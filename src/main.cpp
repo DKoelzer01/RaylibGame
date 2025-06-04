@@ -9,7 +9,6 @@ struct GameState {
 
 struct textObject {
     string text = ""; // Text to display
-    string type = "UI"; // Type of the object (e.g., "text" or "UI")
     Vector3 position = {0.0,0.0,0.0}; // Position of the text relative to the object
     Color color = WHITE; // Color of the text
     float size = 10; // Size of the text
@@ -42,12 +41,19 @@ void drawUI(vector<Object> *uiObjects) {
 Scene mainMenu;
 Scene world;
 
-
+GameState gameState = {0};
 
 
 int main() 
 {
-    GameState gameState = {0};
+    InitWindow(GetMonitorWidth(0), GetMonitorHeight(0), "My first RAYLIB program!");
+    SetTargetFPS(60);
+    
+    SetExitKey(KEY_NULL);
+
+    if (!IsWindowFullscreen()) {
+        ToggleFullscreen();
+    }
 
     bool windowKeepAlive = true;
 
@@ -57,9 +63,30 @@ int main()
     mainMenu.camera.up = (Vector3){ 0.0f, 1.0f, 0.0f };
     mainMenu.camera.fovy = 45.0f;
     mainMenu.camera.projection = CAMERA_PERSPECTIVE;
-    mainMenu.uiObjects.push_back({ "text", { 0.0f, 0.0f, 0.0f }, { 0.0f, 0.0f, 0.0f }, WHITE, 1.0f,  {"Welcome to the Game!","UI"} });
-    mainMenu.uiObjects.push_back({ "text", { 0.0f, 0.0f, 0.0f }, { 0.0f, 0.0f, 0.0f }, WHITE, 1.0f, {"Press ENTER to start","UI",{0,20,0}} });
-    mainMenu.uiObjects.push_back({ "text", { 0.0f, 0.0f, 0.0f }, { 0.0f, 0.0f, 0.0f }, WHITE, 1.0f, {"Press ESC to exit","UI",{0,40,0}} });
+    mainMenu.uiObjects.push_back(Object{
+        "text",
+        { 0.0f, 0.0f, 0.0f },
+        { 0.0f, 0.0f, 0.0f },
+        WHITE,
+        1.0f,
+        textObject{ "Test Game", { static_cast<float>(GetScreenWidth()/2 - MeasureText("Test Game", 40)/2), static_cast<float>(GetScreenHeight()/2 - 30), 0.0f }, WHITE, 40 }
+    });
+    mainMenu.uiObjects.push_back(Object{
+        "text",
+        { 0.0f, 0.0f, 0.0f },
+        { 0.0f, 0.0f, 0.0f },
+        WHITE,
+        1.0f,
+        textObject{ "Press Enter to Start", { static_cast<float>(GetScreenWidth()/2 - MeasureText("Press Enter to Start", 40)/2), static_cast<float>(GetScreenHeight()/2 + 10), 0.0f }, WHITE, 40 }
+    });
+    mainMenu.uiObjects.push_back(Object{
+        "text",
+        { 0.0f, 0.0f, 0.0f },
+        { 0.0f, 0.0f, 0.0f },
+        WHITE,
+        1.0f,
+        textObject{ "Press ESC to exit", { static_cast<float>(GetScreenWidth()/2 - MeasureText("Press ESC to exit", 40)/2), static_cast<float>(GetScreenHeight()/2 + 50), 0.0f }, WHITE, 40 }
+    });
 
     world.objects.push_back({ "cube", { 0.0f, 0.0f, 0.0f }, { 0.0f, 0.0f, 0.0f }, RED, 1.0f });
     world.objects.push_back({ "cube", { 0.0f, 4.0f, 0.0f }, { 0.0f, 2.0f, 2.0f }, GREEN, 1.0f });
@@ -71,14 +98,7 @@ int main()
     world.camera.fovy = 45.0f;
     world.camera.projection = CAMERA_PERSPECTIVE;
 
-    InitWindow(GetMonitorWidth(0), GetMonitorHeight(0), "My first RAYLIB program!");
-    SetTargetFPS(60);
     
-    SetExitKey(KEY_NULL);
-
-    if (!IsWindowFullscreen()) {
-        ToggleFullscreen();
-    }
 
     while (windowKeepAlive)
     {
@@ -86,6 +106,7 @@ int main()
             case 0: // Main Menu
                 if (IsKeyPressed(KEY_ENTER)) {
                     printf("Start Game\n");
+                    HideCursor();
                     gameState.state = 1; // Start game
                 }
                 if (IsKeyPressed(KEY_ESCAPE)) {
@@ -95,6 +116,7 @@ int main()
                 break;
             case 1: // Game
                 if (IsKeyPressed(KEY_ESCAPE)) {
+                    ShowCursor();
                     printf("Game paused\n");
                     gameState.state = 2; // Pause game
                 }
@@ -102,6 +124,7 @@ int main()
             case 2: // Pause Menu
                 if (IsKeyPressed(KEY_R)) {
                     printf("Game unpaused\n");
+                    HideCursor();
                     gameState.state = 1; // Resume game
                 }
                 if (IsKeyPressed(KEY_ESCAPE)) {
@@ -113,17 +136,20 @@ int main()
 
         BeginDrawing();
             ClearBackground(BLACK);
-            DrawFPS(100,100);
+            DrawFPS(10,10);
             if (gameState.state == 0) {
                 drawScene(&mainMenu);
                 drawUI(&mainMenu.uiObjects);
             } else if (gameState.state == 1) {
                 drawScene(&world);
                 drawUI(&world.uiObjects);
+                SetMousePosition(GetScreenWidth()/2, GetScreenHeight()/2);
             } else if (gameState.state == 2) {
                 drawScene(&world);
                 drawUI(&world.uiObjects);
-                EnableCursor();
+                // Blur background
+                DrawRectangle(0, 0, GetScreenWidth(), GetScreenHeight(), Fade(BLACK, 0.7f));
+                // Draw pause menu text
                 DrawText("Game Paused", GetScreenWidth()/2 - MeasureText("Game Paused", 20)/2, GetScreenHeight()/2 - 10, 20, WHITE);
                 DrawText("Press R to resume", GetScreenWidth()/2 - MeasureText("Press R to resume", 20)/2, GetScreenHeight()/2 + 10, 20, WHITE);
                 DrawText("Press ESC to exit", GetScreenWidth()/2 - MeasureText("Press ESC to exit", 20)/2, GetScreenHeight()/2 + 30, 20, WHITE);
@@ -136,12 +162,15 @@ int main()
 
 void drawScene(Scene *scene) {
     BeginMode3D(scene->camera);
-    UpdateCamera(&scene->camera, CAMERA_FREE);
+    if(gameState.state == 1) {
+        UpdateCamera(&scene->camera, CAMERA_FREE);
+    }
+    
     for (int i = 0; i < scene->objects.size(); i++) {
         Object obj = scene->objects[i];
         if( obj.type == "text") {
             // TODO
-            // Draw 3D text
+            // Draw 3D text on objects
             continue;
         } else if (obj.type == "cube") {
             DrawCube(obj.position, obj.scale, obj.scale, obj.scale, obj.color);
