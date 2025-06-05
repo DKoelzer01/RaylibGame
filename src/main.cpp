@@ -9,8 +9,6 @@
 using namespace std;
 
 int gameState = 0; // 0: Main Menu, 1: Game, 2: Pause Menu
-Scene mainMenu = Scene("mainMenu", true); // Main menu scene;
-Scene world = Scene("world", false);;
 
 int main() 
 {
@@ -20,6 +18,8 @@ int main()
     if (!IsWindowFullscreen()) {
         ToggleFullscreen();
     }
+    Scene mainMenu = Scene("mainMenu", true); // Main menu scene;
+    Scene world = Scene("world", false);;
 
     bool windowKeepAlive = true;
 

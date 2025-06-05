@@ -67,9 +67,13 @@
 			"variant": "cpp",
 			"codecvt": "cpp",
 			"ratio": "cpp",
-			"iomanip": "cpp"
+			"iomanip": "cpp",
+			"cstring": "cpp"
 		},
 		"git.autoRepositoryDetection": false,
-		"git.enabled": false
+		"git.enabled": false,
+		"cSpell.words": [
+			"distrib"
+		]
 	}
 }
