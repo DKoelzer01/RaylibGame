@@ -1,5 +1,6 @@
 #include "world.h"
 
+
 void worldHandler(Scene& world) {
     // Initialize the camera for the world scene
     world.camera.position = { 0.0f, 10.0f, 10.0f };
@@ -51,11 +52,11 @@ void generateWorld(Scene& world) {
         Vector3 rotation = { static_cast<float>(distrib(gen)/randScale * 360), static_cast<float>(distrib(gen)/randScale * 360), static_cast<float>(distrib(gen)/randScale * 360) };
         Color color = { static_cast<unsigned char>(distrib(gen)/randScale * 255), static_cast<unsigned char>(distrib(gen)/randScale * 255), 
                         static_cast<unsigned char>(distrib(gen)/randScale * 255), 255 };
-        float size = static_cast<int>((distrib(gen)/randScale)*50 + 1); // Ensure size is at least 1.0
-        size = 50.0f; // Fixed size for testing
+        float size = static_cast<int>((distrib(gen)/randScale)*100 + 20); // Ensure size is at least 1.0
+        //size = 50.0f; // Fixed size for testing
         float scale = 1.0f;
 
-        SimplexNoise* noise = new SimplexNoise(0.01f, 4.0f, 2.0f, 0.5f); // Create a new instance of SimplexNoise
+        SimplexNoise* noise = new SimplexNoise(0.05f, 2.0f, 2.0f, 0.5f); // Create a new instance of SimplexNoise
         if (!noise) {
             std::cerr << "Failed to create SimplexNoise instance." << std::endl;
             return;
@@ -71,30 +72,91 @@ void generateWorld(Scene& world) {
             for (int y = 0; y < size; ++y) {
                 for (int x = 0; x < size; ++x) {
                     int idx = x + y * size + z * size * size;
-                    noiseValues[idx] = noise->fractal(4, position.x + static_cast<float>(x), position.y + static_cast<float>(y), position.z + static_cast<float>(z));
+                    noiseValues[idx] = (noise->fractal(6, position.x + static_cast<float>(x), position.y + static_cast<float>(y), position.z + static_cast<float>(z))+1.0f); // Ensure noise values are positive
                 }
             }
         }
 
         printf("Weighing noise for planetoid %d at position (%f, %f, %f) with size %f\n", i, position.x, position.y, position.z, size);
 
-        weightNoise(noiseValues, pow(size,3), 3.5f);
-        
-        for(int z = 0; z < size; ++z) {
-            for (int y = 0; y < size; ++y) {
-                for (int x = 0; x < size; ++x) {
-                    int idx = x + y * size + z * size * size;
-                    float noiseVal = noiseValues[idx];
-                    if (noiseVal > 0.02f) { // Threshold to determine if a voxel should be created
-                        Vector3 voxelPosition = { position.x + static_cast<float>(x), position.y + static_cast<float>(y), position.z + static_cast<float>(z) };
-                        //printf("Creating voxel at (%f, %f, %f) with noise value %f\n", voxelPosition.x, voxelPosition.y, voxelPosition.z, noiseVal);
-                        world.objects.push_back(std::make_unique<GameObject>("cube", "voxel" + std::to_string(i) + "_" + std::to_string(x) + "_" + std::to_string(y) + "_" + std::to_string(z),voxelPosition, rotation, color, scale));
-                    }
+        // std::ofstream noiseFile;
+        // noiseFile.open("assets/noise/planetoid_noise_" + std::to_string(i) + ".txt");
+        // if (!noiseFile.is_open()) {
+        //     std::cerr << "Failed to open noise file for writing." << std::endl;
+        //     return;
+        // }
+        // for (const auto& value : noiseValues) {
+        //     noiseFile << value << "\n";
+        // }
+        // noiseFile.close();
+
+        weightNoise(noiseValues, pow(size,3), 4.0f);
+        std::vector<Vector3> meshPositions;
+
+        // std::ofstream noiseFileWeighted;
+        // noiseFileWeighted.open("assets/noise/planetoid_noise_" + std::to_string(i) + "weighted.txt");
+        // if (!noiseFileWeighted.is_open()) {
+        //     std::cerr << "Failed to open noise file for writing." << std::endl;
+        //     return;
+        // }
+        // for (const auto& value : noiseValues) {
+        //     noiseFileWeighted << value << "\n";
+        // }
+        // noiseFileWeighted.close();
+
+        printf("Marching cubes for planetoid %d at position (%f, %f, %f) with size %f\n", i, position.x, position.y, position.z, size);
+
+        std::vector<Vector3> vertices;
+        std::vector<unsigned int> indices;
+        std::unordered_map<EdgeKey, unsigned int> edgeCache;
+
+        for(int z = 0; z < size - 1; ++z) {
+            for (int y = 0; y < size - 1; ++y) {
+                for (int x = 0; x < size - 1; ++x) {
+                    //if( noiseValues[x + y * size + z * size * size] > 0.5f) world.objects.push_back(std::make_unique<GameObject>("cube", "testCube", Vector3{static_cast<float>(x+100), static_cast<float>(y), static_cast<float>(z)}, rotation, color, scale));
+                    marchCube(x, y, z, noiseValues, size, vertices, indices, edgeCache, 0.5f);
                 }
             }
         }
 
-        // world.objects.push_back(std::make_unique<GameObject>("sphere", "planetoid" + std::to_string(i), position, rotation, color, scale));
+        // Build mesh from vertices and indices
+        Mesh modelMesh = { 0 };
+        modelMesh.vertexCount = static_cast<int>(vertices.size());
+        modelMesh.triangleCount = static_cast<int>(indices.size() / 3);
+        modelMesh.vertices = new float[modelMesh.vertexCount * 3];
+        for (size_t j = 0; j < vertices.size(); ++j) {
+            modelMesh.vertices[j * 3 + 0] = vertices[j].x;
+            modelMesh.vertices[j * 3 + 1] = vertices[j].y;
+            modelMesh.vertices[j * 3 + 2] = vertices[j].z;
+        }
+        modelMesh.indices = new unsigned short[indices.size()];
+        for (size_t j = 0; j < indices.size(); ++j) {
+            modelMesh.indices[j] = static_cast<unsigned short>(indices[j]);
+        }
+        UploadMesh(&modelMesh, false);
+        Model model = LoadModelFromMesh(modelMesh);
+
+        printf("Saving model for planetoid %d at position (%f, %f, %f) with size %f\n", i, position.x, position.y, position.z, size);
+        std::ofstream modelFile;
+        modelFile.open("assets/models/planetoid/planetoid.obj");
+        if (!modelFile.is_open()) {
+            std::cerr << "Failed to open model file for writing." << std::endl;
+            return;
+        }
+        modelFile << "#planetoid" << i << "\n";
+        // Write vertices
+        for (const auto& v : vertices) {
+            modelFile << "v " << v.x << " " << v.y << " " << v.z << "\n";
+        }
+        // Write faces using indices (OBJ uses 1-based indexing)
+        for (size_t j = 0; j + 2 < indices.size(); j += 3) {
+            modelFile << "f "
+                  << (indices[j] + 1) << " "
+                  << (indices[j + 1] + 1) << " "
+                  << (indices[j + 2] + 1) << "\n";
+        }
+        modelFile.close();
+        world.objects.push_back(std::make_unique<GameObject>("gameobject", "planetoid" + std::to_string(i), position, rotation, color, scale, model));
     // }
 
 

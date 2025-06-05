@@ -6,6 +6,8 @@
 #include <random>
 #include "SimplexNoise.h"
 #include "cubemarch.h"
+#include <array>
+#include <unordered_map>
 
 void worldHandler(Scene& world);
 void generateWorld(Scene& world);

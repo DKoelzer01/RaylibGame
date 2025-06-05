@@ -15,9 +15,6 @@ int main()
     InitWindow(GetMonitorWidth(0), GetMonitorHeight(0), "My first RAYLIB program!");
     SetTargetFPS(60);
     SetExitKey(KEY_NULL);
-    if (!IsWindowFullscreen()) {
-        ToggleFullscreen();
-    }
     Scene mainMenu = Scene("mainMenu", true); // Main menu scene;
     Scene world = Scene("world", false);;
 
@@ -28,6 +25,14 @@ int main()
 
     while (windowKeepAlive)
     {
+        if (!IsWindowFocused()) {
+            ShowCursor();
+            BeginDrawing();
+            EndDrawing();
+            continue;
+        } else if (gameState == 1) {
+            HideCursor();
+        } 
         switch(gameState) {
             case 0: // Main Menu
                 if (IsKeyPressed(KEY_ENTER)) {
@@ -61,6 +66,8 @@ int main()
                 }
                 break;
         }
+
+        
 
         BeginDrawing();
             ClearBackground(BLACK);

@@ -37,5 +37,6 @@ void GameObject::draw() {
         DrawSphereWires(position, scale,0,1, BLACK);
     } else  {
         DrawModel(model, position, scale, color);
+        DrawModelWires(model, position, scale, BLACK);
     }
 }
