@@ -53,6 +53,7 @@ void generateWorld(Scene& world) {
         Color color = { static_cast<unsigned char>(distrib(gen)/randScale * 255), static_cast<unsigned char>(distrib(gen)/randScale * 255), 
                         static_cast<unsigned char>(distrib(gen)/randScale * 255), 255 };
         float size = static_cast<int>((distrib(gen)/randScale)*100 + 20); // Ensure size is at least 1.0
+        // TODO: Fix rendering errors when size is too large. ~150+. 
         //size = 50.0f; // Fixed size for testing
         float scale = 1.0f;
 
@@ -71,7 +72,7 @@ void generateWorld(Scene& world) {
         for (int z = 0; z < size; ++z) {
             for (int y = 0; y < size; ++y) {
                 for (int x = 0; x < size; ++x) {
-                    int idx = x + y * size + z * size * size;
+                    size_t idx = x + y * size + z * size * size;
                     noiseValues[idx] = (noise->fractal(6, position.x + static_cast<float>(x), position.y + static_cast<float>(y), position.z + static_cast<float>(z))+1.0f); // Ensure noise values are positive
                 }
             }

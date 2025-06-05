@@ -317,7 +317,7 @@ const int TRIANGULATIONS[256][15] = {
     {-1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1 },
 };
 
-std::array<int,15> get_triangulation(int x, int y, int z, std::vector<float>& noiseValues,int size, float threshold);
+std::array<int,15> get_triangulation(size_t x, size_t y, size_t z, std::vector<float>& noiseValues,size_t size, float threshold);
 
 void marchCube(int x, int y, int z,
     std::vector<float>& noiseValues, int size,

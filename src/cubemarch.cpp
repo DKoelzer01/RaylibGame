@@ -1,6 +1,6 @@
 #include "cubemarch.h"
 
-std::array<int,15> get_triangulation(int x, int y, int z, std::vector<float>& noiseValues,int size, float threshold) {
+std::array<int,15> get_triangulation(size_t x, size_t y, size_t z, std::vector<float>& noiseValues,size_t size, float threshold) {
     int cubeIndex = 0;
     if (noiseValues[(x    ) + (y    ) * size + (z    ) * size * size] < threshold) cubeIndex |= 1 << 0; // (0,0,0)
     if (noiseValues[(x + 1) + (y    ) * size + (z    ) * size * size] < threshold) cubeIndex |= 1 << 1; // (1,0,0)
