@@ -1,113 +1,41 @@
 #include <raylib.h>
 #include <string>
 #include <vector>
+#include "mainmenu.h"
+#include "world.h"
+#include "scene.h"
+#include "object.h"
+
 using namespace std;
 
-struct GameState {
-    int state = 0; // 0 = main menu, 1 = game, 2 = pause menu
-};
-
-struct textObject {
-    string text = ""; // Text to display
-    Vector3 position = {0.0,0.0,0.0}; // Position of the text relative to the object
-    Color color = WHITE; // Color of the text
-    float size = 10; // Size of the text
-};
-
-struct Object {
-    string type; // Type of the object (e.g., "cube", "sphere")
-    Vector3 position = {0.0,0.0,0.0}; // Position of the object
-    Vector3 rotation = {0.0,0.0,0.0}; // Rotation of the object
-    Color color; // Color of the object
-    float scale = 1.0; // Scale of the object
-    textObject text = {}; // Text object for displaying text on the object
-};
-
-struct Scene {
-    vector<Object> objects; // Array of objects in the scene
-    vector<Object> uiObjects; // Array of UI objects in the scene
-    Camera3D camera; // Camera for the scene
-};
-
-void drawScene(Scene *scene);
-
-void drawUI(vector<Object> *uiObjects) {
-    for (int i = 0; i < uiObjects->size(); i++) {
-        Object obj = (*uiObjects)[i];
-        DrawText(obj.text.text.c_str(), obj.text.position.x, obj.text.position.y, obj.text.size, obj.text.color);
-    }
-}
-
-Scene mainMenu;
-Scene world;
-
-GameState gameState = {0};
-
+int gameState = 0; // 0: Main Menu, 1: Game, 2: Pause Menu
+Scene mainMenu = Scene("mainMenu", true); // Main menu scene;
+Scene world = Scene("world", false);;
 
 int main() 
 {
     InitWindow(GetMonitorWidth(0), GetMonitorHeight(0), "My first RAYLIB program!");
     SetTargetFPS(60);
-    
     SetExitKey(KEY_NULL);
-
     if (!IsWindowFullscreen()) {
         ToggleFullscreen();
     }
 
     bool windowKeepAlive = true;
 
-    mainMenu.camera = {0};
-    mainMenu.camera.position = (Vector3){ 0.0f, 10.0f, 10.0f };
-    mainMenu.camera.target = (Vector3){ 0.0f, 0.0f, 0.0f };
-    mainMenu.camera.up = (Vector3){ 0.0f, 1.0f, 0.0f };
-    mainMenu.camera.fovy = 45.0f;
-    mainMenu.camera.projection = CAMERA_PERSPECTIVE;
-    mainMenu.uiObjects.push_back(Object{
-        "text",
-        { 0.0f, 0.0f, 0.0f },
-        { 0.0f, 0.0f, 0.0f },
-        WHITE,
-        1.0f,
-        textObject{ "Test Game", { static_cast<float>(GetScreenWidth()/2 - MeasureText("Test Game", 40)/2), static_cast<float>(GetScreenHeight()/2 - 30), 0.0f }, WHITE, 40 }
-    });
-    mainMenu.uiObjects.push_back(Object{
-        "text",
-        { 0.0f, 0.0f, 0.0f },
-        { 0.0f, 0.0f, 0.0f },
-        WHITE,
-        1.0f,
-        textObject{ "Press Enter to Start", { static_cast<float>(GetScreenWidth()/2 - MeasureText("Press Enter to Start", 40)/2), static_cast<float>(GetScreenHeight()/2 + 10), 0.0f }, WHITE, 40 }
-    });
-    mainMenu.uiObjects.push_back(Object{
-        "text",
-        { 0.0f, 0.0f, 0.0f },
-        { 0.0f, 0.0f, 0.0f },
-        WHITE,
-        1.0f,
-        textObject{ "Press ESC to exit", { static_cast<float>(GetScreenWidth()/2 - MeasureText("Press ESC to exit", 40)/2), static_cast<float>(GetScreenHeight()/2 + 50), 0.0f }, WHITE, 40 }
-    });
-
-    world.objects.push_back({ "cube", { 0.0f, 0.0f, 0.0f }, { 0.0f, 0.0f, 0.0f }, RED, 1.0f });
-    world.objects.push_back({ "cube", { 0.0f, 4.0f, 0.0f }, { 0.0f, 2.0f, 2.0f }, GREEN, 1.0f });
-    world.objects.push_back({ "cube", { 5.0f, 0.0f, 0.0f }, { 2.0f, 2.0f, 0.0f }, BLUE, 1.0f });
-    world.camera = {0};
-    world.camera.position = (Vector3){ 0.0f, 10.0f, 10.0f };
-    world.camera.target = (Vector3){ 0.0f, 0.0f, 0.0f };
-    world.camera.up = (Vector3){ 0.0f, 1.0f, 0.0f };
-    world.camera.fovy = 45.0f;
-    world.camera.projection = CAMERA_PERSPECTIVE;
-
-    
+    mainMenuHandler(mainMenu);
+    worldHandler(world);
 
     while (windowKeepAlive)
     {
-        switch(gameState.state) {
+        switch(gameState) {
             case 0: // Main Menu
                 if (IsKeyPressed(KEY_ENTER)) {
                     printf("Start Game\n");
                     HideCursor();
-                    gameState.state = 1; // Start game
+                    gameState = 1; // Start game
+                    mainMenu.isActive = false; // Deactivate main menu
+                    world.isActive = true; // Activate world scene
                 }
                 if (IsKeyPressed(KEY_ESCAPE)) {
                     printf("Exit game from main menu\n");
@@ -118,14 +46,14 @@ int main()
                 if (IsKeyPressed(KEY_ESCAPE)) {
                     ShowCursor();
                     printf("Game paused\n");
-                    gameState.state = 2; // Pause game
+                    gameState = 2; // Pause game
                 }
                 break;
             case 2: // Pause Menu
                 if (IsKeyPressed(KEY_R)) {
                     printf("Game unpaused\n");
                     HideCursor();
-                    gameState.state = 1; // Resume game
+                    gameState = 1; // Resume game
                 }
                 if (IsKeyPressed(KEY_ESCAPE)) {
                     printf("Exit game from pause\n");
@@ -137,16 +65,16 @@ int main()
         BeginDrawing();
             ClearBackground(BLACK);
             DrawFPS(10,10);
-            if (gameState.state == 0) {
-                drawScene(&mainMenu);
-                drawUI(&mainMenu.uiObjects);
-            } else if (gameState.state == 1) {
-                drawScene(&world);
-                drawUI(&world.uiObjects);
+            if (gameState == 0) {
+                mainMenu.drawScene(gameState);
+                mainMenu.drawUI(gameState);
+            } else if (gameState == 1) {
+                world.drawScene(gameState);
+                world.drawUI(gameState);
                 SetMousePosition(GetScreenWidth()/2, GetScreenHeight()/2);
-            } else if (gameState.state == 2) {
-                drawScene(&world);
-                drawUI(&world.uiObjects);
+            } else if (gameState == 2) {
+                world.drawScene(gameState);
+                world.drawUI(gameState);
                 // Blur background
                 DrawRectangle(0, 0, GetScreenWidth(), GetScreenHeight(), Fade(BLACK, 0.7f));
                 // Draw pause menu text
@@ -160,23 +88,4 @@ int main()
     CloseWindow();
 }
 
-void drawScene(Scene *scene) {
-    BeginMode3D(scene->camera);
-    if(gameState.state == 1) {
-        UpdateCamera(&scene->camera, CAMERA_FREE);
-    }
-    
-    for (int i = 0; i < scene->objects.size(); i++) {
-        Object obj = scene->objects[i];
-        if( obj.type == "text") {
-            // TODO
-            // Draw 3D text on objects
-            continue;
-        } else if (obj.type == "cube") {
-            DrawCube(obj.position, obj.scale, obj.scale, obj.scale, obj.color);
-            DrawCubeWires(obj.position, obj.scale, obj.scale, obj.scale, BLACK);
-        }
-    }
-    
-    EndMode3D();
-}
+
