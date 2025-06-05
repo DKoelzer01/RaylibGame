@@ -31,8 +31,10 @@ GameObject::GameObject(std::string type, std::string name, Vector3 position, Vec
 void GameObject::draw() {
     if (type == "cube") {
         DrawCube(position, scale, scale, scale, color);
+        DrawCubeWires(position, scale, scale, scale, BLACK);
     } else if (type == "sphere") {
         DrawSphere(position, scale, color);
+        DrawSphereWires(position, scale,0,1, BLACK);
     } else  {
         DrawModel(model, position, scale, color);
     }

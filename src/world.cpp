@@ -28,7 +28,7 @@ void weightNoise(std::vector<float>& noiseValues, int size, float weight) {
                 float dz = z - center;
                 float dist = std::sqrt(dx * dx + dy * dy + dz * dz);
                 float maxDist = std::sqrt(3 * center * center);
-                float scale = 1.0f - (dist / maxDist) * weight;
+                float scale = 2.0f - (dist / maxDist) * weight;
                 if (scale < 0.0f) scale = 0.0f;
                 noiseValues[idx] *= scale;
             }
@@ -52,9 +52,10 @@ void generateWorld(Scene& world) {
         Color color = { static_cast<unsigned char>(distrib(gen)/randScale * 255), static_cast<unsigned char>(distrib(gen)/randScale * 255), 
                         static_cast<unsigned char>(distrib(gen)/randScale * 255), 255 };
         float size = static_cast<int>((distrib(gen)/randScale)*50 + 1); // Ensure size is at least 1.0
+        size = 50.0f; // Fixed size for testing
         float scale = 1.0f;
 
-        SimplexNoise* noise = new SimplexNoise(1.0f, 1.0f, 2.0f, 0.5f); // Create a new instance of SimplexNoise
+        SimplexNoise* noise = new SimplexNoise(0.01f, 4.0f, 2.0f, 0.5f); // Create a new instance of SimplexNoise
         if (!noise) {
             std::cerr << "Failed to create SimplexNoise instance." << std::endl;
             return;
@@ -70,25 +71,24 @@ void generateWorld(Scene& world) {
             for (int y = 0; y < size; ++y) {
                 for (int x = 0; x < size; ++x) {
                     int idx = x + y * size + z * size * size;
-                    noiseValues[idx] = noise->fractal(3, position.x + static_cast<float>(x), position.y + static_cast<float>(y), position.z + static_cast<float>(z));
+                    noiseValues[idx] = noise->fractal(4, position.x + static_cast<float>(x), position.y + static_cast<float>(y), position.z + static_cast<float>(z));
                 }
             }
         }
 
         printf("Weighing noise for planetoid %d at position (%f, %f, %f) with size %f\n", i, position.x, position.y, position.z, size);
 
-        weightNoise(noiseValues, pow(size,3), 1.5f);
+        weightNoise(noiseValues, pow(size,3), 3.5f);
         
         for(int z = 0; z < size; ++z) {
             for (int y = 0; y < size; ++y) {
                 for (int x = 0; x < size; ++x) {
                     int idx = x + y * size + z * size * size;
                     float noiseVal = noiseValues[idx];
-                    if (noiseVal > 0.05f) { // Threshold to determine if a voxel should be created
+                    if (noiseVal > 0.02f) { // Threshold to determine if a voxel should be created
                         Vector3 voxelPosition = { position.x + static_cast<float>(x), position.y + static_cast<float>(y), position.z + static_cast<float>(z) };
                         //printf("Creating voxel at (%f, %f, %f) with noise value %f\n", voxelPosition.x, voxelPosition.y, voxelPosition.z, noiseVal);
-                        world.objects.push_back(std::make_unique<GameObject>("cube", "voxel" + std::to_string(i) + "_" + std::to_string(x) + "_" + std::to_string(y) + "_" + std::to_string(z), 
-                                                                              voxelPosition, rotation, color, scale));
+                        world.objects.push_back(std::make_unique<GameObject>("cube", "voxel" + std::to_string(i) + "_" + std::to_string(x) + "_" + std::to_string(y) + "_" + std::to_string(z),voxelPosition, rotation, color, scale));
                     }
                 }
             }
