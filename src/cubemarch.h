@@ -37,12 +37,25 @@ void marchCube(
     std::vector<float>& noiseValues, size_t size,
     std::vector<Vector3>& vertices,
     std::vector<size_t>& indices,
-    std::vector<int>& edgeCacheFlat,
+    std::vector<int>* edgeCacheLocal,
+    std::vector<int>* edgeCacheX,
+    std::vector<int>* edgeCacheY,
+    std::vector<int>* edgeCacheZ,
     float threshold,
-    int cx, int cy, int cz, int chunkGrid,
-    int cacheType
+    int cx, int cy, int cz, int chunkGrid
 );
 
 extern std::vector<int> edgeCacheFlat;
+
+// Canonical mapping for shared face edge cache
+// faceDir: 0=X, 1=Y, 2=Z
+// side: +1 for positive face (+X, +Y, +Z), -1 for negative face (-X, -Y, -Z)
+void getCanonicalFaceEdgeIndex(
+    int faceDir, int side, // 0=X, 1=Y, 2=Z; side=+1 or -1
+    int x, int y, int z, int edge,
+    int& a, int& b, int& canonicalEdge
+);
+// Returns flatIdx for a face, given (a, b, edge) and stride
+int getFaceFlatIdx(int a, int b, int edge, int stride);
 
 #endif

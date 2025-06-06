@@ -29,6 +29,8 @@ struct Chunk {
     std::vector<Vector3> vertices;
     std::vector<size_t> indices;
     Int3 position; // Position of the chunk in the world
+    Mesh mesh;     // Store mesh for chunk lifetime
+    Model model;   // Store model for chunk lifetime
     // Add more as needed (e.g., mesh, cache)
 };
 

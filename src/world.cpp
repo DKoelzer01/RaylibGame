@@ -202,8 +202,8 @@ void generateWorld(Scene& world) {
 
     float randScale = 100000.0f; // Scale for random number generation
     float genRange = 500.0f; // Range for planetoid generation
-    float minSize = 50.0f; // Minimum size of planetoids
-    float maxSize = 250.0f; // Maximum size of planetoids
+    float minSize = 250.0f; // Minimum size of planetoids
+    float maxSize = 500.0f; // Maximum size of planetoids
     logger.logf("Generated %d planetoids.\n", generatePlanetoids(randScale, world, genRange, minSize, maxSize)); // Generate planetoids in the world
 
     clock_t worldGenEnd = clock();
@@ -220,9 +220,9 @@ int generatePlanetoids(float randScale, Scene& world, float genRange, float minS
     std::uniform_int_distribution<> distrib(1, randScale);
 
     //Generate planetoids
-    int numPlanetoids = (distrib(gen)/randScale) * 10; // Number of planetoids to generate
+    int numPlanetoids = ((distrib(gen)/randScale) * 5) + 1; // Number of planetoids to generate
     //DEBUG
-    numPlanetoids = 1; // For testing purposes, generate only one planetoid
+    // numPlanetoids = 1; // For testing purposes, generate only one planetoid
     logger.logf("Generating %d planetoids...\n", numPlanetoids);
 
     for(int i = 0; i < numPlanetoids; ++i) {
@@ -233,7 +233,7 @@ int generatePlanetoids(float randScale, Scene& world, float genRange, float minS
                                 static_cast<float>(((distrib(gen)/randScale)*genRange)-(genRange/2)), 
                                 static_cast<float>(((distrib(gen)/randScale)*genRange)-(genRange/2))};
 
-        position = { 0.0f, 0.0f, 0.0f }; // Fixed position for testing
+        // position = { 0.0f, 0.0f, 0.0f }; // Fixed position for testing
 
         // Rotation is random in degrees, scaled by randScale
         Vector3 rotation = {    static_cast<float>(distrib(gen)/randScale * 360), 
@@ -246,8 +246,8 @@ int generatePlanetoids(float randScale, Scene& world, float genRange, float minS
                         static_cast<unsigned char>(distrib(gen)/randScale * 255), 255};
 
         // Size is a random float between minSize and maxSize
-        size_t size = static_cast<size_t>((distrib(gen)/randScale)*maxSize) + static_cast<size_t>(minSize);
-        size = 250; // Fixed size for testing
+        size_t size = static_cast<size_t>((distrib(gen)/randScale)*(maxSize-minSize)) + static_cast<size_t>(minSize);
+        // size = 100; // Fixed size for testing
 
         // Scale is a fixed value for now, can be adjusted later
         float scale = 1.0f;
@@ -276,15 +276,17 @@ int generatePlanetoids(float randScale, Scene& world, float genRange, float minS
             position.y - chunkGrid * CHUNK_SIZE * 0.5f,
             position.z - chunkGrid * CHUNK_SIZE * 0.5f
         };
+        logger.logf("Planetoid min corner: (%f, %f, %f)\n", minCorner.x, minCorner.y, minCorner.z);
 
         // --- Shared edge cache setup ---
         // Key: (minChunkX, minChunkY, minChunkZ, faceDir), faceDir: 0=X, 1=Y, 2=Z
         std::unordered_map<std::tuple<int, int, int, int>, std::vector<int>, Tuple4Hash> sharedEdgeCaches;
 
         for (int cz = 0; cz < chunkGrid; ++cz) {
+            logger.logf("Generating chunk row %d/%d... %3.2f\%\n", cz + 1, chunkGrid,cz/ static_cast<float>(chunkGrid) * 100.0f);
             for (int cy = 0; cy < chunkGrid; ++cy) {
                 for (int cx = 0; cx < chunkGrid; ++cx) {
-                    logger.logf("Generating chunk at (%d, %d, %d)\n", cx, cy, cz);
+                    //logger.logf("Generating chunk at (%d, %d, %d)\n", cx, cy, cz);
 
                     Int3 chunkPos = {cx, cy, cz};
                     Chunk& chunk = chunks[chunkPos];
@@ -296,6 +298,7 @@ int generatePlanetoids(float randScale, Scene& world, float genRange, float minS
                         minCorner.y + cy * CHUNK_SIZE,
                         minCorner.z + cz * CHUNK_SIZE
                     };
+                    //logger.logf("Chunk (%d,%d,%d) offset: (%f, %f, %f)\n", cx, cy, cz, chunkOffset.x, chunkOffset.y, chunkOffset.z);
                     // Generate noise for this chunk (including border)
                     for (size_t z = 0; z <= CHUNK_SIZE; ++z) {
                         for (size_t y = 0; y <= CHUNK_SIZE; ++y) {
@@ -304,7 +307,7 @@ int generatePlanetoids(float randScale, Scene& world, float genRange, float minS
                                 float wx = chunkOffset.x + x;
                                 float wy = chunkOffset.y + y;
                                 float wz = chunkOffset.z + z;
-                                chunk.noiseValues[idx] = (noise->fractal(3, wx, wy, wz) + 1.0f);
+                                chunk.noiseValues[idx] = (noise->fractal(6, wx, wy, wz) + 1.0f);
                             }
                         }
                     }
@@ -315,7 +318,7 @@ int generatePlanetoids(float randScale, Scene& world, float genRange, float minS
                         if (v < minNoise) minNoise = v;
                         if (v > maxNoise) maxNoise = v;
                     }
-                    logger.logf("Chunk (%d,%d,%d) noise min: %f, max: %f\n", cx, cy, cz, minNoise, maxNoise);
+                    //logger.logf("Chunk (%d,%d,%d) noise min: %f, max: %f\n", cx, cy, cz, minNoise, maxNoise);
 
                     // Weight noise values for this chunk (use CHUNK_SIZE+1)
                     // Use chunkOffset for weighting
@@ -328,7 +331,7 @@ int generatePlanetoids(float randScale, Scene& world, float genRange, float minS
                         if (v < minNoise) minNoise = v;
                         if (v > maxNoise) maxNoise = v;
                     }
-                    logger.logf("Chunk (%d,%d,%d) weighted noise min: %f, max: %f\n", cx, cy, cz, minNoise, maxNoise);
+                    //logger.logf("Chunk (%d,%d,%d) weighted noise min: %f, max: %f\n", cx, cy, cz, minNoise, maxNoise);
 
                     // --- Shared edge cache pointers for this chunk ---
                     // Each chunk needs up to 3 shared caches (for +X, +Y, +Z faces)
@@ -338,6 +341,7 @@ int generatePlanetoids(float randScale, Scene& world, float genRange, float minS
                     std::vector<int>* edgeCacheX = nullptr;
                     std::vector<int>* edgeCacheY = nullptr;
                     std::vector<int>* edgeCacheZ = nullptr;
+                    // +X, +Y, +Z faces (write)
                     if (cx < chunkGrid - 1) {
                         auto key = std::make_tuple(cx + 1, cy, cz, 0); // Use neighbor's index!
                         edgeCacheX = &sharedEdgeCaches[key];
@@ -359,11 +363,13 @@ int generatePlanetoids(float randScale, Scene& world, float genRange, float minS
                             edgeCacheZ->resize(CHUNK_SIZE * CHUNK_SIZE * 12, -1);
                         }
                     }
-                    
+
+
                     chunk.vertices.clear();
                     chunk.indices.clear();
 
-                    logger.logf("Chunk (%d,%d,%d) marching cubes...\n", cx, cy, cz);
+                    //DEBUG Log the marching cubes process
+                    //logger.logf("Chunk (%d,%d,%d) marching cubes...\n", cx, cy, cz);
                     size_t vertsBefore = chunk.vertices.size();
                     size_t indsBefore = chunk.indices.size();
 
@@ -372,32 +378,19 @@ int generatePlanetoids(float randScale, Scene& world, float genRange, float minS
                     for (size_t z = 0; z < CHUNK_SIZE; ++z) {
                         for (size_t y = 0; y < CHUNK_SIZE; ++y) {
                             for (size_t x = 0; x < CHUNK_SIZE; ++x) {
-                                int cacheType = 0; // 0 = local, 1 = X, 2 = Y, 3 = Z
-                                std::vector<int>* edgeCache = &localEdgeCache;
-
-                                // Only use the shared cache for the +X, +Y, or +Z face (never for x==0, y==0, z==0)
-                                if (x == CHUNK_SIZE - 1 && edgeCacheX) {
-                                    edgeCache = edgeCacheX;
-                                    cacheType = 1;
-                                } else if (y == CHUNK_SIZE - 1 && edgeCacheY) {
-                                    edgeCache = edgeCacheY;
-                                    cacheType = 2;
-                                } else if (z == CHUNK_SIZE - 1 && edgeCacheZ) {
-                                    edgeCache = edgeCacheZ;
-                                    cacheType = 3;
-                                }
-
                                 marchCube(
                                     x, y, z,
                                     chunk.noiseValues, CHUNK_SIZE + 1,
                                     chunk.vertices, chunk.indices,
-                                    *edgeCache, 0.5f,
-                                    cx, cy, cz, chunkGrid, cacheType
+                                    &localEdgeCache, edgeCacheX, edgeCacheY, edgeCacheZ,
+                                    0.5f, // Set threshold to 1.0f for correct isosurface
+                                    cx, cy, cz, chunkGrid
                                 );
                             }
                         }
                     }
-                    logger.logf("Chunk (%d,%d,%d) verts: %zu -> %zu, inds: %zu -> %zu", cx, cy, cz, vertsBefore, chunk.vertices.size(), indsBefore, chunk.indices.size());
+                    //DEBUG Log the number of vertices and indices after marching cubes
+                    //logger.logf("Chunk (%d,%d,%d) verts: %zu -> %zu, inds: %zu -> %zu\n", cx, cy, cz, vertsBefore, chunk.vertices.size(), indsBefore, chunk.indices.size());
 
                     // --- Create mesh and model for this chunk ---
                     if (chunk.vertices.empty() || chunk.indices.empty()) {
@@ -420,9 +413,8 @@ int generatePlanetoids(float randScale, Scene& world, float genRange, float minS
                         mesh.indices[j] = static_cast<unsigned short>(chunk.indices[j]);
                     }
                     UploadMesh(&mesh, false);
-                    Model model = LoadModelFromMesh(mesh);
-
-
+                    chunk.mesh = mesh;
+                    chunk.model = LoadModelFromMesh(chunk.mesh);
 
                     // Create a GameObject for this chunk
                     std::string chunkName = "chunk_" + std::to_string(cx) + "_" + std::to_string(cy) + "_" + std::to_string(cz);
@@ -430,269 +422,265 @@ int generatePlanetoids(float randScale, Scene& world, float genRange, float minS
                     Color chunkColor = color;
                     float chunkScale = scale;
                     Vector3 chunkRot = rotation;
-                    auto chunkObj = std::make_unique<GameObject>("gameobject", chunkName, chunkCoords, chunkRot, chunkColor, chunkScale, model);
+                    auto chunkObj = std::make_unique<GameObject>("gameobject", chunkName, chunkCoords, chunkRot, chunkColor, chunkScale, chunk.model);
                     chunkObj->isActive = true;
                     chunkObj->parent = &world.rootObject;
                     world.rootObject.children.push_back(std::move(chunkObj));
 
                     // --- DEBUG: Compare shared edge cache indices at chunk borders ---
-                    logger.logf("Comparing shared edge caches for chunk (%d,%d,%d)...\n", cx, cy, cz);
-                    for (int cz = 0; cz < chunkGrid; ++cz) {
-                        for (int cy = 0; cy < chunkGrid; ++cy) {
-                            for (int cx = 0; cx < chunkGrid; ++cx) {
-                                // +X neighbor
-                                if (cx < chunkGrid - 1) {
-                                    auto keyA = std::make_tuple(cx + 1, cy, cz, 0);
-                                    auto keyB = std::make_tuple(cx + 1, cy, cz, 0);
-                                    const auto& cacheA = sharedEdgeCaches[keyA];
-                                    const auto& cacheB = sharedEdgeCaches[keyB]; // Both chunks should use the same cache object!
-                                    logger.logf("Comparing shared edge cache for X face at (%d,%d,%d):\n", cx+1, cy, cz);
-                                    for (size_t i = 0; i < cacheA.size(); ++i) {
-                                        if (cacheA[i] != cacheB[i]) {
-                                            logger.logf("  MISMATCH at i=%zu: cacheA=%d, cacheB=%d\n", i, cacheA[i], cacheB[i]);
-                                        }
-                                    }
-                                }
-                                // +Y neighbor
-                                if (cy < chunkGrid - 1) {
-                                    auto keyA = std::make_tuple(cx, cy + 1, cz, 1);
-                                    auto keyB = std::make_tuple(cx, cy + 1, cz, 1);
-                                    const auto& cacheA = sharedEdgeCaches[keyA];
-                                    const auto& cacheB = sharedEdgeCaches[keyB];
-                                    logger.logf("Comparing shared edge cache for Y face at (%d,%d,%d):\n", cx, cy+1, cz);
-                                    for (size_t i = 0; i < cacheA.size(); ++i) {
-                                        if (cacheA[i] != cacheB[i]) {
-                                            logger.logf("  MISMATCH at i=%zu: cacheA=%d, cacheB=%d\n", i, cacheA[i], cacheB[i]);
-                                        }
-                                    }
-                                }
-                                // +Z neighbor
-                                if (cz < chunkGrid - 1) {
-                                    auto keyA = std::make_tuple(cx, cy, cz + 1, 2);
-                                    auto keyB = std::make_tuple(cx, cy, cz + 1, 2);
-                                    const auto& cacheA = sharedEdgeCaches[keyA];
-                                    const auto& cacheB = sharedEdgeCaches[keyB];
-                                    logger.logf("Comparing shared edge cache for Z face at (%d,%d,%d):\n", cx, cy, cz+1);
-                                    for (size_t i = 0; i < cacheA.size(); ++i) {
-                                        if (cacheA[i] != cacheB[i]) {
-                                            logger.logf("  MISMATCH at i=%zu: cacheA=%d, cacheB=%d\n", i, cacheA[i], cacheB[i]);
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
+                    // logger.logf("Comparing shared edge caches for chunk (%d,%d,%d)...\n", cx, cy, cz);
+                    // for (int cz = 0; cz < chunkGrid; ++cz) {
+                    //     for (int cy = 0; cy < chunkGrid; ++cy) {
+                    //         for (int cx = 0; cx < chunkGrid; ++cx) {
+                    //             // +X neighbor
+                    //             if (cx < chunkGrid - 1) {
+                    //                 auto keyA = std::make_tuple(cx + 1, cy, cz, 0);
+                    //                 auto keyB = std::make_tuple(cx + 1, cy, cz, 0);
+                    //                 const auto& cacheA = sharedEdgeCaches[keyA];
+                    //                 const auto& cacheB = sharedEdgeCaches[keyB]; // Both chunks should use the same cache object!
+                    //                 logger.logf("Comparing shared edge cache for X face at (%d,%d,%d):\n", cx+1, cy, cz);
+                    //                 for (size_t i = 0; i < cacheA.size(); ++i) {
+                    //                     if (cacheA[i] != cacheB[i]) {
+                    //                         logger.logf("  MISMATCH at i=%zu: cacheA=%d, cacheB=%d\n", i, cacheA[i], cacheB[i]);
+                    //                     }
+                    //                 }
+                    //             }
+                    //             // +Y neighbor
+                    //             if (cy < chunkGrid - 1) {
+                    //                 auto keyA = std::make_tuple(cx, cy + 1, cz, 1);
+                    //                 auto keyB = std::make_tuple(cx, cy + 1, cz, 1);
+                    //                 const auto& cacheA = sharedEdgeCaches[keyA];
+                    //                 const auto& cacheB = sharedEdgeCaches[keyB];
+                    //                 logger.logf("Comparing shared edge cache for Y face at (%d,%d,%d):\n", cx, cy+1, cz);
+                    //                 for (size_t i = 0; i < cacheA.size(); ++i) {
+                    //                     if (cacheA[i] != cacheB[i]) {
+                    //                         logger.logf("  MISMATCH at i=%zu: cacheA=%d, cacheB=%d\n", i, cacheA[i], cacheB[i]);
+                    //                     }
+                    //                 }
+                    //             }
+                    //             // +Z neighbor
+                    //             if (cz < chunkGrid - 1) {
+                    //                 auto keyA = std::make_tuple(cx, cy, cz + 1, 2);
+                    //                 auto keyB = std::make_tuple(cx, cy, cz + 1, 2);
+                    //                 const auto& cacheA = sharedEdgeCaches[keyA];
+                    //                 const auto& cacheB = sharedEdgeCaches[keyB];
+                    //                 logger.logf("Comparing shared edge cache for Z face at (%d,%d,%d):\n", cx, cy, cz+1);
+                    //                 for (size_t i = 0; i < cacheA.size(); ++i) {
+                    //                     if (cacheA[i] != cacheB[i]) {
+                    //                         logger.logf("  MISMATCH at i=%zu: cacheA=%d, cacheB=%d\n", i, cacheA[i], cacheB[i]);
+                    //                     }
+                    //                 }
+                    //             }
+                    //         }
+                    //     }
+                    // }
 
                     // --- DEBUG: Print vertex positions at chunk boundaries ---
-                    logger.logf("Vertex boundary check for chunk (%d,%d,%d):\n", cx, cy, cz);
-                    if (cx < chunkGrid - 1) {
-                        logger.logf("Vertex boundary check: chunk (%d,%d,%d) +X face\n", cx, cy, cz);
-                        for (const Vector3& v : chunk.vertices) {
-                            if (fabs(v.x - (chunkOffset.x + CHUNK_SIZE)) < 1e-4) {
-                                logger.logf("v=(%.4f,%.4f,%.4f)\n", v.x, v.y, v.z);
-                            }
-                        }
-                    }
-                    if (cy < chunkGrid - 1) {
-                        logger.logf("Vertex boundary check: chunk (%d,%d,%d) +Y face\n", cx, cy, cz);
-                        for (const Vector3& v : chunk.vertices) {
-                            if (fabs(v.y - (chunkOffset.y + CHUNK_SIZE)) < 1e-4) {
-                                logger.logf("v=(%.4f,%.4f,%.4f)\n", v.x, v.y, v.z);
-                            }
-                        }
-                    }
-                    if (cz < chunkGrid - 1) {
-                        logger.logf("Vertex boundary check: chunk (%d,%d,%d) +Z face\n", cx, cy, cz);
-                        for (const Vector3& v : chunk.vertices) {
-                            if (fabs(v.z - (chunkOffset.z + CHUNK_SIZE)) < 1e-4) {
-                                logger.logf("v=(%.4f,%.4f,%.4f)\n", v.x, v.y, v.z);
-                            }
-                        }
-                    }
+                    // logger.logf("Vertex boundary check for chunk (%d,%d,%d):\n", cx, cy, cz);
+                    // if (cx < chunkGrid - 1) {
+                    //     logger.logf("Vertex boundary check: chunk (%d,%d,%d) +X face\n", cx, cy, cz);
+                    //     for (const Vector3& v : chunk.vertices) {
+                    //         if (fabs(v.x - (chunkOffset.x + CHUNK_SIZE)) < 1e-4) {
+                    //             logger.logf("v=(%.4f,%.4f,%.4f)\n", v.x, v.y, v.z);
+                    //         }
+                    //     }
+                    // }
+                    // if (cy < chunkGrid - 1) {
+                    //     logger.logf("Vertex boundary check: chunk (%d,%d,%d) +Y face\n", cx, cy, cz);
+                    //     for (const Vector3& v : chunk.vertices) {
+                    //         if (fabs(v.y - (chunkOffset.y + CHUNK_SIZE)) < 1e-4) {
+                    //             logger.logf("v=(%.4f,%.4f,%.4f)\n", v.x, v.y, v.z);
+                    //         }
+                    //     }
+                    // }
+                    // if (cz < chunkGrid - 1) {
+                    //     logger.logf("Vertex boundary check: chunk (%d,%d,%d) +Z face\n", cx, cy, cz);
+                    //     for (const Vector3& v : chunk.vertices) {
+                    //         if (fabs(v.z - (chunkOffset.z + CHUNK_SIZE)) < 1e-4) {
+                    //             logger.logf("v=(%.4f,%.4f,%.4f)\n", v.x, v.y, v.z);
+                    //         }
+                    //     }
+                    // }
                 }
             }
         }
 
         // --- DEBUG: Compare world-space border vertices between adjacent chunks ---
-        logger.logf("Comparing world-space border vertices between adjacent chunks...\n");
-        for (int cz = 0; cz < chunkGrid; ++cz) {
-            for (int cy = 0; cy < chunkGrid; ++cy) {
-                for (int cx = 0; cx < chunkGrid; ++cx) {
-                    Int3 chunkPos = {cx, cy, cz};
-                    const auto& chunkA = chunks[chunkPos];
-                    Vector3 chunkOffsetA = {
-                        minCorner.x + cx * CHUNK_SIZE,
-                        minCorner.y + cy * CHUNK_SIZE,
-                        minCorner.z + cz * CHUNK_SIZE
-                    };
-
-                    // +X neighbor
-                    if (cx < chunkGrid - 1) {
-                        Int3 neighborX = {cx + 1, cy, cz};
-                        const auto& chunkB = chunks[neighborX];
-                        Vector3 chunkOffsetB = {
-                            minCorner.x + (cx + 1) * CHUNK_SIZE,
-                            minCorner.y + cy * CHUNK_SIZE,
-                            minCorner.z + cz * CHUNK_SIZE
-                        };
-                        logger.logf("Comparing +X border vertices: chunk (%d,%d,%d) <-> (%d,%d,%d)\n", cx, cy, cz, cx+1, cy, cz);
-                        for (const Vector3& vA : chunkA.vertices) {
-                            if (fabs(vA.x - (chunkOffsetA.x + CHUNK_SIZE)) < 1e-4) {
-                                // Look for a matching vertex in chunkB at x == chunkOffsetB.x
-                                bool found = false;
-                                for (const Vector3& vB : chunkB.vertices) {
-                                    if (fabs(vB.x - chunkOffsetB.x) < 1e-4 &&
-                                        fabs(vA.y - vB.y) < 1e-4 &&
-                                        fabs(vA.z - vB.z) < 1e-4) {
-                                        found = true;
-                                        break;
-                                    }
-                                }
-                                if (!found) {
-                                    logger.logf("  MISMATCH: vA=(%.4f,%.4f,%.4f) has no match in neighbor\n", vA.x, vA.y, vA.z);
-                                }
-                            }
-                        }
-                    }
-
-                    // +Y neighbor
-                    if (cy < chunkGrid - 1) {
-                        Int3 neighborY = {cx, cy + 1, cz};
-                        const auto& chunkB = chunks[neighborY];
-                        Vector3 chunkOffsetB = {
-                            minCorner.x + cx * CHUNK_SIZE,
-                            minCorner.y + (cy + 1) * CHUNK_SIZE,
-                            minCorner.z + cz * CHUNK_SIZE
-                        };
-                        logger.logf("Comparing +Y border vertices: chunk (%d,%d,%d) <-> (%d,%d,%d)\n", cx, cy, cz, cx, cy+1, cz);
-                        for (const Vector3& vA : chunkA.vertices) {
-                            if (fabs(vA.y - (chunkOffsetA.y + CHUNK_SIZE)) < 1e-4) {
-                                // Look for a matching vertex in chunkB at y == chunkOffsetB.y
-                                bool found = false;
-                                for (const Vector3& vB : chunkB.vertices) {
-                                    if (fabs(vB.y - chunkOffsetB.y) < 1e-4 &&
-                                        fabs(vA.x - vB.x) < 1e-4 &&
-                                        fabs(vA.z - vB.z) < 1e-4) {
-                                        found = true;
-                                        break;
-                                    }
-                                }
-                                if (!found) {
-                                    logger.logf("  MISMATCH: vA=(%.4f,%.4f,%.4f) has no match in neighbor\n", vA.x, vA.y, vA.z);
-                                }
-                            }
-                        }
-                    }
-
-                    // +Z neighbor
-                    if (cz < chunkGrid - 1) {
-                        Int3 neighborZ = {cx, cy, cz + 1};
-                        const auto& chunkB = chunks[neighborZ];
-                        Vector3 chunkOffsetB = {
-                            minCorner.x + cx * CHUNK_SIZE,
-                            minCorner.y + cy * CHUNK_SIZE,
-                            minCorner.z + (cz + 1) * CHUNK_SIZE
-                        };
-                        logger.logf("Comparing +Z border vertices: chunk (%d,%d,%d) <-> (%d,%d,%d)\n", cx, cy, cz, cx, cy, cz+1);
-                        for (const Vector3& vA : chunkA.vertices) {
-                            if (fabs(vA.z - (chunkOffsetA.z + CHUNK_SIZE)) < 1e-4) {
-                                // Look for a matching vertex in chunkB at z == chunkOffsetB.z
-                                bool found = false;
-                                for (const Vector3& vB : chunkB.vertices) {
-                                    if (fabs(vB.z - chunkOffsetB.z) < 1e-4 &&
-                                        fabs(vA.x - vB.x) < 1e-4 &&
-                                        fabs(vA.y - vB.y) < 1e-4) {
-                                        found = true;
-                                        break;
-                                    }
-                                }
-                                if (!found) {
-                                    logger.logf("  MISMATCH: vA=(%.4f,%.4f,%.4f) has no match in neighbor\n", vA.x, vA.y, vA.z);
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
+        // logger.logf("Comparing world-space border vertices between adjacent chunks...\n");
+        // for (int cz = 0; cz < chunkGrid; ++cz) {
+        //     for (int cy = 0; cy < chunkGrid; ++cy) {
+        //         for (int cx = 0; cx < chunkGrid; ++cx) {
+        //             Int3 chunkPos = {cx, cy, cz};
+        //             const auto& chunkA = chunks[chunkPos];
+        //             Vector3 chunkOffsetA = {
+        //                 minCorner.x + cx * CHUNK_SIZE,
+        //                 minCorner.y + cy * CHUNK_SIZE,
+        //                 minCorner.z + cz * CHUNK_SIZE
+        //             };
+        //             // +X neighbor
+        //             if (cx < chunkGrid - 1) {
+        //                 Int3 neighborX = {cx + 1, cy, cz};
+        //                 const auto& chunkB = chunks[neighborX];
+        //                 Vector3 chunkOffsetB = {
+        //                     minCorner.x + (cx + 1) * CHUNK_SIZE,
+        //                     minCorner.y + cy * CHUNK_SIZE,
+        //                     minCorner.z + cz * CHUNK_SIZE
+        //                 };
+        //                 logger.logf("Comparing +X border vertices: chunk (%d,%d,%d) <-> (%d,%d,%d)\n", cx, cy, cz, cx+1, cy, cz);
+        //                 for (const Vector3& vA : chunkA.vertices) {
+        //                     if (fabs(vA.x - (chunkOffsetA.x + CHUNK_SIZE)) < 1e-4) {
+        //                         // Look for a matching vertex in chunkB at x == chunkOffsetB.x
+        //                         bool found = false;
+        //                         for (const Vector3& vB : chunkB.vertices) {
+        //                             if (fabs(vB.x - chunkOffsetB.x) < 1e-4 &&
+        //                                 fabs(vA.y - vB.y) < 1e-4 &&
+        //                                 fabs(vA.z - vB.z) < 1e-4) {
+        //                                 found = true;
+        //                                 break;
+        //                             }
+        //                         }
+        //                         if (!found) {
+        //                             logger.logf("  MISMATCH: vA=(%.4f,%.4f,%.4f) has no match in neighbor\n", vA.x, vA.y, vA.z);
+        //                         }
+        //                     }
+        //                 }
+        //             }
+        //             // +Y neighbor
+        //             if (cy < chunkGrid - 1) {
+        //                 Int3 neighborY = {cx, cy + 1, cz};
+        //                 const auto& chunkB = chunks[neighborY];
+        //                 Vector3 chunkOffsetB = {
+        //                     minCorner.x + cx * CHUNK_SIZE,
+        //                     minCorner.y + (cy + 1) * CHUNK_SIZE,
+        //                     minCorner.z + cz * CHUNK_SIZE
+        //                 };
+        //                 logger.logf("Comparing +Y border vertices: chunk (%d,%d,%d) <-> (%d,%d,%d)\n", cx, cy, cz, cx, cy+1, cz);
+        //                 for (const Vector3& vA : chunkA.vertices) {
+        //                     if (fabs(vA.y - (chunkOffsetA.y + CHUNK_SIZE)) < 1e-4) {
+        //                         // Look for a matching vertex in chunkB at y == chunkOffsetB.y
+        //                         bool found = false;
+        //                         for (const Vector3& vB : chunkB.vertices) {
+        //                             if (fabs(vB.y - chunkOffsetB.y) < 1e-4 &&
+        //                                 fabs(vA.x - vB.x) < 1e-4 &&
+        //                                 fabs(vA.z - vB.z) < 1e-4) {
+        //                                 found = true;
+        //                                 break;
+        //                             }
+        //                         }
+        //                         if (!found) {
+        //                             logger.logf("  MISMATCH: vA=(%.4f,%.4f,%.4f) has no match in neighbor\n", vA.x, vA.y, vA.z);
+        //                         }
+        //                     }
+        //                 }
+        //             }
+        //             // +Z neighbor
+        //             if (cz < chunkGrid - 1) {
+        //                 Int3 neighborZ = {cx, cy, cz + 1};
+        //                 const auto& chunkB = chunks[neighborZ];
+        //                 Vector3 chunkOffsetB = {
+        //                     minCorner.x + cx * CHUNK_SIZE,
+        //                     minCorner.y + cy * CHUNK_SIZE,
+        //                     minCorner.z + (cz + 1) * CHUNK_SIZE
+        //                 };
+        //                 logger.logf("Comparing +Z border vertices: chunk (%d,%d,%d) <-> (%d,%d,%d)\n", cx, cy, cz, cx, cy, cz+1);
+        //                 for (const Vector3& vA : chunkA.vertices) {
+        //                     if (fabs(vA.z - (chunkOffsetA.z + CHUNK_SIZE)) < 1e-4) {
+        //                         // Look for a matching vertex in chunkB at z == chunkOffsetB.z
+        //                         bool found = false;
+        //                         for (const Vector3& vB : chunkB.vertices) {
+        //                             if (fabs(vB.z - chunkOffsetB.z) < 1e-4 &&
+        //                                 fabs(vA.x - vB.x) < 1e-4 &&
+        //                                 fabs(vA.y - vB.y) < 1e-4) {
+        //                                 found = true;
+        //                                 break;
+        //                             }
+        //                         }
+        //                         if (!found) {
+        //                             logger.logf("  MISMATCH: vA=(%.4f,%.4f,%.4f) has no match in neighbor\n", vA.x, vA.y, vA.z);
+        //                         }
+        //                     }
+        //                 }
+        //             }
+        //         }
+        //     }
+        // }
 
         //--- DEBUG: Check chunk border positions ---
-        logger.logf("Checking chunk border positions...\n");
-        for (int cz = 0; cz < chunkGrid; ++cz) {
-            for (int cy = 0; cy < chunkGrid; ++cy) {
-                for (int cx = 0; cx < chunkGrid; ++cx) {
-                    Int3 chunkPos = {cx, cy, cz};
-                    Vector3 chunkOffsetA = {
-                        minCorner.x + cx * CHUNK_SIZE,
-                        minCorner.y + cy * CHUNK_SIZE,
-                        minCorner.z + cz * CHUNK_SIZE
-                    };
-
-                    // +X neighbor
-                    if (cx < chunkGrid - 1) {
-                        Vector3 chunkOffsetB = {
-                            minCorner.x + (cx + 1) * CHUNK_SIZE,
-                            minCorner.y + cy * CHUNK_SIZE,
-                            minCorner.z + cz * CHUNK_SIZE
-                        };
-                        logger.logf("Checking X border positions: (%d,%d,%d) <-> (%d,%d,%d)\n", cx, cy, cz, cx+1, cy, cz);
-                        checkChunkBorderPositions(chunkOffsetA, chunkOffsetB, CHUNK_SIZE + 1, 'x');
-                    }
-                    // +Y neighbor
-                    if (cy < chunkGrid - 1) {
-                        Vector3 chunkOffsetB = {
-                            minCorner.x + cx * CHUNK_SIZE,
-                            minCorner.y + (cy + 1) * CHUNK_SIZE,
-                            minCorner.z + cz * CHUNK_SIZE
-                        };
-                        logger.logf("Checking Y border positions: (%d,%d,%d) <-> (%d,%d,%d)\n", cx, cy, cz, cx, cy+1, cz);
-                        checkChunkBorderPositions(chunkOffsetA, chunkOffsetB, CHUNK_SIZE + 1, 'y');
-                    }
-                    // +Z neighbor
-                    if (cz < chunkGrid - 1) {
-                        Vector3 chunkOffsetB = {
-                            minCorner.x + cx * CHUNK_SIZE,
-                            minCorner.y + cy * CHUNK_SIZE,
-                            minCorner.z + (cz + 1) * CHUNK_SIZE
-                        };
-                        logger.logf("Checking Z border positions: (%d,%d,%d) <-> (%d,%d,%d)\n", cx, cy, cz, cx, cy, cz+1);
-                        checkChunkBorderPositions(chunkOffsetA, chunkOffsetB, CHUNK_SIZE + 1, 'z');
-                    }
-                }
-            }
-        }
+        // logger.logf("Checking chunk border positions...\n");
+        // for (int cz = 0; cz < chunkGrid; ++cz) {
+        //     for (int cy = 0; cy < chunkGrid; ++cy) {
+        //         for (int cx = 0; cx < chunkGrid; ++cx) {
+        //             Int3 chunkPos = {cx, cy, cz};
+        //             Vector3 chunkOffsetA = {
+        //                 minCorner.x + cx * CHUNK_SIZE,
+        //                 minCorner.y + cy * CHUNK_SIZE,
+        //                 minCorner.z + cz * CHUNK_SIZE
+        //             };
+        //             // +X neighbor
+        //             if (cx < chunkGrid - 1) {
+        //                 Vector3 chunkOffsetB = {
+        //                     minCorner.x + (cx + 1) * CHUNK_SIZE,
+        //                     minCorner.y + cy * CHUNK_SIZE,
+        //                     minCorner.z + cz * CHUNK_SIZE
+        //                 };
+        //                 logger.logf("Checking X border positions: (%d,%d,%d) <-> (%d,%d,%d)\n", cx, cy, cz, cx+1, cy, cz);
+        //                 checkChunkBorderPositions(chunkOffsetA, chunkOffsetB, CHUNK_SIZE + 1, 'x');
+        //             }
+        //             // +Y neighbor
+        //             if (cy < chunkGrid - 1) {
+        //                 Vector3 chunkOffsetB = {
+        //                     minCorner.x + cx * CHUNK_SIZE,
+        //                     minCorner.y + (cy + 1) * CHUNK_SIZE,
+        //                     minCorner.z + cz * CHUNK_SIZE
+        //                 };
+        //                 logger.logf("Checking Y border positions: (%d,%d,%d) <-> (%d,%d,%d)\n", cx, cy, cz, cx, cy+1, cz);
+        //                 checkChunkBorderPositions(chunkOffsetA, chunkOffsetB, CHUNK_SIZE + 1, 'y');
+        //             }
+        //             // +Z neighbor
+        //             if (cz < chunkGrid - 1) {
+        //                 Vector3 chunkOffsetB = {
+        //                     minCorner.x + cx * CHUNK_SIZE,
+        //                     minCorner.y + cy * CHUNK_SIZE,
+        //                     minCorner.z + (cz + 1) * CHUNK_SIZE
+        //                 };
+        //                 logger.logf("Checking Z border positions: (%d,%d,%d) <-> (%d,%d,%d)\n", cx, cy, cz, cx, cy, cz+1);
+        //                 checkChunkBorderPositions(chunkOffsetA, chunkOffsetB, CHUNK_SIZE + 1, 'z');
+        //             }
+        //         }
+        //     }
+        // }
 
         //--- DEBUG: Check shared edge caches for mismatches ---
-        logger.logf("Checking shared edge caches for mismatches...\n");
-        for (int cz = 0; cz < chunkGrid; ++cz) {
-            for (int cy = 0; cy < chunkGrid; ++cy) {
-                for (int cx = 0; cx < chunkGrid; ++cx) {
-                    Int3 chunkPos = {cx, cy, cz};
-                    const auto& chunkA = chunks[chunkPos];
-                    // +X neighbor
-                    if (cx < chunkGrid - 1) {
-                        Int3 neighborX = {cx + 1, cy, cz};
-                        const auto& chunkB = chunks[neighborX];
-                        logger.logf("Checking X border: (%d,%d,%d) <-> (%d,%d,%d)\n", cx, cy, cz, cx+1, cy, cz);
-                        checkChunkBorderNoise(chunkA.noiseValues, chunkB.noiseValues, CHUNK_SIZE + 1, 'x');
-                    }
-                    // +Y neighbor
-                    if (cy < chunkGrid - 1) {
-                        Int3 neighborY = {cx, cy + 1, cz};
-                        const auto& chunkB = chunks[neighborY];
-                        logger.logf("Checking Y border: (%d,%d,%d) <-> (%d,%d,%d)\n", cx, cy, cz, cx, cy+1, cz);
-                        checkChunkBorderNoise(chunkA.noiseValues, chunkB.noiseValues, CHUNK_SIZE + 1, 'y');
-                    }
-                    // +Z neighbor
-                    if (cz < chunkGrid - 1) {
-                        Int3 neighborZ = {cx, cy, cz + 1};
-                        const auto& chunkB = chunks[neighborZ];
-                        logger.logf("Checking Z border: (%d,%d,%d) <-> (%d,%d,%d)\n", cx, cy, cz, cx, cy, cz+1);
-                        checkChunkBorderNoise(chunkA.noiseValues, chunkB.noiseValues, CHUNK_SIZE + 1, 'z');
-                    }
-                }
-            }
-        }
+        // logger.logf("Checking shared edge caches for mismatches...\n");
+        // for (int cz = 0; cz < chunkGrid; ++cz) {
+        //     for (int cy = 0; cy < chunkGrid; ++cy) {
+        //         for (int cx = 0; cx < chunkGrid; ++cx) {
+        //             Int3 chunkPos = {cx, cy, cz};
+        //             const auto& chunkA = chunks[chunkPos];
+        //             // +X neighbor
+        //             if (cx < chunkGrid - 1) {
+        //                 Int3 neighborX = {cx + 1, cy, cz};
+        //                 const auto& chunkB = chunks[neighborX];
+        //                 logger.logf("Checking X border: (%d,%d,%d) <-> (%d,%d,%d)\n", cx, cy, cz, cx+1, cy, cz);
+        //                 checkChunkBorderNoise(chunkA.noiseValues, chunkB.noiseValues, CHUNK_SIZE + 1, 'x');
+        //             }
+        //             // +Y neighbor
+        //             if (cy < chunkGrid - 1) {
+        //                 Int3 neighborY = {cx, cy + 1, cz};
+        //                 const auto& chunkB = chunks[neighborY];
+        //                 logger.logf("Checking Y border: (%d,%d,%d) <-> (%d,%d,%d)\n", cx, cy, cz, cx, cy+1, cz);
+        //                 checkChunkBorderNoise(chunkA.noiseValues, chunkB.noiseValues, CHUNK_SIZE + 1, 'y');
+        //             }
+        //             // +Z neighbor
+        //             if (cz < chunkGrid - 1) {
+        //                 Int3 neighborZ = {cx, cy, cz + 1};
+        //                 const auto& chunkB = chunks[neighborZ];
+        //                 logger.logf("Checking Z border: (%d,%d,%d) <-> (%d,%d,%d)\n", cx, cy, cz, cx, cy, cz+1);
+        //                 checkChunkBorderNoise(chunkA.noiseValues, chunkB.noiseValues, CHUNK_SIZE + 1, 'z');
+        //             }
+        //         }
+        //     }
+        // }
 
         clock_t planetoidGenEnd = clock();
         double planetoidGenTime = static_cast<double>(planetoidGenEnd - planetoidGenStart) / CLOCKS_PER_SEC;
