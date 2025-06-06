@@ -284,6 +284,7 @@ int generatePlanetoids(float randScale, Scene& world, float genRange, float minS
 
         for (int cz = 0; cz < chunkGrid; ++cz) {
             logger.logf("Generating chunk row %d/%d... %3.2f\%\n", cz + 1, chunkGrid,cz/ static_cast<float>(chunkGrid) * 100.0f);
+            printf("\rGenerating chunk row %d/%d... %3.2f%%", cz + 1, chunkGrid, cz / static_cast<float>(chunkGrid) * 100.0f);
             for (int cy = 0; cy < chunkGrid; ++cy) {
                 for (int cx = 0; cx < chunkGrid; ++cx) {
                     //logger.logf("Generating chunk at (%d, %d, %d)\n", cx, cy, cz);
