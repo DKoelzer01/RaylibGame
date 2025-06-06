@@ -1,5 +1,18 @@
 #include "world.h"
+#include <unordered_map>
+#include <tuple>
 
+// Helper for 3D integer coordinates as chunk keys
+namespace std {
+    template<>
+    struct hash<Int3> {
+        size_t operator()(const Int3& k) const {
+            return ((hash<int>()(k.x) ^ (hash<int>()(k.y) << 1)) >> 1) ^ (hash<int>()(k.z) << 2);
+        }
+    };
+}
+
+constexpr size_t CHUNK_SIZE = 64;
 
 void worldHandler(Scene& world) {
     // Initialize the camera for the world scene
@@ -38,131 +51,196 @@ void weightNoise(std::vector<float>& noiseValues, int size, float weight) {
 }
 
 void generateWorld(Scene& world) {
-    // Generate a simple world with a ground plane and some objects
     printf("Generating world scene...\n");
+    clock_t worldGenStart = clock();
 
-    //Generate planetoids
+    //Delete old planetoids
+    //TODO: Implement a proper cleanup of old planetoids
+
+    float randScale = 100000.0f; // Scale for random number generation
+    float genRange = 500.0f; // Range for planetoid generation
+    float minSize = 50.0f; // Minimum size of planetoids
+    float maxSize = 250.0f; // Maximum size of planetoids
+    // Initialize the global edgeCacheFlat with -1
+    edgeCacheFlat.assign(static_cast<size_t>((maxSize-1)*(maxSize-1)*(maxSize-1)*12), -1); // Corrected edge cache size
+    printf("Generated %d planetoids.\n", generatePlanetoids(randScale, world, genRange, minSize, maxSize)); // Generate planetoids in the world
+
+    clock_t worldGenEnd = clock();
+    double worldGenTime = static_cast<double>(worldGenEnd - worldGenStart) / CLOCKS_PER_SEC;
+    printf("World generation completed in %.2f seconds.\n", worldGenTime);
+}
+
+int generatePlanetoids(float randScale, Scene& world, float genRange, float minSize, float maxSize) {
+    int planetoidsGenerated = 0;
+
+    //Setup RNG
     std::random_device rd; // Obtain a seed from the system
     std::mt19937 gen(rd()); // Initialize the Mersenne Twister engine with the seed
-    float randScale = 1000.0f;
-    std::uniform_int_distribution<> distrib(1, randScale); // Define a uniform distribution between 1 and 10
+    std::uniform_int_distribution<> distrib(1, randScale);
 
-    // for(int i = 0; i < distrib(gen); ++i) {
-        Vector3 position = { static_cast<float>(distrib(gen)/10), static_cast<float>(distrib(gen)/10), static_cast<float>(distrib(gen)/10) };
-        Vector3 rotation = { static_cast<float>(distrib(gen)/randScale * 360), static_cast<float>(distrib(gen)/randScale * 360), static_cast<float>(distrib(gen)/randScale * 360) };
-        Color color = { static_cast<unsigned char>(distrib(gen)/randScale * 255), static_cast<unsigned char>(distrib(gen)/randScale * 255), 
-                        static_cast<unsigned char>(distrib(gen)/randScale * 255), 255 };
-        float size = static_cast<int>((distrib(gen)/randScale)*100 + 20); // Ensure size is at least 1.0
-        // TODO: Fix rendering errors when size is too large. ~150+. 
-        //size = 50.0f; // Fixed size for testing
+    //Generate planetoids
+    int numPlanetoids = (distrib(gen)/randScale) * 10; // Number of planetoids to generate
+    //DEBUG
+    numPlanetoids = 1; // For testing purposes, generate only one planetoid
+    printf("Generating %d planetoids...\n", numPlanetoids);
+
+    for(int i = 0; i < numPlanetoids; ++i) {
+        // Generate random position, rotation, color, size, and scale for the planetoid
+
+        // Position is centered around (0,0,0) with a range of genRange
+        Vector3 position = {    static_cast<float>(((distrib(gen)/randScale)*genRange)-(genRange/2)), 
+                                static_cast<float>(((distrib(gen)/randScale)*genRange)-(genRange/2)), 
+                                static_cast<float>(((distrib(gen)/randScale)*genRange)-(genRange/2))};
+
+        //DEBUG: Fixed position for testing
+        position = { 0.0f, 0.0f, 0.0f }; // Centered position for testing
+
+        // Rotation is random in degrees, scaled by randScale
+        Vector3 rotation = {    static_cast<float>(distrib(gen)/randScale * 360), 
+                                static_cast<float>(distrib(gen)/randScale * 360), 
+                                static_cast<float>(distrib(gen)/randScale * 360)};
+
+        // Using a random color generator with a range of 0-255 for RGB values
+        Color color = { static_cast<unsigned char>(distrib(gen)/randScale * 255), 
+                        static_cast<unsigned char>(distrib(gen)/randScale * 255), 
+                        static_cast<unsigned char>(distrib(gen)/randScale * 255), 255};
+
+        // Size is a random float between minSize and maxSize
+        size_t size = static_cast<size_t>((distrib(gen)/randScale)*maxSize) + static_cast<size_t>(minSize);
+        size = 300; // Fixed size for testing
+
+        // Initialize the global edgeCacheFlat for this planetoid's size
+        edgeCacheFlat.assign((size-1)*(size-1)*(size-1)*12, -1); // Corrected edge cache size
+
+        // Scale is a fixed value for now, can be adjusted later
         float scale = 1.0f;
 
-        SimplexNoise* noise = new SimplexNoise(0.05f, 2.0f, 2.0f, 0.5f); // Create a new instance of SimplexNoise
+        printf("\nGenerating planetoid %d...\n", i);
+        clock_t planetoidGenStart = clock();
+
+        float frequencyNoise = static_cast<float>(distrib(gen)/randScale)-0.5f; // Random frequency noise to add some variation from -0.5 to 0.5
+
+        SimplexNoise* noise = new SimplexNoise((1.5f+frequencyNoise)/static_cast<float>(size), 2.0f, 2.0f, 0.5f); // Create a new instance of SimplexNoise
         if (!noise) {
             std::cerr << "Failed to create SimplexNoise instance." << std::endl;
-            return;
+            continue; // Skip this planetoid if noise generation fails;
         }
 
-        int i = 0;
-
-        printf("Generating noise for planetoid %d at position (%f, %f, %f) with size %f\n", i, position.x, position.y, position.z, size);
+        printf("Generating noise for planetoid %d at position (%f, %f, %f) with size %zu and frequency %f\n", i, position.x, position.y, position.z, size, 1.5f+frequencyNoise);
+        clock_t noiseGenStart = clock();
 
         // Generate noise value for the position
         std::vector<float> noiseValues(size * size * size);
-        for (int z = 0; z < size; ++z) {
-            for (int y = 0; y < size; ++y) {
-                for (int x = 0; x < size; ++x) {
+        for (size_t z = 0; z < size; ++z) {
+            for (size_t y = 0; y < size; ++y) {
+                for (size_t x = 0; x < size; ++x) {
                     size_t idx = x + y * size + z * size * size;
                     noiseValues[idx] = (noise->fractal(6, position.x + static_cast<float>(x), position.y + static_cast<float>(y), position.z + static_cast<float>(z))+1.0f); // Ensure noise values are positive
                 }
             }
         }
+        clock_t noiseGenEnd = clock();
+        double noiseGenTime = static_cast<double>(noiseGenEnd - noiseGenStart) / CLOCKS_PER_SEC;
+        printf("Noise generation completed in %.2f seconds for planetoid %d.\n", noiseGenTime, i);
 
         printf("Weighing noise for planetoid %d at position (%f, %f, %f) with size %f\n", i, position.x, position.y, position.z, size);
+        clock_t weightNoiseStart = clock();
 
-        // std::ofstream noiseFile;
-        // noiseFile.open("assets/noise/planetoid_noise_" + std::to_string(i) + ".txt");
-        // if (!noiseFile.is_open()) {
-        //     std::cerr << "Failed to open noise file for writing." << std::endl;
-        //     return;
-        // }
-        // for (const auto& value : noiseValues) {
-        //     noiseFile << value << "\n";
-        // }
-        // noiseFile.close();
+        // Weigh the noise values based on their distance from the center of the planetoid
+        // This will create a spherical shape for the planetoid
+        weightNoise(noiseValues, pow(size,3), 4.0f); // Weight factor to control the shape of the planetoid
 
-        weightNoise(noiseValues, pow(size,3), 4.0f);
-        std::vector<Vector3> meshPositions;
+        clock_t weightNoiseEnd = clock();
+        double weightNoiseTime = static_cast<double>(weightNoiseEnd - weightNoiseStart) / CLOCKS_PER_SEC;
+        printf("Noise weighing completed in %.2f seconds for planetoid %d.\n", weightNoiseTime, i);
 
-        // std::ofstream noiseFileWeighted;
-        // noiseFileWeighted.open("assets/noise/planetoid_noise_" + std::to_string(i) + "weighted.txt");
-        // if (!noiseFileWeighted.is_open()) {
-        //     std::cerr << "Failed to open noise file for writing." << std::endl;
-        //     return;
-        // }
-        // for (const auto& value : noiseValues) {
-        //     noiseFileWeighted << value << "\n";
-        // }
-        // noiseFileWeighted.close();
-
+        // Marching cubes algorithm to generate the mesh
         printf("Marching cubes for planetoid %d at position (%f, %f, %f) with size %f\n", i, position.x, position.y, position.z, size);
-
+        clock_t marchCubeStart = clock();
         std::vector<Vector3> vertices;
-        std::vector<unsigned int> indices;
-        std::unordered_map<EdgeKey, unsigned int> edgeCache;
+        std::vector<size_t> indices;
+        std::unordered_map<EdgeKey, size_t> edgeCache;
 
-        for(int z = 0; z < size - 1; ++z) {
-            for (int y = 0; y < size - 1; ++y) {
-                for (int x = 0; x < size - 1; ++x) {
+        for(size_t z = 0; z < size - 1; ++z) {
+            for (size_t y = 0; y < size - 1; ++y) {
+                for (size_t x = 0; x < size - 1; ++x) {
                     //if( noiseValues[x + y * size + z * size * size] > 0.5f) world.objects.push_back(std::make_unique<GameObject>("cube", "testCube", Vector3{static_cast<float>(x+100), static_cast<float>(y), static_cast<float>(z)}, rotation, color, scale));
-                    marchCube(x, y, z, noiseValues, size, vertices, indices, edgeCache, 0.5f);
+                    marchCube(x, y, z, noiseValues, static_cast<size_t>(size), vertices, indices, edgeCache, 0.5f);
                 }
             }
         }
 
-        // Build mesh from vertices and indices
+        printf("Vertices generated: %zu, Indices generated: %zu\n", vertices.size(), indices.size());
+        clock_t marchCubeEnd = clock();
+        double marchCubeTime = static_cast<double>(marchCubeEnd - marchCubeStart) / CLOCKS_PER_SEC; 
+        printf("Marching cubes completed in %.2f seconds for planetoid %d.\n", marchCubeTime, i);
+
+
+        printf("Creating model for planetoid %d at position (%f, %f, %f) with size %f\n", i, position.x, position.y, position.z, size);
+        clock_t modelGenStart = clock();
+        // Create a mesh from the generated vertices and indices
+        if (vertices.empty() || indices.empty()) {
+            std::cerr << "No vertices or indices generated for planetoid " << i << ". Skipping model generation." << std::endl;
+            continue;   // Skip this planetoid if no vertices or indices were generated
+        }
         Mesh modelMesh = { 0 };
-        modelMesh.vertexCount = static_cast<int>(vertices.size());
+        // Each triangle is 3 vertices, so flatten the triangles into a vertex array
         modelMesh.triangleCount = static_cast<int>(indices.size() / 3);
+        modelMesh.vertexCount = static_cast<int>(indices.size());
         modelMesh.vertices = new float[modelMesh.vertexCount * 3];
-        for (size_t j = 0; j < vertices.size(); ++j) {
-            modelMesh.vertices[j * 3 + 0] = vertices[j].x;
-            modelMesh.vertices[j * 3 + 1] = vertices[j].y;
-            modelMesh.vertices[j * 3 + 2] = vertices[j].z;
-        }
-        modelMesh.indices = new unsigned short[indices.size()];
         for (size_t j = 0; j < indices.size(); ++j) {
-            modelMesh.indices[j] = static_cast<unsigned short>(indices[j]);
+            const Vector3& v = vertices[indices[j]];
+            modelMesh.vertices[j * 3 + 0] = v.x;
+            modelMesh.vertices[j * 3 + 1] = v.y;
+            modelMesh.vertices[j * 3 + 2] = v.z;
         }
+        // No indices, so set to nullptr
+        modelMesh.indices = nullptr;
         UploadMesh(&modelMesh, false);
         Model model = LoadModelFromMesh(modelMesh);
 
+        clock_t modelGenEnd = clock();
+        double modelGenTime = static_cast<double>(modelGenEnd - modelGenStart) / CLOCKS_PER_SEC;
+        printf("Model for planetoid %d created in %.2f seconds.\n", i, modelGenTime);
+
+
+        clock_t modelFileStart = clock();
         printf("Saving model for planetoid %d at position (%f, %f, %f) with size %f\n", i, position.x, position.y, position.z, size);
         std::ofstream modelFile;
-        modelFile.open("assets/models/planetoid/planetoid.obj");
+        std::string modelPath = "assets/models/planetoid/planetoid" + std::to_string(i) + ".obj";
+        modelFile.open(modelPath);
         if (!modelFile.is_open()) {
             std::cerr << "Failed to open model file for writing." << std::endl;
-            return;
+        } else {
+            modelFile << "#planetoid" << i << "\n";
+            // Write vertices
+            for (const auto& v : vertices) {
+                modelFile << "v " << v.x << " " << v.y << " " << v.z << "\n";
+            }
+            // Write faces using indices (OBJ uses 1-based indexing)
+            for (size_t j = 0; j + 2 < indices.size(); j += 3) {
+                modelFile   << "f "
+                            << (indices[j] + 1) << " "
+                            << (indices[j + 1] + 1) << " "
+                            << (indices[j + 2] + 1) << "\n";
+            }
+            modelFile.close();
         }
-        modelFile << "#planetoid" << i << "\n";
-        // Write vertices
-        for (const auto& v : vertices) {
-            modelFile << "v " << v.x << " " << v.y << " " << v.z << "\n";
-        }
-        // Write faces using indices (OBJ uses 1-based indexing)
-        for (size_t j = 0; j + 2 < indices.size(); j += 3) {
-            modelFile << "f "
-                  << (indices[j] + 1) << " "
-                  << (indices[j + 1] + 1) << " "
-                  << (indices[j + 2] + 1) << "\n";
-        }
-        modelFile.close();
+        clock_t modelFileEnd = clock();
+        double modelFileTime = static_cast<double>(modelFileEnd - modelFileStart) / CLOCKS_PER_SEC;
+        printf("Model for planetoid %d saved in %.2f seconds to %s\n", i, modelFileTime, modelPath.c_str());
+
+
         world.objects.push_back(std::make_unique<GameObject>("gameobject", "planetoid" + std::to_string(i), position, rotation, color, scale, model));
-    // }
-
-
-    printf("World scene generated with %zu objects.\n", world.objects.size());
+        clock_t planetoidGenEnd = clock();
+        double planetoidGenTime = static_cast<double>(planetoidGenEnd - planetoidGenStart) / CLOCKS_PER_SEC;
+        printf("Planetoid %d generated in %.2f seconds.\n\n", i, planetoidGenTime);
+        delete noise; // Clean up the noise instance
+        planetoidsGenerated++;
+    }
+    return planetoidsGenerated; // Return the number of planetoids generated
 }
+
 
 void loadWorld(Scene& world) {
     // Load the world scene from a file or initialize it

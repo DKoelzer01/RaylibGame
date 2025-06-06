@@ -8,6 +8,7 @@
 #include <iostream>
 #include <unordered_map>
 #include <tuple>
+#include <cassert>
 
 struct EdgeKey {
     int x, y, z, edge;
@@ -180,7 +181,7 @@ const int TRIANGULATIONS[256][15] = {
     { 7,  8,  0,  7,  0,  6,  6,  0,  2, -1, -1, -1, -1, -1, -1 },
     { 7,  3,  2,  6,  7,  2, -1, -1, -1, -1, -1, -1, -1, -1, -1 },
     { 2,  3,  11, 10, 6,  8,  10, 8,  9,  8,  6,  7, -1, -1, -1 },
-    { 2,  0,  7,  2,  7,  11, 0,  9,  7,  6,  7,  10, 9,  10, 7 },
+    { 2,  0,  7,  2,  7,  11, 0,  9,  7,  6,  7,  10, 9,  10,  7 },
     { 1,  8,  0,  1,  7,  8,  1,  10, 7,  6,  7,  10, 2,  3,  11},
     { 11, 2,  1,  11, 1,  7,  10, 6,  1,  6,  7,  1, -1, -1, -1 },
     { 8,  9,  6,  8,  6,  7,  9,  1,  6,  11, 6,  3,  1,  3,  6 },
@@ -233,7 +234,7 @@ const int TRIANGULATIONS[256][15] = {
     { 6,  2,  8,  6,  8,  7,  2,  1,  8,  4,  8,  5,  1,  5,  8 },
     { 9,  5,  4,  10, 1,  6,  1,  7,  6,  1,  3,  7, -1, -1, -1 },
     { 1,  6,  10, 1,  7,  6,  1,  0,  7,  8,  7,  0,  9,  5,  4 },
-    { 4,  0,  10, 4,  10, 5,  0,  3,  10, 6,  10, 7,  3,  7,  10},
+    { 4,  0,  10, 4,  10, 5,  0,  3,  10, 6,  10,  7,  3,  7,  10},
     { 7,  6,  10, 7,  10, 8,  5,  4,  10, 4,  8,  10,-1, -1, -1 },
     { 6,  9,  5,  6,  11, 9,  11, 8,  9, -1, -1, -1, -1, -1, -1 },
     { 3,  6,  11, 0,  6,  3,  0,  5,  6,  0,  9,  5, -1, -1, -1 },
@@ -319,11 +320,13 @@ const int TRIANGULATIONS[256][15] = {
 
 std::array<int,15> get_triangulation(size_t x, size_t y, size_t z, std::vector<float>& noiseValues,size_t size, float threshold);
 
-void marchCube(int x, int y, int z,
-    std::vector<float>& noiseValues, int size,
+void marchCube(size_t x, size_t y, size_t z,
+    std::vector<float>& noiseValues, size_t size,
     std::vector<Vector3>& vertices,
-    std::vector<unsigned int>& indices,
-    std::unordered_map<EdgeKey, unsigned int>& edgeCache,
+    std::vector<size_t>& indices,
+    std::unordered_map<EdgeKey, size_t>& edgeCache,
     float threshold);
+
+extern std::vector<int> edgeCacheFlat;
 
 #endif

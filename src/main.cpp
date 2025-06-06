@@ -71,7 +71,6 @@ int main()
 
         BeginDrawing();
             ClearBackground(BLACK);
-            DrawFPS(10,10);
             if (gameState == 0) {
                 mainMenu.drawScene(gameState);
                 mainMenu.drawUI(gameState);

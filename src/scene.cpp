@@ -5,7 +5,10 @@
 #endif
 
 
-Scene::Scene(std::string name, bool isActive) : name(name), isActive(isActive) { 
+Scene::Scene(std::string name, bool isActive)
+    : name(name), isActive(isActive),
+      rootObject("root", "root", {0.0f, 0.0f, 0.0f}, {0.0f, 0.0f, 0.0f}, WHITE, 1.0f)
+{
     Mesh cube = GenMeshCube(1.0f, 1.0f, 1.0f);
     skybox = LoadModelFromMesh(cube);
 
@@ -34,7 +37,7 @@ void Scene::drawScene(int gamestate) {
     if (!isActive) return; // Skip drawing if the scene is not active
     BeginMode3D(camera);
     if(gamestate != 0 && gamestate != 2) { // If not in main menu or pause menu
-        UpdateCamera(&camera, CAMERA_FREE);
+        customUpdateCamera(&camera);
     }
     
     rlDisableBackfaceCulling();
@@ -49,6 +52,11 @@ void Scene::drawScene(int gamestate) {
 
 void Scene::drawUI(int gamestate) {
     if (!isActive) return; // Skip drawing if the scene is not active
+    DrawFPS(10,10);
+    std::string camPosStr = "Camera: X=" + std::to_string(camera.position.x) +
+                            " Y=" + std::to_string(camera.position.y) +
+                            " Z=" + std::to_string(camera.position.z);
+    DrawText(camPosStr.c_str(), 10, 30, 20, GREEN);
     for (const auto& objPtr : uiObjects) { objPtr->draw(); }
 }
 

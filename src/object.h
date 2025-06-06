@@ -2,6 +2,7 @@
 #define OBJECT_H
 
 #include <string>
+#include <vector>
 #include <raylib.h>
 #include <iostream>
 
@@ -14,6 +15,11 @@ public:
     Vector3 rotation; // Rotation of the object
     Color color; // Color of the object
     float scale; // Scale of the object
+
+    Object* parent;
+    std::vector<Object*> children;
+
+    bool isActive; // Whether the object is active in the scene
 
     Object(std::string type, std::string name, Vector3 position, Vector3 rotation, Color color, float scale);
     virtual void draw();
