@@ -47,6 +47,7 @@ void Scene::drawScene(int gamestate) {
     rlEnableDepthMask();
 
     for (const auto& objPtr : objects) { objPtr->draw(); }
+    for (const auto& objPtr : rootObject.children) { objPtr->draw(); }
     EndMode3D();
 }
 

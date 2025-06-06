@@ -2,3 +2,6 @@
 *.dsym
 main
 .vscode/
+assets/noise
+assets/models/planetoid
+log.txt

@@ -4,6 +4,20 @@
 #include "scene.h"
 #include "SimplexNoise.h"
 #include "cubemarch.h"
+#include "utils/logger.h"
+
+#include <vector>
+#include <string>
+#include <iostream>
+#include <fstream>
+#include <sstream>
+#include <cmath>
+#include <ctime>
+#include <memory>
+#include <unordered_map>
+#include <tuple>
+#include <unordered_map>
+#include <functional>
 
 struct Int3 {
     int x, y, z;

@@ -29,6 +29,7 @@ GameObject::GameObject(std::string type, std::string name, Vector3 position, Vec
     : Object(type, name, position, rotation, color, scale), model(model) {}
 
 void GameObject::draw() {
+    if (!isActive) return; // Skip drawing if the object is not active
     if (type == "cube") {
         DrawCube(position, scale, scale, scale, color);
         DrawCubeWires(position, scale, scale, scale, BLACK);

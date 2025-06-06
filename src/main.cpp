@@ -5,8 +5,11 @@
 #include "world.h"
 #include "scene.h"
 #include "object.h"
+#include "utils/logger.h"
 
 using namespace std;
+
+Logger logger("log.txt");
 
 int gameState = 0; // 0: Main Menu, 1: Game, 2: Pause Menu
 

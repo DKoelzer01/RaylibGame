@@ -3,6 +3,7 @@
 
 #include <string>
 #include <vector>
+#include <memory>
 #include <raylib.h>
 #include <iostream>
 
@@ -17,13 +18,21 @@ public:
     float scale; // Scale of the object
 
     Object* parent;
-    std::vector<Object*> children;
+    std::vector<std::unique_ptr<Object>> children;
 
     bool isActive; // Whether the object is active in the scene
 
     Object(std::string type, std::string name, Vector3 position, Vector3 rotation, Color color, float scale);
     virtual void draw();
     virtual ~Object();
+
+    // Disable copying
+    Object(const Object&) = delete;
+    Object& operator=(const Object&) = delete;
+
+    // Allow moving
+    Object(Object&&) = default;
+    Object& operator=(Object&&) = default;
 };
 
 #endif
