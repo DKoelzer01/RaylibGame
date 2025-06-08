@@ -68,7 +68,12 @@
 			"codecvt": "cpp",
 			"ratio": "cpp",
 			"iomanip": "cpp",
-			"cstring": "cpp"
+			"cstring": "cpp",
+			"condition_variable": "cpp",
+			"mutex": "cpp",
+			"semaphore": "cpp",
+			"stop_token": "cpp",
+			"thread": "cpp"
 		},
 		"git.autoRepositoryDetection": false,
 		"git.enabled": false,

@@ -52,12 +52,12 @@ int getFaceFlatIdx(int a, int b, int edge, int stride) {
     return (a + b * stride) * 12 + edge;
 }
 
-std::array<int,15> get_triangulation(size_t x, size_t y, size_t z, std::vector<float>& noiseValues, size_t size, float threshold) {
-    int cubeIndex = 0;
+std::array<__int8,15> get_triangulation(unsigned __int8 x, unsigned __int8 y, unsigned __int8 z, std::vector<float>& noiseValues, unsigned __int8 size, float threshold) {
+    unsigned __int8 cubeIndex = 0;
     // Bounds check for all 8 cube corners
     assert(x + 1 < size && y + 1 < size && z + 1 < size);
 
-    auto idx = [size](size_t x, size_t y, size_t z) -> size_t {
+    auto idx = [size](unsigned __int8 x, unsigned __int8 y, unsigned __int8 z) -> unsigned __int16 {
         return x + y * size + z * size * size;
     };
 
@@ -72,27 +72,18 @@ std::array<int,15> get_triangulation(size_t x, size_t y, size_t z, std::vector<f
 
     if (cubeIndex == 0 || cubeIndex == 255) {
         // No triangles to create
-        return std::array<int, 15>{-1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1};
+        return std::array<__int8, 15>{-1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1};
     }
 
-    std::array<int, 15> triangulation;
+    std::array<__int8, 15> triangulation;
     std::copy(std::begin(TRIANGULATIONS[cubeIndex]), std::end(TRIANGULATIONS[cubeIndex]), triangulation.begin());
     return triangulation;
 }
 
-// Helper to compute flatIdx for a face cache (used by both + and - faces)
-inline size_t faceCacheFlatIdx(int face, size_t a, size_t b, size_t edge, size_t stride) {
-    // face: 0=X, 1=Y, 2=Z
-    // For X: a=y, b=z
-    // For Y: a=x, b=z
-    // For Z: a=x, b=y
-    return (a + b * stride) * 12 + edge;
-}
-
 // Call this for each cube
 void marchCube(
-    size_t x, size_t y, size_t z,
-    std::vector<float>& noiseValues, size_t size,
+    unsigned __int8 x, unsigned __int8 y, unsigned __int8 z,
+    std::vector<float>& noiseValues, int size,
     std::vector<Vector3>& vertices,
     std::vector<size_t>& indices,
     std::vector<int>* edgeCacheLocal,
@@ -103,11 +94,7 @@ void marchCube(
     int cx, int cy, int cz, int chunkGrid
 ) {
     assert(x + 1 < size && y + 1 < size && z + 1 < size);
-    std::array<int, 15> triangulation = get_triangulation(x, y, z, noiseValues, size, threshold);
-    auto edgeCacheIndex = [size](size_t x, size_t y, size_t z, size_t edge) -> size_t {
-        size_t dim = size - 1;
-        return (((z * dim + y) * dim + x) * 12) + edge;
-    };
+    std::array<__int8, 15> triangulation = get_triangulation(x, y, z, noiseValues, size, threshold);
     for (int i = 0; i < 15 && triangulation[i] != -1; i += 3) {
         size_t triIdx[3];
         for (int v = 0; v < 3; ++v) {

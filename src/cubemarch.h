@@ -33,8 +33,8 @@ namespace std {
 std::array<int,15> get_triangulation(size_t x, size_t y, size_t z, std::vector<float>& noiseValues,size_t size, float threshold);
 
 void marchCube(
-    size_t x, size_t y, size_t z,
-    std::vector<float>& noiseValues, size_t size,
+    unsigned __int8 x, unsigned __int8 y, unsigned __int8 z,
+    std::vector<float>& noiseValues, int size,
     std::vector<Vector3>& vertices,
     std::vector<size_t>& indices,
     std::vector<int>* edgeCacheLocal,

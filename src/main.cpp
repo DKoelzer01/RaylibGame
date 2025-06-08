@@ -18,6 +18,7 @@ int main()
     InitWindow(GetMonitorWidth(0), GetMonitorHeight(0), "My first RAYLIB program!");
     SetTargetFPS(60);
     SetExitKey(KEY_NULL);
+    SetTraceLogLevel(LOG_WARNING); // Set log level to warning to reduce output noise
     Scene mainMenu = Scene("mainMenu", true); // Main menu scene;
     Scene world = Scene("world", false);;
 

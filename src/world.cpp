@@ -2,6 +2,12 @@
 #include "utils/logger.h"
 
 
+//Setup RNG
+float randScale = 100000.0f; // Scale for random number generation
+std::random_device rd; // Obtain a seed from the system
+std::mt19937 gen(rd()); // Initialize the Mersenne Twister engine with the seed
+std::uniform_int_distribution<> distrib(1, randScale);
+
 // Hash for tuple<int, int, int, int>
 struct Tuple4Hash {
     std::size_t operator()(const std::tuple<int, int, int, int>& t) const {
@@ -172,6 +178,27 @@ void checkChunkBorderNoise(
     }
 }
 
+void logNoiseValues(const std::vector<float>& noiseValues, int size) {
+    if (size <= 0) return;
+    logger.logf("Noise values (size %d):\n", size);
+    float minNoise = noiseValues[0];
+    float maxNoise = noiseValues[0];
+    for (int z = 0; z < size; ++z) {
+        logger.logf("z = %d:\n", z);
+        for (int y = 0; y < size; ++y) {
+            for (int x = 0; x < size; ++x) {
+                int idx = x + y * size + z * size * size;
+                if (noiseValues[idx] < minNoise) minNoise = noiseValues[idx];
+                if (noiseValues[idx] > maxNoise) maxNoise = noiseValues[idx];
+                logger.logf("%02.4f ", noiseValues[idx]);
+            }
+            logger.logf("\n");
+        }
+        logger.logf("\n");
+    }
+    logger.logf("Min noise value: %.4f, Max noise value: %.4f\n", minNoise, maxNoise);
+}
+
 void weightNoise(std::vector<float>& noiseValues, int size, Vector3* chunkOffset, Vector3* center, float weight, float maxDist) {
     if (size <= 0) return;
     for (int z = 0; z < size; ++z) {
@@ -193,15 +220,33 @@ void weightNoise(std::vector<float>& noiseValues, int size, Vector3* chunkOffset
     }
 }
 
+void normalizeNoise(std::vector<float>& noiseValues, int size, float scale = 1.0f) {
+    float minValue = 0.0f; 
+    float maxValue = 1.0f;
+
+    if (size <= 0) return;
+    float minNoise = noiseValues[0];
+    float maxNoise = noiseValues[0];
+    
+    // Find min and max noise values
+    for (float v : noiseValues) {
+        if (v < minNoise) minNoise = v;
+        if (v > maxNoise) maxNoise = v;
+    }
+
+    // Normalize the noise values to the range [minValue, maxValue]
+    for (float& v : noiseValues) {
+        v = ((v - minNoise) / (maxNoise - minNoise)) * (maxValue - minValue) + minValue; 
+        v *= scale; // Scale the normalized value
+        v = round(v); // Round to the nearest integer
+    }
+}
+
 void generateWorld(Scene& world) {
     logger.logf("Generating world scene...\n");
     clock_t worldGenStart = clock();
 
-    //Delete old planetoids
-    //TODO: Implement a proper cleanup of old planetoids
-
-    float randScale = 100000.0f; // Scale for random number generation
-    float genRange = 500.0f; // Range for planetoid generation
+    float genRange = 500.0f; // Radius for planetoid generation
     float minSize = 250.0f; // Minimum size of planetoids
     float maxSize = 500.0f; // Maximum size of planetoids
     logger.logf("Generated %d planetoids.\n", generatePlanetoids(randScale, world, genRange, minSize, maxSize)); // Generate planetoids in the world
@@ -211,21 +256,224 @@ void generateWorld(Scene& world) {
     logger.logf("World generation completed in %.2f seconds.\n", worldGenTime);
 }
 
+void generatePlanetoid(float randScale, Scene& world, Vector3 position, Vector3 rotation,Color color, size_t size, float scale) {
+    clock_t planetoidGenStart = clock();
+    float frequencyNoise = static_cast<float>(distrib(gen)/randScale)-0.25f; // Random frequency noise to add some variation from -0.5 to 0.5
+
+    SimplexNoise* noise = new SimplexNoise((1.5f+frequencyNoise)/static_cast<float>(size), 2.0f, 2.0f, 0.5f); // Create a new instance of SimplexNoise
+    if (!noise) {
+        std::cerr << "Failed to create SimplexNoise instance." << std::endl;
+        return; // Skip this planetoid if noise generation fails;
+    }
+
+    logger.logf("Generating noise for planetoid at position (%f, %f, %f) with size %zu and frequency %f\n", position.x, position.y, position.z, size, 1.5f+frequencyNoise);
+
+    // Instead of one huge mesh, generate a grid of chunks
+    std::unordered_map<Int3, Chunk> chunks;
+    int chunkGrid = size/CHUNK_SIZE + (size % CHUNK_SIZE != 0 ? 1 : 0); // Calculate the number of chunks needed in each dimension
+    logger.logf("Chunk grid size: %d x %d x %d\n", chunkGrid, chunkGrid, chunkGrid);
+
+    // Center the chunk grid around the planetoid position
+    Vector3 minCorner = {
+        position.x - chunkGrid * CHUNK_SIZE * 0.5f,
+        position.y - chunkGrid * CHUNK_SIZE * 0.5f,
+        position.z - chunkGrid * CHUNK_SIZE * 0.5f
+    };
+    logger.logf("Planetoid min corner: (%f, %f, %f)\n", minCorner.x, minCorner.y, minCorner.z);
+
+    // --- Shared edge cache setup ---
+    // Key: (minChunkX, minChunkY, minChunkZ, faceDir), faceDir: 0=X, 1=Y, 2=Z
+    std::unordered_map<std::tuple<int, int, int, int>, std::vector<int>, Tuple4Hash> sharedEdgeCaches;
+
+    for (int cz = 0; cz < chunkGrid; ++cz) {
+        logger.logf("Generating chunk row %d/%d... %3.2f\%\n", cz + 1, chunkGrid,cz/ static_cast<float>(chunkGrid) * 100.0f);
+        printf("\rGenerating chunk row %d/%d... %3.2f%%", cz + 1, chunkGrid, cz / static_cast<float>(chunkGrid) * 100.0f);
+        for (int cy = 0; cy < chunkGrid; ++cy) {
+            for (int cx = 0; cx < chunkGrid; ++cx) {
+                //logger.logf("Generating chunk at (%d, %d, %d)\n", cx, cy, cz);
+                time_t totalChunkStart = clock();
+
+                Int3 chunkPos = {cx, cy, cz};
+                Chunk& chunk = chunks[chunkPos];
+                // Allocate noise for this chunk with a 1-voxel border
+                chunk.noiseValues.resize((CHUNK_SIZE + 1) * (CHUNK_SIZE + 1) * (CHUNK_SIZE + 1));
+                // Calculate chunk's world offset
+                Vector3 chunkOffset = {
+                    minCorner.x + cx * CHUNK_SIZE,
+                    minCorner.y + cy * CHUNK_SIZE,
+                    minCorner.z + cz * CHUNK_SIZE
+                };
+                //logger.logf("Chunk (%d,%d,%d) offset: (%f, %f, %f)\n", cx, cy, cz, chunkOffset.x, chunkOffset.y, chunkOffset.z);
+                // Generate noise for this chunk (including border)
+                // time_t noiseStart = clock();
+                for (size_t z = 0; z <= CHUNK_SIZE; ++z) {
+                    for (size_t y = 0; y <= CHUNK_SIZE; ++y) {
+                        for (size_t x = 0; x <= CHUNK_SIZE; ++x) {
+                            size_t idx = x + y * (CHUNK_SIZE + 1) + z * (CHUNK_SIZE + 1) * (CHUNK_SIZE + 1);
+                            float wx = chunkOffset.x + x;
+                            float wy = chunkOffset.y + y;
+                            float wz = chunkOffset.z + z;
+                            chunk.noiseValues[idx] = (noise->fractal(4, wx, wy, wz) + 1.0f);
+                        }
+                    }
+                }
+                // time_t noiseEnd = clock();
+                // double noiseTime = static_cast<double>(noiseEnd - noiseStart) / CLOCKS_PER_SEC;
+                // logger.logf("\tChunk (%d,%d,%d) noise generated in %.6f seconds.\n", cx, cy, cz, noiseTime);
+
+
+
+                // Weight noise values for this chunk (use CHUNK_SIZE+1)
+                float planetoidRadius = chunkGrid * CHUNK_SIZE * 0.5f;
+                // time_t weightStart = clock();
+                weightNoise(chunk.noiseValues, CHUNK_SIZE + 1, &chunkOffset, &position, 4.0f, planetoidRadius);
+                // time_t weightEnd = clock();
+                // double weightTime = static_cast<double>(weightEnd - weightStart) / CLOCKS_PER_SEC;
+                // logger.logf("\tChunk (%d,%d,%d) noise weighted in %.6f seconds.\n", cx, cy, cz, weightTime);
+
+                // --- Shared edge cache pointers for this chunk ---
+                // Each chunk needs up to 3 shared caches (for +X, +Y, +Z faces)
+                // Each shared cache is sized CHUNK_SIZE*CHUNK_SIZE*12 (for the face)
+                std::vector<int> localEdgeCache(CHUNK_SIZE * CHUNK_SIZE * CHUNK_SIZE * 12, -1);
+                std::fill(localEdgeCache.begin(), localEdgeCache.end(), -1);
+                std::vector<int>* edgeCacheX = nullptr;
+                std::vector<int>* edgeCacheY = nullptr;
+                std::vector<int>* edgeCacheZ = nullptr;
+                // +X, +Y, +Z faces (write)
+                if (cx < chunkGrid - 1) {
+                    auto key = std::make_tuple(cx + 1, cy, cz, 0); // Use neighbor's index!
+                    edgeCacheX = &sharedEdgeCaches[key];
+                    if (edgeCacheX->empty()) {
+                        edgeCacheX->resize(CHUNK_SIZE * CHUNK_SIZE * 12, -1);
+                    }
+                }
+                if (cy < chunkGrid - 1) {
+                    auto key = std::make_tuple(cx, cy + 1, cz, 1);
+                    edgeCacheY = &sharedEdgeCaches[key];
+                    if (edgeCacheY->empty()) {
+                        edgeCacheY->resize(CHUNK_SIZE * CHUNK_SIZE * 12, -1);
+                    }
+                }
+                if (cz < chunkGrid - 1) {
+                    auto key = std::make_tuple(cx, cy, cz + 1, 2);
+                    edgeCacheZ = &sharedEdgeCaches[key];
+                    if (edgeCacheZ->empty()) {
+                        edgeCacheZ->resize(CHUNK_SIZE * CHUNK_SIZE * 12, -1);
+                    }
+                }
+
+
+                chunk.vertices.clear();
+                chunk.indices.clear();
+
+                //DEBUG Log the marching cubes process
+                //logger.logf("Chunk (%d,%d,%d) marching cubes...\n", cx, cy, cz);
+                // size_t vertsBefore = chunk.vertices.size();
+                // size_t indsBefore = chunk.indices.size();
+
+                // Marching cubes: use CHUNK_SIZE+1 for noise, but mesh is CHUNK_SIZE-1
+                // For each cube, select the correct edge cache (local or shared)
+                time_t marchStart = clock();
+                for (unsigned __int8 z = 0; z < CHUNK_SIZE; ++z) {
+                    for (unsigned __int8 y = 0; y < CHUNK_SIZE; ++y) {
+                        for (unsigned __int8 x = 0; x < CHUNK_SIZE; ++x) {
+                            marchCube(
+                                x, y, z,
+                                chunk.noiseValues, CHUNK_SIZE + 1,
+                                chunk.vertices, chunk.indices,
+                                &localEdgeCache, edgeCacheX, edgeCacheY, edgeCacheZ,
+                                0.5f, // Threshold for marching cubes
+                                cx, cy, cz, chunkGrid
+                            );
+                        }
+                    }
+                }
+                //time_t marchEnd = clock();
+                //double marchTime = static_cast<double>(marchEnd - marchStart) / CLOCKS_PER_SEC;
+                //logger.logf("\tChunk (%d,%d,%d) marched cubes in %.6f seconds.\n", cx, cy, cz, marchTime);
+                //logger.logf("Chunk (%d,%d,%d) verts: %zu -> %zu, inds: %zu -> %zu\n", cx, cy, cz, vertsBefore, chunk.vertices.size(), indsBefore, chunk.indices.size());
+
+                time_t meshStart = clock();
+
+                // --- Create mesh and model for this chunk ---
+                if (chunk.vertices.empty() || chunk.indices.empty()) {
+                    logger.logf("\tChunk (%d, %d, %d) has no vertices or indices, skipping.\n", cx, cy, cz);
+                    time_t totalChunkEnd = clock();
+                    double totalChunkTime = static_cast<double>(totalChunkEnd - totalChunkStart) / CLOCKS_PER_SEC;
+                    logger.logf("Total time for chunk (%d,%d,%d): %.6f seconds.\n", cx, cy, cz, totalChunkTime);
+                    continue; // Skip this chunk if it has no vertices or indices
+                }
+                Mesh mesh = { 0 };
+                // Allocate mesh.vertices and mesh.indices
+                mesh.vertexCount = static_cast<int>(chunk.vertices.size());
+                mesh.vertices = new float[mesh.vertexCount * 3];
+                for (size_t j = 0; j < chunk.vertices.size(); ++j) {
+                    const Vector3& v = chunk.vertices[j];
+                    mesh.vertices[j * 3 + 0] = v.x;
+                    mesh.vertices[j * 3 + 1] = v.y;
+                    mesh.vertices[j * 3 + 2] = v.z;
+                }
+                mesh.triangleCount = static_cast<int>(chunk.indices.size() / 3);
+                mesh.indices = new unsigned short[chunk.indices.size()];
+                for (size_t j = 0; j < chunk.indices.size(); ++j) {
+                    mesh.indices[j] = static_cast<unsigned short>(chunk.indices[j]);
+                }
+                UploadMesh(&mesh, false);
+                chunk.mesh = mesh;
+                chunk.model = LoadModelFromMesh(chunk.mesh);
+
+                time_t meshEnd = clock();
+                double meshTime = static_cast<double>(meshEnd - meshStart) / CLOCKS_PER_SEC;
+                logger.logf("\tChunk (%d,%d,%d) created mesh with %d vertices and %d indices in %.6f seconds.\n",
+                    cx, cy, cz, chunk.mesh.vertexCount, chunk.mesh.triangleCount * 3, meshTime);
+
+                // logNoiseValues(chunk.noiseValues, CHUNK_SIZE + 1); // Log noise values for debugging
+                // time_t normNoiseStart = clock();
+                normalizeNoise(chunk.noiseValues, CHUNK_SIZE + 1, 16); // Normalize noise values to [0, 16]
+                // time_t normNoiseEnd = clock();
+                // double normalizeTime = static_cast<double>(normNoiseEnd - normNoiseStart) / CLOCKS_PER_SEC;
+                // logger.logf("\tChunk (%d,%d,%d) normalized noise in %.6f seconds.\n", cx, cy, cz, normalizeTime);
+                // logNoiseValues(chunk.noiseValues, CHUNK_SIZE + 1); // Log noise values for debugging
+
+
+                // Create a GameObject for this chunk
+                // time_t chunkStart = clock();
+                std::string chunkName = "chunk_" + std::to_string(cx) + "_" + std::to_string(cy) + "_" + std::to_string(cz);
+                Vector3 chunkCoords = chunkOffset;
+                Color chunkColor = color;
+                float chunkScale = scale;
+                Vector3 chunkRot = rotation;
+                auto chunkObj = std::make_unique<GameObject>("gameobject", chunkName, chunkCoords, chunkRot, chunkColor, chunkScale, chunk.model);
+                chunkObj->isActive = true;
+                chunkObj->parent = &world.rootObject;
+                world.rootObject.children.push_back(std::move(chunkObj));
+                // time_t chunkEnd = clock();
+                // double chunkTime = static_cast<double>(chunkEnd - chunkStart) / CLOCKS_PER_SEC;
+                // logger.logf("\tChunk (%d,%d,%d) created GameObject in %.6f seconds.\n", cx, cy, cz, chunkTime);
+
+                time_t totalChunkEnd = clock();
+                double totalChunkTime = static_cast<double>(totalChunkEnd - totalChunkStart) / CLOCKS_PER_SEC;
+                logger.logf("Total time for chunk (%d,%d,%d): %.6f seconds.\n", cx, cy, cz, totalChunkTime);
+            }
+        }
+    }
+    delete noise; // Clean up the noise instance
+    time_t planetoidGenEnd = clock();
+    double planetoidGenTime = static_cast<double>(planetoidGenEnd - planetoidGenStart) / CLOCKS_PER_SEC;
+    logger.logf("Planetoid generated in %.2f seconds at position (%f, %f, %f) with size %zu.\n", 
+        planetoidGenTime, position.x, position.y, position.z, size);
+}
+
 int generatePlanetoids(float randScale, Scene& world, float genRange, float minSize, float maxSize) {
     int planetoidsGenerated = 0;
 
-    //Setup RNG
-    std::random_device rd; // Obtain a seed from the system
-    std::mt19937 gen(rd()); // Initialize the Mersenne Twister engine with the seed
-    std::uniform_int_distribution<> distrib(1, randScale);
-
     //Generate planetoids
     int numPlanetoids = ((distrib(gen)/randScale) * 5) + 1; // Number of planetoids to generate
-    //DEBUG
-    // numPlanetoids = 1; // For testing purposes, generate only one planetoid
+    numPlanetoids = 1; // For testing purposes, generate only one planetoid
     logger.logf("Generating %d planetoids...\n", numPlanetoids);
 
     for(int i = 0; i < numPlanetoids; ++i) {
+        clock_t planetoidGenStart = clock();
         // Generate random position, rotation, color, size, and scale for the planetoid
 
         // Position is centered around (0,0,0) with a range of genRange
@@ -247,446 +495,17 @@ int generatePlanetoids(float randScale, Scene& world, float genRange, float minS
 
         // Size is a random float between minSize and maxSize
         size_t size = static_cast<size_t>((distrib(gen)/randScale)*(maxSize-minSize)) + static_cast<size_t>(minSize);
-        // size = 100; // Fixed size for testing
+        size = 500; // Fixed size for testing
 
         // Scale is a fixed value for now, can be adjusted later
         float scale = 1.0f;
 
         logger.logf("Generating planetoid %d...\n", i);
-        clock_t planetoidGenStart = clock();
-
-        float frequencyNoise = static_cast<float>(distrib(gen)/randScale)-0.5f; // Random frequency noise to add some variation from -0.5 to 0.5
-
-        SimplexNoise* noise = new SimplexNoise((1.5f+frequencyNoise)/static_cast<float>(size), 2.0f, 2.0f, 0.5f); // Create a new instance of SimplexNoise
-        if (!noise) {
-            std::cerr << "Failed to create SimplexNoise instance." << std::endl;
-            continue; // Skip this planetoid if noise generation fails;
-        }
-
-        logger.logf("Generating noise for planetoid %d at position (%f, %f, %f) with size %zu and frequency %f\n", i, position.x, position.y, position.z, size, 1.5f+frequencyNoise);
-
-        // Instead of one huge mesh, generate a grid of chunks
-        std::unordered_map<Int3, Chunk> chunks;
-        int chunkGrid = size/CHUNK_SIZE + (size % CHUNK_SIZE != 0 ? 1 : 0); // Calculate the number of chunks needed in each dimension
-        logger.logf("Chunk grid size: %d x %d x %d\n", chunkGrid, chunkGrid, chunkGrid);
-
-        // Center the chunk grid around the planetoid position
-        Vector3 minCorner = {
-            position.x - chunkGrid * CHUNK_SIZE * 0.5f,
-            position.y - chunkGrid * CHUNK_SIZE * 0.5f,
-            position.z - chunkGrid * CHUNK_SIZE * 0.5f
-        };
-        logger.logf("Planetoid min corner: (%f, %f, %f)\n", minCorner.x, minCorner.y, minCorner.z);
-
-        // --- Shared edge cache setup ---
-        // Key: (minChunkX, minChunkY, minChunkZ, faceDir), faceDir: 0=X, 1=Y, 2=Z
-        std::unordered_map<std::tuple<int, int, int, int>, std::vector<int>, Tuple4Hash> sharedEdgeCaches;
-
-        for (int cz = 0; cz < chunkGrid; ++cz) {
-            logger.logf("Generating chunk row %d/%d... %3.2f\%\n", cz + 1, chunkGrid,cz/ static_cast<float>(chunkGrid) * 100.0f);
-            printf("\rGenerating chunk row %d/%d... %3.2f%%", cz + 1, chunkGrid, cz / static_cast<float>(chunkGrid) * 100.0f);
-            for (int cy = 0; cy < chunkGrid; ++cy) {
-                for (int cx = 0; cx < chunkGrid; ++cx) {
-                    //logger.logf("Generating chunk at (%d, %d, %d)\n", cx, cy, cz);
-
-                    Int3 chunkPos = {cx, cy, cz};
-                    Chunk& chunk = chunks[chunkPos];
-                    // Allocate noise for this chunk with a 1-voxel border
-                    chunk.noiseValues.resize((CHUNK_SIZE + 1) * (CHUNK_SIZE + 1) * (CHUNK_SIZE + 1));
-                    // Calculate chunk's world offset
-                    Vector3 chunkOffset = {
-                        minCorner.x + cx * CHUNK_SIZE,
-                        minCorner.y + cy * CHUNK_SIZE,
-                        minCorner.z + cz * CHUNK_SIZE
-                    };
-                    //logger.logf("Chunk (%d,%d,%d) offset: (%f, %f, %f)\n", cx, cy, cz, chunkOffset.x, chunkOffset.y, chunkOffset.z);
-                    // Generate noise for this chunk (including border)
-                    for (size_t z = 0; z <= CHUNK_SIZE; ++z) {
-                        for (size_t y = 0; y <= CHUNK_SIZE; ++y) {
-                            for (size_t x = 0; x <= CHUNK_SIZE; ++x) {
-                                size_t idx = x + y * (CHUNK_SIZE + 1) + z * (CHUNK_SIZE + 1) * (CHUNK_SIZE + 1);
-                                float wx = chunkOffset.x + x;
-                                float wy = chunkOffset.y + y;
-                                float wz = chunkOffset.z + z;
-                                chunk.noiseValues[idx] = (noise->fractal(6, wx, wy, wz) + 1.0f);
-                            }
-                        }
-                    }
-
-                    float minNoise = chunk.noiseValues[0];
-                    float maxNoise = chunk.noiseValues[0];
-                    for (float v : chunk.noiseValues) {
-                        if (v < minNoise) minNoise = v;
-                        if (v > maxNoise) maxNoise = v;
-                    }
-                    //logger.logf("Chunk (%d,%d,%d) noise min: %f, max: %f\n", cx, cy, cz, minNoise, maxNoise);
-
-                    // Weight noise values for this chunk (use CHUNK_SIZE+1)
-                    // Use chunkOffset for weighting
-                    float planetoidRadius = chunkGrid * CHUNK_SIZE * 0.5f;
-                    weightNoise(chunk.noiseValues, CHUNK_SIZE + 1, &chunkOffset, &position, 4.0f, planetoidRadius);
-
-                    minNoise = chunk.noiseValues[0];
-                    maxNoise = chunk.noiseValues[0];
-                    for (float v : chunk.noiseValues) {
-                        if (v < minNoise) minNoise = v;
-                        if (v > maxNoise) maxNoise = v;
-                    }
-                    //logger.logf("Chunk (%d,%d,%d) weighted noise min: %f, max: %f\n", cx, cy, cz, minNoise, maxNoise);
-
-                    // --- Shared edge cache pointers for this chunk ---
-                    // Each chunk needs up to 3 shared caches (for +X, +Y, +Z faces)
-                    // Each shared cache is sized CHUNK_SIZE*CHUNK_SIZE*12 (for the face)
-                    std::vector<int> localEdgeCache(CHUNK_SIZE * CHUNK_SIZE * CHUNK_SIZE * 12, -1);
-                    std::fill(localEdgeCache.begin(), localEdgeCache.end(), -1);
-                    std::vector<int>* edgeCacheX = nullptr;
-                    std::vector<int>* edgeCacheY = nullptr;
-                    std::vector<int>* edgeCacheZ = nullptr;
-                    // +X, +Y, +Z faces (write)
-                    if (cx < chunkGrid - 1) {
-                        auto key = std::make_tuple(cx + 1, cy, cz, 0); // Use neighbor's index!
-                        edgeCacheX = &sharedEdgeCaches[key];
-                        if (edgeCacheX->empty()) {
-                            edgeCacheX->resize(CHUNK_SIZE * CHUNK_SIZE * 12, -1);
-                        }
-                    }
-                    if (cy < chunkGrid - 1) {
-                        auto key = std::make_tuple(cx, cy + 1, cz, 1);
-                        edgeCacheY = &sharedEdgeCaches[key];
-                        if (edgeCacheY->empty()) {
-                            edgeCacheY->resize(CHUNK_SIZE * CHUNK_SIZE * 12, -1);
-                        }
-                    }
-                    if (cz < chunkGrid - 1) {
-                        auto key = std::make_tuple(cx, cy, cz + 1, 2);
-                        edgeCacheZ = &sharedEdgeCaches[key];
-                        if (edgeCacheZ->empty()) {
-                            edgeCacheZ->resize(CHUNK_SIZE * CHUNK_SIZE * 12, -1);
-                        }
-                    }
-
-
-                    chunk.vertices.clear();
-                    chunk.indices.clear();
-
-                    //DEBUG Log the marching cubes process
-                    //logger.logf("Chunk (%d,%d,%d) marching cubes...\n", cx, cy, cz);
-                    size_t vertsBefore = chunk.vertices.size();
-                    size_t indsBefore = chunk.indices.size();
-
-                    // Marching cubes: use CHUNK_SIZE+1 for noise, but mesh is CHUNK_SIZE-1
-                    // For each cube, select the correct edge cache (local or shared)
-                    for (size_t z = 0; z < CHUNK_SIZE; ++z) {
-                        for (size_t y = 0; y < CHUNK_SIZE; ++y) {
-                            for (size_t x = 0; x < CHUNK_SIZE; ++x) {
-                                marchCube(
-                                    x, y, z,
-                                    chunk.noiseValues, CHUNK_SIZE + 1,
-                                    chunk.vertices, chunk.indices,
-                                    &localEdgeCache, edgeCacheX, edgeCacheY, edgeCacheZ,
-                                    0.5f, // Set threshold to 1.0f for correct isosurface
-                                    cx, cy, cz, chunkGrid
-                                );
-                            }
-                        }
-                    }
-                    //DEBUG Log the number of vertices and indices after marching cubes
-                    //logger.logf("Chunk (%d,%d,%d) verts: %zu -> %zu, inds: %zu -> %zu\n", cx, cy, cz, vertsBefore, chunk.vertices.size(), indsBefore, chunk.indices.size());
-
-                    // --- Create mesh and model for this chunk ---
-                    if (chunk.vertices.empty() || chunk.indices.empty()) {
-                        //logger.logf("Chunk at (%d, %d, %d) has no vertices or indices, skipping.\n", cx, cy, cz);
-                        continue; // Skip this chunk if it has no vertices or indices
-                    }
-                    Mesh mesh = { 0 };
-                    // Allocate mesh.vertices and mesh.indices
-                    mesh.vertexCount = static_cast<int>(chunk.vertices.size());
-                    mesh.vertices = new float[mesh.vertexCount * 3];
-                    for (size_t j = 0; j < chunk.vertices.size(); ++j) {
-                        const Vector3& v = chunk.vertices[j];
-                        mesh.vertices[j * 3 + 0] = v.x;
-                        mesh.vertices[j * 3 + 1] = v.y;
-                        mesh.vertices[j * 3 + 2] = v.z;
-                    }
-                    mesh.triangleCount = static_cast<int>(chunk.indices.size() / 3);
-                    mesh.indices = new unsigned short[chunk.indices.size()];
-                    for (size_t j = 0; j < chunk.indices.size(); ++j) {
-                        mesh.indices[j] = static_cast<unsigned short>(chunk.indices[j]);
-                    }
-                    UploadMesh(&mesh, false);
-                    chunk.mesh = mesh;
-                    chunk.model = LoadModelFromMesh(chunk.mesh);
-
-                    // Create a GameObject for this chunk
-                    std::string chunkName = "chunk_" + std::to_string(cx) + "_" + std::to_string(cy) + "_" + std::to_string(cz);
-                    Vector3 chunkCoords = chunkOffset;
-                    Color chunkColor = color;
-                    float chunkScale = scale;
-                    Vector3 chunkRot = rotation;
-                    auto chunkObj = std::make_unique<GameObject>("gameobject", chunkName, chunkCoords, chunkRot, chunkColor, chunkScale, chunk.model);
-                    chunkObj->isActive = true;
-                    chunkObj->parent = &world.rootObject;
-                    world.rootObject.children.push_back(std::move(chunkObj));
-
-                    // --- DEBUG: Compare shared edge cache indices at chunk borders ---
-                    // logger.logf("Comparing shared edge caches for chunk (%d,%d,%d)...\n", cx, cy, cz);
-                    // for (int cz = 0; cz < chunkGrid; ++cz) {
-                    //     for (int cy = 0; cy < chunkGrid; ++cy) {
-                    //         for (int cx = 0; cx < chunkGrid; ++cx) {
-                    //             // +X neighbor
-                    //             if (cx < chunkGrid - 1) {
-                    //                 auto keyA = std::make_tuple(cx + 1, cy, cz, 0);
-                    //                 auto keyB = std::make_tuple(cx + 1, cy, cz, 0);
-                    //                 const auto& cacheA = sharedEdgeCaches[keyA];
-                    //                 const auto& cacheB = sharedEdgeCaches[keyB]; // Both chunks should use the same cache object!
-                    //                 logger.logf("Comparing shared edge cache for X face at (%d,%d,%d):\n", cx+1, cy, cz);
-                    //                 for (size_t i = 0; i < cacheA.size(); ++i) {
-                    //                     if (cacheA[i] != cacheB[i]) {
-                    //                         logger.logf("  MISMATCH at i=%zu: cacheA=%d, cacheB=%d\n", i, cacheA[i], cacheB[i]);
-                    //                     }
-                    //                 }
-                    //             }
-                    //             // +Y neighbor
-                    //             if (cy < chunkGrid - 1) {
-                    //                 auto keyA = std::make_tuple(cx, cy + 1, cz, 1);
-                    //                 auto keyB = std::make_tuple(cx, cy + 1, cz, 1);
-                    //                 const auto& cacheA = sharedEdgeCaches[keyA];
-                    //                 const auto& cacheB = sharedEdgeCaches[keyB];
-                    //                 logger.logf("Comparing shared edge cache for Y face at (%d,%d,%d):\n", cx, cy+1, cz);
-                    //                 for (size_t i = 0; i < cacheA.size(); ++i) {
-                    //                     if (cacheA[i] != cacheB[i]) {
-                    //                         logger.logf("  MISMATCH at i=%zu: cacheA=%d, cacheB=%d\n", i, cacheA[i], cacheB[i]);
-                    //                     }
-                    //                 }
-                    //             }
-                    //             // +Z neighbor
-                    //             if (cz < chunkGrid - 1) {
-                    //                 auto keyA = std::make_tuple(cx, cy, cz + 1, 2);
-                    //                 auto keyB = std::make_tuple(cx, cy, cz + 1, 2);
-                    //                 const auto& cacheA = sharedEdgeCaches[keyA];
-                    //                 const auto& cacheB = sharedEdgeCaches[keyB];
-                    //                 logger.logf("Comparing shared edge cache for Z face at (%d,%d,%d):\n", cx, cy, cz+1);
-                    //                 for (size_t i = 0; i < cacheA.size(); ++i) {
-                    //                     if (cacheA[i] != cacheB[i]) {
-                    //                         logger.logf("  MISMATCH at i=%zu: cacheA=%d, cacheB=%d\n", i, cacheA[i], cacheB[i]);
-                    //                     }
-                    //                 }
-                    //             }
-                    //         }
-                    //     }
-                    // }
-
-                    // --- DEBUG: Print vertex positions at chunk boundaries ---
-                    // logger.logf("Vertex boundary check for chunk (%d,%d,%d):\n", cx, cy, cz);
-                    // if (cx < chunkGrid - 1) {
-                    //     logger.logf("Vertex boundary check: chunk (%d,%d,%d) +X face\n", cx, cy, cz);
-                    //     for (const Vector3& v : chunk.vertices) {
-                    //         if (fabs(v.x - (chunkOffset.x + CHUNK_SIZE)) < 1e-4) {
-                    //             logger.logf("v=(%.4f,%.4f,%.4f)\n", v.x, v.y, v.z);
-                    //         }
-                    //     }
-                    // }
-                    // if (cy < chunkGrid - 1) {
-                    //     logger.logf("Vertex boundary check: chunk (%d,%d,%d) +Y face\n", cx, cy, cz);
-                    //     for (const Vector3& v : chunk.vertices) {
-                    //         if (fabs(v.y - (chunkOffset.y + CHUNK_SIZE)) < 1e-4) {
-                    //             logger.logf("v=(%.4f,%.4f,%.4f)\n", v.x, v.y, v.z);
-                    //         }
-                    //     }
-                    // }
-                    // if (cz < chunkGrid - 1) {
-                    //     logger.logf("Vertex boundary check: chunk (%d,%d,%d) +Z face\n", cx, cy, cz);
-                    //     for (const Vector3& v : chunk.vertices) {
-                    //         if (fabs(v.z - (chunkOffset.z + CHUNK_SIZE)) < 1e-4) {
-                    //             logger.logf("v=(%.4f,%.4f,%.4f)\n", v.x, v.y, v.z);
-                    //         }
-                    //     }
-                    // }
-                }
-            }
-        }
-
-        // --- DEBUG: Compare world-space border vertices between adjacent chunks ---
-        // logger.logf("Comparing world-space border vertices between adjacent chunks...\n");
-        // for (int cz = 0; cz < chunkGrid; ++cz) {
-        //     for (int cy = 0; cy < chunkGrid; ++cy) {
-        //         for (int cx = 0; cx < chunkGrid; ++cx) {
-        //             Int3 chunkPos = {cx, cy, cz};
-        //             const auto& chunkA = chunks[chunkPos];
-        //             Vector3 chunkOffsetA = {
-        //                 minCorner.x + cx * CHUNK_SIZE,
-        //                 minCorner.y + cy * CHUNK_SIZE,
-        //                 minCorner.z + cz * CHUNK_SIZE
-        //             };
-        //             // +X neighbor
-        //             if (cx < chunkGrid - 1) {
-        //                 Int3 neighborX = {cx + 1, cy, cz};
-        //                 const auto& chunkB = chunks[neighborX];
-        //                 Vector3 chunkOffsetB = {
-        //                     minCorner.x + (cx + 1) * CHUNK_SIZE,
-        //                     minCorner.y + cy * CHUNK_SIZE,
-        //                     minCorner.z + cz * CHUNK_SIZE
-        //                 };
-        //                 logger.logf("Comparing +X border vertices: chunk (%d,%d,%d) <-> (%d,%d,%d)\n", cx, cy, cz, cx+1, cy, cz);
-        //                 for (const Vector3& vA : chunkA.vertices) {
-        //                     if (fabs(vA.x - (chunkOffsetA.x + CHUNK_SIZE)) < 1e-4) {
-        //                         // Look for a matching vertex in chunkB at x == chunkOffsetB.x
-        //                         bool found = false;
-        //                         for (const Vector3& vB : chunkB.vertices) {
-        //                             if (fabs(vB.x - chunkOffsetB.x) < 1e-4 &&
-        //                                 fabs(vA.y - vB.y) < 1e-4 &&
-        //                                 fabs(vA.z - vB.z) < 1e-4) {
-        //                                 found = true;
-        //                                 break;
-        //                             }
-        //                         }
-        //                         if (!found) {
-        //                             logger.logf("  MISMATCH: vA=(%.4f,%.4f,%.4f) has no match in neighbor\n", vA.x, vA.y, vA.z);
-        //                         }
-        //                     }
-        //                 }
-        //             }
-        //             // +Y neighbor
-        //             if (cy < chunkGrid - 1) {
-        //                 Int3 neighborY = {cx, cy + 1, cz};
-        //                 const auto& chunkB = chunks[neighborY];
-        //                 Vector3 chunkOffsetB = {
-        //                     minCorner.x + cx * CHUNK_SIZE,
-        //                     minCorner.y + (cy + 1) * CHUNK_SIZE,
-        //                     minCorner.z + cz * CHUNK_SIZE
-        //                 };
-        //                 logger.logf("Comparing +Y border vertices: chunk (%d,%d,%d) <-> (%d,%d,%d)\n", cx, cy, cz, cx, cy+1, cz);
-        //                 for (const Vector3& vA : chunkA.vertices) {
-        //                     if (fabs(vA.y - (chunkOffsetA.y + CHUNK_SIZE)) < 1e-4) {
-        //                         // Look for a matching vertex in chunkB at y == chunkOffsetB.y
-        //                         bool found = false;
-        //                         for (const Vector3& vB : chunkB.vertices) {
-        //                             if (fabs(vB.y - chunkOffsetB.y) < 1e-4 &&
-        //                                 fabs(vA.x - vB.x) < 1e-4 &&
-        //                                 fabs(vA.z - vB.z) < 1e-4) {
-        //                                 found = true;
-        //                                 break;
-        //                             }
-        //                         }
-        //                         if (!found) {
-        //                             logger.logf("  MISMATCH: vA=(%.4f,%.4f,%.4f) has no match in neighbor\n", vA.x, vA.y, vA.z);
-        //                         }
-        //                     }
-        //                 }
-        //             }
-        //             // +Z neighbor
-        //             if (cz < chunkGrid - 1) {
-        //                 Int3 neighborZ = {cx, cy, cz + 1};
-        //                 const auto& chunkB = chunks[neighborZ];
-        //                 Vector3 chunkOffsetB = {
-        //                     minCorner.x + cx * CHUNK_SIZE,
-        //                     minCorner.y + cy * CHUNK_SIZE,
-        //                     minCorner.z + (cz + 1) * CHUNK_SIZE
-        //                 };
-        //                 logger.logf("Comparing +Z border vertices: chunk (%d,%d,%d) <-> (%d,%d,%d)\n", cx, cy, cz, cx, cy, cz+1);
-        //                 for (const Vector3& vA : chunkA.vertices) {
-        //                     if (fabs(vA.z - (chunkOffsetA.z + CHUNK_SIZE)) < 1e-4) {
-        //                         // Look for a matching vertex in chunkB at z == chunkOffsetB.z
-        //                         bool found = false;
-        //                         for (const Vector3& vB : chunkB.vertices) {
-        //                             if (fabs(vB.z - chunkOffsetB.z) < 1e-4 &&
-        //                                 fabs(vA.x - vB.x) < 1e-4 &&
-        //                                 fabs(vA.y - vB.y) < 1e-4) {
-        //                                 found = true;
-        //                                 break;
-        //                             }
-        //                         }
-        //                         if (!found) {
-        //                             logger.logf("  MISMATCH: vA=(%.4f,%.4f,%.4f) has no match in neighbor\n", vA.x, vA.y, vA.z);
-        //                         }
-        //                     }
-        //                 }
-        //             }
-        //         }
-        //     }
-        // }
-
-        //--- DEBUG: Check chunk border positions ---
-        // logger.logf("Checking chunk border positions...\n");
-        // for (int cz = 0; cz < chunkGrid; ++cz) {
-        //     for (int cy = 0; cy < chunkGrid; ++cy) {
-        //         for (int cx = 0; cx < chunkGrid; ++cx) {
-        //             Int3 chunkPos = {cx, cy, cz};
-        //             Vector3 chunkOffsetA = {
-        //                 minCorner.x + cx * CHUNK_SIZE,
-        //                 minCorner.y + cy * CHUNK_SIZE,
-        //                 minCorner.z + cz * CHUNK_SIZE
-        //             };
-        //             // +X neighbor
-        //             if (cx < chunkGrid - 1) {
-        //                 Vector3 chunkOffsetB = {
-        //                     minCorner.x + (cx + 1) * CHUNK_SIZE,
-        //                     minCorner.y + cy * CHUNK_SIZE,
-        //                     minCorner.z + cz * CHUNK_SIZE
-        //                 };
-        //                 logger.logf("Checking X border positions: (%d,%d,%d) <-> (%d,%d,%d)\n", cx, cy, cz, cx+1, cy, cz);
-        //                 checkChunkBorderPositions(chunkOffsetA, chunkOffsetB, CHUNK_SIZE + 1, 'x');
-        //             }
-        //             // +Y neighbor
-        //             if (cy < chunkGrid - 1) {
-        //                 Vector3 chunkOffsetB = {
-        //                     minCorner.x + cx * CHUNK_SIZE,
-        //                     minCorner.y + (cy + 1) * CHUNK_SIZE,
-        //                     minCorner.z + cz * CHUNK_SIZE
-        //                 };
-        //                 logger.logf("Checking Y border positions: (%d,%d,%d) <-> (%d,%d,%d)\n", cx, cy, cz, cx, cy+1, cz);
-        //                 checkChunkBorderPositions(chunkOffsetA, chunkOffsetB, CHUNK_SIZE + 1, 'y');
-        //             }
-        //             // +Z neighbor
-        //             if (cz < chunkGrid - 1) {
-        //                 Vector3 chunkOffsetB = {
-        //                     minCorner.x + cx * CHUNK_SIZE,
-        //                     minCorner.y + cy * CHUNK_SIZE,
-        //                     minCorner.z + (cz + 1) * CHUNK_SIZE
-        //                 };
-        //                 logger.logf("Checking Z border positions: (%d,%d,%d) <-> (%d,%d,%d)\n", cx, cy, cz, cx, cy, cz+1);
-        //                 checkChunkBorderPositions(chunkOffsetA, chunkOffsetB, CHUNK_SIZE + 1, 'z');
-        //             }
-        //         }
-        //     }
-        // }
-
-        //--- DEBUG: Check shared edge caches for mismatches ---
-        // logger.logf("Checking shared edge caches for mismatches...\n");
-        // for (int cz = 0; cz < chunkGrid; ++cz) {
-        //     for (int cy = 0; cy < chunkGrid; ++cy) {
-        //         for (int cx = 0; cx < chunkGrid; ++cx) {
-        //             Int3 chunkPos = {cx, cy, cz};
-        //             const auto& chunkA = chunks[chunkPos];
-        //             // +X neighbor
-        //             if (cx < chunkGrid - 1) {
-        //                 Int3 neighborX = {cx + 1, cy, cz};
-        //                 const auto& chunkB = chunks[neighborX];
-        //                 logger.logf("Checking X border: (%d,%d,%d) <-> (%d,%d,%d)\n", cx, cy, cz, cx+1, cy, cz);
-        //                 checkChunkBorderNoise(chunkA.noiseValues, chunkB.noiseValues, CHUNK_SIZE + 1, 'x');
-        //             }
-        //             // +Y neighbor
-        //             if (cy < chunkGrid - 1) {
-        //                 Int3 neighborY = {cx, cy + 1, cz};
-        //                 const auto& chunkB = chunks[neighborY];
-        //                 logger.logf("Checking Y border: (%d,%d,%d) <-> (%d,%d,%d)\n", cx, cy, cz, cx, cy+1, cz);
-        //                 checkChunkBorderNoise(chunkA.noiseValues, chunkB.noiseValues, CHUNK_SIZE + 1, 'y');
-        //             }
-        //             // +Z neighbor
-        //             if (cz < chunkGrid - 1) {
-        //                 Int3 neighborZ = {cx, cy, cz + 1};
-        //                 const auto& chunkB = chunks[neighborZ];
-        //                 logger.logf("Checking Z border: (%d,%d,%d) <-> (%d,%d,%d)\n", cx, cy, cz, cx, cy, cz+1);
-        //                 checkChunkBorderNoise(chunkA.noiseValues, chunkB.noiseValues, CHUNK_SIZE + 1, 'z');
-        //             }
-        //         }
-        //     }
-        // }
+        generatePlanetoid(randScale, world, position, rotation, color, size, scale);
 
         clock_t planetoidGenEnd = clock();
         double planetoidGenTime = static_cast<double>(planetoidGenEnd - planetoidGenStart) / CLOCKS_PER_SEC;
         logger.logf("Planetoid %d generated in %.2f seconds.\n\n", i, planetoidGenTime);
-        delete noise; // Clean up the noise instance
         planetoidsGenerated++;
     }
     return planetoidsGenerated; // Return the number of planetoids generated
@@ -729,7 +548,6 @@ void loadWorld(Scene& world) {
                 std::string modelPath = "assets/models/" + name + "/" + name + ".obj";
                 std::string texturePath = "assets/models/" + name + "/diffuse.png";
                 Model model;
-                // Model model = LoadModelFromMesh(GenMeshCube(1.0f, 1.0f, 1.0f)); // Default model if loading fails
                 if (!FileExists(modelPath.c_str())) {
                     std::cerr << "Model file does not exist: " << modelPath << std::endl;
                     continue;
