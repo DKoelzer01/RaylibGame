@@ -256,34 +256,61 @@ void generateWorld(Scene& world) {
     logger.logf("World generation completed in %.2f seconds.\n", worldGenTime);
 }
 
+Chunk generateChunk(int cx, int cy, int cz, const Vector3& minCorner, SimplexNoise* noise) {
+    Chunk chunk = {};
+    // Allocate noise for this chunk with a 1-voxel border
+    chunk.noiseValues.resize((CHUNK_SIZE + 1) * (CHUNK_SIZE + 1) * (CHUNK_SIZE + 1));
+    // Calculate chunk's world offset
+    Vector3 chunkOffset = {
+        minCorner.x + cx * CHUNK_SIZE,
+        minCorner.y + cy * CHUNK_SIZE,
+        minCorner.z + cz * CHUNK_SIZE
+    };
+    //logger.logf("Chunk (%d,%d,%d) offset: (%f, %f, %f)\n", cx, cy, cz, chunkOffset.x, chunkOffset.y, chunkOffset.z);
+    // Generate noise for this chunk (including border)
+    // time_t noiseStart = clock();
+    for (size_t z = 0; z <= CHUNK_SIZE; ++z) {
+        for (size_t y = 0; y <= CHUNK_SIZE; ++y) {
+            for (size_t x = 0; x <= CHUNK_SIZE; ++x) {
+                size_t idx = x + y * (CHUNK_SIZE + 1) + z * (CHUNK_SIZE + 1) * (CHUNK_SIZE + 1);
+                float wx = chunkOffset.x + x;
+                float wy = chunkOffset.y + y;
+                float wz = chunkOffset.z + z;
+                chunk.noiseValues[idx] = (noise->fractal(4, wx, wy, wz) + 1.0f);
+            }
+        }
+    }
+
+    return chunk;
+
+}
+
 void generatePlanetoid(float randScale, Scene& world, Vector3 position, Vector3 rotation,Color color, size_t size, float scale) {
     clock_t planetoidGenStart = clock();
-    float frequencyNoise = static_cast<float>(distrib(gen)/randScale)-0.25f; // Random frequency noise to add some variation from -0.5 to 0.5
+    float frequencyNoise = static_cast<float>(distrib(gen)/randScale)-0.5f; // Random frequency noise to add some variation from -0.5 to 0.5
 
     SimplexNoise* noise = new SimplexNoise((1.5f+frequencyNoise)/static_cast<float>(size), 2.0f, 2.0f, 0.5f); // Create a new instance of SimplexNoise
     if (!noise) {
         std::cerr << "Failed to create SimplexNoise instance." << std::endl;
         return; // Skip this planetoid if noise generation fails;
     }
-
-    logger.logf("Generating noise for planetoid at position (%f, %f, %f) with size %zu and frequency %f\n", position.x, position.y, position.z, size, 1.5f+frequencyNoise);
+    logger.logf("Generating planetoid at (%f, %f, %f) with size %zu and scale %.2f with noise frequency %.4f...\n", position.x, position.y, position.z, size, scale,(1.5f+frequencyNoise)/static_cast<float>(size));
 
     // Instead of one huge mesh, generate a grid of chunks
-    std::unordered_map<Int3, Chunk> chunks;
     int chunkGrid = size/CHUNK_SIZE + (size % CHUNK_SIZE != 0 ? 1 : 0); // Calculate the number of chunks needed in each dimension
-    logger.logf("Chunk grid size: %d x %d x %d\n", chunkGrid, chunkGrid, chunkGrid);
-
-    // Center the chunk grid around the planetoid position
-    Vector3 minCorner = {
-        position.x - chunkGrid * CHUNK_SIZE * 0.5f,
-        position.y - chunkGrid * CHUNK_SIZE * 0.5f,
-        position.z - chunkGrid * CHUNK_SIZE * 0.5f
-    };
-    logger.logf("Planetoid min corner: (%f, %f, %f)\n", minCorner.x, minCorner.y, minCorner.z);
+    // logger.logf("Chunk grid size: %d x %d x %d\n", chunkGrid, chunkGrid, chunkGrid);
 
     // --- Shared edge cache setup ---
     // Key: (minChunkX, minChunkY, minChunkZ, faceDir), faceDir: 0=X, 1=Y, 2=Z
     std::unordered_map<std::tuple<int, int, int, int>, std::vector<int>, Tuple4Hash> sharedEdgeCaches;
+    std::unordered_map<Int3, Chunk> chunks; // Store generated chunks by their position
+
+    // Calculate minCorner for chunkOffset calculation
+    Vector3 minCorner = {
+        position.x - (chunkGrid * CHUNK_SIZE) * 0.5f,
+        position.y - (chunkGrid * CHUNK_SIZE) * 0.5f,
+        position.z - (chunkGrid * CHUNK_SIZE) * 0.5f
+    };
 
     for (int cz = 0; cz < chunkGrid; ++cz) {
         logger.logf("Generating chunk row %d/%d... %3.2f\%\n", cz + 1, chunkGrid,cz/ static_cast<float>(chunkGrid) * 100.0f);
@@ -293,35 +320,18 @@ void generatePlanetoid(float randScale, Scene& world, Vector3 position, Vector3 
                 //logger.logf("Generating chunk at (%d, %d, %d)\n", cx, cy, cz);
                 time_t totalChunkStart = clock();
 
-                Int3 chunkPos = {cx, cy, cz};
-                Chunk& chunk = chunks[chunkPos];
-                // Allocate noise for this chunk with a 1-voxel border
-                chunk.noiseValues.resize((CHUNK_SIZE + 1) * (CHUNK_SIZE + 1) * (CHUNK_SIZE + 1));
-                // Calculate chunk's world offset
+                
+                // time_t noiseEnd = clock();
+                // double noiseTime = static_cast<double>(noiseEnd - noiseStart) / CLOCKS_PER_SEC;
+                // logger.logf("\tChunk (%d,%d,%d) noise generated in %.6f seconds.\n", cx, cy, cz, noiseTime);
+
+                Chunk chunk = generateChunk(cx, cy, cz, minCorner, noise);
                 Vector3 chunkOffset = {
                     minCorner.x + cx * CHUNK_SIZE,
                     minCorner.y + cy * CHUNK_SIZE,
                     minCorner.z + cz * CHUNK_SIZE
                 };
-                //logger.logf("Chunk (%d,%d,%d) offset: (%f, %f, %f)\n", cx, cy, cz, chunkOffset.x, chunkOffset.y, chunkOffset.z);
-                // Generate noise for this chunk (including border)
-                // time_t noiseStart = clock();
-                for (size_t z = 0; z <= CHUNK_SIZE; ++z) {
-                    for (size_t y = 0; y <= CHUNK_SIZE; ++y) {
-                        for (size_t x = 0; x <= CHUNK_SIZE; ++x) {
-                            size_t idx = x + y * (CHUNK_SIZE + 1) + z * (CHUNK_SIZE + 1) * (CHUNK_SIZE + 1);
-                            float wx = chunkOffset.x + x;
-                            float wy = chunkOffset.y + y;
-                            float wz = chunkOffset.z + z;
-                            chunk.noiseValues[idx] = (noise->fractal(4, wx, wy, wz) + 1.0f);
-                        }
-                    }
-                }
-                // time_t noiseEnd = clock();
-                // double noiseTime = static_cast<double>(noiseEnd - noiseStart) / CLOCKS_PER_SEC;
-                // logger.logf("\tChunk (%d,%d,%d) noise generated in %.6f seconds.\n", cx, cy, cz, noiseTime);
-
-
+                chunks.insert({{cx, cy, cz}, chunk});
 
                 // Weight noise values for this chunk (use CHUNK_SIZE+1)
                 float planetoidRadius = chunkGrid * CHUNK_SIZE * 0.5f;
@@ -373,7 +383,7 @@ void generatePlanetoid(float randScale, Scene& world, Vector3 position, Vector3 
 
                 // Marching cubes: use CHUNK_SIZE+1 for noise, but mesh is CHUNK_SIZE-1
                 // For each cube, select the correct edge cache (local or shared)
-                time_t marchStart = clock();
+                // time_t marchStart = clock();
                 for (unsigned __int8 z = 0; z < CHUNK_SIZE; ++z) {
                     for (unsigned __int8 y = 0; y < CHUNK_SIZE; ++y) {
                         for (unsigned __int8 x = 0; x < CHUNK_SIZE; ++x) {
@@ -393,14 +403,14 @@ void generatePlanetoid(float randScale, Scene& world, Vector3 position, Vector3 
                 //logger.logf("\tChunk (%d,%d,%d) marched cubes in %.6f seconds.\n", cx, cy, cz, marchTime);
                 //logger.logf("Chunk (%d,%d,%d) verts: %zu -> %zu, inds: %zu -> %zu\n", cx, cy, cz, vertsBefore, chunk.vertices.size(), indsBefore, chunk.indices.size());
 
-                time_t meshStart = clock();
+                // time_t meshStart = clock();
 
                 // --- Create mesh and model for this chunk ---
                 if (chunk.vertices.empty() || chunk.indices.empty()) {
-                    logger.logf("\tChunk (%d, %d, %d) has no vertices or indices, skipping.\n", cx, cy, cz);
+                    // logger.logf("\tChunk (%d, %d, %d) has no vertices or indices, skipping.\n", cx, cy, cz);
                     time_t totalChunkEnd = clock();
                     double totalChunkTime = static_cast<double>(totalChunkEnd - totalChunkStart) / CLOCKS_PER_SEC;
-                    logger.logf("Total time for chunk (%d,%d,%d): %.6f seconds.\n", cx, cy, cz, totalChunkTime);
+                    logger.logf("Total time for empty chunk (%d,%d,%d): %.6f seconds.\n", cx, cy, cz, totalChunkTime);
                     continue; // Skip this chunk if it has no vertices or indices
                 }
                 Mesh mesh = { 0 };
@@ -422,10 +432,10 @@ void generatePlanetoid(float randScale, Scene& world, Vector3 position, Vector3 
                 chunk.mesh = mesh;
                 chunk.model = LoadModelFromMesh(chunk.mesh);
 
-                time_t meshEnd = clock();
-                double meshTime = static_cast<double>(meshEnd - meshStart) / CLOCKS_PER_SEC;
-                logger.logf("\tChunk (%d,%d,%d) created mesh with %d vertices and %d indices in %.6f seconds.\n",
-                    cx, cy, cz, chunk.mesh.vertexCount, chunk.mesh.triangleCount * 3, meshTime);
+                // time_t meshEnd = clock();
+                // double meshTime = static_cast<double>(meshEnd - meshStart) / CLOCKS_PER_SEC;
+                // logger.logf("\tChunk (%d,%d,%d) created mesh with %d vertices and %d indices in %.6f seconds.\n",
+                //     cx, cy, cz, chunk.mesh.vertexCount, chunk.mesh.triangleCount * 3, meshTime);
 
                 // logNoiseValues(chunk.noiseValues, CHUNK_SIZE + 1); // Log noise values for debugging
                 // time_t normNoiseStart = clock();
