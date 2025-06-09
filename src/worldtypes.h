@@ -35,7 +35,7 @@ namespace std {
 struct Chunk {
     std::vector<float> noiseValues;
     std::vector<Vector3> vertices;
-    std::vector<size_t> indices;
+    std::vector<int> indices;
     Int3 position; // Position of the chunk in the world
     Mesh mesh;     // Store mesh for chunk lifetime
     Model model;   // Store model for chunk lifetime

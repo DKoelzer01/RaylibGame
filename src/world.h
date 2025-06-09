@@ -9,6 +9,8 @@
 
 #include <vector>
 #include <string>
+#include <queue>
+#include <unordered_set>
 #include <iostream>
 #include <fstream>
 #include <sstream>
@@ -19,7 +21,6 @@
 #include <tuple>
 #include <functional>
 #include <algorithm>
-
 
 void worldHandler(Scene& world);
 int generatePlanetoids(float randScale, Scene& world, float genRange, float minSize, float maxSize);
