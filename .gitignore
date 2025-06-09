@@ -5,3 +5,4 @@ main
 assets/noise
 assets/models/planetoid
 log.txt
+src/*.o

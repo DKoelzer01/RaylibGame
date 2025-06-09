@@ -1,6 +1,8 @@
 #ifndef gameobject_h
 #define gameobject_h
 #include "object.h"
+#include "worldtypes.h"
+#include "utils/logger.h"
 
 #pragma once
 
@@ -12,6 +14,14 @@ class GameObject: public Object {
         std::string texturePath; // Path to the texture file
         GameObject(std::string type,std::string name, Vector3 position, Vector3 rotation, Color color, float scale);
         GameObject(std::string type,std::string name, Vector3 position, Vector3 rotation, Color color, float scale, Model model);
+
+        void draw() override;
+};
+
+class ChunkObject: public GameObject {
+    public:
+        Chunk chunk; // Store chunk data
+        ChunkObject(std::string type,std::string name, Vector3 position, Vector3 rotation, Color color, float scale, Chunk chunk);
 
         void draw() override;
 };
