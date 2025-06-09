@@ -30,6 +30,16 @@ Scene::Scene(std::string name, bool isActive)
     UnloadImage(img);
     std::cout << "Skybox created: " << name << std::endl;
 
+    // Initialize lighting
+    lightingShader = LoadShader(TextFormat("resources/lighting.vs", GLSL_VERSION),
+                     TextFormat("resources/lighting.fs", GLSL_VERSION));
+    int ambientLoc = GetShaderLocation(lightingShader, "ambient");
+    SetShaderValue(lightingShader, ambientLoc, (float[4]){ 0.1f, 0.1f, 0.1f, 1.0f }, SHADER_UNIFORM_VEC4);
+
+    lights.push_back(CreateLight(LIGHT_DIRECTIONAL, (Vector3){ 0.0f, 1.0f, 0.0f }, (Vector3){ 0.0f, -1.0f, 0.0f }, WHITE, lightingShader));
+
+    
+
     std::cout << "Scene created: " << name << std::endl;
 }
 
@@ -39,15 +49,22 @@ void Scene::drawScene(int gamestate) {
     if(gamestate != 0 && gamestate != 2) { // If not in main menu or pause menu
         customUpdateCamera(&camera);
     }
-    
+
     rlDisableBackfaceCulling();
     rlDisableDepthMask();
     DrawModel(skybox, (Vector3){0, 0, 0}, 1.0f, WHITE);
     rlEnableBackfaceCulling();
     rlEnableDepthMask();
 
+    float cameraPos[3] = { camera.position.x, camera.position.y, camera.position.z };
+        SetShaderValue(lightingShader, lightingShader.locs[SHADER_LOC_VECTOR_VIEW], cameraPos, SHADER_UNIFORM_VEC3);
+
+    // for (const auto& light : lights) { }
+
+    BeginShaderMode(lightingShader);
     for (const auto& objPtr : objects) { objPtr->draw(); }
     for (const auto& objPtr : rootObject.children) { objPtr->draw(); }
+    EndShaderMode();
     EndMode3D();
 }
 
@@ -59,6 +76,20 @@ void Scene::drawUI(int gamestate) {
                             " Z=" + std::to_string(camera.position.z);
     DrawText(camPosStr.c_str(), 10, 30, 20, GREEN);
     for (const auto& objPtr : uiObjects) { objPtr->draw(); }
+}
+
+Scene::~Scene() {
+    // Unload skybox model and its shader
+    if (skybox.meshCount > 0) {
+        UnloadModel(skybox);
+        skybox.meshCount = 0;
+    }
+    // Unload lighting shader
+    if (lightingShader.id > 0) {
+        UnloadShader(lightingShader);
+        lightingShader.id = 0;
+    }
+    // If you have any other dynamically loaded resources, unload them here
 }
 
 

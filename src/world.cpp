@@ -199,25 +199,23 @@ void logNoiseValues(const std::vector<float>& noiseValues, int size) {
     logger.logf("Min noise value: %.4f, Max noise value: %.4f\n", minNoise, maxNoise);
 }
 
-void weightNoise(std::vector<float>& noiseValues, int size, Vector3 chunkOffset, Vector3 center, float weight, float maxDist) {
-    if (size <= 0) return;
+void weightNoise(std::vector<float>& noiseValues, int size, const Vector3& chunkWorldPos, const Vector3& planetoidCenter, float falloff, float maxDist) {
+    float minScale = 1.0f;
+    float maxScale = 0.0f;
     for (int z = 0; z < size; ++z) {
         for (int y = 0; y < size; ++y) {
             for (int x = 0; x < size; ++x) {
                 int idx = x + y * size + z * size * size;
-                float wx = x + chunkOffset.x;
-                float wy = y + chunkOffset.y;
-                float wz = z + chunkOffset.z;
-                float dx = wx - center.x;
-                float dy = wy - center.y;
-                float dz = wz - center.z;
-                float dist = std::sqrt(dx * dx + dy * dy + dz * dz);
+                Vector3 voxelPos = { chunkWorldPos.x + x, chunkWorldPos.y + y, chunkWorldPos.z + z };
+                float dist = Vector3Distance(voxelPos, planetoidCenter);
                 float scale = std::max(0.0f, 1.0f - (dist / maxDist));
-                if (scale < 0.0f) scale = 0.0f;
+                minScale = std::min(minScale, scale);
+                maxScale = std::max(maxScale, scale);
                 noiseValues[idx] *= scale;
             }
         }
     }
+    logger.logf("[weightNoise] minScale=%.4f maxScale=%.4f\n", minScale, maxScale);
 }
 
 void normalizeNoise(std::vector<float>& noiseValues, int size, float scale = 1.0f) {
@@ -258,7 +256,7 @@ void generateWorld(Scene& world) {
 
 Chunk generateChunk(int cx, int cy, int cz, const Vector3& origin, SimplexNoise* noise) {
     Chunk chunk = {};
-    logger.logf("Generating chunk (%d, %d, %d).\n", cx, cy, cz);
+    logger.logf("[generateChunk] Generating chunk (%d, %d, %d) at origin (%.2f, %.2f, %.2f)\n", cx, cy, cz, origin.x, origin.y, origin.z);
     // Allocate noise for this chunk with a 1-voxel border
     const int chunkNoiseSize = (CHUNK_SIZE + 1);
     const int totalNoise = chunkNoiseSize * chunkNoiseSize * chunkNoiseSize;
@@ -296,23 +294,41 @@ void iterativeChunk(int startCx, int startCy, int startCz, const Vector3& origin
         auto [cx, cy, cz] = q.front();
         q.pop();
         Int3 ChunkKey{cx, cy, cz};
-        if (planetoid->generatedChunks.count(ChunkKey) > 0) continue;
+        logger.logf("[iterativeChunk] Attempting chunk (%d, %d, %d) at planetoid origin (%.2f, %.2f, %.2f)\n", cx, cy, cz, origin.x, origin.y, origin.z);
+        if (planetoid->generatedChunks.count(ChunkKey) > 0) {
+            logger.logf("[iterativeChunk] Skipping already generated chunk (%d, %d, %d)\n", cx, cy, cz);
+            continue;
+        }
         planetoid->generatedChunks[ChunkKey] = true;
         Vector3 chunkWorldPos = {
-            static_cast<float>(cx * CHUNK_SIZE),
-            static_cast<float>(cy * CHUNK_SIZE),
-            static_cast<float>(cz * CHUNK_SIZE)
+            origin.x + static_cast<float>(cx * CHUNK_SIZE),
+            origin.y + static_cast<float>(cy * CHUNK_SIZE),
+            origin.z + static_cast<float>(cz * CHUNK_SIZE)
         };
         std::string chunkName;
         chunkName.reserve(32);
         chunkName = "chunk_" + std::to_string(cx) + "_" + std::to_string(cy) + "_" + std::to_string(cz);
         time_t genChunk = clock();
         Chunk chunk = generateChunk(cx, cy, cz, origin, noise);
-        weightNoise(chunk.noiseValues, CHUNK_SIZE + 1, chunkWorldPos, origin, 0.75f, planetoid->size);
+        // Log the chunk noise values min and max
+        logger.logf("[generateChunk] Chunk (%d, %d, %d) noise values min: %.4f, max: %.4f\n",
+            cx, cy, cz,
+            *std::min_element(chunk.noiseValues.begin(), chunk.noiseValues.end()),
+            *std::max_element(chunk.noiseValues.begin(), chunk.noiseValues.end()));
+        // writeNoiseValuesToFile(chunk.noiseValues, CHUNK_SIZE + 1, "assets/noise/" + chunkName + ".txt");
+        weightNoise(chunk.noiseValues, CHUNK_SIZE + 1, chunkWorldPos, origin, 0.5f, planetoid->size);
+        // Log the weighted noise values min and max
+        logger.logf("[weightNoise] Chunk (%d, %d, %d) weighted noise values min: %.4f, max: %.4f\n",
+            cx, cy, cz,
+            *std::min_element(chunk.noiseValues.begin(), chunk.noiseValues.end()),
+            *std::max_element(chunk.noiseValues.begin(), chunk.noiseValues.end()));
+        // writeNoiseValuesToFile(chunk.noiseValues, CHUNK_SIZE + 1, "assets/noise/" + chunkName + "_weighted.txt");
+        // Log the chunk generation time
         time_t genChunkEnd = clock();
         double genChunkTime = static_cast<double>(genChunkEnd - genChunk) / CLOCKS_PER_SEC;
         logger.logf("Chunk (%d, %d, %d) generated in %.2f seconds.\n", cx, cy, cz, genChunkTime);
-        if (isAllBelowThreshold(chunk.noiseValues, 0.1f)) {
+        if (isAllBelowThreshold(chunk.noiseValues, 0.01f)) { // Lowered threshold
+            // logger.logf("Chunk (%d, %d, %d) is empty, skipping.\n", cx, cy, cz);
             planetoid->children.emplace_back(std::make_unique<ChunkObject>("chunk", chunkName, chunkWorldPos, rotation, color, scale, chunk));
             continue;
         }
@@ -445,7 +461,7 @@ int generatePlanetoids(float randScale, Scene& world, float genRange, float minS
                                 static_cast<float>(((distrib(gen)/randScale)*genRange)-(genRange/2)), 
                                 static_cast<float>(((distrib(gen)/randScale)*genRange)-(genRange/2))};
 
-        // position = { 0.0f, 0.0f, 0.0f }; // Fixed position for testing
+        // position = { 64.0f, -64.0f, -64.0f}; // Fixed position for testing
 
         // Rotation is random in degrees, scaled by randScale
         Vector3 rotation = {    static_cast<float>(distrib(gen)/randScale * 360), 
@@ -459,7 +475,7 @@ int generatePlanetoids(float randScale, Scene& world, float genRange, float minS
 
         // Size is a random float between minSize and maxSize
         size_t size = static_cast<size_t>((distrib(gen)/randScale)*(maxSize-minSize)) + static_cast<size_t>(minSize);
-        size = 300; // Fixed size for testing
+        size = 100; // Fixed size for testing
 
         // Scale is a fixed value for now, can be adjusted later
         float scale = 1.0f;

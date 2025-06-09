@@ -28,9 +28,22 @@ GameObject::GameObject(std::string type,std::string name, Vector3 position, Vect
 GameObject::GameObject(std::string type, std::string name, Vector3 position, Vector3 rotation, Color color, float scale, Model model)
     : Object(type, name, position, rotation, color, scale), model(model) {}
 
+GameObject::~GameObject() {
+    // Only unload if this is the only owner and model is valid
+    if (model.meshCount > 0) {
+        UnloadModel(model);
+        model.meshCount = 0; // Prevent double-free if destructor called again
+    }
+}
+
 ChunkObject::ChunkObject(std::string type, std::string name, Vector3 position, Vector3 rotation, Color color, float scale, Chunk chunk)
     : GameObject(type, name, position, rotation, color, scale), chunk(chunk) {
     this->model = chunk.model;
+}
+
+ChunkObject::~ChunkObject() {
+    // Do NOT unload chunk.model here, as it is a copy and may be managed elsewhere.
+    // If you ever manage chunk.model separately, add safe unload logic here.
 }
 
 void GameObject::draw() {
