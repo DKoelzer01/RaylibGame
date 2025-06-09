@@ -28,6 +28,12 @@ GameObject::GameObject(std::string type,std::string name, Vector3 position, Vect
 GameObject::GameObject(std::string type, std::string name, Vector3 position, Vector3 rotation, Color color, float scale, Model model)
     : Object(type, name, position, rotation, color, scale), model(model) {}
 
+ChunkObject::ChunkObject(std::string type, std::string name, Vector3 position, Vector3 rotation, Color color, float scale, Chunk chunk)
+    : GameObject(type, name, position, rotation, color, scale), chunk(chunk) {
+    // Initialize the chunk object with the provided chunk data
+    this->model = chunk.model; // Use the model from the chunk
+}
+
 void GameObject::draw() {
     if (!isActive) return; // Skip drawing if the object is not active
     if (type == "cube") {
@@ -40,4 +46,12 @@ void GameObject::draw() {
         DrawModel(model, position, scale, color);
         DrawModelWires(model, position, scale, BLACK);
     }
+}
+
+void ChunkObject::draw() {
+    // logger.logf("Drawing ChunkObject: %s at position (%f, %f, %f) active:%d\n", name.c_str(), position.x, position.y, position.z, isActive);
+    if (!isActive) return; // Skip drawing if the object is not active
+    DrawModel(chunk.model, position, scale, color);
+    DrawModelWires(chunk.model, position, scale, BLACK);
+    DrawCube({position.x+16,position.y+16,position.z+16},32,32,32, {200,200,200,50}); // Draw a cube at the chunk position for visualization
 }

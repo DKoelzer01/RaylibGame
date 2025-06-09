@@ -52,12 +52,12 @@ int getFaceFlatIdx(int a, int b, int edge, int stride) {
     return (a + b * stride) * 12 + edge;
 }
 
-std::array<__int8,15> get_triangulation(unsigned __int8 x, unsigned __int8 y, unsigned __int8 z, std::vector<float>& noiseValues, unsigned __int8 size, float threshold) {
-    unsigned __int8 cubeIndex = 0;
+std::array<int,15> get_triangulation(int x, int y, int z, std::vector<float>& noiseValues, int size, float threshold) {
+    int cubeIndex = 0;
     // Bounds check for all 8 cube corners
     assert(x + 1 < size && y + 1 < size && z + 1 < size);
 
-    auto idx = [size](unsigned __int8 x, unsigned __int8 y, unsigned __int8 z) -> unsigned __int16 {
+    auto idx = [size](int x, int y, int z) -> int {
         return x + y * size + z * size * size;
     };
 
@@ -72,17 +72,17 @@ std::array<__int8,15> get_triangulation(unsigned __int8 x, unsigned __int8 y, un
 
     if (cubeIndex == 0 || cubeIndex == 255) {
         // No triangles to create
-        return std::array<__int8, 15>{-1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1};
+        return std::array<int, 15>{-1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1};
     }
 
-    std::array<__int8, 15> triangulation;
+    std::array<int, 15> triangulation;
     std::copy(std::begin(TRIANGULATIONS[cubeIndex]), std::end(TRIANGULATIONS[cubeIndex]), triangulation.begin());
     return triangulation;
 }
 
 // Call this for each cube
 void marchCube(
-    unsigned __int8 x, unsigned __int8 y, unsigned __int8 z,
+    int x, int y, int z,
     std::vector<float>& noiseValues, int size,
     std::vector<Vector3>& vertices,
     std::vector<size_t>& indices,
@@ -91,10 +91,10 @@ void marchCube(
     std::vector<int>* edgeCacheY,
     std::vector<int>* edgeCacheZ,
     float threshold,
-    int cx, int cy, int cz, int chunkGrid
+    int cx, int cy, int cz
 ) {
     assert(x + 1 < size && y + 1 < size && z + 1 < size);
-    std::array<__int8, 15> triangulation = get_triangulation(x, y, z, noiseValues, size, threshold);
+    std::array<int, 15> triangulation = get_triangulation(x, y, z, noiseValues, size, threshold);
     for (int i = 0; i < 15 && triangulation[i] != -1; i += 3) {
         size_t triIdx[3];
         for (int v = 0; v < 3; ++v) {
@@ -106,9 +106,6 @@ void marchCube(
             int gx0 = (int)x + CUBE_VERTICES[v0i][0] + cx * (int)(size-1);
             int gy0 = (int)y + CUBE_VERTICES[v0i][1] + cy * (int)(size-1);
             int gz0 = (int)z + CUBE_VERTICES[v0i][2] + cz * (int)(size-1);
-            int gx1 = (int)x + CUBE_VERTICES[v1i][0] + cx * (int)(size-1);
-            int gy1 = (int)y + CUBE_VERTICES[v1i][1] + cy * (int)(size-1);
-            int gz1 = (int)z + CUBE_VERTICES[v1i][2] + cz * (int)(size-1);
             // The edge is between (gx0,gy0,gz0) and (gx1,gy1,gz1)
             // Canonical owner: the chunk with the minimum (cx,cy,cz) that touches the edge
             // For each axis, if the edge lies on a chunk border, use the cache for the lowest chunk index
@@ -121,21 +118,18 @@ void marchCube(
             // Priority: X > Y > Z for corners/edges
             if (onX) {
                 // Use X face cache, canonicalize to face at min X
-                int faceX = gx0 / (int)(size-1);
                 int localY = gy0 % (int)(size-1);
                 int localZ = gz0 % (int)(size-1);
                 getCanonicalFaceEdgeIndex(0, +1, (int)(size-2), localY, localZ, edgeIndex, a, b, canonicalEdge);
                 flatIdx = getFaceFlatIdx(a, b, canonicalEdge, (int)(size-1));
                 cache = edgeCacheX;
             } else if (onY) {
-                int faceY = gy0 / (int)(size-1);
                 int localX = gx0 % (int)(size-1);
                 int localZ = gz0 % (int)(size-1);
                 getCanonicalFaceEdgeIndex(1, +1, localX, (int)(size-2), localZ, edgeIndex, a, b, canonicalEdge);
                 flatIdx = getFaceFlatIdx(a, b, canonicalEdge, (int)(size-1));
                 cache = edgeCacheY;
             } else if (onZ) {
-                int faceZ = gz0 / (int)(size-1);
                 int localX = gx0 % (int)(size-1);
                 int localY = gy0 % (int)(size-1);
                 getCanonicalFaceEdgeIndex(2, +1, localX, localY, (int)(size-2), edgeIndex, a, b, canonicalEdge);

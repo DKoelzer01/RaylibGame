@@ -30,10 +30,10 @@ namespace std {
     };
 }
 
-std::array<int,15> get_triangulation(size_t x, size_t y, size_t z, std::vector<float>& noiseValues,size_t size, float threshold);
+std::array<int,15> get_triangulation(int x, int y, int z, std::vector<float>& noiseValues,int size, float threshold);
 
 void marchCube(
-    unsigned __int8 x, unsigned __int8 y, unsigned __int8 z,
+    int x, int y, int z,
     std::vector<float>& noiseValues, int size,
     std::vector<Vector3>& vertices,
     std::vector<size_t>& indices,
@@ -42,7 +42,7 @@ void marchCube(
     std::vector<int>* edgeCacheY,
     std::vector<int>* edgeCacheZ,
     float threshold,
-    int cx, int cy, int cz, int chunkGrid
+    int cx, int cy, int cz
 );
 
 extern std::vector<int> edgeCacheFlat;
