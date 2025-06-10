@@ -36,9 +36,7 @@ Scene::Scene(std::string name, bool isActive)
     int ambientLoc = GetShaderLocation(lightingShader, "ambient");
     SetShaderValue(lightingShader, ambientLoc, (float[4]){ 0.1f, 0.1f, 0.1f, 1.0f }, SHADER_UNIFORM_VEC4);
 
-    lights.push_back(CreateLight(LIGHT_DIRECTIONAL, (Vector3){ 0.0f, 1.0f, 0.0f }, (Vector3){ 0.0f, -1.0f, 0.0f }, WHITE, lightingShader));
-
-    
+    lights.push_back(CreateLight(LIGHT_DIRECTIONAL, (Vector3){ 0.0f, 0.5f, 0.0f }, (Vector3){ -14.0f, -0.4f, -0.5f }, WHITE, lightingShader));
 
     std::cout << "Scene created: " << name << std::endl;
 }
@@ -57,9 +55,11 @@ void Scene::drawScene(int gamestate) {
     rlEnableDepthMask();
 
     float cameraPos[3] = { camera.position.x, camera.position.y, camera.position.z };
-        SetShaderValue(lightingShader, lightingShader.locs[SHADER_LOC_VECTOR_VIEW], cameraPos, SHADER_UNIFORM_VEC3);
+    SetShaderValue(lightingShader, lightingShader.locs[SHADER_LOC_VECTOR_VIEW], cameraPos, SHADER_UNIFORM_VEC3);
 
-    // for (const auto& light : lights) { }
+    for (const auto& light : lights) { 
+        UpdateLightValues(lightingShader, light);
+    }
 
     BeginShaderMode(lightingShader);
     for (const auto& objPtr : objects) { objPtr->draw(); }
@@ -75,6 +75,11 @@ void Scene::drawUI(int gamestate) {
                             " Y=" + std::to_string(camera.position.y) +
                             " Z=" + std::to_string(camera.position.z);
     DrawText(camPosStr.c_str(), 10, 30, 20, GREEN);
+
+    std::string camFacingVector = "Facing: X=" + std::to_string(camera.target.x) +
+                                  " Y=" + std::to_string(camera.target.y) +
+                                  " Z=" + std::to_string(camera.target.z);
+    DrawText(camFacingVector.c_str(), 10, 50, 20, GREEN);
     for (const auto& objPtr : uiObjects) { objPtr->draw(); }
 }
 

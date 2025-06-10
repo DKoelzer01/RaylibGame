@@ -80,12 +80,30 @@ std::array<int,15> get_triangulation(int x, int y, int z, std::vector<float>& no
     return triangulation;
 }
 
+// Helper to sample noise at floating-point position
+// Manual clamp implementation for C++11/14 compatibility
+template<typename T>
+T clamp(T v, T lo, T hi) {
+    return (v < lo) ? lo : (v > hi) ? hi : v;
+}
+
+static float sampleNoise(const std::vector<float>& noise, int size, float x, float y, float z) {
+    int ix = static_cast<int>(x);
+    int iy = static_cast<int>(y);
+    int iz = static_cast<int>(z);
+    ix = clamp(ix, 0, size-1);
+    iy = clamp(iy, 0, size-1);
+    iz = clamp(iz, 0, size-1);
+    return noise[ix + iy*size + iz*size*size];
+}
+
 // Call this for each cube
 void marchCube(
     int x, int y, int z,
     std::vector<float>& noiseValues, int size,
     std::vector<Vector3>& vertices,
     std::vector<int>& indices,
+    std::vector<Vector3>& normals, // NEW
     std::vector<int>* edgeCacheLocal,
     std::vector<int>* edgeCacheX,
     std::vector<int>* edgeCacheY,
@@ -164,6 +182,24 @@ void marchCube(
                     pos_a.z + t * (pos_b.z - pos_a.z)
                 };
                 vertices.push_back(position);
+                // --- Compute normal as gradient ---
+                float eps = 5e-2f;
+                Vector3 grad = {
+                    sampleNoise(noiseValues, size, position.x + eps, position.y, position.z) - sampleNoise(noiseValues, size, position.x - eps, position.y, position.z),
+                    sampleNoise(noiseValues, size, position.x, position.y + eps, position.z) - sampleNoise(noiseValues, size, position.x, position.y - eps, position.z),
+                    sampleNoise(noiseValues, size, position.x, position.y, position.z + eps) - sampleNoise(noiseValues, size, position.x, position.y, position.z - eps)
+                };
+                // Normalize the gradient vector
+                float length = sqrtf(grad.x * grad.x + grad.y * grad.y + grad.z * grad.z);
+                if (length > 1e-6f) {
+                    grad.x /= length;
+                    grad.y /= length;
+                    grad.z /= length;
+                }
+                // Flip the normal to point outward
+                Vector3 normal = { -grad.x, -grad.y, -grad.z };
+                normals.push_back(normal);
+                // ---
                 size_t idx = vertices.size() - 1;
                 if (flatIdx < cache->size()) (*cache)[flatIdx] = static_cast<int>(idx);
                 triIdx[v] = idx;

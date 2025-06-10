@@ -20,6 +20,14 @@ Light CreateLight(int type, Vector3 position, Vector3 target, Color color, Shade
     light.targetLoc = GetShaderLocation(shader, TextFormat("lights[%i].target", lightCount));
     light.colorLoc = GetShaderLocation(shader, TextFormat("lights[%i].color", lightCount));
 
+    UpdateLightValues(shader, light);
+
+    lightCount++;
+    return light;
+}
+
+void UpdateLightValues(Shader shader, Light light)
+{
     // Send to shader
     SetShaderValue(shader, light.enabledLoc, &light.enabled, SHADER_UNIFORM_INT);
     SetShaderValue(shader, light.typeLoc, &light.type, SHADER_UNIFORM_INT);
@@ -29,7 +37,4 @@ Light CreateLight(int type, Vector3 position, Vector3 target, Color color, Shade
     SetShaderValue(shader, light.targetLoc, tgt, SHADER_UNIFORM_VEC3);
     float col[4] = { (float)light.color.r/255.0f, (float)light.color.g/255.0f, (float)light.color.b/255.0f, (float)light.color.a/255.0f };
     SetShaderValue(shader, light.colorLoc, col, SHADER_UNIFORM_VEC4);
-
-    lightCount++;
-    return light;
 }

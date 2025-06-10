@@ -30,7 +30,6 @@ class Scene {
         std::vector<std::unique_ptr<Object>> uiObjects; // Array of UI objects in the scene
         Camera3D camera; // Camera for the scene
 
-        Shader lightingShader; // Shader for lighting effects
         std::vector<Light> lights; // Array of lights in the scene
 
         Object rootObject;

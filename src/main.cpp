@@ -6,19 +6,32 @@
 #include "scene.h"
 #include "object.h"
 #include "utils/logger.h"
+#include "rlights.h"
+
+#if defined(PLATFORM_DESKTOP)
+    #define GLSL_VERSION            330
+#endif
 
 using namespace std;
 
 Logger logger("log.txt");
+Shader lightingShader; // Global shader for lighting effects
 
 int gameState = 0; // 0: Main Menu, 1: Game, 2: Pause Menu
 
 int main() 
 {
+    SetConfigFlags(FLAG_MSAA_4X_HINT);
+    SetConfigFlags(FLAG_VSYNC_HINT); // Enable VSync for smoother rendering
+    SetConfigFlags(FLAG_WINDOW_RESIZABLE); // Allow window resizing
+    SetConfigFlags(FLAG_WINDOW_UNDECORATED); // Remove window decorations for a cleaner look
+    SetConfigFlags(FLAG_WINDOW_HIGHDPI); // Enable High DPI support
     InitWindow(GetMonitorWidth(0), GetMonitorHeight(0), "My first RAYLIB program!");
     SetTargetFPS(60);
     SetExitKey(KEY_NULL);
     SetTraceLogLevel(LOG_WARNING); // Set log level to warning to reduce output noise
+    lightingShader = LoadShader(TextFormat("resources/lighting.vs", GLSL_VERSION),
+                                TextFormat("resources/lighting.fs", GLSL_VERSION));
     Scene mainMenu("mainMenu", true); // Main menu scene;
     Scene world("world", false);;
 

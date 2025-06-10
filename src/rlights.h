@@ -79,6 +79,8 @@ extern "C" {            // Prevents name mangling of functions
 Light CreateLight(int type, Vector3 position, Vector3 target, Color color, Shader shader);   // Create a light and get shader locations
 void UpdateLightValues(Shader shader, Light light);         // Send light properties to shader
 
+extern Shader lightingShader; // Global shader for lighting effects
+
 #ifdef __cplusplus
 }
 #endif

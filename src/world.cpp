@@ -294,9 +294,9 @@ void iterativeChunk(int startCx, int startCy, int startCz, const Vector3& origin
         auto [cx, cy, cz] = q.front();
         q.pop();
         Int3 ChunkKey{cx, cy, cz};
-        logger.logf("[iterativeChunk] Attempting chunk (%d, %d, %d) at planetoid origin (%.2f, %.2f, %.2f)\n", cx, cy, cz, origin.x, origin.y, origin.z);
+        // logger.logf("[iterativeChunk] Attempting chunk (%d, %d, %d) at planetoid origin (%.2f, %.2f, %.2f)\n", cx, cy, cz, origin.x, origin.y, origin.z);
         if (planetoid->generatedChunks.count(ChunkKey) > 0) {
-            logger.logf("[iterativeChunk] Skipping already generated chunk (%d, %d, %d)\n", cx, cy, cz);
+            // logger.logf("[iterativeChunk] Skipping already generated chunk (%d, %d, %d)\n", cx, cy, cz);
             continue;
         }
         planetoid->generatedChunks[ChunkKey] = true;
@@ -311,17 +311,17 @@ void iterativeChunk(int startCx, int startCy, int startCz, const Vector3& origin
         time_t genChunk = clock();
         Chunk chunk = generateChunk(cx, cy, cz, origin, noise);
         // Log the chunk noise values min and max
-        logger.logf("[generateChunk] Chunk (%d, %d, %d) noise values min: %.4f, max: %.4f\n",
-            cx, cy, cz,
-            *std::min_element(chunk.noiseValues.begin(), chunk.noiseValues.end()),
-            *std::max_element(chunk.noiseValues.begin(), chunk.noiseValues.end()));
+        // logger.logf("[generateChunk] Chunk (%d, %d, %d) noise values min: %.4f, max: %.4f\n",
+        //     cx, cy, cz,
+        //     *std::min_element(chunk.noiseValues.begin(), chunk.noiseValues.end()),
+        //     *std::max_element(chunk.noiseValues.begin(), chunk.noiseValues.end()));
         // writeNoiseValuesToFile(chunk.noiseValues, CHUNK_SIZE + 1, "assets/noise/" + chunkName + ".txt");
         weightNoise(chunk.noiseValues, CHUNK_SIZE + 1, chunkWorldPos, origin, 0.5f, planetoid->size);
         // Log the weighted noise values min and max
-        logger.logf("[weightNoise] Chunk (%d, %d, %d) weighted noise values min: %.4f, max: %.4f\n",
-            cx, cy, cz,
-            *std::min_element(chunk.noiseValues.begin(), chunk.noiseValues.end()),
-            *std::max_element(chunk.noiseValues.begin(), chunk.noiseValues.end()));
+        // logger.logf("[weightNoise] Chunk (%d, %d, %d) weighted noise values min: %.4f, max: %.4f\n",
+        //     cx, cy, cz,
+        //     *std::min_element(chunk.noiseValues.begin(), chunk.noiseValues.end()),
+        //     *std::max_element(chunk.noiseValues.begin(), chunk.noiseValues.end()));
         // writeNoiseValuesToFile(chunk.noiseValues, CHUNK_SIZE + 1, "assets/noise/" + chunkName + "_weighted.txt");
         // Log the chunk generation time
         time_t genChunkEnd = clock();
@@ -357,18 +357,18 @@ void iterativeChunk(int startCx, int startCy, int startCz, const Vector3& origin
         }
         chunk.vertices.clear();
         chunk.indices.clear();
-        // Optionally reserve space if you have a good estimate
+        std::vector<Vector3> normals; // NEW: store per-vertex normals
         chunk.vertices.reserve(CHUNK_SIZE * CHUNK_SIZE * CHUNK_SIZE * 3 / 2);
         chunk.indices.reserve(CHUNK_SIZE * CHUNK_SIZE * CHUNK_SIZE * 6);
-        
-        time_t cubemarchStart = clock();
+        normals.reserve(CHUNK_SIZE * CHUNK_SIZE * CHUNK_SIZE * 3 / 2);
+        // time_t cubemarchStart = clock();
         for(int k = 0; k < CHUNK_SIZE; ++k) {
             for(int j = 0; j < CHUNK_SIZE; ++j) {
                 for(int i = 0; i < CHUNK_SIZE; ++i) {
                     marchCube(
                         i, j, k,
                         chunk.noiseValues, CHUNK_SIZE + 1,
-                        chunk.vertices, chunk.indices,
+                        chunk.vertices, chunk.indices, normals, // pass normals
                         &localEdgeCache, edgeCacheX, edgeCacheY, edgeCacheZ,
                         0.5f,
                         cx, cy, cz
@@ -376,11 +376,10 @@ void iterativeChunk(int startCx, int startCy, int startCz, const Vector3& origin
                 }
             }
         }
-        time_t cubemarchEnd = clock();
-        double cubemarchTime = static_cast<double>(cubemarchEnd - cubemarchStart) / CLOCKS_PER_SEC;
-        logger.logf("Chunk (%d, %d, %d) cubemarched in %.2f\n",cx, cy, cz, cubemarchTime);
+        // time_t cubemarchEnd = clock();
+        // double cubemarchTime = static_cast<double>(cubemarchEnd - cubemarchStart) / CLOCKS_PER_SEC;
+        // logger.logf("Chunk (%d, %d, %d) cubemarched in %.2f\n",cx, cy, cz, cubemarchTime);
         normalizeNoise(chunk.noiseValues, CHUNK_SIZE + 1, 16.0f); // Normalize noise values
-
         Mesh mesh = { 0 };
         mesh.vertexCount = static_cast<int>(chunk.vertices.size());
         mesh.vertices = new float[mesh.vertexCount * 3];
@@ -395,9 +394,17 @@ void iterativeChunk(int startCx, int startCy, int startCz, const Vector3& origin
         for (size_t j = 0; j < chunk.indices.size(); ++j) {
             mesh.indices[j] = static_cast<unsigned short>(chunk.indices[j]);
         }
-        UploadMesh(&mesh, false);
+        // --- Upload normals ---
+        mesh.normals = new float[mesh.vertexCount * 3];
+        for (size_t j = 0; j < normals.size(); ++j) {
+            mesh.normals[j * 3 + 0] = normals[j].x;
+            mesh.normals[j * 3 + 1] = normals[j].y;
+            mesh.normals[j * 3 + 2] = normals[j].z;
+        }
+        UploadMesh(&mesh, false); // Possibly make this dynamic if i want to update the mesh later
         chunk.mesh = mesh;
         chunk.model = LoadModelFromMesh(chunk.mesh);
+        chunk.model.materials[0].shader = lightingShader; // Use the lighting shader for the chunk
         planetoid->children.emplace_back(std::make_unique<ChunkObject>("chunk", chunkName, chunkWorldPos, rotation, color, scale, chunk));
         planetoid->children.back()->isActive = true;
         for (int d = 0; d < 6; ++d) {
