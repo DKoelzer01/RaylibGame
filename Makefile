@@ -370,7 +370,8 @@ CPP_FILES = \
 	src/scene.cpp \
 	src/mainmenu.cpp \
 	src/SimplexNoise.cpp \
-	src/utils/logger.cpp
+	src/utils/logger.cpp \
+    src/rlights.cpp
 
 OBJ_FILES = $(CPP_FILES:.cpp=.o)
 

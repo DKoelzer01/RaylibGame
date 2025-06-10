@@ -9,6 +9,7 @@
 #include <raylib.h>
 #include "rlgl.h"
 #include "raymath.h"
+#include "rlights.h"
 
 #include <string>
 #include <vector>
@@ -29,9 +30,12 @@ class Scene {
         std::vector<std::unique_ptr<Object>> uiObjects; // Array of UI objects in the scene
         Camera3D camera; // Camera for the scene
 
+        std::vector<Light> lights; // Array of lights in the scene
+
         Object rootObject;
 
         Scene(std::string name, bool isActive = false);
+        virtual ~Scene(); // Only declare, do not define or default here
         void drawScene(int gamestate);
         void drawUI(int gamestate);
 };
