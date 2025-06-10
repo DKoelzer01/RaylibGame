@@ -9,6 +9,8 @@ in vec3 fragNormal;
 // Input uniform values
 uniform sampler2D texture0;
 uniform vec4 colDiffuse;
+uniform sampler2D shadowMap;
+uniform mat4 lightSpaceMatrix;
 
 // Output fragment color
 out vec4 finalColor;
@@ -67,11 +69,23 @@ void main()
     vec3 diffuseColor = lightDot * texelColor.rgb * tint.rgb;
     vec3 specularColor = specular * tint.rgb;
 
+    // --- Shadow mapping ---
+    vec4 fragPosLightSpace = lightSpaceMatrix * vec4(fragPosition, 1.0);
+    vec3 projCoords = fragPosLightSpace.xyz / fragPosLightSpace.w;
+    projCoords = projCoords * 0.5 + 0.5;
+    float shadow = 1.0;
+    if (projCoords.x >= 0.0 && projCoords.x <= 1.0 && projCoords.y >= 0.0 && projCoords.y <= 1.0) {
+        float closestDepth = texture(shadowMap, projCoords.xy).r;
+        float currentDepth = projCoords.z;
+        float bias = max(0.004 * (1.0 - dot(normal, lightDot)), 0.0003);
+        shadow = (currentDepth - bias > closestDepth) ? 0.5 : 1.0;
+    }
+    diffuseColor *= shadow;
+    specularColor *= shadow;
+
     vec3 result = ambientColor + diffuseColor + specularColor;
     finalColor = vec4(result, texelColor.a * tint.a);
-    finalColor = pow(finalColor, vec4(1.0/2.2)); // Gamma correction
-
-//     // Visualize normals as color for debugging
-//     vec3 normal = normalize(fragNormal);
-//     finalColor = vec4(normal * 0.5 + 0.5, 1.0);
+    // finalColor = pow(finalColor, vec4(1.0/2.2)); // Gamma correction
+    // Debug: visualize shadow factor
+    finalColor = vec4(vec3(shadow), 1.0);
 }

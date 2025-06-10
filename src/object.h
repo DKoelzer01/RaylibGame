@@ -24,6 +24,7 @@ public:
 
     Object(std::string type, std::string name, Vector3 position, Vector3 rotation, Color color, float scale);
     virtual void draw();
+    virtual void drawDepthOnly(const Matrix& lightSpaceMatrix, Shader* depthShader);
     virtual ~Object(); // Make destructor virtual for safe polymorphic deletion
 
     // Disable copying

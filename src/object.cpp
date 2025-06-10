@@ -1,11 +1,16 @@
 #include "object.h"
 #include "textobject.h"
 #include "gameobject.h"
+#include <raymath.h>
 
 Object::Object(std::string type,std::string name, Vector3 position, Vector3 rotation, Color color, float scale)
     : type(type), name(name), position(position), rotation(rotation), color(color), scale(scale) {}
 
 void Object::draw() {
+}
+
+void Object::drawDepthOnly(const Matrix& lightSpaceMatrix, Shader* depthShader) {
+    // Base objects do not render depth
 }
 
 Object::~Object() {
@@ -66,4 +71,31 @@ void ChunkObject::draw() {
     DrawModel(chunk.model, position, scale, color);
     // DrawModelWires(chunk.model, position, scale, BLACK);
     // DrawCube({position.x+16,position.y+16,position.z+16},32,32,32, {200,200,200,50}); // Draw a cube at the chunk position for visualization
+}
+
+void GameObject::drawDepthOnly(const Matrix& lightSpaceMatrix, Shader* depthShader) {
+    // logger.logf("Drawing GameObject: %s depth at position (%f, %f, %f) active:%d\n", name.c_str(), position.x, position.y, position.z, isActive);
+    if (!isActive) return;
+    // Set shader and uniforms
+    depthShader->locs[SHADER_LOC_MATRIX_MVP] = GetShaderLocation(*depthShader, "lightSpaceMatrix");
+    SetShaderValueMatrix(*depthShader, depthShader->locs[SHADER_LOC_MATRIX_MVP], lightSpaceMatrix);
+    int modelLoc = GetShaderLocation(*depthShader, "model");
+    Matrix modelMat = MatrixMultiply(MatrixScale(scale, scale, scale), MatrixTranslate(position.x, position.y, position.z));
+    SetShaderValueMatrix(*depthShader, modelLoc, modelMat);
+    BeginShaderMode(*depthShader);
+    DrawModel(model, position, scale, WHITE);
+    EndShaderMode();
+}
+
+void ChunkObject::drawDepthOnly(const Matrix& lightSpaceMatrix, Shader* depthShader) {
+    if (!isActive) return;
+    if (chunk.model.meshCount == 0 || chunk.model.meshes == nullptr) return;
+    depthShader->locs[SHADER_LOC_MATRIX_MVP] = GetShaderLocation(*depthShader, "lightSpaceMatrix");
+    SetShaderValueMatrix(*depthShader, depthShader->locs[SHADER_LOC_MATRIX_MVP], lightSpaceMatrix);
+    int modelLoc = GetShaderLocation(*depthShader, "model");
+    Matrix modelMat = MatrixMultiply(MatrixScale(scale, scale, scale), MatrixTranslate(position.x, position.y, position.z));
+    SetShaderValueMatrix(*depthShader, modelLoc, modelMat);
+    BeginShaderMode(*depthShader);
+    DrawMesh(chunk.model.meshes[0], chunk.model.materials[0], MatrixIdentity());
+    EndShaderMode();
 }

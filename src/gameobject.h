@@ -17,6 +17,7 @@ class GameObject: public Object {
         virtual ~GameObject();
 
         void draw() override;
+        void drawDepthOnly(const Matrix& lightSpaceMatrix, Shader* depthShader) override;
 };
 
 class ChunkObject: public GameObject {
@@ -26,6 +27,7 @@ class ChunkObject: public GameObject {
         virtual ~ChunkObject();
 
         void draw() override;
+        void drawDepthOnly(const Matrix& lightSpaceMatrix, Shader* depthShader) override;
 };
 
 #endif

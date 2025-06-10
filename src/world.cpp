@@ -31,6 +31,16 @@ void Planetoid::draw() {
     }
 }
 
+void Planetoid::drawDepthOnly(const Matrix& lightSpaceMatrix, Shader* depthShader) {
+    if (!isActive) return;
+    for(const auto& objPtr : children) {
+        objPtr->drawDepthOnly(lightSpaceMatrix, depthShader);
+    }
+    for(const auto& objPair : chunkChildren) {
+        objPair.second->drawDepthOnly(lightSpaceMatrix, depthShader);
+    }
+}
+
 void worldHandler(Scene& world) {
     // Initialize the camera for the world scene
     world.camera.position = { 0.0f, 10.0f, 10.0f };
@@ -283,7 +293,7 @@ Chunk generateChunk(int cx, int cy, int cz, const Vector3& origin, SimplexNoise*
 }
 
 // Iterative chunk generation using BFS
-void iterativeChunk(int startCx, int startCy, int startCz, const Vector3& origin, Vector3 rotation, Color color, float scale, SimplexNoise* noise, Planetoid* planetoid) {
+void iterativeChunk(int startCx, int startCy, int startCz, const Vector3& origin, Vector3 rotation, Color color, float scale, SimplexNoise* noise, Planetoid* planetoid, Scene& world) {
     struct QueueEntry {
         int cx, cy, cz;
     };
@@ -430,7 +440,7 @@ void iterativeChunk(int startCx, int startCy, int startCz, const Vector3& origin
         UploadMesh(&mesh, false); // Possibly make this dynamic if i want to update the mesh later
         chunk.mesh = mesh;
         chunk.model = LoadModelFromMesh(chunk.mesh);
-        chunk.model.materials[0].shader = lightingShader; // Use the lighting shader for the chunk
+        chunk.model.materials[0].shader = world.lightingShader; // Use the lighting shader for the chunk
         auto inserted = planetoid->chunkChildren.emplace(std::make_pair(Int3{cx, cy, cz}, std::make_unique<ChunkObject>("chunk", chunkName, chunkWorldPos, rotation, color, scale, chunk)));
         if (inserted.second) {
             inserted.first->second->isActive = true;
@@ -468,7 +478,7 @@ void generatePlanetoid(float randScale,std::string name, Scene& world, Vector3 p
     logger.logf("Generating planetoid at (%f, %f, %f) with size %zu and scale %.2f with noise frequency %.4f...\n", position.x, position.y, position.z, size, scale,(1.5f+frequencyNoise)/static_cast<float>(size));
 
     // Use iterative chunk generation
-    iterativeChunk(0, 0, 0, position, rotation, color, scale, noise, planetoid); 
+    iterativeChunk(0, 0, 0, position, rotation, color, scale, noise, planetoid, world); 
 
 
     planetoid->isActive = true; // Set the planetoid as active
@@ -591,7 +601,7 @@ void loadWorld(Scene& world) {
                 } else {
                     logger.logf("Texture file does not exist or materials/maps not allocated: %s\n", texturePath.c_str());
                 }
-
+                model.materials[0].shader = world.lightingShader; // Ensure correct shader for loaded models
                 world.objects.push_back(std::make_unique<GameObject>(type, name, position, rotation, color, scale, model));
                 logger.logf("GameObject created: %s\n", name.c_str());
             } else if (type == "text") {

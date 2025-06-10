@@ -56,6 +56,7 @@ public:
     Planetoid(std::string name, Vector3 position, Vector3 rotation, Color color, float scale, size_t size);
     virtual ~Planetoid();
     void draw() override;
+    void drawDepthOnly(const Matrix& lightSpaceMatrix, Shader* depthShader) override;
 };
 
 #endif
