@@ -3,6 +3,7 @@
 
 #include "cubemarchconsts.h"
 #include "utils/logger.h"
+#include "SimplexNoise.h"
 
 #include <raylib.h>
 #include <vector>
@@ -12,6 +13,12 @@
 #include <unordered_map>
 #include <tuple>
 #include <cassert>
+
+struct EdgeCacheEntry {
+    int vertexIdx;
+    Vector3 normal;
+    EdgeCacheEntry() : vertexIdx(-1), normal({0,0,0}) {}
+};
 
 struct EdgeKey {
     int x, y, z, edge;
@@ -38,12 +45,14 @@ void marchCube(
     std::vector<Vector3>& vertices,
     std::vector<int>& indices,
     std::vector<Vector3>& normals,
-    std::vector<int>* edgeCacheLocal,
-    std::vector<int>* edgeCacheX,
-    std::vector<int>* edgeCacheY,
-    std::vector<int>* edgeCacheZ,
+    std::vector<EdgeCacheEntry>* edgeCacheLocal,
+    std::vector<EdgeCacheEntry>* edgeCacheX,
+    std::vector<EdgeCacheEntry>* edgeCacheY,
+    std::vector<EdgeCacheEntry>* edgeCacheZ,
     float threshold,
-    int cx, int cy, int cz
+    int cx, int cy, int cz,
+    const Vector3& chunkOrigin,
+    SimplexNoise* simplexNoise
 );
 
 extern std::vector<int> edgeCacheFlat;
@@ -58,5 +67,8 @@ void getCanonicalFaceEdgeIndex(
 );
 // Returns flatIdx for a face, given (a, b, edge) and stride
 int getFaceFlatIdx(int a, int b, int edge, int stride);
+
+// Add this struct for edge cache entries with normals
+
 
 #endif

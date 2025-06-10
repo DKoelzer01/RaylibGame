@@ -64,6 +64,6 @@ void ChunkObject::draw() {
     // logger.logf("Drawing ChunkObject: %s at position (%f, %f, %f) active:%d\n", name.c_str(), position.x, position.y, position.z, isActive);
     if (!isActive) return; // Skip drawing if the object is not active
     DrawModel(chunk.model, position, scale, color);
-    DrawModelWires(chunk.model, position, scale, BLACK);
+    // DrawModelWires(chunk.model, position, scale, BLACK);
     // DrawCube({position.x+16,position.y+16,position.z+16},32,32,32, {200,200,200,50}); // Draw a cube at the chunk position for visualization
 }

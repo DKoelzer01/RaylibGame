@@ -5,6 +5,11 @@
 #include <unordered_map>
 #include <vector>
 
+#include "gameobject.h"
+
+// Forward declaration for ChunkObject
+class ChunkObject;
+
 // Hash for tuple<int, int, int, int>
 struct Tuple4Hash {
     std::size_t operator()(const std::tuple<int, int, int, int>& t) const {
@@ -47,6 +52,7 @@ public:
     int size;
     std::unordered_map<std::tuple<int, int, int, int>, std::vector<int>, Tuple4Hash> sharedEdgeCaches; // Shared edge caches for chunks
     std::unordered_map<Int3,bool> generatedChunks; // Store generated chunk positions
+    std::unordered_map<Int3, std::unique_ptr<ChunkObject>> chunkChildren;
     Planetoid(std::string name, Vector3 position, Vector3 rotation, Color color, float scale, size_t size);
     virtual ~Planetoid();
     void draw() override;

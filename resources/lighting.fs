@@ -63,11 +63,15 @@ void main()
         }
     }
 
-    vec3 ambientColor = (ambient.rgb * 0.05) * texelColor.rgb * tint.rgb; // Lower ambient
+    vec3 ambientColor = (ambient.rgb * 0.02) * texelColor.rgb * tint.rgb; // Lower ambient
     vec3 diffuseColor = lightDot * texelColor.rgb * tint.rgb;
     vec3 specularColor = specular * tint.rgb;
 
     vec3 result = ambientColor + diffuseColor + specularColor;
     finalColor = vec4(result, texelColor.a * tint.a);
     finalColor = pow(finalColor, vec4(1.0/2.2)); // Gamma correction
+
+//     // Visualize normals as color for debugging
+//     vec3 normal = normalize(fragNormal);
+//     finalColor = vec4(normal * 0.5 + 0.5, 1.0);
 }

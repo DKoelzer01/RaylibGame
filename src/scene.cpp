@@ -58,6 +58,9 @@ void Scene::drawScene(int gamestate) {
     SetShaderValue(lightingShader, lightingShader.locs[SHADER_LOC_VECTOR_VIEW], cameraPos, SHADER_UNIFORM_VEC3);
 
     for (const auto& light : lights) { 
+    if (!light.enabled) continue; // Skip disabled lights
+        // Draw light source as a sphere at the light position
+        DrawSphere(light.position, 0.1f, light.color);
         UpdateLightValues(lightingShader, light);
     }
 
