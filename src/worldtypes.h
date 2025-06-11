@@ -4,8 +4,10 @@
 #include <tuple>
 #include <unordered_map>
 #include <vector>
+#include "object.h"
+#include "SimplexNoise.h"
+#include "edgecache.h" // EdgeCacheEntry is now defined here
 
-#include "gameobject.h"
 
 // Forward declaration for ChunkObject
 class ChunkObject;
@@ -50,13 +52,19 @@ struct Chunk {
 class Planetoid: public Object {
 public:
     int size;
-    std::unordered_map<std::tuple<int, int, int, int>, std::vector<int>, Tuple4Hash> sharedEdgeCaches; // Shared edge caches for chunks
+    Vector3 seed;
+    std::unordered_map<std::tuple<int, int, int, int>, std::vector<EdgeCacheEntry>, Tuple4Hash> sharedEdgeCaches; // Shared edge caches for chunks
     std::unordered_map<Int3,bool> generatedChunks; // Store generated chunk positions
     std::unordered_map<Int3, std::unique_ptr<ChunkObject>> chunkChildren;
     Planetoid(std::string name, Vector3 position, Vector3 rotation, Color color, float scale, size_t size);
     virtual ~Planetoid();
-    void draw() override;
+    float GetNoise(float wx, float wy, float wz); // Get noise value at world coordinates
+    void draw(Shader* lightingShader) override;
     void drawDepthOnly(const Matrix& lightSpaceMatrix, Shader* depthShader) override;
+    // Update: Now takes chunkWorldPos (relative to planetoid) and origin (planetoid world position)
+    Chunk generateChunk(const Vector3& chunkWorldPos, const Vector3& origin, SimplexNoise* noise);
 };
+
+#include "cubemarch.h" // Only include after Planetoid if needed
 
 #endif

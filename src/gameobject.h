@@ -16,7 +16,7 @@ class GameObject: public Object {
         GameObject(std::string type,std::string name, Vector3 position, Vector3 rotation, Color color, float scale, Model model);
         virtual ~GameObject();
 
-        void draw() override;
+        void draw(Shader* lightingShader) override;
         void drawDepthOnly(const Matrix& lightSpaceMatrix, Shader* depthShader) override;
 };
 
@@ -26,7 +26,7 @@ class ChunkObject: public GameObject {
         ChunkObject(std::string type,std::string name, Vector3 position, Vector3 rotation, Color color, float scale, Chunk chunk);
         virtual ~ChunkObject();
 
-        void draw() override;
+        void draw(Shader* lightingShader) override;
         void drawDepthOnly(const Matrix& lightSpaceMatrix, Shader* depthShader) override;
 };
 

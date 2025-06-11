@@ -10,7 +10,7 @@ class TextObject: public Object     {
         int fontSize; // Font size of the text
         TextObject(std::string text, int fontSize);
         TextObject(std::string text, Vector3 position, Vector3 rotation, Color color, float scale, int fontSize);
-        virtual void draw() override;
+        virtual void draw(Shader* lightingShader) override;
 
 };
 

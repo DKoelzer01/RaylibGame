@@ -1,3 +1,4 @@
+#include "edgecache.h"
 #include "cubemarch.h"
 
 // Canonical edge remapping tables for each face direction
@@ -84,21 +85,13 @@ std::array<int,15> get_triangulation(int x, int y, int z, std::vector<float>& no
 // Manual clamp implementation for C++11/14 compatibility
 template<typename T>
 T clamp(T v, T lo, T hi) {
-    return (v < lo) ? lo : (v > hi) ? hi : v;
+    if (v < lo) return lo;
+    if (v > hi) return hi;
+    return v;
 }
 
-// static float sampleNoise(const std::vector<float>& noise, int size, float x, float y, float z) {
-//     int ix = static_cast<int>(x);
-//     int iy = static_cast<int>(y);
-//     int iz = static_cast<int>(z);
-//     ix = clamp(ix, 0, size-1);
-//     iy = clamp(iy, 0, size-1);
-//     iz = clamp(iz, 0, size-1);
-//     return noise[ix + iy*size + iz*size*size];
-// }
-
 // Helper to sample noise at floating-point position, using world coordinates if out of chunk bounds
-static float sampleNoiseGlobal(const std::vector<float>& noise, int size, float x, float y, float z, const Vector3& chunkOrigin, SimplexNoise* simplexNoise) {
+static float sampleNoiseGlobal(const std::vector<float>& noise, int size, float x, float y, float z, const Vector3& chunkOrigin, SimplexNoise* simplexNoise, Planetoid* planetoid) {
     // If in bounds, use chunk noise
     if (x >= 0 && x < size && y >= 0 && y < size && z >= 0 && z < size) {
         int ix = static_cast<int>(x);
@@ -113,7 +106,7 @@ static float sampleNoiseGlobal(const std::vector<float>& noise, int size, float 
         float wx = chunkOrigin.x + x;
         float wy = chunkOrigin.y + y;
         float wz = chunkOrigin.z + z;
-        return simplexNoise->fractal(4, wx, wy, wz) + 1.0f;
+        return simplexNoise->fractal(4, wx, wy, wz) + 1.0f; // Add 1.0f to match chunk noise range
     }
 }
 
@@ -131,7 +124,8 @@ void marchCube(
     float threshold,
     int cx, int cy, int cz,
     const Vector3& chunkOrigin,
-    SimplexNoise* simplexNoise
+    SimplexNoise* simplexNoise,
+    Planetoid* planetoid
 ) {
     assert(x + 1 < size && y + 1 < size && z + 1 < size);
     std::array<int, 15> triangulation = get_triangulation(x, y, z, noiseValues, size, threshold);
@@ -145,28 +139,31 @@ void marchCube(
             int gx0 = (int)x + CUBE_VERTICES[v0i][0] + cx * (int)(size-1);
             int gy0 = (int)y + CUBE_VERTICES[v0i][1] + cy * (int)(size-1);
             int gz0 = (int)z + CUBE_VERTICES[v0i][2] + cz * (int)(size-1);
-            bool onX = (gx0 % (int)(size-1) == 0) && edgeCacheX;
-            bool onY = (gy0 % (int)(size-1) == 0) && edgeCacheY;
-            bool onZ = (gz0 % (int)(size-1) == 0) && edgeCacheZ;
+            bool onX = (gx0 % (int)(size-1) == 0) && (cx != 0) && edgeCacheX;
+            bool onY = (gy0 % (int)(size-1) == 0) && (cy != 0) && edgeCacheY;
+            bool onZ = (gz0 % (int)(size-1) == 0) && (cz != 0) && edgeCacheZ;
             std::vector<EdgeCacheEntry>* cache = edgeCacheLocal;
             size_t flatIdx = 0;
             int a=0, b=0, canonicalEdge=0;
             if (onX) {
-                int localY = gy0 % (int)(size-1);
-                int localZ = gz0 % (int)(size-1);
-                getCanonicalFaceEdgeIndex(0, +1, (int)(size-2), localY, localZ, edgeIndex, a, b, canonicalEdge);
+                // For +X face, use y and z as local face coordinates
+                int faceY = y;
+                int faceZ = z;
+                getCanonicalFaceEdgeIndex(0, +1, (int)(size-2), faceY, faceZ, edgeIndex, a, b, canonicalEdge);
                 flatIdx = getFaceFlatIdx(a, b, canonicalEdge, (int)(size-1));
                 cache = edgeCacheX;
             } else if (onY) {
-                int localX = gx0 % (int)(size-1);
-                int localZ = gz0 % (int)(size-1);
-                getCanonicalFaceEdgeIndex(1, +1, localX, (int)(size-2), localZ, edgeIndex, a, b, canonicalEdge);
+                // For +Y face, use x and z as local face coordinates
+                int faceX = x;
+                int faceZ = z;
+                getCanonicalFaceEdgeIndex(1, +1, faceX, (int)(size-2), faceZ, edgeIndex, a, b, canonicalEdge);
                 flatIdx = getFaceFlatIdx(a, b, canonicalEdge, (int)(size-1));
                 cache = edgeCacheY;
             } else if (onZ) {
-                int localX = gx0 % (int)(size-1);
-                int localY = gy0 % (int)(size-1);
-                getCanonicalFaceEdgeIndex(2, +1, localX, localY, (int)(size-2), edgeIndex, a, b, canonicalEdge);
+                // For +Z face, use x and y as local face coordinates
+                int faceX = x;
+                int faceY = y;
+                getCanonicalFaceEdgeIndex(2, +1, faceX, faceY, (int)(size-2), edgeIndex, a, b, canonicalEdge);
                 flatIdx = getFaceFlatIdx(a, b, canonicalEdge, (int)(size-1));
                 cache = edgeCacheZ;
             } else {
@@ -184,30 +181,39 @@ void marchCube(
                 triIdx[v] = static_cast<size_t>(cachedIdx);
             } else {
                 // Compute new vertex and normal
-                size_t idx0 = (x + CUBE_VERTICES[v0i][0]) + (y + CUBE_VERTICES[v0i][1]) * size + (z + CUBE_VERTICES[v0i][2]) * size * size;
-                size_t idx1 = (x + CUBE_VERTICES[v1i][0]) + (y + CUBE_VERTICES[v1i][1]) * size + (z + CUBE_VERTICES[v1i][2]) * size * size;
-                assert(idx0 < noiseValues.size());
-                assert(idx1 < noiseValues.size());
-                float v0 = noiseValues[idx0];
-                float v1 = noiseValues[idx1];
-                float denom = v1 - v0;
-                if (fabs(denom) < 1e-6f) denom = 1e-6f;
-                float t = (threshold - v0) / denom;
-                t = fmaxf(0.0f, fminf(1.0f, t));
+                // Use only chunk-local coordinates for mesh vertex positions
                 Vector3 pos_a = { static_cast<float>(x + CUBE_VERTICES[v0i][0]), static_cast<float>(y + CUBE_VERTICES[v0i][1]), static_cast<float>(z + CUBE_VERTICES[v0i][2]) };
                 Vector3 pos_b = { static_cast<float>(x + CUBE_VERTICES[v1i][0]), static_cast<float>(y + CUBE_VERTICES[v1i][1]), static_cast<float>(z + CUBE_VERTICES[v1i][2]) };
+                // Compute t for interpolation
+                auto idx_local = [size](int x, int y, int z) -> int {
+                    return x + y * size + z * size * size;
+                };
+                float val_a = noiseValues[idx_local(static_cast<int>(pos_a.x), static_cast<int>(pos_a.y), static_cast<int>(pos_a.z))];
+                float val_b = noiseValues[idx_local(static_cast<int>(pos_b.x), static_cast<int>(pos_b.y), static_cast<int>(pos_b.z))];
+                float t = (threshold - val_a) / (val_b - val_a + 1e-8f); // Avoid division by zero
+                t = clamp(t, 0.0f, 1.0f);
+                // Convert global marching indices to chunk-local coordinates
                 Vector3 position = {
                     pos_a.x + t * (pos_b.x - pos_a.x),
                     pos_a.y + t * (pos_b.y - pos_a.y),
                     pos_a.z + t * (pos_b.z - pos_a.z)
                 };
-                // Convert to world coordinates for normal calculation
-                Vector3 worldPos = { chunkOrigin.x + position.x, chunkOrigin.y + position.y, chunkOrigin.z + position.z };
+                // Subtract chunkOrigin to ensure chunk-local mesh vertices
+                position.x -= chunkOrigin.x;
+                position.y -= chunkOrigin.y;
+                position.z -= chunkOrigin.z;
+                vertices.push_back(position); // Store only chunk-local position
+                // if (chunkOrigin.x == 0 && chunkOrigin.y == 0 && chunkOrigin.z == 0 && vertices.size() <= 10) {
+                //     printf("[DIAG] chunkOrigin=(%.2f,%.2f,%.2f) vertex=(%.2f,%.2f,%.2f)\n", chunkOrigin.x, chunkOrigin.y, chunkOrigin.z, position.x, position.y, position.z);
+                // }
+                // For normal calculation, use world coordinates
+                // FIX: worldPos should be planetoid/world origin + chunk-local vertex
+                Vector3 worldPos = { position.x + chunkOrigin.x, position.y + chunkOrigin.y, position.z + chunkOrigin.z };
                 float eps = 1e-3f;
                 Vector3 grad = {
-                    sampleNoiseGlobal(noiseValues, size, worldPos.x + eps, worldPos.y, worldPos.z, {0,0,0}, simplexNoise) - sampleNoiseGlobal(noiseValues, size, worldPos.x - eps, worldPos.y, worldPos.z, {0,0,0}, simplexNoise),
-                    sampleNoiseGlobal(noiseValues, size, worldPos.x, worldPos.y + eps, worldPos.z, {0,0,0}, simplexNoise) - sampleNoiseGlobal(noiseValues, size, worldPos.x, worldPos.y - eps, worldPos.z, {0,0,0}, simplexNoise),
-                    sampleNoiseGlobal(noiseValues, size, worldPos.x, worldPos.y, worldPos.z + eps, {0,0,0}, simplexNoise) - sampleNoiseGlobal(noiseValues, size, worldPos.x, worldPos.y, worldPos.z - eps, {0,0,0}, simplexNoise)
+                    sampleNoiseGlobal(noiseValues, size, worldPos.x + eps, worldPos.y, worldPos.z, chunkOrigin, simplexNoise, planetoid) - sampleNoiseGlobal(noiseValues, size, worldPos.x - eps, worldPos.y, worldPos.z, chunkOrigin, simplexNoise, planetoid),
+                    sampleNoiseGlobal(noiseValues, size, worldPos.x, worldPos.y + eps, worldPos.z, chunkOrigin, simplexNoise, planetoid) - sampleNoiseGlobal(noiseValues, size, worldPos.x, worldPos.y - eps, worldPos.z, chunkOrigin, simplexNoise, planetoid),
+                    sampleNoiseGlobal(noiseValues, size, worldPos.x, worldPos.y, worldPos.z + eps, chunkOrigin, simplexNoise, planetoid) - sampleNoiseGlobal(noiseValues, size, worldPos.x, worldPos.y, worldPos.z - eps, chunkOrigin, simplexNoise, planetoid)
                 };
                 float length = sqrtf(grad.x * grad.x + grad.y * grad.y + grad.z * grad.z);
                 if (length > 1e-6f) {
@@ -216,7 +222,6 @@ void marchCube(
                     grad.z /= length;
                 }
                 Vector3 normal = { -grad.x, -grad.y, -grad.z };
-                vertices.push_back(position);
                 normals.push_back(normal);
                 size_t idx = vertices.size() - 1;
                 if (flatIdx < cache->size()) {

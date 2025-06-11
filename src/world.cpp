@@ -19,15 +19,39 @@ Planetoid::Planetoid(std::string name, Vector3 position, Vector3 rotation, Color
     this->generatedChunks.clear();
 }
 
+float Planetoid::GetNoise(float wx, float wy, float wz) {
+    // Convert world coordinates to chunk coordinates
+    int chunkX = static_cast<int>((wx-position.x) / CHUNK_SIZE);
+    int chunkY = static_cast<int>((wy-position.y)  / CHUNK_SIZE);
+    int chunkZ = static_cast<int>((wz-position.z)  / CHUNK_SIZE);
+    Int3 chunkKey = {chunkX, chunkY, chunkZ};
+    // Check if the chunk has been generated
+    if (chunkChildren.find(chunkKey) == chunkChildren.end()) {
+       return 0.0f; // Return 0 if the chunk does not exist
+    } else {
+        // If the chunk exists, retrieve it
+        auto& chunkObject = chunkChildren[chunkKey];
+        if (chunkObject) {
+            // Calculate local coordinates within the chunk
+            float localX = wx - (position.x + chunkX * CHUNK_SIZE);
+            float localY = wy - (position.y + chunkY * CHUNK_SIZE);
+            float localZ = wz - (position.z + chunkZ * CHUNK_SIZE);
+            // Get noise value from the chunk's noise values
+            return chunkObject->chunk.noiseValues[static_cast<int>(localX) + static_cast<int>(localY) * size + static_cast<int>(localZ) * size * size];
+        }
+        return 0.0f; // Return 0 if the chunk does not exist
+    }
+}
+
 Planetoid::~Planetoid() = default;
 
-void Planetoid::draw() {
+void Planetoid::draw(Shader* lightingShader) {
     if (!isActive) return; // Skip drawing if the object is not active
     for(const auto& objPtr : children) {
-        objPtr->draw();
+        objPtr->draw(lightingShader);
     }
     for(const auto& objPtr : chunkChildren) {
-        objPtr.second->draw();
+        objPtr.second->draw(lightingShader);
     }
 }
 
@@ -219,7 +243,8 @@ void weightNoise(std::vector<float>& noiseValues, int size, const Vector3& chunk
         for (int y = 0; y < size; ++y) {
             for (int x = 0; x < size; ++x) {
                 int idx = x + y * size + z * size * size;
-                Vector3 voxelPos = { chunkWorldPos.x + x, chunkWorldPos.y + y, chunkWorldPos.z + z };
+                // Compute voxel position in world space for correct distance calculation
+                Vector3 voxelPos = { chunkWorldPos.x + x + planetoidCenter.x, chunkWorldPos.y + y + planetoidCenter.y, chunkWorldPos.z + z + planetoidCenter.z };
                 float dist = Vector3Distance(voxelPos, planetoidCenter);
                 float scale = std::max(0.0f, 1.0f - (dist / maxDist));
                 minScale = std::min(minScale, scale);
@@ -267,24 +292,23 @@ void generateWorld(Scene& world) {
     logger.logf("World generation completed in %.2f seconds.\n", worldGenTime);
 }
 
-Chunk generateChunk(int cx, int cy, int cz, const Vector3& origin, SimplexNoise* noise) {
+// Update: Now takes chunkWorldPos (relative to planetoid) and origin (planetoid world position)
+Chunk generateChunk(const Vector3& chunkWorldPos, const Vector3& origin, SimplexNoise* noise) {
     Chunk chunk = {};
-    logger.logf("[generateChunk] Generating chunk (%d, %d, %d) at origin (%.2f, %.2f, %.2f)\n", cx, cy, cz, origin.x, origin.y, origin.z);
+    logger.logf("[generateChunk] Generating chunk at chunkWorldPos (%.2f, %.2f, %.2f) and origin (%.2f, %.2f, %.2f)\n", chunkWorldPos.x, chunkWorldPos.y, chunkWorldPos.z, origin.x, origin.y, origin.z);
     // Allocate noise for this chunk with a 1-voxel border
     const int chunkNoiseSize = (CHUNK_SIZE + 1);
     const int totalNoise = chunkNoiseSize * chunkNoiseSize * chunkNoiseSize;
     chunk.noiseValues.resize(totalNoise);
-    // Calculate chunk's world offset
-    const float baseX = origin.x + cx * CHUNK_SIZE;
-    const float baseY = origin.y + cy * CHUNK_SIZE;
-    const float baseZ = origin.z + cz * CHUNK_SIZE;
+    chunk.position = {(int)chunkWorldPos.x, (int)chunkWorldPos.y, (int)chunkWorldPos.z}; // Set to relative position only
+    // Use local chunk coordinates for mesh, but sample noise at world position
     size_t idx = 0;
     for (int z = 0; z <= CHUNK_SIZE; ++z) {
-        float wz = baseZ + z;
         for (int y = 0; y <= CHUNK_SIZE; ++y) {
-            float wy = baseY + y;
             for (int x = 0; x <= CHUNK_SIZE; ++x, ++idx) {
-                float wx = baseX + x;
+                float wx = origin.x + chunkWorldPos.x + x;
+                float wy = origin.y + chunkWorldPos.y + y;
+                float wz = origin.z + chunkWorldPos.z + z;
                 chunk.noiseValues[idx] = noise->fractal(4, wx, wy, wz) + 1.0f;
             }
         }
@@ -314,22 +338,30 @@ void iterativeChunk(int startCx, int startCy, int startCz, const Vector3& origin
         }
         planetoid->generatedChunks[ChunkKey] = true;
         Vector3 chunkWorldPos = {
-            origin.x + static_cast<float>(cx * CHUNK_SIZE),
-            origin.y + static_cast<float>(cy * CHUNK_SIZE),
-            origin.z + static_cast<float>(cz * CHUNK_SIZE)
+            static_cast<float>(cx * CHUNK_SIZE),
+            static_cast<float>(cy * CHUNK_SIZE),
+            static_cast<float>(cz * CHUNK_SIZE)
         };
+        // chunkLocalPos is the chunk's offset within the planetoid (chunk-local)
+        Vector3 chunkLocalPos = {
+            static_cast<float>(cx * CHUNK_SIZE),
+            static_cast<float>(cy * CHUNK_SIZE),
+            static_cast<float>(cz * CHUNK_SIZE)
+        };
+        logger.logf("[iterativeChunk] Creating ChunkObject at chunkLocalPos (%.2f, %.2f, %.2f) for chunk (%d, %d, %d)",
+            chunkLocalPos.x, chunkLocalPos.y, chunkLocalPos.z, cx, cy, cz);
         std::string chunkName;
         chunkName.reserve(32);
         chunkName = "chunk_" + std::to_string(cx) + "_" + std::to_string(cy) + "_" + std::to_string(cz);
         time_t genChunk = clock();
-        Chunk chunk = generateChunk(cx, cy, cz, origin, noise);
+        Chunk chunk = generateChunk(chunkLocalPos, origin, noise); // Pass chunk-local position only
         // Log the chunk noise values min and max
         // logger.logf("[generateChunk] Chunk (%d, %d, %d) noise values min: %.4f, max: %.4f\n",
         //     cx, cy, cz,
         //     *std::min_element(chunk.noiseValues.begin(), chunk.noiseValues.end()),
         //     *std::max_element(chunk.noiseValues.begin(), chunk.noiseValues.end()));
         // writeNoiseValuesToFile(chunk.noiseValues, CHUNK_SIZE + 1, "assets/noise/" + chunkName + ".txt");
-        weightNoise(chunk.noiseValues, CHUNK_SIZE + 1, chunkWorldPos, origin, 0.5f, planetoid->size);
+        weightNoise(chunk.noiseValues, CHUNK_SIZE + 1, chunkLocalPos, origin, 0.5f, planetoid->size);
         // Log the weighted noise values min and max
         // logger.logf("[weightNoise] Chunk (%d, %d, %d) weighted noise values min: %.4f, max: %.4f\n",
         //     cx, cy, cz,
@@ -341,33 +373,73 @@ void iterativeChunk(int startCx, int startCy, int startCz, const Vector3& origin
         double genChunkTime = static_cast<double>(genChunkEnd - genChunk) / CLOCKS_PER_SEC;
         logger.logf("Chunk (%d, %d, %d) generated in %.2f seconds.\n", cx, cy, cz, genChunkTime);
         if (isAllBelowThreshold(chunk.noiseValues, 0.01f)) { // Lowered threshold
-            // logger.logf("Chunk (%d, %d, %d) is empty, skipping.\n", cx, cy, cz);
-            planetoid->chunkChildren.emplace(std::make_pair(Int3{cx, cy, cz}, std::make_unique<ChunkObject>("chunk", chunkName, chunkWorldPos, rotation, color, scale, chunk)));
+            planetoid->chunkChildren.emplace(std::make_pair(Int3{cx, cy, cz}, std::make_unique<ChunkObject>("chunk", chunkName, chunkLocalPos, rotation, color, scale, chunk)));
             continue;
         }
         // --- Shared edge cache pointers for this chunk ---
         std::vector<EdgeCacheEntry> localEdgeCache(CHUNK_SIZE * CHUNK_SIZE * CHUNK_SIZE * 12);
-        std::vector<EdgeCacheEntry>* edgeCacheX = nullptr;
-        std::vector<EdgeCacheEntry>* edgeCacheY = nullptr;
-        std::vector<EdgeCacheEntry>* edgeCacheZ = nullptr;
-        Int3 neighborX = { cx + 1, cy, cz };
-        Int3 neighborY = { cx, cy + 1, cz };
-        Int3 neighborZ = { cx, cy, cz + 1 };
-        if (planetoid->generatedChunks.count(neighborX) > 0) {
-            auto key = std::make_tuple(cx + 1, cy, cz, 0);
-            edgeCacheX = reinterpret_cast<std::vector<EdgeCacheEntry>*>(&planetoid->sharedEdgeCaches[key]);
-            if (edgeCacheX->empty()) edgeCacheX->resize(CHUNK_SIZE * CHUNK_SIZE * 12);
+        std::vector<EdgeCacheEntry>* edgeCacheXPos = nullptr;
+        std::vector<EdgeCacheEntry>* edgeCacheYPos = nullptr;
+        std::vector<EdgeCacheEntry>* edgeCacheZPos = nullptr;
+        std::vector<EdgeCacheEntry>* edgeCacheXNeg = nullptr;
+        std::vector<EdgeCacheEntry>* edgeCacheYNeg = nullptr;
+        std::vector<EdgeCacheEntry>* edgeCacheZNeg = nullptr;
+        // Canonical edge cache keying for all 6 faces
+        // +X face: between (cx,cy,cz) and (cx+1,cy,cz), canonical is min(cx,cx+1)
+        auto keyXPos = std::make_tuple(std::min(cx, cx+1), cy, cz, 0); // 0 = X face
+        if (planetoid->sharedEdgeCaches.count(keyXPos) == 0) {
+            logger.logf("[EdgeCache] Creating edgeCacheXPos for chunk (%d,%d,%d) key (%d,%d,%d,0)\n", cx, cy, cz, std::min(cx, cx+1), cy, cz);
+            planetoid->sharedEdgeCaches[keyXPos] = std::vector<EdgeCacheEntry>(CHUNK_SIZE * CHUNK_SIZE * 12);
+        } else {
+            logger.logf("[EdgeCache] Reusing edgeCacheXPos for chunk (%d,%d,%d) key (%d,%d,%d,0)\n", cx, cy, cz, std::min(cx, cx+1), cy, cz);
         }
-        if (planetoid->generatedChunks.count(neighborY) > 0) {
-            auto key = std::make_tuple(cx, cy + 1, cz, 1);
-            edgeCacheY = reinterpret_cast<std::vector<EdgeCacheEntry>*>(&planetoid->sharedEdgeCaches[key]);
-            if (edgeCacheY->empty()) edgeCacheY->resize(CHUNK_SIZE * CHUNK_SIZE * 12);
+        edgeCacheXPos = &planetoid->sharedEdgeCaches[keyXPos];
+        // -X face: between (cx,cy,cz) and (cx-1,cy,cz)
+        auto keyXNeg = std::make_tuple(std::min(cx, cx-1), cy, cz, 0);
+        if (planetoid->sharedEdgeCaches.count(keyXNeg) == 0) {
+            logger.logf("[EdgeCache] Creating edgeCacheXNeg for chunk (%d,%d,%d) key (%d,%d,%d,0)\n", cx, cy, cz, std::min(cx, cx-1), cy, cz);
+            planetoid->sharedEdgeCaches[keyXNeg] = std::vector<EdgeCacheEntry>(CHUNK_SIZE * CHUNK_SIZE * 12);
+        } else {
+            logger.logf("[EdgeCache] Reusing edgeCacheXNeg for chunk (%d,%d,%d) key (%d,%d,%d,0)\n", cx, cy, cz, std::min(cx, cx-1), cy, cz);
         }
-        if (planetoid->generatedChunks.count(neighborZ) > 0) {
-            auto key = std::make_tuple(cx, cy, cz + 1, 2);
-            edgeCacheZ = reinterpret_cast<std::vector<EdgeCacheEntry>*>(&planetoid->sharedEdgeCaches[key]);
-            if (edgeCacheZ->empty()) edgeCacheZ->resize(CHUNK_SIZE * CHUNK_SIZE * 12);
+        edgeCacheXNeg = &planetoid->sharedEdgeCaches[keyXNeg];
+        // +Y face
+        auto keyYPos = std::make_tuple(cx, std::min(cy, cy+1), cz, 1);
+        if (planetoid->sharedEdgeCaches.count(keyYPos) == 0) {
+            logger.logf("[EdgeCache] Creating edgeCacheYPos for chunk (%d,%d,%d) key (%d,%d,%d,1)\n", cx, cy, cz, cx, std::min(cy, cy+1), cz);
+            planetoid->sharedEdgeCaches[keyYPos] = std::vector<EdgeCacheEntry>(CHUNK_SIZE * CHUNK_SIZE * 12);
+        } else {
+            logger.logf("[EdgeCache] Reusing edgeCacheYPos for chunk (%d,%d,%d) key (%d,%d,%d,1)\n", cx, cy, cz, cx, std::min(cy, cy+1), cz);
         }
+        edgeCacheYPos = &planetoid->sharedEdgeCaches[keyYPos];
+        // -Y face
+        auto keyYNeg = std::make_tuple(cx, std::min(cy, cy-1), cz, 1);
+        if (planetoid->sharedEdgeCaches.count(keyYNeg) == 0) {
+            logger.logf("[EdgeCache] Creating edgeCacheYNeg for chunk (%d,%d,%d) key (%d,%d,%d,1)\n", cx, cy, cz, cx, std::min(cy, cy-1), cz);
+            planetoid->sharedEdgeCaches[keyYNeg] = std::vector<EdgeCacheEntry>(CHUNK_SIZE * CHUNK_SIZE * 12);
+        } else {
+            logger.logf("[EdgeCache] Reusing edgeCacheYNeg for chunk (%d,%d,%d) key (%d,%d,%d,1)\n", cx, cy, cz, cx, std::min(cy, cy-1), cz);
+        }
+        edgeCacheYNeg = &planetoid->sharedEdgeCaches[keyYNeg];
+        // +Z face
+        auto keyZPos = std::make_tuple(cx, cy, std::min(cz, cz+1), 2);
+        if (planetoid->sharedEdgeCaches.count(keyZPos) == 0) {
+            logger.logf("[EdgeCache] Creating edgeCacheZPos for chunk (%d,%d,%d) key (%d,%d,%d,2)\n", cx, cy, cz, cx, cy, std::min(cz, cz+1));
+            planetoid->sharedEdgeCaches[keyZPos] = std::vector<EdgeCacheEntry>(CHUNK_SIZE * CHUNK_SIZE * 12);
+        } else {
+            logger.logf("[EdgeCache] Reusing edgeCacheZPos for chunk (%d,%d,%d) key (%d,%d,%d,2)\n", cx, cy, cz, cx, cy, std::min(cz, cz+1));
+        }
+        edgeCacheZPos = &planetoid->sharedEdgeCaches[keyZPos];
+        // -Z face
+        auto keyZNeg = std::make_tuple(cx, cy, std::min(cz, cz-1), 2);
+        if (planetoid->sharedEdgeCaches.count(keyZNeg) == 0) {
+            logger.logf("[EdgeCache] Creating edgeCacheZNeg for chunk (%d,%d,%d) key (%d,%d,%d,2)\n", cx, cy, cz, cx, cy, std::min(cz, cz-1));
+            planetoid->sharedEdgeCaches[keyZNeg] = std::vector<EdgeCacheEntry>(CHUNK_SIZE * CHUNK_SIZE * 12);
+        } else {
+            logger.logf("[EdgeCache] Reusing edgeCacheZNeg for chunk (%d,%d,%d) key (%d,%d,%d,2)\n", cx, cy, cz, cx, cy, std::min(cz, cz-1));
+        }
+        edgeCacheZNeg = &planetoid->sharedEdgeCaches[keyZNeg];
+        // For now, pass +X, +Y, +Z caches to marchCube (legacy interface)
         chunk.vertices.clear();
         chunk.indices.clear();
         std::vector<Vector3> normals; // NEW: store per-vertex normals
@@ -377,6 +449,10 @@ void iterativeChunk(int startCx, int startCy, int startCz, const Vector3& origin
         // time_t cubemarchStart = clock();
         
         // --- Border noise debug logging ---
+        // Define neighbor chunk keys for border noise debug
+        Int3 neighborX{cx+1, cy, cz};
+        Int3 neighborY{cx, cy+1, cz};
+        Int3 neighborZ{cx, cy, cz+1};
         if (planetoid->generatedChunks.count(neighborX) > 0) {
             ChunkObject* tempchunk = planetoid->chunkChildren[neighborX].get();
             checkChunkBorderNoise(chunk.noiseValues, tempchunk->chunk.noiseValues, CHUNK_SIZE + 1, 'x');
@@ -393,6 +469,17 @@ void iterativeChunk(int startCx, int startCy, int startCz, const Vector3& origin
         for(int k = 0; k < CHUNK_SIZE; ++k) {
             for(int j = 0; j < CHUNK_SIZE; ++j) {
                 for(int i = 0; i < CHUNK_SIZE; ++i) {
+                    // Select correct edge cache for each face
+                    std::vector<EdgeCacheEntry>* edgeCacheX = nullptr;
+                    std::vector<EdgeCacheEntry>* edgeCacheY = nullptr;
+                    std::vector<EdgeCacheEntry>* edgeCacheZ = nullptr;
+                    if (i == 0) edgeCacheX = edgeCacheXNeg;
+                    else if (i == CHUNK_SIZE-1) edgeCacheX = edgeCacheXPos;
+                    if (j == 0) edgeCacheY = edgeCacheYNeg;
+                    else if (j == CHUNK_SIZE-1) edgeCacheY = edgeCacheYPos;
+                    if (k == 0) edgeCacheZ = edgeCacheZNeg;
+                    else if (k == CHUNK_SIZE-1) edgeCacheZ = edgeCacheZPos;
+                    // Pass chunkLocalPos (not chunkWorldPos) as chunkOrigin to marchCube
                     marchCube(
                         i, j, k,
                         chunk.noiseValues, CHUNK_SIZE + 1,
@@ -400,8 +487,9 @@ void iterativeChunk(int startCx, int startCy, int startCz, const Vector3& origin
                         &localEdgeCache, edgeCacheX, edgeCacheY, edgeCacheZ,
                         0.5f,
                         cx, cy, cz,
-                        chunkWorldPos,
-                        noise // pass SimplexNoise*
+                        chunkLocalPos, // <-- fix: use chunkLocalPos, not chunkWorldPos
+                        noise,
+                        planetoid
                     );
                 }
             }
@@ -410,6 +498,9 @@ void iterativeChunk(int startCx, int startCy, int startCz, const Vector3& origin
         // double cubemarchTime = static_cast<double>(cubemarchEnd - cubemarchStart) / CLOCKS_PER_SEC;
         // logger.logf("Chunk (%d, %d, %d) cubemarched in %.2f\n",cx, cy, cz, cubemarchTime);
         // normalizeNoise(chunk.noiseValues, CHUNK_SIZE + 1, 16.0f); // Normalize noise values
+        for (size_t j = 0; j < std::min(chunk.vertices.size(), size_t(5)); ++j) {
+            logger.logf("Chunk (%d,%d,%d) vertex %zu: (%.2f, %.2f, %.2f)", cx, cy, cz, j, chunk.vertices[j].x, chunk.vertices[j].y, chunk.vertices[j].z);
+        }
         Mesh mesh = { 0 };
         mesh.vertexCount = static_cast<int>(chunk.vertices.size());
         mesh.vertices = new float[mesh.vertexCount * 3];
@@ -441,9 +532,10 @@ void iterativeChunk(int startCx, int startCy, int startCz, const Vector3& origin
         chunk.mesh = mesh;
         chunk.model = LoadModelFromMesh(chunk.mesh);
         chunk.model.materials[0].shader = world.lightingShader; // Use the lighting shader for the chunk
-        auto inserted = planetoid->chunkChildren.emplace(std::make_pair(Int3{cx, cy, cz}, std::make_unique<ChunkObject>("chunk", chunkName, chunkWorldPos, rotation, color, scale, chunk)));
+        auto inserted = planetoid->chunkChildren.emplace(std::make_pair(Int3{cx, cy, cz}, std::make_unique<ChunkObject>("chunk", chunkName, chunkLocalPos, rotation, color, scale, chunk)));
         if (inserted.second) {
             inserted.first->second->isActive = true;
+            inserted.first->second->parent = planetoid; // Set parent pointer for correct transform
         }
         for (int d = 0; d < 6; ++d) {
             int nx = cx + dirs[d][0];
@@ -464,13 +556,20 @@ void iterativeChunk(int startCx, int startCy, int startCz, const Vector3& origin
 void generatePlanetoid(float randScale,std::string name, Scene& world, Vector3 position, Vector3 rotation,Color color, size_t size, float scale) {
     Planetoid* planetoid = new Planetoid(name, position, rotation, color, scale, size);
     planetoid->parent = &world.rootObject; // Set the planetoid's parent to the root object of the scene
-    planetoid->sharedEdgeCaches = std::unordered_map<std::tuple<int, int, int, int>, std::vector<int>, Tuple4Hash>(); // Initialize shared edge caches
+    // Initialize shared edge caches with correct type
+    planetoid->sharedEdgeCaches = std::unordered_map<std::tuple<int, int, int, int>, std::vector<EdgeCacheEntry>, Tuple4Hash>(); // Initialize shared edge caches
     world.objects.push_back(std::unique_ptr<Object>(planetoid)); // Add the planetoid to the scene's object list
 
     clock_t planetoidGenStart = clock();
     
     float frequencyNoise = static_cast<float>(distrib(gen)/randScale)-0.5f; // Random frequency noise to add some variation from -0.5 to 0.5
-    SimplexNoise* noise = new SimplexNoise((1.5f+frequencyNoise)/static_cast<float>(size), 2.0f, 2.0f, 0.5f); // Create a new instance of SimplexNoise
+    float seedX = static_cast<float>(distrib(gen)/10.f); // Random seed for X coordinate
+    float seedY = static_cast<float>(distrib(gen)/10.f); // Random seed for Y coordinate
+    float seedZ = static_cast<float>(distrib(gen)/10.f); // Random seed for Z coordinate
+    planetoid->seed = {seedX, seedY, seedZ}; // Set the planetoid's seed for noise generation
+    logger.logf("Planetoid generation parameters: frequencyNoise=%.4f, seedX=%.4f, seedY=%.4f, seedZ=%.4f\n", 
+        frequencyNoise, seedX, seedY, seedZ);
+    SimplexNoise* noise = new SimplexNoise((1.5f+frequencyNoise)/static_cast<float>(size), 2.0f, 2.0f, 0.5f,seedX,seedY,seedZ); // Create a new instance of SimplexNoise
     if (!noise) {
         std::cerr << "Failed to create SimplexNoise instance." << std::endl;
         return; // Skip this planetoid if noise generation fails;
@@ -479,7 +578,7 @@ void generatePlanetoid(float randScale,std::string name, Scene& world, Vector3 p
 
     // Use iterative chunk generation
     iterativeChunk(0, 0, 0, position, rotation, color, scale, noise, planetoid, world); 
-
+    
 
     planetoid->isActive = true; // Set the planetoid as active
     delete noise; // Clean up the noise instance
@@ -506,12 +605,13 @@ int generatePlanetoids(float randScale, Scene& world, float genRange, float minS
                                 static_cast<float>(((distrib(gen)/randScale)*genRange)-(genRange/2)), 
                                 static_cast<float>(((distrib(gen)/randScale)*genRange)-(genRange/2))};
 
-        // position = { 64.0f, -64.0f, -64.0f}; // Fixed position for testing
+        position = {64.0f, 0.0f, 0.0f}; // Fixed position for testing
 
         // Rotation is random in degrees, scaled by randScale
         Vector3 rotation = {    static_cast<float>(distrib(gen)/randScale * 360), 
                                 static_cast<float>(distrib(gen)/randScale * 360), 
                                 static_cast<float>(distrib(gen)/randScale * 360)};
+        rotation = {0.0f, 0.0f, 0.0f}; // Fixed rotation for testing
 
         // Using a random color generator with a range of 0-255 for RGB values
         Color color = { static_cast<unsigned char>(distrib(gen)/randScale * 255), 

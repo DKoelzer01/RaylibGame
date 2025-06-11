@@ -71,7 +71,7 @@ void Scene::drawScene(int gamestate) {
     Vector3 cameraPosVec = camera.position;
     // Choose a sun direction (normalized)
     Vector3 sunDir = Vector3Normalize((Vector3){ -14.0f, 0.0f, 0.0f }); // Example: from above and behind
-    float sunDistance = 200.0f; // Large offset for directional light
+    float sunDistance = 500.0f; // Larger offset for debugging
     Vector3 lightPos = Vector3Add(cameraPosVec, Vector3Scale(sunDir, sunDistance));
     Vector3 lightTarget = cameraPosVec;
     // Update the first light's position/target
@@ -80,10 +80,19 @@ void Scene::drawScene(int gamestate) {
         lights[0].target = lightTarget;
     }
     Matrix lightView = MatrixLookAt(lightPos, lightTarget, (Vector3){0,1,0});
-    float orthoSize = 100.0f; // Adjust as needed for your scene
-    Matrix lightProj = MatrixOrtho(-orthoSize, orthoSize, -orthoSize, orthoSize, 1.0f, 300.0f);
-    lightSpaceMatrix = MatrixMultiply(lightProj, lightView);
+    float orthoSize = 3000.0f; // Larger ortho size for debugging
+    Matrix lightProj = MatrixOrtho(-orthoSize, orthoSize, -orthoSize, orthoSize, 1.0f, 1000.0f);
+    lightSpaceMatrix = MatrixMultiply(lightProj, lightView);    
 
+    logger.logf("lightSpaceMatrix: \n"
+                "  m0: %f, m1: %f, m2: %f, m3: %f\n"
+                "  m4: %f, m5: %f, m6: %f, m7: %f\n"
+                "  m8: %f, m9: %f, m10: %f, m11: %f\n"
+                "  m12: %f, m13: %f, m14: %f, m15: %f\n",
+                lightSpaceMatrix.m0, lightSpaceMatrix.m1, lightSpaceMatrix.m2, lightSpaceMatrix.m3,
+                lightSpaceMatrix.m4, lightSpaceMatrix.m5, lightSpaceMatrix.m6, lightSpaceMatrix.m7,
+                lightSpaceMatrix.m8, lightSpaceMatrix.m9, lightSpaceMatrix.m10, lightSpaceMatrix.m11,
+                lightSpaceMatrix.m12, lightSpaceMatrix.m13, lightSpaceMatrix.m14, lightSpaceMatrix.m15);
     // --- Shadow map render pass ---
     BeginTextureMode(shadowMap);
     ClearBackground(BLACK);
@@ -92,6 +101,22 @@ void Scene::drawScene(int gamestate) {
     for (const auto& objPtr : rootObject.children) { objPtr->drawDepthOnly(lightSpaceMatrix, &depthShader); }
     EndTextureMode();
 
+    int shadowMapLoc = GetShaderLocation(lightingShader, "shadowMap");
+    SetShaderValueTexture(lightingShader, shadowMapLoc, shadowMap.texture);
+    int lightSpaceLoc = GetShaderLocation(lightingShader, "lightSpaceMatrix");
+    SetShaderValueMatrix(lightingShader, lightSpaceLoc, lightSpaceMatrix);
+
+    // Calculate projection and view matrices
+    Matrix proj = GetCameraProjectionMatrix(&camera, CAMERA_PERSPECTIVE); // or MatrixPerspective(...)
+    Matrix view = GetCameraMatrix(camera);
+
+    // MVP = Projection * View
+    Matrix mvp = MatrixMultiply(proj, view);
+
+    // Set the uniform on your shader
+    int mvpLoc = GetShaderLocation(lightingShader, "mvp");
+    SetShaderValueMatrix(lightingShader, mvpLoc, mvp);
+    
     // --- Main scene render ---
     BeginMode3D(camera);
     if(gamestate != 0 && gamestate != 2) { // If not in main menu or pause menu
@@ -109,12 +134,6 @@ void Scene::drawScene(int gamestate) {
         SetShaderValue(lightingShader, viewPosLoc, cameraPos, SHADER_UNIFORM_VEC3);
     }
 
-    // --- Pass shadow map and light matrix to shader ---
-    int shadowMapLoc = GetShaderLocation(lightingShader, "shadowMap");
-    SetShaderValueTexture(lightingShader, shadowMapLoc, shadowMap.texture);
-    int lightSpaceMatrixLoc = GetShaderLocation(lightingShader, "lightSpaceMatrix");
-    SetShaderValueMatrix(lightingShader, lightSpaceMatrixLoc, lightSpaceMatrix);
-
     for (const auto& light : lights) { 
     if (!light.enabled) continue; // Skip disabled lights
         // Draw light source as a sphere at the light position
@@ -127,10 +146,20 @@ void Scene::drawScene(int gamestate) {
     }
 
     BeginShaderMode(lightingShader);
-    for (const auto& objPtr : objects) { objPtr->draw(); }
-    for (const auto& objPtr : rootObject.children) { objPtr->draw(); }
+    logger.logf("Drawing %zu objects\n", objects.size());
+for (const auto& objPtr : objects) {
+        if (!objPtr) continue;
+        logger.logf("[Scene] Drawing object: %s at ptr %p\n", objPtr->name.c_str(), objPtr.get());
+        objPtr->draw(&lightingShader);
+    }
+    for (const auto& objPtr : rootObject.children) {
+        if(!objPtr) continue;
+        logger.logf("[Scene] Drawing root object: %s at ptr %p\n", objPtr->name.c_str(), objPtr.get());
+        objPtr->draw(&lightingShader); 
+    }
     EndShaderMode();
     EndMode3D();
+    // DrawTextureRec(shadowMap.texture, (Rectangle){0, 0, shadowMap.texture.width, -shadowMap.texture.height}, (Vector2){10, 10}, WHITE);
 }
 
 void Scene::drawUI(int gamestate) {
@@ -145,7 +174,7 @@ void Scene::drawUI(int gamestate) {
                                   " Y=" + std::to_string(camera.target.y) +
                                   " Z=" + std::to_string(camera.target.z);
     DrawText(camFacingVector.c_str(), 10, 50, 20, GREEN);
-    for (const auto& objPtr : uiObjects) { objPtr->draw(); }
+    for (const auto& objPtr : uiObjects) { objPtr->draw(&lightingShader); }
 }
 
 Scene::~Scene() {
