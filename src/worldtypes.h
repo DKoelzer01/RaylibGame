@@ -67,4 +67,6 @@ public:
 
 #include "cubemarch.h" // Only include after Planetoid if needed
 
+extern const int CHUNK_SIZE;
+
 #endif

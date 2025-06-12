@@ -1,5 +1,11 @@
 #include "world.h"
 #include "utils/logger.h"
+#include "worldtypes.h"
+#include <unordered_map>
+#include <vector>
+#include <cmath>
+#include <tuple>
+#include <algorithm>
 
 //Setup RNG
 float randScale = 100000.0f; // Scale for random number generation
@@ -10,7 +16,7 @@ std::uniform_int_distribution<> distrib(1, randScale);
 // Helpers for 3D integer coordinates as chunk keys
 
 
-constexpr int CHUNK_SIZE = 32; // You can adjust this for performance/memory
+const int CHUNK_SIZE = 32; // You can adjust this for performance/memory
 
 Planetoid::Planetoid(std::string name, Vector3 position, Vector3 rotation, Color color, float scale, size_t size)
     : Object("planetoid", name, position, rotation, color, scale), size(size) {
@@ -99,6 +105,125 @@ void writeNoiseValuesToFile(const std::vector<float>& noiseValues, int size, con
         out << "\n";
     }
     out.close();
+}
+
+// Hash for tuple<int, int, int> for unordered_map
+struct Tuple3Hash {
+    std::size_t operator()(const std::tuple<int,int,int>& t) const {
+        std::size_t h1 = std::hash<int>()(std::get<0>(t));
+        std::size_t h2 = std::hash<int>()(std::get<1>(t));
+        std::size_t h3 = std::hash<int>()(std::get<2>(t));
+        return ((h1 ^ (h2 << 1)) >> 1) ^ (h3 << 1);
+    }
+};
+
+// Helper: quantize a world position to a grid for normal smoothing
+static inline std::tuple<int,int,int> quantizePosition(const Vector3& pos, float cellSize) {
+    return std::make_tuple(
+        static_cast<int>(std::round(pos.x / cellSize)),
+        static_cast<int>(std::round(pos.y / cellSize)),
+        static_cast<int>(std::round(pos.z / cellSize))
+    );
+}
+
+// Smooth normals across a set of chunks (the new chunk and its neighbors)
+void smoothNormalsAcrossChunks(const std::vector<Chunk*>& chunks, float cellSize) {
+    using PosKey = std::tuple<int,int,int>;
+    struct NormalRef { Chunk* chunk; size_t idx; };
+    std::unordered_map<PosKey, std::vector<NormalRef>, Tuple3Hash> posMap;
+    // Build map
+    for (Chunk* chunk : chunks) {
+        if (!chunk || chunk->mesh.vertexCount == 0 || !chunk->mesh.vertices || !chunk->mesh.normals) continue;
+        // Compute chunk world origin
+        float chunkOriginX = static_cast<float>(chunk->position.x * CHUNK_SIZE);
+        float chunkOriginY = static_cast<float>(chunk->position.y * CHUNK_SIZE);
+        float chunkOriginZ = static_cast<float>(chunk->position.z * CHUNK_SIZE);
+        for (int i = 0; i < chunk->mesh.vertexCount; ++i) {
+            float vx = chunk->mesh.vertices[i * 3 + 0];
+            float vy = chunk->mesh.vertices[i * 3 + 1];
+            float vz = chunk->mesh.vertices[i * 3 + 2];
+            Vector3 worldPos = { vx + chunkOriginX, vy + chunkOriginY, vz + chunkOriginZ };
+            PosKey key = quantizePosition(worldPos, cellSize);
+            // Diagnostic: log border vertices and their quantized keys
+            float borderEps = 1e-2f;
+            bool nearBorder =
+                (fabs(fmod(worldPos.x, CHUNK_SIZE)) < borderEps || fabs(fmod(worldPos.x, CHUNK_SIZE) - CHUNK_SIZE) < borderEps ||
+                 fabs(fmod(worldPos.y, CHUNK_SIZE)) < borderEps || fabs(fmod(worldPos.y, CHUNK_SIZE) - CHUNK_SIZE) < borderEps ||
+                 fabs(fmod(worldPos.z, CHUNK_SIZE)) < borderEps || fabs(fmod(worldPos.z, CHUNK_SIZE) - CHUNK_SIZE) < borderEps);
+            if (nearBorder) {
+                logger.logf("[NormalSmooth] Border vertex: worldPos=(%.6f,%.6f,%.6f) quantKey=(%d,%d,%d) chunk=(%d,%d,%d) idx=%d\n",
+                    worldPos.x, worldPos.y, worldPos.z,
+                    std::get<0>(key), std::get<1>(key), std::get<2>(key),
+                    chunk->position.x, chunk->position.y, chunk->position.z, i);
+            }
+            posMap[key].push_back({chunk, static_cast<size_t>(i)});
+        }
+    }
+    // For each shared position, average normals and assign back
+    for (const auto& kv : posMap) {
+        if (kv.second.size() < 2) {
+            // Diagnostic: log border vertices that are not shared
+            if (kv.second.size() == 1) {
+                Chunk* chunk = kv.second[0].chunk;
+                size_t idx = kv.second[0].idx;
+                float* v = &chunk->mesh.vertices[idx * 3];
+                float chunkOriginX = static_cast<float>(chunk->position.x * CHUNK_SIZE);
+                float chunkOriginY = static_cast<float>(chunk->position.y * CHUNK_SIZE);
+                float chunkOriginZ = static_cast<float>(chunk->position.z * CHUNK_SIZE);
+                Vector3 worldPos = { v[0] + chunkOriginX, v[1] + chunkOriginY, v[2] + chunkOriginZ };
+                float borderEps = 1e-4f; // Tighter epsilon for border check
+                if (
+                    fabs(fmod(worldPos.x, CHUNK_SIZE)) < borderEps || fabs(fmod(worldPos.x, CHUNK_SIZE) - CHUNK_SIZE) < borderEps ||
+                    fabs(fmod(worldPos.y, CHUNK_SIZE)) < borderEps || fabs(fmod(worldPos.y, CHUNK_SIZE) - CHUNK_SIZE) < borderEps ||
+                    fabs(fmod(worldPos.z, CHUNK_SIZE)) < borderEps || fabs(fmod(worldPos.z, CHUNK_SIZE) - CHUNK_SIZE) < borderEps) {
+                    logger.logf("[NormalSmooth] Border vertex NOT SHARED: worldPos=(%.8f,%.8f,%.8f) quantKey=(%d,%d,%d) chunk=(%d,%d,%d) idx=%zu\n",
+                        worldPos.x, worldPos.y, worldPos.z,
+                        std::get<0>(kv.first), std::get<1>(kv.first), std::get<2>(kv.first),
+                        chunk->position.x, chunk->position.y, chunk->position.z, idx);
+                }
+            }
+            continue; // Only care about shared verts
+        }
+        Vector3 avg = {0,0,0};
+        for (const auto& ref : kv.second) {
+            float* n = &ref.chunk->mesh.normals[ref.idx * 3];
+            avg.x += n[0];
+            avg.y += n[1];
+            avg.z += n[2];
+        }
+        float len = std::sqrt(avg.x*avg.x + avg.y*avg.y + avg.z*avg.z);
+        if (len > 1e-6f) {
+            avg.x /= len; avg.y /= len; avg.z /= len;
+        }
+        for (const auto& ref : kv.second) {
+            float* n = &ref.chunk->mesh.normals[ref.idx * 3];
+            n[0] = avg.x; n[1] = avg.y; n[2] = avg.z;
+        }
+    }
+    // Extra: For all border vertices, log their world positions and quantized keys for further diagnosis
+    for (Chunk* chunk : chunks) {
+        if (!chunk || chunk->mesh.vertexCount == 0 || !chunk->mesh.vertices) continue;
+        float chunkOriginX = static_cast<float>(chunk->position.x * CHUNK_SIZE);
+        float chunkOriginY = static_cast<float>(chunk->position.y * CHUNK_SIZE);
+        float chunkOriginZ = static_cast<float>(chunk->position.z * CHUNK_SIZE);
+        for (int i = 0; i < chunk->mesh.vertexCount; ++i) {
+            float vx = chunk->mesh.vertices[i * 3 + 0];
+            float vy = chunk->mesh.vertices[i * 3 + 1];
+            float vz = chunk->mesh.vertices[i * 3 + 2];
+            Vector3 worldPos = { vx + chunkOriginX, vy + chunkOriginY, vz + chunkOriginZ };
+            float borderEps = 1e-4f;
+            if (
+                fabs(fmod(worldPos.x, CHUNK_SIZE)) < borderEps || fabs(fmod(worldPos.x, CHUNK_SIZE) - CHUNK_SIZE) < borderEps ||
+                fabs(fmod(worldPos.y, CHUNK_SIZE)) < borderEps || fabs(fmod(worldPos.y, CHUNK_SIZE) - CHUNK_SIZE) < borderEps ||
+                fabs(fmod(worldPos.z, CHUNK_SIZE)) < borderEps || fabs(fmod(worldPos.z, CHUNK_SIZE) - CHUNK_SIZE) < borderEps) {
+                auto quantKey = quantizePosition(worldPos, cellSize);
+                logger.logf("[NormalSmooth] Border vertex: worldPos=(%.8f,%.8f,%.8f) quantKey=(%d,%d,%d) chunk=(%d,%d,%d) idx=%d\n",
+                    worldPos.x, worldPos.y, worldPos.z,
+                    std::get<0>(quantKey), std::get<1>(quantKey), std::get<2>(quantKey),
+                    chunk->position.x, chunk->position.y, chunk->position.z, i);
+            }
+        }
+    }
 }
 
 void checkChunkBorderPositions(
@@ -214,6 +339,64 @@ void checkChunkBorderNoise(
 bool isAllBelowThreshold(const std::vector<float>& vec, float threshold) {
     return std::all_of(vec.begin(), vec.end(), [threshold](float i){return i < threshold; });
 }
+
+template<typename T>
+T clamp(T v, T lo, T hi) {
+    if (v < lo) return lo;
+    if (v > hi) return hi;
+    return v;
+}
+
+// Utility to compute dot product of two Vector3
+static float dot(const Vector3& a, const Vector3& b) {
+    return a.x * b.x + a.y * b.y + a.z * b.z;
+}
+// Utility to compute length of a Vector3
+static float length(const Vector3& v) {
+    return sqrtf(v.x * v.x + v.y * v.y + v.z * v.z);
+}
+// Utility to compute angle (in degrees) between two normals
+static float angleBetween(const Vector3& a, const Vector3& b) {
+    float d = dot(a, b) / (length(a) * length(b) + 1e-8f);
+    d = clamp(d, -1.0f, 1.0f);
+    return acosf(d) * (180.0f / 3.14159265f);
+}
+// Check for normal discontinuities at chunk borders
+void logNormalDiscontinuitiesAtBorders(Chunk& chunkA, Chunk& chunkB, char axis, float angleThresholdDeg = 5.0f) {
+    // axis: 'x', 'y', or 'z'. chunkA is at lower coord, chunkB is at higher coord.
+    int size = CHUNK_SIZE;
+    for (int i = 0; i < size; ++i) {
+        for (int j = 0; j < size; ++j) {
+            int idxA, idxB;
+            if (axis == 'x') {
+                idxA = (i * size + j) * size + (size - 1); // x = size-1 face of A
+                idxB = (i * size + j) * size + 0;           // x = 0 face of B
+            } else if (axis == 'y') {
+                idxA = ((size - 1) * size + i) * size + j; // y = size-1 face of A
+                idxB = (0 * size + i) * size + j;          // y = 0 face of B
+            } else { // 'z'
+                idxA = (i * size + (size - 1)) * size + j; // z = size-1 face of A
+                idxB = (i * size + 0) * size + j;          // z = 0 face of B
+            }
+            if (idxA < 0 || idxA >= chunkA.mesh.vertexCount || idxB < 0 || idxB >= chunkB.mesh.vertexCount) continue;
+            Vector3 nA = {
+                chunkA.mesh.normals[idxA * 3 + 0],
+                chunkA.mesh.normals[idxA * 3 + 1],
+                chunkA.mesh.normals[idxA * 3 + 2]
+            };
+            Vector3 nB = {
+                chunkB.mesh.normals[idxB * 3 + 0],
+                chunkB.mesh.normals[idxB * 3 + 1],
+                chunkB.mesh.normals[idxB * 3 + 2]
+            };
+            float angle = angleBetween(nA, nB);
+            if (angle > angleThresholdDeg) {
+                logger.logf("Normal discontinuity at border (%c): idxA=%d, idxB=%d, angle=%.2f deg\n", axis, idxA, idxB, angle);
+            }
+        }
+    }
+}
+
 
 void logNoiseValues(const std::vector<float>& noiseValues, int size) {
     if (size <= 0) return;
@@ -528,7 +711,7 @@ void iterativeChunk(int startCx, int startCy, int startCz, const Vector3& origin
             // Optionally: abort or return here to avoid hang
             return;
         }
-        UploadMesh(&mesh, false); // Possibly make this dynamic if i want to update the mesh later
+        UploadMesh(&mesh, true); // Make mesh dynamic so normals can be updated later
         chunk.mesh = mesh;
         chunk.model = LoadModelFromMesh(chunk.mesh);
         chunk.model.materials[0].shader = world.lightingShader; // Use the lighting shader for the chunk
@@ -579,6 +762,46 @@ void generatePlanetoid(float randScale,std::string name, Scene& world, Vector3 p
     // Use iterative chunk generation
     iterativeChunk(0, 0, 0, position, rotation, color, scale, noise, planetoid, world); 
     
+    // Normal vector post processing
+    std::vector<Chunk*> allChunks;
+    for (auto& [key, chunkObject] : planetoid->chunkChildren) {
+        if (!chunkObject->chunk.vertices.empty()) {
+            allChunks.push_back(&chunkObject->chunk);
+        }
+    }
+    // Use a small cell size for quantization (tune as needed for your mesh precision)
+    float normalSmoothCellSize = 1e-3f;
+    smoothNormalsAcrossChunks(allChunks, normalSmoothCellSize);
+    // Re-upload smoothed normals to GPU for each chunk
+    for (Chunk* chunk : allChunks) {
+        UpdateMeshBuffer(chunk->mesh, 2, chunk->mesh.normals, chunk->mesh.vertexCount * 3 * sizeof(float), 0);
+    }
+
+    // --- Check normal discontinuities at all chunk borders ---
+    // For each chunk, check +X, +Y, +Z neighbors
+    for (const auto& [key, chunkObjA] : planetoid->chunkChildren) {
+        if (!chunkObjA || chunkObjA->chunk.vertices.empty()) continue;
+        int cx = key.x, cy = key.y, cz = key.z;
+        // +X neighbor
+        Int3 keyX{cx+1, cy, cz};
+        auto itX = planetoid->chunkChildren.find(keyX);
+        if (itX != planetoid->chunkChildren.end() && itX->second && !itX->second->chunk.vertices.empty()) {
+            logNormalDiscontinuitiesAtBorders(chunkObjA->chunk, itX->second->chunk, 'x');
+        }
+        // +Y neighbor
+        Int3 keyY{cx, cy+1, cz};
+        auto itY = planetoid->chunkChildren.find(keyY);
+        if (itY != planetoid->chunkChildren.end() && itY->second && !itY->second->chunk.vertices.empty()) {
+            logNormalDiscontinuitiesAtBorders(chunkObjA->chunk, itY->second->chunk, 'y');
+        }
+        // +Z neighbor
+        Int3 keyZ{cx, cy, cz+1};
+        auto itZ = planetoid->chunkChildren.find(keyZ);
+        if (itZ != planetoid->chunkChildren.end() && itZ->second && !itZ->second->chunk.vertices.empty()) {
+            logNormalDiscontinuitiesAtBorders(chunkObjA->chunk, itZ->second->chunk, 'z');
+        }
+    }
+
 
     planetoid->isActive = true; // Set the planetoid as active
     delete noise; // Clean up the noise instance
@@ -719,4 +942,3 @@ void loadWorld(Scene& world) {
     }
     file.close();
 }
-
