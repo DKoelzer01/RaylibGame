@@ -43,7 +43,7 @@ float Planetoid::GetNoise(float wx, float wy, float wz) {
             float localY = wy - (position.y + chunkY * CHUNK_SIZE);
             float localZ = wz - (position.z + chunkZ * CHUNK_SIZE);
             // Get noise value from the chunk's noise values
-            return chunkObject->chunk.noiseValues[static_cast<int>(localX) + static_cast<int>(localY) * size + static_cast<int>(localZ) * size * size];
+            return chunkObject->noiseValues[static_cast<int>(localX) + static_cast<int>(localY) * size + static_cast<int>(localZ) * size * size];
         }
         return 0.0f; // Return 0 if the chunk does not exist
     }
@@ -71,6 +71,282 @@ void Planetoid::drawDepthOnly(const Matrix& lightSpaceMatrix, Shader* depthShade
     }
 }
 
+
+
+// Helper to get noise value from this chunk or a neighbor
+static float getNoiseAt(const Chunk* chunk, int x, int y, int z, int size) {
+    return chunk->noiseValues[x + y * size + z * size * size];
+}
+
+template<typename T>
+T clamp(T v, T lo, T hi) {
+    if (v < lo) return lo;
+    if (v > hi) return hi;
+    return v;
+}
+
+static Vector3 trilerpVec3(
+    const Vector3& c000, const Vector3& c100, const Vector3& c010, const Vector3& c110,
+    const Vector3& c001, const Vector3& c101, const Vector3& c011, const Vector3& c111,
+    float tx, float ty, float tz
+) {
+    float x =
+        c000.x * (1 - tx) * (1 - ty) * (1 - tz) +
+        c100.x * tx * (1 - ty) * (1 - tz) +
+        c010.x * (1 - tx) * ty * (1 - tz) +
+        c110.x * tx * ty * (1 - tz) +
+        c001.x * (1 - tx) * (1 - ty) * tz +
+        c101.x * tx * (1 - ty) * tz +
+        c011.x * (1 - tx) * ty * tz +
+        c111.x * tx * ty * tz;
+
+    float y =
+        c000.y * (1 - tx) * (1 - ty) * (1 - tz) +
+        c100.y * tx * (1 - ty) * (1 - tz) +
+        c010.y * (1 - tx) * ty * (1 - tz) +
+        c110.y * tx * ty * (1 - tz) +
+        c001.y * (1 - tx) * (1 - ty) * tz +
+        c101.y * tx * (1 - ty) * tz +
+        c011.y * (1 - tx) * ty * tz +
+        c111.y * tx * ty * tz;
+
+    float z =
+        c000.z * (1 - tx) * (1 - ty) * (1 - tz) +
+        c100.z * tx * (1 - ty) * (1 - tz) +
+        c010.z * (1 - tx) * ty * (1 - tz) +
+        c110.z * tx * ty * (1 - tz) +
+        c001.z * (1 - tx) * (1 - ty) * tz +
+        c101.z * tx * (1 - ty) * tz +
+        c011.z * (1 - tx) * ty * tz +
+        c111.z * tx * ty * tz;
+
+    return {x, y, z};
+}
+
+
+
+void Chunk::calculateNormals() {
+    if (vertices.empty() || mesh.vertexCount == 0) {
+        logger.logf("[deferredNormals]: Skipping normal calculation for chunk at (%d, %d, %d) because it has no vertices.\n", position.x, position.y, position.z);
+        return;
+    }
+    logger.logf("[deferredNormals]: Calculating normals for chunk at (%d, %d, %d): vertices.size() = %zu, mesh.vertexCount = %d\n", position.x, position.y, position.z, vertices.size(), mesh.vertexCount);
+    // Log min/max vertex positions for this chunk
+    float minX = 99999, minY = 99999, minZ = 99999;
+    float maxX = -99999, maxY = -99999, maxZ = -99999;
+    for (const auto& v : vertices) {
+        if (v.x < minX) minX = v.x;
+        if (v.y < minY) minY = v.y;
+        if (v.z < minZ) minZ = v.z;
+        if (v.x > maxX) maxX = v.x;
+        if (v.y > maxY) maxY = v.y;
+        if (v.z > maxZ) maxZ = v.z;
+    }
+    logger.logf("[deferredNormals]: Chunk (%d, %d, %d) vertex bounds: X[%.3f, %.3f] Y[%.3f, %.3f] Z[%.3f, %.3f]\n", position.x, position.y, position.z, minX, maxX, minY, maxY, minZ, maxZ);
+    const int size = CHUNK_SIZE + 1;
+    std::vector<Vector3> newNormals(size * size * size);
+
+    for (int z = 0; z < size; ++z) {
+        for (int y = 0; y < size; ++y) {
+            for (int x = 0; x < size; ++x) {
+                float dx, dy, dz;
+                // X
+                if (x > 0 && x < size - 1) {
+                    dx = getNoiseAt(this, x + 1, y, z, size) - getNoiseAt(this, x - 1, y, z, size);
+                } else {
+                    int nx = x == 0 ? -1 : 1;
+                    int neighborIdx = -1;
+                    for (int i = 0; i < 26; ++i) {
+                        if (neighborOffsets[i][0] == nx && neighborOffsets[i][1] == 0 && neighborOffsets[i][2] == 0) {
+                            neighborIdx = i;
+                            break;
+                        }
+                    }
+                    if (neighborIdx != -1 && neighbors[neighborIdx]) {
+                        if (x == 0)
+                            dx = getNoiseAt(this, x + 1, y, z, size) - getNoiseAt(neighbors[neighborIdx], size - 2, y, z, size);
+                        else
+                            dx = getNoiseAt(neighbors[neighborIdx], 1, y, z, size) - getNoiseAt(this, x - 1, y, z, size);
+                    } else {
+                        dx = 0.0f;
+                    }
+                }
+                // Y
+                if (y > 0 && y < size - 1) {
+                    dy = getNoiseAt(this, x, y + 1, z, size) - getNoiseAt(this, x, y - 1, z, size);
+                } else {
+                    int ny = y == 0 ? -1 : 1;
+                    int neighborIdx = -1;
+                    for (int i = 0; i < 26; ++i) {
+                        if (neighborOffsets[i][1] == ny && neighborOffsets[i][0] == 0 && neighborOffsets[i][2] == 0) {
+                            neighborIdx = i;
+                            break;
+                        }
+                    }
+                    if (neighborIdx != -1 && neighbors[neighborIdx]) {
+                        if (y == 0)
+                            dy = getNoiseAt(this, x, y + 1, z, size) - getNoiseAt(neighbors[neighborIdx], x, size - 2, z, size);
+                        else
+                            dy = getNoiseAt(neighbors[neighborIdx], x, 1, z, size) - getNoiseAt(this, x, y - 1, z, size);
+                    } else {
+                        dy = 0.0f;
+                    }
+                }
+                // Z
+                if (z > 0 && z < size - 1) {
+                    dz = getNoiseAt(this, x, y, z + 1, size) - getNoiseAt(this, x, y, z - 1, size);
+                } else {
+                    int nz = z == 0 ? -1 : 1;
+                    int neighborIdx = -1;
+                    for (int i = 0; i < 26; ++i) {
+                        if (neighborOffsets[i][2] == nz && neighborOffsets[i][0] == 0 && neighborOffsets[i][1] == 0) {
+                            neighborIdx = i;
+                            break;
+                        }
+                    }
+                    if (neighborIdx != -1 && neighbors[neighborIdx]) {
+                        if (z == 0)
+                            dz = getNoiseAt(this, x, y, z + 1, size) - getNoiseAt(neighbors[neighborIdx], x, y, size - 2, size);
+                        else
+                            dz = getNoiseAt(neighbors[neighborIdx], x, y, 1, size) - getNoiseAt(this, x, y, z - 1, size);
+                    } else {
+                        dz = 0.0f;
+                    }
+                }
+                Vector3 n = { -dx, -dy, -dz };
+                float len = sqrtf(n.x * n.x + n.y * n.y + n.z * n.z);
+                if (len > 1e-6f) {
+                    n.x /= len;
+                    n.y /= len;
+                    n.z /= len;
+                }
+                newNormals[x + y * size + z * size * size] = n;
+            }
+        }
+    }
+    // Copy new normals to mesh normals
+    if (mesh.vertexCount > 0 && mesh.normals != nullptr) {
+        // Compute chunk world origin
+        Vector3 chunkWorldOrigin = { (float)position.x, (float)position.y, (float)position.z };
+
+        for (int i = 0; i < mesh.vertexCount; ++i) {
+            if (i >= vertices.size()) {
+                logger.logf("[ERROR] Accessing vertices[%d] but vertices.size() = %zu in chunk (%d, %d, %d)\n", i, vertices.size(), position.x, position.y, position.z);
+                continue;
+            }
+            const Vector3& v = vertices[i];
+            // Convert global vertex position to local chunk space
+            float lx = v.x - chunkWorldOrigin.x;
+            float ly = v.y - chunkWorldOrigin.y;
+            float lz = v.z - chunkWorldOrigin.z;
+            // logger.logf("[deferredNormals]: Vertex[%d] global (%.3f, %.3f, %.3f) local (%.3f, %.3f, %.3f)\n", i, v.x, v.y, v.z, lx, ly, lz);
+            float fx = clamp(lx, 0.0f, (float)(size - 1));
+            float fy = clamp(ly, 0.0f, (float)(size - 1));
+            float fz = clamp(lz, 0.0f, (float)(size - 1));
+            int x0 = (int)floorf(fx), x1 = std::min(x0 + 1, size - 1);
+            int y0 = (int)floorf(fy), y1 = std::min(y0 + 1, size - 1);
+            int z0 = (int)floorf(fz), z1 = std::min(z0 + 1, size - 1);
+            float tx = fx - x0, ty = fy - y0, tz = fz - z0;
+            const Vector3& c000 = newNormals[x0 + y0 * size + z0 * size * size];
+            const Vector3& c100 = newNormals[x1 + y0 * size + z0 * size * size];
+            const Vector3& c010 = newNormals[x0 + y1 * size + z0 * size * size];
+            const Vector3& c110 = newNormals[x1 + y1 * size + z0 * size * size];
+            const Vector3& c001 = newNormals[x0 + y0 * size + z1 * size * size];
+            const Vector3& c101 = newNormals[x1 + y0 * size + z1 * size * size];
+            const Vector3& c011 = newNormals[x0 + y1 * size + z1 * size * size];
+            const Vector3& c111 = newNormals[x1 + y1 * size + z1 * size * size];
+            Vector3 n = trilerpVec3(c000, c100, c010, c110, c001, c101, c011, c111, tx, ty, tz);
+            float len = sqrtf(n.x * n.x + n.y * n.y + n.z * n.z);
+            if (len > 1e-6f) {
+                n.x /= len; n.y /= len; n.z /= len;
+            }
+            mesh.normals[i * 3 + 0] = n.x;
+            mesh.normals[i * 3 + 1] = n.y;
+            mesh.normals[i * 3 + 2] = n.z;
+        }
+        for (int i = 0; i < std::min(5, mesh.vertexCount); ++i) {
+            logger.logf("[deferredNormals]: Normal[%d]: (%.3f, %.3f, %.3f)\n", i, mesh.normals[i*3], mesh.normals[i*3+1], mesh.normals[i*3+2]);
+        }
+        logger.logf("[deferredNormals]: Vertex count: %d, Normal count: %d\n", mesh.vertexCount, mesh.vertexCount * 3);
+        // Update the mesh buffer in GPU
+        UpdateMeshBuffer(mesh, 2, mesh.normals, mesh.vertexCount * 3, 0); // 2 = RLGL_ATTRIBUTE_NORMAL
+    }
+}
+
+// --- Chunk neighborOffsets definition ---
+const int Chunk::neighborOffsets[26][3] = {
+    {-1,-1,-1},{ 0,-1,-1},{ 1,-1,-1},
+    {-1, 0,-1},{ 0, 0,-1},{ 1, 0,-1},
+    {-1, 1,-1},{ 0, 1,-1},{ 1, 1,-1},
+    {-1,-1, 0},{ 0,-1, 0},{ 1,-1, 0},
+    {-1, 0, 0},           { 1, 0, 0},
+    {-1, 1, 0},{ 0, 1, 0},{ 1, 1, 0},
+    {-1,-1, 1},{ 0,-1, 1},{ 1,-1, 1},
+    {-1, 0, 1},{ 0, 0, 1},{ 1, 0, 1},
+    {-1, 1, 1},{ 0, 1, 1},{ 1, 1, 1}
+};
+
+void Chunk::tryCalculateNormals() {
+    logger.logf("[Chunk] Trying to calculate normals for chunk at position (%d, %d, %d)\n", position.x, position.y, position.z);
+    if (allNeighborsPresent()) {
+        logger.logf("[Chunk] All neighbors present for chunk at position (%d, %d, %d), calculating normals\n", position.x, position.y, position.z);
+        calculateNormals();
+        normalsPending = false;
+    } else {
+        logger.logf("[Chunk] Not all neighbors present for chunk at position (%d, %d, %d), deferring normal calculation\n", position.x, position.y, position.z);
+        normalsPending = true;
+    }
+}
+
+// --- Chunk::assignNeighborsAndNotify implementation ---
+void Chunk::assignNeighborsAndNotify(std::unordered_map<Int3, std::unique_ptr<Chunk>>& chunkChildren) {
+    logger.logf("[Chunk] Assigning neighbors for chunk at position (%d, %d, %d)\n", position.x, position.y, position.z);
+    
+    int cx = position.x / CHUNK_SIZE;
+    int cy = position.y / CHUNK_SIZE;
+    int cz = position.z / CHUNK_SIZE;
+    // Get planetoid center and size (radius)
+    // Assumes parent pointer is set to Planetoid, otherwise you may need to pass planetoid as argument
+    Planetoid* planetoid = dynamic_cast<Planetoid*>(parent);
+    Vector3 planetoidCenter = planetoid ? planetoid->position : Vector3{0,0,0};
+    float planetoidRadius = planetoid ? planetoid->size : 0.0f;
+
+    for (int i = 0; i < 26; ++i) {
+        Int3 npos = { cx + neighborOffsets[i][0], cy + neighborOffsets[i][1], cz + neighborOffsets[i][2] };
+        auto it = chunkChildren.find(npos);
+        if (it != chunkChildren.end() && it->second) {
+            Chunk* neighbor = it->second.get();
+            setNeighbor(i, neighbor);
+            // Find the reverse index for this neighbor
+            for (int j = 0; j < 26; j++) {
+                if (neighborOffsets[j][0] == -neighborOffsets[i][0] &&
+                    neighborOffsets[j][1] == -neighborOffsets[i][1] &&
+                    neighborOffsets[j][2] == -neighborOffsets[i][2]) {
+                    neighbor->onNeighborAdded(j, this);
+                    break;
+                }
+            }
+        } else {
+            // Calculate world position of neighbor chunk center
+            Vector3 neighborCenter = {
+                (float)(npos.x * CHUNK_SIZE) + CHUNK_SIZE / 2.0f + planetoidCenter.x,
+                (float)(npos.y * CHUNK_SIZE) + CHUNK_SIZE / 2.0f + planetoidCenter.y,
+                (float)(npos.z * CHUNK_SIZE) + CHUNK_SIZE / 2.0f + planetoidCenter.z
+            };
+            float dist = sqrtf(
+                (neighborCenter.x - planetoidCenter.x) * (neighborCenter.x - planetoidCenter.x) +
+                (neighborCenter.y - planetoidCenter.y) * (neighborCenter.y - planetoidCenter.y) +
+                (neighborCenter.z - planetoidCenter.z) * (neighborCenter.z - planetoidCenter.z)
+            );
+            if (dist > planetoidRadius) {
+                // Out of bounds, treat as present for normal calculation
+                neighborMask |= (1u << i);
+            }
+        }
+    }
+    tryCalculateNormals();
+}
+
 void worldHandler(Scene& world) {
     // Initialize the camera for the world scene
     world.camera.position = { 0.0f, 10.0f, 10.0f };
@@ -83,74 +359,32 @@ void worldHandler(Scene& world) {
     loadWorld(world);
 } 
 
-// Smooth normals across a set of chunks (the new chunk and its neighbors) using exact world position (float equality)
-void smoothNormalsAcrossChunks(const std::vector<Chunk*>& chunks) {
-    struct NormalRef { Chunk* chunk; size_t idx; };
-    std::unordered_map<Vector3, std::vector<NormalRef>, Vector3Hash> posMap;
-    // Build map
-    for (Chunk* chunk : chunks) {
-        if (!chunk || chunk->mesh.vertexCount == 0 || !chunk->mesh.vertices || !chunk->mesh.normals) continue;
-        float chunkOriginX = static_cast<float>(chunk->position.x * CHUNK_SIZE);
-        float chunkOriginY = static_cast<float>(chunk->position.y * CHUNK_SIZE);
-        float chunkOriginZ = static_cast<float>(chunk->position.z * CHUNK_SIZE);
-        for (int i = 0; i < chunk->mesh.vertexCount; ++i) {
-            float vx = chunk->mesh.vertices[i * 3 + 0];
-            float vy = chunk->mesh.vertices[i * 3 + 1];
-            float vz = chunk->mesh.vertices[i * 3 + 2];
-            Vector3 worldPos = { vx + chunkOriginX, vy + chunkOriginY, vz + chunkOriginZ };
-            posMap[worldPos].push_back({chunk, static_cast<size_t>(i)});
-        }
-    }
-    // For each shared position, average normals and assign back
-    for (const auto& kv : posMap) {
-        if (kv.second.size() < 2) continue;
-        Vector3 avg = {0,0,0};
-        for (const auto& ref : kv.second) {
-            float* n = &ref.chunk->mesh.normals[ref.idx * 3];
-            avg.x += n[0];
-            avg.y += n[1];
-            avg.z += n[2];
-        }
-        float len = std::sqrt(avg.x*avg.x + avg.y*avg.y + avg.z*avg.z);
-        if (len > 1e-6f) {
-            avg.x /= len; avg.y /= len; avg.z /= len;
-        }
-        for (const auto& ref : kv.second) {
-            float* n = &ref.chunk->mesh.normals[ref.idx * 3];
-            n[0] = avg.x; n[1] = avg.y; n[2] = avg.z;
-        }
-    }
-}
-
 bool isAllBelowThreshold(const std::vector<float>& vec, float threshold) {
     return std::all_of(vec.begin(), vec.end(), [threshold](float i){return i < threshold; });
-}
-
-template<typename T>
-T clamp(T v, T lo, T hi) {
-    if (v < lo) return lo;
-    if (v > hi) return hi;
-    return v;
 }
 
 // Utility to compute dot product of two Vector3
 static float dot(const Vector3& a, const Vector3& b) {
     return a.x * b.x + a.y * b.y + a.z * b.z;
 }
+
 // Utility to compute length of a Vector3
 static float length(const Vector3& v) {
     return sqrtf(v.x * v.x + v.y * v.y + v.z * v.z);
 }
+
 // Utility to compute angle (in degrees) between two normals
 static float angleBetween(const Vector3& a, const Vector3& b) {
     float d = dot(a, b) / (length(a) * length(b) + 1e-8f);
     d = clamp(d, -1.0f, 1.0f);
     return acosf(d) * (180.0f / 3.14159265f);
 }
+
 // Check for normal discontinuities at chunk borders
 void logNormalDiscontinuitiesAtBorders(Chunk& chunkA, Chunk& chunkB, char axis, float angleThresholdDeg = 5.0f) {
     // axis: 'x', 'y', or 'z'. chunkA is at lower coord, chunkB is at higher coord.
     int size = CHUNK_SIZE;
+
     for (int i = 0; i < size; ++i) {
         for (int j = 0; j < size; ++j) {
             int idxA, idxB;
@@ -239,15 +473,16 @@ void generateWorld(Scene& world) {
     logger.logf("World generation completed in %.2f seconds.\n", worldGenTime);
 }
 
-// Update: Now takes chunkWorldPos (relative to planetoid) and origin (planetoid world position)
-Chunk generateChunk(const Vector3& chunkWorldPos, const Vector3& origin, SimplexNoise* noise) {
-    Chunk chunk = {};
+std::unique_ptr<Chunk> generateChunk(const Vector3& chunkWorldPos, const Vector3& origin, SimplexNoise* noise, Object* parent) {
+    auto chunk = std::make_unique<Chunk>(); // Default-construct chunk
+    chunk->position = {0, 0, 0}; // Initialize chunk position with zero
+    chunk->parent = parent; // Set the parent object for the chunk
     // logger.logf("[generateChunk] Generating chunk at chunkWorldPos (%.2f, %.2f, %.2f) and origin (%.2f, %.2f, %.2f)\n", chunkWorldPos.x, chunkWorldPos.y, chunkWorldPos.z, origin.x, origin.y, origin.z);
     // Allocate noise for this chunk with a 1-voxel border
     const int chunkNoiseSize = (CHUNK_SIZE + 1);
     const int totalNoise = chunkNoiseSize * chunkNoiseSize * chunkNoiseSize;
-    chunk.noiseValues.resize(totalNoise);
-    chunk.position = {(int)chunkWorldPos.x, (int)chunkWorldPos.y, (int)chunkWorldPos.z}; // Set to relative position only
+    chunk->noiseValues.resize(totalNoise);
+    chunk->position = {(int)chunkWorldPos.x, (int)chunkWorldPos.y, (int)chunkWorldPos.z}; // Set to relative position only
     // Use local chunk coordinates for mesh, but sample noise at world position
     size_t idx = 0;
     for (int z = 0; z <= CHUNK_SIZE; ++z) {
@@ -256,7 +491,7 @@ Chunk generateChunk(const Vector3& chunkWorldPos, const Vector3& origin, Simplex
                 float wx = origin.x + chunkWorldPos.x + x;
                 float wy = origin.y + chunkWorldPos.y + y;
                 float wz = origin.z + chunkWorldPos.z + z;
-                chunk.noiseValues[idx] = noise->fractal(4, wx, wy, wz) + 1.0f;
+                chunk->noiseValues[idx] = noise->fractal(4, wx, wy, wz) + 1.0f;
             }
         }
     }
@@ -296,26 +531,27 @@ void iterativeChunk(int startCx, int startCy, int startCz, const Vector3& origin
         chunkName.reserve(32);
         chunkName = "chunk_" + std::to_string(cx) + "_" + std::to_string(cy) + "_" + std::to_string(cz);
         time_t genChunk = clock();
-        Chunk chunk = generateChunk(chunkLocalPos, origin, noise); // Pass chunk-local position only
+        auto chunk = generateChunk(chunkLocalPos, origin, noise, planetoid); // Pass chunk-local position only
         // Log the chunk noise values min and max
         // logger.logf("[generateChunk] Chunk (%d, %d, %d) noise values min: %.4f, max: %.4f\n",
         //     cx, cy, cz,
-        //     *std::min_element(chunk.noiseValues.begin(), chunk.noiseValues.end()),
-        //     *std::max_element(chunk.noiseValues.begin(), chunk.noiseValues.end()));
-        // writeNoiseValuesToFile(chunk.noiseValues, CHUNK_SIZE + 1, "assets/noise/" + chunkName + ".txt");
-        weightNoise(chunk.noiseValues, CHUNK_SIZE + 1, chunkLocalPos, origin, 0.5f, planetoid->size);
+        //     *std::min_element(chunk->noiseValues.begin(), chunk->noiseValues.end()),
+        //     *std::max_element(chunk->noiseValues.begin(), chunk->noiseValues.end()));
+        // writeNoiseValuesToFile(chunk->noiseValues, CHUNK_SIZE + 1, "assets/noise/" + chunkName + ".txt");
+        weightNoise(chunk->noiseValues, CHUNK_SIZE + 1, chunkLocalPos, origin, 0.5f, planetoid->size);
         // Log the weighted noise values min and max
         // logger.logf("[weightNoise] Chunk (%d, %d, %d) weighted noise values min: %.4f, max: %.4f\n",
         //     cx, cy, cz,
-        //     *std::min_element(chunk.noiseValues.begin(), chunk.noiseValues.end()),
-        //     *std::max_element(chunk.noiseValues.begin(), chunk.noiseValues.end()));
-        // writeNoiseValuesToFile(chunk.noiseValues, CHUNK_SIZE + 1, "assets/noise/" + chunkName + "_weighted.txt");
+        //     *std::min_element(chunk->noiseValues.begin(), chunk->noiseValues.end()),
+        //     *std::max_element(chunk->noiseValues.begin(), chunk->noiseValues.end()));
+        // writeNoiseValuesToFile(chunk->noiseValues, CHUNK_SIZE + 1, "assets/noise/" + chunkName + "_weighted.txt");
         // Log the chunk generation time
         time_t genChunkEnd = clock();
         double genChunkTime = static_cast<double>(genChunkEnd - genChunk) / CLOCKS_PER_SEC;
         logger.logf("Chunk noise (%d, %d, %d) generated in %.2f seconds.\n", cx, cy, cz, genChunkTime);
-        if (isAllBelowThreshold(chunk.noiseValues, 0.01f)) { // Lowered threshold
-            planetoid->chunkChildren.emplace(std::make_pair(Int3{cx, cy, cz}, std::make_unique<ChunkObject>("chunk", chunkName, chunkLocalPos, rotation, color, scale, chunk)));
+        if (isAllBelowThreshold(chunk->noiseValues, 0.01f)) { // Lowered threshold
+            planetoid->chunkChildren.emplace(Int3{cx, cy, cz}, std::move(chunk));
+            planetoid->chunkChildren[Int3{cx, cy, cz}]->assignNeighborsAndNotify(planetoid->chunkChildren);
             continue;
         }
         // --- Shared edge cache pointers for this chunk ---
@@ -330,64 +566,62 @@ void iterativeChunk(int startCx, int startCy, int startCz, const Vector3& origin
         // +X face: shared between (cx,cy,cz) and (cx+1,cy,cz), key is (cx,cy,cz,0)
         auto keyXPos = std::make_tuple(cx, cy, cz, 0);
         if (planetoid->sharedEdgeCaches.count(keyXPos) == 0) {
-            logger.logf("[EdgeCache] Creating edgeCacheXPos for chunk (%d,%d,%d) key (%d,%d,%d,0)\n", cx, cy, cz, cx, cy, cz);
+            // logger.logf("[EdgeCache] Creating edgeCacheXPos for chunk (%d,%d,%d) key (%d,%d,%d,0)\n", cx, cy, cz, cx, cy, cz);
             planetoid->sharedEdgeCaches[keyXPos] = std::vector<EdgeCacheEntry>(CHUNK_SIZE * CHUNK_SIZE * 12);
         } else {
-            logger.logf("[EdgeCache] Reusing edgeCacheXPos for chunk (%d,%d,%d) key (%d,%d,%d,0)\n", cx, cy, cz, cx, cy, cz);
+            // logger.logf("[EdgeCache] Reusing edgeCacheXPos for chunk (%d,%d,%d) key (%d,%d,%d,0)\n", cx, cy, cz, cx, cy, cz);
         }
         edgeCacheXPos = &planetoid->sharedEdgeCaches[keyXPos];
         // -X face: shared between (cx-1,cy,cz) and (cx,cy,cz), key is (cx-1,cy,cz,0)
         auto keyXNeg = std::make_tuple(cx-1, cy, cz, 0);
         if (planetoid->sharedEdgeCaches.count(keyXNeg) == 0) {
-            logger.logf("[EdgeCache] Creating edgeCacheXNeg for chunk (%d,%d,%d) key (%d,%d,%d,0)\n", cx, cy, cz, cx-1, cy, cz);
+            // logger.logf("[EdgeCache] Creating edgeCacheXNeg for chunk (%d,%d,%d) key (%d,%d,%d,0)\n", cx, cy, cz, cx-1, cy, cz);
             planetoid->sharedEdgeCaches[keyXNeg] = std::vector<EdgeCacheEntry>(CHUNK_SIZE * CHUNK_SIZE * 12);
         } else {
-            logger.logf("[EdgeCache] Reusing edgeCacheXNeg for chunk (%d,%d,%d) key (%d,%d,%d,0)\n", cx, cy, cz, cx-1, cy, cz);
+            // logger.logf("[EdgeCache] Reusing edgeCacheXNeg for chunk (%d,%d,%d) key (%d,%d,%d,0)\n", cx, cy, cz, cx-1, cy, cz);
         }
         edgeCacheXNeg = &planetoid->sharedEdgeCaches[keyXNeg];
         // +Y face: shared between (cx,cy,cz) and (cx,cy+1,cz), key is (cx,cy,cz,1)
         auto keyYPos = std::make_tuple(cx, cy, cz, 1);
         if (planetoid->sharedEdgeCaches.count(keyYPos) == 0) {
-            logger.logf("[EdgeCache] Creating edgeCacheYPos for chunk (%d,%d,%d) key (%d,%d,%d,1)\n", cx, cy, cz, cx, cy, cz);
+            // logger.logf("[EdgeCache] Creating edgeCacheYPos for chunk (%d,%d,%d) key (%d,%d,%d,1)\n", cx, cy, cz, cx, cy, cz);
             planetoid->sharedEdgeCaches[keyYPos] = std::vector<EdgeCacheEntry>(CHUNK_SIZE * CHUNK_SIZE * 12);
         } else {
-            logger.logf("[EdgeCache] Reusing edgeCacheYPos for chunk (%d,%d,%d) key (%d,%d,%d,1)\n", cx, cy, cz, cx, cy, cz);
+            // logger.logf("[EdgeCache] Reusing edgeCacheYPos for chunk (%d,%d,%d) key (%d,%d,%d,1)\n", cx, cy, cz, cx, cy, cz);
         }
         edgeCacheYPos = &planetoid->sharedEdgeCaches[keyYPos];
         // -Y face: shared between (cx,cy-1,cz) and (cx,cy,cz), key is (cx,cy-1,cz,1)
         auto keyYNeg = std::make_tuple(cx, cy-1, cz, 1);
         if (planetoid->sharedEdgeCaches.count(keyYNeg) == 0) {
-            logger.logf("[EdgeCache] Creating edgeCacheYNeg for chunk (%d,%d,%d) key (%d,%d,%d,1)\n", cx, cy, cz, cx, cy-1, cz);
+            // logger.logf("[EdgeCache] Creating edgeCacheYNeg for chunk (%d,%d,%d) key (%d,%d,%d,1)\n", cx, cy, cz, cx, cy-1, cz);
             planetoid->sharedEdgeCaches[keyYNeg] = std::vector<EdgeCacheEntry>(CHUNK_SIZE * CHUNK_SIZE * 12);
         } else {
-            logger.logf("[EdgeCache] Reusing edgeCacheYNeg for chunk (%d,%d,%d) key (%d,%d,%d,1)\n", cx, cy, cz, cx, cy-1, cz);
+            // logger.logf("[EdgeCache] Reusing edgeCacheYNeg for chunk (%d,%d,%d) key (%d,%d,%d,1)\n", cx, cy, cz, cx, cy-1, cz);
         }
         edgeCacheYNeg = &planetoid->sharedEdgeCaches[keyYNeg];
         // +Z face: shared between (cx,cy,cz) and (cx,cy,cz+1), key is (cx,cy,cz,2)
         auto keyZPos = std::make_tuple(cx, cy, cz, 2);
         if (planetoid->sharedEdgeCaches.count(keyZPos) == 0) {
-            logger.logf("[EdgeCache] Creating edgeCacheZPos for chunk (%d,%d,%d) key (%d,%d,%d,2)\n", cx, cy, cz, cx, cy, cz);
+            // logger.logf("[EdgeCache] Creating edgeCacheZPos for chunk (%d,%d,%d) key (%d,%d,%d,2)\n", cx, cy, cz, cx, cy, cz);
             planetoid->sharedEdgeCaches[keyZPos] = std::vector<EdgeCacheEntry>(CHUNK_SIZE * CHUNK_SIZE * 12);
         } else {
-            logger.logf("[EdgeCache] Reusing edgeCacheZPos for chunk (%d,%d,%d) key (%d,%d,%d,2)\n", cx, cy, cz, cx, cy, cz);
+            // logger.logf("[EdgeCache] Reusing edgeCacheZPos for chunk (%d,%d,%d) key (%d,%d,%d,2)\n", cx, cy, cz, cx, cy, cz);
         }
         edgeCacheZPos = &planetoid->sharedEdgeCaches[keyZPos];
         // -Z face: shared between (cx,cy,cz-1) and (cx,cy,cz), key is (cx,cy,cz-1,2)
         auto keyZNeg = std::make_tuple(cx, cy, cz-1, 2);
         if (planetoid->sharedEdgeCaches.count(keyZNeg) == 0) {
-            logger.logf("[EdgeCache] Creating edgeCacheZNeg for chunk (%d,%d,%d) key (%d,%d,%d,2)\n", cx, cy, cz, cx, cy, cz-1);
+            // logger.logf("[EdgeCache] Creating edgeCacheZNeg for chunk (%d,%d,%d) key (%d,%d,%d,2)\n", cx, cy, cz, cx, cy, cz-1);
             planetoid->sharedEdgeCaches[keyZNeg] = std::vector<EdgeCacheEntry>(CHUNK_SIZE * CHUNK_SIZE * 12);
         } else {
-            logger.logf("[EdgeCache] Reusing edgeCacheZNeg for chunk (%d,%d,%d) key (%d,%d,%d,2)\n", cx, cy, cz, cx, cy, cz-1);
+            // logger.logf("[EdgeCache] Reusing edgeCacheZNeg for chunk (%d,%d,%d) key (%d,%d,%d,2)\n", cx, cy, cz, cx, cy, cz-1);
         }
         edgeCacheZNeg = &planetoid->sharedEdgeCaches[keyZNeg];
         // For now, pass +X, +Y, +Z caches to marchCube (legacy interface)
-        chunk.vertices.clear();
-        chunk.indices.clear();
-        std::vector<Vector3> normals; // NEW: store per-vertex normals
-        chunk.vertices.reserve(CHUNK_SIZE * CHUNK_SIZE * CHUNK_SIZE * 3 / 2);
-        chunk.indices.reserve(CHUNK_SIZE * CHUNK_SIZE * CHUNK_SIZE * 6);
-        normals.reserve(CHUNK_SIZE * CHUNK_SIZE * CHUNK_SIZE * 3 / 2);
+        chunk->vertices.clear();
+        chunk->indices.clear();
+        chunk->vertices.reserve(CHUNK_SIZE * CHUNK_SIZE * CHUNK_SIZE * 3 / 2);
+        chunk->indices.reserve(CHUNK_SIZE * CHUNK_SIZE * CHUNK_SIZE * 6);
         // time_t cubemarchStart = clock();
         
 
@@ -407,8 +641,8 @@ void iterativeChunk(int startCx, int startCy, int startCz, const Vector3& origin
                     // Pass chunkLocalPos (not chunkWorldPos) as chunkOrigin to marchCube
                     marchCube(
                         i, j, k,
-                        chunk.noiseValues, CHUNK_SIZE + 1,
-                        chunk.vertices, chunk.indices, normals,
+                        chunk->noiseValues, CHUNK_SIZE + 1,
+                        chunk->vertices, chunk->indices,
                         &localEdgeCache, edgeCacheX, edgeCacheY, edgeCacheZ,
                         0.5f,
                         cx, cy, cz,
@@ -424,37 +658,29 @@ void iterativeChunk(int startCx, int startCy, int startCz, const Vector3& origin
         // logger.logf("Chunk (%d, %d, %d) cubemarched in %.2f\n",cx, cy, cz, cubemarchTime);
         // normalizeNoise(chunk.noiseValues, CHUNK_SIZE + 1, 16.0f); // Normalize noise values
         Mesh mesh = { 0 };
-        mesh.vertexCount = static_cast<int>(chunk.vertices.size());
+        mesh.vertexCount = static_cast<int>(chunk->vertices.size());
         mesh.vertices = new float[mesh.vertexCount * 3];
-        for (size_t j = 0; j < chunk.vertices.size(); ++j) {
-            const Vector3& v = chunk.vertices[j];
+        for (size_t j = 0; j < chunk->vertices.size(); ++j) {
+            const Vector3& v = chunk->vertices[j];
             mesh.vertices[j * 3 + 0] = v.x;
             mesh.vertices[j * 3 + 1] = v.y;
             mesh.vertices[j * 3 + 2] = v.z;
         }
-        mesh.triangleCount = static_cast<int>(chunk.indices.size() / 3);
-        mesh.indices = new unsigned short[chunk.indices.size()];
-        for (size_t j = 0; j < chunk.indices.size(); ++j) {
-            mesh.indices[j] = static_cast<unsigned short>(chunk.indices[j]);
+        mesh.triangleCount = static_cast<int>(chunk->indices.size() / 3);
+        mesh.indices = new unsigned short[chunk->indices.size()];
+        for (size_t j = 0; j < chunk->indices.size(); ++j) {
+            mesh.indices[j] = static_cast<unsigned short>(chunk->indices[j]);
         }
-        // --- Upload normals ---
-        mesh.normals = new float[mesh.vertexCount * 3];
-        for (size_t j = 0; j < normals.size(); ++j) {
-            mesh.normals[j * 3 + 0] = normals[j].x;
-            mesh.normals[j * 3 + 1] = normals[j].y;
-            mesh.normals[j * 3 + 2] = normals[j].z;
-        }
-        // --- Check for mismatch before uploading mesh ---
-        if (normals.size() != chunk.vertices.size()) {
-            logger.logf("ERROR: normals.size() (%zu) != vertices.size() (%zu)\n", normals.size(), chunk.vertices.size());
-            // Optionally: abort or return here to avoid hang
-            return;
-        }
+        mesh.normals = new float[mesh.vertexCount * 3]; // Allocate space for normals
+
         UploadMesh(&mesh, true); // Make mesh dynamic so normals can be updated later
-        chunk.mesh = mesh;
-        chunk.model = LoadModelFromMesh(chunk.mesh);
-        chunk.model.materials[0].shader = world.lightingShader; // Use the lighting shader for the chunk
-        auto inserted = planetoid->chunkChildren.emplace(std::make_pair(Int3{cx, cy, cz}, std::make_unique<ChunkObject>("chunk", chunkName, chunkLocalPos, rotation, color, scale, chunk)));
+        chunk->mesh = mesh;
+        chunk->model = LoadModelFromMesh(chunk->mesh);
+        chunk->model.materials[0].shader = world.lightingShader; // Use the lighting shader for the chunk
+        logger.logf("[iterativeChunk] Chunk (%d, %d, %d) model position (%.2f, %.2f, %.2f)\n",
+            cx, cy, cz, chunk->model.transform.m0, chunk->model.transform.m5, chunk->model.transform.m10);
+        auto inserted = planetoid->chunkChildren.emplace(Int3{cx, cy, cz}, std::move(chunk));
+        planetoid->chunkChildren[Int3{cx, cy, cz}]->assignNeighborsAndNotify(planetoid->chunkChildren);
         if (inserted.second) {
             inserted.first->second->isActive = true;
             inserted.first->second->parent = planetoid; // Set parent pointer for correct transform
@@ -498,47 +724,13 @@ void generatePlanetoid(float randScale,std::string name, Scene& world, Vector3 p
     }
     logger.logf("Generating planetoid at (%f, %f, %f) with size %zu and scale %.2f with noise frequency %.4f...\n", position.x, position.y, position.z, size, scale,(1.5f+frequencyNoise)/static_cast<float>(size));
 
+    clock_t genStart = clock();
     // Use iterative chunk generation
     iterativeChunk(0, 0, 0, position, rotation, color, scale, noise, planetoid, world); 
-    
-    // Normal vector post processing
-    std::vector<Chunk*> allChunks;
-    for (auto& [key, chunkObject] : planetoid->chunkChildren) {
-        if (!chunkObject->chunk.vertices.empty()) {
-            allChunks.push_back(&chunkObject->chunk);
-        }
-    }
-    smoothNormalsAcrossChunks(allChunks); // No quantization, use exact world position
-    // Re-upload smoothed normals to GPU for each chunk
-    for (Chunk* chunk : allChunks) {
-        UpdateMeshBuffer(chunk->mesh, 2, chunk->mesh.normals, chunk->mesh.vertexCount * 3 * sizeof(float), 0);
-    }
-
-    // --- Check normal discontinuities at all chunk borders ---
-    // For each chunk, check +X, +Y, +Z neighbors
-    for (const auto& [key, chunkObjA] : planetoid->chunkChildren) {
-        if (!chunkObjA || chunkObjA->chunk.vertices.empty()) continue;
-        int cx = key.x, cy = key.y, cz = key.z;
-        // +X neighbor
-        Int3 keyX{cx+1, cy, cz};
-        auto itX = planetoid->chunkChildren.find(keyX);
-        if (itX != planetoid->chunkChildren.end() && itX->second && !itX->second->chunk.vertices.empty()) {
-            logNormalDiscontinuitiesAtBorders(chunkObjA->chunk, itX->second->chunk, 'x');
-        }
-        // +Y neighbor
-        Int3 keyY{cx, cy+1, cz};
-        auto itY = planetoid->chunkChildren.find(keyY);
-        if (itY != planetoid->chunkChildren.end() && itY->second && !itY->second->chunk.vertices.empty()) {
-            logNormalDiscontinuitiesAtBorders(chunkObjA->chunk, itY->second->chunk, 'y');
-        }
-        // +Z neighbor
-        Int3 keyZ{cx, cy, cz+1};
-        auto itZ = planetoid->chunkChildren.find(keyZ);
-        if (itZ != planetoid->chunkChildren.end() && itZ->second && !itZ->second->chunk.vertices.empty()) {
-            logNormalDiscontinuitiesAtBorders(chunkObjA->chunk, itZ->second->chunk, 'z');
-        }
-    }
-
+    clock_t genEnd = clock();
+    double genTime = static_cast<double>(genEnd - genStart) / CLOCKS_PER_SEC;
+    logger.logf("Chunks generated in %.2f seconds at position (%f, %f, %f) with size %zu and scale %.2f.\n", 
+        genTime, position.x, position.y, position.z, size, scale);
 
     planetoid->isActive = true; // Set the planetoid as active
     delete noise; // Clean up the noise instance
@@ -582,7 +774,7 @@ int generatePlanetoids(float randScale, Scene& world, float genRange, float minS
 
         // Size is a random float between minSize and maxSize
         size_t size = static_cast<size_t>((distrib(gen)/randScale)*(maxSize-minSize)) + static_cast<size_t>(minSize);
-        size = 100; // Fixed size for testing
+        size = 50; // Fixed size for testing
 
         // Scale is a fixed value for now, can be adjusted later
         float scale = 1.0f;

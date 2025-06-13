@@ -5,8 +5,7 @@
 
 struct EdgeCacheEntry {
     int vertexIdx;
-    Vector3 normal;
-    EdgeCacheEntry() : vertexIdx(-1), normal({0,0,0}) {}
+    EdgeCacheEntry() : vertexIdx(-1) {}
 };
 
 #endif // EDGECACHE_H

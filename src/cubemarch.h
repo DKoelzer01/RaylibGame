@@ -41,7 +41,6 @@ void marchCube(
     std::vector<float>& noiseValues, int size,
     std::vector<Vector3>& vertices,
     std::vector<int>& indices,
-    std::vector<Vector3>& normals,
     std::vector<EdgeCacheEntry>* edgeCacheLocal,
     std::vector<EdgeCacheEntry>* edgeCacheX,
     std::vector<EdgeCacheEntry>* edgeCacheY,

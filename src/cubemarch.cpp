@@ -94,71 +94,12 @@ T clamp(T v, T lo, T hi) {
     return v;
 }
 
-// Helper to sample noise at floating-point position, using world coordinates if out of chunk bounds
-static float sampleNoiseGlobal(const std::vector<float>& noise, int size, float x, float y, float z, const Vector3& chunkOrigin, SimplexNoise* simplexNoise, Planetoid* planetoid) {
-    // If in bounds, use chunk noise
-    if (x >= 0 && x < size && y >= 0 && y < size && z >= 0 && z < size) {
-        int ix = static_cast<int>(x);
-        int iy = static_cast<int>(y);
-        int iz = static_cast<int>(z);
-        ix = clamp(ix, 0, size-1);
-        iy = clamp(iy, 0, size-1);
-        iz = clamp(iz, 0, size-1);
-        return noise[ix + iy*size + iz*size*size];
-    } else {
-        // Out of bounds: sample global noise using world coordinates
-        float wx = chunkOrigin.x + x;
-        float wy = chunkOrigin.y + y;
-        float wz = chunkOrigin.z + z;
-        return simplexNoise->fractal(4, wx, wy, wz) + 1.0f; // Add 1.0f to match chunk noise range
-    }
-}
-
-// Trilinear interpolation for noise sampling at floating-point positions
-static float sampleNoiseTrilinear(const std::vector<float>& noise, int size, float x, float y, float z, const Vector3& chunkOrigin, SimplexNoise* simplexNoise, Planetoid* planetoid) {
-    // Integer grid points
-    int x0 = static_cast<int>(floorf(x));
-    int x1 = x0 + 1;
-    int y0 = static_cast<int>(floorf(y));
-    int y1 = y0 + 1;
-    int z0 = static_cast<int>(floorf(z));
-    int z1 = z0 + 1;
-    // Fractions
-    float fx = x - x0;
-    float fy = y - y0;
-    float fz = z - z0;
-    // Clamp to valid range
-    x0 = clamp(x0, 0, size-1); x1 = clamp(x1, 0, size-1);
-    y0 = clamp(y0, 0, size-1); y1 = clamp(y1, 0, size-1);
-    z0 = clamp(z0, 0, size-1); z1 = clamp(z1, 0, size-1);
-
-    // Sample 8 corners
-    float c000 = sampleNoiseGlobal(noise, size, x0, y0, z0, chunkOrigin, simplexNoise, planetoid);
-    float c100 = sampleNoiseGlobal(noise, size, x1, y0, z0, chunkOrigin, simplexNoise, planetoid);
-    float c010 = sampleNoiseGlobal(noise, size, x0, y1, z0, chunkOrigin, simplexNoise, planetoid);
-    float c110 = sampleNoiseGlobal(noise, size, x1, y1, z0, chunkOrigin, simplexNoise, planetoid);
-    float c001 = sampleNoiseGlobal(noise, size, x0, y0, z1, chunkOrigin, simplexNoise, planetoid);
-    float c101 = sampleNoiseGlobal(noise, size, x1, y0, z1, chunkOrigin, simplexNoise, planetoid);
-    float c011 = sampleNoiseGlobal(noise, size, x0, y1, z1, chunkOrigin, simplexNoise, planetoid);
-    float c111 = sampleNoiseGlobal(noise, size, x1, y1, z1, chunkOrigin, simplexNoise, planetoid);
-    // Interpolate
-    float c00 = c000 * (1 - fx) + c100 * fx;
-    float c01 = c001 * (1 - fx) + c101 * fx;
-    float c10 = c010 * (1 - fx) + c110 * fx;
-    float c11 = c011 * (1 - fx) + c111 * fx;
-    float c0 = c00 * (1 - fy) + c10 * fy;
-    float c1 = c01 * (1 - fy) + c11 * fy;
-    float c = c0 * (1 - fz) + c1 * fz;
-    return c;
-}
-
 // Call this for each cube
 void marchCube(
     int x, int y, int z,
     std::vector<float>& noiseValues, int size,
     std::vector<Vector3>& vertices,
     std::vector<int>& indices,
-    std::vector<Vector3>& normals, // NEW
     std::vector<EdgeCacheEntry>* edgeCacheLocal,
     std::vector<EdgeCacheEntry>* edgeCacheX,
     std::vector<EdgeCacheEntry>* edgeCacheY,
@@ -213,17 +154,13 @@ void marchCube(
                 cache = edgeCacheLocal;
             }
             int cachedIdx = -1;
-            Vector3 cachedNormal = {0,0,0};
             if (flatIdx < cache->size() && (*cache)[flatIdx].vertexIdx != -1) {
                 cachedIdx = (*cache)[flatIdx].vertexIdx;
-                cachedNormal = (*cache)[flatIdx].normal;
             }
             if (cachedIdx != -1) {
-                // logger.logf("[EdgeCache] HIT: cache=%p flatIdx=%zu -> idx=%d (normal: %.4f %.4f %.4f)\n", (void*)cache, flatIdx, cachedIdx, cachedNormal.x, cachedNormal.y, cachedNormal.z);
                 triIdx[v] = static_cast<size_t>(cachedIdx);
                 // No normals.push_back or normal computation here!
             } else {
-                // Compute new vertex and normal
                 Vector3 pos_a = { static_cast<float>(x + CUBE_VERTICES[v0i][0]), static_cast<float>(y + CUBE_VERTICES[v0i][1]), static_cast<float>(z + CUBE_VERTICES[v0i][2]) };
                 Vector3 pos_b = { static_cast<float>(x + CUBE_VERTICES[v1i][0]), static_cast<float>(y + CUBE_VERTICES[v1i][1]), static_cast<float>(z + CUBE_VERTICES[v1i][2]) };
                 auto idx_local = [size](int x, int y, int z) -> int {
@@ -238,32 +175,11 @@ void marchCube(
                     pos_a.y + t * (pos_b.y - pos_a.y),
                     pos_a.z + t * (pos_b.z - pos_a.z)
                 };
-                // Remove all snapping and rounding logic
-                position.x -= chunkOrigin.x;
-                position.y -= chunkOrigin.y;
-                position.z -= chunkOrigin.z;
+                // Store mesh vertices in chunk-local space (no chunkOrigin offset)
                 vertices.push_back(position);
-                // For normal calculation, use world coordinates
-                Vector3 worldPos = { position.x + chunkOrigin.x, position.y + chunkOrigin.y, position.z + chunkOrigin.z };
-                float eps = 1e-3f;
-                Vector3 grad = {
-                    sampleNoiseTrilinear(noiseValues, size, worldPos.x + eps, worldPos.y, worldPos.z, chunkOrigin, simplexNoise, planetoid) - sampleNoiseTrilinear(noiseValues, size, worldPos.x - eps, worldPos.y, worldPos.z, chunkOrigin, simplexNoise, planetoid),
-                    sampleNoiseTrilinear(noiseValues, size, worldPos.x, worldPos.y + eps, worldPos.z, chunkOrigin, simplexNoise, planetoid) - sampleNoiseTrilinear(noiseValues, size, worldPos.x, worldPos.y - eps, worldPos.z, chunkOrigin, simplexNoise, planetoid),
-                    sampleNoiseTrilinear(noiseValues, size, worldPos.x, worldPos.y, worldPos.z + eps, chunkOrigin, simplexNoise, planetoid) - sampleNoiseTrilinear(noiseValues, size, worldPos.x, worldPos.y, worldPos.z - eps, chunkOrigin, simplexNoise, planetoid)
-                };
-                float length = sqrtf(grad.x * grad.x + grad.y * grad.y + grad.z * grad.z);
-                if (length > 1e-6f) {
-                    grad.x /= length;
-                    grad.y /= length;
-                    grad.z /= length;
-                }
-                Vector3 normal = { -grad.x, -grad.y, -grad.z };
-                normals.push_back(normal);
                 size_t idx = vertices.size() - 1;
                 if (flatIdx < cache->size()) {
                     (*cache)[flatIdx].vertexIdx = static_cast<int>(idx);
-                    (*cache)[flatIdx].normal = normal;
-                    //logger.logf("[EdgeCache] MISS: cache=%p flatIdx=%zu -> idx=%zu (normal: %.4f %.4f %.4f)\n", (void*)cache, flatIdx, idx, normal.x, normal.y, normal.z);
                 }
                 triIdx[v] = idx;
             }
@@ -272,7 +188,5 @@ void marchCube(
         indices.push_back(triIdx[1]);
         indices.push_back(triIdx[2]);
     }
-    // Assert to ensure normals and vertices are always aligned
-    assert(normals.size() == vertices.size() && "Normals and vertices arrays must always be aligned!");
-    // No post-process normalization or accumulation needed
+    // No normals generated here; handled by Chunk::calculateNormals
 }

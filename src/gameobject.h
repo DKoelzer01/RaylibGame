@@ -20,14 +20,4 @@ class GameObject: public Object {
         void drawDepthOnly(const Matrix& lightSpaceMatrix, Shader* depthShader) override;
 };
 
-class ChunkObject: public GameObject {
-    public:
-        Chunk chunk; // Store chunk data
-        ChunkObject(std::string type,std::string name, Vector3 position, Vector3 rotation, Color color, float scale, Chunk chunk);
-        virtual ~ChunkObject();
-
-        void draw(Shader* lightingShader) override;
-        void drawDepthOnly(const Matrix& lightSpaceMatrix, Shader* depthShader) override;
-};
-
 #endif

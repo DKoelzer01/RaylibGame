@@ -57,7 +57,7 @@ void Scene::updateAllChunkShaders() {
         auto planetoid = dynamic_cast<Planetoid*>(objPtr.get());
         if (planetoid) {
             for (auto& chunkPair : planetoid->chunkChildren) {
-                chunkPair.second->chunk.model.materials[0].shader = lightingShader;
+                chunkPair.second->model.materials[0].shader = lightingShader;
             }
         }
     }
@@ -65,7 +65,7 @@ void Scene::updateAllChunkShaders() {
 
 void Scene::drawScene(int gamestate) {
     if (!isActive) return; // Skip drawing if the scene is not active
-
+    
     // --- Compute light view/projection matrix for shadow mapping ---
     // Make the directional light follow the camera/player
     Vector3 cameraPosVec = camera.position;

@@ -86,8 +86,8 @@ void main()
     }
     // Visualize normals as color for debugging
     // finalColor = vec4(vec3(shadow), 1.0); // Debug: visualize shadow factor
-    // finalColor = vec4(normal * 0.5 + 0.5, 1.0);
-    finalColor = vec4(fragPosition * 0.5 + 0.5, 1.0); // Debug: visualize fragment position
+    finalColor = vec4(normal * 0.5 + 0.5, 1.0);
+    // finalColor = vec4(fragPosition * 0.5 + 0.5, 1.0); // Debug: visualize fragment position
     // finalColor = vec4(projCoords, 1.0); // Debug: visualize projected coordinates
     // finalColor = vec4(closestDepth, currentDepth, 0.0, 1.0); // Debug: visualize depth values
     // finalColor = vec4(fragTexCoord, 0.0,1.0);
