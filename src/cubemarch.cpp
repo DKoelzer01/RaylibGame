@@ -219,7 +219,7 @@ void marchCube(
                 cachedNormal = (*cache)[flatIdx].normal;
             }
             if (cachedIdx != -1) {
-                // Use cached vertex index and its cached normal; do NOT recompute or accumulate
+                // logger.logf("[EdgeCache] HIT: cache=%p flatIdx=%zu -> idx=%d (normal: %.4f %.4f %.4f)\n", (void*)cache, flatIdx, cachedIdx, cachedNormal.x, cachedNormal.y, cachedNormal.z);
                 triIdx[v] = static_cast<size_t>(cachedIdx);
                 // No normals.push_back or normal computation here!
             } else {
@@ -238,19 +238,7 @@ void marchCube(
                     pos_a.y + t * (pos_b.y - pos_a.y),
                     pos_a.z + t * (pos_b.z - pos_a.z)
                 };
-                // Snap to chunk borders if very close (for seamless seams)
-                float borderEps = 1e-3f; // Increased epsilon
-                if (fabs(position.x) < borderEps) position.x = 0.0f;
-                if (fabs(position.x - CHUNK_SIZE) < borderEps) position.x = (float)CHUNK_SIZE;
-                if (fabs(position.y) < borderEps) position.y = 0.0f;
-                if (fabs(position.y - CHUNK_SIZE) < borderEps) position.y = (float)CHUNK_SIZE;
-                if (fabs(position.z) < borderEps) position.z = 0.0f;
-                if (fabs(position.z - CHUNK_SIZE) < borderEps) position.z = (float)CHUNK_SIZE;
-                // Round to fixed precision to avoid floating-point drift
-                auto round6 = [](float v) { return std::round(v * 1e6f) / 1e6f; };
-                position.x = round6(position.x);
-                position.y = round6(position.y);
-                position.z = round6(position.z);
+                // Remove all snapping and rounding logic
                 position.x -= chunkOrigin.x;
                 position.y -= chunkOrigin.y;
                 position.z -= chunkOrigin.z;
@@ -275,6 +263,7 @@ void marchCube(
                 if (flatIdx < cache->size()) {
                     (*cache)[flatIdx].vertexIdx = static_cast<int>(idx);
                     (*cache)[flatIdx].normal = normal;
+                    //logger.logf("[EdgeCache] MISS: cache=%p flatIdx=%zu -> idx=%zu (normal: %.4f %.4f %.4f)\n", (void*)cache, flatIdx, idx, normal.x, normal.y, normal.z);
                 }
                 triIdx[v] = idx;
             }

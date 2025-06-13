@@ -7,6 +7,7 @@
 #include "object.h"
 #include "SimplexNoise.h"
 #include "edgecache.h" // EdgeCacheEntry is now defined here
+#include <raylib.h>
 
 
 // Forward declaration for ChunkObject
@@ -37,6 +38,15 @@ namespace std {
         }
     };
 }
+
+struct Vector3Hash {
+    std::size_t operator()(const Vector3& v) const {
+        std::size_t hx = std::hash<float>()(v.x);
+        std::size_t hy = std::hash<float>()(v.y);
+        std::size_t hz = std::hash<float>()(v.z);
+        return ((hx ^ (hy << 1)) >> 1) ^ (hz << 1);
+    }
+};
 
 
 struct Chunk {

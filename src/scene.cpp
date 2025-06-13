@@ -84,15 +84,15 @@ void Scene::drawScene(int gamestate) {
     Matrix lightProj = MatrixOrtho(-orthoSize, orthoSize, -orthoSize, orthoSize, 1.0f, 1000.0f);
     lightSpaceMatrix = MatrixMultiply(lightProj, lightView);    
 
-    logger.logf("lightSpaceMatrix: \n"
-                "  m0: %f, m1: %f, m2: %f, m3: %f\n"
-                "  m4: %f, m5: %f, m6: %f, m7: %f\n"
-                "  m8: %f, m9: %f, m10: %f, m11: %f\n"
-                "  m12: %f, m13: %f, m14: %f, m15: %f\n",
-                lightSpaceMatrix.m0, lightSpaceMatrix.m1, lightSpaceMatrix.m2, lightSpaceMatrix.m3,
-                lightSpaceMatrix.m4, lightSpaceMatrix.m5, lightSpaceMatrix.m6, lightSpaceMatrix.m7,
-                lightSpaceMatrix.m8, lightSpaceMatrix.m9, lightSpaceMatrix.m10, lightSpaceMatrix.m11,
-                lightSpaceMatrix.m12, lightSpaceMatrix.m13, lightSpaceMatrix.m14, lightSpaceMatrix.m15);
+    // logger.logf("lightSpaceMatrix: \n"
+    //             "  m0: %f, m1: %f, m2: %f, m3: %f\n"
+    //             "  m4: %f, m5: %f, m6: %f, m7: %f\n"
+    //             "  m8: %f, m9: %f, m10: %f, m11: %f\n"
+    //             "  m12: %f, m13: %f, m14: %f, m15: %f\n",
+    //             lightSpaceMatrix.m0, lightSpaceMatrix.m1, lightSpaceMatrix.m2, lightSpaceMatrix.m3,
+    //             lightSpaceMatrix.m4, lightSpaceMatrix.m5, lightSpaceMatrix.m6, lightSpaceMatrix.m7,
+    //             lightSpaceMatrix.m8, lightSpaceMatrix.m9, lightSpaceMatrix.m10, lightSpaceMatrix.m11,
+    //             lightSpaceMatrix.m12, lightSpaceMatrix.m13, lightSpaceMatrix.m14, lightSpaceMatrix.m15);
     // --- Shadow map render pass ---
     BeginTextureMode(shadowMap);
     ClearBackground(BLACK);
@@ -137,24 +137,24 @@ void Scene::drawScene(int gamestate) {
     for (const auto& light : lights) { 
     if (!light.enabled) continue; // Skip disabled lights
         // Draw light source as a sphere at the light position
-        logger.logf("Drawing light: %s at position (%f, %f, %f) color (%d, %d, %d)\n",
-            light.type == LIGHT_DIRECTIONAL ? "Directional" : "Point",
-            light.position.x, light.position.y, light.position.z,
-            light.color.r, light.color.g, light.color.b);
+        // logger.logf("Drawing light: %s at position (%f, %f, %f) color (%d, %d, %d)\n",
+        //     light.type == LIGHT_DIRECTIONAL ? "Directional" : "Point",
+        //     light.position.x, light.position.y, light.position.z,
+        //     light.color.r, light.color.g, light.color.b);
         DrawSphere(light.position, 20.0f, ColorAlpha(RED, 0.5f));
         UpdateLightValues(lightingShader, light);
     }
 
     BeginShaderMode(lightingShader);
-    logger.logf("Drawing %zu objects\n", objects.size());
+    // logger.logf("Drawing %zu objects\n", objects.size());
 for (const auto& objPtr : objects) {
         if (!objPtr) continue;
-        logger.logf("[Scene] Drawing object: %s at ptr %p\n", objPtr->name.c_str(), objPtr.get());
+        // logger.logf("[Scene] Drawing object: %s at ptr %p\n", objPtr->name.c_str(), objPtr.get());
         objPtr->draw(&lightingShader);
     }
     for (const auto& objPtr : rootObject.children) {
         if(!objPtr) continue;
-        logger.logf("[Scene] Drawing root object: %s at ptr %p\n", objPtr->name.c_str(), objPtr.get());
+        // logger.logf("[Scene] Drawing root object: %s at ptr %p\n", objPtr->name.c_str(), objPtr.get());
         objPtr->draw(&lightingShader); 
     }
     EndShaderMode();

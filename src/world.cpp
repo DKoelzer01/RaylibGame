@@ -83,58 +83,13 @@ void worldHandler(Scene& world) {
     loadWorld(world);
 } 
 
-void writeNoiseValuesToFile(const std::vector<float>& noiseValues, int size, const std::string& filename) {
-    std::ofstream out(filename);
-    if (!out.is_open()) {
-        std::cerr << "Failed to open file for writing noise values: " << filename << std::endl;
-        return;
-    }
-    // Write size as header (optional, for reference)
-    out << "Size: " << size << "\n";
-    // Write noise values in a human-readable 3D format
-    for (int z = 0; z < size; ++z) {
-        out << "z = " << z << ":\n";
-        for (int y = 0; y < size; ++y) {
-            for (int x = 0; x < size; ++x) {
-                int idx = x + y * size + z * size * size;
-                out << noiseValues[idx];
-                if (x < size - 1) out << ", ";
-            }
-            out << "\n";
-        }
-        out << "\n";
-    }
-    out.close();
-}
-
-// Hash for tuple<int, int, int> for unordered_map
-struct Tuple3Hash {
-    std::size_t operator()(const std::tuple<int,int,int>& t) const {
-        std::size_t h1 = std::hash<int>()(std::get<0>(t));
-        std::size_t h2 = std::hash<int>()(std::get<1>(t));
-        std::size_t h3 = std::hash<int>()(std::get<2>(t));
-        return ((h1 ^ (h2 << 1)) >> 1) ^ (h3 << 1);
-    }
-};
-
-// Helper: quantize a world position to a grid for normal smoothing
-static inline std::tuple<int,int,int> quantizePosition(const Vector3& pos, float cellSize) {
-    return std::make_tuple(
-        static_cast<int>(std::round(pos.x / cellSize)),
-        static_cast<int>(std::round(pos.y / cellSize)),
-        static_cast<int>(std::round(pos.z / cellSize))
-    );
-}
-
-// Smooth normals across a set of chunks (the new chunk and its neighbors)
-void smoothNormalsAcrossChunks(const std::vector<Chunk*>& chunks, float cellSize) {
-    using PosKey = std::tuple<int,int,int>;
+// Smooth normals across a set of chunks (the new chunk and its neighbors) using exact world position (float equality)
+void smoothNormalsAcrossChunks(const std::vector<Chunk*>& chunks) {
     struct NormalRef { Chunk* chunk; size_t idx; };
-    std::unordered_map<PosKey, std::vector<NormalRef>, Tuple3Hash> posMap;
+    std::unordered_map<Vector3, std::vector<NormalRef>, Vector3Hash> posMap;
     // Build map
     for (Chunk* chunk : chunks) {
         if (!chunk || chunk->mesh.vertexCount == 0 || !chunk->mesh.vertices || !chunk->mesh.normals) continue;
-        // Compute chunk world origin
         float chunkOriginX = static_cast<float>(chunk->position.x * CHUNK_SIZE);
         float chunkOriginY = static_cast<float>(chunk->position.y * CHUNK_SIZE);
         float chunkOriginZ = static_cast<float>(chunk->position.z * CHUNK_SIZE);
@@ -143,47 +98,12 @@ void smoothNormalsAcrossChunks(const std::vector<Chunk*>& chunks, float cellSize
             float vy = chunk->mesh.vertices[i * 3 + 1];
             float vz = chunk->mesh.vertices[i * 3 + 2];
             Vector3 worldPos = { vx + chunkOriginX, vy + chunkOriginY, vz + chunkOriginZ };
-            PosKey key = quantizePosition(worldPos, cellSize);
-            // Diagnostic: log border vertices and their quantized keys
-            float borderEps = 1e-2f;
-            bool nearBorder =
-                (fabs(fmod(worldPos.x, CHUNK_SIZE)) < borderEps || fabs(fmod(worldPos.x, CHUNK_SIZE) - CHUNK_SIZE) < borderEps ||
-                 fabs(fmod(worldPos.y, CHUNK_SIZE)) < borderEps || fabs(fmod(worldPos.y, CHUNK_SIZE) - CHUNK_SIZE) < borderEps ||
-                 fabs(fmod(worldPos.z, CHUNK_SIZE)) < borderEps || fabs(fmod(worldPos.z, CHUNK_SIZE) - CHUNK_SIZE) < borderEps);
-            if (nearBorder) {
-                logger.logf("[NormalSmooth] Border vertex: worldPos=(%.6f,%.6f,%.6f) quantKey=(%d,%d,%d) chunk=(%d,%d,%d) idx=%d\n",
-                    worldPos.x, worldPos.y, worldPos.z,
-                    std::get<0>(key), std::get<1>(key), std::get<2>(key),
-                    chunk->position.x, chunk->position.y, chunk->position.z, i);
-            }
-            posMap[key].push_back({chunk, static_cast<size_t>(i)});
+            posMap[worldPos].push_back({chunk, static_cast<size_t>(i)});
         }
     }
     // For each shared position, average normals and assign back
     for (const auto& kv : posMap) {
-        if (kv.second.size() < 2) {
-            // Diagnostic: log border vertices that are not shared
-            if (kv.second.size() == 1) {
-                Chunk* chunk = kv.second[0].chunk;
-                size_t idx = kv.second[0].idx;
-                float* v = &chunk->mesh.vertices[idx * 3];
-                float chunkOriginX = static_cast<float>(chunk->position.x * CHUNK_SIZE);
-                float chunkOriginY = static_cast<float>(chunk->position.y * CHUNK_SIZE);
-                float chunkOriginZ = static_cast<float>(chunk->position.z * CHUNK_SIZE);
-                Vector3 worldPos = { v[0] + chunkOriginX, v[1] + chunkOriginY, v[2] + chunkOriginZ };
-                float borderEps = 1e-4f; // Tighter epsilon for border check
-                if (
-                    fabs(fmod(worldPos.x, CHUNK_SIZE)) < borderEps || fabs(fmod(worldPos.x, CHUNK_SIZE) - CHUNK_SIZE) < borderEps ||
-                    fabs(fmod(worldPos.y, CHUNK_SIZE)) < borderEps || fabs(fmod(worldPos.y, CHUNK_SIZE) - CHUNK_SIZE) < borderEps ||
-                    fabs(fmod(worldPos.z, CHUNK_SIZE)) < borderEps || fabs(fmod(worldPos.z, CHUNK_SIZE) - CHUNK_SIZE) < borderEps) {
-                    logger.logf("[NormalSmooth] Border vertex NOT SHARED: worldPos=(%.8f,%.8f,%.8f) quantKey=(%d,%d,%d) chunk=(%d,%d,%d) idx=%zu\n",
-                        worldPos.x, worldPos.y, worldPos.z,
-                        std::get<0>(kv.first), std::get<1>(kv.first), std::get<2>(kv.first),
-                        chunk->position.x, chunk->position.y, chunk->position.z, idx);
-                }
-            }
-            continue; // Only care about shared verts
-        }
+        if (kv.second.size() < 2) continue;
         Vector3 avg = {0,0,0};
         for (const auto& ref : kv.second) {
             float* n = &ref.chunk->mesh.normals[ref.idx * 3];
@@ -199,140 +119,6 @@ void smoothNormalsAcrossChunks(const std::vector<Chunk*>& chunks, float cellSize
             float* n = &ref.chunk->mesh.normals[ref.idx * 3];
             n[0] = avg.x; n[1] = avg.y; n[2] = avg.z;
         }
-    }
-    // Extra: For all border vertices, log their world positions and quantized keys for further diagnosis
-    for (Chunk* chunk : chunks) {
-        if (!chunk || chunk->mesh.vertexCount == 0 || !chunk->mesh.vertices) continue;
-        float chunkOriginX = static_cast<float>(chunk->position.x * CHUNK_SIZE);
-        float chunkOriginY = static_cast<float>(chunk->position.y * CHUNK_SIZE);
-        float chunkOriginZ = static_cast<float>(chunk->position.z * CHUNK_SIZE);
-        for (int i = 0; i < chunk->mesh.vertexCount; ++i) {
-            float vx = chunk->mesh.vertices[i * 3 + 0];
-            float vy = chunk->mesh.vertices[i * 3 + 1];
-            float vz = chunk->mesh.vertices[i * 3 + 2];
-            Vector3 worldPos = { vx + chunkOriginX, vy + chunkOriginY, vz + chunkOriginZ };
-            float borderEps = 1e-4f;
-            if (
-                fabs(fmod(worldPos.x, CHUNK_SIZE)) < borderEps || fabs(fmod(worldPos.x, CHUNK_SIZE) - CHUNK_SIZE) < borderEps ||
-                fabs(fmod(worldPos.y, CHUNK_SIZE)) < borderEps || fabs(fmod(worldPos.y, CHUNK_SIZE) - CHUNK_SIZE) < borderEps ||
-                fabs(fmod(worldPos.z, CHUNK_SIZE)) < borderEps || fabs(fmod(worldPos.z, CHUNK_SIZE) - CHUNK_SIZE) < borderEps) {
-                auto quantKey = quantizePosition(worldPos, cellSize);
-                logger.logf("[NormalSmooth] Border vertex: worldPos=(%.8f,%.8f,%.8f) quantKey=(%d,%d,%d) chunk=(%d,%d,%d) idx=%d\n",
-                    worldPos.x, worldPos.y, worldPos.z,
-                    std::get<0>(quantKey), std::get<1>(quantKey), std::get<2>(quantKey),
-                    chunk->position.x, chunk->position.y, chunk->position.z, i);
-            }
-        }
-    }
-}
-
-void checkChunkBorderPositions(
-    const Vector3& chunkOffsetA, const Vector3& chunkOffsetB,
-    int size, char axis)
-{
-    // axis: 'x', 'y', or 'z'
-    int mismatches = 0;
-    float epsilon = 1e-6f;
-    if (axis == 'x') {
-        for (int z = 0; z < size; ++z) {
-            for (int y = 0; y < size; ++y) {
-                float wxA = chunkOffsetA.x + (size - 1);
-                float wyA = chunkOffsetA.y + y;
-                float wzA = chunkOffsetA.z + z;
-                float wxB = chunkOffsetB.x + 0;
-                float wyB = chunkOffsetB.y + y;
-                float wzB = chunkOffsetB.z + z;
-                if (fabs(wxA - wxB) > epsilon || fabs(wyA - wyB) > epsilon || fabs(wzA - wzB) > epsilon) {
-                    logger.logf("X border position mismatch at (y=%d, z=%d): (%.8f,%.8f,%.8f) vs (%.8f,%.8f,%.8f)\n",
-                        y, z, wxA, wyA, wzA, wxB, wyB, wzB);
-                    ++mismatches;
-                }
-            }
-        }
-    } else if (axis == 'y') {
-        for (int z = 0; z < size; ++z) {
-            for (int x = 0; x < size; ++x) {
-                float wxA = chunkOffsetA.x + x;
-                float wyA = chunkOffsetA.y + (size - 1);
-                float wzA = chunkOffsetA.z + z;
-                float wxB = chunkOffsetB.x + x;
-                float wyB = chunkOffsetB.y + 0;
-                float wzB = chunkOffsetB.z + z;
-                if (fabs(wxA - wxB) > epsilon || fabs(wyA - wyB) > epsilon || fabs(wzA - wzB) > epsilon) {
-                    logger.logf("Y border position mismatch at (x=%d, z=%d): (%.8f,%.8f,%.8f) vs (%.8f,%.8f,%.8f)\n",
-                        x, z, wxA, wyA, wzA, wxB, wyB, wzB);
-                    ++mismatches;
-                }
-            }
-        }
-    } else if (axis == 'z') {
-        for (int y = 0; y < size; ++y) {
-            for (int x = 0; x < size; ++x) {
-                float wxA = chunkOffsetA.x + x;
-                float wyA = chunkOffsetA.y + y;
-                float wzA = chunkOffsetA.z + (size - 1);
-                float wxB = chunkOffsetB.x + x;
-                float wyB = chunkOffsetB.y + y;
-                float wzB = chunkOffsetB.z + 0;
-                if (fabs(wxA - wxB) > epsilon || fabs(wyA - wyB) > epsilon || fabs(wzA - wzB) > epsilon) {
-                    logger.logf("Z border position mismatch at (x=%d, y=%d): (%.8f,%.8f,%.8f) vs (%.8f,%.8f,%.8f)\n",
-                        x, y, wxA, wyA, wzA, wxB, wyB, wzB);
-                    ++mismatches;
-                }
-            }
-        }
-    }
-    if (mismatches == 0) {
-        logger.logf("No floating-point mismatches found on %c face!\n", axis);
-    } else {
-        logger.logf("Total %d floating-point mismatches found on %c face.\n", mismatches, axis);
-    }
-}
-
-void checkChunkBorderNoise(
-    const std::vector<float>& chunkA, const std::vector<float>& chunkB,
-    int size, char axis)
-{
-    // axis: 'x', 'y', or 'z'
-    int mismatches = 0;
-    if (axis == 'x') {
-        for (int z = 0; z < size; ++z) {
-            for (int y = 0; y < size; ++y) {
-                int idxA = (size - 1) + y * size + z * size * size;
-                int idxB = 0 + y * size + z * size * size;
-                if (fabs(chunkA[idxA] - chunkB[idxB]) > 1e-6f) {
-                    logger.logf("X mismatch at (y=%d, z=%d): %.8f vs %.8f\n", y, z, chunkA[idxA], chunkB[idxB]);
-                    ++mismatches;
-                }
-            }
-        }
-    } else if (axis == 'y') {
-        for (int z = 0; z < size; ++z) {
-            for (int x = 0; x < size; ++x) {
-                int idxA = x + (size - 1) * size + z * size * size;
-                int idxB = x + 0 * size + z * size * size;
-                if (fabs(chunkA[idxA] - chunkB[idxB]) > 1e-6f) {
-                    logger.logf("Y mismatch at (x=%d, z=%d): %.8f vs %.8f\n", x, z, chunkA[idxA], chunkB[idxB]);
-                    ++mismatches;
-                }
-            }
-        }
-    } else if (axis == 'z') {
-        for (int y = 0; y < size; ++y) {
-            for (int x = 0; x < size; ++x) {
-                int idxA = x + y * size + (size - 1) * size * size;
-                int idxB = x + y * size + 0 * size * size;
-                if (fabs(chunkA[idxA] - chunkB[idxB]) > 1e-6f) {
-                    logger.logf("Z mismatch at (x=%d, y=%d): %.8f vs %.8f\n", x, y, chunkA[idxA], chunkB[idxB]);
-                    ++mismatches;
-                }
-            }
-        }
-    }
-    if (mismatches == 0) {
-        logger.logf("No mismatches found on %c face!\n", axis);
-    } else {
-        logger.logf("Total %d mismatches found on %c face.\n", mismatches, axis);
     }
 }
 
@@ -397,28 +183,6 @@ void logNormalDiscontinuitiesAtBorders(Chunk& chunkA, Chunk& chunkB, char axis, 
     }
 }
 
-
-void logNoiseValues(const std::vector<float>& noiseValues, int size) {
-    if (size <= 0) return;
-    logger.logf("Noise values (size %d):\n", size);
-    float minNoise = noiseValues[0];
-    float maxNoise = noiseValues[0];
-    for (int z = 0; z < size; ++z) {
-        logger.logf("z = %d:\n", z);
-        for (int y = 0; y < size; ++y) {
-            for (int x = 0; x < size; ++x) {
-                int idx = x + y * size + z * size * size;
-                if (noiseValues[idx] < minNoise) minNoise = noiseValues[idx];
-                if (noiseValues[idx] > maxNoise) maxNoise = noiseValues[idx];
-                logger.logf("%02.4f ", noiseValues[idx]);
-            }
-            logger.logf("\n");
-        }
-        logger.logf("\n");
-    }
-    logger.logf("Min noise value: %.4f, Max noise value: %.4f\n", minNoise, maxNoise);
-}
-
 void weightNoise(std::vector<float>& noiseValues, int size, const Vector3& chunkWorldPos, const Vector3& planetoidCenter, float falloff, float maxDist) {
     float minScale = 1.0f;
     float maxScale = 0.0f;
@@ -436,7 +200,7 @@ void weightNoise(std::vector<float>& noiseValues, int size, const Vector3& chunk
             }
         }
     }
-    logger.logf("[weightNoise] minScale=%.4f maxScale=%.4f\n", minScale, maxScale);
+    // logger.logf("[weightNoise] minScale=%.4f maxScale=%.4f\n", minScale, maxScale);
 }
 
 void normalizeNoise(std::vector<float>& noiseValues, int size, float scale = 1.0f) {
@@ -478,7 +242,7 @@ void generateWorld(Scene& world) {
 // Update: Now takes chunkWorldPos (relative to planetoid) and origin (planetoid world position)
 Chunk generateChunk(const Vector3& chunkWorldPos, const Vector3& origin, SimplexNoise* noise) {
     Chunk chunk = {};
-    logger.logf("[generateChunk] Generating chunk at chunkWorldPos (%.2f, %.2f, %.2f) and origin (%.2f, %.2f, %.2f)\n", chunkWorldPos.x, chunkWorldPos.y, chunkWorldPos.z, origin.x, origin.y, origin.z);
+    // logger.logf("[generateChunk] Generating chunk at chunkWorldPos (%.2f, %.2f, %.2f) and origin (%.2f, %.2f, %.2f)\n", chunkWorldPos.x, chunkWorldPos.y, chunkWorldPos.z, origin.x, origin.y, origin.z);
     // Allocate noise for this chunk with a 1-voxel border
     const int chunkNoiseSize = (CHUNK_SIZE + 1);
     const int totalNoise = chunkNoiseSize * chunkNoiseSize * chunkNoiseSize;
@@ -520,19 +284,14 @@ void iterativeChunk(int startCx, int startCy, int startCz, const Vector3& origin
             continue;
         }
         planetoid->generatedChunks[ChunkKey] = true;
-        Vector3 chunkWorldPos = {
-            static_cast<float>(cx * CHUNK_SIZE),
-            static_cast<float>(cy * CHUNK_SIZE),
-            static_cast<float>(cz * CHUNK_SIZE)
-        };
         // chunkLocalPos is the chunk's offset within the planetoid (chunk-local)
         Vector3 chunkLocalPos = {
             static_cast<float>(cx * CHUNK_SIZE),
             static_cast<float>(cy * CHUNK_SIZE),
             static_cast<float>(cz * CHUNK_SIZE)
         };
-        logger.logf("[iterativeChunk] Creating ChunkObject at chunkLocalPos (%.2f, %.2f, %.2f) for chunk (%d, %d, %d)",
-            chunkLocalPos.x, chunkLocalPos.y, chunkLocalPos.z, cx, cy, cz);
+        // logger.logf("[iterativeChunk] Creating ChunkObject at chunkLocalPos (%.2f, %.2f, %.2f) for chunk (%d, %d, %d)",
+        //    chunkLocalPos.x, chunkLocalPos.y, chunkLocalPos.z, cx, cy, cz);
         std::string chunkName;
         chunkName.reserve(32);
         chunkName = "chunk_" + std::to_string(cx) + "_" + std::to_string(cy) + "_" + std::to_string(cz);
@@ -554,7 +313,7 @@ void iterativeChunk(int startCx, int startCy, int startCz, const Vector3& origin
         // Log the chunk generation time
         time_t genChunkEnd = clock();
         double genChunkTime = static_cast<double>(genChunkEnd - genChunk) / CLOCKS_PER_SEC;
-        logger.logf("Chunk (%d, %d, %d) generated in %.2f seconds.\n", cx, cy, cz, genChunkTime);
+        logger.logf("Chunk noise (%d, %d, %d) generated in %.2f seconds.\n", cx, cy, cz, genChunkTime);
         if (isAllBelowThreshold(chunk.noiseValues, 0.01f)) { // Lowered threshold
             planetoid->chunkChildren.emplace(std::make_pair(Int3{cx, cy, cz}, std::make_unique<ChunkObject>("chunk", chunkName, chunkLocalPos, rotation, color, scale, chunk)));
             continue;
@@ -567,59 +326,59 @@ void iterativeChunk(int startCx, int startCy, int startCz, const Vector3& origin
         std::vector<EdgeCacheEntry>* edgeCacheXNeg = nullptr;
         std::vector<EdgeCacheEntry>* edgeCacheYNeg = nullptr;
         std::vector<EdgeCacheEntry>* edgeCacheZNeg = nullptr;
-        // Canonical edge cache keying for all 6 faces
-        // +X face: between (cx,cy,cz) and (cx+1,cy,cz), canonical is min(cx,cx+1)
-        auto keyXPos = std::make_tuple(std::min(cx, cx+1), cy, cz, 0); // 0 = X face
+        // For each face, always use the lower chunk coordinate for the cache key
+        // +X face: shared between (cx,cy,cz) and (cx+1,cy,cz), key is (cx,cy,cz,0)
+        auto keyXPos = std::make_tuple(cx, cy, cz, 0);
         if (planetoid->sharedEdgeCaches.count(keyXPos) == 0) {
-            logger.logf("[EdgeCache] Creating edgeCacheXPos for chunk (%d,%d,%d) key (%d,%d,%d,0)\n", cx, cy, cz, std::min(cx, cx+1), cy, cz);
+            logger.logf("[EdgeCache] Creating edgeCacheXPos for chunk (%d,%d,%d) key (%d,%d,%d,0)\n", cx, cy, cz, cx, cy, cz);
             planetoid->sharedEdgeCaches[keyXPos] = std::vector<EdgeCacheEntry>(CHUNK_SIZE * CHUNK_SIZE * 12);
         } else {
-            logger.logf("[EdgeCache] Reusing edgeCacheXPos for chunk (%d,%d,%d) key (%d,%d,%d,0)\n", cx, cy, cz, std::min(cx, cx+1), cy, cz);
+            logger.logf("[EdgeCache] Reusing edgeCacheXPos for chunk (%d,%d,%d) key (%d,%d,%d,0)\n", cx, cy, cz, cx, cy, cz);
         }
         edgeCacheXPos = &planetoid->sharedEdgeCaches[keyXPos];
-        // -X face: between (cx,cy,cz) and (cx-1,cy,cz)
-        auto keyXNeg = std::make_tuple(std::min(cx, cx-1), cy, cz, 0);
+        // -X face: shared between (cx-1,cy,cz) and (cx,cy,cz), key is (cx-1,cy,cz,0)
+        auto keyXNeg = std::make_tuple(cx-1, cy, cz, 0);
         if (planetoid->sharedEdgeCaches.count(keyXNeg) == 0) {
-            logger.logf("[EdgeCache] Creating edgeCacheXNeg for chunk (%d,%d,%d) key (%d,%d,%d,0)\n", cx, cy, cz, std::min(cx, cx-1), cy, cz);
+            logger.logf("[EdgeCache] Creating edgeCacheXNeg for chunk (%d,%d,%d) key (%d,%d,%d,0)\n", cx, cy, cz, cx-1, cy, cz);
             planetoid->sharedEdgeCaches[keyXNeg] = std::vector<EdgeCacheEntry>(CHUNK_SIZE * CHUNK_SIZE * 12);
         } else {
-            logger.logf("[EdgeCache] Reusing edgeCacheXNeg for chunk (%d,%d,%d) key (%d,%d,%d,0)\n", cx, cy, cz, std::min(cx, cx-1), cy, cz);
+            logger.logf("[EdgeCache] Reusing edgeCacheXNeg for chunk (%d,%d,%d) key (%d,%d,%d,0)\n", cx, cy, cz, cx-1, cy, cz);
         }
         edgeCacheXNeg = &planetoid->sharedEdgeCaches[keyXNeg];
-        // +Y face
-        auto keyYPos = std::make_tuple(cx, std::min(cy, cy+1), cz, 1);
+        // +Y face: shared between (cx,cy,cz) and (cx,cy+1,cz), key is (cx,cy,cz,1)
+        auto keyYPos = std::make_tuple(cx, cy, cz, 1);
         if (planetoid->sharedEdgeCaches.count(keyYPos) == 0) {
-            logger.logf("[EdgeCache] Creating edgeCacheYPos for chunk (%d,%d,%d) key (%d,%d,%d,1)\n", cx, cy, cz, cx, std::min(cy, cy+1), cz);
+            logger.logf("[EdgeCache] Creating edgeCacheYPos for chunk (%d,%d,%d) key (%d,%d,%d,1)\n", cx, cy, cz, cx, cy, cz);
             planetoid->sharedEdgeCaches[keyYPos] = std::vector<EdgeCacheEntry>(CHUNK_SIZE * CHUNK_SIZE * 12);
         } else {
-            logger.logf("[EdgeCache] Reusing edgeCacheYPos for chunk (%d,%d,%d) key (%d,%d,%d,1)\n", cx, cy, cz, cx, std::min(cy, cy+1), cz);
+            logger.logf("[EdgeCache] Reusing edgeCacheYPos for chunk (%d,%d,%d) key (%d,%d,%d,1)\n", cx, cy, cz, cx, cy, cz);
         }
         edgeCacheYPos = &planetoid->sharedEdgeCaches[keyYPos];
-        // -Y face
-        auto keyYNeg = std::make_tuple(cx, std::min(cy, cy-1), cz, 1);
+        // -Y face: shared between (cx,cy-1,cz) and (cx,cy,cz), key is (cx,cy-1,cz,1)
+        auto keyYNeg = std::make_tuple(cx, cy-1, cz, 1);
         if (planetoid->sharedEdgeCaches.count(keyYNeg) == 0) {
-            logger.logf("[EdgeCache] Creating edgeCacheYNeg for chunk (%d,%d,%d) key (%d,%d,%d,1)\n", cx, cy, cz, cx, std::min(cy, cy-1), cz);
+            logger.logf("[EdgeCache] Creating edgeCacheYNeg for chunk (%d,%d,%d) key (%d,%d,%d,1)\n", cx, cy, cz, cx, cy-1, cz);
             planetoid->sharedEdgeCaches[keyYNeg] = std::vector<EdgeCacheEntry>(CHUNK_SIZE * CHUNK_SIZE * 12);
         } else {
-            logger.logf("[EdgeCache] Reusing edgeCacheYNeg for chunk (%d,%d,%d) key (%d,%d,%d,1)\n", cx, cy, cz, cx, std::min(cy, cy-1), cz);
+            logger.logf("[EdgeCache] Reusing edgeCacheYNeg for chunk (%d,%d,%d) key (%d,%d,%d,1)\n", cx, cy, cz, cx, cy-1, cz);
         }
         edgeCacheYNeg = &planetoid->sharedEdgeCaches[keyYNeg];
-        // +Z face
-        auto keyZPos = std::make_tuple(cx, cy, std::min(cz, cz+1), 2);
+        // +Z face: shared between (cx,cy,cz) and (cx,cy,cz+1), key is (cx,cy,cz,2)
+        auto keyZPos = std::make_tuple(cx, cy, cz, 2);
         if (planetoid->sharedEdgeCaches.count(keyZPos) == 0) {
-            logger.logf("[EdgeCache] Creating edgeCacheZPos for chunk (%d,%d,%d) key (%d,%d,%d,2)\n", cx, cy, cz, cx, cy, std::min(cz, cz+1));
+            logger.logf("[EdgeCache] Creating edgeCacheZPos for chunk (%d,%d,%d) key (%d,%d,%d,2)\n", cx, cy, cz, cx, cy, cz);
             planetoid->sharedEdgeCaches[keyZPos] = std::vector<EdgeCacheEntry>(CHUNK_SIZE * CHUNK_SIZE * 12);
         } else {
-            logger.logf("[EdgeCache] Reusing edgeCacheZPos for chunk (%d,%d,%d) key (%d,%d,%d,2)\n", cx, cy, cz, cx, cy, std::min(cz, cz+1));
+            logger.logf("[EdgeCache] Reusing edgeCacheZPos for chunk (%d,%d,%d) key (%d,%d,%d,2)\n", cx, cy, cz, cx, cy, cz);
         }
         edgeCacheZPos = &planetoid->sharedEdgeCaches[keyZPos];
-        // -Z face
-        auto keyZNeg = std::make_tuple(cx, cy, std::min(cz, cz-1), 2);
+        // -Z face: shared between (cx,cy,cz-1) and (cx,cy,cz), key is (cx,cy,cz-1,2)
+        auto keyZNeg = std::make_tuple(cx, cy, cz-1, 2);
         if (planetoid->sharedEdgeCaches.count(keyZNeg) == 0) {
-            logger.logf("[EdgeCache] Creating edgeCacheZNeg for chunk (%d,%d,%d) key (%d,%d,%d,2)\n", cx, cy, cz, cx, cy, std::min(cz, cz-1));
+            logger.logf("[EdgeCache] Creating edgeCacheZNeg for chunk (%d,%d,%d) key (%d,%d,%d,2)\n", cx, cy, cz, cx, cy, cz-1);
             planetoid->sharedEdgeCaches[keyZNeg] = std::vector<EdgeCacheEntry>(CHUNK_SIZE * CHUNK_SIZE * 12);
         } else {
-            logger.logf("[EdgeCache] Reusing edgeCacheZNeg for chunk (%d,%d,%d) key (%d,%d,%d,2)\n", cx, cy, cz, cx, cy, std::min(cz, cz-1));
+            logger.logf("[EdgeCache] Reusing edgeCacheZNeg for chunk (%d,%d,%d) key (%d,%d,%d,2)\n", cx, cy, cz, cx, cy, cz-1);
         }
         edgeCacheZNeg = &planetoid->sharedEdgeCaches[keyZNeg];
         // For now, pass +X, +Y, +Z caches to marchCube (legacy interface)
@@ -631,23 +390,6 @@ void iterativeChunk(int startCx, int startCy, int startCz, const Vector3& origin
         normals.reserve(CHUNK_SIZE * CHUNK_SIZE * CHUNK_SIZE * 3 / 2);
         // time_t cubemarchStart = clock();
         
-        // --- Border noise debug logging ---
-        // Define neighbor chunk keys for border noise debug
-        Int3 neighborX{cx+1, cy, cz};
-        Int3 neighborY{cx, cy+1, cz};
-        Int3 neighborZ{cx, cy, cz+1};
-        if (planetoid->generatedChunks.count(neighborX) > 0) {
-            ChunkObject* tempchunk = planetoid->chunkChildren[neighborX].get();
-            checkChunkBorderNoise(chunk.noiseValues, tempchunk->chunk.noiseValues, CHUNK_SIZE + 1, 'x');
-        }
-        if (planetoid->generatedChunks.count(neighborY) > 0) {
-            ChunkObject* tempchunk = planetoid->chunkChildren[neighborY].get();
-            checkChunkBorderNoise(chunk.noiseValues, tempchunk->chunk.noiseValues, CHUNK_SIZE + 1, 'y');
-        }
-        if (planetoid->generatedChunks.count(neighborZ) > 0) {
-            ChunkObject* tempchunk = planetoid->chunkChildren[neighborZ].get();
-            checkChunkBorderNoise(chunk.noiseValues, tempchunk->chunk.noiseValues, CHUNK_SIZE + 1, 'z');
-        }
 
         for(int k = 0; k < CHUNK_SIZE; ++k) {
             for(int j = 0; j < CHUNK_SIZE; ++j) {
@@ -666,11 +408,11 @@ void iterativeChunk(int startCx, int startCy, int startCz, const Vector3& origin
                     marchCube(
                         i, j, k,
                         chunk.noiseValues, CHUNK_SIZE + 1,
-                        chunk.vertices, chunk.indices, normals, // pass normals
+                        chunk.vertices, chunk.indices, normals,
                         &localEdgeCache, edgeCacheX, edgeCacheY, edgeCacheZ,
                         0.5f,
                         cx, cy, cz,
-                        chunkLocalPos, // <-- fix: use chunkLocalPos, not chunkWorldPos
+                        chunkLocalPos,
                         noise,
                         planetoid
                     );
@@ -681,9 +423,6 @@ void iterativeChunk(int startCx, int startCy, int startCz, const Vector3& origin
         // double cubemarchTime = static_cast<double>(cubemarchEnd - cubemarchStart) / CLOCKS_PER_SEC;
         // logger.logf("Chunk (%d, %d, %d) cubemarched in %.2f\n",cx, cy, cz, cubemarchTime);
         // normalizeNoise(chunk.noiseValues, CHUNK_SIZE + 1, 16.0f); // Normalize noise values
-        for (size_t j = 0; j < std::min(chunk.vertices.size(), size_t(5)); ++j) {
-            logger.logf("Chunk (%d,%d,%d) vertex %zu: (%.2f, %.2f, %.2f)", cx, cy, cz, j, chunk.vertices[j].x, chunk.vertices[j].y, chunk.vertices[j].z);
-        }
         Mesh mesh = { 0 };
         mesh.vertexCount = static_cast<int>(chunk.vertices.size());
         mesh.vertices = new float[mesh.vertexCount * 3];
@@ -769,9 +508,7 @@ void generatePlanetoid(float randScale,std::string name, Scene& world, Vector3 p
             allChunks.push_back(&chunkObject->chunk);
         }
     }
-    // Use a small cell size for quantization (tune as needed for your mesh precision)
-    float normalSmoothCellSize = 1e-3f;
-    smoothNormalsAcrossChunks(allChunks, normalSmoothCellSize);
+    smoothNormalsAcrossChunks(allChunks); // No quantization, use exact world position
     // Re-upload smoothed normals to GPU for each chunk
     for (Chunk* chunk : allChunks) {
         UpdateMeshBuffer(chunk->mesh, 2, chunk->mesh.normals, chunk->mesh.vertexCount * 3 * sizeof(float), 0);
