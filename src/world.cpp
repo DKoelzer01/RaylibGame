@@ -75,6 +75,10 @@ void Planetoid::drawDepthOnly(const Matrix& lightSpaceMatrix, Shader* depthShade
 
 // Helper to get noise value from this chunk or a neighbor
 static float getNoiseAt(const Chunk* chunk, int x, int y, int z, int size) {
+    if (x < 0 || x >= size || y < 0 || y >= size || z < 0 || z >= size) {
+        logger.logf("[getNoiseAt WARNING] Out of bounds access: (%d, %d, %d) size=%d\n", x, y, z, size);
+        return 0.0f;
+    }
     return chunk->noiseValues[x + y * size + z * size * size];
 }
 
@@ -124,26 +128,14 @@ static Vector3 trilerpVec3(
 }
 
 
-
 void Chunk::calculateNormals() {
     if (vertices.empty() || mesh.vertexCount == 0) {
         logger.logf("[deferredNormals]: Skipping normal calculation for chunk at (%d, %d, %d) because it has no vertices.\n", position.x, position.y, position.z);
         return;
     }
     logger.logf("[deferredNormals]: Calculating normals for chunk at (%d, %d, %d): vertices.size() = %zu, mesh.vertexCount = %d\n", position.x, position.y, position.z, vertices.size(), mesh.vertexCount);
-    // Log min/max vertex positions for this chunk
-    float minX = 99999, minY = 99999, minZ = 99999;
-    float maxX = -99999, maxY = -99999, maxZ = -99999;
-    for (const auto& v : vertices) {
-        if (v.x < minX) minX = v.x;
-        if (v.y < minY) minY = v.y;
-        if (v.z < minZ) minZ = v.z;
-        if (v.x > maxX) maxX = v.x;
-        if (v.y > maxY) maxY = v.y;
-        if (v.z > maxZ) maxZ = v.z;
-    }
-    logger.logf("[deferredNormals]: Chunk (%d, %d, %d) vertex bounds: X[%.3f, %.3f] Y[%.3f, %.3f] Z[%.3f, %.3f]\n", position.x, position.y, position.z, minX, maxX, minY, maxY, minZ, maxZ);
     const int size = CHUNK_SIZE + 1;
+    logger.logf("[deferredNormals]: newNormals size: %d, expected size: %d\n", size*size*size, mesh.vertexCount*3);
     std::vector<Vector3> newNormals(size * size * size);
 
     for (int z = 0; z < size; ++z) {
@@ -221,28 +213,22 @@ void Chunk::calculateNormals() {
                     n.z /= len;
                 }
                 newNormals[x + y * size + z * size * size] = n;
+                // Debug log for the produced normal and the noise values used
+                // logger.logf("[deferredNormals] Normal at (%d,%d,%d): (%.3f, %.3f, %.3f) | dx=%.3f dy=%.3f dz=%.3f\n", x, y, z, n.x, n.y, n.z, dx, dy, dz);
             }
         }
     }
     // Copy new normals to mesh normals
     if (mesh.vertexCount > 0 && mesh.normals != nullptr) {
-        // Compute chunk world origin
-        Vector3 chunkWorldOrigin = { (float)position.x, (float)position.y, (float)position.z };
-
-        for (int i = 0; i < mesh.vertexCount; ++i) {
-            if (i >= vertices.size()) {
-                logger.logf("[ERROR] Accessing vertices[%d] but vertices.size() = %zu in chunk (%d, %d, %d)\n", i, vertices.size(), position.x, position.y, position.z);
-                continue;
-            }
+        if (mesh.vertexCount != vertices.size()) {
+            logger.logf("[deferredNormals][ERROR] mesh.vertexCount (%d) != vertices.size() (%zu) in chunk (%d, %d, %d)\n", mesh.vertexCount, vertices.size(), position.x, position.y, position.z);
+        }
+        float minLx = 1e9f, maxLx = -1e9f, minLy = 1e9f, maxLy = -1e9f, minLz = 1e9f, maxLz = -1e9f;
+        for (int i = 0; i < mesh.vertexCount && i < vertices.size(); ++i) {
             const Vector3& v = vertices[i];
-            // Convert global vertex position to local chunk space
-            float lx = v.x - chunkWorldOrigin.x;
-            float ly = v.y - chunkWorldOrigin.y;
-            float lz = v.z - chunkWorldOrigin.z;
-            // logger.logf("[deferredNormals]: Vertex[%d] global (%.3f, %.3f, %.3f) local (%.3f, %.3f, %.3f)\n", i, v.x, v.y, v.z, lx, ly, lz);
-            float fx = clamp(lx, 0.0f, (float)(size - 1));
-            float fy = clamp(ly, 0.0f, (float)(size - 1));
-            float fz = clamp(lz, 0.0f, (float)(size - 1));
+            float fx = clamp(v.x, 0.0f, (float)(size - 1));
+            float fy = clamp(v.y, 0.0f, (float)(size - 1));
+            float fz = clamp(v.z, 0.0f, (float)(size - 1));
             int x0 = (int)floorf(fx), x1 = std::min(x0 + 1, size - 1);
             int y0 = (int)floorf(fy), y1 = std::min(y0 + 1, size - 1);
             int z0 = (int)floorf(fz), z1 = std::min(z0 + 1, size - 1);
@@ -263,12 +249,37 @@ void Chunk::calculateNormals() {
             mesh.normals[i * 3 + 0] = n.x;
             mesh.normals[i * 3 + 1] = n.y;
             mesh.normals[i * 3 + 2] = n.z;
+            // Debug log for the interpolation process
+            if (i < 10) {
+                logger.logf("[deferredNormals] Vertex[%d] pos=(%.3f,%.3f,%.3f) local=(%.3f,%.3f,%.3f) fx=%.3f fy=%.3f fz=%.3f x0=%d y0=%d z0=%d tx=%.3f ty=%.3f tz=%.3f\n", i, v.x, v.y, v.z, lx, ly, lz, fx, fy, fz, x0, y0, z0, tx, ty, tz);
+                logger.logf("[deferredNormals]  c000=(%.3f,%.3f,%.3f) c100=(%.3f,%.3f,%.3f) c010=(%.3f,%.3f,%.3f) c110=(%.3f,%.3f,%.3f)\n", c000.x, c000.y, c000.z, c100.x, c100.y, c100.z, c010.x, c010.y, c010.z, c110.x, c110.y, c110.z);
+                logger.logf("[deferredNormals]  c001=(%.3f,%.3f,%.3f) c101=(%.3f,%.3f,%.3f) c011=(%.3f,%.3f,%.3f) c111=(%.3f,%.3f,%.3f)\n", c001.x, c001.y, c001.z, c101.x, c101.y, c101.z, c011.x, c011.y, c011.z, c111.x, c111.y, c111.z);
+                logger.logf("[deferredNormals]  Interpolated normal: (%.3f, %.3f, %.3f)\n", n.x, n.y, n.z);
+            }
+        }
+        // --- Additional Debugging: Check for invalid normals ---
+        int invalidNormalCount = 0;
+        for (int i = 0; i < mesh.vertexCount; ++i) {
+            float nx = mesh.normals[i * 3 + 0];
+            float ny = mesh.normals[i * 3 + 1];
+            float nz = mesh.normals[i * 3 + 2];
+            bool isZero = (fabs(nx) < 1e-6f && fabs(ny) < 1e-6f && fabs(nz) < 1e-6f);
+            bool isNaN = (isnan(nx) || isnan(ny) || isnan(nz));
+            if (isZero || isNaN) {
+                logger.logf("[deferredNormals][INVALID] Normal[%d]: (%.3f, %.3f, %.3f)\n", i, nx, ny, nz);
+                ++invalidNormalCount;
+            }
+        }
+        if (invalidNormalCount > 0) {
+            logger.logf("[deferredNormals][SUMMARY] Found %d invalid normals in chunk (%d, %d, %d)\n", invalidNormalCount, position.x, position.y, position.z);
         }
         for (int i = 0; i < std::min(5, mesh.vertexCount); ++i) {
             logger.logf("[deferredNormals]: Normal[%d]: (%.3f, %.3f, %.3f)\n", i, mesh.normals[i*3], mesh.normals[i*3+1], mesh.normals[i*3+2]);
         }
-        logger.logf("[deferredNormals]: Vertex count: %d, Normal count: %d\n", mesh.vertexCount, mesh.vertexCount * 3);
-        // Update the mesh buffer in GPU
+        
+        if (mesh.normals == nullptr) {
+            logger.logf("[deferredNormals][ERROR] mesh.normals is nullptr after assignment!\n");
+        }
         UpdateMeshBuffer(mesh, 2, mesh.normals, mesh.vertexCount * 3, 0); // 2 = RLGL_ATTRIBUTE_NORMAL
     }
 }
@@ -544,7 +555,6 @@ void iterativeChunk(int startCx, int startCy, int startCz, const Vector3& origin
         //     cx, cy, cz,
         //     *std::min_element(chunk->noiseValues.begin(), chunk->noiseValues.end()),
         //     *std::max_element(chunk->noiseValues.begin(), chunk->noiseValues.end()));
-        // writeNoiseValuesToFile(chunk->noiseValues, CHUNK_SIZE + 1, "assets/noise/" + chunkName + "_weighted.txt");
         // Log the chunk generation time
         time_t genChunkEnd = clock();
         double genChunkTime = static_cast<double>(genChunkEnd - genChunk) / CLOCKS_PER_SEC;
@@ -659,6 +669,9 @@ void iterativeChunk(int startCx, int startCy, int startCz, const Vector3& origin
         // normalizeNoise(chunk.noiseValues, CHUNK_SIZE + 1, 16.0f); // Normalize noise values
         Mesh mesh = { 0 };
         mesh.vertexCount = static_cast<int>(chunk->vertices.size());
+        if (mesh.vertexCount != chunk->vertices.size()) {
+            logger.logf("[ERROR] mesh.vertexCount (%d) != vertices.size() (%zu)\n", mesh.vertexCount, chunk->vertices.size());
+        }
         mesh.vertices = new float[mesh.vertexCount * 3];
         for (size_t j = 0; j < chunk->vertices.size(); ++j) {
             const Vector3& v = chunk->vertices[j];
@@ -671,7 +684,12 @@ void iterativeChunk(int startCx, int startCy, int startCz, const Vector3& origin
         for (size_t j = 0; j < chunk->indices.size(); ++j) {
             mesh.indices[j] = static_cast<unsigned short>(chunk->indices[j]);
         }
-        mesh.normals = new float[mesh.vertexCount * 3]; // Allocate space for normals
+        // Allocate and zero normals
+        mesh.normals = new float[mesh.vertexCount * 3]();
+
+        if (mesh.vertexCount != chunk->vertices.size()) {
+            logger.logf("[ERROR] mesh.vertexCount (%d) != vertices.size() (%zu)\n", mesh.vertexCount, chunk->vertices.size());
+        }
 
         UploadMesh(&mesh, true); // Make mesh dynamic so normals can be updated later
         chunk->mesh = mesh;
