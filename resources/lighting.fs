@@ -86,18 +86,18 @@ void main()
     }
     // Visualize normals as color for debugging
     // finalColor = vec4(vec3(shadow), 1.0); // Debug: visualize shadow factor
-    finalColor = vec4(normal * 0.5 + 0.5, 1.0);
+    // finalColor = vec4(normal * 0.5 + 0.5, 1.0);
     // finalColor = vec4(fragPosition * 0.5 + 0.5, 1.0); // Debug: visualize fragment position
     // finalColor = vec4(projCoords, 1.0); // Debug: visualize projected coordinates
     // finalColor = vec4(closestDepth, currentDepth, 0.0, 1.0); // Debug: visualize depth values
     // finalColor = vec4(fragTexCoord, 0.0,1.0);
     // finalColor = fragPosLightSpace;
     // Only apply shadow to direct lighting, not ambient
-    // diffuseColor *= shadow;
-    // specularColor *= shadow;
-    // vec3 result = ambientColor + diffuseColor + specularColor;
-    // finalColor = vec4(result, texelColor.a * tint.a);
-    // finalColor = pow(finalColor, vec4(1.0/2.2)); // Gamma correction
+    diffuseColor *= shadow;
+    specularColor *= shadow;
+    vec3 result = ambientColor + diffuseColor + specularColor;
+    finalColor = vec4(result, texelColor.a * tint.a);
+    finalColor = pow(finalColor, vec4(1.0/2.2)); // Gamma correction
     // Debug: visualize shadow factor
     // finalColor = vec4(vec3(shadow), 1.0);
 }

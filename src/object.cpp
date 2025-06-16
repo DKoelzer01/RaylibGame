@@ -73,7 +73,7 @@ void GameObject::draw(Shader* lightingShader) {
     }
 }
 
-void Chunk::draw(Shader* lightingShader) {
+void Chunk::draw() {
     if (!isActive) return;
     Matrix matModel = MatrixIdentity();
     matModel = MatrixMultiply(matModel, MatrixScale(scale, scale, scale));
@@ -111,16 +111,16 @@ void GameObject::drawDepthOnly(const Matrix& lightSpaceMatrix, Shader* depthShad
     EndShaderMode();
 }
 
-void Chunk::drawDepthOnly(const Matrix& lightSpaceMatrix, Shader* depthShader) {
+void Chunk::drawDepthOnly(const Matrix& lightSpaceMatrix) {
     if (!isActive) return;
-    if (model.meshCount == 0 || model.meshes == nullptr) return;
+    if (model.meshCount <= 0 || model.materialCount <= 0 || model.materials == nullptr) return;
+    if (model.meshes[0].vertexCount == 0) return; // No vertices to draw
     int lightSpaceLoc = GetShaderLocation(*depthShader, "lightSpaceMatrix");
     SetShaderValueMatrix(*depthShader, lightSpaceLoc, lightSpaceMatrix);
     int modelLoc = GetShaderLocation(*depthShader, "model");
     Matrix modelMat = MatrixMultiply(MatrixTranslate(position.x, position.y, position.z), MatrixScale(scale, scale, scale));
     SetShaderValueMatrix(*depthShader, modelLoc, modelMat);
     BeginShaderMode(*depthShader);
-    model.materials[0].shader = *depthShader; // Ensure correct shader for chunk model
     DrawMesh(mesh, model.materials[0], MatrixIdentity());
     EndShaderMode();
 }

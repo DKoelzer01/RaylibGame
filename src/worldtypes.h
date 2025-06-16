@@ -53,6 +53,8 @@ public:
     std::vector<int> indices;
     Mesh mesh;
     Model model;
+    Shader *lightingShader = nullptr;
+    Shader *depthShader = nullptr;
     Chunk* neighbors[26] = {nullptr};
     bool normalsPending = false;
     uint32_t neighborMask = 0;
@@ -104,8 +106,8 @@ public:
     // Method for Chunk: assign all 26 neighbors and notify them
     void assignNeighborsAndNotify(std::unordered_map<Int3, std::unique_ptr<Chunk>>& chunkChildren);
 
-    void draw(Shader* lightingShader) override;
-    void drawDepthOnly(const Matrix& lightSpaceMatrix, Shader* depthShader) override;
+    void draw();
+    void drawDepthOnly(const Matrix& lightSpaceMatrix);
 };
 
 class Planetoid: public Object {
@@ -115,6 +117,8 @@ public:
     std::unordered_map<std::tuple<int, int, int, int>, std::vector<EdgeCacheEntry>, Tuple4Hash> sharedEdgeCaches; // Shared edge caches for chunks
     std::unordered_map<Int3,bool> generatedChunks; // Store generated chunk positions
     std::unordered_map<Int3, std::unique_ptr<Chunk>> chunkChildren;
+    Shader *lightingShader = nullptr;
+    Shader *depthShader = nullptr;
     Planetoid(std::string name, Vector3 position, Vector3 rotation, Color color, float scale, size_t size);
     virtual ~Planetoid();
     float GetNoise(float wx, float wy, float wz); // Get noise value at world coordinates
