@@ -55,6 +55,8 @@ public:
     Model model;
     Shader *lightingShader = nullptr;
     Shader *depthShader = nullptr;
+    Matrix matModel;
+
     Chunk* neighbors[26] = {nullptr};
     bool normalsPending = false;
     uint32_t neighborMask = 0;

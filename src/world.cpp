@@ -29,6 +29,8 @@ Planetoid::~Planetoid() = default;
 
 void Planetoid::draw(Shader* lightingShader) {
     if (!isActive) return; // Skip drawing if the object is not active
+    logger.logf("[Planetoid::draw] Drawing planetoid '%s' at position (%f, %f, %f)\n",
+                name.c_str(), position.x, position.y, position.z);
     for(const auto& objPtr : children) {
         objPtr->draw(lightingShader);
     }
@@ -39,6 +41,8 @@ void Planetoid::draw(Shader* lightingShader) {
 
 void Planetoid::drawDepthOnly(const Matrix& lightSpaceMatrix, Shader* depthShader) {
     if (!isActive) return;
+    logger.logf("[Planetoid::drawDepthOnly] Drawing depth only for planetoid '%s' at position (%f, %f, %f)\n",
+                name.c_str(), position.x, position.y, position.z);
     for(const auto& objPtr : children) {
         objPtr->drawDepthOnly(lightSpaceMatrix, depthShader);
     }
@@ -108,12 +112,17 @@ static Vector3 trilerpVec3(
 
 
 void Chunk::calculateNormals() {
-    // if (vertices.empty() || mesh.vertexCount == 0) {
-    //     logger.logf("[deferredNormals]: Skipping normal calculation for chunk at (%d, %d, %d) because it has no vertices.\n", position.x, position.y, position.z);
-    //     return;
-    // }
+    if (vertices.empty() || mesh.vertexCount == 0) {
+        // logger.logf("[deferredNormals]: Skipping normal calculation for chunk at (%d, %d, %d) because it has no vertices.\n", position.x, position.y, position.z);
+        return;
+    }
     // logger.logf("[deferredNormals]: Calculating normals for chunk at (%d, %d, %d): vertices.size() = %zu, mesh.vertexCount = %d\n", position.x, position.y, position.z, vertices.size(), mesh.vertexCount);
     
+    if (mesh.vertexCount > 0 && mesh.normals == nullptr) {
+        mesh.normals = new float[mesh.vertexCount * 3]();
+        logger.logf("[deferredNormals][DEFENSIVE] mesh.normals was nullptr, allocated in calculateNormals for chunk at (%d, %d, %d)\n", position.x, position.y, position.z);
+    }
+    // logger.logf("[ChunkGen] Allocated mesh.normals for chunk at (%d, %d, %d), vertexCount=%d\n", position.x, position.y, position.z, mesh.vertexCount);
     int size = CHUNK_SIZE + 1;
     std::vector<Vector3> newNormals(size * size * size);
 

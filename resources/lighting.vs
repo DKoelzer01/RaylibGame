@@ -17,13 +17,10 @@ out vec2 fragTexCoord;
 out vec4 fragColor;
 out vec3 fragNormal;
 
-// NOTE: Add your custom variables here
-
 void main()
 {
     // Compute world position for shadow mapping and lighting
-    vec4 worldPosition = matModel * vec4(vertexPosition, 1.0);
-    fragPosition = worldPosition.xyz;
+    fragPosition = (matModel * vec4(vertexPosition, 1.0)).xyz;
     fragTexCoord = vertexTexCoord;
     fragColor = vertexColor;
     fragNormal = normalize(vec3(matNormal*vec4(vertexNormal, 1.0)));

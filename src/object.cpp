@@ -75,14 +75,17 @@ void GameObject::draw(Shader* lightingShader) {
 
 void Chunk::draw() {
     if (!isActive) return;
-    Matrix matModel = MatrixIdentity();
+    matModel = MatrixIdentity();
     matModel = MatrixMultiply(matModel, MatrixScale(scale, scale, scale));
     matModel = MatrixMultiply(matModel, MatrixTranslate(position.x, position.y, position.z));
 
+    logger.logf("[Chunk::draw] Drawing chunk at (%d, %d, %d)\n", position.x, position.y, position.z);
     if (mesh.vertexCount > 0 && model.meshCount > 0 && model.materialCount > 0 && model.materials != nullptr) {
         for (int i = 0; i < model.materialCount; i++) {
             model.materials[i].shader = *lightingShader;
         }
+        int matModelLoc = GetShaderLocation(model.materials[0].shader, "matModel");
+        SetShaderValueMatrix(model.materials[0].shader, matModelLoc, matModel);
         BeginShaderMode(model.materials[0].shader);
         DrawMesh(mesh, model.materials[0], matModel);
         EndShaderMode();
@@ -112,15 +115,21 @@ void GameObject::drawDepthOnly(const Matrix& lightSpaceMatrix, Shader* depthShad
 }
 
 void Chunk::drawDepthOnly(const Matrix& lightSpaceMatrix) {
+    // logger.logf("[Chunk::drawDepthOnly] Drawing depth only chunk at (%d, %d, %d)\n", position.x, position.y, position.z);
     if (!isActive) return;
-    if (model.meshCount <= 0 || model.materialCount <= 0 || model.materials == nullptr) return;
-    if (model.meshes[0].vertexCount == 0) return; // No vertices to draw
-    int lightSpaceLoc = GetShaderLocation(*depthShader, "lightSpaceMatrix");
-    SetShaderValueMatrix(*depthShader, lightSpaceLoc, lightSpaceMatrix);
-    int modelLoc = GetShaderLocation(*depthShader, "model");
-    Matrix modelMat = MatrixMultiply(MatrixTranslate(position.x, position.y, position.z), MatrixScale(scale, scale, scale));
-    SetShaderValueMatrix(*depthShader, modelLoc, modelMat);
+    if (mesh.vertexCount == 0) return;
+    // Compute model matrix (scale, rotation, translation)
+    matModel = MatrixIdentity();
+    matModel = MatrixMultiply(matModel, MatrixScale(scale, scale, scale));
+    matModel = MatrixMultiply(matModel, MatrixTranslate(position.x, position.y, position.z));
+    // Compute MVP
+    Matrix mvp = MatrixMultiply(lightSpaceMatrix, matModel);
+    int mvpLoc = GetShaderLocation(*depthShader, "mvp");
+    SetShaderValueMatrix(*depthShader, mvpLoc, mvp);
+    // Draw mesh with depth shader
+    Material mat = LoadMaterialDefault();
+    mat.shader = *depthShader;
     BeginShaderMode(*depthShader);
-    DrawMesh(mesh, model.materials[0], MatrixIdentity());
+    DrawMesh(mesh, mat, matModel);
     EndShaderMode();
 }

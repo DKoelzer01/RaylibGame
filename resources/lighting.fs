@@ -79,25 +79,35 @@ void main()
     float currentDepth = 0.0;
     if (projCoords.x >= 0.0 && projCoords.x <= 1.0 && projCoords.y >= 0.0 && projCoords.y <= 1.0) {
         // Try flipping Y for shadow map sample
-        closestDepth = texture(shadowMap, vec2(projCoords.x, 1.0 - projCoords.y)).r;
+        vec2 shadowUV = clamp(vec2(projCoords.x,1.0 - projCoords.y), 0.0, 1.0);
+        closestDepth = texture(shadowMap, shadowUV).r;
         currentDepth = projCoords.z;
-        float bias = 0.01;
+        float bias = 0.001;
         shadow = (currentDepth - bias > closestDepth) ? 0.0 : 1.0;
     }
-    // Visualize normals as color for debugging
-    // finalColor = vec4(vec3(shadow), 1.0); // Debug: visualize shadow factor
+    // Debug output: R = currentDepth, G = closestDepth, B = shadow factor
+    // finalColor = vec4(currentDepth, closestDepth, shadow, 1.0);
     // finalColor = vec4(normal * 0.5 + 0.5, 1.0);
     // finalColor = vec4(fragPosition * 0.5 + 0.5, 1.0); // Debug: visualize fragment position
+    // finalColor = vec4(clamp(projCoords, 0.0, 1.0), 1.0);
+    finalColor = vec4(fragPosLightSpace.xyz * 0.5 + 0.5, 1.0);
+    // finalColor = vec4(fragPosLightSpace.x * 0.5 + 0.5, fragPosLightSpace.y * 0.5 + 0.5, 0.0, 1.0);
+    // if (isnan(projCoords.x) || isinf(projCoords.x)) {
+    //     finalColor = vec4(1,0,0,1); // Red for NaN/Inf
+    // } else {
+    //     finalColor = vec4(projCoords, 1.0);
+    // }
+    // finalColor = vec4(fragPosLightSpace.w, fragPosLightSpace.w, fragPosLightSpace.w, 1.0);
     // finalColor = vec4(projCoords, 1.0); // Debug: visualize projected coordinates
-    // finalColor = vec4(closestDepth, currentDepth, 0.0, 1.0); // Debug: visualize depth values
+    // finalColor = vec4(currentDepth, closestDepth, 0.0, 1.0);    
     // finalColor = vec4(fragTexCoord, 0.0,1.0);
     // finalColor = fragPosLightSpace;
     // Only apply shadow to direct lighting, not ambient
-    diffuseColor *= shadow;
-    specularColor *= shadow;
-    vec3 result = ambientColor + diffuseColor + specularColor;
-    finalColor = vec4(result, texelColor.a * tint.a);
-    finalColor = pow(finalColor, vec4(1.0/2.2)); // Gamma correction
+    // diffuseColor *= shadow;
+    // specularColor *= shadow;
+    // vec3 result = ambientColor + diffuseColor + specularColor;
+    // finalColor = vec4(result, texelColor.a * tint.a);
+    // finalColor = pow(finalColor, vec4(1.0/2.2)); // Gamma correction
     // Debug: visualize shadow factor
     // finalColor = vec4(vec3(shadow), 1.0);
 }
