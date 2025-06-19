@@ -35,6 +35,7 @@
 #define RLIGHTS_H
 
 #include <raylib.h>
+#include <stdio.h>
 
 //----------------------------------------------------------------------------------
 // Defines and Macros
@@ -77,7 +78,7 @@ extern "C" {            // Prevents name mangling of functions
 // Module Functions Declaration
 //----------------------------------------------------------------------------------
 Light CreateLight(int type, Vector3 position, Vector3 target, Color color, Shader shader);   // Create a light and get shader locations
-void UpdateLightValues(Shader shader, Light light);         // Send light properties to shader
+void UpdateLightValues(Shader shader, Light light, int index);         // Send light properties to shader
 
 
 #ifdef __cplusplus

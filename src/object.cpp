@@ -119,11 +119,11 @@ void Chunk::draw(const Matrix& lightSpaceMatrix) {
     BeginShaderMode(model.materials[0].shader);
     DrawMesh(mesh, model.materials[0], matModel);
     EndShaderMode();
-    DrawCubeWires((Vector3){
-        position.x + CHUNK_SIZE/2.0f,
-        position.y + CHUNK_SIZE/2.0f,
-        position.z + CHUNK_SIZE/2.0f
-    }, CHUNK_SIZE, CHUNK_SIZE, CHUNK_SIZE, GREEN);
+    // DrawCubeWires((Vector3){
+    //     position.x + CHUNK_SIZE/2.0f,
+    //     position.y + CHUNK_SIZE/2.0f,
+    //     position.z + CHUNK_SIZE/2.0f
+    // }, CHUNK_SIZE, CHUNK_SIZE, CHUNK_SIZE, GREEN);
 }
 
 void Chunk::drawDepthOnly(const Matrix& lightSpaceMatrix) {

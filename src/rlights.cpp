@@ -20,21 +20,41 @@ Light CreateLight(int type, Vector3 position, Vector3 target, Color color, Shade
     light.targetLoc = GetShaderLocation(shader, TextFormat("lights[%i].target", lightCount));
     light.colorLoc = GetShaderLocation(shader, TextFormat("lights[%i].color", lightCount));
 
-    UpdateLightValues(shader, light);
+    UpdateLightValues(shader, light, lightCount);
 
     lightCount++;
     return light;
 }
-
-void UpdateLightValues(Shader shader, Light light)
+    
+void UpdateLightValues(Shader shader, Light light, int index = 0)
 {
-    // Send to shader
-    SetShaderValue(shader, light.enabledLoc, &light.enabled, SHADER_UNIFORM_INT);
-    SetShaderValue(shader, light.typeLoc, &light.type, SHADER_UNIFORM_INT);
-    float pos[3] = { light.position.x, light.position.y, light.position.z };
-    SetShaderValue(shader, light.positionLoc, pos, SHADER_UNIFORM_VEC3);
-    float tgt[3] = { light.target.x, light.target.y, light.target.z };
-    SetShaderValue(shader, light.targetLoc, tgt, SHADER_UNIFORM_VEC3);
-    float col[4] = { (float)light.color.r/255.0f, (float)light.color.g/255.0f, (float)light.color.b/255.0f, (float)light.color.a/255.0f };
-    SetShaderValue(shader, light.colorLoc, col, SHADER_UNIFORM_VEC4);
+    char uniformName[32];
+
+    // Position
+    sprintf(uniformName, "lights[%d].position", index);
+    int posLoc = GetShaderLocation(shader, uniformName);
+    SetShaderValue(shader, posLoc, &light.position, SHADER_UNIFORM_VEC3);
+
+    // Target
+    sprintf(uniformName, "lights[%d].target", index);
+    int tgtLoc = GetShaderLocation(shader, uniformName);
+    SetShaderValue(shader, tgtLoc, &light.target, SHADER_UNIFORM_VEC3);
+
+    // Color
+    sprintf(uniformName, "lights[%d].color", index);
+    int colLoc = GetShaderLocation(shader, uniformName);
+    float color[4] = { light.color.r/255.0f, light.color.g/255.0f, light.color.b/255.0f, light.color.a/255.0f };
+    SetShaderValue(shader, colLoc, color, SHADER_UNIFORM_VEC4);
+
+    // Enabled
+    sprintf(uniformName, "lights[%d].enabled", index);
+    int enLoc = GetShaderLocation(shader, uniformName);
+    int enabled = light.enabled ? 1 : 0;
+    SetShaderValue(shader, enLoc, &enabled, SHADER_UNIFORM_INT);
+
+    // Type
+    sprintf(uniformName, "lights[%d].type", index);
+    int typeLoc = GetShaderLocation(shader, uniformName);
+    int type = light.type;
+    SetShaderValue(shader, typeLoc, &type, SHADER_UNIFORM_INT);
 }

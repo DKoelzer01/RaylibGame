@@ -12,11 +12,14 @@ Matrix lightSpaceMatrix;
 Matrix cameraView;
 Matrix cameraProj;
 Texture2D shadowMapTexture;
+Texture2D debugTexture;
 
 Scene::Scene(std::string name, bool isActive)
     : name(name), isActive(isActive),
       rootObject("root", "root", {0.0f, 0.0f, 0.0f}, {0.0f, 0.0f, 0.0f}, WHITE, 1.0f)
 {
+    debugTexture = LoadTexture("resources/tex_DebugUVTiles.png"); // For debugging
+
     Mesh cube = GenMeshCube(1.0f, 1.0f, 1.0f);
     skybox = LoadModelFromMesh(cube);
 
@@ -71,18 +74,26 @@ void Scene::updateAllChunkShaders() {
 
 void Scene::drawScene(int gamestate) {
     if (!isActive) return; // Skip drawing if the scene is not active
-    
+
+    // This is for debugging purposes only; in production, shaders should be loaded once and reused
+    lightingShader = LoadShader(TextFormat("resources/lighting.vs", GLSL_VERSION),
+                     TextFormat("resources/lighting.fs", GLSL_VERSION));
+    depthShader = LoadShader("resources/depth.vs", "resources/depth.fs");
     // --- Compute light view/projection matrix for shadow mapping ---
     // Make the directional light follow the camera/player
     Vector3 cameraPosVec = camera.position;
-    cameraPosVec = {0.0f, 0.0f, 0.0f}; // DEBUG: Reset camera position to origin for testing
+    // cameraPosVec = {0.0f, 0.0f, 0.0f}; // DEBUG: Reset camera position to origin for testing
     // Choose a sun direction (normalized)
-    Vector3 sunDir = Vector3Normalize((Vector3){ 14.0f, 0.0f, 0.0f }); // Example: from above and behind
-    float sunDistance = 50.0f; // Larger offset for debugging
+    Vector3 sunDir = Vector3Normalize((Vector3){ 26.0f, 0.0f, 0.0f }); // Example: from above and behind
+    float sunDistance = 500.0f; // Larger offset for debugging
     Vector3 lightPos = Vector3Add(cameraPosVec, Vector3Scale(sunDir, sunDistance));
     Vector3 lightTarget = cameraPosVec;
-    lightPos = Vector3{ 0,100,0};
-    lightTarget = Vector3{ 0,0,0 };
+
+    // Debug: Set light position to fixed position for testing
+    lightPos = (Vector3){ sunDistance, 0.0f, 0.0f }; // DEBUG: Set light position to fixed position for testing
+    // Debug set lightPos to orbit around the origin over time
+    // lightPos = (Vector3){ sin(GetTime()) * sunDistance, 0.0f, -cos(GetTime()) * sunDistance };
+    lightTarget = (Vector3){ 0.0f, 0.0f, 0.0f }; // DEBUG: Set light target to origin for testing
     // Update the first light's position/target
     if (!lights.empty()) {
         lights[0].position = lightPos;
@@ -91,14 +102,14 @@ void Scene::drawScene(int gamestate) {
     Camera lightCamera = {0};
     lightCamera.position = lightPos;
     lightCamera.target = lightTarget;
-    lightCamera.up = (Vector3){0,0,-1};
+    lightCamera.up = (Vector3){0,1,0};
     lightCamera.fovy = 90.0f; // or appropriate value
     lightCamera.projection = CAMERA_ORTHOGRAPHIC;
 
     Matrix lightView = MatrixLookAt(lightPos, lightTarget, lightCamera.up);
-    float orthoSize = 50.0f;
-    float nearPlane = 50.0f;
-    float farPlane = 150.0f;
+    float orthoSize = sunDistance/2.0f; // Size of the orthographic projection box
+    float nearPlane = 100.0f; // Near plane for shadow mapping
+    float farPlane = orthoSize + 100.0f; // Ensure far plane is beyond the light position
     Matrix lightProj = MatrixOrtho(-orthoSize, orthoSize, -orthoSize, orthoSize, nearPlane, farPlane); 
     lightSpaceMatrix = MatrixMultiply(lightProj, lightView);   
 
@@ -114,16 +125,17 @@ void Scene::drawScene(int gamestate) {
     for (const auto& objPtr : rootObject.children) { objPtr->drawDepthOnly(lightSpaceMatrix, &depthShader); }
     EndMode3D();
     EndTextureMode();
+
     shadowMapTexture = shadowMap.texture; // Update shadow map texture reference
     // --- Main pass ---
     Matrix proj = GetCameraProjectionMatrix(&camera, CAMERA_PERSPECTIVE);
     Matrix view = GetCameraMatrix(camera);
+    
     extern Matrix cameraProj, cameraView;
     cameraProj = proj;
     cameraView = view;
 
-    int shadowMapLoc = GetShaderLocation(lightingShader, "shadowMap");
-    SetShaderValueTexture(lightingShader, shadowMapLoc, shadowMap.texture);
+    
     int lightSpaceLoc = GetShaderLocation(lightingShader, "lightSpaceMatrix");
     SetShaderValueMatrix(lightingShader, lightSpaceLoc, lightSpaceMatrix);
 
@@ -146,6 +158,20 @@ void Scene::drawScene(int gamestate) {
         SetShaderValue(lightingShader, viewPosLoc, cameraPos, SHADER_UNIFORM_VEC3);
     }
 
+    int debugTextureLoc = GetShaderLocation(lightingShader, "debugTexture");
+    if (debugTextureLoc != -1) {
+        SetShaderValueTexture(lightingShader, debugTextureLoc, debugTexture);
+    }
+
+    int shadowMapLoc = GetShaderLocation(lightingShader, "shadowMap");
+    if (shadowMapLoc != -1) {
+        SetShaderValueTexture(lightingShader, shadowMapLoc, shadowMap.texture);
+    } else {
+        logger.log("[Scene::drawScene] Warning: shadowMapLoc not found in lighting shader\n");
+    }
+    
+
+    int lightCount = 0;
     for (const auto& light : lights) { 
     if (!light.enabled) continue; // Skip disabled lights
         // Draw light source as a sphere at the light position
@@ -154,7 +180,8 @@ void Scene::drawScene(int gamestate) {
         //     light.position.x, light.position.y, light.position.z,
         //     light.color.r, light.color.g, light.color.b);
         DrawSphere(light.position, 20.0f, ColorAlpha(RED, 0.5f));
-        UpdateLightValues(lightingShader, light);
+        UpdateLightValues(lightingShader, light, lightCount); // Update light values in shader
+        lightCount++;
     }
     
 
@@ -171,31 +198,35 @@ void Scene::drawScene(int gamestate) {
         objPtr->draw(&lightingShader); 
     }
     EndShaderMode();
+    // --- Debug: Draw orthographic projection box ---
+    DrawCubeWires(lightTarget, orthoSize * 2, orthoSize * 2, farPlane - nearPlane, RED);
     EndMode3D();
 
     // --- Debug: Draw shadow map as fullscreen quad ---
     DrawTexturePro(
         shadowMap.texture,
         (Rectangle){ 0, 0, (float)shadowMap.texture.width, -(float)shadowMap.texture.height },
-        (Rectangle){ 0, 0, 400, 400 }, // Draw in a 400x400 box at top-left
+        (Rectangle){ 0, 60, 400, 400 }, // Draw in a 400x400 box at top-left
         (Vector2){ 0, 0 },
         0.0f,
         WHITE
     );
+
+    
 }
 
 void Scene::drawUI(int gamestate) {
     if (!isActive) return; // Skip drawing if the scene is not active
-    // DrawFPS(10,10);
-    // std::string camPosStr = "Camera: X=" + std::to_string(camera.position.x) +
-    //                         " Y=" + std::to_string(camera.position.y) +
-    //                         " Z=" + std::to_string(camera.position.z);
-    // DrawText(camPosStr.c_str(), 10, 30, 20, GREEN);
+    DrawFPS(10,10);
+    std::string camPosStr = "Camera: X=" + std::to_string(camera.position.x) +
+                            " Y=" + std::to_string(camera.position.y) +
+                            " Z=" + std::to_string(camera.position.z);
+    DrawText(camPosStr.c_str(), 10, 30, 20, GREEN);
 
-    // std::string camFacingVector = "Facing: X=" + std::to_string(camera.target.x) +
-    //                               " Y=" + std::to_string(camera.target.y) +
-    //                               " Z=" + std::to_string(camera.target.z);
-    // DrawText(camFacingVector.c_str(), 10, 50, 20, GREEN);
+    std::string camFacingVector = "Facing: X=" + std::to_string(camera.target.x) +
+                                  " Y=" + std::to_string(camera.target.y) +
+                                  " Z=" + std::to_string(camera.target.z);
+    DrawText(camFacingVector.c_str(), 10, 50, 20, GREEN);
     for (const auto& objPtr : uiObjects) { objPtr->draw(&lightingShader); }
 }
 
