@@ -108,7 +108,7 @@ public:
     // Method for Chunk: assign all 26 neighbors and notify them
     void assignNeighborsAndNotify(std::unordered_map<Int3, std::unique_ptr<Chunk>>& chunkChildren);
 
-    void draw();
+    void draw(const Matrix& lightSpaceMatrix);
     void drawDepthOnly(const Matrix& lightSpaceMatrix);
 };
 

@@ -20,6 +20,8 @@
 #include <array>
 #include <unordered_map>
 
+extern Matrix lightSpaceMatrix;
+extern Texture2D shadowMapTexture; // Texture for shadow map
 
 class Scene {
     public:

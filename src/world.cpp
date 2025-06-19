@@ -35,7 +35,7 @@ void Planetoid::draw(Shader* lightingShader) {
         objPtr->draw(lightingShader);
     }
     for(const auto& objPtr : chunkChildren) {
-        objPtr.second->draw();
+        objPtr.second->draw(lightSpaceMatrix);
     }
 }
 

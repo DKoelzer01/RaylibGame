@@ -9,6 +9,9 @@
 // --- Shadow mapping resources ---
 #define SHADOW_MAP_SIZE 2048
 Matrix lightSpaceMatrix;
+Matrix cameraView;
+Matrix cameraProj;
+Texture2D shadowMapTexture;
 
 Scene::Scene(std::string name, bool isActive)
     : name(name), isActive(isActive),
@@ -38,6 +41,7 @@ Scene::Scene(std::string name, bool isActive)
     // Initialize lighting
     lightingShader = LoadShader(TextFormat("resources/lighting.vs", GLSL_VERSION),
                      TextFormat("resources/lighting.fs", GLSL_VERSION));
+    printf("Lighting shader loaded: %d\n", lightingShader.id);
     int ambientLoc = GetShaderLocation(lightingShader, "ambient");
     SetShaderValue(lightingShader, ambientLoc, (float[4]){ 0.1f, 0.1f, 0.1f, 1.0f }, SHADER_UNIFORM_VEC4);
 
@@ -45,6 +49,7 @@ Scene::Scene(std::string name, bool isActive)
 
     // --- Shadow map FBO/texture ---
     shadowMap = LoadRenderTexture(SHADOW_MAP_SIZE, SHADOW_MAP_SIZE);
+    SetTextureFilter(shadowMap.texture, TEXTURE_FILTER_POINT); // Ensure shadow map uses point sampling
     // Depth buffer is automatically handled by LoadRenderTexture in raylib
     // --- Load depth-only shader for shadow mapping ---
     depthShader = LoadShader("resources/depth.vs", "resources/depth.fs");
@@ -76,7 +81,7 @@ void Scene::drawScene(int gamestate) {
     float sunDistance = 50.0f; // Larger offset for debugging
     Vector3 lightPos = Vector3Add(cameraPosVec, Vector3Scale(sunDir, sunDistance));
     Vector3 lightTarget = cameraPosVec;
-    lightPos = Vector3{ 75,50,75};
+    lightPos = Vector3{ 0,100,0};
     lightTarget = Vector3{ 0,0,0 };
     // Update the first light's position/target
     if (!lights.empty()) {
@@ -86,49 +91,44 @@ void Scene::drawScene(int gamestate) {
     Camera lightCamera = {0};
     lightCamera.position = lightPos;
     lightCamera.target = lightTarget;
-    lightCamera.up = (Vector3){0,1,0};
+    lightCamera.up = (Vector3){0,0,-1};
     lightCamera.fovy = 90.0f; // or appropriate value
     lightCamera.projection = CAMERA_ORTHOGRAPHIC;
 
     Matrix lightView = MatrixLookAt(lightPos, lightTarget, lightCamera.up);
-    float orthoSize = 30.0f;
-    float nearPlane = 20.0f;
-    float farPlane = 130.0f;
+    float orthoSize = 50.0f;
+    float nearPlane = 50.0f;
+    float farPlane = 150.0f;
     Matrix lightProj = MatrixOrtho(-orthoSize, orthoSize, -orthoSize, orthoSize, nearPlane, farPlane); 
     lightSpaceMatrix = MatrixMultiply(lightProj, lightView);   
-    printf("lightSpaceMatrix:\n");
-    printf("%f %f %f %f\n", lightSpaceMatrix.m0, lightSpaceMatrix.m1, lightSpaceMatrix.m2, lightSpaceMatrix.m3);
-    printf("%f %f %f %f\n", lightSpaceMatrix.m4, lightSpaceMatrix.m5, lightSpaceMatrix.m6, lightSpaceMatrix.m7);
-    printf("%f %f %f %f\n", lightSpaceMatrix.m8, lightSpaceMatrix.m9, lightSpaceMatrix.m10, lightSpaceMatrix.m11);
-    printf("%f %f %f %f\n", lightSpaceMatrix.m12, lightSpaceMatrix.m13, lightSpaceMatrix.m14, lightSpaceMatrix.m15); 
 
+    // --- Shadow pass ---
     BeginTextureMode(shadowMap);
     ClearBackground(BLACK);
     BeginMode3D(lightCamera);
-
-    // Set camera to lightView/lightProj, render depth only
+    // Set global camera matrices for shadow pass
+    extern Matrix cameraProj, cameraView;
+    cameraProj = lightProj;
+    cameraView = lightView;
     for (const auto& objPtr : objects) { objPtr->drawDepthOnly(lightSpaceMatrix, &depthShader); }
     for (const auto& objPtr : rootObject.children) { objPtr->drawDepthOnly(lightSpaceMatrix, &depthShader); }
     EndMode3D();
     EndTextureMode();
-
+    shadowMapTexture = shadowMap.texture; // Update shadow map texture reference
+    // --- Main pass ---
+    Matrix proj = GetCameraProjectionMatrix(&camera, CAMERA_PERSPECTIVE);
+    Matrix view = GetCameraMatrix(camera);
+    extern Matrix cameraProj, cameraView;
+    cameraProj = proj;
+    cameraView = view;
 
     int shadowMapLoc = GetShaderLocation(lightingShader, "shadowMap");
     SetShaderValueTexture(lightingShader, shadowMapLoc, shadowMap.texture);
     int lightSpaceLoc = GetShaderLocation(lightingShader, "lightSpaceMatrix");
     SetShaderValueMatrix(lightingShader, lightSpaceLoc, lightSpaceMatrix);
 
-    // Calculate projection and view matrices
-    Matrix proj = GetCameraProjectionMatrix(&camera, CAMERA_PERSPECTIVE); // or MatrixPerspective(...)
-    Matrix view = GetCameraMatrix(camera);
+    // Remove global mvp set here; each object sets its own mvp
 
-    // MVP = Projection * View
-    Matrix mvp = MatrixMultiply(proj, view);
-
-    // Set the uniform on your shader
-    int mvpLoc = GetShaderLocation(lightingShader, "mvp");
-    SetShaderValueMatrix(lightingShader, mvpLoc, mvp);
-    
     // --- Main scene render ---
     BeginMode3D(camera);
     if(gamestate != 0 && gamestate != 2) { // If not in main menu or pause menu
@@ -173,22 +173,29 @@ void Scene::drawScene(int gamestate) {
     EndShaderMode();
     EndMode3D();
 
-    // Draw the RenderTexture to the screen for debugging
-    // DrawTextureRec(shadowMap.texture, (Rectangle){40, 40, shadowMap.texture.width, -shadowMap.texture.height}, (Vector2){10, 10}, WHITE);
+    // --- Debug: Draw shadow map as fullscreen quad ---
+    DrawTexturePro(
+        shadowMap.texture,
+        (Rectangle){ 0, 0, (float)shadowMap.texture.width, -(float)shadowMap.texture.height },
+        (Rectangle){ 0, 0, 400, 400 }, // Draw in a 400x400 box at top-left
+        (Vector2){ 0, 0 },
+        0.0f,
+        WHITE
+    );
 }
 
 void Scene::drawUI(int gamestate) {
     if (!isActive) return; // Skip drawing if the scene is not active
-    DrawFPS(10,10);
-    std::string camPosStr = "Camera: X=" + std::to_string(camera.position.x) +
-                            " Y=" + std::to_string(camera.position.y) +
-                            " Z=" + std::to_string(camera.position.z);
-    DrawText(camPosStr.c_str(), 10, 30, 20, GREEN);
+    // DrawFPS(10,10);
+    // std::string camPosStr = "Camera: X=" + std::to_string(camera.position.x) +
+    //                         " Y=" + std::to_string(camera.position.y) +
+    //                         " Z=" + std::to_string(camera.position.z);
+    // DrawText(camPosStr.c_str(), 10, 30, 20, GREEN);
 
-    std::string camFacingVector = "Facing: X=" + std::to_string(camera.target.x) +
-                                  " Y=" + std::to_string(camera.target.y) +
-                                  " Z=" + std::to_string(camera.target.z);
-    DrawText(camFacingVector.c_str(), 10, 50, 20, GREEN);
+    // std::string camFacingVector = "Facing: X=" + std::to_string(camera.target.x) +
+    //                               " Y=" + std::to_string(camera.target.y) +
+    //                               " Z=" + std::to_string(camera.target.z);
+    // DrawText(camFacingVector.c_str(), 10, 50, 20, GREEN);
     for (const auto& objPtr : uiObjects) { objPtr->draw(&lightingShader); }
 }
 
