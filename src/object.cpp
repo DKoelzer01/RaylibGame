@@ -1,11 +1,20 @@
 #include "object.h"
 #include "textobject.h"
 #include "gameobject.h"
+#include <raymath.h>
 
 Object::Object(std::string type,std::string name, Vector3 position, Vector3 rotation, Color color, float scale)
     : type(type), name(name), position(position), rotation(rotation), color(color), scale(scale) {}
 
-void Object::draw() {
+void Object::draw(Shader* lightingShader) {
+    if (!isActive) return; // Skip drawing if the object is not active
+    // Base objects do not render anything by default
+    // Derived classes should implement their own draw logic
+    std::cout << "Drawing base Object: " << name << " of type " << type << std::endl;
+}
+
+void Object::drawDepthOnly(const Matrix& lightSpaceMatrix, Shader* depthShader) {
+    // Base objects do not render depth
 }
 
 Object::~Object() {
@@ -18,7 +27,7 @@ TextObject::TextObject(std::string text, int fontSize)
 TextObject::TextObject(std::string text, Vector3 position, Vector3 rotation, Color color, float scale, int fontSize)
     : Object("text","text", position, rotation, color, scale), text(text), fontSize(fontSize) {}
 
-void TextObject::draw() {
+void TextObject::draw(Shader* lightingShader) {
     DrawText(text.c_str(), static_cast<int>(position.x), static_cast<int>(position.y), fontSize, color);
 }
 
@@ -36,18 +45,27 @@ GameObject::~GameObject() {
     }
 }
 
-ChunkObject::ChunkObject(std::string type, std::string name, Vector3 position, Vector3 rotation, Color color, float scale, Chunk chunk)
-    : GameObject(type, name, position, rotation, color, scale), chunk(chunk) {
-    this->model = chunk.model;
+Chunk::~Chunk() {
+    // Unload mesh and model resources
+    if (mesh.vertices) delete[] mesh.vertices;
+    if (mesh.indices) delete[] mesh.indices;
+    if (mesh.normals) delete[] mesh.normals;
 }
 
-ChunkObject::~ChunkObject() {
-    // Do NOT unload chunk.model here, as it is a copy and may be managed elsewhere.
-    // If you ever manage chunk.model separately, add safe unload logic here.
-}
-
-void GameObject::draw() {
+void GameObject::draw(Shader* lightingShader) {
     if (!isActive) return; // Skip drawing if the object is not active
+    Matrix matModel = MatrixIdentity();
+    matModel = MatrixMultiply(matModel, MatrixScale(scale, scale, scale));
+    matModel = MatrixMultiply(matModel, MatrixRotateXYZ((Vector3){ DEG2RAD*rotation.x, DEG2RAD*rotation.y, DEG2RAD*rotation.z }));
+    matModel = MatrixMultiply(matModel, MatrixTranslate(position.x, position.y, position.z));
+    int matModelLoc = GetShaderLocation(*lightingShader, "matModel");
+    SetShaderValueMatrix(*lightingShader, matModelLoc, matModel);
+    // Compute MVP for main pass
+    extern Matrix cameraProj, cameraView;
+    Matrix mvp = MatrixMultiply(MatrixMultiply(cameraProj, cameraView), matModel);
+    int mvpLoc = GetShaderLocation(*lightingShader, "mvp");
+    SetShaderValueMatrix(*lightingShader, mvpLoc, mvp);
+
     if (type == "cube") {
         DrawCube(position, scale, scale, scale, color);
         DrawCubeWires(position, scale, scale, scale, BLACK);
@@ -55,15 +73,75 @@ void GameObject::draw() {
         DrawSphere(position, scale, color);
         DrawSphereWires(position, scale,0,1, BLACK);
     } else  {
-        DrawModel(model, position, scale, color);
-        DrawModelWires(model, position, scale, BLACK);
+        DrawModel(model, {0,0,0}, 1.0f, WHITE);
+        DrawModelWires(model, {0,0,0}, 1.0f, WHITE);
     }
 }
 
-void ChunkObject::draw() {
-    // logger.logf("Drawing ChunkObject: %s at position (%f, %f, %f) active:%d\n", name.c_str(), position.x, position.y, position.z, isActive);
-    if (!isActive) return; // Skip drawing if the object is not active
-    DrawModel(chunk.model, position, scale, color);
-    // DrawModelWires(chunk.model, position, scale, BLACK);
-    // DrawCube({position.x+16,position.y+16,position.z+16},32,32,32, {200,200,200,50}); // Draw a cube at the chunk position for visualization
+void GameObject::drawDepthOnly(const Matrix& lightSpaceMatrix, Shader* depthShader) {
+    if (!isActive) return;
+    Matrix matModel = MatrixIdentity();
+    matModel = MatrixMultiply(matModel, MatrixScale(scale, scale, scale));
+    matModel = MatrixMultiply(matModel, MatrixRotateXYZ((Vector3){ DEG2RAD*rotation.x, DEG2RAD*rotation.y, DEG2RAD*rotation.z }));
+    matModel = MatrixMultiply(matModel, MatrixTranslate(position.x, position.y, position.z));
+    int matModelLoc = GetShaderLocation(*depthShader, "matModel");
+    SetShaderValueMatrix(*depthShader, matModelLoc, matModel);
+    Matrix mvp = MatrixMultiply(lightSpaceMatrix, matModel);
+    int mvpLoc = GetShaderLocation(*depthShader, "mvp");
+    SetShaderValueMatrix(*depthShader, mvpLoc, mvp);
+    BeginShaderMode(*depthShader);
+    DrawModel(model, {0,0,0}, 1.0f, WHITE);
+    EndShaderMode();
+}
+
+void Chunk::draw(const Matrix& lightSpaceMatrix) {
+    if (!isActive) return;
+    if (mesh.vertexCount == 0) return; // No mesh to draw
+    if (mesh.vertices == nullptr || mesh.indices == nullptr) {
+        logger.logf("[ERROR] Chunk::draw called with uninitialized mesh for chunk at (%d, %d, %d)\n", position.x, position.y, position.z);
+        return;
+    }
+    model.materials[0].shader = *lightingShader;
+    matModel = MatrixIdentity();
+    matModel = MatrixMultiply(matModel, MatrixScale(scale, scale, scale));
+    matModel = MatrixMultiply(matModel, MatrixTranslate(position.x, position.y, position.z));
+    int matModelLoc = GetShaderLocation(model.materials[0].shader, "matModel");
+    SetShaderValueMatrix(model.materials[0].shader, matModelLoc, matModel);
+    // Before setting the lightSpaceMatrix uniform, transpose it for GLSL
+    Matrix transposedLightSpace = MatrixTranspose(lightSpaceMatrix);    
+    int lightSpaceLoc = GetShaderLocation(model.materials[0].shader, "lightSpaceMatrix");
+    SetShaderValueMatrix(model.materials[0].shader, lightSpaceLoc, transposedLightSpace);
+    extern Matrix cameraProj, cameraView;
+    Matrix mvp = MatrixMultiply(MatrixMultiply(cameraProj, cameraView), matModel);
+    int mvpLoc = GetShaderLocation(model.materials[0].shader, "mvp");
+    SetShaderValueMatrix(model.materials[0].shader, mvpLoc, mvp);
+
+    BeginShaderMode(model.materials[0].shader);
+    DrawMesh(mesh, model.materials[0], matModel);
+    EndShaderMode();
+    // DrawCubeWires((Vector3){
+    //     position.x + CHUNK_SIZE/2.0f,
+    //     position.y + CHUNK_SIZE/2.0f,
+    //     position.z + CHUNK_SIZE/2.0f
+    // }, CHUNK_SIZE, CHUNK_SIZE, CHUNK_SIZE, GREEN);
+}
+
+void Chunk::drawDepthOnly(const Matrix& lightSpaceMatrix) {
+    if (!isActive) return;
+    if (mesh.vertexCount == 0) return;
+    matModel = MatrixIdentity();
+    matModel = MatrixMultiply(matModel, MatrixScale(scale, scale, scale));
+    matModel = MatrixMultiply(matModel, MatrixTranslate(position.x, position.y, position.z));
+    int matModelLoc = GetShaderLocation(*depthShader, "matModel");
+    SetShaderValueMatrix(*depthShader, matModelLoc, matModel);
+
+    Matrix mvp = MatrixMultiply(lightSpaceMatrix, matModel);
+    int mvpLoc = GetShaderLocation(*depthShader, "mvp");
+    SetShaderValueMatrix(*depthShader, mvpLoc, mvp);
+
+    Material mat = LoadMaterialDefault();
+    mat.shader = *depthShader;
+    BeginShaderMode(*depthShader);
+    DrawMesh(mesh, mat, matModel);
+    EndShaderMode();
 }

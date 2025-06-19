@@ -15,7 +15,6 @@
 using namespace std;
 
 Logger logger("log.txt");
-Shader lightingShader; // Global shader for lighting effects
 
 int gameState = 0; // 0: Main Menu, 1: Game, 2: Pause Menu
 
@@ -30,8 +29,7 @@ int main()
     SetTargetFPS(60);
     SetExitKey(KEY_NULL);
     SetTraceLogLevel(LOG_WARNING); // Set log level to warning to reduce output noise
-    lightingShader = LoadShader(TextFormat("resources/lighting.vs", GLSL_VERSION),
-                                TextFormat("resources/lighting.fs", GLSL_VERSION));
+    
     Scene mainMenu("mainMenu", true); // Main menu scene;
     Scene world("world", false);;
 

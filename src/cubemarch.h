@@ -4,6 +4,9 @@
 #include "cubemarchconsts.h"
 #include "utils/logger.h"
 #include "SimplexNoise.h"
+#include "edgecache.h" // Include edgecache.h for EdgeCacheEntry
+
+class Planetoid; // Forward declaration for Planetoid
 
 #include <raylib.h>
 #include <vector>
@@ -13,12 +16,6 @@
 #include <unordered_map>
 #include <tuple>
 #include <cassert>
-
-struct EdgeCacheEntry {
-    int vertexIdx;
-    Vector3 normal;
-    EdgeCacheEntry() : vertexIdx(-1), normal({0,0,0}) {}
-};
 
 struct EdgeKey {
     int x, y, z, edge;
@@ -44,7 +41,6 @@ void marchCube(
     std::vector<float>& noiseValues, int size,
     std::vector<Vector3>& vertices,
     std::vector<int>& indices,
-    std::vector<Vector3>& normals,
     std::vector<EdgeCacheEntry>* edgeCacheLocal,
     std::vector<EdgeCacheEntry>* edgeCacheX,
     std::vector<EdgeCacheEntry>* edgeCacheY,
@@ -52,7 +48,8 @@ void marchCube(
     float threshold,
     int cx, int cy, int cz,
     const Vector3& chunkOrigin,
-    SimplexNoise* simplexNoise
+    SimplexNoise* simplexNoise,
+    Planetoid* planetoid
 );
 
 extern std::vector<int> edgeCacheFlat;

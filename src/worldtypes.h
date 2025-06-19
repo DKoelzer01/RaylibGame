@@ -4,11 +4,11 @@
 #include <tuple>
 #include <unordered_map>
 #include <vector>
+#include "object.h"
+#include "SimplexNoise.h"
+#include "edgecache.h" // EdgeCacheEntry is now defined here
+#include <raylib.h>
 
-#include "gameobject.h"
-
-// Forward declaration for ChunkObject
-class ChunkObject;
 
 // Hash for tuple<int, int, int, int>
 struct Tuple4Hash {
@@ -36,26 +36,102 @@ namespace std {
     };
 }
 
+struct Vector3Hash {
+    std::size_t operator()(const Vector3& v) const {
+        std::size_t hx = std::hash<float>()(v.x);
+        std::size_t hy = std::hash<float>()(v.y);
+        std::size_t hz = std::hash<float>()(v.z);
+        return ((hx ^ (hy << 1)) >> 1) ^ (hz << 1);
+    }
+};
 
-struct Chunk {
+
+class Chunk : public Object {
+public:
     std::vector<float> noiseValues;
     std::vector<Vector3> vertices;
     std::vector<int> indices;
-    Int3 position; // Position of the chunk in the world
-    Mesh mesh;     // Store mesh for chunk lifetime
-    Model model;   // Store model for chunk lifetime
-    // Add more as needed (e.g., mesh, cache)
+    Mesh mesh;
+    Model model;
+    Shader *lightingShader = nullptr;
+    Shader *depthShader = nullptr;
+    Matrix matModel;
+
+    Chunk* neighbors[26] = {nullptr};
+    bool normalsPending = false;
+    uint32_t neighborMask = 0;
+
+    Chunk()
+        : Object("chunk", "chunk", {0, 0, 0}, {0, 0, 0}, WHITE, 1.0f), position({0, 0, 0}) {
+        mesh = { 0 };
+        mesh.vertices = nullptr;
+        mesh.indices = nullptr;
+        mesh.normals = nullptr;
+    }
+
+    Chunk(const Int3& pos, Vector3 worldPos, Vector3 rotation, Color color, float scale)
+        : Object("chunk", "chunk", worldPos, rotation, color, scale), position(pos) {}
+    virtual ~Chunk();
+
+    Int3 position; // Position in chunk grid
+
+    // Assign a neighbor at a given index (0-25)
+    void setNeighbor(int idx, Chunk* neighbor) {
+        neighbors[idx] = neighbor;
+        if (neighbor) neighborMask |= (1u << idx);
+        else neighborMask &= ~(1u << idx);
+    }
+
+    // Check if all 26 neighbors are present
+    bool allNeighborsPresent() const {
+        return neighborMask == 0x3FFFFFF; // 26 bits set
+    }
+
+    // Called when a neighbor is added
+    void onNeighborAdded(int idx, Chunk* neighbor) {
+        setNeighbor(idx, neighbor);
+        if (normalsPending && allNeighborsPresent()) {
+            calculateNormals();
+            normalsPending = false;
+        }
+    }
+
+    // Attempt to calculate normals if ready
+    void tryCalculateNormals();
+
+    // Placeholder for your normal calculation logic
+    void calculateNormals();
+
+    // Helper: 26 neighbor offsets (faces, edges, corners)
+    static const int neighborOffsets[26][3];
+
+    // Method for Chunk: assign all 26 neighbors and notify them
+    void assignNeighborsAndNotify(std::unordered_map<Int3, std::unique_ptr<Chunk>>& chunkChildren);
+
+    void draw(const Matrix& lightSpaceMatrix);
+    void drawDepthOnly(const Matrix& lightSpaceMatrix);
 };
 
 class Planetoid: public Object {
 public:
     int size;
-    std::unordered_map<std::tuple<int, int, int, int>, std::vector<int>, Tuple4Hash> sharedEdgeCaches; // Shared edge caches for chunks
+    Vector3 seed;
+    std::unordered_map<std::tuple<int, int, int, int>, std::vector<EdgeCacheEntry>, Tuple4Hash> sharedEdgeCaches; // Shared edge caches for chunks
     std::unordered_map<Int3,bool> generatedChunks; // Store generated chunk positions
-    std::unordered_map<Int3, std::unique_ptr<ChunkObject>> chunkChildren;
+    std::unordered_map<Int3, std::unique_ptr<Chunk>> chunkChildren;
+    Shader *lightingShader = nullptr;
+    Shader *depthShader = nullptr;
     Planetoid(std::string name, Vector3 position, Vector3 rotation, Color color, float scale, size_t size);
     virtual ~Planetoid();
-    void draw() override;
+    float GetNoise(float wx, float wy, float wz); // Get noise value at world coordinates
+    void draw(Shader* lightingShader) override;
+    void drawDepthOnly(const Matrix& lightSpaceMatrix, Shader* depthShader) override;
+    // Update: Now takes chunkWorldPos (relative to planetoid) and origin (planetoid world position)
+    Chunk generateChunk(const Vector3& chunkWorldPos, const Vector3& origin, SimplexNoise* noise);
 };
+
+#include "cubemarch.h" // Only include after Planetoid if needed
+
+extern const int CHUNK_SIZE;
 
 #endif

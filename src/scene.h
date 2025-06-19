@@ -20,6 +20,8 @@
 #include <array>
 #include <unordered_map>
 
+extern Matrix lightSpaceMatrix;
+extern Texture2D shadowMapTexture; // Texture for shadow map
 
 class Scene {
     public:
@@ -31,6 +33,10 @@ class Scene {
         Camera3D camera; // Camera for the scene
 
         std::vector<Light> lights; // Array of lights in the scene
+        Shader lightingShader; // Shader for lighting
+        Shader depthShader;
+        RenderTexture2D shadowMap; // Shadow map for shadow mapping
+
 
         Object rootObject;
 
@@ -38,6 +44,7 @@ class Scene {
         virtual ~Scene(); // Only declare, do not define or default here
         void drawScene(int gamestate);
         void drawUI(int gamestate);
+        void updateAllChunkShaders();
 };
 
 #endif
