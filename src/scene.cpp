@@ -11,15 +11,12 @@
 Matrix lightSpaceMatrix;
 Matrix cameraView;
 Matrix cameraProj;
-Texture2D shadowMapTexture;
-Texture2D debugTexture;
+Texture2D shadowMapTexture; // Texture for shadow map
 
 Scene::Scene(std::string name, bool isActive)
     : name(name), isActive(isActive),
       rootObject("root", "root", {0.0f, 0.0f, 0.0f}, {0.0f, 0.0f, 0.0f}, WHITE, 1.0f)
 {
-    debugTexture = LoadTexture("resources/tex_DebugUVTiles.png"); // For debugging
-
     Mesh cube = GenMeshCube(1.0f, 1.0f, 1.0f);
     skybox = LoadModelFromMesh(cube);
 
@@ -125,8 +122,8 @@ void Scene::drawScene(int gamestate) {
     for (const auto& objPtr : rootObject.children) { objPtr->drawDepthOnly(lightSpaceMatrix, &depthShader); }
     EndMode3D();
     EndTextureMode();
+    shadowMapTexture = shadowMap.texture; // Update the global shadow map texture
 
-    shadowMapTexture = shadowMap.texture; // Update shadow map texture reference
     // --- Main pass ---
     Matrix proj = GetCameraProjectionMatrix(&camera, CAMERA_PERSPECTIVE);
     Matrix view = GetCameraMatrix(camera);
@@ -135,11 +132,8 @@ void Scene::drawScene(int gamestate) {
     cameraProj = proj;
     cameraView = view;
 
-    
     int lightSpaceLoc = GetShaderLocation(lightingShader, "lightSpaceMatrix");
     SetShaderValueMatrix(lightingShader, lightSpaceLoc, lightSpaceMatrix);
-
-    // Remove global mvp set here; each object sets its own mvp
 
     // --- Main scene render ---
     BeginMode3D(camera);
@@ -157,19 +151,6 @@ void Scene::drawScene(int gamestate) {
     if (viewPosLoc != -1) {
         SetShaderValue(lightingShader, viewPosLoc, cameraPos, SHADER_UNIFORM_VEC3);
     }
-
-    int debugTextureLoc = GetShaderLocation(lightingShader, "debugTexture");
-    if (debugTextureLoc != -1) {
-        SetShaderValueTexture(lightingShader, debugTextureLoc, debugTexture);
-    }
-
-    int shadowMapLoc = GetShaderLocation(lightingShader, "shadowMap");
-    if (shadowMapLoc != -1) {
-        SetShaderValueTexture(lightingShader, shadowMapLoc, shadowMap.texture);
-    } else {
-        logger.log("[Scene::drawScene] Warning: shadowMapLoc not found in lighting shader\n");
-    }
-    
 
     int lightCount = 0;
     for (const auto& light : lights) { 
@@ -202,7 +183,7 @@ void Scene::drawScene(int gamestate) {
     DrawCubeWires(lightTarget, orthoSize * 2, orthoSize * 2, farPlane - nearPlane, RED);
     EndMode3D();
 
-    // --- Debug: Draw shadow map as fullscreen quad ---
+    // --- Debug: Draw shadow map as quad ---
     DrawTexturePro(
         shadowMap.texture,
         (Rectangle){ 0, 0, (float)shadowMap.texture.width, -(float)shadowMap.texture.height },
@@ -211,8 +192,6 @@ void Scene::drawScene(int gamestate) {
         0.0f,
         WHITE
     );
-
-    
 }
 
 void Scene::drawUI(int gamestate) {

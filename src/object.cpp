@@ -101,20 +101,58 @@ void Chunk::draw(const Matrix& lightSpaceMatrix) {
         logger.logf("[ERROR] Chunk::draw called with uninitialized mesh for chunk at (%d, %d, %d)\n", position.x, position.y, position.z);
         return;
     }
+    extern Texture2D shadowMapTexture;
     model.materials[0].shader = *lightingShader;
+
+    // Set the model matrix for the chunk
     matModel = MatrixIdentity();
     matModel = MatrixMultiply(matModel, MatrixScale(scale, scale, scale));
     matModel = MatrixMultiply(matModel, MatrixTranslate(position.x, position.y, position.z));
     int matModelLoc = GetShaderLocation(model.materials[0].shader, "matModel");
     SetShaderValueMatrix(model.materials[0].shader, matModelLoc, matModel);
+
     // Before setting the lightSpaceMatrix uniform, transpose it for GLSL
     Matrix transposedLightSpace = MatrixTranspose(lightSpaceMatrix);    
     int lightSpaceLoc = GetShaderLocation(model.materials[0].shader, "lightSpaceMatrix");
     SetShaderValueMatrix(model.materials[0].shader, lightSpaceLoc, transposedLightSpace);
+
+    // Compute MVP for main pass
     extern Matrix cameraProj, cameraView;
     Matrix mvp = MatrixMultiply(MatrixMultiply(cameraProj, cameraView), matModel);
     int mvpLoc = GetShaderLocation(model.materials[0].shader, "mvp");
     SetShaderValueMatrix(model.materials[0].shader, mvpLoc, mvp);
+
+
+    if(shadowMapTexture.id == 0) {
+        logger.log("[ERROR] Chunk::draw: shadowMapTexture is not initialized\n");
+        return;
+    }
+    int shadowMapLoc = GetShaderLocation(model.materials[0].shader, "shadowMap");
+    if (shadowMapLoc == -1) { logger.log("[ERROR] Chunk::draw: shadowMap location not found in lighting shader\n"); }
+
+    int colorLoc = GetShaderLocation(model.materials[0].shader, "colorTexture");
+    if (colorLoc == -1) { logger.log("[ERROR] Chunk::draw: colorTexture location not found in lighting shader\n"); }
+
+    int normalLoc = GetShaderLocation(model.materials[0].shader, "normalTexture");
+    if (normalLoc == -1) { logger.log("[ERROR] Chunk::draw: normalTexture location not found in lighting shader\n"); }
+    
+    int heightLoc = GetShaderLocation(model.materials[0].shader, "heightTexture");
+    if (heightLoc == -1) { logger.log("[ERROR] Chunk::draw: heightTexture location not found in lighting shader\n"); }
+
+    int roughLoc = GetShaderLocation(model.materials[0].shader, "roughnessTexture");
+    if (roughLoc == -1) { logger.log("[ERROR] Chunk::draw: roughnessTexture location not found in lighting shader\n"); }
+
+    int aoLoc = GetShaderLocation(model.materials[0].shader, "aoTexture");
+    if (aoLoc == -1) { logger.log("[ERROR] Chunk::draw: aoTexture location not found in lighting shader\n"); }
+
+
+    SetShaderValueTexture(model.materials[0].shader, shadowMapLoc, shadowMapTexture);
+    SetShaderValueTexture(model.materials[0].shader, colorLoc, model.materials[0].maps[MATERIAL_MAP_DIFFUSE].texture);
+    SetShaderValueTexture(model.materials[0].shader, normalLoc, model.materials[0].maps[MATERIAL_MAP_NORMAL].texture);
+    SetShaderValueTexture(model.materials[0].shader, heightLoc, model.materials[0].maps[MATERIAL_MAP_HEIGHT].texture);
+    SetShaderValueTexture(model.materials[0].shader, roughLoc, model.materials[0].maps[MATERIAL_MAP_ROUGHNESS].texture);
+    SetShaderValueTexture(model.materials[0].shader, aoLoc, model.materials[0].maps[MATERIAL_MAP_OCCLUSION].texture);
+
 
     BeginShaderMode(model.materials[0].shader);
     DrawMesh(mesh, model.materials[0], matModel);

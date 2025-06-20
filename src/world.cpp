@@ -110,6 +110,28 @@ static Vector3 trilerpVec3(
     return {x, y, z};
 }
 
+void Chunk::assignTextures() {
+    Texture2D colorMap      = LoadTexture("assets/textures/ground_0010_color_2k.jpg");
+    Texture2D normalMap     = LoadTexture("assets/textures/ground_0010_normal_opengl_2k.png");
+    Texture2D heightMap     = LoadTexture("assets/textures/ground_0010_height_2k.png");
+    Texture2D roughMap      = LoadTexture("assets/textures/ground_0010_roughness_2k.jpg");
+    Texture2D aoMap         = LoadTexture("assets/textures/ground_0010_ao_2k.jpg");
+
+    model.materials[0].maps[MATERIAL_MAP_DIFFUSE].texture   = colorMap;
+    model.materials[0].maps[MATERIAL_MAP_NORMAL].texture    = normalMap;
+    model.materials[0].maps[MATERIAL_MAP_HEIGHT].texture    = heightMap;
+    model.materials[0].maps[MATERIAL_MAP_ROUGHNESS].texture = roughMap;
+    model.materials[0].maps[MATERIAL_MAP_OCCLUSION].texture = aoMap;
+
+    // Set texture filtering
+    SetTextureFilter(colorMap, TEXTURE_FILTER_BILINEAR);
+    SetTextureFilter(normalMap, TEXTURE_FILTER_BILINEAR);
+    SetTextureFilter(heightMap, TEXTURE_FILTER_BILINEAR);
+    SetTextureFilter(roughMap, TEXTURE_FILTER_BILINEAR);
+    SetTextureFilter(aoMap, TEXTURE_FILTER_BILINEAR);
+
+    logger.logf("[Chunk::assignTextures] Textures assigned for chunk at (%d, %d, %d)\n", position.x, position.y, position.z);
+}
 
 void Chunk::calculateNormals() {
     if (vertices.empty() || mesh.vertexCount == 0) {
@@ -270,6 +292,7 @@ void Chunk::calculateNormals() {
 
     UploadMesh(&mesh,true); // 2 = RLGL_ATTRIBUTE_NORMAL
     model = LoadModelFromMesh(mesh);
+    assignTextures();
 }
 
 // --- Chunk neighborOffsets definition ---
