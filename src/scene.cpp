@@ -11,12 +11,29 @@
 Matrix lightSpaceMatrix;
 Matrix cameraView;
 Matrix cameraProj;
+
 Texture2D shadowMapTexture; // Texture for shadow map
+Texture2D colorMap;
+Texture2D normalMap;
+Texture2D heightMap;
+Texture2D roughMap;
+Texture2D aoMap;
 
 Scene::Scene(std::string name, bool isActive)
     : name(name), isActive(isActive),
       rootObject("root", "root", {0.0f, 0.0f, 0.0f}, {0.0f, 0.0f, 0.0f}, WHITE, 1.0f)
 {
+    colorMap      = LoadTexture("assets/textures/ground_0010_color_2k.jpg");
+    normalMap     = LoadTexture("assets/textures/ground_0010_normal_opengl_2k.png");
+    heightMap     = LoadTexture("assets/textures/ground_0010_height_2k.png");
+    roughMap      = LoadTexture("assets/textures/ground_0010_roughness_2k.jpg");
+    aoMap         = LoadTexture("assets/textures/ground_0010_ao_2k.jpg");
+    SetTextureFilter(colorMap, TEXTURE_FILTER_ANISOTROPIC_16X);
+    SetTextureFilter(normalMap, TEXTURE_FILTER_ANISOTROPIC_16X);
+    SetTextureFilter(heightMap, TEXTURE_FILTER_ANISOTROPIC_16X);
+    SetTextureFilter(roughMap, TEXTURE_FILTER_ANISOTROPIC_16X);
+    SetTextureFilter(aoMap, TEXTURE_FILTER_ANISOTROPIC_16X);
+
     Mesh cube = GenMeshCube(1.0f, 1.0f, 1.0f);
     skybox = LoadModelFromMesh(cube);
 
@@ -165,6 +182,35 @@ void Scene::drawScene(int gamestate) {
         lightCount++;
     }
     
+
+    if(shadowMapTexture.id == 0) {
+        logger.log("[ERROR] Chunk::draw: shadowMapTexture is not initialized\n");
+        return;
+    }
+    int shadowMapLoc = GetShaderLocation(lightingShader, "shadowMap");
+    if (shadowMapLoc == -1) { logger.log("[ERROR] Chunk::draw: shadowMap location not found in lighting shader\n"); }
+
+    int colorLoc = GetShaderLocation(lightingShader, "colorTexture");
+    if (colorLoc == -1) { logger.log("[ERROR] Chunk::draw: colorTexture location not found in lighting shader\n"); }
+
+    int normalLoc = GetShaderLocation(lightingShader, "normalTexture");
+    if (normalLoc == -1) { logger.log("[ERROR] Chunk::draw: normalTexture location not found in lighting shader\n"); }
+    
+    int heightLoc = GetShaderLocation(lightingShader, "heightTexture");
+    if (heightLoc == -1) { logger.log("[ERROR] Chunk::draw: heightTexture location not found in lighting shader\n"); }
+
+    int roughLoc = GetShaderLocation(lightingShader, "roughnessTexture");
+    if (roughLoc == -1) { logger.log("[ERROR] Chunk::draw: roughnessTexture location not found in lighting shader\n"); }
+
+    int aoLoc = GetShaderLocation(lightingShader, "aoTexture");
+    if (aoLoc == -1) { logger.log("[ERROR] Chunk::draw: aoTexture location not found in lighting shader\n"); }
+
+    SetShaderValueTexture(lightingShader, shadowMapLoc, shadowMapTexture);
+    SetShaderValueTexture(lightingShader, colorLoc, colorMap);
+    SetShaderValueTexture(lightingShader, normalLoc, normalMap);
+    SetShaderValueTexture(lightingShader, heightLoc, heightMap);
+    SetShaderValueTexture(lightingShader, roughLoc, roughMap);
+    SetShaderValueTexture(lightingShader, aoLoc, aoMap);
 
     BeginShaderMode(lightingShader);
     // logger.logf("Drawing %zu objects\n", objects.size());

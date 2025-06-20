@@ -15,6 +15,7 @@ uniform sampler2D heightTexture;
 uniform sampler2D roughnessTexture;
 uniform sampler2D aoTexture;
 
+uniform vec3 objectCenter; // Center of the asteroid/object
 
 // Output fragment color
 out vec4 finalColor;
@@ -26,7 +27,7 @@ out vec4 dummyColor;
 #define     LIGHT_DIRECTIONAL       0
 #define     LIGHT_POINT             1
 
-float texScale = 0.2;
+float texScale = 0.01; // Scale for texture mapping
 
 struct Light {
     int enabled;
@@ -41,42 +42,44 @@ uniform Light lights[MAX_LIGHTS];
 uniform vec4 ambient;
 uniform vec3 viewPos;
 
-float hash(vec3 p) {
-    return fract(sin(dot(p, vec3(127.1, 311.7, 74.7))) * 43758.5453);
-}
-
-vec2 randomOffset(vec3 pos) {
-    float rnd = hash(pos);
-    return vec2(rnd, rnd) * 0.005; // Adjust 0.05 as needed
-}
 
 vec4 triplanarTextureGrad(sampler2D tex, vec3 pos, vec3 normal, float scale)
 {
-    vec2 xz = pos.yz * scale;
-    vec2 yz = pos.xz * scale;
-    vec2 xy = pos.xy * scale;
+    // Decorrelate axes: rotate and offset each projection
+    mat2 rotA = mat2(cos(0.0), -sin(0.0), sin(0.0), cos(0.0));
+    mat2 rotB = mat2(cos(1.0), -sin(1.0), sin(1.0), cos(1.0));
+    mat2 rotC = mat2(cos(2.0), -sin(2.0), sin(2.0), cos(2.0));
+
+    vec2 xz = rotA * (pos.yz * scale + vec2(13.1, 7.7));
+    vec2 yz = rotB * (pos.xz * scale + vec2(-5.3, 2.2));
+    vec2 xy = rotC * (pos.xy * scale + vec2(8.8, -11.4));
 
     vec3 blend = abs(normal) + 0.0001;
-    blend = pow(blend, vec3(1.0)); // Softer blend
-    blend = max(blend, vec3(0.2)); // Minimum blend to reduce axis dominance
+    blend = pow(blend, vec3(4.0)); // Softer blend
+    blend = max(blend, vec3(0.05));
     blend /= (blend.x + blend.y + blend.z);
 
-    float rnd = fract(sin(dot(pos, vec3(127.1, 311.7, 74.7))) * 43758.5453);
-    vec2 offset = vec2(rnd, rnd) * 0.01;
+    vec3 scaledPos = pos * scale;
+    vec3 dx = dFdx(scaledPos);
+    vec3 dy = dFdy(scaledPos);
 
-    vec4 xProj = textureGrad(tex, yz + offset, dFdx(yz), dFdy(yz));
-    vec4 yProj = textureGrad(tex, xz + offset, dFdx(xz), dFdy(xz));
-    vec4 zProj = textureGrad(tex, xy + offset, dFdx(xy), dFdy(xy));
+    vec4 xProj = textureGrad(tex, xz, dx.yz, dy.yz);
+    vec4 yProj = textureGrad(tex, yz, dx.xz, dy.xz);
+    vec4 zProj = textureGrad(tex, xy, dx.xy, dy.xy);
 
     return xProj * blend.x + yProj * blend.y + zProj * blend.z;
 }
 
 vec3 triplanarNormal(sampler2D tex, vec3 pos, vec3 normal, float scale)
 {
-    // Projected UVs
-    vec2 xz = pos.yz * scale;
-    vec2 yz = pos.xz * scale;
-    vec2 xy = pos.xy * scale;
+    // Decorrelate axes: rotate and offset each projection
+    mat2 rotA = mat2(cos(0.0), -sin(0.0), sin(0.0), cos(0.0));
+    mat2 rotB = mat2(cos(1.0), -sin(1.0), sin(1.0), cos(1.0));
+    mat2 rotC = mat2(cos(2.0), -sin(2.0), sin(2.0), cos(2.0));
+
+    vec2 xz = rotA * (pos.yz * scale + vec2(13.1, 7.7));
+    vec2 yz = rotB * (pos.xz * scale + vec2(-5.3, 2.2));
+    vec2 xy = rotC * (pos.xy * scale + vec2(8.8, -11.4));
 
     // Blend weights
     vec3 blend = abs(normal) + 0.0001;
@@ -101,11 +104,15 @@ vec3 triplanarNormal(sampler2D tex, vec3 pos, vec3 normal, float scale)
 
 void main()
 {
-    vec4 diffuse    = triplanarTextureGrad(colorTexture, fragPosition, fragNormal, texScale);
-    vec3 normal     = triplanarNormal(normalTexture, fragPosition, fragNormal, texScale);
-    float height    = triplanarTextureGrad(heightTexture, fragPosition, fragNormal, texScale).r;
-    float rough     = triplanarTextureGrad(roughnessTexture, fragPosition, fragNormal, texScale).r;
-    float ao        = triplanarTextureGrad(aoTexture, fragPosition, fragNormal, texScale).r;
+    vec4 diffuse;
+    vec3 normal;
+    float height, rough, ao;
+
+    diffuse    = triplanarTextureGrad(colorTexture, fragPosition, fragNormal, texScale);
+    normal     = triplanarNormal(normalTexture, fragPosition, fragNormal, texScale);
+    height     = triplanarTextureGrad(heightTexture, fragPosition, fragNormal, texScale).r;
+    rough      = triplanarTextureGrad(roughnessTexture, fragPosition, fragNormal, texScale).r;
+    ao         = triplanarTextureGrad(aoTexture, fragPosition, fragNormal, texScale).r;
 
     vec3 lightDot = vec3(0.0);
     vec3 viewD = normalize(viewPos - fragPosition);
@@ -159,11 +166,4 @@ void main()
     vec4 result = vec4(ambientColor + diffuseColor + specularColor, 1.0);
     finalColor = pow(result, vec4(1.0/2.2)); // Gamma correction
     dummyColor = vec4(height, rough, ao, result); // Output additional data for debugging
-    // Debug: visualize shadow 
-    // vec3 blendedNormal = triplanarNormal(normalTexture, fragPosition, fragNormal, texScale);
-    finalColor = vec4(texture(shadowMap, shadowUV).rgb, 1.0); // Debugging shadow map texture
-    // finalColor = diffuse;
-    // finalColor = vec4(normal, 1.0);
-    // finalColor = vec4(vec3(shadow), 1.0);
-    // finalColor = vec4(currentDepth, 0, (1.0-closestDepth)-currentDepth, 1.0); // Debugging depth values
 }
