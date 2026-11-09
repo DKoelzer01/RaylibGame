@@ -12,3 +12,4 @@ bench.png
 imgui.ini
 build/
 saves/
+log_*.txt

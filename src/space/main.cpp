@@ -204,7 +204,7 @@ int main(int argc, char** argv)
                         }
                         flyMaxSpeed = std::max(flyMaxSpeed, Vector3Length(ship.velocity));
                     }
-                } else if (benchMineStrokes > 0 && benchWalkSeconds <= 0.0) {
+                } else if ((benchMineStrokes > 0 || minePhase == 2) && benchWalkSeconds <= 0.0) {
                     // Scripted mining: look at the ground, dig N strokes through the real tool path,
                     // craft everything possible, then build a few strokes back.
                     if (!mineStarted) {
@@ -238,6 +238,7 @@ int main(int argc, char** argv)
                                minedStrokes, mineStoppedEarly ? " (hole left arm's reach)" : "", mineCrafted, built, fillersBefore,
                                inventory.count("stone") + inventory.count("regolith") + inventory.count("concrete"), inv.c_str());
                         benchMineStrokes = 0;
+                        minePhase = 3;
                     }
                 } else if (WorldIdle() && benchWalkSeconds > 0.0) {
                     // Scripted walk: spawn on the surface and walk forward; checks gravity + collision.
@@ -265,7 +266,7 @@ int main(int argc, char** argv)
                                dist, benchWalkSeconds, 100.0 * walkGroundedFrames / std::max(1, walkFrames), walkMinDensity, walkMaxDensity, ISO_LEVEL, alt);
                         benchWalkSeconds = 0.0;
                     }
-                } else if ((WorldIdle() && benchDigStrokes == 0 && !benchSaveLoad && benchWalkSeconds <= 0.0 && benchMineStrokes == 0 && benchFlySeconds <= 0.0 && !benchSuffocate) || GetTime() > 180.0) {
+                } else if ((WorldIdle() && benchDigStrokes == 0 && !benchSaveLoad && benchWalkSeconds <= 0.0 && benchMineStrokes == 0 && minePhase != 2 && benchFlySeconds <= 0.0 && !benchSuffocate) || GetTime() > 180.0) {
                     benchStart = GetTime();
                     printf("bench: world ready after %.2f s (%d chunks, avg build %.2f ms, %d worker threads)\n",
                         GetWorldStats().lastGenerationSeconds, GetWorldStats().chunks, GetWorldStats().avgBuildMs, GetWorldStats().workerThreads);

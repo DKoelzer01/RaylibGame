@@ -62,6 +62,18 @@ Planetoid::Planetoid(std::string name, DVec3 wp, Vector3 rotation, float scale, 
 
 Planetoid::~Planetoid() { planetoidRegistry.erase(id); }
 
+Planetoid::Planetoid(std::string name, DVec3 wp, std::shared_ptr<const TerrainField> terrain)
+    : Object("terrain", name, wp.toFloat(), { 0, 0, 0 }, WHITE, 1.0f),
+      id(nextPlanetoidId++), seed(0), radius(1e9f), field(terrain), edits(std::make_shared<EditList>()) {
+    worldPos = wp;
+    hasWorldPos = true;
+    flat = true;
+    minHeight = terrain->minHeight;
+    maxHeight = terrain->maxHeight;
+    rootLevel = 4; // 512-voxel root tiles, a 5x5 grid around the camera (~1.3 km view range)
+    planetoidRegistry[id] = this;
+}
+
 Planetoid* Planetoid::find(uint64_t id) {
     auto it = planetoidRegistry.find(id);
     return it == planetoidRegistry.end() ? nullptr : it->second;
@@ -100,7 +112,7 @@ static void RequestNode(Planetoid& p, const NodeKey& key, float priority) {
         chunk->parent = &p;
         p.nodes.emplace(key, std::move(chunk));
     }
-    std::shared_ptr<const PlanetoidField> field = p.field;
+    std::shared_ptr<const DensityField> field = p.field;
     std::shared_ptr<const EditList> edits = p.edits;
     const uint64_t id = p.id;
     Jobs().submit(priority, [field, edits, id, key, version] {
@@ -126,7 +138,9 @@ static float DistanceToBox(Vector3 p, Vector3 lo, Vector3 hi) {
 static void CollectDesired(const Planetoid& p, const NodeKey& key, Vector3 camLocal, std::vector<NodeKey>& out) {
     const Vector3 lo = key.origin();
     const Vector3 hi = Vector3AddValue(lo, key.size());
-    if (DistanceToBox({ 0, 0, 0 }, lo, hi) > p.radius + 24.0f) return; // no surface possible here
+    if (p.flat) {
+        if (hi.y < p.minHeight - 8.0f || lo.y > p.maxHeight + 8.0f) return;      // outside the terrain band
+    } else if (DistanceToBox({ 0, 0, 0 }, lo, hi) > p.radius + 24.0f) return;  // no surface possible here
     if (key.level > 0 && DistanceToBox(camLocal, lo, hi) < lodSettings.lodFactor * key.size()) {
         for (int i = 0; i < 8; ++i)
             CollectDesired(p, { key.level - 1, key.x * 2 + (i & 1), key.y * 2 + ((i >> 1) & 1), key.z * 2 + ((i >> 2) & 1) }, camLocal, out);
@@ -141,8 +155,18 @@ static void UpdateLod(Planetoid& p, Vector3 cameraRender) {
     PROFILE_FUNCTION();
     const Vector3 camLocal = p.toLocal(cameraRender);
     std::vector<NodeKey> desired;
-    for (int i = 0; i < 8; ++i)
-        CollectDesired(p, { p.rootLevel, -1 + (i & 1), -1 + ((i >> 1) & 1), -1 + ((i >> 2) & 1) }, camLocal, desired);
+    if (p.flat) {
+        // Open world: a grid of root tiles around the camera, spanning the terrain height band.
+        const float rs = (float)(CHUNK_SIZE << p.rootLevel);
+        const int cx = (int)floorf(camLocal.x / rs), cz = (int)floorf(camLocal.z / rs);
+        const int y0 = (int)floorf(p.minHeight / rs), y1 = (int)floorf(p.maxHeight / rs);
+        for (int z = cz - 2; z <= cz + 2; ++z)
+            for (int x = cx - 2; x <= cx + 2; ++x)
+                for (int y = y0; y <= y1; ++y) CollectDesired(p, { p.rootLevel, x, y, z }, camLocal, desired);
+    } else {
+        for (int i = 0; i < 8; ++i)
+            CollectDesired(p, { p.rootLevel, -1 + (i & 1), -1 + ((i >> 1) & 1), -1 + ((i >> 2) & 1) }, camLocal, desired);
+    }
     std::unordered_set<NodeKey> desiredSet(desired.begin(), desired.end());
 
     for (const NodeKey& k : desired) {
@@ -285,13 +309,16 @@ bool RaycastTerrain(Scene& world, Ray ray, float maxDistance, TerrainHit& hit) {
         const Vector3 d = Vector3Scale(Vector3Subtract(farPoint, o), 1.0f / localLen);
 
         // Bounding sphere (radius + room for added material).
-        const float R = p->radius + 16.0f;
-        const float b = Vector3DotProduct(o, d);
-        const float c = Vector3DotProduct(o, o) - R * R;
-        const float disc = b * b - c;
-        if (disc < 0.0f) continue;
-        float t = std::max(0.0f, -b - sqrtf(disc));
-        const float tEnd = std::min(localLen, -b + sqrtf(disc));
+        float t = 0.0f, tEnd = localLen;
+        if (!p->flat) {
+            const float R = p->radius + 16.0f;
+            const float b = Vector3DotProduct(o, d);
+            const float c = Vector3DotProduct(o, o) - R * R;
+            const float disc = b * b - c;
+            if (disc < 0.0f) continue;
+            t = std::max(0.0f, -b - sqrtf(disc));
+            tEnd = std::min(localLen, -b + sqrtf(disc));
+        }
 
         const float step = 0.5f;
         float prevT = t;
@@ -369,7 +396,7 @@ Planetoid* NearestPlanetoid(Scene& world, Vector3 p) {
     for (auto& obj : world.objects) {
         Planetoid* b = dynamic_cast<Planetoid*>(obj.get());
         if (!b) continue;
-        const float d = Vector3Distance(p, b->position) - b->radius * b->scale;
+        const float d = b->flat ? -1e30f : Vector3Distance(p, b->position) - b->radius * b->scale; // terrain is always "under you"
         if (d < bestDist) { bestDist = d; best = b; }
     }
     return best;
@@ -420,6 +447,8 @@ void generateWorld(Scene& world) {
     buildMsTotal = 0.0;
     buildCount = 0;
 }
+
+void BeginWorldStreaming() { generationStart = GetTime(); buildMsTotal = 0.0; buildCount = 0; }
 
 void regenerateWorld(Scene& world) {
     Jobs().clearQueued();  // in-flight jobs finish; their results are dropped (planetoid ids are gone)

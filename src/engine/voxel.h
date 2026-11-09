@@ -67,27 +67,55 @@ struct TerrainEdit {
 };
 using EditList = std::vector<TerrainEdit>;
 
-// Immutable description of one planetoid's terrain. Shared read-only with worker threads.
-struct PlanetoidField {
-    SimplexNoise shape;    // overall form
-    SimplexNoise detail;   // ore veins / ice patches
-    float radius = 50.0f;  // density fades to 0 at this distance from the centre
-    float iceAmount = 0.0f;// 0..1: how much of the body is ice
+// A terrain density field: density >= ISO_LEVEL is solid. Implementations must be immutable and
+// thread-safe (they are shared read-only with the worker threads that build chunk meshes).
+class DensityField {
+public:
+    virtual ~DensityField() = default;
+    // Density without player edits, in body-local space.
+    virtual float baseDensity(Vector3 p) const = 0;
+    // `base` is the unedited density at p (lets materials know "original surface" vs "dug out").
+    virtual VoxelMaterial material(Vector3 p, float base) const = 0;
+    // Used when the gradient vanishes (e.g. deep inside a flat region).
+    virtual Vector3 fallbackUp(Vector3 p) const = 0;
 
-    PlanetoidField(unsigned int seed, float radius);
-
-    // Base density (no edits) at planetoid-local position p.
-    float baseDensity(Vector3 p) const;
     // Density including edits (the list should already be filtered to ones near p).
     float density(Vector3 p, const TerrainEdit* edits, size_t editCount) const;
     // Outward surface normal: negative density gradient, by central differences.
     Vector3 normal(Vector3 p, const TerrainEdit* edits, size_t editCount, float step = 0.5f) const;
-    VoxelMaterial material(Vector3 p, float densityAtP) const;
-    // Densities above this are impossible without edits; used to skip far chunks.
-    float maxSurfaceRadius() const { return radius; }
+};
+
+// Asteroid / small body: a displaced sphere centred on the local origin.
+class PlanetoidField : public DensityField {
+public:
+    SimplexNoise shape;    // overall form
+    SimplexNoise detail;   // ore veins / ice patches
+    float radius = 50.0f;  // the surface never reaches past this distance from the centre
+    float iceAmount = 0.0f;// 0..1: how much of the body is ice
+
+    PlanetoidField(unsigned int seed, float radius);
+    float baseDensity(Vector3 p) const override;
+    VoxelMaterial material(Vector3 p, float base) const override;
+    Vector3 fallbackUp(Vector3 p) const override;
 
 private:
     PlanetoidField(std::mt19937 rng, float radius);
+};
+
+// Open-world terrain: +Y up, rolling hills and mountains from a heightmap, carved by 3D cave
+// tunnels, with grass/dirt near the surface, snow on high ground and crystal veins underground.
+// (Materials reuse the VoxelMaterial slots: Regolith = grass/soil, Ice = snow, Ore = crystal.)
+class TerrainField : public DensityField {
+public:
+    SimplexNoise hills, detail, caves, veins;
+    float minHeight = -48.0f, maxHeight = 140.0f; // the surface stays inside this band
+    float snowLine = 70.0f;
+
+    explicit TerrainField(unsigned int seed);
+    float surfaceHeight(float x, float z) const;
+    float baseDensity(Vector3 p) const override;
+    VoxelMaterial material(Vector3 p, float base) const override;
+    Vector3 fallbackUp(Vector3) const override { return { 0, 1, 0 }; }
 };
 
 // CPU-side result of meshing one chunk (produced on a worker thread).
@@ -106,7 +134,7 @@ struct ChunkMeshData {
 // Samples the field over node `key` (CHUNK_SIZE+1 cells at the node stride, i.e. one cell of
 // overlap with the +x/+y/+z neighbours to hide cracks between LOD levels) and runs marching cubes.
 // Thread-safe: touches only its arguments.
-void BuildChunkMesh(const PlanetoidField& field, const EditList& allEdits, ChunkMeshData& out);
+void BuildChunkMesh(const DensityField& field, const EditList& allEdits, ChunkMeshData& out);
 
 // Edits whose influence (radius + margin) overlaps the axis-aligned box [lo, hi].
 void FilterEdits(const EditList& all, Vector3 lo, Vector3 hi, float margin, EditList& out);

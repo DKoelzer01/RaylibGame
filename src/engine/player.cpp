@@ -14,12 +14,12 @@ static Vector3 RotateAround(Vector3 v, Vector3 axis, float angle) {
 void Player::spawnOn(Scene& world, Planetoid& body) {
     const float R = body.radius * body.scale;
     const Vector3 c = body.position;
-    const Vector3 above = Vector3Add(c, { 0, R + 60.0f, 0 });
+    const Vector3 above = body.flat ? Vector3Add(c, { 0, body.maxHeight + 20.0f, 0 }) : Vector3Add(c, { 0, R + 60.0f, 0 });
     TerrainHit hit;
     Vector3 feet = Vector3Add(c, { 0, R + 5.0f, 0 });
-    if (RaycastTerrain(world, Ray{ above, { 0, -1, 0 } }, R + 80.0f, hit)) feet = Vector3Add(hit.point, Vector3Scale(hit.normal, 0.2f));
+    if (RaycastTerrain(world, Ray{ above, { 0, -1, 0 } }, body.flat ? body.maxHeight - body.minHeight + 40.0f : R + 80.0f, hit)) feet = Vector3Add(hit.point, Vector3Scale(hit.normal, 0.2f));
     position = world.renderOrigin + feet;
-    up = Vector3Normalize(Vector3Subtract(feet, c));
+    up = body.flat ? Vector3{ 0, 1, 0 } : Vector3Normalize(Vector3Subtract(feet, c));
     forward = Vector3Normalize(Vector3CrossProduct(up, { 1, 0, 0 }));
     if (Vector3Length(forward) < 0.1f) forward = { 0, 0, 1 };
     velocity = { 0, 0, 0 };
@@ -50,7 +50,7 @@ void Player::update(Scene& world, bool inputEnabled, float dt) {
 
     nearest = NearestPlanetoid(world, feet);
     if (nearest) {
-        const Vector3 newUp = Vector3Normalize(Vector3Subtract(feet, nearest->position));
+        const Vector3 newUp = nearest->flat ? Vector3{ 0, 1, 0 } : Vector3Normalize(Vector3Subtract(feet, nearest->position));
         // Carry the view along as "up" changes so walking around the body feels continuous.
         forward = Vector3Normalize(Vector3RotateByQuaternion(forward, QuaternionFromVector3ToVector3(up, newUp)));
         up = newUp;
@@ -102,7 +102,10 @@ void Player::stepPhysics(Scene& world, float dt, Vector3 wish, bool jump, bool j
         const Vector3 toC = Vector3Subtract(nearest->position, feet);
         const float dist = Vector3Length(toC);
         const float R = nearest->radius * nearest->scale;
-        if (dist > 1e-3f && dist < R * 4.0f) {
+        if (nearest->flat) {
+            gdir = { 0, -1, 0 };
+            gravity = 9.81f; // open world: ordinary gravity
+        } else if (dist > 1e-3f && dist < R * 4.0f) {
             gdir = Vector3Scale(toC, 1.0f / dist);
             const float g0 = std::clamp(3.0f + R * 0.03f, 3.0f, 9.81f);
             gravity = g0 * std::min(1.0f, (R * R) / (dist * dist));
@@ -139,7 +142,7 @@ void Player::stepPhysics(Scene& world, float dt, Vector3 wish, bool jump, bool j
         velocity = Vector3Add(velocity, Vector3Scale(thrust, jetpackAccel * dt));
         velocity = Vector3Scale(velocity, 1.0f - std::min(1.0f, 0.3f * dt));
     }
-    velocity = Vector3Add(velocity, Vector3Scale(gdir, gravity * dt));
+    velocity = Vector3Add(velocity, Vector3Scale(gdir, gravity * gravityScale * dt));
 
     feet = Vector3Add(feet, Vector3Scale(velocity, dt));
     grounded = resolveCollisions(world, feet);

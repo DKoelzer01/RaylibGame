@@ -85,7 +85,7 @@ bool TerrainTool_Stroke(bool dig) {
 }
 
 void TerrainTool_Draw3D() {
-    if (!hasHit) return;
+    if (!hasHit || hit.distance < terrainTool.brushRadius * 1.1f) return; // don't engulf the camera
     const Color c = digging ? RED : adding ? GREEN : Fade(WHITE, 0.6f);
     DrawSphereWires(hit.point, terrainTool.brushRadius, 8, 12, c);
 }
