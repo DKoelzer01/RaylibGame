@@ -51,22 +51,8 @@ target_compile_definitions(imgui PUBLIC NO_FONT_AWESOME)
 target_link_libraries(imgui PUBLIC raylib)
 
 # ---------------------------------------------------------------------------------------------
-# Game
+# Optional Tracy profiler client
 # ---------------------------------------------------------------------------------------------
-file(GLOB GAME_SOURCES CONFIGURE_DEPENDS src/*.cpp src/utils/*.cpp)
-add_executable(game ${GAME_SOURCES})
-target_include_directories(game PRIVATE src)
-target_link_libraries(game PRIVATE raylib imgui)
-target_compile_definitions(game PRIVATE PLATFORM_DESKTOP)
-
-if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
-    target_compile_options(game PRIVATE -Wall -Wno-missing-braces)
-endif()
-if(MINGW)
-    # Self-contained exe: no libstdc++/libgcc DLLs needed next to it.
-    target_link_options(game PRIVATE -static)
-endif()
-
 if(ENABLE_TRACY)
     set(TRACY_ENABLE ON CACHE BOOL "" FORCE)
     set(TRACY_ON_DEMAND ON CACHE BOOL "" FORCE)
@@ -75,13 +61,42 @@ if(ENABLE_TRACY)
         GIT_TAG v0.11.1
         GIT_SHALLOW TRUE)
     FetchContent_MakeAvailable(tracy)
-    target_link_libraries(game PRIVATE Tracy::TracyClient) # also defines TRACY_ENABLE
 endif()
 
-# The game loads resources/ and assets/ relative to the working directory, so put the exe
-# at the repo root (where it always lived) and point IDE debuggers there too.
-set_target_properties(game PROPERTIES
-    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_SOURCE_DIR}"
-    RUNTIME_OUTPUT_DIRECTORY_DEBUG "${CMAKE_SOURCE_DIR}"
-    RUNTIME_OUTPUT_DIRECTORY_RELEASE "${CMAKE_SOURCE_DIR}"
-    VS_DEBUGGER_WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}")
+# ---------------------------------------------------------------------------------------------
+# Engine (shared by both games) + the two game executables
+# ---------------------------------------------------------------------------------------------
+file(GLOB_RECURSE ENGINE_SOURCES CONFIGURE_DEPENDS src/engine/*.cpp)
+add_library(engine STATIC ${ENGINE_SOURCES})
+target_include_directories(engine PUBLIC src/engine)
+target_link_libraries(engine PUBLIC raylib imgui)
+target_compile_definitions(engine PUBLIC PLATFORM_DESKTOP)
+if(ENABLE_TRACY)
+    target_link_libraries(engine PUBLIC Tracy::TracyClient) # also defines TRACY_ENABLE for everything
+endif()
+if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+    target_compile_options(engine PRIVATE -Wall -Wno-missing-braces)
+endif()
+
+function(add_game target dir)
+    file(GLOB GAME_SOURCES CONFIGURE_DEPENDS ${dir}/*.cpp)
+    add_executable(${target} ${GAME_SOURCES})
+    target_include_directories(${target} PRIVATE ${dir})
+    target_link_libraries(${target} PRIVATE engine)
+    if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+        target_compile_options(${target} PRIVATE -Wall -Wno-missing-braces)
+    endif()
+    if(MINGW)
+        # Self-contained exe: no libstdc++/libgcc DLLs needed next to it.
+        target_link_options(${target} PRIVATE -static)
+    endif()
+    # Assets load relative to the working directory: put the exe at the repo root.
+    set_target_properties(${target} PROPERTIES
+        RUNTIME_OUTPUT_DIRECTORY "${CMAKE_SOURCE_DIR}"
+        RUNTIME_OUTPUT_DIRECTORY_DEBUG "${CMAKE_SOURCE_DIR}"
+        RUNTIME_OUTPUT_DIRECTORY_RELEASE "${CMAKE_SOURCE_DIR}"
+        VS_DEBUGGER_WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}")
+endfunction()
+
+add_game(game src/space)        # space survival
+add_game(fantasy src/fantasy)   # fantasy survival + drawn-seal magic

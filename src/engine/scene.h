@@ -34,6 +34,8 @@ struct HotShader {
     void unload();
 };
 
+extern bool benchMode; // true in --bench runs: no input-driven camera, scripted tests
+
 class Scene {
     public:
         std::string name; // Name of the scene

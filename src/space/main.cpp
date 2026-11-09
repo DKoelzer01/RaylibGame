@@ -32,7 +32,7 @@ int gameState = 0; // 0: Main Menu, 1: Game, 2: Pause Menu
 
 // --bench <seconds>: windowed 1920x1080, uncapped FPS, skips the menu, holds a fixed
 // camera on the planetoid, prints frame stats to stdout and bench.txt, then exits.
-bool benchMode = false;
+
 
 int main(int argc, char** argv)
 {

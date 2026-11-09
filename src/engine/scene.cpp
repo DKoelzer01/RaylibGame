@@ -7,6 +7,8 @@
 
 #define SHADOW_MAP_SIZE 2048
 
+bool benchMode = false; // set by the game executables (--bench)
+
 // ---------------------------------------------------------------------------------------------
 // HotShader
 // ---------------------------------------------------------------------------------------------
@@ -182,7 +184,7 @@ void Scene::drawScene(int gamestate) {
     if (IsKeyPressed(KEY_F3)) debugDraw = !debugDraw;
 
     // --- Update camera first so both passes use this frame's position ---
-    extern bool benchMode;
+
     if (gamestate == 1 && !benchMode && cameraInputEnabled) customUpdateCamera(&camera);
 
     // --- Directional light: an orthographic box that follows the camera ---
