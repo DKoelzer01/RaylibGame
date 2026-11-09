@@ -5,4 +5,9 @@ main
 assets/noise
 assets/models/planetoid
 log.txt
-src/*.o
+*.o
+*.d
+bench.txt
+bench.png
+imgui.ini
+build/
