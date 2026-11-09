@@ -2,7 +2,7 @@
 #define PROFILER_H
 
 // Tracy profiler hooks. Compiled out unless the build defines TRACY_ENABLE
-// (`mingw32-make TRACY_PATH=path/to/tracy` after a clean; tracy v0.11.x).
+// (CMake: -DENABLE_TRACY=ON or the "profile" preset).
 // Run the Tracy GUI (tracy-profiler.exe, same version) and it connects to the game automatically.
 #ifdef TRACY_ENABLE
     #include <tracy/Tracy.hpp>

@@ -1,19 +1,22 @@
 # RaylibGame
 First attempt at Raylib: a voxel planetoid engine (marching cubes, Simplex fBm, shadowed lighting).
 
-## Build (Windows, w64devkit)
-Requires raylib 5.5 built at `C:/raylib/raylib` (override with `RAYLIB_PATH=...`).
+## Build (CMake)
+Needs CMake 3.24+ and a GCC/MinGW toolchain on PATH (e.g. `C:/raylib/w64devkit/bin`).
+raylib 5.5 is fetched and built automatically on first configure.
 
 ```sh
-export PATH=/c/raylib/w64devkit/bin:$PATH   # or run from the w64devkit shell
-mingw32-make -j8
-./game.exe
+cmake --preset release          # or: debug, profile (Tracy)
+cmake --build --preset release
+./game.exe                      # the exe is written to the repo root (assets are loaded relative to it)
 ```
 
-Optional Tracy profiler (tracy v0.11.x checkout; delete `*.o` when switching it on/off):
-```sh
-mingw32-make -j8 TRACY_PATH=C:/path/to/tracy
-```
+Options: `-DUSE_SYSTEM_RAYLIB=ON -DRAYLIB_PATH=C:/raylib/raylib` links a prebuilt raylib instead of
+fetching; `-DENABLE_TRACY=ON` (the `profile` preset) builds the Tracy v0.11.1 client; connect with
+the matching `tracy-profiler` GUI.
+
+VS Code: the CMake Tools extension picks up `CMakePresets.json`; `compile_commands.json` is
+generated in the build directory for IntelliSense/clangd.
 
 ## Controls
 | Key | Action |
