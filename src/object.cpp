@@ -2,6 +2,7 @@
 #include "textobject.h"
 #include "gameobject.h"
 #include <raymath.h>
+#include <cstring>
 
 Object::Object(std::string type,std::string name, Vector3 position, Vector3 rotation, Color color, float scale)
     : type(type), name(name), position(position), rotation(rotation), color(color), scale(scale) {}
@@ -76,18 +77,41 @@ void GameObject::drawDepthOnly(const RenderContext& ctx) {
 // Chunk
 // ---------------------------------------------------------------------------------------------
 
-Chunk::~Chunk() {
+Chunk::~Chunk() { releaseMesh(); }
+
+void Chunk::releaseMesh() {
     if (mesh.vaoId > 0) {
         UnloadMesh(mesh); // frees GPU buffers and the MemAlloc'd CPU arrays
     } else {
         MemFree(mesh.vertices);
-        MemFree(mesh.indices);
         MemFree(mesh.normals);
+        MemFree(mesh.colors);
+        MemFree(mesh.indices);
     }
+    mesh = Mesh{};
+}
+
+template <typename T>
+static T* CopyToRaylib(const std::vector<T>& v) {
+    T* p = (T*)MemAlloc((unsigned int)(v.size() * sizeof(T)));
+    memcpy(p, v.data(), v.size() * sizeof(T));
+    return p;
+}
+
+void Chunk::setMesh(const ChunkMeshData& data) {
+    releaseMesh();
+    mesh.vertexCount = (int)(data.positions.size() / 3);
+    mesh.triangleCount = (int)(data.indices.size() / 3);
+    mesh.vertices = CopyToRaylib(data.positions);
+    mesh.normals = CopyToRaylib(data.normals);
+    mesh.colors = CopyToRaylib(data.colors);
+    mesh.indices = CopyToRaylib(data.indices);
+    UploadMesh(&mesh, false);
 }
 
 Matrix Chunk::modelMatrix(const Matrix& parentTransform) const {
-    return MatrixMultiply(MatrixTranslate((float)offset.x, (float)offset.y, (float)offset.z), parentTransform);
+    const Vector3 o = voxelOffset();
+    return MatrixMultiply(MatrixTranslate(o.x, o.y, o.z), parentTransform);
 }
 
 bool Chunk::visible(const RenderContext& ctx, const Matrix& model) const {

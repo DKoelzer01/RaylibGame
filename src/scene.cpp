@@ -257,18 +257,19 @@ void Scene::drawScene(int gamestate) {
         if (debugDraw) {
             DrawSphere(lightPos, 10.0f, ColorAlpha(RED, 0.5f));
             DrawCubeWires(centre, shadowHalfExtent * 2, shadowHalfExtent * 2, shadowHalfExtent * 2, RED);
-            // Chunk bounds: green = has a mesh, dark grey = generated but empty.
+            // Chunk bounds (chunks that currently have a mesh).
             for (const auto& obj : objects) {
                 const Planetoid* p = dynamic_cast<const Planetoid*>(obj.get());
                 if (!p) continue;
                 const float h = CHUNK_SIZE * 0.5f * p->scale;
-                for (const auto& entry : p->chunkChildren) {
+                for (const auto& entry : p->chunks) {
                     const Chunk& c = *entry.second;
-                    const Vector3 ctr = Vector3Transform({ c.offset.x + CHUNK_SIZE * 0.5f, c.offset.y + CHUNK_SIZE * 0.5f, c.offset.z + CHUNK_SIZE * 0.5f }, p->localTransform());
+                    const Vector3 ctr = Vector3Transform(Vector3AddValue(c.voxelOffset(), CHUNK_SIZE * 0.5f), p->localTransform());
                     if (c.mesh.vaoId > 0) DrawCubeWires(ctr, 2 * h, 2 * h, 2 * h, GREEN);
                 }
             }
         }
+        if (onDraw3D) onDraw3D();
     EndMode3D();
     lastDrawCalls = drawCalls;
 

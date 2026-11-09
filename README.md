@@ -24,19 +24,33 @@ generated in the build directory for IntelliSense/clangd.
 | Enter | start (main menu) |
 | Mouse / arrows | look |
 | WASD, Space, Ctrl | move (Shift/Alt = faster) |
+| LMB / RMB (hold) | dig / add terrain at the crosshair |
+| Mouse wheel | brush size |
+| F5 / F9 | save / load (`saves/world.sav`) |
 | Esc | pause; R resumes |
-| F1 | debug panel (frame graph, sun/shadow/texture tweaks, world regen by seed) |
+| F1 | debug panel (frame graph, streaming stats, sun/shadow/texture tweaks, brush, world regen by seed) |
 | F3 | debug overlay (light, shadow box, shadow map, chunk bounds) |
 
 Shaders in `resources/` hot-reload when saved.
 
-## Benchmark mode
+## How the terrain works
+- Each planetoid has an immutable `PlanetoidField` (`src/voxel.*`): seeded fBm density with a radial
+  falloff, plus a material function (rock, regolith, ice, ore).
+- Terrain edits are spherical density brushes stored per planetoid. The field + edit list fully
+  define the terrain, so a save file is just the generation settings and the edits.
+- Chunks (32^3 cells) are built on a worker pool (`src/jobsystem.*`): sample density, marching cubes,
+  normals from the density gradient, material weights in vertex colours. The main thread only
+  uploads finished meshes, time-boxed per frame. Edits re-mesh just the touched chunks.
+
+## Benchmark / test mode
 ```sh
-./game.exe --bench 10                      # 1920x1080 uncapped, prints avg/worst frame time
-./game.exe --bench 5 --seed 1553044913 --cam 60 45 -50 --overlay --ui
+./game.exe --bench 10                       # 1920x1080 uncapped; waits for the world to load, prints frame stats
+./game.exe --bench 5 --seed 42 --size 200 --cam 400 200 -400
+./game.exe --bench 2 --seed 1553044913 --cam 60 45 -50 --test-dig 10 --test-saveload
 ```
-Writes `bench.txt` and `bench.png`. `--cam` is the camera offset from the first planetoid,
-`--nocull` disables frustum culling.
+Writes `bench.txt` and `bench.png`. `--cam` = camera offset from the first planetoid, `--count` =
+planetoid count, `--ui` opens the debug panel, `--overlay` the F3 overlay, `--nocull` disables
+frustum culling, `--test-dig N` carves a tunnel at the crosshair, `--test-saveload` saves and reloads.
 
 ## Third-party
 See `third_party/README.md` (Dear ImGui v1.92.7, rlImGui tag Raylib_5_5).

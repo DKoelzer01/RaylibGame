@@ -20,6 +20,7 @@
 #include <random>
 #include <array>
 #include <unordered_map>
+#include <functional>
 
 // A shader loaded from a vs/fs pair that reloads itself when either file changes on disk.
 // A failed compile keeps the previous working shader.
@@ -62,6 +63,7 @@ class Scene {
         Vector3 ambientColor = { 0.12f, 0.12f, 0.14f };
         void reloadShaders();            // force reload (debug UI button)
         int lastDrawCalls = 0;
+        std::function<void()> onDraw3D;  // extra world-space drawing at the end of the main pass
 
         Object rootObject;
 

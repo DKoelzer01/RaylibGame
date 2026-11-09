@@ -2,6 +2,7 @@
 #include "scene.h"
 #include "world.h"
 #include "profiler.h"
+#include "terraintool.h"
 
 #include "imgui.h"
 #include "rlImGui.h"
@@ -82,6 +83,25 @@ void DebugUI_Draw(Scene& world) {
             ImGui::SliderFloat("FOV", &world.camera.fovy, 20.0f, 120.0f, "%.0f deg");
         }
 
+        // --- Chunk streaming ---
+        if (ImGui::CollapsingHeader("Chunk streaming", ImGuiTreeNodeFlags_DefaultOpen)) {
+            const WorldStats& s = GetWorldStats();
+            ImGui::Text("Chunks with mesh: %d   edits: %d", s.chunks, s.edits);
+            ImGui::Text("Jobs queued: %d   running: %d / %d threads", s.queuedJobs, s.runningJobs, s.workerThreads);
+            ImGui::Text("Uploads: %d pending, %d last frame", s.pendingUploads, s.uploadsLastFrame);
+            ImGui::Text("Avg chunk build: %.2f ms   last world load: %.2f s", s.avgBuildMs, s.lastGenerationSeconds);
+        }
+
+        // --- Terrain tool ---
+        if (ImGui::CollapsingHeader("Terrain tool")) {
+            ImGui::SliderFloat("Brush radius", &terrainTool.brushRadius, 1.0f, 24.0f, "%.1f");
+            ImGui::SliderFloat("Strength", &terrainTool.digStrength, 0.05f, 2.0f, "%.2f");
+            ImGui::SliderFloat("Strokes / s", &terrainTool.strokesPerSecond, 1.0f, 30.0f, "%.0f");
+            if (ImGui::Button("Save (F5)")) SaveWorld(world);
+            ImGui::SameLine();
+            if (ImGui::Button("Load (F9)")) LoadWorldSave(world);
+        }
+
         // --- World generation ---
         if (ImGui::CollapsingHeader("World generation", ImGuiTreeNodeFlags_DefaultOpen)) {
             int seed = (int)worldGen.seed;
@@ -90,8 +110,8 @@ void DebugUI_Draw(Scene& world) {
             ImGui::SameLine();
             if (ImGui::SmallButton("Reuse")) worldGen.seed = worldGen.lastSeed;
             ImGui::SliderInt("Planetoids", &worldGen.planetoidCount, 1, 8);
-            ImGui::SliderInt("Planetoid size", &worldGen.planetoidSize, 16, 120);
-            ImGui::TextDisabled("Generation is synchronous: big sizes stall for a while.");
+            ImGui::SliderInt("Planetoid size", &worldGen.planetoidSize, 16, 250);
+            ImGui::TextDisabled("Chunks build on worker threads, nearest first.");
             ImGui::DragFloat3("First position", &worldGen.firstPosition.x, 1.0f);
             if (ImGui::Button("Regenerate world")) regenerateWorld(world);
         }

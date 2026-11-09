@@ -1,344 +1,291 @@
 #include "world.h"
+#include "jobsystem.h"
 #include "utils/logger.h"
 #include "worldtypes.h"
-#include <unordered_map>
-#include <vector>
-#include <cmath>
-#include <tuple>
+
+#include <raymath.h>
 #include <algorithm>
+#include <chrono>
+#include <cmath>
+#include <deque>
+#include <mutex>
+#include <random>
 
-//Setup RNG
-float randScale = 100000.0f; // Scale for random number generation
-std::random_device rd; // Obtain a seed from the system
-std::mt19937 gen(rd()); // Reseeded by generateWorld() from WorldGenSettings
+const int CHUNK_SIZE = 32;
+
 WorldGenSettings worldGen;
-std::uniform_int_distribution<> distrib(1, randScale);
 
-// Helpers for 3D integer coordinates as chunk keys
+namespace {
+    std::random_device rd;
+    std::mt19937 gen(rd()); // reseeded by generateWorld()
 
+    // ---- Async chunk pipeline -------------------------------------------------------------
+    // Declared before the job system so it is destroyed after the workers are joined.
+    std::mutex resultsMutex;
+    std::vector<ChunkMeshData> results;        // filled by workers
+    std::deque<ChunkMeshData> pendingUploads;  // main thread only
+    std::unique_ptr<JobSystem> jobs;
 
-const int CHUNK_SIZE = 32; // You can adjust this for performance/memory
+    std::unordered_map<uint64_t, Planetoid*> planetoidRegistry; // main thread only
+    uint64_t nextPlanetoidId = 1;
 
-Planetoid::Planetoid(std::string name, Vector3 position, Vector3 rotation, Color color, float scale, size_t size)
-    : Object("planetoid", name, position, rotation, color, scale), size(size) {}
+    WorldStats stats;
+    double generationStart = -1.0; // GetTime() when a (re)generation started; <0 once reported
+    double buildMsTotal = 0.0;
+    long buildCount = 0;
 
-Planetoid::~Planetoid() = default;
+    JobSystem& Jobs() {
+        if (!jobs) jobs = std::make_unique<JobSystem>();
+        return *jobs;
+    }
+}
 
-// Chunk meshes are in planetoid-local voxel space centred on the planetoid origin, so the
-// planetoid's transform (scale/rotation/position) is applied on top of each chunk offset.
+// ---------------------------------------------------------------------------------------------
+// Planetoid
+// ---------------------------------------------------------------------------------------------
+
+Planetoid::Planetoid(std::string name, Vector3 position, Vector3 rotation, float scale, unsigned int seed_, float radius_)
+    : Object("planetoid", name, position, rotation, WHITE, scale),
+      id(nextPlanetoidId++), seed(seed_), radius(radius_),
+      field(std::make_shared<PlanetoidField>(seed_, radius_)),
+      edits(std::make_shared<EditList>()) {
+    planetoidRegistry[id] = this;
+}
+
+Planetoid::~Planetoid() { planetoidRegistry.erase(id); }
+
+Planetoid* Planetoid::find(uint64_t id) {
+    auto it = planetoidRegistry.find(id);
+    return it == planetoidRegistry.end() ? nullptr : it->second;
+}
+
+Vector3 Planetoid::toLocal(Vector3 world) const { return Vector3Transform(world, MatrixInvert(localTransform())); }
+Vector3 Planetoid::toWorld(Vector3 local) const { return Vector3Transform(local, localTransform()); }
+
+float Planetoid::densityAt(Vector3 local) const {
+    return field->density(local, edits->data(), edits->size());
+}
+
 void Planetoid::draw(const RenderContext& ctx) {
     if (!isActive) return;
     const Matrix t = localTransform();
     for (const auto& objPtr : children) objPtr->draw(ctx);
-    for (const auto& entry : chunkChildren) entry.second->drawChunk(ctx, t);
+    for (const auto& entry : chunks) entry.second->drawChunk(ctx, t);
 }
 
 void Planetoid::drawDepthOnly(const RenderContext& ctx) {
     if (!isActive) return;
     const Matrix t = localTransform();
     for (const auto& objPtr : children) objPtr->drawDepthOnly(ctx);
-    for (const auto& entry : chunkChildren) entry.second->drawChunkDepth(ctx, t);
+    for (const auto& entry : chunks) entry.second->drawChunkDepth(ctx, t);
 }
 
+// ---------------------------------------------------------------------------------------------
+// Chunk requests / results
+// ---------------------------------------------------------------------------------------------
 
-
-// Helper to get noise value from this chunk or a neighbor
-static float getNoiseAt(const Chunk* chunk, int x, int y, int z, int size) {
-    // logger.logf("[getNoiseAt] Accessing noise value at (%d, %d, %d) in chunk at (%d, %d, %d)\n", x, y, z, chunk->position.x, chunk->position.y, chunk->position.z);
-    if (x < 0 || x >= size || y < 0 || y >= size || z < 0 || z >= size) {
-        logger.logf("[getNoiseAt WARNING] Out of bounds access: (%d, %d, %d) size=%d\n", x, y, z, size);
-        return 0.0f;
-    }
-    return chunk->noiseValues[x + y * size + z * size * size];
+static void RequestChunk(Planetoid& p, Int3 coord, float priority) {
+    const uint32_t version = ++p.requestedVersion[coord];
+    std::shared_ptr<const PlanetoidField> field = p.field;
+    std::shared_ptr<const EditList> edits = p.edits;
+    const uint64_t id = p.id;
+    Jobs().submit(priority, [field, edits, id, coord, version] {
+        PROFILE_SCOPE("Build chunk");
+        ChunkMeshData data;
+        data.planetoidId = id;
+        data.coord = coord;
+        data.version = version;
+        BuildChunkMesh(*field, *edits, data);
+        std::lock_guard<std::mutex> lock(resultsMutex);
+        results.push_back(std::move(data));
+    });
 }
 
-template<typename T>
-T clamp(T v, T lo, T hi) {
-    if (v < lo) return lo;
-    if (v > hi) return hi;
-    return v;
+// Every chunk whose box can contain surface: the density is 0 beyond `radius`.
+static void RequestInitialChunks(Planetoid& p, Vector3 cameraPos) {
+    const int r = (int)ceilf(p.radius / CHUNK_SIZE) + 1;
+    int requested = 0;
+    for (int z = -r; z < r; ++z)
+        for (int y = -r; y < r; ++y)
+            for (int x = -r; x < r; ++x) {
+                const Vector3 lo = { (float)(x * CHUNK_SIZE), (float)(y * CHUNK_SIZE), (float)(z * CHUNK_SIZE) };
+                const Vector3 hi = Vector3AddValue(lo, (float)CHUNK_SIZE);
+                const Vector3 closest = { std::max(lo.x, std::min(0.0f, hi.x)), std::max(lo.y, std::min(0.0f, hi.y)), std::max(lo.z, std::min(0.0f, hi.z)) };
+                if (Vector3Length(closest) > p.radius) continue;
+                // Nearest chunks first so the area around the player appears first.
+                const Vector3 centreWorld = p.toWorld(Vector3AddValue(lo, CHUNK_SIZE * 0.5f));
+                RequestChunk(p, { x, y, z }, Vector3Distance(centreWorld, cameraPos));
+                requested++;
+            }
+    p.initialRequestDone = true;
+    logger.logf("[World] %s: requested %d chunks\n", p.name.c_str(), requested);
 }
 
-static Vector3 trilerpVec3(
-    const Vector3& c000, const Vector3& c100, const Vector3& c010, const Vector3& c110,
-    const Vector3& c001, const Vector3& c101, const Vector3& c011, const Vector3& c111,
-    float tx, float ty, float tz
-) {
-    float x =
-        c000.x * (1 - tx) * (1 - ty) * (1 - tz) +
-        c100.x * tx * (1 - ty) * (1 - tz) +
-        c010.x * (1 - tx) * ty * (1 - tz) +
-        c110.x * tx * ty * (1 - tz) +
-        c001.x * (1 - tx) * (1 - ty) * tz +
-        c101.x * tx * (1 - ty) * tz +
-        c011.x * (1 - tx) * ty * tz +
-        c111.x * tx * ty * tz;
+static bool PipelineIdle();
 
-    float y =
-        c000.y * (1 - tx) * (1 - ty) * (1 - tz) +
-        c100.y * tx * (1 - ty) * (1 - tz) +
-        c010.y * (1 - tx) * ty * (1 - tz) +
-        c110.y * tx * ty * (1 - tz) +
-        c001.y * (1 - tx) * (1 - ty) * tz +
-        c101.y * tx * (1 - ty) * tz +
-        c011.y * (1 - tx) * ty * tz +
-        c111.y * tx * ty * tz;
+static void IntegrateResult(const ChunkMeshData& r) {
+    Planetoid* p = Planetoid::find(r.planetoidId);
+    if (!p) return;                                                   // planetoid was destroyed
+    auto v = p->requestedVersion.find(r.coord);
+    if (v == p->requestedVersion.end() || v->second != r.version) return; // superseded by a newer request
 
-    float z =
-        c000.z * (1 - tx) * (1 - ty) * (1 - tz) +
-        c100.z * tx * (1 - ty) * (1 - tz) +
-        c010.z * (1 - tx) * ty * (1 - tz) +
-        c110.z * tx * ty * (1 - tz) +
-        c001.z * (1 - tx) * (1 - ty) * tz +
-        c101.z * tx * (1 - ty) * tz +
-        c011.z * (1 - tx) * ty * tz +
-        c111.z * tx * ty * tz;
+    buildMsTotal += r.buildMs;
+    buildCount++;
+    if (r.overflow) logger.logf("[ERROR] Chunk (%d,%d,%d) exceeds 65535 vertices; skipped\n", r.coord.x, r.coord.y, r.coord.z);
 
-    return {x, y, z};
-}
-
-void Chunk::calculateNormals() {
-    PROFILE_FUNCTION();
-    if (vertices.empty() || mesh.vertexCount == 0) {
-        // logger.logf("[deferredNormals]: Skipping normal calculation for chunk at (%d, %d, %d) because it has no vertices.\n", offset.x, offset.y, offset.z);
+    auto it = p->chunks.find(r.coord);
+    if (r.positions.empty()) {
+        if (it != p->chunks.end()) p->chunks.erase(it); // dug away entirely
         return;
     }
-    // logger.logf("[deferredNormals]: Calculating normals for chunk at (%d, %d, %d): vertices.size() = %zu, mesh.vertexCount = %d\n", offset.x, offset.y, offset.z, vertices.size(), mesh.vertexCount);
-    
-    if (mesh.vertexCount > 0 && mesh.normals == nullptr) {
-        mesh.normals = (float*)MemAlloc(mesh.vertexCount * 3 * sizeof(float));
-        logger.logf("[deferredNormals][DEFENSIVE] mesh.normals was nullptr, allocated in calculateNormals for chunk at (%d, %d, %d)\n", offset.x, offset.y, offset.z);
+    if (it == p->chunks.end()) {
+        auto chunk = std::make_unique<Chunk>();
+        chunk->coord = r.coord;
+        chunk->parent = p;
+        it = p->chunks.emplace(r.coord, std::move(chunk)).first;
     }
-    // logger.logf("[ChunkGen] Allocated mesh.normals for chunk at (%d, %d, %d), vertexCount=%d\n", offset.x, offset.y, offset.z, mesh.vertexCount);
-    int size = CHUNK_SIZE + 1;
-    std::vector<Vector3> newNormals(size * size * size);
+    it->second->setMesh(r);
+}
 
-    for (int z = 0; z < size; ++z) {
-        for(int y = 0; y < size; ++y) {
-            for(int x = 0; x < size; ++x) {
-                float dx, dy, dz;
-                // X
-                if (x > 0 && x < size - 1) {
-                    dx = getNoiseAt(this, x + 1, y, z, size) - getNoiseAt(this, x - 1, y, z, size);
-                } else {
-                    int nx = x == 0 ? -1 : 1;
-                    int neighborIdx = -1;
-                    for (int i = 0; i < 26; ++i) {
-                        if (neighborOffsets[i][0] == nx && neighborOffsets[i][1] == 0 && neighborOffsets[i][2] == 0) {
-                            neighborIdx = i;
-                            break;
-                        }
-                    }
-                    if (neighborIdx != -1 && neighbors[neighborIdx]) {
-                        if (x == 0)
-                            dx = getNoiseAt(this, x + 1, y, z, size) - getNoiseAt(neighbors[neighborIdx], size - 2, y, z, size);
-                        else
-                            dx = getNoiseAt(neighbors[neighborIdx], 1, y, z, size) - getNoiseAt(this, x - 1, y, z, size);
-                    } else {
-                        dx = 0.0f;
-                    }
-                }
-                // Y
-                if (y > 0 && y < size - 1) {
-                    dy = getNoiseAt(this, x, y + 1, z, size) - getNoiseAt(this, x, y - 1, z, size);
-                } else {
-                    int ny = y == 0 ? -1 : 1;
-                    int neighborIdx = -1;
-                    for (int i = 0; i < 26; ++i) {
-                        if (neighborOffsets[i][1] == ny && neighborOffsets[i][0] == 0 && neighborOffsets[i][2] == 0) {
-                            neighborIdx = i;
-                            break;
-                        }
-                    }
-                    if (neighborIdx != -1 && neighbors[neighborIdx]) {
-                        if (y == 0)
-                            dy = getNoiseAt(this, x, y + 1, z, size) - getNoiseAt(neighbors[neighborIdx], x, size - 2, z, size);
-                        else
-                            dy = getNoiseAt(neighbors[neighborIdx], x, 1, z, size) - getNoiseAt(this, x, y - 1, z, size);
-                    } else {
-                        dy = 0.0f;
-                    }
-                }
-                // Z
-                if (z > 0 && z < size - 1) {
-                    dz = getNoiseAt(this, x, y, z + 1, size) - getNoiseAt(this, x, y, z - 1, size);
-                } else {
-                    int nz = z == 0 ? -1 : 1;
-                    int neighborIdx = -1;
-                    for (int i = 0; i < 26; ++i) {
-                        if (neighborOffsets[i][2] == nz && neighborOffsets[i][0] == 0 && neighborOffsets[i][1] == 0) {
-                            neighborIdx = i;
-                            break;
-                        }
-                    }
-                    if (neighborIdx != -1 && neighbors[neighborIdx]) {
-                        if (z == 0)
-                            dz = getNoiseAt(this, x, y, z + 1, size) - getNoiseAt(neighbors[neighborIdx], x, y, size - 2, size);
-                        else
-                            dz = getNoiseAt(neighbors[neighborIdx], x, y, 1, size) - getNoiseAt(this, x, y, z - 1, size);
-                    } else {
-                        dz = 0.0f;
-                    }
-                }
-                Vector3 n = { -dx, -dy, -dz };
-                float len = sqrtf(n.x * n.x + n.y * n.y + n.z * n.z);
-                if (len > 1e-6f) {
-                    n.x /= len;
-                    n.y /= len;
-                    n.z /= len;
-                }
-                newNormals[x + y * size + z * size * size] = n;
-            }
+void worldUpdate(Scene& world, float uploadBudgetMs) {
+    PROFILE_FUNCTION();
+    for (auto& obj : world.objects) {
+        if (auto* p = dynamic_cast<Planetoid*>(obj.get())) {
+            if (!p->initialRequestDone) RequestInitialChunks(*p, world.camera.position);
         }
     }
-    // Copy new normals to mesh normals
-    if (mesh.vertexCount > 0 && mesh.normals != nullptr) {
-        if ((size_t)mesh.vertexCount != vertices.size()) {
-            logger.logf("[deferredNormals][ERROR] mesh.vertexCount (%d) != vertices.size() (%zu) in chunk (%d, %d, %d)\n", mesh.vertexCount, vertices.size(), offset.x, offset.y, offset.z);
-        }
-        float minLx = 1e9f, maxLx = -1e9f, minLy = 1e9f, maxLy = -1e9f, minLz = 1e9f, maxLz = -1e9f;
-        for (int i = 0; i < mesh.vertexCount; ++i) {
-            const Vector3& v = vertices[i];
-            float lx = v.x;
-            float ly = v.y;
-            float lz = v.z;
-            minLx = std::min(minLx, lx); maxLx = std::max(maxLx, lx);
-            minLy = std::min(minLy, ly); maxLy = std::max(maxLy, ly);
-            minLz = std::min(minLz, lz); maxLz = std::max(maxLz, lz);
-            // Clamp to [0, size-1]
-            float fx = clamp(v.x, 0.0f, (float)(size - 1));
-            float fy = clamp(v.y, 0.0f, (float)(size - 1));
-            float fz = clamp(v.z, 0.0f, (float)(size - 1));
-            int x0 = (int)floorf(fx), x1 = std::min(x0 + 1, size - 1);
-            int y0 = (int)floorf(fy), y1 = std::min(y0 + 1, size - 1);
-            int z0 = (int)floorf(fz), z1 = std::min(z0 + 1, size - 1);
-            float tx = fx - x0, ty = fy - y0, tz = fz - z0;
-            // If on the border, force both indices to be the same and t=0
-            if (fx >= size - 1) { x0 = x1 = size - 1; tx = 0.0f; }
-            if (fy >= size - 1) { y0 = y1 = size - 1; ty = 0.0f; }
-            if (fz >= size - 1) { z0 = z1 = size - 1; tz = 0.0f; }
-            const Vector3& c000 = newNormals[x0 + y0 * size + z0 * size * size];
-            const Vector3& c100 = newNormals[x1 + y0 * size + z0 * size * size];
-            const Vector3& c010 = newNormals[x0 + y1 * size + z0 * size * size];
-            const Vector3& c110 = newNormals[x1 + y1 * size + z0 * size * size];
-            const Vector3& c001 = newNormals[x0 + y0 * size + z1 * size * size];
-            const Vector3& c101 = newNormals[x1 + y0 * size + z1 * size * size];
-            const Vector3& c011 = newNormals[x0 + y1 * size + z1 * size * size];
-            const Vector3& c111 = newNormals[x1 + y1 * size + z1 * size * size];
 
-            Vector3 n = trilerpVec3(c000, c100, c010, c110, c001, c101, c011, c111, tx, ty, tz);
-            float len = sqrtf(n.x * n.x + n.y * n.y + n.z * n.z);
-            // logger.logf("[deferredNormals] length of interpolated normal for vertex[%d] at (%.3f, %.3f, %.3f): %.6f\n", i, v.x, v.y, v.z, len);
-            if (len > 1e-6f && !isnan(n.x) && !isnan(n.y) && !isnan(n.z)) {
-                n.x /= len; n.y /= len; n.z /= len;
-            } else {
-                // Enhanced fallback logging for debugging zero/invalid normals
-                logger.logf("[deferredNormals][FALLBACK-DETAIL] Vertex[%d] in chunk (%d, %d, %d): pos=(%.3f,%.3f,%.3f) fx=%.3f fy=%.3f fz=%.3f\n",
-                    i, offset.x, offset.y, offset.z, v.x, v.y, v.z, fx, fy, fz);
-                logger.logf("[deferredNormals][FALLBACK-DETAIL]  Indices: x0=%d x1=%d y0=%d y1=%d z0=%d z1=%d  t: tx=%.3f ty=%.3f tz=%.3f\n",
-                    x0, x1, y0, y1, z0, z1, tx, ty, tz);
-                logger.logf("[deferredNormals][FALLBACK-DETAIL]  c000=(%.3f,%.3f,%.3f) c100=(%.3f,%.3f,%.3f) c010=(%.3f,%.3f,%.3f) c110=(%.3f,%.3f,%.3f)\n",
-                    c000.x, c000.y, c000.z, c100.x, c100.y, c100.z, c010.x, c010.y, c010.z, c110.x, c110.y, c110.z);
-                logger.logf("[deferredNormals][FALLBACK-DETAIL]  c001=(%.3f,%.3f,%.3f) c101=(%.3f,%.3f,%.3f) c011=(%.3f,%.3f,%.3f) c111=(%.3f,%.3f,%.3f)\n",
-                    c001.x, c001.y, c001.z, c101.x, c101.y, c101.z, c011.x, c011.y, c011.z, c111.x, c111.y, c111.z);
-                logger.logf("[deferredNormals][FALLBACK-DETAIL]  Interpolated normal before fallback: (%.3f, %.3f, %.3f)  len=%.6f\n",
-                    n.x, n.y, n.z, len);
-                n = {0, 1, 0};
-                logger.logf("[deferredNormals][FALLBACK] Assigned fallback normal to vertex[%d] at (%.3f, %.3f, %.3f) in chunk (%d, %d, %d)\n", i, v.x, v.y, v.z, offset.x, offset.y, offset.z);
-            }
-            mesh.normals[i * 3 + 0] = n.x;
-            mesh.normals[i * 3 + 1] = n.y;
-            mesh.normals[i * 3 + 2] = n.z;
-        }
-    }
-    if (mesh.normals == nullptr) {
-        logger.logf("[deferredNormals][ERROR] mesh.normals is nullptr after assignment!\n");
+    {
+        std::lock_guard<std::mutex> lock(resultsMutex);
+        for (ChunkMeshData& r : results) pendingUploads.push_back(std::move(r));
+        results.clear();
     }
 
-    if (mesh.vaoId == 0) {
-        UploadMesh(&mesh, false);
-    } else {
-        // Normals recomputed (e.g. a late neighbour arrived): update only the normal buffer.
-        UpdateMeshBuffer(mesh, RL_DEFAULT_SHADER_ATTRIB_LOCATION_NORMAL, mesh.normals, mesh.vertexCount * 3 * sizeof(float), 0);
+    // GPU uploads are the only main-thread cost; cap them per frame so streaming never hitches.
+    const auto t0 = std::chrono::steady_clock::now();
+    int uploads = 0;
+    while (!pendingUploads.empty()) {
+        IntegrateResult(pendingUploads.front());
+        pendingUploads.pop_front();
+        uploads++;
+        if (std::chrono::duration<float, std::milli>(std::chrono::steady_clock::now() - t0).count() > uploadBudgetMs) break;
+    }
+
+    stats.queuedJobs = (int)Jobs().queued();
+    stats.runningJobs = Jobs().running();
+    stats.pendingUploads = (int)pendingUploads.size();
+    stats.uploadsLastFrame = uploads;
+    stats.workerThreads = (int)Jobs().threadCount();
+    stats.avgBuildMs = buildCount ? (float)(buildMsTotal / buildCount) : 0.0f;
+    stats.chunks = 0;
+    stats.edits = 0;
+    for (auto& obj : world.objects) {
+        if (auto* p = dynamic_cast<Planetoid*>(obj.get())) {
+            stats.chunks += (int)p->chunks.size();
+            stats.edits += (int)p->edits->size();
+        }
+    }
+
+    // Initial requests were issued above, so "pipeline idle" here really means "everything built".
+    if (generationStart >= 0.0 && PipelineIdle()) {
+        stats.lastGenerationSeconds = (float)(GetTime() - generationStart);
+        logger.logf("[World] ready in %.2f s (%d chunks, avg build %.2f ms on %d threads)\n",
+                    stats.lastGenerationSeconds, stats.chunks, stats.avgBuildMs, stats.workerThreads);
+        TraceLog(LOG_WARNING, "World ready in %.2f s (%d chunks)", stats.lastGenerationSeconds, stats.chunks);
+        generationStart = -1.0;
     }
 }
 
-// --- Chunk neighborOffsets definition ---
-const int Chunk::neighborOffsets[26][3] = {
-    {-1,-1,-1},{ 0,-1,-1},{ 1,-1,-1},
-    {-1, 0,-1},{ 0, 0,-1},{ 1, 0,-1},
-    {-1, 1,-1},{ 0, 1,-1},{ 1, 1,-1},
-    {-1,-1, 0},{ 0,-1, 0},{ 1,-1, 0},
-    {-1, 0, 0},           { 1, 0, 0},
-    {-1, 1, 0},{ 0, 1, 0},{ 1, 1, 0},
-    {-1,-1, 1},{ 0,-1, 1},{ 1,-1, 1},
-    {-1, 0, 1},{ 0, 0, 1},{ 1, 0, 1},
-    {-1, 1, 1},{ 0, 1, 1},{ 1, 1, 1}
-};
-
-void Chunk::tryCalculateNormals() {
-    // logger.logf("[Chunk] Trying to calculate normals for chunk at position (%d, %d, %d)\n", offset.x, offset.y, offset.z);
-    if (allNeighborsPresent()) {
-        logger.logf("[Chunk] All neighbors present for chunk at position (%d, %d, %d), calculating normals\n", offset.x, offset.y, offset.z);
-        calculateNormals();
-        normalsPending = false;
-    } else {
-        // logger.logf("[Chunk] Not all neighbors present for chunk at position (%d, %d, %d), deferring normal calculation\n", offset.x, offset.y, offset.z);
-        normalsPending = true;
-    }
+static bool PipelineIdle() {
+    std::lock_guard<std::mutex> lock(resultsMutex);
+    return Jobs().idle() && results.empty() && pendingUploads.empty();
 }
 
-// --- Chunk::assignNeighborsAndNotify implementation ---
-void Chunk::assignNeighborsAndNotify(std::unordered_map<Int3, std::unique_ptr<Chunk>>& chunkChildren) {
-    logger.logf("[Chunk] Assigning neighbors for chunk at position (%d, %d, %d)\n", offset.x, offset.y, offset.z);
-    
-    int cx = offset.x / CHUNK_SIZE;
-    int cy = offset.y / CHUNK_SIZE;
-    int cz = offset.z / CHUNK_SIZE;
-    // Get planetoid center and size (radius)
-    // Assumes parent pointer is set to Planetoid, otherwise you may need to pass planetoid as argument
-    Planetoid* planetoid = dynamic_cast<Planetoid*>(parent);
-    Vector3 planetoidCenter = planetoid ? planetoid->position : Vector3{0,0,0};
-    float planetoidRadius = planetoid ? planetoid->size : 0.0f;
+// False until a (re)generation has fully streamed in, and while edits are being remeshed.
+bool WorldIdle() { return generationStart < 0.0 && PipelineIdle(); }
 
-    for (int i = 0; i < 26; ++i) {
-        Int3 npos = { cx + neighborOffsets[i][0], cy + neighborOffsets[i][1], cz + neighborOffsets[i][2] };
-        auto it = chunkChildren.find(npos);
-        if (it != chunkChildren.end() && it->second) {
-            Chunk* neighbor = it->second.get();
-            setNeighbor(i, neighbor);
-            // Find the reverse index for this neighbor
-            for (int j = 0; j < 26; j++) {
-                if (neighborOffsets[j][0] == -neighborOffsets[i][0] &&
-                    neighborOffsets[j][1] == -neighborOffsets[i][1] &&
-                    neighborOffsets[j][2] == -neighborOffsets[i][2]) {
-                    neighbor->onNeighborAdded(j, this);
-                    break;
+const WorldStats& GetWorldStats() { return stats; }
+
+// ---------------------------------------------------------------------------------------------
+// Raycast + edits
+// ---------------------------------------------------------------------------------------------
+
+bool RaycastTerrain(Scene& world, Ray ray, float maxDistance, TerrainHit& hit) {
+    PROFILE_FUNCTION();
+    bool found = false;
+    float best = maxDistance;
+    for (auto& obj : world.objects) {
+        Planetoid* p = dynamic_cast<Planetoid*>(obj.get());
+        if (!p) continue;
+        // Work in planetoid-local space; step lengths are in local voxels.
+        const Vector3 o = p->toLocal(ray.position);
+        const Vector3 farPoint = p->toLocal(Vector3Add(ray.position, Vector3Scale(ray.direction, best)));
+        const float localLen = Vector3Distance(o, farPoint);
+        if (localLen <= 0.0f) continue;
+        const Vector3 d = Vector3Scale(Vector3Subtract(farPoint, o), 1.0f / localLen);
+
+        // Bounding sphere (radius + room for added material).
+        const float R = p->radius + 16.0f;
+        const float b = Vector3DotProduct(o, d);
+        const float c = Vector3DotProduct(o, o) - R * R;
+        const float disc = b * b - c;
+        if (disc < 0.0f) continue;
+        float t = std::max(0.0f, -b - sqrtf(disc));
+        const float tEnd = std::min(localLen, -b + sqrtf(disc));
+
+        const float step = 0.5f;
+        float prevT = t;
+        if (p->densityAt(Vector3Add(o, Vector3Scale(d, t))) >= ISO_LEVEL) continue; // starting inside rock
+        for (; t <= tEnd; t += step) {
+            if (p->densityAt(Vector3Add(o, Vector3Scale(d, t))) >= ISO_LEVEL) {
+                float lo = prevT, hi = t; // refine the crossing
+                for (int i = 0; i < 8; ++i) {
+                    const float mid = 0.5f * (lo + hi);
+                    if (p->densityAt(Vector3Add(o, Vector3Scale(d, mid))) >= ISO_LEVEL) hi = mid; else lo = mid;
                 }
+                const Vector3 local = Vector3Add(o, Vector3Scale(d, hi));
+                const Vector3 worldPoint = p->toWorld(local);
+                const float dist = Vector3Distance(ray.position, worldPoint);
+                if (dist < best) {
+                    best = dist;
+                    found = true;
+                    hit.planetoid = p;
+                    hit.local = local;
+                    hit.point = worldPoint;
+                    hit.distance = dist;
+                    hit.normal = Vector3Normalize(Vector3Subtract(p->toWorld(Vector3Add(local, p->field->normal(local, p->edits->data(), p->edits->size()))), worldPoint));
+                    hit.material = p->field->material(local, p->field->baseDensity(local));
+                }
+                break;
             }
-        } else {
-            // Calculate world position of neighbor chunk center
-            Vector3 neighborCenter = {
-                (float)(npos.x * CHUNK_SIZE) + CHUNK_SIZE / 2.0f + planetoidCenter.x,
-                (float)(npos.y * CHUNK_SIZE) + CHUNK_SIZE / 2.0f + planetoidCenter.y,
-                (float)(npos.z * CHUNK_SIZE) + CHUNK_SIZE / 2.0f + planetoidCenter.z
-            };
-            float dist = sqrtf(
-                (neighborCenter.x - planetoidCenter.x) * (neighborCenter.x - planetoidCenter.x) +
-                (neighborCenter.y - planetoidCenter.y) * (neighborCenter.y - planetoidCenter.y) +
-                (neighborCenter.z - planetoidCenter.z) * (neighborCenter.z - planetoidCenter.z)
-            );
-            if (dist > planetoidRadius) {
-                // Out of bounds, treat as present for normal calculation
-                neighborMask |= (1u << i);
-            }
+            prevT = t;
         }
     }
-    tryCalculateNormals();
+    return found;
 }
+
+void ApplyTerrainEdit(Planetoid& p, const TerrainEdit& edit) {
+    auto next = std::make_shared<EditList>(*p.edits);
+    next->push_back(edit);
+    p.edits = next;
+
+    // Remesh every chunk whose samples (or normals, +1) the brush touches, including chunks that
+    // do not exist yet (adding material into empty space).
+    const float reach = edit.radius + 1.0f;
+    const int x0 = (int)floorf((edit.center.x - reach) / CHUNK_SIZE), x1 = (int)floorf((edit.center.x + reach) / CHUNK_SIZE);
+    const int y0 = (int)floorf((edit.center.y - reach) / CHUNK_SIZE), y1 = (int)floorf((edit.center.y + reach) / CHUNK_SIZE);
+    const int z0 = (int)floorf((edit.center.z - reach) / CHUNK_SIZE), z1 = (int)floorf((edit.center.z + reach) / CHUNK_SIZE);
+    for (int z = z0; z <= z1; ++z)
+        for (int y = y0; y <= y1; ++y)
+            for (int x = x0; x <= x1; ++x)
+                RequestChunk(p, { x, y, z }, -1.0f); // ahead of any background generation
+}
+
+// ---------------------------------------------------------------------------------------------
+// Generation
+// ---------------------------------------------------------------------------------------------
 
 void worldHandler(Scene& world) {
-    // Initialize the camera for the world scene
     world.camera.position = { 0.0f, 10.0f, 10.0f };
     world.camera.target = { 0.0f, 0.0f, 0.0f };
     world.camera.up = { 0.0f, 1.0f, 0.0f };
@@ -350,315 +297,107 @@ void worldHandler(Scene& world) {
     loadWorld(world);
     // Start out looking at the first planetoid.
     if (!world.objects.empty()) world.camera.target = world.objects[0]->position;
-} 
-
-bool isAllBelowThreshold(const std::vector<float>& vec, float threshold) {
-    return std::all_of(vec.begin(), vec.end(), [threshold](float i){return i < threshold; });
-}
-
-void weightNoise(std::vector<float>& noiseValues, int size, const Vector3& chunkWorldPos, const Vector3& planetoidCenter, float falloff, float maxDist) {
-    float minScale = 1.0f;
-    float maxScale = 0.0f;
-    for (int z = 0; z < size; ++z) {
-        for (int y = 0; y < size; ++y) {
-            for (int x = 0; x < size; ++x) {
-                int idx = x + y * size + z * size * size;
-                // Compute voxel position in world space for correct distance calculation
-                Vector3 voxelPos = { chunkWorldPos.x + x + planetoidCenter.x, chunkWorldPos.y + y + planetoidCenter.y, chunkWorldPos.z + z + planetoidCenter.z };
-                float dist = Vector3Distance(voxelPos, planetoidCenter);
-                float scale = std::max(0.0f, 1.0f - (dist / maxDist));
-                minScale = std::min(minScale, scale);
-                maxScale = std::max(maxScale, scale);
-                noiseValues[idx] *= scale;
-            }
-        }
-    }
-    // logger.logf("[weightNoise] minScale=%.4f maxScale=%.4f\n", minScale, maxScale);
-}
-
-void normalizeNoise(std::vector<float>& noiseValues, int size, float scale = 1.0f) {
-    float minValue = 0.0f; 
-    float maxValue = 1.0f;
-
-    if (size <= 0) return;
-    float minNoise = noiseValues[0];
-    float maxNoise = noiseValues[0];
-    
-    // Find min and max noise values
-    for (float v : noiseValues) {
-        if (v < minNoise) minNoise = v;
-        if (v > maxNoise) maxNoise = v;
-    }
-
-    // Normalize the noise values to the range [minValue, maxValue]
-    for (float& v : noiseValues) {
-        v = ((v - minNoise) / (maxNoise - minNoise)) * (maxValue - minValue) + minValue; 
-        v *= scale; // Scale the normalized value
-        v = round(v); // Round to the nearest integer
-    }
 }
 
 void generateWorld(Scene& world) {
     PROFILE_FUNCTION();
     worldGen.lastSeed = worldGen.seed ? worldGen.seed : rd();
     gen.seed(worldGen.lastSeed);
-    logger.logf("Generating world scene (seed %u)...\n", worldGen.lastSeed);
-    clock_t worldGenStart = clock();
+    logger.logf("Generating world (seed %u)...\n", worldGen.lastSeed);
 
-    float genRange = 500.0f; // Radius for planetoid generation
-    float minSize = 250.0f; // Minimum size of planetoids
-    float maxSize = 500.0f; // Maximum size of planetoids
-    logger.logf("Generated %d planetoids.\n", generatePlanetoids(randScale, world, genRange, minSize, maxSize)); // Generate planetoids in the world
-
-    clock_t worldGenEnd = clock();
-    double worldGenTime = static_cast<double>(worldGenEnd - worldGenStart) / CLOCKS_PER_SEC;
-    logger.logf("World generation completed in %.2f seconds.\n", worldGenTime);
-}
-
-std::unique_ptr<Chunk> generateChunk(const Vector3& chunkWorldPos, const Vector3& origin, SimplexNoise* noise, Object* parent) {
-    auto chunk = std::make_unique<Chunk>(); // Default-construct chunk
-    chunk->offset = {0, 0, 0}; // Initialize chunk position with zero
-    chunk->parent = parent; // Set the parent object for the chunk
-    // logger.logf("[generateChunk] Generating chunk at chunkWorldPos (%.2f, %.2f, %.2f) and origin (%.2f, %.2f, %.2f)\n", chunkWorldPos.x, chunkWorldPos.y, chunkWorldPos.z, origin.x, origin.y, origin.z);
-    // Allocate noise for this chunk with a 1-voxel border
-    const int chunkNoiseSize = (CHUNK_SIZE + 1);
-    const int totalNoise = chunkNoiseSize * chunkNoiseSize * chunkNoiseSize;
-    chunk->noiseValues.resize(totalNoise);
-    chunk->offset = {(int)chunkWorldPos.x, (int)chunkWorldPos.y, (int)chunkWorldPos.z}; // Set to relative position only
-    // Use local chunk coordinates for mesh, but sample noise at world position
-    size_t idx = 0;
-    for (int z = 0; z <= CHUNK_SIZE; ++z) {
-        for (int y = 0; y <= CHUNK_SIZE; ++y) {
-            for (int x = 0; x <= CHUNK_SIZE; ++x, ++idx) {
-                float wx = origin.x + chunkWorldPos.x + x;
-                float wy = origin.y + chunkWorldPos.y + y;
-                float wz = origin.z + chunkWorldPos.z + z;
-                chunk->noiseValues[idx] = noise->fractal(4, wx, wy, wz) + 1.0f;
-            }
-        }
-    }
-    return chunk;
-}
-
-// Iterative chunk generation using BFS
-void iterativeChunk(int startCx, int startCy, int startCz, const Vector3& origin, Vector3 rotation, Color color, float scale, SimplexNoise* noise, Planetoid* planetoid, Scene& world) {
-    struct QueueEntry {
-        int cx, cy, cz;
-    };
-    std::queue<QueueEntry> q;
-    q.push({startCx, startCy, startCz});
-    constexpr int dirs[6][3] = {
-        {1,0,0},{-1,0,0},{0,1,0},{0,-1,0},{0,0,1},{0,0,-1}
-    };
-    while (!q.empty()) {
-        time_t genStart = clock();
-        auto [cx, cy, cz] = q.front();
-        q.pop();
-        Int3 ChunkKey{cx, cy, cz};
-        // logger.logf("[iterativeChunk] Attempting chunk (%d, %d, %d) at planetoid origin (%.2f, %.2f, %.2f)\n", cx, cy, cz, origin.x, origin.y, origin.z);
-        if (planetoid->generatedChunks.count(ChunkKey) > 0) {
-            // logger.logf("[iterativeChunk] Skipping already generated chunk (%d, %d, %d)\n", cx, cy, cz);
-            continue;
-        }
-        planetoid->generatedChunks[ChunkKey] = true;
-        // chunkLocalPos is the chunk's offset within the planetoid (chunk-local)
-        Vector3 chunkLocalPos = {
-            static_cast<float>(cx * CHUNK_SIZE),
-            static_cast<float>(cy * CHUNK_SIZE),
-            static_cast<float>(cz * CHUNK_SIZE)
-        };
-        // logger.logf("[iterativeChunk] Creating ChunkObject at chunkLocalPos (%.2f, %.2f, %.2f) for chunk (%d, %d, %d)",
-        //    chunkLocalPos.x, chunkLocalPos.y, chunkLocalPos.z, cx, cy, cz);
-        std::string chunkName;
-        chunkName.reserve(32);
-        chunkName = "chunk_" + std::to_string(cx) + "_" + std::to_string(cy) + "_" + std::to_string(cz);
-        time_t genChunk = clock();
-        PROFILE_SCOPE("Generate chunk");
-        auto chunk = generateChunk(chunkLocalPos, origin, noise, planetoid);
-        // Log the chunk noise values min and max
-        // logger.logf("[generateChunk] Chunk (%d, %d, %d) noise values min: %.4f, max: %.4f\n",
-        //     cx, cy, cz,
-        //     *std::min_element(chunk->noiseValues.begin(), chunk->noiseValues.end()),
-        //     *std::max_element(chunk->noiseValues.begin(), chunk->noiseValues.end()));
-        // writeNoiseValuesToFile(chunk->noiseValues, CHUNK_SIZE + 1, "assets/noise/" + chunkName + ".txt");
-        weightNoise(chunk->noiseValues, CHUNK_SIZE + 1, chunkLocalPos, origin, 0.5f, planetoid->size);
-        // Log the weighted noise values min and max
-        // logger.logf("[weightNoise] Chunk (%d, %d, %d) weighted noise values min: %.4f, max: %.4f\n",
-        //     cx, cy, cz,
-        //     *std::min_element(chunk->noiseValues.begin(), chunk->noiseValues.end()),
-        //     *std::max_element(chunk->noiseValues.begin(), chunk->noiseValues.end()));
-        // Log the chunk generation time
-        time_t genChunkEnd = clock();
-        double genChunkTime = static_cast<double>(genChunkEnd - genChunk) / CLOCKS_PER_SEC;
-        logger.logf("Chunk noise (%d, %d, %d) generated in %.2f seconds.\n", cx, cy, cz, genChunkTime);
-        if (isAllBelowThreshold(chunk->noiseValues, 0.01f)) { // Lowered threshold
-            planetoid->chunkChildren.emplace(Int3{cx, cy, cz}, std::move(chunk));
-            planetoid->chunkChildren[Int3{cx, cy, cz}]->assignNeighborsAndNotify(planetoid->chunkChildren);
-            continue;
-        }
-        // Per-chunk edge cache: one slot per (grid corner, axis). Vertex indices never cross chunks.
-        const int gridSize = CHUNK_SIZE + 1;
-        std::vector<int> edgeCache(gridSize * gridSize * gridSize * 3, -1);
-        chunk->vertices.clear();
-        chunk->indices.clear();
-        chunk->vertices.reserve(CHUNK_SIZE * CHUNK_SIZE * 6);
-        chunk->indices.reserve(CHUNK_SIZE * CHUNK_SIZE * 18);
-        for (int k = 0; k < CHUNK_SIZE; ++k) {
-            for (int j = 0; j < CHUNK_SIZE; ++j) {
-                for (int i = 0; i < CHUNK_SIZE; ++i) {
-                    marchCube(i, j, k, chunk->noiseValues, gridSize,
-                              chunk->vertices, chunk->indices, edgeCache, 0.5f);
-                }
-            }
-        }
-
-        // raylib meshes use 16-bit indices; refuse to silently wrap.
-        if (chunk->vertices.size() > 65535) {
-            logger.logf("[ERROR] Chunk (%d, %d, %d) has %zu vertices (> 65535); mesh skipped. Reduce CHUNK_SIZE.\n",
-                        cx, cy, cz, chunk->vertices.size());
-            chunk->vertices.clear();
-            chunk->indices.clear();
-        }
-
-        // CPU mesh arrays use raylib's allocator so UnloadMesh() can free them.
-        chunk->mesh.vertexCount = static_cast<int>(chunk->vertices.size());
-        chunk->mesh.triangleCount = static_cast<int>(chunk->indices.size() / 3);
-        if (chunk->mesh.vertexCount > 0) {
-            chunk->mesh.vertices = (float*)MemAlloc(chunk->mesh.vertexCount * 3 * sizeof(float));
-            for (size_t j = 0; j < chunk->vertices.size(); ++j) {
-                const Vector3& v = chunk->vertices[j];
-                chunk->mesh.vertices[j * 3 + 0] = v.x;
-                chunk->mesh.vertices[j * 3 + 1] = v.y;
-                chunk->mesh.vertices[j * 3 + 2] = v.z;
-            }
-            chunk->mesh.indices = (unsigned short*)MemAlloc(chunk->indices.size() * sizeof(unsigned short));
-            for (size_t j = 0; j < chunk->indices.size(); ++j) {
-                chunk->mesh.indices[j] = static_cast<unsigned short>(chunk->indices[j]);
-            }
-            chunk->mesh.normals = (float*)MemAlloc(chunk->mesh.vertexCount * 3 * sizeof(float));
-        }
-        logger.logf("[MeshStats] Chunk (%d, %d, %d): vertexCount=%d, triangleCount=%d\n", cx, cy, cz, chunk->mesh.vertexCount, chunk->mesh.triangleCount);
-
-        auto inserted = planetoid->chunkChildren.emplace(Int3{cx, cy, cz}, std::move(chunk));
-        planetoid->chunkChildren[Int3{cx, cy, cz}]->assignNeighborsAndNotify(planetoid->chunkChildren);
-        if (inserted.second) {
-            inserted.first->second->isActive = true;
-            inserted.first->second->parent = planetoid; // Set parent pointer for correct transform
-        }
-        for (int d = 0; d < 6; ++d) {
-            int nx = cx + dirs[d][0];
-            int ny = cy + dirs[d][1];
-            int nz = cz + dirs[d][2];
-            Int3 nkey{nx, ny, nz};
-            if (planetoid->generatedChunks.count(nkey) == 0) {
-                q.push({nx, ny, nz});
-            }
-        }
-        time_t genEnd = clock();
-        double genTime = static_cast<double>(genEnd - genStart) / CLOCKS_PER_SEC;
-        logger.logf("Chunk (%d, %d, %d) generated in %.2f seconds.\n", cx, cy, cz, genTime);
-    }
-}
-
-
-void generatePlanetoid(float randScale,std::string name, Scene& world, Vector3 position, Vector3 rotation,Color color, size_t size, float scale) {
-    Planetoid* planetoid = new Planetoid(name, position, rotation, color, scale, size);
-    planetoid->parent = &world.rootObject; // Set the planetoid's parent to the root object of the scene
-    // Initialize shared edge caches with correct type
-    world.objects.push_back(std::unique_ptr<Object>(planetoid)); // Add the planetoid to the scene's object list
-
-    clock_t planetoidGenStart = clock();
-    
-    float frequencyNoise = static_cast<float>(distrib(gen)/randScale)-0.5f; // Random frequency noise to add some variation from -0.5 to 0.5
-    float seedX = static_cast<float>(distrib(gen)/10.f); // Random seed for X coordinate
-    float seedY = static_cast<float>(distrib(gen)/10.f); // Random seed for Y coordinate
-    float seedZ = static_cast<float>(distrib(gen)/10.f); // Random seed for Z coordinate
-    planetoid->seed = {seedX, seedY, seedZ}; // Set the planetoid's seed for noise generation
-    logger.logf("Planetoid generation parameters: frequencyNoise=%.4f, seedX=%.4f, seedY=%.4f, seedZ=%.4f\n", 
-        frequencyNoise, seedX, seedY, seedZ);
-    SimplexNoise* noise = new SimplexNoise((1.5f+frequencyNoise)/static_cast<float>(size), 2.0f, 2.0f, 0.5f,seedX,seedY,seedZ); // Create a new instance of SimplexNoise
-    if (!noise) {
-        std::cerr << "Failed to create SimplexNoise instance." << std::endl;
-        return; // Skip this planetoid if noise generation fails;
-    }
-    logger.logf("Generating planetoid at (%f, %f, %f) with size %zu and scale %.2f with noise frequency %.4f...\n", position.x, position.y, position.z, size, scale,(1.5f+frequencyNoise)/static_cast<float>(size));
-
-    clock_t genStart = clock();
-    // Use iterative chunk generation
-    iterativeChunk(0, 0, 0, position, rotation, color, scale, noise, planetoid, world); 
-    // Safety net: chunks whose 26 neighbours never all arrived would otherwise never get normals
-    // (and never be uploaded). Compute them with whatever neighbours exist.
-    for (auto& entry : planetoid->chunkChildren) {
-        if (entry.second->normalsPending) {
-            entry.second->calculateNormals();
-            entry.second->normalsPending = false;
-        }
-    }
-    clock_t genEnd = clock();
-    double genTime = static_cast<double>(genEnd - genStart) / CLOCKS_PER_SEC;
-    logger.logf("Chunks generated in %.2f seconds at position (%f, %f, %f) with size %zu and scale %.2f.\n", 
-        genTime, position.x, position.y, position.z, size, scale);
-
-    planetoid->isActive = true; // Set the planetoid as active
-    delete noise; // Clean up the noise instance
-    time_t planetoidGenEnd = clock();
-    double planetoidGenTime = static_cast<double>(planetoidGenEnd - planetoidGenStart) / CLOCKS_PER_SEC;
-    logger.logf("Planetoid generated in %.2f seconds at position (%f, %f, %f) with size %zu.\n", 
-        planetoidGenTime, position.x, position.y, position.z, size);
-}
-
-int generatePlanetoids(float randScale, Scene& world, float genRange, float minSize, float maxSize) {
-    int planetoidsGenerated = 0;
-
-    //Generate planetoids
-    int numPlanetoids = ((distrib(gen)/randScale) * 5) + 1; // Number of planetoids to generate
-    numPlanetoids = worldGen.planetoidCount; // fixed count while testing (see WorldGenSettings)
-    logger.logf("Generating %d planetoids...\n", numPlanetoids);
-
-    for(int i = 0; i < numPlanetoids; ++i) {
-        clock_t planetoidGenStart = clock();
-        // Generate random position, rotation, color, size, and scale for the planetoid
-
-        // Position is centered around (0,0,0) with a range of genRange
-        Vector3 position = {    static_cast<float>(((distrib(gen)/randScale)*genRange)-(genRange/2)), 
-                                static_cast<float>(((distrib(gen)/randScale)*genRange)-(genRange/2)), 
-                                static_cast<float>(((distrib(gen)/randScale)*genRange)-(genRange/2))};
-
+    std::uniform_real_distribution<float> unit(0.0f, 1.0f);
+    const float genRange = 500.0f;
+    for (int i = 0; i < worldGen.planetoidCount; ++i) {
+        Vector3 position = { (unit(gen) - 0.5f) * genRange, (unit(gen) - 0.5f) * genRange, (unit(gen) - 0.5f) * genRange };
         if (i == 0) position = worldGen.firstPosition; // keep the first one somewhere predictable
-
-        // Rotation is random in degrees, scaled by randScale
-        Vector3 rotation = {    static_cast<float>(distrib(gen)/randScale * 360), 
-                                static_cast<float>(distrib(gen)/randScale * 360), 
-                                static_cast<float>(distrib(gen)/randScale * 360)};
-        rotation = {0.0f, 0.0f, 0.0f}; // Fixed rotation for testing
-
-        // Using a random color generator with a range of 0-255 for RGB values
-        Color color = { static_cast<unsigned char>(distrib(gen)/randScale * 255), 
-                        static_cast<unsigned char>(distrib(gen)/randScale * 255), 
-                        static_cast<unsigned char>(distrib(gen)/randScale * 255), 255};
-
-        color = {255,255,255,255}; // Fixed color for testing
-
-        // Size is a random float between minSize and maxSize
-        size_t size = static_cast<size_t>((distrib(gen)/randScale)*(maxSize-minSize)) + static_cast<size_t>(minSize);
-        size = worldGen.planetoidSize;
-
-        // Scale is a fixed value for now, can be adjusted later
-        float scale = 1.0f;
-
-        logger.logf("Generating planetoid %d...\n", i);
-        std::string name = "planetoid_" + std::to_string(i);
-        generatePlanetoid(randScale, name, world, position, rotation, color, size, scale);
-        
-        clock_t planetoidGenEnd = clock();
-        double planetoidGenTime = static_cast<double>(planetoidGenEnd - planetoidGenStart) / CLOCKS_PER_SEC;
-        logger.logf("Planetoid %d generated in %.2f seconds.\n\n", i, planetoidGenTime);
-        printf("Planetoid %d generated in %.2f seconds.\n\n", i, planetoidGenTime);
-        planetoidsGenerated++;
+        const unsigned int seed = (unsigned int)gen();
+        auto p = std::make_unique<Planetoid>("planetoid_" + std::to_string(i), position, Vector3{ 0, 0, 0 }, 1.0f,
+                                             seed, (float)worldGen.planetoidSize);
+        p->parent = &world.rootObject;
+        world.objects.push_back(std::move(p));
     }
-    return planetoidsGenerated; // Return the number of planetoids generated
+    // Chunks are requested on the next worldUpdate(), nearest to the camera first.
+    generationStart = GetTime();
+    buildMsTotal = 0.0;
+    buildCount = 0;
 }
 
+void regenerateWorld(Scene& world) {
+    Jobs().clearQueued();  // in-flight jobs finish; their results are dropped (planetoid ids are gone)
+    world.objects.clear(); // releases chunk meshes
+    generateWorld(world);
+}
+
+// ---------------------------------------------------------------------------------------------
+// Save / load: the world is fully determined by the generation settings + each planetoid's
+// edit list, so a save is tiny and replays exactly.
+// ---------------------------------------------------------------------------------------------
+
+static const char* SAVE_PATH = "saves/world.sav";
+
+bool SaveWorld(Scene& world) {
+    if (!DirectoryExists("saves")) MakeDirectory("saves");
+    FILE* f = fopen(SAVE_PATH, "w");
+    if (!f) return false;
+    fprintf(f, "RAYLIBGAME_SAVE 1\n");
+    fprintf(f, "seed %u\ncount %d\nsize %d\nfirst %f %f %f\n", worldGen.lastSeed, worldGen.planetoidCount,
+            worldGen.planetoidSize, worldGen.firstPosition.x, worldGen.firstPosition.y, worldGen.firstPosition.z);
+    fprintf(f, "camera %f %f %f %f %f %f\n", world.camera.position.x, world.camera.position.y, world.camera.position.z,
+            world.camera.target.x, world.camera.target.y, world.camera.target.z);
+    int index = 0, total = 0;
+    for (auto& obj : world.objects) {
+        Planetoid* p = dynamic_cast<Planetoid*>(obj.get());
+        if (!p) continue;
+        fprintf(f, "planetoid %d edits %zu\n", index++, p->edits->size());
+        for (const TerrainEdit& e : *p->edits) {
+            fprintf(f, "%f %f %f %f %f\n", e.center.x, e.center.y, e.center.z, e.radius, e.strength);
+            total++;
+        }
+    }
+    fclose(f);
+    logger.logf("[World] saved %d edits to %s\n", total, SAVE_PATH);
+    return true;
+}
+
+bool LoadWorldSave(Scene& world) {
+    FILE* f = fopen(SAVE_PATH, "r");
+    if (!f) return false;
+    int version = 0;
+    if (fscanf(f, "RAYLIBGAME_SAVE %d", &version) != 1 || version != 1) { fclose(f); return false; }
+    unsigned int seed = 0;
+    int count = 1, size = 50;
+    Vector3 first{}, camPos{}, camTarget{};
+    bool ok = fscanf(f, " seed %u count %d size %d first %f %f %f", &seed, &count, &size, &first.x, &first.y, &first.z) == 6;
+    ok = ok && fscanf(f, " camera %f %f %f %f %f %f", &camPos.x, &camPos.y, &camPos.z, &camTarget.x, &camTarget.y, &camTarget.z) == 6;
+    if (!ok) { fclose(f); return false; }
+
+    worldGen.seed = seed;
+    worldGen.planetoidCount = count;
+    worldGen.planetoidSize = size;
+    worldGen.firstPosition = first;
+    regenerateWorld(world);
+    world.camera.position = camPos;
+    world.camera.target = camTarget;
+
+    // Edits are attached before the first worldUpdate() requests chunks, so each chunk is built
+    // once with its edits already applied.
+    std::vector<Planetoid*> planetoids;
+    for (auto& obj : world.objects) if (auto* p = dynamic_cast<Planetoid*>(obj.get())) planetoids.push_back(p);
+    int index = 0;
+    size_t editCount = 0;
+    while (fscanf(f, " planetoid %d edits %zu", &index, &editCount) == 2) {
+        auto list = std::make_shared<EditList>();
+        for (size_t i = 0; i < editCount; ++i) {
+            TerrainEdit e{};
+            if (fscanf(f, " %f %f %f %f %f", &e.center.x, &e.center.y, &e.center.z, &e.radius, &e.strength) != 5) break;
+            list->push_back(e);
+        }
+        if (index >= 0 && index < (int)planetoids.size()) planetoids[index]->edits = list;
+    }
+    fclose(f);
+    logger.logf("[World] loaded %s (seed %u)\n", SAVE_PATH, seed);
+    return true;
+}
 
 void loadWorld(Scene& world) {
     // Load the world scene from a file or initialize it
@@ -738,7 +477,3 @@ void loadWorld(Scene& world) {
     file.close();
 }
 
-void regenerateWorld(Scene& world) {
-    world.objects.clear(); // releases chunk meshes (GPU + CPU)
-    generateWorld(world);
-}

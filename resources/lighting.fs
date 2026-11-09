@@ -92,8 +92,22 @@ void main()
 
     float rough = roughAo.r;
     float ao = roughAo.g;
+
+    // Voxel material blend weights from the vertex colour: R rock, G regolith, B ice, A ore.
+    // (Meshes without vertex colours get white = equal weights, which normalises to a neutral mix.)
+    vec4 w = fragColor;
+    w /= max(w.r + w.g + w.b + w.a, 0.001);
+    float lum = dot(albedo, vec3(0.299, 0.587, 0.114));
+    vec3 rock     = albedo;
+    vec3 regolith = albedo * vec3(1.45, 1.25, 1.0);                      // dusty, warmer, lighter
+    vec3 ice      = mix(vec3(0.55, 0.72, 0.9), vec3(0.85, 0.95, 1.0), lum * 2.0);
+    vec3 ore      = albedo * 0.5 + vec3(0.55, 0.3, 0.08) * (0.4 + lum);  // rusty metal
+    albedo = rock * w.r + regolith * w.g + ice * w.b + ore * w.a;
+    rough = rough * (w.r + w.g) + 0.15 * w.b + 0.3 * w.a;
+    rough = max(rough, w.g);                                             // regolith is matte
+
     float shininess = mix(64.0, 4.0, rough);
-    float specStrength = (1.0 - rough) * 0.5;
+    float specStrength = (1.0 - rough) * (0.5 + 0.8 * (w.b + w.a));
 
     vec3 viewD = normalize(viewPos - fragPosition);
     vec3 direct = vec3(0.0);

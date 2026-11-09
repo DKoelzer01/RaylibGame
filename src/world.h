@@ -2,26 +2,17 @@
 #define world_h
 
 #include "scene.h"
-#include "SimplexNoise.h"
+#include "voxel.h"
+#include "worldtypes.h"
 #include "cubemarch.h"
 #include "utils/logger.h"
-#include "worldtypes.h"
 #include "profiler.h"
 
-#include <vector>
 #include <string>
-#include <queue>
-#include <unordered_set>
 #include <iostream>
 #include <fstream>
 #include <sstream>
-#include <cmath>
-#include <ctime>
 #include <memory>
-#include <unordered_map>
-#include <tuple>
-#include <functional>
-#include <algorithm>
 
 // Tweakable from the debug UI. seed == 0 means "pick a random seed"; lastSeed records what was
 // actually used so an interesting world can be reproduced.
@@ -34,10 +25,36 @@ struct WorldGenSettings {
 };
 extern WorldGenSettings worldGen;
 
+struct WorldStats {
+    int queuedJobs = 0, runningJobs = 0, pendingUploads = 0, uploadsLastFrame = 0, workerThreads = 0;
+    int chunks = 0, edits = 0;
+    float avgBuildMs = 0.0f;            // worker time per chunk (sampling + meshing + normals)
+    float lastGenerationSeconds = 0.0f; // from generateWorld() until every chunk was uploaded
+};
+
+struct TerrainHit {
+    Planetoid* planetoid = nullptr;
+    Vector3 point{};      // world space
+    Vector3 local{};      // planetoid-local voxel space
+    Vector3 normal{};     // world space
+    float distance = 0.0f;
+    VoxelMaterial material = VoxelMaterial::Rock;
+};
+
 void worldHandler(Scene& world);
-int generatePlanetoids(float randScale, Scene& world, float genRange, float minSize, float maxSize);
-void generateWorld(Scene& world);
+void generateWorld(Scene& world);      // creates planetoids; chunks stream in via worldUpdate()
 void regenerateWorld(Scene& world);
-void loadWorld(Scene& world);
+void loadWorld(Scene& world);          // extra objects from assets/scenes/world
+
+// Per frame: requests chunks for new planetoids and uploads finished meshes (time-boxed).
+void worldUpdate(Scene& world, float uploadBudgetMs = 3.0f);
+bool WorldIdle();                      // no queued/running jobs and nothing left to upload
+const WorldStats& GetWorldStats();
+
+bool RaycastTerrain(Scene& world, Ray ray, float maxDistance, TerrainHit& hit);
+void ApplyTerrainEdit(Planetoid& planetoid, const TerrainEdit& edit); // local-space brush
+
+bool SaveWorld(Scene& world);          // saves/world.sav
+bool LoadWorldSave(Scene& world);
 
 #endif
