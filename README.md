@@ -88,6 +88,11 @@ Shaders in `resources/` hot-reload when saved.
   default is the start asteroid plus a ring of 7 more within ~1.5 km. Saves embed the system they were
   made in, so editing the file never breaks a save. Errors are reported with line numbers in `log.txt`.
 - **Audio** (`src/engine/audio.*`): procedural sound effects, no assets.
+- **Planets and moons** (`PlanetField` in `src/engine/voxel.*`): a height map over the sphere (continents and
+  ocean floor, ridged mountains, hills, river valleys), worm caves, ore veins that get richer with depth, snow
+  at high latitudes and on peaks, and an unmineable mantle 1.5% of the radius below sea level (900 m on the
+  60 km planet). Coarse LOD chunks leave out detail finer than their sample spacing. Try it with
+  `./game.exe --bodies resources/data/bodies_planet.txt`.
 - Asteroid density is a displaced sphere (mean surface 0.72 R) with a uniform 0.25/voxel gradient: crisp surfaces and
   predictable dig depth.
 ## Benchmark / test mode
@@ -106,7 +111,8 @@ frustum culling, `--test-dig N` carves a tunnel at the crosshair, `--test-savelo
 `--test-walk S` / `--test-stand S` spawn the player and walk/stand (reports grounding + penetration),
 `--test-mine N` digs N strokes at the feet, crafts everything possible and builds 3 strokes,
 `--test-fly S` autopilots the ship to the nearest other asteroid, `--test-suffocate` checks death/respawn,
-`--test-ride` (standing/jumping on a spinning body; `--ride-spin D` sets its rate), `--test-orbit S` (jetpack orbit stability),
+`--test-mantle` (planet terrain: height band, mantle refuses digging, ore by depth, caves; run with
+`--bodies resources/data/bodies_planet.txt`), `--test-ride` (standing/jumping on a spinning body; `--ride-spin D` sets its rate), `--test-orbit S` (jetpack orbit stability),
 `--test-park` (parked ship rides a spinning body), `--test-gravity` (field values, continuity between
 bodies, an unpiloted ship dropping and parking, a piloted ship hovering), `--test-precision` (float vs double
 placement error standing on body 0; run it with a large body via `--bodies`), `--spin-test` (writes `spin_*.png` frames),

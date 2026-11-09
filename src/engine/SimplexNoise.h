@@ -27,6 +27,11 @@ public:
     float fractal(size_t octaves, float x) const;
     float fractal(size_t octaves, float x, float y) const;
     float fractal(size_t octaves, float x, float y, float z) const;
+    // fractal() without the octaves too fine for samples `footprint` apart: an octave fades out as
+    // its wavelength drops from 4 to 2 footprints (so LOD levels differ smoothly, without aliasing
+    // spikes), and the result keeps fractal(octaves)'s normalisation, so detail is dropped, not
+    // rescaled. footprint <= 0: identical to fractal(octaves).
+    float fractalLimited(size_t octaves, float footprint, float x, float y, float z) const;
 
     /**
      * Constructor of to initialize a fractal noise summation

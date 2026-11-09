@@ -52,8 +52,9 @@ float PlanetoidField::baseDensity(Vector3 p) const {
     return ISO_LEVEL + DENSITY_GRADIENT * (radius * MEAN_SURFACE + displacement - d);
 }
 
-float DensityField::density(Vector3 p, const TerrainEdit* edits, size_t editCount) const {
-    float v = baseDensity(p);
+float DensityField::density(Vector3 p, const TerrainEdit* edits, size_t editCount, float footprint) const {
+    float v = footprint > 0.0f ? baseDensityLod(p, footprint) : baseDensity(p);
+    if (editCount == 0 || !editable(p)) return v; // e.g. a planet's mantle ignores edits
     for (size_t i = 0; i < editCount; ++i) {
         const TerrainEdit& e = edits[i];
         const float dx = p.x - e.center.x, dy = p.y - e.center.y, dz = p.z - e.center.z;
@@ -66,12 +67,12 @@ float DensityField::density(Vector3 p, const TerrainEdit* edits, size_t editCoun
     return v; // no clamp: the uniform gradient keeps values meaningful at any depth
 }
 
-Vector3 DensityField::normal(Vector3 p, const TerrainEdit* edits, size_t n, float h) const {
+Vector3 DensityField::normal(Vector3 p, const TerrainEdit* edits, size_t n, float h, float fp) const {
 
     const Vector3 g = {
-        density({ p.x + h, p.y, p.z }, edits, n) - density({ p.x - h, p.y, p.z }, edits, n),
-        density({ p.x, p.y + h, p.z }, edits, n) - density({ p.x, p.y - h, p.z }, edits, n),
-        density({ p.x, p.y, p.z + h }, edits, n) - density({ p.x, p.y, p.z - h }, edits, n),
+        density({ p.x + h, p.y, p.z }, edits, n, fp) - density({ p.x - h, p.y, p.z }, edits, n, fp),
+        density({ p.x, p.y + h, p.z }, edits, n, fp) - density({ p.x, p.y - h, p.z }, edits, n, fp),
+        density({ p.x, p.y, p.z + h }, edits, n, fp) - density({ p.x, p.y, p.z - h }, edits, n, fp),
     };
     const float len = sqrtf(g.x * g.x + g.y * g.y + g.z * g.z);
     if (len < 1e-6f) {
@@ -145,6 +146,118 @@ VoxelMaterial TerrainField::material(Vector3 p, float base) const {
 }
 
 // ---------------------------------------------------------------------------------------------
+// PlanetField (planets and moons)
+// ---------------------------------------------------------------------------------------------
+
+static float Smoothstep(float a, float b, float x) {
+    const float t = std::clamp((x - a) / (b - a), 0.0f, 1.0f);
+    return t * t * (3.0f - 2.0f * t);
+}
+
+PlanetField::PlanetField(unsigned int seed, float radius_, bool moon_)
+    : radius(radius_), mantleRadius(radius_ * (1.0f - 0.015f)), moon(moon_) {
+    std::mt19937 rng(seed);
+    // Large features scale with the body (a moon gets proportionally sized basins and ridges);
+    // hills, detail, caves and veins are absolute sizes, so they feel the same everywhere.
+    continents = SeededNoise(rng, 2.5f / radius);  // ~24 km continents on a 60 km planet
+    ridges = SeededNoise(rng, 8.5f / radius);      // mountain ranges
+    hills = SeededNoise(rng, 1.0f / 900.0f);
+    valleys = SeededNoise(rng, 6.5f / radius);     // river valleys: where this crosses zero
+    detail = SeededNoise(rng, 1.0f / 70.0f);
+    cavesA = SeededNoise(rng, 1.0f / 60.0f);       // tunnels run where both cave fields cross zero
+    cavesB = SeededNoise(rng, 1.0f / 60.0f);
+    veins = SeededNoise(rng, 1.0f / 30.0f);
+    climate = SeededNoise(rng, 1.0f / 15000.0f);
+    // Bounds of elevation() below (each noise term is in [-1, 1]).
+    if (moon) { minElevation = -90.0f; maxElevation = 340.0f; }
+    else { minElevation = -740.0f; maxElevation = 1690.0f; }
+}
+
+float PlanetField::elevation(Vector3 dir, float fp) const {
+    const float sx = dir.x * radius, sy = dir.y * radius, sz = dir.z * radius; // the surface point (m)
+    if (moon) {
+        // Grey highlands and lowland plains, rough ridged uplands, no oceans.
+        const float base = continents.fractalLimited(4, fp, sx, sy, sz) * 60.0f;
+        const float r = 1.0f - fabsf(ridges.fractalLimited(4, fp, sx, sy, sz));
+        return base + r * r * 250.0f + hills.fractalLimited(3, fp, sx, sy, sz) * 25.0f + detail.fractalLimited(2, fp, sx, sy, sz) * 2.5f;
+    }
+    const float c = continents.fractalLimited(4, fp, sx, sy, sz); // < 0: ocean, > 0: land
+    const float base = c < 0.0f ? c * 650.0f : c * 200.0f;        // ocean floor down to -650 m, gentle land
+    const float land = Smoothstep(-0.02f, 0.06f, c);
+    const float mountainMask = Smoothstep(0.08f, 0.35f, c);      // ranges only well inland
+    float h = base;
+    if (mountainMask > 0.0f) {
+        const float r = 1.0f - fabsf(ridges.fractalLimited(5, fp, sx, sy, sz)); // ridged: sharp crests
+        h += r * r * r * 1400.0f * mountainMask;
+    }
+    h += hills.fractalLimited(3, fp, sx, sy, sz) * (25.0f + 60.0f * mountainMask);
+    // River valleys (~150 m wide) fade out once samples are too far apart to resolve them.
+    const float valleyWeight = land * std::clamp(2.0f - fp / 64.0f, 0.0f, 1.0f);
+    if (valleyWeight > 0.0f) {
+        const float v = fabsf(valleys.fractal(3, sx, sy, sz));
+        if (v < 0.05f) { const float t = 1.0f - v / 0.05f; h -= t * t * 70.0f * valleyWeight; }
+    }
+    return h + detail.fractalLimited(2, fp, sx, sy, sz) * 2.5f;
+}
+
+float PlanetField::baseDensityLod(Vector3 p, float fp) const {
+    const float d = sqrtf(p.x * p.x + p.y * p.y + p.z * p.z);
+    // Far above or far below the surface band only the sign matters (no surface to mesh), so skip
+    // the height map: most samples of a chunk that does not touch the surface take these paths.
+    const float outer = radius + maxElevation, inner = radius + minElevation;
+    if (d > outer + 4.0f) return ISO_LEVEL + DENSITY_GRADIENT * (outer - d);
+    const float surface = (d < inner - 4.0f || d < 1e-3f) ? inner : radius + elevation({ p.x / d, p.y / d, p.z / d }, fp);
+    float v = ISO_LEVEL + DENSITY_GRADIENT * (surface - d);
+    const float depth = surface - d;
+    if (fabsf(depth) < 6.0f) v += DENSITY_GRADIENT * 1.5f * detail.fractalLimited(2, fp, p.x, p.y * 1.3f, p.z); // crags, overhangs
+    // Caves: worm tunnels where both cave fields cross zero, from a few metres down to 20 m above
+    // the mantle (which stays intact). The tunnel is its own distance field (the noise changes
+    // ~0.025 per metre at this frequency, so t * 40 ~ metres from the tunnel's core), combined with
+    // min(): rock density grows with depth, so subtracting a fixed amount would only carve shallow caves.
+    // Tunnels a few metres wide can't be resolved by coarse LOD samples, so they fade out there.
+    const float caveWeight = std::clamp(2.0f - fp / 4.0f, 0.0f, 1.0f);
+    if (caveWeight > 0.0f && depth > 5.0f && d > mantleRadius + 20.0f) {
+        const float t = std::max(fabsf(cavesA.fractal(2, p.x, p.y, p.z)), fabsf(cavesB.fractal(2, p.x, p.y, p.z)));
+        const float fade = std::min(1.0f, (depth - 5.0f) / 8.0f) * std::min(1.0f, (d - mantleRadius - 20.0f) / 10.0f);
+        const float tunnel = ISO_LEVEL + DENSITY_GRADIENT * ((t - 0.06f) * 40.0f + (1.0f - fade * caveWeight) * 20.0f);
+        v = std::min(v, tunnel);
+    }
+    return v;
+}
+
+VoxelMaterial PlanetField::materialLod(Vector3 p, float base, float fp) const {
+    const float d = sqrtf(p.x * p.x + p.y * p.y + p.z * p.z);
+    if (d < mantleRadius + 0.5f || d < 1e-3f) return VoxelMaterial::Rock;   // mantle
+    // Depth below the original surface, from the height map (the density is no measure of depth
+    // here: cave tunnels take the minimum with it, so cave walls stay rock rather than topsoil).
+    (void)base;
+    const float depth = radius + elevation({ p.x / d, p.y / d, p.z / d }, fp) - d; // against the surface this LOD meshes
+    if (depth < 2.5f) {
+        if (!moon && d > 1e-3f) {
+            // Snow at high latitudes and on high peaks, wobbled by a climate field.
+            const float wobble = climate.fractal(2, p.x, p.y, p.z);
+            if (fabsf(p.y) / d > 0.82f + 0.08f * wobble || d - radius > 1050.0f + 150.0f * wobble) return VoxelMaterial::Ice;
+        }
+        return VoxelMaterial::Regolith;
+    }
+    // Ore veins (thin sheets where the vein field crosses zero), richer with depth.
+    if (depth > 8.0f) {
+        const float thickness = depth < 150.0f ? 0.025f : depth < 500.0f ? 0.04f : 0.055f;
+        if (fabsf(veins.fractal(2, p.x, p.y, p.z)) < thickness) return VoxelMaterial::Ore;
+    }
+    return VoxelMaterial::Rock;
+}
+
+Vector3 PlanetField::fallbackUp(Vector3 p) const {
+    const float pl = sqrtf(p.x * p.x + p.y * p.y + p.z * p.z);
+    return pl > 1e-6f ? Vector3{ p.x / pl, p.y / pl, p.z / pl } : Vector3{ 0, 1, 0 };
+}
+
+bool PlanetField::editable(Vector3 p) const {
+    return p.x * p.x + p.y * p.y + p.z * p.z > mantleRadius * mantleRadius;
+}
+
+// ---------------------------------------------------------------------------------------------
 // Chunk meshing (worker thread)
 // ---------------------------------------------------------------------------------------------
 
@@ -177,7 +290,7 @@ void BuildChunkMesh(const DensityField& field, const EditList& allEdits, ChunkMe
     for (int z = 0; z < S; ++z)
         for (int y = 0; y < S; ++y)
             for (int x = 0; x < S; ++x, ++i) {
-                const float d = field.density({ origin.x + x * stride, origin.y + y * stride, origin.z + z * stride }, edits.data(), edits.size());
+                const float d = field.density({ origin.x + x * stride, origin.y + y * stride, origin.z + z * stride }, edits.data(), edits.size(), stride);
                 dens[i] = d;
                 if (d >= ISO_LEVEL) anySolid = true; else anyEmpty = true;
             }
@@ -203,8 +316,8 @@ void BuildChunkMesh(const DensityField& field, const EditList& allEdits, ChunkMe
                 const Vector3 lp = Vector3Scale(verts[v], stride);     // node-relative, in voxels
                 const Vector3 p = Vector3Add(origin, lp);
                 // Coarser levels use a wider gradient step: smoother, cheaper-looking normals far away.
-                const Vector3 n = field.normal(p, edits.data(), edits.size(), 0.5f * stride);
-                const VoxelMaterial m = field.material(p, field.baseDensity(p));
+                const Vector3 n = field.normal(p, edits.data(), edits.size(), 0.5f * stride, stride);
+                const VoxelMaterial m = field.materialLod(p, field.baseDensity(p), stride);
                 out.positions[v * 3 + 0] = lp.x;
                 out.positions[v * 3 + 1] = lp.y;
                 out.positions[v * 3 + 2] = lp.z;

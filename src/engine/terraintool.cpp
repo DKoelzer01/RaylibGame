@@ -64,6 +64,13 @@ bool TerrainTool_Stroke(bool dig) {
     if (!hasHit) return false;
     const bool digging = dig;
     Planetoid& p = *hit.planetoid;
+    if (!p.field->editable(hit.local)) {
+        // A planet's mantle: edits there would have no effect, so refuse before charging anything.
+        Toast("The mantle is too hard to dig into");
+        Audio_Play(Sfx::Error, 0.5f);
+        strokeTimer = 0.5f;
+        return false;
+    }
     const float r3 = terrainTool.brushRadius * terrainTool.brushRadius * terrainTool.brushRadius;
     if (digging) {
         // Yield scales with the volume the stroke removes (~strength * r^3).

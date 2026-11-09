@@ -17,10 +17,11 @@ void Player::spawnOn(Scene& world, Planetoid& body, Vector3 dir) {
     const Vector3 c = body.position;
     if (body.flat) dir = { 0, 1, 0 };
     dir = Vector3Normalize(dir);
-    const Vector3 above = body.flat ? Vector3Add(c, { 0, body.maxHeight + 20.0f, 0 }) : Vector3Add(c, Vector3Scale(dir, R + 60.0f));
+    const float outer = body.field->maxRadius() * body.scale; // above the highest terrain (planets: mountains)
+    const Vector3 above = body.flat ? Vector3Add(c, { 0, body.maxHeight + 20.0f, 0 }) : Vector3Add(c, Vector3Scale(dir, outer + 60.0f));
     TerrainHit hit;
     Vector3 feet = Vector3Add(c, Vector3Scale(dir, R + 5.0f));
-    if (RaycastTerrain(world, Ray{ above, Vector3Negate(dir) }, body.flat ? body.maxHeight - body.minHeight + 40.0f : R + 80.0f, hit)) feet = Vector3Add(hit.point, Vector3Scale(hit.normal, 0.2f));
+    if (RaycastTerrain(world, Ray{ above, Vector3Negate(dir) }, body.flat ? body.maxHeight - body.minHeight + 40.0f : outer + 80.0f, hit)) feet = Vector3Add(hit.point, Vector3Scale(hit.normal, 0.2f));
     position = world.renderOrigin + feet;
     up = body.flat ? Vector3{ 0, 1, 0 } : Vector3Normalize(Vector3Subtract(feet, c));
     forward = Vector3Normalize(Vector3CrossProduct(up, { 1, 0, 0 }));

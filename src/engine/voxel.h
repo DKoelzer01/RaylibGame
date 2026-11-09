@@ -78,11 +78,22 @@ public:
     virtual VoxelMaterial material(Vector3 p, float base) const = 0;
     // Used when the gradient vanishes (e.g. deep inside a flat region).
     virtual Vector3 fallbackUp(Vector3 p) const = 0;
+    // False where player edits have no effect (a planet's mantle).
+    virtual bool editable(Vector3) const { return true; }
+    // Upper bound on the surface's distance from the local origin (LOD root size, spawn raycasts).
+    virtual float maxRadius() const = 0;
+
+    // Density for samples `footprint` apart (chunk meshing at a LOD stride): fields may leave out
+    // detail finer than that. Defaults to baseDensity; footprint 0 = full detail.
+    virtual float baseDensityLod(Vector3 p, float /*footprint*/) const { return baseDensity(p); }
+    // Material of a mesh vertex sampled at that footprint (so coarse vertices, which sit on the
+    // simplified surface, are judged against it). Defaults to material().
+    virtual VoxelMaterial materialLod(Vector3 p, float base, float /*footprint*/) const { return material(p, base); }
 
     // Density including edits (the list should already be filtered to ones near p).
-    float density(Vector3 p, const TerrainEdit* edits, size_t editCount) const;
+    float density(Vector3 p, const TerrainEdit* edits, size_t editCount, float footprint = 0.0f) const;
     // Outward surface normal: negative density gradient, by central differences.
-    Vector3 normal(Vector3 p, const TerrainEdit* edits, size_t editCount, float step = 0.5f) const;
+    Vector3 normal(Vector3 p, const TerrainEdit* edits, size_t editCount, float step = 0.5f, float footprint = 0.0f) const;
 };
 
 // Asteroid / small body: a displaced sphere centred on the local origin.
@@ -98,9 +109,35 @@ public:
     float baseDensity(Vector3 p) const override;
     VoxelMaterial material(Vector3 p, float base) const override;
     Vector3 fallbackUp(Vector3 p) const override;
+    float maxRadius() const override { return radius; }
 
 private:
     PlanetoidField(std::mt19937 rng, float radius);
+};
+
+// Planet or moon: a sphere of `radius` (sea level) with a height map over it (continents, ocean
+// floor, ridged mountains, hills, river valleys), 3D caves, ore veins that get richer with depth,
+// and an unmineable mantle 1.5% of the radius below sea level. Same uniform density gradient as
+// asteroids. Moons: no oceans or snow, craters instead of ridges.
+class PlanetField : public DensityField {
+public:
+    float radius;                 // sea level (m)
+    float mantleRadius;           // edits stop below this
+    bool moon;
+    float minElevation, maxElevation; // the surface stays inside [radius + min, radius + max]
+    SimplexNoise continents, ridges, hills, valleys, detail, cavesA, cavesB, veins, climate;
+
+    PlanetField(unsigned int seed, float radius, bool moon);
+    // Surface height above sea level along a unit direction; footprint > 0 leaves out detail finer
+    // than samples that far apart (see SimplexNoise::fractalLimited).
+    float elevation(Vector3 dir, float footprint = 0.0f) const;
+    float baseDensity(Vector3 p) const override { return baseDensityLod(p, 0.0f); }
+    float baseDensityLod(Vector3 p, float footprint) const override;
+    VoxelMaterial material(Vector3 p, float base) const override { return materialLod(p, base, 0.0f); }
+    VoxelMaterial materialLod(Vector3 p, float base, float footprint) const override;
+    Vector3 fallbackUp(Vector3 p) const override;
+    bool editable(Vector3 p) const override;
+    float maxRadius() const override { return radius + maxElevation; }
 };
 
 // Open-world terrain: +Y up, rolling hills and mountains from a heightmap, carved by 3D cave
@@ -117,6 +154,7 @@ public:
     float baseDensity(Vector3 p) const override;
     VoxelMaterial material(Vector3 p, float base) const override;
     Vector3 fallbackUp(Vector3) const override { return { 0, 1, 0 }; }
+    float maxRadius() const override { return 1e9f; } // unbounded horizontally
 };
 
 // CPU-side result of meshing one chunk (produced on a worker thread).

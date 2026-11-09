@@ -391,10 +391,10 @@ bool RaycastTerrain(Scene& world, Ray ray, float maxDistance, TerrainHit& hit) {
         if (localLen <= 0.0f) continue;
         const Vector3 d = Vector3Scale(Vector3Subtract(farPoint, o), 1.0f / localLen);
 
-        // Bounding sphere (radius + room for added material).
+        // Bounding sphere (highest terrain + room for added material).
         float t = 0.0f, tEnd = localLen;
         if (!p->flat) {
-            const float R = p->radius + 16.0f;
+            const float R = p->field->maxRadius() + 16.0f;
             const float b = Vector3DotProduct(o, d);
             const float c = Vector3DotProduct(o, o) - R * R;
             const float disc = b * b - c;
@@ -403,11 +403,15 @@ bool RaycastTerrain(Scene& world, Ray ray, float maxDistance, TerrainHit& hit) {
             tEnd = std::min(localLen, -b + sqrtf(disc));
         }
 
-        const float step = 0.5f;
+        // Every field has the same density gradient (DENSITY_GRADIENT per metre across a surface), so
+        // the density says roughly how far the surface is: step half that gap (0.5..64 m), which
+        // crosses kilometres of air above a planet in a few dozen samples instead of thousands.
         float prevT = t;
-        if (p->densityAt(Vector3Add(o, Vector3Scale(d, t))) >= ISO_LEVEL) continue; // starting inside rock
-        for (; t <= tEnd; t += step) {
-            if (p->densityAt(Vector3Add(o, Vector3Scale(d, t))) >= ISO_LEVEL) {
+        float dens = p->densityAt(Vector3Add(o, Vector3Scale(d, t)));
+        if (dens >= ISO_LEVEL) continue; // starting inside rock
+        for (; t <= tEnd; prevT = t, t += std::clamp((ISO_LEVEL - dens) / DENSITY_GRADIENT * 0.5f, 0.5f, 64.0f)) {
+            dens = p->densityAt(Vector3Add(o, Vector3Scale(d, t)));
+            if (dens >= ISO_LEVEL) {
                 float lo = prevT, hi = t; // refine the crossing
                 for (int i = 0; i < 8; ++i) {
                     const float mid = 0.5f * (lo + hi);
@@ -428,7 +432,6 @@ bool RaycastTerrain(Scene& world, Ray ray, float maxDistance, TerrainHit& hit) {
                 }
                 break;
             }
-            prevT = t;
         }
     }
     return found;
@@ -576,6 +579,15 @@ void generateWorld(Scene& world) {
     auto add = [&](const BodyDef& d, BodyKind kind, const std::string& name, DVec3 pos, float radius, unsigned int seed, float spin) {
         auto p = std::make_unique<Planetoid>(name, pos, Vector3{ 0, 0, 0 }, 1.0f, seed, radius);
         p->kind = kind;
+        if (kind == BodyKind::Planet || kind == BodyKind::Moon) {
+            // Planet terrain: radius is sea level, where gravity's reference surface sits too; the
+            // LOD root must also cover the highest mountains.
+            auto field = std::make_shared<PlanetField>(seed, radius, kind == BodyKind::Moon);
+            p->gravityRadius = radius;
+            p->rootLevel = 0;
+            while ((float)(CHUNK_SIZE << p->rootLevel) < field->maxRadius() + 24.0f) p->rootLevel++;
+            p->field = field;
+        }
         p->spin = { 0.0f, spin, 0.0f };
         p->surfaceGravity = d.gravity >= 0.0f ? d.gravity : AutoSurfaceGravity(kind, radius);
         p->parent = &world.rootObject;
@@ -611,8 +623,6 @@ void generateWorld(Scene& world) {
                 pos = parent->worldPos + DVec3(cos(a) * r, 0.0, sin(a) * r);
             }
         }
-        if ((d.kind == BodyKind::Planet || d.kind == BodyKind::Moon) && d.radius > 2000.0f)
-            logger.logf("[Bodies] %s: planet terrain arrives in milestone 1 step 4; using asteroid terrain for now\n", d.name.c_str());
         add(d, d.kind, d.name, pos, d.radius, d.hasSeed ? d.seed : drawnSeed, d.spinDegPerSec);
     }
     world.syncRenderPositions();

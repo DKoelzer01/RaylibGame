@@ -1,6 +1,7 @@
 #include <raylib.h>
 #include <string>
 #include <vector>
+#include <random>
 #include "mainmenu.h"
 #include "world.h"
 #include "scene.h"
@@ -61,6 +62,7 @@ int main(int argc, char** argv)
     int parkPhase = 0;
     bool benchGravity = false;     // --test-gravity: gravity field checks, ship drop and hover
     bool benchPrecision = false;   // --test-precision: float vs double placement error on body 0 (use a large body)
+    bool benchMantle = false;      // --test-mantle: planet terrain checks on body 0 (height band, mantle, ore, caves)
     int precisionPhase = 0;
     double precisionStart = 0.0;
     double gravStart = -1.0;
@@ -106,6 +108,7 @@ int main(int argc, char** argv)
         if (std::string(argv[i]) == "--test-park") benchPark = true;
         if (std::string(argv[i]) == "--test-gravity") benchGravity = true;
         if (std::string(argv[i]) == "--test-precision") benchPrecision = true;
+        if (std::string(argv[i]) == "--test-mantle") benchMantle = true;
         if (std::string(argv[i]) == "--sun" && i + 3 < argc) { sunOverride = true; sunArg = Vector3Normalize({ (float)atof(argv[i + 1]), (float)atof(argv[i + 2]), (float)atof(argv[i + 3]) }); }
         if (std::string(argv[i]) == "--look-down") lookDown = true;
         if (std::string(argv[i]) == "--fps" && i + 1 < argc) benchFps = atoi(argv[i + 1]);
@@ -270,6 +273,78 @@ int main(int argc, char** argv)
                             benchOrbitSeconds = 0.0;
                         }
                     }
+                } else if (benchMantle && WorldIdle()) {
+                    // Planet terrain checks on body 0 (run with --bodies resources/data/bodies_planet.txt).
+                    Planetoid* p = dynamic_cast<Planetoid*>(world.objects[0].get());
+                    const PlanetField* f = dynamic_cast<const PlanetField*>(p->field.get());
+                    if (!f) {
+                        printf("bench: --test-mantle needs a planet as the first body (e.g. --bodies resources/data/bodies_planet.txt)\n");
+                    } else {
+                        std::mt19937 rng(1234);
+                        std::normal_distribution<float> gauss(0.0f, 1.0f);
+                        std::uniform_real_distribution<float> unit(0.0f, 1.0f);
+                        auto randomDir = [&]() { return Vector3Normalize({ gauss(rng), gauss(rng), gauss(rng) }); };
+                        // 1. Height band: march down each direction to the first solid point (gap-sized steps,
+                        // like the raycast), bisect, and compare with the field's stated bounds.
+                        const int N = 4000;
+                        float lo = 1e9f, hi = -1e9f;
+                        int ocean = 0, outside = 0;
+                        for (int i = 0; i < N; ++i) {
+                            const Vector3 dir = randomDir();
+                            float r = f->maxRadius() + 10.0f, dens = f->baseDensity(Vector3Scale(dir, r)), prev = r;
+                            while (dens < ISO_LEVEL && r > f->mantleRadius) {
+                                prev = r;
+                                r -= std::clamp((ISO_LEVEL - dens) / DENSITY_GRADIENT * 0.5f, 0.25f, 64.0f);
+                                dens = f->baseDensity(Vector3Scale(dir, r));
+                            }
+                            float a = r, b = prev; // a solid, b air
+                            for (int k = 0; k < 20; ++k) {
+                                const float m = 0.5f * (a + b);
+                                if (f->baseDensity(Vector3Scale(dir, m)) >= ISO_LEVEL) a = m; else b = m;
+                            }
+                            const float e = a - f->radius;
+                            lo = std::min(lo, e); hi = std::max(hi, e);
+                            if (e < 0.0f) ++ocean;
+                            if (e < f->minElevation - 3.0f || e > f->maxElevation + 3.0f) ++outside;
+                        }
+                        printf("bench: planet %s: %d surface samples, elevation %.0f..%.0f m (band %.0f..%.0f), below sea level %.0f%%, outside band %d\n",
+                               p->name.c_str(), N, lo, hi, f->minElevation, f->maxElevation, 100.0f * ocean / N, outside);
+                        // 2. Mantle: dig just above it; the crust must change and the mantle must not.
+                        const Vector3 dir = randomDir();
+                        const Vector3 inMantle = Vector3Scale(dir, f->mantleRadius - 4.0f), inCrust = Vector3Scale(dir, f->mantleRadius + 12.0f);
+                        const float mantleBefore = p->densityAt(inMantle), crustBefore = p->densityAt(inCrust);
+                        const auto savedEdits = p->edits;
+                        ApplyTerrainEdit(*p, TerrainEdit{ Vector3Scale(dir, f->mantleRadius + 4.0f), 12.0f, -20.0f });
+                        const float mantleAfter = p->densityAt(inMantle), crustAfter = p->densityAt(inCrust);
+                        p->edits = savedEdits; // leave the world as it was
+                        const bool mantleOk = mantleAfter == mantleBefore && crustAfter < crustBefore - 1.0f && !f->editable(inMantle) && f->editable(inCrust);
+                        printf("bench: mantle %.0f m below sea level: dig there changed the crust %.2f -> %.2f and the mantle %.2f -> %.2f: %s\n",
+                               f->radius - f->mantleRadius, crustBefore, crustAfter, mantleBefore, mantleAfter, mantleOk ? "refused" : "NOT REFUSED");
+                        // 3. Ore by depth band, and caves.
+                        const float bands[4] = { 8.0f, 150.0f, 500.0f, f->radius - f->mantleRadius - 20.0f };
+                        float orePct[3];
+                        int caveSamples = 0, solidSamples = 0;
+                        for (int band = 0; band < 3; ++band) {
+                            int ore = 0, solid = 0;
+                            for (int i = 0; i < 20000; ++i) {
+                                const Vector3 d = randomDir();
+                                const float depth = bands[band] + unit(rng) * (bands[band + 1] - bands[band]);
+                                const Vector3 pt = Vector3Scale(d, f->radius + f->elevation(d) - depth);
+                                if (!f->editable(pt)) continue; // below the mantle (deep ocean floors)
+                                const float base = f->baseDensity(pt);
+                                if (base < ISO_LEVEL) { ++caveSamples; continue; }
+                                ++solid; ++solidSamples;
+                                if (f->material(pt, base) == VoxelMaterial::Ore) ++ore;
+                            }
+                            orePct[band] = 100.0f * ore / std::max(1, solid);
+                        }
+                        const float cavePct = 100.0f * caveSamples / std::max(1, caveSamples + solidSamples);
+                        const bool oreOk = orePct[0] > 0.0f && orePct[0] < orePct[1] && orePct[1] < orePct[2];
+                        printf("bench: ore by depth: 8-150 m %.1f%%, 150-500 m %.1f%%, 500 m-mantle %.1f%%; caves %.1f%% of underground: %s\n",
+                               orePct[0], orePct[1], orePct[2], cavePct, oreOk && cavePct > 0.0f ? "ok" : "BAD");
+                        printf("bench: planet terrain %s\n", outside == 0 && mantleOk && oreOk && cavePct > 0.0f ? "PASS" : "FAIL");
+                    }
+                    benchMantle = false;
                 } else if (benchPrecision && WorldIdle()) {
                     // Float vs double placement on body 0, standing on its surface (run it with a large
                     // body, e.g. --bodies with a 60 km planet): chunk translations, texture coordinates
@@ -553,7 +628,7 @@ int main(int argc, char** argv)
                                dist, benchWalkSeconds, 100.0 * walkGroundedFrames / std::max(1, walkFrames), walkMinDensity, walkMaxDensity, ISO_LEVEL, alt);
                         benchWalkSeconds = 0.0;
                     }
-                } else if ((WorldIdle() && benchDigStrokes == 0 && !benchSaveLoad && benchWalkSeconds <= 0.0 && benchMineStrokes == 0 && minePhase != 2 && benchFlySeconds <= 0.0 && !benchSuffocate && benchOrbitSeconds <= 0.0 && !benchRide && !benchPark && !benchGravity && !benchPrecision) || GetTime() > 180.0) {
+                } else if ((WorldIdle() && benchDigStrokes == 0 && !benchSaveLoad && benchWalkSeconds <= 0.0 && benchMineStrokes == 0 && minePhase != 2 && benchFlySeconds <= 0.0 && !benchSuffocate && benchOrbitSeconds <= 0.0 && !benchRide && !benchPark && !benchGravity && !benchPrecision && !benchMantle) || GetTime() > 180.0) {
                     benchStart = GetTime();
                     printf("bench: world ready after %.2f s (%d chunks, avg build %.2f ms, %d worker threads)\n",
                         GetWorldStats().lastGenerationSeconds, GetWorldStats().chunks, GetWorldStats().avgBuildMs, GetWorldStats().workerThreads);
