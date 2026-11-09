@@ -6,7 +6,8 @@
 #         position=x,y,z                world position (m), or
 #         orbit=parent,altitude,phase   altitude (m) above a body defined above, phase in degrees
 #         spin=deg/s  or  day=seconds   rotation about the body's Y axis (day < 0: retrograde)
-#         gravity=auto or m/s^2         auto: asteroids 3 + 0.03 R (max 9.81), planets/moons 9.81 R / 100 km
+#         gravity=auto or m/s^2         at the mean surface; auto: asteroids 3 + 0.03 R (max 9.81), planets/moons 9.81 R / 100 km
+#                                       (gravity is summed over every body: inverse-square outside, linear inside)
 #         seed=N                        terrain seed (default: drawn from the world seed)
 # ring    count=N  size=lo,hi (radius multipliers)  extent=m  flatten=f (y spread)  maxspin=deg/s
 #

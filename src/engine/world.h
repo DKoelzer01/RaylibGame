@@ -78,6 +78,10 @@ void ApplyTerrainEdit(Planetoid& planetoid, const TerrainEdit& edit); // local-s
 // Physics helpers (render-space points). Distance is approximate: (ISO - density) / |gradient|.
 bool TerrainSurfaceDistance(Planetoid& p, Vector3 renderPoint, float& dist, Vector3& outwardNormal);
 Planetoid* NearestPlanetoid(Scene& world, Vector3 renderPoint); // by distance to the surface radius
+// Gravity (m/s^2, render space) summed over every body, and one body's share of it: inverse-square
+// outside a body, linear to zero at its centre inside, surfaceGravity at its radius.
+Vector3 GravityAt(Scene& world, Vector3 renderPoint);
+Vector3 BodyGravityAt(const Planetoid& body, Vector3 renderPoint);
 
 bool SaveWorld(Scene& world);          // saves/world.sav
 // Game-specific save data. The load hook must read everything up to and including "end_extras".

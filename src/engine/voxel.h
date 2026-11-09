@@ -91,6 +91,7 @@ public:
     SimplexNoise shape;    // overall form
     SimplexNoise detail;   // ore veins / ice patches
     float radius = 50.0f;  // the surface never reaches past this distance from the centre
+    static constexpr float MEAN_SURFACE = 0.72f; // mean surface radius as a fraction of `radius`
     float iceAmount = 0.0f;// 0..1: how much of the body is ice
 
     PlanetoidField(unsigned int seed, float radius);

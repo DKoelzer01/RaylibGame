@@ -44,7 +44,8 @@ public:
     const uint64_t id;                                   // stable handle for async results
     unsigned int seed;
     BodyKind kind = BodyKind::Asteroid;
-    float surfaceGravity = 9.81f;                        // m/s^2 at radius (inverse-square outside)
+    float surfaceGravity = 9.81f;                        // m/s^2 at gravityRadius
+    float gravityRadius = 0.0f;                          // mean surface: inverse-square outside, linear inside
     float radius;
     Vector3 spin = { 0, 0, 0 };                          // degrees per second about X/Y/Z
     std::shared_ptr<const DensityField> field;           // immutable, shared with workers

@@ -49,7 +49,7 @@ float PlanetoidField::baseDensity(Vector3 p) const {
     // the earlier (noise+1)*(1-d/R) field ramped ~0.02/unit and left mushy near-iso regions.
     const float d = sqrtf(p.x * p.x + p.y * p.y + p.z * p.z);
     const float displacement = radius * 0.25f * shape.fractal(4, p.x, p.y, p.z); // sampled in local space
-    return ISO_LEVEL + DENSITY_GRADIENT * (radius * 0.72f + displacement - d);
+    return ISO_LEVEL + DENSITY_GRADIENT * (radius * MEAN_SURFACE + displacement - d);
 }
 
 float DensityField::density(Vector3 p, const TerrainEdit* edits, size_t editCount) const {

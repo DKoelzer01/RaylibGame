@@ -13,7 +13,7 @@
 //          orbit=parent,altitude,phaseDeg   placed `altitude` above the parent's surface, at
 //                            `phaseDeg` around its equator (motion arrives in milestone 1 step 6)
 //          spin=deg/s  |  day=seconds        rotation about the body's Y axis (day<0: retrograde)
-//          gravity=auto | m/s^2              auto: asteroids 3 + 0.03 R (max 9.81),
+//          gravity=auto | m/s^2              felt at the mean surface (asteroids: 0.72 R); auto: asteroids 3 + 0.03 R (max 9.81),
 //                                            planets/moons 9.81 * R / 100 km
 //          seed=N            terrain seed (default: drawn from the system seed)
 //          ring only: count=N  size=lo,hi (radius multipliers)  extent=m  flatten=f  maxspin=deg/s

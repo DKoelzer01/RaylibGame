@@ -22,6 +22,7 @@ struct Ship {
     bool autopilot = false;                // fly to autopilotTarget (tests / assist)
     DVec3 autopilotTarget{};
     float lastImpact = 0.0f;               // hardest terrain hit this frame (reset by caller)
+    bool hovering = false;                 // flight assist is holding the ship against gravity (HUD/tests)
     // Parked on a body: carried along with its spin (see Ship::update).
     Planetoid* anchorBody = nullptr;
     uint64_t anchorId = 0;

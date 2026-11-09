@@ -56,6 +56,7 @@ Planetoid::Planetoid(std::string name, DVec3 wp, Vector3 rotation, float scale, 
     worldPos = wp;
     hasWorldPos = true;
     surfaceGravity = AutoSurfaceGravity(BodyKind::Asteroid, radius_ * scale); // generateWorld may override
+    gravityRadius = radius_ * scale * PlanetoidField::MEAN_SURFACE;         // the terrain's mean surface
     // Smallest level whose 2x2x2 root nodes (coords -1..0) cover the body plus room for added material.
     while ((float)(CHUNK_SIZE << rootLevel) < radius + 24.0f) rootLevel++;
     planetoidRegistry[id] = this;
@@ -443,6 +444,25 @@ Planetoid* NearestPlanetoid(Scene& world, Vector3 p) {
         if (d < bestDist) { bestDist = d; best = b; }
     }
     return best;
+}
+
+Vector3 BodyGravityAt(const Planetoid& b, Vector3 p) {
+    if (b.flat) return { 0.0f, -b.surfaceGravity, 0.0f }; // open-world terrain: uniform, straight down
+    const Vector3 toC = Vector3Subtract(b.position, p);
+    const float d = Vector3Length(toC);
+    if (d < 1e-4f) return { 0, 0, 0 };
+    const float R = b.gravityRadius > 0.0f ? b.gravityRadius : b.radius * b.scale;
+    // Uniform-density sphere of the body's mean surface radius: inverse-square outside, falling
+    // linearly to zero at the centre inside (continuous at R, where it equals surfaceGravity).
+    const float g = d >= R ? b.surfaceGravity * (R * R) / (d * d) : b.surfaceGravity * d / R;
+    return Vector3Scale(toC, g / d);
+}
+
+Vector3 GravityAt(Scene& world, Vector3 p) {
+    Vector3 g = { 0, 0, 0 };
+    for (auto& obj : world.objects)
+        if (const Planetoid* b = dynamic_cast<const Planetoid*>(obj.get())) g = Vector3Add(g, BodyGravityAt(*b, p));
+    return g;
 }
 
 

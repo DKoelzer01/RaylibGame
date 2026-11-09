@@ -10,7 +10,7 @@ class Scene;
 class Planetoid;
 
 // First-person character for small bodies:
-// - gravity pulls toward the nearest planetoid's centre and "up" follows it, so you can walk all
+// - gravity is summed over every body (GravityAt) and "up" follows it, so you can walk all
 //   the way around an asteroid;
 // - collision is resolved directly against the density field (two spheres: feet and head), so
 //   dug tunnels and built terrain are walkable with no separate collision mesh;
@@ -24,7 +24,7 @@ struct Player {
     bool grounded = false;
     bool flyMode = false;             // F: free-fly dev camera (no gravity/collision)
     float jetpackFuel = 1.0f;         // 0..1, recharges on the ground
-    Planetoid* nearest = nullptr;     // body whose gravity applies
+    Planetoid* nearest = nullptr;     // body we collide with (gravity comes from every body)
     float gravity = 0.0f;             // current acceleration magnitude (HUD/debug)
     bool autoWalk = false;            // tests: walk forward without input
     float gravityScale = 1.0f;        // spells/effects (e.g. featherfall)
@@ -45,7 +45,6 @@ struct Player {
 
     // Stand on the surface of `body` in direction `dir` from its centre (default: its +Y pole).
     void spawnOn(Scene& world, Planetoid& body, Vector3 dir = { 0, 1, 0 });
-    // Surface gravity of a round body of radius R (gameplay rule; summed gravity is milestone 1).
     void update(Scene& world, bool inputEnabled, float dt);
     void applyToCamera(Scene& world) const;  // camera at the eye, looking along forward
 

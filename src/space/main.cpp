@@ -59,6 +59,10 @@ int main(int argc, char** argv)
     Vector3 sunArg = { 1, 0, 0 };
     double parkStart = -1.0;
     int parkPhase = 0;
+    bool benchGravity = false;     // --test-gravity: gravity field checks, ship drop and hover
+    double gravStart = -1.0;
+    int gravPhase = 0;
+    float gravAlt0 = 0.0f, gravEnergy0 = 0.0f, gravMaxImpact = 0.0f;
     bool parkAnchored = false;
     Vector3 parkLocal0{}, parkFwd0{};
     double rideStart = -1.0;
@@ -97,6 +101,7 @@ int main(int argc, char** argv)
         if (std::string(argv[i]) == "--load") loadSaveAtStart = true;
         if (std::string(argv[i]) == "--ride-spin" && i + 1 < argc) rideSpin = (float)atof(argv[i + 1]);
         if (std::string(argv[i]) == "--test-park") benchPark = true;
+        if (std::string(argv[i]) == "--test-gravity") benchGravity = true;
         if (std::string(argv[i]) == "--sun" && i + 3 < argc) { sunOverride = true; sunArg = Vector3Normalize({ (float)atof(argv[i + 1]), (float)atof(argv[i + 2]), (float)atof(argv[i + 3]) }); }
         if (std::string(argv[i]) == "--look-down") lookDown = true;
         if (std::string(argv[i]) == "--fps" && i + 1 < argc) benchFps = atoi(argv[i + 1]);
@@ -242,7 +247,7 @@ int main(int argc, char** argv)
                     const Vector3 feet = (player.position - world.renderOrigin).toFloat();
                     if (orbitStart < 0.0) {
                         const float d = 1.35f * R;
-                        const float g = p->surfaceGravity * (R * R) / (d * d);
+                        const float g = Vector3Length(BodyGravityAt(*p, Vector3Add(p->position, { 0.0f, d, 0.0f })));
                         player.flyMode = false;
                         player.grounded = false;
                         player.position = world.renderOrigin + Vector3Add(p->position, { 0.0f, d, 0.0f });
@@ -260,6 +265,89 @@ int main(int argc, char** argv)
                                    orbitCrashed ? "CRASHED into the surface" : (orbitMax > 3.0f * R ? "ESCAPED" : "stable"));
                             benchOrbitSeconds = 0.0;
                         }
+                    }
+                } else if (benchGravity && WorldIdle()) {
+                    // Scripted gravity checks: the field itself (surface value, half at half depth, a
+                    // quarter at 2R, no jumps between bodies), then an unpiloted ship dropped from 25 m
+                    // must land and park, and a piloted ship must hover in place.
+                    Planetoid* p = dynamic_cast<Planetoid*>(world.objects[0].get());
+                    const double t = gravStart < 0.0 ? 0.0 : GetTime() - gravStart;
+                    // Height of the hull centre above the ground straight "down" (along gravity).
+                    auto altitude = [&]() {
+                        const Vector3 sp = ship.renderPos(world);
+                        TerrainHit hit;
+                        const Vector3 down = Vector3Normalize(GravityAt(world, sp));
+                        return RaycastTerrain(world, Ray{ sp, down }, 500.0f, hit) ? hit.distance : -1.0f;
+                    };
+                    auto placeAbove = [&](float height) {
+                        TerrainHit hit;
+                        const float R = p->radius * p->scale;
+                        if (RaycastTerrain(world, Ray{ Vector3Add(p->position, { 0, R + 80.0f, 0 }), { 0, -1, 0 } }, R + 100.0f, hit)) {
+                            ship.parkNear(world, hit.point, hit.normal);
+                            ship.position = world.renderOrigin + Vector3Add(hit.point, Vector3Scale(hit.normal, ship.hullRadius + height));
+                        }
+                        ship.velocity = { 0, 0, 0 };
+                    };
+                    if (gravStart < 0.0) {
+                        const float R = p->gravityRadius, g0 = p->surfaceGravity; // gravity's reference radius (mean surface)
+                        const Vector3 c = p->position;
+                        const float gs = Vector3Length(BodyGravityAt(*p, Vector3Add(c, { R, 0, 0 })));
+                        const float gh = Vector3Length(BodyGravityAt(*p, Vector3Add(c, { 0, 0.5f * R, 0 }))) / g0;
+                        const float g2 = Vector3Length(BodyGravityAt(*p, Vector3Add(c, { 0, 0, -2.0f * R }))) / g0;
+                        bool pass = fabsf(gs - g0) < 1e-3f && fabsf(gh - 0.5f) < 1e-3f && fabsf(g2 - 0.25f) < 1e-3f;
+                        printf("bench: gravity field: surface %.3f m/s^2 (body %.3f), half depth %.3f g0, 2R %.3f g0\n", gs, g0, gh, g2);
+                        // Continuity: walk the line to the nearest other body; the summed field may change
+                        // no faster than its steepest gradient (2 g0 / R, just outside a surface) allows.
+                        Planetoid* other = nullptr;
+                        for (size_t i = 1; i < world.objects.size(); ++i)
+                            if (auto* q = dynamic_cast<Planetoid*>(world.objects[i].get()))
+                                if (!other || Vector3Distance(q->position, c) < Vector3Distance(other->position, c)) other = q;
+                        if (other) {
+                            const int N = 20000;
+                            const float len = Vector3Distance(c, other->position), step = len / N;
+                            float maxGrad = 0.0f;
+                            for (auto& obj : world.objects)
+                                if (auto* q = dynamic_cast<Planetoid*>(obj.get())) maxGrad = std::max(maxGrad, 2.0f * q->surfaceGravity / q->gravityRadius);
+                            float maxJump = 0.0f, weakest = 1e9f, weakestAt = 0.0f;
+                            Vector3 prev = GravityAt(world, c);
+                            for (int i = 1; i <= N; ++i) {
+                                const Vector3 g = GravityAt(world, Vector3Lerp(c, other->position, (float)i / N));
+                                maxJump = std::max(maxJump, Vector3Distance(g, prev));
+                                if (Vector3Length(g) < weakest) { weakest = Vector3Length(g); weakestAt = (float)i / N; }
+                                prev = g;
+                            }
+                            const float bound = 1.1f * maxGrad * step;
+                            pass = pass && maxJump <= bound;
+                            printf("bench: gravity continuity %s -> %s (%.0f m): max change %.4f m/s^2 per %.3f m step (bound %.4f), weakest %.4f m/s^2 at %.2f of the way\n",
+                                   p->name.c_str(), other->name.c_str(), len, maxJump, step, bound, weakest, weakestAt);
+                        }
+                        printf("bench: gravity field %s\n", pass ? "PASS" : "FAIL");
+                        // Phase 1: drop an unpiloted ship from 25 m.
+                        ship.piloted = false;
+                        player.flyMode = true; // keep the player out of the way (fly mode: no physics)
+                        placeAbove(25.0f);
+                        gravAlt0 = altitude();
+                        gravMaxImpact = 0.0f;
+                        gravPhase = 1;
+                        gravStart = GetTime();
+                    } else if (gravPhase == 1) {
+                        gravMaxImpact = std::max(gravMaxImpact, ship.lastImpact);
+                        if (t > 10.0) {
+                            printf("bench: ship drop from %.1f m (g %.2f): hull centre now %.2f m above ground, parked %s, impact %.1f m/s\n",
+                                   gravAlt0, Vector3Length(GravityAt(world, ship.renderPos(world))), altitude(), ship.anchorBody ? "yes" : "NO", gravMaxImpact);
+                            // Phase 2: hover a piloted ship 25 m up with no input.
+                            placeAbove(25.0f);
+                            ship.piloted = true;
+                            gravAlt0 = altitude();
+                            gravEnergy0 = ship.energy;
+                            gravPhase = 2;
+                            gravStart = GetTime();
+                        }
+                    } else if (gravPhase == 2 && t > 5.0) {
+                        printf("bench: ship hover 5 s at %.1f m: altitude change %+.2f m, energy %.1f -> %.1f (hovering %s)\n",
+                               gravAlt0, altitude() - gravAlt0, gravEnergy0, ship.energy, ship.hovering ? "yes" : "NO");
+                        ship.piloted = false;
+                        benchGravity = false;
                     }
                 } else if (benchPark && WorldIdle()) {
                     // Scripted park: land the ship on the equator of a body spinning 10 deg/s; it must stay put
@@ -414,7 +502,7 @@ int main(int argc, char** argv)
                                dist, benchWalkSeconds, 100.0 * walkGroundedFrames / std::max(1, walkFrames), walkMinDensity, walkMaxDensity, ISO_LEVEL, alt);
                         benchWalkSeconds = 0.0;
                     }
-                } else if ((WorldIdle() && benchDigStrokes == 0 && !benchSaveLoad && benchWalkSeconds <= 0.0 && benchMineStrokes == 0 && minePhase != 2 && benchFlySeconds <= 0.0 && !benchSuffocate && benchOrbitSeconds <= 0.0 && !benchRide && !benchPark) || GetTime() > 180.0) {
+                } else if ((WorldIdle() && benchDigStrokes == 0 && !benchSaveLoad && benchWalkSeconds <= 0.0 && benchMineStrokes == 0 && minePhase != 2 && benchFlySeconds <= 0.0 && !benchSuffocate && benchOrbitSeconds <= 0.0 && !benchRide && !benchPark && !benchGravity) || GetTime() > 180.0) {
                     benchStart = GetTime();
                     printf("bench: world ready after %.2f s (%d chunks, avg build %.2f ms, %d worker threads)\n",
                         GetWorldStats().lastGenerationSeconds, GetWorldStats().chunks, GetWorldStats().avgBuildMs, GetWorldStats().workerThreads);

@@ -73,15 +73,29 @@ void Player::update(Scene& world, bool inputEnabled, float dt) {
     Vector3 feet = (position - world.renderOrigin).toFloat();
 
     nearest = NearestPlanetoid(world, feet);
-    if (nearest) {
-        const Vector3 newUp = nearest->flat ? Vector3{ 0, 1, 0 } : Vector3Normalize(Vector3Subtract(feet, nearest->position));
-        // Carry the view along as "up" changes so walking around the body feels continuous. A zero
-        // "up" (a save without one) has nothing to carry from: take the new up directly.
-        if (Vector3LengthSqr(up) < 0.25f) up = newUp;
+    // "Up" is against the summed gravity. Where gravity is too weak to define it (deep space, the
+    // balance point between bodies) it is left alone so the view doesn't spin; in the air it turns
+    // at most 2 rad/s. On the ground it follows exactly, so walking around a body stays continuous.
+    {
+        const Vector3 g = GravityAt(world, feet);
+        const float gl = Vector3Length(g);
+        Vector3 newUp = up;
+        if (nearest && nearest->flat) newUp = { 0, 1, 0 };
+        else if (gl > 0.05f) newUp = Vector3Scale(g, -1.0f / gl);
+        if (Vector3LengthSqr(up) < 0.25f) {
+            // A zero "up" (a save without one) has nothing to carry from: take the new up directly.
+            up = Vector3LengthSqr(newUp) > 0.25f ? newUp : Vector3{ 0, 1, 0 };
+            newUp = up;
+        }
+        if (!grounded) {
+            const float angle = acosf(std::clamp(Vector3DotProduct(up, newUp), -1.0f, 1.0f));
+            const float maxTurn = 2.0f * dt;
+            if (angle > maxTurn)
+                newUp = Vector3Normalize(Vector3RotateByQuaternion(up, QuaternionSlerp(QuaternionIdentity(), QuaternionFromVector3ToVector3(up, newUp), maxTurn / angle)));
+        }
+        // Carry the view along as "up" changes so walking around the body feels continuous.
         forward = Vector3Normalize(Vector3RotateByQuaternion(forward, QuaternionFromVector3ToVector3(up, newUp)));
         up = newUp;
-    } else if (Vector3LengthSqr(up) < 0.25f) {
-        up = { 0, 1, 0 };
     }
 
     Vector3 wish = { 0, 0, 0 };
@@ -135,23 +149,10 @@ void Player::stepPhysics(Scene& world, float dt, Vector3 wish, bool jump, bool j
 
     const bool wasGrounded = grounded;
 
-    // Gravity: inverse-square toward the nearest body, all the way out (no cutoff), so orbits
-    // work. (Summing every body's pull is milestone 1 in the design doc.)
-    Vector3 gdir = { 0, 0, 0 };
-    gravity = 0.0f;
-    if (nearest) {
-        const Vector3 toC = Vector3Subtract(nearest->position, feet);
-        const float dist = Vector3Length(toC);
-        const float R = nearest->radius * nearest->scale;
-        if (nearest->flat) {
-            gdir = { 0, -1, 0 };
-            gravity = 9.81f; // open world: ordinary gravity
-        } else if (dist > 1e-3f) {
-            gdir = Vector3Scale(toC, 1.0f / dist);
-            const float g0 = nearest->surfaceGravity;
-            gravity = g0 * std::min(1.0f, (R * R) / (dist * dist));
-        }
-    }
+    // Gravity summed over every body (inverse-square, no cutoff, so orbits work).
+    const Vector3 gvec = GravityAt(world, feet);
+    gravity = Vector3Length(gvec);
+    const Vector3 gdir = gravity > 1e-6f ? Vector3Scale(gvec, 1.0f / gravity) : Vector3{ 0, 0, 0 };
 
     const float vUp = Vector3DotProduct(velocity, up);
     if (grounded) {
