@@ -79,14 +79,18 @@ void DebugUI_Draw(Scene& world) {
         // --- Camera ---
         if (ImGui::CollapsingHeader("Camera", ImGuiTreeNodeFlags_DefaultOpen)) {
             ImGui::DragFloat3("Position", &world.camera.position.x, 0.5f);
-            ImGui::SliderFloat("Move speed", &cameraMoveSpeed, 1.0f, 500.0f, "%.0f u/s", ImGuiSliderFlags_Logarithmic);
+            ImGui::SliderFloat("Move speed", &cameraMoveSpeed, 1.0f, 10000.0f, "%.0f u/s", ImGuiSliderFlags_Logarithmic);
+            const DVec3 cw = world.cameraWorld();
+            ImGui::Text("World position: %.1f %.1f %.1f", cw.x, cw.y, cw.z);
+            ImGui::Text("Render origin:  %.1f %.1f %.1f", world.renderOrigin.x, world.renderOrigin.y, world.renderOrigin.z);
             ImGui::SliderFloat("FOV", &world.camera.fovy, 20.0f, 120.0f, "%.0f deg");
         }
 
         // --- Chunk streaming ---
         if (ImGui::CollapsingHeader("Chunk streaming", ImGuiTreeNodeFlags_DefaultOpen)) {
             const WorldStats& s = GetWorldStats();
-            ImGui::Text("Chunks with mesh: %d   edits: %d", s.chunks, s.edits);
+            ImGui::Text("Meshes drawn: %d   LOD nodes: %d   edits: %d", s.chunks, s.nodes, s.edits);
+            ImGui::SliderFloat("LOD factor", &lodSettings.lodFactor, 0.5f, 6.0f, "%.2f");
             ImGui::Text("Jobs queued: %d   running: %d / %d threads", s.queuedJobs, s.runningJobs, s.workerThreads);
             ImGui::Text("Uploads: %d pending, %d last frame", s.pendingUploads, s.uploadsLastFrame);
             ImGui::Text("Avg chunk build: %.2f ms   last world load: %.2f s", s.avgBuildMs, s.lastGenerationSeconds);
@@ -109,7 +113,9 @@ void DebugUI_Draw(Scene& world) {
             ImGui::Text("Last seed used: %u", worldGen.lastSeed);
             ImGui::SameLine();
             if (ImGui::SmallButton("Reuse")) worldGen.seed = worldGen.lastSeed;
-            ImGui::SliderInt("Planetoids", &worldGen.planetoidCount, 1, 8);
+            ImGui::SliderInt("Planetoids", &worldGen.planetoidCount, 1, 32);
+            ImGui::SliderFloat("System radius", &worldGen.systemRadius, 500.0f, 50000.0f, "%.0f", ImGuiSliderFlags_Logarithmic);
+            ImGui::SliderFloat("Max spin (deg/s)", &worldGen.maxSpinDegPerSec, 0.0f, 20.0f, "%.1f");
             ImGui::SliderInt("Planetoid size", &worldGen.planetoidSize, 16, 250);
             ImGui::TextDisabled("Chunks build on worker threads, nearest first.");
             ImGui::DragFloat3("First position", &worldGen.firstPosition.x, 1.0f);

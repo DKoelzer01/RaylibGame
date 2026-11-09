@@ -41,6 +41,12 @@ Shaders in `resources/` hot-reload when saved.
 - Chunks (32^3 cells) are built on a worker pool (`src/jobsystem.*`): sample density, marching cubes,
   normals from the density gradient, material weights in vertex colours. The main thread only
   uploads finished meshes, time-boxed per frame. Edits re-mesh just the touched chunks.
+- Each planetoid is an octree of LOD nodes (`UpdateLod` in `src/world.cpp`): a node at level L covers
+  32*2^L voxels with 32 cells, so near terrain is fine and far terrain costs a handful of draw calls.
+  Nodes overlap their +x/+y/+z neighbours by one cell to hide cracks between levels, and old nodes
+  stay on screen until their replacements are built (no holes while moving).
+- World positions are doubles (`DVec3`); the scene keeps a floating `renderOrigin` near the camera,
+  so rendering stays precise millions of units out.
 
 ## Benchmark / test mode
 ```sh
@@ -49,7 +55,8 @@ Shaders in `resources/` hot-reload when saved.
 ./game.exe --bench 2 --seed 1553044913 --cam 60 45 -50 --test-dig 10 --test-saveload
 ```
 Writes `bench.txt` and `bench.png`. `--cam` = camera offset from the first planetoid, `--count` =
-planetoid count, `--ui` opens the debug panel, `--overlay` the F3 overlay, `--nocull` disables
+planetoid count, `--system R` = belt radius, `--lod F` = LOD factor, `--first x y z` = first body position,
+`--ui` opens the debug panel, `--overlay` the F3 overlay, `--nocull` disables
 frustum culling, `--test-dig N` carves a tunnel at the crosshair, `--test-saveload` saves and reloads.
 
 ## Third-party

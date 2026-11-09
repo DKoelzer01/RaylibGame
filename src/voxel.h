@@ -27,6 +27,32 @@ namespace std {
     };
 }
 
+
+// Octree LOD node. A node at `level` covers CHUNK_SIZE * 2^level voxels per axis, meshed with
+// CHUNK_SIZE cells (stride 2^level), so every node costs about the same to build and draw.
+// (x, y, z) are in units of the node size at that level.
+struct NodeKey {
+    int level, x, y, z;
+    bool operator==(const NodeKey& o) const { return level == o.level && x == o.x && y == o.y && z == o.z; }
+    int stride() const { return 1 << level; }
+    float size() const { return (float)(CHUNK_SIZE << level); }
+    Vector3 origin() const { const float s = size(); return { x * s, y * s, z * s }; }
+    // True if this node's box contains `o`'s box (o is the same node or a descendant).
+    bool contains(const NodeKey& o) const {
+        if (o.level > level) return false;
+        const int shift = level - o.level;
+        return (o.x >> shift) == x && (o.y >> shift) == y && (o.z >> shift) == z;
+    }
+    bool overlaps(const NodeKey& o) const { return contains(o) || o.contains(*this); }
+};
+
+namespace std {
+    template<> struct hash<NodeKey> {
+        size_t operator()(const NodeKey& k) const {
+            return (size_t)((int64_t)k.x * 73856093LL ^ (int64_t)k.y * 19349663LL ^ (int64_t)k.z * 83492791LL ^ (int64_t)k.level * 2654435761LL);
+        }
+    };
+}
 // Voxel materials. Meshes carry them as per-vertex blend weights in the vertex colour
 // (R = rock, G = regolith, B = ice, A = ore), so they interpolate smoothly across triangles.
 enum class VoxelMaterial : uint8_t { Rock = 0, Regolith = 1, Ice = 2, Ore = 3, Count };
@@ -54,7 +80,7 @@ struct PlanetoidField {
     // Density including edits (the list should already be filtered to ones near p).
     float density(Vector3 p, const TerrainEdit* edits, size_t editCount) const;
     // Outward surface normal: negative density gradient, by central differences.
-    Vector3 normal(Vector3 p, const TerrainEdit* edits, size_t editCount) const;
+    Vector3 normal(Vector3 p, const TerrainEdit* edits, size_t editCount, float step = 0.5f) const;
     VoxelMaterial material(Vector3 p, float densityAtP) const;
     // Densities above this are impossible without edits; used to skip far chunks.
     float maxSurfaceRadius() const { return radius; }
@@ -66,9 +92,9 @@ private:
 // CPU-side result of meshing one chunk (produced on a worker thread).
 struct ChunkMeshData {
     uint64_t planetoidId = 0;
-    Int3 coord{};
+    NodeKey key{};
     uint32_t version = 0;
-    std::vector<float> positions;          // xyz, chunk-local
+    std::vector<float> positions;          // xyz, relative to key.origin(), in voxels
     std::vector<float> normals;            // xyz
     std::vector<unsigned char> colors;     // rgba material weights
     std::vector<unsigned short> indices;
@@ -76,7 +102,8 @@ struct ChunkMeshData {
     float buildMs = 0.0f;
 };
 
-// Samples the field for chunk `coord` (offset coord * CHUNK_SIZE) and runs marching cubes.
+// Samples the field over node `key` (CHUNK_SIZE+1 cells at the node stride, i.e. one cell of
+// overlap with the +x/+y/+z neighbours to hide cracks between LOD levels) and runs marching cubes.
 // Thread-safe: touches only its arguments.
 void BuildChunkMesh(const PlanetoidField& field, const EditList& allEdits, ChunkMeshData& out);
 

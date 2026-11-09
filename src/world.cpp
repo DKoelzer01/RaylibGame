@@ -10,10 +10,12 @@
 #include <deque>
 #include <mutex>
 #include <random>
+#include <unordered_set>
 
 const int CHUNK_SIZE = 32;
 
 WorldGenSettings worldGen;
+LodSettings lodSettings;
 
 namespace {
     std::random_device rd;
@@ -44,11 +46,15 @@ namespace {
 // Planetoid
 // ---------------------------------------------------------------------------------------------
 
-Planetoid::Planetoid(std::string name, Vector3 position, Vector3 rotation, float scale, unsigned int seed_, float radius_)
-    : Object("planetoid", name, position, rotation, WHITE, scale),
+Planetoid::Planetoid(std::string name, DVec3 wp, Vector3 rotation, float scale, unsigned int seed_, float radius_)
+    : Object("planetoid", name, wp.toFloat(), rotation, WHITE, scale),
       id(nextPlanetoidId++), seed(seed_), radius(radius_),
       field(std::make_shared<PlanetoidField>(seed_, radius_)),
       edits(std::make_shared<EditList>()) {
+    worldPos = wp;
+    hasWorldPos = true;
+    // Smallest level whose 2x2x2 root nodes (coords -1..0) cover the body plus room for added material.
+    while ((float)(CHUNK_SIZE << rootLevel) < radius + 24.0f) rootLevel++;
     planetoidRegistry[id] = this;
 }
 
@@ -70,30 +76,36 @@ void Planetoid::draw(const RenderContext& ctx) {
     if (!isActive) return;
     const Matrix t = localTransform();
     for (const auto& objPtr : children) objPtr->draw(ctx);
-    for (const auto& entry : chunks) entry.second->drawChunk(ctx, t);
+    for (Chunk* c : drawList) c->drawChunk(ctx, t);
 }
 
 void Planetoid::drawDepthOnly(const RenderContext& ctx) {
     if (!isActive) return;
     const Matrix t = localTransform();
     for (const auto& objPtr : children) objPtr->drawDepthOnly(ctx);
-    for (const auto& entry : chunks) entry.second->drawChunkDepth(ctx, t);
+    for (Chunk* c : drawList) c->drawChunkDepth(ctx, t);
 }
 
 // ---------------------------------------------------------------------------------------------
-// Chunk requests / results
+// Node requests / results
 // ---------------------------------------------------------------------------------------------
 
-static void RequestChunk(Planetoid& p, Int3 coord, float priority) {
-    const uint32_t version = ++p.requestedVersion[coord];
+static void RequestNode(Planetoid& p, const NodeKey& key, float priority) {
+    const uint32_t version = ++p.requestedVersion[key];
+    if (p.nodes.find(key) == p.nodes.end()) {
+        auto chunk = std::make_unique<Chunk>();
+        chunk->key = key;
+        chunk->parent = &p;
+        p.nodes.emplace(key, std::move(chunk));
+    }
     std::shared_ptr<const PlanetoidField> field = p.field;
     std::shared_ptr<const EditList> edits = p.edits;
     const uint64_t id = p.id;
-    Jobs().submit(priority, [field, edits, id, coord, version] {
+    Jobs().submit(priority, [field, edits, id, key, version] {
         PROFILE_SCOPE("Build chunk");
         ChunkMeshData data;
         data.planetoidId = id;
-        data.coord = coord;
+        data.key = key;
         data.version = version;
         BuildChunkMesh(*field, *edits, data);
         std::lock_guard<std::mutex> lock(resultsMutex);
@@ -101,58 +113,105 @@ static void RequestChunk(Planetoid& p, Int3 coord, float priority) {
     });
 }
 
-// Every chunk whose box can contain surface: the density is 0 beyond `radius`.
-static void RequestInitialChunks(Planetoid& p, Vector3 cameraPos) {
-    const int r = (int)ceilf(p.radius / CHUNK_SIZE) + 1;
-    int requested = 0;
-    for (int z = -r; z < r; ++z)
-        for (int y = -r; y < r; ++y)
-            for (int x = -r; x < r; ++x) {
-                const Vector3 lo = { (float)(x * CHUNK_SIZE), (float)(y * CHUNK_SIZE), (float)(z * CHUNK_SIZE) };
-                const Vector3 hi = Vector3AddValue(lo, (float)CHUNK_SIZE);
-                const Vector3 closest = { std::max(lo.x, std::min(0.0f, hi.x)), std::max(lo.y, std::min(0.0f, hi.y)), std::max(lo.z, std::min(0.0f, hi.z)) };
-                if (Vector3Length(closest) > p.radius) continue;
-                // Nearest chunks first so the area around the player appears first.
-                const Vector3 centreWorld = p.toWorld(Vector3AddValue(lo, CHUNK_SIZE * 0.5f));
-                RequestChunk(p, { x, y, z }, Vector3Distance(centreWorld, cameraPos));
-                requested++;
-            }
-    p.initialRequestDone = true;
-    logger.logf("[World] %s: requested %d chunks\n", p.name.c_str(), requested);
+static float DistanceToBox(Vector3 p, Vector3 lo, Vector3 hi) {
+    const float dx = std::max({ lo.x - p.x, 0.0f, p.x - hi.x });
+    const float dy = std::max({ lo.y - p.y, 0.0f, p.y - hi.y });
+    const float dz = std::max({ lo.z - p.z, 0.0f, p.z - hi.z });
+    return sqrtf(dx * dx + dy * dy + dz * dz);
 }
 
-static bool PipelineIdle();
+// Octree descent from the 8 root nodes: split while the camera is closer than lodFactor * node size.
+static void CollectDesired(const Planetoid& p, const NodeKey& key, Vector3 camLocal, std::vector<NodeKey>& out) {
+    const Vector3 lo = key.origin();
+    const Vector3 hi = Vector3AddValue(lo, key.size());
+    if (DistanceToBox({ 0, 0, 0 }, lo, hi) > p.radius + 24.0f) return; // no surface possible here
+    if (key.level > 0 && DistanceToBox(camLocal, lo, hi) < lodSettings.lodFactor * key.size()) {
+        for (int i = 0; i < 8; ++i)
+            CollectDesired(p, { key.level - 1, key.x * 2 + (i & 1), key.y * 2 + ((i >> 1) & 1), key.z * 2 + ((i >> 2) & 1) }, camLocal, out);
+        return;
+    }
+    out.push_back(key);
+}
+
+// Decide which nodes to build and draw. Old nodes stay on screen until every desired node that
+// overlaps them is ready, so LOD changes never open holes.
+static void UpdateLod(Planetoid& p, Vector3 cameraRender) {
+    PROFILE_FUNCTION();
+    const Vector3 camLocal = p.toLocal(cameraRender);
+    std::vector<NodeKey> desired;
+    for (int i = 0; i < 8; ++i)
+        CollectDesired(p, { p.rootLevel, -1 + (i & 1), -1 + ((i >> 1) & 1), -1 + ((i >> 2) & 1) }, camLocal, desired);
+    std::unordered_set<NodeKey> desiredSet(desired.begin(), desired.end());
+
+    for (const NodeKey& k : desired) {
+        if (p.requestedVersion.find(k) != p.requestedVersion.end()) continue;
+        const Vector3 lo = k.origin();
+        // Nearest and coarsest first: fill the view quickly, then refine.
+        const float dist = DistanceToBox(camLocal, lo, Vector3AddValue(lo, k.size()));
+        RequestNode(p, k, dist / (1.0f + k.level));
+    }
+
+    // Previously drawn nodes that are no longer desired, kept while a desired overlap is pending.
+    std::vector<Chunk*> retained;
+    for (Chunk* c : p.drawList) {
+        if (desiredSet.count(c->key)) continue;
+        for (const NodeKey& d : desired) {
+            if (d.overlaps(c->key) && !p.nodes.at(d)->ready) { retained.push_back(c); break; }
+        }
+    }
+    std::vector<Chunk*> draw = retained;
+    for (const NodeKey& d : desired) {
+        Chunk* c = p.nodes.at(d).get();
+        if (!c->ready) continue;
+        bool coveredByCoarser = false;
+        for (Chunk* r : retained) if (r->key.level > d.level && r->key.contains(d)) { coveredByCoarser = true; break; }
+        if (!coveredByCoarser) draw.push_back(c);
+    }
+    p.drawList = std::move(draw);
+
+    // Free nodes that are neither desired nor on screen (late results for them are dropped).
+    std::unordered_set<const Chunk*> onScreen(p.drawList.begin(), p.drawList.end());
+    for (auto it = p.nodes.begin(); it != p.nodes.end();) {
+        if (!desiredSet.count(it->first) && !onScreen.count(it->second.get())) {
+            p.requestedVersion.erase(it->first);
+            it = p.nodes.erase(it);
+        } else {
+            ++it;
+        }
+    }
+}
 
 static void IntegrateResult(const ChunkMeshData& r) {
     Planetoid* p = Planetoid::find(r.planetoidId);
-    if (!p) return;                                                   // planetoid was destroyed
-    auto v = p->requestedVersion.find(r.coord);
-    if (v == p->requestedVersion.end() || v->second != r.version) return; // superseded by a newer request
+    if (!p) return;                                                        // planetoid was destroyed
+    auto v = p->requestedVersion.find(r.key);
+    if (v == p->requestedVersion.end() || v->second != r.version) return;  // superseded or freed
+    auto it = p->nodes.find(r.key);
+    if (it == p->nodes.end()) return;
 
     buildMsTotal += r.buildMs;
     buildCount++;
-    if (r.overflow) logger.logf("[ERROR] Chunk (%d,%d,%d) exceeds 65535 vertices; skipped\n", r.coord.x, r.coord.y, r.coord.z);
-
-    auto it = p->chunks.find(r.coord);
-    if (r.positions.empty()) {
-        if (it != p->chunks.end()) p->chunks.erase(it); // dug away entirely
-        return;
-    }
-    if (it == p->chunks.end()) {
-        auto chunk = std::make_unique<Chunk>();
-        chunk->coord = r.coord;
-        chunk->parent = p;
-        it = p->chunks.emplace(r.coord, std::move(chunk)).first;
-    }
+    if (r.overflow) logger.logf("[ERROR] Node L%d (%d,%d,%d) exceeds 65535 vertices; skipped\n", r.key.level, r.key.x, r.key.y, r.key.z);
     it->second->setMesh(r);
+}
+
+static bool PipelineIdle() {
+    std::lock_guard<std::mutex> lock(resultsMutex);
+    return Jobs().idle() && results.empty() && pendingUploads.empty();
+}
+
+static bool AnyLodPending(Scene& world) {
+    for (auto& obj : world.objects)
+        if (auto* p = dynamic_cast<Planetoid*>(obj.get()))
+            for (auto& n : p->nodes) if (!n.second->ready) return true;
+    return false;
 }
 
 void worldUpdate(Scene& world, float uploadBudgetMs) {
     PROFILE_FUNCTION();
+    const float dt = GetFrameTime();
     for (auto& obj : world.objects) {
-        if (auto* p = dynamic_cast<Planetoid*>(obj.get())) {
-            if (!p->initialRequestDone) RequestInitialChunks(*p, world.camera.position);
-        }
+        if (auto* p = dynamic_cast<Planetoid*>(obj.get())) p->rotation = Vector3Add(p->rotation, Vector3Scale(p->spin, dt));
     }
 
     {
@@ -171,37 +230,36 @@ void worldUpdate(Scene& world, float uploadBudgetMs) {
         if (std::chrono::duration<float, std::milli>(std::chrono::steady_clock::now() - t0).count() > uploadBudgetMs) break;
     }
 
+    // LOD after uploads, so this frame's draw list already includes nodes that just finished.
+    for (auto& obj : world.objects) {
+        if (auto* p = dynamic_cast<Planetoid*>(obj.get())) UpdateLod(*p, world.camera.position);
+    }
+
     stats.queuedJobs = (int)Jobs().queued();
     stats.runningJobs = Jobs().running();
     stats.pendingUploads = (int)pendingUploads.size();
     stats.uploadsLastFrame = uploads;
     stats.workerThreads = (int)Jobs().threadCount();
     stats.avgBuildMs = buildCount ? (float)(buildMsTotal / buildCount) : 0.0f;
-    stats.chunks = 0;
-    stats.edits = 0;
+    stats.chunks = stats.nodes = stats.edits = 0;
     for (auto& obj : world.objects) {
         if (auto* p = dynamic_cast<Planetoid*>(obj.get())) {
-            stats.chunks += (int)p->chunks.size();
+            stats.nodes += (int)p->nodes.size();
+            for (Chunk* c : p->drawList) stats.chunks += c->hasMesh() ? 1 : 0;
             stats.edits += (int)p->edits->size();
         }
     }
 
-    // Initial requests were issued above, so "pipeline idle" here really means "everything built".
-    if (generationStart >= 0.0 && PipelineIdle()) {
+    if (generationStart >= 0.0 && PipelineIdle() && !AnyLodPending(world)) {
         stats.lastGenerationSeconds = (float)(GetTime() - generationStart);
-        logger.logf("[World] ready in %.2f s (%d chunks, avg build %.2f ms on %d threads)\n",
-                    stats.lastGenerationSeconds, stats.chunks, stats.avgBuildMs, stats.workerThreads);
-        TraceLog(LOG_WARNING, "World ready in %.2f s (%d chunks)", stats.lastGenerationSeconds, stats.chunks);
+        logger.logf("[World] ready in %.2f s (%d meshes drawn, %d nodes, avg build %.2f ms on %d threads)\n",
+                    stats.lastGenerationSeconds, stats.chunks, stats.nodes, stats.avgBuildMs, stats.workerThreads);
+        TraceLog(LOG_WARNING, "World ready in %.2f s (%d meshes)", stats.lastGenerationSeconds, stats.chunks);
         generationStart = -1.0;
     }
 }
 
-static bool PipelineIdle() {
-    std::lock_guard<std::mutex> lock(resultsMutex);
-    return Jobs().idle() && results.empty() && pendingUploads.empty();
-}
-
-// False until a (re)generation has fully streamed in, and while edits are being remeshed.
+// False until a (re)generation has fully streamed in, and while edits/LOD changes are building.
 bool WorldIdle() { return generationStart < 0.0 && PipelineIdle(); }
 
 const WorldStats& GetWorldStats() { return stats; }
@@ -269,16 +327,16 @@ void ApplyTerrainEdit(Planetoid& p, const TerrainEdit& edit) {
     next->push_back(edit);
     p.edits = next;
 
-    // Remesh every chunk whose samples (or normals, +1) the brush touches, including chunks that
-    // do not exist yet (adding material into empty space).
-    const float reach = edit.radius + 1.0f;
-    const int x0 = (int)floorf((edit.center.x - reach) / CHUNK_SIZE), x1 = (int)floorf((edit.center.x + reach) / CHUNK_SIZE);
-    const int y0 = (int)floorf((edit.center.y - reach) / CHUNK_SIZE), y1 = (int)floorf((edit.center.y + reach) / CHUNK_SIZE);
-    const int z0 = (int)floorf((edit.center.z - reach) / CHUNK_SIZE), z1 = (int)floorf((edit.center.z + reach) / CHUNK_SIZE);
-    for (int z = z0; z <= z1; ++z)
-        for (int y = y0; y <= y1; ++y)
-            for (int x = x0; x <= x1; ++x)
-                RequestChunk(p, { x, y, z }, -1.0f); // ahead of any background generation
+    // Rebuild every existing node (any level) whose samples or normals the brush reaches. Nodes
+    // that do not exist yet are built later with the new edit list anyway.
+    std::vector<NodeKey> touched;
+    for (auto& entry : p.nodes) {
+        const NodeKey& k = entry.first;
+        const Vector3 lo = k.origin();
+        const Vector3 hi = Vector3AddValue(lo, k.size() * (CHUNK_SIZE + 1.0f) / CHUNK_SIZE);
+        if (DistanceToBox(edit.center, lo, hi) <= edit.radius + k.stride()) touched.push_back(k);
+    }
+    for (const NodeKey& k : touched) RequestNode(p, k, -1.0f - (float)k.level * 0.01f); // ahead of background work
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -305,18 +363,22 @@ void generateWorld(Scene& world) {
     gen.seed(worldGen.lastSeed);
     logger.logf("Generating world (seed %u)...\n", worldGen.lastSeed);
 
-    std::uniform_real_distribution<float> unit(0.0f, 1.0f);
-    const float genRange = 500.0f;
+    std::uniform_real_distribution<double> unit(0.0, 1.0);
     for (int i = 0; i < worldGen.planetoidCount; ++i) {
-        Vector3 position = { (unit(gen) - 0.5f) * genRange, (unit(gen) - 0.5f) * genRange, (unit(gen) - 0.5f) * genRange };
-        if (i == 0) position = worldGen.firstPosition; // keep the first one somewhere predictable
+        // A loose "belt": random directions, distances up to systemRadius. Doubles keep these exact.
+        DVec3 pos = { (unit(gen) - 0.5) * 2.0 * worldGen.systemRadius, (unit(gen) - 0.5) * 0.4 * worldGen.systemRadius,
+                      (unit(gen) - 0.5) * 2.0 * worldGen.systemRadius };
+        if (i == 0) pos = DVec3(worldGen.firstPosition); // keep the first one somewhere predictable
         const unsigned int seed = (unsigned int)gen();
-        auto p = std::make_unique<Planetoid>("planetoid_" + std::to_string(i), position, Vector3{ 0, 0, 0 }, 1.0f,
-                                             seed, (float)worldGen.planetoidSize);
+        // Sizes vary per body around the configured size (the first keeps it exactly).
+        const float size = (i == 0) ? (float)worldGen.planetoidSize : (float)worldGen.planetoidSize * (float)(0.5 + 2.5 * unit(gen));
+        auto p = std::make_unique<Planetoid>("planetoid_" + std::to_string(i), pos, Vector3{ 0, 0, 0 }, 1.0f, seed, size);
+        p->spin = { 0.0f, (float)(unit(gen) - 0.5) * 2.0f * worldGen.maxSpinDegPerSec, 0.0f };
+        if (i == 0) p->spin = { 0, 0, 0 }; // the start body holds still (easier to test edits)
         p->parent = &world.rootObject;
         world.objects.push_back(std::move(p));
     }
-    // Chunks are requested on the next worldUpdate(), nearest to the camera first.
+    world.syncRenderPositions();
     generationStart = GetTime();
     buildMsTotal = 0.0;
     buildCount = 0;
@@ -339,16 +401,18 @@ bool SaveWorld(Scene& world) {
     if (!DirectoryExists("saves")) MakeDirectory("saves");
     FILE* f = fopen(SAVE_PATH, "w");
     if (!f) return false;
-    fprintf(f, "RAYLIBGAME_SAVE 1\n");
-    fprintf(f, "seed %u\ncount %d\nsize %d\nfirst %f %f %f\n", worldGen.lastSeed, worldGen.planetoidCount,
-            worldGen.planetoidSize, worldGen.firstPosition.x, worldGen.firstPosition.y, worldGen.firstPosition.z);
-    fprintf(f, "camera %f %f %f %f %f %f\n", world.camera.position.x, world.camera.position.y, world.camera.position.z,
-            world.camera.target.x, world.camera.target.y, world.camera.target.z);
+    const DVec3 camWorld = world.renderOrigin + world.camera.position;
+    const DVec3 tgtWorld = world.renderOrigin + world.camera.target;
+    fprintf(f, "RAYLIBGAME_SAVE 2\n");
+    fprintf(f, "seed %u\ncount %d\nsize %d\nsystem %f %f\nfirst %f %f %f\n", worldGen.lastSeed, worldGen.planetoidCount,
+            worldGen.planetoidSize, worldGen.systemRadius, worldGen.maxSpinDegPerSec,
+            worldGen.firstPosition.x, worldGen.firstPosition.y, worldGen.firstPosition.z);
+    fprintf(f, "camera %.6f %.6f %.6f %.6f %.6f %.6f\n", camWorld.x, camWorld.y, camWorld.z, tgtWorld.x, tgtWorld.y, tgtWorld.z);
     int index = 0, total = 0;
     for (auto& obj : world.objects) {
         Planetoid* p = dynamic_cast<Planetoid*>(obj.get());
         if (!p) continue;
-        fprintf(f, "planetoid %d edits %zu\n", index++, p->edits->size());
+        fprintf(f, "planetoid %d rot %f %f %f edits %zu\n", index++, p->rotation.x, p->rotation.y, p->rotation.z, p->edits->size());
         for (const TerrainEdit& e : *p->edits) {
             fprintf(f, "%f %f %f %f %f\n", e.center.x, e.center.y, e.center.z, e.radius, e.strength);
             total++;
@@ -363,36 +427,47 @@ bool LoadWorldSave(Scene& world) {
     FILE* f = fopen(SAVE_PATH, "r");
     if (!f) return false;
     int version = 0;
-    if (fscanf(f, "RAYLIBGAME_SAVE %d", &version) != 1 || version != 1) { fclose(f); return false; }
+    if (fscanf(f, "RAYLIBGAME_SAVE %d", &version) != 1 || version != 2) {
+        fclose(f);
+        logger.logf("[World] %s: unsupported save version %d\n", SAVE_PATH, version);
+        return false;
+    }
     unsigned int seed = 0;
     int count = 1, size = 50;
-    Vector3 first{}, camPos{}, camTarget{};
-    bool ok = fscanf(f, " seed %u count %d size %d first %f %f %f", &seed, &count, &size, &first.x, &first.y, &first.z) == 6;
-    ok = ok && fscanf(f, " camera %f %f %f %f %f %f", &camPos.x, &camPos.y, &camPos.z, &camTarget.x, &camTarget.y, &camTarget.z) == 6;
+    float systemRadius = 0, spin = 0;
+    Vector3 first{};
+    double c[6];
+    bool ok = fscanf(f, " seed %u count %d size %d system %f %f first %f %f %f", &seed, &count, &size, &systemRadius, &spin, &first.x, &first.y, &first.z) == 8;
+    ok = ok && fscanf(f, " camera %lf %lf %lf %lf %lf %lf", &c[0], &c[1], &c[2], &c[3], &c[4], &c[5]) == 6;
     if (!ok) { fclose(f); return false; }
 
     worldGen.seed = seed;
     worldGen.planetoidCount = count;
     worldGen.planetoidSize = size;
+    worldGen.systemRadius = systemRadius;
+    worldGen.maxSpinDegPerSec = spin;
     worldGen.firstPosition = first;
     regenerateWorld(world);
-    world.camera.position = camPos;
-    world.camera.target = camTarget;
+    world.setCameraWorld(DVec3(c[0], c[1], c[2]), DVec3(c[3], c[4], c[5]));
 
-    // Edits are attached before the first worldUpdate() requests chunks, so each chunk is built
+    // Edits are attached before the next worldUpdate() requests nodes, so each node is built
     // once with its edits already applied.
     std::vector<Planetoid*> planetoids;
     for (auto& obj : world.objects) if (auto* p = dynamic_cast<Planetoid*>(obj.get())) planetoids.push_back(p);
     int index = 0;
     size_t editCount = 0;
-    while (fscanf(f, " planetoid %d edits %zu", &index, &editCount) == 2) {
+    Vector3 rot{};
+    while (fscanf(f, " planetoid %d rot %f %f %f edits %zu", &index, &rot.x, &rot.y, &rot.z, &editCount) == 5) {
         auto list = std::make_shared<EditList>();
         for (size_t i = 0; i < editCount; ++i) {
             TerrainEdit e{};
             if (fscanf(f, " %f %f %f %f %f", &e.center.x, &e.center.y, &e.center.z, &e.radius, &e.strength) != 5) break;
             list->push_back(e);
         }
-        if (index >= 0 && index < (int)planetoids.size()) planetoids[index]->edits = list;
+        if (index >= 0 && index < (int)planetoids.size()) {
+            planetoids[index]->edits = list;
+            planetoids[index]->rotation = rot;
+        }
     }
     fclose(f);
     logger.logf("[World] loaded %s (seed %u)\n", SAVE_PATH, seed);

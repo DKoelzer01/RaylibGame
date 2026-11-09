@@ -65,6 +65,15 @@ class Scene {
         int lastDrawCalls = 0;
         std::function<void()> onDraw3D;  // extra world-space drawing at the end of the main pass
 
+        // Floating origin: render-space (float) = world (double) - renderOrigin. The camera is kept
+        // near the render-space origin so vertex positions stay precise anywhere in the system.
+        DVec3 renderOrigin{};
+        float originRebaseDistance = 1024.0f;
+        void syncRenderPositions();               // position = worldPos - renderOrigin for top-level objects
+        void updateFloatingOrigin();              // re-centre on the camera when it strays too far
+        void setCameraWorld(DVec3 position, DVec3 target);
+        DVec3 cameraWorld() const { return renderOrigin + camera.position; }
+
         Object rootObject;
 
         Scene(std::string name, bool isActive = false);

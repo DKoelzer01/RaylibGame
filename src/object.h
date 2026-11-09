@@ -8,6 +8,7 @@
 #include <iostream>
 
 #include "frustum.h"
+#include "dvec3.h"
 
 // Everything an object needs to submit draws for one pass. Owned by the Scene; objects never
 // look up shaders or uniforms themselves, they hand meshes + a material to DrawMesh, which sets
@@ -34,6 +35,11 @@ public:
     std::vector<std::unique_ptr<Object>> children;
 
     bool isActive = true; // Whether the object is active in the scene
+
+    // Top-level objects with hasWorldPos keep their authoritative position in doubles; `position`
+    // is then derived each frame as worldPos - Scene::renderOrigin (floating origin).
+    DVec3 worldPos{};
+    bool hasWorldPos = false;
 
     Object(std::string type, std::string name, Vector3 position, Vector3 rotation, Color color, float scale);
     virtual void draw(const RenderContext& ctx);

@@ -64,8 +64,8 @@ float PlanetoidField::density(Vector3 p, const TerrainEdit* edits, size_t editCo
     return std::max(-0.5f, std::min(2.5f, v));
 }
 
-Vector3 PlanetoidField::normal(Vector3 p, const TerrainEdit* edits, size_t n) const {
-    const float h = 0.5f;
+Vector3 PlanetoidField::normal(Vector3 p, const TerrainEdit* edits, size_t n, float h) const {
+
     const Vector3 g = {
         density({ p.x + h, p.y, p.z }, edits, n) - density({ p.x - h, p.y, p.z }, edits, n),
         density({ p.x, p.y + h, p.z }, edits, n) - density({ p.x, p.y - h, p.z }, edits, n),
@@ -107,12 +107,14 @@ void FilterEdits(const EditList& all, Vector3 lo, Vector3 hi, float margin, Edit
 
 void BuildChunkMesh(const PlanetoidField& field, const EditList& allEdits, ChunkMeshData& out) {
     const auto t0 = std::chrono::steady_clock::now();
-    const int S = CHUNK_SIZE + 1;
-    const Vector3 origin = { (float)(out.coord.x * CHUNK_SIZE), (float)(out.coord.y * CHUNK_SIZE), (float)(out.coord.z * CHUNK_SIZE) };
+    const int cells = CHUNK_SIZE + 1;        // +1 cell overlap with the positive neighbours (LOD crack cover)
+    const int S = cells + 1;                 // samples per axis
+    const float stride = (float)out.key.stride();
+    const Vector3 origin = out.key.origin();
 
-    // Margin 1: normals sample density half a voxel outside the chunk.
+    // Margin = one stride: normals sample density half a stride outside the node.
     EditList edits;
-    FilterEdits(allEdits, origin, Vector3AddValue(origin, (float)CHUNK_SIZE), 1.0f, edits);
+    FilterEdits(allEdits, origin, Vector3AddValue(origin, cells * stride), stride, edits);
 
     std::vector<float> dens((size_t)S * S * S);
     bool anySolid = false, anyEmpty = false;
@@ -120,7 +122,7 @@ void BuildChunkMesh(const PlanetoidField& field, const EditList& allEdits, Chunk
     for (int z = 0; z < S; ++z)
         for (int y = 0; y < S; ++y)
             for (int x = 0; x < S; ++x, ++i) {
-                const float d = field.density({ origin.x + x, origin.y + y, origin.z + z }, edits.data(), edits.size());
+                const float d = field.density({ origin.x + x * stride, origin.y + y * stride, origin.z + z * stride }, edits.data(), edits.size());
                 dens[i] = d;
                 if (d >= ISO_LEVEL) anySolid = true; else anyEmpty = true;
             }
@@ -131,9 +133,9 @@ void BuildChunkMesh(const PlanetoidField& field, const EditList& allEdits, Chunk
         std::vector<int> edgeCache((size_t)S * S * S * 3, -1);
         verts.reserve(4096);
         idx.reserve(12288);
-        for (int z = 0; z < CHUNK_SIZE; ++z)
-            for (int y = 0; y < CHUNK_SIZE; ++y)
-                for (int x = 0; x < CHUNK_SIZE; ++x)
+        for (int z = 0; z < cells; ++z)
+            for (int y = 0; y < cells; ++y)
+                for (int x = 0; x < cells; ++x)
                     marchCube(x, y, z, dens, S, verts, idx, edgeCache, ISO_LEVEL);
 
         if (verts.size() > 65535) {
@@ -143,12 +145,14 @@ void BuildChunkMesh(const PlanetoidField& field, const EditList& allEdits, Chunk
             out.normals.resize(verts.size() * 3);
             out.colors.assign(verts.size() * 4, 0);
             for (size_t v = 0; v < verts.size(); ++v) {
-                const Vector3 p = Vector3Add(origin, verts[v]);
-                const Vector3 n = field.normal(p, edits.data(), edits.size());
+                const Vector3 lp = Vector3Scale(verts[v], stride);     // node-relative, in voxels
+                const Vector3 p = Vector3Add(origin, lp);
+                // Coarser levels use a wider gradient step: smoother, cheaper-looking normals far away.
+                const Vector3 n = field.normal(p, edits.data(), edits.size(), 0.5f * stride);
                 const VoxelMaterial m = field.material(p, field.baseDensity(p));
-                out.positions[v * 3 + 0] = verts[v].x;
-                out.positions[v * 3 + 1] = verts[v].y;
-                out.positions[v * 3 + 2] = verts[v].z;
+                out.positions[v * 3 + 0] = lp.x;
+                out.positions[v * 3 + 1] = lp.y;
+                out.positions[v * 3 + 2] = lp.z;
                 out.normals[v * 3 + 0] = n.x;
                 out.normals[v * 3 + 1] = n.y;
                 out.normals[v * 3 + 2] = n.z;

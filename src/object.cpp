@@ -99,7 +99,9 @@ static T* CopyToRaylib(const std::vector<T>& v) {
 }
 
 void Chunk::setMesh(const ChunkMeshData& data) {
+    ready = true;
     releaseMesh();
+    if (data.positions.empty()) return; // node has no surface
     mesh.vertexCount = (int)(data.positions.size() / 3);
     mesh.triangleCount = (int)(data.indices.size() / 3);
     mesh.vertices = CopyToRaylib(data.positions);
@@ -110,13 +112,13 @@ void Chunk::setMesh(const ChunkMeshData& data) {
 }
 
 Matrix Chunk::modelMatrix(const Matrix& parentTransform) const {
-    const Vector3 o = voxelOffset();
+    const Vector3 o = key.origin();
     return MatrixMultiply(MatrixTranslate(o.x, o.y, o.z), parentTransform);
 }
 
 bool Chunk::visible(const RenderContext& ctx, const Matrix& model) const {
     if (!ctx.frustum || !frustumCullingEnabled) return true;
-    const float h = CHUNK_SIZE * 0.5f;
+    const float h = key.size() * 0.5f * (CHUNK_SIZE + 1.0f) / CHUNK_SIZE; // includes the overlap cell
     const Vector3 centre = Vector3Transform({ h, h, h }, model);
     // Bounding sphere of the chunk cube; account for the parent's scale.
     const float s = Vector3Length({ model.m0, model.m1, model.m2 });

@@ -22,12 +22,21 @@ struct WorldGenSettings {
     int planetoidCount = 1;
     int planetoidSize = 50;
     Vector3 firstPosition = { 64.0f, 0.0f, 0.0f };
+    float systemRadius = 6000.0f;    // other planetoids are scattered this far out (world units)
+    float maxSpinDegPerSec = 3.0f;   // random spin about the vertical axis
 };
 extern WorldGenSettings worldGen;
 
+struct LodSettings {
+    float lodFactor = 2.0f; // split a node while the camera is closer than lodFactor * node size
+};
+extern LodSettings lodSettings;
+
 struct WorldStats {
     int queuedJobs = 0, runningJobs = 0, pendingUploads = 0, uploadsLastFrame = 0, workerThreads = 0;
-    int chunks = 0, edits = 0;
+    int chunks = 0;  // meshes drawn this frame
+    int nodes = 0;   // LOD nodes alive (built, building or retained)
+    int edits = 0;
     float avgBuildMs = 0.0f;            // worker time per chunk (sampling + meshing + normals)
     float lastGenerationSeconds = 0.0f; // from generateWorld() until every chunk was uploaded
 };

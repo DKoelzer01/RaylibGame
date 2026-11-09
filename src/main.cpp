@@ -44,6 +44,9 @@ int main(int argc, char** argv)
         if (std::string(argv[i]) == "--test-saveload") benchSaveLoad = true;
         if (std::string(argv[i]) == "--size" && i + 1 < argc) worldGen.planetoidSize = atoi(argv[i + 1]);
         if (std::string(argv[i]) == "--count" && i + 1 < argc) worldGen.planetoidCount = atoi(argv[i + 1]);
+        if (std::string(argv[i]) == "--system" && i + 1 < argc) worldGen.systemRadius = (float)atof(argv[i + 1]);
+        if (std::string(argv[i]) == "--lod" && i + 1 < argc) lodSettings.lodFactor = (float)atof(argv[i + 1]);
+        if (std::string(argv[i]) == "--first" && i + 3 < argc) worldGen.firstPosition = { (float)atof(argv[i+1]), (float)atof(argv[i+2]), (float)atof(argv[i+3]) };
     }
     const bool bench = benchSeconds > 0.0;
     benchMode = bench;
@@ -62,6 +65,7 @@ int main(int argc, char** argv)
     }
     SetExitKey(KEY_NULL);
     SetTraceLogLevel(LOG_WARNING); // Set log level to warning to reduce output noise
+    rlSetClipPlanes(0.5, 60000.0); // space scale: see other bodies kilometres away
     
     DebugUI_Init();
     {   // Scenes own GPU resources: keep them in a scope that ends before CloseWindow().
@@ -146,7 +150,8 @@ int main(int argc, char** argv)
         }
         world.cameraInputEnabled = !DebugUI_IsOpen();
 
-        worldUpdate(world); // streams chunks in even while the menu is showing
+        world.updateFloatingOrigin(); // keep the camera near render-space 0 (float precision)
+        worldUpdate(world);           // LOD + chunk streaming; runs even while the menu is showing
         if (gameState == 1) TerrainTool_Update(world, !bench && !DebugUI_IsOpen());
 
         switch(gameState) {

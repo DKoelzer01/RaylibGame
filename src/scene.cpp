@@ -241,7 +241,7 @@ void Scene::drawScene(int gamestate) {
     BeginMode3D(camera);
         rlDisableBackfaceCulling();
         rlDisableDepthMask();
-        DrawModel(skybox, (Vector3){0, 0, 0}, 1.0f, WHITE);
+        DrawModel(skybox, (Vector3){0, 0, 0}, 1.0f, WHITE); // skybox.vs strips translation and scales the cube
         rlEnableBackfaceCulling();
         rlEnableDepthMask();
 
@@ -257,15 +257,16 @@ void Scene::drawScene(int gamestate) {
         if (debugDraw) {
             DrawSphere(lightPos, 10.0f, ColorAlpha(RED, 0.5f));
             DrawCubeWires(centre, shadowHalfExtent * 2, shadowHalfExtent * 2, shadowHalfExtent * 2, RED);
-            // Chunk bounds (chunks that currently have a mesh).
+            // LOD node bounds, coloured by level (green = finest).
+            static const Color levelColors[] = { GREEN, LIME, YELLOW, ORANGE, RED, MAGENTA, PURPLE, VIOLET };
             for (const auto& obj : objects) {
                 const Planetoid* p = dynamic_cast<const Planetoid*>(obj.get());
                 if (!p) continue;
-                const float h = CHUNK_SIZE * 0.5f * p->scale;
-                for (const auto& entry : p->chunks) {
-                    const Chunk& c = *entry.second;
-                    const Vector3 ctr = Vector3Transform(Vector3AddValue(c.voxelOffset(), CHUNK_SIZE * 0.5f), p->localTransform());
-                    if (c.mesh.vaoId > 0) DrawCubeWires(ctr, 2 * h, 2 * h, 2 * h, GREEN);
+                for (const Chunk* c : p->drawList) {
+                    if (!c->hasMesh()) continue;
+                    const float h = c->key.size() * 0.5f * p->scale;
+                    const Vector3 ctr = Vector3Transform(Vector3AddValue(c->key.origin(), c->key.size() * 0.5f), p->localTransform());
+                    DrawCubeWires(ctr, 2 * h, 2 * h, 2 * h, levelColors[std::min(c->key.level, 7)]);
                 }
             }
         }
@@ -286,8 +287,9 @@ void Scene::drawUI(int gamestate) {
     RenderContext none;
     if (gamestate != 0) {
         DrawFPS(10, 10);
-        DrawText(TextFormat("Camera: %.1f %.1f %.1f   chunks drawn: %d   [F3] debug",
-                 camera.position.x, camera.position.y, camera.position.z, lastDrawCalls), 10, 30, 20, GREEN);
+        const DVec3 cw = cameraWorld();
+        DrawText(TextFormat("Camera: %.1f %.1f %.1f   meshes drawn: %d   [F3] debug",
+                 cw.x, cw.y, cw.z, lastDrawCalls), 10, 30, 20, GREEN);
     }
     for (const auto& obj : uiObjects) obj->draw(none);
 }
@@ -309,4 +311,34 @@ Scene::~Scene() {
     lighting.unload();
     depth.unload();
     UnloadShadowmapRenderTexture(shadowMap);
+}
+
+// ---------------------------------------------------------------------------------------------
+// Floating origin
+// ---------------------------------------------------------------------------------------------
+
+void Scene::syncRenderPositions() {
+    auto sync = [this](Object& o) {
+        if (!o.hasWorldPos) { o.worldPos = renderOrigin + o.position; o.hasWorldPos = true; }
+        o.position = (o.worldPos - renderOrigin).toFloat();
+    };
+    for (auto& obj : objects) sync(*obj);
+    for (auto& obj : rootObject.children) sync(*obj);
+}
+
+void Scene::updateFloatingOrigin() {
+    const Vector3 c = camera.position;
+    if (Vector3Length(c) < originRebaseDistance) { syncRenderPositions(); return; }
+    // Shift the origin to the camera; every render-space position moves by -c.
+    renderOrigin += DVec3(c);
+    camera.position = Vector3Subtract(camera.position, c);
+    camera.target = Vector3Subtract(camera.target, c);
+    syncRenderPositions();
+}
+
+void Scene::setCameraWorld(DVec3 position, DVec3 target) {
+    renderOrigin = position;
+    camera.position = { 0, 0, 0 };
+    camera.target = (target - position).toFloat();
+    syncRenderPositions();
 }
