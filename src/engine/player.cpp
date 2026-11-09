@@ -163,7 +163,9 @@ void Player::stepPhysics(Scene& world, float dt, Vector3 wish, bool jump, bool j
         if (al > 1e-4f) along = Vector3Scale(along, wl / al);
         velocity = Vector3Subtract(Vector3Scale(along, walkSpeed), Vector3Scale(n, 1.5f));
         (void)vUp;
-        if (jump) { velocity = Vector3Add(velocity, Vector3Scale(up, jumpSpeed)); grounded = false; }
+        // A jump starts from the walking velocity only: keeping the press into a sloped ground would
+        // push you downhill on takeoff.
+        if (jump) { velocity = Vector3Add(Vector3Scale(along, walkSpeed), Vector3Scale(up, jumpSpeed)); grounded = false; }
         jetpackFuel = std::min(1.0f, jetpackFuel + dt * 0.5f);
     } else {
         // Airborne: Newtonian. Suit thrusters push along the view (WASD) and up/down (Space/Ctrl)
@@ -180,7 +182,11 @@ void Player::stepPhysics(Scene& world, float dt, Vector3 wish, bool jump, bool j
             velocity = Vector3Scale(velocity, 1.0f - std::min(1.0f, 0.6f * dt));
         }
     }
-    velocity = Vector3Add(velocity, Vector3Scale(gdir, gravity * gravityScale * dt));
+    Vector3 gAccel = Vector3Scale(gdir, gravity * gravityScale * dt);
+    // Static friction: standing on walkable ground, only gravity's push into the ground applies.
+    // (The downhill part made a standing player creep ~1.6 cm/s down slopes at fixed substeps.)
+    if (grounded) gAccel = Vector3Scale(groundNormal, std::min(0.0f, Vector3DotProduct(gAccel, groundNormal)));
+    velocity = Vector3Add(velocity, gAccel);
 
     feet = Vector3Add(feet, Vector3Scale(velocity, dt));
     grounded = resolveCollisions(world, feet);

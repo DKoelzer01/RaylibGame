@@ -271,12 +271,16 @@ static bool AnyLodPending(Scene& world) {
     return false;
 }
 
-void worldUpdate(Scene& world, float uploadBudgetMs, bool advanceTime) {
-    PROFILE_FUNCTION();
-    const float dt = advanceTime ? GetFrameTime() : 0.0f;
+void advanceBodies(Scene& world, float dt) {
+    // Runs at the start of the frame, before the player/ship update, so riders follow this
+    // frame's transform (spinning here after they moved left them one frame behind the surface).
     for (auto& obj : world.objects) {
         if (auto* p = dynamic_cast<Planetoid*>(obj.get())) p->rotation = Vector3Add(p->rotation, Vector3Scale(p->spin, dt));
     }
+}
+
+void worldUpdate(Scene& world, float uploadBudgetMs) {
+    PROFILE_FUNCTION();
 
     {
         std::lock_guard<std::mutex> lock(resultsMutex);

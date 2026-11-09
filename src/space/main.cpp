@@ -65,6 +65,8 @@ int main(int argc, char** argv)
     int ridePhase = 0;
     Vector3 rideFwd0{}, ridePos0{}, rideTakeoff{};
     float rideViewDrift = 0, ridePosDrift = 0, rideSurfaceSpeed = 0;
+    int rideFrames = 0, rideGroundedFrames = 0; // grounded share while standing (ride test)
+    float rideSpin = 10.0f;        // --ride-spin D: spin rate for --test-ride (deg/s)
     bool spinTest = false;         // --spin-test: textures must stay attached to a spinning body
     float spinRate = 30.0f;        // --spin-rate DEG_PER_SEC
     int spinPhase = 0;
@@ -89,6 +91,7 @@ int main(int argc, char** argv)
         if (std::string(argv[i]) == "--test-suffocate") benchSuffocate = true;
         if (std::string(argv[i]) == "--test-orbit" && i + 1 < argc) benchOrbitSeconds = atof(argv[i + 1]);
         if (std::string(argv[i]) == "--test-ride") benchRide = true;
+        if (std::string(argv[i]) == "--ride-spin" && i + 1 < argc) rideSpin = (float)atof(argv[i + 1]);
         if (std::string(argv[i]) == "--test-park") benchPark = true;
         if (std::string(argv[i]) == "--sun" && i + 3 < argc) { sunOverride = true; sunArg = Vector3Normalize({ (float)atof(argv[i + 1]), (float)atof(argv[i + 2]), (float)atof(argv[i + 3]) }); }
         if (std::string(argv[i]) == "--look-down") lookDown = true;
@@ -279,7 +282,7 @@ int main(int argc, char** argv)
                     const Vector3 feet = (player.position - world.renderOrigin).toFloat();
                     const double t = rideStart < 0.0 ? 0.0 : GetTime() - rideStart;
                     if (rideStart < 0.0) {
-                        p->spin = { 0.0f, 10.0f, 0.0f };
+                        p->spin = { 0.0f, rideSpin, 0.0f };
                         player.spawnOn(world, *p, { 1.0f, 0.0f, 0.0f });
                         rideStart = GetTime();
                         ridePhase = 0;
@@ -287,6 +290,8 @@ int main(int argc, char** argv)
                         rideFwd0 = p->dirToLocal(player.forward);
                         ridePos0 = p->toLocal(feet);
                         ridePhase = 1;
+                    } else if (ridePhase == 1 && t <= 4.5) {
+                        ++rideFrames; if (player.grounded) ++rideGroundedFrames;
                     } else if (ridePhase == 1 && t > 4.5) {
                         rideViewDrift = Vector3Angle(rideFwd0, p->dirToLocal(player.forward)) * RAD2DEG;
                         ridePosDrift = Vector3Distance(ridePos0, p->toLocal(feet));
@@ -297,8 +302,8 @@ int main(int argc, char** argv)
                     } else if (ridePhase == 2 && !player.grounded) {
                         ridePhase = 3; // airborne
                     } else if ((ridePhase == 3 && player.grounded) || t > 12.0) {
-                        printf("bench: ride test (10 deg/s, surface %.1f m/s): standing 3 s -> view drift %.2f deg, position drift %.2f m; jump landed %.2f m from takeoff (body frame)%s\n",
-                               rideSurfaceSpeed, rideViewDrift, ridePosDrift, Vector3Distance(rideTakeoff, p->toLocal(feet)), ridePhase == 3 ? "" : " [never landed]");
+                        printf("bench: ride test (%.0f deg/s, surface %.1f m/s): standing 3 s (grounded %.0f%%) -> view drift %.2f deg, position drift %.2f m; jump landed %.2f m from takeoff (body frame)%s\n",
+                               rideSpin, rideSurfaceSpeed, 100.0f * rideGroundedFrames / std::max(1, rideFrames), rideViewDrift, ridePosDrift, Vector3Distance(rideTakeoff, p->toLocal(feet)), ridePhase == 3 ? "" : " [never landed]");
                         benchRide = false;
                     }
                 } else if (benchFlySeconds > 0.0 && benchMineStrokes == 0 && benchWalkSeconds <= 0.0) {
@@ -452,6 +457,7 @@ int main(int argc, char** argv)
                 Audio_Play(Sfx::Build, 0.4f, 1.2f);
             }
         }
+        advanceBodies(world, gameState == 1 ? GetFrameTime() : 0.0f); // bodies only spin while playing; before riders update
         if (gameState == 1) {
             ship.lastImpact = 0.0f;
             if (ship.piloted) {
@@ -475,7 +481,7 @@ int main(int argc, char** argv)
         }
 
         world.updateFloatingOrigin(); // keep the camera near render-space 0 (float precision)
-        worldUpdate(world, 3.0f, gameState == 1); // LOD + streaming always; bodies only spin while playing
+        worldUpdate(world, 3.0f); // LOD + streaming (bodies were spun at the start of the frame)
 
         // Slot 1: headlamp (suit lamp from the eye, or the ship's nose light while piloting).
         // Slot 2: soft glow around the player while the inventory is open.
