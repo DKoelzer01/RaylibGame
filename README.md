@@ -24,7 +24,10 @@ generated in the build directory for IntelliSense/clangd.
 | Enter | start (main menu) |
 | Mouse / arrows | look |
 | WASD, Space, Ctrl | move (Shift/Alt = faster) |
-| LMB / RMB (hold) | dig / add terrain at the crosshair |
+| LMB / RMB (hold) | dig / build terrain at the crosshair (build costs stone or regolith) |
+| Tab | inventory + crafting |
+| F | toggle free-fly camera |
+| Space | jump; hold for jetpack |
 | Mouse wheel | brush size |
 | F5 / F9 | save / load (`saves/world.sav`) |
 | Esc | pause; R resumes |
@@ -48,6 +51,18 @@ Shaders in `resources/` hot-reload when saved.
 - World positions are doubles (`DVec3`); the scene keeps a floating `renderOrigin` near the camera,
   so rendering stays precise millions of units out.
 
+
+## Gameplay (space survival prototype)
+- **Player** (`src/player.*`): walks on planetoids with gravity toward the nearest body; "up" follows
+  the surface so you can walk all the way around. Collision is resolved directly against the density
+  field, so tunnels you dig are walkable. Jump, jetpack in low gravity, 6-DOF suit thrusters in open
+  space, and you ride along on spinning bodies. **F** toggles the free-fly dev camera.
+- **Items & crafting** (`src/inventory.*`, `resources/data/items.txt`, `recipes.txt`): mining yields
+  items by voxel material (rock, regolith, ice, ore); building consumes stone/regolith/lunacrete.
+  **Tab** opens inventory + crafting. Add items/recipes by editing the text files.
+- **Audio** (`src/audio.*`): procedural sound effects, no assets.
+- Asteroid density is a displaced sphere with a uniform 0.25/voxel gradient: crisp surfaces and
+  predictable dig depth.
 ## Benchmark / test mode
 ```sh
 ./game.exe --bench 10                       # 1920x1080 uncapped; waits for the world to load, prints frame stats
@@ -57,7 +72,9 @@ Shaders in `resources/` hot-reload when saved.
 Writes `bench.txt` and `bench.png`. `--cam` = camera offset from the first planetoid, `--count` =
 planetoid count, `--system R` = belt radius, `--lod F` = LOD factor, `--first x y z` = first body position,
 `--ui` opens the debug panel, `--overlay` the F3 overlay, `--nocull` disables
-frustum culling, `--test-dig N` carves a tunnel at the crosshair, `--test-saveload` saves and reloads.
+frustum culling, `--test-dig N` carves a tunnel at the crosshair, `--test-saveload` saves and reloads,
+`--test-walk S` / `--test-stand S` spawn the player and walk/stand (reports grounding + penetration),
+`--test-mine N` digs N strokes at the feet, crafts everything possible and builds 3 strokes.
 
 ## Third-party
 See `third_party/README.md` (Dear ImGui v1.92.7, rlImGui tag Raylib_5_5).

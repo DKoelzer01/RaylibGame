@@ -42,7 +42,6 @@ void DebugUI_Draw(Scene& world) {
         sunInit = true;
     }
 
-    rlImGuiBegin();
     ImGui::SetNextWindowPos(ImVec2(10, 60), ImGuiCond_FirstUseEver);
     ImGui::SetNextWindowSize(ImVec2(380, 0), ImGuiCond_FirstUseEver);
     if (ImGui::Begin("Debug (F1)")) {
@@ -99,7 +98,7 @@ void DebugUI_Draw(Scene& world) {
         // --- Terrain tool ---
         if (ImGui::CollapsingHeader("Terrain tool")) {
             ImGui::SliderFloat("Brush radius", &terrainTool.brushRadius, 1.0f, 24.0f, "%.1f");
-            ImGui::SliderFloat("Strength", &terrainTool.digStrength, 0.05f, 2.0f, "%.2f");
+            ImGui::SliderFloat("Strength", &terrainTool.digStrength, 0.02f, 1.0f, "%.2f");
             ImGui::SliderFloat("Strokes / s", &terrainTool.strokesPerSecond, 1.0f, 30.0f, "%.0f");
             if (ImGui::Button("Save (F5)")) SaveWorld(world);
             ImGui::SameLine();
@@ -123,5 +122,4 @@ void DebugUI_Draw(Scene& world) {
         }
     }
     ImGui::End();
-    rlImGuiEnd();
 }

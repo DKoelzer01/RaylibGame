@@ -9,7 +9,7 @@ void DebugUI_Init();
 void DebugUI_Shutdown();
 bool DebugUI_IsOpen();
 void DebugUI_Toggle();
-// Call between BeginDrawing/EndDrawing, after the scene and HUD.
+// Call inside rlImGuiBegin()/rlImGuiEnd() (main loop), after the scene and HUD.
 void DebugUI_Draw(Scene& world);
 
 #endif

@@ -1,0 +1,10 @@
+# id | display name | stack limit | colour r,g,b | description
+stone           | Stone           | 999 | 130,130,135 | Bulk rock. Used to build terrain back up.
+regolith        | Regolith        | 999 | 170,140,100 | Loose surface dust. Building filler.
+ice             | Ice             | 999 | 170,210,240 | Frozen volatiles. Melts into water.
+iron_ore        | Iron ore        | 999 | 190,110, 50 | Metal-bearing rock from ore veins.
+iron_plate      | Iron plate      | 200 | 180,180,190 | Refined metal.
+water           | Water           | 200 |  70,130,220 | Drinkable, and splits into oxygen.
+oxygen_canister | Oxygen canister |  20 | 120,200,255 | Refills suit oxygen.
+power_cell      | Power cell      |  20 | 250,220, 80 | Recharges suit power.
+concrete        | Lunacrete       | 999 | 200,200,190 | Dense building material.

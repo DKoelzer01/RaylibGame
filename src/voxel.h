@@ -12,6 +12,7 @@
 
 extern const int CHUNK_SIZE;          // cells per chunk edge (samples per edge = CHUNK_SIZE + 1)
 constexpr float ISO_LEVEL = 0.5f;     // density >= ISO_LEVEL is solid
+constexpr float DENSITY_GRADIENT = 0.25f; // density change per voxel across the surface
 
 struct Int3 {
     int x, y, z;

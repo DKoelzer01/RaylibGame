@@ -43,11 +43,13 @@ PlanetoidField::PlanetoidField(std::mt19937 rng, float radius_)
 }
 
 float PlanetoidField::baseDensity(Vector3 p) const {
+    // Displaced sphere: density rises DENSITY_GRADIENT per unit toward the centre, and 3D noise
+    // pushes the surface in/out by up to ~25% of the radius (3D, so overhangs are possible).
+    // A uniform gradient keeps surfaces crisp and makes dig strokes carve predictable depths;
+    // the earlier (noise+1)*(1-d/R) field ramped ~0.02/unit and left mushy near-iso regions.
     const float d = sqrtf(p.x * p.x + p.y * p.y + p.z * p.z);
-    const float falloff = 1.0f - d / radius;
-    if (falloff <= 0.0f) return 0.0f;
-    // Noise is sampled in planetoid-local space, so moving/rotating a planetoid keeps its shape.
-    return (shape.fractal(4, p.x, p.y, p.z) + 1.0f) * falloff;
+    const float displacement = radius * 0.25f * shape.fractal(4, p.x, p.y, p.z); // sampled in local space
+    return ISO_LEVEL + DENSITY_GRADIENT * (radius * 0.72f + displacement - d);
 }
 
 float PlanetoidField::density(Vector3 p, const TerrainEdit* edits, size_t editCount) const {
@@ -61,7 +63,7 @@ float PlanetoidField::density(Vector3 p, const TerrainEdit* edits, size_t editCo
         v += e.strength * t * t * (3.0f - 2.0f * t); // smoothstep falloff: soft-edged craters/mounds
     }
     // Clamp so repeated digging/adding stays reversible in a few clicks.
-    return std::max(-0.5f, std::min(2.5f, v));
+    return v; // no clamp: the uniform gradient keeps values meaningful at any depth
 }
 
 Vector3 PlanetoidField::normal(Vector3 p, const TerrainEdit* edits, size_t n, float h) const {
@@ -85,7 +87,7 @@ VoxelMaterial PlanetoidField::material(Vector3 p, float base) const {
     // Thin ore sheets: where the detail noise crosses zero.
     if (fabsf(detail.fractal(2, p.x, p.y, p.z)) < 0.035f) return VoxelMaterial::Ore;
     if (iceAmount > 0.0f && detail.fractal(2, p.x + 1000.0f, p.y, p.z) > 0.55f - iceAmount) return VoxelMaterial::Ice;
-    if (base < ISO_LEVEL + 0.12f && detail.fractal(1, p.x + 2000.0f, p.y, p.z) > -0.25f) return VoxelMaterial::Regolith;
+    if (base < ISO_LEVEL + 1.0f * DENSITY_GRADIENT && detail.fractal(1, p.x + 2000.0f, p.y, p.z) > -0.25f) return VoxelMaterial::Regolith;
     return VoxelMaterial::Rock;
 }
 

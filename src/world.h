@@ -13,6 +13,8 @@
 #include <fstream>
 #include <sstream>
 #include <memory>
+#include <cstdio>
+#include <functional>
 
 // Tweakable from the debug UI. seed == 0 means "pick a random seed"; lastSeed records what was
 // actually used so an interesting world can be reproduced.
@@ -64,6 +66,9 @@ bool RaycastTerrain(Scene& world, Ray ray, float maxDistance, TerrainHit& hit);
 void ApplyTerrainEdit(Planetoid& planetoid, const TerrainEdit& edit); // local-space brush
 
 bool SaveWorld(Scene& world);          // saves/world.sav
+// Game-specific save data. The load hook must read everything up to and including "end_extras".
+extern std::function<void(FILE*)> saveExtrasHook;
+extern std::function<void(FILE*)> loadExtrasHook;
 bool LoadWorldSave(Scene& world);
 
 #endif

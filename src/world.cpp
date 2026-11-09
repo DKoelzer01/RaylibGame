@@ -15,6 +15,8 @@
 const int CHUNK_SIZE = 32;
 
 WorldGenSettings worldGen;
+std::function<void(FILE*)> saveExtrasHook;
+std::function<void(FILE*)> loadExtrasHook;
 LodSettings lodSettings;
 
 namespace {
@@ -403,11 +405,15 @@ bool SaveWorld(Scene& world) {
     if (!f) return false;
     const DVec3 camWorld = world.renderOrigin + world.camera.position;
     const DVec3 tgtWorld = world.renderOrigin + world.camera.target;
-    fprintf(f, "RAYLIBGAME_SAVE 2\n");
+    fprintf(f, "RAYLIBGAME_SAVE 3\n");
     fprintf(f, "seed %u\ncount %d\nsize %d\nsystem %f %f\nfirst %f %f %f\n", worldGen.lastSeed, worldGen.planetoidCount,
             worldGen.planetoidSize, worldGen.systemRadius, worldGen.maxSpinDegPerSec,
             worldGen.firstPosition.x, worldGen.firstPosition.y, worldGen.firstPosition.z);
     fprintf(f, "camera %.6f %.6f %.6f %.6f %.6f %.6f\n", camWorld.x, camWorld.y, camWorld.z, tgtWorld.x, tgtWorld.y, tgtWorld.z);
+    // Game-specific state (player, inventory, ...) written by whoever registered the hook.
+    fprintf(f, "extras\n");
+    if (saveExtrasHook) saveExtrasHook(f);
+    fprintf(f, "end_extras\n");
     int index = 0, total = 0;
     for (auto& obj : world.objects) {
         Planetoid* p = dynamic_cast<Planetoid*>(obj.get());
@@ -427,7 +433,7 @@ bool LoadWorldSave(Scene& world) {
     FILE* f = fopen(SAVE_PATH, "r");
     if (!f) return false;
     int version = 0;
-    if (fscanf(f, "RAYLIBGAME_SAVE %d", &version) != 1 || version != 2) {
+    if (fscanf(f, "RAYLIBGAME_SAVE %d", &version) != 1 || version < 2 || version > 3) {
         fclose(f);
         logger.logf("[World] %s: unsupported save version %d\n", SAVE_PATH, version);
         return false;
@@ -449,6 +455,14 @@ bool LoadWorldSave(Scene& world) {
     worldGen.firstPosition = first;
     regenerateWorld(world);
     world.setCameraWorld(DVec3(c[0], c[1], c[2]), DVec3(c[3], c[4], c[5]));
+
+    if (version >= 3) {
+        char tok[64] = {};
+        if (fscanf(f, " %63s", tok) == 1 && std::string(tok) == "extras") {
+            if (loadExtrasHook) loadExtrasHook(f); // must consume through "end_extras"
+            else while (fscanf(f, " %63s", tok) == 1 && std::string(tok) != "end_extras") {}
+        }
+    }
 
     // Edits are attached before the next worldUpdate() requests nodes, so each node is built
     // once with its edits already applied.

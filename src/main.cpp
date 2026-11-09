@@ -11,6 +11,12 @@
 #include "debugui.h"
 #include "profiler.h"
 #include "terraintool.h"
+#include "player.h"
+#include "inventory.h"
+#include "gameui.h"
+#include "gamesave.h"
+#include "audio.h"
+#include "rlImGui.h"
 
 #if defined(PLATFORM_DESKTOP)
     #define GLSL_VERSION            330
@@ -32,6 +38,15 @@ int main(int argc, char** argv)
     bool startWithOverlay = false;
     int benchDigStrokes = 0;     // --test-dig N: dig N strokes at the crosshair once the world is loaded
     bool benchSaveLoad = false;  // --test-saveload: then save, reload from disk, and bench the reloaded world
+    double benchWalkSeconds = 0.0; // --test-walk S: spawn on the surface and auto-walk forward for S seconds
+    double walkStart = -1.0;
+    bool benchStandOnly = false; // --test-stand S: like --test-walk but standing still
+    int benchMineStrokes = 0;     // --test-mine N: dig N strokes at the feet, craft, build (after any walk test)
+    bool mineStarted = false, mineStoppedEarly = false;
+    int minePhase = 0, minedStrokes = 0, mineCrafted = 0;
+    DVec3 walkFrom{};
+    float walkMinDensity = 0, walkMaxDensity = 0;
+    int walkGroundedFrames = 0, walkFrames = 0;
     Vector3 benchCamOffset = { -70.0f, 35.0f, 70.0f }; // --cam dx dy dz: bench camera offset from the planetoid
     for (int i = 1; i < argc; ++i) {
         if (std::string(argv[i]) == "--bench") benchSeconds = (i + 1 < argc) ? atof(argv[i + 1]) : 10.0;
@@ -42,6 +57,9 @@ int main(int argc, char** argv)
         if (std::string(argv[i]) == "--cam" && i + 3 < argc) { benchCamOffset = { (float)atof(argv[i+1]), (float)atof(argv[i+2]), (float)atof(argv[i+3]) }; }
         if (std::string(argv[i]) == "--test-dig" && i + 1 < argc) benchDigStrokes = atoi(argv[i + 1]);
         if (std::string(argv[i]) == "--test-saveload") benchSaveLoad = true;
+        if (std::string(argv[i]) == "--test-walk" && i + 1 < argc) benchWalkSeconds = atof(argv[i + 1]);
+        if (std::string(argv[i]) == "--test-mine" && i + 1 < argc) benchMineStrokes = atoi(argv[i + 1]);
+        if (std::string(argv[i]) == "--test-stand" && i + 1 < argc) { benchWalkSeconds = atof(argv[i + 1]); benchStandOnly = true; }
         if (std::string(argv[i]) == "--size" && i + 1 < argc) worldGen.planetoidSize = atoi(argv[i + 1]);
         if (std::string(argv[i]) == "--count" && i + 1 < argc) worldGen.planetoidCount = atoi(argv[i + 1]);
         if (std::string(argv[i]) == "--system" && i + 1 < argc) worldGen.systemRadius = (float)atof(argv[i + 1]);
@@ -68,6 +86,9 @@ int main(int argc, char** argv)
     rlSetClipPlanes(0.5, 60000.0); // space scale: see other bodies kilometres away
     
     DebugUI_Init();
+    if (!bench) Audio_Init();
+    itemDB.load("resources/data/items.txt", "resources/data/recipes.txt");
+    GameSave_Register();
     {   // Scenes own GPU resources: keep them in a scope that ends before CloseWindow().
     Scene mainMenu("mainMenu", true); // Main menu scene;
     Scene world("world", false);
@@ -76,6 +97,7 @@ int main(int argc, char** argv)
 
     mainMenuHandler(mainMenu);
     worldHandler(world);
+    if (Planetoid* start = world.objects.empty() ? nullptr : dynamic_cast<Planetoid*>(world.objects[0].get())) player.spawnOn(world, *start);
     world.onDraw3D = TerrainTool_Draw3D;
 
     const double benchWarmup = 2.0;
@@ -87,6 +109,7 @@ int main(int argc, char** argv)
         world.isActive = true;
         world.camera.position = Vector3Add(world.camera.target, benchCamOffset);
         world.debugDraw = startWithOverlay;
+        player.flyMode = benchWalkSeconds <= 0.0; // the bench drives the camera directly unless walking
         benchStart = -1.0; // starts once the world has finished streaming in
     }
 
@@ -108,15 +131,75 @@ int main(int argc, char** argv)
                         printf("bench: --test-dig found no terrain at the crosshair\n");
                     }
                     benchDigStrokes = 0;
-                } else if (WorldIdle() && benchSaveLoad) {
-                    const Vector3 camPos = world.camera.position, camTarget = world.camera.target;
+                } else if (WorldIdle() && benchSaveLoad && benchWalkSeconds <= 0.0 && benchMineStrokes == 0) {
                     const int editsBefore = GetWorldStats().edits;
-                    const bool ok = SaveWorld(world) && LoadWorldSave(world);
-                    world.camera.position = camPos;
-                    world.camera.target = camTarget;
-                    printf("bench: save/load %s (%d edits saved)\n", ok ? "ok" : "FAILED", editsBefore);
+                    const int itemsBefore = inventory.count("stone") + inventory.count("regolith");
+                    const bool ok = SaveWorld(world) && LoadWorldSave(world); // restores camera + player from the file
+                    printf("bench: save/load %s (%d edits, %d stone+regolith before / %d after)\n", ok ? "ok" : "FAILED",
+                           editsBefore, itemsBefore, inventory.count("stone") + inventory.count("regolith"));
                     benchSaveLoad = false;
-                } else if ((WorldIdle() && benchDigStrokes == 0 && !benchSaveLoad) || GetTime() > 120.0) {
+                } else if (benchMineStrokes > 0 && benchWalkSeconds <= 0.0) {
+                    // Scripted mining: look at the ground, dig N strokes through the real tool path,
+                    // craft everything possible, then build a few strokes back.
+                    if (!mineStarted) {
+                        player.flyMode = false;
+                        player.forward = Vector3Normalize(Vector3Add(Vector3Scale(player.up, -0.8f), Vector3Scale(player.forward, 0.6f)));
+                        mineStarted = true;
+                        minePhase = 1;
+                    } else if (minePhase == 1) {
+                        const bool dug = TerrainTool_Stroke(true);
+                        if (dug) { minedStrokes++; benchMineStrokes--; }
+                        if (!dug || benchMineStrokes == 0) {
+                            mineStoppedEarly = !dug;
+                            int crafted = 0;
+                            for (bool any = true; any && crafted < 100;) {
+                                any = false;
+                                for (const Recipe& r : itemDB.recipes()) if (inventory.craft(r)) { any = true; crafted++; }
+                            }
+                            mineCrafted = crafted;
+                            // Look at nearby ground (not into the hole) for the build strokes next frame.
+                            const Vector3 flat = Vector3Normalize(Vector3Subtract(player.forward, Vector3Scale(player.up, Vector3DotProduct(player.forward, player.up))));
+                            player.forward = Vector3Normalize(Vector3Add(Vector3Scale(flat, -0.6f), Vector3Scale(player.up, -0.8f)));
+                            minePhase = 2;
+                        }
+                    } else {
+                        const int fillersBefore = inventory.count("stone") + inventory.count("regolith") + inventory.count("concrete");
+                        int built = 0;
+                        for (int b = 0; b < 3; ++b) built += TerrainTool_Stroke(false) ? 1 : 0;
+                        std::string inv;
+                        for (const ItemDef& d : itemDB.items()) if (inventory.count(d.id)) inv += " " + d.id + "=" + std::to_string(inventory.count(d.id));
+                        printf("bench: mined %d strokes%s, crafted %d times, built %d strokes (fillers %d -> %d); inventory:%s\n",
+                               minedStrokes, mineStoppedEarly ? " (hole left arm's reach)" : "", mineCrafted, built, fillersBefore,
+                               inventory.count("stone") + inventory.count("regolith") + inventory.count("concrete"), inv.c_str());
+                        benchMineStrokes = 0;
+                    }
+                } else if (WorldIdle() && benchWalkSeconds > 0.0) {
+                    // Scripted walk: spawn on the surface and walk forward; checks gravity + collision.
+                    if (walkStart < 0.0) {
+                        player.autoWalk = !benchStandOnly;
+                        Planetoid* start = dynamic_cast<Planetoid*>(world.objects[0].get());
+                        player.spawnOn(world, *start);
+
+                        walkStart = GetTime();
+                        walkFrom = player.position;
+                        walkMinDensity = 1e9f; walkMaxDensity = -1e9f; walkGroundedFrames = walkFrames = 0;
+                    }
+                    Planetoid* start = dynamic_cast<Planetoid*>(world.objects[0].get());
+                    const Vector3 feet = (player.position - world.renderOrigin).toFloat();
+                    const float d = start->densityAt(start->toLocal(Vector3Add(feet, Vector3Scale(player.up, 0.9f)))); // body centre
+                    walkMinDensity = std::min(walkMinDensity, d);
+                    walkMaxDensity = std::max(walkMaxDensity, d);
+                    walkFrames++;
+                    walkGroundedFrames += player.grounded ? 1 : 0;
+                    if (GetTime() - walkStart > benchWalkSeconds) {
+                        player.autoWalk = false;
+                        const double dist = (player.position - walkFrom).length();
+                        const float alt = Vector3Distance(feet, start->position);
+                        printf("bench: walked %.1f m in %.1f s, grounded %.0f%% of frames, density at body %.2f..%.2f (solid >= %.2f), %.1f m from centre\n",
+                               dist, benchWalkSeconds, 100.0 * walkGroundedFrames / std::max(1, walkFrames), walkMinDensity, walkMaxDensity, ISO_LEVEL, alt);
+                        benchWalkSeconds = 0.0;
+                    }
+                } else if ((WorldIdle() && benchDigStrokes == 0 && !benchSaveLoad && benchWalkSeconds <= 0.0 && benchMineStrokes == 0) || GetTime() > 120.0) {
                     benchStart = GetTime();
                     printf("bench: world ready after %.2f s (%d chunks, avg build %.2f ms, %d worker threads)\n",
                         GetWorldStats().lastGenerationSeconds, GetWorldStats().chunks, GetWorldStats().avgBuildMs, GetWorldStats().workerThreads);
@@ -142,17 +225,27 @@ int main(int argc, char** argv)
             EndDrawing();
             continue;
         } else if (gameState == 1) {
-            if (DebugUI_IsOpen()) ShowCursor(); else HideCursor();
+            if (DebugUI_IsOpen() || GameUI_InventoryOpen()) ShowCursor(); else HideCursor();
         }
         if (!bench && IsKeyPressed(KEY_F1)) {
             DebugUI_Toggle();
             if (!DebugUI_IsOpen()) SetMousePosition(GetScreenWidth()/2, GetScreenHeight()/2);
         }
-        world.cameraInputEnabled = !DebugUI_IsOpen();
+        if (!bench && gameState == 1 && IsKeyPressed(KEY_TAB)) {
+            GameUI_ToggleInventory();
+            if (!GameUI_InventoryOpen()) SetMousePosition(GetScreenWidth()/2, GetScreenHeight()/2);
+        }
+        const bool uiOpen = DebugUI_IsOpen() || GameUI_InventoryOpen();
+        const bool gameInput = !bench && !uiOpen && gameState == 1;
+        world.cameraInputEnabled = player.flyMode && !uiOpen;  // free-fly camera only in fly mode
+        if (gameState == 1) {
+            player.update(world, gameInput, GetFrameTime());
+            player.applyToCamera(world);
+        }
 
         world.updateFloatingOrigin(); // keep the camera near render-space 0 (float precision)
         worldUpdate(world);           // LOD + chunk streaming; runs even while the menu is showing
-        if (gameState == 1) TerrainTool_Update(world, !bench && !DebugUI_IsOpen());
+        if (gameState == 1) TerrainTool_Update(world, gameInput);
 
         switch(gameState) {
             case 0: // Main Menu
@@ -199,7 +292,8 @@ int main(int argc, char** argv)
                 world.drawScene(gameState);
                 world.drawUI(gameState);
                 TerrainTool_DrawHUD();
-                if (!bench && !DebugUI_IsOpen()) SetMousePosition(GetScreenWidth()/2, GetScreenHeight()/2);
+                GameUI_DrawHUD(world);
+                if (!bench && !uiOpen) SetMousePosition(GetScreenWidth()/2, GetScreenHeight()/2);
             } else if (gameState == 2) {
                 world.drawScene(gameState);
                 world.drawUI(gameState);
@@ -210,13 +304,19 @@ int main(int argc, char** argv)
                 DrawText("Press R to resume", GetScreenWidth()/2 - MeasureText("Press R to resume", 20)/2, GetScreenHeight()/2 + 10, 20, WHITE);
                 DrawText("Press ESC to exit", GetScreenWidth()/2 - MeasureText("Press ESC to exit", 20)/2, GetScreenHeight()/2 + 30, 20, WHITE);
             }
-            if (gameState != 0) DebugUI_Draw(world);
+            if (gameState != 0) {
+                rlImGuiBegin();
+                DebugUI_Draw(world);
+                GameUI_Draw(world);
+                rlImGuiEnd();
+            }
         EndDrawing();
         PROFILE_FRAME();
     }
 
     }   // scenes destroyed here, while the GL context still exists
     DebugUI_Shutdown();
+    Audio_Shutdown();
     CloseWindow();
 }
 
