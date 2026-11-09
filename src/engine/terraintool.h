@@ -14,7 +14,7 @@ struct TerrainToolSettings {
 };
 extern TerrainToolSettings terrainTool;
 
-void TerrainTool_Update(Scene& world, bool inputEnabled); // call once per frame before drawing
+void TerrainTool_Update(Scene& world, bool inputEnabled, bool editEnabled = true); // once per frame before drawing; editEnabled=false keeps save/load (F5/F9) only
 bool TerrainTool_Stroke(bool dig);                         // one dig/build stroke at the last crosshair hit
 void TerrainTool_Draw3D();                                // inside BeginMode3D (Scene::onDraw3D)
 void TerrainTool_DrawHUD();                               // 2D, after the scene

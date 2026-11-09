@@ -43,6 +43,7 @@ void Player::update(Scene& world, bool inputEnabled, float dt) {
         // The free-fly camera (Scene / customUpdateCamera) drives; keep the body under the eye.
         position = world.renderOrigin + Vector3Subtract(world.camera.position, Vector3Scale(up, eyeHeight));
         forward = Vector3Normalize(Vector3Subtract(world.camera.target, world.camera.position));
+        up = Vector3Normalize(world.camera.up); // keep a consistent basis for leaving fly mode
         return;
     }
     dt = std::min(dt, 0.1f); // don't explode after a hitch
@@ -106,9 +107,10 @@ void Player::update(Scene& world, bool inputEnabled, float dt) {
     }
     if (autoJump) { jump = true; autoJump = false; }
 
-    // Fixed substeps keep collision stable at any frame rate.
+    // Fixed substeps keep collision stable at any frame rate, and are shortened further at speed
+    // (<= 0.2 m of travel each, under the body radius) so a fast player can't pass through thin walls.
     const float h = 1.0f / 120.0f;
-    int steps = std::max(1, (int)ceilf(dt / h));
+    const int steps = std::clamp(std::max((int)ceilf(dt / h), (int)ceilf(Vector3Length(velocity) * dt / 0.2f)), 1, 1024);
     const float sdt = dt / steps;
     for (int i = 0; i < steps; ++i) { stepPhysics(world, sdt, wish, jump && i == 0, jetUp, jetDown); }
 

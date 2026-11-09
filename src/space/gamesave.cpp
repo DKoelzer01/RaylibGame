@@ -12,6 +12,7 @@ void GameSave_Register() {
         fprintf(f, "player %.6f %.6f %.6f %f %f %f %d %f\n", player.position.x, player.position.y, player.position.z,
                 player.forward.x, player.forward.y, player.forward.z, player.flyMode ? 1 : 0, player.jetpackFuel);
         fprintf(f, "player_up %f %f %f\n", player.up.x, player.up.y, player.up.z);
+        fprintf(f, "player_vel %f %f %f\n", player.velocity.x, player.velocity.y, player.velocity.z);
         for (const auto& kv : inventory.all()) fprintf(f, "item %s %d\n", kv.first.c_str(), kv.second);
         fprintf(f, "ship %.6f %.6f %.6f %f %f %f %f %f %d %d\n", ship.position.x, ship.position.y, ship.position.z, ship.orientation.x,
                 ship.orientation.y, ship.orientation.z, ship.orientation.w, ship.energy, ship.piloted ? 1 : 0, ship.spawned ? 1 : 0);
@@ -31,6 +32,8 @@ void GameSave_Register() {
                 player.up = { 0, 0, 0 }; // set by "player_up"; older saves: rebuilt from the body at the next update
             } else if (strcmp(tok, "player_up") == 0) {
                 fscanf(f, " %f %f %f", &player.up.x, &player.up.y, &player.up.z);
+            } else if (strcmp(tok, "player_vel") == 0) { // older saves: stays zero
+                fscanf(f, " %f %f %f", &player.velocity.x, &player.velocity.y, &player.velocity.z);
             } else if (strcmp(tok, "ship") == 0) {
                 int piloted = 0, spawned = 0;
                 fscanf(f, " %lf %lf %lf %f %f %f %f %f %d %d", &ship.position.x, &ship.position.y, &ship.position.z, &ship.orientation.x, &ship.orientation.y,

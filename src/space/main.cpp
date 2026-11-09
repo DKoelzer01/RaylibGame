@@ -548,7 +548,7 @@ int main(int argc, char** argv)
                 spinPhase = 3;
             }
         }
-        if (gameState == 1) TerrainTool_Update(world, gameInput && !ship.piloted && alive);
+        if (gameState == 1) TerrainTool_Update(world, gameInput && alive, !ship.piloted); // F5/F9 work aboard too
 
         switch(gameState) {
             case 0: // Main Menu

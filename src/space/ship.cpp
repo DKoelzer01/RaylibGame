@@ -17,7 +17,8 @@ void Ship::parkNear(Scene& world, Vector3 point, Vector3 surfaceUp) {
         rest = Vector3Add(hit.point, Vector3Scale(hit.normal, hullRadius));
     position = world.renderOrigin + rest;
     orientation = QuaternionFromVector3ToVector3({ 0, 1, 0 }, surfaceUp);
-    velocity = { 0, 0, 0 };
+    Planetoid* body = NearestPlanetoid(world, rest);
+    velocity = body ? body->surfaceVelocity(rest) : Vector3{ 0, 0, 0 }; // at rest on the (maybe spinning) surface
     spawned = true;
 }
 
@@ -40,7 +41,7 @@ void Ship::update(Scene& world, bool inputEnabled, float dt) {
             orientation = QuaternionNormalize(QuaternionMultiply(QuaternionMultiply(now, QuaternionInvert(anchorRotPrev)), orientation));
             anchorRotPrev = now;
             anchorEndPos = position;
-            velocity = { 0, 0, 0 };
+            velocity = anchorBody->surfaceVelocity(renderPos(world)); // world-space motion (handed to a disembarking player)
             return;
         } else {
             // Taking off from a spinning body: start with the surface's own motion.
@@ -129,16 +130,18 @@ void Ship::update(Scene& world, bool inputEnabled, float dt) {
 
     // Come to rest on the ground (parked, or landed with no thrust) -> anchor to that body so it
     // carries us with its spin; thrusting releases it.
-    if (Vector3Length(accel) == 0.0f && Vector3Length(velocity) < 0.5f) {
+    // "At rest" is measured relative to the surface, so it also works on a spinning body.
+    if (Vector3Length(accel) == 0.0f) {
         if (Planetoid* body = NearestPlanetoid(world, p)) {
             float dist; Vector3 n;
-            if (TerrainSurfaceDistance(*body, p, dist, n) && dist < hullRadius + 1.0f) {
+            const Vector3 surfaceVel = body->surfaceVelocity(p);
+            if (Vector3Distance(velocity, surfaceVel) < 0.5f && TerrainSurfaceDistance(*body, p, dist, n) && dist < hullRadius + 1.0f) {
                 anchorBody = body;
                 anchorId = body->id;
                 anchorLocal = body->toLocal(p);
                 anchorRotPrev = body->rotationQuat();
                 anchorEndPos = position;
-                velocity = { 0, 0, 0 };
+                velocity = surfaceVel; // moving with the surface, as the anchored path reports it
             }
         }
     }

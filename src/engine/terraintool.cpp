@@ -24,7 +24,7 @@ namespace {
     }
 }
 
-void TerrainTool_Update(Scene& world, bool inputEnabled) {
+void TerrainTool_Update(Scene& world, bool inputEnabled, bool editEnabled) {
     PROFILE_FUNCTION();
     const Vector3 dir = Vector3Normalize(Vector3Subtract(world.camera.target, world.camera.position));
     hasHit = RaycastTerrain(world, Ray{ world.camera.position, dir }, player.flyMode ? 150.0f : terrainTool.reach, hit);
@@ -36,6 +36,7 @@ void TerrainTool_Update(Scene& world, bool inputEnabled) {
         if (LoadWorldSave(world)) { Toast("Loaded saves/world.sav"); hasHit = false; return; }
         Toast("No save found");
     }
+    if (!editEnabled) { digging = adding = false; return; } // e.g. piloting: save/load only
 
     const float wheel = GetMouseWheelMove();
     if (wheel != 0.0f) terrainTool.brushRadius = std::clamp(terrainTool.brushRadius * (wheel > 0 ? 1.15f : 1.0f / 1.15f), 1.0f, 24.0f);
@@ -44,11 +45,18 @@ void TerrainTool_Update(Scene& world, bool inputEnabled) {
     adding = !digging && IsMouseButtonDown(MOUSE_BUTTON_RIGHT);
     if (!(digging || adding) || !hasHit) { strokeTimer = 0.0f; return; }
 
-    // Fixed stroke rate while held, so editing speed does not depend on frame rate.
+    // Fixed stroke rate while held, so editing speed does not depend on frame rate: keep the
+    // timer's remainder and run every interval that elapsed this frame (re-aiming between catch-up
+    // strokes so they don't hit an already-dug spot). Catch-up is capped after a long hitch.
     strokeTimer -= GetFrameTime();
-    if (strokeTimer > 0.0f) return;
-    strokeTimer = 1.0f / terrainTool.strokesPerSecond;
-    TerrainTool_Stroke(digging);
+    const float interval = 1.0f / terrainTool.strokesPerSecond;
+    for (int n = 0; strokeTimer <= 0.0f && n < 8; ++n) {
+        if (n > 0) hasHit = RaycastTerrain(world, Ray{ world.camera.position, dir }, player.flyMode ? 150.0f : terrainTool.reach, hit);
+        if (!hasHit) break;
+        TerrainTool_Stroke(digging);
+        strokeTimer += interval;
+    }
+    strokeTimer = std::max(strokeTimer, 0.0f);
 }
 
 // One brush stroke at the current crosshair hit (also used by scripted tests).

@@ -86,7 +86,9 @@ void Survival_Update(Scene& world, float dt, bool jetpackFiring, bool inputEnabl
             else Audio_Play(Sfx::Error, 0.4f);
         }
         if (IsKeyPressed(KEY_TWO)) {
-            if (inventory.remove("power_cell", 1)) {
+            // Don't waste a cell on a full store (ship while piloting, otherwise the suit).
+            const bool full = ship.piloted ? ship.energy >= 99.0f : survival.power >= 99.0f;
+            if (!full && inventory.remove("power_cell", 1)) {
                 if (ship.piloted) ship.energy = std::min(100.0f, ship.energy + 40.0f);
                 else survival.power = std::min(100.0f, survival.power + 50.0f);
                 Audio_Play(Sfx::Pickup);
