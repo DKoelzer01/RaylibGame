@@ -57,6 +57,10 @@ class Scene {
         float sunDistance = 500.0f;
 
         bool debugDraw = false;  // F3: light marker, shadow box, shadow-map preview
+        bool cameraInputEnabled = true;  // false while the debug UI owns the mouse
+        float texScale = 0.05f;          // terrain texture repeats per world unit
+        Vector3 ambientColor = { 0.12f, 0.12f, 0.14f };
+        void reloadShaders();            // force reload (debug UI button)
         int lastDrawCalls = 0;
 
         Object rootObject;

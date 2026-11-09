@@ -19,6 +19,8 @@ struct RenderContext {
     int* drawCalls = nullptr;             // optional stats counter
 };
 
+extern bool frustumCullingEnabled; // debug toggle
+
 class Object {
 public:
     std::string type; // Type of the object (e.g., "cube", "sphere")

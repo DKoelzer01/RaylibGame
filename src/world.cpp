@@ -10,7 +10,8 @@
 //Setup RNG
 float randScale = 100000.0f; // Scale for random number generation
 std::random_device rd; // Obtain a seed from the system
-std::mt19937 gen(rd()); // Initialize the Mersenne Twister engine with the seed
+std::mt19937 gen(rd()); // Reseeded by generateWorld() from WorldGenSettings
+WorldGenSettings worldGen;
 std::uniform_int_distribution<> distrib(1, randScale);
 
 // Helpers for 3D integer coordinates as chunk keys
@@ -97,6 +98,7 @@ static Vector3 trilerpVec3(
 }
 
 void Chunk::calculateNormals() {
+    PROFILE_FUNCTION();
     if (vertices.empty() || mesh.vertexCount == 0) {
         // logger.logf("[deferredNormals]: Skipping normal calculation for chunk at (%d, %d, %d) because it has no vertices.\n", offset.x, offset.y, offset.z);
         return;
@@ -397,7 +399,10 @@ void normalizeNoise(std::vector<float>& noiseValues, int size, float scale = 1.0
 }
 
 void generateWorld(Scene& world) {
-    logger.logf("Generating world scene...\n");
+    PROFILE_FUNCTION();
+    worldGen.lastSeed = worldGen.seed ? worldGen.seed : rd();
+    gen.seed(worldGen.lastSeed);
+    logger.logf("Generating world scene (seed %u)...\n", worldGen.lastSeed);
     clock_t worldGenStart = clock();
 
     float genRange = 500.0f; // Radius for planetoid generation
@@ -468,7 +473,8 @@ void iterativeChunk(int startCx, int startCy, int startCz, const Vector3& origin
         chunkName.reserve(32);
         chunkName = "chunk_" + std::to_string(cx) + "_" + std::to_string(cy) + "_" + std::to_string(cz);
         time_t genChunk = clock();
-        auto chunk = generateChunk(chunkLocalPos, origin, noise, planetoid); // Pass chunk-local position only
+        PROFILE_SCOPE("Generate chunk");
+        auto chunk = generateChunk(chunkLocalPos, origin, noise, planetoid);
         // Log the chunk noise values min and max
         // logger.logf("[generateChunk] Chunk (%d, %d, %d) noise values min: %.4f, max: %.4f\n",
         //     cx, cy, cz,
@@ -606,7 +612,7 @@ int generatePlanetoids(float randScale, Scene& world, float genRange, float minS
 
     //Generate planetoids
     int numPlanetoids = ((distrib(gen)/randScale) * 5) + 1; // Number of planetoids to generate
-    numPlanetoids = 1; // For testing purposes, generate only one planetoid
+    numPlanetoids = worldGen.planetoidCount; // fixed count while testing (see WorldGenSettings)
     logger.logf("Generating %d planetoids...\n", numPlanetoids);
 
     for(int i = 0; i < numPlanetoids; ++i) {
@@ -618,7 +624,7 @@ int generatePlanetoids(float randScale, Scene& world, float genRange, float minS
                                 static_cast<float>(((distrib(gen)/randScale)*genRange)-(genRange/2)), 
                                 static_cast<float>(((distrib(gen)/randScale)*genRange)-(genRange/2))};
 
-        position = {64.0f, 0.0f, 0.0f}; // Fixed position for testing
+        if (i == 0) position = worldGen.firstPosition; // keep the first one somewhere predictable
 
         // Rotation is random in degrees, scaled by randScale
         Vector3 rotation = {    static_cast<float>(distrib(gen)/randScale * 360), 
@@ -635,7 +641,7 @@ int generatePlanetoids(float randScale, Scene& world, float genRange, float minS
 
         // Size is a random float between minSize and maxSize
         size_t size = static_cast<size_t>((distrib(gen)/randScale)*(maxSize-minSize)) + static_cast<size_t>(minSize);
-        size = 50; // Fixed size for testing
+        size = worldGen.planetoidSize;
 
         // Scale is a fixed value for now, can be adjusted later
         float scale = 1.0f;
@@ -730,4 +736,9 @@ void loadWorld(Scene& world) {
         }
     }
     file.close();
+}
+
+void regenerateWorld(Scene& world) {
+    world.objects.clear(); // releases chunk meshes (GPU + CPU)
+    generateWorld(world);
 }

@@ -8,6 +8,8 @@
 #include "utils/logger.h"
 #include "rlights.h"
 #include "raymath.h"
+#include "debugui.h"
+#include "profiler.h"
 
 #if defined(PLATFORM_DESKTOP)
     #define GLSL_VERSION            330
@@ -26,9 +28,14 @@ bool benchMode = false;
 int main(int argc, char** argv)
 {
     double benchSeconds = 0.0;
+    bool startWithOverlay = false;
     Vector3 benchCamOffset = { -70.0f, 35.0f, 70.0f }; // --cam dx dy dz: bench camera offset from the planetoid
     for (int i = 1; i < argc; ++i) {
         if (std::string(argv[i]) == "--bench") benchSeconds = (i + 1 < argc) ? atof(argv[i + 1]) : 10.0;
+        if (std::string(argv[i]) == "--ui") DebugUI_Toggle(); // open the debug panel at start
+        if (std::string(argv[i]) == "--seed" && i + 1 < argc) worldGen.seed = (unsigned int)strtoul(argv[i + 1], nullptr, 10);
+        if (std::string(argv[i]) == "--nocull") frustumCullingEnabled = false;
+        if (std::string(argv[i]) == "--overlay") startWithOverlay = true;
         if (std::string(argv[i]) == "--cam" && i + 3 < argc) { benchCamOffset = { (float)atof(argv[i+1]), (float)atof(argv[i+2]), (float)atof(argv[i+3]) }; }
     }
     const bool bench = benchSeconds > 0.0;
@@ -49,6 +56,7 @@ int main(int argc, char** argv)
     SetExitKey(KEY_NULL);
     SetTraceLogLevel(LOG_WARNING); // Set log level to warning to reduce output noise
     
+    DebugUI_Init();
     {   // Scenes own GPU resources: keep them in a scope that ends before CloseWindow().
     Scene mainMenu("mainMenu", true); // Main menu scene;
     Scene world("world", false);
@@ -66,6 +74,7 @@ int main(int argc, char** argv)
         mainMenu.isActive = false;
         world.isActive = true;
         world.camera.position = Vector3Add(world.camera.target, benchCamOffset);
+        world.debugDraw = startWithOverlay;
         benchStart = GetTime();
     }
 
@@ -92,8 +101,14 @@ int main(int argc, char** argv)
             EndDrawing();
             continue;
         } else if (gameState == 1) {
-            HideCursor();
-        } 
+            if (DebugUI_IsOpen()) ShowCursor(); else HideCursor();
+        }
+        if (!bench && IsKeyPressed(KEY_F1)) {
+            DebugUI_Toggle();
+            if (!DebugUI_IsOpen()) SetMousePosition(GetScreenWidth()/2, GetScreenHeight()/2);
+        }
+        world.cameraInputEnabled = !DebugUI_IsOpen();
+
         switch(gameState) {
             case 0: // Main Menu
                 if (IsKeyPressed(KEY_ENTER)) {
@@ -138,7 +153,7 @@ int main(int argc, char** argv)
             } else if (gameState == 1) {
                 world.drawScene(gameState);
                 world.drawUI(gameState);
-                if (!bench) SetMousePosition(GetScreenWidth()/2, GetScreenHeight()/2);
+                if (!bench && !DebugUI_IsOpen()) SetMousePosition(GetScreenWidth()/2, GetScreenHeight()/2);
             } else if (gameState == 2) {
                 world.drawScene(gameState);
                 world.drawUI(gameState);
@@ -149,10 +164,13 @@ int main(int argc, char** argv)
                 DrawText("Press R to resume", GetScreenWidth()/2 - MeasureText("Press R to resume", 20)/2, GetScreenHeight()/2 + 10, 20, WHITE);
                 DrawText("Press ESC to exit", GetScreenWidth()/2 - MeasureText("Press ESC to exit", 20)/2, GetScreenHeight()/2 + 30, 20, WHITE);
             }
+            if (gameState != 0) DebugUI_Draw(world);
         EndDrawing();
+        PROFILE_FRAME();
     }
-    
+
     }   // scenes destroyed here, while the GL context still exists
+    DebugUI_Shutdown();
     CloseWindow();
 }
 

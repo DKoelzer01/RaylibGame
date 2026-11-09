@@ -22,6 +22,8 @@ void Object::drawDepthOnly(const RenderContext&) {
 
 Object::~Object() {}
 
+bool frustumCullingEnabled = true;
+
 TextObject::TextObject(std::string text, int fontSize)
     : Object("text","text", {0.0f, 0.0f, 0.0f}, {0.0f, 0.0f, 0.0f}, WHITE, 1.0f), text(text), fontSize(fontSize) {}
 
@@ -89,7 +91,7 @@ Matrix Chunk::modelMatrix(const Matrix& parentTransform) const {
 }
 
 bool Chunk::visible(const RenderContext& ctx, const Matrix& model) const {
-    if (!ctx.frustum) return true;
+    if (!ctx.frustum || !frustumCullingEnabled) return true;
     const float h = CHUNK_SIZE * 0.5f;
     const Vector3 centre = Vector3Transform({ h, h, h }, model);
     // Bounding sphere of the chunk cube; account for the parent's scale.

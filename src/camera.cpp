@@ -2,10 +2,12 @@
 
 // Free-fly camera. Speeds are per second and scaled by frame time, so movement no longer
 // depends on frame rate.
+float cameraMoveSpeed = 30.0f;
+
 void customUpdateCamera(Camera3D* camera)
 {
     const float dt = GetFrameTime();
-    float moveSpeed = 30.0f;           // units / second
+    float moveSpeed = cameraMoveSpeed; // units / second
     const float keyTurnSpeed = 1.5f;   // radians / second (arrow keys)
     const float mouseSensitivity = 0.003f; // radians / pixel (already frame-rate independent)
 

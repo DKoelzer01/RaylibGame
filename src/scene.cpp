@@ -1,5 +1,7 @@
 #include "scene.h"
 #include "utils/logger.h"
+#include "profiler.h"
+#include "worldtypes.h"
 #include <raylib.h>
 #include <rlgl.h>
 
@@ -113,14 +115,15 @@ void Scene::applyLightingShader() {
     locShadowRes  = GetShaderLocation(s, "shadowMapResolution");
     locTexScale   = GetShaderLocation(s, "texScale");
 
-    const float ambient[4] = { 0.12f, 0.12f, 0.14f, 1.0f };
-    SetShaderValue(s, locAmbient, ambient, SHADER_UNIFORM_VEC4);
     const int res = SHADOW_MAP_SIZE;
     SetShaderValue(s, locShadowRes, &res, SHADER_UNIFORM_INT);
-    const float texScale = 0.05f;
-    SetShaderValue(s, locTexScale, &texScale, SHADER_UNIFORM_FLOAT);
 
     terrainMaterial.shader = s;
+}
+
+void Scene::reloadShaders() {
+    if (lighting.reloadIfChanged(true)) applyLightingShader();
+    if (depth.reloadIfChanged(true)) depthMaterial.shader = depth.shader;
 }
 
 // Mipmapped, trilinear + anisotropic. Without mipmaps a 2K texture minified onto distant terrain
@@ -170,6 +173,7 @@ void Scene::loadTerrainTextures() {
 
 void Scene::drawScene(int gamestate) {
     if (!isActive) return;
+    PROFILE_FUNCTION();
 
     // --- Hot reload: only touches the GPU when a shader file actually changed ---
     if (lighting.reloadIfChanged()) applyLightingShader();
@@ -179,7 +183,7 @@ void Scene::drawScene(int gamestate) {
 
     // --- Update camera first so both passes use this frame's position ---
     extern bool benchMode;
-    if (gamestate == 1 && !benchMode) customUpdateCamera(&camera);
+    if (gamestate == 1 && !benchMode && cameraInputEnabled) customUpdateCamera(&camera);
 
     // --- Directional light: an orthographic box that follows the camera ---
     const Vector3 centre = camera.position;
@@ -200,6 +204,8 @@ void Scene::drawScene(int gamestate) {
     // Read the light's matrices back from rlgl inside BeginMode3D so the shader's lightSpaceMatrix is
     // exactly what the depth pass rendered with. (DrawMesh overwrites any hand-set "mvp" uniform.)
     const double defaultNear = rlGetCullDistanceNear(), defaultFar = rlGetCullDistanceFar();
+    {
+    PROFILE_SCOPE("Shadow pass");
     rlSetClipPlanes(1.0, sunDistance * 2.0);
     BeginTextureMode(shadowMap);
         ClearBackground(WHITE);
@@ -216,10 +222,15 @@ void Scene::drawScene(int gamestate) {
         EndMode3D();
     EndTextureMode();
     rlSetClipPlanes(defaultNear, defaultFar);
+    }
 
     // --- Per-frame lighting uniforms ---
+    PROFILE_SCOPE("Main pass");
     Shader& s = lighting.shader;
     SetShaderValueMatrix(s, locLightSpace, lightSpaceMatrix);
+    SetShaderValue(s, locTexScale, &texScale, SHADER_UNIFORM_FLOAT);
+    const float ambient[4] = { ambientColor.x, ambientColor.y, ambientColor.z, 1.0f };
+    SetShaderValue(s, locAmbient, ambient, SHADER_UNIFORM_VEC4);
     SetShaderValue(s, locViewPos, &camera.position, SHADER_UNIFORM_VEC3);
     for (size_t i = 0; i < lights.size(); ++i) {
         if (lights[i].enabled) UpdateLightValues(s, lights[i], (int)i);
@@ -246,6 +257,17 @@ void Scene::drawScene(int gamestate) {
         if (debugDraw) {
             DrawSphere(lightPos, 10.0f, ColorAlpha(RED, 0.5f));
             DrawCubeWires(centre, shadowHalfExtent * 2, shadowHalfExtent * 2, shadowHalfExtent * 2, RED);
+            // Chunk bounds: green = has a mesh, dark grey = generated but empty.
+            for (const auto& obj : objects) {
+                const Planetoid* p = dynamic_cast<const Planetoid*>(obj.get());
+                if (!p) continue;
+                const float h = CHUNK_SIZE * 0.5f * p->scale;
+                for (const auto& entry : p->chunkChildren) {
+                    const Chunk& c = *entry.second;
+                    const Vector3 ctr = Vector3Transform({ c.offset.x + CHUNK_SIZE * 0.5f, c.offset.y + CHUNK_SIZE * 0.5f, c.offset.z + CHUNK_SIZE * 0.5f }, p->localTransform());
+                    if (c.mesh.vaoId > 0) DrawCubeWires(ctr, 2 * h, 2 * h, 2 * h, GREEN);
+                }
+            }
         }
     EndMode3D();
     lastDrawCalls = drawCalls;

@@ -371,7 +371,26 @@ CPP_FILES = \
 	src/mainmenu.cpp \
 	src/SimplexNoise.cpp \
 	src/utils/logger.cpp \
-    src/rlights.cpp
+    src/rlights.cpp \
+    src/debugui.cpp \
+    third_party/imgui/imgui.cpp \
+    third_party/imgui/imgui_draw.cpp \
+    third_party/imgui/imgui_tables.cpp \
+    third_party/imgui/imgui_widgets.cpp \
+    third_party/imgui/imgui_demo.cpp \
+    third_party/rlImGui/rlImGui.cpp
+
+INCLUDE_PATHS += -Ithird_party/imgui -Ithird_party/rlImGui
+CFLAGS += -DNO_FONT_AWESOME
+
+# Optional Tracy profiler: mingw32-make TRACY_PATH=C:/path/to/tracy
+# (run `mingw32-make clean` when switching it on or off). Use the matching tracy-profiler GUI version.
+ifdef TRACY_PATH
+    CPP_FILES += $(TRACY_PATH)/public/TracyClient.cpp
+    CFLAGS += -DTRACY_ENABLE
+    INCLUDE_PATHS += -I$(TRACY_PATH)/public
+    LDLIBS += -lws2_32 -ldbghelp
+endif
 
 OBJ_FILES = $(CPP_FILES:.cpp=.o)
 
