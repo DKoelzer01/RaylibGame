@@ -100,6 +100,6 @@ void TerrainTool_DrawHUD() {
         DrawText(TextFormat("%s  %.1f m   brush %.1f", VoxelMaterialName(hit.material), hit.distance, terrainTool.brushRadius),
                  cx + 14, cy + 10, 20, RAYWHITE);
     }
-    DrawText("LMB dig  RMB build  wheel brush  Tab inventory  F fly  F5 save  F9 load  F1 debug", 10, y + 30, 20, Fade(RAYWHITE, 0.7f));
+    DrawText("LMB dig  RMB build  wheel brush  Tab inventory  L lamp  F fly  F5 save  F9 load  F1 debug", 10, y + 30, 20, Fade(RAYWHITE, 0.7f));
     if (GetTime() < toastUntil) DrawText(toast.c_str(), 10, y, 20, YELLOW);
 }

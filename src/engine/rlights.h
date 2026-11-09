@@ -67,7 +67,8 @@ typedef struct {
 // Light type
 typedef enum {
     LIGHT_DIRECTIONAL = 0,
-    LIGHT_POINT
+    LIGHT_POINT,     // range in target.x; color alpha scales intensity
+    LIGHT_SPOT       // aims from position toward target; range = |target - position|; alpha = intensity
 } LightType;
 
 #ifdef __cplusplus

@@ -21,6 +21,7 @@ uniform float texScale;            // world units -> texture repeats
 #define MAX_LIGHTS          4
 #define LIGHT_DIRECTIONAL   0
 #define LIGHT_POINT         1
+#define LIGHT_SPOT          2   // position -> target is the beam; its length is the range
 
 struct Light {
     int enabled;
@@ -149,6 +150,12 @@ void main()
         if (lights[i].type == LIGHT_POINT) {
             float dl = length(lights[i].position - fragPosition) / max(lights[i].target.x, 1.0);
             atten = lights[i].color.a * 3.0 / (1.0 + dl * dl * 4.0);
+        } else if (lights[i].type == LIGHT_SPOT) {
+            vec3 beam = lights[i].target - lights[i].position;
+            float range = max(length(beam), 1.0);
+            float cone = smoothstep(0.82, 0.95, dot(-l, beam / range)); // ~35 deg outer, ~18 deg inner
+            float dl = length(lights[i].position - fragPosition) / range;
+            atten = lights[i].color.a * 3.0 * cone / (1.0 + dl * dl * 4.0);
         }
         direct += (albedo * NdotL + spec) * lights[i].color.rgb * shadow * atten;
     }

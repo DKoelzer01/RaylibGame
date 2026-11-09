@@ -62,7 +62,7 @@ class Scene {
         bool debugDraw = false;  // F3: light marker, shadow box, shadow-map preview
         bool cameraInputEnabled = true;  // false while the debug UI owns the mouse
         float texScale = 0.05f;          // terrain texture repeats per world unit
-        Vector3 ambientColor = { 0.025f, 0.025f, 0.03f }; // linear; night side is dim but readable (sRGB lifts it)
+        Vector3 ambientColor = { 1.0f / 255.0f, 1.0f / 255.0f, 1.0f / 255.0f }; // linear; night side near-black (use the headlamp)
         void reloadShaders();            // force reload (debug UI button)
         int lastDrawCalls = 0;
         int materialPalette = 0;         // lighting.fs: 0 = space materials, 1 = fantasy

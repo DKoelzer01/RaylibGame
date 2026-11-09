@@ -33,6 +33,7 @@ generated in the build directory for IntelliSense/clangd.
 | WASD, Space, Ctrl | move (Shift/Alt = faster) |
 | LMB / RMB (hold) | dig / build terrain at the crosshair (build costs stone or regolith) |
 | Tab | inventory + crafting |
+| L | headlamp (on foot: suit power; piloting: ship nose light) |
 | F | toggle free-fly camera |
 | Space | jump; hold for jetpack |
 | E | board / exit the ship |
@@ -96,7 +97,9 @@ frustum culling, `--test-dig N` carves a tunnel at the crosshair, `--test-savelo
 `--test-mine N` digs N strokes at the feet, crafts everything possible and builds 3 strokes,
 `--test-fly S` autopilots the ship to the nearest other asteroid, `--test-suffocate` checks death/respawn,
 `--test-ride` (standing/jumping on a spinning body), `--test-orbit S` (jetpack orbit stability),
-`--test-park` (parked ship rides a spinning body), `--spin-test` (writes `spin_*.png` frames).
+`--test-park` (parked ship rides a spinning body), `--spin-test` (writes `spin_*.png` frames),
+`--sun x y z` sets the sun direction, `--headlamp` / `--inventory` start with the lamp on / inventory
+open, `--look-down` tilts the view to the ground (lighting checks).
 
 ## Third-party
 See `third_party/README.md` (Dear ImGui v1.92.7, rlImGui tag Raylib_5_5).

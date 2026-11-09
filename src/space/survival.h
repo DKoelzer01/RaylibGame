@@ -12,6 +12,8 @@ struct SurvivalState {
     float jetpackPowerPerSec = 4.0f;
     float suffocationDamagePerSec = 6.0f;
     float lifeSupportRefillPerSec = 12.0f;                    // inside / near the ship
+    float headlampPowerPerSec = 0.15f;                        // ~11 min of lamp on a full suit
+    bool headlamp = false;                                    // L toggles; goes out at 0 power
     bool inLifeSupport = false;
     bool dead = false;
     double deathTime = 0.0;

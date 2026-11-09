@@ -53,6 +53,9 @@ int main(int argc, char** argv)
     bool orbitCrashed = false;
     bool benchRide = false;        // --test-ride: stand on a spinning body, then jump
     bool benchPark = false;        // --test-park: park the ship on a spinning body
+    bool sunOverride = false;      // --sun x y z: sun direction (e.g. to test night-side lighting)
+    bool lookDown = false;         // --look-down: tilt the player view toward the ground (lighting tests)
+    Vector3 sunArg = { 1, 0, 0 };
     double parkStart = -1.0;
     int parkPhase = 0;
     bool parkAnchored = false;
@@ -86,6 +89,10 @@ int main(int argc, char** argv)
         if (std::string(argv[i]) == "--test-orbit" && i + 1 < argc) benchOrbitSeconds = atof(argv[i + 1]);
         if (std::string(argv[i]) == "--test-ride") benchRide = true;
         if (std::string(argv[i]) == "--test-park") benchPark = true;
+        if (std::string(argv[i]) == "--sun" && i + 3 < argc) { sunOverride = true; sunArg = Vector3Normalize({ (float)atof(argv[i + 1]), (float)atof(argv[i + 2]), (float)atof(argv[i + 3]) }); }
+        if (std::string(argv[i]) == "--look-down") lookDown = true;
+        if (std::string(argv[i]) == "--headlamp") survival.headlamp = true;      // lamp on from the start
+        if (std::string(argv[i]) == "--inventory") GameUI_ToggleInventory();     // inventory open (player glow)
         if (std::string(argv[i]) == "--spin-test") spinTest = true;
         if (std::string(argv[i]) == "--test-flycam") {
             // Pitch a free camera through two full loops (past straight up and down) in small steps,
@@ -458,11 +465,45 @@ int main(int argc, char** argv)
             if (ship.piloted && ship.lastImpact > 12.0f) survival.health -= (ship.lastImpact - 12.0f) * 3.0f; // crash damage
             Survival_Update(world, GetFrameTime(), !ship.piloted && !player.grounded && gameInput && player.jetpackFuel > 0.0f && (IsKeyDown(KEY_SPACE) || IsKeyDown(KEY_LEFT_CONTROL) || IsKeyDown(KEY_W) || IsKeyDown(KEY_A) || IsKeyDown(KEY_S) || IsKeyDown(KEY_D)), gameInput);
             Objectives_Update(world);
+            if (bench && lookDown && !ship.piloted) {
+                const Vector3 t = Vector3Subtract(player.forward, Vector3Scale(player.up, Vector3DotProduct(player.forward, player.up)));
+                player.forward = Vector3Normalize(Vector3Subtract(Vector3Scale(Vector3Normalize(t), 0.8f), player.up)); // ~50 deg down
+            }
             if (!ship.piloted) player.applyToCamera(world);
         }
 
         world.updateFloatingOrigin(); // keep the camera near render-space 0 (float precision)
         worldUpdate(world, 3.0f, gameState == 1); // LOD + streaming always; bodies only spin while playing
+
+        // Slot 1: headlamp (suit lamp from the eye, or the ship's nose light while piloting).
+        // Slot 2: soft glow around the player while the inventory is open.
+        if (sunOverride) world.sunDirection = sunArg;
+        while (world.lights.size() < 3) world.lights.push_back(Light{});
+        {
+            Light& lamp = world.lights[1];
+            lamp.type = LIGHT_SPOT;
+            lamp.enabled = gameState == 1 && survival.headlamp && !survival.dead;
+            if (lamp.enabled) {
+                const float range = ship.piloted ? 60.0f : 35.0f;
+                Vector3 from, dir;
+                if (ship.piloted) { from = Vector3Add(ship.renderPos(world), Vector3Scale(ship.forward(), 2.6f)); dir = ship.forward(); }
+                else {
+                    dir = Vector3Normalize(Vector3Subtract(world.camera.target, world.camera.position));
+                    from = Vector3Add(world.camera.position, Vector3Scale(world.camera.up, -0.15f)); // brow, not the eye
+                }
+                lamp.position = from;
+                lamp.target = Vector3Add(from, Vector3Scale(dir, range));
+                lamp.color = { 255, 244, 225, 110 };  // alpha = intensity
+            }
+            Light& glow = world.lights[2];
+            glow.type = LIGHT_POINT;
+            glow.enabled = gameState == 1 && GameUI_InventoryOpen() && !ship.piloted && !survival.dead;
+            if (glow.enabled) {
+                glow.position = Vector3Add(world.camera.position, Vector3Scale(world.camera.up, -0.3f));
+                glow.target = { 6.0f, 0.0f, 0.0f };   // point light: range in target.x
+                glow.color = { 255, 205, 150, 32 };   // warm, dim
+            }
+        }
         // --spin-test: camera locked to the spinning first asteroid; texture must turn with the rock.
         if (bench && spinTest && benchStart >= 0.0) {
             Planetoid* p = dynamic_cast<Planetoid*>(world.objects[0].get());
@@ -559,7 +600,7 @@ int main(int argc, char** argv)
                 Objectives_DrawHUD();
                 if (!ship.piloted && ship.playerInRange(world, (player.position - world.renderOrigin).toFloat(), 5.0f))
                     DrawText("[E] Board ship", GetScreenWidth() / 2 - 60, GetScreenHeight() / 2 + 40, 20, SKYBLUE);
-                if (ship.piloted) DrawText("SHIP: WASD thrust  Space/Ctrl up/down  mouse steer  Z/C roll  Shift boost  X brake  [2] power cell  E exit",
+                if (ship.piloted) DrawText("SHIP: WASD thrust  Space/Ctrl up/down  mouse steer  Z/C roll  Shift boost  X brake  L lights  [2] power cell  E exit",
                                            10, GetScreenHeight() - 30, 18, Fade(SKYBLUE, 0.9f));
                 if (!bench && !uiOpen) SetMousePosition(GetScreenWidth()/2, GetScreenHeight()/2);
             } else if (gameState == 2) {

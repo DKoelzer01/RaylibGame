@@ -59,9 +59,19 @@ void Survival_Update(Scene& world, float dt, bool jetpackFiring, bool inputEnabl
         ship.energy = std::max(0.0f, ship.energy - 0.02f * (survival.oxygen + survival.power - before));
     } else {
         survival.oxygen = std::max(0.0f, survival.oxygen - survival.oxygenDrainPerSec * dt);
-        survival.power = std::max(0.0f, survival.power - (survival.powerDrainPerSec + (jetpackFiring ? survival.jetpackPowerPerSec : 0.0f)) * dt);
+        survival.power = std::max(0.0f, survival.power - (survival.powerDrainPerSec + (jetpackFiring ? survival.jetpackPowerPerSec : 0.0f)
+                                                          + (survival.headlamp && !ship.piloted ? survival.headlampPowerPerSec : 0.0f)) * dt);
     }
-    if (survival.power <= 0.0f) player.jetpackFuel = 0.0f;           // no suit power, no jetpack
+    if (survival.power <= 0.0f) {
+        player.jetpackFuel = 0.0f;                                    // no suit power, no jetpack...
+        if (survival.headlamp && !ship.piloted) { survival.headlamp = false; GameUI_Toast("Headlamp out: no suit power"); } // ...or lamp
+    }
+    if (inputEnabled && IsKeyPressed(KEY_L)) {
+        if (survival.power > 0.0f || ship.piloted) {
+            survival.headlamp = !survival.headlamp;
+            Audio_Play(Sfx::Build, 0.25f, survival.headlamp ? 1.8f : 1.5f);
+        } else GameUI_Toast("No suit power for the headlamp");
+    }
     if (survival.oxygen <= 0.0f) survival.health -= survival.suffocationDamagePerSec * dt;
 
     if (inputEnabled) {
