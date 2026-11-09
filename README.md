@@ -6,7 +6,7 @@ cubes, Simplex fBm, octree LOD, shadowed lighting).
 - `src/engine/` - the reusable engine library (`engine` target): density fields, meshing/LOD, job
   system, player controller, inventory, audio, scenes, debug UI.
 - `src/space/` - the space survival game (`game` target): ship, survival, save/load, HUD, `main.cpp`.
-- `resources/` - shaders and data (`resources/data/items.txt`, `recipes.txt`).
+- `resources/` - shaders and data (`resources/data/bodies.txt`, `items.txt`, `recipes.txt`).
 
 ## Build (CMake)
 Needs CMake 3.24+ and a GCC/MinGW toolchain on PATH (e.g. `C:/raylib/w64devkit/bin`).
@@ -78,8 +78,11 @@ Shaders in `resources/` hot-reload when saved.
 - **Ship** (`src/space/ship.*`): **E** to board/exit. 6-DOF flight (WASD, Space/Ctrl, mouse, Z/C roll,
   Shift boost, X brake) with flight assist, chase camera, terrain collision, crash damage, and an
   energy store. Once at rest on the ground it anchors to that body and rides its spin (position and
-  heading) until you thrust off, keeping the surface's velocity. The start system has 8 asteroids
-  within ~1.5 km.
+  heading) until you thrust off, keeping the surface's velocity.
+- **Star system** (`src/engine/bodies.*`, `resources/data/bodies.txt`): one body (asteroid, planet, moon)
+  or procedural ring per line, with radius, position or orbit, spin or day length, gravity and seed. The
+  default is the start asteroid plus a ring of 7 more within ~1.5 km. Saves embed the system they were
+  made in, so editing the file never breaks a save. Errors are reported with line numbers in `log.txt`.
 - **Audio** (`src/engine/audio.*`): procedural sound effects, no assets.
 - Asteroid density is a displaced sphere with a uniform 0.25/voxel gradient: crisp surfaces and
   predictable dig depth.
@@ -90,13 +93,16 @@ Shaders in `resources/` hot-reload when saved.
 ./game.exe --bench 2 --seed 1553044913 --cam 60 45 -50 --test-dig 10 --test-saveload
 ```
 Writes `bench.txt` and `bench.png`. `--cam` = camera offset from the first planetoid, `--count` =
-planetoid count, `--system R` = belt radius, `--lod F` = LOD factor, `--first x y z` = first body position,
+planetoid count, `--system R` = belt radius, `--lod F` = LOD factor, `--first x y z` = first body position
+(`--size`, `--count`, `--system` and `--first` override the first body and first ring of `bodies.txt`),
+`--bodies file` uses another system file,
+`--dump-system` prints every body, `--load` loads `saves/world.sav` at start, `--fps N` caps the frame rate,
 `--ui` opens the debug panel, `--overlay` the F3 overlay, `--nocull` disables
 frustum culling, `--test-dig N` carves a tunnel at the crosshair, `--test-saveload` saves and reloads,
 `--test-walk S` / `--test-stand S` spawn the player and walk/stand (reports grounding + penetration),
 `--test-mine N` digs N strokes at the feet, crafts everything possible and builds 3 strokes,
 `--test-fly S` autopilots the ship to the nearest other asteroid, `--test-suffocate` checks death/respawn,
-`--test-ride` (standing/jumping on a spinning body), `--test-orbit S` (jetpack orbit stability),
+`--test-ride` (standing/jumping on a spinning body; `--ride-spin D` sets its rate), `--test-orbit S` (jetpack orbit stability),
 `--test-park` (parked ship rides a spinning body), `--spin-test` (writes `spin_*.png` frames),
 `--sun x y z` sets the sun direction, `--headlamp` / `--inventory` start with the lamp on / inventory
 open, `--look-down` tilts the view to the ground (lighting checks).

@@ -9,6 +9,7 @@
 
 #include "object.h"
 #include "voxel.h"
+#include "bodies.h"
 
 // One octree LOD node of a planetoid's surface. Its mesh is built from the planetoid's density
 // field on a worker thread and only uploaded here.
@@ -42,6 +43,8 @@ class Planetoid : public Object {
 public:
     const uint64_t id;                                   // stable handle for async results
     unsigned int seed;
+    BodyKind kind = BodyKind::Asteroid;
+    float surfaceGravity = 9.81f;                        // m/s^2 at radius (inverse-square outside)
     float radius;
     Vector3 spin = { 0, 0, 0 };                          // degrees per second about X/Y/Z
     std::shared_ptr<const DensityField> field;           // immutable, shared with workers

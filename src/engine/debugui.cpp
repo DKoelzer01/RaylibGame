@@ -118,13 +118,31 @@ void DebugUI_Draw(Scene& world) {
             ImGui::Text("Last seed used: %u", worldGen.lastSeed);
             ImGui::SameLine();
             if (ImGui::SmallButton("Reuse")) worldGen.seed = worldGen.lastSeed;
-            ImGui::SliderInt("Planetoids", &worldGen.planetoidCount, 1, 32);
-            ImGui::SliderFloat("System radius", &worldGen.systemRadius, 500.0f, 50000.0f, "%.0f", ImGuiSliderFlags_Logarithmic);
-            ImGui::SliderFloat("Max spin (deg/s)", &worldGen.maxSpinDegPerSec, 0.0f, 20.0f, "%.1f");
-            ImGui::SliderInt("Planetoid size", &worldGen.planetoidSize, 16, 250);
+            // The system definition (from bodies.txt or a save); edits apply on Regenerate.
+            ImGui::TextDisabled("Bodies (%s)", worldGen.bodiesPath.c_str());
+            for (size_t i = 0; i < worldGen.system.bodies.size(); ++i) {
+                BodyDef& b = worldGen.system.bodies[i];
+                ImGui::PushID((int)i);
+                if (ImGui::TreeNode("body", "%s %s", BodyKindName(b.kind), b.name.c_str())) {
+                    if (b.kind == BodyKind::Ring) {
+                        ImGui::SliderInt("Count", &b.count, 0, 64);
+                        ImGui::SliderFloat("Base size", &b.radius, 8.0f, 250.0f, "%.0f");
+                        ImGui::SliderFloat("Extent", &b.extent, 100.0f, 50000.0f, "%.0f", ImGuiSliderFlags_Logarithmic);
+                        ImGui::SliderFloat("Max spin (deg/s)", &b.maxSpinDegPerSec, 0.0f, 20.0f, "%.1f");
+                    } else {
+                        ImGui::SliderFloat("Radius", &b.radius, 8.0f, 100000.0f, "%.0f", ImGuiSliderFlags_Logarithmic);
+                        if (b.orbitParent.empty()) ImGui::DragFloat3("Position", &b.position.x, 1.0f);
+                        else ImGui::DragFloat("Altitude", &b.orbitAltitude, 10.0f, 0.0f, 1e7f, "%.0f");
+                        if (ImGui::SliderFloat("Spin (deg/s)", &b.spinDegPerSec, -20.0f, 20.0f, "%.2f")) b.spinFromDay = false;
+                    }
+                    ImGui::TreePop();
+                }
+                ImGui::PopID();
+            }
             ImGui::TextDisabled("Chunks build on worker threads, nearest first.");
-            ImGui::DragFloat3("First position", &worldGen.firstPosition.x, 1.0f);
             if (ImGui::Button("Regenerate world")) regenerateWorld(world);
+            ImGui::SameLine();
+            if (ImGui::Button("Reload bodies file")) { ReloadSystemDef(); regenerateWorld(world); }
         }
     }
     ImGui::End();

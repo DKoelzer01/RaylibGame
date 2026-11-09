@@ -67,6 +67,8 @@ int main(int argc, char** argv)
     float rideViewDrift = 0, ridePosDrift = 0, rideSurfaceSpeed = 0;
     int rideFrames = 0, rideGroundedFrames = 0; // grounded share while standing (ride test)
     float rideSpin = 10.0f;        // --ride-spin D: spin rate for --test-ride (deg/s)
+    bool dumpSystem = false;       // --dump-system: print every body after generation
+    bool loadSaveAtStart = false;  // --load: load saves/world.sav before starting
     bool spinTest = false;         // --spin-test: textures must stay attached to a spinning body
     float spinRate = 30.0f;        // --spin-rate DEG_PER_SEC
     int spinPhase = 0;
@@ -91,6 +93,8 @@ int main(int argc, char** argv)
         if (std::string(argv[i]) == "--test-suffocate") benchSuffocate = true;
         if (std::string(argv[i]) == "--test-orbit" && i + 1 < argc) benchOrbitSeconds = atof(argv[i + 1]);
         if (std::string(argv[i]) == "--test-ride") benchRide = true;
+        if (std::string(argv[i]) == "--dump-system") dumpSystem = true;
+        if (std::string(argv[i]) == "--load") loadSaveAtStart = true;
         if (std::string(argv[i]) == "--ride-spin" && i + 1 < argc) rideSpin = (float)atof(argv[i + 1]);
         if (std::string(argv[i]) == "--test-park") benchPark = true;
         if (std::string(argv[i]) == "--sun" && i + 3 < argc) { sunOverride = true; sunArg = Vector3Normalize({ (float)atof(argv[i + 1]), (float)atof(argv[i + 2]), (float)atof(argv[i + 3]) }); }
@@ -121,11 +125,12 @@ int main(int argc, char** argv)
         if (std::string(argv[i]) == "--test-fly" && i + 1 < argc) benchFlySeconds = atof(argv[i + 1]);
         if (std::string(argv[i]) == "--test-mine" && i + 1 < argc) benchMineStrokes = atoi(argv[i + 1]);
         if (std::string(argv[i]) == "--test-stand" && i + 1 < argc) { benchWalkSeconds = atof(argv[i + 1]); benchStandOnly = true; }
-        if (std::string(argv[i]) == "--size" && i + 1 < argc) worldGen.planetoidSize = atoi(argv[i + 1]);
-        if (std::string(argv[i]) == "--count" && i + 1 < argc) worldGen.planetoidCount = atoi(argv[i + 1]);
+        if (std::string(argv[i]) == "--size" && i + 1 < argc) worldGen.size = atoi(argv[i + 1]);
+        if (std::string(argv[i]) == "--bodies" && i + 1 < argc) worldGen.bodiesPath = argv[i + 1];   // system definition file
+        if (std::string(argv[i]) == "--count" && i + 1 < argc) worldGen.count = atoi(argv[i + 1]);
         if (std::string(argv[i]) == "--system" && i + 1 < argc) worldGen.systemRadius = (float)atof(argv[i + 1]);
         if (std::string(argv[i]) == "--lod" && i + 1 < argc) lodSettings.lodFactor = (float)atof(argv[i + 1]);
-        if (std::string(argv[i]) == "--first" && i + 3 < argc) worldGen.firstPosition = { (float)atof(argv[i+1]), (float)atof(argv[i+2]), (float)atof(argv[i+3]) };
+        if (std::string(argv[i]) == "--first" && i + 3 < argc) { worldGen.hasFirst = true; worldGen.first = { (float)atof(argv[i+1]), (float)atof(argv[i+2]), (float)atof(argv[i+3]) }; }
     }
     const bool bench = benchSeconds > 0.0;
     benchMode = bench;
@@ -158,6 +163,13 @@ int main(int argc, char** argv)
 
     mainMenuHandler(mainMenu);
     worldHandler(world);
+    if (loadSaveAtStart && !LoadWorldSave(world)) printf("bench: --load: could not load saves/world.sav\n");
+    if (dumpSystem) {
+        for (auto& obj : world.objects)
+            if (auto* p = dynamic_cast<Planetoid*>(obj.get()))
+                printf("body %s %s pos %.3f %.3f %.3f radius %.3f seed %u spin %.4f g %.4f\n", BodyKindName(p->kind), p->name.c_str(), p->worldPos.x, p->worldPos.y, p->worldPos.z,
+                       p->radius, p->seed, p->spin.y, p->surfaceGravity);
+    }
     if (Planetoid* start = world.objects.empty() ? nullptr : dynamic_cast<Planetoid*>(world.objects[0].get())) player.spawnOn(world, *start);
     if (!world.objects.empty()) {
         // Park the ship a few metres ahead of the player.
@@ -230,7 +242,7 @@ int main(int argc, char** argv)
                     const Vector3 feet = (player.position - world.renderOrigin).toFloat();
                     if (orbitStart < 0.0) {
                         const float d = 1.35f * R;
-                        const float g = Player::SurfaceGravity(R) * (R * R) / (d * d);
+                        const float g = p->surfaceGravity * (R * R) / (d * d);
                         player.flyMode = false;
                         player.grounded = false;
                         player.position = world.renderOrigin + Vector3Add(p->position, { 0.0f, d, 0.0f });

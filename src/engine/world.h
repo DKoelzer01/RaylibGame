@@ -16,18 +16,25 @@
 #include <cstdio>
 #include <functional>
 
-// Tweakable from the debug UI. seed == 0 means "pick a random seed"; lastSeed records what was
-// actually used so an interesting world can be reproduced.
+// What generateWorld() builds: the star system from bodiesPath (see bodies.h), plus a seed.
+// seed == 0 means "pick a random seed"; lastSeed records what was actually used so an
+// interesting world can be reproduced. Tweakable from the debug UI.
 struct WorldGenSettings {
     unsigned int seed = 0;
     unsigned int lastSeed = 0;
-    int planetoidCount = 8;
-    int planetoidSize = 50;
-    Vector3 firstPosition = { 64.0f, 0.0f, 0.0f };
-    float systemRadius = 1500.0f;    // other planetoids are scattered this far out (world units)
-    float maxSpinDegPerSec = 3.0f;   // random spin about the vertical axis
+    std::string bodiesPath = "resources/data/bodies.txt";
+    SystemDef system;          // loaded from bodiesPath on first use (or from a save)
+    bool systemLoaded = false;
+    // Command-line overrides of the classic start-body-plus-ring layout, applied whenever
+    // bodiesPath is (re)loaded. Negative / false = keep the file's value.
+    int count = -1;            // total bodies: the first ring gets count minus the single bodies
+    int size = -1;             // radius of the start body and the first ring's base size
+    float systemRadius = -1.0f;// first ring's extent
+    bool hasFirst = false;     // start body position
+    Vector3 first = { 0, 0, 0 };
 };
 extern WorldGenSettings worldGen;
+bool ReloadSystemDef();        // worldGen.bodiesPath -> worldGen.system (+ overrides); false on errors
 
 struct LodSettings {
     float lodFactor = 2.0f; // split a node while the camera is closer than lodFactor * node size

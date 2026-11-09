@@ -148,7 +148,7 @@ void Player::stepPhysics(Scene& world, float dt, Vector3 wish, bool jump, bool j
             gravity = 9.81f; // open world: ordinary gravity
         } else if (dist > 1e-3f) {
             gdir = Vector3Scale(toC, 1.0f / dist);
-            const float g0 = SurfaceGravity(R);
+            const float g0 = nearest->surfaceGravity;
             gravity = g0 * std::min(1.0f, (R * R) / (dist * dist));
         }
     }

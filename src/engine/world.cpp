@@ -55,6 +55,7 @@ Planetoid::Planetoid(std::string name, DVec3 wp, Vector3 rotation, float scale, 
       edits(std::make_shared<EditList>()) {
     worldPos = wp;
     hasWorldPos = true;
+    surfaceGravity = AutoSurfaceGravity(BodyKind::Asteroid, radius_ * scale); // generateWorld may override
     // Smallest level whose 2x2x2 root nodes (coords -1..0) cover the body plus room for added material.
     while ((float)(CHUNK_SIZE << rootLevel) < radius + 24.0f) rootLevel++;
     planetoidRegistry[id] = this;
@@ -463,26 +464,97 @@ void worldHandler(Scene& world) {
     if (!world.objects.empty()) world.camera.target = world.objects[0]->position;
 }
 
+bool ReloadSystemDef() {
+    SystemDef sys;
+    const bool ok = LoadSystemDef(worldGen.bodiesPath, sys);
+    if (!ok) {
+        if (worldGen.systemLoaded) {
+            logger.logf("[Bodies] keeping the current system\n");
+            return false;
+        }
+        logger.logf("[Bodies] falling back to the built-in start system\n");
+        sys = LegacySystemDef(8, 50, 1500.0f, 3.0f, { 64.0f, 0.0f, 0.0f });
+    }
+    // Command-line overrides (bench): first single body and first ring.
+    BodyDef* start = nullptr;
+    BodyDef* ring = nullptr;
+    int singles = 0;
+    for (BodyDef& b : sys.bodies) {
+        if (b.kind == BodyKind::Ring) { if (!ring) ring = &b; }
+        else { ++singles; if (!start) start = &b; }
+    }
+    if (start && worldGen.size > 0) start->radius = (float)worldGen.size;
+    if (start && worldGen.hasFirst) { start->hasPosition = true; start->position = worldGen.first; start->orbitParent.clear(); }
+    if (worldGen.count >= 0) {
+        const int want = std::max(0, worldGen.count - singles);
+        if (ring) ring->count = want;
+        else if (want > 0) {
+            BodyDef r = LegacySystemDef(2, worldGen.size > 0 ? worldGen.size : 50, 1500.0f, 3.0f, {}).bodies[1];
+            r.count = want;
+            sys.bodies.push_back(r);
+            ring = &sys.bodies.back();
+        }
+    }
+    if (ring && worldGen.size > 0) ring->radius = (float)worldGen.size;
+    if (ring && worldGen.systemRadius > 0.0f) ring->extent = worldGen.systemRadius;
+    worldGen.system = sys;
+    worldGen.systemLoaded = true;
+    return ok;
+}
+
 void generateWorld(Scene& world) {
     PROFILE_FUNCTION();
+    if (!worldGen.systemLoaded) ReloadSystemDef();
     worldGen.lastSeed = worldGen.seed ? worldGen.seed : rd();
     gen.seed(worldGen.lastSeed);
-    logger.logf("Generating world (seed %u)...\n", worldGen.lastSeed);
+    logger.logf("Generating world (seed %u, %zu definitions from %s)...\n", worldGen.lastSeed, worldGen.system.bodies.size(), worldGen.bodiesPath.c_str());
 
+    // Every body draws the same values in the same order (3 position values, its terrain seed,
+    // a size value for ring members, a spin value), so a seed reproduces the system exactly.
     std::uniform_real_distribution<double> unit(0.0, 1.0);
-    for (int i = 0; i < worldGen.planetoidCount; ++i) {
-        // A loose "belt": random directions, distances up to systemRadius. Doubles keep these exact.
-        DVec3 pos = { (unit(gen) - 0.5) * 2.0 * worldGen.systemRadius, (unit(gen) - 0.5) * 0.4 * worldGen.systemRadius,
-                      (unit(gen) - 0.5) * 2.0 * worldGen.systemRadius };
-        if (i == 0) pos = DVec3(worldGen.firstPosition); // keep the first one somewhere predictable
-        const unsigned int seed = (unsigned int)gen();
-        // Sizes vary per body around the configured size (the first keeps it exactly).
-        const float size = (i == 0) ? (float)worldGen.planetoidSize : (float)worldGen.planetoidSize * (float)(0.5 + 2.5 * unit(gen));
-        auto p = std::make_unique<Planetoid>("planetoid_" + std::to_string(i), pos, Vector3{ 0, 0, 0 }, 1.0f, seed, size);
-        p->spin = { 0.0f, (float)(unit(gen) - 0.5) * 2.0f * worldGen.maxSpinDegPerSec, 0.0f };
-        if (i == 0) p->spin = { 0, 0, 0 }; // the start body holds still (easier to test edits)
+    std::unordered_map<std::string, Planetoid*> byName;
+    int index = 0;
+    auto add = [&](const BodyDef& d, BodyKind kind, const std::string& name, DVec3 pos, float radius, unsigned int seed, float spin) {
+        auto p = std::make_unique<Planetoid>(name, pos, Vector3{ 0, 0, 0 }, 1.0f, seed, radius);
+        p->kind = kind;
+        p->spin = { 0.0f, spin, 0.0f };
+        p->surfaceGravity = d.gravity >= 0.0f ? d.gravity : AutoSurfaceGravity(kind, radius);
         p->parent = &world.rootObject;
+        byName[name] = p.get();
         world.objects.push_back(std::move(p));
+        ++index;
+    };
+    for (const BodyDef& d : worldGen.system.bodies) {
+        if (d.kind == BodyKind::Ring) {
+            // A loose "belt": random directions, distances up to `extent`. Doubles keep these exact.
+            for (int k = 0; k < d.count; ++k) {
+                const double x = (unit(gen) - 0.5) * 2.0 * d.extent;
+                const double y = (unit(gen) - 0.5) * (2.0 * d.flatten) * d.extent;
+                const double z = (unit(gen) - 0.5) * 2.0 * d.extent;
+                const unsigned int seed = (unsigned int)gen();
+                const float radius = d.radius * (float)(d.sizeMin + (d.sizeMax - d.sizeMin) * unit(gen));
+                const float spin = (float)(unit(gen) - 0.5) * 2.0f * d.maxSpinDegPerSec;
+                add(d, BodyKind::Asteroid, d.name + "_" + std::to_string(index), { x, y, z }, radius, seed, spin);
+            }
+            continue;
+        }
+        for (int i = 0; i < 3; ++i) (void)unit(gen); // position draws (kept so seeds reproduce)
+        const unsigned int drawnSeed = (unsigned int)gen();
+        (void)unit(gen);                               // spin draw
+        DVec3 pos = DVec3(d.position);
+        if (!d.orbitParent.empty()) {
+            // Static placement on the parent's equator for now; orbital motion is milestone 1 step 6.
+            auto it = byName.find(d.orbitParent);
+            if (it != byName.end()) {
+                const Planetoid* parent = it->second;
+                const double r = parent->radius * parent->scale + d.orbitAltitude;
+                const double a = d.orbitPhaseDeg * DEG2RAD;
+                pos = parent->worldPos + DVec3(cos(a) * r, 0.0, sin(a) * r);
+            }
+        }
+        if ((d.kind == BodyKind::Planet || d.kind == BodyKind::Moon) && d.radius > 2000.0f)
+            logger.logf("[Bodies] %s: planet terrain arrives in milestone 1 step 4; using asteroid terrain for now\n", d.name.c_str());
+        add(d, d.kind, d.name, pos, d.radius, d.hasSeed ? d.seed : drawnSeed, d.spinDegPerSec);
     }
     world.syncRenderPositions();
     generationStart = GetTime();
@@ -511,10 +583,11 @@ bool SaveWorld(Scene& world) {
     if (!f) return false;
     const DVec3 camWorld = world.renderOrigin + world.camera.position;
     const DVec3 tgtWorld = world.renderOrigin + world.camera.target;
-    fprintf(f, "RAYLIBGAME_SAVE 3\n");
-    fprintf(f, "seed %u\ncount %d\nsize %d\nsystem %f %f\nfirst %f %f %f\n", worldGen.lastSeed, worldGen.planetoidCount,
-            worldGen.planetoidSize, worldGen.systemRadius, worldGen.maxSpinDegPerSec,
-            worldGen.firstPosition.x, worldGen.firstPosition.y, worldGen.firstPosition.z);
+    // v4: the system definition is stored in the save, so a save reloads the system it was made in
+    // even if bodies.txt has changed since.
+    fprintf(f, "RAYLIBGAME_SAVE 4\n");
+    fprintf(f, "seed %u\nbodies %zu\n", worldGen.lastSeed, worldGen.system.bodies.size());
+    for (const BodyDef& b : worldGen.system.bodies) fprintf(f, "%s\n", FormatBodyDef(b).c_str());
     fprintf(f, "camera %.6f %.6f %.6f %.6f %.6f %.6f\n", camWorld.x, camWorld.y, camWorld.z, tgtWorld.x, tgtWorld.y, tgtWorld.z);
     // Game-specific state (player, inventory, ...) written by whoever registered the hook.
     fprintf(f, "extras\n");
@@ -539,26 +612,48 @@ bool LoadWorldSave(Scene& world) {
     FILE* f = fopen(SAVE_PATH, "r");
     if (!f) return false;
     int version = 0;
-    if (fscanf(f, "RAYLIBGAME_SAVE %d", &version) != 1 || version < 2 || version > 3) {
+    if (fscanf(f, "RAYLIBGAME_SAVE %d", &version) != 1 || version < 2 || version > 4) {
         fclose(f);
         logger.logf("[World] %s: unsupported save version %d\n", SAVE_PATH, version);
         return false;
     }
     unsigned int seed = 0;
-    int count = 1, size = 50;
-    float systemRadius = 0, spin = 0;
-    Vector3 first{};
+    SystemDef sys;
     double c[6];
-    bool ok = fscanf(f, " seed %u count %d size %d system %f %f first %f %f %f", &seed, &count, &size, &systemRadius, &spin, &first.x, &first.y, &first.z) == 8;
+    bool ok = false;
+    if (version >= 4) {
+        // seed, then "bodies N" and N definition lines (same syntax as bodies.txt).
+        size_t n = 0;
+        ok = fscanf(f, " seed %u bodies %zu", &seed, &n) == 2;
+        int ch;
+        while (ok && (ch = fgetc(f)) != '\n' && ch != EOF) {} // rest of the "bodies" line
+        char line[1024];
+        for (size_t i = 0; ok && i < n; ++i) {
+            BodyDef d;
+            std::string error;
+            ok = fgets(line, sizeof(line), f) != nullptr;
+            if (ok) {
+                std::string s(line);
+                while (!s.empty() && (s.back() == '\n' || s.back() == '\r')) s.pop_back();
+                ok = ParseBodyDef(s, d, error);
+                if (!ok) logger.logf("[World] %s: body %zu: %s\n", SAVE_PATH, i, error.c_str());
+                else sys.bodies.push_back(d);
+            }
+        }
+    } else {
+        // v2/v3 stored the old generator's settings; rebuild the system they described.
+        int count = 1, size = 50;
+        float systemRadius = 0, spin = 0;
+        Vector3 first{};
+        ok = fscanf(f, " seed %u count %d size %d system %f %f first %f %f %f", &seed, &count, &size, &systemRadius, &spin, &first.x, &first.y, &first.z) == 8;
+        if (ok) sys = LegacySystemDef(count, size, systemRadius, spin, first);
+    }
     ok = ok && fscanf(f, " camera %lf %lf %lf %lf %lf %lf", &c[0], &c[1], &c[2], &c[3], &c[4], &c[5]) == 6;
-    if (!ok) { fclose(f); return false; }
+    if (!ok) { fclose(f); logger.logf("[World] %s: could not read the header\n", SAVE_PATH); return false; }
 
     worldGen.seed = seed;
-    worldGen.planetoidCount = count;
-    worldGen.planetoidSize = size;
-    worldGen.systemRadius = systemRadius;
-    worldGen.maxSpinDegPerSec = spin;
-    worldGen.firstPosition = first;
+    worldGen.system = sys;
+    worldGen.systemLoaded = true;
     regenerateWorld(world);
     world.setCameraWorld(DVec3(c[0], c[1], c[2]), DVec3(c[3], c[4], c[5]));
 

@@ -46,7 +46,6 @@ struct Player {
     // Stand on the surface of `body` in direction `dir` from its centre (default: its +Y pole).
     void spawnOn(Scene& world, Planetoid& body, Vector3 dir = { 0, 1, 0 });
     // Surface gravity of a round body of radius R (gameplay rule; summed gravity is milestone 1).
-    static float SurfaceGravity(float R) { return std::min(9.81f, 3.0f + R * 0.03f); }
     void update(Scene& world, bool inputEnabled, float dt);
     void applyToCamera(Scene& world) const;  // camera at the eye, looking along forward
 
