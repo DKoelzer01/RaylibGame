@@ -6,7 +6,6 @@
 #include <vector>
 #include "object.h"
 #include "SimplexNoise.h"
-#include "edgecache.h" // EdgeCacheEntry is now defined here
 #include <raylib.h>
 
 
@@ -48,46 +47,28 @@ struct Vector3Hash {
 
 class Chunk : public Object {
 public:
-    std::vector<float> noiseValues;
-    std::vector<Vector3> vertices;
+    std::vector<float> noiseValues;   // (CHUNK_SIZE+1)^3 density samples, chunk-local
+    std::vector<Vector3> vertices;    // CPU copy of mesh positions, chunk-local
     std::vector<int> indices;
-    Mesh mesh;
-    Model model;
-    Shader *lightingShader = nullptr;
-    Shader *depthShader = nullptr;
-    Matrix matModel;
+    Mesh mesh{};                      // CPU arrays allocated with MemAlloc so UnloadMesh can free them
 
     Chunk* neighbors[26] = {nullptr};
     bool normalsPending = false;
     uint32_t neighborMask = 0;
 
-    Chunk()
-        : Object("chunk", "chunk", {0, 0, 0}, {0, 0, 0}, WHITE, 1.0f), position({0, 0, 0}) {
-        mesh = { 0 };
-        mesh.vertices = nullptr;
-        mesh.indices = nullptr;
-        mesh.normals = nullptr;
-    }
-
-    Chunk(const Int3& pos, Vector3 worldPos, Vector3 rotation, Color color, float scale)
-        : Object("chunk", "chunk", worldPos, rotation, color, scale), position(pos) {}
+    Chunk() : Object("chunk", "chunk", {0, 0, 0}, {0, 0, 0}, WHITE, 1.0f), offset({0, 0, 0}) {}
     virtual ~Chunk();
 
-    Int3 position; // Position in chunk grid
+    Int3 offset;   // Chunk offset inside the planetoid, in voxels (multiple of CHUNK_SIZE)
 
-    // Assign a neighbor at a given index (0-25)
     void setNeighbor(int idx, Chunk* neighbor) {
         neighbors[idx] = neighbor;
         if (neighbor) neighborMask |= (1u << idx);
         else neighborMask &= ~(1u << idx);
     }
 
-    // Check if all 26 neighbors are present
-    bool allNeighborsPresent() const {
-        return neighborMask == 0x3FFFFFF; // 26 bits set
-    }
+    bool allNeighborsPresent() const { return neighborMask == 0x3FFFFFF; } // 26 bits set
 
-    // Called when a neighbor is added
     void onNeighborAdded(int idx, Chunk* neighbor) {
         setNeighbor(idx, neighbor);
         if (normalsPending && allNeighborsPresent()) {
@@ -96,41 +77,33 @@ public:
         }
     }
 
-    // Attempt to calculate normals if ready
     void tryCalculateNormals();
-
-    // Placeholder for your normal calculation logic
+    // Computes normals and uploads (or updates) the mesh on the GPU.
     void calculateNormals();
 
-    // Helper: 26 neighbor offsets (faces, edges, corners)
     static const int neighborOffsets[26][3];
-
-    // Method for Chunk: assign all 26 neighbors and notify them
     void assignNeighborsAndNotify(std::unordered_map<Int3, std::unique_ptr<Chunk>>& chunkChildren);
 
-    void draw(const Matrix& lightSpaceMatrix);
-    void drawDepthOnly(const Matrix& lightSpaceMatrix);
+    // parentTransform: the owning planetoid's world transform.
+    void drawChunk(const RenderContext& ctx, const Matrix& parentTransform);
+    void drawChunkDepth(const RenderContext& ctx, const Matrix& parentTransform);
+
+private:
+    bool visible(const RenderContext& ctx, const Matrix& model) const;
+    Matrix modelMatrix(const Matrix& parentTransform) const;
 };
 
 class Planetoid: public Object {
 public:
     int size;
     Vector3 seed;
-    std::unordered_map<std::tuple<int, int, int, int>, std::vector<EdgeCacheEntry>, Tuple4Hash> sharedEdgeCaches; // Shared edge caches for chunks
     std::unordered_map<Int3,bool> generatedChunks; // Store generated chunk positions
     std::unordered_map<Int3, std::unique_ptr<Chunk>> chunkChildren;
-    Shader *lightingShader = nullptr;
-    Shader *depthShader = nullptr;
     Planetoid(std::string name, Vector3 position, Vector3 rotation, Color color, float scale, size_t size);
     virtual ~Planetoid();
-    float GetNoise(float wx, float wy, float wz); // Get noise value at world coordinates
-    void draw(Shader* lightingShader) override;
-    void drawDepthOnly(const Matrix& lightSpaceMatrix, Shader* depthShader) override;
-    // Update: Now takes chunkWorldPos (relative to planetoid) and origin (planetoid world position)
-    Chunk generateChunk(const Vector3& chunkWorldPos, const Vector3& origin, SimplexNoise* noise);
+    void draw(const RenderContext& ctx) override;
+    void drawDepthOnly(const RenderContext& ctx) override;
 };
-
-#include "cubemarch.h" // Only include after Planetoid if needed
 
 extern const int CHUNK_SIZE;
 

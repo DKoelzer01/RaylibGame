@@ -1,279 +1,289 @@
 #include "scene.h"
+#include "utils/logger.h"
 #include <raylib.h>
 #include <rlgl.h>
 
-#if defined(PLATFORM_DESKTOP)
-    #define GLSL_VERSION            330
-#endif
-
-// --- Shadow mapping resources ---
 #define SHADOW_MAP_SIZE 2048
-Matrix lightSpaceMatrix;
-Matrix cameraView;
-Matrix cameraProj;
 
-Texture2D shadowMapTexture; // Texture for shadow map
-Texture2D colorMap;
-Texture2D normalMap;
-Texture2D heightMap;
-Texture2D roughMap;
-Texture2D aoMap;
+// ---------------------------------------------------------------------------------------------
+// HotShader
+// ---------------------------------------------------------------------------------------------
+
+bool HotShader::reloadIfChanged(bool force) {
+    const long vt = GetFileModTime(vsPath.c_str());
+    const long ft = GetFileModTime(fsPath.c_str());
+    if (!force && vt == vsTime && ft == fsTime) return false;
+    vsTime = vt;
+    fsTime = ft;
+
+    Shader s = LoadShader(vsPath.c_str(), fsPath.c_str());
+    // On a compile/link error raylib hands back its default shader instead.
+    if (!IsShaderValid(s) || s.id == rlGetShaderIdDefault()) {
+        logger.logf("[ERROR] Shader %s / %s failed to compile; keeping previous version\n", vsPath.c_str(), fsPath.c_str());
+        TraceLog(LOG_WARNING, "Shader %s failed to compile; keeping previous version", fsPath.c_str());
+        return false;
+    }
+    unload();
+    shader = s;
+    TraceLog(LOG_WARNING, "Shader loaded: %s (id %u)", fsPath.c_str(), shader.id);
+    return true;
+}
+
+void HotShader::unload() {
+    if (shader.id > 0 && shader.id != rlGetShaderIdDefault()) UnloadShader(shader);
+    shader = Shader{};
+}
+
+// ---------------------------------------------------------------------------------------------
+// Shadow map: depth-texture-only framebuffer (same approach as raylib's shaders_shadowmap example).
+// A real depth texture gives 24-bit precision instead of the 8 bits a colour channel would.
+// ---------------------------------------------------------------------------------------------
+
+static RenderTexture2D LoadShadowmapRenderTexture(int width, int height) {
+    RenderTexture2D target = { 0 };
+    target.id = rlLoadFramebuffer();
+    target.texture.width = width;
+    target.texture.height = height;
+    if (target.id > 0) {
+        rlEnableFramebuffer(target.id);
+        target.depth.id = rlLoadTextureDepth(width, height, false);
+        target.depth.width = width;
+        target.depth.height = height;
+        target.depth.format = 19; // DEPTH_COMPONENT_24BIT
+        target.depth.mipmaps = 1;
+        rlFramebufferAttach(target.id, target.depth.id, RL_ATTACHMENT_DEPTH, RL_ATTACHMENT_TEXTURE2D, 0);
+        if (!rlFramebufferComplete(target.id)) TraceLog(LOG_WARNING, "Shadow map FBO incomplete");
+        rlDisableFramebuffer();
+    }
+    return target;
+}
+
+static void UnloadShadowmapRenderTexture(RenderTexture2D target) {
+    if (target.id > 0) rlUnloadFramebuffer(target.id); // also deletes attached depth texture
+}
+
+// ---------------------------------------------------------------------------------------------
+// Scene
+// ---------------------------------------------------------------------------------------------
 
 Scene::Scene(std::string name, bool isActive)
     : name(name), isActive(isActive),
       rootObject("root", "root", {0.0f, 0.0f, 0.0f}, {0.0f, 0.0f, 0.0f}, WHITE, 1.0f)
 {
-    colorMap      = LoadTexture("assets/textures/ground_0010_color_2k.jpg");
-    normalMap     = LoadTexture("assets/textures/ground_0010_normal_opengl_2k.png");
-    heightMap     = LoadTexture("assets/textures/ground_0010_height_2k.png");
-    roughMap      = LoadTexture("assets/textures/ground_0010_roughness_2k.jpg");
-    aoMap         = LoadTexture("assets/textures/ground_0010_ao_2k.jpg");
-    SetTextureFilter(colorMap, TEXTURE_FILTER_ANISOTROPIC_16X);
-    SetTextureFilter(normalMap, TEXTURE_FILTER_ANISOTROPIC_16X);
-    SetTextureFilter(heightMap, TEXTURE_FILTER_ANISOTROPIC_16X);
-    SetTextureFilter(roughMap, TEXTURE_FILTER_ANISOTROPIC_16X);
-    SetTextureFilter(aoMap, TEXTURE_FILTER_ANISOTROPIC_16X);
-
+    // Skybox
     Mesh cube = GenMeshCube(1.0f, 1.0f, 1.0f);
     skybox = LoadModelFromMesh(cube);
-
-    skybox.materials[0].shader = LoadShader(TextFormat("resources/skybox.vs", GLSL_VERSION),
-                                            TextFormat("resources/skybox.fs", GLSL_VERSION));
-
-    SetShaderValue(skybox.materials[0].shader, GetShaderLocation(skybox.materials[0].shader, "environmentMap"), (int[1]){ MATERIAL_MAP_CUBEMAP }, SHADER_UNIFORM_INT);
-    SetShaderValue(skybox.materials[0].shader, GetShaderLocation(skybox.materials[0].shader, "doGamma"), (int[1]){0}, SHADER_UNIFORM_INT);
-    SetShaderValue(skybox.materials[0].shader, GetShaderLocation(skybox.materials[0].shader, "vflipped"), (int[1]){0}, SHADER_UNIFORM_INT);
-
-    // Load cubemap shader and setup required shader locations
-    Shader shdrCubemap = LoadShader(TextFormat("resources/cubemap.vs", GLSL_VERSION),
-                                    TextFormat("resources/cubemap.fs", GLSL_VERSION));
-
-    SetShaderValue(shdrCubemap, GetShaderLocation(shdrCubemap, "equirectangularMap"), (int[1]){ 0 }, SHADER_UNIFORM_INT);
-
+    skybox.materials[0].shader = LoadShader("resources/skybox.vs", "resources/skybox.fs");
+    Shader& sky = skybox.materials[0].shader;
+    SetShaderValue(sky, GetShaderLocation(sky, "environmentMap"), (int[1]){ MATERIAL_MAP_CUBEMAP }, SHADER_UNIFORM_INT);
+    SetShaderValue(sky, GetShaderLocation(sky, "doGamma"), (int[1]){ 0 }, SHADER_UNIFORM_INT);
+    SetShaderValue(sky, GetShaderLocation(sky, "vflipped"), (int[1]){ 0 }, SHADER_UNIFORM_INT);
     Image img = LoadImage("resources/skybox.png");
-    skybox.materials[0].maps[MATERIAL_MAP_CUBEMAP].texture = LoadTextureCubemap(img, CUBEMAP_LAYOUT_AUTO_DETECT);    // CUBEMAP_LAYOUT_PANORAMA
+    skybox.materials[0].maps[MATERIAL_MAP_CUBEMAP].texture = LoadTextureCubemap(img, CUBEMAP_LAYOUT_AUTO_DETECT);
     UnloadImage(img);
-    std::cout << "Skybox created: " << name << std::endl;
 
-    // Initialize lighting
-    lightingShader = LoadShader(TextFormat("resources/lighting.vs", GLSL_VERSION),
-                     TextFormat("resources/lighting.fs", GLSL_VERSION));
-    printf("Lighting shader loaded: %d\n", lightingShader.id);
-    int ambientLoc = GetShaderLocation(lightingShader, "ambient");
-    SetShaderValue(lightingShader, ambientLoc, (float[4]){ 0.1f, 0.1f, 0.1f, 1.0f }, SHADER_UNIFORM_VEC4);
+    // Materials. LoadMaterialDefault allocates the maps array once; we own it for the scene's lifetime.
+    terrainMaterial = LoadMaterialDefault();
+    depthMaterial = LoadMaterialDefault();
 
-    lights.push_back(CreateLight(LIGHT_DIRECTIONAL, (Vector3){ 0.0f, 0.5f, 0.0f }, (Vector3){ -14.0f, -0.4f, -0.5f }, WHITE, lightingShader));
+    shadowMap = LoadShadowmapRenderTexture(SHADOW_MAP_SIZE, SHADOW_MAP_SIZE);
+    terrainMaterial.maps[MATERIAL_MAP_BRDF].texture = shadowMap.depth;
 
-    // --- Shadow map FBO/texture ---
-    shadowMap = LoadRenderTexture(SHADOW_MAP_SIZE, SHADOW_MAP_SIZE);
-    SetTextureFilter(shadowMap.texture, TEXTURE_FILTER_POINT); // Ensure shadow map uses point sampling
-    // Depth buffer is automatically handled by LoadRenderTexture in raylib
-    // --- Load depth-only shader for shadow mapping ---
-    depthShader = LoadShader("resources/depth.vs", "resources/depth.fs");
-    printf("Depth shader loaded: %s\n", depthShader.id > 0 ? "Success" : "Failed");
+    depth.reloadIfChanged(true);
+    depthMaterial.shader = depth.shader;
+    lighting.reloadIfChanged(true);
+
+    lights.push_back(CreateLight(LIGHT_DIRECTIONAL, Vector3Scale(sunDirection, sunDistance), Vector3Zero(), WHITE, lighting.shader));
+    applyLightingShader();
 
     std::cout << "Scene created: " << name << std::endl;
 }
 
-void Scene::updateAllChunkShaders() {
-    for (const auto& objPtr : objects) {
-        auto planetoid = dynamic_cast<Planetoid*>(objPtr.get());
-        if (planetoid) {
-            for (auto& chunkPair : planetoid->chunkChildren) {
-                chunkPair.second->model.materials[0].shader = lightingShader;
-            }
-        }
+void Scene::applyLightingShader() {
+    Shader& s = lighting.shader;
+    // Map raylib's material slots to our sampler names. DrawMesh binds maps[i] to texture unit i
+    // and sets locs[SHADER_LOC_MAP_DIFFUSE + i] = i, so textures can never end up on the wrong unit.
+    s.locs[SHADER_LOC_MAP_ALBEDO]    = GetShaderLocation(s, "colorTexture");
+    s.locs[SHADER_LOC_MAP_NORMAL]    = GetShaderLocation(s, "normalTexture");
+    s.locs[SHADER_LOC_MAP_ROUGHNESS] = GetShaderLocation(s, "roughAoTexture");
+    s.locs[SHADER_LOC_MAP_BRDF]      = GetShaderLocation(s, "shadowMap");
+    locViewPos    = GetShaderLocation(s, "viewPos");
+    locLightSpace = GetShaderLocation(s, "lightSpaceMatrix");
+    locAmbient    = GetShaderLocation(s, "ambient");
+    locShadowRes  = GetShaderLocation(s, "shadowMapResolution");
+    locTexScale   = GetShaderLocation(s, "texScale");
+
+    const float ambient[4] = { 0.12f, 0.12f, 0.14f, 1.0f };
+    SetShaderValue(s, locAmbient, ambient, SHADER_UNIFORM_VEC4);
+    const int res = SHADOW_MAP_SIZE;
+    SetShaderValue(s, locShadowRes, &res, SHADER_UNIFORM_INT);
+    const float texScale = 0.05f;
+    SetShaderValue(s, locTexScale, &texScale, SHADER_UNIFORM_FLOAT);
+
+    terrainMaterial.shader = s;
+}
+
+// Mipmapped, trilinear + anisotropic. Without mipmaps a 2K texture minified onto distant terrain
+// samples scattered texels: it shimmers and thrashes the texture cache.
+static Texture2D UploadFiltered(Image& img) {
+    Texture2D t = LoadTextureFromImage(img);
+    GenTextureMipmaps(&t);
+    SetTextureFilter(t, TEXTURE_FILTER_TRILINEAR);
+    SetTextureFilter(t, TEXTURE_FILTER_ANISOTROPIC_8X);
+    SetTextureWrap(t, TEXTURE_WRAP_REPEAT);
+    return t;
+}
+
+void Scene::loadTerrainTextures() {
+    if (terrainTexturesLoaded) return;
+
+    Image color = LoadImage("assets/textures/ground_0010_color_2k.jpg");
+    ImageFormat(&color, PIXELFORMAT_UNCOMPRESSED_R8G8B8A8);
+    terrainMaterial.maps[MATERIAL_MAP_ALBEDO].texture = UploadFiltered(color);
+    UnloadImage(color);
+
+    // The source normal map is 16-bit; 8 bits per channel is plenty and halves VRAM.
+    Image normal = LoadImage("assets/textures/ground_0010_normal_opengl_2k.png");
+    ImageFormat(&normal, PIXELFORMAT_UNCOMPRESSED_R8G8B8A8);
+    terrainMaterial.maps[MATERIAL_MAP_NORMAL].texture = UploadFiltered(normal);
+    UnloadImage(normal);
+
+    // Pack roughness (R) and ambient occlusion (G) into one texture: one fetch instead of two.
+    Image rough = LoadImage("assets/textures/ground_0010_roughness_2k.jpg");
+    Image ao = LoadImage("assets/textures/ground_0010_ao_2k.jpg");
+    ImageFormat(&rough, PIXELFORMAT_UNCOMPRESSED_R8G8B8A8);
+    ImageFormat(&ao, PIXELFORMAT_UNCOMPRESSED_R8G8B8A8);
+    if (ao.width != rough.width || ao.height != rough.height) ImageResize(&ao, rough.width, rough.height);
+    unsigned char* r = (unsigned char*)rough.data;
+    const unsigned char* a = (const unsigned char*)ao.data;
+    for (int i = 0; i < rough.width * rough.height; ++i) {
+        r[i * 4 + 1] = a[i * 4 + 0];
+        r[i * 4 + 2] = 0;
+        r[i * 4 + 3] = 255;
     }
+    terrainMaterial.maps[MATERIAL_MAP_ROUGHNESS].texture = UploadFiltered(rough);
+    UnloadImage(rough);
+    UnloadImage(ao);
+
+    terrainTexturesLoaded = true;
 }
 
 void Scene::drawScene(int gamestate) {
-    if (!isActive) return; // Skip drawing if the scene is not active
+    if (!isActive) return;
 
-    // This is for debugging purposes only; in production, shaders should be loaded once and reused
-    lightingShader = LoadShader(TextFormat("resources/lighting.vs", GLSL_VERSION),
-                     TextFormat("resources/lighting.fs", GLSL_VERSION));
-    depthShader = LoadShader("resources/depth.vs", "resources/depth.fs");
-    // --- Compute light view/projection matrix for shadow mapping ---
-    // Make the directional light follow the camera/player
-    Vector3 cameraPosVec = camera.position;
-    // cameraPosVec = {0.0f, 0.0f, 0.0f}; // DEBUG: Reset camera position to origin for testing
-    // Choose a sun direction (normalized)
-    Vector3 sunDir = Vector3Normalize((Vector3){ 26.0f, 0.0f, 0.0f }); // Example: from above and behind
-    float sunDistance = 500.0f; // Larger offset for debugging
-    Vector3 lightPos = Vector3Add(cameraPosVec, Vector3Scale(sunDir, sunDistance));
-    Vector3 lightTarget = cameraPosVec;
+    // --- Hot reload: only touches the GPU when a shader file actually changed ---
+    if (lighting.reloadIfChanged()) applyLightingShader();
+    if (depth.reloadIfChanged()) depthMaterial.shader = depth.shader;
 
-    // Debug: Set light position to fixed position for testing
-    lightPos = (Vector3){ sunDistance, 0.0f, 0.0f }; // DEBUG: Set light position to fixed position for testing
-    // Debug set lightPos to orbit around the origin over time
-    // lightPos = (Vector3){ sin(GetTime()) * sunDistance, 0.0f, -cos(GetTime()) * sunDistance };
-    lightTarget = (Vector3){ 0.0f, 0.0f, 0.0f }; // DEBUG: Set light target to origin for testing
-    // Update the first light's position/target
+    if (IsKeyPressed(KEY_F3)) debugDraw = !debugDraw;
+
+    // --- Update camera first so both passes use this frame's position ---
+    extern bool benchMode;
+    if (gamestate == 1 && !benchMode) customUpdateCamera(&camera);
+
+    // --- Directional light: an orthographic box that follows the camera ---
+    const Vector3 centre = camera.position;
+    const Vector3 lightPos = Vector3Add(centre, Vector3Scale(sunDirection, sunDistance));
     if (!lights.empty()) {
         lights[0].position = lightPos;
-        lights[0].target = lightTarget;
+        lights[0].target = centre;
     }
-    Camera lightCamera = {0};
-    lightCamera.position = lightPos;
-    lightCamera.target = lightTarget;
-    lightCamera.up = (Vector3){0,1,0};
-    lightCamera.fovy = 90.0f; // or appropriate value
-    lightCamera.projection = CAMERA_ORTHOGRAPHIC;
 
-    Matrix lightView = MatrixLookAt(lightPos, lightTarget, lightCamera.up);
-    float orthoSize = sunDistance/2.0f; // Size of the orthographic projection box
-    float nearPlane = 100.0f; // Near plane for shadow mapping
-    float farPlane = orthoSize + 100.0f; // Ensure far plane is beyond the light position
-    Matrix lightProj = MatrixOrtho(-orthoSize, orthoSize, -orthoSize, orthoSize, nearPlane, farPlane); 
-    lightSpaceMatrix = MatrixMultiply(lightProj, lightView);   
+    Camera3D lightCam = { 0 };
+    lightCam.position = lightPos;
+    lightCam.target = centre;
+    lightCam.up = (fabsf(sunDirection.y) > 0.99f) ? Vector3{ 0, 0, 1 } : Vector3{ 0, 1, 0 };
+    lightCam.projection = CAMERA_ORTHOGRAPHIC;
+    lightCam.fovy = shadowHalfExtent * 2.0f; // raylib ortho: half-height = fovy/2
 
     // --- Shadow pass ---
+    // Read the light's matrices back from rlgl inside BeginMode3D so the shader's lightSpaceMatrix is
+    // exactly what the depth pass rendered with. (DrawMesh overwrites any hand-set "mvp" uniform.)
+    const double defaultNear = rlGetCullDistanceNear(), defaultFar = rlGetCullDistanceFar();
+    rlSetClipPlanes(1.0, sunDistance * 2.0);
     BeginTextureMode(shadowMap);
-    ClearBackground(BLACK);
-    BeginMode3D(lightCamera);
-    // Set global camera matrices for shadow pass
-    extern Matrix cameraProj, cameraView;
-    cameraProj = lightProj;
-    cameraView = lightView;
-    for (const auto& objPtr : objects) { objPtr->drawDepthOnly(lightSpaceMatrix, &depthShader); }
-    for (const auto& objPtr : rootObject.children) { objPtr->drawDepthOnly(lightSpaceMatrix, &depthShader); }
-    EndMode3D();
+        ClearBackground(WHITE);
+        BeginMode3D(lightCam);
+            const Matrix lightView = rlGetMatrixModelview();
+            const Matrix lightProj = rlGetMatrixProjection();
+            lightSpaceMatrix = MatrixMultiply(lightView, lightProj); // raymath order: view, then projection
+            const Frustum lightFrustum = Frustum::fromViewProj(lightSpaceMatrix);
+            RenderContext shadowCtx;
+            shadowCtx.depthMaterial = &depthMaterial;
+            shadowCtx.frustum = &lightFrustum;
+            for (const auto& obj : objects) obj->drawDepthOnly(shadowCtx);
+            for (const auto& obj : rootObject.children) obj->drawDepthOnly(shadowCtx);
+        EndMode3D();
     EndTextureMode();
-    shadowMapTexture = shadowMap.texture; // Update the global shadow map texture
+    rlSetClipPlanes(defaultNear, defaultFar);
+
+    // --- Per-frame lighting uniforms ---
+    Shader& s = lighting.shader;
+    SetShaderValueMatrix(s, locLightSpace, lightSpaceMatrix);
+    SetShaderValue(s, locViewPos, &camera.position, SHADER_UNIFORM_VEC3);
+    for (size_t i = 0; i < lights.size(); ++i) {
+        if (lights[i].enabled) UpdateLightValues(s, lights[i], (int)i);
+    }
 
     // --- Main pass ---
-    Matrix proj = GetCameraProjectionMatrix(&camera, CAMERA_PERSPECTIVE);
-    Matrix view = GetCameraMatrix(camera);
-    
-    extern Matrix cameraProj, cameraView;
-    cameraProj = proj;
-    cameraView = view;
-
-    int lightSpaceLoc = GetShaderLocation(lightingShader, "lightSpaceMatrix");
-    SetShaderValueMatrix(lightingShader, lightSpaceLoc, lightSpaceMatrix);
-
-    // --- Main scene render ---
+    int drawCalls = 0;
     BeginMode3D(camera);
-    if(gamestate != 0 && gamestate != 2) { // If not in main menu or pause menu
-        customUpdateCamera(&camera);
-    }
-    rlDisableBackfaceCulling();
-    rlDisableDepthMask();
-    DrawModel(skybox, (Vector3){0, 0, 0}, 1.0f, WHITE);
-    rlEnableBackfaceCulling();
-    rlEnableDepthMask();
+        rlDisableBackfaceCulling();
+        rlDisableDepthMask();
+        DrawModel(skybox, (Vector3){0, 0, 0}, 1.0f, WHITE);
+        rlEnableBackfaceCulling();
+        rlEnableDepthMask();
 
-    float cameraPos[3] = { camera.position.x, camera.position.y, camera.position.z };
-    int viewPosLoc = GetShaderLocation(lightingShader, "viewPos");
-    if (viewPosLoc != -1) {
-        SetShaderValue(lightingShader, viewPosLoc, cameraPos, SHADER_UNIFORM_VEC3);
-    }
+        const Frustum viewFrustum = Frustum::fromViewProj(MatrixMultiply(rlGetMatrixModelview(), rlGetMatrixProjection()));
+        RenderContext ctx;
+        ctx.terrainMaterial = &terrainMaterial;
+        ctx.depthMaterial = &depthMaterial;
+        ctx.frustum = &viewFrustum;
+        ctx.drawCalls = &drawCalls;
+        for (const auto& obj : objects) if (obj) obj->draw(ctx);
+        for (const auto& obj : rootObject.children) if (obj) obj->draw(ctx);
 
-    int lightCount = 0;
-    for (const auto& light : lights) { 
-    if (!light.enabled) continue; // Skip disabled lights
-        // Draw light source as a sphere at the light position
-        // logger.logf("Drawing light: %s at position (%f, %f, %f) color (%d, %d, %d)\n",
-        //     light.type == LIGHT_DIRECTIONAL ? "Directional" : "Point",
-        //     light.position.x, light.position.y, light.position.z,
-        //     light.color.r, light.color.g, light.color.b);
-        DrawSphere(light.position, 20.0f, ColorAlpha(RED, 0.5f));
-        UpdateLightValues(lightingShader, light, lightCount); // Update light values in shader
-        lightCount++;
-    }
-    
-
-    if(shadowMapTexture.id == 0) {
-        logger.log("[ERROR] Chunk::draw: shadowMapTexture is not initialized\n");
-        return;
-    }
-    int shadowMapLoc = GetShaderLocation(lightingShader, "shadowMap");
-    if (shadowMapLoc == -1) { logger.log("[ERROR] Chunk::draw: shadowMap location not found in lighting shader\n"); }
-
-    int colorLoc = GetShaderLocation(lightingShader, "colorTexture");
-    if (colorLoc == -1) { logger.log("[ERROR] Chunk::draw: colorTexture location not found in lighting shader\n"); }
-
-    int normalLoc = GetShaderLocation(lightingShader, "normalTexture");
-    if (normalLoc == -1) { logger.log("[ERROR] Chunk::draw: normalTexture location not found in lighting shader\n"); }
-    
-    int heightLoc = GetShaderLocation(lightingShader, "heightTexture");
-    if (heightLoc == -1) { logger.log("[ERROR] Chunk::draw: heightTexture location not found in lighting shader\n"); }
-
-    int roughLoc = GetShaderLocation(lightingShader, "roughnessTexture");
-    if (roughLoc == -1) { logger.log("[ERROR] Chunk::draw: roughnessTexture location not found in lighting shader\n"); }
-
-    int aoLoc = GetShaderLocation(lightingShader, "aoTexture");
-    if (aoLoc == -1) { logger.log("[ERROR] Chunk::draw: aoTexture location not found in lighting shader\n"); }
-
-    SetShaderValueTexture(lightingShader, shadowMapLoc, shadowMapTexture);
-    SetShaderValueTexture(lightingShader, colorLoc, colorMap);
-    SetShaderValueTexture(lightingShader, normalLoc, normalMap);
-    SetShaderValueTexture(lightingShader, heightLoc, heightMap);
-    SetShaderValueTexture(lightingShader, roughLoc, roughMap);
-    SetShaderValueTexture(lightingShader, aoLoc, aoMap);
-
-    BeginShaderMode(lightingShader);
-    // logger.logf("Drawing %zu objects\n", objects.size());
-    for (const auto& objPtr : objects) {
-        if (!objPtr) continue;
-        // logger.logf("[Scene] Drawing object: %s at ptr %p\n", objPtr->name.c_str(), objPtr.get());
-        objPtr->draw(&lightingShader);
-    }
-    for (const auto& objPtr : rootObject.children) {
-        if(!objPtr) continue;
-        // logger.logf("[Scene] Drawing root object: %s at ptr %p\n", objPtr->name.c_str(), objPtr.get());
-        objPtr->draw(&lightingShader); 
-    }
-    EndShaderMode();
-    // --- Debug: Draw orthographic projection box ---
-    DrawCubeWires(lightTarget, orthoSize * 2, orthoSize * 2, farPlane - nearPlane, RED);
+        if (debugDraw) {
+            DrawSphere(lightPos, 10.0f, ColorAlpha(RED, 0.5f));
+            DrawCubeWires(centre, shadowHalfExtent * 2, shadowHalfExtent * 2, shadowHalfExtent * 2, RED);
+        }
     EndMode3D();
+    lastDrawCalls = drawCalls;
 
-    // --- Debug: Draw shadow map as quad ---
-    DrawTexturePro(
-        shadowMap.texture,
-        (Rectangle){ 0, 0, (float)shadowMap.texture.width, -(float)shadowMap.texture.height },
-        (Rectangle){ 0, 60, 400, 400 }, // Draw in a 400x400 box at top-left
-        (Vector2){ 0, 0 },
-        0.0f,
-        WHITE
-    );
+    if (debugDraw) {
+        // Depth texture preview (red channel = depth).
+        DrawTexturePro(shadowMap.depth,
+            (Rectangle){ 0, 0, (float)shadowMap.depth.width, -(float)shadowMap.depth.height },
+            (Rectangle){ 10, 100, 300, 300 }, (Vector2){ 0, 0 }, 0.0f, WHITE);
+    }
 }
 
 void Scene::drawUI(int gamestate) {
-    if (!isActive) return; // Skip drawing if the scene is not active
-    DrawFPS(10,10);
-    std::string camPosStr = "Camera: X=" + std::to_string(camera.position.x) +
-                            " Y=" + std::to_string(camera.position.y) +
-                            " Z=" + std::to_string(camera.position.z);
-    DrawText(camPosStr.c_str(), 10, 30, 20, GREEN);
-
-    std::string camFacingVector = "Facing: X=" + std::to_string(camera.target.x) +
-                                  " Y=" + std::to_string(camera.target.y) +
-                                  " Z=" + std::to_string(camera.target.z);
-    DrawText(camFacingVector.c_str(), 10, 50, 20, GREEN);
-    for (const auto& objPtr : uiObjects) { objPtr->draw(&lightingShader); }
+    if (!isActive) return;
+    RenderContext none;
+    if (gamestate != 0) {
+        DrawFPS(10, 10);
+        DrawText(TextFormat("Camera: %.1f %.1f %.1f   chunks drawn: %d   [F3] debug",
+                 camera.position.x, camera.position.y, camera.position.z, lastDrawCalls), 10, 30, 20, GREEN);
+    }
+    for (const auto& obj : uiObjects) obj->draw(none);
 }
 
 Scene::~Scene() {
-    // Unload skybox model and its shader
     if (skybox.meshCount > 0) {
+        UnloadShader(skybox.materials[0].shader);
+        UnloadTexture(skybox.materials[0].maps[MATERIAL_MAP_CUBEMAP].texture);
         UnloadModel(skybox);
-        skybox.meshCount = 0;
     }
-    // Unload lighting shader
-    if (lightingShader.id > 0) {
-        UnloadShader(lightingShader);
-        lightingShader.id = 0;
+    if (terrainTexturesLoaded) {
+        UnloadTexture(terrainMaterial.maps[MATERIAL_MAP_ALBEDO].texture);
+        UnloadTexture(terrainMaterial.maps[MATERIAL_MAP_NORMAL].texture);
+        UnloadTexture(terrainMaterial.maps[MATERIAL_MAP_ROUGHNESS].texture);
     }
-    // Unload shadow map resources
-    UnloadRenderTexture(shadowMap);
-    // Unload depth shader
-    if (depthShader.id > 0) {
-        UnloadShader(depthShader);
-        depthShader.id = 0;
-    }
-    // If you have any other dynamically loaded resources, unload them here
+    // Free the maps arrays only; shaders and textures are released explicitly here.
+    MemFree(terrainMaterial.maps);
+    MemFree(depthMaterial.maps);
+    lighting.unload();
+    depth.unload();
+    UnloadShadowmapRenderTexture(shadowMap);
 }
-
-

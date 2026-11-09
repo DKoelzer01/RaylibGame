@@ -1,5 +1,3 @@
-#version 330 core
-void main() {
-    float depth = gl_FragCoord.z;
-    gl_FragColor = vec4(depth, depth, depth, 1.0);
-}
+#version 330
+// Depth-only pass: the depth attachment is written automatically; no colour output needed.
+void main() {}

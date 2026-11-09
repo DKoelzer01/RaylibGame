@@ -7,33 +7,43 @@
 #include <raylib.h>
 #include <iostream>
 
-#pragma once
+#include "frustum.h"
+
+// Everything an object needs to submit draws for one pass. Owned by the Scene; objects never
+// look up shaders or uniforms themselves, they hand meshes + a material to DrawMesh, which sets
+// mvp / matModel / matNormal and binds the material's texture maps.
+struct RenderContext {
+    Material* terrainMaterial = nullptr;  // lit terrain material (lighting shader + textures + shadow map)
+    Material* depthMaterial = nullptr;    // depth-only material for the shadow pass
+    const Frustum* frustum = nullptr;     // frustum of the pass's camera (main or light), for culling
+    int* drawCalls = nullptr;             // optional stats counter
+};
+
 class Object {
 public:
     std::string type; // Type of the object (e.g., "cube", "sphere")
     std::string name; // Name of the object
     Vector3 position; // Position of the object
-    Vector3 rotation; // Rotation of the object
+    Vector3 rotation; // Rotation of the object (degrees)
     Color color; // Color of the object
     float scale; // Scale of the object
 
-    Object* parent;
+    Object* parent = nullptr;
     std::vector<std::unique_ptr<Object>> children;
 
-    bool isActive; // Whether the object is active in the scene
+    bool isActive = true; // Whether the object is active in the scene
 
     Object(std::string type, std::string name, Vector3 position, Vector3 rotation, Color color, float scale);
-    virtual void draw(Shader* lightingShader);
-    virtual void drawDepthOnly(const Matrix& lightSpaceMatrix, Shader* depthShader);
+    virtual void draw(const RenderContext& ctx);
+    virtual void drawDepthOnly(const RenderContext& ctx);
     virtual ~Object(); // Make destructor virtual for safe polymorphic deletion
 
-    // Disable copying
+    // Scale, then rotate (XYZ, degrees), then translate.
+    Matrix localTransform() const;
+
+    // Disable copying and moving: derived classes own GPU resources.
     Object(const Object&) = delete;
     Object& operator=(const Object&) = delete;
-
-    // Allow moving
-    Object(Object&&) = default;
-    Object& operator=(Object&&) = default;
 };
 
 #endif
