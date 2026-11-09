@@ -16,6 +16,7 @@ void GameSave_Register() {
         for (const auto& kv : inventory.all()) fprintf(f, "item %s %d\n", kv.first.c_str(), kv.second);
         fprintf(f, "ship %.6f %.6f %.6f %f %f %f %f %f %d %d\n", ship.position.x, ship.position.y, ship.position.z, ship.orientation.x,
                 ship.orientation.y, ship.orientation.z, ship.orientation.w, ship.energy, ship.piloted ? 1 : 0, ship.spawned ? 1 : 0);
+        fprintf(f, "ship_vel %f %f %f\n", ship.velocity.x, ship.velocity.y, ship.velocity.z);
         fprintf(f, "survival %f %f %f %d\n", survival.oxygen, survival.power, survival.health, survival.deaths);
     };
     loadExtrasHook = [](FILE* f) {
@@ -41,6 +42,8 @@ void GameSave_Register() {
                 ship.piloted = piloted != 0;
                 ship.spawned = spawned != 0;
                 ship.velocity = { 0, 0, 0 };
+            } else if (strcmp(tok, "ship_vel") == 0) { // older saves: stays zero
+                fscanf(f, " %f %f %f", &ship.velocity.x, &ship.velocity.y, &ship.velocity.z);
             } else if (strcmp(tok, "survival") == 0) {
                 fscanf(f, " %f %f %f %d", &survival.oxygen, &survival.power, &survival.health, &survival.deaths);
                 survival.dead = false;

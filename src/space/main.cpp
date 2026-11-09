@@ -54,6 +54,7 @@ int main(int argc, char** argv)
     bool benchRide = false;        // --test-ride: stand on a spinning body, then jump
     bool benchPark = false;        // --test-park: park the ship on a spinning body
     bool sunOverride = false;      // --sun x y z: sun direction (e.g. to test night-side lighting)
+    int benchFps = 0;              // --fps N: cap the bench frame rate
     bool lookDown = false;         // --look-down: tilt the player view toward the ground (lighting tests)
     Vector3 sunArg = { 1, 0, 0 };
     double parkStart = -1.0;
@@ -91,6 +92,7 @@ int main(int argc, char** argv)
         if (std::string(argv[i]) == "--test-park") benchPark = true;
         if (std::string(argv[i]) == "--sun" && i + 3 < argc) { sunOverride = true; sunArg = Vector3Normalize({ (float)atof(argv[i + 1]), (float)atof(argv[i + 2]), (float)atof(argv[i + 3]) }); }
         if (std::string(argv[i]) == "--look-down") lookDown = true;
+        if (std::string(argv[i]) == "--fps" && i + 1 < argc) benchFps = atoi(argv[i + 1]);
         if (std::string(argv[i]) == "--headlamp") survival.headlamp = true;      // lamp on from the start
         if (std::string(argv[i]) == "--inventory") GameUI_ToggleInventory();     // inventory open (player glow)
         if (std::string(argv[i]) == "--spin-test") spinTest = true;
@@ -135,7 +137,7 @@ int main(int argc, char** argv)
         SetTargetFPS(60);
     } else {
         InitWindow(1920, 1080, "RaylibGame bench");
-        SetTargetFPS(0);
+        SetTargetFPS(benchFps); // --fps N caps it (frame-rate-dependence checks); 0 = uncapped
     }
     SetExitKey(KEY_NULL);
     SetTraceLogLevel(LOG_WARNING); // Set log level to warning to reduce output noise

@@ -35,7 +35,8 @@ void Ship::update(Scene& world, bool inputEnabled, float dt) {
     if (anchorBody) {
         if ((position - anchorEndPos).length() > 1e-6 || Planetoid::find(anchorId) != anchorBody) {
             anchorBody = nullptr; // moved by something else (parkNear, a load) or the body is gone
-        } else if (!piloted || !(autopilot || (inputEnabled && (IsKeyDown(KEY_W) || IsKeyDown(KEY_S) || IsKeyDown(KEY_A) || IsKeyDown(KEY_D) || IsKeyDown(KEY_SPACE) || IsKeyDown(KEY_LEFT_CONTROL))))) {
+        } else if (!piloted || energy <= 0.0f || // no energy, no takeoff: stay anchored
+                   !(autopilot || (inputEnabled && (IsKeyDown(KEY_W) || IsKeyDown(KEY_S) || IsKeyDown(KEY_A) || IsKeyDown(KEY_D) || IsKeyDown(KEY_SPACE) || IsKeyDown(KEY_LEFT_CONTROL))))) {
             position = world.renderOrigin + anchorBody->toWorld(anchorLocal);
             const Quaternion now = anchorBody->rotationQuat();
             orientation = QuaternionNormalize(QuaternionMultiply(QuaternionMultiply(now, QuaternionInvert(anchorRotPrev)), orientation));
@@ -94,12 +95,19 @@ void Ship::update(Scene& world, bool inputEnabled, float dt) {
         } else braking = true;
     }
 
-    velocity = Vector3Add(velocity, Vector3Scale(accel, dt));
-    // Flight assist: gentle damping always, strong when braking or parked.
-    const float damp = braking ? 2.5f : piloted ? dampingPerSec * (Vector3Length(accel) > 0 ? 0.2f : 1.0f) : 4.0f;
-    velocity = Vector3Scale(velocity, std::max(0.0f, 1.0f - damp * dt));
-
     Vector3 p = renderPos(world);
+
+    velocity = Vector3Add(velocity, Vector3Scale(accel, dt));
+    // Flight assist: gentle damping always, strong when braking or parked. Near a body's surface it
+    // damps toward that surface's motion (so parking/landing on a spinning body settles onto it at
+    // any frame rate); elsewhere toward rest.
+    Vector3 refVel = { 0, 0, 0 };
+    if (Planetoid* body = NearestPlanetoid(world, p)) {
+        float dist; Vector3 n;
+        if (TerrainSurfaceDistance(*body, p, dist, n) && dist < hullRadius + 6.0f) refVel = body->surfaceVelocity(p);
+    }
+    const float damp = braking ? 2.5f : piloted ? dampingPerSec * (Vector3Length(accel) > 0 ? 0.2f : 1.0f) : 4.0f;
+    velocity = Vector3Add(refVel, Vector3Scale(Vector3Subtract(velocity, refVel), std::max(0.0f, 1.0f - damp * dt)));
 
     // Move in substeps of at most ~1 m (less than the 1.2 m hull clearance) so a fast ship can't
     // tunnel through a small asteroid between frames; each substep pushes the hull samples out of

@@ -48,6 +48,10 @@ void Player::update(Scene& world, bool inputEnabled, float dt) {
     }
     dt = std::min(dt, 0.1f); // don't explode after a hitch
 
+    // Drop a ground anchor whose body was destroyed (world regen, a load) whether or not we are
+    // still flagged grounded; everything below may dereference groundBody.
+    if (groundBody && Planetoid::find(groundId) != groundBody) groundBody = nullptr;
+
     // Ride along with a spinning body we are standing on: position AND orientation turn with it,
     // so standing still on a spinning asteroid looks still (the view no longer drifts).
     if (grounded && groundBody) {
@@ -182,7 +186,7 @@ void Player::stepPhysics(Scene& world, float dt, Vector3 wish, bool jump, bool j
     grounded = resolveCollisions(world, feet);
     // Leaving a spinning body: on the ground velocity is relative to the surface, so add the
     // surface's own motion; you keep the body's momentum, as you would really.
-    if (wasGrounded && !grounded && groundBody) velocity = Vector3Add(velocity, groundBody->surfaceVelocity(feet));
+    if (wasGrounded && !grounded && groundBody && Planetoid::find(groundId) == groundBody) velocity = Vector3Add(velocity, groundBody->surfaceVelocity(feet));
     position = world.renderOrigin + feet;
 }
 
