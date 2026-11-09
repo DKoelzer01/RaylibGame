@@ -38,6 +38,7 @@ void Player::update(Scene& world, bool inputEnabled, float dt) {
         velocity = { 0, 0, 0 };
         groundBody = nullptr;
     }
+    impactSpeed = 0.0f; // per-frame; cleared before the fly-mode early return too
     if (flyMode) {
         // The free-fly camera (Scene / customUpdateCamera) drives; keep the body under the eye.
         position = world.renderOrigin + Vector3Subtract(world.camera.position, Vector3Scale(up, eyeHeight));
@@ -45,14 +46,13 @@ void Player::update(Scene& world, bool inputEnabled, float dt) {
         return;
     }
     dt = std::min(dt, 0.1f); // don't explode after a hitch
-    impactSpeed = 0.0f;
 
     // Ride along with a spinning body we are standing on: position AND orientation turn with it,
     // so standing still on a spinning asteroid looks still (the view no longer drifts).
     if (grounded && groundBody) {
-        if ((position - lastEndPosition).length() > 1e-6) {
-            // Something else moved us since last frame (respawn, leaving the ship, a load): the
-            // old ground anchor no longer applies.
+        if ((position - lastEndPosition).length() > 1e-6 || Planetoid::find(groundId) != groundBody) {
+            // Something else moved us since last frame (respawn, leaving the ship, a load), or the
+            // body was destroyed (world regen): the old ground anchor no longer applies.
             grounded = false;
             groundBody = nullptr;
         } else {
@@ -70,9 +70,13 @@ void Player::update(Scene& world, bool inputEnabled, float dt) {
     nearest = NearestPlanetoid(world, feet);
     if (nearest) {
         const Vector3 newUp = nearest->flat ? Vector3{ 0, 1, 0 } : Vector3Normalize(Vector3Subtract(feet, nearest->position));
-        // Carry the view along as "up" changes so walking around the body feels continuous.
+        // Carry the view along as "up" changes so walking around the body feels continuous. A zero
+        // "up" (a save without one) has nothing to carry from: take the new up directly.
+        if (Vector3LengthSqr(up) < 0.25f) up = newUp;
         forward = Vector3Normalize(Vector3RotateByQuaternion(forward, QuaternionFromVector3ToVector3(up, newUp)));
         up = newUp;
+    } else if (Vector3LengthSqr(up) < 0.25f) {
+        up = { 0, 1, 0 };
     }
 
     Vector3 wish = { 0, 0, 0 };
@@ -111,6 +115,7 @@ void Player::update(Scene& world, bool inputEnabled, float dt) {
     feet = (position - world.renderOrigin).toFloat();
     if (grounded && nearest) {
         groundBody = nearest;
+        groundId = nearest->id;
         groundLocal = nearest->toLocal(feet);
         groundRotPrev = nearest->rotationQuat();
     } else {

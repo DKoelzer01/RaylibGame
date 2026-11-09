@@ -32,7 +32,7 @@ void Ship::update(Scene& world, bool inputEnabled, float dt) {
 
     // Parked on a body: ride its spin (position and orientation), skip flight physics.
     if (anchorBody) {
-        if ((position - anchorEndPos).length() > 1e-6 || !Planetoid::find(anchorId)) {
+        if ((position - anchorEndPos).length() > 1e-6 || Planetoid::find(anchorId) != anchorBody) {
             anchorBody = nullptr; // moved by something else (parkNear, a load) or the body is gone
         } else if (!piloted || !(autopilot || (inputEnabled && (IsKeyDown(KEY_W) || IsKeyDown(KEY_S) || IsKeyDown(KEY_A) || IsKeyDown(KEY_D) || IsKeyDown(KEY_SPACE) || IsKeyDown(KEY_LEFT_CONTROL))))) {
             position = world.renderOrigin + anchorBody->toWorld(anchorLocal);
@@ -84,9 +84,13 @@ void Ship::update(Scene& world, bool inputEnabled, float dt) {
         orientation = QuaternionSlerp(orientation, QuaternionMultiply(QuaternionFromVector3ToVector3(forward(), want), orientation), std::min(1.0f, 2.0f * dt));
         const float speed = Vector3Length(velocity);
         const float stopDist = speed * speed / (2.0f * thrust) + 25.0f;
-        if (dist > stopDist && Vector3DotProduct(forward(), want) > 0.95f) accel = Vector3Scale(forward(), thrust * boostMultiplier);
-        else braking = true;
-        if (energy > 0.0f && Vector3Length(accel) > 0.0f) energy = std::max(0.0f, energy - energyPerThrustSec * boostMultiplier * dt * 0.5f);
+        // Same energy rule as manual flight: no energy, no thrust.
+        if (dist > stopDist && Vector3DotProduct(forward(), want) > 0.95f) {
+            if (energy > 0.0f) {
+                accel = Vector3Scale(forward(), thrust * boostMultiplier);
+                energy = std::max(0.0f, energy - energyPerThrustSec * boostMultiplier * dt * 0.5f);
+            }
+        } else braking = true;
     }
 
     velocity = Vector3Add(velocity, Vector3Scale(accel, dt));
@@ -95,10 +99,16 @@ void Ship::update(Scene& world, bool inputEnabled, float dt) {
     velocity = Vector3Scale(velocity, std::max(0.0f, 1.0f - damp * dt));
 
     Vector3 p = renderPos(world);
-    p = Vector3Add(p, Vector3Scale(velocity, dt));
 
-    // Terrain collision: hull sample points pushed out of the density field.
-    if (Planetoid* body = NearestPlanetoid(world, p)) {
+    // Move in substeps of at most ~1 m (less than the 1.2 m hull clearance) so a fast ship can't
+    // tunnel through a small asteroid between frames; each substep pushes the hull samples out of
+    // the density field.
+    const int moveSteps = std::clamp((int)ceilf(Vector3Length(velocity) * dt / 1.0f), 1, 256);
+    const float h = dt / (float)moveSteps;
+    for (int step = 0; step < moveSteps; ++step) {
+        p = Vector3Add(p, Vector3Scale(velocity, h));
+        Planetoid* body = NearestPlanetoid(world, p);
+        if (!body) continue;
         const Vector3 samples[3] = { p, Vector3Add(p, Vector3Scale(forward(), 2.2f)), Vector3Subtract(p, Vector3Scale(forward(), 2.2f)) };
         for (int iter = 0; iter < 3; ++iter) {
             for (const Vector3& s0 : samples) {

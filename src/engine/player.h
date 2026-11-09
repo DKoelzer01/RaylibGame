@@ -3,6 +3,7 @@
 
 #include <raylib.h>
 #include "dvec3.h"
+#include <cstdint>
 #include <algorithm>
 
 class Scene;
@@ -52,6 +53,7 @@ struct Player {
 private:
     Vector3 groundLocal{};            // feet in the ground body's local space (to follow its spin)
     Planetoid* groundBody = nullptr;
+    uint64_t groundId = 0;            // validates groundBody (bodies can be destroyed, e.g. world regen)
     Vector3 groundNormal = { 0, 1, 0 };
     Quaternion groundRotPrev = { 0, 0, 0, 1 }; // ground body's rotation at the end of last update
     DVec3 lastEndPosition{};                    // where update() left us (detects outside moves)

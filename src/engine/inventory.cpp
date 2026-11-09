@@ -117,7 +117,13 @@ int Inventory::count(const std::string& id) const {
 
 bool Inventory::canCraft(const Recipe& r) const {
     for (auto& in : r.inputs) if (count(in.first) < in.second) return false;
-    return true;
+    // The whole output must fit under the stack limit (after its own inputs are consumed, in case
+    // a recipe uses its output item), or the craft would silently destroy ingredients.
+    const ItemDef* d = itemDB.find(r.output);
+    const int limit = d ? d->stackLimit : 999;
+    int have = count(r.output);
+    for (auto& in : r.inputs) if (in.first == r.output) have -= in.second;
+    return have + r.outputCount <= limit;
 }
 
 bool Inventory::craft(const Recipe& r) {

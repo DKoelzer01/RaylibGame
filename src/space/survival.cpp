@@ -24,6 +24,7 @@ void Survival_OnLanding(float impactSpeed) {
 void Survival_Respawn(Scene& world) {
     survival.oxygen = survival.power = survival.health = 100.0f;
     survival.dead = false;
+    player.flyMode = false; // otherwise the free-fly camera would put the player back where they died
     if (ship.spawned) {
         // Wake up next to the ship (or aboard it, if it is out in space).
         const Vector3 sp = ship.renderPos(world);
@@ -47,16 +48,21 @@ void Survival_Update(Scene& world, float dt, bool jetpackFiring, bool inputEnabl
         return;
     }
     const Vector3 pr = ship.piloted ? ship.renderPos(world) : (player.position - world.renderOrigin).toFloat();
-    survival.inLifeSupport = ship.piloted || ship.playerInRange(world, pr, ship.lifeSupportRadius);
+    // Life support runs on ship energy: a drained ship is no refuge (charge it with a power cell).
+    survival.inLifeSupport = (ship.piloted || ship.playerInRange(world, pr, ship.lifeSupportRadius)) && ship.energy > 0.0f;
 
     if (survival.inLifeSupport) {
-        const float before = survival.oxygen + survival.power;
-        survival.oxygen = std::min(100.0f, survival.oxygen + survival.lifeSupportRefillPerSec * dt);
-        survival.power = std::min(100.0f, survival.power + survival.lifeSupportRefillPerSec * dt);
+        // Topping up the suit costs the ship energy; refill only as much as the ship can pay for.
+        const float energyPerPoint = 0.02f;
+        const float wantO2 = std::min(100.0f - survival.oxygen, survival.lifeSupportRefillPerSec * dt);
+        const float wantPwr = std::min(100.0f - survival.power, survival.lifeSupportRefillPerSec * dt);
+        const float want = wantO2 + wantPwr;
+        const float k = want > 0.0f ? std::min(1.0f, ship.energy / (energyPerPoint * want)) : 0.0f;
+        survival.oxygen += wantO2 * k;
+        survival.power += wantPwr * k;
+        ship.energy = std::max(0.0f, ship.energy - energyPerPoint * want * k);
         survival.health = std::min(100.0f, survival.health + 2.0f * dt);
         player.jetpackFuel = std::min(1.0f, player.jetpackFuel + 0.5f * dt); // refill the suit's thruster tank
-        // Topping up the suit costs the ship a little energy.
-        ship.energy = std::max(0.0f, ship.energy - 0.02f * (survival.oxygen + survival.power - before));
     } else {
         survival.oxygen = std::max(0.0f, survival.oxygen - survival.oxygenDrainPerSec * dt);
         survival.power = std::max(0.0f, survival.power - (survival.powerDrainPerSec + (jetpackFiring ? survival.jetpackPowerPerSec : 0.0f)
