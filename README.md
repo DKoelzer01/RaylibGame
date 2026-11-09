@@ -34,7 +34,7 @@ generated in the build directory for IntelliSense/clangd.
 | LMB / RMB (hold) | dig / build terrain at the crosshair (build costs stone or regolith) |
 | Tab | inventory + crafting |
 | L | headlamp (on foot: suit power; piloting: ship nose light) |
-| F | toggle free-fly camera |
+| F | toggle free-fly camera (WASD along the view, Space/Ctrl along camera up, mouse turns, Q/E roll, Shift/Alt faster) |
 | Space | jump; hold for jetpack |
 | E | board / exit the ship |
 | 1 / 2 | use oxygen canister / power cell |

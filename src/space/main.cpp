@@ -19,6 +19,7 @@
 #include "audio.h"
 #include "rlImGui.h"
 #include "ship.h"
+#include "camera.h"
 #include "survival.h"
 
 #if defined(PLATFORM_DESKTOP)
@@ -129,8 +130,10 @@ int main(int argc, char** argv)
             float worstStep = 0.0f, worstOrtho = 0.0f;
             Vector3 prev = { 0, 0, 1 };
             for (int s = 0; s < 400; ++s) {
-                CameraPitch(&c, 0.02f, false, false, true);
-                CameraYaw(&c, 0.003f, false);
+                FlyInput in;
+                in.pitch = 0.02f;
+                in.yaw = 0.003f;
+                ApplyFlyInput(&c, in, 0.0f);
                 const Vector3 fwd = Vector3Normalize(Vector3Subtract(c.target, c.position));
                 worstStep = std::max(worstStep, Vector3Angle(prev, fwd));
                 worstOrtho = std::max(worstOrtho, fabsf(Vector3DotProduct(fwd, Vector3Normalize(c.up))));
@@ -138,6 +141,35 @@ int main(int argc, char** argv)
             }
             printf("bench: flycam pitched 8 rad (past both poles): largest per-step turn %.4f rad (expected ~0.02), max |dot(view, up)| %.4f\n",
                    worstStep, worstOrtho);
+            // Movement is camera-relative at any orientation: after random yaw / pitch / roll, each key
+            // moves exactly along the camera's own forward / right / up, and roll (Q/E) turns up about
+            // the view without moving the view.
+            std::mt19937 rng(7);
+            std::uniform_real_distribution<float> ang(-0.3f, 0.3f);
+            float worstAxis = 1.0f, worstRollView = 0.0f, rolled = 0.0f;
+            for (int s = 0; s < 300; ++s) {
+                FlyInput turn;
+                turn.yaw = ang(rng); turn.pitch = ang(rng); turn.roll = ang(rng);
+                ApplyFlyInput(&c, turn, 0.0f);
+                const Vector3 f = Vector3Normalize(Vector3Subtract(c.target, c.position));
+                const Vector3 u = c.up, r = Vector3CrossProduct(f, u);
+                const Vector3 axes[3] = { f, r, u };
+                for (int a = 0; a < 3; ++a) {
+                    FlyInput mv;
+                    (a == 0 ? mv.forward : a == 1 ? mv.right : mv.up) = 1.0f;
+                    const Vector3 before = c.position;
+                    ApplyFlyInput(&c, mv, 0.1f);
+                    worstAxis = std::min(worstAxis, Vector3DotProduct(Vector3Normalize(Vector3Subtract(c.position, before)), axes[a]));
+                }
+                FlyInput roll;
+                roll.roll = 0.05f; // E
+                const Vector3 upBefore = c.up;
+                ApplyFlyInput(&c, roll, 0.0f);
+                worstRollView = std::max(worstRollView, Vector3Angle(f, Vector3Normalize(Vector3Subtract(c.target, c.position))));
+                rolled += Vector3Angle(upBefore, c.up);
+            }
+            printf("bench: flycam moves along its own axes after random turns: worst alignment %.6f (1 = exact); roll turns up %.3f rad/step, view moves %.6f rad\n",
+                   worstAxis, rolled / 300.0f, worstRollView);
         }
         if (std::string(argv[i]) == "--spin-rate" && i + 1 < argc) spinRate = (float)atof(argv[i + 1]);
         if (std::string(argv[i]) == "--test-fly" && i + 1 < argc) benchFlySeconds = atof(argv[i + 1]);
@@ -688,7 +720,7 @@ int main(int argc, char** argv)
         const bool gameInput = !bench && !uiOpen && gameState == 1;
         world.cameraInputEnabled = player.flyMode && !uiOpen && !ship.piloted;  // free-fly camera only in fly mode
         const bool alive = !survival.dead;
-        if (gameState == 1 && gameInput && alive && IsKeyPressed(KEY_E)) {
+        if (gameState == 1 && gameInput && alive && !player.flyMode && IsKeyPressed(KEY_E)) { // E rolls in free-fly
             const Vector3 feet = (player.position - world.renderOrigin).toFloat();
             if (ship.piloted) {
                 // Step out beside the ship.
