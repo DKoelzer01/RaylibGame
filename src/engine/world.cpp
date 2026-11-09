@@ -107,6 +107,10 @@ Vector3 Planetoid::dirToWorld(Vector3 localDir) const {
     return Vector3Normalize(Vector3Subtract(toWorld(localDir), toWorld({ 0, 0, 0 })));
 }
 
+Quaternion Planetoid::rotationQuat() const {
+    return QuaternionFromMatrix(MatrixRotateXYZ({ DEG2RAD * rotation.x, DEG2RAD * rotation.y, DEG2RAD * rotation.z }));
+}
+
 void Planetoid::draw(const RenderContext& ctx) {
     if (!isActive) return;
     const Matrix t = localTransform();

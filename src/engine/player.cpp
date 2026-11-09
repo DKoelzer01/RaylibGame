@@ -7,9 +7,6 @@
 
 Player player;
 
-static Quaternion BodyRotation(const Planetoid& p) {
-    return QuaternionFromMatrix(MatrixRotateXYZ({ DEG2RAD * p.rotation.x, DEG2RAD * p.rotation.y, DEG2RAD * p.rotation.z }));
-}
 
 static Vector3 RotateAround(Vector3 v, Vector3 axis, float angle) {
     return Vector3RotateByQuaternion(v, QuaternionFromAxisAngle(axis, angle));
@@ -62,7 +59,7 @@ void Player::update(Scene& world, bool inputEnabled, float dt) {
             position = world.renderOrigin + groundBody->toWorld(groundLocal);
             // Turn the view by however much the body turned since last frame (a delta, so view
             // changes made elsewhere between frames are kept).
-            const Quaternion now = BodyRotation(*groundBody);
+            const Quaternion now = groundBody->rotationQuat();
             const Quaternion delta = QuaternionMultiply(now, QuaternionInvert(groundRotPrev));
             forward = Vector3Normalize(Vector3RotateByQuaternion(forward, delta));
             up = Vector3Normalize(Vector3RotateByQuaternion(up, delta));
@@ -115,7 +112,7 @@ void Player::update(Scene& world, bool inputEnabled, float dt) {
     if (grounded && nearest) {
         groundBody = nearest;
         groundLocal = nearest->toLocal(feet);
-        groundRotPrev = BodyRotation(*nearest);
+        groundRotPrev = nearest->rotationQuat();
     } else {
         groundBody = nullptr;
     }

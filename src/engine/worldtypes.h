@@ -75,6 +75,7 @@ public:
     // Body-local direction <-> world direction (rotation only).
     Vector3 dirToLocal(Vector3 worldDir) const;
     Vector3 dirToWorld(Vector3 localDir) const;
+    Quaternion rotationQuat() const; // body orientation (local -> world), for riding along with spin
 
     static Planetoid* find(uint64_t id); // nullptr once destroyed
 };

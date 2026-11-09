@@ -4,8 +4,10 @@
 #include <raylib.h>
 #include <raymath.h>
 #include "dvec3.h"
+#include <cstdint>
 
 class Scene;
+class Planetoid;
 
 // A small pilotable ship. Newtonian 6-DOF flight with assisted damping, chase camera, terrain
 // collision against the density field, an energy store recharged with power cells, and a
@@ -20,6 +22,12 @@ struct Ship {
     bool autopilot = false;                // fly to autopilotTarget (tests / assist)
     DVec3 autopilotTarget{};
     float lastImpact = 0.0f;               // hardest terrain hit this frame (reset by caller)
+    // Parked on a body: carried along with its spin (see Ship::update).
+    Planetoid* anchorBody = nullptr;
+    uint64_t anchorId = 0;
+    Vector3 anchorLocal{};
+    Quaternion anchorRotPrev = { 0, 0, 0, 1 };
+    DVec3 anchorEndPos{};
 
     // Tunables
     float thrust = 18.0f;                  // m/s^2

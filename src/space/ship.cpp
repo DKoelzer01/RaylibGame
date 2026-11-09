@@ -29,6 +29,25 @@ void Ship::update(Scene& world, bool inputEnabled, float dt) {
     if (!spawned) return;
     PROFILE_FUNCTION();
     dt = std::min(dt, 0.1f);
+
+    // Parked on a body: ride its spin (position and orientation), skip flight physics.
+    if (anchorBody) {
+        if ((position - anchorEndPos).length() > 1e-6 || !Planetoid::find(anchorId)) {
+            anchorBody = nullptr; // moved by something else (parkNear, a load) or the body is gone
+        } else if (!piloted || !(autopilot || (inputEnabled && (IsKeyDown(KEY_W) || IsKeyDown(KEY_S) || IsKeyDown(KEY_A) || IsKeyDown(KEY_D) || IsKeyDown(KEY_SPACE) || IsKeyDown(KEY_LEFT_CONTROL))))) {
+            position = world.renderOrigin + anchorBody->toWorld(anchorLocal);
+            const Quaternion now = anchorBody->rotationQuat();
+            orientation = QuaternionNormalize(QuaternionMultiply(QuaternionMultiply(now, QuaternionInvert(anchorRotPrev)), orientation));
+            anchorRotPrev = now;
+            anchorEndPos = position;
+            velocity = { 0, 0, 0 };
+            return;
+        } else {
+            // Taking off from a spinning body: start with the surface's own motion.
+            velocity = anchorBody->surfaceVelocity(renderPos(world));
+            anchorBody = nullptr;
+        }
+    }
     Vector3 accel = { 0, 0, 0 };
     bool braking = false;
 
@@ -97,6 +116,22 @@ void Ship::update(Scene& world, bool inputEnabled, float dt) {
         }
     }
     position = world.renderOrigin + p;
+
+    // Come to rest on the ground (parked, or landed with no thrust) -> anchor to that body so it
+    // carries us with its spin; thrusting releases it.
+    if (Vector3Length(accel) == 0.0f && Vector3Length(velocity) < 0.5f) {
+        if (Planetoid* body = NearestPlanetoid(world, p)) {
+            float dist; Vector3 n;
+            if (TerrainSurfaceDistance(*body, p, dist, n) && dist < hullRadius + 1.0f) {
+                anchorBody = body;
+                anchorId = body->id;
+                anchorLocal = body->toLocal(p);
+                anchorRotPrev = body->rotationQuat();
+                anchorEndPos = position;
+                velocity = { 0, 0, 0 };
+            }
+        }
+    }
 }
 
 void Ship::applyChaseCamera(Scene& world) const {

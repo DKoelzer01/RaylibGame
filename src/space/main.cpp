@@ -52,6 +52,11 @@ int main(int argc, char** argv)
     float orbitMin = 0, orbitMax = 0;
     bool orbitCrashed = false;
     bool benchRide = false;        // --test-ride: stand on a spinning body, then jump
+    bool benchPark = false;        // --test-park: park the ship on a spinning body
+    double parkStart = -1.0;
+    int parkPhase = 0;
+    bool parkAnchored = false;
+    Vector3 parkLocal0{}, parkFwd0{};
     double rideStart = -1.0;
     int ridePhase = 0;
     Vector3 rideFwd0{}, ridePos0{}, rideTakeoff{};
@@ -80,6 +85,7 @@ int main(int argc, char** argv)
         if (std::string(argv[i]) == "--test-suffocate") benchSuffocate = true;
         if (std::string(argv[i]) == "--test-orbit" && i + 1 < argc) benchOrbitSeconds = atof(argv[i + 1]);
         if (std::string(argv[i]) == "--test-ride") benchRide = true;
+        if (std::string(argv[i]) == "--test-park") benchPark = true;
         if (std::string(argv[i]) == "--spin-test") spinTest = true;
         if (std::string(argv[i]) == "--test-flycam") {
             // Pitch a free camera through two full loops (past straight up and down) in small steps,
@@ -231,6 +237,32 @@ int main(int argc, char** argv)
                             benchOrbitSeconds = 0.0;
                         }
                     }
+                } else if (benchPark && WorldIdle()) {
+                    // Scripted park: land the ship on the equator of a body spinning 10 deg/s; it must stay put
+                    // relative to the surface (position and heading) while parked.
+                    Planetoid* p = dynamic_cast<Planetoid*>(world.objects[0].get());
+                    const double t = parkStart < 0.0 ? 0.0 : GetTime() - parkStart;
+                    if (parkStart < 0.0) {
+                        p->spin = { 0.0f, 10.0f, 0.0f };
+                        TerrainHit hit;
+                        const float R = p->radius * p->scale;
+                        if (RaycastTerrain(world, Ray{ Vector3Add(p->position, { R + 60.0f, 0, 0 }), { -1, 0, 0 } }, R + 80.0f, hit))
+                            ship.parkNear(world, hit.point, hit.normal);
+                        ship.piloted = false;
+                        parkStart = GetTime();
+                        parkPhase = 0;
+                    } else if (parkPhase == 0 && t > 1.0) {
+                        parkLocal0 = p->toLocal(ship.renderPos(world));
+                        parkFwd0 = p->dirToLocal(ship.forward());
+                        parkAnchored = ship.anchorBody != nullptr;
+                        parkPhase = 1;
+                    } else if (parkPhase == 1 && t > 5.0) {
+                        const float moved = Vector3Distance(parkLocal0, p->toLocal(ship.renderPos(world)));
+                        const float turned = Vector3Angle(parkFwd0, p->dirToLocal(ship.forward())) * RAD2DEG;
+                        printf("bench: park test (10 deg/s, body turned %.0f deg in 4 s): anchored %s, ship moved %.3f m and turned %.2f deg relative to the surface\n",
+                               4.0 * 10.0, parkAnchored ? "yes" : "NO", moved, turned);
+                        benchPark = false;
+                    }
                 } else if (benchRide && WorldIdle()) {
                     // Scripted ride: stand on the equator of a body spinning 10 deg/s. The view must not drift
                     // against the surface, and a jump must land where it took off (momentum is kept).
@@ -356,7 +388,7 @@ int main(int argc, char** argv)
                                dist, benchWalkSeconds, 100.0 * walkGroundedFrames / std::max(1, walkFrames), walkMinDensity, walkMaxDensity, ISO_LEVEL, alt);
                         benchWalkSeconds = 0.0;
                     }
-                } else if ((WorldIdle() && benchDigStrokes == 0 && !benchSaveLoad && benchWalkSeconds <= 0.0 && benchMineStrokes == 0 && minePhase != 2 && benchFlySeconds <= 0.0 && !benchSuffocate && benchOrbitSeconds <= 0.0 && !benchRide) || GetTime() > 180.0) {
+                } else if ((WorldIdle() && benchDigStrokes == 0 && !benchSaveLoad && benchWalkSeconds <= 0.0 && benchMineStrokes == 0 && minePhase != 2 && benchFlySeconds <= 0.0 && !benchSuffocate && benchOrbitSeconds <= 0.0 && !benchRide && !benchPark) || GetTime() > 180.0) {
                     benchStart = GetTime();
                     printf("bench: world ready after %.2f s (%d chunks, avg build %.2f ms, %d worker threads)\n",
                         GetWorldStats().lastGenerationSeconds, GetWorldStats().chunks, GetWorldStats().avgBuildMs, GetWorldStats().workerThreads);
