@@ -10,6 +10,24 @@
 #include "frustum.h"
 #include "dvec3.h"
 
+// Draws many meshes with one material: binds its shader and texture maps once, then per mesh only
+// sets mvp / matModel and draws (raylib's DrawMesh re-binds and unbinds everything on every call,
+// which dominated the frame with hundreds of terrain chunks). Mirrors DrawMesh's OpenGL 3.3 path;
+// meshes must have been uploaded with a VAO (UploadMesh). Unbinds in the destructor.
+class ChunkBatch {
+public:
+    explicit ChunkBatch(const Material& material);
+    ~ChunkBatch();
+    ChunkBatch(const ChunkBatch&) = delete;
+    ChunkBatch& operator=(const ChunkBatch&) = delete;
+    void setUniform(int loc, const void* value, int uniformType); // the shader is already bound
+    void draw(const Mesh& mesh, const Matrix& model);
+
+private:
+    const Material& material;
+    Matrix view, projection, viewProjection;
+};
+
 // Everything an object needs to submit draws for one pass. Owned by the Scene; objects never
 // look up shaders or uniforms themselves, they hand meshes + a material to DrawMesh, which sets
 // mvp / matModel / matNormal and binds the material's texture maps.
@@ -21,6 +39,7 @@ struct RenderContext {
     int chunkOriginLoc = -1;              // lighting shader "chunkTexOrigin" (chunk origin wrapped to the texture repeat)
     DVec3 renderOrigin{};                 // the scene's floating origin (chunk placement in double)
     float texScale = 0.05f;               // terrain texture repeats per metre (wraps chunkTexOrigin)
+    ChunkBatch* batch = nullptr;          // set while a body draws its chunks (see ChunkBatch)
     int chunkClipLoc = -1;                // lighting shader "chunkClipMax" (chunk-local overlap clipping)
 };
 

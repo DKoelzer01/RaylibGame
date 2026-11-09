@@ -82,16 +82,27 @@ public:
     virtual bool editable(Vector3) const { return true; }
     // Upper bound on the surface's distance from the local origin (LOD root size, spawn raycasts).
     virtual float maxRadius() const = 0;
+    // Lower bound: no surface lies entirely inside this radius (a planet's mantle). 0 = unknown.
+    virtual float minRadius() const { return 0.0f; }
+    // Radius of a sphere that is always opaque (nothing can be dug below it): terrain hidden behind
+    // it from the camera is culled. 0 = no occluder.
+    virtual float occluderRadius() const { return 0.0f; }
 
     // Density for samples `footprint` apart (chunk meshing at a LOD stride): fields may leave out
     // detail finer than that. Defaults to baseDensity; footprint 0 = full detail.
     virtual float baseDensityLod(Vector3 p, float /*footprint*/) const { return baseDensity(p); }
+    // A whole S^3 block of baseDensityLod samples at origin + (x, y, z) * stride, x fastest (chunk
+    // meshing). Fields can share work between samples (a planet evaluates its height map once per
+    // column); the default just loops.
+    virtual void baseDensityBlock(Vector3 origin, float stride, int S, float footprint, float* out) const;
     // Material of a mesh vertex sampled at that footprint (so coarse vertices, which sit on the
     // simplified surface, are judged against it). Defaults to material().
     virtual VoxelMaterial materialLod(Vector3 p, float base, float /*footprint*/) const { return material(p, base); }
 
     // Density including edits (the list should already be filtered to ones near p).
     float density(Vector3 p, const TerrainEdit* edits, size_t editCount, float footprint = 0.0f) const;
+    // Adds the edits' contributions to a base density at p (nothing where !editable(p)).
+    float applyEdits(Vector3 p, float base, const TerrainEdit* edits, size_t editCount) const;
     // Outward surface normal: negative density gradient, by central differences.
     Vector3 normal(Vector3 p, const TerrainEdit* edits, size_t editCount, float step = 0.5f, float footprint = 0.0f) const;
 };
@@ -133,11 +144,17 @@ public:
     float elevation(Vector3 dir, float footprint = 0.0f) const;
     float baseDensity(Vector3 p) const override { return baseDensityLod(p, 0.0f); }
     float baseDensityLod(Vector3 p, float footprint) const override;
+    void baseDensityBlock(Vector3 origin, float stride, int S, float footprint, float* out) const override;
     VoxelMaterial material(Vector3 p, float base) const override { return materialLod(p, base, 0.0f); }
     VoxelMaterial materialLod(Vector3 p, float base, float footprint) const override;
     Vector3 fallbackUp(Vector3 p) const override;
     bool editable(Vector3 p) const override;
     float maxRadius() const override { return radius + maxElevation; }
+    float minRadius() const override { return mantleRadius - 1.0f; } // digging stops at the mantle
+    float occluderRadius() const override { return mantleRadius; }
+
+private:
+    float densityNear(Vector3 p, float d, float surface, float footprint) const; // after the height map
 };
 
 // Open-world terrain: +Y up, rolling hills and mountains from a heightmap, carved by 3D cave
@@ -168,6 +185,7 @@ struct ChunkMeshData {
     std::vector<unsigned short> indices;
     bool overflow = false;                 // > 65535 vertices: mesh dropped
     float buildMs = 0.0f;
+    float sampleMs = 0.0f;                 // part of buildMs spent sampling the density field
 };
 
 // Samples the field over node `key` (CHUNK_SIZE+1 cells at the node stride, i.e. one cell of

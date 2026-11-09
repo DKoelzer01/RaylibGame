@@ -60,6 +60,10 @@ public:
     std::unordered_map<NodeKey, uint32_t> requestedVersion;      // latest request per node
     std::vector<Chunk*> drawList;                                // what is rendered this frame
     int rootLevel = 0;                                           // level whose 2x2x2 nodes cover the body
+    // UpdateLod skips work while nothing changed: the camera (in body space) stayed within 1 m of
+    // where the node selection was last made and no chunk results or edits arrived.
+    bool lodDirty = true;
+    Vector3 lodCamLocal = { 1e30f, 1e30f, 1e30f };
 
     Planetoid(std::string name, DVec3 worldPos, Vector3 rotation, float scale, unsigned int seed, float radius);
     // Open-world terrain body.

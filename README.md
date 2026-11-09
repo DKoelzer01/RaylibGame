@@ -91,7 +91,8 @@ Shaders in `resources/` hot-reload when saved.
 - **Planets and moons** (`PlanetField` in `src/engine/voxel.*`): a height map over the sphere (continents and
   ocean floor, ridged mountains, hills, river valleys), worm caves, ore veins that get richer with depth, snow
   at high latitudes and on peaks, and an unmineable mantle 1.5% of the radius below sea level (900 m on the
-  60 km planet). Coarse LOD chunks leave out detail finer than their sample spacing. Try it with
+  60 km planet). Coarse LOD chunks leave out detail finer than their sample spacing; nodes over the
+  horizon, above the highest terrain or inside the mantle are never built. Try it with
   `./game.exe --bodies resources/data/bodies_planet.txt`.
 - Asteroid density is a displaced sphere (mean surface 0.72 R) with a uniform 0.25/voxel gradient: crisp surfaces and
   predictable dig depth.
@@ -106,6 +107,8 @@ planetoid count, `--system R` = belt radius, `--lod F` = LOD factor, `--first x 
 (`--size`, `--count`, `--system` and `--first` override the first body and first ring of `bodies.txt`),
 `--bodies file` uses another system file,
 `--dump-system` prints every body, `--load` loads `saves/world.sav` at start, `--fps N` caps the frame rate,
+`--bench-walk` walks the player through the measured window (frame time while terrain streams), `--crack-check`
+clears to magenta without a skybox and reports the share of pixels showing through the terrain (look down at it),
 `--ui` opens the debug panel, `--overlay` the F3 overlay, `--nocull` disables
 frustum culling, `--test-dig N` carves a tunnel at the crosshair, `--test-saveload` saves and reloads,
 `--test-walk S` / `--test-stand S` spawn the player and walk/stand (reports grounding + penetration),

@@ -2,6 +2,7 @@
 #include "textobject.h"
 #include "gameobject.h"
 #include <raymath.h>
+#include <rlgl.h>
 #include <algorithm>
 #include <cmath>
 #include <cstring>
@@ -122,30 +123,86 @@ bool Chunk::visible(const RenderContext& ctx, const Matrix& model) const {
     return ctx.frustum->sphereVisible(centre, h * 1.7320508f * s);
 }
 
+// raylib allocates MAX_MATERIAL_MAPS (config.h, default 12) maps per Material; not exported by raylib.h.
+static constexpr int kMaterialMaps = 12;
+
+ChunkBatch::ChunkBatch(const Material& m) : material(m) {
+    view = rlGetMatrixModelview();
+    projection = rlGetMatrixProjection();
+    viewProjection = MatrixMultiply(view, projection);
+    const int* locs = material.shader.locs;
+    rlEnableShader(material.shader.id);
+    if (locs[SHADER_LOC_COLOR_DIFFUSE] != -1) {
+        const Color c = material.maps[MATERIAL_MAP_DIFFUSE].color;
+        const float v[4] = { c.r / 255.0f, c.g / 255.0f, c.b / 255.0f, c.a / 255.0f };
+        rlSetUniform(locs[SHADER_LOC_COLOR_DIFFUSE], v, SHADER_UNIFORM_VEC4, 1);
+    }
+    if (locs[SHADER_LOC_MATRIX_VIEW] != -1) rlSetUniformMatrix(locs[SHADER_LOC_MATRIX_VIEW], view);
+    if (locs[SHADER_LOC_MATRIX_PROJECTION] != -1) rlSetUniformMatrix(locs[SHADER_LOC_MATRIX_PROJECTION], projection);
+    for (int i = 0; i < kMaterialMaps; i++) {
+        if (material.maps[i].texture.id == 0) continue;
+        rlActiveTextureSlot(i);
+        if (i == MATERIAL_MAP_IRRADIANCE || i == MATERIAL_MAP_PREFILTER || i == MATERIAL_MAP_CUBEMAP) rlEnableTextureCubemap(material.maps[i].texture.id);
+        else rlEnableTexture(material.maps[i].texture.id);
+        rlSetUniform(locs[SHADER_LOC_MAP_DIFFUSE + i], &i, SHADER_UNIFORM_INT, 1);
+    }
+}
+
+ChunkBatch::~ChunkBatch() {
+    for (int i = 0; i < kMaterialMaps; i++) {
+        if (material.maps[i].texture.id == 0) continue;
+        rlActiveTextureSlot(i);
+        if (i == MATERIAL_MAP_IRRADIANCE || i == MATERIAL_MAP_PREFILTER || i == MATERIAL_MAP_CUBEMAP) rlDisableTextureCubemap();
+        else rlDisableTexture();
+    }
+    rlDisableVertexArray();
+    rlDisableVertexBuffer();
+    rlDisableVertexBufferElement();
+    rlDisableShader();
+    rlSetMatrixModelview(view);
+    rlSetMatrixProjection(projection);
+}
+
+void ChunkBatch::setUniform(int loc, const void* value, int uniformType) {
+    if (loc >= 0) rlSetUniform(loc, value, uniformType, 1);
+}
+
+void ChunkBatch::draw(const Mesh& mesh, const Matrix& model) {
+    const int* locs = material.shader.locs;
+    if (locs[SHADER_LOC_MATRIX_MODEL] != -1) rlSetUniformMatrix(locs[SHADER_LOC_MATRIX_MODEL], model);
+    if (locs[SHADER_LOC_MATRIX_MVP] != -1) rlSetUniformMatrix(locs[SHADER_LOC_MATRIX_MVP], MatrixMultiply(model, viewProjection));
+    if (!rlEnableVertexArray(mesh.vaoId)) return; // chunk meshes are always uploaded with a VAO
+    if (mesh.indices != nullptr) rlDrawVertexArrayElements(0, mesh.triangleCount * 3, 0);
+    else rlDrawVertexArray(0, mesh.vertexCount);
+}
+
 void Chunk::drawChunk(const RenderContext& ctx, const Matrix& m) {
     if (!isActive || mesh.vaoId == 0 || !ctx.terrainMaterial) return;
     if (!visible(ctx, m)) return;
-    if (ctx.chunkOriginLoc >= 0) {
-        // DrawMesh draws immediately (no batching), so per-draw uniforms set here are safe. Both stay
-        // small far from a body's centre: the texturing origin is the chunk origin wrapped to the
-        // texture's repeat (computed in double, so neighbouring chunks still line up), and the clip
-        // bound is relative to the chunk.
-        const Vector3 o = key.origin();
-        const double period = 1.0 / std::max(ctx.texScale, 1e-6f);
-        auto wrap = [period](float v) { return (float)(fmod(fmod((double)v, period) + period, period)); };
-        const Vector3 texOrigin = { wrap(o.x), wrap(o.y), wrap(o.z) };
-        SetShaderValue(ctx.terrainMaterial->shader, ctx.chunkOriginLoc, &texOrigin, SHADER_UNIFORM_VEC3);
-        if (ctx.chunkClipLoc >= 0) {
-            const Vector3 clip = { clipMax.x - o.x, clipMax.y - o.y, clipMax.z - o.z }; // 1e30 stays "no clip"
-            SetShaderValue(ctx.terrainMaterial->shader, ctx.chunkClipLoc, &clip, SHADER_UNIFORM_VEC3);
-        }
+    // Per-chunk uniforms. Both stay small far from a body's centre: the texturing origin is the
+    // chunk origin wrapped to the texture's repeat (computed in double, so neighbouring chunks still
+    // line up), and the clip bound is relative to the chunk.
+    const Vector3 o = key.origin();
+    const double period = 1.0 / std::max(ctx.texScale, 1e-6f);
+    auto wrap = [period](float v) { return (float)(fmod(fmod((double)v, period) + period, period)); };
+    const Vector3 texOrigin = { wrap(o.x), wrap(o.y), wrap(o.z) };
+    const Vector3 clip = { clipMax.x - o.x, clipMax.y - o.y, clipMax.z - o.z }; // 1e30 stays "no clip"
+    if (ctx.batch) {
+        ctx.batch->setUniform(ctx.chunkOriginLoc, &texOrigin, SHADER_UNIFORM_VEC3);
+        ctx.batch->setUniform(ctx.chunkClipLoc, &clip, SHADER_UNIFORM_VEC3);
+        ctx.batch->draw(mesh, m);
+    } else {
+        // DrawMesh draws immediately, so per-draw uniforms set just before it are safe.
+        if (ctx.chunkOriginLoc >= 0) SetShaderValue(ctx.terrainMaterial->shader, ctx.chunkOriginLoc, &texOrigin, SHADER_UNIFORM_VEC3);
+        if (ctx.chunkClipLoc >= 0) SetShaderValue(ctx.terrainMaterial->shader, ctx.chunkClipLoc, &clip, SHADER_UNIFORM_VEC3);
+        DrawMesh(mesh, *ctx.terrainMaterial, m);
     }
-    DrawMesh(mesh, *ctx.terrainMaterial, m);
     if (ctx.drawCalls) (*ctx.drawCalls)++;
 }
 
 void Chunk::drawChunkDepth(const RenderContext& ctx, const Matrix& m) {
     if (!isActive || mesh.vaoId == 0 || !ctx.depthMaterial) return;
     if (!visible(ctx, m)) return;
-    DrawMesh(mesh, *ctx.depthMaterial, m);
+    if (ctx.batch) ctx.batch->draw(mesh, m);
+    else DrawMesh(mesh, *ctx.depthMaterial, m);
 }

@@ -35,7 +35,7 @@ namespace {
 
     WorldStats stats;
     double generationStart = -1.0; // GetTime() when a (re)generation started; <0 once reported
-    double buildMsTotal = 0.0;
+    double buildMsTotal = 0.0, sampleMsTotal = 0.0;
     long buildCount = 0;
 
     JobSystem& Jobs() {
@@ -113,16 +113,34 @@ DVec3 Planetoid::toLocalD(const DVec3& w) const {
                  (r[0][2] * d.x + r[1][2] * d.y + r[2][2] * d.z) * inv);
 }
 
+// Places a body's chunks in render space. Rotation and scale act on chunk-local vertices (small
+// numbers), so float is fine there; the translation is the chunk origin's render-space position,
+// computed in double so chunks far from the body centre neither jitter nor open seams as the
+// camera moves. Built once per body per pass (the trigonometry is shared by every chunk).
+namespace {
+    struct ChunkPlacer {
+        Matrix rs;
+        double r[3][3];
+        DVec3 offset;  // body position - render origin
+        double s;
+        ChunkPlacer(const Planetoid& p, const DVec3& renderOrigin)
+            : rs(MatrixMultiply(MatrixScale(p.scale, p.scale, p.scale), MatrixRotateXYZ({ DEG2RAD * p.rotation.x, DEG2RAD * p.rotation.y, DEG2RAD * p.rotation.z }))),
+              offset(p.worldPos - renderOrigin), s(p.scale) {
+            BodyRotationD(p.rotation, r);
+        }
+        Matrix model(const NodeKey& key) const {
+            const Vector3 o = key.origin();
+            Matrix m = rs;
+            m.m12 = (float)(offset.x + (r[0][0] * o.x + r[0][1] * o.y + r[0][2] * o.z) * s);
+            m.m13 = (float)(offset.y + (r[1][0] * o.x + r[1][1] * o.y + r[1][2] * o.z) * s);
+            m.m14 = (float)(offset.z + (r[2][0] * o.x + r[2][1] * o.y + r[2][2] * o.z) * s);
+            return m;
+        }
+    };
+}
+
 Matrix Planetoid::chunkModel(const Chunk& chunk, const DVec3& renderOrigin) const {
-    // Rotation and scale act on chunk-local vertices (small numbers), so float is fine there; the
-    // translation is the chunk origin's render-space position, computed in double so chunks far
-    // from the body centre neither jitter nor open seams as the camera moves.
-    Matrix m = MatrixMultiply(MatrixScale(scale, scale, scale), MatrixRotateXYZ({ DEG2RAD * rotation.x, DEG2RAD * rotation.y, DEG2RAD * rotation.z }));
-    const DVec3 t = toWorldD(DVec3(chunk.key.origin())) - renderOrigin;
-    m.m12 = (float)t.x;
-    m.m13 = (float)t.y;
-    m.m14 = (float)t.z;
-    return m;
+    return ChunkPlacer(*this, renderOrigin).model(chunk.key);
 }
 
 float Planetoid::densityAt(Vector3 local) const {
@@ -157,13 +175,23 @@ Quaternion Planetoid::rotationQuat() const {
 void Planetoid::draw(const RenderContext& ctx) {
     if (!isActive) return;
     for (const auto& objPtr : children) objPtr->draw(ctx);
-    for (Chunk* c : drawList) c->drawChunk(ctx, chunkModel(*c, ctx.renderOrigin));
+    if (drawList.empty() || !ctx.terrainMaterial) return;
+    const ChunkPlacer placer(*this, ctx.renderOrigin);
+    ChunkBatch batch(*ctx.terrainMaterial); // shader + textures bound once for all chunks
+    RenderContext c2 = ctx;
+    c2.batch = &batch;
+    for (Chunk* c : drawList) c->drawChunk(c2, placer.model(c->key));
 }
 
 void Planetoid::drawDepthOnly(const RenderContext& ctx) {
     if (!isActive) return;
     for (const auto& objPtr : children) objPtr->drawDepthOnly(ctx);
-    for (Chunk* c : drawList) c->drawChunkDepth(ctx, chunkModel(*c, ctx.renderOrigin));
+    if (drawList.empty() || !ctx.depthMaterial) return;
+    const ChunkPlacer placer(*this, ctx.renderOrigin);
+    ChunkBatch batch(*ctx.depthMaterial);
+    RenderContext c2 = ctx;
+    c2.batch = &batch;
+    for (Chunk* c : drawList) c->drawChunkDepth(c2, placer.model(c->key));
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -200,13 +228,37 @@ static float DistanceToBox(Vector3 p, Vector3 lo, Vector3 hi) {
     return sqrtf(dx * dx + dy * dy + dz * dz);
 }
 
+// True if the whole box lies behind the opaque sphere of radius ro (centred on the body origin) as
+// seen from cam: every corner inside the sphere's shadow cone and beyond its tangent plane (that
+// region is convex, so the box between the corners is hidden too).
+static bool BehindHorizon(Vector3 cam, Vector3 lo, Vector3 hi, float ro) {
+    if (ro <= 0.0f) return false;
+    const Vector3 cv = Vector3Scale(cam, 1.0f / ro);
+    const float vhMagSq = Vector3DotProduct(cv, cv) - 1.0f;
+    if (vhMagSq <= 0.0f) return false; // camera inside the occluder
+    for (int i = 0; i < 8; ++i) {
+        const Vector3 c = { (i & 1) ? hi.x : lo.x, (i & 2) ? hi.y : lo.y, (i & 4) ? hi.z : lo.z };
+        const Vector3 vt = Vector3Subtract(Vector3Scale(c, 1.0f / ro), cv);
+        const float vtDotVc = -Vector3DotProduct(vt, cv);
+        if (!(vtDotVc > vhMagSq && vtDotVc * vtDotVc / Vector3DotProduct(vt, vt) > vhMagSq)) return false;
+    }
+    return true;
+}
+
 // Octree descent from the 8 root nodes: split while the camera is closer than lodFactor * node size.
 static void CollectDesired(const Planetoid& p, const NodeKey& key, Vector3 camLocal, std::vector<NodeKey>& out) {
     const Vector3 lo = key.origin();
     const Vector3 hi = Vector3AddValue(lo, key.size());
     if (p.flat) {
         if (hi.y < p.minHeight - 8.0f || lo.y > p.maxHeight + 8.0f) return;      // outside the terrain band
-    } else if (DistanceToBox({ 0, 0, 0 }, lo, hi) > p.radius + 24.0f) return;  // no surface possible here
+    } else {
+        // No surface possible: wholly above the highest terrain (+ room for built material), or
+        // wholly inside the lowest possible surface (a planet's mantle).
+        if (DistanceToBox({ 0, 0, 0 }, lo, hi) > p.field->maxRadius() + 24.0f) return;
+        const float far = Vector3Length({ std::max(fabsf(lo.x), fabsf(hi.x)), std::max(fabsf(lo.y), fabsf(hi.y)), std::max(fabsf(lo.z), fabsf(hi.z)) });
+        if (far < p.field->minRadius()) return;
+        if (BehindHorizon(camLocal, lo, hi, p.field->occluderRadius() * p.scale)) return; // over the horizon
+    }
     if (key.level > 0 && DistanceToBox(camLocal, lo, hi) < lodSettings.lodFactor * key.size()) {
         for (int i = 0; i < 8; ++i)
             CollectDesired(p, { key.level - 1, key.x * 2 + (i & 1), key.y * 2 + ((i >> 1) & 1), key.z * 2 + ((i >> 2) & 1) }, camLocal, out);
@@ -220,6 +272,11 @@ static void CollectDesired(const Planetoid& p, const NodeKey& key, Vector3 camLo
 static void UpdateLod(Planetoid& p, Vector3 cameraRender) {
     PROFILE_FUNCTION();
     const Vector3 camLocal = p.toLocal(cameraRender);
+    // Nothing to do while the camera (in body space) stays within 1 m of the last selection and no
+    // results or edits arrived: the smallest node splits at lodFactor * 32 m, so 1 m is invisible.
+    if (!p.lodDirty && Vector3DistanceSqr(camLocal, p.lodCamLocal) < 1.0f) return;
+    p.lodDirty = false;
+    p.lodCamLocal = camLocal;
     std::vector<NodeKey> desired;
     if (p.flat) {
         // Open world: a grid of root tiles around the camera, spanning the terrain height band.
@@ -268,7 +325,10 @@ static void UpdateLod(Planetoid& p, Vector3 cameraRender) {
     for (Chunk* c : p.drawList) {
         const NodeKey k = c->key;
         const Vector3 o = k.origin();
-        const float s = k.size() + 0.02f; // tiny overlap so the seam itself never cracks
+        // Keep a quarter cell past the shared face: each chunk has its own model matrix, so vertices
+        // on the face can land a hair apart; both build this strip from the same samples, so the
+        // duplicated sliver is identical surface and does not z-fight.
+        const float s = k.size() + 0.25f * (float)k.stride();
         c->clipMax.x = drawn.count({ k.level, k.x + 1, k.y, k.z }) ? o.x + s : 1e30f;
         c->clipMax.y = drawn.count({ k.level, k.x, k.y + 1, k.z }) ? o.y + s : 1e30f;
         c->clipMax.z = drawn.count({ k.level, k.x, k.y, k.z + 1 }) ? o.z + s : 1e30f;
@@ -295,9 +355,11 @@ static void IntegrateResult(const ChunkMeshData& r) {
     if (it == p->nodes.end()) return;
 
     buildMsTotal += r.buildMs;
+    sampleMsTotal += r.sampleMs;
     buildCount++;
     if (r.overflow) logger.logf("[ERROR] Node L%d (%d,%d,%d) exceeds 65535 vertices; skipped\n", r.key.level, r.key.x, r.key.y, r.key.z);
     it->second->setMesh(r);
+    p->lodDirty = true; // readiness changed: the draw list may change
 }
 
 static bool PipelineIdle() {
@@ -350,6 +412,7 @@ void worldUpdate(Scene& world, float uploadBudgetMs) {
     stats.uploadsLastFrame = uploads;
     stats.workerThreads = (int)Jobs().threadCount();
     stats.avgBuildMs = buildCount ? (float)(buildMsTotal / buildCount) : 0.0f;
+    stats.avgSampleMs = buildCount ? (float)(sampleMsTotal / buildCount) : 0.0f;
     stats.chunks = stats.nodes = stats.edits = 0;
     for (auto& obj : world.objects) {
         if (auto* p = dynamic_cast<Planetoid*>(obj.get())) {
@@ -441,6 +504,7 @@ void ApplyTerrainEdit(Planetoid& p, const TerrainEdit& edit) {
     auto next = std::make_shared<EditList>(*p.edits);
     next->push_back(edit);
     p.edits = next;
+    p.lodDirty = true;
 
     // Rebuild every existing node (any level) whose samples or normals the brush reaches. Nodes
     // that do not exist yet are built later with the new edit list anyway.
@@ -627,11 +691,11 @@ void generateWorld(Scene& world) {
     }
     world.syncRenderPositions();
     generationStart = GetTime();
-    buildMsTotal = 0.0;
+    buildMsTotal = sampleMsTotal = 0.0;
     buildCount = 0;
 }
 
-void BeginWorldStreaming() { generationStart = GetTime(); buildMsTotal = 0.0; buildCount = 0; }
+void BeginWorldStreaming() { generationStart = GetTime(); buildMsTotal = sampleMsTotal = 0.0; buildCount = 0; }
 
 void regenerateWorld(Scene& world) {
     Jobs().clearQueued();  // in-flight jobs finish; their results are dropped (planetoid ids are gone)

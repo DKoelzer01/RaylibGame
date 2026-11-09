@@ -47,6 +47,7 @@ struct WorldStats {
     int nodes = 0;   // LOD nodes alive (built, building or retained)
     int edits = 0;
     float avgBuildMs = 0.0f;            // worker time per chunk (sampling + meshing + normals)
+    float avgSampleMs = 0.0f;           // of which sampling the density field
     float lastGenerationSeconds = 0.0f; // from generateWorld() until every chunk was uploaded
 };
 

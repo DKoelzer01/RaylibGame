@@ -52,8 +52,18 @@ float PlanetoidField::baseDensity(Vector3 p) const {
     return ISO_LEVEL + DENSITY_GRADIENT * (radius * MEAN_SURFACE + displacement - d);
 }
 
+void DensityField::baseDensityBlock(Vector3 o, float stride, int S, float fp, float* out) const {
+    size_t i = 0;
+    for (int z = 0; z < S; ++z)
+        for (int y = 0; y < S; ++y)
+            for (int x = 0; x < S; ++x, ++i) out[i] = baseDensityLod({ o.x + x * stride, o.y + y * stride, o.z + z * stride }, fp);
+}
+
 float DensityField::density(Vector3 p, const TerrainEdit* edits, size_t editCount, float footprint) const {
-    float v = footprint > 0.0f ? baseDensityLod(p, footprint) : baseDensity(p);
+    return applyEdits(p, footprint > 0.0f ? baseDensityLod(p, footprint) : baseDensity(p), edits, editCount);
+}
+
+float DensityField::applyEdits(Vector3 p, float v, const TerrainEdit* edits, size_t editCount) const {
     if (editCount == 0 || !editable(p)) return v; // e.g. a planet's mantle ignores edits
     for (size_t i = 0; i < editCount; ++i) {
         const TerrainEdit& e = edits[i];
@@ -207,6 +217,11 @@ float PlanetField::baseDensityLod(Vector3 p, float fp) const {
     const float outer = radius + maxElevation, inner = radius + minElevation;
     if (d > outer + 4.0f) return ISO_LEVEL + DENSITY_GRADIENT * (outer - d);
     const float surface = (d < inner - 4.0f || d < 1e-3f) ? inner : radius + elevation({ p.x / d, p.y / d, p.z / d }, fp);
+    return densityNear(p, d, surface, fp);
+}
+
+// Everything after the height map, shared by single samples and blocks so both agree exactly.
+float PlanetField::densityNear(Vector3 p, float d, float surface, float fp) const {
     float v = ISO_LEVEL + DENSITY_GRADIENT * (surface - d);
     const float depth = surface - d;
     if (fabsf(depth) < 6.0f) v += DENSITY_GRADIENT * 1.5f * detail.fractalLimited(2, fp, p.x, p.y * 1.3f, p.z); // crags, overhangs
@@ -217,12 +232,72 @@ float PlanetField::baseDensityLod(Vector3 p, float fp) const {
     // Tunnels a few metres wide can't be resolved by coarse LOD samples, so they fade out there.
     const float caveWeight = std::clamp(2.0f - fp / 4.0f, 0.0f, 1.0f);
     if (caveWeight > 0.0f && depth > 5.0f && d > mantleRadius + 20.0f) {
-        const float t = std::max(fabsf(cavesA.fractal(2, p.x, p.y, p.z)), fabsf(cavesB.fractal(2, p.x, p.y, p.z)));
+        // A tunnel needs both fields near zero. If the first alone puts any tunnel more than a couple
+        // of samples away, this sample is plain rock as far as meshing is concerned: skip the second.
+        const float a = fabsf(cavesA.fractal(2, p.x, p.y, p.z));
+        if ((a - 0.06f) * 40.0f > 2.0f * std::max(fp, 1.0f) + 2.0f) return v;
+        const float t = std::max(a, fabsf(cavesB.fractal(2, p.x, p.y, p.z)));
         const float fade = std::min(1.0f, (depth - 5.0f) / 8.0f) * std::min(1.0f, (d - mantleRadius - 20.0f) / 10.0f);
         const float tunnel = ISO_LEVEL + DENSITY_GRADIENT * ((t - 0.06f) * 40.0f + (1.0f - fade * caveWeight) * 20.0f);
         v = std::min(v, tunnel);
     }
     return v;
+}
+
+void PlanetField::baseDensityBlock(Vector3 o, float stride, int S, float fp, float* out) const {
+    const float ext = stride * (float)(S - 1);
+    const Vector3 c = { o.x + 0.5f * ext, o.y + 0.5f * ext, o.z + 0.5f * ext };
+    const float dc = sqrtf(c.x * c.x + c.y * c.y + c.z * c.z), halfDiag = 0.8661f * ext;
+    const float outer = radius + maxElevation, inner = radius + minElevation;
+    // Blocks wholly outside the surface band take the cheap per-sample paths anyway; blocks too large
+    // for a tangent-plane grid (near the centre) fall back to the per-sample loop too.
+    if (dc - halfDiag > outer + 4.0f || dc + halfDiag < inner - 4.0f || halfDiag > 0.5f * dc) {
+        DensityField::baseDensityBlock(o, stride, S, fp, out);
+        return;
+    }
+    // Height map on a gnomonic grid tangent at the block centre's direction: every sample along the
+    // same line of sight from the planet centre shares one height, so a 35^3 block needs ~35^2
+    // height evaluations instead of 35^3. Bilinear interpolation at one stride spacing is accurate
+    // to centimetres (the finest height detail kept at this footprint is >= 2 strides long).
+    const Vector3 n = { c.x / dc, c.y / dc, c.z / dc };
+    const Vector3 t1 = Vector3Normalize(fabsf(n.y) < 0.9f ? Vector3CrossProduct(n, { 0, 1, 0 }) : Vector3CrossProduct(n, { 1, 0, 0 }));
+    const Vector3 t2 = Vector3CrossProduct(n, t1);
+    float umin = 1e30f, umax = -1e30f, vmin = 1e30f, vmax = -1e30f;
+    for (int k = 0; k < 8; ++k) {
+        const Vector3 q = { o.x + ((k & 1) ? ext : 0.0f), o.y + ((k & 2) ? ext : 0.0f), o.z + ((k & 4) ? ext : 0.0f) };
+        const float s = Vector3DotProduct(q, n);
+        const float u = Vector3DotProduct(q, t1) / s, v = Vector3DotProduct(q, t2) / s;
+        umin = std::min(umin, u); umax = std::max(umax, u); vmin = std::min(vmin, v); vmax = std::max(vmax, v);
+    }
+    const float du = stride / radius;
+    const int nu = std::min(256, (int)ceilf((umax - umin) / du) + 2), nv = std::min(256, (int)ceilf((vmax - vmin) / du) + 2);
+    const float su = (umax - umin) / (float)(nu - 1), sv = (vmax - vmin) / (float)(nv - 1);
+    std::vector<float> h((size_t)nu * nv);
+    for (int j = 0; j < nv; ++j)
+        for (int i = 0; i < nu; ++i) {
+            const float u = umin + i * su, v = vmin + j * sv;
+            h[(size_t)j * nu + i] = elevation(Vector3Normalize(Vector3Add(n, Vector3Add(Vector3Scale(t1, u), Vector3Scale(t2, v)))), fp);
+        }
+    size_t idx = 0;
+    for (int z = 0; z < S; ++z)
+        for (int y = 0; y < S; ++y)
+            for (int x = 0; x < S; ++x, ++idx) {
+                const Vector3 p = { o.x + x * stride, o.y + y * stride, o.z + z * stride };
+                const float d = sqrtf(p.x * p.x + p.y * p.y + p.z * p.z);
+                if (d > outer + 4.0f) { out[idx] = ISO_LEVEL + DENSITY_GRADIENT * (outer - d); continue; }
+                float surface = inner;
+                if (d >= inner - 4.0f) {
+                    const float s = Vector3DotProduct(p, n);
+                    const float fu = std::clamp((Vector3DotProduct(p, t1) / s - umin) / su, 0.0f, (float)(nu - 1) - 1e-3f);
+                    const float fv = std::clamp((Vector3DotProduct(p, t2) / s - vmin) / sv, 0.0f, (float)(nv - 1) - 1e-3f);
+                    const int iu = (int)fu, iv = (int)fv;
+                    const float au = fu - iu, av = fv - iv;
+                    const float* r0 = &h[(size_t)iv * nu + iu];
+                    const float* r1 = r0 + nu;
+                    surface = radius + (r0[0] * (1 - au) + r0[1] * au) * (1 - av) + (r1[0] * (1 - au) + r1[1] * au) * av;
+                }
+                out[idx] = densityNear(p, d, surface, fp);
+            }
 }
 
 VoxelMaterial PlanetField::materialLod(Vector3 p, float base, float fp) const {
@@ -280,9 +355,27 @@ void BuildChunkMesh(const DensityField& field, const EditList& allEdits, ChunkMe
     const float stride = (float)out.key.stride();
     const Vector3 origin = out.key.origin();
 
-    // Margin = one stride: normals sample density half a stride outside the node.
+    // Margin = one stride: the gradient samples one stride outside the node.
     EditList edits;
     FilterEdits(allEdits, origin, Vector3AddValue(origin, cells * stride), stride, edits);
+
+    // Sample one extra layer on every side (E = S + 2 per axis): normals are central differences of
+    // this grid, so they need no extra field evaluations, and neighbouring chunks see the same
+    // samples on their shared face (consistent lighting across seams). `base` keeps the unedited
+    // values for materials ("original surface" vs "dug out").
+    const int E = S + 2;
+    std::vector<float> base((size_t)E * E * E);
+    const Vector3 eo = Vector3AddValue(origin, -stride);
+    field.baseDensityBlock(eo, stride, E, stride, base.data());
+    std::vector<float> ext = base;
+    if (!edits.empty()) {
+        size_t k = 0;
+        for (int z = 0; z < E; ++z)
+            for (int y = 0; y < E; ++y)
+                for (int x = 0; x < E; ++x, ++k)
+                    ext[k] = field.applyEdits({ eo.x + x * stride, eo.y + y * stride, eo.z + z * stride }, base[k], edits.data(), edits.size());
+    }
+    auto at = [&](const std::vector<float>& g, int x, int y, int z) { return g[((size_t)z * E + y) * E + x]; }; // extended coords
 
     std::vector<float> dens((size_t)S * S * S);
     bool anySolid = false, anyEmpty = false;
@@ -290,11 +383,18 @@ void BuildChunkMesh(const DensityField& field, const EditList& allEdits, ChunkMe
     for (int z = 0; z < S; ++z)
         for (int y = 0; y < S; ++y)
             for (int x = 0; x < S; ++x, ++i) {
-                const float d = field.density({ origin.x + x * stride, origin.y + y * stride, origin.z + z * stride }, edits.data(), edits.size(), stride);
+                const float d = at(ext, x + 1, y + 1, z + 1);
                 dens[i] = d;
                 if (d >= ISO_LEVEL) anySolid = true; else anyEmpty = true;
             }
 
+    out.sampleMs = std::chrono::duration<float, std::milli>(std::chrono::steady_clock::now() - t0).count();
+    // Density gradient at an inner sample (inner coords), by central differences on the extended grid.
+    auto gradient = [&](int x, int y, int z) {
+        return Vector3{ at(ext, x + 2, y + 1, z + 1) - at(ext, x, y + 1, z + 1),
+                        at(ext, x + 1, y + 2, z + 1) - at(ext, x + 1, y, z + 1),
+                        at(ext, x + 1, y + 1, z + 2) - at(ext, x + 1, y + 1, z) };
+    };
     if (anySolid && anyEmpty) {
         std::vector<Vector3> verts;
         std::vector<int> idx;
@@ -315,9 +415,20 @@ void BuildChunkMesh(const DensityField& field, const EditList& allEdits, ChunkMe
             for (size_t v = 0; v < verts.size(); ++v) {
                 const Vector3 lp = Vector3Scale(verts[v], stride);     // node-relative, in voxels
                 const Vector3 p = Vector3Add(origin, lp);
-                // Coarser levels use a wider gradient step: smoother, cheaper-looking normals far away.
-                const Vector3 n = field.normal(p, edits.data(), edits.size(), 0.5f * stride, stride);
-                const VoxelMaterial m = field.materialLod(p, field.baseDensity(p), stride);
+                // A marching-cubes vertex lies on a grid edge: interpolate the gradient (and the unedited
+                // density) between the edge's two samples, at the vertex's position along it.
+                const Vector3 g = verts[v];
+                int ax = 0;
+                float t = g.x - floorf(g.x);
+                if (g.y - floorf(g.y) > t) { ax = 1; t = g.y - floorf(g.y); }
+                if (g.z - floorf(g.z) > t) { ax = 2; t = g.z - floorf(g.z); }
+                const int x0 = std::min((int)floorf(g.x), S - 1), y0 = std::min((int)floorf(g.y), S - 1), z0 = std::min((int)floorf(g.z), S - 1);
+                const int x1 = std::min(x0 + (ax == 0 ? 1 : 0), S - 1), y1 = std::min(y0 + (ax == 1 ? 1 : 0), S - 1), z1 = std::min(z0 + (ax == 2 ? 1 : 0), S - 1);
+                const Vector3 grad = Vector3Lerp(gradient(x0, y0, z0), gradient(x1, y1, z1), t);
+                const float gl = Vector3Length(grad);
+                const Vector3 n = gl > 1e-6f ? Vector3Scale(grad, -1.0f / gl) : field.fallbackUp(p);
+                const float b = at(base, x0 + 1, y0 + 1, z0 + 1) * (1.0f - t) + at(base, x1 + 1, y1 + 1, z1 + 1) * t;
+                const VoxelMaterial m = field.materialLod(p, b, stride);
                 out.positions[v * 3 + 0] = lp.x;
                 out.positions[v * 3 + 1] = lp.y;
                 out.positions[v * 3 + 2] = lp.z;

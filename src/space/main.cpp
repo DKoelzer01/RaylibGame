@@ -42,6 +42,7 @@ int main(int argc, char** argv)
     int benchDigStrokes = 0;     // --test-dig N: dig N strokes at the crosshair once the world is loaded
     bool benchSaveLoad = false;  // --test-saveload: then save, reload from disk, and bench the reloaded world
     double benchWalkSeconds = 0.0; // --test-walk S: spawn on the surface and auto-walk forward for S seconds
+    bool benchWalkMode = false;    // --bench-walk: the player walks forward for the whole bench (frame time while streaming)
     double walkStart = -1.0;
     bool benchStandOnly = false; // --test-stand S: like --test-walk but standing still
     int benchMineStrokes = 0;     // --test-mine N: dig N strokes at the feet, craft, build (after any walk test)
@@ -63,6 +64,9 @@ int main(int argc, char** argv)
     bool benchGravity = false;     // --test-gravity: gravity field checks, ship drop and hover
     bool benchPrecision = false;   // --test-precision: float vs double placement error on body 0 (use a large body)
     bool benchMantle = false;      // --test-mantle: planet terrain checks on body 0 (height band, mantle, ore, caves)
+    bool crackCheck = false;       // --crack-check: no skybox, magenta clear; reports the share of magenta pixels
+    double benchUpdateMs = 0.0, benchDrawMs = 0.0; long benchTimedFrames = 0; // CPU time in worldUpdate / drawScene
+    bool benchMeasuring = false;   // this frame is inside the measured bench window
     int precisionPhase = 0;
     double precisionStart = 0.0;
     double gravStart = -1.0;
@@ -99,6 +103,7 @@ int main(int argc, char** argv)
         if (std::string(argv[i]) == "--test-dig" && i + 1 < argc) benchDigStrokes = atoi(argv[i + 1]);
         if (std::string(argv[i]) == "--test-saveload") benchSaveLoad = true;
         if (std::string(argv[i]) == "--test-walk" && i + 1 < argc) benchWalkSeconds = atof(argv[i + 1]);
+        if (std::string(argv[i]) == "--bench-walk") benchWalkMode = true;
         if (std::string(argv[i]) == "--test-suffocate") benchSuffocate = true;
         if (std::string(argv[i]) == "--test-orbit" && i + 1 < argc) benchOrbitSeconds = atof(argv[i + 1]);
         if (std::string(argv[i]) == "--test-ride") benchRide = true;
@@ -109,6 +114,7 @@ int main(int argc, char** argv)
         if (std::string(argv[i]) == "--test-gravity") benchGravity = true;
         if (std::string(argv[i]) == "--test-precision") benchPrecision = true;
         if (std::string(argv[i]) == "--test-mantle") benchMantle = true;
+        if (std::string(argv[i]) == "--crack-check") crackCheck = true;
         if (std::string(argv[i]) == "--sun" && i + 3 < argc) { sunOverride = true; sunArg = Vector3Normalize({ (float)atof(argv[i + 1]), (float)atof(argv[i + 2]), (float)atof(argv[i + 3]) }); }
         if (std::string(argv[i]) == "--look-down") lookDown = true;
         if (std::string(argv[i]) == "--fps" && i + 1 < argc) benchFps = atoi(argv[i + 1]);
@@ -199,7 +205,8 @@ int main(int argc, char** argv)
         world.isActive = true;
         world.camera.position = Vector3Add(world.camera.target, benchCamOffset);
         world.debugDraw = startWithOverlay;
-        player.flyMode = benchWalkSeconds <= 0.0; // the bench drives the camera directly unless walking
+        player.flyMode = benchWalkSeconds <= 0.0 && !benchWalkMode; // the bench drives the camera directly unless walking
+        player.autoWalk = benchWalkMode;                              // --bench-walk: walk through the measured window
         benchStart = -1.0; // starts once the world has finished streaming in
     }
 
@@ -630,21 +637,34 @@ int main(int argc, char** argv)
                     }
                 } else if ((WorldIdle() && benchDigStrokes == 0 && !benchSaveLoad && benchWalkSeconds <= 0.0 && benchMineStrokes == 0 && minePhase != 2 && benchFlySeconds <= 0.0 && !benchSuffocate && benchOrbitSeconds <= 0.0 && !benchRide && !benchPark && !benchGravity && !benchPrecision && !benchMantle) || GetTime() > 180.0) {
                     benchStart = GetTime();
-                    printf("bench: world ready after %.2f s (%d chunks, avg build %.2f ms, %d worker threads)\n",
-                        GetWorldStats().lastGenerationSeconds, GetWorldStats().chunks, GetWorldStats().avgBuildMs, GetWorldStats().workerThreads);
+                    printf("bench: world ready after %.2f s (%d chunks, avg build %.2f ms of which sampling %.2f ms, %d worker threads)\n",
+                        GetWorldStats().lastGenerationSeconds, GetWorldStats().chunks, GetWorldStats().avgBuildMs, GetWorldStats().avgSampleMs, GetWorldStats().workerThreads);
                 }
             }
             double t = (benchStart < 0.0) ? 0.0 : GetTime() - benchStart;
             if (benchStart >= 0.0 && t > benchWarmup) {
                 benchFrames++;
+                ++benchTimedFrames;
+                benchMeasuring = true;
                 if (GetFrameTime() > benchMaxFrame) benchMaxFrame = GetFrameTime();
             }
             if (t > benchWarmup + benchSeconds) {
                 double avgMs = 1000.0 * benchSeconds / (double)benchFrames;
-                const char* line = TextFormat("bench: %ld frames in %.1fs | avg %.1f FPS | avg %.2f ms | worst %.2f ms\n",
-                    benchFrames, benchSeconds, 1000.0 / avgMs, avgMs, benchMaxFrame * 1000.0);
+                const char* line = TextFormat("bench: %ld frames in %.1fs | avg %.1f FPS | avg %.2f ms | worst %.2f ms | world update %.2f ms, draw %.2f ms (CPU)\n",
+                    benchFrames, benchSeconds, 1000.0 / avgMs, avgMs, benchMaxFrame * 1000.0, benchUpdateMs / std::max(1L, benchTimedFrames), benchDrawMs / std::max(1L, benchTimedFrames));
                 printf("%s", line);
                 SaveFileText("bench.txt", (char*)line);
+                if (crackCheck) {
+                    // Holes between chunks show the magenta clear colour (look down at terrain that fills the view).
+                    Image shot = LoadImageFromScreen();
+                    Color* px = LoadImageColors(shot);
+                    long holes = 0;
+                    const long total = (long)shot.width * shot.height;
+                    for (long k = 0; k < total; ++k) if (px[k].r > 240 && px[k].g < 16 && px[k].b > 240) ++holes;
+                    printf("bench: crack check: %ld of %ld pixels show through the terrain (%.4f%%)\n", holes, total, 100.0 * holes / total);
+                    UnloadImageColors(px);
+                    UnloadImage(shot);
+                }
                 TakeScreenshot("bench.png");
                 break;
             }
@@ -707,11 +727,12 @@ int main(int argc, char** argv)
         }
 
         world.updateFloatingOrigin(); // keep the camera near render-space 0 (float precision)
-        worldUpdate(world, 3.0f); // LOD + streaming (bodies were spun at the start of the frame)
+        { const double w0 = GetTime(); worldUpdate(world, 3.0f); if (benchMeasuring) benchUpdateMs += (GetTime() - w0) * 1000.0; } // LOD + streaming (bodies were spun at the start of the frame)
 
         // Slot 1: headlamp (suit lamp from the eye, or the ship's nose light while piloting).
         // Slot 2: soft glow around the player while the inventory is open.
         if (sunOverride) world.sunDirection = sunArg;
+        if (crackCheck) world.drawSkybox = false;
         while (world.lights.size() < 3) world.lights.push_back(Light{});
         {
             Light& lamp = world.lights[1];
@@ -821,12 +842,12 @@ int main(int argc, char** argv)
         
 
         BeginDrawing();
-            ClearBackground(BLACK);
+            ClearBackground(crackCheck ? MAGENTA : BLACK); // --crack-check: holes in the terrain show magenta
             if (gameState == 0) {
                 mainMenu.drawScene(gameState);
                 mainMenu.drawUI(gameState);
             } else if (gameState == 1) {
-                world.drawScene(gameState);
+                { const double d0 = GetTime(); world.drawScene(gameState); if (benchMeasuring) benchDrawMs += (GetTime() - d0) * 1000.0; }
                 world.drawUI(gameState);
                 if (!ship.piloted) TerrainTool_DrawHUD();
                 GameUI_DrawHUD(world);
