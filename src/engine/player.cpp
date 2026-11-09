@@ -7,17 +7,23 @@
 
 Player player;
 
+static Quaternion BodyRotation(const Planetoid& p) {
+    return QuaternionFromMatrix(MatrixRotateXYZ({ DEG2RAD * p.rotation.x, DEG2RAD * p.rotation.y, DEG2RAD * p.rotation.z }));
+}
+
 static Vector3 RotateAround(Vector3 v, Vector3 axis, float angle) {
     return Vector3RotateByQuaternion(v, QuaternionFromAxisAngle(axis, angle));
 }
 
-void Player::spawnOn(Scene& world, Planetoid& body) {
+void Player::spawnOn(Scene& world, Planetoid& body, Vector3 dir) {
     const float R = body.radius * body.scale;
     const Vector3 c = body.position;
-    const Vector3 above = body.flat ? Vector3Add(c, { 0, body.maxHeight + 20.0f, 0 }) : Vector3Add(c, { 0, R + 60.0f, 0 });
+    if (body.flat) dir = { 0, 1, 0 };
+    dir = Vector3Normalize(dir);
+    const Vector3 above = body.flat ? Vector3Add(c, { 0, body.maxHeight + 20.0f, 0 }) : Vector3Add(c, Vector3Scale(dir, R + 60.0f));
     TerrainHit hit;
-    Vector3 feet = Vector3Add(c, { 0, R + 5.0f, 0 });
-    if (RaycastTerrain(world, Ray{ above, { 0, -1, 0 } }, body.flat ? body.maxHeight - body.minHeight + 40.0f : R + 80.0f, hit)) feet = Vector3Add(hit.point, Vector3Scale(hit.normal, 0.2f));
+    Vector3 feet = Vector3Add(c, Vector3Scale(dir, R + 5.0f));
+    if (RaycastTerrain(world, Ray{ above, Vector3Negate(dir) }, body.flat ? body.maxHeight - body.minHeight + 40.0f : R + 80.0f, hit)) feet = Vector3Add(hit.point, Vector3Scale(hit.normal, 0.2f));
     position = world.renderOrigin + feet;
     up = body.flat ? Vector3{ 0, 1, 0 } : Vector3Normalize(Vector3Subtract(feet, c));
     forward = Vector3Normalize(Vector3CrossProduct(up, { 1, 0, 0 }));
@@ -44,8 +50,24 @@ void Player::update(Scene& world, bool inputEnabled, float dt) {
     dt = std::min(dt, 0.1f); // don't explode after a hitch
     impactSpeed = 0.0f;
 
-    // Ride along with a spinning body we are standing on.
-    if (grounded && groundBody) position = world.renderOrigin + groundBody->toWorld(groundLocal);
+    // Ride along with a spinning body we are standing on: position AND orientation turn with it,
+    // so standing still on a spinning asteroid looks still (the view no longer drifts).
+    if (grounded && groundBody) {
+        if ((position - lastEndPosition).length() > 1e-6) {
+            // Something else moved us since last frame (respawn, leaving the ship, a load): the
+            // old ground anchor no longer applies.
+            grounded = false;
+            groundBody = nullptr;
+        } else {
+            position = world.renderOrigin + groundBody->toWorld(groundLocal);
+            // Turn the view by however much the body turned since last frame (a delta, so view
+            // changes made elsewhere between frames are kept).
+            const Quaternion now = BodyRotation(*groundBody);
+            const Quaternion delta = QuaternionMultiply(now, QuaternionInvert(groundRotPrev));
+            forward = Vector3Normalize(Vector3RotateByQuaternion(forward, delta));
+            up = Vector3Normalize(Vector3RotateByQuaternion(up, delta));
+        }
+    }
     Vector3 feet = (position - world.renderOrigin).toFloat();
 
     nearest = NearestPlanetoid(world, feet);
@@ -68,8 +90,8 @@ void Player::update(Scene& world, bool inputEnabled, float dt) {
 
         const Vector3 flat = Vector3Normalize(Vector3Subtract(forward, Vector3Scale(up, Vector3DotProduct(forward, up))));
         const Vector3 side = Vector3CrossProduct(flat, up);
-        const bool space = gravity <= 0.0f; // no gravity: move along the view, like a suit thruster
-        const Vector3 f = space ? forward : flat;
+        // On the ground WASD walks level; in the air it fires the suit thrusters along the view.
+        const Vector3 f = grounded ? flat : forward;
         if (IsKeyDown(KEY_W)) wish = Vector3Add(wish, f);
         if (IsKeyDown(KEY_S)) wish = Vector3Subtract(wish, f);
         if (IsKeyDown(KEY_D)) wish = Vector3Add(wish, side);
@@ -79,7 +101,9 @@ void Player::update(Scene& world, bool inputEnabled, float dt) {
         jump = IsKeyPressed(KEY_SPACE);
         jetUp = IsKeyDown(KEY_SPACE);
         jetDown = IsKeyDown(KEY_LEFT_CONTROL);
+        if (IsKeyPressed(KEY_B)) dampeners = !dampeners;
     }
+    if (autoJump) { jump = true; autoJump = false; }
 
     // Fixed substeps keep collision stable at any frame rate.
     const float h = 1.0f / 120.0f;
@@ -88,14 +112,23 @@ void Player::update(Scene& world, bool inputEnabled, float dt) {
     for (int i = 0; i < steps; ++i) { stepPhysics(world, sdt, wish, jump && i == 0, jetUp, jetDown); }
 
     feet = (position - world.renderOrigin).toFloat();
-    if (grounded && nearest) { groundBody = nearest; groundLocal = nearest->toLocal(feet); }
-    else groundBody = nullptr;
+    if (grounded && nearest) {
+        groundBody = nearest;
+        groundLocal = nearest->toLocal(feet);
+        groundRotPrev = BodyRotation(*nearest);
+    } else {
+        groundBody = nullptr;
+    }
+    lastEndPosition = position;
 }
 
 void Player::stepPhysics(Scene& world, float dt, Vector3 wish, bool jump, bool jetUp, bool jetDown) {
     Vector3 feet = (position - world.renderOrigin).toFloat();
 
-    // Gravity: a few m/s^2 on small rocks, fading with distance; none in open space.
+    const bool wasGrounded = grounded;
+
+    // Gravity: inverse-square toward the nearest body, all the way out (no cutoff), so orbits
+    // work. (Summing every body's pull is milestone 1 in the design doc.)
     Vector3 gdir = { 0, 0, 0 };
     gravity = 0.0f;
     if (nearest) {
@@ -105,9 +138,9 @@ void Player::stepPhysics(Scene& world, float dt, Vector3 wish, bool jump, bool j
         if (nearest->flat) {
             gdir = { 0, -1, 0 };
             gravity = 9.81f; // open world: ordinary gravity
-        } else if (dist > 1e-3f && dist < R * 4.0f) {
+        } else if (dist > 1e-3f) {
             gdir = Vector3Scale(toC, 1.0f / dist);
-            const float g0 = std::clamp(3.0f + R * 0.03f, 3.0f, 9.81f);
+            const float g0 = SurfaceGravity(R);
             gravity = g0 * std::min(1.0f, (R * R) / (dist * dist));
         }
     }
@@ -124,28 +157,28 @@ void Player::stepPhysics(Scene& world, float dt, Vector3 wish, bool jump, bool j
         (void)vUp;
         if (jump) { velocity = Vector3Add(velocity, Vector3Scale(up, jumpSpeed)); grounded = false; }
         jetpackFuel = std::min(1.0f, jetpackFuel + dt * 0.5f);
-    } else if (gravity > 0.0f) {
-        velocity = Vector3Add(velocity, Vector3Scale(wish, walkSpeed * 1.5f * dt)); // light air control
-        // Cap horizontal air speed so air control cannot accumulate forever.
-        const float vu = Vector3DotProduct(velocity, up);
-        Vector3 horiz = Vector3Subtract(velocity, Vector3Scale(up, vu));
-        const float maxH = walkSpeed * runMultiplier;
-        if (Vector3Length(horiz) > maxH) horiz = Vector3Scale(Vector3Normalize(horiz), maxH);
-        velocity = Vector3Add(horiz, Vector3Scale(up, vu));
-        if (jetUp && jetpackFuel > 0.0f) { velocity = Vector3Add(velocity, Vector3Scale(up, jetpackAccel * dt)); jetpackFuel -= dt * 0.25f; }
-        if (jetDown) velocity = Vector3Subtract(velocity, Vector3Scale(up, jetpackAccel * dt));
     } else {
-        // Open space: suit thrusters on all axes, with gentle damping so it stays controllable.
-        Vector3 thrust = wish;
+        // Airborne: Newtonian. Suit thrusters push along the view (WASD) and up/down (Space/Ctrl)
+        // while there is fuel; nothing clamps speed, so you can build up orbital velocity.
+        Vector3 thrust = Vector3Length(wish) > 0.0f ? Vector3Normalize(wish) : wish;
         if (jetUp) thrust = Vector3Add(thrust, up);
         if (jetDown) thrust = Vector3Subtract(thrust, up);
-        velocity = Vector3Add(velocity, Vector3Scale(thrust, jetpackAccel * dt));
-        velocity = Vector3Scale(velocity, 1.0f - std::min(1.0f, 0.3f * dt));
+        const float tl = Vector3Length(thrust);
+        if (tl > 0.0f && jetpackFuel > 0.0f) {
+            velocity = Vector3Add(velocity, Vector3Scale(thrust, jetpackAccel * dt / std::max(tl, 1.0f)));
+            jetpackFuel = std::max(0.0f, jetpackFuel - dt * jetpackFuelPerSec);
+        } else if (tl == 0.0f && dampeners && gravity < 0.5f) {
+            // Inertial dampeners (B toggles) only in deep space, so they never fight a fall or an orbit.
+            velocity = Vector3Scale(velocity, 1.0f - std::min(1.0f, 0.6f * dt));
+        }
     }
     velocity = Vector3Add(velocity, Vector3Scale(gdir, gravity * gravityScale * dt));
 
     feet = Vector3Add(feet, Vector3Scale(velocity, dt));
     grounded = resolveCollisions(world, feet);
+    // Leaving a spinning body: on the ground velocity is relative to the surface, so add the
+    // surface's own motion; you keep the body's momentum, as you would really.
+    if (wasGrounded && !grounded && groundBody) velocity = Vector3Add(velocity, groundBody->surfaceVelocity(feet));
     position = world.renderOrigin + feet;
 }
 

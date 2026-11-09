@@ -70,6 +70,11 @@ public:
     Vector3 toWorld(Vector3 local) const;
 
     float densityAt(Vector3 local) const; // includes edits; main-thread helper (raycasts)
+    // Velocity (world units/s) of the body-fixed point currently at renderPoint, from the spin.
+    Vector3 surfaceVelocity(Vector3 renderPoint) const;
+    // Body-local direction <-> world direction (rotation only).
+    Vector3 dirToLocal(Vector3 worldDir) const;
+    Vector3 dirToWorld(Vector3 localDir) const;
 
     static Planetoid* find(uint64_t id); // nullptr once destroyed
 };

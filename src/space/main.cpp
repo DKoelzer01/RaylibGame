@@ -48,6 +48,14 @@ int main(int argc, char** argv)
     int minePhase = 0, minedStrokes = 0, mineCrafted = 0;
     double benchFlySeconds = 0.0, flyStart = -1.0; // --test-fly S: autopilot the ship to the nearest other asteroid
     bool benchSuffocate = false;   // --test-suffocate: run out of oxygen away from the ship, die, respawn
+    double benchOrbitSeconds = 0.0, orbitStart = -1.0; // --test-orbit S: coast on a circular orbit for S seconds
+    float orbitMin = 0, orbitMax = 0;
+    bool orbitCrashed = false;
+    bool benchRide = false;        // --test-ride: stand on a spinning body, then jump
+    double rideStart = -1.0;
+    int ridePhase = 0;
+    Vector3 rideFwd0{}, ridePos0{}, rideTakeoff{};
+    float rideViewDrift = 0, ridePosDrift = 0, rideSurfaceSpeed = 0;
     bool spinTest = false;         // --spin-test: textures must stay attached to a spinning body
     float spinRate = 30.0f;        // --spin-rate DEG_PER_SEC
     int spinPhase = 0;
@@ -70,6 +78,8 @@ int main(int argc, char** argv)
         if (std::string(argv[i]) == "--test-saveload") benchSaveLoad = true;
         if (std::string(argv[i]) == "--test-walk" && i + 1 < argc) benchWalkSeconds = atof(argv[i + 1]);
         if (std::string(argv[i]) == "--test-suffocate") benchSuffocate = true;
+        if (std::string(argv[i]) == "--test-orbit" && i + 1 < argc) benchOrbitSeconds = atof(argv[i + 1]);
+        if (std::string(argv[i]) == "--test-ride") benchRide = true;
         if (std::string(argv[i]) == "--spin-test") spinTest = true;
         if (std::string(argv[i]) == "--test-flycam") {
             // Pitch a free camera through two full loops (past straight up and down) in small steps,
@@ -194,6 +204,62 @@ int main(int argc, char** argv)
                         printf("bench: --test-suffocate FAILED (dead %d, HP %.1f, in life support %d)\n", survival.dead, survival.health, survival.inLifeSupport);
                         benchSuffocate = false;
                     }
+                } else if (benchOrbitSeconds > 0.0 && WorldIdle()) {
+                    // Scripted orbit: place the player at 1.35 radii with circular-orbit speed, no input,
+                    // and check the distance from the centre stays put (no crash, no escape).
+                    Planetoid* p = dynamic_cast<Planetoid*>(world.objects[0].get());
+                    const float R = p->radius * p->scale;
+                    const Vector3 feet = (player.position - world.renderOrigin).toFloat();
+                    if (orbitStart < 0.0) {
+                        const float d = 1.35f * R;
+                        const float g = Player::SurfaceGravity(R) * (R * R) / (d * d);
+                        player.flyMode = false;
+                        player.grounded = false;
+                        player.position = world.renderOrigin + Vector3Add(p->position, { 0.0f, d, 0.0f });
+                        player.velocity = { sqrtf(g * d), 0.0f, 0.0f };
+                        orbitStart = GetTime();
+                        orbitMin = 1e9f; orbitMax = 0.0f; orbitCrashed = false;
+                        printf("bench: orbit test: radius %.1f, start %.1f m from centre at %.2f m/s (period %.0f s)\n", R, d, sqrtf(g * d), 2.0 * PI * d / sqrtf(g * d));
+                    } else {
+                        const float d = Vector3Distance(feet, p->position);
+                        orbitMin = std::min(orbitMin, d);
+                        orbitMax = std::max(orbitMax, d);
+                        if (player.grounded) orbitCrashed = true;
+                        if (GetTime() - orbitStart > benchOrbitSeconds || orbitCrashed) {
+                            printf("bench: orbit after %.0f s: distance from centre %.1f..%.1f m, %s\n", GetTime() - orbitStart, orbitMin, orbitMax,
+                                   orbitCrashed ? "CRASHED into the surface" : (orbitMax > 3.0f * R ? "ESCAPED" : "stable"));
+                            benchOrbitSeconds = 0.0;
+                        }
+                    }
+                } else if (benchRide && WorldIdle()) {
+                    // Scripted ride: stand on the equator of a body spinning 10 deg/s. The view must not drift
+                    // against the surface, and a jump must land where it took off (momentum is kept).
+                    Planetoid* p = dynamic_cast<Planetoid*>(world.objects[0].get());
+                    const Vector3 feet = (player.position - world.renderOrigin).toFloat();
+                    const double t = rideStart < 0.0 ? 0.0 : GetTime() - rideStart;
+                    if (rideStart < 0.0) {
+                        p->spin = { 0.0f, 10.0f, 0.0f };
+                        player.spawnOn(world, *p, { 1.0f, 0.0f, 0.0f });
+                        rideStart = GetTime();
+                        ridePhase = 0;
+                    } else if (ridePhase == 0 && t > 1.5) {
+                        rideFwd0 = p->dirToLocal(player.forward);
+                        ridePos0 = p->toLocal(feet);
+                        ridePhase = 1;
+                    } else if (ridePhase == 1 && t > 4.5) {
+                        rideViewDrift = Vector3Angle(rideFwd0, p->dirToLocal(player.forward)) * RAD2DEG;
+                        ridePosDrift = Vector3Distance(ridePos0, p->toLocal(feet));
+                        rideTakeoff = p->toLocal(feet);
+                        rideSurfaceSpeed = Vector3Length(p->surfaceVelocity(feet));
+                        player.autoJump = true;
+                        ridePhase = 2;
+                    } else if (ridePhase == 2 && !player.grounded) {
+                        ridePhase = 3; // airborne
+                    } else if ((ridePhase == 3 && player.grounded) || t > 12.0) {
+                        printf("bench: ride test (10 deg/s, surface %.1f m/s): standing 3 s -> view drift %.2f deg, position drift %.2f m; jump landed %.2f m from takeoff (body frame)%s\n",
+                               rideSurfaceSpeed, rideViewDrift, ridePosDrift, Vector3Distance(rideTakeoff, p->toLocal(feet)), ridePhase == 3 ? "" : " [never landed]");
+                        benchRide = false;
+                    }
                 } else if (benchFlySeconds > 0.0 && benchMineStrokes == 0 && benchWalkSeconds <= 0.0) {
                     // Scripted flight: board the ship and autopilot to the nearest other asteroid.
                     if (flyStart < 0.0) {
@@ -290,7 +356,7 @@ int main(int argc, char** argv)
                                dist, benchWalkSeconds, 100.0 * walkGroundedFrames / std::max(1, walkFrames), walkMinDensity, walkMaxDensity, ISO_LEVEL, alt);
                         benchWalkSeconds = 0.0;
                     }
-                } else if ((WorldIdle() && benchDigStrokes == 0 && !benchSaveLoad && benchWalkSeconds <= 0.0 && benchMineStrokes == 0 && minePhase != 2 && benchFlySeconds <= 0.0 && !benchSuffocate) || GetTime() > 180.0) {
+                } else if ((WorldIdle() && benchDigStrokes == 0 && !benchSaveLoad && benchWalkSeconds <= 0.0 && benchMineStrokes == 0 && minePhase != 2 && benchFlySeconds <= 0.0 && !benchSuffocate && benchOrbitSeconds <= 0.0 && !benchRide) || GetTime() > 180.0) {
                     benchStart = GetTime();
                     printf("bench: world ready after %.2f s (%d chunks, avg build %.2f ms, %d worker threads)\n",
                         GetWorldStats().lastGenerationSeconds, GetWorldStats().chunks, GetWorldStats().avgBuildMs, GetWorldStats().workerThreads);
@@ -358,7 +424,7 @@ int main(int argc, char** argv)
                 Survival_OnLanding(player.impactSpeed);
             }
             if (ship.piloted && ship.lastImpact > 12.0f) survival.health -= (ship.lastImpact - 12.0f) * 3.0f; // crash damage
-            Survival_Update(world, GetFrameTime(), !ship.piloted && !player.grounded && gameInput && IsKeyDown(KEY_SPACE), gameInput);
+            Survival_Update(world, GetFrameTime(), !ship.piloted && !player.grounded && gameInput && player.jetpackFuel > 0.0f && (IsKeyDown(KEY_SPACE) || IsKeyDown(KEY_LEFT_CONTROL) || IsKeyDown(KEY_W) || IsKeyDown(KEY_A) || IsKeyDown(KEY_S) || IsKeyDown(KEY_D)), gameInput);
             Objectives_Update(world);
             if (!ship.piloted) player.applyToCamera(world);
         }

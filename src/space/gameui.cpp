@@ -81,7 +81,8 @@ void GameUI_DrawHUD(Scene&) {
     DrawRectangle(w - 220, 70, 200, 12, Fade(BLACK, 0.5f));
     DrawRectangle(w - 220, 70, (int)(200 * player.jetpackFuel), 12, SKYBLUE);
     DrawText("JET", w - 260, 68, 16, RAYWHITE);
-    const char* mode = player.flyMode ? "FLY (F)" : player.grounded ? "WALK" : player.gravity > 0 ? "AIR" : "SPACE";
-    DrawText(TextFormat("%s   g %.1f", mode, player.gravity), w - 220, 90, 16, RAYWHITE);
+    const char* mode = player.flyMode ? "FLY (F)" : player.grounded ? "WALK" : player.gravity >= 0.5f ? "AIR" : "SPACE";
+    DrawText(TextFormat("%s   g %.1f   %.1f m/s", mode, player.gravity, Vector3Length(player.velocity)), w - 220, 90, 16, RAYWHITE);
+    DrawText(TextFormat("dampeners %s (B)", player.dampeners ? "on" : "off"), w - 220, 110, 16, player.dampeners ? RAYWHITE : ORANGE);
     if (GetTime() < toastUntil) DrawText(toast.c_str(), 10, GetScreenHeight() - 90, 20, YELLOW);
 }

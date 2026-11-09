@@ -86,6 +86,27 @@ float Planetoid::densityAt(Vector3 local) const {
     return field->density(local, edits->data(), edits->size());
 }
 
+Vector3 Planetoid::surfaceVelocity(Vector3 renderPoint) const {
+    if (spin.x == 0.0f && spin.y == 0.0f && spin.z == 0.0f) return { 0, 0, 0 };
+    // Differentiate the body transform numerically: where will this body-fixed point be in h seconds?
+    // Works for any spin axis (rotation is stored as Euler angles, so no closed-form omega).
+    const float h = 0.01f;
+    const Vector3 local = toLocal(renderPoint);
+    const Vector3 r1 = Vector3Add(rotation, Vector3Scale(spin, h));
+    Matrix m = MatrixScale(scale, scale, scale);
+    m = MatrixMultiply(m, MatrixRotateXYZ({ DEG2RAD * r1.x, DEG2RAD * r1.y, DEG2RAD * r1.z }));
+    m = MatrixMultiply(m, MatrixTranslate(position.x, position.y, position.z));
+    return Vector3Scale(Vector3Subtract(Vector3Transform(local, m), renderPoint), 1.0f / h);
+}
+
+Vector3 Planetoid::dirToLocal(Vector3 worldDir) const {
+    return Vector3Normalize(Vector3Subtract(toLocal(Vector3Add(position, worldDir)), toLocal(position)));
+}
+
+Vector3 Planetoid::dirToWorld(Vector3 localDir) const {
+    return Vector3Normalize(Vector3Subtract(toWorld(localDir), toWorld({ 0, 0, 0 })));
+}
+
 void Planetoid::draw(const RenderContext& ctx) {
     if (!isActive) return;
     const Matrix t = localTransform();

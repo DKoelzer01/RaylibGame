@@ -6,6 +6,7 @@
 
 namespace {
     bool ready = false;
+    float masterVolume = 0.35f;
     Sound sounds[(int)Sfx::Count] = {};
 
     // f(t, u): t = seconds, u = 0..1 progress; returns -1..1.
@@ -29,6 +30,7 @@ namespace {
 void Audio_Init() {
     InitAudioDevice();
     if (!IsAudioDeviceReady()) return;
+    SetMasterVolume(masterVolume);
     std::mt19937 rng(1234);
     std::uniform_real_distribution<float> n(-1.0f, 1.0f);
     float lp = 0.0f;
@@ -59,3 +61,10 @@ void Audio_Play(Sfx s, float volume, float pitch) {
     SetSoundPitch(snd, pitch);
     PlaySound(snd);
 }
+
+void Audio_SetMasterVolume(float v) {
+    masterVolume = v < 0.0f ? 0.0f : (v > 1.0f ? 1.0f : v);
+    if (ready) SetMasterVolume(masterVolume);
+}
+
+float Audio_GetMasterVolume() { return masterVolume; }

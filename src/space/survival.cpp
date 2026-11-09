@@ -54,6 +54,7 @@ void Survival_Update(Scene& world, float dt, bool jetpackFiring, bool inputEnabl
         survival.oxygen = std::min(100.0f, survival.oxygen + survival.lifeSupportRefillPerSec * dt);
         survival.power = std::min(100.0f, survival.power + survival.lifeSupportRefillPerSec * dt);
         survival.health = std::min(100.0f, survival.health + 2.0f * dt);
+        player.jetpackFuel = std::min(1.0f, player.jetpackFuel + 0.5f * dt); // refill the suit's thruster tank
         // Topping up the suit costs the ship a little energy.
         ship.energy = std::max(0.0f, ship.energy - 0.02f * (survival.oxygen + survival.power - before));
     } else {

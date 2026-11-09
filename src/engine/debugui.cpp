@@ -3,6 +3,7 @@
 #include "world.h"
 #include "profiler.h"
 #include "terraintool.h"
+#include "audio.h"
 
 #include "imgui.h"
 #include "rlImGui.h"
@@ -76,6 +77,11 @@ void DebugUI_Draw(Scene& world) {
         }
 
         // --- Camera ---
+        if (ImGui::CollapsingHeader("Audio")) {
+            float vol = Audio_GetMasterVolume();
+            if (ImGui::SliderFloat("Master volume", &vol, 0.0f, 1.0f, "%.2f")) Audio_SetMasterVolume(vol);
+        }
+
         if (ImGui::CollapsingHeader("Camera", ImGuiTreeNodeFlags_DefaultOpen)) {
             ImGui::DragFloat3("Position", &world.camera.position.x, 0.5f);
             ImGui::SliderFloat("Move speed", &cameraMoveSpeed, 1.0f, 10000.0f, "%.0f u/s", ImGuiSliderFlags_Logarithmic);
