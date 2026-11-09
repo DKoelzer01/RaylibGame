@@ -26,6 +26,7 @@ struct Player {
     float gravity = 0.0f;             // current acceleration magnitude (HUD/debug)
     bool autoWalk = false;            // tests: walk forward without input
     float lastContactDot = 0.0f;      // debug: dot(contact normal, up) of the last collision
+    float impactSpeed = 0.0f;         // hardest collision speed this frame (fall damage)
 
     // Tunables
     float eyeHeight = 1.6f;

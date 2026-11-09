@@ -21,10 +21,10 @@
 struct WorldGenSettings {
     unsigned int seed = 0;
     unsigned int lastSeed = 0;
-    int planetoidCount = 1;
+    int planetoidCount = 8;
     int planetoidSize = 50;
     Vector3 firstPosition = { 64.0f, 0.0f, 0.0f };
-    float systemRadius = 6000.0f;    // other planetoids are scattered this far out (world units)
+    float systemRadius = 1500.0f;    // other planetoids are scattered this far out (world units)
     float maxSpinDegPerSec = 3.0f;   // random spin about the vertical axis
 };
 extern WorldGenSettings worldGen;
@@ -64,6 +64,10 @@ const WorldStats& GetWorldStats();
 
 bool RaycastTerrain(Scene& world, Ray ray, float maxDistance, TerrainHit& hit);
 void ApplyTerrainEdit(Planetoid& planetoid, const TerrainEdit& edit); // local-space brush
+
+// Physics helpers (render-space points). Distance is approximate: (ISO - density) / |gradient|.
+bool TerrainSurfaceDistance(Planetoid& p, Vector3 renderPoint, float& dist, Vector3& outwardNormal);
+Planetoid* NearestPlanetoid(Scene& world, Vector3 renderPoint); // by distance to the surface radius
 
 bool SaveWorld(Scene& world);          // saves/world.sav
 // Game-specific save data. The load hook must read everything up to and including "end_extras".

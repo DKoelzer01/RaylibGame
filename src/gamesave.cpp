@@ -2,6 +2,8 @@
 #include "inventory.h"
 #include "player.h"
 #include "world.h"
+#include "ship.h"
+#include "survival.h"
 
 #include <cstring>
 
@@ -10,6 +12,9 @@ void GameSave_Register() {
         fprintf(f, "player %.6f %.6f %.6f %f %f %f %d %f\n", player.position.x, player.position.y, player.position.z,
                 player.forward.x, player.forward.y, player.forward.z, player.flyMode ? 1 : 0, player.jetpackFuel);
         for (const auto& kv : inventory.all()) fprintf(f, "item %s %d\n", kv.first.c_str(), kv.second);
+        fprintf(f, "ship %.6f %.6f %.6f %f %f %f %f %f %d %d\n", ship.position.x, ship.position.y, ship.position.z, ship.orientation.x,
+                ship.orientation.y, ship.orientation.z, ship.orientation.w, ship.energy, ship.piloted ? 1 : 0, ship.spawned ? 1 : 0);
+        fprintf(f, "survival %f %f %f %d\n", survival.oxygen, survival.power, survival.health, survival.deaths);
     };
     loadExtrasHook = [](FILE* f) {
         inventory.clear();
@@ -22,6 +27,16 @@ void GameSave_Register() {
                 player.flyMode = fly != 0;
                 player.velocity = { 0, 0, 0 };
                 player.grounded = false;
+            } else if (strcmp(tok, "ship") == 0) {
+                int piloted = 0, spawned = 0;
+                fscanf(f, " %lf %lf %lf %f %f %f %f %f %d %d", &ship.position.x, &ship.position.y, &ship.position.z, &ship.orientation.x, &ship.orientation.y,
+                       &ship.orientation.z, &ship.orientation.w, &ship.energy, &piloted, &spawned);
+                ship.piloted = piloted != 0;
+                ship.spawned = spawned != 0;
+                ship.velocity = { 0, 0, 0 };
+            } else if (strcmp(tok, "survival") == 0) {
+                fscanf(f, " %f %f %f %d", &survival.oxygen, &survival.power, &survival.health, &survival.deaths);
+                survival.dead = false;
             } else if (strcmp(tok, "item") == 0) {
                 char id[64] = {};
                 int n = 0;

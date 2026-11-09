@@ -28,6 +28,8 @@ generated in the build directory for IntelliSense/clangd.
 | Tab | inventory + crafting |
 | F | toggle free-fly camera |
 | Space | jump; hold for jetpack |
+| E | board / exit the ship |
+| 1 / 2 | use oxygen canister / power cell |
 | Mouse wheel | brush size |
 | F5 / F9 | save / load (`saves/world.sav`) |
 | Esc | pause; R resumes |
@@ -60,6 +62,14 @@ Shaders in `resources/` hot-reload when saved.
 - **Items & crafting** (`src/inventory.*`, `resources/data/items.txt`, `recipes.txt`): mining yields
   items by voxel material (rock, regolith, ice, ore); building consumes stone/regolith/lunacrete.
   **Tab** opens inventory + crafting. Add items/recipes by editing the text files.
+- **Survival** (`src/survival.*`): suit oxygen drains outside the ship's life-support field (~5 min a
+  tank), suit power drains with jetpack use, health drops when suffocating or from hard landings and
+  crashes. Death respawns you at the ship. **1** uses an oxygen canister, **2** a power cell (charges
+  the ship instead while piloting). An objectives list guides the loop: mine ice, craft oxygen, board
+  the ship, fly to another asteroid, refine ore into power cells.
+- **Ship** (`src/ship.*`): **E** to board/exit. 6-DOF flight (WASD, Space/Ctrl, mouse, Z/C roll,
+  Shift boost, X brake) with flight assist, chase camera, terrain collision, crash damage, and an
+  energy store. The start system has 8 asteroids within ~1.5 km.
 - **Audio** (`src/audio.*`): procedural sound effects, no assets.
 - Asteroid density is a displaced sphere with a uniform 0.25/voxel gradient: crisp surfaces and
   predictable dig depth.
@@ -74,7 +84,8 @@ planetoid count, `--system R` = belt radius, `--lod F` = LOD factor, `--first x 
 `--ui` opens the debug panel, `--overlay` the F3 overlay, `--nocull` disables
 frustum culling, `--test-dig N` carves a tunnel at the crosshair, `--test-saveload` saves and reloads,
 `--test-walk S` / `--test-stand S` spawn the player and walk/stand (reports grounding + penetration),
-`--test-mine N` digs N strokes at the feet, crafts everything possible and builds 3 strokes.
+`--test-mine N` digs N strokes at the feet, crafts everything possible and builds 3 strokes,
+`--test-fly S` autopilots the ship to the nearest other asteroid, `--test-suffocate` checks death/respawn.
 
 ## Third-party
 See `third_party/README.md` (Dear ImGui v1.92.7, rlImGui tag Raylib_5_5).

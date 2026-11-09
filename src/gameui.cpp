@@ -3,6 +3,7 @@
 #include "player.h"
 #include "audio.h"
 #include "world.h"
+#include "ship.h"
 
 #include "imgui.h"
 #include <string>
@@ -71,6 +72,11 @@ void GameUI_Draw(Scene&) {
 
 void GameUI_DrawHUD(Scene&) {
     const int w = GetScreenWidth();
+    if (ship.piloted) {
+        DrawText(TextFormat("SHIP  %.0f m/s", Vector3Length(ship.velocity)), w - 220, 70, 20, SKYBLUE);
+        if (GetTime() < toastUntil) DrawText(toast.c_str(), 10, GetScreenHeight() - 90, 20, YELLOW);
+        return;
+    }
     // Jetpack fuel bar (top right).
     DrawRectangle(w - 220, 70, 200, 12, Fade(BLACK, 0.5f));
     DrawRectangle(w - 220, 70, (int)(200 * player.jetpackFuel), 12, SKYBLUE);

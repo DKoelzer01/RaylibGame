@@ -17,6 +17,8 @@
 #include "gamesave.h"
 #include "audio.h"
 #include "rlImGui.h"
+#include "ship.h"
+#include "survival.h"
 
 #if defined(PLATFORM_DESKTOP)
     #define GLSL_VERSION            330
@@ -44,6 +46,11 @@ int main(int argc, char** argv)
     int benchMineStrokes = 0;     // --test-mine N: dig N strokes at the feet, craft, build (after any walk test)
     bool mineStarted = false, mineStoppedEarly = false;
     int minePhase = 0, minedStrokes = 0, mineCrafted = 0;
+    double benchFlySeconds = 0.0, flyStart = -1.0; // --test-fly S: autopilot the ship to the nearest other asteroid
+    bool benchSuffocate = false;   // --test-suffocate: run out of oxygen away from the ship, die, respawn
+    double suffocateStart = -1.0;
+    DVec3 flyFrom{};
+    float flyEnergy = 0.0f, flyMaxSpeed = 0.0f;
     DVec3 walkFrom{};
     float walkMinDensity = 0, walkMaxDensity = 0;
     int walkGroundedFrames = 0, walkFrames = 0;
@@ -58,6 +65,8 @@ int main(int argc, char** argv)
         if (std::string(argv[i]) == "--test-dig" && i + 1 < argc) benchDigStrokes = atoi(argv[i + 1]);
         if (std::string(argv[i]) == "--test-saveload") benchSaveLoad = true;
         if (std::string(argv[i]) == "--test-walk" && i + 1 < argc) benchWalkSeconds = atof(argv[i + 1]);
+        if (std::string(argv[i]) == "--test-suffocate") benchSuffocate = true;
+        if (std::string(argv[i]) == "--test-fly" && i + 1 < argc) benchFlySeconds = atof(argv[i + 1]);
         if (std::string(argv[i]) == "--test-mine" && i + 1 < argc) benchMineStrokes = atoi(argv[i + 1]);
         if (std::string(argv[i]) == "--test-stand" && i + 1 < argc) { benchWalkSeconds = atof(argv[i + 1]); benchStandOnly = true; }
         if (std::string(argv[i]) == "--size" && i + 1 < argc) worldGen.planetoidSize = atoi(argv[i + 1]);
@@ -98,7 +107,12 @@ int main(int argc, char** argv)
     mainMenuHandler(mainMenu);
     worldHandler(world);
     if (Planetoid* start = world.objects.empty() ? nullptr : dynamic_cast<Planetoid*>(world.objects[0].get())) player.spawnOn(world, *start);
-    world.onDraw3D = TerrainTool_Draw3D;
+    if (!world.objects.empty()) {
+        // Park the ship a few metres ahead of the player.
+        const Vector3 feet = (player.position - world.renderOrigin).toFloat();
+        ship.parkNear(world, Vector3Add(feet, Vector3Scale(player.forward, 8.0f)), player.up);
+    }
+    world.onDraw3D = [&world] { if (!ship.piloted) TerrainTool_Draw3D(); ship.draw(world); };
 
     const double benchWarmup = 2.0;
     double benchStart = 0.0, benchMaxFrame = 0.0;
@@ -131,13 +145,65 @@ int main(int argc, char** argv)
                         printf("bench: --test-dig found no terrain at the crosshair\n");
                     }
                     benchDigStrokes = 0;
-                } else if (WorldIdle() && benchSaveLoad && benchWalkSeconds <= 0.0 && benchMineStrokes == 0) {
+                } else if (WorldIdle() && benchSaveLoad && benchWalkSeconds <= 0.0 && benchMineStrokes == 0 && benchFlySeconds <= 0.0) {
                     const int editsBefore = GetWorldStats().edits;
                     const int itemsBefore = inventory.count("stone") + inventory.count("regolith");
                     const bool ok = SaveWorld(world) && LoadWorldSave(world); // restores camera + player from the file
                     printf("bench: save/load %s (%d edits, %d stone+regolith before / %d after)\n", ok ? "ok" : "FAILED",
                            editsBefore, itemsBefore, inventory.count("stone") + inventory.count("regolith"));
                     benchSaveLoad = false;
+                } else if (benchSuffocate && benchWalkSeconds <= 0.0 && benchFlySeconds <= 0.0 && benchMineStrokes == 0) {
+                    // Scripted survival: out of oxygen, far from the ship -> die -> respawn at the ship.
+                    if (suffocateStart < 0.0) {
+                        player.flyMode = false;
+                        const Vector3 feet = (player.position - world.renderOrigin).toFloat();
+                        ship.parkNear(world, Vector3Add(feet, Vector3Scale(player.forward, 30.0f)), player.up); // out of life-support range
+                        survival.oxygen = 0.0f;
+                        survival.health = 15.0f;
+                        suffocateStart = GetTime();
+                    } else if (survival.deaths > 0 && !survival.dead) {
+                        const float d = Vector3Distance((player.position - world.renderOrigin).toFloat(), ship.renderPos(world));
+                        printf("bench: suffocated and respawned after %.1f s; O2 %.0f HP %.0f, %.1f m from ship, deaths %d\n",
+                               GetTime() - suffocateStart, survival.oxygen, survival.health, d, survival.deaths);
+                        benchSuffocate = false;
+                    } else if (GetTime() - suffocateStart > 15.0) {
+                        printf("bench: --test-suffocate FAILED (dead %d, HP %.1f, in life support %d)\n", survival.dead, survival.health, survival.inLifeSupport);
+                        benchSuffocate = false;
+                    }
+                } else if (benchFlySeconds > 0.0 && benchMineStrokes == 0 && benchWalkSeconds <= 0.0) {
+                    // Scripted flight: board the ship and autopilot to the nearest other asteroid.
+                    if (flyStart < 0.0) {
+                        Planetoid* target = nullptr;
+                        float best = 1e30f;
+                        for (size_t i = 1; i < world.objects.size(); ++i)
+                            if (auto* p = dynamic_cast<Planetoid*>(world.objects[i].get())) {
+                                const float d = Vector3Distance(p->position, ship.renderPos(world));
+                                if (d < best) { best = d; target = p; }
+                            }
+                        if (!target) { printf("bench: --test-fly: no second asteroid\n"); benchFlySeconds = 0.0; }
+                        else {
+                            player.flyMode = false;
+                            ship.piloted = true;
+                            ship.autopilot = true;
+                            // Aim for a point 1.6 radii out on the near side of the target.
+                            const Vector3 toShip = Vector3Normalize(Vector3Subtract(ship.renderPos(world), target->position));
+                            ship.autopilotTarget = world.renderOrigin + Vector3Add(target->position, Vector3Scale(toShip, target->radius * 1.6f));
+                            flyStart = GetTime();
+                            flyFrom = ship.position;
+                            flyEnergy = ship.energy;
+                            printf("bench: flying to %s, %.0f m away\n", target->name.c_str(), best);
+                        }
+                    } else {
+                        const double remaining = (ship.autopilotTarget - ship.position).length();
+                        if (remaining < 40.0 || GetTime() - flyStart > benchFlySeconds) {
+                            ship.autopilot = false;
+                            printf("bench: flew %.0f m in %.1f s, %.0f m from target, energy %.0f -> %.0f, max speed %.0f m/s, visited another asteroid: %s\n",
+                                   (ship.position - flyFrom).length(), GetTime() - flyStart, remaining, flyEnergy, ship.energy, flyMaxSpeed,
+                                   remaining < 40.0 ? "yes" : "no");
+                            benchFlySeconds = 0.0;
+                        }
+                        flyMaxSpeed = std::max(flyMaxSpeed, Vector3Length(ship.velocity));
+                    }
                 } else if (benchMineStrokes > 0 && benchWalkSeconds <= 0.0) {
                     // Scripted mining: look at the ground, dig N strokes through the real tool path,
                     // craft everything possible, then build a few strokes back.
@@ -199,7 +265,7 @@ int main(int argc, char** argv)
                                dist, benchWalkSeconds, 100.0 * walkGroundedFrames / std::max(1, walkFrames), walkMinDensity, walkMaxDensity, ISO_LEVEL, alt);
                         benchWalkSeconds = 0.0;
                     }
-                } else if ((WorldIdle() && benchDigStrokes == 0 && !benchSaveLoad && benchWalkSeconds <= 0.0 && benchMineStrokes == 0) || GetTime() > 120.0) {
+                } else if ((WorldIdle() && benchDigStrokes == 0 && !benchSaveLoad && benchWalkSeconds <= 0.0 && benchMineStrokes == 0 && benchFlySeconds <= 0.0 && !benchSuffocate) || GetTime() > 180.0) {
                     benchStart = GetTime();
                     printf("bench: world ready after %.2f s (%d chunks, avg build %.2f ms, %d worker threads)\n",
                         GetWorldStats().lastGenerationSeconds, GetWorldStats().chunks, GetWorldStats().avgBuildMs, GetWorldStats().workerThreads);
@@ -237,15 +303,44 @@ int main(int argc, char** argv)
         }
         const bool uiOpen = DebugUI_IsOpen() || GameUI_InventoryOpen();
         const bool gameInput = !bench && !uiOpen && gameState == 1;
-        world.cameraInputEnabled = player.flyMode && !uiOpen;  // free-fly camera only in fly mode
+        world.cameraInputEnabled = player.flyMode && !uiOpen && !ship.piloted;  // free-fly camera only in fly mode
+        const bool alive = !survival.dead;
+        if (gameState == 1 && gameInput && alive && IsKeyPressed(KEY_E)) {
+            const Vector3 feet = (player.position - world.renderOrigin).toFloat();
+            if (ship.piloted) {
+                // Step out beside the ship.
+                ship.piloted = false;
+                player.position = world.renderOrigin + Vector3Add(ship.renderPos(world), Vector3Add(Vector3Scale(ship.right(), 3.5f), Vector3Scale(ship.up(), 0.5f)));
+                player.velocity = ship.velocity;
+                player.flyMode = false;
+                Audio_Play(Sfx::Build, 0.4f, 1.4f);
+            } else if (ship.playerInRange(world, feet, 5.0f)) {
+                ship.piloted = true;
+                player.flyMode = false;
+                Audio_Play(Sfx::Build, 0.4f, 1.2f);
+            }
+        }
         if (gameState == 1) {
-            player.update(world, gameInput, GetFrameTime());
-            player.applyToCamera(world);
+            ship.lastImpact = 0.0f;
+            if (ship.piloted) {
+                ship.update(world, gameInput && alive, GetFrameTime());
+                ship.applyChaseCamera(world);
+                player.position = ship.position; // the pilot rides inside
+                player.velocity = ship.velocity;
+            } else {
+                ship.update(world, false, GetFrameTime());
+                if (alive) player.update(world, gameInput, GetFrameTime());
+                Survival_OnLanding(player.impactSpeed);
+            }
+            if (ship.piloted && ship.lastImpact > 12.0f) survival.health -= (ship.lastImpact - 12.0f) * 3.0f; // crash damage
+            Survival_Update(world, GetFrameTime(), !ship.piloted && !player.grounded && gameInput && IsKeyDown(KEY_SPACE), gameInput);
+            Objectives_Update(world);
+            if (!ship.piloted) player.applyToCamera(world);
         }
 
         world.updateFloatingOrigin(); // keep the camera near render-space 0 (float precision)
         worldUpdate(world);           // LOD + chunk streaming; runs even while the menu is showing
-        if (gameState == 1) TerrainTool_Update(world, gameInput);
+        if (gameState == 1) TerrainTool_Update(world, gameInput && !ship.piloted && alive);
 
         switch(gameState) {
             case 0: // Main Menu
@@ -291,8 +386,14 @@ int main(int argc, char** argv)
             } else if (gameState == 1) {
                 world.drawScene(gameState);
                 world.drawUI(gameState);
-                TerrainTool_DrawHUD();
+                if (!ship.piloted) TerrainTool_DrawHUD();
                 GameUI_DrawHUD(world);
+                Survival_DrawHUD();
+                Objectives_DrawHUD();
+                if (!ship.piloted && ship.playerInRange(world, (player.position - world.renderOrigin).toFloat(), 5.0f))
+                    DrawText("[E] Board ship", GetScreenWidth() / 2 - 60, GetScreenHeight() / 2 + 40, 20, SKYBLUE);
+                if (ship.piloted) DrawText("SHIP: WASD thrust  Space/Ctrl up/down  mouse steer  Z/C roll  Shift boost  X brake  [2] power cell  E exit",
+                                           10, GetScreenHeight() - 30, 18, Fade(SKYBLUE, 0.9f));
                 if (!bench && !uiOpen) SetMousePosition(GetScreenWidth()/2, GetScreenHeight()/2);
             } else if (gameState == 2) {
                 world.drawScene(gameState);

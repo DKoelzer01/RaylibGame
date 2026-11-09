@@ -11,18 +11,6 @@ static Vector3 RotateAround(Vector3 v, Vector3 axis, float angle) {
     return Vector3RotateByQuaternion(v, QuaternionFromAxisAngle(axis, angle));
 }
 
-static Planetoid* NearestBody(Scene& world, Vector3 p) {
-    Planetoid* best = nullptr;
-    float bestDist = 1e30f;
-    for (auto& obj : world.objects) {
-        Planetoid* b = dynamic_cast<Planetoid*>(obj.get());
-        if (!b) continue;
-        const float d = Vector3Distance(p, b->position) - b->radius * b->scale;
-        if (d < bestDist) { bestDist = d; best = b; }
-    }
-    return best;
-}
-
 void Player::spawnOn(Scene& world, Planetoid& body) {
     const float R = body.radius * body.scale;
     const Vector3 c = body.position;
@@ -54,12 +42,13 @@ void Player::update(Scene& world, bool inputEnabled, float dt) {
         return;
     }
     dt = std::min(dt, 0.1f); // don't explode after a hitch
+    impactSpeed = 0.0f;
 
     // Ride along with a spinning body we are standing on.
     if (grounded && groundBody) position = world.renderOrigin + groundBody->toWorld(groundLocal);
     Vector3 feet = (position - world.renderOrigin).toFloat();
 
-    nearest = NearestBody(world, feet);
+    nearest = NearestPlanetoid(world, feet);
     if (nearest) {
         const Vector3 newUp = Vector3Normalize(Vector3Subtract(feet, nearest->position));
         // Carry the view along as "up" changes so walking around the body feels continuous.
@@ -157,24 +146,6 @@ void Player::stepPhysics(Scene& world, float dt, Vector3 wish, bool jump, bool j
     position = world.renderOrigin + feet;
 }
 
-// Approximate distance from world point c to the iso-surface of p (world units, + outside), with the
-// outward surface normal. Treats density as locally linear: (ISO - density) / |gradient|.
-static bool SurfaceDistance(Planetoid& p, Vector3 c, float& dist, Vector3& normal) {
-    const Vector3 l = p.toLocal(c);
-    const float d = p.densityAt(l);
-    const float e = 0.25f;
-    const Vector3 g = {
-        (p.densityAt({ l.x + e, l.y, l.z }) - p.densityAt({ l.x - e, l.y, l.z })) / (2 * e),
-        (p.densityAt({ l.x, l.y + e, l.z }) - p.densityAt({ l.x, l.y - e, l.z })) / (2 * e),
-        (p.densityAt({ l.x, l.y, l.z + e }) - p.densityAt({ l.x, l.y, l.z - e })) / (2 * e),
-    };
-    const float glen = Vector3Length(g);
-    if (glen < 1e-5f) return false;
-    dist = (ISO_LEVEL - d) / glen * p.scale;
-    normal = Vector3Normalize(Vector3Subtract(p.toWorld(Vector3Add(l, Vector3Scale(g, -1.0f / glen))), c));
-    return true;
-}
-
 // Push the feet/head spheres out of solid density, then probe just below the feet for ground.
 bool Player::resolveCollisions(Scene&, Vector3& feet) {
     if (!nearest) return false;
@@ -185,12 +156,12 @@ bool Player::resolveCollisions(Scene&, Vector3& feet) {
         bool moved = false;
         for (float off : offsets) {
             float dist; Vector3 n;
-            if (!SurfaceDistance(p, Vector3Add(feet, Vector3Scale(up, off)), dist, n) || dist >= radius) continue;
+            if (!TerrainSurfaceDistance(p, Vector3Add(feet, Vector3Scale(up, off)), dist, n) || dist >= radius) continue;
             const float push = std::min(radius - dist, 1.0f); // limit per iteration if deeply embedded
             feet = Vector3Add(feet, Vector3Scale(n, push));
             const float vUpBefore = Vector3DotProduct(velocity, up);
             const float vn = Vector3DotProduct(velocity, n);
-            if (vn < 0.0f) velocity = Vector3Subtract(velocity, Vector3Scale(n, vn));
+            if (vn < 0.0f) { impactSpeed = std::max(impactSpeed, -vn); velocity = Vector3Subtract(velocity, Vector3Scale(n, vn)); }
             lastContactDot = Vector3DotProduct(n, up);
             // Steep walls must not convert a push into upward motion (no wall climbing).
             if (lastContactDot <= 0.55f) {
@@ -207,7 +178,7 @@ bool Player::resolveCollisions(Scene&, Vector3& feet) {
     if (!onGround && Vector3DotProduct(velocity, up) <= 0.5f) {
         float dist; Vector3 n;
         const float skin = 0.12f;
-        if (SurfaceDistance(p, Vector3Add(feet, Vector3Scale(up, radius)), dist, n) && dist < radius + skin && Vector3DotProduct(n, up) > 0.55f) {
+        if (TerrainSurfaceDistance(p, Vector3Add(feet, Vector3Scale(up, radius)), dist, n) && dist < radius + skin && Vector3DotProduct(n, up) > 0.55f) {
             feet = Vector3Subtract(feet, Vector3Scale(n, std::max(0.0f, dist - radius))); // settle onto it
             onGround = true;
             groundNormal = n;

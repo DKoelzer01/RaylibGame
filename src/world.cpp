@@ -342,6 +342,41 @@ void ApplyTerrainEdit(Planetoid& p, const TerrainEdit& edit) {
 }
 
 // ---------------------------------------------------------------------------------------------
+// Shared physics helpers
+// ---------------------------------------------------------------------------------------------
+
+// Approximate distance from world point c to the iso-surface of p (world units, + outside), with the
+// outward surface normal. Treats density as locally linear: (ISO - density) / |gradient|.
+bool TerrainSurfaceDistance(Planetoid& p, Vector3 c, float& dist, Vector3& normal) {
+    const Vector3 l = p.toLocal(c);
+    const float d = p.densityAt(l);
+    const float e = 0.25f;
+    const Vector3 g = {
+        (p.densityAt({ l.x + e, l.y, l.z }) - p.densityAt({ l.x - e, l.y, l.z })) / (2 * e),
+        (p.densityAt({ l.x, l.y + e, l.z }) - p.densityAt({ l.x, l.y - e, l.z })) / (2 * e),
+        (p.densityAt({ l.x, l.y, l.z + e }) - p.densityAt({ l.x, l.y, l.z - e })) / (2 * e),
+    };
+    const float glen = Vector3Length(g);
+    if (glen < 1e-5f) return false;
+    dist = (ISO_LEVEL - d) / glen * p.scale;
+    normal = Vector3Normalize(Vector3Subtract(p.toWorld(Vector3Add(l, Vector3Scale(g, -1.0f / glen))), c));
+    return true;
+}
+
+Planetoid* NearestPlanetoid(Scene& world, Vector3 p) {
+    Planetoid* best = nullptr;
+    float bestDist = 1e30f;
+    for (auto& obj : world.objects) {
+        Planetoid* b = dynamic_cast<Planetoid*>(obj.get());
+        if (!b) continue;
+        const float d = Vector3Distance(p, b->position) - b->radius * b->scale;
+        if (d < bestDist) { bestDist = d; best = b; }
+    }
+    return best;
+}
+
+
+// ---------------------------------------------------------------------------------------------
 // Generation
 // ---------------------------------------------------------------------------------------------
 
