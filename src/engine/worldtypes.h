@@ -17,6 +17,10 @@ public:
     Mesh mesh{};          // GPU mesh (empty if the node contains no surface)
     NodeKey key{};
     bool ready = false;   // a build result has arrived at least once
+    // Body-local upper bound for fragments. Nodes overlap their +x/+y/+z neighbours by one cell to
+    // hide cracks between LOD levels; where the neighbour on an axis is drawn at the same level the
+    // overlap would just duplicate (and z-fight with) its surface, so it is clipped on that axis.
+    Vector3 clipMax = { 1e30f, 1e30f, 1e30f };
 
     Chunk() : Object("chunk", "chunk", {0, 0, 0}, {0, 0, 0}, WHITE, 1.0f) {}
     virtual ~Chunk();

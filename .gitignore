@@ -13,3 +13,5 @@ imgui.ini
 build/
 saves/
 log_*.txt
+CMakeUserPresets.json
+spin_*.png

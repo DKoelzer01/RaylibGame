@@ -4,6 +4,8 @@ in vec3 fragPosition;   // world space
 in vec2 fragTexCoord;
 in vec4 fragColor;
 in vec3 fragNormal;     // world space
+in vec3 fragLocalPos;   // body-local (texturing)
+in vec3 fragLocalNormal;
 
 // Material maps: bound by DrawMesh to the units of the matching raylib material slots.
 uniform sampler2D colorTexture;    // MATERIAL_MAP_ALBEDO
@@ -12,6 +14,7 @@ uniform sampler2D roughAoTexture;  // MATERIAL_MAP_ROUGHNESS: R = roughness, G =
 uniform sampler2D shadowMap;       // MATERIAL_MAP_BRDF: light depth texture
 
 uniform mat4 lightSpaceMatrix;
+uniform mat4 matModel;          // body-local -> world (set by DrawMesh); see lighting.vs about matNormal
 uniform int shadowMapResolution;
 uniform float texScale;            // world units -> texture repeats
 
@@ -31,6 +34,7 @@ uniform Light lights[MAX_LIGHTS];
 uniform vec4 ambient;
 uniform vec3 viewPos;
 uniform int palette;            // 0 = space materials, 1 = fantasy materials
+uniform vec3 chunkClipMax;      // body-local: discard beyond this (see Chunk::clipMax)
 uniform vec3 fogColor;          // linear
 uniform float fogDensity;       // 0 = off
 
@@ -86,12 +90,16 @@ float shadowFactor(vec3 worldPos, vec3 n, vec3 l)
 
 void main()
 {
+    if (any(greaterThan(fragLocalPos, chunkClipMax))) discard;
     vec3 geomNormal = normalize(fragNormal);
-    Triplanar tp = makeTriplanar(fragPosition, geomNormal);
+    // Texture in body-local space so the pattern is fixed to the rock, then bring the bumped
+    // normal into world space for lighting.
+    vec3 localNormal = normalize(fragLocalNormal);
+    Triplanar tp = makeTriplanar(fragLocalPos, localNormal);
 
     vec3 albedo = pow(sampleTriplanar(colorTexture, tp).rgb, vec3(2.2)); // sRGB -> linear
     vec2 roughAo = sampleTriplanar(roughAoTexture, tp).rg;
-    vec3 normal = triplanarNormal(normalTexture, tp, geomNormal);
+    vec3 normal = normalize(mat3(matModel) * triplanarNormal(normalTexture, tp, localNormal));
 
     float rough = roughAo.r;
     float ao = roughAo.g;

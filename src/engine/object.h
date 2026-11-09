@@ -18,6 +18,8 @@ struct RenderContext {
     Material* depthMaterial = nullptr;    // depth-only material for the shadow pass
     const Frustum* frustum = nullptr;     // frustum of the pass's camera (main or light), for culling
     int* drawCalls = nullptr;             // optional stats counter
+    int chunkOriginLoc = -1;              // lighting shader "chunkOrigin" (body-local texturing)
+    int chunkClipLoc = -1;                // lighting shader "chunkClipMax" (same-level overlap clipping)
 };
 
 extern bool frustumCullingEnabled; // debug toggle

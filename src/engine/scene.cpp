@@ -97,7 +97,16 @@ Scene::Scene(std::string name, bool isActive)
     depthMaterial.shader = depth.shader;
     lighting.reloadIfChanged(true);
 
-    lights.push_back(CreateLight(LIGHT_DIRECTIONAL, Vector3Scale(sunDirection, sunDistance), Vector3Zero(), WHITE, lighting.shader));
+    // Slot 0 is the sun. (Not rlights' CreateLight: it numbers lights with a global counter across
+    // all scenes, so the second scene's sun was written into lights[1] and left there as a frozen
+    // phantom light while slot 0 was the one being updated.)
+    Light sun{};
+    sun.type = LIGHT_DIRECTIONAL;
+    sun.enabled = true;
+    sun.position = Vector3Scale(sunDirection, sunDistance);
+    sun.target = Vector3Zero();
+    sun.color = WHITE;
+    lights.push_back(sun);
     applyLightingShader();
 
     std::cout << "Scene created: " << name << std::endl;
@@ -119,6 +128,10 @@ void Scene::applyLightingShader() {
     locPalette    = GetShaderLocation(s, "palette");
     locFogColor   = GetShaderLocation(s, "fogColor");
     locFogDensity = GetShaderLocation(s, "fogDensity");
+    locChunkOrigin = GetShaderLocation(s, "chunkOrigin");
+    locChunkClip = GetShaderLocation(s, "chunkClipMax");
+    const Vector3 noClip = { 1e30f, 1e30f, 1e30f }; // default for anything that is not a chunk
+    SetShaderValue(s, locChunkClip, &noClip, SHADER_UNIFORM_VEC3);
 
     const int res = SHADOW_MAP_SIZE;
     SetShaderValue(s, locShadowRes, &res, SHADER_UNIFORM_INT);
@@ -240,8 +253,10 @@ void Scene::drawScene(int gamestate) {
     const float ambient[4] = { ambientColor.x, ambientColor.y, ambientColor.z, 1.0f };
     SetShaderValue(s, locAmbient, ambient, SHADER_UNIFORM_VEC4);
     SetShaderValue(s, locViewPos, &camera.position, SHADER_UNIFORM_VEC3);
-    for (size_t i = 0; i < lights.size(); ++i) {
-        UpdateLightValues(s, lights[i], (int)i); // also uploads enabled = 0 for switched-off lights
+    // Upload every slot the shader has, so unused slots are explicitly disabled.
+    for (int i = 0; i < MAX_LIGHTS; ++i) {
+        if (i < (int)lights.size()) UpdateLightValues(s, lights[i], i);
+        else { Light off{}; UpdateLightValues(s, off, i); }
     }
 
     // --- Main pass ---
@@ -259,6 +274,8 @@ void Scene::drawScene(int gamestate) {
         ctx.depthMaterial = &depthMaterial;
         ctx.frustum = &viewFrustum;
         ctx.drawCalls = &drawCalls;
+        ctx.chunkOriginLoc = locChunkOrigin;
+        ctx.chunkClipLoc = locChunkClip;
         for (const auto& obj : objects) if (obj) obj->draw(ctx);
         for (const auto& obj : rootObject.children) if (obj) obj->draw(ctx);
 

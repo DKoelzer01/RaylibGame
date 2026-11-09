@@ -195,6 +195,19 @@ static void UpdateLod(Planetoid& p, Vector3 cameraRender) {
     }
     p.drawList = std::move(draw);
 
+    // Clip the one-cell overlap on axes where the +neighbour is drawn at the same level (it would
+    // duplicate that neighbour's surface and z-fight); keep it toward other levels to hide cracks.
+    std::unordered_set<NodeKey> drawn;
+    for (Chunk* c : p.drawList) drawn.insert(c->key);
+    for (Chunk* c : p.drawList) {
+        const NodeKey k = c->key;
+        const Vector3 o = k.origin();
+        const float s = k.size() + 0.02f; // tiny overlap so the seam itself never cracks
+        c->clipMax.x = drawn.count({ k.level, k.x + 1, k.y, k.z }) ? o.x + s : 1e30f;
+        c->clipMax.y = drawn.count({ k.level, k.x, k.y + 1, k.z }) ? o.y + s : 1e30f;
+        c->clipMax.z = drawn.count({ k.level, k.x, k.y, k.z + 1 }) ? o.z + s : 1e30f;
+    }
+
     // Free nodes that are neither desired nor on screen (late results for them are dropped).
     std::unordered_set<const Chunk*> onScreen(p.drawList.begin(), p.drawList.end());
     for (auto it = p.nodes.begin(); it != p.nodes.end();) {
@@ -233,9 +246,9 @@ static bool AnyLodPending(Scene& world) {
     return false;
 }
 
-void worldUpdate(Scene& world, float uploadBudgetMs) {
+void worldUpdate(Scene& world, float uploadBudgetMs, bool advanceTime) {
     PROFILE_FUNCTION();
-    const float dt = GetFrameTime();
+    const float dt = advanceTime ? GetFrameTime() : 0.0f;
     for (auto& obj : world.objects) {
         if (auto* p = dynamic_cast<Planetoid*>(obj.get())) p->rotation = Vector3Add(p->rotation, Vector3Scale(p->spin, dt));
     }

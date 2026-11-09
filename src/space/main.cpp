@@ -48,6 +48,10 @@ int main(int argc, char** argv)
     int minePhase = 0, minedStrokes = 0, mineCrafted = 0;
     double benchFlySeconds = 0.0, flyStart = -1.0; // --test-fly S: autopilot the ship to the nearest other asteroid
     bool benchSuffocate = false;   // --test-suffocate: run out of oxygen away from the ship, die, respawn
+    bool spinTest = false;         // --spin-test: textures must stay attached to a spinning body
+    float spinRate = 30.0f;        // --spin-rate DEG_PER_SEC
+    int spinPhase = 0;
+    Vector3 spinCamLocal{}, spinTgtLocal{};
     double suffocateStart = -1.0;
     DVec3 flyFrom{};
     float flyEnergy = 0.0f, flyMaxSpeed = 0.0f;
@@ -66,6 +70,26 @@ int main(int argc, char** argv)
         if (std::string(argv[i]) == "--test-saveload") benchSaveLoad = true;
         if (std::string(argv[i]) == "--test-walk" && i + 1 < argc) benchWalkSeconds = atof(argv[i + 1]);
         if (std::string(argv[i]) == "--test-suffocate") benchSuffocate = true;
+        if (std::string(argv[i]) == "--spin-test") spinTest = true;
+        if (std::string(argv[i]) == "--test-flycam") {
+            // Pitch a free camera through two full loops (past straight up and down) in small steps,
+            // the way customUpdateCamera does, and check it never flips: each step turns the view by
+            // the same small angle and up stays perpendicular to the view.
+            Camera3D c{ { 0, 0, 0 }, { 0, 0, 1 }, { 0, 1, 0 }, 60.0f, CAMERA_PERSPECTIVE };
+            float worstStep = 0.0f, worstOrtho = 0.0f;
+            Vector3 prev = { 0, 0, 1 };
+            for (int s = 0; s < 400; ++s) {
+                CameraPitch(&c, 0.02f, false, false, true);
+                CameraYaw(&c, 0.003f, false);
+                const Vector3 fwd = Vector3Normalize(Vector3Subtract(c.target, c.position));
+                worstStep = std::max(worstStep, Vector3Angle(prev, fwd));
+                worstOrtho = std::max(worstOrtho, fabsf(Vector3DotProduct(fwd, Vector3Normalize(c.up))));
+                prev = fwd;
+            }
+            printf("bench: flycam pitched 8 rad (past both poles): largest per-step turn %.4f rad (expected ~0.02), max |dot(view, up)| %.4f\n",
+                   worstStep, worstOrtho);
+        }
+        if (std::string(argv[i]) == "--spin-rate" && i + 1 < argc) spinRate = (float)atof(argv[i + 1]);
         if (std::string(argv[i]) == "--test-fly" && i + 1 < argc) benchFlySeconds = atof(argv[i + 1]);
         if (std::string(argv[i]) == "--test-mine" && i + 1 < argc) benchMineStrokes = atoi(argv[i + 1]);
         if (std::string(argv[i]) == "--test-stand" && i + 1 < argc) { benchWalkSeconds = atof(argv[i + 1]); benchStandOnly = true; }
@@ -340,7 +364,51 @@ int main(int argc, char** argv)
         }
 
         world.updateFloatingOrigin(); // keep the camera near render-space 0 (float precision)
-        worldUpdate(world);           // LOD + chunk streaming; runs even while the menu is showing
+        worldUpdate(world, 3.0f, gameState == 1); // LOD + streaming always; bodies only spin while playing
+        // --spin-test: camera locked to the spinning first asteroid; texture must turn with the rock.
+        if (bench && spinTest && benchStart >= 0.0) {
+            Planetoid* p = dynamic_cast<Planetoid*>(world.objects[0].get());
+            const double t = GetTime() - benchStart;
+            if (spinPhase == 0) {
+                p->spin = { 0.0f, spinRate, 0.0f };
+                world.sunDirection = { 0.0f, 1.0f, 0.0f };      // sun on the spin axis: shading stays constant
+                spinCamLocal = p->toLocal(world.camera.position);
+                spinTgtLocal = p->toLocal(world.camera.target);
+                spinPhase = 1;
+            }
+            world.camera.position = p->toWorld(spinCamLocal);    // ride along with the body
+            world.camera.target = p->toWorld(spinTgtLocal);
+            if (spinPhase == 1 && t > 1.0) {
+                TakeScreenshot("spin_a.png");
+                spinPhase = 2;
+            }
+            if (spinPhase == 2 && t > 3.0) {
+                TakeScreenshot("spin_b.png");
+                Image a = LoadImage("spin_a.png"), b = LoadImage("spin_b.png");
+                ImageFormat(&a, PIXELFORMAT_UNCOMPRESSED_R8G8B8A8);
+                ImageFormat(&b, PIXELFORMAT_UNCOMPRESSED_R8G8B8A8);
+                double diff = 0.0;
+                long n = 0;
+                const unsigned char* pa = (const unsigned char*)a.data;
+                const unsigned char* pb = (const unsigned char*)b.data;
+                for (int y = a.height * 35 / 100; y < a.height * 65 / 100; ++y)
+                    for (int x = a.width * 35 / 100; x < a.width * 65 / 100; ++x, ++n)
+                        for (int c = 0; c < 3; ++c) diff += abs((int)pa[(y * a.width + x) * 4 + c] - (int)pb[(y * a.width + x) * 4 + c]);
+                printf("bench: spin test: body turned %.0f deg between shots; mean abs pixel diff in view centre = %.2f / 255\n",
+                       2.0 * spinRate, diff / (n * 3.0));
+                {   // amplified difference image for inspection
+                    Image d = ImageCopy(a);
+                    unsigned char* pd = (unsigned char*)d.data;
+                    for (int i = 0; i < a.width * a.height; ++i)
+                        for (int c = 0; c < 3; ++c) pd[i * 4 + c] = (unsigned char)std::min(255, 4 * abs((int)pa[i * 4 + c] - (int)pb[i * 4 + c]));
+                    ExportImage(d, "spin_diff.png");
+                    UnloadImage(d);
+                }
+                UnloadImage(a);
+                UnloadImage(b);
+                spinPhase = 3;
+            }
+        }
         if (gameState == 1) TerrainTool_Update(world, gameInput && !ship.piloted && alive);
 
         switch(gameState) {

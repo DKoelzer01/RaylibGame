@@ -59,7 +59,8 @@ void BeginWorldStreaming();            // for games that add bodies themselves: 
 void loadWorld(Scene& world);          // extra objects from assets/scenes/world
 
 // Per frame: requests chunks for new planetoids and uploads finished meshes (time-boxed).
-void worldUpdate(Scene& world, float uploadBudgetMs = 3.0f);
+// advanceTime = false while paused: streaming/uploads continue but bodies stop spinning.
+void worldUpdate(Scene& world, float uploadBudgetMs = 3.0f, bool advanceTime = true);
 bool WorldIdle();                      // no queued/running jobs and nothing left to upload
 const WorldStats& GetWorldStats();
 

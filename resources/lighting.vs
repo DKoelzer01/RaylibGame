@@ -10,11 +10,15 @@ in vec4 vertexColor;
 uniform mat4 mvp;
 uniform mat4 matModel;
 uniform mat4 matNormal;
+// Set per chunk draw: the chunk's offset inside its body (voxels). Zero for other meshes.
+uniform vec3 chunkOrigin;
 
-out vec3 fragPosition;  // world space
+out vec3 fragPosition;     // world (render) space: lighting, shadows, fog
 out vec2 fragTexCoord;
 out vec4 fragColor;
-out vec3 fragNormal;    // world space
+out vec3 fragNormal;       // world space
+out vec3 fragLocalPos;     // body-local space: texturing, so textures stay attached to a
+out vec3 fragLocalNormal;  // moving/spinning body and don't swim when the floating origin shifts
 
 void main()
 {
@@ -22,6 +26,11 @@ void main()
     fragTexCoord = vertexTexCoord;
     fragColor = vertexColor;
     // w = 0: normals are directions and must not pick up the model translation.
-    fragNormal = normalize(vec3(matNormal * vec4(vertexNormal, 0.0)));
+    // Normal to world space via matModel. raylib also provides matNormal, but in testing its value
+    // did not follow per-draw model rotations (normals stayed in body space on spinning bodies), so we
+    // don't rely on it. Valid for rotation + uniform scale, which is all the engine uses.
+    fragNormal = normalize(mat3(matModel) * vertexNormal);
+    fragLocalPos = vertexPosition + chunkOrigin;
+    fragLocalNormal = vertexNormal;
     gl_Position = mvp * vec4(vertexPosition, 1.0);
 }

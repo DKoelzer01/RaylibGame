@@ -129,6 +129,12 @@ void Chunk::drawChunk(const RenderContext& ctx, const Matrix& parentTransform) {
     if (!isActive || mesh.vaoId == 0 || !ctx.terrainMaterial) return;
     const Matrix m = modelMatrix(parentTransform);
     if (!visible(ctx, m)) return;
+    if (ctx.chunkOriginLoc >= 0) {
+        // DrawMesh draws immediately (no batching), so a per-draw uniform set here is safe.
+        const Vector3 o = key.origin();
+        SetShaderValue(ctx.terrainMaterial->shader, ctx.chunkOriginLoc, &o, SHADER_UNIFORM_VEC3);
+        if (ctx.chunkClipLoc >= 0) SetShaderValue(ctx.terrainMaterial->shader, ctx.chunkClipLoc, &clipMax, SHADER_UNIFORM_VEC3);
+    }
     DrawMesh(mesh, *ctx.terrainMaterial, m);
     if (ctx.drawCalls) (*ctx.drawCalls)++;
 }
