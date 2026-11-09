@@ -1,6 +1,8 @@
 # id | display name | stack limit | colour r,g,b | description
 stone           | Stone           | 999 | 130,130,135 | Bulk rock. Used to build terrain back up.
 regolith        | Regolith        | 999 | 170,140,100 | Loose surface dust. Building filler.
+sand            | Sand            | 999 | 214,190,140 | Fine grains from beaches and shallows. Building filler.
+gravel          | Gravel          | 999 | 130,126,120 | Loose stones from scree and the sea floor. Building filler.
 ice             | Ice             | 999 | 170,210,240 | Frozen volatiles. Melts into water.
 iron_ore        | Iron ore        | 999 | 190,110, 50 | Metal-bearing rock from ore veins.
 iron_plate      | Iron plate      | 200 | 180,180,190 | Refined metal.

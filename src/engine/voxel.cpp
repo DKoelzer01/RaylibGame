@@ -13,6 +13,10 @@ const char* VoxelMaterialName(VoxelMaterial m) {
         case VoxelMaterial::Regolith: return "regolith";
         case VoxelMaterial::Ice: return "ice";
         case VoxelMaterial::Ore: return "ore";
+        case VoxelMaterial::Sand: return "sand";
+        case VoxelMaterial::Gravel: return "gravel";
+        case VoxelMaterial::Grass: return "grass";
+        case VoxelMaterial::Snow: return "snow";
         default: return "?";
     }
 }
@@ -300,20 +304,33 @@ void PlanetField::baseDensityBlock(Vector3 o, float stride, int S, float fp, flo
             }
 }
 
-VoxelMaterial PlanetField::materialLod(Vector3 p, float base, float fp) const {
+VoxelMaterial PlanetField::materialLod(Vector3 p, float base, float fp, Vector3 normal) const {
     const float d = sqrtf(p.x * p.x + p.y * p.y + p.z * p.z);
     if (d < mantleRadius + 0.5f || d < 1e-3f) return VoxelMaterial::Rock;   // mantle
     // Depth below the original surface, from the height map (the density is no measure of depth
     // here: cave tunnels take the minimum with it, so cave walls stay rock rather than topsoil).
     (void)base;
-    const float depth = radius + elevation({ p.x / d, p.y / d, p.z / d }, fp) - d; // against the surface this LOD meshes
+    const Vector3 up = { p.x / d, p.y / d, p.z / d };
+    const float surfaceElevation = elevation(up, fp);
+    const float depth = radius + surfaceElevation - d; // against the surface this LOD meshes
+    if (moon) return depth < 2.5f ? VoxelMaterial::Regolith : VoxelMaterial::Rock; // grey dust over rock (asteroid palette)
     if (depth < 2.5f) {
-        if (!moon && d > 1e-3f) {
-            // Snow at high latitudes and on high peaks, wobbled by a climate field.
-            const float wobble = climate.fractal(2, p.x, p.y, p.z);
-            if (fabsf(p.y) / d > 0.82f + 0.08f * wobble || d - radius > 1050.0f + 150.0f * wobble) return VoxelMaterial::Ice;
-        }
-        return VoxelMaterial::Regolith;
+        // Surface biome from height above sea level, latitude, slope and a climate wobble. The top
+        // ~0.6 m is the surface material; below it a soil layer (dirt under grass, sand under sand,
+        // gravel under scree), then rock.
+        const float wobble = climate.fractal(2, p.x, p.y, p.z);
+        const float lat = fabsf(up.y);                                     // 0 at the equator, 1 at the poles
+        const float slope = 1.0f - std::clamp(Vector3DotProduct(normal, up), -1.0f, 1.0f); // 0 flat .. 1 vertical
+        const float e = surfaceElevation;
+        const bool skin = depth < 0.6f;
+        if (lat > 0.93f + 0.03f * wobble || e > 1350.0f + 100.0f * wobble) return VoxelMaterial::Ice;          // polar cap, glaciers
+        if (lat > 0.82f + 0.08f * wobble || e > 1050.0f + 150.0f * wobble) return skin ? VoxelMaterial::Snow : VoxelMaterial::Ice;
+        if (slope > 0.45f) return VoxelMaterial::Rock;                                                       // cliffs: bare stone
+        if (e < -80.0f) return VoxelMaterial::Gravel;                                                        // deep sea floor
+        if (e < 6.0f + 4.0f * wobble) return VoxelMaterial::Sand;                                            // beaches, shallows
+        if (slope > 0.3f || e > 800.0f + 100.0f * wobble) return VoxelMaterial::Gravel;                     // scree, alpine
+        if (lat > 0.62f + 0.06f * wobble) return VoxelMaterial::Regolith;                                    // tundra: bare dirt
+        return skin ? VoxelMaterial::Grass : VoxelMaterial::Regolith;                                        // grassland over dirt
     }
     // Ore veins (thin sheets where the vein field crosses zero), richer with depth.
     if (depth > 8.0f) {
@@ -412,6 +429,8 @@ void BuildChunkMesh(const DensityField& field, const EditList& allEdits, ChunkMe
             out.positions.resize(verts.size() * 3);
             out.normals.resize(verts.size() * 3);
             out.colors.assign(verts.size() * 4, 0);
+            out.texcoords.assign(verts.size() * 2, 0.0f);
+            out.texcoords2.assign(verts.size() * 2, 0.0f);
             for (size_t v = 0; v < verts.size(); ++v) {
                 const Vector3 lp = Vector3Scale(verts[v], stride);     // node-relative, in voxels
                 const Vector3 p = Vector3Add(origin, lp);
@@ -428,14 +447,17 @@ void BuildChunkMesh(const DensityField& field, const EditList& allEdits, ChunkMe
                 const float gl = Vector3Length(grad);
                 const Vector3 n = gl > 1e-6f ? Vector3Scale(grad, -1.0f / gl) : field.fallbackUp(p);
                 const float b = at(base, x0 + 1, y0 + 1, z0 + 1) * (1.0f - t) + at(base, x1 + 1, y1 + 1, z1 + 1) * t;
-                const VoxelMaterial m = field.materialLod(p, b, stride);
+                const VoxelMaterial m = field.materialLod(p, b, stride, n);
                 out.positions[v * 3 + 0] = lp.x;
                 out.positions[v * 3 + 1] = lp.y;
                 out.positions[v * 3 + 2] = lp.z;
                 out.normals[v * 3 + 0] = n.x;
                 out.normals[v * 3 + 1] = n.y;
                 out.normals[v * 3 + 2] = n.z;
-                out.colors[v * 4 + (int)m] = 255;
+                const int mi = (int)m; // one-hot weight in the material's channel (see VoxelMaterial)
+                if (mi < 4) out.colors[v * 4 + mi] = 255;
+                else if (mi < 6) out.texcoords[v * 2 + (mi - 4)] = 1.0f;
+                else out.texcoords2[v * 2 + (mi - 6)] = 1.0f;
             }
             out.indices.assign(idx.begin(), idx.end());
         }

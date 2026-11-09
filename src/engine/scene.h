@@ -6,6 +6,7 @@
 #include "gameobject.h"
 #include "camera.h"
 #include "frustum.h"
+#include "terrainlayers.h"
 
 #include <raylib.h>
 #include "rlgl.h"
@@ -50,6 +51,7 @@ class Scene {
         HotShader depth{ "resources/depth.vs", "resources/depth.fs" };
 
         Material terrainMaterial{};   // lighting shader + albedo/normal/rough-ao maps + shadow map
+        TextureArray terrainLayers{};     // dirt/sand/gravel/grass/snow/ice/stone layers (planet palette)
         Material depthMaterial{};     // depth shader only
         RenderTexture2D shadowMap{};  // depth-only FBO; shadowMap.depth is the sampled texture
         Matrix lightSpaceMatrix = MatrixIdentity();
@@ -91,6 +93,7 @@ class Scene {
 
     private:
         void applyLightingShader();   // (re)binds material + static uniforms after a (re)load
+        int locTerrainLayers = -1;
         int locViewPos = -1, locLightSpace = -1, locAmbient = -1, locShadowRes = -1, locTexScale = -1, locPalette = -1, locFogColor = -1, locFogDensity = -1, locChunkOrigin = -1, locChunkClip = -1;
         bool terrainTexturesLoaded = false;
 };

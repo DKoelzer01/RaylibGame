@@ -54,9 +54,10 @@ namespace std {
         }
     };
 }
-// Voxel materials. Meshes carry them as per-vertex blend weights in the vertex colour
-// (R = rock, G = regolith, B = ice, A = ore), so they interpolate smoothly across triangles.
-enum class VoxelMaterial : uint8_t { Rock = 0, Regolith = 1, Ice = 2, Ore = 3, Count };
+// Eight materials. Meshes carry them as per-vertex blend weights: 0-3 in the vertex colour (RGBA),
+// 4-5 in texcoord (xy), 6-7 in texcoord2 (xy), so they interpolate smoothly across triangles.
+// Asteroids use 0-3; planets all eight (Regolith is rendered as dirt there).
+enum class VoxelMaterial : uint8_t { Rock = 0, Regolith = 1, Ice = 2, Ore = 3, Sand = 4, Gravel = 5, Grass = 6, Snow = 7, Count };
 const char* VoxelMaterialName(VoxelMaterial m);
 
 // A spherical density brush in planetoid-local space. strength < 0 digs, > 0 adds.
@@ -97,7 +98,8 @@ public:
     virtual void baseDensityBlock(Vector3 origin, float stride, int S, float footprint, float* out) const;
     // Material of a mesh vertex sampled at that footprint (so coarse vertices, which sit on the
     // simplified surface, are judged against it). Defaults to material().
-    virtual VoxelMaterial materialLod(Vector3 p, float base, float /*footprint*/) const { return material(p, base); }
+    // `normal` = the vertex's outward surface normal (slope-dependent materials).
+    virtual VoxelMaterial materialLod(Vector3 p, float base, float /*footprint*/, Vector3 /*normal*/) const { return material(p, base); }
 
     // Density including edits (the list should already be filtered to ones near p).
     float density(Vector3 p, const TerrainEdit* edits, size_t editCount, float footprint = 0.0f) const;
@@ -145,8 +147,8 @@ public:
     float baseDensity(Vector3 p) const override { return baseDensityLod(p, 0.0f); }
     float baseDensityLod(Vector3 p, float footprint) const override;
     void baseDensityBlock(Vector3 origin, float stride, int S, float footprint, float* out) const override;
-    VoxelMaterial material(Vector3 p, float base) const override { return materialLod(p, base, 0.0f); }
-    VoxelMaterial materialLod(Vector3 p, float base, float footprint) const override;
+    VoxelMaterial material(Vector3 p, float base) const override { return materialLod(p, base, 0.0f, fallbackUp(p)); }
+    VoxelMaterial materialLod(Vector3 p, float base, float footprint, Vector3 normal) const override;
     Vector3 fallbackUp(Vector3 p) const override;
     bool editable(Vector3 p) const override;
     float maxRadius() const override { return radius + maxElevation; }
@@ -181,7 +183,9 @@ struct ChunkMeshData {
     uint32_t version = 0;
     std::vector<float> positions;          // xyz, relative to key.origin(), in voxels
     std::vector<float> normals;            // xyz
-    std::vector<unsigned char> colors;     // rgba material weights
+    std::vector<unsigned char> colors;     // material weights 0-3 (rgba)
+    std::vector<float> texcoords;          // material weights 4-5
+    std::vector<float> texcoords2;         // material weights 6-7
     std::vector<unsigned short> indices;
     bool overflow = false;                 // > 65535 vertices: mesh dropped
     float buildMs = 0.0f;

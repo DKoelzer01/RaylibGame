@@ -177,7 +177,10 @@ void Planetoid::draw(const RenderContext& ctx) {
     for (const auto& objPtr : children) objPtr->draw(ctx);
     if (drawList.empty() || !ctx.terrainMaterial) return;
     const ChunkPlacer placer(*this, ctx.renderOrigin);
-    ChunkBatch batch(*ctx.terrainMaterial); // shader + textures bound once for all chunks
+    ChunkBatch batch(*ctx.terrainMaterial, ctx.terrainLayers, ctx.terrainLayersLoc); // bound once for all chunks
+    // Planets use the texture-layer palette (dirt, sand, grass, ...); other bodies the scene's.
+    const int palette = kind == BodyKind::Planet ? 2 : ctx.scenePalette;
+    batch.setUniform(ctx.paletteLoc, &palette, SHADER_UNIFORM_INT);
     RenderContext c2 = ctx;
     c2.batch = &batch;
     for (Chunk* c : drawList) c->drawChunk(c2, placer.model(c->key));

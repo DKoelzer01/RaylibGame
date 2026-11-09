@@ -14,9 +14,13 @@
 // sets mvp / matModel and draws (raylib's DrawMesh re-binds and unbinds everything on every call,
 // which dominated the frame with hundreds of terrain chunks). Mirrors DrawMesh's OpenGL 3.3 path;
 // meshes must have been uploaded with a VAO (UploadMesh). Unbinds in the destructor.
+struct TextureArray;
+
 class ChunkBatch {
 public:
-    explicit ChunkBatch(const Material& material);
+    // `layers` (optional): a texture array bound to unit kLayersUnit and given to sampler `layersLoc`.
+    explicit ChunkBatch(const Material& material, const TextureArray* layers = nullptr, int layersLoc = -1);
+    static constexpr int kLayersUnit = 11; // a free 2D slot among raylib's 12 material maps
     ~ChunkBatch();
     ChunkBatch(const ChunkBatch&) = delete;
     ChunkBatch& operator=(const ChunkBatch&) = delete;
@@ -25,6 +29,7 @@ public:
 
 private:
     const Material& material;
+    const TextureArray* layers;
     Matrix view, projection, viewProjection;
 };
 
@@ -40,6 +45,10 @@ struct RenderContext {
     DVec3 renderOrigin{};                 // the scene's floating origin (chunk placement in double)
     float texScale = 0.05f;               // terrain texture repeats per metre (wraps chunkTexOrigin)
     ChunkBatch* batch = nullptr;          // set while a body draws its chunks (see ChunkBatch)
+    const TextureArray* terrainLayers = nullptr; // terrain texture array (planet palette)
+    int terrainLayersLoc = -1;            // its sampler uniform
+    int paletteLoc = -1;                  // lighting shader "palette"; bodies may override the scene's
+    int scenePalette = 0;
     int chunkClipLoc = -1;                // lighting shader "chunkClipMax" (chunk-local overlap clipping)
 };
 

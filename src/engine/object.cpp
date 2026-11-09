@@ -3,6 +3,7 @@
 #include "gameobject.h"
 #include <raymath.h>
 #include <rlgl.h>
+#include "terrainlayers.h"
 #include <algorithm>
 #include <cmath>
 #include <cstring>
@@ -110,6 +111,8 @@ void Chunk::setMesh(const ChunkMeshData& data) {
     mesh.vertices = CopyToRaylib(data.positions);
     mesh.normals = CopyToRaylib(data.normals);
     mesh.colors = CopyToRaylib(data.colors);
+    if (!data.texcoords.empty()) mesh.texcoords = CopyToRaylib(data.texcoords);    // material weights 4-5
+    if (!data.texcoords2.empty()) mesh.texcoords2 = CopyToRaylib(data.texcoords2); // material weights 6-7
     mesh.indices = CopyToRaylib(data.indices);
     UploadMesh(&mesh, false);
 }
@@ -126,7 +129,7 @@ bool Chunk::visible(const RenderContext& ctx, const Matrix& model) const {
 // raylib allocates MAX_MATERIAL_MAPS (config.h, default 12) maps per Material; not exported by raylib.h.
 static constexpr int kMaterialMaps = 12;
 
-ChunkBatch::ChunkBatch(const Material& m) : material(m) {
+ChunkBatch::ChunkBatch(const Material& m, const TextureArray* arr, int arrLoc) : material(m), layers(arr && arr->id ? arr : nullptr) {
     view = rlGetMatrixModelview();
     projection = rlGetMatrixProjection();
     viewProjection = MatrixMultiply(view, projection);
@@ -146,9 +149,15 @@ ChunkBatch::ChunkBatch(const Material& m) : material(m) {
         else rlEnableTexture(material.maps[i].texture.id);
         rlSetUniform(locs[SHADER_LOC_MAP_DIFFUSE + i], &i, SHADER_UNIFORM_INT, 1);
     }
+    if (layers) {
+        BindTextureArray(kLayersUnit, *layers);
+        const int unit = kLayersUnit;
+        if (arrLoc >= 0) rlSetUniform(arrLoc, &unit, SHADER_UNIFORM_INT, 1);
+    }
 }
 
 ChunkBatch::~ChunkBatch() {
+    if (layers) UnbindTextureArray(kLayersUnit);
     for (int i = 0; i < kMaterialMaps; i++) {
         if (material.maps[i].texture.id == 0) continue;
         rlActiveTextureSlot(i);

@@ -78,11 +78,11 @@ bool TerrainTool_Stroke(bool dig) {
         Audio_Play(Sfx::Dig, 0.5f, 0.85f + 0.3f * (float)GetRandomValue(0, 100) / 100.0f);
     } else if (!terrainTool.creative) {
         // Building consumes bulk material, best first.
-        static const char* fillers[] = { "concrete", "stone", "regolith" };
+        static const char* fillers[] = { "concrete", "stone", "regolith", "gravel", "sand" };
         bool paid = false;
         for (const char* f : fillers) if (inventory.remove(f, 1)) { paid = true; break; }
         if (!paid) {
-            Toast("Need stone, regolith or lunacrete to build");
+            Toast("Need stone, regolith, gravel, sand or lunacrete to build");
             Audio_Play(Sfx::Error, 0.5f);
             strokeTimer = 0.5f;
             return false;

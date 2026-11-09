@@ -131,6 +131,10 @@ void Scene::applyLightingShader() {
     locFogDensity = GetShaderLocation(s, "fogDensity");
     locChunkOrigin = GetShaderLocation(s, "chunkTexOrigin");
     locChunkClip = GetShaderLocation(s, "chunkClipMax");
+    locTerrainLayers = GetShaderLocation(s, "terrainLayers");
+    // Always on its own unit: two samplers of different types (sampler2D / sampler2DArray) on one unit
+    // make draws fail, and an unset sampler would default to unit 0, the albedo map's.
+    { const int unit = ChunkBatch::kLayersUnit; if (locTerrainLayers >= 0) SetShaderValue(s, locTerrainLayers, &unit, SHADER_UNIFORM_INT); }
     const Vector3 noClip = { 1e30f, 1e30f, 1e30f }; // default for anything that is not a chunk
     SetShaderValue(s, locChunkClip, &noClip, SHADER_UNIFORM_VEC3);
 
@@ -186,6 +190,8 @@ void Scene::loadTerrainTextures() {
     terrainMaterial.maps[MATERIAL_MAP_ROUGHNESS].texture = UploadFiltered(rough);
     UnloadImage(rough);
     UnloadImage(ao);
+
+    terrainLayers = LoadTerrainLayers(512);
 
     terrainTexturesLoaded = true;
 }
@@ -297,6 +303,10 @@ void Scene::drawScene(int gamestate) {
         ctx.chunkClipLoc = locChunkClip;
         ctx.renderOrigin = renderOrigin;
         ctx.texScale = texScale;
+        ctx.terrainLayers = &terrainLayers;
+        ctx.terrainLayersLoc = locTerrainLayers;
+        ctx.paletteLoc = locPalette;
+        ctx.scenePalette = materialPalette;
         for (const auto& obj : objects) if (obj) obj->draw(ctx);
         for (const auto& obj : rootObject.children) if (obj) obj->draw(ctx);
 
@@ -350,6 +360,7 @@ Scene::~Scene() {
         UnloadTexture(terrainMaterial.maps[MATERIAL_MAP_ALBEDO].texture);
         UnloadTexture(terrainMaterial.maps[MATERIAL_MAP_NORMAL].texture);
         UnloadTexture(terrainMaterial.maps[MATERIAL_MAP_ROUGHNESS].texture);
+        UnloadTextureArray(terrainLayers);
     }
     // Free the maps arrays only; shaders and textures are released explicitly here.
     MemFree(terrainMaterial.maps);

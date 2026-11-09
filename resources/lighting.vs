@@ -2,7 +2,8 @@
 
 // Input vertex attributes
 in vec3 vertexPosition;
-in vec2 vertexTexCoord;
+in vec2 vertexTexCoord;   // chunks: material weights 4-5 (sand, gravel)
+in vec2 vertexTexCoord2;  // chunks: material weights 6-7 (grass, snow)
 in vec3 vertexNormal;
 in vec4 vertexColor;
 
@@ -16,6 +17,7 @@ uniform vec3 chunkTexOrigin;
 
 out vec3 fragPosition;     // world (render) space: lighting, shadows, fog
 out vec2 fragTexCoord;
+out vec2 fragTexCoord2;
 out vec4 fragColor;
 out vec3 fragNormal;       // world space
 out vec3 fragTexPos;       // body-aligned texturing position (wrapped): textures stay attached to a
@@ -26,6 +28,7 @@ void main()
 {
     fragPosition = vec3(matModel * vec4(vertexPosition, 1.0));
     fragTexCoord = vertexTexCoord;
+    fragTexCoord2 = vertexTexCoord2;
     fragColor = vertexColor;
     // w = 0: normals are directions and must not pick up the model translation.
     // Normal to world space via matModel. raylib also provides matNormal, but in testing its value

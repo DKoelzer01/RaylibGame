@@ -348,6 +348,18 @@ int main(int argc, char** argv)
                         }
                         printf("bench: planet %s: %d surface samples, elevation %.0f..%.0f m (band %.0f..%.0f), below sea level %.0f%%, outside band %d\n",
                                p->name.c_str(), N, lo, hi, f->minElevation, f->maxElevation, 100.0f * ocean / N, outside);
+                        // Surface materials: the share of each over random surface points (with real slopes).
+                        int counts[(int)VoxelMaterial::Count] = {};
+                        for (int i = 0; i < 2000; ++i) {
+                            const Vector3 dir = randomDir();
+                            const Vector3 pt = Vector3Scale(dir, f->radius + f->elevation(dir));
+                            const Vector3 n = f->normal(pt, nullptr, 0, 0.5f);
+                            ++counts[(int)f->materialLod(pt, f->baseDensity(pt), 0.0f, n)];
+                        }
+                        std::string mix;
+                        for (int m = 0; m < (int)VoxelMaterial::Count; ++m)
+                            if (counts[m]) mix += TextFormat("%s %.1f%%  ", m == (int)VoxelMaterial::Regolith ? "dirt" : VoxelMaterialName((VoxelMaterial)m), 100.0f * counts[m] / 2000.0f);
+                        printf("bench: surface materials: %s\n", mix.c_str());
                         // 2. Mantle: dig just above it; the crust must change and the mantle must not.
                         const Vector3 dir = randomDir();
                         const Vector3 inMantle = Vector3Scale(dir, f->mantleRadius - 4.0f), inCrust = Vector3Scale(dir, f->mantleRadius + 12.0f);
