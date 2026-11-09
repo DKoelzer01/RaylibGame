@@ -4,6 +4,7 @@
 #include "worldtypes.h"
 #include <raylib.h>
 #include <rlgl.h>
+#include <cmath>
 
 #define SHADOW_MAP_SIZE 2048
 
@@ -204,8 +205,25 @@ void Scene::drawScene(int gamestate) {
     if (gamestate == 1 && !benchMode && cameraInputEnabled) customUpdateCamera(&camera);
 
     // --- Directional light: an orthographic box that follows the camera ---
-    const Vector3 centre = camera.position;
-    const Vector3 lightPos = Vector3Add(centre, Vector3Scale(sunDirection, sunDistance));
+    // The box centre is snapped to whole shadow-map texels in light space, so moving the camera
+    // never slides the texel grid across the terrain (which made shadow edges shimmer/crawl).
+    const Vector3 upHint = (fabsf(sunDirection.y) > 0.99f) ? Vector3{ 0, 0, 1 } : Vector3{ 0, 1, 0 };
+    // Snapping happens in absolute (double) world space so floating-origin rebases don't jump it.
+    Vector3 centre = camera.position;
+    {
+        const Vector3 f = Vector3Normalize(Vector3Negate(sunDirection));
+        const Vector3 r = Vector3Normalize(Vector3CrossProduct(f, upHint));
+        const Vector3 u = Vector3CrossProduct(r, f);
+        const double texel = 2.0 * shadowHalfExtent / (double)SHADOW_MAP_SIZE;
+        const DVec3 cw = cameraWorld();
+        auto snapAxis = [&](Vector3 a) {
+            const double d = cw.x * a.x + cw.y * a.y + cw.z * a.z;
+            const double s = std::floor(d / texel + 0.5) * texel;
+            return DVec3{ a.x * s, a.y * s, a.z * s };
+        };
+        centre = (snapAxis(r) + snapAxis(u) + snapAxis(f) - renderOrigin).toFloat();
+    }
+    const Vector3 lightPos = Vector3Add(centre, Vector3Scale(Vector3Normalize(sunDirection), sunDistance));
     if (!lights.empty()) {
         lights[0].position = lightPos;
         lights[0].target = centre;
@@ -214,7 +232,7 @@ void Scene::drawScene(int gamestate) {
     Camera3D lightCam = { 0 };
     lightCam.position = lightPos;
     lightCam.target = centre;
-    lightCam.up = (fabsf(sunDirection.y) > 0.99f) ? Vector3{ 0, 0, 1 } : Vector3{ 0, 1, 0 };
+    lightCam.up = upHint;
     lightCam.projection = CAMERA_ORTHOGRAPHIC;
     lightCam.fovy = shadowHalfExtent * 2.0f; // raylib ortho: half-height = fovy/2
 
