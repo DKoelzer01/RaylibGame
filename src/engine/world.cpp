@@ -84,6 +84,47 @@ Planetoid* Planetoid::find(uint64_t id) {
 Vector3 Planetoid::toLocal(Vector3 world) const { return Vector3Transform(world, MatrixInvert(localTransform())); }
 Vector3 Planetoid::toWorld(Vector3 local) const { return Vector3Transform(local, localTransform()); }
 
+// The rotation of localTransform() (raymath's MatrixRotateXYZ) in double: world = R * (scale * local).
+static void BodyRotationD(const Vector3& rotationDeg, double r[3][3]) {
+    const double ax = -(double)rotationDeg.x * DEG2RAD, ay = -(double)rotationDeg.y * DEG2RAD, az = -(double)rotationDeg.z * DEG2RAD;
+    const double cx = cos(ax), sx = sin(ax), cy = cos(ay), sy = sin(ay), cz = cos(az), sz = sin(az);
+    // Rows of R are (m0, m4, m8), (m1, m5, m9), (m2, m6, m10) of MatrixRotateXYZ.
+    r[0][0] = cz * cy;                 r[0][1] = sz * cy;                 r[0][2] = -sy;
+    r[1][0] = cz * sy * sx - sz * cx;  r[1][1] = sz * sy * sx + cz * cx;  r[1][2] = cy * sx;
+    r[2][0] = cz * sy * cx + sz * sx;  r[2][1] = sz * sy * cx - cz * sx;  r[2][2] = cy * cx;
+}
+
+DVec3 Planetoid::toWorldD(const DVec3& l) const {
+    double r[3][3];
+    BodyRotationD(rotation, r);
+    const double s = scale;
+    return worldPos + DVec3((r[0][0] * l.x + r[0][1] * l.y + r[0][2] * l.z) * s,
+                            (r[1][0] * l.x + r[1][1] * l.y + r[1][2] * l.z) * s,
+                            (r[2][0] * l.x + r[2][1] * l.y + r[2][2] * l.z) * s);
+}
+
+DVec3 Planetoid::toLocalD(const DVec3& w) const {
+    double r[3][3];
+    BodyRotationD(rotation, r);
+    const DVec3 d = w - worldPos;
+    const double inv = 1.0 / scale;
+    return DVec3((r[0][0] * d.x + r[1][0] * d.y + r[2][0] * d.z) * inv,  // R is orthonormal: R^-1 = R^T
+                 (r[0][1] * d.x + r[1][1] * d.y + r[2][1] * d.z) * inv,
+                 (r[0][2] * d.x + r[1][2] * d.y + r[2][2] * d.z) * inv);
+}
+
+Matrix Planetoid::chunkModel(const Chunk& chunk, const DVec3& renderOrigin) const {
+    // Rotation and scale act on chunk-local vertices (small numbers), so float is fine there; the
+    // translation is the chunk origin's render-space position, computed in double so chunks far
+    // from the body centre neither jitter nor open seams as the camera moves.
+    Matrix m = MatrixMultiply(MatrixScale(scale, scale, scale), MatrixRotateXYZ({ DEG2RAD * rotation.x, DEG2RAD * rotation.y, DEG2RAD * rotation.z }));
+    const DVec3 t = toWorldD(DVec3(chunk.key.origin())) - renderOrigin;
+    m.m12 = (float)t.x;
+    m.m13 = (float)t.y;
+    m.m14 = (float)t.z;
+    return m;
+}
+
 float Planetoid::densityAt(Vector3 local) const {
     return field->density(local, edits->data(), edits->size());
 }
@@ -115,16 +156,14 @@ Quaternion Planetoid::rotationQuat() const {
 
 void Planetoid::draw(const RenderContext& ctx) {
     if (!isActive) return;
-    const Matrix t = localTransform();
     for (const auto& objPtr : children) objPtr->draw(ctx);
-    for (Chunk* c : drawList) c->drawChunk(ctx, t);
+    for (Chunk* c : drawList) c->drawChunk(ctx, chunkModel(*c, ctx.renderOrigin));
 }
 
 void Planetoid::drawDepthOnly(const RenderContext& ctx) {
     if (!isActive) return;
-    const Matrix t = localTransform();
     for (const auto& objPtr : children) objPtr->drawDepthOnly(ctx);
-    for (Chunk* c : drawList) c->drawChunkDepth(ctx, t);
+    for (Chunk* c : drawList) c->drawChunkDepth(ctx, chunkModel(*c, ctx.renderOrigin));
 }
 
 // ---------------------------------------------------------------------------------------------

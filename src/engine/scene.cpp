@@ -129,7 +129,7 @@ void Scene::applyLightingShader() {
     locPalette    = GetShaderLocation(s, "palette");
     locFogColor   = GetShaderLocation(s, "fogColor");
     locFogDensity = GetShaderLocation(s, "fogDensity");
-    locChunkOrigin = GetShaderLocation(s, "chunkOrigin");
+    locChunkOrigin = GetShaderLocation(s, "chunkTexOrigin");
     locChunkClip = GetShaderLocation(s, "chunkClipMax");
     const Vector3 noClip = { 1e30f, 1e30f, 1e30f }; // default for anything that is not a chunk
     SetShaderValue(s, locChunkClip, &noClip, SHADER_UNIFORM_VEC3);
@@ -253,6 +253,7 @@ void Scene::drawScene(int gamestate) {
             RenderContext shadowCtx;
             shadowCtx.depthMaterial = &depthMaterial;
             shadowCtx.frustum = &lightFrustum;
+            shadowCtx.renderOrigin = renderOrigin;
             for (const auto& obj : objects) obj->drawDepthOnly(shadowCtx);
             for (const auto& obj : rootObject.children) obj->drawDepthOnly(shadowCtx);
         EndMode3D();
@@ -294,6 +295,8 @@ void Scene::drawScene(int gamestate) {
         ctx.drawCalls = &drawCalls;
         ctx.chunkOriginLoc = locChunkOrigin;
         ctx.chunkClipLoc = locChunkClip;
+        ctx.renderOrigin = renderOrigin;
+        ctx.texScale = texScale;
         for (const auto& obj : objects) if (obj) obj->draw(ctx);
         for (const auto& obj : rootObject.children) if (obj) obj->draw(ctx);
 

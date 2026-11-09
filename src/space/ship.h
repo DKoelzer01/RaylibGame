@@ -26,7 +26,7 @@ struct Ship {
     // Parked on a body: carried along with its spin (see Ship::update).
     Planetoid* anchorBody = nullptr;
     uint64_t anchorId = 0;
-    Vector3 anchorLocal{};
+    DVec3 anchorLocal{};                   // body-local, double (rides large bodies exactly)
     Quaternion anchorRotPrev = { 0, 0, 0, 1 };
     DVec3 anchorEndPos{};
 

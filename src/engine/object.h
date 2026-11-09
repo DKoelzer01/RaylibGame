@@ -18,8 +18,10 @@ struct RenderContext {
     Material* depthMaterial = nullptr;    // depth-only material for the shadow pass
     const Frustum* frustum = nullptr;     // frustum of the pass's camera (main or light), for culling
     int* drawCalls = nullptr;             // optional stats counter
-    int chunkOriginLoc = -1;              // lighting shader "chunkOrigin" (body-local texturing)
-    int chunkClipLoc = -1;                // lighting shader "chunkClipMax" (same-level overlap clipping)
+    int chunkOriginLoc = -1;              // lighting shader "chunkTexOrigin" (chunk origin wrapped to the texture repeat)
+    DVec3 renderOrigin{};                 // the scene's floating origin (chunk placement in double)
+    float texScale = 0.05f;               // terrain texture repeats per metre (wraps chunkTexOrigin)
+    int chunkClipLoc = -1;                // lighting shader "chunkClipMax" (chunk-local overlap clipping)
 };
 
 extern bool frustumCullingEnabled; // debug toggle

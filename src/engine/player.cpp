@@ -61,7 +61,7 @@ void Player::update(Scene& world, bool inputEnabled, float dt) {
             grounded = false;
             groundBody = nullptr;
         } else {
-            position = world.renderOrigin + groundBody->toWorld(groundLocal);
+            position = groundBody->toWorldD(groundLocal);
             // Turn the view by however much the body turned since last frame (a delta, so view
             // changes made elsewhere between frames are kept).
             const Quaternion now = groundBody->rotationQuat();
@@ -136,7 +136,7 @@ void Player::update(Scene& world, bool inputEnabled, float dt) {
     if (grounded && nearest) {
         groundBody = nearest;
         groundId = nearest->id;
-        groundLocal = nearest->toLocal(feet);
+        groundLocal = nearest->toLocalD(position);
         groundRotPrev = nearest->rotationQuat();
     } else {
         groundBody = nullptr;

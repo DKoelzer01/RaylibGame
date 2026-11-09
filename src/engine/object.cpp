@@ -2,6 +2,8 @@
 #include "textobject.h"
 #include "gameobject.h"
 #include <raymath.h>
+#include <algorithm>
+#include <cmath>
 #include <cstring>
 
 Object::Object(std::string type,std::string name, Vector3 position, Vector3 rotation, Color color, float scale)
@@ -111,11 +113,6 @@ void Chunk::setMesh(const ChunkMeshData& data) {
     UploadMesh(&mesh, false);
 }
 
-Matrix Chunk::modelMatrix(const Matrix& parentTransform) const {
-    const Vector3 o = key.origin();
-    return MatrixMultiply(MatrixTranslate(o.x, o.y, o.z), parentTransform);
-}
-
 bool Chunk::visible(const RenderContext& ctx, const Matrix& model) const {
     if (!ctx.frustum || !frustumCullingEnabled) return true;
     const float h = key.size() * 0.5f * (CHUNK_SIZE + 1.0f) / CHUNK_SIZE; // includes the overlap cell
@@ -125,23 +122,30 @@ bool Chunk::visible(const RenderContext& ctx, const Matrix& model) const {
     return ctx.frustum->sphereVisible(centre, h * 1.7320508f * s);
 }
 
-void Chunk::drawChunk(const RenderContext& ctx, const Matrix& parentTransform) {
+void Chunk::drawChunk(const RenderContext& ctx, const Matrix& m) {
     if (!isActive || mesh.vaoId == 0 || !ctx.terrainMaterial) return;
-    const Matrix m = modelMatrix(parentTransform);
     if (!visible(ctx, m)) return;
     if (ctx.chunkOriginLoc >= 0) {
-        // DrawMesh draws immediately (no batching), so a per-draw uniform set here is safe.
+        // DrawMesh draws immediately (no batching), so per-draw uniforms set here are safe. Both stay
+        // small far from a body's centre: the texturing origin is the chunk origin wrapped to the
+        // texture's repeat (computed in double, so neighbouring chunks still line up), and the clip
+        // bound is relative to the chunk.
         const Vector3 o = key.origin();
-        SetShaderValue(ctx.terrainMaterial->shader, ctx.chunkOriginLoc, &o, SHADER_UNIFORM_VEC3);
-        if (ctx.chunkClipLoc >= 0) SetShaderValue(ctx.terrainMaterial->shader, ctx.chunkClipLoc, &clipMax, SHADER_UNIFORM_VEC3);
+        const double period = 1.0 / std::max(ctx.texScale, 1e-6f);
+        auto wrap = [period](float v) { return (float)(fmod(fmod((double)v, period) + period, period)); };
+        const Vector3 texOrigin = { wrap(o.x), wrap(o.y), wrap(o.z) };
+        SetShaderValue(ctx.terrainMaterial->shader, ctx.chunkOriginLoc, &texOrigin, SHADER_UNIFORM_VEC3);
+        if (ctx.chunkClipLoc >= 0) {
+            const Vector3 clip = { clipMax.x - o.x, clipMax.y - o.y, clipMax.z - o.z }; // 1e30 stays "no clip"
+            SetShaderValue(ctx.terrainMaterial->shader, ctx.chunkClipLoc, &clip, SHADER_UNIFORM_VEC3);
+        }
     }
     DrawMesh(mesh, *ctx.terrainMaterial, m);
     if (ctx.drawCalls) (*ctx.drawCalls)++;
 }
 
-void Chunk::drawChunkDepth(const RenderContext& ctx, const Matrix& parentTransform) {
+void Chunk::drawChunkDepth(const RenderContext& ctx, const Matrix& m) {
     if (!isActive || mesh.vaoId == 0 || !ctx.depthMaterial) return;
-    const Matrix m = modelMatrix(parentTransform);
     if (!visible(ctx, m)) return;
     DrawMesh(mesh, *ctx.depthMaterial, m);
 }

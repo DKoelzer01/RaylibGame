@@ -60,6 +60,9 @@ int main(int argc, char** argv)
     double parkStart = -1.0;
     int parkPhase = 0;
     bool benchGravity = false;     // --test-gravity: gravity field checks, ship drop and hover
+    bool benchPrecision = false;   // --test-precision: float vs double placement error on body 0 (use a large body)
+    int precisionPhase = 0;
+    double precisionStart = 0.0;
     double gravStart = -1.0;
     int gravPhase = 0;
     float gravAlt0 = 0.0f, gravEnergy0 = 0.0f, gravMaxImpact = 0.0f;
@@ -102,6 +105,7 @@ int main(int argc, char** argv)
         if (std::string(argv[i]) == "--ride-spin" && i + 1 < argc) rideSpin = (float)atof(argv[i + 1]);
         if (std::string(argv[i]) == "--test-park") benchPark = true;
         if (std::string(argv[i]) == "--test-gravity") benchGravity = true;
+        if (std::string(argv[i]) == "--test-precision") benchPrecision = true;
         if (std::string(argv[i]) == "--sun" && i + 3 < argc) { sunOverride = true; sunArg = Vector3Normalize({ (float)atof(argv[i + 1]), (float)atof(argv[i + 2]), (float)atof(argv[i + 3]) }); }
         if (std::string(argv[i]) == "--look-down") lookDown = true;
         if (std::string(argv[i]) == "--fps" && i + 1 < argc) benchFps = atoi(argv[i + 1]);
@@ -265,6 +269,53 @@ int main(int argc, char** argv)
                                    orbitCrashed ? "CRASHED into the surface" : (orbitMax > 3.0f * R ? "ESCAPED" : "stable"));
                             benchOrbitSeconds = 0.0;
                         }
+                    }
+                } else if (benchPrecision && WorldIdle()) {
+                    // Float vs double placement on body 0, standing on its surface (run it with a large
+                    // body, e.g. --bodies with a 60 km planet): chunk translations, texture coordinates
+                    // near the camera, and a body-anchor round trip, each against an exact double result.
+                    Planetoid* p = dynamic_cast<Planetoid*>(world.objects[0].get());
+                    if (precisionPhase == 0) {
+                        // Stand on the surface (the bench camera starts in fly mode off to the side), then
+                        // wait for the terrain around the new viewpoint to stream in.
+                        player.spawnOn(world, *p, Vector3Normalize({ 0.8f, 0.35f, -0.5f })); // off the spin axis and the grid axes
+                        precisionStart = GetTime();
+                        precisionPhase = 1;
+                    } else if (GetTime() - precisionStart >= 1.5) {
+                    auto ulpMm = [](float x) { x = fabsf(x); return (nextafterf(x, INFINITY) - x) * 1000.0f; };
+                    const DVec3 cam = world.cameraWorld();
+                    const double P = 1.0 / world.texScale;
+                    double chunkOld = 0, chunkNew = 0;
+                    float texOld = 0, texNew = 0;
+                    int nearChunks = 0;
+                    for (Chunk* c : p->drawList) {
+                        const Vector3 o = c->key.origin();
+                        const DVec3 exact = p->toWorldD(DVec3(o)) - world.renderOrigin;
+                        const Matrix mo = MatrixMultiply(MatrixTranslate(o.x, o.y, o.z), p->localTransform());
+                        const Matrix mn = p->chunkModel(*c, world.renderOrigin);
+                        const float size = (float)c->key.size() * (CHUNK_SIZE + 1) / CHUNK_SIZE; // metres, incl. overlap cell
+                        // Only chunks up close count: far away, a few mm of float rounding is invisible.
+                        if (c->key.level > 1 || (exact + world.renderOrigin - cam).length() > 200.0 + size) continue;
+                        chunkOld = std::max(chunkOld, (DVec3(mo.m12, mo.m13, mo.m14) - exact).length());
+                        chunkNew = std::max(chunkNew, (DVec3(mn.m12, mn.m13, mn.m14) - exact).length());
+                        ++nearChunks;
+                        for (int a = 0; a < 3; ++a) {
+                            const float oa = a == 0 ? o.x : a == 1 ? o.y : o.z;
+                            const double wrapped = fmod(fmod((double)oa, P) + P, P);
+                            texOld = std::max(texOld, std::max(ulpMm(oa), ulpMm(oa + size)));
+                            texNew = std::max(texNew, ulpMm((float)wrapped + size));
+                        }
+                    }
+                    const DVec3 abs = player.position;
+                    const Vector3 feet = (abs - world.renderOrigin).toFloat();
+                    const double anchorOld = ((world.renderOrigin + p->toWorld(p->toLocal(feet))) - abs).length();
+                    const double anchorNew = (p->toWorldD(p->toLocalD(abs)) - abs).length();
+                    printf("bench: precision on %s, %.0f m from its centre (%zu chunks drawn, %d fine chunks within 200 m):\n", p->name.c_str(),
+                           (abs - p->worldPos).length(), p->drawList.size(), nearChunks);
+                    printf("bench:   chunk placement error   float %.3f mm   double %.4f mm\n", chunkOld * 1000.0, chunkNew * 1000.0);
+                    printf("bench:   texture coordinate step float %.3f mm   wrapped %.4f mm\n", texOld, texNew);
+                    printf("bench:   anchor round trip error float %.3f mm   double %.6f mm\n", anchorOld * 1000.0, anchorNew * 1000.0);
+                    benchPrecision = false;
                     }
                 } else if (benchGravity && WorldIdle()) {
                     // Scripted gravity checks: the field itself (surface value, half at half depth, a
@@ -502,7 +553,7 @@ int main(int argc, char** argv)
                                dist, benchWalkSeconds, 100.0 * walkGroundedFrames / std::max(1, walkFrames), walkMinDensity, walkMaxDensity, ISO_LEVEL, alt);
                         benchWalkSeconds = 0.0;
                     }
-                } else if ((WorldIdle() && benchDigStrokes == 0 && !benchSaveLoad && benchWalkSeconds <= 0.0 && benchMineStrokes == 0 && minePhase != 2 && benchFlySeconds <= 0.0 && !benchSuffocate && benchOrbitSeconds <= 0.0 && !benchRide && !benchPark && !benchGravity) || GetTime() > 180.0) {
+                } else if ((WorldIdle() && benchDigStrokes == 0 && !benchSaveLoad && benchWalkSeconds <= 0.0 && benchMineStrokes == 0 && minePhase != 2 && benchFlySeconds <= 0.0 && !benchSuffocate && benchOrbitSeconds <= 0.0 && !benchRide && !benchPark && !benchGravity && !benchPrecision) || GetTime() > 180.0) {
                     benchStart = GetTime();
                     printf("bench: world ready after %.2f s (%d chunks, avg build %.2f ms, %d worker threads)\n",
                         GetWorldStats().lastGenerationSeconds, GetWorldStats().chunks, GetWorldStats().avgBuildMs, GetWorldStats().workerThreads);

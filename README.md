@@ -108,7 +108,8 @@ frustum culling, `--test-dig N` carves a tunnel at the crosshair, `--test-savelo
 `--test-fly S` autopilots the ship to the nearest other asteroid, `--test-suffocate` checks death/respawn,
 `--test-ride` (standing/jumping on a spinning body; `--ride-spin D` sets its rate), `--test-orbit S` (jetpack orbit stability),
 `--test-park` (parked ship rides a spinning body), `--test-gravity` (field values, continuity between
-bodies, an unpiloted ship dropping and parking, a piloted ship hovering), `--spin-test` (writes `spin_*.png` frames),
+bodies, an unpiloted ship dropping and parking, a piloted ship hovering), `--test-precision` (float vs double
+placement error standing on body 0; run it with a large body via `--bodies`), `--spin-test` (writes `spin_*.png` frames),
 `--sun x y z` sets the sun direction, `--headlamp` / `--inventory` start with the lamp on / inventory
 open, `--look-down` tilts the view to the ground (lighting checks).
 

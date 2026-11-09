@@ -49,7 +49,7 @@ struct Player {
     void applyToCamera(Scene& world) const;  // camera at the eye, looking along forward
 
 private:
-    Vector3 groundLocal{};            // feet in the ground body's local space (to follow its spin)
+    DVec3 groundLocal{};              // feet in the ground body's local space, double (follows its spin exactly)
     Planetoid* groundBody = nullptr;
     uint64_t groundId = 0;            // validates groundBody (bodies can be destroyed, e.g. world regen)
     Vector3 groundNormal = { 0, 1, 0 };

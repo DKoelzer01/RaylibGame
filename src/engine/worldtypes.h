@@ -30,13 +30,13 @@ public:
     void setMesh(const ChunkMeshData& data);
     bool hasMesh() const { return mesh.vaoId > 0; }
 
-    void drawChunk(const RenderContext& ctx, const Matrix& parentTransform);
-    void drawChunkDepth(const RenderContext& ctx, const Matrix& parentTransform);
+    // `model` = the chunk's full model matrix (Planetoid::chunkModel: translation in double).
+    void drawChunk(const RenderContext& ctx, const Matrix& model);
+    void drawChunkDepth(const RenderContext& ctx, const Matrix& model);
 
 private:
     void releaseMesh();
     bool visible(const RenderContext& ctx, const Matrix& model) const;
-    Matrix modelMatrix(const Matrix& parentTransform) const;
 };
 
 class Planetoid : public Object {
@@ -72,6 +72,12 @@ public:
     // World (render-relative) <-> planetoid-local (voxel) space.
     Vector3 toLocal(Vector3 world) const;
     Vector3 toWorld(Vector3 local) const;
+    // Double-precision versions in absolute world space (not render space): exact far from the
+    // body centre, for anchors and chunk placement on large bodies (floats step ~4-8 mm at 60 km).
+    DVec3 toWorldD(const DVec3& local) const;
+    DVec3 toLocalD(const DVec3& worldAbs) const;
+    // Model matrix of one of this body's chunks in render space, its translation computed in double.
+    Matrix chunkModel(const Chunk& chunk, const DVec3& renderOrigin) const;
 
     float densityAt(Vector3 local) const; // includes edits; main-thread helper (raycasts)
     // Velocity (world units/s) of the body-fixed point currently at renderPoint, from the spin.

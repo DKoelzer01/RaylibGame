@@ -37,7 +37,7 @@ void Ship::update(Scene& world, bool inputEnabled, float dt) {
             anchorBody = nullptr; // moved by something else (parkNear, a load) or the body is gone
         } else if (!piloted || energy <= 0.0f || // no energy, no takeoff: stay anchored
                    !(autopilot || (inputEnabled && (IsKeyDown(KEY_W) || IsKeyDown(KEY_S) || IsKeyDown(KEY_A) || IsKeyDown(KEY_D) || IsKeyDown(KEY_SPACE) || IsKeyDown(KEY_LEFT_CONTROL))))) {
-            position = world.renderOrigin + anchorBody->toWorld(anchorLocal);
+            position = anchorBody->toWorldD(anchorLocal);
             const Quaternion now = anchorBody->rotationQuat();
             orientation = QuaternionNormalize(QuaternionMultiply(QuaternionMultiply(now, QuaternionInvert(anchorRotPrev)), orientation));
             anchorRotPrev = now;
@@ -160,7 +160,7 @@ void Ship::update(Scene& world, bool inputEnabled, float dt) {
             if (Vector3Distance(velocity, surfaceVel) < 0.5f && TerrainSurfaceDistance(*body, p, dist, n) && dist < hullRadius + 1.0f) {
                 anchorBody = body;
                 anchorId = body->id;
-                anchorLocal = body->toLocal(p);
+                anchorLocal = body->toLocalD(position);
                 anchorRotPrev = body->rotationQuat();
                 anchorEndPos = position;
                 velocity = surfaceVel; // moving with the surface, as the anchored path reports it
