@@ -100,6 +100,12 @@ public:
     // simplified surface, are judged against it). Defaults to material().
     // `normal` = the vertex's outward surface normal (slope-dependent materials).
     virtual VoxelMaterial materialLod(Vector3 p, float base, float /*footprint*/, Vector3 /*normal*/) const { return material(p, base); }
+    // materialLod plus how exposed the vertex is to the sky (1 open, 0 buried: caves, deep pits), which
+    // scales its sunlight. Fields that know their surface override it (computed together, once).
+    virtual VoxelMaterial materialSky(Vector3 p, float base, float footprint, Vector3 normal, float& sky) const {
+        sky = 1.0f;
+        return materialLod(p, base, footprint, normal);
+    }
 
     // Density including edits (the list should already be filtered to ones near p).
     float density(Vector3 p, const TerrainEdit* edits, size_t editCount, float footprint = 0.0f) const;
@@ -138,7 +144,9 @@ public:
     float mantleRadius;           // edits stop below this
     bool moon;
     float minElevation, maxElevation; // the surface stays inside [radius + min, radius + max]
-    SimplexNoise continents, ridges, hills, valleys, detail, cavesA, cavesB, veins, climate;
+    SimplexNoise continents, ridges, hills, valleys, detail, cavesA, cavesB, veins, climate, caverns, ravines, ravineMask;
+    static constexpr float kTunnelLevel = 0.096f; // worm tunnel where both cave fields are within this of zero
+    static constexpr float kCavernLevel = 0.68f;  // cavern where the cavern field exceeds this (rare)
 
     PlanetField(unsigned int seed, float radius, bool moon);
     // Surface height above sea level along a unit direction; footprint > 0 leaves out detail finer
@@ -148,7 +156,11 @@ public:
     float baseDensityLod(Vector3 p, float footprint) const override;
     void baseDensityBlock(Vector3 origin, float stride, int S, float footprint, float* out) const override;
     VoxelMaterial material(Vector3 p, float base) const override { return materialLod(p, base, 0.0f, fallbackUp(p)); }
-    VoxelMaterial materialLod(Vector3 p, float base, float footprint, Vector3 normal) const override;
+    VoxelMaterial materialLod(Vector3 p, float base, float footprint, Vector3 normal) const override {
+        float sky;
+        return materialSky(p, base, footprint, normal, sky);
+    }
+    VoxelMaterial materialSky(Vector3 p, float base, float footprint, Vector3 normal, float& sky) const override;
     Vector3 fallbackUp(Vector3 p) const override;
     bool editable(Vector3 p) const override;
     float maxRadius() const override { return radius + maxElevation; }
@@ -186,6 +198,7 @@ struct ChunkMeshData {
     std::vector<unsigned char> colors;     // material weights 0-3 (rgba)
     std::vector<float> texcoords;          // material weights 4-5
     std::vector<float> texcoords2;         // material weights 6-7
+    std::vector<float> tangents;           // (0, 0, 0, sky exposure) per vertex
     std::vector<unsigned short> indices;
     bool overflow = false;                 // > 65535 vertices: mesh dropped
     float buildMs = 0.0f;

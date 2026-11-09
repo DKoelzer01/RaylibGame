@@ -6,6 +6,7 @@ in vec2 vertexTexCoord;   // chunks: material weights 4-5 (sand, gravel)
 in vec2 vertexTexCoord2;  // chunks: material weights 6-7 (grass, snow)
 in vec3 vertexNormal;
 in vec4 vertexColor;
+in vec4 vertexTangent;    // chunks: w = sky exposure (default attribute (0,0,0,1): fully exposed)
 
 // Set by DrawMesh() from the material's shader locations
 uniform mat4 mvp;
@@ -23,6 +24,7 @@ out vec3 fragNormal;       // world space
 out vec3 fragTexPos;       // body-aligned texturing position (wrapped): textures stay attached to a
 out vec3 fragLocalNormal;  // moving/spinning body and don't swim when the floating origin shifts
 out vec3 fragChunkPos;     // chunk-local position (overlap clipping)
+out float fragSky;         // 1 = open to the sky, 0 = buried (scales sunlight)
 
 void main()
 {
@@ -37,6 +39,7 @@ void main()
     fragNormal = normalize(mat3(matModel) * vertexNormal);
     fragTexPos = vertexPosition + chunkTexOrigin;
     fragChunkPos = vertexPosition;
+    fragSky = vertexTangent.w;
     fragLocalNormal = vertexNormal;
     gl_Position = mvp * vec4(vertexPosition, 1.0);
 }

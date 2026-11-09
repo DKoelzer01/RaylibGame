@@ -65,6 +65,9 @@ int main(int argc, char** argv)
     bool benchGravity = false;     // --test-gravity: gravity field checks, ship drop and hover
     bool benchPrecision = false;   // --test-precision: float vs double placement error on body 0 (use a large body)
     bool benchMantle = false;      // --test-mantle: planet terrain checks on body 0 (height band, mantle, ore, caves)
+    bool benchAirJump = false;     // --test-airjump: air control while jumping, jetpack fuel / suit power accounting
+    double airStart = -1.0; int airPhase = 0; float airDist = 0.0f, airTime = 0.0f, airFuel0 = 0.0f, airPower0 = 0.0f, airPowerAir = 0.0f;
+    Vector3 airPrevLocal{};
     bool crackCheck = false;       // --crack-check: no skybox, magenta clear; reports the share of magenta pixels
     double benchUpdateMs = 0.0, benchDrawMs = 0.0; long benchTimedFrames = 0; // CPU time in worldUpdate / drawScene
     bool benchMeasuring = false;   // this frame is inside the measured bench window
@@ -115,6 +118,7 @@ int main(int argc, char** argv)
         if (std::string(argv[i]) == "--test-gravity") benchGravity = true;
         if (std::string(argv[i]) == "--test-precision") benchPrecision = true;
         if (std::string(argv[i]) == "--test-mantle") benchMantle = true;
+        if (std::string(argv[i]) == "--test-airjump") benchAirJump = true;
         if (std::string(argv[i]) == "--crack-check") crackCheck = true;
         if (std::string(argv[i]) == "--sun" && i + 3 < argc) { sunOverride = true; sunArg = Vector3Normalize({ (float)atof(argv[i + 1]), (float)atof(argv[i + 2]), (float)atof(argv[i + 3]) }); }
         if (std::string(argv[i]) == "--look-down") lookDown = true;
@@ -312,6 +316,51 @@ int main(int argc, char** argv)
                             benchOrbitSeconds = 0.0;
                         }
                     }
+                } else if (benchAirJump && WorldIdle()) {
+                    // Walk forward and jump while still holding forward: air control must keep you moving at
+                    // about walking speed relative to the ground, burning no fuel and no suit power. Then
+                    // land with half a tank: recharging it is what costs suit power.
+                    Planetoid* p = dynamic_cast<Planetoid*>(world.objects[0].get());
+                    const double t = airStart < 0.0 ? 0.0 : GetTime() - airStart;
+                    const DVec3 local = p->toLocalD(player.position);
+                    if (airPhase == 0) {
+                        player.spawnOn(world, *p, Vector3Normalize({ 0.6f, 0.5f, 0.6f }));
+                        player.autoWalk = true;
+                        survival.lastJetpackFuel = player.jetpackFuel = 1.0f;
+                        airStart = GetTime();
+                        airPhase = 1;
+                    } else if (airPhase == 1 && t > 2.0 && player.grounded) {
+                        player.autoJump = true;
+                        airFuel0 = player.jetpackFuel;
+                        airPower0 = survival.power;
+                        airDist = airTime = 0.0f;
+                        airPrevLocal = local.toFloat();
+                        airPhase = 2;
+                    } else if (airPhase == 2) {
+                        if (!player.grounded) {
+                            const Vector3 l = local.toFloat();
+                            const Vector3 step = Vector3Subtract(l, airPrevLocal);
+                            const Vector3 n = Vector3Normalize(l);
+                            airDist += Vector3Length(Vector3Subtract(step, Vector3Scale(n, Vector3DotProduct(step, n)))); // level distance, body frame
+                            airTime += GetFrameTime();
+                        } else if (airTime > 0.2f) {
+                            airPowerAir = survival.power;
+                            printf("bench: air jump: %.2f s airborne, %.1f m level relative to the ground (%.2f m/s, walk %.1f m/s); fuel %.2f -> %.2f, suit power %.2f -> %.2f\n",
+                                   airTime, airDist, airDist / airTime, player.walkSpeed, airFuel0, player.jetpackFuel, airPower0, airPowerAir);
+                            player.autoWalk = false;
+                            player.jetpackFuel = 0.5f; // half a tank used; recharging it on the ground costs power
+                            survival.lastJetpackFuel = 0.5f;
+                            airPower0 = survival.power;
+                            airStart = GetTime();
+                            airPhase = 3;
+                        }
+                        airPrevLocal = local.toFloat();
+                    } else if (airPhase == 3 && t > 3.0) {
+                        printf("bench: jetpack recharge 0.50 -> %.2f cost %.2f suit power (expected ~%.1f plus %.2f baseline)\n",
+                               player.jetpackFuel, airPower0 - survival.power, 0.5f * (player.jetpackFuel - 0.5f) / 0.5f * survival.jetpackPowerPerTank,
+                               3.0f * survival.powerDrainPerSec);
+                        benchAirJump = false;
+                    }
                 } else if (benchMantle && WorldIdle()) {
                     // Planet terrain checks on body 0 (run with --bodies resources/data/bodies_planet.txt).
                     Planetoid* p = dynamic_cast<Planetoid*>(world.objects[0].get());
@@ -390,6 +439,24 @@ int main(int argc, char** argv)
                             orePct[band] = 100.0f * ore / std::max(1, solid);
                         }
                         const float cavePct = 100.0f * caveSamples / std::max(1, caveSamples + solidSamples);
+                        // Which kind of cave: share of underground (30 m .. mantle) inside a tunnel / a cavern core.
+                        int inTunnel = 0, inCavern = 0, probes = 0;
+                        for (int i = 0; i < 40000; ++i) {
+                            const Vector3 d = randomDir();
+                            const float depth = 30.0f + unit(rng) * (f->radius - f->mantleRadius - 80.0f);
+                            const Vector3 pt = Vector3Scale(d, f->radius + f->elevation(d) - depth);
+                            if (!f->editable(pt)) continue;
+                            ++probes;
+                            if (std::max(fabsf(f->cavesA.fractal(2, pt.x, pt.y, pt.z)), fabsf(f->cavesB.fractal(2, pt.x, pt.y, pt.z))) < PlanetField::kTunnelLevel) {
+                                static bool shown = false;
+                                ++inTunnel;
+                                if (!shown && depth < 80.0f && f->baseDensity(pt) < ISO_LEVEL && (shown = true))
+                                    printf("bench: a tunnel %.0f m down at local %.1f %.1f %.1f (use --cam to look inside)\n", depth, pt.x, pt.y, pt.z);
+                            }
+                            if (f->caverns.fractal(2, pt.x, pt.y * 1.4f, pt.z) > PlanetField::kCavernLevel) ++inCavern;
+                        }
+                        printf("bench: caves 30 m .. mantle: tunnels %.2f%% of the volume, caverns %.2f%%\n",
+                               100.0f * inTunnel / std::max(1, probes), 100.0f * inCavern / std::max(1, probes));
                         const bool oreOk = orePct[0] > 0.0f && orePct[0] < orePct[1] && orePct[1] < orePct[2];
                         printf("bench: ore by depth: 8-150 m %.1f%%, 150-500 m %.1f%%, 500 m-mantle %.1f%%; caves %.1f%% of underground: %s\n",
                                orePct[0], orePct[1], orePct[2], cavePct, oreOk && cavePct > 0.0f ? "ok" : "BAD");
@@ -679,7 +746,7 @@ int main(int argc, char** argv)
                                dist, benchWalkSeconds, 100.0 * walkGroundedFrames / std::max(1, walkFrames), walkMinDensity, walkMaxDensity, ISO_LEVEL, alt);
                         benchWalkSeconds = 0.0;
                     }
-                } else if ((WorldIdle() && benchDigStrokes == 0 && !benchSaveLoad && benchWalkSeconds <= 0.0 && benchMineStrokes == 0 && minePhase != 2 && benchFlySeconds <= 0.0 && !benchSuffocate && benchOrbitSeconds <= 0.0 && !benchRide && !benchPark && !benchGravity && !benchPrecision && !benchMantle) || GetTime() > 180.0) {
+                } else if ((WorldIdle() && benchDigStrokes == 0 && !benchSaveLoad && benchWalkSeconds <= 0.0 && benchMineStrokes == 0 && minePhase != 2 && benchFlySeconds <= 0.0 && !benchSuffocate && benchOrbitSeconds <= 0.0 && !benchRide && !benchPark && !benchGravity && !benchPrecision && !benchMantle && !benchAirJump) || GetTime() > 180.0) {
                     benchStart = GetTime();
                     printf("bench: world ready after %.2f s (%d chunks, avg build %.2f ms of which sampling %.2f ms, %d worker threads)\n",
                         GetWorldStats().lastGenerationSeconds, GetWorldStats().chunks, GetWorldStats().avgBuildMs, GetWorldStats().avgSampleMs, GetWorldStats().workerThreads);
@@ -761,7 +828,7 @@ int main(int argc, char** argv)
                 Survival_OnLanding(player.impactSpeed);
             }
             if (ship.piloted && ship.lastImpact > 12.0f) survival.health -= (ship.lastImpact - 12.0f) * 3.0f; // crash damage
-            Survival_Update(world, GetFrameTime(), !ship.piloted && !player.grounded && gameInput && player.jetpackFuel > 0.0f && (IsKeyDown(KEY_SPACE) || IsKeyDown(KEY_LEFT_CONTROL) || IsKeyDown(KEY_W) || IsKeyDown(KEY_A) || IsKeyDown(KEY_S) || IsKeyDown(KEY_D)), gameInput);
+            Survival_Update(world, GetFrameTime(), gameInput);
             Objectives_Update(world);
             if (bench && lookDown && !ship.piloted) {
                 const Vector3 t = Vector3Subtract(player.forward, Vector3Scale(player.up, Vector3DotProduct(player.forward, player.up)));

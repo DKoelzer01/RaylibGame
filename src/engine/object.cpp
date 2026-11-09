@@ -113,6 +113,7 @@ void Chunk::setMesh(const ChunkMeshData& data) {
     mesh.colors = CopyToRaylib(data.colors);
     if (!data.texcoords.empty()) mesh.texcoords = CopyToRaylib(data.texcoords);    // material weights 4-5
     if (!data.texcoords2.empty()) mesh.texcoords2 = CopyToRaylib(data.texcoords2); // material weights 6-7
+    if (!data.tangents.empty()) mesh.tangents = CopyToRaylib(data.tangents);       // w: sky exposure
     mesh.indices = CopyToRaylib(data.indices);
     UploadMesh(&mesh, false);
 }

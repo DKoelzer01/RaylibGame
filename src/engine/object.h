@@ -49,6 +49,7 @@ struct RenderContext {
     int terrainLayersLoc = -1;            // its sampler uniform
     int paletteLoc = -1;                  // lighting shader "palette"; bodies may override the scene's
     int scenePalette = 0;
+    int sunOccluderLoc = -1;              // lighting shader "sunOccluder" (a planet blocking the sun)
     int chunkClipLoc = -1;                // lighting shader "chunkClipMax" (chunk-local overlap clipping)
 };
 

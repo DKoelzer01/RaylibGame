@@ -132,6 +132,7 @@ void Scene::applyLightingShader() {
     locChunkOrigin = GetShaderLocation(s, "chunkTexOrigin");
     locChunkClip = GetShaderLocation(s, "chunkClipMax");
     locTerrainLayers = GetShaderLocation(s, "terrainLayers");
+    locSunOccluder = GetShaderLocation(s, "sunOccluder");
     // Always on its own unit: two samplers of different types (sampler2D / sampler2DArray) on one unit
     // make draws fail, and an unset sampler would default to unit 0, the albedo map's.
     { const int unit = ChunkBatch::kLayersUnit; if (locTerrainLayers >= 0) SetShaderValue(s, locTerrainLayers, &unit, SHADER_UNIFORM_INT); }
@@ -306,6 +307,7 @@ void Scene::drawScene(int gamestate) {
         ctx.terrainLayers = &terrainLayers;
         ctx.terrainLayersLoc = locTerrainLayers;
         ctx.paletteLoc = locPalette;
+        ctx.sunOccluderLoc = locSunOccluder;
         ctx.scenePalette = materialPalette;
         for (const auto& obj : objects) if (obj) obj->draw(ctx);
         for (const auto& obj : rootObject.children) if (obj) obj->draw(ctx);

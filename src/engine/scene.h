@@ -93,7 +93,7 @@ class Scene {
 
     private:
         void applyLightingShader();   // (re)binds material + static uniforms after a (re)load
-        int locTerrainLayers = -1;
+        int locTerrainLayers = -1, locSunOccluder = -1;
         int locViewPos = -1, locLightSpace = -1, locAmbient = -1, locShadowRes = -1, locTexScale = -1, locPalette = -1, locFogColor = -1, locFogDensity = -1, locChunkOrigin = -1, locChunkClip = -1;
         bool terrainTexturesLoaded = false;
 };

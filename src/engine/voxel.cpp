@@ -178,10 +178,14 @@ PlanetField::PlanetField(unsigned int seed, float radius_, bool moon_)
     hills = SeededNoise(rng, 1.0f / 900.0f);
     valleys = SeededNoise(rng, 6.5f / radius);     // river valleys: where this crosses zero
     detail = SeededNoise(rng, 1.0f / 70.0f);
-    cavesA = SeededNoise(rng, 1.0f / 60.0f);       // tunnels run where both cave fields cross zero
-    cavesB = SeededNoise(rng, 1.0f / 60.0f);
+    cavesA = SeededNoise(rng, 1.0f / 150.0f);      // tunnels run where both cave fields cross zero
+    cavesB = SeededNoise(rng, 1.0f / 150.0f);
     veins = SeededNoise(rng, 1.0f / 30.0f);
     climate = SeededNoise(rng, 1.0f / 15000.0f);
+    // Added later: drawn after the others so existing seeds keep their continents and mountains.
+    caverns = SeededNoise(rng, 1.0f / 220.0f);       // rare underground chambers
+    ravines = SeededNoise(rng, 5.0f / radius);       // narrow canyons where this crosses zero
+    ravineMask = SeededNoise(rng, 3.0f / radius);    // ...only in some regions
     // Bounds of elevation() below (each noise term is in [-1, 1]).
     if (moon) { minElevation = -90.0f; maxElevation = 340.0f; }
     else { minElevation = -740.0f; maxElevation = 1690.0f; }
@@ -211,6 +215,16 @@ float PlanetField::elevation(Vector3 dir, float fp) const {
         const float v = fabsf(valleys.fractal(3, sx, sy, sz));
         if (v < 0.05f) { const float t = 1.0f - v / 0.05f; h -= t * t * 70.0f * valleyWeight; }
     }
+    // Ravines: rare narrow canyons (~60 m wide, up to ~90 m deep, steep sqrt-profile walls) in some
+    // land regions, faded out where samples are too far apart to resolve them.
+    const float ravineWeight = land * std::clamp(2.0f - fp / 24.0f, 0.0f, 1.0f);
+    if (ravineWeight > 0.0f) {
+        const float region = Smoothstep(0.25f, 0.4f, ravineMask.fractal(2, sx, sy, sz));
+        if (region > 0.0f) {
+            const float r = fabsf(ravines.fractal(2, sx, sy, sz));
+            if (r < 0.006f) h -= sqrtf(1.0f - r / 0.006f) * 90.0f * region * ravineWeight;
+        }
+    }
     return h + detail.fractalLimited(2, fp, sx, sy, sz) * 2.5f;
 }
 
@@ -229,21 +243,30 @@ float PlanetField::densityNear(Vector3 p, float d, float surface, float fp) cons
     float v = ISO_LEVEL + DENSITY_GRADIENT * (surface - d);
     const float depth = surface - d;
     if (fabsf(depth) < 6.0f) v += DENSITY_GRADIENT * 1.5f * detail.fractalLimited(2, fp, p.x, p.y * 1.3f, p.z); // crags, overhangs
-    // Caves: worm tunnels where both cave fields cross zero, from a few metres down to 20 m above
-    // the mantle (which stays intact). The tunnel is its own distance field (the noise changes
-    // ~0.025 per metre at this frequency, so t * 40 ~ metres from the tunnel's core), combined with
-    // min(): rock density grows with depth, so subtracting a fixed amount would only carve shallow caves.
-    // Tunnels a few metres wide can't be resolved by coarse LOD samples, so they fade out there.
-    const float caveWeight = std::clamp(2.0f - fp / 4.0f, 0.0f, 1.0f);
+    // Caves, from a few metres down to 20 m above the mantle (which stays intact). Each cave shape is
+    // its own distance field in metres, combined with min(): rock density grows with depth, so
+    // subtracting a fixed amount would only carve shallow caves.
+    // - Worm tunnels (~14 m radius) where both cave fields cross zero: at 1/150 m the fields change
+    //   ~0.01 per metre, so (t - kTunnelLevel) * 100 ~ metres from the tunnel wall.
+    // - Caverns: rare chambers tens of metres across where a low-frequency field peaks, 30 m+ down.
+    // Coarse LOD samples can't resolve them, so both fade out there.
+    const float caveWeight = std::clamp(2.0f - fp / 8.0f, 0.0f, 1.0f);
     if (caveWeight > 0.0f && depth > 5.0f && d > mantleRadius + 20.0f) {
-        // A tunnel needs both fields near zero. If the first alone puts any tunnel more than a couple
-        // of samples away, this sample is plain rock as far as meshing is concerned: skip the second.
+        const float near = 2.0f * std::max(fp, 1.0f) + 2.0f; // farther than this from a cave = plain rock for meshing
+        float m = 1e9f;                                        // metres to the nearest cave wall (< 0 inside)
+        // A tunnel needs both fields near zero: if the first alone rules one out, skip the second.
         const float a = fabsf(cavesA.fractal(2, p.x, p.y, p.z));
-        if ((a - 0.06f) * 40.0f > 2.0f * std::max(fp, 1.0f) + 2.0f) return v;
-        const float t = std::max(a, fabsf(cavesB.fractal(2, p.x, p.y, p.z)));
-        const float fade = std::min(1.0f, (depth - 5.0f) / 8.0f) * std::min(1.0f, (d - mantleRadius - 20.0f) / 10.0f);
-        const float tunnel = ISO_LEVEL + DENSITY_GRADIENT * ((t - 0.06f) * 40.0f + (1.0f - fade * caveWeight) * 20.0f);
-        v = std::min(v, tunnel);
+        if ((a - kTunnelLevel) * 100.0f <= near) {
+            const float fade = std::min(1.0f, (depth - 5.0f) / 8.0f) * std::min(1.0f, (d - mantleRadius - 20.0f) / 10.0f);
+            const float t = std::max(a, fabsf(cavesB.fractal(2, p.x, p.y, p.z)));
+            m = (t - kTunnelLevel) * 100.0f + (1.0f - fade * caveWeight) * 20.0f;
+        }
+        if (depth > 30.0f && d > mantleRadius + 40.0f) {
+            const float fade = std::min(1.0f, (depth - 30.0f) / 20.0f) * std::min(1.0f, (d - mantleRadius - 40.0f) / 20.0f);
+            const float c = caverns.fractal(2, p.x, p.y * 1.4f, p.z); // a little flattened: wider than tall
+            m = std::min(m, (kCavernLevel - c) * 120.0f + (1.0f - fade * caveWeight) * 30.0f);
+        }
+        if (m < near) v = std::min(v, ISO_LEVEL + DENSITY_GRADIENT * m);
     }
     return v;
 }
@@ -304,15 +327,17 @@ void PlanetField::baseDensityBlock(Vector3 o, float stride, int S, float fp, flo
             }
 }
 
-VoxelMaterial PlanetField::materialLod(Vector3 p, float base, float fp, Vector3 normal) const {
+VoxelMaterial PlanetField::materialSky(Vector3 p, float base, float fp, Vector3 normal, float& sky) const {
+    sky = 1.0f;
     const float d = sqrtf(p.x * p.x + p.y * p.y + p.z * p.z);
-    if (d < mantleRadius + 0.5f || d < 1e-3f) return VoxelMaterial::Rock;   // mantle
+    if (d < mantleRadius + 0.5f || d < 1e-3f) { sky = 0.0f; return VoxelMaterial::Rock; } // mantle: always deep underground
     // Depth below the original surface, from the height map (the density is no measure of depth
     // here: cave tunnels take the minimum with it, so cave walls stay rock rather than topsoil).
     (void)base;
     const Vector3 up = { p.x / d, p.y / d, p.z / d };
     const float surfaceElevation = elevation(up, fp);
     const float depth = radius + surfaceElevation - d; // against the surface this LOD meshes
+    sky = std::clamp(1.0f - (depth - 2.0f) / 8.0f, 0.0f, 1.0f); // buried more than ~10 m: no sky (caves, deep pits)
     if (moon) return depth < 2.5f ? VoxelMaterial::Regolith : VoxelMaterial::Rock; // grey dust over rock (asteroid palette)
     if (depth < 2.5f) {
         // Surface biome from height above sea level, latitude, slope and a climate wobble. The top
@@ -431,6 +456,7 @@ void BuildChunkMesh(const DensityField& field, const EditList& allEdits, ChunkMe
             out.colors.assign(verts.size() * 4, 0);
             out.texcoords.assign(verts.size() * 2, 0.0f);
             out.texcoords2.assign(verts.size() * 2, 0.0f);
+            out.tangents.assign(verts.size() * 4, 0.0f);
             for (size_t v = 0; v < verts.size(); ++v) {
                 const Vector3 lp = Vector3Scale(verts[v], stride);     // node-relative, in voxels
                 const Vector3 p = Vector3Add(origin, lp);
@@ -447,7 +473,9 @@ void BuildChunkMesh(const DensityField& field, const EditList& allEdits, ChunkMe
                 const float gl = Vector3Length(grad);
                 const Vector3 n = gl > 1e-6f ? Vector3Scale(grad, -1.0f / gl) : field.fallbackUp(p);
                 const float b = at(base, x0 + 1, y0 + 1, z0 + 1) * (1.0f - t) + at(base, x1 + 1, y1 + 1, z1 + 1) * t;
-                const VoxelMaterial m = field.materialLod(p, b, stride, n);
+                float sky = 1.0f;
+                const VoxelMaterial m = field.materialSky(p, b, stride, n, sky);
+                out.tangents[v * 4 + 3] = sky;
                 out.positions[v * 3 + 0] = lp.x;
                 out.positions[v * 3 + 1] = lp.y;
                 out.positions[v * 3 + 2] = lp.z;

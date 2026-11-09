@@ -42,7 +42,7 @@ void Survival_Respawn(Scene& world) {
     GameUI_Toast("Respawned at your ship");
 }
 
-void Survival_Update(Scene& world, float dt, bool jetpackFiring, bool inputEnabled) {
+void Survival_Update(Scene& world, float dt, bool inputEnabled) {
     if (survival.dead) {
         if (GetTime() - survival.deathTime > 3.0) Survival_Respawn(world);
         return;
@@ -65,13 +65,20 @@ void Survival_Update(Scene& world, float dt, bool jetpackFiring, bool inputEnabl
         player.jetpackFuel = std::min(1.0f, player.jetpackFuel + 0.5f * dt); // refill the suit's thruster tank
     } else {
         survival.oxygen = std::max(0.0f, survival.oxygen - survival.oxygenDrainPerSec * dt);
-        survival.power = std::max(0.0f, survival.power - (survival.powerDrainPerSec + (jetpackFiring ? survival.jetpackPowerPerSec : 0.0f)
+        survival.power = std::max(0.0f, survival.power - (survival.powerDrainPerSec
                                                           + (survival.headlamp && !ship.piloted ? survival.headlampPowerPerSec : 0.0f)) * dt);
+        // Firing the jetpack only burns fuel; recharging the tank (on the ground) is what costs suit
+        // power, and only as far as the power left can pay for.
+        const float refilled = player.jetpackFuel - survival.lastJetpackFuel;
+        if (refilled > 0.0f) {
+            const float affordable = survival.power / survival.jetpackPowerPerTank;
+            const float paid = std::min(refilled, affordable);
+            player.jetpackFuel = survival.lastJetpackFuel + paid;
+            survival.power = std::max(0.0f, survival.power - paid * survival.jetpackPowerPerTank);
+        }
     }
-    if (survival.power <= 0.0f) {
-        player.jetpackFuel = 0.0f;                                    // no suit power, no jetpack...
-        if (survival.headlamp && !ship.piloted) { survival.headlamp = false; GameUI_Toast("Headlamp out: no suit power"); } // ...or lamp
-    }
+    survival.lastJetpackFuel = player.jetpackFuel;
+    if (survival.power <= 0.0f && survival.headlamp && !ship.piloted) { survival.headlamp = false; GameUI_Toast("Headlamp out: no suit power"); }
     if (inputEnabled && IsKeyPressed(KEY_L)) {
         if (survival.power > 0.0f || ship.piloted) {
             survival.headlamp = !survival.headlamp;

@@ -181,6 +181,15 @@ void Planetoid::draw(const RenderContext& ctx) {
     // Planets use the texture-layer palette (dirt, sand, grass, ...); other bodies the scene's.
     const int palette = kind == BodyKind::Planet ? 2 : ctx.scenePalette;
     batch.setUniform(ctx.paletteLoc, &palette, SHADER_UNIFORM_INT);
+    // Planets and moons shadow their own night side at any distance (the shadow map is local): a
+    // sphere 60 m below sea level blocks the sun. Other bodies clear it (the uniform persists).
+    float occluder[4] = { 0, 0, 0, 0 };
+    if (kind == BodyKind::Planet || kind == BodyKind::Moon) {
+        const Vector3 c = (worldPos - ctx.renderOrigin).toFloat();
+        occluder[0] = c.x; occluder[1] = c.y; occluder[2] = c.z;
+        occluder[3] = std::max(0.0f, radius - 60.0f) * scale;
+    }
+    batch.setUniform(ctx.sunOccluderLoc, occluder, SHADER_UNIFORM_VEC4);
     RenderContext c2 = ctx;
     c2.batch = &batch;
     for (Chunk* c : drawList) c->drawChunk(c2, placer.model(c->key));

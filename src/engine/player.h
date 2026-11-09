@@ -24,6 +24,7 @@ struct Player {
     bool grounded = false;
     bool flyMode = false;             // F: free-fly dev camera (no gravity/collision)
     float jetpackFuel = 1.0f;         // 0..1, recharges on the ground
+    bool jetpackFiring = false;       // fuel was burnt this update (survival / audio / HUD)
     Planetoid* nearest = nullptr;     // body we collide with (gravity comes from every body)
     float gravity = 0.0f;             // current acceleration magnitude (HUD/debug)
     bool autoWalk = false;            // tests: walk forward without input
@@ -41,6 +42,7 @@ struct Player {
     float jumpSpeed = 5.0f;
     float jetpackAccel = 9.0f;
     float jetpackFuelPerSec = 0.1f;   // full tank = 10 s of thrust
+    float airControlAccel = 12.0f;    // m/s^2 toward the wished walking velocity while airborne in gravity
     float mouseSensitivity = 0.003f;
 
     // Stand on the surface of `body` in direction `dir` from its centre (default: its +Y pole).
@@ -55,7 +57,10 @@ private:
     Vector3 groundNormal = { 0, 1, 0 };
     Quaternion groundRotPrev = { 0, 0, 0, 1 }; // ground body's rotation at the end of last update
     DVec3 lastEndPosition{};                    // where update() left us (detects outside moves)
-    void stepPhysics(Scene& world, float dt, Vector3 wishMove, bool jump, bool jetUp, bool jetDown);
+    void stepPhysics(Scene& world, float dt, Vector3 wishMove, bool jetUp, bool jetDown);
+    float jumpBuffer = 0.0f; // seconds a jump press stays pending
+    float coyote = 0.0f;     // seconds a jump is still allowed after leaving the ground
+    float jumpLock = 0.0f;   // seconds after a jump during which the player cannot re-ground
     bool resolveCollisions(Scene& world, Vector3& feet);
 };
 

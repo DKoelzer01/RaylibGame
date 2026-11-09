@@ -65,13 +65,14 @@ Shaders in `resources/` hot-reload when saved.
 ## Gameplay (space survival prototype)
 - **Player** (`src/engine/player.*`): walks on planetoids with gravity toward the nearest body; "up" follows
   the surface so you can walk all the way around. Collision is resolved directly against the density
-  field, so tunnels you dig are walkable. Jump, jetpack in low gravity, 6-DOF suit thrusters in open
+  field, so tunnels you dig are walkable. Jump (buffered, with coyote time), WASD air control while airborne
+  in gravity, jetpack on Space/Ctrl, 6-DOF suit thrusters in open
   space, and you ride along on spinning bodies. **F** toggles the free-fly dev camera.
 - **Items & crafting** (`src/engine/inventory.*`, `resources/data/items.txt`, `recipes.txt`): mining yields
   items by voxel material (rock, regolith, ice, ore); building consumes stone/regolith/lunacrete.
   **Tab** opens inventory + crafting. Add items/recipes by editing the text files.
 - **Survival** (`src/space/survival.*`): suit oxygen drains outside the ship's life-support field (~5 min a
-  tank), suit power drains with jetpack use, health drops when suffocating or from hard landings and
+  tank), suit power pays for recharging the jetpack and the headlamp, health drops when suffocating or from hard landings and
   crashes. Death respawns you at the ship. **1** uses an oxygen canister, **2** a power cell (charges
   the ship instead while piloting). An objectives list guides the loop: mine ice, craft oxygen, board
   the ship, fly to another asteroid, refine ore into power cells.

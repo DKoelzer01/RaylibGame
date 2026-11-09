@@ -8,6 +8,7 @@ in vec3 fragNormal;     // world space
 in vec3 fragTexPos;     // body-aligned, wrapped to the texture repeat (texturing)
 in vec3 fragLocalNormal;
 in vec3 fragChunkPos;   // chunk-local (overlap clipping)
+in float fragSky;       // 1 = open to the sky, 0 = buried (caves, deep pits)
 
 // Material maps: bound by DrawMesh to the units of the matching raylib material slots.
 uniform sampler2D colorTexture;    // MATERIAL_MAP_ALBEDO
@@ -39,6 +40,7 @@ uniform vec4 ambient;
 uniform vec3 viewPos;
 uniform int palette;            // 0 = space materials, 1 = fantasy, 2 = planet (texture layers)
 uniform vec3 chunkClipMax;      // chunk-local: discard beyond this (see Chunk::clipMax)
+uniform vec4 sunOccluder;       // planet: render-space centre + radius of a sphere that blocks the sun (w = 0: none)
 uniform vec3 fogColor;          // linear
 uniform float fogDensity;       // 0 = off
 
@@ -194,7 +196,18 @@ void main()
         float NdotL = max(dot(normal, l), 0.0);
         vec3 h = normalize(l + viewD);
         float spec = (NdotL > 0.0) ? pow(max(dot(normal, h), 0.0), shininess) * specStrength : 0.0;
-        float shadow = (i == 0) ? shadowFactor(fragPosition, geomNormal, l) : 1.0;
+        float shadow = 1.0;
+        if (i == 0) {
+            // The sun: the local shadow map, how buried this point is (caves get no sun even when
+            // the occluding rock lies beyond the shadow map), and the planet itself (the night side,
+            // at any distance): no sun if the ray toward it enters the occluder sphere, or starts inside.
+            shadow = shadowFactor(fragPosition, geomNormal, l) * fragSky;
+            if (sunOccluder.w > 0.0) {
+                vec3 oc = fragPosition - sunOccluder.xyz;
+                float b = dot(oc, l), c = dot(oc, oc) - sunOccluder.w * sunOccluder.w;
+                if (c < 0.0 || (b < 0.0 && b * b > c)) shadow = 0.0;
+            }
+        }
         // Point lights fall off with distance; their range is passed in target.x (target is unused
         // for point lights). Colour alpha scales intensity.
         float atten = 1.0;
@@ -211,7 +224,7 @@ void main()
         direct += (albedo * NdotL + spec) * lights[i].color.rgb * shadow * atten;
     }
 
-    vec3 color = ambient.rgb * albedo * ao + direct + emissive;
+    vec3 color = ambient.rgb * albedo * ao * fragSky + direct + emissive;
     float fog = 1.0 - exp(-fogDensity * length(viewPos - fragPosition));
     color = mix(color, fogColor, clamp(fog, 0.0, 1.0));
     finalColor = vec4(pow(color, vec3(1.0 / 2.2)), 1.0); // linear -> sRGB

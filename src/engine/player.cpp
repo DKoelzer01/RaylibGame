@@ -40,6 +40,7 @@ void Player::update(Scene& world, bool inputEnabled, float dt) {
         groundBody = nullptr;
     }
     impactSpeed = 0.0f; // per-frame; cleared before the fly-mode early return too
+    jetpackFiring = false;
     if (flyMode) {
         // The free-fly camera (Scene / customUpdateCamera) drives; keep the body under the eye.
         position = world.renderOrigin + Vector3Subtract(world.camera.position, Vector3Scale(up, eyeHeight));
@@ -111,8 +112,9 @@ void Player::update(Scene& world, bool inputEnabled, float dt) {
 
         const Vector3 flat = Vector3Normalize(Vector3Subtract(forward, Vector3Scale(up, Vector3DotProduct(forward, up))));
         const Vector3 side = Vector3CrossProduct(flat, up);
-        // On the ground WASD walks level; in the air it fires the suit thrusters along the view.
-        const Vector3 f = grounded ? flat : forward;
+        // On the ground and in the air under gravity WASD is level (walking / air control); in deep
+        // space it fires the suit thrusters along the view.
+        const Vector3 f = (grounded || gravity >= 0.5f) ? flat : forward;
         if (IsKeyDown(KEY_W)) wish = Vector3Add(wish, f);
         if (IsKeyDown(KEY_S)) wish = Vector3Subtract(wish, f);
         if (IsKeyDown(KEY_D)) wish = Vector3Add(wish, side);
@@ -125,13 +127,16 @@ void Player::update(Scene& world, bool inputEnabled, float dt) {
         if (IsKeyPressed(KEY_B)) dampeners = !dampeners;
     }
     if (autoJump) { jump = true; autoJump = false; }
+    // Jump buffer: a press is remembered briefly, so it is not lost on a frame where "grounded"
+    // flickers off over bumpy ground (see coyote time in stepPhysics).
+    if (jump) jumpBuffer = 0.15f;
 
     // Fixed substeps keep collision stable at any frame rate, and are shortened further at speed
     // (<= 0.2 m of travel each, under the body radius) so a fast player can't pass through thin walls.
     const float h = 1.0f / 120.0f;
     const int steps = std::clamp(std::max((int)ceilf(dt / h), (int)ceilf(Vector3Length(velocity) * dt / 0.2f)), 1, 1024);
     const float sdt = dt / steps;
-    for (int i = 0; i < steps; ++i) { stepPhysics(world, sdt, wish, jump && i == 0, jetUp, jetDown); }
+    for (int i = 0; i < steps; ++i) { stepPhysics(world, sdt, wish, jetUp, jetDown); }
 
     feet = (position - world.renderOrigin).toFloat();
     if (grounded && nearest) {
@@ -145,7 +150,7 @@ void Player::update(Scene& world, bool inputEnabled, float dt) {
     lastEndPosition = position;
 }
 
-void Player::stepPhysics(Scene& world, float dt, Vector3 wish, bool jump, bool jetUp, bool jetDown) {
+void Player::stepPhysics(Scene& world, float dt, Vector3 wish, bool jetUp, bool jetDown) {
     Vector3 feet = (position - world.renderOrigin).toFloat();
 
     const bool wasGrounded = grounded;
@@ -167,19 +172,51 @@ void Player::stepPhysics(Scene& world, float dt, Vector3 wish, bool jump, bool j
         (void)vUp;
         // A jump starts from the walking velocity only: keeping the press into a sloped ground would
         // push you downhill on takeoff.
-        if (jump) { velocity = Vector3Add(Vector3Scale(along, walkSpeed), Vector3Scale(up, jumpSpeed)); grounded = false; }
+        if (jumpBuffer > 0.0f) {
+            velocity = Vector3Add(Vector3Scale(along, walkSpeed), Vector3Scale(up, jumpSpeed));
+            grounded = false;
+            jumpBuffer = coyote = 0.0f;
+            jumpLock = 0.15f;
+        } else {
+            coyote = 0.12f;
+        }
         jetpackFuel = std::min(1.0f, jetpackFuel + dt * 0.5f);
     } else {
-        // Airborne: Newtonian. Suit thrusters push along the view (WASD) and up/down (Space/Ctrl)
-        // while there is fuel; nothing clamps speed, so you can build up orbital velocity.
-        Vector3 thrust = Vector3Length(wish) > 0.0f ? Vector3Normalize(wish) : wish;
+        // Airborne: Newtonian; nothing clamps speed, so you can build up orbital velocity.
+        const bool inGravity = gravity >= 0.5f;
+        if (jumpBuffer > 0.0f && coyote > 0.0f) {
+            // Coyote time: just left the ground (or "grounded" flickered off for a frame) - still jump,
+            // setting the upward speed relative to the surface below.
+            const Vector3 surface = nearest ? nearest->surfaceVelocity(feet) : Vector3{ 0, 0, 0 };
+            velocity = Vector3Add(velocity, Vector3Scale(up, jumpSpeed - Vector3DotProduct(Vector3Subtract(velocity, surface), up)));
+            jumpBuffer = coyote = 0.0f;
+            jumpLock = 0.15f;
+        }
+        Vector3 thrust = { 0, 0, 0 };
+        if (inGravity) {
+            // Air control (free, no fuel): steer toward the wished walking velocity relative to the
+            // ground below - enough to reach a ledge mid-jump. With no input, momentum is untouched.
+            if (Vector3Length(wish) > 0.0f) {
+                const Vector3 surface = nearest ? nearest->surfaceVelocity(feet) : Vector3{ 0, 0, 0 };
+                const Vector3 rel = Vector3Subtract(velocity, surface);
+                const Vector3 relLevel = Vector3Subtract(rel, Vector3Scale(up, Vector3DotProduct(rel, up)));
+                const Vector3 dv = Vector3Subtract(Vector3Scale(wish, walkSpeed), relLevel);
+                const float dvl = Vector3Length(dv), maxDv = airControlAccel * dt;
+                if (dvl > 1e-5f) velocity = Vector3Add(velocity, Vector3Scale(dv, std::min(1.0f, maxDv / dvl)));
+            }
+        } else if (Vector3Length(wish) > 0.0f) {
+            thrust = Vector3Normalize(wish); // deep space: suit thrusters along the view
+        }
+        // Jetpack (Space up / Ctrl down, and WASD in deep space) burns fuel; recharging it on the ground
+        // is what costs suit power (see the survival code).
         if (jetUp) thrust = Vector3Add(thrust, up);
         if (jetDown) thrust = Vector3Subtract(thrust, up);
         const float tl = Vector3Length(thrust);
         if (tl > 0.0f && jetpackFuel > 0.0f) {
             velocity = Vector3Add(velocity, Vector3Scale(thrust, jetpackAccel * dt / std::max(tl, 1.0f)));
             jetpackFuel = std::max(0.0f, jetpackFuel - dt * jetpackFuelPerSec);
-        } else if (tl == 0.0f && dampeners && gravity < 0.5f) {
+            jetpackFiring = true;
+        } else if (tl == 0.0f && dampeners && !inGravity) {
             // Inertial dampeners (B toggles) only in deep space, so they never fight a fall or an orbit.
             velocity = Vector3Scale(velocity, 1.0f - std::min(1.0f, 0.6f * dt));
         }
@@ -192,10 +229,15 @@ void Player::stepPhysics(Scene& world, float dt, Vector3 wish, bool jump, bool j
 
     feet = Vector3Add(feet, Vector3Scale(velocity, dt));
     grounded = resolveCollisions(world, feet);
+    // Just jumped: the probe below the feet would still find the slope (they have risen only a few cm)
+    // and re-ground the player, cancelling the jump. Collisions still push out; only grounding waits.
+    if (jumpLock > 0.0f) { grounded = false; jumpLock = std::max(0.0f, jumpLock - dt); }
     // Leaving a spinning body: on the ground velocity is relative to the surface, so add the
     // surface's own motion; you keep the body's momentum, as you would really.
     if (wasGrounded && !grounded && groundBody && Planetoid::find(groundId) == groundBody) velocity = Vector3Add(velocity, groundBody->surfaceVelocity(feet));
     position = world.renderOrigin + feet;
+    jumpBuffer = std::max(0.0f, jumpBuffer - dt);
+    if (!grounded) coyote = std::max(0.0f, coyote - dt);
 }
 
 // Push the feet/head spheres out of solid density, then probe just below the feet for ground.
