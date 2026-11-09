@@ -25,6 +25,7 @@ struct Player {
     Planetoid* nearest = nullptr;     // body whose gravity applies
     float gravity = 0.0f;             // current acceleration magnitude (HUD/debug)
     bool autoWalk = false;            // tests: walk forward without input
+    float gravityScale = 1.0f;        // spells/effects (e.g. featherfall)
     float lastContactDot = 0.0f;      // debug: dot(contact normal, up) of the last collision
     float impactSpeed = 0.0f;         // hardest collision speed this frame (fall damage)
 

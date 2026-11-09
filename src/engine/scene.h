@@ -65,6 +65,10 @@ class Scene {
         Vector3 ambientColor = { 0.12f, 0.12f, 0.14f };
         void reloadShaders();            // force reload (debug UI button)
         int lastDrawCalls = 0;
+        int materialPalette = 0;         // lighting.fs: 0 = space materials, 1 = fantasy
+        bool drawSkybox = true;          // false: the game clears to a sky colour instead
+        Vector3 fogColor = { 0, 0, 0 };  // linear-space fog colour (fantasy: sky haze)
+        float fogDensity = 0.0f;         // 0 = no fog
         std::function<void()> onDraw3D;  // extra world-space drawing at the end of the main pass
 
         // Floating origin: render-space (float) = world (double) - renderOrigin. The camera is kept
@@ -87,7 +91,7 @@ class Scene {
 
     private:
         void applyLightingShader();   // (re)binds material + static uniforms after a (re)load
-        int locViewPos = -1, locLightSpace = -1, locAmbient = -1, locShadowRes = -1, locTexScale = -1;
+        int locViewPos = -1, locLightSpace = -1, locAmbient = -1, locShadowRes = -1, locTexScale = -1, locPalette = -1, locFogColor = -1, locFogDensity = -1;
         bool terrainTexturesLoaded = false;
 };
 

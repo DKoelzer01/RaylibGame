@@ -55,6 +55,7 @@ struct TerrainHit {
 void worldHandler(Scene& world);
 void generateWorld(Scene& world);      // creates planetoids; chunks stream in via worldUpdate()
 void regenerateWorld(Scene& world);
+void BeginWorldStreaming();            // for games that add bodies themselves: WorldIdle() waits for them
 void loadWorld(Scene& world);          // extra objects from assets/scenes/world
 
 // Per frame: requests chunks for new planetoids and uploads finished meshes (time-boxed).

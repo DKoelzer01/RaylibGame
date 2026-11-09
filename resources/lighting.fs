@@ -30,6 +30,9 @@ struct Light {
 uniform Light lights[MAX_LIGHTS];
 uniform vec4 ambient;
 uniform vec3 viewPos;
+uniform int palette;            // 0 = space materials, 1 = fantasy materials
+uniform vec3 fogColor;          // linear
+uniform float fogDensity;       // 0 = off
 
 out vec4 finalColor;
 
@@ -98,10 +101,21 @@ void main()
     vec4 w = fragColor;
     w /= max(w.r + w.g + w.b + w.a, 0.001);
     float lum = dot(albedo, vec3(0.299, 0.587, 0.114));
-    vec3 rock     = albedo;
-    vec3 regolith = albedo * vec3(1.45, 1.25, 1.0);                      // dusty, warmer, lighter
-    vec3 ice      = mix(vec3(0.55, 0.72, 0.9), vec3(0.85, 0.95, 1.0), lum * 2.0);
-    vec3 ore      = albedo * 0.5 + vec3(0.55, 0.3, 0.08) * (0.4 + lum);  // rusty metal
+    vec3 rock, regolith, ice, ore;
+    vec3 emissive = vec3(0.0);
+    if (palette == 1) {
+        // Fantasy: stone, grass/soil, snow, glowing crystal.
+        rock     = albedo * vec3(0.95, 0.95, 1.0);
+        regolith = mix(albedo * vec3(0.45, 0.85, 0.3), albedo * vec3(0.9, 0.7, 0.45), 0.25); // grass, a touch of soil
+        ice      = mix(vec3(0.85, 0.88, 0.95), vec3(1.0), lum * 1.5);                   // snow
+        ore      = vec3(0.35, 0.45, 1.0) * (0.6 + lum);                                 // crystal
+        emissive = vec3(0.15, 0.25, 0.9) * w.a * 0.8;                                   // crystals glow
+    } else {
+        rock     = albedo;
+        regolith = albedo * vec3(1.45, 1.25, 1.0);                      // dusty, warmer, lighter
+        ice      = mix(vec3(0.55, 0.72, 0.9), vec3(0.85, 0.95, 1.0), lum * 2.0);
+        ore      = albedo * 0.5 + vec3(0.55, 0.3, 0.08) * (0.4 + lum);  // rusty metal
+    }
     albedo = rock * w.r + regolith * w.g + ice * w.b + ore * w.a;
     rough = rough * (w.r + w.g) + 0.15 * w.b + 0.3 * w.a;
     rough = max(rough, w.g);                                             // regolith is matte
@@ -121,9 +135,18 @@ void main()
         vec3 h = normalize(l + viewD);
         float spec = (NdotL > 0.0) ? pow(max(dot(normal, h), 0.0), shininess) * specStrength : 0.0;
         float shadow = (i == 0) ? shadowFactor(fragPosition, geomNormal, l) : 1.0;
-        direct += (albedo * NdotL + spec) * lights[i].color.rgb * shadow;
+        // Point lights fall off with distance; their range is passed in target.x (target is unused
+        // for point lights). Colour alpha scales intensity.
+        float atten = 1.0;
+        if (lights[i].type == LIGHT_POINT) {
+            float dl = length(lights[i].position - fragPosition) / max(lights[i].target.x, 1.0);
+            atten = lights[i].color.a * 3.0 / (1.0 + dl * dl * 4.0);
+        }
+        direct += (albedo * NdotL + spec) * lights[i].color.rgb * shadow * atten;
     }
 
-    vec3 color = ambient.rgb * albedo * ao + direct;
+    vec3 color = ambient.rgb * albedo * ao + direct + emissive;
+    float fog = 1.0 - exp(-fogDensity * length(viewPos - fragPosition));
+    color = mix(color, fogColor, clamp(fog, 0.0, 1.0));
     finalColor = vec4(pow(color, vec3(1.0 / 2.2)), 1.0); // linear -> sRGB
 }

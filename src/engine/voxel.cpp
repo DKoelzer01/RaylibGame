@@ -52,7 +52,7 @@ float PlanetoidField::baseDensity(Vector3 p) const {
     return ISO_LEVEL + DENSITY_GRADIENT * (radius * 0.72f + displacement - d);
 }
 
-float PlanetoidField::density(Vector3 p, const TerrainEdit* edits, size_t editCount) const {
+float DensityField::density(Vector3 p, const TerrainEdit* edits, size_t editCount) const {
     float v = baseDensity(p);
     for (size_t i = 0; i < editCount; ++i) {
         const TerrainEdit& e = edits[i];
@@ -66,7 +66,7 @@ float PlanetoidField::density(Vector3 p, const TerrainEdit* edits, size_t editCo
     return v; // no clamp: the uniform gradient keeps values meaningful at any depth
 }
 
-Vector3 PlanetoidField::normal(Vector3 p, const TerrainEdit* edits, size_t n, float h) const {
+Vector3 DensityField::normal(Vector3 p, const TerrainEdit* edits, size_t n, float h) const {
 
     const Vector3 g = {
         density({ p.x + h, p.y, p.z }, edits, n) - density({ p.x - h, p.y, p.z }, edits, n),
@@ -75,8 +75,7 @@ Vector3 PlanetoidField::normal(Vector3 p, const TerrainEdit* edits, size_t n, fl
     };
     const float len = sqrtf(g.x * g.x + g.y * g.y + g.z * g.z);
     if (len < 1e-6f) {
-        const float pl = sqrtf(p.x * p.x + p.y * p.y + p.z * p.z);
-        return pl > 1e-6f ? Vector3{ p.x / pl, p.y / pl, p.z / pl } : Vector3{ 0, 1, 0 };
+        return fallbackUp(p);
     }
     return { -g.x / len, -g.y / len, -g.z / len };
 }
@@ -88,6 +87,60 @@ VoxelMaterial PlanetoidField::material(Vector3 p, float base) const {
     if (fabsf(detail.fractal(2, p.x, p.y, p.z)) < 0.035f) return VoxelMaterial::Ore;
     if (iceAmount > 0.0f && detail.fractal(2, p.x + 1000.0f, p.y, p.z) > 0.55f - iceAmount) return VoxelMaterial::Ice;
     if (base < ISO_LEVEL + 1.0f * DENSITY_GRADIENT && detail.fractal(1, p.x + 2000.0f, p.y, p.z) > -0.25f) return VoxelMaterial::Regolith;
+    return VoxelMaterial::Rock;
+}
+
+Vector3 PlanetoidField::fallbackUp(Vector3 p) const {
+    const float pl = sqrtf(p.x * p.x + p.y * p.y + p.z * p.z);
+    return pl > 1e-6f ? Vector3{ p.x / pl, p.y / pl, p.z / pl } : Vector3{ 0, 1, 0 };
+}
+
+// ---------------------------------------------------------------------------------------------
+// TerrainField (open world, +Y up)
+// ---------------------------------------------------------------------------------------------
+
+static SimplexNoise SeededNoise(std::mt19937& rng, float frequency) {
+    std::uniform_real_distribution<float> unit(0.0f, 1.0f);
+    return SimplexNoise(frequency, 1.0f, 2.0f, 0.5f, unit(rng) * 10000.0f, unit(rng) * 10000.0f, unit(rng) * 10000.0f);
+}
+
+TerrainField::TerrainField(unsigned int seed) {
+    std::mt19937 rng(seed);
+    hills = SeededNoise(rng, 0.0025f);  // ~400 m features: valleys and mountains
+    detail = SeededNoise(rng, 0.02f);   // ~50 m lumps
+    caves = SeededNoise(rng, 0.012f);   // tunnel network
+    veins = SeededNoise(rng, 0.05f);    // crystal veins
+}
+
+float TerrainField::surfaceHeight(float x, float z) const {
+    // (2D fractal in this noise library ignores the seed, so sample the 3D one on a plane.)
+    const float h = hills.fractal(5, x, 0.0f, z);         // -1..1
+    const float mountains = std::max(0.0f, h) * std::max(0.0f, h) * 140.0f; // sharpen peaks
+    return 6.0f + h * 22.0f + mountains + detail.fractal(3, x, 100.0f, z) * 4.0f;
+}
+
+float TerrainField::baseDensity(Vector3 p) const {
+    const float h = surfaceHeight(p.x, p.z);
+    float d = ISO_LEVEL + DENSITY_GRADIENT * (h - p.y);
+    // A little 3D variation for overhangs and crags.
+    d += DENSITY_GRADIENT * 2.5f * detail.fractal(2, p.x, p.y * 1.5f, p.z);
+    // Caves: tunnels where the cave noise crosses zero, kept a few metres below the surface.
+    const float depth = h - p.y;
+    if (depth > 4.0f) {
+        const float c = fabsf(caves.fractal(3, p.x, p.y * 1.6f, p.z));
+        const float tunnel = 1.0f - c / 0.07f;
+        if (tunnel > 0.0f) d -= tunnel * std::min(1.0f, (depth - 4.0f) / 6.0f) * 3.0f;
+    }
+    return d;
+}
+
+VoxelMaterial TerrainField::material(Vector3 p, float base) const {
+    const float depth = (base - ISO_LEVEL) / DENSITY_GRADIENT; // ~metres below the original surface
+    if (depth > 6.0f && fabsf(veins.fractal(2, p.x, p.y, p.z)) < 0.03f) return VoxelMaterial::Ore; // crystal
+    if (depth < 2.5f) {
+        if (p.y > snowLine + detail.fractal(1, p.x, 300.0f, p.z) * 12.0f) return VoxelMaterial::Ice;  // snow
+        return VoxelMaterial::Regolith;                                                               // grass / soil
+    }
     return VoxelMaterial::Rock;
 }
 
@@ -107,7 +160,7 @@ void FilterEdits(const EditList& all, Vector3 lo, Vector3 hi, float margin, Edit
     }
 }
 
-void BuildChunkMesh(const PlanetoidField& field, const EditList& allEdits, ChunkMeshData& out) {
+void BuildChunkMesh(const DensityField& field, const EditList& allEdits, ChunkMeshData& out) {
     const auto t0 = std::chrono::steady_clock::now();
     const int cells = CHUNK_SIZE + 1;        // +1 cell overlap with the positive neighbours (LOD crack cover)
     const int S = cells + 1;                 // samples per axis

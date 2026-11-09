@@ -8,7 +8,7 @@ raylib 5.5 is fetched and built automatically on first configure.
 ```sh
 cmake --preset release          # or: debug, profile (Tracy)
 cmake --build --preset release
-./game.exe                      # the exe is written to the repo root (assets are loaded relative to it)
+./game.exe                      # space game; ./fantasy.exe for the fantasy game (both land in the repo root)
 ```
 
 Options: `-DUSE_SYSTEM_RAYLIB=ON -DRAYLIB_PATH=C:/raylib/raylib` links a prebuilt raylib instead of
@@ -73,6 +73,33 @@ Shaders in `resources/` hot-reload when saved.
 - **Audio** (`src/audio.*`): procedural sound effects, no assets.
 - Asteroid density is a displaced sphere with a uniform 0.25/voxel gradient: crisp surfaces and
   predictable dig depth.
+
+## Project layout
+| Path | What |
+| --- | --- |
+| `src/engine/` | static library shared by both games: rendering, density-field voxel terrain, octree LOD + job system, floating origin, player controller, terrain tool, items, audio, debug UI |
+| `src/space/` | `game.exe` - space survival: asteroids, ship, oxygen/power, objectives |
+| `src/fantasy/` | `fantasy.exe` - fantasy survival: open-world terrain and drawn-seal magic |
+| `resources/`, `assets/` | shaders, textures, item/recipe data |
+
+## Fantasy prototype (`fantasy.exe`)
+- Open-world terrain (`TerrainField` in `src/engine/voxel.*`): heightmap hills and snowy mountains,
+  3D cave tunnels, grass/soil, snow and glowing crystal veins; streamed by the same LOD system as
+  tiles around the player, with fog and a sky colour.
+- **Drawn-seal magic** (`src/fantasy/sealrecognizer.*`, `spells.*`), in the spirit of the drawn-glyph
+  magic idea from SpellPractice (original signs, not a recreation). Press **G** to open the grimoire,
+  draw a **ring**, a **core sign** in the middle and **modifier signs** toward the ring, then **G/Enter**
+  to cast. Live feedback shows ring perfection and recognised signs.
+  - Ring: least-squares circle fit -> roundness, coverage, closure ("perfection"). Sloppy rings fizzle;
+    better drawing = more power. Small dots inside the ring add power.
+  - Signs: $P point-cloud recogniser (stroke order/direction independent, multi-stroke).
+  - Core: triangle = flame, square = earth, wave = water, spiral = wind, asterisk = light.
+    Modifiers: chevron = arrow (launch/forward), small circle = orb (burst/sphere), stroke = line (wall).
+  - Spells: Fireball, Flare Burst, Ember, Stone Wall, Wallbreaker, Mound, Mending, Gale Step,
+    Featherfall, Updraft, Lantern Orb, Sunlance, Glow. Mana regenerates; craters and walls are real
+    terrain edits, lights are real point lights.
+- Tests: `./fantasy.exe --bench 1 --test-recognizer` (accuracy vs sloppiness),
+  `--test-spell fireball [--sloppy 0.6]`, `--grimoire-demo fireball` (screenshot of the canvas).
 ## Benchmark / test mode
 ```sh
 ./game.exe --bench 10                       # 1920x1080 uncapped; waits for the world to load, prints frame stats

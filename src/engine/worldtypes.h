@@ -40,7 +40,11 @@ public:
     unsigned int seed;
     float radius;
     Vector3 spin = { 0, 0, 0 };                          // degrees per second about X/Y/Z
-    std::shared_ptr<const PlanetoidField> field;         // immutable, shared with workers
+    std::shared_ptr<const DensityField> field;           // immutable, shared with workers
+    // Flat (open-world) bodies: +Y up, constant gravity, LOD tiled around the camera within the
+    // height band [minHeight, maxHeight] instead of a sphere of `radius`.
+    bool flat = false;
+    float minHeight = 0.0f, maxHeight = 0.0f;
     std::shared_ptr<const EditList> edits;               // copy-on-write, shared with workers
 
     // LOD state (main thread only).
@@ -50,6 +54,8 @@ public:
     int rootLevel = 0;                                           // level whose 2x2x2 nodes cover the body
 
     Planetoid(std::string name, DVec3 worldPos, Vector3 rotation, float scale, unsigned int seed, float radius);
+    // Open-world terrain body.
+    Planetoid(std::string name, DVec3 worldPos, std::shared_ptr<const TerrainField> terrain);
     virtual ~Planetoid();
 
     void draw(const RenderContext& ctx) override;

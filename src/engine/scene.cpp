@@ -116,6 +116,9 @@ void Scene::applyLightingShader() {
     locAmbient    = GetShaderLocation(s, "ambient");
     locShadowRes  = GetShaderLocation(s, "shadowMapResolution");
     locTexScale   = GetShaderLocation(s, "texScale");
+    locPalette    = GetShaderLocation(s, "palette");
+    locFogColor   = GetShaderLocation(s, "fogColor");
+    locFogDensity = GetShaderLocation(s, "fogDensity");
 
     const int res = SHADOW_MAP_SIZE;
     SetShaderValue(s, locShadowRes, &res, SHADER_UNIFORM_INT);
@@ -231,11 +234,14 @@ void Scene::drawScene(int gamestate) {
     Shader& s = lighting.shader;
     SetShaderValueMatrix(s, locLightSpace, lightSpaceMatrix);
     SetShaderValue(s, locTexScale, &texScale, SHADER_UNIFORM_FLOAT);
+    SetShaderValue(s, locPalette, &materialPalette, SHADER_UNIFORM_INT);
+    SetShaderValue(s, locFogColor, &fogColor, SHADER_UNIFORM_VEC3);
+    SetShaderValue(s, locFogDensity, &fogDensity, SHADER_UNIFORM_FLOAT);
     const float ambient[4] = { ambientColor.x, ambientColor.y, ambientColor.z, 1.0f };
     SetShaderValue(s, locAmbient, ambient, SHADER_UNIFORM_VEC4);
     SetShaderValue(s, locViewPos, &camera.position, SHADER_UNIFORM_VEC3);
     for (size_t i = 0; i < lights.size(); ++i) {
-        if (lights[i].enabled) UpdateLightValues(s, lights[i], (int)i);
+        UpdateLightValues(s, lights[i], (int)i); // also uploads enabled = 0 for switched-off lights
     }
 
     // --- Main pass ---
@@ -243,7 +249,7 @@ void Scene::drawScene(int gamestate) {
     BeginMode3D(camera);
         rlDisableBackfaceCulling();
         rlDisableDepthMask();
-        DrawModel(skybox, (Vector3){0, 0, 0}, 1.0f, WHITE); // skybox.vs strips translation and scales the cube
+        if (drawSkybox) DrawModel(skybox, (Vector3){0, 0, 0}, 1.0f, WHITE); // skybox.vs strips translation and scales the cube
         rlEnableBackfaceCulling();
         rlEnableDepthMask();
 
