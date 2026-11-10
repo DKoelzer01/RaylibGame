@@ -36,11 +36,18 @@ enum class PartType : uint8_t {
     Count
 };
 inline bool IsMachine(PartType t) { return t >= PartType::Chest && t < PartType::Count; }
+inline bool IsShape(PartType t) { return t <= PartType::Beam8; } // structure: built from a material
+constexpr int kShapeCount = (int)PartType::Beam8 + 1;
 const char* PartName(PartType t);
-int PartCostCount(PartType t);              // items one part costs
-const char* PartCostItem(PartType t);       // "concrete", "iron_plate", or the machine's own item
+int PartCostCount(PartType t);              // items one part costs (shapes: of their material)
+const char* PartCostItem(PartType t);       // shapes: concrete (material 0); else the part's own item
 const char* PartMachineName(PartType t);    // machines.txt / recipe name ("kiln"), or nullptr
 
+// Building materials: any shape can be built from any of them, costing the material's item.
+struct BuildMaterial { const char* item; const char* name; Color color; };
+int BuildMaterialCount();
+const BuildMaterial& GetBuildMaterial(int index);
+int BuildMaterialForItem(const char* item);  // index, or -1
 
 // The 24 axis-aligned rotations (index 0 = identity).
 const int* Orientation(int index);          // 3x3 integer matrix, row-major
@@ -50,7 +57,9 @@ struct Part {
     PartType type;
     Int3 origin;        // plot cell of the part's origin cell
     uint8_t orient;     // 0..23
+    uint8_t material = 0; // shapes: BuildMaterial index
 };
+const char* PartItem(const Part& p);         // the item it costs and refunds
 
 // A cell's solid shape in cell space [0,1]^3: the cube cut by up to two half-spaces
 // (dot(n, p) <= d keeps the solid side).

@@ -4,6 +4,7 @@
 #include "world.h"
 #include "ship.h"
 #include "survival.h"
+#include "hotbar.h"
 
 #include <cstring>
 
@@ -15,6 +16,7 @@ void GameSave_Register() {
         fprintf(f, "player_vel %f %f %f\n", player.velocity.x, player.velocity.y, player.velocity.z);
         for (const auto& kv : inventory.all()) fprintf(f, "item %s %d\n", kv.first.c_str(), kv.second);
         fprintf(f, "quest %d\n", QuestBook_Tier());
+        Hotbar_Save(f);
         fprintf(f, "ship %.6f %.6f %.6f %f %f %f %f %f %d %d\n", ship.position.x, ship.position.y, ship.position.z, ship.orientation.x,
                 ship.orientation.y, ship.orientation.z, ship.orientation.w, ship.energy, ship.piloted ? 1 : 0, ship.spawned ? 1 : 0);
         fprintf(f, "ship_vel %f %f %f\n", ship.velocity.x, ship.velocity.y, ship.velocity.z);
@@ -22,9 +24,11 @@ void GameSave_Register() {
     };
     loadExtrasHook = [](FILE* f) {
         inventory.clear();
+        Hotbar_Reset();
         char tok[64] = {};
         while (fscanf(f, " %63s", tok) == 1 && strcmp(tok, "end_extras") != 0) {
             if (strcmp(tok, "quest") == 0) { int t = 0; if (fscanf(f, " %d", &t) == 1) QuestBook_SetTier(t); continue; }
+            if (Hotbar_LoadLine(tok, f)) continue;
             if (strcmp(tok, "player") == 0) {
                 int fly = 0;
                 fscanf(f, " %lf %lf %lf %f %f %f %d %f", &player.position.x, &player.position.y, &player.position.z,

@@ -68,16 +68,34 @@ const char* PartMachineName(PartType t) {
 }
 const char* PartCostItem(PartType t) {
     switch (t) {
-        case PartType::Beam2: case PartType::Beam4: case PartType::Beam8: return "iron_plate";
+
         case PartType::Conveyor: return "conveyor";
         case PartType::Cable: return "cable";
         case PartType::Furnace: return "electric_furnace"; // the item; "furnace" is its recipe map
         default: { const char* m = PartMachineName(t); return m ? m : "concrete"; }
     }
 }
+
+namespace {
+    const BuildMaterial kBuildMaterials[] = {
+        { "concrete", "Concrete", { 168, 166, 158, 255 } },
+        { "stone", "Stone", { 122, 122, 128, 255 } },
+        { "wood", "Wood", { 150, 108, 64, 255 } },
+        { "iron_plate", "Iron", { 118, 122, 130, 255 } },
+        { "glass", "Glass", { 172, 212, 226, 255 } },
+        { "dirt", "Packed dirt", { 120, 90, 60, 255 } },
+    };
+}
+int BuildMaterialCount() { return (int)(sizeof(kBuildMaterials) / sizeof(kBuildMaterials[0])); }
+const BuildMaterial& GetBuildMaterial(int i) { return kBuildMaterials[std::clamp(i, 0, BuildMaterialCount() - 1)]; }
+int BuildMaterialForItem(const char* item) {
+    for (int i = 0; i < BuildMaterialCount(); ++i) if (strcmp(kBuildMaterials[i].item, item) == 0) return i;
+    return -1;
+}
+const char* PartItem(const Part& p) { return IsShape(p.type) ? GetBuildMaterial(p.material).item : PartCostItem(p.type); }
 static Color PartColor(PartType t) {
     switch (t) {
-        case PartType::Beam2: case PartType::Beam4: case PartType::Beam8: return { 118, 122, 130, 255 }; // iron
+
         case PartType::Block: return { 150, 148, 142, 255 };
         case PartType::Conveyor: return { 60, 62, 66, 255 };
         case PartType::Cable: return { 184, 110, 60, 255 };       // copper
@@ -335,7 +353,9 @@ void Plot::buildSection(Int3 key, Section& s, const std::vector<Int3>& sectionCe
     for (const Int3& c : sectionCells) {
         const CellRef& ref = cells.at(c);
         const CellShape& shape = ref.shape;
-        Color color = PartColor(parts[ref.part].type);
+        const Part& pp = parts[ref.part];
+        Color color = IsShape(pp.type) ? GetBuildMaterial(pp.material).color : PartColor(pp.type);
+        if (pp.type == PartType::Block && IsShape(pp.type)) color = { (unsigned char)(color.r * 0.92f), (unsigned char)(color.g * 0.92f), (unsigned char)(color.b * 0.92f), 255 };
         const Vector3 base = { (float)(c.x - lo.x), (float)(c.y - lo.y), (float)(c.z - lo.z) };
         // Cube faces, clipped by the shape's planes; full faces against a full neighbour are hidden.
         for (int f = 0; f < 6; ++f) {
@@ -546,19 +566,21 @@ int PlotSet::partCount() const {
 void PlotSet::save(FILE* f) const {
     int live = 0;
     for (const auto& p : plots) if (p->partCount() > 0) ++live;
-    fprintf(f, "plots %d\n", live);
+    fprintf(f, "plots2 %d\n", live); // "plots2": parts carry their material (old "plots" saves load as concrete)
     for (const auto& p : plots) {
         if (p->partCount() == 0) continue;
         fprintf(f, "plot %u %.4f %.4f %.4f %d\n", p->id, p->origin.x, p->origin.y, p->origin.z, p->partCount());
         for (const Part& part : p->parts)
-            if (part.type != PartType::Count) fprintf(f, "%d %d %d %d %d\n", (int)part.type, part.origin.x, part.origin.y, part.origin.z, part.orient);
+            if (part.type != PartType::Count) fprintf(f, "%d %d %d %d %d %d\n", (int)part.type, part.origin.x, part.origin.y, part.origin.z, part.orient, part.material);
     }
 }
 
 bool PlotSet::load(FILE* f) {
     plots.clear();
     int n = 0;
-    if (fscanf(f, " plots %d", &n) != 1) return false;
+    char tag[16] = {};
+    if (fscanf(f, " %15s %d", tag, &n) != 2 || (strcmp(tag, "plots") != 0 && strcmp(tag, "plots2") != 0)) return false;
+    const bool materials = strcmp(tag, "plots2") == 0;
     for (int i = 0; i < n; ++i) {
         unsigned int id = 0;
         double ox, oy, oz;
@@ -574,9 +596,12 @@ bool PlotSet::load(FILE* f) {
         p->east = Vector3Normalize(p->east);
         p->north = Vector3CrossProduct(p->up, p->east);
         for (int k = 0; k < count; ++k) {
-            int t, x, y, z, o;
+            int t, x, y, z, o, m = 0;
             if (fscanf(f, " %d %d %d %d %d", &t, &x, &y, &z, &o) != 5) return false;
-            p->place({ (PartType)t, { x, y, z }, (uint8_t)o });
+            if (materials && fscanf(f, " %d", &m) != 1) return false;
+            // Old saves: beams were iron.
+            if (!materials && (t == (int)PartType::Beam2 || t == (int)PartType::Beam4 || t == (int)PartType::Beam8)) m = BuildMaterialForItem("iron_plate");
+            p->place({ (PartType)t, { x, y, z }, (uint8_t)o, (uint8_t)std::clamp(m, 0, BuildMaterialCount() - 1) });
         }
         nextId = std::max(nextId, id + 1);
         plots.push_back(std::move(p));

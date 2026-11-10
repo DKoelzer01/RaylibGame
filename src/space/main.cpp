@@ -27,6 +27,7 @@
 #include "buildtool.h"
 #include "progression_test.h"
 #include "menus.h"
+#include "hotbar.h"
 #include "factory.h"
 
 #if defined(PLATFORM_DESKTOP)
@@ -140,6 +141,7 @@ int main(int argc, char** argv)
     bool benchMenus = false;       // --test-menus: main menu, new game, pause, save & quit, load
     bool benchWater = false;       // --test-water: rivers and ponds near the start, their beds and clay
     bool benchFlyFollow = false;   // --test-flyfollow: the fly camera rides its reference body
+    bool benchHotbar = false;      // --test-hotbar: materials and consumables from the hotbar
     int ffPhase = 0;
     double ffStart = 0.0, ffDist0 = 0.0;
     DVec3 ffLocal0{};
@@ -251,6 +253,7 @@ int main(int argc, char** argv)
         if (std::string(argv[i]) == "--test-menus") benchMenus = true;
         if (std::string(argv[i]) == "--test-water") benchWater = true;
         if (std::string(argv[i]) == "--test-flyfollow") benchFlyFollow = true;
+        if (std::string(argv[i]) == "--test-hotbar") benchHotbar = true;
         if (std::string(argv[i]) == "--test-trees") benchTrees = true;
         if (std::string(argv[i]) == "--test-chop") benchChop = true;
         if (std::string(argv[i]) == "--test-persist" && i + 1 < argc) benchPersist = atoi(argv[i + 1]);
@@ -927,6 +930,57 @@ int main(int argc, char** argv)
                                c.name, localDrift, distDrift, 3.0 * Vector3Length(c.body->linearVelocity), ok ? "ok" : "BAD");
                         ffPhase++;
                     }
+                } else if (benchHotbar && WorldIdle()) {
+                    // --test-hotbar: materials from the hotbar (any shape costs its material), a consumable,
+                    // the foundation not digging outside the part, and materials kept through a save.
+                    Planetoid* p = dynamic_cast<Planetoid*>(world.objects[0].get());
+                    const PlanetField* pf = p ? dynamic_cast<const PlanetField*>(p->field.get()) : nullptr;
+                    bool ok = pf != nullptr;
+                    if (ok) {
+                        player.spawnOn(world, *p, StartSpawnDir(*p));
+                        inventory.clear();
+                        Hotbar_Reset();
+                        inventory.add("concrete", 20); inventory.add("wood", 10); inventory.add("oxygen_canister", 1);
+                        const Vector3 home = StartSpawnDirLocal(*p);
+                        const Vector3 t1 = Vector3Normalize(Vector3CrossProduct(home, { 0, 1, 0 }));
+                        const Vector3 d = Vector3Normalize(Vector3Add(home, Vector3Scale(t1, 10.0f / pf->radius)));
+                        if (!p->plots) p->plots = std::make_unique<PlotSet>();
+                        Plot* plot = p->plots->plotFor(Vector3Scale(d, pf->radius + pf->elevation(d)), 0.0f, true);
+                        Hotbar_Press(1, false); // key 2: concrete
+                        const bool concreteMode = buildTool.active && GetBuildMaterial(buildTool.material).item == std::string("concrete");
+                        const int c0 = inventory.count("concrete");
+                        const bool slope = BuildTool_Place(*p, *plot, { PartType::Slope, { 0, 0, 0 }, 0, (uint8_t)buildTool.material }, true);
+                        const int c1 = inventory.count("concrete");
+                        Hotbar_Press(3, false); // key 4: wood
+                        const int w0 = inventory.count("wood");
+                        const bool beam = BuildTool_Place(*p, *plot, { PartType::Beam4, { 2, 0, 0 }, 0, (uint8_t)buildTool.material }, true);
+                        const int w1 = inventory.count("wood");
+                        // Foundation: the ground a little outside a 1 m block keeps its density.
+                        auto outside = [&](float off) { return plot->toBody({ -0.2f + off, 0.3f, 2.5f }); };
+                        const float before = p->densityAt(outside(0.0f));
+                        Hotbar_Press(1, false);
+                        const bool block = BuildTool_Place(*p, *plot, { PartType::Block, { 0, -1, 4 }, 0, (uint8_t)buildTool.material }, true);
+                        const float after = p->densityAt(outside(0.0f));
+                        survival.oxygen = 50.0f;
+                        Hotbar_Press(8, false); // key 9: oxygen canister
+                        const bool used = inventory.count("oxygen_canister") == 0 && survival.oxygen > 90.0f;
+                        Hotbar_Press(0, false); // key 1: terrain tool
+                        const bool toolMode = !buildTool.active;
+                        const bool saved = SaveWorld(world), loaded = saved && LoadWorldSave(world);
+                        Planetoid* q = dynamic_cast<Planetoid*>(world.objects[0].get());
+                        int woodParts = 0, concreteParts = 0;
+                        if (q && q->plots)
+                            for (auto& pl : q->plots->plots)
+                                for (const Part& part : pl->parts) {
+                                    if (part.type == PartType::Count) continue;
+                                    if (PartItem(part) == std::string("wood")) ++woodParts;
+                                    if (PartItem(part) == std::string("concrete")) ++concreteParts;
+                                }
+                        ok = concreteMode && slope && c0 - c1 == 1 && beam && w0 - w1 == 2 && block && fabsf(after - before) < 0.02f && used && toolMode && loaded && woodParts == 1 && concreteParts == 2;
+                        printf("bench: hotbar: concrete mode %d, slope -%d concrete, wood beam4 -%d wood, block placed %d (ground outside %.3f -> %.3f), O2 used %d, tool mode %d, save/load %d/%d: %d wood + %d concrete parts -> %s\n",
+                               concreteMode, c0 - c1, w0 - w1, block, before, after, used, toolMode, saved, loaded, woodParts, concreteParts, ok ? "PASS" : "FAIL");
+                    }
+                    benchHotbar = false;
                 } else if (benchHole && (holePhase > 0 || WorldIdle())) { // edits keep the world busy: run on
                     // --test-hole: on the spinning planet, dig a pit ahead and walk into it, then build a
                     // pillar under your feet while jumping. Neither may hurt you (impacts are measured
@@ -1454,7 +1508,7 @@ int main(int argc, char** argv)
                         }
                         benchWalkSeconds = 0.0;
                     }
-                } else if ((WorldIdle() && benchDigStrokes == 0 && !benchSaveLoad && benchWalkSeconds <= 0.0 && benchMineStrokes == 0 && minePhase != 2 && benchFlySeconds <= 0.0 && !benchSuffocate && benchOrbitSeconds <= 0.0 && !benchRide && !benchPark && !benchGravity && !benchPrecision && !benchMantle && !benchAirJump && !benchMoon && !benchHole && !benchWall && !benchMenus && !benchWater && !benchFlyFollow && !benchTrees && !benchChop && benchPersist == 0 && benchBuild == 0 && benchFactory == 0 && !benchProgression) || GetTime() > 600.0) {
+                } else if ((WorldIdle() && benchDigStrokes == 0 && !benchSaveLoad && benchWalkSeconds <= 0.0 && benchMineStrokes == 0 && minePhase != 2 && benchFlySeconds <= 0.0 && !benchSuffocate && benchOrbitSeconds <= 0.0 && !benchRide && !benchPark && !benchGravity && !benchPrecision && !benchMantle && !benchAirJump && !benchMoon && !benchHole && !benchWall && !benchMenus && !benchWater && !benchFlyFollow && !benchHotbar && !benchTrees && !benchChop && benchPersist == 0 && benchBuild == 0 && benchFactory == 0 && !benchProgression) || GetTime() > 600.0) {
                     benchStart = GetTime();
                     printf("bench: world ready after %.2f s (%d chunks, avg build %.2f ms of which sampling %.2f ms, %d worker threads)\n",
                         GetWorldStats().lastGenerationSeconds, GetWorldStats().chunks, GetWorldStats().avgBuildMs, GetWorldStats().avgSampleMs, GetWorldStats().workerThreads);
@@ -1697,6 +1751,7 @@ int main(int argc, char** argv)
                 spinPhase = 3;
             }
         }
+        if (gameState == 1) Hotbar_Update(world, gameInput && alive, ship.piloted);
         if (gameState == 1) BuildTool_Update(world, gameInput && alive, !ship.piloted && !player.flyMode && !telescope.active && alive);
         if (gameState == 1) TerrainTool_Update(world, gameInput && alive, !ship.piloted && !telescope.active && !buildTool.active); // F5/F9 work aboard too
 
@@ -1779,6 +1834,7 @@ int main(int argc, char** argv)
                 world.drawUI(gameState);
                 Telescope_DrawHUD(world);
                 BuildTool_DrawHUD();
+                Hotbar_DrawHUD(ship.piloted);
                 Machine_DrawHUD();
                 if (!ship.piloted && !telescope.active && !buildTool.active) TerrainTool_DrawHUD();
                 GameUI_DrawHUD(world);
@@ -1786,7 +1842,7 @@ int main(int argc, char** argv)
                 Objectives_DrawHUD();
                 if (!ship.piloted && ship.playerInRange(world, (player.position - world.renderOrigin).toFloat(), 5.0f))
                     DrawText("[E] Board ship", GetScreenWidth() / 2 - 60, GetScreenHeight() / 2 + 40, 20, SKYBLUE);
-                if (ship.piloted) DrawText("SHIP: WASD thrust  Space/Ctrl up/down  mouse steer  Z/C roll  Shift boost  X brake  L lights  [2] power cell  E exit",
+                if (ship.piloted) DrawText("SHIP: WASD thrust  Space/Ctrl up/down  mouse steer  Z/C roll  Shift boost  X brake  L lights  0 power cell (hotbar)  E exit",
                                            10, GetScreenHeight() - 30, 18, Fade(SKYBLUE, 0.9f));
                 if (!bench && !uiOpen) SetMousePosition(GetScreenWidth()/2, GetScreenHeight()/2);
             } else if (gameState == 2) {
