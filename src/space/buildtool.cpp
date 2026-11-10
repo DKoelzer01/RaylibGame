@@ -47,7 +47,8 @@ static void LayFoundation(Planetoid& body, Plot& plot, const Part& part) {
     std::vector<TerrainEdit> edits;
     for (const auto& c : fp) {
         const Vector3 centre = plot.toBody({ (c.first.x + 0.5f) * kCellSize, (c.first.y + 0.5f) * kCellSize, (c.first.z + 0.5f) * kCellSize });
-        if (body.densityAt(centre) > ISO_LEVEL - 0.15f) edits.push_back({ centre, 0.55f, -0.8f });
+        // Clear only inside the cell (a 0.55 m brush dug ~0.3 m past the part into whatever it was built against).
+        if (body.densityAt(centre) > ISO_LEVEL - 0.15f) edits.push_back({ centre, 0.3f, -1.6f });
         const bool bottom = plot.partAt({ c.first.x, c.first.y - 1, c.first.z }) < 0;
         if (bottom) {
             // Only a small gap to real ground is filled (air just under the part, ground within ~1 m);
@@ -63,8 +64,9 @@ static void LayFoundation(Planetoid& body, Plot& plot, const Part& part) {
 bool BuildTool_Place(Planetoid& body, Plot& plot, const Part& part, bool charge) {
     if (!plot.canPlace(part)) return false;
     const PartType t = part.type;
-    if (charge && !terrainTool.creative && !inventory.remove(PartCostItem(t), PartCostCount(t))) {
-        GameUI_Toast(TextFormat("Need %d %s for a %s", PartCostCount(t), PartCostItem(t), PartName(t)));
+    const char* item = PartItem(part);
+    if (charge && !terrainTool.creative && !inventory.remove(item, PartCostCount(t))) {
+        GameUI_Toast(TextFormat("Need %d %s for a %s", PartCostCount(t), item, PartName(t)));
         Audio_Play(Sfx::Error, 0.5f);
         return false;
     }
@@ -78,15 +80,15 @@ void BuildTool_Update(Scene& world, bool inputEnabled, bool usable) {
     if (!usable) { buildTool.active = false; return; }
     if (inputEnabled && IsKeyPressed(KEY_G)) {
         buildTool.active = !buildTool.active;
-        GameUI_Toast(buildTool.active ? "Build mode: wheel picks a part, R/V rotate, RMB place, LMB remove (G to leave)" : "Build mode off");
+        GameUI_Toast(buildTool.active ? "Build mode: wheel picks the shape, R/V rotate, RMB place, LMB remove (G to leave; the hotbar picks the material or machine)" : "Build mode off");
     }
     aim = Aim{};
     if (!buildTool.active) return;
     if (inputEnabled) {
         const float wheel = GetMouseWheelMove();
-        const int n = (int)PartType::Count;
-        if (wheel > 0) buildTool.part = (buildTool.part + 1) % n;
-        if (wheel < 0) buildTool.part = (buildTool.part + n - 1) % n;
+        // The wheel picks the shape (any shape from the selected material); machines come from the hotbar.
+        if (IsShape((PartType)buildTool.part) && wheel > 0) buildTool.part = (buildTool.part + 1) % kShapeCount;
+        if (IsShape((PartType)buildTool.part) && wheel < 0) buildTool.part = (buildTool.part + kShapeCount - 1) % kShapeCount;
         if (IsKeyPressed(KEY_R)) buildTool.orient = RotateOrientation(buildTool.orient, 1);
         if (IsKeyPressed(KEY_V)) buildTool.orient = RotateOrientation(buildTool.orient, 0);
     }
@@ -95,7 +97,7 @@ void BuildTool_Update(Scene& world, bool inputEnabled, bool usable) {
     const Vector3 dir = Vector3Normalize(Vector3Subtract(world.camera.target, world.camera.position));
     const Vector3 lo = body->toLocal(world.camera.position), ld = body->dirToLocal(dir);
     aim.body = body;
-    aim.part = { (PartType)buildTool.part, { 0, 0, 0 }, (uint8_t)buildTool.orient };
+    aim.part = { (PartType)buildTool.part, { 0, 0, 0 }, (uint8_t)buildTool.orient, (uint8_t)buildTool.material };
 
     // Nearest part face along the ray, and the terrain.
     float bestPart = buildTool.reach;
@@ -139,9 +141,9 @@ void BuildTool_Update(Scene& world, bool inputEnabled, bool usable) {
         }
         if (BuildTool_Place(*body, *target, aim.part, true)) Audio_Play(Sfx::Build, 0.5f, 1.2f);
     } else if (IsMouseButtonPressed(MOUSE_BUTTON_LEFT) && aim.removePlot && aim.removePart >= 0) {
-        const PartType t = aim.removePlot->parts[aim.removePart].type;
+        const Part removed = aim.removePlot->parts[aim.removePart];
         if (aim.removePlot->remove(aim.removePart)) {
-            if (!terrainTool.creative) inventory.add(PartCostItem(t), PartCostCount(t));
+            if (!terrainTool.creative) inventory.add(PartItem(removed), PartCostCount(removed.type));
             Audio_Play(Sfx::Dig, 0.5f, 1.3f);
         }
     }
@@ -185,9 +187,14 @@ void BuildTool_DrawHUD() {
     const int cx = GetScreenWidth() / 2, cy = GetScreenHeight() / 2;
     DrawLine(cx - 8, cy, cx + 8, cy, RAYWHITE);
     DrawLine(cx, cy - 8, cx, cy + 8, RAYWHITE);
-    DrawText(TextFormat("BUILD  %s  (%d %s, have %d)", PartName(t), PartCostCount(t), PartCostItem(t), inventory.count(PartCostItem(t))),
-             cx - 200, GetScreenHeight() - 110, 22, SKYBLUE);
-    DrawText("wheel part   R / V rotate   RMB place   LMB remove   G leave", 10, GetScreenHeight() - 30, 20, Fade(RAYWHITE, 0.7f));
+    const Part p{ t, { 0, 0, 0 }, 0, (uint8_t)buildTool.material };
+    const char* item = PartItem(p);
+    const char* label = IsShape(t) ? TextFormat("%s %s", GetBuildMaterial(buildTool.material).name, PartName(t)) : PartName(t);
+    const char* line = TextFormat("BUILD  %s  (%d %s, have %d)", label, PartCostCount(t), item, inventory.count(item));
+    DrawText(line, cx - MeasureText(line, 22) / 2, GetScreenHeight() - 150, 22, SKYBLUE);
+    DrawText(IsShape(t) ? "wheel shape   R / V rotate   RMB place   LMB remove   G leave   1-0 hotbar"
+                        : "R / V rotate   RMB place   LMB remove   G leave   1-0 hotbar",
+             10, GetScreenHeight() - 30, 20, Fade(RAYWHITE, 0.7f));
 }
 
 // ---------------------------------------------------------------------------------------------

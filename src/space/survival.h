@@ -29,6 +29,9 @@ struct SurvivalState {
 extern SurvivalState survival;
 
 void Survival_Update(Scene& world, float dt, bool inputEnabled);
+// Consumables (the hotbar uses them): oxygen canister, power cell (charges the ship while piloting).
+bool Survival_IsUsable(const std::string& id);
+bool Survival_UseItem(const std::string& id);
 void Survival_OnLanding(float impactSpeed);   // fall damage
 void Survival_Respawn(Scene& world);
 void Survival_DrawHUD();

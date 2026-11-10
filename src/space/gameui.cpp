@@ -1,4 +1,5 @@
 #include "gameui.h"
+#include "hotbar.h"
 #include "inventory.h"
 #include "player.h"
 #include "audio.h"
@@ -37,9 +38,14 @@ void GameUI_Draw(Scene&) {
             ImGui::ColorButton(("##c" + d.id).c_str(), ToImColor(d.color), ImGuiColorEditFlags_NoTooltip, ImVec2(14, 14));
             ImGui::SameLine();
             ImGui::Text("%-18s x%d", d.name.c_str(), n);
-            if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", d.description.c_str());
+            if (ImGui::IsItemHovered()) {
+                ImGui::SetTooltip("%s\n(press 1-0 to put it on the hotbar)", d.description.c_str());
+                const int k = Hotbar_KeySlot();
+                if (k >= 0) Hotbar_Bind(k, d.id);
+            }
         }
         if (!any) ImGui::TextDisabled("Empty. Dig with LMB to collect material.");
+        ImGui::TextDisabled("Hover an item, press 1-0: hotbar slot");
 
         ImGui::NextColumn();
         ImGui::TextUnformatted("Crafting");
