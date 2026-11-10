@@ -15,3 +15,5 @@ saves/
 log_*.txt
 CMakeUserPresets.json
 spin_*.png
+bench_*.png
+settings.txt
