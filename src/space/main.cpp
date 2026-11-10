@@ -129,6 +129,8 @@ int main(int argc, char** argv)
     DVec3 walkFrom{};
     float walkMinDensity = 0, walkMaxDensity = 0;
     int walkGroundedFrames = 0, walkFrames = 0;
+    double walkTargetM = 0.0, walkPath = 0.0; // --test-planet-walk M: walk M metres (path, body frame), then PASS/FAIL
+    DVec3 walkLast{};
     Vector3 benchCamOffset = { -70.0f, 35.0f, 70.0f }; // --cam dx dy dz: bench camera offset from the planetoid
     for (int i = 1; i < argc; ++i) {
         if (std::string(argv[i]) == "--bench") benchSeconds = (i + 1 < argc) ? atof(argv[i + 1]) : 10.0;
@@ -140,6 +142,7 @@ int main(int argc, char** argv)
         if (std::string(argv[i]) == "--test-dig" && i + 1 < argc) benchDigStrokes = atoi(argv[i + 1]);
         if (std::string(argv[i]) == "--test-saveload") benchSaveLoad = true;
         if (std::string(argv[i]) == "--test-walk" && i + 1 < argc) benchWalkSeconds = atof(argv[i + 1]);
+        if (std::string(argv[i]) == "--test-planet-walk" && i + 1 < argc) { walkTargetM = atof(argv[i + 1]); benchWalkSeconds = 600.0; } // gate: 1 km on the planet
         if (std::string(argv[i]) == "--bench-walk") benchWalkMode = true;
         if (std::string(argv[i]) == "--spawn-dir" && i + 3 < argc) { hasSpawnDir = true; spawnDir = Vector3Normalize({ (float)atof(argv[i + 1]), (float)atof(argv[i + 2]), (float)atof(argv[i + 3]) }); }
         if (std::string(argv[i]) == "--test-suffocate") benchSuffocate = true;
@@ -318,6 +321,7 @@ int main(int argc, char** argv)
                         ship.parkNear(world, Vector3Add(feet, Vector3Scale(player.forward, 30.0f)), player.up); // out of life-support range
                         survival.oxygen = 0.0f;
                         survival.health = 15.0f;
+                        survival.breathableAltitude = -1e9f; // no air to breathe (the planet's would refill the suit)
                         suffocateStart = GetTime();
                     } else if (survival.deaths > 0 && !survival.dead) {
                         const float d = Vector3Distance((player.position - world.renderOrigin).toFloat(), ship.renderPos(world));
@@ -811,6 +815,7 @@ int main(int argc, char** argv)
                         walkStart = GetTime();
                         walkFrom = start->toLocalD(player.position); // body frame: the spin carries the walker too
                         walkMinDensity = 1e9f; walkMaxDensity = -1e9f; walkGroundedFrames = walkFrames = 0;
+                        walkLast = walkFrom; walkPath = 0.0;
                     }
                     Planetoid* start = dynamic_cast<Planetoid*>(world.objects[0].get());
                     const Vector3 feet = (player.position - world.renderOrigin).toFloat();
@@ -819,12 +824,20 @@ int main(int argc, char** argv)
                     walkMaxDensity = std::max(walkMaxDensity, d);
                     walkFrames++;
                     walkGroundedFrames += player.grounded ? 1 : 0;
-                    if (GetTime() - walkStart > benchWalkSeconds) {
+                    { const DVec3 here = start->toLocalD(player.position); walkPath += (here - walkLast).length(); walkLast = here; }
+                    if (GetTime() - walkStart > benchWalkSeconds || (walkTargetM > 0.0 && walkPath >= walkTargetM)) {
                         player.autoWalk = false;
                         const double dist = (start->toLocalD(player.position) - walkFrom).length();
                         const float alt = Vector3Distance(feet, start->position);
                         printf("bench: walked %.1f m in %.1f s, grounded %.0f%% of frames, density at body %.2f..%.2f (solid >= %.2f), %.1f m from centre\n",
-                               dist, benchWalkSeconds, 100.0 * walkGroundedFrames / std::max(1, walkFrames), walkMinDensity, walkMaxDensity, ISO_LEVEL, alt);
+                               dist, GetTime() - walkStart, 100.0 * walkGroundedFrames / std::max(1, walkFrames), walkMinDensity, walkMaxDensity, ISO_LEVEL, alt);
+                        if (walkTargetM > 0.0) {
+                            const double pct = 100.0 * walkGroundedFrames / std::max(1, walkFrames);
+                            const bool pass = walkPath >= walkTargetM && pct >= 90.0 && walkMaxDensity < ISO_LEVEL;
+                            printf("bench: planet walk %.0f m of %.0f m (path) in %.1f s, grounded %.0f%%, deepest body density %.2f (solid >= %.2f): %s\n",
+                                   walkPath, walkTargetM, GetTime() - walkStart, pct, walkMaxDensity, ISO_LEVEL, pass ? "PASS" : "FAIL");
+                            walkTargetM = 0.0;
+                        }
                         benchWalkSeconds = 0.0;
                     }
                 } else if ((WorldIdle() && benchDigStrokes == 0 && !benchSaveLoad && benchWalkSeconds <= 0.0 && benchMineStrokes == 0 && minePhase != 2 && benchFlySeconds <= 0.0 && !benchSuffocate && benchOrbitSeconds <= 0.0 && !benchRide && !benchPark && !benchGravity && !benchPrecision && !benchMantle && !benchAirJump && !benchMoon) || GetTime() > 180.0) {

@@ -1,6 +1,7 @@
 # RaylibGame
-A space open-world survival prototype on a from-scratch raylib voxel planetoid engine (marching
-cubes, Simplex fBm, octree LOD, shadowed lighting).
+A space open-world survival prototype on a from-scratch raylib voxel planet engine (marching
+cubes, Simplex fBm, octree LOD, shadowed lighting). You start on a 60 km home planet with a moon and an
+asteroid ring overhead.
 
 ## Layout
 - `src/engine/` - the reusable engine library (`engine` target): density fields, meshing/LOD, job
@@ -38,7 +39,8 @@ generated in the build directory for IntelliSense/clangd.
 | Space | jump; hold for jetpack |
 | E | board / exit the ship |
 | 1 / 2 | use oxygen canister / power cell |
-| Mouse wheel | brush size |
+| Mouse wheel | brush size (zoom while the telescope is up) |
+| T | raise / lower the telescope |
 | F5 / F9 | save / load (`saves/world.sav`) |
 | Esc | pause; R resumes |
 | F1 | debug panel (frame graph, streaming stats, sun/shadow/texture tweaks, brush, world regen by seed) |
@@ -47,8 +49,8 @@ generated in the build directory for IntelliSense/clangd.
 Shaders in `resources/` hot-reload when saved.
 
 ## How the terrain works
-- Each planetoid has an immutable `PlanetoidField` (`src/engine/voxel.*`): seeded fBm density with a radial
-  falloff, plus a material function (rock, regolith, ice, ore).
+- Each body has an immutable density field (`src/engine/voxel.*`): asteroids a `PlanetoidField` (seeded fBm density with a radial
+  falloff), planets and moons a `PlanetField` (below); each also gives the material at a point.
 - Terrain edits are spherical density brushes stored per planetoid. The field + edit list fully
   define the terrain, so a save file is just the generation settings and the edits.
 - Chunks (32^3 cells) are built on a worker pool (`src/engine/jobsystem.*`): sample density, marching cubes,
@@ -71,11 +73,11 @@ Shaders in `resources/` hot-reload when saved.
 - **Items & crafting** (`src/engine/inventory.*`, `resources/data/items.txt`, `recipes.txt`): mining yields
   items by voxel material (rock, regolith, ice, ore); building consumes stone/regolith/lunacrete.
   **Tab** opens inventory + crafting. Add items/recipes by editing the text files.
-- **Survival** (`src/space/survival.*`): suit oxygen drains outside the ship's life-support field (~5 min a
+- **Survival** (`src/space/survival.*`): suit oxygen drains outside the ship's life-support field and a planet's breathable air (~5 min a
   tank), suit power pays for recharging the jetpack and the headlamp, health drops when suffocating or from hard landings and
   crashes. Death respawns you at the ship. **1** uses an oxygen canister, **2** a power cell (charges
-  the ship instead while piloting). An objectives list guides the loop: mine ice, craft oxygen, board
-  the ship, fly to another asteroid, refine ore into power cells.
+  the ship instead while piloting). An objectives list guides the loop: dig stone, find iron ore, craft a power cell,
+  board the ship, fly to the moon, visit the asteroid ring.
 - **Ship** (`src/space/ship.*`): **E** to board/exit. 6-DOF flight (WASD, Space/Ctrl, mouse, Z/C roll,
   Shift boost, X brake) with flight assist, chase camera, terrain collision, crash damage, and an
   energy store. Once at rest on the ground it anchors to that body and rides its spin (position and
@@ -121,6 +123,7 @@ clears to magenta without a skybox and reports the share of pixels showing throu
 `--ui` opens the debug panel, `--overlay` the F3 overlay, `--nocull` disables
 frustum culling, `--test-dig N` carves a tunnel at the crosshair, `--test-saveload` saves and reloads,
 `--test-walk S` / `--test-stand S` spawn the player and walk/stand (reports grounding + penetration),
+`--test-planet-walk M` walks M metres on body 0 and prints PASS/FAIL (milestone 1 gate: 1000),
 `--test-mine N` digs N strokes at the feet, crafts everything possible and builds 3 strokes,
 `--test-fly S` autopilots the ship to the nearest other asteroid, `--test-suffocate` checks death/respawn,
 `--test-moon` (moon on its analytic orbit; standing and jumping on it), `--time-scale k` (bodies spin and orbit
