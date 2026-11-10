@@ -225,7 +225,7 @@ uint64_t PlantId(const TreeTileKey& k, int cell) {
 }
 TreeTileKey TileOfPlant(uint64_t id) { return { (int)(id >> 56), (int)((id >> 32) & 0xFFFFFF), (int)((id >> 8) & 0xFFFFFF) }; }
 
-void BuildTile(const PlanetField& f, const EditList& edits, const PlantRemovals& removed, const std::vector<Vector4>& clearings, double now, uint32_t seed, const TreeTileKey& key, TreeTile& out) {
+void BuildTile(const PlanetField& f, const TerrainDeltas& edits, const PlantRemovals& removed, const std::vector<Vector4>& clearings, double now, uint32_t seed, const TreeTileKey& key, TreeTile& out) {
     const float R = f.radius;
     const int N = TilesPerFace(R);
     const float da = 0.5f * PI / N, dc = da / kCells;
@@ -234,7 +234,7 @@ void BuildTile(const PlanetField& f, const EditList& edits, const PlantRemovals&
         const Vector3 cd = FaceDir(key.face, a0 + 0.5f * da, b0 + 0.5f * da);
         out.centre = Vector3Scale(cd, R + std::max(0.0f, f.elevation(cd, 16.0f)));
     }
-    auto solid = [&](Vector3 p) { return f.density(p, edits.data(), edits.size()) >= ISO_LEVEL; };
+    auto solid = [&](Vector3 p) { return f.density(p, &edits) >= ISO_LEVEL; };
     for (int ci = 0; ci < kCells; ++ci)
         for (int cj = 0; cj < kCells; ++cj) {
             uint32_t s = Hash(seed ^ Hash((uint32_t)key.face * 2654435761U ^ (uint32_t)(key.i * kCells + ci) * 40503U ^ (uint32_t)(key.j * kCells + cj) * 9973U));
@@ -329,7 +329,7 @@ struct TreeSystem::Shared {
 };
 
 TreeSystem::TreeSystem(std::shared_ptr<const PlanetField> f, unsigned int s)
-    : shared(std::make_shared<Shared>()), field(std::move(f)), seed(s), radius(field->radius), edits(std::make_shared<EditList>()),
+    : shared(std::make_shared<Shared>()), field(std::move(f)), seed(s), radius(field->radius), edits(std::make_shared<TerrainDeltas>()),
       removed(std::make_shared<PlantRemovals>()), clearings(std::make_shared<std::vector<Vector4>>()) {}
 
 TreeSystem::~TreeSystem() {
@@ -363,7 +363,8 @@ void TreeSystem::request(const TreeTileKey& key, TreeTile& tile, float priority)
     });
 }
 
-void TreeSystem::onEdit(Vector3 c, float r) {
+void TreeSystem::onEdit(Vector3 c, float r, std::shared_ptr<const TerrainDeltas> snapshot) {
+    edits = std::move(snapshot);
     for (auto& kv : tiles)
         if (Vector3Distance(kv.second.centre.x != 0.0f || kv.second.centre.y != 0.0f || kv.second.centre.z != 0.0f
                                 ? kv.second.centre : Vector3Scale(TreeTileCentreDir(kv.first, radius), radius), c) < r + kTreeTileSize)
@@ -372,10 +373,9 @@ void TreeSystem::onEdit(Vector3 c, float r) {
 
 void TreeSystem::update(Planetoid& body, Vector3 camLocal) {
     if (body.edits != edits) {
-        // Edits changed since last frame: rebuild the tiles each new edit reaches.
-        auto old = edits;
+        // Edits replaced without onEdit (a load): rebuild every tile against them.
         edits = body.edits;
-        for (size_t k = old->size(); k < edits->size(); ++k) onEdit((*edits)[k].center, (*edits)[k].radius);
+        for (auto& kv : tiles) request(kv.first, kv.second, 0.0f);
     }
     {
         std::lock_guard<std::mutex> lock(shared->mutex);

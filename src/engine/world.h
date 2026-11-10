@@ -83,6 +83,7 @@ const WorldStats& GetWorldStats();
 
 bool RaycastTerrain(Scene& world, Ray ray, float maxDistance, TerrainHit& hit);
 void ApplyTerrainEdit(Planetoid& planetoid, const TerrainEdit& edit); // local-space brush
+void ApplyTerrainEdits(Planetoid& planetoid, const TerrainEdit* edits, size_t count); // many strokes, one snapshot
 
 // Physics helpers (render-space points). Distance is approximate: (ISO - density) / |gradient|.
 bool TerrainSurfaceDistance(Planetoid& p, Vector3 renderPoint, float& dist, Vector3& outwardNormal);

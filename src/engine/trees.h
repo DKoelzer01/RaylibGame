@@ -102,7 +102,7 @@ public:
     // Instanced draw (tree shader bound by the scene; its view-projection set).
     void draw(const Planetoid& body, const RenderContext& ctx);
     // A terrain edit: rebuild tiles it reaches (trees lose their ground, new ground may grow some).
-    void onEdit(Vector3 localCentre, float radius);
+    void onEdit(Vector3 localCentre, float radius, std::shared_ptr<const TerrainDeltas> edits);
     // Trunks within `range` of a body-local point.
     void trunksNear(Vector3 local, float range, std::vector<Trunk>& out) const;
     // The nearest plant a body-local ray hits within maxDistance.
@@ -124,7 +124,7 @@ private:
     unsigned int seed;
     float radius;
     std::unordered_map<TreeTileKey, TreeTile, TreeTileKeyHash> tiles;
-    std::shared_ptr<const EditList> edits;     // the body's edits as last seen (tiles built with them)
+    std::shared_ptr<const TerrainDeltas> edits; // the body's edits as last seen (tiles built with them)
     std::shared_ptr<const PlantRemovals> removed; // copy-on-write, shared with tile builds
     std::shared_ptr<const std::vector<Vector4>> clearings; // xyz centre, w radius (body-local)
 
