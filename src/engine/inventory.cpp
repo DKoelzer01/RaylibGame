@@ -1,5 +1,7 @@
 #include "inventory.h"
 #include "utils/logger.h"
+#include "world.h"
+#include "voxel.h"
 
 #include <algorithm>
 #include <cmath>
@@ -118,14 +120,14 @@ const char* OreKindAt(Vector3 local, unsigned int seed) {
     return r < 35 ? "iron_ore" : r < 65 ? "copper_ore" : r < 85 ? "tin_ore" : "coal";
 }
 
-const char* ItemForMaterial(VoxelMaterial m) {
+const char* ItemForMaterial(VoxelMaterial m, bool soil) {
     switch (m) {
-        case VoxelMaterial::Regolith: return "regolith";
+        case VoxelMaterial::Regolith: return soil ? "dirt" : "regolith";
         case VoxelMaterial::Ice: return "ice";
         case VoxelMaterial::Ore: return "iron_ore";
         case VoxelMaterial::Sand: return "sand";
         case VoxelMaterial::Gravel: return "gravel";
-        case VoxelMaterial::Grass: return "regolith"; // turf: soil
+        case VoxelMaterial::Grass: return soil ? "dirt" : "regolith"; // turf: soil
         case VoxelMaterial::Snow: return "ice";
         default: return "stone";
     }
@@ -175,4 +177,9 @@ bool Inventory::craft(const Recipe& r) {
     for (auto& in : r.inputs) remove(in.first, in.second);
     add(r.output, r.outputCount);
     return true;
+}
+
+bool HasSoil(const Planetoid& p) {
+    const auto* f = dynamic_cast<const PlanetField*>(p.field.get());
+    return f && !f->moon;
 }

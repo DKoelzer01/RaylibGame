@@ -37,7 +37,9 @@ private:
 extern ItemDB itemDB;
 
 // What mining a voxel material yields.
-const char* ItemForMaterial(VoxelMaterial m);
+// `soil`: a living world (a planet, not a moon or an asteroid): its regolith is dirt.
+const char* ItemForMaterial(VoxelMaterial m, bool soil = false);
+bool HasSoil(const class Planetoid& p);
 // Which ore a vein holds at a body-local point (deposits ~48 m across), from the body's seed.
 const char* OreKindAt(Vector3 local, unsigned int seed);
 

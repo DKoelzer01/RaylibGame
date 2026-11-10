@@ -509,7 +509,7 @@ void Scene::drawScene(int gamestate) {
         // depth clear for the close range. One 0.5 m .. 60 km range resolved only ~12 m of depth at
         // 10 km, so far LOD seams and shorelines z-fought. Chunks straddling the split are drawn in
         // both passes; each pass clips to its range (and frustum-culls chunks outside it).
-        const double kNearSplit = 600.0; // with the 0.15 m near plane: ~0.14 m of depth resolution at the split
+        const double kNearSplit = 2000.0;
         {
             EndMode3D();
             rlSetClipPlanes(kNearSplit * 0.9, farDefault);
@@ -517,7 +517,6 @@ void Scene::drawScene(int gamestate) {
             const Frustum midFrustum = Frustum::fromViewProj(MatrixMultiply(rlGetMatrixModelview(), rlGetMatrixProjection()));
             ctx.frustum = &midFrustum;
             for (const auto& obj : objects) if (obj && !isFar(obj.get())) obj->draw(ctx);
-            drawTrees(1);
             rlDisableBackfaceCulling();
             BeginWaterStencil();
             for (const auto& obj : objects) if (obj && !isFar(obj.get())) obj->drawTransparent(ctx);

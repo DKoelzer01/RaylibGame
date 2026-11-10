@@ -9,7 +9,7 @@ telescope 1       = glass 2, iron_plate 2
 rope 1            = fibre 3
 concrete 2        = stone 2, sand 1
 # --- Tier ladder (quest book): hand crafting ---
-clay 1            = regolith 3
+clay 1            = dirt 3
 crucible_mold 1   = clay 4
 campfire 1        = stone 8, wood 4
 kiln 1            = stone 16, clay 8, fired_crucible 1

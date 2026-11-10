@@ -164,7 +164,7 @@ void Objectives_MarkVisitedBody(int i) { visitedBodies.insert(i); }
 
 void Objectives_Update(Scene& world) {
     QuestBook_Update();
-    if (inventory.count("stone") > 0 || inventory.count("regolith") > 0) objectives[0].done = true;
+    if (inventory.count("stone") > 0 || inventory.count("regolith") > 0 || inventory.count("dirt") > 0) objectives[0].done = true;
     if (inventory.count("iron_ore") > 0) objectives[1].done = true;
     if (inventory.count("power_cell") > 0) objectives[2].done = true;
     if (ship.piloted) objectives[3].done = true;
