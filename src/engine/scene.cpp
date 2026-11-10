@@ -45,6 +45,13 @@ void HotShader::unload() {
 // A real depth texture gives 24-bit precision instead of the 8 bits a colour channel would.
 // ---------------------------------------------------------------------------------------------
 
+// Depth-only clear between the far and near passes (rlgl only clears colour and depth together).
+extern "C" { typedef void (*PfnClear)(unsigned int); extern PfnClear glad_glClear; }
+static void ClearDepthBuffer() {
+    rlDrawRenderBatchActive();
+    if (glad_glClear) glad_glClear(0x00000100); // GL_DEPTH_BUFFER_BIT
+}
+
 static RenderTexture2D LoadShadowmapRenderTexture(int width, int height) {
     RenderTexture2D target = { 0 };
     target.id = rlLoadFramebuffer();
@@ -134,6 +141,7 @@ void Scene::applyLightingShader() {
     locPalette    = GetShaderLocation(s, "palette");
     locFogColor   = GetShaderLocation(s, "fogColor");
     locFogDensity = GetShaderLocation(s, "fogDensity");
+    locFogShell = GetShaderLocation(s, "fogShell");
     locChunkOrigin = GetShaderLocation(s, "chunkTexOrigin");
     locChunkClip = GetShaderLocation(s, "chunkClipMax");
     locTerrainLayers = GetShaderLocation(s, "terrainLayers");
@@ -305,6 +313,12 @@ void Scene::drawScene(int gamestate) {
     }
     SetShaderValue(s, locFogColor, &effFog, SHADER_UNIFORM_VEC3);
     SetShaderValue(s, locFogDensity, &effFogDensity, SHADER_UNIFORM_FLOAT);
+    {
+        const bool underwater = atmosphere.enabled && effFogDensity >= 0.06f;
+        const float shell[4] = { atmosphere.centre.x, atmosphere.centre.y, atmosphere.centre.z,
+                                 atmosphere.enabled && !underwater ? atmosphere.radius + atmosphere.hazeHeight : 0.0f };
+        SetShaderValue(s, locFogShell, shell, SHADER_UNIFORM_VEC4);
+    }
     const float ambient[4] = { effAmbient.x, effAmbient.y, effAmbient.z, 1.0f };
     SetShaderValue(s, locAmbient, ambient, SHADER_UNIFORM_VEC4);
     SetShaderValue(s, locViewPos, &camera.position, SHADER_UNIFORM_VEC3);
@@ -332,11 +346,29 @@ void Scene::drawScene(int gamestate) {
         rlEnableBackfaceCulling();
         rlEnableDepthMask();
 
-        const Frustum viewFrustum = Frustum::fromViewProj(MatrixMultiply(rlGetMatrixModelview(), rlGetMatrixProjection()));
+        // Far pass: bodies whose nearest possible surface is beyond kFarSplit (the moon, the ring,
+        // the planet seen from orbit) are drawn first with clip planes fitted to them, then the depth
+        // buffer is cleared for the near pass. One depth range from 0.5 m to 1000 km would leave
+        // the near terrain no precision.
+        const double kFarSplit = 20000.0;
+        std::vector<Object*> farBodies;
+        double farMin = 1e30, farMax = 0.0;
+        for (const auto& obj : objects) {
+            const Planetoid* p = dynamic_cast<const Planetoid*>(obj.get());
+            if (!p || !p->field) continue;
+            const double d = Vector3Distance(camera.position, p->position);
+            const double rMax = p->field->maxRadius() * p->scale, rOcc = p->field->occluderRadius() * p->scale;
+            const double dMin = d - rMax;
+            if (dMin < kFarSplit) continue;
+            // Farthest visible point: over the body's horizon (its occluder) to the tallest peaks.
+            const double horizon = sqrt(std::max(0.0, d * d - rOcc * rOcc)) + sqrt(std::max(0.0, rMax * rMax - rOcc * rOcc));
+            farBodies.push_back(obj.get());
+            farMin = std::min(farMin, dMin);
+            farMax = std::max(farMax, std::min(d + rMax, horizon));
+        }
         RenderContext ctx;
         ctx.terrainMaterial = &terrainMaterial;
         ctx.depthMaterial = &depthMaterial;
-        ctx.frustum = &viewFrustum;
         ctx.drawCalls = &drawCalls;
         ctx.chunkOriginLoc = locChunkOrigin;
         ctx.chunkClipLoc = locChunkClip;
@@ -347,7 +379,26 @@ void Scene::drawScene(int gamestate) {
         ctx.paletteLoc = locPalette;
         ctx.sunOccluderLoc = locSunOccluder;
         ctx.scenePalette = materialPalette;
-        for (const auto& obj : objects) if (obj) obj->draw(ctx);
+        auto isFar = [&](const Object* o) { return std::find(farBodies.begin(), farBodies.end(), o) != farBodies.end(); };
+        if (!farBodies.empty()) {
+            EndMode3D();
+            const double nearDefault = rlGetCullDistanceNear(), farDefault = rlGetCullDistanceFar();
+            rlSetClipPlanes(std::max(1.0, farMin * 0.9), farMax * 1.05 + 100.0);
+            BeginMode3D(camera);
+            const Frustum farFrustum = Frustum::fromViewProj(MatrixMultiply(rlGetMatrixModelview(), rlGetMatrixProjection()));
+            ctx.frustum = &farFrustum;
+            for (Object* o : farBodies) o->draw(ctx);
+            EndMode3D();
+            ClearDepthBuffer();
+            rlSetClipPlanes(nearDefault, farDefault);
+            BeginMode3D(camera);
+        }
+
+        const Frustum viewFrustum = Frustum::fromViewProj(MatrixMultiply(rlGetMatrixModelview(), rlGetMatrixProjection()));
+        ctx.terrainMaterial = &terrainMaterial;
+        ctx.depthMaterial = &depthMaterial;
+        ctx.frustum = &viewFrustum;
+        for (const auto& obj : objects) if (obj && !isFar(obj.get())) obj->draw(ctx);
         for (const auto& obj : rootObject.children) if (obj) obj->draw(ctx);
 
         // Transparent pass (sea surfaces) after everything opaque. Depth writes stay on: where LOD
@@ -368,7 +419,7 @@ void Scene::drawScene(int gamestate) {
             ctx.waterClipLoc = GetShaderLocation(ws, "chunkClipMax");
             ctx.waterOccluderLoc = GetShaderLocation(ws, "sunOccluder");
             rlDisableBackfaceCulling();
-            for (const auto& obj : objects) if (obj) obj->drawTransparent(ctx);
+            for (const auto& obj : objects) if (obj && !isFar(obj.get())) obj->drawTransparent(ctx);
             rlEnableBackfaceCulling();
         }
 

@@ -38,8 +38,14 @@ bool ReloadSystemDef();        // worldGen.bodiesPath -> worldGen.system (+ over
 
 struct LodSettings {
     float lodFactor = 2.0f; // split a node while the camera is closer than lodFactor * node size
+    // Zoomed view (telescope): nodes inside the view cone refine as if zoom times closer. Set with
+    // SetLodZoom, which re-selects LOD when the zoom or the aim changes.
+    float zoom = 1.0f;
+    Vector3 zoomDir = { 0, 0, 1 };  // render-space view direction
+    float zoomHalfAngle = 0.0f;     // rad, to the screen corners
 };
 extern LodSettings lodSettings;
+void SetLodZoom(Scene& world, float zoom, Vector3 dir, float halfAngle); // zoom 1: off
 
 struct WorldStats {
     int queuedJobs = 0, runningJobs = 0, pendingUploads = 0, uploadsLastFrame = 0, workerThreads = 0;

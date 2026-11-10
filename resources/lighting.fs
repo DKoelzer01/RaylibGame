@@ -43,6 +43,7 @@ uniform vec3 chunkClipMax;      // chunk-local: discard beyond this (see Chunk::
 uniform vec4 sunOccluder;       // planet: render-space centre + radius of a sphere that blocks the sun (w = 0: none)
 uniform vec3 fogColor;          // linear
 uniform float fogDensity;       // 0 = off
+uniform vec4 fogShell;          // atmosphere: render-space centre + outer radius (w = 0: fog the whole distance)
 
 out vec4 finalColor;
 
@@ -225,7 +226,17 @@ void main()
     }
 
     vec3 color = ambient.rgb * albedo * ao * fragSky + direct + emissive;
-    float fog = 1.0 - exp(-fogDensity * length(viewPos - fragPosition));
+    // Fog over the part of the view ray inside the air (fogShell: render-space centre + outer radius;
+    // w = 0: the whole distance), so a moon or ring far beyond the atmosphere stays visible.
+    float fogDist = length(viewPos - fragPosition);
+    if (fogShell.w > 0.0) {
+        vec3 rd = (fragPosition - viewPos) / max(fogDist, 1e-3);
+        vec3 oc = viewPos - fogShell.xyz;
+        float b = dot(oc, rd), c = dot(oc, oc) - fogShell.w * fogShell.w, disc = b * b - c;
+        float t0 = disc > 0.0 ? -b - sqrt(disc) : 0.0, t1 = disc > 0.0 ? -b + sqrt(disc) : 0.0;
+        fogDist = max(0.0, min(t1, fogDist) - max(t0, 0.0));
+    }
+    float fog = 1.0 - exp(-fogDensity * fogDist);
     color = mix(color, fogColor, clamp(fog, 0.0, 1.0));
     finalColor = vec4(pow(color, vec3(1.0 / 2.2)), 1.0); // linear -> sRGB
 }

@@ -109,9 +109,9 @@ void Player::update(Scene& world, bool inputEnabled, float dt) {
     if (autoWalk) wish = Vector3Normalize(Vector3Subtract(forward, Vector3Scale(up, Vector3DotProduct(forward, up))));
     if (inputEnabled) {
         const Vector2 m = GetMouseDelta();
-        forward = RotateAround(forward, up, -m.x * mouseSensitivity);
+        forward = RotateAround(forward, up, -m.x * mouseSensitivity * lookScale);
         const Vector3 right = Vector3Normalize(Vector3CrossProduct(forward, up));
-        const Vector3 pitched = RotateAround(forward, right, -m.y * mouseSensitivity);
+        const Vector3 pitched = RotateAround(forward, right, -m.y * mouseSensitivity * lookScale);
         if (fabsf(Vector3DotProduct(pitched, up)) < 0.985f) forward = pitched; // clamp ~10 deg from straight up/down
 
         const Vector3 flat = Vector3Normalize(Vector3Subtract(forward, Vector3Scale(up, Vector3DotProduct(forward, up))));

@@ -273,7 +273,26 @@ static bool BehindHorizon(Vector3 cam, Vector3 lo, Vector3 hi, float ro) {
 }
 
 // Octree descent from the 8 root nodes: split while the camera is closer than lodFactor * node size.
-static void CollectDesired(const Planetoid& p, const NodeKey& key, Vector3 camLocal, std::vector<NodeKey>& out) {
+// The camera as the LOD sees it (body-local). With a zoomed view (telescope), nodes inside the view
+// cone are refined as if they were `zoom` times closer.
+struct LodView {
+    Vector3 cam;
+    Vector3 dir = { 0, 0, 1 };  // view direction (body-local)
+    float zoom = 1.0f;
+    float halfAngle = 0.0f;     // view cone half-angle (rad), to the screen corners
+};
+
+static float LodDistance(const LodView& v, Vector3 lo, Vector3 hi) {
+    const float d = DistanceToBox(v.cam, lo, hi);
+    if (v.zoom <= 1.0f || d <= 0.0f) return d;
+    const Vector3 to = Vector3Subtract(Vector3Scale(Vector3Add(lo, hi), 0.5f), v.cam);
+    const float len = Vector3Length(to), r = 0.87f * (hi.x - lo.x);
+    if (len <= r) return d / v.zoom;
+    const float ang = acosf(std::clamp(Vector3DotProduct(to, v.dir) / len, -1.0f, 1.0f));
+    return ang <= v.halfAngle + asinf(std::min(1.0f, r / len)) ? d / v.zoom : d;
+}
+
+static void CollectDesired(const Planetoid& p, const NodeKey& key, const LodView& v, std::vector<NodeKey>& out) {
     const Vector3 lo = key.origin();
     const Vector3 hi = Vector3AddValue(lo, key.size());
     if (p.flat) {
@@ -284,11 +303,11 @@ static void CollectDesired(const Planetoid& p, const NodeKey& key, Vector3 camLo
         if (DistanceToBox({ 0, 0, 0 }, lo, hi) > p.field->maxRadius() + 24.0f) return;
         const float far = Vector3Length({ std::max(fabsf(lo.x), fabsf(hi.x)), std::max(fabsf(lo.y), fabsf(hi.y)), std::max(fabsf(lo.z), fabsf(hi.z)) });
         if (far < p.field->minRadius()) return;
-        if (BehindHorizon(camLocal, lo, hi, p.field->occluderRadius() * p.scale)) return; // over the horizon
+        if (BehindHorizon(v.cam, lo, hi, p.field->occluderRadius() * p.scale)) return; // over the horizon
     }
-    if (key.level > 0 && DistanceToBox(camLocal, lo, hi) < lodSettings.lodFactor * key.size()) {
+    if (key.level > 0 && LodDistance(v, lo, hi) < lodSettings.lodFactor * key.size()) {
         for (int i = 0; i < 8; ++i)
-            CollectDesired(p, { key.level - 1, key.x * 2 + (i & 1), key.y * 2 + ((i >> 1) & 1), key.z * 2 + ((i >> 2) & 1) }, camLocal, out);
+            CollectDesired(p, { key.level - 1, key.x * 2 + (i & 1), key.y * 2 + ((i >> 1) & 1), key.z * 2 + ((i >> 2) & 1) }, v, out);
         return;
     }
     out.push_back(key);
@@ -299,6 +318,12 @@ static void CollectDesired(const Planetoid& p, const NodeKey& key, Vector3 camLo
 static void UpdateLod(Planetoid& p, Vector3 cameraRender) {
     PROFILE_FUNCTION();
     const Vector3 camLocal = p.toLocal(cameraRender);
+    LodView view{ camLocal };
+    if (lodSettings.zoom > 1.0f) {
+        view.dir = p.dirToLocal(lodSettings.zoomDir);
+        view.zoom = lodSettings.zoom;
+        view.halfAngle = lodSettings.zoomHalfAngle;
+    }
     // Nothing to do while the camera (in body space) stays within 1 m of the last selection and no
     // results or edits arrived: the smallest node splits at lodFactor * 32 m, so 1 m is invisible.
     if (!p.lodDirty && Vector3DistanceSqr(camLocal, p.lodCamLocal) < 1.0f) return;
@@ -312,10 +337,10 @@ static void UpdateLod(Planetoid& p, Vector3 cameraRender) {
         const int y0 = (int)floorf(p.minHeight / rs), y1 = (int)floorf(p.maxHeight / rs);
         for (int z = cz - 2; z <= cz + 2; ++z)
             for (int x = cx - 2; x <= cx + 2; ++x)
-                for (int y = y0; y <= y1; ++y) CollectDesired(p, { p.rootLevel, x, y, z }, camLocal, desired);
+                for (int y = y0; y <= y1; ++y) CollectDesired(p, { p.rootLevel, x, y, z }, view, desired);
     } else {
         for (int i = 0; i < 8; ++i)
-            CollectDesired(p, { p.rootLevel, -1 + (i & 1), -1 + ((i >> 1) & 1), -1 + ((i >> 2) & 1) }, camLocal, desired);
+            CollectDesired(p, { p.rootLevel, -1 + (i & 1), -1 + ((i >> 1) & 1), -1 + ((i >> 2) & 1) }, view, desired);
     }
     std::unordered_set<NodeKey> desiredSet(desired.begin(), desired.end());
 
@@ -323,7 +348,7 @@ static void UpdateLod(Planetoid& p, Vector3 cameraRender) {
         if (p.requestedVersion.find(k) != p.requestedVersion.end()) continue;
         const Vector3 lo = k.origin();
         // Nearest and coarsest first: fill the view quickly, then refine.
-        const float dist = DistanceToBox(camLocal, lo, Vector3AddValue(lo, k.size()));
+        const float dist = LodDistance(view, lo, Vector3AddValue(lo, k.size()));
         RequestNode(p, k, dist / (1.0f + k.level));
     }
 
@@ -399,6 +424,20 @@ static bool AnyLodPending(Scene& world) {
         if (auto* p = dynamic_cast<Planetoid*>(obj.get()))
             for (auto& n : p->nodes) if (!n.second->ready) return true;
     return false;
+}
+
+void SetLodZoom(Scene& world, float zoom, Vector3 dir, float halfAngle) {
+    zoom = std::max(1.0f, zoom);
+    LodSettings& s = lodSettings;
+    // Re-select when the zoom changes, or the aim moves a quarter of the view (finer is wasted work).
+    const bool changed = fabsf(zoom - s.zoom) > 0.01f * zoom ||
+                         (zoom > 1.0f && Vector3DotProduct(dir, s.zoomDir) < cosf(std::max(halfAngle, 1e-3f) * 0.25f));
+    s.zoom = zoom;
+    s.zoomHalfAngle = halfAngle;
+    if (!changed) return;
+    s.zoomDir = dir;
+    for (auto& obj : world.objects)
+        if (auto* p = dynamic_cast<Planetoid*>(obj.get())) p->lodDirty = true;
 }
 
 namespace { double worldTime = 0.0; }

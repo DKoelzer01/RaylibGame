@@ -44,6 +44,7 @@ struct Player {
     float jetpackFuelPerSec = 0.1f;   // full tank = 10 s of thrust
     float airControlAccel = 12.0f;    // m/s^2 toward the wished walking velocity while airborne in gravity
     float mouseSensitivity = 0.003f;
+    float lookScale = 1.0f;        // mouse look multiplier (the telescope slows it by its zoom)
 
     // Stand on the surface of `body` in direction `dir` from its centre (default: its +Y pole).
     void spawnOn(Scene& world, Planetoid& body, Vector3 dir = { 0, 1, 0 });

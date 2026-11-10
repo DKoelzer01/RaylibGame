@@ -99,6 +99,10 @@ Shaders in `resources/` hot-reload when saved.
   atmosphere: sky colour by sun angle and altitude, dusk glow, stars at night and in space, haze with
   distance, and dense blue fog underwater. It is the default start system: you start on temperate
   grassland (picked from the seed), where the air is breathable below ~15 km (the suit refills its oxygen).
+- **Telescope** (`src/space/telescope.*`): you start with one (craft more from glass and iron plate). T raises it, the
+  wheel zooms 4x-64x; terrain in view refines as if that much closer (`SetLodZoom`). Bodies more than 20 km away
+  draw in a separate far pass with their own depth range, and haze only counts the air the view ray passes
+  through (an 8 km layer), so the moon and the ring are visible from the ground.
 - Asteroid density is a displaced sphere (mean surface 0.72 R) with a uniform 0.25/voxel gradient: crisp surfaces and
   predictable dig depth.
 ## Benchmark / test mode

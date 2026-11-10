@@ -10,3 +10,5 @@ water           | Water           | 200 |  70,130,220 | Drinkable, and splits in
 oxygen_canister | Oxygen canister |  20 | 120,200,255 | Refills suit oxygen.
 power_cell      | Power cell      |  20 | 250,220, 80 | Recharges suit power.
 concrete        | Lunacrete       | 999 | 200,200,190 | Dense building material.
+glass           | Glass           | 200 | 190,225,235 | Melted from sand. Lenses and windows.
+telescope       | Telescope       |   1 | 200,170,110 | T to raise it, wheel to zoom. Spot the moon and the ring from the ground.

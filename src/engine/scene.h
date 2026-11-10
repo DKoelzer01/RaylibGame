@@ -61,6 +61,7 @@ class Scene {
             Vector3 centre = { 0, 0, 0 }; // render space
             float radius = 0.0f;          // sea level
             float height = 25000.0f;      // fades out from sea level to this altitude
+            float hazeHeight = 8000.0f;   // haze (fog) lies in this layer: looking up through it, distant bodies stay clear
         } atmosphere;
 
         Material terrainMaterial{};   // lighting shader + albedo/normal/rough-ao maps + shadow map
@@ -107,7 +108,7 @@ class Scene {
     private:
         void applyLightingShader();   // (re)binds material + static uniforms after a (re)load
         int locTerrainLayers = -1, locSunOccluder = -1;
-        int locViewPos = -1, locLightSpace = -1, locAmbient = -1, locShadowRes = -1, locTexScale = -1, locPalette = -1, locFogColor = -1, locFogDensity = -1, locChunkOrigin = -1, locChunkClip = -1;
+        int locViewPos = -1, locLightSpace = -1, locAmbient = -1, locShadowRes = -1, locTexScale = -1, locPalette = -1, locFogColor = -1, locFogDensity = -1, locFogShell = -1, locChunkOrigin = -1, locChunkClip = -1;
         bool terrainTexturesLoaded = false;
 };
 

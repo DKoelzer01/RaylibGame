@@ -21,6 +21,7 @@
 #include "ship.h"
 #include "camera.h"
 #include "survival.h"
+#include "telescope.h"
 
 #if defined(PLATFORM_DESKTOP)
     #define GLSL_VERSION            330
@@ -34,6 +35,26 @@ int gameState = 0; // 0: Main Menu, 1: Game, 2: Pause Menu
 
 // Where to start on the first body: planets pick temperate grassland (world direction, from the
 // body's seed); asteroids keep the old "top" spot.
+// --telescope Z [--telescope-target name]: bench view through the telescope at zoom Z, aimed at a
+// body (default: the moon) wherever it is in the sky.
+static float benchTelescope = 0.0f;
+static std::string benchTelescopeTarget = "luna";
+static void AimAtTelescopeTarget(Scene& world) {
+    for (auto& obj : world.objects) {
+        auto* p = dynamic_cast<Planetoid*>(obj.get());
+        if (!p || p->name != benchTelescopeTarget) continue;
+        const Vector3 eye = Vector3Add((player.position - world.renderOrigin).toFloat(), Vector3Scale(player.up, player.eyeHeight));
+        player.forward = Vector3Normalize(Vector3Subtract(p->position, eye));
+        static bool told = false;
+        if (!told) {
+            told = true;
+            printf("bench: telescope on %s, %.0f km away, %.1f deg above the horizon\n", p->name.c_str(),
+                   Vector3Distance(eye, p->position) / 1000.0f, asinf(Vector3DotProduct(player.forward, player.up)) * RAD2DEG);
+        }
+        return;
+    }
+}
+
 static Vector3 StartSpawnDir(Planetoid& body) {
     if (auto* field = dynamic_cast<const PlanetField*>(body.field.get())) return body.dirToWorld(field->findSpawnDir(body.seed));
     return { 0, 1, 0 };
@@ -194,6 +215,8 @@ int main(int argc, char** argv)
         if (std::string(argv[i]) == "--test-fly" && i + 1 < argc) benchFlySeconds = atof(argv[i + 1]);
         if (std::string(argv[i]) == "--test-mine" && i + 1 < argc) benchMineStrokes = atoi(argv[i + 1]);
         if (std::string(argv[i]) == "--test-stand" && i + 1 < argc) { benchWalkSeconds = atof(argv[i + 1]); benchStandOnly = true; }
+        if (std::string(argv[i]) == "--telescope" && i + 1 < argc) benchTelescope = (float)atof(argv[i + 1]);
+        if (std::string(argv[i]) == "--telescope-target" && i + 1 < argc) benchTelescopeTarget = argv[i + 1];
         if (std::string(argv[i]) == "--size" && i + 1 < argc) worldGen.size = atoi(argv[i + 1]);
         if (std::string(argv[i]) == "--bodies" && i + 1 < argc) worldGen.bodiesPath = argv[i + 1];   // system definition file
         if (std::string(argv[i]) == "--count" && i + 1 < argc) worldGen.count = atoi(argv[i + 1]);
@@ -245,6 +268,7 @@ int main(int argc, char** argv)
         const Vector3 feet = (player.position - world.renderOrigin).toFloat();
         ship.parkNear(world, Vector3Add(feet, Vector3Scale(player.forward, 8.0f)), player.up);
     }
+    if (inventory.count("telescope") == 0) inventory.add("telescope", 1); // starting kit (a save restores its own inventory)
     world.onDraw3D = [&world] { if (!ship.piloted) TerrainTool_Draw3D(); ship.draw(world); };
 
     const double benchWarmup = 2.0;
@@ -891,7 +915,10 @@ int main(int argc, char** argv)
                 const Vector3 t = Vector3Subtract(player.forward, Vector3Scale(player.up, Vector3DotProduct(player.forward, player.up)));
                 player.forward = Vector3Normalize(Vector3Subtract(Vector3Scale(Vector3Normalize(t), 0.8f), player.up)); // ~50 deg down
             }
+            if (bench && benchTelescope > 0.0f && !ship.piloted) AimAtTelescopeTarget(world);
             if (!ship.piloted) player.applyToCamera(world);
+            Telescope_Update(world, gameInput && alive, !ship.piloted && !player.flyMode && alive);
+            if (bench && benchTelescope > 0.0f) { Telescope_SetActive(world, true); telescope.zoom = benchTelescope; Telescope_Update(world, false, !ship.piloted); }
         }
 
         world.updateFloatingOrigin(); // keep the camera near render-space 0 (float precision)
@@ -987,7 +1014,7 @@ int main(int argc, char** argv)
                 spinPhase = 3;
             }
         }
-        if (gameState == 1) TerrainTool_Update(world, gameInput && alive, !ship.piloted); // F5/F9 work aboard too
+        if (gameState == 1) TerrainTool_Update(world, gameInput && alive, !ship.piloted && !telescope.active); // F5/F9 work aboard too
 
         switch(gameState) {
             case 0: // Main Menu
@@ -1033,7 +1060,8 @@ int main(int argc, char** argv)
             } else if (gameState == 1) {
                 { const double d0 = GetTime(); world.drawScene(gameState); if (benchMeasuring) benchDrawMs += (GetTime() - d0) * 1000.0; }
                 world.drawUI(gameState);
-                if (!ship.piloted) TerrainTool_DrawHUD();
+                Telescope_DrawHUD(world);
+                if (!ship.piloted && !telescope.active) TerrainTool_DrawHUD();
                 GameUI_DrawHUD(world);
                 Survival_DrawHUD();
                 Objectives_DrawHUD();
