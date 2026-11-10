@@ -106,6 +106,11 @@ int main(int argc, char** argv)
     float timeScale = 1.0f;        // --time-scale k: bodies spin and orbit k times faster (testing)
     bool benchMoon = false;        // --test-moon: moon orbit vs analytic, standing and jumping on the moon
     bool benchHole = false;        // --test-hole: walk into a fresh pit and build a pillar underfoot on the spinning planet
+    bool benchWall = false;        // --test-wall: walk into shaft and tunnel walls (no launches)
+    int wallPhase = 0;
+    double wallStart = 0.0, wallMaxStep = 0.0, wallMaxStepAt = 0.0;
+    float wallMaxImpact = 0.0f, wallMinHealth = 100.0f, wallMaxSpeed = 0.0f;
+    DVec3 wallLast{};
     bool benchTrees = false;       // --test-trees: walk into a tree trunk
     bool benchChop = false;        // --test-chop: fell a tree, save/reload, regrow
     int benchPersist = 0;          // --test-persist N: milestone 2 gate (N strokes, flat builds, fast save/load)
@@ -199,6 +204,7 @@ int main(int argc, char** argv)
         if (std::string(argv[i]) == "--test-airjump") benchAirJump = true;
         if (std::string(argv[i]) == "--test-moon") benchMoon = true;
         if (std::string(argv[i]) == "--test-hole") benchHole = true;
+        if (std::string(argv[i]) == "--test-wall") benchWall = true;
         if (std::string(argv[i]) == "--test-trees") benchTrees = true;
         if (std::string(argv[i]) == "--test-chop") benchChop = true;
         if (std::string(argv[i]) == "--test-persist" && i + 1 < argc) benchPersist = atoi(argv[i + 1]);
@@ -294,7 +300,7 @@ int main(int argc, char** argv)
     }
     SetExitKey(KEY_NULL);
     SetTraceLogLevel(LOG_WARNING); // Set log level to warning to reduce output noise
-    rlSetClipPlanes(0.5, 60000.0); // space scale: see other bodies kilometres away
+    rlSetClipPlanes(0.15, 60000.0); // space scale: see other bodies kilometres away; 0.15 m keeps walls out of the near plane at the player radius
     
     DebugUI_Init();
     if (!bench) Audio_Init();
@@ -731,6 +737,54 @@ int main(int argc, char** argv)
                         progPhase = 2;
                     } else if (progPhase == 2) {
                         if (Progression_Update(world) != 0) benchProgression = false;
+                    }
+                } else if (benchWall && (wallPhase > 0 || WorldIdle())) {
+                    // --test-wall: a 7 m shaft with a tunnel off its bottom; walk into the walls at eight
+                    // headings, jumping now and then. Nothing may launch you: the largest per-frame move
+                    // relative to the body, impacts, health and deaths are reported.
+                    Planetoid* p = dynamic_cast<Planetoid*>(world.objects[0].get());
+                    const double t = GetTime() - wallStart;
+                    const Vector3 feet = (player.position - world.renderOrigin).toFloat();
+                    const DVec3 local = p->toLocalD(player.position);
+                    if (wallPhase >= 2) {
+                        const double step = (local - wallLast).length();
+                        if (step > wallMaxStep) { wallMaxStep = step; wallMaxStepAt = t; }
+                        if (step > 0.2) printf("bench: wall: %.2f m move at %.2f s (grounded %d, dt %.4f, v %.1f, contact dot %.2f, body density at feet %.2f)\n", step, t, player.grounded ? 1 : 0, GetFrameTime(), Vector3Length(player.velocity), player.lastContactDot, p->densityAt(p->toLocal(Vector3Add(feet, Vector3Scale(player.up, player.radius)))));
+                        wallMaxImpact = std::max(wallMaxImpact, player.impactSpeed);
+                        wallMinHealth = std::min(wallMinHealth, survival.health);
+                        wallMaxSpeed = std::max(wallMaxSpeed, Vector3Length(Vector3Subtract(player.velocity, player.grounded ? Vector3{ 0, 0, 0 } : p->surfaceVelocity(feet))));
+                    }
+                    wallLast = local;
+                    if (wallPhase == 0) {
+                        player.spawnOn(world, *p, StartSpawnDir(*p));
+                        wallStart = GetTime();
+                        wallPhase = 1;
+                    } else if (wallPhase == 1 && t > 1.5 && player.grounded) {
+                        const Vector3 flat = Vector3Normalize(Vector3Subtract(player.forward, Vector3Scale(player.up, Vector3DotProduct(player.forward, player.up))));
+                        const Vector3 side = Vector3CrossProduct(flat, player.up);
+                        for (int k = 0; k < 6; ++k)      // the shaft, ~3.5 m wide
+                            ApplyTerrainEdit(*p, TerrainEdit{ p->toLocal(Vector3Add(feet, Vector3Add(Vector3Scale(flat, 4.0f), Vector3Scale(player.up, -1.2f * k)))), 1.8f, -10.0f });
+                        for (int k = 1; k < 5; ++k)      // a tunnel off its bottom, 2.4 m high
+                            ApplyTerrainEdit(*p, TerrainEdit{ p->toLocal(Vector3Add(feet, Vector3Add(Vector3Add(Vector3Scale(flat, 4.0f), Vector3Scale(side, 1.6f * k)), Vector3Scale(player.up, -5.6f)))), 1.25f, -10.0f });
+                        player.autoWalk = true;
+                        wallPhase = 2;
+                        wallStart = GetTime();
+                    } else if (wallPhase == 2 && t < 12.0) {
+                        // Turn 45 degrees a second (and jump every other second) while walking.
+                        const int k = (int)t;
+                        static int lastK = -1;
+                        if (k != lastK && t > 3.0) {
+                            lastK = k;
+                            const Matrix r = MatrixRotate(player.up, 45.0f * DEG2RAD);
+                            player.forward = Vector3Normalize(Vector3Transform(player.forward, r));
+                            if (k % 2 == 0) player.autoJump = true;
+                        }
+                    } else if (wallPhase == 2) {
+                        player.autoWalk = false;
+                        const bool pass = survival.deaths == 0 && wallMinHealth > 90.0f && wallMaxStep < 1.0;
+                        printf("bench: wall shove 9 s: largest frame move %.2f m (at %.1f s), top speed vs ground %.1f m/s, worst impact %.1f m/s, health %.0f, deaths %d: %s\n",
+                               wallMaxStep, wallMaxStepAt, wallMaxSpeed, wallMaxImpact, wallMinHealth, survival.deaths, pass ? "PASS" : "FAIL");
+                        benchWall = false;
                     }
                 } else if (benchHole && (holePhase > 0 || WorldIdle())) { // edits keep the world busy: run on
                     // --test-hole: on the spinning planet, dig a pit ahead and walk into it, then build a
@@ -1259,7 +1313,7 @@ int main(int argc, char** argv)
                         }
                         benchWalkSeconds = 0.0;
                     }
-                } else if ((WorldIdle() && benchDigStrokes == 0 && !benchSaveLoad && benchWalkSeconds <= 0.0 && benchMineStrokes == 0 && minePhase != 2 && benchFlySeconds <= 0.0 && !benchSuffocate && benchOrbitSeconds <= 0.0 && !benchRide && !benchPark && !benchGravity && !benchPrecision && !benchMantle && !benchAirJump && !benchMoon && !benchHole && !benchTrees && !benchChop && benchPersist == 0 && benchBuild == 0 && benchFactory == 0 && !benchProgression) || GetTime() > 600.0) {
+                } else if ((WorldIdle() && benchDigStrokes == 0 && !benchSaveLoad && benchWalkSeconds <= 0.0 && benchMineStrokes == 0 && minePhase != 2 && benchFlySeconds <= 0.0 && !benchSuffocate && benchOrbitSeconds <= 0.0 && !benchRide && !benchPark && !benchGravity && !benchPrecision && !benchMantle && !benchAirJump && !benchMoon && !benchHole && !benchWall && !benchTrees && !benchChop && benchPersist == 0 && benchBuild == 0 && benchFactory == 0 && !benchProgression) || GetTime() > 600.0) {
                     benchStart = GetTime();
                     printf("bench: world ready after %.2f s (%d chunks, avg build %.2f ms of which sampling %.2f ms, %d worker threads)\n",
                         GetWorldStats().lastGenerationSeconds, GetWorldStats().chunks, GetWorldStats().avgBuildMs, GetWorldStats().avgSampleMs, GetWorldStats().workerThreads);

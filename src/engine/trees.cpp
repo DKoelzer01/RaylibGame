@@ -477,7 +477,7 @@ void TreeSystem::rebuildBatches(Vector3 camLocal) {
     }
 }
 
-void TreeSystem::draw(const Planetoid& body, const RenderContext& ctx) {
+void TreeSystem::draw(const Planetoid& body, const RenderContext& ctx, int onlyLod) {
     if (!drawnInstances || !ctx.treeShader) return;
     const Matrix model = body.localModel(anchor, ctx.renderOrigin);
     rlSetUniformMatrix(ctx.treeModelLoc, model);
@@ -487,6 +487,7 @@ void TreeSystem::draw(const Planetoid& body, const RenderContext& ctx) {
     for (int slot = 0; slot < 2 * kTreeVariants; ++slot) {
         if (!count[slot]) continue;
         const int v = slot % kTreeVariants, lod = slot / kTreeVariants;
+        if (onlyLod >= 0 && lod != onlyLod) continue;
         const float fade = v < kFirstBush ? kTreeDrawDistance : kBushDrawDistance;
         rlSetUniform(ctx.treeFadeLoc, &fade, RL_SHADER_UNIFORM_FLOAT, 1);
         rlEnableVertexArray(vao[slot]);

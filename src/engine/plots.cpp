@@ -297,9 +297,10 @@ namespace {
     void EmitPoly(const std::vector<Vector3>& poly, Vector3 n, Vector3 base, Color col,
                   std::vector<float>& pos, std::vector<float>& nrm, std::vector<unsigned char>& colr) {
         if (poly.size() < 3) return;
-        // Order the fan so its winding faces n.
+        // Order the fan so its winding faces n in render space. The plot frame (east, up, north =
+        // up x east) is left-handed, which mirrors winding, so the fan winds clockwise about n here.
         Vector3 cr = Vector3CrossProduct(Vector3Subtract(poly[1], poly[0]), Vector3Subtract(poly[2], poly[0]));
-        const bool flip = Vector3DotProduct(cr, n) < 0.0f;
+        const bool flip = Vector3DotProduct(cr, n) > 0.0f;
         for (size_t i = 1; i + 1 < poly.size(); ++i) {
             const Vector3 tri[3] = { poly[0], flip ? poly[i + 1] : poly[i], flip ? poly[i] : poly[i + 1] };
             for (const Vector3& v : tri) {

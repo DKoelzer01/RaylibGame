@@ -100,7 +100,7 @@ public:
     // finished tiles, rebuild the draw batches when needed.
     void update(Planetoid& body, Vector3 camLocal);
     // Instanced draw (tree shader bound by the scene; its view-projection set).
-    void draw(const Planetoid& body, const RenderContext& ctx);
+    void draw(const Planetoid& body, const RenderContext& ctx, int onlyLod = -1); // onlyLod 1: simple far meshes only (the mid pass)
     // A terrain edit: rebuild tiles it reaches (trees lose their ground, new ground may grow some).
     void onEdit(Vector3 localCentre, float radius, std::shared_ptr<const TerrainDeltas> edits);
     // Trunks within `range` of a body-local point.
