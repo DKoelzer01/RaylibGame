@@ -213,7 +213,12 @@ float Forest(Vector3 local, uint32_t seed) {
 }
 float Smooth(float a, float b, float x) { const float t = std::clamp((x - a) / (b - a), 0.0f, 1.0f); return t * t * (3 - 2 * t); }
 
-void BuildTile(const PlanetField& f, const EditList& edits, uint32_t seed, const TreeTileKey& key, TreeTile& out) {
+uint64_t PlantId(const TreeTileKey& k, int cell) {
+    return ((uint64_t)k.face << 56) | ((uint64_t)(k.i & 0xFFFFFF) << 32) | ((uint64_t)(k.j & 0xFFFFFF) << 8) | (uint64_t)(cell & 0xFF);
+}
+TreeTileKey TileOfPlant(uint64_t id) { return { (int)(id >> 56), (int)((id >> 32) & 0xFFFFFF), (int)((id >> 8) & 0xFFFFFF) }; }
+
+void BuildTile(const PlanetField& f, const EditList& edits, const PlantRemovals& removed, double now, uint32_t seed, const TreeTileKey& key, TreeTile& out) {
     const float R = f.radius;
     const int N = TilesPerFace(R);
     const float da = 0.5f * PI / N, dc = da / kCells;
@@ -263,10 +268,26 @@ void BuildTile(const PlanetField& f, const EditList& edits, uint32_t seed, const
                 v = kFirstBush + (int)(h * 3.0f) % 3;
                 scale = 0.7f + 0.7f * sz;
             }
+            const uint64_t id = PlantId(key, ci * kCells + cj);
+            out.builtAt = now;
+            if (auto it = removed.find(id); it != removed.end()) {
+                // Chopped / harvested: gone for kRegrowDelay, then a sapling growing to full size.
+                const double age = now - it->second - kRegrowDelay;
+                if (age < 0.0) { out.regrowing = true; continue; }
+                const float growth = (float)std::clamp(age / kRegrowTime, 0.15, 1.0);
+                if (growth < 1.0f) out.regrowing = true;
+                scale *= growth;
+            }
             const Vector3 p = Vector3Subtract(ground, Vector3Scale(dir, 0.15f)); // sink the base a little
             out.inst[v].insert(out.inst[v].end(), { p.x, p.y, p.z, scale, dir.x, dir.y, dir.z, h });
+            out.ids[v].push_back(id);
             const VariantMesh& vm = Variant(v);
-            if (vm.trunkRadius > 0.0f) out.trunks.push_back({ p, dir, vm.trunkHeight * scale, vm.trunkRadius * scale });
+            if (vm.trunkRadius > 0.0f) {
+                out.trunks.push_back({ p, dir, vm.trunkHeight * scale, vm.trunkRadius * scale });
+                out.plants.push_back({ id, p, dir, vm.trunkHeight * scale, vm.trunkRadius * scale, scale, v });
+            } else {
+                out.plants.push_back({ id, p, dir, 1.2f * scale, 0.7f * scale, scale, v });
+            }
         }
 }
 
@@ -298,7 +319,8 @@ struct TreeSystem::Shared {
 };
 
 TreeSystem::TreeSystem(std::shared_ptr<const PlanetField> f, unsigned int s)
-    : shared(std::make_shared<Shared>()), field(std::move(f)), seed(s), radius(field->radius), edits(std::make_shared<EditList>()) {}
+    : shared(std::make_shared<Shared>()), field(std::move(f)), seed(s), radius(field->radius), edits(std::make_shared<EditList>()),
+      removed(std::make_shared<PlantRemovals>()) {}
 
 TreeSystem::~TreeSystem() {
     shared->alive = false;
@@ -312,16 +334,19 @@ TreeSystem::~TreeSystem() {
 
 void TreeSystem::request(const TreeTileKey& key, TreeTile& tile, float priority) {
     const uint32_t version = ++tile.version;
+    tile.pending = true;
     auto sh = shared;
     auto fld = field;
     auto ed = edits;
+    auto rm = removed;
+    const double now = WorldTime();
     const uint32_t sd = seed;
-    WorldJobs().submit(priority, [sh, fld, ed, sd, key, version] {
+    WorldJobs().submit(priority, [sh, fld, ed, rm, now, sd, key, version] {
         if (!sh->alive) return;
         TreeTile t;
         t.version = version;
         t.ready = true;
-        BuildTile(*fld, *ed, sd, key, t);
+        BuildTile(*fld, *ed, *rm, now, sd, key, t);
         std::lock_guard<std::mutex> lock(sh->mutex);
         sh->results.emplace_back(key, std::move(t));
     });
@@ -351,6 +376,9 @@ void TreeSystem::update(Planetoid& body, Vector3 camLocal) {
         }
         shared->results.clear();
     }
+    // Saplings grow: rebuild their tiles every 20 s of world time.
+    for (auto& kv : tiles)
+        if (kv.second.ready && kv.second.regrowing && !kv.second.pending && WorldTime() - kv.second.builtAt > 20.0) request(kv.first, kv.second, 500.0f);
     // Tiles near the camera (arc distance on the sphere), nothing from high above.
     const float camR = Vector3Length(camLocal);
     const Vector3 camDir = Vector3Scale(camLocal, 1.0f / std::max(camR, 1.0f));
@@ -468,4 +496,61 @@ void TreeSystem::trunksNear(Vector3 local, float range, std::vector<Trunk>& out)
             for (const Trunk& t : it->second.trunks)
                 if (Vector3Distance(t.base, local) < range + t.height) out.push_back(t);
         }
+}
+
+void TreeSystem::remove(uint64_t id) {
+    auto next = std::make_shared<PlantRemovals>(*removed);
+    (*next)[id] = WorldTime();
+    removed = next;
+    // Gone at once from the loaded tile (the next rebuild agrees), and its tile starts watching
+    // for regrowth.
+    auto it = tiles.find(TileOfPlant(id));
+    if (it == tiles.end()) return;
+    TreeTile& t = it->second;
+    for (int v = 0; v < kTreeVariants; ++v)
+        for (size_t k = 0; k < t.ids[v].size(); ++k)
+            if (t.ids[v][k] == id) {
+                t.ids[v].erase(t.ids[v].begin() + k);
+                t.inst[v].erase(t.inst[v].begin() + k * 8, t.inst[v].begin() + k * 8 + 8);
+                break;
+            }
+    t.plants.erase(std::remove_if(t.plants.begin(), t.plants.end(), [id](const Plant& p) { return p.id == id; }), t.plants.end());
+    t.trunks.clear();
+    for (const Plant& p : t.plants) if (p.tree()) t.trunks.push_back({ p.base, p.up, p.height, p.radius });
+    t.regrowing = true;
+    batchDirty = true;
+}
+
+void TreeSystem::setRemovals(const PlantRemovals& r) {
+    removed = std::make_shared<PlantRemovals>(r);
+    for (auto& kv : tiles) request(kv.first, kv.second, 0.0f);
+}
+
+bool TreeSystem::raycast(Vector3 o, Vector3 d, float maxDistance, PlantHit& best) const {
+    const float r = Vector3Length(o);
+    if (r < 1.0f) return false;
+    const TreeTileKey k = TreeTileOf(Vector3Scale(o, 1.0f / r), radius);
+    bool found = false;
+    best.distance = maxDistance;
+    for (int di = -1; di <= 1; ++di)
+        for (int dj = -1; dj <= 1; ++dj) {
+            auto it = tiles.find({ k.face, k.i + di, k.j + dj });
+            if (it == tiles.end() || !it->second.ready) continue;
+            for (const Plant& p : it->second.plants) {
+                // Closest approach between the ray and the plant's axis segment (trunk / bush core).
+                const float pick = p.tree() ? std::max(p.radius, 0.35f) : p.radius;
+                const Vector3 a = p.tree() ? p.base : Vector3Add(p.base, Vector3Scale(p.up, 0.2f * p.scale));
+                const float len = p.tree() ? p.height * 0.8f : 0.6f * p.scale;
+                const Vector3 w = Vector3Subtract(o, a);
+                const float b = Vector3DotProduct(d, p.up), dd = Vector3DotProduct(d, w), e = Vector3DotProduct(p.up, w);
+                const float den = 1.0f - b * b;
+                float t = den > 1e-6f ? (b * e - dd) / den : 0.0f;          // along the ray
+                t = std::clamp(t, 0.0f, maxDistance);
+                const float s = std::clamp(e + b * t, 0.0f, len);           // along the axis
+                const Vector3 pr = Vector3Add(o, Vector3Scale(d, t)), pa = Vector3Add(a, Vector3Scale(p.up, s));
+                if (Vector3Distance(pr, pa) > pick) continue;
+                if (t < best.distance) { best.distance = t; best.plant = p; found = true; }
+            }
+        }
+    return found;
 }

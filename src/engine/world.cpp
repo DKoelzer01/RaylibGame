@@ -881,7 +881,9 @@ void regenerateWorld(Scene& world) {
 // edit list, so a save is tiny and replays exactly.
 // ---------------------------------------------------------------------------------------------
 
-static const char* SAVE_PATH = "saves/world.sav";
+static std::string SAVE_PATH_STR = "saves/world.sav";
+#define SAVE_PATH SAVE_PATH_STR.c_str()
+void SetWorldSavePath(const char* path) { SAVE_PATH_STR = path; }
 
 bool SaveWorld(Scene& world) {
     if (!DirectoryExists("saves")) MakeDirectory("saves");
@@ -891,7 +893,7 @@ bool SaveWorld(Scene& world) {
     const DVec3 tgtWorld = world.renderOrigin + world.camera.target;
     // v4: the system definition is stored in the save, so a save reloads the system it was made in
     // even if bodies.txt has changed since.
-    fprintf(f, "RAYLIBGAME_SAVE 5\n");
+    fprintf(f, "RAYLIBGAME_SAVE 6\n");
     fprintf(f, "seed %u\nbodies %zu\n", worldGen.lastSeed, worldGen.system.bodies.size());
     for (const BodyDef& b : worldGen.system.bodies) fprintf(f, "%s\n", FormatBodyDef(b).c_str());
     fprintf(f, "time %.6f\n", worldTime); // v5: the world clock (orbits)
@@ -909,6 +911,11 @@ bool SaveWorld(Scene& world) {
             fprintf(f, "%f %f %f %f %f\n", e.center.x, e.center.y, e.center.z, e.radius, e.strength);
             total++;
         }
+        // v6: chopped / harvested plants (id, world time removed); they regrow from that time.
+        const PlantRemovals none;
+        const PlantRemovals& rm = p->trees ? p->trees->removals() : none;
+        fprintf(f, "plants %zu\n", rm.size());
+        for (const auto& kv : rm) fprintf(f, "%llu %.3f\n", (unsigned long long)kv.first, kv.second);
     }
     fclose(f);
     logger.logf("[World] saved %d edits to %s\n", total, SAVE_PATH);
@@ -919,7 +926,7 @@ bool LoadWorldSave(Scene& world) {
     FILE* f = fopen(SAVE_PATH, "r");
     if (!f) return false;
     int version = 0;
-    if (fscanf(f, "RAYLIBGAME_SAVE %d", &version) != 1 || version < 2 || version > 5) {
+    if (fscanf(f, "RAYLIBGAME_SAVE %d", &version) != 1 || version < 2 || version > 6) {
         fclose(f);
         logger.logf("[World] %s: unsupported save version %d\n", SAVE_PATH, version);
         return false;
@@ -989,9 +996,20 @@ bool LoadWorldSave(Scene& world) {
             if (fscanf(f, " %f %f %f %f %f", &e.center.x, &e.center.y, &e.center.z, &e.radius, &e.strength) != 5) break;
             list->push_back(e);
         }
+        PlantRemovals plants;
+        size_t plantCount = 0;
+        if (version >= 6 && fscanf(f, " plants %zu", &plantCount) == 1) {
+            for (size_t i = 0; i < plantCount; ++i) {
+                unsigned long long id = 0;
+                double t = 0.0;
+                if (fscanf(f, " %llu %lf", &id, &t) != 2) break;
+                plants[(uint64_t)id] = t;
+            }
+        }
         if (index >= 0 && index < (int)planetoids.size()) {
             planetoids[index]->edits = list;
             planetoids[index]->rotation = rot;
+            if (planetoids[index]->trees) planetoids[index]->trees->setRemovals(plants);
         }
     }
     fclose(f);

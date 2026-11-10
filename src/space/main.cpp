@@ -102,6 +102,12 @@ int main(int argc, char** argv)
     bool benchMoon = false;        // --test-moon: moon orbit vs analytic, standing and jumping on the moon
     bool benchHole = false;        // --test-hole: walk into a fresh pit and build a pillar underfoot on the spinning planet
     bool benchTrees = false;       // --test-trees: walk into a tree trunk
+    bool benchChop = false;        // --test-chop: fell a tree, save/reload, regrow
+    int chopPhase = 0, chopSwings = 0, chopMisses = 0, chopWood0 = 0;
+    double chopStart = 0.0;
+    uint64_t chopId = 0;
+    bool chopFelled = false, chopSaved = false;
+    Trunk chopTarget{};
     int treePhase = 0;
     double treeStart = 0.0;
     float treeMin = 1e9f;
@@ -173,6 +179,7 @@ int main(int argc, char** argv)
         if (std::string(argv[i]) == "--test-moon") benchMoon = true;
         if (std::string(argv[i]) == "--test-hole") benchHole = true;
         if (std::string(argv[i]) == "--test-trees") benchTrees = true;
+        if (std::string(argv[i]) == "--test-chop") benchChop = true;
         if (std::string(argv[i]) == "--time-scale" && i + 1 < argc) timeScale = (float)atof(argv[i + 1]);
         if (std::string(argv[i]) == "--crack-check") crackCheck = true;
         if (std::string(argv[i]) == "--no-foliage") foliageEnabled = false;
@@ -246,6 +253,7 @@ int main(int argc, char** argv)
     }
     const bool bench = benchSeconds > 0.0;
     benchMode = bench;
+    if (bench) SetWorldSavePath("saves/bench.sav"); // tests save and load; keep the player's F5 save out of it
 
     SetConfigFlags(FLAG_MSAA_4X_HINT);
     if (!bench) {
@@ -275,7 +283,11 @@ int main(int argc, char** argv)
 
     mainMenuHandler(mainMenu);
     worldHandler(world);
-    if (loadSaveAtStart && !LoadWorldSave(world)) printf("bench: --load: could not load saves/world.sav\n");
+    if (loadSaveAtStart) { // the player's save, read-only; later bench saves still go to bench.sav
+        SetWorldSavePath("saves/world.sav");
+        if (!LoadWorldSave(world)) printf("bench: --load: could not load saves/world.sav\n");
+        if (bench) SetWorldSavePath("saves/bench.sav");
+    }
     if (dumpSystem) {
         for (auto& obj : world.objects)
             if (auto* p = dynamic_cast<Planetoid*>(obj.get()))
@@ -375,6 +387,72 @@ int main(int argc, char** argv)
                                    orbitCrashed ? "CRASHED into the surface" : (orbitMax > 3.0f * R ? "ESCAPED" : "stable"));
                             benchOrbitSeconds = 0.0;
                         }
+                    }
+                } else if (benchChop && (chopPhase > 0 || WorldIdle())) {
+                    // --test-chop: walk up to the nearest tree, chop it down (wood), save and reload (still
+                    // gone), then wind the clock past regrowth (back, full size).
+                    Planetoid* p = dynamic_cast<Planetoid*>(world.objects[0].get());
+                    const Vector3 feet = (player.position - world.renderOrigin).toFloat();
+                    auto present = [&](uint64_t id) {
+                        std::vector<Trunk> dummy;
+                        PlantHit h;
+                        // Re-aim at the trunk: present if the raycast still finds this id.
+                        const Vector3 eye = p->toLocal(Vector3Add(feet, Vector3Scale(player.up, player.eyeHeight)));
+                        const Vector3 aim = Vector3Normalize(Vector3Subtract(Vector3Add(chopTarget.base, Vector3Scale(chopTarget.up, 1.2f)), eye));
+                        return p->trees->raycast(eye, aim, 8.0f, h) && h.plant.id == id;
+                    };
+                    if (chopPhase == 0) {
+                        if (!p || !p->trees) { printf("bench: --test-chop needs a planet with trees\n"); benchChop = false; }
+                        else { player.spawnOn(world, *p, StartSpawnDir(*p)); chopPhase = 1; chopStart = GetTime(); }
+                    } else if (chopPhase == 1 && GetTime() - chopStart > 1.0 && player.grounded) {
+                        std::vector<Trunk> near;
+                        const Vector3 lf = p->toLocal(feet);
+                        p->trees->trunksNear(lf, 400.0f, near);
+                        float best = 1e9f;
+                        for (const Trunk& t : near) { const float d = Vector3Distance(t.base, lf); if (d < best && t.radius > 0.15f) { best = d; chopTarget = t; } }
+                        if (best > 1e8f) { printf("bench: --test-chop: no tree nearby\n"); benchChop = false; }
+                        else {
+                            const Vector3 up = Vector3Normalize(chopTarget.base);
+                            Vector3 away = Vector3Subtract(lf, chopTarget.base);
+                            away = Vector3Normalize(Vector3Subtract(away, Vector3Scale(up, Vector3DotProduct(away, up))));
+                            player.spawnOn(world, *p, p->dirToWorld(Vector3Normalize(Vector3Add(chopTarget.base, Vector3Scale(away, 2.0f)))));
+                            chopPhase = 2; chopStart = GetTime();
+                        }
+                    } else if (chopPhase == 2 && GetTime() - chopStart > 1.0) {
+                        // Face the trunk at chest height and swing.
+                        const Vector3 eye = Vector3Add(feet, Vector3Scale(player.up, player.eyeHeight));
+                        const Vector3 aim = p->toWorld(Vector3Add(chopTarget.base, Vector3Scale(chopTarget.up, 1.2f)));
+                        player.forward = Vector3Normalize(Vector3Subtract(aim, eye));
+                        player.applyToCamera(world);
+                        TerrainTool_Update(world, false, true); // aim only
+                        uint64_t id = 0;
+                        if (!TerrainTool_AimingPlant(&id)) {
+                            if (++chopMisses > 30) { printf("bench: --test-chop: could not aim at the trunk: FAIL\n"); benchChop = false; }
+                        } else {
+                            if (!chopId) { chopId = id; chopWood0 = inventory.count("wood"); }
+                            ++chopSwings;
+                            if (TerrainTool_Chop()) {
+                                const int wood = inventory.count("wood") - chopWood0;
+                                printf("bench: chop: felled a %.1f m tree in %d swings, +%d wood; gone: %s\n", chopTarget.height, chopSwings, wood, present(chopId) ? "no" : "yes");
+                                chopFelled = wood > 0 && !present(chopId);
+                                SaveWorld(world);
+                                LoadWorldSave(world);
+                                chopPhase = 3; chopStart = GetTime();
+                            }
+                        }
+                    } else if (chopPhase == 3 && GetTime() - chopStart > 3.0) {
+                        p = dynamic_cast<Planetoid*>(world.objects[0].get());
+                        const bool savedGone = p->trees->removals().count(chopId) && !present(chopId);
+                        printf("bench: chop: after save + reload the tree is %s\n", savedGone ? "still gone" : "BACK");
+                        SetWorldTime(WorldTime() + kRegrowDelay + kRegrowTime + 1.0);
+                        p->trees->setRemovals(p->trees->removals()); // rebuild its tiles at the new time
+                        chopPhase = 4; chopStart = GetTime();
+                        chopSaved = savedGone;
+                    } else if (chopPhase == 4 && GetTime() - chopStart > 3.0) {
+                        const bool back = present(chopId);
+                        printf("bench: chop: %.0f min later it has regrown: %s -> %s\n", (kRegrowDelay + kRegrowTime) / 60.0, back ? "yes" : "no",
+                               chopFelled && chopSaved && back ? "PASS" : "FAIL");
+                        benchChop = false;
                     }
                 } else if (benchTrees && (treePhase > 0 || WorldIdle())) {
                     // --test-trees: walk into the nearest tree trunk; the player must stop at its bark.
@@ -952,7 +1030,7 @@ int main(int argc, char** argv)
                         }
                         benchWalkSeconds = 0.0;
                     }
-                } else if ((WorldIdle() && benchDigStrokes == 0 && !benchSaveLoad && benchWalkSeconds <= 0.0 && benchMineStrokes == 0 && minePhase != 2 && benchFlySeconds <= 0.0 && !benchSuffocate && benchOrbitSeconds <= 0.0 && !benchRide && !benchPark && !benchGravity && !benchPrecision && !benchMantle && !benchAirJump && !benchMoon && !benchHole && !benchTrees) || GetTime() > 180.0) {
+                } else if ((WorldIdle() && benchDigStrokes == 0 && !benchSaveLoad && benchWalkSeconds <= 0.0 && benchMineStrokes == 0 && minePhase != 2 && benchFlySeconds <= 0.0 && !benchSuffocate && benchOrbitSeconds <= 0.0 && !benchRide && !benchPark && !benchGravity && !benchPrecision && !benchMantle && !benchAirJump && !benchMoon && !benchHole && !benchTrees && !benchChop) || GetTime() > 180.0) {
                     benchStart = GetTime();
                     printf("bench: world ready after %.2f s (%d chunks, avg build %.2f ms of which sampling %.2f ms, %d worker threads)\n",
                         GetWorldStats().lastGenerationSeconds, GetWorldStats().chunks, GetWorldStats().avgBuildMs, GetWorldStats().avgSampleMs, GetWorldStats().workerThreads);

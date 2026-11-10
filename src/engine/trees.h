@@ -18,6 +18,11 @@
 // Trees draw to ~1 km, bushes to ~300 m, both with a dithered fade.
 //
 // Collision: each tree trunk is a vertical capsule for the player and the ship (bushes are soft).
+//
+// Interaction (step 3): every plant has a stable id (its tile and cell). Chopping or harvesting
+// records the id with the world time; it vanishes at once, its tile rebuilds without it, and after
+// kRegrowDelay it comes back as a sapling that reaches full size kRegrowTime later. Removals are
+// saved with the world.
 
 #include <raylib.h>
 #include <atomic>
@@ -48,6 +53,24 @@ struct TreeTileKeyHash {
     size_t operator()(const TreeTileKey& k) const { return ((size_t)k.face * 73856093u) ^ ((size_t)k.i * 19349663u) ^ ((size_t)k.j * 83492791u); }
 };
 
+constexpr double kRegrowDelay = 600.0;      // s of world time before a sapling appears
+constexpr double kRegrowTime = 1200.0;      // s from sapling to full size
+
+// A plant for picking (chop / harvest), in body-local space.
+struct Plant {
+    uint64_t id;
+    Vector3 base, up;
+    float height, radius;  // trees: the trunk; bushes: the whole bush
+    float scale;
+    int variant;
+    bool tree() const { return variant < kFirstBush; }
+};
+struct PlantHit {
+    Plant plant;
+    float distance;        // along the ray
+};
+using PlantRemovals = std::unordered_map<uint64_t, double>; // id -> world time it was removed
+
 // A trunk for collision, in body-local space (metres).
 struct Trunk {
     Vector3 base;
@@ -61,6 +84,11 @@ struct TreeTile {
     Vector3 centre{};                          // body-local, on the surface
     std::vector<float> inst[kTreeVariants];    // 8 floats each: body-local position, scale, up, hash
     std::vector<Trunk> trunks;
+    std::vector<Plant> plants;                 // every tree and bush (picking)
+    std::vector<uint64_t> ids[kTreeVariants];  // per instance, parallel to inst
+    bool regrowing = false;                    // has saplings: rebuild now and then as they grow
+    double builtAt = 0.0;                      // world time the build used
+    bool pending = false;                      // a rebuild is queued
 };
 
 class TreeSystem {
@@ -77,6 +105,12 @@ public:
     void onEdit(Vector3 localCentre, float radius);
     // Trunks within `range` of a body-local point.
     void trunksNear(Vector3 local, float range, std::vector<Trunk>& out) const;
+    // The nearest plant a body-local ray hits within maxDistance.
+    bool raycast(Vector3 localOrigin, Vector3 localDir, float maxDistance, PlantHit& hit) const;
+    // Chop / harvest: gone now, regrows later.
+    void remove(uint64_t id);
+    const PlantRemovals& removals() const { return *removed; }
+    void setRemovals(const PlantRemovals& r);  // from a save: rebuilds every tile
 
     int loadedTiles() const { return (int)tiles.size(); }
     int instanceCount() const { return drawnInstances; }
@@ -89,6 +123,7 @@ private:
     float radius;
     std::unordered_map<TreeTileKey, TreeTile, TreeTileKeyHash> tiles;
     std::shared_ptr<const EditList> edits;     // the body's edits as last seen (tiles built with them)
+    std::shared_ptr<const PlantRemovals> removed; // copy-on-write, shared with tile builds
 
     // Draw batches.
     DVec3 anchor{};                            // body-local origin of the batch positions

@@ -12,3 +12,7 @@ power_cell      | Power cell      |  20 | 250,220, 80 | Recharges suit power.
 concrete        | Lunacrete       | 999 | 200,200,190 | Dense building material.
 glass           | Glass           | 200 | 190,225,235 | Melted from sand. Lenses and windows.
 telescope       | Telescope       |   1 | 200,170,110 | T to raise it, wheel to zoom. Spot the moon and the ring from the ground.
+wood            | Wood            | 999 | 150,105, 60 | Logs from felled trees. Fuel and building material.
+fibre           | Plant fibre     | 999 | 170,190,110 | Tough stems from bushes. Twists into rope.
+berries         | Berries         | 200 | 190, 40, 70 | Wild berries. Edible.
+rope            | Rope            | 200 | 200,170,120 | Twisted plant fibre.
