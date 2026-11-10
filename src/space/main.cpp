@@ -25,6 +25,7 @@
 #include "survival.h"
 #include "telescope.h"
 #include "buildtool.h"
+#include "progression_test.h"
 #include "factory.h"
 
 #if defined(PLATFORM_DESKTOP)
@@ -114,6 +115,9 @@ int main(int argc, char** argv)
     bool buildOk = false;
     Plot* buildPlot = nullptr;
     int benchFactory = 0;          // --test-factory N: milestone 4 gate (N working machines, tick under 5 ms)
+    bool benchProgression = false; // --test-progression: milestone 5 gate (bare hands to a working LV machine)
+    int progPhase = 0;
+    double progStart = 0.0;
     int factPhase = 0, factSamples = 0;
     uint32_t factPlot = 0;
     double factStart = 0.0, factSum = 0.0, factMax = 0.0;
@@ -201,6 +205,7 @@ int main(int argc, char** argv)
         if (std::string(argv[i]) == "--test-persist" && i + 1 < argc) benchPersist = atoi(argv[i + 1]);
         if (std::string(argv[i]) == "--test-build" && i + 1 < argc) benchBuild = atoi(argv[i + 1]);
         if (std::string(argv[i]) == "--test-factory" && i + 1 < argc) benchFactory = atoi(argv[i + 1]);
+        if (std::string(argv[i]) == "--test-progression") benchProgression = true;
         if (std::string(argv[i]) == "--time-scale" && i + 1 < argc) timeScale = (float)atof(argv[i + 1]);
         if (std::string(argv[i]) == "--crack-check") crackCheck = true;
         if (std::string(argv[i]) == "--no-foliage") foliageEnabled = false;
@@ -723,6 +728,17 @@ int main(int argc, char** argv)
                         const int got = inventory.count("iron_plate") - factRefundBefore;
                         printf("bench: factory: removed the chest: %d iron plates back in the inventory -> %s\n", got, got > 0 ? "PASS" : "FAIL");
                         benchFactory = 0;
+                    }
+                } else if (benchProgression && (progPhase > 0 || WorldIdle())) {
+                    // --test-progression (milestone 5 gate): bare hands to a working LV machine.
+                    if (progPhase == 0) {
+                        Planetoid* p = dynamic_cast<Planetoid*>(world.objects[0].get());
+                        player.spawnOn(world, *p, StartSpawnDir(*p));
+                        progPhase = 1; progStart = GetTime();
+                    } else if (progPhase == 1 && GetTime() - progStart > 2.0) {
+                        progPhase = 2;
+                    } else if (progPhase == 2) {
+                        if (Progression_Update(world) != 0) benchProgression = false;
                     }
                 } else if (benchHole && (holePhase > 0 || WorldIdle())) { // edits keep the world busy: run on
                     // --test-hole: on the spinning planet, dig a pit ahead and walk into it, then build a
@@ -1263,7 +1279,7 @@ int main(int argc, char** argv)
                         }
                         benchWalkSeconds = 0.0;
                     }
-                } else if ((WorldIdle() && benchDigStrokes == 0 && !benchSaveLoad && benchWalkSeconds <= 0.0 && benchMineStrokes == 0 && minePhase != 2 && benchFlySeconds <= 0.0 && !benchSuffocate && benchOrbitSeconds <= 0.0 && !benchRide && !benchPark && !benchGravity && !benchPrecision && !benchMantle && !benchAirJump && !benchMoon && !benchHole && !benchTrees && !benchChop && benchPersist == 0 && benchBuild == 0 && benchFactory == 0) || GetTime() > 180.0) {
+                } else if ((WorldIdle() && benchDigStrokes == 0 && !benchSaveLoad && benchWalkSeconds <= 0.0 && benchMineStrokes == 0 && minePhase != 2 && benchFlySeconds <= 0.0 && !benchSuffocate && benchOrbitSeconds <= 0.0 && !benchRide && !benchPark && !benchGravity && !benchPrecision && !benchMantle && !benchAirJump && !benchMoon && !benchHole && !benchTrees && !benchChop && benchPersist == 0 && benchBuild == 0 && benchFactory == 0 && !benchProgression) || GetTime() > 600.0) {
                     benchStart = GetTime();
                     printf("bench: world ready after %.2f s (%d chunks, avg build %.2f ms of which sampling %.2f ms, %d worker threads)\n",
                         GetWorldStats().lastGenerationSeconds, GetWorldStats().chunks, GetWorldStats().avgBuildMs, GetWorldStats().avgSampleMs, GetWorldStats().workerThreads);

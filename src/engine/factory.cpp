@@ -72,16 +72,59 @@ private:
 } tables;
 
 PartType MachineByName(const std::string& n) {
-    if (n == "furnace") return PartType::Furnace;
-    if (n == "macerator") return PartType::Macerator;
-    if (n == "generator") return PartType::Generator;
-    if (n == "chest") return PartType::Chest;
-    if (n == "battery") return PartType::Battery;
+    for (int t = 0; t < (int)PartType::Count; ++t) {
+        const char* m = PartMachineName((PartType)t);
+        if (m && n == m) return (PartType)t;
+    }
     return PartType::Count;
+}
+
+// machines.txt: how each machine is powered.
+enum class Power : uint8_t { None, Fuel, Eu, Generator, Storage, Battery };
+struct MachineDef {
+    int volts = 0;
+    Power power = Power::None;
+    int euOut = 0;
+    std::vector<int> fuels;  // item ids it burns
+};
+MachineDef machineDefs[(int)PartType::Count];
+std::unordered_map<int, int> fuelTicks; // item id -> burn ticks
+const MachineDef& Def(PartType t) { return machineDefs[(int)t]; }
+
+void LoadMachineDefs() {
+    std::ifstream f("resources/data/machines.txt");
+    std::string line;
+    while (std::getline(f, line)) {
+        if (line.empty() || line[0] == '#') continue;
+        if (line.rfind("fuel ", 0) == 0) {
+            std::stringstream ss(line.substr(5));
+            std::string item; int ticks = 0;
+            if (ss >> item >> ticks) fuelTicks[tables.item(item)] = ticks;
+            continue;
+        }
+        std::vector<std::string> cols;
+        std::stringstream ss(line);
+        std::string c;
+        while (std::getline(ss, c, '|')) {
+            const size_t a = c.find_first_not_of(" \t"), b = c.find_last_not_of(" \t\r");
+            cols.push_back(a == std::string::npos ? "" : c.substr(a, b - a + 1));
+        }
+        if (cols.size() < 4) continue;
+        const PartType t = MachineByName(cols[0]);
+        if (t == PartType::Count) continue;
+        MachineDef& d = machineDefs[(int)t];
+        d.volts = atoi(cols[1].c_str());
+        const std::string& p = cols[2];
+        d.power = p == "fuel" ? Power::Fuel : p == "eu" ? Power::Eu : p == "generator" ? Power::Generator
+                : p == "storage" ? Power::Storage : p == "battery" ? Power::Battery : Power::None;
+        d.euOut = atoi(cols[3].c_str());
+        if (cols.size() > 4) { std::stringstream fs(cols[4]); std::string fuel; while (fs >> fuel) d.fuels.push_back(tables.item(fuel)); }
+    }
 }
 
 void LoadRecipes() {
     if (!tables.recipes.empty()) return;
+    LoadMachineDefs();
     std::ifstream f("resources/data/machine_recipes.txt");
     std::string line;
     auto parseStacks = [](const std::string& s, std::vector<Stack>& out) {
@@ -177,6 +220,7 @@ FactoryStats stats;
 std::thread simThread;
 std::atomic<bool> running{ false };
 std::atomic<long long> tickCount{ 0 };
+std::atomic<int> simSpeed{ 1 };
 std::condition_variable tickCv;
 std::mutex tickCvMutex;
 
@@ -203,10 +247,35 @@ void TakeItems(Stack* s, int n, int item, int count) {
 int InSlots(const Machine& m) { return m.type == PartType::Chest ? kChestSlots : kSlots; }
 
 bool Accepts(PartType type, int item) {
-    if (type == PartType::Chest) return true;
+    if (Def(type).power == Power::Storage) return true;
+    for (int f : Def(type).fuels) if (f == item) return true;
     for (const Recipe& r : tables.recipes)
         if (r.machine == type) for (const Stack& s : r.in) if (s.item == item) return true;
     return false;
+}
+
+// Burns up to maxTicks of fuel (taking new fuel items from the inputs as needed); returns the
+// ticks actually burnt. m.energy holds the ticks left on the current item.
+int BurnFuel(Machine& m, const MachineDef& def, int maxTicks) {
+    int burnt = 0;
+    while (burnt < maxTicks) {
+        if (m.energy <= 0) {
+            bool lit = false;
+            for (int f : def.fuels)
+                if (CountItems(m.in, kSlots, f) > 0) {
+                    TakeItems(m.in, kSlots, f, 1);
+                    auto it = fuelTicks.find(f);
+                    m.energy = it != fuelTicks.end() ? it->second : 200;
+                    lit = true;
+                    break;
+                }
+            if (!lit) break;
+        }
+        const int k = std::min(maxTicks - burnt, m.energy);
+        m.energy -= k;
+        burnt += k;
+    }
+    return burnt;
 }
 
 void BuildNets(PlotSim& ps, const LayoutMsg& L) {
@@ -247,6 +316,14 @@ void BuildNets(PlotSim& ps, const LayoutMsg& L) {
     };
     flood(L.conveyors, ps.itemNets, false);
     flood(L.cables, ps.powerNets, true);
+    // A network runs at the highest voltage of its generators and batteries (lower machines refuse it).
+    for (Net& net : ps.powerNets) {
+        net.voltage = 0;
+        for (int m : net.machines) {
+            const MachineDef& d = Def(ps.machines[m].type);
+            if (d.power == Power::Generator || d.power == Power::Battery) net.voltage = std::max(net.voltage, d.volts);
+        }
+    }
 }
 
 void ApplyLayout(const LayoutMsg& L) {
@@ -294,32 +371,22 @@ void ApplyLayout(const LayoutMsg& L) {
 
 // One step of dt ticks for a plot.
 void TickPlot(PlotSim& ps, int dt, long long& made, int& active) {
-    // Power.
+    // Power: generators burn fuel into EU at their voltage; batteries buffer; consumers on a network
+    // above their voltage refuse it.
     for (Net& net : ps.powerNets) {
         long long supply = 0, demand = 0, batteryAvail = 0;
         for (int mi : net.machines) {
             Machine& m = ps.machines[mi];
+            const MachineDef& def = Def(m.type);
             m.received = 0;
-            if (m.type == PartType::Generator) {
-                int burn = 0;
-                for (int t = 0; t < dt; ++t) {
-                    if (m.energy <= 0) {
-                        // Next fuel item.
-                        for (const Recipe& r : tables.recipes)
-                            if (r.machine == PartType::Generator && !r.in.empty() && CountItems(m.in, kSlots, r.in[0].item) >= r.in[0].count) {
-                                TakeItems(m.in, kSlots, r.in[0].item, r.in[0].count);
-                                m.energy = r.ticks; m.fuelEU = r.eu; break;
-                            }
-                    }
-                    if (m.energy <= 0) break;
-                    --m.energy; ++burn;
-                }
-                supply += (long long)burn * m.fuelEU;
+            if (def.power == Power::Generator) {
+                const int burn = BurnFuel(m, def, dt);
+                supply += (long long)burn * def.euOut;
                 m.status = burn > 0 ? MachineStatus::Working : MachineStatus::NoFuel;
-            } else if (m.type == PartType::Battery) {
+            } else if (def.power == Power::Battery) {
                 batteryAvail += std::min(m.energy, kBatteryRate * dt);
-            } else if (m.type == PartType::Furnace || m.type == PartType::Macerator) {
-                if (m.tier < net.voltage) { m.status = MachineStatus::Overvoltage; continue; }
+            } else if (def.power == Power::Eu) {
+                if (def.volts < net.voltage) { m.status = MachineStatus::Overvoltage; continue; }
                 if (m.recipe >= 0) demand += (long long)tables.recipes[m.recipe].eu * dt;
             }
         }
@@ -328,7 +395,8 @@ void TickPlot(PlotSim& ps, int dt, long long& made, int& active) {
         const long long avail = supply + fromBatteries;
         for (int mi : net.machines) {
             Machine& m = ps.machines[mi];
-            if ((m.type == PartType::Furnace || m.type == PartType::Macerator) && m.recipe >= 0 && m.tier >= net.voltage) {
+            const MachineDef& def = Def(m.type);
+            if (def.power == Power::Eu && m.recipe >= 0 && def.volts >= net.voltage) {
                 const long long need = (long long)tables.recipes[m.recipe].eu * dt;
                 m.received = (int)(demand <= avail ? need : need * avail / std::max(1LL, demand));
             }
@@ -337,37 +405,56 @@ void TickPlot(PlotSim& ps, int dt, long long& made, int& active) {
         long long drain = fromBatteries;
         for (int mi : net.machines) {
             Machine& m = ps.machines[mi];
-            if (m.type != PartType::Battery) continue;
+            if (Def(m.type).power != Power::Battery) continue;
             if (drain > 0) { const long long k = std::min<long long>(drain, std::min(m.energy, kBatteryRate * dt)); m.energy -= (int)k; drain -= k; }
             else if (surplus > 0) { const long long k = std::min<long long>(surplus, std::min(kBatteryCapacity - m.energy, kBatteryRate * dt)); m.energy += (int)k; surplus -= k; }
             m.status = m.energy > 0 ? MachineStatus::Working : MachineStatus::Idle;
         }
     }
-    // Machines: start recipes, progress with the energy received, finish into the outputs.
+    // Machines: start recipes, progress (EU received, fuel burnt, or by themselves), finish into
+    // the outputs.
     for (Machine& m : ps.machines) {
-        if (m.type != PartType::Furnace && m.type != PartType::Macerator) {
-            if (m.type == PartType::Generator && m.status == MachineStatus::Working) ++active;
+        const MachineDef& def = Def(m.type);
+        if (def.power == Power::Generator || def.power == Power::Battery || def.power == Power::Storage) {
+            if (def.power == Power::Generator && m.status == MachineStatus::Working) ++active;
             continue;
         }
         if (m.recipe < 0) {
-            for (size_t ri = 0; ri < tables.recipes.size(); ++ri) {
-                const Recipe& r = tables.recipes[ri];
-                if (r.machine != m.type) continue;
-                bool ok = true;
-                for (const Stack& s : r.in) if (CountItems(m.in, kSlots, s.item) < s.count) { ok = false; break; }
-                if (!ok) continue;
-                for (const Stack& s : r.in) TakeItems(m.in, kSlots, s.item, s.count);
-                m.recipe = (int)ri; m.progress = 0;
-                break;
-            }
+            // Fuel machines: recipes that don't eat fuel come first (a campfire with wood and a
+            // crucible mould fires the mould rather than charring its fuel), and a recipe that does
+            // eat fuel must leave something burning or to burn.
+            auto isFuel = [&](int item) { for (int f : def.fuels) if (f == item) return true; return false; };
+            for (int pass = 0; pass < 2 && m.recipe < 0; ++pass)
+                for (size_t ri = 0; ri < tables.recipes.size(); ++ri) {
+                    const Recipe& r = tables.recipes[ri];
+                    if (r.machine != m.type) continue;
+                    bool eatsFuel = false;
+                    for (const Stack& s : r.in) eatsFuel |= isFuel(s.item);
+                    if (def.power == Power::Fuel && eatsFuel != (pass == 1)) continue;
+                    if (def.power != Power::Fuel && pass == 1) continue;
+                    bool ok = true;
+                    for (const Stack& s : r.in) if (CountItems(m.in, kSlots, s.item) < s.count + (eatsFuel && m.energy <= 0 && def.power == Power::Fuel ? 1 : 0)) { ok = false; break; }
+                    if (!ok) continue;
+                    for (const Stack& s : r.in) TakeItems(m.in, kSlots, s.item, s.count);
+                    m.recipe = (int)ri; m.progress = 0;
+                    break;
+                }
             if (m.recipe < 0) { m.status = MachineStatus::Idle; continue; } // asleep until items arrive
         }
         const Recipe& r = tables.recipes[m.recipe];
-        if (m.status == MachineStatus::Overvoltage && m.tier < (m.powerNet >= 0 ? ps.powerNets[m.powerNet].voltage : 0)) continue;
         if (m.progress < r.ticks) {
-            const int ticks = r.eu > 0 ? m.received / r.eu : dt;
+            int ticks = 0;
+            if (def.power == Power::Eu) {
+                if (m.powerNet < 0) { m.status = MachineStatus::NoPower; continue; }
+                if (def.volts < ps.powerNets[m.powerNet].voltage) { m.status = MachineStatus::Overvoltage; continue; }
+                ticks = r.eu > 0 ? m.received / r.eu : dt;
+            } else if (def.power == Power::Fuel) {
+                ticks = BurnFuel(m, def, std::min(dt, r.ticks - m.progress));
+            } else {
+                ticks = dt; // runs by itself (coke oven)
+            }
             m.progress = std::min(r.ticks, m.progress + ticks);
-            m.status = ticks > 0 ? MachineStatus::Working : MachineStatus::NoPower;
+            m.status = ticks > 0 ? MachineStatus::Working : def.power == Power::Fuel ? MachineStatus::NoFuel : MachineStatus::NoPower;
             if (ticks > 0) ++active;
         }
         if (m.progress >= r.ticks) {
@@ -436,7 +523,7 @@ void SimLoop() {
     auto next = clk::now();
     double emaMs = 0.0, maxMs = 0.0;
     while (running) {
-        next += std::chrono::milliseconds(1000 / kTicksPerSecond);
+        next += std::chrono::microseconds(1000000 / (kTicksPerSecond * std::max(1, simSpeed.load()))); // tests may run the clock faster
         const auto t0 = clk::now();
         {
             std::lock_guard<std::mutex> lock(simMutex);
@@ -639,3 +726,11 @@ void Factory::Load(FILE* f, uint64_t bodyId) {
         pendingStates[{ bodyId, plot, part }] = rest;
     }
 }
+
+bool Factory::Accepts(PartType type, const std::string& item) {
+    LoadRecipes();
+    auto it = tables.itemIds.find(item);
+    return it != tables.itemIds.end() && ::Accepts(type, it->second);
+}
+
+void Factory::SetSpeed(int ticksPerTick) { simSpeed = std::max(1, ticksPerTick); }

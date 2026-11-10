@@ -32,12 +32,14 @@ enum class PartType : uint8_t {
     Cube, Block, Slope, Corner, Beam2, Beam4, Beam8,                 // structure
     Conveyor, Cable,                                                 // item and power connectors (1 cell)
     Chest, Generator, Furnace, Macerator, Battery,                   // machines (1 m, 2x2x2 cells)
+    Campfire, Kiln, CokeOven, BlastFurnace, Boiler, ForgeHammer, AlloySmelter, SteamMacerator,
     Count
 };
 inline bool IsMachine(PartType t) { return t >= PartType::Chest && t < PartType::Count; }
 const char* PartName(PartType t);
 int PartCostCount(PartType t);              // items one part costs
-const char* PartCostItem(PartType t);       // "concrete" / "iron_plate"
+const char* PartCostItem(PartType t);       // "concrete", "iron_plate", or the machine's own item
+const char* PartMachineName(PartType t);    // machines.txt / recipe name ("kiln"), or nullptr
 
 
 // The 24 axis-aligned rotations (index 0 = identity).

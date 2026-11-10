@@ -163,6 +163,7 @@ namespace {
 void Objectives_MarkVisitedBody(int i) { visitedBodies.insert(i); }
 
 void Objectives_Update(Scene& world) {
+    QuestBook_Update();
     if (inventory.count("stone") > 0 || inventory.count("regolith") > 0) objectives[0].done = true;
     if (inventory.count("iron_ore") > 0) objectives[1].done = true;
     if (inventory.count("power_cell") > 0) objectives[2].done = true;
@@ -182,11 +183,80 @@ void Objectives_Update(Scene& world) {
     }
 }
 
+
+// ---------------------------------------------------------------------------------------------
+// Quest book (resources/data/tiers.txt): the tier ladder from bare hands to orbit. Making (or
+// placing) a tier's gate item opens the next one.
+// ---------------------------------------------------------------------------------------------
+
+namespace {
+    struct Tier { std::string name, gate, text; };
+    std::vector<Tier> tiers;
+    int questTier = 0;
+    std::set<std::string> placedItems;
+
+    void LoadTiers() {
+        if (!tiers.empty()) return;
+        FILE* f = fopen("resources/data/tiers.txt", "r");
+        if (!f) return;
+        char buf[1024];
+        while (fgets(buf, sizeof buf, f)) {
+            std::string line = buf;
+            if (line.empty() || line[0] == '#' || line[0] == '\n' || line[0] == '\r') continue;
+            std::vector<std::string> cols;
+            size_t start = 0, bar;
+            while ((bar = line.find('|', start)) != std::string::npos) { cols.push_back(line.substr(start, bar - start)); start = bar + 1; }
+            cols.push_back(line.substr(start));
+            for (auto& c : cols) { const size_t a = c.find_first_not_of(" \t"), b = c.find_last_not_of(" \t\r\n"); c = a == std::string::npos ? "" : c.substr(a, b - a + 1); }
+            if (cols.size() >= 4) tiers.push_back({ cols[1], cols[2], cols[3] });
+        }
+        fclose(f);
+    }
+}
+
+void QuestBook_NotePlaced(const std::string& item) { placedItems.insert(item); }
+int QuestBook_Tier() { return questTier; }
+void QuestBook_SetTier(int t) { questTier = std::max(0, t); }
+
+void QuestBook_Update() {
+    LoadTiers();
+    while (questTier < (int)tiers.size() && tiers[questTier].gate != "-" &&
+           (inventory.count(tiers[questTier].gate) > 0 || placedItems.count(tiers[questTier].gate))) {
+        ++questTier;
+        if (questTier < (int)tiers.size()) GameUI_Toast(TextFormat("Tier %d: %s", questTier, tiers[questTier].name.c_str()));
+    }
+}
+
 void Objectives_DrawHUD() {
+    LoadTiers();
     int y = 64;
-    DrawText("OBJECTIVES", 12, y, 16, Fade(RAYWHITE, 0.8f));
-    for (const Objective& o : objectives) {
+    if (questTier < (int)tiers.size()) {
+        const Tier& t = tiers[questTier];
+        DrawText(TextFormat("QUEST BOOK   tier %d: %s", questTier, t.name.c_str()), 12, y, 16, Fade(GOLD, 0.9f));
         y += 20;
-        DrawText(TextFormat("%s %s", o.done ? "[x]" : "[ ]", o.text), 12, y, 16, o.done ? Fade(GREEN, 0.7f) : RAYWHITE);
+        if (t.gate != "-") {
+            const ItemDef* d = itemDB.find(t.gate);
+            DrawText(TextFormat("Next: make a %s", d ? d->name.c_str() : t.gate.c_str()), 12, y, 16, RAYWHITE);
+            y += 20;
+        }
+        // Wrap the hint at ~64 characters.
+        std::string words = t.text, line;
+        size_t pos = 0;
+        while (pos < words.size()) {
+            size_t sp = words.find(' ', pos);
+            if (sp == std::string::npos) sp = words.size();
+            const std::string w = words.substr(pos, sp - pos);
+            if (line.size() + w.size() + 1 > 64) { DrawText(line.c_str(), 12, y, 14, Fade(RAYWHITE, 0.75f)); y += 17; line.clear(); }
+            line += (line.empty() ? "" : " ") + w;
+            pos = sp + 1;
+        }
+        if (!line.empty()) { DrawText(line.c_str(), 12, y, 14, Fade(RAYWHITE, 0.75f)); y += 17; }
+        y += 8;
+    }
+    // Space goals, compactly.
+    for (const Objective& o : objectives) {
+        if (o.done) continue;
+        DrawText(TextFormat("[ ] %s", o.text), 12, y, 14, Fade(RAYWHITE, 0.6f));
+        y += 16;
     }
 }

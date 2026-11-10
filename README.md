@@ -118,6 +118,13 @@ Shaders in `resources/` hot-reload when saved.
   move outputs to machines that take them, cable networks share generator and battery power (a shortfall slows
   every consumer equally; a machine below the network voltage refuses power). Plots over 1 km away tick once a
   second with a 20x step. Look at a machine for its state; I puts items in, O takes the output. Saved (v9).
+- **Tiers and progression** (`resources/data/materials.txt`, `tiers.txt`, `machines.txt`): materials (iron, copper,
+  tin, bronze, steel families) generate their ore, dust, ingot and plate items; ore veins come in kinds by 48 m deposit
+  (iron, copper, tin, coal). Machines, their power (none, fuel, EU at a voltage, generator, battery) and fuels are data.
+  The quest book (top left) walks the tiers, each gated by an item or placed machine: a campfire fires a clay crucible
+  (tier 0), a kiln smelts copper, tin and iron and alloys bronze (1), a boiler drives a forge hammer by cable and a coke
+  oven and blast furnace make steel (2), glass and vacuum tubes (3), circuits, LV hulls, an LV generator and the electric
+  furnace (4). Fuel machines run recipes that don't eat their fuel first.
 - **Distance sphere** (`src/engine/farsphere.*`): beyond 3 radii (telescope zoom included) planets and moons draw as a
   sphere with colour and normal maps baked on the workers from the height map and biome rules (sea by depth, forest
   canopy), lit by the sun with the night side and a sea glint, under the same haze as the terrain.
@@ -156,7 +163,8 @@ frustum culling, `--test-dig N` carves a tunnel at the crosshair, `--test-savelo
 `--test-hole` (walk into a fresh pit, build a pillar underfoot), `--test-trees` (walk into a trunk), `--test-chop` (fell a tree, save/reload, regrow), `--test-persist N`
 (milestone 2 gate: N strokes, flat builds, save and load under a second), `--test-build N` (milestone 3 gate:
 N parts, standing on them, save/load, frame time with the factory in view), `--test-factory N` (milestone 4 gate:
-N working machines, tick under 5 ms, plates reach the chests, contents survive a reload), `--bench-fly V`
+N working machines, tick under 5 ms, plates reach the chests, contents survive a reload), `--test-progression`
+(milestone 5 gate: a scripted playthrough from an empty inventory to a placed, powered, working LV electric furnace), `--bench-fly V`
 / `--bench-fly-alt A` (camera flight over body 0, LOD streaming; negative A: underwater), `--no-foliage`,
 `--test-mine N` digs N strokes at the feet, crafts everything possible and builds 3 strokes,
 `--test-fly S` autopilots the ship to the nearest other asteroid, `--test-suffocate` checks death/respawn,

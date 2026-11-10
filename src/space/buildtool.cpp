@@ -1,4 +1,5 @@
 #include "buildtool.h"
+#include "survival.h"
 #include "audio.h"
 #include "gameui.h"
 #include "inventory.h"
@@ -34,6 +35,11 @@ namespace {
     }
 }
 
+static bool IsMachineItem(const std::string& id) {
+    for (int t = 0; t < (int)PartType::Count; ++t) if (id == PartCostItem((PartType)t) && IsMachine((PartType)t)) return true;
+    return false;
+}
+
 // Foundation: clear terrain inside the part's cells and fill under its bottom cells.
 static void LayFoundation(Planetoid& body, Plot& plot, const Part& part) {
     std::vector<std::pair<Int3, CellShape>> fp;
@@ -63,6 +69,7 @@ bool BuildTool_Place(Planetoid& body, Plot& plot, const Part& part, bool charge)
         return false;
     }
     plot.place(part);
+    if (IsMachine(part.type)) QuestBook_NotePlaced(PartCostItem(part.type));
     LayFoundation(body, plot, part);
     return true;
 }
@@ -210,15 +217,13 @@ void Machine_Update(Scene& world, bool inputEnabled) {
     if (IsKeyPressed(KEY_I)) {
         // Everything in the inventory the machine might take: fuel for generators, recipe inputs,
         // anything for a chest (the simulation hands back what does not fit).
-        static const char* fuels[] = { "wood" };
-        static const char* inputs[] = { "iron_ore", "sand", "stone", "concrete" };
-        auto give = [&](const char* item) {
-            const int n = inventory.count(item);
-            if (n > 0 && inventory.remove(item, n)) Factory::Insert(machineAim.body, machineAim.plot, machineAim.part, item, n);
-        };
-        if (machineAim.type == PartType::Generator) for (const char* it : fuels) give(it);
-        else if (machineAim.type == PartType::Furnace || machineAim.type == PartType::Macerator) for (const char* it : inputs) give(it);
-        else if (machineAim.type == PartType::Chest) for (const char* it : inputs) give(it);
+        // A chest takes the hand's raw materials only (not tools and machines).
+        const auto all = inventory.all(); // copy: we remove while walking it
+        for (const auto& kv : all) {
+            if (kv.second <= 0 || !Factory::Accepts(machineAim.type, kv.first)) continue;
+            if (machineAim.type == PartType::Chest && (kv.first == "telescope" || IsMachineItem(kv.first))) continue;
+            if (inventory.remove(kv.first, kv.second)) Factory::Insert(machineAim.body, machineAim.plot, machineAim.part, kv.first, kv.second);
+        }
         Audio_Play(Sfx::Pickup, 0.4f, 0.8f);
     }
     if (IsKeyPressed(KEY_O)) { Factory::Extract(machineAim.body, machineAim.plot, machineAim.part); Audio_Play(Sfx::Pickup, 0.4f, 1.2f); }

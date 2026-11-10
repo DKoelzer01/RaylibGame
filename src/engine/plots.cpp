@@ -28,6 +28,14 @@ const char* PartName(PartType t) {
         case PartType::Furnace: return "furnace";
         case PartType::Macerator: return "macerator";
         case PartType::Battery: return "battery";
+        case PartType::Campfire: return "campfire";
+        case PartType::Kiln: return "kiln";
+        case PartType::CokeOven: return "coke oven";
+        case PartType::BlastFurnace: return "blast furnace";
+        case PartType::Boiler: return "steam boiler";
+        case PartType::ForgeHammer: return "forge hammer";
+        case PartType::AlloySmelter: return "alloy smelter";
+        case PartType::SteamMacerator: return "steam macerator";
         default: return "?";
     }
 }
@@ -37,20 +45,34 @@ int PartCostCount(PartType t) {
         case PartType::Beam2: return 1;
         case PartType::Beam4: return 2;
         case PartType::Beam8: return 4;
-        case PartType::Chest: return 4;
-        case PartType::Generator: case PartType::Macerator: case PartType::Battery: return 6;
-        case PartType::Furnace: return 8;
-        default: return 1;
+        default: return 1; // cube, slope, corner; connectors and machines: one of their own item
+    }
+}
+const char* PartMachineName(PartType t) {
+    switch (t) {
+        case PartType::Chest: return "chest";
+        case PartType::Generator: return "generator";
+        case PartType::Furnace: return "furnace";
+        case PartType::Macerator: return "macerator";
+        case PartType::Battery: return "battery";
+        case PartType::Campfire: return "campfire";
+        case PartType::Kiln: return "kiln";
+        case PartType::CokeOven: return "coke_oven";
+        case PartType::BlastFurnace: return "blast_furnace";
+        case PartType::Boiler: return "boiler";
+        case PartType::ForgeHammer: return "forge_hammer";
+        case PartType::AlloySmelter: return "alloy_smelter";
+        case PartType::SteamMacerator: return "steam_macerator";
+        default: return nullptr;
     }
 }
 const char* PartCostItem(PartType t) {
     switch (t) {
-        case PartType::Beam2: case PartType::Beam4: case PartType::Beam8:
-        case PartType::Conveyor: case PartType::Cable:
-        case PartType::Generator: case PartType::Macerator: case PartType::Battery: return "iron_plate";
-        case PartType::Chest: return "wood";
-        case PartType::Furnace: return "stone";
-        default: return "concrete";
+        case PartType::Beam2: case PartType::Beam4: case PartType::Beam8: return "iron_plate";
+        case PartType::Conveyor: return "conveyor";
+        case PartType::Cable: return "cable";
+        case PartType::Furnace: return "electric_furnace"; // the item; "furnace" is its recipe map
+        default: { const char* m = PartMachineName(t); return m ? m : "concrete"; }
     }
 }
 static Color PartColor(PartType t) {
@@ -64,6 +86,14 @@ static Color PartColor(PartType t) {
         case PartType::Furnace: return { 95, 92, 88, 255 };
         case PartType::Macerator: return { 70, 110, 150, 255 };
         case PartType::Battery: return { 210, 180, 60, 255 };
+        case PartType::Campfire: return { 200, 90, 40, 255 };
+        case PartType::Kiln: return { 150, 95, 70, 255 };
+        case PartType::CokeOven: return { 120, 80, 60, 255 };
+        case PartType::BlastFurnace: return { 90, 70, 70, 255 };
+        case PartType::Boiler: return { 160, 110, 60, 255 };
+        case PartType::ForgeHammer: return { 150, 120, 70, 255 };
+        case PartType::AlloySmelter: return { 170, 110, 70, 255 };
+        case PartType::SteamMacerator: return { 140, 120, 90, 255 };
         default: return { 168, 166, 158, 255 };                                                          // concrete
     }
 }
@@ -75,6 +105,8 @@ static void PartCells(PartType t, std::vector<std::pair<Int3, CellShape>>& out) 
     switch (t) {
         case PartType::Cube: case PartType::Conveyor: case PartType::Cable: out.push_back({ { 0, 0, 0 }, full }); break;
         case PartType::Block: case PartType::Chest: case PartType::Generator: case PartType::Furnace: case PartType::Macerator: case PartType::Battery:
+        case PartType::Campfire: case PartType::Kiln: case PartType::CokeOven: case PartType::BlastFurnace: case PartType::Boiler:
+        case PartType::ForgeHammer: case PartType::AlloySmelter: case PartType::SteamMacerator:
             for (int z = 0; z < 2; ++z) for (int y = 0; y < 2; ++y) for (int x = 0; x < 2; ++x) out.push_back({ { x, y, z }, full });
             break;
         case PartType::Slope: {

@@ -1,0 +1,7 @@
+# Tiers (quest book): tier | name | gate item (making it opens the next tier) | what to do
+0 | Primitive        | fired_crucible   | Chop trees for wood, harvest bushes for fibre, dig dirt and stone. Make clay from dirt, mould a crucible (Tab) and fire it in a campfire (G to place, I to feed it wood).
+1 | Stone age        | bronze_ingot     | Build a kiln. Dig deep for copper and tin ore (veins below 8 m), smelt them in the kiln (fuel: wood, charcoal, coal) and alloy 3 copper + 1 tin into bronze.
+2 | Bronze and steam | steel_ingot      | A boiler and copper cables power steam machines (8 V). Hammer plates, crush ore, bake coal into coke in a coke oven, and burn coke in a blast furnace to turn iron into steel.
+3 | Steel            | vacuum_tube      | Glass (sand in a kiln), copper wire and a steel plate make a vacuum tube: the first circuit.
+4 | LV electric      | electric_furnace | Basic circuits on a steel hull make your first LV machine. Power it from an LV generator (32 V; steam machines refuse it).
+5 | MV electric      | -                | Chemistry, plastics and automated mining come next.
