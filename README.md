@@ -93,9 +93,18 @@ Shaders in `resources/` hot-reload when saved.
   gravity is too weak to define it (deep space, the balance point between bodies).
 - **Star system** (`src/engine/bodies.*`, `resources/data/bodies.txt`): one body (asteroid, planet, moon)
   or procedural ring per line, with radius, position or orbit, spin or day length, gravity and seed. The
-  default is the 60 km home planet, its moon and a thin asteroid ring 250 km up (members on their own
-  circular orbits); the old asteroid start is `bodies_asteroids.txt`. Saves embed the system they were
+  default is the 60 km home planet, its moon, an asteroid ring 250 km up and three huge rocks in and
+  beside it; the old asteroid start is `bodies_asteroids.txt`. Saves embed the system they were
   made in, so editing the file never breaks a save. Errors are reported with line numbers in `log.txt`.
+- **Planetary ring** (`src/engine/ring.*`): 60,000 rocks 5-50 m across (about 1% five times bigger) in a band
+  3 km wide and 60 m thick, each on its own circular orbit, derived from the seed and its index (nothing
+  stored until you change one). Far away rocks draw as instances of a dozen lumpy rock meshes (skipped when
+  under a pixel), and beyond ~40 km the ring is a translucent band in a faint dust halo, dark in the planet's
+  shadow, an arc across the sky from the ground. Near a rock (within a reach growing with its size) it becomes
+  a full voxel body: dig it, stand on it (low gravity of its own); leave and it turns back into an instance,
+  keeping its edits and build plots, which are saved (save v10). Huge rocks orbiting inside the ring clear a
+  lane in it (rocks on crossing orbits would collide); the default has goliath and bastion at its edges and
+  pebble in a gap in the middle.
 - **Audio** (`src/engine/audio.*`): procedural sound effects, no assets.
 - **Planets and moons** (`PlanetField` in `src/engine/voxel.*`): a height map over the sphere (continents and
   ocean floor, ridged mountains, hills, river valleys), worm caves, ore veins that get richer with depth, snow
@@ -174,7 +183,9 @@ N working machines, tick under 5 ms, plates reach the chests, contents survive a
 (milestone 5 gate: a scripted playthrough from an empty inventory to a placed, powered, working LV electric furnace),
 `--test-wall` (walk into shaft and tunnel walls: no launches), `--test-menus` (main menu, new game, pause, save & quit,
 load), `--test-water` (inland water near the start, its bed and clay), `--test-flyfollow` (the fly camera rides the
-planet and the moon), `--test-hotbar` (materials, consumables, foundations, materials through a save), `--bench-fly V`
+planet and the moon), `--test-hotbar` (materials, consumables, foundations, materials through a save), `--test-ring`
+(milestone 6 gate: 60k rocks, frame time from the ground and inside the ring, a rock promoted, dug, left, revisited
+and reloaded with its hole, standing on a huge rock), `--bench-fly V`
 / `--bench-fly-alt A` (camera flight over body 0, LOD streaming; negative A: underwater), `--no-foliage`,
 `--test-mine N` digs N strokes at the feet, crafts everything possible and builds 3 strokes,
 `--test-fly S` autopilots the ship to the nearest other asteroid, `--test-suffocate` checks death/respawn,
