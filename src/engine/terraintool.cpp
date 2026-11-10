@@ -122,7 +122,8 @@ bool TerrainTool_Stroke(bool dig) {
     const float r3 = terrainTool.brushRadius * terrainTool.brushRadius * terrainTool.brushRadius;
     if (digging) {
         // Yield scales with the volume the stroke removes (~strength * r^3).
-        inventory.addFractional(ItemForMaterial(hit.material), terrainTool.digStrength * r3 * 0.15f);
+        const char* item = hit.material == VoxelMaterial::Ore ? OreKindAt(hit.local, hit.planetoid->seed) : ItemForMaterial(hit.material);
+        inventory.addFractional(item, terrainTool.digStrength * r3 * 0.15f);
         Audio_Play(Sfx::Dig, 0.5f, 0.85f + 0.3f * (float)GetRandomValue(0, 100) / 100.0f);
     } else if (!terrainTool.creative) {
         // Building consumes bulk material, best first.
@@ -179,4 +180,29 @@ bool TerrainTool_Chop() { return Chop(); }
 bool TerrainTool_AimingPlant(uint64_t* id) {
     if (hasPlant && id) *id = plantHit.plant.id;
     return hasPlant;
+}
+
+// Scripted gathering (tests): dig at a body-local point with the tool's yield rule (one item of
+// whatever is there per call), and chop / harvest the nearest plant.
+bool TerrainTool_DigAt(Planetoid& p, Vector3 local) {
+    if (!p.field->editable(local)) return false;
+    const float base = p.field->baseDensity(local);
+    if (base < ISO_LEVEL) return false; // air
+    const VoxelMaterial m = p.field->material(local, base);
+    const char* item = m == VoxelMaterial::Ore ? OreKindAt(local, p.seed) : ItemForMaterial(m);
+    inventory.add(item, 1);
+    ApplyTerrainEdit(p, TerrainEdit{ local, 1.2f, -0.6f });
+    return true;
+}
+
+bool TerrainTool_HarvestNearest(Planetoid& p, Vector3 local, bool tree) {
+    if (!p.trees) return false;
+    Plant plant;
+    if (!p.trees->nearestPlant(local, 400.0f, tree, plant)) return false;
+    hasPlant = true;
+    plantBody = &p;
+    plantHit.plant = plant;
+    plantHit.distance = 1.0f;
+    for (int i = 0; i < 64; ++i) if (Chop()) return true;
+    return false;
 }

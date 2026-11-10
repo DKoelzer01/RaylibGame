@@ -1,7 +1,30 @@
-# Machine recipes: machine | outputs | inputs | ticks (20 a second) | EU per tick
-# (Generators burn fuel: generator | - | fuel 1 | burn ticks | EU per tick produced.)
-furnace   | iron_plate 1 | iron_ore 1  | 200 | 8
-furnace   | glass 1      | sand 4      | 160 | 8
-macerator | sand 2       | stone 1     | 100 | 4
-macerator | gravel 2     | concrete 1  | 100 | 4
-generator | -            | wood 1      | 400 | 16
+# Machine recipes: machine | outputs | inputs | ticks (20 a second) | EU per tick (eu machines)
+campfire        | charcoal 1       | wood 2                    | 200 | 0
+campfire        | fired_crucible 1 | crucible_mold 1           | 400 | 0
+kiln            | copper_ingot 1   | copper_ore 1              | 200 | 0
+kiln            | tin_ingot 1      | tin_ore 1                 | 200 | 0
+kiln            | iron_ingot 1     | iron_ore 1                | 300 | 0
+kiln            | bronze_ingot 4   | copper_ingot 3, tin_ingot 1 | 400 | 0
+kiln            | glass 1          | sand 4                    | 200 | 0
+kiln            | copper_ingot 1   | copper_dust 1             | 100 | 0
+kiln            | tin_ingot 1      | tin_dust 1                | 100 | 0
+kiln            | iron_ingot 1     | iron_dust 1               | 150 | 0
+coke_oven       | coke 1           | coal 2                    | 600 | 0
+blast_furnace   | steel_ingot 1    | iron_ingot 1              | 600 | 0
+forge_hammer    | bronze_plate 1   | bronze_ingot 1            | 100 | 4
+forge_hammer    | iron_plate 1     | iron_ingot 1              | 100 | 4
+forge_hammer    | steel_plate 1    | steel_ingot 1             | 160 | 6
+alloy_smelter   | bronze_ingot 4   | copper_ingot 3, tin_ingot 1 | 200 | 6
+steam_macerator | copper_dust 1    | copper_ore 1              | 200 | 4
+steam_macerator | tin_dust 1       | tin_ore 1                 | 200 | 4
+steam_macerator | iron_dust 1      | iron_ore 1                | 200 | 4
+steam_macerator | sand 1           | stone 1                   | 100 | 2
+furnace         | iron_plate 1     | iron_ore 1                | 200 | 8
+furnace         | iron_ingot 1     | iron_dust 1               | 100 | 8
+furnace         | copper_ingot 1   | copper_dust 1             | 100 | 8
+furnace         | glass 1          | sand 4                    | 160 | 8
+macerator       | copper_dust 2    | copper_ore 1              | 150 | 8
+macerator       | tin_dust 2       | tin_ore 1                 | 150 | 8
+macerator       | iron_dust 2      | iron_ore 1                | 150 | 8
+macerator       | sand 2           | stone 1                   | 100 | 4
+macerator       | gravel 2         | concrete 1                | 100 | 4

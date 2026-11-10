@@ -2,6 +2,7 @@
 #define TERRAINTOOL_H
 
 #include <cstdint>
+#include <raylib.h>
 
 class Scene;
 
@@ -20,6 +21,9 @@ void TerrainTool_Update(Scene& world, bool inputEnabled, bool editEnabled = true
 bool TerrainTool_Stroke(bool dig);                         // one dig/build stroke at the last crosshair hit
 bool TerrainTool_Chop();     // one swing at the aimed plant (scripted tests); true when it came down
 bool TerrainTool_AimingPlant(uint64_t* id = nullptr);
+class Planetoid;
+bool TerrainTool_DigAt(Planetoid& p, Vector3 local);              // tests: dig a point, gain what it held
+bool TerrainTool_HarvestNearest(Planetoid& p, Vector3 local, bool tree); // tests: fell / harvest the nearest plant
 void TerrainTool_Draw3D();                                // inside BeginMode3D (Scene::onDraw3D)
 void TerrainTool_DrawHUD();                               // 2D, after the scene
 
