@@ -26,7 +26,7 @@ void Player::spawnOn(Scene& world, Planetoid& body, Vector3 dir) {
     up = body.flat ? Vector3{ 0, 1, 0 } : Vector3Normalize(Vector3Subtract(feet, c));
     forward = Vector3Normalize(Vector3CrossProduct(up, { 1, 0, 0 }));
     if (Vector3Length(forward) < 0.1f) forward = { 0, 0, 1 };
-    velocity = { 0, 0, 0 };
+    velocity = body.surfaceVelocity(feet); // move with the ground (a spinning planet's surface is fast)
     grounded = false;
     groundBody = nullptr;
     flyMode = false;

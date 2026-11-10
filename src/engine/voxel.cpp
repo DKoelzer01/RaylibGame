@@ -332,6 +332,42 @@ void PlanetField::baseDensityBlock(Vector3 o, float stride, int S, float fp, flo
             }
 }
 
+Vector3 PlanetField::findSpawnDir(unsigned int seed) const {
+    std::mt19937 rng(seed ^ 0x5eedu);
+    std::uniform_real_distribution<float> unit(0.0f, 1.0f);
+    Vector3 best = { 0, 1, 0 };
+    float bestScore = -1e30f;
+    for (int attempt = 0; attempt < 4000; ++attempt) {
+        // Temperate band: 25-45 degrees north or south.
+        const float lat = (25.0f + 20.0f * unit(rng)) * DEG2RAD * (unit(rng) < 0.5f ? 1.0f : -1.0f);
+        const float lon = unit(rng) * 2.0f * PI;
+        const Vector3 dir = { cosf(lat) * cosf(lon), sinf(lat), cosf(lat) * sinf(lon) };
+        const float e = elevation(dir);
+        if (moon || e < 8.0f || e > 400.0f) continue;
+        // Slope from the height a few metres away in two tangent directions.
+        const Vector3 t1 = Vector3Normalize(Vector3CrossProduct(dir, { 0, 1, 0 }));
+        const Vector3 t2 = Vector3CrossProduct(t1, dir);
+        const float step = 4.0f, ang = step / (radius + e);
+        const float e1 = elevation(Vector3Normalize(Vector3Add(dir, Vector3Scale(t1, ang))));
+        const float e2 = elevation(Vector3Normalize(Vector3Add(dir, Vector3Scale(t2, ang))));
+        const Vector3 normal = Vector3Normalize(Vector3Subtract(dir, Vector3Add(Vector3Scale(t1, (e1 - e) / step), Vector3Scale(t2, (e2 - e) / step))));
+        const float slope = 1.0f - Vector3DotProduct(normal, dir);
+        if (slope > 0.05f) continue;
+        const Vector3 surface = Vector3Scale(dir, radius + e - 0.3f);
+        if (materialLod(surface, 1.0f, 0.0f, normal) != VoxelMaterial::Grass) continue;
+        // Solid underfoot (caves and ravines carve the density, not the height map).
+        bool solid = true;
+        for (float depth : { 1.0f, 3.0f, 6.0f, 12.0f })
+            if (baseDensity(Vector3Scale(dir, radius + e - depth)) < ISO_LEVEL) { solid = false; break; }
+        if (!solid) continue;
+        // Prefer flat, low ground: good enough is good enough.
+        const float score = -slope * 100.0f - e * 0.01f;
+        if (score > bestScore) { bestScore = score; best = dir; }
+        if (slope < 0.01f) break;
+    }
+    return best;
+}
+
 VoxelMaterial PlanetField::materialSky(Vector3 p, float base, float fp, Vector3 normal, float& sky) const {
     sky = 1.0f;
     const float d = sqrtf(p.x * p.x + p.y * p.y + p.z * p.z);

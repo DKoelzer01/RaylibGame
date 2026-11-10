@@ -32,6 +32,13 @@ Logger logger("log.txt");
 
 int gameState = 0; // 0: Main Menu, 1: Game, 2: Pause Menu
 
+// Where to start on the first body: planets pick temperate grassland (world direction, from the
+// body's seed); asteroids keep the old "top" spot.
+static Vector3 StartSpawnDir(Planetoid& body) {
+    if (auto* field = dynamic_cast<const PlanetField*>(body.field.get())) return body.dirToWorld(field->findSpawnDir(body.seed));
+    return { 0, 1, 0 };
+}
+
 // --bench <seconds>: windowed 1920x1080, uncapped FPS, skips the menu, holds a fixed
 // camera on the planetoid, prints frame stats to stdout and bench.txt, then exits.
 
@@ -232,7 +239,7 @@ int main(int argc, char** argv)
                 printf("body %s %s pos %.3f %.3f %.3f radius %.3f seed %u spin %.4f g %.4f\n", BodyKindName(p->kind), p->name.c_str(), p->worldPos.x, p->worldPos.y, p->worldPos.z,
                        p->radius, p->seed, p->spin.y, p->surfaceGravity);
     }
-    if (Planetoid* start = world.objects.empty() ? nullptr : dynamic_cast<Planetoid*>(world.objects[0].get())) player.spawnOn(world, *start);
+    if (Planetoid* start = world.objects.empty() ? nullptr : dynamic_cast<Planetoid*>(world.objects[0].get())) player.spawnOn(world, *start, StartSpawnDir(*start));
     if (!world.objects.empty()) {
         // Park the ship a few metres ahead of the player.
         const Vector3 feet = (player.position - world.renderOrigin).toFloat();
@@ -331,7 +338,7 @@ int main(int argc, char** argv)
                     Planetoid* moon = nullptr;
                     for (auto& obj : world.objects)
                         if (auto* q = dynamic_cast<Planetoid*>(obj.get())) if (q->kind == BodyKind::Moon && q->orbitParent) { moon = q; break; }
-                    if (!moon) { printf("bench: --test-moon needs an orbiting moon (e.g. --bodies resources/data/bodies_planet.txt)\n"); benchMoon = false; }
+                    if (!moon) { printf("bench: --test-moon needs an orbiting moon (the default resources/data/bodies.txt has one)\n"); benchMoon = false; }
                     else {
                         const double t = moonStart < 0.0 ? 0.0 : GetTime() - moonStart;
                         const DVec3 local = moon->toLocalD(player.position);
@@ -412,11 +419,11 @@ int main(int argc, char** argv)
                         benchAirJump = false;
                     }
                 } else if (benchMantle && WorldIdle()) {
-                    // Planet terrain checks on body 0 (run with --bodies resources/data/bodies_planet.txt).
+                    // Planet terrain checks on body 0 (the default system).
                     Planetoid* p = dynamic_cast<Planetoid*>(world.objects[0].get());
                     const PlanetField* f = dynamic_cast<const PlanetField*>(p->field.get());
                     if (!f) {
-                        printf("bench: --test-mantle needs a planet as the first body (e.g. --bodies resources/data/bodies_planet.txt)\n");
+                        printf("bench: --test-mantle needs a planet as the first body (the default resources/data/bodies.txt has one)\n");
                     } else {
                         std::mt19937 rng(1234);
                         std::normal_distribution<float> gauss(0.0f, 1.0f);
@@ -775,10 +782,10 @@ int main(int argc, char** argv)
                     if (walkStart < 0.0) {
                         player.autoWalk = !benchStandOnly;
                         Planetoid* start = dynamic_cast<Planetoid*>(world.objects[0].get());
-                        if (hasSpawnDir) player.spawnOn(world, *start, spawnDir); else player.spawnOn(world, *start);
+                        if (hasSpawnDir) player.spawnOn(world, *start, spawnDir); else player.spawnOn(world, *start, StartSpawnDir(*start));
 
                         walkStart = GetTime();
-                        walkFrom = player.position;
+                        walkFrom = start->toLocalD(player.position); // body frame: the spin carries the walker too
                         walkMinDensity = 1e9f; walkMaxDensity = -1e9f; walkGroundedFrames = walkFrames = 0;
                     }
                     Planetoid* start = dynamic_cast<Planetoid*>(world.objects[0].get());
@@ -790,7 +797,7 @@ int main(int argc, char** argv)
                     walkGroundedFrames += player.grounded ? 1 : 0;
                     if (GetTime() - walkStart > benchWalkSeconds) {
                         player.autoWalk = false;
-                        const double dist = (player.position - walkFrom).length();
+                        const double dist = (start->toLocalD(player.position) - walkFrom).length();
                         const float alt = Vector3Distance(feet, start->position);
                         printf("bench: walked %.1f m in %.1f s, grounded %.0f%% of frames, density at body %.2f..%.2f (solid >= %.2f), %.1f m from centre\n",
                                dist, benchWalkSeconds, 100.0 * walkGroundedFrames / std::max(1, walkFrames), walkMinDensity, walkMaxDensity, ISO_LEVEL, alt);

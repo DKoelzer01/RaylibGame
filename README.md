@@ -86,7 +86,8 @@ Shaders in `resources/` hot-reload when saved.
   gravity is too weak to define it (deep space, the balance point between bodies).
 - **Star system** (`src/engine/bodies.*`, `resources/data/bodies.txt`): one body (asteroid, planet, moon)
   or procedural ring per line, with radius, position or orbit, spin or day length, gravity and seed. The
-  default is the start asteroid plus a ring of 7 more within ~1.5 km. Saves embed the system they were
+  default is the 60 km home planet, its moon and a thin asteroid ring 250 km up (members on their own
+  circular orbits); the old asteroid start is `bodies_asteroids.txt`. Saves embed the system they were
   made in, so editing the file never breaks a save. Errors are reported with line numbers in `log.txt`.
 - **Audio** (`src/engine/audio.*`): procedural sound effects, no assets.
 - **Planets and moons** (`PlanetField` in `src/engine/voxel.*`): a height map over the sphere (continents and
@@ -96,8 +97,8 @@ Shaders in `resources/` hot-reload when saved.
   horizon, above the highest terrain or inside the mantle are never built. A sea fills the planet to sea level
   (meshed per chunk where it meets open air; polar seas are frozen into ice shelves), and the planet has an
   atmosphere: sky colour by sun angle and altitude, dusk glow, stars at night and in space, haze with
-  distance, and dense blue fog underwater. Try it with
-  `./game.exe --bodies resources/data/bodies_planet.txt`.
+  distance, and dense blue fog underwater. It is the default start system: you start on temperate
+  grassland (picked from the seed), where the air is breathable below ~15 km (the suit refills its oxygen).
 - Asteroid density is a displaced sphere (mean surface 0.72 R) with a uniform 0.25/voxel gradient: crisp surfaces and
   predictable dig depth.
 ## Benchmark / test mode
@@ -119,8 +120,8 @@ frustum culling, `--test-dig N` carves a tunnel at the crosshair, `--test-savelo
 `--test-mine N` digs N strokes at the feet, crafts everything possible and builds 3 strokes,
 `--test-fly S` autopilots the ship to the nearest other asteroid, `--test-suffocate` checks death/respawn,
 `--test-moon` (moon on its analytic orbit; standing and jumping on it), `--time-scale k` (bodies spin and orbit
-k times faster), `--test-mantle` (planet terrain: height band, mantle refuses digging, ore by depth, caves; run with
-`--bodies resources/data/bodies_planet.txt`), `--test-ride` (standing/jumping on a spinning body; `--ride-spin D` sets its rate), `--test-orbit S` (jetpack orbit stability),
+k times faster), `--test-mantle` (planet terrain: height band, mantle refuses digging, ore by depth, caves; on the
+default system), `--test-ride` (standing/jumping on a spinning body; `--ride-spin D` sets its rate), `--test-orbit S` (jetpack orbit stability),
 `--test-park` (parked ship rides a spinning body), `--test-gravity` (field values, continuity between
 bodies, an unpiloted ship dropping and parking, a piloted ship hovering), `--test-precision` (float vs double
 placement error standing on body 0; run it with a large body via `--bodies`), `--spin-test` (writes `spin_*.png` frames),

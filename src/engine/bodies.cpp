@@ -104,6 +104,7 @@ bool ParseBodyDef(const std::string& line, BodyDef& out, std::string& error) {
             d.flatten = strtod(val.c_str(), &end);
             ok = end && end != val.c_str() && *end == '\0' && d.flatten >= 0.0;
         }
+        else if (key == "thickness") ok = ParseFloat(val, d.thickness) && d.thickness >= 0.0f;
         else if (key == "maxspin") ok = ParseFloat(val, d.maxSpinDegPerSec) && d.maxSpinDegPerSec >= 0.0f;
         else { error = "unknown key '" + key + "'"; return false; }
         if (!ok) { error = "bad value for '" + key + "': '" + val + "'"; return false; }
@@ -121,6 +122,8 @@ std::string FormatBodyDef(const BodyDef& d) {
     if (d.kind == BodyKind::Ring) {
         s += " count=" + std::to_string(d.count) + " size=" + Num(d.sizeMin) + "," + Num(d.sizeMax) +
              " extent=" + Num(d.extent) + " flatten=" + NumD(d.flatten) + " maxspin=" + Num(d.maxSpinDegPerSec);
+        if (!d.orbitParent.empty())
+            s += " orbit=" + d.orbitParent + "," + Num(d.orbitAltitude) + "," + Num(d.orbitPhaseDeg) + " thickness=" + Num(d.thickness);
     } else {
         if (!d.orbitParent.empty()) s += " orbit=" + d.orbitParent + "," + Num(d.orbitAltitude) + "," + Num(d.orbitPhaseDeg);
         else s += " position=" + Num(d.position.x) + "," + Num(d.position.y) + "," + Num(d.position.z);

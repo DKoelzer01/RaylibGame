@@ -57,6 +57,7 @@ public:
     double orbitRadius = 0.0;   // from the parent's centre (m)
     double orbitRate = 0.0;     // rad/s, from the parent's gravity: sqrt(GM / r^3)
     double orbitPhase = 0.0;    // rad at world time 0
+    double orbitHeight = 0.0;   // offset along the parent's axis (ring members spread above/below the equator)
     Vector3 linearVelocity = { 0, 0, 0 }; // m/s of the body itself (orbit), part of its surface velocity
     std::shared_ptr<const DensityField> field;           // immutable, shared with workers
     // Flat (open-world) bodies: +Y up, constant gravity, LOD tiled around the camera within the

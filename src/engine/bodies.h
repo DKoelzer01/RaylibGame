@@ -17,6 +17,8 @@
 //                                            planets/moons 9.81 * R / 100 km
 //          seed=N            terrain seed (default: drawn from the system seed)
 //          ring only: count=N  size=lo,hi (radius multipliers)  extent=m  flatten=f  maxspin=deg/s
+//          ring with orbit=parent,altitude,phase: members on circular orbits in a band `extent` m wide
+//          and `thickness` m thick about the parent's equator, spread all the way round (phase unused)
 //
 // Bodies draw from the system seed in a fixed order (3 position values, the terrain seed, a
 // size value for ring members, a spin value), whether or not a key overrides them, so a seed
@@ -47,6 +49,7 @@ struct BodyDef {
     float sizeMin = 0.5f, sizeMax = 3.0f;
     float extent = 1500.0f, maxSpinDegPerSec = 3.0f;
     double flatten = 0.2;             // double: the y scatter reproduces the old generator exactly
+    float thickness = 0.0f;           // orbiting ring: vertical spread (m) about the parent's equator
 };
 
 struct SystemDef {

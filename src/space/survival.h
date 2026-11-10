@@ -17,6 +17,9 @@ struct SurvivalState {
     float headlampPowerPerSec = 0.15f;                        // ~11 min of lamp on a full suit
     bool headlamp = false;                                    // L toggles; goes out at 0 power
     bool inLifeSupport = false;
+    float breathableAltitude = 15000.0f;                      // a planet's air is breathable below this (m above sea level)
+    float airRefillPerSec = 4.0f;                             // suit oxygen top-up from breathable air
+    bool breathable = false;
     bool dead = false;
     double deathTime = 0.0;
     int deaths = 0;

@@ -154,6 +154,9 @@ public:
     // Surface height above sea level along a unit direction; footprint > 0 leaves out detail finer
     // than samples that far apart (see SimplexNoise::fractalLimited).
     float elevation(Vector3 dir, float footprint = 0.0f) const;
+    // A body-local direction to a good start spot: temperate latitude, flat grassland a little above
+    // the sea, solid ground underfoot (no cave mouth). Deterministic for a seed.
+    Vector3 findSpawnDir(unsigned int seed) const;
     float baseDensity(Vector3 p) const override { return baseDensityLod(p, 0.0f); }
     float baseDensityLod(Vector3 p, float footprint) const override;
     void baseDensityBlock(Vector3 origin, float stride, int S, float footprint, float* out) const override;

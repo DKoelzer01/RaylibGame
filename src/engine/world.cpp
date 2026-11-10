@@ -411,7 +411,7 @@ static void PlaceOnOrbit(Planetoid& p) {
     const Planetoid& parent = *p.orbitParent;
     const double a = p.orbitPhase + p.orbitRate * worldTime;
     const double c = cos(a), s = sin(a);
-    p.worldPos = parent.worldPos + DVec3(c * p.orbitRadius, 0.0, s * p.orbitRadius);
+    p.worldPos = parent.worldPos + DVec3(c * p.orbitRadius, p.orbitHeight, s * p.orbitRadius);
     const double v = p.orbitRate * p.orbitRadius;
     p.linearVelocity = Vector3Add(parent.linearVelocity, { (float)(-s * v), 0.0f, (float)(c * v) });
 }
@@ -708,7 +708,43 @@ void generateWorld(Scene& world) {
         world.objects.push_back(std::move(p));
         ++index;
     };
+    // Circular orbit in the parent's equatorial plane at the speed its gravity gives:
+    // omega = sqrt(GM / r^3), GM = surface gravity * gravity radius^2.
+    auto setOrbit = [](Planetoid* p, Planetoid* parent, double radius, double phase, double height) {
+        const double gr = parent->gravityRadius > 0.0f ? parent->gravityRadius : parent->radius * parent->scale;
+        const double gm = parent->surfaceGravity * gr * gr;
+        p->orbitParent = parent;
+        p->orbitParentId = parent->id;
+        p->orbitRadius = radius;
+        p->orbitHeight = height;
+        const double r = sqrt(radius * radius + height * height);
+        p->orbitRate = sqrt(gm / (r * r * r));
+        p->orbitPhase = phase;
+        PlaceOnOrbit(*p);
+    };
     for (const BodyDef& d : worldGen.system.bodies) {
+        Planetoid* parent = nullptr;
+        if (!d.orbitParent.empty()) {
+            auto it = byName.find(d.orbitParent);
+            if (it != byName.end()) parent = it->second;
+        }
+        if (d.kind == BodyKind::Ring && parent) {
+            // An orbiting ring: members spread round the parent in a band `extent` wide and
+            // `thickness` thick, each on its own circular orbit (same draws per member as below).
+            const double base = parent->radius * parent->scale + d.orbitAltitude;
+            for (int k = 0; k < d.count; ++k) {
+                const double across = (unit(gen) - 0.5) * d.extent;
+                const double height = (unit(gen) - 0.5) * d.thickness;
+                const double phase = unit(gen) * 2.0 * PI;
+                const unsigned int seed = (unsigned int)gen();
+                const float radius = d.radius * (float)(d.sizeMin + (d.sizeMax - d.sizeMin) * unit(gen));
+                const float spin = (float)(unit(gen) - 0.5) * 2.0f * d.maxSpinDegPerSec;
+                const std::string name = d.name + "_" + std::to_string(index);
+                add(d, BodyKind::Asteroid, name, {}, radius, seed, spin);
+                setOrbit(byName[name], parent, base + across, phase, height);
+            }
+            continue;
+        }
         if (d.kind == BodyKind::Ring) {
             // A loose "belt": random directions, distances up to `extent`. Doubles keep these exact.
             for (int k = 0; k < d.count; ++k) {
@@ -726,25 +762,8 @@ void generateWorld(Scene& world) {
         const unsigned int drawnSeed = (unsigned int)gen();
         (void)unit(gen);                               // spin draw
         DVec3 pos = DVec3(d.position);
-        Planetoid* parent = nullptr;
-        if (!d.orbitParent.empty()) {
-            auto it = byName.find(d.orbitParent);
-            if (it != byName.end()) parent = it->second;
-        }
         add(d, d.kind, d.name, pos, d.radius, d.hasSeed ? d.seed : drawnSeed, d.spinDegPerSec);
-        if (parent) {
-            // Circular orbit in the parent's equatorial plane at the speed its gravity gives:
-            // omega = sqrt(GM / r^3), GM = surface gravity * gravity radius^2.
-            Planetoid* p = byName[d.name];
-            const double gr = parent->gravityRadius > 0.0f ? parent->gravityRadius : parent->radius * parent->scale;
-            const double gm = parent->surfaceGravity * gr * gr;
-            p->orbitParent = parent;
-            p->orbitParentId = parent->id;
-            p->orbitRadius = parent->radius * parent->scale + d.orbitAltitude;
-            p->orbitRate = sqrt(gm / (p->orbitRadius * p->orbitRadius * p->orbitRadius));
-            p->orbitPhase = d.orbitPhaseDeg * DEG2RAD;
-            PlaceOnOrbit(*p);
-        }
+        if (parent) setOrbit(byName[d.name], parent, parent->radius * parent->scale + d.orbitAltitude, d.orbitPhaseDeg * DEG2RAD, 0.0);
     }
     world.syncRenderPositions();
     generationStart = GetTime();

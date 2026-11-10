@@ -49,6 +49,7 @@ void Survival_Update(Scene& world, float dt, bool inputEnabled) {
     }
     const Vector3 pr = ship.piloted ? ship.renderPos(world) : (player.position - world.renderOrigin).toFloat();
     // Life support runs on ship energy: a drained ship is no refuge (charge it with a power cell).
+    survival.breathable = false;
     survival.inLifeSupport = (ship.piloted || ship.playerInRange(world, pr, ship.lifeSupportRadius)) && ship.energy > 0.0f;
 
     if (survival.inLifeSupport) {
@@ -64,7 +65,11 @@ void Survival_Update(Scene& world, float dt, bool inputEnabled) {
         survival.health = std::min(100.0f, survival.health + 2.0f * dt);
         player.jetpackFuel = std::min(1.0f, player.jetpackFuel + 0.5f * dt); // refill the suit's thruster tank
     } else {
-        survival.oxygen = std::max(0.0f, survival.oxygen - survival.oxygenDrainPerSec * dt);
+        // A planet's air is breathable up to ~15 km: the suit tops up its oxygen from it instead.
+        const auto& atm = world.atmosphere;
+        survival.breathable = atm.enabled && Vector3Distance(pr, atm.centre) < atm.radius + survival.breathableAltitude;
+        if (survival.breathable) survival.oxygen = std::min(100.0f, survival.oxygen + survival.airRefillPerSec * dt);
+        else survival.oxygen = std::max(0.0f, survival.oxygen - survival.oxygenDrainPerSec * dt);
         survival.power = std::max(0.0f, survival.power - (survival.powerDrainPerSec
                                                           + (survival.headlamp && !ship.piloted ? survival.headlampPowerPerSec : 0.0f)) * dt);
         // Firing the jetpack only burns fuel; recharging the tank (on the ground) is what costs suit
@@ -127,6 +132,7 @@ void Survival_DrawHUD() {
     Bar(x, y + 44, 260, "HP", survival.health, { 230, 70, 70, 255 }, survival.health < 30.0f);
     if (ship.spawned) Bar(x + 280, y + 44, 180, "SHIP", ship.energy, { 160, 120, 255, 255 }, ship.energy < 15.0f);
     if (survival.inLifeSupport) DrawText("LIFE SUPPORT", x + 280, y + 2, 16, SKYBLUE);
+    else if (survival.breathable) DrawText("BREATHABLE AIR", x + 280, y + 2, 16, Fade(SKYBLUE, 0.7f));
     DrawText(TextFormat("[1] O2 canister x%d   [2] power cell x%d", inventory.count("oxygen_canister"), inventory.count("power_cell")), x, y - 22, 16, Fade(RAYWHITE, 0.8f));
     if (survival.dead) {
         DrawRectangle(0, 0, GetScreenWidth(), GetScreenHeight(), Fade(BLACK, 0.6f));
@@ -143,11 +149,12 @@ void Survival_DrawHUD() {
 namespace {
     struct Objective { const char* text; bool done; };
     std::vector<Objective> objectives = {
-        { "Mine some ice", false },
-        { "Craft an oxygen canister (Tab)", false },
+        { "Dig some stone", false },
+        { "Find iron ore underground", false },
+        { "Craft a power cell (Tab)", false },
         { "Board your ship (E)", false },
-        { "Fly to another asteroid", false },
-        { "Craft a power cell from iron ore", false },
+        { "Fly to the moon", false },
+        { "Visit the asteroid ring", false },
     };
     std::set<int> visitedBodies;
 }
@@ -155,20 +162,23 @@ namespace {
 void Objectives_MarkVisitedBody(int i) { visitedBodies.insert(i); }
 
 void Objectives_Update(Scene& world) {
-    if (inventory.count("ice") > 0 || inventory.count("water") > 0) objectives[0].done = true;
-    if (inventory.count("oxygen_canister") > 0) objectives[1].done = true;
-    if (ship.piloted) objectives[2].done = true;
-    if (inventory.count("power_cell") > 0) objectives[4].done = true;
+    if (inventory.count("stone") > 0 || inventory.count("regolith") > 0) objectives[0].done = true;
+    if (inventory.count("iron_ore") > 0) objectives[1].done = true;
+    if (inventory.count("power_cell") > 0) objectives[2].done = true;
+    if (ship.piloted) objectives[3].done = true;
     // Visiting: get within 2 radii of any body other than the start one.
     const Vector3 pr = ship.piloted ? ship.renderPos(world) : (player.position - world.renderOrigin).toFloat();
     int index = 0;
     for (auto& obj : world.objects) {
         if (auto* p = dynamic_cast<Planetoid*>(obj.get())) {
             if (index > 0 && Vector3Distance(pr, p->position) < p->radius * p->scale * 2.0f) visitedBodies.insert(index);
+            if (index > 0 && visitedBodies.count(index)) {
+                if (p->kind == BodyKind::Moon) objectives[4].done = true;
+                else if (p->kind == BodyKind::Asteroid) objectives[5].done = true;
+            }
             index++;
         }
     }
-    if (!visitedBodies.empty()) objectives[3].done = true;
 }
 
 void Objectives_DrawHUD() {

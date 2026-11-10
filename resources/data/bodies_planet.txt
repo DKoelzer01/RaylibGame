@@ -1,9 +1,0 @@
-# Development system for milestone 1: the home planet and its moon (see bodies.txt for the syntax).
-# Run with:  game.exe --bodies resources/data/bodies_planet.txt
-# Becomes the default start system in milestone 1 step 8 (spawn + asteroid ring).
-
-# 60 km planet, 60-minute day (equator ~105 m/s). Gravity auto: 9.81 * 60 / 100 = 5.9 m/s^2.
-planet terra radius=60000 position=0,0,0 day=3600
-
-# 10 km moon 500 km above the surface on a circular orbit (~5 h, ~195 m/s). Gravity auto: 0.98 m/s^2.
-moon   luna  radius=10000 orbit=terra,500000,30 day=86400
