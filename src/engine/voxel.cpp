@@ -65,30 +65,16 @@ void DensityField::baseDensityBlock(Vector3 o, float stride, int S, float fp, fl
             for (int x = 0; x < S; ++x, ++i) out[i] = baseDensityLod({ o.x + x * stride, o.y + y * stride, o.z + z * stride }, fp);
 }
 
-float DensityField::density(Vector3 p, const TerrainEdit* edits, size_t editCount, float footprint) const {
-    return applyEdits(p, footprint > 0.0f ? baseDensityLod(p, footprint) : baseDensity(p), edits, editCount);
+float DensityField::density(Vector3 p, const TerrainDeltas* deltas, float footprint) const {
+    const float base = footprint > 0.0f ? baseDensityLod(p, footprint) : baseDensity(p);
+    return deltas ? base + deltas->sample(p) : base; // edits never reach a planet's mantle (folding skips it)
 }
 
-float DensityField::applyEdits(Vector3 p, float v, const TerrainEdit* edits, size_t editCount) const {
-    if (editCount == 0 || !editable(p)) return v; // e.g. a planet's mantle ignores edits
-    for (size_t i = 0; i < editCount; ++i) {
-        const TerrainEdit& e = edits[i];
-        const float dx = p.x - e.center.x, dy = p.y - e.center.y, dz = p.z - e.center.z;
-        const float d2 = dx * dx + dy * dy + dz * dz;
-        if (d2 >= e.radius * e.radius) continue;
-        const float t = 1.0f - sqrtf(d2) / e.radius;
-        v += e.strength * t * t * (3.0f - 2.0f * t); // smoothstep falloff: soft-edged craters/mounds
-    }
-    // Clamp so repeated digging/adding stays reversible in a few clicks.
-    return v; // no clamp: the uniform gradient keeps values meaningful at any depth
-}
-
-Vector3 DensityField::normal(Vector3 p, const TerrainEdit* edits, size_t n, float h, float fp) const {
-
+Vector3 DensityField::normal(Vector3 p, const TerrainDeltas* deltas, float h, float fp) const {
     const Vector3 g = {
-        density({ p.x + h, p.y, p.z }, edits, n, fp) - density({ p.x - h, p.y, p.z }, edits, n, fp),
-        density({ p.x, p.y + h, p.z }, edits, n, fp) - density({ p.x, p.y - h, p.z }, edits, n, fp),
-        density({ p.x, p.y, p.z + h }, edits, n, fp) - density({ p.x, p.y, p.z - h }, edits, n, fp),
+        density({ p.x + h, p.y, p.z }, deltas, fp) - density({ p.x - h, p.y, p.z }, deltas, fp),
+        density({ p.x, p.y + h, p.z }, deltas, fp) - density({ p.x, p.y - h, p.z }, deltas, fp),
+        density({ p.x, p.y, p.z + h }, deltas, fp) - density({ p.x, p.y, p.z - h }, deltas, fp),
     };
     const float len = sqrtf(g.x * g.x + g.y * g.y + g.z * g.z);
     if (len < 1e-6f) {
@@ -425,28 +411,12 @@ bool PlanetField::editable(Vector3 p) const {
 // Chunk meshing (worker thread)
 // ---------------------------------------------------------------------------------------------
 
-void FilterEdits(const EditList& all, Vector3 lo, Vector3 hi, float margin, EditList& out) {
-    out.clear();
-    for (const TerrainEdit& e : all) {
-        const float cx = std::max(lo.x, std::min(e.center.x, hi.x));
-        const float cy = std::max(lo.y, std::min(e.center.y, hi.y));
-        const float cz = std::max(lo.z, std::min(e.center.z, hi.z));
-        const float dx = e.center.x - cx, dy = e.center.y - cy, dz = e.center.z - cz;
-        const float r = e.radius + margin;
-        if (dx * dx + dy * dy + dz * dz <= r * r) out.push_back(e);
-    }
-}
-
-void BuildChunkMesh(const DensityField& field, const EditList& allEdits, ChunkMeshData& out) {
+void BuildChunkMesh(const DensityField& field, const TerrainDeltas& deltas, ChunkMeshData& out) {
     const auto t0 = std::chrono::steady_clock::now();
     const int cells = CHUNK_SIZE + 1;        // +1 cell overlap with the positive neighbours (LOD crack cover)
     const int S = cells + 1;                 // samples per axis
     const float stride = (float)out.key.stride();
     const Vector3 origin = out.key.origin();
-
-    // Margin = one stride: the gradient samples one stride outside the node.
-    EditList edits;
-    FilterEdits(allEdits, origin, Vector3AddValue(origin, cells * stride), stride, edits);
 
     // Sample one extra layer on every side (E = S + 2 per axis): normals are central differences of
     // this grid, so they need no extra field evaluations, and neighbouring chunks see the same
@@ -457,12 +427,33 @@ void BuildChunkMesh(const DensityField& field, const EditList& allEdits, ChunkMe
     const Vector3 eo = Vector3AddValue(origin, -stride);
     field.baseDensityBlock(eo, stride, E, stride, base.data());
     std::vector<float> ext = base;
-    if (!edits.empty()) {
+    // Player edits: the delta lattice at the samples (lattice points at every stride; coarse nodes
+    // point-sample it, so big excavations show from afar). Cost depends on the edited chunks here,
+    // never on how many strokes the world has had.
+    std::vector<std::pair<TerrainDeltas::Key, const DeltaChunk*>> near;
+    deltas.chunksIn(eo, Vector3AddValue(eo, (E - 1) * stride), near);
+    if (!near.empty()) {
+        const int st = (int)stride, ox = (int)lroundf(eo.x), oy = (int)lroundf(eo.y), oz = (int)lroundf(eo.z);
+        auto chunkAt = [&](int cx, int cy, int cz) -> const DeltaChunk* {
+            const TerrainDeltas::Key key = TerrainDeltas::KeyOf(cx, cy, cz);
+            for (const auto& c : near) if (c.first == key) return c.second;
+            return nullptr;
+        };
+        auto fdiv = [](int a) { return a >= 0 ? a / kDeltaChunk : -((-a + kDeltaChunk - 1) / kDeltaChunk); };
         size_t k = 0;
         for (int z = 0; z < E; ++z)
-            for (int y = 0; y < E; ++y)
-                for (int x = 0; x < E; ++x, ++k)
-                    ext[k] = field.applyEdits({ eo.x + x * stride, eo.y + y * stride, eo.z + z * stride }, base[k], edits.data(), edits.size());
+            for (int y = 0; y < E; ++y) {
+                const int wy = oy + y * st, wz = oz + z * st, cy = fdiv(wy), cz = fdiv(wz);
+                int lastCx = INT32_MIN;
+                const DeltaChunk* c = nullptr;
+                for (int x = 0; x < E; ++x, ++k) {
+                    const int wx = ox + x * st, cx = fdiv(wx);
+                    if (cx != lastCx) { lastCx = cx; c = chunkAt(cx, cy, cz); }
+                    if (!c) continue;
+                    const int lx = wx - cx * kDeltaChunk, ly = wy - cy * kDeltaChunk, lz = wz - cz * kDeltaChunk;
+                    ext[k] += c->d[(lz * kDeltaChunk + ly) * kDeltaChunk + lx] * kDeltaStep;
+                }
+            }
     }
     auto at = [&](const std::vector<float>& g, int x, int y, int z) { return g[((size_t)z * E + y) * E + x]; }; // extended coords
 
