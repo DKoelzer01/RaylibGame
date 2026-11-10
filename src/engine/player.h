@@ -48,6 +48,10 @@ struct Player {
 
     // Stand on the surface of `body` in direction `dir` from its centre (default: its +Y pole).
     void spawnOn(Scene& world, Planetoid& body, Vector3 dir = { 0, 1, 0 });
+    // Put the feet at a render-space point, moving with the body there (tests, respawns).
+    void placeAt(Scene& world, Planetoid& body, Vector3 renderFeet);
+    // Ride along with body from the next update on (else one slow frame leaves you behind its spin).
+    void anchorTo(Planetoid& body);
     void update(Scene& world, bool inputEnabled, float dt);
     void applyToCamera(Scene& world) const;  // camera at the eye, looking along forward
 

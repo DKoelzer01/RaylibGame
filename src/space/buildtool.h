@@ -1,0 +1,29 @@
+#ifndef BUILDTOOL_H
+#define BUILDTOOL_H
+
+class Scene;
+class Planetoid;
+class Plot;
+struct Part;
+
+// Placing parts on build plots (milestone 3). G toggles build mode; the wheel picks the part,
+// R turns it about the plot's up axis and V about its east axis; RMB places (on a part face, or on
+// the ground: snapping to a nearby plot's grid or starting a new plot), LMB removes a part and
+// refunds it. Parts cost concrete or iron plate. A part placed against the ground clears the
+// terrain inside its cells and fills the ground under them, so it neither floats nor sinks.
+struct BuildToolState {
+    bool active = false;
+    int part = 0;           // PartType
+    int orient = 0;         // 0..23
+    float reach = 8.0f;
+};
+extern BuildToolState buildTool;
+
+void BuildTool_Update(Scene& world, bool inputEnabled, bool usable);
+void BuildTool_Draw3D(Scene& world);
+void BuildTool_DrawHUD();
+// Place a part on a plot (charging its cost unless creative or charge is false) and lay its
+// foundation against the ground. Used by the tool and by scripted tests.
+bool BuildTool_Place(Planetoid& body, Plot& plot, const Part& part, bool charge);
+
+#endif
