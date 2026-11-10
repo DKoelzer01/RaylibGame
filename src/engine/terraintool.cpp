@@ -74,7 +74,7 @@ void TerrainTool_Update(Scene& world, bool inputEnabled, bool editEnabled) {
 
     if (!inputEnabled) { digging = adding = false; return; }
 
-    if (IsKeyPressed(KEY_F5)) Toast(SaveWorld(world) ? "Saved to saves/world.sav" : "Save failed");
+    if (IsKeyPressed(KEY_F5)) Toast(SaveWorld(world) ? TextFormat("Saved to %s", WorldSavePath()) : "Save failed");
     if (IsKeyPressed(KEY_F9)) {
         if (LoadWorldSave(world)) { Toast("Loaded saves/world.sav"); hasHit = false; return; }
         Toast("No save found");

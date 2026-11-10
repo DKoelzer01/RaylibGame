@@ -922,6 +922,7 @@ void regenerateWorld(Scene& world) {
 static std::string SAVE_PATH_STR = "saves/world.sav";
 #define SAVE_PATH SAVE_PATH_STR.c_str()
 void SetWorldSavePath(const char* path) { SAVE_PATH_STR = path; }
+const char* WorldSavePath() { return SAVE_PATH_STR.c_str(); }
 
 // ---------------------------------------------------------------------------------------------
 // Region files: a body's edited delta chunks, 16^3 chunks per file, each chunk compressed.

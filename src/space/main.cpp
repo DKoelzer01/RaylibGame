@@ -26,6 +26,7 @@
 #include "telescope.h"
 #include "buildtool.h"
 #include "progression_test.h"
+#include "menus.h"
 #include "factory.h"
 
 #if defined(PLATFORM_DESKTOP)
@@ -63,6 +64,30 @@ static void AimAtTelescopeTarget(Scene& world) {
 static Vector3 StartSpawnDir(Planetoid& body) {
     if (auto* field = dynamic_cast<const PlanetField*>(body.field.get())) return body.dirToWorld(field->findSpawnDir(body.seed));
     return { 0, 1, 0 };
+}
+
+// A new game on the world as generated: the player at the start, the ship parked ahead, a
+// clearing for both, the starting kit. `reset` also clears what a previous game left behind
+// (inventory, quest tier, survival state).
+static void StartNewWorld(Scene& world, bool reset) {
+    if (reset) {
+        inventory.clear();
+        QuestBook_SetTier(0);
+        survival = SurvivalState{};
+        player.velocity = { 0, 0, 0 };
+        player.flyMode = false;
+        ship.piloted = false;
+    }
+    Planetoid* start = world.objects.empty() ? nullptr : dynamic_cast<Planetoid*>(world.objects[0].get());
+    if (start) {
+        player.spawnOn(world, *start, StartSpawnDir(*start));
+        // Park the ship a few metres ahead of the player.
+        const Vector3 feet = (player.position - world.renderOrigin).toFloat();
+        ship.parkNear(world, Vector3Add(feet, Vector3Scale(player.forward, 8.0f)), player.up);
+        // A clearing at the start, so the parked ship and the player don't stand in a tree.
+        if (start->trees) start->trees->addClearing(start->toLocal(feet), 14.0f);
+    }
+    if (inventory.count("telescope") == 0) inventory.add("telescope", 1); // starting kit (a save restores its own inventory)
 }
 
 // --bench <seconds>: windowed 1920x1080, uncapped FPS, skips the menu, holds a fixed
@@ -107,6 +132,9 @@ int main(int argc, char** argv)
     bool benchMoon = false;        // --test-moon: moon orbit vs analytic, standing and jumping on the moon
     bool benchHole = false;        // --test-hole: walk into a fresh pit and build a pillar underfoot on the spinning planet
     bool benchWall = false;        // --test-wall: walk into shaft and tunnel walls (no launches)
+    bool benchMenus = false;       // --test-menus: main menu, new game, pause, save & quit, load
+    int menuStep = 0, menuFrames = 0;
+    bool menuOk = true;
     int wallPhase = 0;
     double wallStart = 0.0, wallMaxStep = 0.0, wallMaxStepAt = 0.0;
     float wallMaxImpact = 0.0f, wallMinHealth = 100.0f, wallMaxSpeed = 0.0f;
@@ -205,6 +233,7 @@ int main(int argc, char** argv)
         if (std::string(argv[i]) == "--test-moon") benchMoon = true;
         if (std::string(argv[i]) == "--test-hole") benchHole = true;
         if (std::string(argv[i]) == "--test-wall") benchWall = true;
+        if (std::string(argv[i]) == "--test-menus") benchMenus = true;
         if (std::string(argv[i]) == "--test-trees") benchTrees = true;
         if (std::string(argv[i]) == "--test-chop") benchChop = true;
         if (std::string(argv[i]) == "--test-persist" && i + 1 < argc) benchPersist = atoi(argv[i + 1]);
@@ -325,16 +354,11 @@ int main(int argc, char** argv)
                 printf("body %s %s pos %.3f %.3f %.3f radius %.3f seed %u spin %.4f g %.4f\n", BodyKindName(p->kind), p->name.c_str(), p->worldPos.x, p->worldPos.y, p->worldPos.z,
                        p->radius, p->seed, p->spin.y, p->surfaceGravity);
     }
-    if (Planetoid* start = world.objects.empty() ? nullptr : dynamic_cast<Planetoid*>(world.objects[0].get())) player.spawnOn(world, *start, StartSpawnDir(*start));
-    if (!world.objects.empty()) {
-        // Park the ship a few metres ahead of the player.
-        const Vector3 feet = (player.position - world.renderOrigin).toFloat();
-        ship.parkNear(world, Vector3Add(feet, Vector3Scale(player.forward, 8.0f)), player.up);
-    }
-    // A clearing at the start, so the parked ship and the player don't stand in a tree.
-    if (Planetoid* start = world.objects.empty() ? nullptr : dynamic_cast<Planetoid*>(world.objects[0].get()); start && start->trees)
-        start->trees->addClearing(start->toLocal((player.position - world.renderOrigin).toFloat()), 14.0f);
-    if (inventory.count("telescope") == 0) inventory.add("telescope", 1); // starting kit (a save restores its own inventory)
+    StartNewWorld(world, false);
+    if (!bench) Settings_Load();
+    bool worldFresh = !loadSaveAtStart; // the world generated at launch: New Game uses it as it is
+    MenuResult pendingMenu;
+    bool justPaused = false;
     world.onDraw3D = [&world] { if (!ship.piloted && !buildTool.active) TerrainTool_Draw3D(); BuildTool_Draw3D(world); ship.draw(world); };
 
     const double benchWarmup = 2.0;
@@ -1313,7 +1337,7 @@ int main(int argc, char** argv)
                         }
                         benchWalkSeconds = 0.0;
                     }
-                } else if ((WorldIdle() && benchDigStrokes == 0 && !benchSaveLoad && benchWalkSeconds <= 0.0 && benchMineStrokes == 0 && minePhase != 2 && benchFlySeconds <= 0.0 && !benchSuffocate && benchOrbitSeconds <= 0.0 && !benchRide && !benchPark && !benchGravity && !benchPrecision && !benchMantle && !benchAirJump && !benchMoon && !benchHole && !benchWall && !benchTrees && !benchChop && benchPersist == 0 && benchBuild == 0 && benchFactory == 0 && !benchProgression) || GetTime() > 600.0) {
+                } else if ((WorldIdle() && benchDigStrokes == 0 && !benchSaveLoad && benchWalkSeconds <= 0.0 && benchMineStrokes == 0 && minePhase != 2 && benchFlySeconds <= 0.0 && !benchSuffocate && benchOrbitSeconds <= 0.0 && !benchRide && !benchPark && !benchGravity && !benchPrecision && !benchMantle && !benchAirJump && !benchMoon && !benchHole && !benchWall && !benchMenus && !benchTrees && !benchChop && benchPersist == 0 && benchBuild == 0 && benchFactory == 0 && !benchProgression) || GetTime() > 600.0) {
                     benchStart = GetTime();
                     printf("bench: world ready after %.2f s (%d chunks, avg build %.2f ms of which sampling %.2f ms, %d worker threads)\n",
                         GetWorldStats().lastGenerationSeconds, GetWorldStats().chunks, GetWorldStats().avgBuildMs, GetWorldStats().avgSampleMs, GetWorldStats().workerThreads);
@@ -1391,6 +1415,7 @@ int main(int argc, char** argv)
             if (!GameUI_InventoryOpen()) SetMousePosition(GetScreenWidth()/2, GetScreenHeight()/2);
         }
         const bool uiOpen = DebugUI_IsOpen() || GameUI_InventoryOpen();
+        if (!bench && !telescope.active && !DebugUI_IsOpen()) world.camera.fovy = settings.fov; // Settings (the telescope zooms from it)
         const bool gameInput = !bench && !uiOpen && gameState == 1;
         world.cameraInputEnabled = player.flyMode && !uiOpen && !ship.piloted;  // free-fly camera only in fly mode
         const bool alive = !survival.dead;
@@ -1542,38 +1567,71 @@ int main(int argc, char** argv)
         if (gameState == 1) BuildTool_Update(world, gameInput && alive, !ship.piloted && !player.flyMode && !telescope.active && alive);
         if (gameState == 1) TerrainTool_Update(world, gameInput && alive, !ship.piloted && !telescope.active && !buildTool.active); // F5/F9 work aboard too
 
-        switch(gameState) {
-            case 0: // Main Menu
-                if (IsKeyPressed(KEY_ENTER)) {
-                    printf("Start Game\n");
-                    HideCursor();
-                    gameState = 1; // Start game
-                    mainMenu.isActive = false; // Deactivate main menu
-                    world.isActive = true; // Activate world scene
-                }
-                if (IsKeyPressed(KEY_ESCAPE)) {
-                    printf("Exit game from main menu\n");
-                    windowKeepAlive = false; // Exit game
-                }
-                break;
-            case 1: // Game
-                if (IsKeyPressed(KEY_ESCAPE)) {
-                    ShowCursor();
-                    printf("Game paused\n");
-                    gameState = 2; // Pause game
-                }
-                break;
-            case 2: // Pause Menu
-                if (IsKeyPressed(KEY_R)) {
-                    printf("Game unpaused\n");
-                    HideCursor();
-                    gameState = 1; // Resume game
-                }
-                if (IsKeyPressed(KEY_ESCAPE)) {
-                    printf("Exit game from pause\n");
-                    windowKeepAlive = false; // Exit game
-                }
-                break;
+        // --test-menus: the menu flow without clicks: main menu (screenshot), New Game, pause
+        // (screenshot), Save & Quit to Menu, Load Game; each step's state is checked.
+        if (benchMenus) {
+            ++menuFrames;
+            if (menuStep == 0) { gameState = 0; mainMenu.isActive = true; world.isActive = false; menuStep = 1; menuFrames = 0; }
+            else if (menuStep == 1 && menuFrames == 30) { TakeScreenshot("bench_menu_main.png"); pendingMenu.action = MenuAction::NewGame; menuStep = 2; menuFrames = 0; }
+            else if (menuStep == 2 && menuFrames > 60 && WorldIdle()) {
+                menuOk &= gameState == 1;
+                printf("bench: menus: New Game -> in game: %s\n", gameState == 1 ? "yes" : "NO");
+                Menu_ResetPause(); gameState = 2; justPaused = true; menuStep = 3; menuFrames = 0;
+            } else if (menuStep == 3 && menuFrames == 30) { TakeScreenshot("bench_menu_pause.png"); pendingMenu.action = MenuAction::SaveAndQuit; menuStep = 4; menuFrames = 0; }
+            else if (menuStep == 4 && menuFrames == 5) {
+                menuOk &= gameState == 0;
+                printf("bench: menus: Save & Quit -> main menu: %s\n", gameState == 0 ? "yes" : "NO");
+                pendingMenu.action = MenuAction::LoadGame; pendingMenu.path = "saves/bench.sav"; menuStep = 5; menuFrames = 0;
+            } else if (menuStep == 5 && menuFrames == 5) {
+                menuOk &= gameState == 1;
+                printf("bench: menus: Load Game -> in game: %s -> %s\n", gameState == 1 ? "yes" : "NO", menuOk ? "PASS" : "FAIL");
+                benchMenus = false;
+            }
+        }
+        // Menus: the result of last frame's clicks (the menus draw, and see clicks, in BeginDrawing).
+        {
+            auto enterGame = [&] {
+                HideCursor();
+                gameState = 1;
+                mainMenu.isActive = false;
+                world.isActive = true;
+            };
+            auto toMenu = [&] {
+                ShowCursor();
+                gameState = 0;
+                mainMenu.isActive = true;
+                world.isActive = false;
+            };
+            const MenuResult m = pendingMenu;
+            pendingMenu = MenuResult{};
+            switch (m.action) {
+                case MenuAction::NewGame:
+                    SetWorldSavePath(bench ? "saves/bench.sav" : Menu_NewSavePath().c_str()); // bench runs never touch the player's saves
+                    if (!worldFresh) { worldGen.seed = 0; regenerateWorld(world); StartNewWorld(world, true); }
+                    worldFresh = false;
+                    enterGame();
+                    break;
+                case MenuAction::LoadGame:
+                    SetWorldSavePath(m.path.c_str());
+                    if (LoadWorldSave(world)) { worldFresh = false; enterGame(); }
+                    else GameUI_Toast(TextFormat("Could not load %s", m.path.c_str()));
+                    break;
+                case MenuAction::Resume: enterGame(); break;
+                case MenuAction::Save: GameUI_Toast(SaveWorld(world) ? "Saved" : "Save failed"); break;
+                case MenuAction::SaveAndQuit:
+                    if (!SaveWorld(world)) GameUI_Toast("Save failed");
+                    toMenu();
+                    break;
+                case MenuAction::Exit: windowKeepAlive = false; break;
+                case MenuAction::None: break;
+            }
+            // Esc in game pauses (unless it closes the inventory or build mode first); the pause menu
+            // handles Esc itself (resume, or back out of Settings).
+            if (gameState == 1 && m.action == MenuAction::None && IsKeyPressed(KEY_ESCAPE)) {
+                if (GameUI_InventoryOpen()) { GameUI_ToggleInventory(); SetMousePosition(GetScreenWidth() / 2, GetScreenHeight() / 2); }
+                else if (buildTool.active) buildTool.active = false;
+                else { ShowCursor(); Menu_ResetPause(); gameState = 2; justPaused = true; }
+            }
         }
 
         
@@ -1581,8 +1639,7 @@ int main(int argc, char** argv)
         BeginDrawing();
             ClearBackground(crackCheck ? MAGENTA : BLACK); // --crack-check: holes in the terrain show magenta
             if (gameState == 0) {
-                mainMenu.drawScene(gameState);
-                mainMenu.drawUI(gameState);
+                pendingMenu = Menu_Main();
             } else if (gameState == 1) {
                 { const double d0 = GetTime(); world.drawScene(gameState); if (benchMeasuring) benchDrawMs += (GetTime() - d0) * 1000.0; }
                 world.drawUI(gameState);
@@ -1601,13 +1658,10 @@ int main(int argc, char** argv)
             } else if (gameState == 2) {
                 world.drawScene(gameState);
                 world.drawUI(gameState);
-                // Blur background
-                DrawRectangle(0, 0, GetScreenWidth(), GetScreenHeight(), Fade(BLACK, 0.7f));
-                // Draw pause menu text
-                DrawText("Game Paused", GetScreenWidth()/2 - MeasureText("Game Paused", 20)/2, GetScreenHeight()/2 - 10, 20, WHITE);
-                DrawText("Press R to resume", GetScreenWidth()/2 - MeasureText("Press R to resume", 20)/2, GetScreenHeight()/2 + 10, 20, WHITE);
-                DrawText("Press ESC to exit", GetScreenWidth()/2 - MeasureText("Press ESC to exit", 20)/2, GetScreenHeight()/2 + 30, 20, WHITE);
+                const MenuResult m = Menu_Pause();
+                if (!justPaused) pendingMenu = m; // the Esc that opened it is not also a "resume"
             }
+            justPaused = false;
             if (gameState != 0) {
                 rlImGuiBegin();
                 DebugUI_Draw(world);
