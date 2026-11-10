@@ -626,12 +626,11 @@ int main(int argc, char** argv)
                         const Vector3 lf = plot->toPlot(p->toLocal((player.position - world.renderOrigin).toFloat()));
                         const bool standing = player.grounded && fabsf(lf.y - 0.5f) < 0.15f;
                         printf("bench: build: the player stands on the slab: %s (feet %.2f m above the plot floor, grounded %d)\n", standing ? "yes" : "NO", lf.y, player.grounded);
-                        SaveWorld(world);
-                        LoadWorldSave(world);
+                        const bool saved = SaveWorld(world), loaded = LoadWorldSave(world);
                         p = dynamic_cast<Planetoid*>(world.objects[0].get());
                         const int after = p->plots ? p->plots->partCount() : 0;
-                        printf("bench: build: save/load %d -> %d parts\n", buildPlaced, after);
-                        buildOk = standing && after == buildPlaced;
+                        printf("bench: build: save %s, load %s: %d -> %d parts\n", saved ? "ok" : "FAILED", loaded ? "ok" : "FAILED", buildPlaced, after);
+                        buildOk = standing && saved && loaded && after == buildPlaced;
                         // Look at the factory from 30 m for the frame-time measurement.
                         Plot* reloaded = p->plots ? p->plots->plots.front().get() : nullptr;
                         if (reloaded) {
