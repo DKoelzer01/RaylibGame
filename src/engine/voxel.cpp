@@ -1,5 +1,6 @@
 #include "voxel.h"
 #include "foliage.h"
+#include "trees.h"
 #include "cubemarch.h"
 
 #include <raymath.h>
@@ -503,6 +504,8 @@ void BuildChunkMesh(const DensityField& field, const EditList& allEdits, ChunkMe
             out.texcoords.assign(verts.size() * 2, 0.0f);
             out.texcoords2.assign(verts.size() * 2, 0.0f);
             out.tangents.assign(verts.size() * 4, 0.0f);
+            const PlanetField* planetLife = dynamic_cast<const PlanetField*>(&field);
+            if (planetLife && !planetLife->foliage) planetLife = nullptr;
             for (size_t v = 0; v < verts.size(); ++v) {
                 const Vector3 lp = Vector3Scale(verts[v], stride);     // node-relative, in voxels
                 const Vector3 p = Vector3Add(origin, lp);
@@ -522,6 +525,15 @@ void BuildChunkMesh(const DensityField& field, const EditList& allEdits, ChunkMe
                 float sky = 1.0f;
                 const VoxelMaterial m = field.materialSky(p, b, stride, n, sky);
                 out.tangents[v * 4 + 3] = sky;
+                if (planetLife && sky > 0.9f && (m == VoxelMaterial::Grass || m == VoxelMaterial::Regolith)) {
+                    // Distant forests: canopy cover (x) and latitude (y) for the terrain shader, which
+                    // paints them in where the real trees fade out.
+                    const float d = Vector3Length(p);
+                    const Vector3 up = Vector3Scale(p, 1.0f / d);
+                    const float steep = 1.0f - Vector3DotProduct(n, up);
+                    out.tangents[v * 4 + 0] = TreeCanopy(up, planetLife->radius, d - planetLife->radius, planetLife->foliageSeed) * std::clamp(1.0f - (steep - 0.1f) / 0.15f, 0.0f, 1.0f);
+                    out.tangents[v * 4 + 1] = fabsf(up.y);
+                }
                 out.positions[v * 3 + 0] = lp.x;
                 out.positions[v * 3 + 1] = lp.y;
                 out.positions[v * 3 + 2] = lp.z;

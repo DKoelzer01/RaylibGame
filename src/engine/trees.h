@@ -111,6 +111,8 @@ public:
     void remove(uint64_t id);
     const PlantRemovals& removals() const { return *removed; }
     void setRemovals(const PlantRemovals& r);  // from a save: rebuilds every tile
+    // Keep an area free of plants (the start: where the player stands and the ship parks).
+    void addClearing(Vector3 localCentre, float radius);
 
     int loadedTiles() const { return (int)tiles.size(); }
     int instanceCount() const { return drawnInstances; }
@@ -124,6 +126,7 @@ private:
     std::unordered_map<TreeTileKey, TreeTile, TreeTileKeyHash> tiles;
     std::shared_ptr<const EditList> edits;     // the body's edits as last seen (tiles built with them)
     std::shared_ptr<const PlantRemovals> removed; // copy-on-write, shared with tile builds
+    std::shared_ptr<const std::vector<Vector4>> clearings; // xyz centre, w radius (body-local)
 
     // Draw batches.
     DVec3 anchor{};                            // body-local origin of the batch positions
@@ -142,5 +145,8 @@ private:
 // Tile helpers (exposed for tests).
 TreeTileKey TreeTileOf(Vector3 dir, float radius);
 Vector3 TreeTileCentreDir(const TreeTileKey& key, float radius);
+// Fraction of the ground under tree crowns around a body-local direction (the same forest field
+// and odds as the placement), for painting distant forests into the terrain.
+float TreeCanopy(Vector3 dir, float radius, float elevation, unsigned int seed);
 
 #endif

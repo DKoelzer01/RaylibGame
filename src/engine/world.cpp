@@ -796,7 +796,11 @@ void generateWorld(Scene& world) {
             p->rootLevel = 0;
             while ((float)(CHUNK_SIZE << p->rootLevel) < field->maxRadius() + 24.0f) p->rootLevel++;
             p->field = field;
-            if (kind == BodyKind::Planet) p->trees = std::make_unique<TreeSystem>(field, seed ^ 0x7aee5u);
+            if (kind == BodyKind::Planet) {
+                field->foliage = true;
+                field->foliageSeed = seed ^ 0x7aee5u;
+                p->trees = std::make_unique<TreeSystem>(field, field->foliageSeed);
+            }
         }
         p->spin = { 0.0f, spin, 0.0f };
         p->surfaceGravity = d.gravity >= 0.0f ? d.gravity : AutoSurfaceGravity(kind, radius);

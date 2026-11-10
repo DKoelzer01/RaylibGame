@@ -25,6 +25,7 @@ out vec3 fragTexPos;       // body-aligned texturing position (wrapped): texture
 out vec3 fragLocalNormal;  // moving/spinning body and don't swim when the floating origin shifts
 out vec3 fragChunkPos;     // chunk-local position (overlap clipping)
 out float fragSky;         // 1 = open to the sky, 0 = buried (scales sunlight)
+out vec2 fragCanopy;       // planets: distant forest canopy cover (x) and latitude (y)
 
 void main()
 {
@@ -40,6 +41,7 @@ void main()
     fragTexPos = vertexPosition + chunkTexOrigin;
     fragChunkPos = vertexPosition;
     fragSky = vertexTangent.w;
+    fragCanopy = vertexTangent.xy;
     fragLocalNormal = vertexNormal;
     gl_Position = mvp * vec4(vertexPosition, 1.0);
 }

@@ -213,12 +213,19 @@ float Forest(Vector3 local, uint32_t seed) {
 }
 float Smooth(float a, float b, float x) { const float t = std::clamp((x - a) / (b - a), 0.0f, 1.0f); return t * t * (3 - 2 * t); }
 
+// Chance of a tree in a 4 m cell from the forest field, by biome: dense in the tropics, patchy in
+// the temperate band, sparse toward the tundra.
+float TreeChanceFromForest(float forest, float lat) {
+    const float biome = lat < 0.6f ? 1.3f - 0.3f * Smooth(0.2f, 0.4f, lat) : lat < 0.86f ? 1.0f - 0.55f * (lat - 0.6f) / 0.26f : 0.0f;
+    return (0.55f * Smooth(0.48f, 0.72f, forest) + 0.015f) * biome;
+}
+
 uint64_t PlantId(const TreeTileKey& k, int cell) {
     return ((uint64_t)k.face << 56) | ((uint64_t)(k.i & 0xFFFFFF) << 32) | ((uint64_t)(k.j & 0xFFFFFF) << 8) | (uint64_t)(cell & 0xFF);
 }
 TreeTileKey TileOfPlant(uint64_t id) { return { (int)(id >> 56), (int)((id >> 32) & 0xFFFFFF), (int)((id >> 8) & 0xFFFFFF) }; }
 
-void BuildTile(const PlanetField& f, const EditList& edits, const PlantRemovals& removed, double now, uint32_t seed, const TreeTileKey& key, TreeTile& out) {
+void BuildTile(const PlanetField& f, const EditList& edits, const PlantRemovals& removed, const std::vector<Vector4>& clearings, double now, uint32_t seed, const TreeTileKey& key, TreeTile& out) {
     const float R = f.radius;
     const int N = TilesPerFace(R);
     const float da = 0.5f * PI / N, dc = da / kCells;
@@ -234,7 +241,7 @@ void BuildTile(const PlanetField& f, const EditList& edits, const PlantRemovals&
             const float jx = Unit(s), jy = Unit(s), roll = Unit(s), h = Unit(s), sz = Unit(s);
             const Vector3 dir = FaceDir(key.face, a0 + (ci + jx) * dc, b0 + (cj + jy) * dc);
             const float forest = Forest(Vector3Scale(dir, R), seed);
-            const float pTree = 0.55f * Smooth(0.48f, 0.72f, forest) + 0.015f;
+            const float pTree = TreeChanceFromForest(forest, fabsf(dir.y));
             const float pBush = 0.05f + 0.3f * Smooth(0.35f, 0.6f, forest);
             const bool tree = roll < pTree;
             if (!tree && roll >= pTree + pBush) continue;
@@ -268,6 +275,9 @@ void BuildTile(const PlanetField& f, const EditList& edits, const PlantRemovals&
                 v = kFirstBush + (int)(h * 3.0f) % 3;
                 scale = 0.7f + 0.7f * sz;
             }
+            bool cleared = false;
+            for (const Vector4& c : clearings) if (Vector3Distance(ground, { c.x, c.y, c.z }) < c.w) { cleared = true; break; }
+            if (cleared) continue;
             const uint64_t id = PlantId(key, ci * kCells + cj);
             out.builtAt = now;
             if (auto it = removed.find(id); it != removed.end()) {
@@ -320,7 +330,7 @@ struct TreeSystem::Shared {
 
 TreeSystem::TreeSystem(std::shared_ptr<const PlanetField> f, unsigned int s)
     : shared(std::make_shared<Shared>()), field(std::move(f)), seed(s), radius(field->radius), edits(std::make_shared<EditList>()),
-      removed(std::make_shared<PlantRemovals>()) {}
+      removed(std::make_shared<PlantRemovals>()), clearings(std::make_shared<std::vector<Vector4>>()) {}
 
 TreeSystem::~TreeSystem() {
     shared->alive = false;
@@ -339,14 +349,15 @@ void TreeSystem::request(const TreeTileKey& key, TreeTile& tile, float priority)
     auto fld = field;
     auto ed = edits;
     auto rm = removed;
+    auto cl = clearings;
     const double now = WorldTime();
     const uint32_t sd = seed;
-    WorldJobs().submit(priority, [sh, fld, ed, rm, now, sd, key, version] {
+    WorldJobs().submit(priority, [sh, fld, ed, rm, cl, now, sd, key, version] {
         if (!sh->alive) return;
         TreeTile t;
         t.version = version;
         t.ready = true;
-        BuildTile(*fld, *ed, *rm, now, sd, key, t);
+        BuildTile(*fld, *ed, *rm, *cl, now, sd, key, t);
         std::lock_guard<std::mutex> lock(sh->mutex);
         sh->results.emplace_back(key, std::move(t));
     });
@@ -553,4 +564,19 @@ bool TreeSystem::raycast(Vector3 o, Vector3 d, float maxDistance, PlantHit& best
             }
         }
     return found;
+}
+
+float TreeCanopy(Vector3 dir, float radius, float elevation, unsigned int seed) {
+    const float lat = fabsf(dir.y);
+    if (lat > 0.86f || elevation < 4.0f || elevation > 900.0f) return 0.0f;
+    const float edge = std::min(Smooth(4.0f, 12.0f, elevation), 1.0f - Smooth(800.0f, 900.0f, elevation));
+    return Smooth(0.04f, 0.3f, TreeChanceFromForest(Forest(Vector3Scale(dir, radius), seed), lat)) * edge; // forest presence
+}
+
+void TreeSystem::addClearing(Vector3 c, float r) {
+    auto next = std::make_shared<std::vector<Vector4>>(*clearings);
+    next->push_back({ c.x, c.y, c.z, r });
+    clearings = next;
+    for (auto& kv : tiles)
+        if (kv.second.ready && Vector3Distance(kv.second.centre, c) < r + kTreeTileSize) request(kv.first, kv.second, 0.0f);
 }

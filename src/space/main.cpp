@@ -300,6 +300,9 @@ int main(int argc, char** argv)
         const Vector3 feet = (player.position - world.renderOrigin).toFloat();
         ship.parkNear(world, Vector3Add(feet, Vector3Scale(player.forward, 8.0f)), player.up);
     }
+    // A clearing at the start, so the parked ship and the player don't stand in a tree.
+    if (Planetoid* start = world.objects.empty() ? nullptr : dynamic_cast<Planetoid*>(world.objects[0].get()); start && start->trees)
+        start->trees->addClearing(start->toLocal((player.position - world.renderOrigin).toFloat()), 14.0f);
     if (inventory.count("telescope") == 0) inventory.add("telescope", 1); // starting kit (a save restores its own inventory)
     world.onDraw3D = [&world] { if (!ship.piloted) TerrainTool_Draw3D(); ship.draw(world); };
 

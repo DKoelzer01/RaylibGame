@@ -107,6 +107,9 @@ Shaders in `resources/` hot-reload when saved.
   conifers further north and up high), drawn instanced to 1 km (simpler meshes past 200 m). Trunks collide.
   LMB on a tree chops it (wood), on a bush harvests it (fibre, sometimes berries); plants regrow from a sapling
   after 10 minutes and are full size 20 minutes later; removals are saved. Bench runs save to `saves/bench.sav`.
+  Beyond the trees' 1 km range, the terrain paints in forest canopy from the same forest field (forests to the
+  horizon and from orbit); forests are densest in the tropics and thin out toward the tundra. The start has a
+  14 m clearing for the player and the parked ship.
 - **Telescope** (`src/space/telescope.*`): you start with one (craft more from glass and iron plate). T raises it, the
   wheel zooms 4x-64x; terrain in view refines as if that much closer (`SetLodZoom`). Bodies more than 20 km away
   draw in a separate far pass with their own depth range, and haze only counts the air the view ray passes
