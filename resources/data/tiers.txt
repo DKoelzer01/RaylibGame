@@ -4,4 +4,5 @@
 2 | Bronze and steam | steel_ingot      | A boiler and copper cables power steam machines (8 V). Hammer plates, crush ore, bake coal into coke in a coke oven, and burn coke in a blast furnace to turn iron into steel.
 3 | Steel            | vacuum_tube      | Glass (sand in a kiln), copper wire and a steel plate make a vacuum tube: the first circuit.
 4 | LV electric      | electric_furnace | Basic circuits on a steel hull make your first LV machine. Power it from an LV generator (32 V; steam machines refuse it).
-5 | MV electric      | -                | Chemistry, plastics and automated mining come next.
+5 | Rocketry         | cockpit          | Build a rocket on a plot: rocket engines under fuel tanks, a guidance computer and a cockpit on top (landing legs soften touchdowns). Load rocket fuel (I), board (E), throttle up (Shift) and fly to orbit: 35 km up and fast sideways.
+6 | MV electric      | -                | Chemistry, plastics and automated mining come next (the full ladder puts MV and HV before rocketry).
