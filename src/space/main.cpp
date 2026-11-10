@@ -1,6 +1,7 @@
 #include <raylib.h>
 #include <string>
 #include <vector>
+#include <random>
 #include "mainmenu.h"
 #include "world.h"
 #include "scene.h"
@@ -18,7 +19,9 @@
 #include "audio.h"
 #include "rlImGui.h"
 #include "ship.h"
+#include "camera.h"
 #include "survival.h"
+#include "telescope.h"
 
 #if defined(PLATFORM_DESKTOP)
     #define GLSL_VERSION            330
@@ -29,6 +32,33 @@ using namespace std;
 Logger logger("log.txt");
 
 int gameState = 0; // 0: Main Menu, 1: Game, 2: Pause Menu
+
+// Where to start on the first body: planets pick temperate grassland (world direction, from the
+// body's seed); asteroids keep the old "top" spot.
+// --telescope Z [--telescope-target name]: bench view through the telescope at zoom Z, aimed at a
+// body (default: the moon) wherever it is in the sky.
+static float benchTelescope = 0.0f;
+static std::string benchTelescopeTarget = "luna";
+static void AimAtTelescopeTarget(Scene& world) {
+    for (auto& obj : world.objects) {
+        auto* p = dynamic_cast<Planetoid*>(obj.get());
+        if (!p || p->name != benchTelescopeTarget) continue;
+        const Vector3 eye = Vector3Add((player.position - world.renderOrigin).toFloat(), Vector3Scale(player.up, player.eyeHeight));
+        player.forward = Vector3Normalize(Vector3Subtract(p->position, eye));
+        static bool told = false;
+        if (!told) {
+            told = true;
+            printf("bench: telescope on %s, %.0f km away, %.1f deg above the horizon\n", p->name.c_str(),
+                   Vector3Distance(eye, p->position) / 1000.0f, asinf(Vector3DotProduct(player.forward, player.up)) * RAD2DEG);
+        }
+        return;
+    }
+}
+
+static Vector3 StartSpawnDir(Planetoid& body) {
+    if (auto* field = dynamic_cast<const PlanetField*>(body.field.get())) return body.dirToWorld(field->findSpawnDir(body.seed));
+    return { 0, 1, 0 };
+}
 
 // --bench <seconds>: windowed 1920x1080, uncapped FPS, skips the menu, holds a fixed
 // camera on the planetoid, prints frame stats to stdout and bench.txt, then exits.
@@ -41,6 +71,9 @@ int main(int argc, char** argv)
     int benchDigStrokes = 0;     // --test-dig N: dig N strokes at the crosshair once the world is loaded
     bool benchSaveLoad = false;  // --test-saveload: then save, reload from disk, and bench the reloaded world
     double benchWalkSeconds = 0.0; // --test-walk S: spawn on the surface and auto-walk forward for S seconds
+    bool benchWalkMode = false;    // --bench-walk: the player walks forward for the whole bench (frame time while streaming)
+    bool hasSpawnDir = false;      // --spawn-dir x y z: where --test-walk / --test-stand spawn on body 0
+    Vector3 spawnDir = { 0, 1, 0 };
     double walkStart = -1.0;
     bool benchStandOnly = false; // --test-stand S: like --test-walk but standing still
     int benchMineStrokes = 0;     // --test-mine N: dig N strokes at the feet, craft, build (after any walk test)
@@ -59,12 +92,33 @@ int main(int argc, char** argv)
     Vector3 sunArg = { 1, 0, 0 };
     double parkStart = -1.0;
     int parkPhase = 0;
+    bool benchGravity = false;     // --test-gravity: gravity field checks, ship drop and hover
+    bool benchPrecision = false;   // --test-precision: float vs double placement error on body 0 (use a large body)
+    bool benchMantle = false;      // --test-mantle: planet terrain checks on body 0 (height band, mantle, ore, caves)
+    bool benchAirJump = false;     // --test-airjump: air control while jumping, jetpack fuel / suit power accounting
+    float timeScale = 1.0f;        // --time-scale k: bodies spin and orbit k times faster (testing)
+    bool benchMoon = false;        // --test-moon: moon orbit vs analytic, standing and jumping on the moon
+    double moonStart = -1.0; int moonPhase = 0; DVec3 moonLocal0{}, moonTakeoff{}; bool moonAirborne = false;
+    double airStart = -1.0; int airPhase = 0; float airDist = 0.0f, airTime = 0.0f, airFuel0 = 0.0f, airPower0 = 0.0f, airPowerAir = 0.0f;
+    Vector3 airPrevLocal{};
+    bool crackCheck = false;       // --crack-check: no skybox, magenta clear; reports the share of magenta pixels
+    double benchUpdateMs = 0.0, benchDrawMs = 0.0; long benchTimedFrames = 0; // CPU time in worldUpdate / drawScene
+    bool benchMeasuring = false;   // this frame is inside the measured bench window
+    int precisionPhase = 0;
+    double precisionStart = 0.0;
+    double gravStart = -1.0;
+    int gravPhase = 0;
+    float gravAlt0 = 0.0f, gravEnergy0 = 0.0f, gravMaxImpact = 0.0f;
     bool parkAnchored = false;
     Vector3 parkLocal0{}, parkFwd0{};
     double rideStart = -1.0;
     int ridePhase = 0;
     Vector3 rideFwd0{}, ridePos0{}, rideTakeoff{};
     float rideViewDrift = 0, ridePosDrift = 0, rideSurfaceSpeed = 0;
+    int rideFrames = 0, rideGroundedFrames = 0; // grounded share while standing (ride test)
+    float rideSpin = 10.0f;        // --ride-spin D: spin rate for --test-ride (deg/s)
+    bool dumpSystem = false;       // --dump-system: print every body after generation
+    bool loadSaveAtStart = false;  // --load: load saves/world.sav before starting
     bool spinTest = false;         // --spin-test: textures must stay attached to a spinning body
     float spinRate = 30.0f;        // --spin-rate DEG_PER_SEC
     int spinPhase = 0;
@@ -75,6 +129,8 @@ int main(int argc, char** argv)
     DVec3 walkFrom{};
     float walkMinDensity = 0, walkMaxDensity = 0;
     int walkGroundedFrames = 0, walkFrames = 0;
+    double walkTargetM = 0.0, walkPath = 0.0; // --test-planet-walk M: walk M metres (path, body frame), then PASS/FAIL
+    DVec3 walkLast{};
     Vector3 benchCamOffset = { -70.0f, 35.0f, 70.0f }; // --cam dx dy dz: bench camera offset from the planetoid
     for (int i = 1; i < argc; ++i) {
         if (std::string(argv[i]) == "--bench") benchSeconds = (i + 1 < argc) ? atof(argv[i + 1]) : 10.0;
@@ -86,10 +142,23 @@ int main(int argc, char** argv)
         if (std::string(argv[i]) == "--test-dig" && i + 1 < argc) benchDigStrokes = atoi(argv[i + 1]);
         if (std::string(argv[i]) == "--test-saveload") benchSaveLoad = true;
         if (std::string(argv[i]) == "--test-walk" && i + 1 < argc) benchWalkSeconds = atof(argv[i + 1]);
+        if (std::string(argv[i]) == "--test-planet-walk" && i + 1 < argc) { walkTargetM = atof(argv[i + 1]); benchWalkSeconds = 600.0; } // gate: 1 km on the planet
+        if (std::string(argv[i]) == "--bench-walk") benchWalkMode = true;
+        if (std::string(argv[i]) == "--spawn-dir" && i + 3 < argc) { hasSpawnDir = true; spawnDir = Vector3Normalize({ (float)atof(argv[i + 1]), (float)atof(argv[i + 2]), (float)atof(argv[i + 3]) }); }
         if (std::string(argv[i]) == "--test-suffocate") benchSuffocate = true;
         if (std::string(argv[i]) == "--test-orbit" && i + 1 < argc) benchOrbitSeconds = atof(argv[i + 1]);
         if (std::string(argv[i]) == "--test-ride") benchRide = true;
+        if (std::string(argv[i]) == "--dump-system") dumpSystem = true;
+        if (std::string(argv[i]) == "--load") loadSaveAtStart = true;
+        if (std::string(argv[i]) == "--ride-spin" && i + 1 < argc) rideSpin = (float)atof(argv[i + 1]);
         if (std::string(argv[i]) == "--test-park") benchPark = true;
+        if (std::string(argv[i]) == "--test-gravity") benchGravity = true;
+        if (std::string(argv[i]) == "--test-precision") benchPrecision = true;
+        if (std::string(argv[i]) == "--test-mantle") benchMantle = true;
+        if (std::string(argv[i]) == "--test-airjump") benchAirJump = true;
+        if (std::string(argv[i]) == "--test-moon") benchMoon = true;
+        if (std::string(argv[i]) == "--time-scale" && i + 1 < argc) timeScale = (float)atof(argv[i + 1]);
+        if (std::string(argv[i]) == "--crack-check") crackCheck = true;
         if (std::string(argv[i]) == "--sun" && i + 3 < argc) { sunOverride = true; sunArg = Vector3Normalize({ (float)atof(argv[i + 1]), (float)atof(argv[i + 2]), (float)atof(argv[i + 3]) }); }
         if (std::string(argv[i]) == "--look-down") lookDown = true;
         if (std::string(argv[i]) == "--fps" && i + 1 < argc) benchFps = atoi(argv[i + 1]);
@@ -104,8 +173,10 @@ int main(int argc, char** argv)
             float worstStep = 0.0f, worstOrtho = 0.0f;
             Vector3 prev = { 0, 0, 1 };
             for (int s = 0; s < 400; ++s) {
-                CameraPitch(&c, 0.02f, false, false, true);
-                CameraYaw(&c, 0.003f, false);
+                FlyInput in;
+                in.pitch = 0.02f;
+                in.yaw = 0.003f;
+                ApplyFlyInput(&c, in, 0.0f);
                 const Vector3 fwd = Vector3Normalize(Vector3Subtract(c.target, c.position));
                 worstStep = std::max(worstStep, Vector3Angle(prev, fwd));
                 worstOrtho = std::max(worstOrtho, fabsf(Vector3DotProduct(fwd, Vector3Normalize(c.up))));
@@ -113,16 +184,48 @@ int main(int argc, char** argv)
             }
             printf("bench: flycam pitched 8 rad (past both poles): largest per-step turn %.4f rad (expected ~0.02), max |dot(view, up)| %.4f\n",
                    worstStep, worstOrtho);
+            // Movement is camera-relative at any orientation: after random yaw / pitch / roll, each key
+            // moves exactly along the camera's own forward / right / up, and roll (Q/E) turns up about
+            // the view without moving the view.
+            std::mt19937 rng(7);
+            std::uniform_real_distribution<float> ang(-0.3f, 0.3f);
+            float worstAxis = 1.0f, worstRollView = 0.0f, rolled = 0.0f;
+            for (int s = 0; s < 300; ++s) {
+                FlyInput turn;
+                turn.yaw = ang(rng); turn.pitch = ang(rng); turn.roll = ang(rng);
+                ApplyFlyInput(&c, turn, 0.0f);
+                const Vector3 f = Vector3Normalize(Vector3Subtract(c.target, c.position));
+                const Vector3 u = c.up, r = Vector3CrossProduct(f, u);
+                const Vector3 axes[3] = { f, r, u };
+                for (int a = 0; a < 3; ++a) {
+                    FlyInput mv;
+                    (a == 0 ? mv.forward : a == 1 ? mv.right : mv.up) = 1.0f;
+                    const Vector3 before = c.position;
+                    ApplyFlyInput(&c, mv, 0.1f);
+                    worstAxis = std::min(worstAxis, Vector3DotProduct(Vector3Normalize(Vector3Subtract(c.position, before)), axes[a]));
+                }
+                FlyInput roll;
+                roll.roll = 0.05f; // E
+                const Vector3 upBefore = c.up;
+                ApplyFlyInput(&c, roll, 0.0f);
+                worstRollView = std::max(worstRollView, Vector3Angle(f, Vector3Normalize(Vector3Subtract(c.target, c.position))));
+                rolled += Vector3Angle(upBefore, c.up);
+            }
+            printf("bench: flycam moves along its own axes after random turns: worst alignment %.6f (1 = exact); roll turns up %.3f rad/step, view moves %.6f rad\n",
+                   worstAxis, rolled / 300.0f, worstRollView);
         }
         if (std::string(argv[i]) == "--spin-rate" && i + 1 < argc) spinRate = (float)atof(argv[i + 1]);
         if (std::string(argv[i]) == "--test-fly" && i + 1 < argc) benchFlySeconds = atof(argv[i + 1]);
         if (std::string(argv[i]) == "--test-mine" && i + 1 < argc) benchMineStrokes = atoi(argv[i + 1]);
         if (std::string(argv[i]) == "--test-stand" && i + 1 < argc) { benchWalkSeconds = atof(argv[i + 1]); benchStandOnly = true; }
-        if (std::string(argv[i]) == "--size" && i + 1 < argc) worldGen.planetoidSize = atoi(argv[i + 1]);
-        if (std::string(argv[i]) == "--count" && i + 1 < argc) worldGen.planetoidCount = atoi(argv[i + 1]);
+        if (std::string(argv[i]) == "--telescope" && i + 1 < argc) benchTelescope = (float)atof(argv[i + 1]);
+        if (std::string(argv[i]) == "--telescope-target" && i + 1 < argc) benchTelescopeTarget = argv[i + 1];
+        if (std::string(argv[i]) == "--size" && i + 1 < argc) worldGen.size = atoi(argv[i + 1]);
+        if (std::string(argv[i]) == "--bodies" && i + 1 < argc) worldGen.bodiesPath = argv[i + 1];   // system definition file
+        if (std::string(argv[i]) == "--count" && i + 1 < argc) worldGen.count = atoi(argv[i + 1]);
         if (std::string(argv[i]) == "--system" && i + 1 < argc) worldGen.systemRadius = (float)atof(argv[i + 1]);
         if (std::string(argv[i]) == "--lod" && i + 1 < argc) lodSettings.lodFactor = (float)atof(argv[i + 1]);
-        if (std::string(argv[i]) == "--first" && i + 3 < argc) worldGen.firstPosition = { (float)atof(argv[i+1]), (float)atof(argv[i+2]), (float)atof(argv[i+3]) };
+        if (std::string(argv[i]) == "--first" && i + 3 < argc) { worldGen.hasFirst = true; worldGen.first = { (float)atof(argv[i+1]), (float)atof(argv[i+2]), (float)atof(argv[i+3]) }; }
     }
     const bool bench = benchSeconds > 0.0;
     benchMode = bench;
@@ -155,12 +258,20 @@ int main(int argc, char** argv)
 
     mainMenuHandler(mainMenu);
     worldHandler(world);
-    if (Planetoid* start = world.objects.empty() ? nullptr : dynamic_cast<Planetoid*>(world.objects[0].get())) player.spawnOn(world, *start);
+    if (loadSaveAtStart && !LoadWorldSave(world)) printf("bench: --load: could not load saves/world.sav\n");
+    if (dumpSystem) {
+        for (auto& obj : world.objects)
+            if (auto* p = dynamic_cast<Planetoid*>(obj.get()))
+                printf("body %s %s pos %.3f %.3f %.3f radius %.3f seed %u spin %.4f g %.4f\n", BodyKindName(p->kind), p->name.c_str(), p->worldPos.x, p->worldPos.y, p->worldPos.z,
+                       p->radius, p->seed, p->spin.y, p->surfaceGravity);
+    }
+    if (Planetoid* start = world.objects.empty() ? nullptr : dynamic_cast<Planetoid*>(world.objects[0].get())) player.spawnOn(world, *start, StartSpawnDir(*start));
     if (!world.objects.empty()) {
         // Park the ship a few metres ahead of the player.
         const Vector3 feet = (player.position - world.renderOrigin).toFloat();
         ship.parkNear(world, Vector3Add(feet, Vector3Scale(player.forward, 8.0f)), player.up);
     }
+    if (inventory.count("telescope") == 0) inventory.add("telescope", 1); // starting kit (a save restores its own inventory)
     world.onDraw3D = [&world] { if (!ship.piloted) TerrainTool_Draw3D(); ship.draw(world); };
 
     const double benchWarmup = 2.0;
@@ -172,7 +283,8 @@ int main(int argc, char** argv)
         world.isActive = true;
         world.camera.position = Vector3Add(world.camera.target, benchCamOffset);
         world.debugDraw = startWithOverlay;
-        player.flyMode = benchWalkSeconds <= 0.0; // the bench drives the camera directly unless walking
+        player.flyMode = benchWalkSeconds <= 0.0 && !benchWalkMode; // the bench drives the camera directly unless walking
+        player.autoWalk = benchWalkMode;                              // --bench-walk: walk through the measured window
         benchStart = -1.0; // starts once the world has finished streaming in
     }
 
@@ -209,6 +321,7 @@ int main(int argc, char** argv)
                         ship.parkNear(world, Vector3Add(feet, Vector3Scale(player.forward, 30.0f)), player.up); // out of life-support range
                         survival.oxygen = 0.0f;
                         survival.health = 15.0f;
+                        survival.breathableAltitude = -1e9f; // no air to breathe (the planet's would refill the suit)
                         suffocateStart = GetTime();
                     } else if (survival.deaths > 0 && !survival.dead) {
                         const float d = Vector3Distance((player.position - world.renderOrigin).toFloat(), ship.renderPos(world));
@@ -227,7 +340,7 @@ int main(int argc, char** argv)
                     const Vector3 feet = (player.position - world.renderOrigin).toFloat();
                     if (orbitStart < 0.0) {
                         const float d = 1.35f * R;
-                        const float g = Player::SurfaceGravity(R) * (R * R) / (d * d);
+                        const float g = Vector3Length(BodyGravityAt(*p, Vector3Add(p->position, { 0.0f, d, 0.0f })));
                         player.flyMode = false;
                         player.grounded = false;
                         player.position = world.renderOrigin + Vector3Add(p->position, { 0.0f, d, 0.0f });
@@ -245,6 +358,325 @@ int main(int argc, char** argv)
                                    orbitCrashed ? "CRASHED into the surface" : (orbitMax > 3.0f * R ? "ESCAPED" : "stable"));
                             benchOrbitSeconds = 0.0;
                         }
+                    }
+                } else if (benchMoon && WorldIdle()) {
+                    // The moon (first body of kind moon, with an orbit): its position must match the
+                    // analytic orbit; a player standing on it must stay put relative to it, and a jump must
+                    // land near takeoff in its frame (the moon's orbital speed carries over on takeoff).
+                    Planetoid* moon = nullptr;
+                    for (auto& obj : world.objects)
+                        if (auto* q = dynamic_cast<Planetoid*>(obj.get())) if (q->kind == BodyKind::Moon && q->orbitParent) { moon = q; break; }
+                    if (!moon) { printf("bench: --test-moon needs an orbiting moon (the default resources/data/bodies.txt has one)\n"); benchMoon = false; }
+                    else {
+                        const double t = moonStart < 0.0 ? 0.0 : GetTime() - moonStart;
+                        const DVec3 local = moon->toLocalD(player.position);
+                        if (moonPhase == 0) {
+                            player.spawnOn(world, *moon, Vector3Normalize({ 0.3f, 1.0f, 0.2f }));
+                            moonStart = GetTime();
+                            moonPhase = 1;
+                        } else if (moonPhase == 1 && t > 2.5 && player.grounded) {
+                            moonLocal0 = local;
+                            moonPhase = 2;
+                            moonStart = GetTime();
+                        } else if (moonPhase == 2 && t > 3.0) {
+                            const Planetoid* parent = moon->orbitParent;
+                            const double a = moon->orbitPhase + moon->orbitRate * WorldTime();
+                            const DVec3 expected = parent->worldPos + DVec3(cos(a) * moon->orbitRadius, 0.0, sin(a) * moon->orbitRadius);
+                            printf("bench: moon orbit: radius %.0f km, period %.2f h, speed %.1f m/s (expected %.1f); off the analytic orbit by %.3f m at t = %.1f s\n",
+                                   moon->orbitRadius / 1000.0, 2.0 * PI / moon->orbitRate / 3600.0, Vector3Length(moon->linearVelocity),
+                                   moon->orbitRate * moon->orbitRadius, (moon->worldPos - expected).length(), WorldTime());
+                            printf("bench: standing on the moon 3 s while it moved %.0f m: drift %.3f m relative to its surface (g %.2f m/s^2)\n",
+                                   3.0 * Vector3Length(moon->linearVelocity), (local - moonLocal0).length(), player.gravity);
+                            moonTakeoff = local;
+                            player.autoJump = true;
+                            moonAirborne = false;
+                            moonPhase = 3;
+                            moonStart = GetTime();
+                        } else if (moonPhase == 3) {
+                            if (!player.grounded) moonAirborne = true;
+                            else if (moonAirborne || t > 20.0) {
+                                printf("bench: jump on the moon: %.1f s in the air, landed %.2f m from takeoff in the moon's frame%s\n",
+                                       t, (local - moonTakeoff).length(), moonAirborne ? "" : " [never took off]");
+                                benchMoon = false;
+                            }
+                        }
+                    }
+                } else if (benchAirJump && WorldIdle()) {
+                    // Walk forward and jump while still holding forward: air control must keep you moving at
+                    // about walking speed relative to the ground, burning no fuel and no suit power. Then
+                    // land with half a tank: recharging it is what costs suit power.
+                    Planetoid* p = dynamic_cast<Planetoid*>(world.objects[0].get());
+                    const double t = airStart < 0.0 ? 0.0 : GetTime() - airStart;
+                    const DVec3 local = p->toLocalD(player.position);
+                    if (airPhase == 0) {
+                        player.spawnOn(world, *p, Vector3Normalize({ 0.6f, 0.5f, 0.6f }));
+                        player.autoWalk = true;
+                        survival.lastJetpackFuel = player.jetpackFuel = 1.0f;
+                        airStart = GetTime();
+                        airPhase = 1;
+                    } else if (airPhase == 1 && t > 2.0 && player.grounded) {
+                        player.autoJump = true;
+                        airFuel0 = player.jetpackFuel;
+                        airPower0 = survival.power;
+                        airDist = airTime = 0.0f;
+                        airPrevLocal = local.toFloat();
+                        airPhase = 2;
+                    } else if (airPhase == 2) {
+                        if (!player.grounded) {
+                            const Vector3 l = local.toFloat();
+                            const Vector3 step = Vector3Subtract(l, airPrevLocal);
+                            const Vector3 n = Vector3Normalize(l);
+                            airDist += Vector3Length(Vector3Subtract(step, Vector3Scale(n, Vector3DotProduct(step, n)))); // level distance, body frame
+                            airTime += GetFrameTime();
+                        } else if (airTime > 0.2f) {
+                            airPowerAir = survival.power;
+                            printf("bench: air jump: %.2f s airborne, %.1f m level relative to the ground (%.2f m/s, walk %.1f m/s); fuel %.2f -> %.2f, suit power %.2f -> %.2f\n",
+                                   airTime, airDist, airDist / airTime, player.walkSpeed, airFuel0, player.jetpackFuel, airPower0, airPowerAir);
+                            player.autoWalk = false;
+                            player.jetpackFuel = 0.5f; // half a tank used; recharging it on the ground costs power
+                            survival.lastJetpackFuel = 0.5f;
+                            airPower0 = survival.power;
+                            airStart = GetTime();
+                            airPhase = 3;
+                        }
+                        airPrevLocal = local.toFloat();
+                    } else if (airPhase == 3 && t > 3.0) {
+                        printf("bench: jetpack recharge 0.50 -> %.2f cost %.2f suit power (expected ~%.1f plus %.2f baseline)\n",
+                               player.jetpackFuel, airPower0 - survival.power, 0.5f * (player.jetpackFuel - 0.5f) / 0.5f * survival.jetpackPowerPerTank,
+                               3.0f * survival.powerDrainPerSec);
+                        benchAirJump = false;
+                    }
+                } else if (benchMantle && WorldIdle()) {
+                    // Planet terrain checks on body 0 (the default system).
+                    Planetoid* p = dynamic_cast<Planetoid*>(world.objects[0].get());
+                    const PlanetField* f = dynamic_cast<const PlanetField*>(p->field.get());
+                    if (!f) {
+                        printf("bench: --test-mantle needs a planet as the first body (the default resources/data/bodies.txt has one)\n");
+                    } else {
+                        std::mt19937 rng(1234);
+                        std::normal_distribution<float> gauss(0.0f, 1.0f);
+                        std::uniform_real_distribution<float> unit(0.0f, 1.0f);
+                        auto randomDir = [&]() { return Vector3Normalize({ gauss(rng), gauss(rng), gauss(rng) }); };
+                        // 1. Height band: march down each direction to the first solid point (gap-sized steps,
+                        // like the raycast), bisect, and compare with the field's stated bounds.
+                        const int N = 4000;
+                        float lo = 1e9f, hi = -1e9f;
+                        int ocean = 0, outside = 0;
+                        for (int i = 0; i < N; ++i) {
+                            const Vector3 dir = randomDir();
+                            float r = f->maxRadius() + 10.0f, dens = f->baseDensity(Vector3Scale(dir, r)), prev = r;
+                            while (dens < ISO_LEVEL && r > f->mantleRadius) {
+                                prev = r;
+                                r -= std::clamp((ISO_LEVEL - dens) / DENSITY_GRADIENT * 0.5f, 0.25f, 64.0f);
+                                dens = f->baseDensity(Vector3Scale(dir, r));
+                            }
+                            float a = r, b = prev; // a solid, b air
+                            for (int k = 0; k < 20; ++k) {
+                                const float m = 0.5f * (a + b);
+                                if (f->baseDensity(Vector3Scale(dir, m)) >= ISO_LEVEL) a = m; else b = m;
+                            }
+                            const float e = a - f->radius;
+                            lo = std::min(lo, e); hi = std::max(hi, e);
+                            if (e < 0.0f) ++ocean;
+                            if (e < f->minElevation - 3.0f || e > f->maxElevation + 3.0f) ++outside;
+                        }
+                        printf("bench: planet %s: %d surface samples, elevation %.0f..%.0f m (band %.0f..%.0f), below sea level %.0f%%, outside band %d\n",
+                               p->name.c_str(), N, lo, hi, f->minElevation, f->maxElevation, 100.0f * ocean / N, outside);
+                        // Surface materials: the share of each over random surface points (with real slopes).
+                        int counts[(int)VoxelMaterial::Count] = {};
+                        for (int i = 0; i < 2000; ++i) {
+                            const Vector3 dir = randomDir();
+                            const Vector3 pt = Vector3Scale(dir, f->radius + f->elevation(dir));
+                            const Vector3 n = f->normal(pt, nullptr, 0, 0.5f);
+                            ++counts[(int)f->materialLod(pt, f->baseDensity(pt), 0.0f, n)];
+                        }
+                        std::string mix;
+                        for (int m = 0; m < (int)VoxelMaterial::Count; ++m)
+                            if (counts[m]) mix += TextFormat("%s %.1f%%  ", m == (int)VoxelMaterial::Regolith ? "dirt" : VoxelMaterialName((VoxelMaterial)m), 100.0f * counts[m] / 2000.0f);
+                        printf("bench: surface materials: %s\n", mix.c_str());
+                        // 2. Mantle: dig just above it; the crust must change and the mantle must not.
+                        const Vector3 dir = randomDir();
+                        const Vector3 inMantle = Vector3Scale(dir, f->mantleRadius - 4.0f), inCrust = Vector3Scale(dir, f->mantleRadius + 12.0f);
+                        const float mantleBefore = p->densityAt(inMantle), crustBefore = p->densityAt(inCrust);
+                        const auto savedEdits = p->edits;
+                        ApplyTerrainEdit(*p, TerrainEdit{ Vector3Scale(dir, f->mantleRadius + 4.0f), 12.0f, -20.0f });
+                        const float mantleAfter = p->densityAt(inMantle), crustAfter = p->densityAt(inCrust);
+                        p->edits = savedEdits; // leave the world as it was
+                        const bool mantleOk = mantleAfter == mantleBefore && crustAfter < crustBefore - 1.0f && !f->editable(inMantle) && f->editable(inCrust);
+                        printf("bench: mantle %.0f m below sea level: dig there changed the crust %.2f -> %.2f and the mantle %.2f -> %.2f: %s\n",
+                               f->radius - f->mantleRadius, crustBefore, crustAfter, mantleBefore, mantleAfter, mantleOk ? "refused" : "NOT REFUSED");
+                        // 3. Ore by depth band, and caves.
+                        const float bands[4] = { 8.0f, 150.0f, 500.0f, f->radius - f->mantleRadius - 20.0f };
+                        float orePct[3];
+                        int caveSamples = 0, solidSamples = 0;
+                        for (int band = 0; band < 3; ++band) {
+                            int ore = 0, solid = 0;
+                            for (int i = 0; i < 20000; ++i) {
+                                const Vector3 d = randomDir();
+                                const float depth = bands[band] + unit(rng) * (bands[band + 1] - bands[band]);
+                                const Vector3 pt = Vector3Scale(d, f->radius + f->elevation(d) - depth);
+                                if (!f->editable(pt)) continue; // below the mantle (deep ocean floors)
+                                const float base = f->baseDensity(pt);
+                                if (base < ISO_LEVEL) { ++caveSamples; continue; }
+                                ++solid; ++solidSamples;
+                                if (f->material(pt, base) == VoxelMaterial::Ore) ++ore;
+                            }
+                            orePct[band] = 100.0f * ore / std::max(1, solid);
+                        }
+                        const float cavePct = 100.0f * caveSamples / std::max(1, caveSamples + solidSamples);
+                        // Which kind of cave: share of underground (30 m .. mantle) inside a tunnel / a cavern core.
+                        int inTunnel = 0, inCavern = 0, probes = 0;
+                        for (int i = 0; i < 40000; ++i) {
+                            const Vector3 d = randomDir();
+                            const float depth = 30.0f + unit(rng) * (f->radius - f->mantleRadius - 80.0f);
+                            const Vector3 pt = Vector3Scale(d, f->radius + f->elevation(d) - depth);
+                            if (!f->editable(pt)) continue;
+                            ++probes;
+                            if (std::max(fabsf(f->cavesA.fractal(2, pt.x, pt.y, pt.z)), fabsf(f->cavesB.fractal(2, pt.x, pt.y, pt.z))) < PlanetField::kTunnelLevel) {
+                                static bool shown = false;
+                                ++inTunnel;
+                                if (!shown && depth < 80.0f && f->baseDensity(pt) < ISO_LEVEL && (shown = true))
+                                    printf("bench: a tunnel %.0f m down at local %.1f %.1f %.1f (use --cam to look inside)\n", depth, pt.x, pt.y, pt.z);
+                            }
+                            if (f->caverns.fractal(2, pt.x, pt.y * 1.4f, pt.z) > PlanetField::kCavernLevel) ++inCavern;
+                        }
+                        printf("bench: caves 30 m .. mantle: tunnels %.2f%% of the volume, caverns %.2f%%\n",
+                               100.0f * inTunnel / std::max(1, probes), 100.0f * inCavern / std::max(1, probes));
+                        const bool oreOk = orePct[0] > 0.0f && orePct[0] < orePct[1] && orePct[1] < orePct[2];
+                        printf("bench: ore by depth: 8-150 m %.1f%%, 150-500 m %.1f%%, 500 m-mantle %.1f%%; caves %.1f%% of underground: %s\n",
+                               orePct[0], orePct[1], orePct[2], cavePct, oreOk && cavePct > 0.0f ? "ok" : "BAD");
+                        printf("bench: planet terrain %s\n", outside == 0 && mantleOk && oreOk && cavePct > 0.0f ? "PASS" : "FAIL");
+                    }
+                    benchMantle = false;
+                } else if (benchPrecision && WorldIdle()) {
+                    // Float vs double placement on body 0, standing on its surface (run it with a large
+                    // body, e.g. --bodies with a 60 km planet): chunk translations, texture coordinates
+                    // near the camera, and a body-anchor round trip, each against an exact double result.
+                    Planetoid* p = dynamic_cast<Planetoid*>(world.objects[0].get());
+                    if (precisionPhase == 0) {
+                        // Stand on the surface (the bench camera starts in fly mode off to the side), then
+                        // wait for the terrain around the new viewpoint to stream in.
+                        player.spawnOn(world, *p, Vector3Normalize({ 0.8f, 0.35f, -0.5f })); // off the spin axis and the grid axes
+                        precisionStart = GetTime();
+                        precisionPhase = 1;
+                    } else if (GetTime() - precisionStart >= 1.5) {
+                    auto ulpMm = [](float x) { x = fabsf(x); return (nextafterf(x, INFINITY) - x) * 1000.0f; };
+                    const DVec3 cam = world.cameraWorld();
+                    const double P = 1.0 / world.texScale;
+                    double chunkOld = 0, chunkNew = 0;
+                    float texOld = 0, texNew = 0;
+                    int nearChunks = 0;
+                    for (Chunk* c : p->drawList) {
+                        const Vector3 o = c->key.origin();
+                        const DVec3 exact = p->toWorldD(DVec3(o)) - world.renderOrigin;
+                        const Matrix mo = MatrixMultiply(MatrixTranslate(o.x, o.y, o.z), p->localTransform());
+                        const Matrix mn = p->chunkModel(*c, world.renderOrigin);
+                        const float size = (float)c->key.size() * (CHUNK_SIZE + 1) / CHUNK_SIZE; // metres, incl. overlap cell
+                        // Only chunks up close count: far away, a few mm of float rounding is invisible.
+                        if (c->key.level > 1 || (exact + world.renderOrigin - cam).length() > 200.0 + size) continue;
+                        chunkOld = std::max(chunkOld, (DVec3(mo.m12, mo.m13, mo.m14) - exact).length());
+                        chunkNew = std::max(chunkNew, (DVec3(mn.m12, mn.m13, mn.m14) - exact).length());
+                        ++nearChunks;
+                        for (int a = 0; a < 3; ++a) {
+                            const float oa = a == 0 ? o.x : a == 1 ? o.y : o.z;
+                            const double wrapped = fmod(fmod((double)oa, P) + P, P);
+                            texOld = std::max(texOld, std::max(ulpMm(oa), ulpMm(oa + size)));
+                            texNew = std::max(texNew, ulpMm((float)wrapped + size));
+                        }
+                    }
+                    const DVec3 abs = player.position;
+                    const Vector3 feet = (abs - world.renderOrigin).toFloat();
+                    const double anchorOld = ((world.renderOrigin + p->toWorld(p->toLocal(feet))) - abs).length();
+                    const double anchorNew = (p->toWorldD(p->toLocalD(abs)) - abs).length();
+                    printf("bench: precision on %s, %.0f m from its centre (%zu chunks drawn, %d fine chunks within 200 m):\n", p->name.c_str(),
+                           (abs - p->worldPos).length(), p->drawList.size(), nearChunks);
+                    printf("bench:   chunk placement error   float %.3f mm   double %.4f mm\n", chunkOld * 1000.0, chunkNew * 1000.0);
+                    printf("bench:   texture coordinate step float %.3f mm   wrapped %.4f mm\n", texOld, texNew);
+                    printf("bench:   anchor round trip error float %.3f mm   double %.6f mm\n", anchorOld * 1000.0, anchorNew * 1000.0);
+                    benchPrecision = false;
+                    }
+                } else if (benchGravity && WorldIdle()) {
+                    // Scripted gravity checks: the field itself (surface value, half at half depth, a
+                    // quarter at 2R, no jumps between bodies), then an unpiloted ship dropped from 25 m
+                    // must land and park, and a piloted ship must hover in place.
+                    Planetoid* p = dynamic_cast<Planetoid*>(world.objects[0].get());
+                    const double t = gravStart < 0.0 ? 0.0 : GetTime() - gravStart;
+                    // Height of the hull centre above the ground straight "down" (along gravity).
+                    auto altitude = [&]() {
+                        const Vector3 sp = ship.renderPos(world);
+                        TerrainHit hit;
+                        const Vector3 down = Vector3Normalize(GravityAt(world, sp));
+                        return RaycastTerrain(world, Ray{ sp, down }, 500.0f, hit) ? hit.distance : -1.0f;
+                    };
+                    auto placeAbove = [&](float height) {
+                        TerrainHit hit;
+                        const float R = p->radius * p->scale;
+                        if (RaycastTerrain(world, Ray{ Vector3Add(p->position, { 0, R + 80.0f, 0 }), { 0, -1, 0 } }, R + 100.0f, hit)) {
+                            ship.parkNear(world, hit.point, hit.normal);
+                            ship.position = world.renderOrigin + Vector3Add(hit.point, Vector3Scale(hit.normal, ship.hullRadius + height));
+                        }
+                        ship.velocity = { 0, 0, 0 };
+                    };
+                    if (gravStart < 0.0) {
+                        const float R = p->gravityRadius, g0 = p->surfaceGravity; // gravity's reference radius (mean surface)
+                        const Vector3 c = p->position;
+                        const float gs = Vector3Length(BodyGravityAt(*p, Vector3Add(c, { R, 0, 0 })));
+                        const float gh = Vector3Length(BodyGravityAt(*p, Vector3Add(c, { 0, 0.5f * R, 0 }))) / g0;
+                        const float g2 = Vector3Length(BodyGravityAt(*p, Vector3Add(c, { 0, 0, -2.0f * R }))) / g0;
+                        bool pass = fabsf(gs - g0) < 1e-3f && fabsf(gh - 0.5f) < 1e-3f && fabsf(g2 - 0.25f) < 1e-3f;
+                        printf("bench: gravity field: surface %.3f m/s^2 (body %.3f), half depth %.3f g0, 2R %.3f g0\n", gs, g0, gh, g2);
+                        // Continuity: walk the line to the nearest other body; the summed field may change
+                        // no faster than its steepest gradient (2 g0 / R, just outside a surface) allows.
+                        Planetoid* other = nullptr;
+                        for (size_t i = 1; i < world.objects.size(); ++i)
+                            if (auto* q = dynamic_cast<Planetoid*>(world.objects[i].get()))
+                                if (!other || Vector3Distance(q->position, c) < Vector3Distance(other->position, c)) other = q;
+                        if (other) {
+                            const int N = 20000;
+                            const float len = Vector3Distance(c, other->position), step = len / N;
+                            float maxGrad = 0.0f;
+                            for (auto& obj : world.objects)
+                                if (auto* q = dynamic_cast<Planetoid*>(obj.get())) maxGrad = std::max(maxGrad, 2.0f * q->surfaceGravity / q->gravityRadius);
+                            float maxJump = 0.0f, weakest = 1e9f, weakestAt = 0.0f;
+                            Vector3 prev = GravityAt(world, c);
+                            for (int i = 1; i <= N; ++i) {
+                                const Vector3 g = GravityAt(world, Vector3Lerp(c, other->position, (float)i / N));
+                                maxJump = std::max(maxJump, Vector3Distance(g, prev));
+                                if (Vector3Length(g) < weakest) { weakest = Vector3Length(g); weakestAt = (float)i / N; }
+                                prev = g;
+                            }
+                            const float bound = 1.1f * maxGrad * step;
+                            pass = pass && maxJump <= bound;
+                            printf("bench: gravity continuity %s -> %s (%.0f m): max change %.4f m/s^2 per %.3f m step (bound %.4f), weakest %.4f m/s^2 at %.2f of the way\n",
+                                   p->name.c_str(), other->name.c_str(), len, maxJump, step, bound, weakest, weakestAt);
+                        }
+                        printf("bench: gravity field %s\n", pass ? "PASS" : "FAIL");
+                        // Phase 1: drop an unpiloted ship from 25 m.
+                        ship.piloted = false;
+                        player.flyMode = true; // keep the player out of the way (fly mode: no physics)
+                        placeAbove(25.0f);
+                        gravAlt0 = altitude();
+                        gravMaxImpact = 0.0f;
+                        gravPhase = 1;
+                        gravStart = GetTime();
+                    } else if (gravPhase == 1) {
+                        gravMaxImpact = std::max(gravMaxImpact, ship.lastImpact);
+                        if (t > 10.0) {
+                            printf("bench: ship drop from %.1f m (g %.2f): hull centre now %.2f m above ground, parked %s, impact %.1f m/s\n",
+                                   gravAlt0, Vector3Length(GravityAt(world, ship.renderPos(world))), altitude(), ship.anchorBody ? "yes" : "NO", gravMaxImpact);
+                            // Phase 2: hover a piloted ship 25 m up with no input.
+                            placeAbove(25.0f);
+                            ship.piloted = true;
+                            gravAlt0 = altitude();
+                            gravEnergy0 = ship.energy;
+                            gravPhase = 2;
+                            gravStart = GetTime();
+                        }
+                    } else if (gravPhase == 2 && t > 5.0) {
+                        printf("bench: ship hover 5 s at %.1f m: altitude change %+.2f m, energy %.1f -> %.1f (hovering %s)\n",
+                               gravAlt0, altitude() - gravAlt0, gravEnergy0, ship.energy, ship.hovering ? "yes" : "NO");
+                        ship.piloted = false;
+                        benchGravity = false;
                     }
                 } else if (benchPark && WorldIdle()) {
                     // Scripted park: land the ship on the equator of a body spinning 10 deg/s; it must stay put
@@ -279,7 +711,7 @@ int main(int argc, char** argv)
                     const Vector3 feet = (player.position - world.renderOrigin).toFloat();
                     const double t = rideStart < 0.0 ? 0.0 : GetTime() - rideStart;
                     if (rideStart < 0.0) {
-                        p->spin = { 0.0f, 10.0f, 0.0f };
+                        p->spin = { 0.0f, rideSpin, 0.0f };
                         player.spawnOn(world, *p, { 1.0f, 0.0f, 0.0f });
                         rideStart = GetTime();
                         ridePhase = 0;
@@ -287,6 +719,8 @@ int main(int argc, char** argv)
                         rideFwd0 = p->dirToLocal(player.forward);
                         ridePos0 = p->toLocal(feet);
                         ridePhase = 1;
+                    } else if (ridePhase == 1 && t <= 4.5) {
+                        ++rideFrames; if (player.grounded) ++rideGroundedFrames;
                     } else if (ridePhase == 1 && t > 4.5) {
                         rideViewDrift = Vector3Angle(rideFwd0, p->dirToLocal(player.forward)) * RAD2DEG;
                         ridePosDrift = Vector3Distance(ridePos0, p->toLocal(feet));
@@ -297,8 +731,8 @@ int main(int argc, char** argv)
                     } else if (ridePhase == 2 && !player.grounded) {
                         ridePhase = 3; // airborne
                     } else if ((ridePhase == 3 && player.grounded) || t > 12.0) {
-                        printf("bench: ride test (10 deg/s, surface %.1f m/s): standing 3 s -> view drift %.2f deg, position drift %.2f m; jump landed %.2f m from takeoff (body frame)%s\n",
-                               rideSurfaceSpeed, rideViewDrift, ridePosDrift, Vector3Distance(rideTakeoff, p->toLocal(feet)), ridePhase == 3 ? "" : " [never landed]");
+                        printf("bench: ride test (%.0f deg/s, surface %.1f m/s): standing 3 s (grounded %.0f%%) -> view drift %.2f deg, position drift %.2f m; jump landed %.2f m from takeoff (body frame)%s\n",
+                               rideSpin, rideSurfaceSpeed, 100.0f * rideGroundedFrames / std::max(1, rideFrames), rideViewDrift, ridePosDrift, Vector3Distance(rideTakeoff, p->toLocal(feet)), ridePhase == 3 ? "" : " [never landed]");
                         benchRide = false;
                     }
                 } else if (benchFlySeconds > 0.0 && benchMineStrokes == 0 && benchWalkSeconds <= 0.0) {
@@ -376,11 +810,12 @@ int main(int argc, char** argv)
                     if (walkStart < 0.0) {
                         player.autoWalk = !benchStandOnly;
                         Planetoid* start = dynamic_cast<Planetoid*>(world.objects[0].get());
-                        player.spawnOn(world, *start);
+                        if (hasSpawnDir) player.spawnOn(world, *start, spawnDir); else player.spawnOn(world, *start, StartSpawnDir(*start));
 
                         walkStart = GetTime();
-                        walkFrom = player.position;
+                        walkFrom = start->toLocalD(player.position); // body frame: the spin carries the walker too
                         walkMinDensity = 1e9f; walkMaxDensity = -1e9f; walkGroundedFrames = walkFrames = 0;
+                        walkLast = walkFrom; walkPath = 0.0;
                     }
                     Planetoid* start = dynamic_cast<Planetoid*>(world.objects[0].get());
                     const Vector3 feet = (player.position - world.renderOrigin).toFloat();
@@ -389,31 +824,52 @@ int main(int argc, char** argv)
                     walkMaxDensity = std::max(walkMaxDensity, d);
                     walkFrames++;
                     walkGroundedFrames += player.grounded ? 1 : 0;
-                    if (GetTime() - walkStart > benchWalkSeconds) {
+                    { const DVec3 here = start->toLocalD(player.position); walkPath += (here - walkLast).length(); walkLast = here; }
+                    if (GetTime() - walkStart > benchWalkSeconds || (walkTargetM > 0.0 && walkPath >= walkTargetM)) {
                         player.autoWalk = false;
-                        const double dist = (player.position - walkFrom).length();
+                        const double dist = (start->toLocalD(player.position) - walkFrom).length();
                         const float alt = Vector3Distance(feet, start->position);
                         printf("bench: walked %.1f m in %.1f s, grounded %.0f%% of frames, density at body %.2f..%.2f (solid >= %.2f), %.1f m from centre\n",
-                               dist, benchWalkSeconds, 100.0 * walkGroundedFrames / std::max(1, walkFrames), walkMinDensity, walkMaxDensity, ISO_LEVEL, alt);
+                               dist, GetTime() - walkStart, 100.0 * walkGroundedFrames / std::max(1, walkFrames), walkMinDensity, walkMaxDensity, ISO_LEVEL, alt);
+                        if (walkTargetM > 0.0) {
+                            const double pct = 100.0 * walkGroundedFrames / std::max(1, walkFrames);
+                            const bool pass = walkPath >= walkTargetM && pct >= 90.0 && walkMaxDensity < ISO_LEVEL;
+                            printf("bench: planet walk %.0f m of %.0f m (path) in %.1f s, grounded %.0f%%, deepest body density %.2f (solid >= %.2f): %s\n",
+                                   walkPath, walkTargetM, GetTime() - walkStart, pct, walkMaxDensity, ISO_LEVEL, pass ? "PASS" : "FAIL");
+                            walkTargetM = 0.0;
+                        }
                         benchWalkSeconds = 0.0;
                     }
-                } else if ((WorldIdle() && benchDigStrokes == 0 && !benchSaveLoad && benchWalkSeconds <= 0.0 && benchMineStrokes == 0 && minePhase != 2 && benchFlySeconds <= 0.0 && !benchSuffocate && benchOrbitSeconds <= 0.0 && !benchRide && !benchPark) || GetTime() > 180.0) {
+                } else if ((WorldIdle() && benchDigStrokes == 0 && !benchSaveLoad && benchWalkSeconds <= 0.0 && benchMineStrokes == 0 && minePhase != 2 && benchFlySeconds <= 0.0 && !benchSuffocate && benchOrbitSeconds <= 0.0 && !benchRide && !benchPark && !benchGravity && !benchPrecision && !benchMantle && !benchAirJump && !benchMoon) || GetTime() > 180.0) {
                     benchStart = GetTime();
-                    printf("bench: world ready after %.2f s (%d chunks, avg build %.2f ms, %d worker threads)\n",
-                        GetWorldStats().lastGenerationSeconds, GetWorldStats().chunks, GetWorldStats().avgBuildMs, GetWorldStats().workerThreads);
+                    printf("bench: world ready after %.2f s (%d chunks, avg build %.2f ms of which sampling %.2f ms, %d worker threads)\n",
+                        GetWorldStats().lastGenerationSeconds, GetWorldStats().chunks, GetWorldStats().avgBuildMs, GetWorldStats().avgSampleMs, GetWorldStats().workerThreads);
                 }
             }
             double t = (benchStart < 0.0) ? 0.0 : GetTime() - benchStart;
             if (benchStart >= 0.0 && t > benchWarmup) {
                 benchFrames++;
+                ++benchTimedFrames;
+                benchMeasuring = true;
                 if (GetFrameTime() > benchMaxFrame) benchMaxFrame = GetFrameTime();
             }
             if (t > benchWarmup + benchSeconds) {
                 double avgMs = 1000.0 * benchSeconds / (double)benchFrames;
-                const char* line = TextFormat("bench: %ld frames in %.1fs | avg %.1f FPS | avg %.2f ms | worst %.2f ms\n",
-                    benchFrames, benchSeconds, 1000.0 / avgMs, avgMs, benchMaxFrame * 1000.0);
+                const char* line = TextFormat("bench: %ld frames in %.1fs | avg %.1f FPS | avg %.2f ms | worst %.2f ms | world update %.2f ms, draw %.2f ms (CPU)\n",
+                    benchFrames, benchSeconds, 1000.0 / avgMs, avgMs, benchMaxFrame * 1000.0, benchUpdateMs / std::max(1L, benchTimedFrames), benchDrawMs / std::max(1L, benchTimedFrames));
                 printf("%s", line);
                 SaveFileText("bench.txt", (char*)line);
+                if (crackCheck) {
+                    // Holes between chunks show the magenta clear colour (look down at terrain that fills the view).
+                    Image shot = LoadImageFromScreen();
+                    Color* px = LoadImageColors(shot);
+                    long holes = 0;
+                    const long total = (long)shot.width * shot.height;
+                    for (long k = 0; k < total; ++k) if (px[k].r > 240 && px[k].g < 16 && px[k].b > 240) ++holes;
+                    printf("bench: crack check: %ld of %ld pixels show through the terrain (%.4f%%)\n", holes, total, 100.0 * holes / total);
+                    UnloadImageColors(px);
+                    UnloadImage(shot);
+                }
                 TakeScreenshot("bench.png");
                 break;
             }
@@ -437,7 +893,7 @@ int main(int argc, char** argv)
         const bool gameInput = !bench && !uiOpen && gameState == 1;
         world.cameraInputEnabled = player.flyMode && !uiOpen && !ship.piloted;  // free-fly camera only in fly mode
         const bool alive = !survival.dead;
-        if (gameState == 1 && gameInput && alive && IsKeyPressed(KEY_E)) {
+        if (gameState == 1 && gameInput && alive && !player.flyMode && IsKeyPressed(KEY_E)) { // E rolls in free-fly
             const Vector3 feet = (player.position - world.renderOrigin).toFloat();
             if (ship.piloted) {
                 // Step out beside the ship.
@@ -452,6 +908,7 @@ int main(int argc, char** argv)
                 Audio_Play(Sfx::Build, 0.4f, 1.2f);
             }
         }
+        advanceBodies(world, gameState == 1 ? GetFrameTime() * timeScale : 0.0f); // bodies only spin while playing; before riders update
         if (gameState == 1) {
             ship.lastImpact = 0.0f;
             if (ship.piloted) {
@@ -465,21 +922,41 @@ int main(int argc, char** argv)
                 Survival_OnLanding(player.impactSpeed);
             }
             if (ship.piloted && ship.lastImpact > 12.0f) survival.health -= (ship.lastImpact - 12.0f) * 3.0f; // crash damage
-            Survival_Update(world, GetFrameTime(), !ship.piloted && !player.grounded && gameInput && player.jetpackFuel > 0.0f && (IsKeyDown(KEY_SPACE) || IsKeyDown(KEY_LEFT_CONTROL) || IsKeyDown(KEY_W) || IsKeyDown(KEY_A) || IsKeyDown(KEY_S) || IsKeyDown(KEY_D)), gameInput);
+            Survival_Update(world, GetFrameTime(), gameInput);
             Objectives_Update(world);
             if (bench && lookDown && !ship.piloted) {
                 const Vector3 t = Vector3Subtract(player.forward, Vector3Scale(player.up, Vector3DotProduct(player.forward, player.up)));
                 player.forward = Vector3Normalize(Vector3Subtract(Vector3Scale(Vector3Normalize(t), 0.8f), player.up)); // ~50 deg down
             }
+            if (bench && benchTelescope > 0.0f && !ship.piloted) AimAtTelescopeTarget(world);
             if (!ship.piloted) player.applyToCamera(world);
+            Telescope_Update(world, gameInput && alive, !ship.piloted && !player.flyMode && alive);
+            if (bench && benchTelescope > 0.0f) { Telescope_SetActive(world, true); telescope.zoom = benchTelescope; Telescope_Update(world, false, !ship.piloted); }
         }
 
         world.updateFloatingOrigin(); // keep the camera near render-space 0 (float precision)
-        worldUpdate(world, 3.0f, gameState == 1); // LOD + streaming always; bodies only spin while playing
+        { const double w0 = GetTime(); worldUpdate(world, 3.0f); if (benchMeasuring) benchUpdateMs += (GetTime() - w0) * 1000.0; } // LOD + streaming (bodies were spun at the start of the frame)
 
         // Slot 1: headlamp (suit lamp from the eye, or the ship's nose light while piloting).
         // Slot 2: soft glow around the player while the inventory is open.
         if (sunOverride) world.sunDirection = sunArg;
+        // Atmosphere: the nearest planet (moons and asteroids have none) colours the sky and haze.
+        world.atmosphere.enabled = false;
+        {
+            float best = 1e30f;
+            for (auto& obj : world.objects)
+                if (auto* q = dynamic_cast<Planetoid*>(obj.get()))
+                    if (q->kind == BodyKind::Planet) {
+                        const float alt = Vector3Distance(world.camera.position, q->position) - q->radius * q->scale;
+                        if (alt < best) {
+                            best = alt;
+                            world.atmosphere.enabled = true;
+                            world.atmosphere.centre = q->position;
+                            world.atmosphere.radius = q->radius * q->scale;
+                        }
+                    }
+        }
+        if (crackCheck) world.drawSkybox = false;
         while (world.lights.size() < 3) world.lights.push_back(Light{});
         {
             Light& lamp = world.lights[1];
@@ -550,7 +1027,7 @@ int main(int argc, char** argv)
                 spinPhase = 3;
             }
         }
-        if (gameState == 1) TerrainTool_Update(world, gameInput && alive, !ship.piloted); // F5/F9 work aboard too
+        if (gameState == 1) TerrainTool_Update(world, gameInput && alive, !ship.piloted && !telescope.active); // F5/F9 work aboard too
 
         switch(gameState) {
             case 0: // Main Menu
@@ -589,14 +1066,15 @@ int main(int argc, char** argv)
         
 
         BeginDrawing();
-            ClearBackground(BLACK);
+            ClearBackground(crackCheck ? MAGENTA : BLACK); // --crack-check: holes in the terrain show magenta
             if (gameState == 0) {
                 mainMenu.drawScene(gameState);
                 mainMenu.drawUI(gameState);
             } else if (gameState == 1) {
-                world.drawScene(gameState);
+                { const double d0 = GetTime(); world.drawScene(gameState); if (benchMeasuring) benchDrawMs += (GetTime() - d0) * 1000.0; }
                 world.drawUI(gameState);
-                if (!ship.piloted) TerrainTool_DrawHUD();
+                Telescope_DrawHUD(world);
+                if (!ship.piloted && !telescope.active) TerrainTool_DrawHUD();
                 GameUI_DrawHUD(world);
                 Survival_DrawHUD();
                 Objectives_DrawHUD();

@@ -37,7 +37,7 @@ void Ship::update(Scene& world, bool inputEnabled, float dt) {
             anchorBody = nullptr; // moved by something else (parkNear, a load) or the body is gone
         } else if (!piloted || energy <= 0.0f || // no energy, no takeoff: stay anchored
                    !(autopilot || (inputEnabled && (IsKeyDown(KEY_W) || IsKeyDown(KEY_S) || IsKeyDown(KEY_A) || IsKeyDown(KEY_D) || IsKeyDown(KEY_SPACE) || IsKeyDown(KEY_LEFT_CONTROL))))) {
-            position = world.renderOrigin + anchorBody->toWorld(anchorLocal);
+            position = anchorBody->toWorldD(anchorLocal);
             const Quaternion now = anchorBody->rotationQuat();
             orientation = QuaternionNormalize(QuaternionMultiply(QuaternionMultiply(now, QuaternionInvert(anchorRotPrev)), orientation));
             anchorRotPrev = now;
@@ -97,16 +97,30 @@ void Ship::update(Scene& world, bool inputEnabled, float dt) {
 
     Vector3 p = renderPos(world);
 
+    // Gravity from every body. While piloted with energy, flight assist hovers against it (paying
+    // energy as thrust would); otherwise the ship falls, lands and parks.
+    const Vector3 g = GravityAt(world, p);
+    const float gl = Vector3Length(g);
+    hovering = piloted && energy > 0.0f && gl > 0.0f;
+    if (hovering) energy = std::max(0.0f, energy - energyPerThrustSec * (gl / thrust) * dt * 0.5f);
+    else velocity = Vector3Add(velocity, Vector3Scale(g, dt));
+
     velocity = Vector3Add(velocity, Vector3Scale(accel, dt));
     // Flight assist: gentle damping always, strong when braking or parked. Near a body's surface it
     // damps toward that surface's motion (so parking/landing on a spinning body settles onto it at
     // any frame rate); elsewhere toward rest.
     Vector3 refVel = { 0, 0, 0 };
+    bool touching = false;
     if (Planetoid* body = NearestPlanetoid(world, p)) {
         float dist; Vector3 n;
-        if (TerrainSurfaceDistance(*body, p, dist, n) && dist < hullRadius + 6.0f) refVel = body->surfaceVelocity(p);
+        if (TerrainSurfaceDistance(*body, p, dist, n) && dist < hullRadius + 6.0f) {
+            refVel = body->surfaceVelocity(p);
+            touching = dist < 1.7f; // the hull samples collide below 1.2 m
+        }
     }
-    const float damp = braking ? 2.5f : piloted ? dampingPerSec * (Vector3Length(accel) > 0 ? 0.2f : 1.0f) : 4.0f;
+    // Unpiloted: no damping off the ground (it falls or drifts freely, as in vacuum); strong once it
+    // touches down, so it settles onto the surface and parks.
+    const float damp = braking ? 2.5f : piloted ? dampingPerSec * (Vector3Length(accel) > 0 ? 0.2f : 1.0f) : touching ? 4.0f : 0.0f;
     velocity = Vector3Add(refVel, Vector3Scale(Vector3Subtract(velocity, refVel), std::max(0.0f, 1.0f - damp * dt)));
 
     // Move in substeps of at most ~1 m (less than the 1.2 m hull clearance) so a fast ship can't
@@ -146,7 +160,7 @@ void Ship::update(Scene& world, bool inputEnabled, float dt) {
             if (Vector3Distance(velocity, surfaceVel) < 0.5f && TerrainSurfaceDistance(*body, p, dist, n) && dist < hullRadius + 1.0f) {
                 anchorBody = body;
                 anchorId = body->id;
-                anchorLocal = body->toLocal(p);
+                anchorLocal = body->toLocalD(position);
                 anchorRotPrev = body->rotationQuat();
                 anchorEndPos = position;
                 velocity = surfaceVel; // moving with the surface, as the anchored path reports it

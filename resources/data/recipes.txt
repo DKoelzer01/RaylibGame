@@ -4,3 +4,5 @@ water 1           = ice 2
 oxygen_canister 1 = water 2, iron_plate 1
 power_cell 1      = iron_plate 2, regolith 4
 concrete 2        = regolith 3, water 1, stone 2
+glass 1           = sand 4
+telescope 1       = glass 2, iron_plate 2

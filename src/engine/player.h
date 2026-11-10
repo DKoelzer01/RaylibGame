@@ -10,7 +10,7 @@ class Scene;
 class Planetoid;
 
 // First-person character for small bodies:
-// - gravity pulls toward the nearest planetoid's centre and "up" follows it, so you can walk all
+// - gravity is summed over every body (GravityAt) and "up" follows it, so you can walk all
 //   the way around an asteroid;
 // - collision is resolved directly against the density field (two spheres: feet and head), so
 //   dug tunnels and built terrain are walkable with no separate collision mesh;
@@ -24,7 +24,8 @@ struct Player {
     bool grounded = false;
     bool flyMode = false;             // F: free-fly dev camera (no gravity/collision)
     float jetpackFuel = 1.0f;         // 0..1, recharges on the ground
-    Planetoid* nearest = nullptr;     // body whose gravity applies
+    bool jetpackFiring = false;       // fuel was burnt this update (survival / audio / HUD)
+    Planetoid* nearest = nullptr;     // body we collide with (gravity comes from every body)
     float gravity = 0.0f;             // current acceleration magnitude (HUD/debug)
     bool autoWalk = false;            // tests: walk forward without input
     float gravityScale = 1.0f;        // spells/effects (e.g. featherfall)
@@ -41,23 +42,26 @@ struct Player {
     float jumpSpeed = 5.0f;
     float jetpackAccel = 9.0f;
     float jetpackFuelPerSec = 0.1f;   // full tank = 10 s of thrust
+    float airControlAccel = 12.0f;    // m/s^2 toward the wished walking velocity while airborne in gravity
     float mouseSensitivity = 0.003f;
+    float lookScale = 1.0f;        // mouse look multiplier (the telescope slows it by its zoom)
 
     // Stand on the surface of `body` in direction `dir` from its centre (default: its +Y pole).
     void spawnOn(Scene& world, Planetoid& body, Vector3 dir = { 0, 1, 0 });
-    // Surface gravity of a round body of radius R (gameplay rule; summed gravity is milestone 1).
-    static float SurfaceGravity(float R) { return std::min(9.81f, 3.0f + R * 0.03f); }
     void update(Scene& world, bool inputEnabled, float dt);
     void applyToCamera(Scene& world) const;  // camera at the eye, looking along forward
 
 private:
-    Vector3 groundLocal{};            // feet in the ground body's local space (to follow its spin)
+    DVec3 groundLocal{};              // feet in the ground body's local space, double (follows its spin exactly)
     Planetoid* groundBody = nullptr;
     uint64_t groundId = 0;            // validates groundBody (bodies can be destroyed, e.g. world regen)
     Vector3 groundNormal = { 0, 1, 0 };
     Quaternion groundRotPrev = { 0, 0, 0, 1 }; // ground body's rotation at the end of last update
     DVec3 lastEndPosition{};                    // where update() left us (detects outside moves)
-    void stepPhysics(Scene& world, float dt, Vector3 wishMove, bool jump, bool jetUp, bool jetDown);
+    void stepPhysics(Scene& world, float dt, Vector3 wishMove, bool jetUp, bool jetDown);
+    float jumpBuffer = 0.0f; // seconds a jump press stays pending
+    float coyote = 0.0f;     // seconds a jump is still allowed after leaving the ground
+    float jumpLock = 0.0f;   // seconds after a jump during which the player cannot re-ground
     bool resolveCollisions(Scene& world, Vector3& feet);
 };
 

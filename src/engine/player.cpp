@@ -17,15 +17,16 @@ void Player::spawnOn(Scene& world, Planetoid& body, Vector3 dir) {
     const Vector3 c = body.position;
     if (body.flat) dir = { 0, 1, 0 };
     dir = Vector3Normalize(dir);
-    const Vector3 above = body.flat ? Vector3Add(c, { 0, body.maxHeight + 20.0f, 0 }) : Vector3Add(c, Vector3Scale(dir, R + 60.0f));
+    const float outer = body.field->maxRadius() * body.scale; // above the highest terrain (planets: mountains)
+    const Vector3 above = body.flat ? Vector3Add(c, { 0, body.maxHeight + 20.0f, 0 }) : Vector3Add(c, Vector3Scale(dir, outer + 60.0f));
     TerrainHit hit;
     Vector3 feet = Vector3Add(c, Vector3Scale(dir, R + 5.0f));
-    if (RaycastTerrain(world, Ray{ above, Vector3Negate(dir) }, body.flat ? body.maxHeight - body.minHeight + 40.0f : R + 80.0f, hit)) feet = Vector3Add(hit.point, Vector3Scale(hit.normal, 0.2f));
+    if (RaycastTerrain(world, Ray{ above, Vector3Negate(dir) }, body.flat ? body.maxHeight - body.minHeight + 40.0f : outer + 80.0f, hit)) feet = Vector3Add(hit.point, Vector3Scale(hit.normal, 0.2f));
     position = world.renderOrigin + feet;
     up = body.flat ? Vector3{ 0, 1, 0 } : Vector3Normalize(Vector3Subtract(feet, c));
     forward = Vector3Normalize(Vector3CrossProduct(up, { 1, 0, 0 }));
     if (Vector3Length(forward) < 0.1f) forward = { 0, 0, 1 };
-    velocity = { 0, 0, 0 };
+    velocity = body.surfaceVelocity(feet); // move with the ground (a spinning planet's surface is fast)
     grounded = false;
     groundBody = nullptr;
     flyMode = false;
@@ -39,6 +40,7 @@ void Player::update(Scene& world, bool inputEnabled, float dt) {
         groundBody = nullptr;
     }
     impactSpeed = 0.0f; // per-frame; cleared before the fly-mode early return too
+    jetpackFiring = false;
     if (flyMode) {
         // The free-fly camera (Scene / customUpdateCamera) drives; keep the body under the eye.
         position = world.renderOrigin + Vector3Subtract(world.camera.position, Vector3Scale(up, eyeHeight));
@@ -61,7 +63,7 @@ void Player::update(Scene& world, bool inputEnabled, float dt) {
             grounded = false;
             groundBody = nullptr;
         } else {
-            position = world.renderOrigin + groundBody->toWorld(groundLocal);
+            position = groundBody->toWorldD(groundLocal);
             // Turn the view by however much the body turned since last frame (a delta, so view
             // changes made elsewhere between frames are kept).
             const Quaternion now = groundBody->rotationQuat();
@@ -73,15 +75,33 @@ void Player::update(Scene& world, bool inputEnabled, float dt) {
     Vector3 feet = (position - world.renderOrigin).toFloat();
 
     nearest = NearestPlanetoid(world, feet);
-    if (nearest) {
-        const Vector3 newUp = nearest->flat ? Vector3{ 0, 1, 0 } : Vector3Normalize(Vector3Subtract(feet, nearest->position));
-        // Carry the view along as "up" changes so walking around the body feels continuous. A zero
-        // "up" (a save without one) has nothing to carry from: take the new up directly.
-        if (Vector3LengthSqr(up) < 0.25f) up = newUp;
+    // "Up" is against the summed gravity. Where gravity is too weak to define it (deep space, the
+    // balance point between bodies) it is left alone so the view doesn't spin; in the air it turns
+    // at most 2 rad/s. On the ground it follows exactly, so walking around a body stays continuous.
+    {
+        // Felt gravity: near a body on an orbit, it and everything on it fall freely around its parent,
+        // so subtract the body's own acceleration (the outside gravity at its centre). Otherwise the
+        // parent's pull would tilt "up" (~4 deg on the moon) and jumps would go out sideways.
+        Vector3 g = GravityAt(world, feet);
+        if (nearest && nearest->orbitParent) g = Vector3Subtract(g, GravityAt(world, nearest->position));
+        const float gl = Vector3Length(g);
+        Vector3 newUp = up;
+        if (nearest && nearest->flat) newUp = { 0, 1, 0 };
+        else if (gl > 0.05f) newUp = Vector3Scale(g, -1.0f / gl);
+        if (Vector3LengthSqr(up) < 0.25f) {
+            // A zero "up" (a save without one) has nothing to carry from: take the new up directly.
+            up = Vector3LengthSqr(newUp) > 0.25f ? newUp : Vector3{ 0, 1, 0 };
+            newUp = up;
+        }
+        if (!grounded) {
+            const float angle = acosf(std::clamp(Vector3DotProduct(up, newUp), -1.0f, 1.0f));
+            const float maxTurn = 2.0f * dt;
+            if (angle > maxTurn)
+                newUp = Vector3Normalize(Vector3RotateByQuaternion(up, QuaternionSlerp(QuaternionIdentity(), QuaternionFromVector3ToVector3(up, newUp), maxTurn / angle)));
+        }
+        // Carry the view along as "up" changes so walking around the body feels continuous.
         forward = Vector3Normalize(Vector3RotateByQuaternion(forward, QuaternionFromVector3ToVector3(up, newUp)));
         up = newUp;
-    } else if (Vector3LengthSqr(up) < 0.25f) {
-        up = { 0, 1, 0 };
     }
 
     Vector3 wish = { 0, 0, 0 };
@@ -89,15 +109,16 @@ void Player::update(Scene& world, bool inputEnabled, float dt) {
     if (autoWalk) wish = Vector3Normalize(Vector3Subtract(forward, Vector3Scale(up, Vector3DotProduct(forward, up))));
     if (inputEnabled) {
         const Vector2 m = GetMouseDelta();
-        forward = RotateAround(forward, up, -m.x * mouseSensitivity);
+        forward = RotateAround(forward, up, -m.x * mouseSensitivity * lookScale);
         const Vector3 right = Vector3Normalize(Vector3CrossProduct(forward, up));
-        const Vector3 pitched = RotateAround(forward, right, -m.y * mouseSensitivity);
+        const Vector3 pitched = RotateAround(forward, right, -m.y * mouseSensitivity * lookScale);
         if (fabsf(Vector3DotProduct(pitched, up)) < 0.985f) forward = pitched; // clamp ~10 deg from straight up/down
 
         const Vector3 flat = Vector3Normalize(Vector3Subtract(forward, Vector3Scale(up, Vector3DotProduct(forward, up))));
         const Vector3 side = Vector3CrossProduct(flat, up);
-        // On the ground WASD walks level; in the air it fires the suit thrusters along the view.
-        const Vector3 f = grounded ? flat : forward;
+        // On the ground and in the air under gravity WASD is level (walking / air control); in deep
+        // space it fires the suit thrusters along the view.
+        const Vector3 f = (grounded || gravity >= 0.5f) ? flat : forward;
         if (IsKeyDown(KEY_W)) wish = Vector3Add(wish, f);
         if (IsKeyDown(KEY_S)) wish = Vector3Subtract(wish, f);
         if (IsKeyDown(KEY_D)) wish = Vector3Add(wish, side);
@@ -110,19 +131,22 @@ void Player::update(Scene& world, bool inputEnabled, float dt) {
         if (IsKeyPressed(KEY_B)) dampeners = !dampeners;
     }
     if (autoJump) { jump = true; autoJump = false; }
+    // Jump buffer: a press is remembered briefly, so it is not lost on a frame where "grounded"
+    // flickers off over bumpy ground (see coyote time in stepPhysics).
+    if (jump) jumpBuffer = 0.15f;
 
     // Fixed substeps keep collision stable at any frame rate, and are shortened further at speed
     // (<= 0.2 m of travel each, under the body radius) so a fast player can't pass through thin walls.
     const float h = 1.0f / 120.0f;
     const int steps = std::clamp(std::max((int)ceilf(dt / h), (int)ceilf(Vector3Length(velocity) * dt / 0.2f)), 1, 1024);
     const float sdt = dt / steps;
-    for (int i = 0; i < steps; ++i) { stepPhysics(world, sdt, wish, jump && i == 0, jetUp, jetDown); }
+    for (int i = 0; i < steps; ++i) { stepPhysics(world, sdt, wish, jetUp, jetDown); }
 
     feet = (position - world.renderOrigin).toFloat();
     if (grounded && nearest) {
         groundBody = nearest;
         groundId = nearest->id;
-        groundLocal = nearest->toLocal(feet);
+        groundLocal = nearest->toLocalD(position);
         groundRotPrev = nearest->rotationQuat();
     } else {
         groundBody = nullptr;
@@ -130,28 +154,15 @@ void Player::update(Scene& world, bool inputEnabled, float dt) {
     lastEndPosition = position;
 }
 
-void Player::stepPhysics(Scene& world, float dt, Vector3 wish, bool jump, bool jetUp, bool jetDown) {
+void Player::stepPhysics(Scene& world, float dt, Vector3 wish, bool jetUp, bool jetDown) {
     Vector3 feet = (position - world.renderOrigin).toFloat();
 
     const bool wasGrounded = grounded;
 
-    // Gravity: inverse-square toward the nearest body, all the way out (no cutoff), so orbits
-    // work. (Summing every body's pull is milestone 1 in the design doc.)
-    Vector3 gdir = { 0, 0, 0 };
-    gravity = 0.0f;
-    if (nearest) {
-        const Vector3 toC = Vector3Subtract(nearest->position, feet);
-        const float dist = Vector3Length(toC);
-        const float R = nearest->radius * nearest->scale;
-        if (nearest->flat) {
-            gdir = { 0, -1, 0 };
-            gravity = 9.81f; // open world: ordinary gravity
-        } else if (dist > 1e-3f) {
-            gdir = Vector3Scale(toC, 1.0f / dist);
-            const float g0 = SurfaceGravity(R);
-            gravity = g0 * std::min(1.0f, (R * R) / (dist * dist));
-        }
-    }
+    // Gravity summed over every body (inverse-square, no cutoff, so orbits work).
+    const Vector3 gvec = GravityAt(world, feet);
+    gravity = Vector3Length(gvec);
+    const Vector3 gdir = gravity > 1e-6f ? Vector3Scale(gvec, 1.0f / gravity) : Vector3{ 0, 0, 0 };
 
     const float vUp = Vector3DotProduct(velocity, up);
     if (grounded) {
@@ -163,31 +174,74 @@ void Player::stepPhysics(Scene& world, float dt, Vector3 wish, bool jump, bool j
         if (al > 1e-4f) along = Vector3Scale(along, wl / al);
         velocity = Vector3Subtract(Vector3Scale(along, walkSpeed), Vector3Scale(n, 1.5f));
         (void)vUp;
-        if (jump) { velocity = Vector3Add(velocity, Vector3Scale(up, jumpSpeed)); grounded = false; }
+        // A jump starts from the walking velocity only: keeping the press into a sloped ground would
+        // push you downhill on takeoff.
+        if (jumpBuffer > 0.0f) {
+            velocity = Vector3Add(Vector3Scale(along, walkSpeed), Vector3Scale(up, jumpSpeed));
+            grounded = false;
+            jumpBuffer = coyote = 0.0f;
+            jumpLock = 0.15f;
+        } else {
+            coyote = 0.12f;
+        }
         jetpackFuel = std::min(1.0f, jetpackFuel + dt * 0.5f);
     } else {
-        // Airborne: Newtonian. Suit thrusters push along the view (WASD) and up/down (Space/Ctrl)
-        // while there is fuel; nothing clamps speed, so you can build up orbital velocity.
-        Vector3 thrust = Vector3Length(wish) > 0.0f ? Vector3Normalize(wish) : wish;
+        // Airborne: Newtonian; nothing clamps speed, so you can build up orbital velocity.
+        const bool inGravity = gravity >= 0.5f;
+        if (jumpBuffer > 0.0f && coyote > 0.0f) {
+            // Coyote time: just left the ground (or "grounded" flickered off for a frame) - still jump,
+            // setting the upward speed relative to the surface below.
+            const Vector3 surface = nearest ? nearest->surfaceVelocity(feet) : Vector3{ 0, 0, 0 };
+            velocity = Vector3Add(velocity, Vector3Scale(up, jumpSpeed - Vector3DotProduct(Vector3Subtract(velocity, surface), up)));
+            jumpBuffer = coyote = 0.0f;
+            jumpLock = 0.15f;
+        }
+        Vector3 thrust = { 0, 0, 0 };
+        if (inGravity) {
+            // Air control (free, no fuel): steer toward the wished walking velocity relative to the
+            // ground below - enough to reach a ledge mid-jump. With no input, momentum is untouched.
+            if (Vector3Length(wish) > 0.0f) {
+                const Vector3 surface = nearest ? nearest->surfaceVelocity(feet) : Vector3{ 0, 0, 0 };
+                const Vector3 rel = Vector3Subtract(velocity, surface);
+                const Vector3 relLevel = Vector3Subtract(rel, Vector3Scale(up, Vector3DotProduct(rel, up)));
+                const Vector3 dv = Vector3Subtract(Vector3Scale(wish, walkSpeed), relLevel);
+                const float dvl = Vector3Length(dv), maxDv = airControlAccel * dt;
+                if (dvl > 1e-5f) velocity = Vector3Add(velocity, Vector3Scale(dv, std::min(1.0f, maxDv / dvl)));
+            }
+        } else if (Vector3Length(wish) > 0.0f) {
+            thrust = Vector3Normalize(wish); // deep space: suit thrusters along the view
+        }
+        // Jetpack (Space up / Ctrl down, and WASD in deep space) burns fuel; recharging it on the ground
+        // is what costs suit power (see the survival code).
         if (jetUp) thrust = Vector3Add(thrust, up);
         if (jetDown) thrust = Vector3Subtract(thrust, up);
         const float tl = Vector3Length(thrust);
         if (tl > 0.0f && jetpackFuel > 0.0f) {
             velocity = Vector3Add(velocity, Vector3Scale(thrust, jetpackAccel * dt / std::max(tl, 1.0f)));
             jetpackFuel = std::max(0.0f, jetpackFuel - dt * jetpackFuelPerSec);
-        } else if (tl == 0.0f && dampeners && gravity < 0.5f) {
+            jetpackFiring = true;
+        } else if (tl == 0.0f && dampeners && !inGravity) {
             // Inertial dampeners (B toggles) only in deep space, so they never fight a fall or an orbit.
             velocity = Vector3Scale(velocity, 1.0f - std::min(1.0f, 0.6f * dt));
         }
     }
-    velocity = Vector3Add(velocity, Vector3Scale(gdir, gravity * gravityScale * dt));
+    Vector3 gAccel = Vector3Scale(gdir, gravity * gravityScale * dt);
+    // Static friction: standing on walkable ground, only gravity's push into the ground applies.
+    // (The downhill part made a standing player creep ~1.6 cm/s down slopes at fixed substeps.)
+    if (grounded) gAccel = Vector3Scale(groundNormal, std::min(0.0f, Vector3DotProduct(gAccel, groundNormal)));
+    velocity = Vector3Add(velocity, gAccel);
 
     feet = Vector3Add(feet, Vector3Scale(velocity, dt));
     grounded = resolveCollisions(world, feet);
+    // Just jumped: the probe below the feet would still find the slope (they have risen only a few cm)
+    // and re-ground the player, cancelling the jump. Collisions still push out; only grounding waits.
+    if (jumpLock > 0.0f) { grounded = false; jumpLock = std::max(0.0f, jumpLock - dt); }
     // Leaving a spinning body: on the ground velocity is relative to the surface, so add the
     // surface's own motion; you keep the body's momentum, as you would really.
     if (wasGrounded && !grounded && groundBody && Planetoid::find(groundId) == groundBody) velocity = Vector3Add(velocity, groundBody->surfaceVelocity(feet));
     position = world.renderOrigin + feet;
+    jumpBuffer = std::max(0.0f, jumpBuffer - dt);
+    if (!grounded) coyote = std::max(0.0f, coyote - dt);
 }
 
 // Push the feet/head spheres out of solid density, then probe just below the feet for ground.

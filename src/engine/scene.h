@@ -6,6 +6,7 @@
 #include "gameobject.h"
 #include "camera.h"
 #include "frustum.h"
+#include "terrainlayers.h"
 
 #include <raylib.h>
 #include "rlgl.h"
@@ -48,8 +49,23 @@ class Scene {
         std::vector<Light> lights; // Array of lights in the scene
         HotShader lighting{ "resources/lighting.vs", "resources/lighting.fs" };
         HotShader depth{ "resources/depth.vs", "resources/depth.fs" };
+        HotShader water{ "resources/water.vs", "resources/water.fs" };
+        HotShader atmosphereShader{ "resources/skybox.vs", "resources/atmosphere.fs" };
+        Material waterMaterial{};
+        Model atmosphereDome{};       // a cube like the skybox, drawn over it with the atmosphere shader
+
+        // Atmosphere of the planet the camera is near (set by the game each frame). Tints the sky over
+        // the star skybox by sun angle and altitude, and drives day/night haze (fog) and sky ambient.
+        struct Atmosphere {
+            bool enabled = false;
+            Vector3 centre = { 0, 0, 0 }; // render space
+            float radius = 0.0f;          // sea level
+            float height = 25000.0f;      // fades out from sea level to this altitude
+            float hazeHeight = 8000.0f;   // haze (fog) lies in this layer: looking up through it, distant bodies stay clear
+        } atmosphere;
 
         Material terrainMaterial{};   // lighting shader + albedo/normal/rough-ao maps + shadow map
+        TextureArray terrainLayers{};     // dirt/sand/gravel/grass/snow/ice/stone layers (planet palette)
         Material depthMaterial{};     // depth shader only
         RenderTexture2D shadowMap{};  // depth-only FBO; shadowMap.depth is the sampled texture
         Matrix lightSpaceMatrix = MatrixIdentity();
@@ -91,7 +107,8 @@ class Scene {
 
     private:
         void applyLightingShader();   // (re)binds material + static uniforms after a (re)load
-        int locViewPos = -1, locLightSpace = -1, locAmbient = -1, locShadowRes = -1, locTexScale = -1, locPalette = -1, locFogColor = -1, locFogDensity = -1, locChunkOrigin = -1, locChunkClip = -1;
+        int locTerrainLayers = -1, locSunOccluder = -1;
+        int locViewPos = -1, locLightSpace = -1, locAmbient = -1, locShadowRes = -1, locTexScale = -1, locPalette = -1, locFogColor = -1, locFogDensity = -1, locFogShell = -1, locChunkOrigin = -1, locChunkClip = -1;
         bool terrainTexturesLoaded = false;
 };
 

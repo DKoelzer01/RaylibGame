@@ -1,0 +1,30 @@
+# Star system: one body (or procedural ring of bodies) per line.   kind name key=value ...
+#
+# kinds   asteroid | planet | moon      a single body
+#         ring                          `count` procedural asteroids: scattered around the origin, or, with
+#                                       orbit=, in a band around a body
+# keys    radius=m                      body radius (ring: base size of its members)
+#         position=x,y,z                world position (m), or
+#         orbit=parent,altitude,phase   circular orbit at altitude (m) above a body defined above, starting at
+#                                       phase (degrees) in its equatorial plane; the speed comes from its gravity
+#         spin=deg/s  or  day=seconds   rotation about the body's Y axis (day < 0: retrograde)
+#         gravity=auto or m/s^2         at the mean surface; auto: asteroids 3 + 0.03 R (max 9.81), planets/moons 9.81 R / 100 km
+#                                       (gravity is summed over every body: inverse-square outside, linear inside)
+#         seed=N                        terrain seed (default: drawn from the world seed)
+# ring    count=N  size=lo,hi (radius multipliers)  extent=m  flatten=f (y spread)  maxspin=deg/s
+#         orbiting (orbit=): extent = band width (m), thickness=m = vertical spread; members spread all round
+#
+# Bodies draw from the world seed in file order, so reordering lines changes the world.
+# The first single body is the start body (planets: the player starts on temperate grassland).
+# Planets and moons use planet terrain (PlanetField). The old asteroid start system is
+# resources/data/bodies_asteroids.txt (game.exe --bodies resources/data/bodies_asteroids.txt).
+
+# 60 km home planet, 60-minute day (equator ~105 m/s). Gravity auto: 9.81 * 60 / 100 = 5.9 m/s^2.
+planet terra radius=60000 position=0,0,0 day=3600
+
+# 10 km moon 500 km above the surface on a circular orbit (~5 h, ~195 m/s). Gravity auto: 0.98 m/s^2.
+moon   luna  radius=10000 orbit=terra,500000,30 day=86400
+
+# Asteroid ring 250 km up (~2 h orbits, ~260 m/s): a thin band, 4 km wide and 150 m thick.
+# A first pass; the ring gets its proper treatment (density, mining, docking) in milestone 6.
+ring   rock  radius=50 count=40 size=0.5,3 extent=4000 thickness=150 maxspin=3 orbit=terra,250000,0

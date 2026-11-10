@@ -458,6 +458,27 @@ float SimplexNoise::fractal(size_t octaves, float x, float y) const {
  *
  * @return Noise value in the range[-1; 1], value of 0 on all integer coordinates.
  */
+float SimplexNoise::fractalLimited(size_t octaves, float footprint, float x, float y, float z) const {
+    float output = 0.f;
+    float denom  = 0.f;
+    float frequency = mFrequency;
+    float amplitude = mAmplitude;
+
+    for (size_t i = 0; i < octaves; i++) {
+        denom += amplitude;
+        // wavelength / (2 * footprint): >= 2 keeps the octave, <= 1 drops it, linear in between.
+        const float w = footprint > 0.f ? 1.0f / (frequency * 2.0f * footprint) - 1.0f : 1.0f;
+        const float weight = w >= 1.0f ? 1.0f : (w <= 0.0f ? 0.0f : w);
+        if (weight > 0.0f)
+            output += weight * amplitude * noise((x+mSeedX) * frequency, (y+mSeedY) * frequency, (z+mSeedZ) * frequency);
+
+        frequency *= mLacunarity;
+        amplitude *= mPersistence;
+    }
+
+    return (output / denom);
+}
+
 float SimplexNoise::fractal(size_t octaves, float x, float y, float z) const {
     float output = 0.f;
     float denom  = 0.f;

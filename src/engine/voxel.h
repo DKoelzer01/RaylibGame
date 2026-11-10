@@ -54,9 +54,10 @@ namespace std {
         }
     };
 }
-// Voxel materials. Meshes carry them as per-vertex blend weights in the vertex colour
-// (R = rock, G = regolith, B = ice, A = ore), so they interpolate smoothly across triangles.
-enum class VoxelMaterial : uint8_t { Rock = 0, Regolith = 1, Ice = 2, Ore = 3, Count };
+// Eight materials. Meshes carry them as per-vertex blend weights: 0-3 in the vertex colour (RGBA),
+// 4-5 in texcoord (xy), 6-7 in texcoord2 (xy), so they interpolate smoothly across triangles.
+// Asteroids use 0-3; planets all eight (Regolith is rendered as dirt there).
+enum class VoxelMaterial : uint8_t { Rock = 0, Regolith = 1, Ice = 2, Ore = 3, Sand = 4, Gravel = 5, Grass = 6, Snow = 7, Count };
 const char* VoxelMaterialName(VoxelMaterial m);
 
 // A spherical density brush in planetoid-local space. strength < 0 digs, > 0 adds.
@@ -78,11 +79,42 @@ public:
     virtual VoxelMaterial material(Vector3 p, float base) const = 0;
     // Used when the gradient vanishes (e.g. deep inside a flat region).
     virtual Vector3 fallbackUp(Vector3 p) const = 0;
+    // False where player edits have no effect (a planet's mantle).
+    virtual bool editable(Vector3) const { return true; }
+    // Upper bound on the surface's distance from the local origin (LOD root size, spawn raycasts).
+    virtual float maxRadius() const = 0;
+    // Lower bound: no surface lies entirely inside this radius (a planet's mantle). 0 = unknown.
+    virtual float minRadius() const { return 0.0f; }
+    // Radius of a sphere that is always opaque (nothing can be dug below it): terrain hidden behind
+    // it from the camera is culled. 0 = no occluder.
+    virtual float occluderRadius() const { return 0.0f; }
+    // Sea level: a water surface at this radius wherever it meets open air (0 = no sea).
+    virtual float seaLevelRadius() const { return 0.0f; }
+
+    // Density for samples `footprint` apart (chunk meshing at a LOD stride): fields may leave out
+    // detail finer than that. Defaults to baseDensity; footprint 0 = full detail.
+    virtual float baseDensityLod(Vector3 p, float /*footprint*/) const { return baseDensity(p); }
+    // A whole S^3 block of baseDensityLod samples at origin + (x, y, z) * stride, x fastest (chunk
+    // meshing). Fields can share work between samples (a planet evaluates its height map once per
+    // column); the default just loops.
+    virtual void baseDensityBlock(Vector3 origin, float stride, int S, float footprint, float* out) const;
+    // Material of a mesh vertex sampled at that footprint (so coarse vertices, which sit on the
+    // simplified surface, are judged against it). Defaults to material().
+    // `normal` = the vertex's outward surface normal (slope-dependent materials).
+    virtual VoxelMaterial materialLod(Vector3 p, float base, float /*footprint*/, Vector3 /*normal*/) const { return material(p, base); }
+    // materialLod plus how exposed the vertex is to the sky (1 open, 0 buried: caves, deep pits), which
+    // scales its sunlight. Fields that know their surface override it (computed together, once).
+    virtual VoxelMaterial materialSky(Vector3 p, float base, float footprint, Vector3 normal, float& sky) const {
+        sky = 1.0f;
+        return materialLod(p, base, footprint, normal);
+    }
 
     // Density including edits (the list should already be filtered to ones near p).
-    float density(Vector3 p, const TerrainEdit* edits, size_t editCount) const;
+    float density(Vector3 p, const TerrainEdit* edits, size_t editCount, float footprint = 0.0f) const;
+    // Adds the edits' contributions to a base density at p (nothing where !editable(p)).
+    float applyEdits(Vector3 p, float base, const TerrainEdit* edits, size_t editCount) const;
     // Outward surface normal: negative density gradient, by central differences.
-    Vector3 normal(Vector3 p, const TerrainEdit* edits, size_t editCount, float step = 0.5f) const;
+    Vector3 normal(Vector3 p, const TerrainEdit* edits, size_t editCount, float step = 0.5f, float footprint = 0.0f) const;
 };
 
 // Asteroid / small body: a displaced sphere centred on the local origin.
@@ -91,15 +123,58 @@ public:
     SimplexNoise shape;    // overall form
     SimplexNoise detail;   // ore veins / ice patches
     float radius = 50.0f;  // the surface never reaches past this distance from the centre
+    static constexpr float MEAN_SURFACE = 0.72f; // mean surface radius as a fraction of `radius`
     float iceAmount = 0.0f;// 0..1: how much of the body is ice
 
     PlanetoidField(unsigned int seed, float radius);
     float baseDensity(Vector3 p) const override;
     VoxelMaterial material(Vector3 p, float base) const override;
     Vector3 fallbackUp(Vector3 p) const override;
+    float maxRadius() const override { return radius; }
 
 private:
     PlanetoidField(std::mt19937 rng, float radius);
+};
+
+// Planet or moon: a sphere of `radius` (sea level) with a height map over it (continents, ocean
+// floor, ridged mountains, hills, river valleys), 3D caves, ore veins that get richer with depth,
+// and an unmineable mantle 1.5% of the radius below sea level. Same uniform density gradient as
+// asteroids. Moons: no oceans or snow, craters instead of ridges.
+class PlanetField : public DensityField {
+public:
+    float radius;                 // sea level (m)
+    float mantleRadius;           // edits stop below this
+    bool moon;
+    float minElevation, maxElevation; // the surface stays inside [radius + min, radius + max]
+    SimplexNoise continents, ridges, hills, valleys, detail, cavesA, cavesB, veins, climate, caverns, ravines, ravineMask;
+    static constexpr float kTunnelLevel = 0.096f; // worm tunnel where both cave fields are within this of zero
+    static constexpr float kCavernLevel = 0.68f;  // cavern where the cavern field exceeds this (rare)
+
+    PlanetField(unsigned int seed, float radius, bool moon);
+    // Surface height above sea level along a unit direction; footprint > 0 leaves out detail finer
+    // than samples that far apart (see SimplexNoise::fractalLimited).
+    float elevation(Vector3 dir, float footprint = 0.0f) const;
+    // A body-local direction to a good start spot: temperate latitude, flat grassland a little above
+    // the sea, solid ground underfoot (no cave mouth). Deterministic for a seed.
+    Vector3 findSpawnDir(unsigned int seed) const;
+    float baseDensity(Vector3 p) const override { return baseDensityLod(p, 0.0f); }
+    float baseDensityLod(Vector3 p, float footprint) const override;
+    void baseDensityBlock(Vector3 origin, float stride, int S, float footprint, float* out) const override;
+    VoxelMaterial material(Vector3 p, float base) const override { return materialLod(p, base, 0.0f, fallbackUp(p)); }
+    VoxelMaterial materialLod(Vector3 p, float base, float footprint, Vector3 normal) const override {
+        float sky;
+        return materialSky(p, base, footprint, normal, sky);
+    }
+    VoxelMaterial materialSky(Vector3 p, float base, float footprint, Vector3 normal, float& sky) const override;
+    Vector3 fallbackUp(Vector3 p) const override;
+    bool editable(Vector3 p) const override;
+    float maxRadius() const override { return radius + maxElevation; }
+    float minRadius() const override { return mantleRadius - 1.0f; } // digging stops at the mantle
+    float occluderRadius() const override { return mantleRadius; }
+    float seaLevelRadius() const override { return moon ? 0.0f : radius; }
+
+private:
+    float densityNear(Vector3 p, float d, float surface, float footprint) const; // after the height map
 };
 
 // Open-world terrain: +Y up, rolling hills and mountains from a heightmap, carved by 3D cave
@@ -116,6 +191,7 @@ public:
     float baseDensity(Vector3 p) const override;
     VoxelMaterial material(Vector3 p, float base) const override;
     Vector3 fallbackUp(Vector3) const override { return { 0, 1, 0 }; }
+    float maxRadius() const override { return 1e9f; } // unbounded horizontally
 };
 
 // CPU-side result of meshing one chunk (produced on a worker thread).
@@ -125,10 +201,17 @@ struct ChunkMeshData {
     uint32_t version = 0;
     std::vector<float> positions;          // xyz, relative to key.origin(), in voxels
     std::vector<float> normals;            // xyz
-    std::vector<unsigned char> colors;     // rgba material weights
+    std::vector<unsigned char> colors;     // material weights 0-3 (rgba)
+    std::vector<float> texcoords;          // material weights 4-5
+    std::vector<float> texcoords2;         // material weights 6-7
+    std::vector<float> tangents;           // (0, 0, 0, sky exposure) per vertex
+    std::vector<float> waterPositions;     // sea surface where it meets open air (same frame as positions)
+    std::vector<float> waterNormals;
+    std::vector<unsigned short> waterIndices;
     std::vector<unsigned short> indices;
     bool overflow = false;                 // > 65535 vertices: mesh dropped
     float buildMs = 0.0f;
+    float sampleMs = 0.0f;                 // part of buildMs spent sampling the density field
 };
 
 // Samples the field over node `key` (CHUNK_SIZE+1 cells at the node stride, i.e. one cell of

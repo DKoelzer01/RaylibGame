@@ -28,6 +28,7 @@ void GameSave_Register() {
                 fscanf(f, " %lf %lf %lf %f %f %f %d %f", &player.position.x, &player.position.y, &player.position.z,
                        &player.forward.x, &player.forward.y, &player.forward.z, &fly, &player.jetpackFuel);
                 player.flyMode = fly != 0;
+                survival.lastJetpackFuel = player.jetpackFuel; // a load is not a recharge
                 player.velocity = { 0, 0, 0 };
                 player.grounded = false;
                 player.up = { 0, 0, 0 }; // set by "player_up"; older saves: rebuilt from the body at the next update

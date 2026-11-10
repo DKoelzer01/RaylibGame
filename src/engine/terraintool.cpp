@@ -64,6 +64,13 @@ bool TerrainTool_Stroke(bool dig) {
     if (!hasHit) return false;
     const bool digging = dig;
     Planetoid& p = *hit.planetoid;
+    if (!p.field->editable(hit.local)) {
+        // A planet's mantle: edits there would have no effect, so refuse before charging anything.
+        Toast("The mantle is too hard to dig into");
+        Audio_Play(Sfx::Error, 0.5f);
+        strokeTimer = 0.5f;
+        return false;
+    }
     const float r3 = terrainTool.brushRadius * terrainTool.brushRadius * terrainTool.brushRadius;
     if (digging) {
         // Yield scales with the volume the stroke removes (~strength * r^3).
@@ -71,11 +78,11 @@ bool TerrainTool_Stroke(bool dig) {
         Audio_Play(Sfx::Dig, 0.5f, 0.85f + 0.3f * (float)GetRandomValue(0, 100) / 100.0f);
     } else if (!terrainTool.creative) {
         // Building consumes bulk material, best first.
-        static const char* fillers[] = { "concrete", "stone", "regolith" };
+        static const char* fillers[] = { "concrete", "stone", "regolith", "gravel", "sand" };
         bool paid = false;
         for (const char* f : fillers) if (inventory.remove(f, 1)) { paid = true; break; }
         if (!paid) {
-            Toast("Need stone, regolith or lunacrete to build");
+            Toast("Need stone, regolith, gravel, sand or lunacrete to build");
             Audio_Play(Sfx::Error, 0.5f);
             strokeTimer = 0.5f;
             return false;
@@ -108,6 +115,6 @@ void TerrainTool_DrawHUD() {
         DrawText(TextFormat("%s  %.1f m   brush %.1f", VoxelMaterialName(hit.material), hit.distance, terrainTool.brushRadius),
                  cx + 14, cy + 10, 20, RAYWHITE);
     }
-    DrawText("LMB dig  RMB build  wheel brush  Tab inventory  L lamp  F fly  F5 save  F9 load  F1 debug", 10, y + 30, 20, Fade(RAYWHITE, 0.7f));
+    DrawText("LMB dig  RMB build  wheel brush  Tab inventory  T telescope  L lamp  F fly  F5 save  F9 load  F1 debug", 10, y + 30, 20, Fade(RAYWHITE, 0.7f));
     if (GetTime() < toastUntil) DrawText(toast.c_str(), 10, y, 20, YELLOW);
 }

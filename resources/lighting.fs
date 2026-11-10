@@ -1,17 +1,21 @@
 #version 330
 
 in vec3 fragPosition;   // world space
-in vec2 fragTexCoord;
+in vec2 fragTexCoord;    // chunks: material weights 4-5 (sand, gravel)
+in vec2 fragTexCoord2;   // chunks: material weights 6-7 (grass, snow)
 in vec4 fragColor;
 in vec3 fragNormal;     // world space
-in vec3 fragLocalPos;   // body-local (texturing)
+in vec3 fragTexPos;     // body-aligned, wrapped to the texture repeat (texturing)
 in vec3 fragLocalNormal;
+in vec3 fragChunkPos;   // chunk-local (overlap clipping)
+in float fragSky;       // 1 = open to the sky, 0 = buried (caves, deep pits)
 
 // Material maps: bound by DrawMesh to the units of the matching raylib material slots.
 uniform sampler2D colorTexture;    // MATERIAL_MAP_ALBEDO
 uniform sampler2D normalTexture;   // MATERIAL_MAP_NORMAL (OpenGL convention, tangent space)
 uniform sampler2D roughAoTexture;  // MATERIAL_MAP_ROUGHNESS: R = roughness, G = ambient occlusion
 uniform sampler2D shadowMap;       // MATERIAL_MAP_BRDF: light depth texture
+uniform sampler2DArray terrainLayers; // planet palette: dirt, sand, gravel, grass, snow, ice, stone (terrainlayers.h)
 
 uniform mat4 lightSpaceMatrix;
 uniform mat4 matModel;          // body-local -> world (set by DrawMesh); see lighting.vs about matNormal
@@ -34,10 +38,12 @@ struct Light {
 uniform Light lights[MAX_LIGHTS];
 uniform vec4 ambient;
 uniform vec3 viewPos;
-uniform int palette;            // 0 = space materials, 1 = fantasy materials
-uniform vec3 chunkClipMax;      // body-local: discard beyond this (see Chunk::clipMax)
+uniform int palette;            // 0 = space materials, 1 = fantasy, 2 = planet (texture layers)
+uniform vec3 chunkClipMax;      // chunk-local: discard beyond this (see Chunk::clipMax)
+uniform vec4 sunOccluder;       // planet: render-space centre + radius of a sphere that blocks the sun (w = 0: none)
 uniform vec3 fogColor;          // linear
 uniform float fogDensity;       // 0 = off
+uniform vec4 fogShell;          // atmosphere: render-space centre + outer radius (w = 0: fog the whole distance)
 
 out vec4 finalColor;
 
@@ -58,6 +64,19 @@ Triplanar makeTriplanar(vec3 p, vec3 n)
 vec4 sampleTriplanar(sampler2D tex, Triplanar t)
 {
     return texture(tex, t.uvX) * t.w.x + texture(tex, t.uvY) * t.w.y + texture(tex, t.uvZ) * t.w.z;
+}
+
+// One layer of the terrain texture array, triplanar, sRGB -> linear.
+vec3 sampleLayer(Triplanar t, float layer)
+{
+    // Triplanar weights are sharpened (pow 4), so most pixels take nearly everything from one axis:
+    // skip axes under 2% and renormalise.
+    vec3 c = vec3(0.0);
+    float sum = 0.0;
+    if (t.w.x > 0.02) { c += texture(terrainLayers, vec3(t.uvX, layer)).rgb * t.w.x; sum += t.w.x; }
+    if (t.w.y > 0.02) { c += texture(terrainLayers, vec3(t.uvY, layer)).rgb * t.w.y; sum += t.w.y; }
+    if (t.w.z > 0.02) { c += texture(terrainLayers, vec3(t.uvZ, layer)).rgb * t.w.z; sum += t.w.z; }
+    return pow(c / max(sum, 1e-4), vec3(2.2));
 }
 
 // Triplanar normal mapping, "whiteout" blend (Ben Golus). Uses the sign of the geometric normal
@@ -91,15 +110,21 @@ float shadowFactor(vec3 worldPos, vec3 n, vec3 l)
 
 void main()
 {
-    if (any(greaterThan(fragLocalPos, chunkClipMax))) discard;
+    if (any(greaterThan(fragChunkPos, chunkClipMax))) discard;
     vec3 geomNormal = normalize(fragNormal);
     // Texture in body-local space so the pattern is fixed to the rock, then bring the bumped
     // normal into world space for lighting.
     vec3 localNormal = normalize(fragLocalNormal);
-    Triplanar tp = makeTriplanar(fragLocalPos, localNormal);
+    Triplanar tp = makeTriplanar(fragTexPos, localNormal);
 
-    vec3 albedo = pow(sampleTriplanar(colorTexture, tp).rgb, vec3(2.2)); // sRGB -> linear
-    vec2 roughAo = sampleTriplanar(roughAoTexture, tp).rg;
+    // The base rock / roughness maps feed the asteroid and fantasy palettes; the planet palette takes
+    // its colours from the texture layers instead, so it skips these six fetches.
+    vec3 albedo = vec3(0.5);
+    vec2 roughAo = vec2(0.8, 1.0);
+    if (palette != 2) {
+        albedo = pow(sampleTriplanar(colorTexture, tp).rgb, vec3(2.2)); // sRGB -> linear
+        roughAo = sampleTriplanar(roughAoTexture, tp).rg;
+    }
     vec3 normal = normalize(mat3(matModel) * triplanarNormal(normalTexture, tp, localNormal));
 
     float rough = roughAo.r;
@@ -125,12 +150,41 @@ void main()
         ice      = mix(vec3(0.55, 0.72, 0.9), vec3(0.85, 0.95, 1.0), lum * 2.0);
         ore      = albedo * 0.5 + vec3(0.55, 0.3, 0.08) * (0.4 + lum);  // rusty metal
     }
-    albedo = rock * w.r + regolith * w.g + ice * w.b + ore * w.a;
-    rough = rough * (w.r + w.g) + 0.15 * w.b + 0.3 * w.a;
-    rough = max(rough, w.g);                                             // regolith is matte
+    float shinyMaterials = w.b + w.a; // ice + ore: extra specular
+    if (palette == 2) {
+        // Planet: eight materials from the texture layers (weights 0-3 in the vertex colour, 4-5 in
+        // texcoord, 6-7 in texcoord2). Only layers with weight are sampled (usually one or two).
+        float w8[8] = float[8](fragColor.r, fragColor.g, fragColor.b, fragColor.a,
+                               fragTexCoord.x, fragTexCoord.y, fragTexCoord2.x, fragTexCoord2.y);
+        float total = 0.0;
+        for (int i = 0; i < 8; i++) total += w8[i];
+        // material -> texture layer: stone, dirt, ice, ore (stone, rusted), sand, gravel, grass, snow
+        const float layerOf[8] = float[8](6.0, 0.0, 5.0, 6.0, 1.0, 2.0, 3.0, 4.0);
+        const float roughOf[8] = float[8](0.75, 0.95, 0.15, 0.35, 0.9, 0.85, 0.95, 0.7);
+        const float bumpOf[8] = float[8](1.0, 0.8, 0.15, 0.9, 0.3, 1.0, 0.6, 0.25); // normal-map strength
+        vec3 a = vec3(0.0);
+        float r = 0.0, bump = 0.0;
+        for (int i = 0; i < 8; i++) {
+            float wi = w8[i] / max(total, 0.001);
+            if (wi < 0.01) continue;
+            vec3 c = sampleLayer(tp, layerOf[i]);
+            if (i == 3) c = c * 0.5 + vec3(0.55, 0.3, 0.08) * (0.4 + dot(c, vec3(0.333))); // ore: rusty metal
+            a += c * wi;
+            r += roughOf[i] * wi;
+            bump += bumpOf[i] * wi;
+        }
+        albedo = a;
+        rough = r;
+        normal = normalize(mix(normalize(mat3(matModel) * localNormal), normal, bump)); // smoother sand, snow, ice
+        shinyMaterials = (w8[2] + w8[3] + 0.3 * w8[7]) / max(total, 0.001);
+    } else {
+        albedo = rock * w.r + regolith * w.g + ice * w.b + ore * w.a;
+        rough = rough * (w.r + w.g) + 0.15 * w.b + 0.3 * w.a;
+        rough = max(rough, w.g);                                             // regolith is matte
+    }
 
     float shininess = mix(64.0, 4.0, rough);
-    float specStrength = (1.0 - rough) * (0.5 + 0.8 * (w.b + w.a));
+    float specStrength = (1.0 - rough) * (0.5 + 0.8 * shinyMaterials);
 
     vec3 viewD = normalize(viewPos - fragPosition);
     vec3 direct = vec3(0.0);
@@ -143,7 +197,18 @@ void main()
         float NdotL = max(dot(normal, l), 0.0);
         vec3 h = normalize(l + viewD);
         float spec = (NdotL > 0.0) ? pow(max(dot(normal, h), 0.0), shininess) * specStrength : 0.0;
-        float shadow = (i == 0) ? shadowFactor(fragPosition, geomNormal, l) : 1.0;
+        float shadow = 1.0;
+        if (i == 0) {
+            // The sun: the local shadow map, how buried this point is (caves get no sun even when
+            // the occluding rock lies beyond the shadow map), and the planet itself (the night side,
+            // at any distance): no sun if the ray toward it enters the occluder sphere, or starts inside.
+            shadow = shadowFactor(fragPosition, geomNormal, l) * fragSky;
+            if (sunOccluder.w > 0.0) {
+                vec3 oc = fragPosition - sunOccluder.xyz;
+                float b = dot(oc, l), c = dot(oc, oc) - sunOccluder.w * sunOccluder.w;
+                if (c < 0.0 || (b < 0.0 && b * b > c)) shadow = 0.0;
+            }
+        }
         // Point lights fall off with distance; their range is passed in target.x (target is unused
         // for point lights). Colour alpha scales intensity.
         float atten = 1.0;
@@ -160,8 +225,18 @@ void main()
         direct += (albedo * NdotL + spec) * lights[i].color.rgb * shadow * atten;
     }
 
-    vec3 color = ambient.rgb * albedo * ao + direct + emissive;
-    float fog = 1.0 - exp(-fogDensity * length(viewPos - fragPosition));
+    vec3 color = ambient.rgb * albedo * ao * fragSky + direct + emissive;
+    // Fog over the part of the view ray inside the air (fogShell: render-space centre + outer radius;
+    // w = 0: the whole distance), so a moon or ring far beyond the atmosphere stays visible.
+    float fogDist = length(viewPos - fragPosition);
+    if (fogShell.w > 0.0) {
+        vec3 rd = (fragPosition - viewPos) / max(fogDist, 1e-3);
+        vec3 oc = viewPos - fogShell.xyz;
+        float b = dot(oc, rd), c = dot(oc, oc) - fogShell.w * fogShell.w, disc = b * b - c;
+        float t0 = disc > 0.0 ? -b - sqrt(disc) : 0.0, t1 = disc > 0.0 ? -b + sqrt(disc) : 0.0;
+        fogDist = max(0.0, min(t1, fogDist) - max(t0, 0.0));
+    }
+    float fog = 1.0 - exp(-fogDensity * fogDist);
     color = mix(color, fogColor, clamp(fog, 0.0, 1.0));
     finalColor = vec4(pow(color, vec3(1.0 / 2.2)), 1.0); // linear -> sRGB
 }
