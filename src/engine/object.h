@@ -56,6 +56,8 @@ struct RenderContext {
     Shader* grassShader = nullptr;        // foliage: grass tufts (drawn after the opaque terrain)
     int grassModelLoc = -1, grassOccluderLoc = -1;
     Vector3 cameraPos = { 0, 0, 0 };      // render space
+    Shader* treeShader = nullptr;         // foliage: trees and bushes
+    int treeModelLoc = -1, treeOccluderLoc = -1, treeFadeLoc = -1;
 };
 
 extern bool frustumCullingEnabled; // debug toggle

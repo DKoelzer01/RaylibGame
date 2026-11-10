@@ -126,6 +126,7 @@ Scene::Scene(std::string name, bool isActive)
     waterMaterial = LoadMaterialDefault();
     water.reloadIfChanged(true);
     grass.reloadIfChanged(true);
+    trees.reloadIfChanged(true);
     atmosphereShader.reloadIfChanged(true);
     atmosphereDome = LoadModelFromMesh(GenMeshCube(1.0f, 1.0f, 1.0f));
 
@@ -245,6 +246,7 @@ void Scene::drawScene(int gamestate) {
     if (depth.reloadIfChanged()) depthMaterial.shader = depth.shader;
     water.reloadIfChanged();
     grass.reloadIfChanged();
+    trees.reloadIfChanged();
     atmosphereShader.reloadIfChanged();
 
     if (IsKeyPressed(KEY_F3)) debugDraw = !debugDraw;
@@ -505,6 +507,32 @@ void Scene::drawScene(int gamestate) {
             rlEnableBackfaceCulling();
             rlDisableShader();
         }
+        // Trees and bushes: one instanced draw per variant per body.
+        if (trees.shader.id > 0 && foliageEnabled) {
+            rlDrawRenderBatchActive();
+            Shader& ts = trees.shader;
+            rlEnableShader(ts.id);
+            const Matrix vp = MatrixMultiply(rlGetMatrixModelview(), rlGetMatrixProjection());
+            rlSetUniformMatrix(GetShaderLocation(ts, "matViewProj"), vp);
+            const float now = (float)fmod(GetTime(), 3600.0);
+            const float shell[4] = { atmosphere.centre.x, atmosphere.centre.y, atmosphere.centre.z,
+                                     atmosphere.enabled && effFogDensity < 0.06f ? atmosphere.radius + atmosphere.hazeHeight : 0.0f };
+            rlSetUniform(GetShaderLocation(ts, "sunDir"), &sun, RL_SHADER_UNIFORM_VEC3, 1);
+            rlSetUniform(GetShaderLocation(ts, "viewPos"), &camera.position, RL_SHADER_UNIFORM_VEC3, 1);
+            rlSetUniform(GetShaderLocation(ts, "ambient"), &effAmbient, RL_SHADER_UNIFORM_VEC3, 1);
+            rlSetUniform(GetShaderLocation(ts, "fogColor"), &effFog, RL_SHADER_UNIFORM_VEC3, 1);
+            rlSetUniform(GetShaderLocation(ts, "fogDensity"), &effFogDensity, RL_SHADER_UNIFORM_FLOAT, 1);
+            rlSetUniform(GetShaderLocation(ts, "fogShell"), shell, RL_SHADER_UNIFORM_VEC4, 1);
+            rlSetUniform(GetShaderLocation(ts, "time"), &now, RL_SHADER_UNIFORM_FLOAT, 1);
+            RenderContext tctx = ctx;
+            tctx.treeShader = &ts;
+            tctx.treeModelLoc = GetShaderLocation(ts, "matModel");
+            tctx.treeOccluderLoc = GetShaderLocation(ts, "sunOccluder");
+            tctx.treeFadeLoc = GetShaderLocation(ts, "fadeEnd");
+            for (const auto& obj : objects)
+                if (auto* p = dynamic_cast<Planetoid*>(obj.get()); p && !isFar(p) && p->trees) p->trees->draw(*p, tctx);
+            rlDisableShader();
+        }
 
         // Transparent pass (sea surfaces) after everything opaque. Depth writes stay on: where LOD
         // nodes overlap, the second copy of the same surface then fails the depth test instead of
@@ -577,6 +605,7 @@ Scene::~Scene() {
     depth.unload();
     water.unload();
     grass.unload();
+    trees.unload();
     atmosphereShader.unload();
     UnloadShadowmapRenderTexture(shadowMap);
 }

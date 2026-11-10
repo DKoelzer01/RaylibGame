@@ -89,6 +89,8 @@ bool TerrainSurfaceDistance(Planetoid& p, Vector3 renderPoint, float& dist, Vect
 Planetoid* NearestPlanetoid(Scene& world, Vector3 renderPoint); // by distance to the surface radius
 // In the sea: below sea level over open ocean and above its floor (a dry cave below sea level is not).
 bool IsUnderwater(Scene& world, Vector3 renderPoint);
+class JobSystem;
+JobSystem& WorldJobs(); // the shared worker pool (chunk builds, foliage tiles)
 // Gravity (m/s^2, render space) summed over every body, and one body's share of it: inverse-square
 // outside a body, linear to zero at its centre inside, surfaceGravity at its radius.
 Vector3 GravityAt(Scene& world, Vector3 renderPoint);

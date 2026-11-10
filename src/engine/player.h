@@ -69,6 +69,7 @@ private:
     float coyote = 0.0f;     // seconds a jump is still allowed after leaving the ground
     float jumpLock = 0.0f;   // seconds after a jump during which the player cannot re-ground
     bool resolveCollisions(Scene& world, Vector3& feet);
+    void collideTrunks(Vector3& feet); // tree trunks: vertical capsules on the nearest body
     // Velocity of the terrain being collided with, in the frame `velocity` is in: zero while grounded
     // (velocity is then relative to the surface), the surface velocity while airborne (world frame).
     Vector3 collideFrameVel = { 0, 0, 0 };

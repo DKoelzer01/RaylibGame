@@ -152,6 +152,31 @@ void Ship::update(Scene& world, bool inputEnabled, float dt) {
                 }
             }
         }
+        // Tree trunks: vertical capsules; the hull is ~1.6 m wide around them.
+        if (body->trees) {
+            static thread_local std::vector<Trunk> near;
+            near.clear();
+            const Vector3 lp = body->toLocal(p);
+            body->trees->trunksNear(lp, 6.0f, near);
+            for (const Trunk& t : near) {
+                const Vector3 d = Vector3Subtract(lp, t.base);
+                const float along = Vector3DotProduct(d, t.up);
+                if (along < -2.0f || along > t.height + 1.0f) continue;
+                const Vector3 side = Vector3Subtract(d, Vector3Scale(t.up, along));
+                const float dist = Vector3Length(side), minDist = t.radius + 1.6f;
+                if (dist >= minDist || dist < 1e-4f) continue;
+                const Vector3 n = body->dirToWorld(Vector3Scale(side, 1.0f / dist));
+                p = Vector3Add(p, Vector3Scale(n, minDist - dist));
+                const Vector3 sv = body->surfaceVelocity(p);
+                Vector3 rel = Vector3Subtract(velocity, sv);
+                const float vn = Vector3DotProduct(rel, n);
+                if (vn < 0.0f) {
+                    lastImpact = std::max(lastImpact, -vn);
+                    rel = Vector3Scale(Vector3Subtract(rel, Vector3Scale(n, 1.2f * vn)), 0.7f);
+                    velocity = Vector3Add(sv, rel);
+                }
+            }
+        }
     }
     position = world.renderOrigin + p;
 

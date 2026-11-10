@@ -101,6 +101,11 @@ int main(int argc, char** argv)
     float timeScale = 1.0f;        // --time-scale k: bodies spin and orbit k times faster (testing)
     bool benchMoon = false;        // --test-moon: moon orbit vs analytic, standing and jumping on the moon
     bool benchHole = false;        // --test-hole: walk into a fresh pit and build a pillar underfoot on the spinning planet
+    bool benchTrees = false;       // --test-trees: walk into a tree trunk
+    int treePhase = 0;
+    double treeStart = 0.0;
+    float treeMin = 1e9f;
+    Trunk treeTarget{};
     int holePhase = 0;
     double holeStart = -1.0;
     float holeMaxImpact = 0.0f, holeMinHealth = 100.0f;
@@ -167,6 +172,7 @@ int main(int argc, char** argv)
         if (std::string(argv[i]) == "--test-airjump") benchAirJump = true;
         if (std::string(argv[i]) == "--test-moon") benchMoon = true;
         if (std::string(argv[i]) == "--test-hole") benchHole = true;
+        if (std::string(argv[i]) == "--test-trees") benchTrees = true;
         if (std::string(argv[i]) == "--time-scale" && i + 1 < argc) timeScale = (float)atof(argv[i + 1]);
         if (std::string(argv[i]) == "--crack-check") crackCheck = true;
         if (std::string(argv[i]) == "--no-foliage") foliageEnabled = false;
@@ -368,6 +374,55 @@ int main(int argc, char** argv)
                             printf("bench: orbit after %.0f s: distance from centre %.1f..%.1f m, %s\n", GetTime() - orbitStart, orbitMin, orbitMax,
                                    orbitCrashed ? "CRASHED into the surface" : (orbitMax > 3.0f * R ? "ESCAPED" : "stable"));
                             benchOrbitSeconds = 0.0;
+                        }
+                    }
+                } else if (benchTrees && (treePhase > 0 || WorldIdle())) {
+                    // --test-trees: walk into the nearest tree trunk; the player must stop at its bark.
+                    Planetoid* p = dynamic_cast<Planetoid*>(world.objects[0].get());
+                    if (!p || !p->trees) { printf("bench: --test-trees needs a planet with trees\n"); benchTrees = false; }
+                    else if (treePhase == 0) {
+                        player.spawnOn(world, *p, StartSpawnDir(*p));
+                        treePhase = 1;
+                        treeStart = GetTime();
+                    } else if (treePhase == 1 && GetTime() - treeStart > 1.0 && player.grounded) {
+                        std::vector<Trunk> near;
+                        const Vector3 feet = (player.position - world.renderOrigin).toFloat();
+                        p->trees->trunksNear(p->toLocal(feet), 400.0f, near);
+                        const Vector3 lf = p->toLocal(feet);
+                        float best = 1e9f;
+                        for (const Trunk& t : near) { const float d = Vector3Distance(t.base, lf); if (d < best && t.radius > 0.15f) { best = d; treeTarget = t; } }
+                        if (best > 1e8f) { printf("bench: no tree trunk within 400 m (%d tiles, %d instances)\n", p->trees->loadedTiles(), p->trees->instanceCount()); benchTrees = false; }
+                        else {
+                            // Stand 6 m from it, facing it.
+                            const Vector3 up = Vector3Normalize(treeTarget.base);
+                            Vector3 away = Vector3Subtract(lf, treeTarget.base);
+                            away = Vector3Normalize(Vector3Subtract(away, Vector3Scale(up, Vector3DotProduct(away, up))));
+                            player.spawnOn(world, *p, p->dirToWorld(Vector3Normalize(Vector3Add(treeTarget.base, Vector3Scale(away, 6.0f)))));
+                            {
+                                const Vector3 nl = p->toLocal((player.position - world.renderOrigin).toFloat());
+                                printf("bench: trees: target %.1f m from the start, spawned %.1f m from it (trunk height %.1f, base r %.1f, surface r %.1f)\n",
+                                       best, Vector3Distance(nl, treeTarget.base), treeTarget.height, Vector3Length(treeTarget.base), Vector3Length(nl));
+                            }
+                            treePhase = 2;
+                            treeStart = GetTime();
+                            treeMin = 1e9f;
+                        }
+                    } else if (treePhase == 2) {
+                        const Vector3 lf = p->toLocal((player.position - world.renderOrigin).toFloat());
+                        const Vector3 d = Vector3Subtract(lf, treeTarget.base);
+                        const Vector3 side = Vector3Subtract(d, Vector3Scale(treeTarget.up, Vector3DotProduct(d, treeTarget.up)));
+                        if (GetTime() - treeStart > 1.0 && treeMin > 1e8f) printf("bench: trees: start %.1f m from the trunk axis, grounded %d\n", Vector3Length(side), player.grounded);
+                        if (GetTime() - treeStart > 1.0) {
+                            player.forward = p->dirToWorld(Vector3Normalize(Vector3Negate(side)));
+                            player.autoWalk = true;
+                            treeMin = std::min(treeMin, Vector3Length(side));
+                        }
+                        if (GetTime() - treeStart > 5.0) {
+                            player.autoWalk = false;
+                            const float limit = treeTarget.radius + player.radius - 0.05f;
+                            printf("bench: trees: %d tiles, %d instances drawn; walked into a %.1f m trunk (r %.2f m): closest %.2f m from its axis (limit %.2f): %s\n",
+                                   p->trees->loadedTiles(), p->trees->instanceCount(), treeTarget.height, treeTarget.radius, treeMin, limit, treeMin >= limit && treeMin < limit + 0.3f ? "PASS" : "FAIL");
+                            benchTrees = false;
                         }
                     }
                 } else if (benchHole && (holePhase > 0 || WorldIdle())) { // edits keep the world busy: run on
@@ -897,7 +952,7 @@ int main(int argc, char** argv)
                         }
                         benchWalkSeconds = 0.0;
                     }
-                } else if ((WorldIdle() && benchDigStrokes == 0 && !benchSaveLoad && benchWalkSeconds <= 0.0 && benchMineStrokes == 0 && minePhase != 2 && benchFlySeconds <= 0.0 && !benchSuffocate && benchOrbitSeconds <= 0.0 && !benchRide && !benchPark && !benchGravity && !benchPrecision && !benchMantle && !benchAirJump && !benchMoon && !benchHole) || GetTime() > 180.0) {
+                } else if ((WorldIdle() && benchDigStrokes == 0 && !benchSaveLoad && benchWalkSeconds <= 0.0 && benchMineStrokes == 0 && minePhase != 2 && benchFlySeconds <= 0.0 && !benchSuffocate && benchOrbitSeconds <= 0.0 && !benchRide && !benchPark && !benchGravity && !benchPrecision && !benchMantle && !benchAirJump && !benchMoon && !benchHole && !benchTrees) || GetTime() > 180.0) {
                     benchStart = GetTime();
                     printf("bench: world ready after %.2f s (%d chunks, avg build %.2f ms of which sampling %.2f ms, %d worker threads)\n",
                         GetWorldStats().lastGenerationSeconds, GetWorldStats().chunks, GetWorldStats().avgBuildMs, GetWorldStats().avgSampleMs, GetWorldStats().workerThreads);

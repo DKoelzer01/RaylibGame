@@ -4,6 +4,7 @@
 #include <raymath.h>
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
 
 Player player;
 
@@ -258,9 +259,13 @@ void Player::stepPhysics(Scene& world, float dt, Vector3 wish, bool jetUp, bool 
     feet = Vector3Add(feet, Vector3Scale(Vector3Subtract(velocity, frameVel), dt));
     collideFrameVel = (wasGrounded || !nearest) ? Vector3{ 0, 0, 0 } : nearest->surfaceVelocity(feet);
     grounded = resolveCollisions(world, feet);
+    collideTrunks(feet);
     // Just jumped: the probe below the feet would still find the slope (they have risen only a few cm)
     // and re-ground the player, cancelling the jump. Collisions still push out; only grounding waits.
     if (jumpLock > 0.0f) { grounded = false; jumpLock = std::max(0.0f, jumpLock - dt); }
+    // Just landed: on the ground velocity is relative to the surface (as the walking code expects), so
+    // take the ground's own motion out now rather than leave a world-frame velocity for a frame.
+    if (!wasGrounded && grounded) velocity = Vector3Subtract(velocity, collideFrameVel);
     // Leaving a spinning body: on the ground velocity is relative to the surface, so add the
     // surface's own motion; you keep the body's momentum, as you would really.
     if (wasGrounded && !grounded && groundBody && Planetoid::find(groundId) == groundBody) velocity = Vector3Add(velocity, groundBody->surfaceVelocity(feet));
@@ -318,4 +323,27 @@ void Player::applyToCamera(Scene& world) const {
     world.camera.position = Vector3Add(feet, Vector3Scale(up, eyeHeight));
     world.camera.target = Vector3Add(world.camera.position, forward);
     world.camera.up = up;
+}
+
+// Tree trunks are vertical capsules (bushes are soft): push the body cylinder out sideways and
+// drop the velocity into the trunk, relative to the (moving) ground the tree stands on.
+void Player::collideTrunks(Vector3& feet) {
+    if (!nearest || !nearest->trees) return;
+    static thread_local std::vector<Trunk> near;
+    near.clear();
+    const Vector3 local = nearest->toLocal(feet);
+    nearest->trees->trunksNear(local, radius + 2.0f, near);
+    for (const Trunk& t : near) {
+        const Vector3 d = Vector3Subtract(local, t.base);
+        const float along = Vector3DotProduct(d, t.up);
+        if (along < -eyeHeight || along > t.height) continue;      // below the roots or over the top
+        const Vector3 side = Vector3Subtract(d, Vector3Scale(t.up, along));
+        const float dist = Vector3Length(side);
+        const float minDist = t.radius + radius;
+        if (dist >= minDist || dist < 1e-4f) continue;
+        const Vector3 n = nearest->dirToWorld(Vector3Scale(side, 1.0f / dist));
+        feet = Vector3Add(feet, Vector3Scale(n, minDist - dist));
+        const float vn = Vector3DotProduct(Vector3Subtract(velocity, collideFrameVel), n);
+        if (vn < 0.0f) velocity = Vector3Subtract(velocity, Vector3Scale(n, vn));
+    }
 }

@@ -45,6 +45,8 @@ namespace {
     }
 }
 
+JobSystem& WorldJobs() { return Jobs(); }
+
 // ---------------------------------------------------------------------------------------------
 // Planetoid
 // ---------------------------------------------------------------------------------------------
@@ -129,8 +131,8 @@ namespace {
               offset(p.worldPos - renderOrigin), s(p.scale) {
             BodyRotationD(p.rotation, r);
         }
-        Matrix model(const NodeKey& key) const {
-            const Vector3 o = key.origin();
+        Matrix model(const NodeKey& key) const { const Vector3 o = key.origin(); return modelAt(DVec3(o)); }
+        Matrix modelAt(const DVec3& o) const {
             Matrix m = rs;
             m.m12 = (float)(offset.x + (r[0][0] * o.x + r[0][1] * o.y + r[0][2] * o.z) * s);
             m.m13 = (float)(offset.y + (r[1][0] * o.x + r[1][1] * o.y + r[1][2] * o.z) * s);
@@ -138,6 +140,10 @@ namespace {
             return m;
         }
     };
+}
+
+Matrix Planetoid::localModel(const DVec3& anchorLocal, const DVec3& renderOrigin) const {
+    return ChunkPlacer(*this, renderOrigin).modelAt(anchorLocal);
 }
 
 Matrix Planetoid::chunkModel(const Chunk& chunk, const DVec3& renderOrigin) const {
@@ -164,12 +170,24 @@ Vector3 Planetoid::surfaceVelocity(Vector3 renderPoint) const {
     return Vector3Add(linearVelocity, Vector3CrossProduct(omega, Vector3Subtract(renderPoint, position)));
 }
 
+// Directions only rotate (no translation): transforming two points and subtracting lost ~0.2 deg in
+// float with the body centre tens of km from the render origin (hundreds of metres on the surface).
 Vector3 Planetoid::dirToLocal(Vector3 worldDir) const {
-    return Vector3Normalize(Vector3Subtract(toLocal(Vector3Add(position, worldDir)), toLocal(position)));
+    double r[3][3];
+    BodyRotationD(rotation, r);
+    const Vector3 d = worldDir;
+    return Vector3Normalize({ (float)(r[0][0] * d.x + r[1][0] * d.y + r[2][0] * d.z),
+                              (float)(r[0][1] * d.x + r[1][1] * d.y + r[2][1] * d.z),
+                              (float)(r[0][2] * d.x + r[1][2] * d.y + r[2][2] * d.z) });
 }
 
 Vector3 Planetoid::dirToWorld(Vector3 localDir) const {
-    return Vector3Normalize(Vector3Subtract(toWorld(localDir), toWorld({ 0, 0, 0 })));
+    double r[3][3];
+    BodyRotationD(rotation, r);
+    const Vector3 d = localDir;
+    return Vector3Normalize({ (float)(r[0][0] * d.x + r[0][1] * d.y + r[0][2] * d.z),
+                              (float)(r[1][0] * d.x + r[1][1] * d.y + r[1][2] * d.z),
+                              (float)(r[2][0] * d.x + r[2][1] * d.y + r[2][2] * d.z) });
 }
 
 Quaternion Planetoid::rotationQuat() const {
@@ -527,7 +545,10 @@ void worldUpdate(Scene& world, float uploadBudgetMs) {
 
     // LOD after uploads, so this frame's draw list already includes nodes that just finished.
     for (auto& obj : world.objects) {
-        if (auto* p = dynamic_cast<Planetoid*>(obj.get())) UpdateLod(*p, world.camera.position);
+        if (auto* p = dynamic_cast<Planetoid*>(obj.get())) {
+            UpdateLod(*p, world.camera.position);
+            if (p->trees) p->trees->update(*p, p->toLocal(world.camera.position));
+        }
     }
 
     stats.queuedJobs = (int)Jobs().queued();
@@ -775,6 +796,7 @@ void generateWorld(Scene& world) {
             p->rootLevel = 0;
             while ((float)(CHUNK_SIZE << p->rootLevel) < field->maxRadius() + 24.0f) p->rootLevel++;
             p->field = field;
+            if (kind == BodyKind::Planet) p->trees = std::make_unique<TreeSystem>(field, seed ^ 0x7aee5u);
         }
         p->spin = { 0.0f, spin, 0.0f };
         p->surfaceGravity = d.gravity >= 0.0f ? d.gravity : AutoSurfaceGravity(kind, radius);

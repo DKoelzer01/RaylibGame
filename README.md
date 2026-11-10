@@ -101,6 +101,10 @@ Shaders in `resources/` hot-reload when saved.
   atmosphere: sky colour by sun angle and altitude, dusk glow, stars at night and in space, haze with
   distance, and dense blue fog underwater. It is the default start system: you start on temperate
   grassland (picked from the seed), where the air is breathable below ~15 km (the suit refills its oxygen).
+- **Foliage** (`src/engine/foliage.*`, `trees.*`): instanced grass tufts on grass terrain (from each finest chunk's mesh,
+  to 70 m), and trees and bushes built from prisms, placed on a 64 m cube-sphere tile grid from the seed (a
+  forest field, grass or dirt, gentle slopes, solid ground, below the tree line; broadleaf in the temperate band,
+  conifers further north and up high), drawn instanced to 1 km (simpler meshes past 200 m). Trunks collide.
 - **Telescope** (`src/space/telescope.*`): you start with one (craft more from glass and iron plate). T raises it, the
   wheel zooms 4x-64x; terrain in view refines as if that much closer (`SetLodZoom`). Bodies more than 20 km away
   draw in a separate far pass with their own depth range, and haze only counts the air the view ray passes
@@ -124,6 +128,8 @@ clears to magenta without a skybox and reports the share of pixels showing throu
 frustum culling, `--test-dig N` carves a tunnel at the crosshair, `--test-saveload` saves and reloads,
 `--test-walk S` / `--test-stand S` spawn the player and walk/stand (reports grounding + penetration),
 `--test-planet-walk M` walks M metres on body 0 and prints PASS/FAIL (milestone 1 gate: 1000),
+`--test-hole` (walk into a fresh pit, build a pillar underfoot), `--test-trees` (walk into a trunk), `--bench-fly V`
+/ `--bench-fly-alt A` (camera flight over body 0, LOD streaming; negative A: underwater), `--no-foliage`,
 `--test-mine N` digs N strokes at the feet, crafts everything possible and builds 3 strokes,
 `--test-fly S` autopilots the ship to the nearest other asteroid, `--test-suffocate` checks death/respawn,
 `--test-moon` (moon on its analytic orbit; standing and jumping on it), `--time-scale k` (bodies spin and orbit

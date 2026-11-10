@@ -12,6 +12,7 @@
 #include "voxel.h"
 #include "bodies.h"
 #include "foliage.h"
+#include "trees.h"
 
 // One octree LOD node of a planetoid's surface. Its mesh is built from the planetoid's density
 // field on a worker thread and only uploaded here.
@@ -102,6 +103,9 @@ public:
     DVec3 toLocalD(const DVec3& worldAbs) const;
     // Model matrix of one of this body's chunks in render space, its translation computed in double.
     Matrix chunkModel(const Chunk& chunk, const DVec3& renderOrigin) const;
+    // Model matrix for geometry positioned relative to a body-local anchor (foliage batches).
+    Matrix localModel(const DVec3& anchorLocal, const DVec3& renderOrigin) const;
+    std::unique_ptr<TreeSystem> trees;                   // planets with life: trees and bushes
 
     float densityAt(Vector3 local) const; // includes edits; main-thread helper (raycasts)
     // Velocity (world units/s) of the body-fixed point currently at renderPoint, from the spin.
