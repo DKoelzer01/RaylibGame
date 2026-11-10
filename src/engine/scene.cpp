@@ -127,6 +127,7 @@ Scene::Scene(std::string name, bool isActive)
     water.reloadIfChanged(true);
     grass.reloadIfChanged(true);
     trees.reloadIfChanged(true);
+    farSphere.reloadIfChanged(true);
     atmosphereShader.reloadIfChanged(true);
     atmosphereDome = LoadModelFromMesh(GenMeshCube(1.0f, 1.0f, 1.0f));
 
@@ -247,6 +248,7 @@ void Scene::drawScene(int gamestate) {
     water.reloadIfChanged();
     grass.reloadIfChanged();
     trees.reloadIfChanged();
+    farSphere.reloadIfChanged();
     atmosphereShader.reloadIfChanged();
 
     if (IsKeyPressed(KEY_F3)) debugDraw = !debugDraw;
@@ -409,6 +411,18 @@ void Scene::drawScene(int gamestate) {
         ctx.sunOccluderLoc = locSunOccluder;
         ctx.scenePalette = materialPalette;
         ctx.cameraPos = camera.position;
+        if (farSphere.shader.id > 0) {
+            Shader& fs = farSphere.shader;
+            SetShaderValue(fs, GetShaderLocation(fs, "sunDir"), &sun, SHADER_UNIFORM_VEC3);
+            SetShaderValue(fs, GetShaderLocation(fs, "viewPos"), &camera.position, SHADER_UNIFORM_VEC3);
+            SetShaderValue(fs, GetShaderLocation(fs, "ambient"), &effAmbient, SHADER_UNIFORM_VEC3);
+            const float fshell[4] = { atmosphere.centre.x, atmosphere.centre.y, atmosphere.centre.z,
+                                      atmosphere.enabled && effFogDensity < 0.06f ? atmosphere.radius + atmosphere.hazeHeight : 0.0f };
+            SetShaderValue(fs, GetShaderLocation(fs, "fogColor"), &effFog, SHADER_UNIFORM_VEC3);
+            SetShaderValue(fs, GetShaderLocation(fs, "fogDensity"), &effFogDensity, SHADER_UNIFORM_FLOAT);
+            SetShaderValue(fs, GetShaderLocation(fs, "fogShell"), fshell, SHADER_UNIFORM_VEC4);
+            ctx.farShader = &fs;
+        }
         auto isFar = [&](const Object* o) { return std::find(farBodies.begin(), farBodies.end(), o) != farBodies.end(); };
         const double nearDefault = rlGetCullDistanceNear(), farDefault = rlGetCullDistanceFar();
         // Sea surface material, set up once for the far, mid and near passes.
@@ -606,6 +620,7 @@ Scene::~Scene() {
     water.unload();
     grass.unload();
     trees.unload();
+    farSphere.unload();
     atmosphereShader.unload();
     UnloadShadowmapRenderTexture(shadowMap);
 }

@@ -101,6 +101,9 @@ Shaders in `resources/` hot-reload when saved.
   atmosphere: sky colour by sun angle and altitude, dusk glow, stars at night and in space, haze with
   distance, and dense blue fog underwater. It is the default start system: you start on temperate
   grassland (picked from the seed), where the air is breathable below ~15 km (the suit refills its oxygen).
+- **Distance sphere** (`src/engine/farsphere.*`): beyond 3 radii (telescope zoom included) planets and moons draw as a
+  sphere with colour and normal maps baked on the workers from the height map and biome rules (sea by depth, forest
+  canopy), lit by the sun with the night side and a sea glint, under the same haze as the terrain.
 - **Foliage** (`src/engine/foliage.*`, `trees.*`): instanced grass tufts on grass terrain (from each finest chunk's mesh,
   to 70 m), and trees and bushes built from prisms, placed on a 64 m cube-sphere tile grid from the seed (a
   forest field, grass or dirt, gentle slopes, solid ground, below the tree line; broadleaf in the temperate band,
