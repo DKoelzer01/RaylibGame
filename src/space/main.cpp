@@ -61,6 +61,11 @@ static void AimAtTelescopeTarget(Scene& world) {
     }
 }
 
+static Vector3 StartSpawnDirLocal(Planetoid& body) {
+    if (auto* field = dynamic_cast<const PlanetField*>(body.field.get())) return field->findSpawnDir(body.seed);
+    return { 0, 1, 0 };
+}
+
 static Vector3 StartSpawnDir(Planetoid& body) {
     if (auto* field = dynamic_cast<const PlanetField*>(body.field.get())) return body.dirToWorld(field->findSpawnDir(body.seed));
     return { 0, 1, 0 };
@@ -134,6 +139,11 @@ int main(int argc, char** argv)
     bool benchWall = false;        // --test-wall: walk into shaft and tunnel walls (no launches)
     bool benchMenus = false;       // --test-menus: main menu, new game, pause, save & quit, load
     bool benchWater = false;       // --test-water: rivers and ponds near the start, their beds and clay
+    bool benchFlyFollow = false;   // --test-flyfollow: the fly camera rides its reference body
+    int ffPhase = 0;
+    double ffStart = 0.0, ffDist0 = 0.0;
+    DVec3 ffLocal0{};
+    bool ffOk = true, ffBaseline = false;
     int waterPhase = 0;
     double waterStart = 0.0;
     Vector3 waterDir{};
@@ -240,6 +250,7 @@ int main(int argc, char** argv)
         if (std::string(argv[i]) == "--test-wall") benchWall = true;
         if (std::string(argv[i]) == "--test-menus") benchMenus = true;
         if (std::string(argv[i]) == "--test-water") benchWater = true;
+        if (std::string(argv[i]) == "--test-flyfollow") benchFlyFollow = true;
         if (std::string(argv[i]) == "--test-trees") benchTrees = true;
         if (std::string(argv[i]) == "--test-chop") benchChop = true;
         if (std::string(argv[i]) == "--test-persist" && i + 1 < argc) benchPersist = atoi(argv[i + 1]);
@@ -378,6 +389,7 @@ int main(int argc, char** argv)
         world.debugDraw = startWithOverlay;
         player.flyMode = benchWalkSeconds <= 0.0 && !benchWalkMode; // the bench drives the camera directly unless walking
         player.autoWalk = benchWalkMode;                              // --bench-walk: walk through the measured window
+        player.flyFollow = false;                                     // the bench drives the camera itself
         benchStart = -1.0; // starts once the world has finished streaming in
     }
 
@@ -869,6 +881,51 @@ int main(int argc, char** argv)
                                    waterLevel, bedE, VoxelMaterialName(m), under ? "yes" : "no", above ? "yes" : "no", clay, pass ? "PASS" : "FAIL");
                             benchWater = false;
                         }
+                    }
+                } else if (benchFlyFollow && (ffPhase > 0 || WorldIdle())) {
+                    // --test-flyfollow: the fly camera with no input stays put relative to its reference
+                    // body: over the spinning planet (100 m up), near the orbiting moon (200 m up), and
+                    // at 3 moon radii (inside its sphere of influence: its motion, not its spin).
+                    Planetoid* planet = dynamic_cast<Planetoid*>(world.objects[0].get());
+                    Planetoid* moon = nullptr;
+                    for (auto& obj : world.objects) if (auto* q = dynamic_cast<Planetoid*>(obj.get())) if (q->kind == BodyKind::Moon && q->orbitParent) { moon = q; break; }
+                    struct Case { Planetoid* body; Vector3 local; const char* name; };
+                    const Case cases[3] = {
+                        { planet, Vector3Scale(StartSpawnDirLocal(*planet), planet->radius + 400.0f), "planet, 100 m+ up" },
+                        { moon, moon ? Vector3Scale(Vector3Normalize({ 0.3f, 1.0f, 0.2f }), moon->radius + 600.0f) : Vector3{}, "moon, low" },
+                        { moon, moon ? Vector3Scale(Vector3Normalize({ 0.3f, 1.0f, 0.2f }), moon->radius * 3.0f) : Vector3{}, "moon, 3 radii" } };
+                    if (!moon) { printf("bench: --test-flyfollow needs the moon\n"); benchFlyFollow = false; }
+                    else if (ffPhase % 2 == 0) {
+                        if (ffPhase / 2 >= 3) {
+                            printf("bench: fly follow: %s\n", ffOk ? "PASS" : "FAIL");
+                            benchFlyFollow = false;
+                        } else {
+                            const Case& c = cases[ffPhase / 2];
+                            player.flyMode = true;
+                            player.flyFollow = true;
+                            world.camera.position = c.body->toWorld(c.local);
+                            world.camera.target = Vector3Add(world.camera.position, c.body->dirToWorld({ 1, 0, 0 }));
+                            world.camera.up = c.body->dirToWorld(Vector3Normalize(c.local));
+                            ffStart = GetTime();
+                            ffPhase++;
+                            ffBaseline = true; // taken next frame, once the carry has a recorded pose
+                        }
+                    } else if (ffBaseline) {
+                        const Case& c = cases[ffPhase / 2];
+                        ffLocal0 = c.body->toLocalD(world.renderOrigin + world.camera.position);
+                        ffDist0 = (world.renderOrigin + world.camera.position - c.body->worldPos).length();
+                        ffBaseline = false;
+                    } else if (GetTime() - ffStart > 3.0) {
+                        const Case& c = cases[ffPhase / 2];
+                        const DVec3 cam = world.renderOrigin + world.camera.position;
+                        const double localDrift = (c.body->toLocalD(cam) - ffLocal0).length();
+                        const double distDrift = fabs((cam - c.body->worldPos).length() - ffDist0);
+                        const bool rotating = ffPhase / 2 < 2;
+                        const bool ok = rotating ? localDrift < 0.1 : distDrift < 0.1;
+                        ffOk &= ok;
+                        printf("bench: fly follow (%s): 3 s later %.3f m from its spot on the body, distance to the centre changed %.3f m (body moved %.0f m) -> %s\n",
+                               c.name, localDrift, distDrift, 3.0 * Vector3Length(c.body->linearVelocity), ok ? "ok" : "BAD");
+                        ffPhase++;
                     }
                 } else if (benchHole && (holePhase > 0 || WorldIdle())) { // edits keep the world busy: run on
                     // --test-hole: on the spinning planet, dig a pit ahead and walk into it, then build a
@@ -1397,7 +1454,7 @@ int main(int argc, char** argv)
                         }
                         benchWalkSeconds = 0.0;
                     }
-                } else if ((WorldIdle() && benchDigStrokes == 0 && !benchSaveLoad && benchWalkSeconds <= 0.0 && benchMineStrokes == 0 && minePhase != 2 && benchFlySeconds <= 0.0 && !benchSuffocate && benchOrbitSeconds <= 0.0 && !benchRide && !benchPark && !benchGravity && !benchPrecision && !benchMantle && !benchAirJump && !benchMoon && !benchHole && !benchWall && !benchMenus && !benchWater && !benchTrees && !benchChop && benchPersist == 0 && benchBuild == 0 && benchFactory == 0 && !benchProgression) || GetTime() > 600.0) {
+                } else if ((WorldIdle() && benchDigStrokes == 0 && !benchSaveLoad && benchWalkSeconds <= 0.0 && benchMineStrokes == 0 && minePhase != 2 && benchFlySeconds <= 0.0 && !benchSuffocate && benchOrbitSeconds <= 0.0 && !benchRide && !benchPark && !benchGravity && !benchPrecision && !benchMantle && !benchAirJump && !benchMoon && !benchHole && !benchWall && !benchMenus && !benchWater && !benchFlyFollow && !benchTrees && !benchChop && benchPersist == 0 && benchBuild == 0 && benchFactory == 0 && !benchProgression) || GetTime() > 600.0) {
                     benchStart = GetTime();
                     printf("bench: world ready after %.2f s (%d chunks, avg build %.2f ms of which sampling %.2f ms, %d worker threads)\n",
                         GetWorldStats().lastGenerationSeconds, GetWorldStats().chunks, GetWorldStats().avgBuildMs, GetWorldStats().avgSampleMs, GetWorldStats().workerThreads);
@@ -1718,6 +1775,7 @@ int main(int argc, char** argv)
                 pendingMenu = Menu_Main();
             } else if (gameState == 1) {
                 { const double d0 = GetTime(); world.drawScene(gameState); if (benchMeasuring) benchDrawMs += (GetTime() - d0) * 1000.0; }
+                player.recordFly(world); // after the fly camera's input (in drawScene): the pose to carry next frame
                 world.drawUI(gameState);
                 Telescope_DrawHUD(world);
                 BuildTool_DrawHUD();
