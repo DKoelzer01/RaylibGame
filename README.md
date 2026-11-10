@@ -105,8 +105,8 @@ Shaders in `resources/` hot-reload when saved.
   orbit; W/S, A/D, Z/C steer (the guidance computer holds attitude). The HUD shows altitude, speeds and the orbit
   (apoapsis / periapsis; in orbit once the periapsis clears the air at 35 km). A gentle upright touchdown turns it
   back into a plot on whatever it landed on; hard landings break legs, harder ones engines (damage, not
-  destruction). The cockpit is pressurised. Saves keep a rocket in flight. The quest book's tier 5 is rocketry
-  (placeholder recipes on today's materials until the MV / HV tiers exist).
+  destruction). The cockpit is pressurised. Saves keep a rocket in flight. Rocketry is tier 7 of the quest book: parts
+  need titanium alloy, aluminium and advanced circuits, and fuel comes from the refinery.
 - **Planetary ring** (`src/engine/ring.*`): 60,000 rocks 5-50 m across (about 1% five times bigger) in a band
   3 km wide and 60 m thick, each on its own circular orbit, derived from the seed and its index (nothing
   stored until you change one). Far away rocks draw as instances of a dozen lumpy rock meshes (skipped when
@@ -152,6 +152,14 @@ Shaders in `resources/` hot-reload when saved.
   (tier 0), a kiln smelts copper, tin and iron and alloys bronze (1), a boiler drives a forge hammer by cable and a coke
   oven and blast furnace make steel (2), glass and vacuum tubes (3), circuits, LV hulls, an LV generator and the electric
   furnace (4). Fuel machines run recipes that don't eat their fuel first.
+  From LV, ore processing multiplies ore the GTNH way: a macerator crushes it (x2), an ore washer (water from a water pump)
+  purifies it, a centrifuge splits it into dust and a byproduct (iron: nickel, copper: gold, the rest: iron), and the
+  electric furnace smelts the dust. MV (5, 128 V): an MV generator, an electrolyzer (water into hydrogen and oxygen;
+  bauxite dust into aluminium, the gate), a chemical reactor (polyethylene for good circuits) and a miner that works the
+  deposit under it (bauxite and ilmenite deposits join the ores). HV (6, 512 V): an HV generator, an arc furnace
+  (titanium from ilmenite and coke, then titanium alloy: the gate), a refinery (rocket fuel) and a precision assembler
+  (alloy plates, advanced circuits). A machine on a network above its voltage refuses the power, so each tier runs its
+  own cables and generator.
 - **Distance sphere** (`src/engine/farsphere.*`): beyond 3 radii (telescope zoom included) planets and moons draw as a
   sphere with colour and normal maps baked on the workers from the height map and biome rules (sea by depth, forest
   canopy), lit by the sun with the night side and a sea glint, under the same haze as the terrain.
@@ -191,7 +199,9 @@ frustum culling, `--test-dig N` carves a tunnel at the crosshair, `--test-savelo
 (milestone 2 gate: N strokes, flat builds, save and load under a second), `--test-build N` (milestone 3 gate:
 N parts, standing on them, save/load, frame time with the factory in view), `--test-factory N` (milestone 4 gate:
 N working machines, tick under 5 ms, plates reach the chests, contents survive a reload), `--test-progression`
-(milestone 5 gate: a scripted playthrough from an empty inventory to a placed, powered, working LV electric furnace),
+(milestone 5 gate: a scripted playthrough from an empty inventory to a placed, powered, working LV electric furnace;
+`--test-progression full`: the milestone 8 gate, on through ore processing, MV and HV to titanium alloy, a miner and the
+refinery),
 `--test-wall` (walk into shaft and tunnel walls: no launches), `--test-menus` (main menu, new game, pause, save & quit,
 load), `--test-water` (inland water near the start, its bed and clay), `--test-flyfollow` (the fly camera rides the
 planet and the moon), `--test-hotbar` (materials, consumables, foundations, materials through a save), `--test-ring`

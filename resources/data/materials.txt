@@ -1,7 +1,16 @@
 # Materials: each generates its item family (id material_form), the way GTNH does.
 # material | Name   | r,g,b       | forms
-iron       | Iron   | 165,160,165 | ore dust ingot plate rod
-copper     | Copper | 205,115,65  | ore dust ingot plate wire
-tin        | Tin    | 205,205,215 | ore dust ingot plate
-bronze     | Bronze | 205,140,60  | dust ingot plate gear
-steel      | Steel  | 120,122,132 | ingot plate rod gear
+# Ore processing from LV: ore -> 2 crushed (macerator) -> purified (ore washer, water) -> dust and a
+# byproduct (centrifuge) -> ingot (electric furnace).
+iron       | Iron       | 165,160,165 | ore crushed purified dust ingot plate rod
+copper     | Copper     | 205,115,65  | ore crushed purified dust ingot plate wire
+tin        | Tin        | 205,205,215 | ore crushed purified dust ingot plate
+bronze     | Bronze     | 205,140,60  | dust ingot plate gear
+steel      | Steel      | 120,122,132 | ingot plate rod gear
+nickel     | Nickel     | 200,200,150 | dust ingot
+gold       | Gold       | 240,200,60  | dust ingot
+bauxite    | Bauxite    | 190,110,90  | ore crushed purified dust
+aluminium  | Aluminium  | 190,205,220 | dust ingot plate
+ilmenite   | Ilmenite   | 70,60,60    | ore crushed purified dust
+titanium   | Titanium   | 200,170,210 | dust ingot plate
+titanium_alloy | Titanium alloy | 170,150,200 | ingot plate

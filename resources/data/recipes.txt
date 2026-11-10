@@ -31,10 +31,26 @@ generator 1       = lv_hull 1, copper_wire 4, steel_plate 4
 electric_furnace 1 = lv_hull 1, basic_circuit 2, copper_wire 4
 macerator 1       = lv_hull 1, basic_circuit 2, steel_plate 2
 battery 1         = lv_hull 1, power_cell 2
-# Rocketry (milestone 7). Placeholder costs on today's materials until the MV / HV tiers exist.
-rocket_engine 1   = steel_plate 12, basic_circuit 2, copper_wire 8
-fuel_tank 1       = steel_plate 8
-cockpit 1         = steel_plate 6, glass 4, basic_circuit 2
-guidance_computer 1 = basic_circuit 4, vacuum_tube 4, copper_wire 8
-landing_leg 1     = steel_plate 3
-rocket_fuel 4     = coal 2, wood 2
+# Milestone 8: LV ore processing, MV, HV.
+ore_washer 1      = lv_hull 1, basic_circuit 1, steel_plate 4
+centrifuge 1      = lv_hull 1, basic_circuit 2, copper_wire 8
+water_pump 1      = lv_hull 1, basic_circuit 1, iron_plate 4
+mv_hull 1         = steel_plate 4, copper_wire 8
+mv_generator 1    = mv_hull 1, basic_circuit 2, steel_plate 6
+electrolyzer 1    = mv_hull 1, basic_circuit 2, copper_wire 16
+chemical_reactor 1 = mv_hull 1, basic_circuit 2, glass 4
+good_circuit 1    = basic_circuit 1, polyethylene 1, copper_wire 2
+steel_gear 1      = steel_plate 4
+miner 1           = mv_hull 1, good_circuit 2, steel_gear 2
+advanced_circuit 1 = good_circuit 1, gold_ingot 1, aluminium_plate 1
+hv_hull 1         = aluminium_plate 4, steel_plate 4
+hv_generator 1    = hv_hull 1, advanced_circuit 1, steel_plate 4
+arc_furnace 1     = hv_hull 1, advanced_circuit 2, copper_wire 16
+refinery 1        = hv_hull 1, advanced_circuit 2, aluminium_plate 8
+precision_assembler 1 = hv_hull 1, advanced_circuit 3, glass 4
+# Rocketry (tier 7): titanium alloy, aluminium, advanced circuits; fuel from the refinery.
+rocket_engine 1   = titanium_alloy_plate 8, advanced_circuit 2, steel_plate 4
+fuel_tank 1       = aluminium_plate 8
+cockpit 1         = titanium_alloy_plate 4, glass 6, advanced_circuit 2
+guidance_computer 1 = advanced_circuit 3, gold_ingot 1
+landing_leg 1     = aluminium_plate 2, steel_plate 2

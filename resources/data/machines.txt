@@ -15,6 +15,17 @@ furnace         | 32 | eu        | 0  |
 macerator       | 32 | eu        | 0  |
 chest           | 0  | storage   | 0  |
 battery         | 32 | battery   | 0  |
+ore_washer      | 32 | eu        | 0  |
+centrifuge      | 32 | eu        | 0  |
+water_pump      | 32 | eu        | 0  |
+mv_generator    | 128 | generator | 128 | coal coke
+electrolyzer    | 128 | eu        | 0  |
+chemical_reactor | 128 | eu       | 0  |
+miner           | 128 | eu        | 0  |
+hv_generator    | 512 | generator | 512 | coke
+arc_furnace     | 512 | eu        | 0  |
+refinery        | 512 | eu        | 0  |
+precision_assembler | 512 | eu    | 0  |
 # fuel | burn ticks (20 a second)
 fuel wood 400
 fuel charcoal 1600
