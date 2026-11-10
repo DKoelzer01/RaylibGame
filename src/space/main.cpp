@@ -3,6 +3,7 @@
 #include <vector>
 #include <random>
 #include <chrono>
+#include <array>
 #include "mainmenu.h"
 #include "world.h"
 #include "scene.h"
@@ -24,6 +25,7 @@
 #include "survival.h"
 #include "telescope.h"
 #include "buildtool.h"
+#include "factory.h"
 
 #if defined(PLATFORM_DESKTOP)
     #define GLSL_VERSION            330
@@ -111,6 +113,13 @@ int main(int argc, char** argv)
     double buildStart = 0.0;
     bool buildOk = false;
     Plot* buildPlot = nullptr;
+    int benchFactory = 0;          // --test-factory N: milestone 4 gate (N working machines, tick under 5 ms)
+    int factPhase = 0, factSamples = 0;
+    uint32_t factPlot = 0;
+    double factStart = 0.0, factSum = 0.0, factMax = 0.0;
+    long long factMade0 = 0;
+    std::string factChestBefore;
+    std::vector<std::array<int, 3>> factSeeds;
     int chopPhase = 0, chopSwings = 0, chopMisses = 0, chopWood0 = 0;
     double chopStart = 0.0;
     uint64_t chopId = 0;
@@ -190,6 +199,7 @@ int main(int argc, char** argv)
         if (std::string(argv[i]) == "--test-chop") benchChop = true;
         if (std::string(argv[i]) == "--test-persist" && i + 1 < argc) benchPersist = atoi(argv[i + 1]);
         if (std::string(argv[i]) == "--test-build" && i + 1 < argc) benchBuild = atoi(argv[i + 1]);
+        if (std::string(argv[i]) == "--test-factory" && i + 1 < argc) benchFactory = atoi(argv[i + 1]);
         if (std::string(argv[i]) == "--time-scale" && i + 1 < argc) timeScale = (float)atof(argv[i + 1]);
         if (std::string(argv[i]) == "--crack-check") crackCheck = true;
         if (std::string(argv[i]) == "--no-foliage") foliageEnabled = false;
@@ -641,6 +651,70 @@ int main(int argc, char** argv)
                         }
                         printf("bench: build gate (parts, standing, save/load): %s; frame time with the factory in view follows\n", buildOk ? "PASS" : "FAIL");
                         benchBuild = 0;
+                    }
+                } else if (benchFactory > 0 && (factPhase > 0 || WorldIdle())) {
+                    // --test-factory N (milestone 4 gate): N machines in groups of generator + 2 furnaces +
+                    // chest, joined by a cable and a conveyor, all working: the 20 Hz tick must stay
+                    // under 5 ms, and plates must reach the chests.
+                    Planetoid* p = dynamic_cast<Planetoid*>(world.objects[0].get());
+                    if (factPhase == 0) {
+                        player.spawnOn(world, *p, StartSpawnDir(*p));
+                        factPhase = 1;
+                        factStart = GetTime();
+                    } else if (factPhase == 1 && GetTime() - factStart > 1.0 && player.grounded) {
+                        const Vector3 feet = (player.position - world.renderOrigin).toFloat();
+                        const Vector3 flat = Vector3Normalize(Vector3Subtract(player.forward, Vector3Scale(player.up, Vector3DotProduct(player.forward, player.up))));
+                        if (!p->plots) p->plots = std::make_unique<PlotSet>();
+                        Plot* plot = p->plots->plotFor(p->toLocal(Vector3Add(Vector3Add(feet, Vector3Scale(flat, 20.0f)), Vector3Scale(player.up, 3.0f))), 0.0f, true);
+                        factPlot = plot->id;
+                        const int groups = benchFactory / 4;
+                        const int perRow = (int)ceilf(sqrtf((float)groups));
+                        for (int g = 0; g < groups; ++g) {
+                            const int bx = (g % perRow) * 12, bz = (g / perRow) * 5, by = 0;
+                            const int gen = plot->place({ PartType::Generator, { bx, by, bz }, 0 });
+                            const int f1 = plot->place({ PartType::Furnace, { bx + 3, by, bz }, 0 });
+                            const int f2 = plot->place({ PartType::Furnace, { bx + 6, by, bz }, 0 });
+                            plot->place({ PartType::Chest, { bx + 9, by, bz }, 0 });
+                            for (int x = 0; x < 8; ++x) plot->place({ PartType::Cable, { bx + x, by, bz - 1 }, 0 });
+                            for (int x = 3; x < 11; ++x) plot->place({ PartType::Conveyor, { bx + x, by, bz + 2 }, 0 });
+                            factSeeds.push_back({ gen, f1, f2 });
+                        }
+                        printf("bench: factory: %d groups, %d parts on plot %u\n", groups, plot->partCount(), plot->id);
+                        factPhase = 2; factStart = GetTime();
+                    } else if (factPhase == 2 && GetTime() - factStart > 1.0) {
+                        for (const auto& s : factSeeds) {
+                            Factory::Seed(p->id, factPlot, s[0], "wood", 64);
+                            Factory::Seed(p->id, factPlot, s[1], "iron_ore", 32);
+                            Factory::Seed(p->id, factPlot, s[2], "iron_ore", 32);
+                        }
+                        factPhase = 3; factStart = GetTime();
+                    } else if (factPhase == 3 && GetTime() - factStart > 2.0) {
+                        factMade0 = Factory::Stats().itemsMade;
+                        Factory::View(p->id, factPlot, factSeeds[0][2] + 1); // watch the first chest from now on
+                        factPhase = 4; factStart = GetTime(); factSamples = 0; factSum = 0.0; factMax = 0.0;
+                    } else if (factPhase == 4) {
+                        const FactoryStats s = Factory::Stats();
+                        factSum += s.avgTickMs; ++factSamples;
+                        if (GetTime() - factStart > 12.0) {
+                            const double avg = factSum / std::max(1, factSamples);
+                            const MachineView chest = Factory::View(p->id, factPlot, factSeeds[0][2] + 1);
+                            const bool pass = avg < 5.0 && s.activeMachines >= benchFactory / 2 && s.itemsMade > 0;
+                            printf("bench: factory: %d machines (%d active), %d item / %d power networks; tick %.2f ms avg, %.2f ms worst; %lld items made in the last 12 s (%lld total); first chest: %s -> %s\n",
+                                   s.machines, s.activeMachines, s.itemNetworks, s.powerNetworks, avg, s.maxTickMs, s.itemsMade - factMade0, s.itemsMade, chest.input.c_str(), pass ? "PASS" : "FAIL");
+                            factChestBefore = chest.input;
+                            SaveWorld(world);
+                            const bool loaded = LoadWorldSave(world);
+                            if (!loaded) printf("bench: factory: load FAILED\n");
+                            factPhase = 5; factStart = GetTime();
+                        }
+                    } else if (factPhase == 5) {
+                        Planetoid* p2 = dynamic_cast<Planetoid*>(world.objects[0].get());
+                        const MachineView chest = Factory::View(p2->id, factPlot, factSeeds[0][2] + 1);
+                        if (GetTime() - factStart > 2.0) {
+                            printf("bench: factory: first chest before save %s, after reload %s -> %s\n", factChestBefore.c_str(), chest.input.c_str(),
+                                   chest.valid && chest.input != "-" && !chest.input.empty() ? "PASS" : "FAIL");
+                            benchFactory = 0;
+                        }
                     }
                 } else if (benchHole && (holePhase > 0 || WorldIdle())) { // edits keep the world busy: run on
                     // --test-hole: on the spinning planet, dig a pit ahead and walk into it, then build a
@@ -1181,7 +1255,7 @@ int main(int argc, char** argv)
                         }
                         benchWalkSeconds = 0.0;
                     }
-                } else if ((WorldIdle() && benchDigStrokes == 0 && !benchSaveLoad && benchWalkSeconds <= 0.0 && benchMineStrokes == 0 && minePhase != 2 && benchFlySeconds <= 0.0 && !benchSuffocate && benchOrbitSeconds <= 0.0 && !benchRide && !benchPark && !benchGravity && !benchPrecision && !benchMantle && !benchAirJump && !benchMoon && !benchHole && !benchTrees && !benchChop && benchPersist == 0 && benchBuild == 0) || GetTime() > 180.0) {
+                } else if ((WorldIdle() && benchDigStrokes == 0 && !benchSaveLoad && benchWalkSeconds <= 0.0 && benchMineStrokes == 0 && minePhase != 2 && benchFlySeconds <= 0.0 && !benchSuffocate && benchOrbitSeconds <= 0.0 && !benchRide && !benchPark && !benchGravity && !benchPrecision && !benchMantle && !benchAirJump && !benchMoon && !benchHole && !benchTrees && !benchChop && benchPersist == 0 && benchBuild == 0 && benchFactory == 0) || GetTime() > 180.0) {
                     benchStart = GetTime();
                     printf("bench: world ready after %.2f s (%d chunks, avg build %.2f ms of which sampling %.2f ms, %d worker threads)\n",
                         GetWorldStats().lastGenerationSeconds, GetWorldStats().chunks, GetWorldStats().avgBuildMs, GetWorldStats().avgSampleMs, GetWorldStats().workerThreads);
@@ -1301,6 +1375,8 @@ int main(int argc, char** argv)
                 lastAutosave = GetTime();
                 if (SaveWorld(world)) GameUI_Toast("Autosaved");
             }
+            Factory::Sync(world);                                // machine layouts in, items out
+            Machine_Update(world, gameInput && alive && !ship.piloted);
             Objectives_Update(world);
             if (bench && lookDown && !ship.piloted) {
                 const Vector3 t = Vector3Subtract(player.forward, Vector3Scale(player.up, Vector3DotProduct(player.forward, player.up)));
@@ -1454,6 +1530,7 @@ int main(int argc, char** argv)
                 world.drawUI(gameState);
                 Telescope_DrawHUD(world);
                 BuildTool_DrawHUD();
+                Machine_DrawHUD();
                 if (!ship.piloted && !telescope.active && !buildTool.active) TerrainTool_DrawHUD();
                 GameUI_DrawHUD(world);
                 Survival_DrawHUD();
@@ -1486,6 +1563,7 @@ int main(int argc, char** argv)
     }   // scenes destroyed here, while the GL context still exists
     DebugUI_Shutdown();
     Audio_Shutdown();
+    Factory::Stop();
     CloseWindow();
 }
 

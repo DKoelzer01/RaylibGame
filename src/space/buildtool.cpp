@@ -6,6 +6,7 @@
 #include "terraintool.h"
 #include "world.h"
 #include "worldtypes.h"
+#include "factory.h"
 
 #include <raymath.h>
 #include <algorithm>
@@ -180,4 +181,61 @@ void BuildTool_DrawHUD() {
     DrawText(TextFormat("BUILD  %s  (%d %s, have %d)", PartName(t), PartCostCount(t), PartCostItem(t), inventory.count(PartCostItem(t))),
              cx - 200, GetScreenHeight() - 110, 22, SKYBLUE);
     DrawText("wheel part   R / V rotate   RMB place   LMB remove   G leave", 10, GetScreenHeight() - 30, 20, Fade(RAYWHITE, 0.7f));
+}
+
+// ---------------------------------------------------------------------------------------------
+// Machines: look at one to see its state; I puts matching items in, O takes the outputs.
+// ---------------------------------------------------------------------------------------------
+
+namespace {
+    struct MachineAim { uint64_t body = 0; uint32_t plot = 0; int part = -1; PartType type = PartType::Count; } machineAim;
+}
+
+void Machine_Update(Scene& world, bool inputEnabled) {
+    machineAim = MachineAim{};
+    Planetoid* body = player.nearest;
+    if (!body || !body->plots || player.flyMode) return;
+    const Vector3 dir = Vector3Normalize(Vector3Subtract(world.camera.target, world.camera.position));
+    const Vector3 lo = body->toLocal(world.camera.position), ld = body->dirToLocal(dir);
+    float best = 6.0f;
+    for (auto& pl : body->plots->plots) {
+        Int3 c, f; float d;
+        if (!pl->raycast(lo, ld, best, c, f, d)) continue;
+        const int part = pl->partAt(c);
+        if (part < 0 || !IsMachine(pl->parts[part].type)) continue;
+        best = d;
+        machineAim = { body->id, pl->id, part, pl->parts[part].type };
+    }
+    if (machineAim.part < 0 || !inputEnabled) return;
+    if (IsKeyPressed(KEY_I)) {
+        // Everything in the inventory the machine might take: fuel for generators, recipe inputs,
+        // anything for a chest (the simulation hands back what does not fit).
+        static const char* fuels[] = { "wood" };
+        static const char* inputs[] = { "iron_ore", "sand", "stone", "concrete" };
+        auto give = [&](const char* item) {
+            const int n = inventory.count(item);
+            if (n > 0 && inventory.remove(item, n)) Factory::Insert(machineAim.body, machineAim.plot, machineAim.part, item, n);
+        };
+        if (machineAim.type == PartType::Generator) for (const char* it : fuels) give(it);
+        else if (machineAim.type == PartType::Furnace || machineAim.type == PartType::Macerator) for (const char* it : inputs) give(it);
+        else if (machineAim.type == PartType::Chest) for (const char* it : inputs) give(it);
+        Audio_Play(Sfx::Pickup, 0.4f, 0.8f);
+    }
+    if (IsKeyPressed(KEY_O)) { Factory::Extract(machineAim.body, machineAim.plot, machineAim.part); Audio_Play(Sfx::Pickup, 0.4f, 1.2f); }
+}
+
+void Machine_DrawHUD() {
+    if (machineAim.part < 0) return;
+    const MachineView v = Factory::View(machineAim.body, machineAim.plot, machineAim.part);
+    const int x = GetScreenWidth() / 2 + 20, y = GetScreenHeight() / 2 + 40;
+    DrawRectangle(x - 8, y - 6, 420, 112, Fade(BLACK, 0.55f));
+    DrawText(TextFormat("%s: %s", PartName(machineAim.type), v.valid ? MachineStatusName(v.status) : "..."), x, y, 20, SKYBLUE);
+    if (v.duration > 0) {
+        DrawRectangle(x, y + 26, 300, 8, Fade(RAYWHITE, 0.2f));
+        DrawRectangle(x, y + 26, 300 * v.progress / v.duration, 8, ORANGE);
+    }
+    DrawText(TextFormat("in: %s", v.input.c_str()), x, y + 40, 16, RAYWHITE);
+    DrawText(TextFormat("out: %s", v.output.c_str()), x, y + 60, 16, RAYWHITE);
+    if (v.energyMax > 0) DrawText(TextFormat("charge %d / %d EU", v.energy, v.energyMax), x, y + 80, 16, YELLOW);
+    else DrawText("I put items in   O take the output", x, y + 80, 16, Fade(RAYWHITE, 0.7f));
 }

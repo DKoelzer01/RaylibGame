@@ -2,6 +2,7 @@
 #include "jobsystem.h"
 #include "utils/logger.h"
 #include "worldtypes.h"
+#include "factory.h"
 
 #include <raymath.h>
 #include <rlgl.h>
@@ -908,6 +909,7 @@ void BeginWorldStreaming() { generationStart = GetTime(); buildMsTotal = sampleM
 
 void regenerateWorld(Scene& world) {
     Jobs().clearQueued();  // in-flight jobs finish; their results are dropped (planetoid ids are gone)
+    Factory::Reset();      // machines belong to the old bodies
     world.objects.clear(); // releases chunk meshes
     generateWorld(world);
 }
@@ -1071,7 +1073,7 @@ bool SaveWorld(Scene& world) {
     const DVec3 tgtWorld = world.renderOrigin + world.camera.target;
     // v4: the system definition is stored in the save, so a save reloads the system it was made in
     // even if bodies.txt has changed since.
-    fprintf(f, "RAYLIBGAME_SAVE 8\n");
+    fprintf(f, "RAYLIBGAME_SAVE 9\n");
     fprintf(f, "seed %u\nbodies %zu\n", worldGen.lastSeed, worldGen.system.bodies.size());
     for (const BodyDef& b : worldGen.system.bodies) fprintf(f, "%s\n", FormatBodyDef(b).c_str());
     fprintf(f, "time %.6f\n", worldTime); // v5: the world clock (orbits)
@@ -1099,6 +1101,7 @@ bool SaveWorld(Scene& world) {
         for (const auto& kv : rm) fprintf(f, "%llu %.3f\n", (unsigned long long)kv.first, kv.second);
         // v8: build plots and their parts.
         if (p->plots) p->plots->save(f); else fprintf(f, "plots 0\n");
+        Factory::Save(f, p->id); // v9: machine contents
         regionsWritten += SaveBodyRegions(*p, bodyIndex, dir);
     }
     fclose(f);
@@ -1110,7 +1113,7 @@ bool LoadWorldSave(Scene& world) {
     FILE* f = fopen(SAVE_PATH, "r");
     if (!f) return false;
     int version = 0;
-    if (fscanf(f, "RAYLIBGAME_SAVE %d", &version) != 1 || version < 2 || version > 8) {
+    if (fscanf(f, "RAYLIBGAME_SAVE %d", &version) != 1 || version < 2 || version > 9) {
         fclose(f);
         logger.logf("[World] %s: unsupported save version %d\n", SAVE_PATH, version);
         return false;
@@ -1205,6 +1208,7 @@ bool LoadWorldSave(Scene& world) {
         auto plots = std::make_unique<PlotSet>();
         if (version >= 8 && !plots->load(f)) logger.logf("[World] %s: damaged plot data\n", SAVE_PATH);
         if (body) body->plots = plots->plots.empty() ? nullptr : std::move(plots);
+        if (version >= 9) Factory::Load(f, body ? body->id : 0); // machine contents, applied when the layouts reach the simulation
         if (body) {
             body->edits = deltas;
             body->rotation = rot;
