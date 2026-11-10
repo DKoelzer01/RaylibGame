@@ -82,7 +82,14 @@ void Ship::update(Scene& world, bool inputEnabled, float dt) {
         // Test/assist: turn toward the target and fly there, braking on approach.
         const Vector3 to = Vector3Subtract((autopilotTarget - world.renderOrigin).toFloat(), renderPos(world));
         const float dist = Vector3Length(to);
-        const Vector3 want = Vector3Scale(to, 1.0f / std::max(dist, 1e-3f));
+        Vector3 want = Vector3Scale(to, 1.0f / std::max(dist, 1e-3f));
+        // Terrain in the way (the straight line can run through the body it is parked on): climb away
+        // from that body's centre until the line is clear (it used to ram the ground, energy to 0).
+        TerrainHit block;
+        if (RaycastTerrain(world, Ray{ renderPos(world), want }, std::min(dist, 300.0f), block) && block.planetoid) {
+            const Vector3 away = Vector3Normalize(Vector3Subtract(renderPos(world), block.planetoid->position));
+            want = Vector3Normalize(Vector3Add(Vector3Scale(away, 1.0f), Vector3Scale(want, 0.35f)));
+        }
         orientation = QuaternionSlerp(orientation, QuaternionMultiply(QuaternionFromVector3ToVector3(forward(), want), orientation), std::min(1.0f, 2.0f * dt));
         const float speed = Vector3Length(velocity);
         const float stopDist = speed * speed / (2.0f * thrust) + 25.0f;
