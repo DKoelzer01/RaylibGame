@@ -1,11 +1,12 @@
 #version 330
 
-// Sea surface: deep blue, reflecting the sky at grazing angles (Fresnel), small moving ripples,
+// Sea surface: translucent deep blue, reflecting the sky at grazing angles (Fresnel), small ripples,
 // a sun glint, the planet's own shadow at night, and the same distance fog as the terrain.
 in vec3 fragPosition;
 in vec3 fragNormal;
 in vec3 fragTexPos;
 in vec3 fragChunkPos;
+in float fragDepth;            // depth to the sea floor (m)
 
 uniform vec3 viewPos;
 uniform vec3 sunDir;           // towards the sun
@@ -44,12 +45,19 @@ void main()
         if (c < 0.0 || (b < 0.0 && b * b > c)) sunVis = 0.0;
     }
     float light = sunVis * max(dot(n, sunDir), 0.0);
-    vec3 deep = vec3(0.004, 0.03, 0.09) * (0.15 + 0.85 * light);
-    vec3 color = mix(deep, skyColor, fresnel);
+    vec3 deep = vec3(0.01, 0.05, 0.13) * (0.15 + 0.85 * light); // dark but clearly blue, also from orbit
+    // Clear turquoise in the shallows, deep blue offshore.
+    float clarity = exp(-fragDepth / 5.0);
+    vec3 shallow = vec3(0.03, 0.22, 0.24) * (0.15 + 0.85 * light);
+    vec3 color = mix(mix(deep, shallow, clarity), skyColor, fresnel);
     vec3 h = normalize(sunDir + v);
-    color += vec3(1.0, 0.95, 0.85) * pow(max(dot(n, h), 0.0), 800.0) * 1.2 * sunVis;
-    // Opaque for now: where LOD nodes overlap, a translucent surface drawn twice would show seams.
-    float alpha = 1.0;
+    float glint = pow(max(dot(n, h), 0.0), 800.0) * 1.2 * sunVis;
+    color += vec3(1.0, 0.95, 0.85) * glint;
+    // Translucent: see into the shallows looking down, mostly sky reflection at grazing angles
+    // (Fresnel). Seen from below, the surface is a bright, mostly opaque ceiling. The scene's stencil
+    // blends one water layer per pixel, so overlapping LOD copies don't double up.
+    bool below = dot(normalize(fragNormal), v) < 0.0;
+    float alpha = below ? 0.8 : clamp(max(mix(1.0, 0.3, clarity), fresnel) + glint, 0.0, 1.0);
 
     float fog = 1.0 - exp(-fogDensity * dist);
     color = mix(color, fogColor, clamp(fog, 0.0, 1.0));

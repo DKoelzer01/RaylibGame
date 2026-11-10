@@ -207,6 +207,7 @@ struct ChunkMeshData {
     std::vector<float> tangents;           // (0, 0, 0, sky exposure) per vertex
     std::vector<float> waterPositions;     // sea surface where it meets open air (same frame as positions)
     std::vector<float> waterNormals;
+    std::vector<float> waterDepth;         // per water vertex: (depth to the sea floor in m, 0)
     std::vector<unsigned short> waterIndices;
     std::vector<float> grass;              // grass tufts (foliage.h: kGrassFloats each), finest level only
     std::vector<unsigned short> indices;

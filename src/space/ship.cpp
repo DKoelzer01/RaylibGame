@@ -139,11 +139,16 @@ void Ship::update(Scene& world, bool inputEnabled, float dt) {
                 float dist; Vector3 n;
                 if (!TerrainSurfaceDistance(*body, s, dist, n) || dist >= 1.2f) continue;
                 p = Vector3Add(p, Vector3Scale(n, std::min(1.2f - dist, 2.0f)));
-                const float vn = Vector3DotProduct(velocity, n);
+                // Relative to the (moving) surface: a spinning planet's ground moves at up to 105 m/s,
+                // which must not read as an impact or be scrubbed off by the scrape friction.
+                const Vector3 sv = body->surfaceVelocity(s);
+                Vector3 rel = Vector3Subtract(velocity, sv);
+                const float vn = Vector3DotProduct(rel, n);
                 if (vn < 0.0f) {
                     lastImpact = std::max(lastImpact, -vn);
-                    velocity = Vector3Subtract(velocity, Vector3Scale(n, 1.2f * vn)); // small bounce
-                    velocity = Vector3Scale(velocity, 0.7f);                           // scrape friction
+                    rel = Vector3Subtract(rel, Vector3Scale(n, 1.2f * vn)); // small bounce
+                    rel = Vector3Scale(rel, 0.7f);                           // scrape friction
+                    velocity = Vector3Add(sv, rel);
                 }
             }
         }

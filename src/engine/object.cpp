@@ -81,7 +81,7 @@ void GameObject::drawDepthOnly(const RenderContext& ctx) {
 // Chunk
 // ---------------------------------------------------------------------------------------------
 
-Chunk::~Chunk() { releaseMesh(); }
+Chunk::~Chunk() { wanted->store(0); releaseMesh(); }
 
 void Chunk::releaseMesh() {
     if (mesh.vaoId > 0) {
@@ -114,6 +114,7 @@ void Chunk::setMesh(const ChunkMeshData& data) {
         waterMesh.triangleCount = (int)(data.waterIndices.size() / 3);
         waterMesh.vertices = CopyToRaylib(data.waterPositions);
         waterMesh.normals = CopyToRaylib(data.waterNormals);
+        if (!data.waterDepth.empty()) waterMesh.texcoords = CopyToRaylib(data.waterDepth);
         waterMesh.indices = CopyToRaylib(data.waterIndices);
         UploadMesh(&waterMesh, false);
     }

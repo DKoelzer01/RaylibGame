@@ -37,6 +37,11 @@ void Player::update(Scene& world, bool inputEnabled, float dt) {
     if (inputEnabled && IsKeyPressed(KEY_F)) {
         flyMode = !flyMode;
         velocity = { 0, 0, 0 };
+        if (!flyMode) {
+            // Drop in moving with the ground below (a spinning planet's surface is fast).
+            const Vector3 feet = (position - world.renderOrigin).toFloat();
+            if (Planetoid* p = NearestPlanetoid(world, feet)) velocity = p->surfaceVelocity(feet);
+        }
         groundBody = nullptr;
     }
     impactSpeed = 0.0f; // per-frame; cleared before the fly-mode early return too
@@ -71,6 +76,13 @@ void Player::update(Scene& world, bool inputEnabled, float dt) {
             forward = Vector3Normalize(Vector3RotateByQuaternion(forward, delta));
             up = Vector3Normalize(Vector3RotateByQuaternion(up, delta));
         }
+    }
+    // Airborne: carry along with the body we were near (its spin and orbit since last frame); the
+    // motion of our own (world-frame) velocity is then integrated relative to its surface below.
+    if (airBody && Planetoid::find(airId) != airBody) airBody = nullptr;
+    if (!grounded && airBody) {
+        if ((position - lastEndPosition).length() > 1e-6) airBody = nullptr; // moved from outside (respawn, load, ship)
+        else position = airBody->toWorldD(airLocal);
     }
     Vector3 feet = (position - world.renderOrigin).toFloat();
 
@@ -138,7 +150,9 @@ void Player::update(Scene& world, bool inputEnabled, float dt) {
     // Fixed substeps keep collision stable at any frame rate, and are shortened further at speed
     // (<= 0.2 m of travel each, under the body radius) so a fast player can't pass through thin walls.
     const float h = 1.0f / 120.0f;
-    const int steps = std::clamp(std::max((int)ceilf(dt / h), (int)ceilf(Vector3Length(velocity) * dt / 0.2f)), 1, 1024);
+    // Speed relative to the ground (airborne velocity is world-frame and carries the spin).
+    const Vector3 relVel = (!grounded && nearest) ? Vector3Subtract(velocity, nearest->surfaceVelocity((position - world.renderOrigin).toFloat())) : velocity;
+    const int steps = std::clamp(std::max((int)ceilf(dt / h), (int)ceilf(Vector3Length(relVel) * dt / 0.2f)), 1, 1024);
     const float sdt = dt / steps;
     for (int i = 0; i < steps; ++i) { stepPhysics(world, sdt, wish, jetUp, jetDown); }
 
@@ -150,6 +164,13 @@ void Player::update(Scene& world, bool inputEnabled, float dt) {
         groundRotPrev = nearest->rotationQuat();
     } else {
         groundBody = nullptr;
+    }
+    if (!grounded && nearest) {
+        airBody = nearest;
+        airId = nearest->id;
+        airLocal = nearest->toLocalD(position);
+    } else {
+        airBody = nullptr;
     }
     lastEndPosition = position;
 }
@@ -231,7 +252,11 @@ void Player::stepPhysics(Scene& world, float dt, Vector3 wish, bool jetUp, bool 
     if (grounded) gAccel = Vector3Scale(groundNormal, std::min(0.0f, Vector3DotProduct(gAccel, groundNormal)));
     velocity = Vector3Add(velocity, gAccel);
 
-    feet = Vector3Add(feet, Vector3Scale(velocity, dt));
+    // Airborne, velocity is world-frame but the terrain already stands where it will be at the end of
+    // this frame (and update() carried us with it): move relative to its surface.
+    const Vector3 frameVel = (!wasGrounded && nearest) ? nearest->surfaceVelocity(feet) : Vector3{ 0, 0, 0 };
+    feet = Vector3Add(feet, Vector3Scale(Vector3Subtract(velocity, frameVel), dt));
+    collideFrameVel = (wasGrounded || !nearest) ? Vector3{ 0, 0, 0 } : nearest->surfaceVelocity(feet);
     grounded = resolveCollisions(world, feet);
     // Just jumped: the probe below the feet would still find the slope (they have risen only a few cm)
     // and re-ground the player, cancelling the jump. Collisions still push out; only grounding waits.
@@ -258,7 +283,9 @@ bool Player::resolveCollisions(Scene&, Vector3& feet) {
             const float push = std::min(radius - dist, 1.0f); // limit per iteration if deeply embedded
             feet = Vector3Add(feet, Vector3Scale(n, push));
             const float vUpBefore = Vector3DotProduct(velocity, up);
-            const float vn = Vector3DotProduct(velocity, n);
+            // Impact and push-out relative to the (moving) terrain: against the world-frame velocity a
+            // spinning planet's hole walls hit like 86 m/s impacts and stopped you dead while they moved on.
+            const float vn = Vector3DotProduct(Vector3Subtract(velocity, collideFrameVel), n);
             if (vn < 0.0f) { impactSpeed = std::max(impactSpeed, -vn); velocity = Vector3Subtract(velocity, Vector3Scale(n, vn)); }
             lastContactDot = Vector3DotProduct(n, up);
             // Steep walls must not convert a push into upward motion (no wall climbing).

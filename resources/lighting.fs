@@ -161,7 +161,9 @@ void main()
         // material -> texture layer: stone, dirt, ice, ore (stone, rusted), sand, gravel, grass, snow
         const float layerOf[8] = float[8](6.0, 0.0, 5.0, 6.0, 1.0, 2.0, 3.0, 4.0);
         const float roughOf[8] = float[8](0.75, 0.95, 0.15, 0.35, 0.9, 0.85, 0.95, 0.7);
-        const float bumpOf[8] = float[8](1.0, 0.8, 0.15, 0.9, 0.3, 1.0, 0.6, 0.25); // normal-map strength
+        // Strength of the (asteroid rock) normal map per material: rocky ones only; on grass, dirt and
+        // sand its craters read as the asteroid texture showing through.
+        const float bumpOf[8] = float[8](1.0, 0.12, 0.15, 0.9, 0.08, 0.6, 0.05, 0.15); // normal-map strength
         vec3 a = vec3(0.0);
         float r = 0.0, bump = 0.0;
         for (int i = 0; i < 8; i++) {

@@ -2,6 +2,7 @@
 #define worldtypes_h
 
 #include <cstdint>
+#include <atomic>
 #include <memory>
 #include <unordered_map>
 #include <vector>
@@ -19,6 +20,9 @@ public:
     Mesh mesh{};          // GPU mesh (empty if the node contains no surface)
     Mesh waterMesh{};     // sea surface in this node (empty if none)
     FoliageGpu grass{};   // grass tufts (finest level only)
+    // The build version this node still wants (0 once freed). Queued jobs check it and skip work
+    // nobody wants any more (flying fast used to fill the workers with builds for nodes long passed).
+    std::shared_ptr<std::atomic<uint32_t>> wanted = std::make_shared<std::atomic<uint32_t>>(0);
     NodeKey key{};
     bool ready = false;   // a build result has arrived at least once
     // Body-local upper bound for fragments. Nodes overlap their +x/+y/+z neighbours by one cell to

@@ -208,7 +208,17 @@ void Planetoid::drawTransparent(const RenderContext& ctx) {
     batch.setUniform(ctx.waterOccluderLoc, occluder, SHADER_UNIFORM_VEC4);
     RenderContext c2 = ctx;
     c2.batch = &batch;
-    for (Chunk* ch : drawList) ch->drawWater(c2, placer.model(ch->key));
+    // Nearest first: with the stencil set up by the scene (one water layer per pixel), the closest
+    // surface claims the pixel and overlapping LOD copies of the sea behind it are skipped.
+    std::vector<std::pair<float, Chunk*>> order;
+    for (Chunk* ch : drawList) {
+        if (ch->waterMesh.vaoId == 0) continue;
+        const Matrix m = placer.model(ch->key);
+        const float h = ch->key.size() * 0.5f;
+        order.push_back({ Vector3DistanceSqr(Vector3Transform({ h, h, h }, m), ctx.cameraPos), ch });
+    }
+    std::sort(order.begin(), order.end(), [](const auto& a, const auto& b) { return a.first < b.first; });
+    for (auto& o : order) o.second->drawWater(c2, placer.model(o.second->key));
 }
 
 void Planetoid::drawFoliage(const RenderContext& ctx) {
@@ -246,7 +256,10 @@ static void RequestNode(Planetoid& p, const NodeKey& key, float priority) {
     std::shared_ptr<const DensityField> field = p.field;
     std::shared_ptr<const EditList> edits = p.edits;
     const uint64_t id = p.id;
-    Jobs().submit(priority, [field, edits, id, key, version] {
+    std::shared_ptr<std::atomic<uint32_t>> wanted = p.nodes.at(key)->wanted;
+    wanted->store(version);
+    Jobs().submit(priority, [field, edits, id, key, version, wanted] {
+        if (wanted->load() != version) return; // superseded or freed while queued
         PROFILE_SCOPE("Build chunk");
         ChunkMeshData data;
         data.planetoidId = id;
@@ -363,19 +376,32 @@ static void UpdateLod(Planetoid& p, Vector3 cameraRender) {
     }
 
     // Previously drawn nodes that are no longer desired, kept while a desired overlap is pending.
+    // Overlap tests walk ancestors through hash sets (comparing every drawn node with every desired
+    // one cost ~3 ms a frame with thousands of nodes while flying).
+    auto parentOf = [](const NodeKey& k) { return NodeKey{ k.level + 1, k.x >> 1, k.y >> 1, k.z >> 1 }; };
+    std::unordered_set<NodeKey> pendingDesired, pendingWithin; // pending nodes, and every node containing one
+    for (const NodeKey& d : desired) {
+        if (p.nodes.at(d)->ready) continue;
+        pendingDesired.insert(d);
+        for (NodeKey k = d; k.level <= p.rootLevel; k = parentOf(k))
+            if (!pendingWithin.insert(k).second) break; // its ancestors are in already
+    }
     std::vector<Chunk*> retained;
+    std::unordered_set<NodeKey> retainedSet;
     for (Chunk* c : p.drawList) {
         if (desiredSet.count(c->key)) continue;
-        for (const NodeKey& d : desired) {
-            if (d.overlaps(c->key) && !p.nodes.at(d)->ready) { retained.push_back(c); break; }
-        }
+        bool keep = pendingWithin.count(c->key) > 0;                // a pending desired node lies inside it
+        for (NodeKey k = parentOf(c->key); !keep && k.level <= p.rootLevel; k = parentOf(k))
+            keep = pendingDesired.count(k) > 0;                      // inside a pending desired node
+        if (keep) { retained.push_back(c); retainedSet.insert(c->key); }
     }
     std::vector<Chunk*> draw = retained;
     for (const NodeKey& d : desired) {
         Chunk* c = p.nodes.at(d).get();
         if (!c->ready) continue;
         bool coveredByCoarser = false;
-        for (Chunk* r : retained) if (r->key.level > d.level && r->key.contains(d)) { coveredByCoarser = true; break; }
+        if (!retainedSet.empty())
+            for (NodeKey k = parentOf(d); !coveredByCoarser && k.level <= p.rootLevel; k = parentOf(k)) coveredByCoarser = retainedSet.count(k) > 0;
         if (!coveredByCoarser) draw.push_back(c);
     }
     p.drawList = std::move(draw);
@@ -1029,3 +1055,15 @@ void loadWorld(Scene& world) {
     file.close();
 }
 
+
+bool IsUnderwater(Scene& world, Vector3 renderPoint) {
+    Planetoid* p = NearestPlanetoid(world, renderPoint);
+    if (!p || !p->field) return false;
+    const auto* pf = dynamic_cast<const PlanetField*>(p->field.get());
+    if (!pf) return false;
+    const Vector3 local = p->toLocal(renderPoint);
+    const float d = Vector3Length(local);
+    const float sea = pf->seaLevelRadius();
+    if (sea <= 0.0f || d >= sea || d < 1.0f) return false;
+    return d > pf->radius + pf->elevation(Vector3Scale(local, 1.0f / d)); // above the sea floor
+}

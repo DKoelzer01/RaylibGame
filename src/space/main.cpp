@@ -72,6 +72,8 @@ int main(int argc, char** argv)
     bool benchSaveLoad = false;  // --test-saveload: then save, reload from disk, and bench the reloaded world
     double benchWalkSeconds = 0.0; // --test-walk S: spawn on the surface and auto-walk forward for S seconds
     bool benchWalkMode = false;    // --bench-walk: the player walks forward for the whole bench (frame time while streaming)
+    float benchFlySpeed = 0.0f;    // --bench-fly V: the camera flies over body 0 at V m/s through the bench (LOD streaming)
+    float benchFlyAlt = 1e9f;      // --bench-fly-alt A: fly at A m relative to sea level instead (negative: underwater, looking up)
     bool hasSpawnDir = false;      // --spawn-dir x y z: where --test-walk / --test-stand spawn on body 0
     Vector3 spawnDir = { 0, 1, 0 };
     double walkStart = -1.0;
@@ -87,7 +89,7 @@ int main(int argc, char** argv)
     bool benchRide = false;        // --test-ride: stand on a spinning body, then jump
     bool benchPark = false;        // --test-park: park the ship on a spinning body
     bool sunOverride = false;      // --sun x y z: sun direction (e.g. to test night-side lighting)
-    int benchFps = 0;              // --fps N: cap the bench frame rate
+    int benchFps = -1;             // --fps N: cap the frame rate (0 = uncapped); default: bench uncapped, play at the monitor refresh rate
     bool lookDown = false;         // --look-down: tilt the player view toward the ground (lighting tests)
     Vector3 sunArg = { 1, 0, 0 };
     double parkStart = -1.0;
@@ -98,6 +100,11 @@ int main(int argc, char** argv)
     bool benchAirJump = false;     // --test-airjump: air control while jumping, jetpack fuel / suit power accounting
     float timeScale = 1.0f;        // --time-scale k: bodies spin and orbit k times faster (testing)
     bool benchMoon = false;        // --test-moon: moon orbit vs analytic, standing and jumping on the moon
+    bool benchHole = false;        // --test-hole: walk into a fresh pit and build a pillar underfoot on the spinning planet
+    int holePhase = 0;
+    double holeStart = -1.0;
+    float holeMaxImpact = 0.0f, holeMinHealth = 100.0f;
+    Vector3 holeRim = { 0, 0, 0 };
     double moonStart = -1.0; int moonPhase = 0; DVec3 moonLocal0{}, moonTakeoff{}; bool moonAirborne = false;
     double airStart = -1.0; int airPhase = 0; float airDist = 0.0f, airTime = 0.0f, airFuel0 = 0.0f, airPower0 = 0.0f, airPowerAir = 0.0f;
     Vector3 airPrevLocal{};
@@ -144,6 +151,8 @@ int main(int argc, char** argv)
         if (std::string(argv[i]) == "--test-walk" && i + 1 < argc) benchWalkSeconds = atof(argv[i + 1]);
         if (std::string(argv[i]) == "--test-planet-walk" && i + 1 < argc) { walkTargetM = atof(argv[i + 1]); benchWalkSeconds = 600.0; } // gate: 1 km on the planet
         if (std::string(argv[i]) == "--bench-walk") benchWalkMode = true;
+        if (std::string(argv[i]) == "--bench-fly" && i + 1 < argc) benchFlySpeed = (float)atof(argv[i + 1]);
+        if (std::string(argv[i]) == "--bench-fly-alt" && i + 1 < argc) benchFlyAlt = (float)atof(argv[i + 1]);
         if (std::string(argv[i]) == "--spawn-dir" && i + 3 < argc) { hasSpawnDir = true; spawnDir = Vector3Normalize({ (float)atof(argv[i + 1]), (float)atof(argv[i + 2]), (float)atof(argv[i + 3]) }); }
         if (std::string(argv[i]) == "--test-suffocate") benchSuffocate = true;
         if (std::string(argv[i]) == "--test-orbit" && i + 1 < argc) benchOrbitSeconds = atof(argv[i + 1]);
@@ -157,6 +166,7 @@ int main(int argc, char** argv)
         if (std::string(argv[i]) == "--test-mantle") benchMantle = true;
         if (std::string(argv[i]) == "--test-airjump") benchAirJump = true;
         if (std::string(argv[i]) == "--test-moon") benchMoon = true;
+        if (std::string(argv[i]) == "--test-hole") benchHole = true;
         if (std::string(argv[i]) == "--time-scale" && i + 1 < argc) timeScale = (float)atof(argv[i + 1]);
         if (std::string(argv[i]) == "--crack-check") crackCheck = true;
         if (std::string(argv[i]) == "--no-foliage") foliageEnabled = false;
@@ -233,15 +243,15 @@ int main(int argc, char** argv)
 
     SetConfigFlags(FLAG_MSAA_4X_HINT);
     if (!bench) {
-        SetConfigFlags(FLAG_VSYNC_HINT); // Enable VSync for smoother rendering
         SetConfigFlags(FLAG_WINDOW_RESIZABLE); // Allow window resizing
         SetConfigFlags(FLAG_WINDOW_UNDECORATED); // Remove window decorations for a cleaner look
         SetConfigFlags(FLAG_WINDOW_HIGHDPI); // Enable High DPI support
         InitWindow(GetMonitorWidth(0), GetMonitorHeight(0), "My first RAYLIB program!");
-        SetTargetFPS(60);
+        // No VSync: cap at the monitor's refresh rate instead (VSync on a 60 Hz desktop locked the game to 60).
+        SetTargetFPS(benchFps >= 0 ? benchFps : std::max(60, GetMonitorRefreshRate(GetCurrentMonitor())));
     } else {
         InitWindow(1920, 1080, "RaylibGame bench");
-        SetTargetFPS(benchFps); // --fps N caps it (frame-rate-dependence checks); 0 = uncapped
+        SetTargetFPS(std::max(0, benchFps)); // --fps N caps it (frame-rate-dependence checks); 0 = uncapped
     }
     SetExitKey(KEY_NULL);
     SetTraceLogLevel(LOG_WARNING); // Set log level to warning to reduce output noise
@@ -360,6 +370,52 @@ int main(int argc, char** argv)
                             benchOrbitSeconds = 0.0;
                         }
                     }
+                } else if (benchHole && (holePhase > 0 || WorldIdle())) { // edits keep the world busy: run on
+                    // --test-hole: on the spinning planet, dig a pit ahead and walk into it, then build a
+                    // pillar under your feet while jumping. Neither may hurt you (impacts are measured
+                    // against the moving terrain, not the world frame).
+                    Planetoid* p = dynamic_cast<Planetoid*>(world.objects[0].get());
+                    const double t = holeStart < 0.0 ? 0.0 : GetTime() - holeStart;
+                    holeMaxImpact = std::max(holeMaxImpact, player.impactSpeed);
+                    holeMinHealth = std::min(holeMinHealth, survival.health);
+                    const Vector3 feet = (player.position - world.renderOrigin).toFloat();
+                    if (holePhase == 0) {
+                        player.spawnOn(world, *p, StartSpawnDir(*p));
+                        holeStart = GetTime();
+                        holePhase = 1;
+                    } else if (holePhase == 1 && t > 1.5 && player.grounded) {
+                        // A 3 m wide, ~5 m deep pit starting 3 m ahead.
+                        const Vector3 flat = Vector3Normalize(Vector3Subtract(player.forward, Vector3Scale(player.up, Vector3DotProduct(player.forward, player.up))));
+                        for (int k = 0; k < 4; ++k)
+                            for (int s = 0; s < 3; ++s)
+                                ApplyTerrainEdit(*p, TerrainEdit{ p->toLocal(Vector3Add(feet, Vector3Add(Vector3Scale(flat, 3.5f + 1.5f * s), Vector3Scale(player.up, -1.2f * k)))), 1.8f, -10.0f });
+                        player.autoWalk = true;
+                        holePhase = 2;
+                        holeStart = GetTime();
+                    } else if (holePhase == 2 && t > 4.0) {
+                        player.autoWalk = false;
+                        printf("bench: walked into a fresh pit: worst impact %.1f m/s, health %.0f, deaths %d, %.1f m below the rim\n",
+                               holeMaxImpact, holeMinHealth, survival.deaths, Vector3DotProduct(Vector3Subtract(feet, holeRim), player.up) * -1.0f);
+                        holeMaxImpact = 0.0f;
+                        holePhase = 3;
+                        holeStart = GetTime();
+                    } else if (holePhase == 3 && t < 4.0) {
+                        // Build a pillar under the feet a stroke every 0.25 s, jumping now and then.
+                        static double nextStroke = 0.0;
+                        if (GetTime() >= nextStroke) {
+                            ApplyTerrainEdit(*p, TerrainEdit{ p->toLocal(Vector3Subtract(feet, Vector3Scale(player.up, 0.6f))), 1.6f, 6.0f });
+                            nextStroke = GetTime() + 0.25;
+                            if (((int)(t * 4.0)) % 4 == 0) player.autoJump = true;
+                        }
+                    } else if (holePhase == 3) {
+                        const bool pass = survival.deaths == 0 && holeMinHealth > 90.0f;
+                        printf("bench: built a pillar underfoot for 4 s: worst impact %.1f m/s, health %.0f, deaths %d, speed vs ground %.1f m/s: %s\n",
+                               holeMaxImpact, holeMinHealth, survival.deaths,
+                               Vector3Length(Vector3Subtract(player.velocity, player.grounded ? Vector3{ 0, 0, 0 } : p->surfaceVelocity(feet))),
+                               pass ? "PASS" : "FAIL");
+                        benchHole = false;
+                    }
+                    if (holePhase == 1) holeRim = feet;
                 } else if (benchMoon && WorldIdle()) {
                     // The moon (first body of kind moon, with an orbit): its position must match the
                     // analytic orbit; a player standing on it must stay put relative to it, and a jump must
@@ -841,7 +897,7 @@ int main(int argc, char** argv)
                         }
                         benchWalkSeconds = 0.0;
                     }
-                } else if ((WorldIdle() && benchDigStrokes == 0 && !benchSaveLoad && benchWalkSeconds <= 0.0 && benchMineStrokes == 0 && minePhase != 2 && benchFlySeconds <= 0.0 && !benchSuffocate && benchOrbitSeconds <= 0.0 && !benchRide && !benchPark && !benchGravity && !benchPrecision && !benchMantle && !benchAirJump && !benchMoon) || GetTime() > 180.0) {
+                } else if ((WorldIdle() && benchDigStrokes == 0 && !benchSaveLoad && benchWalkSeconds <= 0.0 && benchMineStrokes == 0 && minePhase != 2 && benchFlySeconds <= 0.0 && !benchSuffocate && benchOrbitSeconds <= 0.0 && !benchRide && !benchPark && !benchGravity && !benchPrecision && !benchMantle && !benchAirJump && !benchMoon && !benchHole) || GetTime() > 180.0) {
                     benchStart = GetTime();
                     printf("bench: world ready after %.2f s (%d chunks, avg build %.2f ms of which sampling %.2f ms, %d worker threads)\n",
                         GetWorldStats().lastGenerationSeconds, GetWorldStats().chunks, GetWorldStats().avgBuildMs, GetWorldStats().avgSampleMs, GetWorldStats().workerThreads);
@@ -853,6 +909,34 @@ int main(int argc, char** argv)
                 ++benchTimedFrames;
                 benchMeasuring = true;
                 if (GetFrameTime() > benchMaxFrame) benchMaxFrame = GetFrameTime();
+            }
+            if ((benchFlySpeed > 0.0f || benchFlyAlt < 1e8f) && benchStart >= 0.0) {
+                // --bench-fly V: the camera flies a great circle over body 0 at V m/s, 150 m above the
+                // terrain, looking ahead and down; node counts each second show whether LOD keeps up.
+                Planetoid* b = dynamic_cast<Planetoid*>(world.objects[0].get());
+                const auto* pf = b ? dynamic_cast<const PlanetField*>(b->field.get()) : nullptr;
+                if (pf) {
+                    const double ang = benchFlySpeed * t / (double)pf->radius;
+                    const Vector3 dir = { (float)cos(ang) * 0.8f, 0.6f, (float)sin(ang) * 0.8f };       // body-local, 37 deg north
+                    const Vector3 ahead = { -(float)sin(ang) * 0.8f, 0.0f, (float)cos(ang) * 0.8f };
+                    const float alt = benchFlyAlt < 1e8f ? pf->radius + benchFlyAlt : pf->radius + std::max(0.0f, pf->elevation(dir)) + 150.0f;
+                    const DVec3 pos = b->toWorldD(DVec3(Vector3Scale(dir, alt)));
+                    const float look = benchFlyAlt < 0.0f ? alt + 80.0f : alt - 60.0f; // underwater: look up at the surface
+                    const DVec3 tgt = b->toWorldD(DVec3(Vector3Add(Vector3Scale(dir, look), Vector3Scale(Vector3Normalize(ahead), 200.0f))));
+                    world.setCameraWorld(pos, tgt);
+                    world.camera.up = b->dirToWorld(dir);
+                    if (benchFlyAlt > 5000.0f && benchFlyAlt < 1e8f) { // high up: look down at the planet, a little off-centre
+                        world.setCameraWorld(pos, b->toWorldD(DVec3(Vector3Add(Vector3Scale(dir, pf->radius * 0.5f), Vector3Scale(Vector3Normalize(ahead), pf->radius * 0.3f)))));
+                        world.camera.up = b->dirToWorld(Vector3Normalize(ahead));
+                    }
+                    static int lastSec = -1;
+                    if ((int)t != lastSec) {
+                        lastSec = (int)t;
+                        const WorldStats& s = GetWorldStats();
+                        printf("bench: fly t=%2d s  %5.1f km flown  nodes %5d  drawn %4d  queued %4d  %.0f FPS\n", (int)t,
+                               benchFlySpeed * t / 1000.0, s.nodes, s.chunks, s.queuedJobs, (double)GetFPS());
+                    }
+                }
             }
             if (t > benchWarmup + benchSeconds) {
                 double avgMs = 1000.0 * benchSeconds / (double)benchFrames;
@@ -909,21 +993,24 @@ int main(int argc, char** argv)
                 Audio_Play(Sfx::Build, 0.4f, 1.2f);
             }
         }
-        advanceBodies(world, gameState == 1 ? GetFrameTime() * timeScale : 0.0f); // bodies only spin while playing; before riders update
+        // One clamped frame time for everything that moves (bodies, ship, player): clamping only the
+        // player let the ground spin away under it during a slow frame.
+        const float frameDt = std::min(GetFrameTime(), 0.1f);
+        advanceBodies(world, gameState == 1 ? frameDt * timeScale : 0.0f); // bodies only spin while playing; before riders update
         if (gameState == 1) {
             ship.lastImpact = 0.0f;
             if (ship.piloted) {
-                ship.update(world, gameInput && alive, GetFrameTime());
+                ship.update(world, gameInput && alive, frameDt);
                 ship.applyChaseCamera(world);
                 player.position = ship.position; // the pilot rides inside
                 player.velocity = ship.velocity;
             } else {
-                ship.update(world, false, GetFrameTime());
-                if (alive) player.update(world, gameInput, GetFrameTime());
+                ship.update(world, false, frameDt);
+                if (alive) player.update(world, gameInput, frameDt);
                 Survival_OnLanding(player.impactSpeed);
             }
             if (ship.piloted && ship.lastImpact > 12.0f) survival.health -= (ship.lastImpact - 12.0f) * 3.0f; // crash damage
-            Survival_Update(world, GetFrameTime(), gameInput);
+            Survival_Update(world, frameDt, gameInput);
             Objectives_Update(world);
             if (bench && lookDown && !ship.piloted) {
                 const Vector3 t = Vector3Subtract(player.forward, Vector3Scale(player.up, Vector3DotProduct(player.forward, player.up)));
