@@ -54,6 +54,12 @@ struct Player {
     void anchorTo(Planetoid& body);
     void update(Scene& world, bool inputEnabled, float dt);
     void applyToCamera(Scene& world) const;  // camera at the eye, looking along forward
+    // Fly mode follows the reference body (the nearest whose sphere of influence holds the camera):
+    // its spin and motion within 2 radii, its motion only further out. recordFly() runs after the
+    // camera's own input each frame (Scene::drawScene); update() then carries it with the body.
+    bool flyFollow = true;
+    void recordFly(Scene& world);
+    Planetoid* flyReference(Scene& world, bool& rotate) const;
 
 private:
     DVec3 groundLocal{};              // feet in the ground body's local space, double (follows its spin exactly)
@@ -68,6 +74,12 @@ private:
     Planetoid* airBody = nullptr;
     uint64_t airId = 0;
     DVec3 airLocal{};
+    uint64_t flyBodyId = 0;           // body the fly camera was recorded against (0: none)
+    bool flyRotate = false;
+    DVec3 flyLocal{}, flyBodyPos{};
+    Vector3 flyLocalFwd{}, flyLocalUp{};
+    DVec3 flyCarried{};               // the carried camera in double (float render space rounds it)
+    bool flyCarriedValid = false;
     void stepPhysics(Scene& world, float dt, Vector3 wishMove, bool jetUp, bool jetDown);
     float jumpBuffer = 0.0f; // seconds a jump press stays pending
     float coyote = 0.0f;     // seconds a jump is still allowed after leaving the ground
