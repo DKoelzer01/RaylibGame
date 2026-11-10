@@ -13,6 +13,7 @@
 #include "bodies.h"
 #include "foliage.h"
 #include "trees.h"
+#include "farsphere.h"
 
 // One octree LOD node of a planetoid's surface. Its mesh is built from the planetoid's density
 // field on a worker thread and only uploaded here.
@@ -106,6 +107,8 @@ public:
     // Model matrix for geometry positioned relative to a body-local anchor (foliage batches).
     Matrix localModel(const DVec3& anchorLocal, const DVec3& renderOrigin) const;
     std::unique_ptr<TreeSystem> trees;                   // planets with life: trees and bushes
+    std::unique_ptr<FarSphere> farSphere;                // planets and moons: drawn as a sphere from far away
+    bool useFarSphere(const RenderContext& ctx) const;  // far enough (zoom included) and baked
 
     float densityAt(Vector3 local) const; // includes edits; main-thread helper (raycasts)
     // Velocity (world units/s) of the body-fixed point currently at renderPoint, from the spin.
