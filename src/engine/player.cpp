@@ -281,12 +281,38 @@ bool Player::resolveCollisions(Scene&, Vector3& feet) {
     Planetoid& p = *nearest;
     bool onGround = false;
     const float offsets[2] = { radius, eyeHeight - radius };
-    for (int iter = 0; iter < 4; ++iter) {
+    // The linear estimate (iso - density) / |gradient| is only a distance where the density behaves
+    // like one; dig and build edits (big density steps) break that, and it reported contacts in open
+    // air that pushed up to 1 m per iteration, sometimes into the ground (the "wall launch"). So each
+    // contact is confirmed by sampling along the normal, the push is the measured penetration, and the
+    // total push in a frame is capped.
+    auto solid = [&](Vector3 c) { return p.densityAt(p.toLocal(c)) >= ISO_LEVEL; };
+    float pushBudget = 0.6f;
+    for (int iter = 0; iter < 4 && pushBudget > 0.0f; ++iter) {
         bool moved = false;
         for (float off : offsets) {
             float dist; Vector3 n;
-            if (!TerrainSurfaceDistance(p, Vector3Add(feet, Vector3Scale(up, off)), dist, n) || dist >= radius) continue;
-            const float push = std::min(radius - dist, 1.0f); // limit per iteration if deeply embedded
+            const Vector3 c = Vector3Add(feet, Vector3Scale(up, off));
+            if (!TerrainSurfaceDistance(p, c, dist, n) || dist >= radius) continue;
+            float push = 0.0f;
+            if (!solid(c)) {
+                // Centre in the open: is there solid ground within the radius along -n, and how far?
+                if (!solid(Vector3Subtract(c, Vector3Scale(n, radius)))) continue; // a false contact
+                float lo = 0.0f, hi = radius;                                       // lo open, hi solid
+                for (int k = 0; k < 6; ++k) {
+                    const float mid = 0.5f * (lo + hi);
+                    if (solid(Vector3Subtract(c, Vector3Scale(n, mid)))) hi = mid; else lo = mid;
+                }
+                push = radius - hi;
+            } else {
+                // Embedded: step out along the normal to open space.
+                float s = 0.05f;
+                while (s < 1.0f && solid(Vector3Add(c, Vector3Scale(n, s)))) s += 0.05f;
+                push = s + radius;
+            }
+            push = std::min(push, pushBudget);
+            if (push <= 1e-4f) continue;
+            pushBudget -= push;
             feet = Vector3Add(feet, Vector3Scale(n, push));
             const float vUpBefore = Vector3DotProduct(velocity, up);
             // Impact and push-out relative to the (moving) terrain: against the world-frame velocity a
