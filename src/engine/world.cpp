@@ -4,6 +4,7 @@
 #include "worldtypes.h"
 
 #include <raymath.h>
+#include <rlgl.h>
 #include <algorithm>
 #include <chrono>
 #include <cmath>
@@ -208,6 +209,15 @@ void Planetoid::drawTransparent(const RenderContext& ctx) {
     RenderContext c2 = ctx;
     c2.batch = &batch;
     for (Chunk* ch : drawList) ch->drawWater(c2, placer.model(ch->key));
+}
+
+void Planetoid::drawFoliage(const RenderContext& ctx) {
+    if (!isActive || drawList.empty() || !ctx.grassShader) return;
+    const ChunkPlacer placer(*this, ctx.renderOrigin);
+    const Vector3 c = (worldPos - ctx.renderOrigin).toFloat();
+    const float occluder[4] = { c.x, c.y, c.z, std::max(0.0f, radius - 60.0f) * scale }; // night side, as for terrain
+    rlSetUniform(ctx.grassOccluderLoc, occluder, RL_SHADER_UNIFORM_VEC4, 1);
+    for (Chunk* ch : drawList) if (ch->key.level == 0) ch->drawGrass(ctx, placer.model(ch->key));
 }
 
 void Planetoid::drawDepthOnly(const RenderContext& ctx) {

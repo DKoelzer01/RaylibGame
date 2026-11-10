@@ -93,6 +93,7 @@ void Chunk::releaseMesh() {
         MemFree(mesh.indices);
     }
     mesh = Mesh{};
+    Foliage_Release(grass);
     if (waterMesh.vaoId > 0) UnloadMesh(waterMesh);
     waterMesh = Mesh{};
 }
@@ -116,6 +117,7 @@ void Chunk::setMesh(const ChunkMeshData& data) {
         waterMesh.indices = CopyToRaylib(data.waterIndices);
         UploadMesh(&waterMesh, false);
     }
+    Foliage_Upload(grass, data.grass);
     if (data.positions.empty()) return; // node has no terrain surface
     mesh.vertexCount = (int)(data.positions.size() / 3);
     mesh.triangleCount = (int)(data.indices.size() / 3);
@@ -241,4 +243,15 @@ void Chunk::drawChunkDepth(const RenderContext& ctx, const Matrix& m) {
     if (!visible(ctx, m)) return;
     if (ctx.batch) ctx.batch->draw(mesh, m);
     else DrawMesh(mesh, *ctx.depthMaterial, m);
+}
+
+void Chunk::drawGrass(const RenderContext& ctx, const Matrix& m) {
+    if (!isActive || !grass.vao || !ctx.grassShader) return;
+    // Only near chunks: grass is gone (faded) by kGrassDrawDistance.
+    const float h = key.size() * 0.5f;
+    const Vector3 centre = Vector3Transform({ h, h, h }, m);
+    if (Vector3Distance(centre, ctx.cameraPos) > kGrassDrawDistance + h * 1.7320508f) return;
+    if (!visible(ctx, m)) return;
+    Foliage_Draw(grass, *ctx.grassShader, ctx.grassModelLoc, m);
+    if (ctx.drawCalls) ++*ctx.drawCalls;
 }

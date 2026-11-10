@@ -100,6 +100,7 @@ Scene::Scene(std::string name, bool isActive)
     depthMaterial = LoadMaterialDefault();
     waterMaterial = LoadMaterialDefault();
     water.reloadIfChanged(true);
+    grass.reloadIfChanged(true);
     atmosphereShader.reloadIfChanged(true);
     atmosphereDome = LoadModelFromMesh(GenMeshCube(1.0f, 1.0f, 1.0f));
 
@@ -218,6 +219,7 @@ void Scene::drawScene(int gamestate) {
     if (lighting.reloadIfChanged()) applyLightingShader();
     if (depth.reloadIfChanged()) depthMaterial.shader = depth.shader;
     water.reloadIfChanged();
+    grass.reloadIfChanged();
     atmosphereShader.reloadIfChanged();
 
     if (IsKeyPressed(KEY_F3)) debugDraw = !debugDraw;
@@ -401,6 +403,37 @@ void Scene::drawScene(int gamestate) {
         for (const auto& obj : objects) if (obj && !isFar(obj.get())) obj->draw(ctx);
         for (const auto& obj : rootObject.children) if (obj) obj->draw(ctx);
 
+        // Foliage: grass tufts on near chunks (instanced; one draw per chunk with grass in range).
+        if (grass.shader.id > 0 && foliageEnabled) {
+            rlDrawRenderBatchActive();
+            Shader& gs = grass.shader;
+            rlEnableShader(gs.id);
+            const Matrix vp = MatrixMultiply(rlGetMatrixModelview(), rlGetMatrixProjection());
+            rlSetUniformMatrix(GetShaderLocation(gs, "matViewProj"), vp);
+            const float now = (float)fmod(GetTime(), 3600.0);
+            const float fadeEnd = kGrassDrawDistance;
+            const float shell[4] = { atmosphere.centre.x, atmosphere.centre.y, atmosphere.centre.z,
+                                     atmosphere.enabled && effFogDensity < 0.06f ? atmosphere.radius + atmosphere.hazeHeight : 0.0f };
+            rlSetUniform(GetShaderLocation(gs, "sunDir"), &sun, RL_SHADER_UNIFORM_VEC3, 1);
+            rlSetUniform(GetShaderLocation(gs, "viewPos"), &camera.position, RL_SHADER_UNIFORM_VEC3, 1);
+            rlSetUniform(GetShaderLocation(gs, "ambient"), &effAmbient, RL_SHADER_UNIFORM_VEC3, 1);
+            rlSetUniform(GetShaderLocation(gs, "fogColor"), &effFog, RL_SHADER_UNIFORM_VEC3, 1);
+            rlSetUniform(GetShaderLocation(gs, "fogDensity"), &effFogDensity, RL_SHADER_UNIFORM_FLOAT, 1);
+            rlSetUniform(GetShaderLocation(gs, "fogShell"), shell, RL_SHADER_UNIFORM_VEC4, 1);
+            rlSetUniform(GetShaderLocation(gs, "time"), &now, RL_SHADER_UNIFORM_FLOAT, 1);
+            rlSetUniform(GetShaderLocation(gs, "fadeEnd"), &fadeEnd, RL_SHADER_UNIFORM_FLOAT, 1);
+            RenderContext gctx = ctx;
+            gctx.grassShader = &gs;
+            gctx.grassModelLoc = GetShaderLocation(gs, "matModel");
+            gctx.grassOccluderLoc = GetShaderLocation(gs, "sunOccluder");
+            gctx.cameraPos = camera.position;
+            rlDisableBackfaceCulling();
+            for (const auto& obj : objects)
+                if (auto* p = dynamic_cast<Planetoid*>(obj.get()); p && !isFar(p)) p->drawFoliage(gctx);
+            rlEnableBackfaceCulling();
+            rlDisableShader();
+        }
+
         // Transparent pass (sea surfaces) after everything opaque. Depth writes stay on: where LOD
         // nodes overlap, the second copy of the same surface then fails the depth test instead of
         // blending twice. Both faces are drawn (seen from under the water too).
@@ -481,6 +514,7 @@ Scene::~Scene() {
     lighting.unload();
     depth.unload();
     water.unload();
+    grass.unload();
     atmosphereShader.unload();
     UnloadShadowmapRenderTexture(shadowMap);
 }

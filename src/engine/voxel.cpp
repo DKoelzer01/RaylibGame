@@ -1,4 +1,5 @@
 #include "voxel.h"
+#include "foliage.h"
 #include "cubemarch.h"
 
 #include <raymath.h>
@@ -585,5 +586,6 @@ void BuildChunkMesh(const DensityField& field, const EditList& allEdits, ChunkMe
             if (out.waterPositions.size() / 3 > 65535) { out.waterPositions.clear(); out.waterNormals.clear(); out.waterIndices.clear(); }
         }
     }
+    ScatterGrass(field, out); // foliage: grass tufts on the finest level (in the build time)
     out.buildMs = std::chrono::duration<float, std::milli>(std::chrono::steady_clock::now() - t0).count();
 }

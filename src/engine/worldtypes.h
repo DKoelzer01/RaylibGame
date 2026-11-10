@@ -10,6 +10,7 @@
 #include "object.h"
 #include "voxel.h"
 #include "bodies.h"
+#include "foliage.h"
 
 // One octree LOD node of a planetoid's surface. Its mesh is built from the planetoid's density
 // field on a worker thread and only uploaded here.
@@ -17,6 +18,7 @@ class Chunk : public Object {
 public:
     Mesh mesh{};          // GPU mesh (empty if the node contains no surface)
     Mesh waterMesh{};     // sea surface in this node (empty if none)
+    FoliageGpu grass{};   // grass tufts (finest level only)
     NodeKey key{};
     bool ready = false;   // a build result has arrived at least once
     // Body-local upper bound for fragments. Nodes overlap their +x/+y/+z neighbours by one cell to
@@ -35,6 +37,7 @@ public:
     void drawChunk(const RenderContext& ctx, const Matrix& model);
     void drawChunkDepth(const RenderContext& ctx, const Matrix& model);
     void drawWater(const RenderContext& ctx, const Matrix& model);  // with ctx.batch bound to the water material
+    void drawGrass(const RenderContext& ctx, const Matrix& model);  // grass shader bound (Planetoid::drawFoliage)
 
 private:
     void releaseMesh();
@@ -84,6 +87,7 @@ public:
     void draw(const RenderContext& ctx) override;
     void drawDepthOnly(const RenderContext& ctx) override;
     void drawTransparent(const RenderContext& ctx) override; // sea surface
+    void drawFoliage(const RenderContext& ctx);             // grass (ctx.grassShader bound)
 
     // World (render-relative) <-> planetoid-local (voxel) space.
     Vector3 toLocal(Vector3 world) const;

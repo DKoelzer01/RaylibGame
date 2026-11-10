@@ -208,6 +208,7 @@ struct ChunkMeshData {
     std::vector<float> waterPositions;     // sea surface where it meets open air (same frame as positions)
     std::vector<float> waterNormals;
     std::vector<unsigned short> waterIndices;
+    std::vector<float> grass;              // grass tufts (foliage.h: kGrassFloats each), finest level only
     std::vector<unsigned short> indices;
     bool overflow = false;                 // > 65535 vertices: mesh dropped
     float buildMs = 0.0f;
