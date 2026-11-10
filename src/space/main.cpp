@@ -133,6 +133,11 @@ int main(int argc, char** argv)
     bool benchHole = false;        // --test-hole: walk into a fresh pit and build a pillar underfoot on the spinning planet
     bool benchWall = false;        // --test-wall: walk into shaft and tunnel walls (no launches)
     bool benchMenus = false;       // --test-menus: main menu, new game, pause, save & quit, load
+    bool benchWater = false;       // --test-water: rivers and ponds near the start, their beds and clay
+    int waterPhase = 0;
+    double waterStart = 0.0;
+    Vector3 waterDir{};
+    float waterLevel = 0.0f;
     int menuStep = 0, menuFrames = 0;
     bool menuOk = true;
     int wallPhase = 0;
@@ -234,6 +239,7 @@ int main(int argc, char** argv)
         if (std::string(argv[i]) == "--test-hole") benchHole = true;
         if (std::string(argv[i]) == "--test-wall") benchWall = true;
         if (std::string(argv[i]) == "--test-menus") benchMenus = true;
+        if (std::string(argv[i]) == "--test-water") benchWater = true;
         if (std::string(argv[i]) == "--test-trees") benchTrees = true;
         if (std::string(argv[i]) == "--test-chop") benchChop = true;
         if (std::string(argv[i]) == "--test-persist" && i + 1 < argc) benchPersist = atoi(argv[i + 1]);
@@ -329,7 +335,7 @@ int main(int argc, char** argv)
     }
     SetExitKey(KEY_NULL);
     SetTraceLogLevel(LOG_WARNING); // Set log level to warning to reduce output noise
-    rlSetClipPlanes(0.15, 60000.0); // space scale: see other bodies kilometres away; 0.15 m keeps walls out of the near plane at the player radius
+    rlSetClipPlanes(0.5, 60000.0); // space scale: see other bodies kilometres away (0.2 m near walls: see the frame loop)
     
     DebugUI_Init();
     if (!bench) Audio_Init();
@@ -809,6 +815,60 @@ int main(int argc, char** argv)
                         printf("bench: wall shove 9 s: largest frame move %.2f m (at %.1f s), top speed vs ground %.1f m/s, worst impact %.1f m/s, health %.0f, deaths %d: %s\n",
                                wallMaxStep, wallMaxStepAt, wallMaxSpeed, wallMaxImpact, wallMinHealth, survival.deaths, pass ? "PASS" : "FAIL");
                         benchWall = false;
+                    }
+                } else if (benchWater && (waterPhase > 0 || WorldIdle())) {
+                    // --test-water: inland water near the start (rivers, ponds): find some, look at it
+                    // (bench_water.png), dig its bed for clay, and check the underwater test inside it.
+                    Planetoid* p = dynamic_cast<Planetoid*>(world.objects[0].get());
+                    const PlanetField* pf = p ? dynamic_cast<const PlanetField*>(p->field.get()) : nullptr;
+                    if (!pf) { printf("bench: --test-water needs the planet\n"); benchWater = false; }
+                    else if (waterPhase == 0) {
+                        const Vector3 home = pf->findSpawnDir(p->seed); // around the start (the bench camera may be over the sea)
+                        const Vector3 t1 = Vector3Normalize(Vector3CrossProduct(home, { 0, 1, 0 })), t2 = Vector3CrossProduct(t1, home);
+                        int wet = 0, samples = 0;
+                        float best = 1e30f;
+                        for (float e = -4000.0f; e <= 4000.0f; e += 20.0f)
+                            for (float n = -4000.0f; n <= 4000.0f; n += 20.0f) {
+                                const Vector3 d = Vector3Normalize(Vector3Add(home, Vector3Add(Vector3Scale(t1, e / pf->radius), Vector3Scale(t2, n / pf->radius))));
+                                ++samples;
+                                if (!pf->inlandWaterNear(d, 0.0f)) continue;
+                                const float w = pf->waterElevation(d);
+                                if (w == PlanetField::kNoWater || w <= 0.0f || pf->elevation(d) >= w - 0.2f) continue;
+                                ++wet;
+                                if (pf->elevation(d) > w - 1.0f) continue; // look at (and dig) a spot at least 1 m deep
+                                const float dist = sqrtf(e * e + n * n);
+                                if (dist < best) { best = dist; waterDir = d; waterLevel = w; }
+                            }
+                        printf("bench: water: %.2f%% of 64 km^2 around the start is inland water (%d of %d samples); nearest %.0f m away\n", 100.0f * wet / samples, wet, samples, best);
+                        if (best > 1e29f) { printf("bench: water: FAIL (none)\n"); benchWater = false; }
+                        else { waterPhase = 1; waterStart = GetTime(); player.flyMode = true; sunOverride = true; } // daylight for the picture
+                    } else {
+                        // Camera 22 m above the water, 30 m off to one side, looking at it.
+                        const Vector3 t1 = Vector3Normalize(Vector3CrossProduct(waterDir, { 0, 1, 0 }));
+                        const Vector3 at = Vector3Scale(waterDir, pf->radius + waterLevel);
+                        const Vector3 eye = Vector3Add(Vector3Scale(waterDir, pf->radius + waterLevel + 22.0f), Vector3Scale(t1, 30.0f));
+                        world.camera.position = p->toWorld(eye);
+                        world.camera.target = p->toWorld(at);
+                        world.camera.up = p->dirToWorld(waterDir);
+                        sunArg = p->dirToWorld(Vector3Normalize(Vector3Add(waterDir, Vector3Scale(t1, -0.6f))));
+                        player.position = world.renderOrigin + world.camera.position;
+                        if (waterPhase == 1 && GetTime() - waterStart > 3.0 && WorldIdle()) {
+                            TakeScreenshot("bench_water.png");
+                            const Vector3 inside = Vector3Scale(waterDir, pf->radius + waterLevel - 0.3f);
+                            const bool under = IsUnderwater(world, p->toWorld(inside));
+                            const bool above = IsUnderwater(world, p->toWorld(Vector3Scale(waterDir, pf->radius + waterLevel + 1.0f)));
+                            const float bedE = pf->elevation(waterDir);
+                            const Vector3 bed = Vector3Scale(waterDir, pf->radius + bedE - 0.5f);
+                            const float base = pf->baseDensity(bed);
+                            const VoxelMaterial m = pf->material(bed, base);
+                            const int clay0 = inventory.count("clay");
+                            for (int k = 0; k < 12; ++k) TerrainTool_DigAt(*p, Vector3Subtract(bed, Vector3Scale(waterDir, 0.4f * k)));
+                            const int clay = inventory.count("clay") - clay0;
+                            const bool pass = under && !above && clay > 0 && (m == VoxelMaterial::Sand || m == VoxelMaterial::Gravel);
+                            printf("bench: water: surface %.1f m, bed %.1f m (%s); underwater 0.3 m down: %s, 1 m up: %s; 12 digs in the bed: %d clay -> %s\n",
+                                   waterLevel, bedE, VoxelMaterialName(m), under ? "yes" : "no", above ? "yes" : "no", clay, pass ? "PASS" : "FAIL");
+                            benchWater = false;
+                        }
                     }
                 } else if (benchHole && (holePhase > 0 || WorldIdle())) { // edits keep the world busy: run on
                     // --test-hole: on the spinning planet, dig a pit ahead and walk into it, then build a
@@ -1337,7 +1397,7 @@ int main(int argc, char** argv)
                         }
                         benchWalkSeconds = 0.0;
                     }
-                } else if ((WorldIdle() && benchDigStrokes == 0 && !benchSaveLoad && benchWalkSeconds <= 0.0 && benchMineStrokes == 0 && minePhase != 2 && benchFlySeconds <= 0.0 && !benchSuffocate && benchOrbitSeconds <= 0.0 && !benchRide && !benchPark && !benchGravity && !benchPrecision && !benchMantle && !benchAirJump && !benchMoon && !benchHole && !benchWall && !benchMenus && !benchTrees && !benchChop && benchPersist == 0 && benchBuild == 0 && benchFactory == 0 && !benchProgression) || GetTime() > 600.0) {
+                } else if ((WorldIdle() && benchDigStrokes == 0 && !benchSaveLoad && benchWalkSeconds <= 0.0 && benchMineStrokes == 0 && minePhase != 2 && benchFlySeconds <= 0.0 && !benchSuffocate && benchOrbitSeconds <= 0.0 && !benchRide && !benchPark && !benchGravity && !benchPrecision && !benchMantle && !benchAirJump && !benchMoon && !benchHole && !benchWall && !benchMenus && !benchWater && !benchTrees && !benchChop && benchPersist == 0 && benchBuild == 0 && benchFactory == 0 && !benchProgression) || GetTime() > 600.0) {
                     benchStart = GetTime();
                     printf("bench: world ready after %.2f s (%d chunks, avg build %.2f ms of which sampling %.2f ms, %d worker threads)\n",
                         GetWorldStats().lastGenerationSeconds, GetWorldStats().chunks, GetWorldStats().avgBuildMs, GetWorldStats().avgSampleMs, GetWorldStats().workerThreads);
@@ -1416,6 +1476,22 @@ int main(int argc, char** argv)
         }
         const bool uiOpen = DebugUI_IsOpen() || GameUI_InventoryOpen();
         if (!bench && !telescope.active && !DebugUI_IsOpen()) world.camera.fovy = settings.fov; // Settings (the telescope zooms from it)
+        // Near plane: 0.5 m keeps depth precision out to the 2 km pass split, but the frustum corners
+        // then sit 0.65 m from the eye, past the 0.45 m player radius, so walls clipped into view.
+        // Close to terrain or a build it drops to 0.2 m (looking at a wall, far precision matters less).
+        {
+            float nearPlane = 0.5f;
+            if (Planetoid* nb = world.objects.empty() ? nullptr : NearestPlanetoid(world, world.camera.position)) { // (player.nearest can be stale right after a load)
+                float dist; Vector3 n;
+                if (TerrainSurfaceDistance(*nb, world.camera.position, dist, n) && dist < 2.0f) nearPlane = 0.2f;
+                if (nearPlane > 0.2f && nb->plots)
+                    for (auto& pl : nb->plots->plots) {
+                        Vector3 c = nb->toLocal(world.camera.position), nl;
+                        if (pl->collideSphere(c, 2.0f / nb->scale, nl)) { nearPlane = 0.2f; break; }
+                    }
+            }
+            rlSetClipPlanes(nearPlane, 60000.0);
+        }
         const bool gameInput = !bench && !uiOpen && gameState == 1;
         world.cameraInputEnabled = player.flyMode && !uiOpen && !ship.piloted;  // free-fly camera only in fly mode
         const bool alive = !survival.dead;

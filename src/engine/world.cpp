@@ -1305,6 +1305,14 @@ bool IsUnderwater(Scene& world, Vector3 renderPoint) {
     const Vector3 local = p->toLocal(renderPoint);
     const float d = Vector3Length(local);
     const float sea = pf->seaLevelRadius();
-    if (sea <= 0.0f || d >= sea || d < 1.0f) return false;
-    return d > pf->radius + pf->elevation(Vector3Scale(local, 1.0f / d)); // above the sea floor
+    if (sea <= 0.0f || d < 1.0f) return false;
+    const Vector3 dir = Vector3Scale(local, 1.0f / d);
+    // The water surface here: the sea, or a river or pond above it.
+    float surface = sea;
+    if (d >= sea && pf->inlandWaterNear(dir, 0.0f)) {
+        const float w = pf->waterElevation(dir);
+        if (w != PlanetField::kNoWater) surface = std::max(surface, sea + w);
+    }
+    if (d >= surface) return false;
+    return d > pf->radius + pf->elevation(dir); // above the bed
 }
