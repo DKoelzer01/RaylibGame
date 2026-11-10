@@ -79,7 +79,11 @@ void Player::update(Scene& world, bool inputEnabled, float dt) {
     // balance point between bodies) it is left alone so the view doesn't spin; in the air it turns
     // at most 2 rad/s. On the ground it follows exactly, so walking around a body stays continuous.
     {
-        const Vector3 g = GravityAt(world, feet);
+        // Felt gravity: near a body on an orbit, it and everything on it fall freely around its parent,
+        // so subtract the body's own acceleration (the outside gravity at its centre). Otherwise the
+        // parent's pull would tilt "up" (~4 deg on the moon) and jumps would go out sideways.
+        Vector3 g = GravityAt(world, feet);
+        if (nearest && nearest->orbitParent) g = Vector3Subtract(g, GravityAt(world, nearest->position));
         const float gl = Vector3Length(g);
         Vector3 newUp = up;
         if (nearest && nearest->flat) newUp = { 0, 1, 0 };

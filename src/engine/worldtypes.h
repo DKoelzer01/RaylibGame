@@ -48,6 +48,14 @@ public:
     float gravityRadius = 0.0f;                          // mean surface: inverse-square outside, linear inside
     float radius;
     Vector3 spin = { 0, 0, 0 };                          // degrees per second about X/Y/Z
+    // Circular orbit around another body (bodies.txt orbit=): advanced analytically from the world
+    // clock in advanceBodies(), in the parent's equatorial (XZ) plane. orbitParent is validated by id.
+    Planetoid* orbitParent = nullptr;
+    uint64_t orbitParentId = 0;
+    double orbitRadius = 0.0;   // from the parent's centre (m)
+    double orbitRate = 0.0;     // rad/s, from the parent's gravity: sqrt(GM / r^3)
+    double orbitPhase = 0.0;    // rad at world time 0
+    Vector3 linearVelocity = { 0, 0, 0 }; // m/s of the body itself (orbit), part of its surface velocity
     std::shared_ptr<const DensityField> field;           // immutable, shared with workers
     // Flat (open-world) bodies: +Y up, constant gravity, LOD tiled around the camera within the
     // height band [minHeight, maxHeight] instead of a sphere of `radius`.

@@ -68,7 +68,9 @@ void loadWorld(Scene& world);          // extra objects from assets/scenes/world
 
 // Per frame: requests chunks for new planetoids and uploads finished meshes (time-boxed).
 // advanceTime = false while paused: streaming/uploads continue but bodies stop spinning.
-void advanceBodies(Scene& world, float dt);  // spin bodies; call BEFORE updating anything that rides them
+void advanceBodies(Scene& world, float dt);  // spin and orbit bodies; call BEFORE updating anything that rides them
+double WorldTime();                          // seconds of simulated time (advances only while playing; saved)
+void SetWorldTime(double t);
 void worldUpdate(Scene& world, float uploadBudgetMs = 3.0f); // LOD, streaming, uploads
 bool WorldIdle();                      // no queued/running jobs and nothing left to upload
 const WorldStats& GetWorldStats();

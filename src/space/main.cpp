@@ -66,6 +66,9 @@ int main(int argc, char** argv)
     bool benchPrecision = false;   // --test-precision: float vs double placement error on body 0 (use a large body)
     bool benchMantle = false;      // --test-mantle: planet terrain checks on body 0 (height band, mantle, ore, caves)
     bool benchAirJump = false;     // --test-airjump: air control while jumping, jetpack fuel / suit power accounting
+    float timeScale = 1.0f;        // --time-scale k: bodies spin and orbit k times faster (testing)
+    bool benchMoon = false;        // --test-moon: moon orbit vs analytic, standing and jumping on the moon
+    double moonStart = -1.0; int moonPhase = 0; DVec3 moonLocal0{}, moonTakeoff{}; bool moonAirborne = false;
     double airStart = -1.0; int airPhase = 0; float airDist = 0.0f, airTime = 0.0f, airFuel0 = 0.0f, airPower0 = 0.0f, airPowerAir = 0.0f;
     Vector3 airPrevLocal{};
     bool crackCheck = false;       // --crack-check: no skybox, magenta clear; reports the share of magenta pixels
@@ -119,6 +122,8 @@ int main(int argc, char** argv)
         if (std::string(argv[i]) == "--test-precision") benchPrecision = true;
         if (std::string(argv[i]) == "--test-mantle") benchMantle = true;
         if (std::string(argv[i]) == "--test-airjump") benchAirJump = true;
+        if (std::string(argv[i]) == "--test-moon") benchMoon = true;
+        if (std::string(argv[i]) == "--time-scale" && i + 1 < argc) timeScale = (float)atof(argv[i + 1]);
         if (std::string(argv[i]) == "--crack-check") crackCheck = true;
         if (std::string(argv[i]) == "--sun" && i + 3 < argc) { sunOverride = true; sunArg = Vector3Normalize({ (float)atof(argv[i + 1]), (float)atof(argv[i + 2]), (float)atof(argv[i + 3]) }); }
         if (std::string(argv[i]) == "--look-down") lookDown = true;
@@ -314,6 +319,48 @@ int main(int argc, char** argv)
                             printf("bench: orbit after %.0f s: distance from centre %.1f..%.1f m, %s\n", GetTime() - orbitStart, orbitMin, orbitMax,
                                    orbitCrashed ? "CRASHED into the surface" : (orbitMax > 3.0f * R ? "ESCAPED" : "stable"));
                             benchOrbitSeconds = 0.0;
+                        }
+                    }
+                } else if (benchMoon && WorldIdle()) {
+                    // The moon (first body of kind moon, with an orbit): its position must match the
+                    // analytic orbit; a player standing on it must stay put relative to it, and a jump must
+                    // land near takeoff in its frame (the moon's orbital speed carries over on takeoff).
+                    Planetoid* moon = nullptr;
+                    for (auto& obj : world.objects)
+                        if (auto* q = dynamic_cast<Planetoid*>(obj.get())) if (q->kind == BodyKind::Moon && q->orbitParent) { moon = q; break; }
+                    if (!moon) { printf("bench: --test-moon needs an orbiting moon (e.g. --bodies resources/data/bodies_planet.txt)\n"); benchMoon = false; }
+                    else {
+                        const double t = moonStart < 0.0 ? 0.0 : GetTime() - moonStart;
+                        const DVec3 local = moon->toLocalD(player.position);
+                        if (moonPhase == 0) {
+                            player.spawnOn(world, *moon, Vector3Normalize({ 0.3f, 1.0f, 0.2f }));
+                            moonStart = GetTime();
+                            moonPhase = 1;
+                        } else if (moonPhase == 1 && t > 2.5 && player.grounded) {
+                            moonLocal0 = local;
+                            moonPhase = 2;
+                            moonStart = GetTime();
+                        } else if (moonPhase == 2 && t > 3.0) {
+                            const Planetoid* parent = moon->orbitParent;
+                            const double a = moon->orbitPhase + moon->orbitRate * WorldTime();
+                            const DVec3 expected = parent->worldPos + DVec3(cos(a) * moon->orbitRadius, 0.0, sin(a) * moon->orbitRadius);
+                            printf("bench: moon orbit: radius %.0f km, period %.2f h, speed %.1f m/s (expected %.1f); off the analytic orbit by %.3f m at t = %.1f s\n",
+                                   moon->orbitRadius / 1000.0, 2.0 * PI / moon->orbitRate / 3600.0, Vector3Length(moon->linearVelocity),
+                                   moon->orbitRate * moon->orbitRadius, (moon->worldPos - expected).length(), WorldTime());
+                            printf("bench: standing on the moon 3 s while it moved %.0f m: drift %.3f m relative to its surface (g %.2f m/s^2)\n",
+                                   3.0 * Vector3Length(moon->linearVelocity), (local - moonLocal0).length(), player.gravity);
+                            moonTakeoff = local;
+                            player.autoJump = true;
+                            moonAirborne = false;
+                            moonPhase = 3;
+                            moonStart = GetTime();
+                        } else if (moonPhase == 3) {
+                            if (!player.grounded) moonAirborne = true;
+                            else if (moonAirborne || t > 20.0) {
+                                printf("bench: jump on the moon: %.1f s in the air, landed %.2f m from takeoff in the moon's frame%s\n",
+                                       t, (local - moonTakeoff).length(), moonAirborne ? "" : " [never took off]");
+                                benchMoon = false;
+                            }
                         }
                     }
                 } else if (benchAirJump && WorldIdle()) {
@@ -746,7 +793,7 @@ int main(int argc, char** argv)
                                dist, benchWalkSeconds, 100.0 * walkGroundedFrames / std::max(1, walkFrames), walkMinDensity, walkMaxDensity, ISO_LEVEL, alt);
                         benchWalkSeconds = 0.0;
                     }
-                } else if ((WorldIdle() && benchDigStrokes == 0 && !benchSaveLoad && benchWalkSeconds <= 0.0 && benchMineStrokes == 0 && minePhase != 2 && benchFlySeconds <= 0.0 && !benchSuffocate && benchOrbitSeconds <= 0.0 && !benchRide && !benchPark && !benchGravity && !benchPrecision && !benchMantle && !benchAirJump) || GetTime() > 180.0) {
+                } else if ((WorldIdle() && benchDigStrokes == 0 && !benchSaveLoad && benchWalkSeconds <= 0.0 && benchMineStrokes == 0 && minePhase != 2 && benchFlySeconds <= 0.0 && !benchSuffocate && benchOrbitSeconds <= 0.0 && !benchRide && !benchPark && !benchGravity && !benchPrecision && !benchMantle && !benchAirJump && !benchMoon) || GetTime() > 180.0) {
                     benchStart = GetTime();
                     printf("bench: world ready after %.2f s (%d chunks, avg build %.2f ms of which sampling %.2f ms, %d worker threads)\n",
                         GetWorldStats().lastGenerationSeconds, GetWorldStats().chunks, GetWorldStats().avgBuildMs, GetWorldStats().avgSampleMs, GetWorldStats().workerThreads);
@@ -814,7 +861,7 @@ int main(int argc, char** argv)
                 Audio_Play(Sfx::Build, 0.4f, 1.2f);
             }
         }
-        advanceBodies(world, gameState == 1 ? GetFrameTime() : 0.0f); // bodies only spin while playing; before riders update
+        advanceBodies(world, gameState == 1 ? GetFrameTime() * timeScale : 0.0f); // bodies only spin while playing; before riders update
         if (gameState == 1) {
             ship.lastImpact = 0.0f;
             if (ship.piloted) {

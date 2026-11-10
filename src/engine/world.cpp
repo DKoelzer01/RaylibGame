@@ -148,16 +148,19 @@ float Planetoid::densityAt(Vector3 local) const {
 }
 
 Vector3 Planetoid::surfaceVelocity(Vector3 renderPoint) const {
-    if (spin.x == 0.0f && spin.y == 0.0f && spin.z == 0.0f) return { 0, 0, 0 };
-    // Differentiate the body transform numerically: where will this body-fixed point be in h seconds?
-    // Works for any spin axis (rotation is stored as Euler angles, so no closed-form omega).
-    const float h = 0.01f;
-    const Vector3 local = toLocal(renderPoint);
-    const Vector3 r1 = Vector3Add(rotation, Vector3Scale(spin, h));
-    Matrix m = MatrixScale(scale, scale, scale);
-    m = MatrixMultiply(m, MatrixRotateXYZ({ DEG2RAD * r1.x, DEG2RAD * r1.y, DEG2RAD * r1.z }));
-    m = MatrixMultiply(m, MatrixTranslate(position.x, position.y, position.z));
-    return Vector3Scale(Vector3Subtract(Vector3Transform(local, m), renderPoint), 1.0f / h);
+    // The body's own motion (orbit) plus its spin: omega x (point - centre). Omega comes from the
+    // rotation change over one second (rotation is Euler angles, so any spin axis works); taking it
+    // as a vector keeps this exact far from the centre (differentiating positions in float lost
+    // ~0.4 m/s at 60 km).
+    if (spin.x == 0.0f && spin.y == 0.0f && spin.z == 0.0f) return linearVelocity;
+    const Vector3 r1 = Vector3Add(rotation, spin);
+    const Quaternion q0 = rotationQuat();
+    const Quaternion q1 = QuaternionFromMatrix(MatrixRotateXYZ({ DEG2RAD * r1.x, DEG2RAD * r1.y, DEG2RAD * r1.z }));
+    Vector3 axis; float angle;
+    QuaternionToAxisAngle(QuaternionNormalize(QuaternionMultiply(q1, QuaternionInvert(q0))), &axis, &angle);
+    if (angle > PI) angle -= 2.0f * PI;
+    const Vector3 omega = Vector3Scale(axis, angle); // rad/s
+    return Vector3Add(linearVelocity, Vector3CrossProduct(omega, Vector3Subtract(renderPoint, position)));
 }
 
 Vector3 Planetoid::dirToLocal(Vector3 worldDir) const {
@@ -386,12 +389,34 @@ static bool AnyLodPending(Scene& world) {
     return false;
 }
 
+namespace { double worldTime = 0.0; }
+double WorldTime() { return worldTime; }
+void SetWorldTime(double t) { worldTime = t; }
+
+// Place an orbiting body for the current world time (its parent must already be placed).
+static void PlaceOnOrbit(Planetoid& p) {
+    if (!p.orbitParent || Planetoid::find(p.orbitParentId) != p.orbitParent) { p.orbitParent = nullptr; return; }
+    const Planetoid& parent = *p.orbitParent;
+    const double a = p.orbitPhase + p.orbitRate * worldTime;
+    const double c = cos(a), s = sin(a);
+    p.worldPos = parent.worldPos + DVec3(c * p.orbitRadius, 0.0, s * p.orbitRadius);
+    const double v = p.orbitRate * p.orbitRadius;
+    p.linearVelocity = Vector3Add(parent.linearVelocity, { (float)(-s * v), 0.0f, (float)(c * v) });
+}
+
 void advanceBodies(Scene& world, float dt) {
     // Runs at the start of the frame, before the player/ship update, so riders follow this
     // frame's transform (spinning here after they moved left them one frame behind the surface).
+    // Orbits are evaluated from the world clock (not integrated), so they never drift.
+    worldTime += dt;
+    bool moved = false;
     for (auto& obj : world.objects) {
-        if (auto* p = dynamic_cast<Planetoid*>(obj.get())) p->rotation = Vector3Add(p->rotation, Vector3Scale(p->spin, dt));
+        auto* p = dynamic_cast<Planetoid*>(obj.get());
+        if (!p) continue;
+        p->rotation = Vector3Add(p->rotation, Vector3Scale(p->spin, dt));
+        if (p->orbitParent) { PlaceOnOrbit(*p); moved = true; } // parents come first in the list
     }
+    if (moved) world.syncRenderPositions();
 }
 
 void worldUpdate(Scene& world, float uploadBudgetMs) {
@@ -689,17 +714,25 @@ void generateWorld(Scene& world) {
         const unsigned int drawnSeed = (unsigned int)gen();
         (void)unit(gen);                               // spin draw
         DVec3 pos = DVec3(d.position);
+        Planetoid* parent = nullptr;
         if (!d.orbitParent.empty()) {
-            // Static placement on the parent's equator for now; orbital motion is milestone 1 step 6.
             auto it = byName.find(d.orbitParent);
-            if (it != byName.end()) {
-                const Planetoid* parent = it->second;
-                const double r = parent->radius * parent->scale + d.orbitAltitude;
-                const double a = d.orbitPhaseDeg * DEG2RAD;
-                pos = parent->worldPos + DVec3(cos(a) * r, 0.0, sin(a) * r);
-            }
+            if (it != byName.end()) parent = it->second;
         }
         add(d, d.kind, d.name, pos, d.radius, d.hasSeed ? d.seed : drawnSeed, d.spinDegPerSec);
+        if (parent) {
+            // Circular orbit in the parent's equatorial plane at the speed its gravity gives:
+            // omega = sqrt(GM / r^3), GM = surface gravity * gravity radius^2.
+            Planetoid* p = byName[d.name];
+            const double gr = parent->gravityRadius > 0.0f ? parent->gravityRadius : parent->radius * parent->scale;
+            const double gm = parent->surfaceGravity * gr * gr;
+            p->orbitParent = parent;
+            p->orbitParentId = parent->id;
+            p->orbitRadius = parent->radius * parent->scale + d.orbitAltitude;
+            p->orbitRate = sqrt(gm / (p->orbitRadius * p->orbitRadius * p->orbitRadius));
+            p->orbitPhase = d.orbitPhaseDeg * DEG2RAD;
+            PlaceOnOrbit(*p);
+        }
     }
     world.syncRenderPositions();
     generationStart = GetTime();
@@ -730,9 +763,10 @@ bool SaveWorld(Scene& world) {
     const DVec3 tgtWorld = world.renderOrigin + world.camera.target;
     // v4: the system definition is stored in the save, so a save reloads the system it was made in
     // even if bodies.txt has changed since.
-    fprintf(f, "RAYLIBGAME_SAVE 4\n");
+    fprintf(f, "RAYLIBGAME_SAVE 5\n");
     fprintf(f, "seed %u\nbodies %zu\n", worldGen.lastSeed, worldGen.system.bodies.size());
     for (const BodyDef& b : worldGen.system.bodies) fprintf(f, "%s\n", FormatBodyDef(b).c_str());
+    fprintf(f, "time %.6f\n", worldTime); // v5: the world clock (orbits)
     fprintf(f, "camera %.6f %.6f %.6f %.6f %.6f %.6f\n", camWorld.x, camWorld.y, camWorld.z, tgtWorld.x, tgtWorld.y, tgtWorld.z);
     // Game-specific state (player, inventory, ...) written by whoever registered the hook.
     fprintf(f, "extras\n");
@@ -757,7 +791,7 @@ bool LoadWorldSave(Scene& world) {
     FILE* f = fopen(SAVE_PATH, "r");
     if (!f) return false;
     int version = 0;
-    if (fscanf(f, "RAYLIBGAME_SAVE %d", &version) != 1 || version < 2 || version > 4) {
+    if (fscanf(f, "RAYLIBGAME_SAVE %d", &version) != 1 || version < 2 || version > 5) {
         fclose(f);
         logger.logf("[World] %s: unsupported save version %d\n", SAVE_PATH, version);
         return false;
@@ -793,9 +827,12 @@ bool LoadWorldSave(Scene& world) {
         ok = fscanf(f, " seed %u count %d size %d system %f %f first %f %f %f", &seed, &count, &size, &systemRadius, &spin, &first.x, &first.y, &first.z) == 8;
         if (ok) sys = LegacySystemDef(count, size, systemRadius, spin, first);
     }
+    double savedTime = 0.0;
+    if (ok && version >= 5) ok = fscanf(f, " time %lf", &savedTime) == 1;
     ok = ok && fscanf(f, " camera %lf %lf %lf %lf %lf %lf", &c[0], &c[1], &c[2], &c[3], &c[4], &c[5]) == 6;
     if (!ok) { fclose(f); logger.logf("[World] %s: could not read the header\n", SAVE_PATH); return false; }
 
+    worldTime = savedTime; // before regenerating: orbiting bodies are placed for this time
     worldGen.seed = seed;
     worldGen.system = sys;
     worldGen.systemLoaded = true;

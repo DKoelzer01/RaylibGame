@@ -4,7 +4,8 @@
 #         ring                          `count` procedural asteroids around the origin
 # keys    radius=m                      body radius (ring: base size of its members)
 #         position=x,y,z                world position (m), or
-#         orbit=parent,altitude,phase   altitude (m) above a body defined above, phase in degrees
+#         orbit=parent,altitude,phase   circular orbit at altitude (m) above a body defined above, starting at
+#                                       phase (degrees) in its equatorial plane; the speed comes from its gravity
 #         spin=deg/s  or  day=seconds   rotation about the body's Y axis (day < 0: retrograde)
 #         gravity=auto or m/s^2         at the mean surface; auto: asteroids 3 + 0.03 R (max 9.81), planets/moons 9.81 R / 100 km
 #                                       (gravity is summed over every body: inverse-square outside, linear inside)

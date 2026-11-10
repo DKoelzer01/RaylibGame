@@ -115,7 +115,8 @@ frustum culling, `--test-dig N` carves a tunnel at the crosshair, `--test-savelo
 `--test-walk S` / `--test-stand S` spawn the player and walk/stand (reports grounding + penetration),
 `--test-mine N` digs N strokes at the feet, crafts everything possible and builds 3 strokes,
 `--test-fly S` autopilots the ship to the nearest other asteroid, `--test-suffocate` checks death/respawn,
-`--test-mantle` (planet terrain: height band, mantle refuses digging, ore by depth, caves; run with
+`--test-moon` (moon on its analytic orbit; standing and jumping on it), `--time-scale k` (bodies spin and orbit
+k times faster), `--test-mantle` (planet terrain: height band, mantle refuses digging, ore by depth, caves; run with
 `--bodies resources/data/bodies_planet.txt`), `--test-ride` (standing/jumping on a spinning body; `--ride-spin D` sets its rate), `--test-orbit S` (jetpack orbit stability),
 `--test-park` (parked ship rides a spinning body), `--test-gravity` (field values, continuity between
 bodies, an unpiloted ship dropping and parking, a piloted ship hovering), `--test-precision` (float vs double
