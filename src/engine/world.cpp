@@ -206,6 +206,12 @@ void Planetoid::draw(const RenderContext& ctx) {
     for (const auto& objPtr : children) objPtr->draw(ctx);
     if (farSphere && ctx.farShader) farSphere->ready(); // uploads the bake once it is done
     if (useFarSphere(ctx)) { farSphere->draw(*this, ctx, *ctx.farShader); return; }
+    if (plots && ctx.partShader) {
+        const Vector3 c = (worldPos - ctx.renderOrigin).toFloat();
+        const float occluder[4] = { c.x, c.y, c.z, (kind == BodyKind::Planet || kind == BodyKind::Moon) ? std::max(0.0f, radius - 60.0f) * scale : 0.0f };
+        SetShaderValue(*ctx.partShader, ctx.partOccluderLoc, occluder, SHADER_UNIFORM_VEC4);
+        for (auto& pl : plots->plots) pl->draw(*this, ctx, *ctx.partShader);
+    }
     if (drawList.empty() || !ctx.terrainMaterial) return;
     const ChunkPlacer placer(*this, ctx.renderOrigin);
     ChunkBatch batch(*ctx.terrainMaterial, ctx.terrainLayers, ctx.terrainLayersLoc); // bound once for all chunks
@@ -260,6 +266,7 @@ void Planetoid::drawFoliage(const RenderContext& ctx) {
 void Planetoid::drawDepthOnly(const RenderContext& ctx) {
     if (!isActive) return;
     for (const auto& objPtr : children) objPtr->drawDepthOnly(ctx);
+    if (plots && ctx.depthMaterial) for (auto& pl : plots->plots) pl->drawDepth(*this, ctx, *ctx.depthMaterial); // parts cast shadows
     if (drawList.empty() || !ctx.depthMaterial) return;
     const ChunkPlacer placer(*this, ctx.renderOrigin);
     ChunkBatch batch(*ctx.depthMaterial);
@@ -1058,7 +1065,7 @@ bool SaveWorld(Scene& world) {
     const DVec3 tgtWorld = world.renderOrigin + world.camera.target;
     // v4: the system definition is stored in the save, so a save reloads the system it was made in
     // even if bodies.txt has changed since.
-    fprintf(f, "RAYLIBGAME_SAVE 7\n");
+    fprintf(f, "RAYLIBGAME_SAVE 8\n");
     fprintf(f, "seed %u\nbodies %zu\n", worldGen.lastSeed, worldGen.system.bodies.size());
     for (const BodyDef& b : worldGen.system.bodies) fprintf(f, "%s\n", FormatBodyDef(b).c_str());
     fprintf(f, "time %.6f\n", worldTime); // v5: the world clock (orbits)
@@ -1084,6 +1091,8 @@ bool SaveWorld(Scene& world) {
         const PlantRemovals& rm = p->trees ? p->trees->removals() : none;
         fprintf(f, "plants %zu\n", rm.size());
         for (const auto& kv : rm) fprintf(f, "%llu %.3f\n", (unsigned long long)kv.first, kv.second);
+        // v8: build plots and their parts.
+        if (p->plots) p->plots->save(f); else fprintf(f, "plots 0\n");
         regionsWritten += SaveBodyRegions(*p, bodyIndex, dir);
     }
     fclose(f);
@@ -1186,6 +1195,10 @@ bool LoadWorldSave(Scene& world) {
                 plants[(uint64_t)id] = t;
             }
         }
+        // v8: build plots.
+        auto plots = std::make_unique<PlotSet>();
+        if (version >= 8 && !plots->load(f)) logger.logf("[World] %s: damaged plot data\n", SAVE_PATH);
+        if (body) body->plots = plots->plots.empty() ? nullptr : std::move(plots);
         if (body) {
             body->edits = deltas;
             body->rotation = rot;

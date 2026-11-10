@@ -34,6 +34,7 @@ generated in the build directory for IntelliSense/clangd.
 | WASD, Space, Ctrl | move (Shift/Alt = faster) |
 | LMB / RMB (hold) | dig / build terrain at the crosshair (build costs stone or regolith) |
 | Tab | inventory + crafting |
+| G | build mode (wheel part, R / V rotate, RMB place, LMB remove) |
 | L | headlamp (on foot: suit power; piloting: ship nose light) |
 | F | toggle free-fly camera (WASD along the view, Space/Ctrl along camera up, mouse turns, Q/E roll, Shift/Alt faster) |
 | Space | jump; hold for jetpack |
@@ -105,6 +106,12 @@ Shaders in `resources/` hot-reload when saved.
   atmosphere: sky colour by sun angle and altitude, dusk glow, stars at night and in space, haze with
   distance, and dense blue fog underwater. It is the default start system: you start on temperate
   grassland (picked from the seed), where the air is breathable below ~15 km (the suit refills its oxygen).
+- **Build plots** (`src/engine/plots.*`, `src/space/buildtool.*`): G toggles build mode. Parts snap to a 0.5 m grid on
+  a plot anchored where the first part goes (up = local gravity, north along the meridian); the wheel picks cube,
+  1 m block, slope, corner or a 1/2/4 m beam, R/V rotate (24 orientations), RMB places, LMB removes (refunded).
+  Parts cost concrete (also from stone + sand) or iron plate, lay their own foundations (terrain cleared inside,
+  small gaps to the ground filled), merge into one mesh per 8 m section with hidden faces culled, cast shadows,
+  collide with the player, and are saved.
 - **Distance sphere** (`src/engine/farsphere.*`): beyond 3 radii (telescope zoom included) planets and moons draw as a
   sphere with colour and normal maps baked on the workers from the height map and biome rules (sea by depth, forest
   canopy), lit by the sun with the night side and a sea glint, under the same haze as the terrain.
@@ -141,7 +148,8 @@ frustum culling, `--test-dig N` carves a tunnel at the crosshair, `--test-savelo
 `--test-walk S` / `--test-stand S` spawn the player and walk/stand (reports grounding + penetration),
 `--test-planet-walk M` walks M metres on body 0 and prints PASS/FAIL (milestone 1 gate: 1000),
 `--test-hole` (walk into a fresh pit, build a pillar underfoot), `--test-trees` (walk into a trunk), `--test-chop` (fell a tree, save/reload, regrow), `--test-persist N`
-(milestone 2 gate: N strokes, flat builds, save and load under a second), `--bench-fly V`
+(milestone 2 gate: N strokes, flat builds, save and load under a second), `--test-build N` (milestone 3 gate:
+N parts, standing on them, save/load, frame time with the factory in view), `--bench-fly V`
 / `--bench-fly-alt A` (camera flight over body 0, LOD streaming; negative A: underwater), `--no-foliage`,
 `--test-mine N` digs N strokes at the feet, crafts everything possible and builds 3 strokes,
 `--test-fly S` autopilots the ship to the nearest other asteroid, `--test-suffocate` checks death/respawn,

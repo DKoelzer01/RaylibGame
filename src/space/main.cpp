@@ -23,6 +23,7 @@
 #include "camera.h"
 #include "survival.h"
 #include "telescope.h"
+#include "buildtool.h"
 
 #if defined(PLATFORM_DESKTOP)
     #define GLSL_VERSION            330
@@ -105,6 +106,11 @@ int main(int argc, char** argv)
     bool benchTrees = false;       // --test-trees: walk into a tree trunk
     bool benchChop = false;        // --test-chop: fell a tree, save/reload, regrow
     int benchPersist = 0;          // --test-persist N: milestone 2 gate (N strokes, flat builds, fast save/load)
+    int benchBuild = 0;            // --test-build N: milestone 3 gate (N parts, standing on them, save/load, FPS)
+    int buildPhase = 0, buildPlaced = 0;
+    double buildStart = 0.0;
+    bool buildOk = false;
+    Plot* buildPlot = nullptr;
     int chopPhase = 0, chopSwings = 0, chopMisses = 0, chopWood0 = 0;
     double chopStart = 0.0;
     uint64_t chopId = 0;
@@ -183,6 +189,7 @@ int main(int argc, char** argv)
         if (std::string(argv[i]) == "--test-trees") benchTrees = true;
         if (std::string(argv[i]) == "--test-chop") benchChop = true;
         if (std::string(argv[i]) == "--test-persist" && i + 1 < argc) benchPersist = atoi(argv[i + 1]);
+        if (std::string(argv[i]) == "--test-build" && i + 1 < argc) benchBuild = atoi(argv[i + 1]);
         if (std::string(argv[i]) == "--time-scale" && i + 1 < argc) timeScale = (float)atof(argv[i + 1]);
         if (std::string(argv[i]) == "--crack-check") crackCheck = true;
         if (std::string(argv[i]) == "--no-foliage") foliageEnabled = false;
@@ -307,7 +314,7 @@ int main(int argc, char** argv)
     if (Planetoid* start = world.objects.empty() ? nullptr : dynamic_cast<Planetoid*>(world.objects[0].get()); start && start->trees)
         start->trees->addClearing(start->toLocal((player.position - world.renderOrigin).toFloat()), 14.0f);
     if (inventory.count("telescope") == 0) inventory.add("telescope", 1); // starting kit (a save restores its own inventory)
-    world.onDraw3D = [&world] { if (!ship.piloted) TerrainTool_Draw3D(); ship.draw(world); };
+    world.onDraw3D = [&world] { if (!ship.piloted && !buildTool.active) TerrainTool_Draw3D(); BuildTool_Draw3D(world); ship.draw(world); };
 
     const double benchWarmup = 2.0;
     double benchStart = 0.0, benchMaxFrame = 0.0;
@@ -568,6 +575,73 @@ int main(int argc, char** argv)
                         printf("bench: persist: chunk build %.2f ms before, %.2f ms after; save %.0f ms (full), %.0f ms (100 more strokes); load %.0f ms; reloaded identical: %s -> %s\n",
                                buildBefore, buildAfter, saveFull, saveIncr, loadMs, same ? "yes" : "NO", pass ? "PASS" : "FAIL");
                         benchPersist = 0;
+                    }
+                } else if (benchBuild > 0 && (buildPhase > 0 || WorldIdle())) {
+                    // --test-build N (milestone 3 gate): N parts on a plot by the start, the player standing
+                    // on them, a save/load round trip, then the frame rate with the factory in view.
+                    Planetoid* p = dynamic_cast<Planetoid*>(world.objects[0].get());
+                    if (buildPhase == 0) {
+                        player.spawnOn(world, *p, StartSpawnDir(*p));
+                        buildPhase = 1;
+                        buildStart = GetTime();
+                    } else if (buildPhase == 1 && GetTime() - buildStart > 1.0 && player.grounded) {
+                        using clk = std::chrono::steady_clock;
+                        const auto t0 = clk::now();
+                        const Vector3 feet = (player.position - world.renderOrigin).toFloat();
+                        const Vector3 flat = Vector3Normalize(Vector3Subtract(player.forward, Vector3Scale(player.up, Vector3DotProduct(player.forward, player.up))));
+                        TerrainHit th;
+                        const Vector3 above = Vector3Add(Vector3Add(feet, Vector3Scale(flat, 12.0f)), Vector3Scale(player.up, 20.0f));
+                        RaycastTerrain(world, Ray{ above, Vector3Negate(player.up) }, 60.0f, th);
+                        if (!p->plots) p->plots = std::make_unique<PlotSet>();
+                        Plot* plot = p->plots->plotFor(th.local, 0.0f, true);
+                        buildPlot = plot;
+                        std::mt19937 rng(11);
+                        int placed = 0, tries = 0;
+                        auto put = [&](PartType t, Int3 c, int o) { ++tries; if (BuildTool_Place(*p, *plot, { t, c, (uint8_t)o }, false)) ++placed; };
+                        // A 48 x 48 floor slab (cubes), walls 12 high round it, then a mix inside.
+                        for (int z = 0; z < 48 && placed < benchBuild; ++z) for (int x = 0; x < 48 && placed < benchBuild; ++x) put(PartType::Cube, { x, 0, z }, 0);
+                        for (int y = 1; y <= 12 && placed < benchBuild; ++y)
+                            for (int k = 0; k < 48 && placed < benchBuild; ++k) {
+                                put(PartType::Cube, { k, y, 0 }, 0); put(PartType::Cube, { k, y, 47 }, 0);
+                                put(PartType::Cube, { 0, y, k }, 0); put(PartType::Cube, { 47, y, k }, 0);
+                            }
+                        const PartType mix[6] = { PartType::Block, PartType::Beam4, PartType::Slope, PartType::Corner, PartType::Beam8, PartType::Cube };
+                        while (placed < benchBuild && tries < benchBuild * 20) {
+                            const Int3 c = { 2 + (int)(rng() % 44), 1 + (int)(rng() % 20), 2 + (int)(rng() % 44) };
+                            put(mix[rng() % 6], c, (int)(rng() % 24));
+                        }
+                        const double ms = std::chrono::duration<double, std::milli>(clk::now() - t0).count();
+                        printf("bench: build: %d parts placed in %.0f ms (%d tries), %zu cells on plot %u\n", placed, ms, tries, plot->cells.size(), plot->id);
+                        // A clear 6 x 6 pad outside the walls to stand on.
+                        for (int z = 0; z < 6; ++z) for (int x = -8; x < -2; ++x) put(PartType::Cube, { x, 0, z }, 0);
+                        buildPlaced = plot->partCount();
+                        // Stand on the slab: drop the player 2 m above a free corner of it.
+                        const Vector3 top = p->toWorld(plot->toBody({ -2.75f, 0.5f + 2.0f, 1.5f })); // over the pad
+                        player.placeAt(world, *p, top);
+                        player.velocity = p->surfaceVelocity(top);
+                        buildPhase = 2;
+                        buildStart = GetTime();
+                    } else if (buildPhase == 2 && GetTime() - buildStart > 2.0) {
+                        Plot* plot = buildPlot;
+                        const Vector3 lf = plot->toPlot(p->toLocal((player.position - world.renderOrigin).toFloat()));
+                        const bool standing = player.grounded && fabsf(lf.y - 0.5f) < 0.15f;
+                        printf("bench: build: the player stands on the slab: %s (feet %.2f m above the plot floor, grounded %d)\n", standing ? "yes" : "NO", lf.y, player.grounded);
+                        SaveWorld(world);
+                        LoadWorldSave(world);
+                        p = dynamic_cast<Planetoid*>(world.objects[0].get());
+                        const int after = p->plots ? p->plots->partCount() : 0;
+                        printf("bench: build: save/load %d -> %d parts\n", buildPlaced, after);
+                        buildOk = standing && after == buildPlaced;
+                        // Look at the factory from 30 m for the frame-time measurement.
+                        Plot* reloaded = p->plots ? p->plots->plots.front().get() : nullptr;
+                        if (reloaded) {
+                            const Vector3 centre = p->toWorld(reloaded->toBody({ 12.0f, 3.0f, 12.0f }));
+                            player.spawnOn(world, *p, p->dirToWorld(Vector3Normalize(reloaded->toBody({ 12.0f, 0.0f, -18.0f }))));
+                            const Vector3 eye = Vector3Add((player.position - world.renderOrigin).toFloat(), Vector3Scale(player.up, player.eyeHeight));
+                            player.forward = Vector3Normalize(Vector3Subtract(centre, eye));
+                        }
+                        printf("bench: build gate (parts, standing, save/load): %s; frame time with the factory in view follows\n", buildOk ? "PASS" : "FAIL");
+                        benchBuild = 0;
                     }
                 } else if (benchHole && (holePhase > 0 || WorldIdle())) { // edits keep the world busy: run on
                     // --test-hole: on the spinning planet, dig a pit ahead and walk into it, then build a
@@ -1096,7 +1170,7 @@ int main(int argc, char** argv)
                         }
                         benchWalkSeconds = 0.0;
                     }
-                } else if ((WorldIdle() && benchDigStrokes == 0 && !benchSaveLoad && benchWalkSeconds <= 0.0 && benchMineStrokes == 0 && minePhase != 2 && benchFlySeconds <= 0.0 && !benchSuffocate && benchOrbitSeconds <= 0.0 && !benchRide && !benchPark && !benchGravity && !benchPrecision && !benchMantle && !benchAirJump && !benchMoon && !benchHole && !benchTrees && !benchChop && benchPersist == 0) || GetTime() > 180.0) {
+                } else if ((WorldIdle() && benchDigStrokes == 0 && !benchSaveLoad && benchWalkSeconds <= 0.0 && benchMineStrokes == 0 && minePhase != 2 && benchFlySeconds <= 0.0 && !benchSuffocate && benchOrbitSeconds <= 0.0 && !benchRide && !benchPark && !benchGravity && !benchPrecision && !benchMantle && !benchAirJump && !benchMoon && !benchHole && !benchTrees && !benchChop && benchPersist == 0 && benchBuild == 0) || GetTime() > 180.0) {
                     benchStart = GetTime();
                     printf("bench: world ready after %.2f s (%d chunks, avg build %.2f ms of which sampling %.2f ms, %d worker threads)\n",
                         GetWorldStats().lastGenerationSeconds, GetWorldStats().chunks, GetWorldStats().avgBuildMs, GetWorldStats().avgSampleMs, GetWorldStats().workerThreads);
@@ -1223,7 +1297,7 @@ int main(int argc, char** argv)
             }
             if (bench && benchTelescope > 0.0f && !ship.piloted) AimAtTelescopeTarget(world);
             if (!ship.piloted) player.applyToCamera(world);
-            Telescope_Update(world, gameInput && alive, !ship.piloted && !player.flyMode && alive);
+            Telescope_Update(world, gameInput && alive, !ship.piloted && !player.flyMode && alive && !buildTool.active);
             if (bench && benchTelescope > 0.0f) { Telescope_SetActive(world, true); telescope.zoom = benchTelescope; Telescope_Update(world, false, !ship.piloted); }
         }
 
@@ -1320,7 +1394,8 @@ int main(int argc, char** argv)
                 spinPhase = 3;
             }
         }
-        if (gameState == 1) TerrainTool_Update(world, gameInput && alive, !ship.piloted && !telescope.active); // F5/F9 work aboard too
+        if (gameState == 1) BuildTool_Update(world, gameInput && alive, !ship.piloted && !player.flyMode && !telescope.active && alive);
+        if (gameState == 1) TerrainTool_Update(world, gameInput && alive, !ship.piloted && !telescope.active && !buildTool.active); // F5/F9 work aboard too
 
         switch(gameState) {
             case 0: // Main Menu
@@ -1367,7 +1442,8 @@ int main(int argc, char** argv)
                 { const double d0 = GetTime(); world.drawScene(gameState); if (benchMeasuring) benchDrawMs += (GetTime() - d0) * 1000.0; }
                 world.drawUI(gameState);
                 Telescope_DrawHUD(world);
-                if (!ship.piloted && !telescope.active) TerrainTool_DrawHUD();
+                BuildTool_DrawHUD();
+                if (!ship.piloted && !telescope.active && !buildTool.active) TerrainTool_DrawHUD();
                 GameUI_DrawHUD(world);
                 Survival_DrawHUD();
                 Objectives_DrawHUD();

@@ -30,6 +30,7 @@ void Player::spawnOn(Scene& world, Planetoid& body, Vector3 dir) {
     velocity = body.surfaceVelocity(feet); // move with the ground (a spinning planet's surface is fast)
     grounded = false;
     groundBody = nullptr;
+    anchorTo(body);
     flyMode = false;
 }
 
@@ -303,6 +304,29 @@ bool Player::resolveCollisions(Scene&, Vector3& feet) {
         }
         if (!moved) break;
     }
+    // Build plot parts: the same two spheres pushed out of part shapes (exact convex cells).
+    if (p.plots) {
+        for (int iter = 0; iter < 2; ++iter)
+            for (float off : offsets)
+                for (auto& pl : p.plots->plots) {
+                    const Vector3 before = p.toLocal(Vector3Add(feet, Vector3Scale(up, off)));
+                    Vector3 c = before, nl;
+                    if (!pl->collideSphere(c, radius / p.scale, nl)) continue;
+                    const Vector3 moved = Vector3Subtract(c, before);
+                    const float len = Vector3Length(moved) * p.scale;
+                    if (len > 1e-6f) feet = Vector3Add(feet, Vector3Scale(p.dirToWorld(Vector3Normalize(moved)), len));
+                    const Vector3 n = p.dirToWorld(nl);
+                    const float vn = Vector3DotProduct(Vector3Subtract(velocity, collideFrameVel), n);
+                    if (vn < 0.0f) { impactSpeed = std::max(impactSpeed, -vn); velocity = Vector3Subtract(velocity, Vector3Scale(n, vn)); }
+                    if (Vector3DotProduct(n, up) > 0.55f) { onGround = true; groundNormal = n; }
+                }
+        // Standing on a part: a probe just below the feet sphere.
+        if (!onGround && Vector3DotProduct(velocity, up) <= 0.5f)
+            for (auto& pl : p.plots->plots) {
+                Vector3 c = p.toLocal(Vector3Add(feet, Vector3Scale(up, radius - 0.12f))), nl;
+                if (pl->collideSphere(c, radius / p.scale, nl) && Vector3DotProduct(p.dirToWorld(nl), up) > 0.55f) { onGround = true; groundNormal = p.dirToWorld(nl); break; }
+            }
+    }
     // Ground probe: the push-out is approximate and can leave a small gap; treat anything within a
     // few centimetres below the feet sphere as standing (unless moving away, e.g. jumping).
     if (!onGround && Vector3DotProduct(velocity, up) <= 0.5f) {
@@ -346,4 +370,20 @@ void Player::collideTrunks(Vector3& feet) {
         const float vn = Vector3DotProduct(Vector3Subtract(velocity, collideFrameVel), n);
         if (vn < 0.0f) velocity = Vector3Subtract(velocity, Vector3Scale(n, vn));
     }
+}
+
+void Player::anchorTo(Planetoid& body) {
+    airBody = &body;
+    airId = body.id;
+    airLocal = body.toLocalD(position);
+    lastEndPosition = position;
+}
+
+void Player::placeAt(Scene& world, Planetoid& body, Vector3 renderFeet) {
+    position = world.renderOrigin + renderFeet;
+    velocity = body.surfaceVelocity(renderFeet);
+    grounded = false;
+    groundBody = nullptr;
+    flyMode = false;
+    anchorTo(body);
 }
