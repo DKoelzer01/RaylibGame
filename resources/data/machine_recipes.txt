@@ -23,8 +23,45 @@ furnace         | iron_plate 1     | iron_ore 1                | 200 | 8
 furnace         | iron_ingot 1     | iron_dust 1               | 100 | 8
 furnace         | copper_ingot 1   | copper_dust 1             | 100 | 8
 furnace         | glass 1          | sand 4                    | 160 | 8
-macerator       | copper_dust 2    | copper_ore 1              | 150 | 8
-macerator       | tin_dust 2       | tin_ore 1                 | 150 | 8
-macerator       | iron_dust 2      | iron_ore 1                | 150 | 8
 macerator       | sand 2           | stone 1                   | 100 | 4
 macerator       | gravel 2         | concrete 1                | 100 | 4
+# Milestone 8. LV ore processing: ore -> 2 crushed -> purified (water) -> dust + byproduct -> ingot.
+macerator       | iron_crushed 2     | iron_ore 1                | 150 | 8
+macerator       | copper_crushed 2   | copper_ore 1              | 150 | 8
+macerator       | tin_crushed 2      | tin_ore 1                 | 150 | 8
+macerator       | bauxite_crushed 2  | bauxite_ore 1             | 150 | 8
+macerator       | ilmenite_crushed 2 | ilmenite_ore 1            | 150 | 8
+ore_washer      | iron_purified 1    | iron_crushed 1, water 1   | 100 | 8
+ore_washer      | copper_purified 1  | copper_crushed 1, water 1 | 100 | 8
+ore_washer      | tin_purified 1     | tin_crushed 1, water 1    | 100 | 8
+ore_washer      | bauxite_purified 1 | bauxite_crushed 1, water 1 | 100 | 8
+ore_washer      | ilmenite_purified 1 | ilmenite_crushed 1, water 1 | 100 | 8
+centrifuge      | iron_dust 4, nickel_dust 1     | iron_purified 4     | 200 | 10
+centrifuge      | copper_dust 4, gold_dust 1     | copper_purified 4   | 200 | 10
+centrifuge      | tin_dust 4, iron_dust 1        | tin_purified 4      | 200 | 10
+centrifuge      | bauxite_dust 4, iron_dust 1    | bauxite_purified 4  | 200 | 10
+centrifuge      | ilmenite_dust 4, iron_dust 1   | ilmenite_purified 4 | 200 | 10
+water_pump      | water 2            | -                         | 40  | 4
+furnace         | iron_ingot 1       | iron_crushed 1            | 150 | 8
+furnace         | copper_ingot 1     | copper_crushed 1          | 150 | 8
+furnace         | tin_ingot 1        | tin_crushed 1             | 150 | 8
+furnace         | tin_ingot 1        | tin_dust 1                | 100 | 8
+furnace         | nickel_ingot 1     | nickel_dust 1             | 100 | 8
+furnace         | gold_ingot 1       | gold_dust 1               | 100 | 8
+forge_hammer    | aluminium_plate 1  | aluminium_ingot 1         | 120 | 6
+# MV (128 V).
+electrolyzer    | hydrogen 2, oxygen 1 | water 2                 | 100 | 32
+electrolyzer    | aluminium_ingot 2  | bauxite_dust 4            | 400 | 64
+chemical_reactor | polyethylene 1    | coal 1, hydrogen 2        | 200 | 30
+miner           | iron_ore 1         | -                         | 200 | 32
+miner           | copper_ore 1       | -                         | 200 | 32
+miner           | tin_ore 1          | -                         | 200 | 32
+miner           | coal 1             | -                         | 200 | 32
+miner           | bauxite_ore 1      | -                         | 240 | 32
+miner           | ilmenite_ore 1     | -                         | 300 | 32
+# HV (512 V).
+arc_furnace     | titanium_ingot 1   | ilmenite_dust 2, coke 1   | 600 | 120
+arc_furnace     | titanium_alloy_ingot 4 | titanium_ingot 3, aluminium_ingot 1 | 400 | 120
+refinery        | rocket_fuel 4      | coal 1, hydrogen 4, oxygen 2 | 200 | 64
+precision_assembler | titanium_alloy_plate 1 | titanium_alloy_ingot 1 | 200 | 96
+precision_assembler | advanced_circuit 1 | good_circuit 1, gold_ingot 1, aluminium_plate 1 | 300 | 96

@@ -34,10 +34,13 @@ enum class PartType : uint8_t {
     Chest, Generator, Furnace, Macerator, Battery,                   // machines (1 m, 2x2x2 cells)
     Campfire, Kiln, CokeOven, BlastFurnace, Boiler, ForgeHammer, AlloySmelter, SteamMacerator,
     RocketEngine, FuelTank, Cockpit, Guidance, LandingLeg,           // rocket parts (milestone 7, ship_parts.txt)
+    OreWasher, Centrifuge, WaterPump,                                // LV ore processing (milestone 8)
+    MvGenerator, Electrolyzer, ChemicalReactor, Miner,               // MV
+    HvGenerator, ArcFurnace, Refinery, PrecisionAssembler,           // HV
     Count
 };
-inline bool IsMachine(PartType t) { return t >= PartType::Chest && t <= PartType::SteamMacerator; }
-inline bool IsRocketPart(PartType t) { return t >= PartType::RocketEngine && t < PartType::Count; }
+inline bool IsMachine(PartType t) { return (t >= PartType::Chest && t <= PartType::SteamMacerator) || (t >= PartType::OreWasher && t < PartType::Count); }
+inline bool IsRocketPart(PartType t) { return t >= PartType::RocketEngine && t <= PartType::LandingLeg; }
 inline bool IsShape(PartType t) { return t <= PartType::Beam8; } // structure: built from a material
 constexpr int kShapeCount = (int)PartType::Beam8 + 1;
 const char* PartName(PartType t);

@@ -71,10 +71,13 @@ bool ItemDB::load(const char* itemsPath, const char* recipesPath) {
                 ItemDef d;
                 d.id = f[0] + "_" + form;
                 if (byId.count(d.id)) continue;
-                d.name = f[1] + " " + form;
+                // "Iron ore", "Crushed iron ore", "Purified iron ore", "Iron dust", "Iron ingot"...
+                std::string lower = f[1];
+                if (!lower.empty()) lower[0] = (char)tolower(lower[0]);
+                d.name = form == "crushed" ? "Crushed " + lower + " ore" : form == "purified" ? "Purified " + lower + " ore" : f[1] + " " + form;
                 d.stackLimit = 999;
                 d.color = form == "ore" ? Color{ (unsigned char)(c.r * 0.7f), (unsigned char)(c.g * 0.6f), (unsigned char)(c.b * 0.5f), 255 } : c;
-                d.description = form == "ore" ? "Ore from deep veins." : form == "dust" ? "Crushed; smelts quickly." : "";
+                d.description = form == "ore" ? "Ore from deep veins." : form == "dust" ? "Crushed; smelts quickly." : form == "crushed" ? "Ore crushed in a macerator: wash it (ore washer) for more." : form == "purified" ? "Washed ore: a centrifuge splits off its byproduct." : "";
                 byId[d.id] = itemList.size();
                 itemList.push_back(d);
             }
@@ -112,12 +115,13 @@ const ItemDef* ItemDB::find(const std::string& id) const {
 }
 
 const char* OreKindAt(Vector3 local, unsigned int seed) {
-    // Deposits about 48 m across hold one kind of ore: iron 35%, copper 30%, tin 20%, coal 15%.
+    // Deposits about 48 m across hold one kind of ore: iron 30%, copper 25%, tin 17%, coal 13%,
+    // bauxite (aluminium) 10%, ilmenite (titanium) 5%.
     const int x = (int)floorf(local.x / 48.0f), y = (int)floorf(local.y / 48.0f), z = (int)floorf(local.z / 48.0f);
     uint32_t h = (uint32_t)x * 73856093u ^ (uint32_t)y * 19349663u ^ (uint32_t)z * 83492791u ^ seed * 2654435761u;
     h ^= h >> 16; h *= 0x7feb352du; h ^= h >> 15; h *= 0x846ca68bu; h ^= h >> 16;
     const unsigned r = h % 100;
-    return r < 35 ? "iron_ore" : r < 65 ? "copper_ore" : r < 85 ? "tin_ore" : "coal";
+    return r < 30 ? "iron_ore" : r < 55 ? "copper_ore" : r < 72 ? "tin_ore" : r < 85 ? "coal" : r < 95 ? "bauxite_ore" : "ilmenite_ore";
 }
 
 const char* ItemForMaterial(VoxelMaterial m, bool soil) {

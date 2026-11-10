@@ -41,6 +41,17 @@ const char* PartName(PartType t) {
         case PartType::Cockpit: return "cockpit";
         case PartType::Guidance: return "guidance computer";
         case PartType::LandingLeg: return "landing leg";
+        case PartType::OreWasher: return "ore washer";
+        case PartType::Centrifuge: return "centrifuge";
+        case PartType::WaterPump: return "water pump";
+        case PartType::MvGenerator: return "MV generator";
+        case PartType::Electrolyzer: return "electrolyzer";
+        case PartType::ChemicalReactor: return "chemical reactor";
+        case PartType::Miner: return "miner";
+        case PartType::HvGenerator: return "HV generator";
+        case PartType::ArcFurnace: return "arc furnace";
+        case PartType::Refinery: return "refinery";
+        case PartType::PrecisionAssembler: return "precision assembler";
         default: return "?";
     }
 }
@@ -68,6 +79,17 @@ const char* PartMachineName(PartType t) {
         case PartType::ForgeHammer: return "forge_hammer";
         case PartType::AlloySmelter: return "alloy_smelter";
         case PartType::SteamMacerator: return "steam_macerator";
+        case PartType::OreWasher: return "ore_washer";
+        case PartType::Centrifuge: return "centrifuge";
+        case PartType::WaterPump: return "water_pump";
+        case PartType::MvGenerator: return "mv_generator";
+        case PartType::Electrolyzer: return "electrolyzer";
+        case PartType::ChemicalReactor: return "chemical_reactor";
+        case PartType::Miner: return "miner";
+        case PartType::HvGenerator: return "hv_generator";
+        case PartType::ArcFurnace: return "arc_furnace";
+        case PartType::Refinery: return "refinery";
+        case PartType::PrecisionAssembler: return "precision_assembler";
         default: return nullptr;
     }
 }
@@ -127,6 +149,17 @@ static Color PartColor(PartType t) {
         case PartType::Cockpit: return { 60, 120, 170, 255 };
         case PartType::Guidance: return { 40, 140, 90, 255 };
         case PartType::LandingLeg: return { 150, 150, 150, 255 };
+        case PartType::OreWasher: return { 70, 120, 170, 255 };
+        case PartType::Centrifuge: return { 160, 160, 170, 255 };
+        case PartType::WaterPump: return { 50, 90, 160, 255 };
+        case PartType::MvGenerator: return { 200, 90, 50, 255 };
+        case PartType::Electrolyzer: return { 180, 180, 80, 255 };
+        case PartType::ChemicalReactor: return { 120, 160, 120, 255 };
+        case PartType::Miner: return { 110, 90, 70, 255 };
+        case PartType::HvGenerator: return { 210, 60, 60, 255 };
+        case PartType::ArcFurnace: return { 90, 90, 110, 255 };
+        case PartType::Refinery: return { 140, 110, 160, 255 };
+        case PartType::PrecisionAssembler: return { 100, 140, 180, 255 };
         default: return { 168, 166, 158, 255 };                                                          // concrete
     }
 }
@@ -142,6 +175,9 @@ static void PartCells(PartType t, std::vector<std::pair<Int3, CellShape>>& out) 
         case PartType::Campfire: case PartType::Kiln: case PartType::CokeOven: case PartType::BlastFurnace: case PartType::Boiler:
         case PartType::ForgeHammer: case PartType::AlloySmelter: case PartType::SteamMacerator:
         case PartType::RocketEngine: case PartType::FuelTank: case PartType::Cockpit:
+        case PartType::OreWasher: case PartType::Centrifuge: case PartType::WaterPump: case PartType::MvGenerator: case PartType::Electrolyzer:
+        case PartType::ChemicalReactor: case PartType::Miner: case PartType::HvGenerator: case PartType::ArcFurnace: case PartType::Refinery:
+        case PartType::PrecisionAssembler:
             for (int z = 0; z < 2; ++z) for (int y = 0; y < 2; ++y) for (int x = 0; x < 2; ++x) out.push_back({ { x, y, z }, full });
             break;
         case PartType::Slope: {

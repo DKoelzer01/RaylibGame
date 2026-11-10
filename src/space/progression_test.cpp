@@ -36,6 +36,8 @@ namespace {
     std::map<std::string, size_t> oreNext;
     std::map<std::string, int> parts;                 // machine -> part index
     int failed = 0;
+    bool full = false;          // --test-progression full: on through MV and HV to titanium alloy
+    void BuildFull();
 
     Vector3 Surface(Vector3 dir) { return Vector3Scale(dir, field->radius + field->elevation(dir)); }
     Vector3 Offset(float east, float north) {
@@ -123,8 +125,8 @@ namespace {
     }
     // Run a machine until `item` reaches `want` in the inventory (taking its output now and then).
     bool Collect(const std::string& machine, const std::string& item, int want) {
-        static double lastTake = 0.0;
-        if (GetTime() - lastTake > 0.25) { lastTake = GetTime(); Factory::Extract(body->id, plot->id, parts[machine]); }
+        static std::map<std::string, double> lastTake; // per machine (one shared timer starved the second of two)
+        if (GetTime() - lastTake[machine] > 0.25) { lastTake[machine] = GetTime(); Factory::Extract(body->id, plot->id, parts[machine]); }
         return inventory.count(item) >= want;
     }
 
@@ -191,10 +193,147 @@ namespace {
             const MachineView v = Factory::View(body->id, plot->id, parts["electric_furnace"]);
             return v.valid && v.status == MachineStatus::Working;
         });
+        if (full) BuildFull();
+    }
+
+    // A machine run: feed it once, then collect until `want` of `item` is held.
+    // Machines hold 4 stacks of 64, so it is topped up in batches the way a player would; what is
+    // not meant for it (the inventory beyond `count`) is kept back.
+    std::function<bool()> Run(const std::string& machine, std::vector<std::pair<std::string, int>> feed, const std::string& item, int want) {
+        auto keep = std::make_shared<std::map<std::string, int>>();
+        auto last = std::make_shared<double>(-1.0);
+        return [=] {
+            if (*last < 0.0) for (const auto& f : feed) (*keep)[f.first] = std::max(0, inventory.count(f.first) - f.second);
+            if (GetTime() - *last > 0.3) {
+                *last = GetTime();
+                for (const auto& f : feed) {
+                    const int spare = inventory.count(f.first) - (*keep)[f.first];
+                    if (spare > 0) Give(machine, f.first, std::min(spare, 24));
+                }
+            }
+            return Collect(machine, item, want);
+        };
+    }
+    bool Cables(int z, int x0, int x1) {
+        for (int x = x0; x <= x1; ++x) if (!BuildTool_Place(*body, *plot, { PartType::Cable, { x, 0, z }, 0 }, true)) { printf("bench: progression: no cable at %d,%d\n", x, z); failed = 1; return false; }
+        return true;
+    }
+
+    // milestone 8: the rest of the ladder, through LV ore processing, MV and HV to titanium alloy
+    // (rocketry's tier), and a miner working its deposit.
+    void BuildFull() {
+        auto add = [](const std::string& n, std::function<bool()> f) { steps.push_back({ n, std::move(f) }); };
+        add("mine for the MV and HV ladder (iron, coal, copper, bauxite, ilmenite) and dig stone", [] {
+            return MineOre("iron_ore", 185) && MineOre("coal", 530) && MineOre("copper_ore", 160) && MineOre("bauxite_ore", 14) && MineOre("ilmenite_ore", 4) && DigFor("stone", 40, 6.0f);
+        });
+        add("smelt 170 iron in the kiln", Run("kiln", { { "iron_ore", 170 }, { "coal", 34 } }, "iron_ingot", 170));
+        add("smelt 145 copper in the kiln", Run("kiln", { { "copper_ore", 145 }, { "coal", 29 } }, "copper_ingot", 145));
+        add("bake 172 coke", Run("coke_oven", { { "coal", 344 } }, "coke", 172));
+        add("make 160 steel", Run("blast_furnace", { { "iron_ingot", 160 }, { "coke", 160 } }, "steel_ingot", 160));
+        add("fuel the boiler again", [] { Give("boiler", "coal", 20); return true; });
+        add("hammer 160 steel plates", Run("forge_hammer", { { "steel_ingot", 160 } }, "steel_plate", 160));
+        add("dig 184 sand", [] { return DigSand(184); });
+        add("make 46 glass", Run("kiln", { { "sand", 184 }, { "coal", 12 } }, "glass", 46));
+        add("craft 40 vacuum tubes and 12 basic circuits", [] { return Craft("vacuum_tube", 40) && Craft("basic_circuit", 12); });
+        // LV ore processing line (its own generator and cables).
+        add("craft the LV ore line: macerator, ore washer, centrifuge, water pump, a generator", [] {
+            return Craft("macerator", 1) && Craft("ore_washer", 1) && Craft("centrifuge", 1) && Craft("water_pump", 1) && Craft("generator", 1) && Craft("cable", 16);
+        });
+        add("place and wire the LV ore line", [] {
+            if (!Place("macerator", PartType::Macerator, { 0, 0, 12 }) || !Place("ore_washer", PartType::OreWasher, { 3, 0, 12 }) || !Place("centrifuge", PartType::Centrifuge, { 6, 0, 12 }) ||
+                !Place("water_pump", PartType::WaterPump, { 9, 0, 12 }) || !Place("generator2", PartType::Generator, { 12, 0, 12 })) return false;
+            if (!Cables(11, 0, 13)) return false;
+            Give("generator2", "coal", 12);
+            return true;
+        });
+        add("pump 60 water", Run("water_pump", {}, "water", 60));
+        add("crush 14 bauxite, 4 ilmenite and 12 copper ore", [] {
+            static bool fed = false;
+            if (!fed) { fed = true; Give("macerator", "bauxite_ore", 14); Give("macerator", "ilmenite_ore", 4); Give("macerator", "copper_ore", 12); }
+            return Collect("macerator", "bauxite_crushed", 28) && inventory.count("ilmenite_crushed") >= 8 && inventory.count("copper_crushed") >= 24;
+        });
+        add("wash them (purified ore)", [] {
+            static bool fed = false;
+            if (!fed) { fed = true; Give("ore_washer", "bauxite_crushed", 28); Give("ore_washer", "ilmenite_crushed", 8); Give("ore_washer", "copper_crushed", 24); Give("ore_washer", "water", 60); }
+            return Collect("ore_washer", "bauxite_purified", 28) && inventory.count("ilmenite_purified") >= 8 && inventory.count("copper_purified") >= 24;
+        });
+        add("centrifuge them (dust; gold from copper)", [] {
+            static bool fed = false;
+            if (!fed) { fed = true; Give("centrifuge", "bauxite_purified", 28); Give("centrifuge", "ilmenite_purified", 8); Give("centrifuge", "copper_purified", 24); }
+            return Collect("centrifuge", "bauxite_dust", 28) && inventory.count("ilmenite_dust") >= 8 && inventory.count("gold_dust") >= 6;
+        });
+        add("refuel the first LV generator", [] { Give("generator", "coal", 8); return true; });
+        add("smelt 6 gold", Run("electric_furnace", { { "gold_dust", 6 } }, "gold_ingot", 6));
+        add("smelt the 24 copper dust (the processing pays: 12 ore gave 24 ingots and gold)", Run("electric_furnace", { { "copper_dust", 24 } }, "copper_ingot", 24));
+        // MV.
+        add("craft the MV row: hulls, an MV generator, an electrolyzer, a chemical reactor", [] {
+            return Craft("mv_hull", 3) && Craft("mv_generator", 1) && Craft("electrolyzer", 1) && Craft("chemical_reactor", 1) && Craft("cable", 12);
+        });
+        add("place and wire the MV row (128 V)", [] {
+            if (!Place("mv_generator", PartType::MvGenerator, { 0, 0, 16 }) || !Place("electrolyzer", PartType::Electrolyzer, { 3, 0, 16 }) ||
+                !Place("chemical_reactor", PartType::ChemicalReactor, { 6, 0, 16 })) return false;
+            if (!Cables(15, 0, 11)) return false;
+            Give("mv_generator", "coal", 8);
+            return true;
+        });
+        add("pump 20 more water", Run("water_pump", {}, "water", 20));
+        add("electrolyse water into 10 hydrogen", Run("electrolyzer", { { "water", 10 } }, "hydrogen", 10));
+        add("make 5 polyethylene", Run("chemical_reactor", { { "coal", 5 }, { "hydrogen", 10 } }, "polyethylene", 5));
+        add("electrolyse bauxite dust into 12 aluminium (MV gate)", Run("electrolyzer", { { "bauxite_dust", 24 } }, "aluminium_ingot", 12));
+        add("refuel the boiler", [] { Give("boiler", "coal", 6); return true; });
+        add("hammer 11 aluminium plates", Run("forge_hammer", { { "aluminium_ingot", 11 } }, "aluminium_plate", 11));
+        add("a miner on the MV row works its deposit", [] {
+            static bool placed = false;
+            if (!placed) {
+                placed = true;
+                if (!Craft("basic_circuit", 5) || !Craft("good_circuit", 2) || !Craft("miner", 1) || !Place("miner", PartType::Miner, { 9, 0, 16 })) { failed = 1; return false; }
+            }
+            const MachineView v = Factory::View(body->id, plot->id, parts["miner"]);
+            static bool reported = false;
+            if (v.valid && v.output.find(" x") != std::string::npos && !reported) { reported = true; printf("bench: progression: the miner makes %s\n", v.output.c_str()); }
+            return v.valid && (v.output.find("_ore") != std::string::npos || v.output.find("coal") != std::string::npos);
+        });
+        // HV.
+        add("craft good and advanced circuits, HV hulls, an HV generator, an arc furnace", [] {
+            return Craft("good_circuit", 3) && Craft("advanced_circuit", 3) && Craft("hv_hull", 2) && Craft("hv_generator", 1) && Craft("arc_furnace", 1) && Craft("cable", 8);
+        });
+        add("place and wire the HV row (512 V)", [] {
+            if (!Place("hv_generator", PartType::HvGenerator, { 0, 0, 20 }) || !Place("arc_furnace", PartType::ArcFurnace, { 3, 0, 20 })) return false;
+            if (!Cables(19, 0, 5)) return false;
+            Give("hv_generator", "coke", 3);
+            return true;
+        });
+        add("arc furnace: 3 titanium from ilmenite and coke", Run("arc_furnace", { { "ilmenite_dust", 6 }, { "coke", 3 } }, "titanium_ingot", 3));
+        add("arc furnace: titanium alloy (HV gate)", Run("arc_furnace", { { "titanium_ingot", 3 }, { "aluminium_ingot", 1 } }, "titanium_alloy_ingot", 4));
+        // The other HV machines (placed without charging and seeded: a recipe check, not more grind).
+        add("HV recipe check: the refinery makes rocket fuel, the precision assembler alloy plates", [] {
+            static bool placed = false;
+            if (!placed) {
+                placed = true;
+                if (!BuildTool_Place(*body, *plot, { PartType::Refinery, { 6, 0, 20 }, 0 }, false) || !BuildTool_Place(*body, *plot, { PartType::PrecisionAssembler, { 9, 0, 20 }, 0 }, false)) { failed = 1; return false; }
+                parts["refinery"] = (int)plot->parts.size() - 2;
+                parts["precision_assembler"] = (int)plot->parts.size() - 1;
+                for (int x = 6; x <= 11; ++x) BuildTool_Place(*body, *plot, { PartType::Cable, { x, 0, 19 }, 0 }, false);
+                return false;
+            }
+            // Feed once the new layout has reached the simulation (items for machines it does not know yet are dropped).
+            static bool fed = false;
+            if (!fed && GetTime() - stepStart > 0.5) {
+                fed = true;
+                Give("hv_generator", "coke", 2);
+                Factory::Seed(body->id, plot->id, parts["refinery"], "coal", 1);
+                Factory::Seed(body->id, plot->id, parts["refinery"], "hydrogen", 4);
+                Factory::Seed(body->id, plot->id, parts["refinery"], "oxygen", 2);
+                Give("precision_assembler", "titanium_alloy_ingot", 4);
+            }
+            Collect("refinery", "rocket_fuel", 4);
+            return Collect("precision_assembler", "titanium_alloy_plate", 4) && inventory.count("rocket_fuel") >= 4;
+        });
     }
 }
 
-int Progression_Update(Scene& world) {
+int Progression_Update(Scene& world, bool fullLadder) {
+    full = fullLadder;
     if (steps.empty()) {
         body = dynamic_cast<Planetoid*>(world.objects[0].get());
         field = body ? dynamic_cast<const PlanetField*>(body->field.get()) : nullptr;
@@ -222,8 +361,10 @@ int Progression_Update(Scene& world) {
         stepStart = GetTime();
         if (current >= steps.size()) {
             Factory::SetSpeed(1);
-            printf("bench: progression: bare hands to a working LV machine in %.0f s, quest tier %d -> %s\n", GetTime() - testStart, QuestBook_Tier(), QuestBook_Tier() >= 5 ? "PASS" : "FAIL");
-            return QuestBook_Tier() >= 5 ? 1 : -1;
+            const int need = full ? 7 : 5;
+            printf("bench: progression: bare hands to %s in %.0f s, quest tier %d -> %s\n", full ? "titanium alloy (rocketry)" : "a working LV machine",
+                   GetTime() - testStart, QuestBook_Tier(), QuestBook_Tier() >= need ? "PASS" : "FAIL");
+            return QuestBook_Tier() >= need ? 1 : -1;
         }
     } else if (GetTime() - stepStart > 120.0 || failed) {
         printf("bench: progression: FAIL at \"%s\" (wood %d, copper %d/%d ore/ingot, tin %d/%d, iron %d/%d, coal %d, bronze %d, steel %d/%d)\n", steps[current].name.c_str(),
