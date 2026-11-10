@@ -5,6 +5,7 @@
 #include <raylib.h>
 #include <rlgl.h>
 #include <cmath>
+#include <algorithm>
 
 #define SHADOW_MAP_SIZE 2048
 
@@ -90,6 +91,10 @@ Scene::Scene(std::string name, bool isActive)
     // Materials. LoadMaterialDefault allocates the maps array once; we own it for the scene's lifetime.
     terrainMaterial = LoadMaterialDefault();
     depthMaterial = LoadMaterialDefault();
+    waterMaterial = LoadMaterialDefault();
+    water.reloadIfChanged(true);
+    atmosphereShader.reloadIfChanged(true);
+    atmosphereDome = LoadModelFromMesh(GenMeshCube(1.0f, 1.0f, 1.0f));
 
     shadowMap = LoadShadowmapRenderTexture(SHADOW_MAP_SIZE, SHADOW_MAP_SIZE);
     terrainMaterial.maps[MATERIAL_MAP_BRDF].texture = shadowMap.depth;
@@ -204,6 +209,8 @@ void Scene::drawScene(int gamestate) {
     // --- Hot reload: only touches the GPU when a shader file actually changed ---
     if (lighting.reloadIfChanged()) applyLightingShader();
     if (depth.reloadIfChanged()) depthMaterial.shader = depth.shader;
+    water.reloadIfChanged();
+    atmosphereShader.reloadIfChanged();
 
     if (IsKeyPressed(KEY_F3)) debugDraw = !debugDraw;
 
@@ -274,9 +281,31 @@ void Scene::drawScene(int gamestate) {
     SetShaderValueMatrix(s, locLightSpace, lightSpaceMatrix);
     SetShaderValue(s, locTexScale, &texScale, SHADER_UNIFORM_FLOAT);
     SetShaderValue(s, locPalette, &materialPalette, SHADER_UNIFORM_INT);
-    SetShaderValue(s, locFogColor, &fogColor, SHADER_UNIFORM_VEC3);
-    SetShaderValue(s, locFogDensity, &fogDensity, SHADER_UNIFORM_FLOAT);
-    const float ambient[4] = { ambientColor.x, ambientColor.y, ambientColor.z, 1.0f };
+    // Atmosphere: by day near a planet the air hazes distant terrain toward the horizon sky colour and
+    // lights shadows a little (sky ambient); both fade with altitude and at night. Under the sea the
+    // camera sees a dense dark-blue fog instead.
+    const Vector3 sun = Vector3Normalize(sunDirection);
+    Vector3 effFog = fogColor, effAmbient = ambientColor, skyHorizon = { 0, 0, 0 };
+    float effFogDensity = fogDensity, atmDensity = 0.0f;
+    Vector3 atmUp = { 0, 1, 0 };
+    if (atmosphere.enabled) {
+        const Vector3 rel = Vector3Subtract(camera.position, atmosphere.centre);
+        const float d = Vector3Length(rel);
+        atmUp = d > 1e-3f ? Vector3Scale(rel, 1.0f / d) : Vector3{ 0, 1, 0 };
+        const float alt = d - atmosphere.radius;
+        atmDensity = powf(std::clamp(1.0f - alt / atmosphere.height, 0.0f, 1.0f), 1.5f);
+        const float s = Vector3DotProduct(atmUp, sun);
+        const float t = std::clamp((s + 0.18f) / 0.30f, 0.0f, 1.0f);
+        const float day = t * t * (3.0f - 2.0f * t);
+        skyHorizon = Vector3Scale({ 0.35f, 0.53f, 0.83f }, day); // linear horizon sky
+        effFog = Vector3Add(effFog, Vector3Scale(skyHorizon, atmDensity));
+        effFogDensity += atmDensity / 35000.0f;                    // ~35 km to fade a third of the way
+        effAmbient = Vector3Add(effAmbient, Vector3Scale(skyHorizon, 0.06f * atmDensity));
+        if (alt < 0.0f) { effFog = { 0.004f, 0.02f, 0.035f }; effFogDensity = 0.06f; } // under the sea
+    }
+    SetShaderValue(s, locFogColor, &effFog, SHADER_UNIFORM_VEC3);
+    SetShaderValue(s, locFogDensity, &effFogDensity, SHADER_UNIFORM_FLOAT);
+    const float ambient[4] = { effAmbient.x, effAmbient.y, effAmbient.z, 1.0f };
     SetShaderValue(s, locAmbient, ambient, SHADER_UNIFORM_VEC4);
     SetShaderValue(s, locViewPos, &camera.position, SHADER_UNIFORM_VEC3);
     // Upload every slot the shader has, so unused slots are explicitly disabled.
@@ -291,6 +320,15 @@ void Scene::drawScene(int gamestate) {
         rlDisableBackfaceCulling();
         rlDisableDepthMask();
         if (drawSkybox) DrawModel(skybox, (Vector3){0, 0, 0}, 1.0f, WHITE); // skybox.vs strips translation and scales the cube
+        if (drawSkybox) {
+            // The sky (and the sun disc, also in space) blended over the stars.
+            Shader& as = atmosphereShader.shader;
+            SetShaderValue(as, GetShaderLocation(as, "sunDir"), &sun, SHADER_UNIFORM_VEC3);
+            SetShaderValue(as, GetShaderLocation(as, "upDir"), &atmUp, SHADER_UNIFORM_VEC3);
+            SetShaderValue(as, GetShaderLocation(as, "density"), &atmDensity, SHADER_UNIFORM_FLOAT);
+            atmosphereDome.materials[0].shader = as;
+            DrawModel(atmosphereDome, (Vector3){ 0, 0, 0 }, 1.0f, WHITE);
+        }
         rlEnableBackfaceCulling();
         rlEnableDepthMask();
 
@@ -311,6 +349,28 @@ void Scene::drawScene(int gamestate) {
         ctx.scenePalette = materialPalette;
         for (const auto& obj : objects) if (obj) obj->draw(ctx);
         for (const auto& obj : rootObject.children) if (obj) obj->draw(ctx);
+
+        // Transparent pass (sea surfaces) after everything opaque. Depth writes stay on: where LOD
+        // nodes overlap, the second copy of the same surface then fails the depth test instead of
+        // blending twice. Both faces are drawn (seen from under the water too).
+        {
+            Shader& ws = water.shader;
+            const float now = (float)fmod(GetTime(), 3600.0);
+            SetShaderValue(ws, GetShaderLocation(ws, "viewPos"), &camera.position, SHADER_UNIFORM_VEC3);
+            SetShaderValue(ws, GetShaderLocation(ws, "sunDir"), &sun, SHADER_UNIFORM_VEC3);
+            SetShaderValue(ws, GetShaderLocation(ws, "skyColor"), &skyHorizon, SHADER_UNIFORM_VEC3);
+            SetShaderValue(ws, GetShaderLocation(ws, "fogColor"), &effFog, SHADER_UNIFORM_VEC3);
+            SetShaderValue(ws, GetShaderLocation(ws, "fogDensity"), &effFogDensity, SHADER_UNIFORM_FLOAT);
+            SetShaderValue(ws, GetShaderLocation(ws, "time"), &now, SHADER_UNIFORM_FLOAT);
+            waterMaterial.shader = ws;
+            ctx.waterMaterial = &waterMaterial;
+            ctx.waterTexOriginLoc = GetShaderLocation(ws, "chunkTexOrigin");
+            ctx.waterClipLoc = GetShaderLocation(ws, "chunkClipMax");
+            ctx.waterOccluderLoc = GetShaderLocation(ws, "sunOccluder");
+            rlDisableBackfaceCulling();
+            for (const auto& obj : objects) if (obj) obj->drawTransparent(ctx);
+            rlEnableBackfaceCulling();
+        }
 
         if (debugDraw) {
             DrawSphere(lightPos, 10.0f, ColorAlpha(RED, 0.5f));
@@ -369,6 +429,8 @@ Scene::~Scene() {
     MemFree(depthMaterial.maps);
     lighting.unload();
     depth.unload();
+    water.unload();
+    atmosphereShader.unload();
     UnloadShadowmapRenderTexture(shadowMap);
 }
 

@@ -88,6 +88,8 @@ public:
     // Radius of a sphere that is always opaque (nothing can be dug below it): terrain hidden behind
     // it from the camera is culled. 0 = no occluder.
     virtual float occluderRadius() const { return 0.0f; }
+    // Sea level: a water surface at this radius wherever it meets open air (0 = no sea).
+    virtual float seaLevelRadius() const { return 0.0f; }
 
     // Density for samples `footprint` apart (chunk meshing at a LOD stride): fields may leave out
     // detail finer than that. Defaults to baseDensity; footprint 0 = full detail.
@@ -166,6 +168,7 @@ public:
     float maxRadius() const override { return radius + maxElevation; }
     float minRadius() const override { return mantleRadius - 1.0f; } // digging stops at the mantle
     float occluderRadius() const override { return mantleRadius; }
+    float seaLevelRadius() const override { return moon ? 0.0f : radius; }
 
 private:
     float densityNear(Vector3 p, float d, float surface, float footprint) const; // after the height map
@@ -199,6 +202,9 @@ struct ChunkMeshData {
     std::vector<float> texcoords;          // material weights 4-5
     std::vector<float> texcoords2;         // material weights 6-7
     std::vector<float> tangents;           // (0, 0, 0, sky exposure) per vertex
+    std::vector<float> waterPositions;     // sea surface where it meets open air (same frame as positions)
+    std::vector<float> waterNormals;
+    std::vector<unsigned short> waterIndices;
     std::vector<unsigned short> indices;
     bool overflow = false;                 // > 65535 vertices: mesh dropped
     float buildMs = 0.0f;

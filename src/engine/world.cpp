@@ -198,6 +198,18 @@ void Planetoid::draw(const RenderContext& ctx) {
     for (Chunk* c : drawList) c->drawChunk(c2, placer.model(c->key));
 }
 
+void Planetoid::drawTransparent(const RenderContext& ctx) {
+    if (!isActive || drawList.empty() || !ctx.waterMaterial || field->seaLevelRadius() <= 0.0f) return;
+    const ChunkPlacer placer(*this, ctx.renderOrigin);
+    ChunkBatch batch(*ctx.waterMaterial);
+    const Vector3 c = (worldPos - ctx.renderOrigin).toFloat();
+    const float occluder[4] = { c.x, c.y, c.z, std::max(0.0f, radius - 60.0f) * scale }; // night side, as for terrain
+    batch.setUniform(ctx.waterOccluderLoc, occluder, SHADER_UNIFORM_VEC4);
+    RenderContext c2 = ctx;
+    c2.batch = &batch;
+    for (Chunk* ch : drawList) ch->drawWater(c2, placer.model(ch->key));
+}
+
 void Planetoid::drawDepthOnly(const RenderContext& ctx) {
     if (!isActive) return;
     for (const auto& objPtr : children) objPtr->drawDepthOnly(ctx);

@@ -50,6 +50,8 @@ struct RenderContext {
     int paletteLoc = -1;                  // lighting shader "palette"; bodies may override the scene's
     int scenePalette = 0;
     int sunOccluderLoc = -1;              // lighting shader "sunOccluder" (a planet blocking the sun)
+    Material* waterMaterial = nullptr;    // sea surface (water shader); drawn in the transparent pass
+    int waterTexOriginLoc = -1, waterClipLoc = -1, waterOccluderLoc = -1;
     int chunkClipLoc = -1;                // lighting shader "chunkClipMax" (chunk-local overlap clipping)
 };
 
@@ -77,6 +79,7 @@ public:
     Object(std::string type, std::string name, Vector3 position, Vector3 rotation, Color color, float scale);
     virtual void draw(const RenderContext& ctx);
     virtual void drawDepthOnly(const RenderContext& ctx);
+    virtual void drawTransparent(const RenderContext&) {} // after every opaque object (water)
     virtual ~Object(); // Make destructor virtual for safe polymorphic deletion
 
     // Scale, then rotate (XYZ, degrees), then translate.

@@ -16,6 +16,7 @@
 class Chunk : public Object {
 public:
     Mesh mesh{};          // GPU mesh (empty if the node contains no surface)
+    Mesh waterMesh{};     // sea surface in this node (empty if none)
     NodeKey key{};
     bool ready = false;   // a build result has arrived at least once
     // Body-local upper bound for fragments. Nodes overlap their +x/+y/+z neighbours by one cell to
@@ -33,6 +34,7 @@ public:
     // `model` = the chunk's full model matrix (Planetoid::chunkModel: translation in double).
     void drawChunk(const RenderContext& ctx, const Matrix& model);
     void drawChunkDepth(const RenderContext& ctx, const Matrix& model);
+    void drawWater(const RenderContext& ctx, const Matrix& model);  // with ctx.batch bound to the water material
 
 private:
     void releaseMesh();
@@ -80,6 +82,7 @@ public:
 
     void draw(const RenderContext& ctx) override;
     void drawDepthOnly(const RenderContext& ctx) override;
+    void drawTransparent(const RenderContext& ctx) override; // sea surface
 
     // World (render-relative) <-> planetoid-local (voxel) space.
     Vector3 toLocal(Vector3 world) const;

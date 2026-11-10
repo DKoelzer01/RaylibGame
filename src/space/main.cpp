@@ -44,6 +44,8 @@ int main(int argc, char** argv)
     bool benchSaveLoad = false;  // --test-saveload: then save, reload from disk, and bench the reloaded world
     double benchWalkSeconds = 0.0; // --test-walk S: spawn on the surface and auto-walk forward for S seconds
     bool benchWalkMode = false;    // --bench-walk: the player walks forward for the whole bench (frame time while streaming)
+    bool hasSpawnDir = false;      // --spawn-dir x y z: where --test-walk / --test-stand spawn on body 0
+    Vector3 spawnDir = { 0, 1, 0 };
     double walkStart = -1.0;
     bool benchStandOnly = false; // --test-stand S: like --test-walk but standing still
     int benchMineStrokes = 0;     // --test-mine N: dig N strokes at the feet, craft, build (after any walk test)
@@ -111,6 +113,7 @@ int main(int argc, char** argv)
         if (std::string(argv[i]) == "--test-saveload") benchSaveLoad = true;
         if (std::string(argv[i]) == "--test-walk" && i + 1 < argc) benchWalkSeconds = atof(argv[i + 1]);
         if (std::string(argv[i]) == "--bench-walk") benchWalkMode = true;
+        if (std::string(argv[i]) == "--spawn-dir" && i + 3 < argc) { hasSpawnDir = true; spawnDir = Vector3Normalize({ (float)atof(argv[i + 1]), (float)atof(argv[i + 2]), (float)atof(argv[i + 3]) }); }
         if (std::string(argv[i]) == "--test-suffocate") benchSuffocate = true;
         if (std::string(argv[i]) == "--test-orbit" && i + 1 < argc) benchOrbitSeconds = atof(argv[i + 1]);
         if (std::string(argv[i]) == "--test-ride") benchRide = true;
@@ -772,7 +775,7 @@ int main(int argc, char** argv)
                     if (walkStart < 0.0) {
                         player.autoWalk = !benchStandOnly;
                         Planetoid* start = dynamic_cast<Planetoid*>(world.objects[0].get());
-                        player.spawnOn(world, *start);
+                        if (hasSpawnDir) player.spawnOn(world, *start, spawnDir); else player.spawnOn(world, *start);
 
                         walkStart = GetTime();
                         walkFrom = player.position;
@@ -890,6 +893,22 @@ int main(int argc, char** argv)
         // Slot 1: headlamp (suit lamp from the eye, or the ship's nose light while piloting).
         // Slot 2: soft glow around the player while the inventory is open.
         if (sunOverride) world.sunDirection = sunArg;
+        // Atmosphere: the nearest planet (moons and asteroids have none) colours the sky and haze.
+        world.atmosphere.enabled = false;
+        {
+            float best = 1e30f;
+            for (auto& obj : world.objects)
+                if (auto* q = dynamic_cast<Planetoid*>(obj.get()))
+                    if (q->kind == BodyKind::Planet) {
+                        const float alt = Vector3Distance(world.camera.position, q->position) - q->radius * q->scale;
+                        if (alt < best) {
+                            best = alt;
+                            world.atmosphere.enabled = true;
+                            world.atmosphere.centre = q->position;
+                            world.atmosphere.radius = q->radius * q->scale;
+                        }
+                    }
+        }
         if (crackCheck) world.drawSkybox = false;
         while (world.lights.size() < 3) world.lights.push_back(Light{});
         {

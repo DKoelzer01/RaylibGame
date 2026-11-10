@@ -93,7 +93,10 @@ Shaders in `resources/` hot-reload when saved.
   ocean floor, ridged mountains, hills, river valleys), worm caves, ore veins that get richer with depth, snow
   at high latitudes and on peaks, and an unmineable mantle 1.5% of the radius below sea level (900 m on the
   60 km planet). Coarse LOD chunks leave out detail finer than their sample spacing; nodes over the
-  horizon, above the highest terrain or inside the mantle are never built. Try it with
+  horizon, above the highest terrain or inside the mantle are never built. A sea fills the planet to sea level
+  (meshed per chunk where it meets open air; polar seas are frozen into ice shelves), and the planet has an
+  atmosphere: sky colour by sun angle and altitude, dusk glow, stars at night and in space, haze with
+  distance, and dense blue fog underwater. Try it with
   `./game.exe --bodies resources/data/bodies_planet.txt`.
 - Asteroid density is a displaced sphere (mean surface 0.72 R) with a uniform 0.25/voxel gradient: crisp surfaces and
   predictable dig depth.

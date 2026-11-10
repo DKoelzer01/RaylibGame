@@ -49,6 +49,19 @@ class Scene {
         std::vector<Light> lights; // Array of lights in the scene
         HotShader lighting{ "resources/lighting.vs", "resources/lighting.fs" };
         HotShader depth{ "resources/depth.vs", "resources/depth.fs" };
+        HotShader water{ "resources/water.vs", "resources/water.fs" };
+        HotShader atmosphereShader{ "resources/skybox.vs", "resources/atmosphere.fs" };
+        Material waterMaterial{};
+        Model atmosphereDome{};       // a cube like the skybox, drawn over it with the atmosphere shader
+
+        // Atmosphere of the planet the camera is near (set by the game each frame). Tints the sky over
+        // the star skybox by sun angle and altitude, and drives day/night haze (fog) and sky ambient.
+        struct Atmosphere {
+            bool enabled = false;
+            Vector3 centre = { 0, 0, 0 }; // render space
+            float radius = 0.0f;          // sea level
+            float height = 25000.0f;      // fades out from sea level to this altitude
+        } atmosphere;
 
         Material terrainMaterial{};   // lighting shader + albedo/normal/rough-ao maps + shadow map
         TextureArray terrainLayers{};     // dirt/sand/gravel/grass/snow/ice/stone layers (planet palette)

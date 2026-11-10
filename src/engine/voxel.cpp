@@ -225,7 +225,12 @@ float PlanetField::elevation(Vector3 dir, float fp) const {
             if (r < 0.006f) h -= sqrtf(1.0f - r / 0.006f) * 90.0f * region * ravineWeight;
         }
     }
-    return h + detail.fractalLimited(2, fp, sx, sy, sz) * 2.5f;
+    h += detail.fractalLimited(2, fp, sx, sy, sz) * 2.5f;
+    // Polar ice shelves: near the poles the sea is frozen, so low ground is raised to an ice sheet a
+    // couple of metres above sea level (the material rules make it ice).
+    const float iceCap = Smoothstep(0.86f, 0.92f, fabsf(dir.y) + 0.03f * climate.fractalLimited(2, fp, sx, sy, sz));
+    if (iceCap > 0.0f && h < 2.0f) h += (2.0f - h) * iceCap;
+    return h;
 }
 
 float PlanetField::baseDensityLod(Vector3 p, float fp) const {
@@ -488,6 +493,60 @@ void BuildChunkMesh(const DensityField& field, const EditList& allEdits, ChunkMe
                 else out.texcoords2[v * 2 + (mi - 6)] = 1.0f;
             }
             out.indices.assign(idx.begin(), idx.end());
+        }
+    }
+
+    // Sea surface: marching cubes on the sea-level sphere over the same samples, keeping only the
+    // triangles that are in open air (their centre is not inside rock), so it shows over oceans and
+    // lakes but not through land. Runs even when the node holds no terrain surface (open ocean).
+    const float sea = field.seaLevelRadius();
+    if (sea > 0.0f) {
+        const Vector3 lo = origin, hi = Vector3AddValue(origin, cells * stride);
+        const Vector3 nearest = { std::clamp(0.0f, lo.x, hi.x), std::clamp(0.0f, lo.y, hi.y), std::clamp(0.0f, lo.z, hi.z) };
+        const float dmin = Vector3Length(nearest);
+        const float dmax = Vector3Length({ std::max(fabsf(lo.x), fabsf(hi.x)), std::max(fabsf(lo.y), fabsf(hi.y)), std::max(fabsf(lo.z), fabsf(hi.z)) });
+        if (dmin < sea && dmax > sea) {
+            std::vector<float> wd((size_t)S * S * S);
+            size_t k = 0;
+            for (int z = 0; z < S; ++z)
+                for (int y = 0; y < S; ++y)
+                    for (int x = 0; x < S; ++x, ++k) {
+                        const Vector3 p = { origin.x + x * stride, origin.y + y * stride, origin.z + z * stride };
+                        wd[k] = ISO_LEVEL + DENSITY_GRADIENT * (sea - sqrtf(p.x * p.x + p.y * p.y + p.z * p.z));
+                    }
+            std::vector<Vector3> wv;
+            std::vector<int> wi;
+            std::vector<int> cache((size_t)S * S * S * 3, -1);
+            for (int z = 0; z < cells; ++z)
+                for (int y = 0; y < cells; ++y)
+                    for (int x = 0; x < cells; ++x)
+                        marchCube(x, y, z, wd, S, wv, wi, cache, ISO_LEVEL);
+            // Terrain density at a point in sample coordinates (trilinear over the terrain grid).
+            auto terrainAt = [&](Vector3 g) {
+                const int x0 = std::clamp((int)floorf(g.x), 0, S - 2), y0 = std::clamp((int)floorf(g.y), 0, S - 2), z0 = std::clamp((int)floorf(g.z), 0, S - 2);
+                const float fx = g.x - x0, fy = g.y - y0, fz = g.z - z0;
+                auto d = [&](int x, int y, int z) { return dens[((size_t)z * S + y) * S + x]; };
+                const float c00 = d(x0, y0, z0) * (1 - fx) + d(x0 + 1, y0, z0) * fx, c10 = d(x0, y0 + 1, z0) * (1 - fx) + d(x0 + 1, y0 + 1, z0) * fx;
+                const float c01 = d(x0, y0, z0 + 1) * (1 - fx) + d(x0 + 1, y0, z0 + 1) * fx, c11 = d(x0, y0 + 1, z0 + 1) * (1 - fx) + d(x0 + 1, y0 + 1, z0 + 1) * fx;
+                return (c00 * (1 - fy) + c10 * fy) * (1 - fz) + (c01 * (1 - fy) + c11 * fy) * fz;
+            };
+            std::vector<int> remap(wv.size(), -1);
+            for (size_t t = 0; t + 2 < wi.size(); t += 3) {
+                const Vector3 c = Vector3Scale(Vector3Add(Vector3Add(wv[wi[t]], wv[wi[t + 1]]), wv[wi[t + 2]]), 1.0f / 3.0f);
+                if (terrainAt(c) >= ISO_LEVEL) continue; // under land
+                for (int e = 0; e < 3; ++e) {
+                    int& r = remap[wi[t + e]];
+                    if (r < 0) {
+                        r = (int)(out.waterPositions.size() / 3);
+                        const Vector3 lp = Vector3Scale(wv[wi[t + e]], stride);
+                        const Vector3 n = Vector3Normalize(Vector3Add(origin, lp)); // the sea is a sphere: radial normals
+                        out.waterPositions.insert(out.waterPositions.end(), { lp.x, lp.y, lp.z });
+                        out.waterNormals.insert(out.waterNormals.end(), { n.x, n.y, n.z });
+                    }
+                    out.waterIndices.push_back((unsigned short)r);
+                }
+            }
+            if (out.waterPositions.size() / 3 > 65535) { out.waterPositions.clear(); out.waterNormals.clear(); out.waterIndices.clear(); }
         }
     }
     out.buildMs = std::chrono::duration<float, std::milli>(std::chrono::steady_clock::now() - t0).count();

@@ -93,6 +93,8 @@ void Chunk::releaseMesh() {
         MemFree(mesh.indices);
     }
     mesh = Mesh{};
+    if (waterMesh.vaoId > 0) UnloadMesh(waterMesh);
+    waterMesh = Mesh{};
 }
 
 template <typename T>
@@ -105,7 +107,16 @@ static T* CopyToRaylib(const std::vector<T>& v) {
 void Chunk::setMesh(const ChunkMeshData& data) {
     ready = true;
     releaseMesh();
-    if (data.positions.empty()) return; // node has no surface
+    if (!data.waterPositions.empty()) {
+        // Sea surface (may exist without any terrain surface in the node: open sea).
+        waterMesh.vertexCount = (int)(data.waterPositions.size() / 3);
+        waterMesh.triangleCount = (int)(data.waterIndices.size() / 3);
+        waterMesh.vertices = CopyToRaylib(data.waterPositions);
+        waterMesh.normals = CopyToRaylib(data.waterNormals);
+        waterMesh.indices = CopyToRaylib(data.waterIndices);
+        UploadMesh(&waterMesh, false);
+    }
+    if (data.positions.empty()) return; // node has no terrain surface
     mesh.vertexCount = (int)(data.positions.size() / 3);
     mesh.triangleCount = (int)(data.indices.size() / 3);
     mesh.vertices = CopyToRaylib(data.positions);
@@ -208,6 +219,21 @@ void Chunk::drawChunk(const RenderContext& ctx, const Matrix& m) {
         DrawMesh(mesh, *ctx.terrainMaterial, m);
     }
     if (ctx.drawCalls) (*ctx.drawCalls)++;
+}
+
+void Chunk::drawWater(const RenderContext& ctx, const Matrix& m) {
+    if (!isActive || waterMesh.vaoId == 0 || !ctx.batch) return;
+    if (!visible(ctx, m)) return;
+    // Same per-chunk uniforms as the terrain (wrapped texturing origin for ripples, overlap clip).
+    const Vector3 o = key.origin();
+    const double period = 1.0 / std::max(ctx.texScale, 1e-6f);
+    auto wrap = [period](float v) { return (float)(fmod(fmod((double)v, period) + period, period)); };
+    const Vector3 texOrigin = { wrap(o.x), wrap(o.y), wrap(o.z) };
+    // Same overlap clip as the terrain (the water is opaque, so overlapping copies do not show).
+    const Vector3 clip = { clipMax.x - o.x, clipMax.y - o.y, clipMax.z - o.z };
+    ctx.batch->setUniform(ctx.waterTexOriginLoc, &texOrigin, SHADER_UNIFORM_VEC3);
+    ctx.batch->setUniform(ctx.waterClipLoc, &clip, SHADER_UNIFORM_VEC3);
+    ctx.batch->draw(waterMesh, m);
 }
 
 void Chunk::drawChunkDepth(const RenderContext& ctx, const Matrix& m) {
