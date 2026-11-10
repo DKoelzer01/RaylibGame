@@ -193,6 +193,19 @@ private:
     float riverWeight(const Land& l) const;
 };
 
+// No terrain at all: a body that only carries a build plot (a rocket in flight, rocket.h).
+class EmptyField : public DensityField {
+public:
+    explicit EmptyField(float radius) : r(radius) {}
+    float baseDensity(Vector3) const override { return ISO_LEVEL - 100.0f; }
+    VoxelMaterial material(Vector3, float) const override { return VoxelMaterial::Rock; }
+    Vector3 fallbackUp(Vector3) const override { return { 0, 1, 0 }; }
+    bool editable(Vector3) const override { return false; }
+    float maxRadius() const override { return r; }
+private:
+    float r;
+};
+
 // Open-world terrain: +Y up, rolling hills and mountains from a heightmap, carved by 3D cave
 // tunnels, with grass/dirt near the surface, snow on high ground and crystal veins underground.
 // (Materials reuse the VoxelMaterial slots: Regolith = grass/soil, Ice = snow, Ore = crystal.)

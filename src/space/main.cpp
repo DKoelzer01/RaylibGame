@@ -29,6 +29,8 @@
 #include "menus.h"
 #include "hotbar.h"
 #include "ring_test.h"
+#include "rocket.h"
+#include "rocket_test.h"
 #include "factory.h"
 
 #if defined(PLATFORM_DESKTOP)
@@ -84,6 +86,7 @@ static void StartNewWorld(Scene& world, bool reset) {
         player.velocity = { 0, 0, 0 };
         player.flyMode = false;
         ship.piloted = false;
+        Rocket_Reset();
     }
     Planetoid* start = world.objects.empty() ? nullptr : dynamic_cast<Planetoid*>(world.objects[0].get());
     if (start) {
@@ -144,6 +147,8 @@ int main(int argc, char** argv)
     bool benchFlyFollow = false;   // --test-flyfollow: the fly camera rides its reference body
     bool benchHotbar = false;      // --test-hotbar: materials and consumables from the hotbar
     bool benchRing = false, ringStarted = false; // --test-ring: milestone 6 gate
+    bool benchRocket = false, rocketStarted = false; // --test-rocket: milestone 7 gate
+    double rocketWait = 0.0;
     int ffPhase = 0;
     double ffStart = 0.0, ffDist0 = 0.0;
     DVec3 ffLocal0{};
@@ -258,6 +263,7 @@ int main(int argc, char** argv)
         if (std::string(argv[i]) == "--test-flyfollow") benchFlyFollow = true;
         if (std::string(argv[i]) == "--test-hotbar") benchHotbar = true;
         if (std::string(argv[i]) == "--test-ring") benchRing = true;
+        if (std::string(argv[i]) == "--test-rocket") benchRocket = true;
         if (std::string(argv[i]) == "--test-trees") benchTrees = true;
         if (std::string(argv[i]) == "--test-chop") benchChop = true;
         if (std::string(argv[i]) == "--test-persist" && i + 1 < argc) benchPersist = atoi(argv[i + 1]);
@@ -367,6 +373,7 @@ int main(int argc, char** argv)
 
     mainMenuHandler(mainMenu);
     worldHandler(world);
+    Rocket_Init(&world);
     if (loadSaveAtStart) { // the player's save, read-only; later bench saves still go to bench.sav
         SetWorldSavePath("saves/world.sav");
         if (!LoadWorldSave(world)) printf("bench: --load: could not load saves/world.sav\n");
@@ -383,7 +390,7 @@ int main(int argc, char** argv)
     bool worldFresh = !loadSaveAtStart; // the world generated at launch: New Game uses it as it is
     MenuResult pendingMenu;
     bool justPaused = false;
-    world.onDraw3D = [&world] { if (!ship.piloted && !buildTool.active) TerrainTool_Draw3D(); BuildTool_Draw3D(world); ship.draw(world); };
+    world.onDraw3D = [&world] { if (!ship.piloted && !buildTool.active && !Rocket_Boarded()) TerrainTool_Draw3D(); BuildTool_Draw3D(world); ship.draw(world); };
 
     const double benchWarmup = 2.0;
     double benchStart = 0.0, benchMaxFrame = 0.0;
@@ -995,6 +1002,9 @@ int main(int argc, char** argv)
                 } else if (benchRing && (ringStarted || WorldIdle())) {
                     if (!ringStarted) { ringStarted = true; Planetoid* p = dynamic_cast<Planetoid*>(world.objects[0].get()); player.spawnOn(world, *p, StartSpawnDir(*p)); }
                     else if (RingTest_Update(world) != 0) benchRing = false;
+                } else if (benchRocket && (rocketStarted || WorldIdle())) {
+                    if (!rocketStarted) { rocketStarted = true; Planetoid* p = dynamic_cast<Planetoid*>(world.objects[0].get()); player.spawnOn(world, *p, StartSpawnDir(*p)); rocketWait = GetTime(); }
+                    else if (GetTime() - rocketWait > 1.5 && RocketTest_Update(world) != 0) benchRocket = false;
                 } else if (benchHole && (holePhase > 0 || WorldIdle())) { // edits keep the world busy: run on
                     // --test-hole: on the spinning planet, dig a pit ahead and walk into it, then build a
                     // pillar under your feet while jumping. Neither may hurt you (impacts are measured
@@ -1534,7 +1544,7 @@ int main(int argc, char** argv)
                         }
                         benchWalkSeconds = 0.0;
                     }
-                } else if ((WorldIdle() && benchDigStrokes == 0 && !benchSaveLoad && benchWalkSeconds <= 0.0 && benchMineStrokes == 0 && minePhase != 2 && benchFlySeconds <= 0.0 && !benchSuffocate && benchOrbitSeconds <= 0.0 && !benchRide && !benchPark && !benchGravity && !benchPrecision && !benchMantle && !benchAirJump && !benchMoon && !benchHole && !benchWall && !benchMenus && !benchWater && !benchFlyFollow && !benchHotbar && !benchRing && !benchTrees && !benchChop && benchPersist == 0 && benchBuild == 0 && benchFactory == 0 && !benchProgression) || GetTime() > 600.0) {
+                } else if ((WorldIdle() && benchDigStrokes == 0 && !benchSaveLoad && benchWalkSeconds <= 0.0 && benchMineStrokes == 0 && minePhase != 2 && benchFlySeconds <= 0.0 && !benchSuffocate && benchOrbitSeconds <= 0.0 && !benchRide && !benchPark && !benchGravity && !benchPrecision && !benchMantle && !benchAirJump && !benchMoon && !benchHole && !benchWall && !benchMenus && !benchWater && !benchFlyFollow && !benchHotbar && !benchRing && !benchRocket && !benchTrees && !benchChop && benchPersist == 0 && benchBuild == 0 && benchFactory == 0 && !benchProgression) || GetTime() > 600.0) {
                     benchStart = GetTime();
                     printf("bench: world ready after %.2f s (%d chunks, avg build %.2f ms of which sampling %.2f ms, %d worker threads)\n",
                         GetWorldStats().lastGenerationSeconds, GetWorldStats().chunks, GetWorldStats().avgBuildMs, GetWorldStats().avgSampleMs, GetWorldStats().workerThreads);
@@ -1632,7 +1642,7 @@ int main(int argc, char** argv)
         const bool gameInput = !bench && !uiOpen && gameState == 1;
         world.cameraInputEnabled = player.flyMode && !uiOpen && !ship.piloted;  // free-fly camera only in fly mode
         const bool alive = !survival.dead;
-        if (gameState == 1 && gameInput && alive && !player.flyMode && IsKeyPressed(KEY_E)) { // E rolls in free-fly
+        if (gameState == 1 && gameInput && alive && !player.flyMode && !Rocket_Boarded() && !Rocket_AimingCockpit() && IsKeyPressed(KEY_E)) { // E rolls in free-fly
             const Vector3 feet = (player.position - world.renderOrigin).toFloat();
             if (ship.piloted) {
                 // Step out beside the ship.
@@ -1658,10 +1668,14 @@ int main(int argc, char** argv)
                 ship.applyChaseCamera(world);
                 player.position = ship.position; // the pilot rides inside
                 player.velocity = ship.velocity;
+            } else if (Rocket_Boarded()) {
+                ship.update(world, false, frameDt);
+                Rocket_Update(world, gameInput && alive, frameDt * timeScale); // flight (and its camera)
             } else {
                 ship.update(world, false, frameDt);
                 if (alive) player.update(world, gameInput, frameDt);
                 Survival_OnLanding(player.impactSpeed);
+                Rocket_Update(world, gameInput && alive, frameDt); // on foot: aim at a rocket (E boards, I fuels)
             }
             if (ship.piloted && ship.lastImpact > 12.0f) survival.health -= (ship.lastImpact - 12.0f) * 3.0f; // crash damage
             Survival_Update(world, frameDt, gameInput);
@@ -1679,7 +1693,7 @@ int main(int argc, char** argv)
                 player.forward = Vector3Normalize(Vector3Subtract(Vector3Scale(Vector3Normalize(t), 0.8f), player.up)); // ~50 deg down
             }
             if (bench && benchTelescope > 0.0f && !ship.piloted) AimAtTelescopeTarget(world);
-            if (!ship.piloted) player.applyToCamera(world);
+            if (!ship.piloted && !Rocket_Boarded()) player.applyToCamera(world);
             Telescope_Update(world, gameInput && alive, !ship.piloted && !player.flyMode && alive && !buildTool.active);
             if (bench && benchTelescope > 0.0f) { Telescope_SetActive(world, true); telescope.zoom = benchTelescope; Telescope_Update(world, false, !ship.piloted); }
         }
@@ -1778,8 +1792,8 @@ int main(int argc, char** argv)
             }
         }
         if (gameState == 1) Hotbar_Update(world, gameInput && alive, ship.piloted);
-        if (gameState == 1) BuildTool_Update(world, gameInput && alive, !ship.piloted && !player.flyMode && !telescope.active && alive);
-        if (gameState == 1) TerrainTool_Update(world, gameInput && alive, !ship.piloted && !telescope.active && !buildTool.active); // F5/F9 work aboard too
+        if (gameState == 1) BuildTool_Update(world, gameInput && alive, !ship.piloted && !Rocket_Boarded() && !player.flyMode && !telescope.active && alive);
+        if (gameState == 1) TerrainTool_Update(world, gameInput && alive, !ship.piloted && !Rocket_Boarded() && !telescope.active && !buildTool.active); // F5/F9 work aboard too
 
         // --test-menus: the menu flow without clicks: main menu (screenshot), New Game, pause
         // (screenshot), Save & Quit to Menu, Load Game; each step's state is checked.
@@ -1862,7 +1876,8 @@ int main(int argc, char** argv)
                 BuildTool_DrawHUD();
                 Hotbar_DrawHUD(ship.piloted);
                 Machine_DrawHUD();
-                if (!ship.piloted && !telescope.active && !buildTool.active) TerrainTool_DrawHUD();
+                Rocket_DrawHUD(world);
+                if (!ship.piloted && !telescope.active && !buildTool.active && !Rocket_Boarded()) TerrainTool_DrawHUD();
                 GameUI_DrawHUD(world);
                 Survival_DrawHUD();
                 Objectives_DrawHUD();

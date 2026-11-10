@@ -33,9 +33,11 @@ enum class PartType : uint8_t {
     Conveyor, Cable,                                                 // item and power connectors (1 cell)
     Chest, Generator, Furnace, Macerator, Battery,                   // machines (1 m, 2x2x2 cells)
     Campfire, Kiln, CokeOven, BlastFurnace, Boiler, ForgeHammer, AlloySmelter, SteamMacerator,
+    RocketEngine, FuelTank, Cockpit, Guidance, LandingLeg,           // rocket parts (milestone 7, ship_parts.txt)
     Count
 };
-inline bool IsMachine(PartType t) { return t >= PartType::Chest && t < PartType::Count; }
+inline bool IsMachine(PartType t) { return t >= PartType::Chest && t <= PartType::SteamMacerator; }
+inline bool IsRocketPart(PartType t) { return t >= PartType::RocketEngine && t < PartType::Count; }
 inline bool IsShape(PartType t) { return t <= PartType::Beam8; } // structure: built from a material
 constexpr int kShapeCount = (int)PartType::Beam8 + 1;
 const char* PartName(PartType t);
@@ -78,6 +80,7 @@ public:
     Vector3 east, up, north;            // body-local unit axes: plot x, y, z
 
     std::vector<Part> parts;            // index = part id (removed parts have type Count)
+    float fuel = 0.0f;                  // rocket fuel loaded (kg), when the plot is a rocket
     struct CellRef { int part; CellShape shape; };
     std::unordered_map<Int3, CellRef> cells; // occupied cell -> part index and its shape there
 
@@ -122,6 +125,8 @@ public:
     // `reach` of it, or a new one anchored there (up = radial).
     Plot* plotFor(Vector3 bodyLocal, float reach, bool create);
     Plot* byId(uint32_t id);
+    Plot* adopt(std::unique_ptr<Plot> plot);          // move a plot in (from another body), with a fresh id
+    std::unique_ptr<Plot> release(Plot* plot);        // take one out
     int partCount() const;
     void save(FILE* f) const;
     bool load(FILE* f);

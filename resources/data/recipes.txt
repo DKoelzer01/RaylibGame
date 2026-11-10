@@ -31,3 +31,10 @@ generator 1       = lv_hull 1, copper_wire 4, steel_plate 4
 electric_furnace 1 = lv_hull 1, basic_circuit 2, copper_wire 4
 macerator 1       = lv_hull 1, basic_circuit 2, steel_plate 2
 battery 1         = lv_hull 1, power_cell 2
+# Rocketry (milestone 7). Placeholder costs on today's materials until the MV / HV tiers exist.
+rocket_engine 1   = steel_plate 12, basic_circuit 2, copper_wire 8
+fuel_tank 1       = steel_plate 8
+cockpit 1         = steel_plate 6, glass 4, basic_circuit 2
+guidance_computer 1 = basic_circuit 4, vacuum_tube 4, copper_wire 8
+landing_leg 1     = steel_plate 3
+rocket_fuel 4     = coal 2, wood 2

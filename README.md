@@ -39,7 +39,7 @@ generated in the build directory for IntelliSense/clangd.
 | L | headlamp (on foot: suit power; piloting: ship nose light) |
 | F | toggle free-fly camera (WASD along the view, Space/Ctrl along camera up, mouse turns, Q/E roll, Shift/Alt faster) |
 | Space | jump; hold for jetpack |
-| E | board / exit the ship |
+| E | board / exit the ship; board a rocket (looking at its cockpit) / leave it once landed |
 | Mouse wheel | brush size (zoom while the telescope is up) |
 | T | raise / lower the telescope |
 | F5 / F9 | save / load (the current save file) |
@@ -96,6 +96,17 @@ Shaders in `resources/` hot-reload when saved.
   default is the 60 km home planet, its moon, an asteroid ring 250 km up and three huge rocks in and
   beside it; the old asteroid start is `bodies_asteroids.txt`. Saves embed the system they were
   made in, so editing the file never breaks a save. Errors are reported with line numbers in `log.txt`.
+- **Rockets** (`src/space/rocket.*`, `resources/data/ship_parts.txt`): a build plot with a cockpit is a rocket. Build it
+  freely from rocket engines, fuel tanks, a guidance computer, landing legs and any structure (parts' mass, thrust,
+  engine efficiency and tank sizes are data; structure weighs by material). Looking at it shows the launch check
+  (thrust-to-weight above 1.2 here, delta-v for orbit, fuel loaded, what is missing); I loads rocket fuel, E boards.
+  Throttle up (Shift; Ctrl down, X cuts) and the plot lifts off as a vehicle: summed gravity, drag against the
+  turning air, fuel burnt at the engines' efficiency, in double precision, so coasting above the air is a real
+  orbit; W/S, A/D, Z/C steer (the guidance computer holds attitude). The HUD shows altitude, speeds and the orbit
+  (apoapsis / periapsis; in orbit once the periapsis clears the air at 35 km). A gentle upright touchdown turns it
+  back into a plot on whatever it landed on; hard landings break legs, harder ones engines (damage, not
+  destruction). The cockpit is pressurised. Saves keep a rocket in flight. The quest book's tier 5 is rocketry
+  (placeholder recipes on today's materials until the MV / HV tiers exist).
 - **Planetary ring** (`src/engine/ring.*`): 60,000 rocks 5-50 m across (about 1% five times bigger) in a band
   3 km wide and 60 m thick, each on its own circular orbit, derived from the seed and its index (nothing
   stored until you change one). Far away rocks draw as instances of a dozen lumpy rock meshes (skipped when
@@ -185,7 +196,8 @@ N working machines, tick under 5 ms, plates reach the chests, contents survive a
 load), `--test-water` (inland water near the start, its bed and clay), `--test-flyfollow` (the fly camera rides the
 planet and the moon), `--test-hotbar` (materials, consumables, foundations, materials through a save), `--test-ring`
 (milestone 6 gate: 60k rocks, frame time from the ground and inside the ring, a rock promoted, dug, left, revisited
-and reloaded with its hole, standing on a huge rock), `--bench-fly V`
+and reloaded with its hole, standing on a huge rock), `--test-rocket` (milestone 7 gate, with `--time-scale 8`: a rocket built,
+fuelled and flown by the autopilot to orbit, saved and loaded in orbit, brought down and landed), `--bench-fly V`
 / `--bench-fly-alt A` (camera flight over body 0, LOD streaming; negative A: underwater), `--no-foliage`,
 `--test-mine N` digs N strokes at the feet, crafts everything possible and builds 3 strokes,
 `--test-fly S` autopilots the ship to the nearest other asteroid, `--test-suffocate` checks death/respawn,

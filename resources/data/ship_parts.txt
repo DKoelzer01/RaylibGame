@@ -1,0 +1,16 @@
+# Rocket parts (milestone 7): build parts on a plot; a plot with a cockpit is a rocket.
+# part item         | mass kg | thrust kN | isp s | fuel kg | what it does
+rocket_engine       | 600     | 120       | 300   | 0       | thrust along the plot's up axis
+fuel_tank           | 200     | 0         | 0     | 1500    | holds rocket fuel (I loads it from the inventory)
+cockpit             | 800     | 0         | 0     | 0       | pressurised seat for the pilot (life support)
+guidance_computer   | 100     | 0         | 0     | 0       | attitude control (reaction wheels)
+landing_leg         | 60      | 0         | 0     | 0       | absorbs touchdowns (each lifts the safe landing speed)
+# Structure: kg per 0.5 m cell of each building material.
+material concrete 300
+material stone 330
+material wood 60
+material iron_plate 90
+material glass 80
+material dirt 200
+# Rocket fuel: kg per item.
+fuel rocket_fuel 100
