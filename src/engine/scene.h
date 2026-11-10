@@ -90,6 +90,11 @@ class Scene {
         Vector3 fogColor = { 0, 0, 0 };  // linear-space fog colour (fantasy: sky haze)
         float fogDensity = 0.0f;         // 0 = no fog
         std::function<void()> onDraw3D;  // extra world-space drawing at the end of the main pass
+        // Extra geometry in the depth passes (rings, ring.h): range and draw in the far pass, draw in
+        // the mid and near passes (rebuild = the first of the frame).
+        std::function<bool(double& dmin, double& dmax)> farExtraRange;
+        std::function<void(const RenderContext&)> drawFarExtra;
+        std::function<void(const RenderContext&, bool rebuild)> drawPassExtra;
 
         // Floating origin: render-space (float) = world (double) - renderOrigin. The camera is kept
         // near the render-space origin so vertex positions stay precise anywhere in the system.

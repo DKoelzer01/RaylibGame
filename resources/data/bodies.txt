@@ -25,6 +25,13 @@ planet terra radius=60000 position=0,0,0 day=3600
 # 10 km moon 500 km above the surface on a circular orbit (~5 h, ~195 m/s). Gravity auto: 0.98 m/s^2.
 moon   luna  radius=10000 orbit=terra,500000,30 day=86400
 
-# Asteroid ring 250 km up (~2 h orbits, ~260 m/s): a thin band, 4 km wide and 150 m thick.
-# A first pass; the ring gets its proper treatment (density, mining, docking) in milestone 6.
-ring   rock  radius=50 count=40 size=0.5,3 extent=4000 thickness=150 maxspin=3 orbit=terra,250000,0
+# Asteroid ring 250 km up (~2 h orbits, ~260 m/s): 60,000 rocks in a band 3 km wide and 60 m thick
+# (ring.h). Sizes 5-50 m across (radius x size), about 1% five times bigger. Far away they are
+# instances and a translucent band; up close each becomes a diggable voxel body.
+ring   rock  radius=25 count=60000 size=0.1,1 extent=3000 thickness=60 maxspin=3 orbit=terra,250000,0
+
+# Huge rocks at the ring edges and one in it: the goals of the first trip to space. The one inside
+# clears a lane, a gap in the band (rocks on crossing orbits would collide).
+asteroid goliath radius=330 orbit=terra,248240,20 gravity=1.6 day=5400
+asteroid bastion radius=420 orbit=terra,251820,150 gravity=1.9 day=7200
+asteroid pebble  radius=220 orbit=terra,250000,260 gravity=1.3 day=3600

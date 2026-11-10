@@ -56,6 +56,8 @@ struct RenderContext {
     Shader* grassShader = nullptr;        // foliage: grass tufts (drawn after the opaque terrain)
     int grassModelLoc = -1, grassOccluderLoc = -1;
     Vector3 cameraPos = { 0, 0, 0 };      // render space
+    Vector3 sunDir = { 0, 1, 0 };         // toward the sun
+    Vector3 ambient = { 0, 0, 0 };
     Shader* farShader = nullptr;          // distance sphere (farsphere.h)
     Shader* partShader = nullptr;         // build plots (plots.h)
     int partOccluderLoc = -1;
