@@ -497,17 +497,35 @@ void TreeSystem::draw(const Planetoid& body, const RenderContext& ctx, int onlyL
     }
 }
 
+// The tile under a body-local direction and its neighbours, across cube-face seams too: sampled a
+// little under a tile away in eight directions (the same face's i+-1, j+-1 missed the trees just
+// over a seam, so you walked through them and could not chop them).
+static void TilesAround(Vector3 dir, float radius, TreeTileKey out[9], int& n) {
+    n = 0;
+    const Vector3 t1 = Vector3Normalize(Vector3CrossProduct(dir, fabsf(dir.y) < 0.9f ? Vector3{ 0, 1, 0 } : Vector3{ 1, 0, 0 }));
+    const Vector3 t2 = Vector3CrossProduct(t1, dir);
+    const float a = 0.9f * kTreeTileSize / radius;
+    for (int di = -1; di <= 1; ++di)
+        for (int dj = -1; dj <= 1; ++dj) {
+            const TreeTileKey k = TreeTileOf(Vector3Normalize(Vector3Add(dir, Vector3Add(Vector3Scale(t1, di * a), Vector3Scale(t2, dj * a)))), radius);
+            bool dup = false;
+            for (int m = 0; m < n; ++m) dup |= out[m] == k;
+            if (!dup) out[n++] = k;
+        }
+}
+
 void TreeSystem::trunksNear(Vector3 local, float range, std::vector<Trunk>& out) const {
     const float r = Vector3Length(local);
     if (r < 1.0f) return;
-    const TreeTileKey k = TreeTileOf(Vector3Scale(local, 1.0f / r), radius);
-    for (int di = -1; di <= 1; ++di)
-        for (int dj = -1; dj <= 1; ++dj) {
-            auto it = tiles.find({ k.face, k.i + di, k.j + dj });
-            if (it == tiles.end() || !it->second.ready) continue;
-            for (const Trunk& t : it->second.trunks)
-                if (Vector3Distance(t.base, local) < range + t.height) out.push_back(t);
-        }
+    TreeTileKey keys[9];
+    int n = 0;
+    TilesAround(Vector3Scale(local, 1.0f / r), radius, keys, n);
+    for (int m = 0; m < n; ++m) {
+        auto it = tiles.find(keys[m]);
+        if (it == tiles.end() || !it->second.ready) continue;
+        for (const Trunk& t : it->second.trunks)
+            if (Vector3Distance(t.base, local) < range + t.height) out.push_back(t);
+    }
 }
 
 void TreeSystem::remove(uint64_t id) {
@@ -531,6 +549,9 @@ void TreeSystem::remove(uint64_t id) {
     for (const Plant& p : t.plants) if (p.tree()) t.trunks.push_back({ p.base, p.up, p.height, p.radius });
     t.regrowing = true;
     batchDirty = true;
+    // A rebuild already queued was built with the old removals: it would bring the plant back (and,
+    // not regrowing, keep it). Re-request so that result is dropped (stale version) for a fresh one.
+    if (t.pending) request(it->first, t, 0.0f);
 }
 
 void TreeSystem::setRemovals(const PlantRemovals& r) {
@@ -541,12 +562,13 @@ void TreeSystem::setRemovals(const PlantRemovals& r) {
 bool TreeSystem::raycast(Vector3 o, Vector3 d, float maxDistance, PlantHit& best) const {
     const float r = Vector3Length(o);
     if (r < 1.0f) return false;
-    const TreeTileKey k = TreeTileOf(Vector3Scale(o, 1.0f / r), radius);
+    TreeTileKey keys[9];
+    int nk = 0;
+    TilesAround(Vector3Scale(o, 1.0f / r), radius, keys, nk);
     bool found = false;
     best.distance = maxDistance;
-    for (int di = -1; di <= 1; ++di)
-        for (int dj = -1; dj <= 1; ++dj) {
-            auto it = tiles.find({ k.face, k.i + di, k.j + dj });
+    for (int m = 0; m < nk; ++m) {
+            auto it = tiles.find(keys[m]);
             if (it == tiles.end() || !it->second.ready) continue;
             for (const Plant& p : it->second.plants) {
                 // Closest approach between the ray and the plant's axis segment (trunk / bush core).
