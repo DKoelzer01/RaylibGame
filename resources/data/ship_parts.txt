@@ -12,5 +12,19 @@ material wood 60
 material iron_plate 90
 material glass 80
 material dirt 200
+material heat_shield_tile 150
 # Rocket fuel: kg per item.
 fuel rocket_fuel 100
+# Heat: degrees C a part survives on the leading face (re-entry, fast flight in thick air). Default 900.
+heat rocket_engine 1600
+heat fuel_tank 1100
+heat cockpit 1200
+heat guidance_computer 700
+heat landing_leg 1100
+heat heat_shield_tile 3000
+heat concrete 1100
+heat stone 1200
+heat wood 250
+heat iron_plate 1000
+heat glass 900
+heat dirt 600

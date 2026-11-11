@@ -24,7 +24,9 @@ namespace {
     int phase = 0;
     double phaseStart = 0.0, testStart = 0.0;
     Vector3 padDir{};
-    bool orbited = false, savedInOrbit = false;
+    bool orbited = false, savedInOrbit = false, mapShot = false, warped = false, warpDone = false;
+    double warpStart = 0.0;
+    RocketTelemetry warpBefore;
     double maxAlt = 0.0;
     void Next() { ++phase; phaseStart = GetTime(); }
     double T() { return GetTime() - phaseStart; }
@@ -88,7 +90,27 @@ int RocketTest_Update(Scene& world) {
                    before.apoapsis / 1000.0, after.apoapsis / 1000.0, before.periapsis / 1000.0, after.periapsis / 1000.0);
             if (!same) return -1;
         }
-        if (T() > 5.0) { Rocket_SetAutopilot(RocketAutopilot::Deorbit); printf("bench: rocket: deorbit burn\n"); Next(); }
+        // The orbit map, then time warp: 100x for a while (coasting), the orbit must hold.
+        if (T() > 3.0 && !mapShot) { mapShot = true; Rocket_SetMapView(true); }
+        if (T() > 3.5 && !warped) {
+            warped = true;
+            TakeScreenshot("bench_rocket_map.png");
+            Rocket_SetMapView(false);
+            warpBefore = Rocket_Telemetry(world);
+            Rocket_SetWarp(6);
+            warpStart = GetTime();
+        }
+        if (warped && !warpDone && GetTime() - warpStart > 8.0) {
+            warpDone = true;
+            const float factor = Rocket_Warp();
+            Rocket_SetWarp(0);
+            const RocketTelemetry a = Rocket_Telemetry(world);
+            const bool held = factor >= 100.0f && fabs(a.apoapsis - warpBefore.apoapsis) < 1500.0 && fabs(a.periapsis - warpBefore.periapsis) < 1500.0;
+            printf("bench: rocket: time warp %.0fx for 8 s (~%.0f min of orbit): apoapsis %.1f -> %.1f km, periapsis %.1f -> %.1f km: %s\n", factor, 8.0 * factor / 60.0,
+                   warpBefore.apoapsis / 1000.0, a.apoapsis / 1000.0, warpBefore.periapsis / 1000.0, a.periapsis / 1000.0, held ? "orbit held" : "DRIFTED");
+            if (!held) return -1;
+        }
+        if (warpDone) { Rocket_SetAutopilot(RocketAutopilot::Deorbit); printf("bench: rocket: deorbit burn\n"); Next(); }
         break;
     case 4: {
         static double lastLog = 0.0;
@@ -97,8 +119,8 @@ int RocketTest_Update(Scene& world) {
         if (t.state == RocketState::OnPad && t.landings > 0) {
             const Vector3 landed = Vector3Normalize(p->toLocal((player.position - world.renderOrigin).toFloat()));
             const double km = acos(std::clamp(Vector3DotProduct(landed, padDir), -1.0f, 1.0f)) * pf->radius / 1000.0;
-            printf("bench: rocket: LANDED on %s after %.0f s: touchdown %.1f m/s, %d parts broken, %.0f km from the pad, fuel %.0f kg left (highest %.1f km)\n",
-                   t.body.c_str(), GetTime() - testStart, t.lastTouchdown, t.damage, km, t.fuel, maxAlt / 1000.0);
+            printf("bench: rocket: LANDED on %s after %.0f s: touchdown %.1f m/s, %d parts broken, %.0f km from the pad, fuel %.0f kg left (highest %.1f km, hottest %.0f C)\n",
+                   t.body.c_str(), GetTime() - testStart, t.lastTouchdown, t.damage, km, t.fuel, maxAlt / 1000.0, Rocket_MaxTemperature());
             Next();
         } else if (T() > 300.0) { printf("bench: rocket: did not land (altitude %.0f m, vertical %.1f m/s, fuel %.0f kg)\n", t.groundAltitude, t.verticalSpeed, t.fuel); return -1; }
         break;

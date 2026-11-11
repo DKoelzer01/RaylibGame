@@ -31,6 +31,7 @@
 #include "ring_test.h"
 #include "rocket.h"
 #include "rocket_test.h"
+#include "blueprint.h"
 #include "factory.h"
 
 #if defined(PLATFORM_DESKTOP)
@@ -149,6 +150,7 @@ int main(int argc, char** argv)
     bool benchRing = false, ringStarted = false; // --test-ring: milestone 6 gate
     bool benchRocket = false, rocketStarted = false; // --test-rocket: milestone 7 gate
     double rocketWait = 0.0;
+    bool benchBlueprint = false;   // --test-blueprint: place, fill in, save and load a blueprint
     int ffPhase = 0;
     double ffStart = 0.0, ffDist0 = 0.0;
     DVec3 ffLocal0{};
@@ -265,6 +267,7 @@ int main(int argc, char** argv)
         if (std::string(argv[i]) == "--test-hotbar") benchHotbar = true;
         if (std::string(argv[i]) == "--test-ring") benchRing = true;
         if (std::string(argv[i]) == "--test-rocket") benchRocket = true;
+        if (std::string(argv[i]) == "--test-blueprint") benchBlueprint = true;
         if (std::string(argv[i]) == "--test-trees") benchTrees = true;
         if (std::string(argv[i]) == "--test-chop") benchChop = true;
         if (std::string(argv[i]) == "--test-persist" && i + 1 < argc) benchPersist = atoi(argv[i + 1]);
@@ -770,6 +773,9 @@ int main(int argc, char** argv)
                             printf("bench: factory: %d machines (%d active), %d item / %d power networks; tick %.2f ms avg, %.2f ms worst; %lld items made in the last 12 s (%lld total); first chest: %s -> %s\n",
                                    s.machines, s.activeMachines, s.itemNetworks, s.powerNetworks, avg, s.maxTickMs, s.itemsMade - factMade0, s.itemsMade, chest.input.c_str(), pass ? "PASS" : "FAIL");
                             factChestBefore = chest.input;
+                            // Remove the plot's first part before saving: the chest's index must survive the reload
+                            // (saves kept only live parts, so every index after a removed one shifted down).
+                            if (Plot* pl = p->plots ? p->plots->byId(factPlot) : nullptr) pl->remove(0);
                             SaveWorld(world);
                             const bool loaded = LoadWorldSave(world);
                             if (!loaded) printf("bench: factory: load FAILED\n");
@@ -1006,6 +1012,39 @@ int main(int argc, char** argv)
                 } else if (benchRocket && (rocketStarted || WorldIdle())) {
                     if (!rocketStarted) { rocketStarted = true; Planetoid* p = dynamic_cast<Planetoid*>(world.objects[0].get()); player.spawnOn(world, *p, StartSpawnDir(*p)); rocketWait = GetTime(); }
                     else if (GetTime() - rocketWait > 1.5 && RocketTest_Update(world) != 0) benchRocket = false;
+                } else if (benchBlueprint && WorldIdle()) {
+                    // --test-blueprint: the starter rocket preset, placed from the inventory (one landing leg
+                    // short: it places the rest and says what is missing; placing again fills it in), then
+                    // saved as a blueprint and loaded back.
+                    benchBlueprint = false;
+                    Planetoid* p = dynamic_cast<Planetoid*>(world.objects[0].get());
+                    const PlanetField* pf = p ? dynamic_cast<const PlanetField*>(p->field.get()) : nullptr;
+                    int idx = -1;
+                    for (size_t i = 0; i < Blueprint_List().size(); ++i) if (Blueprint_List()[i].name == "Starter rocket") idx = (int)i;
+                    if (!pf || idx < 0) { printf("bench: blueprint: FAIL (no planet or no Starter rocket preset)\n"); }
+                    else {
+                        player.spawnOn(world, *p, StartSpawnDir(*p));
+                        const Vector3 home = StartSpawnDirLocal(*p);
+                        const Vector3 t1 = Vector3Normalize(Vector3CrossProduct(home, { 0, 1, 0 }));
+                        const Vector3 d = Vector3Normalize(Vector3Add(home, Vector3Scale(t1, 16.0f / pf->radius)));
+                        if (!p->plots) p->plots = std::make_unique<PlotSet>();
+                        Plot* plot = p->plots->plotFor(Vector3Scale(d, pf->radius + pf->elevation(d)), 0.0f, true);
+                        inventory.clear();
+                        inventory.add("rocket_engine", 1); inventory.add("landing_leg", 3); inventory.add("fuel_tank", 4);
+                        inventory.add("guidance_computer", 1); inventory.add("cockpit", 1);
+                        const Blueprint& bp = Blueprint_List()[idx];
+                        std::string missing;
+                        const int first = Blueprint_Place(*p, *plot, bp, { 0, 0, 0 }, true, missing);
+                        inventory.add("landing_leg", 1);
+                        std::string missing2;
+                        const int second = Blueprint_Place(*p, *plot, bp, { 0, 0, 0 }, true, missing2);
+                        const bool saved = Blueprint_SaveFile(*plot, "saves/bench_blueprint.bp", "bench copy");
+                        Blueprint back;
+                        const bool loaded = Blueprint_LoadFile("saves/bench_blueprint.bp", back);
+                        const bool ok = first == 10 && missing == "1 landing_leg" && second == 1 && plot->partCount() == (int)bp.parts.size() && saved && loaded && back.parts.size() == bp.parts.size();
+                        printf("bench: blueprint: %s (%zu parts): placed %d (missing: %s), then %d more; saved and loaded %zu parts -> %s\n",
+                               bp.name.c_str(), bp.parts.size(), first, missing.c_str(), second, back.parts.size(), ok ? "PASS" : "FAIL");
+                    }
                 } else if (benchHole && (holePhase > 0 || WorldIdle())) { // edits keep the world busy: run on
                     // --test-hole: on the spinning planet, dig a pit ahead and walk into it, then build a
                     // pillar under your feet while jumping. Neither may hurt you (impacts are measured
@@ -1545,7 +1584,7 @@ int main(int argc, char** argv)
                         }
                         benchWalkSeconds = 0.0;
                     }
-                } else if ((WorldIdle() && benchDigStrokes == 0 && !benchSaveLoad && benchWalkSeconds <= 0.0 && benchMineStrokes == 0 && minePhase != 2 && benchFlySeconds <= 0.0 && !benchSuffocate && benchOrbitSeconds <= 0.0 && !benchRide && !benchPark && !benchGravity && !benchPrecision && !benchMantle && !benchAirJump && !benchMoon && !benchHole && !benchWall && !benchMenus && !benchWater && !benchFlyFollow && !benchHotbar && !benchRing && !benchRocket && !benchTrees && !benchChop && benchPersist == 0 && benchBuild == 0 && benchFactory == 0 && !benchProgression) || GetTime() > 600.0) {
+                } else if ((WorldIdle() && benchDigStrokes == 0 && !benchSaveLoad && benchWalkSeconds <= 0.0 && benchMineStrokes == 0 && minePhase != 2 && benchFlySeconds <= 0.0 && !benchSuffocate && benchOrbitSeconds <= 0.0 && !benchRide && !benchPark && !benchGravity && !benchPrecision && !benchMantle && !benchAirJump && !benchMoon && !benchHole && !benchWall && !benchMenus && !benchWater && !benchFlyFollow && !benchHotbar && !benchRing && !benchRocket && !benchBlueprint && !benchTrees && !benchChop && benchPersist == 0 && benchBuild == 0 && benchFactory == 0 && !benchProgression) || GetTime() > 600.0) {
                     benchStart = GetTime();
                     printf("bench: world ready after %.2f s (%d chunks, avg build %.2f ms of which sampling %.2f ms, %d worker threads)\n",
                         GetWorldStats().lastGenerationSeconds, GetWorldStats().chunks, GetWorldStats().avgBuildMs, GetWorldStats().avgSampleMs, GetWorldStats().workerThreads);
@@ -1661,7 +1700,7 @@ int main(int argc, char** argv)
         // One clamped frame time for everything that moves (bodies, ship, player): clamping only the
         // player let the ground spin away under it during a slow frame.
         const float frameDt = std::min(GetFrameTime(), 0.1f);
-        advanceBodies(world, gameState == 1 ? frameDt * timeScale : 0.0f); // bodies only spin while playing; before riders update
+        advanceBodies(world, gameState == 1 ? frameDt * timeScale * Rocket_Warp() : 0.0f); // bodies only spin while playing (warped with a coasting rocket); before riders update
         if (gameState == 1) {
             ship.lastImpact = 0.0f;
             if (ship.piloted) {
@@ -1671,7 +1710,7 @@ int main(int argc, char** argv)
                 player.velocity = ship.velocity;
             } else if (Rocket_Boarded()) {
                 ship.update(world, false, frameDt);
-                Rocket_Update(world, gameInput && alive, frameDt * timeScale); // flight (and its camera)
+                Rocket_Update(world, gameInput && alive, frameDt * timeScale * Rocket_Warp()); // flight (and its camera)
             } else {
                 ship.update(world, false, frameDt);
                 if (alive) player.update(world, gameInput, frameDt);
@@ -1877,11 +1916,11 @@ int main(int argc, char** argv)
                 BuildTool_DrawHUD();
                 Hotbar_DrawHUD(ship.piloted);
                 Machine_DrawHUD();
-                Rocket_DrawHUD(world);
                 if (!ship.piloted && !telescope.active && !buildTool.active && !Rocket_Boarded()) TerrainTool_DrawHUD();
                 GameUI_DrawHUD(world);
                 Survival_DrawHUD();
                 Objectives_DrawHUD();
+                Rocket_DrawHUD(world); // last: the orbit map covers the rest
                 if (!ship.piloted && ship.playerInRange(world, (player.position - world.renderOrigin).toFloat(), 5.0f))
                     DrawText("[E] Board ship", GetScreenWidth() / 2 - 60, GetScreenHeight() / 2 + 40, 20, SKYBLUE);
                 if (ship.piloted) DrawText("SHIP: WASD thrust  Space/Ctrl up/down  mouse steer  Z/C roll  Shift boost  X brake  L lights  0 power cell (hotbar)  E exit",

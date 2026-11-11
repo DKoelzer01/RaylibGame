@@ -54,6 +54,12 @@ struct RocketTelemetry {
 
 void Rocket_Init(Scene* world);                // ship_parts.txt; the world (for loading a rocket in flight)
 bool Rocket_Boarded();
+// Time warp while coasting above the air (period / comma), dropping to 1x for burns and in the air.
+float Rocket_Warp();
+void Rocket_SetWarp(int level);    // 0 = 1x .. 6 = 100x (tests)
+bool Rocket_MapView();             // M: the orbit map is up
+void Rocket_SetMapView(bool on);
+float Rocket_MaxTemperature();     // hottest the leading face got (tests)
 bool Rocket_AimingCockpit();                   // on foot, looking at a rocket's cockpit (E boards it)
 // Once a frame. On foot: the launch-check panel, E boards, I loads fuel. Aboard: flight and camera.
 void Rocket_Update(Scene& world, bool inputEnabled, float dt);

@@ -116,6 +116,7 @@ namespace {
         { "iron_plate", "Iron", { 118, 122, 130, 255 } },
         { "glass", "Glass", { 172, 212, 226, 255 } },
         { "dirt", "Packed dirt", { 120, 90, 60, 255 } },
+        { "heat_shield_tile", "Heat shield", { 45, 42, 40, 255 } },  // survives re-entry on a rocket's leading face
     };
 }
 int BuildMaterialCount() { return (int)(sizeof(kBuildMaterials) / sizeof(kBuildMaterials[0])); }
@@ -619,13 +620,17 @@ int PlotSet::partCount() const {
 void PlotSet::save(FILE* f) const {
     int live = 0;
     for (const auto& p : plots) if (p->partCount() > 0) ++live;
-    // plots3: parts carry their material and plots their rocket fuel (plots2: no fuel; plots: no materials).
-    fprintf(f, "plots3 %d\n", live);
+    // plots4: every part slot, removed ones as "-1" placeholders, so part indices (what the factory
+    // saves machine contents by) survive a reload; parts carry their material and plots their rocket
+    // fuel. (plots3: live parts only; plots2: no fuel; plots: no materials.)
+    fprintf(f, "plots4 %d\n", live);
     for (const auto& p : plots) {
         if (p->partCount() == 0) continue;
-        fprintf(f, "plot %u %.4f %.4f %.4f %d %.1f\n", p->id, p->origin.x, p->origin.y, p->origin.z, p->partCount(), p->fuel);
-        for (const Part& part : p->parts)
-            if (part.type != PartType::Count) fprintf(f, "%d %d %d %d %d %d\n", (int)part.type, part.origin.x, part.origin.y, part.origin.z, part.orient, part.material);
+        fprintf(f, "plot %u %.4f %.4f %.4f %d %.1f\n", p->id, p->origin.x, p->origin.y, p->origin.z, (int)p->parts.size(), p->fuel);
+        for (const Part& part : p->parts) {
+            if (part.type == PartType::Count) fprintf(f, "-1\n");
+            else fprintf(f, "%d %d %d %d %d %d\n", (int)part.type, part.origin.x, part.origin.y, part.origin.z, part.orient, part.material);
+        }
     }
 }
 
@@ -633,8 +638,10 @@ bool PlotSet::load(FILE* f) {
     plots.clear();
     int n = 0;
     char tag[16] = {};
-    if (fscanf(f, " %15s %d", tag, &n) != 2 || (strcmp(tag, "plots") != 0 && strcmp(tag, "plots2") != 0 && strcmp(tag, "plots3") != 0)) return false;
-    const bool materials = strcmp(tag, "plots") != 0, hasFuel = strcmp(tag, "plots3") == 0;
+    if (fscanf(f, " %15s %d", tag, &n) != 2 || (strcmp(tag, "plots") != 0 && strcmp(tag, "plots2") != 0 && strcmp(tag, "plots3") != 0 && strcmp(tag, "plots4") != 0)) return false;
+    const bool materials = strcmp(tag, "plots") != 0, hasFuel = strcmp(tag, "plots3") == 0 || strcmp(tag, "plots4") == 0;
+    const bool slots = strcmp(tag, "plots4") == 0; // removed parts kept as placeholders
+    const Part dead{ PartType::Count, { 0, 0, 0 }, 0, 0 };
     for (int i = 0; i < n; ++i) {
         unsigned int id = 0;
         double ox, oy, oz;
@@ -654,11 +661,14 @@ bool PlotSet::load(FILE* f) {
         p->north = Vector3CrossProduct(p->up, p->east);
         for (int k = 0; k < count; ++k) {
             int t, x, y, z, o, m = 0;
-            if (fscanf(f, " %d %d %d %d %d", &t, &x, &y, &z, &o) != 5) return false;
+            if (fscanf(f, " %d", &t) != 1) return false;
+            if (slots && t < 0) { p->parts.push_back(dead); continue; } // a removed part's slot
+            if (fscanf(f, " %d %d %d %d", &x, &y, &z, &o) != 4) return false;
             if (materials && fscanf(f, " %d", &m) != 1) return false;
             // Old saves: beams were iron.
             if (!materials && (t == (int)PartType::Beam2 || t == (int)PartType::Beam4 || t == (int)PartType::Beam8)) m = BuildMaterialForItem("iron_plate");
-            p->place({ (PartType)t, { x, y, z }, (uint8_t)o, (uint8_t)std::clamp(m, 0, BuildMaterialCount() - 1) });
+            // A part that no longer fits still keeps its slot, so the indices after it don't shift.
+            if (p->place({ (PartType)t, { x, y, z }, (uint8_t)o, (uint8_t)std::clamp(m, 0, BuildMaterialCount() - 1) }) < 0) p->parts.push_back(dead);
         }
         nextId = std::max(nextId, id + 1);
         plots.push_back(std::move(p));

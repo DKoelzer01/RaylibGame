@@ -8,6 +8,7 @@
 #include "world.h"
 #include "worldtypes.h"
 #include "factory.h"
+#include "blueprint.h"
 
 #include <raymath.h>
 #include <algorithm>
@@ -80,7 +81,7 @@ void BuildTool_Update(Scene& world, bool inputEnabled, bool usable) {
     if (!usable) { buildTool.active = false; return; }
     if (inputEnabled && IsKeyPressed(KEY_G)) {
         buildTool.active = !buildTool.active;
-        GameUI_Toast(buildTool.active ? "Build mode: wheel picks the shape, R/V rotate, RMB place, LMB remove (G to leave; the hotbar picks the material or machine)" : "Build mode off");
+        GameUI_Toast(buildTool.active ? "Build mode: wheel shape, R/V rotate, RMB place, LMB remove, B save blueprint, N blueprints (G to leave)" : "Build mode off");
     }
     aim = Aim{};
     if (!buildTool.active) return;
@@ -133,6 +134,19 @@ void BuildTool_Update(Scene& world, bool inputEnabled, bool usable) {
     else aim.canPlace = true;
 
     if (!inputEnabled) return;
+    if (Blueprint_Keys(body, aim.removePlot)) return; // B saves the plot looked at, N cycles blueprints
+    if (const Blueprint* bp = Blueprint_Active(); bp && IsMouseButtonPressed(MOUSE_BUTTON_RIGHT)) {
+        Plot* target = aim.plot;
+        if (!target) {
+            if (!body->plots) body->plots = std::make_unique<PlotSet>();
+            target = body->plots->plotFor(aim.newOrigin, 0.0f, true);
+        }
+        std::string missing;
+        const int n = Blueprint_Place(*body, *target, *bp, aim.part.origin, true, missing);
+        GameUI_Toast(missing.empty() ? TextFormat("Placed %d parts of %s", n, bp->name.c_str()) : TextFormat("Placed %d parts; still need %s", n, missing.c_str()));
+        if (n > 0) Audio_Play(Sfx::Build, 0.5f, 1.0f);
+        return;
+    }
     if (IsMouseButtonPressed(MOUSE_BUTTON_RIGHT) && aim.canPlace) {
         Plot* target = aim.plot;
         if (!target) {
@@ -174,7 +188,8 @@ void BuildTool_Draw3D(Scene& world) {
     };
     std::vector<std::pair<Int3, CellShape>> fp;
     Plot::Footprint(aim.part, fp);
-    for (const auto& c : fp) box(*frame, c.first, aim.canPlace ? GREEN : RED);
+    if (Blueprint_Active()) Blueprint_DrawGhost(body, *frame, aim.part.origin, true); // the whole blueprint instead of one part
+    else for (const auto& c : fp) box(*frame, c.first, aim.canPlace ? GREEN : RED);
     if (aim.removePlot && aim.removePart >= 0) {
         Plot::Footprint(aim.removePlot->parts[aim.removePart], fp);
         for (const auto& c : fp) box(*aim.removePlot, c.first, Fade(ORANGE, 0.7f));
@@ -183,6 +198,7 @@ void BuildTool_Draw3D(Scene& world) {
 
 void BuildTool_DrawHUD() {
     if (!buildTool.active) return;
+    Blueprint_DrawHUD();
     const PartType t = (PartType)buildTool.part;
     const int cx = GetScreenWidth() / 2, cy = GetScreenHeight() / 2;
     DrawLine(cx - 8, cy, cx + 8, cy, RAYWHITE);
