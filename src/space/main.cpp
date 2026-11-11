@@ -758,7 +758,19 @@ int main(int argc, char** argv)
                         ApplyTerrainEdit(*p, TerrainEdit{ Vector3Scale(dir, f->mantleRadius + 4.0f), 12.0f, -20.0f });
                         const float mantleAfter = p->densityAt(inMantle), crustAfter = p->densityAt(inCrust);
                         p->edits = savedEdits; // leave the world as it was
-                        const bool mantleOk = mantleAfter == mantleBefore && crustAfter < crustBefore - 1.0f && !f->editable(inMantle) && f->editable(inCrust);
+                        // A hole 700 m down (above the mantle) must open: deltas saturated at ~510 m of rock.
+                        bool deepOk = true;
+                        {
+                            const Vector3 dd = randomDir();
+                            const float depth = std::min(700.0f, f->radius + f->elevation(dd) - f->mantleRadius - 30.0f);
+                            const Vector3 deep = Vector3Scale(dd, f->radius + f->elevation(dd) - depth);
+                            ApplyTerrainEdit(*p, TerrainEdit{ deep, 6.0f, -(DENSITY_GRADIENT * depth + 20.0f) });
+                            const float after = p->densityAt(deep);
+                            p->edits = savedEdits;
+                            deepOk = after < ISO_LEVEL;
+                            printf("bench: a hole %.0f m down: density %.1f (air below %.2f): %s\n", depth, after, ISO_LEVEL, deepOk ? "open" : "STILL SOLID");
+                        }
+                        const bool mantleOk = deepOk && mantleAfter == mantleBefore && crustAfter < crustBefore - 1.0f && !f->editable(inMantle) && f->editable(inCrust);
                         printf("bench: mantle %.0f m below sea level: dig there changed the crust %.2f -> %.2f and the mantle %.2f -> %.2f: %s\n",
                                f->radius - f->mantleRadius, crustBefore, crustAfter, mantleBefore, mantleAfter, mantleOk ? "refused" : "NOT REFUSED");
                         // 3. Ore by depth band, and caves.
