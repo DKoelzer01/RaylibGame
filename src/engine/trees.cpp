@@ -602,3 +602,17 @@ void TreeSystem::addClearing(Vector3 c, float r) {
     for (auto& kv : tiles)
         if (kv.second.ready && Vector3Distance(kv.second.centre, c) < r + kTreeTileSize) request(kv.first, kv.second, 0.0f);
 }
+
+bool TreeSystem::nearestPlant(Vector3 local, float range, bool tree, Plant& out) const {
+    float best = range;
+    bool found = false;
+    for (const auto& kv : tiles) {
+        if (!kv.second.ready || Vector3Distance(kv.second.centre, local) > range + kTreeTileSize) continue;
+        for (const Plant& p : kv.second.plants) {
+            if (p.tree() != tree) continue;
+            const float d = Vector3Distance(p.base, local);
+            if (d < best) { best = d; out = p; found = true; }
+        }
+    }
+    return found;
+}

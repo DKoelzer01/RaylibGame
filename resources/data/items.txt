@@ -16,3 +16,27 @@ wood            | Wood            | 999 | 150,105, 60 | Logs from felled trees. 
 fibre           | Plant fibre     | 999 | 170,190,110 | Tough stems from bushes. Twists into rope.
 berries         | Berries         | 200 | 190, 40, 70 | Wild berries. Edible.
 rope            | Rope            | 200 | 200,170,120 | Twisted plant fibre.
+clay            | Clay            | 999 | 170,120, 95 | Wet earth. Moulds into crucibles; bricks for kilns and ovens.
+crucible_mold   | Crucible mould  |  20 | 175,125,100 | Unfired clay crucible. Fire it in a campfire.
+fired_crucible  | Fired crucible  |  20 | 190, 90, 60 | Holds molten metal. The key to the stone age.
+charcoal        | Charcoal        | 999 |  45, 40, 38 | Wood baked in a campfire. Burns hotter and longer than wood.
+coal            | Coal            | 999 |  30, 30, 32 | From coal deposits underground. Good fuel; bakes into coke.
+coke            | Coke            | 999 |  70, 70, 78 | Baked coal. Burns hot enough to make steel.
+vacuum_tube     | Vacuum tube     | 200 | 210,200,150 | The first circuit element.
+basic_circuit   | Basic circuit   | 200 |  60,140, 70 | Circuit board for LV machines.
+lv_hull         | LV machine hull |  20 | 130,132,140 | Steel casing for LV machines.
+conveyor        | Conveyor        | 999 |  60, 62, 66 | Moves items between machines (build part).
+cable           | Copper cable    | 999 | 184,110, 60 | Carries power between machines (build part).
+campfire        | Campfire        |  20 | 200, 90, 40 | Burns wood: bakes charcoal, fires clay.
+kiln            | Kiln            |  20 | 150, 95, 70 | Fuel-fired: smelts ore into ingots, sand into glass, alloys bronze.
+coke_oven       | Coke oven       |  20 | 120, 80, 60 | Bakes coal into coke (no fuel needed).
+blast_furnace   | Blast furnace   |  20 |  90, 70, 70 | Burns coke to make steel from iron.
+boiler          | Steam boiler    |  20 | 160,110, 60 | Burns fuel for steam power (8 V).
+forge_hammer    | Forge hammer    |  20 | 150,120, 70 | Steam: hammers ingots into plates.
+alloy_smelter   | Alloy smelter   |  20 | 170,110, 70 | Steam: alloys copper and tin into bronze.
+steam_macerator | Steam macerator |  20 | 140,120, 90 | Steam: crushes ore into dust and stone into sand.
+chest           | Chest           |  20 | 150,105, 60 | Storage for 16 stacks (build part).
+generator       | LV generator    |  20 | 180, 60, 45 | Burns fuel for LV power (32 V).
+electric_furnace| Electric furnace|  20 |  95, 92, 88 | LV: smelts quickly on power.
+macerator       | Macerator       |  20 |  70,110,150 | LV: crushes ore into twice the dust.
+battery         | LV battery      |  20 | 210,180, 60 | Stores LV power.

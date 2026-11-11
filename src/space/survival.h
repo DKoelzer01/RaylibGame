@@ -1,6 +1,8 @@
 #ifndef SURVIVAL_H
 #define SURVIVAL_H
 
+#include <string>
+
 class Scene;
 
 // Suit survival loop: oxygen drains outside the ship's life-support field, power drains with
@@ -34,6 +36,11 @@ void Survival_DrawHUD();
 // Lightweight objective tracker for the vertical slice.
 void Objectives_Update(Scene& world);
 void Objectives_DrawHUD();
+// Quest book (tiers.txt): current tier, advanced when its gate item is made or placed.
+void QuestBook_Update();
+void QuestBook_NotePlaced(const std::string& item);
+int QuestBook_Tier();
+void QuestBook_SetTier(int tier);
 void Objectives_MarkVisitedBody(int bodyIndex);
 
 #endif

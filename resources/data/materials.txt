@@ -1,0 +1,7 @@
+# Materials: each generates its item family (id material_form), the way GTNH does.
+# material | Name   | r,g,b       | forms
+iron       | Iron   | 165,160,165 | ore dust ingot plate rod
+copper     | Copper | 205,115,65  | ore dust ingot plate wire
+tin        | Tin    | 205,205,215 | ore dust ingot plate
+bronze     | Bronze | 205,140,60  | dust ingot plate gear
+steel      | Steel  | 120,122,132 | ingot plate rod gear
