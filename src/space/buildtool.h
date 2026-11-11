@@ -25,5 +25,8 @@ void BuildTool_DrawHUD();
 // Place a part on a plot (charging its cost unless creative or charge is false) and lay its
 // foundation against the ground. Used by the tool and by scripted tests.
 bool BuildTool_Place(Planetoid& body, Plot& plot, const Part& part, bool charge);
+// Machines: looking at one shows its state (factory snapshot); I inserts items, O takes outputs.
+void Machine_Update(Scene& world, bool inputEnabled);
+void Machine_DrawHUD();
 
 #endif

@@ -1,0 +1,7 @@
+# Machine recipes: machine | outputs | inputs | ticks (20 a second) | EU per tick
+# (Generators burn fuel: generator | - | fuel 1 | burn ticks | EU per tick produced.)
+furnace   | iron_plate 1 | iron_ore 1  | 200 | 8
+furnace   | glass 1      | sand 4      | 160 | 8
+macerator | sand 2       | stone 1     | 100 | 4
+macerator | gravel 2     | concrete 1  | 100 | 4
+generator | -            | wood 1      | 400 | 16

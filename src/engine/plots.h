@@ -28,7 +28,13 @@ struct RenderContext;
 constexpr float kCellSize = 0.5f;   // m
 constexpr int kSectionCells = 16;   // cells per section edge (8 m)
 
-enum class PartType : uint8_t { Cube, Block, Slope, Corner, Beam2, Beam4, Beam8, Count };
+enum class PartType : uint8_t {
+    Cube, Block, Slope, Corner, Beam2, Beam4, Beam8,                 // structure
+    Conveyor, Cable,                                                 // item and power connectors (1 cell)
+    Chest, Generator, Furnace, Macerator, Battery,                   // machines (1 m, 2x2x2 cells)
+    Count
+};
+inline bool IsMachine(PartType t) { return t >= PartType::Chest && t < PartType::Count; }
 const char* PartName(PartType t);
 int PartCostCount(PartType t);              // items one part costs
 const char* PartCostItem(PartType t);       // "concrete" / "iron_plate"
@@ -56,6 +62,7 @@ struct CellShape {
 class Plot {
 public:
     uint32_t id = 0;
+    uint32_t version = 0;               // bumped on every place / remove (the factory resyncs)
     DVec3 origin;                       // body-local, the corner of cell (0,0,0)
     Vector3 east, up, north;            // body-local unit axes: plot x, y, z
 

@@ -21,6 +21,13 @@ const char* PartName(PartType t) {
         case PartType::Beam2: return "beam 1 m";
         case PartType::Beam4: return "beam 2 m";
         case PartType::Beam8: return "beam 4 m";
+        case PartType::Conveyor: return "conveyor";
+        case PartType::Cable: return "cable";
+        case PartType::Chest: return "chest";
+        case PartType::Generator: return "generator";
+        case PartType::Furnace: return "furnace";
+        case PartType::Macerator: return "macerator";
+        case PartType::Battery: return "battery";
         default: return "?";
     }
 }
@@ -30,16 +37,33 @@ int PartCostCount(PartType t) {
         case PartType::Beam2: return 1;
         case PartType::Beam4: return 2;
         case PartType::Beam8: return 4;
+        case PartType::Chest: return 4;
+        case PartType::Generator: case PartType::Macerator: case PartType::Battery: return 6;
+        case PartType::Furnace: return 8;
         default: return 1;
     }
 }
 const char* PartCostItem(PartType t) {
-    return (t == PartType::Beam2 || t == PartType::Beam4 || t == PartType::Beam8) ? "iron_plate" : "concrete";
+    switch (t) {
+        case PartType::Beam2: case PartType::Beam4: case PartType::Beam8:
+        case PartType::Conveyor: case PartType::Cable:
+        case PartType::Generator: case PartType::Macerator: case PartType::Battery: return "iron_plate";
+        case PartType::Chest: return "wood";
+        case PartType::Furnace: return "stone";
+        default: return "concrete";
+    }
 }
 static Color PartColor(PartType t) {
     switch (t) {
         case PartType::Beam2: case PartType::Beam4: case PartType::Beam8: return { 118, 122, 130, 255 }; // iron
         case PartType::Block: return { 150, 148, 142, 255 };
+        case PartType::Conveyor: return { 60, 62, 66, 255 };
+        case PartType::Cable: return { 184, 110, 60, 255 };       // copper
+        case PartType::Chest: return { 150, 105, 60, 255 };       // wood
+        case PartType::Generator: return { 180, 60, 45, 255 };
+        case PartType::Furnace: return { 95, 92, 88, 255 };
+        case PartType::Macerator: return { 70, 110, 150, 255 };
+        case PartType::Battery: return { 210, 180, 60, 255 };
         default: return { 168, 166, 158, 255 };                                                          // concrete
     }
 }
@@ -49,8 +73,8 @@ static void PartCells(PartType t, std::vector<std::pair<Int3, CellShape>>& out) 
     out.clear();
     CellShape full;
     switch (t) {
-        case PartType::Cube: out.push_back({ { 0, 0, 0 }, full }); break;
-        case PartType::Block:
+        case PartType::Cube: case PartType::Conveyor: case PartType::Cable: out.push_back({ { 0, 0, 0 }, full }); break;
+        case PartType::Block: case PartType::Chest: case PartType::Generator: case PartType::Furnace: case PartType::Macerator: case PartType::Battery:
             for (int z = 0; z < 2; ++z) for (int y = 0; y < 2; ++y) for (int x = 0; x < 2; ++x) out.push_back({ { x, y, z }, full });
             break;
         case PartType::Slope: {
@@ -165,6 +189,7 @@ int Plot::place(const Part& p) {
     parts.push_back(p);
     for (const auto& c : fp) { cells[c.first] = { idx, c.second }; markDirty(c.first); }
     ++livePartCount;
+    ++version;
     return idx;
 }
 
@@ -175,6 +200,7 @@ bool Plot::remove(int idx) {
     for (const auto& c : fp) { cells.erase(c.first); markDirty(c.first); }
     parts[idx].type = PartType::Count;
     --livePartCount;
+    ++version;
     return true;
 }
 
@@ -340,9 +366,13 @@ void Plot::draw(const Planetoid& body, const RenderContext& ctx, Shader shader) 
     static Material material = LoadMaterialDefault();
     material.shader = shader;
     rebuildDirty();
+    const float half = kSectionCells * kCellSize * 0.5f;
     for (auto& kv : sections) {
         if (!kv.second.mesh.vaoId) continue;
-        DrawMesh(kv.second.mesh, material, PlotSectionModel(*this, body, ctx, kv.first));
+        const Matrix model = PlotSectionModel(*this, body, ctx, kv.first);
+        // Cull sections outside the view (a big factory has hundreds of them).
+        if (ctx.frustum && frustumCullingEnabled && !ctx.frustum->sphereVisible(Vector3Transform({ half, half, half }, model), half * 1.7321f)) continue;
+        DrawMesh(kv.second.mesh, material, model);
         if (ctx.drawCalls) ++*ctx.drawCalls;
     }
 }
