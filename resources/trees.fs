@@ -35,10 +35,10 @@ float sunShadow(vec3 p)
     if (q.x < 0.0 || q.x > 1.0 || q.y < 0.0 || q.y > 1.0 || q.z > 1.0) return 1.0;
     vec2 texel = vec2(1.0 / float(shadowMapResolution));
     float lit = 0.0;
-    for (int x = -1; x <= 1; x++)
-        for (int y = -1; y <= 1; y++)
-            lit += (q.z - 0.003 > texture(shadowMap, q.xy + texel * vec2(x, y)).r) ? 0.0 : 1.0;
-    return lit / 9.0;
+    for (int x = 0; x <= 1; x++)
+        for (int y = 0; y <= 1; y++)
+            lit += (q.z - 0.003 > texture(shadowMap, q.xy + texel * (vec2(x, y) - 0.5) * 2.0).r) ? 0.0 : 1.0;
+    return lit / 4.0;
 }
 vec3 lampLight(vec3 p, vec3 n)
 {

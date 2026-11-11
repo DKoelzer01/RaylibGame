@@ -792,6 +792,14 @@ void BuildChunkMesh(const DensityField& field, const TerrainDeltas& deltas, Chun
             for (size_t t = 0; t + 2 < wi.size(); t += 3) {
                 const Vector3 c = Vector3Scale(Vector3Add(Vector3Add(wv[wi[t]], wv[wi[t + 1]]), wv[wi[t + 2]]), 1.0f / 3.0f);
                 if (terrainAt(c) >= ISO_LEVEL) continue; // under land
+                if (planetField) {
+                    // Underground: where the original ground stands over the water (a cave or tunnel under a
+                    // river, or below sea level) the water surface is not open water. Rivers used to line the
+                    // cave walls.
+                    const Vector3 wc = Vector3Add(origin, Vector3Scale(c, stride));
+                    const float wl = Vector3Length(wc);
+                    if (wl > 1.0f && planetField->elevation(Vector3Scale(wc, 1.0f / wl), (float)stride) > wl - sea + 1.0f) continue;
+                }
                 for (int e = 0; e < 3; ++e) {
                     int& r = remap[wi[t + e]];
                     if (r < 0) {

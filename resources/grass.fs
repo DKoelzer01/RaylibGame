@@ -31,11 +31,7 @@ float sunShadow(vec3 p)
     vec3 q = ls.xyz / ls.w * 0.5 + 0.5;
     if (q.x < 0.0 || q.x > 1.0 || q.y < 0.0 || q.y > 1.0 || q.z > 1.0) return 1.0;
     vec2 texel = vec2(1.0 / float(shadowMapResolution));
-    float lit = 0.0;
-    for (int x = -1; x <= 1; x++)
-        for (int y = -1; y <= 1; y++)
-            lit += (q.z - 0.003 > texture(shadowMap, q.xy + texel * vec2(x, y)).r) ? 0.0 : 1.0;
-    return lit / 9.0;
+    return (q.z - 0.003 > texture(shadowMap, q.xy).r) ? 0.0 : 1.0; // one tap: grass is many small fragments
 }
 vec3 lampLight(vec3 p, vec3 n)
 {
