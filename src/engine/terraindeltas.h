@@ -4,7 +4,7 @@
 // Player terrain edits as density deltas (milestone 2, design doc section 3).
 //
 // Every brush stroke is folded straight into a lattice of density changes at 1-voxel spacing,
-// stored in 32^3 chunks of 16-bit values (1/256 density steps). Density = base field + the
+// stored in 32^3 chunks of 16-bit values (1/64 density steps). Density = base field + the
 // trilinear delta, so sampling costs the same whether the world has ten strokes or a million (the
 // old brush list was scanned on every sample). A TerrainDeltas value is an immutable snapshot
 // shared with the worker threads; an edit builds a new snapshot that shares every untouched chunk.
@@ -21,7 +21,9 @@ struct TerrainEdit;
 
 constexpr int kDeltaChunk = 32;                 // lattice samples per chunk edge
 constexpr int kRegionChunks = 16;               // chunks per region file edge
-constexpr float kDeltaStep = 1.0f / 256.0f;     // density per stored unit
+// Density per stored unit: +-512 in int16, about 2 km of rock (0.25 a metre) - enough to dig from a
+// mountain top to the mantle (1/256 saturated at ~510 m: an invisible floor). ~6 cm of surface precision.
+constexpr float kDeltaStep = 1.0f / 64.0f;
 
 struct DeltaChunk {
     int16_t d[kDeltaChunk * kDeltaChunk * kDeltaChunk] = {};
