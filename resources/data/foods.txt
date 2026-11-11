@@ -1,0 +1,10 @@
+# Foods: item | food value (the bar is 0-100) | raw (optional: may make you sick)
+# Eat from the hotbar (hover an item in the inventory, press 1-0 to bind it).
+berries        | 4
+roots          | 6
+roasted_roots  | 15
+bread          | 25
+raw_meat       | 8  | raw
+cooked_meat    | 30
+egg            | 10
+milk           | 12

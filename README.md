@@ -94,6 +94,14 @@ Shaders in `resources/` hot-reload when saved.
   through the tech: each tier (`resources/data/tiers.txt`) is 4-8 tasks that tick themselves off (get N of an item, ever;
   place a machine; reach orbit; visit the moon or the ring), and the next tier opens when all are done. Quest state,
   placed machines and obtained totals are saved.
+- **Hunger and temperature** (`src/space/survival.*`, `resources/data/foods.txt`): a food bar that empties in ~45
+  min (faster running, on the jetpack, in the cold, or sick from raw meat); at 0 health falls slowly, above 80 it heals.
+  Eat from the hotbar. The air temperature (latitude, height, day and night, shelter underground) shows by the bars:
+  below 5 C food drains faster (3x at the poles), above 35 C slow damage. The suit regulates in vacuum.
+- **Farming** (`src/space/farming.*`, `resources/data/crops.txt`): farmland is a build part (4 dirt, or till soft
+  ground with a shovel: RMB). Look at it: I plants seeds you carry, O harvests a ripe crop (yield plus 1-2 seeds).
+  Grain, roots and flax grow in daylight only, twice as fast with water within 4 m; seeds come from bushes. Grain
+  grinds into flour (Tab), bread and roasted roots cook in a campfire. Crops are saved.
 - **Hands** (`src/space/viewmodel.*`): a gloved hand holding the selected tool (by type and tier) or a cube of the
   selected item, drawn in its own pass over the world. It bobs with the distance walked (a figure eight, 1.5 cm up and
   1 cm across a step, none standing still), swings on each mining stroke or chop, and dips when switching. Settings:
@@ -234,6 +242,8 @@ fuelled and flown by the autopilot to orbit, saved and loaded in orbit, brought 
 `--test-mine N` digs N strokes at the feet, crafts everything possible and builds 3 strokes,
 `--test-suffocate` checks death/respawn,
 `--test-moon` (moon on its analytic orbit; standing and jumping on it; digging at the feet launches nobody),
+`--test-hunger` (drain at rest, starving, eating, cold at the pole, saved), `--test-farm` (till, plant, no growth at
+night, ripe in daylight, harvest, a growing crop saved),
 `--test-quests` (tiers open by their tasks, items used up still count, quest state through a save),
 `--test-viewmodel` (hands still at rest, bob within its amplitude once a step, screenshots of each tool),
 `--test-map` (compass reads east facing east, walking explores, a waypoint north bears 0, both maps render, saved),

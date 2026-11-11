@@ -1,6 +1,8 @@
 # Machine recipes: machine | outputs | inputs | ticks (20 a second) | EU per tick (eu machines)
 campfire        | charcoal 1       | wood 2                    | 200 | 0
 campfire        | fired_crucible 1 | crucible_mold 1           | 400 | 0
+campfire        | roasted_roots 1  | roots 1                   | 200 | 0
+campfire        | bread 1          | flour 2                   | 300 | 0
 kiln            | copper_ingot 1   | copper_ore 1              | 200 | 0
 kiln            | tin_ingot 1      | tin_ore 1                 | 200 | 0
 kiln            | iron_ingot 1     | iron_ore 1                | 300 | 0

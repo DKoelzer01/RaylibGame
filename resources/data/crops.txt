@@ -1,0 +1,6 @@
+# Crops: id | seed item | yield item and count | daylight seconds to ripen | ripe colour r,g,b
+# Planted on farmland (I), harvested ripe (O) for the yield plus 1-2 seeds. They grow in daylight only
+# (Terra's day is an hour: 3600 s of daylight is about two days), twice as fast with water within 4 m.
+grain | grain_seeds | grain 3 | 3600 | 214,190,90
+roots | root_seeds  | roots 2 | 3600 | 160,95,55
+flax  | flax_seeds  | fibre 4 | 3000 | 120,160,210

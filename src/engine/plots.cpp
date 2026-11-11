@@ -52,6 +52,7 @@ const char* PartName(PartType t) {
         case PartType::ArcFurnace: return "arc furnace";
         case PartType::Refinery: return "refinery";
         case PartType::PrecisionAssembler: return "precision assembler";
+        case PartType::Farmland: return "farmland";
         default: return "?";
     }
 }
@@ -99,6 +100,7 @@ const char* PartCostItem(PartType t) {
         case PartType::Conveyor: return "conveyor";
         case PartType::Cable: return "cable";
         case PartType::Furnace: return "electric_furnace"; // the item; "furnace" is its recipe map
+        case PartType::Farmland: return "farmland";
         case PartType::RocketEngine: return "rocket_engine";
         case PartType::FuelTank: return "fuel_tank";
         case PartType::Cockpit: return "cockpit";
@@ -161,6 +163,7 @@ static Color PartColor(PartType t) {
         case PartType::ArcFurnace: return { 90, 90, 110, 255 };
         case PartType::Refinery: return { 140, 110, 160, 255 };
         case PartType::PrecisionAssembler: return { 100, 140, 180, 255 };
+        case PartType::Farmland: return { 86, 60, 38, 255 };
         default: return { 168, 166, 158, 255 };                                                          // concrete
     }
 }
@@ -180,6 +183,9 @@ static void PartCells(PartType t, std::vector<std::pair<Int3, CellShape>>& out) 
         case PartType::ChemicalReactor: case PartType::Miner: case PartType::HvGenerator: case PartType::ArcFurnace: case PartType::Refinery:
         case PartType::PrecisionAssembler:
             for (int z = 0; z < 2; ++z) for (int y = 0; y < 2; ++y) for (int x = 0; x < 2; ++x) out.push_back({ { x, y, z }, full });
+            break;
+        case PartType::Farmland: // 1 m square, half a metre deep
+            for (int z = 0; z < 2; ++z) for (int x = 0; x < 2; ++x) out.push_back({ { x, 0, z }, full });
             break;
         case PartType::Slope: {
             CellShape s; s.full = false; s.planes = 1; s.n[0] = { 0, 1, 1 }; s.d[0] = 1.0f; // rises toward -z
