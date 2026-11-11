@@ -103,11 +103,12 @@ float shadowFactor(vec3 worldPos, vec3 n, vec3 l)
     if (p.x < 0.0 || p.x > 1.0 || p.y < 0.0 || p.y > 1.0 || p.z > 1.0) return 1.0; // outside the shadow box
     float bias = max(0.002 * (1.0 - dot(n, l)), 0.0005);
     vec2 texel = vec2(1.0 / float(shadowMapResolution));
+    // A wider 5x5 filter (1.5 texels apart): softer shadow edges from rocks, trees and builds.
     float lit = 0.0;
-    for (int x = -1; x <= 1; x++)
-        for (int y = -1; y <= 1; y++)
-            lit += (p.z - bias > texture(shadowMap, p.xy + texel * vec2(x, y)).r) ? 0.0 : 1.0;
-    return lit / 9.0;
+    for (int x = -2; x <= 2; x++)
+        for (int y = -2; y <= 2; y++)
+            lit += (p.z - bias > texture(shadowMap, p.xy + texel * 1.5 * vec2(x, y)).r) ? 0.0 : 1.0;
+    return lit / 25.0;
 }
 
 void main()
@@ -246,7 +247,7 @@ void main()
             if (sunOccluder.w > 0.0) {
                 vec3 oc = fragPosition - sunOccluder.xyz;
                 float b = dot(oc, l), c = dot(oc, oc) - sunOccluder.w * sunOccluder.w;
-                if (c < 0.0 || (b < 0.0 && b * b > c)) shadow = 0.0;
+                if (b < 0.0) shadow *= smoothstep(sunOccluder.w - max(sunOccluder.w * 0.04, -b * 0.03), sunOccluder.w + max(sunOccluder.w * 0.04, -b * 0.03), sqrt(max(c + sunOccluder.w * sunOccluder.w - b * b, 0.0))); // soft-edged night side
             }
         }
         // Point lights fall off with distance; their range is passed in target.x (target is unused
