@@ -103,6 +103,7 @@ void DebugUI_Draw(Scene& world) {
 
         // --- Terrain tool ---
         if (ImGui::CollapsingHeader("Terrain tool")) {
+            ImGui::Checkbox("Terraform tool (debug: old brush, any material)", &terrainTool.terraform);
             ImGui::SliderFloat("Brush radius", &terrainTool.brushRadius, 1.0f, 24.0f, "%.1f");
             ImGui::SliderFloat("Strength", &terrainTool.digStrength, 0.02f, 1.0f, "%.2f");
             ImGui::SliderFloat("Strokes / s", &terrainTool.strokesPerSecond, 1.0f, 30.0f, "%.0f");

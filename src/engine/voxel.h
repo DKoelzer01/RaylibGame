@@ -65,6 +65,10 @@ struct TerrainEdit {
     Vector3 center;
     float radius;
     float strength;
+    // Carve: subtract exactly this sphere (CSG, like the caves): density becomes at most
+    // ISO + gradient * (distance - radius), a hard edge where the surface meets it. Strength unused.
+    bool carve = false;
+    bool softOnly = false; // carve: only soft ground (dirt, sand, gravel, snow); rock stays (no pickaxe)
 };
 #include "terraindeltas.h"
 

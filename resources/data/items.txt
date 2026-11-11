@@ -67,3 +67,17 @@ hydrogen        | Hydrogen cell   | 200 | 200,220,255 | From electrolysis.
 oxygen          | Oxygen cell     | 200 | 140,200,255 | From electrolysis.
 polyethylene    | Polyethylene    | 200 | 230,230,230 | Plastic sheet.
 heat_shield_tile | Heat shield tile | block | 45, 42, 40 | Ceramic on titanium: build a rocket's leading face from it to survive re-entry.
+# Hand tools (tools.h): pickaxes for stone and ore (bauxite needs iron, ilmenite steel), shovels for
+# soft ground, axes for trees. Higher tiers dig a bigger sphere, faster.
+stone_pickaxe    | Stone pickaxe    | tool | 140,135,130 | Mines stone, ice and the common ores (iron, copper, tin, coal).
+stone_shovel     | Stone shovel     | tool | 150,130,110 | Digs dirt, sand, gravel and snow faster and wider than bare hands.
+stone_axe        | Stone axe        | tool | 150,120,100 | Fells trees in half the swings.
+iron_pickaxe     | Iron pickaxe     | tool | 175,170,175 | Mines bauxite too; a bigger bite than stone.
+iron_shovel      | Iron shovel      | tool | 175,165,155 | A wider, faster shovel.
+iron_axe         | Iron axe         | tool | 175,160,150 | Fells trees faster.
+steel_pickaxe    | Steel pickaxe    | tool | 125,128,140 | Mines ilmenite (titanium ore) too.
+steel_shovel     | Steel shovel     | tool | 125,125,135 | A wider, faster shovel.
+steel_axe        | Steel axe        | tool | 125,120,130 | Fells trees quickly.
+titanium_pickaxe | Titanium pickaxe | tool | 205,180,215 | The biggest bite.
+titanium_shovel  | Titanium shovel  | tool | 205,180,205 | The widest shovel.
+titanium_axe     | Titanium axe     | tool | 205,175,200 | Fells trees in a few swings.

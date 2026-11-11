@@ -55,3 +55,16 @@ cockpit 1         = titanium_alloy_plate 4, glass 6, advanced_circuit 2
 guidance_computer 1 = advanced_circuit 3, gold_ingot 1
 landing_leg 1     = aluminium_plate 2, steel_plate 2
 heat_shield_tile 4 = clay 4, titanium_alloy_plate 1
+# Hand tools: stone ones from gravel (stones turn up when digging dirt), then metal heads.
+stone_pickaxe 1    = gravel 4, wood 2, fibre 2
+stone_shovel 1     = gravel 2, wood 2, fibre 2
+stone_axe 1        = gravel 3, wood 2, fibre 2
+iron_pickaxe 1     = iron_ingot 3, wood 2
+iron_shovel 1      = iron_ingot 2, wood 2
+iron_axe 1         = iron_ingot 3, wood 2
+steel_pickaxe 1    = steel_ingot 3, wood 2
+steel_shovel 1     = steel_ingot 2, wood 2
+steel_axe 1        = steel_ingot 3, wood 2
+titanium_pickaxe 1 = titanium_ingot 3, steel_rod 1
+titanium_shovel 1  = titanium_ingot 2, steel_rod 1
+titanium_axe 1     = titanium_ingot 3, steel_rod 1

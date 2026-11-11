@@ -1266,6 +1266,7 @@ int main(int argc, char** argv)
                                 printf("bench: jump on the moon: %.1f s in the air, landed %.2f m from takeoff in the moon's frame%s\n",
                                        t, (local - moonTakeoff).length(), moonAirborne ? "" : " [never took off]");
                                 // Then dig at the feet for 4 s: the ground going away must not launch the player.
+                                inventory.add("steel_shovel", 1); terrainTool.heldTool = "steel_shovel"; // a wide bite: the ground goes
                                 player.forward = Vector3Normalize(Vector3Add(Vector3Scale(player.up, -0.9f), Vector3Scale(player.forward, 0.3f)));
                                 moonTakeoff = local; moonMaxUp = 0.0f; moonMaxRise = 0.0; moonMinRise = 0.0; moonStrokes = 0;
                                 moonPhase = 4;
@@ -1675,7 +1676,7 @@ int main(int argc, char** argv)
                         int built = 0;
                         for (int b = 0; b < 3; ++b) built += TerrainTool_Stroke(false) ? 1 : 0;
                         std::string inv;
-                        for (const ItemDef& d : itemDB.items()) if (inventory.count(d.id)) inv += " " + d.id + "=" + std::to_string(inventory.count(d.id));
+                        for (const ItemDef& d : itemDB.items()) if (inventory.amount(d.id) > 0.0) inv += " " + d.id + "=" + TextFormat("%.2f", inventory.amount(d.id));
                         printf("bench: mined %d strokes%s, crafted %d times, built %d strokes (fillers %d -> %d); inventory:%s\n",
                                minedStrokes, mineStoppedEarly ? " (hole left arm's reach)" : "", mineCrafted, built, fillersBefore,
                                inventory.count("stone") + inventory.count("regolith") + inventory.count("concrete"), inv.c_str());
