@@ -3,6 +3,7 @@
 #include "inventory.h"
 #include "player.h"
 #include "audio.h"
+#include "terraintool.h"
 #include "world.h"
 #include "ship.h"
 
@@ -79,6 +80,73 @@ static void DrawGrid() {
     ImGui::TextDisabled(held >= 0 ? "Click a cell to drop the stack" : "Tools: 1 per slot, blocks 256, resources 8192");
 }
 
+// Hand crafting. In creative mode every recipe can be made and costs nothing.
+static void DrawCrafting() {
+    const bool creative = terrainTool.creative;
+    if (creative) ImGui::TextColored(ImVec4(1.0f, 0.8f, 0.3f, 1.0f), "Creative: crafting costs nothing");
+    for (size_t i = 0; i < itemDB.recipes().size(); ++i) {
+        const Recipe& r = itemDB.recipes()[i];
+        const ItemDef* out = itemDB.find(r.output);
+        const bool can = creative || inventory.canCraft(r);
+        ImGui::PushID((int)i);
+        ImGui::BeginDisabled(!can);
+        if (ImGui::Button("Craft")) {
+            if (creative) { if (inventory.addAmount(r.output, r.outputCount) < r.outputCount) Audio_Play(Sfx::Craft); }
+            else if (inventory.craft(r)) Audio_Play(Sfx::Craft);
+        }
+        ImGui::EndDisabled();
+        ImGui::SameLine();
+        ImGui::Text("%d x %s", r.outputCount, out ? out->name.c_str() : r.output.c_str());
+        std::string needs = "   needs ";
+        for (size_t k = 0; k < r.inputs.size(); ++k) {
+            const ItemDef* in = itemDB.find(r.inputs[k].first);
+            needs += std::to_string(inventory.count(r.inputs[k].first)) + "/" + std::to_string(r.inputs[k].second) + " " + (in ? in->name : r.inputs[k].first);
+            if (k + 1 < r.inputs.size()) needs += ", ";
+        }
+        ImGui::TextDisabled("%s", needs.c_str());
+        ImGui::PopID();
+    }
+}
+
+// Creative mode: free building, crafting and blueprints, and any item into the inventory.
+static void DrawCreative() {
+    ImGui::Checkbox("Creative mode (build, craft and place blueprints for free)", &terrainTool.creative);
+    static char filter[64] = {};
+    ImGui::SetNextItemWidth(220.0f);
+    ImGui::InputTextWithHint("##filter", "search items", filter, sizeof(filter));
+    ImGui::SameLine();
+    if (ImGui::Button("Clear inventory")) inventory.clear();
+    ImGui::Separator();
+    std::string f = filter;
+    for (char& c : f) c = (char)tolower(c);
+    ImGui::BeginChild("creativeitems");
+    int shown = 0;
+    for (const ItemDef& d : itemDB.items()) {
+        std::string name = d.name;
+        for (char& c : name) c = (char)tolower(c);
+        if (!f.empty() && name.find(f) == std::string::npos && d.id.find(f) == std::string::npos) continue;
+        ImGui::PushID(d.id.c_str());
+        ImGui::ColorButton("##c", ToImColor(d.color), ImGuiColorEditFlags_NoTooltip, ImVec2(14, 14));
+        ImGui::SameLine();
+        ImGui::Text("%-20s", d.name.c_str());
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s (%s, %d per slot)\n%s", d.id.c_str(), KindName(d.kind), StackLimit(d.id), d.description.c_str());
+        ImGui::SameLine(260.0f);
+        if (ImGui::SmallButton("+1")) inventory.add(d.id, 1);
+        if (d.kind != ItemKind::Tool) {
+            ImGui::SameLine();
+            if (ImGui::SmallButton("+10")) inventory.add(d.id, 10);
+            ImGui::SameLine();
+            if (ImGui::SmallButton("stack")) inventory.add(d.id, StackLimit(d.id));
+        }
+        ImGui::SameLine();
+        ImGui::TextDisabled("have %.2f", inventory.amount(d.id));
+        ImGui::PopID();
+        ++shown;
+    }
+    if (shown == 0) ImGui::TextDisabled("No items match");
+    ImGui::EndChild();
+}
+
 void GameUI_Draw(Scene&) {
     if (!inventoryOpen) return;
     const ImGuiIO& io = ImGui::GetIO();
@@ -93,28 +161,16 @@ void GameUI_Draw(Scene&) {
         DrawGrid();
 
         ImGui::NextColumn();
-        ImGui::TextUnformatted("Crafting");
-        ImGui::Separator();
-        for (size_t i = 0; i < itemDB.recipes().size(); ++i) {
-            const Recipe& r = itemDB.recipes()[i];
-            const ItemDef* out = itemDB.find(r.output);
-            const bool can = inventory.canCraft(r);
-            ImGui::PushID((int)i);
-            ImGui::BeginDisabled(!can);
-            if (ImGui::Button("Craft")) {
-                if (inventory.craft(r)) Audio_Play(Sfx::Craft);
+        if (ImGui::BeginTabBar("invtabs")) {
+            if (ImGui::BeginTabItem("Crafting")) {
+                DrawCrafting();
+                ImGui::EndTabItem();
             }
-            ImGui::EndDisabled();
-            ImGui::SameLine();
-            ImGui::Text("%d x %s", r.outputCount, out ? out->name.c_str() : r.output.c_str());
-            std::string needs = "   needs ";
-            for (size_t k = 0; k < r.inputs.size(); ++k) {
-                const ItemDef* in = itemDB.find(r.inputs[k].first);
-                needs += std::to_string(inventory.count(r.inputs[k].first)) + "/" + std::to_string(r.inputs[k].second) + " " + (in ? in->name : r.inputs[k].first);
-                if (k + 1 < r.inputs.size()) needs += ", ";
+            if (ImGui::BeginTabItem("Creative")) {
+                DrawCreative();
+                ImGui::EndTabItem();
             }
-            ImGui::TextDisabled("%s", needs.c_str());
-            ImGui::PopID();
+            ImGui::EndTabBar();
         }
         ImGui::Columns(1);
     }

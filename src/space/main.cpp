@@ -1032,12 +1032,15 @@ int main(int argc, char** argv)
                     inventory.clear();
                     inventory.add("telescope", 1); inventory.addAmount("copper_ore", 12.34); inventory.add("kiln", 2);
                     inventory.swapSlots(0, 7);
+                    terrainTool.creative = true; // saved with the world
                     const std::string path = std::string(GetWorkingDirectory()) + "/inv_test.tmp";
                     if (FILE* f = fopen(path.c_str(), "w")) { saveExtrasHook(f); fprintf(f, "end_extras\n"); fclose(f); }
                     inventory.clear();
                     if (FILE* f = fopen(path.c_str(), "r")) { loadExtrasHook(f); fclose(f); }
                     remove(path.c_str());
                     check(inventory.grid()[7].id == "telescope" && fabs(inventory.amount("copper_ore") - 12.34) < 0.001 && inventory.count("kiln") == 2, "save and load keep slots and fractions");
+                    check(terrainTool.creative, "creative mode is saved");
+                    terrainTool.creative = false;
                     printf("bench: inventory: %s\n", ok ? "PASS" : "FAIL");
                     inventory.clear();
                     benchInventory = false;
