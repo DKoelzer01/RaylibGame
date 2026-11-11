@@ -2,6 +2,7 @@
 #include <string>
 #include <vector>
 #include <random>
+#include <chrono>
 #include "mainmenu.h"
 #include "world.h"
 #include "scene.h"
@@ -103,6 +104,7 @@ int main(int argc, char** argv)
     bool benchHole = false;        // --test-hole: walk into a fresh pit and build a pillar underfoot on the spinning planet
     bool benchTrees = false;       // --test-trees: walk into a tree trunk
     bool benchChop = false;        // --test-chop: fell a tree, save/reload, regrow
+    int benchPersist = 0;          // --test-persist N: milestone 2 gate (N strokes, flat builds, fast save/load)
     int chopPhase = 0, chopSwings = 0, chopMisses = 0, chopWood0 = 0;
     double chopStart = 0.0;
     uint64_t chopId = 0;
@@ -180,6 +182,7 @@ int main(int argc, char** argv)
         if (std::string(argv[i]) == "--test-hole") benchHole = true;
         if (std::string(argv[i]) == "--test-trees") benchTrees = true;
         if (std::string(argv[i]) == "--test-chop") benchChop = true;
+        if (std::string(argv[i]) == "--test-persist" && i + 1 < argc) benchPersist = atoi(argv[i + 1]);
         if (std::string(argv[i]) == "--time-scale" && i + 1 < argc) timeScale = (float)atof(argv[i + 1]);
         if (std::string(argv[i]) == "--crack-check") crackCheck = true;
         if (std::string(argv[i]) == "--no-foliage") foliageEnabled = false;
@@ -506,6 +509,66 @@ int main(int argc, char** argv)
                             benchTrees = false;
                         }
                     }
+                } else if (benchPersist > 0 && WorldIdle()) {
+                    // --test-persist N (milestone 2 gate): N strokes over ~600x600 m around the start;
+                    // chunk builds must stay flat, a save and a load must take under a second.
+                    Planetoid* p = dynamic_cast<Planetoid*>(world.objects[0].get());
+                    const auto* pf = p ? dynamic_cast<const PlanetField*>(p->field.get()) : nullptr;
+                    if (!pf) { printf("bench: --test-persist needs a planet\n"); benchPersist = 0; }
+                    else {
+                        using clk = std::chrono::steady_clock;
+                        auto ms = [](clk::time_point a) { return std::chrono::duration<double, std::milli>(clk::now() - a).count(); };
+                        const Vector3 centre = Vector3Normalize(p->toLocal((player.position - world.renderOrigin).toFloat()));
+                        const Vector3 t1 = Vector3Normalize(Vector3CrossProduct(centre, { 0, 1, 0 })), t2 = Vector3CrossProduct(t1, centre);
+                        // Builds: 24 finest nodes around the area, timed before and after.
+                        std::vector<NodeKey> keys;
+                        for (int k = 0; k < 24; ++k) {
+                            const float a = k * 0.26f, rr = 40.0f + 10.0f * k;
+                            const Vector3 d = Vector3Normalize(Vector3Add(centre, Vector3Add(Vector3Scale(t1, cosf(a) * rr / pf->radius), Vector3Scale(t2, sinf(a) * rr / pf->radius))));
+                            const Vector3 s = Vector3Scale(d, pf->radius + pf->elevation(d));
+                            keys.push_back({ 0, (int)floorf(s.x / CHUNK_SIZE), (int)floorf(s.y / CHUNK_SIZE), (int)floorf(s.z / CHUNK_SIZE) });
+                        }
+                        auto timeBuilds = [&]() {
+                            const auto t = clk::now();
+                            for (const NodeKey& k : keys) { ChunkMeshData m; m.key = k; BuildChunkMesh(*p->field, *p->edits, m); }
+                            return ms(t) / keys.size();
+                        };
+                        const double buildBefore = timeBuilds();
+                        std::mt19937 rng(7);
+                        std::uniform_real_distribution<float> u(0.0f, 1.0f);
+                        std::vector<TerrainEdit> strokes((size_t)benchPersist);
+                        for (TerrainEdit& e : strokes) {
+                            const Vector3 d = Vector3Normalize(Vector3Add(centre, Vector3Add(Vector3Scale(t1, (u(rng) - 0.5f) * 600.0f / pf->radius), Vector3Scale(t2, (u(rng) - 0.5f) * 600.0f / pf->radius))));
+                            const float depth = -8.0f * u(rng) + 1.0f;
+                            e.center = Vector3Scale(d, pf->radius + pf->elevation(d) + depth);
+                            e.radius = 1.5f + 2.5f * u(rng);
+                            e.strength = u(rng) < 0.8f ? -0.12f - 0.18f * u(rng) : 0.12f + 0.1f * u(rng);
+                        }
+                        auto t = clk::now();
+                        ApplyTerrainEdits(*p, strokes.data(), strokes.size());
+                        const double foldMs = ms(t);
+                        const double buildAfter = timeBuilds();
+                        t = clk::now();
+                        SaveWorld(world);
+                        const double saveFull = ms(t);
+                        std::vector<TerrainEdit> more(strokes.begin(), strokes.begin() + std::min<size_t>(100, strokes.size()));
+                        ApplyTerrainEdits(*p, more.data(), more.size());
+                        t = clk::now();
+                        SaveWorld(world);
+                        const double saveIncr = ms(t);
+                        const size_t chunks = p->edits->chunks.size();
+                        const float probe = p->densityAt(strokes[0].center);
+                        t = clk::now();
+                        const bool loaded = LoadWorldSave(world);
+                        const double loadMs = ms(t);
+                        p = dynamic_cast<Planetoid*>(world.objects[0].get());
+                        const bool same = loaded && p->edits->chunks.size() == chunks && fabsf(p->densityAt(strokes[0].center) - probe) < 1e-4f;
+                        const bool pass = same && saveFull < 1000.0 && loadMs < 1000.0 && buildAfter < buildBefore * 1.5 + 0.5;
+                        printf("bench: persist: %d strokes folded in %.0f ms into %zu delta chunks (%zu strokes recorded)\n", benchPersist, foldMs, chunks, p->edits->strokes);
+                        printf("bench: persist: chunk build %.2f ms before, %.2f ms after; save %.0f ms (full), %.0f ms (100 more strokes); load %.0f ms; reloaded identical: %s -> %s\n",
+                               buildBefore, buildAfter, saveFull, saveIncr, loadMs, same ? "yes" : "NO", pass ? "PASS" : "FAIL");
+                        benchPersist = 0;
+                    }
                 } else if (benchHole && (holePhase > 0 || WorldIdle())) { // edits keep the world busy: run on
                     // --test-hole: on the spinning planet, dig a pit ahead and walk into it, then build a
                     // pillar under your feet while jumping. Neither may hurt you (impacts are measured
@@ -695,7 +758,19 @@ int main(int argc, char** argv)
                         ApplyTerrainEdit(*p, TerrainEdit{ Vector3Scale(dir, f->mantleRadius + 4.0f), 12.0f, -20.0f });
                         const float mantleAfter = p->densityAt(inMantle), crustAfter = p->densityAt(inCrust);
                         p->edits = savedEdits; // leave the world as it was
-                        const bool mantleOk = mantleAfter == mantleBefore && crustAfter < crustBefore - 1.0f && !f->editable(inMantle) && f->editable(inCrust);
+                        // A hole 700 m down (above the mantle) must open: deltas saturated at ~510 m of rock.
+                        bool deepOk = true;
+                        {
+                            const Vector3 dd = randomDir();
+                            const float depth = std::min(700.0f, f->radius + f->elevation(dd) - f->mantleRadius - 30.0f);
+                            const Vector3 deep = Vector3Scale(dd, f->radius + f->elevation(dd) - depth);
+                            ApplyTerrainEdit(*p, TerrainEdit{ deep, 6.0f, -(DENSITY_GRADIENT * depth + 20.0f) });
+                            const float after = p->densityAt(deep);
+                            p->edits = savedEdits;
+                            deepOk = after < ISO_LEVEL;
+                            printf("bench: a hole %.0f m down: density %.1f (air below %.2f): %s\n", depth, after, ISO_LEVEL, deepOk ? "open" : "STILL SOLID");
+                        }
+                        const bool mantleOk = deepOk && mantleAfter == mantleBefore && crustAfter < crustBefore - 1.0f && !f->editable(inMantle) && f->editable(inCrust);
                         printf("bench: mantle %.0f m below sea level: dig there changed the crust %.2f -> %.2f and the mantle %.2f -> %.2f: %s\n",
                                f->radius - f->mantleRadius, crustBefore, crustAfter, mantleBefore, mantleAfter, mantleOk ? "refused" : "NOT REFUSED");
                         // 3. Ore by depth band, and caves.
@@ -1033,7 +1108,7 @@ int main(int argc, char** argv)
                         }
                         benchWalkSeconds = 0.0;
                     }
-                } else if ((WorldIdle() && benchDigStrokes == 0 && !benchSaveLoad && benchWalkSeconds <= 0.0 && benchMineStrokes == 0 && minePhase != 2 && benchFlySeconds <= 0.0 && !benchSuffocate && benchOrbitSeconds <= 0.0 && !benchRide && !benchPark && !benchGravity && !benchPrecision && !benchMantle && !benchAirJump && !benchMoon && !benchHole && !benchTrees && !benchChop) || GetTime() > 180.0) {
+                } else if ((WorldIdle() && benchDigStrokes == 0 && !benchSaveLoad && benchWalkSeconds <= 0.0 && benchMineStrokes == 0 && minePhase != 2 && benchFlySeconds <= 0.0 && !benchSuffocate && benchOrbitSeconds <= 0.0 && !benchRide && !benchPark && !benchGravity && !benchPrecision && !benchMantle && !benchAirJump && !benchMoon && !benchHole && !benchTrees && !benchChop && benchPersist == 0) || GetTime() > 180.0) {
                     benchStart = GetTime();
                     printf("bench: world ready after %.2f s (%d chunks, avg build %.2f ms of which sampling %.2f ms, %d worker threads)\n",
                         GetWorldStats().lastGenerationSeconds, GetWorldStats().chunks, GetWorldStats().avgBuildMs, GetWorldStats().avgSampleMs, GetWorldStats().workerThreads);
@@ -1147,6 +1222,12 @@ int main(int argc, char** argv)
             }
             if (ship.piloted && ship.lastImpact > 12.0f) survival.health -= (ship.lastImpact - 12.0f) * 3.0f; // crash damage
             Survival_Update(world, frameDt, gameInput);
+            // Autosave every 5 minutes of play (incremental: only regions changed since the last save).
+            static double lastAutosave = GetTime();
+            if (!bench && alive && GetTime() - lastAutosave > 300.0) {
+                lastAutosave = GetTime();
+                if (SaveWorld(world)) GameUI_Toast("Autosaved");
+            }
             Objectives_Update(world);
             if (bench && lookDown && !ship.piloted) {
                 const Vector3 t = Vector3Subtract(player.forward, Vector3Scale(player.up, Vector3DotProduct(player.forward, player.up)));

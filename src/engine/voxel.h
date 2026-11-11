@@ -66,7 +66,7 @@ struct TerrainEdit {
     float radius;
     float strength;
 };
-using EditList = std::vector<TerrainEdit>;
+#include "terraindeltas.h"
 
 // A terrain density field: density >= ISO_LEVEL is solid. Implementations must be immutable and
 // thread-safe (they are shared read-only with the worker threads that build chunk meshes).
@@ -109,12 +109,10 @@ public:
         return materialLod(p, base, footprint, normal);
     }
 
-    // Density including edits (the list should already be filtered to ones near p).
-    float density(Vector3 p, const TerrainEdit* edits, size_t editCount, float footprint = 0.0f) const;
-    // Adds the edits' contributions to a base density at p (nothing where !editable(p)).
-    float applyEdits(Vector3 p, float base, const TerrainEdit* edits, size_t editCount) const;
+    // Density including the player's edits (base + trilinear delta; deltas may be null).
+    float density(Vector3 p, const TerrainDeltas* deltas, float footprint = 0.0f) const;
     // Outward surface normal: negative density gradient, by central differences.
-    Vector3 normal(Vector3 p, const TerrainEdit* edits, size_t editCount, float step = 0.5f, float footprint = 0.0f) const;
+    Vector3 normal(Vector3 p, const TerrainDeltas* deltas, float step = 0.5f, float footprint = 0.0f) const;
 };
 
 // Asteroid / small body: a displaced sphere centred on the local origin.
@@ -221,9 +219,7 @@ struct ChunkMeshData {
 // Samples the field over node `key` (CHUNK_SIZE+1 cells at the node stride, i.e. one cell of
 // overlap with the +x/+y/+z neighbours to hide cracks between LOD levels) and runs marching cubes.
 // Thread-safe: touches only its arguments.
-void BuildChunkMesh(const DensityField& field, const EditList& allEdits, ChunkMeshData& out);
+void BuildChunkMesh(const DensityField& field, const TerrainDeltas& deltas, ChunkMeshData& out);
 
-// Edits whose influence (radius + margin) overlaps the axis-aligned box [lo, hi].
-void FilterEdits(const EditList& all, Vector3 lo, Vector3 hi, float margin, EditList& out);
 
 #endif

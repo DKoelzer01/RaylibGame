@@ -8,6 +8,8 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <cstdio>
+#include <cstring>
 #include <deque>
 #include <mutex>
 #include <random>
@@ -55,7 +57,7 @@ Planetoid::Planetoid(std::string name, DVec3 wp, Vector3 rotation, float scale, 
     : Object("planetoid", name, wp.toFloat(), rotation, WHITE, scale),
       id(nextPlanetoidId++), seed(seed_), radius(radius_),
       field(std::make_shared<PlanetoidField>(seed_, radius_)),
-      edits(std::make_shared<EditList>()) {
+      edits(std::make_shared<TerrainDeltas>()) {
     worldPos = wp;
     hasWorldPos = true;
     surfaceGravity = AutoSurfaceGravity(BodyKind::Asteroid, radius_ * scale); // generateWorld may override
@@ -69,7 +71,7 @@ Planetoid::~Planetoid() { planetoidRegistry.erase(id); }
 
 Planetoid::Planetoid(std::string name, DVec3 wp, std::shared_ptr<const TerrainField> terrain)
     : Object("terrain", name, wp.toFloat(), { 0, 0, 0 }, WHITE, 1.0f),
-      id(nextPlanetoidId++), seed(0), radius(1e9f), field(terrain), edits(std::make_shared<EditList>()) {
+      id(nextPlanetoidId++), seed(0), radius(1e9f), field(terrain), edits(std::make_shared<TerrainDeltas>()) {
     worldPos = wp;
     hasWorldPos = true;
     flat = true;
@@ -151,7 +153,7 @@ Matrix Planetoid::chunkModel(const Chunk& chunk, const DVec3& renderOrigin) cons
 }
 
 float Planetoid::densityAt(Vector3 local) const {
-    return field->density(local, edits->data(), edits->size());
+    return field->density(local, edits.get());
 }
 
 Vector3 Planetoid::surfaceVelocity(Vector3 renderPoint) const {
@@ -279,7 +281,7 @@ static void RequestNode(Planetoid& p, const NodeKey& key, float priority) {
         p.nodes.emplace(key, std::move(chunk));
     }
     std::shared_ptr<const DensityField> field = p.field;
-    std::shared_ptr<const EditList> edits = p.edits;
+    std::shared_ptr<const TerrainDeltas> edits = p.edits;
     const uint64_t id = p.id;
     std::shared_ptr<std::atomic<uint32_t>> wanted = p.nodes.at(key)->wanted;
     wanted->store(version);
@@ -570,7 +572,7 @@ void worldUpdate(Scene& world, float uploadBudgetMs) {
         if (auto* p = dynamic_cast<Planetoid*>(obj.get())) {
             stats.nodes += (int)p->nodes.size();
             for (Chunk* c : p->drawList) stats.chunks += c->hasMesh() ? 1 : 0;
-            stats.edits += (int)p->edits->size();
+            stats.edits += (int)p->edits->strokes;
         }
     }
 
@@ -642,7 +644,7 @@ bool RaycastTerrain(Scene& world, Ray ray, float maxDistance, TerrainHit& hit) {
                     hit.local = local;
                     hit.point = worldPoint;
                     hit.distance = dist;
-                    hit.normal = Vector3Normalize(Vector3Subtract(p->toWorld(Vector3Add(local, p->field->normal(local, p->edits->data(), p->edits->size()))), worldPoint));
+                    hit.normal = Vector3Normalize(Vector3Subtract(p->toWorld(Vector3Add(local, p->field->normal(local, p->edits.get()))), worldPoint));
                     hit.material = p->field->material(local, p->field->baseDensity(local));
                 }
                 break;
@@ -652,22 +654,37 @@ bool RaycastTerrain(Scene& world, Ray ray, float maxDistance, TerrainHit& hit) {
     return found;
 }
 
-void ApplyTerrainEdit(Planetoid& p, const TerrainEdit& edit) {
-    auto next = std::make_shared<EditList>(*p.edits);
-    next->push_back(edit);
-    p.edits = next;
+void ApplyTerrainEdit(Planetoid& p, const TerrainEdit& edit) { ApplyTerrainEdits(p, &edit, 1); }
+
+void ApplyTerrainEdits(Planetoid& p, const TerrainEdit* edits, size_t count) {
+    if (count == 0) return;
+    // Fold the strokes into the delta lattice: a new snapshot sharing every untouched chunk (the
+    // old one may still be in use by worker builds).
+    TerrainDeltasBuilder b(*p.edits);
+    std::unordered_set<TerrainDeltas::Key> touchedChunks;
+    for (size_t i = 0; i < count; ++i) b.apply(edits[i], *p.field, &touchedChunks);
+    p.edits = b.finish();
+    for (TerrainDeltas::Key k : touchedChunks) p.dirtyRegions.insert(TerrainDeltas::RegionOf(k));
     p.lodDirty = true;
 
-    // Rebuild every existing node (any level) whose samples or normals the brush reaches. Nodes
-    // that do not exist yet are built later with the new edit list anyway.
+    // Rebuild every existing node (any level) whose samples or normals the strokes reach. Nodes
+    // that do not exist yet are built later with the new deltas anyway.
+    Vector3 lo = edits[0].center, hi = edits[0].center;
+    float rmax = 0.0f;
+    for (size_t i = 0; i < count; ++i) { lo = Vector3Min(lo, edits[i].center); hi = Vector3Max(hi, edits[i].center); rmax = std::max(rmax, edits[i].radius); }
     std::vector<NodeKey> touched;
     for (auto& entry : p.nodes) {
         const NodeKey& k = entry.first;
-        const Vector3 lo = k.origin();
-        const Vector3 hi = Vector3AddValue(lo, k.size() * (CHUNK_SIZE + 1.0f) / CHUNK_SIZE);
-        if (DistanceToBox(edit.center, lo, hi) <= edit.radius + k.stride()) touched.push_back(k);
+        const Vector3 nlo = k.origin();
+        const Vector3 nhi = Vector3AddValue(nlo, k.size() * (CHUNK_SIZE + 1.0f) / CHUNK_SIZE);
+        const float margin = rmax + k.stride() + 1.0f;
+        if (hi.x + margin < nlo.x || lo.x - margin > nhi.x || hi.y + margin < nlo.y || lo.y - margin > nhi.y || hi.z + margin < nlo.z || lo.z - margin > nhi.z) continue;
+        if (count == 1 && DistanceToBox(edits[0].center, nlo, nhi) > margin) continue;
+        touched.push_back(k);
     }
     for (const NodeKey& k : touched) RequestNode(p, k, -1.0f - (float)k.level * 0.01f); // ahead of background work
+    if (p.trees)
+        for (size_t i = 0; i < count; i += std::max<size_t>(1, count / 64)) p.trees->onEdit(edits[i].center, edits[i].radius, p.edits);
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -897,6 +914,148 @@ static std::string SAVE_PATH_STR = "saves/world.sav";
 #define SAVE_PATH SAVE_PATH_STR.c_str()
 void SetWorldSavePath(const char* path) { SAVE_PATH_STR = path; }
 
+// ---------------------------------------------------------------------------------------------
+// Region files: a body's edited delta chunks, 16^3 chunks per file, each chunk compressed.
+//   "RGN3", int32 count, then per chunk: int32 cx, cy, cz, int32 payload bytes, run-length payload
+//   (RGN2, the same in 1/256 steps, and RGN1, DEFLATE-compressed, are still read).
+// ---------------------------------------------------------------------------------------------
+
+static std::string RegionDir() { return SAVE_PATH_STR + ".regions"; }
+
+static std::string RegionFile(const std::string& dir, int body, TerrainDeltas::Key region) {
+    int rx, ry, rz;
+    TerrainDeltas::Unpack(region, rx, ry, rz);
+    return TextFormat("%s/b%d_%d_%d_%d.rgn", dir.c_str(), body, rx, ry, rz);
+}
+
+// RGN2/3 chunk payload: run-length coded, repeating [uint16 zero run][uint16 count][count x int16].
+// Edited chunks are mostly zeros around a band of changed samples; this is compact and ~100x
+// faster than DEFLATE (which made a 100k-stroke save take seconds).
+static void EncodeChunk(const DeltaChunk& c, std::vector<uint16_t>& out) {
+    out.clear();
+    const int n = kDeltaChunk * kDeltaChunk * kDeltaChunk;
+    int i = 0;
+    while (i < n) {
+        int zeros = 0;
+        while (i < n && c.d[i] == 0 && zeros < 65535) { ++i; ++zeros; }
+        const int start = i;
+        while (i < n && c.d[i] != 0 && i - start < 65535) ++i;
+        out.push_back((uint16_t)zeros);
+        out.push_back((uint16_t)(i - start));
+        for (int k = start; k < i; ++k) out.push_back((uint16_t)c.d[k]);
+    }
+}
+
+static bool DecodeChunk(const uint16_t* in, size_t words, DeltaChunk& c) {
+    const int n = kDeltaChunk * kDeltaChunk * kDeltaChunk;
+    int i = 0;
+    size_t w = 0;
+    while (w + 1 < words) {
+        const int zeros = in[w++], count = in[w++];
+        if (i + zeros + count > n || w + count > words) return false;
+        i += zeros;
+        for (int k = 0; k < count; ++k) c.d[i++] = (int16_t)in[w++];
+    }
+    return true;
+}
+
+static bool WriteRegion(const std::string& path, const std::vector<std::pair<TerrainDeltas::Key, const DeltaChunk*>>& chunks) {
+    FILE* f = fopen(path.c_str(), "wb");
+    if (!f) return false;
+    fwrite("RGN3", 1, 4, f);
+    const int32_t n = (int32_t)chunks.size();
+    fwrite(&n, 4, 1, f);
+    std::vector<uint16_t> enc;
+    for (const auto& c : chunks) {
+        int cx, cy, cz;
+        TerrainDeltas::Unpack(c.first, cx, cy, cz);
+        EncodeChunk(*c.second, enc);
+        const int32_t hdr[4] = { cx, cy, cz, (int32_t)(enc.size() * 2) };
+        fwrite(hdr, 4, 4, f);
+        fwrite(enc.data(), 2, enc.size(), f);
+    }
+    fclose(f);
+    return true;
+}
+
+static bool ReadRegion(const std::string& path, TerrainDeltasBuilder& b) {
+    FILE* f = fopen(path.c_str(), "rb");
+    if (!f) return false;
+    char magic[4];
+    int32_t n = 0;
+    bool ok = fread(magic, 1, 4, f) == 4 && fread(&n, 4, 1, f) == 1;
+    // RGN3: run-length, deltas in 1/64 steps. RGN2 (run-length) and RGN1 (DEFLATE) stored 1/256
+    // steps: scaled down on load.
+    const bool rle = ok && (memcmp(magic, "RGN3", 4) == 0 || memcmp(magic, "RGN2", 4) == 0);
+    const int legacy = ok && memcmp(magic, "RGN3", 4) != 0 ? 4 : 1;
+    auto rescale = [legacy](DeltaChunk& c) { if (legacy > 1) for (int16_t& v : c.d) v = (int16_t)lroundf(v / (float)legacy); };
+    ok = ok && (rle || memcmp(magic, "RGN1", 4) == 0);
+    std::vector<unsigned char> comp;
+    for (int32_t i = 0; ok && i < n; ++i) {
+        int32_t hdr[4];
+        if (fread(hdr, 4, 4, f) != 4 || hdr[3] <= 0) { ok = false; break; }
+        comp.resize((size_t)hdr[3]);
+        if (fread(comp.data(), 1, comp.size(), f) != comp.size()) { ok = false; break; }
+        if (rle) {
+            auto chunk = std::make_shared<DeltaChunk>();
+            if (!DecodeChunk((const uint16_t*)comp.data(), comp.size() / 2, *chunk)) { ok = false; break; }
+            rescale(*chunk);
+            b.setChunk(TerrainDeltas::KeyOf(hdr[0], hdr[1], hdr[2]), chunk);
+            continue;
+        }
+        int size = 0;
+        unsigned char* raw = DecompressData(comp.data(), (int)comp.size(), &size);
+        if (raw && size == (int)sizeof(DeltaChunk::d)) {
+            auto chunk = std::make_shared<DeltaChunk>();
+            memcpy(chunk->d, raw, sizeof(chunk->d));
+            rescale(*chunk);
+            b.setChunk(TerrainDeltas::KeyOf(hdr[0], hdr[1], hdr[2]), chunk);
+        } else ok = false;
+        if (raw) MemFree(raw);
+    }
+    fclose(f);
+    return ok;
+}
+
+// Writes this body's changed regions (all of them, after removing old files, the first time it is
+// saved to this directory). Returns the number of region files written.
+static int SaveBodyRegions(Planetoid& p, int body, const std::string& dir) {
+    const bool full = p.allRegionsDirty || p.regionsSavedTo != dir;
+    if (full) {
+        const std::string prefix = TextFormat("b%d_", body);
+        FilePathList files = LoadDirectoryFiles(dir.c_str());
+        for (unsigned int i = 0; i < files.count; ++i)
+            if (std::string(GetFileName(files.paths[i])).rfind(prefix, 0) == 0) std::remove(files.paths[i]);
+        UnloadDirectoryFiles(files);
+    }
+    std::unordered_map<TerrainDeltas::Key, std::vector<std::pair<TerrainDeltas::Key, const DeltaChunk*>>> byRegion;
+    for (const auto& kv : p.edits->chunks) {
+        const TerrainDeltas::Key r = TerrainDeltas::RegionOf(kv.first);
+        if (full || p.dirtyRegions.count(r)) byRegion[r].push_back({ kv.first, kv.second.get() });
+    }
+    int written = 0;
+    for (const auto& kv : byRegion) written += WriteRegion(RegionFile(dir, body, kv.first), kv.second) ? 1 : 0;
+    p.dirtyRegions.clear();
+    p.allRegionsDirty = false;
+    p.regionsSavedTo = dir;
+    return written;
+}
+
+// Reads every region file of a body into a new delta snapshot.
+static std::shared_ptr<const TerrainDeltas> LoadBodyRegions(int body, const std::string& dir, size_t strokes) {
+    TerrainDeltasBuilder b(TerrainDeltas{});
+    if (DirectoryExists(dir.c_str())) {
+        const std::string prefix = TextFormat("b%d_", body);
+        FilePathList files = LoadDirectoryFiles(dir.c_str());
+        for (unsigned int i = 0; i < files.count; ++i)
+            if (std::string(GetFileName(files.paths[i])).rfind(prefix, 0) == 0 && !ReadRegion(files.paths[i], b))
+                logger.logf("[World] %s: damaged region file\n", files.paths[i]);
+        UnloadDirectoryFiles(files);
+    }
+    b.state().strokes = strokes;
+    return b.finish();
+}
+
 bool SaveWorld(Scene& world) {
     if (!DirectoryExists("saves")) MakeDirectory("saves");
     FILE* f = fopen(SAVE_PATH, "w");
@@ -905,7 +1064,7 @@ bool SaveWorld(Scene& world) {
     const DVec3 tgtWorld = world.renderOrigin + world.camera.target;
     // v4: the system definition is stored in the save, so a save reloads the system it was made in
     // even if bodies.txt has changed since.
-    fprintf(f, "RAYLIBGAME_SAVE 6\n");
+    fprintf(f, "RAYLIBGAME_SAVE 7\n");
     fprintf(f, "seed %u\nbodies %zu\n", worldGen.lastSeed, worldGen.system.bodies.size());
     for (const BodyDef& b : worldGen.system.bodies) fprintf(f, "%s\n", FormatBodyDef(b).c_str());
     fprintf(f, "time %.6f\n", worldTime); // v5: the world clock (orbits)
@@ -914,23 +1073,27 @@ bool SaveWorld(Scene& world) {
     fprintf(f, "extras\n");
     if (saveExtrasHook) saveExtrasHook(f);
     fprintf(f, "end_extras\n");
-    int index = 0, total = 0;
+    // v7: terrain edits live in region files next to the save (RegionDir), written incrementally:
+    // only regions changed since the last save, unless the body has never been saved there.
+    const std::string dir = RegionDir();
+    if (!DirectoryExists(dir.c_str())) MakeDirectory(dir.c_str());
+    int index = 0, regionsWritten = 0;
+    size_t totalStrokes = 0;
     for (auto& obj : world.objects) {
         Planetoid* p = dynamic_cast<Planetoid*>(obj.get());
         if (!p) continue;
-        fprintf(f, "planetoid %d rot %f %f %f edits %zu\n", index++, p->rotation.x, p->rotation.y, p->rotation.z, p->edits->size());
-        for (const TerrainEdit& e : *p->edits) {
-            fprintf(f, "%f %f %f %f %f\n", e.center.x, e.center.y, e.center.z, e.radius, e.strength);
-            total++;
-        }
+        const int bodyIndex = index++;
+        fprintf(f, "planetoid %d rot %f %f %f strokes %zu\n", bodyIndex, p->rotation.x, p->rotation.y, p->rotation.z, p->edits->strokes);
+        totalStrokes += p->edits->strokes;
         // v6: chopped / harvested plants (id, world time removed); they regrow from that time.
         const PlantRemovals none;
         const PlantRemovals& rm = p->trees ? p->trees->removals() : none;
         fprintf(f, "plants %zu\n", rm.size());
         for (const auto& kv : rm) fprintf(f, "%llu %.3f\n", (unsigned long long)kv.first, kv.second);
+        regionsWritten += SaveBodyRegions(*p, bodyIndex, dir);
     }
     fclose(f);
-    logger.logf("[World] saved %d edits to %s\n", total, SAVE_PATH);
+    logger.logf("[World] saved %zu strokes to %s (%d region files written)\n", totalStrokes, SAVE_PATH, regionsWritten);
     return true;
 }
 
@@ -938,7 +1101,7 @@ bool LoadWorldSave(Scene& world) {
     FILE* f = fopen(SAVE_PATH, "r");
     if (!f) return false;
     int version = 0;
-    if (fscanf(f, "RAYLIBGAME_SAVE %d", &version) != 1 || version < 2 || version > 6) {
+    if (fscanf(f, "RAYLIBGAME_SAVE %d", &version) != 1 || version < 2 || version > 7) {
         fclose(f);
         logger.logf("[World] %s: unsupported save version %d\n", SAVE_PATH, version);
         return false;
@@ -1001,12 +1164,23 @@ bool LoadWorldSave(Scene& world) {
     int index = 0;
     size_t editCount = 0;
     Vector3 rot{};
-    while (fscanf(f, " planetoid %d rot %f %f %f edits %zu", &index, &rot.x, &rot.y, &rot.z, &editCount) == 5) {
-        auto list = std::make_shared<EditList>();
-        for (size_t i = 0; i < editCount; ++i) {
-            TerrainEdit e{};
-            if (fscanf(f, " %f %f %f %f %f", &e.center.x, &e.center.y, &e.center.z, &e.radius, &e.strength) != 5) break;
-            list->push_back(e);
+    char kind[16] = {};
+    const std::string dir = RegionDir();
+    while (fscanf(f, " planetoid %d rot %f %f %f %15s %zu", &index, &rot.x, &rot.y, &rot.z, kind, &editCount) == 6) {
+        Planetoid* body = index >= 0 && index < (int)planetoids.size() ? planetoids[index] : nullptr;
+        std::shared_ptr<const TerrainDeltas> deltas;
+        if (std::string(kind) == "strokes") {
+            // v7: the deltas are in the region files.
+            deltas = LoadBodyRegions(index, dir, editCount);
+        } else {
+            // v2-v6: a brush list; fold it into deltas (written out as regions on the next save).
+            TerrainDeltasBuilder b(TerrainDeltas{});
+            for (size_t i = 0; i < editCount; ++i) {
+                TerrainEdit e{};
+                if (fscanf(f, " %f %f %f %f %f", &e.center.x, &e.center.y, &e.center.z, &e.radius, &e.strength) != 5) break;
+                if (body) b.apply(e, *body->field);
+            }
+            deltas = b.finish();
         }
         PlantRemovals plants;
         size_t plantCount = 0;
@@ -1018,10 +1192,13 @@ bool LoadWorldSave(Scene& world) {
                 plants[(uint64_t)id] = t;
             }
         }
-        if (index >= 0 && index < (int)planetoids.size()) {
-            planetoids[index]->edits = list;
-            planetoids[index]->rotation = rot;
-            if (planetoids[index]->trees) planetoids[index]->trees->setRemovals(plants);
+        if (body) {
+            body->edits = deltas;
+            body->rotation = rot;
+            body->dirtyRegions.clear();
+            body->allRegionsDirty = std::string(kind) != "strokes"; // an old brush-list save: write regions next time
+            body->regionsSavedTo = body->allRegionsDirty ? std::string() : dir;
+            if (body->trees) body->trees->setRemovals(plants);
         }
     }
     fclose(f);

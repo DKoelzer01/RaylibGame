@@ -51,8 +51,12 @@ Shaders in `resources/` hot-reload when saved.
 ## How the terrain works
 - Each body has an immutable density field (`src/engine/voxel.*`): asteroids a `PlanetoidField` (seeded fBm density with a radial
   falloff), planets and moons a `PlanetField` (below); each also gives the material at a point.
-- Terrain edits are spherical density brushes stored per planetoid. The field + edit list fully
-  define the terrain, so a save file is just the generation settings and the edits.
+- Terrain edits (`src/engine/terraindeltas.*`) are spherical density brushes folded straight into a lattice of
+  density deltas (1-voxel spacing, 32^3 chunks of 16-bit values, copy-on-write snapshots shared with the workers).
+  Density = base field + the trilinear delta, so builds cost the same after a million strokes. Saves keep the
+  deltas in region files next to the save (`<save>.regions/`, 16^3 chunks per file, run-length coded), written
+  incrementally: only regions changed since the last save. The game autosaves every 5 minutes. Older saves (brush
+  lists) are folded into deltas on load.
 - Chunks (32^3 cells) are built on a worker pool (`src/engine/jobsystem.*`): sample density, marching cubes,
   normals from the density gradient, material weights in vertex colours. The main thread only
   uploads finished meshes, time-boxed per frame. Edits re-mesh just the touched chunks.
@@ -136,7 +140,8 @@ clears to magenta without a skybox and reports the share of pixels showing throu
 frustum culling, `--test-dig N` carves a tunnel at the crosshair, `--test-saveload` saves and reloads,
 `--test-walk S` / `--test-stand S` spawn the player and walk/stand (reports grounding + penetration),
 `--test-planet-walk M` walks M metres on body 0 and prints PASS/FAIL (milestone 1 gate: 1000),
-`--test-hole` (walk into a fresh pit, build a pillar underfoot), `--test-trees` (walk into a trunk), `--test-chop` (fell a tree, save/reload, regrow), `--bench-fly V`
+`--test-hole` (walk into a fresh pit, build a pillar underfoot), `--test-trees` (walk into a trunk), `--test-chop` (fell a tree, save/reload, regrow), `--test-persist N`
+(milestone 2 gate: N strokes, flat builds, save and load under a second), `--bench-fly V`
 / `--bench-fly-alt A` (camera flight over body 0, LOD streaming; negative A: underwater), `--no-foliage`,
 `--test-mine N` digs N strokes at the feet, crafts everything possible and builds 3 strokes,
 `--test-fly S` autopilots the ship to the nearest other asteroid, `--test-suffocate` checks death/respawn,

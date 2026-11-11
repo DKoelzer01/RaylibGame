@@ -73,7 +73,10 @@ public:
     // height band [minHeight, maxHeight] instead of a sphere of `radius`.
     bool flat = false;
     float minHeight = 0.0f, maxHeight = 0.0f;
-    std::shared_ptr<const EditList> edits;               // copy-on-write, shared with workers
+    std::shared_ptr<const TerrainDeltas> edits;          // player edits as density deltas; immutable snapshot, shared with workers
+    std::unordered_set<TerrainDeltas::Key> dirtyRegions; // regions changed since the last save (incremental saves)
+    bool allRegionsDirty = true;                         // a fresh body: the first save writes every region
+    std::string regionsSavedTo;                          // the region directory it was last saved to / loaded from
 
     // LOD state (main thread only).
     std::unordered_map<NodeKey, std::unique_ptr<Chunk>> nodes;   // built or being built
