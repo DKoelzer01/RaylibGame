@@ -21,7 +21,7 @@ void GameSave_Register() {
             const InvSlot& s = inventory.grid()[i];
             if (!s.empty()) fprintf(f, "slot %d %s %lld\n", i, s.id.c_str(), (long long)s.centi);
         }
-        fprintf(f, "quest %d\n", QuestBook_Tier());
+        QuestBook_Save(f);
         fprintf(f, "creative %d\n", terrainTool.creative ? 1 : 0);
         Hotbar_Save(f);
         Nav_Save(f);
@@ -33,9 +33,10 @@ void GameSave_Register() {
         terrainTool.creative = false;
         Hotbar_Reset();
         Nav_Reset();
+        QuestBook_Reset();
         char tok[64] = {};
         while (fscanf(f, " %63s", tok) == 1 && strcmp(tok, "end_extras") != 0) {
-            if (strcmp(tok, "quest") == 0) { int t = 0; if (fscanf(f, " %d", &t) == 1) QuestBook_SetTier(t); continue; }
+            if (QuestBook_LoadLine(tok, f)) continue;
             if (strcmp(tok, "creative") == 0) { int c = 0; if (fscanf(f, " %d", &c) == 1) terrainTool.creative = c != 0; continue; }
             if (Hotbar_LoadLine(tok, f)) continue;
             if (Nav_LoadLine(tok, f)) continue;

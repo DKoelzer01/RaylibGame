@@ -90,7 +90,10 @@ Shaders in `resources/` hot-reload when saved.
 - **Survival** (`src/space/survival.*`): suit oxygen drains outside a planet's breathable air and a rocket's
   cockpit (~5 min a tank), suit power pays for recharging the jetpack and the headlamp, health drops when
   suffocating or from hard landings. Death respawns you at rest at the start. Oxygen canisters and power cells are
-  used from the hotbar. An objectives list guides the loop; the quest book (tiers) leads through the tech.
+  used from the hotbar. Current Objectives (top left; Tab > Quests for every tier) lead
+  through the tech: each tier (`resources/data/tiers.txt`) is 4-8 tasks that tick themselves off (get N of an item, ever;
+  place a machine; reach orbit; visit the moon or the ring), and the next tier opens when all are done. Quest state,
+  placed machines and obtained totals are saved.
 - **Hands** (`src/space/viewmodel.*`): a gloved hand holding the selected tool (by type and tier) or a cube of the
   selected item, drawn in its own pass over the world. It bobs with the distance walked (a figure eight, 1.5 cm up and
   1 cm across a step, none standing still), swings on each mining stroke or chop, and dips when switching. Settings:
@@ -231,6 +234,7 @@ fuelled and flown by the autopilot to orbit, saved and loaded in orbit, brought 
 `--test-mine N` digs N strokes at the feet, crafts everything possible and builds 3 strokes,
 `--test-suffocate` checks death/respawn,
 `--test-moon` (moon on its analytic orbit; standing and jumping on it; digging at the feet launches nobody),
+`--test-quests` (tiers open by their tasks, items used up still count, quest state through a save),
 `--test-viewmodel` (hands still at rest, bob within its amplitude once a step, screenshots of each tool),
 `--test-map` (compass reads east facing east, walking explores, a waypoint north bears 0, both maps render, saved),
 `--test-smallbody` (drop onto a huge ring rock and a 5 m one: land, stand, no death), `--test-inventory` (grid

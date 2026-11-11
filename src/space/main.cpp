@@ -86,7 +86,7 @@ static Vector3 StartSpawnDir(Planetoid& body) {
 static void StartNewWorld(Scene& world, bool reset) {
     if (reset) {
         inventory.clear();
-        QuestBook_SetTier(0);
+        QuestBook_Reset();
         survival = SurvivalState{};
         player.velocity = { 0, 0, 0 };
         player.flyMode = false;
@@ -155,6 +155,7 @@ int main(int argc, char** argv)
     bool benchHotbar = false;      // --test-hotbar: materials and consumables from the hotbar
     bool benchInventory = false;   // --test-inventory: grid stacking, fractions, sorting, saves
     bool benchMap = false;         // --test-map: compass, exploration, waypoints, map images, saves
+    bool benchQuests = false;      // --test-quests: tiers open by their tasks; quest state through a save
     bool benchViewmodel = false;   // --test-viewmodel: hands still at rest, bob within limits walking, screenshots
     int vmPhase = 0, vmSigns = 0; double vmStart = 0.0; float vmStillMax = 0.0f, vmMaxX = 0.0f, vmMaxY = 0.0f, vmWalked = 0.0f; Vector3 vmLast{}; DVec3 vmFrom{};
     int mapPhase = 0, mapTiles = 0; double mapStart = 0.0; float mapHeading = -1.0f, mapBearing = -1.0f; bool mapImageOk = false; DVec3 mapFrom{};
@@ -283,6 +284,7 @@ int main(int argc, char** argv)
         if (std::string(argv[i]) == "--test-hotbar") benchHotbar = true;
         if (std::string(argv[i]) == "--test-inventory") benchInventory = true;
         if (std::string(argv[i]) == "--test-map") benchMap = true;
+        if (std::string(argv[i]) == "--test-quests") benchQuests = true;
         if (std::string(argv[i]) == "--test-viewmodel") benchViewmodel = true;
         if (std::string(argv[i]) == "--test-ring") benchRing = true;
         if (std::string(argv[i]) == "--test-rocket") benchRocket = true;
@@ -1032,6 +1034,36 @@ int main(int argc, char** argv)
                                c.name, localDrift, distDrift, 3.0 * Vector3Length(c.body->linearVelocity), ok ? "ok" : "BAD");
                         ffPhase++;
                     }
+                } else if (benchQuests && WorldIdle()) {
+                    // --test-quests: tier 0's tasks done open tier 1; part of tier 1 done survives a save
+                    // and load (tier, done tasks, obtained totals, placed machines); the rest opens tier 2.
+                    bool ok = true;
+                    auto check = [&](bool c, const char* what) { if (!c) { printf("bench: quests: FAILED %s\n", what); ok = false; } };
+                    inventory.clear();
+                    QuestBook_Reset();
+                    check(QuestBook_Tier() == 0 && QuestBook_TaskCount(0) >= 4, "tier 0 has tasks");
+                    inventory.add("wood", 4); inventory.add("fibre", 2); inventory.addAmount("gravel", 4.0); inventory.add("stone_pickaxe", 1);
+                    inventory.add("stone", 8); inventory.add("fired_crucible", 1);
+                    inventory.remove("wood", 4); // used up: obtained totals still count
+                    QuestBook_NotePlaced("campfire");
+                    QuestBook_Update();
+                    check(QuestBook_Tier() == 1, "tier 0 done opens tier 1");
+                    QuestBook_NotePlaced("kiln");
+                    inventory.add("copper_ore", 4);
+                    QuestBook_Update();
+                    check(QuestBook_Tier() == 1 && QuestBook_TaskDone(1, 0) && QuestBook_TaskDone(1, 1) && !QuestBook_TaskDone(1, 2), "part of tier 1");
+                    const std::string path = std::string(GetWorkingDirectory()) + "/quest_test.tmp";
+                    if (FILE* f = fopen(path.c_str(), "w")) { saveExtrasHook(f); fprintf(f, "end_extras\n"); fclose(f); }
+                    QuestBook_Reset(); inventory.clear();
+                    if (FILE* f = fopen(path.c_str(), "r")) { loadExtrasHook(f); fclose(f); }
+                    remove(path.c_str());
+                    check(QuestBook_Tier() == 1 && QuestBook_TaskDone(1, 0) && QuestBook_TaskDone(1, 1) && !QuestBook_TaskDone(1, 2) && inventory.obtainedTotal("wood") >= 4.0, "saved and loaded");
+                    inventory.add("tin_ore", 2); inventory.add("copper_ingot", 3); inventory.add("bronze_ingot", 1);
+                    QuestBook_Update();
+                    check(QuestBook_Tier() == 2, "tier 1 done opens tier 2");
+                    printf("bench: quests: %d tiers, tier 0 -> 1 -> 2 by their tasks, save/load kept the tier and tasks -> %s\n", QuestBook_TierCount(), ok ? "PASS" : "FAIL");
+                    inventory.clear(); QuestBook_Reset();
+                    benchQuests = false;
                 } else if (benchViewmodel && (vmPhase > 0 || WorldIdle())) {
                     // --test-viewmodel: standing still the hands don't move; walking they bob within the
                     // set amplitude, once a step; screenshots of the hands and each tool type.
@@ -1906,7 +1938,7 @@ int main(int argc, char** argv)
                         }
                         benchWalkSeconds = 0.0;
                     }
-                } else if ((WorldIdle() && benchDigStrokes == 0 && !benchSaveLoad && benchWalkSeconds <= 0.0 && benchMineStrokes == 0 && minePhase != 2 && benchFlySeconds <= 0.0 && !benchSuffocate && benchOrbitSeconds <= 0.0 && !benchRide && !benchPark && !benchGravity && !benchPrecision && !benchMantle && !benchAirJump && !benchMoon && !benchHole && !benchWall && !benchMenus && !benchWater && !benchFlyFollow && !benchHotbar && !benchInventory && !benchMap && !benchViewmodel && !benchRing && !benchRocket && !benchBlueprint && !benchSmallBody && !benchTrees && !benchChop && benchPersist == 0 && benchBuild == 0 && benchFactory == 0 && !benchProgression) || GetTime() > 600.0) {
+                } else if ((WorldIdle() && benchDigStrokes == 0 && !benchSaveLoad && benchWalkSeconds <= 0.0 && benchMineStrokes == 0 && minePhase != 2 && benchFlySeconds <= 0.0 && !benchSuffocate && benchOrbitSeconds <= 0.0 && !benchRide && !benchPark && !benchGravity && !benchPrecision && !benchMantle && !benchAirJump && !benchMoon && !benchHole && !benchWall && !benchMenus && !benchWater && !benchFlyFollow && !benchHotbar && !benchInventory && !benchMap && !benchViewmodel && !benchQuests && !benchRing && !benchRocket && !benchBlueprint && !benchSmallBody && !benchTrees && !benchChop && benchPersist == 0 && benchBuild == 0 && benchFactory == 0 && !benchProgression) || GetTime() > 600.0) {
                     benchStart = GetTime();
                     printf("bench: world ready after %.2f s (%d chunks, avg build %.2f ms of which sampling %.2f ms, %d worker threads)\n",
                         GetWorldStats().lastGenerationSeconds, GetWorldStats().chunks, GetWorldStats().avgBuildMs, GetWorldStats().avgSampleMs, GetWorldStats().workerThreads);

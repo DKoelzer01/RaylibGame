@@ -79,7 +79,11 @@ public:
     double amount(const std::string& id) const; // with the fraction
     bool canCraft(const Recipe& r) const;
     bool craft(const Recipe& r);
-    void clear() { for (auto& s : slots) s = InvSlot{}; partial.clear(); }
+    void clear() { for (auto& s : slots) s = InvSlot{}; partial.clear(); obtained.clear(); }
+    // Everything ever obtained (crafted, mined, taken from machines), whatever happened to it since:
+    // quest tasks count these. Saved with the game.
+    std::unordered_map<std::string, double> obtained;
+    double obtainedTotal(const std::string& id) const { auto it = obtained.find(id); return it == obtained.end() ? 0.0 : it->second; }
     // Whole units of everything held (a copy).
     std::unordered_map<std::string, int> all() const;
     std::vector<InvSlot>& grid() { return slots; }

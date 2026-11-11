@@ -9,6 +9,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstring>
 #include <set>
 #include <string>
 #include <vector>
@@ -118,57 +119,32 @@ void Survival_DrawHUD() {
     }
 }
 
-// ---------------------------------------------------------------------------------------------
-// Objectives
-// ---------------------------------------------------------------------------------------------
-
-namespace {
-    struct Objective { const char* text; bool done; };
-    std::vector<Objective> objectives = {
-        { "Dig some stone", false },
-        { "Find iron ore underground", false },
-        { "Craft a power cell (Tab)", false },
-        { "Build a rocket and reach orbit", false },
-        { "Fly to the moon", false },
-        { "Visit the asteroid ring", false },
-    };
-    std::set<int> visitedBodies;
-}
-
-void Objectives_MarkVisitedBody(int i) { visitedBodies.insert(i); }
-
-void Objectives_Update(Scene& world) {
-    QuestBook_Update();
-    if (inventory.count("stone") > 0 || inventory.count("regolith") > 0 || inventory.count("dirt") > 0) objectives[0].done = true;
-    if (inventory.count("iron_ore") > 0) objectives[1].done = true;
-    if (inventory.count("power_cell") > 0) objectives[2].done = true;
-    if (Rocket_Telemetry(world).periapsis > 35000.0 && Rocket_Boarded()) objectives[3].done = true;
-    // Visiting: get within 2 radii of any body other than the start one.
-    const Vector3 pr = (player.position - world.renderOrigin).toFloat();
-    int index = 0;
-    for (auto& obj : world.objects) {
-        if (auto* p = dynamic_cast<Planetoid*>(obj.get())) {
-            if (index > 0 && Vector3Distance(pr, p->position) < p->radius * p->scale * 2.0f) visitedBodies.insert(index);
-            if (index > 0 && visitedBodies.count(index)) {
-                if (p->kind == BodyKind::Moon) objectives[4].done = true;
-                else if (p->kind == BodyKind::Asteroid) objectives[5].done = true;
-            }
-            index++;
-        }
-    }
-}
-
-
-// ---------------------------------------------------------------------------------------------
-// Quest book (resources/data/tiers.txt): the tier ladder from bare hands to orbit. Making (or
-// placing) a tier's gate item opens the next one.
+// Current Objectives (resources/data/tiers.txt): the tier ladder from bare hands to orbit, each
+// tier a short list of tasks that tick themselves off. A tier opens the next once every task is
+// done (a tier with no tasks: once its gate item is made or placed).
+//   get <item> <n>   n of the item obtained, ever (crafted, mined, taken from a machine)
+//   place <item>     a machine of that item placed
+//   orbit            a rocket in orbit
+//   visit moon|ring  near the moon / a ring rock or one of the huge rocks
 // ---------------------------------------------------------------------------------------------
 
 namespace {
-    struct Tier { std::string name, gate, text; };
+    struct Task { std::string kind, target; double n = 1.0; std::string text; bool done = false; };
+    struct Tier { std::string name, gate, text; std::vector<Task> tasks; };
     std::vector<Tier> tiers;
     int questTier = 0;
     std::set<std::string> placedItems;
+    std::set<int> visitedBodies;
+    bool reachedOrbit = false, visitedMoon = false, visitedRing = false;
+
+    std::vector<std::string> Columns(const std::string& line) {
+        std::vector<std::string> cols;
+        size_t start = 0, bar;
+        while ((bar = line.find('|', start)) != std::string::npos) { cols.push_back(line.substr(start, bar - start)); start = bar + 1; }
+        cols.push_back(line.substr(start));
+        for (auto& c : cols) { const size_t a = c.find_first_not_of(" \t"), b = c.find_last_not_of(" \t\r\n"); c = a == std::string::npos ? "" : c.substr(a, b - a + 1); }
+        return cols;
+    }
 
     void LoadTiers() {
         if (!tiers.empty()) return;
@@ -177,63 +153,163 @@ namespace {
         char buf[1024];
         while (fgets(buf, sizeof buf, f)) {
             std::string line = buf;
-            if (line.empty() || line[0] == '#' || line[0] == '\n' || line[0] == '\r') continue;
-            std::vector<std::string> cols;
-            size_t start = 0, bar;
-            while ((bar = line.find('|', start)) != std::string::npos) { cols.push_back(line.substr(start, bar - start)); start = bar + 1; }
-            cols.push_back(line.substr(start));
-            for (auto& c : cols) { const size_t a = c.find_first_not_of(" \t"), b = c.find_last_not_of(" \t\r\n"); c = a == std::string::npos ? "" : c.substr(a, b - a + 1); }
-            if (cols.size() >= 4) tiers.push_back({ cols[1], cols[2], cols[3] });
+            const size_t a = line.find_first_not_of(" \t");
+            if (a == std::string::npos || line[a] == '#' || line[a] == '\n' || line[a] == '\r') continue;
+            const std::vector<std::string> cols = Columns(line);
+            if (cols[0] == "task") {
+                if (tiers.empty() || cols.size() < 3) continue;
+                Task t;
+                char kind[32] = {}, target[64] = {};
+                double n = 1.0;
+                const int got = sscanf(cols[1].c_str(), "%31s %63s %lf", kind, target, &n);
+                if (got < 1) continue;
+                t.kind = kind;
+                t.target = got >= 2 ? target : "";
+                t.n = got >= 3 ? n : 1.0;
+                t.text = cols[2];
+                tiers.back().tasks.push_back(t);
+            } else if (cols.size() >= 4) {
+                tiers.push_back({ cols[1], cols[2], cols[3], {} });
+            }
         }
         fclose(f);
     }
+
+    bool TaskMet(const Task& t) {
+        if (t.kind == "get") return inventory.obtainedTotal(t.target) >= t.n - 1e-6;
+        if (t.kind == "place") return placedItems.count(t.target) > 0;
+        if (t.kind == "orbit") return reachedOrbit;
+        if (t.kind == "visit") return t.target == "moon" ? visitedMoon : visitedRing;
+        return false;
+    }
+}
+
+void Objectives_MarkVisitedBody(int i) { visitedBodies.insert(i); }
+
+void Objectives_Update(Scene& world) {
+    if (Rocket_Telemetry(world).periapsis > 35000.0 && Rocket_Boarded()) reachedOrbit = true;
+    // Visiting: within 2 radii of any body other than the start one.
+    const Vector3 pr = (player.position - world.renderOrigin).toFloat();
+    int index = 0;
+    for (auto& obj : world.objects) {
+        if (auto* p = dynamic_cast<Planetoid*>(obj.get())) {
+            if (index > 0 && Vector3Distance(pr, p->position) < p->radius * p->scale * 2.0f) {
+                visitedBodies.insert(index);
+                if (p->kind == BodyKind::Moon) visitedMoon = true;
+                else if (p->kind == BodyKind::Asteroid) visitedRing = true;
+            }
+            index++;
+        }
+    }
+    QuestBook_Update();
 }
 
 void QuestBook_NotePlaced(const std::string& item) { placedItems.insert(item); }
 int QuestBook_Tier() { return questTier; }
 void QuestBook_SetTier(int t) { questTier = std::max(0, t); }
 
+void QuestBook_Reset() {
+    LoadTiers();
+    questTier = 0;
+    placedItems.clear();
+    visitedBodies.clear();
+    reachedOrbit = visitedMoon = visitedRing = false;
+    for (Tier& t : tiers) for (Task& k : t.tasks) k.done = false;
+}
+
 void QuestBook_Update() {
     LoadTiers();
-    while (questTier < (int)tiers.size() && tiers[questTier].gate != "-" &&
-           (inventory.count(tiers[questTier].gate) > 0 || placedItems.count(tiers[questTier].gate))) {
+    while (questTier < (int)tiers.size()) {
+        Tier& t = tiers[questTier];
+        bool open;
+        if (t.tasks.empty()) {
+            open = t.gate != "-" && (inventory.obtainedTotal(t.gate) > 0.0 || inventory.count(t.gate) > 0 || placedItems.count(t.gate));
+        } else {
+            open = true;
+            for (Task& k : t.tasks) {
+                if (!k.done && TaskMet(k)) k.done = true;
+                open = open && k.done;
+            }
+        }
+        if (!open) break;
         ++questTier;
         if (questTier < (int)tiers.size()) GameUI_Toast(TextFormat("Tier %d: %s", questTier, tiers[questTier].name.c_str()));
     }
 }
 
+int QuestBook_TierCount() { LoadTiers(); return (int)tiers.size(); }
+const char* QuestBook_TierName(int i) { LoadTiers(); return i >= 0 && i < (int)tiers.size() ? tiers[i].name.c_str() : ""; }
+const char* QuestBook_TierText(int i) { LoadTiers(); return i >= 0 && i < (int)tiers.size() ? tiers[i].text.c_str() : ""; }
+int QuestBook_TaskCount(int i) { LoadTiers(); return i >= 0 && i < (int)tiers.size() ? (int)tiers[i].tasks.size() : 0; }
+const char* QuestBook_TaskText(int i, int k) { return k >= 0 && k < QuestBook_TaskCount(i) ? tiers[i].tasks[k].text.c_str() : ""; }
+bool QuestBook_TaskDone(int i, int k) { return k >= 0 && k < QuestBook_TaskCount(i) && (tiers[i].tasks[k].done || i < questTier); }
+
+void QuestBook_Save(FILE* f) {
+    fprintf(f, "quest %d\n", questTier);
+    for (size_t i = 0; i < tiers.size(); ++i)
+        for (size_t k = 0; k < tiers[i].tasks.size(); ++k)
+            if (tiers[i].tasks[k].done) fprintf(f, "quest_done %zu %zu\n", i, k);
+    for (const std::string& p : placedItems) fprintf(f, "placed %s\n", p.c_str());
+    for (const auto& kv : inventory.obtained) if (kv.second > 0.0) fprintf(f, "obtained %s %.2f\n", kv.first.c_str(), kv.second);
+    fprintf(f, "quest_flags %d %d %d\n", reachedOrbit ? 1 : 0, visitedMoon ? 1 : 0, visitedRing ? 1 : 0);
+}
+
+bool QuestBook_LoadLine(const char* tok, FILE* f) {
+    LoadTiers();
+    char id[64] = {};
+    if (strcmp(tok, "quest") == 0) { int t = 0; if (fscanf(f, " %d", &t) == 1) questTier = std::max(0, t); return true; }
+    if (strcmp(tok, "quest_done") == 0) {
+        int i = 0, k = 0;
+        if (fscanf(f, " %d %d", &i, &k) == 2 && i >= 0 && i < (int)tiers.size() && k >= 0 && k < (int)tiers[i].tasks.size()) tiers[i].tasks[k].done = true;
+        return true;
+    }
+    if (strcmp(tok, "placed") == 0) { if (fscanf(f, " %63s", id) == 1) placedItems.insert(id); return true; }
+    if (strcmp(tok, "obtained") == 0) { double n = 0; if (fscanf(f, " %63s %lf", id, &n) == 2) inventory.obtained[id] = n; return true; }
+    if (strcmp(tok, "quest_flags") == 0) {
+        int a = 0, b = 0, c = 0;
+        if (fscanf(f, " %d %d %d", &a, &b, &c) == 3) { reachedOrbit = a; visitedMoon = b; visitedRing = c; }
+        return true;
+    }
+    return false;
+}
+
+// Wraps text at `chars` characters, drawing each line; returns the y after it.
+static int DrawWrapped(const std::string& text, int x, int y, int chars, int size, Color col) {
+    std::string line;
+    size_t pos = 0;
+    while (pos < text.size()) {
+        size_t sp = text.find(' ', pos);
+        if (sp == std::string::npos) sp = text.size();
+        const std::string w = text.substr(pos, sp - pos);
+        if (!line.empty() && line.size() + w.size() + 1 > (size_t)chars) { DrawText(line.c_str(), x, y, size, col); y += size + 3; line.clear(); }
+        line += (line.empty() ? "" : " ") + w;
+        pos = sp + 1;
+    }
+    if (!line.empty()) { DrawText(line.c_str(), x, y, size, col); y += size + 3; }
+    return y;
+}
+
 void Objectives_DrawHUD() {
     LoadTiers();
     int y = 64;
-    if (questTier < (int)tiers.size()) {
-        const Tier& t = tiers[questTier];
-        DrawText(TextFormat("QUEST BOOK   tier %d: %s", questTier, t.name.c_str()), 12, y, 16, Fade(GOLD, 0.9f));
+    if (questTier >= (int)tiers.size()) {
+        DrawText("CURRENT OBJECTIVES   all done", 12, y, 16, Fade(GOLD, 0.9f));
+        return;
+    }
+    const Tier& t = tiers[questTier];
+    DrawText(TextFormat("CURRENT OBJECTIVES   tier %d: %s", questTier, t.name.c_str()), 12, y, 16, Fade(GOLD, 0.9f));
+    y += 22;
+    if (t.tasks.empty() && t.gate != "-") {
+        const ItemDef* d = itemDB.find(t.gate);
+        DrawText(TextFormat("[ ] Make a %s", d ? d->name.c_str() : t.gate.c_str()), 12, y, 16, RAYWHITE);
         y += 20;
-        if (t.gate != "-") {
-            const ItemDef* d = itemDB.find(t.gate);
-            DrawText(TextFormat("Next: make a %s", d ? d->name.c_str() : t.gate.c_str()), 12, y, 16, RAYWHITE);
-            y += 20;
-        }
-        // Wrap the hint at ~64 characters.
-        std::string words = t.text, line;
-        size_t pos = 0;
-        while (pos < words.size()) {
-            size_t sp = words.find(' ', pos);
-            if (sp == std::string::npos) sp = words.size();
-            const std::string w = words.substr(pos, sp - pos);
-            if (line.size() + w.size() + 1 > 64) { DrawText(line.c_str(), 12, y, 14, Fade(RAYWHITE, 0.75f)); y += 17; line.clear(); }
-            line += (line.empty() ? "" : " ") + w;
-            pos = sp + 1;
-        }
-        if (!line.empty()) { DrawText(line.c_str(), 12, y, 14, Fade(RAYWHITE, 0.75f)); y += 17; }
-        y += 8;
     }
-    // Space goals, compactly.
-    for (const Objective& o : objectives) {
-        if (o.done) continue;
-        DrawText(TextFormat("[ ] %s", o.text), 12, y, 14, Fade(RAYWHITE, 0.6f));
-        y += 16;
+    for (const Task& k : t.tasks) {
+        y = DrawWrapped(TextFormat("%s %s", k.done ? "[x]" : "[ ]", k.text.c_str()), 12, y, 58, 15, k.done ? Fade(GREEN, 0.75f) : RAYWHITE);
+        y += 1;
     }
+    y += 4;
+    DrawWrapped(t.text, 12, y, 64, 13, Fade(RAYWHITE, 0.6f)); // the tier's hint
 }
 
 bool Survival_IsUsable(const std::string& id) { return id == "oxygen_canister" || id == "power_cell"; }
