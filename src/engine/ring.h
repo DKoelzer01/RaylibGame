@@ -81,6 +81,10 @@ public:
     // left out (their indices stay, so saves keep their meaning). Returns how many.
     int clearLane(double orbitRadius, double height, double radius);
     int clearedCount = 0;
+    // The band's dust halo reaches this far either side of the rocks: 60 km, less for a low ring
+    // (a third of its height above the parent, so it never reaches into the planet).
+    double Halo() const { return std::min(60000.0, 0.33 * (innerRadius - parentRadius)); }
+    double parentRadius = 0;
     int drawnInstances = 0;
 
     // Saves: rocks with edits or plots (promoted or not). Bodies use region ids 1000000 + ...

@@ -21,6 +21,35 @@ uniform float fogDensity;
 uniform vec4 fogShell;
 uniform float fadeEnd;
 
+// Shadows from the sun's shadow map (terrain, trees and builds), and the headlamp (a spot light).
+uniform sampler2D shadowMap;
+uniform mat4 lightSpaceMatrix;
+uniform int shadowMapResolution;
+uniform vec4 lampPos;     // render space; w = intensity (0: off)
+uniform vec4 lampTarget;  // the beam's end; w unused
+float sunShadow(vec3 p)
+{
+    if (shadowMapResolution <= 0) return 1.0;
+    vec4 ls = lightSpaceMatrix * vec4(p, 1.0);
+    vec3 q = ls.xyz / ls.w * 0.5 + 0.5;
+    if (q.x < 0.0 || q.x > 1.0 || q.y < 0.0 || q.y > 1.0 || q.z > 1.0) return 1.0;
+    vec2 texel = vec2(1.0 / float(shadowMapResolution));
+    float lit = 0.0;
+    for (int x = 0; x <= 1; x++)
+        for (int y = 0; y <= 1; y++)
+            lit += (q.z - 0.003 > texture(shadowMap, q.xy + texel * (vec2(x, y) - 0.5) * 2.0).r) ? 0.0 : 1.0;
+    return lit / 4.0;
+}
+vec3 lampLight(vec3 p, vec3 n)
+{
+    if (lampPos.w <= 0.0) return vec3(0.0);
+    vec3 beam = lampTarget.xyz - lampPos.xyz;
+    float range = max(length(beam), 1.0);
+    vec3 l = normalize(lampPos.xyz - p);
+    float cone = smoothstep(0.82, 0.95, dot(-l, beam / range));
+    float dl = length(lampPos.xyz - p) / range;
+    return vec3(1.0, 0.95, 0.85) * lampPos.w * 3.0 * cone / (1.0 + dl * dl * 4.0) * max(dot(n, l), 0.35);
+}
 out vec4 finalColor;
 
 void main()
@@ -42,13 +71,14 @@ void main()
     if (sunOccluder.w > 0.0) {
         vec3 oc = fragPosition - sunOccluder.xyz;
         float b = dot(oc, sunDir), c = dot(oc, oc) - sunOccluder.w * sunOccluder.w;
-        if (c < 0.0 || (b < 0.0 && b * b > c)) sunVis = 0.0;
+        // Soft-edged: a penumbra 4% of the body's radius, widening behind it (a hard edge looked cut out).
+        if (b < 0.0) sunVis *= smoothstep(sunOccluder.w - max(sunOccluder.w * 0.04, -b * 0.03), sunOccluder.w + max(sunOccluder.w * 0.04, -b * 0.03), sqrt(max(c + sunOccluder.w * sunOccluder.w - b * b, 0.0)));
     }
     float ndl = dot(n, sunDir);
     float wrap = mix(0.0, 0.3, fragLeaf);
-    float direct = sunVis * clamp((ndl + wrap) / (1.0 + wrap), 0.0, 1.0);
+    float direct = sunVis * sunShadow(fragPosition) * clamp((ndl + wrap) / (1.0 + wrap), 0.0, 1.0);
     float sky = 0.7 + 0.3 * n.y; // a little more sky from above
-    vec3 color = albedo * (ambient * 1.6 * sky + vec3(1.0, 0.96, 0.88) * direct);
+    vec3 color = albedo * (ambient * 1.6 * sky + vec3(1.0, 0.96, 0.88) * direct + lampLight(fragPosition, n));
 
     float fogDist = dist;
     if (fogShell.w > 0.0) {

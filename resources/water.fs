@@ -42,7 +42,8 @@ void main()
     if (sunOccluder.w > 0.0) {
         vec3 oc = fragPosition - sunOccluder.xyz;
         float b = dot(oc, sunDir), c = dot(oc, oc) - sunOccluder.w * sunOccluder.w;
-        if (c < 0.0 || (b < 0.0 && b * b > c)) sunVis = 0.0;
+        // Soft-edged: a penumbra 4% of the body's radius, widening behind it (a hard edge looked cut out).
+        if (b < 0.0) sunVis *= smoothstep(sunOccluder.w - max(sunOccluder.w * 0.04, -b * 0.03), sunOccluder.w + max(sunOccluder.w * 0.04, -b * 0.03), sqrt(max(c + sunOccluder.w * sunOccluder.w - b * b, 0.0)));
     }
     float light = sunVis * max(dot(n, sunDir), 0.0);
     vec3 deep = vec3(0.01, 0.05, 0.13) * (0.15 + 0.85 * light); // dark but clearly blue, also from orbit

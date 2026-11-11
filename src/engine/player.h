@@ -23,6 +23,7 @@ struct Player {
     Vector3 up = { 0, 1, 0 };
     bool grounded = false;
     bool flyMode = false;             // F: free-fly dev camera (no gravity/collision)
+    int spawns = 0;                   // counts spawnOn/placeAt: the game raises the loading screen on a new one
     float jetpackFuel = 1.0f;         // 0..1, recharges on the ground
     bool jetpackFiring = false;       // fuel was burnt this update (survival / audio / HUD)
     Planetoid* nearest = nullptr;     // body we collide with (gravity comes from every body)
@@ -44,6 +45,8 @@ struct Player {
     float jetpackFuelPerSec = 0.1f;   // full tank = 10 s of thrust
     float airControlAccel = 12.0f;    // m/s^2 toward the wished walking velocity while airborne in gravity
     float mouseSensitivity = 0.003f;
+    bool smoothMotion = false;        // Settings "Reduce motion": eased walking and a smoothed camera up
+    mutable Vector3 cameraUp = { 0, 1, 0 };
     float lookScale = 1.0f;        // mouse look multiplier (the telescope slows it by its zoom)
 
     // Stand on the surface of `body` in direction `dir` from its centre (default: its +Y pole).
@@ -74,6 +77,10 @@ private:
     Planetoid* airBody = nullptr;
     uint64_t airId = 0;
     DVec3 airLocal{};
+    // Airborne near an orbiting body we move in its free-falling frame: its velocity at the end of
+    // last frame (its change is added to ours), and whether this frame uses felt gravity.
+    Vector3 airFrameVel{};
+    bool airFelt = false;
     uint64_t flyBodyId = 0;           // body the fly camera was recorded against (0: none)
     bool flyRotate = false;
     DVec3 flyLocal{}, flyBodyPos{};

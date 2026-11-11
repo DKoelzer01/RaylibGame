@@ -108,6 +108,8 @@ namespace {
         changed |= Slider({ x, y, w, h }, "Field of view", settings.fov, 30.0f, 100.0f, "%.0f deg"); y += h + 10 * s;
         changed |= Slider({ x, y, w, h }, "Volume", settings.volume, 0.0f, 1.0f, "%.2f"); y += h + 10 * s;
         changed |= Toggle({ x, y, w, h }, "Foliage", settings.foliage); y += h + 10 * s;
+        changed |= Toggle({ x, y, w, h }, "VSync (no tearing)", settings.vsync); y += h + 10 * s;
+        changed |= Toggle({ x, y, w, h }, "Reduce motion", settings.reduceMotion); y += h + 10 * s;
         {
             const int fs = (int)(h * 0.5f);
             DrawText("Frame cap", (int)x, (int)(y + (h - fs) * 0.5f), fs, kText);
@@ -137,6 +139,8 @@ void Settings_Load() {
             else if (!strcmp(key, "volume")) settings.volume = std::clamp(v, 0.0f, 1.0f);
             else if (!strcmp(key, "foliage")) settings.foliage = v != 0.0f;
             else if (!strcmp(key, "fpscap")) settings.fpsCap = std::max(0, (int)v);
+            else if (!strcmp(key, "vsync")) settings.vsync = v != 0.0f;
+            else if (!strcmp(key, "reducemotion")) settings.reduceMotion = v != 0.0f;
         }
         fclose(f);
     }
@@ -146,7 +150,8 @@ void Settings_Load() {
 void Settings_Save() {
     FILE* f = fopen("settings.txt", "w");
     if (!f) return;
-    fprintf(f, "mouse %.3f\nfov %.1f\nvolume %.3f\nfoliage %d\nfpscap %d\n", settings.mouseSensitivity, settings.fov, settings.volume, settings.foliage ? 1 : 0, settings.fpsCap);
+    fprintf(f, "mouse %.3f\nfov %.1f\nvolume %.3f\nfoliage %d\nfpscap %d\nvsync %d\nreducemotion %d\n", settings.mouseSensitivity, settings.fov, settings.volume,
+            settings.foliage ? 1 : 0, settings.fpsCap, settings.vsync ? 1 : 0, settings.reduceMotion ? 1 : 0);
     fclose(f);
 }
 
@@ -156,7 +161,9 @@ void Settings_Apply() {
     telescope.baseFov = settings.fov; // the camera's fov is set by the game each frame it is not zoomed
     Audio_SetMasterVolume(settings.volume);
     foliageEnabled = settings.foliage;
-    SetTargetFPS(settings.fpsCap > 0 ? settings.fpsCap : std::max(60, GetMonitorRefreshRate(GetCurrentMonitor())));
+    if (settings.vsync) SetWindowState(FLAG_VSYNC_HINT); else ClearWindowState(FLAG_VSYNC_HINT);
+    SetTargetFPS(settings.fpsCap > 0 ? settings.fpsCap : (settings.vsync ? 0 : std::max(60, GetMonitorRefreshRate(GetCurrentMonitor()))));
+    player.smoothMotion = settings.reduceMotion;
 }
 
 std::string Menu_NewSavePath() {

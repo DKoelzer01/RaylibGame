@@ -1,5 +1,6 @@
 #include "terraindeltas.h"
 #include "voxel.h"
+#include "tools.h"
 
 #include <algorithm>
 #include <cmath>
@@ -70,7 +71,8 @@ void TerrainDeltas::chunksIn(Vector3 lo, Vector3 hi, std::vector<std::pair<Key, 
 
 void TerrainDeltasBuilder::apply(const TerrainEdit& e, const DensityField& field, std::unordered_set<TerrainDeltas::Key>* touched) {
     next->strokes++;
-    const float r = e.radius;
+    // A carve also lowers solid points just outside the sphere, so the meshed surface sits on it.
+    const float r = e.carve ? e.radius + 2.0f : e.radius;
     const int x0 = (int)floorf(e.center.x - r), x1 = (int)ceilf(e.center.x + r);
     const int y0 = (int)floorf(e.center.y - r), y1 = (int)ceilf(e.center.y + r);
     const int z0 = (int)floorf(e.center.z - r), z1 = (int)ceilf(e.center.z + r);
@@ -84,8 +86,11 @@ void TerrainDeltasBuilder::apply(const TerrainEdit& e, const DensityField& field
                 if (d2 >= r * r) continue;
                 const Vector3 p = { (float)x, (float)y, (float)z };
                 if (!field.editable(p)) continue; // e.g. a planet's mantle
-                const float t = 1.0f - sqrtf(d2) / r;
-                const float add = e.strength * t * t * (3.0f - 2.0f * t);
+                const float dist = sqrtf(d2);
+                const float t = 1.0f - dist / r;
+                float add = e.strength * t * t * (3.0f - 2.0f * t);
+                float carveTo = 0.0f; // carve: the density this point may have at most
+                if (e.carve) carveTo = ISO_LEVEL + DENSITY_GRADIENT * (dist - e.radius);
                 const int cx = (int)floorf((float)x / kDeltaChunk), cy = (int)floorf((float)y / kDeltaChunk), cz = (int)floorf((float)z / kDeltaChunk);
                 const TerrainDeltas::Key k = TerrainDeltas::KeyOf(cx, cy, cz);
                 if (k != chunkKey) {
@@ -104,6 +109,12 @@ void TerrainDeltasBuilder::apply(const TerrainEdit& e, const DensityField& field
                     if (touched) touched->insert(k);
                 }
                 int16_t& v = chunk->d[Idx(x - cx * kDeltaChunk, y - cy * kDeltaChunk, z - cz * kDeltaChunk)];
-                v = (int16_t)std::clamp((int)lroundf(v + add / kDeltaStep), -32767, 32767);
+                if (e.carve) {
+                    const float base = field.baseDensity(p);
+                    if (e.softOnly && base >= ISO_LEVEL && !IsSoft(field.material(p, base))) continue;
+                    if (base + v * kDeltaStep > carveTo) v = (int16_t)std::clamp((int)lroundf((carveTo - base) / kDeltaStep), -32767, 32767);
+                } else {
+                    v = (int16_t)std::clamp((int)lroundf(v + add / kDeltaStep), -32767, 32767);
+                }
             }
 }

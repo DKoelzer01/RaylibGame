@@ -124,6 +124,7 @@ RingSystem::RingSystem(const BodyDef& d, Planetoid& parentBody, uint32_t seed, i
     const double gr = parentBody.gravityRadius > 0.0f ? parentBody.gravityRadius : pr;
     const double gm = parentBody.surfaceGravity * gr * gr;
     const double base = pr + d.orbitAltitude;
+    parentRadius = pr;
     innerRadius = base - d.extent * 0.5;
     outerRadius = base + d.extent * 0.5;
     thickness = d.thickness;
@@ -297,9 +298,9 @@ bool RingSystem::bandRange(Scene& world, double& dmin, double& dmax) const {
     const DVec3 cam = world.renderOrigin + world.camera.position;
     const DVec3 rel = cam - parent->worldPos;
     const double rho = sqrt(rel.x * rel.x + rel.z * rel.z);
-    const double nearRho = std::clamp(rho, innerRadius - 60000.0, outerRadius + 60000.0);
+    const double nearRho = std::clamp(rho, innerRadius - Halo(), outerRadius + Halo());
     dmin = sqrt((rho - nearRho) * (rho - nearRho) + rel.y * rel.y);
-    dmax = sqrt((rho + outerRadius + 60000.0) * (rho + outerRadius + 60000.0) + rel.y * rel.y);
+    dmax = sqrt((rho + outerRadius + Halo()) * (rho + outerRadius + Halo()) + rel.y * rel.y);
     dmin = std::max(dmin, 20000.0); // nearer than this it has faded out (the rocks take over)
     return dmax > dmin;
 }
@@ -413,7 +414,7 @@ void RingSystem::drawBand(Scene& world, const RenderContext& ctx) {
     const Vector3 pc = (parent->worldPos - world.renderOrigin).toFloat();
     // The drawn band reaches a dust halo either side of the rocks (the rock band alone is a thread
     // from the ground: 3 km wide at ~270 km).
-    const double halo = 60000.0;
+    const double halo = Halo();
     const float ring[4] = { pc.x, pc.y, pc.z, (float)(innerRadius - halo) };
     const float core[2] = { (float)innerRadius, (float)outerRadius };
     rlSetUniform(GetShaderLocation(sh, "coreRadii"), core, RL_SHADER_UNIFORM_VEC2, 1);

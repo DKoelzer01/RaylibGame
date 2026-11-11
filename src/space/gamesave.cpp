@@ -6,6 +6,7 @@
 #include "survival.h"
 #include "hotbar.h"
 #include "rocket.h"
+#include "terraintool.h"
 
 #include <cstring>
 
@@ -15,21 +16,24 @@ void GameSave_Register() {
                 player.forward.x, player.forward.y, player.forward.z, player.flyMode ? 1 : 0, player.jetpackFuel);
         fprintf(f, "player_up %f %f %f\n", player.up.x, player.up.y, player.up.z);
         fprintf(f, "player_vel %f %f %f\n", player.velocity.x, player.velocity.y, player.velocity.z);
-        for (const auto& kv : inventory.all()) fprintf(f, "item %s %d\n", kv.first.c_str(), kv.second);
+        for (int i = 0; i < Inventory::kSlots; ++i) {
+            const InvSlot& s = inventory.grid()[i];
+            if (!s.empty()) fprintf(f, "slot %d %s %lld\n", i, s.id.c_str(), (long long)s.centi);
+        }
         fprintf(f, "quest %d\n", QuestBook_Tier());
+        fprintf(f, "creative %d\n", terrainTool.creative ? 1 : 0);
         Hotbar_Save(f);
         Rocket_Save(f);
-        fprintf(f, "ship %.6f %.6f %.6f %f %f %f %f %f %d %d\n", ship.position.x, ship.position.y, ship.position.z, ship.orientation.x,
-                ship.orientation.y, ship.orientation.z, ship.orientation.w, ship.energy, ship.piloted ? 1 : 0, ship.spawned ? 1 : 0);
-        fprintf(f, "ship_vel %f %f %f\n", ship.velocity.x, ship.velocity.y, ship.velocity.z);
         fprintf(f, "survival %f %f %f %d\n", survival.oxygen, survival.power, survival.health, survival.deaths);
     };
     loadExtrasHook = [](FILE* f) {
         inventory.clear();
+        terrainTool.creative = false;
         Hotbar_Reset();
         char tok[64] = {};
         while (fscanf(f, " %63s", tok) == 1 && strcmp(tok, "end_extras") != 0) {
             if (strcmp(tok, "quest") == 0) { int t = 0; if (fscanf(f, " %d", &t) == 1) QuestBook_SetTier(t); continue; }
+            if (strcmp(tok, "creative") == 0) { int c = 0; if (fscanf(f, " %d", &c) == 1) terrainTool.creative = c != 0; continue; }
             if (Hotbar_LoadLine(tok, f)) continue;
             if (Rocket_LoadLine(tok, f)) continue;
             if (strcmp(tok, "player") == 0) {
@@ -49,14 +53,22 @@ void GameSave_Register() {
                 int piloted = 0, spawned = 0;
                 fscanf(f, " %lf %lf %lf %f %f %f %f %f %d %d", &ship.position.x, &ship.position.y, &ship.position.z, &ship.orientation.x, &ship.orientation.y,
                        &ship.orientation.z, &ship.orientation.w, &ship.energy, &piloted, &spawned);
-                ship.piloted = piloted != 0;
-                ship.spawned = spawned != 0;
+                ship.piloted = false; // old saves: the placeholder ship is gone (its line is read and dropped)
+                ship.spawned = false; (void)piloted; (void)spawned;
                 ship.velocity = { 0, 0, 0 };
             } else if (strcmp(tok, "ship_vel") == 0) { // older saves: stays zero
                 fscanf(f, " %f %f %f", &ship.velocity.x, &ship.velocity.y, &ship.velocity.z);
             } else if (strcmp(tok, "survival") == 0) {
                 fscanf(f, " %f %f %f %d", &survival.oxygen, &survival.power, &survival.health, &survival.deaths);
                 survival.dead = false;
+            } else if (strcmp(tok, "slot") == 0) {
+                char id[64] = {};
+                int i = 0;
+                long long c = 0;
+                if (fscanf(f, " %d %63s %lld", &i, id, &c) == 3 && i >= 0 && i < Inventory::kSlots && c > 0 && itemDB.find(id)) {
+                    InvSlot& s = inventory.grid()[i];
+                    if (s.empty()) { s.id = id; s.centi = c; } else inventory.addAmount(id, c / 100.0);
+                }
             } else if (strcmp(tok, "item") == 0) {
                 char id[64] = {};
                 int n = 0;

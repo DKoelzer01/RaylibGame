@@ -73,6 +73,11 @@ class Scene {
         Material depthMaterial{};     // depth shader only
         RenderTexture2D shadowMap{};  // depth-only FBO; shadowMap.depth is the sampled texture
         Matrix lightSpaceMatrix = MatrixIdentity();
+        // Tests: a world point whose sub-texel drift across the shadow map is summed (shadows crawling).
+        std::function<DVec3()> shadowProbe;
+        float shadowProbeSlide = 0.0f;
+        Vector2 shadowProbeLast{};
+        bool shadowProbeHave = false;
 
         // Sun: direction *towards* the light, and shadow-volume parameters.
         Vector3 sunDirection = { 1.0f, 0.0f, 0.0f };

@@ -18,10 +18,12 @@ struct MenuResult {
 
 struct GameSettings {
     float mouseSensitivity = 1.0f;  // multiplier on the default look speed
-    float fov = 45.0f;              // degrees (vertical)
+    float fov = 65.0f;              // degrees (vertical; narrow views are a motion-sickness trigger)
     float volume = 0.35f;
     bool foliage = true;
     int fpsCap = 0;                 // 0: the monitor's refresh rate
+    bool vsync = true;              // no tearing (caps at the monitor's refresh rate)
+    bool reduceMotion = false;      // eased walking starts/stops and a smoothed camera up (motion sickness)
 };
 extern GameSettings settings;
 void Settings_Load();            // settings.txt (missing: defaults)

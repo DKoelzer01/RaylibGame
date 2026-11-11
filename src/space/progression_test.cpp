@@ -17,6 +17,7 @@
 #include <raymath.h>
 #include <algorithm>
 #include <cstdio>
+#include <cstring>
 #include <functional>
 #include <map>
 #include <random>
@@ -101,9 +102,24 @@ namespace {
                     const float base = field->baseDensity(p);
                     if (base < ISO_LEVEL) continue;
                     if (field->material(p, base) != VoxelMaterial::Ore) continue;
-                    orePoints[OreKindAt(p, body->seed)].push_back(p);
+                    orePoints[OreKindOf(*body, p)].push_back(p);
                 }
             }
+        // Deposits of the rarer kinds are worth a trip: prospect further and deeper for any missing.
+        for (const char* rare : { "bauxite_ore", "ilmenite_ore", "coal" }) {
+            if (orePoints[rare].size() >= 40) continue;
+            for (float e = -800.0f; e <= 800.0f && orePoints[rare].size() < 400; e += 8.0f)
+                for (float n = -800.0f; n <= 800.0f && orePoints[rare].size() < 400; n += 8.0f) {
+                    const Vector3 d = Offset(e, n);
+                    const Vector3 s = Surface(d);
+                    for (float depth = 10.0f; depth <= 300.0f; depth += 4.0f) {
+                        const Vector3 p = Vector3Subtract(s, Vector3Scale(d, depth));
+                        const float base = field->baseDensity(p);
+                        if (base < ISO_LEVEL || field->material(p, base) != VoxelMaterial::Ore) continue;
+                        if (strcmp(OreKindOf(*body, p), rare) == 0) orePoints[rare].push_back(p);
+                    }
+                }
+        }
         for (auto& kv : orePoints) printf("bench: progression: %zu %s samples under the area\n", kv.second.size(), kv.first.c_str());
     }
     bool MineOre(const std::string& kind, int want) {
@@ -136,6 +152,12 @@ namespace {
         // Tier 0: wood, dirt, stone; clay, a crucible, a campfire to fire it.
         add("chop trees for 160 wood", [] { while (inventory.count("wood") < 160) if (!TerrainTool_HarvestNearest(*body, home, true)) return false; return true; });
         add("dig 84 dirt", [] { return DigFor("dirt", 84, 1.0f); });
+        add("harvest bushes for fibre; craft and hold a stone pickaxe (gravel from the dirt)", [] {
+            while (inventory.count("fibre") < 2) if (!TerrainTool_HarvestNearest(*body, home, false)) return false;
+            if (!Craft("stone_pickaxe", 1)) return false;
+            terrainTool.heldTool = "stone_pickaxe";
+            return true;
+        });
         add("dig 72 stone", [] { return DigFor("stone", 72, 5.0f); });
         add("craft clay, a crucible mould and a campfire", [] { return Craft("clay", 28) && Craft("crucible_mold", 1) && Craft("campfire", 1); });
         add("place the campfire and fire the crucible", [] {
@@ -223,13 +245,22 @@ namespace {
     // (rocketry's tier), and a miner working its deposit.
     void BuildFull() {
         auto add = [](const std::string& n, std::function<bool()> f) { steps.push_back({ n, std::move(f) }); };
-        add("mine for the MV and HV ladder (iron, coal, copper, bauxite, ilmenite) and dig stone", [] {
-            return MineOre("iron_ore", 185) && MineOre("coal", 530) && MineOre("copper_ore", 160) && MineOre("bauxite_ore", 14) && MineOre("ilmenite_ore", 4) && DigFor("stone", 40, 6.0f);
+        add("mine for the MV and HV ladder (iron, coal, copper) and dig stone", [] {
+            return MineOre("iron_ore", 185) && MineOre("coal", 530) && MineOre("copper_ore", 160) && DigFor("stone", 40, 6.0f);
         });
         add("smelt 170 iron in the kiln", Run("kiln", { { "iron_ore", 170 }, { "coal", 34 } }, "iron_ingot", 170));
         add("smelt 145 copper in the kiln", Run("kiln", { { "copper_ore", 145 }, { "coal", 29 } }, "copper_ingot", 145));
         add("bake 172 coke", Run("coke_oven", { { "coal", 344 } }, "coke", 172));
-        add("make 160 steel", Run("blast_furnace", { { "iron_ingot", 160 }, { "coke", 160 } }, "steel_ingot", 160));
+        add("make 163 steel", Run("blast_furnace", { { "iron_ingot", 163 }, { "coke", 163 } }, "steel_ingot", 163));
+        // Bauxite needs an iron pickaxe, ilmenite a steel one.
+        add("craft iron and steel pickaxes; mine bauxite and ilmenite", [] {
+            if (!Craft("iron_pickaxe", 1)) return false;
+            terrainTool.heldTool = "iron_pickaxe";
+            if (!MineOre("bauxite_ore", 14)) return false;
+            if (!Craft("steel_pickaxe", 1)) return false;
+            terrainTool.heldTool = "steel_pickaxe";
+            return MineOre("ilmenite_ore", 4);
+        });
         add("fuel the boiler again", [] { Give("boiler", "coal", 20); return true; });
         add("hammer 160 steel plates", Run("forge_hammer", { { "steel_ingot", 160 } }, "steel_plate", 160));
         add("dig 184 sand", [] { return DigSand(184); });

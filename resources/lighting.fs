@@ -10,6 +10,7 @@ in vec3 fragLocalNormal;
 in vec3 fragChunkPos;   // chunk-local (overlap clipping)
 in float fragSky;       // 1 = open to the sky, 0 = buried (caves, deep pits)
 in vec2 fragCanopy;     // planets: forest canopy cover and latitude (painted in beyond the real trees)
+in float fragOreKind;   // planets: which ore, (1 + kind) / 8 (0 none)
 
 // Material maps: bound by DrawMesh to the units of the matching raylib material slots.
 uniform sampler2D colorTexture;    // MATERIAL_MAP_ALBEDO
@@ -102,10 +103,11 @@ float shadowFactor(vec3 worldPos, vec3 n, vec3 l)
     if (p.x < 0.0 || p.x > 1.0 || p.y < 0.0 || p.y > 1.0 || p.z > 1.0) return 1.0; // outside the shadow box
     float bias = max(0.002 * (1.0 - dot(n, l)), 0.0005);
     vec2 texel = vec2(1.0 / float(shadowMapResolution));
+    // A widely spaced 3x3 filter (2 texels apart): softer edges from rocks, trees and builds at 9 taps.
     float lit = 0.0;
     for (int x = -1; x <= 1; x++)
         for (int y = -1; y <= 1; y++)
-            lit += (p.z - bias > texture(shadowMap, p.xy + texel * vec2(x, y)).r) ? 0.0 : 1.0;
+            lit += (p.z - bias > texture(shadowMap, p.xy + texel * 2.0 * vec2(x, y)).r) ? 0.0 : 1.0;
     return lit / 9.0;
 }
 
@@ -171,7 +173,15 @@ void main()
             float wi = w8[i] / max(total, 0.001);
             if (wi < 0.01) continue;
             vec3 c = sampleLayer(tp, layerOf[i]);
-            if (i == 3) c = c * 0.5 + vec3(0.55, 0.3, 0.08) * (0.4 + dot(c, vec3(0.333))); // ore: rusty metal
+            if (i == 3) {
+                // Ore: flecks of the mineral's colour in the stone, by kind (iron rust, copper green,
+                // tin pale, coal black, bauxite red, ilmenite dark violet).
+                int kind = int(fragOreKind * 8.0 + 0.5) - 1;
+                vec3 mineral = kind == 1 ? vec3(0.10, 0.42, 0.30) : kind == 2 ? vec3(0.62, 0.62, 0.64) : kind == 3 ? vec3(0.03, 0.03, 0.035)
+                             : kind == 4 ? vec3(0.62, 0.22, 0.16) : kind == 5 ? vec3(0.13, 0.08, 0.16) : vec3(0.58, 0.27, 0.08);
+                float fleck = smoothstep(0.30, 0.55, dot(c, vec3(0.333)) + 0.15 * sin(dot(fragTexPos, vec3(7.1, 5.3, 6.7))));
+                c = mix(c * 0.55, mineral, 0.35 + 0.55 * fleck);
+            }
             a += c * wi;
             r += roughOf[i] * wi;
             bump += bumpOf[i] * wi;
@@ -190,7 +200,23 @@ void main()
             rough = mix(rough, 0.95, c);
         }
         rough = r;
-        normal = normalize(mix(normalize(mat3(matModel) * localNormal), normal, bump)); // smoother sand, snow, ice
+        // Bumps from each layer's own texture (its brightness as a height, through screen-space
+        // derivatives), not the asteroid's crater normal map, which showed through on sand, gravel
+        // and cave walls.
+        {
+            vec3 nGeom = normalize(mat3(matModel) * localNormal);
+            float hgt = dot(a, vec3(0.333)) * bump * 0.06;
+            vec3 dpdx = dFdx(fragPosition), dpdy = dFdy(fragPosition);
+            float dhdx = dFdx(hgt), dhdy = dFdy(hgt);
+            vec3 r1 = cross(dpdy, nGeom), r2 = cross(nGeom, dpdx);
+            float det = dot(dpdx, r1);
+            vec3 grad = sign(det) * (dhdx * r1 + dhdy * r2);
+            // Guard the derivatives: across triangle edges (and edge-on) they jump, which drew dark seams.
+            vec3 tilt = abs(det) > 1e-10 ? grad / abs(det) : vec3(0.0);
+            float tl = length(tilt);
+            if (tl > 0.35) tilt *= 0.35 / tl;
+            normal = normalize(nGeom - tilt);
+        }
         shinyMaterials = (w8[2] + w8[3] + 0.3 * w8[7]) / max(total, 0.001);
     } else {
         albedo = rock * w.r + regolith * w.g + ice * w.b + ore * w.a;
@@ -221,7 +247,7 @@ void main()
             if (sunOccluder.w > 0.0) {
                 vec3 oc = fragPosition - sunOccluder.xyz;
                 float b = dot(oc, l), c = dot(oc, oc) - sunOccluder.w * sunOccluder.w;
-                if (c < 0.0 || (b < 0.0 && b * b > c)) shadow = 0.0;
+                if (b < 0.0) shadow *= smoothstep(sunOccluder.w - max(sunOccluder.w * 0.04, -b * 0.03), sunOccluder.w + max(sunOccluder.w * 0.04, -b * 0.03), sqrt(max(c + sunOccluder.w * sunOccluder.w - b * b, 0.0))); // soft-edged night side
             }
         }
         // Point lights fall off with distance; their range is passed in target.x (target is unused

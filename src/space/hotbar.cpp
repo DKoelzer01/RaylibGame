@@ -5,6 +5,8 @@
 #include "plots.h"
 #include "survival.h"
 #include "audio.h"
+#include "terraintool.h"
+#include "tools.h"
 
 #include <raylib.h>
 #include <cstring>
@@ -25,7 +27,7 @@ namespace {
 
     const char* ShortName(const std::string& id) {
         if (id.empty()) return "";
-        if (id == kHotbarTerrainTool) return "Dig/Fill";
+        if (id == kHotbarTerrainTool) return "Hands";
         if (id == "oxygen_canister") return "O2 can";
         if (id == "power_cell") return "Power cell";
         if (id == "cable") return "Cable";
@@ -41,7 +43,13 @@ namespace {
         if (Survival_IsUsable(id)) { Survival_UseItem(id); return; } // consumables don't change the selection
         if (piloting) return;
         selected = slot;
-        if (id == kHotbarTerrainTool) { buildTool.active = false; return; }
+        if (id == kHotbarTerrainTool) { buildTool.active = false; terrainTool.heldTool.clear(); return; }
+        if (KindOf(id) == ItemKind::Tool && ToolOf(id).type != ToolType::Hands) {
+            if (inventory.count(id) <= 0) { GameUI_Toast(TextFormat("No %s", ShortName(id))); Audio_Play(Sfx::Error, 0.3f); return; }
+            buildTool.active = false;
+            terrainTool.heldTool = id;
+            return;
+        }
         const int m = BuildMaterialForItem(id.c_str());
         if (m >= 0) {
             buildTool.active = true;
@@ -87,8 +95,24 @@ void Hotbar_Update(Scene&, bool inputEnabled, bool piloting) {
     static bool initialised = false;
     if (!initialised) { Hotbar_Reset(); initialised = true; }
     // G (build mode on/off) is the build tool's; keep the selection in step with it.
-    if (!buildTool.active && slots[selected] != kHotbarTerrainTool) {
+    const bool toolSelected = KindOf(slots[selected]) == ItemKind::Tool && slots[selected] == terrainTool.heldTool;
+    if (!buildTool.active && slots[selected] != kHotbarTerrainTool && !toolSelected) {
         for (int i = 0; i < kHotbarSlots; ++i) if (slots[i] == kHotbarTerrainTool) { selected = i; break; }
+        terrainTool.heldTool.clear();
+    }
+    // A tool lost (or never carried) falls back to bare hands.
+    if (!terrainTool.heldTool.empty() && inventory.count(terrainTool.heldTool) <= 0) terrainTool.heldTool.clear();
+    // New tools go on the hotbar: the first empty slot, else the first whose item isn't carried.
+    for (const InvSlot& s : inventory.grid()) {
+        if (s.empty() || KindOf(s.id) != ItemKind::Tool || ToolOf(s.id).type == ToolType::Hands) continue;
+        bool bound = false;
+        for (const auto& b : slots) bound |= b == s.id;
+        if (bound) continue;
+        int free = -1;
+        for (int i = 0; i < kHotbarSlots && free < 0; ++i) if (slots[i].empty()) free = i;
+        for (int i = 0; i < kHotbarSlots && free < 0; ++i)
+            if (slots[i] != kHotbarTerrainTool && i != selected && inventory.count(slots[i]) <= 0) free = i;
+        if (free >= 0) Hotbar_Bind(free, s.id);
     }
     if (!inputEnabled) return;
     const int k = Hotbar_KeySlot();

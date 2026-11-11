@@ -158,6 +158,7 @@ static float Smoothstep(float a, float b, float x) {
 
 PlanetField::PlanetField(unsigned int seed, float radius_, bool moon_)
     : radius(radius_), mantleRadius(radius_ * (1.0f - 0.015f)), moon(moon_) {
+    oreSeed = seed ^ 0x0e5e0e5u;
     std::mt19937 rng(seed);
     // Large features scale with the body (a moon gets proportionally sized basins and ridges);
     // hills, detail, caves and veins are absolute sizes, so they feel the same everywhere.
@@ -178,6 +179,16 @@ PlanetField::PlanetField(unsigned int seed, float radius_, bool moon_)
     // Bounds of elevation() below (each noise term is in [-1, 1]).
     if (moon) { minElevation = -90.0f; maxElevation = 340.0f; }
     else { minElevation = -740.0f; maxElevation = 1690.0f; }
+}
+
+// River valleys: 70 m deep, with a flat floodplain floor (valley-noise units < kValleyFloor, room for
+// the widest river) and sides rising over the next 0.04 units. (A V-shaped floor rose ~27 m across a
+// river's width and tilted its water.)
+static constexpr float kValleyFloor = 0.035f, kValleyEdge = 0.075f;
+static float ValleyCarve(float v) {
+    if (v >= kValleyEdge) return 0.0f;
+    const float t = 1.0f - std::max(v - kValleyFloor, 0.0f) / (kValleyEdge - kValleyFloor);
+    return t * t * 70.0f;
 }
 
 PlanetField::Land PlanetField::land(Vector3 dir, float fp) const {
@@ -207,7 +218,7 @@ PlanetField::Land PlanetField::land(Vector3 dir, float fp) const {
     if (valleyWeight > 0.0f) {
         const float v = fabsf(valleys.fractal(3, sx, sy, sz));
         l.valley = v;
-        if (v < 0.05f) { const float t = 1.0f - v / 0.05f; h -= t * t * 70.0f * valleyWeight; }
+        h -= ValleyCarve(v) * valleyWeight;
     }
     // Ravines: rare narrow canyons (~60 m wide, up to ~90 m deep, steep sqrt-profile walls) in some
     // land regions, faded out where samples are too far apart to resolve them.
@@ -267,6 +278,39 @@ float PlanetField::riverWeight(const Land& l) const {
     return l.valleyWeight * (1.0f - Smoothstep(80.0f, 250.0f, l.ridge)) * Smoothstep(1.0f, 6.0f, l.h) * (1.0f - Smoothstep(700.0f, 900.0f, l.h));
 }
 
+float PlanetField::broadLand(const Land& l, Vector3 dir, float smoothFp) const {
+    const float sx = dir.x * radius, sy = dir.y * radius, sz = dir.z * radius;
+    const float base = l.c < 0.0f ? l.c * 650.0f : l.c * 200.0f;
+    return base + l.ridge + hills.fractalLimited(3, smoothFp, sx, sy, sz) * (25.0f + 60.0f * l.mountain) - ValleyCarve(l.valley) * l.valleyWeight;
+}
+
+PlanetField::River PlanetField::stream(const Land& l, Vector3 dir, float fp) const {
+    River r{ riverWeight(l) * std::clamp(2.0f - fp / 12.0f, 0.0f, 1.0f), kNoWater, 1.0f };
+    if (r.w <= 0.0f || l.stream >= kStreamZone) { r.w = 0.0f; return r; }
+    // Smoothed like rivers, less so (streams follow the land more closely): without the hills'
+    // finest octave; faded out where it would need a levee or a deep cut.
+    r.level = std::max(broadLand(l, dir, std::max(fp, 32.0f)) - kStreamDrop, 0.3f);
+    const float m = r.level - l.h;
+    r.w *= (1.0f - Smoothstep(2.5f, 4.0f, m)) * (1.0f - Smoothstep(5.0f, 8.0f, -m));
+    return r;
+}
+
+PlanetField::River PlanetField::river(const Land& l, Vector3 dir, float fp) const {
+    River r{ riverWeight(l), kNoWater, 1.0f };
+    if (r.w <= 0.0f) return r;
+    // Wider toward the sea: lowland rivers have gathered their tributaries.
+    r.wf = 1.0f + 1.5f * (1.0f - Smoothstep(5.0f, 250.0f, l.h));
+    if (l.valley >= kRiverZone * r.wf) { r.w = 0.0f; return r; }
+    // The water level from the land with only its broad hills (no finer octaves, no detail) and the
+    // valley: smooth along the river instead of following every bump of the valley floor.
+    r.level = std::max(broadLand(l, dir, std::max(fp, 96.0f)) - kRiverDrop, 0.3f);
+    // Where that would stand well above the valley floor (a tall levee) or deep below it (a gorge),
+    // the river fades out rather than build walls.
+    const float m = r.level - l.h;
+    r.w *= (1.0f - Smoothstep(4.0f, 8.0f, m)) * (1.0f - Smoothstep(14.0f, 22.0f, -m));
+    return r;
+}
+
 PlanetField::Pond PlanetField::pondOfCell(int cx, int cy, int cz) const {
     struct Entry { int x, y, z; const PlanetField* f; Pond p; };
     thread_local Entry cache[512];
@@ -312,18 +356,33 @@ float PlanetField::elevation(Vector3 dir, float fp) const {
     if (moon) return l.h;
     float h = l.h + l.detail;
     // River channel along the valley floor, banks smoothed (less fine detail) near it.
-    const float rw = riverWeight(l);
-    // Streams: the same, smaller (a narrower, shallower channel; no valley).
-    const float sw = rw * std::clamp(2.0f - fp / 12.0f, 0.0f, 1.0f);
-    if (sw > 0.0f && l.stream < kStreamZone) {
+    // Streams: the same as rivers, smaller (a narrower, shallower channel; no valley).
+    const River st = stream(l, dir, fp);
+    if (st.w > 0.0f) {
         const float zone = 1.0f - l.stream / kStreamZone;
-        h = l.h + l.detail * (1.0f - 0.85f * zone * sw);
-        if (l.stream < kStreamHalf) { const float t = 1.0f - (l.stream / kStreamHalf) * (l.stream / kStreamHalf); h -= kStreamDepth * t * sw; }
+        h = l.h + l.detail * (1.0f - 0.85f * zone * st.w);
+        const float bank = st.level + 0.3f;
+        if (h < bank) h += (bank - h) * (1.0f - Smoothstep(kStreamHalf, kStreamZone, l.stream)) * st.w;
+        if (l.stream < kStreamHalf) {
+            const float t = 1.0f - (l.stream / kStreamHalf) * (l.stream / kStreamHalf);
+            const float bed = st.level + 0.2f - (kStreamDepth - kStreamDrop + 0.2f) * t;
+            h += (bed - h) * st.w;
+        }
     }
-    if (rw > 0.0f && l.valley < kRiverZone) {
-        const float zone = 1.0f - l.valley / kRiverZone;
-        h = std::min(h, l.h + l.detail * (1.0f - 0.85f * zone * rw));
-        if (l.valley < kRiverHalf) { const float t = 1.0f - (l.valley / kRiverHalf) * (l.valley / kRiverHalf); h -= kRiverDepth * t * rw; }
+    const River rv = river(l, dir, fp);
+    if (rv.w > 0.0f) {
+        const float half = kRiverHalf * rv.wf, zoneW = kRiverZone * rv.wf;
+        const float zone = 1.0f - l.valley / zoneW;
+        h = std::min(h, l.h + l.detail * (1.0f - 0.85f * zone * rv.w));
+        // Banks a little above the water next to the channel (a low levee where the floor dips).
+        const float bank = rv.level + 0.4f;
+        if (h < bank) h += (bank - h) * (1.0f - Smoothstep(half, zoneW, l.valley)) * rv.w;
+        // The channel: its bed shaped to the water level (cut into higher ground, filled in lower).
+        if (l.valley < half) {
+            const float t = 1.0f - (l.valley / half) * (l.valley / half);
+            const float bed = rv.level + 0.3f - (kRiverDepth - kRiverDrop + 0.3f) * t;
+            h += (bed - h) * rv.w;
+        }
     }
     // Ponds: a bowl to the pond's level inside its radius, an embankment just outside it where the
     // ground falls away. Faded out where samples are too far apart to resolve them.
@@ -352,9 +411,15 @@ float PlanetField::waterElevation(Vector3 dir, float fp) const {
     if (moon) return kNoWater;
     float w = kNoWater;
     const Land l = land(dir, fp);
-    if (fp < 128.0f && riverWeight(l) > 0.3f && l.valley < kRiverHalf * 1.2f) w = l.h - kRiverDrop;
+    if (fp < 128.0f) {
+        const River rv = river(l, dir, fp);
+        if (rv.w > 0.3f && l.valley < kRiverHalf * rv.wf * 1.2f) w = rv.level;
+    }
     if (fp >= 96.0f) return w; // ponds are not resolved (their bowls fade out by here)
-    if (riverWeight(l) > 0.3f && fp < 12.0f && l.stream < kStreamHalf * 1.2f) w = std::max(w, l.h - kStreamDrop);
+    if (fp < 12.0f && l.stream < kStreamHalf * 1.2f) {
+        const River st = stream(l, dir, fp);
+        if (st.w > 0.3f) w = std::max(w, st.level);
+    }
     ForPondCellsNear(Vector3Scale(dir, radius), kPondReach, [&](int x, int y, int z) {
         const Pond p = pondOfCell(x, y, z);
         if (p.exists && Vector3Distance(dir, p.dir) * radius < p.r * 1.05f) w = std::max(w, p.level);
@@ -367,7 +432,7 @@ bool PlanetField::inlandWaterNear(Vector3 dir, float extent, float fp) const {
     const float sx = dir.x * radius, sy = dir.y * radius, sz = dir.z * radius;
     // The valley noise changes by at most ~3x its frequency per metre.
     // Each kind only where samples resolve it (as in elevation() and waterElevation()).
-    if (fp < 128.0f && fabsf(valleys.fractal(3, sx, sy, sz)) < kRiverHalf * 1.2f + extent * 3.0f * 6.5f / radius) return true;
+    if (fp < 128.0f && fabsf(valleys.fractal(3, sx, sy, sz)) < kRiverHalf * 2.5f * 1.2f + extent * 3.0f * 6.5f / radius) return true;
     if (fp < 12.0f && fabsf(streams.fractal(2, sx, sy, sz)) < kStreamHalf * 1.2f + extent * 0.0075f) return true;
     if (fp >= 96.0f) return false;
     bool near = false;
@@ -567,11 +632,8 @@ VoxelMaterial PlanetField::materialSky(Vector3 p, float base, float fp, Vector3 
         if (natural && slope < 0.3f) return VoxelMaterial::Grass;
         return skin ? VoxelMaterial::Grass : VoxelMaterial::Regolith;                                        // grassland over dirt
     }
-    // Ore veins (thin sheets where the vein field crosses zero), richer with depth.
-    if (depth > 8.0f) {
-        const float thickness = depth < 150.0f ? 0.025f : depth < 500.0f ? 0.04f : 0.055f;
-        if (fabsf(veins.fractal(2, p.x, p.y, p.z)) < thickness) return VoxelMaterial::Ore;
-    }
+    // Ore: deposits of one kind, and scattered pockets of the common ores (oreKind).
+    if (depth > 3.0f && oreKind(p, depth) >= 0) return VoxelMaterial::Ore;
     return VoxelMaterial::Rock;
 }
 
@@ -693,6 +755,14 @@ void BuildChunkMesh(const DensityField& field, const TerrainDeltas& deltas, Chun
                 float sky = 1.0f;
                 const VoxelMaterial m = field.materialSky(p, b, stride, n, sky);
                 out.tangents[v * 4 + 3] = sky;
+                if (m == VoxelMaterial::Ore) {
+                    // Which ore (the shader colours each kind): 1 + kind, over 8.
+                    if (const auto* pfo = dynamic_cast<const PlanetField*>(&field)) {
+                        const float dl = Vector3Length(p);
+                        const int k = dl > 1.0f ? pfo->oreKind(p, pfo->radius + pfo->elevation(Vector3Scale(p, 1.0f / dl), (float)stride) - dl) : -1;
+                        out.tangents[v * 4 + 2] = (k + 1) / 8.0f;
+                    }
+                }
                 if (planetLife && sky > 0.9f && (m == VoxelMaterial::Grass || m == VoxelMaterial::Regolith)) {
                     // Distant forests: canopy cover (x) and latitude (y) for the terrain shader, which
                     // paints them in where the real trees fade out.
@@ -786,6 +856,14 @@ void BuildChunkMesh(const DensityField& field, const TerrainDeltas& deltas, Chun
             for (size_t t = 0; t + 2 < wi.size(); t += 3) {
                 const Vector3 c = Vector3Scale(Vector3Add(Vector3Add(wv[wi[t]], wv[wi[t + 1]]), wv[wi[t + 2]]), 1.0f / 3.0f);
                 if (terrainAt(c) >= ISO_LEVEL) continue; // under land
+                if (planetField) {
+                    // Underground: where the original ground stands over the water (a cave or tunnel under a
+                    // river, or below sea level) the water surface is not open water. Rivers used to line the
+                    // cave walls.
+                    const Vector3 wc = Vector3Add(origin, Vector3Scale(c, stride));
+                    const float wl = Vector3Length(wc);
+                    if (wl > 1.0f && planetField->elevation(Vector3Scale(wc, 1.0f / wl), (float)stride) > wl - sea + 1.0f) continue;
+                }
                 for (int e = 0; e < 3; ++e) {
                     int& r = remap[wi[t + e]];
                     if (r < 0) {
@@ -807,4 +885,74 @@ void BuildChunkMesh(const DensityField& field, const TerrainDeltas& deltas, Chun
     }
     ScatterGrass(field, out); // foliage: grass tufts on the finest level (in the build time)
     out.buildMs = std::chrono::duration<float, std::milli>(std::chrono::steady_clock::now() - t0).count();
+}
+
+// ---------------------------------------------------------------------------------------------
+// Ore: deposits and scattered pockets
+// ---------------------------------------------------------------------------------------------
+
+namespace {
+    constexpr float kDepositCell = 96.0f;
+    uint32_t OreHash(int x, int y, int z, uint32_t seed) {
+        uint32_t h = (uint32_t)x * 73856093u ^ (uint32_t)y * 19349663u ^ (uint32_t)z * 83492791u ^ seed * 2654435761u;
+        h ^= h >> 16; h *= 0x7feb352du; h ^= h >> 15; h *= 0x846ca68bu; h ^= h >> 16;
+        return h;
+    }
+    float OreUnit(uint32_t& h) { h = h * 1664525u + 1013904223u; return (h >> 8) * (1.0f / 16777216.0f); }
+    struct Deposit { bool exists; Vector3 centre; float radius; int kind; };
+    Deposit DepositOf(int cx, int cy, int cz, uint32_t seed) {
+        uint32_t h = OreHash(cx, cy, cz, seed);
+        Deposit d{ false, {}, 0, -1 };
+        if (OreUnit(h) > 0.35f) return d;
+        d.exists = true;
+        d.centre = { (cx + 0.25f + 0.5f * OreUnit(h)) * kDepositCell, (cy + 0.25f + 0.5f * OreUnit(h)) * kDepositCell, (cz + 0.25f + 0.5f * OreUnit(h)) * kDepositCell };
+        d.radius = 3.5f + 5.5f * OreUnit(h); // 7-18 m across
+        const float r = OreUnit(h);          // coal 22%, iron 22%, copper 20%, tin 12%, bauxite 14%, ilmenite 10%
+        d.kind = r < 0.22f ? 3 : r < 0.44f ? 0 : r < 0.64f ? 1 : r < 0.76f ? 2 : r < 0.90f ? 4 : 5;
+        return d;
+    }
+    float MinDepth(int kind) { return kind == 4 ? 20.0f : kind == 5 ? 60.0f : 4.0f; }
+}
+
+const char* PlanetField::OreKindName(int kind) {
+    static const char* names[kOreKindCount] = { "iron_ore", "copper_ore", "tin_ore", "coal", "bauxite_ore", "ilmenite_ore" };
+    return kind >= 0 && kind < kOreKindCount ? names[kind] : nullptr;
+}
+
+int PlanetField::oreKind(Vector3 p, float depth) const {
+    if (moon || depth < 3.0f) return -1;
+    // A deposit (its blob stays inside its own cell: centre at least 24 m from the edges, radius <= 9 m
+    // plus the lumpiness).
+    const int cx = (int)floorf(p.x / kDepositCell), cy = (int)floorf(p.y / kDepositCell), cz = (int)floorf(p.z / kDepositCell);
+    const Deposit d = DepositOf(cx, cy, cz, oreSeed);
+    if (d.exists && depth >= MinDepth(d.kind)) {
+        const float k = Vector3Distance(p, d.centre) / d.radius + 0.35f * veins.fractal(2, p.x * 3.0f, p.y * 3.0f, p.z * 3.0f);
+        if (k < 1.0f) return d.kind;
+    }
+    // Scattered pockets of the common ores and coal, more of them near the surface.
+    const float pocket = veins.fractal(1, p.x * 4.0f, p.y * 4.0f, p.z * 4.0f);
+    const float threshold = 0.72f + 0.12f * std::clamp((depth - 20.0f) / 200.0f, 0.0f, 1.0f);
+    if (pocket > threshold) {
+        uint32_t h = OreHash((int)floorf(p.x / 8.0f), (int)floorf(p.y / 8.0f), (int)floorf(p.z / 8.0f), oreSeed ^ 0x5eedu);
+        const float r = OreUnit(h);
+        return r < 0.35f ? 0 : r < 0.60f ? 1 : r < 0.75f ? 2 : 3; // iron, copper, tin, and coal (the seams near the surface)
+    }
+    return -1;
+}
+
+int PlanetField::depositNear(Vector3 p, float reach) const {
+    const int x0 = (int)floorf((p.x - reach) / kDepositCell), x1 = (int)floorf((p.x + reach) / kDepositCell);
+    const int y0 = (int)floorf((p.y - reach) / kDepositCell), y1 = (int)floorf((p.y + reach) / kDepositCell);
+    const int z0 = (int)floorf((p.z - reach) / kDepositCell), z1 = (int)floorf((p.z + reach) / kDepositCell);
+    int best = -1;
+    float bestD = 1e30f;
+    for (int z = z0; z <= z1; ++z)
+        for (int y = y0; y <= y1; ++y)
+            for (int x = x0; x <= x1; ++x) {
+                const Deposit d = DepositOf(x, y, z, oreSeed);
+                if (!d.exists) continue;
+                const float dist = Vector3Distance(p, d.centre) - d.radius;
+                if (dist < reach && dist < bestD) { bestD = dist; best = d.kind; }
+            }
+    return best;
 }

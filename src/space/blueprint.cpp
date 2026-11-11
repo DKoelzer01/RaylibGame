@@ -3,6 +3,7 @@
 #include "gameui.h"
 #include "inventory.h"
 #include "audio.h"
+#include "terraintool.h"
 #include "worldtypes.h"
 
 #include <raylib.h>
@@ -110,7 +111,7 @@ int Blueprint_Place(Planetoid& body, Plot& plot, const Blueprint& bp, Int3 o, bo
         q.origin = { o.x + p.origin.x, o.y + p.origin.y, o.z + p.origin.z };
         if (!plot.canPlace(q)) continue; // already there (filling in) or blocked
         const char* item = PartItem(q);
-        if (charge && inventory.count(item) < PartCostCount(q.type)) { short_[item] += PartCostCount(q.type); continue; }
+        if (charge && !terrainTool.creative && inventory.count(item) < PartCostCount(q.type)) { short_[item] += PartCostCount(q.type); continue; }
         if (BuildTool_Place(body, plot, q, charge)) ++placed;
     }
     missing.clear();

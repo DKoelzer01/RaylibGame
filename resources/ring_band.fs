@@ -42,7 +42,8 @@ void main()
     if (sunOccluder.w > 0.0) {
         vec3 oc = fragPosition - sunOccluder.xyz;
         float b = dot(oc, sunDir), c = dot(oc, oc) - sunOccluder.w * sunOccluder.w;
-        if (c < 0.0 || (b < 0.0 && b * b > c)) sunVis = 0.0;
+        // Soft-edged: a penumbra 4% of the body's radius, widening behind it (a hard edge looked cut out).
+        if (b < 0.0) sunVis *= smoothstep(sunOccluder.w - max(sunOccluder.w * 0.04, -b * 0.03), sunOccluder.w + max(sunOccluder.w * 0.04, -b * 0.03), sqrt(max(c + sunOccluder.w * sunOccluder.w - b * b, 0.0)));
     }
     // Lit from either face; the side away from the sun still glows through a little.
     float lit = sunVis * (0.35 + 0.65 * abs(sunDir.y));

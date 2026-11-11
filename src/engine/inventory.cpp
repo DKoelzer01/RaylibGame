@@ -2,6 +2,7 @@
 #include "utils/logger.h"
 #include "world.h"
 #include "voxel.h"
+#include "plots.h"
 
 #include <algorithm>
 #include <cmath>
@@ -42,7 +43,8 @@ bool ItemDB::load(const char* itemsPath, const char* recipesPath) {
         ItemDef d;
         d.id = f[0];
         d.name = f[1];
-        d.stackLimit = std::max(1, atoi(f[2].c_str()));
+        // Kind: "tool", "block" or "resource"; a legacy stack-limit number of 1 means a tool.
+        d.kind = f[2] == "tool" || f[2] == "1" ? ItemKind::Tool : f[2] == "block" ? ItemKind::Block : ItemKind::Resource;
         const auto rgb = Split(f[3], ',');
         if (rgb.size() == 3) d.color = { (unsigned char)atoi(rgb[0].c_str()), (unsigned char)atoi(rgb[1].c_str()), (unsigned char)atoi(rgb[2].c_str()), 255 };
         d.description = f[4];
@@ -75,7 +77,6 @@ bool ItemDB::load(const char* itemsPath, const char* recipesPath) {
                 std::string lower = f[1];
                 if (!lower.empty()) lower[0] = (char)tolower(lower[0]);
                 d.name = form == "crushed" ? "Crushed " + lower + " ore" : form == "purified" ? "Purified " + lower + " ore" : f[1] + " " + form;
-                d.stackLimit = 999;
                 d.color = form == "ore" ? Color{ (unsigned char)(c.r * 0.7f), (unsigned char)(c.g * 0.6f), (unsigned char)(c.b * 0.5f), 255 } : c;
                 d.description = form == "ore" ? "Ore from deep veins." : form == "dust" ? "Crushed; smelts quickly." : form == "crushed" ? "Ore crushed in a macerator: wash it (ore washer) for more." : form == "purified" ? "Washed ore: a centrifuge splits off its byproduct." : "";
                 byId[d.id] = itemList.size();
@@ -105,6 +106,12 @@ bool ItemDB::load(const char* itemsPath, const char* recipesPath) {
         if (valid) recipeList.push_back(r);
         else logger.logf("[WARN] recipes: unknown item in '%s'\n", line.c_str());
     }
+    // Placeable parts (machines, conveyors, cables, rocket parts) are blocks: stacks of 256.
+    for (int t = kShapeCount; t < (int)PartType::Count; ++t)
+        if (const char* item = PartCostItem((PartType)t)) {
+            auto it = byId.find(item);
+            if (it != byId.end() && itemList[it->second].kind == ItemKind::Resource) itemList[it->second].kind = ItemKind::Block;
+        }
     logger.logf("[Items] %zu items, %zu recipes\n", itemList.size(), recipeList.size());
     return true;
 }
@@ -137,53 +144,163 @@ const char* ItemForMaterial(VoxelMaterial m, bool soil) {
     }
 }
 
+ItemKind KindOf(const std::string& id) {
+    const ItemDef* d = itemDB.find(id);
+    return d ? d->kind : ItemKind::Resource;
+}
+
+int StackLimit(const std::string& id) {
+    switch (KindOf(id)) {
+        case ItemKind::Tool: return 1;
+        case ItemKind::Block: return 256;
+        default: return 8192;
+    }
+}
+
+static int64_t ToCenti(double amount) { return (int64_t)llround(amount * 100.0); }
+
+int64_t Inventory::room(const std::string& id) const {
+    const int64_t cap = (int64_t)StackLimit(id) * 100;
+    int64_t r = 0;
+    for (const InvSlot& s : slots) {
+        if (s.empty()) r += cap;
+        else if (s.id == id) r += std::max<int64_t>(0, cap - s.centi);
+    }
+    return r;
+}
+
 void Inventory::addFractional(const std::string& id, float amount) {
+    if (amount <= 0.0f) return;
+    // Hundredths go in; less than that waits until enough has been dug.
     float& p = partial[id];
     p += amount;
-    const int whole = (int)floorf(p);
-    if (whole > 0) { p -= whole; add(id, whole); }
+    const double hundredths = floor(p * 100.0);
+    if (hundredths >= 1.0) { p -= (float)(hundredths / 100.0); addAmount(id, hundredths / 100.0); }
 }
 
-void Inventory::add(const std::string& id, int n) {
-    if (n <= 0) return;
-    const ItemDef* d = itemDB.find(id);
-    const int limit = d ? d->stackLimit : 999;
-    int& c = counts[id];
-    c = std::min(limit, c + n);
+double Inventory::addAmount(const std::string& id, double amount) {
+    if (amount <= 0.0 || id.empty()) return 0.0;
+    // Tools and blocks come in whole units.
+    int64_t left = KindOf(id) == ItemKind::Resource ? ToCenti(amount) : (int64_t)floor(amount + 1e-6) * 100;
+    const int64_t cap = (int64_t)StackLimit(id) * 100;
+    for (InvSlot& s : slots) {       // top up stacks of it first
+        if (left <= 0) break;
+        if (s.empty() || s.id != id) continue;
+        const int64_t put = std::min(left, cap - s.centi);
+        if (put > 0) { s.centi += put; left -= put; }
+    }
+    for (InvSlot& s : slots) {       // then fill empty cells in order
+        if (left <= 0) break;
+        if (!s.empty()) continue;
+        const int64_t put = std::min(left, cap);
+        s.id = id; s.centi = put; left -= put;
+    }
+    if (left > 0) overflowed = true;
+    return left / 100.0;
 }
 
-bool Inventory::remove(const std::string& id, int n) {
-    auto it = counts.find(id);
-    if (it == counts.end() || it->second < n) return false;
-    it->second -= n;
-    if (it->second == 0) counts.erase(it);
+bool Inventory::removeAmount(const std::string& id, double amount) {
+    const int64_t want = ToCenti(amount);
+    if (want <= 0) return true;
+    int64_t have = 0;
+    for (const InvSlot& s : slots) if (!s.empty() && s.id == id) have += s.centi;
+    if (have < want) return false;
+    int64_t left = want;
+    for (int i = kSlots - 1; i >= 0 && left > 0; --i) { // from the last stacks, so the first stay put
+        InvSlot& s = slots[i];
+        if (s.empty() || s.id != id) continue;
+        const int64_t take = std::min(left, s.centi);
+        s.centi -= take; left -= take;
+        if (s.centi <= 0) s = InvSlot{};
+    }
     return true;
 }
 
+double Inventory::amount(const std::string& id) const {
+    int64_t c = 0;
+    for (const InvSlot& s : slots) if (!s.empty() && s.id == id) c += s.centi;
+    return c / 100.0;
+}
+
 int Inventory::count(const std::string& id) const {
-    auto it = counts.find(id);
-    return it == counts.end() ? 0 : it->second;
+    int64_t c = 0;
+    for (const InvSlot& s : slots) if (!s.empty() && s.id == id) c += s.centi;
+    return (int)(c / 100);
+}
+
+std::unordered_map<std::string, int> Inventory::all() const {
+    std::unordered_map<std::string, int64_t> c;
+    for (const InvSlot& s : slots) if (!s.empty()) c[s.id] += s.centi;
+    std::unordered_map<std::string, int> out;
+    for (auto& kv : c) if (kv.second >= 100) out[kv.first] = (int)(kv.second / 100);
+    return out;
 }
 
 bool Inventory::canCraft(const Recipe& r) const {
     for (auto& in : r.inputs) if (count(in.first) < in.second) return false;
-    // The whole output must fit under the stack limit (after its own inputs are consumed, in case
-    // a recipe uses its output item), or the craft would silently destroy ingredients.
-    const ItemDef* d = itemDB.find(r.output);
-    const int limit = d ? d->stackLimit : 999;
-    int have = count(r.output);
-    for (auto& in : r.inputs) if (in.first == r.output) have -= in.second;
-    return have + r.outputCount <= limit;
+    // The output must fit (after the inputs are taken out), or crafting would destroy ingredients.
+    Inventory after = *this;
+    for (auto& in : r.inputs) after.removeAmount(in.first, in.second);
+    return after.room(r.output) >= (int64_t)r.outputCount * 100;
 }
 
 bool Inventory::craft(const Recipe& r) {
     if (!canCraft(r)) return false;
-    for (auto& in : r.inputs) remove(in.first, in.second);
-    add(r.output, r.outputCount);
+    for (auto& in : r.inputs) removeAmount(in.first, in.second);
+    addAmount(r.output, r.outputCount);
     return true;
+}
+
+void Inventory::swapSlots(int a, int b) {
+    if (a == b || a < 0 || b < 0 || a >= kSlots || b >= kSlots) return;
+    InvSlot& from = slots[a];
+    InvSlot& to = slots[b];
+    if (!from.empty() && !to.empty() && from.id == to.id) {
+        const int64_t cap = (int64_t)StackLimit(from.id) * 100;
+        const int64_t put = std::min(from.centi, cap - to.centi);
+        to.centi += put; from.centi -= put;
+        if (from.centi <= 0) from = InvSlot{};
+        return;
+    }
+    std::swap(from, to);
+}
+
+void Inventory::sort() {
+    std::unordered_map<std::string, int64_t> total;
+    for (const InvSlot& s : slots) if (!s.empty()) total[s.id] += s.centi;
+    std::vector<std::pair<std::string, int64_t>> items(total.begin(), total.end());
+    std::sort(items.begin(), items.end(), [](const auto& x, const auto& y) {
+        const ItemKind kx = KindOf(x.first), ky = KindOf(y.first);
+        if (kx != ky) return (int)kx > (int)ky; // tools, then blocks, then resources
+        const ItemDef* dx = itemDB.find(x.first);
+        const ItemDef* dy = itemDB.find(y.first);
+        return (dx ? dx->name : x.first) < (dy ? dy->name : y.first);
+    });
+    for (auto& s : slots) s = InvSlot{};
+    size_t i = 0;
+    for (auto& it : items) {
+        const int64_t cap = (int64_t)StackLimit(it.first) * 100;
+        for (int64_t left = it.second; left > 0 && i < slots.size(); ++i) {
+            const int64_t put = std::min(left, cap);
+            slots[i].id = it.first; slots[i].centi = put; left -= put;
+        }
+    }
 }
 
 bool HasSoil(const Planetoid& p) {
     const auto* f = dynamic_cast<const PlanetField*>(p.field.get());
     return f && !f->moon;
+}
+
+const char* OreKindOf(const Planetoid& body, Vector3 local) {
+    if (const auto* pf = dynamic_cast<const PlanetField*>(body.field.get())) {
+        const float d = Vector3Length(local);
+        if (d > 1.0f) {
+            const float depth = pf->radius + pf->elevation(Vector3Scale(local, 1.0f / d)) - d;
+            const int k = pf->oreKind(local, depth);
+            if (k >= 0) return PlanetField::OreKindName(k);
+        }
+        return "iron_ore"; // (ore material where oreKind finds none: only at a different detail level)
+    }
+    return OreKindAt(local, body.seed);
 }

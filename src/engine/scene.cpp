@@ -262,21 +262,40 @@ void Scene::drawScene(int gamestate) {
     // --- Directional light: an orthographic box that follows the camera ---
     // The box centre is snapped to whole shadow-map texels in light space, so moving the camera
     // never slides the texel grid across the terrain (which made shadow edges shimmer/crawl).
-    const Vector3 upHint = (fabsf(sunDirection.y) > 0.99f) ? Vector3{ 0, 0, 1 } : Vector3{ 0, 1, 0 };
-    // Snapping happens in absolute (double) world space so floating-origin rebases don't jump it.
+    // On a spinning body the ground moves through world space (~105 m/s on Terra's equator): a grid
+    // snapped in world space let the terrain slide across the texels every frame and shadow edges
+    // crawl. So the grid is snapped in the frame of the body under the camera, and the light's "up"
+    // turns with it: the texels then stay put on the ground (bar the sun's own slow motion).
+    Planetoid* ground = NearestPlanetoid(*this, camera.position);
+    if (ground && ground->flat) ground = nullptr;
+    Vector3 upHint = (fabsf(sunDirection.y) > 0.99f) ? Vector3{ 0, 0, 1 } : Vector3{ 0, 1, 0 };
+    if (ground) {
+        upHint = ground->dirToWorld({ 0, 1, 0 });
+        if (fabsf(Vector3DotProduct(upHint, Vector3Normalize(sunDirection))) > 0.99f) upHint = ground->dirToWorld({ 0, 0, 1 });
+    }
+    // Snapping happens in double precision so floating-origin rebases don't jump it.
     Vector3 centre = camera.position;
     {
         const Vector3 f = Vector3Normalize(Vector3Negate(sunDirection));
         const Vector3 r = Vector3Normalize(Vector3CrossProduct(f, upHint));
         const Vector3 u = Vector3CrossProduct(r, f);
         const double texel = 2.0 * shadowHalfExtent / (double)SHADOW_MAP_SIZE;
-        const DVec3 cw = cameraWorld();
-        auto snapAxis = [&](Vector3 a) {
+        // Relative to an anchor fixed on the body near the camera (a 256 m grid): about the body's
+        // centre, the sun's slow turn (0.1 deg/s on Terra) still swept the grid 60 km out at 105 m/s.
+        DVec3 cw = ground ? ground->toLocalD(cameraWorld()) : cameraWorld();
+        DVec3 anchor{ 0, 0, 0 };
+        if (ground) {
+            anchor = { std::floor(cw.x / 256.0) * 256.0, std::floor(cw.y / 256.0) * 256.0, std::floor(cw.z / 256.0) * 256.0 };
+            cw = cw - anchor;
+        }
+        auto snapAxis = [&](Vector3 worldAxis) {
+            const Vector3 a = ground ? ground->dirToLocal(worldAxis) : worldAxis;
             const double d = cw.x * a.x + cw.y * a.y + cw.z * a.z;
             const double s = std::floor(d / texel + 0.5) * texel;
             return DVec3{ a.x * s, a.y * s, a.z * s };
         };
-        centre = (snapAxis(r) + snapAxis(u) + snapAxis(f) - renderOrigin).toFloat();
+        const DVec3 snapped = snapAxis(r) + snapAxis(u) + snapAxis(f) + anchor;
+        centre = ((ground ? ground->toWorldD(snapped) : snapped) - renderOrigin).toFloat();
     }
     const Vector3 lightPos = Vector3Add(centre, Vector3Scale(Vector3Normalize(sunDirection), sunDistance));
     if (!lights.empty()) {
@@ -304,6 +323,18 @@ void Scene::drawScene(int gamestate) {
             const Matrix lightView = rlGetMatrixModelview();
             const Matrix lightProj = rlGetMatrixProjection();
             lightSpaceMatrix = MatrixMultiply(lightView, lightProj); // raymath order: view, then projection
+            if (shadowProbe) {
+                const Vector3 wp = (shadowProbe() - renderOrigin).toFloat();
+                const Matrix& m = lightSpaceMatrix;
+                const float x = m.m0 * wp.x + m.m4 * wp.y + m.m8 * wp.z + m.m12, y = m.m1 * wp.x + m.m5 * wp.y + m.m9 * wp.z + m.m13;
+                const Vector2 tx = { (x * 0.5f + 0.5f) * SHADOW_MAP_SIZE, (y * 0.5f + 0.5f) * SHADOW_MAP_SIZE };
+                if (shadowProbeHave) {
+                    // Whole-texel jumps are the box re-snapping; the fraction is the ground sliding.
+                    const float dx = tx.x - shadowProbeLast.x, dy = tx.y - shadowProbeLast.y;
+                    shadowProbeSlide += sqrtf((dx - roundf(dx)) * (dx - roundf(dx)) + (dy - roundf(dy)) * (dy - roundf(dy)));
+                }
+                shadowProbeLast = tx; shadowProbeHave = true;
+            }
             const Frustum lightFrustum = Frustum::fromViewProj(lightSpaceMatrix);
             RenderContext shadowCtx;
             shadowCtx.depthMaterial = &depthMaterial;
@@ -483,6 +514,24 @@ void Scene::drawScene(int gamestate) {
 
         // Trees and bushes: one instanced draw per variant per body. The mid pass draws the simple
         // far meshes (trees reach 1 km, past the near/mid split); the near pass draws them all.
+        // Foliage lighting (grass, trees): the sun's shadow map and the headlamp, as the terrain gets.
+        auto setFoliageLighting = [&](Shader& sh) {
+            const int slot = 6;
+            rlActiveTextureSlot(slot);
+            rlEnableTexture(shadowMap.depth.id);
+            rlSetUniform(GetShaderLocation(sh, "shadowMap"), &slot, RL_SHADER_UNIFORM_INT, 1);
+            rlSetUniformMatrix(GetShaderLocation(sh, "lightSpaceMatrix"), lightSpaceMatrix);
+            const int res = shadowMap.depth.width;
+            rlSetUniform(GetShaderLocation(sh, "shadowMapResolution"), &res, RL_SHADER_UNIFORM_INT, 1);
+            float lamp[4] = { 0, 0, 0, 0 }, target[4] = { 0, 0, 0, 0 };
+            if (lights.size() > 1 && lights[1].enabled && lights[1].type == LIGHT_SPOT) {
+                lamp[0] = lights[1].position.x; lamp[1] = lights[1].position.y; lamp[2] = lights[1].position.z; lamp[3] = lights[1].color.a / 255.0f;
+                target[0] = lights[1].target.x; target[1] = lights[1].target.y; target[2] = lights[1].target.z;
+            }
+            rlSetUniform(GetShaderLocation(sh, "lampPos"), lamp, RL_SHADER_UNIFORM_VEC4, 1);
+            rlSetUniform(GetShaderLocation(sh, "lampTarget"), target, RL_SHADER_UNIFORM_VEC4, 1);
+            rlActiveTextureSlot(0);
+        };
         auto drawTrees = [&](int onlyLod) {
             if (trees.shader.id <= 0 || !foliageEnabled) return;
             rlDrawRenderBatchActive();
@@ -500,6 +549,7 @@ void Scene::drawScene(int gamestate) {
             rlSetUniform(GetShaderLocation(ts, "fogDensity"), &effFogDensity, RL_SHADER_UNIFORM_FLOAT, 1);
             rlSetUniform(GetShaderLocation(ts, "fogShell"), shell, RL_SHADER_UNIFORM_VEC4, 1);
             rlSetUniform(GetShaderLocation(ts, "time"), &now, RL_SHADER_UNIFORM_FLOAT, 1);
+            setFoliageLighting(ts);
             RenderContext tctx = ctx;
             tctx.treeShader = &ts;
             tctx.treeModelLoc = GetShaderLocation(ts, "matModel");
@@ -561,6 +611,7 @@ void Scene::drawScene(int gamestate) {
             rlSetUniform(GetShaderLocation(gs, "fogShell"), shell, RL_SHADER_UNIFORM_VEC4, 1);
             rlSetUniform(GetShaderLocation(gs, "time"), &now, RL_SHADER_UNIFORM_FLOAT, 1);
             rlSetUniform(GetShaderLocation(gs, "fadeEnd"), &fadeEnd, RL_SHADER_UNIFORM_FLOAT, 1);
+            setFoliageLighting(gs);
             RenderContext gctx = ctx;
             gctx.grassShader = &gs;
             gctx.grassModelLoc = GetShaderLocation(gs, "matModel");

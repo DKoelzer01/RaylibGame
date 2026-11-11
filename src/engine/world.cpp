@@ -739,7 +739,11 @@ Planetoid* NearestPlanetoid(Scene& world, Vector3 p) {
     for (auto& obj : world.objects) {
         Planetoid* b = dynamic_cast<Planetoid*>(obj.get());
         if (!b || b->vehicle) continue; // a rocket in flight has no ground
-        const float d = b->flat ? -1e30f : Vector3Distance(p, b->position) - b->radius * b->scale; // terrain is always "under you"
+        // Distance to its mean surface (gravityRadius: an asteroid's is ~0.72 of its bounding radius): by the
+        // bounding radius a big rock 200 m off "won" over the small one underfoot, and the player fell
+        // through it at the difference of their orbits.
+        const float surface = b->gravityRadius > 0.0f ? b->gravityRadius : b->radius * b->scale;
+        const float d = b->flat ? -1e30f : Vector3Distance(p, b->position) - surface; // terrain is always "under you"
         if (d < bestDist) { bestDist = d; best = b; }
     }
     return best;
