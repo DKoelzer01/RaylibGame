@@ -6,7 +6,7 @@ asteroid ring overhead.
 ## Layout
 - `src/engine/` - the reusable engine library (`engine` target): density fields, meshing/LOD, job
   system, player controller, inventory, audio, scenes, debug UI.
-- `src/space/` - the space survival game (`game` target): ship, survival, save/load, HUD, `main.cpp`.
+- `src/space/` - the space survival game (`game` target): survival, rockets, tools, inventory UI, save/load, HUD, `main.cpp`.
 - `resources/` - shaders and data (`resources/data/bodies.txt`, `items.txt`, `recipes.txt`).
 
 ## Build (CMake)
@@ -29,23 +29,23 @@ generated in the build directory for IntelliSense/clangd.
 ## Controls
 | Key | Action |
 | --- | --- |
-| Mouse | main menu: New Game, Load Game (saves in `saves/`), Settings (mouse, FOV, volume, foliage, frame cap), Exit |
+| Mouse | main menu: New Game, Load Game (saves in `saves/`), Settings (mouse, FOV (65 default), volume, foliage, frame cap, VSync, Reduce motion), Exit |
 | Mouse / arrows | look |
 | WASD, Space, Ctrl | move (Shift/Alt = faster) |
-| LMB / RMB (hold) | dig / fill terrain at the crosshair (filling costs stone, dirt, gravel or sand) |
-| Tab | inventory + crafting |
+| LMB / RMB (hold) | mine with the tool in hand (the sphere shows inside the ground) / place soil; LMB on a tree or bush chops or harvests it |
+| Tab | inventory grid (click a stack to move it, Sort), crafting, and the Creative tab (creative mode, any item) |
 | G | build mode (wheel shape, R / V rotate, RMB place, LMB remove; B saves the plot you look at as a blueprint, N cycles blueprints: RMB places what you can afford) |
 | M / , . | aboard a rocket: orbit map / time warp down, up (1x-100x, coasting above the air only) |
-| 1-9, 0 | hotbar: the terrain tool, a building material (any shape costs it), a machine, or a consumable (oxygen canister, power cell). In the inventory, hover an item and press 1-0 to bind it |
-| L | headlamp (on foot: suit power; piloting: ship nose light) |
+| 1-9, 0 | hotbar: hands, a tool (pickaxe, shovel, axe), a building material (any shape costs it), a machine, or a consumable (oxygen canister, power cell). In the inventory, hover an item and press 1-0 to bind it |
+| L | headlamp (suit power) |
 | F | toggle free-fly camera (WASD along the view, Space/Ctrl along camera up, mouse turns, Q/E roll, Shift/Alt faster) |
 | Space | jump; hold for jetpack |
-| E | board / exit the ship; board a rocket (looking at its cockpit) / leave it once landed |
-| Mouse wheel | brush size (zoom while the telescope is up) |
+| E | board a rocket (looking at its cockpit) / leave it once landed |
+| Mouse wheel | build shape; telescope zoom; brush size with the debug terraform tool |
 | T | raise / lower the telescope |
 | F5 / F9 | save / load (the current save file) |
 | Esc | pause menu (Resume, Save, Settings, Save & Quit to Menu); Esc again resumes |
-| F1 | debug panel (frame graph, streaming stats, sun/shadow/texture tweaks, brush, world regen by seed) |
+| F1 | debug panel (frame graph, streaming stats, sun/shadow/texture tweaks, the old terraform brush, world regen by seed) |
 | F3 | debug overlay (light, shadow box, shadow map, chunk bounds) |
 
 Shaders in `resources/` hot-reload when saved.
@@ -76,19 +76,23 @@ Shaders in `resources/` hot-reload when saved.
   field, so tunnels you dig are walkable. Jump (buffered, with coyote time), WASD air control while airborne
   in gravity, jetpack on Space/Ctrl, 6-DOF suit thrusters in open
   space, and you ride along on spinning bodies. **F** toggles the free-fly dev camera.
-- **Items & crafting** (`src/engine/inventory.*`, `resources/data/items.txt`, `recipes.txt`): mining yields
-  items by voxel material (rock, regolith, ice, ore); building consumes stone/regolith/lunacrete.
-  **Tab** opens inventory + crafting. Add items/recipes by editing the text files.
-- **Survival** (`src/space/survival.*`): suit oxygen drains outside the ship's life-support field and a planet's breathable air (~5 min a
-  tank), suit power pays for recharging the jetpack and the headlamp, health drops when suffocating or from hard landings and
-  crashes. Death respawns you at the ship. **1** uses an oxygen canister, **2** a power cell (charges
-  the ship instead while piloting). An objectives list guides the loop: dig stone, find iron ore, craft a power cell,
-  board the ship, fly to the moon, visit the asteroid ring.
-- **Ship** (`src/space/ship.*`): **E** to board/exit. 6-DOF flight (WASD, Space/Ctrl, mouse, Z/C roll,
-  Shift boost, X brake) with flight assist, chase camera, terrain collision, crash damage, and an
-  energy store. Once at rest on the ground it anchors to that body and rides its spin (position and
-  heading) until you thrust off, keeping the surface's velocity. It feels gravity: piloted with energy,
-  flight assist hovers against it (costing energy like thrust); unpiloted, it falls, lands and parks.
+- **Items & inventory** (`src/engine/inventory.*`, `resources/data/items.txt`, `recipes.txt`): a 9x5 grid. Each
+  item is a tool (never stacks), a block (placeable parts and building blocks: 256 a slot) or a resource (8192 a
+  slot, amounts to 0.01, so mining yields fractions). Mining yields what the dug sphere held, by material and ore
+  kind. **Tab** opens the grid (click a stack, click a cell to drop/swap/merge; Sort), hand crafting, and the
+  Creative tab: creative mode (building, crafting and blueprints free) and any item into the inventory. Add
+  items/recipes by editing the text files.
+- **Tools** (`src/engine/tools.*`): pickaxes, shovels and axes in stone, iron, steel and titanium, crafted by hand
+  (stone ones from gravel, which digging dirt turns up). Stone and ore need a pickaxe (bauxite iron or better,
+  ilmenite steel); bare hands only scrape soft ground. Higher tiers dig a bigger sphere, faster; axes fell trees
+  in fewer swings. A stroke carves exactly the sphere shown (drawn only inside the material). Select tools on
+  the hotbar; crafted tools bind to a free slot. The old brush is a debug option (F1, Terrain tool).
+- **Survival** (`src/space/survival.*`): suit oxygen drains outside a planet's breathable air and a rocket's
+  cockpit (~5 min a tank), suit power pays for recharging the jetpack and the headlamp, health drops when
+  suffocating or from hard landings. Death respawns you at rest at the start. Oxygen canisters and power cells are
+  used from the hotbar. An objectives list guides the loop; the quest book (tiers) leads through the tech.
+- **Loading screen**: entering the game, and every spawn or teleport, shows it until the terrain there is built;
+  play (and the scripted tests) wait it out.
 - **Gravity** (`GravityAt` in `src/engine/world.*`): summed over every body, inverse-square outside a
   body's mean surface and linear to zero at its centre inside. "Up" is against it, and is held where
   gravity is too weak to define it (deep space, the balance point between bodies).
@@ -178,7 +182,7 @@ Shaders in `resources/` hot-reload when saved.
   after 10 minutes and are full size 20 minutes later; removals are saved. Bench runs save to `saves/bench.sav`.
   Beyond the trees' 1 km range, the terrain paints in forest canopy from the same forest field (forests to the
   horizon and from orbit); forests are densest in the tropics and thin out toward the tundra. The start has a
-  14 m clearing for the player and the parked ship.
+  14 m clearing for the player.
 - **Telescope** (`src/space/telescope.*`): you start with one (craft more from glass and iron plate). T raises it, the
   wheel zooms 4x-64x; terrain in view refines as if that much closer (`SetLodZoom`). Bodies more than 20 km away
   draw in a separate far pass with their own depth range, and haze only counts the air the view ray passes
@@ -200,7 +204,7 @@ planetoid count, `--system R` = belt radius, `--lod F` = LOD factor, `--first x 
 clears to magenta without a skybox and reports the share of pixels showing through the terrain (look down at it),
 `--ui` opens the debug panel, `--overlay` the F3 overlay, `--nocull` disables
 frustum culling, `--test-dig N` carves a tunnel at the crosshair, `--test-saveload` saves and reloads,
-`--test-walk S` / `--test-stand S` spawn the player and walk/stand (reports grounding + penetration),
+`--test-walk S` / `--test-stand S` spawn the player and walk/stand (reports grounding + penetration; standing: camera jitter in the ground's frame and shadow-texel slide, PASS/FAIL),
 `--test-planet-walk M` walks M metres on body 0 and prints PASS/FAIL (milestone 1 gate: 1000),
 `--test-hole` (walk into a fresh pit, build a pillar underfoot), `--test-trees` (walk into a trunk), `--test-chop` (fell a tree, save/reload, regrow), `--test-persist N`
 (milestone 2 gate: N strokes, flat builds, save and load under a second), `--test-build N` (milestone 3 gate:
@@ -209,20 +213,22 @@ N working machines, tick under 5 ms, plates reach the chests, contents survive a
 (milestone 5 gate: a scripted playthrough from an empty inventory to a placed, powered, working LV electric furnace;
 `--test-progression full`: the milestone 8 gate, on through ore processing, MV and HV to titanium alloy, a miner and the
 refinery),
-`--test-wall` (walk into shaft and tunnel walls: no launches), `--test-menus` (main menu, new game, pause, save & quit,
-load), `--test-water` (inland water near the start, its bed and clay), `--test-flyfollow` (the fly camera rides the
+`--test-wall` (walk into shaft and tunnel walls, then into the point of two narrowing crevices: no launches), `--test-menus` (main menu, new game, pause, save & quit,
+load), `--test-water` (inland water near the start, its surface roughness, its bed and clay), `--test-flyfollow` (the fly camera rides the
 planet and the moon), `--test-hotbar` (materials, consumables, foundations, materials through a save), `--test-ring`
 (milestone 6 gate: 60k rocks, frame time from the ground and inside the ring, a rock promoted, dug, left, revisited
 and reloaded with its hole, standing on a huge rock), `--test-blueprint` (place the starter rocket preset, fill in, save and load), `--test-rocket` (milestone 7 gate, with `--time-scale 8`: a rocket built,
 fuelled and flown by the autopilot to orbit, saved and loaded in orbit, brought down and landed), `--bench-fly V`
 / `--bench-fly-alt A` (camera flight over body 0, LOD streaming; negative A: underwater), `--no-foliage`,
 `--test-mine N` digs N strokes at the feet, crafts everything possible and builds 3 strokes,
-`--test-fly S` autopilots the ship to the nearest other asteroid, `--test-suffocate` checks death/respawn,
-`--test-moon` (moon on its analytic orbit; standing and jumping on it), `--time-scale k` (bodies spin and orbit
+`--test-suffocate` checks death/respawn,
+`--test-moon` (moon on its analytic orbit; standing and jumping on it; digging at the feet launches nobody),
+`--test-smallbody` (drop onto a huge ring rock and a 5 m one: land, stand, no death), `--test-inventory` (grid
+stacking, fractions, crafting room, sorting, creative mode, saves), `--time-scale k` (bodies spin and orbit
 k times faster), `--test-mantle` (planet terrain: height band, mantle refuses digging, ore by depth, caves; on the
 default system), `--test-ride` (standing/jumping on a spinning body; `--ride-spin D` sets its rate), `--test-orbit S` (jetpack orbit stability),
-`--test-park` (parked ship rides a spinning body), `--test-gravity` (field values, continuity between
-bodies, an unpiloted ship dropping and parking, a piloted ship hovering), `--test-precision` (float vs double
+`--test-gravity` (field values, continuity between
+bodies), `--test-precision` (float vs double
 placement error standing on body 0; run it with a large body via `--bodies`), `--spin-test` (writes `spin_*.png` frames),
 `--sun x y z` sets the sun direction, `--headlamp` / `--inventory` start with the lamp on / inventory
 open, `--look-down` tilts the view to the ground (lighting checks).
