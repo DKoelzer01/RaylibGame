@@ -29,6 +29,7 @@
 #include "menus.h"
 #include "hotbar.h"
 #include "navigation.h"
+#include "viewmodel.h"
 #include "ring_test.h"
 #include "rocket.h"
 #include "jobsystem.h"
@@ -154,6 +155,8 @@ int main(int argc, char** argv)
     bool benchHotbar = false;      // --test-hotbar: materials and consumables from the hotbar
     bool benchInventory = false;   // --test-inventory: grid stacking, fractions, sorting, saves
     bool benchMap = false;         // --test-map: compass, exploration, waypoints, map images, saves
+    bool benchViewmodel = false;   // --test-viewmodel: hands still at rest, bob within limits walking, screenshots
+    int vmPhase = 0, vmSigns = 0; double vmStart = 0.0; float vmStillMax = 0.0f, vmMaxX = 0.0f, vmMaxY = 0.0f, vmWalked = 0.0f; Vector3 vmLast{}; DVec3 vmFrom{};
     int mapPhase = 0, mapTiles = 0; double mapStart = 0.0; float mapHeading = -1.0f, mapBearing = -1.0f; bool mapImageOk = false; DVec3 mapFrom{};
     bool benchRing = false, ringStarted = false; // --test-ring: milestone 6 gate
     bool benchRocket = false, rocketStarted = false; // --test-rocket: milestone 7 gate
@@ -280,6 +283,7 @@ int main(int argc, char** argv)
         if (std::string(argv[i]) == "--test-hotbar") benchHotbar = true;
         if (std::string(argv[i]) == "--test-inventory") benchInventory = true;
         if (std::string(argv[i]) == "--test-map") benchMap = true;
+        if (std::string(argv[i]) == "--test-viewmodel") benchViewmodel = true;
         if (std::string(argv[i]) == "--test-ring") benchRing = true;
         if (std::string(argv[i]) == "--test-rocket") benchRocket = true;
         if (std::string(argv[i]) == "--test-blueprint") benchBlueprint = true;
@@ -1027,6 +1031,43 @@ int main(int argc, char** argv)
                         printf("bench: fly follow (%s): 3 s later %.3f m from its spot on the body, distance to the centre changed %.3f m (body moved %.0f m) -> %s\n",
                                c.name, localDrift, distDrift, 3.0 * Vector3Length(c.body->linearVelocity), ok ? "ok" : "BAD");
                         ffPhase++;
+                    }
+                } else if (benchViewmodel && (vmPhase > 0 || WorldIdle())) {
+                    // --test-viewmodel: standing still the hands don't move; walking they bob within the
+                    // set amplitude, once a step; screenshots of the hands and each tool type.
+                    Planetoid* p = dynamic_cast<Planetoid*>(world.objects[0].get());
+                    const double t = GetTime() - vmStart;
+                    const Vector3 b = Viewmodel_BobOffset();
+                    if (vmPhase == 0) {
+                        player.spawnOn(world, *p, StartSpawnDir(*p));
+                        terrainTool.heldTool.clear();
+                        vmStart = GetTime(); vmPhase = 1;
+                    } else if (vmPhase == 1 && t > 1.5 && player.grounded) {
+                        vmLast = b; vmStillMax = 0.0f; vmPhase = 2; vmStart = GetTime();
+                    } else if (vmPhase == 2) {
+                        vmStillMax = std::max(vmStillMax, Vector3Distance(b, vmLast)); vmLast = b;
+                        if (t > 2.0) { vmFrom = p->toLocalD(player.position); player.autoWalk = true; vmMaxX = vmMaxY = 0.0f; vmSigns = 0; vmPhase = 3; vmStart = GetTime(); }
+                    } else if (vmPhase == 3) {
+                        vmMaxX = std::max(vmMaxX, fabsf(b.x)); vmMaxY = std::max(vmMaxY, fabsf(b.y));
+                        if ((b.x > 0.0f) != (vmLast.x > 0.0f) && fabsf(b.x) > 1e-5f) ++vmSigns;
+                        vmLast = b;
+                        if ((p->toLocalD(player.position) - vmFrom).length() > 10.0 || t > 6.0) {
+                            player.autoWalk = false;
+                            vmWalked = (float)(p->toLocalD(player.position) - vmFrom).length();
+                            player.forward = Vector3Normalize(Vector3Subtract(player.forward, Vector3Scale(player.up, 0.35f)));
+                            vmPhase = 4; vmStart = GetTime();
+                        }
+                    } else if (vmPhase >= 4 && vmPhase <= 7 && t > 1.2) {
+                        static const char* shots[4] = { "bench_hands.png", "bench_hands_pickaxe.png", "bench_hands_axe.png", "bench_hands_shovel.png" };
+                        static const char* next[4] = { "stone_pickaxe", "iron_axe", "steel_shovel", "" };
+                        TakeScreenshot(shots[vmPhase - 4]);
+                        if (next[vmPhase - 4][0]) { inventory.add(next[vmPhase - 4], 1); terrainTool.heldTool = next[vmPhase - 4]; }
+                        vmPhase++; vmStart = GetTime();
+                    } else if (vmPhase == 8) {
+                        const bool pass = vmStillMax < 1e-5f && vmMaxX <= 0.0101f && vmMaxY <= 0.0151f && vmMaxX > 0.003f && vmSigns >= 8;
+                        printf("bench: viewmodel: standing still moved %.5f m; walking %.1f m bobbed up to %.4f m across, %.4f m down, %d step swings; drawn %d -> %s\n",
+                               vmStillMax, vmWalked, vmMaxX, vmMaxY, vmSigns, Viewmodel_Visible() ? 1 : 0, pass ? "PASS" : "FAIL");
+                        benchViewmodel = false;
                     }
                 } else if (benchMap && (mapPhase > 0 || WorldIdle())) {
                     // --test-map: the compass reads east when facing east; walking marks the ground;
@@ -1865,7 +1906,7 @@ int main(int argc, char** argv)
                         }
                         benchWalkSeconds = 0.0;
                     }
-                } else if ((WorldIdle() && benchDigStrokes == 0 && !benchSaveLoad && benchWalkSeconds <= 0.0 && benchMineStrokes == 0 && minePhase != 2 && benchFlySeconds <= 0.0 && !benchSuffocate && benchOrbitSeconds <= 0.0 && !benchRide && !benchPark && !benchGravity && !benchPrecision && !benchMantle && !benchAirJump && !benchMoon && !benchHole && !benchWall && !benchMenus && !benchWater && !benchFlyFollow && !benchHotbar && !benchInventory && !benchMap && !benchRing && !benchRocket && !benchBlueprint && !benchSmallBody && !benchTrees && !benchChop && benchPersist == 0 && benchBuild == 0 && benchFactory == 0 && !benchProgression) || GetTime() > 600.0) {
+                } else if ((WorldIdle() && benchDigStrokes == 0 && !benchSaveLoad && benchWalkSeconds <= 0.0 && benchMineStrokes == 0 && minePhase != 2 && benchFlySeconds <= 0.0 && !benchSuffocate && benchOrbitSeconds <= 0.0 && !benchRide && !benchPark && !benchGravity && !benchPrecision && !benchMantle && !benchAirJump && !benchMoon && !benchHole && !benchWall && !benchMenus && !benchWater && !benchFlyFollow && !benchHotbar && !benchInventory && !benchMap && !benchViewmodel && !benchRing && !benchRocket && !benchBlueprint && !benchSmallBody && !benchTrees && !benchChop && benchPersist == 0 && benchBuild == 0 && benchFactory == 0 && !benchProgression) || GetTime() > 600.0) {
                     benchStart = GetTime();
                     printf("bench: world ready after %.2f s (%d chunks, avg build %.2f ms of which sampling %.2f ms, %d worker threads)\n",
                         GetWorldStats().lastGenerationSeconds, GetWorldStats().chunks, GetWorldStats().avgBuildMs, GetWorldStats().avgSampleMs, GetWorldStats().workerThreads);
@@ -1993,6 +2034,7 @@ int main(int argc, char** argv)
             if (ship.piloted && ship.lastImpact > 12.0f) survival.health -= (ship.lastImpact - 12.0f) * 3.0f; // crash damage
             if (!loading) Survival_Update(world, frameDt, gameInput);
             if (!loading) Nav_Update(world, !bench && Nav_MapOpen()); // exploration, the map
+            if (!loading) Viewmodel_Update(world, frameDt);
             // Autosave every 5 minutes of play (incremental: only regions changed since the last save).
             static double lastAutosave = GetTime();
             if (!bench && alive && GetTime() - lastAutosave > 300.0) {
@@ -2187,6 +2229,7 @@ int main(int argc, char** argv)
             } else if (gameState == 1) {
                 { const double d0 = GetTime(); world.drawScene(gameState); if (benchMeasuring) benchDrawMs += (GetTime() - d0) * 1000.0; }
                 player.recordFly(world); // after the fly camera's input (in drawScene): the pose to carry next frame
+                Viewmodel_Draw(world);   // the hands, over the world
                 world.drawUI(gameState);
                 Telescope_DrawHUD(world);
                 BuildTool_DrawHUD();

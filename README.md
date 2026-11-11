@@ -91,6 +91,10 @@ Shaders in `resources/` hot-reload when saved.
   cockpit (~5 min a tank), suit power pays for recharging the jetpack and the headlamp, health drops when
   suffocating or from hard landings. Death respawns you at rest at the start. Oxygen canisters and power cells are
   used from the hotbar. An objectives list guides the loop; the quest book (tiers) leads through the tech.
+- **Hands** (`src/space/viewmodel.*`): a gloved hand holding the selected tool (by type and tier) or a cube of the
+  selected item, drawn in its own pass over the world. It bobs with the distance walked (a figure eight, 1.5 cm up and
+  1 cm across a step, none standing still), swings on each mining stroke or chop, and dips when switching. Settings:
+  Show hands, Hand bob (Full, Reduced, Off; Reduce motion halves it).
 - **Navigation** (`src/space/navigation.*`): a compass across the top of the HUD (heading, the start and waypoints).
   With a Map in the inventory (you start with one; fibre and charcoal make another) a minimap turns with your view
   and M opens the full map. Both show only explored ground: 256 m tiles within 150 m of where you have been, drawn
@@ -227,6 +231,7 @@ fuelled and flown by the autopilot to orbit, saved and loaded in orbit, brought 
 `--test-mine N` digs N strokes at the feet, crafts everything possible and builds 3 strokes,
 `--test-suffocate` checks death/respawn,
 `--test-moon` (moon on its analytic orbit; standing and jumping on it; digging at the feet launches nobody),
+`--test-viewmodel` (hands still at rest, bob within its amplitude once a step, screenshots of each tool),
 `--test-map` (compass reads east facing east, walking explores, a waypoint north bears 0, both maps render, saved),
 `--test-smallbody` (drop onto a huge ring rock and a 5 m one: land, stand, no death), `--test-inventory` (grid
 stacking, fractions, crafting room, sorting, creative mode, saves), `--time-scale k` (bodies spin and orbit
