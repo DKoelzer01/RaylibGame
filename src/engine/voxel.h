@@ -224,6 +224,10 @@ private:
     float broadLand(const Land& l, Vector3 dir, float smoothFootprint) const; // the land without fine hills and detail
 };
 
+// Gems (M22): the rare gem a stone kind holds (granite amethyst, marble ruby, basalt sapphire,
+// limestone emerald), or nullptr; any rock may also give quartz.
+const char* GemForStone(const char* stone);
+
 // No terrain at all: a body that only carries a build plot (a rocket in flight, rocket.h).
 class EmptyField : public DensityField {
 public:

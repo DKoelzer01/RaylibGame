@@ -141,6 +141,25 @@ namespace {
         { "limestone", "Limestone", { 206, 202, 186, 255 } },
         { "marble", "Marble", { 236, 234, 230, 255 } },
         { "brick", "Brick", { 158, 74, 52, 255 } },
+        // Decoration (M22): plaster in eight dye colours, stained glass, lamps, polished gems.
+        { "white_plaster", "White plaster", { 236, 234, 226, 255 } },
+        { "black_plaster", "Black plaster", { 40, 40, 44, 255 } },
+        { "red_plaster", "Red plaster", { 178, 52, 46, 255 } },
+        { "orange_plaster", "Orange plaster", { 222, 128, 48, 255 } },
+        { "yellow_plaster", "Yellow plaster", { 232, 200, 70, 255 } },
+        { "green_plaster", "Green plaster", { 84, 142, 66, 255 } },
+        { "blue_plaster", "Blue plaster", { 58, 92, 172, 255 } },
+        { "purple_plaster", "Purple plaster", { 124, 70, 150, 255 } },
+        { "red_glass", "Red glass", { 210, 110, 110, 255 } },
+        { "yellow_glass", "Yellow glass", { 236, 218, 120, 255 } },
+        { "green_glass", "Green glass", { 130, 200, 130, 255 } },
+        { "blue_glass", "Blue glass", { 120, 150, 222, 255 } },
+        { "lamp", "Lamp", { 255, 244, 200, 255 } },
+        { "quartz_block", "Quartz", { 240, 236, 244, 255 } },
+        { "amethyst_block", "Amethyst", { 150, 100, 200, 255 } },
+        { "ruby_block", "Ruby", { 196, 40, 70, 255 } },
+        { "sapphire_block", "Sapphire", { 50, 80, 196, 255 } },
+        { "emerald_block", "Emerald", { 40, 176, 110, 255 } },
     };
 }
 int BuildMaterialCount() { return (int)(sizeof(kBuildMaterials) / sizeof(kBuildMaterials[0])); }

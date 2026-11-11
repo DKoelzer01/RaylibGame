@@ -143,3 +143,35 @@ sandstone          | Sandstone         |   999 | 212,182,132 | Warm yellow stone
 limestone          | Limestone         |   999 | 206,202,186 | Pale stone common inland. A building material.
 marble             | Marble            |   999 | 236,234,230 | White stone in rare deep pockets. A building material.
 brick              | Brick             |   999 | 158,74,52   | Fired clay (kiln). A building material.
+# Decoration (plan 3, M22): gems from rock, dyes from plants and minerals, and what they make.
+quartz             | Quartz             |   999 | 240,236,244 | A clear crystal, now and then in any rock. Glass and lamps; polish into quartz blocks.
+amethyst           | Amethyst           |   999 | 150,100,200 | A violet gem in granite. Polish into amethyst blocks; a purple dye.
+ruby               | Ruby               |   999 | 196,40,70   | A red gem in marble. Polish into ruby blocks.
+sapphire           | Sapphire           |   999 | 50,80,196   | A blue gem in basalt. Polish into sapphire blocks.
+emerald            | Emerald            |   999 | 40,176,110  | A green gem in limestone. Polish into emerald blocks.
+white_dye          | White dye          |   999 | 240,240,236 | From limestone. Paints plaster.
+black_dye          | Black dye          |   999 | 34,34,38    | From charcoal. Paints plaster.
+red_dye            | Red dye            |   999 | 190,40,40   | From berries. Paints plaster and glass.
+orange_dye         | Orange dye         |   999 | 230,130,40  | From roots, or red and yellow dye.
+yellow_dye         | Yellow dye         |   999 | 236,206,60  | From grain. Paints plaster and glass.
+green_dye          | Green dye          |   999 | 70,150,60   | From plant fibre. Paints plaster and glass.
+blue_dye           | Blue dye           |   999 | 50,80,190   | From flax seeds (the blue flowers). Paints plaster and glass.
+purple_dye         | Purple dye         |   999 | 130,60,160  | From red and blue dye, or amethyst.
+white_plaster      | White plaster      |   999 | 236,234,226 | Lime plaster: build any shape with it.
+black_plaster      | Black plaster      |   999 | 40,40,44    | Painted plaster: build any shape with it.
+red_plaster        | Red plaster        |   999 | 178,52,46   | Painted plaster: build any shape with it.
+orange_plaster     | Orange plaster     |   999 | 222,128,48  | Painted plaster: build any shape with it.
+yellow_plaster     | Yellow plaster     |   999 | 232,200,70  | Painted plaster: build any shape with it.
+green_plaster      | Green plaster      |   999 | 84,142,66   | Painted plaster: build any shape with it.
+blue_plaster       | Blue plaster       |   999 | 58,92,172   | Painted plaster: build any shape with it.
+purple_plaster     | Purple plaster     |   999 | 124,70,150  | Painted plaster: build any shape with it.
+red_glass          | Red glass          |   999 | 210,110,110 | Stained glass: build panes and windows.
+yellow_glass       | Yellow glass       |   999 | 236,218,120 | Stained glass: build panes and windows.
+green_glass        | Green glass        |   999 | 130,200,130 | Stained glass: build panes and windows.
+blue_glass         | Blue glass         |   999 | 120,150,222 | Stained glass: build panes and windows.
+lamp               | Lamp               |   999 | 255,244,200 | A glowing block (quartz and power-cell light): build any shape with it.
+quartz_block       | Quartz block       |   999 | 240,236,244 | Polished quartz: build any shape with it.
+amethyst_block     | Amethyst block     |   999 | 150,100,200 | Polished amethyst: build any shape with it.
+ruby_block         | Ruby block         |   999 | 196,40,70   | Polished ruby: build any shape with it.
+sapphire_block     | Sapphire block     |   999 | 50,80,196   | Polished sapphire: build any shape with it.
+emerald_block      | Emerald block      |   999 | 40,176,110  | Polished emerald: build any shape with it.

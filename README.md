@@ -130,6 +130,10 @@ Shaders in `resources/` hot-reload when saved.
   limestone inland, basalt deep down and under the sea, marble in rare deep pockets); a kiln fires clay into bricks.
   All of them are building materials. The build wheel adds detail shapes inside one cell: a slab (half height), a
   panel (half thickness), a pane (a thin board through the middle, for glass) and a post (a quarter column).
+- **Decoration** (plan 3, M22): rock now and then gives a gem (quartz anywhere; amethyst in granite, ruby in marble,
+  sapphire in basalt, emerald in limestone). Dyes in eight colours come from berries, roots, grain, fibre, flax seeds,
+  charcoal and limestone (orange and purple also mixed). Building materials: lime plaster painted in eight colours,
+  stained glass in four, lamps (quartz, glass, a power cell; drawn bright, no light cast yet) and polished gem blocks.
 - **Stations and docking** (plan 3, M20; `src/space/station.*`): a station core built onto a rocket is deployed in a
   stable orbit with K: it becomes its own body on an exact two-body (Kepler) orbit from the state it had, holding up to
   1500 kg of fuel. Near a station (within 40 m, under 2 m/s) K docks: the rocket's plot joins the station's body,

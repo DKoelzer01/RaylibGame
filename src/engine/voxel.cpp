@@ -4,6 +4,7 @@
 #include "trees.h"
 #include "cubemarch.h"
 
+#include <cstring>
 #include <raymath.h>
 #include <algorithm>
 #include <chrono>
@@ -973,4 +974,13 @@ const char* PlanetField::stoneKind(Vector3 p) const {
     if (l.h < 25.0f) return "sandstone";        // low coastal land
     // Broad regions of granite and limestone elsewhere.
     return climate.fractal(1, p.x * 0.3f, p.y * 0.3f, p.z * 0.3f) > 0.15f ? "granite" : "limestone";
+}
+
+const char* GemForStone(const char* stone) {
+    if (!stone) return nullptr;
+    if (strcmp(stone, "granite") == 0) return "amethyst";
+    if (strcmp(stone, "marble") == 0) return "ruby";
+    if (strcmp(stone, "basalt") == 0) return "sapphire";
+    if (strcmp(stone, "limestone") == 0) return "emerald";
+    return nullptr;
 }

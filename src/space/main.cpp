@@ -1,4 +1,5 @@
 #include <set>
+#include <map>
 #include <cstring>
 #include <raylib.h>
 #include <string>
@@ -183,6 +184,7 @@ int main(int argc, char** argv)
     bool benchSuit = false, suitOk = true; int suitPhase = 0; double suitStart = 0.0; float suitFoodRatio = 0.0f, suitWater = 0.0f, suitRebreather = 0.0f; // --test-suit
     int benchShotTabs = 0; // --shot-tabs
     bool benchRecipes = false; // --test-recipes
+    bool benchDecor = false, decorOk = true; int decorPhase = 0, decorGems = 0, decorGemKinds = 0, decorDigs = 0, decorPlaced = 0; double decorStart = 0.0; Vector3 decorCamPos{}, decorCamTarget{}, decorCamUp{ 0, 1, 0 }; // --test-decor
     bool benchMaterials = false, matOk = true; int matPhase = 0, matPlaced = 0; double matStart = 0.0; std::string matKinds; Vector3 matCamPos{}, matCamTarget{}, matCamUp{ 0, 1, 0 }; // --test-materials
     bool benchDamage = false, damageOk = true; int damagePhase = 0; double damageStart = 0.0; float damageThrust = 0.0f, damageRepaired = 0.0f, damageVacuum = 0.0f; // --test-damage
     bool benchCrafting = false, craftOk = true; int craftPhase = 0, craftChest = -1, craftInv0 = 0, craftWood0 = 0, craftDeposited = 0, craftInChest = 0; double craftStart = 0.0; Plot* craftPlot = nullptr; // --test-crafting
@@ -325,6 +327,7 @@ int main(int argc, char** argv)
         if (std::string(argv[i]) == "--test-threats") benchThreats = true;
         if (std::string(argv[i]) == "--shot-tabs") benchShotTabs = 1;
         if (std::string(argv[i]) == "--test-recipes") benchRecipes = true;
+        if (std::string(argv[i]) == "--test-decor") benchDecor = true;
         if (std::string(argv[i]) == "--test-materials") benchMaterials = true;
         if (std::string(argv[i]) == "--test-damage") benchDamage = true;
         if (std::string(argv[i]) == "--test-crafting") benchCrafting = true;
@@ -1599,6 +1602,99 @@ int main(int argc, char** argv)
                         printf("bench: materials: logs and planks of three woods; stone kinds %s; a hut of %d detail parts in 8 materials, saved -> %s\n", matKinds.c_str(), matPlaced, matOk ? "PASS" : "FAIL");
                         benchMaterials = false;
                     }
+                } else if (benchDecor && (decorPhase > 0 || WorldIdle())) {
+                    // --test-decor (plan 3, M22): rock gives gems by its stone kind; dyes, plaster in eight colours,
+                    // stained glass, lamps and gem blocks craft and build; a screenshot of a decorated wall.
+                    Planetoid* p = dynamic_cast<Planetoid*>(world.objects[0].get());
+                    const auto* pf = p ? dynamic_cast<const PlanetField*>(p->field.get()) : nullptr;
+                    auto check = [&](bool c, const char* what) { if (!c) { printf("bench: decor: FAILED %s\n", what); decorOk = false; } };
+                    if (decorPhase == 0) {
+                        player.spawnOn(world, *p, StartSpawnDir(*p));
+                        decorPhase = 1; decorStart = GetTime(); decorOk = true;
+                    } else if (decorPhase == 1 && GetTime() - decorStart > 1.5 && player.grounded) {
+                        const Vector3 me = p->toLocal((player.position - world.renderOrigin).toFloat());
+                        const Vector3 up = Vector3Normalize(me);
+                        const Vector3 t1 = Vector3Normalize(Vector3CrossProduct(up, { 0, 1, 0 })), t2 = Vector3CrossProduct(t1, up);
+                        // A spot of each stone kind within 20 km, then dig it until its gem turns up.
+                        std::map<std::string, Vector3> spot;
+                        for (int i = 0; i < 2000 && spot.size() < 5; ++i) {
+                            const float a = ((i * 37) % 200 - 100) * 200.0f, b = ((i * 91) % 200 - 100) * 200.0f;
+                            const Vector3 d = Vector3Normalize(Vector3Add(up, Vector3Add(Vector3Scale(t1, a / pf->radius), Vector3Scale(t2, b / pf->radius))));
+                            const float surf = pf->radius + pf->elevation(d);
+                            for (float depth : { 8.0f, 30.0f, 80.0f }) { const Vector3 q = Vector3Scale(d, surf - depth); spot.emplace(pf->stoneKind(q), q); }
+                        }
+                        inventory.add("stone_pickaxe", 1);
+                        terrainTool.heldTool = "stone_pickaxe";
+                        const char* gems[5] = { "quartz", "amethyst", "ruby", "sapphire", "emerald" };
+                        int g0[5]; for (int k = 0; k < 5; ++k) g0[k] = inventory.count(gems[k]);
+                        int digs = 0;
+                        for (const auto& kv : spot) {
+                            const Vector3 dir = Vector3Normalize(kv.second);
+                            for (int k = 0; k < 160; ++k, ++digs) TerrainTool_DigAt(*p, Vector3Subtract(kv.second, Vector3Scale(dir, 0.5f * (k % 40))));
+                        }
+                        terrainTool.heldTool.clear();
+                        int kinds = 0;
+                        for (int k = 0; k < 5; ++k) { decorGems += inventory.count(gems[k]) - g0[k]; kinds += inventory.count(gems[k]) > g0[k] ? 1 : 0; }
+                        decorGemKinds = kinds; decorDigs = digs;
+                        check(kinds >= 3, "rock gives gems of several kinds");
+                        // Dyes, plaster, stained glass, gem blocks, lamps.
+                        inventory.add("limestone", 40); inventory.add("sand", 30); inventory.add("charcoal", 6); inventory.add("berries", 24); inventory.add("grain", 16);
+                        inventory.add("fibre", 18); inventory.add("flax_seeds", 24); inventory.add("roots", 8); inventory.add("glass", 24); inventory.add("power_cell", 2);
+                        for (const char* g : gems) inventory.add(g, 4);
+                        auto make = [&](const char* item, int n) {
+                            for (int tries = 0; tries < 24 && inventory.count(item) < n; ++tries) {
+                                bool any = false;
+                                for (const Recipe& r : itemDB.recipes()) if (r.output == item && inventory.canCraft(r)) { inventory.craft(r); any = true; break; }
+                                if (!any) break;
+                            }
+                            return inventory.count(item) >= n;
+                        };
+                        bool blocks = true; for (const char* g : gems) { const bool ok1 = make(TextFormat("%s_block", g), 1); if (!ok1) printf("bench: decor: no %s block (%d %s)\n", g, inventory.count(g), g); blocks = ok1 && blocks; }
+                        check(blocks, "gem blocks");
+                        const char* colours[8] = { "white", "black", "red", "orange", "yellow", "green", "blue", "purple" };
+                        bool allDyes = true, allPlaster = true;
+                        for (const char* c : colours) allDyes = make(TextFormat("%s_dye", c), c[0] == 'w' ? 10 : 6) && allDyes;
+                        allPlaster = make("white_plaster", 72);
+                        for (int k = 1; k < 8; ++k) allPlaster = make(TextFormat("%s_plaster", colours[k]), 4) && allPlaster;
+                        check(allDyes, "every dye crafts");
+                        check(allPlaster, "plaster in eight colours");
+                        inventory.clear(); // room for the next crafts (a full 45-slot grid refuses outputs)
+                        inventory.add("glass", 24); inventory.add("quartz", 2); inventory.add("power_cell", 2);
+                        for (const char* c : { "red", "yellow", "green", "blue" }) inventory.add(TextFormat("%s_dye", c), 2);
+                        bool glass = true; for (const char* c : { "red", "yellow", "green", "blue" }) glass = make(TextFormat("%s_glass", c), 2) && glass;
+                        check(glass, "stained glass");
+                        check(make("lamp", 2), "lamps");
+                        // A wall 6 m ahead: plaster stripes, a stained-glass window, lamps and gem blocks.
+                        if (!p->plots) p->plots = std::make_unique<PlotSet>();
+                        const Vector3 wd = Vector3Normalize(Vector3Add(me, Vector3Scale(t1, 6.0f)));
+                        Plot* wall = p->plots->plotFor(Vector3Scale(wd, pf->radius + pf->elevation(wd)), 0.0f, true);
+                        auto mat = [](const char* item) { return (uint8_t)std::max(0, BuildMaterialForItem(item)); };
+                        int placed = 0, tried = 0;
+                        auto put = [&](PartType t, Int3 c, const char* m) { ++tried; placed += wall->place(Part{ t, c, (uint8_t)RotateOrientation(0, 1), mat(m) }) >= 0 ? 1 : 0; };
+                        for (int x = 0; x < 8; ++x) for (int y = 0; y < 2; ++y) put(PartType::Panel, { x, y, 0 }, TextFormat("%s_plaster", colours[x]));
+                        const char* gl[4] = { "red_glass", "yellow_glass", "green_glass", "blue_glass" };
+                        for (int x = 0; x < 8; ++x) put(PartType::Pane, { x, 2, 0 }, gl[x % 4]);
+                        for (int x = 0; x < 8; ++x) put(PartType::Panel, { x, 3, 0 }, x % 2 ? "lamp" : "white_plaster");
+                        const char* gb[5] = { "quartz_block", "amethyst_block", "ruby_block", "sapphire_block", "emerald_block" };
+                        for (int x = 0; x < 5; ++x) put(PartType::Cube, { 1 + x, 4, 0 }, gb[x]);
+                        check(placed == tried, "the wall built");
+                        decorPlaced = placed;
+                        const Vector3 wc = wall->toBody({ 2.0f, 1.2f, 0.0f });
+                        decorCamPos = Vector3Add(wc, Vector3Add(Vector3Scale(up, 0.8f), Vector3Scale(Vector3Normalize(Vector3Subtract(wall->toBody({ 2.0f, 1.2f, -1.0f }), wc)), 5.5f)));
+                        decorCamTarget = wc; decorCamUp = up;
+                        player.flyMode = true;
+                        sunOverride = true; sunArg = p->dirToWorld(Vector3Normalize(Vector3Add(up, Vector3Scale(Vector3Normalize(Vector3Subtract(decorCamPos, wc)), 0.6f))));
+                        decorPhase = 2; decorStart = GetTime();
+                    } else if (decorPhase == 2) {
+                        world.camera.position = p->toWorld(decorCamPos); world.camera.target = p->toWorld(decorCamTarget); world.camera.up = p->dirToWorld(decorCamUp);
+                        player.position = world.renderOrigin + world.camera.position;
+                        if (GetTime() - decorStart > 2.0) {
+                            TakeScreenshot("bench_decor.png");
+                            printf("bench: decor: %d gems of %d kinds in %d digs; 8 dyes, 8 plasters, 4 stained glasses, lamps, 5 gem blocks; a wall of %d parts -> %s\n",
+                                   decorGems, decorGemKinds, decorDigs, decorPlaced, decorOk ? "PASS" : "FAIL");
+                            benchDecor = false;
+                        }
+                    }
                 } else if (benchRecipes) {
                     // --test-recipes: every item can be had from what the world gives (digging, chopping,
                     // bushes, grass, animals, crops) through hand recipes, machines (once their own item
@@ -1613,7 +1709,8 @@ int main(int argc, char** argv)
                     auto ids = [&](const std::string& list) { std::vector<std::string> out; for (const std::string& e : split(list, ',')) { char id[64] = {}; if (e != "-" && sscanf(e.c_str(), "%63s", id) == 1) out.push_back(id); } return out; };
                     std::set<std::string> have = { "wood", "fibre", "berries", "grain_seeds", "root_seeds", "flax_seeds", "dirt", "gravel", "stone", "sand", "clay",
                                                    "ice", "regolith", "iron_ore", "copper_ore", "tin_ore", "coal", "bauxite_ore", "ilmenite_ore", "telescope", "map", "basic_suit",
-                                                   "oak_log", "birch_log", "pine_log", "granite", "basalt", "sandstone", "limestone", "marble" };
+                                                   "oak_log", "birch_log", "pine_log", "granite", "basalt", "sandstone", "limestone", "marble",
+                                                   "quartz", "amethyst", "ruby", "sapphire", "emerald" };
                     std::set<std::string> used;
                     struct Rule { std::string machine; std::vector<std::string> in, out; };
                     std::vector<Rule> rules;
@@ -2910,7 +3007,7 @@ int main(int argc, char** argv)
                         }
                         benchWalkSeconds = 0.0;
                     }
-                } else if ((WorldIdle() && benchDigStrokes == 0 && !benchSaveLoad && benchWalkSeconds <= 0.0 && benchMineStrokes == 0 && minePhase != 2 && benchFlySeconds <= 0.0 && !benchSuffocate && benchOrbitSeconds <= 0.0 && !benchRide && !benchPark && !benchGravity && !benchPrecision && !benchMantle && !benchAirJump && !benchMoon && !benchHole && !benchWall && !benchMenus && !benchWater && !benchFlyFollow && !benchHotbar && !benchInventory && !benchMap && !benchViewmodel && !benchQuests && !benchHunger && !benchFarm && !benchAnimals && !benchThreats && benchShotTabs == 0 && !benchRecipes && !benchMaterials && !benchDamage && !benchCrafting && !benchSuit && !benchTools && !benchRivers && !benchRing && !benchRocket && !benchStation && !benchBlueprint && !benchSmallBody && !benchTrees && !benchChop && benchPersist == 0 && benchBuild == 0 && benchFactory == 0 && !benchProgression) || GetTime() > 600.0) {
+                } else if ((WorldIdle() && benchDigStrokes == 0 && !benchSaveLoad && benchWalkSeconds <= 0.0 && benchMineStrokes == 0 && minePhase != 2 && benchFlySeconds <= 0.0 && !benchSuffocate && benchOrbitSeconds <= 0.0 && !benchRide && !benchPark && !benchGravity && !benchPrecision && !benchMantle && !benchAirJump && !benchMoon && !benchHole && !benchWall && !benchMenus && !benchWater && !benchFlyFollow && !benchHotbar && !benchInventory && !benchMap && !benchViewmodel && !benchQuests && !benchHunger && !benchFarm && !benchAnimals && !benchThreats && benchShotTabs == 0 && !benchRecipes && !benchDecor && !benchMaterials && !benchDamage && !benchCrafting && !benchSuit && !benchTools && !benchRivers && !benchRing && !benchRocket && !benchStation && !benchBlueprint && !benchSmallBody && !benchTrees && !benchChop && benchPersist == 0 && benchBuild == 0 && benchFactory == 0 && !benchProgression) || GetTime() > 600.0) {
                     benchStart = GetTime();
                     printf("bench: world ready after %.2f s (%d chunks, avg build %.2f ms of which sampling %.2f ms, %d worker threads)\n",
                         GetWorldStats().lastGenerationSeconds, GetWorldStats().chunks, GetWorldStats().avgBuildMs, GetWorldStats().avgSampleMs, GetWorldStats().workerThreads);

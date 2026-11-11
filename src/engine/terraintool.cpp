@@ -278,6 +278,10 @@ bool TerrainTool_Stroke(bool dig) {
             }
     for (auto& kv : got) inventory.addFractional(kv.first, kv.second);
     if (wet > 0.0f) inventory.addFractional("clay", wet * 0.8f); // river and pond beds hold clay
+    if (stoneKindAt) { // rock now and then holds a gem: quartz anywhere, and the gem of its stone kind (M22)
+        const char* gem = GetRandomValue(0, 999) < 25 ? GemForStone(stoneKindAt) : GetRandomValue(0, 999) < 40 ? "quartz" : nullptr;
+        if (gem && itemDB.find(gem)) { inventory.add(gem, 1); Toast(TextFormat("+1 %s!", gem)); }
+    }
     if (grass && GetRandomValue(0, 99) < 6) { // grass now and then turns up a seed
         static const char* seeds[3] = { "grain_seeds", "root_seeds", "flax_seeds" };
         const char* s = seeds[GetRandomValue(0, 2)];
@@ -366,7 +370,12 @@ bool TerrainTool_DigAt(Planetoid& p, Vector3 local) {
     if (!terrainTool.terraform && !DigRuleFor(HeldTool(), m, item).can) return false;
     inventory.add(item, 1);
     if (strcmp(item, "dirt") == 0) inventory.addFractional("gravel", 0.2f); // stones in the soil
-    if (strcmp(item, "stone") == 0) if (const auto* pfk = dynamic_cast<const PlanetField*>(p.field.get())) { const char* k = pfk->stoneKind(local); if (strcmp(k, "stone") != 0) inventory.addFractional(k, 0.4f); } // its kind of stone
+    if (strcmp(item, "stone") == 0) if (const auto* pfk = dynamic_cast<const PlanetField*>(p.field.get())) { // its kind of stone, and now and then a gem
+        const char* k = pfk->stoneKind(local);
+        if (strcmp(k, "stone") != 0) inventory.addFractional(k, 0.4f);
+        const char* gem = GetRandomValue(0, 999) < 25 ? GemForStone(k) : GetRandomValue(0, 999) < 40 ? "quartz" : nullptr;
+        if (gem && itemDB.find(gem)) inventory.add(gem, 1);
+    }
     if (WetBed(p, local, m)) inventory.addFractional("clay", 0.4f); // beds hold clay
     ApplyTerrainEdit(p, TerrainEdit{ local, 1.2f, -0.6f });
     return true;
