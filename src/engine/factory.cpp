@@ -61,6 +61,11 @@ struct Tables {
         itemNames.push_back(n);
         return (int)itemNames.size() - 1;
     }
+    int find(const std::string& n) { // -1 if never seen
+        std::lock_guard<std::mutex> lock(mutex);
+        auto it = itemIds.find(n);
+        return it == itemIds.end() ? -1 : it->second;
+    }
     std::string name(int id) {
         std::lock_guard<std::mutex> lock(mutex);
         return id >= 0 && id < (int)itemNames.size() ? itemNames[id] : std::string();
@@ -433,7 +438,9 @@ void TickPlot(PlotSim& ps, int dt, long long& made, int& active) {
                     if (def.power == Power::Fuel && eatsFuel != (pass == 1)) continue;
                     if (def.power != Power::Fuel && pass == 1) continue;
                     bool ok = true;
-                    for (const Stack& s : r.in) if (CountItems(m.in, kSlots, s.item) < s.count + (eatsFuel && m.energy <= 0 && def.power == Power::Fuel ? 1 : 0)) { ok = false; break; }
+                    // Nothing burning: one more of the fuel it eats must be left to light (only the fuel; an
+                    // extra of every input stalled recipes holding exactly enough of the rest).
+                    for (const Stack& s : r.in) if (CountItems(m.in, kSlots, s.item) < s.count + (isFuel(s.item) && m.energy <= 0 && def.power == Power::Fuel ? 1 : 0)) { ok = false; break; }
                     if (!ok) continue;
                     for (const Stack& s : r.in) TakeItems(m.in, kSlots, s.item, s.count);
                     m.recipe = (int)ri; m.progress = 0;
@@ -729,8 +736,8 @@ void Factory::Load(FILE* f, uint64_t bodyId) {
 
 bool Factory::Accepts(PartType type, const std::string& item) {
     LoadRecipes();
-    auto it = tables.itemIds.find(item);
-    return it != tables.itemIds.end() && ::Accepts(type, it->second);
+    const int id = tables.find(item);
+    return id >= 0 && ::Accepts(type, id);
 }
 
 void Factory::SetSpeed(int ticksPerTick) { simSpeed = std::max(1, ticksPerTick); }
