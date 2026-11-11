@@ -42,7 +42,7 @@ namespace {
     const CropDef* Crop(const std::string& id) { LoadCrops(); for (const CropDef& c : crops) if (c.id == id) return &c; return nullptr; }
 
     // Crop state per farmland part: "<body name>|<plot id>|<part>" -> crop and growth (0..1).
-    struct Growing { std::string crop; float growth = 0.0f; };
+    struct Growing { std::string crop; float growth = 0.0f; float rate = 0.0f; }; // rate: 1, or 2 by water (worked out once; 0 = not yet)
     std::map<std::string, Growing> fields;
 
     std::string Key(const Planetoid& body, const Plot& plot, int part) { return body.name + "|" + std::to_string(plot.id) + "|" + std::to_string(part); }
@@ -84,12 +84,15 @@ void Farm_Update(Scene& world, float dt) {
         const Vector3 top = TopCentre(*plot, plot->parts[part]);
         const Vector3 up = Vector3Normalize(top);
         if (Vector3DotProduct(sun, body->dirToWorld(up)) < 0.05f) { ++it; continue; }
-        float rate = 1.0f;
-        if (const auto* pf = dynamic_cast<const PlanetField*>(body->field.get())) {
-            const float e = pf->elevation(up);
-            if (e < 3.0f) rate = 2.0f; // the sea shore
-            else if (pf->inlandWaterNear(up, 4.0f) && pf->waterElevation(up) != PlanetField::kNoWater) rate = 2.0f;
+        if (g.rate <= 0.0f) { // the terrain queries are costly: once per field
+            g.rate = 1.0f;
+            if (const auto* pf = dynamic_cast<const PlanetField*>(body->field.get())) {
+                const float e = pf->elevation(up);
+                if (e < 3.0f) g.rate = 2.0f; // the sea shore
+                else if (pf->inlandWaterNear(up, 4.0f) && pf->waterElevation(up) != PlanetField::kNoWater) g.rate = 2.0f;
+            }
         }
+        const float rate = g.rate;
         g.growth = std::min(1.0f, g.growth + dt * rate / c->growSeconds);
         ++it;
     }

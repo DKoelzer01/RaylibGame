@@ -3,6 +3,7 @@
 #include "buildtool.h"
 #include "gameui.h"
 #include "hotbar.h"
+#include "rocket.h"
 #include "inventory.h"
 #include "player.h"
 #include "plots.h"
@@ -445,7 +446,7 @@ void Animals_Update(Scene& world, float dt, float worldDt, bool inputEnabled) {
         // dusk stalkers hunt within 70 m after dark. A campfire within 10 m keeps the player safe, and
         // stalkers will not come within 14 m of one.
         bool hunting = false;
-        if (s.hostile && threatsOn && Difficulty_ThreatScale() > 0.0f && sameBody && a.fleeTimer <= 0.0f && !survival.dead && !player.flyMode) {
+        if (s.hostile && threatsOn && Difficulty_ThreatScale() > 0.0f && sameBody && a.fleeTimer <= 0.0f && !survival.dead && !player.flyMode && !Rocket_Boarded()) { // not inside a cockpit
             Vector3 fire;
             const bool playerSafe = NearFire(playerLocal, 10.0f, fire);
             if (s.night && NearFire(a.pos, 14.0f, fire)) { a.fleeTimer = 3.0f; a.fleeFrom = fire; }
@@ -544,8 +545,10 @@ void Animals_Update(Scene& world, float dt, float worldDt, bool inputEnabled) {
             young.health = species[a.species].health * 0.5f;
             young.followUntil = -1.0;
             young.rng = a.rng ^ 0x9e37u;
+            const bool seen = here && here->name == a.body; // before the push: it may move the vector (a, b)
+            const std::string kind = species[a.species].name;
             animals.push_back(young);
-            if (here && here->name == a.body) GameUI_Toast(TextFormat("A young %s was born", species[a.species].name.c_str()));
+            if (seen) GameUI_Toast(TextFormat("A young %s was born", kind.c_str()));
             QuestBook_Count("bred");
             break;
         }
