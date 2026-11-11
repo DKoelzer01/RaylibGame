@@ -33,6 +33,7 @@ struct SurvivalState {
     float breathableAltitude = 15000.0f;                      // a planet's air is breathable below this (m above sea level)
     float airRefillPerSec = 4.0f;                             // suit oxygen top-up from breathable air
     bool breathable = false;
+    bool underwater = false;                                  // the head is in water (oxygen drains faster)
     bool dead = false;
     double deathTime = 0.0;
     int deaths = 0;

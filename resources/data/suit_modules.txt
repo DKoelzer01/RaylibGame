@@ -1,0 +1,15 @@
+# Suit modules: id | effect | value | text
+# Effects: oxygen/power (+capacity), jetpack (+fuel and thrust), walk (+speed, softer landings), lamp (+range),
+# food (-hunger), underwater (oxygen drain multiplier in water), insulation (share of the cold felt),
+# thermal (no cold, no heat damage), grip (steeper ground walkable), scanner (nearest ore within 64 m).
+oxygen_tank_module | oxygen     | 0.5  | +50% oxygen
+battery_pack       | power      | 0.5  | +50% suit power
+insulation_module  | insulation | 0.4  | feel only 40% of the cold's extra hunger
+rebreather         | underwater | 0.5  | oxygen lasts 4x longer underwater
+thruster_pack      | jetpack    | 0.6  | +60% jetpack fuel and thrust
+lamp_upgrade       | lamp       | 1.0  | headlamp reaches twice as far
+thermal_regulator  | thermal    | 1    | no cold hunger, no heat damage
+ore_scanner        | scanner    | 1    | shows the nearest ore within 64 m
+servo_legs         | walk       | 0.2  | +20% walk speed, safer landings
+grip_boots         | grip       | 1    | walk up ground to ~73 degrees
+food_pouch         | food       | 0.25 | hunger 25% slower

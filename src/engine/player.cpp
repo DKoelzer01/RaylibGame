@@ -390,7 +390,7 @@ bool Player::resolveCollisions(Scene&, Vector3& feet) {
                 const float vUpAfter = Vector3DotProduct(velocity, up);
                 if (vUpAfter > vUpBefore) velocity = Vector3Subtract(velocity, Vector3Scale(up, vUpAfter - vUpBefore));
             }
-            if (lastContactDot > 0.55f) { onGround = true; groundNormal = n; } // walkable slope (< ~57 deg)
+            if (lastContactDot > walkableCos) { onGround = true; groundNormal = n; } // walkable slope (< ~57 deg)
             moved = true;
         }
         if (!moved) break;

@@ -109,6 +109,12 @@ Shaders in `resources/` hot-reload when saved.
   through, animals do not) make a pen. Look at one: I feeds it (it follows
   you for 30 s; two fed adults close together breed a young one that grows up in an hour), O collects wool (shears),
   milk (bucket) or eggs, LMB attacks (meat, hide, feathers). Raw meat cooks in a campfire. Animals are saved.
+- **Environmental suit** (`src/space/suit.*`, `resources/data/suits.txt`, `suit_modules.txt`): you start in a basic
+  suit with 2 module slots; a field suit (steel plate, cloth, polyethylene) has 4 and +20% oxygen and power, an
+  explorer suit (titanium alloy, advanced circuits) 6 and +50%. Modules, fitted in the inventory's Suit tab: oxygen
+  tank, battery pack, insulation, rebreather, thruster pack, lamp upgrade, thermal regulator, ore scanner (nearest
+  ore within 64 m on the HUD), servo legs, grip boots, food pouch. Underwater, oxygen drains twice as fast. Swapping
+  suits keeps the modules that fit and returns the rest. Cloth comes from fibre or wool.
 - **Hands** (`src/space/viewmodel.*`): a gloved hand holding the selected tool (by type and tier) or a cube of the
   selected item, drawn in its own pass over the world. It bobs with the distance walked (a figure eight, 1.5 cm up and
   1 cm across a step, none standing still), swings on each mining stroke or chop, and dips when switching. Settings:
@@ -252,6 +258,8 @@ fuelled and flown by the autopilot to orbit, saved and loaded in orbit, brought 
 `--test-hunger` (drain at rest, starving, eating, cold at the pole, saved), `--test-farm` (till, plant, no growth at
 night, ripe in daylight, harvest, a growing crop saved), `--test-animals` (herds placed, grazing on the ground,
 flee when hit, follow when fed, a fenced pen holds a scared herd and lets the player through its gate, breeding, drops, saved, 200 animals under 1 ms),
+`--test-suit` (each module's stat, suits swapped, saved; underwater oxygen with and without a rebreather; the cold
+at the pole bare, insulated and regulated),
 `--test-quests` (tiers open by their tasks, items used up still count, quest state through a save),
 `--test-viewmodel` (hands still at rest, bob within its amplitude once a step, screenshots of each tool),
 `--test-map` (compass reads east facing east, walking explores, a waypoint north bears 0, both maps render, saved),

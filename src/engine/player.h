@@ -44,6 +44,7 @@ struct Player {
     float jetpackAccel = 9.0f;
     float jetpackFuelPerSec = 0.1f;   // full tank = 10 s of thrust
     float airControlAccel = 12.0f;    // m/s^2 toward the wished walking velocity while airborne in gravity
+    float walkableCos = 0.55f;        // ground steeper than this (cos of its slope, ~57 deg) is a wall; grip boots lower it
     float mouseSensitivity = 0.003f;
     bool smoothMotion = false;        // Settings "Reduce motion": eased walking and a smoothed camera up
     mutable Vector3 cameraUp = { 0, 1, 0 };
