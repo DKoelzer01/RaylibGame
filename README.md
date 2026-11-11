@@ -120,6 +120,11 @@ Shaders in `resources/` hot-reload when saved.
   landings break legs (a crash, engines too). A damaged engine gives less thrust, a damaged tank leaks (2 kg/s when
   broken), broken legs and guidance stop counting. Damage is saved with the plot. A repair kit (hotbar) halves the
   worst part's damage on the rocket in reach; the rocket panel shows the damage.
+- **Life support and cabins** (plan 3, M19): a cockpit holds 10 minutes of air, a cabin (4 seats) 30; load oxygen
+  canisters with I (with the fuel). Aboard in breathable air the cockpit breathes the air outside; above it, it spends
+  the loaded air, and when that is gone the suit's own oxygen takes over (the hull keeps the vacuum out). P aboard
+  engages the autopilot: a gravity turn to a 45 km orbit, or in orbit a deorbit burn and a powered landing; P again
+  for manual. The rocketry tier asks for life support and a landing; launches and landings count for quests.
 - **Crafting** (the Crafting tab, `src/space/recipebook.*`, `src/space/storage.*`): only recipes you know show - a
   recipe is known once all its ingredients have been discovered (some also need an unlock in
   `resources/data/recipe_unlocks.txt`), with a toast for each new one. Search by item or ingredient; a toggle shows only

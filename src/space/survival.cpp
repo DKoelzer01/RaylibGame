@@ -114,7 +114,14 @@ void Survival_Update(Scene& world, float dt, bool inputEnabled) {
     survival.breathable = false;
     survival.underwater = false;
     // Life support: a rocket's pressurised cockpit (the placeholder ship that also gave it is gone).
-    survival.inLifeSupport = Rocket_Boarded();
+    // Life support: a cockpit in breathable air uses the air outside; elsewhere it spends the air loaded
+    // into the rocket (oxygen canisters), and when that is gone the suit's own oxygen takes over (the
+    // hull still holds pressure, so no vacuum clock).
+    {
+        const auto& atm0 = world.atmosphere;
+        const bool airOutside = atm0.enabled && Vector3Distance(pr, atm0.centre) < atm0.radius + survival.breathableAltitude;
+        survival.inLifeSupport = Rocket_Boarded() && (airOutside || Rocket_BreatheAboard(dt));
+    }
     survival.inVacuum = false;
     if (survival.inLifeSupport) survival.vacuumTime = 0.0f;
     if (survival.inLifeSupport) {
@@ -131,6 +138,7 @@ void Survival_Update(Scene& world, float dt, bool inputEnabled) {
         survival.inVacuum = !(atm.enabled && Vector3Distance(pr, atm.centre) < atm.radius + survival.breathableAltitude);
         if (survival.inVacuum && !Suit_Stats().vacuum) { survival.vacuumTime += dt; if (survival.vacuumTime > 60.0f) survival.health -= 4.0f * std::min(dt, survival.vacuumTime - 60.0f); }
         else survival.vacuumTime = 0.0f;
+        if (Rocket_Boarded()) { survival.vacuumTime = 0.0f; survival.inVacuum = false; } // inside a pressurised hull, out of air
         if (survival.breathable) survival.oxygen = std::min(100.0f, survival.oxygen + survival.airRefillPerSec * dt);
         else {
             // Underwater drains it faster (a rebreather slows that); bigger tanks last longer.

@@ -39,10 +39,11 @@ enum class PartType : uint8_t {
     HvGenerator, ArcFurnace, Refinery, PrecisionAssembler,           // HV
     Farmland,                                                        // tilled soil a crop grows on (plan 2, milestone 11)
     Fence, Gate,                                                     // 1 m wooden panels: pens (milestone 12); the player walks through a gate, animals do not
+    Cabin,                                                           // rocket crew cabin: 4 seats, 30 min of air (plan 3, M19)
     Count
 };
 inline bool IsMachine(PartType t) { return (t >= PartType::Chest && t <= PartType::SteamMacerator) || (t >= PartType::OreWasher && t <= PartType::PrecisionAssembler); }
-inline bool IsRocketPart(PartType t) { return t >= PartType::RocketEngine && t <= PartType::LandingLeg; }
+inline bool IsRocketPart(PartType t) { return (t >= PartType::RocketEngine && t <= PartType::LandingLeg) || t == PartType::Cabin; }
 inline bool IsShape(PartType t) { return t <= PartType::Beam8; } // structure: built from a material
 constexpr int kShapeCount = (int)PartType::Beam8 + 1;
 const char* PartName(PartType t);
@@ -87,6 +88,7 @@ public:
     std::vector<Part> parts;            // index = part id (removed parts have type Count)
     float fuel = 0.0f;                  // rocket fuel loaded (kg), when the plot is a rocket
     std::unordered_map<int, float> damage; // rocket parts: part index -> 0 sound .. 1 out of action (saved)
+    float air = 0.0f;                   // rocket life support: minutes of breathable air loaded (saved)
     struct CellRef { int part; CellShape shape; };
     std::unordered_map<Int3, CellRef> cells; // occupied cell -> part index and its shape there
 

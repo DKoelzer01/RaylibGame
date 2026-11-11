@@ -32,6 +32,8 @@ struct RocketStats {
     float damage = 0;                     // mean damage of the rocket parts, 0..1
     int damagedParts = 0;                 // rocket parts with any damage
     float leak = 0;                       // kg of fuel a second lost from damaged tanks
+    float airCapacity = 0;                // minutes of air the cockpits (10) and cabins (30) hold
+    int seats = 0;                        // a cockpit 1, a cabin 4
     float twr = 0, deltaV = 0, deltaVNeeded = 0;
     bool ready = false;
     std::vector<std::string> missing;
@@ -41,6 +43,11 @@ RocketStats Rocket_Stats(const Plot& plot, const Planetoid* body);
 // Repair kits (from the hotbar): the most damaged part of the nearest rocket within 12 m (the boarded
 // one, or one on a pad) is half repaired. False if there is none to repair.
 bool Rocket_UseRepairKit();
+// Life support: oxygen canisters loaded into a rocket (I, with the fuel), 10 minutes of air each.
+int Rocket_LoadAir(Plot& plot, int canisters);
+// Aboard outside breathable air, the cockpit spends its air: true while there is some.
+bool Rocket_BreatheAboard(float dt);
+float Rocket_AirMinutes();
 // Tests: damage a rocket part (part index) by an amount.
 void Rocket_DamagePart(Plot& plot, int part, float amount);
 

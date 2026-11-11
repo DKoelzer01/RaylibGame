@@ -105,3 +105,4 @@ bronze_gear 1        = bronze_plate 4
 insulation_module 1  = feather 8, cloth 2
 # Rocket repair (milestone 18).
 repair_kit 2         = steel_plate 2, copper_wire 2, iron_rod 2
+cabin 1              = titanium_alloy_plate 4, glass 4, advanced_circuit 1

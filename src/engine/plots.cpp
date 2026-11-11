@@ -55,6 +55,7 @@ const char* PartName(PartType t) {
         case PartType::Farmland: return "farmland";
         case PartType::Fence: return "fence";
         case PartType::Gate: return "gate";
+        case PartType::Cabin: return "cabin";
         default: return "?";
     }
 }
@@ -105,6 +106,7 @@ const char* PartCostItem(PartType t) {
         case PartType::Farmland: return "farmland";
         case PartType::Fence: return "fence";
         case PartType::Gate: return "gate";
+        case PartType::Cabin: return "cabin";
         case PartType::RocketEngine: return "rocket_engine";
         case PartType::FuelTank: return "fuel_tank";
         case PartType::Cockpit: return "cockpit";
@@ -170,6 +172,7 @@ static Color PartColor(PartType t) {
         case PartType::Farmland: return { 86, 60, 38, 255 };
         case PartType::Fence: return { 130, 95, 60, 255 };
         case PartType::Gate: return { 165, 120, 70, 255 };
+        case PartType::Cabin: return { 200, 205, 215, 255 };
         default: return { 168, 166, 158, 255 };                                                          // concrete
     }
 }
@@ -184,7 +187,7 @@ static void PartCells(PartType t, std::vector<std::pair<Int3, CellShape>>& out) 
         case PartType::Block: case PartType::Chest: case PartType::Generator: case PartType::Furnace: case PartType::Macerator: case PartType::Battery:
         case PartType::Campfire: case PartType::Kiln: case PartType::CokeOven: case PartType::BlastFurnace: case PartType::Boiler:
         case PartType::ForgeHammer: case PartType::AlloySmelter: case PartType::SteamMacerator:
-        case PartType::RocketEngine: case PartType::FuelTank: case PartType::Cockpit:
+        case PartType::RocketEngine: case PartType::FuelTank: case PartType::Cockpit: case PartType::Cabin:
         case PartType::OreWasher: case PartType::Centrifuge: case PartType::WaterPump: case PartType::MvGenerator: case PartType::Electrolyzer:
         case PartType::ChemicalReactor: case PartType::Miner: case PartType::HvGenerator: case PartType::ArcFurnace: case PartType::Refinery:
         case PartType::PrecisionAssembler:
@@ -653,7 +656,7 @@ void PlotSet::save(FILE* f) const {
         }
         int worn = 0;
         for (const auto& kv : p->damage) worn += kv.second > 0.0f ? 1 : 0;
-        fprintf(f, "wear %d", worn);
+        fprintf(f, "wear %d %.2f", worn, p->air); // and the air its life support holds
         for (const auto& kv : p->damage) if (kv.second > 0.0f) fprintf(f, " %d %.3f", kv.first, kv.second);
         fprintf(f, "\n");
     }
@@ -698,7 +701,7 @@ bool PlotSet::load(FILE* f) {
         }
         if (wear) {
             int worn = 0;
-            if (fscanf(f, " wear %d", &worn) != 1) return false;
+            if (fscanf(f, " wear %d %f", &worn, &p->air) != 2) return false;
             for (int k = 0; k < worn; ++k) { int part = 0; float d = 0.0f; if (fscanf(f, " %d %f", &part, &d) != 2) return false; p->damage[part] = d; }
         }
         nextId = std::max(nextId, id + 1);

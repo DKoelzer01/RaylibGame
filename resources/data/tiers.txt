@@ -64,7 +64,9 @@
     task | get guidance_computer 1 | Craft a guidance computer
     task | get cockpit 1          | Craft a cockpit
     task | get rocket_fuel 5      | Refine rocket fuel
+    task | do lifesupport 1        | Load oxygen canisters into the rocket (I): its air outside the atmosphere
     task | orbit                  | Fly a rocket to orbit (35 km up, fast sideways)
+    task | do rocket_landed 1      | Bring a rocket back down (aboard, P: the autopilot deorbits and lands)
 8 | Space            | -                | The ring 50 km up (the huge rocks goliath, bastion and pebble), then the moon.
     task | visit ring             | Visit the asteroid ring 50 km up
     task | visit moon             | Land on the moon

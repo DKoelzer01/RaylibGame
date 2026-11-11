@@ -28,6 +28,7 @@ namespace {
     double warpStart = 0.0;
     RocketTelemetry warpBefore;
     double maxAlt = 0.0;
+    float airLoaded = 0.0f;   // minutes of air loaded into the cockpit
     void Next() { ++phase; phaseStart = GetTime(); }
     double T() { return GetTime() - phaseStart; }
 }
@@ -54,6 +55,8 @@ int RocketTest_Update(Scene& world) {
         ok &= BuildTool_Place(*p, *plot, { PartType::Cockpit, { 0, 11, 0 }, 0 }, false);
         inventory.add("rocket_fuel", 60);
         const int loaded = Rocket_LoadFuel(*plot, 60);
+        inventory.add("oxygen_canister", 1);
+        airLoaded = Rocket_LoadAir(*plot, 1) * 10.0f; // 10 min for the cockpit's life support
         const RocketStats s = Rocket_Stats(*plot, p);
         printf("bench: rocket: built %d parts (%s); fuel %d items -> %.0f kg; dry %.0f kg, thrust %.0f kN, TWR %.2f, delta-v %.0f m/s (orbit needs ~%.0f): %s\n",
                plot->partCount(), ok ? "ok" : "FAILED", loaded, s.fuel, s.dryMass, s.thrust / 1000.0f, s.twr, s.deltaV, s.deltaVNeeded, s.ready ? "READY" : s.missing.front().c_str());
@@ -127,8 +130,12 @@ int RocketTest_Update(Scene& world) {
     case 5: {
         if (T() < 2.0) break;
         TakeScreenshot("bench_rocket_landed.png");
+        // Life support spent some of the cockpit's air above the atmosphere (none on the ground).
+        const float air = Rocket_AirMinutes();
+        const bool breathed = air < airLoaded - 0.05f && air > 0.0f;
+        printf("bench: rocket: life support: %.1f of %.0f min of air left%s\n", air, airLoaded, breathed ? "" : " - FAILED: the air was not used");
         const bool out = Rocket_Exit(world);
-        const bool pass = orbited && t.damage == 0 && out && survival.deaths == 0;
+        const bool pass = orbited && t.damage == 0 && out && survival.deaths == 0 && breathed;
         printf("bench: rocket gate (build, launch, orbit, land): %s\n", pass ? "PASS" : "FAIL");
         return pass ? 1 : -1;
     }

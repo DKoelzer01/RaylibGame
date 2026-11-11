@@ -1,4 +1,5 @@
 #include "rocket.h"
+#include "survival.h"
 #include "buildtool.h"
 #include "gameui.h"
 #include "inventory.h"
@@ -221,10 +222,12 @@ namespace {
         autopilot = RocketAutopilot::Off;
         angVel = { 0, 0, 0 };
         ++landings;
+        QuestBook_Count("rocket_landed");
     }
 
     // Lift off: the pad plot becomes the vehicle's.
     void Launch(Scene& world) {
+        QuestBook_Count("launch");
         Planetoid* body = PadBody();
         Plot* plotPtr = PadPlot();
         if (!body || !plotPtr) return;
@@ -566,7 +569,8 @@ RocketStats Rocket_Stats(const Plot& plot, const Planetoid* body) {
             ++rocketParts;
             if (p.type == PartType::RocketEngine && dmg < 1.0f) ++s.engines;
             if (p.type == PartType::FuelTank) { ++s.tanks; s.leak += 2.0f * dmg; } // 2 kg/s from a broken tank
-            if (p.type == PartType::Cockpit) ++s.cockpits;
+            if (p.type == PartType::Cockpit) { ++s.cockpits; ++s.seats; s.airCapacity += 10.0f; }
+            if (p.type == PartType::Cabin) { s.seats += 4; s.airCapacity += 30.0f; }
             if (p.type == PartType::Guidance && dmg < 1.0f) ++s.guidance;
             if (p.type == PartType::LandingLeg && dmg < 1.0f) ++s.legs;
         } else {
@@ -661,13 +665,15 @@ void Rocket_Update(Scene& world, bool input, float dt) {
         if (!hit) return;
         aimBody = body->id;
         aimPlot = hit->id;
-        aimCockpit = hit->parts[hitPart].type == PartType::Cockpit;
+        aimCockpit = hit->parts[hitPart].type == PartType::Cockpit || hit->parts[hitPart].type == PartType::Cabin;
         if (!input) return;
         if (IsKeyPressed(KEY_I)) {
             const int n = Rocket_LoadFuel(*hit, 1 << 20);
-            GameUI_Toast(n > 0 ? TextFormat("Loaded %d rocket fuel (%.0f kg)", n, n * fuelPerItem) : "No rocket fuel to load, or the tanks are full");
+            const int air = Rocket_LoadAir(*hit, 1 << 20);
+            if (n > 0 || air > 0) GameUI_Toast(TextFormat("Loaded %d rocket fuel (%.0f kg), %d oxygen canister(s) (%d min of air)", n, n * fuelPerItem, air, air * 10));
+            else GameUI_Toast("Nothing to load (rocket fuel, oxygen canisters), or it is full");
         }
-        if (aimCockpit && IsKeyPressed(KEY_E)) { Rocket_Board(world, *body, *hit); GameUI_Toast("Aboard: Shift throttle up to launch, Ctrl down, X cut, W/S/A/D/Z/C steer, E leave"); }
+        if (aimCockpit && IsKeyPressed(KEY_E)) { Rocket_Board(world, *body, *hit); GameUI_Toast("Aboard: P autopilot (to orbit / down to land), Shift throttle up, Ctrl down, X cut, W/S/A/D/Z/C steer, M map, E leave"); }
         return;
     }
     // Aboard.
@@ -678,6 +684,15 @@ void Rocket_Update(Scene& world, bool input, float dt) {
         if (IsKeyDown(KEY_LEFT_CONTROL)) throttle = std::max(0.0f, throttle - dt * 0.6f);
         if (IsKeyPressed(KEY_X)) throttle = 0.0f;
         if (IsKeyPressed(KEY_M)) mapView = !mapView;
+        if (IsKeyPressed(KEY_P)) { // the autopilot: to orbit, or (in orbit) down to a landing; again: manual
+            if (autopilot != RocketAutopilot::Off) { autopilot = RocketAutopilot::Off; GameUI_Toast("Autopilot off: manual control"); }
+            else {
+                const RocketTelemetry t = Rocket_Telemetry(world);
+                if (state == RocketState::Flying && t.periapsis > 30000.0) { autopilot = RocketAutopilot::Deorbit; GameUI_Toast("Autopilot: deorbit burn, then a powered landing"); }
+                else if (state == RocketState::Flying && t.groundAltitude > 300.0 && t.verticalSpeed < 0.0) { autopilot = RocketAutopilot::Land; GameUI_Toast("Autopilot: powered landing"); }
+                else { autopilot = RocketAutopilot::Ascent; autoTarget = 45000.0; GameUI_Toast("Autopilot: gravity turn to a 45 km orbit"); }
+            }
+        }
         if (IsKeyPressed(KEY_PERIOD)) Rocket_SetWarp(warpLevel + 1);
         if (IsKeyPressed(KEY_COMMA)) Rocket_SetWarp(warpLevel - 1);
         if (state == RocketState::OnPad && IsKeyPressed(KEY_E)) { Rocket_Exit(world); return; }
@@ -870,6 +885,7 @@ void Rocket_DrawHUD(Scene& world) {
         DrawText(TextFormat("fuel %.0f / %.0f kg   delta-v %.0f m/s (orbit needs ~%.0f)", s.fuel, s.fuelCapacity, s.deltaV, s.deltaVNeeded), x, y, 16, RAYWHITE); y += 20;
         DrawText(TextFormat("%d engine(s), %d tank(s), %d landing leg(s)", s.engines, s.tanks, s.legs), x, y, 16, RAYWHITE); y += 24;
         if (s.damagedParts > 0) { DrawText(TextFormat("DAMAGE: %d part(s), %.0f%% overall%s - repair kits mend them (hotbar)", s.damagedParts, s.damage * 100.0f, s.leak > 0.0f ? ", tanks leaking" : ""), x, y, 16, ORANGE); y += 22; }
+        if (s.airCapacity > 0.0f) { DrawText(TextFormat("Air: %.0f of %.0f min (oxygen canisters, I) - %d seat(s)", plot->air, s.airCapacity, s.seats), x, y, 16, plot->air > 0.0f ? RAYWHITE : ORANGE); y += 22; }
         if (s.ready) { DrawText("READY", x, y, 18, GREEN); y += 22; }
         for (const std::string& m : s.missing) { DrawText(TextFormat("needs %s", m.c_str()), x, y, 16, ORANGE); y += 20; }
         DrawText(aimCockpit ? "E board   I load fuel" : "I load fuel (look at the cockpit to board)", x, y + 4, 16, Fade(RAYWHITE, 0.8f));
@@ -978,5 +994,24 @@ bool Rocket_UseRepairKit() {
     GameUI_Toast(TextFormat("Repaired the %s: %.0f%% damaged", PartName(best->parts[part].type), worst->second * 100.0f));
     if (worst->second <= 0.0f) best->damage.erase(worst);
     Audio_Play(Sfx::Craft, 0.6f, 0.9f);
+    return true;
+}
+
+int Rocket_LoadAir(Plot& plot, int canisters) {
+    const RocketStats s = Rocket_Stats(plot, nullptr);
+    const int room = (int)((s.airCapacity - plot.air) / 10.0f);
+    const int n = std::min({ canisters, room, inventory.count("oxygen_canister") });
+    if (n <= 0 || !inventory.remove("oxygen_canister", n)) return 0;
+    plot.air += n * 10.0f;
+    QuestBook_Count("lifesupport", n);
+    return n;
+}
+
+float Rocket_AirMinutes() { Plot* p = CurrentPlot(); return p ? p->air : 0.0f; }
+
+bool Rocket_BreatheAboard(float dt) {
+    Plot* p = CurrentPlot();
+    if (!p || p->air <= 0.0f) return false;
+    p->air = std::max(0.0f, p->air - dt / 60.0f);
     return true;
 }
