@@ -202,7 +202,7 @@ int main(int argc, char** argv)
     double holeStart = -1.0;
     float holeMaxImpact = 0.0f, holeMinHealth = 100.0f;
     Vector3 holeRim = { 0, 0, 0 };
-    double moonStart = -1.0; int moonPhase = 0; DVec3 moonLocal0{}, moonTakeoff{}; bool moonAirborne = false;
+    double moonStart = -1.0; int moonPhase = 0; DVec3 moonLocal0{}, moonTakeoff{}; bool moonAirborne = false; float moonMaxUp = 0.0f; double moonMaxRise = 0.0, moonMinRise = 0.0; int moonStrokes = 0;
     double airStart = -1.0; int airPhase = 0; float airDist = 0.0f, airTime = 0.0f, airFuel0 = 0.0f, airPower0 = 0.0f, airPowerAir = 0.0f;
     Vector3 airPrevLocal{};
     bool crackCheck = false;       // --crack-check: no skybox, magenta clear; reports the share of magenta pixels
@@ -1178,6 +1178,22 @@ int main(int argc, char** argv)
                             else if (moonAirborne || t > 20.0) {
                                 printf("bench: jump on the moon: %.1f s in the air, landed %.2f m from takeoff in the moon's frame%s\n",
                                        t, (local - moonTakeoff).length(), moonAirborne ? "" : " [never took off]");
+                                // Then dig at the feet for 4 s: the ground going away must not launch the player.
+                                player.forward = Vector3Normalize(Vector3Add(Vector3Scale(player.up, -0.9f), Vector3Scale(player.forward, 0.3f)));
+                                moonTakeoff = local; moonMaxUp = 0.0f; moonMaxRise = 0.0; moonMinRise = 0.0; moonStrokes = 0;
+                                moonPhase = 4;
+                                moonStart = GetTime();
+                            }
+                        } else if (moonPhase == 4) {
+                            const Vector3 fe = (player.position - world.renderOrigin).toFloat();
+                            const Vector3 rel = player.grounded ? player.velocity : Vector3Subtract(player.velocity, moon->surfaceVelocity(fe));
+                            moonMaxUp = std::max(moonMaxUp, Vector3DotProduct(rel, player.up));
+                            moonMaxRise = std::max(moonMaxRise, local.length() - moonTakeoff.length()); moonMinRise = std::min(moonMinRise, local.length() - moonTakeoff.length());
+                            if (TerrainTool_Stroke(true)) ++moonStrokes;
+                            if (t > 4.0) {
+                                const bool ok = moonMaxUp < 3.0f && moonMaxRise < 1.5;
+                                printf("bench: dig at the feet on the moon: %d strokes, worst upward speed %.2f m/s, rose at most %.2f m, sank %.2f m: %s\n",
+                                       moonStrokes, moonMaxUp, moonMaxRise, -moonMinRise, ok ? "PASS" : "FAIL");
                                 benchMoon = false;
                             }
                         }
