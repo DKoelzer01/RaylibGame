@@ -166,7 +166,7 @@ int main(int argc, char** argv)
     float waterLevel = 0.0f;
     int menuStep = 0, menuFrames = 0;
     bool menuOk = true;
-    int wallPhase = 0;
+    int wallPhase = 0; bool wallOk = true;
     double wallStart = 0.0, wallMaxStep = 0.0, wallMaxStepAt = 0.0;
     float wallMaxImpact = 0.0f, wallMinHealth = 100.0f, wallMaxSpeed = 0.0f;
     DVec3 wallLast{};
@@ -846,10 +846,39 @@ int main(int argc, char** argv)
                             if (k % 2 == 0) player.autoJump = true;
                         }
                     } else if (wallPhase == 2) {
-                        player.autoWalk = false;
                         const bool pass = survival.deaths == 0 && wallMinHealth > 90.0f && wallMaxStep < 1.0;
                         printf("bench: wall shove 9 s: largest frame move %.2f m (at %.1f s), top speed vs ground %.1f m/s, worst impact %.1f m/s, health %.0f, deaths %d: %s\n",
                                wallMaxStep, wallMaxStepAt, wallMaxSpeed, wallMaxImpact, wallMinHealth, survival.deaths, pass ? "PASS" : "FAIL");
+                        wallOk = pass;
+                        // Tight corners: two crevices narrowing to under the body's width meet in a V ahead;
+                        // walk and jump into its point, turning a little either way.
+                        const Vector3 flat = Vector3Normalize(Vector3Subtract(player.forward, Vector3Scale(player.up, Vector3DotProduct(player.forward, player.up))));
+                        const Vector3 side = Vector3CrossProduct(flat, player.up);
+                        for (int arm = -1; arm <= 1; arm += 2)
+                            for (int k = 0; k < 8; ++k) {
+                                const float r = std::max(0.42f, 1.2f - 0.11f * k);
+                                const Vector3 along = Vector3Add(Vector3Scale(flat, 0.8f * k), Vector3Scale(side, arm * (1.6f - 0.2f * k)));
+                                ApplyTerrainEdit(*p, TerrainEdit{ p->toLocal(Vector3Add(feet, Vector3Add(along, Vector3Scale(player.up, r)))), r, -10.0f });
+                            }
+                        player.forward = flat;
+                        wallMaxStep = 0.0; wallMaxImpact = 0.0f; wallMaxSpeed = 0.0f; wallMinHealth = survival.health;
+                        wallPhase = 3;
+                        wallStart = GetTime();
+                    } else if (wallPhase == 3 && t < 7.0) {
+                        const int k = (int)(t * 2.0);
+                        static int lastK = -1;
+                        if (k != lastK && t > 1.0) {
+                            lastK = k;
+                            const Matrix r = MatrixRotate(player.up, (k % 2 ? 20.0f : -20.0f) * DEG2RAD);
+                            player.forward = Vector3Normalize(Vector3Transform(player.forward, r));
+                            if (k % 3 == 0) player.autoJump = true;
+                        }
+                    } else if (wallPhase == 3) {
+                        player.autoWalk = false;
+                        const bool pass = survival.deaths == 0 && wallMinHealth > 90.0f && wallMaxStep < 1.0;
+                        printf("bench: tight corner 6 s: largest frame move %.2f m (at %.1f s), top speed vs ground %.1f m/s, worst impact %.1f m/s, health %.0f, deaths %d: %s\n",
+                               wallMaxStep, wallMaxStepAt, wallMaxSpeed, wallMaxImpact, wallMinHealth, survival.deaths, pass ? "PASS" : "FAIL");
+                        printf("bench: wall: %s\n", wallOk && pass ? "PASS" : "FAIL");
                         benchWall = false;
                     }
                 } else if (benchWater && (waterPhase > 0 || WorldIdle())) {

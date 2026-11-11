@@ -322,7 +322,13 @@ void Player::stepPhysics(Scene& world, float dt, Vector3 wish, bool jetUp, bool 
     if (!wasGrounded && grounded) velocity = Vector3Subtract(velocity, collideFrameVel);
     // Leaving a spinning body: on the ground velocity is relative to the surface, so add the
     // surface's own motion; you keep the body's momentum, as you would really.
-    if (wasGrounded && !grounded && groundBody && Planetoid::find(groundId) == groundBody) velocity = Vector3Add(velocity, groundBody->surfaceVelocity(feet));
+    // Landed and lifted off within one frame (contact flicker in a tight corner) leaves groundBody
+    // unset (it is recorded at the end of the frame): the landing took out the nearest body's motion,
+    // so give that back. Skipping it lost the planet's spin (~87 m/s) and the walls threw the player.
+    if (wasGrounded && !grounded) {
+        Planetoid* from = (groundBody && Planetoid::find(groundId) == groundBody) ? groundBody : nearest;
+        if (from) velocity = Vector3Add(velocity, from->surfaceVelocity(feet));
+    }
     position = world.renderOrigin + feet;
     jumpBuffer = std::max(0.0f, jumpBuffer - dt);
     if (!grounded) coyote = std::max(0.0f, coyote - dt);
