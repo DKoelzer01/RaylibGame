@@ -245,13 +245,22 @@ namespace {
     // (rocketry's tier), and a miner working its deposit.
     void BuildFull() {
         auto add = [](const std::string& n, std::function<bool()> f) { steps.push_back({ n, std::move(f) }); };
-        add("mine for the MV and HV ladder (iron, coal, copper, bauxite, ilmenite) and dig stone", [] {
-            return MineOre("iron_ore", 185) && MineOre("coal", 530) && MineOre("copper_ore", 160) && MineOre("bauxite_ore", 14) && MineOre("ilmenite_ore", 4) && DigFor("stone", 40, 6.0f);
+        add("mine for the MV and HV ladder (iron, coal, copper) and dig stone", [] {
+            return MineOre("iron_ore", 185) && MineOre("coal", 530) && MineOre("copper_ore", 160) && DigFor("stone", 40, 6.0f);
         });
         add("smelt 170 iron in the kiln", Run("kiln", { { "iron_ore", 170 }, { "coal", 34 } }, "iron_ingot", 170));
         add("smelt 145 copper in the kiln", Run("kiln", { { "copper_ore", 145 }, { "coal", 29 } }, "copper_ingot", 145));
         add("bake 172 coke", Run("coke_oven", { { "coal", 344 } }, "coke", 172));
-        add("make 160 steel", Run("blast_furnace", { { "iron_ingot", 160 }, { "coke", 160 } }, "steel_ingot", 160));
+        add("make 163 steel", Run("blast_furnace", { { "iron_ingot", 163 }, { "coke", 163 } }, "steel_ingot", 163));
+        // Bauxite needs an iron pickaxe, ilmenite a steel one.
+        add("craft iron and steel pickaxes; mine bauxite and ilmenite", [] {
+            if (!Craft("iron_pickaxe", 1)) return false;
+            terrainTool.heldTool = "iron_pickaxe";
+            if (!MineOre("bauxite_ore", 14)) return false;
+            if (!Craft("steel_pickaxe", 1)) return false;
+            terrainTool.heldTool = "steel_pickaxe";
+            return MineOre("ilmenite_ore", 4);
+        });
         add("fuel the boiler again", [] { Give("boiler", "coal", 20); return true; });
         add("hammer 160 steel plates", Run("forge_hammer", { { "steel_ingot", 160 } }, "steel_plate", 160));
         add("dig 184 sand", [] { return DigSand(184); });
