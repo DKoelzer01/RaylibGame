@@ -34,6 +34,34 @@ namespace {
     const Vector3 kStone = { 0.38f, 0.37f, 0.36f }, kMoonDust = { 0.42f, 0.40f, 0.38f }, kMoonRock = { 0.28f, 0.27f, 0.26f };
 }
 
+Vector3 SurfaceAlbedo(const PlanetField& f, Vector3 up, float e, float slope, bool foliage, unsigned int foliageSeed, bool& water) {
+    const float lat = fabsf(up.y);
+    water = false;
+    if (f.moon) return Mix(kMoonDust, kMoonRock, slope * 4.0f);
+    if (e < 0.0f && lat < 0.9f) {
+        // Sea: clear in the shallows, deep blue offshore (as the water shader).
+        const float clarity = expf(e / 5.0f);
+        water = true;
+        return Mix({ 0.01f, 0.05f, 0.13f }, { 0.03f, 0.22f, 0.24f }, clarity * 0.6f);
+    }
+    const Vector3 p = Vector3Scale(up, f.radius + e);
+    const float w = f.climate.fractal(2, p.x, p.y, p.z);
+    if (lat > 0.9f && e < 0.0f) return kIce;                                     // frozen polar sea
+    if (lat > 0.93f + 0.03f * w || e > 1350.0f + 100.0f * w) return kIce;
+    if (lat > 0.82f + 0.08f * w || e > 1050.0f + 150.0f * w) return kSnow;
+    if (slope > 0.45f) return kStone;
+    if (e < 6.0f + 4.0f * w) return kSand;
+    if (slope > 0.3f || e > 800.0f + 100.0f * w) return kGravel;
+    Vector3 c = lat > 0.62f + 0.06f * w ? kDirt : kGrass;
+    if (foliage) {
+        const float canopy = TreeCanopy(up, f.radius, e, foliageSeed);
+        const Vector3 crowns = lat < 0.35f ? Mix({ 0.22f, 0.27f, 0.07f }, { 0.09f, 0.27f, 0.05f }, (lat - 0.15f) / 0.2f)
+                                           : Mix({ 0.09f, 0.27f, 0.05f }, { 0.05f, 0.17f, 0.08f }, (lat - 0.45f) / 0.25f);
+        c = Mix(c, Vector3Scale(crowns, 0.5f), canopy);
+    }
+    return c;
+}
+
 struct FarSphere::Bake {
     std::shared_ptr<const PlanetField> field;
     bool foliage = false;
@@ -82,7 +110,6 @@ static void ShadeRows(FarSphere::Bake& b, int y0, int y1) {
         for (int x = 0; x < W; ++x) {
             const Vector3 up = TexelDir(x, y, W, H);
             const float e = E(x, y);
-            const float lat = fabsf(up.y);
             // Normal from the height grid: east-west and north-south slopes.
             const float cl = std::max(cosf(((y + 0.5f) / H - 0.5f) * PI), 0.02f);
             const float dx = 2.0f * PI * R * cl / W, dy = PI * R / H;
@@ -92,35 +119,9 @@ static void ShadeRows(FarSphere::Bake& b, int y0, int y1) {
             const Vector3 north = Vector3CrossProduct(up, east);
             Vector3 n = Vector3Normalize(Vector3Subtract(up, Vector3Add(Vector3Scale(east, dedx), Vector3Scale(north, dedy))));
             const float slope = 1.0f - Vector3DotProduct(n, up);
-            Vector3 c;
             bool water = false;
-            if (f.moon) {
-                c = Mix(kMoonDust, kMoonRock, slope * 4.0f);
-            } else if (e < 0.0f && lat < 0.9f) {
-                // Sea: clear in the shallows, deep blue offshore (as the water shader).
-                const float clarity = expf(e / 5.0f);
-                c = Mix({ 0.01f, 0.05f, 0.13f }, { 0.03f, 0.22f, 0.24f }, clarity * 0.6f);
-                water = true;
-                n = up;
-            } else {
-                const Vector3 p = Vector3Scale(up, R + e);
-                const float w = f.climate.fractal(2, p.x, p.y, p.z);
-                if (lat > 0.9f && e < 0.0f) c = kIce;                                     // frozen polar sea
-                else if (lat > 0.93f + 0.03f * w || e > 1350.0f + 100.0f * w) c = kIce;
-                else if (lat > 0.82f + 0.08f * w || e > 1050.0f + 150.0f * w) c = kSnow;
-                else if (slope > 0.45f) c = kStone;
-                else if (e < 6.0f + 4.0f * w) c = kSand;
-                else if (slope > 0.3f || e > 800.0f + 100.0f * w) c = kGravel;
-                else {
-                    c = lat > 0.62f + 0.06f * w ? kDirt : kGrass;
-                    if (b.foliage) {
-                        const float canopy = TreeCanopy(up, R, e, b.foliageSeed);
-                        const Vector3 crowns = lat < 0.35f ? Mix({ 0.22f, 0.27f, 0.07f }, { 0.09f, 0.27f, 0.05f }, (lat - 0.15f) / 0.2f)
-                                                           : Mix({ 0.09f, 0.27f, 0.05f }, { 0.05f, 0.17f, 0.08f }, (lat - 0.45f) / 0.25f);
-                        c = Mix(c, Vector3Scale(crowns, 0.5f), canopy);
-                    }
-                }
-            }
+            const Vector3 c = SurfaceAlbedo(f, up, e, slope, b.foliage, b.foliageSeed, water);
+            if (water) n = up;
             unsigned char* px = &b.albedo[((size_t)y * W + x) * 4];
             PutColor(px, c, water);
             unsigned char* pn = &b.normals[((size_t)y * W + x) * 4];

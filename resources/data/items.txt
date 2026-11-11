@@ -81,3 +81,5 @@ steel_axe        | Steel axe        | tool | 125,120,130 | Fells trees quickly.
 titanium_pickaxe | Titanium pickaxe | tool | 205,180,215 | The biggest bite.
 titanium_shovel  | Titanium shovel  | tool | 205,180,205 | The widest shovel.
 titanium_axe     | Titanium axe     | tool | 205,175,200 | Fells trees in a few swings.
+# Navigation: carrying a Map shows the minimap and opens the full map (M).
+map              | Map              | tool | 210,190,140 | Shows the ground you have explored: a minimap on the HUD, the full map with M (waypoints).

@@ -19,6 +19,11 @@ struct RenderContext;
 
 constexpr float kFarSphereRadii = 3.0f;   // the coarse meshes look rougher than the bake past here
 
+// Linear albedo of a planet's surface at a unit direction (e: height above sea level, slope:
+// 1 - dot(normal, up)), by the same biome rules as the terrain; water set over the sea. Shared by
+// the far-sphere bake and the maps.
+Vector3 SurfaceAlbedo(const PlanetField& f, Vector3 up, float e, float slope, bool foliage, unsigned int foliageSeed, bool& water);
+
 class FarSphere {
 public:
     FarSphere(std::shared_ptr<const PlanetField> field, bool foliage, unsigned int foliageSeed);

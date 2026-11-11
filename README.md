@@ -35,7 +35,7 @@ generated in the build directory for IntelliSense/clangd.
 | LMB / RMB (hold) | mine with the tool in hand (the sphere shows inside the ground) / place soil; LMB on a tree or bush chops or harvests it |
 | Tab | inventory grid (click a stack to move it, Sort), crafting, and the Creative tab (creative mode, any item) |
 | G | build mode (wheel shape, R / V rotate, RMB place, LMB remove; B saves the plot you look at as a blueprint, N cycles blueprints: RMB places what you can afford) |
-| M / , . | aboard a rocket: orbit map / time warp down, up (1x-100x, coasting above the air only) |
+| M / , . | the map (with a Map: wheel zoom, drag pan, click a waypoint, right-click removes, C centres); aboard a rocket: orbit map / time warp down, up (1x-100x, coasting above the air only) |
 | 1-9, 0 | hotbar: hands, a tool (pickaxe, shovel, axe), a building material (any shape costs it), a machine, or a consumable (oxygen canister, power cell). In the inventory, hover an item and press 1-0 to bind it |
 | L | headlamp (suit power) |
 | F | toggle free-fly camera (WASD along the view, Space/Ctrl along camera up, mouse turns, Q/E roll, Shift/Alt faster) |
@@ -91,6 +91,10 @@ Shaders in `resources/` hot-reload when saved.
   cockpit (~5 min a tank), suit power pays for recharging the jetpack and the headlamp, health drops when
   suffocating or from hard landings. Death respawns you at rest at the start. Oxygen canisters and power cells are
   used from the hotbar. An objectives list guides the loop; the quest book (tiers) leads through the tech.
+- **Navigation** (`src/space/navigation.*`): a compass across the top of the HUD (heading, the start and waypoints).
+  With a Map in the inventory (you start with one; fibre and charcoal make another) a minimap turns with your view
+  and M opens the full map. Both show only explored ground: 256 m tiles within 150 m of where you have been, drawn
+  on the workers from the height field (biome colours, hillshade, sea and rivers). Exploration and waypoints are saved.
 - **Loading screen**: entering the game, and every spawn or teleport, shows it until the terrain there is built;
   play (and the scripted tests) wait it out.
 - **Gravity** (`GravityAt` in `src/engine/world.*`): summed over every body, inverse-square outside a
@@ -223,6 +227,7 @@ fuelled and flown by the autopilot to orbit, saved and loaded in orbit, brought 
 `--test-mine N` digs N strokes at the feet, crafts everything possible and builds 3 strokes,
 `--test-suffocate` checks death/respawn,
 `--test-moon` (moon on its analytic orbit; standing and jumping on it; digging at the feet launches nobody),
+`--test-map` (compass reads east facing east, walking explores, a waypoint north bears 0, both maps render, saved),
 `--test-smallbody` (drop onto a huge ring rock and a 5 m one: land, stand, no death), `--test-inventory` (grid
 stacking, fractions, crafting room, sorting, creative mode, saves), `--time-scale k` (bodies spin and orbit
 k times faster), `--test-mantle` (planet terrain: height band, mantle refuses digging, ore by depth, caves; on the

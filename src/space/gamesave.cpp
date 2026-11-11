@@ -7,6 +7,7 @@
 #include "hotbar.h"
 #include "rocket.h"
 #include "terraintool.h"
+#include "navigation.h"
 
 #include <cstring>
 
@@ -23,6 +24,7 @@ void GameSave_Register() {
         fprintf(f, "quest %d\n", QuestBook_Tier());
         fprintf(f, "creative %d\n", terrainTool.creative ? 1 : 0);
         Hotbar_Save(f);
+        Nav_Save(f);
         Rocket_Save(f);
         fprintf(f, "survival %f %f %f %d\n", survival.oxygen, survival.power, survival.health, survival.deaths);
     };
@@ -30,11 +32,13 @@ void GameSave_Register() {
         inventory.clear();
         terrainTool.creative = false;
         Hotbar_Reset();
+        Nav_Reset();
         char tok[64] = {};
         while (fscanf(f, " %63s", tok) == 1 && strcmp(tok, "end_extras") != 0) {
             if (strcmp(tok, "quest") == 0) { int t = 0; if (fscanf(f, " %d", &t) == 1) QuestBook_SetTier(t); continue; }
             if (strcmp(tok, "creative") == 0) { int c = 0; if (fscanf(f, " %d", &c) == 1) terrainTool.creative = c != 0; continue; }
             if (Hotbar_LoadLine(tok, f)) continue;
+            if (Nav_LoadLine(tok, f)) continue;
             if (Rocket_LoadLine(tok, f)) continue;
             if (strcmp(tok, "player") == 0) {
                 int fly = 0;
