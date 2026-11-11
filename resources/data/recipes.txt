@@ -68,3 +68,4 @@ steel_axe 1        = steel_ingot 3, wood 2
 titanium_pickaxe 1 = titanium_ingot 3, steel_rod 1
 titanium_shovel 1  = titanium_ingot 2, steel_rod 1
 titanium_axe 1     = titanium_ingot 3, steel_rod 1
+map 1              = fibre 4, charcoal 1

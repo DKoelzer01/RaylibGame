@@ -60,6 +60,7 @@ namespace {
         const Plant& p = plantHit.plant;
         if (p.id != chopId) { chopId = p.id; chopHits = 0; }
         Audio_Play(Sfx::Dig, 0.45f, p.tree() ? 0.6f : 1.4f);
+        ++terrainTool.swings;
         if (++chopHits < HitsToFell(p)) return false;
         plantBody->trees->remove(p.id);
         if (p.tree()) {
@@ -169,6 +170,7 @@ static bool BrushStroke(bool digging) {
         inventory.addFractional(hitItem, terrainTool.digStrength * r3 * 0.15f);
         if (WetBed(p, hit.local, hit.material)) inventory.addFractional("clay", terrainTool.digStrength * r3 * 0.06f); // river and pond beds hold clay
         Audio_Play(Sfx::Dig, 0.5f, 0.85f + 0.3f * (float)GetRandomValue(0, 100) / 100.0f);
+        ++terrainTool.swings;
     } else {
         if (!PayFiller()) return false;
         Audio_Play(Sfx::Build, 0.6f);
@@ -247,6 +249,7 @@ bool TerrainTool_Stroke(bool dig) {
     e.softOnly = softOnly;
     ApplyTerrainEdit(p, e);
     Audio_Play(Sfx::Dig, 0.5f, 0.85f + 0.3f * (float)GetRandomValue(0, 100) / 100.0f);
+    ++terrainTool.swings;
     return true;
 }
 

@@ -102,14 +102,25 @@ namespace {
         const float s = Scale();
         const float w = 760.0f * s, h = 52.0f * s;
         const float x = (GetScreenWidth() - w) * 0.5f;
-        float y = GetScreenHeight() * 0.32f;
+        float y = GetScreenHeight() * 0.26f;
         bool changed = false;
-        changed |= Slider({ x, y, w, h }, "Mouse sensitivity", settings.mouseSensitivity, 0.2f, 3.0f, "%.2fx"); y += h + 10 * s;
-        changed |= Slider({ x, y, w, h }, "Field of view", settings.fov, 30.0f, 100.0f, "%.0f deg"); y += h + 10 * s;
-        changed |= Slider({ x, y, w, h }, "Volume", settings.volume, 0.0f, 1.0f, "%.2f"); y += h + 10 * s;
-        changed |= Toggle({ x, y, w, h }, "Foliage", settings.foliage); y += h + 10 * s;
-        changed |= Toggle({ x, y, w, h }, "VSync (no tearing)", settings.vsync); y += h + 10 * s;
-        changed |= Toggle({ x, y, w, h }, "Reduce motion", settings.reduceMotion); y += h + 10 * s;
+        changed |= Slider({ x, y, w, h }, "Mouse sensitivity", settings.mouseSensitivity, 0.2f, 3.0f, "%.2fx"); y += h + 6 * s;
+        changed |= Slider({ x, y, w, h }, "Field of view", settings.fov, 30.0f, 100.0f, "%.0f deg"); y += h + 6 * s;
+        changed |= Slider({ x, y, w, h }, "Volume", settings.volume, 0.0f, 1.0f, "%.2f"); y += h + 6 * s;
+        changed |= Toggle({ x, y, w, h }, "Foliage", settings.foliage); y += h + 6 * s;
+        changed |= Toggle({ x, y, w, h }, "VSync (no tearing)", settings.vsync); y += h + 6 * s;
+        changed |= Toggle({ x, y, w, h }, "Reduce motion", settings.reduceMotion); y += h + 6 * s;
+        changed |= Toggle({ x, y, w, h }, "Show hands", settings.showHands); y += h + 6 * s;
+        {
+            const int fs = (int)(h * 0.5f);
+            DrawText("Hand bob", (int)x, (int)(y + (h - fs) * 0.5f), fs, kText);
+            const char* names[] = { "Full", "Reduced", "Off" };
+            for (int k = 0; k < 3; ++k) {
+                const Rectangle b = { x + w * 0.38f + k * (h * 2.4f), y + h * 0.1f, h * 2.2f, h * 0.8f };
+                if (Button(b, settings.handBob == k ? TextFormat("[%s]", names[k]) : names[k])) { settings.handBob = k; changed = true; }
+            }
+            y += h + 6 * s;
+        }
         {
             const int fs = (int)(h * 0.5f);
             DrawText("Frame cap", (int)x, (int)(y + (h - fs) * 0.5f), fs, kText);
@@ -119,7 +130,7 @@ namespace {
                 const Rectangle b = { x + w * 0.38f + k * (h * 2.4f), y + h * 0.1f, h * 2.2f, h * 0.8f };
                 if (Button(b, settings.fpsCap == caps[k] ? TextFormat("[%s]", names[k]) : names[k])) { settings.fpsCap = caps[k]; changed = true; }
             }
-            y += h + 10 * s;
+            y += h + 6 * s;
         }
         if (changed) Settings_Apply();
         const bool back = Button({ (GetScreenWidth() - 300 * s) * 0.5f, y + 30 * s, 300 * s, 58 * s }, "Back") || IsKeyPressed(KEY_ESCAPE);
@@ -141,6 +152,8 @@ void Settings_Load() {
             else if (!strcmp(key, "fpscap")) settings.fpsCap = std::max(0, (int)v);
             else if (!strcmp(key, "vsync")) settings.vsync = v != 0.0f;
             else if (!strcmp(key, "reducemotion")) settings.reduceMotion = v != 0.0f;
+            else if (!strcmp(key, "showhands")) settings.showHands = v != 0.0f;
+            else if (!strcmp(key, "handbob")) settings.handBob = std::clamp((int)v, 0, 2);
         }
         fclose(f);
     }
@@ -152,6 +165,7 @@ void Settings_Save() {
     if (!f) return;
     fprintf(f, "mouse %.3f\nfov %.1f\nvolume %.3f\nfoliage %d\nfpscap %d\nvsync %d\nreducemotion %d\n", settings.mouseSensitivity, settings.fov, settings.volume,
             settings.foliage ? 1 : 0, settings.fpsCap, settings.vsync ? 1 : 0, settings.reduceMotion ? 1 : 0);
+    fprintf(f, "showhands %d\nhandbob %d\n", settings.showHands ? 1 : 0, settings.handBob);
     fclose(f);
 }
 

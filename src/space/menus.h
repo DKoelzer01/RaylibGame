@@ -24,6 +24,8 @@ struct GameSettings {
     int fpsCap = 0;                 // 0: the monitor's refresh rate
     bool vsync = true;              // no tearing (caps at the monitor's refresh rate)
     bool reduceMotion = false;      // eased walking starts/stops and a smoothed camera up (motion sickness)
+    bool showHands = true;          // the hands and held tool (a fixed reference in view: motion sickness)
+    int handBob = 0;                // 0 full, 1 reduced, 2 off
 };
 extern GameSettings settings;
 void Settings_Load();            // settings.txt (missing: defaults)

@@ -17,6 +17,7 @@ struct TerrainToolSettings {
     bool creative = false;       // building costs nothing
     bool terraform = false;      // debug (F1): the old brush tool - dig and fill any material, wheel resizes
     std::string heldTool;        // the tool item in hand (hotbar); empty or not carried: bare hands
+    int swings = 0;              // counts mining strokes and chops (the hands animate a swing on each)
 };
 extern TerrainToolSettings terrainTool;
 
