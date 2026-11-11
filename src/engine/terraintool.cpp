@@ -206,9 +206,25 @@ bool TerrainTool_Stroke(bool dig) {
     if (terrainTool.terraform) return BrushStroke(dig);
 
     const float radius = MiningRadius();
-    if (!dig && tool.type == ToolType::Shovel && IsSoft(hit.material) && terrainTool.till) {
-        // A shovel tills soft ground into farmland (no soil placed).
-        if (terrainTool.till(p, hit.local)) { Audio_Play(Sfx::Dig, 0.5f, 0.7f); ++terrainTool.swings; return true; }
+    if (!dig && (tool.type == ToolType::Shovel || tool.type == ToolType::Hoe) && IsSoft(hit.material) && terrainTool.till) {
+        // A shovel or a hoe tills soft ground into farmland (no soil placed); an iron or better hoe
+        // tills the 3x3 metres around the aimed square at once.
+        bool any = terrainTool.till(p, hit.local);
+        if (tool.type == ToolType::Hoe && tool.tier >= 2) {
+            const Vector3 up = Vector3Normalize(hit.local);
+            Vector3 east = Vector3CrossProduct({ 0, 1, 0 }, up);
+            east = Vector3Length(east) < 1e-3f ? Vector3{ 1, 0, 0 } : Vector3Normalize(east);
+            const Vector3 north = Vector3CrossProduct(up, east);
+            for (int a = -1; a <= 1; ++a)
+                for (int b = -1; b <= 1; ++b) {
+                    if (a == 0 && b == 0) continue;
+                    const Vector3 d = Vector3Normalize(Vector3Add(hit.local, Vector3Add(Vector3Scale(east, (float)a), Vector3Scale(north, (float)b))));
+                    const auto* pf = dynamic_cast<const PlanetField*>(p.field.get());
+                    const Vector3 at = pf ? Vector3Scale(d, pf->radius + pf->elevation(d)) : Vector3Add(hit.local, Vector3Add(Vector3Scale(east, (float)a), Vector3Scale(north, (float)b)));
+                    any = terrainTool.till(p, at) || any;
+                }
+        }
+        if (any) { Audio_Play(Sfx::Dig, 0.5f, 0.7f); ++terrainTool.swings; return true; }
         return false;
     }
     if (!dig) {

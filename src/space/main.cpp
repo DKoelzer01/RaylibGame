@@ -33,6 +33,8 @@
 #include "farming.h"
 #include "animals.h"
 #include "suit.h"
+#include "toolwear.h"
+#include "tools.h"
 #include "ring_test.h"
 #include "rocket.h"
 #include "jobsystem.h"
@@ -99,6 +101,7 @@ static void StartNewWorld(Scene& world, bool reset) {
         Farm_Reset();
         Animals_Reset();
         Suit_Reset();
+        ToolWear_Reset();
     }
     Planetoid* start = world.objects.empty() ? nullptr : dynamic_cast<Planetoid*>(world.objects[0].get());
     if (start) {
@@ -163,6 +166,7 @@ int main(int argc, char** argv)
     bool benchMap = false;         // --test-map: compass, exploration, waypoints, map images, saves
     bool benchQuests = false;      // --test-quests: tiers open by their tasks; quest state through a save
     bool benchHunger = false, benchFarm = false; // --test-hunger, --test-farm
+    bool benchTools = false, toolsOk = true; int toolsPhase = 0, toolsLife = 0, toolsTilled = 0; double toolsStart = 0.0; // --test-tools
     bool benchSuit = false, suitOk = true; int suitPhase = 0; double suitStart = 0.0; float suitFoodRatio = 0.0f, suitWater = 0.0f, suitRebreather = 0.0f; // --test-suit
     bool benchAnimals = false; int animalPhase = 0, animalCount = 0; double animalStart = 0.0, animalMs = 0.0; int animalNatural = 0; float penWorst = 0.0f, animalSpread = 0.0f, animalFled = 0.0f, animalFollow = 0.0f; // --test-animals
     int hungerPhase = 0, farmPhase = 0; double hungerStart = 0.0, farmStart = 0.0; bool hungerOk = false; float hungerTemp = 0.0f, hungerDrain = 0.0f, farmQuarter = 0.0f, farmGrowth = 0.0f;
@@ -299,6 +303,7 @@ int main(int argc, char** argv)
         if (std::string(argv[i]) == "--test-farm") benchFarm = true;
         if (std::string(argv[i]) == "--test-animals") benchAnimals = true;
         if (std::string(argv[i]) == "--test-suit") benchSuit = true;
+        if (std::string(argv[i]) == "--test-tools") benchTools = true;
         if (std::string(argv[i]) == "--test-viewmodel") benchViewmodel = true;
         if (std::string(argv[i]) == "--test-ring") benchRing = true;
         if (std::string(argv[i]) == "--test-rocket") benchRocket = true;
@@ -1095,6 +1100,61 @@ int main(int argc, char** argv)
                                hungerTemp, hungerDrain, poleTemp, poleDrain, hungerOk && cold ? "PASS" : "FAIL");
                         survival.food = 100.0f; survival.health = 100.0f;
                         benchHunger = false;
+                    }
+                } else if (benchTools && (toolsPhase > 0 || WorldIdle())) {
+                    // --test-tools: a tool wears with each stroke (counted through the swing counter) and
+                    // breaks at its durability; repairing restores it for its head material; wear is
+                    // saved; an iron hoe tills 3x3 m of farmland in one stroke.
+                    Planetoid* p = dynamic_cast<Planetoid*>(world.objects[0].get());
+                    auto check = [&](bool c, const char* what) { if (!c) { printf("bench: tools: FAILED %s\n", what); toolsOk = false; } };
+                    if (toolsPhase == 0) {
+                        player.spawnOn(world, *p, StartSpawnDir(*p));
+                        toolsPhase = 1; toolsStart = GetTime(); toolsOk = true;
+                    } else if (toolsPhase == 1 && GetTime() - toolsStart > 1.5 && player.grounded) {
+                        ToolWear_Reset();
+                        inventory.add("stone_pickaxe", 1);
+                        terrainTool.heldTool = "stone_pickaxe";
+                        terrainTool.swings += 7; // seven strokes, counted by the main loop's wear hook next frame
+                        toolsPhase = 2;
+                    } else if (toolsPhase == 2) {
+                        check(ToolWear_Used("stone_pickaxe") == 7, "strokes wear the held tool");
+                        const int life = ToolDurability(ToolOf("stone_pickaxe"));
+                        ToolWear_OnStroke("stone_pickaxe", life - 8);
+                        check(inventory.count("stone_pickaxe") == 1 && ToolWear_Left("stone_pickaxe") > 0.0f, "one stroke from breaking");
+                        // Save and load the wear.
+                        const std::string path = std::string(GetWorkingDirectory()) + "/tools_test.tmp";
+                        if (FILE* fp = fopen(path.c_str(), "w")) { saveExtrasHook(fp); fprintf(fp, "end_extras\n"); fclose(fp); }
+                        ToolWear_Reset();
+                        if (FILE* fp = fopen(path.c_str(), "r")) { loadExtrasHook(fp); fclose(fp); }
+                        remove(path.c_str());
+                        check(ToolWear_Used("stone_pickaxe") == life - 1, "wear saved");
+                        // Repair (2 gravel for stone), then wear it out.
+                        const int gravel0 = inventory.count("gravel");
+                        check(!ToolWear_Repair("stone_pickaxe") || gravel0 >= 2, "no repair without gravel");
+                        inventory.add("gravel", 2);
+                        const int gravel1 = inventory.count("gravel");
+                        check(ToolWear_Repair("stone_pickaxe") && ToolWear_Used("stone_pickaxe") == 0 && inventory.count("gravel") == gravel1 - 2, "repaired for 2 gravel");
+                        ToolWear_OnStroke("stone_pickaxe", life);
+                        check(inventory.count("stone_pickaxe") == 0, "broke at its durability");
+                        toolsLife = life;
+                        // An iron hoe: look at the ground just ahead and till.
+                        inventory.add("iron_hoe", 1);
+                        terrainTool.heldTool = "iron_hoe";
+                        const Vector3 level = Vector3Normalize(Vector3Subtract(player.forward, Vector3Scale(player.up, Vector3DotProduct(player.forward, player.up))));
+                        player.forward = Vector3Normalize(Vector3Subtract(level, Vector3Scale(player.up, 0.8f)));
+                        player.applyToCamera(world);
+                        TerrainTool_Update(world, false, true); // aim only
+                        int before = 0;
+                        if (p->plots) for (auto& pl : p->plots->plots) for (auto& part : pl->parts) before += part.type == PartType::Farmland ? 1 : 0;
+                        const bool stroked = TerrainTool_Stroke(false);
+                        int after = 0;
+                        if (p->plots) for (auto& pl : p->plots->plots) for (auto& part : pl->parts) after += part.type == PartType::Farmland ? 1 : 0;
+                        toolsTilled = after - before;
+                        check(stroked && toolsTilled >= 7, "an iron hoe tills 3x3 m");
+                        printf("bench: tools: wear counted, saved, repaired, a stone pickaxe broke after %d strokes; an iron hoe tilled %d squares in one stroke -> %s\n",
+                               toolsLife, toolsTilled, toolsOk ? "PASS" : "FAIL");
+                        terrainTool.heldTool.clear();
+                        benchTools = false;
                     }
                 } else if (benchSuit && (suitPhase > 0 || WorldIdle())) {
                     // --test-suit: each module changes its stat by the stated amount; underwater and the
@@ -2303,7 +2363,7 @@ int main(int argc, char** argv)
                         }
                         benchWalkSeconds = 0.0;
                     }
-                } else if ((WorldIdle() && benchDigStrokes == 0 && !benchSaveLoad && benchWalkSeconds <= 0.0 && benchMineStrokes == 0 && minePhase != 2 && benchFlySeconds <= 0.0 && !benchSuffocate && benchOrbitSeconds <= 0.0 && !benchRide && !benchPark && !benchGravity && !benchPrecision && !benchMantle && !benchAirJump && !benchMoon && !benchHole && !benchWall && !benchMenus && !benchWater && !benchFlyFollow && !benchHotbar && !benchInventory && !benchMap && !benchViewmodel && !benchQuests && !benchHunger && !benchFarm && !benchAnimals && !benchSuit && !benchRing && !benchRocket && !benchBlueprint && !benchSmallBody && !benchTrees && !benchChop && benchPersist == 0 && benchBuild == 0 && benchFactory == 0 && !benchProgression) || GetTime() > 600.0) {
+                } else if ((WorldIdle() && benchDigStrokes == 0 && !benchSaveLoad && benchWalkSeconds <= 0.0 && benchMineStrokes == 0 && minePhase != 2 && benchFlySeconds <= 0.0 && !benchSuffocate && benchOrbitSeconds <= 0.0 && !benchRide && !benchPark && !benchGravity && !benchPrecision && !benchMantle && !benchAirJump && !benchMoon && !benchHole && !benchWall && !benchMenus && !benchWater && !benchFlyFollow && !benchHotbar && !benchInventory && !benchMap && !benchViewmodel && !benchQuests && !benchHunger && !benchFarm && !benchAnimals && !benchSuit && !benchTools && !benchRing && !benchRocket && !benchBlueprint && !benchSmallBody && !benchTrees && !benchChop && benchPersist == 0 && benchBuild == 0 && benchFactory == 0 && !benchProgression) || GetTime() > 600.0) {
                     benchStart = GetTime();
                     printf("bench: world ready after %.2f s (%d chunks, avg build %.2f ms of which sampling %.2f ms, %d worker threads)\n",
                         GetWorldStats().lastGenerationSeconds, GetWorldStats().chunks, GetWorldStats().avgBuildMs, GetWorldStats().avgSampleMs, GetWorldStats().workerThreads);
@@ -2550,6 +2610,12 @@ int main(int argc, char** argv)
         if (gameState == 1) Hotbar_Update(world, gameInput && alive, ship.piloted);
         if (gameState == 1) BuildTool_Update(world, gameInput && alive, !ship.piloted && !Rocket_Boarded() && !player.flyMode && !telescope.active && alive);
         if (gameState == 1) TerrainTool_Update(world, gameInput && alive && !Animals_Aiming(), !ship.piloted && !Rocket_Boarded() && !telescope.active && !buildTool.active); // F5/F9 work aboard too
+        {   // Tool wear: each stroke, chop or hit with the held tool (the swing counter covers them all).
+            static int lastSwings = 0;
+            if (terrainTool.swings > lastSwings && !terrainTool.creative && !terrainTool.terraform && !terrainTool.heldTool.empty())
+                ToolWear_OnStroke(terrainTool.heldTool, terrainTool.swings - lastSwings);
+            lastSwings = terrainTool.swings;
+        }
 
         // --test-menus: the menu flow without clicks: main menu (screenshot), New Game, pause
         // (screenshot), Save & Quit to Menu, Load Game; each step's state is checked.

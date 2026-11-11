@@ -9,7 +9,7 @@
 #include <string>
 #include "voxel.h"
 
-enum class ToolType { Hands, Pickaxe, Shovel, Axe };
+enum class ToolType { Hands, Pickaxe, Shovel, Axe, Hoe };
 
 struct ToolSpec {
     ToolType type = ToolType::Hands;
@@ -33,5 +33,8 @@ int PickTierFor(VoxelMaterial m, const char* item); // the pickaxe tier stone an
 
 // Swings to fell a tree, relative to an axe-less base count (bushes are unaffected).
 float ChopFactor(ToolSpec tool);
+
+// Strokes a tool lasts before it breaks (hands: unlimited, 0): stone 150, iron 400, steel 900, titanium 2000.
+int ToolDurability(ToolSpec tool);
 
 #endif

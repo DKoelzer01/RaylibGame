@@ -115,6 +115,10 @@ Shaders in `resources/` hot-reload when saved.
   tank, battery pack, insulation, rebreather, thruster pack, lamp upgrade, thermal regulator, ore scanner (nearest
   ore within 64 m on the HUD), servo legs, grip boots, food pouch. Underwater, oxygen drains twice as fast. Swapping
   suits keeps the modules that fit and returns the rest. Cloth comes from fibre or wool.
+- **Tool wear** (`src/space/toolwear.*`): every stroke, chop or hit wears the held tool (stone 150 strokes, iron 400,
+  steel 900, titanium 2000; a bar on its hotbar slot). A worn-out tool breaks. Repair it in the Crafting tab for a
+  little of its head material (2 gravel, or one iron, steel or titanium ingot). Hoes till soft ground into
+  farmland (RMB); iron and better till 3x3 m at once.
 - **Hands** (`src/space/viewmodel.*`): a gloved hand holding the selected tool (by type and tier) or a cube of the
   selected item, drawn in its own pass over the world. It bobs with the distance walked (a figure eight, 1.5 cm up and
   1 cm across a step, none standing still), swings on each mining stroke or chop, and dips when switching. Settings:
@@ -260,6 +264,7 @@ night, ripe in daylight, harvest, a growing crop saved), `--test-animals` (herds
 flee when hit, follow when fed, a fenced pen holds a scared herd and lets the player through its gate, breeding, drops, saved, 200 animals under 1 ms),
 `--test-suit` (each module's stat, suits swapped, saved; underwater oxygen with and without a rebreather; the cold
 at the pole bare, insulated and regulated),
+`--test-tools` (wear counted from strokes, saved, repaired, a tool breaks at its durability; an iron hoe tills 3x3),
 `--test-quests` (tiers open by their tasks, items used up still count, quest state through a save),
 `--test-viewmodel` (hands still at rest, bob within its amplitude once a step, screenshots of each tool),
 `--test-map` (compass reads east facing east, walking explores, a waypoint north bears 0, both maps render, saved),
