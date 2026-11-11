@@ -399,6 +399,8 @@ void Scene::drawScene(int gamestate) {
             farMin = std::min(farMin, dMin);
             farMax = std::max(farMax, std::min(d + rMax, horizon));
         }
+        bool farExtra = false;
+        if (farExtraRange) { double a, b; if (farExtraRange(a, b)) { farExtra = true; farMin = std::min(farMin, a); farMax = std::max(farMax, b); } }
         RenderContext ctx;
         ctx.terrainMaterial = &terrainMaterial;
         ctx.depthMaterial = &depthMaterial;
@@ -413,6 +415,8 @@ void Scene::drawScene(int gamestate) {
         ctx.sunOccluderLoc = locSunOccluder;
         ctx.scenePalette = materialPalette;
         ctx.cameraPos = camera.position;
+        ctx.sunDir = sun;
+        ctx.ambient = effAmbient;
         if (farSphere.shader.id > 0) {
             Shader& fs = farSphere.shader;
             SetShaderValue(fs, GetShaderLocation(fs, "sunDir"), &sun, SHADER_UNIFORM_VEC3);
@@ -457,7 +461,7 @@ void Scene::drawScene(int gamestate) {
             ctx.waterOccluderLoc = GetShaderLocation(ws, "sunOccluder");
         };
         prepareWater();
-        if (!farBodies.empty()) {
+        if (!farBodies.empty() || farExtra) {
             EndMode3D();
             rlSetClipPlanes(std::max(1.0, farMin * 0.9), farMax * 1.05 + 100.0);
             BeginMode3D(camera);
@@ -469,6 +473,7 @@ void Scene::drawScene(int gamestate) {
             for (Object* o : farBodies) o->drawTransparent(ctx);
             rlEnableBackfaceCulling();
             EndWaterStencil();
+            if (drawFarExtra) drawFarExtra(ctx); // translucent ring band, depth-tested against the far bodies
             EndMode3D();
             ClearDepthBuffer();
             rlSetClipPlanes(nearDefault, farDefault);
@@ -517,6 +522,7 @@ void Scene::drawScene(int gamestate) {
             const Frustum midFrustum = Frustum::fromViewProj(MatrixMultiply(rlGetMatrixModelview(), rlGetMatrixProjection()));
             ctx.frustum = &midFrustum;
             for (const auto& obj : objects) if (obj && !isFar(obj.get())) obj->draw(ctx);
+            if (drawPassExtra) drawPassExtra(ctx, true);  // ring rocks (instances)
             rlDisableBackfaceCulling();
             BeginWaterStencil();
             for (const auto& obj : objects) if (obj && !isFar(obj.get())) obj->drawTransparent(ctx);
@@ -534,6 +540,7 @@ void Scene::drawScene(int gamestate) {
         ctx.frustum = &viewFrustum;
         for (const auto& obj : objects) if (obj && !isFar(obj.get())) obj->draw(ctx);
         for (const auto& obj : rootObject.children) if (obj) obj->draw(ctx);
+        if (drawPassExtra) drawPassExtra(ctx, false);
 
         // Foliage: grass tufts on near chunks (instanced; one draw per chunk with grass in range).
         if (grass.shader.id > 0 && foliageEnabled) {

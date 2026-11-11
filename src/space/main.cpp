@@ -28,6 +28,7 @@
 #include "progression_test.h"
 #include "menus.h"
 #include "hotbar.h"
+#include "ring_test.h"
 #include "factory.h"
 
 #if defined(PLATFORM_DESKTOP)
@@ -142,6 +143,7 @@ int main(int argc, char** argv)
     bool benchWater = false;       // --test-water: rivers and ponds near the start, their beds and clay
     bool benchFlyFollow = false;   // --test-flyfollow: the fly camera rides its reference body
     bool benchHotbar = false;      // --test-hotbar: materials and consumables from the hotbar
+    bool benchRing = false, ringStarted = false; // --test-ring: milestone 6 gate
     int ffPhase = 0;
     double ffStart = 0.0, ffDist0 = 0.0;
     DVec3 ffLocal0{};
@@ -255,6 +257,7 @@ int main(int argc, char** argv)
         if (std::string(argv[i]) == "--test-water") benchWater = true;
         if (std::string(argv[i]) == "--test-flyfollow") benchFlyFollow = true;
         if (std::string(argv[i]) == "--test-hotbar") benchHotbar = true;
+        if (std::string(argv[i]) == "--test-ring") benchRing = true;
         if (std::string(argv[i]) == "--test-trees") benchTrees = true;
         if (std::string(argv[i]) == "--test-chop") benchChop = true;
         if (std::string(argv[i]) == "--test-persist" && i + 1 < argc) benchPersist = atoi(argv[i + 1]);
@@ -989,6 +992,9 @@ int main(int argc, char** argv)
                                concreteMode, c0 - c1, w0 - w1, block, before, after, used, toolMode, saved, loaded, woodParts, concreteParts, ok ? "PASS" : "FAIL");
                     }
                     benchHotbar = false;
+                } else if (benchRing && (ringStarted || WorldIdle())) {
+                    if (!ringStarted) { ringStarted = true; Planetoid* p = dynamic_cast<Planetoid*>(world.objects[0].get()); player.spawnOn(world, *p, StartSpawnDir(*p)); }
+                    else if (RingTest_Update(world) != 0) benchRing = false;
                 } else if (benchHole && (holePhase > 0 || WorldIdle())) { // edits keep the world busy: run on
                     // --test-hole: on the spinning planet, dig a pit ahead and walk into it, then build a
                     // pillar under your feet while jumping. Neither may hurt you (impacts are measured
@@ -1528,7 +1534,7 @@ int main(int argc, char** argv)
                         }
                         benchWalkSeconds = 0.0;
                     }
-                } else if ((WorldIdle() && benchDigStrokes == 0 && !benchSaveLoad && benchWalkSeconds <= 0.0 && benchMineStrokes == 0 && minePhase != 2 && benchFlySeconds <= 0.0 && !benchSuffocate && benchOrbitSeconds <= 0.0 && !benchRide && !benchPark && !benchGravity && !benchPrecision && !benchMantle && !benchAirJump && !benchMoon && !benchHole && !benchWall && !benchMenus && !benchWater && !benchFlyFollow && !benchHotbar && !benchTrees && !benchChop && benchPersist == 0 && benchBuild == 0 && benchFactory == 0 && !benchProgression) || GetTime() > 600.0) {
+                } else if ((WorldIdle() && benchDigStrokes == 0 && !benchSaveLoad && benchWalkSeconds <= 0.0 && benchMineStrokes == 0 && minePhase != 2 && benchFlySeconds <= 0.0 && !benchSuffocate && benchOrbitSeconds <= 0.0 && !benchRide && !benchPark && !benchGravity && !benchPrecision && !benchMantle && !benchAirJump && !benchMoon && !benchHole && !benchWall && !benchMenus && !benchWater && !benchFlyFollow && !benchHotbar && !benchRing && !benchTrees && !benchChop && benchPersist == 0 && benchBuild == 0 && benchFactory == 0 && !benchProgression) || GetTime() > 600.0) {
                     benchStart = GetTime();
                     printf("bench: world ready after %.2f s (%d chunks, avg build %.2f ms of which sampling %.2f ms, %d worker threads)\n",
                         GetWorldStats().lastGenerationSeconds, GetWorldStats().chunks, GetWorldStats().avgBuildMs, GetWorldStats().avgSampleMs, GetWorldStats().workerThreads);

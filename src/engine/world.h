@@ -76,6 +76,12 @@ void loadWorld(Scene& world);          // extra objects from assets/scenes/world
 // advanceTime = false while paused: streaming/uploads continue but bodies stop spinning.
 void advanceBodies(Scene& world, float dt);  // spin and orbit bodies; call BEFORE updating anything that rides them
 double WorldTime();                          // seconds of simulated time (advances only while playing; saved)
+void PlaceBodyOnOrbit(Planetoid& p);             // position (and velocity) on its analytic orbit now
+// Region files of a body's deltas (id = body index, or a ring rock's id): save the changed regions, load all.
+int SaveRegionsFor(const TerrainDeltas& edits, std::unordered_set<TerrainDeltas::Key>& dirty, bool& allDirty, std::string& savedTo, int body, const std::string& dir);
+std::shared_ptr<const TerrainDeltas> LoadRegionsFor(int body, const std::string& dir, size_t strokes);
+class RingSystem;
+std::vector<std::unique_ptr<RingSystem>>& Rings();
 void SetWorldTime(double t);
 void worldUpdate(Scene& world, float uploadBudgetMs = 3.0f); // LOD, streaming, uploads
 bool WorldIdle();                      // no queued/running jobs and nothing left to upload

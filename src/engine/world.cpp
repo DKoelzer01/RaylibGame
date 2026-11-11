@@ -1,4 +1,5 @@
 #include "world.h"
+#include "ring.h"
 #include "jobsystem.h"
 #include "utils/logger.h"
 #include "worldtypes.h"
@@ -516,7 +517,7 @@ double WorldTime() { return worldTime; }
 void SetWorldTime(double t) { worldTime = t; }
 
 // Place an orbiting body for the current world time (its parent must already be placed).
-static void PlaceOnOrbit(Planetoid& p) {
+void PlaceBodyOnOrbit(Planetoid& p) {
     if (!p.orbitParent || Planetoid::find(p.orbitParentId) != p.orbitParent) { p.orbitParent = nullptr; return; }
     const Planetoid& parent = *p.orbitParent;
     const double a = p.orbitPhase + p.orbitRate * worldTime;
@@ -536,13 +537,15 @@ void advanceBodies(Scene& world, float dt) {
         auto* p = dynamic_cast<Planetoid*>(obj.get());
         if (!p) continue;
         p->rotation = Vector3Add(p->rotation, Vector3Scale(p->spin, dt));
-        if (p->orbitParent) { PlaceOnOrbit(*p); moved = true; } // parents come first in the list
+        if (p->orbitParent) { PlaceBodyOnOrbit(*p); moved = true; } // parents come first in the list
     }
     if (moved) world.syncRenderPositions();
 }
 
 void worldUpdate(Scene& world, float uploadBudgetMs) {
     PROFILE_FUNCTION();
+    // Ring rocks near the camera become voxel bodies (and back) before this frame's LOD selection.
+    for (auto& ring : Rings()) ring->update(world, world.renderOrigin + world.camera.position);
 
     {
         std::lock_guard<std::mutex> lock(resultsMutex);
@@ -753,7 +756,22 @@ Vector3 GravityAt(Scene& world, Vector3 p) {
 // Generation
 // ---------------------------------------------------------------------------------------------
 
+static std::vector<std::unique_ptr<RingSystem>> gRings;
+std::vector<std::unique_ptr<RingSystem>>& Rings() { return gRings; }
+
 void worldHandler(Scene& world) {
+    // Rings draw through the scene's extra-geometry hooks (band in the far pass, rocks in the others).
+    world.farExtraRange = [&world](double& dmin, double& dmax) {
+        bool any = false;
+        dmin = 1e300; dmax = 0.0;
+        for (auto& ring : gRings) {
+            double a, b;
+            if (ring->bandRange(world, a, b)) { any = true; dmin = std::min(dmin, a); dmax = std::max(dmax, b); }
+        }
+        return any;
+    };
+    world.drawFarExtra = [&world](const RenderContext& ctx) { for (auto& ring : gRings) ring->drawBand(world, ctx); };
+    world.drawPassExtra = [&world](const RenderContext& ctx, bool rebuild) { for (auto& ring : gRings) ring->drawRocks(world, ctx, rebuild); };
     world.camera.position = { 0.0f, 10.0f, 10.0f };
     world.camera.target = { 0.0f, 0.0f, 0.0f };
     world.camera.up = { 0.0f, 1.0f, 0.0f };
@@ -808,6 +826,7 @@ bool ReloadSystemDef() {
 void generateWorld(Scene& world) {
     PROFILE_FUNCTION();
     if (!worldGen.systemLoaded) ReloadSystemDef();
+    gRings.clear();
     worldGen.lastSeed = worldGen.seed ? worldGen.seed : rd();
     gen.seed(worldGen.lastSeed);
     logger.logf("Generating world (seed %u, %zu definitions from %s)...\n", worldGen.lastSeed, worldGen.system.bodies.size(), worldGen.bodiesPath.c_str());
@@ -854,7 +873,7 @@ void generateWorld(Scene& world) {
         const double r = sqrt(radius * radius + height * height);
         p->orbitRate = sqrt(gm / (r * r * r));
         p->orbitPhase = phase;
-        PlaceOnOrbit(*p);
+        PlaceBodyOnOrbit(*p);
     };
     for (const BodyDef& d : worldGen.system.bodies) {
         Planetoid* parent = nullptr;
@@ -863,20 +882,10 @@ void generateWorld(Scene& world) {
             if (it != byName.end()) parent = it->second;
         }
         if (d.kind == BodyKind::Ring && parent) {
-            // An orbiting ring: members spread round the parent in a band `extent` wide and
-            // `thickness` thick, each on its own circular orbit (same draws per member as below).
-            const double base = parent->radius * parent->scale + d.orbitAltitude;
-            for (int k = 0; k < d.count; ++k) {
-                const double across = (unit(gen) - 0.5) * d.extent;
-                const double height = (unit(gen) - 0.5) * d.thickness;
-                const double phase = unit(gen) * 2.0 * PI;
-                const unsigned int seed = (unsigned int)gen();
-                const float radius = d.radius * (float)(d.sizeMin + (d.sizeMax - d.sizeMin) * unit(gen));
-                const float spin = (float)(unit(gen) - 0.5) * 2.0f * d.maxSpinDegPerSec;
-                const std::string name = d.name + "_" + std::to_string(index);
-                add(d, BodyKind::Asteroid, name, {}, radius, seed, spin);
-                setOrbit(byName[name], parent, base + across, phase, height);
-            }
+            // An orbiting ring (ring.h): its rocks are instances, promoted to voxel bodies up close.
+            // Seeded from the world seed and the ring's position in the file (no draws from `gen`,
+            // so the bodies after it keep their seeds).
+            gRings.push_back(std::make_unique<RingSystem>(d, *parent, worldGen.lastSeed ^ (uint32_t)(gRings.size() * 2654435761u), (int)gRings.size()));
             continue;
         }
         if (d.kind == BodyKind::Ring) {
@@ -899,6 +908,13 @@ void generateWorld(Scene& world) {
         add(d, d.kind, d.name, pos, d.radius, d.hasSeed ? d.seed : drawnSeed, d.spinDegPerSec);
         if (parent) setOrbit(byName[d.name], parent, parent->radius * parent->scale + d.orbitAltitude, d.orbitPhaseDeg * DEG2RAD, 0.0);
     }
+    // Big bodies orbiting inside a ring clear their lanes in it.
+    for (auto& ring : gRings)
+        for (auto& obj : world.objects)
+            if (auto* p = dynamic_cast<Planetoid*>(obj.get()); p && p->orbitParent && p->ringRock < 0) {
+                const int n = ring->clearLane(p->orbitRadius, p->orbitHeight, p->radius * p->scale);
+                if (n > 0) logger.logf("[World] %s clears %d rocks from ring %s\n", p->name.c_str(), n, ring->name.c_str());
+            }
     world.syncRenderPositions();
     generationStart = GetTime();
     buildMsTotal = sampleMsTotal = 0.0;
@@ -910,6 +926,7 @@ void BeginWorldStreaming() { generationStart = GetTime(); buildMsTotal = sampleM
 void regenerateWorld(Scene& world) {
     Jobs().clearQueued();  // in-flight jobs finish; their results are dropped (planetoid ids are gone)
     Factory::Reset();      // machines belong to the old bodies
+    gRings.clear();        // before their parent bodies go
     world.objects.clear(); // releases chunk meshes
     generateWorld(world);
 }
@@ -1027,10 +1044,10 @@ static bool ReadRegion(const std::string& path, TerrainDeltasBuilder& b) {
     return ok;
 }
 
-// Writes this body's changed regions (all of them, after removing old files, the first time it is
+// Writes a body's changed regions (all of them, after removing old files, the first time it is
 // saved to this directory). Returns the number of region files written.
-static int SaveBodyRegions(Planetoid& p, int body, const std::string& dir) {
-    const bool full = p.allRegionsDirty || p.regionsSavedTo != dir;
+int SaveRegionsFor(const TerrainDeltas& edits, std::unordered_set<TerrainDeltas::Key>& dirty, bool& allDirty, std::string& savedTo, int body, const std::string& dir) {
+    const bool full = allDirty || savedTo != dir;
     if (full) {
         const std::string prefix = TextFormat("b%d_", body);
         FilePathList files = LoadDirectoryFiles(dir.c_str());
@@ -1039,20 +1056,23 @@ static int SaveBodyRegions(Planetoid& p, int body, const std::string& dir) {
         UnloadDirectoryFiles(files);
     }
     std::unordered_map<TerrainDeltas::Key, std::vector<std::pair<TerrainDeltas::Key, const DeltaChunk*>>> byRegion;
-    for (const auto& kv : p.edits->chunks) {
+    for (const auto& kv : edits.chunks) {
         const TerrainDeltas::Key r = TerrainDeltas::RegionOf(kv.first);
-        if (full || p.dirtyRegions.count(r)) byRegion[r].push_back({ kv.first, kv.second.get() });
+        if (full || dirty.count(r)) byRegion[r].push_back({ kv.first, kv.second.get() });
     }
     int written = 0;
     for (const auto& kv : byRegion) written += WriteRegion(RegionFile(dir, body, kv.first), kv.second) ? 1 : 0;
-    p.dirtyRegions.clear();
-    p.allRegionsDirty = false;
-    p.regionsSavedTo = dir;
+    dirty.clear();
+    allDirty = false;
+    savedTo = dir;
     return written;
+}
+static int SaveBodyRegions(Planetoid& p, int body, const std::string& dir) {
+    return SaveRegionsFor(*p.edits, p.dirtyRegions, p.allRegionsDirty, p.regionsSavedTo, body, dir);
 }
 
 // Reads every region file of a body into a new delta snapshot.
-static std::shared_ptr<const TerrainDeltas> LoadBodyRegions(int body, const std::string& dir, size_t strokes) {
+std::shared_ptr<const TerrainDeltas> LoadRegionsFor(int body, const std::string& dir, size_t strokes) {
     TerrainDeltasBuilder b(TerrainDeltas{});
     if (DirectoryExists(dir.c_str())) {
         const std::string prefix = TextFormat("b%d_", body);
@@ -1074,7 +1094,7 @@ bool SaveWorld(Scene& world) {
     const DVec3 tgtWorld = world.renderOrigin + world.camera.target;
     // v4: the system definition is stored in the save, so a save reloads the system it was made in
     // even if bodies.txt has changed since.
-    fprintf(f, "RAYLIBGAME_SAVE 9\n");
+    fprintf(f, "RAYLIBGAME_SAVE 10\n");
     fprintf(f, "seed %u\nbodies %zu\n", worldGen.lastSeed, worldGen.system.bodies.size());
     for (const BodyDef& b : worldGen.system.bodies) fprintf(f, "%s\n", FormatBodyDef(b).c_str());
     fprintf(f, "time %.6f\n", worldTime); // v5: the world clock (orbits)
@@ -1091,7 +1111,7 @@ bool SaveWorld(Scene& world) {
     size_t totalStrokes = 0;
     for (auto& obj : world.objects) {
         Planetoid* p = dynamic_cast<Planetoid*>(obj.get());
-        if (!p) continue;
+        if (!p || p->ringRock >= 0) continue; // promoted ring rocks are saved with their ring (below)
         const int bodyIndex = index++;
         fprintf(f, "planetoid %d rot %f %f %f strokes %zu\n", bodyIndex, p->rotation.x, p->rotation.y, p->rotation.z, p->edits->strokes);
         totalStrokes += p->edits->strokes;
@@ -1105,6 +1125,8 @@ bool SaveWorld(Scene& world) {
         Factory::Save(f, p->id); // v9: machine contents
         regionsWritten += SaveBodyRegions(*p, bodyIndex, dir);
     }
+    // v10: ring rocks a visit changed (edits, plots), whether they are voxel bodies now or not.
+    for (auto& ring : gRings) ring->save(f, dir);
     fclose(f);
     logger.logf("[World] saved %zu strokes to %s (%d region files written)\n", totalStrokes, SAVE_PATH, regionsWritten);
     return true;
@@ -1114,7 +1136,7 @@ bool LoadWorldSave(Scene& world) {
     FILE* f = fopen(SAVE_PATH, "r");
     if (!f) return false;
     int version = 0;
-    if (fscanf(f, "RAYLIBGAME_SAVE %d", &version) != 1 || version < 2 || version > 9) {
+    if (fscanf(f, "RAYLIBGAME_SAVE %d", &version) != 1 || version < 2 || version > 10) {
         fclose(f);
         logger.logf("[World] %s: unsupported save version %d\n", SAVE_PATH, version);
         return false;
@@ -1184,7 +1206,7 @@ bool LoadWorldSave(Scene& world) {
         std::shared_ptr<const TerrainDeltas> deltas;
         if (std::string(kind) == "strokes") {
             // v7: the deltas are in the region files.
-            deltas = LoadBodyRegions(index, dir, editCount);
+            deltas = LoadRegionsFor(index, dir, editCount);
         } else {
             // v2-v6: a brush list; fold it into deltas (written out as regions on the next save).
             TerrainDeltasBuilder b(TerrainDeltas{});
@@ -1218,6 +1240,13 @@ bool LoadWorldSave(Scene& world) {
             body->regionsSavedTo = body->allRegionsDirty ? std::string() : dir;
             if (body->trees) body->trees->setRemovals(plants);
         }
+    }
+    // v10: ring rocks with edits or plots (kept as the ring's dormant state until promoted).
+    int ringNo = 0, rock = 0;
+    size_t rockStrokes = 0;
+    while (version >= 10 && fscanf(f, " ringrock %d %d strokes %zu", &ringNo, &rock, &rockStrokes) == 3) {
+        if (ringNo >= 0 && ringNo < (int)gRings.size()) gRings[ringNo]->loadRock(f, rock, rockStrokes, dir);
+        else { PlotSet skip; skip.load(f); }
     }
     fclose(f);
     logger.logf("[World] loaded %s (seed %u)\n", SAVE_PATH, seed);
