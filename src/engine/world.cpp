@@ -194,9 +194,16 @@ Quaternion Planetoid::rotationQuat() const {
     return QuaternionFromMatrix(MatrixRotateXYZ({ DEG2RAD * rotation.x, DEG2RAD * rotation.y, DEG2RAD * rotation.z }));
 }
 
+bool Planetoid::useFarSphere(const RenderContext& ctx) const {
+    if (!farSphere || !ctx.farShader || !farSphere->isReady()) return false;
+    return Vector3Distance(position, ctx.cameraPos) / std::max(1.0f, lodSettings.zoom) > kFarSphereRadii * radius * scale;
+}
+
 void Planetoid::draw(const RenderContext& ctx) {
     if (!isActive) return;
     for (const auto& objPtr : children) objPtr->draw(ctx);
+    if (farSphere && ctx.farShader) farSphere->ready(); // uploads the bake once it is done
+    if (useFarSphere(ctx)) { farSphere->draw(*this, ctx, *ctx.farShader); return; }
     if (drawList.empty() || !ctx.terrainMaterial) return;
     const ChunkPlacer placer(*this, ctx.renderOrigin);
     ChunkBatch batch(*ctx.terrainMaterial, ctx.terrainLayers, ctx.terrainLayersLoc); // bound once for all chunks
@@ -218,7 +225,7 @@ void Planetoid::draw(const RenderContext& ctx) {
 }
 
 void Planetoid::drawTransparent(const RenderContext& ctx) {
-    if (!isActive || drawList.empty() || !ctx.waterMaterial || field->seaLevelRadius() <= 0.0f) return;
+    if (!isActive || drawList.empty() || !ctx.waterMaterial || field->seaLevelRadius() <= 0.0f || useFarSphere(ctx)) return;
     const ChunkPlacer placer(*this, ctx.renderOrigin);
     ChunkBatch batch(*ctx.waterMaterial);
     const Vector3 c = (worldPos - ctx.renderOrigin).toFloat();
@@ -801,6 +808,7 @@ void generateWorld(Scene& world) {
                 field->foliageSeed = seed ^ 0x7aee5u;
                 p->trees = std::make_unique<TreeSystem>(field, field->foliageSeed);
             }
+            p->farSphere = std::make_unique<FarSphere>(field, field->foliage, field->foliageSeed); // bakes on the workers
         }
         p->spin = { 0.0f, spin, 0.0f };
         p->surfaceGravity = d.gravity >= 0.0f ? d.gravity : AutoSurfaceGravity(kind, radius);
