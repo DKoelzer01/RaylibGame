@@ -34,6 +34,19 @@ void Player::spawnOn(Scene& world, Planetoid& body, Vector3 dir) {
     flyMode = false;
 }
 
+
+// Felt gravity: near a body on an orbit, it and everything on it fall freely around its parent, so
+// its parent's pull cancels in its frame - subtract the body's own acceleration (the outside
+// gravity at its centre). A small body only counts once its own pull here is felt (0.1 m/s^2):
+// flying past ring rocks the planet stays the reference instead of "up" snapping between rocks.
+static bool FeltIsRelative(Vector3 feet, const Planetoid* nearest) {
+    return nearest && nearest->orbitParent && Vector3Length(BodyGravityAt(*nearest, feet)) >= 0.1f;
+}
+static Vector3 FeltGravity(Scene& world, Vector3 feet, Planetoid* nearest) {
+    const Vector3 g = GravityAt(world, feet);
+    if (!FeltIsRelative(feet, nearest)) return g;
+    return Vector3Subtract(g, GravityAt(world, nearest->position));
+}
 void Player::update(Scene& world, bool inputEnabled, float dt) {
     PROFILE_FUNCTION();
     if (inputEnabled && IsKeyPressed(KEY_F)) {
@@ -112,8 +125,7 @@ void Player::update(Scene& world, bool inputEnabled, float dt) {
         // Felt gravity: near a body on an orbit, it and everything on it fall freely around its parent,
         // so subtract the body's own acceleration (the outside gravity at its centre). Otherwise the
         // parent's pull would tilt "up" (~4 deg on the moon) and jumps would go out sideways.
-        Vector3 g = GravityAt(world, feet);
-        if (nearest && nearest->orbitParent) g = Vector3Subtract(g, GravityAt(world, nearest->position));
+        const Vector3 g = FeltGravity(world, feet, nearest);
         const float gl = Vector3Length(g);
         Vector3 newUp = up;
         if (nearest && nearest->flat) newUp = { 0, 1, 0 };
@@ -172,6 +184,15 @@ void Player::update(Scene& world, bool inputEnabled, float dt) {
     const Vector3 relVel = (!grounded && nearest) ? Vector3Subtract(velocity, nearest->surfaceVelocity((position - world.renderOrigin).toFloat())) : velocity;
     const int steps = std::clamp(std::max((int)ceilf(dt / h), (int)ceilf(Vector3Length(relVel) * dt / 0.2f)), 1, 1024);
     const float sdt = dt / steps;
+    // Airborne by an orbiting body: move in its free-falling frame - take its change of velocity
+    // since last frame, then fall with the felt gravity. A rail orbit ignores other bodies' pull (a
+    // big rock next to a small one), so world gravity drifted the player off a 5 m rock as fast as
+    // it pulled them in: they hovered a metre up and never landed.
+    airFelt = false;
+    if (!grounded && airBody && airBody == nearest && FeltIsRelative((position - world.renderOrigin).toFloat(), nearest)) {
+        velocity = Vector3Add(velocity, Vector3Subtract(nearest->linearVelocity, airFrameVel));
+        airFelt = true;
+    }
     for (int i = 0; i < steps; ++i) { stepPhysics(world, sdt, wish, jetUp, jetDown); }
 
     feet = (position - world.renderOrigin).toFloat();
@@ -187,6 +208,7 @@ void Player::update(Scene& world, bool inputEnabled, float dt) {
         airBody = nearest;
         airId = nearest->id;
         airLocal = nearest->toLocalD(position);
+        airFrameVel = nearest->linearVelocity;
     } else {
         airBody = nullptr;
     }
@@ -199,9 +221,10 @@ void Player::stepPhysics(Scene& world, float dt, Vector3 wish, bool jetUp, bool 
     const bool wasGrounded = grounded;
 
     // Gravity summed over every body (inverse-square, no cutoff, so orbits work).
-    const Vector3 gvec = GravityAt(world, feet);
-    gravity = Vector3Length(gvec);
-    const Vector3 gdir = gravity > 1e-6f ? Vector3Scale(gvec, 1.0f / gravity) : Vector3{ 0, 0, 0 };
+    const Vector3 gvec = GravityAt(world, feet);       // world frame: airborne velocity is world-frame
+    const Vector3 gFelt = FeltGravity(world, feet, nearest); // the ground's frame: grounded velocity is relative to it
+    gravity = Vector3Length(gFelt);
+    const Vector3 gdir = gravity > 1e-6f ? Vector3Scale(gFelt, 1.0f / gravity) : Vector3{ 0, 0, 0 };
 
     const float vUp = Vector3DotProduct(velocity, up);
     if (grounded) {
@@ -269,10 +292,16 @@ void Player::stepPhysics(Scene& world, float dt, Vector3 wish, bool jetUp, bool 
             jetpackFiring = true;
         } else if (tl == 0.0f && dampeners && !inGravity) {
             // Inertial dampeners (B toggles) only in deep space, so they never fight a fall or an orbit.
-            velocity = Vector3Scale(velocity, 1.0f - std::min(1.0f, 0.6f * dt));
+            // Relative to the nearest body: damping the world-frame velocity (a ring rock's ~3 km/s
+            // orbit) dragged the player off small rocks at hundreds of m/s^2.
+            const Vector3 frame = nearest ? nearest->surfaceVelocity(feet) : Vector3{ 0, 0, 0 };
+            velocity = Vector3Add(frame, Vector3Scale(Vector3Subtract(velocity, frame), 1.0f - std::min(1.0f, 0.6f * dt)));
         }
     }
-    Vector3 gAccel = Vector3Scale(gdir, gravity * gravityScale * dt);
+    // On the ground (surface-relative velocity) the felt gravity; in the air the world's (a rock's
+    // orbit is then followed by the frame carry): the world's planet pull on the ground of a ring rock
+    // shoved the player off it.
+    Vector3 gAccel = Vector3Scale(grounded || airFelt ? gFelt : gvec, gravityScale * dt);
     // Static friction: standing on walkable ground, only gravity's push into the ground applies.
     // (The downhill part made a standing player creep ~1.6 cm/s down slopes at fixed substeps.)
     if (grounded) gAccel = Vector3Scale(groundNormal, std::min(0.0f, Vector3DotProduct(gAccel, groundNormal)));
@@ -371,7 +400,7 @@ bool Player::resolveCollisions(Scene&, Vector3& feet) {
                     if (Vector3DotProduct(n, up) > 0.55f) { onGround = true; groundNormal = n; }
                 }
         // Standing on a part: a probe just below the feet sphere.
-        if (!onGround && Vector3DotProduct(velocity, up) <= 0.5f)
+        if (!onGround && Vector3DotProduct(Vector3Subtract(velocity, collideFrameVel), up) <= 0.5f)
             for (auto& pl : p.plots->plots) {
                 Vector3 c = p.toLocal(Vector3Add(feet, Vector3Scale(up, radius - 0.12f))), nl;
                 if (pl->collideSphere(c, radius / p.scale, nl) && Vector3DotProduct(p.dirToWorld(nl), up) > 0.55f) { onGround = true; groundNormal = p.dirToWorld(nl); break; }
@@ -379,7 +408,7 @@ bool Player::resolveCollisions(Scene&, Vector3& feet) {
     }
     // Ground probe: the push-out is approximate and can leave a small gap; treat anything within a
     // few centimetres below the feet sphere as standing (unless moving away, e.g. jumping).
-    if (!onGround && Vector3DotProduct(velocity, up) <= 0.5f) {
+    if (!onGround && Vector3DotProduct(Vector3Subtract(velocity, collideFrameVel), up) <= 0.5f) {
         float dist; Vector3 n;
         const float skin = 0.12f;
         if (TerrainSurfaceDistance(p, Vector3Add(feet, Vector3Scale(up, radius)), dist, n) && dist < radius + skin && Vector3DotProduct(n, up) > 0.55f) {
@@ -473,6 +502,7 @@ void Player::anchorTo(Planetoid& body) {
     airBody = &body;
     airId = body.id;
     airLocal = body.toLocalD(position);
+    airFrameVel = body.linearVelocity;
     lastEndPosition = position;
 }
 

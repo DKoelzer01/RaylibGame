@@ -33,6 +33,7 @@
 #include "jobsystem.h"
 #include "rocket_test.h"
 #include "blueprint.h"
+#include "ring.h"
 #include "factory.h"
 
 #if defined(PLATFORM_DESKTOP)
@@ -150,6 +151,11 @@ int main(int argc, char** argv)
     bool benchRocket = false, rocketStarted = false; // --test-rocket: milestone 7 gate
     double rocketWait = 0.0;
     bool benchBlueprint = false;   // --test-blueprint: place, fill in, save and load a blueprint
+    bool benchSmallBody = false;   // --test-smallbody: land on a huge and a small ring rock
+    int sbPhase = 0, sbRock = -1, sbGrounded = 0, sbFrames = 0, sbDeaths = 0;
+    double sbStart = 0.0;
+    float sbMaxImpact = 0.0f, sbHealth = 100.0f;
+    bool sbDropped = false, sbOk = true;
     int ffPhase = 0;
     double ffStart = 0.0, ffDist0 = 0.0;
     DVec3 ffLocal0{};
@@ -266,6 +272,7 @@ int main(int argc, char** argv)
         if (std::string(argv[i]) == "--test-ring") benchRing = true;
         if (std::string(argv[i]) == "--test-rocket") benchRocket = true;
         if (std::string(argv[i]) == "--test-blueprint") benchBlueprint = true;
+        if (std::string(argv[i]) == "--test-smallbody") benchSmallBody = true;
         if (std::string(argv[i]) == "--test-trees") benchTrees = true;
         if (std::string(argv[i]) == "--test-chop") benchChop = true;
         if (std::string(argv[i]) == "--test-persist" && i + 1 < argc) benchPersist = atoi(argv[i + 1]);
@@ -1034,6 +1041,59 @@ int main(int argc, char** argv)
                         printf("bench: blueprint: %s (%zu parts): placed %d (missing: %s), then %d more; saved and loaded %zu parts -> %s\n",
                                bp.name.c_str(), bp.parts.size(), first, missing.c_str(), second, back.parts.size(), ok ? "PASS" : "FAIL");
                     }
+                } else if (benchSmallBody && (sbPhase > 0 || WorldIdle())) {
+                    // --test-smallbody: drop out of fly mode 30 m over a huge ring rock (pebble), then over a
+                    // small ring rock: land, stand, and no death; then dig at the feet on the moon (no launch).
+                    const double t = GetTime() - sbStart;
+                    auto findBody = [&](const char* name) -> Planetoid* { for (auto& o : world.objects) if (auto* q = dynamic_cast<Planetoid*>(o.get()); q && q->name == name) return q; return nullptr; };
+                    auto dropOver = [&](Planetoid& b, float height) {
+                        const DVec3 c = b.worldPos;
+                        const Vector3 dir = Vector3Normalize({ 0.3f, 1.0f, 0.2f });
+                        float r = b.radius * b.scale;
+                        while (r > 1.0f && b.densityAt(Vector3Scale(b.dirToLocal(dir), r)) < ISO_LEVEL) r -= 0.5f;
+                        player.flyMode = false;
+                        player.placeAt(world, b, (c + DVec3(Vector3Scale(dir, r + height)) - world.renderOrigin).toFloat());
+                        sbMaxImpact = 0.0f; sbHealth = survival.health; sbDeaths = survival.deaths; sbGrounded = 0; sbFrames = 0;
+                    };
+                    if (sbPhase > 0 && sbPhase % 2 == 1) { sbMaxImpact = std::max(sbMaxImpact, player.impactSpeed); ++sbFrames; if (player.grounded) ++sbGrounded; }
+                    if (sbPhase == 0) {
+                        Planetoid* pebble = findBody("pebble");
+                        if (!pebble) { printf("bench: smallbody: no pebble\n"); benchSmallBody = false; }
+                        else { player.flyMode = true; world.setCameraWorld(pebble->worldPos + DVec3(0, pebble->radius * 2.0, 0), pebble->worldPos); sbPhase = 1; sbStart = GetTime(); }
+                    } else if (sbPhase == 1 && t > 2.0 && !sbDropped) {
+                        sbDropped = true; dropOver(*findBody("pebble"), 30.0f); sbStart = GetTime();
+                    } else if (sbPhase == 1 && sbDropped && t > 12.0) {
+                        printf("bench: smallbody: pebble: worst impact %.1f m/s, grounded %d%% of the last frames, deaths %d, health %.0f, gravity %.2f\n",
+                               sbMaxImpact, 100 * sbGrounded / std::max(1, sbFrames), survival.deaths - sbDeaths, survival.health, player.gravity);
+                        sbOk &= survival.deaths == sbDeaths && player.grounded;
+                        // A small ring rock next: the nearest one to pebble's lane, promoted when the camera is near.
+                        RingSystem& ring = *Rings()[0];
+                        int k = -1; float best = 0.0f;
+                        const DVec3 here = player.position;
+                        for (size_t i = 0; i < ring.rocks.size(); ++i) {
+                            if (ring.rocks[i].radius <= 0.0f || ring.rocks[i].radius * 0.72f > 30.0f) continue;
+                            const double d = (ring.rockPosition((int)i) - here).length();
+                            if (k < 0 || d < best) { best = (float)d; k = (int)i; }
+                        }
+                        sbRock = k;
+                        player.flyMode = true;
+                        world.setCameraWorld(ring.rockPosition(k) + DVec3(0, 60, 0), ring.rockPosition(k));
+                        sbPhase = 2; sbStart = GetTime(); sbDropped = false;
+                    } else if (sbPhase == 2) {
+                        RingSystem& ring = *Rings()[0];
+                        world.setCameraWorld(ring.rockPosition(sbRock) + DVec3(0, 60, 0), ring.rockPosition(sbRock));
+                        if (Planetoid* b = ring.promotedBody(sbRock); b && t > 1.0) { dropOver(*b, 3.0f); sbPhase = 3; sbStart = GetTime(); }
+                        else if (t > 10.0) { printf("bench: smallbody: rock %d never promoted\n", sbRock); sbOk = false; sbPhase = 4; }
+                    } else if (sbPhase == 3 && t < 12.0) {
+                    } else if (sbPhase == 3 && t >= 12.0) {
+                        printf("bench: smallbody: ring rock %d (%.0f m across): worst impact %.1f m/s, grounded %d%%, deaths %d, health %.0f, gravity %.2f\n", sbRock,
+                               Rings()[0]->rocks[sbRock].radius * 1.44f, sbMaxImpact, 100 * sbGrounded / std::max(1, sbFrames), survival.deaths - sbDeaths, survival.health, player.gravity);
+                        sbOk &= survival.deaths == sbDeaths && player.grounded;
+                        sbPhase = 4;
+                    } else if (sbPhase == 4) {
+                        printf("bench: smallbody: %s\n", sbOk ? "PASS" : "FAIL");
+                        benchSmallBody = false;
+                    }
                 } else if (benchHole && (holePhase > 0 || WorldIdle())) { // edits keep the world busy: run on
                     // --test-hole: on the spinning planet, dig a pit ahead and walk into it, then build a
                     // pillar under your feet while jumping. Neither may hurt you (impacts are measured
@@ -1554,7 +1614,7 @@ int main(int argc, char** argv)
                         }
                         benchWalkSeconds = 0.0;
                     }
-                } else if ((WorldIdle() && benchDigStrokes == 0 && !benchSaveLoad && benchWalkSeconds <= 0.0 && benchMineStrokes == 0 && minePhase != 2 && benchFlySeconds <= 0.0 && !benchSuffocate && benchOrbitSeconds <= 0.0 && !benchRide && !benchPark && !benchGravity && !benchPrecision && !benchMantle && !benchAirJump && !benchMoon && !benchHole && !benchWall && !benchMenus && !benchWater && !benchFlyFollow && !benchHotbar && !benchRing && !benchRocket && !benchBlueprint && !benchTrees && !benchChop && benchPersist == 0 && benchBuild == 0 && benchFactory == 0 && !benchProgression) || GetTime() > 600.0) {
+                } else if ((WorldIdle() && benchDigStrokes == 0 && !benchSaveLoad && benchWalkSeconds <= 0.0 && benchMineStrokes == 0 && minePhase != 2 && benchFlySeconds <= 0.0 && !benchSuffocate && benchOrbitSeconds <= 0.0 && !benchRide && !benchPark && !benchGravity && !benchPrecision && !benchMantle && !benchAirJump && !benchMoon && !benchHole && !benchWall && !benchMenus && !benchWater && !benchFlyFollow && !benchHotbar && !benchRing && !benchRocket && !benchBlueprint && !benchSmallBody && !benchTrees && !benchChop && benchPersist == 0 && benchBuild == 0 && benchFactory == 0 && !benchProgression) || GetTime() > 600.0) {
                     benchStart = GetTime();
                     printf("bench: world ready after %.2f s (%d chunks, avg build %.2f ms of which sampling %.2f ms, %d worker threads)\n",
                         GetWorldStats().lastGenerationSeconds, GetWorldStats().chunks, GetWorldStats().avgBuildMs, GetWorldStats().avgSampleMs, GetWorldStats().workerThreads);

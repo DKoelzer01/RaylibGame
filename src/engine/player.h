@@ -76,6 +76,10 @@ private:
     Planetoid* airBody = nullptr;
     uint64_t airId = 0;
     DVec3 airLocal{};
+    // Airborne near an orbiting body we move in its free-falling frame: its velocity at the end of
+    // last frame (its change is added to ours), and whether this frame uses felt gravity.
+    Vector3 airFrameVel{};
+    bool airFelt = false;
     uint64_t flyBodyId = 0;           // body the fly camera was recorded against (0: none)
     bool flyRotate = false;
     DVec3 flyLocal{}, flyBodyPos{};
