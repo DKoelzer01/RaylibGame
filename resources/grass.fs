@@ -18,6 +18,35 @@ uniform float fogDensity;
 uniform vec4 fogShell;      // atmosphere: centre + outer radius (w = 0: fog the whole distance)
 uniform float fadeEnd;      // fully gone here (m)
 
+// Shadows from the sun's shadow map (terrain, trees and builds), and the headlamp (a spot light).
+uniform sampler2D shadowMap;
+uniform mat4 lightSpaceMatrix;
+uniform int shadowMapResolution;
+uniform vec4 lampPos;     // render space; w = intensity (0: off)
+uniform vec4 lampTarget;  // the beam's end; w unused
+float sunShadow(vec3 p)
+{
+    if (shadowMapResolution <= 0) return 1.0;
+    vec4 ls = lightSpaceMatrix * vec4(p, 1.0);
+    vec3 q = ls.xyz / ls.w * 0.5 + 0.5;
+    if (q.x < 0.0 || q.x > 1.0 || q.y < 0.0 || q.y > 1.0 || q.z > 1.0) return 1.0;
+    vec2 texel = vec2(1.0 / float(shadowMapResolution));
+    float lit = 0.0;
+    for (int x = -1; x <= 1; x++)
+        for (int y = -1; y <= 1; y++)
+            lit += (q.z - 0.003 > texture(shadowMap, q.xy + texel * vec2(x, y)).r) ? 0.0 : 1.0;
+    return lit / 9.0;
+}
+vec3 lampLight(vec3 p, vec3 n)
+{
+    if (lampPos.w <= 0.0) return vec3(0.0);
+    vec3 beam = lampTarget.xyz - lampPos.xyz;
+    float range = max(length(beam), 1.0);
+    vec3 l = normalize(lampPos.xyz - p);
+    float cone = smoothstep(0.82, 0.95, dot(-l, beam / range));
+    float dl = length(lampPos.xyz - p) / range;
+    return vec3(1.0, 0.95, 0.85) * lampPos.w * 3.0 * cone / (1.0 + dl * dl * 4.0) * max(dot(n, l), 0.35);
+}
 out vec4 finalColor;
 
 void main()
@@ -46,8 +75,8 @@ void main()
     }
     // Thin blades: light from the ground's angle to the sun, wrapped so backlit grass still glows.
     float ndl = dot(normalize(fragUp), sunDir);
-    float direct = sunVis * clamp(ndl * 0.6 + 0.4, 0.0, 1.0) * smoothstep(-0.05, 0.1, ndl);
-    vec3 color = albedo * (ambient * 1.5 + vec3(1.0, 0.96, 0.88) * direct);
+    float direct = sunVis * sunShadow(fragPosition) * clamp(ndl * 0.6 + 0.4, 0.0, 1.0) * smoothstep(-0.05, 0.1, ndl);
+    vec3 color = albedo * (ambient * 1.5 + vec3(1.0, 0.96, 0.88) * direct + lampLight(fragPosition, normalize(fragUp)));
 
     float fogDist = dist;
     if (fogShell.w > 0.0) {
