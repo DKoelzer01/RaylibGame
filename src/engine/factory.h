@@ -59,6 +59,10 @@ namespace Factory {
     // Player item transfers (queued for the next tick).
     void Insert(uint64_t bodyId, uint32_t plotId, int part, const std::string& item, int count);
     void Extract(uint64_t bodyId, uint32_t plotId, int part);
+    // Crafting and storing from nearby chests: take `count` of one item out of a chest (into the
+    // inventory next tick), and what the chests of plots near the player hold (as of the last tick).
+    void Take(uint64_t bodyId, uint32_t plotId, int part, const std::string& item, int count);
+    std::vector<std::pair<std::string, int>> ChestContents(uint64_t bodyId, uint32_t plotId, int part);
     // Tests: put items straight into a machine (fuel, ore) before it runs.
     void Seed(uint64_t bodyId, uint32_t plotId, int part, const std::string& item, int count);
     // Whether a machine type takes an item (recipe input, fuel, or a chest).

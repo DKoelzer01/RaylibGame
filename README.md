@@ -114,6 +114,11 @@ Shaders in `resources/` hot-reload when saved.
   Animals are saved. Threats (not on peaceful): thornbacks (territorial) charge within 12 m; after dark, dusk stalkers
   come out 45-60 m away and hunt you, keep 14 m from a campfire (one within 10 m keeps you safe) and leave at dawn.
   No hostile herds within 500 m of the start.
+- **Crafting** (the Crafting tab, `src/space/recipebook.*`, `src/space/storage.*`): only recipes you know show - a
+  recipe is known once all its ingredients have been discovered (some also need an unlock in
+  `resources/data/recipe_unlocks.txt`), with a toast for each new one. Search by item or ingredient; a toggle shows only
+  what you can make now. Chests within 8 m count as part of the inventory (a craft pulls what it needs from them),
+  and Deposit (button, or Q with the inventory open) puts items into the nearby chests that already hold them.
 - **Quest tree** (`src/space/questtree.*`, `resources/data/quests.txt`, the Quest tree tab): side lines branching off
   the main tiers - farming, husbandry, the suit and exploring (nights survived, stalkers fought, tiles mapped) - each
   node opening on its requirements and paying a reward when done. `--shot-tabs` screenshots the tree and Suit tabs.
@@ -275,6 +280,8 @@ fuelled and flown by the autopilot to orbit, saved and loaded in orbit, brought 
 `--test-moon` (moon on its analytic orbit; standing and jumping on it; digging at the feet launches nobody),
 `--test-hunger` (drain at rest, starving, eating, cold at the pole, saved), `--test-farm` (till, plant, no growth at
 night, ripe in daylight, harvest, a growing crop saved), `--test-animals` (herds placed, grazing on the ground,
+`--test-crafting` (discovery and unlocks gate recipes, search, a nearby chest counted, pulled from and deposited
+into), `--test-recipes` (every item reachable from the world; lists items nothing uses),
 `--test-threats` (a stalker comes after dark and bites; a campfire keeps it off; gone by day; none on peaceful; a
 thornback charges), `--test-animals` (herds placed, grazing on the ground,
 flee when hit, follow when fed, a fenced pen holds a scared herd and lets the player through its gate, breeding, drops, saved, 200 animals under 1 ms),

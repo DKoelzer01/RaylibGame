@@ -12,6 +12,7 @@
 #include "animals.h"
 #include "suit.h"
 #include "toolwear.h"
+#include "recipebook.h"
 
 #include <algorithm>
 #include <cstring>
@@ -49,6 +50,7 @@ void GameSave_Register() {
         Animals_Reset();
         Suit_Reset();
         ToolWear_Reset();
+        RecipeBook_Reset();
         worldDifficulty = 1; // a save without the line: normal
         char tok[64] = {};
         while (fscanf(f, " %63s", tok) == 1 && strcmp(tok, "end_extras") != 0) {

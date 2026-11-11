@@ -36,6 +36,8 @@
 #include "animals.h"
 #include "suit.h"
 #include "toolwear.h"
+#include "recipebook.h"
+#include "storage.h"
 #include "tools.h"
 #include "rivers.h"
 #include "questtree.h"
@@ -106,6 +108,7 @@ static void StartNewWorld(Scene& world, bool reset) {
         Animals_Reset();
         Suit_Reset();
         ToolWear_Reset();
+        RecipeBook_Reset();
     }
     Planetoid* start = world.objects.empty() ? nullptr : dynamic_cast<Planetoid*>(world.objects[0].get());
     if (start) {
@@ -178,6 +181,7 @@ int main(int argc, char** argv)
     bool benchSuit = false, suitOk = true; int suitPhase = 0; double suitStart = 0.0; float suitFoodRatio = 0.0f, suitWater = 0.0f, suitRebreather = 0.0f; // --test-suit
     int benchShotTabs = 0; // --shot-tabs
     bool benchRecipes = false; // --test-recipes
+    bool benchCrafting = false, craftOk = true; int craftPhase = 0, craftChest = -1, craftInv0 = 0, craftWood0 = 0, craftDeposited = 0, craftInChest = 0; double craftStart = 0.0; Plot* craftPlot = nullptr; // --test-crafting
     bool benchThreats = false, threatsOk = true; int threatPhase = 0; double threatStart = 0.0; float threatBite = 0.0f, threatFire = 0.0f, threatRam = 0.0f; int threatSpawned = 0, threatLeft = 0, threatPeaceful = 0; // --test-threats
     bool benchAnimals = false; int animalPhase = 0, animalCount = 0; double animalStart = 0.0, animalMs = 0.0; int animalNatural = 0; float penWorst = 0.0f, animalLured = 0.0f, animalSpread = 0.0f, animalFled = 0.0f, animalFollow = 0.0f; // --test-animals
     int hungerPhase = 0, farmPhase = 0; double hungerStart = 0.0, farmStart = 0.0; bool hungerOk = false; float hungerTemp = 0.0f, hungerDrain = 0.0f, farmQuarter = 0.0f, farmGrowth = 0.0f;
@@ -316,6 +320,7 @@ int main(int argc, char** argv)
         if (std::string(argv[i]) == "--test-threats") benchThreats = true;
         if (std::string(argv[i]) == "--shot-tabs") benchShotTabs = 1;
         if (std::string(argv[i]) == "--test-recipes") benchRecipes = true;
+        if (std::string(argv[i]) == "--test-crafting") benchCrafting = true;
         if (std::string(argv[i]) == "--test-suit") benchSuit = true;
         if (std::string(argv[i]) == "--test-tools") benchTools = true;
         if (std::string(argv[i]) == "--test-rivers") benchRivers = true;
@@ -1358,6 +1363,64 @@ int main(int argc, char** argv)
                         survival.food = 100.0f; survival.oxygen = 100.0f; survival.health = 100.0f;
                         benchSuit = false;
                     }
+                } else if (benchCrafting && (craftPhase > 0 || WorldIdle())) {
+                    // --test-crafting: recipes are known once their ingredients are discovered (and any unlock
+                    // is met); search; a chest beside the player counts for crafting and is pulled from; the
+                    // inventory deposits into chests that already hold an item.
+                    Planetoid* p = dynamic_cast<Planetoid*>(world.objects[0].get());
+                    auto check = [&](bool c, const char* what) { if (!c) { printf("bench: crafting: FAILED %s\n", what); craftOk = false; } };
+                    auto recipeFor = [](const char* out) -> const Recipe* { for (const Recipe& r : itemDB.recipes()) if (r.output == out) return &r; return nullptr; };
+                    if (craftPhase == 0) {
+                        player.spawnOn(world, *p, StartSpawnDir(*p));
+                        craftPhase = 1; craftStart = GetTime(); craftOk = true;
+                    } else if (craftPhase == 1 && GetTime() - craftStart > 1.5 && player.grounded) {
+                        const Recipe* rod = recipeFor("steel_rod");
+                        const Recipe* suit = recipeFor("explorer_suit");
+                        check(rod && suit, "recipes found");
+                        if (rod && suit) {
+                            check(!RecipeBook_Known(*rod), "steel rods hidden before steel is found");
+                            inventory.add("steel_ingot", 1);
+                            check(RecipeBook_Known(*rod), "finding steel reveals steel rods");
+                            check(RecipeBook_Matches(*rod, "rod") && RecipeBook_Matches(*rod, "steel ingot") && !RecipeBook_Matches(*rod, "zzz"), "search by name or ingredient");
+                            inventory.add("titanium_alloy_ingot", 1); inventory.add("advanced_circuit", 1); inventory.add("cloth", 1);
+                            check(!RecipeBook_Known(*suit), "the explorer suit also needs its unlock (three nights)");
+                            QuestBook_Count("nights", 3.0);
+                            check(RecipeBook_Known(*suit), "unlocked after three nights");
+                        }
+                        // A chest 2 m ahead.
+                        if (!p->plots) p->plots = std::make_unique<PlotSet>();
+                        const auto* pf = dynamic_cast<const PlanetField*>(p->field.get());
+                        const Vector3 me = p->toLocal((player.position - world.renderOrigin).toFloat());
+                        const Vector3 up = Vector3Normalize(me);
+                        const Vector3 d = Vector3Normalize(Vector3Add(me, Vector3Scale(Vector3Normalize(Vector3CrossProduct(up, { 0, 1, 0 })), 2.5f)));
+                        const Vector3 at = Vector3Scale(d, pf->radius + pf->elevation(d));
+                        craftPlot = p->plots->plotFor(at, 0.0f, true);
+                        craftChest = craftPlot->place(Part{ PartType::Chest, craftPlot->cellAt(craftPlot->toPlot(Vector3Add(at, Vector3Scale(d, 0.1f)))), 0, 0 });
+                        check(craftChest >= 0 && Storage_NearbyChests(world).size() == 1, "a chest within reach");
+                        craftPhase = 2; craftStart = GetTime();
+                    } else if (craftPhase == 2 && GetTime() - craftStart > 1.0) {
+                        Factory::Seed(p->id, craftPlot->id, craftChest, "iron_ingot", 4);
+                        craftPhase = 3; craftStart = GetTime();
+                    } else if (craftPhase == 3 && GetTime() - craftStart > 0.5) {
+                        check(Storage_CountNearby(world, "iron_ingot") == 4, "the chest's contents counted");
+                        craftInv0 = inventory.count("iron_ingot");
+                        check(Storage_Pull(world, "iron_ingot", 3), "pull 3 iron from the chest");
+                        craftPhase = 4; craftStart = GetTime();
+                    } else if (craftPhase == 4 && GetTime() - craftStart > 0.5) {
+                        check(inventory.count("iron_ingot") == craftInv0 + 3 && Storage_CountNearby(world, "iron_ingot") == 1, "the iron arrived; one left in the chest");
+                        inventory.add("wood", 5);
+                        craftWood0 = inventory.count("wood");
+                        craftDeposited = Storage_Deposit(world);
+                        check(craftDeposited == 1 && inventory.count("iron_ingot") == 0 && inventory.count("wood") == craftWood0, "deposit: iron into the chest that holds iron; wood stays");
+                        craftPhase = 5; craftStart = GetTime();
+                    } else if (craftPhase == 5 && GetTime() - craftStart > 0.5) {
+                        craftInChest = Storage_CountNearby(world, "iron_ingot");
+                        check(craftInChest == craftInv0 + 4, "the chest holds the deposited iron");
+                        if (craftPlot && craftChest >= 0) craftPlot->remove(craftChest);
+                        printf("bench: crafting: discovery reveals recipes, an unlock gates one, search works; a nearby chest counted, pulled from, deposited into (%d iron there) -> %s\n",
+                               craftInChest, craftOk ? "PASS" : "FAIL");
+                        benchCrafting = false;
+                    }
                 } else if (benchRecipes) {
                     // --test-recipes: every item can be had from what the world gives (digging, chopping,
                     // bushes, grass, animals, crops) through hand recipes, machines (once their own item
@@ -1450,7 +1513,11 @@ int main(int argc, char** argv)
                         benchShotTabs = 3; frames = 0;
                     } else if (benchShotTabs == 3 && ++frames == 40) {
                         TakeScreenshot("bench_suit.png");
-                        printf("bench: shot-tabs: bench_questtree.png, bench_suit.png\n");
+                        GameUI_ShowTab("Crafting");
+                        benchShotTabs = 4; frames = 0;
+                    } else if (benchShotTabs == 4 && ++frames == 40) {
+                        TakeScreenshot("bench_crafting.png");
+                        printf("bench: shot-tabs: bench_questtree.png, bench_suit.png, bench_crafting.png\n");
                         GameUI_ToggleInventory();
                         benchShotTabs = 0;
                     }
@@ -2661,7 +2728,7 @@ int main(int argc, char** argv)
                         }
                         benchWalkSeconds = 0.0;
                     }
-                } else if ((WorldIdle() && benchDigStrokes == 0 && !benchSaveLoad && benchWalkSeconds <= 0.0 && benchMineStrokes == 0 && minePhase != 2 && benchFlySeconds <= 0.0 && !benchSuffocate && benchOrbitSeconds <= 0.0 && !benchRide && !benchPark && !benchGravity && !benchPrecision && !benchMantle && !benchAirJump && !benchMoon && !benchHole && !benchWall && !benchMenus && !benchWater && !benchFlyFollow && !benchHotbar && !benchInventory && !benchMap && !benchViewmodel && !benchQuests && !benchHunger && !benchFarm && !benchAnimals && !benchThreats && benchShotTabs == 0 && !benchRecipes && !benchSuit && !benchTools && !benchRivers && !benchRing && !benchRocket && !benchBlueprint && !benchSmallBody && !benchTrees && !benchChop && benchPersist == 0 && benchBuild == 0 && benchFactory == 0 && !benchProgression) || GetTime() > 600.0) {
+                } else if ((WorldIdle() && benchDigStrokes == 0 && !benchSaveLoad && benchWalkSeconds <= 0.0 && benchMineStrokes == 0 && minePhase != 2 && benchFlySeconds <= 0.0 && !benchSuffocate && benchOrbitSeconds <= 0.0 && !benchRide && !benchPark && !benchGravity && !benchPrecision && !benchMantle && !benchAirJump && !benchMoon && !benchHole && !benchWall && !benchMenus && !benchWater && !benchFlyFollow && !benchHotbar && !benchInventory && !benchMap && !benchViewmodel && !benchQuests && !benchHunger && !benchFarm && !benchAnimals && !benchThreats && benchShotTabs == 0 && !benchRecipes && !benchCrafting && !benchSuit && !benchTools && !benchRivers && !benchRing && !benchRocket && !benchBlueprint && !benchSmallBody && !benchTrees && !benchChop && benchPersist == 0 && benchBuild == 0 && benchFactory == 0 && !benchProgression) || GetTime() > 600.0) {
                     benchStart = GetTime();
                     printf("bench: world ready after %.2f s (%d chunks, avg build %.2f ms of which sampling %.2f ms, %d worker threads)\n",
                         GetWorldStats().lastGenerationSeconds, GetWorldStats().chunks, GetWorldStats().avgBuildMs, GetWorldStats().avgSampleMs, GetWorldStats().workerThreads);

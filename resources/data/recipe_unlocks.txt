@@ -1,0 +1,5 @@
+# Recipe unlocks: output | task (the quest book's kinds: get <item> <n>, place <item>, do <event> <n>, orbit,
+# visit moon|ring). A recipe is known once all its ingredients have been discovered; an entry here adds a
+# further condition (hidden until it is met).
+explorer_suit | do nights 3
+ore_scanner   | do explored 40

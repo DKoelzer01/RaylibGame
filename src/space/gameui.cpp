@@ -8,6 +8,10 @@
 #include "suit.h"
 #include "toolwear.h"
 #include "questtree.h"
+#include "recipebook.h"
+#include "storage.h"
+#include "factory.h"
+#include <map>
 #include "world.h"
 #include "ship.h"
 
@@ -23,6 +27,7 @@ namespace {
 bool GameUI_InventoryOpen() { return inventoryOpen; }
 void GameUI_ToggleInventory() { inventoryOpen = !inventoryOpen; }
 static std::string forceTab; // the tab to select when the window next draws
+static Scene* uiWorld = nullptr; // the world the window was last drawn for (nearby chests)
 void GameUI_ShowTab(const char* tab) { inventoryOpen = true; forceTab = tab; }
 void GameUI_Toast(const char* text) { toast = text; toastUntil = GetTime() + 2.5; }
 
@@ -83,23 +88,71 @@ static void DrawGrid() {
     if (held >= 0 && grid[held].empty()) held = -1;
     if (ImGui::Button("Sort")) { inventory.sort(); held = -1; }
     ImGui::SameLine();
-    ImGui::TextDisabled(held >= 0 ? "Click a cell to drop the stack" : "Tools: 1 per slot, blocks 256, resources 8192");
+    // Deposit (button or Q): items a nearby chest already holds go into it.
+    const int nChests = uiWorld ? (int)Storage_NearbyChests(*uiWorld).size() : 0;
+    ImGui::BeginDisabled(nChests == 0);
+    if ((ImGui::Button("Deposit (Q)") || (nChests > 0 && IsKeyPressed(KEY_Q))) && uiWorld) {
+        const int kinds = Storage_Deposit(*uiWorld);
+        GameUI_Toast(kinds > 0 ? TextFormat("Deposited %d kind%s of item into nearby chests", kinds, kinds > 1 ? "s" : "") : "Nothing here matches what the nearby chests hold");
+        if (kinds > 0) Audio_Play(Sfx::Pickup, 0.5f, 0.8f);
+        held = -1;
+    }
+    ImGui::EndDisabled();
+    ImGui::SameLine();
+    ImGui::TextDisabled(held >= 0 ? "Click a cell to drop the stack" : nChests > 0 ? TextFormat("%d chest%s within reach", nChests, nChests > 1 ? "s" : "") : "Tools 1, blocks 256, resources 8192");
 }
 
-// Hand crafting. In creative mode every recipe can be made and costs nothing.
+// Hand crafting: the recipes you know (every ingredient discovered, and any unlock met), searchable,
+// optionally only what you can make now. Nearby chests count as if their contents were in the
+// inventory: a craft short of something pulls it from them first (it arrives next tick).
+// In creative mode every recipe is known and costs nothing.
 static void DrawCrafting() {
     const bool creative = terrainTool.creative;
     if (creative) ImGui::TextColored(ImVec4(1.0f, 0.8f, 0.3f, 1.0f), "Creative: crafting costs nothing");
     ToolWear_DrawRepairUI();
+    static char query[64] = {};
+    static bool craftableOnly = false;
+    static int pending = -1;           // a craft waiting for items pulled from chests
+    static double pendingUntil = 0.0;
+    ImGui::SetNextItemWidth(220.0f);
+    ImGui::InputTextWithHint("##recipesearch", "search recipes", query, sizeof(query));
+    ImGui::SameLine();
+    ImGui::Checkbox("Only what I can make", &craftableOnly);
+    std::string q = query;
+    for (char& c : q) c = (char)tolower((unsigned char)c);
+    // What nearby chests hold, once for this frame.
+    std::map<std::string, int> stored;
+    if (uiWorld)
+        for (const NearChest& c : Storage_NearbyChests(*uiWorld))
+            for (const auto& s : Factory::ChestContents(c.body, c.plot, c.part)) stored[s.first] += s.second;
+    auto have = [&](const std::string& id) { auto it = stored.find(id); return inventory.count(id) + (it == stored.end() ? 0 : it->second); };
+    auto canMake = [&](const Recipe& r) { if (creative) return true; for (const auto& in : r.inputs) if (have(in.first) < in.second) return false; return true; };
+    // A pending craft completes once the pulled items have arrived.
+    if (pending >= 0 && pending < (int)itemDB.recipes().size()) {
+        const Recipe& r = itemDB.recipes()[pending];
+        if (inventory.canCraft(r)) { if (inventory.craft(r)) Audio_Play(Sfx::Craft); pending = -1; }
+        else if (GetTime() > pendingUntil) { GameUI_Toast("The chests no longer hold enough"); pending = -1; }
+    }
+    int hidden = 0, shown = 0;
+    ImGui::BeginChild("recipes");
     for (size_t i = 0; i < itemDB.recipes().size(); ++i) {
         const Recipe& r = itemDB.recipes()[i];
+        if (!RecipeBook_Known(r)) { ++hidden; continue; }
+        if (!RecipeBook_Matches(r, q)) continue;
+        const bool can = canMake(r);
+        if (craftableOnly && !can) continue;
+        ++shown;
         const ItemDef* out = itemDB.find(r.output);
-        const bool can = creative || inventory.canCraft(r);
         ImGui::PushID((int)i);
-        ImGui::BeginDisabled(!can);
+        ImGui::BeginDisabled(!can || pending >= 0);
         if (ImGui::Button("Craft")) {
             if (creative) { if (inventory.addAmount(r.output, r.outputCount) < r.outputCount) Audio_Play(Sfx::Craft); }
-            else if (inventory.craft(r)) Audio_Play(Sfx::Craft);
+            else if (inventory.canCraft(r)) { if (inventory.craft(r)) Audio_Play(Sfx::Craft); }
+            else if (uiWorld) {
+                bool ok = true;
+                for (const auto& in : r.inputs) ok = Storage_Pull(*uiWorld, in.first, in.second - inventory.count(in.first)) && ok;
+                if (ok) { pending = (int)i; pendingUntil = GetTime() + 2.0; }
+            }
         }
         ImGui::EndDisabled();
         ImGui::SameLine();
@@ -107,12 +160,17 @@ static void DrawCrafting() {
         std::string needs = "   needs ";
         for (size_t k = 0; k < r.inputs.size(); ++k) {
             const ItemDef* in = itemDB.find(r.inputs[k].first);
-            needs += std::to_string(inventory.count(r.inputs[k].first)) + "/" + std::to_string(r.inputs[k].second) + " " + (in ? in->name : r.inputs[k].first);
+            const int inv = inventory.count(r.inputs[k].first), all = have(r.inputs[k].first);
+            needs += std::to_string(all) + "/" + std::to_string(r.inputs[k].second) + " " + (in ? in->name : r.inputs[k].first);
+            if (all > inv) needs += TextFormat(" (%d in chests)", all - inv);
             if (k + 1 < r.inputs.size()) needs += ", ";
         }
         ImGui::TextDisabled("%s", needs.c_str());
         ImGui::PopID();
     }
+    if (shown == 0) ImGui::TextDisabled(craftableOnly ? "Nothing you can make right now" : "No known recipe matches");
+    if (hidden > 0) ImGui::TextDisabled("%d recipes still to discover: find new materials (and some need more)", hidden);
+    ImGui::EndChild();
 }
 
 // Creative mode: free building, crafting and blueprints, and any item into the inventory.
@@ -154,7 +212,9 @@ static void DrawCreative() {
     ImGui::EndChild();
 }
 
-void GameUI_Draw(Scene&) {
+void GameUI_Draw(Scene& world) {
+    uiWorld = &world;
+    RecipeBook_Update(); // new recipes: a toast
     if (!inventoryOpen) return;
     const ImGuiIO& io = ImGui::GetIO();
     ImGui::SetNextWindowPos(ImVec2(io.DisplaySize.x * 0.5f, io.DisplaySize.y * 0.5f), ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
@@ -169,7 +229,7 @@ void GameUI_Draw(Scene&) {
 
         ImGui::NextColumn();
         if (ImGui::BeginTabBar("invtabs")) {
-            if (ImGui::BeginTabItem("Crafting")) {
+            if (ImGui::BeginTabItem("Crafting", nullptr, forceTab == "Crafting" ? ImGuiTabItemFlags_SetSelected : 0)) {
                 DrawCrafting();
                 ImGui::EndTabItem();
             }
