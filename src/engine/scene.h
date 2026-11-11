@@ -50,6 +50,8 @@ class Scene {
         HotShader lighting{ "resources/lighting.vs", "resources/lighting.fs" };
         HotShader depth{ "resources/depth.vs", "resources/depth.fs" };
         HotShader water{ "resources/water.vs", "resources/water.fs" };
+        HotShader grass{ "resources/grass.vs", "resources/grass.fs" };
+        HotShader trees{ "resources/trees.vs", "resources/trees.fs" };
         HotShader atmosphereShader{ "resources/skybox.vs", "resources/atmosphere.fs" };
         Material waterMaterial{};
         Model atmosphereDome{};       // a cube like the skybox, drawn over it with the atmosphere shader

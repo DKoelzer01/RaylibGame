@@ -67,7 +67,8 @@ void Survival_Update(Scene& world, float dt, bool inputEnabled) {
     } else {
         // A planet's air is breathable up to ~15 km: the suit tops up its oxygen from it instead.
         const auto& atm = world.atmosphere;
-        survival.breathable = atm.enabled && Vector3Distance(pr, atm.centre) < atm.radius + survival.breathableAltitude;
+        const Vector3 head = Vector3Add(pr, Vector3Scale(player.up, player.eyeHeight));
+        survival.breathable = atm.enabled && Vector3Distance(pr, atm.centre) < atm.radius + survival.breathableAltitude && !IsUnderwater(world, head);
         if (survival.breathable) survival.oxygen = std::min(100.0f, survival.oxygen + survival.airRefillPerSec * dt);
         else survival.oxygen = std::max(0.0f, survival.oxygen - survival.oxygenDrainPerSec * dt);
         survival.power = std::max(0.0f, survival.power - (survival.powerDrainPerSec

@@ -3,6 +3,7 @@
 #include "inventory.h"
 #include "audio.h"
 #include "player.h"
+#include "worldtypes.h"
 
 #include <raymath.h>
 #include <algorithm>
@@ -17,6 +18,40 @@ namespace {
     float strokeTimer = 0.0f;
     std::string toast;
     double toastUntil = 0.0;
+    // The plant under the crosshair (closer than the terrain hit), and progress chopping it.
+    bool hasPlant = false;
+    PlantHit plantHit{};
+    Planetoid* plantBody = nullptr;
+    uint64_t chopId = 0;
+    int chopHits = 0;
+
+    void Toast(const std::string& msg);
+    int HitsToFell(const Plant& p) { return p.tree() ? 6 + (int)(p.scale * 4.0f) : 1; }
+
+    // One swing at the aimed plant; true when it came down (items into the inventory).
+    bool Chop() {
+        if (!hasPlant || !plantBody || !plantBody->trees) return false;
+        const Plant& p = plantHit.plant;
+        if (p.id != chopId) { chopId = p.id; chopHits = 0; }
+        Audio_Play(Sfx::Dig, 0.45f, p.tree() ? 0.6f : 1.4f);
+        if (++chopHits < HitsToFell(p)) return false;
+        plantBody->trees->remove(p.id);
+        if (p.tree()) {
+            const int wood = 3 + (int)(p.scale * 4.0f);
+            inventory.add("wood", wood);
+            Toast(TextFormat("+%d wood", wood));
+            Audio_Play(Sfx::Build, 0.6f, 0.5f);
+        } else {
+            inventory.add("fibre", 2);
+            const bool berries = (p.id & 1) == 0;
+            if (berries) inventory.add("berries", 1);
+            Toast(berries ? "+2 fibre  +1 berries" : "+2 fibre");
+            Audio_Play(Sfx::Pickup, 0.5f);
+        }
+        chopId = 0; chopHits = 0;
+        hasPlant = false;
+        return true;
+    }
 
     void Toast(const std::string& msg) {
         toast = msg;
@@ -28,6 +63,14 @@ void TerrainTool_Update(Scene& world, bool inputEnabled, bool editEnabled) {
     PROFILE_FUNCTION();
     const Vector3 dir = Vector3Normalize(Vector3Subtract(world.camera.target, world.camera.position));
     hasHit = RaycastTerrain(world, Ray{ world.camera.position, dir }, player.flyMode ? 150.0f : terrainTool.reach, hit);
+    hasPlant = false;
+    plantBody = player.nearest;
+    if (plantBody && plantBody->trees && !player.flyMode) {
+        const Vector3 lo = plantBody->toLocal(world.camera.position), ld = plantBody->dirToLocal(dir);
+        const float reach = std::min(terrainTool.reach, 6.0f); // arm's length for an axe
+        hasPlant = plantBody->trees->raycast(lo, ld, hasHit ? std::min(reach, hit.distance) : reach, plantHit);
+    }
+    if (!hasPlant) chopHits = 0;
 
     if (!inputEnabled) { digging = adding = false; return; }
 
@@ -43,7 +86,7 @@ void TerrainTool_Update(Scene& world, bool inputEnabled, bool editEnabled) {
 
     digging = IsMouseButtonDown(MOUSE_BUTTON_LEFT);
     adding = !digging && IsMouseButtonDown(MOUSE_BUTTON_RIGHT);
-    if (!(digging || adding) || !hasHit) { strokeTimer = 0.0f; return; }
+    if (!(digging || adding) || !(hasHit || (digging && hasPlant))) { strokeTimer = 0.0f; return; }
 
     // Fixed stroke rate while held, so editing speed does not depend on frame rate: keep the
     // timer's remainder and run every interval that elapsed this frame (re-aiming between catch-up
@@ -52,7 +95,12 @@ void TerrainTool_Update(Scene& world, bool inputEnabled, bool editEnabled) {
     const float interval = 1.0f / terrainTool.strokesPerSecond;
     for (int n = 0; strokeTimer <= 0.0f && n < 8; ++n) {
         if (n > 0) hasHit = RaycastTerrain(world, Ray{ world.camera.position, dir }, player.flyMode ? 150.0f : terrainTool.reach, hit);
-        if (!hasHit) break;
+        if (!hasHit && !hasPlant) break;
+        if (digging && hasPlant) { // ~8 swings a second; a short pause after it comes down
+            if (Chop()) { strokeTimer = 0.4f; break; }
+            strokeTimer += 0.12f;
+            continue;
+        }
         TerrainTool_Stroke(digging);
         strokeTimer += interval;
     }
@@ -100,7 +148,7 @@ bool TerrainTool_Stroke(bool dig) {
 }
 
 void TerrainTool_Draw3D() {
-    if (!hasHit || hit.distance < terrainTool.brushRadius * 1.1f) return; // don't engulf the camera
+    if (!hasHit || hasPlant || hit.distance < terrainTool.brushRadius * 1.1f) return; // don't engulf the camera
     const Color c = digging ? RED : adding ? GREEN : Fade(WHITE, 0.6f);
     DrawSphereWires(hit.point, terrainTool.brushRadius, 8, 12, c);
 }
@@ -111,10 +159,24 @@ void TerrainTool_DrawHUD() {
     DrawLine(cx, cy - 8, cx, cy + 8, RAYWHITE);
 
     const int y = GetScreenHeight() - 60;
-    if (hasHit) {
+    if (hasPlant) {
+        const Plant& p = plantHit.plant;
+        DrawText(TextFormat("%s  %.1f m   LMB %s", p.tree() ? "tree" : "bush", plantHit.distance, p.tree() ? "chop" : "harvest"), cx + 14, cy + 10, 20, RAYWHITE);
+        if (chopId == p.id && chopHits > 0) {
+            const float f = (float)chopHits / HitsToFell(p);
+            DrawRectangle(cx + 14, cy + 34, 120, 6, Fade(BLACK, 0.5f));
+            DrawRectangle(cx + 14, cy + 34, (int)(120 * f), 6, ORANGE);
+        }
+    } else if (hasHit) {
         DrawText(TextFormat("%s  %.1f m   brush %.1f", VoxelMaterialName(hit.material), hit.distance, terrainTool.brushRadius),
                  cx + 14, cy + 10, 20, RAYWHITE);
     }
     DrawText("LMB dig  RMB build  wheel brush  Tab inventory  T telescope  L lamp  F fly  F5 save  F9 load  F1 debug", 10, y + 30, 20, Fade(RAYWHITE, 0.7f));
     if (GetTime() < toastUntil) DrawText(toast.c_str(), 10, y, 20, YELLOW);
+}
+
+bool TerrainTool_Chop() { return Chop(); }
+bool TerrainTool_AimingPlant(uint64_t* id) {
+    if (hasPlant && id) *id = plantHit.plant.id;
+    return hasPlant;
 }

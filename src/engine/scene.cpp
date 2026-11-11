@@ -2,6 +2,7 @@
 #include "utils/logger.h"
 #include "profiler.h"
 #include "worldtypes.h"
+#include "world.h"
 #include <raylib.h>
 #include <rlgl.h>
 #include <cmath>
@@ -52,6 +53,30 @@ static void ClearDepthBuffer() {
     if (glad_glClear) glad_glClear(0x00000100); // GL_DEPTH_BUFFER_BIT
 }
 
+// Translucent water: overlapping LOD copies of the sea must blend only once per pixel, so the
+// stencil lets the first (nearest, see Planetoid::drawTransparent) water fragment claim it.
+extern "C" {
+    typedef void (*PfnEnable)(unsigned int);
+    typedef void (*PfnStencilFunc)(unsigned int, int, unsigned int);
+    typedef void (*PfnStencilOp)(unsigned int, unsigned int, unsigned int);
+    extern PfnEnable glad_glEnable;
+    extern PfnEnable glad_glDisable;
+    extern PfnStencilFunc glad_glStencilFunc;
+    extern PfnStencilOp glad_glStencilOp;
+}
+static void BeginWaterStencil() {
+    rlDrawRenderBatchActive();
+    if (!glad_glStencilFunc || !glad_glStencilOp) return;
+    glad_glClear(0x00000400);                   // GL_STENCIL_BUFFER_BIT
+    glad_glEnable(0x0B90);                      // GL_STENCIL_TEST
+    glad_glStencilFunc(0x0202, 0, 0xFF);        // GL_EQUAL 0: unclaimed pixels only
+    glad_glStencilOp(0x1E00, 0x1E00, 0x1E02);   // keep, keep, GL_INCR where drawn
+}
+static void EndWaterStencil() {
+    rlDrawRenderBatchActive();
+    if (glad_glDisable) glad_glDisable(0x0B90);
+}
+
 static RenderTexture2D LoadShadowmapRenderTexture(int width, int height) {
     RenderTexture2D target = { 0 };
     target.id = rlLoadFramebuffer();
@@ -100,6 +125,8 @@ Scene::Scene(std::string name, bool isActive)
     depthMaterial = LoadMaterialDefault();
     waterMaterial = LoadMaterialDefault();
     water.reloadIfChanged(true);
+    grass.reloadIfChanged(true);
+    trees.reloadIfChanged(true);
     atmosphereShader.reloadIfChanged(true);
     atmosphereDome = LoadModelFromMesh(GenMeshCube(1.0f, 1.0f, 1.0f));
 
@@ -218,6 +245,8 @@ void Scene::drawScene(int gamestate) {
     if (lighting.reloadIfChanged()) applyLightingShader();
     if (depth.reloadIfChanged()) depthMaterial.shader = depth.shader;
     water.reloadIfChanged();
+    grass.reloadIfChanged();
+    trees.reloadIfChanged();
     atmosphereShader.reloadIfChanged();
 
     if (IsKeyPressed(KEY_F3)) debugDraw = !debugDraw;
@@ -309,7 +338,7 @@ void Scene::drawScene(int gamestate) {
         effFog = Vector3Add(effFog, Vector3Scale(skyHorizon, atmDensity));
         effFogDensity += atmDensity / 35000.0f;                    // ~35 km to fade a third of the way
         effAmbient = Vector3Add(effAmbient, Vector3Scale(skyHorizon, 0.06f * atmDensity));
-        if (alt < 0.0f) { effFog = { 0.004f, 0.02f, 0.035f }; effFogDensity = 0.06f; } // under the sea
+        if (alt < 0.0f && IsUnderwater(*this, camera.position)) { effFog = { 0.004f, 0.02f, 0.035f }; effFogDensity = 0.06f; } // in the sea (not a dry cave below sea level)
     }
     SetShaderValue(s, locFogColor, &effFog, SHADER_UNIFORM_VEC3);
     SetShaderValue(s, locFogDensity, &effFogDensity, SHADER_UNIFORM_FLOAT);
@@ -379,32 +408,11 @@ void Scene::drawScene(int gamestate) {
         ctx.paletteLoc = locPalette;
         ctx.sunOccluderLoc = locSunOccluder;
         ctx.scenePalette = materialPalette;
+        ctx.cameraPos = camera.position;
         auto isFar = [&](const Object* o) { return std::find(farBodies.begin(), farBodies.end(), o) != farBodies.end(); };
-        if (!farBodies.empty()) {
-            EndMode3D();
-            const double nearDefault = rlGetCullDistanceNear(), farDefault = rlGetCullDistanceFar();
-            rlSetClipPlanes(std::max(1.0, farMin * 0.9), farMax * 1.05 + 100.0);
-            BeginMode3D(camera);
-            const Frustum farFrustum = Frustum::fromViewProj(MatrixMultiply(rlGetMatrixModelview(), rlGetMatrixProjection()));
-            ctx.frustum = &farFrustum;
-            for (Object* o : farBodies) o->draw(ctx);
-            EndMode3D();
-            ClearDepthBuffer();
-            rlSetClipPlanes(nearDefault, farDefault);
-            BeginMode3D(camera);
-        }
-
-        const Frustum viewFrustum = Frustum::fromViewProj(MatrixMultiply(rlGetMatrixModelview(), rlGetMatrixProjection()));
-        ctx.terrainMaterial = &terrainMaterial;
-        ctx.depthMaterial = &depthMaterial;
-        ctx.frustum = &viewFrustum;
-        for (const auto& obj : objects) if (obj && !isFar(obj.get())) obj->draw(ctx);
-        for (const auto& obj : rootObject.children) if (obj) obj->draw(ctx);
-
-        // Transparent pass (sea surfaces) after everything opaque. Depth writes stay on: where LOD
-        // nodes overlap, the second copy of the same surface then fails the depth test instead of
-        // blending twice. Both faces are drawn (seen from under the water too).
-        {
+        const double nearDefault = rlGetCullDistanceNear(), farDefault = rlGetCullDistanceFar();
+        // Sea surface material, set up once for the far, mid and near passes.
+        auto prepareWater = [&] {
             Shader& ws = water.shader;
             const float now = (float)fmod(GetTime(), 3600.0);
             SetShaderValue(ws, GetShaderLocation(ws, "viewPos"), &camera.position, SHADER_UNIFORM_VEC3);
@@ -418,8 +426,122 @@ void Scene::drawScene(int gamestate) {
             ctx.waterTexOriginLoc = GetShaderLocation(ws, "chunkTexOrigin");
             ctx.waterClipLoc = GetShaderLocation(ws, "chunkClipMax");
             ctx.waterOccluderLoc = GetShaderLocation(ws, "sunOccluder");
+        };
+        prepareWater();
+        if (!farBodies.empty()) {
+            EndMode3D();
+            rlSetClipPlanes(std::max(1.0, farMin * 0.9), farMax * 1.05 + 100.0);
+            BeginMode3D(camera);
+            const Frustum farFrustum = Frustum::fromViewProj(MatrixMultiply(rlGetMatrixModelview(), rlGetMatrixProjection()));
+            ctx.frustum = &farFrustum;
+            for (Object* o : farBodies) o->draw(ctx);
+            BeginWaterStencil(); // the sea too (a planet seen from orbit is a far body)
             rlDisableBackfaceCulling();
+            for (Object* o : farBodies) o->drawTransparent(ctx);
+            rlEnableBackfaceCulling();
+            EndWaterStencil();
+            EndMode3D();
+            ClearDepthBuffer();
+            rlSetClipPlanes(nearDefault, farDefault);
+            BeginMode3D(camera);
+        }
+
+
+        // Mid pass: near bodies' terrain and sea beyond kNearSplit, in their own depth range, then a
+        // depth clear for the close range. One 0.5 m .. 60 km range resolved only ~12 m of depth at
+        // 10 km, so far LOD seams and shorelines z-fought. Chunks straddling the split are drawn in
+        // both passes; each pass clips to its range (and frustum-culls chunks outside it).
+        const double kNearSplit = 2000.0;
+        {
+            EndMode3D();
+            rlSetClipPlanes(kNearSplit * 0.9, farDefault);
+            BeginMode3D(camera);
+            const Frustum midFrustum = Frustum::fromViewProj(MatrixMultiply(rlGetMatrixModelview(), rlGetMatrixProjection()));
+            ctx.frustum = &midFrustum;
+            for (const auto& obj : objects) if (obj && !isFar(obj.get())) obj->draw(ctx);
+            rlDisableBackfaceCulling();
+            BeginWaterStencil();
             for (const auto& obj : objects) if (obj && !isFar(obj.get())) obj->drawTransparent(ctx);
+            EndWaterStencil();
+            rlEnableBackfaceCulling();
+            EndMode3D();
+            ClearDepthBuffer();
+            rlSetClipPlanes(nearDefault, kNearSplit);
+            BeginMode3D(camera);
+        }
+
+        const Frustum viewFrustum = Frustum::fromViewProj(MatrixMultiply(rlGetMatrixModelview(), rlGetMatrixProjection()));
+        ctx.terrainMaterial = &terrainMaterial;
+        ctx.depthMaterial = &depthMaterial;
+        ctx.frustum = &viewFrustum;
+        for (const auto& obj : objects) if (obj && !isFar(obj.get())) obj->draw(ctx);
+        for (const auto& obj : rootObject.children) if (obj) obj->draw(ctx);
+
+        // Foliage: grass tufts on near chunks (instanced; one draw per chunk with grass in range).
+        if (grass.shader.id > 0 && foliageEnabled) {
+            rlDrawRenderBatchActive();
+            Shader& gs = grass.shader;
+            rlEnableShader(gs.id);
+            const Matrix vp = MatrixMultiply(rlGetMatrixModelview(), rlGetMatrixProjection());
+            rlSetUniformMatrix(GetShaderLocation(gs, "matViewProj"), vp);
+            const float now = (float)fmod(GetTime(), 3600.0);
+            const float fadeEnd = kGrassDrawDistance;
+            const float shell[4] = { atmosphere.centre.x, atmosphere.centre.y, atmosphere.centre.z,
+                                     atmosphere.enabled && effFogDensity < 0.06f ? atmosphere.radius + atmosphere.hazeHeight : 0.0f };
+            rlSetUniform(GetShaderLocation(gs, "sunDir"), &sun, RL_SHADER_UNIFORM_VEC3, 1);
+            rlSetUniform(GetShaderLocation(gs, "viewPos"), &camera.position, RL_SHADER_UNIFORM_VEC3, 1);
+            rlSetUniform(GetShaderLocation(gs, "ambient"), &effAmbient, RL_SHADER_UNIFORM_VEC3, 1);
+            rlSetUniform(GetShaderLocation(gs, "fogColor"), &effFog, RL_SHADER_UNIFORM_VEC3, 1);
+            rlSetUniform(GetShaderLocation(gs, "fogDensity"), &effFogDensity, RL_SHADER_UNIFORM_FLOAT, 1);
+            rlSetUniform(GetShaderLocation(gs, "fogShell"), shell, RL_SHADER_UNIFORM_VEC4, 1);
+            rlSetUniform(GetShaderLocation(gs, "time"), &now, RL_SHADER_UNIFORM_FLOAT, 1);
+            rlSetUniform(GetShaderLocation(gs, "fadeEnd"), &fadeEnd, RL_SHADER_UNIFORM_FLOAT, 1);
+            RenderContext gctx = ctx;
+            gctx.grassShader = &gs;
+            gctx.grassModelLoc = GetShaderLocation(gs, "matModel");
+            gctx.grassOccluderLoc = GetShaderLocation(gs, "sunOccluder");
+            gctx.cameraPos = camera.position;
+            rlDisableBackfaceCulling();
+            for (const auto& obj : objects)
+                if (auto* p = dynamic_cast<Planetoid*>(obj.get()); p && !isFar(p)) p->drawFoliage(gctx);
+            rlEnableBackfaceCulling();
+            rlDisableShader();
+        }
+        // Trees and bushes: one instanced draw per variant per body.
+        if (trees.shader.id > 0 && foliageEnabled) {
+            rlDrawRenderBatchActive();
+            Shader& ts = trees.shader;
+            rlEnableShader(ts.id);
+            const Matrix vp = MatrixMultiply(rlGetMatrixModelview(), rlGetMatrixProjection());
+            rlSetUniformMatrix(GetShaderLocation(ts, "matViewProj"), vp);
+            const float now = (float)fmod(GetTime(), 3600.0);
+            const float shell[4] = { atmosphere.centre.x, atmosphere.centre.y, atmosphere.centre.z,
+                                     atmosphere.enabled && effFogDensity < 0.06f ? atmosphere.radius + atmosphere.hazeHeight : 0.0f };
+            rlSetUniform(GetShaderLocation(ts, "sunDir"), &sun, RL_SHADER_UNIFORM_VEC3, 1);
+            rlSetUniform(GetShaderLocation(ts, "viewPos"), &camera.position, RL_SHADER_UNIFORM_VEC3, 1);
+            rlSetUniform(GetShaderLocation(ts, "ambient"), &effAmbient, RL_SHADER_UNIFORM_VEC3, 1);
+            rlSetUniform(GetShaderLocation(ts, "fogColor"), &effFog, RL_SHADER_UNIFORM_VEC3, 1);
+            rlSetUniform(GetShaderLocation(ts, "fogDensity"), &effFogDensity, RL_SHADER_UNIFORM_FLOAT, 1);
+            rlSetUniform(GetShaderLocation(ts, "fogShell"), shell, RL_SHADER_UNIFORM_VEC4, 1);
+            rlSetUniform(GetShaderLocation(ts, "time"), &now, RL_SHADER_UNIFORM_FLOAT, 1);
+            RenderContext tctx = ctx;
+            tctx.treeShader = &ts;
+            tctx.treeModelLoc = GetShaderLocation(ts, "matModel");
+            tctx.treeOccluderLoc = GetShaderLocation(ts, "sunOccluder");
+            tctx.treeFadeLoc = GetShaderLocation(ts, "fadeEnd");
+            for (const auto& obj : objects)
+                if (auto* p = dynamic_cast<Planetoid*>(obj.get()); p && !isFar(p) && p->trees) p->trees->draw(*p, tctx);
+            rlDisableShader();
+        }
+
+        // Transparent pass (sea surfaces) after everything opaque. Depth writes stay on: where LOD
+        // nodes overlap, the second copy of the same surface then fails the depth test instead of
+        // blending twice. Both faces are drawn (seen from under the water too).
+        {
+            rlDisableBackfaceCulling();
+            BeginWaterStencil();
+            for (const auto& obj : objects) if (obj && !isFar(obj.get())) obj->drawTransparent(ctx);
+            EndWaterStencil();
             rlEnableBackfaceCulling();
         }
 
@@ -441,6 +563,7 @@ void Scene::drawScene(int gamestate) {
         }
         if (onDraw3D) onDraw3D();
     EndMode3D();
+    rlSetClipPlanes(nearDefault, farDefault); // the passes above narrowed them
     lastDrawCalls = drawCalls;
 
     if (debugDraw) {
@@ -481,6 +604,8 @@ Scene::~Scene() {
     lighting.unload();
     depth.unload();
     water.unload();
+    grass.unload();
+    trees.unload();
     atmosphereShader.unload();
     UnloadShadowmapRenderTexture(shadowMap);
 }

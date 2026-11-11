@@ -53,6 +53,11 @@ struct RenderContext {
     Material* waterMaterial = nullptr;    // sea surface (water shader); drawn in the transparent pass
     int waterTexOriginLoc = -1, waterClipLoc = -1, waterOccluderLoc = -1;
     int chunkClipLoc = -1;                // lighting shader "chunkClipMax" (chunk-local overlap clipping)
+    Shader* grassShader = nullptr;        // foliage: grass tufts (drawn after the opaque terrain)
+    int grassModelLoc = -1, grassOccluderLoc = -1;
+    Vector3 cameraPos = { 0, 0, 0 };      // render space
+    Shader* treeShader = nullptr;         // foliage: trees and bushes
+    int treeModelLoc = -1, treeOccluderLoc = -1, treeFadeLoc = -1;
 };
 
 extern bool frustumCullingEnabled; // debug toggle

@@ -4,6 +4,7 @@
 #include "worldtypes.h"
 
 #include <raymath.h>
+#include <rlgl.h>
 #include <algorithm>
 #include <chrono>
 #include <cmath>
@@ -43,6 +44,8 @@ namespace {
         return *jobs;
     }
 }
+
+JobSystem& WorldJobs() { return Jobs(); }
 
 // ---------------------------------------------------------------------------------------------
 // Planetoid
@@ -128,8 +131,8 @@ namespace {
               offset(p.worldPos - renderOrigin), s(p.scale) {
             BodyRotationD(p.rotation, r);
         }
-        Matrix model(const NodeKey& key) const {
-            const Vector3 o = key.origin();
+        Matrix model(const NodeKey& key) const { const Vector3 o = key.origin(); return modelAt(DVec3(o)); }
+        Matrix modelAt(const DVec3& o) const {
             Matrix m = rs;
             m.m12 = (float)(offset.x + (r[0][0] * o.x + r[0][1] * o.y + r[0][2] * o.z) * s);
             m.m13 = (float)(offset.y + (r[1][0] * o.x + r[1][1] * o.y + r[1][2] * o.z) * s);
@@ -137,6 +140,10 @@ namespace {
             return m;
         }
     };
+}
+
+Matrix Planetoid::localModel(const DVec3& anchorLocal, const DVec3& renderOrigin) const {
+    return ChunkPlacer(*this, renderOrigin).modelAt(anchorLocal);
 }
 
 Matrix Planetoid::chunkModel(const Chunk& chunk, const DVec3& renderOrigin) const {
@@ -163,12 +170,24 @@ Vector3 Planetoid::surfaceVelocity(Vector3 renderPoint) const {
     return Vector3Add(linearVelocity, Vector3CrossProduct(omega, Vector3Subtract(renderPoint, position)));
 }
 
+// Directions only rotate (no translation): transforming two points and subtracting lost ~0.2 deg in
+// float with the body centre tens of km from the render origin (hundreds of metres on the surface).
 Vector3 Planetoid::dirToLocal(Vector3 worldDir) const {
-    return Vector3Normalize(Vector3Subtract(toLocal(Vector3Add(position, worldDir)), toLocal(position)));
+    double r[3][3];
+    BodyRotationD(rotation, r);
+    const Vector3 d = worldDir;
+    return Vector3Normalize({ (float)(r[0][0] * d.x + r[1][0] * d.y + r[2][0] * d.z),
+                              (float)(r[0][1] * d.x + r[1][1] * d.y + r[2][1] * d.z),
+                              (float)(r[0][2] * d.x + r[1][2] * d.y + r[2][2] * d.z) });
 }
 
 Vector3 Planetoid::dirToWorld(Vector3 localDir) const {
-    return Vector3Normalize(Vector3Subtract(toWorld(localDir), toWorld({ 0, 0, 0 })));
+    double r[3][3];
+    BodyRotationD(rotation, r);
+    const Vector3 d = localDir;
+    return Vector3Normalize({ (float)(r[0][0] * d.x + r[0][1] * d.y + r[0][2] * d.z),
+                              (float)(r[1][0] * d.x + r[1][1] * d.y + r[1][2] * d.z),
+                              (float)(r[2][0] * d.x + r[2][1] * d.y + r[2][2] * d.z) });
 }
 
 Quaternion Planetoid::rotationQuat() const {
@@ -207,7 +226,26 @@ void Planetoid::drawTransparent(const RenderContext& ctx) {
     batch.setUniform(ctx.waterOccluderLoc, occluder, SHADER_UNIFORM_VEC4);
     RenderContext c2 = ctx;
     c2.batch = &batch;
-    for (Chunk* ch : drawList) ch->drawWater(c2, placer.model(ch->key));
+    // Nearest first: with the stencil set up by the scene (one water layer per pixel), the closest
+    // surface claims the pixel and overlapping LOD copies of the sea behind it are skipped.
+    std::vector<std::pair<float, Chunk*>> order;
+    for (Chunk* ch : drawList) {
+        if (ch->waterMesh.vaoId == 0) continue;
+        const Matrix m = placer.model(ch->key);
+        const float h = ch->key.size() * 0.5f;
+        order.push_back({ Vector3DistanceSqr(Vector3Transform({ h, h, h }, m), ctx.cameraPos), ch });
+    }
+    std::sort(order.begin(), order.end(), [](const auto& a, const auto& b) { return a.first < b.first; });
+    for (auto& o : order) o.second->drawWater(c2, placer.model(o.second->key));
+}
+
+void Planetoid::drawFoliage(const RenderContext& ctx) {
+    if (!isActive || drawList.empty() || !ctx.grassShader) return;
+    const ChunkPlacer placer(*this, ctx.renderOrigin);
+    const Vector3 c = (worldPos - ctx.renderOrigin).toFloat();
+    const float occluder[4] = { c.x, c.y, c.z, std::max(0.0f, radius - 60.0f) * scale }; // night side, as for terrain
+    rlSetUniform(ctx.grassOccluderLoc, occluder, RL_SHADER_UNIFORM_VEC4, 1);
+    for (Chunk* ch : drawList) if (ch->key.level == 0) ch->drawGrass(ctx, placer.model(ch->key));
 }
 
 void Planetoid::drawDepthOnly(const RenderContext& ctx) {
@@ -236,7 +274,10 @@ static void RequestNode(Planetoid& p, const NodeKey& key, float priority) {
     std::shared_ptr<const DensityField> field = p.field;
     std::shared_ptr<const EditList> edits = p.edits;
     const uint64_t id = p.id;
-    Jobs().submit(priority, [field, edits, id, key, version] {
+    std::shared_ptr<std::atomic<uint32_t>> wanted = p.nodes.at(key)->wanted;
+    wanted->store(version);
+    Jobs().submit(priority, [field, edits, id, key, version, wanted] {
+        if (wanted->load() != version) return; // superseded or freed while queued
         PROFILE_SCOPE("Build chunk");
         ChunkMeshData data;
         data.planetoidId = id;
@@ -353,19 +394,32 @@ static void UpdateLod(Planetoid& p, Vector3 cameraRender) {
     }
 
     // Previously drawn nodes that are no longer desired, kept while a desired overlap is pending.
+    // Overlap tests walk ancestors through hash sets (comparing every drawn node with every desired
+    // one cost ~3 ms a frame with thousands of nodes while flying).
+    auto parentOf = [](const NodeKey& k) { return NodeKey{ k.level + 1, k.x >> 1, k.y >> 1, k.z >> 1 }; };
+    std::unordered_set<NodeKey> pendingDesired, pendingWithin; // pending nodes, and every node containing one
+    for (const NodeKey& d : desired) {
+        if (p.nodes.at(d)->ready) continue;
+        pendingDesired.insert(d);
+        for (NodeKey k = d; k.level <= p.rootLevel; k = parentOf(k))
+            if (!pendingWithin.insert(k).second) break; // its ancestors are in already
+    }
     std::vector<Chunk*> retained;
+    std::unordered_set<NodeKey> retainedSet;
     for (Chunk* c : p.drawList) {
         if (desiredSet.count(c->key)) continue;
-        for (const NodeKey& d : desired) {
-            if (d.overlaps(c->key) && !p.nodes.at(d)->ready) { retained.push_back(c); break; }
-        }
+        bool keep = pendingWithin.count(c->key) > 0;                // a pending desired node lies inside it
+        for (NodeKey k = parentOf(c->key); !keep && k.level <= p.rootLevel; k = parentOf(k))
+            keep = pendingDesired.count(k) > 0;                      // inside a pending desired node
+        if (keep) { retained.push_back(c); retainedSet.insert(c->key); }
     }
     std::vector<Chunk*> draw = retained;
     for (const NodeKey& d : desired) {
         Chunk* c = p.nodes.at(d).get();
         if (!c->ready) continue;
         bool coveredByCoarser = false;
-        for (Chunk* r : retained) if (r->key.level > d.level && r->key.contains(d)) { coveredByCoarser = true; break; }
+        if (!retainedSet.empty())
+            for (NodeKey k = parentOf(d); !coveredByCoarser && k.level <= p.rootLevel; k = parentOf(k)) coveredByCoarser = retainedSet.count(k) > 0;
         if (!coveredByCoarser) draw.push_back(c);
     }
     p.drawList = std::move(draw);
@@ -491,7 +545,10 @@ void worldUpdate(Scene& world, float uploadBudgetMs) {
 
     // LOD after uploads, so this frame's draw list already includes nodes that just finished.
     for (auto& obj : world.objects) {
-        if (auto* p = dynamic_cast<Planetoid*>(obj.get())) UpdateLod(*p, world.camera.position);
+        if (auto* p = dynamic_cast<Planetoid*>(obj.get())) {
+            UpdateLod(*p, world.camera.position);
+            if (p->trees) p->trees->update(*p, p->toLocal(world.camera.position));
+        }
     }
 
     stats.queuedJobs = (int)Jobs().queued();
@@ -739,6 +796,11 @@ void generateWorld(Scene& world) {
             p->rootLevel = 0;
             while ((float)(CHUNK_SIZE << p->rootLevel) < field->maxRadius() + 24.0f) p->rootLevel++;
             p->field = field;
+            if (kind == BodyKind::Planet) {
+                field->foliage = true;
+                field->foliageSeed = seed ^ 0x7aee5u;
+                p->trees = std::make_unique<TreeSystem>(field, field->foliageSeed);
+            }
         }
         p->spin = { 0.0f, spin, 0.0f };
         p->surfaceGravity = d.gravity >= 0.0f ? d.gravity : AutoSurfaceGravity(kind, radius);
@@ -823,7 +885,9 @@ void regenerateWorld(Scene& world) {
 // edit list, so a save is tiny and replays exactly.
 // ---------------------------------------------------------------------------------------------
 
-static const char* SAVE_PATH = "saves/world.sav";
+static std::string SAVE_PATH_STR = "saves/world.sav";
+#define SAVE_PATH SAVE_PATH_STR.c_str()
+void SetWorldSavePath(const char* path) { SAVE_PATH_STR = path; }
 
 bool SaveWorld(Scene& world) {
     if (!DirectoryExists("saves")) MakeDirectory("saves");
@@ -833,7 +897,7 @@ bool SaveWorld(Scene& world) {
     const DVec3 tgtWorld = world.renderOrigin + world.camera.target;
     // v4: the system definition is stored in the save, so a save reloads the system it was made in
     // even if bodies.txt has changed since.
-    fprintf(f, "RAYLIBGAME_SAVE 5\n");
+    fprintf(f, "RAYLIBGAME_SAVE 6\n");
     fprintf(f, "seed %u\nbodies %zu\n", worldGen.lastSeed, worldGen.system.bodies.size());
     for (const BodyDef& b : worldGen.system.bodies) fprintf(f, "%s\n", FormatBodyDef(b).c_str());
     fprintf(f, "time %.6f\n", worldTime); // v5: the world clock (orbits)
@@ -851,6 +915,11 @@ bool SaveWorld(Scene& world) {
             fprintf(f, "%f %f %f %f %f\n", e.center.x, e.center.y, e.center.z, e.radius, e.strength);
             total++;
         }
+        // v6: chopped / harvested plants (id, world time removed); they regrow from that time.
+        const PlantRemovals none;
+        const PlantRemovals& rm = p->trees ? p->trees->removals() : none;
+        fprintf(f, "plants %zu\n", rm.size());
+        for (const auto& kv : rm) fprintf(f, "%llu %.3f\n", (unsigned long long)kv.first, kv.second);
     }
     fclose(f);
     logger.logf("[World] saved %d edits to %s\n", total, SAVE_PATH);
@@ -861,7 +930,7 @@ bool LoadWorldSave(Scene& world) {
     FILE* f = fopen(SAVE_PATH, "r");
     if (!f) return false;
     int version = 0;
-    if (fscanf(f, "RAYLIBGAME_SAVE %d", &version) != 1 || version < 2 || version > 5) {
+    if (fscanf(f, "RAYLIBGAME_SAVE %d", &version) != 1 || version < 2 || version > 6) {
         fclose(f);
         logger.logf("[World] %s: unsupported save version %d\n", SAVE_PATH, version);
         return false;
@@ -931,9 +1000,20 @@ bool LoadWorldSave(Scene& world) {
             if (fscanf(f, " %f %f %f %f %f", &e.center.x, &e.center.y, &e.center.z, &e.radius, &e.strength) != 5) break;
             list->push_back(e);
         }
+        PlantRemovals plants;
+        size_t plantCount = 0;
+        if (version >= 6 && fscanf(f, " plants %zu", &plantCount) == 1) {
+            for (size_t i = 0; i < plantCount; ++i) {
+                unsigned long long id = 0;
+                double t = 0.0;
+                if (fscanf(f, " %llu %lf", &id, &t) != 2) break;
+                plants[(uint64_t)id] = t;
+            }
+        }
         if (index >= 0 && index < (int)planetoids.size()) {
             planetoids[index]->edits = list;
             planetoids[index]->rotation = rot;
+            if (planetoids[index]->trees) planetoids[index]->trees->setRemovals(plants);
         }
     }
     fclose(f);
@@ -1019,3 +1099,15 @@ void loadWorld(Scene& world) {
     file.close();
 }
 
+
+bool IsUnderwater(Scene& world, Vector3 renderPoint) {
+    Planetoid* p = NearestPlanetoid(world, renderPoint);
+    if (!p || !p->field) return false;
+    const auto* pf = dynamic_cast<const PlanetField*>(p->field.get());
+    if (!pf) return false;
+    const Vector3 local = p->toLocal(renderPoint);
+    const float d = Vector3Length(local);
+    const float sea = pf->seaLevelRadius();
+    if (sea <= 0.0f || d >= sea || d < 1.0f) return false;
+    return d > pf->radius + pf->elevation(Vector3Scale(local, 1.0f / d)); // above the sea floor
+}

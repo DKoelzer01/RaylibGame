@@ -2,6 +2,7 @@
 #define worldtypes_h
 
 #include <cstdint>
+#include <atomic>
 #include <memory>
 #include <unordered_map>
 #include <vector>
@@ -10,6 +11,8 @@
 #include "object.h"
 #include "voxel.h"
 #include "bodies.h"
+#include "foliage.h"
+#include "trees.h"
 
 // One octree LOD node of a planetoid's surface. Its mesh is built from the planetoid's density
 // field on a worker thread and only uploaded here.
@@ -17,6 +20,10 @@ class Chunk : public Object {
 public:
     Mesh mesh{};          // GPU mesh (empty if the node contains no surface)
     Mesh waterMesh{};     // sea surface in this node (empty if none)
+    FoliageGpu grass{};   // grass tufts (finest level only)
+    // The build version this node still wants (0 once freed). Queued jobs check it and skip work
+    // nobody wants any more (flying fast used to fill the workers with builds for nodes long passed).
+    std::shared_ptr<std::atomic<uint32_t>> wanted = std::make_shared<std::atomic<uint32_t>>(0);
     NodeKey key{};
     bool ready = false;   // a build result has arrived at least once
     // Body-local upper bound for fragments. Nodes overlap their +x/+y/+z neighbours by one cell to
@@ -35,6 +42,7 @@ public:
     void drawChunk(const RenderContext& ctx, const Matrix& model);
     void drawChunkDepth(const RenderContext& ctx, const Matrix& model);
     void drawWater(const RenderContext& ctx, const Matrix& model);  // with ctx.batch bound to the water material
+    void drawGrass(const RenderContext& ctx, const Matrix& model);  // grass shader bound (Planetoid::drawFoliage)
 
 private:
     void releaseMesh();
@@ -84,6 +92,7 @@ public:
     void draw(const RenderContext& ctx) override;
     void drawDepthOnly(const RenderContext& ctx) override;
     void drawTransparent(const RenderContext& ctx) override; // sea surface
+    void drawFoliage(const RenderContext& ctx);             // grass (ctx.grassShader bound)
 
     // World (render-relative) <-> planetoid-local (voxel) space.
     Vector3 toLocal(Vector3 world) const;
@@ -94,6 +103,9 @@ public:
     DVec3 toLocalD(const DVec3& worldAbs) const;
     // Model matrix of one of this body's chunks in render space, its translation computed in double.
     Matrix chunkModel(const Chunk& chunk, const DVec3& renderOrigin) const;
+    // Model matrix for geometry positioned relative to a body-local anchor (foliage batches).
+    Matrix localModel(const DVec3& anchorLocal, const DVec3& renderOrigin) const;
+    std::unique_ptr<TreeSystem> trees;                   // planets with life: trees and bushes
 
     float densityAt(Vector3 local) const; // includes edits; main-thread helper (raycasts)
     // Velocity (world units/s) of the body-fixed point currently at renderPoint, from the spin.

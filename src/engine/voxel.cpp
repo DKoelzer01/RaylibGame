@@ -1,4 +1,6 @@
 #include "voxel.h"
+#include "foliage.h"
+#include "trees.h"
 #include "cubemarch.h"
 
 #include <raymath.h>
@@ -378,9 +380,13 @@ VoxelMaterial PlanetField::materialSky(Vector3 p, float base, float fp, Vector3 
     const Vector3 up = { p.x / d, p.y / d, p.z / d };
     const float surfaceElevation = elevation(up, fp);
     const float depth = radius + surfaceElevation - d; // against the surface this LOD meshes
-    sky = std::clamp(1.0f - (depth - 2.0f) / 8.0f, 0.0f, 1.0f); // buried more than ~10 m: no sky (caves, deep pits)
-    if (moon) return depth < 2.5f ? VoxelMaterial::Regolith : VoxelMaterial::Rock; // grey dust over rock (asteroid palette)
-    if (depth < 2.5f) {
+    // A coarse LOD mesh strays from the height map it approximates by up to a couple of samples, so
+    // its "depth" must allow for that, or whole patches of surface read as buried (black, no sun) and
+    // take underground materials (seen from orbit as black triangles on peaks and rings along the grid).
+    const float slack = fp > 1.0f ? 2.0f * fp : 0.0f;
+    sky = std::clamp(1.0f - (depth - 2.0f - slack) / 8.0f, 0.0f, 1.0f); // buried more than ~10 m: no sky (caves, deep pits)
+    if (moon) return depth < 2.5f + slack ? VoxelMaterial::Regolith : VoxelMaterial::Rock; // grey dust over rock (asteroid palette)
+    if (depth < 2.5f + slack) {
         // Surface biome from height above sea level, latitude, slope and a climate wobble. The top
         // ~0.6 m is the surface material; below it a soil layer (dirt under grass, sand under sand,
         // gravel under scree), then rock.
@@ -388,7 +394,7 @@ VoxelMaterial PlanetField::materialSky(Vector3 p, float base, float fp, Vector3 
         const float lat = fabsf(up.y);                                     // 0 at the equator, 1 at the poles
         const float slope = 1.0f - std::clamp(Vector3DotProduct(normal, up), -1.0f, 1.0f); // 0 flat .. 1 vertical
         const float e = surfaceElevation;
-        const bool skin = depth < 0.6f;
+        const bool skin = depth < 0.6f + slack;
         if (lat > 0.93f + 0.03f * wobble || e > 1350.0f + 100.0f * wobble) return VoxelMaterial::Ice;          // polar cap, glaciers
         if (lat > 0.82f + 0.08f * wobble || e > 1050.0f + 150.0f * wobble) return skin ? VoxelMaterial::Snow : VoxelMaterial::Ice;
         if (slope > 0.45f) return VoxelMaterial::Rock;                                                       // cliffs: bare stone
@@ -498,6 +504,8 @@ void BuildChunkMesh(const DensityField& field, const EditList& allEdits, ChunkMe
             out.texcoords.assign(verts.size() * 2, 0.0f);
             out.texcoords2.assign(verts.size() * 2, 0.0f);
             out.tangents.assign(verts.size() * 4, 0.0f);
+            const PlanetField* planetLife = dynamic_cast<const PlanetField*>(&field);
+            if (planetLife && !planetLife->foliage) planetLife = nullptr;
             for (size_t v = 0; v < verts.size(); ++v) {
                 const Vector3 lp = Vector3Scale(verts[v], stride);     // node-relative, in voxels
                 const Vector3 p = Vector3Add(origin, lp);
@@ -517,6 +525,15 @@ void BuildChunkMesh(const DensityField& field, const EditList& allEdits, ChunkMe
                 float sky = 1.0f;
                 const VoxelMaterial m = field.materialSky(p, b, stride, n, sky);
                 out.tangents[v * 4 + 3] = sky;
+                if (planetLife && sky > 0.9f && (m == VoxelMaterial::Grass || m == VoxelMaterial::Regolith)) {
+                    // Distant forests: canopy cover (x) and latitude (y) for the terrain shader, which
+                    // paints them in where the real trees fade out.
+                    const float d = Vector3Length(p);
+                    const Vector3 up = Vector3Scale(p, 1.0f / d);
+                    const float steep = 1.0f - Vector3DotProduct(n, up);
+                    out.tangents[v * 4 + 0] = TreeCanopy(up, planetLife->radius, d - planetLife->radius, planetLife->foliageSeed) * std::clamp(1.0f - (steep - 0.1f) / 0.15f, 0.0f, 1.0f);
+                    out.tangents[v * 4 + 1] = fabsf(up.y);
+                }
                 out.positions[v * 3 + 0] = lp.x;
                 out.positions[v * 3 + 1] = lp.y;
                 out.positions[v * 3 + 2] = lp.z;
@@ -566,6 +583,7 @@ void BuildChunkMesh(const DensityField& field, const EditList& allEdits, ChunkMe
                 const float c01 = d(x0, y0, z0 + 1) * (1 - fx) + d(x0 + 1, y0, z0 + 1) * fx, c11 = d(x0, y0 + 1, z0 + 1) * (1 - fx) + d(x0 + 1, y0 + 1, z0 + 1) * fx;
                 return (c00 * (1 - fy) + c10 * fy) * (1 - fz) + (c01 * (1 - fy) + c11 * fy) * fz;
             };
+            const PlanetField* planetField = dynamic_cast<const PlanetField*>(&field);
             std::vector<int> remap(wv.size(), -1);
             for (size_t t = 0; t + 2 < wi.size(); t += 3) {
                 const Vector3 c = Vector3Scale(Vector3Add(Vector3Add(wv[wi[t]], wv[wi[t + 1]]), wv[wi[t + 2]]), 1.0f / 3.0f);
@@ -578,12 +596,16 @@ void BuildChunkMesh(const DensityField& field, const EditList& allEdits, ChunkMe
                         const Vector3 n = Vector3Normalize(Vector3Add(origin, lp)); // the sea is a sphere: radial normals
                         out.waterPositions.insert(out.waterPositions.end(), { lp.x, lp.y, lp.z });
                         out.waterNormals.insert(out.waterNormals.end(), { n.x, n.y, n.z });
+                        // Depth to the sea floor from the height map (the shader grades clarity and colour by it).
+                        const float depth = planetField ? std::max(0.0f, -planetField->elevation(n, (float)stride)) : 50.0f;
+                        out.waterDepth.insert(out.waterDepth.end(), { depth, 0.0f });
                     }
                     out.waterIndices.push_back((unsigned short)r);
                 }
             }
-            if (out.waterPositions.size() / 3 > 65535) { out.waterPositions.clear(); out.waterNormals.clear(); out.waterIndices.clear(); }
+            if (out.waterPositions.size() / 3 > 65535) { out.waterPositions.clear(); out.waterNormals.clear(); out.waterDepth.clear(); out.waterIndices.clear(); }
         }
     }
+    ScatterGrass(field, out); // foliage: grass tufts on the finest level (in the build time)
     out.buildMs = std::chrono::duration<float, std::milli>(std::chrono::steady_clock::now() - t0).count();
 }

@@ -146,6 +146,8 @@ public:
     float mantleRadius;           // edits stop below this
     bool moon;
     float minElevation, maxElevation; // the surface stays inside [radius + min, radius + max]
+    bool foliage = false;         // grows trees (planets with life); the terrain paints distant canopy
+    unsigned int foliageSeed = 0; // the tree system's seed (TreeCanopy matches its forests)
     SimplexNoise continents, ridges, hills, valleys, detail, cavesA, cavesB, veins, climate, caverns, ravines, ravineMask;
     static constexpr float kTunnelLevel = 0.096f; // worm tunnel where both cave fields are within this of zero
     static constexpr float kCavernLevel = 0.68f;  // cavern where the cavern field exceeds this (rare)
@@ -207,7 +209,9 @@ struct ChunkMeshData {
     std::vector<float> tangents;           // (0, 0, 0, sky exposure) per vertex
     std::vector<float> waterPositions;     // sea surface where it meets open air (same frame as positions)
     std::vector<float> waterNormals;
+    std::vector<float> waterDepth;         // per water vertex: (depth to the sea floor in m, 0)
     std::vector<unsigned short> waterIndices;
+    std::vector<float> grass;              // grass tufts (foliage.h: kGrassFloats each), finest level only
     std::vector<unsigned short> indices;
     bool overflow = false;                 // > 65535 vertices: mesh dropped
     float buildMs = 0.0f;

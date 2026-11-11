@@ -58,11 +58,21 @@ private:
     Vector3 groundNormal = { 0, 1, 0 };
     Quaternion groundRotPrev = { 0, 0, 0, 1 }; // ground body's rotation at the end of last update
     DVec3 lastEndPosition{};                    // where update() left us (detects outside moves)
+    // Airborne near a body: carried with its motion each frame and moved by velocity relative to its
+    // surface, so substep collisions line up with the (already moved) terrain. Same inertial path to
+    // first order; without it you ran up to a frame of spin (86 m/s at 60 km) ahead of the ground.
+    Planetoid* airBody = nullptr;
+    uint64_t airId = 0;
+    DVec3 airLocal{};
     void stepPhysics(Scene& world, float dt, Vector3 wishMove, bool jetUp, bool jetDown);
     float jumpBuffer = 0.0f; // seconds a jump press stays pending
     float coyote = 0.0f;     // seconds a jump is still allowed after leaving the ground
     float jumpLock = 0.0f;   // seconds after a jump during which the player cannot re-ground
     bool resolveCollisions(Scene& world, Vector3& feet);
+    void collideTrunks(Vector3& feet); // tree trunks: vertical capsules on the nearest body
+    // Velocity of the terrain being collided with, in the frame `velocity` is in: zero while grounded
+    // (velocity is then relative to the surface), the surface velocity while airborne (world frame).
+    Vector3 collideFrameVel = { 0, 0, 0 };
 };
 
 extern Player player;

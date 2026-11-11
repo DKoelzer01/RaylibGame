@@ -9,6 +9,7 @@ in vec3 fragTexPos;     // body-aligned, wrapped to the texture repeat (texturin
 in vec3 fragLocalNormal;
 in vec3 fragChunkPos;   // chunk-local (overlap clipping)
 in float fragSky;       // 1 = open to the sky, 0 = buried (caves, deep pits)
+in vec2 fragCanopy;     // planets: forest canopy cover and latitude (painted in beyond the real trees)
 
 // Material maps: bound by DrawMesh to the units of the matching raylib material slots.
 uniform sampler2D colorTexture;    // MATERIAL_MAP_ALBEDO
@@ -161,7 +162,9 @@ void main()
         // material -> texture layer: stone, dirt, ice, ore (stone, rusted), sand, gravel, grass, snow
         const float layerOf[8] = float[8](6.0, 0.0, 5.0, 6.0, 1.0, 2.0, 3.0, 4.0);
         const float roughOf[8] = float[8](0.75, 0.95, 0.15, 0.35, 0.9, 0.85, 0.95, 0.7);
-        const float bumpOf[8] = float[8](1.0, 0.8, 0.15, 0.9, 0.3, 1.0, 0.6, 0.25); // normal-map strength
+        // Strength of the (asteroid rock) normal map per material: rocky ones only; on grass, dirt and
+        // sand its craters read as the asteroid texture showing through.
+        const float bumpOf[8] = float[8](1.0, 0.12, 0.15, 0.9, 0.08, 0.6, 0.05, 0.15); // normal-map strength
         vec3 a = vec3(0.0);
         float r = 0.0, bump = 0.0;
         for (int i = 0; i < 8; i++) {
@@ -174,6 +177,18 @@ void main()
             bump += bumpOf[i] * wi;
         }
         albedo = a;
+        if (fragCanopy.x > 0.01) {
+            // Distant forests: where the real trees (drawn to 1 km) fade out, the ground takes the
+            // colour of their crowns, by latitude as the trees do, broken up a little by the texture.
+            float c = fragCanopy.x * smoothstep(650.0, 950.0, length(viewPos - fragPosition));
+            float lat = fragCanopy.y;
+            vec3 dry = vec3(0.22, 0.27, 0.07), temperate = vec3(0.09, 0.27, 0.05), cold = vec3(0.05, 0.17, 0.08);
+            vec3 crowns = lat < 0.35 ? mix(dry, temperate, smoothstep(0.15, 0.35, lat)) : mix(temperate, cold, smoothstep(0.45, 0.7, lat));
+            vec2 crown = floor(fragTexPos.xz / 5.0); // ~5 m dapple, like the prism crowns
+            crowns *= 0.75 + 0.5 * fract(sin(dot(crown, vec2(12.9898, 78.233))) * 43758.5453);
+            albedo = mix(albedo, crowns * 0.5, c); // crowns in their own shade read darker than open grass
+            rough = mix(rough, 0.95, c);
+        }
         rough = r;
         normal = normalize(mix(normalize(mat3(matModel) * localNormal), normal, bump)); // smoother sand, snow, ice
         shinyMaterials = (w8[2] + w8[3] + 0.3 * w8[7]) / max(total, 0.001);

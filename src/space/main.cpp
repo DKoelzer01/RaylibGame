@@ -72,6 +72,8 @@ int main(int argc, char** argv)
     bool benchSaveLoad = false;  // --test-saveload: then save, reload from disk, and bench the reloaded world
     double benchWalkSeconds = 0.0; // --test-walk S: spawn on the surface and auto-walk forward for S seconds
     bool benchWalkMode = false;    // --bench-walk: the player walks forward for the whole bench (frame time while streaming)
+    float benchFlySpeed = 0.0f;    // --bench-fly V: the camera flies over body 0 at V m/s through the bench (LOD streaming)
+    float benchFlyAlt = 1e9f;      // --bench-fly-alt A: fly at A m relative to sea level instead (negative: underwater, looking up)
     bool hasSpawnDir = false;      // --spawn-dir x y z: where --test-walk / --test-stand spawn on body 0
     Vector3 spawnDir = { 0, 1, 0 };
     double walkStart = -1.0;
@@ -87,7 +89,7 @@ int main(int argc, char** argv)
     bool benchRide = false;        // --test-ride: stand on a spinning body, then jump
     bool benchPark = false;        // --test-park: park the ship on a spinning body
     bool sunOverride = false;      // --sun x y z: sun direction (e.g. to test night-side lighting)
-    int benchFps = 0;              // --fps N: cap the bench frame rate
+    int benchFps = -1;             // --fps N: cap the frame rate (0 = uncapped); default: bench uncapped, play at the monitor refresh rate
     bool lookDown = false;         // --look-down: tilt the player view toward the ground (lighting tests)
     Vector3 sunArg = { 1, 0, 0 };
     double parkStart = -1.0;
@@ -98,6 +100,22 @@ int main(int argc, char** argv)
     bool benchAirJump = false;     // --test-airjump: air control while jumping, jetpack fuel / suit power accounting
     float timeScale = 1.0f;        // --time-scale k: bodies spin and orbit k times faster (testing)
     bool benchMoon = false;        // --test-moon: moon orbit vs analytic, standing and jumping on the moon
+    bool benchHole = false;        // --test-hole: walk into a fresh pit and build a pillar underfoot on the spinning planet
+    bool benchTrees = false;       // --test-trees: walk into a tree trunk
+    bool benchChop = false;        // --test-chop: fell a tree, save/reload, regrow
+    int chopPhase = 0, chopSwings = 0, chopMisses = 0, chopWood0 = 0;
+    double chopStart = 0.0;
+    uint64_t chopId = 0;
+    bool chopFelled = false, chopSaved = false;
+    Trunk chopTarget{};
+    int treePhase = 0;
+    double treeStart = 0.0;
+    float treeMin = 1e9f;
+    Trunk treeTarget{};
+    int holePhase = 0;
+    double holeStart = -1.0;
+    float holeMaxImpact = 0.0f, holeMinHealth = 100.0f;
+    Vector3 holeRim = { 0, 0, 0 };
     double moonStart = -1.0; int moonPhase = 0; DVec3 moonLocal0{}, moonTakeoff{}; bool moonAirborne = false;
     double airStart = -1.0; int airPhase = 0; float airDist = 0.0f, airTime = 0.0f, airFuel0 = 0.0f, airPower0 = 0.0f, airPowerAir = 0.0f;
     Vector3 airPrevLocal{};
@@ -144,6 +162,8 @@ int main(int argc, char** argv)
         if (std::string(argv[i]) == "--test-walk" && i + 1 < argc) benchWalkSeconds = atof(argv[i + 1]);
         if (std::string(argv[i]) == "--test-planet-walk" && i + 1 < argc) { walkTargetM = atof(argv[i + 1]); benchWalkSeconds = 600.0; } // gate: 1 km on the planet
         if (std::string(argv[i]) == "--bench-walk") benchWalkMode = true;
+        if (std::string(argv[i]) == "--bench-fly" && i + 1 < argc) benchFlySpeed = (float)atof(argv[i + 1]);
+        if (std::string(argv[i]) == "--bench-fly-alt" && i + 1 < argc) benchFlyAlt = (float)atof(argv[i + 1]);
         if (std::string(argv[i]) == "--spawn-dir" && i + 3 < argc) { hasSpawnDir = true; spawnDir = Vector3Normalize({ (float)atof(argv[i + 1]), (float)atof(argv[i + 2]), (float)atof(argv[i + 3]) }); }
         if (std::string(argv[i]) == "--test-suffocate") benchSuffocate = true;
         if (std::string(argv[i]) == "--test-orbit" && i + 1 < argc) benchOrbitSeconds = atof(argv[i + 1]);
@@ -157,8 +177,12 @@ int main(int argc, char** argv)
         if (std::string(argv[i]) == "--test-mantle") benchMantle = true;
         if (std::string(argv[i]) == "--test-airjump") benchAirJump = true;
         if (std::string(argv[i]) == "--test-moon") benchMoon = true;
+        if (std::string(argv[i]) == "--test-hole") benchHole = true;
+        if (std::string(argv[i]) == "--test-trees") benchTrees = true;
+        if (std::string(argv[i]) == "--test-chop") benchChop = true;
         if (std::string(argv[i]) == "--time-scale" && i + 1 < argc) timeScale = (float)atof(argv[i + 1]);
         if (std::string(argv[i]) == "--crack-check") crackCheck = true;
+        if (std::string(argv[i]) == "--no-foliage") foliageEnabled = false;
         if (std::string(argv[i]) == "--sun" && i + 3 < argc) { sunOverride = true; sunArg = Vector3Normalize({ (float)atof(argv[i + 1]), (float)atof(argv[i + 2]), (float)atof(argv[i + 3]) }); }
         if (std::string(argv[i]) == "--look-down") lookDown = true;
         if (std::string(argv[i]) == "--fps" && i + 1 < argc) benchFps = atoi(argv[i + 1]);
@@ -229,18 +253,19 @@ int main(int argc, char** argv)
     }
     const bool bench = benchSeconds > 0.0;
     benchMode = bench;
+    if (bench) SetWorldSavePath("saves/bench.sav"); // tests save and load; keep the player's F5 save out of it
 
     SetConfigFlags(FLAG_MSAA_4X_HINT);
     if (!bench) {
-        SetConfigFlags(FLAG_VSYNC_HINT); // Enable VSync for smoother rendering
         SetConfigFlags(FLAG_WINDOW_RESIZABLE); // Allow window resizing
         SetConfigFlags(FLAG_WINDOW_UNDECORATED); // Remove window decorations for a cleaner look
         SetConfigFlags(FLAG_WINDOW_HIGHDPI); // Enable High DPI support
         InitWindow(GetMonitorWidth(0), GetMonitorHeight(0), "My first RAYLIB program!");
-        SetTargetFPS(60);
+        // No VSync: cap at the monitor's refresh rate instead (VSync on a 60 Hz desktop locked the game to 60).
+        SetTargetFPS(benchFps >= 0 ? benchFps : std::max(60, GetMonitorRefreshRate(GetCurrentMonitor())));
     } else {
         InitWindow(1920, 1080, "RaylibGame bench");
-        SetTargetFPS(benchFps); // --fps N caps it (frame-rate-dependence checks); 0 = uncapped
+        SetTargetFPS(std::max(0, benchFps)); // --fps N caps it (frame-rate-dependence checks); 0 = uncapped
     }
     SetExitKey(KEY_NULL);
     SetTraceLogLevel(LOG_WARNING); // Set log level to warning to reduce output noise
@@ -258,7 +283,11 @@ int main(int argc, char** argv)
 
     mainMenuHandler(mainMenu);
     worldHandler(world);
-    if (loadSaveAtStart && !LoadWorldSave(world)) printf("bench: --load: could not load saves/world.sav\n");
+    if (loadSaveAtStart) { // the player's save, read-only; later bench saves still go to bench.sav
+        SetWorldSavePath("saves/world.sav");
+        if (!LoadWorldSave(world)) printf("bench: --load: could not load saves/world.sav\n");
+        if (bench) SetWorldSavePath("saves/bench.sav");
+    }
     if (dumpSystem) {
         for (auto& obj : world.objects)
             if (auto* p = dynamic_cast<Planetoid*>(obj.get()))
@@ -271,6 +300,9 @@ int main(int argc, char** argv)
         const Vector3 feet = (player.position - world.renderOrigin).toFloat();
         ship.parkNear(world, Vector3Add(feet, Vector3Scale(player.forward, 8.0f)), player.up);
     }
+    // A clearing at the start, so the parked ship and the player don't stand in a tree.
+    if (Planetoid* start = world.objects.empty() ? nullptr : dynamic_cast<Planetoid*>(world.objects[0].get()); start && start->trees)
+        start->trees->addClearing(start->toLocal((player.position - world.renderOrigin).toFloat()), 14.0f);
     if (inventory.count("telescope") == 0) inventory.add("telescope", 1); // starting kit (a save restores its own inventory)
     world.onDraw3D = [&world] { if (!ship.piloted) TerrainTool_Draw3D(); ship.draw(world); };
 
@@ -359,6 +391,167 @@ int main(int argc, char** argv)
                             benchOrbitSeconds = 0.0;
                         }
                     }
+                } else if (benchChop && (chopPhase > 0 || WorldIdle())) {
+                    // --test-chop: walk up to the nearest tree, chop it down (wood), save and reload (still
+                    // gone), then wind the clock past regrowth (back, full size).
+                    Planetoid* p = dynamic_cast<Planetoid*>(world.objects[0].get());
+                    const Vector3 feet = (player.position - world.renderOrigin).toFloat();
+                    auto present = [&](uint64_t id) {
+                        std::vector<Trunk> dummy;
+                        PlantHit h;
+                        // Re-aim at the trunk: present if the raycast still finds this id.
+                        const Vector3 eye = p->toLocal(Vector3Add(feet, Vector3Scale(player.up, player.eyeHeight)));
+                        const Vector3 aim = Vector3Normalize(Vector3Subtract(Vector3Add(chopTarget.base, Vector3Scale(chopTarget.up, 1.2f)), eye));
+                        return p->trees->raycast(eye, aim, 8.0f, h) && h.plant.id == id;
+                    };
+                    if (chopPhase == 0) {
+                        if (!p || !p->trees) { printf("bench: --test-chop needs a planet with trees\n"); benchChop = false; }
+                        else { player.spawnOn(world, *p, StartSpawnDir(*p)); chopPhase = 1; chopStart = GetTime(); }
+                    } else if (chopPhase == 1 && GetTime() - chopStart > 1.0 && player.grounded) {
+                        std::vector<Trunk> near;
+                        const Vector3 lf = p->toLocal(feet);
+                        p->trees->trunksNear(lf, 400.0f, near);
+                        float best = 1e9f;
+                        for (const Trunk& t : near) { const float d = Vector3Distance(t.base, lf); if (d < best && t.radius > 0.15f) { best = d; chopTarget = t; } }
+                        if (best > 1e8f) { printf("bench: --test-chop: no tree nearby\n"); benchChop = false; }
+                        else {
+                            const Vector3 up = Vector3Normalize(chopTarget.base);
+                            Vector3 away = Vector3Subtract(lf, chopTarget.base);
+                            away = Vector3Normalize(Vector3Subtract(away, Vector3Scale(up, Vector3DotProduct(away, up))));
+                            player.spawnOn(world, *p, p->dirToWorld(Vector3Normalize(Vector3Add(chopTarget.base, Vector3Scale(away, 2.0f)))));
+                            chopPhase = 2; chopStart = GetTime();
+                        }
+                    } else if (chopPhase == 2 && GetTime() - chopStart > 1.0) {
+                        // Face the trunk at chest height and swing.
+                        const Vector3 eye = Vector3Add(feet, Vector3Scale(player.up, player.eyeHeight));
+                        const Vector3 aim = p->toWorld(Vector3Add(chopTarget.base, Vector3Scale(chopTarget.up, 1.2f)));
+                        player.forward = Vector3Normalize(Vector3Subtract(aim, eye));
+                        player.applyToCamera(world);
+                        TerrainTool_Update(world, false, true); // aim only
+                        uint64_t id = 0;
+                        if (!TerrainTool_AimingPlant(&id)) {
+                            if (++chopMisses > 30) { printf("bench: --test-chop: could not aim at the trunk: FAIL\n"); benchChop = false; }
+                        } else {
+                            if (!chopId) { chopId = id; chopWood0 = inventory.count("wood"); }
+                            ++chopSwings;
+                            if (TerrainTool_Chop()) {
+                                const int wood = inventory.count("wood") - chopWood0;
+                                printf("bench: chop: felled a %.1f m tree in %d swings, +%d wood; gone: %s\n", chopTarget.height, chopSwings, wood, present(chopId) ? "no" : "yes");
+                                chopFelled = wood > 0 && !present(chopId);
+                                SaveWorld(world);
+                                LoadWorldSave(world);
+                                chopPhase = 3; chopStart = GetTime();
+                            }
+                        }
+                    } else if (chopPhase == 3 && GetTime() - chopStart > 3.0) {
+                        p = dynamic_cast<Planetoid*>(world.objects[0].get());
+                        const bool savedGone = p->trees->removals().count(chopId) && !present(chopId);
+                        printf("bench: chop: after save + reload the tree is %s\n", savedGone ? "still gone" : "BACK");
+                        SetWorldTime(WorldTime() + kRegrowDelay + kRegrowTime + 1.0);
+                        p->trees->setRemovals(p->trees->removals()); // rebuild its tiles at the new time
+                        chopPhase = 4; chopStart = GetTime();
+                        chopSaved = savedGone;
+                    } else if (chopPhase == 4 && GetTime() - chopStart > 3.0) {
+                        const bool back = present(chopId);
+                        printf("bench: chop: %.0f min later it has regrown: %s -> %s\n", (kRegrowDelay + kRegrowTime) / 60.0, back ? "yes" : "no",
+                               chopFelled && chopSaved && back ? "PASS" : "FAIL");
+                        benchChop = false;
+                    }
+                } else if (benchTrees && (treePhase > 0 || WorldIdle())) {
+                    // --test-trees: walk into the nearest tree trunk; the player must stop at its bark.
+                    Planetoid* p = dynamic_cast<Planetoid*>(world.objects[0].get());
+                    if (!p || !p->trees) { printf("bench: --test-trees needs a planet with trees\n"); benchTrees = false; }
+                    else if (treePhase == 0) {
+                        player.spawnOn(world, *p, StartSpawnDir(*p));
+                        treePhase = 1;
+                        treeStart = GetTime();
+                    } else if (treePhase == 1 && GetTime() - treeStart > 1.0 && player.grounded) {
+                        std::vector<Trunk> near;
+                        const Vector3 feet = (player.position - world.renderOrigin).toFloat();
+                        p->trees->trunksNear(p->toLocal(feet), 400.0f, near);
+                        const Vector3 lf = p->toLocal(feet);
+                        float best = 1e9f;
+                        for (const Trunk& t : near) { const float d = Vector3Distance(t.base, lf); if (d < best && t.radius > 0.15f) { best = d; treeTarget = t; } }
+                        if (best > 1e8f) { printf("bench: no tree trunk within 400 m (%d tiles, %d instances)\n", p->trees->loadedTiles(), p->trees->instanceCount()); benchTrees = false; }
+                        else {
+                            // Stand 6 m from it, facing it.
+                            const Vector3 up = Vector3Normalize(treeTarget.base);
+                            Vector3 away = Vector3Subtract(lf, treeTarget.base);
+                            away = Vector3Normalize(Vector3Subtract(away, Vector3Scale(up, Vector3DotProduct(away, up))));
+                            player.spawnOn(world, *p, p->dirToWorld(Vector3Normalize(Vector3Add(treeTarget.base, Vector3Scale(away, 6.0f)))));
+                            {
+                                const Vector3 nl = p->toLocal((player.position - world.renderOrigin).toFloat());
+                                printf("bench: trees: target %.1f m from the start, spawned %.1f m from it (trunk height %.1f, base r %.1f, surface r %.1f)\n",
+                                       best, Vector3Distance(nl, treeTarget.base), treeTarget.height, Vector3Length(treeTarget.base), Vector3Length(nl));
+                            }
+                            treePhase = 2;
+                            treeStart = GetTime();
+                            treeMin = 1e9f;
+                        }
+                    } else if (treePhase == 2) {
+                        const Vector3 lf = p->toLocal((player.position - world.renderOrigin).toFloat());
+                        const Vector3 d = Vector3Subtract(lf, treeTarget.base);
+                        const Vector3 side = Vector3Subtract(d, Vector3Scale(treeTarget.up, Vector3DotProduct(d, treeTarget.up)));
+                        if (GetTime() - treeStart > 1.0 && treeMin > 1e8f) printf("bench: trees: start %.1f m from the trunk axis, grounded %d\n", Vector3Length(side), player.grounded);
+                        if (GetTime() - treeStart > 1.0) {
+                            player.forward = p->dirToWorld(Vector3Normalize(Vector3Negate(side)));
+                            player.autoWalk = true;
+                            treeMin = std::min(treeMin, Vector3Length(side));
+                        }
+                        if (GetTime() - treeStart > 5.0) {
+                            player.autoWalk = false;
+                            const float limit = treeTarget.radius + player.radius - 0.05f;
+                            printf("bench: trees: %d tiles, %d instances drawn; walked into a %.1f m trunk (r %.2f m): closest %.2f m from its axis (limit %.2f): %s\n",
+                                   p->trees->loadedTiles(), p->trees->instanceCount(), treeTarget.height, treeTarget.radius, treeMin, limit, treeMin >= limit && treeMin < limit + 0.3f ? "PASS" : "FAIL");
+                            benchTrees = false;
+                        }
+                    }
+                } else if (benchHole && (holePhase > 0 || WorldIdle())) { // edits keep the world busy: run on
+                    // --test-hole: on the spinning planet, dig a pit ahead and walk into it, then build a
+                    // pillar under your feet while jumping. Neither may hurt you (impacts are measured
+                    // against the moving terrain, not the world frame).
+                    Planetoid* p = dynamic_cast<Planetoid*>(world.objects[0].get());
+                    const double t = holeStart < 0.0 ? 0.0 : GetTime() - holeStart;
+                    holeMaxImpact = std::max(holeMaxImpact, player.impactSpeed);
+                    holeMinHealth = std::min(holeMinHealth, survival.health);
+                    const Vector3 feet = (player.position - world.renderOrigin).toFloat();
+                    if (holePhase == 0) {
+                        player.spawnOn(world, *p, StartSpawnDir(*p));
+                        holeStart = GetTime();
+                        holePhase = 1;
+                    } else if (holePhase == 1 && t > 1.5 && player.grounded) {
+                        // A 3 m wide, ~5 m deep pit starting 3 m ahead.
+                        const Vector3 flat = Vector3Normalize(Vector3Subtract(player.forward, Vector3Scale(player.up, Vector3DotProduct(player.forward, player.up))));
+                        for (int k = 0; k < 4; ++k)
+                            for (int s = 0; s < 3; ++s)
+                                ApplyTerrainEdit(*p, TerrainEdit{ p->toLocal(Vector3Add(feet, Vector3Add(Vector3Scale(flat, 3.5f + 1.5f * s), Vector3Scale(player.up, -1.2f * k)))), 1.8f, -10.0f });
+                        player.autoWalk = true;
+                        holePhase = 2;
+                        holeStart = GetTime();
+                    } else if (holePhase == 2 && t > 4.0) {
+                        player.autoWalk = false;
+                        printf("bench: walked into a fresh pit: worst impact %.1f m/s, health %.0f, deaths %d, %.1f m below the rim\n",
+                               holeMaxImpact, holeMinHealth, survival.deaths, Vector3DotProduct(Vector3Subtract(feet, holeRim), player.up) * -1.0f);
+                        holeMaxImpact = 0.0f;
+                        holePhase = 3;
+                        holeStart = GetTime();
+                    } else if (holePhase == 3 && t < 4.0) {
+                        // Build a pillar under the feet a stroke every 0.25 s, jumping now and then.
+                        static double nextStroke = 0.0;
+                        if (GetTime() >= nextStroke) {
+                            ApplyTerrainEdit(*p, TerrainEdit{ p->toLocal(Vector3Subtract(feet, Vector3Scale(player.up, 0.6f))), 1.6f, 6.0f });
+                            nextStroke = GetTime() + 0.25;
+                            if (((int)(t * 4.0)) % 4 == 0) player.autoJump = true;
+                        }
+                    } else if (holePhase == 3) {
+                        const bool pass = survival.deaths == 0 && holeMinHealth > 90.0f;
+                        printf("bench: built a pillar underfoot for 4 s: worst impact %.1f m/s, health %.0f, deaths %d, speed vs ground %.1f m/s: %s\n",
+                               holeMaxImpact, holeMinHealth, survival.deaths,
+                               Vector3Length(Vector3Subtract(player.velocity, player.grounded ? Vector3{ 0, 0, 0 } : p->surfaceVelocity(feet))),
+                               pass ? "PASS" : "FAIL");
+                        benchHole = false;
+                    }
+                    if (holePhase == 1) holeRim = feet;
                 } else if (benchMoon && WorldIdle()) {
                     // The moon (first body of kind moon, with an orbit): its position must match the
                     // analytic orbit; a player standing on it must stay put relative to it, and a jump must
@@ -840,7 +1033,7 @@ int main(int argc, char** argv)
                         }
                         benchWalkSeconds = 0.0;
                     }
-                } else if ((WorldIdle() && benchDigStrokes == 0 && !benchSaveLoad && benchWalkSeconds <= 0.0 && benchMineStrokes == 0 && minePhase != 2 && benchFlySeconds <= 0.0 && !benchSuffocate && benchOrbitSeconds <= 0.0 && !benchRide && !benchPark && !benchGravity && !benchPrecision && !benchMantle && !benchAirJump && !benchMoon) || GetTime() > 180.0) {
+                } else if ((WorldIdle() && benchDigStrokes == 0 && !benchSaveLoad && benchWalkSeconds <= 0.0 && benchMineStrokes == 0 && minePhase != 2 && benchFlySeconds <= 0.0 && !benchSuffocate && benchOrbitSeconds <= 0.0 && !benchRide && !benchPark && !benchGravity && !benchPrecision && !benchMantle && !benchAirJump && !benchMoon && !benchHole && !benchTrees && !benchChop) || GetTime() > 180.0) {
                     benchStart = GetTime();
                     printf("bench: world ready after %.2f s (%d chunks, avg build %.2f ms of which sampling %.2f ms, %d worker threads)\n",
                         GetWorldStats().lastGenerationSeconds, GetWorldStats().chunks, GetWorldStats().avgBuildMs, GetWorldStats().avgSampleMs, GetWorldStats().workerThreads);
@@ -852,6 +1045,34 @@ int main(int argc, char** argv)
                 ++benchTimedFrames;
                 benchMeasuring = true;
                 if (GetFrameTime() > benchMaxFrame) benchMaxFrame = GetFrameTime();
+            }
+            if ((benchFlySpeed > 0.0f || benchFlyAlt < 1e8f) && benchStart >= 0.0) {
+                // --bench-fly V: the camera flies a great circle over body 0 at V m/s, 150 m above the
+                // terrain, looking ahead and down; node counts each second show whether LOD keeps up.
+                Planetoid* b = dynamic_cast<Planetoid*>(world.objects[0].get());
+                const auto* pf = b ? dynamic_cast<const PlanetField*>(b->field.get()) : nullptr;
+                if (pf) {
+                    const double ang = benchFlySpeed * t / (double)pf->radius;
+                    const Vector3 dir = { (float)cos(ang) * 0.8f, 0.6f, (float)sin(ang) * 0.8f };       // body-local, 37 deg north
+                    const Vector3 ahead = { -(float)sin(ang) * 0.8f, 0.0f, (float)cos(ang) * 0.8f };
+                    const float alt = benchFlyAlt < 1e8f ? pf->radius + benchFlyAlt : pf->radius + std::max(0.0f, pf->elevation(dir)) + 150.0f;
+                    const DVec3 pos = b->toWorldD(DVec3(Vector3Scale(dir, alt)));
+                    const float look = benchFlyAlt < 0.0f ? alt + 80.0f : alt - 60.0f; // underwater: look up at the surface
+                    const DVec3 tgt = b->toWorldD(DVec3(Vector3Add(Vector3Scale(dir, look), Vector3Scale(Vector3Normalize(ahead), 200.0f))));
+                    world.setCameraWorld(pos, tgt);
+                    world.camera.up = b->dirToWorld(dir);
+                    if (benchFlyAlt > 5000.0f && benchFlyAlt < 1e8f) { // high up: look down at the planet, a little off-centre
+                        world.setCameraWorld(pos, b->toWorldD(DVec3(Vector3Add(Vector3Scale(dir, pf->radius * 0.5f), Vector3Scale(Vector3Normalize(ahead), pf->radius * 0.3f)))));
+                        world.camera.up = b->dirToWorld(Vector3Normalize(ahead));
+                    }
+                    static int lastSec = -1;
+                    if ((int)t != lastSec) {
+                        lastSec = (int)t;
+                        const WorldStats& s = GetWorldStats();
+                        printf("bench: fly t=%2d s  %5.1f km flown  nodes %5d  drawn %4d  queued %4d  %.0f FPS\n", (int)t,
+                               benchFlySpeed * t / 1000.0, s.nodes, s.chunks, s.queuedJobs, (double)GetFPS());
+                    }
+                }
             }
             if (t > benchWarmup + benchSeconds) {
                 double avgMs = 1000.0 * benchSeconds / (double)benchFrames;
@@ -908,21 +1129,24 @@ int main(int argc, char** argv)
                 Audio_Play(Sfx::Build, 0.4f, 1.2f);
             }
         }
-        advanceBodies(world, gameState == 1 ? GetFrameTime() * timeScale : 0.0f); // bodies only spin while playing; before riders update
+        // One clamped frame time for everything that moves (bodies, ship, player): clamping only the
+        // player let the ground spin away under it during a slow frame.
+        const float frameDt = std::min(GetFrameTime(), 0.1f);
+        advanceBodies(world, gameState == 1 ? frameDt * timeScale : 0.0f); // bodies only spin while playing; before riders update
         if (gameState == 1) {
             ship.lastImpact = 0.0f;
             if (ship.piloted) {
-                ship.update(world, gameInput && alive, GetFrameTime());
+                ship.update(world, gameInput && alive, frameDt);
                 ship.applyChaseCamera(world);
                 player.position = ship.position; // the pilot rides inside
                 player.velocity = ship.velocity;
             } else {
-                ship.update(world, false, GetFrameTime());
-                if (alive) player.update(world, gameInput, GetFrameTime());
+                ship.update(world, false, frameDt);
+                if (alive) player.update(world, gameInput, frameDt);
                 Survival_OnLanding(player.impactSpeed);
             }
             if (ship.piloted && ship.lastImpact > 12.0f) survival.health -= (ship.lastImpact - 12.0f) * 3.0f; // crash damage
-            Survival_Update(world, GetFrameTime(), gameInput);
+            Survival_Update(world, frameDt, gameInput);
             Objectives_Update(world);
             if (bench && lookDown && !ship.piloted) {
                 const Vector3 t = Vector3Subtract(player.forward, Vector3Scale(player.up, Vector3DotProduct(player.forward, player.up)));
