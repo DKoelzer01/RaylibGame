@@ -1,0 +1,16 @@
+# Blueprint: part type, cell x y z (from its lowest corner), orientation, material
+# A first rocket: an engine on four landing legs, four fuel tanks, a guidance computer and a cockpit.
+# About 3.5 km/s of delta-v with full tanks: to orbit and back down with fuel to spare.
+name Starter rocket
+parts 11
+22 1 0 1 0 0
+26 0 0 0 0 0
+26 3 0 0 0 0
+26 0 0 3 0 0
+26 3 0 3 0 0
+23 1 2 1 0 0
+23 1 4 1 0 0
+23 1 6 1 0 0
+23 1 8 1 0 0
+25 1 10 1 0 0
+24 1 11 1 0 0

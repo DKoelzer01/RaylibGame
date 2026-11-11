@@ -8,6 +8,7 @@
 #include "voxel.h"
 #include "world.h"
 #include "worldtypes.h"
+#include "ring.h"
 
 #include <raymath.h>
 #include <algorithm>
@@ -19,7 +20,7 @@
 
 namespace {
     constexpr double kG0 = 9.80665;
-    constexpr double kAirScaleHeight = 4000.0, kAirDensity = 1.2, kAirTop = 40000.0;
+    constexpr double kAirScaleHeight = 4000.0, kAirDensity = 1.2, kAirTop = 35000.0; // the top matches "in orbit" (periapsis above 35 km)
     constexpr double kMaxStep = 1.0 / 120.0;
     constexpr float kTurnAccel = 1.2f, kTurnRate = 0.7f;   // rad/s^2, rad/s (per guidance computer, capped)
 
@@ -40,6 +41,13 @@ namespace {
     Vector3 angVel{};            // world, rad/s
     Vector3 comLocal{};          // plot space (m), centre of mass
     float throttle = 0.0f;
+    // Time warp (coasting above the air only) and heating (re-entry and fast flight in thick air).
+    int warpLevel = 0;
+    const float kWarps[] = { 1, 2, 5, 10, 25, 50, 100 };
+    float temperature = 20.0f, maxTemperature = 20.0f;  // the leading face, degrees C
+    double overheat = 0.0;                               // s the leading part has been past its limit
+    bool mapView = false;
+    std::map<std::string, float> heatLimit;             // item -> degrees C it survives
     double flightTime = 0.0;
     RocketAutopilot autopilot = RocketAutopilot::Off;
     double autoTarget = 45000.0;
@@ -63,6 +71,7 @@ namespace {
             ss >> first;
             if (first == "material") { std::string m; float kg; if (ss >> m >> kg) materialMass[m] = kg; continue; }
             if (first == "fuel") { std::string id; float kg; if (ss >> id >> kg) fuelPerItem = kg; continue; }
+            if (first == "heat") { std::string id; float c; if (ss >> id >> c) heatLimit[id] = c; continue; }
             std::vector<std::string> cols;
             size_t start = 0, bar;
             while ((bar = line.find('|', start)) != std::string::npos) { cols.push_back(line.substr(start, bar - start)); start = bar + 1; }
@@ -342,6 +351,10 @@ namespace {
             a.steer = true;
             const float align = Vector3DotProduct(Up(), a.dir);
             a.throttle = align > 0.8f ? std::clamp(need / std::max(amax, 0.01f), 0.0f, 1.0f) : 0.0f;
+            // High up, let the air do the braking (it is free; burning off the sideways speed there cost
+            // most of the fuel): coast retrograde unless already falling too fast to stop lower down.
+            const bool airless = !(dynamic_cast<const PlanetField*>(b->field.get()) && !dynamic_cast<const PlanetField*>(b->field.get())->moon);
+            if (!airless && ground > 12000.0 && vv > vt * 0.8f) { a.throttle = 0.0f; a.dir = Vector3Length(vrel) > 1.0f ? Vector3Normalize(Vector3Negate(vrel)) : up; }
             break;
         }
         default: break;
@@ -353,6 +366,30 @@ namespace {
         for (size_t i = 0; i < plot.parts.size(); ++i) {
             const PartType t = plot.parts[i].type;
             if (t == PartType::LandingLeg || (engines && t == PartType::RocketEngine)) { plot.remove((int)i); ++damage; }
+        }
+    }
+
+    // The part on the leading face (furthest along the airflow) burns away if it stays past its heat
+    // limit; heat shield tiles (and the rocket parts' own alloys) survive a re-entry, wood does not.
+    void Heat(Plot& plot, Vector3 into, float h) {
+        const Vector3 dirLocal = Vector3RotateByQuaternion(into, QuaternionInvert(rot)); // the airflow in the rocket's frame
+        int lead = -1;
+        float best = -1e30f;
+        for (const auto& kv : plot.cells) {
+            const Vector3 c = CellCentre(kv.first);
+            const Vector3 p = Vector3Subtract({ c.x, c.y, -c.z }, comLocal);
+            const float d = Vector3DotProduct(p, dirLocal);
+            if (d > best) { best = d; lead = kv.second.part; }
+        }
+        if (lead < 0) return;
+        const char* item = PartItem(plot.parts[lead]);
+        const float limit = heatLimit.count(item) ? heatLimit[item] : 900.0f;
+        if (temperature > limit) overheat += h; else overheat = std::max(0.0, overheat - h);
+        if (overheat > 1.5 && plot.parts[lead].type != PartType::Cockpit) { // the cockpit scorches but holds: damage, not destruction
+            GameUI_Toast(TextFormat("The %s burnt away (%.0f C, it takes %.0f C)", PartName(plot.parts[lead].type), temperature, limit));
+            plot.remove(lead);
+            ++damage;
+            overheat = 0.0;
         }
     }
 
@@ -394,8 +431,16 @@ namespace {
                 const Vector3 vrel = Vector3Subtract(vel, air->surfaceVelocity((com - world.renderOrigin).toFloat()));
                 const float area = std::max(1.0f, (float)plot->cells.size() * kCellSize * kCellSize * 0.25f);
                 force = Vector3Add(force, Vector3Scale(vrel, -(float)(0.5 * rho * Vector3Length(vrel) * 0.8 * area)));
+                // Heating (Sutton-Graves: flux ~ sqrt(density) v^3), scaled for this world's slow orbits so a
+                // steep re-entry glows ~1000 C. The leading face takes it; the parts behind it are shielded.
+                const double v = Vector3Length(vrel);
+                temperature += (float)((7e-6 * sqrt(rho) * v * v * v - 0.2 * (temperature - 20.0)) * h);
+                if (temperature > 20.0f && vrel.x * vrel.x + vrel.y * vrel.y + vrel.z * vrel.z > 1.0f) Heat(*plot, Vector3Normalize(vrel), h);
+            } else {
+                temperature += (float)(-0.2 * (temperature - 20.0) * h);
             }
         }
+        maxTemperature = std::max(maxTemperature, temperature);
         vel = Vector3Add(vel, Vector3Scale(Vector3Add(g, Vector3Scale(force, 1.0f / std::max(mass, 1.0f))), h));
         com = com + DVec3(Vector3Scale(vel, h));
         const float w = Vector3Length(angVel);
@@ -474,6 +519,11 @@ namespace {
 Scene* gWorld = nullptr;
 void Rocket_Init(Scene* world) { gWorld = world; Load(); }
 bool Rocket_Boarded() { return state != RocketState::None; }
+float Rocket_Warp() { return state == RocketState::Flying ? kWarps[warpLevel] : 1.0f; }
+bool Rocket_MapView() { return state != RocketState::None && mapView; }
+void Rocket_SetMapView(bool on) { mapView = on; }
+void Rocket_SetWarp(int level) { warpLevel = std::clamp(level, 0, (int)(sizeof(kWarps) / sizeof(kWarps[0])) - 1); }
+float Rocket_MaxTemperature() { return maxTemperature; }
 bool Rocket_AimingCockpit() { return state == RocketState::None && aimCockpit; }
 
 RocketStats Rocket_Stats(const Plot& plot, const Planetoid* body) {
@@ -601,6 +651,9 @@ void Rocket_Update(Scene& world, bool input, float dt) {
         if (IsKeyDown(KEY_LEFT_SHIFT)) throttle = std::min(1.0f, throttle + dt * 0.6f);
         if (IsKeyDown(KEY_LEFT_CONTROL)) throttle = std::max(0.0f, throttle - dt * 0.6f);
         if (IsKeyPressed(KEY_X)) throttle = 0.0f;
+        if (IsKeyPressed(KEY_M)) mapView = !mapView;
+        if (IsKeyPressed(KEY_PERIOD)) Rocket_SetWarp(warpLevel + 1);
+        if (IsKeyPressed(KEY_COMMA)) Rocket_SetWarp(warpLevel - 1);
         if (state == RocketState::OnPad && IsKeyPressed(KEY_E)) { Rocket_Exit(world); return; }
     }
     if (state == RocketState::OnPad) {
@@ -625,6 +678,19 @@ void Rocket_Update(Scene& world, bool input, float dt) {
             player.position = seat;
             player.velocity = vel;
         }
+    }
+    // Warp only while coasting above the air: any burn, the air or leaving flight drops it to 1x.
+    if (warpLevel > 0) {
+        bool ok = state == RocketState::Flying && throttle <= 0.0f;
+        if (ok) {
+            if (Planetoid* b = Dominant(world, com)) {
+                const auto* pf = dynamic_cast<const PlanetField*>(b->field.get());
+                const double alt = (com - b->worldPos).length() - b->radius * b->scale;
+                if (pf && !pf->moon && alt < kAirTop) ok = false;
+                if (alt < 2000.0) ok = false; // close to any ground
+            }
+        }
+        if (!ok) { warpLevel = 0; GameUI_Toast("Time warp off"); }
     }
     ApplyCamera(world);
 }
@@ -672,6 +738,97 @@ RocketTelemetry Rocket_Telemetry(Scene& world) {
     return t;
 }
 
+// The orbit map (M): the orbit in its own plane around the dominant body, drawn from its elements.
+static void DrawOrbitMap(Scene& world) {
+    DVec3 p = com;
+    Vector3 v = vel;
+    if (state == RocketState::OnPad) {
+        Planetoid* body = PadBody();
+        Plot* plot = PadPlot();
+        if (!body || !plot) return;
+        CockpitCentre(*body, *plot, p);
+        v = body->surfaceVelocity((p - world.renderOrigin).toFloat());
+    }
+    Planetoid* b = Dominant(world, p);
+    if (!b) return;
+    const double mu = Mu(*b), R = b->radius * b->scale;
+    const DVec3 r = p - b->worldPos;
+    const DVec3 vv = DVec3(Vector3Subtract(v, b->linearVelocity));
+    auto cross = [](const DVec3& a, const DVec3& c) { return DVec3(a.y * c.z - a.z * c.y, a.z * c.x - a.x * c.z, a.x * c.y - a.y * c.x); };
+    auto dot = [](const DVec3& a, const DVec3& c) { return a.x * c.x + a.y * c.y + a.z * c.z; };
+    DVec3 hv = cross(r, vv);
+    const double hl = hv.length(), rl = r.length();
+    // Eccentricity vector (points at periapsis); its plane basis P (periapsis), Q.
+    DVec3 ev = cross(vv, hv) * (1.0 / mu) - r * (1.0 / rl);
+    const double e = ev.length();
+    DVec3 P = e > 1e-6 ? ev * (1.0 / e) : r * (1.0 / rl);
+    if (hl < 1e-6) hv = cross(r, DVec3(0, 1, 0)).length() > 1e-6 ? cross(r, DVec3(0, 1, 0)) : DVec3(1, 0, 0);
+    DVec3 Q = cross(hv * (1.0 / hv.length()), P);
+    const double semiLatus = hl * hl / mu;
+    double ra = -1.0, rp = semiLatus / (1.0 + e);
+    if (e < 1.0) ra = semiLatus / (1.0 - e);
+    // Screen layout.
+    const float cx = GetScreenWidth() * 0.5f, cy = GetScreenHeight() * 0.5f, panel = GetScreenHeight() * 0.42f;
+    const double extent = std::max({ R * 1.6, rl * 1.15, e < 1.0 ? ra * 1.05 : rl * 2.0 });
+    const double s = panel / extent;
+    auto toScreen = [&](double x, double y) { return Vector2{ cx + (float)(x * s), cy - (float)(y * s) }; };
+    DrawRectangle(0, 0, GetScreenWidth(), GetScreenHeight(), Fade(BLACK, 0.82f));
+    // The body, its air and any ring around it.
+    const auto* pf = dynamic_cast<const PlanetField*>(b->field.get());
+    const bool air = pf && !pf->moon;
+    if (air) DrawCircleLines((int)cx, (int)cy, (float)((R + kAirTop) * s), Fade(SKYBLUE, 0.35f));
+    for (auto& ring : Rings()) {
+        DrawCircleLines((int)cx, (int)cy, (float)(ring->innerRadius * s), Fade(BEIGE, 0.35f));
+        DrawCircleLines((int)cx, (int)cy, (float)(ring->outerRadius * s), Fade(BEIGE, 0.35f));
+    }
+    DrawCircle((int)cx, (int)cy, (float)(R * s), air ? Color{ 40, 90, 150, 255 } : Color{ 120, 120, 125, 255 });
+    // Other bodies that fit on the map (the moon), projected onto the orbit plane.
+    for (auto& obj : world.objects) {
+        auto* o = dynamic_cast<Planetoid*>(obj.get());
+        if (!o || o == b || o->vehicle || o->ringRock >= 0) continue;
+        const DVec3 d = o->worldPos - b->worldPos;
+        const Vector2 sp = toScreen(dot(d, P), dot(d, Q));
+        if (fabs(sp.x - cx) > panel * 1.2f || fabs(sp.y - cy) > panel * 1.2f) continue;
+        DrawCircleV(sp, std::max(3.0f, (float)(o->radius * o->scale * s)), GRAY);
+        DrawText(o->name.c_str(), (int)sp.x + 6, (int)sp.y - 6, 14, LIGHTGRAY);
+    }
+    // The orbit (red inside the body: it would hit the ground there).
+    const double th0 = e < 1.0 ? -PI : -acos(-1.0 / e) + 0.02, th1 = e < 1.0 ? PI : acos(-1.0 / e) - 0.02;
+    Vector2 prev{};
+    for (int i = 0; i <= 360; ++i) {
+        const double th = th0 + (th1 - th0) * i / 360.0;
+        const double rr = semiLatus / (1.0 + e * cos(th));
+        if (rr <= 0.0 || rr > extent * 4.0) { prev = {}; continue; }
+        const Vector2 sp = toScreen(rr * cos(th), rr * sin(th));
+        if (i > 0 && (prev.x != 0.0f || prev.y != 0.0f)) DrawLineEx(prev, sp, 2.0f, rr < R ? Fade(RED, 0.8f) : Fade(GREEN, 0.9f));
+        prev = sp;
+    }
+    // Apoapsis and periapsis.
+    const Vector2 pe = toScreen(rp, 0.0);
+    DrawCircleV(pe, 5.0f, ORANGE);
+    DrawText(TextFormat("Pe %.1f km", (rp - R) / 1000.0), (int)pe.x + 8, (int)pe.y - 8, 16, ORANGE);
+    if (ra > 0.0) {
+        const Vector2 ap = toScreen(-ra, 0.0);
+        DrawCircleV(ap, 5.0f, SKYBLUE);
+        DrawText(TextFormat("Ap %.1f km", (ra - R) / 1000.0), (int)ap.x + 8, (int)ap.y - 8, 16, SKYBLUE);
+    }
+    // The rocket, and the time to apoapsis.
+    const double theta = atan2(dot(r, Q), dot(r, P));
+    const Vector2 me = toScreen(rl * cos(theta), rl * sin(theta));
+    DrawCircleV(me, 6.0f, WHITE);
+    DrawText("you", (int)me.x + 8, (int)me.y + 4, 14, WHITE);
+    std::string info = TextFormat("MAP (M)   %s   warp %.0fx (, .)   %.0f C", b->name.c_str(), Rocket_Warp(), temperature);
+    if (e < 1.0 && e > 1e-4) {
+        const double a = semiLatus / (1.0 - e * e), n = sqrt(mu / (a * a * a));
+        const double E = 2.0 * atan(sqrt((1.0 - e) / (1.0 + e)) * tan(theta * 0.5));
+        double M = E - e * sin(E);
+        double tAp = (PI - M) / n;
+        if (tAp < 0) tAp += 2.0 * PI / n;
+        info += TextFormat("   apoapsis in %.0f s   period %.0f min", tAp, 2.0 * PI / n / 60.0);
+    }
+    DrawText(info.c_str(), 20, GetScreenHeight() - 70, 20, RAYWHITE);
+}
+
 void Rocket_DrawHUD(Scene& world) {
     const int x = 20, w = 470;
     int y = 290;
@@ -691,6 +848,7 @@ void Rocket_DrawHUD(Scene& world) {
         DrawText(aimCockpit ? "E board   I load fuel" : "I load fuel (look at the cockpit to board)", x, y + 4, 16, Fade(RAYWHITE, 0.8f));
         return;
     }
+    if (mapView) { DrawOrbitMap(world); return; }
     const RocketTelemetry t = Rocket_Telemetry(world);
     DrawRectangle(x - 8, y - 8, w, 190, Fade(BLACK, 0.55f));
     DrawText(state == RocketState::OnPad ? "ROCKET  on the ground" : "ROCKET  flying", x, y, 20, SKYBLUE); y += 26;
@@ -699,8 +857,8 @@ void Rocket_DrawHUD(Scene& world) {
     if (t.apoapsis < 0) DrawText(TextFormat("escaping   periapsis %.1f km", t.periapsis / 1000.0), x, y, 16, YELLOW);
     else DrawText(TextFormat("apoapsis %.1f km   periapsis %.1f km%s", t.apoapsis / 1000.0, t.periapsis / 1000.0, t.periapsis > 35000.0 ? "   IN ORBIT" : ""), x, y, 16, t.periapsis > 35000.0 ? GREEN : RAYWHITE);
     y += 20;
-    DrawText(TextFormat("throttle %3.0f%%   fuel %.0f kg   TWR %.2f", t.throttle * 100.0f, t.fuel, t.twr), x, y, 16, RAYWHITE); y += 24;
-    DrawText("Shift / Ctrl throttle   X cut   W/S A/D Z/C steer   mouse looks", x, y, 14, Fade(RAYWHITE, 0.75f)); y += 18;
+    DrawText(TextFormat("throttle %3.0f%%   fuel %.0f kg   TWR %.2f   %.0f C   warp %.0fx", t.throttle * 100.0f, t.fuel, t.twr, temperature, Rocket_Warp()), x, y, 16, temperature > 700.0f ? ORANGE : RAYWHITE); y += 24;
+    DrawText("Shift / Ctrl throttle   X cut   W/S A/D Z/C steer   M map   , . warp", x, y, 14, Fade(RAYWHITE, 0.75f)); y += 18;
     if (state == RocketState::OnPad) DrawText("E leave the cockpit", x, y, 14, Fade(RAYWHITE, 0.75f));
 }
 

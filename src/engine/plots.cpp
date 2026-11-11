@@ -116,6 +116,7 @@ namespace {
         { "iron_plate", "Iron", { 118, 122, 130, 255 } },
         { "glass", "Glass", { 172, 212, 226, 255 } },
         { "dirt", "Packed dirt", { 120, 90, 60, 255 } },
+        { "heat_shield_tile", "Heat shield", { 45, 42, 40, 255 } },  // survives re-entry on a rocket's leading face
     };
 }
 int BuildMaterialCount() { return (int)(sizeof(kBuildMaterials) / sizeof(kBuildMaterials[0])); }

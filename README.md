@@ -34,7 +34,8 @@ generated in the build directory for IntelliSense/clangd.
 | WASD, Space, Ctrl | move (Shift/Alt = faster) |
 | LMB / RMB (hold) | dig / fill terrain at the crosshair (filling costs stone, dirt, gravel or sand) |
 | Tab | inventory + crafting |
-| G | build mode (wheel shape, R / V rotate, RMB place, LMB remove) |
+| G | build mode (wheel shape, R / V rotate, RMB place, LMB remove; B saves the plot you look at as a blueprint, N cycles blueprints: RMB places what you can afford) |
+| M / , . | aboard a rocket: orbit map / time warp down, up (1x-100x, coasting above the air only) |
 | 1-9, 0 | hotbar: the terrain tool, a building material (any shape costs it), a machine, or a consumable (oxygen canister, power cell). In the inventory, hover an item and press 1-0 to bind it |
 | L | headlamp (on foot: suit power; piloting: ship nose light) |
 | F | toggle free-fly camera (WASD along the view, Space/Ctrl along camera up, mouse turns, Q/E roll, Shift/Alt faster) |
@@ -107,6 +108,12 @@ Shaders in `resources/` hot-reload when saved.
   back into a plot on whatever it landed on; hard landings break legs, harder ones engines (damage, not
   destruction). The cockpit is pressurised. Saves keep a rocket in flight. Rocketry is tier 7 of the quest book: parts
   need titanium alloy, aluminium and advanced circuits, and fuel comes from the refinery.
+  M opens the orbit map (the orbit drawn from its elements around the body you orbit, apoapsis / periapsis, the air,
+  the moon, time to apoapsis); , and . warp time 1x-100x while coasting above the air (any burn, the air or ground
+  within 2 km drops it). Fast flight in thick air heats the leading face (re-entry: ~800 C coming down from orbit): the
+  part there burns away if it stays past its limit (wood 250 C, glass 900, the rocket parts' alloys 1100-1600, heat
+  shield tiles 3000), shielding the parts behind it; the cockpit scorches but holds. The landing autopilot aerobrakes
+  above 12 km. Blueprints (resources/blueprints/, your own in blueprints/): a starter rocket ships as a preset.
 - **Planetary ring** (`src/engine/ring.*`): 60,000 rocks 5-50 m across (about 1% five times bigger) in a band
   3 km wide and 60 m thick, each on its own circular orbit, derived from the seed and its index (nothing
   stored until you change one). Far away rocks draw as instances of a dozen lumpy rock meshes (skipped when
@@ -206,7 +213,7 @@ refinery),
 load), `--test-water` (inland water near the start, its bed and clay), `--test-flyfollow` (the fly camera rides the
 planet and the moon), `--test-hotbar` (materials, consumables, foundations, materials through a save), `--test-ring`
 (milestone 6 gate: 60k rocks, frame time from the ground and inside the ring, a rock promoted, dug, left, revisited
-and reloaded with its hole, standing on a huge rock), `--test-rocket` (milestone 7 gate, with `--time-scale 8`: a rocket built,
+and reloaded with its hole, standing on a huge rock), `--test-blueprint` (place the starter rocket preset, fill in, save and load), `--test-rocket` (milestone 7 gate, with `--time-scale 8`: a rocket built,
 fuelled and flown by the autopilot to orbit, saved and loaded in orbit, brought down and landed), `--bench-fly V`
 / `--bench-fly-alt A` (camera flight over body 0, LOD streaming; negative A: underwater), `--no-foliage`,
 `--test-mine N` digs N strokes at the feet, crafts everything possible and builds 3 strokes,

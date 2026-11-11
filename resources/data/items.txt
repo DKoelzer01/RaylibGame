@@ -66,3 +66,4 @@ advanced_circuit | Advanced circuit | 200 | 60,200,140 | HV circuit: gold contac
 hydrogen        | Hydrogen cell   | 200 | 200,220,255 | From electrolysis.
 oxygen          | Oxygen cell     | 200 | 140,200,255 | From electrolysis.
 polyethylene    | Polyethylene    | 200 | 230,230,230 | Plastic sheet.
+heat_shield_tile | Heat shield tile | 256 | 45, 42, 40 | Ceramic on titanium: build a rocket's leading face from it to survive re-entry.

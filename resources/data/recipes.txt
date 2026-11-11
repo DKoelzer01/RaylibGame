@@ -54,3 +54,4 @@ fuel_tank 1       = aluminium_plate 8
 cockpit 1         = titanium_alloy_plate 4, glass 6, advanced_circuit 2
 guidance_computer 1 = advanced_circuit 3, gold_ingot 1
 landing_leg 1     = aluminium_plate 2, steel_plate 2
+heat_shield_tile 4 = clay 4, titanium_alloy_plate 1
