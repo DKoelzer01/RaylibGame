@@ -125,6 +125,11 @@ Shaders in `resources/` hot-reload when saved.
   the loaded air, and when that is gone the suit's own oxygen takes over (the hull keeps the vacuum out). P aboard
   engages the autopilot: a gravity turn to a 45 km orbit, or in orbit a deorbit burn and a powered landing; P again
   for manual. The rocketry tier asks for life support and a landing; launches and landings count for quests.
+- **Stations and docking** (plan 3, M20; `src/space/station.*`): a station core built onto a rocket is deployed in a
+  stable orbit with K: it becomes its own body on an exact two-body (Kepler) orbit from the state it had, holding up to
+  1500 kg of fuel. Near a station (within 40 m, under 2 m/s) K docks: the rocket's plot joins the station's body,
+  keeping its attitude. Docked, T takes 500 kg of fuel from the station's tanks and Shift+T gives it; U (or any
+  throttle) undocks. Stations, their plots, fuel and machines are saved.
 - **Crafting** (the Crafting tab, `src/space/recipebook.*`, `src/space/storage.*`): only recipes you know show - a
   recipe is known once all its ingredients have been discovered (some also need an unlock in
   `resources/data/recipe_unlocks.txt`), with a toast for each new one. Search by item or ingredient; a toggle shows only
@@ -297,7 +302,8 @@ fuelled and flown by the autopilot to orbit, saved and loaded in orbit, brought 
 `--test-moon` (moon on its analytic orbit; standing and jumping on it; digging at the feet launches nobody),
 `--test-hunger` (drain at rest, starving, eating, cold at the pole, saved), `--test-farm` (till, plant, no growth at
 night, ripe in daylight, harvest, a growing crop saved), `--test-animals` (herds placed, grazing on the ground,
-`--test-damage` (engine damage halves thrust, a broken tank leaks, legs stop counting, damage saved, a repair kit,
+`--test-station` (with `--time-scale 8`: a rocket with a station core flies to orbit, deploys it, docks, gives fuel,
+undocks, docks again, takes fuel; the station and its fuel through a save), `--test-damage` (engine damage halves thrust, a broken tank leaks, legs stop counting, damage saved, a repair kit,
 vacuum in the basic and explorer suits), `--test-crafting` (discovery and unlocks gate recipes, search, a nearby chest counted, pulled from and deposited
 into), `--test-recipes` (every item reachable from the world; lists items nothing uses),
 `--test-threats` (a stalker comes after dark and bites; a campfire keeps it off; gone by day; none on peaceful; a

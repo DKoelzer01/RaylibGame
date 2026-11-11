@@ -37,6 +37,7 @@
 #include "suit.h"
 #include "toolwear.h"
 #include "recipebook.h"
+#include "station.h"
 #include "storage.h"
 #include "tools.h"
 #include "rivers.h"
@@ -106,6 +107,7 @@ static void StartNewWorld(Scene& world, bool reset) {
         Nav_Reset();
         Farm_Reset();
         Animals_Reset();
+        Station_Reset();
         Suit_Reset();
         ToolWear_Reset();
         RecipeBook_Reset();
@@ -191,6 +193,7 @@ int main(int argc, char** argv)
     int mapPhase = 0, mapTiles = 0; double mapStart = 0.0; float mapHeading = -1.0f, mapBearing = -1.0f; bool mapImageOk = false; DVec3 mapFrom{};
     bool benchRing = false, ringStarted = false; // --test-ring: milestone 6 gate
     bool benchRocket = false, rocketStarted = false; // --test-rocket: milestone 7 gate
+    bool benchStation = false, stationStarted = false; double stationWait = 0.0; // --test-station: plan 3 M20 gate
     double rocketWait = 0.0;
     bool benchBlueprint = false;   // --test-blueprint: place, fill in, save and load a blueprint
     bool benchSmallBody = false;   // --test-smallbody: land on a huge and a small ring rock
@@ -329,6 +332,7 @@ int main(int argc, char** argv)
         if (std::string(argv[i]) == "--test-viewmodel") benchViewmodel = true;
         if (std::string(argv[i]) == "--test-ring") benchRing = true;
         if (std::string(argv[i]) == "--test-rocket") benchRocket = true;
+        if (std::string(argv[i]) == "--test-station") benchStation = true;
         if (std::string(argv[i]) == "--test-blueprint") benchBlueprint = true;
         if (std::string(argv[i]) == "--test-smallbody") benchSmallBody = true;
         if (std::string(argv[i]) == "--test-trees") benchTrees = true;
@@ -441,6 +445,7 @@ int main(int argc, char** argv)
     mainMenuHandler(mainMenu);
     worldHandler(world);
     Rocket_Init(&world);
+    Station_Init(&world);
     if (loadSaveAtStart) { // the player's save, read-only; later bench saves still go to bench.sav
         SetWorldSavePath("saves/world.sav");
         if (!LoadWorldSave(world)) printf("bench: --load: could not load saves/world.sav\n");
@@ -2134,6 +2139,9 @@ int main(int argc, char** argv)
                 } else if (benchRing && (ringStarted || WorldIdle())) {
                     if (!ringStarted) { ringStarted = true; Planetoid* p = dynamic_cast<Planetoid*>(world.objects[0].get()); player.spawnOn(world, *p, StartSpawnDir(*p)); }
                     else if (RingTest_Update(world) != 0) benchRing = false;
+                } else if (benchStation && (stationStarted || WorldIdle())) {
+                    if (!stationStarted) { stationStarted = true; stationWait = GetTime(); }
+                    else if (GetTime() - stationWait > 1.5 && StationTest_Update(world) != 0) benchStation = false;
                 } else if (benchRocket && (rocketStarted || WorldIdle())) {
                     if (!rocketStarted) { rocketStarted = true; Planetoid* p = dynamic_cast<Planetoid*>(world.objects[0].get()); player.spawnOn(world, *p, StartSpawnDir(*p)); rocketWait = GetTime(); }
                     else if (GetTime() - rocketWait > 1.5 && RocketTest_Update(world) != 0) benchRocket = false;
@@ -2801,7 +2809,7 @@ int main(int argc, char** argv)
                         }
                         benchWalkSeconds = 0.0;
                     }
-                } else if ((WorldIdle() && benchDigStrokes == 0 && !benchSaveLoad && benchWalkSeconds <= 0.0 && benchMineStrokes == 0 && minePhase != 2 && benchFlySeconds <= 0.0 && !benchSuffocate && benchOrbitSeconds <= 0.0 && !benchRide && !benchPark && !benchGravity && !benchPrecision && !benchMantle && !benchAirJump && !benchMoon && !benchHole && !benchWall && !benchMenus && !benchWater && !benchFlyFollow && !benchHotbar && !benchInventory && !benchMap && !benchViewmodel && !benchQuests && !benchHunger && !benchFarm && !benchAnimals && !benchThreats && benchShotTabs == 0 && !benchRecipes && !benchDamage && !benchCrafting && !benchSuit && !benchTools && !benchRivers && !benchRing && !benchRocket && !benchBlueprint && !benchSmallBody && !benchTrees && !benchChop && benchPersist == 0 && benchBuild == 0 && benchFactory == 0 && !benchProgression) || GetTime() > 600.0) {
+                } else if ((WorldIdle() && benchDigStrokes == 0 && !benchSaveLoad && benchWalkSeconds <= 0.0 && benchMineStrokes == 0 && minePhase != 2 && benchFlySeconds <= 0.0 && !benchSuffocate && benchOrbitSeconds <= 0.0 && !benchRide && !benchPark && !benchGravity && !benchPrecision && !benchMantle && !benchAirJump && !benchMoon && !benchHole && !benchWall && !benchMenus && !benchWater && !benchFlyFollow && !benchHotbar && !benchInventory && !benchMap && !benchViewmodel && !benchQuests && !benchHunger && !benchFarm && !benchAnimals && !benchThreats && benchShotTabs == 0 && !benchRecipes && !benchDamage && !benchCrafting && !benchSuit && !benchTools && !benchRivers && !benchRing && !benchRocket && !benchStation && !benchBlueprint && !benchSmallBody && !benchTrees && !benchChop && benchPersist == 0 && benchBuild == 0 && benchFactory == 0 && !benchProgression) || GetTime() > 600.0) {
                     benchStart = GetTime();
                     printf("bench: world ready after %.2f s (%d chunks, avg build %.2f ms of which sampling %.2f ms, %d worker threads)\n",
                         GetWorldStats().lastGenerationSeconds, GetWorldStats().chunks, GetWorldStats().avgBuildMs, GetWorldStats().avgSampleMs, GetWorldStats().workerThreads);
@@ -2912,6 +2920,7 @@ int main(int argc, char** argv)
         advanceBodies(world, gameState == 1 && !loading ? frameDt * timeScale * Rocket_Warp() : 0.0f); // bodies only spin while playing (warped with a coasting rocket); before riders update
         if (gameState == 1) {
             ship.lastImpact = 0.0f;
+            Station_Update(world); // stations on their orbits, before anything rides on them
             if (ship.piloted) {
                 ship.update(world, gameInput && alive, frameDt);
                 ship.applyChaseCamera(world);
@@ -2948,7 +2957,7 @@ int main(int argc, char** argv)
             }
             if (bench && benchTelescope > 0.0f && !ship.piloted) AimAtTelescopeTarget(world);
             if (!ship.piloted && !Rocket_Boarded()) player.applyToCamera(world);
-            Telescope_Update(world, gameInput && alive, !ship.piloted && !player.flyMode && alive && !buildTool.active);
+            Telescope_Update(world, gameInput && alive && !Rocket_Boarded(), !ship.piloted && !player.flyMode && alive && !buildTool.active); // aboard, T moves fuel
             if (bench && benchTelescope > 0.0f) { Telescope_SetActive(world, true); telescope.zoom = benchTelescope; Telescope_Update(world, false, !ship.piloted); }
         }
 

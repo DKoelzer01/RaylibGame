@@ -48,6 +48,14 @@ int Rocket_LoadAir(Plot& plot, int canisters);
 // Aboard outside breathable air, the cockpit spends its air: true while there is some.
 bool Rocket_BreatheAboard(float dt);
 float Rocket_AirMinutes();
+// Stations (plan 3, M20; station.h). In a stable orbit with a station core aboard, K deploys it as a
+// station; near a station (within 40 m, under 2 m/s) K docks. Docked: T / Shift+T move fuel between the
+// rocket and the station's tanks (kg > 0: into the rocket), and launching (or U) undocks.
+bool Rocket_DeployStation();
+bool Rocket_Dock();
+bool Rocket_Undock();
+float Rocket_TransferFuel(float kg);
+bool Rocket_DockedAtStation();
 // Tests: damage a rocket part (part index) by an amount.
 void Rocket_DamagePart(Plot& plot, int part, float amount);
 

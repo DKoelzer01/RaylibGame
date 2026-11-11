@@ -40,10 +40,11 @@ enum class PartType : uint8_t {
     Farmland,                                                        // tilled soil a crop grows on (plan 2, milestone 11)
     Fence, Gate,                                                     // 1 m wooden panels: pens (milestone 12); the player walks through a gate, animals do not
     Cabin,                                                           // rocket crew cabin: 4 seats, 30 min of air (plan 3, M19)
+    StationCore,                                                     // deployed in orbit: founds a station (plan 3, M20); stores fuel
     Count
 };
 inline bool IsMachine(PartType t) { return (t >= PartType::Chest && t <= PartType::SteamMacerator) || (t >= PartType::OreWasher && t <= PartType::PrecisionAssembler); }
-inline bool IsRocketPart(PartType t) { return (t >= PartType::RocketEngine && t <= PartType::LandingLeg) || t == PartType::Cabin; }
+inline bool IsRocketPart(PartType t) { return (t >= PartType::RocketEngine && t <= PartType::LandingLeg) || t == PartType::Cabin || t == PartType::StationCore; }
 inline bool IsShape(PartType t) { return t <= PartType::Beam8; } // structure: built from a material
 constexpr int kShapeCount = (int)PartType::Beam8 + 1;
 const char* PartName(PartType t);

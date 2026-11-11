@@ -1,5 +1,6 @@
 #include "rocket.h"
 #include "survival.h"
+#include "station.h"
 #include "buildtool.h"
 #include "gameui.h"
 #include "inventory.h"
@@ -481,6 +482,7 @@ namespace {
         const Vector3 vrel = Vector3Subtract(vel, ground->surfaceVelocity((com - world.renderOrigin).toFloat()));
         const float speed = Vector3Length(vrel);
         const Vector3 gup = Vector3Normalize((com - ground->worldPos).toFloat());
+        if (Vector3DotProduct(vrel, gup) > 0.3f) return; // still climbing off the ground (a slow lift-off): not a landing
         const float tilt = acosf(std::clamp(Vector3DotProduct(Up(), gup), -1.0f, 1.0f)) * RAD2DEG;
         const float safe = 4.0f + 1.5f * std::min(4, st.legs);
         lastTouchdown = speed;
@@ -695,6 +697,13 @@ void Rocket_Update(Scene& world, bool input, float dt) {
         }
         if (IsKeyPressed(KEY_PERIOD)) Rocket_SetWarp(warpLevel + 1);
         if (IsKeyPressed(KEY_COMMA)) Rocket_SetWarp(warpLevel - 1);
+        // Stations: K deploys the core (in orbit) or docks (near one); docked, T / Shift+T move fuel, U undocks.
+        if (IsKeyPressed(KEY_K) && state == RocketState::Flying) { if (Station_Nearest(world, com, 400.0f)) Rocket_Dock(); else Rocket_DeployStation(); }
+        if (IsKeyPressed(KEY_T) && Rocket_DockedAtStation()) {
+            const float kg = Rocket_TransferFuel(IsKeyDown(KEY_LEFT_SHIFT) ? -500.0f : 500.0f);
+            GameUI_Toast(kg > 0.0f ? TextFormat("Took %.0f kg of fuel from the station", kg) : kg < 0.0f ? TextFormat("Gave the station %.0f kg of fuel", -kg) : "No fuel to move (or no room)");
+        }
+        if (IsKeyPressed(KEY_U) && Rocket_DockedAtStation()) Rocket_Undock();
         if (state == RocketState::OnPad && IsKeyPressed(KEY_E)) { Rocket_Exit(world); return; }
     }
     if (state == RocketState::OnPad) {
@@ -1014,4 +1023,122 @@ bool Rocket_BreatheAboard(float dt) {
     if (!p || p->air <= 0.0f) return false;
     p->air = std::max(0.0f, p->air - dt / 60.0f);
     return true;
+}
+
+// ---------------------------------------------------------------------------------------------
+// Stations (plan 3, M20): deploy a station core in orbit, dock, undock, move fuel.
+// ---------------------------------------------------------------------------------------------
+
+bool Rocket_DeployStation() {
+    if (!gWorld || state != RocketState::Flying) return false;
+    Scene& world = *gWorld;
+    Planetoid* veh = Vehicle();
+    Plot* vp = VehiclePlot();
+    if (!veh || !vp) return false;
+    int core = -1;
+    for (int i = 0; i < (int)vp->parts.size(); ++i) if (vp->parts[i].type == PartType::StationCore) core = i;
+    if (core < 0) { GameUI_Toast("No station core aboard"); return false; }
+    Planetoid* b = Dominant(world, com);
+    if (!b) return false;
+    double ra, rp;
+    Orbit(*b, com, vel, ra, rp);
+    if (ra < 0.0 || rp - b->radius * b->scale < 30000.0) { GameUI_Toast("Deploy a station from a stable orbit (periapsis above 30 km)"); return false; }
+    // The core leaves the rocket where it is: its cells' corner in the vehicle frame, in world space.
+    const Part part = vp->parts[core];
+    const DVec3 at = ToWorld({ part.origin.x * kCellSize, part.origin.y * kCellSize, -part.origin.z * kCellSize });
+    Planetoid* st = Station_Create(world, *b, at, vel, rot, 6.0f);
+    if (!st) { GameUI_Toast("No stable orbit for a station here"); return false; }
+    vp->remove(core);
+    auto plot = std::make_unique<Plot>();
+    plot->origin = DVec3(0, 0, 0);
+    plot->east = { 1, 0, 0 };
+    plot->up = { 0, 1, 0 };
+    plot->north = { 0, 0, -1 };
+    Part np = part;
+    np.origin = { 0, 0, 0 };
+    plot->place(np);
+    // Fuel the rocket can no longer hold (the core's tank went with it) stays in the core.
+    const float cap = Rocket_Stats(*vp, b).fuelCapacity;
+    if (vp->fuel > cap) { plot->fuel = std::min(1500.0f, vp->fuel - cap); vp->fuel = cap; }
+    st->plots->adopt(std::move(plot));
+    QuestBook_Count("station");
+    GameUI_Toast("Station founded: K docks (within 40 m, under 2 m/s); docked, T takes fuel and Shift+T gives it");
+    Audio_Play(Sfx::Build, 0.7f, 0.7f);
+    return true;
+}
+
+bool Rocket_Dock() {
+    if (!gWorld || state != RocketState::Flying) return false;
+    Scene& world = *gWorld;
+    Planetoid* veh = Vehicle();
+    Plot* vp = VehiclePlot();
+    Planetoid* st = Station_Nearest(world, com, 400.0f);
+    if (!veh || !vp || !st || !st->plots) { GameUI_Toast("No station near"); return false; }
+    // Distance to the station's nearest part, and the speed between them.
+    double nearest = 1e30;
+    for (const auto& pl : st->plots->plots)
+        for (const auto& kv : pl->cells) nearest = std::min(nearest, (st->toWorldD(DVec3(pl->toBody(CellCentre(kv.first)))) - com).length());
+    const float rel = Vector3Length(Vector3Subtract(vel, st->linearVelocity));
+    if (nearest > 40.0) { GameUI_Toast(TextFormat("The station is %.0f m away: dock within 40 m", nearest)); return false; }
+    if (rel > 2.0f) { GameUI_Toast(TextFormat("Closing at %.1f m/s: slow to under 2 to dock", rel)); return false; }
+    // The rocket's plot joins the station's body, keeping its attitude.
+    const Vector3 ex = Vector3RotateByQuaternion({ 1, 0, 0 }, rot), ey = Vector3RotateByQuaternion({ 0, 1, 0 }, rot), ez = Vector3RotateByQuaternion({ 0, 0, -1 }, rot);
+    std::unique_ptr<Plot> plot = veh->plots->release(vp);
+    plot->origin = st->toLocalD(veh->worldPos);
+    plot->east = st->dirToLocal(ex);
+    plot->up = st->dirToLocal(ey);
+    plot->north = st->dirToLocal(ez);
+    const uint32_t fromPlot = plot->id;
+    Plot* placed = st->plots->adopt(std::move(plot));
+    Factory::MovePlot(veh->id, fromPlot, st->id, placed->id);
+    padBody = st->id;
+    padPlot = placed->id;
+    for (auto it = world.objects.begin(); it != world.objects.end(); ++it)
+        if (it->get() == veh) { world.objects.erase(it); break; }
+    vehicleId = 0;
+    state = RocketState::OnPad;
+    throttle = 0.0f;
+    autopilot = RocketAutopilot::Off;
+    angVel = { 0, 0, 0 };
+    QuestBook_Count("dock");
+    GameUI_Toast("Docked: T takes fuel from the station, Shift+T gives it; throttle up (or U) to undock");
+    Audio_Play(Sfx::Build, 0.6f, 0.8f);
+    return true;
+}
+
+bool Rocket_Undock() {
+    if (!gWorld || state != RocketState::OnPad) return false;
+    Planetoid* body = PadBody();
+    if (!body || !Station_Is(*body)) return false;
+    throttle = 0.0f;
+    Launch(*gWorld); // drifting beside the station at its speed
+    return state == RocketState::Flying;
+}
+
+float Rocket_TransferFuel(float kg) {
+    if (state != RocketState::OnPad) return 0.0f;
+    Planetoid* body = PadBody();
+    Plot* plot = PadPlot();
+    if (!body || !plot || !body->plots || !Station_Is(*body)) return 0.0f;
+    const float cap = Rocket_Stats(*plot, body).fuelCapacity;
+    float moved = 0.0f;
+    for (const auto& pl : body->plots->plots) {
+        if (pl.get() == plot) continue;
+        if (kg > 0.0f) { // into the rocket
+            const float k = std::min({ kg - moved, pl->fuel, cap - plot->fuel });
+            if (k <= 0.0f) continue;
+            pl->fuel -= k; plot->fuel += k; moved += k;
+        } else {         // into the station's tanks
+            const float room = Rocket_Stats(*pl, body).fuelCapacity - pl->fuel;
+            const float k = std::min({ -kg - moved, room, plot->fuel });
+            if (k <= 0.0f) continue;
+            pl->fuel += k; plot->fuel -= k; moved += k;
+        }
+    }
+    return kg > 0.0f ? moved : -moved;
+}
+
+bool Rocket_DockedAtStation() {
+    Planetoid* body = state == RocketState::OnPad ? PadBody() : nullptr;
+    return body && Station_Is(*body);
 }

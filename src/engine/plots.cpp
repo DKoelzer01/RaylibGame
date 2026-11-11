@@ -56,6 +56,7 @@ const char* PartName(PartType t) {
         case PartType::Fence: return "fence";
         case PartType::Gate: return "gate";
         case PartType::Cabin: return "cabin";
+        case PartType::StationCore: return "station_core";
         default: return "?";
     }
 }
@@ -107,6 +108,7 @@ const char* PartCostItem(PartType t) {
         case PartType::Fence: return "fence";
         case PartType::Gate: return "gate";
         case PartType::Cabin: return "cabin";
+        case PartType::StationCore: return "station_core";
         case PartType::RocketEngine: return "rocket_engine";
         case PartType::FuelTank: return "fuel_tank";
         case PartType::Cockpit: return "cockpit";
@@ -173,6 +175,7 @@ static Color PartColor(PartType t) {
         case PartType::Fence: return { 130, 95, 60, 255 };
         case PartType::Gate: return { 165, 120, 70, 255 };
         case PartType::Cabin: return { 200, 205, 215, 255 };
+        case PartType::StationCore: return { 230, 220, 120, 255 };
         default: return { 168, 166, 158, 255 };                                                          // concrete
     }
 }
@@ -187,7 +190,7 @@ static void PartCells(PartType t, std::vector<std::pair<Int3, CellShape>>& out) 
         case PartType::Block: case PartType::Chest: case PartType::Generator: case PartType::Furnace: case PartType::Macerator: case PartType::Battery:
         case PartType::Campfire: case PartType::Kiln: case PartType::CokeOven: case PartType::BlastFurnace: case PartType::Boiler:
         case PartType::ForgeHammer: case PartType::AlloySmelter: case PartType::SteamMacerator:
-        case PartType::RocketEngine: case PartType::FuelTank: case PartType::Cockpit: case PartType::Cabin:
+        case PartType::RocketEngine: case PartType::FuelTank: case PartType::Cockpit: case PartType::Cabin: case PartType::StationCore:
         case PartType::OreWasher: case PartType::Centrifuge: case PartType::WaterPump: case PartType::MvGenerator: case PartType::Electrolyzer:
         case PartType::ChemicalReactor: case PartType::Miner: case PartType::HvGenerator: case PartType::ArcFurnace: case PartType::Refinery:
         case PartType::PrecisionAssembler:

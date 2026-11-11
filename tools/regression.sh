@@ -79,6 +79,7 @@ space() {
     run --seed 42 --bench 3 --time-scale 8 --test-rocket
     run --seed 9 --bench 3 --time-scale 8 --test-rocket
     run --seed 42 --bench 3 --test-damage
+    run --seed 42 --bench 3 --time-scale 8 --test-station
     run $A --bench 5 --test-orbit 10
     run $A --bench 5 --test-ride
 }
