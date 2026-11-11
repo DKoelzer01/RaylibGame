@@ -211,7 +211,15 @@ void Player::stepPhysics(Scene& world, float dt, Vector3 wish, bool jetUp, bool 
         Vector3 along = Vector3Subtract(wish, Vector3Scale(n, Vector3DotProduct(wish, n)));
         const float wl = Vector3Length(wish), al = Vector3Length(along);
         if (al > 1e-4f) along = Vector3Scale(along, wl / al);
-        velocity = Vector3Subtract(Vector3Scale(along, walkSpeed), Vector3Scale(n, 1.5f));
+        Vector3 walk = Vector3Scale(along, walkSpeed);
+        if (smoothMotion) {
+            // Reduce motion: ease into and out of walking (instant starts and stops are hard to watch).
+            const Vector3 cur = Vector3Subtract(velocity, Vector3Scale(n, Vector3DotProduct(velocity, n)));
+            const Vector3 dv = Vector3Subtract(walk, cur);
+            const float dl = Vector3Length(dv), maxDv = 20.0f * dt;
+            walk = dl > maxDv ? Vector3Add(cur, Vector3Scale(dv, maxDv / dl)) : walk;
+        }
+        velocity = Vector3Subtract(walk, Vector3Scale(n, 1.5f));
         (void)vUp;
         // A jump starts from the walking velocity only: keeping the press into a sloped ground would
         // push you downhill on takeoff.
@@ -388,7 +396,10 @@ void Player::applyToCamera(Scene& world) const {
     const Vector3 feet = (position - world.renderOrigin).toFloat();
     world.camera.position = Vector3Add(feet, Vector3Scale(up, eyeHeight));
     world.camera.target = Vector3Add(world.camera.position, forward);
-    world.camera.up = up;
+    // Reduce motion: the camera's up follows the ground's gently (no lurch when it changes).
+    if (smoothMotion && Vector3Length(cameraUp) > 0.5f) cameraUp = Vector3Normalize(Vector3Lerp(cameraUp, up, std::min(1.0f, 4.0f * GetFrameTime())));
+    else cameraUp = up;
+    world.camera.up = cameraUp;
 }
 
 // Tree trunks are vertical capsules (bushes are soft): push the body cylinder out sideways and

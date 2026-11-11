@@ -30,6 +30,7 @@
 #include "hotbar.h"
 #include "ring_test.h"
 #include "rocket.h"
+#include "jobsystem.h"
 #include "rocket_test.h"
 #include "blueprint.h"
 #include "factory.h"
@@ -390,6 +391,9 @@ int main(int argc, char** argv)
     bool worldFresh = !loadSaveAtStart; // the world generated at launch: New Game uses it as it is
     MenuResult pendingMenu;
     bool justPaused = false;
+    bool loading = false;          // the loading screen is up
+    double loadStart = 0.0;
+    size_t loadMax = 1;
     world.onDraw3D = [&world] { if (!ship.piloted && !buildTool.active && !Rocket_Boarded()) TerrainTool_Draw3D(); BuildTool_Draw3D(world); };
 
     const double benchWarmup = 2.0;
@@ -1644,7 +1648,7 @@ int main(int argc, char** argv)
             }
             rlSetClipPlanes(nearPlane, 60000.0);
         }
-        const bool gameInput = !bench && !uiOpen && gameState == 1;
+        const bool gameInput = !bench && !uiOpen && gameState == 1 && !loading;
         world.cameraInputEnabled = player.flyMode && !uiOpen && !ship.piloted;  // free-fly camera only in fly mode
         const bool alive = !survival.dead;
         // One clamped frame time for everything that moves (bodies, ship, player): clamping only the
@@ -1813,6 +1817,7 @@ int main(int argc, char** argv)
                 gameState = 1;
                 mainMenu.isActive = false;
                 world.isActive = true;
+                loading = !bench; loadStart = GetTime(); loadMax = 1; // the loading screen until the terrain around you is in
             };
             auto toMenu = [&] {
                 ShowCursor();
@@ -1834,7 +1839,7 @@ int main(int argc, char** argv)
                     if (LoadWorldSave(world)) { worldFresh = false; enterGame(); }
                     else GameUI_Toast(TextFormat("Could not load %s", m.path.c_str()));
                     break;
-                case MenuAction::Resume: enterGame(); break;
+                case MenuAction::Resume: enterGame(); loading = false; break;
                 case MenuAction::Save: GameUI_Toast(SaveWorld(world) ? "Saved" : "Save failed"); break;
                 case MenuAction::SaveAndQuit:
                     if (!SaveWorld(world)) GameUI_Toast("Save failed");
@@ -1871,6 +1876,19 @@ int main(int argc, char** argv)
                 Survival_DrawHUD();
                 Objectives_DrawHUD();
                 Rocket_DrawHUD(world); // last: the orbit map covers the rest
+                if (loading) {
+                    // Loading screen: black, with the streaming progress, until the world around you is built
+                    // (it used to show you standing in a void among trees and water while the ground popped in).
+                    const size_t pending = WorldJobs().queued() + WorldJobs().running();
+                    loadMax = std::max(loadMax, pending);
+                    const float progress = WorldIdle() ? 1.0f : 1.0f - (float)pending / (float)loadMax;
+                    DrawRectangle(0, 0, GetScreenWidth(), GetScreenHeight(), BLACK);
+                    const int bw = GetScreenWidth() / 3, bx = (GetScreenWidth() - bw) / 2, by = GetScreenHeight() / 2;
+                    DrawText("Building the world", bx, by - 40, 28, RAYWHITE);
+                    DrawRectangle(bx, by, bw, 14, Fade(RAYWHITE, 0.15f));
+                    DrawRectangle(bx, by, (int)(bw * std::clamp(progress, 0.02f, 1.0f)), 14, SKYBLUE);
+                    if ((WorldIdle() && GetTime() - loadStart > 0.5) || GetTime() - loadStart > 20.0) loading = false;
+                }
                 if (!bench && !uiOpen) SetMousePosition(GetScreenWidth()/2, GetScreenHeight()/2);
             } else if (gameState == 2) {
                 world.drawScene(gameState);
