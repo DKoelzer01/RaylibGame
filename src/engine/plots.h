@@ -38,6 +38,7 @@ enum class PartType : uint8_t {
     MvGenerator, Electrolyzer, ChemicalReactor, Miner,               // MV
     HvGenerator, ArcFurnace, Refinery, PrecisionAssembler,           // HV
     Farmland,                                                        // tilled soil a crop grows on (plan 2, milestone 11)
+    Fence, Gate,                                                     // 1 m wooden panels: pens (milestone 12); the player walks through a gate, animals do not
     Count
 };
 inline bool IsMachine(PartType t) { return (t >= PartType::Chest && t <= PartType::SteamMacerator) || (t >= PartType::OreWasher && t <= PartType::PrecisionAssembler); }

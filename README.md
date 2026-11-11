@@ -102,6 +102,13 @@ Shaders in `resources/` hot-reload when saved.
   ground with a shovel: RMB). Look at it: I plants seeds you carry, O harvests a ripe crop (yield plus 1-2 seeds).
   Grain, roots and flax grow in daylight only, twice as fast with water within 4 m; seeds come from bushes. Grain
   grinds into flour (Tab), bread and roasted roots cook in a campfire. Crops are saved.
+- **Animals** (`src/space/animals.*`, `resources/data/animals.txt`): passive placeholder animals (coloured boxes with
+  a head): woolbacks, plains runners (wild: they bolt at 25 m), cluckers and hornhides. Herds are placed from the seed
+  in 256 m tiles as you come near; only those within 300 m move. They graze, wander, rest at night and run when hit;
+  they keep off water, steep ground and build parts. Fences (2 from 3 wood) and gates (the player walks
+  through, animals do not) make a pen. Look at one: I feeds it (it follows
+  you for 30 s; two fed adults close together breed a young one that grows up in an hour), O collects wool (shears),
+  milk (bucket) or eggs, LMB attacks (meat, hide, feathers). Raw meat cooks in a campfire. Animals are saved.
 - **Hands** (`src/space/viewmodel.*`): a gloved hand holding the selected tool (by type and tier) or a cube of the
   selected item, drawn in its own pass over the world. It bobs with the distance walked (a figure eight, 1.5 cm up and
   1 cm across a step, none standing still), swings on each mining stroke or chop, and dips when switching. Settings:
@@ -243,7 +250,8 @@ fuelled and flown by the autopilot to orbit, saved and loaded in orbit, brought 
 `--test-suffocate` checks death/respawn,
 `--test-moon` (moon on its analytic orbit; standing and jumping on it; digging at the feet launches nobody),
 `--test-hunger` (drain at rest, starving, eating, cold at the pole, saved), `--test-farm` (till, plant, no growth at
-night, ripe in daylight, harvest, a growing crop saved),
+night, ripe in daylight, harvest, a growing crop saved), `--test-animals` (herds placed, grazing on the ground,
+flee when hit, follow when fed, a fenced pen holds a scared herd and lets the player through its gate, breeding, drops, saved, 200 animals under 1 ms),
 `--test-quests` (tiers open by their tasks, items used up still count, quest state through a save),
 `--test-viewmodel` (hands still at rest, bob within its amplitude once a step, screenshots of each tool),
 `--test-map` (compass reads east facing east, walking explores, a waypoint north bears 0, both maps render, saved),
