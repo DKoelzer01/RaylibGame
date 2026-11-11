@@ -29,12 +29,13 @@ bool Animals_LoadLine(const char* tok, FILE* f);
 
 // Tests.
 int Animals_Count();
-int Animals_Spawn(Scene& world, Planetoid& body, const std::string& species, Vector3 bodyLocal, int count, bool young = false);
+int Animals_Spawn(Scene& world, Planetoid& body, const std::string& species, Vector3 bodyLocal, int count, bool young = false, float spread = 18.0f);
 int Animals_Nearest(Vector3 bodyLocal, float range);          // index or -1
 Vector3 Animals_Position(int index);                           // body-local
 bool Animals_Hit(int index, float damage);                     // true if it fell
 bool Animals_Feed(int index);                                  // with the player's food for it
 int Animals_YoungCount();
 double Animals_LastUpdateMs();
+int Animals_PennedCount();                                   // near the player, last checked (every 2 s)
 
 #endif

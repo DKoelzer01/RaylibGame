@@ -4,6 +4,7 @@
 #include "gameui.h"
 #include "inventory.h"
 #include "plots.h"
+#include "survival.h"
 #include "voxel.h"
 #include "world.h"
 #include "worldtypes.h"
@@ -103,6 +104,7 @@ bool Farm_Plant(Planetoid& body, Plot& plot, int part, const std::string& seed) 
         if (!seed.empty() && c.seed != seed) continue;
         if (inventory.count(c.seed) <= 0 || !inventory.remove(c.seed, 1)) continue;
         fields[key] = { c.id, 0.0f };
+        QuestBook_Count("plant");
         Audio_Play(Sfx::Pickup, 0.4f, 0.7f);
         return true;
     }
@@ -121,6 +123,7 @@ int Farm_Harvest(Planetoid& body, Plot& plot, int part) {
     inventory.add(c->yield, c->yieldCount);
     inventory.add(c->seed, seeds);
     GameUI_Toast(TextFormat("+%d %s  +%d seeds", c->yieldCount, c->yield.c_str(), seeds));
+    QuestBook_Count("harvest");
     Audio_Play(Sfx::Pickup, 0.5f);
     fields.erase(it);
     return c->yieldCount + seeds;
@@ -161,7 +164,9 @@ bool Farm_Till(Scene& world, Planetoid& body, Vector3 ground) {
         plot = body.plots->plotFor(ground, 0.0f, true);
     }
     if (!plot->canPlace(part)) return false;
-    return BuildTool_Place(body, *plot, part, false);
+    if (!BuildTool_Place(body, *plot, part, false)) return false;
+    QuestBook_Count("till");
+    return true;
 }
 
 void Farm_Draw3D(Scene& world) {

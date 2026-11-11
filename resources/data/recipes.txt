@@ -80,7 +80,7 @@ gate 1             = wood 3, fibre 1
 # Environmental suit (milestone 13).
 cloth 1              = fibre 4
 cloth 2              = wool 3
-field_suit 1         = steel_plate 6, cloth 6, polyethylene 2
+field_suit 1         = steel_plate 6, cloth 6, hide 2
 explorer_suit 1      = titanium_alloy_ingot 6, advanced_circuit 2, cloth 4
 oxygen_tank_module 1 = iron_plate 4, glass 2
 battery_pack 1       = power_cell 2, copper_wire 4

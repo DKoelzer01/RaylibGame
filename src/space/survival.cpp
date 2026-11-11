@@ -14,6 +14,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstring>
+#include <map>
 #include <set>
 #include <string>
 #include <unordered_map>
@@ -226,6 +227,7 @@ namespace {
     std::set<std::string> placedItems;
     std::set<int> visitedBodies;
     bool reachedOrbit = false, visitedMoon = false, visitedRing = false;
+    std::map<std::string, double> questCounts; // events for "do" tasks: eat, feed, penned, till, plant, harvest, waypoint, modules, explored
 
     std::vector<std::string> Columns(const std::string& line) {
         std::vector<std::string> cols;
@@ -270,6 +272,7 @@ namespace {
         if (t.kind == "place") return placedItems.count(t.target) > 0;
         if (t.kind == "orbit") return reachedOrbit;
         if (t.kind == "visit") return t.target == "moon" ? visitedMoon : visitedRing;
+        if (t.kind == "do") { auto it = questCounts.find(t.target); return it != questCounts.end() && it->second >= t.n - 1e-6; }
         return false;
     }
 }
@@ -295,6 +298,9 @@ void Objectives_Update(Scene& world) {
 }
 
 void QuestBook_NotePlaced(const std::string& item) { placedItems.insert(item); }
+void QuestBook_Count(const std::string& event, double n) { questCounts[event] += n; }
+void QuestBook_AtLeast(const std::string& event, double v) { double& c = questCounts[event]; c = std::max(c, v); }
+double QuestBook_CountOf(const std::string& event) { auto it = questCounts.find(event); return it == questCounts.end() ? 0.0 : it->second; }
 int QuestBook_Tier() { return questTier; }
 void QuestBook_SetTier(int t) { questTier = std::max(0, t); }
 
@@ -304,6 +310,7 @@ void QuestBook_Reset() {
     placedItems.clear();
     visitedBodies.clear();
     reachedOrbit = visitedMoon = visitedRing = false;
+    questCounts.clear();
     for (Tier& t : tiers) for (Task& k : t.tasks) k.done = false;
 }
 
@@ -342,6 +349,7 @@ void QuestBook_Save(FILE* f) {
     for (const std::string& p : placedItems) fprintf(f, "placed %s\n", p.c_str());
     for (const auto& kv : inventory.obtained) if (kv.second > 0.0) fprintf(f, "obtained %s %.2f\n", kv.first.c_str(), kv.second);
     fprintf(f, "quest_flags %d %d %d\n", reachedOrbit ? 1 : 0, visitedMoon ? 1 : 0, visitedRing ? 1 : 0);
+    for (const auto& kv : questCounts) fprintf(f, "quest_count %s %.2f\n", kv.first.c_str(), kv.second);
 }
 
 bool QuestBook_LoadLine(const char* tok, FILE* f) {
@@ -354,6 +362,7 @@ bool QuestBook_LoadLine(const char* tok, FILE* f) {
         return true;
     }
     if (strcmp(tok, "placed") == 0) { if (fscanf(f, " %63s", id) == 1) placedItems.insert(id); return true; }
+    if (strcmp(tok, "quest_count") == 0) { double n = 0; if (fscanf(f, " %63s %lf", id, &n) == 2) questCounts[id] = n; return true; }
     if (strcmp(tok, "obtained") == 0) { double n = 0; if (fscanf(f, " %63s %lf", id, &n) == 2) inventory.obtained[id] = n; return true; }
     if (strcmp(tok, "quest_flags") == 0) {
         int a = 0, b = 0, c = 0;
@@ -410,6 +419,7 @@ bool Survival_UseItem(const std::string& id) {
         const Food& food = foods[id];
         if (survival.food < 98.0f && inventory.remove(id, 1)) {
             survival.food = std::min(100.0f, survival.food + food.value);
+            QuestBook_Count("eat");
             if (food.raw && GetRandomValue(0, 99) < 30) { survival.sickUntil = (float)GetTime() + 60.0f; GameUI_Toast("You feel sick: cook your meat"); }
             Audio_Play(Sfx::Pickup, 0.5f, 0.8f);
             return true;

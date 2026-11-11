@@ -5,6 +5,7 @@
 #include "inventory.h"
 #include "player.h"
 #include "plots.h"
+#include "survival.h"
 #include "terraintool.h"
 #include "tools.h"
 #include "voxel.h"
@@ -108,7 +109,8 @@ struct Animal {
 std::vector<Animal> animals;
 std::unordered_map<std::string, std::unordered_set<uint64_t>> spawnedTiles; // body -> herd tiles decided
 int aimed = -1;
-double lastSpawnCheck = -1.0, lastHit = -1.0;
+double lastSpawnCheck = -1.0, lastHit = -1.0, lastPenCheck = -10.0;
+int pennedNow = 0;
 double lastUpdateMs = 0.0;
 int frameNo = 0;
 
@@ -156,6 +158,26 @@ bool BlockedAlong(const Planetoid& body, Vector3 from, Vector3 to, float height)
         if (BlockedByParts(body, at, Vector3Normalize(at), height)) return true;
     }
     return false;
+}
+
+// An animal at `pos` is penned when build parts stand within 30 m in all eight directions.
+bool IsPenned(const Planetoid& body, Vector3 pos) {
+    if (!body.plots || body.plots->plots.empty()) return false;
+    const Vector3 up = Vector3Normalize(pos);
+    Vector3 east, north;
+    TangentFrame(up, east, north);
+    const float r = Vector3Length(pos);
+    for (int k = 0; k < 8; ++k) {
+        const float ang = k * PI / 4.0f;
+        const Vector3 dirT = Vector3Add(Vector3Scale(east, cosf(ang)), Vector3Scale(north, sinf(ang)));
+        bool hit = false;
+        for (float s = 0.25f; s <= 30.0f && !hit; s += 0.25f) {
+            const Vector3 at = Vector3Scale(Vector3Normalize(Vector3Add(pos, Vector3Scale(dirT, s))), r);
+            hit = BlockedByParts(body, at, Vector3Normalize(at), 1.0f);
+        }
+        if (!hit) return false;
+    }
+    return true;
 }
 
 constexpr float kTileSize = 256.0f;
@@ -226,10 +248,11 @@ void Animals_Reset() { animals.clear(); spawnedTiles.clear(); aimed = -1; }
 int Animals_Count() { return (int)animals.size(); }
 Vector3 Animals_Position(int i) { return i >= 0 && i < (int)animals.size() ? animals[i].pos : Vector3{ 0, 0, 0 }; }
 double Animals_LastUpdateMs() { return lastUpdateMs; }
+int Animals_PennedCount() { return pennedNow; }
 bool Animals_Aiming() { return aimed >= 0; }
 int Animals_YoungCount() { int n = 0; for (const Animal& a : animals) n += a.age < 1.0f ? 1 : 0; return n; }
 
-int Animals_Spawn(Scene& world, Planetoid& body, const std::string& id, Vector3 local, int count, bool young) {
+int Animals_Spawn(Scene& world, Planetoid& body, const std::string& id, Vector3 local, int count, bool young, float spread) {
     (void)world;
     const int si = SpeciesIndex(id);
     const auto* pf = dynamic_cast<const PlanetField*>(body.field.get());
@@ -240,7 +263,7 @@ int Animals_Spawn(Scene& world, Planetoid& body, const std::string& id, Vector3 
     uint32_t h = Hash((uint64_t)(local.x * 7.0f) ^ ((uint64_t)(local.z * 13.0f) << 20), (uint32_t)animals.size() + 17u);
     int made = 0;
     for (int k = 0; k < count; ++k) {
-        const float r = 4.0f + 14.0f * Rand01(h), t = 2.0f * PI * Rand01(h);
+        const float r = spread >= 18.0f ? 4.0f + 14.0f * Rand01(h) : spread * Rand01(h), t = 2.0f * PI * Rand01(h);
         const Vector3 d = Vector3Normalize(Vector3Add(Vector3Scale(up, pf->radius), Vector3Add(Vector3Scale(east, r * cosf(t)), Vector3Scale(north, r * sinf(t)))));
         Vector3 at; float e;
         if (!Ground(*pf, d, at, e)) continue;
@@ -290,6 +313,7 @@ bool Animals_Feed(int i) {
         if (inventory.count(food) > 0 && inventory.remove(food, 1)) {
             a.fed = true;
             a.followUntil = WorldTime() + 30.0;
+            QuestBook_Count("feed");
             a.fleeTimer = 0.0f;
             Audio_Play(Sfx::Pickup, 0.4f, 1.3f);
             return true;
@@ -383,6 +407,18 @@ void Animals_Update(Scene& world, float dt, float worldDt, bool inputEnabled) {
                         !BlockedAlong(*body, a.pos, at, height);
         if (ok) a.pos = at;
         else { a.heading += PI * (0.6f + 0.6f * Rand01(a.rng)); a.timer = 1.0f + Rand01(a.rng); }
+    }
+    // Penned: build parts within 30 m in all eight directions around an animal near the player
+    // (checked every 2 s; the quest's "pen two animals").
+    if (here && GetTime() - lastPenCheck > 2.0) {
+        lastPenCheck = GetTime();
+        int n = 0;
+        for (const Animal& a : animals) {
+            if (a.body != here->name || Vector3Distance(a.pos, playerLocal) > 120.0f) continue;
+            if (IsPenned(*here, a.pos)) ++n;
+        }
+        pennedNow = n;
+        QuestBook_AtLeast("penned", n);
     }
     // Breeding: two fed adults of a kind within 6 m make a young one (once every 5 min of world time).
     for (size_t i = 0; i < animals.size(); ++i) {

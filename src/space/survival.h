@@ -56,6 +56,10 @@ void Objectives_DrawHUD();
 // Quest book (tiers.txt): current tier, advanced when its gate item is made or placed.
 void QuestBook_Update();
 void QuestBook_NotePlaced(const std::string& item);
+// Events counted for "do <event> <n>" tasks (eat, feed, penned, till, plant, harvest, waypoint, modules, explored).
+void QuestBook_Count(const std::string& event, double n = 1.0);
+void QuestBook_AtLeast(const std::string& event, double value); // a running maximum (penned animals, modules fitted)
+double QuestBook_CountOf(const std::string& event);
 int QuestBook_Tier();
 void QuestBook_SetTier(int tier);
 void QuestBook_Reset();                         // a new game: tier 0, nothing done

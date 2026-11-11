@@ -158,6 +158,7 @@ bool Suit_Fit(const std::string& id) {
         if (slot.empty()) {
             inventory.remove(id, 1);
             slot = id;
+            { int nfit = 0; for (const std::string& m : fitted) nfit += m.empty() ? 0 : 1; QuestBook_AtLeast("modules", nfit); }
             Recompute();
             Audio_Play(Sfx::Build, 0.4f, 1.4f);
             return true;

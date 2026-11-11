@@ -1,4 +1,5 @@
 #include "navigation.h"
+#include "survival.h"
 #include "farsphere.h"
 #include "gameui.h"
 #include "inventory.h"
@@ -262,6 +263,7 @@ bool Nav_MapImageReady() { return bigMap.tex.id != 0 && !bigMap.pending; }
 
 void Nav_AddWaypoint(const std::string& body, Vector3 dir, const std::string& name) {
     waypoints.push_back({ body, name, Vector3Normalize(dir) });
+    QuestBook_Count("waypoint");
 }
 
 float Nav_Heading(Scene& world) {
@@ -293,6 +295,7 @@ void Nav_Update(Scene& world, bool inputEnabled) {
                 set.insert(TileKey(d, R));
             }
         if (set.size() != before) ++exploredVersion[h.body->name];
+        if (set.size() != before) { size_t all = 0; for (const auto& kv : explored) all += kv.second.size(); QuestBook_AtLeast("explored", (double)all); }
     }
     // Minimap: re-rendered when the player has moved 10 m off its centre, or new ground shows.
     minimap.take();
