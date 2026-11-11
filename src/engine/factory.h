@@ -68,6 +68,12 @@ namespace Factory {
     // Saves: machine contents per body index (the plots themselves are saved with the body).
     void Save(FILE* f, uint64_t bodyId);
     void Load(FILE* f, uint64_t bodyId);
+    // The same in two steps, for bodies that exist only later (ring rocks loaded dormant, a rocket in
+    // flight): read a "machines" block as text (empty if none), then attach it to a body id.
+    std::vector<std::string> ReadSaved(FILE* f);
+    void LoadSaved(uint64_t bodyId, const std::vector<std::string>& lines);
+    // A plot moved to another body / id (a rocket launching or landing): its machines go with it.
+    void MovePlot(uint64_t fromBody, uint32_t fromPlot, uint64_t toBody, uint32_t toPlot);
 }
 
 #endif

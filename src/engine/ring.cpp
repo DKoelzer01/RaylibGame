@@ -1,4 +1,5 @@
 #include "ring.h"
+#include "factory.h"
 #include "bodies.h"
 #include "player.h"
 #include "scene.h"
@@ -268,6 +269,7 @@ void RingSystem::promote(Scene& world, int rock) {
         p->allRegionsDirty = s.allRegionsDirty;
         p->regionsSavedTo = s.regionsSavedTo;
         p->plots = std::move(s.plots);
+        if (!s.machines.empty()) Factory::LoadSaved(p->id, s.machines); // applied with the plot's first layout
         dormant.erase(st);
     }
     PlaceBodyOnOrbit(*p);
@@ -451,6 +453,13 @@ void RingSystem::save(FILE* f, const std::string& dir) {
     for (const Item& it : items) {
         fprintf(f, "ringrock %d %d strokes %zu\n", ringNo, it.rock, it.edits ? it.edits->strokes : (size_t)0);
         if (it.plots) it.plots->save(f); else fprintf(f, "plots2 0\n");
+        // Machine contents (a rock with a plot stays a voxel body, so usually from the simulation;
+        // one loaded dormant and never visited keeps its saved lines).
+        if (it.body) Factory::Save(f, it.body->id);
+        else {
+            fprintf(f, "machines %d\n", (int)it.state->machines.size());
+            for (const std::string& line : it.state->machines) fprintf(f, "%s\n", line.c_str());
+        }
         if (it.body) {
             SaveRegionsFor(*it.body->edits, it.body->dirtyRegions, it.body->allRegionsDirty, it.body->regionsSavedTo, regionBodyId(it.rock), dir);
         } else if (it.state->edits) {
@@ -462,8 +471,10 @@ void RingSystem::save(FILE* f, const std::string& dir) {
 bool RingSystem::loadRock(FILE* f, int rock, size_t strokes, const std::string& dir) {
     auto plots = std::make_unique<PlotSet>();
     const bool ok = plots->load(f);
+    std::vector<std::string> machines = Factory::ReadSaved(f); // none in older saves
     if (rock < 0 || rock >= (int)rocks.size()) return ok;
     RingRockState& s = dormant[rock];
+    s.machines = std::move(machines);
     s.edits = LoadRegionsFor(regionBodyId(rock), dir, strokes);
     s.allRegionsDirty = false;
     s.regionsSavedTo = dir;

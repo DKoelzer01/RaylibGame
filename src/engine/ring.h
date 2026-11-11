@@ -50,6 +50,7 @@ struct RingRockState {
     bool allRegionsDirty = true;
     std::string regionsSavedTo;
     std::unique_ptr<PlotSet> plots;
+    std::vector<std::string> machines;   // saved machine contents, attached when the rock is promoted
 };
 
 class RingSystem {
