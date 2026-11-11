@@ -923,8 +923,8 @@ void SetWorldSavePath(const char* path) { SAVE_PATH_STR = path; }
 
 // ---------------------------------------------------------------------------------------------
 // Region files: a body's edited delta chunks, 16^3 chunks per file, each chunk compressed.
-//   "RGN2", int32 count, then per chunk: int32 cx, cy, cz, int32 payload bytes, run-length payload
-//   (RGN1, DEFLATE-compressed chunks, is still read).
+//   "RGN3", int32 count, then per chunk: int32 cx, cy, cz, int32 payload bytes, run-length payload
+//   (RGN2, the same in 1/256 steps, and RGN1, DEFLATE-compressed, are still read).
 // ---------------------------------------------------------------------------------------------
 
 static std::string RegionDir() { return SAVE_PATH_STR + ".regions"; }
@@ -935,7 +935,7 @@ static std::string RegionFile(const std::string& dir, int body, TerrainDeltas::K
     return TextFormat("%s/b%d_%d_%d_%d.rgn", dir.c_str(), body, rx, ry, rz);
 }
 
-// RGN2 chunk payload: run-length coded, repeating [uint16 zero run][uint16 count][count x int16].
+// RGN2/3 chunk payload: run-length coded, repeating [uint16 zero run][uint16 count][count x int16].
 // Edited chunks are mostly zeros around a band of changed samples; this is compact and ~100x
 // faster than DEFLATE (which made a 100k-stroke save take seconds).
 static void EncodeChunk(const DeltaChunk& c, std::vector<uint16_t>& out) {
@@ -969,7 +969,7 @@ static bool DecodeChunk(const uint16_t* in, size_t words, DeltaChunk& c) {
 static bool WriteRegion(const std::string& path, const std::vector<std::pair<TerrainDeltas::Key, const DeltaChunk*>>& chunks) {
     FILE* f = fopen(path.c_str(), "wb");
     if (!f) return false;
-    fwrite("RGN2", 1, 4, f);
+    fwrite("RGN3", 1, 4, f);
     const int32_t n = (int32_t)chunks.size();
     fwrite(&n, 4, 1, f);
     std::vector<uint16_t> enc;
@@ -991,7 +991,11 @@ static bool ReadRegion(const std::string& path, TerrainDeltasBuilder& b) {
     char magic[4];
     int32_t n = 0;
     bool ok = fread(magic, 1, 4, f) == 4 && fread(&n, 4, 1, f) == 1;
-    const bool rle = ok && memcmp(magic, "RGN2", 4) == 0;
+    // RGN3: run-length, deltas in 1/64 steps. RGN2 (run-length) and RGN1 (DEFLATE) stored 1/256
+    // steps: scaled down on load.
+    const bool rle = ok && (memcmp(magic, "RGN3", 4) == 0 || memcmp(magic, "RGN2", 4) == 0);
+    const int legacy = ok && memcmp(magic, "RGN3", 4) != 0 ? 4 : 1;
+    auto rescale = [legacy](DeltaChunk& c) { if (legacy > 1) for (int16_t& v : c.d) v = (int16_t)lroundf(v / (float)legacy); };
     ok = ok && (rle || memcmp(magic, "RGN1", 4) == 0);
     std::vector<unsigned char> comp;
     for (int32_t i = 0; ok && i < n; ++i) {
@@ -1002,6 +1006,7 @@ static bool ReadRegion(const std::string& path, TerrainDeltasBuilder& b) {
         if (rle) {
             auto chunk = std::make_shared<DeltaChunk>();
             if (!DecodeChunk((const uint16_t*)comp.data(), comp.size() / 2, *chunk)) { ok = false; break; }
+            rescale(*chunk);
             b.setChunk(TerrainDeltas::KeyOf(hdr[0], hdr[1], hdr[2]), chunk);
             continue;
         }
@@ -1010,6 +1015,7 @@ static bool ReadRegion(const std::string& path, TerrainDeltasBuilder& b) {
         if (raw && size == (int)sizeof(DeltaChunk::d)) {
             auto chunk = std::make_shared<DeltaChunk>();
             memcpy(chunk->d, raw, sizeof(chunk->d));
+            rescale(*chunk);
             b.setChunk(TerrainDeltas::KeyOf(hdr[0], hdr[1], hdr[2]), chunk);
         } else ok = false;
         if (raw) MemFree(raw);
