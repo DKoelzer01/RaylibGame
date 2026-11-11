@@ -9,6 +9,7 @@
 #include "world.h"
 #include "worldtypes.h"
 #include "ring.h"
+#include "factory.h"
 
 #include <raymath.h>
 #include <algorithm>
@@ -204,7 +205,9 @@ namespace {
         plot->east = Vector3Normalize(plot->east);
         plot->north = Vector3CrossProduct(plot->up, plot->east);
         if (!body.plots) body.plots = std::make_unique<PlotSet>();
+        const uint32_t fromPlot = plot->id;
         Plot* placed = body.plots->adopt(std::move(plot));
+        Factory::MovePlot(veh->id, fromPlot, body.id, placed->id); // its machines (a cargo chest) come along
         for (const Part& p : placed->parts)
             if (p.type != PartType::Count && !placed->cells.count({ p.origin.x, p.origin.y - 1, p.origin.z })) BuildTool_LayFoundation(body, *placed, p);
         padBody = body.id;
@@ -253,7 +256,8 @@ namespace {
         plot->east = { 1, 0, 0 };
         plot->up = { 0, 1, 0 };
         plot->north = { 0, 0, -1 };
-        veh->plots->adopt(std::move(plot));
+        const uint32_t fromPlot = plot->id;
+        Factory::MovePlot(body->id, fromPlot, veh->id, veh->plots->adopt(std::move(plot))->id); // its machines fly along
         vehicleId = veh->id;
         com = originW + DVec3(Vector3RotateByQuaternion(comLocal, rot));
         vel = body->surfaceVelocity((com - world.renderOrigin).toFloat());
@@ -878,6 +882,7 @@ void Rocket_Save(FILE* f) {
             rot.x, rot.y, rot.z, rot.w, angVel.x, angVel.y, angVel.z, comLocal.x, comLocal.y, comLocal.z, throttle, plot->fuel, flightTime);
     Planetoid* v = Vehicle();
     v->plots->save(f);
+    Factory::Save(f, v->id); // its machines' contents
 }
 
 bool Rocket_LoadLine(const char* tok, FILE* f) {
@@ -894,6 +899,7 @@ bool Rocket_LoadLine(const char* tok, FILE* f) {
                &angVel.x, &angVel.y, &angVel.z, &comLocal.x, &comLocal.y, &comLocal.z, &throttle, &fuel, &ft) != 19) return true;
     auto plots = std::make_unique<PlotSet>();
     if (!plots->load(f) || plots->plots.empty()) return true;
+    const std::vector<std::string> machines = Factory::ReadSaved(f); // none in older saves
     Plot* p = plots->plots[0].get();
     p->origin = DVec3(0, 0, 0);
     p->east = { 1, 0, 0 };
@@ -906,6 +912,7 @@ bool Rocket_LoadLine(const char* tok, FILE* f) {
     veh->parent = &world.rootObject;
     veh->plots = std::move(plots);
     vehicleId = veh->id;
+    if (!machines.empty()) Factory::LoadSaved(veh->id, machines);
     world.objects.push_back(std::move(veh));
     state = RocketState::Flying;
     flightTime = std::max(ft, 2.0);

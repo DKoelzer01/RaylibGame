@@ -200,6 +200,8 @@ std::mutex queueMutex;                        // main thread -> sim
 std::vector<LayoutMsg> layoutQueue;
 std::vector<ItemMsg> itemQueue;
 std::vector<std::pair<uint64_t, std::pair<uint32_t, bool>>> nearQueue;
+struct MoveMsg { uint64_t fromBody; uint32_t fromPlot; uint64_t toBody; uint32_t toPlot; };
+std::vector<MoveMsg> moveQueue;               // plots that changed body / id (rocket launch, landing)
 bool resetRequested = false;
 std::vector<std::pair<int, int>> results;     // sim -> main: (item, count) back to the inventory
 
@@ -516,13 +518,17 @@ void SimLoop() {
             std::vector<LayoutMsg> layouts;
             std::vector<ItemMsg> items;
             std::vector<std::pair<uint64_t, std::pair<uint32_t, bool>>> nears;
+            std::vector<MoveMsg> moves;
             bool reset = false;
             {
                 std::lock_guard<std::mutex> q(queueMutex);
-                layouts.swap(layoutQueue); items.swap(itemQueue); nears.swap(nearQueue);
+                layouts.swap(layoutQueue); items.swap(itemQueue); nears.swap(nearQueue); moves.swap(moveQueue);
                 reset = resetRequested; resetRequested = false;
             }
             if (reset) { plots.clear(); emaMs = maxMs = 0.0; }
+            // Moved plots first, so the new plot's first layout finds its machines (same part indices).
+            for (const MoveMsg& mv : moves)
+                if (PlotSim* p = FindPlot(mv.fromBody, mv.fromPlot); p && !FindPlot(mv.toBody, mv.toPlot)) { p->body = mv.toBody; p->plot = mv.toPlot; }
             for (const LayoutMsg& L : layouts) ApplyLayout(L);
             for (const auto& n : nears) if (PlotSim* p = FindPlot(n.first, n.second.first)) p->nearPlayer = n.second.second;
             std::vector<std::pair<int, int>> back;
@@ -699,23 +705,40 @@ void Factory::Save(FILE* f, uint64_t bodyId) {
     }
 }
 
-void Factory::Load(FILE* f, uint64_t bodyId) {
-    LoadRecipes();
+std::vector<std::string> Factory::ReadSaved(FILE* f) {
+    std::vector<std::string> lines;
     int n = 0;
-    if (fscanf(f, " machines %d", &n) != 1) return;
+    if (fscanf(f, " machines %d", &n) != 1) return lines; // none here (older saves)
     char line[4096];
-    fgets(line, sizeof line, f); // rest of the header line
-    std::lock_guard<std::mutex> lock(simMutex);
+    if (!fgets(line, sizeof line, f)) return lines; // rest of the header line
     for (int i = 0; i < n; ++i) {
         if (!fgets(line, sizeof line, f)) break;
+        std::string s = line;
+        while (!s.empty() && (s.back() == '\n' || s.back() == '\r')) s.pop_back();
+        lines.push_back(s);
+    }
+    return lines;
+}
+
+void Factory::LoadSaved(uint64_t bodyId, const std::vector<std::string>& lines) {
+    LoadRecipes();
+    std::lock_guard<std::mutex> lock(simMutex);
+    for (const std::string& line : lines) {
         std::stringstream ss(line);
         std::string tag; uint32_t plot; int part;
-        ss >> tag >> plot >> part;
+        if (!(ss >> tag >> plot >> part)) continue;
         std::vector<std::string> rest;
         std::string w;
         while (ss >> w) rest.push_back(w);
         pendingStates[{ bodyId, plot, part }] = rest;
     }
+}
+
+void Factory::Load(FILE* f, uint64_t bodyId) { LoadSaved(bodyId, ReadSaved(f)); }
+
+void Factory::MovePlot(uint64_t fromBody, uint32_t fromPlot, uint64_t toBody, uint32_t toPlot) {
+    std::lock_guard<std::mutex> q(queueMutex);
+    moveQueue.push_back({ fromBody, fromPlot, toBody, toPlot });
 }
 
 bool Factory::Accepts(PartType type, const std::string& item) {

@@ -772,6 +772,9 @@ int main(int argc, char** argv)
                             printf("bench: factory: %d machines (%d active), %d item / %d power networks; tick %.2f ms avg, %.2f ms worst; %lld items made in the last 12 s (%lld total); first chest: %s -> %s\n",
                                    s.machines, s.activeMachines, s.itemNetworks, s.powerNetworks, avg, s.maxTickMs, s.itemsMade - factMade0, s.itemsMade, chest.input.c_str(), pass ? "PASS" : "FAIL");
                             factChestBefore = chest.input;
+                            // Remove the plot's first part before saving: the chest's index must survive the reload
+                            // (saves kept only live parts, so every index after a removed one shifted down).
+                            if (Plot* pl = p->plots ? p->plots->byId(factPlot) : nullptr) pl->remove(0);
                             SaveWorld(world);
                             const bool loaded = LoadWorldSave(world);
                             if (!loaded) printf("bench: factory: load FAILED\n");

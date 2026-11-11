@@ -1254,7 +1254,7 @@ bool LoadWorldSave(Scene& world) {
     size_t rockStrokes = 0;
     while (version >= 10 && fscanf(f, " ringrock %d %d strokes %zu", &ringNo, &rock, &rockStrokes) == 3) {
         if (ringNo >= 0 && ringNo < (int)gRings.size()) gRings[ringNo]->loadRock(f, rock, rockStrokes, dir);
-        else { PlotSet skip; skip.load(f); }
+        else { PlotSet skip; skip.load(f); Factory::ReadSaved(f); }
     }
     fclose(f);
     logger.logf("[World] loaded %s (seed %u)\n", SAVE_PATH, seed);
