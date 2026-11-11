@@ -128,6 +128,7 @@ Scene::Scene(std::string name, bool isActive)
     grass.reloadIfChanged(true);
     trees.reloadIfChanged(true);
     farSphere.reloadIfChanged(true);
+    parts.reloadIfChanged(true);
     atmosphereShader.reloadIfChanged(true);
     atmosphereDome = LoadModelFromMesh(GenMeshCube(1.0f, 1.0f, 1.0f));
 
@@ -249,6 +250,7 @@ void Scene::drawScene(int gamestate) {
     grass.reloadIfChanged();
     trees.reloadIfChanged();
     farSphere.reloadIfChanged();
+    parts.reloadIfChanged();
     atmosphereShader.reloadIfChanged();
 
     if (IsKeyPressed(KEY_F3)) debugDraw = !debugDraw;
@@ -422,6 +424,19 @@ void Scene::drawScene(int gamestate) {
             SetShaderValue(fs, GetShaderLocation(fs, "fogDensity"), &effFogDensity, SHADER_UNIFORM_FLOAT);
             SetShaderValue(fs, GetShaderLocation(fs, "fogShell"), fshell, SHADER_UNIFORM_VEC4);
             ctx.farShader = &fs;
+        }
+        if (parts.shader.id > 0) {
+            Shader& ps = parts.shader;
+            const float pshell[4] = { atmosphere.centre.x, atmosphere.centre.y, atmosphere.centre.z,
+                                      atmosphere.enabled && effFogDensity < 0.06f ? atmosphere.radius + atmosphere.hazeHeight : 0.0f };
+            SetShaderValue(ps, GetShaderLocation(ps, "sunDir"), &sun, SHADER_UNIFORM_VEC3);
+            SetShaderValue(ps, GetShaderLocation(ps, "viewPos"), &camera.position, SHADER_UNIFORM_VEC3);
+            SetShaderValue(ps, GetShaderLocation(ps, "ambient"), &effAmbient, SHADER_UNIFORM_VEC3);
+            SetShaderValue(ps, GetShaderLocation(ps, "fogColor"), &effFog, SHADER_UNIFORM_VEC3);
+            SetShaderValue(ps, GetShaderLocation(ps, "fogDensity"), &effFogDensity, SHADER_UNIFORM_FLOAT);
+            SetShaderValue(ps, GetShaderLocation(ps, "fogShell"), pshell, SHADER_UNIFORM_VEC4);
+            ctx.partShader = &ps;
+            ctx.partOccluderLoc = GetShaderLocation(ps, "sunOccluder");
         }
         auto isFar = [&](const Object* o) { return std::find(farBodies.begin(), farBodies.end(), o) != farBodies.end(); };
         const double nearDefault = rlGetCullDistanceNear(), farDefault = rlGetCullDistanceFar();
@@ -621,6 +636,7 @@ Scene::~Scene() {
     grass.unload();
     trees.unload();
     farSphere.unload();
+    parts.unload();
     atmosphereShader.unload();
     UnloadShadowmapRenderTexture(shadowMap);
 }
