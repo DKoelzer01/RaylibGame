@@ -7,6 +7,7 @@
 #include <memory>
 #include <random>
 #include <vector>
+#include <mutex>
 
 #include "SimplexNoise.h"
 
@@ -142,6 +143,7 @@ private:
 // floor, ridged mountains, hills, river valleys), 3D caves, ore veins that get richer with depth,
 // and an unmineable mantle 1.5% of the radius below sea level. Same uniform density gradient as
 // asteroids. Moons: no oceans or snow, craters instead of ridges.
+class RiverNetwork;
 class PlanetField : public DensityField {
 public:
     float radius;                 // sea level (m)
@@ -159,8 +161,9 @@ public:
     // Surface height above sea level along a unit direction; footprint > 0 leaves out detail finer
     // than samples that far apart (see SimplexNoise::fractalLimited).
     float elevation(Vector3 dir, float footprint = 0.0f) const;
-    // Inland water (planets): rivers run in a channel along the river valleys, a little below the
-    // banks; ponds (12-38 m, flat surface, a low embankment where the ground falls away) sit in some
+    // Inland water (planets): rivers of the drainage network (rivers.h) in channels they carve, lakes
+    // in filled depressions, and
+    // ponds (12-38 m, flat surface, a low embankment where the ground falls away) in some
     // cells of a ~380 m grid on gentle inland ground. The surface's height above sea level here, or
     // kNoWater. The sea is separate (sea level).
     static constexpr float kNoWater = -1e9f;
@@ -192,12 +195,17 @@ public:
     VoxelMaterial materialSky(Vector3 p, float base, float footprint, Vector3 normal, float& sky) const override;
     Vector3 fallbackUp(Vector3 p) const override;
     bool editable(Vector3 p) const override;
+    // The river drainage network (rivers.h), built on first use; nullptr on moons.
+    const RiverNetwork* rivers() const;
     float maxRadius() const override { return radius + maxElevation; }
     float minRadius() const override { return mantleRadius - 1.0f; } // digging stops at the mantle
     float occluderRadius() const override { return mantleRadius; }
     float seaLevelRadius() const override { return moon ? 0.0f : radius; }
 
 private:
+    struct RiverState { std::once_flag once; std::unique_ptr<RiverNetwork> net; ~RiverState(); };
+    std::shared_ptr<RiverState> riverState;
+    unsigned int riverSeed = 0;
     float densityNear(Vector3 p, float d, float surface, float footprint) const; // after the height map
     struct Land { float h, c, mountain, valley, valleyWeight, detail, stream, ridge; };
     Land land(Vector3 dir, float footprint) const;     // the height map before rivers and ponds

@@ -35,6 +35,7 @@
 #include "suit.h"
 #include "toolwear.h"
 #include "tools.h"
+#include "rivers.h"
 #include "ring_test.h"
 #include "rocket.h"
 #include "jobsystem.h"
@@ -166,6 +167,7 @@ int main(int argc, char** argv)
     bool benchMap = false;         // --test-map: compass, exploration, waypoints, map images, saves
     bool benchQuests = false;      // --test-quests: tiers open by their tasks; quest state through a save
     bool benchHunger = false, benchFarm = false; // --test-hunger, --test-farm
+    bool benchRivers = false, riverOk = false; int riverPhase = 0; double riverStart = 0.0; float riverLongest = 0.0f, riverBuild = 0.0f, riverWet = 0.0f, riverLevel = 0.0f; Vector3 riverDir{ 0, 0, 0 }; // --test-rivers
     bool benchTools = false, toolsOk = true; int toolsPhase = 0, toolsLife = 0, toolsTilled = 0; double toolsStart = 0.0; // --test-tools
     bool benchSuit = false, suitOk = true; int suitPhase = 0; double suitStart = 0.0; float suitFoodRatio = 0.0f, suitWater = 0.0f, suitRebreather = 0.0f; // --test-suit
     bool benchAnimals = false; int animalPhase = 0, animalCount = 0; double animalStart = 0.0, animalMs = 0.0; int animalNatural = 0; float penWorst = 0.0f, animalSpread = 0.0f, animalFled = 0.0f, animalFollow = 0.0f; // --test-animals
@@ -304,6 +306,7 @@ int main(int argc, char** argv)
         if (std::string(argv[i]) == "--test-animals") benchAnimals = true;
         if (std::string(argv[i]) == "--test-suit") benchSuit = true;
         if (std::string(argv[i]) == "--test-tools") benchTools = true;
+        if (std::string(argv[i]) == "--test-rivers") benchRivers = true;
         if (std::string(argv[i]) == "--test-viewmodel") benchViewmodel = true;
         if (std::string(argv[i]) == "--test-ring") benchRing = true;
         if (std::string(argv[i]) == "--test-rocket") benchRocket = true;
@@ -930,6 +933,86 @@ int main(int argc, char** argv)
                                wallMaxStep, wallMaxStepAt, wallMaxSpeed, wallMaxImpact, wallMinHealth, survival.deaths, pass ? "PASS" : "FAIL");
                         printf("bench: wall: %s\n", wallOk && pass ? "PASS" : "FAIL");
                         benchWall = false;
+                    }
+                } else if (benchRivers && (riverPhase > 0 || WorldIdle())) {
+                    // --test-rivers: the drainage network. Along every river the water level never rises
+                    // downstream and the width never shrinks; walking the longest one from source to sea
+                    // through the terrain queries, the water surface only falls and lies in its channel.
+                    Planetoid* p = dynamic_cast<Planetoid*>(world.objects[0].get());
+                    const PlanetField* pf = p ? dynamic_cast<const PlanetField*>(p->field.get()) : nullptr;
+                    if (riverPhase == 0) {
+                        bool ok = pf != nullptr;
+                        auto check = [&](bool c, const char* what) { if (!c) { printf("bench: rivers: FAILED %s\n", what); ok = false; } };
+                        const double t0 = GetTime();
+                        const RiverNetwork* net = pf ? pf->rivers() : nullptr;
+                        const double buildS = GetTime() - t0;
+                        check(net != nullptr, "a network");
+                        if (net) {
+                            const RiverNetwork::Stats s = net->stats();
+                            float rise = 0.0f, shrink = 0.0f;
+                            const int links = net->checkDownstream(rise, shrink);
+                            check(links > 100 && s.mouths > 5, "rivers reach the sea");
+                            check(rise <= 1e-4f, "levels never rise downstream (network)");
+                            check(shrink <= 1e-4f, "widths never shrink downstream");
+                            std::vector<Vector3> dirs; std::vector<float> levels;
+                            net->longestPath(5.0f, dirs, levels);
+                            // Through the queries: waterElevation along the centreline; the surface may only
+                            // fall (a confluence's neighbouring branch may differ by a little), the bed lies
+                            // under it, and the path ends at the sea.
+                            float worstUp = 0.0f, prev = 1e30f, dryRun = 0.0f, worstDry = 0.0f;
+                            int wet = 0;
+                            for (size_t i = 0; i < dirs.size(); ++i) {
+                                const float w = pf->waterElevation(dirs[i]);
+                                const float e = pf->elevation(dirs[i]);
+                                if (w != PlanetField::kNoWater) {
+                                    if (prev < 1e29f) worstUp = std::max(worstUp, w - prev);
+                                    prev = std::min(prev, w);
+                                }
+                                if (w != PlanetField::kNoWater && e < w - 0.2f) { ++wet; dryRun = 0.0f; }
+                                else { dryRun += 5.0f; worstDry = std::max(worstDry, dryRun); }
+                            }
+                            const float wetShare = dirs.empty() ? 0.0f : (float)wet / dirs.size();
+                            check(dirs.size() > 100, "a long river");
+                            check(worstUp < 0.05f, "the surface never rises walking downstream");
+                            check(wetShare > 0.9f, "water in the channel along the river");
+                            check(!dirs.empty() && pf->elevation(dirs.back()) < 3.0f, "it ends at the sea (or the polar ice shelf)");
+                            riverLongest = s.longestKm; riverBuild = (float)buildS; riverWet = wetShare;
+                            printf("bench: rivers: network built in %.2f s: %d cells of %.0f m, %d land, %d river (%.1f%%), %d lake cells, %d mouths; %d links: worst rise %.5f m, worst narrowing %.5f m\n",
+                                   buildS, s.cells, s.cellSize, s.landCells, s.riverCells, 100.0f * s.riverCells / std::max(1, s.landCells), s.lakeCells, s.mouths, links, rise, shrink);
+                            printf("bench: rivers: longest %.1f km, walked every 5 m: %.0f%% wet, longest dry run %.0f m, worst rise %.3f m, from %.1f m to %.1f m\n",
+                                   s.longestKm, 100.0f * wetShare, worstDry, worstUp, levels.empty() ? 0.0f : levels.front(), levels.empty() ? 0.0f : levels.back());
+                            // A look at a river: the nearest to the start (every 150 m within 8 km).
+                            {
+                                const Vector3 home = pf->findSpawnDir(p->seed);
+                                const Vector3 t1 = Vector3Normalize(Vector3CrossProduct(home, { 0, 1, 0 })), t2 = Vector3CrossProduct(t1, home);
+                                float bestD = 1e30f;
+                                for (float e = -8000.0f; e <= 8000.0f; e += 150.0f)
+                                    for (float n2 = -8000.0f; n2 <= 8000.0f; n2 += 150.0f) {
+                                        const Vector3 d = Vector3Normalize(Vector3Add(home, Vector3Add(Vector3Scale(t1, e / pf->radius), Vector3Scale(t2, n2 / pf->radius))));
+                                        const RiverNetwork::Hit h = net->nearest(d, 75.0f);
+                                        if (!h.found || h.level < 2.0f || e * e + n2 * n2 >= bestD) continue;
+                                        bestD = e * e + n2 * n2; riverDir = d; riverLevel = h.level;
+                                    }
+                                if (bestD < 1e29f) printf("bench: rivers: nearest river to the start %.1f km away, its water at %.1f m\n", sqrtf(bestD) / 1000.0f, riverLevel);
+                            }
+                        }
+                        riverOk = ok;
+                        if (ok && Vector3Length(riverDir) > 0.5f) { riverPhase = 1; riverStart = GetTime(); player.flyMode = true; sunOverride = true; }
+                        else { printf("bench: rivers: %s\n", ok ? "PASS" : "FAIL"); benchRivers = false; }
+                    } else {
+                        const Vector3 t1 = Vector3Normalize(Vector3CrossProduct(riverDir, { 0, 1, 0 }));
+                        const Vector3 at = Vector3Scale(riverDir, pf->radius + riverLevel);
+                        const Vector3 eye = Vector3Add(Vector3Scale(riverDir, pf->radius + riverLevel + 70.0f), Vector3Scale(t1, 110.0f));
+                        world.camera.position = p->toWorld(eye);
+                        world.camera.target = p->toWorld(at);
+                        world.camera.up = p->dirToWorld(riverDir);
+                        sunArg = p->dirToWorld(Vector3Normalize(Vector3Add(riverDir, Vector3Scale(t1, -0.6f))));
+                        player.position = world.renderOrigin + world.camera.position;
+                        if (GetTime() - riverStart > 3.0 && WorldIdle()) {
+                            TakeScreenshot("bench_river.png");
+                            printf("bench: rivers: %s\n", riverOk ? "PASS" : "FAIL");
+                            benchRivers = false;
+                        }
                     }
                 } else if (benchWater && (waterPhase > 0 || WorldIdle())) {
                     // --test-water: inland water near the start (rivers, ponds): find some, look at it
@@ -2363,7 +2446,7 @@ int main(int argc, char** argv)
                         }
                         benchWalkSeconds = 0.0;
                     }
-                } else if ((WorldIdle() && benchDigStrokes == 0 && !benchSaveLoad && benchWalkSeconds <= 0.0 && benchMineStrokes == 0 && minePhase != 2 && benchFlySeconds <= 0.0 && !benchSuffocate && benchOrbitSeconds <= 0.0 && !benchRide && !benchPark && !benchGravity && !benchPrecision && !benchMantle && !benchAirJump && !benchMoon && !benchHole && !benchWall && !benchMenus && !benchWater && !benchFlyFollow && !benchHotbar && !benchInventory && !benchMap && !benchViewmodel && !benchQuests && !benchHunger && !benchFarm && !benchAnimals && !benchSuit && !benchTools && !benchRing && !benchRocket && !benchBlueprint && !benchSmallBody && !benchTrees && !benchChop && benchPersist == 0 && benchBuild == 0 && benchFactory == 0 && !benchProgression) || GetTime() > 600.0) {
+                } else if ((WorldIdle() && benchDigStrokes == 0 && !benchSaveLoad && benchWalkSeconds <= 0.0 && benchMineStrokes == 0 && minePhase != 2 && benchFlySeconds <= 0.0 && !benchSuffocate && benchOrbitSeconds <= 0.0 && !benchRide && !benchPark && !benchGravity && !benchPrecision && !benchMantle && !benchAirJump && !benchMoon && !benchHole && !benchWall && !benchMenus && !benchWater && !benchFlyFollow && !benchHotbar && !benchInventory && !benchMap && !benchViewmodel && !benchQuests && !benchHunger && !benchFarm && !benchAnimals && !benchSuit && !benchTools && !benchRivers && !benchRing && !benchRocket && !benchBlueprint && !benchSmallBody && !benchTrees && !benchChop && benchPersist == 0 && benchBuild == 0 && benchFactory == 0 && !benchProgression) || GetTime() > 600.0) {
                     benchStart = GetTime();
                     printf("bench: world ready after %.2f s (%d chunks, avg build %.2f ms of which sampling %.2f ms, %d worker threads)\n",
                         GetWorldStats().lastGenerationSeconds, GetWorldStats().chunks, GetWorldStats().avgBuildMs, GetWorldStats().avgSampleMs, GetWorldStats().workerThreads);

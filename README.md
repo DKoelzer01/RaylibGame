@@ -165,7 +165,7 @@ Shaders in `resources/` hot-reload when saved.
   pebble in a gap in the middle.
 - **Audio** (`src/engine/audio.*`): procedural sound effects, no assets.
 - **Planets and moons** (`PlanetField` in `src/engine/voxel.*`): a height map over the sphere (continents and
-  ocean floor, ridged mountains, hills, river valleys), worm caves, ore veins that get richer with depth, snow
+  ocean floor, ridged mountains, hills; rivers carve their valleys), worm caves, ore veins that get richer with depth, snow
   at high latitudes and on peaks, and an unmineable mantle 1.5% of the radius below sea level (900 m on the
   60 km planet). Coarse LOD chunks leave out detail finer than their sample spacing; nodes over the
   horizon, above the highest terrain or inside the mantle are never built. A sea fills the planet to sea level
@@ -180,8 +180,11 @@ Shaders in `resources/` hot-reload when saved.
   places, LMB removes (refunded). A shape costs its material by size; parts lay their own foundations (terrain
   cleared inside their cells only, small gaps to the ground filled), merge into one mesh per 8 m section with
   hidden faces culled, cast shadows, collide with the player, and are saved with their material.
-- **Inland water** (`PlanetField::waterElevation`): rivers in a channel along the river valleys, smaller streams
-  on a finer network, and ponds (12-38 m, flat surfaces) on gentle ground; beds are sand and gravel, and digging
+- **Inland water** (`PlanetField::waterElevation`, `src/engine/rivers.*`): a drainage network per planet. A priority
+  flood over ~420 m cells routes water downhill to the sea; cells draining more than ~7 km^2 carry a river, its level
+  falling (never rising) downstream and its width and depth growing with the flow; filled depressions become lakes.
+  Rivers curve between the cells and carve their own valleys (a floodplain, then sides rising 0.3 m per m). Ponds
+  (12-38 m, flat surfaces) sit on gentle ground; beds are sand and gravel, and digging
   them also turns up clay. Undug grassland facing up is grass all the way through its soil; planets yield dirt
   (moons and asteroids regolith).
 - **Fly camera** (F): rides its reference body, the nearest whose sphere of influence holds it: its spin and
@@ -265,6 +268,8 @@ flee when hit, follow when fed, a fenced pen holds a scared herd and lets the pl
 `--test-suit` (each module's stat, suits swapped, saved; underwater oxygen with and without a rebreather; the cold
 at the pole bare, insulated and regulated),
 `--test-tools` (wear counted from strokes, saved, repaired, a tool breaks at its durability; an iron hoe tills 3x3),
+`--test-rivers` (the network: levels never rise and widths never shrink downstream; the longest river walked
+through the terrain queries stays wet and only falls; a screenshot of the river nearest the start),
 `--test-quests` (tiers open by their tasks, items used up still count, quest state through a save),
 `--test-viewmodel` (hands still at rest, bob within its amplitude once a step, screenshots of each tool),
 `--test-map` (compass reads east facing east, walking explores, a waypoint north bears 0, both maps render, saved),
