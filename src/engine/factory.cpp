@@ -49,16 +49,26 @@ struct Recipe {
 };
 
 struct Tables {
-    std::vector<std::string> itemNames;
-    std::unordered_map<std::string, int> itemIds;
     std::vector<Recipe> recipes;
+    // Item ids are interned from both threads (the main thread's inserts, the simulation's loaded
+    // states) and names read on both: a new name grew the vector under a reader. Locked; names are
+    // returned by value.
     int item(const std::string& n) {
+        std::lock_guard<std::mutex> lock(mutex);
         auto it = itemIds.find(n);
         if (it != itemIds.end()) return it->second;
         itemIds[n] = (int)itemNames.size();
         itemNames.push_back(n);
         return (int)itemNames.size() - 1;
     }
+    std::string name(int id) {
+        std::lock_guard<std::mutex> lock(mutex);
+        return id >= 0 && id < (int)itemNames.size() ? itemNames[id] : std::string();
+    }
+private:
+    std::mutex mutex;
+    std::vector<std::string> itemNames;
+    std::unordered_map<std::string, int> itemIds;
 } tables;
 
 PartType MachineByName(const std::string& n) {
@@ -405,7 +415,7 @@ void FillView(const PlotSim& ps, int part, MachineView& v) {
     v.energyMax = m.type == PartType::Battery ? kBatteryCapacity : 0;
     auto list = [](const Stack* s, int n) {
         std::string out;
-        for (int i = 0; i < n; ++i) if (s[i].count > 0) { if (!out.empty()) out += ", "; out += tables.itemNames[s[i].item] + " x" + std::to_string(s[i].count); }
+        for (int i = 0; i < n; ++i) if (s[i].count > 0) { if (!out.empty()) out += ", "; out += tables.name(s[i].item) + " x" + std::to_string(s[i].count); }
         return out.empty() ? std::string("-") : out;
     };
     v.input = list(m.in, InSlots(m));
@@ -441,7 +451,7 @@ void SimLoop() {
                 if (!p || it == p->byPart.end()) { if (im.kind == 0) back.push_back({ im.item, im.count }); continue; }
                 Machine& m = p->machines[it->second];
                 if (im.kind == 0 || im.kind == 2) {
-                    const int left = Accepts(m.type, im.item) || m.type == PartType::Generator ? AddItems(m.in, InSlots(m), im.item, im.count) : im.count;
+                    const int left = Accepts(m.type, im.item) ? AddItems(m.in, InSlots(m), im.item, im.count) : im.count;
                     if (left > 0 && im.kind == 0) back.push_back({ im.item, left });
                 } else {
                     Stack* s = m.type == PartType::Chest ? m.in : m.out;
@@ -547,7 +557,7 @@ void Factory::Sync(Scene& world) {
         std::lock_guard<std::mutex> v(viewMutex);
         back.swap(results);
     }
-    for (auto& r : back) inventory.add(tables.itemNames[r.first], r.second);
+    for (auto& r : back) inventory.add(tables.name(r.first), r.second);
 }
 
 MachineView Factory::View(uint64_t body, uint32_t plot, int part) {
@@ -592,10 +602,10 @@ void Factory::Save(FILE* f, uint64_t bodyId) {
             fprintf(f, "m %u %d %d %d %d %d", ps.plot, m.part, m.recipe, m.progress, m.energy, m.fuelEU);
             int nin = 0; for (int i = 0; i < InSlots(m); ++i) if (m.in[i].count > 0) ++nin;
             fprintf(f, " %d", nin);
-            for (int i = 0; i < InSlots(m); ++i) if (m.in[i].count > 0) fprintf(f, " %s %d", tables.itemNames[m.in[i].item].c_str(), m.in[i].count);
+            for (int i = 0; i < InSlots(m); ++i) if (m.in[i].count > 0) fprintf(f, " %s %d", tables.name(m.in[i].item).c_str(), m.in[i].count);
             int nout = 0; for (int i = 0; i < kSlots; ++i) if (m.out[i].count > 0) ++nout;
             fprintf(f, " %d", nout);
-            for (int i = 0; i < kSlots; ++i) if (m.out[i].count > 0) fprintf(f, " %s %d", tables.itemNames[m.out[i].item].c_str(), m.out[i].count);
+            for (int i = 0; i < kSlots; ++i) if (m.out[i].count > 0) fprintf(f, " %s %d", tables.name(m.out[i].item).c_str(), m.out[i].count);
             fprintf(f, "\n");
         }
     }
