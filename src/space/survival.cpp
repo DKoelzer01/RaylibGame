@@ -21,6 +21,10 @@
 #include <vector>
 
 SurvivalState survival;
+int worldDifficulty = 1;
+float Difficulty_HungerScale() { return worldDifficulty == 0 ? 0.6f : worldDifficulty == 2 ? 1.25f : 1.0f; }
+float Difficulty_ThreatScale() { return worldDifficulty == 0 ? 0.0f : worldDifficulty == 2 ? 1.5f : 1.0f; }
+const char* Difficulty_Name(int d) { return d == 0 ? "Peaceful" : d == 2 ? "Hard" : "Normal"; }
 
 // ---------------------------------------------------------------------------------------------
 // Food (resources/data/foods.txt: item | food | note) and the air temperature
@@ -154,7 +158,7 @@ void Survival_Update(Scene& world, float dt, bool inputEnabled) {
     {
         const Vector3 flat = Vector3Subtract(player.velocity, Vector3Scale(player.up, Vector3DotProduct(player.velocity, player.up)));
         const bool active = player.jetpackFiring || (player.grounded && Vector3Length(flat) > player.walkSpeed * 1.1f);
-        float drain = survival.foodDrainPerSec * (active ? 1.6f : 1.0f) * Suit_Stats().food;
+        float drain = survival.foodDrainPerSec * (active ? 1.6f : 1.0f) * Suit_Stats().food * Difficulty_HungerScale();
         const float T = survival.temperature;
         if (!std::isnan(T) && T < 5.0f) drain *= 1.0f + Suit_Stats().cold * (5.0f - T) / 15.0f; // insulation, the regulator
         if (GetTime() < survival.sickUntil) drain *= 2.0f;

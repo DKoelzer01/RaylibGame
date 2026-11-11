@@ -121,6 +121,16 @@ namespace {
             }
             y += h + 6 * s;
         }
+        {   // Difficulty for the next new world (each world keeps its own).
+            const int fs = (int)(h * 0.5f);
+            DrawText("New worlds", (int)x, (int)(y + (h - fs) * 0.5f), fs, kText);
+            const char* names[] = { "Peaceful", "Normal", "Hard" };
+            for (int k = 0; k < 3; ++k) {
+                const Rectangle b = { x + w * 0.38f + k * (h * 2.4f), y + h * 0.1f, h * 2.2f, h * 0.8f };
+                if (Button(b, settings.difficulty == k ? TextFormat("[%s]", names[k]) : names[k])) { settings.difficulty = k; changed = true; }
+            }
+            y += h + 6 * s;
+        }
         {
             const int fs = (int)(h * 0.5f);
             DrawText("Frame cap", (int)x, (int)(y + (h - fs) * 0.5f), fs, kText);
@@ -154,6 +164,7 @@ void Settings_Load() {
             else if (!strcmp(key, "reducemotion")) settings.reduceMotion = v != 0.0f;
             else if (!strcmp(key, "showhands")) settings.showHands = v != 0.0f;
             else if (!strcmp(key, "handbob")) settings.handBob = std::clamp((int)v, 0, 2);
+            else if (!strcmp(key, "difficulty")) settings.difficulty = std::clamp((int)v, 0, 2);
         }
         fclose(f);
     }
@@ -166,6 +177,7 @@ void Settings_Save() {
     fprintf(f, "mouse %.3f\nfov %.1f\nvolume %.3f\nfoliage %d\nfpscap %d\nvsync %d\nreducemotion %d\n", settings.mouseSensitivity, settings.fov, settings.volume,
             settings.foliage ? 1 : 0, settings.fpsCap, settings.vsync ? 1 : 0, settings.reduceMotion ? 1 : 0);
     fprintf(f, "showhands %d\nhandbob %d\n", settings.showHands ? 1 : 0, settings.handBob);
+    fprintf(f, "difficulty %d\n", settings.difficulty);
     fclose(f);
 }
 

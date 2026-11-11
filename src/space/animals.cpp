@@ -38,7 +38,9 @@ struct Species {
     std::vector<std::pair<std::string, int>> drops;
     std::string product, productTool;                // "-" none / no tool needed
     float regrow = 600.0f;                           // world seconds until the product is ready again
-    bool wild = false;
+    bool wild = false;                               // flees the player at 25 m
+    bool hostile = false;                            // charges the player within 12 m (by day too)
+    bool night = false;                              // a night hunter: spawns near the player after dark, leaves at dawn
     int herdMin = 2, herdMax = 5;
     float latMin = 0.0f, latMax = 0.8f;
 };
@@ -77,6 +79,8 @@ void LoadSpecies() {
         char prod[64] = {}, tool[64] = {};
         if (sscanf(c[9].c_str(), "%63s %63s %f", prod, tool, &s.regrow) >= 1) { s.product = prod; s.productTool = tool; }
         s.wild = c[10] == "wild";
+        s.hostile = c[10] == "hostile" || c[10] == "night";
+        s.night = c[10] == "night";
         sscanf(c[11].c_str(), "%d %d", &s.herdMin, &s.herdMax);
         sscanf(c[12].c_str(), "%f %f", &s.latMin, &s.latMax);
         species.push_back(s);
@@ -89,7 +93,7 @@ int SpeciesIndex(const std::string& id) { LoadSpecies(); for (size_t i = 0; i < 
 // Animals
 // ---------------------------------------------------------------------------------------------
 
-enum class State : uint8_t { Graze, Walk, Flee, Follow, Rest };
+enum class State : uint8_t { Graze, Walk, Flee, Follow, Rest, Hunt };
 
 struct Animal {
     int species = 0;
@@ -106,11 +110,16 @@ struct Animal {
     float timer = 0.0f, fleeTimer = 0.0f;
     Vector3 fleeFrom{};
     uint32_t rng = 1;
+    double angryUntil = -1.0, lastBite = -1.0; // hostile: charging until (world time); the last bite
+    float daylight = 0.0f;                     // night hunters: seconds of daylight seen (they leave)
 };
 std::vector<Animal> animals;
 std::unordered_map<std::string, std::unordered_set<uint64_t>> spawnedTiles; // body -> herd tiles decided
 int aimed = -1;
-double lastSpawnCheck = -1.0, lastHit = -1.0, lastPenCheck = -10.0;
+double lastSpawnCheck = -1.0, lastHit = -1.0, lastPenCheck = -10.0, lastFireScan = -10.0, lastNightSpawn = -10.0;
+std::vector<Vector3> fires; // campfires near the player (body-local)
+bool threatsOn = true;     // off in bench runs except --test-threats
+bool NearFire(Vector3 p, float r, Vector3& at) { for (const Vector3& f : fires) if (Vector3Distance(f, p) < r) { at = f; return true; } return false; }
 int pennedNow = 0;
 double lastUpdateMs = 0.0;
 int frameNo = 0;
@@ -203,6 +212,13 @@ uint32_t Hash(uint64_t k, uint32_t seed) {
 }
 
 // New herds in tiles near the player the first time they come within 300 m (planets with life).
+Vector3 StartDir(const Planetoid& body, const PlanetField& pf) {
+    static std::unordered_map<std::string, Vector3> cache;
+    auto it = cache.find(body.name);
+    if (it != cache.end()) return it->second;
+    return cache[body.name] = pf.findSpawnDir(body.seed);
+}
+
 void SpawnHerds(Scene& world, Planetoid& body, const PlanetField& pf, Vector3 up) {
     if (!pf.foliage || species.empty()) return;
     auto& done = spawnedTiles[body.name];
@@ -218,9 +234,12 @@ void SpawnHerds(Scene& world, Planetoid& body, const PlanetField& pf, Vector3 up
             if (Rand01(h) > 0.35f) continue; // about a third of the tiles hold a herd
             const float lat = fabsf(centre.y);
             std::vector<int> fit;
-            for (size_t i = 0; i < species.size(); ++i) if (lat >= species[i].latMin && lat <= species[i].latMax) fit.push_back((int)i);
+            for (size_t i = 0; i < species.size(); ++i)
+                if (lat >= species[i].latMin && lat <= species[i].latMax && species[i].herdMax > 0 && !species[i].night && !(species[i].hostile && worldDifficulty == 0))
+                    fit.push_back((int)i);
             if (fit.empty()) continue;
             const Species& s = species[fit[(size_t)(Rand01(h) * fit.size()) % fit.size()]];
+            if (s.hostile && Vector3Distance(Vector3Scale(centre, pf.radius), Vector3Scale(StartDir(body, pf), pf.radius)) < 500.0f) continue; // a safe start
             Vector3 at; float e;
             if (!Ground(pf, centre, at, e) || e > 900.0f) continue; // no herds at sea or above the tree line
             const int n = s.herdMin + (int)(Rand01(h) * (s.herdMax - s.herdMin + 1));
@@ -250,9 +269,13 @@ int Animals_Count() { return (int)animals.size(); }
 Vector3 Animals_Position(int i) { return i >= 0 && i < (int)animals.size() ? animals[i].pos : Vector3{ 0, 0, 0 }; }
 double Animals_LastUpdateMs() { return lastUpdateMs; }
 int Animals_PennedCount() { return pennedNow; }
+void Animals_SetThreats(bool on) { threatsOn = on; }
+void Animals_RefreshNow() { lastFireScan = -100.0; lastNightSpawn = -100.0; lastPenCheck = -100.0; }
+int Animals_NightCount() { int n = 0; for (const Animal& a : animals) n += species[a.species].night ? 1 : 0; return n; }
 bool Animals_IsFeed(const std::string& id) { LoadSpecies(); for (const Species& s : species) for (const std::string& d : s.diet) if (d == id) return true; return false; }
 const std::string& Animals_Body(int i) { static const std::string none; return i >= 0 && i < (int)animals.size() ? animals[i].body : none; }
 bool Animals_Wild(int i) { return i >= 0 && i < (int)animals.size() && species[animals[i].species].wild; }
+bool Animals_Hostile(int i) { return i >= 0 && i < (int)animals.size() && species[animals[i].species].hostile; }
 bool Animals_Aiming() { return aimed >= 0; }
 int Animals_YoungCount() { int n = 0; for (const Animal& a : animals) n += a.age < 1.0f ? 1 : 0; return n; }
 
@@ -301,7 +324,9 @@ bool Animals_Hit(int i, float damage) {
     if (i < 0 || i >= (int)animals.size()) return false;
     Animal& a = animals[i];
     a.health -= damage;
-    a.fleeTimer = 5.0f;
+    // Hostile ones fight back until badly hurt; the rest run.
+    a.fleeTimer = !species[a.species].hostile || a.health < 0.35f * species[a.species].health ? 5.0f : 0.0f;
+    if (species[a.species].hostile && a.fleeTimer <= 0.0f) a.angryUntil = WorldTime() + 20.0;
     a.fleeFrom = a.pos; // refined to the player's position in the update
     a.state = State::Flee;
     Audio_Play(Sfx::Dig, 0.5f, 1.6f);
@@ -344,6 +369,44 @@ void Animals_Update(Scene& world, float dt, float worldDt, bool inputEnabled) {
     const double now = WorldTime();
     const std::string held = Hotbar_HeldFood(); // its food in the player's hand: animals follow
     const Vector3 sun = Vector3Normalize(world.sunDirection);
+    // Campfires near the player (refreshed every second): night hunters keep away from them.
+    if (here && GetTime() - lastFireScan > 1.0) {
+        lastFireScan = GetTime();
+        fires.clear();
+        if (here->plots)
+            for (const auto& pl : here->plots->plots)
+                for (const Part& p : pl->parts)
+                    if (p.type == PartType::Campfire) {
+                        const Vector3 c = pl->toBody({ (p.origin.x + 1.0f) * kCellSize, (p.origin.y + 0.5f) * kCellSize, (p.origin.z + 1.0f) * kCellSize });
+                        if (Vector3Distance(c, playerLocal) < 200.0f) fires.push_back(c);
+                    }
+    }
+    // Night threats (not on peaceful): every 12 s after dark, a dusk stalker comes out of the dark 45-60 m
+    // away, up to 2 near the player (3 on hard) - not underground, flying, or by a campfire.
+    if (here && pf && threatsOn && !player.flyMode && !survival.dead && Difficulty_ThreatScale() > 0.0f && GetTime() - lastNightSpawn > 12.0) {
+        lastNightSpawn = GetTime();
+        const Vector3 up = Vector3Normalize(playerLocal);
+        const bool dark = Vector3DotProduct(Vector3Normalize(world.sunDirection), here->dirToWorld(up)) < -0.1f;
+        const bool surface = Vector3Length(playerLocal) > pf->radius + pf->elevation(up) - 6.0f;
+        int hunter = -1;
+        for (size_t k = 0; k < species.size(); ++k) if (species[k].night) { hunter = (int)k; break; }
+        Vector3 fire;
+        if (dark && surface && hunter >= 0 && !NearFire(playerLocal, 10.0f, fire)) {
+            int near = 0;
+            for (const Animal& a : animals) near += species[a.species].night && a.body == here->name && Vector3Distance(a.pos, playerLocal) < 100.0f ? 1 : 0;
+            if (near < (worldDifficulty == 2 ? 3 : 2)) {
+                Vector3 east, north;
+                TangentFrame(up, east, north);
+                for (int attempt = 0; attempt < 8; ++attempt) { // a dry spot (not water, not by a fire)
+                const float ang = 2.0f * PI * (float)GetRandomValue(0, 1000) / 1000.0f, r = 45.0f + 15.0f * (float)GetRandomValue(0, 1000) / 1000.0f;
+                const Vector3 d = Vector3Normalize(Vector3Add(playerLocal, Vector3Add(Vector3Scale(east, r * cosf(ang)), Vector3Scale(north, r * sinf(ang)))));
+                const Vector3 at = Vector3Scale(d, pf->radius + pf->elevation(d));
+                if (!NearFire(at, 14.0f, fire) && Animals_Spawn(world, *here, species[hunter].id, at, 1, false, 0.5f) > 0) break;
+                }
+            }
+        }
+    }
+    std::vector<int> gone;
     std::unordered_map<std::string, Planetoid*> bodies;
     for (size_t i = 0; i < animals.size(); ++i) {
         Animal& a = animals[i];
@@ -368,7 +431,41 @@ void Animals_Update(Scene& world, float dt, float worldDt, bool inputEnabled) {
         float speed = 0.0f;
         Vector3 toward{};
         bool steer = false;
-        if (a.fleeTimer > 0.0f) {
+        const bool dark = Vector3DotProduct(sun, body->dirToWorld(up)) < -0.1f;
+        // Night hunters: in daylight they run off, and are gone once out of sight (or after 40 s).
+        if (s.night && !dark) {
+            a.daylight += step;
+            if (a.daylight > 40.0f || (dist > 70.0f && a.daylight > 5.0f)) { gone.push_back((int)i); continue; }
+            a.fleeTimer = std::max(a.fleeTimer, 1.0f);
+            a.fleeFrom = sameBody ? playerLocal : a.pos;
+        }
+        // Hostile ones (not on peaceful): thornbacks charge within 12 m (or for 20 s after being hit),
+        // dusk stalkers hunt within 70 m after dark. A campfire within 10 m keeps the player safe, and
+        // stalkers will not come within 14 m of one.
+        bool hunting = false;
+        if (s.hostile && threatsOn && Difficulty_ThreatScale() > 0.0f && sameBody && a.fleeTimer <= 0.0f && !survival.dead && !player.flyMode) {
+            Vector3 fire;
+            const bool playerSafe = NearFire(playerLocal, 10.0f, fire);
+            if (s.night && NearFire(a.pos, 14.0f, fire)) { a.fleeTimer = 3.0f; a.fleeFrom = fire; }
+            else if (s.night) hunting = dark && dist < 70.0f && !playerSafe;
+            else hunting = (dist < 12.0f || now < a.angryUntil) && dist < 30.0f && !playerSafe;
+        }
+        if (hunting) {
+            a.state = State::Hunt;
+            toward = Vector3Subtract(playerLocal, a.pos);
+            steer = true;
+            speed = s.run * (s.night ? 0.8f : 1.0f);
+            const float reach = 0.5f * s.size.x + 1.0f;
+            if (dist < reach) {
+                speed = 0.0f;
+                if (GetTime() - a.lastBite > 1.2) {
+                    a.lastBite = GetTime();
+                    survival.health -= 8.0f * Difficulty_ThreatScale();
+                    Audio_Play(Sfx::Error, 0.7f, 0.5f);
+                    GameUI_Toast(TextFormat("The %s %s you!", s.name.c_str(), s.night ? "bites" : "rams"));
+                }
+            }
+        } else if (a.fleeTimer > 0.0f) {
             a.fleeTimer -= step;
             a.state = State::Flee;
             if (sameBody) a.fleeFrom = playerLocal;
@@ -426,6 +523,9 @@ void Animals_Update(Scene& world, float dt, float worldDt, bool inputEnabled) {
         pennedNow = n;
         QuestBook_AtLeast("penned", n);
     }
+    // Night hunters gone at daylight.
+    for (int k = (int)gone.size() - 1; k >= 0; --k) animals.erase(animals.begin() + gone[k]);
+    if (!gone.empty()) aimed = -1;
     // Breeding: two fed adults of a kind within 6 m make a young one (once every 5 min of world time).
     for (size_t i = 0; i < animals.size(); ++i) {
         Animal& a = animals[i];
@@ -537,7 +637,7 @@ void Animals_DrawHUD() {
     const Species& s = species[a.species];
     const int x = GetScreenWidth() / 2 + 20, y = GetScreenHeight() / 2 + 40;
     DrawRectangle(x - 8, y - 6, 380, 74, Fade(BLACK, 0.55f));
-    const char* state = a.state == State::Flee ? "fleeing" : a.state == State::Follow ? "follows you" : a.state == State::Rest ? "resting" : a.state == State::Walk ? "wandering" : "grazing";
+    const char* state = a.state == State::Hunt ? "hunting you" : a.state == State::Flee ? "fleeing" : a.state == State::Follow ? "follows you" : a.state == State::Rest ? "resting" : a.state == State::Walk ? "wandering" : "grazing";
     DrawText(TextFormat("%s%s  (%s%s)", a.age < 1.0f ? "young " : "", s.name.c_str(), state, a.fed ? ", fed" : ""), x, y, 20, Color{ 240, 220, 160, 255 });
     DrawRectangle(x, y + 26, 200, 6, Fade(RAYWHITE, 0.2f));
     DrawRectangle(x, y + 26, (int)(200 * std::max(0.0f, a.health) / s.health), 6, RED);

@@ -37,6 +37,7 @@ void GameSave_Register() {
         Rocket_Save(f);
         fprintf(f, "survival %f %f %f %d\n", survival.oxygen, survival.power, survival.health, survival.deaths);
         fprintf(f, "food %f\n", survival.food);
+        fprintf(f, "difficulty %d\n", worldDifficulty);
     };
     loadExtrasHook = [](FILE* f) {
         inventory.clear();
@@ -48,6 +49,7 @@ void GameSave_Register() {
         Animals_Reset();
         Suit_Reset();
         ToolWear_Reset();
+        worldDifficulty = 1; // a save without the line: normal
         char tok[64] = {};
         while (fscanf(f, " %63s", tok) == 1 && strcmp(tok, "end_extras") != 0) {
             if (QuestBook_LoadLine(tok, f)) continue;
@@ -55,6 +57,7 @@ void GameSave_Register() {
             if (Animals_LoadLine(tok, f)) continue;
             if (Suit_LoadLine(tok, f)) continue;
             if (ToolWear_LoadLine(tok, f)) continue;
+            if (strcmp(tok, "difficulty") == 0) { int d = 1; if (fscanf(f, " %d", &d) == 1) worldDifficulty = std::clamp(d, 0, 2); continue; }
             if (strcmp(tok, "food") == 0) { float v = 100.0f; if (fscanf(f, " %f", &v) == 1) survival.food = std::clamp(v, 0.0f, 100.0f); continue; }
             if (strcmp(tok, "creative") == 0) { int c = 0; if (fscanf(f, " %d", &c) == 1) terrainTool.creative = c != 0; continue; }
             if (Hotbar_LoadLine(tok, f)) continue;

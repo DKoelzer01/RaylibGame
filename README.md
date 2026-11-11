@@ -111,7 +111,11 @@ Shaders in `resources/` hot-reload when saved.
   you for 30 s; two fed adults close together breed a young one that grows up in an hour), O collects wool (shears),
   milk (bucket) or eggs, LMB attacks (meat, hide, feathers). Holding an animal's food (select its hotbar slot)
   draws it to you within 16 m, wild ones too. Animals show as dots on the minimap. Raw meat cooks in a campfire.
-  Animals are saved.
+  Animals are saved. Threats (not on peaceful): thornbacks (territorial) charge within 12 m; after dark, dusk stalkers
+  come out 45-60 m away and hunt you, keep 14 m from a campfire (one within 10 m keeps you safe) and leave at dawn.
+  No hostile herds within 500 m of the start.
+- **Difficulty** (Settings: New worlds; saved with each world): peaceful (no threats, hunger x0.6, 6 berries to
+  start), normal, hard (no Map in the starting kit, hunger x1.25, threats bite 1.5x and up to 3 stalkers).
 - **Environmental suit** (`src/space/suit.*`, `resources/data/suits.txt`, `suit_modules.txt`): you start in a basic
   suit with 2 module slots; a field suit (steel plate, cloth, polyethylene) has 4 and +20% oxygen and power, an
   explorer suit (titanium alloy, advanced circuits) 6 and +50%. Modules, fitted in the inventory's Suit tab: oxygen
@@ -268,6 +272,8 @@ fuelled and flown by the autopilot to orbit, saved and loaded in orbit, brought 
 `--test-moon` (moon on its analytic orbit; standing and jumping on it; digging at the feet launches nobody),
 `--test-hunger` (drain at rest, starving, eating, cold at the pole, saved), `--test-farm` (till, plant, no growth at
 night, ripe in daylight, harvest, a growing crop saved), `--test-animals` (herds placed, grazing on the ground,
+`--test-threats` (a stalker comes after dark and bites; a campfire keeps it off; gone by day; none on peaceful; a
+thornback charges), `--test-animals` (herds placed, grazing on the ground,
 flee when hit, follow when fed, a fenced pen holds a scared herd and lets the player through its gate, breeding, drops, saved, 200 animals under 1 ms),
 `--test-suit` (each module's stat, suits swapped, saved; underwater oxygen with and without a rebreather; the cold
 at the pole bare, insulated and regulated),

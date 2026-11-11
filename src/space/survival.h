@@ -40,6 +40,14 @@ struct SurvivalState {
 };
 extern SurvivalState survival;
 
+// The world's difficulty (saved with it; new worlds take settings.difficulty): 0 peaceful (no night
+// threats or hostile animals, hunger x0.6, extra food to start), 1 normal, 2 hard (no Map in the
+// starting kit, hunger x1.25, threats bite harder and come more often).
+extern int worldDifficulty;
+float Difficulty_HungerScale();
+float Difficulty_ThreatScale(); // 0 peaceful, 1 normal, 1.5 hard
+const char* Difficulty_Name(int d);
+
 void Survival_Update(Scene& world, float dt, bool inputEnabled);
 // Consumables (the hotbar uses them): oxygen canister, power cell (charges the ship while piloting).
 bool Survival_IsUsable(const std::string& id);

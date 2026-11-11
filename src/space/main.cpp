@@ -112,8 +112,11 @@ static void StartNewWorld(Scene& world, bool reset) {
         // A clearing at the start, so the player does not start in a tree.
         if (start->trees) start->trees->addClearing(start->toLocal(feet), 14.0f);
     }
-    if (inventory.count("telescope") == 0) inventory.add("telescope", 1); // starting kit (a save restores its own inventory)
-    if (inventory.count("map") == 0) inventory.add("map", 1);
+    // The starting kit by difficulty (a save restores its own inventory and difficulty).
+    if (reset) worldDifficulty = settings.difficulty;
+    if (inventory.count("telescope") == 0) inventory.add("telescope", 1);
+    if (inventory.count("map") == 0 && worldDifficulty < 2) inventory.add("map", 1); // hard: find your own way
+    if (reset && worldDifficulty == 0) inventory.add("berries", 6);
 }
 
 // --bench <seconds>: windowed 1920x1080, uncapped FPS, skips the menu, holds a fixed
@@ -170,6 +173,7 @@ int main(int argc, char** argv)
     bool benchRivers = false, riverOk = false; int riverPhase = 0; double riverStart = 0.0; float riverLongest = 0.0f, riverBuild = 0.0f, riverWet = 0.0f, riverLevel = 0.0f; Vector3 riverDir{ 0, 0, 0 }; // --test-rivers
     bool benchTools = false, toolsOk = true; int toolsPhase = 0, toolsLife = 0, toolsTilled = 0; double toolsStart = 0.0; // --test-tools
     bool benchSuit = false, suitOk = true; int suitPhase = 0; double suitStart = 0.0; float suitFoodRatio = 0.0f, suitWater = 0.0f, suitRebreather = 0.0f; // --test-suit
+    bool benchThreats = false, threatsOk = true; int threatPhase = 0; double threatStart = 0.0; float threatBite = 0.0f, threatFire = 0.0f, threatRam = 0.0f; int threatSpawned = 0, threatLeft = 0, threatPeaceful = 0; // --test-threats
     bool benchAnimals = false; int animalPhase = 0, animalCount = 0; double animalStart = 0.0, animalMs = 0.0; int animalNatural = 0; float penWorst = 0.0f, animalLured = 0.0f, animalSpread = 0.0f, animalFled = 0.0f, animalFollow = 0.0f; // --test-animals
     int hungerPhase = 0, farmPhase = 0; double hungerStart = 0.0, farmStart = 0.0; bool hungerOk = false; float hungerTemp = 0.0f, hungerDrain = 0.0f, farmQuarter = 0.0f, farmGrowth = 0.0f;
     bool benchViewmodel = false;   // --test-viewmodel: hands still at rest, bob within limits walking, screenshots
@@ -304,6 +308,7 @@ int main(int argc, char** argv)
         if (std::string(argv[i]) == "--test-hunger") benchHunger = true;
         if (std::string(argv[i]) == "--test-farm") benchFarm = true;
         if (std::string(argv[i]) == "--test-animals") benchAnimals = true;
+        if (std::string(argv[i]) == "--test-threats") benchThreats = true;
         if (std::string(argv[i]) == "--test-suit") benchSuit = true;
         if (std::string(argv[i]) == "--test-tools") benchTools = true;
         if (std::string(argv[i]) == "--test-rivers") benchRivers = true;
@@ -391,6 +396,7 @@ int main(int argc, char** argv)
     const bool bench = benchSeconds > 0.0;
     benchMode = bench;
     if (bench) SetWorldSavePath("saves/bench.sav"); // tests save and load; keep the player's F5 save out of it
+    if (bench && !benchThreats) Animals_SetThreats(false); // hostile animals and night spawns would upset other tests
 
     SetConfigFlags(FLAG_MSAA_4X_HINT);
     if (!bench) {
@@ -1344,6 +1350,78 @@ int main(int argc, char** argv)
                         Suit_Reset();
                         survival.food = 100.0f; survival.oxygen = 100.0f; survival.health = 100.0f;
                         benchSuit = false;
+                    }
+                } else if (benchThreats && (threatPhase > 0 || WorldIdle())) {
+                    // --test-threats: after dark a dusk stalker comes 45-60 m out and hunts (a bite hurts); a
+                    // campfire keeps it off; daylight sends it away; peaceful worlds get none; a thornback
+                    // charges when you come close and can be fought off.
+                    Planetoid* p = dynamic_cast<Planetoid*>(world.objects[0].get());
+                    auto check = [&](bool c, const char* what) { if (!c) { printf("bench: threats: FAILED %s\n", what); threatsOk = false; } };
+                    if (threatPhase == 0) {
+                        player.spawnOn(world, *p, StartSpawnDir(*p));
+                        threatPhase = 1; threatStart = GetTime();
+                    } else if (threatPhase == 1 && GetTime() - threatStart > 1.5 && player.grounded) {
+                        const Vector3 me = p->toLocal((player.position - world.renderOrigin).toFloat());
+                        const Vector3 up = Vector3Normalize(me);
+                        auto step = [&](float seconds) { for (float t = 0.0f; t < seconds; t += 0.1f) Animals_Update(world, 0.1f, 0.1f, false); };
+                        auto nearestNight = [&]() { float best = 1e9f; for (int i = 0; i < Animals_Count(); ++i) if (Animals_Hostile(i)) best = std::min(best, Vector3Distance(Animals_Position(i), me)); return best; };
+                        worldDifficulty = 1;
+                        Animals_Reset();
+                        survival.health = 100.0f;
+                        // Night: a stalker comes.
+                        world.sunDirection = p->dirToWorld(Vector3Negate(up));
+                        Animals_RefreshNow();
+                        Animals_Update(world, 0.1f, 0.1f, false);
+                        threatSpawned = Animals_NightCount();
+                        const float d0 = nearestNight();
+                        check(threatSpawned == 1 && d0 > 40.0f && d0 < 65.0f, "a stalker comes out of the dark 45-60 m away");
+                        step(15.0f);
+                        threatBite = 100.0f - survival.health;
+                        check(threatBite > 0.0f, "it hunts the player down and bites");
+                        // A campfire beside the player: no more bites; the stalker keeps its distance.
+                        survival.health = 100.0f;
+                        if (!p->plots) p->plots = std::make_unique<PlotSet>();
+                        const Vector3 fireDir = Vector3Normalize(Vector3Add(me, Vector3Scale(Vector3Normalize(Vector3CrossProduct(up, { 0, 1, 0 })), 3.0f)));
+                        const auto* pf = dynamic_cast<const PlanetField*>(p->field.get());
+                        const Vector3 fireAt = Vector3Scale(fireDir, pf->radius + pf->elevation(fireDir));
+                        Plot* fp = p->plots->plotFor(fireAt, 0.0f, true);
+                        const int firePart = fp->place(Part{ PartType::Campfire, fp->cellAt(fp->toPlot(Vector3Add(fireAt, Vector3Scale(fireDir, 0.1f)))), 0, 0 });
+                        check(firePart >= 0, "a campfire placed");
+                        Animals_RefreshNow();
+                        step(15.0f);
+                        threatFire = nearestNight();
+                        check(survival.health >= 100.0f && threatFire > 12.0f, "a campfire keeps it off");
+                        if (firePart >= 0) fp->remove(firePart);
+                        Animals_RefreshNow();
+                        // Daylight: it runs off and is gone.
+                        world.sunDirection = p->dirToWorld(up);
+                        step(45.0f);
+                        threatLeft = Animals_NightCount();
+                        check(threatLeft == 0, "gone by day");
+                        // Peaceful: nothing comes.
+                        worldDifficulty = 0;
+                        world.sunDirection = p->dirToWorld(Vector3Negate(up));
+                        Animals_RefreshNow();
+                        step(2.0f);
+                        threatPeaceful = Animals_NightCount();
+                        check(threatPeaceful == 0, "no threats on peaceful");
+                        // A thornback 8 m away by day: it charges; fought off with an axe.
+                        worldDifficulty = 1;
+                        world.sunDirection = p->dirToWorld(up);
+                        survival.health = 100.0f;
+                        Animals_Reset();
+                        Animals_Spawn(world, *p, "thornback", Vector3Add(me, Vector3Scale(Vector3Normalize(Vector3CrossProduct(up, { 0, 1, 0 })), -8.0f)), 1, false, 0.5f);
+                        step(6.0f);
+                        threatRam = 100.0f - survival.health;
+                        check(threatRam > 0.0f, "a thornback charges when you come close");
+                        bool fell = false;
+                        for (int k = 0; k < 12 && !fell && Animals_Count() > 0; ++k) fell = Animals_Hit(0, 6.0f);
+                        check(fell || Animals_Count() == 0, "fought off");
+                        printf("bench: threats: night stalker at %.0f m, bit for %.0f; by a campfire it kept %.0f m off, no bites; gone by day (%d left); peaceful %d; thornback rammed for %.0f -> %s\n",
+                               d0, threatBite, threatFire, threatLeft, threatPeaceful, threatRam, threatsOk ? "PASS" : "FAIL");
+                        Animals_Reset();
+                        survival.health = 100.0f;
+                        benchThreats = false;
                     }
                 } else if (benchAnimals && (animalPhase > 0 || WorldIdle())) {
                     // --test-animals: a herd spawns on the ground and stays there, a hit one flees, a fed one
@@ -2466,7 +2544,7 @@ int main(int argc, char** argv)
                         }
                         benchWalkSeconds = 0.0;
                     }
-                } else if ((WorldIdle() && benchDigStrokes == 0 && !benchSaveLoad && benchWalkSeconds <= 0.0 && benchMineStrokes == 0 && minePhase != 2 && benchFlySeconds <= 0.0 && !benchSuffocate && benchOrbitSeconds <= 0.0 && !benchRide && !benchPark && !benchGravity && !benchPrecision && !benchMantle && !benchAirJump && !benchMoon && !benchHole && !benchWall && !benchMenus && !benchWater && !benchFlyFollow && !benchHotbar && !benchInventory && !benchMap && !benchViewmodel && !benchQuests && !benchHunger && !benchFarm && !benchAnimals && !benchSuit && !benchTools && !benchRivers && !benchRing && !benchRocket && !benchBlueprint && !benchSmallBody && !benchTrees && !benchChop && benchPersist == 0 && benchBuild == 0 && benchFactory == 0 && !benchProgression) || GetTime() > 600.0) {
+                } else if ((WorldIdle() && benchDigStrokes == 0 && !benchSaveLoad && benchWalkSeconds <= 0.0 && benchMineStrokes == 0 && minePhase != 2 && benchFlySeconds <= 0.0 && !benchSuffocate && benchOrbitSeconds <= 0.0 && !benchRide && !benchPark && !benchGravity && !benchPrecision && !benchMantle && !benchAirJump && !benchMoon && !benchHole && !benchWall && !benchMenus && !benchWater && !benchFlyFollow && !benchHotbar && !benchInventory && !benchMap && !benchViewmodel && !benchQuests && !benchHunger && !benchFarm && !benchAnimals && !benchThreats && !benchSuit && !benchTools && !benchRivers && !benchRing && !benchRocket && !benchBlueprint && !benchSmallBody && !benchTrees && !benchChop && benchPersist == 0 && benchBuild == 0 && benchFactory == 0 && !benchProgression) || GetTime() > 600.0) {
                     benchStart = GetTime();
                     printf("bench: world ready after %.2f s (%d chunks, avg build %.2f ms of which sampling %.2f ms, %d worker threads)\n",
                         GetWorldStats().lastGenerationSeconds, GetWorldStats().chunks, GetWorldStats().avgBuildMs, GetWorldStats().avgSampleMs, GetWorldStats().workerThreads);

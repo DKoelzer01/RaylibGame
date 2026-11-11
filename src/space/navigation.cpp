@@ -450,7 +450,7 @@ void Nav_DrawHUD(Scene& world) {
         const Vector2 p = OnImage(m, dir);
         const Vector2 rel = { (p.x - off.x) * k, (p.y - off.y) * k };
         const Vector2 s = { c.x + rel.x * cr - rel.y * sr, c.y + rel.x * sr + rel.y * cr };
-        if (Vector2Distance(s, c) < rad - 4.0f) DrawCircleV(s, 2.5f, Animals_Wild(i) ? Color{ 230, 180, 110, 255 } : RAYWHITE);
+        if (Vector2Distance(s, c) < rad - 4.0f) DrawCircleV(s, 2.5f, Animals_Hostile(i) ? RED : Animals_Wild(i) ? Color{ 230, 180, 110, 255 } : RAYWHITE);
     }
     // The player: an arrow pointing up (the view), north marked on the rim.
     DrawTriangle({ c.x, c.y - 9 }, { c.x - 6, c.y + 7 }, { c.x + 6, c.y + 7 }, SKYBLUE);
