@@ -130,3 +130,16 @@ titanium_hoe       | Titanium hoe       |  tool | 205,180,205 | Tills 3x3 m of f
 repair_kit         | Repair kit         |   999 | 200,180,90  | Mends the most damaged part of the rocket in reach by half (use from the hotbar).
 cabin              | Cabin              | block | 200,205,215 | Rocket crew cabin: 4 seats and 30 minutes of air for the life support (load oxygen canisters, I).
 station_core       | Station core       | block | 230,220,120 | Build it onto a rocket; in orbit, K deploys it as a space station (rockets dock to it: K; T moves fuel).
+# Building variety (M21): logs of each tree species (planks to build with), stone kinds from digging rock, bricks.
+oak_log            |  Oak log          |   999 | 120,84,50   | From broadleaf trees. Saw into oak planks (Tab).
+birch_log          |  Birch log        |   999 | 220,214,200 | From the pale broadleaf trees. Saw into birch planks (Tab).
+pine_log           |  Pine log         |   999 | 110,76,46   | From conifers. Saw into pine planks (Tab).
+oak_planks         | Oak planks        |   999 | 158,112,66  | Warm brown planks: build any shape with them.
+birch_planks       | Birch planks      |   999 | 214,196,152 | Pale planks: build any shape with them.
+pine_planks        | Pine planks       |   999 | 176,132,82  | Light brown planks: build any shape with them.
+granite            | Granite           |   999 | 168,146,140 | Speckled pink-grey stone, from mountain rock. A building material.
+basalt             | Basalt            |   999 | 62,62,68    | Dark stone from deep rock, the sea floor and the moon. A building material.
+sandstone          | Sandstone         |   999 | 212,182,132 | Warm yellow stone from low coastal land. A building material.
+limestone          | Limestone         |   999 | 206,202,186 | Pale stone common inland. A building material.
+marble             | Marble            |   999 | 236,234,230 | White stone in rare deep pockets. A building material.
+brick              | Brick             |   999 | 158,74,52   | Fired clay (kiln). A building material.

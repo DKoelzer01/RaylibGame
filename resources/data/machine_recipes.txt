@@ -7,6 +7,7 @@ campfire        | cooked_meat 1    | raw_meat 1                | 250 | 0
 kiln            | copper_ingot 1   | copper_ore 1              | 200 | 0
 kiln            | tin_ingot 1      | tin_ore 1                 | 200 | 0
 kiln            | iron_ingot 1     | iron_ore 1                | 300 | 0
+kiln            | brick 2          | clay 1                    | 160 | 0
 kiln            | bronze_ingot 4   | copper_ingot 3, tin_ingot 1 | 400 | 0
 kiln            | glass 1          | sand 4                    | 200 | 0
 kiln            | copper_ingot 1   | copper_dust 1             | 100 | 0

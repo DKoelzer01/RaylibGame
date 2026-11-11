@@ -21,6 +21,10 @@ const char* PartName(PartType t) {
         case PartType::Beam2: return "beam 1 m";
         case PartType::Beam4: return "beam 2 m";
         case PartType::Beam8: return "beam 4 m";
+        case PartType::Slab: return "slab";
+        case PartType::Panel: return "panel";
+        case PartType::Pane: return "pane";
+        case PartType::Post: return "post";
         case PartType::Conveyor: return "conveyor";
         case PartType::Cable: return "cable";
         case PartType::Chest: return "chest";
@@ -127,6 +131,16 @@ namespace {
         { "glass", "Glass", { 172, 212, 226, 255 } },
         { "dirt", "Packed dirt", { 120, 90, 60, 255 } },
         { "heat_shield_tile", "Heat shield", { 45, 42, 40, 255 } },  // survives re-entry on a rocket's leading face
+        // Building variety (M21): planks from each tree species, stone kinds from the ground, kiln bricks.
+        { "oak_planks", "Oak", { 158, 112, 66, 255 } },
+        { "birch_planks", "Birch", { 214, 196, 152, 255 } },
+        { "pine_planks", "Pine", { 176, 132, 82, 255 } },
+        { "granite", "Granite", { 168, 146, 140, 255 } },
+        { "basalt", "Basalt", { 62, 62, 68, 255 } },
+        { "sandstone", "Sandstone", { 212, 182, 132, 255 } },
+        { "limestone", "Limestone", { 206, 202, 186, 255 } },
+        { "marble", "Marble", { 236, 234, 230, 255 } },
+        { "brick", "Brick", { 158, 74, 52, 255 } },
     };
 }
 int BuildMaterialCount() { return (int)(sizeof(kBuildMaterials) / sizeof(kBuildMaterials[0])); }
@@ -202,6 +216,26 @@ static void PartCells(PartType t, std::vector<std::pair<Int3, CellShape>>& out) 
         case PartType::Fence: case PartType::Gate: { // a 10 cm board across the middle, 1 m long and 1 m high
             CellShape s; s.full = false; s.planes = 2; s.n[0] = { 1, 0, 0 }; s.d[0] = 0.6f; s.n[1] = { -1, 0, 0 }; s.d[1] = -0.4f;
             for (int z = 0; z < 2; ++z) for (int y = 0; y < 2; ++y) out.push_back({ { 0, y, z }, s });
+            break;
+        }
+        case PartType::Slab: {  // the lower half of the cell
+            CellShape s; s.full = false; s.planes = 1; s.n[0] = { 0, 1, 0 }; s.d[0] = 0.5f;
+            out.push_back({ { 0, 0, 0 }, s });
+            break;
+        }
+        case PartType::Panel: { // half the cell's thickness, against one face
+            CellShape s; s.full = false; s.planes = 1; s.n[0] = { 1, 0, 0 }; s.d[0] = 0.5f;
+            out.push_back({ { 0, 0, 0 }, s });
+            break;
+        }
+        case PartType::Pane: {  // a thin board through the middle (glass panes, screens)
+            CellShape s; s.full = false; s.planes = 2; s.n[0] = { 1, 0, 0 }; s.d[0] = 0.56f; s.n[1] = { -1, 0, 0 }; s.d[1] = -0.44f;
+            out.push_back({ { 0, 0, 0 }, s });
+            break;
+        }
+        case PartType::Post: {  // a quarter of the cell, up one edge
+            CellShape s; s.full = false; s.planes = 2; s.n[0] = { 1, 0, 0 }; s.d[0] = 0.5f; s.n[1] = { 0, 0, 1 }; s.d[1] = 0.5f;
+            out.push_back({ { 0, 0, 0 }, s });
             break;
         }
         case PartType::Slope: {

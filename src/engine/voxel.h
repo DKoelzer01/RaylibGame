@@ -179,6 +179,10 @@ public:
     static const char* OreKindName(int kind);   // "iron_ore", "copper_ore", "tin_ore", "coal", "bauxite_ore", "ilmenite_ore"
     int oreKind(Vector3 p, float depth) const;
     int depositNear(Vector3 p, float reach) const; // the kind of a deposit within `reach` m, or -1 (miners)
+    // The kind of stone that rock is here (M21, building variety): an item id - marble in rare deep
+    // pockets, basalt deep down and under the sea, granite in the mountains, sandstone on low coastal
+    // land, limestone elsewhere (in broad regions).
+    const char* stoneKind(Vector3 p) const;
     // On a river or pond bed (or its wet shore): digging there also turns up clay.
     bool wetBed(Vector3 local) const;
     // A body-local direction to a good start spot: temperate latitude, flat grassland a little above

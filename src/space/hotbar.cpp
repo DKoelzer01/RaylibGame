@@ -22,7 +22,8 @@ namespace {
 
     // A part type placed from this item (machines, conveyors, cables), or Count.
     PartType PartForItem(const std::string& id) {
-        for (int t = kShapeCount; t < (int)PartType::Count; ++t)
+        for (int t = 0; t < (int)PartType::Count; ++t)
+            if (IsShape((PartType)t)) continue; else
             if (id == PartCostItem((PartType)t)) return (PartType)t;
         return PartType::Count;
     }

@@ -107,7 +107,8 @@ bool ItemDB::load(const char* itemsPath, const char* recipesPath) {
         else logger.logf("[WARN] recipes: unknown item in '%s'\n", line.c_str());
     }
     // Placeable parts (machines, conveyors, cables, rocket parts) are blocks: stacks of 256.
-    for (int t = kShapeCount; t < (int)PartType::Count; ++t)
+    for (int t = 0; t < (int)PartType::Count; ++t)
+        if (IsShape((PartType)t)) continue; else
         if (const char* item = PartCostItem((PartType)t)) {
             auto it = byId.find(item);
             if (it != byId.end() && itemList[it->second].kind == ItemKind::Resource) itemList[it->second].kind = ItemKind::Block;

@@ -956,3 +956,21 @@ int PlanetField::depositNear(Vector3 p, float reach) const {
             }
     return best;
 }
+
+const char* PlanetField::stoneKind(Vector3 p) const {
+    if (moon) return "basalt"; // the maria: dark basalt plains
+    const float d = Vector3Length(p);
+    if (d < 1.0f) return "stone";
+    const Vector3 dir = Vector3Scale(p, 1.0f / d);
+    const float surface = radius + elevation(dir, 8.0f);
+    const float depth = surface - d;
+    // Marble: small pockets below 20 m (the vein noise at a coarse scale).
+    if (depth > 20.0f && fabsf(veins.fractal(1, p.x * 0.2f, p.y * 0.2f, p.z * 0.2f)) < 0.05f) return "marble";
+    if (depth > 60.0f) return "basalt";
+    const Land l = land(dir, 32.0f);
+    if (l.h < 0.0f) return "basalt";            // the sea floor
+    if (l.mountain > 0.4f) return "granite";    // the ranges
+    if (l.h < 25.0f) return "sandstone";        // low coastal land
+    // Broad regions of granite and limestone elsewhere.
+    return climate.fractal(1, p.x * 0.3f, p.y * 0.3f, p.z * 0.3f) > 0.15f ? "granite" : "limestone";
+}

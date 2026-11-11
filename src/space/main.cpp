@@ -183,6 +183,7 @@ int main(int argc, char** argv)
     bool benchSuit = false, suitOk = true; int suitPhase = 0; double suitStart = 0.0; float suitFoodRatio = 0.0f, suitWater = 0.0f, suitRebreather = 0.0f; // --test-suit
     int benchShotTabs = 0; // --shot-tabs
     bool benchRecipes = false; // --test-recipes
+    bool benchMaterials = false, matOk = true; int matPhase = 0, matPlaced = 0; double matStart = 0.0; std::string matKinds; Vector3 matCamPos{}, matCamTarget{}, matCamUp{ 0, 1, 0 }; // --test-materials
     bool benchDamage = false, damageOk = true; int damagePhase = 0; double damageStart = 0.0; float damageThrust = 0.0f, damageRepaired = 0.0f, damageVacuum = 0.0f; // --test-damage
     bool benchCrafting = false, craftOk = true; int craftPhase = 0, craftChest = -1, craftInv0 = 0, craftWood0 = 0, craftDeposited = 0, craftInChest = 0; double craftStart = 0.0; Plot* craftPlot = nullptr; // --test-crafting
     bool benchThreats = false, threatsOk = true; int threatPhase = 0; double threatStart = 0.0; float threatBite = 0.0f, threatFire = 0.0f, threatRam = 0.0f; int threatSpawned = 0, threatLeft = 0, threatPeaceful = 0; // --test-threats
@@ -324,6 +325,7 @@ int main(int argc, char** argv)
         if (std::string(argv[i]) == "--test-threats") benchThreats = true;
         if (std::string(argv[i]) == "--shot-tabs") benchShotTabs = 1;
         if (std::string(argv[i]) == "--test-recipes") benchRecipes = true;
+        if (std::string(argv[i]) == "--test-materials") benchMaterials = true;
         if (std::string(argv[i]) == "--test-damage") benchDamage = true;
         if (std::string(argv[i]) == "--test-crafting") benchCrafting = true;
         if (std::string(argv[i]) == "--test-suit") benchSuit = true;
@@ -1499,6 +1501,104 @@ int main(int argc, char** argv)
                                damageThrust, damageRepaired, damageVacuum, damageOk ? "PASS" : "FAIL");
                         benchDamage = false;
                     }
+                } else if (benchMaterials && (matPhase > 0 || WorldIdle())) {
+                    // --test-materials (plan 3, M21): trees give logs of their species (planks), rock gives the
+                    // stone of its region and depth, the detail shapes (slab, panel, pane, post) build in the new
+                    // materials and keep them through a save; a screenshot of a little hut built from them.
+                    Planetoid* p = dynamic_cast<Planetoid*>(world.objects[0].get());
+                    const auto* pf = p ? dynamic_cast<const PlanetField*>(p->field.get()) : nullptr;
+                    auto check = [&](bool c, const char* what) { if (!c) { printf("bench: materials: FAILED %s\n", what); matOk = false; } };
+                    if (matPhase == 0) {
+                        player.spawnOn(world, *p, StartSpawnDir(*p));
+                        matPhase = 1; matStart = GetTime(); matOk = true;
+                    } else if (matPhase == 1 && GetTime() - matStart > 1.5 && player.grounded) {
+                        const Vector3 me = p->toLocal((player.position - world.renderOrigin).toFloat());
+                        const Vector3 up = Vector3Normalize(me);
+                        // Logs from a tree, sawn into planks.
+                        int logs = 0;
+                        for (int k = 0; k < 4 && logs == 0; ++k) {
+                            TerrainTool_HarvestNearest(*p, me, true);
+                            logs = inventory.count("oak_log") + inventory.count("birch_log") + inventory.count("pine_log");
+                        }
+                        check(logs > 0, "a tree gives logs of its species");
+                        int planks = 0;
+                        for (const char* l : { "oak", "birch", "pine" }) {
+                            const std::string log = std::string(l) + "_log", plank = std::string(l) + "_planks";
+                            for (const Recipe& r : itemDB.recipes()) if (r.output == plank && inventory.count(log) > 0) inventory.craft(r);
+                            planks += inventory.count(plank);
+                        }
+                        check(planks >= 4, "logs saw into planks");
+                        // Stone kinds over the region and with depth.
+                        std::set<std::string> kinds;
+                        const Vector3 t1 = Vector3Normalize(Vector3CrossProduct(up, { 0, 1, 0 })), t2 = Vector3CrossProduct(t1, up);
+                        for (int i = 0; i < 400; ++i) {
+                            const float a = ((i * 37) % 200 - 100) * 200.0f, b = ((i * 91) % 200 - 100) * 200.0f; // +-20 km
+                            const Vector3 d = Vector3Normalize(Vector3Add(up, Vector3Add(Vector3Scale(t1, a / pf->radius), Vector3Scale(t2, b / pf->radius))));
+                            const float surf = pf->radius + pf->elevation(d);
+                            for (float depth : { 5.0f, 30.0f, 80.0f }) kinds.insert(pf->stoneKind(Vector3Scale(d, surf - depth)));
+                        }
+                        std::string list;
+                        for (const auto& k : kinds) list += (list.empty() ? "" : ", ") + k;
+                        check(kinds.size() >= 4 && kinds.count("basalt"), "several stone kinds (basalt deep down)");
+                        matKinds = list;
+                        // Digging rock gives its kind too.
+                        double kindsBefore = 0.0;
+                        for (const auto& k : kinds) kindsBefore += inventory.obtainedTotal(k);
+                        inventory.add("stone_pickaxe", 1);
+                        terrainTool.heldTool = "stone_pickaxe";
+                        for (int k = 0; k < 6; ++k) TerrainTool_DigAt(*p, Vector3Subtract(Vector3Scale(up, pf->radius + pf->elevation(up)), Vector3Scale(up, 6.0f + k * 0.6f)));
+                        double kindsAfter = 0.0;
+                        for (const auto& k : kinds) kindsAfter += inventory.obtainedTotal(k);
+                        check(kindsAfter > kindsBefore, "digging rock gives its stone kind");
+                        terrainTool.heldTool.clear();
+                        // A little hut 6 m ahead: a marble slab floor, oak panel walls, glass panes, granite posts.
+                        if (!p->plots) p->plots = std::make_unique<PlotSet>();
+                        const Vector3 hd = Vector3Normalize(Vector3Add(me, Vector3Scale(t1, 6.0f)));
+                        Plot* hut = p->plots->plotFor(Vector3Scale(hd, pf->radius + pf->elevation(hd)), 0.0f, true);
+                        auto mat = [](const char* item) { return (uint8_t)std::max(0, BuildMaterialForItem(item)); };
+                        int placed = 0, tried = 0;
+                        auto put = [&](PartType t, Int3 c, int orient, const char* m) { ++tried; placed += hut->place(Part{ t, c, (uint8_t)orient, mat(m) }) >= 0 ? 1 : 0; };
+                        for (int x = 0; x < 6; ++x) for (int z = 0; z < 6; ++z) put(PartType::Slab, { x, 0, z }, 0, "marble");
+                        for (int y = 1; y <= 4; ++y) {
+                            for (int x = 1; x < 5; ++x) { put(y == 2 || y == 3 ? PartType::Pane : PartType::Panel, { x, y, 0 }, RotateOrientation(0, 1), y == 2 || y == 3 ? "glass" : "oak_planks"); put(PartType::Panel, { x, y, 5 }, RotateOrientation(0, 1), "birch_planks"); }
+                            for (int z = 1; z < 5; ++z) { put(PartType::Panel, { 0, y, z }, 0, "pine_planks"); put(PartType::Panel, { 5, y, z }, 0, "oak_planks"); }
+                            put(PartType::Post, { 0, y, 0 }, 0, "granite"); put(PartType::Post, { 5, y, 0 }, 0, "granite"); put(PartType::Post, { 0, y, 5 }, 0, "granite"); put(PartType::Post, { 5, y, 5 }, 0, "granite");
+                        }
+                        for (int x = 0; x < 6; ++x) for (int z = 0; z < 6; ++z) put(PartType::Slab, { x, 5, z }, 0, (x + z) % 2 ? "brick" : "basalt");
+                        check(placed == tried, "the hut's parts placed");
+                        bool partial = true;
+                        for (const auto& kv : hut->cells) partial = partial && !kv.second.shape.full;
+                        check(partial && !hut->cells.empty(), "detail shapes fill part of a cell");
+                        // Save and load: the materials come back.
+                        const std::string path = std::string(GetWorkingDirectory()) + "/materials_test.tmp";
+                        if (FILE* f = fopen(path.c_str(), "w")) { p->plots->save(f); fclose(f); }
+                        PlotSet back; bool loaded = false;
+                        if (FILE* f = fopen(path.c_str(), "r")) { loaded = back.load(f); fclose(f); }
+                        remove(path.c_str());
+                        const Plot* hb = loaded ? back.byId(hut->id) : nullptr;
+                        bool same = hb && hb->parts.size() == hut->parts.size();
+                        for (size_t i = 0; same && i < hut->parts.size(); ++i) same = hb->parts[i].type == hut->parts[i].type && hb->parts[i].material == hut->parts[i].material;
+                        check(same, "the hut saved with its materials");
+                        matPlaced = placed;
+                        // Look at the hut.
+                        const Vector3 hutC = hut->toBody({ 1.5f, 1.2f, 1.5f });
+                        world.camera.position = p->toWorld(Vector3Add(hutC, Vector3Add(Vector3Scale(up, 3.5f), Vector3Add(Vector3Scale(t1, -4.0f), Vector3Scale(t2, -5.0f)))));
+                        world.camera.target = p->toWorld(hutC);
+                        world.camera.up = p->dirToWorld(up);
+                        player.flyMode = true;
+                        player.position = world.renderOrigin + world.camera.position;
+                        sunOverride = true; sunArg = p->dirToWorld(Vector3Normalize(Vector3Add(up, Vector3Scale(t1, 0.5f))));
+                        matCamPos = Vector3Add(hutC, Vector3Add(Vector3Scale(up, 3.5f), Vector3Add(Vector3Scale(t1, -4.0f), Vector3Scale(t2, -5.0f)))); matCamTarget = hutC; matCamUp = up; // body-local
+                        matPhase = 2; matStart = GetTime();
+                    } else if (matPhase == 2 && GetTime() - matStart <= 2.0) {
+                        world.camera.position = p->toWorld(matCamPos); world.camera.target = p->toWorld(matCamTarget); world.camera.up = p->dirToWorld(matCamUp); // hold the view on the hut
+                        player.position = world.renderOrigin + world.camera.position;
+                    } else if (matPhase == 2 && GetTime() - matStart > 2.0) {
+                        world.camera.position = p->toWorld(matCamPos); world.camera.target = p->toWorld(matCamTarget); world.camera.up = p->dirToWorld(matCamUp);
+                        TakeScreenshot("bench_materials.png");
+                        printf("bench: materials: logs and planks of three woods; stone kinds %s; a hut of %d detail parts in 8 materials, saved -> %s\n", matKinds.c_str(), matPlaced, matOk ? "PASS" : "FAIL");
+                        benchMaterials = false;
+                    }
                 } else if (benchRecipes) {
                     // --test-recipes: every item can be had from what the world gives (digging, chopping,
                     // bushes, grass, animals, crops) through hand recipes, machines (once their own item
@@ -1512,7 +1612,8 @@ int main(int argc, char** argv)
                     };
                     auto ids = [&](const std::string& list) { std::vector<std::string> out; for (const std::string& e : split(list, ',')) { char id[64] = {}; if (e != "-" && sscanf(e.c_str(), "%63s", id) == 1) out.push_back(id); } return out; };
                     std::set<std::string> have = { "wood", "fibre", "berries", "grain_seeds", "root_seeds", "flax_seeds", "dirt", "gravel", "stone", "sand", "clay",
-                                                   "ice", "regolith", "iron_ore", "copper_ore", "tin_ore", "coal", "bauxite_ore", "ilmenite_ore", "telescope", "map", "basic_suit" };
+                                                   "ice", "regolith", "iron_ore", "copper_ore", "tin_ore", "coal", "bauxite_ore", "ilmenite_ore", "telescope", "map", "basic_suit",
+                                                   "oak_log", "birch_log", "pine_log", "granite", "basalt", "sandstone", "limestone", "marble" };
                     std::set<std::string> used;
                     struct Rule { std::string machine; std::vector<std::string> in, out; };
                     std::vector<Rule> rules;
@@ -1564,7 +1665,7 @@ int main(int argc, char** argv)
                     std::vector<std::string> missing, unused;
                     for (const ItemDef& d : itemDB.items()) {
                         if (!have.count(d.id)) missing.push_back(d.id);
-                        const bool consumed = used.count(d.id) || Survival_IsFood(d.id) || Survival_IsUsable(d.id) || Suit_IsSuit(d.id) || Suit_IsModule(d.id) ||
+                        const bool consumed = used.count(d.id) || BuildMaterialForItem(d.id.c_str()) >= 0 || Survival_IsFood(d.id) || Survival_IsUsable(d.id) || Suit_IsSuit(d.id) || Suit_IsModule(d.id) ||
                                               ToolOf(d.id).type != ToolType::Hands || KindOf(d.id) == ItemKind::Block || KindOf(d.id) == ItemKind::Tool;
                         if (!consumed) unused.push_back(d.id);
                     }
@@ -2809,7 +2910,7 @@ int main(int argc, char** argv)
                         }
                         benchWalkSeconds = 0.0;
                     }
-                } else if ((WorldIdle() && benchDigStrokes == 0 && !benchSaveLoad && benchWalkSeconds <= 0.0 && benchMineStrokes == 0 && minePhase != 2 && benchFlySeconds <= 0.0 && !benchSuffocate && benchOrbitSeconds <= 0.0 && !benchRide && !benchPark && !benchGravity && !benchPrecision && !benchMantle && !benchAirJump && !benchMoon && !benchHole && !benchWall && !benchMenus && !benchWater && !benchFlyFollow && !benchHotbar && !benchInventory && !benchMap && !benchViewmodel && !benchQuests && !benchHunger && !benchFarm && !benchAnimals && !benchThreats && benchShotTabs == 0 && !benchRecipes && !benchDamage && !benchCrafting && !benchSuit && !benchTools && !benchRivers && !benchRing && !benchRocket && !benchStation && !benchBlueprint && !benchSmallBody && !benchTrees && !benchChop && benchPersist == 0 && benchBuild == 0 && benchFactory == 0 && !benchProgression) || GetTime() > 600.0) {
+                } else if ((WorldIdle() && benchDigStrokes == 0 && !benchSaveLoad && benchWalkSeconds <= 0.0 && benchMineStrokes == 0 && minePhase != 2 && benchFlySeconds <= 0.0 && !benchSuffocate && benchOrbitSeconds <= 0.0 && !benchRide && !benchPark && !benchGravity && !benchPrecision && !benchMantle && !benchAirJump && !benchMoon && !benchHole && !benchWall && !benchMenus && !benchWater && !benchFlyFollow && !benchHotbar && !benchInventory && !benchMap && !benchViewmodel && !benchQuests && !benchHunger && !benchFarm && !benchAnimals && !benchThreats && benchShotTabs == 0 && !benchRecipes && !benchMaterials && !benchDamage && !benchCrafting && !benchSuit && !benchTools && !benchRivers && !benchRing && !benchRocket && !benchStation && !benchBlueprint && !benchSmallBody && !benchTrees && !benchChop && benchPersist == 0 && benchBuild == 0 && benchFactory == 0 && !benchProgression) || GetTime() > 600.0) {
                     benchStart = GetTime();
                     printf("bench: world ready after %.2f s (%d chunks, avg build %.2f ms of which sampling %.2f ms, %d worker threads)\n",
                         GetWorldStats().lastGenerationSeconds, GetWorldStats().chunks, GetWorldStats().avgBuildMs, GetWorldStats().avgSampleMs, GetWorldStats().workerThreads);
