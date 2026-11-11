@@ -119,6 +119,7 @@ int main(int argc, char** argv)
     double factStart = 0.0, factSum = 0.0, factMax = 0.0;
     long long factMade0 = 0;
     std::string factChestBefore;
+    int factRefundBefore = 0;
     std::vector<std::array<int, 3>> factSeeds;
     int chopPhase = 0, chopSwings = 0, chopMisses = 0, chopWood0 = 0;
     double chopStart = 0.0;
@@ -713,8 +714,15 @@ int main(int argc, char** argv)
                         if (GetTime() - factStart > 2.0) {
                             printf("bench: factory: first chest before save %s, after reload %s -> %s\n", factChestBefore.c_str(), chest.input.c_str(),
                                    chest.valid && chest.input != "-" && !chest.input.empty() ? "PASS" : "FAIL");
-                            benchFactory = 0;
+                            // Then remove that chest: what it held must come back to the inventory.
+                            factRefundBefore = inventory.count("iron_plate");
+                            if (Plot* pl = p2->plots ? p2->plots->byId(factPlot) : nullptr) pl->remove(factSeeds[0][2] + 1);
+                            factPhase = 6; factStart = GetTime();
                         }
+                    } else if (factPhase == 6 && GetTime() - factStart > 2.0) {
+                        const int got = inventory.count("iron_plate") - factRefundBefore;
+                        printf("bench: factory: removed the chest: %d iron plates back in the inventory -> %s\n", got, got > 0 ? "PASS" : "FAIL");
+                        benchFactory = 0;
                     }
                 } else if (benchHole && (holePhase > 0 || WorldIdle())) { // edits keep the world busy: run on
                     // --test-hole: on the spinning planet, dig a pit ahead and walk into it, then build a
