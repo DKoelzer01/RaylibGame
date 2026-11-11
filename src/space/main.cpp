@@ -181,6 +181,7 @@ int main(int argc, char** argv)
     double factStart = 0.0, factSum = 0.0, factMax = 0.0;
     long long factMade0 = 0;
     std::string factChestBefore;
+    int factRefundBefore = 0;
     std::vector<std::array<int, 3>> factSeeds;
     int chopPhase = 0, chopSwings = 0, chopMisses = 0, chopWood0 = 0;
     double chopStart = 0.0;
@@ -780,8 +781,15 @@ int main(int argc, char** argv)
                         if (GetTime() - factStart > 2.0) {
                             printf("bench: factory: first chest before save %s, after reload %s -> %s\n", factChestBefore.c_str(), chest.input.c_str(),
                                    chest.valid && chest.input != "-" && !chest.input.empty() ? "PASS" : "FAIL");
-                            benchFactory = 0;
+                            // Then remove that chest: what it held must come back to the inventory.
+                            factRefundBefore = inventory.count("iron_plate");
+                            if (Plot* pl = p2->plots ? p2->plots->byId(factPlot) : nullptr) pl->remove(factSeeds[0][2] + 1);
+                            factPhase = 6; factStart = GetTime();
                         }
+                    } else if (factPhase == 6 && GetTime() - factStart > 2.0) {
+                        const int got = inventory.count("iron_plate") - factRefundBefore;
+                        printf("bench: factory: removed the chest: %d iron plates back in the inventory -> %s\n", got, got > 0 ? "PASS" : "FAIL");
+                        benchFactory = 0;
                     }
                 } else if (benchProgression && (progPhase > 0 || WorldIdle())) {
                     // --test-progression (milestone 5 gate): bare hands to a working LV machine.
@@ -1187,7 +1195,19 @@ int main(int argc, char** argv)
                         ApplyTerrainEdit(*p, TerrainEdit{ Vector3Scale(dir, f->mantleRadius + 4.0f), 12.0f, -20.0f });
                         const float mantleAfter = p->densityAt(inMantle), crustAfter = p->densityAt(inCrust);
                         p->edits = savedEdits; // leave the world as it was
-                        const bool mantleOk = mantleAfter == mantleBefore && crustAfter < crustBefore - 1.0f && !f->editable(inMantle) && f->editable(inCrust);
+                        // A hole 700 m down (above the mantle) must open: deltas saturated at ~510 m of rock.
+                        bool deepOk = true;
+                        {
+                            const Vector3 dd = randomDir();
+                            const float depth = std::min(700.0f, f->radius + f->elevation(dd) - f->mantleRadius - 30.0f);
+                            const Vector3 deep = Vector3Scale(dd, f->radius + f->elevation(dd) - depth);
+                            ApplyTerrainEdit(*p, TerrainEdit{ deep, 6.0f, -(DENSITY_GRADIENT * depth + 20.0f) });
+                            const float after = p->densityAt(deep);
+                            p->edits = savedEdits;
+                            deepOk = after < ISO_LEVEL;
+                            printf("bench: a hole %.0f m down: density %.1f (air below %.2f): %s\n", depth, after, ISO_LEVEL, deepOk ? "open" : "STILL SOLID");
+                        }
+                        const bool mantleOk = deepOk && mantleAfter == mantleBefore && crustAfter < crustBefore - 1.0f && !f->editable(inMantle) && f->editable(inCrust);
                         printf("bench: mantle %.0f m below sea level: dig there changed the crust %.2f -> %.2f and the mantle %.2f -> %.2f: %s\n",
                                f->radius - f->mantleRadius, crustBefore, crustAfter, mantleBefore, mantleAfter, mantleOk ? "refused" : "NOT REFUSED");
                         // 3. Ore by depth band, and caves.
