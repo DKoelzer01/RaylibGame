@@ -227,6 +227,7 @@ void Player::stepPhysics(Scene& world, float dt, Vector3 wish, bool jetUp, bool 
     const Vector3 gdir = gravity > 1e-6f ? Vector3Scale(gFelt, 1.0f / gravity) : Vector3{ 0, 0, 0 };
 
     const float vUp = Vector3DotProduct(velocity, up);
+    bool resting = false; // grounded with no walking input
     if (grounded) {
         // Direct ground control along the contact plane, pressed lightly into it so crests and dips
         // keep contact. Collision-induced upward speed is discarded (only jumps leave the ground).
@@ -242,7 +243,11 @@ void Player::stepPhysics(Scene& world, float dt, Vector3 wish, bool jetUp, bool 
             const float dl = Vector3Length(dv), maxDv = 20.0f * dt;
             walk = dl > maxDv ? Vector3Add(cur, Vector3Scale(dv, maxDv / dl)) : walk;
         }
-        velocity = Vector3Subtract(walk, Vector3Scale(n, 1.5f));
+        // At rest, no press into the ground: the push back out is found to a few mm, so pressing in
+        // every substep made a standing camera (and the shadow map with it) vibrate by 5-9 mm a frame.
+        // The ground probe keeps a resting player grounded.
+        resting = Vector3LengthSqr(walk) < 1e-6f;
+        velocity = resting ? Vector3{ 0, 0, 0 } : Vector3Subtract(walk, Vector3Scale(n, 1.5f));
         (void)vUp;
         // A jump starts from the walking velocity only: keeping the press into a sloped ground would
         // push you downhill on takeoff.
@@ -304,7 +309,7 @@ void Player::stepPhysics(Scene& world, float dt, Vector3 wish, bool jetUp, bool 
     Vector3 gAccel = Vector3Scale(grounded || airFelt ? gFelt : gvec, gravityScale * dt);
     // Static friction: standing on walkable ground, only gravity's push into the ground applies.
     // (The downhill part made a standing player creep ~1.6 cm/s down slopes at fixed substeps.)
-    if (grounded) gAccel = Vector3Scale(groundNormal, std::min(0.0f, Vector3DotProduct(gAccel, groundNormal)));
+    if (grounded) gAccel = resting ? Vector3{ 0, 0, 0 } : Vector3Scale(groundNormal, std::min(0.0f, Vector3DotProduct(gAccel, groundNormal)));
     velocity = Vector3Add(velocity, gAccel);
 
     // Airborne, velocity is world-frame but the terrain already stands where it will be at the end of
@@ -358,7 +363,7 @@ bool Player::resolveCollisions(Scene&, Vector3& feet) {
                 // Centre in the open: is there solid ground within the radius along -n, and how far?
                 if (!solid(Vector3Subtract(c, Vector3Scale(n, radius)))) continue; // a false contact
                 float lo = 0.0f, hi = radius;                                       // lo open, hi solid
-                for (int k = 0; k < 6; ++k) {
+                for (int k = 0; k < 10; ++k) { // to ~0.4 mm
                     const float mid = 0.5f * (lo + hi);
                     if (solid(Vector3Subtract(c, Vector3Scale(n, mid)))) hi = mid; else lo = mid;
                 }
@@ -418,9 +423,17 @@ bool Player::resolveCollisions(Scene&, Vector3& feet) {
         float dist; Vector3 n;
         const float skin = 0.12f;
         if (TerrainSurfaceDistance(p, Vector3Add(feet, Vector3Scale(up, radius)), dist, n) && dist < radius + skin && Vector3DotProduct(n, up) > 0.55f) {
-            feet = Vector3Subtract(feet, Vector3Scale(n, std::max(0.0f, dist - radius))); // settle onto it
+            // Settle onto it, past a 2 cm dead band: the distance here is a linear estimate and the
+            // push-out a bisection; settling every frame see-sawed between the two by 5-9 mm.
+            const float gap = dist - radius;
+            if (gap > 0.02f) feet = Vector3Subtract(feet, Vector3Scale(n, gap - 0.01f));
             onGround = true;
             groundNormal = n;
+        } else if (solid(Vector3Subtract(feet, Vector3Scale(up, skin)))) {
+            // The estimate overshoots on small, sharply curved bodies: solid right under the feet is
+            // standing too (a resting player no longer presses into the ground to make contact).
+            onGround = true;
+            groundNormal = up;
         }
     }
     return onGround;

@@ -119,6 +119,7 @@ int main(int argc, char** argv)
     Vector3 spawnDir = { 0, 1, 0 };
     double walkStart = -1.0;
     bool benchStandOnly = false; // --test-stand S: like --test-walk but standing still
+    double standCamMax = 0.0; float standFwdMax = 0.0f, standUpMax = 0.0f, standTexelSlide = 0.0f; int standFrames = 0, standJitterFrames = 0;
     int benchMineStrokes = 0;     // --test-mine N: dig N strokes at the feet, craft, build (after any walk test)
     bool mineStarted = false, mineStoppedEarly = false;
     int minePhase = 0, minedStrokes = 0, mineCrafted = 0;
@@ -1700,6 +1701,33 @@ int main(int argc, char** argv)
                     walkMaxDensity = std::max(walkMaxDensity, d);
                     walkFrames++;
                     walkGroundedFrames += player.grounded ? 1 : 0;
+                    if (benchStandOnly && GetTime() - walkStart > 1.0) {
+                        // Standing still: the camera must hold still in the ground's frame (no jitter).
+                        static DVec3 lastCam{}; static Vector3 lastFwd{}, lastUp{}; static bool have = false;
+                        const DVec3 cam = start->toLocalD(world.renderOrigin + world.camera.position);
+                        const Vector3 fwd = start->dirToLocal(Vector3Normalize(Vector3Subtract(world.camera.target, world.camera.position)));
+                        const Vector3 up = start->dirToLocal(world.camera.up);
+                        if (have) {
+                            standCamMax = std::max(standCamMax, (cam - lastCam).length());
+                            if ((cam - lastCam).length() > 0.002) ++standJitterFrames;
+                            standFwdMax = std::max(standFwdMax, acosf(std::clamp(Vector3DotProduct(fwd, lastFwd), -1.0f, 1.0f)) * RAD2DEG);
+                            standUpMax = std::max(standUpMax, acosf(std::clamp(Vector3DotProduct(up, lastUp), -1.0f, 1.0f)) * RAD2DEG);
+                            standFrames++;
+                        }
+                        {
+                            // A fixed point on the ground (the feet at 1 s) in shadow-map texels: it must not
+                            // slide across the texel grid while standing (only the sun's slow motion).
+                            static bool havePt = false;
+                            if (!havePt) {
+                                havePt = true;
+                                const DVec3 groundPt = start->toLocalD(player.position);
+                                world.shadowProbe = [start, groundPt] { return start->toWorldD(groundPt); };
+                                world.shadowProbeSlide = 0.0f;
+                            }
+                            standTexelSlide = world.shadowProbeSlide;
+                        }
+                        lastCam = cam; lastFwd = fwd; lastUp = up; have = true;
+                    }
                     { const DVec3 here = start->toLocalD(player.position); walkPath += (here - walkLast).length(); walkLast = here; }
                     if (GetTime() - walkStart > benchWalkSeconds || (walkTargetM > 0.0 && walkPath >= walkTargetM)) {
                         player.autoWalk = false;
@@ -1707,6 +1735,8 @@ int main(int argc, char** argv)
                         const float alt = Vector3Distance(feet, start->position);
                         printf("bench: walked %.1f m in %.1f s, grounded %.0f%% of frames, density at body %.2f..%.2f (solid >= %.2f), %.1f m from centre\n",
                                dist, GetTime() - walkStart, 100.0 * walkGroundedFrames / std::max(1, walkFrames), walkMinDensity, walkMaxDensity, ISO_LEVEL, alt);
+                        if (benchStandOnly) printf("bench: standing still %d frames: camera moved at most %.4f m per frame in the ground's frame, view turned %.4f deg, up %.4f deg; the ground slid %.2f shadow texels/s: %s\n", standFrames, standCamMax, standFwdMax, standUpMax, standTexelSlide / std::max(0.1, GetTime() - walkStart - 1.0),
+                                                   standJitterFrames * 100 <= standFrames && standTexelSlide / std::max(0.1, GetTime() - walkStart - 1.0) < 10.0 ? "PASS" : "FAIL");
                         if (walkTargetM > 0.0) {
                             const double pct = 100.0 * walkGroundedFrames / std::max(1, walkFrames);
                             const bool pass = walkPath >= walkTargetM && pct >= 90.0 && walkMaxDensity < ISO_LEVEL;
