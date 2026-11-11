@@ -40,6 +40,14 @@ struct SurvivalState {
 };
 extern SurvivalState survival;
 
+// The world's difficulty (saved with it; new worlds take settings.difficulty): 0 peaceful (no night
+// threats or hostile animals, hunger x0.6, extra food to start), 1 normal, 2 hard (no Map in the
+// starting kit, hunger x1.25, threats bite harder and come more often).
+extern int worldDifficulty;
+float Difficulty_HungerScale();
+float Difficulty_ThreatScale(); // 0 peaceful, 1 normal, 1.5 hard
+const char* Difficulty_Name(int d);
+
 void Survival_Update(Scene& world, float dt, bool inputEnabled);
 // Consumables (the hotbar uses them): oxygen canister, power cell (charges the ship while piloting).
 bool Survival_IsUsable(const std::string& id);
@@ -56,6 +64,12 @@ void Objectives_DrawHUD();
 // Quest book (tiers.txt): current tier, advanced when its gate item is made or placed.
 void QuestBook_Update();
 void QuestBook_NotePlaced(const std::string& item);
+// Events counted for "do <event> <n>" tasks (eat, feed, penned, till, plant, harvest, waypoint, modules, explored).
+void QuestBook_Count(const std::string& event, double n = 1.0);
+void QuestBook_AtLeast(const std::string& event, double value); // a running maximum (penned animals, modules fitted)
+double QuestBook_CountOf(const std::string& event);
+// Whether a task spec ("get iron_ingot 3", "place kiln", "do eat 1", ...) is met now (the quest tree).
+bool QuestBook_Met(const std::string& kind, const std::string& target, double n);
 int QuestBook_Tier();
 void QuestBook_SetTier(int tier);
 void QuestBook_Reset();                         // a new game: tier 0, nothing done

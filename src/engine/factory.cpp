@@ -205,7 +205,7 @@ struct LayoutMsg {
     std::vector<std::string> machineVariant;              // per machine: its one output item ("" any)
     std::vector<Int3> conveyors, cables;
 };
-struct ItemMsg { int kind; uint64_t body; uint32_t plot; int part; int item; int count; }; // 0 insert, 1 extract, 2 seed
+struct ItemMsg { int kind; uint64_t body; uint32_t plot; int part; int item; int count; }; // 0 insert, 1 extract, 2 seed, 3 take (one item from a chest)
 
 std::mutex simMutex;                          // state (sim thread holds it for a tick)
 std::vector<PlotSim> plots;
@@ -224,6 +224,7 @@ std::vector<std::pair<int, int>> refunds;     // sim thread: contents of removed
 std::mutex viewMutex;                         // snapshot for the HUD
 std::tuple<uint64_t, uint32_t, int> watchKey{ 0, 0, -1 };
 MachineView watchView;
+std::map<std::tuple<uint64_t, uint32_t, int>, std::vector<std::pair<int, int>>> chestView; // chests of plots near the player: (item, count)
 FactoryStats stats;
 
 std::thread simThread;
@@ -567,6 +568,8 @@ void SimLoop() {
                 if (im.kind == 0 || im.kind == 2) {
                     const int left = Accepts(m.type, im.item) ? AddItems(m.in, InSlots(m), im.item, im.count) : im.count;
                     if (left > 0 && im.kind == 0) back.push_back({ im.item, left });
+                } else if (im.kind == 3) {
+                    if (m.type == PartType::Chest) { const int k = std::min(im.count, CountItems(m.in, kChestSlots, im.item)); TakeItems(m.in, kChestSlots, im.item, k); if (k > 0) back.push_back({ im.item, k }); }
                 } else {
                     Stack* s = m.type == PartType::Chest ? m.in : m.out;
                     const int n = m.type == PartType::Chest ? kChestSlots : kSlots;
@@ -593,6 +596,15 @@ void SimLoop() {
                 const auto& [b, pl, part] = watchKey;
                 if (PlotSim* p = FindPlot(b, pl)) FillView(*p, part, watchView); else watchView = MachineView{};
                 for (auto& r : back) results.push_back(r);
+                chestView.clear();
+                for (const PlotSim& ps : plots) {
+                    if (!ps.nearPlayer) continue;
+                    for (const Machine& m : ps.machines) {
+                        if (m.type != PartType::Chest) continue;
+                        auto& v = chestView[std::make_tuple(ps.body, ps.plot, m.part)];
+                        for (int i = 0; i < kChestSlots; ++i) if (m.in[i].count > 0) v.push_back({ m.in[i].item, m.in[i].count });
+                    }
+                }
             }
         }
         tickCount++;
@@ -778,3 +790,22 @@ bool Factory::Accepts(PartType type, const std::string& item) {
 }
 
 void Factory::SetSpeed(int ticksPerTick) { simSpeed = std::max(1, ticksPerTick); }
+
+void Factory::Take(uint64_t body, uint32_t plot, int part, const std::string& item, int count) {
+    std::lock_guard<std::mutex> q(queueMutex);
+    itemQueue.push_back({ 3, body, plot, part, tables.item(item), count });
+}
+
+std::vector<std::pair<std::string, int>> Factory::ChestContents(uint64_t body, uint32_t plot, int part) {
+    std::vector<std::pair<std::string, int>> out;
+    std::lock_guard<std::mutex> v(viewMutex);
+    auto it = chestView.find(std::make_tuple(body, plot, part));
+    if (it == chestView.end()) return out;
+    for (const auto& s : it->second) {
+        const std::string name = tables.name(s.first);
+        bool merged = false;
+        for (auto& o : out) if (o.first == name) { o.second += s.second; merged = true; }
+        if (!merged) out.push_back({ name, s.second });
+    }
+    return out;
+}

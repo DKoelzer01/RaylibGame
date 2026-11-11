@@ -96,23 +96,38 @@ Shaders in `resources/` hot-reload when saved.
   placed machines and obtained totals are saved.
 - **Hunger and temperature** (`src/space/survival.*`, `resources/data/foods.txt`): a food bar that empties in ~45
   min (faster running, on the jetpack, in the cold, or sick from raw meat); at 0 health falls slowly, above 80 it heals.
-  Eat from the hotbar. The air temperature (latitude, height, day and night, shelter underground) shows by the bars:
+  Eat from the hotbar: the first press of a food slot takes it in hand, the second eats it. The air temperature (latitude, height, day and night, shelter underground) shows by the bars:
   below 5 C food drains faster (3x at the poles), above 35 C slow damage. The suit regulates in vacuum.
 - **Farming** (`src/space/farming.*`, `resources/data/crops.txt`): farmland is a build part (4 dirt, or till soft
   ground with a shovel: RMB). Look at it: I plants seeds you carry, O harvests a ripe crop (yield plus 1-2 seeds).
   Grain, roots and flax grow in daylight only, twice as fast with water within 4 m; seeds come from bushes. Grain
-  grinds into flour (Tab), bread and roasted roots cook in a campfire. Crops are saved.
+  grinds into flour (Tab), bread and roasted roots cook in a campfire. Digging grass now and then turns up seeds.
+  Crops show four stages (sprouts, leafy, tall, ripe with heads). Crops are saved.
 - **Animals** (`src/space/animals.*`, `resources/data/animals.txt`): passive placeholder animals (coloured boxes with
   a head): woolbacks, plains runners (wild: they bolt at 25 m), cluckers and hornhides. Herds are placed from the seed
   in 256 m tiles as you come near; only those within 300 m move. They graze, wander, rest at night and run when hit;
   they keep off water, steep ground and build parts. Fences (2 from 3 wood) and gates (the player walks
   through, animals do not) make a pen. Look at one: I feeds it (it follows
   you for 30 s; two fed adults close together breed a young one that grows up in an hour), O collects wool (shears),
-  milk (bucket) or eggs, LMB attacks (meat, hide, feathers). Raw meat cooks in a campfire. Animals are saved.
+  milk (bucket) or eggs, LMB attacks (meat, hide, feathers). Holding an animal's food (select its hotbar slot)
+  draws it to you within 16 m, wild ones too. Animals show as dots on the minimap. Raw meat cooks in a campfire.
+  Animals are saved. Threats (not on peaceful): thornbacks (territorial) charge within 12 m; after dark, dusk stalkers
+  come out 45-60 m away and hunt you, keep 14 m from a campfire (one within 10 m keeps you safe) and leave at dawn.
+  No hostile herds within 500 m of the start.
+- **Crafting** (the Crafting tab, `src/space/recipebook.*`, `src/space/storage.*`): only recipes you know show - a
+  recipe is known once all its ingredients have been discovered (some also need an unlock in
+  `resources/data/recipe_unlocks.txt`), with a toast for each new one. Search by item or ingredient; a toggle shows only
+  what you can make now. Chests within 8 m count as part of the inventory (a craft pulls what it needs from them),
+  and Deposit (button, or Q with the inventory open) puts items into the nearby chests that already hold them.
+- **Quest tree** (`src/space/questtree.*`, `resources/data/quests.txt`, the Quest tree tab): side lines branching off
+  the main tiers - farming, husbandry, the suit and exploring (nights survived, stalkers fought, tiles mapped) - each
+  node opening on its requirements and paying a reward when done. `--shot-tabs` screenshots the tree and Suit tabs.
+- **Difficulty** (Settings: New worlds; saved with each world): peaceful (no threats, hunger x0.6, 6 berries to
+  start), normal, hard (no Map in the starting kit, hunger x1.25, threats bite 1.5x and up to 3 stalkers).
 - **Environmental suit** (`src/space/suit.*`, `resources/data/suits.txt`, `suit_modules.txt`): you start in a basic
   suit with 2 module slots; a field suit (steel plate, cloth, polyethylene) has 4 and +20% oxygen and power, an
   explorer suit (titanium alloy, advanced circuits) 6 and +50%. Modules, fitted in the inventory's Suit tab: oxygen
-  tank, battery pack, insulation, rebreather, thruster pack, lamp upgrade, thermal regulator, ore scanner (nearest
+  tank (drag a module onto a slot, or Fit), battery pack, insulation, rebreather, thruster pack, lamp upgrade, thermal regulator, ore scanner (nearest
   ore within 64 m on the HUD), servo legs, grip boots, food pouch. Underwater, oxygen drains twice as fast. Swapping
   suits keeps the modules that fit and returns the rest. Cloth comes from fibre or wool.
 - **Tool wear** (`src/space/toolwear.*`): every stroke, chop or hit wears the held tool (stone 150 strokes, iron 400,
@@ -182,7 +197,8 @@ Shaders in `resources/` hot-reload when saved.
   hidden faces culled, cast shadows, collide with the player, and are saved with their material.
 - **Inland water** (`PlanetField::waterElevation`, `src/engine/rivers.*`): a drainage network per planet. A priority
   flood over ~420 m cells routes water downhill to the sea; cells draining more than ~7 km^2 carry a river, its level
-  falling (never rising) downstream and its width and depth growing with the flow; filled depressions become lakes.
+  falling (never rising) downstream and its width and depth growing with the flow; filled depressions become lakes
+  (the ground next to them is banked up 0.3 m above the water).
   Rivers curve between the cells and carve their own valleys (a floodplain, then sides rising 0.3 m per m). Ponds
   (12-38 m, flat surfaces) sit on gentle ground; beds are sand and gravel, and digging
   them also turns up clay. Undug grassland facing up is grass all the way through its soil; planets yield dirt
@@ -264,13 +280,17 @@ fuelled and flown by the autopilot to orbit, saved and loaded in orbit, brought 
 `--test-moon` (moon on its analytic orbit; standing and jumping on it; digging at the feet launches nobody),
 `--test-hunger` (drain at rest, starving, eating, cold at the pole, saved), `--test-farm` (till, plant, no growth at
 night, ripe in daylight, harvest, a growing crop saved), `--test-animals` (herds placed, grazing on the ground,
+`--test-crafting` (discovery and unlocks gate recipes, search, a nearby chest counted, pulled from and deposited
+into), `--test-recipes` (every item reachable from the world; lists items nothing uses),
+`--test-threats` (a stalker comes after dark and bites; a campfire keeps it off; gone by day; none on peaceful; a
+thornback charges), `--test-animals` (herds placed, grazing on the ground,
 flee when hit, follow when fed, a fenced pen holds a scared herd and lets the player through its gate, breeding, drops, saved, 200 animals under 1 ms),
 `--test-suit` (each module's stat, suits swapped, saved; underwater oxygen with and without a rebreather; the cold
 at the pole bare, insulated and regulated),
 `--test-tools` (wear counted from strokes, saved, repaired, a tool breaks at its durability; an iron hoe tills 3x3),
 `--test-rivers` (the network: levels never rise and widths never shrink downstream; the longest river walked
 through the terrain queries stays wet and only falls; a screenshot of the river nearest the start),
-`--test-quests` (tiers open by their tasks, items used up still count, quest state through a save),
+`--test-quests` (tiers open by their tasks, items used up still count, event tasks, the quest tree, all through a save),
 `--test-viewmodel` (hands still at rest, bob within its amplitude once a step, screenshots of each tool),
 `--test-map` (compass reads east facing east, walking explores, a waypoint north bears 0, both maps render, saved),
 `--test-smallbody` (drop onto a huge ring rock and a 5 m one: land, stand, no death), `--test-inventory` (grid

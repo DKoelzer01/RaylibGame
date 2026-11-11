@@ -4,6 +4,7 @@
 #include "gameui.h"
 #include "inventory.h"
 #include "plots.h"
+#include "survival.h"
 #include "voxel.h"
 #include "world.h"
 #include "worldtypes.h"
@@ -41,7 +42,7 @@ namespace {
     const CropDef* Crop(const std::string& id) { LoadCrops(); for (const CropDef& c : crops) if (c.id == id) return &c; return nullptr; }
 
     // Crop state per farmland part: "<body name>|<plot id>|<part>" -> crop and growth (0..1).
-    struct Growing { std::string crop; float growth = 0.0f; };
+    struct Growing { std::string crop; float growth = 0.0f; float rate = 0.0f; }; // rate: 1, or 2 by water (worked out once; 0 = not yet)
     std::map<std::string, Growing> fields;
 
     std::string Key(const Planetoid& body, const Plot& plot, int part) { return body.name + "|" + std::to_string(plot.id) + "|" + std::to_string(part); }
@@ -83,12 +84,15 @@ void Farm_Update(Scene& world, float dt) {
         const Vector3 top = TopCentre(*plot, plot->parts[part]);
         const Vector3 up = Vector3Normalize(top);
         if (Vector3DotProduct(sun, body->dirToWorld(up)) < 0.05f) { ++it; continue; }
-        float rate = 1.0f;
-        if (const auto* pf = dynamic_cast<const PlanetField*>(body->field.get())) {
-            const float e = pf->elevation(up);
-            if (e < 3.0f) rate = 2.0f; // the sea shore
-            else if (pf->inlandWaterNear(up, 4.0f) && pf->waterElevation(up) != PlanetField::kNoWater) rate = 2.0f;
+        if (g.rate <= 0.0f) { // the terrain queries are costly: once per field
+            g.rate = 1.0f;
+            if (const auto* pf = dynamic_cast<const PlanetField*>(body->field.get())) {
+                const float e = pf->elevation(up);
+                if (e < 3.0f) g.rate = 2.0f; // the sea shore
+                else if (pf->inlandWaterNear(up, 4.0f) && pf->waterElevation(up) != PlanetField::kNoWater) g.rate = 2.0f;
+            }
         }
+        const float rate = g.rate;
         g.growth = std::min(1.0f, g.growth + dt * rate / c->growSeconds);
         ++it;
     }
@@ -103,6 +107,7 @@ bool Farm_Plant(Planetoid& body, Plot& plot, int part, const std::string& seed) 
         if (!seed.empty() && c.seed != seed) continue;
         if (inventory.count(c.seed) <= 0 || !inventory.remove(c.seed, 1)) continue;
         fields[key] = { c.id, 0.0f };
+        QuestBook_Count("plant");
         Audio_Play(Sfx::Pickup, 0.4f, 0.7f);
         return true;
     }
@@ -121,6 +126,7 @@ int Farm_Harvest(Planetoid& body, Plot& plot, int part) {
     inventory.add(c->yield, c->yieldCount);
     inventory.add(c->seed, seeds);
     GameUI_Toast(TextFormat("+%d %s  +%d seeds", c->yieldCount, c->yield.c_str(), seeds));
+    QuestBook_Count("harvest");
     Audio_Play(Sfx::Pickup, 0.5f);
     fields.erase(it);
     return c->yieldCount + seeds;
@@ -161,7 +167,9 @@ bool Farm_Till(Scene& world, Planetoid& body, Vector3 ground) {
         plot = body.plots->plotFor(ground, 0.0f, true);
     }
     if (!plot->canPlace(part)) return false;
-    return BuildTool_Place(body, *plot, part, false);
+    if (!BuildTool_Place(body, *plot, part, false)) return false;
+    QuestBook_Count("till");
+    return true;
 }
 
 void Farm_Draw3D(Scene& world) {
@@ -181,17 +189,22 @@ void Farm_Draw3D(Scene& world) {
         const Vector3 e = body->dirToWorld(plot->east), u = body->dirToWorld(plot->up), n = body->dirToWorld(plot->north);
         const float g = kv.second.growth;
         const int stage = std::min(3, (int)(g * 4.0f));
-        const float h = 0.12f + 0.22f * stage;
-        const Color col = g >= 1.0f ? c->color : ColorLerp({ 70, 150, 50, 255 }, c->color, g * 0.6f);
+        // Four stages: sprouts, leafy, tall, ripe (heads in the crop's colour on top).
+        static const float kH[4] = { 0.08f, 0.25f, 0.5f, 0.7f };
+        const bool ripe = g >= 1.0f;
+        const float h = kH[ripe ? 3 : std::min(stage, 2)];
+        const Color col = ColorLerp({ 70, 150, 50, 255 }, { 110, 150, 60, 255 }, g);
         // Right-handed (east, up, south): the plot frame (east, up, north) is mirrored, which would
         // turn the cubes inside out under backface culling.
         Matrix m = { e.x, u.x, -n.x, top.x, e.y, u.y, -n.y, top.y, e.z, u.z, -n.z, top.z, 0, 0, 0, 1 };
         rlPushMatrix();
         rlMultMatrixf(MatrixToFloat(m));
-        for (int k = 0; k < 4; ++k) {
-            const float x = (k & 1) ? 0.25f : -0.25f, z = (k & 2) ? 0.25f : -0.25f;
-            DrawCube({ x, h * 0.5f, z }, 0.16f + 0.04f * stage, h, 0.16f + 0.04f * stage, col);
-            DrawCubeWires({ x, h * 0.5f, z }, 0.16f + 0.04f * stage, h, 0.16f + 0.04f * stage, Fade(BLACK, 0.25f));
+        const float w = ripe ? 0.07f : 0.05f + 0.025f * std::min(stage, 2);
+        for (int k = 0; k < 9; ++k) {
+            const float x = (k % 3 - 1) * 0.3f + ((k * 37) % 7 - 3) * 0.012f, z = (k / 3 - 1) * 0.3f + ((k * 53) % 7 - 3) * 0.012f;
+            const float hk = h * (0.85f + 0.05f * (k % 4));
+            DrawCube({ x, hk * 0.5f, z }, w, hk, w, col);
+            if (ripe) DrawCube({ x, hk + 0.06f, z }, w * 1.8f, 0.12f, w * 1.8f, c->color); // the head
         }
         rlPopMatrix();
     }

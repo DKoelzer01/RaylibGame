@@ -158,6 +158,7 @@ bool Suit_Fit(const std::string& id) {
         if (slot.empty()) {
             inventory.remove(id, 1);
             slot = id;
+            { int nfit = 0; for (const std::string& m : fitted) nfit += m.empty() ? 0 : 1; QuestBook_AtLeast("modules", nfit); }
             Recompute();
             Audio_Play(Sfx::Build, 0.4f, 1.4f);
             return true;
@@ -208,10 +209,32 @@ void Suit_DrawTab() {
     ImGui::Separator();
     for (int i = 0; i < (int)fitted.size(); ++i) {
         ImGui::PushID(i);
-        if (fitted[i].empty()) ImGui::TextDisabled("Slot %d: empty", i + 1);
-        else {
-            const ItemDef* d = itemDB.find(fitted[i]);
-            ImGui::Text("Slot %d: %s", i + 1, d ? d->name.c_str() : fitted[i].c_str());
+        // Each slot is a drop target: drag a carried module here (a fitted one swaps back out).
+        const ItemDef* d = fitted[i].empty() ? nullptr : itemDB.find(fitted[i]);
+        const std::string label = fitted[i].empty() ? TextFormat("Slot %d: empty (drag a module here)", i + 1)
+                                                    : TextFormat("Slot %d: %s", i + 1, d ? d->name.c_str() : fitted[i].c_str());
+        ImGui::Selectable(label.c_str(), false, 0, ImVec2(ImGui::GetContentRegionAvail().x - 70.0f, 0.0f));
+        if (!fitted[i].empty() && ImGui::BeginDragDropSource()) {
+            ImGui::SetDragDropPayload("SUIT_SLOT", &i, sizeof(int));
+            ImGui::Text("Remove %s", d ? d->name.c_str() : fitted[i].c_str());
+            ImGui::EndDragDropSource();
+        }
+        if (ImGui::BeginDragDropTarget()) {
+            if (const ImGuiPayload* pl = ImGui::AcceptDragDropPayload("SUIT_MODULE")) {
+                const std::string id((const char*)pl->Data);
+                if (inventory.count(id) > 0) {
+                    if (!fitted[i].empty()) Suit_Unfit(i);
+                    inventory.remove(id, 1);
+                    fitted[i] = id;
+                    Recompute();
+                    int nfit = 0; for (const std::string& m : fitted) nfit += m.empty() ? 0 : 1;
+                    QuestBook_AtLeast("modules", nfit);
+                    Audio_Play(Sfx::Build, 0.4f, 1.4f);
+                }
+            }
+            ImGui::EndDragDropTarget();
+        }
+        if (!fitted[i].empty()) {
             ImGui::SameLine();
             if (ImGui::SmallButton("Remove")) Suit_Unfit(i);
             ImGui::TextDisabled("    %s", Suit_ModuleText(fitted[i]));
@@ -219,7 +242,11 @@ void Suit_DrawTab() {
         ImGui::PopID();
     }
     ImGui::Separator();
-    ImGui::TextUnformatted("Carried:");
+    ImGui::TextUnformatted("Carried (drag onto a slot, or Fit):");
+    if (ImGui::BeginDragDropTarget()) { // a fitted module dropped back here comes out
+        if (const ImGuiPayload* pl = ImGui::AcceptDragDropPayload("SUIT_SLOT")) Suit_Unfit(*(const int*)pl->Data);
+        ImGui::EndDragDropTarget();
+    }
     bool any = false;
     for (const auto& m : modules) {
         const int n = inventory.count(m.id);
@@ -229,7 +256,12 @@ void Suit_DrawTab() {
         const ItemDef* d = itemDB.find(m.id);
         if (ImGui::SmallButton("Fit")) Suit_Fit(m.id);
         ImGui::SameLine();
-        ImGui::Text("%s x%d - %s", d ? d->name.c_str() : m.id.c_str(), n, m.text.c_str());
+        ImGui::Selectable(TextFormat("%s x%d - %s", d ? d->name.c_str() : m.id.c_str(), n, m.text.c_str()));
+        if (ImGui::BeginDragDropSource()) {
+            ImGui::SetDragDropPayload("SUIT_MODULE", m.id.c_str(), m.id.size() + 1);
+            ImGui::Text("%s", d ? d->name.c_str() : m.id.c_str());
+            ImGui::EndDragDropSource();
+        }
         ImGui::PopID();
     }
     for (const auto& su : suits) {

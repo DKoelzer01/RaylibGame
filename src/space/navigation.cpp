@@ -1,4 +1,6 @@
 #include "navigation.h"
+#include "survival.h"
+#include "animals.h"
 #include "farsphere.h"
 #include "gameui.h"
 #include "inventory.h"
@@ -262,6 +264,7 @@ bool Nav_MapImageReady() { return bigMap.tex.id != 0 && !bigMap.pending; }
 
 void Nav_AddWaypoint(const std::string& body, Vector3 dir, const std::string& name) {
     waypoints.push_back({ body, name, Vector3Normalize(dir) });
+    QuestBook_Count("waypoint");
 }
 
 float Nav_Heading(Scene& world) {
@@ -293,6 +296,7 @@ void Nav_Update(Scene& world, bool inputEnabled) {
                 set.insert(TileKey(d, R));
             }
         if (set.size() != before) ++exploredVersion[h.body->name];
+        if (set.size() != before) { size_t all = 0; for (const auto& kv : explored) all += kv.second.size(); QuestBook_AtLeast("explored", (double)all); }
     }
     // Minimap: re-rendered when the player has moved 10 m off its centre, or new ground shows.
     minimap.take();
@@ -439,6 +443,15 @@ void Nav_DrawHUD(Scene& world) {
     };
     if (hasStart && startBody == h.body->name) onMini(startDir, GREEN);
     for (const Waypoint& w : waypoints) if (w.body == h.body->name) onMini(w.dir, GOLD);
+    // Animals nearby: small dots (not pinned to the rim), wild ones tan.
+    for (int i = 0; i < Animals_Count(); ++i) {
+        if (Animals_Body(i) != h.body->name) continue;
+        const Vector3 dir = Vector3Normalize(Animals_Position(i));
+        const Vector2 p = OnImage(m, dir);
+        const Vector2 rel = { (p.x - off.x) * k, (p.y - off.y) * k };
+        const Vector2 s = { c.x + rel.x * cr - rel.y * sr, c.y + rel.x * sr + rel.y * cr };
+        if (Vector2Distance(s, c) < rad - 4.0f) DrawCircleV(s, 2.5f, Animals_Hostile(i) ? RED : Animals_Wild(i) ? Color{ 230, 180, 110, 255 } : RAYWHITE);
+    }
     // The player: an arrow pointing up (the view), north marked on the rim.
     DrawTriangle({ c.x, c.y - 9 }, { c.x - 6, c.y + 7 }, { c.x + 6, c.y + 7 }, SKYBLUE);
     if (heading >= 0.0f) {

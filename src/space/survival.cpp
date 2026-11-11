@@ -1,5 +1,6 @@
 #include "survival.h"
 #include "suit.h"
+#include "questtree.h"
 #include "rocket.h"
 #include "inventory.h"
 #include "player.h"
@@ -14,12 +15,17 @@
 #include <algorithm>
 #include <cmath>
 #include <cstring>
+#include <map>
 #include <set>
 #include <string>
 #include <unordered_map>
 #include <vector>
 
 SurvivalState survival;
+int worldDifficulty = 1;
+float Difficulty_HungerScale() { return worldDifficulty == 0 ? 0.6f : worldDifficulty == 2 ? 1.25f : 1.0f; }
+float Difficulty_ThreatScale() { return worldDifficulty == 0 ? 0.0f : worldDifficulty == 2 ? 1.5f : 1.0f; }
+const char* Difficulty_Name(int d) { return d == 0 ? "Peaceful" : d == 2 ? "Hard" : "Normal"; }
 
 // ---------------------------------------------------------------------------------------------
 // Food (resources/data/foods.txt: item | food | note) and the air temperature
@@ -153,7 +159,7 @@ void Survival_Update(Scene& world, float dt, bool inputEnabled) {
     {
         const Vector3 flat = Vector3Subtract(player.velocity, Vector3Scale(player.up, Vector3DotProduct(player.velocity, player.up)));
         const bool active = player.jetpackFiring || (player.grounded && Vector3Length(flat) > player.walkSpeed * 1.1f);
-        float drain = survival.foodDrainPerSec * (active ? 1.6f : 1.0f) * Suit_Stats().food;
+        float drain = survival.foodDrainPerSec * (active ? 1.6f : 1.0f) * Suit_Stats().food * Difficulty_HungerScale();
         const float T = survival.temperature;
         if (!std::isnan(T) && T < 5.0f) drain *= 1.0f + Suit_Stats().cold * (5.0f - T) / 15.0f; // insulation, the regulator
         if (GetTime() < survival.sickUntil) drain *= 2.0f;
@@ -166,6 +172,13 @@ void Survival_Update(Scene& world, float dt, bool inputEnabled) {
     if (inputEnabled) {
     }
 
+    {   // A night survived (the quest tree): dark fell and day came back without a death.
+        static bool inNight = false;
+        static int deathsAtDusk = 0;
+        const bool dark = Vector3DotProduct(Vector3Normalize(world.sunDirection), player.up) < -0.1f && player.nearest != nullptr;
+        if (dark && !inNight) { inNight = true; deathsAtDusk = survival.deaths; }
+        else if (!dark && inNight) { inNight = false; if (survival.deaths == deathsAtDusk) QuestBook_Count("nights"); }
+    }
     if (survival.health <= 0.0f) {
         survival.health = 0.0f;
         survival.dead = true;
@@ -185,8 +198,10 @@ static void Bar(int x, int y, int w, const char* label, float value, Color c, bo
 
 void Survival_DrawHUD() {
     const int x = 20, y = GetScreenHeight() - 192;
-    Bar(x, y, 260, "O2", survival.oxygen, { 90, 200, 255, 255 }, survival.oxygen < 20.0f);
-    Bar(x, y + 22, 260, "PWR", survival.power, { 250, 210, 70, 255 }, survival.power < 15.0f);
+    // The oxygen and power bars grow with the suit's capacity (basic suit: 260 px).
+    const int wO2 = (int)(180.0f + 80.0f * std::min(Suit_Stats().oxygen, 2.5f)), wPwr = (int)(180.0f + 80.0f * std::min(Suit_Stats().power, 2.5f));
+    Bar(x, y, wO2, "O2", survival.oxygen, { 90, 200, 255, 255 }, survival.oxygen < 20.0f);
+    Bar(x, y + 22, wPwr, "PWR", survival.power, { 250, 210, 70, 255 }, survival.power < 15.0f);
     Bar(x, y + 44, 260, "HP", survival.health, { 230, 70, 70, 255 }, survival.health < 30.0f);
     Bar(x, y + 66, 260, "FOOD", survival.food, { 120, 200, 90, 255 }, survival.food < 15.0f);
     // The air temperature, coloured when it costs you (cold: hunger; heat: health).
@@ -195,11 +210,12 @@ void Survival_DrawHUD() {
         const Color tc = T < 5.0f ? Color{ 130, 190, 255, 255 } : T > 35.0f ? Color{ 255, 140, 70, 255 } : Fade(RAYWHITE, 0.8f);
         const SuitStats& st = Suit_Stats();
         const char* note = T < 5.0f ? (st.cold <= 0.0f ? "  cold: regulated" : st.cold < 1.0f ? "  cold: insulated" : "  cold: hungrier") : T > 35.0f ? (st.heatProof ? "  heat: regulated" : "  heat") : "";
-        DrawText(TextFormat("%.0f C%s", T, note), x + 280, y + 68, 16, tc);
+        DrawText(TextFormat("%.0f C%s", T, note), x + std::max(wO2, wPwr) + 20, y + 68, 16, tc);
     }
-    if (GetTime() < survival.sickUntil) DrawText("SICK", x + 280, y + 46, 16, ORANGE);
-    if (survival.inLifeSupport) DrawText("LIFE SUPPORT", x + 280, y + 2, 16, SKYBLUE);
-    else if (survival.breathable) DrawText("BREATHABLE AIR", x + 280, y + 2, 16, Fade(SKYBLUE, 0.7f));
+    const int tx = x + std::max(wO2, wPwr) + 20;
+    if (GetTime() < survival.sickUntil) DrawText("SICK", tx, y + 46, 16, ORANGE);
+    if (survival.inLifeSupport) DrawText("LIFE SUPPORT", tx, y + 2, 16, SKYBLUE);
+    else if (survival.breathable) DrawText("BREATHABLE AIR", tx, y + 2, 16, Fade(SKYBLUE, 0.7f));
     DrawText(TextFormat("O2 canister x%d   power cell x%d   (use from the hotbar)", inventory.count("oxygen_canister"), inventory.count("power_cell")), x, y - 22, 16, Fade(RAYWHITE, 0.8f));
     if (survival.dead) {
         DrawRectangle(0, 0, GetScreenWidth(), GetScreenHeight(), Fade(BLACK, 0.6f));
@@ -226,6 +242,7 @@ namespace {
     std::set<std::string> placedItems;
     std::set<int> visitedBodies;
     bool reachedOrbit = false, visitedMoon = false, visitedRing = false;
+    std::map<std::string, double> questCounts; // events for "do" tasks: eat, feed, penned, till, plant, harvest, waypoint, modules, explored
 
     std::vector<std::string> Columns(const std::string& line) {
         std::vector<std::string> cols;
@@ -270,6 +287,7 @@ namespace {
         if (t.kind == "place") return placedItems.count(t.target) > 0;
         if (t.kind == "orbit") return reachedOrbit;
         if (t.kind == "visit") return t.target == "moon" ? visitedMoon : visitedRing;
+        if (t.kind == "do") { auto it = questCounts.find(t.target); return it != questCounts.end() && it->second >= t.n - 1e-6; }
         return false;
     }
 }
@@ -295,6 +313,10 @@ void Objectives_Update(Scene& world) {
 }
 
 void QuestBook_NotePlaced(const std::string& item) { placedItems.insert(item); }
+bool QuestBook_Met(const std::string& kind, const std::string& target, double n) { Task t; t.kind = kind; t.target = target; t.n = n; return TaskMet(t); }
+void QuestBook_Count(const std::string& event, double n) { questCounts[event] += n; }
+void QuestBook_AtLeast(const std::string& event, double v) { double& c = questCounts[event]; c = std::max(c, v); }
+double QuestBook_CountOf(const std::string& event) { auto it = questCounts.find(event); return it == questCounts.end() ? 0.0 : it->second; }
 int QuestBook_Tier() { return questTier; }
 void QuestBook_SetTier(int t) { questTier = std::max(0, t); }
 
@@ -304,6 +326,8 @@ void QuestBook_Reset() {
     placedItems.clear();
     visitedBodies.clear();
     reachedOrbit = visitedMoon = visitedRing = false;
+    questCounts.clear();
+    QuestTree_Reset();
     for (Tier& t : tiers) for (Task& k : t.tasks) k.done = false;
 }
 
@@ -325,6 +349,7 @@ void QuestBook_Update() {
         ++questTier;
         if (questTier < (int)tiers.size()) GameUI_Toast(TextFormat("Tier %d: %s", questTier, tiers[questTier].name.c_str()));
     }
+    QuestTree_Update(); // the side lines
 }
 
 int QuestBook_TierCount() { LoadTiers(); return (int)tiers.size(); }
@@ -342,6 +367,8 @@ void QuestBook_Save(FILE* f) {
     for (const std::string& p : placedItems) fprintf(f, "placed %s\n", p.c_str());
     for (const auto& kv : inventory.obtained) if (kv.second > 0.0) fprintf(f, "obtained %s %.2f\n", kv.first.c_str(), kv.second);
     fprintf(f, "quest_flags %d %d %d\n", reachedOrbit ? 1 : 0, visitedMoon ? 1 : 0, visitedRing ? 1 : 0);
+    for (const auto& kv : questCounts) fprintf(f, "quest_count %s %.2f\n", kv.first.c_str(), kv.second);
+    QuestTree_Save(f);
 }
 
 bool QuestBook_LoadLine(const char* tok, FILE* f) {
@@ -354,6 +381,8 @@ bool QuestBook_LoadLine(const char* tok, FILE* f) {
         return true;
     }
     if (strcmp(tok, "placed") == 0) { if (fscanf(f, " %63s", id) == 1) placedItems.insert(id); return true; }
+    if (QuestTree_LoadLine(tok, f)) return true;
+    if (strcmp(tok, "quest_count") == 0) { double n = 0; if (fscanf(f, " %63s %lf", id, &n) == 2) questCounts[id] = n; return true; }
     if (strcmp(tok, "obtained") == 0) { double n = 0; if (fscanf(f, " %63s %lf", id, &n) == 2) inventory.obtained[id] = n; return true; }
     if (strcmp(tok, "quest_flags") == 0) {
         int a = 0, b = 0, c = 0;
@@ -410,6 +439,7 @@ bool Survival_UseItem(const std::string& id) {
         const Food& food = foods[id];
         if (survival.food < 98.0f && inventory.remove(id, 1)) {
             survival.food = std::min(100.0f, survival.food + food.value);
+            QuestBook_Count("eat");
             if (food.raw && GetRandomValue(0, 99) < 30) { survival.sickUntil = (float)GetTime() + 60.0f; GameUI_Toast("You feel sick: cook your meat"); }
             Audio_Play(Sfx::Pickup, 0.5f, 0.8f);
             return true;

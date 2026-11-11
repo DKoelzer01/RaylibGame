@@ -8,6 +8,7 @@
 #include "audio.h"
 #include "terraintool.h"
 #include "tools.h"
+#include "animals.h"
 
 #include <raylib.h>
 #include <cstring>
@@ -41,6 +42,15 @@ namespace {
     void Select(int slot, bool piloting) {
         const std::string& id = slots[slot];
         if (id.empty()) return;
+        // Food and animal feed: the first press takes it in hand (animals that eat it follow you); the
+        // next press eats it (food only).
+        if ((Survival_IsFood(id) || Animals_IsFeed(id)) && !piloting) {
+            if (selected == slot && buildTool.active == false && terrainTool.heldTool.empty()) { if (Survival_IsFood(id)) Survival_UseItem(id); return; }
+            if (inventory.count(id) <= 0) { GameUI_Toast(TextFormat("No %s", ShortName(id))); return; }
+            selected = slot; buildTool.active = false; terrainTool.heldTool.clear();
+            GameUI_Toast(Survival_IsFood(id) ? TextFormat("Holding %s: press %d again to eat", ShortName(id), (slot + 1) % 10) : TextFormat("Holding %s: animals that eat it follow you", ShortName(id)));
+            return;
+        }
         if (Survival_IsUsable(id)) { Survival_UseItem(id); return; } // consumables don't change the selection
         if (piloting) return;
         selected = slot;
@@ -84,6 +94,11 @@ void Hotbar_Bind(int slot, const std::string& id) {
 
 const std::string& Hotbar_Slot(int slot) { return slots[slot]; }
 int Hotbar_Selected() { return selected; }
+std::string Hotbar_HeldFood() {
+    if (selected < 0 || selected >= kHotbarSlots || buildTool.active || !terrainTool.heldTool.empty()) return "";
+    const std::string& id = slots[selected];
+    return (Survival_IsFood(id) || Animals_IsFeed(id)) && inventory.count(id) > 0 ? id : "";
+}
 
 int Hotbar_KeySlot() {
     for (int i = 0; i < kHotbarSlots; ++i) if (IsKeyPressed(kKeys[i])) return i;

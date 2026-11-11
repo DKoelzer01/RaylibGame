@@ -356,6 +356,10 @@ float PlanetField::elevation(Vector3 dir, float fp) const {
     // water, then sides rising 0.3 m per m) cut into higher ground, low banks where the ground dips
     // below the water, and the channel bed. The valley stays resolved further out than the channel.
     if (const RiverNetwork* net = rivers()) {
+        // Next to a lake, the ground is banked up 0.3 m above its surface, fading out over 140 m, so
+        // the water stays in (the outflow river below cuts through it).
+        float lv, ld;
+        if (net->lakeRim(dir, lv, ld) && h < lv + 0.3f) h += (lv + 0.3f - h) * (1.0f - Smoothstep(0.0f, 140.0f, ld));
         const RiverNetwork::Hit rh = net->nearest(dir, RiverNetwork::kMaxReach);
         if (rh.found) {
             const float d = rh.dist, half = rh.halfWidth;

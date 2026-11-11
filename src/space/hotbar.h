@@ -23,6 +23,7 @@ void Hotbar_DrawHUD(bool piloting);
 void Hotbar_Bind(int slot, const std::string& id);    // slot 0..9 (key 1 .. key 0)
 const std::string& Hotbar_Slot(int slot);
 int Hotbar_Selected();
+std::string Hotbar_HeldFood();                        // the food or animal feed in hand (a selected slot), or ""
 // A number key pressed this frame: its slot (0..9), or -1.
 int Hotbar_KeySlot();
 void Hotbar_Press(int slot, bool piloting);           // as if its key were pressed (tests)

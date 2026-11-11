@@ -28,6 +28,9 @@ public:
     Hit nearest(Vector3 dir, float reach) const;
     // A lake here (in a lake cell or next to one): its level, else false.
     bool lakeAt(Vector3 dir, float& level) const;
+    // Next to a lake: its level and roughly how far from its edge (m). Ground there is banked up
+    // above the lake (elevation()) so the water stays in.
+    bool lakeRim(Vector3 dir, float& level, float& dist) const;
     bool waterNear(Vector3 dir, float extent) const; // cheap: a river or lake within `extent` m may be here
 
     // Tests and stats.
@@ -46,7 +49,7 @@ private:
     float R = 1.0f, cell = 420.0f;
     int n = 1; // cells per face edge
     std::vector<float> h, F, L, hw, dep;
-    std::vector<int> parent, mainChild;
+    std::vector<int> parent, mainChild, rimOf;
     std::vector<float> acc;
     std::vector<unsigned char> river, lake;
     struct Piece { Vector3 a, b; float la, lb, wa, wb, da, db; }; // positions in metres (body-local)

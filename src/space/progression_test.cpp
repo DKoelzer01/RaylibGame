@@ -13,6 +13,10 @@
 #include "factory.h"
 #include "world.h"
 #include "worldtypes.h"
+#include "animals.h"
+#include "farming.h"
+#include "navigation.h"
+#include "suit.h"
 
 #include <raymath.h>
 #include <algorithm>
@@ -32,6 +36,7 @@ namespace {
     Planetoid* body = nullptr;
     const PlanetField* field = nullptr;
     Plot* plot = nullptr;
+    Scene* scene = nullptr;
     Vector3 home{};                                   // body-local, the start
     std::map<std::string, std::vector<Vector3>> orePoints;
     std::map<std::string, size_t> oreNext;
@@ -167,13 +172,18 @@ namespace {
             if (!fed) { fed = true; Give("campfire", "crucible_mold", 1); Give("campfire", "wood", 2); }
             return Collect("campfire", "fired_crucible", 1);
         });
-        // Tier 1: a kiln; ores; ingots; bronze.
+        // Tier 1: eat; a kiln; ores; ingots; bronze.
+        add("harvest bushes for berries and eat them", [] {
+            while (inventory.count("berries") < 1) if (!TerrainTool_HarvestNearest(*body, home, false)) return false;
+            survival.food = 90.0f; // a morning's work
+            return Survival_UseItem("berries") && QuestBook_CountOf("eat") >= 1.0;
+        });
         add("find ore veins", [] { FindOre(); return true; });
-        add("mine 38 copper, 8 tin, 32 iron ore and 12 coal", [] { return MineOre("copper_ore", 38) && MineOre("tin_ore", 8) && MineOre("iron_ore", 32) && MineOre("coal", 12); });
+        add("mine 38 copper, 8 tin, 52 iron ore and 16 coal", [] { return MineOre("copper_ore", 38) && MineOre("tin_ore", 8) && MineOre("iron_ore", 52) && MineOre("coal", 16); });
         add("craft and place a kiln", [] { return Craft("kiln", 1) && Place("kiln", PartType::Kiln, { 3, 0, 0 }); });
         add("smelt copper", [] { static bool fed = false; if (!fed) { fed = true; Give("kiln", "copper_ore", 38); Give("kiln", "wood", 22); } return Collect("kiln", "copper_ingot", 38); });
         add("smelt tin", [] { static bool fed = false; if (!fed) { fed = true; Give("kiln", "tin_ore", 8); Give("kiln", "wood", 5); } return Collect("kiln", "tin_ingot", 8); });
-        add("smelt iron", [] { static bool fed = false; if (!fed) { fed = true; Give("kiln", "iron_ore", 30); Give("kiln", "wood", 24); } return Collect("kiln", "iron_ingot", 30); });
+        add("smelt iron", [] { static bool fed = false; if (!fed) { fed = true; Give("kiln", "iron_ore", 38); Give("kiln", "wood", 30); } return Collect("kiln", "iron_ingot", 38); });
         add("alloy 28 bronze", [] {
             static bool fed = false;
             if (!fed) { fed = true; Give("kiln", "copper_ingot", 21); Give("kiln", "tin_ingot", 7); Give("kiln", "wood", 8); }
@@ -193,13 +203,57 @@ namespace {
         add("craft and place a coke oven and a blast furnace", [] {
             return Craft("coke_oven", 1) && Craft("blast_furnace", 1) && Place("coke_oven", PartType::CokeOven, { 9, 0, 0 }) && Place("blast_furnace", PartType::BlastFurnace, { 12, 0, 0 });
         });
-        add("bake 6 coke", [] { static bool fed = false; if (!fed) { fed = true; Give("coke_oven", "coal", 12); } return Collect("coke_oven", "coke", 6); });
-        add("make 26 steel", [] { static bool fed = false; if (!fed) { fed = true; Give("blast_furnace", "iron_ingot", 26); Give("blast_furnace", "coke", 6); } return Collect("blast_furnace", "steel_ingot", 26); });
-        add("hammer 26 steel plates", [] { static bool fed = false; if (!fed) { fed = true; Give("forge_hammer", "steel_ingot", 26); Give("boiler", "wood", 40); } return Collect("forge_hammer", "steel_plate", 26); });
-        // Tier 3: glass, vacuum tubes.
-        add("dig 16 sand", [] { return DigSand(16); });
-        add("make 4 glass", [] { static bool fed = false; if (!fed) { fed = true; Give("kiln", "sand", 16); Give("kiln", "wood", 3); } return Collect("kiln", "glass", 4); });
+        add("bake 8 coke", [] { static bool fed = false; if (!fed) { fed = true; Give("coke_oven", "coal", 16); } return Collect("coke_oven", "coke", 8); });
+        add("make 34 steel", [] { static bool fed = false; if (!fed) { fed = true; Give("blast_furnace", "iron_ingot", 34); Give("blast_furnace", "coke", 8); } return Collect("blast_furnace", "steel_ingot", 34); });
+        add("hammer 34 steel plates", [] { static bool fed = false; if (!fed) { fed = true; Give("forge_hammer", "steel_ingot", 34); Give("boiler", "wood", 50); } return Collect("forge_hammer", "steel_plate", 34); });
+        add("pen two hornhides in a ring of fences (then take their hide)", [] {
+            static int phase = 0;
+            if (phase == 0) {
+                while (inventory.count("wood") < 60) if (!TerrainTool_HarvestNearest(*body, home, true)) return false;
+                if (!Craft("fence", 34)) return false;
+                // An 8 m square of fences 40 m east of the workshop, following the ground.
+                const Vector3 c = Surface(Offset(40.0f, 0.0f));
+                Plot* pen = body->plots->plotFor(c, 0.0f, true);
+                const uint8_t across = (uint8_t)RotateOrientation(0, 1); // turned fences sit a cell toward -z
+                for (int a = -8; a <= 8; a += 2)
+                    for (int side = 0; side < 4; ++side) {
+                        const bool alongX = side < 2;
+                        if (!alongX && a == 8) continue; // the rows reach the corners
+                        const int cx = alongX ? a : side == 2 ? -8 : 8, cz = alongX ? (side == 0 ? -8 : 9) : a;
+                        const Vector3 col = Vector3Normalize(pen->toBody({ (cx + 0.5f) * kCellSize, 0.0f, (cz + 0.5f) * kCellSize }));
+                        const int g = pen->cellAt(pen->toPlot(Surface(col))).y;
+                        if (!BuildTool_Place(*body, *pen, { PartType::Fence, { cx, g, cz }, alongX ? across : (uint8_t)0 }, true)) { printf("bench: progression: a fence would not go down\n"); failed = 1; return false; }
+                    }
+                // Two hornhides found grazing nearby, fed and led in (spawned inside: the AI is --test-animals' job).
+                Animals_Spawn(*scene, *body, "hornhide", c, 2, false, 1.5f);
+                phase = 1;
+                return false;
+            }
+            if (QuestBook_CountOf("penned") < 2.0) return false; // the pen check runs every 2 s
+            // Slaughtered for their hide (6) for a food pouch and the field suit.
+            for (int k = 0; k < 4 && inventory.count("hide") < 4; ++k) { const int i = Animals_Nearest(Surface(Offset(40.0f, 0.0f)), 20.0f); if (i < 0) break; Animals_Hit(i, 999.0f); }
+            return inventory.count("hide") >= 4;
+        });
+        // Tier 3: glass, vacuum tubes; a field; two suit modules.
+        add("dig 24 sand", [] { return DigSand(24); });
+        add("make 6 glass", [] { static bool fed = false; if (!fed) { fed = true; Give("kiln", "sand", 24); Give("kiln", "wood", 4); } return Collect("kiln", "glass", 6); });
         add("craft 4 vacuum tubes", [] { return Craft("copper_wire", 8) && Craft("vacuum_tube", 4); });
+        add("till a field and plant seeds from the bushes", [] {
+            while (inventory.count("grain_seeds") + inventory.count("root_seeds") + inventory.count("flax_seeds") < 1)
+                if (!TerrainTool_HarvestNearest(*body, home, false)) return false;
+            const Vector3 g = Surface(Offset(-20.0f, 10.0f));
+            if (!Farm_Till(*scene, *body, g)) { printf("bench: progression: could not till\n"); failed = 1; return false; }
+            for (auto& pl : body->plots->plots)
+                for (int i = (int)pl->parts.size() - 1; i >= 0; --i)
+                    if (pl->parts[i].type == PartType::Farmland && Farm_Plant(*body, *pl, i, "")) return QuestBook_CountOf("plant") >= 1.0;
+            return false;
+        });
+        add("craft and fit two suit modules (a food pouch and an oxygen tank)", [] {
+            while (inventory.count("fibre") < 40) if (!TerrainTool_HarvestNearest(*body, home, false)) return false;
+            if (!Craft("food_pouch", 1) || !Craft("oxygen_tank_module", 1)) return false;
+            Suit_Reset();
+            return Suit_Fit("food_pouch") && Suit_Fit("oxygen_tank_module") && QuestBook_CountOf("modules") >= 2.0;
+        });
         // Tier 4: circuits, hulls, an LV generator and the first LV machine, powered and working.
         add("craft basic circuits, hulls, a generator and an electric furnace", [] {
             return Craft("copper_wire", 8) && Craft("basic_circuit", 2) && Craft("lv_hull", 2) && Craft("copper_wire", 8) && Craft("generator", 1) && Craft("electric_furnace", 1) && Craft("cable", 4);
@@ -215,6 +269,12 @@ namespace {
             const MachineView v = Factory::View(body->id, plot->id, parts["electric_furnace"]);
             return v.valid && v.status == MachineStatus::Working;
         });
+        add("mark the workshop on the map; craft and wear a field suit", [] {
+            Nav_AddWaypoint(body->name, Vector3Normalize(home), "Workshop");
+            if (!Craft("field_suit", 1) || !Suit_Wear("field_suit")) return false;
+            return Suit_Modules().size() == 4 && QuestBook_CountOf("waypoint") >= 1.0;
+        });
+        add("the quest book opens the MV tier", [] { return QuestBook_Tier() >= 5; });
         if (full) BuildFull();
     }
 
@@ -365,6 +425,7 @@ namespace {
 
 int Progression_Update(Scene& world, bool fullLadder) {
     full = fullLadder;
+    scene = &world;
     if (steps.empty()) {
         body = dynamic_cast<Planetoid*>(world.objects[0].get());
         field = body ? dynamic_cast<const PlanetField*>(body->field.get()) : nullptr;

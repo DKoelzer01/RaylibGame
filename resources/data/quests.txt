@@ -1,0 +1,31 @@
+# Quest tree: side lines branching off the main line (tiers.txt). Each node:
+#   node | id | line | requires (node ids and/or "tier N", comma separated; "-" none) | task | title | reward (item n, ...; "-" none)
+# Tasks are the same as the main line's: get <item> <n>, place <item>, do <event> <n> (events: eat, feed,
+# penned, bred, till, plant, harvest, waypoint, modules, explored, nights, slain, stalker), orbit, visit moon|ring.
+# A node opens once its requirements are done; its reward goes into the inventory when it is done.
+line | farming   | Farming   | 120,200,90
+line | husbandry | Husbandry | 230,190,120
+line | suit      | Suit      | 110,170,240
+line | explorer  | Explorer  | 230,140,90
+
+node | f1 | farming | tier 1     | do till 1        | Till your first farmland      | root_seeds 2
+node | f2 | farming | f1         | do harvest 1     | Harvest a ripe crop            | grain_seeds 3
+node | f3 | farming | f2         | get bread 1      | Bake bread in a campfire       | flax_seeds 2
+node | f4 | farming | f3         | do harvest 10    | Harvest ten crops              | iron_hoe 1
+
+node | h1 | husbandry | tier 1   | do feed 1        | Feed an animal (look at it, I) | grain 4
+node | h2 | husbandry | h1       | do penned 2      | Pen two animals                | fence 4
+node | h3 | husbandry | h2       | do bred 1        | Breed a young one              | shears 1
+node | h4 | husbandry | h3       | get wool 4       | Shear four wool                | cloth 4
+node | h5 | husbandry | h3       | get milk 1       | Milk a hornhide (bucket)       | cooked_meat 2
+
+node | s1 | suit | tier 2        | do modules 1     | Fit a suit module              | cloth 2
+node | s2 | suit | s1            | get field_suit 1 | Make a field suit              | oxygen_canister 2
+node | s3 | suit | s2            | do modules 4     | Fill a field suit's slots      | power_cell 2
+node | s4 | suit | s3, tier 6    | get explorer_suit 1 | Make an explorer suit       | battery_pack 1
+
+node | e1 | explorer | -          | do explored 20   | Explore 20 map tiles           | berries 4
+node | e2 | explorer | e1         | do nights 1      | Survive a night                | cooked_meat 2
+node | e3 | explorer | e2         | do waypoint 3    | Mark three waypoints           | power_cell 1
+node | e4 | explorer | e2         | do stalker 1     | Fight off a dusk stalker       | hide 2
+node | e5 | explorer | e3         | do explored 100  | Explore 100 map tiles          | ore_scanner 1

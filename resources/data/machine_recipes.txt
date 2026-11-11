@@ -52,6 +52,13 @@ furnace         | tin_ingot 1        | tin_dust 1                | 100 | 8
 furnace         | nickel_ingot 1     | nickel_dust 1             | 100 | 8
 furnace         | gold_ingot 1       | gold_dust 1               | 100 | 8
 forge_hammer    | aluminium_plate 1  | aluminium_ingot 1         | 120 | 6
+# Plates and dusts that had no recipe (--test-recipes).
+forge_hammer    | copper_plate 1     | copper_ingot 1            | 100 | 4
+forge_hammer    | tin_plate 1        | tin_ingot 1               | 100 | 4
+forge_hammer    | titanium_plate 1   | titanium_ingot 1          | 200 | 8
+macerator       | bronze_dust 1      | bronze_ingot 1            | 100 | 4
+macerator       | aluminium_dust 1   | aluminium_ingot 1         | 100 | 6
+macerator       | titanium_dust 1    | titanium_ingot 1          | 160 | 8
 # MV (128 V).
 electrolyzer    | hydrogen 2, oxygen 1 | water 2                 | 100 | 32
 electrolyzer    | aluminium_ingot 2  | bauxite_dust 4            | 400 | 64

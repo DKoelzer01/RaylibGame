@@ -1,3 +1,5 @@
+#include <set>
+#include <cstring>
 #include <raylib.h>
 #include <string>
 #include <vector>
@@ -34,8 +36,11 @@
 #include "animals.h"
 #include "suit.h"
 #include "toolwear.h"
+#include "recipebook.h"
+#include "storage.h"
 #include "tools.h"
 #include "rivers.h"
+#include "questtree.h"
 #include "ring_test.h"
 #include "rocket.h"
 #include "jobsystem.h"
@@ -103,6 +108,7 @@ static void StartNewWorld(Scene& world, bool reset) {
         Animals_Reset();
         Suit_Reset();
         ToolWear_Reset();
+        RecipeBook_Reset();
     }
     Planetoid* start = world.objects.empty() ? nullptr : dynamic_cast<Planetoid*>(world.objects[0].get());
     if (start) {
@@ -112,8 +118,11 @@ static void StartNewWorld(Scene& world, bool reset) {
         // A clearing at the start, so the player does not start in a tree.
         if (start->trees) start->trees->addClearing(start->toLocal(feet), 14.0f);
     }
-    if (inventory.count("telescope") == 0) inventory.add("telescope", 1); // starting kit (a save restores its own inventory)
-    if (inventory.count("map") == 0) inventory.add("map", 1);
+    // The starting kit by difficulty (a save restores its own inventory and difficulty).
+    if (reset) worldDifficulty = settings.difficulty;
+    if (inventory.count("telescope") == 0) inventory.add("telescope", 1);
+    if (inventory.count("map") == 0 && worldDifficulty < 2) inventory.add("map", 1); // hard: find your own way
+    if (reset && worldDifficulty == 0) inventory.add("berries", 6);
 }
 
 // --bench <seconds>: windowed 1920x1080, uncapped FPS, skips the menu, holds a fixed
@@ -170,7 +179,11 @@ int main(int argc, char** argv)
     bool benchRivers = false, riverOk = false; int riverPhase = 0; double riverStart = 0.0; float riverLongest = 0.0f, riverBuild = 0.0f, riverWet = 0.0f, riverLevel = 0.0f; Vector3 riverDir{ 0, 0, 0 }; // --test-rivers
     bool benchTools = false, toolsOk = true; int toolsPhase = 0, toolsLife = 0, toolsTilled = 0; double toolsStart = 0.0; // --test-tools
     bool benchSuit = false, suitOk = true; int suitPhase = 0; double suitStart = 0.0; float suitFoodRatio = 0.0f, suitWater = 0.0f, suitRebreather = 0.0f; // --test-suit
-    bool benchAnimals = false; int animalPhase = 0, animalCount = 0; double animalStart = 0.0, animalMs = 0.0; int animalNatural = 0; float penWorst = 0.0f, animalSpread = 0.0f, animalFled = 0.0f, animalFollow = 0.0f; // --test-animals
+    int benchShotTabs = 0; // --shot-tabs
+    bool benchRecipes = false; // --test-recipes
+    bool benchCrafting = false, craftOk = true; int craftPhase = 0, craftChest = -1, craftInv0 = 0, craftWood0 = 0, craftDeposited = 0, craftInChest = 0; double craftStart = 0.0; Plot* craftPlot = nullptr; // --test-crafting
+    bool benchThreats = false, threatsOk = true; int threatPhase = 0; double threatStart = 0.0; float threatBite = 0.0f, threatFire = 0.0f, threatRam = 0.0f; int threatSpawned = 0, threatLeft = 0, threatPeaceful = 0; // --test-threats
+    bool benchAnimals = false; int animalPhase = 0, animalCount = 0; double animalStart = 0.0, animalMs = 0.0; int animalNatural = 0; float penWorst = 0.0f, animalLured = 0.0f, animalSpread = 0.0f, animalFled = 0.0f, animalFollow = 0.0f; // --test-animals
     int hungerPhase = 0, farmPhase = 0; double hungerStart = 0.0, farmStart = 0.0; bool hungerOk = false; float hungerTemp = 0.0f, hungerDrain = 0.0f, farmQuarter = 0.0f, farmGrowth = 0.0f;
     bool benchViewmodel = false;   // --test-viewmodel: hands still at rest, bob within limits walking, screenshots
     int vmPhase = 0, vmSigns = 0; double vmStart = 0.0; float vmStillMax = 0.0f, vmMaxX = 0.0f, vmMaxY = 0.0f, vmWalked = 0.0f; Vector3 vmLast{}; DVec3 vmFrom{};
@@ -304,6 +317,10 @@ int main(int argc, char** argv)
         if (std::string(argv[i]) == "--test-hunger") benchHunger = true;
         if (std::string(argv[i]) == "--test-farm") benchFarm = true;
         if (std::string(argv[i]) == "--test-animals") benchAnimals = true;
+        if (std::string(argv[i]) == "--test-threats") benchThreats = true;
+        if (std::string(argv[i]) == "--shot-tabs") benchShotTabs = 1;
+        if (std::string(argv[i]) == "--test-recipes") benchRecipes = true;
+        if (std::string(argv[i]) == "--test-crafting") benchCrafting = true;
         if (std::string(argv[i]) == "--test-suit") benchSuit = true;
         if (std::string(argv[i]) == "--test-tools") benchTools = true;
         if (std::string(argv[i]) == "--test-rivers") benchRivers = true;
@@ -391,6 +408,7 @@ int main(int argc, char** argv)
     const bool bench = benchSeconds > 0.0;
     benchMode = bench;
     if (bench) SetWorldSavePath("saves/bench.sav"); // tests save and load; keep the player's F5 save out of it
+    if (bench && !benchThreats) Animals_SetThreats(false); // hostile animals and night spawns would upset other tests
 
     SetConfigFlags(FLAG_MSAA_4X_HINT);
     if (!bench) {
@@ -1345,6 +1363,236 @@ int main(int argc, char** argv)
                         survival.food = 100.0f; survival.oxygen = 100.0f; survival.health = 100.0f;
                         benchSuit = false;
                     }
+                } else if (benchCrafting && (craftPhase > 0 || WorldIdle())) {
+                    // --test-crafting: recipes are known once their ingredients are discovered (and any unlock
+                    // is met); search; a chest beside the player counts for crafting and is pulled from; the
+                    // inventory deposits into chests that already hold an item.
+                    Planetoid* p = dynamic_cast<Planetoid*>(world.objects[0].get());
+                    auto check = [&](bool c, const char* what) { if (!c) { printf("bench: crafting: FAILED %s\n", what); craftOk = false; } };
+                    auto recipeFor = [](const char* out) -> const Recipe* { for (const Recipe& r : itemDB.recipes()) if (r.output == out) return &r; return nullptr; };
+                    if (craftPhase == 0) {
+                        player.spawnOn(world, *p, StartSpawnDir(*p));
+                        craftPhase = 1; craftStart = GetTime(); craftOk = true;
+                    } else if (craftPhase == 1 && GetTime() - craftStart > 1.5 && player.grounded) {
+                        const Recipe* rod = recipeFor("steel_rod");
+                        const Recipe* suit = recipeFor("explorer_suit");
+                        check(rod && suit, "recipes found");
+                        if (rod && suit) {
+                            check(!RecipeBook_Known(*rod), "steel rods hidden before steel is found");
+                            inventory.add("steel_ingot", 1);
+                            check(RecipeBook_Known(*rod), "finding steel reveals steel rods");
+                            check(RecipeBook_Matches(*rod, "rod") && RecipeBook_Matches(*rod, "steel ingot") && !RecipeBook_Matches(*rod, "zzz"), "search by name or ingredient");
+                            inventory.add("titanium_alloy_ingot", 1); inventory.add("advanced_circuit", 1); inventory.add("cloth", 1);
+                            check(!RecipeBook_Known(*suit), "the explorer suit also needs its unlock (three nights)");
+                            QuestBook_Count("nights", 3.0);
+                            check(RecipeBook_Known(*suit), "unlocked after three nights");
+                        }
+                        // A chest 2 m ahead.
+                        if (!p->plots) p->plots = std::make_unique<PlotSet>();
+                        const auto* pf = dynamic_cast<const PlanetField*>(p->field.get());
+                        const Vector3 me = p->toLocal((player.position - world.renderOrigin).toFloat());
+                        const Vector3 up = Vector3Normalize(me);
+                        const Vector3 d = Vector3Normalize(Vector3Add(me, Vector3Scale(Vector3Normalize(Vector3CrossProduct(up, { 0, 1, 0 })), 2.5f)));
+                        const Vector3 at = Vector3Scale(d, pf->radius + pf->elevation(d));
+                        craftPlot = p->plots->plotFor(at, 0.0f, true);
+                        craftChest = craftPlot->place(Part{ PartType::Chest, craftPlot->cellAt(craftPlot->toPlot(Vector3Add(at, Vector3Scale(d, 0.1f)))), 0, 0 });
+                        check(craftChest >= 0 && Storage_NearbyChests(world).size() == 1, "a chest within reach");
+                        craftPhase = 2; craftStart = GetTime();
+                    } else if (craftPhase == 2 && GetTime() - craftStart > 1.0) {
+                        Factory::Seed(p->id, craftPlot->id, craftChest, "iron_ingot", 4);
+                        craftPhase = 3; craftStart = GetTime();
+                    } else if (craftPhase == 3 && GetTime() - craftStart > 0.5) {
+                        check(Storage_CountNearby(world, "iron_ingot") == 4, "the chest's contents counted");
+                        craftInv0 = inventory.count("iron_ingot");
+                        check(Storage_Pull(world, "iron_ingot", 3), "pull 3 iron from the chest");
+                        craftPhase = 4; craftStart = GetTime();
+                    } else if (craftPhase == 4 && GetTime() - craftStart > 0.5) {
+                        check(inventory.count("iron_ingot") == craftInv0 + 3 && Storage_CountNearby(world, "iron_ingot") == 1, "the iron arrived; one left in the chest");
+                        inventory.add("wood", 5);
+                        craftWood0 = inventory.count("wood");
+                        craftDeposited = Storage_Deposit(world);
+                        check(craftDeposited == 1 && inventory.count("iron_ingot") == 0 && inventory.count("wood") == craftWood0, "deposit: iron into the chest that holds iron; wood stays");
+                        craftPhase = 5; craftStart = GetTime();
+                    } else if (craftPhase == 5 && GetTime() - craftStart > 0.5) {
+                        craftInChest = Storage_CountNearby(world, "iron_ingot");
+                        check(craftInChest == craftInv0 + 4, "the chest holds the deposited iron");
+                        if (craftPlot && craftChest >= 0) craftPlot->remove(craftChest);
+                        printf("bench: crafting: discovery reveals recipes, an unlock gates one, search works; a nearby chest counted, pulled from, deposited into (%d iron there) -> %s\n",
+                               craftInChest, craftOk ? "PASS" : "FAIL");
+                        benchCrafting = false;
+                    }
+                } else if (benchRecipes) {
+                    // --test-recipes: every item can be had from what the world gives (digging, chopping,
+                    // bushes, grass, animals, crops) through hand recipes, machines (once their own item
+                    // can be made) and the starting kit. Lists what cannot, and items nothing uses.
+                    auto split = [](const std::string& s, char sep) {
+                        std::vector<std::string> out; size_t a = 0, b;
+                        while ((b = s.find(sep, a)) != std::string::npos) { out.push_back(s.substr(a, b - a)); a = b + 1; }
+                        out.push_back(s.substr(a));
+                        for (auto& c : out) { const size_t x = c.find_first_not_of(" \t"), y = c.find_last_not_of(" \t\r\n"); c = x == std::string::npos ? "" : c.substr(x, y - x + 1); }
+                        return out;
+                    };
+                    auto ids = [&](const std::string& list) { std::vector<std::string> out; for (const std::string& e : split(list, ',')) { char id[64] = {}; if (e != "-" && sscanf(e.c_str(), "%63s", id) == 1) out.push_back(id); } return out; };
+                    std::set<std::string> have = { "wood", "fibre", "berries", "grain_seeds", "root_seeds", "flax_seeds", "dirt", "gravel", "stone", "sand", "clay",
+                                                   "ice", "regolith", "iron_ore", "copper_ore", "tin_ore", "coal", "bauxite_ore", "ilmenite_ore", "telescope", "map", "basic_suit" };
+                    std::set<std::string> used;
+                    struct Rule { std::string machine; std::vector<std::string> in, out; };
+                    std::vector<Rule> rules;
+                    for (const Recipe& r : itemDB.recipes()) { Rule u; u.out = { r.output }; for (const auto& in : r.inputs) u.in.push_back(in.first); rules.push_back(u); }
+                    char buf[1024];
+                    if (FILE* f = fopen("resources/data/machine_recipes.txt", "r")) {
+                        while (fgets(buf, sizeof buf, f)) {
+                            if (buf[0] == '#' || buf[0] == '\n' || buf[0] == '\r') continue;
+                            const auto c = split(buf, '|');
+                            if (c.size() < 3) continue;
+                            Rule u; u.machine = c[0] == "furnace" ? "electric_furnace" : c[0]; u.out = ids(c[1]); u.in = ids(c[2]);
+                            rules.push_back(u);
+                        }
+                        fclose(f);
+                    }
+                    if (FILE* f = fopen("resources/data/animals.txt", "r")) { // drops; products need their tool
+                        while (fgets(buf, sizeof buf, f)) {
+                            if (buf[0] == '#' || buf[0] == '\n' || buf[0] == '\r') continue;
+                            const auto c = split(buf, '|');
+                            if (c.size() < 13) continue;
+                            for (const std::string& d : ids(c[8])) have.insert(d);
+                            char prod[64] = {}, tool[64] = {};
+                            if (sscanf(c[9].c_str(), "%63s %63s", prod, tool) >= 1 && strcmp(prod, "-") != 0) { Rule u; u.out = { prod }; if (tool[0] && strcmp(tool, "-") != 0) u.in = { tool }; u.machine = "#tool"; rules.push_back(u); }
+                            for (const std::string& d : ids(c[7])) used.insert(d);
+                        }
+                        fclose(f);
+                    }
+                    if (FILE* f = fopen("resources/data/crops.txt", "r")) {
+                        while (fgets(buf, sizeof buf, f)) {
+                            if (buf[0] == '#' || buf[0] == '\n' || buf[0] == '\r') continue;
+                            const auto c = split(buf, '|');
+                            if (c.size() < 3) continue;
+                            Rule u; u.in = { c[1] }; u.out = ids(c[2]); u.machine = "#farmland"; rules.push_back(u);
+                        }
+                        fclose(f);
+                    }
+                    for (bool grew = true; grew;) {
+                        grew = false;
+                        for (const Rule& u : rules) {
+                            if (!u.machine.empty() && u.machine[0] != '#' && !have.count(u.machine)) continue;
+                            if (u.machine == "#farmland" && !have.count("farmland")) continue;
+                            bool ok = true;
+                            for (const std::string& in : u.in) ok = ok && (u.machine == "#tool" ? have.count(in) > 0 : have.count(in) > 0);
+                            if (!ok) continue;
+                            for (const std::string& o : u.out) if (have.insert(o).second) grew = true;
+                        }
+                    }
+                    for (const Rule& u : rules) { for (const std::string& in : u.in) used.insert(in); if (!u.machine.empty() && u.machine[0] != '#') used.insert(u.machine); }
+                    std::vector<std::string> missing, unused;
+                    for (const ItemDef& d : itemDB.items()) {
+                        if (!have.count(d.id)) missing.push_back(d.id);
+                        const bool consumed = used.count(d.id) || Survival_IsFood(d.id) || Survival_IsUsable(d.id) || Suit_IsSuit(d.id) || Suit_IsModule(d.id) ||
+                                              ToolOf(d.id).type != ToolType::Hands || KindOf(d.id) == ItemKind::Block || KindOf(d.id) == ItemKind::Tool;
+                        if (!consumed) unused.push_back(d.id);
+                    }
+                    printf("bench: recipes: %zu items, %zu reachable from the world;", itemDB.items().size(), have.size());
+                    if (!missing.empty()) { printf(" unreachable:"); for (const auto& m : missing) printf(" %s", m.c_str()); }
+                    printf("\nbench: recipes: %zu items nothing uses (end products or loose ends):", unused.size());
+                    for (const auto& m : unused) printf(" %s", m.c_str());
+                    printf("\nbench: recipes: %s\n", missing.empty() ? "PASS" : "FAIL");
+                    benchRecipes = false;
+                } else if (benchShotTabs > 0 && (benchShotTabs > 1 || WorldIdle())) {
+                    // --shot-tabs: screenshots of the Quest tree (some progress) and Suit tabs.
+                    static int frames = 0;
+                    if (benchShotTabs == 1) {
+                        QuestBook_SetTier(3);
+                        QuestBook_AtLeast("explored", 30.0); QuestBook_Count("till"); QuestBook_Count("feed");
+                        inventory.add("food_pouch", 1); inventory.add("oxygen_tank_module", 1); inventory.add("grip_boots", 1); inventory.add("field_suit", 1);
+                        Suit_Reset(); Suit_Fit("food_pouch");
+                        QuestBook_Update();
+                        GameUI_ShowTab("Quest tree");
+                        benchShotTabs = 2; frames = 0;
+                    } else if (benchShotTabs == 2 && ++frames == 40) {
+                        TakeScreenshot("bench_questtree.png");
+                        GameUI_ShowTab("Suit");
+                        benchShotTabs = 3; frames = 0;
+                    } else if (benchShotTabs == 3 && ++frames == 40) {
+                        TakeScreenshot("bench_suit.png");
+                        GameUI_ShowTab("Crafting");
+                        benchShotTabs = 4; frames = 0;
+                    } else if (benchShotTabs == 4 && ++frames == 40) {
+                        TakeScreenshot("bench_crafting.png");
+                        printf("bench: shot-tabs: bench_questtree.png, bench_suit.png, bench_crafting.png\n");
+                        GameUI_ToggleInventory();
+                        benchShotTabs = 0;
+                    }
+                } else if (benchThreats && (threatPhase > 0 || WorldIdle())) {
+                    // --test-threats: after dark a dusk stalker comes 45-60 m out and hunts (a bite hurts); a
+                    // campfire keeps it off; daylight sends it away; peaceful worlds get none; a thornback
+                    // charges when you come close and can be fought off.
+                    Planetoid* p = dynamic_cast<Planetoid*>(world.objects[0].get());
+                    auto check = [&](bool c, const char* what) { if (!c) { printf("bench: threats: FAILED %s\n", what); threatsOk = false; } };
+                    if (threatPhase == 0) {
+                        player.spawnOn(world, *p, StartSpawnDir(*p));
+                        threatPhase = 1; threatStart = GetTime();
+                    } else if (threatPhase == 1 && GetTime() - threatStart > 1.5 && player.grounded) {
+                        const Vector3 me = p->toLocal((player.position - world.renderOrigin).toFloat());
+                        const Vector3 up = Vector3Normalize(me);
+                        auto step = [&](float seconds) { for (float t = 0.0f; t < seconds; t += 0.1f) Animals_Update(world, 0.1f, 0.1f, false); };
+                        auto nearestNight = [&]() { float best = 1e9f; for (int i = 0; i < Animals_Count(); ++i) if (Animals_Hostile(i)) best = std::min(best, Vector3Distance(Animals_Position(i), me)); return best; };
+                        worldDifficulty = 1;
+                        Animals_Reset();
+                        survival.health = 100.0f;
+                        // Night: a stalker comes.
+                        world.sunDirection = p->dirToWorld(Vector3Negate(up));
+                        Animals_RefreshNow();
+                        Animals_Update(world, 0.1f, 0.1f, false);
+                        threatSpawned = Animals_NightCount();
+                        const float d0 = nearestNight();
+                        check(threatSpawned == 1 && d0 > 40.0f && d0 < 65.0f, "a stalker comes out of the dark 45-60 m away");
+                        step(15.0f);
+                        threatBite = 100.0f - survival.health;
+                        check(threatBite > 0.0f, "it hunts the player down and bites");
+                        // A campfire beside the player: no more bites; the stalker keeps its distance.
+                        survival.health = 100.0f;
+                        if (!p->plots) p->plots = std::make_unique<PlotSet>();
+                        const Vector3 fireDir = Vector3Normalize(Vector3Add(me, Vector3Scale(Vector3Normalize(Vector3CrossProduct(up, { 0, 1, 0 })), 3.0f)));
+                        const auto* pf = dynamic_cast<const PlanetField*>(p->field.get());
+                        const Vector3 fireAt = Vector3Scale(fireDir, pf->radius + pf->elevation(fireDir));
+                        Plot* fp = p->plots->plotFor(fireAt, 0.0f, true);
+                        const int firePart = fp->place(Part{ PartType::Campfire, fp->cellAt(fp->toPlot(Vector3Add(fireAt, Vector3Scale(fireDir, 0.1f)))), 0, 0 });
+                        check(firePart >= 0, "a campfire placed");
+                        Animals_RefreshNow();
+                        step(15.0f);
+                        threatFire = nearestNight();
+                        check(survival.health >= 100.0f && threatFire > 12.0f, "a campfire keeps it off");
+                        if (firePart >= 0) fp->remove(firePart);
+                        Animals_RefreshNow();
+                        // Daylight: it runs off and is gone.
+                        world.sunDirection = p->dirToWorld(up);
+                        step(45.0f);
+                        threatLeft = Animals_NightCount();
+                        check(threatLeft == 0, "gone by day");
+                        // Peaceful: nothing comes.
+                        worldDifficulty = 0;
+                        world.sunDirection = p->dirToWorld(Vector3Negate(up));
+                        Animals_RefreshNow();
+                        step(2.0f);
+                        threatPeaceful = Animals_NightCount();
+                        check(threatPeaceful == 0, "no threats on peaceful");
+                        // A thornback 8 m away by day: it charges; fought off with an axe.
+                        worldDifficulty = 1;
+                        world.sunDirection = p->dirToWorld(up);
+                        survival.health = 100.0f;
+                        Animals_Reset();
+                        Animals_Spawn(world, *p, "thornback", Vector3Add(me, Vector3Scale(Vector3Normalize(Vector3CrossProduct(up, { 0, 1, 0 })), -8.0f)), 1, false, 0.5f);
+                        step(6.0f);
+                        threatRam = 100.0f - survival.health;
+                        check(threatRam > 0.0f, "a thornback charges when you come close");
+                        bool fell = false;
+                        for (int k = 0; k < 12 && !fell && Animals_Count() > 0; ++k) fell = Animals_Hit(0, 6.0f);
+                        check(fell || Animals_Count() == 0, "fought off");
+                        printf("bench: threats: night stalker at %.0f m, bit for %.0f; by a campfire it kept %.0f m off, no bites; gone by day (%d left); peaceful %d; thornback rammed for %.0f -> %s\n",
+                               d0, threatBite, threatFire, threatLeft, threatPeaceful, threatRam, threatsOk ? "PASS" : "FAIL");
+                        Animals_Reset();
+                        survival.health = 100.0f;
+                        benchThreats = false;
+                    }
                 } else if (benchAnimals && (animalPhase > 0 || WorldIdle())) {
                     // --test-animals: a herd spawns on the ground and stays there, a hit one flees, a fed one
                     // follows, two fed adults breed, 200 animals update in under 1 ms, animals are saved.
@@ -1392,6 +1640,25 @@ int main(int argc, char** argv)
                         step(12.0f);
                         animalFollow = Vector3Distance(Animals_Position(fdx), me);
                         check(animalFollow < std::max(4.0f, f0 - 8.0f), "the fed one came to the player");
+                        // Holding its food (a selected food slot) brings one in without feeding it; the
+                        // second press eats.
+                        {
+                            Animals_Reset();
+                            Animals_Spawn(world, *p, "woolback", Vector3Add(me, Vector3Scale(east, 12.0f)), 1, false, 0.5f);
+                            const float h0 = Animals_Count() ? Vector3Distance(Animals_Position(0), me) : 0.0f;
+                            inventory.add("berries", 2);
+                            Hotbar_Bind(8, "berries");
+                            Hotbar_Press(8, false);
+                            check(Hotbar_HeldFood() == "berries", "holding berries");
+                            step(8.0f);
+                            animalLured = Animals_Count() ? Vector3Distance(Animals_Position(0), me) : 99.0f;
+                            check(animalLured < 4.0f && h0 > 8.0f, "held food lures an animal");
+                            const int g0 = inventory.count("berries");
+                            survival.food = 50.0f;
+                            Hotbar_Press(8, false);
+                            check(inventory.count("berries") == g0 - 1, "the second press eats it");
+                            Hotbar_Reset();
+                        }
                         // A pen: fences (and a gate) 24 m out around a herd. Scared, they run, but stay inside;
                         // the player walks through the gate, not through a fence.
                         {
@@ -1466,8 +1733,8 @@ int main(int argc, char** argv)
                         animalCount = Animals_Count(); animalMs = worst;
                         check(animalCount >= 150 && worst < 1.0, "200 animals under 1 ms");
                         Animals_Reset();
-                        printf("bench: animals: %d placed around the start; herd grazed within %.0f m for a minute, hit one fled %.1f m, fed one came to %.1f m, in a pen at most %.1f m from its centre, a pair bred, meat, saved; %d animals in %.3f ms -> %s\n",
-                               animalNatural, animalSpread, animalFled, animalFollow, penWorst, animalCount, animalMs, ok ? "PASS" : "FAIL");
+                        printf("bench: animals: %d placed around the start; herd grazed within %.0f m for a minute, hit one fled %.1f m, fed one came to %.1f m, held berries lured one to %.1f m, in a pen at most %.1f m from its centre, a pair bred, meat, saved; %d animals in %.3f ms -> %s\n",
+                               animalNatural, animalSpread, animalFled, animalFollow, animalLured, penWorst, animalCount, animalMs, ok ? "PASS" : "FAIL");
                         // A look at them: one of each kind ahead of the player, then a screenshot.
                         const Vector3 fwd = Vector3Normalize(p->dirToLocal(Vector3Subtract(player.forward, Vector3Scale(player.up, Vector3DotProduct(player.forward, player.up)))));
                         const char* kinds[] = { "woolback", "plains_runner", "clucker", "hornhide" };
@@ -1556,19 +1823,34 @@ int main(int argc, char** argv)
                     QuestBook_NotePlaced("campfire");
                     QuestBook_Update();
                     check(QuestBook_Tier() == 1, "tier 0 done opens tier 1");
+                    QuestBook_Count("eat"); // an event task ("do eat 1")
                     QuestBook_NotePlaced("kiln");
                     inventory.add("copper_ore", 4);
                     QuestBook_Update();
-                    check(QuestBook_Tier() == 1 && QuestBook_TaskDone(1, 0) && QuestBook_TaskDone(1, 1) && !QuestBook_TaskDone(1, 2), "part of tier 1");
+                    check(QuestBook_Tier() == 1 && QuestBook_TaskDone(1, 0) && QuestBook_TaskDone(1, 1) && QuestBook_TaskDone(1, 2) && !QuestBook_TaskDone(1, 3), "part of tier 1");
                     const std::string path = std::string(GetWorkingDirectory()) + "/quest_test.tmp";
                     if (FILE* f = fopen(path.c_str(), "w")) { saveExtrasHook(f); fprintf(f, "end_extras\n"); fclose(f); }
                     QuestBook_Reset(); inventory.clear();
                     if (FILE* f = fopen(path.c_str(), "r")) { loadExtrasHook(f); fclose(f); }
                     remove(path.c_str());
-                    check(QuestBook_Tier() == 1 && QuestBook_TaskDone(1, 0) && QuestBook_TaskDone(1, 1) && !QuestBook_TaskDone(1, 2) && inventory.obtainedTotal("wood") >= 4.0, "saved and loaded");
+                    check(QuestBook_Tier() == 1 && QuestBook_TaskDone(1, 0) && QuestBook_TaskDone(1, 1) && QuestBook_TaskDone(1, 2) && !QuestBook_TaskDone(1, 3) && inventory.obtainedTotal("wood") >= 4.0 && QuestBook_CountOf("eat") >= 1.0, "saved and loaded");
                     inventory.add("tin_ore", 2); inventory.add("copper_ingot", 3); inventory.add("bronze_ingot", 1);
                     QuestBook_Update();
                     check(QuestBook_Tier() == 2, "tier 1 done opens tier 2");
+                    // The quest tree: side nodes open by their requirements, complete by their task, pay a
+                    // reward, and are saved.
+                    check(QuestTree_NodeCount() >= 12, "side lines loaded");
+                    check(QuestTree_IsOpen("f1") && QuestTree_IsOpen("h1") && QuestTree_IsOpen("s1") && !QuestTree_IsOpen("s2") && QuestTree_IsOpen("e1"), "nodes open by tier and by their requirements");
+                    const int berries0 = inventory.count("berries");
+                    QuestBook_AtLeast("explored", 25.0);
+                    QuestBook_Update();
+                    check(QuestTree_IsDone("e1") && inventory.count("berries") == berries0 + 4 && QuestTree_IsOpen("e2") && !QuestTree_IsOpen("e3"), "a side node done pays its reward and opens the next");
+                    if (FILE* f = fopen(path.c_str(), "w")) { saveExtrasHook(f); fprintf(f, "end_extras\n"); fclose(f); }
+                    QuestBook_Reset();
+                    check(!QuestTree_IsDone("e1"), "reset clears the tree");
+                    if (FILE* f = fopen(path.c_str(), "r")) { loadExtrasHook(f); fclose(f); }
+                    remove(path.c_str());
+                    check(QuestTree_IsDone("e1"), "the tree saved");
                     printf("bench: quests: %d tiers, tier 0 -> 1 -> 2 by their tasks, save/load kept the tier and tasks -> %s\n", QuestBook_TierCount(), ok ? "PASS" : "FAIL");
                     inventory.clear(); QuestBook_Reset();
                     benchQuests = false;
@@ -2446,7 +2728,7 @@ int main(int argc, char** argv)
                         }
                         benchWalkSeconds = 0.0;
                     }
-                } else if ((WorldIdle() && benchDigStrokes == 0 && !benchSaveLoad && benchWalkSeconds <= 0.0 && benchMineStrokes == 0 && minePhase != 2 && benchFlySeconds <= 0.0 && !benchSuffocate && benchOrbitSeconds <= 0.0 && !benchRide && !benchPark && !benchGravity && !benchPrecision && !benchMantle && !benchAirJump && !benchMoon && !benchHole && !benchWall && !benchMenus && !benchWater && !benchFlyFollow && !benchHotbar && !benchInventory && !benchMap && !benchViewmodel && !benchQuests && !benchHunger && !benchFarm && !benchAnimals && !benchSuit && !benchTools && !benchRivers && !benchRing && !benchRocket && !benchBlueprint && !benchSmallBody && !benchTrees && !benchChop && benchPersist == 0 && benchBuild == 0 && benchFactory == 0 && !benchProgression) || GetTime() > 600.0) {
+                } else if ((WorldIdle() && benchDigStrokes == 0 && !benchSaveLoad && benchWalkSeconds <= 0.0 && benchMineStrokes == 0 && minePhase != 2 && benchFlySeconds <= 0.0 && !benchSuffocate && benchOrbitSeconds <= 0.0 && !benchRide && !benchPark && !benchGravity && !benchPrecision && !benchMantle && !benchAirJump && !benchMoon && !benchHole && !benchWall && !benchMenus && !benchWater && !benchFlyFollow && !benchHotbar && !benchInventory && !benchMap && !benchViewmodel && !benchQuests && !benchHunger && !benchFarm && !benchAnimals && !benchThreats && benchShotTabs == 0 && !benchRecipes && !benchCrafting && !benchSuit && !benchTools && !benchRivers && !benchRing && !benchRocket && !benchBlueprint && !benchSmallBody && !benchTrees && !benchChop && benchPersist == 0 && benchBuild == 0 && benchFactory == 0 && !benchProgression) || GetTime() > 600.0) {
                     benchStart = GetTime();
                     printf("bench: world ready after %.2f s (%d chunks, avg build %.2f ms of which sampling %.2f ms, %d worker threads)\n",
                         GetWorldStats().lastGenerationSeconds, GetWorldStats().chunks, GetWorldStats().avgBuildMs, GetWorldStats().avgSampleMs, GetWorldStats().workerThreads);
