@@ -19,9 +19,6 @@ void GameSave_Register() {
         fprintf(f, "quest %d\n", QuestBook_Tier());
         Hotbar_Save(f);
         Rocket_Save(f);
-        fprintf(f, "ship %.6f %.6f %.6f %f %f %f %f %f %d %d\n", ship.position.x, ship.position.y, ship.position.z, ship.orientation.x,
-                ship.orientation.y, ship.orientation.z, ship.orientation.w, ship.energy, ship.piloted ? 1 : 0, ship.spawned ? 1 : 0);
-        fprintf(f, "ship_vel %f %f %f\n", ship.velocity.x, ship.velocity.y, ship.velocity.z);
         fprintf(f, "survival %f %f %f %d\n", survival.oxygen, survival.power, survival.health, survival.deaths);
     };
     loadExtrasHook = [](FILE* f) {
@@ -49,8 +46,8 @@ void GameSave_Register() {
                 int piloted = 0, spawned = 0;
                 fscanf(f, " %lf %lf %lf %f %f %f %f %f %d %d", &ship.position.x, &ship.position.y, &ship.position.z, &ship.orientation.x, &ship.orientation.y,
                        &ship.orientation.z, &ship.orientation.w, &ship.energy, &piloted, &spawned);
-                ship.piloted = piloted != 0;
-                ship.spawned = spawned != 0;
+                ship.piloted = false; // old saves: the placeholder ship is gone (its line is read and dropped)
+                ship.spawned = false; (void)piloted; (void)spawned;
                 ship.velocity = { 0, 0, 0 };
             } else if (strcmp(tok, "ship_vel") == 0) { // older saves: stays zero
                 fscanf(f, " %f %f %f", &ship.velocity.x, &ship.velocity.y, &ship.velocity.z);

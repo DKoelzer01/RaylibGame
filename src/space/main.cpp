@@ -92,10 +92,8 @@ static void StartNewWorld(Scene& world, bool reset) {
     Planetoid* start = world.objects.empty() ? nullptr : dynamic_cast<Planetoid*>(world.objects[0].get());
     if (start) {
         player.spawnOn(world, *start, StartSpawnDir(*start));
-        // Park the ship a few metres ahead of the player.
         const Vector3 feet = (player.position - world.renderOrigin).toFloat();
-        ship.parkNear(world, Vector3Add(feet, Vector3Scale(player.forward, 8.0f)), player.up);
-        // A clearing at the start, so the parked ship and the player don't stand in a tree.
+        // A clearing at the start, so the player does not start in a tree.
         if (start->trees) start->trees->addClearing(start->toLocal(feet), 14.0f);
     }
     if (inventory.count("telescope") == 0) inventory.add("telescope", 1); // starting kit (a save restores its own inventory)
@@ -252,7 +250,7 @@ int main(int argc, char** argv)
         if (std::string(argv[i]) == "--dump-system") dumpSystem = true;
         if (std::string(argv[i]) == "--load") loadSaveAtStart = true;
         if (std::string(argv[i]) == "--ride-spin" && i + 1 < argc) rideSpin = (float)atof(argv[i + 1]);
-        if (std::string(argv[i]) == "--test-park") benchPark = true;
+        if (std::string(argv[i]) == "--test-park" || std::string(argv[i]) == "--test-fly") { printf("bench: %s was removed with the placeholder ship\n", argv[i]); if (i + 1 < argc && argv[i + 1][0] != '-') ++i; }
         if (std::string(argv[i]) == "--test-gravity") benchGravity = true;
         if (std::string(argv[i]) == "--test-precision") benchPrecision = true;
         if (std::string(argv[i]) == "--test-mantle") benchMantle = true;
@@ -332,7 +330,6 @@ int main(int argc, char** argv)
                    worstAxis, rolled / 300.0f, worstRollView);
         }
         if (std::string(argv[i]) == "--spin-rate" && i + 1 < argc) spinRate = (float)atof(argv[i + 1]);
-        if (std::string(argv[i]) == "--test-fly" && i + 1 < argc) benchFlySeconds = atof(argv[i + 1]);
         if (std::string(argv[i]) == "--test-mine" && i + 1 < argc) benchMineStrokes = atoi(argv[i + 1]);
         if (std::string(argv[i]) == "--test-stand" && i + 1 < argc) { benchWalkSeconds = atof(argv[i + 1]); benchStandOnly = true; }
         if (std::string(argv[i]) == "--telescope" && i + 1 < argc) benchTelescope = (float)atof(argv[i + 1]);
@@ -393,7 +390,7 @@ int main(int argc, char** argv)
     bool worldFresh = !loadSaveAtStart; // the world generated at launch: New Game uses it as it is
     MenuResult pendingMenu;
     bool justPaused = false;
-    world.onDraw3D = [&world] { if (!ship.piloted && !buildTool.active && !Rocket_Boarded()) TerrainTool_Draw3D(); BuildTool_Draw3D(world); ship.draw(world); };
+    world.onDraw3D = [&world] { if (!ship.piloted && !buildTool.active && !Rocket_Boarded()) TerrainTool_Draw3D(); BuildTool_Draw3D(world); };
 
     const double benchWarmup = 2.0;
     double benchStart = 0.0, benchMaxFrame = 0.0;
@@ -436,18 +433,17 @@ int main(int argc, char** argv)
                            editsBefore, itemsBefore, inventory.count("stone") + inventory.count("regolith"));
                     benchSaveLoad = false;
                 } else if (benchSuffocate && benchWalkSeconds <= 0.0 && benchFlySeconds <= 0.0 && benchMineStrokes == 0) {
-                    // Scripted survival: out of oxygen, far from the ship -> die -> respawn at the ship.
+                    // Scripted survival: out of oxygen -> die -> respawn at the start, at rest.
                     if (suffocateStart < 0.0) {
                         player.flyMode = false;
-                        const Vector3 feet = (player.position - world.renderOrigin).toFloat();
-                        ship.parkNear(world, Vector3Add(feet, Vector3Scale(player.forward, 30.0f)), player.up); // out of life-support range
+                        player.velocity = Vector3Scale(player.up, 30.0f); // moving fast when it dies: none of it may survive the respawn
                         survival.oxygen = 0.0f;
                         survival.health = 15.0f;
                         survival.breathableAltitude = -1e9f; // no air to breathe (the planet's would refill the suit)
                         suffocateStart = GetTime();
                     } else if (survival.deaths > 0 && !survival.dead) {
-                        const float d = Vector3Distance((player.position - world.renderOrigin).toFloat(), ship.renderPos(world));
-                        printf("bench: suffocated and respawned after %.1f s; O2 %.0f HP %.0f, %.1f m from ship, deaths %d\n",
+                        const float d = Vector3Length(Vector3Subtract(player.velocity, player.nearest ? player.nearest->surfaceVelocity((player.position - world.renderOrigin).toFloat()) : Vector3{ 0, 0, 0 }));
+                        printf("bench: suffocated and respawned after %.1f s; O2 %.0f HP %.0f, moving %.1f m/s against the ground, deaths %d\n",
                                GetTime() - suffocateStart, survival.oxygen, survival.health, d, survival.deaths);
                         benchSuffocate = false;
                     } else if (GetTime() - suffocateStart > 15.0) {
@@ -1318,8 +1314,7 @@ int main(int argc, char** argv)
                     }
                 } else if (benchGravity && WorldIdle()) {
                     // Scripted gravity checks: the field itself (surface value, half at half depth, a
-                    // quarter at 2R, no jumps between bodies), then an unpiloted ship dropped from 25 m
-                    // must land and park, and a piloted ship must hover in place.
+                    // quarter at 2R, no jumps between bodies).
                     Planetoid* p = dynamic_cast<Planetoid*>(world.objects[0].get());
                     const double t = gravStart < 0.0 ? 0.0 : GetTime() - gravStart;
                     // Height of the hull centre above the ground straight "down" (along gravity).
@@ -1372,14 +1367,7 @@ int main(int argc, char** argv)
                                    p->name.c_str(), other->name.c_str(), len, maxJump, step, bound, weakest, weakestAt);
                         }
                         printf("bench: gravity field %s\n", pass ? "PASS" : "FAIL");
-                        // Phase 1: drop an unpiloted ship from 25 m.
-                        ship.piloted = false;
-                        player.flyMode = true; // keep the player out of the way (fly mode: no physics)
-                        placeAbove(25.0f);
-                        gravAlt0 = altitude();
-                        gravMaxImpact = 0.0f;
-                        gravPhase = 1;
-                        gravStart = GetTime();
+                        benchGravity = false; // (the placeholder ship and its drop / hover checks are gone)
                     } else if (gravPhase == 1) {
                         gravMaxImpact = std::max(gravMaxImpact, ship.lastImpact);
                         if (t > 10.0) {
@@ -1659,21 +1647,6 @@ int main(int argc, char** argv)
         const bool gameInput = !bench && !uiOpen && gameState == 1;
         world.cameraInputEnabled = player.flyMode && !uiOpen && !ship.piloted;  // free-fly camera only in fly mode
         const bool alive = !survival.dead;
-        if (gameState == 1 && gameInput && alive && !player.flyMode && !Rocket_Boarded() && !Rocket_AimingCockpit() && IsKeyPressed(KEY_E)) { // E rolls in free-fly
-            const Vector3 feet = (player.position - world.renderOrigin).toFloat();
-            if (ship.piloted) {
-                // Step out beside the ship.
-                ship.piloted = false;
-                player.position = world.renderOrigin + Vector3Add(ship.renderPos(world), Vector3Add(Vector3Scale(ship.right(), 3.5f), Vector3Scale(ship.up(), 0.5f)));
-                player.velocity = ship.velocity;
-                player.flyMode = false;
-                Audio_Play(Sfx::Build, 0.4f, 1.4f);
-            } else if (ship.playerInRange(world, feet, 5.0f)) {
-                ship.piloted = true;
-                player.flyMode = false;
-                Audio_Play(Sfx::Build, 0.4f, 1.2f);
-            }
-        }
         // One clamped frame time for everything that moves (bodies, ship, player): clamping only the
         // player let the ground spin away under it during a slow frame.
         const float frameDt = std::min(GetFrameTime(), 0.1f);
@@ -1898,10 +1871,6 @@ int main(int argc, char** argv)
                 Survival_DrawHUD();
                 Objectives_DrawHUD();
                 Rocket_DrawHUD(world); // last: the orbit map covers the rest
-                if (!ship.piloted && ship.playerInRange(world, (player.position - world.renderOrigin).toFloat(), 5.0f))
-                    DrawText("[E] Board ship", GetScreenWidth() / 2 - 60, GetScreenHeight() / 2 + 40, 20, SKYBLUE);
-                if (ship.piloted) DrawText("SHIP: WASD thrust  Space/Ctrl up/down  mouse steer  Z/C roll  Shift boost  X brake  L lights  0 power cell (hotbar)  E exit",
-                                           10, GetScreenHeight() - 30, 18, Fade(SKYBLUE, 0.9f));
                 if (!bench && !uiOpen) SetMousePosition(GetScreenWidth()/2, GetScreenHeight()/2);
             } else if (gameState == 2) {
                 world.drawScene(gameState);

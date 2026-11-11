@@ -94,7 +94,7 @@ Shaders in `resources/` hot-reload when saved.
   gravity is too weak to define it (deep space, the balance point between bodies).
 - **Star system** (`src/engine/bodies.*`, `resources/data/bodies.txt`): one body (asteroid, planet, moon)
   or procedural ring per line, with radius, position or orbit, spin or day length, gravity and seed. The
-  default is the 60 km home planet, its moon, an asteroid ring 250 km up and three huge rocks in and
+  default is the 60 km home planet, its moon, an asteroid ring 50 km up and three huge rocks in and
   beside it; the old asteroid start is `bodies_asteroids.txt`. Saves embed the system they were
   made in, so editing the file never breaks a save. Errors are reported with line numbers in `log.txt`.
 - **Rockets** (`src/space/rocket.*`, `resources/data/ship_parts.txt`): a build plot with a cockpit is a rocket. Build it
