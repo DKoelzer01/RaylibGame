@@ -15,7 +15,10 @@ void GameSave_Register() {
                 player.forward.x, player.forward.y, player.forward.z, player.flyMode ? 1 : 0, player.jetpackFuel);
         fprintf(f, "player_up %f %f %f\n", player.up.x, player.up.y, player.up.z);
         fprintf(f, "player_vel %f %f %f\n", player.velocity.x, player.velocity.y, player.velocity.z);
-        for (const auto& kv : inventory.all()) fprintf(f, "item %s %d\n", kv.first.c_str(), kv.second);
+        for (int i = 0; i < Inventory::kSlots; ++i) {
+            const InvSlot& s = inventory.grid()[i];
+            if (!s.empty()) fprintf(f, "slot %d %s %lld\n", i, s.id.c_str(), (long long)s.centi);
+        }
         fprintf(f, "quest %d\n", QuestBook_Tier());
         Hotbar_Save(f);
         Rocket_Save(f);
@@ -54,6 +57,14 @@ void GameSave_Register() {
             } else if (strcmp(tok, "survival") == 0) {
                 fscanf(f, " %f %f %f %d", &survival.oxygen, &survival.power, &survival.health, &survival.deaths);
                 survival.dead = false;
+            } else if (strcmp(tok, "slot") == 0) {
+                char id[64] = {};
+                int i = 0;
+                long long c = 0;
+                if (fscanf(f, " %d %63s %lld", &i, id, &c) == 3 && i >= 0 && i < Inventory::kSlots && c > 0 && itemDB.find(id)) {
+                    InvSlot& s = inventory.grid()[i];
+                    if (s.empty()) { s.id = id; s.centi = c; } else inventory.addAmount(id, c / 100.0);
+                }
             } else if (strcmp(tok, "item") == 0) {
                 char id[64] = {};
                 int n = 0;

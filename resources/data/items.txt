@@ -1,4 +1,4 @@
-# id | display name | stack limit | colour r,g,b | description
+# id | display name | kind (tool, block, or a number: a resource; placeable parts are blocks) | colour r,g,b | description
 stone           | Stone           | 999 | 130,130,135 | Bulk rock. Used to build terrain back up.
 regolith        | Regolith        | 999 | 170,140,100 | Loose surface dust. Building filler.
 dirt            | Dirt            | 999 | 120,90,60   | Soil from the surface. Building filler; makes clay.
@@ -10,9 +10,9 @@ iron_plate      | Iron plate      | 200 | 180,180,190 | Refined metal.
 water           | Water           | 200 |  70,130,220 | Drinkable, and splits into oxygen.
 oxygen_canister | Oxygen canister |  20 | 120,200,255 | Refills suit oxygen.
 power_cell      | Power cell      |  20 | 250,220, 80 | Recharges suit power.
-concrete        | Lunacrete       | 999 | 200,200,190 | Dense building material.
+concrete        | Lunacrete       | block | 200,200,190 | Dense building material.
 glass           | Glass           | 200 | 190,225,235 | Melted from sand. Lenses and windows.
-telescope       | Telescope       |   1 | 200,170,110 | T to raise it, wheel to zoom. Spot the moon and the ring from the ground.
+telescope       | Telescope       |   tool | 200,170,110 | T to raise it, wheel to zoom. Spot the moon and the ring from the ground.
 wood            | Wood            | 999 | 150,105, 60 | Logs from felled trees. Fuel and building material.
 fibre           | Plant fibre     | 999 | 170,190,110 | Tough stems from bushes. Twists into rope.
 berries         | Berries         | 200 | 190, 40, 70 | Wild berries. Edible.
@@ -66,4 +66,4 @@ advanced_circuit | Advanced circuit | 200 | 60,200,140 | HV circuit: gold contac
 hydrogen        | Hydrogen cell   | 200 | 200,220,255 | From electrolysis.
 oxygen          | Oxygen cell     | 200 | 140,200,255 | From electrolysis.
 polyethylene    | Polyethylene    | 200 | 230,230,230 | Plastic sheet.
-heat_shield_tile | Heat shield tile | 256 | 45, 42, 40 | Ceramic on titanium: build a rocket's leading face from it to survive re-entry.
+heat_shield_tile | Heat shield tile | block | 45, 42, 40 | Ceramic on titanium: build a rocket's leading face from it to survive re-entry.

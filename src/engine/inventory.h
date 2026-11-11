@@ -4,15 +4,22 @@
 #include <raylib.h>
 #include <string>
 #include <unordered_map>
+#include <cstdint>
 #include <vector>
 
 #include "voxel.h"
 
 // Item and recipe definitions, loaded from resources/data/*.txt so content can change without
 // recompiling.
+// What kind of thing an item is decides how it stacks in the inventory grid.
+enum class ItemKind : uint8_t {
+    Resource, // raw and processed materials: stacks of 8192, amounts to 0.01
+    Block,    // placeable build parts (machines, conveyors, rocket parts...) and building blocks: 256
+    Tool,     // never stacks
+};
 struct ItemDef {
     std::string id, name, description;
-    int stackLimit = 999;
+    ItemKind kind = ItemKind::Resource;
     Color color = GRAY;
 };
 
@@ -46,19 +53,44 @@ const char* OreKindAt(Vector3 local, unsigned int seed);
 // other bodies by the old 48 m deposit hash (OreKindAt).
 const char* OreKindOf(const class Planetoid& body, Vector3 local);
 
+ItemKind KindOf(const std::string& id);
+int StackLimit(const std::string& id); // whole units per slot
+
+// One grid cell. Amounts are hundredths (2 decimal places), so resources can be fractional.
+struct InvSlot {
+    std::string id;
+    int64_t centi = 0;
+    bool empty() const { return centi <= 0 || id.empty(); }
+    double amount() const { return centi / 100.0; }
+};
+
 class Inventory {
 public:
-    // Mining produces fractional amounts; whole units appear once enough has been dug.
+    static constexpr int kCols = 9, kRows = 5, kSlots = kCols * kRows;
+    Inventory() : slots(kSlots) {}
+    // Mining produces fractional amounts: hundredths go into the grid, smaller remainders carry over.
     void addFractional(const std::string& id, float amount);
-    void add(const std::string& id, int count);
-    bool remove(const std::string& id, int count);
-    int count(const std::string& id) const;
+    // Returns what did not fit (the grid is full); `overflowed` is set so the game can say so.
+    double addAmount(const std::string& id, double amount);
+    void add(const std::string& id, int count) { if (count > 0) addAmount(id, count); }
+    bool remove(const std::string& id, int count) { return removeAmount(id, count); }
+    bool removeAmount(const std::string& id, double amount);
+    int count(const std::string& id) const;     // whole units
+    double amount(const std::string& id) const; // with the fraction
     bool canCraft(const Recipe& r) const;
     bool craft(const Recipe& r);
-    void clear() { counts.clear(); partial.clear(); }
-    const std::unordered_map<std::string, int>& all() const { return counts; }
+    void clear() { for (auto& s : slots) s = InvSlot{}; partial.clear(); }
+    // Whole units of everything held (a copy).
+    std::unordered_map<std::string, int> all() const;
+    std::vector<InvSlot>& grid() { return slots; }
+    const std::vector<InvSlot>& grid() const { return slots; }
+    void swapSlots(int a, int b);  // move/swap two cells, merging same items up to the stack limit
+    void sort();                   // by kind, then name; merges partial stacks
+    bool overflowed = false;       // set when something did not fit; the game clears it after warning
 private:
-    std::unordered_map<std::string, int> counts;
+    // Room for `id` across the grid in hundredths (existing stacks plus empty slots).
+    int64_t room(const std::string& id) const;
+    std::vector<InvSlot> slots;
     std::unordered_map<std::string, float> partial;
 };
 

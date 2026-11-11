@@ -147,6 +147,7 @@ int main(int argc, char** argv)
     bool benchWater = false;       // --test-water: rivers and ponds near the start, their beds and clay
     bool benchFlyFollow = false;   // --test-flyfollow: the fly camera rides its reference body
     bool benchHotbar = false;      // --test-hotbar: materials and consumables from the hotbar
+    bool benchInventory = false;   // --test-inventory: grid stacking, fractions, sorting, saves
     bool benchRing = false, ringStarted = false; // --test-ring: milestone 6 gate
     bool benchRocket = false, rocketStarted = false; // --test-rocket: milestone 7 gate
     double rocketWait = 0.0;
@@ -269,6 +270,7 @@ int main(int argc, char** argv)
         if (std::string(argv[i]) == "--test-water") benchWater = true;
         if (std::string(argv[i]) == "--test-flyfollow") benchFlyFollow = true;
         if (std::string(argv[i]) == "--test-hotbar") benchHotbar = true;
+        if (std::string(argv[i]) == "--test-inventory") benchInventory = true;
         if (std::string(argv[i]) == "--test-ring") benchRing = true;
         if (std::string(argv[i]) == "--test-rocket") benchRocket = true;
         if (std::string(argv[i]) == "--test-blueprint") benchBlueprint = true;
@@ -980,6 +982,61 @@ int main(int argc, char** argv)
                                c.name, localDrift, distDrift, 3.0 * Vector3Length(c.body->linearVelocity), ok ? "ok" : "BAD");
                         ffPhase++;
                     }
+                } else if (benchInventory && WorldIdle()) {
+                    // --test-inventory: the grid's stacking rules, fractions, crafting room, sorting and
+                    // the save round trip.
+                    bool ok = true;
+                    auto check = [&](bool c, const char* what) { if (!c) { printf("bench: inventory: FAILED %s\n", what); ok = false; } };
+                    inventory.clear();
+                    inventory.add("telescope", 3);
+                    int tools = 0;
+                    for (const InvSlot& s : inventory.grid()) if (s.id == "telescope") { ++tools; check(s.centi == 100, "tools stack to 1"); }
+                    check(tools == 3, "three telescopes in three slots");
+                    inventory.add("conveyor", 300);
+                    int conv = 0;
+                    for (const InvSlot& s : inventory.grid()) if (s.id == "conveyor") ++conv;
+                    check(conv == 2 && inventory.count("conveyor") == 300, "blocks stack to 256");
+                    inventory.add("stone", 9000);
+                    check(inventory.count("stone") == 9000 && inventory.grid()[5].centi == 819200, "resources stack to 8192");
+                    for (int i = 0; i < 1000; ++i) inventory.addFractional("iron_ore", 0.0123f);
+                    check(fabs(inventory.amount("iron_ore") - 12.30) < 0.02 && inventory.count("iron_ore") == 12, "fractional amounts to 0.01");
+                    check(inventory.removeAmount("iron_ore", 0.25) && fabs(inventory.amount("iron_ore") - 12.05) < 0.02, "remove a fraction");
+                    check(!inventory.remove("stone", 9001), "can't remove more than held");
+                    inventory.sort();
+                    check(KindOf(inventory.grid()[0].id) == ItemKind::Tool && inventory.count("stone") == 9000, "sort: tools first, nothing lost");
+                    // Full: 45 slots of 8192 regolith; the rest is refused and flagged.
+                    inventory.clear();
+                    const double left = inventory.addAmount("regolith", 8192.0 * Inventory::kSlots + 10.0);
+                    check(fabs(left - 10.0) < 0.01 && inventory.overflowed, "a full grid refuses the rest");
+                    inventory.overflowed = false;
+                    // Crafting must not run when the output has no room.
+                    const Recipe* rr = nullptr;
+                    for (const Recipe& r : itemDB.recipes()) if (r.output == "rope") { rr = &r; break; }
+                    if (rr) {
+                        // Inputs that leave a remainder free no cell: with the rest full, no room for rope.
+                        inventory.clear();
+                        for (auto& in : rr->inputs) inventory.add(in.first, in.second * 2);
+                        inventory.addAmount("regolith", 1e9); inventory.overflowed = false;
+                        check(!inventory.canCraft(*rr), "no craft without room for the output");
+                        // Exactly the inputs: using them up frees their cells for the output.
+                        inventory.clear();
+                        for (auto& in : rr->inputs) inventory.add(in.first, in.second);
+                        inventory.addAmount("regolith", 1e9); inventory.overflowed = false;
+                        check(inventory.canCraft(*rr) && inventory.craft(*rr) && inventory.count("rope") == rr->outputCount, "craft into the inputs' freed cells");
+                    }
+                    // Save round trip through the extras hooks.
+                    inventory.clear();
+                    inventory.add("telescope", 1); inventory.addAmount("copper_ore", 12.34); inventory.add("kiln", 2);
+                    inventory.swapSlots(0, 7);
+                    const std::string path = std::string(GetWorkingDirectory()) + "/inv_test.tmp";
+                    if (FILE* f = fopen(path.c_str(), "w")) { saveExtrasHook(f); fprintf(f, "end_extras\n"); fclose(f); }
+                    inventory.clear();
+                    if (FILE* f = fopen(path.c_str(), "r")) { loadExtrasHook(f); fclose(f); }
+                    remove(path.c_str());
+                    check(inventory.grid()[7].id == "telescope" && fabs(inventory.amount("copper_ore") - 12.34) < 0.001 && inventory.count("kiln") == 2, "save and load keep slots and fractions");
+                    printf("bench: inventory: %s\n", ok ? "PASS" : "FAIL");
+                    inventory.clear();
+                    benchInventory = false;
                 } else if (benchHotbar && WorldIdle()) {
                     // --test-hotbar: materials from the hotbar (any shape costs its material), a consumable,
                     // the foundation not digging outside the part, and materials kept through a save.
@@ -1659,7 +1716,7 @@ int main(int argc, char** argv)
                         }
                         benchWalkSeconds = 0.0;
                     }
-                } else if ((WorldIdle() && benchDigStrokes == 0 && !benchSaveLoad && benchWalkSeconds <= 0.0 && benchMineStrokes == 0 && minePhase != 2 && benchFlySeconds <= 0.0 && !benchSuffocate && benchOrbitSeconds <= 0.0 && !benchRide && !benchPark && !benchGravity && !benchPrecision && !benchMantle && !benchAirJump && !benchMoon && !benchHole && !benchWall && !benchMenus && !benchWater && !benchFlyFollow && !benchHotbar && !benchRing && !benchRocket && !benchBlueprint && !benchSmallBody && !benchTrees && !benchChop && benchPersist == 0 && benchBuild == 0 && benchFactory == 0 && !benchProgression) || GetTime() > 600.0) {
+                } else if ((WorldIdle() && benchDigStrokes == 0 && !benchSaveLoad && benchWalkSeconds <= 0.0 && benchMineStrokes == 0 && minePhase != 2 && benchFlySeconds <= 0.0 && !benchSuffocate && benchOrbitSeconds <= 0.0 && !benchRide && !benchPark && !benchGravity && !benchPrecision && !benchMantle && !benchAirJump && !benchMoon && !benchHole && !benchWall && !benchMenus && !benchWater && !benchFlyFollow && !benchHotbar && !benchInventory && !benchRing && !benchRocket && !benchBlueprint && !benchSmallBody && !benchTrees && !benchChop && benchPersist == 0 && benchBuild == 0 && benchFactory == 0 && !benchProgression) || GetTime() > 600.0) {
                     benchStart = GetTime();
                     printf("bench: world ready after %.2f s (%d chunks, avg build %.2f ms of which sampling %.2f ms, %d worker threads)\n",
                         GetWorldStats().lastGenerationSeconds, GetWorldStats().chunks, GetWorldStats().avgBuildMs, GetWorldStats().avgSampleMs, GetWorldStats().workerThreads);
