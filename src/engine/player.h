@@ -23,6 +23,7 @@ struct Player {
     Vector3 up = { 0, 1, 0 };
     bool grounded = false;
     bool flyMode = false;             // F: free-fly dev camera (no gravity/collision)
+    int spawns = 0;                   // counts spawnOn/placeAt: the game raises the loading screen on a new one
     float jetpackFuel = 1.0f;         // 0..1, recharges on the ground
     bool jetpackFiring = false;       // fuel was burnt this update (survival / audio / HUD)
     Planetoid* nearest = nullptr;     // body we collide with (gravity comes from every body)

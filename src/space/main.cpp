@@ -404,6 +404,9 @@ int main(int argc, char** argv)
     bool loading = false;          // the loading screen is up
     double loadStart = 0.0;
     size_t loadMax = 1;
+    bool spawnLoad = false;        // raised by a spawn or teleport (not entering the game): no minimum time
+    int loadFrames = 0;
+    int seenSpawns = 0;
     world.onDraw3D = [&world] { if (!ship.piloted && !buildTool.active && !Rocket_Boarded()) TerrainTool_Draw3D(); BuildTool_Draw3D(world); };
 
     const double benchWarmup = 2.0;
@@ -423,7 +426,7 @@ int main(int argc, char** argv)
 
     while (windowKeepAlive && !WindowShouldClose())
     {
-        if (bench) {
+        if (bench && !loading) { // scripted tests wait out the loading screen (a half-built world is no game state)
             if (benchStart < 0.0) {
                 if (WorldIdle() && benchDigStrokes > 0) {
                     // Scripted edit test: carve a tunnel straight in at the crosshair.
@@ -1848,7 +1851,9 @@ int main(int argc, char** argv)
         // One clamped frame time for everything that moves (bodies, ship, player): clamping only the
         // player let the ground spin away under it during a slow frame.
         const float frameDt = std::min(GetFrameTime(), 0.1f);
-        advanceBodies(world, gameState == 1 ? frameDt * timeScale * Rocket_Warp() : 0.0f); // bodies only spin while playing (warped with a coasting rocket); before riders update
+        // A spawn or teleport: the loading screen until the terrain there is built (play and tests pause).
+        if (player.spawns != seenSpawns) { seenSpawns = player.spawns; if (gameState == 1) { loading = true; spawnLoad = true; loadStart = GetTime(); loadMax = 1; loadFrames = 0; } }
+        advanceBodies(world, gameState == 1 && !loading ? frameDt * timeScale * Rocket_Warp() : 0.0f); // bodies only spin while playing (warped with a coasting rocket); before riders update
         if (gameState == 1) {
             ship.lastImpact = 0.0f;
             if (ship.piloted) {
@@ -1861,12 +1866,12 @@ int main(int argc, char** argv)
                 Rocket_Update(world, gameInput && alive, frameDt * timeScale * Rocket_Warp()); // flight (and its camera)
             } else {
                 ship.update(world, false, frameDt);
-                if (alive) player.update(world, gameInput, frameDt);
+                if (alive && !loading) player.update(world, gameInput, frameDt);
                 Survival_OnLanding(player.impactSpeed);
                 Rocket_Update(world, gameInput && alive, frameDt); // on foot: aim at a rocket (E boards, I fuels)
             }
             if (ship.piloted && ship.lastImpact > 12.0f) survival.health -= (ship.lastImpact - 12.0f) * 3.0f; // crash damage
-            Survival_Update(world, frameDt, gameInput);
+            if (!loading) Survival_Update(world, frameDt, gameInput);
             // Autosave every 5 minutes of play (incremental: only regions changed since the last save).
             static double lastAutosave = GetTime();
             if (!bench && alive && GetTime() - lastAutosave > 300.0) {
@@ -2081,7 +2086,14 @@ int main(int argc, char** argv)
                     DrawText("Building the world", bx, by - 40, 28, RAYWHITE);
                     DrawRectangle(bx, by, bw, 14, Fade(RAYWHITE, 0.15f));
                     DrawRectangle(bx, by, (int)(bw * std::clamp(progress, 0.02f, 1.0f)), 14, SKYBLUE);
-                    if ((WorldIdle() && GetTime() - loadStart > 0.5) || GetTime() - loadStart > 20.0) loading = false;
+                    // Entering the game holds it half a second; a spawn only until the streamer has had a few
+                    // frames to queue the new place and has built it (where it is built already: at once).
+                    ++loadFrames;
+                    const bool built = spawnLoad ? WorldIdle() && loadFrames >= 3 : WorldIdle() && GetTime() - loadStart > 0.5;
+                    if (built || GetTime() - loadStart > 20.0) {
+                        if (bench) printf("bench: loading screen after a spawn: %d frames, %.2f s\n", loadFrames, GetTime() - loadStart);
+                        loading = false; spawnLoad = false;
+                    }
                 }
                 if (!bench && !uiOpen) SetMousePosition(GetScreenWidth()/2, GetScreenHeight()/2);
             } else if (gameState == 2) {

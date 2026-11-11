@@ -14,6 +14,7 @@ static Vector3 RotateAround(Vector3 v, Vector3 axis, float angle) {
 }
 
 void Player::spawnOn(Scene& world, Planetoid& body, Vector3 dir) {
+    ++spawns;
     const float R = body.radius * body.scale;
     const Vector3 c = body.position;
     if (body.flat) dir = { 0, 1, 0 };
@@ -526,6 +527,7 @@ void Player::anchorTo(Planetoid& body) {
 }
 
 void Player::placeAt(Scene& world, Planetoid& body, Vector3 renderFeet) {
+    ++spawns;
     position = world.renderOrigin + renderFeet;
     velocity = body.surfaceVelocity(renderFeet);
     grounded = false;
