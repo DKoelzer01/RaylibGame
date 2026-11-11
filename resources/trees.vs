@@ -30,7 +30,7 @@ void main()
     vec3 b0 = cross(up, t0);
     float a = h * 6.2831853;
     vec3 t = t0 * cos(a) + b0 * sin(a);
-    vec3 b = cross(up, t);
+    vec3 b = cross(t, up);   // right-handed (t, up, b): keeps the mesh winding (front faces CCW)
     float s = instPosScale.w;
     vec3 v = vertexPosition;
     // Wind on leaves: a slow sway growing with height.

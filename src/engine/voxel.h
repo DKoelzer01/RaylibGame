@@ -146,7 +146,7 @@ public:
     float minElevation, maxElevation; // the surface stays inside [radius + min, radius + max]
     bool foliage = false;         // grows trees (planets with life); the terrain paints distant canopy
     unsigned int foliageSeed = 0; // the tree system's seed (TreeCanopy matches its forests)
-    SimplexNoise continents, ridges, hills, valleys, detail, cavesA, cavesB, veins, climate, caverns, ravines, ravineMask;
+    SimplexNoise continents, ridges, hills, valleys, detail, cavesA, cavesB, veins, climate, caverns, ravines, ravineMask, streams;
     static constexpr float kTunnelLevel = 0.096f; // worm tunnel where both cave fields are within this of zero
     static constexpr float kCavernLevel = 0.68f;  // cavern where the cavern field exceeds this (rare)
 
@@ -154,6 +154,17 @@ public:
     // Surface height above sea level along a unit direction; footprint > 0 leaves out detail finer
     // than samples that far apart (see SimplexNoise::fractalLimited).
     float elevation(Vector3 dir, float footprint = 0.0f) const;
+    // Inland water (planets): rivers run in a channel along the river valleys, a little below the
+    // banks; ponds (12-38 m, flat surface, a low embankment where the ground falls away) sit in some
+    // cells of a ~380 m grid on gentle inland ground. The surface's height above sea level here, or
+    // kNoWater. The sea is separate (sea level).
+    static constexpr float kNoWater = -1e9f;
+    float waterElevation(Vector3 dir, float footprint = 0.0f) const;
+    // Whether inland water may lie within `extent` metres of a direction (cheap; meshing skips the
+    // per-sample work elsewhere).
+    bool inlandWaterNear(Vector3 dir, float extent, float footprint = 0.0f) const;
+    // On a river or pond bed (or its wet shore): digging there also turns up clay.
+    bool wetBed(Vector3 local) const;
     // A body-local direction to a good start spot: temperate latitude, flat grassland a little above
     // the sea, solid ground underfoot (no cave mouth). Deterministic for a seed.
     Vector3 findSpawnDir(unsigned int seed) const;
@@ -175,6 +186,11 @@ public:
 
 private:
     float densityNear(Vector3 p, float d, float surface, float footprint) const; // after the height map
+    struct Land { float h, c, mountain, valley, valleyWeight, detail, stream, ridge; };
+    Land land(Vector3 dir, float footprint) const;     // the height map before rivers and ponds
+    struct Pond { bool exists; Vector3 dir; float r, level, depth; };
+    Pond pondOfCell(int cx, int cy, int cz) const;       // deterministic per cell (cached per thread)
+    float riverWeight(const Land& l) const;
 };
 
 // Open-world terrain: +Y up, rolling hills and mountains from a heightmap, carved by 3D cave

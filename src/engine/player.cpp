@@ -49,6 +49,22 @@ void Player::update(Scene& world, bool inputEnabled, float dt) {
     impactSpeed = 0.0f; // per-frame; cleared before the fly-mode early return too
     jetpackFiring = false;
     if (flyMode) {
+        // Carry the camera with its reference body's motion since recordFly() (after last frame's input).
+        bool rotate = false;
+        Planetoid* ref = flyFollow ? flyReference(world, rotate) : nullptr;
+        if (ref && ref->id == flyBodyId && rotate == flyRotate) {
+            if (rotate) {
+                flyCarried = ref->toWorldD(flyLocal);
+                flyCarriedValid = true;
+                world.camera.position = (flyCarried - world.renderOrigin).toFloat();
+                world.camera.target = Vector3Add(world.camera.position, ref->dirToWorld(flyLocalFwd));
+                world.camera.up = ref->dirToWorld(flyLocalUp);
+            } else {
+                const Vector3 move = (ref->worldPos - flyBodyPos).toFloat();
+                world.camera.position = Vector3Add(world.camera.position, move);
+                world.camera.target = Vector3Add(world.camera.target, move);
+            }
+        }
         // The free-fly camera (Scene / customUpdateCamera) drives; keep the body under the eye.
         position = world.renderOrigin + Vector3Subtract(world.camera.position, Vector3Scale(up, eyeHeight));
         forward = Vector3Normalize(Vector3Subtract(world.camera.target, world.camera.position));
@@ -281,12 +297,38 @@ bool Player::resolveCollisions(Scene&, Vector3& feet) {
     Planetoid& p = *nearest;
     bool onGround = false;
     const float offsets[2] = { radius, eyeHeight - radius };
-    for (int iter = 0; iter < 4; ++iter) {
+    // The linear estimate (iso - density) / |gradient| is only a distance where the density behaves
+    // like one; dig and build edits (big density steps) break that, and it reported contacts in open
+    // air that pushed up to 1 m per iteration, sometimes into the ground (the "wall launch"). So each
+    // contact is confirmed by sampling along the normal, the push is the measured penetration, and the
+    // total push in a frame is capped.
+    auto solid = [&](Vector3 c) { return p.densityAt(p.toLocal(c)) >= ISO_LEVEL; };
+    float pushBudget = 0.6f;
+    for (int iter = 0; iter < 4 && pushBudget > 0.0f; ++iter) {
         bool moved = false;
         for (float off : offsets) {
             float dist; Vector3 n;
-            if (!TerrainSurfaceDistance(p, Vector3Add(feet, Vector3Scale(up, off)), dist, n) || dist >= radius) continue;
-            const float push = std::min(radius - dist, 1.0f); // limit per iteration if deeply embedded
+            const Vector3 c = Vector3Add(feet, Vector3Scale(up, off));
+            if (!TerrainSurfaceDistance(p, c, dist, n) || dist >= radius) continue;
+            float push = 0.0f;
+            if (!solid(c)) {
+                // Centre in the open: is there solid ground within the radius along -n, and how far?
+                if (!solid(Vector3Subtract(c, Vector3Scale(n, radius)))) continue; // a false contact
+                float lo = 0.0f, hi = radius;                                       // lo open, hi solid
+                for (int k = 0; k < 6; ++k) {
+                    const float mid = 0.5f * (lo + hi);
+                    if (solid(Vector3Subtract(c, Vector3Scale(n, mid)))) hi = mid; else lo = mid;
+                }
+                push = radius - hi;
+            } else {
+                // Embedded: step out along the normal to open space.
+                float s = 0.05f;
+                while (s < 1.0f && solid(Vector3Add(c, Vector3Scale(n, s)))) s += 0.05f;
+                push = s + radius;
+            }
+            push = std::min(push, pushBudget);
+            if (push <= 1e-4f) continue;
+            pushBudget -= push;
             feet = Vector3Add(feet, Vector3Scale(n, push));
             const float vUpBefore = Vector3DotProduct(velocity, up);
             // Impact and push-out relative to the (moving) terrain: against the world-frame velocity a
@@ -370,6 +412,50 @@ void Player::collideTrunks(Vector3& feet) {
         const float vn = Vector3DotProduct(Vector3Subtract(velocity, collideFrameVel), n);
         if (vn < 0.0f) velocity = Vector3Subtract(velocity, Vector3Scale(n, vn));
     }
+}
+
+Planetoid* Player::flyReference(Scene& world, bool& rotate) const {
+    // Sphere of influence: a = orbit radius, r = a (m / M)^0.4 with masses ~ g R^2. Bodies with no
+    // parent reach everywhere. Several hold the camera: the nearest surface wins.
+    const DVec3 cam = world.renderOrigin + world.camera.position;
+    Planetoid* best = nullptr;
+    double bestDist = 1e300;
+    for (auto& obj : world.objects) {
+        Planetoid* b = dynamic_cast<Planetoid*>(obj.get());
+        if (!b || b->flat) continue;
+        const double d = (cam - b->worldPos).length();
+        const double R = (double)b->radius * b->scale;
+        double soi = 1e300;
+        if (b->orbitParent && Planetoid::find(b->orbitParentId) == b->orbitParent) {
+            const Planetoid* m = b->orbitParent;
+            const double Rm = (double)m->radius * m->scale;
+            const double ratio = (b->surfaceGravity * R * R) / std::max(1e-9, (double)m->surfaceGravity * Rm * Rm);
+            soi = std::max(2.0 * R, b->orbitRadius * pow(std::max(ratio, 0.0), 0.4));
+        } else if (b->kind == BodyKind::Asteroid) {
+            soi = 10.0 * R; // loose asteroids (no orbit): their neighbourhood
+        }
+        if (d > soi) continue;
+        if (d - R < bestDist) { bestDist = d - R; best = b; }
+    }
+    if (best) rotate = (cam - best->worldPos).length() < 2.0 * best->radius * best->scale;
+    return best;
+}
+
+void Player::recordFly(Scene& world) {
+    flyBodyId = 0;
+    if (!flyMode || !flyFollow) return;
+    bool rotate = false;
+    Planetoid* ref = flyReference(world, rotate);
+    if (!ref) return;
+    flyBodyId = ref->id;
+    flyRotate = rotate;
+    flyBodyPos = ref->worldPos;
+    // Unmoved by input since the carry: the double pose, not its float rounding (which drifted ~0.2 m in 3 s).
+    const DVec3 cam = world.renderOrigin + world.camera.position;
+    flyLocal = ref->toLocalD(flyCarriedValid && (cam - flyCarried).length() < 0.01 ? flyCarried : cam);
+    flyCarriedValid = false;
+    flyLocalFwd = ref->dirToLocal(Vector3Normalize(Vector3Subtract(world.camera.target, world.camera.position)));
+    flyLocalUp = ref->dirToLocal(world.camera.up);
 }
 
 void Player::anchorTo(Planetoid& body) {

@@ -476,6 +476,35 @@ void Scene::drawScene(int gamestate) {
         }
 
 
+        // Trees and bushes: one instanced draw per variant per body. The mid pass draws the simple
+        // far meshes (trees reach 1 km, past the near/mid split); the near pass draws them all.
+        auto drawTrees = [&](int onlyLod) {
+            if (trees.shader.id <= 0 || !foliageEnabled) return;
+            rlDrawRenderBatchActive();
+            Shader& ts = trees.shader;
+            rlEnableShader(ts.id);
+            const Matrix vp = MatrixMultiply(rlGetMatrixModelview(), rlGetMatrixProjection());
+            rlSetUniformMatrix(GetShaderLocation(ts, "matViewProj"), vp);
+            const float now = (float)fmod(GetTime(), 3600.0);
+            const float shell[4] = { atmosphere.centre.x, atmosphere.centre.y, atmosphere.centre.z,
+                                     atmosphere.enabled && effFogDensity < 0.06f ? atmosphere.radius + atmosphere.hazeHeight : 0.0f };
+            rlSetUniform(GetShaderLocation(ts, "sunDir"), &sun, RL_SHADER_UNIFORM_VEC3, 1);
+            rlSetUniform(GetShaderLocation(ts, "viewPos"), &camera.position, RL_SHADER_UNIFORM_VEC3, 1);
+            rlSetUniform(GetShaderLocation(ts, "ambient"), &effAmbient, RL_SHADER_UNIFORM_VEC3, 1);
+            rlSetUniform(GetShaderLocation(ts, "fogColor"), &effFog, RL_SHADER_UNIFORM_VEC3, 1);
+            rlSetUniform(GetShaderLocation(ts, "fogDensity"), &effFogDensity, RL_SHADER_UNIFORM_FLOAT, 1);
+            rlSetUniform(GetShaderLocation(ts, "fogShell"), shell, RL_SHADER_UNIFORM_VEC4, 1);
+            rlSetUniform(GetShaderLocation(ts, "time"), &now, RL_SHADER_UNIFORM_FLOAT, 1);
+            RenderContext tctx = ctx;
+            tctx.treeShader = &ts;
+            tctx.treeModelLoc = GetShaderLocation(ts, "matModel");
+            tctx.treeOccluderLoc = GetShaderLocation(ts, "sunOccluder");
+            tctx.treeFadeLoc = GetShaderLocation(ts, "fadeEnd");
+            for (const auto& obj : objects)
+                if (auto* p = dynamic_cast<Planetoid*>(obj.get()); p && !isFar(p) && p->trees) p->trees->draw(*p, tctx, onlyLod);
+            rlDisableShader();
+        };
+
         // Mid pass: near bodies' terrain and sea beyond kNearSplit, in their own depth range, then a
         // depth clear for the close range. One 0.5 m .. 60 km range resolved only ~12 m of depth at
         // 10 km, so far LOD seams and shorelines z-fought. Chunks straddling the split are drawn in
@@ -536,32 +565,7 @@ void Scene::drawScene(int gamestate) {
             rlEnableBackfaceCulling();
             rlDisableShader();
         }
-        // Trees and bushes: one instanced draw per variant per body.
-        if (trees.shader.id > 0 && foliageEnabled) {
-            rlDrawRenderBatchActive();
-            Shader& ts = trees.shader;
-            rlEnableShader(ts.id);
-            const Matrix vp = MatrixMultiply(rlGetMatrixModelview(), rlGetMatrixProjection());
-            rlSetUniformMatrix(GetShaderLocation(ts, "matViewProj"), vp);
-            const float now = (float)fmod(GetTime(), 3600.0);
-            const float shell[4] = { atmosphere.centre.x, atmosphere.centre.y, atmosphere.centre.z,
-                                     atmosphere.enabled && effFogDensity < 0.06f ? atmosphere.radius + atmosphere.hazeHeight : 0.0f };
-            rlSetUniform(GetShaderLocation(ts, "sunDir"), &sun, RL_SHADER_UNIFORM_VEC3, 1);
-            rlSetUniform(GetShaderLocation(ts, "viewPos"), &camera.position, RL_SHADER_UNIFORM_VEC3, 1);
-            rlSetUniform(GetShaderLocation(ts, "ambient"), &effAmbient, RL_SHADER_UNIFORM_VEC3, 1);
-            rlSetUniform(GetShaderLocation(ts, "fogColor"), &effFog, RL_SHADER_UNIFORM_VEC3, 1);
-            rlSetUniform(GetShaderLocation(ts, "fogDensity"), &effFogDensity, RL_SHADER_UNIFORM_FLOAT, 1);
-            rlSetUniform(GetShaderLocation(ts, "fogShell"), shell, RL_SHADER_UNIFORM_VEC4, 1);
-            rlSetUniform(GetShaderLocation(ts, "time"), &now, RL_SHADER_UNIFORM_FLOAT, 1);
-            RenderContext tctx = ctx;
-            tctx.treeShader = &ts;
-            tctx.treeModelLoc = GetShaderLocation(ts, "matModel");
-            tctx.treeOccluderLoc = GetShaderLocation(ts, "sunOccluder");
-            tctx.treeFadeLoc = GetShaderLocation(ts, "fadeEnd");
-            for (const auto& obj : objects)
-                if (auto* p = dynamic_cast<Planetoid*>(obj.get()); p && !isFar(p) && p->trees) p->trees->draw(*p, tctx);
-            rlDisableShader();
-        }
+        drawTrees(-1);
 
         // Transparent pass (sea surfaces) after everything opaque. Depth writes stay on: where LOD
         // nodes overlap, the second copy of the same surface then fails the depth test instead of

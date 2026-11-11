@@ -133,7 +133,7 @@ namespace {
         auto add = [](const std::string& n, std::function<bool()> f) { steps.push_back({ n, std::move(f) }); };
         // Tier 0: wood, dirt, stone; clay, a crucible, a campfire to fire it.
         add("chop trees for 160 wood", [] { while (inventory.count("wood") < 160) if (!TerrainTool_HarvestNearest(*body, home, true)) return false; return true; });
-        add("dig 84 dirt", [] { return DigFor("regolith", 84, 1.0f); });
+        add("dig 84 dirt", [] { return DigFor("dirt", 84, 1.0f); });
         add("dig 72 stone", [] { return DigFor("stone", 72, 5.0f); });
         add("craft clay, a crucible mould and a campfire", [] { return Craft("clay", 28) && Craft("crucible_mold", 1) && Craft("campfire", 1); });
         add("place the campfire and fire the crucible", [] {

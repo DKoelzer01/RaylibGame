@@ -74,7 +74,7 @@ void TerrainTool_Update(Scene& world, bool inputEnabled, bool editEnabled) {
 
     if (!inputEnabled) { digging = adding = false; return; }
 
-    if (IsKeyPressed(KEY_F5)) Toast(SaveWorld(world) ? "Saved to saves/world.sav" : "Save failed");
+    if (IsKeyPressed(KEY_F5)) Toast(SaveWorld(world) ? TextFormat("Saved to %s", WorldSavePath()) : "Save failed");
     if (IsKeyPressed(KEY_F9)) {
         if (LoadWorldSave(world)) { Toast("Loaded saves/world.sav"); hasHit = false; return; }
         Toast("No save found");
@@ -107,6 +107,13 @@ void TerrainTool_Update(Scene& world, bool inputEnabled, bool editEnabled) {
     strokeTimer = std::max(strokeTimer, 0.0f);
 }
 
+// Sand, gravel or dirt on a river or pond bed (planets).
+static bool WetBed(Planetoid& p, Vector3 local, VoxelMaterial m) {
+    if (m != VoxelMaterial::Sand && m != VoxelMaterial::Gravel && m != VoxelMaterial::Regolith) return false;
+    const auto* pf = dynamic_cast<const PlanetField*>(p.field.get());
+    return pf && pf->wetBed(local);
+}
+
 // One brush stroke at the current crosshair hit (also used by scripted tests).
 bool TerrainTool_Stroke(bool dig) {
     if (!hasHit) return false;
@@ -122,16 +129,17 @@ bool TerrainTool_Stroke(bool dig) {
     const float r3 = terrainTool.brushRadius * terrainTool.brushRadius * terrainTool.brushRadius;
     if (digging) {
         // Yield scales with the volume the stroke removes (~strength * r^3).
-        const char* item = hit.material == VoxelMaterial::Ore ? OreKindAt(hit.local, hit.planetoid->seed) : ItemForMaterial(hit.material);
+        const char* item = hit.material == VoxelMaterial::Ore ? OreKindAt(hit.local, hit.planetoid->seed) : ItemForMaterial(hit.material, HasSoil(*hit.planetoid));
         inventory.addFractional(item, terrainTool.digStrength * r3 * 0.15f);
+        if (WetBed(p, hit.local, hit.material)) inventory.addFractional("clay", terrainTool.digStrength * r3 * 0.06f); // river and pond beds hold clay
         Audio_Play(Sfx::Dig, 0.5f, 0.85f + 0.3f * (float)GetRandomValue(0, 100) / 100.0f);
     } else if (!terrainTool.creative) {
         // Building consumes bulk material, best first.
-        static const char* fillers[] = { "concrete", "stone", "regolith", "gravel", "sand" };
+        static const char* fillers[] = { "concrete", "stone", "dirt", "regolith", "gravel", "sand" };
         bool paid = false;
         for (const char* f : fillers) if (inventory.remove(f, 1)) { paid = true; break; }
         if (!paid) {
-            Toast("Need stone, regolith, gravel, sand or lunacrete to build");
+            Toast("Need stone, dirt, regolith, gravel, sand or concrete to build");
             Audio_Play(Sfx::Error, 0.5f);
             strokeTimer = 0.5f;
             return false;
@@ -169,10 +177,10 @@ void TerrainTool_DrawHUD() {
             DrawRectangle(cx + 14, cy + 34, (int)(120 * f), 6, ORANGE);
         }
     } else if (hasHit) {
-        DrawText(TextFormat("%s  %.1f m   brush %.1f", VoxelMaterialName(hit.material), hit.distance, terrainTool.brushRadius),
+        DrawText(TextFormat("%s  %.1f m   brush %.1f", hit.material == VoxelMaterial::Regolith && HasSoil(*hit.planetoid) ? "dirt" : VoxelMaterialName(hit.material), hit.distance, terrainTool.brushRadius),
                  cx + 14, cy + 10, 20, RAYWHITE);
     }
-    DrawText("LMB dig  RMB build  wheel brush  Tab inventory  T telescope  L lamp  F fly  F5 save  F9 load  F1 debug", 10, y + 30, 20, Fade(RAYWHITE, 0.7f));
+    DrawText("LMB dig  RMB fill  wheel brush  G build  1-0 hotbar  Tab inventory  T telescope  L lamp  F fly  F5 save  F1 debug", 10, y + 30, 20, Fade(RAYWHITE, 0.7f));
     if (GetTime() < toastUntil) DrawText(toast.c_str(), 10, y, 20, YELLOW);
 }
 
@@ -189,8 +197,9 @@ bool TerrainTool_DigAt(Planetoid& p, Vector3 local) {
     const float base = p.field->baseDensity(local);
     if (base < ISO_LEVEL) return false; // air
     const VoxelMaterial m = p.field->material(local, base);
-    const char* item = m == VoxelMaterial::Ore ? OreKindAt(local, p.seed) : ItemForMaterial(m);
+    const char* item = m == VoxelMaterial::Ore ? OreKindAt(local, p.seed) : ItemForMaterial(m, HasSoil(p));
     inventory.add(item, 1);
+    if (WetBed(p, local, m)) inventory.addFractional("clay", 0.4f); // beds hold clay
     ApplyTerrainEdit(p, TerrainEdit{ local, 1.2f, -0.6f });
     return true;
 }

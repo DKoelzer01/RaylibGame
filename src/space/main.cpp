@@ -26,6 +26,8 @@
 #include "telescope.h"
 #include "buildtool.h"
 #include "progression_test.h"
+#include "menus.h"
+#include "hotbar.h"
 #include "factory.h"
 
 #if defined(PLATFORM_DESKTOP)
@@ -60,9 +62,38 @@ static void AimAtTelescopeTarget(Scene& world) {
     }
 }
 
+static Vector3 StartSpawnDirLocal(Planetoid& body) {
+    if (auto* field = dynamic_cast<const PlanetField*>(body.field.get())) return field->findSpawnDir(body.seed);
+    return { 0, 1, 0 };
+}
+
 static Vector3 StartSpawnDir(Planetoid& body) {
     if (auto* field = dynamic_cast<const PlanetField*>(body.field.get())) return body.dirToWorld(field->findSpawnDir(body.seed));
     return { 0, 1, 0 };
+}
+
+// A new game on the world as generated: the player at the start, the ship parked ahead, a
+// clearing for both, the starting kit. `reset` also clears what a previous game left behind
+// (inventory, quest tier, survival state).
+static void StartNewWorld(Scene& world, bool reset) {
+    if (reset) {
+        inventory.clear();
+        QuestBook_SetTier(0);
+        survival = SurvivalState{};
+        player.velocity = { 0, 0, 0 };
+        player.flyMode = false;
+        ship.piloted = false;
+    }
+    Planetoid* start = world.objects.empty() ? nullptr : dynamic_cast<Planetoid*>(world.objects[0].get());
+    if (start) {
+        player.spawnOn(world, *start, StartSpawnDir(*start));
+        // Park the ship a few metres ahead of the player.
+        const Vector3 feet = (player.position - world.renderOrigin).toFloat();
+        ship.parkNear(world, Vector3Add(feet, Vector3Scale(player.forward, 8.0f)), player.up);
+        // A clearing at the start, so the parked ship and the player don't stand in a tree.
+        if (start->trees) start->trees->addClearing(start->toLocal(feet), 14.0f);
+    }
+    if (inventory.count("telescope") == 0) inventory.add("telescope", 1); // starting kit (a save restores its own inventory)
 }
 
 // --bench <seconds>: windowed 1920x1080, uncapped FPS, skips the menu, holds a fixed
@@ -106,6 +137,25 @@ int main(int argc, char** argv)
     float timeScale = 1.0f;        // --time-scale k: bodies spin and orbit k times faster (testing)
     bool benchMoon = false;        // --test-moon: moon orbit vs analytic, standing and jumping on the moon
     bool benchHole = false;        // --test-hole: walk into a fresh pit and build a pillar underfoot on the spinning planet
+    bool benchWall = false;        // --test-wall: walk into shaft and tunnel walls (no launches)
+    bool benchMenus = false;       // --test-menus: main menu, new game, pause, save & quit, load
+    bool benchWater = false;       // --test-water: rivers and ponds near the start, their beds and clay
+    bool benchFlyFollow = false;   // --test-flyfollow: the fly camera rides its reference body
+    bool benchHotbar = false;      // --test-hotbar: materials and consumables from the hotbar
+    int ffPhase = 0;
+    double ffStart = 0.0, ffDist0 = 0.0;
+    DVec3 ffLocal0{};
+    bool ffOk = true, ffBaseline = false;
+    int waterPhase = 0;
+    double waterStart = 0.0;
+    Vector3 waterDir{};
+    float waterLevel = 0.0f;
+    int menuStep = 0, menuFrames = 0;
+    bool menuOk = true;
+    int wallPhase = 0;
+    double wallStart = 0.0, wallMaxStep = 0.0, wallMaxStepAt = 0.0;
+    float wallMaxImpact = 0.0f, wallMinHealth = 100.0f, wallMaxSpeed = 0.0f;
+    DVec3 wallLast{};
     bool benchTrees = false;       // --test-trees: walk into a tree trunk
     bool benchChop = false;        // --test-chop: fell a tree, save/reload, regrow
     int benchPersist = 0;          // --test-persist N: milestone 2 gate (N strokes, flat builds, fast save/load)
@@ -200,6 +250,11 @@ int main(int argc, char** argv)
         if (std::string(argv[i]) == "--test-airjump") benchAirJump = true;
         if (std::string(argv[i]) == "--test-moon") benchMoon = true;
         if (std::string(argv[i]) == "--test-hole") benchHole = true;
+        if (std::string(argv[i]) == "--test-wall") benchWall = true;
+        if (std::string(argv[i]) == "--test-menus") benchMenus = true;
+        if (std::string(argv[i]) == "--test-water") benchWater = true;
+        if (std::string(argv[i]) == "--test-flyfollow") benchFlyFollow = true;
+        if (std::string(argv[i]) == "--test-hotbar") benchHotbar = true;
         if (std::string(argv[i]) == "--test-trees") benchTrees = true;
         if (std::string(argv[i]) == "--test-chop") benchChop = true;
         if (std::string(argv[i]) == "--test-persist" && i + 1 < argc) benchPersist = atoi(argv[i + 1]);
@@ -295,7 +350,7 @@ int main(int argc, char** argv)
     }
     SetExitKey(KEY_NULL);
     SetTraceLogLevel(LOG_WARNING); // Set log level to warning to reduce output noise
-    rlSetClipPlanes(0.5, 60000.0); // space scale: see other bodies kilometres away
+    rlSetClipPlanes(0.5, 60000.0); // space scale: see other bodies kilometres away (0.2 m near walls: see the frame loop)
     
     DebugUI_Init();
     if (!bench) Audio_Init();
@@ -320,16 +375,11 @@ int main(int argc, char** argv)
                 printf("body %s %s pos %.3f %.3f %.3f radius %.3f seed %u spin %.4f g %.4f\n", BodyKindName(p->kind), p->name.c_str(), p->worldPos.x, p->worldPos.y, p->worldPos.z,
                        p->radius, p->seed, p->spin.y, p->surfaceGravity);
     }
-    if (Planetoid* start = world.objects.empty() ? nullptr : dynamic_cast<Planetoid*>(world.objects[0].get())) player.spawnOn(world, *start, StartSpawnDir(*start));
-    if (!world.objects.empty()) {
-        // Park the ship a few metres ahead of the player.
-        const Vector3 feet = (player.position - world.renderOrigin).toFloat();
-        ship.parkNear(world, Vector3Add(feet, Vector3Scale(player.forward, 8.0f)), player.up);
-    }
-    // A clearing at the start, so the parked ship and the player don't stand in a tree.
-    if (Planetoid* start = world.objects.empty() ? nullptr : dynamic_cast<Planetoid*>(world.objects[0].get()); start && start->trees)
-        start->trees->addClearing(start->toLocal((player.position - world.renderOrigin).toFloat()), 14.0f);
-    if (inventory.count("telescope") == 0) inventory.add("telescope", 1); // starting kit (a save restores its own inventory)
+    StartNewWorld(world, false);
+    if (!bench) Settings_Load();
+    bool worldFresh = !loadSaveAtStart; // the world generated at launch: New Game uses it as it is
+    MenuResult pendingMenu;
+    bool justPaused = false;
     world.onDraw3D = [&world] { if (!ship.piloted && !buildTool.active) TerrainTool_Draw3D(); BuildTool_Draw3D(world); ship.draw(world); };
 
     const double benchWarmup = 2.0;
@@ -343,6 +393,7 @@ int main(int argc, char** argv)
         world.debugDraw = startWithOverlay;
         player.flyMode = benchWalkSeconds <= 0.0 && !benchWalkMode; // the bench drives the camera directly unless walking
         player.autoWalk = benchWalkMode;                              // --bench-walk: walk through the measured window
+        player.flyFollow = false;                                     // the bench drives the camera itself
         benchStart = -1.0; // starts once the world has finished streaming in
     }
 
@@ -740,6 +791,204 @@ int main(int argc, char** argv)
                     } else if (progPhase == 2) {
                         if (Progression_Update(world) != 0) benchProgression = false;
                     }
+                } else if (benchWall && (wallPhase > 0 || WorldIdle())) {
+                    // --test-wall: a 7 m shaft with a tunnel off its bottom; walk into the walls at eight
+                    // headings, jumping now and then. Nothing may launch you: the largest per-frame move
+                    // relative to the body, impacts, health and deaths are reported.
+                    Planetoid* p = dynamic_cast<Planetoid*>(world.objects[0].get());
+                    const double t = GetTime() - wallStart;
+                    const Vector3 feet = (player.position - world.renderOrigin).toFloat();
+                    const DVec3 local = p->toLocalD(player.position);
+                    if (wallPhase >= 2) {
+                        const double step = (local - wallLast).length();
+                        if (step > wallMaxStep) { wallMaxStep = step; wallMaxStepAt = t; }
+                        if (step > 0.2) printf("bench: wall: %.2f m move at %.2f s (grounded %d, dt %.4f, v %.1f, contact dot %.2f, body density at feet %.2f)\n", step, t, player.grounded ? 1 : 0, GetFrameTime(), Vector3Length(player.velocity), player.lastContactDot, p->densityAt(p->toLocal(Vector3Add(feet, Vector3Scale(player.up, player.radius)))));
+                        wallMaxImpact = std::max(wallMaxImpact, player.impactSpeed);
+                        wallMinHealth = std::min(wallMinHealth, survival.health);
+                        wallMaxSpeed = std::max(wallMaxSpeed, Vector3Length(Vector3Subtract(player.velocity, player.grounded ? Vector3{ 0, 0, 0 } : p->surfaceVelocity(feet))));
+                    }
+                    wallLast = local;
+                    if (wallPhase == 0) {
+                        player.spawnOn(world, *p, StartSpawnDir(*p));
+                        wallStart = GetTime();
+                        wallPhase = 1;
+                    } else if (wallPhase == 1 && t > 1.5 && player.grounded) {
+                        const Vector3 flat = Vector3Normalize(Vector3Subtract(player.forward, Vector3Scale(player.up, Vector3DotProduct(player.forward, player.up))));
+                        const Vector3 side = Vector3CrossProduct(flat, player.up);
+                        for (int k = 0; k < 6; ++k)      // the shaft, ~3.5 m wide
+                            ApplyTerrainEdit(*p, TerrainEdit{ p->toLocal(Vector3Add(feet, Vector3Add(Vector3Scale(flat, 4.0f), Vector3Scale(player.up, -1.2f * k)))), 1.8f, -10.0f });
+                        for (int k = 1; k < 5; ++k)      // a tunnel off its bottom, 2.4 m high
+                            ApplyTerrainEdit(*p, TerrainEdit{ p->toLocal(Vector3Add(feet, Vector3Add(Vector3Add(Vector3Scale(flat, 4.0f), Vector3Scale(side, 1.6f * k)), Vector3Scale(player.up, -5.6f)))), 1.25f, -10.0f });
+                        player.autoWalk = true;
+                        wallPhase = 2;
+                        wallStart = GetTime();
+                    } else if (wallPhase == 2 && t < 12.0) {
+                        // Turn 45 degrees a second (and jump every other second) while walking.
+                        const int k = (int)t;
+                        static int lastK = -1;
+                        if (k != lastK && t > 3.0) {
+                            lastK = k;
+                            const Matrix r = MatrixRotate(player.up, 45.0f * DEG2RAD);
+                            player.forward = Vector3Normalize(Vector3Transform(player.forward, r));
+                            if (k % 2 == 0) player.autoJump = true;
+                        }
+                    } else if (wallPhase == 2) {
+                        player.autoWalk = false;
+                        const bool pass = survival.deaths == 0 && wallMinHealth > 90.0f && wallMaxStep < 1.0;
+                        printf("bench: wall shove 9 s: largest frame move %.2f m (at %.1f s), top speed vs ground %.1f m/s, worst impact %.1f m/s, health %.0f, deaths %d: %s\n",
+                               wallMaxStep, wallMaxStepAt, wallMaxSpeed, wallMaxImpact, wallMinHealth, survival.deaths, pass ? "PASS" : "FAIL");
+                        benchWall = false;
+                    }
+                } else if (benchWater && (waterPhase > 0 || WorldIdle())) {
+                    // --test-water: inland water near the start (rivers, ponds): find some, look at it
+                    // (bench_water.png), dig its bed for clay, and check the underwater test inside it.
+                    Planetoid* p = dynamic_cast<Planetoid*>(world.objects[0].get());
+                    const PlanetField* pf = p ? dynamic_cast<const PlanetField*>(p->field.get()) : nullptr;
+                    if (!pf) { printf("bench: --test-water needs the planet\n"); benchWater = false; }
+                    else if (waterPhase == 0) {
+                        const Vector3 home = pf->findSpawnDir(p->seed); // around the start (the bench camera may be over the sea)
+                        const Vector3 t1 = Vector3Normalize(Vector3CrossProduct(home, { 0, 1, 0 })), t2 = Vector3CrossProduct(t1, home);
+                        int wet = 0, samples = 0;
+                        float best = 1e30f;
+                        for (float e = -4000.0f; e <= 4000.0f; e += 20.0f)
+                            for (float n = -4000.0f; n <= 4000.0f; n += 20.0f) {
+                                const Vector3 d = Vector3Normalize(Vector3Add(home, Vector3Add(Vector3Scale(t1, e / pf->radius), Vector3Scale(t2, n / pf->radius))));
+                                ++samples;
+                                if (!pf->inlandWaterNear(d, 0.0f)) continue;
+                                const float w = pf->waterElevation(d);
+                                if (w == PlanetField::kNoWater || w <= 0.0f || pf->elevation(d) >= w - 0.2f) continue;
+                                ++wet;
+                                if (pf->elevation(d) > w - 1.0f) continue; // look at (and dig) a spot at least 1 m deep
+                                const float dist = sqrtf(e * e + n * n);
+                                if (dist < best) { best = dist; waterDir = d; waterLevel = w; }
+                            }
+                        printf("bench: water: %.2f%% of 64 km^2 around the start is inland water (%d of %d samples); nearest %.0f m away\n", 100.0f * wet / samples, wet, samples, best);
+                        if (best > 1e29f) { printf("bench: water: FAIL (none)\n"); benchWater = false; }
+                        else { waterPhase = 1; waterStart = GetTime(); player.flyMode = true; sunOverride = true; } // daylight for the picture
+                    } else {
+                        // Camera 22 m above the water, 30 m off to one side, looking at it.
+                        const Vector3 t1 = Vector3Normalize(Vector3CrossProduct(waterDir, { 0, 1, 0 }));
+                        const Vector3 at = Vector3Scale(waterDir, pf->radius + waterLevel);
+                        const Vector3 eye = Vector3Add(Vector3Scale(waterDir, pf->radius + waterLevel + 22.0f), Vector3Scale(t1, 30.0f));
+                        world.camera.position = p->toWorld(eye);
+                        world.camera.target = p->toWorld(at);
+                        world.camera.up = p->dirToWorld(waterDir);
+                        sunArg = p->dirToWorld(Vector3Normalize(Vector3Add(waterDir, Vector3Scale(t1, -0.6f))));
+                        player.position = world.renderOrigin + world.camera.position;
+                        if (waterPhase == 1 && GetTime() - waterStart > 3.0 && WorldIdle()) {
+                            TakeScreenshot("bench_water.png");
+                            const Vector3 inside = Vector3Scale(waterDir, pf->radius + waterLevel - 0.3f);
+                            const bool under = IsUnderwater(world, p->toWorld(inside));
+                            const bool above = IsUnderwater(world, p->toWorld(Vector3Scale(waterDir, pf->radius + waterLevel + 1.0f)));
+                            const float bedE = pf->elevation(waterDir);
+                            const Vector3 bed = Vector3Scale(waterDir, pf->radius + bedE - 0.5f);
+                            const float base = pf->baseDensity(bed);
+                            const VoxelMaterial m = pf->material(bed, base);
+                            const int clay0 = inventory.count("clay");
+                            for (int k = 0; k < 12; ++k) TerrainTool_DigAt(*p, Vector3Subtract(bed, Vector3Scale(waterDir, 0.4f * k)));
+                            const int clay = inventory.count("clay") - clay0;
+                            const bool pass = under && !above && clay > 0 && (m == VoxelMaterial::Sand || m == VoxelMaterial::Gravel);
+                            printf("bench: water: surface %.1f m, bed %.1f m (%s); underwater 0.3 m down: %s, 1 m up: %s; 12 digs in the bed: %d clay -> %s\n",
+                                   waterLevel, bedE, VoxelMaterialName(m), under ? "yes" : "no", above ? "yes" : "no", clay, pass ? "PASS" : "FAIL");
+                            benchWater = false;
+                        }
+                    }
+                } else if (benchFlyFollow && (ffPhase > 0 || WorldIdle())) {
+                    // --test-flyfollow: the fly camera with no input stays put relative to its reference
+                    // body: over the spinning planet (100 m up), near the orbiting moon (200 m up), and
+                    // at 3 moon radii (inside its sphere of influence: its motion, not its spin).
+                    Planetoid* planet = dynamic_cast<Planetoid*>(world.objects[0].get());
+                    Planetoid* moon = nullptr;
+                    for (auto& obj : world.objects) if (auto* q = dynamic_cast<Planetoid*>(obj.get())) if (q->kind == BodyKind::Moon && q->orbitParent) { moon = q; break; }
+                    struct Case { Planetoid* body; Vector3 local; const char* name; };
+                    const Case cases[3] = {
+                        { planet, Vector3Scale(StartSpawnDirLocal(*planet), planet->radius + 400.0f), "planet, 100 m+ up" },
+                        { moon, moon ? Vector3Scale(Vector3Normalize({ 0.3f, 1.0f, 0.2f }), moon->radius + 600.0f) : Vector3{}, "moon, low" },
+                        { moon, moon ? Vector3Scale(Vector3Normalize({ 0.3f, 1.0f, 0.2f }), moon->radius * 3.0f) : Vector3{}, "moon, 3 radii" } };
+                    if (!moon) { printf("bench: --test-flyfollow needs the moon\n"); benchFlyFollow = false; }
+                    else if (ffPhase % 2 == 0) {
+                        if (ffPhase / 2 >= 3) {
+                            printf("bench: fly follow: %s\n", ffOk ? "PASS" : "FAIL");
+                            benchFlyFollow = false;
+                        } else {
+                            const Case& c = cases[ffPhase / 2];
+                            player.flyMode = true;
+                            player.flyFollow = true;
+                            world.camera.position = c.body->toWorld(c.local);
+                            world.camera.target = Vector3Add(world.camera.position, c.body->dirToWorld({ 1, 0, 0 }));
+                            world.camera.up = c.body->dirToWorld(Vector3Normalize(c.local));
+                            ffStart = GetTime();
+                            ffPhase++;
+                            ffBaseline = true; // taken next frame, once the carry has a recorded pose
+                        }
+                    } else if (ffBaseline) {
+                        const Case& c = cases[ffPhase / 2];
+                        ffLocal0 = c.body->toLocalD(world.renderOrigin + world.camera.position);
+                        ffDist0 = (world.renderOrigin + world.camera.position - c.body->worldPos).length();
+                        ffBaseline = false;
+                    } else if (GetTime() - ffStart > 3.0) {
+                        const Case& c = cases[ffPhase / 2];
+                        const DVec3 cam = world.renderOrigin + world.camera.position;
+                        const double localDrift = (c.body->toLocalD(cam) - ffLocal0).length();
+                        const double distDrift = fabs((cam - c.body->worldPos).length() - ffDist0);
+                        const bool rotating = ffPhase / 2 < 2;
+                        const bool ok = rotating ? localDrift < 0.1 : distDrift < 0.1;
+                        ffOk &= ok;
+                        printf("bench: fly follow (%s): 3 s later %.3f m from its spot on the body, distance to the centre changed %.3f m (body moved %.0f m) -> %s\n",
+                               c.name, localDrift, distDrift, 3.0 * Vector3Length(c.body->linearVelocity), ok ? "ok" : "BAD");
+                        ffPhase++;
+                    }
+                } else if (benchHotbar && WorldIdle()) {
+                    // --test-hotbar: materials from the hotbar (any shape costs its material), a consumable,
+                    // the foundation not digging outside the part, and materials kept through a save.
+                    Planetoid* p = dynamic_cast<Planetoid*>(world.objects[0].get());
+                    const PlanetField* pf = p ? dynamic_cast<const PlanetField*>(p->field.get()) : nullptr;
+                    bool ok = pf != nullptr;
+                    if (ok) {
+                        player.spawnOn(world, *p, StartSpawnDir(*p));
+                        inventory.clear();
+                        Hotbar_Reset();
+                        inventory.add("concrete", 20); inventory.add("wood", 10); inventory.add("oxygen_canister", 1);
+                        const Vector3 home = StartSpawnDirLocal(*p);
+                        const Vector3 t1 = Vector3Normalize(Vector3CrossProduct(home, { 0, 1, 0 }));
+                        const Vector3 d = Vector3Normalize(Vector3Add(home, Vector3Scale(t1, 10.0f / pf->radius)));
+                        if (!p->plots) p->plots = std::make_unique<PlotSet>();
+                        Plot* plot = p->plots->plotFor(Vector3Scale(d, pf->radius + pf->elevation(d)), 0.0f, true);
+                        Hotbar_Press(1, false); // key 2: concrete
+                        const bool concreteMode = buildTool.active && GetBuildMaterial(buildTool.material).item == std::string("concrete");
+                        const int c0 = inventory.count("concrete");
+                        const bool slope = BuildTool_Place(*p, *plot, { PartType::Slope, { 0, 0, 0 }, 0, (uint8_t)buildTool.material }, true);
+                        const int c1 = inventory.count("concrete");
+                        Hotbar_Press(3, false); // key 4: wood
+                        const int w0 = inventory.count("wood");
+                        const bool beam = BuildTool_Place(*p, *plot, { PartType::Beam4, { 2, 0, 0 }, 0, (uint8_t)buildTool.material }, true);
+                        const int w1 = inventory.count("wood");
+                        // Foundation: the ground a little outside a 1 m block keeps its density.
+                        auto outside = [&](float off) { return plot->toBody({ -0.2f + off, 0.3f, 2.5f }); };
+                        const float before = p->densityAt(outside(0.0f));
+                        Hotbar_Press(1, false);
+                        const bool block = BuildTool_Place(*p, *plot, { PartType::Block, { 0, -1, 4 }, 0, (uint8_t)buildTool.material }, true);
+                        const float after = p->densityAt(outside(0.0f));
+                        survival.oxygen = 50.0f;
+                        Hotbar_Press(8, false); // key 9: oxygen canister
+                        const bool used = inventory.count("oxygen_canister") == 0 && survival.oxygen > 90.0f;
+                        Hotbar_Press(0, false); // key 1: terrain tool
+                        const bool toolMode = !buildTool.active;
+                        const bool saved = SaveWorld(world), loaded = saved && LoadWorldSave(world);
+                        Planetoid* q = dynamic_cast<Planetoid*>(world.objects[0].get());
+                        int woodParts = 0, concreteParts = 0;
+                        if (q && q->plots)
+                            for (auto& pl : q->plots->plots)
+                                for (const Part& part : pl->parts) {
+                                    if (part.type == PartType::Count) continue;
+                                    if (PartItem(part) == std::string("wood")) ++woodParts;
+                                    if (PartItem(part) == std::string("concrete")) ++concreteParts;
+                                }
+                        ok = concreteMode && slope && c0 - c1 == 1 && beam && w0 - w1 == 2 && block && fabsf(after - before) < 0.02f && used && toolMode && loaded && woodParts == 1 && concreteParts == 2;
+                        printf("bench: hotbar: concrete mode %d, slope -%d concrete, wood beam4 -%d wood, block placed %d (ground outside %.3f -> %.3f), O2 used %d, tool mode %d, save/load %d/%d: %d wood + %d concrete parts -> %s\n",
+                               concreteMode, c0 - c1, w0 - w1, block, before, after, used, toolMode, saved, loaded, woodParts, concreteParts, ok ? "PASS" : "FAIL");
+                    }
+                    benchHotbar = false;
                 } else if (benchHole && (holePhase > 0 || WorldIdle())) { // edits keep the world busy: run on
                     // --test-hole: on the spinning planet, dig a pit ahead and walk into it, then build a
                     // pillar under your feet while jumping. Neither may hurt you (impacts are measured
@@ -1279,7 +1528,7 @@ int main(int argc, char** argv)
                         }
                         benchWalkSeconds = 0.0;
                     }
-                } else if ((WorldIdle() && benchDigStrokes == 0 && !benchSaveLoad && benchWalkSeconds <= 0.0 && benchMineStrokes == 0 && minePhase != 2 && benchFlySeconds <= 0.0 && !benchSuffocate && benchOrbitSeconds <= 0.0 && !benchRide && !benchPark && !benchGravity && !benchPrecision && !benchMantle && !benchAirJump && !benchMoon && !benchHole && !benchTrees && !benchChop && benchPersist == 0 && benchBuild == 0 && benchFactory == 0 && !benchProgression) || GetTime() > 600.0) {
+                } else if ((WorldIdle() && benchDigStrokes == 0 && !benchSaveLoad && benchWalkSeconds <= 0.0 && benchMineStrokes == 0 && minePhase != 2 && benchFlySeconds <= 0.0 && !benchSuffocate && benchOrbitSeconds <= 0.0 && !benchRide && !benchPark && !benchGravity && !benchPrecision && !benchMantle && !benchAirJump && !benchMoon && !benchHole && !benchWall && !benchMenus && !benchWater && !benchFlyFollow && !benchHotbar && !benchTrees && !benchChop && benchPersist == 0 && benchBuild == 0 && benchFactory == 0 && !benchProgression) || GetTime() > 600.0) {
                     benchStart = GetTime();
                     printf("bench: world ready after %.2f s (%d chunks, avg build %.2f ms of which sampling %.2f ms, %d worker threads)\n",
                         GetWorldStats().lastGenerationSeconds, GetWorldStats().chunks, GetWorldStats().avgBuildMs, GetWorldStats().avgSampleMs, GetWorldStats().workerThreads);
@@ -1357,6 +1606,23 @@ int main(int argc, char** argv)
             if (!GameUI_InventoryOpen()) SetMousePosition(GetScreenWidth()/2, GetScreenHeight()/2);
         }
         const bool uiOpen = DebugUI_IsOpen() || GameUI_InventoryOpen();
+        if (!bench && !telescope.active && !DebugUI_IsOpen()) world.camera.fovy = settings.fov; // Settings (the telescope zooms from it)
+        // Near plane: 0.5 m keeps depth precision out to the 2 km pass split, but the frustum corners
+        // then sit 0.65 m from the eye, past the 0.45 m player radius, so walls clipped into view.
+        // Close to terrain or a build it drops to 0.2 m (looking at a wall, far precision matters less).
+        {
+            float nearPlane = 0.5f;
+            if (Planetoid* nb = world.objects.empty() ? nullptr : NearestPlanetoid(world, world.camera.position)) { // (player.nearest can be stale right after a load)
+                float dist; Vector3 n;
+                if (TerrainSurfaceDistance(*nb, world.camera.position, dist, n) && dist < 2.0f) nearPlane = 0.2f;
+                if (nearPlane > 0.2f && nb->plots)
+                    for (auto& pl : nb->plots->plots) {
+                        Vector3 c = nb->toLocal(world.camera.position), nl;
+                        if (pl->collideSphere(c, 2.0f / nb->scale, nl)) { nearPlane = 0.2f; break; }
+                    }
+            }
+            rlSetClipPlanes(nearPlane, 60000.0);
+        }
         const bool gameInput = !bench && !uiOpen && gameState == 1;
         world.cameraInputEnabled = player.flyMode && !uiOpen && !ship.piloted;  // free-fly camera only in fly mode
         const bool alive = !survival.dead;
@@ -1505,41 +1771,75 @@ int main(int argc, char** argv)
                 spinPhase = 3;
             }
         }
+        if (gameState == 1) Hotbar_Update(world, gameInput && alive, ship.piloted);
         if (gameState == 1) BuildTool_Update(world, gameInput && alive, !ship.piloted && !player.flyMode && !telescope.active && alive);
         if (gameState == 1) TerrainTool_Update(world, gameInput && alive, !ship.piloted && !telescope.active && !buildTool.active); // F5/F9 work aboard too
 
-        switch(gameState) {
-            case 0: // Main Menu
-                if (IsKeyPressed(KEY_ENTER)) {
-                    printf("Start Game\n");
-                    HideCursor();
-                    gameState = 1; // Start game
-                    mainMenu.isActive = false; // Deactivate main menu
-                    world.isActive = true; // Activate world scene
-                }
-                if (IsKeyPressed(KEY_ESCAPE)) {
-                    printf("Exit game from main menu\n");
-                    windowKeepAlive = false; // Exit game
-                }
-                break;
-            case 1: // Game
-                if (IsKeyPressed(KEY_ESCAPE)) {
-                    ShowCursor();
-                    printf("Game paused\n");
-                    gameState = 2; // Pause game
-                }
-                break;
-            case 2: // Pause Menu
-                if (IsKeyPressed(KEY_R)) {
-                    printf("Game unpaused\n");
-                    HideCursor();
-                    gameState = 1; // Resume game
-                }
-                if (IsKeyPressed(KEY_ESCAPE)) {
-                    printf("Exit game from pause\n");
-                    windowKeepAlive = false; // Exit game
-                }
-                break;
+        // --test-menus: the menu flow without clicks: main menu (screenshot), New Game, pause
+        // (screenshot), Save & Quit to Menu, Load Game; each step's state is checked.
+        if (benchMenus) {
+            ++menuFrames;
+            if (menuStep == 0) { gameState = 0; mainMenu.isActive = true; world.isActive = false; menuStep = 1; menuFrames = 0; }
+            else if (menuStep == 1 && menuFrames == 30) { TakeScreenshot("bench_menu_main.png"); pendingMenu.action = MenuAction::NewGame; menuStep = 2; menuFrames = 0; }
+            else if (menuStep == 2 && menuFrames > 60 && WorldIdle()) {
+                menuOk &= gameState == 1;
+                printf("bench: menus: New Game -> in game: %s\n", gameState == 1 ? "yes" : "NO");
+                Menu_ResetPause(); gameState = 2; justPaused = true; menuStep = 3; menuFrames = 0;
+            } else if (menuStep == 3 && menuFrames == 30) { TakeScreenshot("bench_menu_pause.png"); pendingMenu.action = MenuAction::SaveAndQuit; menuStep = 4; menuFrames = 0; }
+            else if (menuStep == 4 && menuFrames == 5) {
+                menuOk &= gameState == 0;
+                printf("bench: menus: Save & Quit -> main menu: %s\n", gameState == 0 ? "yes" : "NO");
+                pendingMenu.action = MenuAction::LoadGame; pendingMenu.path = "saves/bench.sav"; menuStep = 5; menuFrames = 0;
+            } else if (menuStep == 5 && menuFrames == 5) {
+                menuOk &= gameState == 1;
+                printf("bench: menus: Load Game -> in game: %s -> %s\n", gameState == 1 ? "yes" : "NO", menuOk ? "PASS" : "FAIL");
+                benchMenus = false;
+            }
+        }
+        // Menus: the result of last frame's clicks (the menus draw, and see clicks, in BeginDrawing).
+        {
+            auto enterGame = [&] {
+                HideCursor();
+                gameState = 1;
+                mainMenu.isActive = false;
+                world.isActive = true;
+            };
+            auto toMenu = [&] {
+                ShowCursor();
+                gameState = 0;
+                mainMenu.isActive = true;
+                world.isActive = false;
+            };
+            const MenuResult m = pendingMenu;
+            pendingMenu = MenuResult{};
+            switch (m.action) {
+                case MenuAction::NewGame:
+                    SetWorldSavePath(bench ? "saves/bench.sav" : Menu_NewSavePath().c_str()); // bench runs never touch the player's saves
+                    if (!worldFresh) { worldGen.seed = 0; regenerateWorld(world); StartNewWorld(world, true); }
+                    worldFresh = false;
+                    enterGame();
+                    break;
+                case MenuAction::LoadGame:
+                    SetWorldSavePath(m.path.c_str());
+                    if (LoadWorldSave(world)) { worldFresh = false; enterGame(); }
+                    else GameUI_Toast(TextFormat("Could not load %s", m.path.c_str()));
+                    break;
+                case MenuAction::Resume: enterGame(); break;
+                case MenuAction::Save: GameUI_Toast(SaveWorld(world) ? "Saved" : "Save failed"); break;
+                case MenuAction::SaveAndQuit:
+                    if (!SaveWorld(world)) GameUI_Toast("Save failed");
+                    toMenu();
+                    break;
+                case MenuAction::Exit: windowKeepAlive = false; break;
+                case MenuAction::None: break;
+            }
+            // Esc in game pauses (unless it closes the inventory or build mode first); the pause menu
+            // handles Esc itself (resume, or back out of Settings).
+            if (gameState == 1 && m.action == MenuAction::None && IsKeyPressed(KEY_ESCAPE)) {
+                if (GameUI_InventoryOpen()) { GameUI_ToggleInventory(); SetMousePosition(GetScreenWidth() / 2, GetScreenHeight() / 2); }
+                else if (buildTool.active) buildTool.active = false;
+                else { ShowCursor(); Menu_ResetPause(); gameState = 2; justPaused = true; }
+            }
         }
 
         
@@ -1547,13 +1847,14 @@ int main(int argc, char** argv)
         BeginDrawing();
             ClearBackground(crackCheck ? MAGENTA : BLACK); // --crack-check: holes in the terrain show magenta
             if (gameState == 0) {
-                mainMenu.drawScene(gameState);
-                mainMenu.drawUI(gameState);
+                pendingMenu = Menu_Main();
             } else if (gameState == 1) {
                 { const double d0 = GetTime(); world.drawScene(gameState); if (benchMeasuring) benchDrawMs += (GetTime() - d0) * 1000.0; }
+                player.recordFly(world); // after the fly camera's input (in drawScene): the pose to carry next frame
                 world.drawUI(gameState);
                 Telescope_DrawHUD(world);
                 BuildTool_DrawHUD();
+                Hotbar_DrawHUD(ship.piloted);
                 Machine_DrawHUD();
                 if (!ship.piloted && !telescope.active && !buildTool.active) TerrainTool_DrawHUD();
                 GameUI_DrawHUD(world);
@@ -1561,19 +1862,16 @@ int main(int argc, char** argv)
                 Objectives_DrawHUD();
                 if (!ship.piloted && ship.playerInRange(world, (player.position - world.renderOrigin).toFloat(), 5.0f))
                     DrawText("[E] Board ship", GetScreenWidth() / 2 - 60, GetScreenHeight() / 2 + 40, 20, SKYBLUE);
-                if (ship.piloted) DrawText("SHIP: WASD thrust  Space/Ctrl up/down  mouse steer  Z/C roll  Shift boost  X brake  L lights  [2] power cell  E exit",
+                if (ship.piloted) DrawText("SHIP: WASD thrust  Space/Ctrl up/down  mouse steer  Z/C roll  Shift boost  X brake  L lights  0 power cell (hotbar)  E exit",
                                            10, GetScreenHeight() - 30, 18, Fade(SKYBLUE, 0.9f));
                 if (!bench && !uiOpen) SetMousePosition(GetScreenWidth()/2, GetScreenHeight()/2);
             } else if (gameState == 2) {
                 world.drawScene(gameState);
                 world.drawUI(gameState);
-                // Blur background
-                DrawRectangle(0, 0, GetScreenWidth(), GetScreenHeight(), Fade(BLACK, 0.7f));
-                // Draw pause menu text
-                DrawText("Game Paused", GetScreenWidth()/2 - MeasureText("Game Paused", 20)/2, GetScreenHeight()/2 - 10, 20, WHITE);
-                DrawText("Press R to resume", GetScreenWidth()/2 - MeasureText("Press R to resume", 20)/2, GetScreenHeight()/2 + 10, 20, WHITE);
-                DrawText("Press ESC to exit", GetScreenWidth()/2 - MeasureText("Press ESC to exit", 20)/2, GetScreenHeight()/2 + 30, 20, WHITE);
+                const MenuResult m = Menu_Pause();
+                if (!justPaused) pendingMenu = m; // the Esc that opened it is not also a "resume"
             }
+            justPaused = false;
             if (gameState != 0) {
                 rlImGuiBegin();
                 DebugUI_Draw(world);

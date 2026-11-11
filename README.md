@@ -29,21 +29,21 @@ generated in the build directory for IntelliSense/clangd.
 ## Controls
 | Key | Action |
 | --- | --- |
-| Enter | start (main menu) |
+| Mouse | main menu: New Game, Load Game (saves in `saves/`), Settings (mouse, FOV, volume, foliage, frame cap), Exit |
 | Mouse / arrows | look |
 | WASD, Space, Ctrl | move (Shift/Alt = faster) |
-| LMB / RMB (hold) | dig / build terrain at the crosshair (build costs stone or regolith) |
+| LMB / RMB (hold) | dig / fill terrain at the crosshair (filling costs stone, dirt, gravel or sand) |
 | Tab | inventory + crafting |
-| G | build mode (wheel part, R / V rotate, RMB place, LMB remove) |
+| G | build mode (wheel shape, R / V rotate, RMB place, LMB remove) |
+| 1-9, 0 | hotbar: the terrain tool, a building material (any shape costs it), a machine, or a consumable (oxygen canister, power cell). In the inventory, hover an item and press 1-0 to bind it |
 | L | headlamp (on foot: suit power; piloting: ship nose light) |
 | F | toggle free-fly camera (WASD along the view, Space/Ctrl along camera up, mouse turns, Q/E roll, Shift/Alt faster) |
 | Space | jump; hold for jetpack |
 | E | board / exit the ship |
-| 1 / 2 | use oxygen canister / power cell |
 | Mouse wheel | brush size (zoom while the telescope is up) |
 | T | raise / lower the telescope |
-| F5 / F9 | save / load (`saves/world.sav`) |
-| Esc | pause; R resumes |
+| F5 / F9 | save / load (the current save file) |
+| Esc | pause menu (Resume, Save, Settings, Save & Quit to Menu); Esc again resumes |
 | F1 | debug panel (frame graph, streaming stats, sun/shadow/texture tweaks, brush, world regen by seed) |
 | F3 | debug overlay (light, shadow box, shadow map, chunk bounds) |
 
@@ -107,11 +107,18 @@ Shaders in `resources/` hot-reload when saved.
   distance, and dense blue fog underwater. It is the default start system: you start on temperate
   grassland (picked from the seed), where the air is breathable below ~15 km (the suit refills its oxygen).
 - **Build plots** (`src/engine/plots.*`, `src/space/buildtool.*`): G toggles build mode. Parts snap to a 0.5 m grid on
-  a plot anchored where the first part goes (up = local gravity, north along the meridian); the wheel picks cube,
-  1 m block, slope, corner or a 1/2/4 m beam, R/V rotate (24 orientations), RMB places, LMB removes (refunded).
-  Parts cost concrete (also from stone + sand) or iron plate, lay their own foundations (terrain cleared inside,
-  small gaps to the ground filled), merge into one mesh per 8 m section with hidden faces culled, cast shadows,
-  collide with the player, and are saved.
+  a plot anchored where the first part goes (up = local gravity, north along the meridian); the hotbar picks the
+  material (concrete, stone, wood, iron plate, glass, packed dirt) or a machine, the wheel picks the shape (cube,
+  1 m block, slope, corner or a 1/2/4 m beam; any shape from any material), R/V rotate (24 orientations), RMB
+  places, LMB removes (refunded). A shape costs its material by size; parts lay their own foundations (terrain
+  cleared inside their cells only, small gaps to the ground filled), merge into one mesh per 8 m section with
+  hidden faces culled, cast shadows, collide with the player, and are saved with their material.
+- **Inland water** (`PlanetField::waterElevation`): rivers in a channel along the river valleys, smaller streams
+  on a finer network, and ponds (12-38 m, flat surfaces) on gentle ground; beds are sand and gravel, and digging
+  them also turns up clay. Undug grassland facing up is grass all the way through its soil; planets yield dirt
+  (moons and asteroids regolith).
+- **Fly camera** (F): rides its reference body, the nearest whose sphere of influence holds it: its spin and
+  motion within 2 radii, its motion only further out.
 - **Factory simulation** (`src/engine/factory.*`, `resources/data/machine_recipes.txt`): machines are build parts
   (chest, combustion generator, electric furnace, macerator, battery) joined by conveyor and cable parts. A
   deterministic simulation runs at 20 ticks a second on its own thread (integer items and energy): conveyor networks
@@ -164,7 +171,10 @@ frustum culling, `--test-dig N` carves a tunnel at the crosshair, `--test-savelo
 (milestone 2 gate: N strokes, flat builds, save and load under a second), `--test-build N` (milestone 3 gate:
 N parts, standing on them, save/load, frame time with the factory in view), `--test-factory N` (milestone 4 gate:
 N working machines, tick under 5 ms, plates reach the chests, contents survive a reload), `--test-progression`
-(milestone 5 gate: a scripted playthrough from an empty inventory to a placed, powered, working LV electric furnace), `--bench-fly V`
+(milestone 5 gate: a scripted playthrough from an empty inventory to a placed, powered, working LV electric furnace),
+`--test-wall` (walk into shaft and tunnel walls: no launches), `--test-menus` (main menu, new game, pause, save & quit,
+load), `--test-water` (inland water near the start, its bed and clay), `--test-flyfollow` (the fly camera rides the
+planet and the moon), `--test-hotbar` (materials, consumables, foundations, materials through a save), `--bench-fly V`
 / `--bench-fly-alt A` (camera flight over body 0, LOD streaming; negative A: underwater), `--no-foliage`,
 `--test-mine N` digs N strokes at the feet, crafts everything possible and builds 3 strokes,
 `--test-fly S` autopilots the ship to the nearest other asteroid, `--test-suffocate` checks death/respawn,

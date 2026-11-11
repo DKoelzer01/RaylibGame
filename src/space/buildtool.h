@@ -15,6 +15,7 @@ struct BuildToolState {
     bool active = false;
     int part = 0;           // PartType
     int orient = 0;         // 0..23
+    int material = 0;       // BuildMaterial index for shapes
     float reach = 8.0f;
 };
 extern BuildToolState buildTool;

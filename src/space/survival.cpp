@@ -94,19 +94,6 @@ void Survival_Update(Scene& world, float dt, bool inputEnabled) {
     if (survival.oxygen <= 0.0f) survival.health -= survival.suffocationDamagePerSec * dt;
 
     if (inputEnabled) {
-        if (IsKeyPressed(KEY_ONE)) {
-            if (survival.oxygen < 99.0f && inventory.remove("oxygen_canister", 1)) { survival.oxygen = std::min(100.0f, survival.oxygen + 50.0f); Audio_Play(Sfx::Pickup); }
-            else Audio_Play(Sfx::Error, 0.4f);
-        }
-        if (IsKeyPressed(KEY_TWO)) {
-            // Don't waste a cell on a full store (ship while piloting, otherwise the suit).
-            const bool full = ship.piloted ? ship.energy >= 99.0f : survival.power >= 99.0f;
-            if (!full && inventory.remove("power_cell", 1)) {
-                if (ship.piloted) ship.energy = std::min(100.0f, ship.energy + 40.0f);
-                else survival.power = std::min(100.0f, survival.power + 50.0f);
-                Audio_Play(Sfx::Pickup);
-            } else Audio_Play(Sfx::Error, 0.4f);
-        }
     }
 
     if (survival.health <= 0.0f) {
@@ -134,7 +121,7 @@ void Survival_DrawHUD() {
     if (ship.spawned) Bar(x + 280, y + 44, 180, "SHIP", ship.energy, { 160, 120, 255, 255 }, ship.energy < 15.0f);
     if (survival.inLifeSupport) DrawText("LIFE SUPPORT", x + 280, y + 2, 16, SKYBLUE);
     else if (survival.breathable) DrawText("BREATHABLE AIR", x + 280, y + 2, 16, Fade(SKYBLUE, 0.7f));
-    DrawText(TextFormat("[1] O2 canister x%d   [2] power cell x%d", inventory.count("oxygen_canister"), inventory.count("power_cell")), x, y - 22, 16, Fade(RAYWHITE, 0.8f));
+    DrawText(TextFormat("O2 canister x%d   power cell x%d   (use from the hotbar)", inventory.count("oxygen_canister"), inventory.count("power_cell")), x, y - 22, 16, Fade(RAYWHITE, 0.8f));
     if (survival.dead) {
         DrawRectangle(0, 0, GetScreenWidth(), GetScreenHeight(), Fade(BLACK, 0.6f));
         const char* msg = survival.oxygen <= 0.0f ? "You suffocated" : "You died";
@@ -164,7 +151,7 @@ void Objectives_MarkVisitedBody(int i) { visitedBodies.insert(i); }
 
 void Objectives_Update(Scene& world) {
     QuestBook_Update();
-    if (inventory.count("stone") > 0 || inventory.count("regolith") > 0) objectives[0].done = true;
+    if (inventory.count("stone") > 0 || inventory.count("regolith") > 0 || inventory.count("dirt") > 0) objectives[0].done = true;
     if (inventory.count("iron_ore") > 0) objectives[1].done = true;
     if (inventory.count("power_cell") > 0) objectives[2].done = true;
     if (ship.piloted) objectives[3].done = true;
@@ -259,4 +246,23 @@ void Objectives_DrawHUD() {
         DrawText(TextFormat("[ ] %s", o.text), 12, y, 14, Fade(RAYWHITE, 0.6f));
         y += 16;
     }
+}
+
+bool Survival_IsUsable(const std::string& id) { return id == "oxygen_canister" || id == "power_cell"; }
+
+bool Survival_UseItem(const std::string& id) {
+    if (id == "oxygen_canister") {
+        if (survival.oxygen < 99.0f && inventory.remove("oxygen_canister", 1)) { survival.oxygen = std::min(100.0f, survival.oxygen + 50.0f); Audio_Play(Sfx::Pickup); return true; }
+    } else if (id == "power_cell") {
+        // Don't waste a cell on a full store (ship while piloting, otherwise the suit).
+        const bool full = ship.piloted ? ship.energy >= 99.0f : survival.power >= 99.0f;
+        if (!full && inventory.remove("power_cell", 1)) {
+            if (ship.piloted) ship.energy = std::min(100.0f, ship.energy + 40.0f);
+            else survival.power = std::min(100.0f, survival.power + 50.0f);
+            Audio_Play(Sfx::Pickup);
+            return true;
+        }
+    }
+    Audio_Play(Sfx::Error, 0.4f);
+    return false;
 }
