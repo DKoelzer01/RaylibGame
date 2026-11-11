@@ -1,3 +1,5 @@
+#include <set>
+#include <cstring>
 #include <raylib.h>
 #include <string>
 #include <vector>
@@ -175,6 +177,7 @@ int main(int argc, char** argv)
     bool benchTools = false, toolsOk = true; int toolsPhase = 0, toolsLife = 0, toolsTilled = 0; double toolsStart = 0.0; // --test-tools
     bool benchSuit = false, suitOk = true; int suitPhase = 0; double suitStart = 0.0; float suitFoodRatio = 0.0f, suitWater = 0.0f, suitRebreather = 0.0f; // --test-suit
     int benchShotTabs = 0; // --shot-tabs
+    bool benchRecipes = false; // --test-recipes
     bool benchThreats = false, threatsOk = true; int threatPhase = 0; double threatStart = 0.0; float threatBite = 0.0f, threatFire = 0.0f, threatRam = 0.0f; int threatSpawned = 0, threatLeft = 0, threatPeaceful = 0; // --test-threats
     bool benchAnimals = false; int animalPhase = 0, animalCount = 0; double animalStart = 0.0, animalMs = 0.0; int animalNatural = 0; float penWorst = 0.0f, animalLured = 0.0f, animalSpread = 0.0f, animalFled = 0.0f, animalFollow = 0.0f; // --test-animals
     int hungerPhase = 0, farmPhase = 0; double hungerStart = 0.0, farmStart = 0.0; bool hungerOk = false; float hungerTemp = 0.0f, hungerDrain = 0.0f, farmQuarter = 0.0f, farmGrowth = 0.0f;
@@ -312,6 +315,7 @@ int main(int argc, char** argv)
         if (std::string(argv[i]) == "--test-animals") benchAnimals = true;
         if (std::string(argv[i]) == "--test-threats") benchThreats = true;
         if (std::string(argv[i]) == "--shot-tabs") benchShotTabs = 1;
+        if (std::string(argv[i]) == "--test-recipes") benchRecipes = true;
         if (std::string(argv[i]) == "--test-suit") benchSuit = true;
         if (std::string(argv[i]) == "--test-tools") benchTools = true;
         if (std::string(argv[i]) == "--test-rivers") benchRivers = true;
@@ -1354,6 +1358,81 @@ int main(int argc, char** argv)
                         survival.food = 100.0f; survival.oxygen = 100.0f; survival.health = 100.0f;
                         benchSuit = false;
                     }
+                } else if (benchRecipes) {
+                    // --test-recipes: every item can be had from what the world gives (digging, chopping,
+                    // bushes, grass, animals, crops) through hand recipes, machines (once their own item
+                    // can be made) and the starting kit. Lists what cannot, and items nothing uses.
+                    auto split = [](const std::string& s, char sep) {
+                        std::vector<std::string> out; size_t a = 0, b;
+                        while ((b = s.find(sep, a)) != std::string::npos) { out.push_back(s.substr(a, b - a)); a = b + 1; }
+                        out.push_back(s.substr(a));
+                        for (auto& c : out) { const size_t x = c.find_first_not_of(" \t"), y = c.find_last_not_of(" \t\r\n"); c = x == std::string::npos ? "" : c.substr(x, y - x + 1); }
+                        return out;
+                    };
+                    auto ids = [&](const std::string& list) { std::vector<std::string> out; for (const std::string& e : split(list, ',')) { char id[64] = {}; if (e != "-" && sscanf(e.c_str(), "%63s", id) == 1) out.push_back(id); } return out; };
+                    std::set<std::string> have = { "wood", "fibre", "berries", "grain_seeds", "root_seeds", "flax_seeds", "dirt", "gravel", "stone", "sand", "clay",
+                                                   "ice", "regolith", "iron_ore", "copper_ore", "tin_ore", "coal", "bauxite_ore", "ilmenite_ore", "telescope", "map", "basic_suit" };
+                    std::set<std::string> used;
+                    struct Rule { std::string machine; std::vector<std::string> in, out; };
+                    std::vector<Rule> rules;
+                    for (const Recipe& r : itemDB.recipes()) { Rule u; u.out = { r.output }; for (const auto& in : r.inputs) u.in.push_back(in.first); rules.push_back(u); }
+                    char buf[1024];
+                    if (FILE* f = fopen("resources/data/machine_recipes.txt", "r")) {
+                        while (fgets(buf, sizeof buf, f)) {
+                            if (buf[0] == '#' || buf[0] == '\n' || buf[0] == '\r') continue;
+                            const auto c = split(buf, '|');
+                            if (c.size() < 3) continue;
+                            Rule u; u.machine = c[0] == "furnace" ? "electric_furnace" : c[0]; u.out = ids(c[1]); u.in = ids(c[2]);
+                            rules.push_back(u);
+                        }
+                        fclose(f);
+                    }
+                    if (FILE* f = fopen("resources/data/animals.txt", "r")) { // drops; products need their tool
+                        while (fgets(buf, sizeof buf, f)) {
+                            if (buf[0] == '#' || buf[0] == '\n' || buf[0] == '\r') continue;
+                            const auto c = split(buf, '|');
+                            if (c.size() < 13) continue;
+                            for (const std::string& d : ids(c[8])) have.insert(d);
+                            char prod[64] = {}, tool[64] = {};
+                            if (sscanf(c[9].c_str(), "%63s %63s", prod, tool) >= 1 && strcmp(prod, "-") != 0) { Rule u; u.out = { prod }; if (tool[0] && strcmp(tool, "-") != 0) u.in = { tool }; u.machine = "#tool"; rules.push_back(u); }
+                            for (const std::string& d : ids(c[7])) used.insert(d);
+                        }
+                        fclose(f);
+                    }
+                    if (FILE* f = fopen("resources/data/crops.txt", "r")) {
+                        while (fgets(buf, sizeof buf, f)) {
+                            if (buf[0] == '#' || buf[0] == '\n' || buf[0] == '\r') continue;
+                            const auto c = split(buf, '|');
+                            if (c.size() < 3) continue;
+                            Rule u; u.in = { c[1] }; u.out = ids(c[2]); u.machine = "#farmland"; rules.push_back(u);
+                        }
+                        fclose(f);
+                    }
+                    for (bool grew = true; grew;) {
+                        grew = false;
+                        for (const Rule& u : rules) {
+                            if (!u.machine.empty() && u.machine[0] != '#' && !have.count(u.machine)) continue;
+                            if (u.machine == "#farmland" && !have.count("farmland")) continue;
+                            bool ok = true;
+                            for (const std::string& in : u.in) ok = ok && (u.machine == "#tool" ? have.count(in) > 0 : have.count(in) > 0);
+                            if (!ok) continue;
+                            for (const std::string& o : u.out) if (have.insert(o).second) grew = true;
+                        }
+                    }
+                    for (const Rule& u : rules) { for (const std::string& in : u.in) used.insert(in); if (!u.machine.empty() && u.machine[0] != '#') used.insert(u.machine); }
+                    std::vector<std::string> missing, unused;
+                    for (const ItemDef& d : itemDB.items()) {
+                        if (!have.count(d.id)) missing.push_back(d.id);
+                        const bool consumed = used.count(d.id) || Survival_IsFood(d.id) || Survival_IsUsable(d.id) || Suit_IsSuit(d.id) || Suit_IsModule(d.id) ||
+                                              ToolOf(d.id).type != ToolType::Hands || KindOf(d.id) == ItemKind::Block || KindOf(d.id) == ItemKind::Tool;
+                        if (!consumed) unused.push_back(d.id);
+                    }
+                    printf("bench: recipes: %zu items, %zu reachable from the world;", itemDB.items().size(), have.size());
+                    if (!missing.empty()) { printf(" unreachable:"); for (const auto& m : missing) printf(" %s", m.c_str()); }
+                    printf("\nbench: recipes: %zu items nothing uses (end products or loose ends):", unused.size());
+                    for (const auto& m : unused) printf(" %s", m.c_str());
+                    printf("\nbench: recipes: %s\n", missing.empty() ? "PASS" : "FAIL");
+                    benchRecipes = false;
                 } else if (benchShotTabs > 0 && (benchShotTabs > 1 || WorldIdle())) {
                     // --shot-tabs: screenshots of the Quest tree (some progress) and Suit tabs.
                     static int frames = 0;
@@ -2582,7 +2661,7 @@ int main(int argc, char** argv)
                         }
                         benchWalkSeconds = 0.0;
                     }
-                } else if ((WorldIdle() && benchDigStrokes == 0 && !benchSaveLoad && benchWalkSeconds <= 0.0 && benchMineStrokes == 0 && minePhase != 2 && benchFlySeconds <= 0.0 && !benchSuffocate && benchOrbitSeconds <= 0.0 && !benchRide && !benchPark && !benchGravity && !benchPrecision && !benchMantle && !benchAirJump && !benchMoon && !benchHole && !benchWall && !benchMenus && !benchWater && !benchFlyFollow && !benchHotbar && !benchInventory && !benchMap && !benchViewmodel && !benchQuests && !benchHunger && !benchFarm && !benchAnimals && !benchThreats && benchShotTabs == 0 && !benchSuit && !benchTools && !benchRivers && !benchRing && !benchRocket && !benchBlueprint && !benchSmallBody && !benchTrees && !benchChop && benchPersist == 0 && benchBuild == 0 && benchFactory == 0 && !benchProgression) || GetTime() > 600.0) {
+                } else if ((WorldIdle() && benchDigStrokes == 0 && !benchSaveLoad && benchWalkSeconds <= 0.0 && benchMineStrokes == 0 && minePhase != 2 && benchFlySeconds <= 0.0 && !benchSuffocate && benchOrbitSeconds <= 0.0 && !benchRide && !benchPark && !benchGravity && !benchPrecision && !benchMantle && !benchAirJump && !benchMoon && !benchHole && !benchWall && !benchMenus && !benchWater && !benchFlyFollow && !benchHotbar && !benchInventory && !benchMap && !benchViewmodel && !benchQuests && !benchHunger && !benchFarm && !benchAnimals && !benchThreats && benchShotTabs == 0 && !benchRecipes && !benchSuit && !benchTools && !benchRivers && !benchRing && !benchRocket && !benchBlueprint && !benchSmallBody && !benchTrees && !benchChop && benchPersist == 0 && benchBuild == 0 && benchFactory == 0 && !benchProgression) || GetTime() > 600.0) {
                     benchStart = GetTime();
                     printf("bench: world ready after %.2f s (%d chunks, avg build %.2f ms of which sampling %.2f ms, %d worker threads)\n",
                         GetWorldStats().lastGenerationSeconds, GetWorldStats().chunks, GetWorldStats().avgBuildMs, GetWorldStats().avgSampleMs, GetWorldStats().workerThreads);
