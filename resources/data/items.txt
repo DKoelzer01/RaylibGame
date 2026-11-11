@@ -93,3 +93,15 @@ flour            | Flour            |   999 | 235,230,215 | Bake into bread in a
 bread            | Bread            |   999 | 200,150,80  | Food: 25.
 roots            | Roots            |   999 | 160,95,55   | Food: 6 raw, 15 roasted in a campfire.
 roasted_roots    | Roasted roots    |   999 | 140,80,40   | Food: 15.
+# Animals (plan 2, milestone 12): drops, products and the tools to collect them.
+raw_meat         | Raw meat         |   999 | 190,80,80   | Food: 8, may make you sick. Cook it in a campfire.
+cooked_meat      | Cooked meat      |   999 | 150,90,60   | Food: 30.
+egg              | Egg              |   999 | 240,230,200 | Food: 10. Cluckers lay them (O).
+milk             | Milk             |   999 | 245,245,240 | Food: 12. From a hornhide with a bucket (O).
+wool             | Wool             |   999 | 235,235,225 | Shorn from woolbacks (O, with shears). Spins into fibre (Tab).
+hide             | Hide             |   999 | 160,110,70  | From plains runners and hornhides. Leather for suits.
+feather          | Feather          |   999 | 230,220,210 | From cluckers.
+shears           | Shears           |  tool | 180,180,190 | Shear a woolback for wool (look at it, O).
+bucket           | Bucket           |  tool | 160,160,170 | Milk a hornhide (look at it, O).
+fence            | Fence            | block | 130,95,60   | A 1 m wooden panel. Animals can't cross it: build a pen.
+gate             | Gate             | block | 165,120,70  | A fence panel you can walk through; animals can't.

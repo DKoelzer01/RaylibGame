@@ -9,6 +9,7 @@
 #include "terraintool.h"
 #include "navigation.h"
 #include "farming.h"
+#include "animals.h"
 
 #include <algorithm>
 #include <cstring>
@@ -28,6 +29,7 @@ void GameSave_Register() {
         Hotbar_Save(f);
         Nav_Save(f);
         Farm_Save(f);
+        Animals_Save(f);
         Rocket_Save(f);
         fprintf(f, "survival %f %f %f %d\n", survival.oxygen, survival.power, survival.health, survival.deaths);
         fprintf(f, "food %f\n", survival.food);
@@ -39,10 +41,12 @@ void GameSave_Register() {
         Nav_Reset();
         QuestBook_Reset();
         Farm_Reset();
+        Animals_Reset();
         char tok[64] = {};
         while (fscanf(f, " %63s", tok) == 1 && strcmp(tok, "end_extras") != 0) {
             if (QuestBook_LoadLine(tok, f)) continue;
             if (Farm_LoadLine(tok, f)) continue;
+            if (Animals_LoadLine(tok, f)) continue;
             if (strcmp(tok, "food") == 0) { float v = 100.0f; if (fscanf(f, " %f", &v) == 1) survival.food = std::clamp(v, 0.0f, 100.0f); continue; }
             if (strcmp(tok, "creative") == 0) { int c = 0; if (fscanf(f, " %d", &c) == 1) terrainTool.creative = c != 0; continue; }
             if (Hotbar_LoadLine(tok, f)) continue;

@@ -53,6 +53,8 @@ const char* PartName(PartType t) {
         case PartType::Refinery: return "refinery";
         case PartType::PrecisionAssembler: return "precision assembler";
         case PartType::Farmland: return "farmland";
+        case PartType::Fence: return "fence";
+        case PartType::Gate: return "gate";
         default: return "?";
     }
 }
@@ -101,6 +103,8 @@ const char* PartCostItem(PartType t) {
         case PartType::Cable: return "cable";
         case PartType::Furnace: return "electric_furnace"; // the item; "furnace" is its recipe map
         case PartType::Farmland: return "farmland";
+        case PartType::Fence: return "fence";
+        case PartType::Gate: return "gate";
         case PartType::RocketEngine: return "rocket_engine";
         case PartType::FuelTank: return "fuel_tank";
         case PartType::Cockpit: return "cockpit";
@@ -164,6 +168,8 @@ static Color PartColor(PartType t) {
         case PartType::Refinery: return { 140, 110, 160, 255 };
         case PartType::PrecisionAssembler: return { 100, 140, 180, 255 };
         case PartType::Farmland: return { 86, 60, 38, 255 };
+        case PartType::Fence: return { 130, 95, 60, 255 };
+        case PartType::Gate: return { 165, 120, 70, 255 };
         default: return { 168, 166, 158, 255 };                                                          // concrete
     }
 }
@@ -187,6 +193,11 @@ static void PartCells(PartType t, std::vector<std::pair<Int3, CellShape>>& out) 
         case PartType::Farmland: // 1 m square, half a metre deep
             for (int z = 0; z < 2; ++z) for (int x = 0; x < 2; ++x) out.push_back({ { x, 0, z }, full });
             break;
+        case PartType::Fence: case PartType::Gate: { // a 10 cm board across the middle, 1 m long and 1 m high
+            CellShape s; s.full = false; s.planes = 2; s.n[0] = { 1, 0, 0 }; s.d[0] = 0.6f; s.n[1] = { -1, 0, 0 }; s.d[1] = -0.4f;
+            for (int z = 0; z < 2; ++z) for (int y = 0; y < 2; ++y) out.push_back({ { 0, y, z }, s });
+            break;
+        }
         case PartType::Slope: {
             CellShape s; s.full = false; s.planes = 1; s.n[0] = { 0, 1, 1 }; s.d[0] = 1.0f; // rises toward -z
             out.push_back({ { 0, 0, 0 }, s });
@@ -530,8 +541,9 @@ bool Plot::collideSphere(Vector3& bodyCentre, float r, Vector3& normalOut) const
         for (int z = (int)floorf(p.z - rc); z <= (int)floorf(p.z + rc); ++z)
             for (int y = (int)floorf(p.y - rc); y <= (int)floorf(p.y + rc); ++y)
                 for (int x = (int)floorf(p.x - rc); x <= (int)floorf(p.x + rc); ++x) {
-                    CellShape s;
-                    if (!CellShapeAt(*this, { x, y, z }, s)) continue;
+                    auto it = cells.find({ x, y, z });
+                    if (it == cells.end() || parts[it->second.part].type == PartType::Gate) continue; // people pass a gate
+                    const CellShape& s = it->second.shape;
                     const Vector3 q = ClosestInCell(p, { x, y, z }, s);
                     Vector3 d = Vector3Subtract(p, q);
                     float len = Vector3Length(d);

@@ -31,6 +31,7 @@
 #include "navigation.h"
 #include "viewmodel.h"
 #include "farming.h"
+#include "animals.h"
 #include "ring_test.h"
 #include "rocket.h"
 #include "jobsystem.h"
@@ -95,6 +96,7 @@ static void StartNewWorld(Scene& world, bool reset) {
         Rocket_Reset();
         Nav_Reset();
         Farm_Reset();
+        Animals_Reset();
     }
     Planetoid* start = world.objects.empty() ? nullptr : dynamic_cast<Planetoid*>(world.objects[0].get());
     if (start) {
@@ -159,6 +161,7 @@ int main(int argc, char** argv)
     bool benchMap = false;         // --test-map: compass, exploration, waypoints, map images, saves
     bool benchQuests = false;      // --test-quests: tiers open by their tasks; quest state through a save
     bool benchHunger = false, benchFarm = false; // --test-hunger, --test-farm
+    bool benchAnimals = false; int animalPhase = 0, animalCount = 0; double animalStart = 0.0, animalMs = 0.0; int animalNatural = 0; float penWorst = 0.0f, animalSpread = 0.0f, animalFled = 0.0f, animalFollow = 0.0f; // --test-animals
     int hungerPhase = 0, farmPhase = 0; double hungerStart = 0.0, farmStart = 0.0; bool hungerOk = false; float hungerTemp = 0.0f, hungerDrain = 0.0f, farmQuarter = 0.0f, farmGrowth = 0.0f;
     bool benchViewmodel = false;   // --test-viewmodel: hands still at rest, bob within limits walking, screenshots
     int vmPhase = 0, vmSigns = 0; double vmStart = 0.0; float vmStillMax = 0.0f, vmMaxX = 0.0f, vmMaxY = 0.0f, vmWalked = 0.0f; Vector3 vmLast{}; DVec3 vmFrom{};
@@ -291,6 +294,7 @@ int main(int argc, char** argv)
         if (std::string(argv[i]) == "--test-quests") benchQuests = true;
         if (std::string(argv[i]) == "--test-hunger") benchHunger = true;
         if (std::string(argv[i]) == "--test-farm") benchFarm = true;
+        if (std::string(argv[i]) == "--test-animals") benchAnimals = true;
         if (std::string(argv[i]) == "--test-viewmodel") benchViewmodel = true;
         if (std::string(argv[i]) == "--test-ring") benchRing = true;
         if (std::string(argv[i]) == "--test-rocket") benchRocket = true;
@@ -427,7 +431,7 @@ int main(int argc, char** argv)
     bool spawnLoad = false;        // raised by a spawn or teleport (not entering the game): no minimum time
     int loadFrames = 0;
     int seenSpawns = 0;
-    world.onDraw3D = [&world] { Farm_Draw3D(world); if (!ship.piloted && !buildTool.active && !Rocket_Boarded()) TerrainTool_Draw3D(); BuildTool_Draw3D(world); };
+    world.onDraw3D = [&world] { Farm_Draw3D(world); Animals_Draw3D(world); if (!ship.piloted && !buildTool.active && !Rocket_Boarded()) TerrainTool_Draw3D(); BuildTool_Draw3D(world); };
     terrainTool.till = [&world](Planetoid& body, Vector3 ground) { return Farm_Till(world, body, ground); }; // a shovel's RMB
 
     const double benchWarmup = 2.0;
@@ -1087,6 +1091,145 @@ int main(int argc, char** argv)
                                hungerTemp, hungerDrain, poleTemp, poleDrain, hungerOk && cold ? "PASS" : "FAIL");
                         survival.food = 100.0f; survival.health = 100.0f;
                         benchHunger = false;
+                    }
+                } else if (benchAnimals && (animalPhase > 0 || WorldIdle())) {
+                    // --test-animals: a herd spawns on the ground and stays there, a hit one flees, a fed one
+                    // follows, two fed adults breed, 200 animals update in under 1 ms, animals are saved.
+                    Planetoid* p = dynamic_cast<Planetoid*>(world.objects[0].get());
+                    if (animalPhase == 0) {
+                        player.spawnOn(world, *p, StartSpawnDir(*p));
+                        animalPhase = 1; animalStart = GetTime();
+                    } else if (animalPhase == 1 && GetTime() - animalStart > 1.5 && player.grounded) {
+                        bool ok = true;
+                        auto check = [&](bool c, const char* what) { if (!c) { printf("bench: animals: FAILED %s\n", what); ok = false; } };
+                        const auto* pf = dynamic_cast<const PlanetField*>(p->field.get());
+                        const Vector3 me = p->toLocal((player.position - world.renderOrigin).toFloat());
+                        const Vector3 up = Vector3Normalize(me);
+                        Vector3 east = Vector3Normalize(Vector3CrossProduct({ 0, 1, 0 }, up));
+                        const Vector3 north = Vector3CrossProduct(up, east);
+                        auto onGround = [&](int i) { const Vector3 a = Animals_Position(i); return fabsf(Vector3Length(a) - (pf->radius + pf->elevation(Vector3Normalize(a)))) < 0.05f; };
+                        auto step = [&](float seconds) { for (float t = 0.0f; t < seconds; t += 0.1f) Animals_Update(world, 0.1f, 0.1f, false); };
+                        animalNatural = Animals_Count(); // herds placed around the player as it arrived
+                        check(animalNatural > 0, "herds spawn around the player");
+                        Animals_Reset();
+                        world.sunDirection = p->dirToWorld(up); // noon: no resting
+                        const Vector3 herdAt = Vector3Add(me, Vector3Scale(east, 30.0f));
+                        const int made = Animals_Spawn(world, *p, "woolback", herdAt, 6);
+                        check(made >= 4, "a herd spawned");
+                        bool grounded = true;
+                        for (int i = 0; i < Animals_Count(); ++i) grounded = grounded && onGround(i);
+                        check(grounded, "spawned on the ground");
+                        step(60.0f);
+                        float spread = 0.0f; grounded = true;
+                        for (int i = 0; i < Animals_Count(); ++i) { spread = std::max(spread, Vector3Distance(Animals_Position(i), herdAt)); grounded = grounded && onGround(i); }
+                        check(grounded && spread < 80.0f, "a minute of grazing: still on the ground and near");
+                        animalSpread = spread;
+                        // Hit one: it runs from the player.
+                        const int h = Animals_Nearest(me, 200.0f);
+                        const float d0 = Vector3Distance(Animals_Position(h), me);
+                        check(!Animals_Hit(h, 1.0f), "a light hit does not kill");
+                        step(3.0f);
+                        animalFled = Vector3Distance(Animals_Position(h), me) - d0;
+                        check(animalFled > 5.0f, "the hit one fled");
+                        // Feed one: it follows the player.
+                        inventory.add("grain", 4);
+                        const int fdx = Animals_Nearest(me, 200.0f);
+                        const float f0 = Vector3Distance(Animals_Position(fdx), me);
+                        check(Animals_Feed(fdx), "fed");
+                        step(12.0f);
+                        animalFollow = Vector3Distance(Animals_Position(fdx), me);
+                        check(animalFollow < std::max(4.0f, f0 - 8.0f), "the fed one came to the player");
+                        // A pen: fences (and a gate) 24 m out around a herd. Scared, they run, but stay inside;
+                        // the player walks through the gate, not through a fence.
+                        {
+                            Animals_Reset();
+                            if (!p->plots) p->plots = std::make_unique<PlotSet>();
+                            const Vector3 penDir = Vector3Normalize(Vector3Add(me, Vector3Scale(north, 40.0f)));
+                            const Vector3 penAt = Vector3Scale(penDir, pf->radius + pf->elevation(penDir));
+                            Plot* pen = p->plots->plotFor(penAt, 0.0f, true);
+                            int walls = 0, wallsTried = 0;
+                            const uint8_t across = (uint8_t)RotateOrientation(0, 1); // a fence turned to run along x
+                            Int3 gateCell{ 0, 0, 0 }, fenceCell{ 0, 0, 0 };
+                            for (int a = -48; a < 48; a += 2)
+                                for (int side = 0; side < 4; ++side) {
+                                    const bool alongX = side < 2;
+                                    const int cx = alongX ? a : side == 2 ? -48 : 48, cz = alongX ? (side == 0 ? -48 : 49) : a; // turned fences sit a cell toward -z
+                                    const Vector3 col = Vector3Normalize(pen->toBody({ (cx + 0.5f) * kCellSize, 0.0f, (cz + 0.5f) * kCellSize }));
+                                    const int g = pen->cellAt(pen->toPlot(Vector3Scale(col, pf->radius + pf->elevation(col)))).y;
+                                    const bool gate = side == 0 && a == 0;
+                                    for (int y = g - 2; y <= g; y += 2) {
+                                        Part fp{ gate ? PartType::Gate : PartType::Fence, { cx, y, cz }, alongX ? across : (uint8_t)0, 0 };
+                                        ++wallsTried;
+                                        walls += pen->place(fp) >= 0 ? 1 : 0;
+                                    }
+                                    if (gate) gateCell = { cx, g, cz };
+                                    if (side == 2 && a == 0) fenceCell = { cx, g, cz };
+                                }
+                            // The player: a 0.45 m sphere at a gate cell passes, at a fence cell is pushed out.
+                            auto pushed = [&](Int3 c) {
+                                Vector3 at = pen->toBody({ (c.x + 0.5f) * kCellSize, (c.y + 0.5f) * kCellSize, (c.z + 0.5f) * kCellSize }), n;
+                                return pen->collideSphere(at, 0.45f, n);
+                            };
+                            check(walls == wallsTried, "every fence placed");
+                            check(!pushed(gateCell) && pushed(fenceCell), "the player passes the gate, not a fence");
+                            Animals_Spawn(world, *p, "woolback", penAt, 6);
+                            for (int i = 0; i < Animals_Count(); ++i) Animals_Hit(i, 0.0f);
+                            step(30.0f);
+                            bool inside = Animals_Count() >= 4;
+                            for (int i = 0; i < Animals_Count(); ++i) {
+                                const Vector3 q = pen->toPlot(Animals_Position(i));
+                                penWorst = std::max(penWorst, std::max(fabsf(q.x), fabsf(q.z)));
+                                inside = inside && fabsf(q.x) < 24.0f && fabsf(q.z) < 24.0f;
+                            }
+                            check(inside, "a fenced pen holds a scared herd");
+                            for (int i = 0; i < (int)pen->parts.size(); ++i) pen->remove(i);
+                        }
+                        // Two fed adults side by side breed.
+                        Animals_Reset();
+                        Animals_Spawn(world, *p, "woolback", Vector3Add(me, Vector3Scale(north, 10.0f)), 2);
+                        check(Animals_Count() == 2, "a pair");
+                        if (Animals_Count() == 2) {
+                            Animals_Feed(0); Animals_Feed(1);
+                            step(15.0f); // they follow the player and meet
+                            check(Animals_YoungCount() == 1, "a young one born");
+                        }
+                        // Kill one: drops.
+                        const int meat0 = inventory.count("raw_meat");
+                        check(Animals_Hit(0, 999.0f) && inventory.count("raw_meat") > meat0, "meat when it falls");
+                        // Save and load.
+                        const int before = Animals_Count();
+                        const Vector3 pos0 = Animals_Position(0);
+                        const std::string path = std::string(GetWorkingDirectory()) + "/animals_test.tmp";
+                        if (FILE* f = fopen(path.c_str(), "w")) { saveExtrasHook(f); fprintf(f, "end_extras\n"); fclose(f); }
+                        Animals_Reset();
+                        if (FILE* f = fopen(path.c_str(), "r")) { loadExtrasHook(f); fclose(f); }
+                        remove(path.c_str());
+                        check(Animals_Count() == before && Vector3Distance(Animals_Position(0), pos0) < 0.01f, "saved and loaded");
+                        // 200 within 300 m: the update stays under 1 ms.
+                        Animals_Reset();
+                        for (int k = 0; k < 20; ++k) Animals_Spawn(world, *p, "woolback", Vector3Add(me, Vector3Add(Vector3Scale(east, -150.0f + 15.0f * k), Vector3Scale(north, 40.0f))), 10);
+                        double worst = 0.0;
+                        for (int k = 0; k < 60; ++k) { Animals_Update(world, 1.0f / 60.0f, 1.0f / 60.0f, false); worst = std::max(worst, Animals_LastUpdateMs()); }
+                        animalCount = Animals_Count(); animalMs = worst;
+                        check(animalCount >= 150 && worst < 1.0, "200 animals under 1 ms");
+                        Animals_Reset();
+                        printf("bench: animals: %d placed around the start; herd grazed within %.0f m for a minute, hit one fled %.1f m, fed one came to %.1f m, in a pen at most %.1f m from its centre, a pair bred, meat, saved; %d animals in %.3f ms -> %s\n",
+                               animalNatural, animalSpread, animalFled, animalFollow, penWorst, animalCount, animalMs, ok ? "PASS" : "FAIL");
+                        // A look at them: one of each kind ahead of the player, then a screenshot.
+                        const Vector3 fwd = Vector3Normalize(p->dirToLocal(Vector3Subtract(player.forward, Vector3Scale(player.up, Vector3DotProduct(player.forward, player.up)))));
+                        const char* kinds[] = { "woolback", "plains_runner", "clucker", "hornhide" };
+                        for (int k = 0; k < 4; ++k) Animals_Spawn(world, *p, kinds[k], Vector3Add(me, Vector3Scale(fwd, 14.0f + 4.0f * k)), 2);
+                        {   // and a fence with a gate, 6 m ahead
+                            const Vector3 fd = Vector3Normalize(Vector3Add(me, Vector3Scale(fwd, 6.0f)));
+                            Plot* fp = p->plots->plotFor(Vector3Scale(fd, pf->radius + pf->elevation(fd)), 0.0f, true);
+                            for (int k = -3; k <= 3; ++k) fp->place(Part{ k == 0 ? PartType::Gate : PartType::Fence, { 2 * k, 0, 0 }, (uint8_t)RotateOrientation(0, 1), 0 });
+                        }
+                        world.sunDirection = Vector3Normalize(Vector3Add(p->dirToWorld(up), p->dirToWorld(east)));
+                        animalPhase = 2; animalStart = GetTime();
+                    } else if (animalPhase == 2 && GetTime() - animalStart > 0.6) {
+                        TakeScreenshot("bench_animals.png");
+                        Animals_Reset();
+                        benchAnimals = false;
                     }
                 } else if (benchFarm && (farmPhase > 0 || WorldIdle())) {
                     // --test-farm: till with a shovel's hook, plant grain, no growth at night, ripe in
@@ -2050,7 +2193,7 @@ int main(int argc, char** argv)
                         }
                         benchWalkSeconds = 0.0;
                     }
-                } else if ((WorldIdle() && benchDigStrokes == 0 && !benchSaveLoad && benchWalkSeconds <= 0.0 && benchMineStrokes == 0 && minePhase != 2 && benchFlySeconds <= 0.0 && !benchSuffocate && benchOrbitSeconds <= 0.0 && !benchRide && !benchPark && !benchGravity && !benchPrecision && !benchMantle && !benchAirJump && !benchMoon && !benchHole && !benchWall && !benchMenus && !benchWater && !benchFlyFollow && !benchHotbar && !benchInventory && !benchMap && !benchViewmodel && !benchQuests && !benchHunger && !benchFarm && !benchRing && !benchRocket && !benchBlueprint && !benchSmallBody && !benchTrees && !benchChop && benchPersist == 0 && benchBuild == 0 && benchFactory == 0 && !benchProgression) || GetTime() > 600.0) {
+                } else if ((WorldIdle() && benchDigStrokes == 0 && !benchSaveLoad && benchWalkSeconds <= 0.0 && benchMineStrokes == 0 && minePhase != 2 && benchFlySeconds <= 0.0 && !benchSuffocate && benchOrbitSeconds <= 0.0 && !benchRide && !benchPark && !benchGravity && !benchPrecision && !benchMantle && !benchAirJump && !benchMoon && !benchHole && !benchWall && !benchMenus && !benchWater && !benchFlyFollow && !benchHotbar && !benchInventory && !benchMap && !benchViewmodel && !benchQuests && !benchHunger && !benchFarm && !benchAnimals && !benchRing && !benchRocket && !benchBlueprint && !benchSmallBody && !benchTrees && !benchChop && benchPersist == 0 && benchBuild == 0 && benchFactory == 0 && !benchProgression) || GetTime() > 600.0) {
                     benchStart = GetTime();
                     printf("bench: world ready after %.2f s (%d chunks, avg build %.2f ms of which sampling %.2f ms, %d worker threads)\n",
                         GetWorldStats().lastGenerationSeconds, GetWorldStats().chunks, GetWorldStats().avgBuildMs, GetWorldStats().avgSampleMs, GetWorldStats().workerThreads);
@@ -2180,6 +2323,7 @@ int main(int argc, char** argv)
             if (!loading) Nav_Update(world, !bench && Nav_MapOpen()); // exploration, the map
             if (!loading) Viewmodel_Update(world, frameDt);
             if (!loading) Farm_Update(world, frameDt * timeScale * Rocket_Warp()); // crops grow on world time
+            if (!loading) Animals_Update(world, frameDt, frameDt * timeScale * Rocket_Warp(), gameInput && alive && !ship.piloted);
             // Autosave every 5 minutes of play (incremental: only regions changed since the last save).
             static double lastAutosave = GetTime();
             if (!bench && alive && GetTime() - lastAutosave > 300.0) {
@@ -2294,7 +2438,7 @@ int main(int argc, char** argv)
         }
         if (gameState == 1) Hotbar_Update(world, gameInput && alive, ship.piloted);
         if (gameState == 1) BuildTool_Update(world, gameInput && alive, !ship.piloted && !Rocket_Boarded() && !player.flyMode && !telescope.active && alive);
-        if (gameState == 1) TerrainTool_Update(world, gameInput && alive, !ship.piloted && !Rocket_Boarded() && !telescope.active && !buildTool.active); // F5/F9 work aboard too
+        if (gameState == 1) TerrainTool_Update(world, gameInput && alive && !Animals_Aiming(), !ship.piloted && !Rocket_Boarded() && !telescope.active && !buildTool.active); // F5/F9 work aboard too
 
         // --test-menus: the menu flow without clicks: main menu (screenshot), New Game, pause
         // (screenshot), Save & Quit to Menu, Load Game; each step's state is checked.
@@ -2380,6 +2524,7 @@ int main(int argc, char** argv)
                 BuildTool_DrawHUD();
                 Hotbar_DrawHUD(ship.piloted);
                 Machine_DrawHUD();
+                if (!ship.piloted && !buildTool.active) Animals_DrawHUD();
                 if (!ship.piloted && !telescope.active && !buildTool.active && !Rocket_Boarded()) TerrainTool_DrawHUD();
                 GameUI_DrawHUD(world);
                 Survival_DrawHUD();
