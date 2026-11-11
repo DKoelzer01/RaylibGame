@@ -41,7 +41,7 @@ static bool IsMachineItem(const std::string& id) {
 }
 
 // Foundation: clear terrain inside the part's cells and fill under its bottom cells.
-static void LayFoundation(Planetoid& body, Plot& plot, const Part& part) {
+void BuildTool_LayFoundation(Planetoid& body, Plot& plot, const Part& part) {
     std::vector<std::pair<Int3, CellShape>> fp;
     Plot::Footprint(part, fp);
     std::vector<TerrainEdit> edits;
@@ -71,8 +71,8 @@ bool BuildTool_Place(Planetoid& body, Plot& plot, const Part& part, bool charge)
         return false;
     }
     plot.place(part);
-    if (IsMachine(part.type)) QuestBook_NotePlaced(PartCostItem(part.type));
-    LayFoundation(body, plot, part);
+    if (IsMachine(part.type) || IsRocketPart(part.type)) QuestBook_NotePlaced(PartCostItem(part.type));
+    BuildTool_LayFoundation(body, plot, part);
     return true;
 }
 

@@ -36,6 +36,11 @@ const char* PartName(PartType t) {
         case PartType::ForgeHammer: return "forge hammer";
         case PartType::AlloySmelter: return "alloy smelter";
         case PartType::SteamMacerator: return "steam macerator";
+        case PartType::RocketEngine: return "rocket engine";
+        case PartType::FuelTank: return "fuel tank";
+        case PartType::Cockpit: return "cockpit";
+        case PartType::Guidance: return "guidance computer";
+        case PartType::LandingLeg: return "landing leg";
         default: return "?";
     }
 }
@@ -72,6 +77,11 @@ const char* PartCostItem(PartType t) {
         case PartType::Conveyor: return "conveyor";
         case PartType::Cable: return "cable";
         case PartType::Furnace: return "electric_furnace"; // the item; "furnace" is its recipe map
+        case PartType::RocketEngine: return "rocket_engine";
+        case PartType::FuelTank: return "fuel_tank";
+        case PartType::Cockpit: return "cockpit";
+        case PartType::Guidance: return "guidance_computer";
+        case PartType::LandingLeg: return "landing_leg";
         default: { const char* m = PartMachineName(t); return m ? m : "concrete"; }
     }
 }
@@ -112,6 +122,11 @@ static Color PartColor(PartType t) {
         case PartType::ForgeHammer: return { 150, 120, 70, 255 };
         case PartType::AlloySmelter: return { 170, 110, 70, 255 };
         case PartType::SteamMacerator: return { 140, 120, 90, 255 };
+        case PartType::RocketEngine: return { 70, 72, 80, 255 };
+        case PartType::FuelTank: return { 220, 222, 226, 255 };
+        case PartType::Cockpit: return { 60, 120, 170, 255 };
+        case PartType::Guidance: return { 40, 140, 90, 255 };
+        case PartType::LandingLeg: return { 150, 150, 150, 255 };
         default: return { 168, 166, 158, 255 };                                                          // concrete
     }
 }
@@ -121,10 +136,12 @@ static void PartCells(PartType t, std::vector<std::pair<Int3, CellShape>>& out) 
     out.clear();
     CellShape full;
     switch (t) {
-        case PartType::Cube: case PartType::Conveyor: case PartType::Cable: out.push_back({ { 0, 0, 0 }, full }); break;
+        case PartType::Cube: case PartType::Conveyor: case PartType::Cable: case PartType::Guidance: case PartType::LandingLeg:
+            out.push_back({ { 0, 0, 0 }, full }); break;
         case PartType::Block: case PartType::Chest: case PartType::Generator: case PartType::Furnace: case PartType::Macerator: case PartType::Battery:
         case PartType::Campfire: case PartType::Kiln: case PartType::CokeOven: case PartType::BlastFurnace: case PartType::Boiler:
         case PartType::ForgeHammer: case PartType::AlloySmelter: case PartType::SteamMacerator:
+        case PartType::RocketEngine: case PartType::FuelTank: case PartType::Cockpit:
             for (int z = 0; z < 2; ++z) for (int y = 0; y < 2; ++y) for (int x = 0; x < 2; ++x) out.push_back({ { x, y, z }, full });
             break;
         case PartType::Slope: {
@@ -566,10 +583,11 @@ int PlotSet::partCount() const {
 void PlotSet::save(FILE* f) const {
     int live = 0;
     for (const auto& p : plots) if (p->partCount() > 0) ++live;
-    fprintf(f, "plots2 %d\n", live); // "plots2": parts carry their material (old "plots" saves load as concrete)
+    // plots3: parts carry their material and plots their rocket fuel (plots2: no fuel; plots: no materials).
+    fprintf(f, "plots3 %d\n", live);
     for (const auto& p : plots) {
         if (p->partCount() == 0) continue;
-        fprintf(f, "plot %u %.4f %.4f %.4f %d\n", p->id, p->origin.x, p->origin.y, p->origin.z, p->partCount());
+        fprintf(f, "plot %u %.4f %.4f %.4f %d %.1f\n", p->id, p->origin.x, p->origin.y, p->origin.z, p->partCount(), p->fuel);
         for (const Part& part : p->parts)
             if (part.type != PartType::Count) fprintf(f, "%d %d %d %d %d %d\n", (int)part.type, part.origin.x, part.origin.y, part.origin.z, part.orient, part.material);
     }
@@ -579,16 +597,19 @@ bool PlotSet::load(FILE* f) {
     plots.clear();
     int n = 0;
     char tag[16] = {};
-    if (fscanf(f, " %15s %d", tag, &n) != 2 || (strcmp(tag, "plots") != 0 && strcmp(tag, "plots2") != 0)) return false;
-    const bool materials = strcmp(tag, "plots2") == 0;
+    if (fscanf(f, " %15s %d", tag, &n) != 2 || (strcmp(tag, "plots") != 0 && strcmp(tag, "plots2") != 0 && strcmp(tag, "plots3") != 0)) return false;
+    const bool materials = strcmp(tag, "plots") != 0, hasFuel = strcmp(tag, "plots3") == 0;
     for (int i = 0; i < n; ++i) {
         unsigned int id = 0;
         double ox, oy, oz;
         int count = 0;
         if (fscanf(f, " plot %u %lf %lf %lf %d", &id, &ox, &oy, &oz, &count) != 5) return false;
+        float fuel = 0.0f;
+        if (hasFuel && fscanf(f, " %f", &fuel) != 1) return false;
         auto p = std::make_unique<Plot>();
         p->id = id;
         p->origin = DVec3(ox, oy, oz);
+        p->fuel = fuel;
         const Vector3 ob = { (float)ox, (float)oy, (float)oz };
         p->up = Vector3Normalize(ob);
         p->east = Vector3CrossProduct({ 0, 1, 0 }, p->up);
@@ -607,4 +628,17 @@ bool PlotSet::load(FILE* f) {
         plots.push_back(std::move(p));
     }
     return true;
+}
+
+Plot* PlotSet::adopt(std::unique_ptr<Plot> plot) {
+    plot->id = nextId++;
+    plot->version++;
+    plots.push_back(std::move(plot));
+    return plots.back().get();
+}
+
+std::unique_ptr<Plot> PlotSet::release(Plot* plot) {
+    for (auto it = plots.begin(); it != plots.end(); ++it)
+        if (it->get() == plot) { std::unique_ptr<Plot> p = std::move(*it); plots.erase(it); return p; }
+    return nullptr;
 }

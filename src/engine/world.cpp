@@ -1,5 +1,6 @@
 #include "world.h"
 #include "ring.h"
+#include "player.h"
 #include "jobsystem.h"
 #include "utils/logger.h"
 #include "worldtypes.h"
@@ -70,6 +71,18 @@ Planetoid::Planetoid(std::string name, DVec3 wp, Vector3 rotation, float scale, 
 }
 
 Planetoid::~Planetoid() { planetoidRegistry.erase(id); }
+
+Planetoid::Planetoid(std::string name, DVec3 wp, std::shared_ptr<const EmptyField> empty, float radius_)
+    : Object("vehicle", name, wp.toFloat(), { 0, 0, 0 }, WHITE, 1.0f),
+      id(nextPlanetoidId++), seed(0), radius(radius_), field(empty), edits(std::make_shared<TerrainDeltas>()) {
+    worldPos = wp;
+    hasWorldPos = true;
+    surfaceGravity = 0.0f;
+    gravityRadius = 1.0f;
+    vehicle = true;
+    while ((float)(CHUNK_SIZE << rootLevel) < radius + 4.0f) rootLevel++;
+    planetoidRegistry[id] = this;
+}
 
 Planetoid::Planetoid(std::string name, DVec3 wp, std::shared_ptr<const TerrainField> terrain)
     : Object("terrain", name, wp.toFloat(), { 0, 0, 0 }, WHITE, 1.0f),
@@ -725,7 +738,7 @@ Planetoid* NearestPlanetoid(Scene& world, Vector3 p) {
     float bestDist = 1e30f;
     for (auto& obj : world.objects) {
         Planetoid* b = dynamic_cast<Planetoid*>(obj.get());
-        if (!b) continue;
+        if (!b || b->vehicle) continue; // a rocket in flight has no ground
         const float d = b->flat ? -1e30f : Vector3Distance(p, b->position) - b->radius * b->scale; // terrain is always "under you"
         if (d < bestDist) { bestDist = d; best = b; }
     }
@@ -926,6 +939,7 @@ void BeginWorldStreaming() { generationStart = GetTime(); buildMsTotal = sampleM
 void regenerateWorld(Scene& world) {
     Jobs().clearQueued();  // in-flight jobs finish; their results are dropped (planetoid ids are gone)
     Factory::Reset();      // machines belong to the old bodies
+    player.nearest = nullptr; // every body goes (the player refinds its ground next update)
     gRings.clear();        // before their parent bodies go
     world.objects.clear(); // releases chunk meshes
     generateWorld(world);
@@ -1111,7 +1125,7 @@ bool SaveWorld(Scene& world) {
     size_t totalStrokes = 0;
     for (auto& obj : world.objects) {
         Planetoid* p = dynamic_cast<Planetoid*>(obj.get());
-        if (!p || p->ringRock >= 0) continue; // promoted ring rocks are saved with their ring (below)
+        if (!p || p->ringRock >= 0 || p->vehicle) continue; // promoted ring rocks: saved with their ring (below); rockets: by the game
         const int bodyIndex = index++;
         fprintf(f, "planetoid %d rot %f %f %f strokes %zu\n", bodyIndex, p->rotation.x, p->rotation.y, p->rotation.z, p->edits->strokes);
         totalStrokes += p->edits->strokes;

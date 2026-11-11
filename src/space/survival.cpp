@@ -1,4 +1,5 @@
 #include "survival.h"
+#include "rocket.h"
 #include "inventory.h"
 #include "player.h"
 #include "ship.h"
@@ -51,8 +52,14 @@ void Survival_Update(Scene& world, float dt, bool inputEnabled) {
     // Life support runs on ship energy: a drained ship is no refuge (charge it with a power cell).
     survival.breathable = false;
     survival.inLifeSupport = (ship.piloted || ship.playerInRange(world, pr, ship.lifeSupportRadius)) && ship.energy > 0.0f;
+    if (Rocket_Boarded()) {
+        // A rocket's cockpit is pressurised (and charges the suit) on its own supply.
+        survival.inLifeSupport = true;
+        survival.oxygen = std::min(100.0f, survival.oxygen + survival.lifeSupportRefillPerSec * dt);
+        survival.power = std::min(100.0f, survival.power + survival.lifeSupportRefillPerSec * dt);
+    }
 
-    if (survival.inLifeSupport) {
+    if (survival.inLifeSupport && !Rocket_Boarded()) {
         // Topping up the suit costs the ship energy; refill only as much as the ship can pay for.
         const float energyPerPoint = 0.02f;
         const float wantO2 = std::min(100.0f - survival.oxygen, survival.lifeSupportRefillPerSec * dt);

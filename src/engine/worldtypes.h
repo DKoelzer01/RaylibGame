@@ -93,6 +93,9 @@ public:
     Planetoid(std::string name, DVec3 worldPos, Vector3 rotation, float scale, unsigned int seed, float radius);
     // Open-world terrain body.
     Planetoid(std::string name, DVec3 worldPos, std::shared_ptr<const TerrainField> terrain);
+    // A body with no terrain that carries a build plot (rocket.h): no gravity, never meshed.
+    Planetoid(std::string name, DVec3 worldPos, std::shared_ptr<const EmptyField> empty, float radius);
+    bool vehicle = false;                                // a flying rocket: saved by the rocket code, not as a body
     virtual ~Planetoid();
 
     void draw(const RenderContext& ctx) override;
