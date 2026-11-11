@@ -1,5 +1,6 @@
 #include "survival.h"
 #include "suit.h"
+#include "questtree.h"
 #include "rocket.h"
 #include "inventory.h"
 #include "player.h"
@@ -171,6 +172,13 @@ void Survival_Update(Scene& world, float dt, bool inputEnabled) {
     if (inputEnabled) {
     }
 
+    {   // A night survived (the quest tree): dark fell and day came back without a death.
+        static bool inNight = false;
+        static int deathsAtDusk = 0;
+        const bool dark = Vector3DotProduct(Vector3Normalize(world.sunDirection), player.up) < -0.1f && player.nearest != nullptr;
+        if (dark && !inNight) { inNight = true; deathsAtDusk = survival.deaths; }
+        else if (!dark && inNight) { inNight = false; if (survival.deaths == deathsAtDusk) QuestBook_Count("nights"); }
+    }
     if (survival.health <= 0.0f) {
         survival.health = 0.0f;
         survival.dead = true;
@@ -305,6 +313,7 @@ void Objectives_Update(Scene& world) {
 }
 
 void QuestBook_NotePlaced(const std::string& item) { placedItems.insert(item); }
+bool QuestBook_Met(const std::string& kind, const std::string& target, double n) { Task t; t.kind = kind; t.target = target; t.n = n; return TaskMet(t); }
 void QuestBook_Count(const std::string& event, double n) { questCounts[event] += n; }
 void QuestBook_AtLeast(const std::string& event, double v) { double& c = questCounts[event]; c = std::max(c, v); }
 double QuestBook_CountOf(const std::string& event) { auto it = questCounts.find(event); return it == questCounts.end() ? 0.0 : it->second; }
@@ -318,6 +327,7 @@ void QuestBook_Reset() {
     visitedBodies.clear();
     reachedOrbit = visitedMoon = visitedRing = false;
     questCounts.clear();
+    QuestTree_Reset();
     for (Tier& t : tiers) for (Task& k : t.tasks) k.done = false;
 }
 
@@ -339,6 +349,7 @@ void QuestBook_Update() {
         ++questTier;
         if (questTier < (int)tiers.size()) GameUI_Toast(TextFormat("Tier %d: %s", questTier, tiers[questTier].name.c_str()));
     }
+    QuestTree_Update(); // the side lines
 }
 
 int QuestBook_TierCount() { LoadTiers(); return (int)tiers.size(); }
@@ -357,6 +368,7 @@ void QuestBook_Save(FILE* f) {
     for (const auto& kv : inventory.obtained) if (kv.second > 0.0) fprintf(f, "obtained %s %.2f\n", kv.first.c_str(), kv.second);
     fprintf(f, "quest_flags %d %d %d\n", reachedOrbit ? 1 : 0, visitedMoon ? 1 : 0, visitedRing ? 1 : 0);
     for (const auto& kv : questCounts) fprintf(f, "quest_count %s %.2f\n", kv.first.c_str(), kv.second);
+    QuestTree_Save(f);
 }
 
 bool QuestBook_LoadLine(const char* tok, FILE* f) {
@@ -369,6 +381,7 @@ bool QuestBook_LoadLine(const char* tok, FILE* f) {
         return true;
     }
     if (strcmp(tok, "placed") == 0) { if (fscanf(f, " %63s", id) == 1) placedItems.insert(id); return true; }
+    if (QuestTree_LoadLine(tok, f)) return true;
     if (strcmp(tok, "quest_count") == 0) { double n = 0; if (fscanf(f, " %63s %lf", id, &n) == 2) questCounts[id] = n; return true; }
     if (strcmp(tok, "obtained") == 0) { double n = 0; if (fscanf(f, " %63s %lf", id, &n) == 2) inventory.obtained[id] = n; return true; }
     if (strcmp(tok, "quest_flags") == 0) {

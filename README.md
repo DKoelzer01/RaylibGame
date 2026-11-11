@@ -114,6 +114,9 @@ Shaders in `resources/` hot-reload when saved.
   Animals are saved. Threats (not on peaceful): thornbacks (territorial) charge within 12 m; after dark, dusk stalkers
   come out 45-60 m away and hunt you, keep 14 m from a campfire (one within 10 m keeps you safe) and leave at dawn.
   No hostile herds within 500 m of the start.
+- **Quest tree** (`src/space/questtree.*`, `resources/data/quests.txt`, the Quest tree tab): side lines branching off
+  the main tiers - farming, husbandry, the suit and exploring (nights survived, stalkers fought, tiles mapped) - each
+  node opening on its requirements and paying a reward when done. `--shot-tabs` screenshots the tree and Suit tabs.
 - **Difficulty** (Settings: New worlds; saved with each world): peaceful (no threats, hunger x0.6, 6 berries to
   start), normal, hard (no Map in the starting kit, hunger x1.25, threats bite 1.5x and up to 3 stalkers).
 - **Environmental suit** (`src/space/suit.*`, `resources/data/suits.txt`, `suit_modules.txt`): you start in a basic
@@ -280,7 +283,7 @@ at the pole bare, insulated and regulated),
 `--test-tools` (wear counted from strokes, saved, repaired, a tool breaks at its durability; an iron hoe tills 3x3),
 `--test-rivers` (the network: levels never rise and widths never shrink downstream; the longest river walked
 through the terrain queries stays wet and only falls; a screenshot of the river nearest the start),
-`--test-quests` (tiers open by their tasks, items used up still count, quest state through a save),
+`--test-quests` (tiers open by their tasks, items used up still count, event tasks, the quest tree, all through a save),
 `--test-viewmodel` (hands still at rest, bob within its amplitude once a step, screenshots of each tool),
 `--test-map` (compass reads east facing east, walking explores, a waypoint north bears 0, both maps render, saved),
 `--test-smallbody` (drop onto a huge ring rock and a 5 m one: land, stand, no death), `--test-inventory` (grid

@@ -7,6 +7,7 @@
 #include "survival.h"
 #include "suit.h"
 #include "toolwear.h"
+#include "questtree.h"
 #include "world.h"
 #include "ship.h"
 
@@ -21,6 +22,8 @@ namespace {
 
 bool GameUI_InventoryOpen() { return inventoryOpen; }
 void GameUI_ToggleInventory() { inventoryOpen = !inventoryOpen; }
+static std::string forceTab; // the tab to select when the window next draws
+void GameUI_ShowTab(const char* tab) { inventoryOpen = true; forceTab = tab; }
 void GameUI_Toast(const char* text) { toast = text; toastUntil = GetTime() + 2.5; }
 
 static ImVec4 ToImColor(Color c) { return ImVec4(c.r / 255.0f, c.g / 255.0f, c.b / 255.0f, 1.0f); }
@@ -155,7 +158,7 @@ void GameUI_Draw(Scene&) {
     if (!inventoryOpen) return;
     const ImGuiIO& io = ImGui::GetIO();
     ImGui::SetNextWindowPos(ImVec2(io.DisplaySize.x * 0.5f, io.DisplaySize.y * 0.5f), ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
-    ImGui::SetNextWindowSize(ImVec2(1000, 480), ImGuiCond_Appearing);
+    ImGui::SetNextWindowSize(ImVec2(1320, 640), ImGuiCond_Appearing);
     if (ImGui::Begin("Inventory (Tab)", &inventoryOpen, ImGuiWindowFlags_NoCollapse)) {
         ImGui::Columns(2, "inv", true);
         static bool widthSet = false;
@@ -189,7 +192,11 @@ void GameUI_Draw(Scene&) {
                 }
                 ImGui::EndTabItem();
             }
-            if (ImGui::BeginTabItem("Suit")) {
+            if (ImGui::BeginTabItem("Quest tree", nullptr, forceTab == "Quest tree" ? ImGuiTabItemFlags_SetSelected : 0)) {
+                QuestTree_DrawTab();
+                ImGui::EndTabItem();
+            }
+            if (ImGui::BeginTabItem("Suit", nullptr, forceTab == "Suit" ? ImGuiTabItemFlags_SetSelected : 0)) {
                 Suit_DrawTab();
                 ImGui::EndTabItem();
             }
@@ -198,6 +205,7 @@ void GameUI_Draw(Scene&) {
                 ImGui::EndTabItem();
             }
             ImGui::EndTabBar();
+            forceTab.clear();
         }
         ImGui::Columns(1);
     }

@@ -36,6 +36,7 @@
 #include "toolwear.h"
 #include "tools.h"
 #include "rivers.h"
+#include "questtree.h"
 #include "ring_test.h"
 #include "rocket.h"
 #include "jobsystem.h"
@@ -173,6 +174,7 @@ int main(int argc, char** argv)
     bool benchRivers = false, riverOk = false; int riverPhase = 0; double riverStart = 0.0; float riverLongest = 0.0f, riverBuild = 0.0f, riverWet = 0.0f, riverLevel = 0.0f; Vector3 riverDir{ 0, 0, 0 }; // --test-rivers
     bool benchTools = false, toolsOk = true; int toolsPhase = 0, toolsLife = 0, toolsTilled = 0; double toolsStart = 0.0; // --test-tools
     bool benchSuit = false, suitOk = true; int suitPhase = 0; double suitStart = 0.0; float suitFoodRatio = 0.0f, suitWater = 0.0f, suitRebreather = 0.0f; // --test-suit
+    int benchShotTabs = 0; // --shot-tabs
     bool benchThreats = false, threatsOk = true; int threatPhase = 0; double threatStart = 0.0; float threatBite = 0.0f, threatFire = 0.0f, threatRam = 0.0f; int threatSpawned = 0, threatLeft = 0, threatPeaceful = 0; // --test-threats
     bool benchAnimals = false; int animalPhase = 0, animalCount = 0; double animalStart = 0.0, animalMs = 0.0; int animalNatural = 0; float penWorst = 0.0f, animalLured = 0.0f, animalSpread = 0.0f, animalFled = 0.0f, animalFollow = 0.0f; // --test-animals
     int hungerPhase = 0, farmPhase = 0; double hungerStart = 0.0, farmStart = 0.0; bool hungerOk = false; float hungerTemp = 0.0f, hungerDrain = 0.0f, farmQuarter = 0.0f, farmGrowth = 0.0f;
@@ -309,6 +311,7 @@ int main(int argc, char** argv)
         if (std::string(argv[i]) == "--test-farm") benchFarm = true;
         if (std::string(argv[i]) == "--test-animals") benchAnimals = true;
         if (std::string(argv[i]) == "--test-threats") benchThreats = true;
+        if (std::string(argv[i]) == "--shot-tabs") benchShotTabs = 1;
         if (std::string(argv[i]) == "--test-suit") benchSuit = true;
         if (std::string(argv[i]) == "--test-tools") benchTools = true;
         if (std::string(argv[i]) == "--test-rivers") benchRivers = true;
@@ -1351,6 +1354,27 @@ int main(int argc, char** argv)
                         survival.food = 100.0f; survival.oxygen = 100.0f; survival.health = 100.0f;
                         benchSuit = false;
                     }
+                } else if (benchShotTabs > 0 && (benchShotTabs > 1 || WorldIdle())) {
+                    // --shot-tabs: screenshots of the Quest tree (some progress) and Suit tabs.
+                    static int frames = 0;
+                    if (benchShotTabs == 1) {
+                        QuestBook_SetTier(3);
+                        QuestBook_AtLeast("explored", 30.0); QuestBook_Count("till"); QuestBook_Count("feed");
+                        inventory.add("food_pouch", 1); inventory.add("oxygen_tank_module", 1); inventory.add("grip_boots", 1); inventory.add("field_suit", 1);
+                        Suit_Reset(); Suit_Fit("food_pouch");
+                        QuestBook_Update();
+                        GameUI_ShowTab("Quest tree");
+                        benchShotTabs = 2; frames = 0;
+                    } else if (benchShotTabs == 2 && ++frames == 40) {
+                        TakeScreenshot("bench_questtree.png");
+                        GameUI_ShowTab("Suit");
+                        benchShotTabs = 3; frames = 0;
+                    } else if (benchShotTabs == 3 && ++frames == 40) {
+                        TakeScreenshot("bench_suit.png");
+                        printf("bench: shot-tabs: bench_questtree.png, bench_suit.png\n");
+                        GameUI_ToggleInventory();
+                        benchShotTabs = 0;
+                    }
                 } else if (benchThreats && (threatPhase > 0 || WorldIdle())) {
                     // --test-threats: after dark a dusk stalker comes 45-60 m out and hunts (a bite hurts); a
                     // campfire keeps it off; daylight sends it away; peaceful worlds get none; a thornback
@@ -1667,6 +1691,20 @@ int main(int argc, char** argv)
                     inventory.add("tin_ore", 2); inventory.add("copper_ingot", 3); inventory.add("bronze_ingot", 1);
                     QuestBook_Update();
                     check(QuestBook_Tier() == 2, "tier 1 done opens tier 2");
+                    // The quest tree: side nodes open by their requirements, complete by their task, pay a
+                    // reward, and are saved.
+                    check(QuestTree_NodeCount() >= 12, "side lines loaded");
+                    check(QuestTree_IsOpen("f1") && QuestTree_IsOpen("h1") && QuestTree_IsOpen("s1") && !QuestTree_IsOpen("s2") && QuestTree_IsOpen("e1"), "nodes open by tier and by their requirements");
+                    const int berries0 = inventory.count("berries");
+                    QuestBook_AtLeast("explored", 25.0);
+                    QuestBook_Update();
+                    check(QuestTree_IsDone("e1") && inventory.count("berries") == berries0 + 4 && QuestTree_IsOpen("e2") && !QuestTree_IsOpen("e3"), "a side node done pays its reward and opens the next");
+                    if (FILE* f = fopen(path.c_str(), "w")) { saveExtrasHook(f); fprintf(f, "end_extras\n"); fclose(f); }
+                    QuestBook_Reset();
+                    check(!QuestTree_IsDone("e1"), "reset clears the tree");
+                    if (FILE* f = fopen(path.c_str(), "r")) { loadExtrasHook(f); fclose(f); }
+                    remove(path.c_str());
+                    check(QuestTree_IsDone("e1"), "the tree saved");
                     printf("bench: quests: %d tiers, tier 0 -> 1 -> 2 by their tasks, save/load kept the tier and tasks -> %s\n", QuestBook_TierCount(), ok ? "PASS" : "FAIL");
                     inventory.clear(); QuestBook_Reset();
                     benchQuests = false;
@@ -2544,7 +2582,7 @@ int main(int argc, char** argv)
                         }
                         benchWalkSeconds = 0.0;
                     }
-                } else if ((WorldIdle() && benchDigStrokes == 0 && !benchSaveLoad && benchWalkSeconds <= 0.0 && benchMineStrokes == 0 && minePhase != 2 && benchFlySeconds <= 0.0 && !benchSuffocate && benchOrbitSeconds <= 0.0 && !benchRide && !benchPark && !benchGravity && !benchPrecision && !benchMantle && !benchAirJump && !benchMoon && !benchHole && !benchWall && !benchMenus && !benchWater && !benchFlyFollow && !benchHotbar && !benchInventory && !benchMap && !benchViewmodel && !benchQuests && !benchHunger && !benchFarm && !benchAnimals && !benchThreats && !benchSuit && !benchTools && !benchRivers && !benchRing && !benchRocket && !benchBlueprint && !benchSmallBody && !benchTrees && !benchChop && benchPersist == 0 && benchBuild == 0 && benchFactory == 0 && !benchProgression) || GetTime() > 600.0) {
+                } else if ((WorldIdle() && benchDigStrokes == 0 && !benchSaveLoad && benchWalkSeconds <= 0.0 && benchMineStrokes == 0 && minePhase != 2 && benchFlySeconds <= 0.0 && !benchSuffocate && benchOrbitSeconds <= 0.0 && !benchRide && !benchPark && !benchGravity && !benchPrecision && !benchMantle && !benchAirJump && !benchMoon && !benchHole && !benchWall && !benchMenus && !benchWater && !benchFlyFollow && !benchHotbar && !benchInventory && !benchMap && !benchViewmodel && !benchQuests && !benchHunger && !benchFarm && !benchAnimals && !benchThreats && benchShotTabs == 0 && !benchSuit && !benchTools && !benchRivers && !benchRing && !benchRocket && !benchBlueprint && !benchSmallBody && !benchTrees && !benchChop && benchPersist == 0 && benchBuild == 0 && benchFactory == 0 && !benchProgression) || GetTime() > 600.0) {
                     benchStart = GetTime();
                     printf("bench: world ready after %.2f s (%d chunks, avg build %.2f ms of which sampling %.2f ms, %d worker threads)\n",
                         GetWorldStats().lastGenerationSeconds, GetWorldStats().chunks, GetWorldStats().avgBuildMs, GetWorldStats().avgSampleMs, GetWorldStats().workerThreads);

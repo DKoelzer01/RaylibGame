@@ -250,6 +250,8 @@ void SpawnHerds(Scene& world, Planetoid& body, const PlanetField& pf, Vector3 up
 void Kill(int i) {
     const Animal& a = animals[i];
     const Species& s = species[a.species];
+    QuestBook_Count("slain");
+    if (s.night) QuestBook_Count("stalker");
     std::string got;
     for (const auto& d : s.drops) {
         const int n = std::max(1, (int)lroundf(d.second * (0.4f + 0.6f * a.age)));
@@ -544,6 +546,7 @@ void Animals_Update(Scene& world, float dt, float worldDt, bool inputEnabled) {
             young.rng = a.rng ^ 0x9e37u;
             animals.push_back(young);
             if (here && here->name == a.body) GameUI_Toast(TextFormat("A young %s was born", species[a.species].name.c_str()));
+            QuestBook_Count("bred");
             break;
         }
     }
