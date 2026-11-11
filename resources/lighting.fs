@@ -10,6 +10,7 @@ in vec3 fragLocalNormal;
 in vec3 fragChunkPos;   // chunk-local (overlap clipping)
 in float fragSky;       // 1 = open to the sky, 0 = buried (caves, deep pits)
 in vec2 fragCanopy;     // planets: forest canopy cover and latitude (painted in beyond the real trees)
+in float fragOreKind;   // planets: which ore, (1 + kind) / 8 (0 none)
 
 // Material maps: bound by DrawMesh to the units of the matching raylib material slots.
 uniform sampler2D colorTexture;    // MATERIAL_MAP_ALBEDO
@@ -171,7 +172,15 @@ void main()
             float wi = w8[i] / max(total, 0.001);
             if (wi < 0.01) continue;
             vec3 c = sampleLayer(tp, layerOf[i]);
-            if (i == 3) c = c * 0.5 + vec3(0.55, 0.3, 0.08) * (0.4 + dot(c, vec3(0.333))); // ore: rusty metal
+            if (i == 3) {
+                // Ore: flecks of the mineral's colour in the stone, by kind (iron rust, copper green,
+                // tin pale, coal black, bauxite red, ilmenite dark violet).
+                int kind = int(fragOreKind * 8.0 + 0.5) - 1;
+                vec3 mineral = kind == 1 ? vec3(0.10, 0.42, 0.30) : kind == 2 ? vec3(0.62, 0.62, 0.64) : kind == 3 ? vec3(0.03, 0.03, 0.035)
+                             : kind == 4 ? vec3(0.62, 0.22, 0.16) : kind == 5 ? vec3(0.13, 0.08, 0.16) : vec3(0.58, 0.27, 0.08);
+                float fleck = smoothstep(0.30, 0.55, dot(c, vec3(0.333)) + 0.15 * sin(dot(fragTexPos, vec3(7.1, 5.3, 6.7))));
+                c = mix(c * 0.55, mineral, 0.35 + 0.55 * fleck);
+            }
             a += c * wi;
             r += roughOf[i] * wi;
             bump += bumpOf[i] * wi;
@@ -190,7 +199,23 @@ void main()
             rough = mix(rough, 0.95, c);
         }
         rough = r;
-        normal = normalize(mix(normalize(mat3(matModel) * localNormal), normal, bump)); // smoother sand, snow, ice
+        // Bumps from each layer's own texture (its brightness as a height, through screen-space
+        // derivatives), not the asteroid's crater normal map, which showed through on sand, gravel
+        // and cave walls.
+        {
+            vec3 nGeom = normalize(mat3(matModel) * localNormal);
+            float hgt = dot(a, vec3(0.333)) * bump * 0.06;
+            vec3 dpdx = dFdx(fragPosition), dpdy = dFdy(fragPosition);
+            float dhdx = dFdx(hgt), dhdy = dFdy(hgt);
+            vec3 r1 = cross(dpdy, nGeom), r2 = cross(nGeom, dpdx);
+            float det = dot(dpdx, r1);
+            vec3 grad = sign(det) * (dhdx * r1 + dhdy * r2);
+            // Guard the derivatives: across triangle edges (and edge-on) they jump, which drew dark seams.
+            vec3 tilt = abs(det) > 1e-10 ? grad / abs(det) : vec3(0.0);
+            float tl = length(tilt);
+            if (tl > 0.35) tilt *= 0.35 / tl;
+            normal = normalize(nGeom - tilt);
+        }
         shinyMaterials = (w8[2] + w8[3] + 0.3 * w8[7]) / max(total, 0.001);
     } else {
         albedo = rock * w.r + regolith * w.g + ice * w.b + ore * w.a;

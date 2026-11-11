@@ -146,6 +146,7 @@ public:
     float minElevation, maxElevation; // the surface stays inside [radius + min, radius + max]
     bool foliage = false;         // grows trees (planets with life); the terrain paints distant canopy
     unsigned int foliageSeed = 0; // the tree system's seed (TreeCanopy matches its forests)
+    unsigned int oreSeed = 0;     // ore deposits (oreKind)
     SimplexNoise continents, ridges, hills, valleys, detail, cavesA, cavesB, veins, climate, caverns, ravines, ravineMask, streams;
     static constexpr float kTunnelLevel = 0.096f; // worm tunnel where both cave fields are within this of zero
     static constexpr float kCavernLevel = 0.68f;  // cavern where the cavern field exceeds this (rare)
@@ -163,6 +164,14 @@ public:
     // Whether inland water may lie within `extent` metres of a direction (cheap; meshing skips the
     // per-sample work elsewhere).
     bool inlandWaterNear(Vector3 dir, float extent, float footprint = 0.0f) const;
+    // Ore at a point `depth` m under the original surface: an index into kOreKinds, or -1.
+    //   Deposits: a 96 m grid; about a third of its cells hold one lumpy blob 7-18 m across of a single
+    //   kind (coal, iron, copper, tin; bauxite below 20 m, ilmenite below 60 m) - a find worth mining.
+    //   Scattered: small pockets of the common ores (iron, copper, tin) and coal everywhere, most near the surface.
+    static constexpr int kOreKindCount = 6;
+    static const char* OreKindName(int kind);   // "iron_ore", "copper_ore", "tin_ore", "coal", "bauxite_ore", "ilmenite_ore"
+    int oreKind(Vector3 p, float depth) const;
+    int depositNear(Vector3 p, float reach) const; // the kind of a deposit within `reach` m, or -1 (miners)
     // On a river or pond bed (or its wet shore): digging there also turns up clay.
     bool wetBed(Vector3 local) const;
     // A body-local direction to a good start spot: temperate latitude, flat grassland a little above

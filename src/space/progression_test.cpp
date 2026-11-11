@@ -17,6 +17,7 @@
 #include <raymath.h>
 #include <algorithm>
 #include <cstdio>
+#include <cstring>
 #include <functional>
 #include <map>
 #include <random>
@@ -101,9 +102,24 @@ namespace {
                     const float base = field->baseDensity(p);
                     if (base < ISO_LEVEL) continue;
                     if (field->material(p, base) != VoxelMaterial::Ore) continue;
-                    orePoints[OreKindAt(p, body->seed)].push_back(p);
+                    orePoints[OreKindOf(*body, p)].push_back(p);
                 }
             }
+        // Deposits of the rarer kinds are worth a trip: prospect further and deeper for any missing.
+        for (const char* rare : { "bauxite_ore", "ilmenite_ore", "coal" }) {
+            if (orePoints[rare].size() >= 40) continue;
+            for (float e = -800.0f; e <= 800.0f && orePoints[rare].size() < 400; e += 8.0f)
+                for (float n = -800.0f; n <= 800.0f && orePoints[rare].size() < 400; n += 8.0f) {
+                    const Vector3 d = Offset(e, n);
+                    const Vector3 s = Surface(d);
+                    for (float depth = 10.0f; depth <= 300.0f; depth += 4.0f) {
+                        const Vector3 p = Vector3Subtract(s, Vector3Scale(d, depth));
+                        const float base = field->baseDensity(p);
+                        if (base < ISO_LEVEL || field->material(p, base) != VoxelMaterial::Ore) continue;
+                        if (strcmp(OreKindOf(*body, p), rare) == 0) orePoints[rare].push_back(p);
+                    }
+                }
+        }
         for (auto& kv : orePoints) printf("bench: progression: %zu %s samples under the area\n", kv.second.size(), kv.first.c_str());
     }
     bool MineOre(const std::string& kind, int want) {

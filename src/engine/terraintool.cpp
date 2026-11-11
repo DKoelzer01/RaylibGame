@@ -129,7 +129,7 @@ bool TerrainTool_Stroke(bool dig) {
     const float r3 = terrainTool.brushRadius * terrainTool.brushRadius * terrainTool.brushRadius;
     if (digging) {
         // Yield scales with the volume the stroke removes (~strength * r^3).
-        const char* item = hit.material == VoxelMaterial::Ore ? OreKindAt(hit.local, hit.planetoid->seed) : ItemForMaterial(hit.material, HasSoil(*hit.planetoid));
+        const char* item = hit.material == VoxelMaterial::Ore ? OreKindOf(*hit.planetoid, hit.local) : ItemForMaterial(hit.material, HasSoil(*hit.planetoid));
         inventory.addFractional(item, terrainTool.digStrength * r3 * 0.15f);
         if (WetBed(p, hit.local, hit.material)) inventory.addFractional("clay", terrainTool.digStrength * r3 * 0.06f); // river and pond beds hold clay
         Audio_Play(Sfx::Dig, 0.5f, 0.85f + 0.3f * (float)GetRandomValue(0, 100) / 100.0f);
@@ -197,7 +197,7 @@ bool TerrainTool_DigAt(Planetoid& p, Vector3 local) {
     const float base = p.field->baseDensity(local);
     if (base < ISO_LEVEL) return false; // air
     const VoxelMaterial m = p.field->material(local, base);
-    const char* item = m == VoxelMaterial::Ore ? OreKindAt(local, p.seed) : ItemForMaterial(m, HasSoil(p));
+    const char* item = m == VoxelMaterial::Ore ? OreKindOf(p, local) : ItemForMaterial(m, HasSoil(p));
     inventory.add(item, 1);
     if (WetBed(p, local, m)) inventory.addFractional("clay", 0.4f); // beds hold clay
     ApplyTerrainEdit(p, TerrainEdit{ local, 1.2f, -0.6f });

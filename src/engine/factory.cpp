@@ -621,7 +621,10 @@ void Factory::Sync(Scene& world) {
                         std::string variant;
                         if (part.type == PartType::Miner) {
                             const Vector3 at = pl->toBody({ (part.origin.x + 1.0f) * kCellSize, (part.origin.y - 32.0f) * kCellSize, (part.origin.z + 1.0f) * kCellSize });
-                            variant = OreKindAt(at, body->seed);
+                            // The deposit within 40 m under it, or (without one) the scattered common ore there.
+                            const auto* pf = dynamic_cast<const PlanetField*>(body->field.get());
+                            const int dep = pf ? pf->depositNear(at, 40.0f) : -1;
+                            variant = dep >= 0 ? PlanetField::OreKindName(dep) : pf ? (OreKindOf(*body, at) ? OreKindOf(*body, at) : "iron_ore") : OreKindAt(at, body->seed);
                         }
                         L.machineVariant.push_back(variant);
                     } else if (part.type == PartType::Conveyor) L.conveyors.push_back(part.origin);

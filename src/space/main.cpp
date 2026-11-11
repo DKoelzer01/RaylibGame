@@ -1263,7 +1263,8 @@ int main(int argc, char** argv)
                         }
                         printf("bench: caves 30 m .. mantle: tunnels %.2f%% of the volume, caverns %.2f%%\n",
                                100.0f * inTunnel / std::max(1, probes), 100.0f * inCavern / std::max(1, probes));
-                        const bool oreOk = orePct[0] > 0.0f && orePct[0] < orePct[1] && orePct[1] < orePct[2];
+                        // Ore: found at every depth, most of it near the surface (deposits plus pockets of the common ores).
+                        const bool oreOk = orePct[2] > 0.3f && orePct[0] >= orePct[1] && orePct[1] >= orePct[2] * 0.8f;
                         printf("bench: ore by depth: 8-150 m %.1f%%, 150-500 m %.1f%%, 500 m-mantle %.1f%%; caves %.1f%% of underground: %s\n",
                                orePct[0], orePct[1], orePct[2], cavePct, oreOk && cavePct > 0.0f ? "ok" : "BAD");
                         printf("bench: planet terrain %s\n", outside == 0 && mantleOk && oreOk && cavePct > 0.0f ? "PASS" : "FAIL");

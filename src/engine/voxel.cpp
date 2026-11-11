@@ -158,6 +158,7 @@ static float Smoothstep(float a, float b, float x) {
 
 PlanetField::PlanetField(unsigned int seed, float radius_, bool moon_)
     : radius(radius_), mantleRadius(radius_ * (1.0f - 0.015f)), moon(moon_) {
+    oreSeed = seed ^ 0x0e5e0e5u;
     std::mt19937 rng(seed);
     // Large features scale with the body (a moon gets proportionally sized basins and ridges);
     // hills, detail, caves and veins are absolute sizes, so they feel the same everywhere.
@@ -567,11 +568,8 @@ VoxelMaterial PlanetField::materialSky(Vector3 p, float base, float fp, Vector3 
         if (natural && slope < 0.3f) return VoxelMaterial::Grass;
         return skin ? VoxelMaterial::Grass : VoxelMaterial::Regolith;                                        // grassland over dirt
     }
-    // Ore veins (thin sheets where the vein field crosses zero), richer with depth.
-    if (depth > 8.0f) {
-        const float thickness = depth < 150.0f ? 0.025f : depth < 500.0f ? 0.04f : 0.055f;
-        if (fabsf(veins.fractal(2, p.x, p.y, p.z)) < thickness) return VoxelMaterial::Ore;
-    }
+    // Ore: deposits of one kind, and scattered pockets of the common ores (oreKind).
+    if (depth > 3.0f && oreKind(p, depth) >= 0) return VoxelMaterial::Ore;
     return VoxelMaterial::Rock;
 }
 
@@ -693,6 +691,14 @@ void BuildChunkMesh(const DensityField& field, const TerrainDeltas& deltas, Chun
                 float sky = 1.0f;
                 const VoxelMaterial m = field.materialSky(p, b, stride, n, sky);
                 out.tangents[v * 4 + 3] = sky;
+                if (m == VoxelMaterial::Ore) {
+                    // Which ore (the shader colours each kind): 1 + kind, over 8.
+                    if (const auto* pfo = dynamic_cast<const PlanetField*>(&field)) {
+                        const float dl = Vector3Length(p);
+                        const int k = dl > 1.0f ? pfo->oreKind(p, pfo->radius + pfo->elevation(Vector3Scale(p, 1.0f / dl), (float)stride) - dl) : -1;
+                        out.tangents[v * 4 + 2] = (k + 1) / 8.0f;
+                    }
+                }
                 if (planetLife && sky > 0.9f && (m == VoxelMaterial::Grass || m == VoxelMaterial::Regolith)) {
                     // Distant forests: canopy cover (x) and latitude (y) for the terrain shader, which
                     // paints them in where the real trees fade out.
@@ -807,4 +813,74 @@ void BuildChunkMesh(const DensityField& field, const TerrainDeltas& deltas, Chun
     }
     ScatterGrass(field, out); // foliage: grass tufts on the finest level (in the build time)
     out.buildMs = std::chrono::duration<float, std::milli>(std::chrono::steady_clock::now() - t0).count();
+}
+
+// ---------------------------------------------------------------------------------------------
+// Ore: deposits and scattered pockets
+// ---------------------------------------------------------------------------------------------
+
+namespace {
+    constexpr float kDepositCell = 96.0f;
+    uint32_t OreHash(int x, int y, int z, uint32_t seed) {
+        uint32_t h = (uint32_t)x * 73856093u ^ (uint32_t)y * 19349663u ^ (uint32_t)z * 83492791u ^ seed * 2654435761u;
+        h ^= h >> 16; h *= 0x7feb352du; h ^= h >> 15; h *= 0x846ca68bu; h ^= h >> 16;
+        return h;
+    }
+    float OreUnit(uint32_t& h) { h = h * 1664525u + 1013904223u; return (h >> 8) * (1.0f / 16777216.0f); }
+    struct Deposit { bool exists; Vector3 centre; float radius; int kind; };
+    Deposit DepositOf(int cx, int cy, int cz, uint32_t seed) {
+        uint32_t h = OreHash(cx, cy, cz, seed);
+        Deposit d{ false, {}, 0, -1 };
+        if (OreUnit(h) > 0.35f) return d;
+        d.exists = true;
+        d.centre = { (cx + 0.25f + 0.5f * OreUnit(h)) * kDepositCell, (cy + 0.25f + 0.5f * OreUnit(h)) * kDepositCell, (cz + 0.25f + 0.5f * OreUnit(h)) * kDepositCell };
+        d.radius = 3.5f + 5.5f * OreUnit(h); // 7-18 m across
+        const float r = OreUnit(h);          // coal 22%, iron 22%, copper 20%, tin 12%, bauxite 14%, ilmenite 10%
+        d.kind = r < 0.22f ? 3 : r < 0.44f ? 0 : r < 0.64f ? 1 : r < 0.76f ? 2 : r < 0.90f ? 4 : 5;
+        return d;
+    }
+    float MinDepth(int kind) { return kind == 4 ? 20.0f : kind == 5 ? 60.0f : 4.0f; }
+}
+
+const char* PlanetField::OreKindName(int kind) {
+    static const char* names[kOreKindCount] = { "iron_ore", "copper_ore", "tin_ore", "coal", "bauxite_ore", "ilmenite_ore" };
+    return kind >= 0 && kind < kOreKindCount ? names[kind] : nullptr;
+}
+
+int PlanetField::oreKind(Vector3 p, float depth) const {
+    if (moon || depth < 3.0f) return -1;
+    // A deposit (its blob stays inside its own cell: centre at least 24 m from the edges, radius <= 9 m
+    // plus the lumpiness).
+    const int cx = (int)floorf(p.x / kDepositCell), cy = (int)floorf(p.y / kDepositCell), cz = (int)floorf(p.z / kDepositCell);
+    const Deposit d = DepositOf(cx, cy, cz, oreSeed);
+    if (d.exists && depth >= MinDepth(d.kind)) {
+        const float k = Vector3Distance(p, d.centre) / d.radius + 0.35f * veins.fractal(2, p.x * 3.0f, p.y * 3.0f, p.z * 3.0f);
+        if (k < 1.0f) return d.kind;
+    }
+    // Scattered pockets of the common ores and coal, more of them near the surface.
+    const float pocket = veins.fractal(1, p.x * 4.0f, p.y * 4.0f, p.z * 4.0f);
+    const float threshold = 0.72f + 0.12f * std::clamp((depth - 20.0f) / 200.0f, 0.0f, 1.0f);
+    if (pocket > threshold) {
+        uint32_t h = OreHash((int)floorf(p.x / 8.0f), (int)floorf(p.y / 8.0f), (int)floorf(p.z / 8.0f), oreSeed ^ 0x5eedu);
+        const float r = OreUnit(h);
+        return r < 0.35f ? 0 : r < 0.60f ? 1 : r < 0.75f ? 2 : 3; // iron, copper, tin, and coal (the seams near the surface)
+    }
+    return -1;
+}
+
+int PlanetField::depositNear(Vector3 p, float reach) const {
+    const int x0 = (int)floorf((p.x - reach) / kDepositCell), x1 = (int)floorf((p.x + reach) / kDepositCell);
+    const int y0 = (int)floorf((p.y - reach) / kDepositCell), y1 = (int)floorf((p.y + reach) / kDepositCell);
+    const int z0 = (int)floorf((p.z - reach) / kDepositCell), z1 = (int)floorf((p.z + reach) / kDepositCell);
+    int best = -1;
+    float bestD = 1e30f;
+    for (int z = z0; z <= z1; ++z)
+        for (int y = y0; y <= y1; ++y)
+            for (int x = x0; x <= x1; ++x) {
+                const Deposit d = DepositOf(x, y, z, oreSeed);
+                if (!d.exists) continue;
+                const float dist = Vector3Distance(p, d.centre) - d.radius;
+                if (dist < reach && dist < bestD) { bestD = dist; best = d.kind; }
+            }
+    return best;
 }

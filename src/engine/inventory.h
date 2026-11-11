@@ -42,6 +42,9 @@ const char* ItemForMaterial(VoxelMaterial m, bool soil = false);
 bool HasSoil(const class Planetoid& p);
 // Which ore a vein holds at a body-local point (deposits ~48 m across), from the body's seed.
 const char* OreKindAt(Vector3 local, unsigned int seed);
+// The ore at a body-local point: planets from their deposits and pockets (PlanetField::oreKind),
+// other bodies by the old 48 m deposit hash (OreKindAt).
+const char* OreKindOf(const class Planetoid& body, Vector3 local);
 
 class Inventory {
 public:

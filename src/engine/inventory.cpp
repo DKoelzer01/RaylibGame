@@ -187,3 +187,16 @@ bool HasSoil(const Planetoid& p) {
     const auto* f = dynamic_cast<const PlanetField*>(p.field.get());
     return f && !f->moon;
 }
+
+const char* OreKindOf(const Planetoid& body, Vector3 local) {
+    if (const auto* pf = dynamic_cast<const PlanetField*>(body.field.get())) {
+        const float d = Vector3Length(local);
+        if (d > 1.0f) {
+            const float depth = pf->radius + pf->elevation(Vector3Scale(local, 1.0f / d)) - d;
+            const int k = pf->oreKind(local, depth);
+            if (k >= 0) return PlanetField::OreKindName(k);
+        }
+        return "iron_ore"; // (ore material where oreKind finds none: only at a different detail level)
+    }
+    return OreKindAt(local, body.seed);
+}

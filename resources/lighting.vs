@@ -26,6 +26,7 @@ out vec3 fragLocalNormal;  // moving/spinning body and don't swim when the float
 out vec3 fragChunkPos;     // chunk-local position (overlap clipping)
 out float fragSky;         // 1 = open to the sky, 0 = buried (scales sunlight)
 out vec2 fragCanopy;       // planets: distant forest canopy cover (x) and latitude (y)
+out float fragOreKind;     // planets: which ore (1 + kind) / 8, 0 none
 
 void main()
 {
@@ -42,6 +43,7 @@ void main()
     fragChunkPos = vertexPosition;
     fragSky = vertexTangent.w;
     fragCanopy = vertexTangent.xy;
+    fragOreKind = vertexTangent.z;
     fragLocalNormal = vertexNormal;
     gl_Position = mvp * vec4(vertexPosition, 1.0);
 }
