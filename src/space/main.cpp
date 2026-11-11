@@ -39,6 +39,7 @@
 #include "toolwear.h"
 #include "recipebook.h"
 #include "station.h"
+#include "weather.h"
 #include "storage.h"
 #include "tools.h"
 #include "rivers.h"
@@ -184,6 +185,7 @@ int main(int argc, char** argv)
     bool benchSuit = false, suitOk = true; int suitPhase = 0; double suitStart = 0.0; float suitFoodRatio = 0.0f, suitWater = 0.0f, suitRebreather = 0.0f; // --test-suit
     int benchShotTabs = 0; // --shot-tabs
     bool benchRecipes = false; // --test-recipes
+    bool benchWeather = false, weatherOk = true; int weatherPhase = 0, weatherCounts[6] = {}, weatherChanges = 0; double weatherStart = 0.0; float weatherChill = 0.0f; // --test-weather
     bool benchDecor = false, decorOk = true; int decorPhase = 0, decorGems = 0, decorGemKinds = 0, decorDigs = 0, decorPlaced = 0; double decorStart = 0.0; Vector3 decorCamPos{}, decorCamTarget{}, decorCamUp{ 0, 1, 0 }; // --test-decor
     bool benchMaterials = false, matOk = true; int matPhase = 0, matPlaced = 0; double matStart = 0.0; std::string matKinds; Vector3 matCamPos{}, matCamTarget{}, matCamUp{ 0, 1, 0 }; // --test-materials
     bool benchDamage = false, damageOk = true; int damagePhase = 0; double damageStart = 0.0; float damageThrust = 0.0f, damageRepaired = 0.0f, damageVacuum = 0.0f; // --test-damage
@@ -327,6 +329,7 @@ int main(int argc, char** argv)
         if (std::string(argv[i]) == "--test-threats") benchThreats = true;
         if (std::string(argv[i]) == "--shot-tabs") benchShotTabs = 1;
         if (std::string(argv[i]) == "--test-recipes") benchRecipes = true;
+        if (std::string(argv[i]) == "--test-weather") benchWeather = true;
         if (std::string(argv[i]) == "--test-decor") benchDecor = true;
         if (std::string(argv[i]) == "--test-materials") benchMaterials = true;
         if (std::string(argv[i]) == "--test-damage") benchDamage = true;
@@ -473,7 +476,7 @@ int main(int argc, char** argv)
     bool spawnLoad = false;        // raised by a spawn or teleport (not entering the game): no minimum time
     int loadFrames = 0;
     int seenSpawns = 0;
-    world.onDraw3D = [&world] { Farm_Draw3D(world); Animals_Draw3D(world); if (!ship.piloted && !buildTool.active && !Rocket_Boarded()) TerrainTool_Draw3D(); BuildTool_Draw3D(world); };
+    world.onDraw3D = [&world] { Farm_Draw3D(world); Animals_Draw3D(world); Weather_Draw3D(world); if (!ship.piloted && !buildTool.active && !Rocket_Boarded()) TerrainTool_Draw3D(); BuildTool_Draw3D(world); };
     terrainTool.till = [&world](Planetoid& body, Vector3 ground) { return Farm_Till(world, body, ground); }; // a shovel's RMB
 
     const double benchWarmup = 2.0;
@@ -1694,6 +1697,62 @@ int main(int argc, char** argv)
                                    decorGems, decorGemKinds, decorDigs, decorPlaced, decorOk ? "PASS" : "FAIL");
                             benchDecor = false;
                         }
+                    }
+                } else if (benchWeather && (weatherPhase > 0 || WorldIdle())) {
+                    // --test-weather (plan 3, M23): the forecast over the planet gives every kind of weather (snow
+                    // toward the poles), is the same for the same place and time, and moves on over a day; rain
+                    // greys the sky and chills the air; screenshots of rain, snow, a storm and fog.
+                    Planetoid* p = dynamic_cast<Planetoid*>(world.objects[0].get());
+                    auto check = [&](bool c, const char* what) { if (!c) { printf("bench: weather: FAILED %s\n", what); weatherOk = false; } };
+                    if (weatherPhase == 0) {
+                        player.spawnOn(world, *p, StartSpawnDir(*p));
+                        weatherPhase = 1; weatherStart = GetTime(); weatherOk = true;
+                    } else if (weatherPhase == 1 && GetTime() - weatherStart > 1.5 && player.grounded) {
+                        int count[6] = {}, polarSnow = 0, polar = 0;
+                        const double t0 = WorldTime();
+                        for (int i = 0; i < 3000; ++i) {
+                            const float z = 1.0f - 2.0f * (i + 0.5f) / 3000.0f, r = sqrtf(1.0f - z * z), a = i * 2.39996f;
+                            const Vector3 d = { r * cosf(a), z, r * sinf(a) };
+                            const WeatherState w = Weather_At(world, d, t0 + (i % 7) * 3600.0);
+                            ++count[(int)w.kind];
+                            if (fabsf(z) > 0.8f) { ++polar; polarSnow += w.kind == WeatherKind::Snow ? 1 : 0; }
+                        }
+                        for (int k = 0; k < 6; ++k) weatherCounts[k] = count[k];
+                        check(count[0] > 0 && count[1] > 0 && count[2] > 0, "clear, overcast and rain all occur");
+                        check(count[4] > 0 && polarSnow > 0, "snow (toward the poles)");
+                        check(count[3] > 0, "storms occur");
+                        check(count[5] > 0, "fog occurs");
+                        const Vector3 me = Vector3Normalize(p->toLocal((player.position - world.renderOrigin).toFloat()));
+                        const WeatherState a1 = Weather_At(world, me, t0), a2 = Weather_At(world, me, t0);
+                        check(a1.cloud == a2.cloud && a1.kind == a2.kind, "the same place and time, the same weather");
+                        std::set<int> overDay;
+                        for (int h = 0; h < 24; ++h) overDay.insert((int)Weather_At(world, me, t0 + h * 600.0).kind);
+                        weatherChanges = (int)overDay.size();
+                        check(weatherChanges >= 2, "the weather moves on over a day");
+                        // Forced rain: the sky greys and the air chills.
+                        Weather_Force((int)WeatherKind::Clear); Weather_Update(world, 1.0f); Survival_Update(world, 0.01f, false);
+                        const float tClear = survival.temperature;
+                        Weather_Force((int)WeatherKind::Rain); Weather_Update(world, 1.0f); Survival_Update(world, 0.01f, false);
+                        const float tRain = survival.temperature;
+                        check(world.weatherCloud > 0.6f && tRain < tClear - 2.0f, "rain greys the sky and chills the air");
+                        weatherChill = tClear - tRain;
+                        sunOverride = true; sunArg = p->dirToWorld(Vector3Normalize(Vector3Add(me, { 0.0f, 0.15f, 0.0f }))); // mid-morning for the pictures
+                        weatherPhase = 2; weatherStart = GetTime();
+                    } else if (weatherPhase >= 2 && weatherPhase <= 5) {
+                        // A look up the slope in each weather (the screenshot after 2 s of each).
+                        const WeatherKind shots[4] = { WeatherKind::Rain, WeatherKind::Snow, WeatherKind::Storm, WeatherKind::Fog };
+                        const char* names[4] = { "bench_weather_rain.png", "bench_weather_snow.png", "bench_weather_storm.png", "bench_weather_fog.png" };
+                        const int k = weatherPhase - 2;
+                        Weather_Force((int)shots[k]);
+                        if (GetTime() - weatherStart > 2.0) {
+                            TakeScreenshot(names[k]);
+                            ++weatherPhase; weatherStart = GetTime();
+                        }
+                    } else if (weatherPhase == 6) {
+                        Weather_Force(-1);
+                        printf("bench: weather: over 3000 places clear %d, overcast %d, rain %d, storm %d, snow %d, fog %d; %d kinds at the start over a day; rain %.1f C colder -> %s\n",
+                               weatherCounts[0], weatherCounts[1], weatherCounts[2], weatherCounts[3], weatherCounts[4], weatherCounts[5], weatherChanges, weatherChill, weatherOk ? "PASS" : "FAIL");
+                        benchWeather = false;
                     }
                 } else if (benchRecipes) {
                     // --test-recipes: every item can be had from what the world gives (digging, chopping,
@@ -3007,7 +3066,7 @@ int main(int argc, char** argv)
                         }
                         benchWalkSeconds = 0.0;
                     }
-                } else if ((WorldIdle() && benchDigStrokes == 0 && !benchSaveLoad && benchWalkSeconds <= 0.0 && benchMineStrokes == 0 && minePhase != 2 && benchFlySeconds <= 0.0 && !benchSuffocate && benchOrbitSeconds <= 0.0 && !benchRide && !benchPark && !benchGravity && !benchPrecision && !benchMantle && !benchAirJump && !benchMoon && !benchHole && !benchWall && !benchMenus && !benchWater && !benchFlyFollow && !benchHotbar && !benchInventory && !benchMap && !benchViewmodel && !benchQuests && !benchHunger && !benchFarm && !benchAnimals && !benchThreats && benchShotTabs == 0 && !benchRecipes && !benchDecor && !benchMaterials && !benchDamage && !benchCrafting && !benchSuit && !benchTools && !benchRivers && !benchRing && !benchRocket && !benchStation && !benchBlueprint && !benchSmallBody && !benchTrees && !benchChop && benchPersist == 0 && benchBuild == 0 && benchFactory == 0 && !benchProgression) || GetTime() > 600.0) {
+                } else if ((WorldIdle() && benchDigStrokes == 0 && !benchSaveLoad && benchWalkSeconds <= 0.0 && benchMineStrokes == 0 && minePhase != 2 && benchFlySeconds <= 0.0 && !benchSuffocate && benchOrbitSeconds <= 0.0 && !benchRide && !benchPark && !benchGravity && !benchPrecision && !benchMantle && !benchAirJump && !benchMoon && !benchHole && !benchWall && !benchMenus && !benchWater && !benchFlyFollow && !benchHotbar && !benchInventory && !benchMap && !benchViewmodel && !benchQuests && !benchHunger && !benchFarm && !benchAnimals && !benchThreats && benchShotTabs == 0 && !benchRecipes && !benchWeather && !benchDecor && !benchMaterials && !benchDamage && !benchCrafting && !benchSuit && !benchTools && !benchRivers && !benchRing && !benchRocket && !benchStation && !benchBlueprint && !benchSmallBody && !benchTrees && !benchChop && benchPersist == 0 && benchBuild == 0 && benchFactory == 0 && !benchProgression) || GetTime() > 600.0) {
                     benchStart = GetTime();
                     printf("bench: world ready after %.2f s (%d chunks, avg build %.2f ms of which sampling %.2f ms, %d worker threads)\n",
                         GetWorldStats().lastGenerationSeconds, GetWorldStats().chunks, GetWorldStats().avgBuildMs, GetWorldStats().avgSampleMs, GetWorldStats().workerThreads);
@@ -3140,6 +3199,7 @@ int main(int argc, char** argv)
             if (!loading) Viewmodel_Update(world, frameDt);
             if (!loading) Farm_Update(world, frameDt * timeScale * Rocket_Warp()); // crops grow on world time
             if (!loading) Animals_Update(world, frameDt, frameDt * timeScale * Rocket_Warp(), gameInput && alive && !ship.piloted);
+            if (!loading) Weather_Update(world, frameDt * timeScale); // the sky, rain and snow, lightning
             // Autosave every 5 minutes of play (incremental: only regions changed since the last save).
             static double lastAutosave = GetTime();
             if (!bench && alive && GetTime() - lastAutosave > 300.0) {
@@ -3348,6 +3408,7 @@ int main(int argc, char** argv)
                 Machine_DrawHUD();
                 if (!ship.piloted && !buildTool.active) Animals_DrawHUD();
                 Suit_DrawHUD();
+                Weather_DrawHUD();
                 if (!ship.piloted && !telescope.active && !buildTool.active && !Rocket_Boarded()) TerrainTool_DrawHUD();
                 GameUI_DrawHUD(world);
                 Survival_DrawHUD();

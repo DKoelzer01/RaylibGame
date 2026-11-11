@@ -301,6 +301,8 @@ void Scene::drawScene(int gamestate) {
     if (!lights.empty()) {
         lights[0].position = lightPos;
         lights[0].target = centre;
+        const unsigned char k = (unsigned char)(255.0f * (1.0f - 0.7f * std::clamp(weatherCloud, 0.0f, 1.0f))); // cloud cover dims the sun
+        lights[0].color = { k, k, (unsigned char)std::min(255, k + 6), 255 };
     }
 
     Camera3D lightCam = { 0 };
@@ -373,6 +375,12 @@ void Scene::drawScene(int gamestate) {
         effFog = Vector3Add(effFog, Vector3Scale(skyHorizon, atmDensity));
         effFogDensity += atmDensity / 35000.0f;                    // ~35 km to fade a third of the way
         effAmbient = Vector3Add(effAmbient, Vector3Scale(skyHorizon, 0.06f * atmDensity));
+        // Weather: cloud cover greys the haze and lifts the (diffuse) ambient a little; ground fog
+        // thickens the haze near the ground.
+        const Vector3 grey = Vector3Scale({ 0.30f, 0.32f, 0.35f }, day);
+        effFog = Vector3Lerp(effFog, Vector3Scale(grey, atmDensity), weatherCloud * 0.6f);
+        effFogDensity += atmDensity * (weatherCloud * weatherCloud / 9000.0f + weatherFog / 60.0f);
+        effAmbient = Vector3Add(effAmbient, Vector3Scale(grey, 0.05f * weatherCloud * atmDensity));
         if (alt < 0.0f && IsUnderwater(*this, camera.position)) { effFog = { 0.004f, 0.02f, 0.035f }; effFogDensity = 0.06f; } // in the sea (not a dry cave below sea level)
     }
     SetShaderValue(s, locFogColor, &effFog, SHADER_UNIFORM_VEC3);
@@ -404,6 +412,8 @@ void Scene::drawScene(int gamestate) {
             SetShaderValue(as, GetShaderLocation(as, "sunDir"), &sun, SHADER_UNIFORM_VEC3);
             SetShaderValue(as, GetShaderLocation(as, "upDir"), &atmUp, SHADER_UNIFORM_VEC3);
             SetShaderValue(as, GetShaderLocation(as, "density"), &atmDensity, SHADER_UNIFORM_FLOAT);
+            const float overcast = std::clamp(weatherCloud, 0.0f, 1.0f) * std::min(1.0f, atmDensity * 3.0f);
+            SetShaderValue(as, GetShaderLocation(as, "overcast"), &overcast, SHADER_UNIFORM_FLOAT);
             atmosphereDome.materials[0].shader = as;
             DrawModel(atmosphereDome, (Vector3){ 0, 0, 0 }, 1.0f, WHITE);
         }

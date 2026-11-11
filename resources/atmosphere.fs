@@ -6,7 +6,8 @@ in vec3 fragPosition;          // view direction (cube vertex, from skybox.vs)
 
 uniform vec3 sunDir;           // towards the sun
 uniform vec3 upDir;            // away from the planet centre, at the camera
-uniform float density;         // 1 at sea level .. 0 above the atmosphere
+uniform float density;
+uniform float overcast;        // weather: 0 clear .. 1 a thick grey sky (no sun disc)
 
 out vec4 finalColor;
 
@@ -22,11 +23,12 @@ void main()
     float sunset = clamp(1.0 - abs(s) * 4.0, 0.0, 1.0); // sun near the horizon
     sky = mix(sky, vec3(1.0, 0.45, 0.15), sunset * pow(max(mu, 0.0), 3.0) * (0.4 + 0.6 * horizon));
     sky *= day;
-    sky += vec3(1.0, 0.9, 0.7) * pow(max(mu, 0.0), 300.0) * day * density; // glare around the sun
+    sky = mix(sky, vec3(0.52, 0.55, 0.60) * day, overcast * 0.85);       // cloud cover greys the sky
+    sky += vec3(1.0, 0.9, 0.7) * pow(max(mu, 0.0), 300.0) * day * density * (1.0 - overcast); // glare around the sun
     float alpha = density * (0.06 + 0.94 * day);                         // night: the stars show through
 
     // The sun disc (also in space, where the atmosphere is gone).
-    float disc = smoothstep(0.99985, 0.99995, mu);
+    float disc = smoothstep(0.99985, 0.99995, mu) * (1.0 - smoothstep(0.4, 0.8, overcast));
     vec3 col = mix(sky, vec3(1.0, 0.97, 0.9), disc);
     alpha = max(alpha, disc);
     finalColor = vec4(col, alpha); // already display (sRGB-ish) colours, like the skybox

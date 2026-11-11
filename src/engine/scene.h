@@ -94,6 +94,8 @@ class Scene {
         bool drawSkybox = true;          // false: the game clears to a sky colour instead
         Vector3 fogColor = { 0, 0, 0 };  // linear-space fog colour (fantasy: sky haze)
         float fogDensity = 0.0f;         // 0 = no fog
+        float weatherCloud = 0.0f;       // weather (set by the game each frame): cloud cover 0..1 greys the sky, dims the sun
+        float weatherFog = 0.0f;         // ground fog 0..1 (thick at 1: ~60 m visibility)
         std::function<void()> onDraw3D;  // extra world-space drawing at the end of the main pass
         // Extra geometry in the depth passes (rings, ring.h): range and draw in the far pass, draw in
         // the mid and near passes (rebuild = the first of the frame).

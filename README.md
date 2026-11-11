@@ -134,6 +134,11 @@ Shaders in `resources/` hot-reload when saved.
   sapphire in basalt, emerald in limestone). Dyes in eight colours come from berries, roots, grain, fibre, flax seeds,
   charcoal and limestone (orange and purple also mixed). Building materials: lime plaster painted in eight colours,
   stained glass in four, lamps (quartz, glass, a power cell; drawn bright, no light cast yet) and polished gem blocks.
+- **Weather** (plan 3, M23; `src/space/weather.*`): on the planet the weather follows a cloud field that drifts with a
+  slowly turning wind, so the same place and time always has the same weather (nothing saved). Thick cloud rains,
+  snows below 1 C, and in warm air becomes a storm with lightning and thunder; around dawn calm humid low ground lies
+  in fog. It greys the sky, dims the sun, thickens the haze and draws rain or snow around you. Rain makes crops near
+  you grow half again as fast, storms send animals to shelter, rain and snow chill the air, and the HUD names it.
 - **Stations and docking** (plan 3, M20; `src/space/station.*`): a station core built onto a rocket is deployed in a
   stable orbit with K: it becomes its own body on an exact two-body (Kepler) orbit from the state it had, holding up to
   1500 kg of fuel. Near a station (within 40 m, under 2 m/s) K docks: the rocket's plot joins the station's body,

@@ -5,6 +5,8 @@
 #include "inventory.h"
 #include "plots.h"
 #include "survival.h"
+#include "weather.h"
+#include "player.h"
 #include "voxel.h"
 #include "world.h"
 #include "worldtypes.h"
@@ -92,7 +94,11 @@ void Farm_Update(Scene& world, float dt) {
                 else if (pf->inlandWaterNear(up, 4.0f) && pf->waterElevation(up) != PlanetField::kNoWater) g.rate = 2.0f;
             }
         }
-        const float rate = g.rate;
+        // Rain on the field speeds it by half again (the weather where the player is: fields
+        // more than 3 km away grow at their own rate).
+        const bool rainy = (Weather_Here().kind == WeatherKind::Rain || Weather_Here().kind == WeatherKind::Storm) && body == player.nearest &&
+                           Vector3Distance(top, body->toLocal((player.position - world.renderOrigin).toFloat())) < 3000.0f;
+        const float rate = g.rate * (rainy ? 1.5f : 1.0f);
         g.growth = std::min(1.0f, g.growth + dt * rate / c->growSeconds);
         ++it;
     }
