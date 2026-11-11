@@ -15,7 +15,7 @@ namespace {
     constexpr float kRiverArea = 40.0f;   // cells draining here before a river starts (~7 km^2)
     constexpr float kDrop = 0.8f;         // water below the smooth land at a river node
     constexpr float kMinLevel = 0.3f;     // at the sea
-    constexpr float kLakeDepth = 4.0f;    // a filled depression this deep is a lake
+    constexpr float kLakeDepth = 6.0f;    // a filled depression this deep is a lake
 
     uint32_t Hash(uint32_t x, uint32_t seed) {
         uint32_t h = x * 2654435761u ^ seed * 0x9e3779b9u;
@@ -122,6 +122,14 @@ RiverNetwork::RiverNetwork(float radius, unsigned int seed, const std::function<
         ++st.landCells;
         if (acc[c] >= kRiverArea) { river[c] = 1; ++st.riverCells; }
         if (F[c] - h[c] > kLakeDepth && F[c] > 1.0f) { lake[c] = 1; ++st.lakeCells; }
+    }
+    // Lake rims: the land cells next to a lake (the lake that stands highest there), for the bank.
+    rimOf.assign(N, -1);
+    for (int c = 0; c < N; ++c) {
+        if (lake[c] || h[c] < 0.0f) continue;
+        neighbours(c, nb);
+        for (int k = 0; k < 8; ++k)
+            if (nb[k] >= 0 && lake[nb[k]] && (rimOf[c] < 0 || F[nb[k]] > F[rimOf[c]])) rimOf[c] = nb[k];
     }
     // Levels: a running minimum downstream (children before parents in reverse flood order).
     L.assign(N, 0.0f); hw.assign(N, 0.0f); dep.assign(N, 0.0f);
@@ -264,4 +272,14 @@ void RiverNetwork::longestPath(float step, std::vector<Vector3>& dirs, std::vect
             }
         }
     }
+}
+
+bool RiverNetwork::lakeRim(Vector3 dir, float& level, float& dist) const {
+    const int c = cellOf(dir);
+    const int l = rimOf[c];
+    if (l < 0) return false;
+    level = F[l];
+    // Roughly from the lake cell's edge (cells are ~square): the centre distance less half a cell.
+    dist = std::max(0.0f, Vector3Distance(Vector3Scale(dir, R), Vector3Scale(centre(l), R)) - 0.5f * cell);
+    return true;
 }

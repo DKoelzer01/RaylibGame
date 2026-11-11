@@ -186,17 +186,22 @@ void Farm_Draw3D(Scene& world) {
         const Vector3 e = body->dirToWorld(plot->east), u = body->dirToWorld(plot->up), n = body->dirToWorld(plot->north);
         const float g = kv.second.growth;
         const int stage = std::min(3, (int)(g * 4.0f));
-        const float h = 0.12f + 0.22f * stage;
-        const Color col = g >= 1.0f ? c->color : ColorLerp({ 70, 150, 50, 255 }, c->color, g * 0.6f);
+        // Four stages: sprouts, leafy, tall, ripe (heads in the crop's colour on top).
+        static const float kH[4] = { 0.08f, 0.25f, 0.5f, 0.7f };
+        const bool ripe = g >= 1.0f;
+        const float h = kH[ripe ? 3 : std::min(stage, 2)];
+        const Color col = ColorLerp({ 70, 150, 50, 255 }, { 110, 150, 60, 255 }, g);
         // Right-handed (east, up, south): the plot frame (east, up, north) is mirrored, which would
         // turn the cubes inside out under backface culling.
         Matrix m = { e.x, u.x, -n.x, top.x, e.y, u.y, -n.y, top.y, e.z, u.z, -n.z, top.z, 0, 0, 0, 1 };
         rlPushMatrix();
         rlMultMatrixf(MatrixToFloat(m));
-        for (int k = 0; k < 4; ++k) {
-            const float x = (k & 1) ? 0.25f : -0.25f, z = (k & 2) ? 0.25f : -0.25f;
-            DrawCube({ x, h * 0.5f, z }, 0.16f + 0.04f * stage, h, 0.16f + 0.04f * stage, col);
-            DrawCubeWires({ x, h * 0.5f, z }, 0.16f + 0.04f * stage, h, 0.16f + 0.04f * stage, Fade(BLACK, 0.25f));
+        const float w = ripe ? 0.07f : 0.05f + 0.025f * std::min(stage, 2);
+        for (int k = 0; k < 9; ++k) {
+            const float x = (k % 3 - 1) * 0.3f + ((k * 37) % 7 - 3) * 0.012f, z = (k / 3 - 1) * 0.3f + ((k * 53) % 7 - 3) * 0.012f;
+            const float hk = h * (0.85f + 0.05f * (k % 4));
+            DrawCube({ x, hk * 0.5f, z }, w, hk, w, col);
+            if (ripe) DrawCube({ x, hk + 0.06f, z }, w * 1.8f, 0.12f, w * 1.8f, c->color); // the head
         }
         rlPopMatrix();
     }

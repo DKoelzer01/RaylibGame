@@ -2,6 +2,7 @@
 #include "audio.h"
 #include "buildtool.h"
 #include "gameui.h"
+#include "hotbar.h"
 #include "inventory.h"
 #include "player.h"
 #include "plots.h"
@@ -249,6 +250,9 @@ int Animals_Count() { return (int)animals.size(); }
 Vector3 Animals_Position(int i) { return i >= 0 && i < (int)animals.size() ? animals[i].pos : Vector3{ 0, 0, 0 }; }
 double Animals_LastUpdateMs() { return lastUpdateMs; }
 int Animals_PennedCount() { return pennedNow; }
+bool Animals_IsFeed(const std::string& id) { LoadSpecies(); for (const Species& s : species) for (const std::string& d : s.diet) if (d == id) return true; return false; }
+const std::string& Animals_Body(int i) { static const std::string none; return i >= 0 && i < (int)animals.size() ? animals[i].body : none; }
+bool Animals_Wild(int i) { return i >= 0 && i < (int)animals.size() && species[animals[i].species].wild; }
 bool Animals_Aiming() { return aimed >= 0; }
 int Animals_YoungCount() { int n = 0; for (const Animal& a : animals) n += a.age < 1.0f ? 1 : 0; return n; }
 
@@ -338,6 +342,7 @@ void Animals_Update(Scene& world, float dt, float worldDt, bool inputEnabled) {
         if (d > 1.0f && d - pf->radius < 400.0f) SpawnHerds(world, *here, *pf, Vector3Scale(playerLocal, 1.0f / d));
     }
     const double now = WorldTime();
+    const std::string held = Hotbar_HeldFood(); // its food in the player's hand: animals follow
     const Vector3 sun = Vector3Normalize(world.sunDirection);
     std::unordered_map<std::string, Planetoid*> bodies;
     for (size_t i = 0; i < animals.size(); ++i) {
@@ -370,7 +375,8 @@ void Animals_Update(Scene& world, float dt, float worldDt, bool inputEnabled) {
             toward = Vector3Subtract(a.pos, a.fleeFrom);
             steer = true;
             speed = s.run;
-        } else if (now < a.followUntil && sameBody && dist > 2.5f) {
+        } else if (sameBody && dist > 2.5f && (now < a.followUntil || (dist < 16.0f && !held.empty() && std::find(s.diet.begin(), s.diet.end(), held) != s.diet.end()))) {
+            // Fed (30 s), or the player holds its food: it follows (wild ones too: the food wins).
             a.state = State::Follow;
             toward = Vector3Subtract(playerLocal, a.pos);
             steer = true;

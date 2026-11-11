@@ -251,6 +251,7 @@ bool TerrainTool_Stroke(bool dig) {
     const float cell = step * step * step * p.scale * p.scale * p.scale;
     std::map<std::string, float> got;
     float wet = 0.0f;
+    bool grass = false;
     for (int z = -4; z <= 4; ++z)
         for (int y = -4; y <= 4; ++y)
             for (int x = -4; x <= 4; ++x) {
@@ -264,9 +265,15 @@ bool TerrainTool_Stroke(bool dig) {
                 got[item] += cell * 2.0f;
                 if (strcmp(item, "dirt") == 0) got["gravel"] += cell * 0.4f; // stones in the soil (enough for the first stone tools)
                 if (WetBed(p, q, m)) wet += cell;
+                if (m == VoxelMaterial::Grass) grass = true;
             }
     for (auto& kv : got) inventory.addFractional(kv.first, kv.second);
     if (wet > 0.0f) inventory.addFractional("clay", wet * 0.8f); // river and pond beds hold clay
+    if (grass && GetRandomValue(0, 99) < 6) { // grass now and then turns up a seed
+        static const char* seeds[3] = { "grain_seeds", "root_seeds", "flax_seeds" };
+        const char* s = seeds[GetRandomValue(0, 2)];
+        if (itemDB.find(s)) { inventory.add(s, 1); Toast(TextFormat("+1 %s from the grass", s)); }
+    }
     TerrainEdit e{};
     e.center = hit.local;
     e.radius = r;

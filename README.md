@@ -96,23 +96,26 @@ Shaders in `resources/` hot-reload when saved.
   placed machines and obtained totals are saved.
 - **Hunger and temperature** (`src/space/survival.*`, `resources/data/foods.txt`): a food bar that empties in ~45
   min (faster running, on the jetpack, in the cold, or sick from raw meat); at 0 health falls slowly, above 80 it heals.
-  Eat from the hotbar. The air temperature (latitude, height, day and night, shelter underground) shows by the bars:
+  Eat from the hotbar: the first press of a food slot takes it in hand, the second eats it. The air temperature (latitude, height, day and night, shelter underground) shows by the bars:
   below 5 C food drains faster (3x at the poles), above 35 C slow damage. The suit regulates in vacuum.
 - **Farming** (`src/space/farming.*`, `resources/data/crops.txt`): farmland is a build part (4 dirt, or till soft
   ground with a shovel: RMB). Look at it: I plants seeds you carry, O harvests a ripe crop (yield plus 1-2 seeds).
   Grain, roots and flax grow in daylight only, twice as fast with water within 4 m; seeds come from bushes. Grain
-  grinds into flour (Tab), bread and roasted roots cook in a campfire. Crops are saved.
+  grinds into flour (Tab), bread and roasted roots cook in a campfire. Digging grass now and then turns up seeds.
+  Crops show four stages (sprouts, leafy, tall, ripe with heads). Crops are saved.
 - **Animals** (`src/space/animals.*`, `resources/data/animals.txt`): passive placeholder animals (coloured boxes with
   a head): woolbacks, plains runners (wild: they bolt at 25 m), cluckers and hornhides. Herds are placed from the seed
   in 256 m tiles as you come near; only those within 300 m move. They graze, wander, rest at night and run when hit;
   they keep off water, steep ground and build parts. Fences (2 from 3 wood) and gates (the player walks
   through, animals do not) make a pen. Look at one: I feeds it (it follows
   you for 30 s; two fed adults close together breed a young one that grows up in an hour), O collects wool (shears),
-  milk (bucket) or eggs, LMB attacks (meat, hide, feathers). Raw meat cooks in a campfire. Animals are saved.
+  milk (bucket) or eggs, LMB attacks (meat, hide, feathers). Holding an animal's food (select its hotbar slot)
+  draws it to you within 16 m, wild ones too. Animals show as dots on the minimap. Raw meat cooks in a campfire.
+  Animals are saved.
 - **Environmental suit** (`src/space/suit.*`, `resources/data/suits.txt`, `suit_modules.txt`): you start in a basic
   suit with 2 module slots; a field suit (steel plate, cloth, polyethylene) has 4 and +20% oxygen and power, an
   explorer suit (titanium alloy, advanced circuits) 6 and +50%. Modules, fitted in the inventory's Suit tab: oxygen
-  tank, battery pack, insulation, rebreather, thruster pack, lamp upgrade, thermal regulator, ore scanner (nearest
+  tank (drag a module onto a slot, or Fit), battery pack, insulation, rebreather, thruster pack, lamp upgrade, thermal regulator, ore scanner (nearest
   ore within 64 m on the HUD), servo legs, grip boots, food pouch. Underwater, oxygen drains twice as fast. Swapping
   suits keeps the modules that fit and returns the rest. Cloth comes from fibre or wool.
 - **Tool wear** (`src/space/toolwear.*`): every stroke, chop or hit wears the held tool (stone 150 strokes, iron 400,
@@ -182,7 +185,8 @@ Shaders in `resources/` hot-reload when saved.
   hidden faces culled, cast shadows, collide with the player, and are saved with their material.
 - **Inland water** (`PlanetField::waterElevation`, `src/engine/rivers.*`): a drainage network per planet. A priority
   flood over ~420 m cells routes water downhill to the sea; cells draining more than ~7 km^2 carry a river, its level
-  falling (never rising) downstream and its width and depth growing with the flow; filled depressions become lakes.
+  falling (never rising) downstream and its width and depth growing with the flow; filled depressions become lakes
+  (the ground next to them is banked up 0.3 m above the water).
   Rivers curve between the cells and carve their own valleys (a floodplain, then sides rising 0.3 m per m). Ponds
   (12-38 m, flat surfaces) sit on gentle ground; beds are sand and gravel, and digging
   them also turns up clay. Undug grassland facing up is grass all the way through its soil; planets yield dirt

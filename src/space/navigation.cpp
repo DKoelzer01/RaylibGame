@@ -1,5 +1,6 @@
 #include "navigation.h"
 #include "survival.h"
+#include "animals.h"
 #include "farsphere.h"
 #include "gameui.h"
 #include "inventory.h"
@@ -442,6 +443,15 @@ void Nav_DrawHUD(Scene& world) {
     };
     if (hasStart && startBody == h.body->name) onMini(startDir, GREEN);
     for (const Waypoint& w : waypoints) if (w.body == h.body->name) onMini(w.dir, GOLD);
+    // Animals nearby: small dots (not pinned to the rim), wild ones tan.
+    for (int i = 0; i < Animals_Count(); ++i) {
+        if (Animals_Body(i) != h.body->name) continue;
+        const Vector3 dir = Vector3Normalize(Animals_Position(i));
+        const Vector2 p = OnImage(m, dir);
+        const Vector2 rel = { (p.x - off.x) * k, (p.y - off.y) * k };
+        const Vector2 s = { c.x + rel.x * cr - rel.y * sr, c.y + rel.x * sr + rel.y * cr };
+        if (Vector2Distance(s, c) < rad - 4.0f) DrawCircleV(s, 2.5f, Animals_Wild(i) ? Color{ 230, 180, 110, 255 } : RAYWHITE);
+    }
     // The player: an arrow pointing up (the view), north marked on the rim.
     DrawTriangle({ c.x, c.y - 9 }, { c.x - 6, c.y + 7 }, { c.x + 6, c.y + 7 }, SKYBLUE);
     if (heading >= 0.0f) {

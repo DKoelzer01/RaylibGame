@@ -186,8 +186,10 @@ static void Bar(int x, int y, int w, const char* label, float value, Color c, bo
 
 void Survival_DrawHUD() {
     const int x = 20, y = GetScreenHeight() - 192;
-    Bar(x, y, 260, "O2", survival.oxygen, { 90, 200, 255, 255 }, survival.oxygen < 20.0f);
-    Bar(x, y + 22, 260, "PWR", survival.power, { 250, 210, 70, 255 }, survival.power < 15.0f);
+    // The oxygen and power bars grow with the suit's capacity (basic suit: 260 px).
+    const int wO2 = (int)(180.0f + 80.0f * std::min(Suit_Stats().oxygen, 2.5f)), wPwr = (int)(180.0f + 80.0f * std::min(Suit_Stats().power, 2.5f));
+    Bar(x, y, wO2, "O2", survival.oxygen, { 90, 200, 255, 255 }, survival.oxygen < 20.0f);
+    Bar(x, y + 22, wPwr, "PWR", survival.power, { 250, 210, 70, 255 }, survival.power < 15.0f);
     Bar(x, y + 44, 260, "HP", survival.health, { 230, 70, 70, 255 }, survival.health < 30.0f);
     Bar(x, y + 66, 260, "FOOD", survival.food, { 120, 200, 90, 255 }, survival.food < 15.0f);
     // The air temperature, coloured when it costs you (cold: hunger; heat: health).
@@ -196,11 +198,12 @@ void Survival_DrawHUD() {
         const Color tc = T < 5.0f ? Color{ 130, 190, 255, 255 } : T > 35.0f ? Color{ 255, 140, 70, 255 } : Fade(RAYWHITE, 0.8f);
         const SuitStats& st = Suit_Stats();
         const char* note = T < 5.0f ? (st.cold <= 0.0f ? "  cold: regulated" : st.cold < 1.0f ? "  cold: insulated" : "  cold: hungrier") : T > 35.0f ? (st.heatProof ? "  heat: regulated" : "  heat") : "";
-        DrawText(TextFormat("%.0f C%s", T, note), x + 280, y + 68, 16, tc);
+        DrawText(TextFormat("%.0f C%s", T, note), x + std::max(wO2, wPwr) + 20, y + 68, 16, tc);
     }
-    if (GetTime() < survival.sickUntil) DrawText("SICK", x + 280, y + 46, 16, ORANGE);
-    if (survival.inLifeSupport) DrawText("LIFE SUPPORT", x + 280, y + 2, 16, SKYBLUE);
-    else if (survival.breathable) DrawText("BREATHABLE AIR", x + 280, y + 2, 16, Fade(SKYBLUE, 0.7f));
+    const int tx = x + std::max(wO2, wPwr) + 20;
+    if (GetTime() < survival.sickUntil) DrawText("SICK", tx, y + 46, 16, ORANGE);
+    if (survival.inLifeSupport) DrawText("LIFE SUPPORT", tx, y + 2, 16, SKYBLUE);
+    else if (survival.breathable) DrawText("BREATHABLE AIR", tx, y + 2, 16, Fade(SKYBLUE, 0.7f));
     DrawText(TextFormat("O2 canister x%d   power cell x%d   (use from the hotbar)", inventory.count("oxygen_canister"), inventory.count("power_cell")), x, y - 22, 16, Fade(RAYWHITE, 0.8f));
     if (survival.dead) {
         DrawRectangle(0, 0, GetScreenWidth(), GetScreenHeight(), Fade(BLACK, 0.6f));

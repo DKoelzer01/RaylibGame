@@ -170,7 +170,7 @@ int main(int argc, char** argv)
     bool benchRivers = false, riverOk = false; int riverPhase = 0; double riverStart = 0.0; float riverLongest = 0.0f, riverBuild = 0.0f, riverWet = 0.0f, riverLevel = 0.0f; Vector3 riverDir{ 0, 0, 0 }; // --test-rivers
     bool benchTools = false, toolsOk = true; int toolsPhase = 0, toolsLife = 0, toolsTilled = 0; double toolsStart = 0.0; // --test-tools
     bool benchSuit = false, suitOk = true; int suitPhase = 0; double suitStart = 0.0; float suitFoodRatio = 0.0f, suitWater = 0.0f, suitRebreather = 0.0f; // --test-suit
-    bool benchAnimals = false; int animalPhase = 0, animalCount = 0; double animalStart = 0.0, animalMs = 0.0; int animalNatural = 0; float penWorst = 0.0f, animalSpread = 0.0f, animalFled = 0.0f, animalFollow = 0.0f; // --test-animals
+    bool benchAnimals = false; int animalPhase = 0, animalCount = 0; double animalStart = 0.0, animalMs = 0.0; int animalNatural = 0; float penWorst = 0.0f, animalLured = 0.0f, animalSpread = 0.0f, animalFled = 0.0f, animalFollow = 0.0f; // --test-animals
     int hungerPhase = 0, farmPhase = 0; double hungerStart = 0.0, farmStart = 0.0; bool hungerOk = false; float hungerTemp = 0.0f, hungerDrain = 0.0f, farmQuarter = 0.0f, farmGrowth = 0.0f;
     bool benchViewmodel = false;   // --test-viewmodel: hands still at rest, bob within limits walking, screenshots
     int vmPhase = 0, vmSigns = 0; double vmStart = 0.0; float vmStillMax = 0.0f, vmMaxX = 0.0f, vmMaxY = 0.0f, vmWalked = 0.0f; Vector3 vmLast{}; DVec3 vmFrom{};
@@ -1392,6 +1392,25 @@ int main(int argc, char** argv)
                         step(12.0f);
                         animalFollow = Vector3Distance(Animals_Position(fdx), me);
                         check(animalFollow < std::max(4.0f, f0 - 8.0f), "the fed one came to the player");
+                        // Holding its food (a selected food slot) brings one in without feeding it; the
+                        // second press eats.
+                        {
+                            Animals_Reset();
+                            Animals_Spawn(world, *p, "woolback", Vector3Add(me, Vector3Scale(east, 12.0f)), 1, false, 0.5f);
+                            const float h0 = Animals_Count() ? Vector3Distance(Animals_Position(0), me) : 0.0f;
+                            inventory.add("berries", 2);
+                            Hotbar_Bind(8, "berries");
+                            Hotbar_Press(8, false);
+                            check(Hotbar_HeldFood() == "berries", "holding berries");
+                            step(8.0f);
+                            animalLured = Animals_Count() ? Vector3Distance(Animals_Position(0), me) : 99.0f;
+                            check(animalLured < 4.0f && h0 > 8.0f, "held food lures an animal");
+                            const int g0 = inventory.count("berries");
+                            survival.food = 50.0f;
+                            Hotbar_Press(8, false);
+                            check(inventory.count("berries") == g0 - 1, "the second press eats it");
+                            Hotbar_Reset();
+                        }
                         // A pen: fences (and a gate) 24 m out around a herd. Scared, they run, but stay inside;
                         // the player walks through the gate, not through a fence.
                         {
@@ -1466,8 +1485,8 @@ int main(int argc, char** argv)
                         animalCount = Animals_Count(); animalMs = worst;
                         check(animalCount >= 150 && worst < 1.0, "200 animals under 1 ms");
                         Animals_Reset();
-                        printf("bench: animals: %d placed around the start; herd grazed within %.0f m for a minute, hit one fled %.1f m, fed one came to %.1f m, in a pen at most %.1f m from its centre, a pair bred, meat, saved; %d animals in %.3f ms -> %s\n",
-                               animalNatural, animalSpread, animalFled, animalFollow, penWorst, animalCount, animalMs, ok ? "PASS" : "FAIL");
+                        printf("bench: animals: %d placed around the start; herd grazed within %.0f m for a minute, hit one fled %.1f m, fed one came to %.1f m, held berries lured one to %.1f m, in a pen at most %.1f m from its centre, a pair bred, meat, saved; %d animals in %.3f ms -> %s\n",
+                               animalNatural, animalSpread, animalFled, animalFollow, animalLured, penWorst, animalCount, animalMs, ok ? "PASS" : "FAIL");
                         // A look at them: one of each kind ahead of the player, then a screenshot.
                         const Vector3 fwd = Vector3Normalize(p->dirToLocal(Vector3Subtract(player.forward, Vector3Scale(player.up, Vector3DotProduct(player.forward, player.up)))));
                         const char* kinds[] = { "woolback", "plains_runner", "clucker", "hornhide" };
