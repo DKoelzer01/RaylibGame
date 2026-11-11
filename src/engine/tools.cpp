@@ -4,7 +4,7 @@
 
 namespace {
     const char* const kTiers[] = { "hands", "stone", "iron", "steel", "titanium" };
-    const char* const kTypes[] = { "hands", "pickaxe", "shovel", "axe" };
+    const char* const kTypes[] = { "hands", "pickaxe", "shovel", "axe", "hoe" };
 }
 
 const char* ToolTierName(int tier) { return kTiers[tier < 0 ? 0 : tier > 4 ? 4 : tier]; }
@@ -20,6 +20,7 @@ ToolSpec ToolOf(const std::string& id) {
     if (type == "pickaxe") s.type = ToolType::Pickaxe;
     else if (type == "shovel") s.type = ToolType::Shovel;
     else if (type == "axe") s.type = ToolType::Axe;
+    else if (type == "hoe") s.type = ToolType::Hoe;
     else return ToolSpec{};
     return s;
 }
@@ -65,5 +66,11 @@ DigRule DigRuleFor(ToolSpec tool, VoxelMaterial m, const char* item) {
 float ChopFactor(ToolSpec tool) {
     if (tool.type != ToolType::Axe) return 2.0f; // bare hands (or the wrong tool): twice the swings
     static const float k[] = { 2.0f, 1.0f, 0.7f, 0.5f, 0.35f };
+    return k[tool.tier < 0 ? 0 : tool.tier > 4 ? 4 : tool.tier];
+}
+
+int ToolDurability(ToolSpec tool) {
+    if (tool.type == ToolType::Hands) return 0;
+    static const int k[] = { 0, 150, 400, 900, 2000 };
     return k[tool.tier < 0 ? 0 : tool.tier > 4 ? 4 : tool.tier];
 }

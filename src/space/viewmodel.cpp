@@ -164,6 +164,9 @@ void Viewmodel_Draw(Scene& world) {
             case ToolType::Shovel:
                 Box(onHandle({ 0, 0.27f, 0 }), { 0.15f, 0.17f, 0.018f }, head, light);
                 break;
+            case ToolType::Hoe: // a flat blade at right angles to the top of the handle
+                Box(onHandle({ 0, 0.2f, 0.06f }), { 0.14f, 0.025f, 0.12f }, head, light);
+                break;
             default: break;
         }
     }

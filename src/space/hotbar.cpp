@@ -1,4 +1,5 @@
 #include "hotbar.h"
+#include "toolwear.h"
 #include "buildtool.h"
 #include "gameui.h"
 #include "inventory.h"
@@ -135,6 +136,11 @@ void Hotbar_DrawHUD(bool piloting) {
             const ItemDef* d = itemDB.find(id);
             if (d) DrawRectangle(x + size / 2 - 9, y0 + 14, 18, 18, d->color);
             DrawText(TextFormat("%d", inventory.count(id)), x + size - 4 - MeasureText(TextFormat("%d", inventory.count(id)), 14), y0 + 3, 14, RAYWHITE);
+            const float left = ToolWear_Left(id); // a worn tool: a bar along the bottom, green to red
+            if (left < 1.0f && inventory.count(id) > 0) {
+                DrawRectangle(x + 4, y0 + size - 4, size - 8, 3, Fade(BLACK, 0.6f));
+                DrawRectangle(x + 4, y0 + size - 4, (int)((size - 8) * left), 3, ColorLerp(RED, GREEN, left));
+            }
         } else {
             DrawRectangle(x + size / 2 - 9, y0 + 14, 18, 18, { 170, 140, 100, 255 });
         }

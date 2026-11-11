@@ -1,4 +1,5 @@
 #include "voxel.h"
+#include "rivers.h"
 #include "foliage.h"
 #include "trees.h"
 #include "cubemarch.h"
@@ -159,6 +160,8 @@ static float Smoothstep(float a, float b, float x) {
 PlanetField::PlanetField(unsigned int seed, float radius_, bool moon_)
     : radius(radius_), mantleRadius(radius_ * (1.0f - 0.015f)), moon(moon_) {
     oreSeed = seed ^ 0x0e5e0e5u;
+    riverSeed = seed;
+    riverState = std::make_shared<RiverState>();
     std::mt19937 rng(seed);
     // Large features scale with the body (a moon gets proportionally sized basins and ridges);
     // hills, detail, caves and veins are absolute sizes, so they feel the same everywhere.
@@ -212,14 +215,10 @@ PlanetField::Land PlanetField::land(Vector3 dir, float fp) const {
         h += l.ridge;
     }
     h += hills.fractalLimited(3, fp, sx, sy, sz) * (25.0f + 60.0f * mountainMask);
-    // River valleys (~150 m wide) fade out once samples are too far apart to resolve them.
+    // (River valleys are carved by the drainage network's rivers in elevation(); the old valley-noise
+    // valleys and streams are gone, so l.valley and l.stream stay at 1: none.)
     const float valleyWeight = landMask * std::clamp(2.0f - fp / 64.0f, 0.0f, 1.0f);
     l.valley = 1.0f;
-    if (valleyWeight > 0.0f) {
-        const float v = fabsf(valleys.fractal(3, sx, sy, sz));
-        l.valley = v;
-        h -= ValleyCarve(v) * valleyWeight;
-    }
     // Ravines: rare narrow canyons (~60 m wide, up to ~90 m deep, steep sqrt-profile walls) in some
     // land regions, faded out where samples are too far apart to resolve them.
     const float ravineWeight = landMask * std::clamp(2.0f - fp / 24.0f, 0.0f, 1.0f);
@@ -230,8 +229,6 @@ PlanetField::Land PlanetField::land(Vector3 dir, float fp) const {
             if (r < 0.006f) h -= sqrtf(1.0f - r / 0.006f) * 90.0f * region * ravineWeight;
         }
     }
-    // Streams: a finer network (~8 m wide channels, no valley), resolved by fine samples only.
-    if (landMask > 0.0f && fp < 24.0f) l.stream = fabsf(streams.fractal(2, sx, sy, sz));
     l.detail = detail.fractalLimited(2, fp, sx, sy, sz) * 2.5f;
     // Polar ice shelves: near the poles the sea is frozen, so low ground is raised to an ice sheet a
     // couple of metres above sea level (the material rules make it ice).
@@ -355,33 +352,25 @@ float PlanetField::elevation(Vector3 dir, float fp) const {
     const Land l = land(dir, fp);
     if (moon) return l.h;
     float h = l.h + l.detail;
-    // River channel along the valley floor, banks smoothed (less fine detail) near it.
-    // Streams: the same as rivers, smaller (a narrower, shallower channel; no valley).
-    const River st = stream(l, dir, fp);
-    if (st.w > 0.0f) {
-        const float zone = 1.0f - l.stream / kStreamZone;
-        h = l.h + l.detail * (1.0f - 0.85f * zone * st.w);
-        const float bank = st.level + 0.3f;
-        if (h < bank) h += (bank - h) * (1.0f - Smoothstep(kStreamHalf, kStreamZone, l.stream)) * st.w;
-        if (l.stream < kStreamHalf) {
-            const float t = 1.0f - (l.stream / kStreamHalf) * (l.stream / kStreamHalf);
-            const float bed = st.level + 0.2f - (kStreamDepth - kStreamDrop + 0.2f) * t;
-            h += (bed - h) * st.w;
-        }
-    }
-    const River rv = river(l, dir, fp);
-    if (rv.w > 0.0f) {
-        const float half = kRiverHalf * rv.wf, zoneW = kRiverZone * rv.wf;
-        const float zone = 1.0f - l.valley / zoneW;
-        h = std::min(h, l.h + l.detail * (1.0f - 0.85f * zone * rv.w));
-        // Banks a little above the water next to the channel (a low levee where the floor dips).
-        const float bank = rv.level + 0.4f;
-        if (h < bank) h += (bank - h) * (1.0f - Smoothstep(half, zoneW, l.valley)) * rv.w;
-        // The channel: its bed shaped to the water level (cut into higher ground, filled in lower).
-        if (l.valley < half) {
-            const float t = 1.0f - (l.valley / half) * (l.valley / half);
-            const float bed = rv.level + 0.3f - (kRiverDepth - kRiverDrop + 0.3f) * t;
-            h += (bed - h) * rv.w;
+    // Rivers of the drainage network: a valley (a floodplain 2.5 channel half-widths across at the
+    // water, then sides rising 0.3 m per m) cut into higher ground, low banks where the ground dips
+    // below the water, and the channel bed. The valley stays resolved further out than the channel.
+    if (const RiverNetwork* net = rivers()) {
+        const RiverNetwork::Hit rh = net->nearest(dir, RiverNetwork::kMaxReach);
+        if (rh.found) {
+            const float d = rh.dist, half = rh.halfWidth;
+            const float flat = 2.5f * half, reach = std::min(flat + 200.0f, RiverNetwork::kMaxReach);
+            const float allowed = rh.level + 0.5f + std::max(0.0f, d - flat) * 0.3f;
+            const float vw = (1.0f - Smoothstep(reach * 0.7f, reach, d)) * std::clamp(2.0f - fp / 512.0f, 0.0f, 1.0f);
+            if (h > allowed) h += (allowed - h) * vw;
+            const float cw = std::clamp(2.0f - fp / (4.0f * half), 0.0f, 1.0f) * Smoothstep(-2.0f, 0.5f, l.h); // not out at sea
+            const float bank = rh.level + 0.4f;
+            if (h < bank && d < half + 12.0f) h += (bank - h) * (1.0f - Smoothstep(half, half + 12.0f, d)) * cw;
+            if (d < half) {
+                const float t = 1.0f - (d / half) * (d / half);
+                const float bed = rh.level + 0.3f - (rh.depth + 0.3f) * t;
+                h += (bed - h) * cw;
+            }
         }
     }
     // Ponds: a bowl to the pond's level inside its radius, an embankment just outside it where the
@@ -410,16 +399,15 @@ float PlanetField::elevation(Vector3 dir, float fp) const {
 float PlanetField::waterElevation(Vector3 dir, float fp) const {
     if (moon) return kNoWater;
     float w = kNoWater;
-    const Land l = land(dir, fp);
-    if (fp < 128.0f) {
-        const River rv = river(l, dir, fp);
-        if (rv.w > 0.3f && l.valley < kRiverHalf * rv.wf * 1.2f) w = rv.level;
+    if (const RiverNetwork* net = rivers()) {
+        if (fp < 128.0f) {
+            const RiverNetwork::Hit rh = net->nearest(dir, 60.0f);
+            if (rh.found && rh.dist < rh.halfWidth * 1.05f) w = rh.level;
+        }
+        float lake;
+        if (fp < 256.0f && net->lakeAt(dir, lake)) w = std::max(w, lake);
     }
     if (fp >= 96.0f) return w; // ponds are not resolved (their bowls fade out by here)
-    if (fp < 12.0f && l.stream < kStreamHalf * 1.2f) {
-        const River st = stream(l, dir, fp);
-        if (st.w > 0.3f) w = std::max(w, st.level);
-    }
     ForPondCellsNear(Vector3Scale(dir, radius), kPondReach, [&](int x, int y, int z) {
         const Pond p = pondOfCell(x, y, z);
         if (p.exists && Vector3Distance(dir, p.dir) * radius < p.r * 1.05f) w = std::max(w, p.level);
@@ -430,10 +418,8 @@ float PlanetField::waterElevation(Vector3 dir, float fp) const {
 bool PlanetField::inlandWaterNear(Vector3 dir, float extent, float fp) const {
     if (moon) return false;
     const float sx = dir.x * radius, sy = dir.y * radius, sz = dir.z * radius;
-    // The valley noise changes by at most ~3x its frequency per metre.
     // Each kind only where samples resolve it (as in elevation() and waterElevation()).
-    if (fp < 128.0f && fabsf(valleys.fractal(3, sx, sy, sz)) < kRiverHalf * 2.5f * 1.2f + extent * 3.0f * 6.5f / radius) return true;
-    if (fp < 12.0f && fabsf(streams.fractal(2, sx, sy, sz)) < kStreamHalf * 1.2f + extent * 0.0075f) return true;
+    if (fp < 256.0f) if (const RiverNetwork* net = rivers()) if (net->waterNear(dir, extent)) return true;
     if (fp >= 96.0f) return false;
     bool near = false;
     ForPondCellsNear({ sx, sy, sz }, kPondReach + extent, [&](int x, int y, int z) {
@@ -442,6 +428,16 @@ bool PlanetField::inlandWaterNear(Vector3 dir, float extent, float fp) const {
         if (p.exists && Vector3Distance(dir, p.dir) * radius < p.r * 1.05f + extent) near = true;
     });
     return near;
+}
+
+PlanetField::RiverState::~RiverState() = default;
+
+const RiverNetwork* PlanetField::rivers() const {
+    if (moon || !riverState) return nullptr;
+    std::call_once(riverState->once, [this] {
+        riverState->net = std::make_unique<RiverNetwork>(radius, riverSeed, [this](Vector3 d) { return land(d, 256.0f).h; });
+    });
+    return riverState->net.get();
 }
 
 bool PlanetField::wetBed(Vector3 local) const {

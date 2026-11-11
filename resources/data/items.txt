@@ -121,3 +121,8 @@ ore_scanner        | Ore scanner        |  tool | 255,190,110 | Suit module: sho
 servo_legs         | Servo legs         |  tool | 150,150,170 | Suit module: +20% walk speed, safer landings.
 grip_boots         | Grip boots         |  tool | 110,90,70   | Suit module: walk up steeper ground.
 food_pouch         | Food pouch         |  tool | 160,120,80  | Suit module: hunger 25% slower.
+# Hoes (plan 2, milestone 14): till soft ground into farmland (RMB); iron and better till 3x3 m at once.
+stone_hoe          | Stone hoe          |  tool | 150,140,120 | Tills soft ground into farmland (RMB).
+iron_hoe           | Iron hoe           |  tool | 175,165,155 | Tills 3x3 m of farmland at once (RMB).
+steel_hoe          | Steel hoe          |  tool | 125,125,135 | Tills 3x3 m of farmland at once (RMB); lasts longer.
+titanium_hoe       | Titanium hoe       |  tool | 205,180,205 | Tills 3x3 m of farmland at once (RMB); lasts longest.

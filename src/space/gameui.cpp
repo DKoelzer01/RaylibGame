@@ -6,6 +6,7 @@
 #include "terraintool.h"
 #include "survival.h"
 #include "suit.h"
+#include "toolwear.h"
 #include "world.h"
 #include "ship.h"
 
@@ -86,6 +87,7 @@ static void DrawGrid() {
 static void DrawCrafting() {
     const bool creative = terrainTool.creative;
     if (creative) ImGui::TextColored(ImVec4(1.0f, 0.8f, 0.3f, 1.0f), "Creative: crafting costs nothing");
+    ToolWear_DrawRepairUI();
     for (size_t i = 0; i < itemDB.recipes().size(); ++i) {
         const Recipe& r = itemDB.recipes()[i];
         const ItemDef* out = itemDB.find(r.output);
