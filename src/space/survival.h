@@ -1,6 +1,7 @@
 #ifndef SURVIVAL_H
 #define SURVIVAL_H
 
+#include <cstdio>
 #include <string>
 
 class Scene;
@@ -44,6 +45,16 @@ void QuestBook_Update();
 void QuestBook_NotePlaced(const std::string& item);
 int QuestBook_Tier();
 void QuestBook_SetTier(int tier);
+void QuestBook_Reset();                         // a new game: tier 0, nothing done
+void QuestBook_Save(FILE* f);                   // tier, done tasks, placed machines, obtained totals
+bool QuestBook_LoadLine(const char* tok, FILE* f);
+// The tiers and their tasks (HUD, the Quests tab).
+int QuestBook_TierCount();
+const char* QuestBook_TierName(int tier);
+const char* QuestBook_TierText(int tier);
+int QuestBook_TaskCount(int tier);
+const char* QuestBook_TaskText(int tier, int task);
+bool QuestBook_TaskDone(int tier, int task);
 void Objectives_MarkVisitedBody(int bodyIndex);
 
 #endif

@@ -4,6 +4,7 @@
 #include "player.h"
 #include "audio.h"
 #include "terraintool.h"
+#include "survival.h"
 #include "world.h"
 #include "ship.h"
 
@@ -164,6 +165,25 @@ void GameUI_Draw(Scene&) {
         if (ImGui::BeginTabBar("invtabs")) {
             if (ImGui::BeginTabItem("Crafting")) {
                 DrawCrafting();
+                ImGui::EndTabItem();
+            }
+            if (ImGui::BeginTabItem("Quests")) {
+                // The main quest line: done tiers collapsed, the current one open, the next shown.
+                const int cur = QuestBook_Tier();
+                for (int i = 0; i < QuestBook_TierCount() && i <= cur + 1; ++i) {
+                    ImGui::PushID(i);
+                    const bool done = i < cur;
+                    const char* name = QuestBook_TierName(i);
+                    ImGui::SetNextItemOpen(i == cur, ImGuiCond_Appearing);
+                    if (ImGui::CollapsingHeader(TextFormat("%s Tier %d: %s", done ? "[done]" : i == cur ? "[now]" : "[next]", i, name))) {
+                        ImGui::TextWrapped("%s", QuestBook_TierText(i));
+                        for (int k = 0; k < QuestBook_TaskCount(i); ++k) {
+                            const bool kd = QuestBook_TaskDone(i, k);
+                            ImGui::TextColored(kd ? ImVec4(0.45f, 0.85f, 0.45f, 1.0f) : ImVec4(0.95f, 0.95f, 0.95f, 1.0f), "%s %s", kd ? "[x]" : "[ ]", QuestBook_TaskText(i, k));
+                        }
+                    }
+                    ImGui::PopID();
+                }
                 ImGui::EndTabItem();
             }
             if (ImGui::BeginTabItem("Creative")) {

@@ -196,6 +196,7 @@ double Inventory::addAmount(const std::string& id, double amount) {
         s.id = id; s.centi = put; left -= put;
     }
     if (left > 0) overflowed = true;
+    obtained[id] += (KindOf(id) == ItemKind::Resource ? ToCenti(amount) : (int64_t)floor(amount + 1e-6) * 100) / 100.0 - left / 100.0;
     return left / 100.0;
 }
 

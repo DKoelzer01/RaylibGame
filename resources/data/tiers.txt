@@ -1,10 +1,63 @@
-# Tiers (quest book): tier | name | gate item (making it opens the next tier) | what to do
+# Tiers (Current Objectives): tier | name | gate item (used only by a tier without tasks) | the hint under the tasks
+# Indented task lines under a tier: task | <kind and target> | text. A tier opens the next when all are done:
+#   get <item> <n> (n obtained, ever) - place <item> (that machine placed) - orbit - visit moon | visit ring
 0 | Primitive        | fired_crucible   | Chop trees for wood, harvest bushes for fibre, dig dirt and stone. Make clay from dirt, mould a crucible (Tab) and fire it in a campfire (G to place, I to feed it wood).
+    task | get wood 4             | Chop a tree for wood (LMB on a trunk)
+    task | get fibre 2            | Harvest a bush for fibre
+    task | get gravel 4           | Dig dirt with your hands until you have 4 gravel
+    task | get stone_pickaxe 1    | Craft a stone pickaxe (Tab)
+    task | get stone 8            | Dig stone with the pickaxe
+    task | place campfire         | Place a campfire (G) and feed it wood (I)
+    task | get fired_crucible 1   | Mould a crucible from clay and fire it in the campfire
 1 | Stone age        | bronze_ingot     | Build a kiln. Dig deep for copper and tin ore (veins below 8 m), smelt them in the kiln (fuel: wood, charcoal, coal) and alloy 3 copper + 1 tin into bronze.
+    task | place kiln             | Build and place a kiln
+    task | get copper_ore 4       | Find copper ore (deposits and pockets below 8 m)
+    task | get tin_ore 2          | Find tin ore
+    task | get copper_ingot 3     | Smelt copper ingots in the kiln
+    task | get bronze_ingot 1     | Alloy bronze: 3 copper and 1 tin in the kiln
 2 | Bronze and steam | steel_ingot      | A boiler and copper cables power steam machines (8 V). Hammer plates, crush ore, bake coal into coke in a coke oven, and burn coke in a blast furnace to turn iron into steel.
+    task | place boiler           | Place a steam boiler and feed it fuel
+    task | place forge_hammer     | Place a forge hammer and cable it to the boiler
+    task | get bronze_plate 4     | Hammer 4 bronze plates
+    task | place coke_oven        | Build a coke oven
+    task | get coke 2             | Bake coal into coke
+    task | place blast_furnace    | Build a blast furnace
+    task | get steel_ingot 1      | Make steel from iron and coke
 3 | Steel            | vacuum_tube      | Glass (sand in a kiln), copper wire and a steel plate make a vacuum tube: the first circuit.
+    task | get sand 8             | Dig sand on a beach or riverbank
+    task | get glass 2            | Melt sand into glass in the kiln
+    task | get copper_wire 4      | Draw copper wire (Tab)
+    task | get vacuum_tube 1      | Craft a vacuum tube
 4 | LV electric      | electric_furnace | Basic circuits on a steel hull make your first LV machine. Power it from an LV generator (32 V; steam machines refuse it).
+    task | get basic_circuit 1    | Craft a basic circuit
+    task | get lv_hull 1          | Craft an LV machine hull
+    task | get generator 1        | Craft an LV generator
+    task | get electric_furnace 1 | Craft an electric furnace
+    task | place generator        | Place the LV generator
+    task | place electric_furnace | Place the electric furnace and cable it to the generator
 5 | MV electric      | aluminium_ingot  | Process ore for more: a macerator crushes it (x2), an ore washer and a water pump purify it, a centrifuge splits off byproducts (iron: nickel, copper: gold). MV (128 V): an MV generator powers an electrolyzer (water: hydrogen and oxygen) and a chemical reactor (polyethylene for good circuits). Electrolyse bauxite dust into aluminium. A miner works the deposit under it.
+    task | place macerator        | Place a macerator: crushed ore smelts to twice the ingots
+    task | place ore_washer       | Place an ore washer (and a water pump) to purify crushed ore
+    task | place centrifuge       | Place a centrifuge to split byproducts from purified ore
+    task | get gold_ingot 1       | Smelt the gold a centrifuge splits from copper
+    task | place mv_generator     | Place an MV generator (128 V)
+    task | get hydrogen 2         | Electrolyse water into hydrogen
+    task | get polyethylene 1     | Make polyethylene in a chemical reactor
+    task | get aluminium_ingot 1  | Electrolyse bauxite dust into aluminium
 6 | HV electric      | titanium_alloy_ingot | HV (512 V): an HV generator, an arc furnace (ilmenite and coke into titanium; titanium and aluminium into titanium alloy), a refinery (rocket fuel) and a precision assembler (alloy plates, advanced circuits).
+    task | get good_circuit 1     | Craft a good circuit
+    task | get advanced_circuit 1 | Craft an advanced circuit
+    task | place hv_generator     | Place an HV generator (512 V)
+    task | place arc_furnace      | Place an arc furnace
+    task | get titanium_ingot 1   | Make titanium from ilmenite and coke
+    task | get titanium_alloy_ingot 1 | Alloy titanium with aluminium
 7 | Rocketry         | cockpit          | Build a rocket on a plot: rocket engines under fuel tanks, a guidance computer and a cockpit on top (landing legs soften touchdowns). Load rocket fuel (I), board (E), throttle up (Shift) and fly to orbit: 35 km up and fast sideways.
+    task | get rocket_engine 1    | Craft a rocket engine
+    task | get fuel_tank 1        | Craft a fuel tank
+    task | get guidance_computer 1 | Craft a guidance computer
+    task | get cockpit 1          | Craft a cockpit
+    task | get rocket_fuel 5      | Refine rocket fuel
+    task | orbit                  | Fly a rocket to orbit (35 km up, fast sideways)
 8 | Space            | -                | The ring 50 km up (the huge rocks goliath, bastion and pebble), then the moon.
+    task | visit ring             | Visit the asteroid ring 50 km up
+    task | visit moon             | Land on the moon
