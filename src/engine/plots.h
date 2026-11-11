@@ -86,6 +86,7 @@ public:
 
     std::vector<Part> parts;            // index = part id (removed parts have type Count)
     float fuel = 0.0f;                  // rocket fuel loaded (kg), when the plot is a rocket
+    std::unordered_map<int, float> damage; // rocket parts: part index -> 0 sound .. 1 out of action (saved)
     struct CellRef { int part; CellShape shape; };
     std::unordered_map<Int3, CellRef> cells; // occupied cell -> part index and its shape there
 

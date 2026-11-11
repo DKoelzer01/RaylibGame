@@ -366,10 +366,13 @@ namespace {
         return a;
     }
 
+    // Hard landings damage the legs (a crash: the legs and engines too). Parts stop working rather
+    // than fall off; a repair kit or a hangar mends them.
     void Damage(Plot& plot, bool engines) {
         for (size_t i = 0; i < plot.parts.size(); ++i) {
             const PartType t = plot.parts[i].type;
-            if (t == PartType::LandingLeg || (engines && t == PartType::RocketEngine)) { plot.remove((int)i); ++damage; }
+            if (t == PartType::LandingLeg) { Rocket_DamagePart(plot, (int)i, engines ? 1.0f : 0.6f); ++damage; }
+            else if (engines && t == PartType::RocketEngine) { Rocket_DamagePart(plot, (int)i, 0.7f); ++damage; }
         }
     }
 
@@ -389,10 +392,15 @@ namespace {
         const char* item = PartItem(plot.parts[lead]);
         const float limit = heatLimit.count(item) ? heatLimit[item] : 900.0f;
         if (temperature > limit) overheat += h; else overheat = std::max(0.0, overheat - h);
-        if (overheat > 1.5 && plot.parts[lead].type != PartType::Cockpit) { // the cockpit scorches but holds: damage, not destruction
-            GameUI_Toast(TextFormat("The %s burnt away (%.0f C, it takes %.0f C)", PartName(plot.parts[lead].type), temperature, limit));
-            plot.remove(lead);
-            ++damage;
+        if (overheat > 1.5) { // the leading part scorches: damaged, not destroyed (the cockpit at most to 90%)
+            const bool cockpit = plot.parts[lead].type == PartType::Cockpit;
+            const float before = plot.damage.count(lead) ? plot.damage[lead] : 0.0f;
+            Rocket_DamagePart(plot, lead, 0.25f);
+            if (cockpit) plot.damage[lead] = std::min(plot.damage[lead], 0.9f);
+            if (plot.damage[lead] > before) {
+                GameUI_Toast(TextFormat("The %s is overheating: %.0f%% damaged (%.0f C, it takes %.0f C)", PartName(plot.parts[lead].type), plot.damage[lead] * 100.0f, temperature, limit));
+                ++damage;
+            }
             overheat = 0.0;
         }
     }
@@ -425,6 +433,7 @@ namespace {
         const float mass = RocketMass(st, plot->fuel);
         const float thrust = plot->fuel > 0.0f ? throttle * st.thrust : 0.0f;
         if (thrust > 0.0f) plot->fuel = std::max(0.0f, plot->fuel - thrust / (float)(st.isp * kG0) * h);
+        if (st.leak > 0.0f && plot->fuel > 0.0f) plot->fuel = std::max(0.0f, plot->fuel - st.leak * (float)h); // damaged tanks leak
         const Vector3 g = Gravity(world, com);
         Vector3 force = Vector3Scale(Up(), thrust);
         if (Planetoid* air = Dominant(world, com)) {
@@ -538,20 +547,28 @@ RocketStats Rocket_Stats(const Plot& plot, const Planetoid* body) {
     Load();
     RocketStats s;
     float ispThrust = 0.0f;
-    for (const Part& p : plot.parts) {
+    int rocketParts = 0;
+    for (int pi = 0; pi < (int)plot.parts.size(); ++pi) {
+        const Part& p = plot.parts[pi];
         if (p.type == PartType::Count) continue;
         const char* item = PartItem(p);
         if (IsRocketPart(p.type)) {
             const PartStat& ps = partStats[item];
+            auto dit = plot.damage.find(pi);
+            const float dmg = dit == plot.damage.end() ? 0.0f : std::clamp(dit->second, 0.0f, 1.0f);
+            const float health = 1.0f - dmg; // a damaged engine pushes less; a broken one not at all
             s.dryMass += ps.mass;
-            s.thrust += ps.thrust;
-            ispThrust += ps.isp * ps.thrust;
+            s.thrust += ps.thrust * health;
+            ispThrust += ps.isp * ps.thrust * health;
             s.fuelCapacity += ps.fuel;
-            if (p.type == PartType::RocketEngine) ++s.engines;
-            if (p.type == PartType::FuelTank) ++s.tanks;
+            s.damage += dmg;
+            if (dmg > 0.0f) ++s.damagedParts;
+            ++rocketParts;
+            if (p.type == PartType::RocketEngine && dmg < 1.0f) ++s.engines;
+            if (p.type == PartType::FuelTank) { ++s.tanks; s.leak += 2.0f * dmg; } // 2 kg/s from a broken tank
             if (p.type == PartType::Cockpit) ++s.cockpits;
-            if (p.type == PartType::Guidance) ++s.guidance;
-            if (p.type == PartType::LandingLeg) ++s.legs;
+            if (p.type == PartType::Guidance && dmg < 1.0f) ++s.guidance;
+            if (p.type == PartType::LandingLeg && dmg < 1.0f) ++s.legs;
         } else {
             std::vector<std::pair<Int3, CellShape>> fp;
             Plot::Footprint(p, fp);
@@ -559,6 +576,7 @@ RocketStats Rocket_Stats(const Plot& plot, const Planetoid* body) {
         }
     }
     s.isp = s.thrust > 0.0f ? ispThrust / s.thrust : 0.0f;
+    s.damage = rocketParts > 0 ? s.damage / rocketParts : 0.0f;
     s.fuel = std::min(plot.fuel, s.fuelCapacity);
     const float m0 = s.dryMass + s.fuel;
     float g = 9.81f, needed = 700.0f;
@@ -851,6 +869,7 @@ void Rocket_DrawHUD(Scene& world) {
         DrawText(TextFormat("mass %.1f t (dry %.1f t)   thrust %.0f kN   TWR %.2f", (s.dryMass + s.fuel) / 1000.0f, s.dryMass / 1000.0f, s.thrust / 1000.0f, s.twr), x, y, 16, RAYWHITE); y += 20;
         DrawText(TextFormat("fuel %.0f / %.0f kg   delta-v %.0f m/s (orbit needs ~%.0f)", s.fuel, s.fuelCapacity, s.deltaV, s.deltaVNeeded), x, y, 16, RAYWHITE); y += 20;
         DrawText(TextFormat("%d engine(s), %d tank(s), %d landing leg(s)", s.engines, s.tanks, s.legs), x, y, 16, RAYWHITE); y += 24;
+        if (s.damagedParts > 0) { DrawText(TextFormat("DAMAGE: %d part(s), %.0f%% overall%s - repair kits mend them (hotbar)", s.damagedParts, s.damage * 100.0f, s.leak > 0.0f ? ", tanks leaking" : ""), x, y, 16, ORANGE); y += 22; }
         if (s.ready) { DrawText("READY", x, y, 18, GREEN); y += 22; }
         for (const std::string& m : s.missing) { DrawText(TextFormat("needs %s", m.c_str()), x, y, 16, ORANGE); y += 20; }
         DrawText(aimCockpit ? "E board   I load fuel" : "I load fuel (look at the cockpit to board)", x, y + 4, 16, Fade(RAYWHITE, 0.8f));
@@ -921,5 +940,43 @@ bool Rocket_LoadLine(const char* tok, FILE* f) {
     state = RocketState::Flying;
     flightTime = std::max(ft, 2.0);
     SyncVehicle(world);
+    return true;
+}
+
+void Rocket_DamagePart(Plot& plot, int part, float amount) {
+    if (part < 0 || part >= (int)plot.parts.size() || plot.parts[part].type == PartType::Count) return;
+    float& d = plot.damage[part];
+    d = std::clamp(d + amount, 0.0f, 1.0f);
+}
+
+bool Rocket_UseRepairKit() {
+    if (!gWorld) return false;
+    Scene& world = *gWorld;
+    // The rocket in reach: the boarded one, else a pad rocket (a plot with rocket parts) within 12 m.
+    Plot* best = nullptr;
+    if (state == RocketState::Flying || Rocket_Boarded()) best = state == RocketState::Flying ? VehiclePlot() : PadPlot();
+    if (!best) {
+        Planetoid* body = player.nearest;
+        if (body && body->plots) {
+            const Vector3 me = body->toLocal((player.position - world.renderOrigin).toFloat());
+            float bestD = 12.0f;
+            for (const auto& pl : body->plots->plots) {
+                if (pl->damage.empty()) continue;
+                for (const auto& kv : pl->cells) {
+                    const float d = Vector3Distance(pl->toBody({ (kv.first.x + 0.5f) * kCellSize, (kv.first.y + 0.5f) * kCellSize, (kv.first.z + 0.5f) * kCellSize }), me);
+                    if (d < bestD) { bestD = d; best = pl.get(); }
+                }
+            }
+        }
+    }
+    if (!best || best->damage.empty()) { GameUI_Toast("No damaged rocket within reach"); return false; }
+    auto worst = best->damage.begin();
+    for (auto it = best->damage.begin(); it != best->damage.end(); ++it) if (it->second > worst->second) worst = it;
+    if (worst->second <= 0.0f) { GameUI_Toast("Nothing here needs repair"); return false; }
+    const int part = worst->first;
+    worst->second = std::max(0.0f, worst->second - 0.5f);
+    GameUI_Toast(TextFormat("Repaired the %s: %.0f%% damaged", PartName(best->parts[part].type), worst->second * 100.0f));
+    if (worst->second <= 0.0f) best->damage.erase(worst);
+    Audio_Play(Sfx::Craft, 0.6f, 0.9f);
     return true;
 }

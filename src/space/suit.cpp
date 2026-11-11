@@ -17,7 +17,7 @@
 
 namespace {
 
-struct SuitDef { std::string id, name; int slots = 2; float oxygen = 1.0f, power = 1.0f; };
+struct SuitDef { std::string id, name; int slots = 2; float oxygen = 1.0f, power = 1.0f; bool vacuum = false; };
 struct ModuleDef { std::string id, effect, text; float value = 0.0f; };
 std::vector<SuitDef> suits;
 std::vector<ModuleDef> modules;
@@ -54,7 +54,7 @@ void Load() {
             if (buf[0] == '#' || buf[0] == '\n' || buf[0] == '\r') continue;
             const auto c = Columns(buf);
             if (c.size() < 5) continue;
-            suits.push_back({ c[0], c[1], atoi(c[2].c_str()), (float)atof(c[3].c_str()), (float)atof(c[4].c_str()) });
+            suits.push_back({ c[0], c[1], atoi(c[2].c_str()), (float)atof(c[3].c_str()), (float)atof(c[4].c_str()), c.size() >= 6 && c[5] == "1" });
         }
         fclose(f);
     }
@@ -74,7 +74,7 @@ const ModuleDef* FindModule(const std::string& id) { Load(); for (const auto& m 
 void Recompute() {
     SuitStats s;
     const SuitDef* suit = FindSuit(worn);
-    if (suit) { s.slots = suit->slots; s.oxygen = suit->oxygen; s.power = suit->power; }
+    if (suit) { s.slots = suit->slots; s.oxygen = suit->oxygen; s.power = suit->power; s.vacuum = suit->vacuum; }
     for (const std::string& id : fitted) {
         const ModuleDef* m = id.empty() ? nullptr : FindModule(id);
         if (!m) continue;

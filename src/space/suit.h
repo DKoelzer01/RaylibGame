@@ -21,6 +21,7 @@ struct SuitStats {
     float cold = 1.0f;                   // share of the cold's extra hunger felt (insulation 0.4, regulator 0)
     bool heatProof = false;              // thermal regulator: no heat damage
     bool grip = false, scanner = false, servo = false;
+    bool vacuum = false;                 // rated for vacuum (the explorer suit)
 };
 
 const SuitStats& Suit_Stats();

@@ -29,12 +29,20 @@ class Plot;
 struct RocketStats {
     float dryMass = 0, fuel = 0, fuelCapacity = 0, thrust = 0, isp = 0; // kg, N, s
     int engines = 0, tanks = 0, cockpits = 0, guidance = 0, legs = 0;
+    float damage = 0;                     // mean damage of the rocket parts, 0..1
+    int damagedParts = 0;                 // rocket parts with any damage
+    float leak = 0;                       // kg of fuel a second lost from damaged tanks
     float twr = 0, deltaV = 0, deltaVNeeded = 0;
     bool ready = false;
     std::vector<std::string> missing;
 };
 // Stats of a plot as a rocket on (or near) a body.
 RocketStats Rocket_Stats(const Plot& plot, const Planetoid* body);
+// Repair kits (from the hotbar): the most damaged part of the nearest rocket within 12 m (the boarded
+// one, or one on a pad) is half repaired. False if there is none to repair.
+bool Rocket_UseRepairKit();
+// Tests: damage a rocket part (part index) by an amount.
+void Rocket_DamagePart(Plot& plot, int part, float amount);
 
 enum class RocketState { None, OnPad, Flying };
 enum class RocketAutopilot { Off, Ascent, Circularize, Deorbit, Land };

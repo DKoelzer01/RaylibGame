@@ -320,6 +320,7 @@ bool Plot::remove(int idx) {
     Footprint(parts[idx], fp);
     for (const auto& c : fp) { cells.erase(c.first); markDirty(c.first); }
     parts[idx].type = PartType::Count;
+    damage.erase(idx);
     --livePartCount;
     ++version;
     return true;
@@ -641,7 +642,8 @@ void PlotSet::save(FILE* f) const {
     // plots4: every part slot, removed ones as "-1" placeholders, so part indices (what the factory
     // saves machine contents by) survive a reload; parts carry their material and plots their rocket
     // fuel. (plots3: live parts only; plots2: no fuel; plots: no materials.)
-    fprintf(f, "plots4 %d\n", live);
+    // plots5: plots4 plus a "wear" line per plot (rocket part damage by part index).
+    fprintf(f, "plots5 %d\n", live);
     for (const auto& p : plots) {
         if (p->partCount() == 0) continue;
         fprintf(f, "plot %u %.4f %.4f %.4f %d %.1f\n", p->id, p->origin.x, p->origin.y, p->origin.z, (int)p->parts.size(), p->fuel);
@@ -649,6 +651,11 @@ void PlotSet::save(FILE* f) const {
             if (part.type == PartType::Count) fprintf(f, "-1\n");
             else fprintf(f, "%d %d %d %d %d %d\n", (int)part.type, part.origin.x, part.origin.y, part.origin.z, part.orient, part.material);
         }
+        int worn = 0;
+        for (const auto& kv : p->damage) worn += kv.second > 0.0f ? 1 : 0;
+        fprintf(f, "wear %d", worn);
+        for (const auto& kv : p->damage) if (kv.second > 0.0f) fprintf(f, " %d %.3f", kv.first, kv.second);
+        fprintf(f, "\n");
     }
 }
 
@@ -656,9 +663,10 @@ bool PlotSet::load(FILE* f) {
     plots.clear();
     int n = 0;
     char tag[16] = {};
-    if (fscanf(f, " %15s %d", tag, &n) != 2 || (strcmp(tag, "plots") != 0 && strcmp(tag, "plots2") != 0 && strcmp(tag, "plots3") != 0 && strcmp(tag, "plots4") != 0)) return false;
-    const bool materials = strcmp(tag, "plots") != 0, hasFuel = strcmp(tag, "plots3") == 0 || strcmp(tag, "plots4") == 0;
-    const bool slots = strcmp(tag, "plots4") == 0; // removed parts kept as placeholders
+    if (fscanf(f, " %15s %d", tag, &n) != 2 || (strcmp(tag, "plots") != 0 && strcmp(tag, "plots2") != 0 && strcmp(tag, "plots3") != 0 && strcmp(tag, "plots4") != 0 && strcmp(tag, "plots5") != 0)) return false;
+    const bool wear = strcmp(tag, "plots5") == 0;
+    const bool materials = strcmp(tag, "plots") != 0, hasFuel = strcmp(tag, "plots3") == 0 || strcmp(tag, "plots4") == 0 || wear;
+    const bool slots = strcmp(tag, "plots4") == 0 || wear; // removed parts kept as placeholders
     const Part dead{ PartType::Count, { 0, 0, 0 }, 0, 0 };
     for (int i = 0; i < n; ++i) {
         unsigned int id = 0;
@@ -687,6 +695,11 @@ bool PlotSet::load(FILE* f) {
             if (!materials && (t == (int)PartType::Beam2 || t == (int)PartType::Beam4 || t == (int)PartType::Beam8)) m = BuildMaterialForItem("iron_plate");
             // A part that no longer fits still keeps its slot, so the indices after it don't shift.
             if (p->place({ (PartType)t, { x, y, z }, (uint8_t)o, (uint8_t)std::clamp(m, 0, BuildMaterialCount() - 1) }) < 0) p->parts.push_back(dead);
+        }
+        if (wear) {
+            int worn = 0;
+            if (fscanf(f, " wear %d", &worn) != 1) return false;
+            for (int k = 0; k < worn; ++k) { int part = 0; float d = 0.0f; if (fscanf(f, " %d %f", &part, &d) != 2) return false; p->damage[part] = d; }
         }
         nextId = std::max(nextId, id + 1);
         plots.push_back(std::move(p));

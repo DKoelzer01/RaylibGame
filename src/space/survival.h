@@ -34,6 +34,8 @@ struct SurvivalState {
     float airRefillPerSec = 4.0f;                             // suit oxygen top-up from breathable air
     bool breathable = false;
     bool underwater = false;                                  // the head is in water (oxygen drains faster)
+    bool inVacuum = false;                                    // outside any breathable air (space, the moon, ring rocks)
+    float vacuumTime = 0.0f;                                  // seconds in vacuum in a suit not rated for it (60 s, then it hurts)
     bool dead = false;
     double deathTime = 0.0;
     int deaths = 0;
