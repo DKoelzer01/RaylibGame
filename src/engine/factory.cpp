@@ -167,6 +167,7 @@ std::vector<ItemMsg> itemQueue;
 std::vector<std::pair<uint64_t, std::pair<uint32_t, bool>>> nearQueue;
 bool resetRequested = false;
 std::vector<std::pair<int, int>> results;     // sim -> main: (item, count) back to the inventory
+std::vector<std::pair<int, int>> refunds;     // sim thread: contents of removed machines (to results)
 
 std::mutex viewMutex;                         // snapshot for the HUD
 std::tuple<uint64_t, uint32_t, int> watchKey{ 0, 0, -1 };
@@ -277,6 +278,14 @@ void ApplyLayout(const LayoutMsg& L) {
         }
         byPart[part] = (int)next.size();
         next.push_back(std::move(m));
+    }
+    // Machines gone from the layout (the part was removed, or replaced by another kind): what they
+    // held goes back to the player instead of vanishing with them.
+    for (const Machine& old : ps->machines) {
+        auto kept = byPart.find(old.part);
+        if (kept != byPart.end() && next[kept->second].type == old.type) continue;
+        for (int i = 0; i < InSlots(old); ++i) if (old.in[i].count > 0) refunds.push_back({ old.in[i].item, old.in[i].count });
+        for (int i = 0; i < kSlots; ++i) if (old.out[i].count > 0) refunds.push_back({ old.out[i].item, old.out[i].count });
     }
     ps->machines = std::move(next);
     ps->byPart = std::move(byPart);
@@ -445,6 +454,7 @@ void SimLoop() {
             for (const LayoutMsg& L : layouts) ApplyLayout(L);
             for (const auto& n : nears) if (PlotSim* p = FindPlot(n.first, n.second.first)) p->nearPlayer = n.second.second;
             std::vector<std::pair<int, int>> back;
+            back.swap(refunds); // removed machines' contents (from this tick's layouts)
             for (const ItemMsg& im : items) {
                 PlotSim* p = FindPlot(im.body, im.plot);
                 auto it = p ? p->byPart.find(im.part) : decltype(p->byPart.end()){};
