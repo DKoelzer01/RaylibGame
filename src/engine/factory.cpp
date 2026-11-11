@@ -181,6 +181,7 @@ struct Machine {
     int energy = 0;                         // battery charge / generator fuel ticks left
     int fuelEU = 0;                         // generator: EU per tick of the current fuel
     int tier = kTierLV;
+    int variant = -1;                       // item id: a miner only makes the ore of the deposit under it
     MachineStatus status = MachineStatus::Idle;
     int powerNet = -1, itemNet = -1;
     int received = 0;                       // EU this tick (consumers)
@@ -201,6 +202,7 @@ struct LayoutMsg {
     uint64_t body; uint32_t plot, version;
     std::vector<std::pair<int, PartType>> machines;      // part index, type
     std::vector<std::vector<Int3>> machineCells;
+    std::vector<std::string> machineVariant;              // per machine: its one output item ("" any)
     std::vector<Int3> conveyors, cables;
 };
 struct ItemMsg { int kind; uint64_t body; uint32_t plot; int part; int item; int count; }; // 0 insert, 1 extract, 2 seed
@@ -345,6 +347,7 @@ void ApplyLayout(const LayoutMsg& L) {
         auto it = ps->byPart.find(part);
         if (it != ps->byPart.end() && ps->machines[it->second].type == type) m = ps->machines[it->second];
         m.part = part; m.type = type; m.cells = L.machineCells[i];
+        m.variant = i < L.machineVariant.size() && !L.machineVariant[i].empty() ? tables.item(L.machineVariant[i]) : -1;
         // A loaded save's contents arrive before the layout: apply them once.
         auto pend = pendingStates.find({ L.body, L.plot, part });
         if (pend != pendingStates.end()) {
@@ -433,6 +436,7 @@ void TickPlot(PlotSim& ps, int dt, long long& made, int& active) {
                 for (size_t ri = 0; ri < tables.recipes.size(); ++ri) {
                     const Recipe& r = tables.recipes[ri];
                     if (r.machine != m.type) continue;
+                    if (m.variant >= 0 && (r.out.empty() || r.out[0].item != m.variant)) continue;
                     bool eatsFuel = false;
                     for (const Stack& s : r.in) eatsFuel |= isFuel(s.item);
                     if (def.power == Power::Fuel && eatsFuel != (pass == 1)) continue;
@@ -629,7 +633,7 @@ void Factory::Sync(Scene& world) {
             const std::string key = PlotKey(body->id, pl->id);
             auto sv = sentVersions.find(key);
             if (sv == sentVersions.end() || sv->second != pl->version) {
-                LayoutMsg L{ body->id, pl->id, pl->version, {}, {}, {}, {} };
+                LayoutMsg L{ body->id, pl->id, pl->version, {}, {}, {}, {}, {} };
                 std::vector<std::pair<Int3, CellShape>> fp;
                 for (size_t i = 0; i < pl->parts.size(); ++i) {
                     const Part& part = pl->parts[i];
@@ -640,6 +644,13 @@ void Factory::Sync(Scene& world) {
                         for (auto& c : fp) cells.push_back(c.first);
                         L.machines.push_back({ (int)i, part.type });
                         L.machineCells.push_back(std::move(cells));
+                        // A miner works the ore deposit 16 m under it.
+                        std::string variant;
+                        if (part.type == PartType::Miner) {
+                            const Vector3 at = pl->toBody({ (part.origin.x + 1.0f) * kCellSize, (part.origin.y - 32.0f) * kCellSize, (part.origin.z + 1.0f) * kCellSize });
+                            variant = OreKindAt(at, body->seed);
+                        }
+                        L.machineVariant.push_back(variant);
                     } else if (part.type == PartType::Conveyor) L.conveyors.push_back(part.origin);
                     else if (part.type == PartType::Cable) L.cables.push_back(part.origin);
                 }

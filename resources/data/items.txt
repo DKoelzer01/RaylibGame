@@ -47,3 +47,22 @@ cockpit         | Cockpit         |   4 |  60,120,170 | Pressurised seat; a plot
 guidance_computer | Guidance computer | 4 | 40,140,90 | Steers a rocket (reaction wheels).
 landing_leg     | Landing leg     |  20 | 150,150,150 | Softens touchdowns.
 rocket_fuel     | Rocket fuel     | 200 | 200, 80, 40 | 100 kg of fuel. Look at a rocket and press I to load it.
+# Milestone 8: ore processing, MV, HV
+ore_washer      | Ore washer      |  20 |  70,120,170 | LV: washes crushed ore with water into purified ore.
+centrifuge      | Centrifuge      |  20 | 160,160,170 | LV: splits purified ore into dust and a byproduct.
+water_pump      | Water pump      |  20 |  50, 90,160 | LV: pumps water.
+mv_generator    | MV generator    |  20 | 200, 90, 50 | Burns coal or coke for MV power (128 V).
+electrolyzer    | Electrolyzer    |  20 | 180,180, 80 | MV: splits water into hydrogen and oxygen; bauxite dust into aluminium.
+chemical_reactor | Chemical reactor | 20 | 120,160,120 | MV: coal and hydrogen into polyethylene.
+miner           | Miner           |  20 | 110, 90, 70 | MV: mines the ore deposit under it, forever.
+hv_generator    | HV generator    |  20 | 210, 60, 60 | Burns coke for HV power (512 V).
+arc_furnace     | Arc furnace     |  20 |  90, 90,110 | HV: titanium from ilmenite and coke; titanium alloy.
+refinery        | Refinery        |  20 | 140,110,160 | HV: rocket fuel from coal, hydrogen and oxygen.
+precision_assembler | Precision assembler | 20 | 100,140,180 | HV: titanium alloy plates, advanced circuits.
+mv_hull         | MV machine hull |  20 | 150,155,165 | Steel and copper casing for MV machines.
+hv_hull         | HV machine hull |  20 | 175,185,200 | Aluminium and steel casing for HV machines.
+good_circuit    | Good circuit    | 200 |  60,170, 90 | MV circuit: a basic circuit on polyethylene.
+advanced_circuit | Advanced circuit | 200 | 60,200,140 | HV circuit: gold contacts on aluminium.
+hydrogen        | Hydrogen cell   | 200 | 200,220,255 | From electrolysis.
+oxygen          | Oxygen cell     | 200 | 140,200,255 | From electrolysis.
+polyethylene    | Polyethylene    | 200 | 230,230,230 | Plastic sheet.
