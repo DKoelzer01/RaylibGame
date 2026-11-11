@@ -1,0 +1,5 @@
+# Environmental suits (plan 2, milestone 13): id | name | module slots | oxygen | power (capacity multipliers)
+# Worn in the inventory's Suit tab. Everyone starts in the basic suit.
+basic_suit    | Basic suit    | 2 | 1.0 | 1.0
+field_suit    | Field suit    | 4 | 1.2 | 1.2
+explorer_suit | Explorer suit | 6 | 1.5 | 1.5

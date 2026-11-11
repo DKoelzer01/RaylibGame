@@ -5,6 +5,7 @@
 #include "audio.h"
 #include "terraintool.h"
 #include "survival.h"
+#include "suit.h"
 #include "world.h"
 #include "ship.h"
 
@@ -184,6 +185,10 @@ void GameUI_Draw(Scene&) {
                     }
                     ImGui::PopID();
                 }
+                ImGui::EndTabItem();
+            }
+            if (ImGui::BeginTabItem("Suit")) {
+                Suit_DrawTab();
                 ImGui::EndTabItem();
             }
             if (ImGui::BeginTabItem("Creative")) {

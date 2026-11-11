@@ -1,4 +1,5 @@
 #include "survival.h"
+#include "suit.h"
 #include "rocket.h"
 #include "inventory.h"
 #include "player.h"
@@ -72,7 +73,7 @@ bool Survival_IsFood(const std::string& id) { LoadFoods(); return foods.count(id
 float Survival_FoodValue(const std::string& id) { LoadFoods(); auto it = foods.find(id); return it == foods.end() ? 0.0f : it->second.value; }
 
 void Survival_OnLanding(float impactSpeed) {
-    const float safe = 9.0f;
+    const float safe = Suit_Stats().servo ? 12.0f : 9.0f; // servo legs soften landings
     if (impactSpeed <= safe || survival.dead) return;
     survival.health -= (impactSpeed - safe) * 8.0f;
     Audio_Play(Sfx::Error, 0.6f, 0.6f);
@@ -104,6 +105,7 @@ void Survival_Update(Scene& world, float dt, bool inputEnabled) {
     }
     const Vector3 pr = (player.position - world.renderOrigin).toFloat();
     survival.breathable = false;
+    survival.underwater = false;
     // Life support: a rocket's pressurised cockpit (the placeholder ship that also gave it is gone).
     survival.inLifeSupport = Rocket_Boarded();
     if (survival.inLifeSupport) {
@@ -117,17 +119,23 @@ void Survival_Update(Scene& world, float dt, bool inputEnabled) {
         const Vector3 head = Vector3Add(pr, Vector3Scale(player.up, player.eyeHeight));
         survival.breathable = atm.enabled && Vector3Distance(pr, atm.centre) < atm.radius + survival.breathableAltitude && !IsUnderwater(world, head);
         if (survival.breathable) survival.oxygen = std::min(100.0f, survival.oxygen + survival.airRefillPerSec * dt);
-        else survival.oxygen = std::max(0.0f, survival.oxygen - survival.oxygenDrainPerSec * dt);
-        survival.power = std::max(0.0f, survival.power - (survival.powerDrainPerSec
+        else {
+            // Underwater drains it faster (a rebreather slows that); bigger tanks last longer.
+            const bool underwater = atm.enabled && IsUnderwater(world, head);
+            survival.underwater = underwater;
+            survival.oxygen = std::max(0.0f, survival.oxygen - survival.oxygenDrainPerSec * (underwater ? Suit_Stats().underwater : 1.0f) / Suit_Stats().oxygen * dt);
+        }
+        survival.power = std::max(0.0f, survival.power - (1.0f / Suit_Stats().power) * (survival.powerDrainPerSec
                                                           + (survival.headlamp && !ship.piloted ? survival.headlampPowerPerSec : 0.0f)) * dt);
         // Firing the jetpack only burns fuel; recharging the tank (on the ground) is what costs suit
         // power, and only as far as the power left can pay for.
         const float refilled = player.jetpackFuel - survival.lastJetpackFuel;
         if (refilled > 0.0f) {
-            const float affordable = survival.power / survival.jetpackPowerPerTank;
+            const float perTank = survival.jetpackPowerPerTank / Suit_Stats().power;
+            const float affordable = survival.power / perTank;
             const float paid = std::min(refilled, affordable);
             player.jetpackFuel = survival.lastJetpackFuel + paid;
-            survival.power = std::max(0.0f, survival.power - paid * survival.jetpackPowerPerTank);
+            survival.power = std::max(0.0f, survival.power - paid * perTank);
         }
     }
     survival.lastJetpackFuel = player.jetpackFuel;
@@ -145,14 +153,14 @@ void Survival_Update(Scene& world, float dt, bool inputEnabled) {
     {
         const Vector3 flat = Vector3Subtract(player.velocity, Vector3Scale(player.up, Vector3DotProduct(player.velocity, player.up)));
         const bool active = player.jetpackFiring || (player.grounded && Vector3Length(flat) > player.walkSpeed * 1.1f);
-        float drain = survival.foodDrainPerSec * (active ? 1.6f : 1.0f);
+        float drain = survival.foodDrainPerSec * (active ? 1.6f : 1.0f) * Suit_Stats().food;
         const float T = survival.temperature;
-        if (!std::isnan(T) && T < 5.0f) drain *= 1.0f + (5.0f - T) / 15.0f;
+        if (!std::isnan(T) && T < 5.0f) drain *= 1.0f + Suit_Stats().cold * (5.0f - T) / 15.0f; // insulation, the regulator
         if (GetTime() < survival.sickUntil) drain *= 2.0f;
         if (!survival.inLifeSupport) survival.food = std::max(0.0f, survival.food - drain * dt);
         if (survival.food <= 0.0f) survival.health -= survival.starvationDamagePerSec * dt;
         else if (survival.food > 80.0f && survival.oxygen > 0.0f) survival.health = std::min(100.0f, survival.health + survival.wellFedHealPerSec * dt);
-        if (!std::isnan(T) && T > 35.0f) survival.health -= 0.05f * (T - 35.0f) * dt; // 40 C: 0.25 a second
+        if (!std::isnan(T) && T > 35.0f && !Suit_Stats().heatProof) survival.health -= 0.05f * (T - 35.0f) * dt; // 40 C: 0.25 a second
     }
 
     if (inputEnabled) {
@@ -185,7 +193,9 @@ void Survival_DrawHUD() {
     const float T = survival.temperature;
     if (!std::isnan(T)) {
         const Color tc = T < 5.0f ? Color{ 130, 190, 255, 255 } : T > 35.0f ? Color{ 255, 140, 70, 255 } : Fade(RAYWHITE, 0.8f);
-        DrawText(TextFormat("%.0f C%s", T, T < 5.0f ? "  cold: hungrier" : T > 35.0f ? "  heat" : ""), x + 280, y + 68, 16, tc);
+        const SuitStats& st = Suit_Stats();
+        const char* note = T < 5.0f ? (st.cold <= 0.0f ? "  cold: regulated" : st.cold < 1.0f ? "  cold: insulated" : "  cold: hungrier") : T > 35.0f ? (st.heatProof ? "  heat: regulated" : "  heat") : "";
+        DrawText(TextFormat("%.0f C%s", T, note), x + 280, y + 68, 16, tc);
     }
     if (GetTime() < survival.sickUntil) DrawText("SICK", x + 280, y + 46, 16, ORANGE);
     if (survival.inLifeSupport) DrawText("LIFE SUPPORT", x + 280, y + 2, 16, SKYBLUE);

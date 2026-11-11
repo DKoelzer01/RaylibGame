@@ -32,6 +32,7 @@
 #include "viewmodel.h"
 #include "farming.h"
 #include "animals.h"
+#include "suit.h"
 #include "ring_test.h"
 #include "rocket.h"
 #include "jobsystem.h"
@@ -97,6 +98,7 @@ static void StartNewWorld(Scene& world, bool reset) {
         Nav_Reset();
         Farm_Reset();
         Animals_Reset();
+        Suit_Reset();
     }
     Planetoid* start = world.objects.empty() ? nullptr : dynamic_cast<Planetoid*>(world.objects[0].get());
     if (start) {
@@ -161,6 +163,7 @@ int main(int argc, char** argv)
     bool benchMap = false;         // --test-map: compass, exploration, waypoints, map images, saves
     bool benchQuests = false;      // --test-quests: tiers open by their tasks; quest state through a save
     bool benchHunger = false, benchFarm = false; // --test-hunger, --test-farm
+    bool benchSuit = false, suitOk = true; int suitPhase = 0; double suitStart = 0.0; float suitFoodRatio = 0.0f, suitWater = 0.0f, suitRebreather = 0.0f; // --test-suit
     bool benchAnimals = false; int animalPhase = 0, animalCount = 0; double animalStart = 0.0, animalMs = 0.0; int animalNatural = 0; float penWorst = 0.0f, animalSpread = 0.0f, animalFled = 0.0f, animalFollow = 0.0f; // --test-animals
     int hungerPhase = 0, farmPhase = 0; double hungerStart = 0.0, farmStart = 0.0; bool hungerOk = false; float hungerTemp = 0.0f, hungerDrain = 0.0f, farmQuarter = 0.0f, farmGrowth = 0.0f;
     bool benchViewmodel = false;   // --test-viewmodel: hands still at rest, bob within limits walking, screenshots
@@ -295,6 +298,7 @@ int main(int argc, char** argv)
         if (std::string(argv[i]) == "--test-hunger") benchHunger = true;
         if (std::string(argv[i]) == "--test-farm") benchFarm = true;
         if (std::string(argv[i]) == "--test-animals") benchAnimals = true;
+        if (std::string(argv[i]) == "--test-suit") benchSuit = true;
         if (std::string(argv[i]) == "--test-viewmodel") benchViewmodel = true;
         if (std::string(argv[i]) == "--test-ring") benchRing = true;
         if (std::string(argv[i]) == "--test-rocket") benchRocket = true;
@@ -1091,6 +1095,112 @@ int main(int argc, char** argv)
                                hungerTemp, hungerDrain, poleTemp, poleDrain, hungerOk && cold ? "PASS" : "FAIL");
                         survival.food = 100.0f; survival.health = 100.0f;
                         benchHunger = false;
+                    }
+                } else if (benchSuit && (suitPhase > 0 || WorldIdle())) {
+                    // --test-suit: each module changes its stat by the stated amount; underwater and the
+                    // cold drain as set; swapping suits keeps the modules that fit and returns the rest;
+                    // the setup survives a save and load.
+                    Planetoid* p = dynamic_cast<Planetoid*>(world.objects[0].get());
+                    const auto* pf = dynamic_cast<const PlanetField*>(p->field.get());
+                    auto check = [&](bool c, const char* what) { if (!c) { printf("bench: suit: FAILED %s\n", what); suitOk = false; } };
+                    auto near = [](float a, float b) { return fabsf(a - b) < 0.02f * fabsf(b) + 1e-4f; };
+                    auto fitOnly = [&](const char* id) {
+                        for (int i = 0; i < (int)Suit_Modules().size(); ++i) Suit_Unfit(i);
+                        if (id) { inventory.add(id, 1); Suit_Fit(id); }
+                        Suit_Apply(world, 0.0f);
+                    };
+                    auto drainOver = [&](float seconds, float& oxygen, float& food) {
+                        survival.oxygen = 100.0f; survival.food = 100.0f; survival.health = 100.0f; survival.sickUntil = 0.0f;
+                        player.velocity = { 0, 0, 0 };
+                        Survival_Update(world, seconds, false);
+                        oxygen = 100.0f - survival.oxygen; food = 100.0f - survival.food;
+                    };
+                    if (suitPhase == 0) {
+                        player.spawnOn(world, *p, StartSpawnDir(*p));
+                        suitPhase = 1; suitStart = GetTime(); suitOk = true;
+                    } else if (suitPhase == 1 && GetTime() - suitStart > 1.5 && player.grounded) {
+                        Suit_Reset();
+                        Suit_Apply(world, 0.0f);
+                        check(Suit_Worn() == "basic_suit" && Suit_Modules().size() == 2, "the basic suit, 2 slots");
+                        const float walk0 = player.walkSpeed, fuel0 = player.jetpackFuelPerSec, thrust0 = player.jetpackAccel;
+                        float o, f0, f;
+                        drainOver(60.0f, o, f0);
+                        // Wear the explorer suit: 6 slots, 1.5x oxygen and power.
+                        inventory.add("explorer_suit", 1);
+                        check(Suit_Wear("explorer_suit") && Suit_Modules().size() == 6 && near(Suit_Stats().oxygen, 1.5f), "the explorer suit");
+                        check(inventory.count("basic_suit") == 1, "the old suit back in the inventory");
+                        fitOnly("servo_legs");     check(near(player.walkSpeed, walk0 * 1.2f), "servo legs: +20% walk");
+                        fitOnly("thruster_pack");  check(near(player.jetpackFuelPerSec, fuel0 / 1.6f) && near(player.jetpackAccel, thrust0 * 1.6f), "thruster pack: +60% fuel and thrust");
+                        fitOnly("oxygen_tank_module"); check(near(Suit_Stats().oxygen, 2.0f), "oxygen tank: +50%");
+                        fitOnly("battery_pack");   check(near(Suit_Stats().power, 2.0f), "battery pack: +50%");
+                        fitOnly("lamp_upgrade");   check(near(Suit_Stats().lamp, 2.0f), "lamp upgrade");
+                        fitOnly("grip_boots");     check(player.walkableCos < 0.4f, "grip boots");
+                        fitOnly("food_pouch");     drainOver(60.0f, o, f); check(near(f, f0 * 0.75f), "food pouch: hunger 25% slower");
+                        suitFoodRatio = f / f0;
+                        fitOnly("ore_scanner");    check(Suit_Stats().scanner, "ore scanner");
+                        fitOnly(nullptr);
+                        check(near(player.walkSpeed, walk0) && near(Suit_Stats().oxygen, 1.5f), "modules out: the suit's own figures");
+                        // Fill all six, swap to the basic suit: two stay, four come back.
+                        const char* six[6] = { "servo_legs", "thruster_pack", "oxygen_tank_module", "battery_pack", "lamp_upgrade", "food_pouch" };
+                        int before = 0;
+                        for (const char* id : six) before += inventory.count(id);
+                        for (const char* id : six) { inventory.add(id, 1); Suit_Fit(id); }
+                        int fittedN = 0; for (const auto& m : Suit_Modules()) fittedN += m.empty() ? 0 : 1;
+                        check(fittedN == 6, "six modules fitted");
+                        check(Suit_Wear("basic_suit"), "back to the basic suit");
+                        fittedN = 0; for (const auto& m : Suit_Modules()) fittedN += m.empty() ? 0 : 1;
+                        int after = 0;
+                        for (const char* id : six) after += inventory.count(id);
+                        check(fittedN == 2 && after == before + 4 && inventory.count("explorer_suit") == 1, "two kept, four and the explorer suit returned");
+                        // Save and load.
+                        const std::string w = Suit_Worn(); const std::vector<std::string> mods = Suit_Modules();
+                        const std::string path = std::string(GetWorkingDirectory()) + "/suit_test.tmp";
+                        if (FILE* fp = fopen(path.c_str(), "w")) { saveExtrasHook(fp); fprintf(fp, "end_extras\n"); fclose(fp); }
+                        Suit_Reset();
+                        if (FILE* fp = fopen(path.c_str(), "r")) { loadExtrasHook(fp); fclose(fp); }
+                        remove(path.c_str());
+                        check(Suit_Worn() == w && Suit_Modules() == mods, "the suit saved");
+                        Suit_Reset(); Suit_Apply(world, 0.0f);
+                        // Next: under the sea.
+                        Vector3 sea{ 0, 0, 0 };
+                        for (int i = 0; i < 4000 && sea.x == 0.0f && sea.y == 0.0f; ++i) {
+                            const Vector3 d = Vector3Normalize({ sinf(i * 2.39996f) * sqrtf(1.0f - powf(1.0f - 2.0f * (i + 0.5f) / 4000.0f, 2.0f)), 1.0f - 2.0f * (i + 0.5f) / 4000.0f, cosf(i * 2.39996f) * sqrtf(1.0f - powf(1.0f - 2.0f * (i + 0.5f) / 4000.0f, 2.0f)) });
+                            const float e = pf->elevation(d);
+                            if (e < -8.0f && e > -30.0f && fabsf(d.y) < 0.6f) sea = d;
+                        }
+                        check(Vector3Length(sea) > 0.5f, "a shallow sea found");
+                        player.spawnOn(world, *p, p->dirToWorld(sea));
+                        suitPhase = 2; suitStart = GetTime();
+                    } else if (suitPhase == 2 && GetTime() - suitStart > 2.0) {
+                        float base, rebreathed, f;
+                        fitOnly(nullptr);
+                        drainOver(10.0f, base, f);
+                        check(survival.underwater, "the head is underwater");
+                        fitOnly("rebreather");
+                        drainOver(10.0f, rebreathed, f);
+                        suitWater = base; suitRebreather = rebreathed;
+                        check(near(base, survival.oxygenDrainPerSec * 2.0f * 10.0f), "underwater: oxygen drains twice as fast");
+                        check(near(rebreathed, base * 0.25f), "rebreather: 4x longer underwater");
+                        fitOnly(nullptr);
+                        player.spawnOn(world, *p, p->dirToWorld(Vector3Normalize({ 0.02f, 1.0f, 0.03f })));
+                        suitPhase = 3; suitStart = GetTime();
+                    } else if (suitPhase == 3 && GetTime() - suitStart > 1.5 && player.grounded) {
+                        float o, cold, insulated, regulated;
+                        fitOnly(nullptr);            drainOver(60.0f, o, cold);
+                        const float T = survival.temperature;
+                        fitOnly("insulation_module"); drainOver(60.0f, o, insulated);
+                        fitOnly("thermal_regulator"); drainOver(60.0f, o, regulated);
+                        const float base = 60.0f * survival.foodDrainPerSec;
+                        check(T < 0.0f, "the pole is cold");
+                        check(near(cold, base * (1.0f + (5.0f - T) / 15.0f)), "cold: hungrier");
+                        check(near(insulated, base * (1.0f + 0.4f * (5.0f - T) / 15.0f)), "insulation: 40% of the cold felt");
+                        check(near(regulated, base), "thermal regulator: no cold");
+                        fitOnly(nullptr);
+                        printf("bench: suit: modules checked (food pouch x%.2f), suits swapped, saved; underwater O2 -%.1f in 10 s, %.2f with a rebreather; at the pole (%.0f C) food -%.2f, insulated -%.2f, regulated -%.2f a minute -> %s\n",
+                               suitFoodRatio, suitWater, suitRebreather, T, cold, insulated, regulated, suitOk ? "PASS" : "FAIL");
+                        Suit_Reset();
+                        survival.food = 100.0f; survival.oxygen = 100.0f; survival.health = 100.0f;
+                        benchSuit = false;
                     }
                 } else if (benchAnimals && (animalPhase > 0 || WorldIdle())) {
                     // --test-animals: a herd spawns on the ground and stays there, a hit one flees, a fed one
@@ -2193,7 +2303,7 @@ int main(int argc, char** argv)
                         }
                         benchWalkSeconds = 0.0;
                     }
-                } else if ((WorldIdle() && benchDigStrokes == 0 && !benchSaveLoad && benchWalkSeconds <= 0.0 && benchMineStrokes == 0 && minePhase != 2 && benchFlySeconds <= 0.0 && !benchSuffocate && benchOrbitSeconds <= 0.0 && !benchRide && !benchPark && !benchGravity && !benchPrecision && !benchMantle && !benchAirJump && !benchMoon && !benchHole && !benchWall && !benchMenus && !benchWater && !benchFlyFollow && !benchHotbar && !benchInventory && !benchMap && !benchViewmodel && !benchQuests && !benchHunger && !benchFarm && !benchAnimals && !benchRing && !benchRocket && !benchBlueprint && !benchSmallBody && !benchTrees && !benchChop && benchPersist == 0 && benchBuild == 0 && benchFactory == 0 && !benchProgression) || GetTime() > 600.0) {
+                } else if ((WorldIdle() && benchDigStrokes == 0 && !benchSaveLoad && benchWalkSeconds <= 0.0 && benchMineStrokes == 0 && minePhase != 2 && benchFlySeconds <= 0.0 && !benchSuffocate && benchOrbitSeconds <= 0.0 && !benchRide && !benchPark && !benchGravity && !benchPrecision && !benchMantle && !benchAirJump && !benchMoon && !benchHole && !benchWall && !benchMenus && !benchWater && !benchFlyFollow && !benchHotbar && !benchInventory && !benchMap && !benchViewmodel && !benchQuests && !benchHunger && !benchFarm && !benchAnimals && !benchSuit && !benchRing && !benchRocket && !benchBlueprint && !benchSmallBody && !benchTrees && !benchChop && benchPersist == 0 && benchBuild == 0 && benchFactory == 0 && !benchProgression) || GetTime() > 600.0) {
                     benchStart = GetTime();
                     printf("bench: world ready after %.2f s (%d chunks, avg build %.2f ms of which sampling %.2f ms, %d worker threads)\n",
                         GetWorldStats().lastGenerationSeconds, GetWorldStats().chunks, GetWorldStats().avgBuildMs, GetWorldStats().avgSampleMs, GetWorldStats().workerThreads);
@@ -2314,6 +2424,7 @@ int main(int argc, char** argv)
                 Rocket_Update(world, gameInput && alive, frameDt * timeScale * Rocket_Warp()); // flight (and its camera)
             } else {
                 ship.update(world, false, frameDt);
+                Suit_Apply(world, frameDt); // the worn suit and modules: walk, jetpack, grip, the scanner
                 if (alive && !loading) player.update(world, gameInput, frameDt);
                 Survival_OnLanding(player.impactSpeed);
                 Rocket_Update(world, gameInput && alive, frameDt); // on foot: aim at a rocket (E boards, I fuels)
@@ -2372,7 +2483,7 @@ int main(int argc, char** argv)
             lamp.type = LIGHT_SPOT;
             lamp.enabled = gameState == 1 && survival.headlamp && !survival.dead;
             if (lamp.enabled) {
-                const float range = ship.piloted ? 60.0f : 35.0f;
+                const float range = ship.piloted ? 60.0f : 35.0f * Suit_Stats().lamp; // the lamp upgrade reaches further
                 Vector3 from, dir;
                 if (ship.piloted) { from = Vector3Add(ship.renderPos(world), Vector3Scale(ship.forward(), 2.6f)); dir = ship.forward(); }
                 else {
@@ -2525,6 +2636,7 @@ int main(int argc, char** argv)
                 Hotbar_DrawHUD(ship.piloted);
                 Machine_DrawHUD();
                 if (!ship.piloted && !buildTool.active) Animals_DrawHUD();
+                Suit_DrawHUD();
                 if (!ship.piloted && !telescope.active && !buildTool.active && !Rocket_Boarded()) TerrainTool_DrawHUD();
                 GameUI_DrawHUD(world);
                 Survival_DrawHUD();

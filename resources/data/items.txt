@@ -105,3 +105,19 @@ shears           | Shears           |  tool | 180,180,190 | Shear a woolback for
 bucket           | Bucket           |  tool | 160,160,170 | Milk a hornhide (look at it, O).
 fence            | Fence            | block | 130,95,60   | A 1 m wooden panel. Animals can't cross it: build a pen.
 gate             | Gate             | block | 165,120,70  | A fence panel you can walk through; animals can't.
+# Environmental suit (plan 2, milestone 13): suits and modules, fitted in the inventory's Suit tab.
+cloth              | Cloth              |   999 | 220,215,190 | Woven from fibre or wool. Suits and modules.
+basic_suit         | Basic suit         |  tool | 200,200,190 | 2 module slots. You start in one.
+field_suit         | Field suit         |  tool | 120,150,110 | 4 module slots, +20% oxygen and power.
+explorer_suit      | Explorer suit      |  tool | 220,200,120 | 6 module slots, +50% oxygen and power.
+oxygen_tank_module | Oxygen tank module |  tool | 90,200,255  | Suit module: +50% oxygen.
+battery_pack       | Battery pack       |  tool | 250,210,70  | Suit module: +50% suit power.
+insulation_module  | Insulation         |  tool | 235,235,225 | Suit module: the cold costs much less food.
+rebreather         | Rebreather         |  tool | 70,140,200  | Suit module: oxygen lasts longer underwater.
+thruster_pack      | Thruster pack      |  tool | 200,110,60  | Suit module: +60% jetpack fuel and thrust.
+lamp_upgrade       | Lamp upgrade       |  tool | 255,244,200 | Suit module: a longer headlamp beam.
+thermal_regulator  | Thermal regulator  |  tool | 230,120,90  | Suit module: steady body temperature in heat and cold.
+ore_scanner        | Ore scanner        |  tool | 255,190,110 | Suit module: shows the nearest ore within 64 m.
+servo_legs         | Servo legs         |  tool | 150,150,170 | Suit module: +20% walk speed, safer landings.
+grip_boots         | Grip boots         |  tool | 110,90,70   | Suit module: walk up steeper ground.
+food_pouch         | Food pouch         |  tool | 160,120,80  | Suit module: hunger 25% slower.
