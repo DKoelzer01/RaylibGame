@@ -181,6 +181,16 @@ PlanetField::PlanetField(unsigned int seed, float radius_, bool moon_)
     else { minElevation = -740.0f; maxElevation = 1690.0f; }
 }
 
+// River valleys: 70 m deep, with a flat floodplain floor (valley-noise units < kValleyFloor, room for
+// the widest river) and sides rising over the next 0.04 units. (A V-shaped floor rose ~27 m across a
+// river's width and tilted its water.)
+static constexpr float kValleyFloor = 0.035f, kValleyEdge = 0.075f;
+static float ValleyCarve(float v) {
+    if (v >= kValleyEdge) return 0.0f;
+    const float t = 1.0f - std::max(v - kValleyFloor, 0.0f) / (kValleyEdge - kValleyFloor);
+    return t * t * 70.0f;
+}
+
 PlanetField::Land PlanetField::land(Vector3 dir, float fp) const {
     const float sx = dir.x * radius, sy = dir.y * radius, sz = dir.z * radius; // the surface point (m)
     Land l{ 0, 0, 0, 1, 0, 0, 1, 0 };
@@ -208,7 +218,7 @@ PlanetField::Land PlanetField::land(Vector3 dir, float fp) const {
     if (valleyWeight > 0.0f) {
         const float v = fabsf(valleys.fractal(3, sx, sy, sz));
         l.valley = v;
-        if (v < 0.05f) { const float t = 1.0f - v / 0.05f; h -= t * t * 70.0f * valleyWeight; }
+        h -= ValleyCarve(v) * valleyWeight;
     }
     // Ravines: rare narrow canyons (~60 m wide, up to ~90 m deep, steep sqrt-profile walls) in some
     // land regions, faded out where samples are too far apart to resolve them.
@@ -268,6 +278,39 @@ float PlanetField::riverWeight(const Land& l) const {
     return l.valleyWeight * (1.0f - Smoothstep(80.0f, 250.0f, l.ridge)) * Smoothstep(1.0f, 6.0f, l.h) * (1.0f - Smoothstep(700.0f, 900.0f, l.h));
 }
 
+float PlanetField::broadLand(const Land& l, Vector3 dir, float smoothFp) const {
+    const float sx = dir.x * radius, sy = dir.y * radius, sz = dir.z * radius;
+    const float base = l.c < 0.0f ? l.c * 650.0f : l.c * 200.0f;
+    return base + l.ridge + hills.fractalLimited(3, smoothFp, sx, sy, sz) * (25.0f + 60.0f * l.mountain) - ValleyCarve(l.valley) * l.valleyWeight;
+}
+
+PlanetField::River PlanetField::stream(const Land& l, Vector3 dir, float fp) const {
+    River r{ riverWeight(l) * std::clamp(2.0f - fp / 12.0f, 0.0f, 1.0f), kNoWater, 1.0f };
+    if (r.w <= 0.0f || l.stream >= kStreamZone) { r.w = 0.0f; return r; }
+    // Smoothed like rivers, less so (streams follow the land more closely): without the hills'
+    // finest octave; faded out where it would need a levee or a deep cut.
+    r.level = std::max(broadLand(l, dir, std::max(fp, 32.0f)) - kStreamDrop, 0.3f);
+    const float m = r.level - l.h;
+    r.w *= (1.0f - Smoothstep(2.5f, 4.0f, m)) * (1.0f - Smoothstep(5.0f, 8.0f, -m));
+    return r;
+}
+
+PlanetField::River PlanetField::river(const Land& l, Vector3 dir, float fp) const {
+    River r{ riverWeight(l), kNoWater, 1.0f };
+    if (r.w <= 0.0f) return r;
+    // Wider toward the sea: lowland rivers have gathered their tributaries.
+    r.wf = 1.0f + 1.5f * (1.0f - Smoothstep(5.0f, 250.0f, l.h));
+    if (l.valley >= kRiverZone * r.wf) { r.w = 0.0f; return r; }
+    // The water level from the land with only its broad hills (no finer octaves, no detail) and the
+    // valley: smooth along the river instead of following every bump of the valley floor.
+    r.level = std::max(broadLand(l, dir, std::max(fp, 96.0f)) - kRiverDrop, 0.3f);
+    // Where that would stand well above the valley floor (a tall levee) or deep below it (a gorge),
+    // the river fades out rather than build walls.
+    const float m = r.level - l.h;
+    r.w *= (1.0f - Smoothstep(4.0f, 8.0f, m)) * (1.0f - Smoothstep(14.0f, 22.0f, -m));
+    return r;
+}
+
 PlanetField::Pond PlanetField::pondOfCell(int cx, int cy, int cz) const {
     struct Entry { int x, y, z; const PlanetField* f; Pond p; };
     thread_local Entry cache[512];
@@ -313,18 +356,33 @@ float PlanetField::elevation(Vector3 dir, float fp) const {
     if (moon) return l.h;
     float h = l.h + l.detail;
     // River channel along the valley floor, banks smoothed (less fine detail) near it.
-    const float rw = riverWeight(l);
-    // Streams: the same, smaller (a narrower, shallower channel; no valley).
-    const float sw = rw * std::clamp(2.0f - fp / 12.0f, 0.0f, 1.0f);
-    if (sw > 0.0f && l.stream < kStreamZone) {
+    // Streams: the same as rivers, smaller (a narrower, shallower channel; no valley).
+    const River st = stream(l, dir, fp);
+    if (st.w > 0.0f) {
         const float zone = 1.0f - l.stream / kStreamZone;
-        h = l.h + l.detail * (1.0f - 0.85f * zone * sw);
-        if (l.stream < kStreamHalf) { const float t = 1.0f - (l.stream / kStreamHalf) * (l.stream / kStreamHalf); h -= kStreamDepth * t * sw; }
+        h = l.h + l.detail * (1.0f - 0.85f * zone * st.w);
+        const float bank = st.level + 0.3f;
+        if (h < bank) h += (bank - h) * (1.0f - Smoothstep(kStreamHalf, kStreamZone, l.stream)) * st.w;
+        if (l.stream < kStreamHalf) {
+            const float t = 1.0f - (l.stream / kStreamHalf) * (l.stream / kStreamHalf);
+            const float bed = st.level + 0.2f - (kStreamDepth - kStreamDrop + 0.2f) * t;
+            h += (bed - h) * st.w;
+        }
     }
-    if (rw > 0.0f && l.valley < kRiverZone) {
-        const float zone = 1.0f - l.valley / kRiverZone;
-        h = std::min(h, l.h + l.detail * (1.0f - 0.85f * zone * rw));
-        if (l.valley < kRiverHalf) { const float t = 1.0f - (l.valley / kRiverHalf) * (l.valley / kRiverHalf); h -= kRiverDepth * t * rw; }
+    const River rv = river(l, dir, fp);
+    if (rv.w > 0.0f) {
+        const float half = kRiverHalf * rv.wf, zoneW = kRiverZone * rv.wf;
+        const float zone = 1.0f - l.valley / zoneW;
+        h = std::min(h, l.h + l.detail * (1.0f - 0.85f * zone * rv.w));
+        // Banks a little above the water next to the channel (a low levee where the floor dips).
+        const float bank = rv.level + 0.4f;
+        if (h < bank) h += (bank - h) * (1.0f - Smoothstep(half, zoneW, l.valley)) * rv.w;
+        // The channel: its bed shaped to the water level (cut into higher ground, filled in lower).
+        if (l.valley < half) {
+            const float t = 1.0f - (l.valley / half) * (l.valley / half);
+            const float bed = rv.level + 0.3f - (kRiverDepth - kRiverDrop + 0.3f) * t;
+            h += (bed - h) * rv.w;
+        }
     }
     // Ponds: a bowl to the pond's level inside its radius, an embankment just outside it where the
     // ground falls away. Faded out where samples are too far apart to resolve them.
@@ -353,9 +411,15 @@ float PlanetField::waterElevation(Vector3 dir, float fp) const {
     if (moon) return kNoWater;
     float w = kNoWater;
     const Land l = land(dir, fp);
-    if (fp < 128.0f && riverWeight(l) > 0.3f && l.valley < kRiverHalf * 1.2f) w = l.h - kRiverDrop;
+    if (fp < 128.0f) {
+        const River rv = river(l, dir, fp);
+        if (rv.w > 0.3f && l.valley < kRiverHalf * rv.wf * 1.2f) w = rv.level;
+    }
     if (fp >= 96.0f) return w; // ponds are not resolved (their bowls fade out by here)
-    if (riverWeight(l) > 0.3f && fp < 12.0f && l.stream < kStreamHalf * 1.2f) w = std::max(w, l.h - kStreamDrop);
+    if (fp < 12.0f && l.stream < kStreamHalf * 1.2f) {
+        const River st = stream(l, dir, fp);
+        if (st.w > 0.3f) w = std::max(w, st.level);
+    }
     ForPondCellsNear(Vector3Scale(dir, radius), kPondReach, [&](int x, int y, int z) {
         const Pond p = pondOfCell(x, y, z);
         if (p.exists && Vector3Distance(dir, p.dir) * radius < p.r * 1.05f) w = std::max(w, p.level);
@@ -368,7 +432,7 @@ bool PlanetField::inlandWaterNear(Vector3 dir, float extent, float fp) const {
     const float sx = dir.x * radius, sy = dir.y * radius, sz = dir.z * radius;
     // The valley noise changes by at most ~3x its frequency per metre.
     // Each kind only where samples resolve it (as in elevation() and waterElevation()).
-    if (fp < 128.0f && fabsf(valleys.fractal(3, sx, sy, sz)) < kRiverHalf * 1.2f + extent * 3.0f * 6.5f / radius) return true;
+    if (fp < 128.0f && fabsf(valleys.fractal(3, sx, sy, sz)) < kRiverHalf * 2.5f * 1.2f + extent * 3.0f * 6.5f / radius) return true;
     if (fp < 12.0f && fabsf(streams.fractal(2, sx, sy, sz)) < kStreamHalf * 1.2f + extent * 0.0075f) return true;
     if (fp >= 96.0f) return false;
     bool near = false;

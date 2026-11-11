@@ -204,6 +204,12 @@ private:
     struct Pond { bool exists; Vector3 dir; float r, level, depth; };
     Pond pondOfCell(int cx, int cy, int cz) const;       // deterministic per cell (cached per thread)
     float riverWeight(const Land& l) const;
+    // A river here: its weight (0: none), water level (smooth: from the land without its fine hills
+    // and detail, so it does not follow every bump) and width factor (wider toward the sea).
+    struct River { float w, level, wf; };
+    River river(const Land& l, Vector3 dir, float footprint) const;
+    River stream(const Land& l, Vector3 dir, float footprint) const; // the same for streams (wf unused)
+    float broadLand(const Land& l, Vector3 dir, float smoothFootprint) const; // the land without fine hills and detail
 };
 
 // No terrain at all: a body that only carries a build plot (a rocket in flight, rocket.h).

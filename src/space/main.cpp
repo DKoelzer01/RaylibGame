@@ -911,6 +911,30 @@ int main(int argc, char** argv)
                                 if (dist < best) { best = dist; waterDir = d; waterLevel = w; }
                             }
                         printf("bench: water: %.2f%% of 64 km^2 around the start is inland water (%d of %d samples); nearest %.0f m away\n", 100.0f * wet / samples, wet, samples, best);
+                        {
+                            // Water surface smoothness: the level's change between neighbours 4 m apart, where
+                            // both are water (a river's surface should be nearly flat across and gently sloped along).
+                            double sum = 0.0; int pairs = 0, steep = 0; float worst = 0.0f;
+                            auto lvl = [&](float e, float n, float& w) {
+                                const Vector3 d = Vector3Normalize(Vector3Add(home, Vector3Add(Vector3Scale(t1, e / pf->radius), Vector3Scale(t2, n / pf->radius))));
+                                if (!pf->inlandWaterNear(d, 0.0f)) return false;
+                                w = pf->waterElevation(d);
+                                return w != PlanetField::kNoWater && w > 0.0f && pf->elevation(d) < w - 0.2f;
+                            };
+                            for (float e = -2000.0f; e <= 2000.0f; e += 4.0f)
+                                for (float n = -2000.0f; n <= 2000.0f; n += 4.0f) {
+                                    float a, b, c;
+                                    if (!lvl(e, n, a)) continue;
+                                    for (int k = 0; k < 2; ++k) {
+                                        const float de = k ? 0.0f : 4.0f, dn = k ? 4.0f : 0.0f;
+                                        if (!lvl(e + de, n + dn, b) || !lvl(e - de, n - dn, c)) continue;
+                                        const float s = fabsf(b - 2.0f * a + c); // bumps and kinks, not an even slope
+                                        sum += s; ++pairs; worst = std::max(worst, s); if (s > 0.2f) ++steep;
+                                    }
+                                }
+                            printf("bench: water surface roughness (second difference over 4 m): %d samples, mean %.3f m, worst %.2f m, %.1f%% over 0.2 m\n",
+                                   pairs, pairs ? sum / pairs : 0.0, worst, pairs ? 100.0 * steep / pairs : 0.0);
+                        }
                         if (best > 1e29f) { printf("bench: water: FAIL (none)\n"); benchWater = false; }
                         else { waterPhase = 1; waterStart = GetTime(); player.flyMode = true; sunOverride = true; } // daylight for the picture
                     } else {
