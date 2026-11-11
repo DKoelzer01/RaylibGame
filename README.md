@@ -245,6 +245,12 @@ Shaders in `resources/` hot-reload when saved.
 - Asteroid density is a displaced sphere (mean surface 0.72 R) with a uniform 0.25/voxel gradient: crisp surfaces and
   predictable dig depth.
 ## Benchmark / test mode
+
+The whole regression is one script: `tools/regression.sh [planet|space|all]` (`EXE=...` picks the game,
+`SNAPSHOT=1` runs from a copy of the exe and `resources/` so you can keep building). It prints each test's
+lines and a closing PASS/FAIL count, and exits 1 on any failure. The space set (ring, blueprint, rocket on two
+seeds, orbit, ride) runs in about 4 minutes; the planet set in about 45.
+
 ```sh
 ./game.exe --bench 10                       # 1920x1080 uncapped; waits for the world to load, prints frame stats
 ./game.exe --bench 5 --seed 42 --size 200 --cam 400 200 -400

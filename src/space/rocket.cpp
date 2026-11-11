@@ -457,9 +457,13 @@ namespace {
         Planetoid* ground = GroundBody(world, com);
         if (!ground) return;
         bool touching = false;
+        // The sea counts as a surface: a rocket coming down over it splashes down and floats (the
+        // autopilot aims for sea level there).
+        const float sea = ground->field ? ground->field->seaLevelRadius() : 0.0f;
         for (const Vector3& p : pts) {
             const DVec3 wp = ToWorld({ p.x, p.y, -p.z });
-            if (ground->densityAt(ground->toLocalD(wp).toFloat()) >= ISO_LEVEL) { touching = true; break; }
+            const Vector3 lp = ground->toLocalD(wp).toFloat();
+            if (ground->densityAt(lp) >= ISO_LEVEL || (sea > 0.0f && Vector3Length(lp) < sea)) { touching = true; break; }
         }
         if (!touching) return;
         const Vector3 vrel = Vector3Subtract(vel, ground->surfaceVelocity((com - world.renderOrigin).toFloat()));
