@@ -72,7 +72,11 @@ namespace {
             inventory.add("fibre", 2);
             const bool berries = (p.id & 1) == 0;
             if (berries) inventory.add("berries", 1);
-            Toast(berries ? "+2 fibre  +1 berries" : "+2 fibre");
+            // Seeds for farming: one of grain, roots or flax from half the bushes.
+            static const char* seeds[3] = { "grain_seeds", "root_seeds", "flax_seeds" };
+            const char* seed = ((p.id >> 1) & 1) == 0 ? seeds[(p.id >> 2) % 3] : nullptr;
+            if (seed && itemDB.find(seed)) inventory.add(seed, 1);
+            Toast(TextFormat("+2 fibre%s%s", berries ? "  +1 berries" : "", seed && itemDB.find(seed) ? "  +1 seeds" : ""));
             Audio_Play(Sfx::Pickup, 0.5f);
         }
         chopId = 0; chopHits = 0;
@@ -202,6 +206,11 @@ bool TerrainTool_Stroke(bool dig) {
     if (terrainTool.terraform) return BrushStroke(dig);
 
     const float radius = MiningRadius();
+    if (!dig && tool.type == ToolType::Shovel && IsSoft(hit.material) && terrainTool.till) {
+        // A shovel tills soft ground into farmland (no soil placed).
+        if (terrainTool.till(p, hit.local)) { Audio_Play(Sfx::Dig, 0.5f, 0.7f); ++terrainTool.swings; return true; }
+        return false;
+    }
     if (!dig) {
         if (!PayFiller()) return false;
         TerrainEdit e{};

@@ -1,5 +1,6 @@
 #include "buildtool.h"
 #include "survival.h"
+#include "farming.h"
 #include "audio.h"
 #include "gameui.h"
 #include "inventory.h"
@@ -232,11 +233,19 @@ void Machine_Update(Scene& world, bool inputEnabled) {
         Int3 c, f; float d;
         if (!pl->raycast(lo, ld, best, c, f, d)) continue;
         const int part = pl->partAt(c);
-        if (part < 0 || !IsMachine(pl->parts[part].type)) continue;
+        if (part < 0 || (!IsMachine(pl->parts[part].type) && pl->parts[part].type != PartType::Farmland)) continue;
         best = d;
         machineAim = { body->id, pl->id, part, pl->parts[part].type };
     }
     if (machineAim.part < 0 || !inputEnabled) return;
+    if (machineAim.type == PartType::Farmland) {
+        // Farmland: I plants seeds you carry, O harvests a ripe crop.
+        Planetoid* fb = Planetoid::find(machineAim.body);
+        Plot* fp = fb && fb->plots ? fb->plots->byId(machineAim.plot) : nullptr;
+        if (fb && fp && IsKeyPressed(KEY_I)) Farm_Plant(*fb, *fp, machineAim.part);
+        if (fb && fp && IsKeyPressed(KEY_O)) Farm_Harvest(*fb, *fp, machineAim.part);
+        return;
+    }
     if (IsKeyPressed(KEY_I)) {
         // Everything in the inventory the machine might take: fuel for generators, recipe inputs,
         // anything for a chest (the simulation hands back what does not fit).
@@ -254,6 +263,12 @@ void Machine_Update(Scene& world, bool inputEnabled) {
 
 void Machine_DrawHUD() {
     if (machineAim.part < 0) return;
+    if (machineAim.type == PartType::Farmland) {
+        Planetoid* fb = Planetoid::find(machineAim.body);
+        Plot* fp = fb && fb->plots ? fb->plots->byId(machineAim.plot) : nullptr;
+        if (fb && fp) Farm_DrawAimHUD(*fb, *fp, machineAim.part);
+        return;
+    }
     const MachineView v = Factory::View(machineAim.body, machineAim.plot, machineAim.part);
     const int x = GetScreenWidth() / 2 + 20, y = GetScreenHeight() / 2 + 40;
     DrawRectangle(x - 8, y - 6, 420, 112, Fade(BLACK, 0.55f));

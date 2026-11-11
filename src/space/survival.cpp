@@ -6,15 +6,70 @@
 #include "audio.h"
 #include "gameui.h"
 #include "world.h"
+#include "worldtypes.h"
+#include "voxel.h"
+#include "scene.h"
 
 #include <algorithm>
 #include <cmath>
 #include <cstring>
 #include <set>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 SurvivalState survival;
+
+// ---------------------------------------------------------------------------------------------
+// Food (resources/data/foods.txt: item | food | note) and the air temperature
+// ---------------------------------------------------------------------------------------------
+
+namespace {
+    struct Food { float value = 0.0f; bool raw = false; };
+    std::unordered_map<std::string, Food> foods;
+    bool foodsLoaded = false;
+
+    void LoadFoods() {
+        if (foodsLoaded) return;
+        foodsLoaded = true;
+        FILE* f = fopen("resources/data/foods.txt", "r");
+        if (!f) return;
+        char line[512];
+        while (fgets(line, sizeof line, f)) {
+            if (line[0] == '#' || line[0] == '\n' || line[0] == '\r') continue;
+            char id[64] = {}, flag[32] = {};
+            float v = 0.0f;
+            // "id | value | raw" (the third column optional)
+            if (sscanf(line, " %63[^ |] | %f | %31[^ |\r\n]", id, &v, flag) >= 2) foods[id] = { v, strcmp(flag, "raw") == 0 };
+        }
+        fclose(f);
+    }
+
+    // The air temperature where the player stands (deg C), or NaN in vacuum (the suit regulates):
+    // 32 at the equator falling to about -25 at the poles, 6.5 colder per km of height, +-7 between
+    // noon and midnight, and underground drifting toward a cave's steady 12.
+    float AirTemperature(Scene& world) {
+        Planetoid* p = player.nearest;
+        if (!p || !world.atmosphere.enabled) return NAN;
+        const auto* pf = dynamic_cast<const PlanetField*>(p->field.get());
+        if (!pf || pf->moon) return NAN;
+        const Vector3 local = p->toLocal((player.position - world.renderOrigin).toFloat());
+        const float d = Vector3Length(local);
+        if (d < 1.0f) return NAN;
+        const Vector3 up = Vector3Scale(local, 1.0f / d);
+        const float height = d - pf->radius;                  // above sea level
+        if (height > survival.breathableAltitude) return NAN; // above the air: the suit regulates
+        const float lat = fabsf(up.y);
+        const float sun = Vector3DotProduct(Vector3Normalize(world.sunDirection), player.up); // -1 midnight .. 1 noon
+        float t = 32.0f - 57.0f * powf(lat, 1.5f) - 6.5f * std::max(height, 0.0f) / 1000.0f + 7.0f * sun;
+        const float depth = pf->elevation(up) - height;       // below the surface here
+        if (depth > 3.0f) t += (12.0f - t) * std::min(1.0f, (depth - 3.0f) / 12.0f);
+        return t;
+    }
+}
+
+bool Survival_IsFood(const std::string& id) { LoadFoods(); return foods.count(id) > 0; }
+float Survival_FoodValue(const std::string& id) { LoadFoods(); auto it = foods.find(id); return it == foods.end() ? 0.0f : it->second.value; }
 
 void Survival_OnLanding(float impactSpeed) {
     const float safe = 9.0f;
@@ -25,6 +80,8 @@ void Survival_OnLanding(float impactSpeed) {
 
 void Survival_Respawn(Scene& world) {
     survival.oxygen = survival.power = survival.health = 100.0f;
+    survival.food = std::max(survival.food, 60.0f);
+    survival.sickUntil = 0.0f;
     survival.dead = false;
     player.flyMode = false; // otherwise the free-fly camera would put the player back where they died
     // Wake up at the start, at rest with the ground there (spawnOn sets the velocity to the surface's:
@@ -82,6 +139,21 @@ void Survival_Update(Scene& world, float dt, bool inputEnabled) {
         } else GameUI_Toast("No suit power for the headlamp");
     }
     if (survival.oxygen <= 0.0f) survival.health -= survival.suffocationDamagePerSec * dt;
+    // Temperature and hunger. Food drains faster running or on the jetpack, in the cold, and
+    // while sick; the cockpit's life support feeds you. Heat does slow damage.
+    survival.temperature = AirTemperature(world);
+    {
+        const Vector3 flat = Vector3Subtract(player.velocity, Vector3Scale(player.up, Vector3DotProduct(player.velocity, player.up)));
+        const bool active = player.jetpackFiring || (player.grounded && Vector3Length(flat) > player.walkSpeed * 1.1f);
+        float drain = survival.foodDrainPerSec * (active ? 1.6f : 1.0f);
+        const float T = survival.temperature;
+        if (!std::isnan(T) && T < 5.0f) drain *= 1.0f + (5.0f - T) / 15.0f;
+        if (GetTime() < survival.sickUntil) drain *= 2.0f;
+        if (!survival.inLifeSupport) survival.food = std::max(0.0f, survival.food - drain * dt);
+        if (survival.food <= 0.0f) survival.health -= survival.starvationDamagePerSec * dt;
+        else if (survival.food > 80.0f && survival.oxygen > 0.0f) survival.health = std::min(100.0f, survival.health + survival.wellFedHealPerSec * dt);
+        if (!std::isnan(T) && T > 35.0f) survival.health -= 0.05f * (T - 35.0f) * dt; // 40 C: 0.25 a second
+    }
 
     if (inputEnabled) {
     }
@@ -104,10 +176,18 @@ static void Bar(int x, int y, int w, const char* label, float value, Color c, bo
 }
 
 void Survival_DrawHUD() {
-    const int x = 20, y = GetScreenHeight() - 170;
+    const int x = 20, y = GetScreenHeight() - 192;
     Bar(x, y, 260, "O2", survival.oxygen, { 90, 200, 255, 255 }, survival.oxygen < 20.0f);
     Bar(x, y + 22, 260, "PWR", survival.power, { 250, 210, 70, 255 }, survival.power < 15.0f);
     Bar(x, y + 44, 260, "HP", survival.health, { 230, 70, 70, 255 }, survival.health < 30.0f);
+    Bar(x, y + 66, 260, "FOOD", survival.food, { 120, 200, 90, 255 }, survival.food < 15.0f);
+    // The air temperature, coloured when it costs you (cold: hunger; heat: health).
+    const float T = survival.temperature;
+    if (!std::isnan(T)) {
+        const Color tc = T < 5.0f ? Color{ 130, 190, 255, 255 } : T > 35.0f ? Color{ 255, 140, 70, 255 } : Fade(RAYWHITE, 0.8f);
+        DrawText(TextFormat("%.0f C%s", T, T < 5.0f ? "  cold: hungrier" : T > 35.0f ? "  heat" : ""), x + 280, y + 68, 16, tc);
+    }
+    if (GetTime() < survival.sickUntil) DrawText("SICK", x + 280, y + 46, 16, ORANGE);
     if (survival.inLifeSupport) DrawText("LIFE SUPPORT", x + 280, y + 2, 16, SKYBLUE);
     else if (survival.breathable) DrawText("BREATHABLE AIR", x + 280, y + 2, 16, Fade(SKYBLUE, 0.7f));
     DrawText(TextFormat("O2 canister x%d   power cell x%d   (use from the hotbar)", inventory.count("oxygen_canister"), inventory.count("power_cell")), x, y - 22, 16, Fade(RAYWHITE, 0.8f));
@@ -312,9 +392,22 @@ void Objectives_DrawHUD() {
     DrawWrapped(t.text, 12, y, 64, 13, Fade(RAYWHITE, 0.6f)); // the tier's hint
 }
 
-bool Survival_IsUsable(const std::string& id) { return id == "oxygen_canister" || id == "power_cell"; }
+bool Survival_IsUsable(const std::string& id) { return id == "oxygen_canister" || id == "power_cell" || Survival_IsFood(id); }
 
 bool Survival_UseItem(const std::string& id) {
+    if (Survival_IsFood(id)) {
+        // Eat: not when full (no waste). Raw meat may make you sick: food drains twice as fast a minute.
+        const Food& food = foods[id];
+        if (survival.food < 98.0f && inventory.remove(id, 1)) {
+            survival.food = std::min(100.0f, survival.food + food.value);
+            if (food.raw && GetRandomValue(0, 99) < 30) { survival.sickUntil = (float)GetTime() + 60.0f; GameUI_Toast("You feel sick: cook your meat"); }
+            Audio_Play(Sfx::Pickup, 0.5f, 0.8f);
+            return true;
+        }
+        if (survival.food >= 98.0f) GameUI_Toast("You are full");
+        Audio_Play(Sfx::Error, 0.4f);
+        return false;
+    }
     if (id == "oxygen_canister") {
         if (survival.oxygen < 99.0f && inventory.remove("oxygen_canister", 1)) { survival.oxygen = std::min(100.0f, survival.oxygen + 50.0f); Audio_Play(Sfx::Pickup); return true; }
     } else if (id == "power_cell") {

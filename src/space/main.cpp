@@ -30,6 +30,7 @@
 #include "hotbar.h"
 #include "navigation.h"
 #include "viewmodel.h"
+#include "farming.h"
 #include "ring_test.h"
 #include "rocket.h"
 #include "jobsystem.h"
@@ -93,6 +94,7 @@ static void StartNewWorld(Scene& world, bool reset) {
         ship.piloted = false;
         Rocket_Reset();
         Nav_Reset();
+        Farm_Reset();
     }
     Planetoid* start = world.objects.empty() ? nullptr : dynamic_cast<Planetoid*>(world.objects[0].get());
     if (start) {
@@ -156,6 +158,8 @@ int main(int argc, char** argv)
     bool benchInventory = false;   // --test-inventory: grid stacking, fractions, sorting, saves
     bool benchMap = false;         // --test-map: compass, exploration, waypoints, map images, saves
     bool benchQuests = false;      // --test-quests: tiers open by their tasks; quest state through a save
+    bool benchHunger = false, benchFarm = false; // --test-hunger, --test-farm
+    int hungerPhase = 0, farmPhase = 0; double hungerStart = 0.0, farmStart = 0.0; bool hungerOk = false; float hungerTemp = 0.0f, hungerDrain = 0.0f, farmQuarter = 0.0f, farmGrowth = 0.0f;
     bool benchViewmodel = false;   // --test-viewmodel: hands still at rest, bob within limits walking, screenshots
     int vmPhase = 0, vmSigns = 0; double vmStart = 0.0; float vmStillMax = 0.0f, vmMaxX = 0.0f, vmMaxY = 0.0f, vmWalked = 0.0f; Vector3 vmLast{}; DVec3 vmFrom{};
     int mapPhase = 0, mapTiles = 0; double mapStart = 0.0; float mapHeading = -1.0f, mapBearing = -1.0f; bool mapImageOk = false; DVec3 mapFrom{};
@@ -285,6 +289,8 @@ int main(int argc, char** argv)
         if (std::string(argv[i]) == "--test-inventory") benchInventory = true;
         if (std::string(argv[i]) == "--test-map") benchMap = true;
         if (std::string(argv[i]) == "--test-quests") benchQuests = true;
+        if (std::string(argv[i]) == "--test-hunger") benchHunger = true;
+        if (std::string(argv[i]) == "--test-farm") benchFarm = true;
         if (std::string(argv[i]) == "--test-viewmodel") benchViewmodel = true;
         if (std::string(argv[i]) == "--test-ring") benchRing = true;
         if (std::string(argv[i]) == "--test-rocket") benchRocket = true;
@@ -421,7 +427,8 @@ int main(int argc, char** argv)
     bool spawnLoad = false;        // raised by a spawn or teleport (not entering the game): no minimum time
     int loadFrames = 0;
     int seenSpawns = 0;
-    world.onDraw3D = [&world] { if (!ship.piloted && !buildTool.active && !Rocket_Boarded()) TerrainTool_Draw3D(); BuildTool_Draw3D(world); };
+    world.onDraw3D = [&world] { Farm_Draw3D(world); if (!ship.piloted && !buildTool.active && !Rocket_Boarded()) TerrainTool_Draw3D(); BuildTool_Draw3D(world); };
+    terrainTool.till = [&world](Planetoid& body, Vector3 ground) { return Farm_Till(world, body, ground); }; // a shovel's RMB
 
     const double benchWarmup = 2.0;
     double benchStart = 0.0, benchMaxFrame = 0.0;
@@ -1033,6 +1040,111 @@ int main(int argc, char** argv)
                         printf("bench: fly follow (%s): 3 s later %.3f m from its spot on the body, distance to the centre changed %.3f m (body moved %.0f m) -> %s\n",
                                c.name, localDrift, distDrift, 3.0 * Vector3Length(c.body->linearVelocity), ok ? "ok" : "BAD");
                         ffPhase++;
+                    }
+                } else if (benchHunger && (hungerPhase > 0 || WorldIdle())) {
+                    // --test-hunger: the food bar drains at its set rate at rest, starving hurts slowly,
+                    // eating restores it, the poles are cold and make you hungrier, food is saved.
+                    Planetoid* p = dynamic_cast<Planetoid*>(world.objects[0].get());
+                    if (hungerPhase == 0) {
+                        player.spawnOn(world, *p, StartSpawnDir(*p));
+                        hungerPhase = 1; hungerStart = GetTime();
+                    } else if (hungerPhase == 1 && GetTime() - hungerStart > 1.5 && player.grounded) {
+                        bool ok = true;
+                        auto check = [&](bool c, const char* what) { if (!c) { printf("bench: hunger: FAILED %s\n", what); ok = false; } };
+                        player.velocity = { 0, 0, 0 };
+                        survival.food = 100.0f; survival.health = 100.0f; survival.oxygen = 100.0f; survival.sickUntil = 0.0f;
+                        Survival_Update(world, 60.0f, false);
+                        const float tempHere = survival.temperature, drained = 100.0f - survival.food;
+                        const float expected = 60.0f * survival.foodDrainPerSec * (tempHere < 5.0f ? 1.0f + (5.0f - tempHere) / 15.0f : 1.0f);
+                        check(fabsf(drained - expected) < expected * 0.05f + 0.01f, "drain at rest");
+                        survival.food = 0.0f; survival.health = 100.0f;
+                        Survival_Update(world, 10.0f, false);
+                        const float starve = 100.0f - survival.health;
+                        check(starve > 4.0f && starve < 6.0f, "starving: 0.5 a second");
+                        survival.food = 50.0f; survival.health = 100.0f;
+                        inventory.add("berries", 2);
+                        Survival_UseItem("berries");
+                        check(fabsf(survival.food - (50.0f + Survival_FoodValue("berries"))) < 0.01f && Survival_FoodValue("berries") > 0.0f, "eating berries");
+                        // Save and load the food bar.
+                        survival.food = 37.0f;
+                        const std::string path = std::string(GetWorkingDirectory()) + "/hunger_test.tmp";
+                        if (FILE* f = fopen(path.c_str(), "w")) { saveExtrasHook(f); fprintf(f, "end_extras\n"); fclose(f); }
+                        survival.food = 100.0f;
+                        if (FILE* f = fopen(path.c_str(), "r")) { loadExtrasHook(f); fclose(f); }
+                        remove(path.c_str());
+                        check(fabsf(survival.food - 37.0f) < 0.01f, "food saved");
+                        hungerOk = ok; hungerTemp = tempHere; hungerDrain = drained;
+                        // Then to the pole: cold.
+                        player.spawnOn(world, *p, p->dirToWorld(Vector3Normalize({ 0.02f, 1.0f, 0.03f })));
+                        hungerPhase = 2; hungerStart = GetTime();
+                    } else if (hungerPhase == 2 && GetTime() - hungerStart > 1.5 && player.grounded) {
+                        player.velocity = { 0, 0, 0 };
+                        survival.food = 100.0f; survival.health = 100.0f;
+                        Survival_Update(world, 60.0f, false);
+                        const float poleTemp = survival.temperature, poleDrain = 100.0f - survival.food;
+                        const bool cold = poleTemp < 0.0f && poleDrain > hungerDrain * 1.5f;
+                        printf("bench: hunger: %.1f C at the start, food -%.2f a minute at rest; at the pole %.1f C, -%.2f a minute; starving, eating, saving checked -> %s\n",
+                               hungerTemp, hungerDrain, poleTemp, poleDrain, hungerOk && cold ? "PASS" : "FAIL");
+                        survival.food = 100.0f; survival.health = 100.0f;
+                        benchHunger = false;
+                    }
+                } else if (benchFarm && (farmPhase > 0 || WorldIdle())) {
+                    // --test-farm: till with a shovel's hook, plant grain, no growth at night, ripe in
+                    // daylight, harvest gives grain and seeds; a growing crop survives a save.
+                    Planetoid* p = dynamic_cast<Planetoid*>(world.objects[0].get());
+                    if (farmPhase == 0) {
+                        player.spawnOn(world, *p, StartSpawnDir(*p));
+                        farmPhase = 1; farmStart = GetTime();
+                    } else if (farmPhase == 1 && GetTime() - farmStart > 1.5 && player.grounded) {
+                        bool ok = true;
+                        auto check = [&](bool c, const char* what) { if (!c) { printf("bench: farm: FAILED %s\n", what); ok = false; } };
+                        const Vector3 feet = (player.position - world.renderOrigin).toFloat();
+                        const Vector3 ahead = Vector3Add(feet, Vector3Scale(Vector3Normalize(Vector3Subtract(player.forward, Vector3Scale(player.up, Vector3DotProduct(player.forward, player.up)))), 3.0f));
+                        TerrainHit hit;
+                        const bool found = RaycastTerrain(world, Ray{ Vector3Add(ahead, Vector3Scale(player.up, 3.0f)), Vector3Negate(player.up) }, 10.0f, hit);
+                        check(found, "ground ahead");
+                        const bool tilled = found && Farm_Till(world, *p, hit.local);
+                        check(tilled, "tilled");
+                        Plot* plot = nullptr; int part = -1;
+                        if (tilled && p->plots)
+                            for (auto& pl : p->plots->plots)
+                                for (int i = (int)pl->parts.size() - 1; i >= 0 && part < 0; --i)
+                                    if (pl->parts[i].type == PartType::Farmland) { plot = pl.get(); part = i; }
+                        check(part >= 0, "farmland part");
+                        if (plot) {
+                            inventory.add("grain_seeds", 2);
+                            check(Farm_Plant(*p, *plot, part, "grain_seeds"), "planted");
+                            const Vector3 up = p->dirToWorld(plot->up);
+                            std::string crop; float g = 0.0f;
+                            world.sunDirection = Vector3Negate(up); // night
+                            Farm_Update(world, 2000.0f);
+                            Farm_Crop(*p, *plot, part, crop, g);
+                            check(crop == "grain" && g == 0.0f, "no growth at night");
+                            world.sunDirection = up; // noon
+                            Farm_Update(world, 900.0f);
+                            Farm_Crop(*p, *plot, part, crop, g);
+                            farmQuarter = g;
+                            check(g > 0.2f && g < 0.6f, "a quarter (or half, by water) after 900 s of day");
+                            Farm_Update(world, 4000.0f);
+                            Farm_Crop(*p, *plot, part, crop, g);
+                            check(g >= 1.0f, "ripe");
+                            const int grain0 = inventory.count("grain"), seeds0 = inventory.count("grain_seeds");
+                            check(Farm_Harvest(*p, *plot, part) > 0 && inventory.count("grain") == grain0 + 3 && inventory.count("grain_seeds") > seeds0, "harvest: grain and seeds");
+                            // Plant again, half grow, save and load.
+                            check(Farm_Plant(*p, *plot, part, "grain_seeds"), "replanted");
+                            Farm_Update(world, 600.0f);
+                            float before = 0.0f; Farm_Crop(*p, *plot, part, crop, before);
+                            const std::string path = std::string(GetWorkingDirectory()) + "/farm_test.tmp";
+                            if (FILE* f = fopen(path.c_str(), "w")) { saveExtrasHook(f); fprintf(f, "end_extras\n"); fclose(f); }
+                            Farm_Reset();
+                            if (FILE* f = fopen(path.c_str(), "r")) { loadExtrasHook(f); fclose(f); }
+                            remove(path.c_str());
+                            float after = -1.0f; Farm_Crop(*p, *plot, part, crop, after);
+                            check(crop == "grain" && fabsf(after - before) < 0.001f, "a growing crop saved");
+                            farmGrowth = before;
+                        }
+                        printf("bench: farm: tilled, planted; night 0, 900 s of day %.2f, ripe, harvested; replanted at %.2f survived a save -> %s\n", farmQuarter, farmGrowth, ok ? "PASS" : "FAIL");
+                        benchFarm = false;
                     }
                 } else if (benchQuests && WorldIdle()) {
                     // --test-quests: tier 0's tasks done open tier 1; part of tier 1 done survives a save
@@ -1938,7 +2050,7 @@ int main(int argc, char** argv)
                         }
                         benchWalkSeconds = 0.0;
                     }
-                } else if ((WorldIdle() && benchDigStrokes == 0 && !benchSaveLoad && benchWalkSeconds <= 0.0 && benchMineStrokes == 0 && minePhase != 2 && benchFlySeconds <= 0.0 && !benchSuffocate && benchOrbitSeconds <= 0.0 && !benchRide && !benchPark && !benchGravity && !benchPrecision && !benchMantle && !benchAirJump && !benchMoon && !benchHole && !benchWall && !benchMenus && !benchWater && !benchFlyFollow && !benchHotbar && !benchInventory && !benchMap && !benchViewmodel && !benchQuests && !benchRing && !benchRocket && !benchBlueprint && !benchSmallBody && !benchTrees && !benchChop && benchPersist == 0 && benchBuild == 0 && benchFactory == 0 && !benchProgression) || GetTime() > 600.0) {
+                } else if ((WorldIdle() && benchDigStrokes == 0 && !benchSaveLoad && benchWalkSeconds <= 0.0 && benchMineStrokes == 0 && minePhase != 2 && benchFlySeconds <= 0.0 && !benchSuffocate && benchOrbitSeconds <= 0.0 && !benchRide && !benchPark && !benchGravity && !benchPrecision && !benchMantle && !benchAirJump && !benchMoon && !benchHole && !benchWall && !benchMenus && !benchWater && !benchFlyFollow && !benchHotbar && !benchInventory && !benchMap && !benchViewmodel && !benchQuests && !benchHunger && !benchFarm && !benchRing && !benchRocket && !benchBlueprint && !benchSmallBody && !benchTrees && !benchChop && benchPersist == 0 && benchBuild == 0 && benchFactory == 0 && !benchProgression) || GetTime() > 600.0) {
                     benchStart = GetTime();
                     printf("bench: world ready after %.2f s (%d chunks, avg build %.2f ms of which sampling %.2f ms, %d worker threads)\n",
                         GetWorldStats().lastGenerationSeconds, GetWorldStats().chunks, GetWorldStats().avgBuildMs, GetWorldStats().avgSampleMs, GetWorldStats().workerThreads);
@@ -2067,6 +2179,7 @@ int main(int argc, char** argv)
             if (!loading) Survival_Update(world, frameDt, gameInput);
             if (!loading) Nav_Update(world, !bench && Nav_MapOpen()); // exploration, the map
             if (!loading) Viewmodel_Update(world, frameDt);
+            if (!loading) Farm_Update(world, frameDt * timeScale * Rocket_Warp()); // crops grow on world time
             // Autosave every 5 minutes of play (incremental: only regions changed since the last save).
             static double lastAutosave = GetTime();
             if (!bench && alive && GetTime() - lastAutosave > 300.0) {

@@ -37,9 +37,10 @@ enum class PartType : uint8_t {
     OreWasher, Centrifuge, WaterPump,                                // LV ore processing (milestone 8)
     MvGenerator, Electrolyzer, ChemicalReactor, Miner,               // MV
     HvGenerator, ArcFurnace, Refinery, PrecisionAssembler,           // HV
+    Farmland,                                                        // tilled soil a crop grows on (plan 2, milestone 11)
     Count
 };
-inline bool IsMachine(PartType t) { return (t >= PartType::Chest && t <= PartType::SteamMacerator) || (t >= PartType::OreWasher && t < PartType::Count); }
+inline bool IsMachine(PartType t) { return (t >= PartType::Chest && t <= PartType::SteamMacerator) || (t >= PartType::OreWasher && t <= PartType::PrecisionAssembler); }
 inline bool IsRocketPart(PartType t) { return t >= PartType::RocketEngine && t <= PartType::LandingLeg; }
 inline bool IsShape(PartType t) { return t <= PartType::Beam8; } // structure: built from a material
 constexpr int kShapeCount = (int)PartType::Beam8 + 1;
