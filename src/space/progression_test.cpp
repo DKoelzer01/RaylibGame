@@ -52,7 +52,15 @@ namespace {
         return Vector3Normalize(Vector3Add(up, Vector3Add(Vector3Scale(t1, east / field->radius), Vector3Scale(t2, north / field->radius))));
     }
 
+    // Like a player putting building stone, logs and gems in a chest: digging and chopping now give
+    // those too (M21, M22), and a full 45-slot grid refuses a craft's output.
+    void Stash() {
+        static const char* kStash[] = { "granite", "basalt", "sandstone", "limestone", "marble", "oak_log", "birch_log", "pine_log",
+                                        "quartz", "amethyst", "ruby", "sapphire", "emerald", "grain_seeds", "root_seeds", "flax_seeds", "berries" };
+        for (const char* id : kStash) { const int n = inventory.count(id); if (n > 0) inventory.remove(id, n); }
+    }
     bool Craft(const std::string& item, int want) {
+        Stash();
         const Recipe* r = nullptr;
         for (const Recipe& rc : itemDB.recipes()) if (rc.output == item) { r = &rc; break; }
         if (!r) { printf("bench: progression: no recipe for %s\n", item.c_str()); failed = 1; return false; }
