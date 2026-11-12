@@ -221,6 +221,9 @@ public:
     Climate climateAt(Vector3 dir, float elev) const;
     Biome biomeAt(Vector3 dir, float elev) const;
     Biome biomeOf(const Climate& c, float elev) const;
+    // Biome landforms (Plan 5 B) added to the height before rivers carve it: desert dunes, badlands
+    // mesas (flat tops on steep risers), swamps flattened toward the water table.
+    float biomeShape(Vector3 dir, float h, float fp) const;
     float baseDensity(Vector3 p) const override { return baseDensityLod(p, 0.0f); }
     float baseDensityLod(Vector3 p, float footprint) const override;
     void baseDensityBlock(Vector3 origin, float stride, int S, float footprint, float* out) const override;

@@ -190,7 +190,7 @@ PlanetField::PlanetField(unsigned int seed, float radius_, bool moon_)
     biomeJitter = SeededNoise(rng, 1.0f / 90.0f);     // ...and a fine wobble that interleaves their borders
     // Bounds of elevation() below (each noise term is in [-1, 1]).
     if (moon) { minElevation = -90.0f; maxElevation = 340.0f; }
-    else { minElevation = -740.0f; maxElevation = 1690.0f + 30.0f; } // + the 3D terrain band
+    else { minElevation = -740.0f; maxElevation = 1690.0f + 30.0f + 15.0f; } // + the 3D terrain band + biome landforms (dunes, mesas)
 }
 
 // River valleys: 70 m deep, with a flat floodplain floor (valley-noise units < kValleyFloor, room for
@@ -362,6 +362,7 @@ float PlanetField::elevation(Vector3 dir, float fp) const {
     const Land l = land(dir, fp);
     if (moon) return l.h;
     float h = l.h + l.detail;
+    h += biomeShape(dir, h, fp);
     // Rivers of the drainage network: a valley (a floodplain 2.5 channel half-widths across at the
     // water, then sides rising 0.3 m per m) cut into higher ground, low banks where the ground dips
     // below the water, and the channel bed. The valley stays resolved further out than the channel.
@@ -419,6 +420,40 @@ float PlanetField::elevation(Vector3 dir, float fp) const {
         });
     }
     return h;
+}
+
+float PlanetField::biomeShape(Vector3 dir, float h, float fp) const {
+    if (moon || h < 2.0f) return 0.0f;
+    const Climate c = climateAt(dir, h);
+    auto smooth = [](float a, float b, float x) { const float t = std::clamp((x - a) / (b - a), 0.0f, 1.0f); return t * t * (3.0f - 2.0f * t); };
+    const float hot = smooth(16.0f, 20.0f, c.temp);
+    const float desert = hot * smooth(0.27f, 0.2f, c.moist);
+    const float badlands = hot * smooth(0.2f, 0.27f, c.moist) * (1.0f - smooth(0.36f, 0.42f, c.moist));
+    const float swamp = smooth(0.7f, 0.82f, c.moist) * smooth(9.0f, 15.0f, c.temp) * (1.0f - smooth(60.0f, 110.0f, h));
+    if (desert + badlands + swamp < 1e-3f) return 0.0f;
+    const float x = dir.x * radius, y = dir.y * radius, z = dir.z * radius;
+    float dh = 0.0f;
+    if (desert > 0.0f && fp < 48.0f) {
+        // Dunes: ~55 m crests across the prevailing wind, wandering, their height swelling and fading
+        // (up to ~9 m); gone where samples are too far apart to show them. Fade near the coast.
+        const float warp = 2.2f * biomeJitter.fractal(2, x * 0.25f, y * 0.25f, z * 0.25f);
+        const float u = (x * 0.8f + z * 0.6f) / 55.0f + warp;
+        const float crest = powf(0.5f + 0.5f * sinf(u * 6.2831853f), 2.2f);
+        const float swell = 0.55f + 0.45f * moistNoise.fractal(1, x * 6.0f, y * 6.0f, z * 6.0f);
+        dh += desert * crest * 9.0f * swell * smooth(4.0f, 20.0f, h) * std::clamp(2.0f - fp / 24.0f, 0.0f, 1.0f);
+    }
+    if (badlands > 0.0f) {
+        // Mesas: the height in 14 m steps, each step a flat top that rises sharply at its edge.
+        const float step = 14.0f, t = h / step, f = t - floorf(t);
+        const float terraced = (floorf(t) + smooth(0.72f, 0.92f, f)) * step;
+        dh += (terraced - h) * badlands;
+    }
+    if (swamp > 0.0f) {
+        // Swamps: pulled down toward a low, gently rolling floor 2-5 m above the sea.
+        const float floorH = 3.5f + 1.5f * biomeJitter.fractal(1, x, y, z);
+        if (h > floorH) dh += (floorH - h) * 0.85f * swamp;
+    }
+    return dh;
 }
 
 float PlanetField::waterElevation(Vector3 dir, float fp) const {
