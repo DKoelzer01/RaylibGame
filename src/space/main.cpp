@@ -52,6 +52,7 @@
 #include "blueprint.h"
 #include "ring.h"
 #include "factory.h"
+#include "fluid.h"
 
 #if defined(PLATFORM_DESKTOP)
     #define GLSL_VERSION            330
@@ -187,6 +188,7 @@ int main(int argc, char** argv)
     bool benchTools = false, toolsOk = true; int toolsPhase = 0, toolsLife = 0, toolsTilled = 0; double toolsStart = 0.0; // --test-tools
     bool benchSuit = false, suitOk = true; int suitPhase = 0; double suitStart = 0.0; float suitFoodRatio = 0.0f, suitWater = 0.0f, suitRebreather = 0.0f; // --test-suit
     int benchShotTabs = 0; // --shot-tabs
+    bool benchFlow = false; int flowPhase = 0; double flowStart = 0.0, flowEdit = 0.0, flowReachT = -1.0, flowCaveT = -1.0, flowSleepT = -1.0; Vector3 flowDir{}, flowOut{}, flowEnd{}, flowCave{}; float flowLevel = 0.0f; // --test-flow
     bool benchForest = false; int forestPhase = 0; double forestStart = 0.0; Vector3 forestCam{}, forestTarget{}, forestUp{}; // --shot-forest
     bool benchRecipes = false; // --test-recipes
     bool benchWeather = false, weatherOk = true; int weatherPhase = 0, weatherCounts[6] = {}, weatherChanges = 0; double weatherStart = 0.0; float weatherChill = 0.0f; // --test-weather
@@ -337,6 +339,7 @@ int main(int argc, char** argv)
         if (std::string(argv[i]) == "--test-threats") benchThreats = true;
         if (std::string(argv[i]) == "--shot-tabs") benchShotTabs = 1;
         if (std::string(argv[i]) == "--shot-forest") benchForest = true;
+        if (std::string(argv[i]) == "--test-flow") benchFlow = true;
         if (std::string(argv[i]) == "--test-recipes") benchRecipes = true;
         if (std::string(argv[i]) == "--test-weather") benchWeather = true;
         if (std::string(argv[i]) == "--test-decor") benchDecor = true;
@@ -1952,6 +1955,104 @@ int main(int argc, char** argv)
                         GameUI_ToggleInventory();
                         benchShotTabs = 0;
                     }
+                } else if (benchFlow && (flowPhase > 0 || WorldIdle())) {
+                    // --test-flow (Plan 4, F2/F3): cut a channel out of the nearest inland water, ending in a
+                    // shaft down to a sealed chamber. Water must reach the channel's end, flood the chamber up
+                    // the shaft toward the feeding level, keep the step under budget, and sleep once settled.
+                    Planetoid* p = dynamic_cast<Planetoid*>(world.objects[0].get());
+                    const PlanetField* pf = p ? dynamic_cast<const PlanetField*>(p->field.get()) : nullptr;
+                    auto at = [&](Vector3 dir, float h) { return Vector3Scale(dir, pf->radius + h); }; // body-local
+                    if (!pf) { printf("bench: flow: needs the planet\n"); benchFlow = false; }
+                    else if (flowPhase == 0) {
+                        // Nearest inland water at least 1.5 m deep with a shore within 25 m.
+                        const Vector3 home = pf->findSpawnDir(p->seed);
+                        const Vector3 t1 = Vector3Normalize(Vector3CrossProduct(home, { 0, 1, 0 })), t2 = Vector3CrossProduct(t1, home);
+                        float best = 1e30f;
+                        for (float e = -3000.0f; e <= 3000.0f; e += 16.0f)
+                            for (float n = -3000.0f; n <= 3000.0f; n += 16.0f) {
+                                const float dist = sqrtf(e * e + n * n);
+                                if (dist >= best) continue;
+                                const Vector3 d = Vector3Normalize(Vector3Add(home, Vector3Add(Vector3Scale(t1, e / pf->radius), Vector3Scale(t2, n / pf->radius))));
+                                const PlanetField::WaterSource ws = pf->waterSourceAt(d);
+                                if (!ws.kind || ws.kind == 3 || ws.level <= 2.0f || pf->elevation(d) > ws.level - 1.5f) continue;
+                                // A shore within 25 m in one of four directions, low enough to cut through.
+                                const Vector3 outs[4] = { t1, Vector3Negate(t1), t2, Vector3Negate(t2) };
+                                for (const Vector3& o : outs) {
+                                    for (float s = 2.0f; s <= 25.0f; s += 1.0f) {
+                                        const Vector3 q = Vector3Normalize(Vector3Add(d, Vector3Scale(o, s / pf->radius)));
+                                        const float eq = pf->elevation(q);
+                                        if (pf->waterSourceAt(q).kind) continue;
+                                        if (eq > ws.level + 0.3f && eq < ws.level + 4.0f) { best = dist; flowDir = d; flowOut = o; flowLevel = ws.level; flowStart = s; }
+                                        break;
+                                    }
+                                }
+                            }
+                        if (best > 1e29f) { printf("bench: flow: no inland water with a low shore near the start -> FAIL\n"); benchFlow = false; }
+                        else {
+                            const float shore = (float)flowStart;
+                            printf("bench: flow: water %.0f m from the start, level %.1f m, shore %.0f m out\n", best, flowLevel, shore);
+                            // The channel: from 2 m inside the water to 14 m past the shore, its floor 1.5 m under the
+                            // water; then a 10 m shaft and a chamber of radius 3.
+                            std::vector<TerrainEdit> cut;
+                            for (float s = shore - 2.0f; s <= shore + 14.0f; s += 0.8f) {
+                                const Vector3 q = Vector3Normalize(Vector3Add(flowDir, Vector3Scale(flowOut, s / pf->radius)));
+                                for (float h = flowLevel - 0.3f; h <= flowLevel + 4.0f; h += 1.2f) cut.push_back({ at(q, h), 1.6f, -1.0f, true });
+                            }
+                            const Vector3 endDir = Vector3Normalize(Vector3Add(flowDir, Vector3Scale(flowOut, (shore + 14.0f) / pf->radius)));
+                            for (float h = flowLevel - 1.0f; h >= flowLevel - 12.0f; h -= 0.8f) cut.push_back({ at(endDir, h), 1.3f, -1.0f, true });
+                            cut.push_back({ at(endDir, flowLevel - 13.0f), 3.0f, -1.0f, true });
+                            ApplyTerrainEdits(*p, cut.data(), cut.size());
+                            flowEnd = at(Vector3Normalize(Vector3Add(flowDir, Vector3Scale(flowOut, (shore + 10.0f) / pf->radius))), flowLevel - 0.6f);
+                            flowCave = at(endDir, flowLevel - 14.5f);
+                            flowEdit = GetTime();
+                            // Camera over the channel's end, looking back at the water.
+                            player.flyMode = true; sunOverride = true;
+                            sunArg = p->dirToWorld(Vector3Normalize(Vector3Add(flowDir, Vector3Scale(flowOut, -0.5f))));
+                            flowPhase = 1;
+                        }
+                    } else if (flowPhase == 1) {
+                        const Vector3 up = Vector3Normalize(flowEnd);
+                        const Vector3 eye = Vector3Add(Vector3Add(flowEnd, Vector3Scale(up, 9.0f)), Vector3Scale(flowOut, 9.0f));
+                        world.camera.position = p->toWorld(eye);
+                        world.camera.target = p->toWorld(Vector3Subtract(flowEnd, Vector3Scale(flowOut, 6.0f)));
+                        world.camera.up = p->dirToWorld(up);
+                        player.position = world.renderOrigin + world.camera.position;
+                        const double t = GetTime() - flowEdit;
+                        if (flowReachT < 0.0 && Fluid::Wet(*p, flowEnd)) flowReachT = t;
+                        if (flowCaveT < 0.0 && Fluid::Wet(*p, flowCave)) flowCaveT = t;
+                        static double lastPrint = 0.0;
+                        if (t - lastPrint >= 5.0) {
+                            lastPrint = t;
+                            const Fluid::Stats s = Fluid::GetStats();
+                            printf("bench: flow t=%3.0f s: %d sites, %d bricks (%d awake), %.0f wet cells, %.1f m^3, step %.2f ms (max %.2f), mesh %.2f ms, %d meshes; changes d%lld s%lld r%lld l%lld\n",
+                                   t, s.sites, s.bricks, s.activeBricks, s.wetCells, s.volume, s.stepMs, s.maxStepMs, s.meshMs, s.meshes, s.dbg[0], s.dbg[1], s.dbg[2], s.dbg[3]);
+                        }
+                        if (flowReachT >= 0.0 && flowCaveT >= 0.0 && flowSleepT < 0.0 && Fluid::Asleep()) flowSleepT = t;
+                        if (t > 6.0 && t < 7.0) TakeScreenshot("bench_flow.png");
+                        if (getenv("FLOWDBG") && t > 8.0 && t < 8.1) {
+                            // Cells along the channel at three heights, and down the shaft.
+                            const Vector3 up = Vector3Normalize(flowEnd);
+                            for (float s = -6.0f; s <= 6.0f; s += 2.0f)
+                                for (float h : { -0.5f, 0.5f, 1.5f }) {
+                                    const Vector3 q = Vector3Add(Vector3Add(flowEnd, Vector3Scale(flowOut, s - 10.0f)), Vector3Scale(up, h));
+                                    printf("bench: flow dbg along %+.0f m, %+.1f m: %s\n", s - 10.0f, h, Fluid::DebugCell(*p, q).c_str());
+                                }
+                            for (float h = 1.0f; h >= -15.0f; h -= 1.0f) {
+                                const Vector3 q = Vector3Add(Vector3Add(flowEnd, Vector3Scale(flowOut, 4.0f)), Vector3Scale(up, h));
+                                printf("bench: flow dbg shaft %+.0f m: %s  density %.2f\n", h, Fluid::DebugCell(*p, q).c_str(), p->densityAt(q));
+                            }
+                        }
+                        if ((flowSleepT >= 0.0 && t > flowSleepT + 1.0) || t > 120.0) {
+                            TakeScreenshot("bench_flow_end.png");
+                            const Fluid::Stats s = Fluid::GetStats();
+                            const float caveTop = Fluid::SurfaceAbove(*p, flowCave, 16.0f);
+                            const bool pass = flowReachT >= 0.0 && flowCaveT >= 0.0 && flowSleepT >= 0.0 && s.maxStepMs < 30.0;
+                            printf("bench: flow: reached the channel end after %.1f s, the chamber after %.1f s; water stands %.1f m over the chamber floor point (feed level %.1f m above it); asleep after %.1f s; step max %.2f ms -> %s\n",
+                                   flowReachT, flowCaveT, caveTop, 14.5f, flowSleepT, s.maxStepMs, pass ? "PASS" : "FAIL");
+                            printf("bench: flow: bench_flow.png, bench_flow_end.png\n");
+                            benchFlow = false;
+                        }
+                    }
                 } else if (benchForest && (forestPhase > 0 || WorldIdle())) {
                     // --shot-forest: the species mix around the start (60/20/20 per area) and a daylight view
                     // from 30 m up (bench_forest.png).
@@ -3255,7 +3356,7 @@ int main(int argc, char** argv)
                         }
                         benchWalkSeconds = 0.0;
                     }
-                } else if ((WorldIdle() && benchDigStrokes == 0 && !benchPaint && !benchSaveLoad && benchWalkSeconds <= 0.0 && benchMineStrokes == 0 && minePhase != 2 && benchFlySeconds <= 0.0 && !benchSuffocate && benchOrbitSeconds <= 0.0 && !benchRide && !benchPark && !benchGravity && !benchPrecision && !benchMantle && !benchAirJump && !benchMoon && !benchHole && !benchWall && !benchMenus && !benchWater && !benchFlyFollow && !benchHotbar && !benchInventory && !benchMap && !benchViewmodel && !benchQuests && !benchHunger && !benchFarm && !benchAnimals && !benchThreats && benchShotTabs == 0 && !benchForest && !benchRecipes && !benchWeather && !benchDecor && !benchMaterials && !benchDamage && !benchCrafting && !benchSuit && !benchTools && !benchRivers && !benchRing && !benchRocket && !benchStation && !benchBlueprint && !benchSmallBody && !benchTrees && !benchChop && benchPersist == 0 && benchBuild == 0 && benchFactory == 0 && !benchProgression) || GetTime() > 600.0) {
+                } else if ((WorldIdle() && benchDigStrokes == 0 && !benchPaint && !benchSaveLoad && benchWalkSeconds <= 0.0 && benchMineStrokes == 0 && minePhase != 2 && benchFlySeconds <= 0.0 && !benchSuffocate && benchOrbitSeconds <= 0.0 && !benchRide && !benchPark && !benchGravity && !benchPrecision && !benchMantle && !benchAirJump && !benchMoon && !benchHole && !benchWall && !benchMenus && !benchWater && !benchFlyFollow && !benchHotbar && !benchInventory && !benchMap && !benchViewmodel && !benchQuests && !benchHunger && !benchFarm && !benchAnimals && !benchThreats && benchShotTabs == 0 && !benchForest && !benchFlow && !benchRecipes && !benchWeather && !benchDecor && !benchMaterials && !benchDamage && !benchCrafting && !benchSuit && !benchTools && !benchRivers && !benchRing && !benchRocket && !benchStation && !benchBlueprint && !benchSmallBody && !benchTrees && !benchChop && benchPersist == 0 && benchBuild == 0 && benchFactory == 0 && !benchProgression) || GetTime() > 600.0) {
                     benchStart = GetTime();
                     printf("bench: world ready after %.2f s (%d chunks, avg build %.2f ms of which sampling %.2f ms, %d worker threads)\n",
                         GetWorldStats().lastGenerationSeconds, GetWorldStats().chunks, GetWorldStats().avgBuildMs, GetWorldStats().avgSampleMs, GetWorldStats().workerThreads);
@@ -3399,6 +3500,7 @@ int main(int argc, char** argv)
                 if (SaveWorld(world)) GameUI_Toast("Autosaved");
             }
             Factory::Sync(world);                                // machine layouts in, items out
+            Fluid::Update(world, frameDt);                       // flowing water: commands in, a step job, meshes up
             Machine_Update(world, gameInput && alive && !ship.piloted);
             Objectives_Update(world);
             if (bench && lookDown && !ship.piloted) {

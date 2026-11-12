@@ -261,6 +261,7 @@ namespace {
         return h;
     }
     float PondUnit(uint32_t& h) { h = h * 1664525u + 1013904223u; return (h >> 8) * (1.0f / 16777216.0f); }
+    uint64_t PondId(int x, int y, int z) { return ((uint64_t)(x & 0x1FFFFF) << 42) | ((uint64_t)(y & 0x1FFFFF) << 21) | (uint64_t)(z & 0x1FFFFF); }
     constexpr float kPondReach = 70.0f;    // a pond's effect (embankment) ends within this of its centre
     // The pond cells whose pond could reach within `reach` of surface point s (usually just one).
     template <class F> void ForPondCellsNear(Vector3 s, float reach, F&& f) {
@@ -430,7 +431,7 @@ float PlanetField::waterElevation(Vector3 dir, float fp) const {
     if (fp >= 96.0f) return w; // ponds are not resolved (their bowls fade out by here)
     ForPondCellsNear(Vector3Scale(dir, radius), kPondReach, [&](int x, int y, int z) {
         const Pond p = pondOfCell(x, y, z);
-        if (p.exists && Vector3Distance(dir, p.dir) * radius < p.r * 1.05f) w = std::max(w, p.level);
+        if (p.exists && !pondClaimed(PondId(x, y, z)) && Vector3Distance(dir, p.dir) * radius < p.r * 1.05f) w = std::max(w, p.level);
     });
     return w;
 }
@@ -448,9 +449,49 @@ bool PlanetField::inlandWaterNear(Vector3 dir, float extent, float fp) const {
     ForPondCellsNear({ sx, sy, sz }, kPondReach + extent, [&](int x, int y, int z) {
         if (near) return;
         const Pond p = pondOfCell(x, y, z);
-        if (p.exists && Vector3Distance(dir, p.dir) * radius < p.r * 1.05f + extent) near = true;
+        if (p.exists && !pondClaimed(PondId(x, y, z)) && Vector3Distance(dir, p.dir) * radius < p.r * 1.05f + extent) near = true;
     });
     return near;
+}
+
+PlanetField::WaterSource PlanetField::waterSourceAt(Vector3 dir) const {
+    WaterSource s;
+    if (moon) return s;
+    if (const RiverNetwork* net = rivers()) {
+        float lake;
+        if (net->lakeAt(dir, lake)) { s.kind = 2; s.level = lake; }
+        else {
+            const RiverNetwork::Hit rh = net->nearest(dir, 60.0f);
+            if (rh.found && rh.dist < rh.halfWidth * 1.05f) { s.kind = 1; s.level = rh.level; }
+        }
+    }
+    ForPondCellsNear(Vector3Scale(dir, radius), kPondReach, [&](int x, int y, int z) {
+        const Pond p = pondOfCell(x, y, z);
+        if (!p.exists || p.level <= s.level || Vector3Distance(dir, p.dir) * radius >= p.r * 1.05f) return;
+        const uint64_t id = PondId(x, y, z);
+        if (pondClaimed(id)) return;
+        s.kind = 3; s.level = p.level; s.pond = id; s.pondDir = p.dir; s.pondR = p.r;
+    });
+    return s;
+}
+
+void PlanetField::claimPond(uint64_t id) const {
+    std::lock_guard<std::mutex> lock(pondState->m);
+    if (pondState->claimed.insert(id).second) pondState->n++;
+}
+bool PlanetField::pondClaimed(uint64_t id) const {
+    if (pondState->n.load(std::memory_order_relaxed) == 0) return false;
+    std::lock_guard<std::mutex> lock(pondState->m);
+    return pondState->claimed.count(id) > 0;
+}
+std::vector<uint64_t> PlanetField::claimedPonds() const {
+    std::lock_guard<std::mutex> lock(pondState->m);
+    return std::vector<uint64_t>(pondState->claimed.begin(), pondState->claimed.end());
+}
+void PlanetField::clearClaimedPonds() const {
+    std::lock_guard<std::mutex> lock(pondState->m);
+    pondState->claimed.clear();
+    pondState->n = 0;
 }
 
 PlanetField::RiverState::~RiverState() = default;
@@ -987,7 +1028,7 @@ void BuildChunkMesh(const DensityField& field, const TerrainDeltas& deltas, Chun
                     // cave walls.
                     const Vector3 wc = Vector3Add(origin, Vector3Scale(c, stride));
                     const float wl = Vector3Length(wc);
-                    if (wl > 1.0f && planetField->elevation(Vector3Scale(wc, 1.0f / wl), (float)stride) > wl - sea + 1.0f) continue;
+                    if (wl > 1.0f && planetField->elevation(Vector3Scale(wc, 1.0f / wl), (float)stride) > wl - sea + (stride <= 2.0f ? 0.15f : 1.0f)) continue; // near: only over the original bed (dug ground beside it is the simulation's)
                 }
                 for (int e = 0; e < 3; ++e) {
                     int& r = remap[wi[t + e]];

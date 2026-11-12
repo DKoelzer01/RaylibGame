@@ -5,6 +5,7 @@
 #include "utils/logger.h"
 #include "worldtypes.h"
 #include "factory.h"
+#include "fluid.h"
 
 #include <raymath.h>
 #include <rlgl.h>
@@ -272,6 +273,7 @@ void Planetoid::drawTransparent(const RenderContext& ctx) {
     }
     std::sort(order.begin(), order.end(), [](const auto& a, const auto& b) { return a.first < b.first; });
     for (auto& o : order) o.second->drawWater(c2, placer.model(o.second->key));
+    Fluid::Draw(*this, ctx, batch); // flowing water (after the static surfaces it continues)
 }
 
 void Planetoid::drawFoliage(const RenderContext& ctx) {
@@ -724,6 +726,20 @@ void ApplyTerrainEdits(Planetoid& p, const TerrainEdit* edits, size_t count) {
     for (const NodeKey& k : touched) RequestNode(p, k, -1.0f - (float)k.level * 0.01f); // ahead of background work
     if (p.trees)
         for (size_t i = 0; i < count; i += std::max<size_t>(1, count / 64)) p.trees->onEdit(edits[i].center, edits[i].radius, p.edits);
+    // Flowing water: wake it, or start it where the edit opens space next to water.
+    for (size_t i = 0; i < count; i += std::max<size_t>(1, count / 64)) Fluid::OnTerrainEdit(p, edits[i].center, edits[i].radius);
+}
+
+void RequestRemesh(Planetoid& p, Vector3 c, float r) {
+    std::vector<NodeKey> touched;
+    for (auto& entry : p.nodes) {
+        const NodeKey& k = entry.first;
+        const Vector3 nlo = k.origin();
+        const Vector3 nhi = Vector3AddValue(nlo, k.size() * (CHUNK_SIZE + 1.0f) / CHUNK_SIZE);
+        if (DistanceToBox(c, nlo, nhi) > r + k.stride() + 1.0f) continue;
+        touched.push_back(k);
+    }
+    for (const NodeKey& k : touched) RequestNode(p, k, -1.0f - (float)k.level * 0.01f);
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -958,6 +974,7 @@ void BeginWorldStreaming() { generationStart = GetTime(); buildMsTotal = sampleM
 void regenerateWorld(Scene& world) {
     Jobs().clearQueued();  // in-flight jobs finish; their results are dropped (planetoid ids are gone)
     Factory::Reset();      // machines belong to the old bodies
+    Fluid::Reset();        // so does flowing water
     player.nearest = nullptr; // every body goes (the player refinds its ground next update)
     gRings.clear();        // before their parent bodies go
     world.objects.clear(); // releases chunk meshes
@@ -1167,7 +1184,7 @@ bool SaveWorld(Scene& world) {
     const DVec3 tgtWorld = world.renderOrigin + world.camera.target;
     // v4: the system definition is stored in the save, so a save reloads the system it was made in
     // even if bodies.txt has changed since.
-    fprintf(f, "RAYLIBGAME_SAVE 10\n");
+    fprintf(f, "RAYLIBGAME_SAVE 11\n");
     fprintf(f, "seed %u\nbodies %zu\n", worldGen.lastSeed, worldGen.system.bodies.size());
     for (const BodyDef& b : worldGen.system.bodies) fprintf(f, "%s\n", FormatBodyDef(b).c_str());
     fprintf(f, "time %.6f\n", worldTime); // v5: the world clock (orbits)
@@ -1196,6 +1213,7 @@ bool SaveWorld(Scene& world) {
         // v8: build plots and their parts.
         if (p->plots) p->plots->save(f); else fprintf(f, "plots 0\n");
         Factory::Save(f, p->id); // v9: machine contents
+        Fluid::Save(f, p->id);   // v11: flowing water
         regionsWritten += SaveBodyRegions(*p, bodyIndex, dir);
     }
     // v10: ring rocks a visit changed (edits, plots), whether they are voxel bodies now or not.
@@ -1209,11 +1227,12 @@ bool LoadWorldSave(Scene& world) {
     FILE* f = fopen(SAVE_PATH, "r");
     if (!f) return false;
     int version = 0;
-    if (fscanf(f, "RAYLIBGAME_SAVE %d", &version) != 1 || version < 2 || version > 10) {
+    if (fscanf(f, "RAYLIBGAME_SAVE %d", &version) != 1 || version < 2 || version > 11) {
         fclose(f);
         logger.logf("[World] %s: unsupported save version %d\n", SAVE_PATH, version);
         return false;
     }
+    Fluid::Reset(); // the save carries its own water
     unsigned int seed = 0;
     SystemDef sys;
     double c[6];
@@ -1305,6 +1324,7 @@ bool LoadWorldSave(Scene& world) {
         if (version >= 8 && !plots->load(f)) logger.logf("[World] %s: damaged plot data\n", SAVE_PATH);
         if (body) body->plots = plots->plots.empty() ? nullptr : std::move(plots);
         if (version >= 9) Factory::Load(f, body ? body->id : 0); // machine contents, applied when the layouts reach the simulation
+        if (version >= 11) Fluid::Load(f, body ? body->id : 0); // flowing water (classified again as it loads)
         if (body) {
             body->edits = deltas;
             body->rotation = rot;
@@ -1414,6 +1434,7 @@ bool IsUnderwater(Scene& world, Vector3 renderPoint) {
     const float d = Vector3Length(local);
     const float sea = pf->seaLevelRadius();
     if (sea <= 0.0f || d < 1.0f) return false;
+    if (Fluid::Wet(*p, local)) return true; // flowing water
     const Vector3 dir = Vector3Scale(local, 1.0f / d);
     // The water surface here: the sea, or a river or pond above it.
     float surface = sea;

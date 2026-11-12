@@ -8,6 +8,8 @@
 #include <random>
 #include <vector>
 #include <mutex>
+#include <atomic>
+#include <unordered_set>
 
 #include "SimplexNoise.h"
 
@@ -186,6 +188,16 @@ public:
     const char* stoneKind(Vector3 p) const;
     // On a river or pond bed (or its wet shore): digging there also turns up clay.
     bool wetBed(Vector3 local) const;
+    // The static water at a direction and its kind (flowing water, fluid.h): 0 none, 1 river, 2 lake,
+    // 3 pond; level above sea level. Ponds carry an id and their centre and radius.
+    struct WaterSource { int kind = 0; float level = kNoWater; uint64_t pond = 0; Vector3 pondDir{}; float pondR = 0.0f; };
+    WaterSource waterSourceAt(Vector3 dir) const;
+    // A pond the water simulation took over: its static surface is gone (waterElevation and
+    // inlandWaterNear skip it). Thread-safe; saved by the simulation.
+    void claimPond(uint64_t id) const;
+    bool pondClaimed(uint64_t id) const;
+    std::vector<uint64_t> claimedPonds() const;
+    void clearClaimedPonds() const;
     // A body-local direction to a good start spot: temperate latitude, flat grassland a little above
     // the sea, solid ground underfoot (no cave mouth). Deterministic for a seed.
     Vector3 findSpawnDir(unsigned int seed) const;
@@ -211,6 +223,8 @@ public:
     float rockFeature(Vector3 p, float d, float surface, float footprint) const;
 private:
     struct RiverState { std::once_flag once; std::unique_ptr<RiverNetwork> net; ~RiverState(); };
+    struct PondState { std::mutex m; std::unordered_set<uint64_t> claimed; std::atomic<int> n{ 0 }; };
+    std::shared_ptr<PondState> pondState = std::make_shared<PondState>();
     std::shared_ptr<RiverState> riverState;
     unsigned int riverSeed = 0;
     float densityNear(Vector3 p, float d, float surface, float footprint) const; // after the height map
