@@ -860,8 +860,14 @@ VoxelMaterial PlanetField::materialSky(Vector3 p, float base, float fp, Vector3 
         if (slope > 0.45f) return VoxelMaterial::Rock;                                                       // cliffs: bare stone
         if (e < -80.0f) return VoxelMaterial::Gravel;                                                        // deep sea floor
         if (e < 6.0f + 4.0f * wobble) return VoxelMaterial::Sand;                                            // beaches, shallows
+        // Biomes (Plan 5 B). The terrain shader tints each by the climate (red sand in the badlands,
+        // dry grass on the savanna, dark mud in swamps).
+        const Biome biome = biomeAt(up, e);
+        if (biome == Biome::Desert) return VoxelMaterial::Sand;                                              // dunes all the way down
+        if (biome == Biome::Badlands) return slope > 0.18f ? VoxelMaterial::Rock : skin ? VoxelMaterial::Sand : VoxelMaterial::Rock; // red sand over banded rock
         if (slope > 0.3f || e > 800.0f + 100.0f * wobble) return VoxelMaterial::Gravel;                     // scree, alpine
-        if (lat > 0.62f + 0.06f * wobble) return skin ? VoxelMaterial::Gravel : VoxelMaterial::Regolith;    // tundra: stony ground over dirt
+        if (biome == Biome::Tundra) return skin ? VoxelMaterial::Gravel : VoxelMaterial::Regolith;          // tundra: stony ground over dirt
+        if (biome == Biome::Swamp && skin && rocks.fractal(1, p.x * 0.12f, p.y * 0.12f, p.z * 0.12f) > 0.15f) return VoxelMaterial::Regolith; // mud flats between the reeds
         // Grassland. Undug ground facing up is turf all the way down to the soil layer (the mesh strays
         // from the height map, which used to bare patches of dirt); dug ground is dirt.
         const bool natural = base < ISO_LEVEL + DENSITY_GRADIENT * (1.0f + slack);
@@ -1003,14 +1009,18 @@ void BuildChunkMesh(const DensityField& field, const TerrainDeltas& deltas, Chun
                         out.tangents[v * 4 + 2] = (k + 1) / 8.0f;
                     }
                 }
-                if (planetLife && sky > 0.9f && (m == VoxelMaterial::Grass || m == VoxelMaterial::Regolith)) {
-                    // Distant forests: canopy cover (x) and latitude (y) for the terrain shader, which
-                    // paints them in where the real trees fade out.
+                if (planetLife && sky > 0.5f) {
+                    // The climate (Plan 5 B) for the terrain shader's biome tints, packed in y: 1 + the
+                    // temperature step (0-62 over -30..40 C) + moisture in the fraction (0 = no climate).
                     const float d = Vector3Length(p);
                     const Vector3 up = Vector3Scale(p, 1.0f / d);
-                    const float steep = 1.0f - Vector3DotProduct(n, up);
-                    out.tangents[v * 4 + 0] = TreeCanopy(up, planetLife->radius, d - planetLife->radius, planetLife->foliageSeed) * std::clamp(1.0f - (steep - 0.1f) / 0.15f, 0.0f, 1.0f);
-                    out.tangents[v * 4 + 1] = fabsf(up.y);
+                    const PlanetField::Climate cl = planetLife->climateAt(up, d - planetLife->radius);
+                    out.tangents[v * 4 + 1] = 1.0f + floorf(std::clamp((cl.temp + 30.0f) / 70.0f, 0.0f, 1.0f) * 62.0f) + std::min(cl.moist, 0.999f);
+                    // Distant forests: canopy cover (x), painted in where the real trees fade out.
+                    if (sky > 0.9f && (m == VoxelMaterial::Grass || m == VoxelMaterial::Regolith)) {
+                        const float steep = 1.0f - Vector3DotProduct(n, up);
+                        out.tangents[v * 4 + 0] = TreeCanopy(up, planetLife->radius, d - planetLife->radius, planetLife->foliageSeed) * std::clamp(1.0f - (steep - 0.1f) / 0.15f, 0.0f, 1.0f);
+                    }
                 }
                 out.positions[v * 3 + 0] = lp.x;
                 out.positions[v * 3 + 1] = lp.y;
