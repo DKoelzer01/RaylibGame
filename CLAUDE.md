@@ -115,9 +115,15 @@ Water (Plan 4, user answers)
    tree/stone placement (already checks density), static water bed, spawn, map, materialSky depth.
    Coarse LOD keeps the low octaves so far silhouettes match. Gate: --shot-terrain (cliff and
    overhang screenshots), --crack-check, --test-planet-walk, chunk build time within +30%.
+   Built: PlanetField::terrain3D (smooth warped noise stretched upward + a little ridged, raised more
+   than carved, dips capped at 3 m; mask from rugged noise and elevation); materialSky depth follows it;
+   --shot-terrain. Tuning history: all-ridged made paper-thin shelves, deep carving made pits.
 7. Chunk generation speed (2026-11-12): builds already run in parallel on the job pool (one job per
    chunk, ~7 ms each, 3-5 ms of it density sampling). Next: SIMD noise (4-8 samples at once, the
    biggest win), a per-region height-map cache shared across chunks and LOD levels, cheap
    all-rock/all-air rejection before full sampling; split a single chunk across threads only for
    urgent rebuilds. Do this with or right after 6 (3D noise adds sampling cost).
+   Built: SimplexNoise::noise4 (SSE2, bit-identical to noise(), checked by --profile-density) used by
+   fractal/fractalLimited 4 octaves at a time (density sample ~1.7x faster); river pieces carry a
+   bounding sphere for nearest(). --profile-density prints ns per call by part.
 Deferred by the user: moon mining launch, motion sickness.

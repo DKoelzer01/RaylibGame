@@ -189,6 +189,7 @@ int main(int argc, char** argv)
     bool benchTools = false, toolsOk = true; int toolsPhase = 0, toolsLife = 0, toolsTilled = 0; double toolsStart = 0.0; // --test-tools
     bool benchSuit = false, suitOk = true; int suitPhase = 0; double suitStart = 0.0; float suitFoodRatio = 0.0f, suitWater = 0.0f, suitRebreather = 0.0f; // --test-suit
     int benchShotTabs = 0; // --shot-tabs
+    bool benchTerrain = false; int terrainPhase = 0; double terrainT0 = 0.0; Vector3 terrainAt{}, terrainOut{}; // --shot-terrain
     bool benchPump = false; int pumpPhase = 0, pumpCable = -1; double pumpT0 = 0.0, pumpedAtCut = 0.0; uint32_t pumpPlot = 0; Vector3 pumpBasin{}; float pumpRise = 0.0f; // --test-pump
     bool benchBucket = false; int bucketPhase = 0, bucketTrips = 0; double bucketT0 = 0.0; Vector3 bucketWater{}, bucketBasin{}, bucketField{}; // --test-bucket
     bool benchPond = false; int pondPhase = 0; double pondT0 = 0.0; Vector3 pondDirB{}, pondOutB{}, pondPit{}, pondMid{}; float pondLevelB = 0.0f, pondRB = 0.0f; // --test-pond
@@ -347,6 +348,7 @@ int main(int argc, char** argv)
         if (std::string(argv[i]) == "--test-pond") benchPond = true;
         if (std::string(argv[i]) == "--test-bucket") benchBucket = true;
         if (std::string(argv[i]) == "--test-pump") benchPump = true;
+        if (std::string(argv[i]) == "--shot-terrain") benchTerrain = true;
         if (std::string(argv[i]) == "--test-recipes") benchRecipes = true;
         if (std::string(argv[i]) == "--test-weather") benchWeather = true;
         if (std::string(argv[i]) == "--test-decor") benchDecor = true;
@@ -506,6 +508,52 @@ int main(int argc, char** argv)
         if (Hotbar_Slot(s) == from) Hotbar_Bind(s, to);
         QuestBook_Count(ev);
     };
+
+    for (int i = 1; i < argc; ++i)
+        if (std::string(argv[i]) == "--profile-density") {
+            // Plan item 7: what terrain sampling costs, part by part, over 200k points within 20 m of the
+            // surface around the start (one thread, ns per call).
+            Planetoid* p = dynamic_cast<Planetoid*>(world.objects[0].get());
+            const auto* pf = p ? dynamic_cast<const PlanetField*>(p->field.get()) : nullptr;
+            if (pf) {
+                const Vector3 home = pf->findSpawnDir(p->seed);
+                const Vector3 t1 = Vector3Normalize(Vector3CrossProduct(home, { 0, 1, 0 })), t2 = Vector3CrossProduct(t1, home);
+                std::vector<Vector3> pts; std::vector<float> surf;
+                std::mt19937 rng(7);
+                std::uniform_real_distribution<float> u(-1.0f, 1.0f);
+                for (int k = 0; k < 200000; ++k) {
+                    const Vector3 d = Vector3Normalize(Vector3Add(home, Vector3Add(Vector3Scale(t1, 3000.0f * u(rng) / pf->radius), Vector3Scale(t2, 3000.0f * u(rng) / pf->radius))));
+                    const float s = pf->radius + pf->elevation(d);
+                    surf.push_back(s); pts.push_back(Vector3Scale(d, s + 20.0f * u(rng)));
+                }
+                auto timeIt = [&](const char* name, auto&& f) {
+                    volatile float sink = 0.0f;
+                    const auto t0 = std::chrono::steady_clock::now();
+                    for (size_t k = 0; k < pts.size(); ++k) sink = sink + f(k);
+                    const double ns = std::chrono::duration<double, std::nano>(std::chrono::steady_clock::now() - t0).count() / pts.size();
+                    printf("bench: density profile: %-26s %7.0f ns\n", name, ns);
+                };
+                {
+                    // noise4 must match noise() exactly (the terrain is sampled both ways nowhere, but
+                    // determinism across builds matters).
+                    std::uniform_real_distribution<float> big(-5000.0f, 5000.0f);
+                    double worst = 0.0; int diff = 0;
+                    for (int k = 0; k < 250000; ++k) {
+                        float xs[4], ys[4], zs[4], o[4];
+                        for (int l = 0; l < 4; ++l) { xs[l] = big(rng); ys[l] = big(rng); zs[l] = big(rng); }
+                        SimplexNoise::noise4(xs, ys, zs, o);
+                        for (int l = 0; l < 4; ++l) { const double e = fabs((double)o[l] - SimplexNoise::noise(xs[l], ys[l], zs[l])); worst = std::max(worst, e); diff += e > 0.0; }
+                    }
+                    printf("bench: density profile: noise4 vs noise over 1M points: %d differ, worst %.3g -> %s\n", diff, worst, diff == 0 ? "PASS" : (worst < 1e-5 ? "PASS (rounding)" : "FAIL"));
+                }
+                timeIt("elevation (height map)", [&](size_t k) { return pf->elevation(Vector3Normalize(pts[k])); });
+                timeIt("terrain3D (3D band)", [&](size_t k) { const float d = Vector3Length(pts[k]); return pf->terrain3D(pts[k], d, surf[k], 1.0f); });
+                timeIt("rockFeature (tors, boulders)", [&](size_t k) { const float d = Vector3Length(pts[k]); return pf->rockFeature(pts[k], d, surf[k], 1.0f); });
+                timeIt("density (all, no edits)", [&](size_t k) { return pf->density(pts[k], nullptr, 1.0f); });
+                timeIt("waterSourceAt", [&](size_t k) { return (float)pf->waterSourceAt(Vector3Normalize(pts[k])).kind; });
+            }
+            return 0;
+        }
 
     const double benchWarmup = 2.0;
     double benchStart = 0.0, benchMaxFrame = 0.0;
@@ -1967,6 +2015,55 @@ int main(int argc, char** argv)
                         printf("bench: shot-tabs: bench_questtree.png, bench_suit.png, bench_crafting.png, bench_chest.png, bench_machine.png\n");
                         GameUI_ToggleInventory();
                         benchShotTabs = 0;
+                    }
+                } else if (benchTerrain && (terrainPhase > 0 || WorldIdle())) {
+                    // --shot-terrain (plan item 6): the nearest strongly rugged land (the 3D band at full
+                    // strength), seen from the air (bench_terrain.png) and from the ground (bench_terrain_low.png).
+                    Planetoid* p = dynamic_cast<Planetoid*>(world.objects[0].get());
+                    const PlanetField* pf = p ? dynamic_cast<const PlanetField*>(p->field.get()) : nullptr;
+                    const double t = GetTime() - terrainT0;
+                    if (!pf) { printf("bench: terrain: needs the planet\n"); benchTerrain = false; }
+                    else if (terrainPhase == 0) {
+                        const Vector3 home = pf->findSpawnDir(p->seed);
+                        const Vector3 t1 = Vector3Normalize(Vector3CrossProduct(home, { 0, 1, 0 })), t2 = Vector3CrossProduct(t1, home);
+                        float best = 1e30f; int rugged = 0, samples = 0;
+                        for (float e = -5000.0f; e <= 5000.0f; e += 50.0f)
+                            for (float n = -5000.0f; n <= 5000.0f; n += 50.0f) {
+                                const Vector3 d = Vector3Normalize(Vector3Add(home, Vector3Add(Vector3Scale(t1, e / pf->radius), Vector3Scale(t2, n / pf->radius))));
+                                const float s = pf->radius + pf->elevation(d);
+                                float amp = 0.0f;
+                                for (float h : { -8.0f, 0.0f, 8.0f }) amp = std::max(amp, fabsf(pf->terrain3D(Vector3Scale(d, s + h), s + h, s, 1.0f)));
+                                ++samples;
+                                if (amp < 6.0f) continue;
+                                ++rugged;
+                                const float dist = sqrtf(e * e + n * n);
+                                if (dist < best) { best = dist; terrainAt = Vector3Scale(d, s); terrainOut = t1; }
+                            }
+                        printf("bench: terrain: %.1f%% of 100 km^2 around the start is rugged (3D band over 6 m); nearest %.0f m away\n", 100.0f * rugged / std::max(1, samples), best);
+                        if (best > 1e29f) { printf("bench: terrain: no rugged land -> FAIL\n"); benchTerrain = false; }
+                        else {
+                            player.flyMode = true; sunOverride = true;
+                            const Vector3 up = Vector3Normalize(terrainAt);
+                            sunArg = p->dirToWorld(Vector3Normalize(Vector3Add(up, Vector3Scale(terrainOut, 0.6f))));
+                            terrainPhase = 1; terrainT0 = GetTime();
+                        }
+                    } else {
+                        const Vector3 up = Vector3Normalize(terrainAt);
+                        const Vector3 side = Vector3CrossProduct(up, terrainOut);
+                        const bool low = terrainPhase == 2;
+                        Vector3 eye = Vector3Add(terrainAt, Vector3Add(Vector3Scale(up, low ? 2.0f : 45.0f), Vector3Add(Vector3Scale(terrainOut, low ? -30.0f : -60.0f), Vector3Scale(side, low ? 8.0f : 20.0f))));
+                        if (low) { // down from 40 m to the first ground, then 2 m over it
+                            eye = Vector3Add(eye, Vector3Scale(up, 38.0f));
+                            for (int k = 0; k < 80 && p->densityAt(eye) < ISO_LEVEL; ++k) eye = Vector3Subtract(eye, Vector3Scale(up, 0.5f));
+                            eye = Vector3Add(eye, Vector3Scale(up, 2.0f));
+                        }
+                        world.camera.position = p->toWorld(eye); world.camera.target = p->toWorld(low ? Vector3Add(eye, Vector3Add(Vector3Scale(terrainOut, 50.0f), Vector3Scale(up, -4.0f))) : terrainAt); world.camera.up = p->dirToWorld(up);
+                        player.position = world.renderOrigin + world.camera.position;
+                        if (t > 4.0) {
+                            TakeScreenshot(low ? "bench_terrain_low.png" : "bench_terrain.png");
+                            if (low) { printf("bench: terrain: bench_terrain.png, bench_terrain_low.png\n"); benchTerrain = false; }
+                            else { terrainPhase = 2; terrainT0 = GetTime(); }
+                        }
                     }
                 } else if (benchPump && (pumpPhase > 0 || WorldIdle())) {
                     // --test-pump (Plan 4, F6): a powered water pump at a river's edge sends water through pipes
@@ -3669,7 +3766,7 @@ int main(int argc, char** argv)
                         }
                         benchWalkSeconds = 0.0;
                     }
-                } else if ((WorldIdle() && benchDigStrokes == 0 && !benchPaint && !benchSaveLoad && benchWalkSeconds <= 0.0 && benchMineStrokes == 0 && minePhase != 2 && benchFlySeconds <= 0.0 && !benchSuffocate && benchOrbitSeconds <= 0.0 && !benchRide && !benchPark && !benchGravity && !benchPrecision && !benchMantle && !benchAirJump && !benchMoon && !benchHole && !benchWall && !benchMenus && !benchWater && !benchFlyFollow && !benchHotbar && !benchInventory && !benchMap && !benchViewmodel && !benchQuests && !benchHunger && !benchFarm && !benchAnimals && !benchThreats && benchShotTabs == 0 && !benchForest && !benchFlow && !benchPond && !benchBucket && !benchPump && !benchRecipes && !benchWeather && !benchDecor && !benchMaterials && !benchDamage && !benchCrafting && !benchSuit && !benchTools && !benchRivers && !benchRing && !benchRocket && !benchStation && !benchBlueprint && !benchSmallBody && !benchTrees && !benchChop && benchPersist == 0 && benchBuild == 0 && benchFactory == 0 && !benchProgression) || GetTime() > 600.0) {
+                } else if ((WorldIdle() && benchDigStrokes == 0 && !benchPaint && !benchSaveLoad && benchWalkSeconds <= 0.0 && benchMineStrokes == 0 && minePhase != 2 && benchFlySeconds <= 0.0 && !benchSuffocate && benchOrbitSeconds <= 0.0 && !benchRide && !benchPark && !benchGravity && !benchPrecision && !benchMantle && !benchAirJump && !benchMoon && !benchHole && !benchWall && !benchMenus && !benchWater && !benchFlyFollow && !benchHotbar && !benchInventory && !benchMap && !benchViewmodel && !benchQuests && !benchHunger && !benchFarm && !benchAnimals && !benchThreats && benchShotTabs == 0 && !benchForest && !benchFlow && !benchPond && !benchBucket && !benchPump && !benchTerrain && !benchRecipes && !benchWeather && !benchDecor && !benchMaterials && !benchDamage && !benchCrafting && !benchSuit && !benchTools && !benchRivers && !benchRing && !benchRocket && !benchStation && !benchBlueprint && !benchSmallBody && !benchTrees && !benchChop && benchPersist == 0 && benchBuild == 0 && benchFactory == 0 && !benchProgression) || GetTime() > 600.0) {
                     benchStart = GetTime();
                     printf("bench: world ready after %.2f s (%d chunks, avg build %.2f ms of which sampling %.2f ms, %d worker threads)\n",
                         GetWorldStats().lastGenerationSeconds, GetWorldStats().chunks, GetWorldStats().avgBuildMs, GetWorldStats().avgSampleMs, GetWorldStats().workerThreads);

@@ -182,9 +182,12 @@ PlanetField::PlanetField(unsigned int seed, float radius_, bool moon_)
     streams = SeededNoise(rng, 1.0f / 900.0f);        // small streams where this crosses zero (added last)
     rocks = SeededNoise(rng, 1.0f / 22.0f);           // outcrop fins and crags (playtest 4)
     rockMask = SeededNoise(rng, 1.0f / 340.0f);       // ...only in rocky patches
+    rugged = SeededNoise(rng, 1.0f / 1600.0f);        // 3D terrain (plan item 6): where hills turn to cliffs
+    cliffs = SeededNoise(rng, 1.0f / 45.0f);          // ...their shape (ridged, stretched upward)
+    warp3 = SeededNoise(rng, 1.0f / 70.0f);           // ...and its domain warp (leaning crests, undercuts)
     // Bounds of elevation() below (each noise term is in [-1, 1]).
     if (moon) { minElevation = -90.0f; maxElevation = 340.0f; }
-    else { minElevation = -740.0f; maxElevation = 1690.0f; }
+    else { minElevation = -740.0f; maxElevation = 1690.0f + 30.0f; } // + the 3D terrain band
 }
 
 // River valleys: 70 m deep, with a flat floodplain floor (valley-noise units < kValleyFloor, room for
@@ -601,10 +604,40 @@ float PlanetField::rockFeature(Vector3 p, float d, float surface, float fp) cons
     return best;
 }
 
+// 3D terrain (plan item 6): a band of full 3D noise from 16 m under the height map to 26 m over it.
+// Where a regional mask (~1.6 km patches, more of it the higher the land) makes the land rugged,
+// smooth noise stretched upward (features ~2.5x taller than wide: cliff faces), edged with its ridged
+// form, and domain-warped
+// (crests lean: overhangs, undercuts) raises ridges and carves alcoves, up to 12 m either way.
+// The beaches and the low land by the sea stay smooth. Coarse levels of detail keep its low octaves,
+// so far silhouettes match near ones. Returns metres added to the surface here (+ solid, - carved).
+float PlanetField::terrain3D(Vector3 p, float d, float surface, float fp) const {
+    if (moon || d < 1e-3f) return 0.0f;
+    const float h = d - surface;
+    if (h < -16.0f || h > 26.0f) return 0.0f;
+    const float elev = surface - radius;
+    if (elev < 6.0f) return 0.0f;
+    const float mask = Smoothstep(0.0f, 0.4f, rugged.fractal(2, p.x, p.y, p.z)) * Smoothstep(6.0f, 60.0f, elev);
+    if (mask <= 0.0f) return 0.0f;
+    const Vector3 dir = { p.x / d, p.y / d, p.z / d };
+    Vector3 q = Vector3Subtract(p, Vector3Scale(dir, h * 0.6f)); // vertical stretch
+    const float w = 9.0f * warp3.fractalLimited(2, fp, q.x, q.y, q.z);
+    q = { q.x + w, q.y - 0.7f * w, q.z + 0.4f * w };
+    const float n = cliffs.fractalLimited(3, fp, q.x, q.y, q.z);
+    // Smooth warped noise gives the body (overhangs as thick as they are wide); a little of its ridged
+    // form sharpens the rock edges. (All-ridged made paper-thin shelves high up.)
+    const float shape = n + 0.3f * (1.0f - 2.0f * fabsf(n)) + 0.15f;
+    const float fade = (1.0f - Smoothstep(3.0f, 20.0f, h)) * Smoothstep(-16.0f, -8.0f, h); // shelves 2-8 m up, not floating sheets
+    // Raised more than carved: hills and cliffs rise, alcoves are their undercuts (deep carving read as
+    // pits in the plains), so dips stop at 3 m.
+    return std::max(16.0f * mask * shape * fade, -3.0f);
+}
+
 // Everything after the height map, shared by single samples and blocks so both agree exactly.
 float PlanetField::densityNear(Vector3 p, float d, float surface, float fp) const {
     float v = ISO_LEVEL + DENSITY_GRADIENT * (surface - d);
     const float depth = surface - d;
+    if (depth < 16.0f && depth > -26.0f) v += DENSITY_GRADIENT * terrain3D(p, d, surface, fp); // hills, cliffs, overhangs
     if (fabsf(depth) < 6.0f) v += DENSITY_GRADIENT * 1.5f * detail.fractalLimited(2, fp, p.x, p.y * 1.3f, p.z); // crags, overhangs
     if (depth < 3.0f && depth > -9.0f) {
         const float m = rockFeature(p, d, surface, fp);
@@ -739,7 +772,9 @@ VoxelMaterial PlanetField::materialSky(Vector3 p, float base, float fp, Vector3 
     // `base` (the unedited density) tells undug ground (near the iso level) from dug-out ground.
     const Vector3 up = { p.x / d, p.y / d, p.z / d };
     const float surfaceElevation = elevation(up, fp);
-    const float depth = radius + surfaceElevation - d; // against the surface this LOD meshes
+    // Against the surface this LOD meshes, moved by the 3D terrain band (a carved alcove 10 m under the
+    // height map is open air, not buried rock: it keeps its sky light and surface materials).
+    const float depth = radius + surfaceElevation - d + terrain3D(p, d, radius + surfaceElevation, fp);
     // A coarse LOD mesh strays from the height map it approximates by up to a couple of samples, so
     // its "depth" must allow for that, or whole patches of surface read as buried (black, no sun) and
     // take underground materials (seen from orbit as black triangles on peaks and rings along the grid).
