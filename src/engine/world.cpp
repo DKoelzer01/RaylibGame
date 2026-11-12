@@ -294,7 +294,20 @@ void Planetoid::drawDepthOnly(const RenderContext& ctx) {
     ChunkBatch batch(*ctx.depthMaterial);
     RenderContext c2 = ctx;
     c2.batch = &batch;
-    for (Chunk* c : drawList) c->drawChunkDepth(c2, placer.model(c->key));
+    // Pre-cull against the light box's column in body-local space: most chunks of the draw list lie far
+    // outside it, and working out their model matrix (double precision) was most of the pass's CPU time.
+    const bool column = ctx.cullAxisRadius > 0.0f;
+    const Vector3 pL = column ? toLocal(ctx.cullAxisPoint) : Vector3{}, dL = column ? dirToLocal(ctx.cullAxisDir) : Vector3{};
+    const float rL = column ? ctx.cullAxisRadius / std::max(scale, 1e-6f) : 0.0f;
+    for (Chunk* c : drawList) {
+        if (column) {
+            const float h = c->key.size() * 0.5f;
+            const Vector3 v = Vector3Subtract(Vector3AddValue(c->key.origin(), h), pL);
+            const float along = Vector3DotProduct(v, dL), reach = rL + h * 1.75f;
+            if (Vector3LengthSqr(v) - along * along > reach * reach) continue;
+        }
+        c->drawChunkDepth(c2, placer.model(c->key));
+    }
 }
 
 // ---------------------------------------------------------------------------------------------

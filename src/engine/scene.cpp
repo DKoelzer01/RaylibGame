@@ -18,6 +18,11 @@ bool benchMode = false; // set by the game executables (--bench)
 // ---------------------------------------------------------------------------------------------
 
 bool HotShader::reloadIfChanged(bool force) {
+    // Two file stats per shader cost ~20 us each on Windows: 20 a frame was ~0.35 ms of the main
+    // thread. Look at most twice a second (each shader keeps its own clock).
+    const double now = GetTime();
+    if (!force && now - lastCheck < 0.5) return false;
+    lastCheck = now;
     const long vt = GetFileModTime(vsPath.c_str());
     const long ft = GetFileModTime(fsPath.c_str());
     if (!force && vt == vsTime && ft == fsTime) return false;
@@ -343,6 +348,8 @@ void Scene::drawScene(int gamestate) {
             shadowCtx.depthMaterial = &depthMaterial;
             shadowCtx.frustum = &lightFrustum;
             shadowCtx.renderOrigin = renderOrigin;
+            shadowCtx.cullAxisPoint = centre; shadowCtx.cullAxisDir = Vector3Normalize(sunDirection);
+            shadowCtx.cullAxisRadius = shadowHalfExtent * 1.4143f; // the ortho box's corners
             for (const auto& obj : objects) obj->drawDepthOnly(shadowCtx);
             for (const auto& obj : rootObject.children) obj->drawDepthOnly(shadowCtx);
         EndMode3D();

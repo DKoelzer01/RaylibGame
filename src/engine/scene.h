@@ -29,6 +29,7 @@ struct HotShader {
     std::string vsPath, fsPath;
     Shader shader{};
     long vsTime = 0, fsTime = 0;
+    double lastCheck = -1e9;     // reloadIfChanged looks at the files at most twice a second
 
     // Returns true when a new shader was swapped in (callers must re-apply locations/uniforms).
     bool reloadIfChanged(bool force = false);

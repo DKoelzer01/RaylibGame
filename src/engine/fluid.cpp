@@ -34,7 +34,7 @@ constexpr int kEvaporate = 3;          // resting specks this thin (~1 cm) dry u
 constexpr int kSubsteps = 3;           // simulation steps per 20 Hz tick (water moves a cell a step)
 constexpr int kSleepSteps = 120;       // 2 s without change: a brick sleeps
 constexpr int kLevelEvery = 15;        // levelling pass every 0.25 s
-constexpr int kInitPerStep = 6;        // bricks whose cells are classified per step (each costs a few ms)
+constexpr int kInitPerStep = 24;       // bricks classified per step, in parallel on the worker pool (each a few ms)
 constexpr int kMaxBricks = 4096;       // per site
 
 inline int Idx(int x, int y, int z) { return x + y * B + z * B * B; }
@@ -149,7 +149,11 @@ std::map<std::pair<int, int64_t>, GpuMesh> gpu;  // main thread
 
 // Cells of a brick: solid from the terrain density (edits included); open cells inside static water
 // are sources (infinite) or, for ponds, take the pond over.
-void Classify(Site& s, Brick& b, const BodyRef& ref) {
+struct PondClaim { uint64_t id; Vector3 dir; float r, level; };
+// Runs in parallel over bricks (pool jobs): it writes only its own brick; ponds it finds are reported
+// in `claims` and taken over after the batch (RunJob), never here.
+void Classify(const Site& s, Brick& b, const BodyRef& ref, std::vector<PondClaim>& claims) {
+    std::vector<Site::PondInfo> ponds = s.pondInfo; // taken over before, and found in this brick
     const PlanetField* pf = ref.pf;
     const float sea = pf ? pf->seaLevelRadius() : 0.0f;
     for (int y = 0; y < B; ++y)
@@ -167,25 +171,13 @@ void Classify(Site& s, Brick& b, const BodyRef& ref) {
                 if (bed < sea) { level = sea; kind = 4; } // the sea
                 const PlanetField::WaterSource ws = pf->waterSourceAt(dir);
                 if (ws.kind == 3 && bed < sea + ws.level) {
-                    // A pond: the simulation takes it over (finite water from here on). Its static surface
-                    // goes (the chunks around it rebuild) and every brick of its water is queued.
-                    pf->claimPond(ws.pond);
-                    s.ponds.push_back(ws.pond);
-                    s.pondInfo.push_back({ ws.pondDir, ws.pondR, ws.level });
-                    {
-                        std::lock_guard<std::mutex> lock(pubMx);
-                        const Vector3 pc = Vector3Scale(ws.pondDir, pf->radius + ws.level);
-                        remeshQueue.push_back({ s.body, { pc.x, pc.y, pc.z, ws.pondR * 1.3f + 8.0f } });
-                    }
-                    const Vector3 pc = Vector3Scale(ws.pondDir, pf->radius + ws.level);
-                    int pci, pcj, pck;
-                    s.cellOf(pc, pci, pcj, pck);
-                    const int rc = (int)ceilf(ws.pondR * 1.1f) + 1;
-                    for (int bk = FloorDiv(pck - 8, B); bk <= FloorDiv(pck, B); ++bk)
-                        for (int bj = FloorDiv(pcj - rc, B); bj <= FloorDiv(pcj + rc, B); ++bj)
-                            for (int bi = FloorDiv(pci - rc, B); bi <= FloorDiv(pci + rc, B); ++bi) s.ensure(bi, bj, bk);
+                    // A pond: the simulation takes it over (finite water from here on); reported to RunJob,
+                    // which hides its static surface and queues every brick of its water.
+                    bool known = false;
+                    for (const PondClaim& c : claims) known = known || c.id == ws.pond;
+                    if (!known) { claims.push_back({ ws.pond, ws.pondDir, ws.pondR, ws.level }); ponds.push_back({ ws.pondDir, ws.pondR, ws.level }); }
                 } else if (ws.kind && sea + ws.level > level) { level = sea + ws.level; kind = ws.kind; }
-                for (const Site::PondInfo& p : s.pondInfo)
+                for (const Site::PondInfo& p : ponds)
                     if (Vector3Distance(dir, p.dir) * pf->radius < p.r * 1.05f && sea + p.level > level) { level = sea + p.level; kind = 5; }
             }
             const float top = pf ? bed + 14.0f : 1e9f;  // tors, boulders and detail stay below this
@@ -636,18 +628,48 @@ void RunJob() {
     std::vector<Command> cmds;
     { std::lock_guard<std::mutex> c(cmdMx); cmds.swap(commands); }
     for (const Command& c : cmds) ApplyCommand(c);
-    // Classify queued bricks (a few a step: each costs ~4k density samples).
-    int budget = kInitPerStep;
+    // Classify queued bricks, in parallel on the worker pool (each costs ~4k density samples, a few ms):
+    // this job waits for them, so nothing else touches the site meanwhile. Ponds found are taken over
+    // after the batch.
+    struct Work { Site* s; Brick* b; const BodyRef* ref; std::vector<PondClaim> claims; };
+    std::vector<Work> work;
     for (auto& s : sites) {
         auto rit = refs.find(s->body);
         if (rit == refs.end()) continue;
-        while (!s->pending.empty() && budget > 0) {
+        while (!s->pending.empty() && (int)work.size() < kInitPerStep) {
             Brick* b = s->pending.front(); s->pending.pop_front();
             if (b->ready) continue;
-            Classify(*s, *b, rit->second);
-            --budget;
-            // Neighbours wake: water may now flow in or out.
-            for (Brick* o : b->nbr) if (o) Touch(o);
+            bool dup = false;
+            for (const Work& w : work) dup = dup || w.b == b;
+            if (!dup) work.push_back({ s.get(), b, &rit->second, {} });
+        }
+    }
+    if (!work.empty()) {
+        std::atomic<int> left{ (int)work.size() - 1 };
+        for (size_t k = 1; k < work.size(); ++k) {
+            Work* w = &work[k];
+            WorldJobs().submit(-3.0f, [w, &left] { Classify(*w->s, *w->b, *w->ref, w->claims); left.fetch_sub(1); });
+        }
+        Classify(*work[0].s, *work[0].b, *work[0].ref, work[0].claims); // this thread takes one too
+        while (left.load() > 0) std::this_thread::yield();
+        for (Work& w : work) {
+            for (Brick* o : w.b->nbr) if (o) Touch(o); // neighbours wake: water may now flow in or out
+            const PlanetField* pf = w.ref->pf;
+            for (const PondClaim& c : w.claims) {
+                if (!pf || std::find(w.s->ponds.begin(), w.s->ponds.end(), c.id) != w.s->ponds.end()) continue;
+                // Take the pond over: no static surface (the chunks around it rebuild); queue its bricks.
+                pf->claimPond(c.id);
+                w.s->ponds.push_back(c.id);
+                w.s->pondInfo.push_back({ c.dir, c.r, c.level });
+                const Vector3 pc = Vector3Scale(c.dir, pf->radius + c.level);
+                { std::lock_guard<std::mutex> lock(pubMx); remeshQueue.push_back({ w.s->body, { pc.x, pc.y, pc.z, c.r * 1.3f + 8.0f } }); }
+                int pci, pcj, pck;
+                w.s->cellOf(pc, pci, pcj, pck);
+                const int rc = (int)ceilf(c.r * 1.1f) + 1;
+                for (int bk = FloorDiv(pck - 8, B); bk <= FloorDiv(pck, B); ++bk)
+                    for (int bj = FloorDiv(pcj - rc, B); bj <= FloorDiv(pcj + rc, B); ++bj)
+                        for (int bi = FloorDiv(pci - rc, B); bi <= FloorDiv(pci + rc, B); ++bi) w.s->ensure(bi, bj, bk);
+            }
         }
     }
     const int n = kSubsteps * std::max(1, speed.load());
