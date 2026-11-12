@@ -85,7 +85,7 @@ namespace Fluid {
     // Sources (springs, seeps): add fluid at up to `rate` m^3/s while the fluid surface over the source
     // is below its head (`head` m above the source point). A basin fills to the head and the source
     // rests (equilibrium); where the rim is lower than the head the overflow runs off as a stream.
-    // Saved with the site. A second source on the same cell replaces the first.
+    // Saved with the site. A source within 2 cells of an existing one replaces it.
     void AddSource(Planetoid& body, Vector3 local, int kind, float rate, float head);
     int SourceCount();
 

@@ -254,14 +254,14 @@ void RequestBeyond(Site& s, Brick* b, int x, int y, int z, int dx, int dy, int d
 // below the head. A basin over it fills to the head and the source rests; a lower rim lets the overflow
 // run off (the step carries it away), so the source keeps adding and a stream forms.
 void StepSpring(Site& s, Site::Spring& sp) {
-    sp.acc = std::min(sp.acc + sp.perStep, std::max(2.0f, sp.perStep * 30.0f)); // owed at most ~half a second's worth
-    if (sp.acc < 1.0f) return;
+    sp.acc = std::min(sp.acc + sp.perStep, std::max(16.0f, sp.perStep * 30.0f)); // owed at most ~half a second's worth
+    if (sp.acc < 8.0f) return; // in drops of 3 cm+: thinner specks would soak away (kEvaporate) before they spread
     for (int k = 0; k < 64; ++k) {
         const int ck = sp.ck + k;
         if ((float)ck >= sp.head) return;                       // the surface is at the head
         Brick* b; int i;
         if (!s.cell(sp.ci, sp.cj, ck, b, i)) { s.ensure(FloorDiv(sp.ci, B), FloorDiv(sp.cj, B), FloorDiv(ck, B)); return; }
-        if (b->flags[i] & kSolid) { if (k == 0) continue; return; } // buried source: it wells up through the cell above
+        if (b->flags[i] & kSolid) { if (k < 3) continue; return; }  // a buried source wells up through the ground just above it
         if (b->fill[i] > 0 && CellKind(b->flags[i]) != sp.kind) return; // another fluid lies on it
         if (b->fill[i] >= 255) continue;                          // full: the surface is higher up
         const float surface = ck + b->fill[i] / 255.0f;
@@ -647,7 +647,7 @@ void ApplyCommand(const Command& c) {
         const float fz = Vector3DotProduct(Vector3Subtract(c.c, s->origin), s->u);
         Site::Spring sp{ ci, cj, ck, std::clamp(c.fluid, 0, 7), c.r * 255.0f / (20.0f * kSubsteps), fz + c.head };
         bool replaced = false;
-        for (Site::Spring& o : s->springs) if (o.ci == ci && o.cj == cj && o.ck == ck) { o = sp; replaced = true; }
+        for (Site::Spring& o : s->springs) if (!replaced && abs(o.ci - ci) <= 2 && abs(o.cj - cj) <= 2 && abs(o.ck - ck) <= 2) { o = sp; replaced = true; } // the same source again (a reload)
         if (!replaced) s->springs.push_back(sp);
         EnsureAround(*s, c.c, 2.0f);
         return;

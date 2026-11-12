@@ -176,3 +176,17 @@ regression 47/47 on 040f1eb. All CurrentIssues items are "changed - confirm in p
 - C: dramatic terrain tied to biomes, with a good variety of flat building spots as well as
   interesting ones; floating islands rare; ravines and cave mouths in the same pass.
 - D: some PBR; stylized look - higher resolution than Minecraft but fairly unrealistic.
+
+## Generic fluids (user, 2026-11-12) - on m25-biomes / PR #30
+- One fluid model, not per-fluid copies: kinds come from resources/data/fluids.txt (water = 0, crude_oil;
+  room for 8, e.g. lava later: colour, opacity, glow, viscosity, min spread, bucket item). The kind rides in
+  cell flag bits 5-7; kinds never mix (a fluid enters only empty cells or its own kind). Meshes per kind,
+  drawn by water.fs (fluidColor.a > 0 = a non-water kind). Saves: fill + 256 x kind; sources on a "springs" line.
+- Sources (Fluid::AddSource): a rate (m^3/s) and a head; fill the column's surface up to the head, then rest
+  (equilibrium, bricks sleep) or overflow into a stream. Slow sources add in drops of >= 8/255 (thinner
+  specks soak away: kEvaporate). Place them on the real ground (probe density from ~8 m up: the mesh can
+  stand metres above the height map).
+- Natural sources (ambience.cpp kSourceTypes): oil seeps in warm biomes (carved basin, head under the rim:
+  pools) and water springs in wet hill biomes (head 1.2 m over the ground: streams). --test-oil, --test-spring.
+- Follow-up ideas from the user: express rivers/lakes (and later magma) as sources too; springs show as
+  thin films on steep scree (consider a carved channel or a lower film limit for springs).
