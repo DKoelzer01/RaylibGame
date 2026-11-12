@@ -205,7 +205,7 @@ struct LayoutMsg {
     std::vector<std::string> machineVariant;              // per machine: its one output item ("" any)
     std::vector<Int3> conveyors, cables;
 };
-struct ItemMsg { int kind; uint64_t body; uint32_t plot; int part; int item; int count; }; // 0 insert, 1 extract, 2 seed, 3 take (one item from a chest)
+struct ItemMsg { int kind; uint64_t body; uint32_t plot; int part; int item; int count; }; // 0 insert, 1 extract, 2 seed, 3 take (one item from a chest), 4 take slot (item = slot, count = 1 for an output slot)
 
 std::mutex simMutex;                          // state (sim thread holds it for a tick)
 std::vector<PlotSim> plots;
@@ -530,6 +530,8 @@ void FillView(const PlotSim& ps, int part, MachineView& v) {
     };
     v.input = list(m.in, InSlots(m));
     v.output = list(m.out, kSlots);
+    for (int i = 0; i < InSlots(m); ++i) v.inSlots.push_back({ m.in[i].count > 0 ? tables.name(m.in[i].item) : std::string(), m.in[i].count });
+    if (m.type != PartType::Chest) for (int i = 0; i < kSlots; ++i) v.outSlots.push_back({ m.out[i].count > 0 ? tables.name(m.out[i].item) : std::string(), m.out[i].count });
 }
 
 void SimLoop() {
@@ -570,6 +572,10 @@ void SimLoop() {
                     if (left > 0 && im.kind == 0) back.push_back({ im.item, left });
                 } else if (im.kind == 3) {
                     if (m.type == PartType::Chest) { const int k = std::min(im.count, CountItems(m.in, kChestSlots, im.item)); TakeItems(m.in, kChestSlots, im.item, k); if (k > 0) back.push_back({ im.item, k }); }
+                } else if (im.kind == 4) {
+                    Stack* s = im.count ? m.out : m.in;
+                    const int n = im.count ? kSlots : InSlots(m);
+                    if (im.item >= 0 && im.item < n && s[im.item].count > 0) { back.push_back({ s[im.item].item, s[im.item].count }); s[im.item] = Stack{}; }
                 } else {
                     Stack* s = m.type == PartType::Chest ? m.in : m.out;
                     const int n = m.type == PartType::Chest ? kChestSlots : kSlots;
@@ -715,6 +721,10 @@ void Factory::Insert(uint64_t body, uint32_t plot, int part, const std::string& 
 void Factory::Extract(uint64_t body, uint32_t plot, int part) {
     std::lock_guard<std::mutex> q(queueMutex);
     itemQueue.push_back({ 1, body, plot, part, -1, 0 });
+}
+void Factory::TakeSlot(uint64_t body, uint32_t plot, int part, int slot, bool output) {
+    std::lock_guard<std::mutex> q(queueMutex);
+    itemQueue.push_back({ 4, body, plot, part, slot, output ? 1 : 0 });
 }
 void Factory::Seed(uint64_t body, uint32_t plot, int part, const std::string& item, int count) {
     std::lock_guard<std::mutex> q(queueMutex);

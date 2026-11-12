@@ -37,7 +37,7 @@ namespace {
     }
 }
 
-static bool IsMachineItem(const std::string& id) {
+bool IsMachineItem(const std::string& id) {
     for (int t = 0; t < (int)PartType::Count; ++t) if (id == PartCostItem((PartType)t) && IsMachine((PartType)t)) return true;
     return false;
 }
@@ -311,6 +311,13 @@ void Machine_Update(Scene& world, bool inputEnabled) {
         if (fb && fp && IsKeyPressed(KEY_O)) Farm_Harvest(*fb, *fp, machineAim.part);
         return;
     }
+    // RMB (outside build mode, where RMB places parts) opens the machine's own screen: its slots
+    // beside the inventory, like the player's.
+    if (!buildTool.active && IsMouseButtonPressed(MOUSE_BUTTON_RIGHT)) {
+        GameUI_OpenContainer(machineAim.body, machineAim.plot, machineAim.part, (int)machineAim.type);
+        Audio_Play(Sfx::Pickup, 0.3f, 1.0f);
+        return;
+    }
     if (IsKeyPressed(KEY_I)) {
         // Everything in the inventory the machine might take: fuel for generators, recipe inputs,
         // anything for a chest (the simulation hands back what does not fit).
@@ -327,7 +334,7 @@ void Machine_Update(Scene& world, bool inputEnabled) {
 }
 
 void Machine_DrawHUD() {
-    if (machineAim.part < 0) return;
+    if (machineAim.part < 0 || GameUI_ContainerOpen()) return; // the open screen watches its own machine
     if (machineAim.type == PartType::Farmland) {
         Planetoid* fb = Planetoid::find(machineAim.body);
         Plot* fp = fb && fb->plots ? fb->plots->byId(machineAim.plot) : nullptr;
@@ -345,5 +352,5 @@ void Machine_DrawHUD() {
     DrawText(TextFormat("in: %s", v.input.c_str()), x, y + 40, 16, RAYWHITE);
     DrawText(TextFormat("out: %s", v.output.c_str()), x, y + 60, 16, RAYWHITE);
     if (v.energyMax > 0) DrawText(TextFormat("charge %d / %d EU", v.energy, v.energyMax), x, y + 80, 16, YELLOW);
-    else DrawText("I put items in   O take the output", x, y + 80, 16, Fade(RAYWHITE, 0.7f));
+    else DrawText("RMB open   I put items in   O take the output", x, y + 80, 16, Fade(RAYWHITE, 0.7f));
 }

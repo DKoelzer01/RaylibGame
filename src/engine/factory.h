@@ -37,6 +37,7 @@ struct MachineView {             // published per machine each tick
     int progress = 0, duration = 0; // recipe ticks done / needed
     int energy = 0, energyMax = 0;  // buffer (generators: fuel ticks left)
     std::string input, output;      // "iron_ore x3"
+    std::vector<std::pair<std::string, int>> inSlots, outSlots; // per slot ("", 0 when empty); chests use inSlots
     bool valid = false;
 };
 
@@ -59,6 +60,8 @@ namespace Factory {
     // Player item transfers (queued for the next tick).
     void Insert(uint64_t bodyId, uint32_t plotId, int part, const std::string& item, int count);
     void Extract(uint64_t bodyId, uint32_t plotId, int part);
+    // Container screen: one slot's whole stack back to the inventory (next tick).
+    void TakeSlot(uint64_t bodyId, uint32_t plotId, int part, int slot, bool output);
     // Crafting and storing from nearby chests: take `count` of one item out of a chest (into the
     // inventory next tick), and what the chests of plots near the player hold (as of the last tick).
     void Take(uint64_t bodyId, uint32_t plotId, int part, const std::string& item, int count);

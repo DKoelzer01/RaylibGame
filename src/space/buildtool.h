@@ -1,6 +1,8 @@
 #ifndef BUILDTOOL_H
 #define BUILDTOOL_H
 
+#include <string>
+
 class Scene;
 class Planetoid;
 class Plot;
@@ -33,5 +35,6 @@ void BuildTool_LayFoundation(Planetoid& body, Plot& plot, const Part& part);
 // Machines: looking at one shows its state (factory snapshot); I inserts items, O takes outputs.
 void Machine_Update(Scene& world, bool inputEnabled);
 void Machine_DrawHUD();
+bool IsMachineItem(const std::string& id); // an item that builds a machine part (chests don't take these)
 
 #endif

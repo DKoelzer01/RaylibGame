@@ -1878,6 +1878,7 @@ int main(int argc, char** argv)
                     // --shot-tabs: screenshots of the Quest tree (some progress) and Suit tabs.
                     static int frames = 0;
                     if (benchShotTabs == 1) {
+                        if (Planetoid* p0 = dynamic_cast<Planetoid*>(world.objects[0].get())) { player.flyMode = false; player.spawnOn(world, *p0, StartSpawnDir(*p0)); } // stands by the containers placed below
                         QuestBook_SetTier(3);
                         QuestBook_AtLeast("explored", 30.0); QuestBook_Count("till"); QuestBook_Count("feed");
                         inventory.add("food_pouch", 1); inventory.add("oxygen_tank_module", 1); inventory.add("grip_boots", 1); inventory.add("field_suit", 1);
@@ -1895,7 +1896,55 @@ int main(int argc, char** argv)
                         benchShotTabs = 4; frames = 0;
                     } else if (benchShotTabs == 4 && ++frames == 40) {
                         TakeScreenshot("bench_crafting.png");
-                        printf("bench: shot-tabs: bench_questtree.png, bench_suit.png, bench_crafting.png\n");
+                        // Container screens: a chest and a furnace next to the player, filled, opened.
+                        Planetoid* p = player.nearest;
+                        static uint32_t plotId = 0; static int chestPart = -1, furnacePart = -1; static int stoneBefore = 0;
+                        if (p) {
+                            const Vector3 feet = (player.position - world.renderOrigin).toFloat();
+                            const Vector3 flat = Vector3Normalize(Vector3Subtract(player.forward, Vector3Scale(player.up, Vector3DotProduct(player.forward, player.up))));
+                            if (!p->plots) p->plots = std::make_unique<PlotSet>();
+                            Plot* plot = p->plots->plotFor(p->toLocal(Vector3Add(Vector3Add(feet, Vector3Scale(flat, 5.0f)), Vector3Scale(player.up, 1.0f))), 0.0f, true);
+                            plotId = plot->id;
+                            chestPart = plot->place({ PartType::Chest, { 0, 0, 0 }, 0 });
+                            furnacePart = plot->place({ PartType::Furnace, { 3, 0, 0 }, 0 });
+                        }
+                        benchShotTabs = 5; frames = 0;
+                        if (!p || chestPart < 0 || furnacePart < 0) { printf("bench: container: could not place a chest and furnace -> FAIL\n"); benchShotTabs = 0; GameUI_ToggleInventory(); }
+                        (void)stoneBefore;
+                    } else if (benchShotTabs == 5 && ++frames == 30) {
+                        // The layout reached the simulation: fill both, open the chest.
+                        Planetoid* p = player.nearest;
+                        static uint32_t plotId2 = 0;
+                        (void)plotId2;
+                        Plot* plot = p && p->plots ? p->plots->plots.back().get() : nullptr;
+                        if (plot) {
+                            int chest = -1, furnace = -1;
+                            for (int i = 0; i < (int)plot->parts.size(); ++i) { if (plot->parts[i].type == PartType::Chest) chest = i; if (plot->parts[i].type == PartType::Furnace) furnace = i; }
+                            Factory::Seed(p->id, plot->id, chest, "stone", 40); Factory::Seed(p->id, plot->id, chest, "wood", 20); Factory::Seed(p->id, plot->id, chest, "iron_ore", 7);
+                            Factory::Seed(p->id, plot->id, furnace, "iron_ore", 5); Factory::Seed(p->id, plot->id, furnace, "wood", 8);
+                            GameUI_OpenContainer(p->id, plot->id, chest, (int)PartType::Chest);
+                        }
+                        benchShotTabs = 6; frames = 0;
+                    } else if (benchShotTabs == 6 && ++frames == 40) {
+                        TakeScreenshot("bench_chest.png");
+                        // Take the chest's first slot (stone) through the screen's own command.
+                        Planetoid* p = player.nearest;
+                        Plot* plot = p->plots->plots.back().get();
+                        int chest = -1;
+                        for (int i = 0; i < (int)plot->parts.size(); ++i) if (plot->parts[i].type == PartType::Chest) chest = i;
+                        const int before = inventory.count("stone");
+                        Factory::TakeSlot(p->id, plot->id, chest, 0, false);
+                        Factory::WaitTicks(3);
+                        Factory::Sync(world);
+                        const MachineView v = Factory::View(p->id, plot->id, chest);
+                        printf("bench: container: took slot 0 of the chest: stone %d -> %d, chest slots %d (slot 0 now %s x%d): %s\n", before, inventory.count("stone"),
+                               (int)v.inSlots.size(), v.inSlots.empty() ? "?" : v.inSlots[0].first.c_str(), v.inSlots.empty() ? 0 : v.inSlots[0].second,
+                               inventory.count("stone") == before + 40 && v.inSlots.size() == 16 ? "PASS" : "FAIL");
+                        for (int i = 0; i < (int)plot->parts.size(); ++i) if (plot->parts[i].type == PartType::Furnace) GameUI_OpenContainer(p->id, plot->id, i, (int)PartType::Furnace);
+                        benchShotTabs = 7; frames = 0;
+                    } else if (benchShotTabs == 7 && ++frames == 40) {
+                        TakeScreenshot("bench_machine.png");
+                        printf("bench: shot-tabs: bench_questtree.png, bench_suit.png, bench_crafting.png, bench_chest.png, bench_machine.png\n");
                         GameUI_ToggleInventory();
                         benchShotTabs = 0;
                     }
