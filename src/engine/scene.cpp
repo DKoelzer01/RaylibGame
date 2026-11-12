@@ -133,6 +133,7 @@ Scene::Scene(std::string name, bool isActive)
     water.reloadIfChanged(true);
     grass.reloadIfChanged(true);
     trees.reloadIfChanged(true);
+    treeDepth.reloadIfChanged(true);
     farSphere.reloadIfChanged(true);
     parts.reloadIfChanged(true);
     atmosphereShader.reloadIfChanged(true);
@@ -258,6 +259,7 @@ void Scene::drawScene(int gamestate) {
     water.reloadIfChanged();
     grass.reloadIfChanged();
     trees.reloadIfChanged();
+    treeDepth.reloadIfChanged();
     farSphere.reloadIfChanged();
     parts.reloadIfChanged();
     atmosphereShader.reloadIfChanged();
@@ -354,6 +356,23 @@ void Scene::drawScene(int gamestate) {
                 shadowCtx.cullAxisRadius = halfExtent * 1.4143f; // the ortho box's corners
                 for (const auto& obj : objects) obj->drawDepthOnly(shadowCtx);
                 for (const auto& obj : rootObject.children) obj->drawDepthOnly(shadowCtx);
+                // Trees and bushes: the instanced tree vertex shader (same sway) with the depth-only
+                // fragment shader.
+                if (treeDepth.shader.id > 0 && foliageEnabled) {
+                    rlDrawRenderBatchActive();
+                    Shader& ts = treeDepth.shader;
+                    rlEnableShader(ts.id);
+                    rlSetUniformMatrix(GetShaderLocation(ts, "matViewProj"), outMatrix);
+                    const float now = (float)fmod(GetTime(), 3600.0);
+                    rlSetUniform(GetShaderLocation(ts, "time"), &now, RL_SHADER_UNIFORM_FLOAT, 1);
+                    RenderContext tctx = shadowCtx;
+                    tctx.treeShader = &ts;
+                    tctx.treeModelLoc = GetShaderLocation(ts, "matModel");
+                    tctx.treeOccluderLoc = tctx.treeFadeLoc = tctx.treeBarkLoc = tctx.treeLeafLoc = -1;
+                    for (const auto& obj : objects)
+                        if (auto* p = dynamic_cast<Planetoid*>(obj.get()); p && p->isActive && p->trees) p->trees->draw(*p, tctx);
+                    rlDisableShader();
+                }
             EndMode3D();
         EndTextureMode();
     };
@@ -763,6 +782,7 @@ Scene::~Scene() {
     water.unload();
     grass.unload();
     trees.unload();
+    treeDepth.unload();
     farSphere.unload();
     parts.unload();
     atmosphereShader.unload();

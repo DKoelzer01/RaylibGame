@@ -53,6 +53,7 @@ class Scene {
         HotShader water{ "resources/water.vs", "resources/water.fs" };
         HotShader grass{ "resources/grass.vs", "resources/grass.fs" };
         HotShader trees{ "resources/trees.vs", "resources/trees.fs" };
+        HotShader treeDepth{ "resources/trees.vs", "resources/depth.fs" }; // trees and bushes in the shadow pass
         HotShader farSphere{ "resources/farsphere.vs", "resources/farsphere.fs" };
         HotShader parts{ "resources/parts.vs", "resources/parts.fs" };
         HotShader atmosphereShader{ "resources/skybox.vs", "resources/atmosphere.fs" };
