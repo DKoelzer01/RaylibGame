@@ -185,6 +185,9 @@ PlanetField::PlanetField(unsigned int seed, float radius_, bool moon_)
     rugged = SeededNoise(rng, 1.0f / 1600.0f);        // 3D terrain (plan item 6): where hills turn to cliffs
     cliffs = SeededNoise(rng, 1.0f / 45.0f);          // ...their shape (ridged, stretched upward)
     warp3 = SeededNoise(rng, 1.0f / 70.0f);           // ...and its domain warp (leaning crests, undercuts)
+    tempNoise = SeededNoise(rng, 1.0f / 4200.0f);     // biomes (Plan 5 B): regional warm and cool patches
+    moistNoise = SeededNoise(rng, 1.0f / 3200.0f);    // ...wet and dry ones
+    biomeJitter = SeededNoise(rng, 1.0f / 90.0f);     // ...and a fine wobble that interleaves their borders
     // Bounds of elevation() below (each noise term is in [-1, 1]).
     if (moon) { minElevation = -90.0f; maxElevation = 340.0f; }
     else { minElevation = -740.0f; maxElevation = 1690.0f + 30.0f; } // + the 3D terrain band
@@ -729,6 +732,56 @@ void PlanetField::baseDensityBlock(Vector3 o, float stride, int S, float fp, flo
             }
 }
 
+// ---------------------------------------------------------------------------------------------
+// Biomes (Plan 5 B)
+// ---------------------------------------------------------------------------------------------
+
+const char* BiomeName(Biome b) {
+    static const char* names[(int)Biome::Count] = { "Ocean", "Jungle", "Savanna", "Desert", "Badlands", "Forest", "Meadow", "Swamp", "Taiga", "Tundra", "Alpine", "Polar" };
+    return (int)b < (int)Biome::Count ? names[(int)b] : "?";
+}
+
+PlanetField::Climate PlanetField::climateAt(Vector3 dir, float elev) const {
+    Climate c;
+    if (moon) { c.temp = -20.0f; c.moist = 0.0f; return c; }
+    const float lat = fabsf(dir.y);
+    const float x = dir.x * radius, y = dir.y * radius, z = dir.z * radius;
+    // Warm at the equator, cold at the poles; 6.5 C colder per km of height; regional patches +-7 C.
+    c.temp = 30.0f - 44.0f * powf(lat, 1.5f) - 6.5f * std::max(elev, 0.0f) / 1000.0f + 7.0f * tempNoise.fractal(2, x, y, z);
+    // Moisture: regional wet and dry patches, wetter in the lowlands near the sea.
+    c.moist = 0.5f + 0.85f * moistNoise.fractal(3, x, y, z) + 0.08f * (1.0f - Smoothstep(10.0f, 150.0f, elev)); // noise sits mostly in +-0.4
+    c.moist = std::clamp(c.moist, 0.0f, 1.0f);
+    return c;
+}
+
+Biome PlanetField::biomeOf(const Climate& c, float elev) const {
+    if (moon) return Biome::Polar;
+    if (elev < 0.0f) return Biome::Ocean;
+    if (c.temp < -12.0f) return Biome::Polar;
+    if (elev > 850.0f) return Biome::Alpine;
+    if (c.temp < -2.0f) return Biome::Tundra;
+    if (c.temp < 7.0f) return c.moist > 0.3f ? Biome::Taiga : Biome::Tundra;
+    if (c.temp < 19.0f) {
+        if (c.moist < 0.33f) return Biome::Meadow;
+        if (c.moist > 0.74f && elev < 90.0f) return Biome::Swamp;
+        return Biome::Forest;
+    }
+    if (c.moist < 0.24f) return Biome::Desert;
+    if (c.moist < 0.37f) return Biome::Badlands;
+    if (c.moist < 0.58f) return Biome::Savanna;
+    if (c.moist > 0.8f && elev < 70.0f) return Biome::Swamp;
+    return Biome::Jungle;
+}
+
+Biome PlanetField::biomeAt(Vector3 dir, float elev) const {
+    Climate c = climateAt(dir, elev);
+    // A fine wobble (~90 m) on the climate: neighbouring biomes interleave over ~100-150 m at a border.
+    const float j = biomeJitter.fractal(2, dir.x * radius, dir.y * radius, dir.z * radius);
+    c.temp += 1.2f * j;
+    c.moist += 0.035f * j;
+    return biomeOf(c, elev);
+}
+
 Vector3 PlanetField::findSpawnDir(unsigned int seed) const {
     std::mt19937 rng(seed ^ 0x5eedu);
     std::uniform_real_distribution<float> unit(0.0f, 1.0f);
@@ -758,9 +811,12 @@ Vector3 PlanetField::findSpawnDir(unsigned int seed) const {
             if (baseDensity(Vector3Scale(dir, radius + e - depth)) < ISO_LEVEL) { solid = false; break; }
         if (!solid) continue;
         // Prefer flat, low ground: good enough is good enough.
-        const float score = -slope * 100.0f - e * 0.01f;
+        // Start in a temperate forest or meadow (Plan 5 B); other biomes only when none is found.
+        const Biome b = biomeAt(dir, e);
+        const bool temperate = b == Biome::Forest || b == Biome::Meadow;
+        const float score = -slope * 100.0f - e * 0.01f - (temperate ? 0.0f : 1000.0f);
         if (score > bestScore) { bestScore = score; best = dir; }
-        if (slope < 0.01f) break;
+        if (slope < 0.01f && temperate) break;
     }
     return best;
 }

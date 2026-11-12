@@ -193,6 +193,7 @@ int main(int argc, char** argv)
     bool benchTools = false, toolsOk = true; int toolsPhase = 0, toolsLife = 0, toolsTilled = 0; double toolsStart = 0.0; // --test-tools
     bool benchSuit = false, suitOk = true; int suitPhase = 0; double suitStart = 0.0; float suitFoodRatio = 0.0f, suitWater = 0.0f, suitRebreather = 0.0f; // --test-suit
     int benchShotTabs = 0; // --shot-tabs
+    bool benchBiomes = false; // --test-biomes
     bool benchParticles = false; int particlePhase = 0; double particleT0 = 0.0; Vector3 particleEye{}, particleAt{}; // --shot-particles
     bool benchShadow = false; int shadowPhase = 0; double shadowT0 = 0.0; Vector3 shadowEye{}, shadowAt{}; // --shot-shadow
     bool benchFarForest = false; int farForestPhase = 0; double farForestT0 = 0.0; Vector3 farForestEye{}, farForestAt{}; // --shot-far-forest
@@ -360,6 +361,7 @@ int main(int argc, char** argv)
         if (std::string(argv[i]) == "--shot-terrain") benchTerrain = true;
         if (std::string(argv[i]) == "--shot-shadow") benchShadow = true;
         if (std::string(argv[i]) == "--shot-particles") benchParticles = true;
+        if (std::string(argv[i]) == "--test-biomes") benchBiomes = true;
         if (std::string(argv[i]) == "--shot-far-forest") benchFarForest = true;
         if (std::string(argv[i]) == "--test-recipes") benchRecipes = true;
         if (std::string(argv[i]) == "--test-weather") benchWeather = true;
@@ -2085,6 +2087,48 @@ int main(int argc, char** argv)
                         printf("bench: shot-tabs: bench_questtree.png, bench_suit.png, bench_crafting.png, bench_chest.png, bench_machine.png\n");
                         GameUI_ToggleInventory();
                         benchShotTabs = 0;
+                    }
+                } else if (benchBiomes && WorldIdle()) {
+                    // --test-biomes (Plan 5 B): biome shares over the land, the biomes within 5 km of the
+                    // start (regional: several in reach), and the start's own (a temperate one).
+                    Planetoid* p = dynamic_cast<Planetoid*>(world.objects[0].get());
+                    const PlanetField* pf = p ? dynamic_cast<const PlanetField*>(p->field.get()) : nullptr;
+                    benchBiomes = false;
+                    if (!pf) printf("bench: biomes: needs the planet -> FAIL\n");
+                    else {
+                        int count[(int)Biome::Count] = {}, land = 0;
+                        std::mt19937 rng(7);
+                        std::uniform_real_distribution<float> u(-1.0f, 1.0f);
+                        for (int i = 0; i < 40000; ++i) {
+                            Vector3 d = { u(rng), u(rng), u(rng) };
+                            if (Vector3LengthSqr(d) > 1.0f || Vector3LengthSqr(d) < 1e-4f) { --i; continue; }
+                            d = Vector3Normalize(d);
+                            const float e = pf->elevation(d, 64.0f);
+                            if (e < 0.0f) continue;
+                            ++land; ++count[(int)pf->biomeAt(d, e)];
+                        }
+                        const Vector3 home = pf->findSpawnDir(p->seed);
+                        const Biome start = pf->biomeAt(home, pf->elevation(home));
+                        const Vector3 t1 = Vector3Normalize(Vector3CrossProduct(home, { 0, 1, 0 })), t2 = Vector3CrossProduct(t1, home);
+                        int nearCount[(int)Biome::Count] = {};
+                        for (float a = -5000.0f; a <= 5000.0f; a += 100.0f)
+                            for (float b = -5000.0f; b <= 5000.0f; b += 100.0f) {
+                                if (a * a + b * b > 25e6f) continue;
+                                const Vector3 d = Vector3Normalize(Vector3Add(home, Vector3Add(Vector3Scale(t1, a / pf->radius), Vector3Scale(t2, b / pf->radius))));
+                                const float e = pf->elevation(d, 64.0f);
+                                ++nearCount[(int)pf->biomeAt(d, e)];
+                            }
+                        int kinds = 0, nearKinds = 0;
+                        printf("bench: biomes: land share:");
+                        for (int b = 1; b < (int)Biome::Count; ++b) {
+                            printf(" %s %.1f%%", BiomeName((Biome)b), 100.0f * count[b] / std::max(land, 1));
+                            if (b != (int)Biome::Polar && count[b] > 0) ++kinds;
+                            if (b != (int)Biome::Ocean && nearCount[b] > 20) ++nearKinds;
+                        }
+                        printf("\nbench: biomes: within 5 km of the start:");
+                        for (int b = 0; b < (int)Biome::Count; ++b) if (nearCount[b]) printf(" %s %d", BiomeName((Biome)b), nearCount[b]);
+                        const bool ok = kinds == 10 && nearKinds >= 3 && (start == Biome::Forest || start == Biome::Meadow);
+                        printf("\nbench: biomes: %d of 10 land biomes on the planet, %d near the start, start in %s -> %s\n", kinds, nearKinds, BiomeName(start), ok ? "PASS" : "FAIL");
                     }
                 } else if (benchParticles && (particlePhase > 0 || WorldIdle())) {
                     // --shot-particles: every particle kind in front of a standing camera: a smoke column,
@@ -3983,7 +4027,7 @@ int main(int argc, char** argv)
                         }
                         benchWalkSeconds = 0.0;
                     }
-                } else if ((WorldIdle() && benchDigStrokes == 0 && !benchPaint && !benchSaveLoad && benchWalkSeconds <= 0.0 && benchMineStrokes == 0 && minePhase != 2 && benchFlySeconds <= 0.0 && !benchSuffocate && benchOrbitSeconds <= 0.0 && !benchRide && !benchPark && !benchGravity && !benchPrecision && !benchMantle && !benchAirJump && !benchMoon && !benchHole && !benchWall && !benchMenus && !benchWater && !benchFlyFollow && !benchHotbar && !benchInventory && !benchMap && !benchViewmodel && !benchQuests && !benchHunger && !benchFarm && !benchAnimals && !benchThreats && benchShotTabs == 0 && !benchForest && !benchFlow && !benchPond && !benchBucket && !benchPump && !benchTerrain && !benchShadow && !benchParticles && !benchFarForest && !benchRecipes && !benchWeather && !benchDecor && !benchMaterials && !benchDamage && !benchCrafting && !benchSuit && !benchTools && !benchRivers && !benchRing && !benchRocket && !benchStation && !benchBlueprint && !benchSmallBody && !benchTrees && !benchChop && benchPersist == 0 && benchBuild == 0 && benchFactory == 0 && !benchProgression) || GetTime() > 600.0) {
+                } else if ((WorldIdle() && benchDigStrokes == 0 && !benchPaint && !benchSaveLoad && benchWalkSeconds <= 0.0 && benchMineStrokes == 0 && minePhase != 2 && benchFlySeconds <= 0.0 && !benchSuffocate && benchOrbitSeconds <= 0.0 && !benchRide && !benchPark && !benchGravity && !benchPrecision && !benchMantle && !benchAirJump && !benchMoon && !benchHole && !benchWall && !benchMenus && !benchWater && !benchFlyFollow && !benchHotbar && !benchInventory && !benchMap && !benchViewmodel && !benchQuests && !benchHunger && !benchFarm && !benchAnimals && !benchThreats && benchShotTabs == 0 && !benchForest && !benchFlow && !benchPond && !benchBucket && !benchPump && !benchTerrain && !benchShadow && !benchParticles && !benchBiomes && !benchFarForest && !benchRecipes && !benchWeather && !benchDecor && !benchMaterials && !benchDamage && !benchCrafting && !benchSuit && !benchTools && !benchRivers && !benchRing && !benchRocket && !benchStation && !benchBlueprint && !benchSmallBody && !benchTrees && !benchChop && benchPersist == 0 && benchBuild == 0 && benchFactory == 0 && !benchProgression) || GetTime() > 600.0) {
                     benchStart = GetTime();
                     printf("bench: world ready after %.2f s (%d chunks, avg build %.2f ms of which sampling %.2f ms, %d worker threads)\n",
                         GetWorldStats().lastGenerationSeconds, GetWorldStats().chunks, GetWorldStats().avgBuildMs, GetWorldStats().avgSampleMs, GetWorldStats().workerThreads);
