@@ -60,6 +60,8 @@ public:
     float gravityRadius = 0.0f;                          // mean surface: inverse-square outside, linear inside
     float radius;
     Vector3 spin = { 0, 0, 0 };                          // degrees per second about X/Y/Z
+    double spinAngle[3] = { 0, 0, 0 };                   // rotation kept in double and wrapped to [0, 360): float Euler angles grown by spin*dt lose precision over a long session
+    bool spinAngleSet = false;
     // Circular orbit around another body (bodies.txt orbit=): advanced analytically from the world
     // clock in advanceBodies(), in the parent's equatorial (XZ) plane. orbitParent is validated by id.
     Planetoid* orbitParent = nullptr;

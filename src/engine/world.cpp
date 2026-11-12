@@ -579,7 +579,19 @@ void advanceBodies(Scene& world, float dt) {
     for (auto& obj : world.objects) {
         auto* p = dynamic_cast<Planetoid*>(obj.get());
         if (!p) continue;
-        p->rotation = Vector3Add(p->rotation, Vector3Scale(p->spin, dt));
+        if (p->spin.x != 0.0f || p->spin.y != 0.0f || p->spin.z != 0.0f) {
+            float* r[3] = { &p->rotation.x, &p->rotation.y, &p->rotation.z };
+            const float s[3] = { p->spin.x, p->spin.y, p->spin.z };
+            for (int k = 0; k < 3; ++k) {
+                // Something else (a load, a script) set the angle: take it over.
+                if (!p->spinAngleSet || (float)p->spinAngle[k] != *r[k]) p->spinAngle[k] = *r[k];
+                double a = fmod(p->spinAngle[k] + (double)s[k] * dt, 360.0);
+                if (a < 0.0) a += 360.0;
+                p->spinAngle[k] = a;
+                *r[k] = (float)a;
+            }
+            p->spinAngleSet = true;
+        }
         if (p->orbitParent) { PlaceBodyOnOrbit(*p); moved = true; } // parents come first in the list
     }
     if (moved) world.syncRenderPositions();
