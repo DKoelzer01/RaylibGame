@@ -122,6 +122,8 @@ void Player::update(Scene& world, bool inputEnabled, float dt) {
     const DVec3 eyeFrom = (grounded && groundBody) ? groundLocal : airLocal;
 
     nearest = NearestPlanetoid(world, feet);
+    // In water when the body's middle is (static or flowing water).
+    inWater = !flyMode && IsUnderwater(world, Vector3Add(feet, Vector3Scale(up, 0.9f)));
     // "Up" is against the summed gravity. Where gravity is too weak to define it (deep space, the
     // balance point between bodies) it is left alone so the view doesn't spin; in the air it turns
     // at most 2 rad/s. On the ground it follows exactly, so walking around a body stays continuous.
@@ -197,6 +199,9 @@ void Player::update(Scene& world, bool inputEnabled, float dt) {
         velocity = Vector3Add(velocity, Vector3Subtract(nearest->linearVelocity, airFrameVel));
         airFelt = true;
     }
+    // In water Space and Ctrl swim instead of firing the jetpack.
+    swimUp = inWater && jetUp; swimDown = inWater && jetDown;
+    if (inWater) jetUp = jetDown = false;
     for (int i = 0; i < steps; ++i) { stepPhysics(world, sdt, wish, jetUp, jetDown); }
 
     feet = (position - world.renderOrigin).toFloat();
@@ -268,7 +273,7 @@ void Player::stepPhysics(Scene& world, float dt, Vector3 wish, bool jetUp, bool 
         Vector3 along = Vector3Subtract(wish, Vector3Scale(n, Vector3DotProduct(wish, n)));
         const float wl = Vector3Length(wish), al = Vector3Length(along);
         if (al > 1e-4f) along = Vector3Scale(along, wl / al);
-        Vector3 walk = Vector3Scale(along, walkSpeed);
+        Vector3 walk = Vector3Scale(along, walkSpeed * (inWater ? 0.55f : 1.0f)); // wading is slow
         if (smoothMotion) {
             // Reduce motion: ease into and out of walking (instant starts and stops are hard to watch).
             const Vector3 cur = Vector3Subtract(velocity, Vector3Scale(n, Vector3DotProduct(velocity, n)));
@@ -340,6 +345,15 @@ void Player::stepPhysics(Scene& world, float dt, Vector3 wish, bool jetUp, bool 
     // orbit is then followed by the frame carry): the world's planet pull on the ground of a ring rock
     // shoved the player off it.
     Vector3 gAccel = Vector3Scale(grounded || airFelt ? gFelt : gvec, gravityScale * dt);
+    if (inWater && !grounded) {
+        // Swimming: buoyancy all but cancels gravity, the water drags (relative to the ground's frame),
+        // Space swims up and Ctrl down (no jetpack under water).
+        gAccel = Vector3Scale(gAccel, 0.12f);
+        const Vector3 frame = nearest ? nearest->surfaceVelocity(feet) : Vector3{ 0, 0, 0 };
+        velocity = Vector3Add(frame, Vector3Scale(Vector3Subtract(velocity, frame), expf(-1.8f * dt)));
+        if (swimUp) velocity = Vector3Add(velocity, Vector3Scale(up, 9.0f * dt));
+        if (swimDown) velocity = Vector3Subtract(velocity, Vector3Scale(up, 6.0f * dt));
+    }
     // Static friction: standing on walkable ground, only gravity's push into the ground applies.
     // (The downhill part made a standing player creep ~1.6 cm/s down slopes at fixed substeps.)
     if (grounded) gAccel = resting ? Vector3{ 0, 0, 0 } : Vector3Scale(groundNormal, std::min(0.0f, Vector3DotProduct(gAccel, groundNormal)));

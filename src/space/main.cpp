@@ -188,6 +188,7 @@ int main(int argc, char** argv)
     bool benchTools = false, toolsOk = true; int toolsPhase = 0, toolsLife = 0, toolsTilled = 0; double toolsStart = 0.0; // --test-tools
     bool benchSuit = false, suitOk = true; int suitPhase = 0; double suitStart = 0.0; float suitFoodRatio = 0.0f, suitWater = 0.0f, suitRebreather = 0.0f; // --test-suit
     int benchShotTabs = 0; // --shot-tabs
+    bool benchPond = false; int pondPhase = 0; double pondT0 = 0.0; Vector3 pondDirB{}, pondOutB{}, pondPit{}, pondMid{}; float pondLevelB = 0.0f, pondRB = 0.0f; // --test-pond
     bool benchFlow = false; int flowPhase = 0; double flowStart = 0.0, flowEdit = 0.0, flowReachT = -1.0, flowCaveT = -1.0, flowSleepT = -1.0; Vector3 flowDir{}, flowOut{}, flowEnd{}, flowCave{}; float flowLevel = 0.0f; // --test-flow
     bool benchForest = false; int forestPhase = 0; double forestStart = 0.0; Vector3 forestCam{}, forestTarget{}, forestUp{}; // --shot-forest
     bool benchRecipes = false; // --test-recipes
@@ -340,6 +341,7 @@ int main(int argc, char** argv)
         if (std::string(argv[i]) == "--shot-tabs") benchShotTabs = 1;
         if (std::string(argv[i]) == "--shot-forest") benchForest = true;
         if (std::string(argv[i]) == "--test-flow") benchFlow = true;
+        if (std::string(argv[i]) == "--test-pond") benchPond = true;
         if (std::string(argv[i]) == "--test-recipes") benchRecipes = true;
         if (std::string(argv[i]) == "--test-weather") benchWeather = true;
         if (std::string(argv[i]) == "--test-decor") benchDecor = true;
@@ -1955,6 +1957,108 @@ int main(int argc, char** argv)
                         GameUI_ToggleInventory();
                         benchShotTabs = 0;
                     }
+                } else if (benchPond && (pondPhase > 0 || WorldIdle())) {
+                    // --test-pond (Plan 4, F4): drain the nearest pond into a pit dug beside it. The pond is
+                    // taken over (no static surface), its level drops, the pit fills; then save, go 300 m away,
+                    // load and come back: the pond stays drained and the pit full.
+                    Planetoid* p = dynamic_cast<Planetoid*>(world.objects[0].get());
+                    const PlanetField* pf = p ? dynamic_cast<const PlanetField*>(p->field.get()) : nullptr;
+                    auto at = [&](Vector3 dir, float h) { return Vector3Scale(dir, pf->radius + h); };
+                    auto along = [&](float s) { return Vector3Normalize(Vector3Add(pondDirB, Vector3Scale(pondOutB, s / pf->radius))); };
+                    const double t = GetTime() - pondT0;
+                    if (!pf) { printf("bench: pond: needs the planet\n"); benchPond = false; }
+                    else if (pondPhase == 0) {
+                        const Vector3 home = pf->findSpawnDir(p->seed);
+                        const Vector3 t1 = Vector3Normalize(Vector3CrossProduct(home, { 0, 1, 0 })), t2 = Vector3CrossProduct(t1, home);
+                        float best = 1e30f;
+                        for (float e = -6000.0f; e <= 6000.0f; e += 24.0f)
+                            for (float n = -6000.0f; n <= 6000.0f; n += 24.0f) {
+                                const float dist = sqrtf(e * e + n * n);
+                                if (dist >= best) continue;
+                                const Vector3 d = Vector3Normalize(Vector3Add(home, Vector3Add(Vector3Scale(t1, e / pf->radius), Vector3Scale(t2, n / pf->radius))));
+                                const PlanetField::WaterSource ws = pf->waterSourceAt(d);
+                                if (ws.kind != 3) continue;
+                                best = dist; pondDirB = ws.pondDir; pondLevelB = ws.level; pondRB = ws.pondR;
+                            }
+                        if (best > 1e29f) { printf("bench: pond: no pond within 6 km -> FAIL\n"); benchPond = false; }
+                        else {
+                            pondOutB = Vector3Normalize(Vector3CrossProduct(pondDirB, { 0, 1, 0 }));
+                            const float bed = pf->elevation(pondDirB);
+                            printf("bench: pond: %.0f m from the start, radius %.0f m, level %.1f m, %.1f m deep at the middle\n", best, pondRB, pondLevelB, pondLevelB - bed);
+                            // A trench from the middle out past the rim, its floor below the pond's bed, then a pit.
+                            std::vector<TerrainEdit> cut;
+                            const float floorH = bed - 1.5f;
+                            for (float s = 0.0f; s <= pondRB + 12.0f; s += 0.8f)
+                                for (float h = floorH + 1.2f; h <= pondLevelB + 3.0f; h += 1.2f) cut.push_back({ at(along(s), h), 1.4f, -1.0f, true });
+                            for (int k = 0; k < 3; ++k) cut.push_back({ at(along(pondRB + 14.0f), floorH - 1.5f - 1.5f * k), 3.5f, -1.0f, true });
+                            ApplyTerrainEdits(*p, cut.data(), cut.size());
+                            pondPit = at(along(pondRB + 14.0f), floorH - 4.5f);
+                            pondMid = at(along(pondRB * 0.3f), pondLevelB - 0.3f);
+                            player.flyMode = true; sunOverride = true;
+                            sunArg = p->dirToWorld(Vector3Normalize(Vector3Add(pondDirB, Vector3Scale(pondOutB, 0.5f))));
+                            pondPhase = 1; pondT0 = GetTime();
+                        }
+                    } else if (pondPhase == 1) {
+                        // Watch from above the rim.
+                        const Vector3 up = pondDirB;
+                        const Vector3 eye = Vector3Add(at(along(pondRB + 6.0f), pondLevelB + 18.0f), Vector3Scale(Vector3CrossProduct(up, pondOutB), 22.0f));
+                        world.camera.position = p->toWorld(eye); world.camera.target = p->toWorld(at(along(pondRB * 0.5f), pondLevelB)); world.camera.up = p->dirToWorld(up);
+                        player.position = world.renderOrigin + world.camera.position;
+                        static double lastPrint = 0.0;
+                        if (t - lastPrint >= 5.0) {
+                            lastPrint = t;
+                            const Fluid::Stats s = Fluid::GetStats();
+                            printf("bench: pond t=%3.0f s: %d bricks (%d awake), %.0f wet cells, %.1f m^3, %d ponds taken over; middle %s, pit %s\n", t, s.bricks, s.activeBricks, s.wetCells, s.volume, s.claimedPonds,
+                                   Fluid::Wet(*p, pondMid) ? "wet" : "dry", Fluid::Wet(*p, pondPit) ? "wet" : "dry");
+                        }
+                        if (t > 8.0 && t < 8.1) TakeScreenshot("bench_pond.png");
+                        if ((t > 15.0 && Fluid::Asleep()) || t > 150.0) {
+                            TakeScreenshot("bench_pond_drained.png");
+                            const bool claimed = Fluid::GetStats().claimedPonds > 0;
+                            const bool midDry = !Fluid::Wet(*p, pondMid), pitWet = Fluid::Wet(*p, pondPit);
+                            const float vol = (float)Fluid::GetStats().volume;
+                            printf("bench: pond: settled after %.0f s: taken over %d, the top 0.3 m of the pond %s, the pit %s, %.1f m^3 of water\n", t, (int)claimed, midDry ? "drained" : "still full", pitWet ? "filled" : "dry", vol);
+                            const bool saved = SaveWorld(world);
+                            // Away 300 m, load, back.
+                            player.placeAt(world, *p, p->toWorld(at(along(pondRB + 300.0f), pf->elevation(along(pondRB + 300.0f)) + 2.0f)));
+                            const bool loaded = saved && LoadWorldSave(world);
+                            printf("bench: pond: saved %d, went 300 m away, loaded %d\n", (int)saved, (int)loaded);
+                            pondPhase = 2; pondT0 = GetTime();
+                            pondRB = claimed && midDry && pitWet ? pondRB : -pondRB; // remember the first result
+                        }
+                    } else if (pondPhase == 2) {
+                        const Vector3 up = pondDirB;
+                        const float r = fabsf(pondRB);
+                        const Vector3 eye = Vector3Add(at(along(r + 6.0f), pondLevelB + 18.0f), Vector3Scale(Vector3CrossProduct(up, pondOutB), 22.0f));
+                        world.camera.position = p->toWorld(eye); world.camera.target = p->toWorld(at(along(r * 0.5f), pondLevelB)); world.camera.up = p->dirToWorld(up);
+                        player.position = world.renderOrigin + world.camera.position;
+                        if (t > 12.0 && Fluid::Asleep()) {
+                            TakeScreenshot("bench_pond_loaded.png");
+                            const PlanetField::WaterSource ws = pf->waterSourceAt(pondDirB);
+                            const bool stillClaimed = ws.kind != 3;
+                            const bool midDry = !Fluid::Wet(*p, pondMid), pitWet = Fluid::Wet(*p, pondPit);
+                            const bool pass = pondRB > 0.0f && stillClaimed && midDry && pitWet;
+                            printf("bench: pond: after the load the pond is %s, its top %s, the pit %s, %.1f m^3 -> %s\n", stillClaimed ? "still taken over" : "back to static water",
+                                   midDry ? "drained" : "full", pitWet ? "full" : "dry", Fluid::GetStats().volume, pass ? "PASS" : "FAIL");
+                            printf("bench: pond: bench_pond.png, bench_pond_drained.png, bench_pond_loaded.png\n");
+                            // Swimming: into the flooded pit, 1.5 m under its surface.
+                            player.flyMode = false;
+                            player.placeAt(world, *p, p->toWorld(Vector3Add(pondPit, Vector3Scale(Vector3Normalize(pondPit), 1.0f))));
+                            pondPhase = 3; pondT0 = GetTime();
+                        } else if (t > 120.0) { printf("bench: pond: did not settle after the load -> FAIL\n"); benchPond = false; }
+                    } else if (pondPhase == 3) {
+                        static float h0 = 0.0f; static int inWaterFrames = 0, frames = 0;
+                        const float h = Vector3Length(p->toLocal((player.position - world.renderOrigin).toFloat()));
+                        if (t < 0.5) { h0 = h; inWaterFrames = frames = 0; }
+                        else { ++frames; inWaterFrames += player.inWater ? 1 : 0; }
+                        if (t > 3.0) {
+                            const float sink = (h0 - h) / 2.5f;
+                            const bool pass = frames > 0 && inWaterFrames * 10 >= frames * 9 && sink < 1.0f;
+                            printf("bench: pond: swimming in the pit: in water %d%% of frames, sank %.2f m/s (falling in air would be ~%.0f m/s) -> %s\n",
+                                   frames ? 100 * inWaterFrames / frames : 0, sink, player.gravity * 2.5f * 0.5f, pass ? "PASS" : "FAIL");
+                            benchPond = false;
+                        }
+                    }
                 } else if (benchFlow && (flowPhase > 0 || WorldIdle())) {
                     // --test-flow (Plan 4, F2/F3): cut a channel out of the nearest inland water, ending in a
                     // shaft down to a sealed chamber. Water must reach the channel's end, flood the chamber up
@@ -3356,7 +3460,7 @@ int main(int argc, char** argv)
                         }
                         benchWalkSeconds = 0.0;
                     }
-                } else if ((WorldIdle() && benchDigStrokes == 0 && !benchPaint && !benchSaveLoad && benchWalkSeconds <= 0.0 && benchMineStrokes == 0 && minePhase != 2 && benchFlySeconds <= 0.0 && !benchSuffocate && benchOrbitSeconds <= 0.0 && !benchRide && !benchPark && !benchGravity && !benchPrecision && !benchMantle && !benchAirJump && !benchMoon && !benchHole && !benchWall && !benchMenus && !benchWater && !benchFlyFollow && !benchHotbar && !benchInventory && !benchMap && !benchViewmodel && !benchQuests && !benchHunger && !benchFarm && !benchAnimals && !benchThreats && benchShotTabs == 0 && !benchForest && !benchFlow && !benchRecipes && !benchWeather && !benchDecor && !benchMaterials && !benchDamage && !benchCrafting && !benchSuit && !benchTools && !benchRivers && !benchRing && !benchRocket && !benchStation && !benchBlueprint && !benchSmallBody && !benchTrees && !benchChop && benchPersist == 0 && benchBuild == 0 && benchFactory == 0 && !benchProgression) || GetTime() > 600.0) {
+                } else if ((WorldIdle() && benchDigStrokes == 0 && !benchPaint && !benchSaveLoad && benchWalkSeconds <= 0.0 && benchMineStrokes == 0 && minePhase != 2 && benchFlySeconds <= 0.0 && !benchSuffocate && benchOrbitSeconds <= 0.0 && !benchRide && !benchPark && !benchGravity && !benchPrecision && !benchMantle && !benchAirJump && !benchMoon && !benchHole && !benchWall && !benchMenus && !benchWater && !benchFlyFollow && !benchHotbar && !benchInventory && !benchMap && !benchViewmodel && !benchQuests && !benchHunger && !benchFarm && !benchAnimals && !benchThreats && benchShotTabs == 0 && !benchForest && !benchFlow && !benchPond && !benchRecipes && !benchWeather && !benchDecor && !benchMaterials && !benchDamage && !benchCrafting && !benchSuit && !benchTools && !benchRivers && !benchRing && !benchRocket && !benchStation && !benchBlueprint && !benchSmallBody && !benchTrees && !benchChop && benchPersist == 0 && benchBuild == 0 && benchFactory == 0 && !benchProgression) || GetTime() > 600.0) {
                     benchStart = GetTime();
                     printf("bench: world ready after %.2f s (%d chunks, avg build %.2f ms of which sampling %.2f ms, %d worker threads)\n",
                         GetWorldStats().lastGenerationSeconds, GetWorldStats().chunks, GetWorldStats().avgBuildMs, GetWorldStats().avgSampleMs, GetWorldStats().workerThreads);

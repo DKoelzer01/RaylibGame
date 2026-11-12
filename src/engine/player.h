@@ -35,6 +35,8 @@ struct Player {
     float lastContactDot = 0.0f;      // debug: dot(contact normal, up) of the last collision
     float impactSpeed = 0.0f;         // hardest collision speed this frame (fall damage)
     Vector3 groundNormal = { 0, 1, 0 }; // contact normal while grounded
+    bool inWater = false;             // the body's middle is in water (swimming: buoyancy, drag, Space/Ctrl swim)
+    bool swimUp = false, swimDown = false;
     float eyeOffset = 0.0f;           // camera height smoothing (metres along up, see update)
     float eyeVz = 0.0f;               // low-passed vertical speed of the feet in the ground frame
     bool eyeSmoothing = true;         // tests: --no-eye-smooth turns it off (A/B)

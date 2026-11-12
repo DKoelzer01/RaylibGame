@@ -29,7 +29,8 @@ constexpr uint8_t kSolid = 1, kSource = 2, kStatic = 4; // kStatic: inside stati
 constexpr uint8_t kDug = 8;            // open only because of an edit: static water may flow into it
 constexpr int kSiteBricks = 16;        // a site reaches +-16 bricks (256 m) from its origin
 constexpr float kSiteJoin = 180.0f;    // a disturbance within this of a site's origin joins it
-constexpr int kMinSpread = 7;          // films thinner than this (~3 cm) don't spread sideways
+constexpr int kMinSpread = 10;         // films thinner than this (~4 cm) don't spread sideways
+constexpr int kEvaporate = 3;          // resting specks this thin (~1 cm) dry up
 constexpr int kSubsteps = 3;           // simulation steps per 20 Hz tick (water moves a cell a step)
 constexpr int kSleepSteps = 120;       // 2 s without change: a brick sleeps
 constexpr int kLevelEvery = 15;        // levelling pass every 0.25 s
@@ -290,6 +291,7 @@ void StepSite(Site& s, int parity) {
                             const int diff = f0 - o.b->fill[o.i];
                             if (diff < 5) continue;
                             const int m = std::min(diff / 5, f);
+                            if (o.b->fill[o.i] == 0 && m < kMinSpread) continue; // no trickles into dry cells: a film's edge holds
                             if (m <= 0) continue;
                             o.b->fill[o.i] = (uint8_t)(o.b->fill[o.i] + m);
                             f -= m;
@@ -297,6 +299,7 @@ void StepSite(Site& s, int parity) {
                             moved = true; ++dbgSide;
                         }
                     }
+                    if (f > 0 && f <= kEvaporate && !src && (!belowOpen || belowFull)) { f = 0; moved = true; } // a resting speck soaks away
                     b->fill[i] = (uint8_t)f;
                 }
         // Sources hold their level.
@@ -374,13 +377,26 @@ void LevelSite(Site& s) {
                 }
                 level = 0.5f * (a + z);
             }
-            // Ease toward the level (30% a pass): a flooded cave rises, a U-bend's arms meet.
+            // Ease toward the level (30% a pass): a flooded cave rises, a U-bend's arms meet. A body within
+            // a few 255ths everywhere is left alone (so it sleeps); otherwise the rounding is carried from
+            // cell to cell so a finite body keeps its volume.
+            float worst = 0.0f;
             for (const C& c : comp) {
                 if (c.b->flags[c.i] & kSource) continue;
-                const float want = std::clamp(level - c.ck, 0.0f, 1.0f) * 255.0f;
-                const float now = c.b->fill[c.i];
+                const float want = std::clamp(level - c.ck, 0.0f, 1.0f) * 255.0f, now = c.b->fill[c.i];
                 if (hasSource && want <= now) continue; // fed by static water: only raise (a sloping river feeds at several levels)
-                const int nf = std::clamp((int)lroundf(now + (want - now) * 0.3f), 0, 255);
+                worst = std::max(worst, fabsf(want - now));
+            }
+            if (worst < 6.0f) continue;
+            float carry = 0.0f;
+            for (const C& c : comp) {
+                if (c.b->flags[c.i] & kSource) continue;
+                const float want = std::clamp(level - c.ck, 0.0f, 1.0f) * 255.0f, now = c.b->fill[c.i];
+                if (hasSource && want <= now) continue;
+                const float d = (want - now) * 0.3f + (hasSource ? 0.0f : carry);
+                const int di = (int)lroundf(d);
+                const int nf = std::clamp((int)now + di, 0, 255);
+                carry = d - (float)(nf - (int)now);
                 if (nf != c.b->fill[c.i]) { c.b->fill[c.i] = (uint8_t)nf; Touch(c.b); ++dbgLevel; }
             }
         }
