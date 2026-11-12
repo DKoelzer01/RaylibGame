@@ -24,59 +24,8 @@ uniform float fadeEnd;
 uniform vec3 barkTint;   // per species (trees.h WoodSpeciesInfo); 1 for bushes and stones
 uniform vec3 leafTint;
 
-// Shadows from the sun's shadow map (terrain, trees and builds), and the headlamp (a spot light).
-uniform sampler2D shadowMap;
-uniform mat4 lightSpaceMatrix;
-uniform int shadowMapResolution;
-uniform vec4 lampPos;     // render space; w = intensity (0: off)
-uniform vec4 lampTarget;  // the beam's end; w unused
-// Two cascades (the near box ~3 cm texels, the wide one ~20 cm), bilinear-filtered compares; foliage
-// has no reliable normal here, so a depth bias of two texels. TAPS: 1 = one bilinear tap (grass).
-#define TAPS 4
-uniform sampler2D shadowMapNear;
-uniform mat4 lightSpaceNear;
-uniform vec2 shadowTexel;       // metres per texel: near, far
-uniform float shadowDepthRange;
-float shadowTap(sampler2D map, vec2 uv, float z, float res)
-{
-    vec2 st = uv * res - 0.5;
-    vec2 i = floor(st), f = st - i;
-    vec2 b = (i + 0.5) / res;
-    float d = 1.0 / res;
-    float a0 = step(z, texture(map, b).r), a1 = step(z, texture(map, b + vec2(d, 0.0)).r);
-    float a2 = step(z, texture(map, b + vec2(0.0, d)).r), a3 = step(z, texture(map, b + vec2(d, d)).r);
-    return mix(mix(a0, a1, f.x), mix(a2, a3, f.x), f.y);
-}
-float cascadeTap(sampler2D map, mat4 m, vec3 p, float texelM, out bool inside)
-{
-    vec4 ls = m * vec4(p, 1.0);
-    vec3 q = ls.xyz / ls.w * 0.5 + 0.5;
-    inside = q.x > 0.01 && q.x < 0.99 && q.y > 0.01 && q.y < 0.99 && q.z <= 1.0;
-    if (!inside) return 1.0;
-    float res = float(shadowMapResolution);
-    float z = q.z - 2.0 * texelM / shadowDepthRange;
-    if (TAPS == 1) return shadowTap(map, q.xy, z, res);
-    return 0.25 * (shadowTap(map, q.xy + vec2(-0.5, -0.5) / res, z, res) + shadowTap(map, q.xy + vec2(0.5, -0.5) / res, z, res)
-                 + shadowTap(map, q.xy + vec2(-0.5, 0.5) / res, z, res) + shadowTap(map, q.xy + vec2(0.5, 0.5) / res, z, res));
-}
-float sunShadow(vec3 p)
-{
-    if (shadowMapResolution <= 0) return 1.0;
-    bool inNear, inFar;
-    float s = cascadeTap(shadowMapNear, lightSpaceNear, p, shadowTexel.x, inNear);
-    if (inNear) return s;
-    return cascadeTap(shadowMap, lightSpaceMatrix, p, shadowTexel.y, inFar);
-}
-vec3 lampLight(vec3 p, vec3 n)
-{
-    if (lampPos.w <= 0.0) return vec3(0.0);
-    vec3 beam = lampTarget.xyz - lampPos.xyz;
-    float range = max(length(beam), 1.0);
-    vec3 l = normalize(lampPos.xyz - p);
-    float cone = smoothstep(0.82, 0.95, dot(-l, beam / range));
-    float dl = length(lampPos.xyz - p) / range;
-    return vec3(1.0, 0.95, 0.85) * lampPos.w * 3.0 * cone / (1.0 + dl * dl * 4.0) * max(dot(n, l), 0.35);
-}
+// Sun shadows (two cascades, hardware PCF) and the headlamp.
+#include "shadow.glsl"
 out vec4 finalColor;
 
 void main()
@@ -105,7 +54,7 @@ void main()
     }
     float ndl = dot(n, sunDir);
     float wrap = mix(0.0, 0.3, fragLeaf);
-    float direct = sunVis * sunShadow(fragPosition) * clamp((ndl + wrap) / (1.0 + wrap), 0.0, 1.0);
+    float direct = sunVis * sunShadowSimple(fragPosition, 4) * clamp((ndl + wrap) / (1.0 + wrap), 0.0, 1.0);
     float sky = 0.7 + 0.3 * n.y; // a little more sky from above
     vec3 color = albedo * (ambient * 1.6 * sky + vec3(1.0, 0.96, 0.88) * direct + lampLight(fragPosition, n));
 

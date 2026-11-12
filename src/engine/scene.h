@@ -30,6 +30,7 @@ struct HotShader {
     Shader shader{};
     long vsTime = 0, fsTime = 0;
     double lastCheck = -1e9;     // reloadIfChanged looks at the files at most twice a second
+    std::vector<std::string> includes; // files pulled in by `#include "..."` (watched with the fs)
 
     // Returns true when a new shader was swapped in (callers must re-apply locations/uniforms).
     bool reloadIfChanged(bool force = false);
@@ -37,6 +38,7 @@ struct HotShader {
 };
 
 extern bool benchMode; // true in --bench runs: no input-driven camera, scripted tests
+void SetShadowCompare(unsigned int depthTexture, bool on); // shadow maps: hardware compare on/off (debug previews read raw depth)
 
 class Scene {
     public:

@@ -18,6 +18,36 @@ bool benchMode = false; // set by the game executables (--bench)
 // HotShader
 // ---------------------------------------------------------------------------------------------
 
+// A shader source with `#include "file"` lines replaced by that file (relative to the including
+// file's folder; one level deep is all the shaders use, but nesting works). The included paths are
+// collected so hot reload also watches them.
+static std::string ExpandShaderIncludes(const std::string& path, std::vector<std::string>& includes, int depth = 0) {
+    char* text = LoadFileText(path.c_str());
+    if (!text) return std::string();
+    std::string src(text), out;
+    UnloadFileText(text);
+    const std::string dir = path.substr(0, path.find_last_of("/\\") + 1);
+    size_t pos = 0;
+    while (pos < src.size()) {
+        size_t eol = src.find('\n', pos);
+        if (eol == std::string::npos) eol = src.size();
+        const std::string line = src.substr(pos, eol - pos);
+        const size_t inc = line.find("#include");
+        const size_t q0 = line.find('"'), q1 = line.rfind('"');
+        if (inc != std::string::npos && line.find_first_not_of(" \t") == inc && q0 != std::string::npos && q1 > q0 && depth < 4) {
+            const std::string file = dir + line.substr(q0 + 1, q1 - q0 - 1);
+            includes.push_back(file);
+            out += ExpandShaderIncludes(file, includes, depth + 1);
+            out += "\n";
+        } else {
+            out += line;
+            out += "\n";
+        }
+        pos = eol + 1;
+    }
+    return out;
+}
+
 bool HotShader::reloadIfChanged(bool force) {
     // Two file stats per shader cost ~20 us each on Windows: 20 a frame was ~0.35 ms of the main
     // thread. Look at most twice a second (each shader keeps its own clock).
@@ -25,12 +55,17 @@ bool HotShader::reloadIfChanged(bool force) {
     if (!force && now - lastCheck < 0.5) return false;
     lastCheck = now;
     const long vt = GetFileModTime(vsPath.c_str());
-    const long ft = GetFileModTime(fsPath.c_str());
+    long ft = GetFileModTime(fsPath.c_str());
+    for (const std::string& inc : includes) ft = std::max(ft, GetFileModTime(inc.c_str())); // included files count as the fs
     if (!force && vt == vsTime && ft == fsTime) return false;
     vsTime = vt;
     fsTime = ft;
 
-    Shader s = LoadShader(vsPath.c_str(), fsPath.c_str());
+    std::vector<std::string> incs;
+    const std::string vsSrc = ExpandShaderIncludes(vsPath, incs), fsSrc = ExpandShaderIncludes(fsPath, incs);
+    includes = incs;
+    for (const std::string& inc : includes) fsTime = std::max(fsTime, GetFileModTime(inc.c_str()));
+    Shader s = LoadShaderFromMemory(vsSrc.empty() ? nullptr : vsSrc.c_str(), fsSrc.empty() ? nullptr : fsSrc.c_str());
     // On a compile/link error raylib hands back its default shader instead.
     if (!IsShaderValid(s) || s.id == rlGetShaderIdDefault()) {
         logger.logf("[ERROR] Shader %s / %s failed to compile; keeping previous version\n", vsPath.c_str(), fsPath.c_str());
@@ -84,6 +119,7 @@ static void EndWaterStencil() {
     if (glad_glDisable) glad_glDisable(0x0B90);
 }
 
+void SetShadowCompare(unsigned int depthTexture, bool on);
 static RenderTexture2D LoadShadowmapRenderTexture(int width, int height) {
     RenderTexture2D target = { 0 };
     target.id = rlLoadFramebuffer();
@@ -99,8 +135,33 @@ static RenderTexture2D LoadShadowmapRenderTexture(int width, int height) {
         rlFramebufferAttach(target.id, target.depth.id, RL_ATTACHMENT_DEPTH, RL_ATTACHMENT_TEXTURE2D, 0);
         if (!rlFramebufferComplete(target.id)) TraceLog(LOG_WARNING, "Shadow map FBO incomplete");
         rlDisableFramebuffer();
+        SetShadowCompare(target.depth.id, true);
     }
     return target;
+}
+
+// Hardware shadow comparison (sampler2DShadow in shadow.glsl): with a linear filter one lookup returns
+// the bilinear-filtered result of comparing the four nearest texels. Off for the debug previews,
+// which read the raw depth.
+extern "C" {
+    typedef void (*PfnBindTex)(unsigned int, unsigned int);
+    typedef void (*PfnTexParami)(unsigned int, unsigned int, int);
+    extern PfnBindTex glad_glBindTexture;
+    extern PfnTexParami glad_glTexParameteri;
+}
+void SetShadowCompare(unsigned int depthTexture, bool on) {
+    if (!glad_glBindTexture || !glad_glTexParameteri || depthTexture == 0) return;
+    constexpr unsigned int TEX2D = 0x0DE1, MIN_FILTER = 0x2801, MAG_FILTER = 0x2800, LINEAR = 0x2601, NEAREST = 0x2600;
+    constexpr unsigned int COMPARE_MODE = 0x884C, COMPARE_FUNC = 0x884D, COMPARE_REF = 0x884E, LEQUAL = 0x0203, WRAP_S = 0x2802, WRAP_T = 0x2803, CLAMP_EDGE = 0x812F;
+    rlDrawRenderBatchActive();
+    glad_glBindTexture(TEX2D, depthTexture);
+    glad_glTexParameteri(TEX2D, COMPARE_MODE, on ? (int)COMPARE_REF : 0);
+    glad_glTexParameteri(TEX2D, COMPARE_FUNC, (int)LEQUAL);
+    glad_glTexParameteri(TEX2D, MIN_FILTER, (int)(on ? LINEAR : NEAREST));
+    glad_glTexParameteri(TEX2D, MAG_FILTER, (int)(on ? LINEAR : NEAREST));
+    glad_glTexParameteri(TEX2D, WRAP_S, (int)CLAMP_EDGE);
+    glad_glTexParameteri(TEX2D, WRAP_T, (int)CLAMP_EDGE);
+    glad_glBindTexture(TEX2D, 0);
 }
 
 static void UnloadShadowmapRenderTexture(RenderTexture2D target) {
@@ -532,6 +593,33 @@ void Scene::drawScene(int gamestate) {
             SetShaderValue(fs, GetShaderLocation(fs, "fogShell"), fshell, SHADER_UNIFORM_VEC4);
             ctx.farShader = &fs;
         }
+        // Foliage lighting (grass, trees): the sun's shadow map and the headlamp, as the terrain gets.
+        auto setFoliageLighting = [&](Shader& sh) {
+            const int slot = 6;
+            rlActiveTextureSlot(slot);
+            rlEnableTexture(shadowMap.depth.id);
+            rlSetUniform(GetShaderLocation(sh, "shadowMap"), &slot, RL_SHADER_UNIFORM_INT, 1);
+            rlSetUniformMatrix(GetShaderLocation(sh, "lightSpaceMatrix"), lightSpaceMatrix);
+            const int slotNear = 7;
+            rlActiveTextureSlot(slotNear);
+            rlEnableTexture(shadowNear.depth.id);
+            rlSetUniform(GetShaderLocation(sh, "shadowMapNear"), &slotNear, RL_SHADER_UNIFORM_INT, 1);
+            rlSetUniformMatrix(GetShaderLocation(sh, "lightSpaceNear"), lightSpaceNear);
+            const float texels[2] = { 2.0f * shadowNearHalfExtent / SHADOW_MAP_SIZE, 2.0f * shadowHalfExtent / SHADOW_MAP_SIZE };
+            rlSetUniform(GetShaderLocation(sh, "shadowTexel"), texels, RL_SHADER_UNIFORM_VEC2, 1);
+            const float depthRange = (float)(sunDistance * 2.0 - 1.0);
+            rlSetUniform(GetShaderLocation(sh, "shadowDepthRange"), &depthRange, RL_SHADER_UNIFORM_FLOAT, 1);
+            const int res = shadowMap.depth.width;
+            rlSetUniform(GetShaderLocation(sh, "shadowMapResolution"), &res, RL_SHADER_UNIFORM_INT, 1);
+            float lamp[4] = { 0, 0, 0, 0 }, target[4] = { 0, 0, 0, 0 };
+            if (lights.size() > 1 && lights[1].enabled && lights[1].type == LIGHT_SPOT) {
+                lamp[0] = lights[1].position.x; lamp[1] = lights[1].position.y; lamp[2] = lights[1].position.z; lamp[3] = lights[1].color.a / 255.0f;
+                target[0] = lights[1].target.x; target[1] = lights[1].target.y; target[2] = lights[1].target.z;
+            }
+            rlSetUniform(GetShaderLocation(sh, "lampPos"), lamp, RL_SHADER_UNIFORM_VEC4, 1);
+            rlSetUniform(GetShaderLocation(sh, "lampTarget"), target, RL_SHADER_UNIFORM_VEC4, 1);
+            rlActiveTextureSlot(0);
+        };
         if (parts.shader.id > 0) {
             Shader& ps = parts.shader;
             const float pshell[4] = { atmosphere.centre.x, atmosphere.centre.y, atmosphere.centre.z,
@@ -544,6 +632,7 @@ void Scene::drawScene(int gamestate) {
             SetShaderValue(ps, GetShaderLocation(ps, "fogShell"), pshell, SHADER_UNIFORM_VEC4);
             ctx.partShader = &ps;
             ctx.partOccluderLoc = GetShaderLocation(ps, "sunOccluder");
+            ctx.bindSunLighting = setFoliageLighting;
         }
         auto isFar = [&](const Object* o) { return std::find(farBodies.begin(), farBodies.end(), o) != farBodies.end(); };
         const double nearDefault = rlGetCullDistanceNear(), farDefault = rlGetCullDistanceFar();
@@ -587,33 +676,6 @@ void Scene::drawScene(int gamestate) {
 
         // Trees and bushes: one instanced draw per variant per body. The mid pass draws the simple
         // far meshes (trees reach kTreeDrawDistance, past the near/mid split); the near pass draws them all.
-        // Foliage lighting (grass, trees): the sun's shadow map and the headlamp, as the terrain gets.
-        auto setFoliageLighting = [&](Shader& sh) {
-            const int slot = 6;
-            rlActiveTextureSlot(slot);
-            rlEnableTexture(shadowMap.depth.id);
-            rlSetUniform(GetShaderLocation(sh, "shadowMap"), &slot, RL_SHADER_UNIFORM_INT, 1);
-            rlSetUniformMatrix(GetShaderLocation(sh, "lightSpaceMatrix"), lightSpaceMatrix);
-            const int slotNear = 7;
-            rlActiveTextureSlot(slotNear);
-            rlEnableTexture(shadowNear.depth.id);
-            rlSetUniform(GetShaderLocation(sh, "shadowMapNear"), &slotNear, RL_SHADER_UNIFORM_INT, 1);
-            rlSetUniformMatrix(GetShaderLocation(sh, "lightSpaceNear"), lightSpaceNear);
-            const float texels[2] = { 2.0f * shadowNearHalfExtent / SHADOW_MAP_SIZE, 2.0f * shadowHalfExtent / SHADOW_MAP_SIZE };
-            rlSetUniform(GetShaderLocation(sh, "shadowTexel"), texels, RL_SHADER_UNIFORM_VEC2, 1);
-            const float depthRange = (float)(sunDistance * 2.0 - 1.0);
-            rlSetUniform(GetShaderLocation(sh, "shadowDepthRange"), &depthRange, RL_SHADER_UNIFORM_FLOAT, 1);
-            const int res = shadowMap.depth.width;
-            rlSetUniform(GetShaderLocation(sh, "shadowMapResolution"), &res, RL_SHADER_UNIFORM_INT, 1);
-            float lamp[4] = { 0, 0, 0, 0 }, target[4] = { 0, 0, 0, 0 };
-            if (lights.size() > 1 && lights[1].enabled && lights[1].type == LIGHT_SPOT) {
-                lamp[0] = lights[1].position.x; lamp[1] = lights[1].position.y; lamp[2] = lights[1].position.z; lamp[3] = lights[1].color.a / 255.0f;
-                target[0] = lights[1].target.x; target[1] = lights[1].target.y; target[2] = lights[1].target.z;
-            }
-            rlSetUniform(GetShaderLocation(sh, "lampPos"), lamp, RL_SHADER_UNIFORM_VEC4, 1);
-            rlSetUniform(GetShaderLocation(sh, "lampTarget"), target, RL_SHADER_UNIFORM_VEC4, 1);
-            rlActiveTextureSlot(0);
-        };
         auto drawTrees = [&](int onlyLod) {
             if (trees.shader.id <= 0 || !foliageEnabled) return;
             rlDrawRenderBatchActive();
@@ -748,10 +810,12 @@ void Scene::drawScene(int gamestate) {
     GpuTimer_Mark("draw3d");
 
     if (debugDraw) {
-        // Depth texture preview (red channel = depth).
+        // Depth texture preview (red channel = depth), with the hardware compare off while it draws.
+        SetShadowCompare(shadowMap.depth.id, false);
         DrawTexturePro(shadowMap.depth,
             (Rectangle){ 0, 0, (float)shadowMap.depth.width, -(float)shadowMap.depth.height },
             (Rectangle){ 10, 100, 300, 300 }, (Vector2){ 0, 0 }, 0.0f, WHITE);
+        SetShadowCompare(shadowMap.depth.id, true);
     }
 }
 

@@ -231,6 +231,12 @@ void Planetoid::draw(const RenderContext& ctx) {
         const Vector3 c = (worldPos - ctx.renderOrigin).toFloat();
         const float occluder[4] = { c.x, c.y, c.z, (kind == BodyKind::Planet || kind == BodyKind::Moon) ? std::max(0.0f, radius - 60.0f) * scale : 0.0f };
         SetShaderValue(*ctx.partShader, ctx.partOccluderLoc, occluder, SHADER_UNIFORM_VEC4);
+        if (ctx.bindSunLighting && !plots->plots.empty()) {
+            // Shadow cascades on texture slots 6-7 (DrawMesh's default material only binds slot 0).
+            rlDrawRenderBatchActive();
+            rlEnableShader(ctx.partShader->id);
+            ctx.bindSunLighting(*ctx.partShader);
+        }
         for (auto& pl : plots->plots) pl->draw(*this, ctx, *ctx.partShader);
     }
     if (drawList.empty() || !ctx.terrainMaterial) return;
@@ -260,6 +266,7 @@ void Planetoid::drawTransparent(const RenderContext& ctx) {
     const Vector3 c = (worldPos - ctx.renderOrigin).toFloat();
     const float occluder[4] = { c.x, c.y, c.z, std::max(0.0f, radius - 60.0f) * scale }; // night side, as for terrain
     batch.setUniform(ctx.waterOccluderLoc, occluder, SHADER_UNIFORM_VEC4);
+    if (ctx.bindSunLighting) ctx.bindSunLighting(ctx.waterMaterial->shader); // cliffs and builds shade the water (slots 6-7)
     RenderContext c2 = ctx;
     c2.batch = &batch;
     // Nearest first: with the stencil set up by the scene (one water layer per pixel), the closest

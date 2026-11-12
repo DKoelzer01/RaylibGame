@@ -17,6 +17,8 @@ uniform vec3 fogColor;         // linear
 uniform float fogDensity;
 uniform float time;
 
+#include "shadow.glsl"
+
 out vec4 finalColor;
 
 void main()
@@ -45,6 +47,7 @@ void main()
         // Soft-edged: a penumbra 4% of the body's radius, widening behind it (a hard edge looked cut out).
         if (b < 0.0) sunVis *= smoothstep(sunOccluder.w - max(sunOccluder.w * 0.04, -b * 0.03), sunOccluder.w + max(sunOccluder.w * 0.04, -b * 0.03), sqrt(max(c + sunOccluder.w * sunOccluder.w - b * b, 0.0)));
     }
+    sunVis *= sunShadowSimple(fragPosition, 1); // terrain, trees and builds shade the surface
     float light = sunVis * max(dot(n, sunDir), 0.0);
     vec3 deep = vec3(0.01, 0.05, 0.13) * (0.15 + 0.85 * light); // dark but clearly blue, also from orbit
     // Clear turquoise in the shallows, deep blue offshore.

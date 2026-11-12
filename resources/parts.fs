@@ -1,6 +1,7 @@
 #version 330
 
-// Parts: sRGB vertex colour, sun light with the planet's night side, sky ambient, the terrain's haze.
+// Parts: sRGB vertex colour, sun light with shadows (shadow.glsl) and the planet's night side, the
+// headlamp, sky ambient (more from above), a soft specular, and the terrain's haze.
 in vec3 fragPosition;
 in vec3 fragNormal;
 in vec4 fragColor;
@@ -12,6 +13,8 @@ uniform vec4 sunOccluder;
 uniform vec3 fogColor;
 uniform float fogDensity;
 uniform vec4 fogShell;
+
+#include "shadow.glsl"
 
 out vec4 finalColor;
 
@@ -26,8 +29,11 @@ void main()
         // Soft-edged: a penumbra 4% of the body's radius, widening behind it (a hard edge looked cut out).
         if (b < 0.0) sunVis *= smoothstep(sunOccluder.w - max(sunOccluder.w * 0.04, -b * 0.03), sunOccluder.w + max(sunOccluder.w * 0.04, -b * 0.03), sqrt(max(c + sunOccluder.w * sunOccluder.w - b * b, 0.0)));
     }
-    float direct = sunVis * max(dot(n, sunDir), 0.0);
-    vec3 color = albedo * (ambient * (1.4 + 0.3 * n.y) + vec3(1.0, 0.96, 0.88) * direct);
+    float ndl = max(dot(n, sunDir), 0.0);
+    float sun = sunVis * ndl * (ndl > 0.0 ? sunShadowNormal(fragPosition, n, sunDir, 4) : 0.0);
+    vec3 v = normalize(viewPos - fragPosition);
+    float spec = pow(max(dot(n, normalize(sunDir + v)), 0.0), 32.0) * 0.12 * sun;
+    vec3 color = albedo * (ambient * (1.4 + 0.3 * n.y) + vec3(1.0, 0.96, 0.88) * sun + lampLight(fragPosition, n)) + vec3(spec);
     float dist = length(viewPos - fragPosition), fogDist = dist;
     if (fogShell.w > 0.0) {
         vec3 rd = (fragPosition - viewPos) / max(dist, 1e-3);

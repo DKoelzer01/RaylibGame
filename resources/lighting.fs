@@ -16,12 +16,9 @@ in float fragOreKind;   // planets: which ore, (1 + kind) / 8 (0 none)
 uniform sampler2D colorTexture;    // MATERIAL_MAP_ALBEDO
 uniform sampler2D normalTexture;   // MATERIAL_MAP_NORMAL (OpenGL convention, tangent space)
 uniform sampler2D roughAoTexture;  // MATERIAL_MAP_ROUGHNESS: R = roughness, G = ambient occlusion
-uniform sampler2D shadowMap;       // MATERIAL_MAP_BRDF: light depth texture
 uniform sampler2DArray terrainLayers; // planet palette: dirt, sand, gravel, grass, snow, ice, stone (terrainlayers.h)
 
-uniform mat4 lightSpaceMatrix;
 uniform mat4 matModel;          // body-local -> world (set by DrawMesh); see lighting.vs about matNormal
-uniform int shadowMapResolution;
 uniform float texScale;            // world units -> texture repeats
 
 #define MAX_LIGHTS          4
@@ -96,47 +93,10 @@ vec3 triplanarNormal(sampler2D tex, Triplanar t, vec3 n)
     return normalize(tnX.zyx * t.w.x + tnY.xzy * t.w.y + tnZ.xyz * t.w.z);
 }
 
-// Shadows: two cascades (the near box ~3 cm texels, the wide one ~20 cm). 1.0 = fully lit.
-uniform sampler2D shadowMapNear;
-uniform mat4 lightSpaceNear;
-uniform vec2 shadowTexel;       // metres per texel: near, far
-uniform float shadowDepthRange; // metres the light's depth spans
-// A bilinear-filtered compare: the four texels around the point, each lit or not, blended by where
-// the point falls between them (a smooth edge instead of a texel step).
-float shadowTap(sampler2D map, vec2 uv, float z, float res)
-{
-    vec2 st = uv * res - 0.5;
-    vec2 i = floor(st), f = st - i;
-    vec2 b = (i + 0.5) / res;
-    float d = 1.0 / res;
-    float a0 = step(z, texture(map, b).r), a1 = step(z, texture(map, b + vec2(d, 0.0)).r);
-    float a2 = step(z, texture(map, b + vec2(0.0, d)).r), a3 = step(z, texture(map, b + vec2(d, d)).r);
-    return mix(mix(a0, a1, f.x), mix(a2, a3, f.x), f.y);
-}
-// One cascade: the lookup moved about a texel along the normal (no self-shadowing on flat-shaded
-// triangles: the drifting light/dark triangle pattern) plus a slope-scaled depth bias of a texel or
-// two; a 2x2 of bilinear taps half a texel either side (smooth edges ~2 texels wide, 16 fetches).
-float cascadeShadow(sampler2D map, mat4 m, vec3 worldPos, vec3 n, vec3 l, float texelM, out bool inside)
-{
-    float ndl = clamp(dot(n, l), 0.0, 1.0);
-    vec4 ls = m * vec4(worldPos + n * texelM * (1.5 - 0.5 * ndl), 1.0);
-    vec3 p = ls.xyz / ls.w * 0.5 + 0.5;
-    inside = p.x > 0.01 && p.x < 0.99 && p.y > 0.01 && p.y < 0.99 && p.z <= 1.0;
-    if (!inside) return 1.0;
-    float slope = sqrt(max(1.0 - ndl * ndl, 0.0)) / max(ndl, 0.2);
-    float z = p.z - texelM * (0.5 + 1.0 * min(slope, 4.0)) / shadowDepthRange;
-    float res = float(shadowMapResolution);
-    return 0.25 * (shadowTap(map, p.xy + vec2(-0.5, -0.5) / res, z, res) + shadowTap(map, p.xy + vec2(0.5, -0.5) / res, z, res)
-                 + shadowTap(map, p.xy + vec2(-0.5, 0.5) / res, z, res) + shadowTap(map, p.xy + vec2(0.5, 0.5) / res, z, res));
-}
-float shadowFactor(vec3 worldPos, vec3 n, vec3 l)
-{
-    if (shadowMapResolution <= 0) return 1.0;
-    bool inNear, inFar;
-    float s = cascadeShadow(shadowMapNear, lightSpaceNear, worldPos, n, l, shadowTexel.x, inNear);
-    if (inNear) return s;
-    return cascadeShadow(shadowMap, lightSpaceMatrix, worldPos, n, l, shadowTexel.y, inFar);
-}
+// Sun shadows: two cascades, hardware PCF (shadow.glsl). The far map is MATERIAL_MAP_BRDF, the near one
+// MATERIAL_MAP_HEIGHT.
+#include "shadow.glsl"
+float shadowFactor(vec3 worldPos, vec3 n, vec3 l) { return sunShadowNormal(worldPos, n, l, 4); }
 
 // Smooth value noise in [0, 1] (macro variation of the terrain colour).
 float hash3(vec3 p) { p = mod(p, 289.0); return fract(sin(dot(p, vec3(127.1, 311.7, 74.7))) * 43758.5453); } // mod: sin() of huge arguments bands
