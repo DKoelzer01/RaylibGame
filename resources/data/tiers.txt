@@ -4,7 +4,7 @@
 0 | Primitive        | fired_crucible   | Chop trees for wood, harvest bushes for fibre, dig dirt and stone. Make clay from dirt, mould a crucible (Tab) and fire it in a campfire (G to place, I to feed it wood).
     task | get wood 4             | Chop a tree for wood (LMB on a trunk)
     task | get fibre 2            | Harvest a bush for fibre
-    task | get gravel 4           | Dig dirt with your hands until you have 4 gravel
+    task | get stone 4            | Pick up loose stones (LMB) until you have 4 stone
     task | get stone_pickaxe 1    | Craft a stone pickaxe (Tab)
     task | get stone 8            | Dig stone with the pickaxe
     task | place campfire         | Place a campfire (G) and feed it wood (I)

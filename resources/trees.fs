@@ -8,6 +8,7 @@ in vec3 fragPosition;
 in vec3 fragNormal;
 in float fragLeaf;
 in float fragShade;
+in float fragStone;
 in float fragHash;
 in float fragLatitude;
 in float fragHeight;
@@ -66,6 +67,7 @@ void main()
     leafC *= 0.75 + 0.5 * fragShade * (0.8 + 0.4 * fragHash);
     vec3 bark = vec3(0.20, 0.13, 0.08) * (0.8 + 0.4 * fragShade);
     vec3 albedo = mix(bark, leafC, fragLeaf);
+    albedo = mix(albedo, vec3(0.36, 0.35, 0.33) * (0.7 + 0.6 * fragShade), fragStone); // loose stones
 
     float sunVis = 1.0;
     if (sunOccluder.w > 0.0) {

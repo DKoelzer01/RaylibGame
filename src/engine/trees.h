@@ -38,8 +38,9 @@ class PlanetField;
 class Planetoid;
 struct RenderContext;
 
-constexpr int kTreeVariants = 9;            // 0-3 broadleaf, 4-5 conifer, 6-8 bush
+constexpr int kTreeVariants = 10;           // 0-3 broadleaf, 4-5 conifer, 6-8 bush, 9 loose stones
 constexpr int kFirstBush = 6;
+constexpr int kStoneVariant = 9;            // loose stones on the ground: picked up for stone (the first stone tools)
 constexpr float kTreeTileSize = 64.0f;      // m
 constexpr float kTreeDrawDistance = 1000.0f;
 constexpr float kBushDrawDistance = 300.0f;
@@ -64,6 +65,7 @@ struct Plant {
     float scale;
     int variant;
     bool tree() const { return variant < kFirstBush; }
+    bool stone() const { return variant == kStoneVariant; }
 };
 struct PlantHit {
     Plant plant;
@@ -106,7 +108,7 @@ public:
     // Trunks within `range` of a body-local point.
     void trunksNear(Vector3 local, float range, std::vector<Trunk>& out) const;
     // The nearest loaded plant (tree or bush) to a body-local point.
-    bool nearestPlant(Vector3 local, float range, bool tree, Plant& out) const;
+    bool nearestPlant(Vector3 local, float range, bool tree, Plant& out, bool stone = false) const; // stone: loose stones (else bushes when !tree)
     // The nearest plant a body-local ray hits within maxDistance.
     bool raycast(Vector3 localOrigin, Vector3 localDir, float maxDistance, PlantHit& hit) const;
     // Chop / harvest: gone now, regrows later.

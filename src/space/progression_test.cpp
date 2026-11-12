@@ -165,8 +165,9 @@ namespace {
         // Tier 0: wood, dirt, stone; clay, a crucible, a campfire to fire it.
         add("chop trees for 160 wood", [] { while (inventory.count("wood") < 160) if (!TerrainTool_HarvestNearest(*body, home, true)) return false; return true; });
         add("dig 84 dirt", [] { return DigFor("dirt", 84, 1.0f); });
-        add("harvest bushes for fibre; craft and hold a stone pickaxe (gravel from the dirt)", [] {
+        add("harvest bushes for fibre, pick up loose stones; craft and hold a stone pickaxe", [] {
             while (inventory.count("fibre") < 2) if (!TerrainTool_HarvestNearest(*body, home, false)) return false;
+            while (inventory.count("stone") < 4) if (!TerrainTool_HarvestNearest(*body, home, false, true)) return false;
             if (!Craft("stone_pickaxe", 1)) return false;
             terrainTool.heldTool = "stone_pickaxe";
             return true;

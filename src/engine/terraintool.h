@@ -32,7 +32,7 @@ bool TerrainTool_Chop();     // one swing at the aimed plant (scripted tests); t
 bool TerrainTool_AimingPlant(uint64_t* id = nullptr);
 class Planetoid;
 bool TerrainTool_DigAt(Planetoid& p, Vector3 local);              // tests: dig a point, gain what it held
-bool TerrainTool_HarvestNearest(Planetoid& p, Vector3 local, bool tree); // tests: fell / harvest the nearest plant
+bool TerrainTool_HarvestNearest(Planetoid& p, Vector3 local, bool tree, bool stone = false); // tests: fell / harvest the nearest plant (or pick up stones)
 void TerrainTool_Draw3D();                                // inside BeginMode3D (Scene::onDraw3D)
 void TerrainTool_DrawHUD();                               // 2D, after the scene
 

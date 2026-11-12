@@ -1283,12 +1283,12 @@ int main(int argc, char** argv)
                         if (FILE* fp = fopen(path.c_str(), "r")) { loadExtrasHook(fp); fclose(fp); }
                         remove(path.c_str());
                         check(ToolWear_Used("stone_pickaxe") == life - 1, "wear saved");
-                        // Repair (2 gravel for stone), then wear it out.
-                        const int gravel0 = inventory.count("gravel");
-                        check(!ToolWear_Repair("stone_pickaxe") || gravel0 >= 2, "no repair without gravel");
-                        inventory.add("gravel", 2);
-                        const int gravel1 = inventory.count("gravel");
-                        check(ToolWear_Repair("stone_pickaxe") && ToolWear_Used("stone_pickaxe") == 0 && inventory.count("gravel") == gravel1 - 2, "repaired for 2 gravel");
+                        // Repair (2 stone for stone tools), then wear it out.
+                        const int stone0 = inventory.count("stone");
+                        check(!ToolWear_Repair("stone_pickaxe") || stone0 >= 2, "no repair without stone");
+                        inventory.add("stone", 2);
+                        const int stone1 = inventory.count("stone");
+                        check(ToolWear_Repair("stone_pickaxe") && ToolWear_Used("stone_pickaxe") == 0 && inventory.count("stone") == stone1 - 2, "repaired for 2 stone");
                         ToolWear_OnStroke("stone_pickaxe", life);
                         check(inventory.count("stone_pickaxe") == 0, "broke at its durability");
                         toolsLife = life;

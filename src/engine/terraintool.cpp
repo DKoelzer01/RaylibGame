@@ -73,6 +73,11 @@ namespace {
             if (itemDB.find(log)) inventory.add(log, logs);
             Toast(TextFormat("+%d wood  +%d %s", wood, 1 + (int)(p.scale * 2.0f), p.variant < 2 ? "oak logs" : p.variant < 4 ? "birch logs" : "pine logs"));
             Audio_Play(Sfx::Build, 0.6f, 0.5f);
+        } else if (p.stone()) {
+            const int n = 1 + (int)((p.id >> 3) & 1); // a stone or two, picked up off the ground
+            inventory.add("stone", n);
+            Toast(TextFormat("+%d stone", n));
+            Audio_Play(Sfx::Pickup, 0.5f, 0.8f);
         } else {
             inventory.add("fibre", 2);
             const bool berries = (p.id & 1) == 0;
@@ -364,7 +369,7 @@ void TerrainTool_DrawHUD() {
     const std::string held = tool.type == ToolType::Hands ? std::string("hands") : std::string(ToolTierName(tool.tier)) + " " + ToolTypeName(tool.type);
     if (hasPlant) {
         const Plant& p = plantHit.plant;
-        DrawText(TextFormat("%s  %.1f m   LMB %s (%s)", p.tree() ? "tree" : "bush", plantHit.distance, p.tree() ? "chop" : "harvest", held.c_str()), cx + 14, cy + 10, 20, RAYWHITE);
+        DrawText(TextFormat("%s  %.1f m   LMB %s (%s)", p.tree() ? "tree" : p.stone() ? "stones" : "bush", plantHit.distance, p.tree() ? "chop" : p.stone() ? "pick up" : "harvest", held.c_str()), cx + 14, cy + 10, 20, RAYWHITE);
         if (chopId == p.id && chopHits > 0) {
             const float f = (float)chopHits / HitsToFell(p);
             DrawRectangle(cx + 14, cy + 34, 120, 6, Fade(BLACK, 0.5f));
@@ -413,10 +418,10 @@ bool TerrainTool_DigAt(Planetoid& p, Vector3 local) {
     return true;
 }
 
-bool TerrainTool_HarvestNearest(Planetoid& p, Vector3 local, bool tree) {
+bool TerrainTool_HarvestNearest(Planetoid& p, Vector3 local, bool tree, bool stone) {
     if (!p.trees) return false;
     Plant plant;
-    if (!p.trees->nearestPlant(local, 400.0f, tree, plant)) return false;
+    if (!p.trees->nearestPlant(local, 400.0f, tree, plant, stone)) return false;
     tool = HeldTool();
     hasPlant = true;
     plantBody = &p;

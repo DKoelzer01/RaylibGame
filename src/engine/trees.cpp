@@ -24,12 +24,13 @@ struct VariantMesh {
     int vertexCount = 0;
 };
 VariantMesh gVariants[2][kTreeVariants]; // [0] full, [1] far (a few prisms)
+unsigned char gStoneFlag = 0; // set while building the loose-stone mesh: its vertices draw grey (colour b)
 std::once_flag gVariantsOnce;
 
 void Emit(VariantMesh& m, Vector3 p, Vector3 n, bool leaf, unsigned char shade) {
     m.pos.insert(m.pos.end(), { p.x, p.y, p.z });
     m.nrm.insert(m.nrm.end(), { n.x, n.y, n.z });
-    m.col.insert(m.col.end(), { (unsigned char)(leaf ? 255 : 0), shade, 0, 255 });
+    m.col.insert(m.col.end(), { (unsigned char)(leaf ? 255 : 0), shade, gStoneFlag, 255 });
 }
 
 void Quad(VariantMesh& m, Vector3 a, Vector3 b, Vector3 c, Vector3 d, Vector3 centre, bool leaf, unsigned char shade) {
@@ -126,6 +127,22 @@ void Bush(VariantMesh& m, unsigned int seed) {
     m.trunkHeight = 0.0f;
 }
 
+// Loose stones: two to four low, tilted lumps a hand or two across, lying on the ground.
+void Stones(VariantMesh& m, unsigned int seed) {
+    std::mt19937 r(seed);
+    gStoneFlag = 255;
+    const int n = 2 + (int)(U(r) * 3.0f);
+    for (int k = 0; k < n; ++k) {
+        const float c = 0.22f + 0.28f * U(r);
+        const Vector3 o = { (U(r) - 0.5f) * 0.8f, 0.0f, (U(r) - 0.5f) * 0.8f };
+        const Vector3 tilt = { (U(r) - 0.5f) * 0.3f, 0.0f, (U(r) - 0.5f) * 0.3f };
+        Prism(m, Vector3Subtract(o, { 0, c * 0.25f, 0 }), Vector3Add(Vector3Add(o, tilt), { 0, c * 0.45f, 0 }), c, c * 0.7f, U(r) * 1.5f, false, Shade(r));
+    }
+    gStoneFlag = 0;
+    m.trunkRadius = 0.0f;
+    m.trunkHeight = 0.0f;
+}
+
 // Far meshes: the same silhouette from a few prisms (trunk + crown; trunk + two cones; one block).
 void FarFrom(const VariantMesh& full, int v, VariantMesh& m) {
     float lo[3] = { 1e9f, 1e9f, 1e9f }, hi[3] = { -1e9f, -1e9f, -1e9f };
@@ -152,9 +169,11 @@ void BuildVariants() {
         VariantMesh& m = gVariants[0][v];
         if (v < 4) Broadleaf(m, 1000u + v * 7919u);
         else if (v < kFirstBush) Conifer(m, 2000u + v * 7919u);
+        else if (v == kStoneVariant) Stones(m, 4000u + v * 7919u);
         else Bush(m, 3000u + v * 7919u);
         m.vertexCount = (int)(m.pos.size() / 3);
-        FarFrom(m, v, gVariants[1][v]);
+        if (v == kStoneVariant) gVariants[1][v] = m; // already a few prisms (and no crown for FarFrom to fit)
+        else FarFrom(m, v, gVariants[1][v]);
         gVariants[1][v].vertexCount = (int)(gVariants[1][v].pos.size() / 3);
     }
 }
@@ -243,12 +262,14 @@ void BuildTile(const PlanetField& f, const TerrainDeltas& edits, const PlantRemo
             const float forest = Forest(Vector3Scale(dir, R), seed);
             const float pTree = TreeChanceFromForest(forest, fabsf(dir.y));
             const float pBush = 0.05f + 0.3f * Smooth(0.35f, 0.6f, forest);
+            const float pStone = 0.025f;                                  // loose stones: the first stone tools' stone
             const bool tree = roll < pTree;
-            if (!tree && roll >= pTree + pBush) continue;
+            const bool stone = !tree && roll >= pTree + pBush && roll < pTree + pBush + pStone;
+            if (!tree && !stone && roll >= pTree + pBush) continue;
             const float lat = fabsf(dir.y);
             if (lat > 0.86f) continue;                                  // polar: nothing grows
             const float e = f.elevation(dir);
-            if (e < 4.0f || e > (tree ? 900.0f : 1100.0f)) continue;   // beach / sea, above the tree line
+            if (e < 4.0f || e > (tree ? 900.0f : stone ? 1300.0f : 1100.0f)) continue;   // beach / sea, above the tree line
             // Slope from the height a few metres away.
             const Vector3 t1 = Vector3Normalize(Vector3CrossProduct(dir, fabsf(dir.y) < 0.9f ? Vector3{ 0, 1, 0 } : Vector3{ 1, 0, 0 }));
             const Vector3 t2 = Vector3CrossProduct(t1, dir);
@@ -257,10 +278,10 @@ void BuildTile(const PlanetField& f, const TerrainDeltas& edits, const PlantRemo
             const float e2 = f.elevation(Vector3Normalize(Vector3Add(dir, Vector3Scale(t2, ang))));
             const Vector3 normal = Vector3Normalize(Vector3Subtract(dir, Vector3Add(Vector3Scale(t1, (e1 - e) / step), Vector3Scale(t2, (e2 - e) / step))));
             const float slope = 1.0f - Vector3DotProduct(normal, dir);
-            if (slope > (tree ? 0.12f : 0.2f)) continue;
+            if (slope > (tree ? 0.12f : stone ? 0.3f : 0.2f)) continue;
             const Vector3 ground = Vector3Scale(dir, R + e);
             const VoxelMaterial m = f.materialLod(Vector3Subtract(ground, Vector3Scale(dir, 0.3f)), 1.0f, 0.0f, normal);
-            if (m != VoxelMaterial::Grass && m != VoxelMaterial::Regolith) continue;
+            if (m != VoxelMaterial::Grass && m != VoxelMaterial::Regolith && !(stone && m == VoxelMaterial::Gravel)) continue;
             // Solid ground underfoot and open air above (caves, ravines, edits).
             if (!solid(Vector3Subtract(ground, Vector3Scale(dir, 1.0f))) || !solid(Vector3Subtract(ground, Vector3Scale(dir, 4.0f)))) continue;
             if (solid(Vector3Add(ground, Vector3Scale(dir, 1.5f))) || (tree && solid(Vector3Add(ground, Vector3Scale(dir, 6.0f))))) continue;
@@ -271,6 +292,9 @@ void BuildTile(const PlanetField& f, const TerrainDeltas& edits, const PlantRemo
                 const bool conifer = lat > 0.66f + 0.12f * (h - 0.5f) || e > 550.0f + 300.0f * (h - 0.5f);
                 v = conifer ? 4 + (int)(h * 2.0f) % 2 : (int)(h * 4.0f) % 4;
                 scale = 0.6f + 0.7f * sz + 0.35f * forest;
+            } else if (stone) {
+                v = kStoneVariant;
+                scale = 0.8f + 0.6f * sz;
             } else {
                 v = kFirstBush + (int)(h * 3.0f) % 3;
                 scale = 0.7f + 0.7f * sz;
@@ -296,7 +320,7 @@ void BuildTile(const PlanetField& f, const TerrainDeltas& edits, const PlantRemo
                 out.trunks.push_back({ p, dir, vm.trunkHeight * scale, vm.trunkRadius * scale });
                 out.plants.push_back({ id, p, dir, vm.trunkHeight * scale, vm.trunkRadius * scale, scale, v });
             } else {
-                out.plants.push_back({ id, p, dir, 1.2f * scale, 0.7f * scale, scale, v });
+                out.plants.push_back({ id, p, dir, (stone ? 0.5f : 1.2f) * scale, 0.7f * scale, scale, v });
             }
         }
 }
@@ -604,13 +628,13 @@ void TreeSystem::addClearing(Vector3 c, float r) {
         if (kv.second.ready && Vector3Distance(kv.second.centre, c) < r + kTreeTileSize) request(kv.first, kv.second, 0.0f);
 }
 
-bool TreeSystem::nearestPlant(Vector3 local, float range, bool tree, Plant& out) const {
+bool TreeSystem::nearestPlant(Vector3 local, float range, bool tree, Plant& out, bool stone) const {
     float best = range;
     bool found = false;
     for (const auto& kv : tiles) {
         if (!kv.second.ready || Vector3Distance(kv.second.centre, local) > range + kTreeTileSize) continue;
         for (const Plant& p : kv.second.plants) {
-            if (p.tree() != tree) continue;
+            if (p.tree() != tree || p.stone() != stone) continue;
             const float d = Vector3Distance(p.base, local);
             if (d < best) { best = d; out = p; found = true; }
         }
