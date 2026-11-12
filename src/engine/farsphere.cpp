@@ -51,12 +51,29 @@ Vector3 SurfaceAlbedo(const PlanetField& f, Vector3 up, float e, float slope, bo
     if (lat > 0.82f + 0.08f * w || e > 1050.0f + 150.0f * w) return kSnow;
     if (slope > 0.45f) return kStone;
     if (e < 6.0f + 4.0f * w) return kSand;
+    // Biomes (Plan 5 B), with the terrain shader's climate tints (lighting.fs biomeTint).
+    const Biome biome = f.biomeAt(up, e);
+    const PlanetField::Climate cl = f.climateAt(up, e);
+    auto smooth = [](float a, float b, float x) { const float t = std::clamp((x - a) / (b - a), 0.0f, 1.0f); return t * t * (3.0f - 2.0f * t); };
+    const float red = smooth(16.0f, 21.0f, cl.temp) * smooth(0.2f, 0.27f, cl.moist) * (1.0f - smooth(0.36f, 0.44f, cl.moist));
+    if (biome == Biome::Desert) return kSand;
+    if (biome == Biome::Badlands) return Vector3Multiply(slope > 0.18f ? kStone : kSand, Mix({ 1, 1, 1 }, { 1.22f, 0.72f, 0.5f }, red));
     if (slope > 0.3f || e > 800.0f + 100.0f * w) return kGravel;
-    Vector3 c = lat > 0.62f + 0.06f * w ? kDirt : kGrass;
+    if (biome == Biome::Tundra) return Mix(kGravel, kDirt, 0.4f);
+    Vector3 c = kGrass;
+    {
+        Vector3 t = { 1, 1, 1 };
+        t = Mix(t, { 2.0f, 1.3f, 0.45f }, smooth(0.66f, 0.5f, cl.moist) * smooth(16.0f, 20.0f, cl.temp)); // straw
+        t = Mix(t, { 0.72f, 1.02f, 0.68f }, smooth(18.0f, 23.0f, cl.temp) * smooth(0.56f, 0.7f, cl.moist)); // lush
+        t = Mix(t, { 0.92f, 0.92f, 0.95f }, smooth(9.0f, 3.0f, cl.temp));                                     // cold
+        t = Mix(t, { 0.82f, 0.86f, 0.55f }, smooth(0.68f, 0.8f, cl.moist));                                   // swamp
+        c = Vector3Multiply(c, t);
+        if (biome == Biome::Swamp) c = Mix(c, Vector3Scale(kDirt, 0.6f), 0.3f); // mud flats
+    }
     if (foliage) {
         const float canopy = TreeCanopy(up, f.radius, e, foliageSeed, &f);
-        const Vector3 crowns = lat < 0.35f ? Mix({ 0.22f, 0.27f, 0.07f }, { 0.09f, 0.27f, 0.05f }, (lat - 0.15f) / 0.2f)
-                                           : Mix({ 0.09f, 0.27f, 0.05f }, { 0.05f, 0.17f, 0.08f }, (lat - 0.45f) / 0.25f);
+        const Vector3 dry = { 0.22f, 0.27f, 0.07f }, temperate = { 0.09f, 0.27f, 0.05f }, cold = { 0.05f, 0.17f, 0.08f };
+        const Vector3 crowns = Mix(Mix(temperate, dry, smooth(0.5f, 0.25f, cl.moist) * smooth(12.0f, 22.0f, cl.temp)), cold, smooth(8.0f, 0.0f, cl.temp));
         c = Mix(c, Vector3Scale(crowns, 0.5f), canopy);
     }
     return c;
