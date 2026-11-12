@@ -357,12 +357,23 @@ float PlanetField::elevation(Vector3 dir, float fp) const {
     // water, then sides rising 0.3 m per m) cut into higher ground, low banks where the ground dips
     // below the water, and the channel bed. The valley stays resolved further out than the channel.
     if (const RiverNetwork* net = rivers()) {
-        // Next to a lake, the ground is banked up 0.3 m above its surface, fading out over 140 m, so
-        // the water stays in (the outflow river below cuts through it).
-        float lv, ld;
-        if (net->lakeRim(dir, lv, ld) && h < lv + 0.3f) h += (lv + 0.3f - h) * (1.0f - Smoothstep(0.0f, 140.0f, ld));
+        // Lakes (rivers.h): the level is held under the land around the basin, so the shore is the
+        // terrain's own. Between the samples that checked it the ground may still dip lower; a low
+        // bank in the outer part of the water region (at most 4 m of fill, 0.3 m above the water)
+        // keeps the water in there, and fades out beyond the region.
+        float lv = 0.0f, lout = 0.0f;
+        const bool nearLake = net->lakeAt(dir, lv, lout);
+        const bool inLake = nearLake && lout < RiverNetwork::kLakeMargin;
+        if (nearLake && lout > 0.0f && h < lv + 0.3f) {
+            const float M = RiverNetwork::kLakeMargin;
+            const float k = Smoothstep(0.3f * M, 0.8f * M, lout) * (1.0f - Smoothstep(1.2f * M, 2.0f * M, lout));
+            h += std::min(lv + 0.3f - h, 4.0f) * k;
+        }
         const RiverNetwork::Hit rh = net->nearest(dir, RiverNetwork::kMaxReach);
-        if (rh.found) {
+        // In a lake, only a river arriving at the lake's level shapes the ground (its valley and bed
+        // lead into the lake; no banks, which stood up out of the water as sand ridges); the outflow
+        // and any other river leave the lake alone.
+        if (rh.found && (!inLake || fabsf(rh.level - lv) < 1.0f)) {
             const float d = rh.dist, half = rh.halfWidth;
             const float flat = 2.5f * half, reach = std::min(flat + 200.0f, RiverNetwork::kMaxReach);
             const float allowed = rh.level + 0.5f + std::max(0.0f, d - flat) * 0.3f;
@@ -370,7 +381,7 @@ float PlanetField::elevation(Vector3 dir, float fp) const {
             if (h > allowed) h += (allowed - h) * vw;
             const float cw = std::clamp(2.0f - fp / (4.0f * half), 0.0f, 1.0f) * Smoothstep(-2.0f, 0.5f, l.h); // not out at sea
             const float bank = rh.level + 0.4f;
-            if (h < bank && d < half + 12.0f) h += (bank - h) * (1.0f - Smoothstep(half, half + 12.0f, d)) * cw;
+            if (!inLake && h < bank && d < half + 12.0f) h += (bank - h) * (1.0f - Smoothstep(half, half + 12.0f, d)) * cw;
             if (d < half) {
                 const float t = 1.0f - (d / half) * (d / half);
                 const float bed = rh.level + 0.3f - (rh.depth + 0.3f) * t;
@@ -405,12 +416,14 @@ float PlanetField::waterElevation(Vector3 dir, float fp) const {
     if (moon) return kNoWater;
     float w = kNoWater;
     if (const RiverNetwork* net = rivers()) {
-        if (fp < 128.0f) {
+        // A lake's water is its level over its whole region (the terrain decides the shore); rivers
+        // in it take its level. Lakes are big: kept out to coarse levels of detail.
+        float lake;
+        if (fp < 1024.0f && net->lakeAt(dir, lake)) w = lake;
+        else if (fp < 128.0f) {
             const RiverNetwork::Hit rh = net->nearest(dir, 60.0f);
             if (rh.found && rh.dist < rh.halfWidth * 1.05f) w = rh.level;
         }
-        float lake;
-        if (fp < 256.0f && net->lakeAt(dir, lake)) w = std::max(w, lake);
     }
     if (fp >= 96.0f) return w; // ponds are not resolved (their bowls fade out by here)
     ForPondCellsNear(Vector3Scale(dir, radius), kPondReach, [&](int x, int y, int z) {
@@ -424,7 +437,10 @@ bool PlanetField::inlandWaterNear(Vector3 dir, float extent, float fp) const {
     if (moon) return false;
     const float sx = dir.x * radius, sy = dir.y * radius, sz = dir.z * radius;
     // Each kind only where samples resolve it (as in elevation() and waterElevation()).
-    if (fp < 256.0f) if (const RiverNetwork* net = rivers()) if (net->waterNear(dir, extent)) return true;
+    if (const RiverNetwork* net = rivers()) {
+        if (fp < 1024.0f && net->lakeNear(dir, extent)) return true;
+        if (fp < 256.0f && net->riverNear(dir, extent)) return true;
+    }
     if (fp >= 96.0f) return false;
     bool near = false;
     ForPondCellsNear({ sx, sy, sz }, kPondReach + extent, [&](int x, int y, int z) {
@@ -812,11 +828,33 @@ void BuildChunkMesh(const DensityField& field, const TerrainDeltas& deltas, Chun
             auto lat = [&](int i) { return std::min(i * L, S - 1); };
             if (inland) {
                 level.resize((size_t)LN * LN * LN);
+                // Raw levels on the lattice and one node beyond it on every side (the neighbouring
+                // chunks' nodes: lattices of chunks at the same level line up), so a dry node on the
+                // chunk's edge sees wet ones next door and both chunks' surfaces meet at the seam.
+                const int LE = LN + 2;
+                auto coord = [&](int i) { return i < 0 ? -L : i >= LN ? lat(LN - 1) + L : lat(i); };
+                std::vector<float> raw((size_t)LE * LE * LE);
+                auto R = [&](int x, int y, int z) -> float& { return raw[((size_t)(z + 1) * LE + (y + 1)) * LE + (x + 1)]; };
+                auto P = [&](int x, int y, int z) { return Vector3{ origin.x + coord(x) * stride, origin.y + coord(y) * stride, origin.z + coord(z) * stride }; };
+                for (int z = -1; z <= LN; ++z)
+                    for (int y = -1; y <= LN; ++y)
+                        for (int x = -1; x <= LN; ++x)
+                            R(x, y, z) = pf->waterElevation(Vector3Normalize(P(x, y, z)), (float)stride);
+                // A dry point next to wet ones takes the lower of their level and just under its own
+                // ground, not sea level: between them the interpolated surface then stays level out to
+                // where the shore rises, or runs just under low ground, instead of sloping down across
+                // it (sheets of water at chunk corners). Dry points with no wet neighbour: sea level.
                 for (int z = 0; z < LN; ++z)
                     for (int y = 0; y < LN; ++y)
                         for (int x = 0; x < LN; ++x) {
-                            const Vector3 p = { origin.x + lat(x) * stride, origin.y + lat(y) * stride, origin.z + lat(z) * stride };
-                            const float w = pf->waterElevation(Vector3Normalize(p), (float)stride);
+                            float w = R(x, y, z);
+                            if (w == PlanetField::kNoWater) {
+                                float wet = PlanetField::kNoWater;
+                                for (int c = -1; c <= 1; ++c)
+                                    for (int b = -1; b <= 1; ++b)
+                                        for (int a = -1; a <= 1; ++a) wet = std::max(wet, R(x + a, y + b, z + c));
+                                w = wet == PlanetField::kNoWater ? 0.0f : std::min(wet, pf->elevation(Vector3Normalize(P(x, y, z)), (float)stride) - 2.0f);
+                            }
                             level[((size_t)z * LN + y) * LN + x] = sea + std::max(0.0f, w);
                         }
             }

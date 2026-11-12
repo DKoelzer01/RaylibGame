@@ -117,19 +117,76 @@ RiverNetwork::RiverNetwork(float radius, unsigned int seed, const std::function<
     for (int k = (int)order.size() - 1; k >= 0; --k) { const int c = order[k]; if (parent[c] >= 0) acc[parent[c]] += acc[c]; }
     river.assign(N, 0);
     lake.assign(N, 0);
+    lakeLevel.assign(N, 0.0f);
     for (int c = 0; c < N; ++c) {
         if (h[c] < 0.0f) continue;
         ++st.landCells;
         if (acc[c] >= kRiverArea) { river[c] = 1; ++st.riverCells; }
-        if (F[c] - h[c] > kLakeDepth && F[c] > 1.0f) { lake[c] = 1; ++st.lakeCells; }
     }
-    // Lake rims: the land cells next to a lake (the lake that stands highest there), for the bank.
-    rimOf.assign(N, -1);
-    for (int c = 0; c < N; ++c) {
-        if (lake[c] || h[c] < 0.0f) continue;
-        neighbours(c, nb);
-        for (int k = 0; k < 8; ++k)
-            if (nb[k] >= 0 && lake[nb[k]] && (rimOf[c] < 0 || F[nb[k]] > F[rimOf[c]])) rimOf[c] = nb[k];
+    // Lakes: each basin the flood filled (connected filled land cells) that is deep enough. Its
+    // level is one value over the whole basin, and is held 3 m under the land just outside it (the
+    // basin's edges, and kLakeMargin beyond them): the flood saw only cell centres, and between
+    // them the real ground can fall lower, which stood the lake above its surroundings on walls.
+    {
+        std::vector<int> group(N, -1), cells;
+        std::vector<unsigned char> filled(N, 0);
+        for (int c = 0; c < N; ++c) filled[c] = h[c] >= 0.0f && F[c] - h[c] > 0.05f;
+        for (int s = 0; s < N; ++s) {
+            if (!filled[s] || group[s] >= 0) continue;
+            cells.clear();
+            cells.push_back(s);
+            group[s] = s;
+            float level = F[s], lowest = h[s];
+            for (size_t i = 0; i < cells.size(); ++i) {
+                const int c = cells[i];
+                level = std::min(level, F[c]);
+                lowest = std::min(lowest, h[c]);
+                neighbours(c, nb);
+                for (int k = 0; k < 8; ++k)
+                    if (nb[k] >= 0 && filled[nb[k]] && group[nb[k]] < 0) { group[nb[k]] = s; cells.push_back(nb[k]); }
+            }
+            if (level - lowest <= kLakeDepth || level <= 1.0f) continue; // a shallow dip: no lake
+            // The land just outside: on each edge to a cell outside the basin, and kLakeMargin beyond.
+            float rim = 1e30f;
+            for (int c : cells) {
+                neighbours(c, nb);
+                const Vector3 pc = Vector3Scale(centre(c), R);
+                for (int k = 0; k < 8; ++k) {
+                    const int m = nb[k];
+                    if (m < 0 || group[m] == s) continue;
+                    const Vector3 pm = Vector3Scale(centre(m), R);
+                    const Vector3 cm = Vector3Subtract(pm, pc);
+                    const float len = Vector3Length(cm);
+                    if (len < 1.0f) continue;
+                    const bool diagonal = len > 1.25f * cell;
+                    const Vector3 side = Vector3Normalize(Vector3CrossProduct(pc, cm));
+                    for (float out : { 0.5f * cell, 0.5f * cell + kLakeMargin }) {
+                        const Vector3 base = Vector3Add(pc, Vector3Scale(cm, (diagonal ? out * 1.41f : out) / len));
+                        for (float s2 : { -0.5f, -0.25f, 0.0f, 0.25f, 0.5f }) {
+                            if (diagonal && s2 != 0.0f) continue;
+                            rim = std::min(rim, height(Vector3Normalize(Vector3Add(base, Vector3Scale(side, s2 * cell)))));
+                        }
+                    }
+                }
+            }
+            level = std::min(level, rim - 3.0f);
+            if (level - lowest <= kLakeDepth || level <= 1.0f) continue;
+            for (int c : cells) { lake[c] = 1; lakeLevel[c] = level; ++st.lakeCells; }
+        }
+    }
+    // Steps from each cell to the nearest lake cell (breadth first), for cheap "lake near" tests.
+    lakeSteps.assign(N, 255);
+    {
+        std::vector<int> frontier, next;
+        for (int c = 0; c < N; ++c) if (lake[c]) { lakeSteps[c] = 0; frontier.push_back(c); }
+        for (int d = 1; d < 255 && !frontier.empty(); ++d) {
+            next.clear();
+            for (int c : frontier) {
+                neighbours(c, nb);
+                for (int k = 0; k < 8; ++k) if (nb[k] >= 0 && lakeSteps[nb[k]] == 255) { lakeSteps[nb[k]] = (unsigned char)d; next.push_back(nb[k]); }
+            }
+            frontier.swap(next);
+        }
     }
     // Levels: a running minimum downstream (children before parents in reverse flood order).
     L.assign(N, 0.0f); hw.assign(N, 0.0f); dep.assign(N, 0.0f);
@@ -138,12 +195,15 @@ RiverNetwork::RiverNetwork(float radius, unsigned int seed, const std::function<
     // The floor only falls going downstream (a lake's level is above anything it drains to), and so
     // does the running minimum, so their maximum does too.
     std::vector<float> floorLevel(N, kMinLevel);
-    for (int c : order) floorLevel[c] = lake[c] ? F[c] : parent[c] >= 0 ? floorLevel[parent[c]] : kMinLevel;
+    for (int c : order) {
+        const float below = parent[c] >= 0 ? floorLevel[parent[c]] : kMinLevel;
+        floorLevel[c] = lake[c] ? std::max(lakeLevel[c], below) : below;
+    }
     std::vector<float> minChild(N, 1e30f);
     for (int k = (int)order.size() - 1; k >= 0; --k) {
         const int c = order[k];
         if (!river[c]) continue;
-        L[c] = std::max(floorLevel[c], std::min(F[c] - (lake[c] ? 0.0f : kDrop), minChild[c]));
+        L[c] = std::max(floorLevel[c], std::min(lake[c] ? lakeLevel[c] : F[c] - kDrop, minChild[c]));
         const float s = sqrtf(acc[c] / kRiverArea);
         hw[c] = std::min(3.0f + 2.5f * s, 45.0f);
         dep[c] = std::min(1.2f + 0.6f * s, 6.0f);
@@ -218,15 +278,45 @@ RiverNetwork::Hit RiverNetwork::nearest(Vector3 dir, float reach) const {
     return hit;
 }
 
-bool RiverNetwork::lakeAt(Vector3 dir, float& level) const {
-    const int c = cellOf(dir);
-    if (lake[c]) { level = F[c]; return true; }
-    return false;
+float RiverNetwork::distToCell(Vector3 d, int c) const {
+    // Equiangular cube-sphere: angles in the cell's face frame are (very nearly) arc lengths.
+    const int face = c / (n * n), i = (c / n) % n, j = c % n;
+    const float dn = Vector3DotProduct(d, kN[face]);
+    if (dn < 0.2f) return 1e30f;
+    const float da = 0.5f * PI / n;
+    const float a = atanf(Vector3DotProduct(d, kU[face]) / dn), b = atanf(Vector3DotProduct(d, kV[face]) / dn);
+    const float a0 = -0.25f * PI + i * da, b0 = -0.25f * PI + j * da;
+    const float ea = std::max({ a0 - a, 0.0f, a - (a0 + da) }), eb = std::max({ b0 - b, 0.0f, b - (b0 + da) });
+    return sqrtf(ea * ea + eb * eb) * R;
 }
 
-bool RiverNetwork::waterNear(Vector3 dir, float extent) const {
+bool RiverNetwork::lakeAt(Vector3 dir, float& level, float& outside) const {
     const int c = cellOf(dir);
-    if (lake[c]) return true;
+    if (lake[c]) { level = lakeLevel[c]; outside = 0.0f; return true; }
+    if (lakeSteps[c] != 1) return false;
+    // Next to a lake: within the margin of a lake cell (the nearest; the highest on a tie).
+    int nb[8];
+    neighbours(c, nb);
+    bool found = false;
+    for (int k = 0; k < 8; ++k) {
+        const int m = nb[k];
+        if (m < 0 || !lake[m]) continue;
+        const float d = distToCell(dir, m);
+        if (d >= 2.0f * kLakeMargin) continue; // the water ends at the margin; the bank fades out by twice it
+        if (!found || d < outside - 0.01f || (d < outside + 0.01f && lakeLevel[m] > level)) { level = lakeLevel[m]; outside = d; found = true; }
+    }
+    return found;
+}
+
+bool RiverNetwork::lakeNear(Vector3 dir, float extent) const {
+    const int s = lakeSteps[cellOf(dir)];
+    if (s == 255) return false;
+    // A cell s steps away is at least (s - 1) cells from the lake's cells.
+    return (float)std::max(0, s - 1) * cell <= extent + kLakeMargin;
+}
+
+bool RiverNetwork::riverNear(Vector3 dir, float extent) const {
+    const int c = cellOf(dir);
     if (index[c].empty()) return false;
     const Hit h2 = nearest(dir, 60.0f + extent);
     return h2.found && h2.dist < h2.halfWidth * 1.3f + extent;
@@ -272,14 +362,4 @@ void RiverNetwork::longestPath(float step, std::vector<Vector3>& dirs, std::vect
             }
         }
     }
-}
-
-bool RiverNetwork::lakeRim(Vector3 dir, float& level, float& dist) const {
-    const int c = cellOf(dir);
-    const int l = rimOf[c];
-    if (l < 0) return false;
-    level = F[l];
-    // Roughly from the lake cell's edge (cells are ~square): the centre distance less half a cell.
-    dist = std::max(0.0f, Vector3Distance(Vector3Scale(dir, R), Vector3Scale(centre(l), R)) - 0.5f * cell);
-    return true;
 }
