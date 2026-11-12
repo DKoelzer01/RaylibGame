@@ -555,11 +555,11 @@ float PlanetField::rockFeature(Vector3 p, float d, float surface, float fp) cons
     if (mask > 0.0f) {
         // Tors: the footprint is noise at the sea-level point, the same all the way up a column, so
         // the sides are vertical cliffs; each tor's top height varies, its top flares a little
-        // (an overhang lip) and rough strata break the walls.
+        // (an overhang lip) and rough strata break the lower walls.
         const float n = rocks.fractal(2, s.x, s.y, s.z);
         const float top = (3.0f + 9.0f * mask) * (0.6f + 0.4f * rocks.noise(s.x * 0.01f, s.y * 0.01f, s.z * 0.01f));
         const float f = std::clamp(h / std::max(top, 0.5f), 0.0f, 1.0f);
-        const float thr = 0.3f - 0.06f * f * f + 0.04f * sinf(h * 2.1f + n * 9.0f);  // flared top, strata
+        const float thr = 0.3f - 0.06f * f * f + 0.04f * sinf(h * 2.1f + n * 9.0f) * (1.0f - Smoothstep(0.35f, 0.7f, f));  // flared top; strata on the walls only (on the crown they made ridges)
         const float side = (n - thr) * 14.0f;                   // ~metres in from the wall
         best = std::max(best, std::min(side, top - h) * w);
     }

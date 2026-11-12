@@ -195,7 +195,7 @@ int main(int argc, char** argv)
     bool benchBucket = false; int bucketPhase = 0, bucketTrips = 0; double bucketT0 = 0.0; Vector3 bucketWater{}, bucketBasin{}, bucketField{}; // --test-bucket
     bool benchPond = false; int pondPhase = 0; double pondT0 = 0.0; Vector3 pondDirB{}, pondOutB{}, pondPit{}, pondMid{}; float pondLevelB = 0.0f, pondRB = 0.0f; // --test-pond
     bool benchFlow = false; int flowPhase = 0; double flowStart = 0.0, flowEdit = 0.0, flowReachT = -1.0, flowCaveT = -1.0, flowSleepT = -1.0; Vector3 flowDir{}, flowOut{}, flowEnd{}, flowCave{}; float flowLevel = 0.0f; // --test-flow
-    bool benchForest = false; int forestPhase = 0; double forestStart = 0.0; Vector3 forestCam{}, forestTarget{}, forestUp{}; // --shot-forest
+    bool benchForest = false; int forestPhase = 0; double forestStart = 0.0; Vector3 forestCam{}, forestTarget{}, forestUp{}; bool outcropHigh = false; // --shot-forest (--outcrop-high: the highest outcrop in range, not the nearest)
     bool benchRecipes = false; // --test-recipes
     bool benchWeather = false, weatherOk = true; int weatherPhase = 0, weatherCounts[6] = {}, weatherChanges = 0; double weatherStart = 0.0; float weatherChill = 0.0f; // --test-weather
     bool benchDecor = false, decorOk = true; int decorPhase = 0, decorGems = 0, decorGemKinds = 0, decorDigs = 0, decorPlaced = 0; double decorStart = 0.0; Vector3 decorCamPos{}, decorCamTarget{}, decorCamUp{ 0, 1, 0 }; // --test-decor
@@ -346,6 +346,7 @@ int main(int argc, char** argv)
         if (std::string(argv[i]) == "--test-threats") benchThreats = true;
         if (std::string(argv[i]) == "--shot-tabs") benchShotTabs = 1;
         if (std::string(argv[i]) == "--shot-forest") benchForest = true;
+        if (std::string(argv[i]) == "--outcrop-high") outcropHigh = true;
         if (std::string(argv[i]) == "--test-flow") benchFlow = true;
         if (std::string(argv[i]) == "--test-pond") benchPond = true;
         if (std::string(argv[i]) == "--test-bucket") benchBucket = true;
@@ -2592,16 +2593,19 @@ int main(int argc, char** argv)
                             const Vector3 up = Vector3Normalize(forestTarget);
                             const Vector3 t1 = Vector3Normalize(Vector3CrossProduct(up, fabsf(up.y) < 0.9f ? Vector3{ 0, 1, 0 } : Vector3{ 1, 0, 0 }));
                             const Vector3 t2 = Vector3CrossProduct(t1, up);
-                            float bestD = 1e9f; Vector3 bestP{};
-                            for (int i = -120; pf && i <= 120; ++i)
-                                for (int j = -120; j <= 120; ++j) {
+                            float bestD = 1e9f, bestE = -1e9f; Vector3 bestP{};
+                            const int span = outcropHigh ? 240 : 120;
+                            for (int i = -span; pf && i <= span; ++i)
+                                for (int j = -span; j <= span; ++j) {
                                     const float dd = 25.0f * sqrtf((float)(i * i + j * j));
-                                    if (dd >= bestD) continue;
+                                    if (!outcropHigh && dd >= bestD) continue;
                                     const Vector3 dir = Vector3Normalize(Vector3Add(up, Vector3Add(Vector3Scale(t1, 25.0f * i / pf->radius), Vector3Scale(t2, 25.0f * j / pf->radius))));
                                     const float surf = pf->radius + pf->elevation(dir);
+                                    if (outcropHigh && (surf <= bestE || surf - pf->radius > 500.0f)) continue;  // grassland, below the snow
                                     const Vector3 q = Vector3Scale(dir, surf + 2.0f);
-                                    if (pf->rockFeature(q, surf + 2.0f, surf, 1.0f) > 0.5f) { bestD = dd; bestP = q; }
+                                    if (pf->rockFeature(q, surf + 2.0f, surf, 1.0f) > 0.5f) { bestD = dd; bestE = surf; bestP = q; }
                                 }
+                            if (outcropHigh && bestE > 0.0f) printf("bench: forest: highest outcrop at %.0f m elevation\n", bestE - pf->radius);
                             printf("bench: forest: nearest outcrop %.0f m away\n", bestD);
                             if (bestD < 1e8f) {
                                 const Vector3 bu = Vector3Normalize(bestP);
