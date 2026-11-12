@@ -106,6 +106,10 @@ Water (Plan 4, user answers)
 5. Parallelism and GPU compute (user, 2026-11-11): audit main-thread work for the job system;
    raylib built with GRAPHICS_API_OPENGL_43 exposes compute shaders + SSBOs (rlgl) - candidates
    are the water sim, chunk density/meshing, foliage placement; keep a GL 3.3 fallback.
+   Done (da1cde5): shader hot-reload checks throttled to 2/s (frame 2.93 -> 2.55 ms), water brick
+   classification on the job pool (worst step 26.8 -> 11.9 ms). GPU compute not adopted: it needs a GL 4.3
+   raylib build and a shader copy of the density field that the CPU (collisions, queries) would still
+   need too; revisit only if a CPU system becomes the bottleneck.
 5b. M24 moon and ring tiers - done (15fae76 + the ladder gate: --test-progression ev, PASS).
 6. 3D terrain (user, 2026-11-12): full 3D noise for hills and cliffs with natural overhangs and
    alcoves, on top of the height map and the tors/boulders (PlanetField::rockFeature). Plan: a 3D
@@ -128,3 +132,6 @@ Water (Plan 4, user answers)
    fractal/fractalLimited 4 octaves at a time (density sample ~1.7x faster); river pieces carry a
    bounding sphere for nearest(). --profile-density prints ns per call by part.
 Deferred by the user: moon mining launch, motion sickness.
+Follow-ups done (2026-11-12, after the issue list): minimap mask at draw time (f4afeb0), tor strata kept to
+the walls (5e19f49; --shot-forest --outcrop-high), planet spin as a wrapped double (d187759), trees cast
+shadows (d591eee), sparse 4^3 bricks in delta chunks (66f2dbf; --test-persist prints delta memory).
