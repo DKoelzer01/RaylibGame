@@ -75,6 +75,9 @@ class Scene {
         TextureArray terrainLayers{};     // dirt/sand/gravel/grass/snow/ice/stone layers (planet palette)
         Material depthMaterial{};     // depth shader only
         RenderTexture2D shadowMap{};  // depth-only FBO; shadowMap.depth is the sampled texture
+        RenderTexture2D shadowNear{}; // the near cascade (sharp shadows close by)
+        Matrix lightSpaceNear = MatrixIdentity();
+        float shadowNearHalfExtent = 32.0f; // half-width of the near cascade's box (2048 texels: ~3 cm)
         Matrix lightSpaceMatrix = MatrixIdentity();
         // Tests: a world point whose sub-texel drift across the shadow map is summed (shadows crawling).
         std::function<DVec3()> shadowProbe;

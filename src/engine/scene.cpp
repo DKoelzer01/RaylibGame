@@ -139,6 +139,8 @@ Scene::Scene(std::string name, bool isActive)
     atmosphereDome = LoadModelFromMesh(GenMeshCube(1.0f, 1.0f, 1.0f));
 
     shadowMap = LoadShadowmapRenderTexture(SHADOW_MAP_SIZE, SHADOW_MAP_SIZE);
+    shadowNear = LoadShadowmapRenderTexture(SHADOW_MAP_SIZE, SHADOW_MAP_SIZE);
+    terrainMaterial.maps[MATERIAL_MAP_HEIGHT].texture = shadowNear.depth; // a spare slot: the near cascade
     terrainMaterial.maps[MATERIAL_MAP_BRDF].texture = shadowMap.depth;
 
     depth.reloadIfChanged(true);
@@ -168,6 +170,7 @@ void Scene::applyLightingShader() {
     s.locs[SHADER_LOC_MAP_NORMAL]    = GetShaderLocation(s, "normalTexture");
     s.locs[SHADER_LOC_MAP_ROUGHNESS] = GetShaderLocation(s, "roughAoTexture");
     s.locs[SHADER_LOC_MAP_BRDF]      = GetShaderLocation(s, "shadowMap");
+    s.locs[SHADER_LOC_MAP_HEIGHT]    = GetShaderLocation(s, "shadowMapNear");
     locViewPos    = GetShaderLocation(s, "viewPos");
     locLightSpace = GetShaderLocation(s, "lightSpaceMatrix");
     locAmbient    = GetShaderLocation(s, "ambient");
@@ -279,13 +282,14 @@ void Scene::drawScene(int gamestate) {
         upHint = ground->dirToWorld({ 0, 1, 0 });
         if (fabsf(Vector3DotProduct(upHint, Vector3Normalize(sunDirection))) > 0.99f) upHint = ground->dirToWorld({ 0, 0, 1 });
     }
-    // Snapping happens in double precision so floating-origin rebases don't jump it.
-    Vector3 centre = camera.position;
-    {
+    // Two cascades (shadow pass below): a sharp near box (shadowNearHalfExtent, ~3 cm texels) and the
+    // wide one (shadowHalfExtent, ~20 cm). Each box centre is snapped to whole texels of its own map,
+    // in double precision so floating-origin rebases don't jump it.
+    auto snapCentre = [&](float halfExtent) {
         const Vector3 f = Vector3Normalize(Vector3Negate(sunDirection));
         const Vector3 r = Vector3Normalize(Vector3CrossProduct(f, upHint));
         const Vector3 u = Vector3CrossProduct(r, f);
-        const double texel = 2.0 * shadowHalfExtent / (double)SHADOW_MAP_SIZE;
+        const double texel = 2.0 * halfExtent / (double)SHADOW_MAP_SIZE;
         // Relative to an anchor fixed on the body near the camera (a 256 m grid): about the body's
         // centre, the sun's slow turn (0.1 deg/s on Terra) still swept the grid 60 km out at 105 m/s.
         DVec3 cw = ground ? ground->toLocalD(cameraWorld()) : cameraWorld();
@@ -301,8 +305,9 @@ void Scene::drawScene(int gamestate) {
             return DVec3{ a.x * s, a.y * s, a.z * s };
         };
         const DVec3 snapped = snapAxis(r) + snapAxis(u) + snapAxis(f) + anchor;
-        centre = ((ground ? ground->toWorldD(snapped) : snapped) - renderOrigin).toFloat();
-    }
+        return ((ground ? ground->toWorldD(snapped) : snapped) - renderOrigin).toFloat();
+    };
+    const Vector3 centre = snapCentre(shadowHalfExtent);
     const Vector3 lightPos = Vector3Add(centre, Vector3Scale(Vector3Normalize(sunDirection), sunDistance));
     if (!lights.empty()) {
         lights[0].position = lightPos;
@@ -311,49 +316,52 @@ void Scene::drawScene(int gamestate) {
         lights[0].color = { k, k, (unsigned char)std::min(255, k + 6), 255 };
     }
 
-    Camera3D lightCam = { 0 };
-    lightCam.position = lightPos;
-    lightCam.target = centre;
-    lightCam.up = upHint;
-    lightCam.projection = CAMERA_ORTHOGRAPHIC;
-    lightCam.fovy = shadowHalfExtent * 2.0f; // raylib ortho: half-height = fovy/2
-
     // --- Shadow pass ---
-    // Read the light's matrices back from rlgl inside BeginMode3D so the shader's lightSpaceMatrix is
+    // Read the light's matrices back from rlgl inside BeginMode3D so the shader's light matrix is
     // exactly what the depth pass rendered with. (DrawMesh overwrites any hand-set "mvp" uniform.)
     const double defaultNear = rlGetCullDistanceNear(), defaultFar = rlGetCullDistanceFar();
+    auto renderCascade = [&](RenderTexture2D& target, float halfExtent, Vector3 boxCentre, Matrix& outMatrix, bool probe) {
+        Camera3D lightCam = { 0 };
+        lightCam.position = Vector3Add(boxCentre, Vector3Scale(Vector3Normalize(sunDirection), sunDistance));
+        lightCam.target = boxCentre;
+        lightCam.up = upHint;
+        lightCam.projection = CAMERA_ORTHOGRAPHIC;
+        lightCam.fovy = halfExtent * 2.0f; // raylib ortho: half-height = fovy/2
+        BeginTextureMode(target);
+            ClearBackground(WHITE);
+            BeginMode3D(lightCam);
+                const Matrix lightView = rlGetMatrixModelview();
+                const Matrix lightProj = rlGetMatrixProjection();
+                outMatrix = MatrixMultiply(lightView, lightProj); // raymath order: view, then projection
+                if (probe && shadowProbe) {
+                    const Vector3 wp = (shadowProbe() - renderOrigin).toFloat();
+                    const Matrix& m = outMatrix;
+                    const float x = m.m0 * wp.x + m.m4 * wp.y + m.m8 * wp.z + m.m12, y = m.m1 * wp.x + m.m5 * wp.y + m.m9 * wp.z + m.m13;
+                    const Vector2 tx = { (x * 0.5f + 0.5f) * SHADOW_MAP_SIZE, (y * 0.5f + 0.5f) * SHADOW_MAP_SIZE };
+                    if (shadowProbeHave) {
+                        // Whole-texel jumps are the box re-snapping; the fraction is the ground sliding.
+                        const float dx = tx.x - shadowProbeLast.x, dy = tx.y - shadowProbeLast.y;
+                        shadowProbeSlide += sqrtf((dx - roundf(dx)) * (dx - roundf(dx)) + (dy - roundf(dy)) * (dy - roundf(dy)));
+                    }
+                    shadowProbeLast = tx; shadowProbeHave = true;
+                }
+                const Frustum lightFrustum = Frustum::fromViewProj(outMatrix);
+                RenderContext shadowCtx;
+                shadowCtx.depthMaterial = &depthMaterial;
+                shadowCtx.frustum = &lightFrustum;
+                shadowCtx.renderOrigin = renderOrigin;
+                shadowCtx.cullAxisPoint = boxCentre; shadowCtx.cullAxisDir = Vector3Normalize(sunDirection);
+                shadowCtx.cullAxisRadius = halfExtent * 1.4143f; // the ortho box's corners
+                for (const auto& obj : objects) obj->drawDepthOnly(shadowCtx);
+                for (const auto& obj : rootObject.children) obj->drawDepthOnly(shadowCtx);
+            EndMode3D();
+        EndTextureMode();
+    };
     {
     PROFILE_SCOPE("Shadow pass");
     rlSetClipPlanes(1.0, sunDistance * 2.0);
-    BeginTextureMode(shadowMap);
-        ClearBackground(WHITE);
-        BeginMode3D(lightCam);
-            const Matrix lightView = rlGetMatrixModelview();
-            const Matrix lightProj = rlGetMatrixProjection();
-            lightSpaceMatrix = MatrixMultiply(lightView, lightProj); // raymath order: view, then projection
-            if (shadowProbe) {
-                const Vector3 wp = (shadowProbe() - renderOrigin).toFloat();
-                const Matrix& m = lightSpaceMatrix;
-                const float x = m.m0 * wp.x + m.m4 * wp.y + m.m8 * wp.z + m.m12, y = m.m1 * wp.x + m.m5 * wp.y + m.m9 * wp.z + m.m13;
-                const Vector2 tx = { (x * 0.5f + 0.5f) * SHADOW_MAP_SIZE, (y * 0.5f + 0.5f) * SHADOW_MAP_SIZE };
-                if (shadowProbeHave) {
-                    // Whole-texel jumps are the box re-snapping; the fraction is the ground sliding.
-                    const float dx = tx.x - shadowProbeLast.x, dy = tx.y - shadowProbeLast.y;
-                    shadowProbeSlide += sqrtf((dx - roundf(dx)) * (dx - roundf(dx)) + (dy - roundf(dy)) * (dy - roundf(dy)));
-                }
-                shadowProbeLast = tx; shadowProbeHave = true;
-            }
-            const Frustum lightFrustum = Frustum::fromViewProj(lightSpaceMatrix);
-            RenderContext shadowCtx;
-            shadowCtx.depthMaterial = &depthMaterial;
-            shadowCtx.frustum = &lightFrustum;
-            shadowCtx.renderOrigin = renderOrigin;
-            shadowCtx.cullAxisPoint = centre; shadowCtx.cullAxisDir = Vector3Normalize(sunDirection);
-            shadowCtx.cullAxisRadius = shadowHalfExtent * 1.4143f; // the ortho box's corners
-            for (const auto& obj : objects) obj->drawDepthOnly(shadowCtx);
-            for (const auto& obj : rootObject.children) obj->drawDepthOnly(shadowCtx);
-        EndMode3D();
-    EndTextureMode();
+    renderCascade(shadowMap, shadowHalfExtent, centre, lightSpaceMatrix, true);
+    renderCascade(shadowNear, shadowNearHalfExtent, snapCentre(shadowNearHalfExtent), lightSpaceNear, false);
     GpuTimer_Mark("shadow");
     rlSetClipPlanes(defaultNear, defaultFar);
     }
@@ -362,6 +370,13 @@ void Scene::drawScene(int gamestate) {
     PROFILE_SCOPE("Main pass");
     Shader& s = lighting.shader;
     SetShaderValueMatrix(s, locLightSpace, lightSpaceMatrix);
+    // Cascades: the near one's matrix; each cascade's texel in metres and the depth range (the bias
+    // is sized from them: a texel's worth along the normal, and a slope term in depth units).
+    SetShaderValueMatrix(s, GetShaderLocation(s, "lightSpaceNear"), lightSpaceNear);
+    const float shadowTexels[2] = { 2.0f * shadowNearHalfExtent / SHADOW_MAP_SIZE, 2.0f * shadowHalfExtent / SHADOW_MAP_SIZE };
+    SetShaderValue(s, GetShaderLocation(s, "shadowTexel"), shadowTexels, SHADER_UNIFORM_VEC2);
+    const float shadowDepthRange = (float)(sunDistance * 2.0 - 1.0);
+    SetShaderValue(s, GetShaderLocation(s, "shadowDepthRange"), &shadowDepthRange, SHADER_UNIFORM_FLOAT);
     SetShaderValue(s, locTexScale, &texScale, SHADER_UNIFORM_FLOAT);
     SetShaderValue(s, locPalette, &materialPalette, SHADER_UNIFORM_INT);
     // Atmosphere: by day near a planet the air hazes distant terrain toward the horizon sky colour and
@@ -555,6 +570,15 @@ void Scene::drawScene(int gamestate) {
             rlEnableTexture(shadowMap.depth.id);
             rlSetUniform(GetShaderLocation(sh, "shadowMap"), &slot, RL_SHADER_UNIFORM_INT, 1);
             rlSetUniformMatrix(GetShaderLocation(sh, "lightSpaceMatrix"), lightSpaceMatrix);
+            const int slotNear = 7;
+            rlActiveTextureSlot(slotNear);
+            rlEnableTexture(shadowNear.depth.id);
+            rlSetUniform(GetShaderLocation(sh, "shadowMapNear"), &slotNear, RL_SHADER_UNIFORM_INT, 1);
+            rlSetUniformMatrix(GetShaderLocation(sh, "lightSpaceNear"), lightSpaceNear);
+            const float texels[2] = { 2.0f * shadowNearHalfExtent / SHADOW_MAP_SIZE, 2.0f * shadowHalfExtent / SHADOW_MAP_SIZE };
+            rlSetUniform(GetShaderLocation(sh, "shadowTexel"), texels, RL_SHADER_UNIFORM_VEC2, 1);
+            const float depthRange = (float)(sunDistance * 2.0 - 1.0);
+            rlSetUniform(GetShaderLocation(sh, "shadowDepthRange"), &depthRange, RL_SHADER_UNIFORM_FLOAT, 1);
             const int res = shadowMap.depth.width;
             rlSetUniform(GetShaderLocation(sh, "shadowMapResolution"), &res, RL_SHADER_UNIFORM_INT, 1);
             float lamp[4] = { 0, 0, 0, 0 }, target[4] = { 0, 0, 0, 0 };
@@ -743,6 +767,7 @@ Scene::~Scene() {
     parts.unload();
     atmosphereShader.unload();
     UnloadShadowmapRenderTexture(shadowMap);
+    UnloadShadowmapRenderTexture(shadowNear);
 }
 
 // ---------------------------------------------------------------------------------------------

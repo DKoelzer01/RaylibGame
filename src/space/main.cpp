@@ -189,6 +189,7 @@ int main(int argc, char** argv)
     bool benchTools = false, toolsOk = true; int toolsPhase = 0, toolsLife = 0, toolsTilled = 0; double toolsStart = 0.0; // --test-tools
     bool benchSuit = false, suitOk = true; int suitPhase = 0; double suitStart = 0.0; float suitFoodRatio = 0.0f, suitWater = 0.0f, suitRebreather = 0.0f; // --test-suit
     int benchShotTabs = 0; // --shot-tabs
+    bool benchShadow = false; int shadowPhase = 0; double shadowT0 = 0.0; Vector3 shadowEye{}, shadowAt{}; // --shot-shadow
     bool benchTerrain = false; int terrainPhase = 0; double terrainT0 = 0.0; Vector3 terrainAt{}, terrainOut{}; // --shot-terrain
     bool benchPump = false; int pumpPhase = 0, pumpCable = -1; double pumpT0 = 0.0, pumpedAtCut = 0.0; uint32_t pumpPlot = 0; Vector3 pumpBasin{}; float pumpRise = 0.0f; // --test-pump
     bool benchBucket = false; int bucketPhase = 0, bucketTrips = 0; double bucketT0 = 0.0; Vector3 bucketWater{}, bucketBasin{}, bucketField{}; // --test-bucket
@@ -350,6 +351,7 @@ int main(int argc, char** argv)
         if (std::string(argv[i]) == "--test-bucket") benchBucket = true;
         if (std::string(argv[i]) == "--test-pump") benchPump = true;
         if (std::string(argv[i]) == "--shot-terrain") benchTerrain = true;
+        if (std::string(argv[i]) == "--shot-shadow") benchShadow = true;
         if (std::string(argv[i]) == "--test-recipes") benchRecipes = true;
         if (std::string(argv[i]) == "--test-weather") benchWeather = true;
         if (std::string(argv[i]) == "--test-decor") benchDecor = true;
@@ -2065,6 +2067,46 @@ int main(int argc, char** argv)
                         printf("bench: shot-tabs: bench_questtree.png, bench_suit.png, bench_crafting.png, bench_chest.png, bench_machine.png\n");
                         GameUI_ToggleInventory();
                         benchShotTabs = 0;
+                    }
+                } else if (benchShadow && (shadowPhase > 0 || WorldIdle())) {
+                    // --shot-shadow: a tree's shadow on the ground from 3 m away (bench_shadow.png), and a
+                    // close look straight at flat sunlit ground (bench_shadow_ground.png: no acne pattern).
+                    Planetoid* p = dynamic_cast<Planetoid*>(world.objects[0].get());
+                    const double t = GetTime() - shadowT0;
+                    if (shadowPhase == 0) {
+                        player.spawnOn(world, *p, StartSpawnDir(*p));
+                        shadowPhase = 1; shadowT0 = GetTime();
+                    } else if (shadowPhase == 1 && t > 1.5) {
+                        const Vector3 me = p->toLocal((player.position - world.renderOrigin).toFloat());
+                        const Vector3 up = Vector3Normalize(me);
+                        std::vector<Trunk> near;
+                        if (p->trees) p->trees->trunksNear(me, 120.0f, near);
+                        float best = 1e9f; Trunk tr{};
+                        for (const Trunk& k : near) { const float d = Vector3Distance(k.base, me); if (d < best && k.height > 3.0f) { best = d; tr = k; } }
+                        // Morning sun from one side, low enough for long shadows.
+                        const Vector3 t1 = Vector3Normalize(Vector3CrossProduct(up, { 0, 1, 0 }));
+                        const Vector3 sunL = Vector3Normalize(Vector3Add(up, Vector3Scale(t1, 1.2f)));
+                        sunOverride = true; sunArg = p->dirToWorld(sunL);
+                        player.flyMode = true;
+                        if (best > 1e8f) { printf("bench: shadow: no tree nearby\n"); benchShadow = false; }
+                        else {
+                            const Vector3 away = Vector3Normalize(Vector3Subtract(Vector3Negate(t1), Vector3Scale(up, Vector3DotProduct(Vector3Negate(t1), up))));
+                            shadowAt = Vector3Add(tr.base, Vector3Scale(away, 6.0f)); // past the crown: the trunk's and crown's shadow edges
+                            const Vector3 side = Vector3CrossProduct(up, away);
+                            shadowEye = Vector3Add(Vector3Add(shadowAt, Vector3Scale(side, 4.0f)), Vector3Scale(up, 2.2f));
+                            shadowPhase = 2; shadowT0 = GetTime();
+                        }
+                    } else if (shadowPhase >= 2) {
+                        const Vector3 up = Vector3Normalize(shadowAt);
+                        const Vector3 eye = shadowPhase == 2 ? shadowEye : Vector3Add(Vector3Add(shadowEye, Vector3Scale(Vector3Normalize(Vector3Subtract(shadowEye, shadowAt)), 6.0f)), Vector3Scale(up, 0.5f));
+                        const Vector3 at = shadowPhase == 2 ? shadowAt : Vector3Add(shadowEye, Vector3Scale(Vector3Normalize(Vector3Subtract(shadowEye, shadowAt)), 9.0f)); // bare ground ahead, looked down at
+                        world.camera.position = p->toWorld(eye); world.camera.target = p->toWorld(Vector3Subtract(at, Vector3Scale(up, shadowPhase == 2 ? 0.0f : 3.0f))); world.camera.up = p->dirToWorld(up);
+                        player.position = world.renderOrigin + world.camera.position;
+                        if (t > 3.0) {
+                            TakeScreenshot(shadowPhase == 2 ? "bench_shadow.png" : "bench_shadow_ground.png");
+                            if (shadowPhase == 3) { printf("bench: shadow: bench_shadow.png, bench_shadow_ground.png\n"); benchShadow = false; }
+                            else { shadowPhase = 3; shadowT0 = GetTime(); }
+                        }
                     }
                 } else if (benchTerrain && (terrainPhase > 0 || WorldIdle())) {
                     // --shot-terrain (plan item 6): the nearest strongly rugged land (the 3D band at full
@@ -3816,7 +3858,7 @@ int main(int argc, char** argv)
                         }
                         benchWalkSeconds = 0.0;
                     }
-                } else if ((WorldIdle() && benchDigStrokes == 0 && !benchPaint && !benchSaveLoad && benchWalkSeconds <= 0.0 && benchMineStrokes == 0 && minePhase != 2 && benchFlySeconds <= 0.0 && !benchSuffocate && benchOrbitSeconds <= 0.0 && !benchRide && !benchPark && !benchGravity && !benchPrecision && !benchMantle && !benchAirJump && !benchMoon && !benchHole && !benchWall && !benchMenus && !benchWater && !benchFlyFollow && !benchHotbar && !benchInventory && !benchMap && !benchViewmodel && !benchQuests && !benchHunger && !benchFarm && !benchAnimals && !benchThreats && benchShotTabs == 0 && !benchForest && !benchFlow && !benchPond && !benchBucket && !benchPump && !benchTerrain && !benchRecipes && !benchWeather && !benchDecor && !benchMaterials && !benchDamage && !benchCrafting && !benchSuit && !benchTools && !benchRivers && !benchRing && !benchRocket && !benchStation && !benchBlueprint && !benchSmallBody && !benchTrees && !benchChop && benchPersist == 0 && benchBuild == 0 && benchFactory == 0 && !benchProgression) || GetTime() > 600.0) {
+                } else if ((WorldIdle() && benchDigStrokes == 0 && !benchPaint && !benchSaveLoad && benchWalkSeconds <= 0.0 && benchMineStrokes == 0 && minePhase != 2 && benchFlySeconds <= 0.0 && !benchSuffocate && benchOrbitSeconds <= 0.0 && !benchRide && !benchPark && !benchGravity && !benchPrecision && !benchMantle && !benchAirJump && !benchMoon && !benchHole && !benchWall && !benchMenus && !benchWater && !benchFlyFollow && !benchHotbar && !benchInventory && !benchMap && !benchViewmodel && !benchQuests && !benchHunger && !benchFarm && !benchAnimals && !benchThreats && benchShotTabs == 0 && !benchForest && !benchFlow && !benchPond && !benchBucket && !benchPump && !benchTerrain && !benchShadow && !benchRecipes && !benchWeather && !benchDecor && !benchMaterials && !benchDamage && !benchCrafting && !benchSuit && !benchTools && !benchRivers && !benchRing && !benchRocket && !benchStation && !benchBlueprint && !benchSmallBody && !benchTrees && !benchChop && benchPersist == 0 && benchBuild == 0 && benchFactory == 0 && !benchProgression) || GetTime() > 600.0) {
                     benchStart = GetTime();
                     printf("bench: world ready after %.2f s (%d chunks, avg build %.2f ms of which sampling %.2f ms, %d worker threads)\n",
                         GetWorldStats().lastGenerationSeconds, GetWorldStats().chunks, GetWorldStats().avgBuildMs, GetWorldStats().avgSampleMs, GetWorldStats().workerThreads);

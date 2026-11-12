@@ -24,14 +24,42 @@ uniform mat4 lightSpaceMatrix;
 uniform int shadowMapResolution;
 uniform vec4 lampPos;     // render space; w = intensity (0: off)
 uniform vec4 lampTarget;  // the beam's end; w unused
+// Two cascades (the near box ~3 cm texels, the wide one ~20 cm), bilinear-filtered compares; foliage
+// has no reliable normal here, so a depth bias of two texels. TAPS: 1 = one bilinear tap (grass).
+#define TAPS 1
+uniform sampler2D shadowMapNear;
+uniform mat4 lightSpaceNear;
+uniform vec2 shadowTexel;       // metres per texel: near, far
+uniform float shadowDepthRange;
+float shadowTap(sampler2D map, vec2 uv, float z, float res)
+{
+    vec2 st = uv * res - 0.5;
+    vec2 i = floor(st), f = st - i;
+    vec2 b = (i + 0.5) / res;
+    float d = 1.0 / res;
+    float a0 = step(z, texture(map, b).r), a1 = step(z, texture(map, b + vec2(d, 0.0)).r);
+    float a2 = step(z, texture(map, b + vec2(0.0, d)).r), a3 = step(z, texture(map, b + vec2(d, d)).r);
+    return mix(mix(a0, a1, f.x), mix(a2, a3, f.x), f.y);
+}
+float cascadeTap(sampler2D map, mat4 m, vec3 p, float texelM, out bool inside)
+{
+    vec4 ls = m * vec4(p, 1.0);
+    vec3 q = ls.xyz / ls.w * 0.5 + 0.5;
+    inside = q.x > 0.01 && q.x < 0.99 && q.y > 0.01 && q.y < 0.99 && q.z <= 1.0;
+    if (!inside) return 1.0;
+    float res = float(shadowMapResolution);
+    float z = q.z - 2.0 * texelM / shadowDepthRange;
+    if (TAPS == 1) return shadowTap(map, q.xy, z, res);
+    return 0.25 * (shadowTap(map, q.xy + vec2(-0.5, -0.5) / res, z, res) + shadowTap(map, q.xy + vec2(0.5, -0.5) / res, z, res)
+                 + shadowTap(map, q.xy + vec2(-0.5, 0.5) / res, z, res) + shadowTap(map, q.xy + vec2(0.5, 0.5) / res, z, res));
+}
 float sunShadow(vec3 p)
 {
     if (shadowMapResolution <= 0) return 1.0;
-    vec4 ls = lightSpaceMatrix * vec4(p, 1.0);
-    vec3 q = ls.xyz / ls.w * 0.5 + 0.5;
-    if (q.x < 0.0 || q.x > 1.0 || q.y < 0.0 || q.y > 1.0 || q.z > 1.0) return 1.0;
-    vec2 texel = vec2(1.0 / float(shadowMapResolution));
-    return (q.z - 0.003 > texture(shadowMap, q.xy).r) ? 0.0 : 1.0; // one tap: grass is many small fragments
+    bool inNear, inFar;
+    float s = cascadeTap(shadowMapNear, lightSpaceNear, p, shadowTexel.x, inNear);
+    if (inNear) return s;
+    return cascadeTap(shadowMap, lightSpaceMatrix, p, shadowTexel.y, inFar);
 }
 vec3 lampLight(vec3 p, vec3 n)
 {
