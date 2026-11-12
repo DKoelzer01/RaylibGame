@@ -33,7 +33,7 @@ float TerrainDeltas::at(int x, int y, int z) const {
     const int cx = FloorDiv(x, kDeltaChunk), cy = FloorDiv(y, kDeltaChunk), cz = FloorDiv(z, kDeltaChunk);
     auto it = chunks.find(KeyOf(cx, cy, cz));
     if (it == chunks.end()) return 0.0f;
-    return it->second->d[Idx(x - cx * kDeltaChunk, y - cy * kDeltaChunk, z - cz * kDeltaChunk)] * kDeltaStep;
+    return it->second->get(Idx(x - cx * kDeltaChunk, y - cy * kDeltaChunk, z - cz * kDeltaChunk)) * kDeltaStep;
 }
 
 float TerrainDeltas::sample(Vector3 pos) const {
@@ -131,7 +131,7 @@ void TerrainDeltasBuilder::apply(const TerrainEdit& e, const DensityField& field
                     if (touched) touched->insert(k);
                 }
                 const int i = Idx(x - cx * kDeltaChunk, y - cy * kDeltaChunk, z - cz * kDeltaChunk);
-                int16_t& v = chunk->d[i];
+                const int16_t v = chunk->get(i);
                 if (e.carve) {
                     const float base = field.baseDensity(p);
                     // Placed ground digs like what it is (placed gravel with a shovel), not the rock below.
@@ -139,11 +139,11 @@ void TerrainDeltasBuilder::apply(const TerrainEdit& e, const DensityField& field
                     const VoxelMaterial was = placed >= 0 ? (VoxelMaterial)placed : base >= ISO_LEVEL ? field.material(p, base) : VoxelMaterial::Regolith;
                     if (e.softOnly && (base + v * kDeltaStep) >= ISO_LEVEL && !IsSoft(was)) continue;
                     if (base + v * kDeltaStep > carveTo) {
-                        v = (int16_t)std::clamp((int)lroundf((carveTo - base) / kDeltaStep), -32767, 32767);
+                        chunk->set(i, (int16_t)std::clamp((int)lroundf((carveTo - base) / kDeltaStep), -32767, 32767));
                         if (dist < e.radius) chunk->setMat(i, 0); // dug out: what is exposed below shows its own material
                     }
                 } else {
-                    v = (int16_t)std::clamp((int)lroundf(v + add / kDeltaStep), -32767, 32767);
+                    chunk->set(i, (int16_t)std::clamp((int)lroundf(v + add / kDeltaStep), -32767, 32767));
                     if (e.paint >= 0 && t > 0.15f) chunk->setMat(i, (uint8_t)(e.paint + 1));
                 }
             }

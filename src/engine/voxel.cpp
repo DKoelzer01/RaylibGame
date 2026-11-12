@@ -873,7 +873,7 @@ void BuildChunkMesh(const DensityField& field, const TerrainDeltas& deltas, Chun
                     if (cx != lastCx) { lastCx = cx; c = chunkAt(cx, cy, cz); }
                     if (!c) continue;
                     const int lx = wx - cx * kDeltaChunk, ly = wy - cy * kDeltaChunk, lz = wz - cz * kDeltaChunk;
-                    ext[k] += c->d[(lz * kDeltaChunk + ly) * kDeltaChunk + lx] * kDeltaStep;
+                    ext[k] += c->get((lz * kDeltaChunk + ly) * kDeltaChunk + lx) * kDeltaStep;
                 }
             }
     }

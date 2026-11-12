@@ -886,6 +886,9 @@ int main(int argc, char** argv)
                         SaveWorld(world);
                         const double saveIncr = ms(t);
                         const size_t chunks = p->edits->chunks.size();
+                        size_t deltaBytes = 0;
+                        for (const auto& [k, c] : p->edits->chunks) deltaBytes += c->bytes();
+                        const double deltaMB = deltaBytes / 1048576.0, denseMB = chunks * (DeltaChunk::kN * 2.0) / 1048576.0;
                         const float probe = p->densityAt(strokes[0].center);
                         t = clk::now();
                         const bool loaded = LoadWorldSave(world);
@@ -894,6 +897,7 @@ int main(int argc, char** argv)
                         const bool same = loaded && p->edits->chunks.size() == chunks && fabsf(p->densityAt(strokes[0].center) - probe) < 1e-4f;
                         const bool pass = same && saveFull < 1000.0 && loadMs < 1000.0 && buildAfter < buildBefore * 1.5 + 0.5;
                         printf("bench: persist: %d strokes folded in %.0f ms into %zu delta chunks (%zu strokes recorded)\n", benchPersist, foldMs, chunks, p->edits->strokes);
+                        printf("bench: persist: delta memory %.0f MB (%.0f MB if dense)\n", deltaMB, denseMB);
                         printf("bench: persist: chunk build %.2f ms before, %.2f ms after; save %.0f ms (full), %.0f ms (100 more strokes); load %.0f ms; reloaded identical: %s -> %s\n",
                                buildBefore, buildAfter, saveFull, saveIncr, loadMs, same ? "yes" : "NO", pass ? "PASS" : "FAIL");
                         benchPersist = 0;

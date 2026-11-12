@@ -1036,28 +1036,34 @@ static std::string RegionFile(const std::string& dir, int body, TerrainDeltas::K
 static void EncodeChunk(const DeltaChunk& c, std::vector<uint16_t>& out) {
     out.clear();
     const int n = kDeltaChunk * kDeltaChunk * kDeltaChunk;
+    thread_local std::vector<int16_t> dense(DeltaChunk::kN);
+    c.toDense(dense.data());
+    const int16_t* d = dense.data();
     int i = 0;
     while (i < n) {
         int zeros = 0;
-        while (i < n && c.d[i] == 0 && zeros < 65535) { ++i; ++zeros; }
+        while (i < n && d[i] == 0 && zeros < 65535) { ++i; ++zeros; }
         const int start = i;
-        while (i < n && c.d[i] != 0 && i - start < 65535) ++i;
+        while (i < n && d[i] != 0 && i - start < 65535) ++i;
         out.push_back((uint16_t)zeros);
         out.push_back((uint16_t)(i - start));
-        for (int k = start; k < i; ++k) out.push_back((uint16_t)c.d[k]);
+        for (int k = start; k < i; ++k) out.push_back((uint16_t)d[k]);
     }
 }
 
 static bool DecodeChunk(const uint16_t* in, size_t words, DeltaChunk& c) {
     const int n = kDeltaChunk * kDeltaChunk * kDeltaChunk;
+    thread_local std::vector<int16_t> dense(DeltaChunk::kN);
+    std::fill(dense.begin(), dense.end(), (int16_t)0);
     int i = 0;
     size_t w = 0;
     while (w + 1 < words) {
         const int zeros = in[w++], count = in[w++];
         if (i + zeros + count > n || w + count > words) return false;
         i += zeros;
-        for (int k = 0; k < count; ++k) c.d[i++] = (int16_t)in[w++];
+        for (int k = 0; k < count; ++k) dense[i++] = (int16_t)in[w++];
     }
+    c.fromDense(dense.data());
     return true;
 }
 
@@ -1130,7 +1136,7 @@ static bool ReadRegion(const std::string& path, TerrainDeltasBuilder& b) {
     const bool v4 = ok && memcmp(magic, "RGN5", 4) == 0; // + the placed-material channel
     const bool rle = ok && (v4 || memcmp(magic, "RGN3", 4) == 0 || memcmp(magic, "RGN2", 4) == 0);
     const int legacy = ok && !v4 && memcmp(magic, "RGN3", 4) != 0 ? 4 : 1;
-    auto rescale = [legacy](DeltaChunk& c) { if (legacy > 1) for (int16_t& v : c.d) v = (int16_t)lroundf(v / (float)legacy); };
+    auto rescale = [legacy](DeltaChunk& c) { if (legacy > 1) for (int i = 0; i < DeltaChunk::kN; ++i) c.set(i, (int16_t)lroundf(c.get(i) / (float)legacy)); };
     ok = ok && (rle || memcmp(magic, "RGN1", 4) == 0);
     std::vector<unsigned char> comp;
     for (int32_t i = 0; ok && i < n; ++i) {
@@ -1151,9 +1157,9 @@ static bool ReadRegion(const std::string& path, TerrainDeltasBuilder& b) {
         }
         int size = 0;
         unsigned char* raw = DecompressData(comp.data(), (int)comp.size(), &size);
-        if (raw && size == (int)sizeof(DeltaChunk::d)) {
+        if (raw && size == (int)(DeltaChunk::kN * sizeof(int16_t))) {
             auto chunk = std::make_shared<DeltaChunk>();
-            memcpy(chunk->d, raw, sizeof(chunk->d));
+            for (int i = 0; i < DeltaChunk::kN; ++i) chunk->set(i, ((const int16_t*)raw)[i]);
             rescale(*chunk);
             b.setChunk(TerrainDeltas::KeyOf(hdr[0], hdr[1], hdr[2]), chunk);
         } else ok = false;
