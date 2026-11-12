@@ -87,8 +87,9 @@ Water (Plan 4, user answers)
 - Sea, rivers and large lakes (> ~1 km^2) are infinite; rivers can be diverted; small lakes/ponds
   are finite once disturbed. The sea can flood a channel dug inland below sea level.
 - Multi-level (cave) water must work. Buckets AND pipes/pumps. All of F1-F6 before the next playtest.
-- Open: spans per column vs sparse 3D 1 m cells (Terraria-style, marching-cubes surface) for F2 -
-  answered in the doc recommending 3D cells; awaiting the user.
+- Decided (2026-11-11): F2 is a sparse 3D cell simulation, Terraria-style, 1 m voxels (fill amount
+  per cell; down, then sideways; a slow levelling pass for U-bends / cave pressure), surface meshed
+  with marching cubes on the fill amounts. Replaces the per-column span design.
 
 ## Remaining playtest batches (branch playtest-fixes-4)
 

@@ -117,6 +117,9 @@ void Player::update(Scene& world, bool inputEnabled, float dt) {
         else position = airBody->toWorldD(airLocal);
     }
     Vector3 feet = (position - world.renderOrigin).toFloat();
+    // Eye smoothing (below) compares the feet in the ground's frame before and after this update.
+    Planetoid* const eyeBody = (grounded && groundBody) ? groundBody : (airBody ? airBody : nullptr);
+    const DVec3 eyeFrom = (grounded && groundBody) ? groundLocal : airLocal;
 
     nearest = NearestPlanetoid(world, feet);
     // "Up" is against the summed gravity. Where gravity is too weak to define it (deep space, the
@@ -204,6 +207,35 @@ void Player::update(Scene& world, bool inputEnabled, float dt) {
         groundRotPrev = nearest->rotationQuat();
     } else {
         groundBody = nullptr;
+    }
+    // Eye smoothing: walking, the collision push-out moves the feet up and down by millimetres to
+    // centimetres from one frame to the next (marching-cubes facets, the contact normal changing),
+    // and the camera showed every step as shake - worst climbing steep slopes. The eye follows a
+    // low-passed vertical *speed* of the feet in the ground's frame, so a steady climb has no lag and
+    // only the frame-to-frame noise is filtered; a slow pull keeps it within 25 cm of the body.
+    {
+        float dz = 0.0f;
+        const float offBefore = eyeOffset;
+        const bool known = eyeBody && nearest == eyeBody && dt > 0.0f;
+        if (known) {
+            const DVec3 d = eyeBody->toLocalD(position) - eyeFrom;
+            const Vector3 u = eyeBody->dirToLocal(up);
+            dz = (float)(d.x * u.x + d.y * u.y + d.z * u.z) * eyeBody->scale;
+        }
+        if (eyeSmoothing && known && grounded && fabsf(dz) < 1.0f) {
+            const float vz = dz / dt;
+            eyeVz += (vz - eyeVz) * (1.0f - expf(-dt / 0.10f));
+            eyeOffset += eyeVz * dt - dz;
+            eyeOffset *= expf(-dt * 5.0f);
+            eyeOffset = std::clamp(eyeOffset, -0.25f, 0.25f);
+        } else {
+            // In the air (jumps, falls, a frame of lost contact) the eye follows the body and eases
+            // out what is left; the speed is kept so landing again on a slope doesn't lag.
+            eyeVz = known ? dz / dt : 0.0f;
+            eyeOffset *= expf(-dt * 15.0f);
+        }
+        eyeStep = known ? dz + (eyeOffset - offBefore) : 0.0f; // tests: the eye's height change this update, ground frame
+        eyeStepKnown = known;
     }
     if (!grounded && nearest) {
         airBody = nearest;
@@ -443,7 +475,7 @@ bool Player::resolveCollisions(Scene&, Vector3& feet) {
 void Player::applyToCamera(Scene& world) const {
     if (flyMode) return;
     const Vector3 feet = (position - world.renderOrigin).toFloat();
-    world.camera.position = Vector3Add(feet, Vector3Scale(up, eyeHeight));
+    world.camera.position = Vector3Add(feet, Vector3Scale(up, eyeHeight + eyeOffset));
     world.camera.target = Vector3Add(world.camera.position, forward);
     // Reduce motion: the camera's up follows the ground's gently (no lurch when it changes).
     if (smoothMotion && Vector3Length(cameraUp) > 0.5f) cameraUp = Vector3Normalize(Vector3Lerp(cameraUp, up, std::min(1.0f, 4.0f * GetFrameTime())));

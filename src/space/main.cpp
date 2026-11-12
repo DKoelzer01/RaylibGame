@@ -149,6 +149,7 @@ int main(int argc, char** argv)
     Vector3 spawnDir = { 0, 1, 0 };
     double walkStart = -1.0;
     bool benchStandOnly = false; // --test-stand S: like --test-walk but standing still
+    int walkJolts = 0, walkJoltFrames = 0, walkSteepFrames = 0, walkSteepJolts = 0; double walkJoltMax = 0.0, walkSlopeMax = 0.0;
     double standCamMax = 0.0; float standFwdMax = 0.0f, standUpMax = 0.0f, standTexelSlide = 0.0f; int standFrames = 0, standJitterFrames = 0;
     int benchMineStrokes = 0;     // --test-mine N: dig N strokes at the feet, craft, build (after any walk test)
     bool mineStarted = false, mineStoppedEarly = false;
@@ -301,6 +302,7 @@ int main(int argc, char** argv)
         if (std::string(argv[i]) == "--test-paint") benchPaint = true;
         if (std::string(argv[i]) == "--test-saveload") benchSaveLoad = true;
         if (std::string(argv[i]) == "--test-walk" && i + 1 < argc) benchWalkSeconds = atof(argv[i + 1]);
+        if (std::string(argv[i]) == "--no-eye-smooth") player.eyeSmoothing = false;
         if (std::string(argv[i]) == "--test-planet-walk" && i + 1 < argc) { walkTargetM = atof(argv[i + 1]); benchWalkSeconds = 600.0; } // gate: 1 km on the planet
         if (std::string(argv[i]) == "--bench-walk") benchWalkMode = true;
         if (std::string(argv[i]) == "--bench-fly" && i + 1 < argc) benchFlySpeed = (float)atof(argv[i + 1]);
@@ -3063,7 +3065,28 @@ int main(int argc, char** argv)
                     walkMaxDensity = std::max(walkMaxDensity, d);
                     walkFrames++;
                     walkGroundedFrames += player.grounded ? 1 : 0;
-                    if (benchStandOnly && GetTime() - walkStart > 1.0) {
+                    if (!benchStandOnly && GetTime() - walkStart > 1.0) {
+                        // Walking: the eye height (ground frame) should change smoothly. A jolt is a change of
+                        // more than 3 mm in its per-frame step while grounded (bumps felt as camera shake).
+                        // The step comes from the player's own ground-frame bookkeeping: converting the camera
+                        // into the spinning planet's frame here added cm of float rounding at 60 km.
+                        static double lvz = 0.0; static int have = 0;
+                        if (player.eyeStepKnown) {
+                            const double vz = player.eyeStep * 1000.0; // mm this frame
+                            if (have >= 1 && player.grounded) {
+                                const double j = fabs(vz - lvz);
+                                walkJoltMax = std::max(walkJoltMax, j);
+                                if (j > 3.0) ++walkJolts;
+                                ++walkJoltFrames;
+                                walkSlopeMax = std::max(walkSlopeMax, (double)acosf(std::clamp(Vector3DotProduct(player.groundNormal, player.up), -1.0f, 1.0f)) * RAD2DEG);
+                                if (acosf(std::clamp(Vector3DotProduct(player.groundNormal, player.up), -1.0f, 1.0f)) * RAD2DEG > 20.0f) { ++walkSteepFrames; if (j > 3.0) ++walkSteepJolts; }
+                            }
+                            lvz = vz; have = 1;
+                        } else {
+                            have = 0;
+                        }
+                    }
+                    if (benchStandOnly &&GetTime() - walkStart > 1.0) {
                         // Standing still: the camera must hold still in the ground's frame (no jitter).
                         static DVec3 lastCam{}; static Vector3 lastFwd{}, lastUp{}; static bool have = false;
                         const DVec3 cam = start->toLocalD(world.renderOrigin + world.camera.position);
@@ -3097,6 +3120,8 @@ int main(int argc, char** argv)
                         const float alt = Vector3Distance(feet, start->position);
                         printf("bench: walked %.1f m in %.1f s, grounded %.0f%% of frames, density at body %.2f..%.2f (solid >= %.2f), %.1f m from centre\n",
                                dist, GetTime() - walkStart, 100.0 * walkGroundedFrames / std::max(1, walkFrames), walkMinDensity, walkMaxDensity, ISO_LEVEL, alt);
+                        if (!benchStandOnly) printf("bench: walk camera: %d jolts (eye height step changes > 3 mm between frames) in %d grounded frames (%d of %d on ground over 20 deg), worst %.1f mm, steepest ground %.0f deg\n",
+                                                    walkJolts, walkJoltFrames, walkSteepJolts, walkSteepFrames, walkJoltMax, walkSlopeMax);
                         if (benchStandOnly) printf("bench: standing still %d frames: camera moved at most %.4f m per frame in the ground's frame, view turned %.4f deg, up %.4f deg; the ground slid %.2f shadow texels/s: %s\n", standFrames, standCamMax, standFwdMax, standUpMax, standTexelSlide / std::max(0.1, GetTime() - walkStart - 1.0),
                                                    standJitterFrames * 100 <= standFrames && standTexelSlide / std::max(0.1, GetTime() - walkStart - 1.0) < 10.0 ? "PASS" : "FAIL");
                         if (walkTargetM > 0.0) {

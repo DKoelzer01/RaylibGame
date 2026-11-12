@@ -34,6 +34,12 @@ struct Player {
     bool autoJump = false;            // tests: jump once on the next update
     float lastContactDot = 0.0f;      // debug: dot(contact normal, up) of the last collision
     float impactSpeed = 0.0f;         // hardest collision speed this frame (fall damage)
+    Vector3 groundNormal = { 0, 1, 0 }; // contact normal while grounded
+    float eyeOffset = 0.0f;           // camera height smoothing (metres along up, see update)
+    float eyeVz = 0.0f;               // low-passed vertical speed of the feet in the ground frame
+    bool eyeSmoothing = true;         // tests: --no-eye-smooth turns it off (A/B)
+    float eyeStep = 0.0f;             // tests: the eye's height change in the last update (ground frame, m)
+    bool eyeStepKnown = false;
 
     // Tunables
     float eyeHeight = 1.6f;
@@ -69,7 +75,7 @@ private:
     DVec3 groundLocal{};              // feet in the ground body's local space, double (follows its spin exactly)
     Planetoid* groundBody = nullptr;
     uint64_t groundId = 0;            // validates groundBody (bodies can be destroyed, e.g. world regen)
-    Vector3 groundNormal = { 0, 1, 0 };
+
     Quaternion groundRotPrev = { 0, 0, 0, 1 }; // ground body's rotation at the end of last update
     DVec3 lastEndPosition{};                    // where update() left us (detects outside moves)
     // Airborne near a body: carried with its motion each frame and moved by velocity relative to its
