@@ -25,7 +25,8 @@ namespace {
     TerrainHit hit;
     bool hasHit = false;
     bool digging = false, adding = false;
-    float strokeTimer = 0.0f;
+    double nextStrokeAt = 0.0;   // the next swing may start then (GetTime)
+    float strokeLength = 0.5f;   // the current cooldown's length (the HUD bar)
     std::string toast;
     double toastUntil = 0.0;
     // The plant under the crosshair (closer than the terrain hit), and progress chopping it.
@@ -147,29 +148,27 @@ void TerrainTool_Update(Scene& world, bool inputEnabled, bool editEnabled) {
 
     digging = IsMouseButtonDown(MOUSE_BUTTON_LEFT);
     adding = !digging && IsMouseButtonDown(MOUSE_BUTTON_RIGHT);
-    if (!(digging || adding) || !(hasHit || (digging && hasPlant))) { strokeTimer = 0.0f; return; }
-
-    // Fixed stroke rate while held, so editing speed does not depend on frame rate: keep the
-    // timer's remainder and run every interval that elapsed this frame (re-aiming between catch-up
-    // strokes so they don't hit an already-dug spot). Catch-up is capped after a long hitch.
-    strokeTimer -= GetFrameTime();
+    // One swing per cooldown, and the cooldown runs whether the button is held or not, so clicking
+    // fast is no faster than holding (it was: a release reset the timer). The swing animation lasts
+    // exactly the cooldown (terrainTool.swingTime), and the HUD bar under the crosshair shows it.
+    const double now = GetTime();
+    if (!(digging || adding) || !(hasHit || (digging && hasPlant))) return;
+    if (now < nextStrokeAt) return;
+    const double base = now - nextStrokeAt < 0.1 ? nextStrokeAt : now; // held on: keep the beat (frame-rate independent)
+    if (digging && hasPlant) {
+        const float chop = 0.3f; // an axe (or hand) swing at a trunk or bush
+        const bool felled = Chop();
+        terrainTool.swingTime = chop;
+        nextStrokeAt = base + (felled ? 0.45 : chop);
+        strokeLength = (float)(nextStrokeAt - now);
+        return;
+    }
     const float rate = terrainTool.terraform ? terrainTool.strokesPerSecond : std::max(rule.strokesPerSecond, 2.0f);
     const float interval = 1.0f / rate;
-    for (int n = 0; strokeTimer <= 0.0f && n < 8; ++n) {
-        if (n > 0) {
-            hasHit = RaycastTerrain(world, Ray{ world.camera.position, dir }, player.flyMode ? 150.0f : terrainTool.reach, hit) && !PartInFront(world, dir, hit);
-            if (hasHit) { hitItem = ItemAt(*hit.planetoid, hit.local, hit.material); rule = DigRuleFor(tool, hit.material, hitItem.c_str()); }
-        }
-        if (!hasHit && !hasPlant) break;
-        if (digging && hasPlant) { // ~8 swings a second; a short pause after it comes down
-            if (Chop()) { strokeTimer = 0.4f; break; }
-            strokeTimer += 0.12f;
-            continue;
-        }
-        if (!TerrainTool_Stroke(digging)) { strokeTimer = std::max(strokeTimer, 0.4f); break; }
-        strokeTimer += interval;
-    }
-    strokeTimer = std::max(strokeTimer, 0.0f);
+    if (!TerrainTool_Stroke(digging)) { nextStrokeAt = now + 0.4; strokeLength = 0.4f; return; }
+    terrainTool.swingTime = interval;
+    nextStrokeAt = base + interval;
+    strokeLength = (float)(nextStrokeAt - now);
 }
 
 // Sand, gravel or dirt on a river or pond bed (planets).
@@ -432,3 +431,8 @@ bool TerrainTool_HarvestNearest(Planetoid& p, Vector3 local, bool tree, bool sto
 }
 
 bool TerrainTool_IsFiller(const std::string& item) { return FillerMaterial(item) >= 0; }
+
+float TerrainTool_Cooldown() {
+    const double left = nextStrokeAt - GetTime();
+    return left <= 0.0 ? 0.0f : std::min(1.0f, (float)(left / std::max(strokeLength, 0.01f)));
+}

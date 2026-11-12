@@ -98,7 +98,7 @@ void Viewmodel_Update(Scene& world, float dt) {
     bob = { kBobSide * sinf(phase) * amp, -kBobUp * sinf(phase) * sinf(phase) * amp, 0.0f };
     // Swing on each stroke or chop; dip when what is held changes.
     if (terrainTool.swings != seenSwings) { seenSwings = terrainTool.swings; swing = 0.0f; }
-    swing = std::min(1.0f, swing + dt / 0.28f);
+    swing = std::min(1.0f, swing + dt / std::max(terrainTool.swingTime, 0.1f)); // one swing per cooldown
     const std::string now = Held();
     if (now != held) { held = now; dip = 0.0f; }
     dip = std::min(1.0f, dip + dt / 0.25f);

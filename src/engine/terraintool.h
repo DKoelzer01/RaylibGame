@@ -19,6 +19,7 @@ struct TerrainToolSettings {
     bool terraform = false;      // debug (F1): the old brush tool - dig and fill any material, wheel resizes
     std::string heldTool;        // the tool item in hand (hotbar); empty or not carried: bare hands
     int swings = 0;              // counts mining strokes and chops (the hands animate a swing on each)
+    float swingTime = 0.3f;      // how long the current swing takes (its cooldown): the hands animate over it
     int gemBoost = 1;            // tests: multiplies the (rare) odds of a gem or quartz per rock stroke
     // A shovel's RMB on soft ground tills it into farmland (set by the game; returns true if it did).
     std::function<bool(class Planetoid&, Vector3 localGround)> till;
@@ -28,6 +29,7 @@ extern TerrainToolSettings terrainTool;
 void TerrainTool_Update(Scene& world, bool inputEnabled, bool editEnabled = true); // once per frame before drawing; editEnabled=false keeps save/load (F5/F9) only
 bool TerrainTool_Stroke(bool dig);                         // one dig/build stroke at the last crosshair hit
 bool TerrainTool_IsFiller(const std::string& item);        // bulk ground placed with RMB (dirt, gravel, sand, stone...)
+float TerrainTool_Cooldown();                              // 1 just after a swing .. 0 ready for the next
 bool TerrainTool_Chop();     // one swing at the aimed plant (scripted tests); true when it came down
 bool TerrainTool_AimingPlant(uint64_t* id = nullptr);
 class Planetoid;
