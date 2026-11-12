@@ -80,3 +80,11 @@ arc_furnace     | titanium_alloy_ingot 4 | titanium_ingot 3, aluminium_ingot 1 |
 refinery        | rocket_fuel 4      | coal 1, hydrogen 4, oxygen 2 | 200 | 64
 precision_assembler | titanium_alloy_plate 1 | titanium_alloy_ingot 1 | 200 | 96
 precision_assembler | advanced_circuit 1 | good_circuit 1, gold_ingot 1, aluminium_plate 1 | 300 | 96
+# Moon and ring tiers (M24).
+centrifuge      | helium3 1          | regolith 32               | 300 | 16
+arc_furnace     | aluminium_ingot 1  | anorthite 4               | 300 | 120
+arc_furnace     | nickel_ingot 1, iron_ingot 1 | nickel_iron_ore 2 | 200 | 120
+arc_furnace     | platinum_ingot 1   | platinum_ore 2            | 300 | 160
+arc_furnace     | iridium_ingot 1    | iridium_ore 2             | 400 | 200
+precision_assembler | superconductor 2 | platinum_ingot 1, copper_wire 4, ice 2 | 300 | 128
+mass_driver     | launched_capsule 1 | cargo_capsule 1           | 200 | 1024

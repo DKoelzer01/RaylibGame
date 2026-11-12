@@ -26,6 +26,8 @@ hv_generator    | 512 | generator | 512 | coke
 arc_furnace     | 512 | eu        | 0  |
 refinery        | 512 | eu        | 0  |
 precision_assembler | 512 | eu    | 0  |
+fusion_reactor  | 2048 | generator | 2048 | helium3
+mass_driver     | 2048 | eu       | 0  |
 # fuel | burn ticks (20 a second)
 fuel oak_log 1200
 fuel birch_log 1200
@@ -40,3 +42,4 @@ fuel spruce_planks 300
 fuel charcoal 1600
 fuel coal 1600
 fuel coke 3200
+fuel helium3 12000

@@ -183,3 +183,13 @@ amethyst_block     | Amethyst block     |   999 | 150,100,200 | Polished amethys
 ruby_block         | Ruby block         |   999 | 196,40,70   | Polished ruby: build any shape with it.
 sapphire_block     | Sapphire block     |   999 | 50,80,196   | Polished sapphire: build any shape with it.
 emerald_block      | Emerald block      |   999 | 40,176,110  | Polished emerald: build any shape with it.
+# Moon and ring (M24, tiers 9-10): materials carried home to build Terra's EV machines.
+anorthite          | Anorthite          |   999 | 222,220,212 | Pale moon rock. The arc furnace smelts it into aluminium.
+helium3            | Helium-3           |   999 | 200,232,255 | Fusion fuel: a trace in moon regolith that the centrifuge separates.
+nickel_iron_ore    | Nickel-iron        |   999 | 150,140,120 | Metal straight from ring rocks: the arc furnace splits it into nickel and iron.
+superconductor     | Superconductor     |   999 | 120,160,230 | Platinum wire cooled by ice: carries current without loss (EV machines).
+ev_hull            | EV machine hull    |    20 | 170,175,190 | Titanium-alloy casing laced with superconductor, for EV (2048 V) machines.
+fusion_reactor     | Fusion reactor     |    20 | 230,120,255 | EV generator (2048 V): burns helium-3.
+mass_driver        | Mass driver        |    20 | 160,170,190 | EV: fires cargo capsules to orbit along a magnetic rail.
+cargo_capsule      | Cargo capsule      |   999 | 200,200,210 | Packed cargo for the mass driver.
+launched_capsule   | Orbital delivery   |   999 | 255,220,120 | A cargo capsule the mass driver put in orbit.

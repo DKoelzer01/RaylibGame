@@ -55,7 +55,10 @@ namespace {
     }
 
     const char* ItemAt(Planetoid& p, Vector3 local, VoxelMaterial m) {
-        return m == VoxelMaterial::Ore ? OreKindOf(p, local) : ItemForMaterial(m, HasSoil(p));
+        if (m == VoxelMaterial::Ore) return OreKindOf(p, local);
+        // The moon's rock is anorthite (M24: smelted into aluminium on Terra).
+        if (m == VoxelMaterial::Rock) if (const auto* pf = dynamic_cast<const PlanetField*>(p.field.get()); pf && pf->moon) return "anorthite";
+        return ItemForMaterial(m, HasSoil(p));
     }
 
     // One swing at the aimed plant; true when it came down (items into the inventory).

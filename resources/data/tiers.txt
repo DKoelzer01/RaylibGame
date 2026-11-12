@@ -71,3 +71,14 @@
 8 | Space            | -                | The ring 50 km up (the huge rocks goliath, bastion and pebble), then the moon.
     task | visit ring             | Visit the asteroid ring 50 km up
     task | visit moon             | Land on the moon
+9 | Fusion           | fusion_reactor   | Bring the moon and the ring home: anorthite (moon rock) smelts into aluminium, the centrifuge pulls helium-3 out of moon regolith, ring rocks hold nickel-iron, platinum and iridium. Superconductors make the first EV (2048 V) machine: a fusion reactor burning helium-3.
+    task | get anorthite 16       | Mine anorthite on the moon (its pale rock)
+    task | get helium3 2          | Separate helium-3 from moon regolith (centrifuge)
+    task | get nickel_iron_ore 8  | Mine nickel-iron from ring rocks
+    task | get platinum_ingot 2   | Smelt platinum from ring rocks (arc furnace)
+    task | get superconductor 8   | Make superconductors (precision assembler: platinum, copper wire, ice)
+    task | place fusion_reactor   | Build a fusion reactor on Terra and fuel it with helium-3
+10 | Mass driver     | mass_driver      | Iridium from the ring's rock cores finishes the EV hull; a mass driver on the fusion reactor's power fires cargo capsules to orbit.
+    task | get iridium_ingot 1    | Smelt iridium from ring rock cores
+    task | place mass_driver      | Build a mass driver and power it from the fusion reactor
+    task | get launched_capsule 1 | Launch a cargo capsule to orbit

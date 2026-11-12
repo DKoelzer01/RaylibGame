@@ -43,9 +43,10 @@ enum class PartType : uint8_t {
     StationCore,                                                     // deployed in orbit: founds a station (plan 3, M20); stores fuel
     Slab, Panel, Pane, Post,                                         // detail shapes inside one cell: half height, half thickness, a thin pane, a quarter post (M21)
     Pipe, Outlet,                                                    // water pipes from pumps, and outlets that pour it out (Plan 4, F6)
+    FusionReactor, MassDriver,                                       // EV machines of tiers 9-10 (M24)
     Count
 };
-inline bool IsMachine(PartType t) { return (t >= PartType::Chest && t <= PartType::SteamMacerator) || (t >= PartType::OreWasher && t <= PartType::PrecisionAssembler); }
+inline bool IsMachine(PartType t) { return (t >= PartType::Chest && t <= PartType::SteamMacerator) || (t >= PartType::OreWasher && t <= PartType::PrecisionAssembler) || t == PartType::FusionReactor || t == PartType::MassDriver; }
 inline bool IsRocketPart(PartType t) { return (t >= PartType::RocketEngine && t <= PartType::LandingLeg) || t == PartType::Cabin || t == PartType::StationCore; }
 inline bool IsShape(PartType t) { return t <= PartType::Beam8 || (t >= PartType::Slab && t <= PartType::Post); } // structure: built from a material
 // The shapes in the build wheel's order (the detail shapes of M21 after the beams).

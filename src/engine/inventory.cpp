@@ -314,5 +314,14 @@ const char* OreKindOf(const Planetoid& body, Vector3 local) {
         }
         return "iron_ore"; // (ore material where oreKind finds none: only at a different detail level)
     }
+    if (body.ringRock >= 0) {
+        // Ring rocks (M24): metal-rich - nickel-iron most, then iron, platinum, a little iridium and copper
+        // (deposits ~48 m across, as on asteroids).
+        const int x = (int)floorf(local.x / 48.0f), y = (int)floorf(local.y / 48.0f), z = (int)floorf(local.z / 48.0f);
+        uint32_t h = (uint32_t)x * 73856093u ^ (uint32_t)y * 19349663u ^ (uint32_t)z * 83492791u ^ (body.seed + 17u) * 2654435761u;
+        h ^= h >> 16; h *= 0x7feb352du; h ^= h >> 15; h *= 0x846ca68bu; h ^= h >> 16;
+        const unsigned r = h % 100;
+        return r < 45 ? "nickel_iron_ore" : r < 65 ? "iron_ore" : r < 80 ? "platinum_ore" : r < 86 ? "iridium_ore" : "copper_ore";
+    }
     return OreKindAt(local, body.seed);
 }
