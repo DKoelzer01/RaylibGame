@@ -120,6 +120,7 @@ public:
     bool useFarSphere(const RenderContext& ctx) const;  // far enough (zoom included) and baked
 
     float densityAt(Vector3 local) const; // includes edits; main-thread helper (raycasts)
+    VoxelMaterial materialAt(Vector3 local) const; // the material there: placed ground's own, else the field's
     // Velocity (world units/s) of the body-fixed point currently at renderPoint, from the spin.
     Vector3 surfaceVelocity(Vector3 renderPoint) const;
     // Body-local direction <-> world direction (rotation only).

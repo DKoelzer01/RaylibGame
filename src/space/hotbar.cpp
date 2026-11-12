@@ -62,6 +62,12 @@ namespace {
             terrainTool.heldTool = id;
             return;
         }
+        if (TerrainTool_IsFiller(id) && BuildMaterialForItem(id.c_str()) < 0) { // loose ground (gravel, sand): in hand, RMB places it
+            if (inventory.count(id) <= 0) { GameUI_Toast(TextFormat("No %s", ShortName(id))); Audio_Play(Sfx::Error, 0.3f); return; }
+            buildTool.active = false;
+            terrainTool.heldTool = id;
+            return;
+        }
         const int m = BuildMaterialForItem(id.c_str());
         if (m >= 0) {
             buildTool.active = true;

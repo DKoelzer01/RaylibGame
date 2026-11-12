@@ -70,6 +70,7 @@ struct TerrainEdit {
     // ISO + gradient * (distance - radius), a hard edge where the surface meets it. Strength unused.
     bool carve = false;
     bool softOnly = false; // carve: only soft ground (dirt, sand, gravel, snow); rock stays (no pickaxe)
+    int paint = -1;        // adding: the VoxelMaterial the added ground is made of (-1: the field's own)
 };
 #include "terraindeltas.h"
 

@@ -26,6 +26,7 @@ extern TerrainToolSettings terrainTool;
 
 void TerrainTool_Update(Scene& world, bool inputEnabled, bool editEnabled = true); // once per frame before drawing; editEnabled=false keeps save/load (F5/F9) only
 bool TerrainTool_Stroke(bool dig);                         // one dig/build stroke at the last crosshair hit
+bool TerrainTool_IsFiller(const std::string& item);        // bulk ground placed with RMB (dirt, gravel, sand, stone...)
 bool TerrainTool_Chop();     // one swing at the aimed plant (scripted tests); true when it came down
 bool TerrainTool_AimingPlant(uint64_t* id = nullptr);
 class Planetoid;

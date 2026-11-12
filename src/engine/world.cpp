@@ -167,6 +167,11 @@ Matrix Planetoid::chunkModel(const Chunk& chunk, const DVec3& renderOrigin) cons
     return ChunkPlacer(*this, renderOrigin).model(chunk.key);
 }
 
+VoxelMaterial Planetoid::materialAt(Vector3 local) const {
+    if (edits) { const int m = edits->materialAt(local); if (m >= 0) return (VoxelMaterial)m; }
+    return field->material(local, field->baseDensity(local));
+}
+
 float Planetoid::densityAt(Vector3 local) const {
     return field->density(local, edits.get());
 }
@@ -679,7 +684,7 @@ bool RaycastTerrain(Scene& world, Ray ray, float maxDistance, TerrainHit& hit) {
                     hit.point = worldPoint;
                     hit.distance = dist;
                     hit.normal = Vector3Normalize(Vector3Subtract(p->toWorld(Vector3Add(local, p->field->normal(local, p->edits.get()))), worldPoint));
-                    hit.material = p->field->material(local, p->field->baseDensity(local));
+                    hit.material = p->materialAt(local);
                 }
                 break;
             }
@@ -1014,20 +1019,55 @@ static bool DecodeChunk(const uint16_t* in, size_t words, DeltaChunk& c) {
     return true;
 }
 
+// The placed-material channel: the same run-length layout, one uint16 per material byte.
+static void EncodeMaterials(const DeltaChunk& c, std::vector<uint16_t>& out) {
+    out.clear();
+    const int n = kDeltaChunk * kDeltaChunk * kDeltaChunk;
+    int i = 0;
+    bool any = false;
+    for (int k = 0; k < n && !any; ++k) any = c.m[k] != 0;
+    if (!any) return; // nothing placed: an empty channel
+    while (i < n) {
+        int zeros = 0;
+        while (i < n && c.m[i] == 0 && zeros < 65535) { ++i; ++zeros; }
+        const int start = i;
+        while (i < n && c.m[i] != 0 && i - start < 65535) ++i;
+        out.push_back((uint16_t)zeros);
+        out.push_back((uint16_t)(i - start));
+        for (int k = start; k < i; ++k) out.push_back((uint16_t)c.m[k]);
+    }
+}
+
+static bool DecodeMaterials(const uint16_t* in, size_t words, DeltaChunk& c) {
+    const int n = kDeltaChunk * kDeltaChunk * kDeltaChunk;
+    int i = 0;
+    size_t w = 0;
+    while (w + 1 < words) {
+        const int zeros = in[w++], count = in[w++];
+        if (i + zeros + count > n || w + count > words) return false;
+        i += zeros;
+        for (int k = 0; k < count; ++k) c.m[i++] = (uint8_t)std::min<int>(in[w++], (int)VoxelMaterial::Count);
+    }
+    return true;
+}
+
 static bool WriteRegion(const std::string& path, const std::vector<std::pair<TerrainDeltas::Key, const DeltaChunk*>>& chunks) {
     FILE* f = fopen(path.c_str(), "wb");
     if (!f) return false;
-    fwrite("RGN3", 1, 4, f);
+    // RGN4: RGN3's run-length densities, then the placed-material channel coded the same way.
+    fwrite("RGN4", 1, 4, f);
     const int32_t n = (int32_t)chunks.size();
     fwrite(&n, 4, 1, f);
-    std::vector<uint16_t> enc;
+    std::vector<uint16_t> enc, encM;
     for (const auto& c : chunks) {
         int cx, cy, cz;
         TerrainDeltas::Unpack(c.first, cx, cy, cz);
         EncodeChunk(*c.second, enc);
-        const int32_t hdr[4] = { cx, cy, cz, (int32_t)(enc.size() * 2) };
-        fwrite(hdr, 4, 4, f);
+        EncodeMaterials(*c.second, encM);
+        const int32_t hdr[5] = { cx, cy, cz, (int32_t)(enc.size() * 2), (int32_t)(encM.size() * 2) };
+        fwrite(hdr, 4, 5, f);
         fwrite(enc.data(), 2, enc.size(), f);
+        fwrite(encM.data(), 2, encM.size(), f);
     }
     fclose(f);
     return true;
@@ -1041,19 +1081,24 @@ static bool ReadRegion(const std::string& path, TerrainDeltasBuilder& b) {
     bool ok = fread(magic, 1, 4, f) == 4 && fread(&n, 4, 1, f) == 1;
     // RGN3: run-length, deltas in 1/64 steps. RGN2 (run-length) and RGN1 (DEFLATE) stored 1/256
     // steps: scaled down on load.
-    const bool rle = ok && (memcmp(magic, "RGN3", 4) == 0 || memcmp(magic, "RGN2", 4) == 0);
-    const int legacy = ok && memcmp(magic, "RGN3", 4) != 0 ? 4 : 1;
+    const bool v4 = ok && memcmp(magic, "RGN4", 4) == 0; // + the placed-material channel
+    const bool rle = ok && (v4 || memcmp(magic, "RGN3", 4) == 0 || memcmp(magic, "RGN2", 4) == 0);
+    const int legacy = ok && !v4 && memcmp(magic, "RGN3", 4) != 0 ? 4 : 1;
     auto rescale = [legacy](DeltaChunk& c) { if (legacy > 1) for (int16_t& v : c.d) v = (int16_t)lroundf(v / (float)legacy); };
     ok = ok && (rle || memcmp(magic, "RGN1", 4) == 0);
     std::vector<unsigned char> comp;
     for (int32_t i = 0; ok && i < n; ++i) {
-        int32_t hdr[4];
-        if (fread(hdr, 4, 4, f) != 4 || hdr[3] <= 0) { ok = false; break; }
+        int32_t hdr[5] = {};
+        if (fread(hdr, 4, v4 ? 5 : 4, f) != (size_t)(v4 ? 5 : 4) || hdr[3] <= 0 || hdr[4] < 0) { ok = false; break; }
         comp.resize((size_t)hdr[3]);
         if (fread(comp.data(), 1, comp.size(), f) != comp.size()) { ok = false; break; }
         if (rle) {
             auto chunk = std::make_shared<DeltaChunk>();
             if (!DecodeChunk((const uint16_t*)comp.data(), comp.size() / 2, *chunk)) { ok = false; break; }
+            if (hdr[4] > 0) {
+                std::vector<unsigned char> mats((size_t)hdr[4]);
+                if (fread(mats.data(), 1, mats.size(), f) != mats.size() || !DecodeMaterials((const uint16_t*)mats.data(), mats.size() / 2, *chunk)) { ok = false; break; }
+            }
             rescale(*chunk);
             b.setChunk(TerrainDeltas::KeyOf(hdr[0], hdr[1], hdr[2]), chunk);
             continue;

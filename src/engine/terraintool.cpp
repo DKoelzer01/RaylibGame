@@ -160,11 +160,26 @@ static bool WetBed(Planetoid& p, Vector3 local, VoxelMaterial m) {
     return pf && pf->wetBed(local);
 }
 
-// Building consumes bulk material, best first.
-static bool PayFiller() {
-    if (terrainTool.creative) return true;
+// The ground a filler item makes when placed (-1: not a filler).
+static int FillerMaterial(const std::string& item) {
+    static const struct { const char* item; VoxelMaterial m; } kFillers[] = {
+        { "dirt", VoxelMaterial::Regolith }, { "regolith", VoxelMaterial::Regolith }, { "gravel", VoxelMaterial::Gravel },
+        { "sand", VoxelMaterial::Sand }, { "stone", VoxelMaterial::Rock }, { "concrete", VoxelMaterial::Rock },
+        { "granite", VoxelMaterial::Rock }, { "basalt", VoxelMaterial::Rock }, { "limestone", VoxelMaterial::Rock },
+        { "marble", VoxelMaterial::Rock }, { "sandstone", VoxelMaterial::Rock },
+    };
+    for (const auto& f : kFillers) if (item == f.item) return (int)f.m;
+    return -1;
+}
+
+// Building consumes bulk material: the filler in hand when there is one (it is what gets placed),
+// else the best one carried. `paint` = the material the placed ground is made of.
+static bool PayFiller(int& paint) {
+    const std::string& held = terrainTool.heldTool;
+    if (FillerMaterial(held) >= 0 && (terrainTool.creative || inventory.remove(held, 1))) { paint = FillerMaterial(held); return true; }
+    if (terrainTool.creative) { paint = -1; return true; }
     static const char* fillers[] = { "concrete", "stone", "dirt", "regolith", "gravel", "sand" };
-    for (const char* f : fillers) if (inventory.remove(f, 1)) return true;
+    for (const char* f : fillers) if (inventory.remove(f, 1)) { paint = FillerMaterial(f); return true; }
     Toast("Need stone, dirt, regolith, gravel, sand or concrete to build");
     Audio_Play(Sfx::Error, 0.5f);
     return false;
@@ -180,7 +195,8 @@ static bool BrushStroke(bool digging) {
         Audio_Play(Sfx::Dig, 0.5f, 0.85f + 0.3f * (float)GetRandomValue(0, 100) / 100.0f);
         ++terrainTool.swings;
     } else {
-        if (!PayFiller()) return false;
+        int paint = -1;
+        if (!PayFiller(paint)) return false;
         Audio_Play(Sfx::Build, 0.6f);
     }
     TerrainEdit e;
@@ -232,10 +248,12 @@ bool TerrainTool_Stroke(bool dig) {
         return false;
     }
     if (!dig) {
-        if (!PayFiller()) return false;
+        int paint = -1;
+        if (!PayFiller(paint)) return false;
         TerrainEdit e{};
         e.radius = radius * 1.3f / p.scale;
         e.strength = 0.6f;
+        e.paint = paint;
         const Vector3 localNormal = Vector3Normalize(Vector3Subtract(p.toLocal(Vector3Add(hit.point, hit.normal)), hit.local));
         e.center = Vector3Add(hit.local, Vector3Scale(localNormal, 0.3f * e.radius));
         ApplyTerrainEdit(p, e);
@@ -264,7 +282,7 @@ bool TerrainTool_Stroke(bool dig) {
                 const Vector3 q = Vector3Add(hit.local, { x * step, y * step, z * step });
                 const float d = p.densityAt(q);
                 if (d < ISO_LEVEL || !p.field->editable(q)) continue;
-                const VoxelMaterial m = p.field->material(q, d);
+                const VoxelMaterial m = p.materialAt(q);
                 if (softOnly && !IsSoft(m)) continue;
                 const char* item = ItemAt(p, q, m);
                 got[item] += cell * 2.0f;
@@ -393,3 +411,5 @@ bool TerrainTool_HarvestNearest(Planetoid& p, Vector3 local, bool tree) {
     for (int i = 0; i < 64; ++i) if (Chop()) return true;
     return false;
 }
+
+bool TerrainTool_IsFiller(const std::string& item) { return FillerMaterial(item) >= 0; }

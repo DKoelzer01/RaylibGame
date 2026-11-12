@@ -139,6 +139,7 @@ int main(int argc, char** argv)
     double benchSeconds = 0.0;
     bool startWithOverlay = false;
     int benchDigStrokes = 0;     // --test-dig N: dig N strokes at the crosshair once the world is loaded
+    bool benchPaint = false;     // --test-paint: placed gravel stays gravel (and through a save and load)
     bool benchSaveLoad = false;  // --test-saveload: then save, reload from disk, and bench the reloaded world
     double benchWalkSeconds = 0.0; // --test-walk S: spawn on the surface and auto-walk forward for S seconds
     bool benchWalkMode = false;    // --bench-walk: the player walks forward for the whole bench (frame time while streaming)
@@ -297,6 +298,7 @@ int main(int argc, char** argv)
         if (std::string(argv[i]) == "--overlay") startWithOverlay = true;
         if (std::string(argv[i]) == "--cam" && i + 3 < argc) { benchCamOffset = { (float)atof(argv[i+1]), (float)atof(argv[i+2]), (float)atof(argv[i+3]) }; }
         if (std::string(argv[i]) == "--test-dig" && i + 1 < argc) benchDigStrokes = atoi(argv[i + 1]);
+        if (std::string(argv[i]) == "--test-paint") benchPaint = true;
         if (std::string(argv[i]) == "--test-saveload") benchSaveLoad = true;
         if (std::string(argv[i]) == "--test-walk" && i + 1 < argc) benchWalkSeconds = atof(argv[i + 1]);
         if (std::string(argv[i]) == "--test-planet-walk" && i + 1 < argc) { walkTargetM = atof(argv[i + 1]); benchWalkSeconds = 600.0; } // gate: 1 km on the planet
@@ -507,10 +509,10 @@ int main(int argc, char** argv)
         if (bench && !loading) { // scripted tests wait out the loading screen (a half-built world is no game state)
             if (benchStart < 0.0) {
                 if (WorldIdle() && benchDigStrokes > 0) {
-                    // Scripted edit test: carve a tunnel straight in at the crosshair.
+                    // Scripted edit test: carve a shaft straight down under the player.
                     TerrainHit hit;
-                    const Vector3 dir = Vector3Normalize(Vector3Subtract(world.camera.target, world.camera.position));
-                    if (RaycastTerrain(world, Ray{ world.camera.position, dir }, 300.0f, hit)) {
+                    const Vector3 eye = Vector3Add((player.position - world.renderOrigin).toFloat(), Vector3Scale(player.up, 6.0f)), dir = Vector3Negate(player.up); // straight down: the bench camera is not placed yet
+                    if (RaycastTerrain(world, Ray{ eye, dir }, 300.0f, hit)) {
                         for (int s = 0; s < benchDigStrokes; ++s) {
                             const Vector3 local = hit.planetoid->toLocal(Vector3Add(hit.point, Vector3Scale(dir, 2.0f * s)));
                             ApplyTerrainEdit(*hit.planetoid, TerrainEdit{ local, 8.0f, -1.0f });
@@ -520,6 +522,35 @@ int main(int argc, char** argv)
                         printf("bench: --test-dig found no terrain at the crosshair\n");
                     }
                     benchDigStrokes = 0;
+                } else if (WorldIdle() && benchPaint) {
+                    // Placed ground keeps its material: build a gravel mound at the crosshair, look at it,
+                    // then save, load and look again.
+                    TerrainHit hit;
+                    const Vector3 eye = Vector3Add((player.position - world.renderOrigin).toFloat(), Vector3Scale(player.up, 6.0f)), dir = Vector3Negate(player.up); // straight down from above the player
+                    if (RaycastTerrain(world, Ray{ eye, dir }, 300.0f, hit)) {
+                        const VoxelMaterial before = hit.material;
+                        Planetoid& p = *hit.planetoid;
+                        const Vector3 up = Vector3Normalize(hit.local);
+                        for (int s = 0; s < 4; ++s) {
+                            TerrainEdit e{};
+                            e.center = Vector3Add(hit.local, Vector3Scale(up, 0.5f + 0.4f * s));
+                            e.radius = 2.0f;
+                            e.strength = 0.6f;
+                            e.paint = (int)VoxelMaterial::Gravel;
+                            ApplyTerrainEdit(p, e);
+                        }
+                        TerrainHit a, b;
+                        const bool hitA = RaycastTerrain(world, Ray{ eye, dir }, 300.0f, a);
+                        const bool saved = SaveWorld(world) && LoadWorldSave(world);
+                        const Vector3 eye2 = Vector3Add((player.position - world.renderOrigin).toFloat(), Vector3Scale(player.up, 6.0f)), dir2 = Vector3Negate(player.up);
+                        const bool hitB = RaycastTerrain(world, Ray{ eye2, dir2 }, 300.0f, b);
+                        const bool ok = hitA && a.material == VoxelMaterial::Gravel && saved && hitB && b.material == VoxelMaterial::Gravel;
+                        printf("bench: paint: ground was %s; placed gravel reads %s, after save/load %s -> %s\n", VoxelMaterialName(before),
+                               hitA ? VoxelMaterialName(a.material) : "nothing", hitB ? VoxelMaterialName(b.material) : "nothing", ok ? "PASS" : "FAIL");
+                    } else {
+                        printf("bench: --test-paint found no terrain at the crosshair -> FAIL\n");
+                    }
+                    benchPaint = false;
                 } else if (WorldIdle() && benchSaveLoad && benchWalkSeconds <= 0.0 && benchMineStrokes == 0 && benchFlySeconds <= 0.0) {
                     const int editsBefore = GetWorldStats().edits;
                     const int itemsBefore = inventory.count("stone") + inventory.count("regolith");
@@ -3074,7 +3105,7 @@ int main(int argc, char** argv)
                         }
                         benchWalkSeconds = 0.0;
                     }
-                } else if ((WorldIdle() && benchDigStrokes == 0 && !benchSaveLoad && benchWalkSeconds <= 0.0 && benchMineStrokes == 0 && minePhase != 2 && benchFlySeconds <= 0.0 && !benchSuffocate && benchOrbitSeconds <= 0.0 && !benchRide && !benchPark && !benchGravity && !benchPrecision && !benchMantle && !benchAirJump && !benchMoon && !benchHole && !benchWall && !benchMenus && !benchWater && !benchFlyFollow && !benchHotbar && !benchInventory && !benchMap && !benchViewmodel && !benchQuests && !benchHunger && !benchFarm && !benchAnimals && !benchThreats && benchShotTabs == 0 && !benchRecipes && !benchWeather && !benchDecor && !benchMaterials && !benchDamage && !benchCrafting && !benchSuit && !benchTools && !benchRivers && !benchRing && !benchRocket && !benchStation && !benchBlueprint && !benchSmallBody && !benchTrees && !benchChop && benchPersist == 0 && benchBuild == 0 && benchFactory == 0 && !benchProgression) || GetTime() > 600.0) {
+                } else if ((WorldIdle() && benchDigStrokes == 0 && !benchPaint && !benchSaveLoad && benchWalkSeconds <= 0.0 && benchMineStrokes == 0 && minePhase != 2 && benchFlySeconds <= 0.0 && !benchSuffocate && benchOrbitSeconds <= 0.0 && !benchRide && !benchPark && !benchGravity && !benchPrecision && !benchMantle && !benchAirJump && !benchMoon && !benchHole && !benchWall && !benchMenus && !benchWater && !benchFlyFollow && !benchHotbar && !benchInventory && !benchMap && !benchViewmodel && !benchQuests && !benchHunger && !benchFarm && !benchAnimals && !benchThreats && benchShotTabs == 0 && !benchRecipes && !benchWeather && !benchDecor && !benchMaterials && !benchDamage && !benchCrafting && !benchSuit && !benchTools && !benchRivers && !benchRing && !benchRocket && !benchStation && !benchBlueprint && !benchSmallBody && !benchTrees && !benchChop && benchPersist == 0 && benchBuild == 0 && benchFactory == 0 && !benchProgression) || GetTime() > 600.0) {
                     benchStart = GetTime();
                     printf("bench: world ready after %.2f s (%d chunks, avg build %.2f ms of which sampling %.2f ms, %d worker threads)\n",
                         GetWorldStats().lastGenerationSeconds, GetWorldStats().chunks, GetWorldStats().avgBuildMs, GetWorldStats().avgSampleMs, GetWorldStats().workerThreads);

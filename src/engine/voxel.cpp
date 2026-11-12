@@ -770,7 +770,8 @@ void BuildChunkMesh(const DensityField& field, const TerrainDeltas& deltas, Chun
                 const Vector3 n = gl > 1e-6f ? Vector3Scale(grad, -1.0f / gl) : field.fallbackUp(p);
                 const float b = at(base, x0 + 1, y0 + 1, z0 + 1) * (1.0f - t) + at(base, x1 + 1, y1 + 1, z1 + 1) * t;
                 float sky = 1.0f;
-                const VoxelMaterial m = field.materialSky(p, b, stride, n, sky);
+                VoxelMaterial m = field.materialSky(p, b, stride, n, sky);
+                if (!near.empty()) { const int placed = deltas.materialAt(p); if (placed >= 0) m = (VoxelMaterial)placed; } // placed ground keeps its material
                 out.tangents[v * 4 + 3] = sky;
                 if (m == VoxelMaterial::Ore) {
                     // Which ore (the shader colours each kind): 1 + kind, over 8.

@@ -27,6 +27,9 @@ constexpr float kDeltaStep = 1.0f / 64.0f;
 
 struct DeltaChunk {
     int16_t d[kDeltaChunk * kDeltaChunk * kDeltaChunk] = {};
+    // Placed ground's material per lattice point: 0 = the field's own, else VoxelMaterial + 1
+    // (gravel placed stays gravel instead of taking on the dirt or grass the ground has there).
+    uint8_t m[kDeltaChunk * kDeltaChunk * kDeltaChunk] = {};
 };
 
 class TerrainDeltas {
@@ -42,6 +45,9 @@ public:
     bool empty() const { return chunks.empty(); }
     float at(int x, int y, int z) const;        // lattice delta (0 where never edited)
     float sample(Vector3 p) const;              // trilinear between lattice points
+    // The placed material at a point: the nearest lattice point's, else any of the cell's corners
+    // (a surface point lies between a placed solid point and air); -1 where nothing was placed.
+    int materialAt(Vector3 p) const;
     // Chunks overlapping a body-local box (a build's quick test; empty -> no edits there).
     void chunksIn(Vector3 lo, Vector3 hi, std::vector<std::pair<Key, const DeltaChunk*>>& out) const;
 };
