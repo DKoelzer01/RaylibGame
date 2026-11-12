@@ -166,6 +166,17 @@ void BuildTool_Update(Scene& world, bool inputEnabled, bool usable) {
     if (hitPlot && (!terrain || bestPart <= th.distance)) {
         aim.plot = hitPlot;
         aim.part.origin = { hitCell.x + hitFace.x, hitCell.y + hitFace.y, hitCell.z + hitFace.z };
+        {   // A part bigger than a cell grows from its origin, which could reach back into the block
+            // aimed at: slide it out along the aimed face until every cell of it is in front of that face.
+            std::vector<std::pair<Int3, CellShape>> fp;
+            Plot::Footprint(aim.part, fp);
+            int behind = 0;
+            for (const auto& c : fp) {
+                const int d = (c.first.x - hitCell.x) * hitFace.x + (c.first.y - hitCell.y) * hitFace.y + (c.first.z - hitCell.z) * hitFace.z;
+                behind = std::max(behind, 1 - d);
+            }
+            aim.part.origin = { aim.part.origin.x + hitFace.x * behind, aim.part.origin.y + hitFace.y * behind, aim.part.origin.z + hitFace.z * behind };
+        }
         aim.removePlot = hitPlot;
         aim.removePart = hitPlot->partAt(hitCell);
     } else if (terrain) {
