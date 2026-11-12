@@ -19,6 +19,7 @@ struct TerrainToolSettings {
     bool terraform = false;      // debug (F1): the old brush tool - dig and fill any material, wheel resizes
     std::string heldTool;        // the tool item in hand (hotbar); empty or not carried: bare hands
     int swings = 0;              // counts mining strokes and chops (the hands animate a swing on each)
+    int gemBoost = 1;            // tests: multiplies the (rare) odds of a gem or quartz per rock stroke
     // A shovel's RMB on soft ground tills it into farmland (set by the game; returns true if it did).
     std::function<bool(class Planetoid&, Vector3 localGround)> till;
 };

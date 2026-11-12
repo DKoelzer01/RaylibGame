@@ -297,7 +297,7 @@ bool TerrainTool_Stroke(bool dig) {
     for (auto& kv : got) inventory.addFractional(kv.first, kv.second);
     if (wet > 0.0f) inventory.addFractional("clay", wet * 0.8f); // river and pond beds hold clay
     if (stoneKindAt) { // rock now and then holds a gem: quartz anywhere, and the gem of its stone kind (M22)
-        const char* gem = GetRandomValue(0, 999) < 25 ? GemForStone(stoneKindAt) : GetRandomValue(0, 999) < 40 ? "quartz" : nullptr;
+        const char* gem = GetRandomValue(0, 29999) < 10 * terrainTool.gemBoost ? GemForStone(stoneKindAt) : GetRandomValue(0, 29999) < 16 * terrainTool.gemBoost ? "quartz" : nullptr; // rare: 1 in 3000 strokes a gem, 1 in 1900 quartz (veins later)
         if (gem && itemDB.find(gem)) { inventory.add(gem, 1); Toast(TextFormat("+1 %s!", gem)); }
     }
     if (grass && GetRandomValue(0, 99) < 6) { // grass now and then turns up a seed
@@ -391,7 +391,7 @@ bool TerrainTool_DigAt(Planetoid& p, Vector3 local) {
     if (strcmp(item, "stone") == 0) if (const auto* pfk = dynamic_cast<const PlanetField*>(p.field.get())) { // its kind of stone, and now and then a gem
         const char* k = pfk->stoneKind(local);
         if (strcmp(k, "stone") != 0) inventory.addFractional(k, 0.4f);
-        const char* gem = GetRandomValue(0, 999) < 25 ? GemForStone(k) : GetRandomValue(0, 999) < 40 ? "quartz" : nullptr;
+        const char* gem = GetRandomValue(0, 29999) < 10 * terrainTool.gemBoost ? GemForStone(k) : GetRandomValue(0, 29999) < 16 * terrainTool.gemBoost ? "quartz" : nullptr; // rare: 1 in 3000 strokes a gem, 1 in 1900 quartz (veins later)
         if (gem && itemDB.find(gem)) inventory.add(gem, 1);
     }
     if (WetBed(p, local, m)) inventory.addFractional("clay", 0.4f); // beds hold clay
