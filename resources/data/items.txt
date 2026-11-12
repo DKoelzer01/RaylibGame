@@ -29,6 +29,8 @@ basic_circuit   | Basic circuit   | 200 |  60,140, 70 | Circuit board for LV mac
 lv_hull         | LV machine hull |  20 | 130,132,140 | Steel casing for LV machines.
 conveyor        | Conveyor        | 999 |  60, 62, 66 | Moves items between machines (build part).
 cable           | Copper cable    | 999 | 184,110, 60 | Carries power between machines (build part).
+pipe            | Water pipe      | 999 |  96,116,140 | Carries water from a water pump to outlets (build part: join them face to face).
+water_outlet    | Water outlet    | 999 |  60,120,190 | Pours out the water a pump sends down its pipes (build part).
 campfire        | Campfire        |  20 | 200, 90, 40 | Burns logs and planks: bakes charcoal, fires clay.
 kiln            | Kiln            |  20 | 150, 95, 70 | Fuel-fired: smelts ore into ingots, sand into glass, alloys bronze.
 coke_oven       | Coke oven       |  20 | 120, 80, 60 | Bakes coal into coke (no fuel needed).
@@ -51,7 +53,7 @@ rocket_fuel     | Rocket fuel     | 200 | 200, 80, 40 | 100 kg of fuel. Look at 
 # Milestone 8: ore processing, MV, HV
 ore_washer      | Ore washer      |  20 |  70,120,170 | LV: washes crushed ore with water into purified ore.
 centrifuge      | Centrifuge      |  20 | 160,160,170 | LV: splits purified ore into dust and a byproduct.
-water_pump      | Water pump      |  20 |  50, 90,160 | LV: pumps water.
+water_pump      | Water pump      |  20 |  50, 90,160 | LV: lifts water from under it (a river, a pond, the sea) into pipes; outlets pour it out. Needs power.
 mv_generator    | MV generator    |  20 | 200, 90, 50 | Burns coal or coke for MV power (128 V).
 electrolyzer    | Electrolyzer    |  20 | 180,180, 80 | MV: splits water into hydrogen and oxygen; bauxite dust into aluminium.
 chemical_reactor | Chemical reactor | 20 | 120,160,120 | MV: coal and hydrogen into polyethylene.

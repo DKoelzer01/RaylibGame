@@ -53,6 +53,7 @@
 #include "ring.h"
 #include "factory.h"
 #include "fluid.h"
+#include "waterworks.h"
 
 #if defined(PLATFORM_DESKTOP)
     #define GLSL_VERSION            330
@@ -188,6 +189,7 @@ int main(int argc, char** argv)
     bool benchTools = false, toolsOk = true; int toolsPhase = 0, toolsLife = 0, toolsTilled = 0; double toolsStart = 0.0; // --test-tools
     bool benchSuit = false, suitOk = true; int suitPhase = 0; double suitStart = 0.0; float suitFoodRatio = 0.0f, suitWater = 0.0f, suitRebreather = 0.0f; // --test-suit
     int benchShotTabs = 0; // --shot-tabs
+    bool benchPump = false; int pumpPhase = 0, pumpCable = -1; double pumpT0 = 0.0, pumpedAtCut = 0.0; uint32_t pumpPlot = 0; Vector3 pumpBasin{}; float pumpRise = 0.0f; // --test-pump
     bool benchBucket = false; int bucketPhase = 0, bucketTrips = 0; double bucketT0 = 0.0; Vector3 bucketWater{}, bucketBasin{}, bucketField{}; // --test-bucket
     bool benchPond = false; int pondPhase = 0; double pondT0 = 0.0; Vector3 pondDirB{}, pondOutB{}, pondPit{}, pondMid{}; float pondLevelB = 0.0f, pondRB = 0.0f; // --test-pond
     bool benchFlow = false; int flowPhase = 0; double flowStart = 0.0, flowEdit = 0.0, flowReachT = -1.0, flowCaveT = -1.0, flowSleepT = -1.0; Vector3 flowDir{}, flowOut{}, flowEnd{}, flowCave{}; float flowLevel = 0.0f; // --test-flow
@@ -344,6 +346,7 @@ int main(int argc, char** argv)
         if (std::string(argv[i]) == "--test-flow") benchFlow = true;
         if (std::string(argv[i]) == "--test-pond") benchPond = true;
         if (std::string(argv[i]) == "--test-bucket") benchBucket = true;
+        if (std::string(argv[i]) == "--test-pump") benchPump = true;
         if (std::string(argv[i]) == "--test-recipes") benchRecipes = true;
         if (std::string(argv[i]) == "--test-weather") benchWeather = true;
         if (std::string(argv[i]) == "--test-decor") benchDecor = true;
@@ -1965,6 +1968,108 @@ int main(int argc, char** argv)
                         GameUI_ToggleInventory();
                         benchShotTabs = 0;
                     }
+                } else if (benchPump && (pumpPhase > 0 || WorldIdle())) {
+                    // --test-pump (Plan 4, F6): a powered water pump at a river's edge sends water through pipes
+                    // to an outlet over a bowl dug 30 m inland; the bowl fills; cutting the cable stops it.
+                    Planetoid* p = dynamic_cast<Planetoid*>(world.objects[0].get());
+                    const PlanetField* pf = p ? dynamic_cast<const PlanetField*>(p->field.get()) : nullptr;
+                    const double t = GetTime() - pumpT0;
+                    if (!pf) { printf("bench: pump: needs the planet\n"); benchPump = false; }
+                    else if (pumpPhase == 0) {
+                        const Vector3 home = pf->findSpawnDir(p->seed);
+                        const Vector3 t1 = Vector3Normalize(Vector3CrossProduct(home, { 0, 1, 0 })), t2 = Vector3CrossProduct(t1, home);
+                        float best = 1e30f, level = 0.0f, shoreS = 0.0f; Vector3 wdir{}, out{};
+                        for (float e = -3000.0f; e <= 3000.0f; e += 16.0f)
+                            for (float n = -3000.0f; n <= 3000.0f; n += 16.0f) {
+                                const float dist = sqrtf(e * e + n * n);
+                                if (dist >= best) continue;
+                                const Vector3 d = Vector3Normalize(Vector3Add(home, Vector3Add(Vector3Scale(t1, e / pf->radius), Vector3Scale(t2, n / pf->radius))));
+                                const PlanetField::WaterSource ws = pf->waterSourceAt(d);
+                                if (!ws.kind || ws.kind == 3 || ws.level <= 2.0f || pf->elevation(d) > ws.level - 1.5f) continue;
+                                const Vector3 outs[4] = { t1, Vector3Negate(t1), t2, Vector3Negate(t2) };
+                                for (const Vector3& o : outs)
+                                    for (float s = 2.0f; s <= 20.0f; s += 1.0f) {
+                                        const Vector3 q = Vector3Normalize(Vector3Add(d, Vector3Scale(o, s / pf->radius)));
+                                        if (pf->waterSourceAt(q).kind) continue;
+                                        const float eq = pf->elevation(q);
+                                        if (eq > ws.level + 0.2f && eq < ws.level + 6.0f) { best = dist; wdir = d; out = o; level = ws.level; shoreS = s; }
+                                        break;
+                                    }
+                            }
+                        if (best > 1e29f) { printf("bench: pump: no water with a shore -> FAIL\n"); benchPump = false; }
+                        else {
+                            auto along = [&](float s) { return Vector3Normalize(Vector3Add(wdir, Vector3Scale(out, s / pf->radius))); };
+                            const Vector3 intakeAt = Vector3Scale(along(shoreS - 2.5f), pf->radius + level + 0.15f); // the pump's floor, just over the water
+                            const Vector3 bd = along(shoreS + 28.0f);
+                            const Vector3 b = Vector3Scale(bd, pf->radius + pf->elevation(bd));
+                            const TerrainEdit bowl{ Vector3Subtract(b, Vector3Scale(bd, 0.8f)), 2.6f, -1.0f, true };
+                            ApplyTerrainEdit(*p, bowl);
+                            pumpBasin = Vector3Subtract(b, Vector3Scale(bd, 2.4f));
+                            pumpRise = pf->elevation(bd) - level;
+                            if (!p->plots) p->plots = std::make_unique<PlotSet>();
+                            Plot* plot = p->plots->plotFor(intakeAt, 0.0f, true);
+                            pumpPlot = plot->id;
+                            const Int3 pc = plot->cellAt(plot->toPlot(intakeAt));
+                            // The pipe runs along the plot axis closest to inland.
+                            const Vector3 o = Vector3Subtract(plot->toPlot(Vector3Add(intakeAt, out)), plot->toPlot(intakeAt));
+                            const bool alongX = fabsf(o.x) >= fabsf(o.z);
+                            const int dir = (alongX ? o.x : o.z) > 0.0f ? 1 : -1;
+                            plot->place({ PartType::WaterPump, pc, 0 });
+                            // Power: a generator behind the pump, joined by a cable cell.
+                            auto off = [&](Int3 c, int a) { return alongX ? Int3{ c.x + a, c.y, c.z } : Int3{ c.x, c.y, c.z + a }; };
+                            const int gen = plot->place({ PartType::Generator, off(pc, dir > 0 ? -3 : 3), 0 });
+                            pumpCable = plot->place({ PartType::Cable, off(pc, dir > 0 ? -1 : 2), 0 });
+                            // Pipes: out of the pump's top on the inland side, along the axis, across, then down to
+                            // the outlet 1 m over the bowl.
+                            const Int3 tc = plot->cellAt(plot->toPlot(Vector3Add(b, Vector3Scale(bd, 1.0f))));
+                            Int3 c = off(Int3{ pc.x, pc.y + 1, pc.z }, dir > 0 ? 2 : -1);
+                            int pipes = 0;
+                            auto pipe = [&](Int3 at) { if (plot->place({ PartType::Pipe, at, 0 }) >= 0) ++pipes; };
+                            pipe(c);
+                            const int ty = std::max(tc.y + 1, c.y);
+                            while (c.y < ty) { ++c.y; pipe(c); }
+                            while (c.x != tc.x) { c.x += c.x < tc.x ? 1 : -1; pipe(c); }
+                            while (c.z != tc.z) { c.z += c.z < tc.z ? 1 : -1; pipe(c); }
+                            while (c.y > tc.y + 1) { --c.y; pipe(c); }
+                            const int outlet = plot->place({ PartType::Outlet, { c.x, c.y - 1, c.z }, 0 });
+                            Factory::Seed(p->id, plot->id, gen, "oak_log", 64);
+                            printf("bench: pump: river %.0f m from the start; pump at its edge, %d pipes, outlet %s over a bowl 30 m inland and %.1f m higher; generator %d, cable %d\n",
+                                   best, pipes, outlet >= 0 ? "placed" : "BLOCKED", pumpRise, gen, pumpCable);
+                            player.flyMode = true; sunOverride = true;
+                            sunArg = p->dirToWorld(Vector3Normalize(Vector3Add(bd, Vector3Scale(out, -0.5f))));
+                            pumpPhase = 1; pumpT0 = GetTime();
+                        }
+                    } else if (pumpPhase >= 1) {
+                        const Vector3 up = Vector3Normalize(pumpBasin);
+                        const Vector3 eye = Vector3Add(pumpBasin, Vector3Add(Vector3Scale(up, 12.0f), Vector3Scale(Vector3Normalize(Vector3CrossProduct(up, { 0, 1, 0 })), 14.0f)));
+                        world.camera.position = p->toWorld(eye); world.camera.target = p->toWorld(pumpBasin); world.camera.up = p->dirToWorld(up);
+                        player.position = world.renderOrigin + world.camera.position;
+                        static double lastPrint = 0.0;
+                        const WaterworksStats ws = Waterworks_Stats();
+                        if (t - lastPrint >= 5.0) {
+                            lastPrint = t;
+                            Plot* plot = p->plots ? p->plots->byId(pumpPlot) : nullptr;
+                            int pumpPart = -1;
+                            if (plot) for (int i = 0; i < (int)plot->parts.size(); ++i) if (plot->parts[i].type == PartType::WaterPump) pumpPart = i;
+                            const MachineView v = pumpPart >= 0 ? Factory::View(p->id, pumpPlot, pumpPart) : MachineView{};
+                            printf("bench: pump t=%3.0f s: %s, %d networks, pumped %.1f m^3 (%d dry), bowl holds %.1f m^3\n", t, v.valid ? MachineStatusName(v.status) : "-", ws.networks, ws.pumped, ws.dry,
+                                   Fluid::WaterAt(*p, pumpBasin, 2.5f));
+                        }
+                        if (pumpPhase == 1 && t > 60.0) {
+                            TakeScreenshot("bench_pump.png");
+                            // Cut the power.
+                            if (Plot* plot = p->plots ? p->plots->byId(pumpPlot) : nullptr) plot->remove(pumpCable);
+                            pumpedAtCut = ws.pumped;
+                            pumpPhase = 2;
+                        } else if (pumpPhase == 2 && t > 75.0) {
+                            const double after = ws.pumped - pumpedAtCut;
+                            const float bowl = Fluid::WaterAt(*p, pumpBasin, 2.5f);
+                            const bool pass = pumpedAtCut >= 10.0 && bowl >= 5.0f && after <= 1.0;
+                            printf("bench: pump: pumped %.1f m^3 in 60 s (%.1f m up), the bowl holds %.1f m^3; after cutting the cable %.1f m^3 more -> %s\n",
+                                   pumpedAtCut, pumpRise, bowl, after, pass ? "PASS" : "FAIL");
+                            benchPump = false;
+                        }
+                    }
                 } else if (benchBucket && (bucketPhase > 0 || WorldIdle())) {
                     // --test-bucket (Plan 4, F5): scoop river water with a bucket, carry it 50 m inland to a dug
                     // basin and pour it (twice); the basin holds the water and a field beside it counts as watered.
@@ -3564,7 +3669,7 @@ int main(int argc, char** argv)
                         }
                         benchWalkSeconds = 0.0;
                     }
-                } else if ((WorldIdle() && benchDigStrokes == 0 && !benchPaint && !benchSaveLoad && benchWalkSeconds <= 0.0 && benchMineStrokes == 0 && minePhase != 2 && benchFlySeconds <= 0.0 && !benchSuffocate && benchOrbitSeconds <= 0.0 && !benchRide && !benchPark && !benchGravity && !benchPrecision && !benchMantle && !benchAirJump && !benchMoon && !benchHole && !benchWall && !benchMenus && !benchWater && !benchFlyFollow && !benchHotbar && !benchInventory && !benchMap && !benchViewmodel && !benchQuests && !benchHunger && !benchFarm && !benchAnimals && !benchThreats && benchShotTabs == 0 && !benchForest && !benchFlow && !benchPond && !benchBucket && !benchRecipes && !benchWeather && !benchDecor && !benchMaterials && !benchDamage && !benchCrafting && !benchSuit && !benchTools && !benchRivers && !benchRing && !benchRocket && !benchStation && !benchBlueprint && !benchSmallBody && !benchTrees && !benchChop && benchPersist == 0 && benchBuild == 0 && benchFactory == 0 && !benchProgression) || GetTime() > 600.0) {
+                } else if ((WorldIdle() && benchDigStrokes == 0 && !benchPaint && !benchSaveLoad && benchWalkSeconds <= 0.0 && benchMineStrokes == 0 && minePhase != 2 && benchFlySeconds <= 0.0 && !benchSuffocate && benchOrbitSeconds <= 0.0 && !benchRide && !benchPark && !benchGravity && !benchPrecision && !benchMantle && !benchAirJump && !benchMoon && !benchHole && !benchWall && !benchMenus && !benchWater && !benchFlyFollow && !benchHotbar && !benchInventory && !benchMap && !benchViewmodel && !benchQuests && !benchHunger && !benchFarm && !benchAnimals && !benchThreats && benchShotTabs == 0 && !benchForest && !benchFlow && !benchPond && !benchBucket && !benchPump && !benchRecipes && !benchWeather && !benchDecor && !benchMaterials && !benchDamage && !benchCrafting && !benchSuit && !benchTools && !benchRivers && !benchRing && !benchRocket && !benchStation && !benchBlueprint && !benchSmallBody && !benchTrees && !benchChop && benchPersist == 0 && benchBuild == 0 && benchFactory == 0 && !benchProgression) || GetTime() > 600.0) {
                     benchStart = GetTime();
                     printf("bench: world ready after %.2f s (%d chunks, avg build %.2f ms of which sampling %.2f ms, %d worker threads)\n",
                         GetWorldStats().lastGenerationSeconds, GetWorldStats().chunks, GetWorldStats().avgBuildMs, GetWorldStats().avgSampleMs, GetWorldStats().workerThreads);
@@ -3709,6 +3814,7 @@ int main(int argc, char** argv)
             }
             Factory::Sync(world);                                // machine layouts in, items out
             Fluid::Update(world, frameDt);                       // flowing water: commands in, a step job, meshes up
+            Waterworks_Update(world, frameDt);                   // pumps send water down pipes to outlets
             Machine_Update(world, gameInput && alive && !ship.piloted);
             Objectives_Update(world);
             if (bench && lookDown && !ship.piloted) {

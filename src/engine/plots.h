@@ -42,6 +42,7 @@ enum class PartType : uint8_t {
     Cabin,                                                           // rocket crew cabin: 4 seats, 30 min of air (plan 3, M19)
     StationCore,                                                     // deployed in orbit: founds a station (plan 3, M20); stores fuel
     Slab, Panel, Pane, Post,                                         // detail shapes inside one cell: half height, half thickness, a thin pane, a quarter post (M21)
+    Pipe, Outlet,                                                    // water pipes from pumps, and outlets that pour it out (Plan 4, F6)
     Count
 };
 inline bool IsMachine(PartType t) { return (t >= PartType::Chest && t <= PartType::SteamMacerator) || (t >= PartType::OreWasher && t <= PartType::PrecisionAssembler); }

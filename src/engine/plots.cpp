@@ -26,6 +26,8 @@ const char* PartName(PartType t) {
         case PartType::Pane: return "pane";
         case PartType::Post: return "post";
         case PartType::Conveyor: return "conveyor";
+        case PartType::Pipe: return "water pipe";
+        case PartType::Outlet: return "water outlet";
         case PartType::Cable: return "cable";
         case PartType::Chest: return "chest";
         case PartType::Generator: return "generator";
@@ -106,6 +108,8 @@ const char* PartCostItem(PartType t) {
     switch (t) {
 
         case PartType::Conveyor: return "conveyor";
+        case PartType::Pipe: return "pipe";
+        case PartType::Outlet: return "water_outlet";
         case PartType::Cable: return "cable";
         case PartType::Furnace: return "electric_furnace"; // the item; "furnace" is its recipe map
         case PartType::Farmland: return "farmland";
@@ -184,6 +188,8 @@ static Color PartColor(PartType t) {
 
         case PartType::Block: return { 150, 148, 142, 255 };
         case PartType::Conveyor: return { 60, 62, 66, 255 };
+        case PartType::Pipe: return { 96, 116, 140, 255 };
+        case PartType::Outlet: return { 60, 120, 190, 255 };
         case PartType::Cable: return { 184, 110, 60, 255 };       // copper
         case PartType::Chest: return { 150, 105, 60, 255 };       // wood
         case PartType::Generator: return { 180, 60, 45, 255 };
@@ -228,7 +234,7 @@ static void PartCells(PartType t, std::vector<std::pair<Int3, CellShape>>& out) 
     out.clear();
     CellShape full;
     switch (t) {
-        case PartType::Cube: case PartType::Conveyor: case PartType::Cable: case PartType::Guidance: case PartType::LandingLeg:
+        case PartType::Cube: case PartType::Conveyor: case PartType::Cable: case PartType::Guidance: case PartType::LandingLeg: case PartType::Pipe: case PartType::Outlet:
             out.push_back({ { 0, 0, 0 }, full }); break;
         case PartType::Block: case PartType::Chest: case PartType::Generator: case PartType::Furnace: case PartType::Macerator: case PartType::Battery:
         case PartType::Campfire: case PartType::Kiln: case PartType::CokeOven: case PartType::BlastFurnace: case PartType::Boiler:

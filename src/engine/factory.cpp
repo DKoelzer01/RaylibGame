@@ -205,7 +205,7 @@ struct LayoutMsg {
     std::vector<std::string> machineVariant;              // per machine: its one output item ("" any)
     std::vector<Int3> conveyors, cables;
 };
-struct ItemMsg { int kind; uint64_t body; uint32_t plot; int part; int item; int count; }; // 0 insert, 1 extract, 2 seed, 3 take (one item from a chest), 4 take slot (item = slot, count = 1 for an output slot)
+struct ItemMsg { int kind; uint64_t body; uint32_t plot; int part; int item; int count; }; // 0 insert, 1 extract, 2 seed, 3 take (one item from a chest), 4 take slot (item = slot, count = 1 for an output slot), 5 drain outputs
 
 std::mutex simMutex;                          // state (sim thread holds it for a tick)
 std::vector<PlotSim> plots;
@@ -225,6 +225,7 @@ std::mutex viewMutex;                         // snapshot for the HUD
 std::tuple<uint64_t, uint32_t, int> watchKey{ 0, 0, -1 };
 MachineView watchView;
 std::map<std::tuple<uint64_t, uint32_t, int>, std::vector<std::pair<int, int>>> chestView; // chests of plots near the player: (item, count)
+std::map<std::tuple<uint64_t, uint32_t, int>, int> pumpView;     // water pumps (every plot): water units in their outputs
 FactoryStats stats;
 
 std::thread simThread;
@@ -572,6 +573,8 @@ void SimLoop() {
                     if (left > 0 && im.kind == 0) back.push_back({ im.item, left });
                 } else if (im.kind == 3) {
                     if (m.type == PartType::Chest) { const int k = std::min(im.count, CountItems(m.in, kChestSlots, im.item)); TakeItems(m.in, kChestSlots, im.item, k); if (k > 0) back.push_back({ im.item, k }); }
+                } else if (im.kind == 5) {
+                    TakeItems(m.out, kSlots, im.item, im.count); // a pump's water leaves through its pipes (nothing to the inventory)
                 } else if (im.kind == 4) {
                     Stack* s = im.count ? m.out : m.in;
                     const int n = im.count ? kSlots : InSlots(m);
@@ -603,6 +606,10 @@ void SimLoop() {
                 if (PlotSim* p = FindPlot(b, pl)) FillView(*p, part, watchView); else watchView = MachineView{};
                 for (auto& r : back) results.push_back(r);
                 chestView.clear();
+                pumpView.clear();
+                for (const PlotSim& ps : plots)
+                    for (const Machine& m : ps.machines)
+                        if (m.type == PartType::WaterPump) { int w = 0; for (int i = 0; i < kSlots; ++i) if (m.out[i].count > 0) w += m.out[i].count; pumpView[std::make_tuple(ps.body, ps.plot, m.part)] = w; }
                 for (const PlotSim& ps : plots) {
                     if (!ps.nearPlayer) continue;
                     for (const Machine& m : ps.machines) {
@@ -818,4 +825,15 @@ std::vector<std::pair<std::string, int>> Factory::ChestContents(uint64_t body, u
         if (!merged) out.push_back({ name, s.second });
     }
     return out;
+}
+
+int Factory::PumpWater(uint64_t body, uint32_t plot, int part) {
+    std::lock_guard<std::mutex> v(viewMutex);
+    auto it = pumpView.find(std::make_tuple(body, plot, part));
+    return it == pumpView.end() ? 0 : it->second;
+}
+
+void Factory::Drain(uint64_t body, uint32_t plot, int part, const std::string& item, int count) {
+    std::lock_guard<std::mutex> q(queueMutex);
+    itemQueue.push_back({ 5, body, plot, part, tables.item(item), count });
 }
