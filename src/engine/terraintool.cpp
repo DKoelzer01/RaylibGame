@@ -5,6 +5,7 @@
 #include "player.h"
 #include "worldtypes.h"
 #include "tools.h"
+#include "plots.h"
 
 #include <raymath.h>
 #include <rlgl.h>
@@ -94,10 +95,23 @@ namespace {
     }
 }
 
+// A built part nearer along the ray than the terrain hit blocks it: no digging, tilling or placing
+// ground through walls and floors (breaking parts is the build tool's).
+static bool PartInFront(Scene& world, Vector3 dir, const TerrainHit& h) {
+    const Planetoid* body = h.planetoid;
+    if (!body || !body->plots) return false;
+    const Vector3 lo = body->toLocal(world.camera.position), ld = body->dirToLocal(dir);
+    for (auto& pl : body->plots->plots) {
+        Int3 c, f; float d;
+        if (pl->raycast(lo, ld, h.distance / std::max(body->scale, 1e-6f), c, f, d)) return true;
+    }
+    return false;
+}
+
 void TerrainTool_Update(Scene& world, bool inputEnabled, bool editEnabled) {
     PROFILE_FUNCTION();
     const Vector3 dir = Vector3Normalize(Vector3Subtract(world.camera.target, world.camera.position));
-    hasHit = RaycastTerrain(world, Ray{ world.camera.position, dir }, player.flyMode ? 150.0f : terrainTool.reach, hit);
+    hasHit = RaycastTerrain(world, Ray{ world.camera.position, dir }, player.flyMode ? 150.0f : terrainTool.reach, hit) && !PartInFront(world, dir, hit);
     hasPlant = false;
     plantBody = player.nearest;
     if (plantBody && plantBody->trees && !player.flyMode) {
@@ -138,7 +152,7 @@ void TerrainTool_Update(Scene& world, bool inputEnabled, bool editEnabled) {
     const float interval = 1.0f / rate;
     for (int n = 0; strokeTimer <= 0.0f && n < 8; ++n) {
         if (n > 0) {
-            hasHit = RaycastTerrain(world, Ray{ world.camera.position, dir }, player.flyMode ? 150.0f : terrainTool.reach, hit);
+            hasHit = RaycastTerrain(world, Ray{ world.camera.position, dir }, player.flyMode ? 150.0f : terrainTool.reach, hit) && !PartInFront(world, dir, hit);
             if (hasHit) { hitItem = ItemAt(*hit.planetoid, hit.local, hit.material); rule = DigRuleFor(tool, hit.material, hitItem.c_str()); }
         }
         if (!hasHit && !hasPlant) break;
