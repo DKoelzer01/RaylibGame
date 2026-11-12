@@ -45,7 +45,7 @@ C++ raylib 5.5 planetoid survival game. `src/engine` (static lib), `src/space` -
 ## Plans and trackers
 
 - Plan 2 (early game, done): https://claude.ai/artifact/RL22kZ7VBMugAFgGRPS3cE
-- Plan 3 (Terra tiers, space): https://claude.ai/artifact/XVw45AC6vwYitbdhaeP2xL - next: M24 moon/ring tiers.
+- Plan 3 (Terra tiers, space): https://claude.ai/artifact/XVw45AC6vwYitbdhaeP2xL - M21-M24 done (M24 on PR #28).
 - Plan 4 (flowing water): https://claude.ai/artifact/27xL5j1zkirSe8pDZgPz59
 - `CurrentIssues.md` (untracked, the user's playtest list): erase lines once fully resolved; mark
   deferred or changed-needs-confirmation items inline.
@@ -82,6 +82,15 @@ World and rendering
   never below ~0.22 so a few are always out.
 - Perf: chunks draw nearest-first (early-Z), CPU copies of chunk meshes are freed after upload.
   Remaining frame time is mostly present/composition, not our passes.
+- Terrain lattice 0.25 m (kVoxelSize; RAYLIBGAME_VOXEL_1M builds the old 1 m one): digs carve exactly the
+  previewed sphere (--test-dig-shape IoU 0.85). Delta chunks hold sparse 4^3 bricks; regions are RGN5.
+- Shadows (2026-11-12): two cascades (near +-32 m, far +-200 m, 2048 each), bilinear PCF, normal-offset
+  lookup + slope bias; trees and bushes draw into both (tree vertex shader + depth.fs). Grass casts none
+  by choice (blades thinner than a near texel).
+- Foliage (user, 2026-11-12): grass = 3 instanced meshes (tuft, 14-blade clump, 24-blade dense clump;
+  variant rides in scale + 10*variant), 7 per m^2, darker lower half, drawn to 100 m; trees to 2 km,
+  bushes 300 m. The user trades a few FPS for view distance (walk bench ~220 FPS). Draw distances are
+  runtime values (--grass-dist, --tree-dist); the terrain canopy tint follows treeDistance.
 
 Water (Plan 4, user answers)
 - Sea, rivers and large lakes (> ~1 km^2) are infinite; rivers can be diverted; small lakes/ponds
@@ -134,4 +143,6 @@ Water (Plan 4, user answers)
 Deferred by the user: moon mining launch, motion sickness.
 Follow-ups done (2026-11-12, after the issue list): minimap mask at draw time (f4afeb0), tor strata kept to
 the walls (5e19f49; --shot-forest --outcrop-high), planet spin as a wrapped double (d187759), trees cast
-shadows (d591eee), sparse 4^3 bricks in delta chunks (66f2dbf; --test-persist prints delta memory).
+shadows (d591eee), sparse 4^3 bricks in delta chunks (66f2dbf; --test-persist prints delta memory), fuller
+grass + longer view distances (8201a55; --shot-shadow adds bench_grass.png, --shot-far-forest). Full planet
+regression 47/47 on 040f1eb. All CurrentIssues items are "changed - confirm in play".
