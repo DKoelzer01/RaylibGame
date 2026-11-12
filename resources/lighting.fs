@@ -183,8 +183,13 @@ void main()
                 int kind = int(fragOreKind * 8.0 + 0.5) - 1;
                 vec3 mineral = kind == 1 ? vec3(0.10, 0.42, 0.30) : kind == 2 ? vec3(0.62, 0.62, 0.64) : kind == 3 ? vec3(0.03, 0.03, 0.035)
                              : kind == 4 ? vec3(0.62, 0.22, 0.16) : kind == 5 ? vec3(0.13, 0.08, 0.16) : vec3(0.58, 0.27, 0.08);
+                // Veins: thin warped bands of the mineral through the rock, plus crystal glints between them.
                 float fleck = smoothstep(0.30, 0.55, dot(c, vec3(0.333)) + 0.15 * sin(dot(fragTexPos, vec3(7.1, 5.3, 6.7))));
-                c = mix(c * 0.55, mineral, 0.35 + 0.55 * fleck);
+                float vp = dot(fragTexPos, vec3(0.37, 0.81, 0.45)) * 1.4 + vnoise(fragTexPos * 0.7) * 1.8;
+                float vein = smoothstep(0.16, 0.04, abs(fract(vp) - 0.5));
+                float glint = step(0.94, hash3(floor(fragTexPos * 7.0)));
+                c = mix(c * 0.6, mineral, 0.2 + 0.35 * fleck + 0.45 * vein);
+                c += mineral * glint * 0.6;
             }
             a += c * wi;
             r += roughOf[i] * wi;
