@@ -23,6 +23,7 @@
 #include "gamesave.h"
 #include "audio.h"
 #include "rlImGui.h"
+#include "gputimer.h"
 #include "ship.h"
 #include "camera.h"
 #include "survival.h"
@@ -274,6 +275,7 @@ int main(int argc, char** argv)
     float rideSpin = 10.0f;        // --ride-spin D: spin rate for --test-ride (deg/s)
     bool dumpSystem = false;       // --dump-system: print every body after generation
     bool loadSaveAtStart = false;  // --load: load saves/world.sav before starting
+    bool benchAtSave = false;      // --at-save
     bool spinTest = false;         // --spin-test: textures must stay attached to a spinning body
     float spinRate = 30.0f;        // --spin-rate DEG_PER_SEC
     int spinPhase = 0;
@@ -307,6 +309,7 @@ int main(int argc, char** argv)
         if (std::string(argv[i]) == "--test-ride") benchRide = true;
         if (std::string(argv[i]) == "--dump-system") dumpSystem = true;
         if (std::string(argv[i]) == "--load") loadSaveAtStart = true;
+        if (std::string(argv[i]) == "--at-save") { loadSaveAtStart = true; benchAtSave = true; } // --load, and bench from the save's own camera (no respawn)
         if (std::string(argv[i]) == "--ride-spin" && i + 1 < argc) rideSpin = (float)atof(argv[i + 1]);
         if (std::string(argv[i]) == "--test-park" || std::string(argv[i]) == "--test-fly") { printf("bench: %s was removed with the placeholder ship\n", argv[i]); if (i + 1 < argc && argv[i + 1][0] != '-') ++i; }
         if (std::string(argv[i]) == "--test-gravity") benchGravity = true;
@@ -424,14 +427,18 @@ int main(int argc, char** argv)
     if (bench) SetWorldSavePath("saves/bench.sav"); // tests save and load; keep the player's F5 save out of it
     if (bench && !benchThreats) Animals_SetThreats(false); // hostile animals and night spawns would upset other tests
 
-    SetConfigFlags(FLAG_MSAA_4X_HINT);
-    if (!bench) {
+    bool msaa = true;
+    for (int i = 1; i < argc; ++i) if (std::string(argv[i]) == "--no-msaa") msaa = false;
+    if (msaa) SetConfigFlags(FLAG_MSAA_4X_HINT);
+    bool nativeWindow = false; // --native-window: a bench in the game's own window (borderless, monitor-sized), uncapped
+    for (int i = 1; i < argc; ++i) if (std::string(argv[i]) == "--native-window") nativeWindow = true;
+    if (!bench || nativeWindow) {
         SetConfigFlags(FLAG_WINDOW_RESIZABLE); // Allow window resizing
         SetConfigFlags(FLAG_WINDOW_UNDECORATED); // Remove window decorations for a cleaner look
         SetConfigFlags(FLAG_WINDOW_HIGHDPI); // Enable High DPI support
         InitWindow(GetMonitorWidth(0), GetMonitorHeight(0), "My first RAYLIB program!");
         // No VSync: cap at the monitor's refresh rate instead (VSync on a 60 Hz desktop locked the game to 60).
-        SetTargetFPS(benchFps >= 0 ? benchFps : std::max(60, GetMonitorRefreshRate(GetCurrentMonitor())));
+        SetTargetFPS(bench ? std::max(0, benchFps) : benchFps >= 0 ? benchFps : std::max(60, GetMonitorRefreshRate(GetCurrentMonitor())));
     } else {
         InitWindow(1920, 1080, "RaylibGame bench");
         SetTargetFPS(std::max(0, benchFps)); // --fps N caps it (frame-rate-dependence checks); 0 = uncapped
@@ -465,7 +472,7 @@ int main(int argc, char** argv)
                 printf("body %s %s pos %.3f %.3f %.3f radius %.3f seed %u spin %.4f g %.4f\n", BodyKindName(p->kind), p->name.c_str(), p->worldPos.x, p->worldPos.y, p->worldPos.z,
                        p->radius, p->seed, p->spin.y, p->surfaceGravity);
     }
-    StartNewWorld(world, false);
+    if (!benchAtSave) StartNewWorld(world, false);
     if (!bench) Settings_Load();
     bool worldFresh = !loadSaveAtStart; // the world generated at launch: New Game uses it as it is
     MenuResult pendingMenu;
@@ -486,7 +493,7 @@ int main(int argc, char** argv)
         gameState = 1;
         mainMenu.isActive = false;
         world.isActive = true;
-        world.camera.position = Vector3Add(world.camera.target, benchCamOffset);
+        if (!benchAtSave) world.camera.position = Vector3Add(world.camera.target, benchCamOffset);
         world.debugDraw = startWithOverlay;
         player.flyMode = benchWalkSeconds <= 0.0 && !benchWalkMode; // the bench drives the camera directly unless walking
         player.autoWalk = benchWalkMode;                              // --bench-walk: walk through the measured window
@@ -496,6 +503,7 @@ int main(int argc, char** argv)
 
     while (windowKeepAlive && !WindowShouldClose())
     {
+        GpuTimer_CpuFrameStart(); GpuTimer_BeginFrame();
         if (bench && !loading) { // scripted tests wait out the loading screen (a half-built world is no game state)
             if (benchStart < 0.0) {
                 if (WorldIdle() && benchDigStrokes > 0) {
@@ -3113,6 +3121,8 @@ int main(int argc, char** argv)
                     benchFrames, benchSeconds, 1000.0 / avgMs, avgMs, benchMaxFrame * 1000.0, benchUpdateMs / std::max(1L, benchTimedFrames), benchDrawMs / std::max(1L, benchTimedFrames));
                 printf("%s", line);
                 SaveFileText("bench.txt", (char*)line);
+                GpuTimer_Print();
+                GpuTimer_PrintCpu();
                 if (crackCheck) {
                     // Holes between chunks show the magenta clear colour (look down at terrain that fills the view).
                     Image shot = LoadImageFromScreen();
@@ -3174,6 +3184,7 @@ int main(int argc, char** argv)
         const float frameDt = std::min(GetFrameTime(), 0.1f);
         // A spawn or teleport: the loading screen until the terrain there is built (play and tests pause).
         if (player.spawns != seenSpawns) { seenSpawns = player.spawns; if (gameState == 1) { loading = true; spawnLoad = true; loadStart = GetTime(); loadMax = 1; loadFrames = 0; } }
+        GpuTimer_CpuMark("bench-logic");
         advanceBodies(world, gameState == 1 && !loading ? frameDt * timeScale * Rocket_Warp() : 0.0f); // bodies only spin while playing (warped with a coasting rocket); before riders update
         if (gameState == 1) {
             ship.lastImpact = 0.0f;
@@ -3219,6 +3230,7 @@ int main(int argc, char** argv)
             if (bench && benchTelescope > 0.0f) { Telescope_SetActive(world, true); telescope.zoom = benchTelescope; Telescope_Update(world, false, !ship.piloted); }
         }
 
+        GpuTimer_CpuMark("game-update");
         world.updateFloatingOrigin(); // keep the camera near render-space 0 (float precision)
         { const double w0 = GetTime(); worldUpdate(world, 3.0f); if (benchMeasuring) benchUpdateMs += (GetTime() - w0) * 1000.0; } // LOD + streaming (bodies were spun at the start of the frame)
 
@@ -3312,6 +3324,7 @@ int main(int argc, char** argv)
                 spinPhase = 3;
             }
         }
+        GpuTimer_CpuMark("world+lights");
         if (gameState == 1) Hotbar_Update(world, gameInput && alive, ship.piloted);
         if (gameState == 1) BuildTool_Update(world, gameInput && alive, !ship.piloted && !Rocket_Boarded() && !player.flyMode && !telescope.active && alive);
         if (gameState == 1) TerrainTool_Update(world, gameInput && alive && !Animals_Aiming(), !ship.piloted && !Rocket_Boarded() && !telescope.active && !buildTool.active); // F5/F9 work aboard too
@@ -3393,8 +3406,11 @@ int main(int argc, char** argv)
 
         
 
+        GpuTimer_Mark("pre-draw (uploads, updates)");
         BeginDrawing();
             ClearBackground(crackCheck ? MAGENTA : BLACK); // --crack-check: holes in the terrain show magenta
+            GpuTimer_Enable(benchMeasuring); GpuTimer_Mark("clear");
+            GpuTimer_CpuMark("begin-draw");
             if (gameState == 0) {
                 pendingMenu = Menu_Main();
             } else if (gameState == 1) {
@@ -3445,12 +3461,15 @@ int main(int argc, char** argv)
             }
             justPaused = false;
             if (gameState != 0) {
+                GpuTimer_Mark("hud");
                 rlImGuiBegin();
                 DebugUI_Draw(world);
                 GameUI_Draw(world);
                 rlImGuiEnd();
+                GpuTimer_Mark("imgui");
             }
         EndDrawing();
+        GpuTimer_Mark("swap+poll");
         PROFILE_FRAME();
     }
 

@@ -453,6 +453,16 @@ static void UpdateLod(Planetoid& p, Vector3 cameraRender) {
             for (NodeKey k = parentOf(d); !coveredByCoarser && k.level <= p.rootLevel; k = parentOf(k)) coveredByCoarser = retainedSet.count(k) > 0;
         if (!coveredByCoarser) draw.push_back(c);
     }
+    // Nearest first (front to back): the depth test then rejects most of the terrain hidden behind
+    // nearer hills before the (costly) terrain shader runs on it. Unsorted, much of the screen was
+    // shaded two or three times over: about a quarter of the frame.
+    {
+        std::vector<std::pair<float, Chunk*>> byDist;
+        byDist.reserve(draw.size());
+        for (Chunk* c : draw) { const Vector3 lo = c->key.origin(); byDist.push_back({ DistanceToBox(camLocal, lo, Vector3AddValue(lo, c->key.size())), c }); }
+        std::sort(byDist.begin(), byDist.end(), [](const auto& a, const auto& b) { return a.first < b.first; });
+        for (size_t i = 0; i < draw.size(); ++i) draw[i] = byDist[i].second;
+    }
     p.drawList = std::move(draw);
 
     // Clip the one-cell overlap on axes where the +neighbour is drawn at the same level (it would

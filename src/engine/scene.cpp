@@ -1,4 +1,5 @@
 #include "scene.h"
+#include "gputimer.h"
 #include "utils/logger.h"
 #include "profiler.h"
 #include "worldtypes.h"
@@ -346,6 +347,7 @@ void Scene::drawScene(int gamestate) {
             for (const auto& obj : rootObject.children) obj->drawDepthOnly(shadowCtx);
         EndMode3D();
     EndTextureMode();
+    GpuTimer_Mark("shadow");
     rlSetClipPlanes(defaultNear, defaultFar);
     }
 
@@ -419,6 +421,7 @@ void Scene::drawScene(int gamestate) {
         }
         rlEnableBackfaceCulling();
         rlEnableDepthMask();
+        GpuTimer_Mark("sky");
 
         // Far pass: bodies whose nearest possible surface is beyond kFarSplit (the moon, the ring,
         // the planet seen from orbit) are drawn first with clip planes fitted to them, then the depth
@@ -519,6 +522,7 @@ void Scene::drawScene(int gamestate) {
             ClearDepthBuffer();
             rlSetClipPlanes(nearDefault, farDefault);
             BeginMode3D(camera);
+            GpuTimer_Mark("far");
         }
 
 
@@ -592,6 +596,7 @@ void Scene::drawScene(int gamestate) {
             ClearDepthBuffer();
             rlSetClipPlanes(nearDefault, kNearSplit);
             BeginMode3D(camera);
+            GpuTimer_Mark("mid");
         }
 
         const Frustum viewFrustum = Frustum::fromViewProj(MatrixMultiply(rlGetMatrixModelview(), rlGetMatrixProjection()));
@@ -601,6 +606,7 @@ void Scene::drawScene(int gamestate) {
         for (const auto& obj : objects) if (obj && !isFar(obj.get())) obj->draw(ctx);
         for (const auto& obj : rootObject.children) if (obj) obj->draw(ctx);
         if (drawPassExtra) drawPassExtra(ctx, false);
+        GpuTimer_Mark("near");
 
         // Foliage: grass tufts on near chunks (instanced; one draw per chunk with grass in range).
         if (grass.shader.id > 0 && foliageEnabled) {
@@ -633,7 +639,9 @@ void Scene::drawScene(int gamestate) {
             rlEnableBackfaceCulling();
             rlDisableShader();
         }
+        GpuTimer_Mark("grass");
         drawTrees(-1);
+        GpuTimer_Mark("trees");
 
         // Transparent pass (sea surfaces) after everything opaque. Depth writes stay on: where LOD
         // nodes overlap, the second copy of the same surface then fails the depth test instead of
@@ -662,10 +670,12 @@ void Scene::drawScene(int gamestate) {
                 }
             }
         }
+        GpuTimer_Mark("water");
         if (onDraw3D) onDraw3D();
     EndMode3D();
     rlSetClipPlanes(nearDefault, farDefault); // the passes above narrowed them
     lastDrawCalls = drawCalls;
+    GpuTimer_Mark("draw3d");
 
     if (debugDraw) {
         // Depth texture preview (red channel = depth).

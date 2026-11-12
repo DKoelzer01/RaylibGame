@@ -124,11 +124,13 @@ void main()
     // its colours from the texture layers instead, so it skips these six fetches.
     vec3 albedo = vec3(0.5);
     vec2 roughAo = vec2(0.8, 1.0);
+    // Planets bump from their own layers below (the crater normal map is not used: three fetches saved).
+    vec3 normal = geomNormal;
     if (palette != 2) {
         albedo = pow(sampleTriplanar(colorTexture, tp).rgb, vec3(2.2)); // sRGB -> linear
         roughAo = sampleTriplanar(roughAoTexture, tp).rg;
+        normal = normalize(mat3(matModel) * triplanarNormal(normalTexture, tp, localNormal));
     }
-    vec3 normal = normalize(mat3(matModel) * triplanarNormal(normalTexture, tp, localNormal));
 
     float rough = roughAo.r;
     float ao = roughAo.g;
