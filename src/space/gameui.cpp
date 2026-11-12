@@ -19,6 +19,7 @@
 #include <string>
 
 #include "buildtool.h"
+#include "itemicons.h"
 #include "plots.h"
 #include "worldtypes.h"
 #include <raymath.h>
@@ -42,6 +43,15 @@ void GameUI_CloseContainer() { container.open = false; }
 // An item's icon: its colour in a shape by kind - tools a handle and head, blocks a shaded cube,
 // machines a framed box, resources a rounded lump. `dim` greys it (a recipe you can't make yet).
 static void DrawItemIcon(ImDrawList* dl, ImVec2 p, float size, const std::string& id, bool dim = false) {
+    if (ItemIcons_Has(id)) {
+        // The painted icon (itemicons.h); dimmed for recipes you can't make yet.
+        float uv0[2], uv1[2];
+        ItemIcons_UV(id, uv0, uv1);
+        const float m = size * 0.04f;
+        dl->AddImage((ImTextureID)(intptr_t)ItemIcons_Texture().id, ImVec2(p.x + m, p.y + m), ImVec2(p.x + size - m, p.y + size - m),
+                     ImVec2(uv0[0], uv0[1]), ImVec2(uv1[0], uv1[1]), dim ? IM_COL32(110, 110, 115, 150) : IM_COL32(255, 255, 255, 255));
+        return;
+    }
     const ItemDef* d = itemDB.find(id);
     Color c = d ? d->color : GRAY;
     if (dim) c = ColorLerp(c, Color{ 60, 62, 66, 255 }, 0.6f);

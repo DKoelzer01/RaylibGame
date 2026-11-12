@@ -32,6 +32,7 @@
 #include "progression_test.h"
 #include "menus.h"
 #include "hotbar.h"
+#include "itemicons.h"
 #include "navigation.h"
 #include "viewmodel.h"
 #include "farming.h"
@@ -476,6 +477,9 @@ int main(int argc, char** argv)
     DebugUI_Init();
     if (!bench) Audio_Init();
     itemDB.load("resources/data/items.txt", "resources/data/recipes.txt");
+    ItemIcons_Init(); // one painted icon per item (itemicons.h)
+    for (int i = 1; i < argc; ++i)
+        if (std::string(argv[i]) == "--shot-icons") printf("bench: icons: %d items -> bench_icons.png (%s)\n", (int)itemDB.items().size(), ItemIcons_SaveSheet("bench_icons.png") ? "saved" : "FAILED");
     GameSave_Register();
     {   // Scenes own GPU resources: keep them in a scope that ends before CloseWindow().
     Scene mainMenu("mainMenu", true); // Main menu scene;

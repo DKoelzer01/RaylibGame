@@ -1,6 +1,7 @@
 #include "hotbar.h"
 #include "toolwear.h"
 #include "buildtool.h"
+#include "itemicons.h"
 #include "gameui.h"
 #include "inventory.h"
 #include "plots.h"
@@ -168,7 +169,9 @@ void Hotbar_DrawHUD(bool piloting) {
         if (id.empty()) continue;
         {
             const ItemDef* d = itemDB.find(id);
-            if (d) DrawRectangle(x + size / 2 - 9, y0 + 14, 18, 18, d->color);
+            const float is = (float)size - 28.0f; // the painted icon (itemicons.h), between the slot number and the name
+            if (ItemIcons_Has(id)) ItemIcons_Draw(id, { x + (size - is) * 0.5f, (float)y0 + 8.0f, is, is });
+            else if (d) DrawRectangle(x + size / 2 - 9, y0 + 14, 18, 18, d->color);
             DrawText(TextFormat("%d", inventory.count(id)), x + size - 4 - MeasureText(TextFormat("%d", inventory.count(id)), 14), y0 + 3, 14, RAYWHITE);
             const float left = ToolWear_Left(id); // a worn tool: a bar along the bottom, green to red
             if (left < 1.0f && inventory.count(id) > 0) {
