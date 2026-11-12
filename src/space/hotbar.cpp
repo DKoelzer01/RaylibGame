@@ -42,7 +42,11 @@ namespace {
 
     void Select(int slot, bool piloting) {
         const std::string& id = slots[slot];
-        if (id.empty()) return;
+        if (id.empty()) { // an empty slot is bare hands
+            if (piloting) return;
+            selected = slot; buildTool.active = false; terrainTool.heldTool.clear();
+            return;
+        }
         // Food and animal feed: the first press takes it in hand (animals that eat it follow you); the
         // next press eats it (food only).
         if ((Survival_IsFood(id) || Animals_IsFeed(id)) && !piloting) {
@@ -87,8 +91,8 @@ namespace {
 }
 
 void Hotbar_Reset() {
-    const char* defaults[kHotbarSlots] = { kHotbarTerrainTool, "concrete", "stone", "wood", "iron_plate", "conveyor", "cable", "chest", "oxygen_canister", "power_cell" };
-    for (int i = 0; i < kHotbarSlots; ++i) slots[i] = defaults[i];
+    // Empty: an empty slot is bare hands; tools bind themselves as they are made, the rest by the player.
+    for (int i = 0; i < kHotbarSlots; ++i) slots[i].clear();
     selected = 0;
 }
 
@@ -118,9 +122,11 @@ void Hotbar_Update(Scene&, bool inputEnabled, bool piloting) {
     static bool initialised = false;
     if (!initialised) { Hotbar_Reset(); initialised = true; }
     // G (build mode on/off) is the build tool's; keep the selection in step with it.
-    const bool toolSelected = KindOf(slots[selected]) == ItemKind::Tool && slots[selected] == terrainTool.heldTool;
-    if (!buildTool.active && slots[selected] != kHotbarTerrainTool && !toolSelected) {
-        for (int i = 0; i < kHotbarSlots; ++i) if (slots[i] == kHotbarTerrainTool) { selected = i; break; }
+    // Leaving build mode with a block selected: the hand goes empty (to an empty slot, if there is one).
+    const std::string& cur = slots[selected];
+    const bool inHand = cur.empty() || cur == terrainTool.heldTool || Survival_IsFood(cur) || Animals_IsFeed(cur);
+    if (!buildTool.active && !inHand) {
+        for (int i = 0; i < kHotbarSlots; ++i) if (slots[i].empty()) { selected = i; break; }
         terrainTool.heldTool.clear();
     }
     // A tool lost (or never carried) falls back to bare hands.
@@ -134,7 +140,7 @@ void Hotbar_Update(Scene&, bool inputEnabled, bool piloting) {
         int free = -1;
         for (int i = 0; i < kHotbarSlots && free < 0; ++i) if (slots[i].empty()) free = i;
         for (int i = 0; i < kHotbarSlots && free < 0; ++i)
-            if (slots[i] != kHotbarTerrainTool && i != selected && inventory.count(slots[i]) <= 0) free = i;
+            if (i != selected && inventory.count(slots[i]) <= 0) free = i;
         if (free >= 0) Hotbar_Bind(free, s.id);
     }
     if (!inputEnabled) return;
@@ -154,7 +160,7 @@ void Hotbar_DrawHUD(bool piloting) {
         DrawRectangleLines(x, y0, size, size, sel ? SKYBLUE : Fade(RAYWHITE, 0.35f));
         DrawText(TextFormat("%d", (i + 1) % 10), x + 4, y0 + 3, 14, Fade(RAYWHITE, 0.7f));
         if (id.empty()) continue;
-        if (id != kHotbarTerrainTool) {
+        {
             const ItemDef* d = itemDB.find(id);
             if (d) DrawRectangle(x + size / 2 - 9, y0 + 14, 18, 18, d->color);
             DrawText(TextFormat("%d", inventory.count(id)), x + size - 4 - MeasureText(TextFormat("%d", inventory.count(id)), 14), y0 + 3, 14, RAYWHITE);
@@ -163,8 +169,6 @@ void Hotbar_DrawHUD(bool piloting) {
                 DrawRectangle(x + 4, y0 + size - 4, size - 8, 3, Fade(BLACK, 0.6f));
                 DrawRectangle(x + 4, y0 + size - 4, (int)((size - 8) * left), 3, ColorLerp(RED, GREEN, left));
             }
-        } else {
-            DrawRectangle(x + size / 2 - 9, y0 + 14, 18, 18, { 170, 140, 100, 255 });
         }
         const char* name = ShortName(id);
         int fs = 12;
@@ -181,6 +185,6 @@ bool Hotbar_LoadLine(const char* tok, FILE* f) {
     if (strcmp(tok, "hotbar") != 0) return false;
     int slot = -1;
     char id[64] = {};
-    if (fscanf(f, " %d %63s", &slot, id) == 2 && slot >= 0 && slot < kHotbarSlots) slots[slot] = strcmp(id, "-") == 0 ? "" : id;
+    if (fscanf(f, " %d %63s", &slot, id) == 2 && slot >= 0 && slot < kHotbarSlots) slots[slot] = strcmp(id, "-") == 0 || strcmp(id, kHotbarTerrainTool) == 0 ? "" : id; // the old "Hands" slot is an empty one now
     return true;
 }

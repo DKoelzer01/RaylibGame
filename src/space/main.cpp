@@ -2392,7 +2392,8 @@ int main(int argc, char** argv)
                     if (ok) {
                         player.spawnOn(world, *p, StartSpawnDir(*p));
                         inventory.clear();
-                        Hotbar_Reset();
+                        Hotbar_Reset(); // empty: bind what the test uses (slot 1 stays empty: bare hands)
+                        Hotbar_Bind(1, "concrete"); Hotbar_Bind(3, "wood"); Hotbar_Bind(8, "oxygen_canister");
                         inventory.add("concrete", 20); inventory.add("wood", 10); inventory.add("oxygen_canister", 1);
                         const Vector3 home = StartSpawnDirLocal(*p);
                         const Vector3 t1 = Vector3Normalize(Vector3CrossProduct(home, { 0, 1, 0 }));
@@ -2417,7 +2418,7 @@ int main(int argc, char** argv)
                         survival.oxygen = 50.0f;
                         Hotbar_Press(8, false); // key 9: oxygen canister
                         const bool used = inventory.count("oxygen_canister") == 0 && survival.oxygen > 90.0f;
-                        Hotbar_Press(0, false); // key 1: terrain tool
+                        Hotbar_Press(0, false); // key 1: an empty slot, bare hands
                         const bool toolMode = !buildTool.active;
                         const bool saved = SaveWorld(world), loaded = saved && LoadWorldSave(world);
                         Planetoid* q = dynamic_cast<Planetoid*>(world.objects[0].get());
