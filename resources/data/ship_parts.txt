@@ -10,7 +10,11 @@ station_core        | 700     | 0         | 0     | 1500    | deployed in orbit 
 # Structure: kg per 0.5 m cell of each building material.
 material concrete 300
 material stone 330
-material wood 60
+material oak_planks 60
+material birch_planks 60
+material maple_planks 60
+material pine_planks 60
+material spruce_planks 60
 material iron_plate 90
 material glass 80
 material dirt 200
@@ -28,7 +32,11 @@ heat station_core 1200
 heat heat_shield_tile 3000
 heat concrete 1100
 heat stone 1200
-heat wood 250
+heat oak_planks 250
+heat birch_planks 250
+heat maple_planks 250
+heat pine_planks 250
+heat spruce_planks 250
 heat iron_plate 1000
 heat glass 900
 heat dirt 600

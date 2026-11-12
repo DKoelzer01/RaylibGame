@@ -21,6 +21,8 @@ uniform vec3 fogColor;
 uniform float fogDensity;
 uniform vec4 fogShell;
 uniform float fadeEnd;
+uniform vec3 barkTint;   // per species (trees.h WoodSpeciesInfo); 1 for bushes and stones
+uniform vec3 leafTint;
 
 // Shadows from the sun's shadow map (terrain, trees and builds), and the headlamp (a spot light).
 uniform sampler2D shadowMap;
@@ -65,7 +67,8 @@ void main()
     vec3 dry = vec3(0.22, 0.27, 0.07), temperate = vec3(0.09, 0.27, 0.05), cold = vec3(0.05, 0.17, 0.08);
     vec3 leafC = lat < 0.35 ? mix(dry, temperate, smoothstep(0.15, 0.35, lat)) : mix(temperate, cold, smoothstep(0.45, 0.7, lat));
     leafC *= 0.75 + 0.5 * fragShade * (0.8 + 0.4 * fragHash);
-    vec3 bark = vec3(0.20, 0.13, 0.08) * (0.8 + 0.4 * fragShade);
+    leafC = min(leafC * leafTint, vec3(0.9));
+    vec3 bark = min(vec3(0.20, 0.13, 0.08) * barkTint, vec3(0.85)) * (0.8 + 0.4 * fragShade);
     vec3 albedo = mix(bark, leafC, fragLeaf);
     albedo = mix(albedo, vec3(0.36, 0.35, 0.33) * (0.7 + 0.6 * fragShade), fragStone); // loose stones
 

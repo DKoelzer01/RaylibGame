@@ -111,6 +111,17 @@ float shadowFactor(vec3 worldPos, vec3 n, vec3 l)
     return lit / 9.0;
 }
 
+// Smooth value noise in [0, 1] (macro variation of the terrain colour).
+float hash3(vec3 p) { p = mod(p, 289.0); return fract(sin(dot(p, vec3(127.1, 311.7, 74.7))) * 43758.5453); } // mod: sin() of huge arguments bands
+float vnoise(vec3 p)
+{
+    vec3 i = floor(p), f = fract(p);
+    f = f * f * (3.0 - 2.0 * f);
+    float x00 = mix(hash3(i), hash3(i + vec3(1, 0, 0)), f.x), x10 = mix(hash3(i + vec3(0, 1, 0)), hash3(i + vec3(1, 1, 0)), f.x);
+    float x01 = mix(hash3(i + vec3(0, 0, 1)), hash3(i + vec3(1, 0, 1)), f.x), x11 = mix(hash3(i + vec3(0, 1, 1)), hash3(i + vec3(1, 1, 1)), f.x);
+    return mix(mix(x00, x10, f.y), mix(x01, x11, f.y), f.z);
+}
+
 void main()
 {
     if (any(greaterThan(fragChunkPos, chunkClipMax))) discard;
@@ -119,6 +130,8 @@ void main()
     // normal into world space for lighting.
     vec3 localNormal = normalize(fragLocalNormal);
     Triplanar tp = makeTriplanar(fragTexPos, localNormal);
+    float farMix = smoothstep(60.0, 280.0, length(viewPos - fragPosition));
+    Triplanar tpFar = makeTriplanar(fragTexPos * 0.21 + vec3(17.3, 5.1, 9.7), localNormal);
 
     // The base rock / roughness maps feed the asteroid and fantasy palettes; the planet palette takes
     // its colours from the texture layers instead, so it skips these six fetches.
@@ -175,6 +188,8 @@ void main()
             float wi = w8[i] / max(total, 0.001);
             if (wi < 0.01) continue;
             vec3 c = sampleLayer(tp, layerOf[i]);
+            // Far away the repeat of one scale shows: blend in the same layer ~5x larger.
+            if (farMix > 0.01) c = mix(c, sampleLayer(tpFar, layerOf[i]), 0.55 * farMix);
             if (i == 3) {
                 // Ore: flecks of the mineral's colour in the stone, by kind (iron rust, copper green,
                 // tin pale, coal black, bauxite red, ilmenite dark violet).
@@ -189,6 +204,9 @@ void main()
             bump += bumpOf[i] * wi;
         }
         albedo = a;
+        // Slow brightness and warmth changes over ~70-250 m break up what tiling is left.
+        float macro = vnoise(fragTexPos / 70.0) * 0.6 + vnoise(fragTexPos / 250.0) * 0.4;
+        albedo *= mix(vec3(0.84, 0.86, 0.9), vec3(1.14, 1.1, 1.02), macro);
         if (fragCanopy.x > 0.01) {
             // Distant forests: where the real trees (drawn to 1 km) fade out, the ground takes the
             // colour of their crowns, by latitude as the trees do, broken up a little by the texture.

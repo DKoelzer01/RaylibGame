@@ -67,13 +67,11 @@ namespace {
         if (++chopHits < HitsToFell(p)) return false;
         plantBody->trees->remove(p.id);
         if (p.tree()) {
-            const int wood = 3 + (int)(p.scale * 4.0f);
-            inventory.add("wood", wood);
-            // And logs of its species (building variety, M21): broadleaf 0-1 oak, 2-3 birch; conifers pine.
-            const char* log = p.variant < 2 ? "oak_log" : p.variant < 4 ? "birch_log" : "pine_log";
+            // Logs of its species (saw them into planks: recipes take any planks).
+            const WoodSpeciesDef& sp = WoodSpeciesInfo(SpeciesOfVariant(p.variant));
             const int logs = 1 + (int)(p.scale * 2.0f);
-            if (itemDB.find(log)) inventory.add(log, logs);
-            Toast(TextFormat("+%d wood  +%d %s", wood, 1 + (int)(p.scale * 2.0f), p.variant < 2 ? "oak logs" : p.variant < 4 ? "birch logs" : "pine logs"));
+            inventory.add(sp.log, logs);
+            Toast(TextFormat("+%d %s log%s", logs, sp.name, logs > 1 ? "s" : ""));
             Audio_Play(Sfx::Build, 0.6f, 0.5f);
         } else if (p.stone()) {
             const int n = 1 + (int)((p.id >> 3) & 1); // a stone or two, picked up off the ground

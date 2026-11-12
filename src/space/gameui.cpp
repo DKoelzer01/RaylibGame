@@ -198,7 +198,7 @@ static void DrawCrafting() {
     if (uiWorld)
         for (const NearChest& c : Storage_NearbyChests(*uiWorld))
             for (const auto& s : Factory::ChestContents(c.body, c.plot, c.part)) stored[s.first] += s.second;
-    auto have = [&](const std::string& id) { auto it = stored.find(id); return inventory.count(id) + (it == stored.end() ? 0 : it->second); };
+    auto have = [&](const std::string& id) { int n = inventory.count(id); for (const auto& s : stored) if (ItemMatches(id, s.first)) n += s.second; return n; };
     auto canMake = [&](const Recipe& r) { if (creative) return true; for (const auto& in : r.inputs) if (have(in.first) < in.second) return false; return true; };
     // A pending craft completes once the pulled items have arrived.
     if (pending >= 0 && pending < (int)itemDB.recipes().size()) {

@@ -1,15 +1,15 @@
 # Tiers (Current Objectives): tier | name | gate item (used only by a tier without tasks) | the hint under the tasks
 # Indented task lines under a tier: task | <kind and target> | text. A tier opens the next when all are done:
 #   get <item> <n> (n obtained, ever) - place <item> (that machine placed) - orbit - visit moon | visit ring
-0 | Primitive        | fired_crucible   | Chop trees for wood, harvest bushes for fibre, dig dirt and stone. Make clay from dirt, mould a crucible (Tab) and fire it in a campfire (G to place, I to feed it wood).
-    task | get wood 4             | Chop a tree for wood (LMB on a trunk)
+0 | Primitive        | fired_crucible   | Chop trees for logs (saw them into planks, Tab), harvest bushes for fibre, dig dirt and stone. Make clay from dirt, mould a crucible (Tab) and fire it in a campfire (G to place, I to feed it logs or planks).
+    task | get any_log 2          | Chop a tree for logs (LMB on a trunk)
     task | get fibre 2            | Harvest a bush for fibre
     task | get stone 4            | Pick up loose stones (LMB) until you have 4 stone
     task | get stone_pickaxe 1    | Craft a stone pickaxe (Tab)
     task | get stone 8            | Dig stone with the pickaxe
-    task | place campfire         | Place a campfire (G) and feed it wood (I)
+    task | place campfire         | Place a campfire (G) and feed it logs or planks (I)
     task | get fired_crucible 1   | Mould a crucible from clay and fire it in the campfire
-1 | Stone age        | bronze_ingot     | Build a kiln. Dig deep for copper and tin ore (veins below 8 m), smelt them in the kiln (fuel: wood, charcoal, coal) and alloy 3 copper + 1 tin into bronze.
+1 | Stone age        | bronze_ingot     | Build a kiln. Dig deep for copper and tin ore (veins below 8 m), smelt them in the kiln (fuel: logs, planks, charcoal, coal) and alloy 3 copper + 1 tin into bronze.
     task | do eat 1               | Eat something (berries from bushes: bind food to the hotbar)
     task | place kiln             | Build and place a kiln
     task | get copper_ore 4       | Find copper ore (deposits and pockets below 8 m)

@@ -187,6 +187,7 @@ int main(int argc, char** argv)
     bool benchTools = false, toolsOk = true; int toolsPhase = 0, toolsLife = 0, toolsTilled = 0; double toolsStart = 0.0; // --test-tools
     bool benchSuit = false, suitOk = true; int suitPhase = 0; double suitStart = 0.0; float suitFoodRatio = 0.0f, suitWater = 0.0f, suitRebreather = 0.0f; // --test-suit
     int benchShotTabs = 0; // --shot-tabs
+    bool benchForest = false; int forestPhase = 0; double forestStart = 0.0; Vector3 forestCam{}, forestTarget{}, forestUp{}; // --shot-forest
     bool benchRecipes = false; // --test-recipes
     bool benchWeather = false, weatherOk = true; int weatherPhase = 0, weatherCounts[6] = {}, weatherChanges = 0; double weatherStart = 0.0; float weatherChill = 0.0f; // --test-weather
     bool benchDecor = false, decorOk = true; int decorPhase = 0, decorGems = 0, decorGemKinds = 0, decorDigs = 0, decorPlaced = 0; double decorStart = 0.0; Vector3 decorCamPos{}, decorCamTarget{}, decorCamUp{ 0, 1, 0 }; // --test-decor
@@ -335,6 +336,7 @@ int main(int argc, char** argv)
         if (std::string(argv[i]) == "--test-animals") benchAnimals = true;
         if (std::string(argv[i]) == "--test-threats") benchThreats = true;
         if (std::string(argv[i]) == "--shot-tabs") benchShotTabs = 1;
+        if (std::string(argv[i]) == "--shot-forest") benchForest = true;
         if (std::string(argv[i]) == "--test-recipes") benchRecipes = true;
         if (std::string(argv[i]) == "--test-weather") benchWeather = true;
         if (std::string(argv[i]) == "--test-decor") benchDecor = true;
@@ -646,11 +648,11 @@ int main(int argc, char** argv)
                         if (!TerrainTool_AimingPlant(&id)) {
                             if (++chopMisses > 30) { printf("bench: --test-chop: could not aim at the trunk: FAIL\n"); benchChop = false; }
                         } else {
-                            if (!chopId) { chopId = id; chopWood0 = inventory.count("wood"); }
+                            if (!chopId) { chopId = id; chopWood0 = inventory.count("any_log"); }
                             ++chopSwings;
                             if (TerrainTool_Chop()) {
-                                const int wood = inventory.count("wood") - chopWood0;
-                                printf("bench: chop: felled a %.1f m tree in %d swings, +%d wood; gone: %s\n", chopTarget.height, chopSwings, wood, present(chopId) ? "no" : "yes");
+                                const int wood = inventory.count("any_log") - chopWood0;
+                                printf("bench: chop: felled a %.1f m tree in %d swings, +%d logs; gone: %s\n", chopTarget.height, chopSwings, wood, present(chopId) ? "no" : "yes");
                                 chopFelled = wood > 0 && !present(chopId);
                                 SaveWorld(world);
                                 LoadWorldSave(world);
@@ -877,7 +879,7 @@ int main(int argc, char** argv)
                         factPhase = 2; factStart = GetTime();
                     } else if (factPhase == 2 && GetTime() - factStart > 1.0) {
                         for (const auto& s : factSeeds) {
-                            Factory::Seed(p->id, factPlot, s[0], "wood", 64);
+                            Factory::Seed(p->id, factPlot, s[0], "oak_log", 32);
                             Factory::Seed(p->id, factPlot, s[1], "iron_ore", 32);
                             Factory::Seed(p->id, factPlot, s[2], "iron_ore", 32);
                         }
@@ -1464,10 +1466,10 @@ int main(int argc, char** argv)
                         craftPhase = 4; craftStart = GetTime();
                     } else if (craftPhase == 4 && GetTime() - craftStart > 0.5) {
                         check(inventory.count("iron_ingot") == craftInv0 + 3 && Storage_CountNearby(world, "iron_ingot") == 1, "the iron arrived; one left in the chest");
-                        inventory.add("wood", 5);
-                        craftWood0 = inventory.count("wood");
+                        inventory.add("oak_planks", 5);
+                        craftWood0 = inventory.count("oak_planks");
                         craftDeposited = Storage_Deposit(world);
-                        check(craftDeposited == 1 && inventory.count("iron_ingot") == 0 && inventory.count("wood") == craftWood0, "deposit: iron into the chest that holds iron; wood stays");
+                        check(craftDeposited == 1 && inventory.count("iron_ingot") == 0 && inventory.count("oak_planks") == craftWood0, "deposit: iron into the chest that holds iron; planks stay");
                         craftPhase = 5; craftStart = GetTime();
                     } else if (craftPhase == 5 && GetTime() - craftStart > 0.5) {
                         craftInChest = Storage_CountNearby(world, "iron_ingot");
@@ -1809,7 +1811,7 @@ int main(int argc, char** argv)
                         return out;
                     };
                     auto ids = [&](const std::string& list) { std::vector<std::string> out; for (const std::string& e : split(list, ',')) { char id[64] = {}; if (e != "-" && sscanf(e.c_str(), "%63s", id) == 1) out.push_back(id); } return out; };
-                    std::set<std::string> have = { "wood", "fibre", "berries", "grain_seeds", "root_seeds", "flax_seeds", "dirt", "gravel", "stone", "sand", "clay",
+                    std::set<std::string> have = { "maple_log", "spruce_log", "fibre", "berries", "grain_seeds", "root_seeds", "flax_seeds", "dirt", "gravel", "stone", "sand", "clay",
                                                    "ice", "regolith", "iron_ore", "copper_ore", "tin_ore", "coal", "bauxite_ore", "ilmenite_ore", "telescope", "map", "basic_suit",
                                                    "oak_log", "birch_log", "pine_log", "granite", "basalt", "sandstone", "limestone", "marble",
                                                    "quartz", "amethyst", "ruby", "sapphire", "emerald" };
@@ -1817,6 +1819,8 @@ int main(int argc, char** argv)
                     struct Rule { std::string machine; std::vector<std::string> in, out; };
                     std::vector<Rule> rules;
                     for (const Recipe& r : itemDB.recipes()) { Rule u; u.out = { r.output }; for (const auto& in : r.inputs) u.in.push_back(in.first); rules.push_back(u); }
+                    for (const ItemDef& d : itemDB.items()) // wildcards: any planks (any log) is had once one kind is
+                        for (const char* w : { "any_planks", "any_log" }) if (d.id != w && ItemMatches(w, d.id)) { Rule u; u.in = { d.id }; u.out = { w }; rules.push_back(u); }
                     char buf[1024];
                     if (FILE* f = fopen("resources/data/machine_recipes.txt", "r")) {
                         while (fgets(buf, sizeof buf, f)) {
@@ -1920,8 +1924,8 @@ int main(int argc, char** argv)
                         if (plot) {
                             int chest = -1, furnace = -1;
                             for (int i = 0; i < (int)plot->parts.size(); ++i) { if (plot->parts[i].type == PartType::Chest) chest = i; if (plot->parts[i].type == PartType::Furnace) furnace = i; }
-                            Factory::Seed(p->id, plot->id, chest, "stone", 40); Factory::Seed(p->id, plot->id, chest, "wood", 20); Factory::Seed(p->id, plot->id, chest, "iron_ore", 7);
-                            Factory::Seed(p->id, plot->id, furnace, "iron_ore", 5); Factory::Seed(p->id, plot->id, furnace, "wood", 8);
+                            Factory::Seed(p->id, plot->id, chest, "stone", 40); Factory::Seed(p->id, plot->id, chest, "oak_log", 20); Factory::Seed(p->id, plot->id, chest, "iron_ore", 7);
+                            Factory::Seed(p->id, plot->id, furnace, "iron_ore", 5); Factory::Seed(p->id, plot->id, furnace, "oak_log", 8);
                             GameUI_OpenContainer(p->id, plot->id, chest, (int)PartType::Chest);
                         }
                         benchShotTabs = 6; frames = 0;
@@ -1947,6 +1951,75 @@ int main(int argc, char** argv)
                         printf("bench: shot-tabs: bench_questtree.png, bench_suit.png, bench_crafting.png, bench_chest.png, bench_machine.png\n");
                         GameUI_ToggleInventory();
                         benchShotTabs = 0;
+                    }
+                } else if (benchForest && (forestPhase > 0 || WorldIdle())) {
+                    // --shot-forest: the species mix around the start (60/20/20 per area) and a daylight view
+                    // from 30 m up (bench_forest.png).
+                    Planetoid* p = dynamic_cast<Planetoid*>(world.objects[0].get());
+                    if (forestPhase == 0) {
+                        player.spawnOn(world, *p, StartSpawnDir(*p));
+                        forestPhase = 1; forestStart = GetTime();
+                    } else if (forestPhase == 1 && GetTime() - forestStart > 2.0) {
+                        const Vector3 me = p->toLocal((player.position - world.renderOrigin).toFloat());
+                        const Vector3 up = Vector3Normalize(me);
+                        const Vector3 t1 = Vector3Normalize(Vector3CrossProduct(up, fabsf(up.y) < 0.9f ? Vector3{ 0, 1, 0 } : Vector3{ 1, 0, 0 }));
+                        int n[(int)WoodSpecies::Count];
+                        if (p->trees) {
+                            for (const float range : { 150.0f, 600.0f }) {
+                                p->trees->speciesCounts(me, range, n);
+                                int total = 0; for (int s = 0; s < (int)WoodSpecies::Count; ++s) total += n[s];
+                                printf("bench: forest: %d trees within %.0f m:", total, range);
+                                for (int s = 0; s < (int)WoodSpecies::Count; ++s) printf(" %s %d%%", WoodSpeciesInfo((WoodSpecies)s).name, total ? 100 * n[s] / total : 0);
+                                printf("\n");
+                            }
+                        }
+                        forestCam = Vector3Add(me, Vector3Add(Vector3Scale(up, 30.0f), Vector3Scale(t1, -15.0f)));
+                        forestTarget = Vector3Add(me, Vector3Scale(t1, 70.0f));
+                        forestUp = up;
+                        player.flyMode = true;
+                        sunOverride = true; sunArg = p->dirToWorld(Vector3Normalize(Vector3Add(up, Vector3Scale(t1, -0.4f))));
+                        forestPhase = 2; forestStart = GetTime();
+                    } else if (forestPhase == 2) {
+                        world.camera.position = p->toWorld(forestCam); world.camera.target = p->toWorld(forestTarget); world.camera.up = p->dirToWorld(forestUp);
+                        player.position = world.renderOrigin + world.camera.position;
+                        if (GetTime() - forestStart > 3.0) {
+                            TakeScreenshot("bench_forest.png");
+                            // The nearest rock outcrop (within 3 km, on a 25 m grid): look at it next.
+                            const auto* pf = dynamic_cast<const PlanetField*>(p->field.get());
+                            const Vector3 up = Vector3Normalize(forestTarget);
+                            const Vector3 t1 = Vector3Normalize(Vector3CrossProduct(up, fabsf(up.y) < 0.9f ? Vector3{ 0, 1, 0 } : Vector3{ 1, 0, 0 }));
+                            const Vector3 t2 = Vector3CrossProduct(t1, up);
+                            float bestD = 1e9f; Vector3 bestP{};
+                            for (int i = -120; pf && i <= 120; ++i)
+                                for (int j = -120; j <= 120; ++j) {
+                                    const float dd = 25.0f * sqrtf((float)(i * i + j * j));
+                                    if (dd >= bestD) continue;
+                                    const Vector3 dir = Vector3Normalize(Vector3Add(up, Vector3Add(Vector3Scale(t1, 25.0f * i / pf->radius), Vector3Scale(t2, 25.0f * j / pf->radius))));
+                                    const float surf = pf->radius + pf->elevation(dir);
+                                    const Vector3 q = Vector3Scale(dir, surf + 2.0f);
+                                    if (pf->rockFeature(q, surf + 2.0f, surf, 1.0f) > 0.5f) { bestD = dd; bestP = q; }
+                                }
+                            printf("bench: forest: nearest outcrop %.0f m away\n", bestD);
+                            if (bestD < 1e8f) {
+                                const Vector3 bu = Vector3Normalize(bestP);
+                                const Vector3 bt = Vector3Normalize(Vector3CrossProduct(bu, fabsf(bu.y) < 0.9f ? Vector3{ 0, 1, 0 } : Vector3{ 1, 0, 0 }));
+                                forestCam = Vector3Add(bestP, Vector3Add(Vector3Scale(bu, 14.0f), Vector3Scale(bt, -30.0f)));
+                                forestTarget = bestP; forestUp = bu;
+                                sunArg = p->dirToWorld(Vector3Normalize(Vector3Add(bu, Vector3Scale(bt, -0.5f))));
+                                forestPhase = 3; forestStart = GetTime();
+                            } else {
+                                printf("bench: forest: bench_forest.png\n");
+                                benchForest = false;
+                            }
+                        }
+                    } else if (forestPhase == 3) {
+                        world.camera.position = p->toWorld(forestCam); world.camera.target = p->toWorld(forestTarget); world.camera.up = p->dirToWorld(forestUp);
+                        player.position = world.renderOrigin + world.camera.position;
+                        if (GetTime() - forestStart > 5.0) {
+                            TakeScreenshot("bench_outcrop.png");
+                            printf("bench: forest: bench_forest.png, bench_outcrop.png\n");
+                            benchForest = false;
+                        }
                     }
                 } else if (benchThreats && (threatPhase > 0 || WorldIdle())) {
                     // --test-threats: after dark a dusk stalker comes 45-60 m out and hunts (a bite hurts); a
@@ -2244,9 +2317,9 @@ int main(int argc, char** argv)
                     inventory.clear();
                     QuestBook_Reset();
                     check(QuestBook_Tier() == 0 && QuestBook_TaskCount(0) >= 4, "tier 0 has tasks");
-                    inventory.add("wood", 4); inventory.add("fibre", 2); inventory.addAmount("gravel", 4.0); inventory.add("stone_pickaxe", 1);
+                    inventory.add("oak_log", 2); inventory.add("fibre", 2); inventory.addAmount("gravel", 4.0); inventory.add("stone_pickaxe", 1);
                     inventory.add("stone", 8); inventory.add("fired_crucible", 1);
-                    inventory.remove("wood", 4); // used up: obtained totals still count
+                    inventory.remove("oak_log", 2); // used up: obtained totals still count
                     QuestBook_NotePlaced("campfire");
                     QuestBook_Update();
                     check(QuestBook_Tier() == 1, "tier 0 done opens tier 1");
@@ -2260,7 +2333,7 @@ int main(int argc, char** argv)
                     QuestBook_Reset(); inventory.clear();
                     if (FILE* f = fopen(path.c_str(), "r")) { loadExtrasHook(f); fclose(f); }
                     remove(path.c_str());
-                    check(QuestBook_Tier() == 1 && QuestBook_TaskDone(1, 0) && QuestBook_TaskDone(1, 1) && QuestBook_TaskDone(1, 2) && !QuestBook_TaskDone(1, 3) && inventory.obtainedTotal("wood") >= 4.0 && QuestBook_CountOf("eat") >= 1.0, "saved and loaded");
+                    check(QuestBook_Tier() == 1 && QuestBook_TaskDone(1, 0) && QuestBook_TaskDone(1, 1) && QuestBook_TaskDone(1, 2) && !QuestBook_TaskDone(1, 3) && inventory.obtainedTotal("any_log") >= 2.0 && QuestBook_CountOf("eat") >= 1.0, "saved and loaded");
                     inventory.add("tin_ore", 2); inventory.add("copper_ingot", 3); inventory.add("bronze_ingot", 1);
                     QuestBook_Update();
                     check(QuestBook_Tier() == 2, "tier 1 done opens tier 2");
@@ -2444,8 +2517,8 @@ int main(int argc, char** argv)
                         player.spawnOn(world, *p, StartSpawnDir(*p));
                         inventory.clear();
                         Hotbar_Reset(); // empty: bind what the test uses (slot 1 stays empty: bare hands)
-                        Hotbar_Bind(1, "concrete"); Hotbar_Bind(3, "wood"); Hotbar_Bind(8, "oxygen_canister");
-                        inventory.add("concrete", 20); inventory.add("wood", 10); inventory.add("oxygen_canister", 1);
+                        Hotbar_Bind(1, "concrete"); Hotbar_Bind(3, "oak_planks"); Hotbar_Bind(8, "oxygen_canister");
+                        inventory.add("concrete", 20); inventory.add("oak_planks", 10); inventory.add("oxygen_canister", 1);
                         const Vector3 home = StartSpawnDirLocal(*p);
                         const Vector3 t1 = Vector3Normalize(Vector3CrossProduct(home, { 0, 1, 0 }));
                         const Vector3 d = Vector3Normalize(Vector3Add(home, Vector3Scale(t1, 10.0f / pf->radius)));
@@ -2457,9 +2530,9 @@ int main(int argc, char** argv)
                         const bool slope = BuildTool_Place(*p, *plot, { PartType::Slope, { 0, 0, 0 }, 0, (uint8_t)buildTool.material }, true);
                         const int c1 = inventory.count("concrete");
                         Hotbar_Press(3, false); // key 4: wood
-                        const int w0 = inventory.count("wood");
+                        const int w0 = inventory.count("oak_planks");
                         const bool beam = BuildTool_Place(*p, *plot, { PartType::Beam4, { 2, 0, 0 }, 0, (uint8_t)buildTool.material }, true);
-                        const int w1 = inventory.count("wood");
+                        const int w1 = inventory.count("oak_planks");
                         // Foundation: the ground a little outside a 1 m block keeps its density.
                         auto outside = [&](float off) { return plot->toBody({ -0.2f + off, 0.3f, 2.5f }); };
                         const float before = p->densityAt(outside(0.0f));
@@ -2478,7 +2551,7 @@ int main(int argc, char** argv)
                             for (auto& pl : q->plots->plots)
                                 for (const Part& part : pl->parts) {
                                     if (part.type == PartType::Count) continue;
-                                    if (PartItem(part) == std::string("wood")) ++woodParts;
+                                    if (PartItem(part) == std::string("oak_planks")) ++woodParts;
                                     if (PartItem(part) == std::string("concrete")) ++concreteParts;
                                 }
                         ok = concreteMode && slope && c0 - c1 == 1 && beam && w0 - w1 == 2 && block && fabsf(after - before) < 0.02f && used && toolMode && loaded && woodParts == 1 && concreteParts == 2;
@@ -3182,7 +3255,7 @@ int main(int argc, char** argv)
                         }
                         benchWalkSeconds = 0.0;
                     }
-                } else if ((WorldIdle() && benchDigStrokes == 0 && !benchPaint && !benchSaveLoad && benchWalkSeconds <= 0.0 && benchMineStrokes == 0 && minePhase != 2 && benchFlySeconds <= 0.0 && !benchSuffocate && benchOrbitSeconds <= 0.0 && !benchRide && !benchPark && !benchGravity && !benchPrecision && !benchMantle && !benchAirJump && !benchMoon && !benchHole && !benchWall && !benchMenus && !benchWater && !benchFlyFollow && !benchHotbar && !benchInventory && !benchMap && !benchViewmodel && !benchQuests && !benchHunger && !benchFarm && !benchAnimals && !benchThreats && benchShotTabs == 0 && !benchRecipes && !benchWeather && !benchDecor && !benchMaterials && !benchDamage && !benchCrafting && !benchSuit && !benchTools && !benchRivers && !benchRing && !benchRocket && !benchStation && !benchBlueprint && !benchSmallBody && !benchTrees && !benchChop && benchPersist == 0 && benchBuild == 0 && benchFactory == 0 && !benchProgression) || GetTime() > 600.0) {
+                } else if ((WorldIdle() && benchDigStrokes == 0 && !benchPaint && !benchSaveLoad && benchWalkSeconds <= 0.0 && benchMineStrokes == 0 && minePhase != 2 && benchFlySeconds <= 0.0 && !benchSuffocate && benchOrbitSeconds <= 0.0 && !benchRide && !benchPark && !benchGravity && !benchPrecision && !benchMantle && !benchAirJump && !benchMoon && !benchHole && !benchWall && !benchMenus && !benchWater && !benchFlyFollow && !benchHotbar && !benchInventory && !benchMap && !benchViewmodel && !benchQuests && !benchHunger && !benchFarm && !benchAnimals && !benchThreats && benchShotTabs == 0 && !benchForest && !benchRecipes && !benchWeather && !benchDecor && !benchMaterials && !benchDamage && !benchCrafting && !benchSuit && !benchTools && !benchRivers && !benchRing && !benchRocket && !benchStation && !benchBlueprint && !benchSmallBody && !benchTrees && !benchChop && benchPersist == 0 && benchBuild == 0 && benchFactory == 0 && !benchProgression) || GetTime() > 600.0) {
                     benchStart = GetTime();
                     printf("bench: world ready after %.2f s (%d chunks, avg build %.2f ms of which sampling %.2f ms, %d worker threads)\n",
                         GetWorldStats().lastGenerationSeconds, GetWorldStats().chunks, GetWorldStats().avgBuildMs, GetWorldStats().avgSampleMs, GetWorldStats().workerThreads);

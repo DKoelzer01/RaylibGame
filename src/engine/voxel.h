@@ -154,7 +154,7 @@ public:
     bool foliage = false;         // grows trees (planets with life); the terrain paints distant canopy
     unsigned int foliageSeed = 0; // the tree system's seed (TreeCanopy matches its forests)
     unsigned int oreSeed = 0;     // ore deposits (oreKind)
-    SimplexNoise continents, ridges, hills, valleys, detail, cavesA, cavesB, veins, climate, caverns, ravines, ravineMask, streams;
+    SimplexNoise continents, ridges, hills, valleys, detail, cavesA, cavesB, veins, climate, caverns, ravines, ravineMask, streams, rocks, rockMask;
     static constexpr float kTunnelLevel = 0.096f; // worm tunnel where both cave fields are within this of zero
     static constexpr float kCavernLevel = 0.68f;  // cavern where the cavern field exceeds this (rare)
 
@@ -207,6 +207,8 @@ public:
     float occluderRadius() const override { return mantleRadius; }
     float seaLevelRadius() const override { return moon ? 0.0f : radius; }
 
+    // Rock outcrops and boulders near the surface: metres inside the nearest one (< 0 outside).
+    float rockFeature(Vector3 p, float d, float surface, float footprint) const;
 private:
     struct RiverState { std::once_flag once; std::unique_ptr<RiverNetwork> net; ~RiverState(); };
     std::shared_ptr<RiverState> riverState;

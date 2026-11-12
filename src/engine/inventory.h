@@ -55,6 +55,8 @@ const char* OreKindOf(const class Planetoid& body, Vector3 local);
 
 ItemKind KindOf(const std::string& id);
 int StackLimit(const std::string& id); // whole units per slot
+// Recipe wildcards: "any_planks" matches planks of any wood (oak_planks, ...), "any_log" any log.
+bool ItemMatches(const std::string& want, const std::string& have);
 
 // One grid cell. Amounts are hundredths (2 decimal places), so resources can be fractional.
 struct InvSlot {
@@ -83,7 +85,10 @@ public:
     // Everything ever obtained (crafted, mined, taken from machines), whatever happened to it since:
     // quest tasks count these. Saved with the game.
     std::unordered_map<std::string, double> obtained;
-    double obtainedTotal(const std::string& id) const { auto it = obtained.find(id); return it == obtained.end() ? 0.0 : it->second; }
+    double obtainedTotal(const std::string& id) const {
+        if (id.rfind("any_", 0) == 0) { double t = 0.0; for (const auto& kv : obtained) if (ItemMatches(id, kv.first)) t += kv.second; return t; }
+        auto it = obtained.find(id); return it == obtained.end() ? 0.0 : it->second;
+    }
     // Whole units of everything held (a copy).
     std::unordered_map<std::string, int> all() const;
     std::vector<InvSlot>& grid() { return slots; }

@@ -13,14 +13,15 @@ power_cell      | Power cell      |  20 | 250,220, 80 | Recharges suit power.
 concrete        | Lunacrete       | block | 200,200,190 | Dense building material.
 glass           | Glass           | 200 | 190,225,235 | Melted from sand. Lenses and windows.
 telescope       | Telescope       |   tool | 200,170,110 | T to raise it, wheel to zoom. Spot the moon and the ring from the ground.
-wood            | Wood            | 999 | 150,105, 60 | Logs from felled trees. Fuel and building material.
+any_planks      | Any planks      | 999 | 166,120, 74 | Planks of any wood: recipes that need wood take whichever planks you carry (saw logs into planks, Tab).
+any_log         | Any log         | 999 | 120, 84, 50 | A log of any tree.
 fibre           | Plant fibre     | 999 | 170,190,110 | Tough stems from bushes. Twists into rope.
 berries         | Berries         | 200 | 190, 40, 70 | Wild berries. Edible.
 rope            | Rope            | 200 | 200,170,120 | Twisted plant fibre.
 clay            | Clay            | 999 | 170,120, 95 | Wet earth. Moulds into crucibles; bricks for kilns and ovens.
 crucible_mold   | Crucible mould  |  20 | 175,125,100 | Unfired clay crucible. Fire it in a campfire.
 fired_crucible  | Fired crucible  |  20 | 190, 90, 60 | Holds molten metal. The key to the stone age.
-charcoal        | Charcoal        | 999 |  45, 40, 38 | Wood baked in a campfire. Burns hotter and longer than wood.
+charcoal        | Charcoal        | 999 |  45, 40, 38 | Wood baked in a campfire. Burns hotter and longer than logs.
 coal            | Coal            | 999 |  30, 30, 32 | From coal deposits underground. Good fuel; bakes into coke.
 coke            | Coke            | 999 |  70, 70, 78 | Baked coal. Burns hot enough to make steel.
 vacuum_tube     | Vacuum tube     | 200 | 210,200,150 | The first circuit element.
@@ -28,7 +29,7 @@ basic_circuit   | Basic circuit   | 200 |  60,140, 70 | Circuit board for LV mac
 lv_hull         | LV machine hull |  20 | 130,132,140 | Steel casing for LV machines.
 conveyor        | Conveyor        | 999 |  60, 62, 66 | Moves items between machines (build part).
 cable           | Copper cable    | 999 | 184,110, 60 | Carries power between machines (build part).
-campfire        | Campfire        |  20 | 200, 90, 40 | Burns wood: bakes charcoal, fires clay.
+campfire        | Campfire        |  20 | 200, 90, 40 | Burns logs and planks: bakes charcoal, fires clay.
 kiln            | Kiln            |  20 | 150, 95, 70 | Fuel-fired: smelts ore into ingots, sand into glass, alloys bronze.
 coke_oven       | Coke oven       |  20 | 120, 80, 60 | Bakes coal into coke (no fuel needed).
 blast_furnace   | Blast furnace   |  20 |  90, 70, 70 | Burns coke to make steel from iron.
@@ -134,9 +135,13 @@ station_core       | Station core       | block | 230,220,120 | Build it onto a 
 oak_log            |  Oak log          |   999 | 120,84,50   | From broadleaf trees. Saw into oak planks (Tab).
 birch_log          |  Birch log        |   999 | 220,214,200 | From the pale broadleaf trees. Saw into birch planks (Tab).
 pine_log           |  Pine log         |   999 | 110,76,46   | From conifers. Saw into pine planks (Tab).
+maple_log          |  Maple log        |   999 | 128,70,52   | From the red-leaved broadleaf trees. Saw into maple planks (Tab).
+spruce_log         |  Spruce log       |   999 | 84,60,44    | From the dark, dense conifers. Saw into spruce planks (Tab).
 oak_planks         | Oak planks        |   999 | 158,112,66  | Warm brown planks: build any shape with them.
 birch_planks       | Birch planks      |   999 | 214,196,152 | Pale planks: build any shape with them.
 pine_planks        | Pine planks       |   999 | 176,132,82  | Light brown planks: build any shape with them.
+maple_planks       | Maple planks      |   999 | 182,104,78  | Reddish planks: build any shape with them.
+spruce_planks      | Spruce planks     |   999 | 112,82,58   | Dark brown planks: build any shape with them.
 granite            | Granite           |   999 | 168,146,140 | Speckled pink-grey stone, from mountain rock. A building material.
 basalt             | Basalt            |   999 | 62,62,68    | Dark stone from deep rock, the sea floor and the moon. A building material.
 sandstone          | Sandstone         |   999 | 212,182,132 | Warm yellow stone from low coastal land. A building material.

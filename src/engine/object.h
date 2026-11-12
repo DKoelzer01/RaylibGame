@@ -62,7 +62,7 @@ struct RenderContext {
     Shader* partShader = nullptr;         // build plots (plots.h)
     int partOccluderLoc = -1;
     Shader* treeShader = nullptr;         // foliage: trees and bushes
-    int treeModelLoc = -1, treeOccluderLoc = -1, treeFadeLoc = -1;
+    int treeModelLoc = -1, treeOccluderLoc = -1, treeFadeLoc = -1, treeBarkLoc = -1, treeLeafLoc = -1;
 };
 
 extern bool frustumCullingEnabled; // debug toggle

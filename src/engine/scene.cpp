@@ -582,6 +582,8 @@ void Scene::drawScene(int gamestate) {
             tctx.treeModelLoc = GetShaderLocation(ts, "matModel");
             tctx.treeOccluderLoc = GetShaderLocation(ts, "sunOccluder");
             tctx.treeFadeLoc = GetShaderLocation(ts, "fadeEnd");
+            tctx.treeBarkLoc = GetShaderLocation(ts, "barkTint");
+            tctx.treeLeafLoc = GetShaderLocation(ts, "leafTint");
             for (const auto& obj : objects)
                 if (auto* p = dynamic_cast<Planetoid*>(obj.get()); p && !isFar(p) && p->trees) p->trees->draw(*p, tctx, onlyLod);
             rlDisableShader();

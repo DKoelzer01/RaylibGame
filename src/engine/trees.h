@@ -38,9 +38,18 @@ class PlanetField;
 class Planetoid;
 struct RenderContext;
 
-constexpr int kTreeVariants = 10;           // 0-3 broadleaf, 4-5 conifer, 6-8 bush, 9 loose stones
-constexpr int kFirstBush = 6;
-constexpr int kStoneVariant = 9;            // loose stones on the ground: picked up for stone (the first stone tools)
+// Tree variants are species x 2 shapes: 0-1 oak, 2-3 birch, 4-5 maple (broadleaf), 6-7 pine, 8-9 spruce
+// (conifers); then 10-12 bushes and 13 loose stones.
+constexpr int kTreeVariants = 14;
+constexpr int kFirstBush = 10;
+constexpr int kStoneVariant = 13;           // loose stones on the ground: picked up for stone (the first stone tools)
+// Wood species: what a tree drops when felled (its log) and how it is drawn (bark and leaf tints
+// over the shader's latitude colours). An area has a dominant species (60%) and two others (20% each).
+enum class WoodSpecies : uint8_t { Oak, Birch, Maple, Pine, Spruce, Count };
+struct WoodSpeciesDef { const char* log; const char* name; bool conifer; Vector3 bark, leaf; };
+const WoodSpeciesDef& WoodSpeciesInfo(WoodSpecies s);
+inline WoodSpecies SpeciesOfVariant(int v) { return (WoodSpecies)(v / 2); }  // trees only (v < kFirstBush)
+
 constexpr float kTreeTileSize = 64.0f;      // m
 constexpr float kTreeDrawDistance = 1000.0f;
 constexpr float kBushDrawDistance = 300.0f;
@@ -120,6 +129,8 @@ public:
 
     int loadedTiles() const { return (int)tiles.size(); }
     int instanceCount() const { return drawnInstances; }
+    // Tests: trees per species in loaded tiles within `range` of a body-local point.
+    void speciesCounts(Vector3 local, float range, int out[(int)WoodSpecies::Count]) const;
 
 private:
     struct Shared;                             // results queue shared with worker jobs

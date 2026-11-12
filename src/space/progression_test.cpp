@@ -55,9 +55,15 @@ namespace {
     // Like a player putting building stone, logs and gems in a chest: digging and chopping now give
     // those too (M21, M22), and a full 45-slot grid refuses a craft's output.
     void Stash() {
-        static const char* kStash[] = { "granite", "basalt", "sandstone", "limestone", "marble", "oak_log", "birch_log", "pine_log",
+        static const char* kStash[] = { "granite", "basalt", "sandstone", "limestone", "marble",
                                         "quartz", "amethyst", "ruby", "sapphire", "emerald", "grain_seeds", "root_seeds", "flax_seeds", "berries" };
         for (const char* id : kStash) { const int n = inventory.count(id); if (n > 0) inventory.remove(id, n); }
+    }
+    // Saw one log (of whatever wood is carried) into planks; false with no logs.
+    bool SawLog() {
+        for (const Recipe& rc : itemDB.recipes())
+            if (rc.inputs.size() == 1 && ItemMatches("any_log", rc.inputs[0].first) && inventory.count(rc.inputs[0].first) > 0) return inventory.craft(rc);
+        return false;
     }
     bool Craft(const std::string& item, int want) {
         Stash();
@@ -66,10 +72,13 @@ namespace {
         if (!r) { printf("bench: progression: no recipe for %s\n", item.c_str()); failed = 1; return false; }
         // Like a player: craft missing hand-craftable ingredients first (wire for cables, ...).
         while (inventory.count(item) < want) {
-            for (const auto& in : r->inputs)
+            for (const auto& in : r->inputs) {
+                // Wildcard planks: saw whichever logs are carried.
+                while (in.first == "any_planks" && inventory.count(in.first) < in.second && SawLog()) {}
                 if (inventory.count(in.first) < in.second)
                     for (const Recipe& sub : itemDB.recipes())
                         if (sub.output == in.first) { Craft(in.first, in.second); break; }
+            }
             if (!inventory.craft(*r)) {
                 printf("bench: progression: cannot craft %s:", item.c_str());
                 for (const auto& in : r->inputs) printf(" %s %d/%d", in.first.c_str(), inventory.count(in.first), in.second);
@@ -149,6 +158,11 @@ namespace {
         return plot->partCount() == before + 1;
     }
     void Give(const std::string& machine, const std::string& item, int count) {
+        if (item.rfind("any_", 0) == 0) { // a wildcard: the real items carried
+            for (const auto& kv : inventory.all())
+                if (count > 0 && ItemMatches(item, kv.first)) { const int k = std::min(count, kv.second); Give(machine, kv.first, k); count -= k; }
+            return;
+        }
         count = std::min(count, inventory.count(item));
         if (count > 0 && inventory.remove(item, count)) Factory::Insert(body->id, plot->id, parts[machine], item, count);
     }
@@ -163,7 +177,7 @@ namespace {
         steps.clear();
         auto add = [](const std::string& n, std::function<bool()> f) { steps.push_back({ n, std::move(f) }); };
         // Tier 0: wood, dirt, stone; clay, a crucible, a campfire to fire it.
-        add("chop trees for 160 wood", [] { while (inventory.count("wood") < 160) if (!TerrainTool_HarvestNearest(*body, home, true)) return false; return true; });
+        add("chop trees for 70 logs", [] { while (inventory.count("any_log") < 70) if (!TerrainTool_HarvestNearest(*body, home, true)) return false; return true; });
         add("dig 84 dirt", [] { return DigFor("dirt", 84, 1.0f); });
         add("harvest bushes for fibre, pick up loose stones; craft and hold a stone pickaxe", [] {
             while (inventory.count("fibre") < 2) if (!TerrainTool_HarvestNearest(*body, home, false)) return false;
@@ -178,7 +192,7 @@ namespace {
             static bool started = false;
             if (!started) { started = true; if (!Place("campfire", PartType::Campfire, { 0, 0, 0 })) return false; return false; }
             static bool fed = false;
-            if (!fed) { fed = true; Give("campfire", "crucible_mold", 1); Give("campfire", "wood", 2); }
+            if (!fed) { fed = true; Give("campfire", "crucible_mold", 1); Give("campfire", "any_log", 1); }
             return Collect("campfire", "fired_crucible", 1);
         });
         // Tier 1: eat; a kiln; ores; ingots; bronze.
@@ -190,12 +204,12 @@ namespace {
         add("find ore veins", [] { FindOre(); return true; });
         add("mine 38 copper, 8 tin, 52 iron ore and 16 coal", [] { return MineOre("copper_ore", 38) && MineOre("tin_ore", 8) && MineOre("iron_ore", 52) && MineOre("coal", 16); });
         add("craft and place a kiln", [] { return Craft("kiln", 1) && Place("kiln", PartType::Kiln, { 3, 0, 0 }); });
-        add("smelt copper", [] { static bool fed = false; if (!fed) { fed = true; Give("kiln", "copper_ore", 38); Give("kiln", "wood", 22); } return Collect("kiln", "copper_ingot", 38); });
-        add("smelt tin", [] { static bool fed = false; if (!fed) { fed = true; Give("kiln", "tin_ore", 8); Give("kiln", "wood", 5); } return Collect("kiln", "tin_ingot", 8); });
-        add("smelt iron", [] { static bool fed = false; if (!fed) { fed = true; Give("kiln", "iron_ore", 38); Give("kiln", "wood", 30); } return Collect("kiln", "iron_ingot", 38); });
+        add("smelt copper", [] { static bool fed = false; if (!fed) { fed = true; Give("kiln", "copper_ore", 38); Give("kiln", "any_log", 8); } return Collect("kiln", "copper_ingot", 38); });
+        add("smelt tin", [] { static bool fed = false; if (!fed) { fed = true; Give("kiln", "tin_ore", 8); Give("kiln", "any_log", 2); } return Collect("kiln", "tin_ingot", 8); });
+        add("smelt iron", [] { static bool fed = false; if (!fed) { fed = true; Give("kiln", "iron_ore", 38); Give("kiln", "any_log", 10); } return Collect("kiln", "iron_ingot", 38); });
         add("alloy 28 bronze", [] {
             static bool fed = false;
-            if (!fed) { fed = true; Give("kiln", "copper_ingot", 21); Give("kiln", "tin_ingot", 7); Give("kiln", "wood", 8); }
+            if (!fed) { fed = true; Give("kiln", "copper_ingot", 21); Give("kiln", "tin_ingot", 7); Give("kiln", "any_log", 3); }
             return Collect("kiln", "bronze_ingot", 28);
         });
         // Tier 2: steam (boiler + cables + forge hammer), coke, steel.
@@ -205,7 +219,7 @@ namespace {
         add("place and wire the steam machines", [] {
             if (!Place("boiler", PartType::Boiler, { 0, 0, 4 }) || !Place("forge_hammer", PartType::ForgeHammer, { 3, 0, 4 })) return false;
             for (int x = 0; x < 4; ++x) if (!BuildTool_Place(*body, *plot, { PartType::Cable, { x, 0, 3 }, 0 }, true)) { failed = 1; return false; }
-            Give("boiler", "wood", 20);
+            Give("boiler", "any_log", 7);
             return true;
         });
         add("hammer 8 bronze plates", [] { static bool fed = false; if (!fed) { fed = true; Give("forge_hammer", "bronze_ingot", 8); } return Collect("forge_hammer", "bronze_plate", 8); });
@@ -214,11 +228,11 @@ namespace {
         });
         add("bake 8 coke", [] { static bool fed = false; if (!fed) { fed = true; Give("coke_oven", "coal", 16); } return Collect("coke_oven", "coke", 8); });
         add("make 34 steel", [] { static bool fed = false; if (!fed) { fed = true; Give("blast_furnace", "iron_ingot", 34); Give("blast_furnace", "coke", 8); } return Collect("blast_furnace", "steel_ingot", 34); });
-        add("hammer 34 steel plates", [] { static bool fed = false; if (!fed) { fed = true; Give("forge_hammer", "steel_ingot", 34); Give("boiler", "wood", 50); } return Collect("forge_hammer", "steel_plate", 34); });
+        add("hammer 34 steel plates", [] { static bool fed = false; if (!fed) { fed = true; Give("forge_hammer", "steel_ingot", 34); Give("boiler", "any_log", 17); } return Collect("forge_hammer", "steel_plate", 34); });
         add("pen two hornhides in a ring of fences (then take their hide)", [] {
             static int phase = 0;
             if (phase == 0) {
-                while (inventory.count("wood") < 60) if (!TerrainTool_HarvestNearest(*body, home, true)) return false;
+                while (inventory.count("any_log") < 20) if (!TerrainTool_HarvestNearest(*body, home, true)) return false;
                 if (!Craft("fence", 34)) return false;
                 // An 8 m square of fences 40 m east of the workshop, following the ground.
                 const Vector3 c = Surface(Offset(40.0f, 0.0f));
@@ -245,7 +259,7 @@ namespace {
         });
         // Tier 3: glass, vacuum tubes; a field; two suit modules.
         add("dig 24 sand", [] { return DigSand(24); });
-        add("make 6 glass", [] { static bool fed = false; if (!fed) { fed = true; Give("kiln", "sand", 24); Give("kiln", "wood", 4); } return Collect("kiln", "glass", 6); });
+        add("make 6 glass", [] { static bool fed = false; if (!fed) { fed = true; Give("kiln", "sand", 24); Give("kiln", "any_log", 2); } return Collect("kiln", "glass", 6); });
         add("craft 4 vacuum tubes", [] { return Craft("copper_wire", 8) && Craft("vacuum_tube", 4); });
         add("till a field and plant seeds from the bushes", [] {
             while (inventory.count("grain_seeds") + inventory.count("root_seeds") + inventory.count("flax_seeds") < 1)
@@ -270,7 +284,7 @@ namespace {
         add("place and wire the LV machines", [] {
             if (!Place("generator", PartType::Generator, { 0, 0, 8 }) || !Place("electric_furnace", PartType::Furnace, { 3, 0, 8 })) return false;
             for (int x = 0; x < 4; ++x) if (!BuildTool_Place(*body, *plot, { PartType::Cable, { x, 0, 7 }, 0 }, true)) { failed = 1; return false; }
-            Give("generator", "wood", 4);
+            Give("generator", "any_log", 2);
             Give("electric_furnace", "iron_ore", 2);
             return true;
         });
@@ -468,8 +482,8 @@ int Progression_Update(Scene& world, bool fullLadder) {
             return QuestBook_Tier() >= need ? 1 : -1;
         }
     } else if (GetTime() - stepStart > 120.0 || failed) {
-        printf("bench: progression: FAIL at \"%s\" (wood %d, copper %d/%d ore/ingot, tin %d/%d, iron %d/%d, coal %d, bronze %d, steel %d/%d)\n", steps[current].name.c_str(),
-               inventory.count("wood"), inventory.count("copper_ore"), inventory.count("copper_ingot"), inventory.count("tin_ore"), inventory.count("tin_ingot"),
+        printf("bench: progression: FAIL at \"%s\" (logs %d, copper %d/%d ore/ingot, tin %d/%d, iron %d/%d, coal %d, bronze %d, steel %d/%d)\n", steps[current].name.c_str(),
+               inventory.count("any_log"), inventory.count("copper_ore"), inventory.count("copper_ingot"), inventory.count("tin_ore"), inventory.count("tin_ingot"),
                inventory.count("iron_ore"), inventory.count("iron_ingot"), inventory.count("coal"), inventory.count("bronze_ingot"), inventory.count("steel_ingot"), inventory.count("steel_plate"));
         Factory::SetSpeed(1);
         return -1;

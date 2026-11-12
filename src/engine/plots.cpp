@@ -126,7 +126,6 @@ namespace {
     const BuildMaterial kBuildMaterials[] = {
         { "concrete", "Concrete", { 168, 166, 158, 255 } },
         { "stone", "Stone", { 122, 122, 128, 255 } },
-        { "wood", "Wood", { 150, 108, 64, 255 } },
         { "iron_plate", "Iron", { 118, 122, 130, 255 } },
         { "glass", "Glass", { 172, 212, 226, 255 } },
         { "dirt", "Packed dirt", { 120, 90, 60, 255 } },
@@ -135,6 +134,8 @@ namespace {
         { "oak_planks", "Oak", { 158, 112, 66, 255 } },
         { "birch_planks", "Birch", { 214, 196, 152, 255 } },
         { "pine_planks", "Pine", { 176, 132, 82, 255 } },
+        { "maple_planks", "Maple", { 182, 104, 78, 255 } },
+        { "spruce_planks", "Spruce", { 112, 82, 58, 255 } },
         { "granite", "Granite", { 168, 146, 140, 255 } },
         { "basalt", "Basalt", { 62, 62, 68, 255 } },
         { "sandstone", "Sandstone", { 212, 182, 132, 255 } },
@@ -160,6 +161,15 @@ namespace {
         { "ruby_block", "Ruby", { 196, 40, 70, 255 } },
         { "sapphire_block", "Sapphire", { 50, 80, 196, 255 } },
         { "emerald_block", "Emerald", { 40, 176, 110, 255 } },
+        // Raw resources as blocks (playtest 4): logs of each wood (bark colours), clay, ice and coal.
+        { "oak_log", "Oak log", { 92, 66, 42, 255 } },
+        { "birch_log", "Birch log", { 226, 222, 210, 255 } },
+        { "maple_log", "Maple log", { 110, 64, 50, 255 } },
+        { "pine_log", "Pine log", { 104, 74, 50, 255 } },
+        { "spruce_log", "Spruce log", { 70, 52, 40, 255 } },
+        { "clay", "Clay", { 170, 120, 95, 255 } },
+        { "ice", "Ice", { 176, 214, 240, 255 } },
+        { "coal", "Coal", { 36, 36, 40, 255 } },
     };
 }
 int BuildMaterialCount() { return (int)(sizeof(kBuildMaterials) / sizeof(kBuildMaterials[0])); }

@@ -180,6 +180,8 @@ PlanetField::PlanetField(unsigned int seed, float radius_, bool moon_)
     ravines = SeededNoise(rng, 5.0f / radius);       // narrow canyons where this crosses zero
     ravineMask = SeededNoise(rng, 3.0f / radius);    // ...only in some regions
     streams = SeededNoise(rng, 1.0f / 900.0f);        // small streams where this crosses zero (added last)
+    rocks = SeededNoise(rng, 1.0f / 22.0f);           // outcrop fins and crags (playtest 4)
+    rockMask = SeededNoise(rng, 1.0f / 340.0f);       // ...only in rocky patches
     // Bounds of elevation() below (each noise term is in [-1, 1]).
     if (moon) { minElevation = -90.0f; maxElevation = 340.0f; }
     else { minElevation = -740.0f; maxElevation = 1690.0f; }
@@ -481,11 +483,92 @@ float PlanetField::baseDensityLod(Vector3 p, float fp) const {
     return densityNear(p, d, surface, fp);
 }
 
+namespace {
+    constexpr float kBoulderCell = 24.0f;  // m: at most one boulder per cell
+    constexpr float kBoulderMax = 5.0f;    // m: largest boulder radius
+    struct Boulder { bool exists; Vector3 dir; float r, lift; };
+}
+
+// Rock outcrops and boulders (playtest 4: "all terrain is round"). Both are unions with the ground,
+// so they mine and collide like any rock, and both fade out where samples are too coarse to show them.
+// - Outcrops: tors in rocky patches (a 340 m mask, more on high ground): columns with vertical cliff
+//   sides, 3-12 m tall, their tops flaring into a lip (small overhangs), strata on the walls.
+// - Boulders: at most one per 24 m cell (owned by the cell its sea-level point lies in, like ponds),
+//   1.2-5 m across, sunk 10-40% into the ground, lumpy; none under water or on beaches.
+// Returns metres inside the nearest feature (< 0 outside it).
+float PlanetField::rockFeature(Vector3 p, float d, float surface, float fp) const {
+    if (moon || d < 1e-3f) return -1e9f;
+    const float w = std::clamp(2.0f - fp / 4.0f, 0.0f, 1.0f);
+    const float h = d - surface;                      // metres above the height-map ground
+    if (w <= 0.0f || h > 9.0f || h < -3.0f) return -1e9f;
+    const float elev = surface - radius;
+    if (elev < 4.0f) return -1e9f;                    // sea, beaches, shallows
+    float best = -1e9f;
+    // Outcrops.
+    const float mask = Smoothstep(0.5f, 0.75f, rockMask.fractal(2, p.x, p.y, p.z) + 0.2f * Smoothstep(150.0f, 600.0f, elev));
+    const Vector3 dir = { p.x / d, p.y / d, p.z / d };
+    const Vector3 s = Vector3Scale(dir, radius);
+    if (mask > 0.0f) {
+        // Tors: the footprint is noise at the sea-level point, the same all the way up a column, so
+        // the sides are vertical cliffs; each tor's top height varies, its top flares a little
+        // (an overhang lip) and rough strata break the walls.
+        const float n = rocks.fractal(2, s.x, s.y, s.z);
+        const float top = (3.0f + 9.0f * mask) * (0.6f + 0.4f * rocks.noise(s.x * 0.01f, s.y * 0.01f, s.z * 0.01f));
+        const float f = std::clamp(h / std::max(top, 0.5f), 0.0f, 1.0f);
+        const float thr = 0.3f - 0.06f * f * f + 0.04f * sinf(h * 2.1f + n * 9.0f);  // flared top, strata
+        const float side = (n - thr) * 14.0f;                   // ~metres in from the wall
+        best = std::max(best, std::min(side, top - h) * w);
+    }
+    // Boulders.
+    const float reach = kBoulderMax * 1.3f;
+    const int x0 = (int)floorf((s.x - reach) / kBoulderCell), x1 = (int)floorf((s.x + reach) / kBoulderCell);
+    const int y0 = (int)floorf((s.y - reach) / kBoulderCell), y1 = (int)floorf((s.y + reach) / kBoulderCell);
+    const int z0 = (int)floorf((s.z - reach) / kBoulderCell), z1 = (int)floorf((s.z + reach) / kBoulderCell);
+    for (int cz = z0; cz <= z1; ++cz)
+        for (int cy = y0; cy <= y1; ++cy)
+            for (int cx = x0; cx <= x1; ++cx) {
+                struct Entry { int x, y, z; const PlanetField* f; Boulder b; };
+                thread_local Entry cache[1024];
+                Entry& e = cache[PondHash(cx, cy, cz, 91u) & 1023u];
+                if (!(e.f == this && e.x == cx && e.y == cy && e.z == cz)) {
+                    Boulder b{ false, { 0, 0, 0 }, 0, 0 };
+                    uint32_t hh = PondHash(cx, cy, cz, (uint32_t)(radius * 3.0f) ^ 0xb01du);
+                    if (PondUnit(hh) < 0.16f) {
+                        const Vector3 c = { (cx + PondUnit(hh)) * kBoulderCell, (cy + PondUnit(hh)) * kBoulderCell, (cz + PondUnit(hh)) * kBoulderCell };
+                        const float len = Vector3Length(c);
+                        if (len > 1.0f) {
+                            b.dir = Vector3Scale(c, 1.0f / len);
+                            const Vector3 q = Vector3Scale(b.dir, radius);
+                            if ((int)floorf(q.x / kBoulderCell) == cx && (int)floorf(q.y / kBoulderCell) == cy && (int)floorf(q.z / kBoulderCell) == cz) {
+                                const float u = PondUnit(hh);
+                                b.r = 1.2f + (kBoulderMax - 1.2f) * u * u;  // mostly small
+                                b.lift = b.r * (0.1f + 0.3f * PondUnit(hh));
+                                b.exists = true;
+                            }
+                        }
+                    }
+                    e = { cx, cy, cz, this, b };
+                }
+                const Boulder& b = e.b;
+                if (!b.exists) continue;
+                const float horiz = Vector3Distance(dir, b.dir) * radius;
+                if (horiz > b.r * 1.3f) continue;
+                const float vert = (h - b.lift) / 0.75f;      // a little squat
+                const float lump = 0.25f * b.r * rocks.fractal(2, p.x * 1.7f, p.y * 1.7f, p.z * 1.7f);
+                best = std::max(best, (b.r + lump - sqrtf(horiz * horiz + vert * vert)) * w);
+            }
+    return best;
+}
+
 // Everything after the height map, shared by single samples and blocks so both agree exactly.
 float PlanetField::densityNear(Vector3 p, float d, float surface, float fp) const {
     float v = ISO_LEVEL + DENSITY_GRADIENT * (surface - d);
     const float depth = surface - d;
     if (fabsf(depth) < 6.0f) v += DENSITY_GRADIENT * 1.5f * detail.fractalLimited(2, fp, p.x, p.y * 1.3f, p.z); // crags, overhangs
+    if (depth < 3.0f && depth > -9.0f) {
+        const float m = rockFeature(p, d, surface, fp);
+        if (m > -4.0f) v = std::max(v, ISO_LEVEL + DENSITY_GRADIENT * m);
+    }
     // Caves, from a few metres down to 20 m above the mantle (which stays intact). Each cave shape is
     // its own distance field in metres, combined with min(): rock density grows with depth, so
     // subtracting a fixed amount would only carve shallow caves.
@@ -622,6 +705,8 @@ VoxelMaterial PlanetField::materialSky(Vector3 p, float base, float fp, Vector3 
     const float slack = fp > 1.0f ? 2.0f * fp : 0.0f;
     sky = std::clamp(1.0f - (depth - 2.0f - slack) / 8.0f, 0.0f, 1.0f); // buried more than ~10 m: no sky (caves, deep pits)
     if (moon) return depth < 2.5f + slack ? VoxelMaterial::Regolith : VoxelMaterial::Rock; // grey dust over rock (asteroid palette)
+    // Outcrops and boulders are bare rock (snow still caps them up high, below).
+    if (depth < 2.5f + slack && surfaceElevation < 1050.0f && rockFeature(p, d, radius + surfaceElevation, fp) > -0.35f) return VoxelMaterial::Rock;
     if (depth < 2.5f + slack) {
         // Surface biome from height above sea level, latitude, slope and a climate wobble. The top
         // ~0.6 m is the surface material; below it a soil layer (dirt under grass, sand under sand,
