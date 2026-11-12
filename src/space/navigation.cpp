@@ -338,7 +338,7 @@ void Nav_Update(Scene& world, bool inputEnabled) {
         }
         if (IsMouseButtonReleased(MOUSE_BUTTON_LEFT) && dragging) {
             const Vector2 d = Vector2Subtract(mouse, dragFrom);
-            if (!dragMoved && Vector2Length(d) <= 4.0f && inside && bigMap.shown && !bigMap.pending) {
+            if (!dragMoved && Vector2Length(d) <= 4.0f && inside && bigMap.shown && !bigMap.pending && mapDirtyAt < 0.0) { // only on a settled view (the image is the view)
                 // A click: a waypoint there.
                 const MapImage& m = *bigMap.shown;
                 const Vector3 dir = PixelDir(m, (mouse.x - r.x) * scale, (mouse.y - r.y) * scale);
@@ -351,12 +351,14 @@ void Nav_Update(Scene& world, bool inputEnabled) {
         if (IsMouseButtonPressed(MOUSE_BUTTON_RIGHT) && inside && bigMap.shown) {
             // Remove the waypoint nearest the cursor (within 14 px).
             const MapImage& m = *bigMap.shown;
+            const float k = m.mpp / mpp; // the image as the view draws it (see Nav_DrawMap)
+            const Vector2 off = OnImage(m, mapCentre);
             int best = -1;
             float bestD = 14.0f;
             for (size_t i = 0; i < waypoints.size(); ++i) {
                 if (waypoints[i].body != h.body->name) continue;
                 const Vector2 p = OnImage(m, waypoints[i].dir);
-                const Vector2 s = { r.x + r.width * 0.5f + p.x / scale, r.y + r.height * 0.5f + p.y / scale };
+                const Vector2 s = { r.x + r.width * 0.5f + (p.x - off.x) * k / scale, r.y + r.height * 0.5f + (p.y - off.y) * k / scale };
                 const float dd = Vector2Distance(s, mouse);
                 if (dd < bestD) { bestD = dd; best = (int)i; }
             }
@@ -365,7 +367,7 @@ void Nav_Update(Scene& world, bool inputEnabled) {
         if (IsKeyPressed(KEY_C)) { mapCentre = h.up; mapDirtyAt = GetTime(); } // back to the player
     }
     // Re-render after the view settles (a short pause, so dragging doesn't queue a render a frame).
-    if (mapDirtyAt >= 0.0 && GetTime() - mapDirtyAt > 0.12 && !bigMap.pending) {
+    if (mapDirtyAt >= 0.0 && GetTime() - mapDirtyAt > 0.05 && !bigMap.pending) {
         bigMap.pending = StartImage(h, mapCentre, kZooms[mapZoom], kMapPixels, kMapPixels, false);
         mapDirtyAt = -1.0;
     }
@@ -466,12 +468,23 @@ void Nav_DrawMap(Scene& world) {
     DrawRectangle(0, 0, GetScreenWidth(), GetScreenHeight(), Fade(BLACK, 0.7f));
     const Rectangle r = MapRect();
     DrawRectangleRec(r, { 16, 19, 26, 255 });
-    if (bigMap.tex.id && bigMap.shown) DrawTexturePro(bigMap.tex, { 0, 0, (float)bigMap.shown->W, (float)bigMap.shown->H }, r, { 0, 0 }, 0.0f, WHITE);
+    // The last rendered image is drawn where the current view puts it (shifted while dragging, scaled
+    // after a zoom), so the map follows the cursor at once and the fresh render only sharpens it.
+    if (bigMap.tex.id && bigMap.shown) {
+        const MapImage& m = *bigMap.shown;
+        const float scale = m.W / r.width, k = m.mpp / kZooms[mapZoom];
+        const Vector2 off = Vector3LengthSqr(mapCentre) > 0.5f ? OnImage(m, mapCentre) : Vector2{ 0, 0 };
+        const Rectangle dst = { r.x + r.width * 0.5f - (m.W * 0.5f + off.x) * k / scale, r.y + r.height * 0.5f - (m.H * 0.5f + off.y) * k / scale, m.W * k / scale, m.H * k / scale };
+        BeginScissorMode((int)r.x, (int)r.y, (int)r.width, (int)r.height);
+        DrawTexturePro(bigMap.tex, { 0, 0, (float)m.W, (float)m.H }, dst, { 0, 0 }, 0.0f, WHITE);
+        EndScissorMode();
+    }
     DrawRectangleLinesEx(r, 2.0f, Fade(RAYWHITE, 0.5f));
     if (bigMap.shown && h.body) {
         const MapImage& m = *bigMap.shown;
-        const float scale = m.W / r.width;
-        auto toScreen = [&](Vector3 dir) { const Vector2 p = OnImage(m, dir); return Vector2{ r.x + r.width * 0.5f + p.x / scale, r.y + r.height * 0.5f + p.y / scale }; };
+        const float scale = m.W / r.width, k = m.mpp / kZooms[mapZoom];
+        const Vector2 off = Vector3LengthSqr(mapCentre) > 0.5f ? OnImage(m, mapCentre) : Vector2{ 0, 0 };
+        auto toScreen = [&](Vector3 dir) { const Vector2 p = OnImage(m, dir); return Vector2{ r.x + r.width * 0.5f + (p.x - off.x) * k / scale, r.y + r.height * 0.5f + (p.y - off.y) * k / scale }; };
         BeginScissorMode((int)r.x, (int)r.y, (int)r.width, (int)r.height);
         if (hasStart && startBody == h.body->name) DrawMarker(toScreen(startDir), GREEN, "Start", 7.0f);
         for (const Waypoint& w : waypoints) if (w.body == h.body->name) DrawMarker(toScreen(w.dir), GOLD, w.name.c_str(), 7.0f);
@@ -484,7 +497,7 @@ void Nav_DrawMap(Scene& world) {
                      Vector2Add(Vector2Subtract(p, Vector2Scale(f, 7.0f)), Vector2Scale(sd, 7.0f)), SKYBLUE);
         EndScissorMode();
         // Scale bar: 100 m .. 10 km.
-        const float metresPerScreenPx = m.mpp * scale;
+        const float metresPerScreenPx = kZooms[mapZoom] * scale;
         float bar = 100.0f;
         while (bar / metresPerScreenPx < 80.0f) bar *= 2.0f;
         const int bw = (int)(bar / metresPerScreenPx), bx = (int)r.x + 16, by = (int)(r.y + r.height) - 24;
