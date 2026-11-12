@@ -16,6 +16,8 @@ uniform vec4 sunOccluder;      // planet: centre + radius blocking the sun (w = 
 uniform vec3 fogColor;         // linear
 uniform float fogDensity;
 uniform float time;
+uniform vec4 fluidColor;       // a > 0: drawing another fluid kind (fluid.cpp): sRGB colour, opacity
+uniform float fluidGlow;       // its emissive strength (lava)
 
 #include "shadow.glsl"
 
@@ -62,6 +64,16 @@ void main()
     // blends one water layer per pixel, so overlapping LOD copies don't double up.
     bool below = dot(normalize(fragNormal), v) < 0.0;
     float alpha = below ? 0.8 : clamp(max(mix(1.0, 0.3, clarity), fresnel) + glint, 0.0, 1.0);
+    if (fluidColor.a > 0.0) {
+        // Another fluid kind (fluid.cpp, fluids.txt): its own colour and opacity, a sky reflection at grazing
+        // angles, a faint rainbow sheen on dark ones (oil), a hard sun glint, and its glow (lava).
+        vec3 base = pow(fluidColor.rgb, vec3(2.2));
+        float dark = 1.0 - clamp(dot(base, vec3(0.333)) * 5.0, 0.0, 1.0);
+        vec3 sheen = 0.5 + 0.5 * cos(6.2831853 * (vec3(0.0, 0.33, 0.67) + dot(fragTexPos, vec3(0.13, 0.07, 0.11)) + nv * 2.0));
+        color = base * (0.3 + 0.7 * light) + skyColor * fresnel * 0.5 + sheen * 0.05 * light * dark
+              + vec3(1.0, 0.95, 0.85) * glint * 1.5 + base * fluidGlow * 3.0;
+        alpha = max(fluidColor.a, fresnel);
+    }
 
     float fog = 1.0 - exp(-fogDensity * dist);
     color = mix(color, fogColor, clamp(fog, 0.0, 1.0));

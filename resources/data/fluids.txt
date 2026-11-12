@@ -1,0 +1,6 @@
+# Fluid kinds for the flowing-fluid simulation (src/engine/fluid.h, Plan 5). Kind 0 is water; up to 8 kinds.
+# Kinds don't mix: a fluid flows only into empty cells or cells of its own kind (oil rests on water).
+# id | name | colour r,g,b (sRGB) | opacity | glow (emissive) | viscosity (sideways flow = difference / this; water 5) |
+#   min spread (films thinner than this /255 m stay put) | bucket item and count (- 0: the water bucket)
+water     | Water     | 40,90,160   | 0.6  | 0.0 | 5  | 10 | - 0
+crude_oil | Crude oil | 26,20,15    | 0.97 | 0.0 | 9  | 16 | crude_oil 4

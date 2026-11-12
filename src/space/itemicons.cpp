@@ -593,7 +593,13 @@ void PaintItem(Canvas& cv, const ItemDef& d) {
     if (is({ "stone", "clay", "anorthite" })) { Lump(cv, c, id == "clay" ? 0.04f : 0.12f); return; }
     if (is({ "iron_plate", "polyethylene" })) { Plate(cv, c); return; }
     if (id == "superconductor") { Coil(cv, c); return; }
-    if (is({ "water", "milk", "rocket_fuel" })) { Bottle(cv, c); return; }
+    if (is({ "water", "milk", "rocket_fuel", "crude_oil" })) { Bottle(cv, c); return; }
+    if (id == "peat") { Pile(cv, c); return; }
+    if (id == "cactus") {
+        cv.paint(Union(Box(32, 36, 7, 22, 6), Union(Union(Box(20, 32, 3.5f, 8, 3), Box(23, 38, 5, 3, 2)), Union(Box(44, 26, 3.5f, 8, 3), Box(41, 32, 5, 3, 2)))), Lin(c));
+        for (int i = 0; i < 5; ++i) cv.line(30.0f, 18.0f + i * 7, 30.0f, 21.0f + i * 7, 0.6f, Mix(c, kWhite, 0.5f), 0.7f);
+        return;
+    }
     if (is({ "oxygen_canister", "hydrogen", "oxygen", "helium3", "oxygen_tank_module" })) { Canister(cv, c); return; }
     if (is({ "power_cell", "battery_pack" })) { Cell(cv, c); return; }
     if (id == "berries") { Berries(cv, c); return; }

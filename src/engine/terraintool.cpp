@@ -85,12 +85,26 @@ namespace {
             Particles_Emit(*plantBody, Vector3Add(p.base, Vector3Scale(p.up, p.height * (p.tree() ? 0.8f : 0.5f))), leaves);
         }
         plantBody->trees->remove(p.id);
+        // The biome it grew in (Plan 5 B resources): desert scrub is cactus, jungle trees give rubber.
+        Biome biome = Biome::Forest;
+        if (const auto* pf = dynamic_cast<const PlanetField*>(plantBody->field.get())) {
+            const float r = Vector3Length(p.base);
+            if (r > 1.0f) biome = pf->biomeAt(Vector3Scale(p.base, 1.0f / r), r - pf->radius);
+        }
+        if (p.tree() && biome == Biome::Jungle && itemDB.find("rubber")) { inventory.add("rubber", 1); }
+        if (!p.tree() && !p.stone() && (biome == Biome::Desert || biome == Biome::Badlands) && itemDB.find("cactus")) {
+            inventory.add("cactus", 2);
+            Toast("+2 cactus");
+            Audio_Play(Sfx::Pickup, 0.5f);
+            chopId = 0; chopHits = 0; hasPlant = false;
+            return true;
+        }
         if (p.tree()) {
             // Logs of its species (saw them into planks: recipes take any planks).
             const WoodSpeciesDef& sp = WoodSpeciesInfo(SpeciesOfVariant(p.variant));
             const int logs = 1 + (int)(p.scale * 2.0f);
             inventory.add(sp.log, logs);
-            Toast(TextFormat("+%d %s log%s", logs, sp.name, logs > 1 ? "s" : ""));
+            Toast(TextFormat("+%d %s log%s%s", logs, sp.name, logs > 1 ? "s" : "", biome == Biome::Jungle ? "  +1 rubber" : ""));
             Audio_Play(Sfx::Build, 0.6f, 0.5f);
         } else if (p.stone()) {
             const int n = 1 + (int)((p.id >> 3) & 1); // a stone or two, picked up off the ground
@@ -141,6 +155,17 @@ bool TerrainTool_Bucket(Scene& world) {
     {
     Planetoid& body = *bodyP;
     const std::string from = terrainTool.heldTool;
+    const int kindHere = from == "bucket" && hasHit ? Fluid::KindAt(body, hit.local, 1.5f) : -1;
+    if (kindHere > 0 && Fluid::FluidAt(body, hit.local, 1.5f, kindHere) >= 0.5f) {
+        // Another fluid (fluids.txt): a bucketful yields the kind's bucket item; the bucket comes back empty.
+        const Fluid::Kind& fk = Fluid::KindInfo(kindHere);
+        if (!fk.bucketItem.empty() && itemDB.find(fk.bucketItem) && Fluid::Take(body, hit.local, 1.0f, 1.5f, kindHere) >= 0.5f) {
+            inventory.add(fk.bucketItem, fk.bucketCount);
+            Audio_Play(Sfx::Pickup, 0.6f, 0.5f);
+            Toast(TextFormat("+%d %s", fk.bucketCount, fk.name.c_str()));
+        } else Toast("Not enough to scoop here");
+        return true;
+    }
     if (from == "bucket") {
         const float maxD = hasHit ? hit.distance + 1.0f : terrainTool.reach; // the water may start just past a shallow bed
         bool found = false;
@@ -399,6 +424,11 @@ bool TerrainTool_Stroke(bool dig) {
     float wet = 0.0f;
     bool grass = false;
     const char* stoneKindAt = nullptr;
+    bool swampHere = false; // Plan 5 B: digging swamp ground turns up peat
+    if (const auto* pfb = dynamic_cast<const PlanetField*>(p.field.get()); pfb && itemDB.find("peat")) {
+        const float r0 = Vector3Length(hit.local);
+        if (r0 > 1.0f) swampHere = pfb->biomeAt(Vector3Scale(hit.local, 1.0f / r0), pfb->elevation(Vector3Scale(hit.local, 1.0f / r0))) == Biome::Swamp;
+    }
     for (int z = -4; z <= 4; ++z)
         for (int y = -4; y <= 4; ++y)
             for (int x = -4; x <= 4; ++x) {
@@ -417,6 +447,7 @@ bool TerrainTool_Stroke(bool dig) {
                 if (strcmp(item, "dirt") == 0) got["gravel"] += cell * 0.4f; // stones in the soil (enough for the first stone tools)
                 if (WetBed(p, q, m)) wet += cell;
                 if (m == VoxelMaterial::Grass) grass = true;
+                if (swampHere && (m == VoxelMaterial::Grass || m == VoxelMaterial::Regolith)) got["peat"] += cell * 0.8f; // Plan 5 B: swamp ground is peat
             }
     for (auto& kv : got) inventory.addFractional(kv.first, kv.second);
     if (wet > 0.0f) inventory.addFractional("clay", wet * 0.8f); // river and pond beds hold clay
