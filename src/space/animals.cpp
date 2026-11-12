@@ -4,6 +4,7 @@
 #include "gameui.h"
 #include "hotbar.h"
 #include "rocket.h"
+#include "weather.h"
 #include "inventory.h"
 #include "player.h"
 #include "plots.h"
@@ -485,7 +486,7 @@ void Animals_Update(Scene& world, float dt, float worldDt, bool inputEnabled) {
             a.fleeTimer = 4.0f;
             a.fleeFrom = playerLocal;
             continue;
-        } else if (Vector3DotProduct(sun, body->dirToWorld(up)) < -0.1f) {
+        } else if (dark || (sameBody && Weather_StormHere())) { // night, or a storm: they shelter and rest
             a.state = State::Rest; // night
         } else {
             a.timer -= step;

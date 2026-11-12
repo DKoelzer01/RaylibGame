@@ -179,6 +179,10 @@ public:
     static const char* OreKindName(int kind);   // "iron_ore", "copper_ore", "tin_ore", "coal", "bauxite_ore", "ilmenite_ore"
     int oreKind(Vector3 p, float depth) const;
     int depositNear(Vector3 p, float reach) const; // the kind of a deposit within `reach` m, or -1 (miners)
+    // The kind of stone that rock is here (M21, building variety): an item id - marble in rare deep
+    // pockets, basalt deep down and under the sea, granite in the mountains, sandstone on low coastal
+    // land, limestone elsewhere (in broad regions).
+    const char* stoneKind(Vector3 p) const;
     // On a river or pond bed (or its wet shore): digging there also turns up clay.
     bool wetBed(Vector3 local) const;
     // A body-local direction to a good start spot: temperate latitude, flat grassland a little above
@@ -219,6 +223,10 @@ private:
     River stream(const Land& l, Vector3 dir, float footprint) const; // the same for streams (wf unused)
     float broadLand(const Land& l, Vector3 dir, float smoothFootprint) const; // the land without fine hills and detail
 };
+
+// Gems (M22): the rare gem a stone kind holds (granite amethyst, marble ruby, basalt sapphire,
+// limestone emerald), or nullptr; any rock may also give quartz.
+const char* GemForStone(const char* stone);
 
 // No terrain at all: a body that only carries a build plot (a rocket in flight, rocket.h).
 class EmptyField : public DensityField {

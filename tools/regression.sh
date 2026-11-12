@@ -71,6 +71,9 @@ planet() {
     run --seed 9 --bench 3 --test-threats
     run --seed 42 --bench 2 --test-recipes
     run --seed 42 --bench 3 --test-crafting
+    run --seed 42 --bench 3 --test-materials
+    run --seed 42 --bench 3 --test-decor
+    run --seed 42 --bench 3 --test-weather
 }
 
 space() {

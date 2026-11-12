@@ -41,12 +41,16 @@ enum class PartType : uint8_t {
     Fence, Gate,                                                     // 1 m wooden panels: pens (milestone 12); the player walks through a gate, animals do not
     Cabin,                                                           // rocket crew cabin: 4 seats, 30 min of air (plan 3, M19)
     StationCore,                                                     // deployed in orbit: founds a station (plan 3, M20); stores fuel
+    Slab, Panel, Pane, Post,                                         // detail shapes inside one cell: half height, half thickness, a thin pane, a quarter post (M21)
     Count
 };
 inline bool IsMachine(PartType t) { return (t >= PartType::Chest && t <= PartType::SteamMacerator) || (t >= PartType::OreWasher && t <= PartType::PrecisionAssembler); }
 inline bool IsRocketPart(PartType t) { return (t >= PartType::RocketEngine && t <= PartType::LandingLeg) || t == PartType::Cabin || t == PartType::StationCore; }
-inline bool IsShape(PartType t) { return t <= PartType::Beam8; } // structure: built from a material
-constexpr int kShapeCount = (int)PartType::Beam8 + 1;
+inline bool IsShape(PartType t) { return t <= PartType::Beam8 || (t >= PartType::Slab && t <= PartType::Post); } // structure: built from a material
+// The shapes in the build wheel's order (the detail shapes of M21 after the beams).
+constexpr PartType kShapes[] = { PartType::Cube, PartType::Block, PartType::Slope, PartType::Corner, PartType::Beam2, PartType::Beam4, PartType::Beam8,
+                                 PartType::Slab, PartType::Panel, PartType::Pane, PartType::Post };
+constexpr int kShapeCount = (int)(sizeof(kShapes) / sizeof(kShapes[0]));
 const char* PartName(PartType t);
 int PartCostCount(PartType t);              // items one part costs (shapes: of their material)
 const char* PartCostItem(PartType t);       // shapes: concrete (material 0); else the part's own item

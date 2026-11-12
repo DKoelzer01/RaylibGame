@@ -1,6 +1,7 @@
 #include "survival.h"
 #include "suit.h"
 #include "questtree.h"
+#include "weather.h"
 #include "rocket.h"
 #include "inventory.h"
 #include "player.h"
@@ -171,6 +172,11 @@ void Survival_Update(Scene& world, float dt, bool inputEnabled) {
     // Temperature and hunger. Food drains faster running or on the jetpack, in the cold, and
     // while sick; the cockpit's life support feeds you. Heat does slow damage.
     survival.temperature = AirTemperature(world);
+    if (!std::isnan(survival.temperature)) { // rain and snow chill the air
+        const WeatherState& w = Weather_Here();
+        if (w.kind == WeatherKind::Rain || w.kind == WeatherKind::Storm) survival.temperature -= 4.0f * w.precipitation;
+        else if (w.kind == WeatherKind::Snow) survival.temperature -= 3.0f * w.precipitation;
+    }
     {
         const Vector3 flat = Vector3Subtract(player.velocity, Vector3Scale(player.up, Vector3DotProduct(player.velocity, player.up)));
         const bool active = player.jetpackFiring || (player.grounded && Vector3Length(flat) > player.walkSpeed * 1.1f);
@@ -229,6 +235,7 @@ void Survival_DrawHUD() {
     }
     const int tx = x + std::max(wO2, wPwr) + 20;
     if (GetTime() < survival.sickUntil) DrawText("SICK", tx, y + 46, 16, ORANGE);
+    if (!std::isnan(T) && Weather_Here().kind != WeatherKind::Clear) DrawText(TextFormat("weather: %s", Weather_Name(Weather_Here().kind)), tx, y + 24, 16, Fade(RAYWHITE, 0.75f));
     if (survival.inLifeSupport) DrawText("LIFE SUPPORT", tx, y + 2, 16, SKYBLUE);
     else if (survival.breathable) DrawText("BREATHABLE AIR", tx, y + 2, 16, Fade(SKYBLUE, 0.7f));
     else if (survival.inVacuum) {

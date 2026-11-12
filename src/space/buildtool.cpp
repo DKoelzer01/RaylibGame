@@ -89,8 +89,12 @@ void BuildTool_Update(Scene& world, bool inputEnabled, bool usable) {
     if (inputEnabled) {
         const float wheel = GetMouseWheelMove();
         // The wheel picks the shape (any shape from the selected material); machines come from the hotbar.
-        if (IsShape((PartType)buildTool.part) && wheel > 0) buildTool.part = (buildTool.part + 1) % kShapeCount;
-        if (IsShape((PartType)buildTool.part) && wheel < 0) buildTool.part = (buildTool.part + kShapeCount - 1) % kShapeCount;
+        if (IsShape((PartType)buildTool.part) && wheel != 0.0f) { // step through kShapes
+            int k = 0;
+            for (int i = 0; i < kShapeCount; ++i) if ((int)kShapes[i] == buildTool.part) k = i;
+            k = (k + (wheel > 0 ? 1 : kShapeCount - 1)) % kShapeCount;
+            buildTool.part = (int)kShapes[k];
+        }
         if (IsKeyPressed(KEY_R)) buildTool.orient = RotateOrientation(buildTool.orient, 1);
         if (IsKeyPressed(KEY_V)) buildTool.orient = RotateOrientation(buildTool.orient, 0);
     }

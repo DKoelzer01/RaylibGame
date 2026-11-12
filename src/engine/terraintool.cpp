@@ -66,7 +66,11 @@ namespace {
         if (p.tree()) {
             const int wood = 3 + (int)(p.scale * 4.0f);
             inventory.add("wood", wood);
-            Toast(TextFormat("+%d wood", wood));
+            // And logs of its species (building variety, M21): broadleaf 0-1 oak, 2-3 birch; conifers pine.
+            const char* log = p.variant < 2 ? "oak_log" : p.variant < 4 ? "birch_log" : "pine_log";
+            const int logs = 1 + (int)(p.scale * 2.0f);
+            if (itemDB.find(log)) inventory.add(log, logs);
+            Toast(TextFormat("+%d wood  +%d %s", wood, 1 + (int)(p.scale * 2.0f), p.variant < 2 ? "oak logs" : p.variant < 4 ? "birch logs" : "pine logs"));
             Audio_Play(Sfx::Build, 0.6f, 0.5f);
         } else {
             inventory.add("fibre", 2);
@@ -252,6 +256,7 @@ bool TerrainTool_Stroke(bool dig) {
     std::map<std::string, float> got;
     float wet = 0.0f;
     bool grass = false;
+    const char* stoneKindAt = nullptr;
     for (int z = -4; z <= 4; ++z)
         for (int y = -4; y <= 4; ++y)
             for (int x = -4; x <= 4; ++x) {
@@ -263,12 +268,20 @@ bool TerrainTool_Stroke(bool dig) {
                 if (softOnly && !IsSoft(m)) continue;
                 const char* item = ItemAt(p, q, m);
                 got[item] += cell * 2.0f;
+                if (strcmp(item, "stone") == 0) { // the kind of stone the rock is here (building variety), one look per stroke
+                    if (!stoneKindAt) { const auto* pfk = dynamic_cast<const PlanetField*>(p.field.get()); stoneKindAt = pfk ? pfk->stoneKind(hit.local) : "stone"; }
+                    if (strcmp(stoneKindAt, "stone") != 0) got[stoneKindAt] += cell * 0.8f;
+                }
                 if (strcmp(item, "dirt") == 0) got["gravel"] += cell * 0.4f; // stones in the soil (enough for the first stone tools)
                 if (WetBed(p, q, m)) wet += cell;
                 if (m == VoxelMaterial::Grass) grass = true;
             }
     for (auto& kv : got) inventory.addFractional(kv.first, kv.second);
     if (wet > 0.0f) inventory.addFractional("clay", wet * 0.8f); // river and pond beds hold clay
+    if (stoneKindAt) { // rock now and then holds a gem: quartz anywhere, and the gem of its stone kind (M22)
+        const char* gem = GetRandomValue(0, 999) < 25 ? GemForStone(stoneKindAt) : GetRandomValue(0, 999) < 40 ? "quartz" : nullptr;
+        if (gem && itemDB.find(gem)) { inventory.add(gem, 1); Toast(TextFormat("+1 %s!", gem)); }
+    }
     if (grass && GetRandomValue(0, 99) < 6) { // grass now and then turns up a seed
         static const char* seeds[3] = { "grain_seeds", "root_seeds", "flax_seeds" };
         const char* s = seeds[GetRandomValue(0, 2)];
@@ -357,6 +370,12 @@ bool TerrainTool_DigAt(Planetoid& p, Vector3 local) {
     if (!terrainTool.terraform && !DigRuleFor(HeldTool(), m, item).can) return false;
     inventory.add(item, 1);
     if (strcmp(item, "dirt") == 0) inventory.addFractional("gravel", 0.2f); // stones in the soil
+    if (strcmp(item, "stone") == 0) if (const auto* pfk = dynamic_cast<const PlanetField*>(p.field.get())) { // its kind of stone, and now and then a gem
+        const char* k = pfk->stoneKind(local);
+        if (strcmp(k, "stone") != 0) inventory.addFractional(k, 0.4f);
+        const char* gem = GetRandomValue(0, 999) < 25 ? GemForStone(k) : GetRandomValue(0, 999) < 40 ? "quartz" : nullptr;
+        if (gem && itemDB.find(gem)) inventory.add(gem, 1);
+    }
     if (WetBed(p, local, m)) inventory.addFractional("clay", 0.4f); // beds hold clay
     ApplyTerrainEdit(p, TerrainEdit{ local, 1.2f, -0.6f });
     return true;
