@@ -2317,7 +2317,7 @@ int main(int argc, char** argv)
                             float cover = 0.0f;
                             for (float r = 1000.0f; r <= 2200.0f; r += 200.0f) {
                                 const Vector3 d = Vector3Normalize(Vector3Add(home, Vector3Scale(flat, r / pf->radius)));
-                                cover += TreeCanopy(d, pf->radius, pf->elevation(d), pf->foliageSeed);
+                                cover += TreeCanopy(d, pf->radius, pf->elevation(d), pf->foliageSeed, pf);
                             }
                             if (cover > best) { best = cover; bestDir = flat; }
                         }

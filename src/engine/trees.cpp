@@ -255,11 +255,30 @@ float Forest(Vector3 local, uint32_t seed) {
 }
 float Smooth(float a, float b, float x) { const float t = std::clamp((x - a) / (b - a), 0.0f, 1.0f); return t * t * (3 - 2 * t); }
 
-// Chance of a tree in a 4 m cell from the forest field, by biome: dense in the tropics, patchy in
-// the temperate band, sparse toward the tundra.
-float TreeChanceFromForest(float forest, float lat) {
-    const float biome = lat < 0.6f ? 1.3f - 0.3f * Smooth(0.2f, 0.4f, lat) : lat < 0.86f ? 1.0f - 0.55f * (lat - 0.6f) / 0.26f : 0.0f;
-    return (0.55f * Smooth(0.48f, 0.72f, forest) + 0.015f) * biome;
+// What grows in each biome (Plan 5 B): tree, bush and loose-stone density (multipliers), conifer or
+// broadleaf woods, and tree size. Jungles and taiga are dense, savanna and meadows open with lone
+// trees, deserts and badlands nearly bare (scrub and stones), tundra a few stunted conifers.
+struct BiomeFlora { float trees, bushes, stones; bool cold; float size; float cover = 0.0f; }; // cover: least tree odds anywhere in it (closed canopy)
+static BiomeFlora FloraOf(Biome b) {
+    switch (b) {
+        case Biome::Jungle:   return { 1.5f, 1.4f, 0.5f, false, 1.35f, 0.34f };
+        case Biome::Savanna:  return { 0.08f, 0.45f, 1.0f, false, 1.15f };
+        case Biome::Desert:   return { 0.0f, 0.06f, 2.0f, false, 1.0f };
+        case Biome::Badlands: return { 0.02f, 0.12f, 2.5f, false, 0.8f };
+        case Biome::Forest:   return { 1.0f, 1.0f, 1.0f, false, 1.0f };
+        case Biome::Meadow:   return { 0.07f, 1.3f, 0.8f, false, 1.1f };
+        case Biome::Swamp:    return { 0.45f, 1.5f, 0.3f, false, 0.9f };
+        case Biome::Taiga:    return { 1.35f, 0.6f, 1.0f, true, 1.05f, 0.26f };
+        case Biome::Tundra:   return { 0.04f, 0.35f, 1.6f, true, 0.6f };
+        case Biome::Alpine:   return { 0.25f, 0.5f, 1.5f, true, 0.8f };
+        default:              return { 0.0f, 0.0f, 0.0f, true, 1.0f };   // ocean, polar
+    }
+}
+constexpr float kMaxTreeFactor = 1.5f, kMaxBushFactor = 1.5f, kMaxStoneFactor = 2.5f;
+
+// Chance of a tree in a 4 m cell from the forest field, scaled by the biome's tree factor.
+float TreeChanceFromForest(float forest, float biomeTrees) {
+    return (0.55f * Smooth(0.48f, 0.72f, forest) + 0.015f) * biomeTrees;
 }
 
 uint64_t PlantId(const TreeTileKey& k, int cell) {
@@ -283,15 +302,21 @@ void BuildTile(const PlanetField& f, const TerrainDeltas& edits, const PlantRemo
             const float jx = Unit(s), jy = Unit(s), roll = Unit(s), h = Unit(s), sz = Unit(s);
             const Vector3 dir = FaceDir(key.face, a0 + (ci + jx) * dc, b0 + (cj + jy) * dc);
             const float forest = Forest(Vector3Scale(dir, R), seed);
-            const float pTree = TreeChanceFromForest(forest, fabsf(dir.y));
-            const float pBush = 0.05f + 0.3f * Smooth(0.35f, 0.6f, forest);
-            const float pStone = 0.025f;                                  // loose stones: the first stone tools' stone
-            const bool tree = roll < pTree;
-            const bool stone = !tree && roll >= pTree + pBush && roll < pTree + pBush + pStone;
-            if (!tree && !stone && roll >= pTree + pBush) continue;
+            // First a cheap cut at the densest any biome allows, then the biome's own odds (it needs the
+            // height, which is the expensive part).
+            const float pTreeMax = std::max(TreeChanceFromForest(forest, kMaxTreeFactor), 0.34f);
+            const float pBushBase = 0.05f + 0.3f * Smooth(0.35f, 0.6f, forest);
+            const float pStoneBase = 0.025f;                              // loose stones: the first stone tools' stone
+            if (roll >= pTreeMax + pBushBase * kMaxBushFactor + pStoneBase * kMaxStoneFactor) continue;
             const float lat = fabsf(dir.y);
             if (lat > 0.86f) continue;                                  // polar: nothing grows
             const float e = f.elevation(dir);
+            const Biome biome = f.biomeAt(dir, e);
+            const BiomeFlora flora = FloraOf(biome);
+            const float pTree = std::max(TreeChanceFromForest(forest, flora.trees), flora.cover), pBush = pBushBase * flora.bushes, pStone = pStoneBase * flora.stones;
+            const bool tree = roll < pTree;
+            const bool stone = !tree && roll >= pTree + pBush && roll < pTree + pBush + pStone;
+            if (!tree && !stone && roll >= pTree + pBush) continue;
             if (e < 4.0f || e > (tree ? 900.0f : stone ? 1300.0f : 1100.0f)) continue;   // beach / sea, above the tree line
             // Slope from the height a few metres away.
             const Vector3 t1 = Vector3Normalize(Vector3CrossProduct(dir, fabsf(dir.y) < 0.9f ? Vector3{ 0, 1, 0 } : Vector3{ 1, 0, 0 }));
@@ -314,7 +339,7 @@ void BuildTile(const PlanetField& f, const TerrainDeltas& edits, const PlantRemo
                 // Broadleaf woods (oak, birch, maple) in the temperate band; conifer woods (pine, spruce,
                 // birch) from ~40 degrees and up high, mixing at the edge. Each area (a ~400 m noise
                 // patch) has a dominant species: 60% of its trees, the other two 20% each.
-                const bool cold = lat > 0.66f + 0.12f * (h - 0.5f) || e > 550.0f + 300.0f * (h - 0.5f);
+                const bool cold = flora.cold || e > 550.0f + 300.0f * (h - 0.5f); // conifers in cold biomes and up high (Plan 5 B)
                 static const WoodSpecies kWarm[3] = { WoodSpecies::Oak, WoodSpecies::Maple, WoodSpecies::Birch };
                 static const WoodSpecies kCold[3] = { WoodSpecies::Pine, WoodSpecies::Spruce, WoodSpecies::Birch };
                 const float area = ValueNoise(Vector3Scale(Vector3Scale(dir, R), 1.0f / 400.0f), seed ^ 0x7a3c19u);
@@ -323,7 +348,7 @@ void BuildTile(const PlanetField& f, const TerrainDeltas& edits, const PlantRemo
                 const int k = pick < 0.6f ? dom : pick < 0.8f ? (dom + 1) % 3 : (dom + 2) % 3;
                 const WoodSpecies sp = (cold ? kCold : kWarm)[k];
                 v = (int)sp * 2 + (int)(h * 2.0f) % 2;
-                scale = 0.6f + 0.7f * sz + 0.35f * forest;
+                scale = (0.6f + 0.7f * sz + 0.35f * forest) * flora.size;
                 if (sp == WoodSpecies::Birch) scale *= 0.85f; // slender
             } else if (stone) {
                 v = kStoneVariant;
@@ -346,7 +371,10 @@ void BuildTile(const PlanetField& f, const TerrainDeltas& edits, const PlantRemo
                 scale *= growth;
             }
             const Vector3 p = Vector3Subtract(ground, Vector3Scale(dir, 0.15f)); // sink the base a little
-            out.inst[v].insert(out.inst[v].end(), { p.x, p.y, p.z, scale, dir.x, dir.y, dir.z, h });
+            // The climate (Plan 5 B) in the up vector's length, packed as for the terrain (trees.vs decodes it).
+            const PlanetField::Climate cl = f.climateAt(dir, e);
+            const float code = 1.0f + floorf(std::clamp((cl.temp + 30.0f) / 70.0f, 0.0f, 1.0f) * 62.0f) + std::min(cl.moist, 0.999f);
+            out.inst[v].insert(out.inst[v].end(), { p.x, p.y, p.z, scale, dir.x * code, dir.y * code, dir.z * code, h });
             out.ids[v].push_back(id);
             const VariantMesh& vm = Variant(v);
             if (vm.trunkRadius > 0.0f) {
@@ -653,11 +681,15 @@ bool TreeSystem::raycast(Vector3 o, Vector3 d, float maxDistance, PlantHit& best
     return found;
 }
 
-float TreeCanopy(Vector3 dir, float radius, float elevation, unsigned int seed) {
+float TreeCanopy(Vector3 dir, float radius, float elevation, unsigned int seed, const PlanetField* field) {
     const float lat = fabsf(dir.y);
     if (lat > 0.86f || elevation < 4.0f || elevation > 900.0f) return 0.0f;
     const float edge = std::min(Smooth(4.0f, 12.0f, elevation), 1.0f - Smooth(800.0f, 900.0f, elevation));
-    return Smooth(0.04f, 0.3f, TreeChanceFromForest(Forest(Vector3Scale(dir, radius), seed), lat)) * edge; // forest presence
+    // The biome's tree factor (Plan 5 B); without a field, the old latitude rule.
+    const BiomeFlora fl = field ? FloraOf(field->biomeAt(dir, elevation)) : BiomeFlora{};
+    if (field && fl.cover > 0.0f) return std::max(Smooth(0.04f, 0.3f, fl.cover), Smooth(0.04f, 0.3f, TreeChanceFromForest(Forest(Vector3Scale(dir, radius), seed), fl.trees))) * edge;
+    const float trees = field ? fl.trees : (lat < 0.6f ? 1.3f - 0.3f * Smooth(0.2f, 0.4f, lat) : 1.0f - 0.55f * (lat - 0.6f) / 0.26f);
+    return Smooth(0.04f, 0.3f, TreeChanceFromForest(Forest(Vector3Scale(dir, radius), seed), trees)) * edge; // forest presence
 }
 
 void TreeSystem::addClearing(Vector3 c, float r) {

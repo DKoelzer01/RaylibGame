@@ -114,12 +114,12 @@ vec3 biomeTint(int material, float temp, float moist)
 {
     float red = smoothstep(16.0, 21.0, temp) * smoothstep(0.2, 0.27, moist) * (1.0 - smoothstep(0.36, 0.44, moist));
     if (material == 6) {   // grass
-        float dry = smoothstep(0.62, 0.3, moist) * smoothstep(14.0, 21.0, temp);
-        float lush = smoothstep(20.0, 26.0, temp) * smoothstep(0.58, 0.78, moist);
-        float cold = smoothstep(8.0, -2.0, temp);
+        float dry = smoothstep(0.66, 0.5, moist) * smoothstep(16.0, 20.0, temp);
+        float lush = smoothstep(18.0, 23.0, temp) * smoothstep(0.56, 0.7, moist);
+        float cold = smoothstep(9.0, 3.0, temp);
         float swamp = smoothstep(0.68, 0.8, moist);
         vec3 t = vec3(1.0);
-        t = mix(t, vec3(1.55, 1.25, 0.55), dry);
+        t = mix(t, vec3(2.0, 1.3, 0.45), dry);
         t = mix(t, vec3(0.72, 1.02, 0.68), lush);
         t = mix(t, vec3(0.92, 0.92, 0.95), cold);
         t = mix(t, vec3(0.82, 0.86, 0.55), swamp);

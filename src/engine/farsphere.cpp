@@ -54,7 +54,7 @@ Vector3 SurfaceAlbedo(const PlanetField& f, Vector3 up, float e, float slope, bo
     if (slope > 0.3f || e > 800.0f + 100.0f * w) return kGravel;
     Vector3 c = lat > 0.62f + 0.06f * w ? kDirt : kGrass;
     if (foliage) {
-        const float canopy = TreeCanopy(up, f.radius, e, foliageSeed);
+        const float canopy = TreeCanopy(up, f.radius, e, foliageSeed, &f);
         const Vector3 crowns = lat < 0.35f ? Mix({ 0.22f, 0.27f, 0.07f }, { 0.09f, 0.27f, 0.05f }, (lat - 0.15f) / 0.2f)
                                            : Mix({ 0.09f, 0.27f, 0.05f }, { 0.05f, 0.17f, 0.08f }, (lat - 0.45f) / 0.25f);
         c = Mix(c, Vector3Scale(crowns, 0.5f), canopy);

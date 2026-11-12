@@ -1019,7 +1019,7 @@ void BuildChunkMesh(const DensityField& field, const TerrainDeltas& deltas, Chun
                     // Distant forests: canopy cover (x), painted in where the real trees fade out.
                     if (sky > 0.9f && (m == VoxelMaterial::Grass || m == VoxelMaterial::Regolith)) {
                         const float steep = 1.0f - Vector3DotProduct(n, up);
-                        out.tangents[v * 4 + 0] = TreeCanopy(up, planetLife->radius, d - planetLife->radius, planetLife->foliageSeed) * std::clamp(1.0f - (steep - 0.1f) / 0.15f, 0.0f, 1.0f);
+                        out.tangents[v * 4 + 0] = TreeCanopy(up, planetLife->radius, d - planetLife->radius, planetLife->foliageSeed, planetLife) * std::clamp(1.0f - (steep - 0.1f) / 0.15f, 0.0f, 1.0f);
                     }
                 }
                 out.positions[v * 3 + 0] = lp.x;
