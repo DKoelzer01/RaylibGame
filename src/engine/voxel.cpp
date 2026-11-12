@@ -696,7 +696,9 @@ void PlanetField::baseDensityBlock(Vector3 o, float stride, int S, float fp, flo
         const float u = Vector3DotProduct(q, t1) / s, v = Vector3DotProduct(q, t2) / s;
         umin = std::min(umin, u); umax = std::max(umax, u); vmin = std::min(vmin, v); vmax = std::max(vmax, v);
     }
-    const float du = stride / radius;
+    // Spaced at the footprint (>= 1 m), not the stride: nodes finer than 1 m (for edits) interpolate a
+    // height map that has no finer detail anyway.
+    const float du = std::max(stride, fp) / radius;
     const int nu = std::min(256, (int)ceilf((umax - umin) / du) + 2), nv = std::min(256, (int)ceilf((vmax - vmin) / du) + 2);
     const float su = (umax - umin) / (float)(nu - 1), sv = (vmax - vmin) / (float)(nv - 1);
     std::vector<float> h((size_t)nu * nv);
@@ -842,7 +844,9 @@ void BuildChunkMesh(const DensityField& field, const TerrainDeltas& deltas, Chun
     const int E = S + 2;
     std::vector<float> base((size_t)E * E * E);
     const Vector3 eo = Vector3AddValue(origin, -stride);
-    field.baseDensityBlock(eo, stride, E, stride, base.data());
+    // Footprint at least 1 m: the generated terrain keeps no detail finer than it had on the 1 m lattice
+    // (finer nodes exist for edits: the dig spheres), and sub-metre octaves would only cost.
+    field.baseDensityBlock(eo, stride, E, std::max(stride, 1.0f), base.data());
     std::vector<float> ext = base;
     // Player edits: the delta lattice at the samples (lattice points at every stride; coarse nodes
     // point-sample it, so big excavations show from afar). Cost depends on the edited chunks here,
@@ -850,7 +854,8 @@ void BuildChunkMesh(const DensityField& field, const TerrainDeltas& deltas, Chun
     std::vector<std::pair<TerrainDeltas::Key, const DeltaChunk*>> near;
     deltas.chunksIn(eo, Vector3AddValue(eo, (E - 1) * stride), near);
     if (!near.empty()) {
-        const int st = (int)stride, ox = (int)lroundf(eo.x), oy = (int)lroundf(eo.y), oz = (int)lroundf(eo.z);
+        // Lattice indices (kVoxelSize apart): a node of level L samples every 2^L-th lattice point.
+        const int st = out.key.latticeStride(), ox = (int)lroundf(eo.x / kVoxelSize), oy = (int)lroundf(eo.y / kVoxelSize), oz = (int)lroundf(eo.z / kVoxelSize);
         auto chunkAt = [&](int cx, int cy, int cz) -> const DeltaChunk* {
             const TerrainDeltas::Key key = TerrainDeltas::KeyOf(cx, cy, cz);
             for (const auto& c : near) if (c.first == key) return c.second;

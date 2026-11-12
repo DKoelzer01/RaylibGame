@@ -14,6 +14,16 @@
 #include "SimplexNoise.h"
 
 extern const int CHUNK_SIZE;          // cells per chunk edge (samples per edge = CHUNK_SIZE + 1)
+// The finest terrain cell (body-local units, metres on planets): the edit lattice spacing and the
+// octree's level-0 stride. 0.25 m makes the dig spheres the tools show (0.35-1.2 m) exactly what is
+// carved; it was 1 m (a 0.4 m sphere moved the nearest lattice point, so holes depended on the grid).
+#ifdef RAYLIBGAME_VOXEL_1M   // a comparison build at the old 1 m lattice (tests only)
+constexpr float kVoxelSize = 1.0f;
+constexpr int kVoxelShift = 0;
+#else
+constexpr float kVoxelSize = 0.25f;
+constexpr int kVoxelShift = 2;                  // log2(1 / kVoxelSize): levels finer than the old 1 m cell
+#endif
 constexpr float ISO_LEVEL = 0.5f;     // density >= ISO_LEVEL is solid
 constexpr float DENSITY_GRADIENT = 0.25f; // density change per voxel across the surface
 
@@ -32,14 +42,15 @@ namespace std {
 }
 
 
-// Octree LOD node. A node at `level` covers CHUNK_SIZE * 2^level voxels per axis, meshed with
+// Octree LOD node. A node at `level` covers CHUNK_SIZE * 2^level voxels (kVoxelSize each) per axis, meshed with
 // CHUNK_SIZE cells (stride 2^level), so every node costs about the same to build and draw.
 // (x, y, z) are in units of the node size at that level.
 struct NodeKey {
     int level, x, y, z;
     bool operator==(const NodeKey& o) const { return level == o.level && x == o.x && y == o.y && z == o.z; }
-    int stride() const { return 1 << level; }
-    float size() const { return (float)(CHUNK_SIZE << level); }
+    float stride() const { return kVoxelSize * (float)(1 << level); }   // metres between samples
+    int latticeStride() const { return 1 << level; }                      // edit-lattice points between samples
+    float size() const { return kVoxelSize * (float)(CHUNK_SIZE << level); }
     Vector3 origin() const { const float s = size(); return { x * s, y * s, z * s }; }
     // True if this node's box contains `o`'s box (o is the same node or a descendant).
     bool contains(const NodeKey& o) const {

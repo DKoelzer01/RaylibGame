@@ -44,11 +44,12 @@ namespace {
 }
 
 void ScatterGrass(const DensityField& field, ChunkMeshData& out) {
-    if (out.key.level != 0 || out.indices.empty() || out.texcoords2.empty() || out.tangents.empty()) return;
+    // Nodes at 1 m resolution or finer (the old level 0 and the finer ones around the player).
+    if (out.key.stride() > 1.0f || out.indices.empty() || out.texcoords2.empty() || out.tangents.empty()) return;
     const float sea = field.seaLevelRadius();
     if (sea <= 0.0f) return; // no seas, no grass (moons, asteroids)
     const Vector3 origin = out.key.origin();
-    const float edge = (float)CHUNK_SIZE; // keep the overlap cell to the neighbour (it draws its own)
+    const float edge = out.key.size(); // keep the overlap cell to the neighbour (it draws its own)
     const uint32_t nodeSeed = Hash((uint32_t)out.key.x * 73856093U ^ (uint32_t)out.key.y * 19349663U ^ (uint32_t)out.key.z * 83492791U);
     const size_t tris = out.indices.size() / 3;
     for (size_t t = 0; t < tris; ++t) {

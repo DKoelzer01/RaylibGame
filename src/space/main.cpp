@@ -511,6 +511,55 @@ int main(int argc, char** argv)
     };
 
     for (int i = 1; i < argc; ++i)
+        if (std::string(argv[i]) == "--test-dig-shape") {
+            // Digging is what the preview shows: 40 digs (straight down, the tools' radii 0.35-0.85 m, sunk
+            // half a radius as the tool does) at random spots; the ground each one removes is compared with
+            // the previewed sphere (both within the ground before), sampled every 5 cm: intersection over union.
+            Planetoid* p = dynamic_cast<Planetoid*>(world.objects[0].get());
+            const auto* pf = p ? dynamic_cast<const PlanetField*>(p->field.get()) : nullptr;
+            if (pf) {
+                const Vector3 home = pf->findSpawnDir(p->seed);
+                const Vector3 t1 = Vector3Normalize(Vector3CrossProduct(home, { 0, 1, 0 })), t2 = Vector3CrossProduct(t1, home);
+                std::mt19937 rng(11);
+                std::uniform_real_distribution<float> u(-1.0f, 1.0f);
+                const float radii[4] = { 0.35f, 0.45f, 0.6f, 0.85f };
+                double sum = 0.0, worst = 1.0; int n = 0;
+                for (int k = 0; k < 40; ++k) {
+                    const Vector3 d = Vector3Normalize(Vector3Add(home, Vector3Add(Vector3Scale(t1, 150.0f * u(rng) / pf->radius), Vector3Scale(t2, 150.0f * u(rng) / pf->radius))));
+                    // The ground along the radial line (the real surface, 3D band and all).
+                    float h = pf->radius + pf->elevation(d) + 20.0f;
+                    while (h > pf->radius - 100.0f && p->densityAt(Vector3Scale(d, h)) < ISO_LEVEL) h -= 0.02f;
+                    const float r = radii[k % 4];
+                    const Vector3 centre = Vector3Scale(d, h - 0.5f * r);
+                    const float step = 0.05f, box = r + 0.3f;
+                    std::vector<char> before;
+                    std::vector<Vector3> pts;
+                    for (float z = -box; z <= box; z += step)
+                        for (float y = -box; y <= box; y += step)
+                            for (float x = -box; x <= box; x += step) {
+                                const Vector3 q = Vector3Add(centre, { x, y, z });
+                                pts.push_back(q);
+                                before.push_back(p->densityAt(q) >= ISO_LEVEL);
+                            }
+                    TerrainEdit e{};
+                    e.center = centre; e.radius = r; e.carve = true;
+                    ApplyTerrainEdit(*p, e);
+                    long inter = 0, uni = 0;
+                    for (size_t j = 0; j < pts.size(); ++j) {
+                        if (!before[j]) continue;
+                        const bool want = Vector3Distance(pts[j], centre) < r;
+                        const bool got = p->densityAt(pts[j]) < ISO_LEVEL;
+                        inter += want && got; uni += want || got;
+                    }
+                    const double iou = uni ? (double)inter / uni : 1.0;
+                    sum += iou; worst = std::min(worst, iou); ++n;
+                }
+                printf("bench: dig shape: %d digs (radius 0.35-0.85 m, lattice %.2f m): mean IoU with the previewed sphere %.3f, worst %.3f -> %s\n",
+                       n, kVoxelSize, sum / std::max(1, n), worst, sum / std::max(1, n) >= 0.85 && worst >= 0.7 ? "PASS" : "FAIL");
+            }
+            return 0;
+        }
+    for (int i = 1; i < argc; ++i)
         if (std::string(argv[i]) == "--profile-density") {
             // Plan item 7: what terrain sampling costs, part by part, over 200k points within 20 m of the
             // surface around the start (one thread, ns per call).

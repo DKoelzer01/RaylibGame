@@ -67,7 +67,7 @@ Planetoid::Planetoid(std::string name, DVec3 wp, Vector3 rotation, float scale, 
     surfaceGravity = AutoSurfaceGravity(BodyKind::Asteroid, radius_ * scale); // generateWorld may override
     gravityRadius = radius_ * scale * PlanetoidField::MEAN_SURFACE;         // the terrain's mean surface
     // Smallest level whose 2x2x2 root nodes (coords -1..0) cover the body plus room for added material.
-    while ((float)(CHUNK_SIZE << rootLevel) < radius + 24.0f) rootLevel++;
+    while (kVoxelSize * (float)(CHUNK_SIZE << rootLevel) < radius + 24.0f) rootLevel++;
     planetoidRegistry[id] = this;
 }
 
@@ -81,7 +81,7 @@ Planetoid::Planetoid(std::string name, DVec3 wp, std::shared_ptr<const EmptyFiel
     surfaceGravity = 0.0f;
     gravityRadius = 1.0f;
     vehicle = true;
-    while ((float)(CHUNK_SIZE << rootLevel) < radius + 4.0f) rootLevel++;
+    while (kVoxelSize * (float)(CHUNK_SIZE << rootLevel) < radius + 4.0f) rootLevel++;
     planetoidRegistry[id] = this;
 }
 
@@ -93,7 +93,7 @@ Planetoid::Planetoid(std::string name, DVec3 wp, std::shared_ptr<const TerrainFi
     flat = true;
     minHeight = terrain->minHeight;
     maxHeight = terrain->maxHeight;
-    rootLevel = 4; // 512-voxel root tiles, a 5x5 grid around the camera (~1.3 km view range)
+    rootLevel = 4 + kVoxelShift; // 512 m root tiles, a 5x5 grid around the camera (~1.3 km view range)
     planetoidRegistry[id] = this;
 }
 
@@ -282,7 +282,7 @@ void Planetoid::drawFoliage(const RenderContext& ctx) {
     const Vector3 c = (worldPos - ctx.renderOrigin).toFloat();
     const float occluder[4] = { c.x, c.y, c.z, std::max(0.0f, radius - 60.0f) * scale }; // night side, as for terrain
     rlSetUniform(ctx.grassOccluderLoc, occluder, RL_SHADER_UNIFORM_VEC4, 1);
-    for (Chunk* ch : drawList) if (ch->key.level == 0) ch->drawGrass(ctx, placer.model(ch->key));
+    for (Chunk* ch : drawList) if (ch->key.stride() <= 1.0f) ch->drawGrass(ctx, placer.model(ch->key)); // the levels that carry grass (foliage.cpp)
 }
 
 void Planetoid::drawDepthOnly(const RenderContext& ctx) {
@@ -424,7 +424,7 @@ static void UpdateLod(Planetoid& p, Vector3 cameraRender) {
     std::vector<NodeKey> desired;
     if (p.flat) {
         // Open world: a grid of root tiles around the camera, spanning the terrain height band.
-        const float rs = (float)(CHUNK_SIZE << p.rootLevel);
+        const float rs = kVoxelSize * (float)(CHUNK_SIZE << p.rootLevel);
         const int cx = (int)floorf(camLocal.x / rs), cz = (int)floorf(camLocal.z / rs);
         const int y0 = (int)floorf(p.minHeight / rs), y1 = (int)floorf(p.maxHeight / rs);
         for (int z = cz - 2; z <= cz + 2; ++z)
@@ -906,7 +906,7 @@ void generateWorld(Scene& world) {
             auto field = std::make_shared<PlanetField>(seed, radius, kind == BodyKind::Moon);
             p->gravityRadius = radius;
             p->rootLevel = 0;
-            while ((float)(CHUNK_SIZE << p->rootLevel) < field->maxRadius() + 24.0f) p->rootLevel++;
+            while (kVoxelSize * (float)(CHUNK_SIZE << p->rootLevel) < field->maxRadius() + 24.0f) p->rootLevel++;
             p->field = field;
             if (kind == BodyKind::Planet) {
                 field->foliage = true;
@@ -1084,8 +1084,9 @@ static bool DecodeMaterials(const uint16_t* in, size_t words, DeltaChunk& c) {
 static bool WriteRegion(const std::string& path, const std::vector<std::pair<TerrainDeltas::Key, const DeltaChunk*>>& chunks) {
     FILE* f = fopen(path.c_str(), "wb");
     if (!f) return false;
-    // RGN4: RGN3's run-length densities, then the placed-material channel coded the same way.
-    fwrite("RGN4", 1, 4, f);
+    // RGN5: RGN4 (RGN3's run-length densities, then the placed-material channel coded the same way)
+    // on the kVoxelSize lattice.
+    fwrite("RGN5", 1, 4, f);
     const int32_t n = (int32_t)chunks.size();
     fwrite(&n, 4, 1, f);
     std::vector<uint16_t> enc, encM;
@@ -1111,7 +1112,10 @@ static bool ReadRegion(const std::string& path, TerrainDeltasBuilder& b) {
     bool ok = fread(magic, 1, 4, f) == 4 && fread(&n, 4, 1, f) == 1;
     // RGN3: run-length, deltas in 1/64 steps. RGN2 (run-length) and RGN1 (DEFLATE) stored 1/256
     // steps: scaled down on load.
-    const bool v4 = ok && memcmp(magic, "RGN4", 4) == 0; // + the placed-material channel
+    // RGN1-4 sit on the old 1 m lattice: their edits would land in the wrong place on the kVoxelSize one
+    // (a save-breaking change, 2026-11-12), so they are skipped.
+    if (ok && memcmp(magic, "RGN5", 4) != 0) { logger.logf("[World] %s: terrain edits on the old 1 m lattice, skipped\n", path.c_str()); fclose(f); return true; }
+    const bool v4 = ok && memcmp(magic, "RGN5", 4) == 0; // + the placed-material channel
     const bool rle = ok && (v4 || memcmp(magic, "RGN3", 4) == 0 || memcmp(magic, "RGN2", 4) == 0);
     const int legacy = ok && !v4 && memcmp(magic, "RGN3", 4) != 0 ? 4 : 1;
     auto rescale = [legacy](DeltaChunk& c) { if (legacy > 1) for (int16_t& v : c.d) v = (int16_t)lroundf(v / (float)legacy); };

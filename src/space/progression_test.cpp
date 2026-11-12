@@ -5,6 +5,7 @@
 // fast so the ~20 minutes of machine time take seconds.
 
 #include "progression_test.h"
+#include "fluid.h"
 #include "buildtool.h"
 #include "player.h"
 #include "survival.h"
@@ -271,6 +272,13 @@ namespace {
                 for (int i = (int)pl->parts.size() - 1; i >= 0; --i)
                     if (pl->parts[i].type == PartType::Farmland && Farm_Plant(*body, *pl, i, "")) return QuestBook_CountOf("plant") >= 1.0;
             return false;
+        });
+        add("water the field: a bucket of water poured beside it", [] {
+            // The bucket's pour (TerrainTool_Bucket counts "pour" through the game's hook), done directly:
+            // the quest task needs the event, the field gets the water.
+            Fluid::Pour(*body, Surface(Offset(-22.0f, 10.0f)), 1.0f);
+            QuestBook_Count("pour");
+            return QuestBook_CountOf("pour") >= 1.0;
         });
         add("craft and fit two suit modules (a food pouch and an oxygen tank)", [] {
             while (inventory.count("fibre") < 40) if (!TerrainTool_HarvestNearest(*body, home, false)) return false;
