@@ -59,7 +59,7 @@ private:
     std::vector<unsigned char> river, lake;
     std::vector<float> lakeLevel;          // per lake cell: its basin's water level (m)
     std::vector<unsigned char> lakeSteps;  // cells to the nearest lake cell (capped at 255)
-    struct Piece { Vector3 a, b; float la, lb, wa, wb, da, db; }; // positions in metres (body-local)
+    struct Piece { Vector3 a, b; float la, lb, wa, wb, da, db; Vector3 mid{}; float halfLen = 0.0f; }; // positions in metres (body-local); mid/halfLen: a bounding sphere for nearest()
     std::vector<Piece> pieces;
     std::vector<std::vector<int>> index; // cell -> pieces within reach
     Stats st;

@@ -27,6 +27,7 @@
 #include "SimplexNoise.h"
 
 #include <cstdint>  // int32_t/uint8_t
+#include <emmintrin.h> // SSE2: noise4
 
 /**
  * Computes the largest integer value not greater than the float one
@@ -396,6 +397,71 @@ float SimplexNoise::noise(float x, float y, float z) {
 }
 
 
+
+// Four 3D simplex samples at once (SSE2): the same arithmetic in the same order as noise(x, y, z), so
+// the results are identical; only the permutation lookups stay scalar. fractal() and fractalLimited()
+// evaluate their octaves four at a time with it (plan item 7: terrain sampling is mostly octaves).
+void SimplexNoise::noise4(const float* xs, const float* ys, const float* zs, float* out) {
+    const __m128 F3 = _mm_set1_ps(1.0f / 3.0f), G3 = _mm_set1_ps(1.0f / 6.0f);
+    const __m128 x = _mm_loadu_ps(xs), y = _mm_loadu_ps(ys), z = _mm_loadu_ps(zs);
+    const __m128 s = _mm_mul_ps(_mm_add_ps(_mm_add_ps(x, y), z), F3);
+    auto vfloor = [](__m128 a) { // fastfloor: truncate, minus one where that went up
+        __m128i t = _mm_cvttps_epi32(a);
+        const __m128 lt = _mm_cmplt_ps(a, _mm_cvtepi32_ps(t));
+        return _mm_add_epi32(t, _mm_castps_si128(lt));
+    };
+    const __m128i i = vfloor(_mm_add_ps(x, s)), j = vfloor(_mm_add_ps(y, s)), k = vfloor(_mm_add_ps(z, s));
+    const __m128 fi = _mm_cvtepi32_ps(i), fj = _mm_cvtepi32_ps(j), fk = _mm_cvtepi32_ps(k);
+    const __m128 t = _mm_mul_ps(_mm_cvtepi32_ps(_mm_add_epi32(_mm_add_epi32(i, j), k)), G3);
+    const __m128 x0 = _mm_sub_ps(x, _mm_sub_ps(fi, t)), y0 = _mm_sub_ps(y, _mm_sub_ps(fj, t)), z0 = _mm_sub_ps(z, _mm_sub_ps(fk, t));
+    // Which simplex (branch-free; matches the six cases of noise()).
+    const __m128 xy = _mm_cmpge_ps(x0, y0), yz = _mm_cmpge_ps(y0, z0), xz = _mm_cmpge_ps(x0, z0);
+    const __m128 one = _mm_set1_ps(1.0f);
+    const __m128 i1m = _mm_and_ps(xy, xz), j1m = _mm_andnot_ps(xy, yz);
+    const __m128 k1m = _mm_andnot_ps(_mm_or_ps(i1m, j1m), _mm_castsi128_ps(_mm_set1_epi32(-1)));
+    const __m128 i2m = _mm_or_ps(xy, xz), j2m = _mm_or_ps(_mm_andnot_ps(xy, _mm_castsi128_ps(_mm_set1_epi32(-1))), _mm_and_ps(xy, yz));
+    const __m128 k2m = _mm_andnot_ps(_mm_and_ps(i2m, j2m), _mm_castsi128_ps(_mm_set1_epi32(-1)));
+    const __m128 i1 = _mm_and_ps(i1m, one), j1 = _mm_and_ps(j1m, one), k1 = _mm_and_ps(k1m, one);
+    const __m128 i2 = _mm_and_ps(i2m, one), j2 = _mm_and_ps(j2m, one), k2 = _mm_and_ps(k2m, one);
+    const __m128 G2 = _mm_set1_ps(2.0f * (1.0f / 6.0f)), G33 = _mm_set1_ps(3.0f * (1.0f / 6.0f));
+    const __m128 x1 = _mm_add_ps(_mm_sub_ps(x0, i1), G3), y1 = _mm_add_ps(_mm_sub_ps(y0, j1), G3), z1 = _mm_add_ps(_mm_sub_ps(z0, k1), G3);
+    const __m128 x2 = _mm_add_ps(_mm_sub_ps(x0, i2), G2), y2 = _mm_add_ps(_mm_sub_ps(y0, j2), G2), z2 = _mm_add_ps(_mm_sub_ps(z0, k2), G2);
+    const __m128 x3 = _mm_add_ps(_mm_sub_ps(x0, one), G33), y3 = _mm_add_ps(_mm_sub_ps(y0, one), G33), z3 = _mm_add_ps(_mm_sub_ps(z0, one), G33);
+    // Gradient indices (scalar table lookups).
+    alignas(16) int32_t I[4], J[4], K[4], A1[4], B1[4], C1[4], A2[4], B2[4], C2[4];
+    _mm_store_si128((__m128i*)I, i); _mm_store_si128((__m128i*)J, j); _mm_store_si128((__m128i*)K, k);
+    _mm_store_si128((__m128i*)A1, _mm_cvttps_epi32(i1)); _mm_store_si128((__m128i*)B1, _mm_cvttps_epi32(j1)); _mm_store_si128((__m128i*)C1, _mm_cvttps_epi32(k1));
+    _mm_store_si128((__m128i*)A2, _mm_cvttps_epi32(i2)); _mm_store_si128((__m128i*)B2, _mm_cvttps_epi32(j2)); _mm_store_si128((__m128i*)C2, _mm_cvttps_epi32(k2));
+    alignas(16) int32_t g0[4], g1[4], g2[4], g3[4];
+    for (int l = 0; l < 4; ++l) {
+        g0[l] = hash(I[l] + hash(J[l] + hash(K[l])));
+        g1[l] = hash(I[l] + A1[l] + hash(J[l] + B1[l] + hash(K[l] + C1[l])));
+        g2[l] = hash(I[l] + A2[l] + hash(J[l] + B2[l] + hash(K[l] + C2[l])));
+        g3[l] = hash(I[l] + 1 + hash(J[l] + 1 + hash(K[l] + 1)));
+    }
+    // grad(): h = hash & 15; u = h < 8 ? x : y; v = h < 4 ? y : (h == 12 || h == 14) ? x : z; signs from bits 0, 1.
+    auto grad4 = [](const int32_t* g, __m128 gx, __m128 gy, __m128 gz) {
+        const __m128i h = _mm_and_si128(_mm_load_si128((const __m128i*)g), _mm_set1_epi32(15));
+        auto sel = [](__m128 m, __m128 a, __m128 b) { return _mm_or_ps(_mm_and_ps(m, a), _mm_andnot_ps(m, b)); };
+        const __m128 lt8 = _mm_castsi128_ps(_mm_cmplt_epi32(h, _mm_set1_epi32(8)));
+        const __m128 lt4 = _mm_castsi128_ps(_mm_cmplt_epi32(h, _mm_set1_epi32(4)));
+        const __m128 h12 = _mm_castsi128_ps(_mm_or_si128(_mm_cmpeq_epi32(h, _mm_set1_epi32(12)), _mm_cmpeq_epi32(h, _mm_set1_epi32(14))));
+        const __m128 u = sel(lt8, gx, gy);
+        const __m128 v = sel(lt4, gy, sel(h12, gx, gz));
+        const __m128 neg = _mm_set1_ps(-0.0f);
+        const __m128 s1 = _mm_castsi128_ps(_mm_cmpeq_epi32(_mm_and_si128(h, _mm_set1_epi32(1)), _mm_set1_epi32(1)));
+        const __m128 s2 = _mm_castsi128_ps(_mm_cmpeq_epi32(_mm_and_si128(h, _mm_set1_epi32(2)), _mm_set1_epi32(2)));
+        return _mm_add_ps(_mm_xor_ps(u, _mm_and_ps(s1, neg)), _mm_xor_ps(v, _mm_and_ps(s2, neg)));
+    };
+    auto corner = [&](const int32_t* g, __m128 cx, __m128 cy, __m128 cz) {
+        __m128 tt = _mm_sub_ps(_mm_sub_ps(_mm_sub_ps(_mm_set1_ps(0.6f), _mm_mul_ps(cx, cx)), _mm_mul_ps(cy, cy)), _mm_mul_ps(cz, cz));
+        const __m128 pos = _mm_cmpge_ps(tt, _mm_setzero_ps());
+        tt = _mm_mul_ps(tt, tt);
+        return _mm_and_ps(pos, _mm_mul_ps(_mm_mul_ps(tt, tt), grad4(g, cx, cy, cz)));
+    };
+    const __m128 n0 = corner(g0, x0, y0, z0), n1 = corner(g1, x1, y1, z1), n2 = corner(g2, x2, y2, z2), n3 = corner(g3, x3, y3, z3);
+    _mm_storeu_ps(out, _mm_mul_ps(_mm_set1_ps(32.0f), _mm_add_ps(_mm_add_ps(_mm_add_ps(n0, n1), n2), n3)));
+}
 /**
  * Fractal/Fractional Brownian Motion (fBm) summation of 1D Perlin Simplex noise
  *
@@ -458,24 +524,31 @@ float SimplexNoise::fractal(size_t octaves, float x, float y) const {
  *
  * @return Noise value in the range[-1; 1], value of 0 on all integer coordinates.
  */
+
 float SimplexNoise::fractalLimited(size_t octaves, float footprint, float x, float y, float z) const {
     float output = 0.f;
     float denom  = 0.f;
     float frequency = mFrequency;
     float amplitude = mAmplitude;
-
-    for (size_t i = 0; i < octaves; i++) {
-        denom += amplitude;
-        // wavelength / (2 * footprint): >= 2 keeps the octave, <= 1 drops it, linear in between.
-        const float w = footprint > 0.f ? 1.0f / (frequency * 2.0f * footprint) - 1.0f : 1.0f;
-        const float weight = w >= 1.0f ? 1.0f : (w <= 0.0f ? 0.0f : w);
-        if (weight > 0.0f)
-            output += weight * amplitude * noise((x+mSeedX) * frequency, (y+mSeedY) * frequency, (z+mSeedZ) * frequency);
-
-        frequency *= mLacunarity;
-        amplitude *= mPersistence;
+    // Octaves four at a time (noise4); summed in octave order, as the one-at-a-time loop did.
+    for (size_t i0 = 0; i0 < octaves; i0 += 4) {
+        alignas(16) float xs[4] = {}, ys[4] = {}, zs[4] = {}, ns[4], ws[4] = {}, as[4] = {};
+        int live = 0;
+        const size_t n = octaves - i0 < 4 ? octaves - i0 : 4;
+        for (size_t l = 0; l < n; ++l) {
+            denom += amplitude;
+            // wavelength / (2 * footprint): >= 2 keeps the octave, <= 1 drops it, linear in between.
+            const float w = footprint > 0.f ? 1.0f / (frequency * 2.0f * footprint) - 1.0f : 1.0f;
+            ws[l] = w >= 1.0f ? 1.0f : (w <= 0.0f ? 0.0f : w);
+            as[l] = amplitude;
+            if (ws[l] > 0.0f) { live = 1; xs[l] = (x + mSeedX) * frequency; ys[l] = (y + mSeedY) * frequency; zs[l] = (z + mSeedZ) * frequency; }
+            frequency *= mLacunarity;
+            amplitude *= mPersistence;
+        }
+        if (!live) continue;
+        noise4(xs, ys, zs, ns);
+        for (size_t l = 0; l < n; ++l) if (ws[l] > 0.0f) output += ws[l] * as[l] * ns[l];
     }
-
     return (output / denom);
 }
 
@@ -484,14 +557,17 @@ float SimplexNoise::fractal(size_t octaves, float x, float y, float z) const {
     float denom  = 0.f;
     float frequency = mFrequency;
     float amplitude = mAmplitude;
-
-    for (size_t i = 0; i < octaves; i++) {
-        output += (amplitude * noise((x+mSeedX) * frequency, (y+mSeedY) * frequency, (z+mSeedZ) * frequency));
-        denom += amplitude;
-
-        frequency *= mLacunarity;
-        amplitude *= mPersistence;
+    for (size_t i0 = 0; i0 < octaves; i0 += 4) {
+        alignas(16) float xs[4] = {}, ys[4] = {}, zs[4] = {}, ns[4], as[4] = {};
+        const size_t n = octaves - i0 < 4 ? octaves - i0 : 4;
+        for (size_t l = 0; l < n; ++l) {
+            xs[l] = (x + mSeedX) * frequency; ys[l] = (y + mSeedY) * frequency; zs[l] = (z + mSeedZ) * frequency;
+            as[l] = amplitude;
+            frequency *= mLacunarity;
+            amplitude *= mPersistence;
+        }
+        noise4(xs, ys, zs, ns);
+        for (size_t l = 0; l < n; ++l) { output += as[l] * ns[l]; denom += as[l]; }
     }
-
     return (output / denom);
 }

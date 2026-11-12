@@ -241,6 +241,7 @@ RiverNetwork::RiverNetwork(float radius, unsigned int seed, const std::function<
             q2 = Vector3Scale(Vector3Normalize(q2), R);
             const float t0 = (float)(k - 1) / K;
             pieces.push_back({ prev, q2, la + (lb - la) * t0, la + (lb - la) * t, wa + (wb - wa) * t0, wa + (wb - wa) * t, da + (db - da) * t0, da + (db - da) * t });
+            pieces.back().mid = Vector3Scale(Vector3Add(prev, q2), 0.5f); pieces.back().halfLen = 0.5f * Vector3Distance(prev, q2);
             prev = q2;
         }
     }
@@ -266,6 +267,9 @@ RiverNetwork::Hit RiverNetwork::nearest(Vector3 dir, float reach) const {
     const Vector3 p = Vector3Scale(dir, R);
     for (int i : list) {
         const Piece& pc = pieces[i];
+        // Bounding sphere first: no closer than its surface (most pieces in a cell are far away).
+        const float dc = Vector3Distance(p, pc.mid) - pc.halfLen;
+        if (dc >= hit.dist) continue;
         float t;
         const float d = SegDist(p, pc.a, pc.b, t);
         if (d >= hit.dist) continue;
