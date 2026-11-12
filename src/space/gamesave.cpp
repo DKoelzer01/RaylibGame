@@ -13,6 +13,7 @@
 #include "suit.h"
 #include "toolwear.h"
 #include "recipebook.h"
+#include "station.h"
 
 #include <algorithm>
 #include <cstring>
@@ -36,6 +37,7 @@ void GameSave_Register() {
         Suit_Save(f);
         ToolWear_Save(f);
         Rocket_Save(f);
+        Station_Save(f);
         fprintf(f, "survival %f %f %f %d\n", survival.oxygen, survival.power, survival.health, survival.deaths);
         fprintf(f, "food %f\n", survival.food);
         fprintf(f, "difficulty %d\n", worldDifficulty);
@@ -48,6 +50,7 @@ void GameSave_Register() {
         QuestBook_Reset();
         Farm_Reset();
         Animals_Reset();
+        Station_Reset();
         Suit_Reset();
         ToolWear_Reset();
         RecipeBook_Reset();
@@ -65,6 +68,7 @@ void GameSave_Register() {
             if (Hotbar_LoadLine(tok, f)) continue;
             if (Nav_LoadLine(tok, f)) continue;
             if (Rocket_LoadLine(tok, f)) continue;
+            if (Station_LoadLine(tok, f)) continue;
             if (strcmp(tok, "player") == 0) {
                 int fly = 0;
                 fscanf(f, " %lf %lf %lf %f %f %f %d %f", &player.position.x, &player.position.y, &player.position.z,

@@ -15,6 +15,8 @@
 #include "voxel.h"
 #include "world.h"
 #include "worldtypes.h"
+#include "station.h"
+#include "gamesave.h"
 
 #include <raymath.h>
 #include <algorithm>
@@ -28,6 +30,7 @@ namespace {
     double warpStart = 0.0;
     RocketTelemetry warpBefore;
     double maxAlt = 0.0;
+    float airLoaded = 0.0f;   // minutes of air loaded into the cockpit
     void Next() { ++phase; phaseStart = GetTime(); }
     double T() { return GetTime() - phaseStart; }
 }
@@ -54,6 +57,8 @@ int RocketTest_Update(Scene& world) {
         ok &= BuildTool_Place(*p, *plot, { PartType::Cockpit, { 0, 11, 0 }, 0 }, false);
         inventory.add("rocket_fuel", 60);
         const int loaded = Rocket_LoadFuel(*plot, 60);
+        inventory.add("oxygen_canister", 1);
+        airLoaded = Rocket_LoadAir(*plot, 1) * 10.0f; // 10 min for the cockpit's life support
         const RocketStats s = Rocket_Stats(*plot, p);
         printf("bench: rocket: built %d parts (%s); fuel %d items -> %.0f kg; dry %.0f kg, thrust %.0f kN, TWR %.2f, delta-v %.0f m/s (orbit needs ~%.0f): %s\n",
                plot->partCount(), ok ? "ok" : "FAILED", loaded, s.fuel, s.dryMass, s.thrust / 1000.0f, s.twr, s.deltaV, s.deltaVNeeded, s.ready ? "READY" : s.missing.front().c_str());
@@ -127,10 +132,132 @@ int RocketTest_Update(Scene& world) {
     case 5: {
         if (T() < 2.0) break;
         TakeScreenshot("bench_rocket_landed.png");
+        // Life support spent some of the cockpit's air above the atmosphere (none on the ground).
+        const float air = Rocket_AirMinutes();
+        const bool breathed = air < airLoaded - 0.05f && air > 0.0f;
+        printf("bench: rocket: life support: %.1f of %.0f min of air left%s\n", air, airLoaded, breathed ? "" : " - FAILED: the air was not used");
         const bool out = Rocket_Exit(world);
-        const bool pass = orbited && t.damage == 0 && out && survival.deaths == 0;
+        const bool pass = orbited && t.damage == 0 && out && survival.deaths == 0 && breathed;
         printf("bench: rocket gate (build, launch, orbit, land): %s\n", pass ? "PASS" : "FAIL");
         return pass ? 1 : -1;
+    }
+    }
+    return 0;
+}
+
+// --test-station (plan 3, M20 gate): the rocket above with a station core on top flies to orbit,
+// deploys the core as a station (its own body on a Kepler orbit), docks to it, gives it fuel,
+// undocks, docks again and takes some fuel back; the station and its fuel survive a save and load.
+namespace {
+    int sphase = 0;
+    double sStart = 0.0, sPhaseStart = 0.0;
+    bool sOk = true;
+    float sGiven = 0.0f, sTaken = 0.0f, sFuelSaved = 0.0f;
+    double sPe0 = 0.0, sPe1 = 0.0;
+    void SNext() { ++sphase; sPhaseStart = GetTime(); }
+    double ST() { return GetTime() - sPhaseStart; }
+    void SCheck(bool c, const char* what) { if (!c) { printf("bench: station: FAILED %s\n", what); sOk = false; } }
+    float StationFuel(Scene& world) {
+        float f = 0.0f;
+        for (auto& o : world.objects)
+            if (auto* b = dynamic_cast<Planetoid*>(o.get()); b && Station_Is(*b) && b->plots)
+                for (const auto& pl : b->plots->plots) {
+                    bool core = false;
+                    for (const Part& part : pl->parts) core = core || part.type == PartType::StationCore;
+                    if (core) f += pl->fuel;
+                }
+        return f;
+    }
+}
+
+int StationTest_Update(Scene& world) {
+    Planetoid* p = dynamic_cast<Planetoid*>(world.objects[0].get());
+    const PlanetField* pf = p ? dynamic_cast<const PlanetField*>(p->field.get()) : nullptr;
+    if (!pf) { printf("bench: --test-station needs the planet\n"); return -1; }
+    const RocketTelemetry t = Rocket_Telemetry(world);
+    switch (sphase) {
+    case 0: {
+        sStart = GetTime();
+        const Vector3 home = Vector3Normalize(p->toLocal((player.position - world.renderOrigin).toFloat()));
+        const Vector3 t1 = Vector3Normalize(Vector3CrossProduct(home, { 0, 1, 0 }));
+        const Vector3 pad = Vector3Normalize(Vector3Add(home, Vector3Scale(t1, 14.0f / pf->radius)));
+        if (!p->plots) p->plots = std::make_unique<PlotSet>();
+        Plot* plot = p->plots->plotFor(Vector3Scale(pad, pf->radius + pf->elevation(pad)), 0.0f, true);
+        bool ok = BuildTool_Place(*p, *plot, { PartType::RocketEngine, { 0, 0, 0 }, 0 }, false);
+        const Int3 legs[4] = { { -1, 0, -1 }, { 2, 0, -1 }, { -1, 0, 2 }, { 2, 0, 2 } };
+        for (const Int3& l : legs) ok &= BuildTool_Place(*p, *plot, { PartType::LandingLeg, l, 0 }, false);
+        for (int k = 0; k < 4; ++k) ok &= BuildTool_Place(*p, *plot, { PartType::FuelTank, { 0, 2 + 2 * k, 0 }, 0 }, false);
+        ok &= BuildTool_Place(*p, *plot, { PartType::Guidance, { 0, 10, 0 }, 0 }, false);
+        ok &= BuildTool_Place(*p, *plot, { PartType::Cockpit, { 0, 11, 0 }, 0 }, false);
+        ok &= BuildTool_Place(*p, *plot, { PartType::StationCore, { 0, 13, 0 }, 0 }, false);
+        inventory.add("rocket_fuel", 75);
+        Rocket_LoadFuel(*plot, 75);
+        const RocketStats s = Rocket_Stats(*plot, p);
+        printf("bench: station: rocket of %d parts with a station core: fuel %.0f of %.0f kg, TWR %.2f, delta-v %.0f m/s: %s\n",
+               plot->partCount(), s.fuel, s.fuelCapacity, s.twr, s.deltaV, s.ready ? "READY" : s.missing.front().c_str());
+        if (!ok || !s.ready || !Rocket_Board(world, *p, *plot)) return -1;
+        SNext();
+        break;
+    }
+    case 1:
+        if (ST() > 1.0) { Rocket_SetAutopilot(RocketAutopilot::Ascent, 45000.0); SNext(); }
+        break;
+    case 2: // to orbit
+        if (t.state == RocketState::Flying && t.periapsis > 35000.0 && t.apoapsis > 35000.0) {
+            printf("bench: station: in orbit after %.0f s (apoapsis %.1f km, periapsis %.1f km, fuel %.0f kg)\n", GetTime() - sStart, t.apoapsis / 1000.0, t.periapsis / 1000.0, t.fuel);
+            SNext();
+        } else if (ST() > 240.0) {
+            printf("bench: station: no orbit (state %d, apoapsis %.1f km, periapsis %.1f km, altitude %.1f km, fuel %.0f kg, autopilot %d)\n",
+                   (int)t.state, t.apoapsis / 1000.0, t.periapsis / 1000.0, t.altitude / 1000.0, t.fuel, (int)t.autopilot);
+            return -1;
+        }
+        break;
+    case 3: { // deploy
+        if (ST() < 1.0) break;
+        SCheck(Rocket_DeployStation(), "the core deployed");
+        double ap = 0.0;
+        SCheck(Station_Count() == 1 && Station_Orbit(0, ap, sPe0) && sPe0 > 30000.0, "a station on a stable orbit");
+        printf("bench: station: founded (orbit %.1f x %.1f km); station tanks hold %.0f kg\n", ap / 1000.0, sPe0 / 1000.0, StationFuel(world));
+        SNext();
+        break;
+    }
+    case 4: // dock (it is right beside us, at the same speed)
+        if (ST() < 1.0) break;
+        SCheck(Rocket_Dock() && Rocket_DockedAtStation(), "docked");
+        SNext();
+        break;
+    case 5: { // give fuel, undock
+        if (ST() < 0.5) break;
+        const float before = StationFuel(world);
+        sGiven = -Rocket_TransferFuel(-400.0f);
+        SCheck(sGiven > 300.0f && StationFuel(world) > before + 300.0f, "fuel given to the station");
+        SCheck(Rocket_Undock() && Rocket_Telemetry(world).state == RocketState::Flying, "undocked");
+        SNext();
+        break;
+    }
+    case 6: // drift a few seconds beside it, dock again, take fuel back
+        if (ST() < 3.0) break;
+        SCheck(Rocket_Dock(), "docked again");
+        sTaken = Rocket_TransferFuel(200.0f);
+        SCheck(sTaken > 150.0f, "fuel taken from the station");
+        SNext();
+        break;
+    case 7: { // save and load the station
+        if (ST() < 0.5) break;
+        sFuelSaved = StationFuel(world);
+        const std::string path = std::string(GetWorkingDirectory()) + "/station_test.tmp";
+        if (FILE* f = fopen(path.c_str(), "w")) { saveExtrasHook(f); fprintf(f, "end_extras\n"); fclose(f); }
+        Rocket_Exit(world);
+        Station_Reset();
+        SCheck(Station_Count() == 0, "stations cleared");
+        if (FILE* f = fopen(path.c_str(), "r")) { loadExtrasHook(f); fclose(f); }
+        remove(path.c_str());
+        double ap = 0.0;
+        SCheck(Station_Count() == 1 && Station_Orbit(0, ap, sPe1) && fabs(sPe1 - sPe0) < 500.0, "the station and its orbit loaded");
+        SCheck(fabsf(StationFuel(world) - sFuelSaved) < 1.0f, "its fuel loaded");
+        printf("bench: station: gave %.0f kg, undocked and docked again, took %.0f kg back; saved and loaded (periapsis %.1f -> %.1f km, %.0f kg in its tanks) -> %s\n",
+               sGiven, sTaken, sPe0 / 1000.0, sPe1 / 1000.0, StationFuel(world), sOk ? "PASS" : "FAIL");
+        return sOk ? 1 : -1;
     }
     }
     return 0;

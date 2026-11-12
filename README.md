@@ -114,6 +114,22 @@ Shaders in `resources/` hot-reload when saved.
   Animals are saved. Threats (not on peaceful): thornbacks (territorial) charge within 12 m; after dark, dusk stalkers
   come out 45-60 m away and hunt you, keep 14 m from a campfire (one within 10 m keeps you safe) and leave at dawn.
   No hostile herds within 500 m of the start.
+- **Vacuum and rocket damage** (plan 3, M18): only the explorer suit is rated for vacuum (space, the moon, ring
+  rocks; `suits.txt`); in another suit vacuum is survivable for 60 s, then costs 4 health a second (a HUD countdown).
+  Rocket parts take damage instead of falling off: re-entry heat scorches the leading part 25% at a time, hard
+  landings break legs (a crash, engines too). A damaged engine gives less thrust, a damaged tank leaks (2 kg/s when
+  broken), broken legs and guidance stop counting. Damage is saved with the plot. A repair kit (hotbar) halves the
+  worst part's damage on the rocket in reach; the rocket panel shows the damage.
+- **Life support and cabins** (plan 3, M19): a cockpit holds 10 minutes of air, a cabin (4 seats) 30; load oxygen
+  canisters with I (with the fuel). Aboard in breathable air the cockpit breathes the air outside; above it, it spends
+  the loaded air, and when that is gone the suit's own oxygen takes over (the hull keeps the vacuum out). P aboard
+  engages the autopilot: a gravity turn to a 45 km orbit, or in orbit a deorbit burn and a powered landing; P again
+  for manual. The rocketry tier asks for life support and a landing; launches and landings count for quests.
+- **Stations and docking** (plan 3, M20; `src/space/station.*`): a station core built onto a rocket is deployed in a
+  stable orbit with K: it becomes its own body on an exact two-body (Kepler) orbit from the state it had, holding up to
+  1500 kg of fuel. Near a station (within 40 m, under 2 m/s) K docks: the rocket's plot joins the station's body,
+  keeping its attitude. Docked, T takes 500 kg of fuel from the station's tanks and Shift+T gives it; U (or any
+  throttle) undocks. Stations, their plots, fuel and machines are saved.
 - **Crafting** (the Crafting tab, `src/space/recipebook.*`, `src/space/storage.*`): only recipes you know show - a
   recipe is known once all its ingredients have been discovered (some also need an unlock in
   `resources/data/recipe_unlocks.txt`), with a toast for each new one. Search by item or ingredient; a toggle shows only
@@ -245,6 +261,12 @@ Shaders in `resources/` hot-reload when saved.
 - Asteroid density is a displaced sphere (mean surface 0.72 R) with a uniform 0.25/voxel gradient: crisp surfaces and
   predictable dig depth.
 ## Benchmark / test mode
+
+The whole regression is one script: `tools/regression.sh [planet|space|all]` (`EXE=...` picks the game,
+`SNAPSHOT=1` runs from a copy of the exe and `resources/` so you can keep building). It prints each test's
+lines and a closing PASS/FAIL count, and exits 1 on any failure. The space set (ring, blueprint, rocket on two
+seeds, orbit, ride) runs in about 4 minutes; the planet set in about 45.
+
 ```sh
 ./game.exe --bench 10                       # 1920x1080 uncapped; waits for the world to load, prints frame stats
 ./game.exe --bench 5 --seed 42 --size 200 --cam 400 200 -400
@@ -280,7 +302,9 @@ fuelled and flown by the autopilot to orbit, saved and loaded in orbit, brought 
 `--test-moon` (moon on its analytic orbit; standing and jumping on it; digging at the feet launches nobody),
 `--test-hunger` (drain at rest, starving, eating, cold at the pole, saved), `--test-farm` (till, plant, no growth at
 night, ripe in daylight, harvest, a growing crop saved), `--test-animals` (herds placed, grazing on the ground,
-`--test-crafting` (discovery and unlocks gate recipes, search, a nearby chest counted, pulled from and deposited
+`--test-station` (with `--time-scale 8`: a rocket with a station core flies to orbit, deploys it, docks, gives fuel,
+undocks, docks again, takes fuel; the station and its fuel through a save), `--test-damage` (engine damage halves thrust, a broken tank leaks, legs stop counting, damage saved, a repair kit,
+vacuum in the basic and explorer suits), `--test-crafting` (discovery and unlocks gate recipes, search, a nearby chest counted, pulled from and deposited
 into), `--test-recipes` (every item reachable from the world; lists items nothing uses),
 `--test-threats` (a stalker comes after dark and bites; a campfire keeps it off; gone by day; none on peaceful; a
 thornback charges), `--test-animals` (herds placed, grazing on the ground,

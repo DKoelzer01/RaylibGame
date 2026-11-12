@@ -37,6 +37,7 @@
 #include "suit.h"
 #include "toolwear.h"
 #include "recipebook.h"
+#include "station.h"
 #include "storage.h"
 #include "tools.h"
 #include "rivers.h"
@@ -106,6 +107,7 @@ static void StartNewWorld(Scene& world, bool reset) {
         Nav_Reset();
         Farm_Reset();
         Animals_Reset();
+        Station_Reset();
         Suit_Reset();
         ToolWear_Reset();
         RecipeBook_Reset();
@@ -181,6 +183,7 @@ int main(int argc, char** argv)
     bool benchSuit = false, suitOk = true; int suitPhase = 0; double suitStart = 0.0; float suitFoodRatio = 0.0f, suitWater = 0.0f, suitRebreather = 0.0f; // --test-suit
     int benchShotTabs = 0; // --shot-tabs
     bool benchRecipes = false; // --test-recipes
+    bool benchDamage = false, damageOk = true; int damagePhase = 0; double damageStart = 0.0; float damageThrust = 0.0f, damageRepaired = 0.0f, damageVacuum = 0.0f; // --test-damage
     bool benchCrafting = false, craftOk = true; int craftPhase = 0, craftChest = -1, craftInv0 = 0, craftWood0 = 0, craftDeposited = 0, craftInChest = 0; double craftStart = 0.0; Plot* craftPlot = nullptr; // --test-crafting
     bool benchThreats = false, threatsOk = true; int threatPhase = 0; double threatStart = 0.0; float threatBite = 0.0f, threatFire = 0.0f, threatRam = 0.0f; int threatSpawned = 0, threatLeft = 0, threatPeaceful = 0; // --test-threats
     bool benchAnimals = false; int animalPhase = 0, animalCount = 0; double animalStart = 0.0, animalMs = 0.0; int animalNatural = 0; float penWorst = 0.0f, animalLured = 0.0f, animalSpread = 0.0f, animalFled = 0.0f, animalFollow = 0.0f; // --test-animals
@@ -190,6 +193,7 @@ int main(int argc, char** argv)
     int mapPhase = 0, mapTiles = 0; double mapStart = 0.0; float mapHeading = -1.0f, mapBearing = -1.0f; bool mapImageOk = false; DVec3 mapFrom{};
     bool benchRing = false, ringStarted = false; // --test-ring: milestone 6 gate
     bool benchRocket = false, rocketStarted = false; // --test-rocket: milestone 7 gate
+    bool benchStation = false, stationStarted = false; double stationWait = 0.0; // --test-station: plan 3 M20 gate
     double rocketWait = 0.0;
     bool benchBlueprint = false;   // --test-blueprint: place, fill in, save and load a blueprint
     bool benchSmallBody = false;   // --test-smallbody: land on a huge and a small ring rock
@@ -320,6 +324,7 @@ int main(int argc, char** argv)
         if (std::string(argv[i]) == "--test-threats") benchThreats = true;
         if (std::string(argv[i]) == "--shot-tabs") benchShotTabs = 1;
         if (std::string(argv[i]) == "--test-recipes") benchRecipes = true;
+        if (std::string(argv[i]) == "--test-damage") benchDamage = true;
         if (std::string(argv[i]) == "--test-crafting") benchCrafting = true;
         if (std::string(argv[i]) == "--test-suit") benchSuit = true;
         if (std::string(argv[i]) == "--test-tools") benchTools = true;
@@ -327,6 +332,7 @@ int main(int argc, char** argv)
         if (std::string(argv[i]) == "--test-viewmodel") benchViewmodel = true;
         if (std::string(argv[i]) == "--test-ring") benchRing = true;
         if (std::string(argv[i]) == "--test-rocket") benchRocket = true;
+        if (std::string(argv[i]) == "--test-station") benchStation = true;
         if (std::string(argv[i]) == "--test-blueprint") benchBlueprint = true;
         if (std::string(argv[i]) == "--test-smallbody") benchSmallBody = true;
         if (std::string(argv[i]) == "--test-trees") benchTrees = true;
@@ -439,6 +445,7 @@ int main(int argc, char** argv)
     mainMenuHandler(mainMenu);
     worldHandler(world);
     Rocket_Init(&world);
+    Station_Init(&world);
     if (loadSaveAtStart) { // the player's save, read-only; later bench saves still go to bench.sav
         SetWorldSavePath("saves/world.sav");
         if (!LoadWorldSave(world)) printf("bench: --load: could not load saves/world.sav\n");
@@ -1421,6 +1428,77 @@ int main(int argc, char** argv)
                                craftInChest, craftOk ? "PASS" : "FAIL");
                         benchCrafting = false;
                     }
+                } else if (benchDamage && (damagePhase > 0 || WorldIdle())) {
+                    // --test-damage (plan 3, M18): rocket part damage lowers thrust, a broken tank leaks, broken
+                    // legs stop counting; damage is saved with the plot; a repair kit mends the worst part;
+                    // vacuum hurts after 60 s in an unrated suit, never in the explorer suit.
+                    Planetoid* p = dynamic_cast<Planetoid*>(world.objects[0].get());
+                    auto check = [&](bool c, const char* what) { if (!c) { printf("bench: damage: FAILED %s\n", what); damageOk = false; } };
+                    if (damagePhase == 0) {
+                        player.spawnOn(world, *p, StartSpawnDir(*p));
+                        damagePhase = 1; damageStart = GetTime(); damageOk = true;
+                    } else if (damagePhase == 1 && GetTime() - damageStart > 1.5 && player.grounded) {
+                        if (!p->plots) p->plots = std::make_unique<PlotSet>();
+                        const auto* pf = dynamic_cast<const PlanetField*>(p->field.get());
+                        const Vector3 me = p->toLocal((player.position - world.renderOrigin).toFloat());
+                        const Vector3 up = Vector3Normalize(me);
+                        const Vector3 d = Vector3Normalize(Vector3Add(me, Vector3Scale(Vector3Normalize(Vector3CrossProduct(up, { 0, 1, 0 })), 4.0f)));
+                        Plot* r = p->plots->plotFor(Vector3Scale(d, pf->radius + pf->elevation(d)), 0.0f, true);
+                        int legs[4] = { -1, -1, -1, -1 };
+                        for (int k = 0; k < 4; ++k) legs[k] = r->place(Part{ PartType::LandingLeg, { k & 1 ? 1 : -2, 0, k & 2 ? 1 : -2 }, 0, 0 });
+                        const int engine = r->place(Part{ PartType::RocketEngine, { -1, 0, -1 }, 0, 0 });
+                        const int tank = r->place(Part{ PartType::FuelTank, { -1, 2, -1 }, 0, 0 });
+                        r->place(Part{ PartType::Guidance, { 0, 4, 0 }, 0, 0 });
+                        r->place(Part{ PartType::Cockpit, { -1, 5, -1 }, 0, 0 });
+                        check(engine >= 0 && tank >= 0 && legs[0] >= 0, "a rocket built");
+                        const RocketStats s0 = Rocket_Stats(*r, p);
+                        Rocket_DamagePart(*r, engine, 0.5f);
+                        Rocket_DamagePart(*r, tank, 1.0f);
+                        Rocket_DamagePart(*r, legs[0], 1.0f);
+                        const RocketStats s1 = Rocket_Stats(*r, p);
+                        check(fabsf(s1.thrust - s0.thrust * 0.5f) < 1.0f, "half-damaged engine: half thrust");
+                        check(s1.leak > 1.9f && s1.leak < 2.1f, "a broken tank leaks 2 kg/s");
+                        check(s1.legs == s0.legs - 1, "a broken leg stops counting");
+                        check(s1.damagedParts == 3 && s1.damage > 0.0f, "damage counted");
+                        damageThrust = s1.thrust / std::max(1.0f, s0.thrust);
+                        // Saved with the plot.
+                        const std::string path = std::string(GetWorkingDirectory()) + "/damage_test.tmp";
+                        if (FILE* f = fopen(path.c_str(), "w")) { p->plots->save(f); fclose(f); }
+                        PlotSet back;
+                        bool loaded = false;
+                        if (FILE* f = fopen(path.c_str(), "r")) { loaded = back.load(f); fclose(f); }
+                        remove(path.c_str());
+                        const Plot* rb = loaded ? back.byId(r->id) : nullptr;
+                        check(rb && rb->damage.count(engine) && fabsf(rb->damage.at(engine) - 0.5f) < 0.01f && rb->damage.count(tank), "damage saved with the plot");
+                        // A repair kit: the worst part (the tank or the leg, both broken) mended by half.
+                        inventory.add("repair_kit", 1);
+                        const bool used = Survival_UseItem("repair_kit");
+                        const RocketStats s2 = Rocket_Stats(*r, p);
+                        check(used && inventory.count("repair_kit") == 0 && s2.damage < s1.damage - 0.05f, "a repair kit mends the worst part");
+                        damageRepaired = s1.damage - s2.damage;
+                        for (int k = (int)r->parts.size() - 1; k >= 0; --k) r->remove(k);
+                        // Vacuum: high above the air in the basic suit, then the explorer suit.
+                        const DVec3 keep = player.position;
+                        player.position = p->worldPos + DVec3(Vector3Scale(p->dirToWorld(up), pf->radius + 40000.0f));
+                        Suit_Reset(); Suit_Apply(world, 0.0f);
+                        survival.health = 100.0f; survival.oxygen = 100.0f; survival.vacuumTime = 0.0f;
+                        Survival_Update(world, 30.0f, false);
+                        const float after30 = survival.health;
+                        Survival_Update(world, 40.0f, false);
+                        damageVacuum = 100.0f - survival.health;
+                        check(survival.inVacuum && after30 >= 99.9f && damageVacuum > 10.0f, "vacuum: 60 s, then it hurts (basic suit)");
+                        inventory.add("explorer_suit", 1);
+                        Suit_Wear("explorer_suit"); Suit_Apply(world, 0.0f);
+                        survival.health = 100.0f; survival.oxygen = 100.0f; survival.vacuumTime = 0.0f;
+                        Survival_Update(world, 30.0f, false); Survival_Update(world, 40.0f, false);
+                        check(survival.health >= 99.9f, "the explorer suit is vacuum-rated");
+                        player.position = keep;
+                        Suit_Reset(); Suit_Apply(world, 0.0f);
+                        survival.health = 100.0f; survival.oxygen = 100.0f; survival.vacuumTime = 0.0f;
+                        printf("bench: damage: engine at half thrust (%.2f), tank leaking, leg out, saved; a repair kit mended %.2f; vacuum cost %.0f health past 60 s in the basic suit, none in the explorer suit -> %s\n",
+                               damageThrust, damageRepaired, damageVacuum, damageOk ? "PASS" : "FAIL");
+                        benchDamage = false;
+                    }
                 } else if (benchRecipes) {
                     // --test-recipes: every item can be had from what the world gives (digging, chopping,
                     // bushes, grass, animals, crops) through hand recipes, machines (once their own item
@@ -2061,6 +2139,9 @@ int main(int argc, char** argv)
                 } else if (benchRing && (ringStarted || WorldIdle())) {
                     if (!ringStarted) { ringStarted = true; Planetoid* p = dynamic_cast<Planetoid*>(world.objects[0].get()); player.spawnOn(world, *p, StartSpawnDir(*p)); }
                     else if (RingTest_Update(world) != 0) benchRing = false;
+                } else if (benchStation && (stationStarted || WorldIdle())) {
+                    if (!stationStarted) { stationStarted = true; stationWait = GetTime(); }
+                    else if (GetTime() - stationWait > 1.5 && StationTest_Update(world) != 0) benchStation = false;
                 } else if (benchRocket && (rocketStarted || WorldIdle())) {
                     if (!rocketStarted) { rocketStarted = true; Planetoid* p = dynamic_cast<Planetoid*>(world.objects[0].get()); player.spawnOn(world, *p, StartSpawnDir(*p)); rocketWait = GetTime(); }
                     else if (GetTime() - rocketWait > 1.5 && RocketTest_Update(world) != 0) benchRocket = false;
@@ -2728,7 +2809,7 @@ int main(int argc, char** argv)
                         }
                         benchWalkSeconds = 0.0;
                     }
-                } else if ((WorldIdle() && benchDigStrokes == 0 && !benchSaveLoad && benchWalkSeconds <= 0.0 && benchMineStrokes == 0 && minePhase != 2 && benchFlySeconds <= 0.0 && !benchSuffocate && benchOrbitSeconds <= 0.0 && !benchRide && !benchPark && !benchGravity && !benchPrecision && !benchMantle && !benchAirJump && !benchMoon && !benchHole && !benchWall && !benchMenus && !benchWater && !benchFlyFollow && !benchHotbar && !benchInventory && !benchMap && !benchViewmodel && !benchQuests && !benchHunger && !benchFarm && !benchAnimals && !benchThreats && benchShotTabs == 0 && !benchRecipes && !benchCrafting && !benchSuit && !benchTools && !benchRivers && !benchRing && !benchRocket && !benchBlueprint && !benchSmallBody && !benchTrees && !benchChop && benchPersist == 0 && benchBuild == 0 && benchFactory == 0 && !benchProgression) || GetTime() > 600.0) {
+                } else if ((WorldIdle() && benchDigStrokes == 0 && !benchSaveLoad && benchWalkSeconds <= 0.0 && benchMineStrokes == 0 && minePhase != 2 && benchFlySeconds <= 0.0 && !benchSuffocate && benchOrbitSeconds <= 0.0 && !benchRide && !benchPark && !benchGravity && !benchPrecision && !benchMantle && !benchAirJump && !benchMoon && !benchHole && !benchWall && !benchMenus && !benchWater && !benchFlyFollow && !benchHotbar && !benchInventory && !benchMap && !benchViewmodel && !benchQuests && !benchHunger && !benchFarm && !benchAnimals && !benchThreats && benchShotTabs == 0 && !benchRecipes && !benchDamage && !benchCrafting && !benchSuit && !benchTools && !benchRivers && !benchRing && !benchRocket && !benchStation && !benchBlueprint && !benchSmallBody && !benchTrees && !benchChop && benchPersist == 0 && benchBuild == 0 && benchFactory == 0 && !benchProgression) || GetTime() > 600.0) {
                     benchStart = GetTime();
                     printf("bench: world ready after %.2f s (%d chunks, avg build %.2f ms of which sampling %.2f ms, %d worker threads)\n",
                         GetWorldStats().lastGenerationSeconds, GetWorldStats().chunks, GetWorldStats().avgBuildMs, GetWorldStats().avgSampleMs, GetWorldStats().workerThreads);
@@ -2839,6 +2920,7 @@ int main(int argc, char** argv)
         advanceBodies(world, gameState == 1 && !loading ? frameDt * timeScale * Rocket_Warp() : 0.0f); // bodies only spin while playing (warped with a coasting rocket); before riders update
         if (gameState == 1) {
             ship.lastImpact = 0.0f;
+            Station_Update(world); // stations on their orbits, before anything rides on them
             if (ship.piloted) {
                 ship.update(world, gameInput && alive, frameDt);
                 ship.applyChaseCamera(world);
@@ -2875,7 +2957,7 @@ int main(int argc, char** argv)
             }
             if (bench && benchTelescope > 0.0f && !ship.piloted) AimAtTelescopeTarget(world);
             if (!ship.piloted && !Rocket_Boarded()) player.applyToCamera(world);
-            Telescope_Update(world, gameInput && alive, !ship.piloted && !player.flyMode && alive && !buildTool.active);
+            Telescope_Update(world, gameInput && alive && !Rocket_Boarded(), !ship.piloted && !player.flyMode && alive && !buildTool.active); // aboard, T moves fuel
             if (bench && benchTelescope > 0.0f) { Telescope_SetActive(world, true); telescope.zoom = benchTelescope; Telescope_Update(world, false, !ship.piloted); }
         }
 

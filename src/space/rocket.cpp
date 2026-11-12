@@ -1,4 +1,6 @@
 #include "rocket.h"
+#include "survival.h"
+#include "station.h"
 #include "buildtool.h"
 #include "gameui.h"
 #include "inventory.h"
@@ -221,10 +223,12 @@ namespace {
         autopilot = RocketAutopilot::Off;
         angVel = { 0, 0, 0 };
         ++landings;
+        QuestBook_Count("rocket_landed");
     }
 
     // Lift off: the pad plot becomes the vehicle's.
     void Launch(Scene& world) {
+        QuestBook_Count("launch");
         Planetoid* body = PadBody();
         Plot* plotPtr = PadPlot();
         if (!body || !plotPtr) return;
@@ -366,10 +370,13 @@ namespace {
         return a;
     }
 
+    // Hard landings damage the legs (a crash: the legs and engines too). Parts stop working rather
+    // than fall off; a repair kit or a hangar mends them.
     void Damage(Plot& plot, bool engines) {
         for (size_t i = 0; i < plot.parts.size(); ++i) {
             const PartType t = plot.parts[i].type;
-            if (t == PartType::LandingLeg || (engines && t == PartType::RocketEngine)) { plot.remove((int)i); ++damage; }
+            if (t == PartType::LandingLeg) { Rocket_DamagePart(plot, (int)i, engines ? 1.0f : 0.6f); ++damage; }
+            else if (engines && t == PartType::RocketEngine) { Rocket_DamagePart(plot, (int)i, 0.7f); ++damage; }
         }
     }
 
@@ -389,10 +396,15 @@ namespace {
         const char* item = PartItem(plot.parts[lead]);
         const float limit = heatLimit.count(item) ? heatLimit[item] : 900.0f;
         if (temperature > limit) overheat += h; else overheat = std::max(0.0, overheat - h);
-        if (overheat > 1.5 && plot.parts[lead].type != PartType::Cockpit) { // the cockpit scorches but holds: damage, not destruction
-            GameUI_Toast(TextFormat("The %s burnt away (%.0f C, it takes %.0f C)", PartName(plot.parts[lead].type), temperature, limit));
-            plot.remove(lead);
-            ++damage;
+        if (overheat > 1.5) { // the leading part scorches: damaged, not destroyed (the cockpit at most to 90%)
+            const bool cockpit = plot.parts[lead].type == PartType::Cockpit;
+            const float before = plot.damage.count(lead) ? plot.damage[lead] : 0.0f;
+            Rocket_DamagePart(plot, lead, 0.25f);
+            if (cockpit) plot.damage[lead] = std::min(plot.damage[lead], 0.9f);
+            if (plot.damage[lead] > before) {
+                GameUI_Toast(TextFormat("The %s is overheating: %.0f%% damaged (%.0f C, it takes %.0f C)", PartName(plot.parts[lead].type), plot.damage[lead] * 100.0f, temperature, limit));
+                ++damage;
+            }
             overheat = 0.0;
         }
     }
@@ -425,6 +437,7 @@ namespace {
         const float mass = RocketMass(st, plot->fuel);
         const float thrust = plot->fuel > 0.0f ? throttle * st.thrust : 0.0f;
         if (thrust > 0.0f) plot->fuel = std::max(0.0f, plot->fuel - thrust / (float)(st.isp * kG0) * h);
+        if (st.leak > 0.0f && plot->fuel > 0.0f) plot->fuel = std::max(0.0f, plot->fuel - st.leak * (float)h); // damaged tanks leak
         const Vector3 g = Gravity(world, com);
         Vector3 force = Vector3Scale(Up(), thrust);
         if (Planetoid* air = Dominant(world, com)) {
@@ -457,14 +470,19 @@ namespace {
         Planetoid* ground = GroundBody(world, com);
         if (!ground) return;
         bool touching = false;
+        // The sea counts as a surface: a rocket coming down over it splashes down and floats (the
+        // autopilot aims for sea level there).
+        const float sea = ground->field ? ground->field->seaLevelRadius() : 0.0f;
         for (const Vector3& p : pts) {
             const DVec3 wp = ToWorld({ p.x, p.y, -p.z });
-            if (ground->densityAt(ground->toLocalD(wp).toFloat()) >= ISO_LEVEL) { touching = true; break; }
+            const Vector3 lp = ground->toLocalD(wp).toFloat();
+            if (ground->densityAt(lp) >= ISO_LEVEL || (sea > 0.0f && Vector3Length(lp) < sea)) { touching = true; break; }
         }
         if (!touching) return;
         const Vector3 vrel = Vector3Subtract(vel, ground->surfaceVelocity((com - world.renderOrigin).toFloat()));
         const float speed = Vector3Length(vrel);
         const Vector3 gup = Vector3Normalize((com - ground->worldPos).toFloat());
+        if (Vector3DotProduct(vrel, gup) > 0.3f) return; // still climbing off the ground (a slow lift-off): not a landing
         const float tilt = acosf(std::clamp(Vector3DotProduct(Up(), gup), -1.0f, 1.0f)) * RAD2DEG;
         const float safe = 4.0f + 1.5f * std::min(4, st.legs);
         lastTouchdown = speed;
@@ -534,20 +552,29 @@ RocketStats Rocket_Stats(const Plot& plot, const Planetoid* body) {
     Load();
     RocketStats s;
     float ispThrust = 0.0f;
-    for (const Part& p : plot.parts) {
+    int rocketParts = 0;
+    for (int pi = 0; pi < (int)plot.parts.size(); ++pi) {
+        const Part& p = plot.parts[pi];
         if (p.type == PartType::Count) continue;
         const char* item = PartItem(p);
         if (IsRocketPart(p.type)) {
             const PartStat& ps = partStats[item];
+            auto dit = plot.damage.find(pi);
+            const float dmg = dit == plot.damage.end() ? 0.0f : std::clamp(dit->second, 0.0f, 1.0f);
+            const float health = 1.0f - dmg; // a damaged engine pushes less; a broken one not at all
             s.dryMass += ps.mass;
-            s.thrust += ps.thrust;
-            ispThrust += ps.isp * ps.thrust;
+            s.thrust += ps.thrust * health;
+            ispThrust += ps.isp * ps.thrust * health;
             s.fuelCapacity += ps.fuel;
-            if (p.type == PartType::RocketEngine) ++s.engines;
-            if (p.type == PartType::FuelTank) ++s.tanks;
-            if (p.type == PartType::Cockpit) ++s.cockpits;
-            if (p.type == PartType::Guidance) ++s.guidance;
-            if (p.type == PartType::LandingLeg) ++s.legs;
+            s.damage += dmg;
+            if (dmg > 0.0f) ++s.damagedParts;
+            ++rocketParts;
+            if (p.type == PartType::RocketEngine && dmg < 1.0f) ++s.engines;
+            if (p.type == PartType::FuelTank) { ++s.tanks; s.leak += 2.0f * dmg; } // 2 kg/s from a broken tank
+            if (p.type == PartType::Cockpit) { ++s.cockpits; ++s.seats; s.airCapacity += 10.0f; }
+            if (p.type == PartType::Cabin) { s.seats += 4; s.airCapacity += 30.0f; }
+            if (p.type == PartType::Guidance && dmg < 1.0f) ++s.guidance;
+            if (p.type == PartType::LandingLeg && dmg < 1.0f) ++s.legs;
         } else {
             std::vector<std::pair<Int3, CellShape>> fp;
             Plot::Footprint(p, fp);
@@ -555,6 +582,7 @@ RocketStats Rocket_Stats(const Plot& plot, const Planetoid* body) {
         }
     }
     s.isp = s.thrust > 0.0f ? ispThrust / s.thrust : 0.0f;
+    s.damage = rocketParts > 0 ? s.damage / rocketParts : 0.0f;
     s.fuel = std::min(plot.fuel, s.fuelCapacity);
     const float m0 = s.dryMass + s.fuel;
     float g = 9.81f, needed = 700.0f;
@@ -639,13 +667,15 @@ void Rocket_Update(Scene& world, bool input, float dt) {
         if (!hit) return;
         aimBody = body->id;
         aimPlot = hit->id;
-        aimCockpit = hit->parts[hitPart].type == PartType::Cockpit;
+        aimCockpit = hit->parts[hitPart].type == PartType::Cockpit || hit->parts[hitPart].type == PartType::Cabin;
         if (!input) return;
         if (IsKeyPressed(KEY_I)) {
             const int n = Rocket_LoadFuel(*hit, 1 << 20);
-            GameUI_Toast(n > 0 ? TextFormat("Loaded %d rocket fuel (%.0f kg)", n, n * fuelPerItem) : "No rocket fuel to load, or the tanks are full");
+            const int air = Rocket_LoadAir(*hit, 1 << 20);
+            if (n > 0 || air > 0) GameUI_Toast(TextFormat("Loaded %d rocket fuel (%.0f kg), %d oxygen canister(s) (%d min of air)", n, n * fuelPerItem, air, air * 10));
+            else GameUI_Toast("Nothing to load (rocket fuel, oxygen canisters), or it is full");
         }
-        if (aimCockpit && IsKeyPressed(KEY_E)) { Rocket_Board(world, *body, *hit); GameUI_Toast("Aboard: Shift throttle up to launch, Ctrl down, X cut, W/S/A/D/Z/C steer, E leave"); }
+        if (aimCockpit && IsKeyPressed(KEY_E)) { Rocket_Board(world, *body, *hit); GameUI_Toast("Aboard: P autopilot (to orbit / down to land), Shift throttle up, Ctrl down, X cut, W/S/A/D/Z/C steer, M map, E leave"); }
         return;
     }
     // Aboard.
@@ -656,8 +686,24 @@ void Rocket_Update(Scene& world, bool input, float dt) {
         if (IsKeyDown(KEY_LEFT_CONTROL)) throttle = std::max(0.0f, throttle - dt * 0.6f);
         if (IsKeyPressed(KEY_X)) throttle = 0.0f;
         if (IsKeyPressed(KEY_M)) mapView = !mapView;
+        if (IsKeyPressed(KEY_P)) { // the autopilot: to orbit, or (in orbit) down to a landing; again: manual
+            if (autopilot != RocketAutopilot::Off) { autopilot = RocketAutopilot::Off; GameUI_Toast("Autopilot off: manual control"); }
+            else {
+                const RocketTelemetry t = Rocket_Telemetry(world);
+                if (state == RocketState::Flying && t.periapsis > 30000.0) { autopilot = RocketAutopilot::Deorbit; GameUI_Toast("Autopilot: deorbit burn, then a powered landing"); }
+                else if (state == RocketState::Flying && t.groundAltitude > 300.0 && t.verticalSpeed < 0.0) { autopilot = RocketAutopilot::Land; GameUI_Toast("Autopilot: powered landing"); }
+                else { autopilot = RocketAutopilot::Ascent; autoTarget = 45000.0; GameUI_Toast("Autopilot: gravity turn to a 45 km orbit"); }
+            }
+        }
         if (IsKeyPressed(KEY_PERIOD)) Rocket_SetWarp(warpLevel + 1);
         if (IsKeyPressed(KEY_COMMA)) Rocket_SetWarp(warpLevel - 1);
+        // Stations: K deploys the core (in orbit) or docks (near one); docked, T / Shift+T move fuel, U undocks.
+        if (IsKeyPressed(KEY_K) && state == RocketState::Flying) { if (Station_Nearest(world, com, 400.0f)) Rocket_Dock(); else Rocket_DeployStation(); }
+        if (IsKeyPressed(KEY_T) && Rocket_DockedAtStation()) {
+            const float kg = Rocket_TransferFuel(IsKeyDown(KEY_LEFT_SHIFT) ? -500.0f : 500.0f);
+            GameUI_Toast(kg > 0.0f ? TextFormat("Took %.0f kg of fuel from the station", kg) : kg < 0.0f ? TextFormat("Gave the station %.0f kg of fuel", -kg) : "No fuel to move (or no room)");
+        }
+        if (IsKeyPressed(KEY_U) && Rocket_DockedAtStation()) Rocket_Undock();
         if (state == RocketState::OnPad && IsKeyPressed(KEY_E)) { Rocket_Exit(world); return; }
     }
     if (state == RocketState::OnPad) {
@@ -847,6 +893,8 @@ void Rocket_DrawHUD(Scene& world) {
         DrawText(TextFormat("mass %.1f t (dry %.1f t)   thrust %.0f kN   TWR %.2f", (s.dryMass + s.fuel) / 1000.0f, s.dryMass / 1000.0f, s.thrust / 1000.0f, s.twr), x, y, 16, RAYWHITE); y += 20;
         DrawText(TextFormat("fuel %.0f / %.0f kg   delta-v %.0f m/s (orbit needs ~%.0f)", s.fuel, s.fuelCapacity, s.deltaV, s.deltaVNeeded), x, y, 16, RAYWHITE); y += 20;
         DrawText(TextFormat("%d engine(s), %d tank(s), %d landing leg(s)", s.engines, s.tanks, s.legs), x, y, 16, RAYWHITE); y += 24;
+        if (s.damagedParts > 0) { DrawText(TextFormat("DAMAGE: %d part(s), %.0f%% overall%s - repair kits mend them (hotbar)", s.damagedParts, s.damage * 100.0f, s.leak > 0.0f ? ", tanks leaking" : ""), x, y, 16, ORANGE); y += 22; }
+        if (s.airCapacity > 0.0f) { DrawText(TextFormat("Air: %.0f of %.0f min (oxygen canisters, I) - %d seat(s)", plot->air, s.airCapacity, s.seats), x, y, 16, plot->air > 0.0f ? RAYWHITE : ORANGE); y += 22; }
         if (s.ready) { DrawText("READY", x, y, 18, GREEN); y += 22; }
         for (const std::string& m : s.missing) { DrawText(TextFormat("needs %s", m.c_str()), x, y, 16, ORANGE); y += 20; }
         DrawText(aimCockpit ? "E board   I load fuel" : "I load fuel (look at the cockpit to board)", x, y + 4, 16, Fade(RAYWHITE, 0.8f));
@@ -918,4 +966,179 @@ bool Rocket_LoadLine(const char* tok, FILE* f) {
     flightTime = std::max(ft, 2.0);
     SyncVehicle(world);
     return true;
+}
+
+void Rocket_DamagePart(Plot& plot, int part, float amount) {
+    if (part < 0 || part >= (int)plot.parts.size() || plot.parts[part].type == PartType::Count) return;
+    float& d = plot.damage[part];
+    d = std::clamp(d + amount, 0.0f, 1.0f);
+}
+
+bool Rocket_UseRepairKit() {
+    if (!gWorld) return false;
+    Scene& world = *gWorld;
+    // The rocket in reach: the boarded one, else a pad rocket (a plot with rocket parts) within 12 m.
+    Plot* best = nullptr;
+    if (state == RocketState::Flying || Rocket_Boarded()) best = state == RocketState::Flying ? VehiclePlot() : PadPlot();
+    if (!best) {
+        Planetoid* body = player.nearest;
+        if (body && body->plots) {
+            const Vector3 me = body->toLocal((player.position - world.renderOrigin).toFloat());
+            float bestD = 12.0f;
+            for (const auto& pl : body->plots->plots) {
+                if (pl->damage.empty()) continue;
+                for (const auto& kv : pl->cells) {
+                    const float d = Vector3Distance(pl->toBody({ (kv.first.x + 0.5f) * kCellSize, (kv.first.y + 0.5f) * kCellSize, (kv.first.z + 0.5f) * kCellSize }), me);
+                    if (d < bestD) { bestD = d; best = pl.get(); }
+                }
+            }
+        }
+    }
+    if (!best || best->damage.empty()) { GameUI_Toast("No damaged rocket within reach"); return false; }
+    auto worst = best->damage.begin();
+    for (auto it = best->damage.begin(); it != best->damage.end(); ++it) if (it->second > worst->second) worst = it;
+    if (worst->second <= 0.0f) { GameUI_Toast("Nothing here needs repair"); return false; }
+    const int part = worst->first;
+    worst->second = std::max(0.0f, worst->second - 0.5f);
+    GameUI_Toast(TextFormat("Repaired the %s: %.0f%% damaged", PartName(best->parts[part].type), worst->second * 100.0f));
+    if (worst->second <= 0.0f) best->damage.erase(worst);
+    Audio_Play(Sfx::Craft, 0.6f, 0.9f);
+    return true;
+}
+
+int Rocket_LoadAir(Plot& plot, int canisters) {
+    const RocketStats s = Rocket_Stats(plot, nullptr);
+    const int room = (int)((s.airCapacity - plot.air) / 10.0f);
+    const int n = std::min({ canisters, room, inventory.count("oxygen_canister") });
+    if (n <= 0 || !inventory.remove("oxygen_canister", n)) return 0;
+    plot.air += n * 10.0f;
+    QuestBook_Count("lifesupport", n);
+    return n;
+}
+
+float Rocket_AirMinutes() { Plot* p = CurrentPlot(); return p ? p->air : 0.0f; }
+
+bool Rocket_BreatheAboard(float dt) {
+    Plot* p = CurrentPlot();
+    if (!p || p->air <= 0.0f) return false;
+    p->air = std::max(0.0f, p->air - dt / 60.0f);
+    return true;
+}
+
+// ---------------------------------------------------------------------------------------------
+// Stations (plan 3, M20): deploy a station core in orbit, dock, undock, move fuel.
+// ---------------------------------------------------------------------------------------------
+
+bool Rocket_DeployStation() {
+    if (!gWorld || state != RocketState::Flying) return false;
+    Scene& world = *gWorld;
+    Planetoid* veh = Vehicle();
+    Plot* vp = VehiclePlot();
+    if (!veh || !vp) return false;
+    int core = -1;
+    for (int i = 0; i < (int)vp->parts.size(); ++i) if (vp->parts[i].type == PartType::StationCore) core = i;
+    if (core < 0) { GameUI_Toast("No station core aboard"); return false; }
+    Planetoid* b = Dominant(world, com);
+    if (!b) return false;
+    double ra, rp;
+    Orbit(*b, com, vel, ra, rp);
+    if (ra < 0.0 || rp - b->radius * b->scale < 30000.0) { GameUI_Toast("Deploy a station from a stable orbit (periapsis above 30 km)"); return false; }
+    // The core leaves the rocket where it is: its cells' corner in the vehicle frame, in world space.
+    const Part part = vp->parts[core];
+    const DVec3 at = ToWorld({ part.origin.x * kCellSize, part.origin.y * kCellSize, -part.origin.z * kCellSize });
+    Planetoid* st = Station_Create(world, *b, at, vel, rot, 6.0f);
+    if (!st) { GameUI_Toast("No stable orbit for a station here"); return false; }
+    vp->remove(core);
+    auto plot = std::make_unique<Plot>();
+    plot->origin = DVec3(0, 0, 0);
+    plot->east = { 1, 0, 0 };
+    plot->up = { 0, 1, 0 };
+    plot->north = { 0, 0, -1 };
+    Part np = part;
+    np.origin = { 0, 0, 0 };
+    plot->place(np);
+    // Fuel the rocket can no longer hold (the core's tank went with it) stays in the core.
+    const float cap = Rocket_Stats(*vp, b).fuelCapacity;
+    if (vp->fuel > cap) { plot->fuel = std::min(1500.0f, vp->fuel - cap); vp->fuel = cap; }
+    st->plots->adopt(std::move(plot));
+    QuestBook_Count("station");
+    GameUI_Toast("Station founded: K docks (within 40 m, under 2 m/s); docked, T takes fuel and Shift+T gives it");
+    Audio_Play(Sfx::Build, 0.7f, 0.7f);
+    return true;
+}
+
+bool Rocket_Dock() {
+    if (!gWorld || state != RocketState::Flying) return false;
+    Scene& world = *gWorld;
+    Planetoid* veh = Vehicle();
+    Plot* vp = VehiclePlot();
+    Planetoid* st = Station_Nearest(world, com, 400.0f);
+    if (!veh || !vp || !st || !st->plots) { GameUI_Toast("No station near"); return false; }
+    // Distance to the station's nearest part, and the speed between them.
+    double nearest = 1e30;
+    for (const auto& pl : st->plots->plots)
+        for (const auto& kv : pl->cells) nearest = std::min(nearest, (st->toWorldD(DVec3(pl->toBody(CellCentre(kv.first)))) - com).length());
+    const float rel = Vector3Length(Vector3Subtract(vel, st->linearVelocity));
+    if (nearest > 40.0) { GameUI_Toast(TextFormat("The station is %.0f m away: dock within 40 m", nearest)); return false; }
+    if (rel > 2.0f) { GameUI_Toast(TextFormat("Closing at %.1f m/s: slow to under 2 to dock", rel)); return false; }
+    // The rocket's plot joins the station's body, keeping its attitude.
+    const Vector3 ex = Vector3RotateByQuaternion({ 1, 0, 0 }, rot), ey = Vector3RotateByQuaternion({ 0, 1, 0 }, rot), ez = Vector3RotateByQuaternion({ 0, 0, -1 }, rot);
+    std::unique_ptr<Plot> plot = veh->plots->release(vp);
+    plot->origin = st->toLocalD(veh->worldPos);
+    plot->east = st->dirToLocal(ex);
+    plot->up = st->dirToLocal(ey);
+    plot->north = st->dirToLocal(ez);
+    const uint32_t fromPlot = plot->id;
+    Plot* placed = st->plots->adopt(std::move(plot));
+    Factory::MovePlot(veh->id, fromPlot, st->id, placed->id);
+    padBody = st->id;
+    padPlot = placed->id;
+    for (auto it = world.objects.begin(); it != world.objects.end(); ++it)
+        if (it->get() == veh) { world.objects.erase(it); break; }
+    vehicleId = 0;
+    state = RocketState::OnPad;
+    throttle = 0.0f;
+    autopilot = RocketAutopilot::Off;
+    angVel = { 0, 0, 0 };
+    QuestBook_Count("dock");
+    GameUI_Toast("Docked: T takes fuel from the station, Shift+T gives it; throttle up (or U) to undock");
+    Audio_Play(Sfx::Build, 0.6f, 0.8f);
+    return true;
+}
+
+bool Rocket_Undock() {
+    if (!gWorld || state != RocketState::OnPad) return false;
+    Planetoid* body = PadBody();
+    if (!body || !Station_Is(*body)) return false;
+    throttle = 0.0f;
+    Launch(*gWorld); // drifting beside the station at its speed
+    return state == RocketState::Flying;
+}
+
+float Rocket_TransferFuel(float kg) {
+    if (state != RocketState::OnPad) return 0.0f;
+    Planetoid* body = PadBody();
+    Plot* plot = PadPlot();
+    if (!body || !plot || !body->plots || !Station_Is(*body)) return 0.0f;
+    const float cap = Rocket_Stats(*plot, body).fuelCapacity;
+    float moved = 0.0f;
+    for (const auto& pl : body->plots->plots) {
+        if (pl.get() == plot) continue;
+        if (kg > 0.0f) { // into the rocket
+            const float k = std::min({ kg - moved, pl->fuel, cap - plot->fuel });
+            if (k <= 0.0f) continue;
+            pl->fuel -= k; plot->fuel += k; moved += k;
+        } else {         // into the station's tanks
+            const float room = Rocket_Stats(*pl, body).fuelCapacity - pl->fuel;
+            const float k = std::min({ -kg - moved, room, plot->fuel });
+            if (k <= 0.0f) continue;
+            pl->fuel += k; plot->fuel -= k; moved += k;
+        }
+    }
+    return kg > 0.0f ? moved : -moved;
+}
+
+bool Rocket_DockedAtStation() {
+    Planetoid* body = state == RocketState::OnPad ? PadBody() : nullptr;
+    return body && Station_Is(*body);
 }

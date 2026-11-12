@@ -29,12 +29,35 @@ class Plot;
 struct RocketStats {
     float dryMass = 0, fuel = 0, fuelCapacity = 0, thrust = 0, isp = 0; // kg, N, s
     int engines = 0, tanks = 0, cockpits = 0, guidance = 0, legs = 0;
+    float damage = 0;                     // mean damage of the rocket parts, 0..1
+    int damagedParts = 0;                 // rocket parts with any damage
+    float leak = 0;                       // kg of fuel a second lost from damaged tanks
+    float airCapacity = 0;                // minutes of air the cockpits (10) and cabins (30) hold
+    int seats = 0;                        // a cockpit 1, a cabin 4
     float twr = 0, deltaV = 0, deltaVNeeded = 0;
     bool ready = false;
     std::vector<std::string> missing;
 };
 // Stats of a plot as a rocket on (or near) a body.
 RocketStats Rocket_Stats(const Plot& plot, const Planetoid* body);
+// Repair kits (from the hotbar): the most damaged part of the nearest rocket within 12 m (the boarded
+// one, or one on a pad) is half repaired. False if there is none to repair.
+bool Rocket_UseRepairKit();
+// Life support: oxygen canisters loaded into a rocket (I, with the fuel), 10 minutes of air each.
+int Rocket_LoadAir(Plot& plot, int canisters);
+// Aboard outside breathable air, the cockpit spends its air: true while there is some.
+bool Rocket_BreatheAboard(float dt);
+float Rocket_AirMinutes();
+// Stations (plan 3, M20; station.h). In a stable orbit with a station core aboard, K deploys it as a
+// station; near a station (within 40 m, under 2 m/s) K docks. Docked: T / Shift+T move fuel between the
+// rocket and the station's tanks (kg > 0: into the rocket), and launching (or U) undocks.
+bool Rocket_DeployStation();
+bool Rocket_Dock();
+bool Rocket_Undock();
+float Rocket_TransferFuel(float kg);
+bool Rocket_DockedAtStation();
+// Tests: damage a rocket part (part index) by an amount.
+void Rocket_DamagePart(Plot& plot, int part, float amount);
 
 enum class RocketState { None, OnPad, Flying };
 enum class RocketAutopilot { Off, Ascent, Circularize, Deorbit, Land };

@@ -89,6 +89,7 @@ void Survival_Respawn(Scene& world) {
     survival.oxygen = survival.power = survival.health = 100.0f;
     survival.food = std::max(survival.food, 60.0f);
     survival.sickUntil = 0.0f;
+    survival.vacuumTime = 0.0f;
     survival.dead = false;
     player.flyMode = false; // otherwise the free-fly camera would put the player back where they died
     // Wake up at the start, at rest with the ground there (spawnOn sets the velocity to the surface's:
@@ -113,7 +114,16 @@ void Survival_Update(Scene& world, float dt, bool inputEnabled) {
     survival.breathable = false;
     survival.underwater = false;
     // Life support: a rocket's pressurised cockpit (the placeholder ship that also gave it is gone).
-    survival.inLifeSupport = Rocket_Boarded();
+    // Life support: a cockpit in breathable air uses the air outside; elsewhere it spends the air loaded
+    // into the rocket (oxygen canisters), and when that is gone the suit's own oxygen takes over (the
+    // hull still holds pressure, so no vacuum clock).
+    {
+        const auto& atm0 = world.atmosphere;
+        const bool airOutside = atm0.enabled && Vector3Distance(pr, atm0.centre) < atm0.radius + survival.breathableAltitude;
+        survival.inLifeSupport = Rocket_Boarded() && (airOutside || Rocket_BreatheAboard(dt));
+    }
+    survival.inVacuum = false;
+    if (survival.inLifeSupport) survival.vacuumTime = 0.0f;
     if (survival.inLifeSupport) {
         survival.oxygen = std::min(100.0f, survival.oxygen + survival.lifeSupportRefillPerSec * dt);
         survival.power = std::min(100.0f, survival.power + survival.lifeSupportRefillPerSec * dt);
@@ -124,6 +134,11 @@ void Survival_Update(Scene& world, float dt, bool inputEnabled) {
         const auto& atm = world.atmosphere;
         const Vector3 head = Vector3Add(pr, Vector3Scale(player.up, player.eyeHeight));
         survival.breathable = atm.enabled && Vector3Distance(pr, atm.centre) < atm.radius + survival.breathableAltitude && !IsUnderwater(world, head);
+        // Vacuum (outside the air): a suit not rated for it holds 60 s, then it hurts (4 a second).
+        survival.inVacuum = !(atm.enabled && Vector3Distance(pr, atm.centre) < atm.radius + survival.breathableAltitude);
+        if (survival.inVacuum && !Suit_Stats().vacuum) { survival.vacuumTime += dt; if (survival.vacuumTime > 60.0f) survival.health -= 4.0f * std::min(dt, survival.vacuumTime - 60.0f); }
+        else survival.vacuumTime = 0.0f;
+        if (Rocket_Boarded()) { survival.vacuumTime = 0.0f; survival.inVacuum = false; } // inside a pressurised hull, out of air
         if (survival.breathable) survival.oxygen = std::min(100.0f, survival.oxygen + survival.airRefillPerSec * dt);
         else {
             // Underwater drains it faster (a rebreather slows that); bigger tanks last longer.
@@ -216,6 +231,10 @@ void Survival_DrawHUD() {
     if (GetTime() < survival.sickUntil) DrawText("SICK", tx, y + 46, 16, ORANGE);
     if (survival.inLifeSupport) DrawText("LIFE SUPPORT", tx, y + 2, 16, SKYBLUE);
     else if (survival.breathable) DrawText("BREATHABLE AIR", tx, y + 2, 16, Fade(SKYBLUE, 0.7f));
+    else if (survival.inVacuum) {
+        if (Suit_Stats().vacuum) DrawText("VACUUM: suit rated", tx, y + 2, 16, Fade(SKYBLUE, 0.7f));
+        else { const bool flash = survival.vacuumTime > 50.0f && fmodf((float)GetTime(), 0.6f) < 0.3f; DrawText(survival.vacuumTime < 60.0f ? TextFormat("VACUUM: suit not rated, %.0f s", 60.0f - survival.vacuumTime) : "VACUUM: suit failing - get to air or a cockpit", tx, y + 2, 16, flash ? RED : ORANGE); }
+    }
     DrawText(TextFormat("O2 canister x%d   power cell x%d   (use from the hotbar)", inventory.count("oxygen_canister"), inventory.count("power_cell")), x, y - 22, 16, Fade(RAYWHITE, 0.8f));
     if (survival.dead) {
         DrawRectangle(0, 0, GetScreenWidth(), GetScreenHeight(), Fade(BLACK, 0.6f));
@@ -431,9 +450,13 @@ void Objectives_DrawHUD() {
     DrawWrapped(t.text, 12, y, 64, 13, Fade(RAYWHITE, 0.6f)); // the tier's hint
 }
 
-bool Survival_IsUsable(const std::string& id) { return id == "oxygen_canister" || id == "power_cell" || Survival_IsFood(id); }
+bool Survival_IsUsable(const std::string& id) { return id == "oxygen_canister" || id == "power_cell" || id == "repair_kit" || Survival_IsFood(id); }
 
 bool Survival_UseItem(const std::string& id) {
+    if (id == "repair_kit") { // mends the most damaged part of the rocket in reach (rocket.h)
+        if (inventory.count(id) > 0 && Rocket_UseRepairKit()) { inventory.remove(id, 1); return true; }
+        return false;
+    }
     if (Survival_IsFood(id)) {
         // Eat: not when full (no waste). Raw meat may make you sick: food drains twice as fast a minute.
         const Food& food = foods[id];
