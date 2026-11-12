@@ -95,10 +95,14 @@ Water (Plan 4, user answers)
 
 1. Controls: camera jitter on steep slopes - done (eye smoothing, d0ecdf3), confirm in play.
 2. UI: right-click container/machine inventories like the player's; crafting as an icon grid with
-   hover tooltips (name, cost, description).
+   hover tooltips (name, cost, description) - done (30111b8; --shot-tabs checks a chest slot take).
 3. World: 60/20/20 tree mix per area + more wood types, recipes take any planks (log -> planks of its
-   wood), placeable log/stone blocks, rocks/boulders/cliffs/overhangs, less far-LOD texture tiling.
-4. Flowing water F1-F6 (3D voxel sim).
+   wood), placeable log/stone blocks, rocks/boulders/cliffs/overhangs, less far-LOD texture tiling -
+   done (c75af72): five woods (WoodSpeciesInfo), any_planks/any_log wildcards (ItemMatches), tors and
+   boulders in PlanetField::rockFeature, two-scale terrain texturing; --shot-forest.
+4. Flowing water F1-F6 (3D voxel sim) - done: src/engine/fluid.*, src/space/waterworks.*; tests --test-flow,
+   --test-pond, --test-bucket, --test-pump. Static water feeds only dug cells; ponds are taken over
+   (PlanetField::claimPond) and finite; static chunk water shows only over the original bed near by.
 5. Parallelism and GPU compute (user, 2026-11-11): audit main-thread work for the job system;
    raylib built with GRAPHICS_API_OPENGL_43 exposes compute shaders + SSBOs (rlgl) - candidates
    are the water sim, chunk density/meshing, foliage placement; keep a GL 3.3 fallback.
