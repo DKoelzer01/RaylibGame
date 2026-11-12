@@ -74,6 +74,10 @@ planet() {
     run --seed 42 --bench 3 --test-materials
     run --seed 42 --bench 3 --test-decor
     run --seed 42 --bench 3 --test-weather
+    run --seed 42 --bench 3 --test-flow
+    run --seed 42 --bench 3 --test-pond
+    run --seed 42 --bench 3 --test-bucket
+    run --seed 42 --bench 3 --test-pump
 }
 
 space() {

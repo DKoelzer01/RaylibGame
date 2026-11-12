@@ -2568,7 +2568,7 @@ int main(int argc, char** argv)
                     } else if (pondPhase == 3) {
                         static float h0 = 0.0f; static int inWaterFrames = 0, frames = 0;
                         const float h = Vector3Length(p->toLocal((player.position - world.renderOrigin).toFloat()));
-                        if (t < 0.5) { h0 = h; inWaterFrames = frames = 0; }
+                        if (t < 0.5 || h0 == 0.0f) { h0 = h; inWaterFrames = frames = 0; pondT0 = GetTime() - std::min(t, 0.5); } // the first frame here can come late (a hitch)
                         else { ++frames; inWaterFrames += player.inWater ? 1 : 0; }
                         if (t > 3.0) {
                             const float sink = (h0 - h) / 2.5f;
@@ -2576,6 +2576,7 @@ int main(int argc, char** argv)
                             printf("bench: pond: swimming in the pit: in water %d%% of frames, sank %.2f m/s (falling in air would be ~%.0f m/s) -> %s\n",
                                    frames ? 100 * inWaterFrames / frames : 0, sink, player.gravity * 2.5f * 0.5f, pass ? "PASS" : "FAIL");
                             benchPond = false;
+                            h0 = 0.0f;
                         }
                     }
                 } else if (benchFlow && (flowPhase > 0 || WorldIdle())) {
