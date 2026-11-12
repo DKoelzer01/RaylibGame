@@ -26,6 +26,7 @@ namespace {
     bool hasHit = false;
     bool digging = false, adding = false;
     double nextStrokeAt = 0.0;   // the next swing may start then (GetTime)
+    Vector3 aimLocal{};          // the view direction, body-local, at the last hit (digs go into the ground along it)
     float strokeLength = 0.5f;   // the current cooldown's length (the HUD bar)
     std::string toast;
     double toastUntil = 0.0;
@@ -128,6 +129,7 @@ void TerrainTool_Update(Scene& world, bool inputEnabled, bool editEnabled) {
     if (!hasPlant) chopHits = 0;
     tool = HeldTool();
     if (hasHit) {
+        aimLocal = hit.planetoid->dirToLocal(dir);
         hitItem = ItemAt(*hit.planetoid, hit.local, hit.material);
         rule = DigRuleFor(tool, hit.material, hitItem.c_str());
     }
@@ -230,6 +232,16 @@ static bool BrushStroke(bool digging) {
 // The mining sphere for the current hit: centred on the surface point, the tool's radius.
 static float MiningRadius() { return rule.radius > 0.0f ? rule.radius : DigRuleFor(tool, VoxelMaterial::Regolith, nullptr).radius; }
 
+// Where a dig's sphere sits: half its radius into the ground along the view (or straight down), so
+// the hole is where the crosshair is and the circle drawn on the surface is exactly its mouth
+// (radius sqrt(1 - 0.25) = 0.87 of the sphere's). Centred on the surface point, half of it was air
+// and how deep it bit depended on the angle.
+static constexpr float kDigSink = 0.5f;
+static Vector3 DigCentre(float r) {
+    const Vector3 d = Vector3LengthSqr(aimLocal) > 0.5f ? Vector3Normalize(aimLocal) : Vector3Negate(Vector3Normalize(hit.local));
+    return Vector3Add(hit.local, Vector3Scale(d, kDigSink * r));
+}
+
 // One stroke at the current crosshair hit (also used by scripted tests). Tools carve exactly the
 // sphere shown (what lies inside it, of what the tool can dig, is collected); RMB places soil.
 bool TerrainTool_Stroke(bool dig) {
@@ -288,6 +300,7 @@ bool TerrainTool_Stroke(bool dig) {
     const bool softOnly = tool.type != ToolType::Pickaxe;
     const float r = radius / p.scale;
     const float step = r / 4.0f;
+    const Vector3 centre = DigCentre(r);
     const float cell = step * step * step * p.scale * p.scale * p.scale;
     std::map<std::string, float> got;
     float wet = 0.0f;
@@ -297,7 +310,7 @@ bool TerrainTool_Stroke(bool dig) {
         for (int y = -4; y <= 4; ++y)
             for (int x = -4; x <= 4; ++x) {
                 if (x * x + y * y + z * z > 16) continue;
-                const Vector3 q = Vector3Add(hit.local, { x * step, y * step, z * step });
+                const Vector3 q = Vector3Add(centre, { x * step, y * step, z * step });
                 const float d = p.densityAt(q);
                 if (d < ISO_LEVEL || !p.field->editable(q)) continue;
                 const VoxelMaterial m = p.materialAt(q);
@@ -324,7 +337,7 @@ bool TerrainTool_Stroke(bool dig) {
         if (itemDB.find(s)) { inventory.add(s, 1); Toast(TextFormat("+1 %s from the grass", s)); }
     }
     TerrainEdit e{};
-    e.center = hit.local;
+    e.center = centre;
     e.radius = r;
     e.carve = true;
     e.softOnly = softOnly;
@@ -342,19 +355,23 @@ void TerrainTool_Draw3D() {
         DrawSphereWires(hit.point, terrainTool.brushRadius, 8, 12, c);
         return;
     }
-    // The mining sphere, only where it lies inside the material: drawn where it is behind the
-    // terrain surface (depth test flipped), so it shows through the ground and never in the air.
-    const float radius = MiningRadius();
-    if (hit.distance < radius * 1.05f) return;
+    // The dig's mouth: a circle on the surface where the sphere cuts it (DigCentre), depth-tested like
+    // anything else, so it never shows through structures, foliage or hills.
+    const float radius = MiningRadius() * sqrtf(1.0f - kDigSink * kDigSink);
     const Color c = !rule.can ? Color{ 255, 80, 60, 255 } : digging ? Color{ 255, 220, 120, 255 } : Color{ 120, 220, 255, 255 };
+    const Vector3 n = Vector3Normalize(hit.normal);
+    Vector3 u = Vector3CrossProduct(n, fabsf(n.y) < 0.9f ? Vector3{ 0, 1, 0 } : Vector3{ 1, 0, 0 });
+    u = Vector3Normalize(u);
+    const Vector3 v = Vector3CrossProduct(n, u);
+    const Vector3 o = Vector3Add(hit.point, Vector3Scale(n, 0.05f)); // just off the ground (no z-fighting)
+    constexpr int kSeg = 40;
+    auto at = [&](int k) { const float a = 2.0f * PI * k / kSeg; return Vector3Add(o, Vector3Add(Vector3Scale(u, cosf(a) * radius), Vector3Scale(v, sinf(a) * radius))); };
     rlDrawRenderBatchActive();
-    glDepthFunc(kGlGreater);
     rlDisableDepthMask();
-    rlDisableBackfaceCulling(); // the bowl inside the ground is the sphere's far side
-    DrawSphereEx(hit.point, radius, 12, 16, Fade(c, 0.35f));
-    DrawSphereWires(hit.point, radius, 8, 12, Fade(c, 0.8f));
+    rlDisableBackfaceCulling();
+    for (int k = 0; k < kSeg; ++k) DrawTriangle3D(o, at(k), at(k + 1), Fade(c, 0.16f));
+    for (int k = 0; k < kSeg; ++k) DrawLine3D(at(k), at(k + 1), Fade(c, 0.9f));
     rlDrawRenderBatchActive();
-    glDepthFunc(kGlLequal);
     rlEnableDepthMask();
     rlEnableBackfaceCulling();
 }
