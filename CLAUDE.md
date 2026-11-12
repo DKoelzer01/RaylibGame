@@ -106,4 +106,18 @@ Water (Plan 4, user answers)
 5. Parallelism and GPU compute (user, 2026-11-11): audit main-thread work for the job system;
    raylib built with GRAPHICS_API_OPENGL_43 exposes compute shaders + SSBOs (rlgl) - candidates
    are the water sim, chunk density/meshing, foliage placement; keep a GL 3.3 fallback.
+6. 3D terrain (user, 2026-11-12): full 3D noise for hills and cliffs with natural overhangs and
+   alcoves, on top of the height map and the tors/boulders (PlanetField::rockFeature). Plan: a 3D
+   displacement band around the surface (~-15..+25 m), strength from a regional "rugged" mask and
+   the slope (gentle plains stay smooth), domain-warped ridged noise for cliffs and undercuts;
+   material = rock where the 3D term carves or builds; removes floating bits (no solid fully above
+   open air beyond a few m). Systems that assume a height map must use density near the surface:
+   tree/stone placement (already checks density), static water bed, spawn, map, materialSky depth.
+   Coarse LOD keeps the low octaves so far silhouettes match. Gate: --shot-terrain (cliff and
+   overhang screenshots), --crack-check, --test-planet-walk, chunk build time within +30%.
+7. Chunk generation speed (2026-11-12): builds already run in parallel on the job pool (one job per
+   chunk, ~7 ms each, 3-5 ms of it density sampling). Next: SIMD noise (4-8 samples at once, the
+   biggest win), a per-region height-map cache shared across chunks and LOD levels, cheap
+   all-rock/all-air rejection before full sampling; split a single chunk across threads only for
+   urgent rebuilds. Do this with or right after 6 (3D noise adds sampling cost).
 Deferred by the user: moon mining launch, motion sickness.
