@@ -416,6 +416,19 @@ void Scene::drawScene(int gamestate) {
             SetShaderValue(as, GetShaderLocation(as, "density"), &atmDensity, SHADER_UNIFORM_FLOAT);
             const float overcast = std::clamp(weatherCloud, 0.0f, 1.0f) * std::min(1.0f, atmDensity * 3.0f);
             SetShaderValue(as, GetShaderLocation(as, "overcast"), &overcast, SHADER_UNIFORM_FLOAT);
+            {   // Clouds: the camera in the planet's frame, and the layer's radius (none without air).
+                const Vector3 rel = Vector3Subtract(camera.position, atmosphere.centre);
+                const Vector3 camLocal = Vector3Add(Vector3Add(Vector3Scale(atmosphere.toLocalX, rel.x), Vector3Scale(atmosphere.toLocalY, rel.y)), Vector3Scale(atmosphere.toLocalZ, rel.z));
+                const float shell = atmosphere.enabled ? atmosphere.radius + atmosphere.cloudHeight : 0.0f;
+                const float cover = std::clamp(weatherCloud, 0.0f, 1.0f);
+                SetShaderValue(as, GetShaderLocation(as, "camLocal"), &camLocal, SHADER_UNIFORM_VEC3);
+                SetShaderValue(as, GetShaderLocation(as, "toLocalX"), &atmosphere.toLocalX, SHADER_UNIFORM_VEC3);
+                SetShaderValue(as, GetShaderLocation(as, "toLocalY"), &atmosphere.toLocalY, SHADER_UNIFORM_VEC3);
+                SetShaderValue(as, GetShaderLocation(as, "toLocalZ"), &atmosphere.toLocalZ, SHADER_UNIFORM_VEC3);
+                SetShaderValue(as, GetShaderLocation(as, "cloudShell"), &shell, SHADER_UNIFORM_FLOAT);
+                SetShaderValue(as, GetShaderLocation(as, "cloudDrift"), &cloudDrift, SHADER_UNIFORM_VEC3);
+                SetShaderValue(as, GetShaderLocation(as, "cloudCover"), &cover, SHADER_UNIFORM_FLOAT);
+            }
             atmosphereDome.materials[0].shader = as;
             DrawModel(atmosphereDome, (Vector3){ 0, 0, 0 }, 1.0f, WHITE);
         }

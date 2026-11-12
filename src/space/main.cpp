@@ -3283,6 +3283,9 @@ int main(int argc, char** argv)
                             world.atmosphere.enabled = true;
                             world.atmosphere.centre = q->position;
                             world.atmosphere.radius = q->radius * q->scale;
+                            world.atmosphere.toLocalX = q->dirToLocal({ 1, 0, 0 });
+                            world.atmosphere.toLocalY = q->dirToLocal({ 0, 1, 0 });
+                            world.atmosphere.toLocalZ = q->dirToLocal({ 0, 0, 1 });
                         }
                     }
         }

@@ -66,6 +66,8 @@ class Scene {
             float radius = 0.0f;          // sea level
             float height = 25000.0f;      // fades out from sea level to this altitude
             float hazeHeight = 8000.0f;   // haze (fog) lies in this layer: looking up through it, distant bodies stay clear
+            Vector3 toLocalX = { 1, 0, 0 }, toLocalY = { 0, 1, 0 }, toLocalZ = { 0, 0, 1 }; // planet-local images of the world axes (clouds)
+            float cloudHeight = 1500.0f;  // the cloud layer, above sea level (m)
         } atmosphere;
 
         Material terrainMaterial{};   // lighting shader + albedo/normal/rough-ao maps + shadow map
@@ -96,6 +98,7 @@ class Scene {
         float fogDensity = 0.0f;         // 0 = no fog
         float weatherCloud = 0.0f;       // weather (set by the game each frame): cloud cover 0..1 greys the sky, dims the sun
         float weatherFog = 0.0f;         // ground fog 0..1 (thick at 1: ~60 m visibility)
+        Vector3 cloudDrift = { 0, 0, 0 }; // weather: how far the wind has carried the clouds (planet-local m)
         std::function<void()> onDraw3D;  // extra world-space drawing at the end of the main pass
         // Extra geometry in the depth passes (rings, ring.h): range and draw in the far pass, draw in
         // the mid and near passes (rebuild = the first of the frame).
