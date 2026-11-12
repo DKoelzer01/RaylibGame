@@ -32,6 +32,7 @@
     task | get vacuum_tube 1      | Craft a vacuum tube
     task | do till 1              | Till a field (a shovel or hoe: RMB on soft ground)
     task | do plant 1             | Plant seeds on the farmland (look at it, I)
+    task | do pour 1              | Carry water to it: a bucket (hotbar, RMB) scoops 1 m^3 and pours it; water within 4 m doubles growth
     task | do modules 2           | Fit a second suit module (Tab > Suit)
 4 | LV electric      | electric_furnace | Basic circuits on a steel hull make your first LV machine. Power it from an LV generator (32 V; steam machines refuse it).
     task | get basic_circuit 1    | Craft a basic circuit

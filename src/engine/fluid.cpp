@@ -909,7 +909,7 @@ bool Fluid::StandingWaterNear(const Planetoid& body, Vector3 local, float range)
     for (const PubSite& s : published) {
         if (s.body != body.id) continue;
         const int R = (int)ceilf(range);
-        for (int dk = -2; dk <= 1; ++dk)
+        for (int dk = -3; dk <= 1; ++dk)
             for (int dj = -R; dj <= R; dj += 1)
                 for (int di = -R; di <= R; di += 1) {
                     const Vector3 q = Vector3Add(local, Vector3Add(Vector3Add(Vector3Scale(s.e, (float)di), Vector3Scale(s.n, (float)dj)), Vector3Scale(s.u, (float)dk)));

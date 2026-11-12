@@ -23,6 +23,9 @@ struct TerrainToolSettings {
     int gemBoost = 1;            // tests: multiplies the (rare) odds of a gem or quartz per rock stroke
     // A shovel's RMB on soft ground tills it into farmland (set by the game; returns true if it did).
     std::function<bool(class Planetoid&, Vector3 localGround)> till;
+    // The item in hand became another (an empty bucket filled, a full one emptied): the game rebinds
+    // the hotbar slot and counts quest events ("scoop", "pour").
+    std::function<void(const std::string& from, const std::string& to, const char* event)> swapHeld;
 };
 extern TerrainToolSettings terrainTool;
 
@@ -31,6 +34,7 @@ bool TerrainTool_Stroke(bool dig);                         // one dig/build stro
 bool TerrainTool_IsFiller(const std::string& item);        // bulk ground placed with RMB (dirt, gravel, sand, stone...)
 float TerrainTool_Cooldown();                              // 1 just after a swing .. 0 ready for the next
 bool TerrainTool_Chop();     // one swing at the aimed plant (scripted tests); true when it came down
+bool TerrainTool_Bucket(class Scene& world); // the bucket in hand: scoop or pour (RMB; scripted tests call it after aiming)
 bool TerrainTool_AimingPlant(uint64_t* id = nullptr);
 class Planetoid;
 bool TerrainTool_DigAt(Planetoid& p, Vector3 local);              // tests: dig a point, gain what it held

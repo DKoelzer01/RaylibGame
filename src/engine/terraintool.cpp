@@ -6,6 +6,7 @@
 #include "worldtypes.h"
 #include "tools.h"
 #include "plots.h"
+#include "fluid.h"
 
 #include <raymath.h>
 #include <rlgl.h>
@@ -113,6 +114,45 @@ static bool PartInFront(Scene& world, Vector3 dir, const TerrainHit& h) {
     return false;
 }
 
+// The bucket in hand (Plan 4, F5): empty, it scoops 1 m^3 from the first water along the view within
+// reach (static or flowing); full, it pours where you look. Uses the aim of the last TerrainTool_Update.
+bool TerrainTool_Bucket(Scene& world) {
+    Planetoid* bodyP = player.nearest ? player.nearest : (hasHit ? hit.planetoid : nullptr); // nearest is set by the next update after a teleport
+    if (!bodyP || (terrainTool.heldTool != "bucket" && terrainTool.heldTool != "water_bucket")) return false;
+    const Vector3 dir = Vector3Normalize(Vector3Subtract(world.camera.target, world.camera.position));
+    {
+    Planetoid& body = *bodyP;
+    const std::string from = terrainTool.heldTool;
+    if (from == "bucket") {
+        const float maxD = hasHit ? hit.distance + 1.0f : terrainTool.reach; // the water may start just past a shallow bed
+        bool found = false;
+        for (float s = 0.4f; s <= maxD && !found; s += 0.25f) {
+            const Vector3 q = Vector3Add(world.camera.position, Vector3Scale(dir, s));
+            if (!IsUnderwater(world, q)) continue;
+            found = true;
+            if (Fluid::Take(body, body.toLocal(q), 1.0f, 1.5f) >= 0.5f && inventory.remove("bucket", 1)) {
+                inventory.add("water_bucket", 1);
+                terrainTool.heldTool = "water_bucket";
+                Audio_Play(Sfx::Pickup, 0.6f, 0.6f);
+                Toast("Bucket filled (1 m^3): RMB pours it");
+                if (terrainTool.swapHeld) terrainTool.swapHeld(from, "water_bucket", "scoop");
+            } else Toast("Not enough water here");
+        }
+        if (!found) Toast("No water within reach");
+    } else if (!hasHit) {
+        Toast("Look at the ground to pour");
+    } else {
+        const Vector3 up = Vector3Normalize(hit.local);
+        Fluid::Pour(*hit.planetoid, Vector3Add(hit.local, Vector3Scale(up, 0.6f)), 1.0f);
+        if (inventory.remove("water_bucket", 1)) inventory.add("bucket", 1);
+        terrainTool.heldTool = "bucket";
+        Audio_Play(Sfx::Dig, 0.5f, 1.6f);
+        if (terrainTool.swapHeld) terrainTool.swapHeld(from, "bucket", "pour");
+    }
+    }
+    return true;
+}
+
 void TerrainTool_Update(Scene& world, bool inputEnabled, bool editEnabled) {
     PROFILE_FUNCTION();
     const Vector3 dir = Vector3Normalize(Vector3Subtract(world.camera.target, world.camera.position));
@@ -146,8 +186,13 @@ void TerrainTool_Update(Scene& world, bool inputEnabled, bool editEnabled) {
         if (wheel != 0.0f) terrainTool.brushRadius = std::clamp(terrainTool.brushRadius * (wheel > 0 ? 1.15f : 1.0f / 1.15f), 1.0f, 24.0f);
     }
 
+    // Buckets (Plan 4, F5): RMB with an empty bucket scoops 1 m^3 of water (static or flowing) from
+    // the first water along the view within reach; RMB with a full one pours it where you look.
+    const bool bucket = terrainTool.heldTool == "bucket" || terrainTool.heldTool == "water_bucket";
+    if (bucket && IsMouseButtonPressed(MOUSE_BUTTON_RIGHT)) TerrainTool_Bucket(world);
+
     digging = IsMouseButtonDown(MOUSE_BUTTON_LEFT);
-    adding = !digging && IsMouseButtonDown(MOUSE_BUTTON_RIGHT);
+    adding = !bucket && !digging && IsMouseButtonDown(MOUSE_BUTTON_RIGHT);
     // One swing per cooldown, and the cooldown runs whether the button is held or not, so clicking
     // fast is no faster than holding (it was: a release reset the timer). The swing animation lasts
     // exactly the cooldown (terrainTool.swingTime), and the HUD bar under the crosshair shows it.

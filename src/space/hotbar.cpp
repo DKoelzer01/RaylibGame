@@ -60,6 +60,12 @@ namespace {
         if (piloting) return;
         selected = slot;
         if (id == kHotbarTerrainTool) { buildTool.active = false; terrainTool.heldTool.clear(); return; }
+        if (id == "bucket" || id == "water_bucket") { // in hand: RMB scoops / pours water (terraintool)
+            if (inventory.count(id) <= 0) { GameUI_Toast(TextFormat("No %s", ShortName(id))); Audio_Play(Sfx::Error, 0.3f); return; }
+            buildTool.active = false;
+            terrainTool.heldTool = id;
+            return;
+        }
         if (KindOf(id) == ItemKind::Tool && ToolOf(id).type != ToolType::Hands) {
             if (inventory.count(id) <= 0) { GameUI_Toast(TextFormat("No %s", ShortName(id))); Audio_Play(Sfx::Error, 0.3f); return; }
             buildTool.active = false;

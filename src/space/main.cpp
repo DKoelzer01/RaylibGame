@@ -188,6 +188,7 @@ int main(int argc, char** argv)
     bool benchTools = false, toolsOk = true; int toolsPhase = 0, toolsLife = 0, toolsTilled = 0; double toolsStart = 0.0; // --test-tools
     bool benchSuit = false, suitOk = true; int suitPhase = 0; double suitStart = 0.0; float suitFoodRatio = 0.0f, suitWater = 0.0f, suitRebreather = 0.0f; // --test-suit
     int benchShotTabs = 0; // --shot-tabs
+    bool benchBucket = false; int bucketPhase = 0, bucketTrips = 0; double bucketT0 = 0.0; Vector3 bucketWater{}, bucketBasin{}, bucketField{}; // --test-bucket
     bool benchPond = false; int pondPhase = 0; double pondT0 = 0.0; Vector3 pondDirB{}, pondOutB{}, pondPit{}, pondMid{}; float pondLevelB = 0.0f, pondRB = 0.0f; // --test-pond
     bool benchFlow = false; int flowPhase = 0; double flowStart = 0.0, flowEdit = 0.0, flowReachT = -1.0, flowCaveT = -1.0, flowSleepT = -1.0; Vector3 flowDir{}, flowOut{}, flowEnd{}, flowCave{}; float flowLevel = 0.0f; // --test-flow
     bool benchForest = false; int forestPhase = 0; double forestStart = 0.0; Vector3 forestCam{}, forestTarget{}, forestUp{}; // --shot-forest
@@ -342,6 +343,7 @@ int main(int argc, char** argv)
         if (std::string(argv[i]) == "--shot-forest") benchForest = true;
         if (std::string(argv[i]) == "--test-flow") benchFlow = true;
         if (std::string(argv[i]) == "--test-pond") benchPond = true;
+        if (std::string(argv[i]) == "--test-bucket") benchBucket = true;
         if (std::string(argv[i]) == "--test-recipes") benchRecipes = true;
         if (std::string(argv[i]) == "--test-weather") benchWeather = true;
         if (std::string(argv[i]) == "--test-decor") benchDecor = true;
@@ -496,6 +498,11 @@ int main(int argc, char** argv)
     int seenSpawns = 0;
     world.onDraw3D = [&world] { Farm_Draw3D(world); Animals_Draw3D(world); Weather_Draw3D(world); if (!ship.piloted && !buildTool.active && !Rocket_Boarded()) TerrainTool_Draw3D(); BuildTool_Draw3D(world); };
     terrainTool.till = [&world](Planetoid& body, Vector3 ground) { return Farm_Till(world, body, ground); }; // a shovel's RMB
+    terrainTool.swapHeld = [](const std::string& from, const std::string& to, const char* ev) { // a bucket filled or emptied
+        const int s = Hotbar_Selected();
+        if (Hotbar_Slot(s) == from) Hotbar_Bind(s, to);
+        QuestBook_Count(ev);
+    };
 
     const double benchWarmup = 2.0;
     double benchStart = 0.0, benchMaxFrame = 0.0;
@@ -1826,6 +1833,7 @@ int main(int argc, char** argv)
                     for (const Recipe& r : itemDB.recipes()) { Rule u; u.out = { r.output }; for (const auto& in : r.inputs) u.in.push_back(in.first); rules.push_back(u); }
                     for (const ItemDef& d : itemDB.items()) // wildcards: any planks (any log) is had once one kind is
                         for (const char* w : { "any_planks", "any_log" }) if (d.id != w && ItemMatches(w, d.id)) { Rule u; u.in = { d.id }; u.out = { w }; rules.push_back(u); }
+                    { Rule u; u.in = { "bucket" }; u.out = { "water_bucket" }; rules.push_back(u); } // scooping water
                     char buf[1024];
                     if (FILE* f = fopen("resources/data/machine_recipes.txt", "r")) {
                         while (fgets(buf, sizeof buf, f)) {
@@ -1956,6 +1964,102 @@ int main(int argc, char** argv)
                         printf("bench: shot-tabs: bench_questtree.png, bench_suit.png, bench_crafting.png, bench_chest.png, bench_machine.png\n");
                         GameUI_ToggleInventory();
                         benchShotTabs = 0;
+                    }
+                } else if (benchBucket && (bucketPhase > 0 || WorldIdle())) {
+                    // --test-bucket (Plan 4, F5): scoop river water with a bucket, carry it 50 m inland to a dug
+                    // basin and pour it (twice); the basin holds the water and a field beside it counts as watered.
+                    Planetoid* p = dynamic_cast<Planetoid*>(world.objects[0].get());
+                    const PlanetField* pf = p ? dynamic_cast<const PlanetField*>(p->field.get()) : nullptr;
+                    const double t = GetTime() - bucketT0;
+                    auto lookFrom = [&](Vector3 standLocal, Vector3 targetLocal) {
+                        player.flyMode = false;
+                        player.placeAt(world, *p, p->toWorld(standLocal));
+                        const Vector3 eye = Vector3Add(standLocal, Vector3Scale(Vector3Normalize(standLocal), player.eyeHeight));
+                        player.forward = p->dirToWorld(Vector3Normalize(Vector3Subtract(targetLocal, eye)));
+                        player.applyToCamera(world);
+                        TerrainTool_Update(world, false, true); // aim only
+                    };
+                    if (!pf) { printf("bench: bucket: needs the planet\n"); benchBucket = false; }
+                    else if (bucketPhase == 0) {
+                        // The nearest river or lake with a low shore (as --test-flow).
+                        const Vector3 home = pf->findSpawnDir(p->seed);
+                        const Vector3 t1 = Vector3Normalize(Vector3CrossProduct(home, { 0, 1, 0 })), t2 = Vector3CrossProduct(t1, home);
+                        float best = 1e30f, level = 0.0f, shoreS = 0.0f; Vector3 wdir{}, out{};
+                        for (float e = -3000.0f; e <= 3000.0f; e += 16.0f)
+                            for (float n = -3000.0f; n <= 3000.0f; n += 16.0f) {
+                                const float dist = sqrtf(e * e + n * n);
+                                if (dist >= best) continue;
+                                const Vector3 d = Vector3Normalize(Vector3Add(home, Vector3Add(Vector3Scale(t1, e / pf->radius), Vector3Scale(t2, n / pf->radius))));
+                                const PlanetField::WaterSource ws = pf->waterSourceAt(d);
+                                if (!ws.kind || ws.kind == 3 || ws.level <= 2.0f || pf->elevation(d) > ws.level - 1.0f) continue;
+                                const Vector3 outs[4] = { t1, Vector3Negate(t1), t2, Vector3Negate(t2) };
+                                for (const Vector3& o : outs)
+                                    for (float s = 2.0f; s <= 20.0f; s += 1.0f) {
+                                        const Vector3 q = Vector3Normalize(Vector3Add(d, Vector3Scale(o, s / pf->radius)));
+                                        if (pf->waterSourceAt(q).kind) continue;
+                                        const float eq = pf->elevation(q);
+                                        if (eq > ws.level + 0.2f && eq < ws.level + 2.5f) { best = dist; wdir = d; out = o; level = ws.level; shoreS = s; }
+                                        break;
+                                    }
+                            }
+                        if (best > 1e29f) { printf("bench: bucket: no water with a low shore -> FAIL\n"); benchBucket = false; }
+                        else {
+                            auto along = [&](float s) { return Vector3Normalize(Vector3Add(wdir, Vector3Scale(out, s / pf->radius))); };
+                            auto ground = [&](float s) { const Vector3 d = along(s); return Vector3Scale(d, pf->radius + pf->elevation(d)); };
+                            bucketWater = Vector3Scale(along(shoreS - 3.0f), pf->radius + level - 0.4f);
+                            // The basin: a bowl 50 m inland; the field 3 m beyond it.
+                            const Vector3 b = ground(shoreS + 50.0f);
+                            const TerrainEdit bowl{ Vector3Subtract(b, Vector3Scale(Vector3Normalize(b), 0.8f)), 2.2f, -1.0f, true };
+                            ApplyTerrainEdit(*p, bowl);
+                            bucketBasin = Vector3Subtract(b, Vector3Scale(Vector3Normalize(b), 2.4f)); // 0.6 m over the bowl's floor
+                            bucketField = ground(shoreS + 53.0f);
+                            inventory.add("bucket", 1);
+                            terrainTool.heldTool = "bucket";
+                            printf("bench: bucket: water %.0f m from the start (level %.1f m); basin 50 m inland; field watered before: %s\n", best, level,
+                                   Fluid::StandingWaterNear(*p, bucketField, 4.0f) ? "yes" : "no");
+                            bucketPhase = 1; bucketT0 = GetTime();
+                        }
+                    } else if (bucketPhase == 1 && t > 1.0) {
+                        // At the shore, looking at the water: scoop.
+                        auto along = [&](Vector3 from, float s) { (void)from; return s; };
+                        (void)along;
+                        const Vector3 up = Vector3Normalize(bucketWater);
+                        const Vector3 outDir = Vector3Normalize(Vector3Subtract(bucketBasin, bucketWater));
+                        const Vector3 flat = Vector3Normalize(Vector3Subtract(outDir, Vector3Scale(up, Vector3DotProduct(outDir, up))));
+                        Vector3 stand = Vector3Add(bucketWater, Vector3Scale(flat, 2.5f)); // at the water's edge
+                        stand = Vector3Scale(Vector3Normalize(stand), pf->radius + pf->elevation(Vector3Normalize(stand)) + 0.3f);
+                        lookFrom(stand, bucketWater);
+                        {
+                            const Vector3 dir = Vector3Normalize(Vector3Subtract(world.camera.target, world.camera.position));
+                            float firstWet = -1.0f;
+                            for (float s = 0.4f; s <= 8.0f && firstWet < 0.0f; s += 0.25f) if (IsUnderwater(world, Vector3Add(world.camera.position, Vector3Scale(dir, s)))) firstWet = s;
+                            const float aimDist = Vector3Distance(p->toLocal(world.camera.position), bucketWater);
+                            printf("bench: bucket: aiming %.1f m at the water, first water along the view at %.2f m, %.1f m of water available\n", aimDist, firstWet,
+                                   Fluid::WaterAt(*p, bucketWater, 1.5f));
+                        }
+                        TerrainTool_Bucket(world);
+                        printf("bench: bucket: trip %d: scooped -> water bucket %d\n", bucketTrips + 1, inventory.count("water_bucket"));
+                        bucketPhase = 2; bucketT0 = GetTime();
+                    } else if (bucketPhase == 2 && t > 1.0) {
+                        // At the basin: pour into it.
+                        const Vector3 up = Vector3Normalize(bucketBasin);
+                        const Vector3 side = Vector3Normalize(Vector3Subtract(bucketField, bucketBasin));
+                        Vector3 stand = Vector3Add(bucketBasin, Vector3Scale(side, 3.0f));
+                        stand = Vector3Scale(Vector3Normalize(stand), pf->radius + pf->elevation(Vector3Normalize(stand)) + 0.3f);
+                        (void)up;
+                        lookFrom(stand, bucketBasin);
+                        TerrainTool_Bucket(world);
+                        ++bucketTrips;
+                        printf("bench: bucket: trip %d: poured -> empty bucket %d\n", bucketTrips, inventory.count("bucket"));
+                        bucketPhase = bucketTrips < 2 ? 1 : 3; bucketT0 = GetTime();
+                    } else if (bucketPhase == 3 && t > 4.0) {
+                        const bool basinWet = Fluid::WaterAt(*p, bucketBasin, 1.6f) >= 1.0f;
+                        const bool field = Fluid::StandingWaterNear(*p, bucketField, 4.0f);
+                        const float vol = (float)Fluid::GetStats().volume;
+                        const bool pass = basinWet && field && QuestBook_CountOf("pour") >= 2.0 && inventory.count("bucket") == 1;
+                        printf("bench: bucket: basin %s, field 3 m away watered %s, pour events %.0f, %.1f m^3 of moving water -> %s\n", basinWet ? "wet" : "dry", field ? "yes" : "no",
+                               QuestBook_CountOf("pour"), vol, pass ? "PASS" : "FAIL");
+                        benchBucket = false;
                     }
                 } else if (benchPond && (pondPhase > 0 || WorldIdle())) {
                     // --test-pond (Plan 4, F4): drain the nearest pond into a pit dug beside it. The pond is
@@ -3460,7 +3564,7 @@ int main(int argc, char** argv)
                         }
                         benchWalkSeconds = 0.0;
                     }
-                } else if ((WorldIdle() && benchDigStrokes == 0 && !benchPaint && !benchSaveLoad && benchWalkSeconds <= 0.0 && benchMineStrokes == 0 && minePhase != 2 && benchFlySeconds <= 0.0 && !benchSuffocate && benchOrbitSeconds <= 0.0 && !benchRide && !benchPark && !benchGravity && !benchPrecision && !benchMantle && !benchAirJump && !benchMoon && !benchHole && !benchWall && !benchMenus && !benchWater && !benchFlyFollow && !benchHotbar && !benchInventory && !benchMap && !benchViewmodel && !benchQuests && !benchHunger && !benchFarm && !benchAnimals && !benchThreats && benchShotTabs == 0 && !benchForest && !benchFlow && !benchPond && !benchRecipes && !benchWeather && !benchDecor && !benchMaterials && !benchDamage && !benchCrafting && !benchSuit && !benchTools && !benchRivers && !benchRing && !benchRocket && !benchStation && !benchBlueprint && !benchSmallBody && !benchTrees && !benchChop && benchPersist == 0 && benchBuild == 0 && benchFactory == 0 && !benchProgression) || GetTime() > 600.0) {
+                } else if ((WorldIdle() && benchDigStrokes == 0 && !benchPaint && !benchSaveLoad && benchWalkSeconds <= 0.0 && benchMineStrokes == 0 && minePhase != 2 && benchFlySeconds <= 0.0 && !benchSuffocate && benchOrbitSeconds <= 0.0 && !benchRide && !benchPark && !benchGravity && !benchPrecision && !benchMantle && !benchAirJump && !benchMoon && !benchHole && !benchWall && !benchMenus && !benchWater && !benchFlyFollow && !benchHotbar && !benchInventory && !benchMap && !benchViewmodel && !benchQuests && !benchHunger && !benchFarm && !benchAnimals && !benchThreats && benchShotTabs == 0 && !benchForest && !benchFlow && !benchPond && !benchBucket && !benchRecipes && !benchWeather && !benchDecor && !benchMaterials && !benchDamage && !benchCrafting && !benchSuit && !benchTools && !benchRivers && !benchRing && !benchRocket && !benchStation && !benchBlueprint && !benchSmallBody && !benchTrees && !benchChop && benchPersist == 0 && benchBuild == 0 && benchFactory == 0 && !benchProgression) || GetTime() > 600.0) {
                     benchStart = GetTime();
                     printf("bench: world ready after %.2f s (%d chunks, avg build %.2f ms of which sampling %.2f ms, %d worker threads)\n",
                         GetWorldStats().lastGenerationSeconds, GetWorldStats().chunks, GetWorldStats().avgBuildMs, GetWorldStats().avgSampleMs, GetWorldStats().workerThreads);

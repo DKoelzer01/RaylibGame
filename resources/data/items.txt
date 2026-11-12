@@ -103,7 +103,8 @@ wool             | Wool             |   999 | 235,235,225 | Shorn from woolbacks
 hide             | Hide             |   999 | 160,110,70  | From plains runners and hornhides. Leather for suits.
 feather          | Feather          |   999 | 230,220,210 | From cluckers.
 shears           | Shears           |  tool | 180,180,190 | Shear a woolback for wool (look at it, O).
-bucket           | Bucket           |  tool | 160,160,170 | Milk a hornhide (look at it, O).
+bucket           | Bucket           |  tool | 160,160,170 | Hold it (hotbar): RMB scoops 1 m^3 of water from a river, pond, the sea or a channel. Milks a hornhide (look at it, O).
+water_bucket     | Water bucket     |  tool |  70,120,200 | A bucket of water (1 m^3): RMB pours it where you look (water a field, fill a basin).
 fence            | Fence            | block | 130,95,60   | A 1 m wooden panel. Animals can't cross it: build a pen.
 gate             | Gate             | block | 165,120,70  | A fence panel you can walk through; animals can't.
 # Environmental suit (plan 2, milestone 13): suits and modules, fitted in the inventory's Suit tab.
