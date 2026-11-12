@@ -261,7 +261,7 @@ void Chunk::drawChunkDepth(const RenderContext& ctx, const Matrix& m) {
 }
 
 void Chunk::drawGrass(const RenderContext& ctx, const Matrix& m) {
-    if (!isActive || !grass.vao || !ctx.grassShader) return;
+    if (!isActive || !grass.vbo || !ctx.grassShader) return;
     // Only near chunks: grass is gone (faded) by kGrassDrawDistance.
     const float h = key.size() * 0.5f;
     const Vector3 centre = Vector3Transform({ h, h, h }, m);

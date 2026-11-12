@@ -15,7 +15,8 @@
 //
 // Drawing: per body, one instance buffer per variant over all loaded tiles, rebuilt (a few times a
 // second at most) when tiles arrive or leave, positioned relative to an anchor near the camera.
-// Trees draw to ~1 km, bushes to ~300 m, both with a dithered fade.
+// Trees draw to kTreeDrawDistance (2 km), bushes to ~300 m, both with a dithered fade; past the trees
+// the terrain shader paints their canopy in (lighting.fs, treeDistance).
 //
 // Collision: each tree trunk is a vertical capsule for the player and the ship (bushes are soft).
 //
@@ -51,7 +52,7 @@ const WoodSpeciesDef& WoodSpeciesInfo(WoodSpecies s);
 inline WoodSpecies SpeciesOfVariant(int v) { return (WoodSpecies)(v / 2); }  // trees only (v < kFirstBush)
 
 constexpr float kTreeTileSize = 64.0f;      // m
-constexpr float kTreeDrawDistance = 1000.0f;
+inline float kTreeDrawDistance = 2000.0f;    // trees (simple meshes past kTreeNearDistance); --tree-dist
 constexpr float kBushDrawDistance = 300.0f;
 constexpr float kTreeNearDistance = 200.0f; // full meshes inside this, simple ones beyond
 

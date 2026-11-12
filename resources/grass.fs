@@ -8,6 +8,7 @@ in vec3 fragUp;
 in float fragHeight;
 in float fragHash;
 in float fragLatitude;
+in float fragBlade;
 
 uniform vec3 viewPos;
 uniform vec3 sunDir;        // towards the sun
@@ -89,7 +90,10 @@ void main()
     vec3 albedo = lat < 0.35 ? mix(dry, temperate, smoothstep(0.15, 0.35, lat))
                              : mix(temperate, cold, smoothstep(0.5, 0.7, lat));
     albedo *= 0.8 + 0.4 * fragHash;
-    albedo *= mix(0.45, 1.15, fragHeight); // self-shadowed roots, sunlit tips
+    albedo *= 0.85 + 0.3 * fragBlade;      // blades in a clump differ a little
+    // Self-shadowed lower half (the clump and its neighbours shade it), sunlit tips.
+    float lit = smoothstep(0.0, 0.65, fragHeight);
+    albedo *= mix(0.28, 1.15, lit * lit * (3.0 - 2.0 * lit) * 0.5 + lit * 0.5);
 
     float sunVis = 1.0;
     if (sunOccluder.w > 0.0) {

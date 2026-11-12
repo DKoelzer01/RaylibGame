@@ -46,6 +46,7 @@ uniform vec4 sunOccluder;       // planet: render-space centre + radius of a sph
 uniform vec3 fogColor;          // linear
 uniform float fogDensity;       // 0 = off
 uniform vec4 fogShell;          // atmosphere: render-space centre + outer radius (w = 0: fog the whole distance)
+uniform float treeDistance;     // real trees are drawn to here (m); the canopy tint takes over near it
 
 out vec4 finalColor;
 
@@ -234,9 +235,9 @@ void main()
         float macro = vnoise(fragTexPos / 70.0) * 0.6 + vnoise(fragTexPos / 250.0) * 0.4;
         albedo *= mix(vec3(0.84, 0.86, 0.9), vec3(1.14, 1.1, 1.02), macro);
         if (fragCanopy.x > 0.01) {
-            // Distant forests: where the real trees (drawn to 1 km) fade out, the ground takes the
+            // Distant forests: where the real trees (drawn to treeDistance) fade out, the ground takes the
             // colour of their crowns, by latitude as the trees do, broken up a little by the texture.
-            float c = fragCanopy.x * smoothstep(650.0, 950.0, length(viewPos - fragPosition));
+            float c = fragCanopy.x * smoothstep(0.65 * treeDistance, 0.95 * treeDistance, length(viewPos - fragPosition));
             float lat = fragCanopy.y;
             vec3 dry = vec3(0.22, 0.27, 0.07), temperate = vec3(0.09, 0.27, 0.05), cold = vec3(0.05, 0.17, 0.08);
             vec3 crowns = lat < 0.35 ? mix(dry, temperate, smoothstep(0.15, 0.35, lat)) : mix(temperate, cold, smoothstep(0.45, 0.7, lat));

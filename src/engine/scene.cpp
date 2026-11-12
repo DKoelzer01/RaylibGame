@@ -4,6 +4,7 @@
 #include "profiler.h"
 #include "worldtypes.h"
 #include "world.h"
+#include "trees.h"
 #include <raylib.h>
 #include <rlgl.h>
 #include <cmath>
@@ -389,6 +390,10 @@ void Scene::drawScene(int gamestate) {
     PROFILE_SCOPE("Main pass");
     Shader& s = lighting.shader;
     SetShaderValueMatrix(s, locLightSpace, lightSpaceMatrix);
+    {   // Distant forests: the canopy tint takes over where the real trees fade out.
+        const float treeDist = kTreeDrawDistance;
+        SetShaderValue(s, GetShaderLocation(s, "treeDistance"), &treeDist, SHADER_UNIFORM_FLOAT);
+    }
     // Cascades: the near one's matrix; each cascade's texel in metres and the depth range (the bias
     // is sized from them: a texel's worth along the normal, and a slope term in depth units).
     SetShaderValueMatrix(s, GetShaderLocation(s, "lightSpaceNear"), lightSpaceNear);
@@ -581,7 +586,7 @@ void Scene::drawScene(int gamestate) {
 
 
         // Trees and bushes: one instanced draw per variant per body. The mid pass draws the simple
-        // far meshes (trees reach 1 km, past the near/mid split); the near pass draws them all.
+        // far meshes (trees reach kTreeDrawDistance, past the near/mid split); the near pass draws them all.
         // Foliage lighting (grass, trees): the sun's shadow map and the headlamp, as the terrain gets.
         auto setFoliageLighting = [&](Shader& sh) {
             const int slot = 6;

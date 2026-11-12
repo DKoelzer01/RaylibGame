@@ -190,6 +190,7 @@ int main(int argc, char** argv)
     bool benchSuit = false, suitOk = true; int suitPhase = 0; double suitStart = 0.0; float suitFoodRatio = 0.0f, suitWater = 0.0f, suitRebreather = 0.0f; // --test-suit
     int benchShotTabs = 0; // --shot-tabs
     bool benchShadow = false; int shadowPhase = 0; double shadowT0 = 0.0; Vector3 shadowEye{}, shadowAt{}; // --shot-shadow
+    bool benchFarForest = false; int farForestPhase = 0; double farForestT0 = 0.0; Vector3 farForestEye{}, farForestAt{}; // --shot-far-forest
     bool benchTerrain = false; int terrainPhase = 0; double terrainT0 = 0.0; Vector3 terrainAt{}, terrainOut{}; // --shot-terrain
     bool benchPump = false; int pumpPhase = 0, pumpCable = -1; double pumpT0 = 0.0, pumpedAtCut = 0.0; uint32_t pumpPlot = 0; Vector3 pumpBasin{}; float pumpRise = 0.0f; // --test-pump
     bool benchBucket = false; int bucketPhase = 0, bucketTrips = 0; double bucketT0 = 0.0; Vector3 bucketWater{}, bucketBasin{}, bucketField{}; // --test-bucket
@@ -353,6 +354,7 @@ int main(int argc, char** argv)
         if (std::string(argv[i]) == "--test-pump") benchPump = true;
         if (std::string(argv[i]) == "--shot-terrain") benchTerrain = true;
         if (std::string(argv[i]) == "--shot-shadow") benchShadow = true;
+        if (std::string(argv[i]) == "--shot-far-forest") benchFarForest = true;
         if (std::string(argv[i]) == "--test-recipes") benchRecipes = true;
         if (std::string(argv[i]) == "--test-weather") benchWeather = true;
         if (std::string(argv[i]) == "--test-decor") benchDecor = true;
@@ -377,6 +379,8 @@ int main(int argc, char** argv)
         if (std::string(argv[i]) == "--time-scale" && i + 1 < argc) timeScale = (float)atof(argv[i + 1]);
         if (std::string(argv[i]) == "--crack-check") crackCheck = true;
         if (std::string(argv[i]) == "--no-foliage") foliageEnabled = false;
+        if (std::string(argv[i]) == "--grass-dist" && i + 1 < argc) kGrassDrawDistance = (float)atof(argv[i + 1]);
+        if (std::string(argv[i]) == "--tree-dist" && i + 1 < argc) kTreeDrawDistance = (float)atof(argv[i + 1]);
         if (std::string(argv[i]) == "--sun" && i + 3 < argc) { sunOverride = true; sunArg = Vector3Normalize({ (float)atof(argv[i + 1]), (float)atof(argv[i + 2]), (float)atof(argv[i + 3]) }); }
         if (std::string(argv[i]) == "--look-down") lookDown = true;
         if (std::string(argv[i]) == "--fps" && i + 1 < argc) benchFps = atoi(argv[i + 1]);
@@ -2106,11 +2110,58 @@ int main(int argc, char** argv)
                         const Vector3 eye = shadowPhase == 2 ? shadowEye : Vector3Add(Vector3Add(shadowEye, Vector3Scale(Vector3Normalize(Vector3Subtract(shadowEye, shadowAt)), 6.0f)), Vector3Scale(up, 0.5f));
                         const Vector3 at = shadowPhase == 2 ? shadowAt : Vector3Add(shadowEye, Vector3Scale(Vector3Normalize(Vector3Subtract(shadowEye, shadowAt)), 9.0f)); // bare ground ahead, looked down at
                         world.camera.position = p->toWorld(eye); world.camera.target = p->toWorld(Vector3Subtract(at, Vector3Scale(up, shadowPhase == 2 ? 0.0f : 3.0f))); world.camera.up = p->dirToWorld(up);
+                        if (shadowPhase == 4) {
+                            // Standing height (1.7 m over the ground), looking out across the field, a little down.
+                            const Vector3 out = Vector3Normalize(Vector3Subtract(shadowEye, shadowAt));
+                            const Vector3 flat = Vector3Normalize(Vector3Subtract(out, Vector3Scale(up, Vector3DotProduct(out, up))));
+                            const auto* pf4 = dynamic_cast<const PlanetField*>(p->field.get());
+                            const Vector3 ground = pf4 ? Vector3Scale(up, pf4->radius + pf4->elevation(up)) : shadowAt;
+                            const Vector3 e4 = Vector3Add(ground, Vector3Scale(up, 1.7f));
+                            world.camera.position = p->toWorld(e4);
+                            world.camera.target = p->toWorld(Vector3Add(e4, Vector3Subtract(Vector3Scale(flat, 20.0f), Vector3Scale(up, 2.5f))));
+                        }
                         player.position = world.renderOrigin + world.camera.position;
                         if (t > 3.0) {
-                            TakeScreenshot(shadowPhase == 2 ? "bench_shadow.png" : "bench_shadow_ground.png");
-                            if (shadowPhase == 3) { printf("bench: shadow: bench_shadow.png, bench_shadow_ground.png\n"); benchShadow = false; }
-                            else { shadowPhase = 3; shadowT0 = GetTime(); }
+                            TakeScreenshot(shadowPhase == 2 ? "bench_shadow.png" : shadowPhase == 3 ? "bench_shadow_ground.png" : "bench_grass.png");
+                            if (shadowPhase == 4) { printf("bench: shadow: bench_shadow.png, bench_shadow_ground.png, bench_grass.png\n"); benchShadow = false; }
+                            else { ++shadowPhase; shadowT0 = GetTime(); }
+                        }
+                    }
+                } else if (benchFarForest && (farForestPhase > 0 || WorldIdle())) {
+                    // --shot-far-forest: from 30 m over the start, look toward the most wooded direction
+                    // 1.5 km out (bench_far_forest.png): real trees out to the tree distance, canopy tint past it.
+                    Planetoid* p = dynamic_cast<Planetoid*>(world.objects[0].get());
+                    const PlanetField* pf = p ? dynamic_cast<const PlanetField*>(p->field.get()) : nullptr;
+                    if (!pf) { printf("bench: far forest: needs the planet\n"); benchFarForest = false; }
+                    else if (farForestPhase == 0) {
+                        const Vector3 home = pf->findSpawnDir(p->seed);
+                        const Vector3 t1 = Vector3Normalize(Vector3CrossProduct(home, { 0, 1, 0 })), t2 = Vector3CrossProduct(t1, home);
+                        float best = -1.0f; Vector3 bestDir = t1;
+                        for (int k = 0; k < 72; ++k) {
+                            const float a = k * 2.0f * PI / 72.0f;
+                            const Vector3 flat = Vector3Add(Vector3Scale(t1, cosf(a)), Vector3Scale(t2, sinf(a)));
+                            float cover = 0.0f;
+                            for (float r = 1000.0f; r <= 2200.0f; r += 200.0f) {
+                                const Vector3 d = Vector3Normalize(Vector3Add(home, Vector3Scale(flat, r / pf->radius)));
+                                cover += TreeCanopy(d, pf->radius, pf->elevation(d), pf->foliageSeed);
+                            }
+                            if (cover > best) { best = cover; bestDir = flat; }
+                        }
+                        const Vector3 ground = Vector3Scale(home, pf->radius + pf->elevation(home));
+                        farForestEye = Vector3Add(ground, Vector3Scale(home, 30.0f));
+                        farForestAt = Vector3Add(farForestEye, Vector3Subtract(Vector3Scale(bestDir, 1500.0f), Vector3Scale(home, 60.0f)));
+                        printf("bench: far forest: most wooded direction has canopy %.2f (of 7) between 1 and 2.2 km\n", best);
+                        sunOverride = true; sunArg = p->dirToWorld(Vector3Normalize(Vector3Add(home, Vector3Scale(bestDir, -0.6f)))); // sun behind the camera
+                        farForestPhase = 1; farForestT0 = GetTime();
+                    } else {
+                        world.camera.position = p->toWorld(farForestEye); world.camera.target = p->toWorld(farForestAt);
+                        world.camera.up = p->dirToWorld(Vector3Normalize(farForestEye));
+                        player.position = world.renderOrigin + world.camera.position;
+                        player.flyMode = true;
+                        if (GetTime() - farForestT0 > 10.0) {
+                            TakeScreenshot("bench_far_forest.png");
+                            printf("bench: far forest: bench_far_forest.png (trees drawn to %.0f m)\n", kTreeDrawDistance);
+                            benchFarForest = false;
                         }
                     }
                 } else if (benchTerrain && (terrainPhase > 0 || WorldIdle())) {
@@ -3866,7 +3917,7 @@ int main(int argc, char** argv)
                         }
                         benchWalkSeconds = 0.0;
                     }
-                } else if ((WorldIdle() && benchDigStrokes == 0 && !benchPaint && !benchSaveLoad && benchWalkSeconds <= 0.0 && benchMineStrokes == 0 && minePhase != 2 && benchFlySeconds <= 0.0 && !benchSuffocate && benchOrbitSeconds <= 0.0 && !benchRide && !benchPark && !benchGravity && !benchPrecision && !benchMantle && !benchAirJump && !benchMoon && !benchHole && !benchWall && !benchMenus && !benchWater && !benchFlyFollow && !benchHotbar && !benchInventory && !benchMap && !benchViewmodel && !benchQuests && !benchHunger && !benchFarm && !benchAnimals && !benchThreats && benchShotTabs == 0 && !benchForest && !benchFlow && !benchPond && !benchBucket && !benchPump && !benchTerrain && !benchShadow && !benchRecipes && !benchWeather && !benchDecor && !benchMaterials && !benchDamage && !benchCrafting && !benchSuit && !benchTools && !benchRivers && !benchRing && !benchRocket && !benchStation && !benchBlueprint && !benchSmallBody && !benchTrees && !benchChop && benchPersist == 0 && benchBuild == 0 && benchFactory == 0 && !benchProgression) || GetTime() > 600.0) {
+                } else if ((WorldIdle() && benchDigStrokes == 0 && !benchPaint && !benchSaveLoad && benchWalkSeconds <= 0.0 && benchMineStrokes == 0 && minePhase != 2 && benchFlySeconds <= 0.0 && !benchSuffocate && benchOrbitSeconds <= 0.0 && !benchRide && !benchPark && !benchGravity && !benchPrecision && !benchMantle && !benchAirJump && !benchMoon && !benchHole && !benchWall && !benchMenus && !benchWater && !benchFlyFollow && !benchHotbar && !benchInventory && !benchMap && !benchViewmodel && !benchQuests && !benchHunger && !benchFarm && !benchAnimals && !benchThreats && benchShotTabs == 0 && !benchForest && !benchFlow && !benchPond && !benchBucket && !benchPump && !benchTerrain && !benchShadow && !benchFarForest && !benchRecipes && !benchWeather && !benchDecor && !benchMaterials && !benchDamage && !benchCrafting && !benchSuit && !benchTools && !benchRivers && !benchRing && !benchRocket && !benchStation && !benchBlueprint && !benchSmallBody && !benchTrees && !benchChop && benchPersist == 0 && benchBuild == 0 && benchFactory == 0 && !benchProgression) || GetTime() > 600.0) {
                     benchStart = GetTime();
                     printf("bench: world ready after %.2f s (%d chunks, avg build %.2f ms of which sampling %.2f ms, %d worker threads)\n",
                         GetWorldStats().lastGenerationSeconds, GetWorldStats().chunks, GetWorldStats().avgBuildMs, GetWorldStats().avgSampleMs, GetWorldStats().workerThreads);
