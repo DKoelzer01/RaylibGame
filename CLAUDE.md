@@ -106,6 +106,7 @@ Water (Plan 4, user answers)
 5. Parallelism and GPU compute (user, 2026-11-11): audit main-thread work for the job system;
    raylib built with GRAPHICS_API_OPENGL_43 exposes compute shaders + SSBOs (rlgl) - candidates
    are the water sim, chunk density/meshing, foliage placement; keep a GL 3.3 fallback.
+5b. M24 moon and ring tiers - done (15fae76 + the ladder gate: --test-progression ev, PASS).
 6. 3D terrain (user, 2026-11-12): full 3D noise for hills and cliffs with natural overhangs and
    alcoves, on top of the height map and the tors/boulders (PlanetField::rockFeature). Plan: a 3D
    displacement band around the surface (~-15..+25 m), strength from a regional "rugged" mask and

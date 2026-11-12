@@ -43,6 +43,7 @@ namespace {
     std::map<std::string, int> parts;                 // machine -> part index
     int failed = 0;
     bool full = false;          // --test-progression full: on through MV and HV to titanium alloy
+    bool ev = false;            // --test-progression ev: tiers 9-10 (M24)
     void BuildFull();
 
     Vector3 Surface(Vector3 dir) { return Vector3Scale(dir, field->radius + field->elevation(dir)); }
@@ -324,6 +325,56 @@ namespace {
         return true;
     }
 
+    // M24: tiers 9 and 10 on Terra. The player arrives with what a moon and a ring trip bring home
+    // (anorthite, regolith, nickel-iron, platinum and iridium ore) and the HV-era basics; the ladder
+    // works the real machines: helium-3 in the centrifuge, ring metals and aluminium in the arc
+    // furnace, superconductors in the precision assembler, then a fusion reactor powering a mass
+    // driver that launches a cargo capsule.
+    void BuildEv() {
+        auto add = [](const std::string& n, std::function<bool()> f) { steps.push_back({ n, std::move(f) }); };
+        add("arrive home with moon and ring materials (and HV-era machines and parts)", [] {
+            const std::pair<const char*, int> carried[] = {
+                { "anorthite", 16 }, { "regolith", 64 }, { "nickel_iron_ore", 8 }, { "platinum_ore", 32 }, { "iridium_ore", 4 }, { "ice", 28 },
+                { "generator", 1 }, { "centrifuge", 1 }, { "hv_generator", 1 }, { "arc_furnace", 1 }, { "precision_assembler", 1 }, { "cable", 40 },
+                { "oak_log", 40 }, { "coke", 24 }, { "copper_wire", 56 }, { "titanium_alloy_plate", 8 }, { "advanced_circuit", 3 },
+                { "steel_plate", 8 }, { "aluminium_plate", 4 }, { "iron_plate", 2 } };
+            for (const auto& c : carried) inventory.add(c.first, c.second);
+            return true;
+        });
+        add("place the LV row (centrifuge) and the HV row (arc furnace, precision assembler)", [] {
+            if (!Place("generator", PartType::Generator, { 0, 0, 0 }) || !Place("centrifuge", PartType::Centrifuge, { 3, 0, 0 }) || !Cables(-1, 0, 4)) return false;
+            if (!Place("hv_generator", PartType::HvGenerator, { 0, 0, 6 }) || !Place("arc_furnace", PartType::ArcFurnace, { 3, 0, 6 }) ||
+                !Place("precision_assembler", PartType::PrecisionAssembler, { 6, 0, 6 }) || !Cables(5, 0, 7)) return false;
+            return true;
+        });
+        add("fuel both generators", [] {
+            if (GetTime() - stepStart < 0.5) return false; // the layout reaches the simulation first
+            Give("generator", "oak_log", 40); Give("hv_generator", "coke", 24);
+            return true;
+        });
+        add("centrifuge: 2 helium-3 from moon regolith", Run("centrifuge", { { "regolith", 64 } }, "helium3", 2));
+        add("arc furnace: aluminium from anorthite", Run("arc_furnace", { { "anorthite", 16 } }, "aluminium_ingot", 4));
+        add("arc furnace: nickel and iron from nickel-iron", Run("arc_furnace", { { "nickel_iron_ore", 8 } }, "nickel_ingot", 4));
+        add("arc furnace: 16 platinum", Run("arc_furnace", { { "platinum_ore", 32 } }, "platinum_ingot", 16));
+        add("arc furnace: 2 iridium", Run("arc_furnace", { { "iridium_ore", 4 } }, "iridium_ingot", 2));
+        add("precision assembler: 28 superconductors", [] {
+            static auto run = Run("precision_assembler", { { "platinum_ingot", 14 }, { "copper_wire", 56 }, { "ice", 28 } }, "superconductor", 28);
+            return run();
+        });
+        add("craft two EV hulls, a fusion reactor, a mass driver and a cargo capsule", [] {
+            return Craft("ev_hull", 2) && Craft("fusion_reactor", 1) && Craft("mass_driver", 1) && Craft("cargo_capsule", 1);
+        });
+        add("place the EV row (2048 V): fusion reactor and mass driver", [] {
+            return Place("fusion_reactor", PartType::FusionReactor, { 0, 0, 12 }) && Place("mass_driver", PartType::MassDriver, { 3, 0, 12 }) && Cables(11, 0, 4);
+        });
+        add("fuel the fusion reactor with helium-3", [] {
+            if (GetTime() - stepStart < 0.5) return false;
+            Give("fusion_reactor", "helium3", 2);
+            return true;
+        });
+        add("mass driver: launch a cargo capsule", Run("mass_driver", { { "cargo_capsule", 1 } }, "launched_capsule", 1));
+    }
+
     // milestone 8: the rest of the ladder, through LV ore processing, MV and HV to titanium alloy
     // (rocketry's tier), and a miner working its deposit.
     void BuildFull() {
@@ -446,7 +497,7 @@ namespace {
     }
 }
 
-int Progression_Update(Scene& world, bool fullLadder) {
+int Progression_Update(Scene& world, bool fullLadder, bool evLadder) {
     full = fullLadder;
     scene = &world;
     if (steps.empty()) {
@@ -464,6 +515,8 @@ int Progression_Update(Scene& world, bool fullLadder) {
         const Vector3 d = Vector3Normalize(Vector3Add(up, Vector3Scale(t1, 8.0f / field->radius)));
         plot = body->plots->plotFor(Vector3Scale(d, field->radius + field->elevation(d)), 0.0f, true);
         Build();
+        if (evLadder) { steps.clear(); BuildEv(); QuestBook_SetTier(9); }
+        ev = evLadder;
         current = 0;
         testStart = stepStart = GetTime();
         printf("bench: progression: %zu steps, inventory empty, quest tier 0\n", steps.size());
@@ -476,6 +529,12 @@ int Progression_Update(Scene& world, bool fullLadder) {
         stepStart = GetTime();
         if (current >= steps.size()) {
             Factory::SetSpeed(1);
+            if (ev) {
+                bool done = QuestBook_Tier() > 10;
+                if (!done && QuestBook_Tier() == 10) { done = true; for (int k = 0; k < QuestBook_TaskCount(10); ++k) done = done && QuestBook_TaskDone(10, k); }
+                printf("bench: progression: moon and ring haul to a launched capsule in %.0f s, quest tier %d -> %s\n", GetTime() - testStart, QuestBook_Tier(), done ? "PASS" : "FAIL");
+                return done ? 1 : -1;
+            }
             const int need = full ? 7 : 5;
             printf("bench: progression: bare hands to %s in %.0f s, quest tier %d -> %s\n", full ? "titanium alloy (rocketry)" : "a working LV machine",
                    GetTime() - testStart, QuestBook_Tier(), QuestBook_Tier() >= need ? "PASS" : "FAIL");

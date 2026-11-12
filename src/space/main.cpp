@@ -242,6 +242,7 @@ int main(int argc, char** argv)
     int benchFactory = 0;          // --test-factory N: milestone 4 gate (N working machines, tick under 5 ms)
     bool benchProgression = false; // --test-progression: milestone 5 gate (bare hands to a working LV machine)
     bool progressionFull = false;  // --test-progression full: milestone 8 gate (on to titanium alloy)
+    bool progressionEv = false;    // --test-progression ev: M24 gate (tiers 9-10 from a moon and ring haul)
     int progPhase = 0;
     double progStart = 0.0;
     int factPhase = 0, factSamples = 0;
@@ -369,7 +370,7 @@ int main(int argc, char** argv)
         if (std::string(argv[i]) == "--test-persist" && i + 1 < argc) benchPersist = atoi(argv[i + 1]);
         if (std::string(argv[i]) == "--test-build" && i + 1 < argc) benchBuild = atoi(argv[i + 1]);
         if (std::string(argv[i]) == "--test-factory" && i + 1 < argc) benchFactory = atoi(argv[i + 1]);
-        if (std::string(argv[i]) == "--test-progression") { benchProgression = true; progressionFull = i + 1 < argc && std::string(argv[i + 1]) == "full"; }
+        if (std::string(argv[i]) == "--test-progression") { benchProgression = true; progressionFull = i + 1 < argc && std::string(argv[i + 1]) == "full"; progressionEv = i + 1 < argc && std::string(argv[i + 1]) == "ev"; }
         if (std::string(argv[i]) == "--time-scale" && i + 1 < argc) timeScale = (float)atof(argv[i + 1]);
         if (std::string(argv[i]) == "--crack-check") crackCheck = true;
         if (std::string(argv[i]) == "--no-foliage") foliageEnabled = false;
@@ -994,7 +995,7 @@ int main(int argc, char** argv)
                     } else if (progPhase == 1 && GetTime() - progStart > 2.0) {
                         progPhase = 2;
                     } else if (progPhase == 2) {
-                        if (Progression_Update(world, progressionFull) != 0) benchProgression = false;
+                        if (Progression_Update(world, progressionFull, progressionEv) != 0) benchProgression = false;
                     }
                 } else if (benchWall && (wallPhase > 0 || WorldIdle())) {
                     // --test-wall: a 7 m shaft with a tunnel off its bottom; walk into the walls at eight
