@@ -10,6 +10,7 @@
 #include "navigation.h"
 #include "farming.h"
 #include "animals.h"
+#include "particles.h"
 #include "suit.h"
 #include "toolwear.h"
 #include "recipebook.h"
@@ -50,6 +51,7 @@ void GameSave_Register() {
         QuestBook_Reset();
         Farm_Reset();
         Animals_Reset();
+        Particles_Clear();
         Station_Reset();
         Suit_Reset();
         ToolWear_Reset();

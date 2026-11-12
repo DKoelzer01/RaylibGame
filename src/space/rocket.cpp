@@ -17,6 +17,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstring>
+#include "particles.h"
 #include <map>
 #include <sstream>
 #include <fstream>
@@ -409,6 +410,45 @@ namespace {
         }
     }
 
+    // Engine plumes (particles.h): flame and, in the air, a trail of smoke from each working engine,
+    // thrown back along the rocket's axis at the rocket's speed over the ground below. ~60 puffs a
+    // second per engine at full throttle, at most a few per frame in time warp.
+    void Exhaust(Scene& world, Plot& plot, float h) {
+        static float pending = 0.0f;
+        pending = std::min(pending + h * 60.0f * std::max(throttle, 0.2f), 4.0f);
+        if (pending < 1.0f) return;
+        const int bursts = (int)pending;
+        pending -= (float)bursts;
+        Planetoid* v = Vehicle();
+        Planetoid* ground = Dominant(world, com);
+        if (!v || !ground) return;
+        const auto* pf = dynamic_cast<const PlanetField*>(ground->field.get());
+        const double alt = (com - ground->worldPos).length() - ground->radius * ground->scale;
+        const bool air = pf && !pf->moon && alt < kAirTop;
+        const Vector3 down = Vector3Negate(Up());
+        const Vector3 groundVel = Vector3Subtract(vel, ground->surfaceVelocity((com - world.renderOrigin).toFloat()));
+        for (size_t i = 0; i < plot.parts.size(); ++i) {
+            const Part& part = plot.parts[i];
+            if (part.type != PartType::RocketEngine) continue;
+            auto dmg = plot.damage.find((int)i);
+            if (dmg != plot.damage.end() && dmg->second >= 1.0f) continue;
+            const Vector3 nozzle = plot.toBody({ (part.origin.x + 1) * kCellSize, part.origin.y * kCellSize - 0.2f, (part.origin.z + 1) * kCellSize });
+            const DVec3 at = v->toWorldD(DVec3(nozzle));
+            for (int b = 0; b < bursts; ++b) {
+                ParticleBurst fire;
+                fire.kind = ParticleKind::Fire; fire.color = { 255, 140, 40, 255 };
+                fire.count = 3; fire.size = 0.9f; fire.life = 0.35f; fire.speed = 28.0f * std::max(throttle, 0.3f); fire.spread = 0.08f;
+                Particles_EmitWorld(*ground, at, fire, down, groundVel);
+                if (air) {
+                    ParticleBurst smoke;
+                    smoke.kind = ParticleKind::Smoke; smoke.color = { 205, 200, 195, 255 };
+                    smoke.count = 1; smoke.size = 1.6f; smoke.life = 5.0f; smoke.speed = 12.0f; smoke.spread = 0.25f;
+                    Particles_EmitWorld(*ground, at, smoke, down, Vector3Scale(groundVel, 0.6f));
+                }
+            }
+        }
+    }
+
     void FlightStep(Scene& world, float h, bool input) {
         Plot* plot = VehiclePlot();
         if (!plot) { state = RocketState::None; return; }
@@ -437,6 +477,7 @@ namespace {
         const float mass = RocketMass(st, plot->fuel);
         const float thrust = plot->fuel > 0.0f ? throttle * st.thrust : 0.0f;
         if (thrust > 0.0f) plot->fuel = std::max(0.0f, plot->fuel - thrust / (float)(st.isp * kG0) * h);
+        if (thrust > 0.0f) Exhaust(world, *plot, h);
         if (st.leak > 0.0f && plot->fuel > 0.0f) plot->fuel = std::max(0.0f, plot->fuel - st.leak * (float)h); // damaged tanks leak
         const Vector3 g = Gravity(world, com);
         Vector3 force = Vector3Scale(Up(), thrust);
