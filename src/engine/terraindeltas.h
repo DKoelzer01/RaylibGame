@@ -11,6 +11,7 @@
 
 #include <raylib.h>
 #include <cstdint>
+#include <cstring>
 #include <memory>
 #include <unordered_map>
 #include <unordered_set>
@@ -26,10 +27,20 @@ constexpr int kRegionChunks = 16;               // chunks per region file edge
 constexpr float kDeltaStep = 1.0f / 64.0f;
 
 struct DeltaChunk {
-    int16_t d[kDeltaChunk * kDeltaChunk * kDeltaChunk] = {};
+    static constexpr int kN = kDeltaChunk * kDeltaChunk * kDeltaChunk;
+    int16_t d[kN] = {};
     // Placed ground's material per lattice point: 0 = the field's own, else VoxelMaterial + 1
     // (gravel placed stays gravel instead of taking on the dirt or grass the ground has there).
-    uint8_t m[kDeltaChunk * kDeltaChunk * kDeltaChunk] = {};
+    // Allocated on first use: most chunks are only dug (the 0.25 m lattice made chunks 64x more).
+    std::unique_ptr<uint8_t[]> mats;
+    DeltaChunk() = default;
+    DeltaChunk(const DeltaChunk& o) {
+        memcpy(d, o.d, sizeof d);
+        if (o.mats) { mats.reset(new uint8_t[kN]); memcpy(mats.get(), o.mats.get(), kN); }
+    }
+    DeltaChunk& operator=(const DeltaChunk&) = delete;
+    uint8_t mat(int i) const { return mats ? mats[i] : 0; }
+    void setMat(int i, uint8_t v) { if (!mats) { if (!v) return; mats.reset(new uint8_t[kN]()); } mats[i] = v; }
 };
 
 class TerrainDeltas {

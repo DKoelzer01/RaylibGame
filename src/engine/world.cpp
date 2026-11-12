@@ -1055,16 +1055,16 @@ static void EncodeMaterials(const DeltaChunk& c, std::vector<uint16_t>& out) {
     const int n = kDeltaChunk * kDeltaChunk * kDeltaChunk;
     int i = 0;
     bool any = false;
-    for (int k = 0; k < n && !any; ++k) any = c.m[k] != 0;
+    for (int k = 0; k < n && !any; ++k) any = c.mat(k) != 0;
     if (!any) return; // nothing placed: an empty channel
     while (i < n) {
         int zeros = 0;
-        while (i < n && c.m[i] == 0 && zeros < 65535) { ++i; ++zeros; }
+        while (i < n && c.mat(i) == 0 && zeros < 65535) { ++i; ++zeros; }
         const int start = i;
-        while (i < n && c.m[i] != 0 && i - start < 65535) ++i;
+        while (i < n && c.mat(i) != 0 && i - start < 65535) ++i;
         out.push_back((uint16_t)zeros);
         out.push_back((uint16_t)(i - start));
-        for (int k = start; k < i; ++k) out.push_back((uint16_t)c.m[k]);
+        for (int k = start; k < i; ++k) out.push_back((uint16_t)c.mat(k));
     }
 }
 
@@ -1076,7 +1076,7 @@ static bool DecodeMaterials(const uint16_t* in, size_t words, DeltaChunk& c) {
         const int zeros = in[w++], count = in[w++];
         if (i + zeros + count > n || w + count > words) return false;
         i += zeros;
-        for (int k = 0; k < count; ++k) c.m[i++] = (uint8_t)std::min<int>(in[w++], (int)VoxelMaterial::Count);
+        for (int k = 0; k < count; ++k) c.setMat(i++, (uint8_t)std::min<int>(in[w++], (int)VoxelMaterial::Count));
     }
     return true;
 }

@@ -55,7 +55,7 @@ int TerrainDeltas::materialAt(Vector3 pos) const {
         const int cx = FloorDiv(x, kDeltaChunk), cy = FloorDiv(y, kDeltaChunk), cz = FloorDiv(z, kDeltaChunk);
         auto it = chunks.find(KeyOf(cx, cy, cz));
         if (it == chunks.end()) return -1;
-        return (int)it->second->m[Idx(x - cx * kDeltaChunk, y - cy * kDeltaChunk, z - cz * kDeltaChunk)] - 1;
+        return (int)it->second->mat(Idx(x - cx * kDeltaChunk, y - cy * kDeltaChunk, z - cz * kDeltaChunk)) - 1;
     };
     const int m = mat((int)lroundf(p.x), (int)lroundf(p.y), (int)lroundf(p.z));
     if (m >= 0) return m;
@@ -94,7 +94,7 @@ void TerrainDeltas::chunksIn(Vector3 loPos, Vector3 hiPos, std::vector<std::pair
 void TerrainDeltasBuilder::apply(const TerrainEdit& e, const DensityField& field, std::unordered_set<TerrainDeltas::Key>* touched) {
     next->strokes++;
     // A carve also lowers solid points just outside the sphere, so the meshed surface sits on it.
-    const float r = e.carve ? e.radius + 2.0f : e.radius;
+    const float r = e.carve ? e.radius + 1.0f : e.radius; // 1 m: enough on the 0.25 m lattice (2 m touched 8 delta chunks a stroke)
     const int x0 = (int)floorf((e.center.x - r) / kVoxelSize), x1 = (int)ceilf((e.center.x + r) / kVoxelSize); // lattice indices
     const int y0 = (int)floorf((e.center.y - r) / kVoxelSize), y1 = (int)ceilf((e.center.y + r) / kVoxelSize); // lattice indices
     const int z0 = (int)floorf((e.center.z - r) / kVoxelSize), z1 = (int)ceilf((e.center.z + r) / kVoxelSize); // lattice indices
@@ -135,16 +135,16 @@ void TerrainDeltasBuilder::apply(const TerrainEdit& e, const DensityField& field
                 if (e.carve) {
                     const float base = field.baseDensity(p);
                     // Placed ground digs like what it is (placed gravel with a shovel), not the rock below.
-                    const int placed = (int)chunk->m[i] - 1;
+                    const int placed = (int)chunk->mat(i) - 1;
                     const VoxelMaterial was = placed >= 0 ? (VoxelMaterial)placed : base >= ISO_LEVEL ? field.material(p, base) : VoxelMaterial::Regolith;
                     if (e.softOnly && (base + v * kDeltaStep) >= ISO_LEVEL && !IsSoft(was)) continue;
                     if (base + v * kDeltaStep > carveTo) {
                         v = (int16_t)std::clamp((int)lroundf((carveTo - base) / kDeltaStep), -32767, 32767);
-                        if (dist < e.radius) chunk->m[i] = 0; // dug out: what is exposed below shows its own material
+                        if (dist < e.radius) chunk->setMat(i, 0); // dug out: what is exposed below shows its own material
                     }
                 } else {
                     v = (int16_t)std::clamp((int)lroundf(v + add / kDeltaStep), -32767, 32767);
-                    if (e.paint >= 0 && t > 0.15f) chunk->m[i] = (uint8_t)(e.paint + 1);
+                    if (e.paint >= 0 && t > 0.15f) chunk->setMat(i, (uint8_t)(e.paint + 1));
                 }
             }
 }
