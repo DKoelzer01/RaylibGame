@@ -249,14 +249,16 @@ public:
     // Rock outcrops and boulders near the surface: metres inside the nearest one (< 0 outside).
     float rockFeature(Vector3 p, float d, float surface, float footprint) const;
     // 3D terrain: metres the surface is raised (+) or carved (-) here by the 3D noise band (0 outside it).
-    float terrain3D(Vector3 p, float d, float surface, float footprint) const;
+    struct Column3D { float mask = 0.0f, f = 0.0f; };          // the 3D band's per-column strength (Plan 5 C)
+    Column3D terrain3DColumn(Vector3 dir, float elev) const;
+    float terrain3D(Vector3 p, float d, float surface, float footprint, const Column3D* col = nullptr) const;
 private:
     struct RiverState { std::once_flag once; std::unique_ptr<RiverNetwork> net; ~RiverState(); };
     struct PondState { std::mutex m; std::unordered_set<uint64_t> claimed; std::atomic<int> n{ 0 }; };
     std::shared_ptr<PondState> pondState = std::make_shared<PondState>();
     std::shared_ptr<RiverState> riverState;
     unsigned int riverSeed = 0;
-    float densityNear(Vector3 p, float d, float surface, float footprint) const; // after the height map
+    float densityNear(Vector3 p, float d, float surface, float footprint, const Column3D* col = nullptr) const; // after the height map
     struct Land { float h, c, mountain, valley, valleyWeight, detail, stream, ridge; };
     Land land(Vector3 dir, float footprint) const;     // the height map before rivers and ponds
     struct Pond { bool exists; Vector3 dir; float r, level, depth; };
