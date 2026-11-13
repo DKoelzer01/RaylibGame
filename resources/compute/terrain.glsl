@@ -305,7 +305,7 @@ float rockFeature(vec3 p, float d, float surface, float fp) {
     if (planetMoon != 0 || d < 1e-3) return -1e9;
     precise float w = clamp(2.0 - xdiv(fp, 4.0), 0.0, 1.0);
     precise float h = d - surface;
-    if (w <= 0.0 || h > 9.0 || h < -3.0) return -1e9;
+    if (w <= 0.0 || h > 14.0 || h < -3.0) return -1e9; // tops reach 12 m (#242)
     precise float elev = surface - planetRadius;
     if (elev < 4.0) return -1e9;
     precise float best = -1e9;
@@ -402,7 +402,7 @@ float densityNear(vec3 p, float d, float surface, float fp, float cmask, float c
     precise float depth = surface - d;
     if (depth < K_BAND_BELOW && depth > -K_BAND_ABOVE) v += DENSITY_GRADIENT * terrain3D(p, d, surface, fp, cmask, cf);
     if (abs(depth) < 6.0) v += DENSITY_GRADIENT * 1.5 * fractalLimited(N_DETAIL, 2, fp, p.x, p.y * 1.3, p.z);
-    if (depth < 3.0 && depth > -9.0) {
+    if (depth < 3.0 && depth > -14.0) {
         precise float m = rockFeature(p, d, surface, fp);
         if (m > -4.0) v = max(v, ISO_LEVEL + DENSITY_GRADIENT * m);
     }
