@@ -109,6 +109,8 @@ extern "C" {
     extern PfnFlush glad_glFlush;
     extern PfnStencilFunc glad_glStencilFunc;
     extern PfnStencilOp glad_glStencilOp;
+    typedef void (*PfnGetIntegerv)(unsigned int, int*);
+    extern PfnGetIntegerv glad_glGetIntegerv;
 }
 // Hand the queued commands to the GPU now (pass boundaries): without this the driver held the whole frame
 // until the swap, so the GPU only started once the CPU had finished submitting, and CPU and GPU ran one
@@ -795,10 +797,19 @@ void Scene::drawScene(int gamestate) {
             gctx.grassModelLoc = GetShaderLocation(gs, "matModel");
             gctx.grassOccluderLoc = GetShaderLocation(gs, "sunOccluder");
             gctx.cameraPos = camera.position;
+            // The fade at the edge of the draw distance (#241): under MSAA the fade alpha becomes sample
+            // coverage (alpha-to-coverage: smooth, no blending or sorting); single-sampled it falls back
+            // to the dithered discard.
+            int samples = 0;
+            if (glad_glGetIntegerv) glad_glGetIntegerv(0x80A9, &samples); // GL_SAMPLES of the bound framebuffer
+            const float a2c = samples > 1 ? 1.0f : 0.0f;
+            rlSetUniform(GetShaderLocation(gs, "alphaToCoverage"), &a2c, RL_SHADER_UNIFORM_FLOAT, 1);
+            if (a2c > 0.0f) { rlDisableColorBlend(); glad_glEnable(0x809E); }                        // GL_SAMPLE_ALPHA_TO_COVERAGE
             rlDisableBackfaceCulling();
             for (const auto& obj : objects)
                 if (auto* p = dynamic_cast<Planetoid*>(obj.get()); p && !isFar(p)) p->drawFoliage(gctx);
             rlEnableBackfaceCulling();
+            if (a2c > 0.0f) { glad_glDisable(0x809E); rlEnableColorBlend(); }
             rlDisableShader();
         }
         GpuTimer_Mark("grass");

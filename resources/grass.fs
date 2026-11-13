@@ -19,6 +19,7 @@ uniform vec3 fogColor;
 uniform float fogDensity;
 uniform vec4 fogShell;      // atmosphere: centre + outer radius (w = 0: fog the whole distance)
 uniform float fadeEnd;      // fully gone here (m)
+uniform float alphaToCoverage; // 1: the fade is written as alpha (GL_SAMPLE_ALPHA_TO_COVERAGE on)
 
 // Sun shadows (two cascades, hardware PCF) and the headlamp.
 #include "shadow.glsl"
@@ -41,11 +42,17 @@ vec3 climateFoliage(vec3 temperate, vec3 dry, vec3 cold, vec3 lush, vec3 swampC,
 void main()
 {
     float dist = length(viewPos - fragPosition);
-    // Dithered fade over the last 40% of the draw distance (no blending, so no sorting).
+    // Fade over the last 40% of the draw distance, without blending (so no sorting): under MSAA the
+    // alpha is turned into sample coverage (alpha-to-coverage, #241); single-sampled, a dithered discard.
     float fade = clamp((fadeEnd - dist) / (fadeEnd * 0.4), 0.0, 1.0);
-    vec2 cell = floor(gl_FragCoord.xy);
-    float dither = fract(sin(dot(cell, vec2(12.9898, 78.233))) * 43758.5453);
-    if (dither > fade) discard;
+    fade = fade * fade * (3.0 - 2.0 * fade);
+    if (alphaToCoverage > 0.5) {
+        if (fade <= 0.0) discard;
+    } else {
+        vec2 cell = floor(gl_FragCoord.xy);
+        float dither = fract(sin(dot(cell, vec2(12.9898, 78.233))) * 43758.5453);
+        if (dither > fade) discard;
+    }
 
     vec3 temperate = vec3(0.10, 0.30, 0.05);
     vec3 dry = vec3(0.40, 0.35, 0.11);   // straw
@@ -80,5 +87,5 @@ void main()
     }
     float fog = 1.0 - exp(-fogDensity * fogDist);
     color = mix(color, fogColor, clamp(fog, 0.0, 1.0));
-    finalColor = vec4(pow(color, vec3(1.0 / 2.2)), 1.0);
+    finalColor = vec4(pow(color, vec3(1.0 / 2.2)), alphaToCoverage > 0.5 ? fade : 1.0);
 }
