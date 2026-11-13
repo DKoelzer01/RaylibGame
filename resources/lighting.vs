@@ -37,7 +37,19 @@ out vec3 fragChunkPos;     // chunk-local position (overlap clipping)
 out float fragSky;         // 1 = open to the sky, 0 = buried (scales sunlight)
 out vec2 fragCanopy;       // planets: distant forest canopy cover (x) and latitude (y)
 out float fragOreKind;     // planets: which ore (1 + kind) / 8, 0 none
+out float fragMacro;       // slow (70-250 m) brightness variation for the planet palette (per vertex: #183)
 flat out vec3 fragClipMax;
+
+// Smooth value noise in [0, 1] (the planet palette's macro variation; was per pixel in lighting.fs).
+float hash3(vec3 p) { p = mod(p, 289.0); return fract(sin(dot(p, vec3(127.1, 311.7, 74.7))) * 43758.5453); }
+float vnoise(vec3 p)
+{
+    vec3 i = floor(p), f = fract(p);
+    f = f * f * (3.0 - 2.0 * f);
+    float x00 = mix(hash3(i), hash3(i + vec3(1, 0, 0)), f.x), x10 = mix(hash3(i + vec3(0, 1, 0)), hash3(i + vec3(1, 1, 0)), f.x);
+    float x01 = mix(hash3(i + vec3(0, 0, 1)), hash3(i + vec3(1, 0, 1)), f.x), x11 = mix(hash3(i + vec3(0, 1, 1)), hash3(i + vec3(1, 1, 1)), f.x);
+    return mix(mix(x00, x10, f.y), mix(x01, x11, f.y), f.z);
+}
 
 void main()
 {
@@ -64,6 +76,7 @@ void main()
     fragSky = vertexTangent.w;
     fragCanopy = vertexTangent.xy;
     fragOreKind = vertexTangent.z;
+    fragMacro = vnoise(fragTexPos / 70.0) * 0.6 + vnoise(fragTexPos / 250.0) * 0.4;
     fragLocalNormal = vertexNormal;
     gl_Position = arenaDraw == 1 ? matViewProj * world : mvp * vec4(vertexPosition, 1.0);
 }

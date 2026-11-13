@@ -11,6 +11,7 @@ in vec3 fragChunkPos;   // chunk-local (overlap clipping)
 in float fragSky;       // 1 = open to the sky, 0 = buried (caves, deep pits)
 in vec2 fragCanopy;     // planets: forest canopy cover and latitude (painted in beyond the real trees)
 in float fragOreKind;   // planets: which ore, (1 + kind) / 8 (0 none)
+in float fragMacro;     // planets: slow brightness / warmth variation (70-250 m), per vertex (lighting.vs)
 
 // Material maps: bound by DrawMesh to the units of the matching raylib material slots.
 uniform sampler2D colorTexture;    // MATERIAL_MAP_ALBEDO
@@ -90,6 +91,14 @@ vec2 sampleDetail(Triplanar t, float layer, float k, inout vec2 dX, inout vec2 d
     if (t.w.y > 0.02) { vec4 d = texture(terrainDetail, vec3(t.uvY, layer)); dY += (d.xy * 2.0 - 1.0) * k; ra += d.zw * t.w.y; sum += t.w.y; }
     if (t.w.z > 0.02) { vec4 d = texture(terrainDetail, vec3(t.uvZ, layer)); dZ += (d.xy * 2.0 - 1.0) * k; ra += d.zw * t.w.z; sum += t.w.z; }
     return ra / max(sum, 1e-4);
+}
+
+// The same, from the dominant axis only (one fetch): the far-scale blend, where a second full triplanar
+// lookup cost more than it showed (#183).
+vec3 sampleLayerDominant(Triplanar t, float layer)
+{
+    vec2 uv = (t.w.x >= t.w.y && t.w.x >= t.w.z) ? t.uvX : (t.w.y >= t.w.z ? t.uvY : t.uvZ);
+    return pow(texture(terrainLayers, vec3(uv, layer)).rgb, vec3(2.2));
 }
 
 // Triplanar normal mapping, "whiteout" blend (Ben Golus). Uses the sign of the geometric normal
@@ -219,14 +228,15 @@ void main()
         const float bumpOf[8] = float[8](1.0, 0.8, 0.6, 1.0, 0.7, 1.0, 0.7, 0.5); // detail normal strength
         vec3 a = vec3(0.0);
         float r = 0.0, aoSum = 0.0;
-        float near = 1.0 - farMix;               // detail maps fade out with distance (mips flatten them anyway)
+        // Detail maps fade out by ~120 m (mips flatten them before that; #183: sampling them out to 280 m cost 0.2 ms)
+        float near = 1.0 - smoothstep(40.0, 120.0, length(viewPos - fragPosition));
         vec2 dX = vec2(0.0), dY = vec2(0.0), dZ = vec2(0.0);
         for (int i = 0; i < 8; i++) {
             float wi = w8[i] / max(total, 0.001);
             if (wi < 0.01) continue;
             vec3 c = sampleLayer(tp, layerOf[i]);
             // Far away the repeat of one scale shows: blend in the same layer ~5x larger.
-            if (farMix > 0.01) c = mix(c, sampleLayer(tpFar, layerOf[i]), 0.55 * farMix);
+            if (farMix > 0.01) c = mix(c, sampleLayerDominant(tpFar, layerOf[i]), 0.55 * farMix); // one fetch: the dominant axis (#183)
             if (hasClimate) c *= biomeTint(i, ctemp, cmoist);
             if (i == 3) {
                 // Ore: flecks of the mineral's colour in the stone, by kind (iron rust, copper green,
@@ -250,7 +260,7 @@ void main()
         }
         albedo = a;
         // Slow brightness and warmth changes over ~70-250 m break up what tiling is left.
-        float macro = vnoise(fragTexPos / 70.0) * 0.6 + vnoise(fragTexPos / 250.0) * 0.4;
+        float macro = fragMacro; // per vertex (70-250 m features; #183)
         albedo *= mix(vec3(0.84, 0.86, 0.9), vec3(1.14, 1.1, 1.02), macro);
         if (fragCanopy.x > 0.01) {
             // Distant forests: where the real trees (drawn to treeDistance) fade out, the ground takes the
