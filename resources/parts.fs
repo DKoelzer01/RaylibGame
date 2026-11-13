@@ -12,6 +12,7 @@ in vec3 fragNormal;
 in vec4 fragColor;
 in vec3 fragLocal;
 in vec3 fragLocalNormal;
+in float fragSky;         // 1 open .. 0 buried (parts.vs; #216: parts underground took full sky light)
 
 uniform vec3 viewPos;
 uniform vec3 sunDir;
@@ -199,10 +200,10 @@ void main()
         if (b < 0.0) sunVis *= smoothstep(sunOccluder.w - max(sunOccluder.w * 0.04, -b * 0.03), sunOccluder.w + max(sunOccluder.w * 0.04, -b * 0.03), sqrt(max(c + sunOccluder.w * sunOccluder.w - b * b, 0.0)));
     }
     float ndl = max(dot(n, sunDir), 0.0);
-    float sun = sunVis * ndl * (ndl > 0.0 ? sunShadowNormal(fragPosition, n, sunDir, 4) : 0.0);
+    float sun = sunVis * ndl * (ndl > 0.0 ? sunShadowNormal(fragPosition, n, sunDir, 4) : 0.0) * fragSky;
     vec3 v = normalize(viewPos - fragPosition);
     float specular = pow(max(dot(n, normalize(sunDir + v)), 0.0), mix(16.0, 96.0, spec)) * spec * 0.6 * sun;
-    vec3 color = albedo * (ambient * (1.4 + 0.3 * n.y) + vec3(1.0, 0.96, 0.88) * sun + lampLight(fragPosition, n)) + vec3(specular)
+    vec3 color = albedo * (ambient * (1.4 + 0.3 * n.y) * fragSky + vec3(1.0, 0.96, 0.88) * sun + lampLight(fragPosition, n)) + vec3(specular)
                + albedo * emit * 1.2;
     float dist = length(viewPos - fragPosition), fogDist = dist;
     if (fogShell.w > 0.0) {

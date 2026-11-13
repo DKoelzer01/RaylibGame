@@ -226,6 +226,7 @@ std::tuple<uint64_t, uint32_t, int> watchKey{ 0, 0, -1 };
 MachineView watchView;
 std::map<std::tuple<uint64_t, uint32_t, int>, std::vector<std::pair<int, int>>> chestView; // chests of plots near the player: (item, count)
 std::map<std::tuple<uint64_t, uint32_t, int>, int> pumpView;     // water pumps (every plot): water units in their outputs
+std::map<std::tuple<uint64_t, uint32_t, int>, int> pumpPending;  // pump water drained (queued) but not yet out of pumpView (viewMutex)
 inline uint64_t WorkingKey(uint64_t body, uint32_t plot, int part) { return (body * 1315423911ull) ^ ((uint64_t)plot << 24) ^ (uint64_t)(uint32_t)part; }
 std::unordered_set<uint64_t> workingView;                          // machines working on near plots (viewMutex)
 FactoryStats stats;
@@ -565,10 +566,11 @@ void SimLoop() {
             for (const auto& n : nears) if (PlotSim* p = FindPlot(n.first, n.second.first)) p->nearPlayer = n.second.second;
             std::vector<std::pair<int, int>> back;
             back.swap(refunds); // removed machines' contents (from this tick's layouts)
+            std::vector<std::pair<std::tuple<uint64_t, uint32_t, int>, int>> drained; // pump drains applied this tick (pumpPending)
             for (const ItemMsg& im : items) {
                 PlotSim* p = FindPlot(im.body, im.plot);
                 auto it = p ? p->byPart.find(im.part) : decltype(p->byPart.end()){};
-                if (!p || it == p->byPart.end()) { if (im.kind == 0) back.push_back({ im.item, im.count }); continue; }
+                if (!p || it == p->byPart.end()) { if (im.kind == 0) back.push_back({ im.item, im.count }); if (im.kind == 5) drained.push_back({ std::make_tuple(im.body, im.plot, im.part), im.count }); continue; }
                 Machine& m = p->machines[it->second];
                 if (im.kind == 0 || im.kind == 2) {
                     const int left = Accepts(m.type, im.item) ? AddItems(m.in, InSlots(m), im.item, im.count) : im.count;
@@ -577,6 +579,7 @@ void SimLoop() {
                     if (m.type == PartType::Chest) { const int k = std::min(im.count, CountItems(m.in, kChestSlots, im.item)); TakeItems(m.in, kChestSlots, im.item, k); if (k > 0) back.push_back({ im.item, k }); }
                 } else if (im.kind == 5) {
                     TakeItems(m.out, kSlots, im.item, im.count); // a pump's water leaves through its pipes (nothing to the inventory)
+                    drained.push_back({ std::make_tuple(im.body, im.plot, im.part), im.count });
                 } else if (im.kind == 4) {
                     Stack* s = im.count ? m.out : m.in;
                     const int n = im.count ? kSlots : InSlots(m);
@@ -609,6 +612,8 @@ void SimLoop() {
                 for (auto& r : back) results.push_back(r);
                 chestView.clear();
                 pumpView.clear();
+                for (const auto& [k, n] : drained) if (auto pit = pumpPending.find(k); pit != pumpPending.end() && (pit->second -= n) <= 0) pumpPending.erase(pit);
+                if (reset) pumpPending.clear();
                 workingView.clear(); // machines working on the plots near the player (models, smoke: Factory::Working)
                 for (const PlotSim& ps : plots)
                     if (ps.nearPlayer) for (const Machine& m : ps.machines) if (m.status == MachineStatus::Working) workingView.insert(WorkingKey(ps.body, ps.plot, m.part));
@@ -835,10 +840,13 @@ std::vector<std::pair<std::string, int>> Factory::ChestContents(uint64_t body, u
 int Factory::PumpWater(uint64_t body, uint32_t plot, int part) {
     std::lock_guard<std::mutex> v(viewMutex);
     auto it = pumpView.find(std::make_tuple(body, plot, part));
-    return it == pumpView.end() ? 0 : it->second;
+    const int have = it == pumpView.end() ? 0 : it->second;
+    auto pit = pumpPending.find(std::make_tuple(body, plot, part));
+    return std::max(0, have - (pit == pumpPending.end() ? 0 : pit->second)); // not what is already on its way out
 }
 
 void Factory::Drain(uint64_t body, uint32_t plot, int part, const std::string& item, int count) {
+    { std::lock_guard<std::mutex> v(viewMutex); pumpPending[std::make_tuple(body, plot, part)] += count; } // PumpWater won't offer it twice
     std::lock_guard<std::mutex> q(queueMutex);
     itemQueue.push_back({ 5, body, plot, part, tables.item(item), count });
 }

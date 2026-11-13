@@ -66,18 +66,21 @@ void Waterworks_Update(Scene& world, float dt) {
                 }
                 if (outs.empty()) continue; // nowhere to send it: the pump fills up and stops
                 ++stats.networks;
-                stats.outlets += (int)outs.size();
-                const int units = Factory::PumpWater(body->id, pl->id, pump);
+                // Each outlet part once, however many of its cells touch the network.
+                std::unordered_set<int> outParts;
+                for (int64_t k : outs) outParts.insert(outlets[k]);
+                stats.outlets += (int)outParts.size();
+                const int units = Factory::PumpWater(body->id, pl->id, pump); // less what earlier drains still have queued
                 if (units <= 0) continue;
-                Factory::Drain(body->id, pl->id, pump, "water", units);
-                // From under the pump.
+                // From under the pump; only the units the world actually gave leave the pump (a dry or short
+                // intake keeps the rest).
                 const Vector3 intake = Vector3Subtract(pl->toBody({ (bottom.x + 0.5f) * kCellSize, bottom.y * kCellSize, (bottom.z + 0.5f) * kCellSize }), Vector3Scale(pl->up, 0.7f));
                 const float got = Fluid::Take(*body, intake, units * kWaterPerUnit, 1.6f);
                 if (got <= 0.0f) { ++stats.dry; continue; }
+                Factory::Drain(body->id, pl->id, pump, "water", std::min(units, (int)ceilf(got / kWaterPerUnit - 1e-4f)));
                 stats.pumped += got;
-                const float each = got / (float)outs.size();
-                for (int64_t k : outs) {
-                    const int part = outlets[k];
+                const float each = got / (float)outParts.size();
+                for (int part : outParts) {
                     Plot::Footprint(pl->parts[part], fp);
                     const Int3 c = fp.empty() ? pl->parts[part].origin : fp[0].first;
                     Fluid::Pour(*body, pl->toBody({ (c.x + 0.5f) * kCellSize, (c.y + 0.5f) * kCellSize, (c.z + 0.5f) * kCellSize }), each);

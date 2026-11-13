@@ -45,7 +45,7 @@ namespace {
         const std::string& id = slots[slot];
         if (id.empty()) { // an empty slot is bare hands
             if (piloting) return;
-            selected = slot; buildTool.active = false; terrainTool.heldTool.clear();
+            selected = slot; buildTool.active = false; terrainTool.heldTool.clear(); terrainTool.holdingItem = false;
             return;
         }
         // Food and animal feed: the first press takes it in hand (animals that eat it follow you); the
@@ -53,13 +53,14 @@ namespace {
         if ((Survival_IsFood(id) || Animals_IsFeed(id)) && !piloting) {
             if (selected == slot && buildTool.active == false && terrainTool.heldTool.empty()) { if (Survival_IsFood(id)) Survival_UseItem(id); return; }
             if (inventory.count(id) <= 0) { GameUI_Toast(TextFormat("No %s", ShortName(id))); return; }
-            selected = slot; buildTool.active = false; terrainTool.heldTool.clear();
+            selected = slot; buildTool.active = false; terrainTool.heldTool.clear(); terrainTool.holdingItem = true; // RMB: no terrain (#201)
             GameUI_Toast(Survival_IsFood(id) ? TextFormat("Holding %s: press %d again to eat", ShortName(id), (slot + 1) % 10) : TextFormat("Holding %s: animals that eat it follow you", ShortName(id)));
             return;
         }
         if (Survival_IsUsable(id)) { Survival_UseItem(id); return; } // consumables don't change the selection
         if (piloting) return;
         selected = slot;
+        terrainTool.holdingItem = false;
         if (id == kHotbarTerrainTool) { buildTool.active = false; terrainTool.heldTool.clear(); return; }
         if (id == "bucket" || id == "water_bucket") { // in hand: RMB scoops / pours water (terraintool)
             if (inventory.count(id) <= 0) { GameUI_Toast(TextFormat("No %s", ShortName(id))); Audio_Play(Sfx::Error, 0.3f); return; }
@@ -101,6 +102,7 @@ void Hotbar_Reset() {
     // Empty: an empty slot is bare hands; tools bind themselves as they are made, the rest by the player.
     for (int i = 0; i < kHotbarSlots; ++i) slots[i].clear();
     selected = 0;
+    terrainTool.holdingItem = false;
 }
 
 void Hotbar_Bind(int slot, const std::string& id) {
@@ -150,9 +152,13 @@ void Hotbar_Update(Scene&, bool inputEnabled, bool piloting) {
             if (i != selected && inventory.count(slots[i]) <= 0) free = i;
         if (free >= 0) Hotbar_Bind(free, s.id);
     }
-    if (!inputEnabled) return;
-    const int k = Hotbar_KeySlot();
-    if (k >= 0) Select(k, piloting);
+    if (inputEnabled) {
+        const int k = Hotbar_KeySlot();
+        if (k >= 0) Select(k, piloting);
+    }
+    // Food or feed really in hand (not just selected: the last one eaten or fed leaves bare hands): RMB
+    // never places terrain with it (#201). Derived each frame so it cannot go stale.
+    terrainTool.holdingItem = !Hotbar_HeldFood().empty();
 }
 
 void Hotbar_DrawHUD(bool piloting) {

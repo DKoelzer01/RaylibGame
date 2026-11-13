@@ -34,6 +34,9 @@ void main()
     vec3 t = t0 * cos(a) + b0 * sin(a);
     vec3 b = cross(up, t);
     float s = mod(instPosScale.w, 10.0);  // the tens carry the variant (foliage.cpp)
+    // Shrink toward the ground over the fade band too (#241), so the far edge sinks away rather than
+    // ending in a line of full-height blades.
+    s *= mix(1.0, 0.3, smoothstep(0.6 * fadeEnd, fadeEnd, length(root - viewPos)));
     float y = vertexPosition.y;
     // Wind: a slow gust field over position plus a quick flutter, bending tips more than roots.
     float gust = sin(time * 1.3 + dot(root, vec3(0.11, 0.07, 0.13))) * 0.5 + 0.5;

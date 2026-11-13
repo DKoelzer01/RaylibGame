@@ -23,6 +23,7 @@
 #include "voxel.h" // Int3
 
 class Planetoid;
+class PlanetField;
 struct RenderContext;
 
 constexpr float kCellSize = 0.5f;   // m
@@ -128,8 +129,10 @@ private:
     std::unordered_map<Int3, Section> sections;
     int livePartCount = 0;
     void markDirty(Int3 cell);
-    void rebuildDirty();                // every dirty section in one pass over the cells
-    void buildSection(Int3 key, Section& s, const std::vector<Int3>& sectionCells);
+    // Every dirty section in one pass over the cells. `field` (the body's, when it is a planet) gives each
+    // cell its sky exposure (#216: parts underground took full sky light).
+    void rebuildDirty(const PlanetField* field = nullptr);
+    void buildSection(Int3 key, Section& s, const std::vector<Int3>& sectionCells, const PlanetField* field);
 };
 
 // All plots of one body.

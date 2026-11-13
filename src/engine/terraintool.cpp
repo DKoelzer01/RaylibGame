@@ -235,7 +235,7 @@ void TerrainTool_Update(Scene& world, bool inputEnabled, bool editEnabled) {
     if (bucket && IsMouseButtonPressed(MOUSE_BUTTON_RIGHT)) TerrainTool_Bucket(world);
 
     digging = IsMouseButtonDown(MOUSE_BUTTON_LEFT);
-    adding = !bucket && !digging && IsMouseButtonDown(MOUSE_BUTTON_RIGHT);
+    adding = !bucket && !terrainTool.holdingItem && !digging && IsMouseButtonDown(MOUSE_BUTTON_RIGHT); // food / feed in hand never builds (#201)
     // One swing per cooldown, and the cooldown runs whether the button is held or not, so clicking
     // fast is no faster than holding (it was: a release reset the timer). The swing animation lasts
     // exactly the cooldown (terrainTool.swingTime), and the HUD bar under the crosshair shows it.

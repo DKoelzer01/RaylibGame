@@ -69,7 +69,10 @@ void main()
     }
     float ndl = dot(n, sunDir);
     float wrap = mix(0.0, 0.3, fragLeaf);
-    float direct = sunVis * sunShadowSimple(fragPosition, 4) * clamp((ndl + wrap) / (1.0 + wrap), 0.0, 1.0);
+    // Normal-offset + slope-biased lookup (#188: the fixed-bias one striped the steep canopy faces at low sun). Leaves
+    // are lit from both sides, so their normal faces the sun for the lookup.
+    vec3 ns = (fragLeaf > 0.5 && ndl < 0.0) ? -n : n;
+    float direct = sunVis * sunShadowNormal(fragPosition, ns, sunDir, 4) * clamp((ndl + wrap) / (1.0 + wrap), 0.0, 1.0);
     float sky = 0.7 + 0.3 * n.y; // a little more sky from above
     vec3 color = albedo * (ambient * 1.6 * sky + vec3(1.0, 0.96, 0.88) * direct + lampLight(fragPosition, n));
 

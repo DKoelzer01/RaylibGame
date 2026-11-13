@@ -523,7 +523,7 @@ namespace {
     }
 }
 
-void Plot::rebuildDirty() {
+void Plot::rebuildDirty(const PlanetField* field) {
     std::unordered_map<Int3, std::vector<Int3>> byDirty;
     bool any = false;
     for (auto& kv : sections) if (kv.second.dirty) { byDirty[kv.first]; any = true; }
@@ -532,17 +532,26 @@ void Plot::rebuildDirty() {
         auto it = byDirty.find(SectionOf(kv.first));
         if (it != byDirty.end()) it->second.push_back(kv.first);
     }
-    for (auto& kv : byDirty) buildSection(kv.first, sections[kv.first], kv.second);
+    for (auto& kv : byDirty) buildSection(kv.first, sections[kv.first], kv.second, field);
 }
 
-void Plot::buildSection(Int3 key, Section& s, const std::vector<Int3>& sectionCells) {
+void Plot::buildSection(Int3 key, Section& s, const std::vector<Int3>& sectionCells, const PlanetField* field) {
     if (s.mesh.vaoId) UnloadMesh(s.mesh);
     s.mesh = Mesh{};
     s.dirty = false;
-    std::vector<float> pos, nrm;
+    std::vector<float> pos, nrm, sky; // per vertex u = how buried (1 - sky exposure; parts.vs / parts.fs, #216)
     std::vector<unsigned char> col;
     const Int3 lo = { key.x * kSectionCells, key.y * kSectionCells, key.z * kSectionCells };
     for (const Int3& c : sectionCells) {
+        // Sky exposure of the cell (1 open, 0 buried ~10 m+): the terrain's own rule (materialSky's depth below
+        // the original surface), from the cell centre. Parts underground took the full sky ambient (#216).
+        float cellSky = 1.0f;
+        if (field) {
+            const Vector3 centre = toBody({ (c.x + 0.5f) * kCellSize, (c.y + 0.5f) * kCellSize, (c.z + 0.5f) * kCellSize });
+            const float len = Vector3Length(centre);
+            if (len > 1.0f) field->materialSky(centre, 1.0f, 1.0f, Vector3Scale(centre, 1.0f / len), cellSky);
+        }
+        const size_t firstVertex = pos.size() / 3;
         const CellRef& ref = cells.at(c);
         const CellShape& shape = ref.shape;
         const Part& pp = parts[ref.part];
@@ -580,6 +589,7 @@ void Plot::buildSection(Int3 key, Section& s, const std::vector<Int3>& sectionCe
             for (int j = 0; j < shape.planes; ++j) if (j != i) Clip(poly, shape.n[j], shape.d[j]);
             EmitPoly(poly, n, base, color, pos, nrm, col);
         }
+        for (size_t v = firstVertex; v < pos.size() / 3; ++v) { sky.push_back(1.0f - cellSky); sky.push_back(0.0f); } // as "buried": meshes without it read 0 = open sky
     }
     if (pos.empty()) return;
     s.mesh.vertexCount = (int)(pos.size() / 3);
@@ -590,6 +600,8 @@ void Plot::buildSection(Int3 key, Section& s, const std::vector<Int3>& sectionCe
     memcpy(s.mesh.vertices, pos.data(), pos.size() * sizeof(float));
     memcpy(s.mesh.normals, nrm.data(), nrm.size() * sizeof(float));
     memcpy(s.mesh.colors, col.data(), col.size());
+    s.mesh.texcoords = (float*)MemAlloc((unsigned int)(sky.size() * sizeof(float)));
+    memcpy(s.mesh.texcoords, sky.data(), sky.size() * sizeof(float));
     UploadMesh(&s.mesh, false);
 }
 
@@ -611,7 +623,7 @@ static Matrix PlotSectionModel(const Plot& p, const Planetoid& body, const Rende
 void Plot::draw(const Planetoid& body, const RenderContext& ctx, Shader shader) {
     static Material material = LoadMaterialDefault();
     material.shader = shader;
-    rebuildDirty();
+    rebuildDirty(dynamic_cast<const PlanetField*>(body.field.get()));
     const float half = kSectionCells * kCellSize * 0.5f;
     for (auto& kv : sections) {
         if (!kv.second.mesh.vaoId) continue;
@@ -624,7 +636,7 @@ void Plot::draw(const Planetoid& body, const RenderContext& ctx, Shader shader) 
 }
 
 void Plot::drawDepth(const Planetoid& body, const RenderContext& ctx, Material& depth) {
-    rebuildDirty();
+    rebuildDirty(dynamic_cast<const PlanetField*>(body.field.get()));
     for (auto& kv : sections) {
         if (kv.second.mesh.vaoId) DrawMesh(kv.second.mesh, depth, PlotSectionModel(*this, body, ctx, kv.first));
     }

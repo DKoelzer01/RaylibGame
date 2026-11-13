@@ -16,6 +16,7 @@ struct TerrainToolSettings {
     float strokesPerSecond = 10.0f;
     float reach = 12.0f;         // max raycast distance (arm's reach; fly mode uses 150)
     bool creative = false;       // building costs nothing
+    bool holdingItem = false;    // food or feed in hand (hotbar): RMB never places terrain with it (#201)
     bool terraform = false;      // debug (F1): the old brush tool - dig and fill any material, wheel resizes
     std::string heldTool;        // the tool item in hand (hotbar); empty or not carried: bare hands
     int swings = 0;              // counts mining strokes and chops (the hands animate a swing on each)

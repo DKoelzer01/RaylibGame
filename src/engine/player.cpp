@@ -377,6 +377,33 @@ void Player::stepPhysics(Scene& world, float dt, Vector3 wish, bool jetUp, bool 
     // Landed and lifted off within one frame (contact flicker in a tight corner) leaves groundBody
     // unset (it is recorded at the end of the frame): the landing took out the nearest body's motion,
     // so give that back. Skipping it lost the planet's spin (~87 m/s) and the walls threw the player.
+    if (wasGrounded && !grounded && nearest) {
+        // Walked off an edge (#240): the walking velocity followed a contact normal tilting out over
+        // the lip and carried the 1.5 m/s press into the ground, so leaving it threw the player down
+        // (more when sprinting). If there is no ground a walkable slope's drop ahead and below, keep
+        // only the level part and let gravity start from rest. Contact flickers on bumpy ground and
+        // walking down a slope (ground still there) keep their velocity.
+        const float vu = Vector3DotProduct(velocity, up);
+        if (vu < 0.0f && jumpLock <= 0.0f) {
+            Planetoid& p = *nearest;
+            const Vector3 level = Vector3Subtract(velocity, Vector3Scale(up, vu));
+            const float ll = Vector3Length(level);
+            const float ahead = std::min(ll * 0.1f, 1.5f); // where the feet will be in 0.1 s
+            const Vector3 probe = ll > 1e-4f ? Vector3Add(feet, Vector3Scale(level, ahead / ll)) : feet;
+            const float depth = 0.4f + 1.6f * ahead; // ~58 degrees: steeper than walkable
+            bool ground = false;
+            for (float k = 0.1f; k <= depth && !ground; k += 0.15f) {
+                const Vector3 at = Vector3Subtract(probe, Vector3Scale(up, k));
+                ground = p.densityAt(p.toLocal(at)) >= ISO_LEVEL;
+                if (!ground && p.plots) // built parts count as ground too (stairs, platform steps)
+                    for (auto& pl : p.plots->plots) {
+                        Vector3 c = p.toLocal(at), nl;
+                        if (pl->collideSphere(c, 0.08f / p.scale, nl)) { ground = true; break; }
+                    }
+            }
+            if (!ground) velocity = level;
+        }
+    }
     if (wasGrounded && !grounded) {
         Planetoid* from = (groundBody && Planetoid::find(groundId) == groundBody) ? groundBody : nearest;
         if (from) velocity = Vector3Add(velocity, from->surfaceVelocity(feet));

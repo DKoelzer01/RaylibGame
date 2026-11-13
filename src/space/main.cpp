@@ -151,6 +151,18 @@ static void StartNewWorld(Scene& world, bool reset) {
 
 int main(int argc, char** argv)
 {
+    // Data and shaders are read from resources/ relative to the working directory. Launched from Explorer
+    // (or a build dir) that is the exe's folder, which has no resources/ next to it: the game found nothing and
+    // crashed (#234). Use the first of the working directory, the exe's folder and its parents that has it.
+    if (!DirectoryExists("resources")) {
+        std::string dir = GetApplicationDirectory();
+        for (int up = 0; up < 6 && !dir.empty(); ++up) {
+            if (DirectoryExists((dir + "resources").c_str())) { ChangeDirectory(dir.c_str()); break; }
+            const size_t cut = dir.find_last_of("/\\", dir.size() >= 2 ? dir.size() - 2 : std::string::npos);
+            if (cut == std::string::npos) break;
+            dir = dir.substr(0, cut + 1);
+        }
+    }
     double benchSeconds = 0.0;
     bool startWithOverlay = false;
     int benchDigStrokes = 0;     // --test-dig N: dig N strokes at the crosshair once the world is loaded
@@ -158,6 +170,9 @@ int main(int argc, char** argv)
     bool benchSaveLoad = false;  // --test-saveload: then save, reload from disk, and bench the reloaded world
     double benchWalkSeconds = 0.0; // --test-walk S: spawn on the surface and auto-walk forward for S seconds
     bool benchWalkMode = false;    // --bench-walk: the player walks forward for the whole bench (frame time while streaming)
+    bool benchStandMode = false;   // --bench-stand: as --bench-walk, but standing still at the start (#204: walking vs standing, same view)
+    bool cursorLocked = false;     // DisableCursor while playing (#205)
+    bool perfLog = false;          // --perf-log: per-pass CPU/GPU averages to log.txt every 5 s in normal play, tagged moving/still (#204)
     float benchFlySpeed = 0.0f;    // --bench-fly V: the camera flies over body 0 at V m/s through the bench (LOD streaming)
     float benchFlyAlt = 1e9f;      // --bench-fly-alt A: fly at A m relative to sea level instead (negative: underwater, looking up)
     bool hasSpawnDir = false;      // --spawn-dir x y z: where --test-walk / --test-stand spawn on body 0
@@ -252,6 +267,7 @@ int main(int argc, char** argv)
     int wallPhase = 0; bool wallOk = true;
     double wallStart = 0.0, wallMaxStep = 0.0, wallMaxStepAt = 0.0;
     float wallMaxImpact = 0.0f, wallMinHealth = 100.0f, wallMaxSpeed = 0.0f;
+    bool benchLedge = false; int ledgePhase = 0, ledgePass = 0; bool ledgeOk = true, ledgeAir = false; double ledgeStart = 0.0, ledgeAirStart = 0.0; float ledgeV0 = 0.0f, ledgeExcess = 0.0f; float ledgeWalk0 = 0.0f;
     DVec3 wallLast{};
     bool benchTrees = false;       // --test-trees: walk into a tree trunk
     bool benchChop = false;        // --test-chop: fell a tree, save/reload, regrow
@@ -314,6 +330,8 @@ int main(int argc, char** argv)
     int spinPhase = 0;
     Vector3 spinCamLocal{}, spinTgtLocal{};
     double suffocateStart = -1.0;
+    double suffocateDrift = 0.0;    // --test-suffocate: how far the dead camera drifted in the body frame (#231)
+    double suffocateSettle = 0.0;   // ...and how far the eye smoothing moved it in the first 0.2 s
     DVec3 flyFrom{};
     float flyEnergy = 0.0f, flyMaxSpeed = 0.0f;
     DVec3 walkFrom{};
@@ -336,6 +354,8 @@ int main(int argc, char** argv)
         if (std::string(argv[i]) == "--no-eye-smooth") player.eyeSmoothing = false;
         if (std::string(argv[i]) == "--test-planet-walk" && i + 1 < argc) { walkTargetM = atof(argv[i + 1]); benchWalkSeconds = 600.0; } // gate: 1 km on the planet
         if (std::string(argv[i]) == "--bench-walk") benchWalkMode = true;
+        if (std::string(argv[i]) == "--bench-stand") { benchWalkMode = true; benchStandMode = true; }
+        if (std::string(argv[i]) == "--perf-log") perfLog = true;
         if (std::string(argv[i]) == "--bench-fly" && i + 1 < argc) benchFlySpeed = (float)atof(argv[i + 1]);
         if (std::string(argv[i]) == "--bench-fly-alt" && i + 1 < argc) benchFlyAlt = (float)atof(argv[i + 1]);
         if (std::string(argv[i]) == "--spawn-dir" && i + 3 < argc) { hasSpawnDir = true; spawnDir = Vector3Normalize({ (float)atof(argv[i + 1]), (float)atof(argv[i + 2]), (float)atof(argv[i + 3]) }); }
@@ -354,6 +374,7 @@ int main(int argc, char** argv)
         if (std::string(argv[i]) == "--test-moon") benchMoon = true;
         if (std::string(argv[i]) == "--test-hole") benchHole = true;
         if (std::string(argv[i]) == "--test-wall") benchWall = true;
+        if (std::string(argv[i]) == "--test-ledge") benchLedge = true; // walk and sprint off a pit edge (#240)
         if (std::string(argv[i]) == "--test-menus") benchMenus = true;
         if (std::string(argv[i]) == "--test-water") benchWater = true;
         if (std::string(argv[i]) == "--test-flyfollow") benchFlyFollow = true;
@@ -777,7 +798,7 @@ int main(int argc, char** argv)
         if (!benchAtSave) world.camera.position = Vector3Add(world.camera.target, benchCamOffset);
         world.debugDraw = startWithOverlay;
         player.flyMode = benchWalkSeconds <= 0.0 && !benchWalkMode; // the bench drives the camera directly unless walking
-        player.autoWalk = benchWalkMode;                              // --bench-walk: walk through the measured window
+        player.autoWalk = benchWalkMode && !benchStandMode;           // --bench-walk: walk through the measured window (--bench-stand: stand)
         player.flyFollow = false;                                     // the bench drives the camera itself
         benchStart = -1.0; // starts once the world has finished streaming in
     }
@@ -846,8 +867,20 @@ int main(int argc, char** argv)
                         survival.health = 15.0f;
                         survival.breathableAltitude = -1e9f; // no air to breathe (the planet's would refill the suit)
                         suffocateStart = GetTime();
+                    } else if (survival.dead && player.nearest) {
+                        // #231: while dead the camera holds its place in the body's frame (drift over the death).
+                        static DVec3 firstLocal{};
+                        static bool have = false;
+                        static double deadAt = -1.0, settleDrift = 0.0;
+                        if (deadAt < 0.0) deadAt = GetTime();
+                        const DVec3 camLocal = player.nearest->toLocalD(world.renderOrigin + world.camera.position);
+                        if (!have) firstLocal = camLocal; // the first dead frame: how far the eye smoothing then settles
+                        if (GetTime() - deadAt < 0.2) { settleDrift = std::max(settleDrift, (camLocal - firstLocal).length()); firstLocal = camLocal; have = true; }
+                        else suffocateDrift = std::max(suffocateDrift, (camLocal - firstLocal).length()); // held after that
+                        suffocateSettle = settleDrift;
                     } else if (survival.deaths > 0 && !survival.dead) {
-                        const float d = Vector3Length(Vector3Subtract(player.velocity, player.nearest ? player.nearest->surfaceVelocity((player.position - world.renderOrigin).toFloat()) : Vector3{ 0, 0, 0 }));
+                        printf("bench: suffocate: while dead the camera drifted %.3f m in the body's frame (#231) -> %s\n", suffocateDrift, suffocateDrift < 0.01 ? "PASS" : "FAIL");
+                        const float d = Vector3Length(Vector3Subtract(player.velocity, !player.grounded && player.nearest ? player.nearest->surfaceVelocity((player.position - world.renderOrigin).toFloat()) : Vector3{ 0, 0, 0 }));
                         printf("bench: suffocated and respawned after %.1f s; O2 %.0f HP %.0f, moving %.1f m/s against the ground, deaths %d\n",
                                GetTime() - suffocateStart, survival.oxygen, survival.health, d, survival.deaths);
                         benchSuffocate = false;
@@ -1288,6 +1321,47 @@ int main(int argc, char** argv)
                                wallMaxStep, wallMaxStepAt, wallMaxSpeed, wallMaxImpact, wallMinHealth, survival.deaths, pass ? "PASS" : "FAIL");
                         printf("bench: wall: %s\n", wallOk && pass ? "PASS" : "FAIL");
                         benchWall = false;
+                    }
+                } else if (benchLedge && (ledgePhase > 0 || WorldIdle())) {
+                    // --test-ledge (#240): walk, then sprint, off the sharp lip of a dug pit. In the first
+                    // 0.2 s of the fall the downward speed must come from gravity alone (g*t): the edge
+                    // must not throw the player down.
+                    Planetoid* p = dynamic_cast<Planetoid*>(world.objects[0].get());
+                    const double t = GetTime() - ledgeStart;
+                    const Vector3 feet = (player.position - world.renderOrigin).toFloat();
+                    if (ledgePhase == 0) {
+                        player.spawnOn(world, *p, StartSpawnDir(*p));
+                        ledgeWalk0 = player.walkSpeed;
+                        ledgeStart = GetTime();
+                        ledgePhase = 1;
+                    } else if (ledgePhase == 1 && t > 1.5 && player.grounded) {
+                        if (ledgePass == 0) {
+                            const Vector3 flat = Vector3Normalize(Vector3Subtract(player.forward, Vector3Scale(player.up, Vector3DotProduct(player.forward, player.up))));
+                            player.forward = flat;
+                            for (int k = 0; k < 5; ++k) // a pit ~5 m wide and deep, its lip 2.5 m ahead
+                                ApplyTerrainEdit(*p, TerrainEdit{ p->toLocal(Vector3Add(feet, Vector3Add(Vector3Scale(flat, 5.0f), Vector3Scale(player.up, -1.5f * k)))), 2.5f, -10.0f });
+                        }
+                        player.walkSpeed = ledgeWalk0 * (ledgePass == 1 ? player.runMultiplier : 1.0f);
+                        player.autoWalk = true;
+                        ledgeAir = false; ledgeExcess = 0.0f;
+                        ledgePhase = 2; ledgeStart = GetTime();
+                    } else if (ledgePhase == 2) {
+                        const float vUp = Vector3DotProduct(Vector3Subtract(player.velocity, player.grounded ? Vector3{ 0, 0, 0 } : p->surfaceVelocity(feet)), player.up);
+                        if (!ledgeAir && !player.grounded) { ledgeAir = true; ledgeAirStart = GetTime(); ledgeV0 = vUp; }
+                        if (ledgeAir) {
+                            const float ta = (float)(GetTime() - ledgeAirStart);
+                            if (ta <= 0.2f) ledgeExcess = std::max(ledgeExcess, -vUp - player.gravity * ta);
+                        }
+                        if ((ledgeAir && GetTime() - ledgeAirStart > 0.3) || t > 6.0) {
+                            player.autoWalk = false;
+                            player.walkSpeed = ledgeWalk0;
+                            const bool pass = ledgeAir && ledgeExcess < 0.5f;
+                            printf("bench: ledge %s: left the ground at %.2f m/s vertical, worst extra downward speed in 0.2 s %.2f m/s: %s\n",
+                                   ledgePass == 0 ? "walk" : "sprint", ledgeV0, ledgeExcess, pass ? "PASS" : "FAIL");
+                            ledgeOk = ledgeOk && pass;
+                            if (++ledgePass < 2) { ledgePhase = 0; }
+                            else { printf("bench: ledge: %s\n", ledgeOk ? "PASS" : "FAIL"); benchLedge = false; }
+                        }
                     }
                 } else if (benchRivers && (riverPhase > 0 || WorldIdle())) {
                     // --test-rivers: the drainage network. Along every river the water level never rises
@@ -4450,7 +4524,7 @@ int main(int argc, char** argv)
                         }
                         benchWalkSeconds = 0.0;
                     }
-                } else if ((WorldIdle() && benchDigStrokes == 0 && !benchPaint && !benchSaveLoad && benchWalkSeconds <= 0.0 && benchMineStrokes == 0 && minePhase != 2 && benchFlySeconds <= 0.0 && !benchSuffocate && benchOrbitSeconds <= 0.0 && !benchRide && !benchPark && !benchGravity && !benchPrecision && !benchMantle && !benchAirJump && !benchMoon && !benchHole && !benchWall && !benchMenus && !benchWater && !benchFlyFollow && !benchHotbar && !benchInventory && !benchMap && !benchViewmodel && !benchQuests && !benchHunger && !benchFarm && !benchAnimals && !benchThreats && benchShotTabs == 0 && !benchForest && !benchFlow && !benchPond && !benchBucket && !benchPump && !benchTerrain && !benchShadow && !benchParticles && !benchBiomes && !benchOil && !benchSpring && !benchShotAnimals && !benchShotMachines && benchShotBiomes < 0 && !benchFarForest && !benchRecipes && !benchWeather && !benchDecor && !benchMaterials && !benchDamage && !benchCrafting && !benchSuit && !benchTools && !benchRivers && !benchRing && !benchRocket && !benchStation && !benchBlueprint && !benchSmallBody && !benchTrees && !benchChop && benchPersist == 0 && benchBuild == 0 && benchFactory == 0 && !benchProgression) || GetTime() > 600.0) {
+                } else if ((WorldIdle() && benchDigStrokes == 0 && !benchPaint && !benchSaveLoad && benchWalkSeconds <= 0.0 && benchMineStrokes == 0 && minePhase != 2 && benchFlySeconds <= 0.0 && !benchSuffocate && benchOrbitSeconds <= 0.0 && !benchRide && !benchPark && !benchGravity && !benchPrecision && !benchMantle && !benchAirJump && !benchMoon && !benchHole && !benchWall && !benchLedge && !benchMenus && !benchWater && !benchFlyFollow && !benchHotbar && !benchInventory && !benchMap && !benchViewmodel && !benchQuests && !benchHunger && !benchFarm && !benchAnimals && !benchThreats && benchShotTabs == 0 && !benchForest && !benchFlow && !benchPond && !benchBucket && !benchPump && !benchTerrain && !benchShadow && !benchParticles && !benchBiomes && !benchOil && !benchSpring && !benchShotAnimals && !benchShotMachines && benchShotBiomes < 0 && !benchFarForest && !benchRecipes && !benchWeather && !benchDecor && !benchMaterials && !benchDamage && !benchCrafting && !benchSuit && !benchTools && !benchRivers && !benchRing && !benchRocket && !benchStation && !benchBlueprint && !benchSmallBody && !benchTrees && !benchChop && benchPersist == 0 && benchBuild == 0 && benchFactory == 0 && !benchProgression) || GetTime() > 600.0) {
                     benchStart = GetTime();
                     printf("bench: world ready after %.2f s (%d chunks, avg build %.2f ms of which sampling %.2f ms, %d worker threads)\n",
                         GetWorldStats().lastGenerationSeconds, GetWorldStats().chunks, GetWorldStats().avgBuildMs, GetWorldStats().avgSampleMs, GetWorldStats().workerThreads);
@@ -4516,25 +4590,35 @@ int main(int argc, char** argv)
                 break;
             }
         } else if (!IsWindowFocused()) {
-            ShowCursor();
+            if (cursorLocked) { EnableCursor(); cursorLocked = false; }
             BeginDrawing();
             EndDrawing();
             continue;
-        } else if (gameState == 1) {
-            if (DebugUI_IsOpen() || GameUI_InventoryOpen() || Nav_MapOpen()) ShowCursor(); else HideCursor();
+        }
+        {
+            // The cursor (#204, #205): locked while playing (DisableCursor: hidden, raw relative motion, no
+            // warping) and free in menus and UIs, switched only when that changes. It used to be hidden and warped
+            // back to the centre with SetMousePosition every frame: a blocking OS call per frame (benches skip it,
+            // so they never showed the frame-rate drop while moving and looking) that also lost the motion between
+            // warps (choppy look at low frame rates).
+            const bool wantLock = !bench && gameState == 1 && !(DebugUI_IsOpen() || GameUI_InventoryOpen() || Nav_MapOpen());
+            if (wantLock != cursorLocked) {
+                if (wantLock) DisableCursor(); else EnableCursor();
+                cursorLocked = wantLock;
+            }
         }
         if (!bench && IsKeyPressed(KEY_F1)) {
             DebugUI_Toggle();
-            if (!DebugUI_IsOpen()) SetMousePosition(GetScreenWidth()/2, GetScreenHeight()/2);
+            // (relocking the cursor centres it)
         }
         if (!bench && gameState == 1 && IsKeyPressed(KEY_TAB)) {
             GameUI_ToggleInventory();
-            if (!GameUI_InventoryOpen()) SetMousePosition(GetScreenWidth()/2, GetScreenHeight()/2);
+            // (relocking the cursor centres it)
         }
         // M: the map (aboard a rocket M is its orbit map).
         if (!bench && gameState == 1 && IsKeyPressed(KEY_M) && !Rocket_Boarded() && !GameUI_InventoryOpen() && !DebugUI_IsOpen()) {
             Nav_ToggleMap();
-            if (!Nav_MapOpen()) SetMousePosition(GetScreenWidth()/2, GetScreenHeight()/2);
+            // (relocking the cursor centres it)
         }
         const bool uiOpen = DebugUI_IsOpen() || GameUI_InventoryOpen() || Nav_MapOpen();
         if (!bench && !telescope.active && !DebugUI_IsOpen()) world.camera.fovy = settings.fov; // Settings (the telescope zooms from it)
@@ -4579,6 +4663,36 @@ int main(int argc, char** argv)
                 ship.update(world, false, frameDt);
                 Suit_Apply(world, frameDt); // the worn suit and modules: walk, jetpack, grip, the scanner
                 if (alive && !loading) player.update(world, gameInput, frameDt);
+                {
+                    // Dead (until the respawn): the view stays exactly where the player died, held in the frame of the
+                    // body they were on - player.update is skipped, so nothing else carried it with the spinning,
+                    // orbiting planet (it drifted off at ~100 m/s, or kept the death velocity; #231).
+                    static uint64_t deathId = 0; // re-resolved each frame: the body may be destroyed while dead (ring rocks, regen)
+                    static DVec3 deathLocal{};
+                    static Vector3 deathForward{}, deathUp{};
+                    static bool held = false;
+                    if (!alive && !loading) {
+                        if (!held) {
+                            Planetoid* deathBody = player.nearest;
+                            deathId = deathBody ? deathBody->id : 0;
+                            if (deathBody) {
+                                deathLocal = deathBody->toLocalD(player.position);
+                                deathForward = deathBody->dirToLocal(player.forward);
+                                deathUp = deathBody->dirToLocal(player.up);
+                            }
+                            held = true;
+                        }
+                        if (Planetoid* deathBody = deathId ? Planetoid::find(deathId) : nullptr) {
+                            player.position = deathBody->toWorldD(deathLocal);
+                            player.forward = deathBody->dirToWorld(deathForward);
+                            player.up = deathBody->dirToWorld(deathUp);
+                        }
+                        player.velocity = { 0, 0, 0 };
+                    } else {
+                        held = false;
+                        deathId = 0;
+                    }
+                }
                 Survival_OnLanding(player.impactSpeed);
                 Rocket_Update(world, gameInput && alive, frameDt); // on foot: aim at a rocket (E boards, I fuels)
             }
@@ -4783,8 +4897,8 @@ int main(int argc, char** argv)
             // Esc in game pauses (unless it closes the inventory or build mode first); the pause menu
             // handles Esc itself (resume, or back out of Settings).
             if (gameState == 1 && m.action == MenuAction::None && IsKeyPressed(KEY_ESCAPE)) {
-                if (Nav_MapOpen()) { Nav_CloseMap(); SetMousePosition(GetScreenWidth() / 2, GetScreenHeight() / 2); }
-                else if (GameUI_InventoryOpen()) { GameUI_ToggleInventory(); SetMousePosition(GetScreenWidth() / 2, GetScreenHeight() / 2); }
+                if (Nav_MapOpen()) Nav_CloseMap();
+                else if (GameUI_InventoryOpen()) GameUI_ToggleInventory();
                 else if (buildTool.active) buildTool.active = false;
                 else { ShowCursor(); Menu_ResetPause(); gameState = 2; justPaused = true; }
             }
@@ -4795,7 +4909,7 @@ int main(int argc, char** argv)
         GpuTimer_Mark("pre-draw (uploads, updates)");
         BeginDrawing();
             ClearBackground(crackCheck ? MAGENTA : BLACK); // --crack-check: holes in the terrain show magenta
-            GpuTimer_Enable(benchMeasuring); GpuTimer_Mark("clear");
+            GpuTimer_Enable(benchMeasuring || perfLog); GpuTimer_Mark("clear");
             GpuTimer_CpuMark("begin-draw");
             if (gameState == 0) {
                 pendingMenu = Menu_Main();
@@ -4838,7 +4952,18 @@ int main(int argc, char** argv)
                         loading = false; spawnLoad = false;
                     }
                 }
-                if (!bench && !uiOpen) SetMousePosition(GetScreenWidth()/2, GetScreenHeight()/2);
+                // (No per-frame cursor warp: the cursor is locked with DisableCursor while playing, #204 / #205.)
+                if (perfLog) {
+                    // --perf-log (#204): every 5 s, the per-pass averages to log.txt, tagged by how the player moved (average
+                    // speed, and mouse-look turning) so "standing" and "moving" can be compared from a real session.
+                    static double perfT0 = GetTime(), perfSpeed = 0.0, perfLook = 0.0; static long perfN = 0;
+                    perfSpeed += Vector3Length(Vector3Subtract(player.velocity, !player.grounded && player.nearest ? player.nearest->surfaceVelocity((player.position - world.renderOrigin).toFloat()) : Vector3{ 0, 0, 0 })); /* against the ground: airborne velocity is world-frame and includes the planet's spin (grounded it is surface-relative already) */ perfLook += Vector2Length(GetMouseDelta()); ++perfN;
+                    if (GetTime() - perfT0 >= 5.0) {
+                        const double sp = perfSpeed / std::max(1L, perfN), lk = perfLook / std::max(1L, perfN);
+                        GpuTimer_LogAndReset(TextFormat("%s (speed %.1f m/s, look %.1f px/frame, %d FPS)", sp > 0.5 || lk > 0.5 ? "MOVING" : "still", sp, lk, GetFPS()));
+                        perfT0 = GetTime(); perfSpeed = perfLook = 0.0; perfN = 0;
+                    }
+                }
             } else if (gameState == 2) {
                 world.drawScene(gameState);
                 world.drawUI(gameState);

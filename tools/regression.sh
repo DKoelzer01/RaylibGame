@@ -48,6 +48,7 @@ planet() {
     run --seed 42 --bench 3 --test-progression full
     run --seed 42 --bench 3 --test-wall
     run --seed 9 --bench 3 --test-wall
+    run --seed 42 --bench 3 --test-ledge
     run --seed 42 --bench 3 --test-menus
     run --seed 42 --bench 3 --test-water
     run --seed 9 --bench 3 --test-water
