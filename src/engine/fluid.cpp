@@ -176,7 +176,7 @@ void Classify(const Site& s, Brick& b, const BodyRef& ref, std::vector<PondClaim
                     bool known = false;
                     for (const PondClaim& c : claims) known = known || c.id == ws.pond;
                     if (!known) { claims.push_back({ ws.pond, ws.pondDir, ws.pondR, ws.level }); ponds.push_back({ ws.pondDir, ws.pondR, ws.level }); }
-                } else if (ws.kind && sea + ws.level > level) { level = sea + ws.level; kind = ws.kind; }
+                } else if (ws.kind && ws.kind != 3 && sea + ws.level > level) { level = sea + ws.level; kind = ws.kind; } // a pond (even its rim, above the level) is never an infinite source
                 for (const Site::PondInfo& p : ponds)
                     if (Vector3Distance(dir, p.dir) * pf->radius < p.r * 1.05f && sea + p.level > level) { level = sea + p.level; kind = 5; }
             }

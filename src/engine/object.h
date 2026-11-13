@@ -4,6 +4,7 @@
 #include <string>
 #include <vector>
 #include <memory>
+#include <functional>
 #include <raylib.h>
 #include <iostream>
 
@@ -61,6 +62,7 @@ struct RenderContext {
     Shader* farShader = nullptr;          // distance sphere (farsphere.h)
     Shader* partShader = nullptr;         // build plots (plots.h)
     int partOccluderLoc = -1;
+    std::function<void(Shader&)> bindSunLighting; // binds the shadow cascades + headlamp uniforms to an enabled shader (parts, foliage)
     Shader* treeShader = nullptr;         // foliage: trees and bushes
     int treeModelLoc = -1, treeOccluderLoc = -1, treeFadeLoc = -1, treeBarkLoc = -1, treeLeafLoc = -1;
     // Shadow pass: the light box's column (render space): chunks farther than this from the axis are skipped

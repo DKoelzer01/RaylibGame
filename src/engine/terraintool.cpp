@@ -2,6 +2,7 @@
 #include "world.h"
 #include "inventory.h"
 #include "audio.h"
+#include "particles.h"
 #include "player.h"
 #include "worldtypes.h"
 #include "tools.h"
@@ -68,7 +69,21 @@ namespace {
         if (p.id != chopId) { chopId = p.id; chopHits = 0; }
         Audio_Play(Sfx::Dig, 0.45f, p.tree() ? 0.6f : 1.4f);
         ++terrainTool.swings;
+        {   // Chips off the trunk (leaves off a bush, grit off a stone).
+            ParticleBurst chips;
+            chips.kind = ParticleKind::Debris;
+            chips.color = p.tree() ? Color{ 196, 160, 110, 255 } : p.stone() ? Color{ 130, 128, 124, 255 } : Color{ 70, 110, 45, 255 };
+            chips.count = 6; chips.size = p.tree() ? 0.06f : 0.05f; chips.life = 1.4f; chips.speed = 2.5f; chips.spread = 0.8f;
+            Particles_Emit(*plantBody, Vector3Add(p.base, Vector3Scale(p.up, p.tree() ? std::min(1.2f, p.height * 0.3f) : p.height * 0.5f)), chips);
+        }
         if (++chopHits < HitsToFell(p)) return false;
+        if (!p.stone()) {
+            // It comes down: a burst of leaves from the crown.
+            ParticleBurst leaves;
+            leaves.kind = ParticleKind::Debris; leaves.color = { 60, 105, 40, 255 };
+            leaves.count = p.tree() ? 40 : 14; leaves.size = 0.09f; leaves.life = 2.5f; leaves.speed = 2.0f; leaves.spread = 1.0f;
+            Particles_Emit(*plantBody, Vector3Add(p.base, Vector3Scale(p.up, p.height * (p.tree() ? 0.8f : 0.5f))), leaves);
+        }
         plantBody->trees->remove(p.id);
         if (p.tree()) {
             // Logs of its species (saw them into planks: recipes take any planks).
@@ -147,6 +162,10 @@ bool TerrainTool_Bucket(Scene& world) {
     } else {
         const Vector3 up = Vector3Normalize(hit.local);
         Fluid::Pour(*hit.planetoid, Vector3Add(hit.local, Vector3Scale(up, 0.6f)), 1.0f);
+        ParticleBurst splash;
+        splash.kind = ParticleKind::Splash; splash.color = { 150, 190, 235, 220 };
+        splash.count = 18; splash.size = 0.08f; splash.life = 0.9f; splash.speed = 2.5f; splash.spread = 0.7f;
+        Particles_Emit(*hit.planetoid, Vector3Add(hit.local, Vector3Scale(up, 0.3f)), splash);
         if (inventory.remove("water_bucket", 1)) inventory.add("bucket", 1);
         terrainTool.heldTool = "bucket";
         Audio_Play(Sfx::Dig, 0.5f, 1.6f);
@@ -288,6 +307,33 @@ static Vector3 DigCentre(float r) {
     return Vector3Add(hit.local, Vector3Scale(d, kDigSink * r));
 }
 
+// Particles for a stroke (particles.h): a puff of dust in the ground's colour and a few clods thrown
+// out of the hole, toward the camera side.
+static Color DustColor(VoxelMaterial m) {
+    switch (m) {
+        case VoxelMaterial::Regolith: return { 122, 92, 62, 255 };   // dirt on planets
+        case VoxelMaterial::Ice: return { 200, 225, 245, 255 };
+        case VoxelMaterial::Ore: return { 120, 96, 80, 255 };
+        case VoxelMaterial::Sand: return { 214, 192, 146, 255 };
+        case VoxelMaterial::Gravel: return { 128, 124, 118, 255 };
+        case VoxelMaterial::Grass: return { 96, 84, 52, 255 };
+        case VoxelMaterial::Snow: return { 240, 244, 250, 255 };
+        default: return { 128, 126, 124, 255 };
+    }
+}
+static void StrokeParticles(const Planetoid& p, Vector3 local, VoxelMaterial m, bool dig) {
+    const Color c = DustColor(m);
+    ParticleBurst dust;
+    dust.kind = ParticleKind::Dust; dust.color = { c.r, c.g, c.b, 200 }; dust.count = dig ? 10 : 7;
+    dust.size = 0.35f; dust.life = 1.1f; dust.speed = 1.2f; dust.spread = 0.9f;
+    Particles_Emit(p, local, dust);
+    if (!dig) return;
+    ParticleBurst clods;
+    clods.kind = ParticleKind::Debris; clods.color = c; clods.count = 7;
+    clods.size = 0.07f; clods.life = 1.6f; clods.speed = 3.2f; clods.spread = 0.5f;
+    Particles_Emit(p, local, clods);
+}
+
 // One stroke at the current crosshair hit (also used by scripted tests). Tools carve exactly the
 // sphere shown (what lies inside it, of what the tool can dig, is collected); RMB places soil.
 bool TerrainTool_Stroke(bool dig) {
@@ -332,6 +378,7 @@ bool TerrainTool_Stroke(bool dig) {
         e.paint = paint;
         const Vector3 localNormal = Vector3Normalize(Vector3Subtract(p.toLocal(Vector3Add(hit.point, hit.normal)), hit.local));
         e.center = Vector3Add(hit.local, Vector3Scale(localNormal, 0.3f * e.radius));
+        StrokeParticles(p, hit.local, hit.material, false);
         ApplyTerrainEdit(p, e);
         Audio_Play(Sfx::Build, 0.6f);
         return true;
@@ -387,6 +434,7 @@ bool TerrainTool_Stroke(bool dig) {
     e.radius = r;
     e.carve = true;
     e.softOnly = softOnly;
+    StrokeParticles(p, hit.local, hit.material, true);
     ApplyTerrainEdit(p, e);
     Audio_Play(Sfx::Dig, 0.5f, 0.85f + 0.3f * (float)GetRandomValue(0, 100) / 100.0f);
     ++terrainTool.swings;

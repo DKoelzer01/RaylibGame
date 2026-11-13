@@ -96,11 +96,17 @@ Image GenerateTerrainLayerImage(int layer, int size) {
             const float u = (x + 0.5f) / size, v = (y + 0.5f) / size;
             Color c = BLACK;
             switch (layer) {
-                case LayerDirt: { // brown soil: lumpy tone, dark clods, a few light grains
+                case LayerDirt: { // brown soil: lumpy tone, dark clods, small stones and light grains
                     const float n = Fbm(u, v, 8, 5, 11u);
                     c = Mix({ 74, 52, 34, 255 }, { 128, 94, 62, 255 }, n * 1.4f - 0.2f);
                     if (ValueNoise(u, v, 96, 12u) > 0.82f) c = Scale(c, 0.7f);
                     if (Rand01(x, y, 13u) > 0.985f) c = Scale(c, 1.35f);
+                    float f1, f2; uint32_t id;
+                    Worley(u, v, 36, 14u, f1, f2, id);
+                    if ((id % 9u) == 0 && f1 < 0.3f) { // a pebble in every ninth cell, shaded round, a dark rim
+                        const Color stone = Mix({ 96, 90, 84, 255 }, { 150, 142, 130, 255 }, (id >> 8 & 0xFF) / 255.0f);
+                        c = Mix(Scale(stone, 1.12f - f1 * 1.2f), Scale(c, 0.6f), std::clamp((f1 - 0.22f) * 12.0f, 0.0f, 1.0f));
+                    }
                     break;
                 }
                 case LayerSand: { // pale tan: fine grain and soft wind ripples
@@ -109,14 +115,15 @@ Image GenerateTerrainLayerImage(int layer, int size) {
                     c = Scale(c, 0.92f + 0.16f * Rand01(x, y, 23u));
                     break;
                 }
-                case LayerGravel: { // grey pebbles of varied tone with dark gaps between them
+                case LayerGravel: { // small rounded pebbles of varied tone, shaded, with soil between them
                     float f1, f2; uint32_t id;
-                    Worley(u, v, 40, 31u, f1, f2, id);
-                    const float tone = 0.75f + 0.5f * ((id & 0xFF) / 255.0f);
-                    const float edge = std::clamp((f2 - f1) * 5.0f, 0.0f, 1.0f);
-                    c = Scale(Mix({ 95, 92, 88, 255 }, { 150, 146, 138, 255 }, (id >> 8 & 0xFF) / 255.0f), tone);
-                    c = Mix({ 40, 38, 36, 255 }, c, edge);
-                    c = Scale(c, 0.9f + 0.2f * ValueNoise(u, v, 128, 32u));
+                    Worley(u, v, 56, 31u, f1, f2, id);
+                    const float tone = 0.8f + 0.4f * ((id & 0xFF) / 255.0f);
+                    const float edge = std::clamp((f2 - f1) * 7.0f, 0.0f, 1.0f);
+                    Color pebble = Scale(Mix({ 98, 94, 88, 255 }, { 158, 152, 142, 255 }, (id >> 8 & 0xFF) / 255.0f), tone);
+                    pebble = Scale(pebble, 1.15f - 0.55f * f1); // rounded: lighter in the middle
+                    c = Mix({ 62, 54, 46, 255 }, pebble, edge);
+                    c = Scale(c, 0.92f + 0.16f * ValueNoise(u, v, 128, 32u));
                     break;
                 }
                 case LayerGrass: { // green turf: patchy tone, streaky blades, dry flecks
@@ -140,12 +147,19 @@ Image GenerateTerrainLayerImage(int layer, int size) {
                     c = Mix(c, { 235, 245, 255, 255 }, crack * 0.8f);
                     break;
                 }
-                case LayerStone: { // grey rock: mottled, with dark fractures
+                case LayerStone: { // grey rock: warped strata bands, fine grain, thin cracks, lichen
+                    const float warp = Fbm(u, v, 3, 4, 73u);
+                    const float band = v * 9.0f + warp * 1.6f;                       // 9 wavy layers per tile (seamless)
+                    const float strata = 0.5f + 0.5f * sinf(band * 6.2831853f);
+                    const float layerTone = Rand01((int)floorf(band) & 15, 0, 75u);  // each layer a little lighter or darker
+                    const float grain = Fbm(u, v, 24, 4, 72u);
+                    c = Mix({ 92, 91, 95, 255 }, { 158, 154, 148, 255 }, 0.5f * grain + 0.22f * strata + 0.25f * layerTone);
                     float f1, f2; uint32_t id;
-                    Worley(u, v, 7, 71u, f1, f2, id);
-                    const float fracture = 1.0f - std::clamp((f2 - f1) * 25.0f, 0.0f, 1.0f);
-                    c = Mix({ 92, 92, 96, 255 }, { 150, 148, 146, 255 }, Fbm(u, v, 8, 5, 72u));
-                    c = Mix(c, { 50, 50, 54, 255 }, fracture * 0.7f);
+                    Worley(u, v, 5, 71u, f1, f2, id);
+                    const float crack = 1.0f - std::clamp((f2 - f1) * 70.0f, 0.0f, 1.0f);
+                    c = Mix(c, { 52, 51, 55, 255 }, crack * 0.8f);
+                    const float lichen = Fbm(u, v, 10, 3, 74u);
+                    if (lichen > 0.68f) c = Mix(c, { 118, 128, 86, 255 }, std::min(1.0f, (lichen - 0.68f) * 6.0f) * 0.45f);
                     break;
                 }
                 default: c = MAGENTA;

@@ -32,6 +32,9 @@
 #include "progression_test.h"
 #include "menus.h"
 #include "hotbar.h"
+#include "itemicons.h"
+#include "particles.h"
+#include "ambience.h"
 #include "navigation.h"
 #include "viewmodel.h"
 #include "farming.h"
@@ -112,6 +115,7 @@ static void StartNewWorld(Scene& world, bool reset) {
         Nav_Reset();
         Farm_Reset();
         Animals_Reset();
+        Particles_Clear();
         Station_Reset();
         Suit_Reset();
         ToolWear_Reset();
@@ -189,6 +193,7 @@ int main(int argc, char** argv)
     bool benchTools = false, toolsOk = true; int toolsPhase = 0, toolsLife = 0, toolsTilled = 0; double toolsStart = 0.0; // --test-tools
     bool benchSuit = false, suitOk = true; int suitPhase = 0; double suitStart = 0.0; float suitFoodRatio = 0.0f, suitWater = 0.0f, suitRebreather = 0.0f; // --test-suit
     int benchShotTabs = 0; // --shot-tabs
+    bool benchParticles = false; int particlePhase = 0; double particleT0 = 0.0; Vector3 particleEye{}, particleAt{}; // --shot-particles
     bool benchShadow = false; int shadowPhase = 0; double shadowT0 = 0.0; Vector3 shadowEye{}, shadowAt{}; // --shot-shadow
     bool benchFarForest = false; int farForestPhase = 0; double farForestT0 = 0.0; Vector3 farForestEye{}, farForestAt{}; // --shot-far-forest
     bool benchTerrain = false; int terrainPhase = 0; double terrainT0 = 0.0; Vector3 terrainAt{}, terrainOut{}; // --shot-terrain
@@ -354,6 +359,7 @@ int main(int argc, char** argv)
         if (std::string(argv[i]) == "--test-pump") benchPump = true;
         if (std::string(argv[i]) == "--shot-terrain") benchTerrain = true;
         if (std::string(argv[i]) == "--shot-shadow") benchShadow = true;
+        if (std::string(argv[i]) == "--shot-particles") benchParticles = true;
         if (std::string(argv[i]) == "--shot-far-forest") benchFarForest = true;
         if (std::string(argv[i]) == "--test-recipes") benchRecipes = true;
         if (std::string(argv[i]) == "--test-weather") benchWeather = true;
@@ -476,6 +482,9 @@ int main(int argc, char** argv)
     DebugUI_Init();
     if (!bench) Audio_Init();
     itemDB.load("resources/data/items.txt", "resources/data/recipes.txt");
+    ItemIcons_Init(); // one painted icon per item (itemicons.h)
+    for (int i = 1; i < argc; ++i)
+        if (std::string(argv[i]) == "--shot-icons") printf("bench: icons: %d items -> bench_icons.png (%s)\n", (int)itemDB.items().size(), ItemIcons_SaveSheet("bench_icons.png") ? "saved" : "FAILED");
     GameSave_Register();
     {   // Scenes own GPU resources: keep them in a scope that ends before CloseWindow().
     Scene mainMenu("mainMenu", true); // Main menu scene;
@@ -509,7 +518,7 @@ int main(int argc, char** argv)
     bool spawnLoad = false;        // raised by a spawn or teleport (not entering the game): no minimum time
     int loadFrames = 0;
     int seenSpawns = 0;
-    world.onDraw3D = [&world] { Farm_Draw3D(world); Animals_Draw3D(world); Weather_Draw3D(world); if (!ship.piloted && !buildTool.active && !Rocket_Boarded()) TerrainTool_Draw3D(); BuildTool_Draw3D(world); };
+    world.onDraw3D = [&world] { Farm_Draw3D(world); Animals_Draw3D(world); Weather_Draw3D(world); Particles_Draw(world); if (!ship.piloted && !buildTool.active && !Rocket_Boarded()) TerrainTool_Draw3D(); BuildTool_Draw3D(world); };
     terrainTool.till = [&world](Planetoid& body, Vector3 ground) { return Farm_Till(world, body, ground); }; // a shovel's RMB
     terrainTool.swapHeld = [](const std::string& from, const std::string& to, const char* ev) { // a bucket filled or emptied
         const int s = Hotbar_Selected();
@@ -2077,6 +2086,62 @@ int main(int argc, char** argv)
                         GameUI_ToggleInventory();
                         benchShotTabs = 0;
                     }
+                } else if (benchParticles && (particlePhase > 0 || WorldIdle())) {
+                    // --shot-particles: every particle kind in front of a standing camera: a smoke column,
+                    // a flame with sparks, a dig puff with clods, water splashes and fireflies (bench_particles.png).
+                    Planetoid* p = dynamic_cast<Planetoid*>(world.objects[0].get());
+                    const double t = GetTime() - particleT0;
+                    if (particlePhase == 0) {
+                        player.spawnOn(world, *p, StartSpawnDir(*p));
+                        particlePhase = 1; particleT0 = GetTime();
+                    } else if (particlePhase == 1 && t > 1.5) {
+                        const Vector3 me = p->toLocal((player.position - world.renderOrigin).toFloat());
+                        const Vector3 up = Vector3Normalize(me);
+                        const auto* pfp = dynamic_cast<const PlanetField*>(p->field.get());
+                        const Vector3 ground = pfp ? Vector3Scale(up, pfp->radius + pfp->elevation(up)) : me;
+                        const Vector3 t1 = Vector3Normalize(Vector3CrossProduct(up, { 0, 1, 0 }));
+                        sunOverride = true; sunArg = p->dirToWorld(Vector3Normalize(Vector3Add(up, Vector3Scale(t1, 0.8f))));
+                        player.flyMode = true;
+                        particleEye = Vector3Add(ground, Vector3Scale(up, 1.7f));
+                        particleAt = Vector3Add(Vector3Add(ground, Vector3Scale(t1, 6.0f)), Vector3Scale(up, 1.0f)); // above the grass
+                        particlePhase = 2; particleT0 = GetTime();
+                    } else if (particlePhase == 2) {
+                        const Vector3 up = Vector3Normalize(particleEye);
+                        world.camera.position = p->toWorld(particleEye);
+                        world.camera.target = p->toWorld(Vector3Add(particleAt, Vector3Scale(up, 0.6f)));
+                        world.camera.up = p->dirToWorld(up);
+                        player.position = world.renderOrigin + world.camera.position;
+                        const Vector3 fwd = Vector3Normalize(Vector3Subtract(particleAt, particleEye));
+                        const Vector3 side = Vector3Normalize(Vector3CrossProduct(fwd, up));
+                        auto at = [&](float s, float lift) { const Vector3 q = Vector3Add(particleAt, Vector3Scale(side, s)); const Vector3 d = Vector3Normalize(q);
+                                                             const auto* pf = dynamic_cast<const PlanetField*>(p->field.get()); return Vector3Scale(d, (pf ? pf->radius + pf->elevation(d) : Vector3Length(q)) + lift + 1.0f); };
+                        static double lastEmit = 0.0;
+                        if (GetTime() - lastEmit > 0.05 && t < 2.6) {
+                            lastEmit = GetTime();
+                            ParticleBurst b;
+                            b = {}; b.kind = ParticleKind::Smoke; b.color = { 190, 188, 185, 255 }; b.count = 2; b.size = 0.5f; b.life = 4.0f; b.speed = 0.9f; b.spread = 0.25f;
+                            Particles_Emit(*p, at(-4.0f, 0.3f), b);
+                            b = {}; b.kind = ParticleKind::Fire; b.color = { 255, 120, 30, 255 }; b.count = 4; b.size = 0.45f; b.life = 0.6f; b.speed = 1.0f; b.spread = 0.2f;
+                            Particles_Emit(*p, at(-1.3f, 0.1f), b);
+                            b = {}; b.kind = ParticleKind::Spark; b.color = { 255, 170, 60, 255 }; b.count = 1; b.size = 0.05f; b.life = 1.4f; b.speed = 2.5f; b.spread = 0.3f;
+                            Particles_Emit(*p, at(-1.3f, 0.3f), b);
+                            b = {}; b.kind = ParticleKind::Splash; b.color = { 175, 195, 225, 200 }; b.count = 3; b.size = 0.06f; b.life = 0.4f; b.speed = 1.4f; b.spread = 0.45f;
+                            Particles_Emit(*p, at(4.0f, 0.0f), b);
+                            if (GetRandomValue(0, 4) == 0) {
+                                b = {}; b.kind = ParticleKind::Dust; b.color = { 122, 92, 62, 200 }; b.count = 10; b.size = 0.35f; b.life = 1.1f; b.speed = 1.2f; b.spread = 0.9f;
+                                Particles_Emit(*p, at(1.4f, 0.0f), b);
+                                b = {}; b.kind = ParticleKind::Debris; b.color = { 122, 92, 62, 255 }; b.count = 7; b.size = 0.07f; b.life = 1.6f; b.speed = 3.2f; b.spread = 0.5f;
+                                Particles_Emit(*p, at(1.4f, 0.0f), b);
+                                b = {}; b.kind = ParticleKind::Firefly; b.color = { 200, 255, 110, 255 }; b.count = 3; b.size = 0.1f; b.life = 6.0f; b.speed = 0.3f; b.spread = 1.0f;
+                                Particles_Emit(*p, at(GetRandomValue(-50, 50) / 10.0f, 1.2f), b);
+                            }
+                        }
+                        if (t > 2.4) {
+                            TakeScreenshot("bench_particles.png");
+                            printf("bench: particles: %d live -> bench_particles.png\n", Particles_Count());
+                            benchParticles = false;
+                        }
+                    }
                 } else if (benchShadow && (shadowPhase > 0 || WorldIdle())) {
                     // --shot-shadow: a tree's shadow on the ground from 3 m away (bench_shadow.png), and a
                     // close look straight at flat sunlit ground (bench_shadow_ground.png: no acne pattern).
@@ -2503,7 +2568,7 @@ int main(int argc, char** argv)
                     } else if (pondPhase == 3) {
                         static float h0 = 0.0f; static int inWaterFrames = 0, frames = 0;
                         const float h = Vector3Length(p->toLocal((player.position - world.renderOrigin).toFloat()));
-                        if (t < 0.5) { h0 = h; inWaterFrames = frames = 0; }
+                        if (t < 0.5 || h0 == 0.0f) { h0 = h; inWaterFrames = frames = 0; pondT0 = GetTime() - std::min(t, 0.5); } // the first frame here can come late (a hitch)
                         else { ++frames; inWaterFrames += player.inWater ? 1 : 0; }
                         if (t > 3.0) {
                             const float sink = (h0 - h) / 2.5f;
@@ -2511,6 +2576,7 @@ int main(int argc, char** argv)
                             printf("bench: pond: swimming in the pit: in water %d%% of frames, sank %.2f m/s (falling in air would be ~%.0f m/s) -> %s\n",
                                    frames ? 100 * inWaterFrames / frames : 0, sink, player.gravity * 2.5f * 0.5f, pass ? "PASS" : "FAIL");
                             benchPond = false;
+                            h0 = 0.0f;
                         }
                     }
                 } else if (benchFlow && (flowPhase > 0 || WorldIdle())) {
@@ -3917,7 +3983,7 @@ int main(int argc, char** argv)
                         }
                         benchWalkSeconds = 0.0;
                     }
-                } else if ((WorldIdle() && benchDigStrokes == 0 && !benchPaint && !benchSaveLoad && benchWalkSeconds <= 0.0 && benchMineStrokes == 0 && minePhase != 2 && benchFlySeconds <= 0.0 && !benchSuffocate && benchOrbitSeconds <= 0.0 && !benchRide && !benchPark && !benchGravity && !benchPrecision && !benchMantle && !benchAirJump && !benchMoon && !benchHole && !benchWall && !benchMenus && !benchWater && !benchFlyFollow && !benchHotbar && !benchInventory && !benchMap && !benchViewmodel && !benchQuests && !benchHunger && !benchFarm && !benchAnimals && !benchThreats && benchShotTabs == 0 && !benchForest && !benchFlow && !benchPond && !benchBucket && !benchPump && !benchTerrain && !benchShadow && !benchFarForest && !benchRecipes && !benchWeather && !benchDecor && !benchMaterials && !benchDamage && !benchCrafting && !benchSuit && !benchTools && !benchRivers && !benchRing && !benchRocket && !benchStation && !benchBlueprint && !benchSmallBody && !benchTrees && !benchChop && benchPersist == 0 && benchBuild == 0 && benchFactory == 0 && !benchProgression) || GetTime() > 600.0) {
+                } else if ((WorldIdle() && benchDigStrokes == 0 && !benchPaint && !benchSaveLoad && benchWalkSeconds <= 0.0 && benchMineStrokes == 0 && minePhase != 2 && benchFlySeconds <= 0.0 && !benchSuffocate && benchOrbitSeconds <= 0.0 && !benchRide && !benchPark && !benchGravity && !benchPrecision && !benchMantle && !benchAirJump && !benchMoon && !benchHole && !benchWall && !benchMenus && !benchWater && !benchFlyFollow && !benchHotbar && !benchInventory && !benchMap && !benchViewmodel && !benchQuests && !benchHunger && !benchFarm && !benchAnimals && !benchThreats && benchShotTabs == 0 && !benchForest && !benchFlow && !benchPond && !benchBucket && !benchPump && !benchTerrain && !benchShadow && !benchParticles && !benchFarForest && !benchRecipes && !benchWeather && !benchDecor && !benchMaterials && !benchDamage && !benchCrafting && !benchSuit && !benchTools && !benchRivers && !benchRing && !benchRocket && !benchStation && !benchBlueprint && !benchSmallBody && !benchTrees && !benchChop && benchPersist == 0 && benchBuild == 0 && benchFactory == 0 && !benchProgression) || GetTime() > 600.0) {
                     benchStart = GetTime();
                     printf("bench: world ready after %.2f s (%d chunks, avg build %.2f ms of which sampling %.2f ms, %d worker threads)\n",
                         GetWorldStats().lastGenerationSeconds, GetWorldStats().chunks, GetWorldStats().avgBuildMs, GetWorldStats().avgSampleMs, GetWorldStats().workerThreads);
@@ -4054,6 +4120,8 @@ int main(int argc, char** argv)
             if (!loading) Farm_Update(world, frameDt * timeScale * Rocket_Warp()); // crops grow on world time
             if (!loading) Animals_Update(world, frameDt, frameDt * timeScale * Rocket_Warp(), gameInput && alive && !ship.piloted);
             if (!loading) Weather_Update(world, frameDt * timeScale); // the sky, rain and snow, lightning
+            if (!loading) Ambience_Update(world, frameDt); // rain splashes, fireflies, machine smoke
+            Particles_Update(world, frameDt); // smoke, dust, exhaust, splashes (particles.h)
             // Autosave every 5 minutes of play (incremental: only regions changed since the last save).
             static double lastAutosave = GetTime();
             if (!bench && alive && GetTime() - lastAutosave > 300.0) {

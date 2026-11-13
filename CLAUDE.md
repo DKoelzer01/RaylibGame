@@ -47,6 +47,8 @@ C++ raylib 5.5 planetoid survival game. `src/engine` (static lib), `src/space` -
 - Plan 2 (early game, done): https://claude.ai/artifact/RL22kZ7VBMugAFgGRPS3cE
 - Plan 3 (Terra tiers, space): https://claude.ai/artifact/XVw45AC6vwYitbdhaeP2xL - M21-M24 done (M24 on PR #28).
 - Plan 4 (flowing water): https://claude.ai/artifact/27xL5j1zkirSe8pDZgPz59
+- Plan 5 (art, life, world variety): https://claude.ai/artifact/5igt2VrsTyNhZ3BZ94teHX - A animal models/AI, B biomes,
+  C Minecraft-style 3D terrain, D authored textures await the user's answers; the light items are done on art-pass-5.
 - `CurrentIssues.md` (untracked, the user's playtest list): erase lines once fully resolved; mark
   deferred or changed-needs-confirmation items inline.
 
@@ -146,3 +148,31 @@ the walls (5e19f49; --shot-forest --outcrop-high), planet spin as a wrapped doub
 shadows (d591eee), sparse 4^3 bricks in delta chunks (66f2dbf; --test-persist prints delta memory), fuller
 grass + longer view distances (8201a55; --shot-shadow adds bench_grass.png, --shot-far-forest). Full planet
 regression 47/47 on 040f1eb. All CurrentIssues items are "changed - confirm in play".
+
+## Art pass (branch art-pass-5, 2026-11-12, Plan 5 light items)
+
+- Shaders take `#include "file"` (HotShader expands it, relative to the shader, and watches the file).
+  `resources/shadow.glsl` = the two-cascade sun shadow lookup + headlamp for lighting/trees/grass/parts/water.
+  Shadow maps use hardware compare (sampler2DShadow, linear): never sample them as sampler2D (debug
+  previews call SetShadowCompare(id, false) first). Near cascade blends into the far one over 8% of its box.
+- Parts receive shadows + headlamp (ctx.bindSunLighting binds slots 6-7 before plot and water draws).
+- Part surface patterns: id in the part mesh's vertex-colour alpha (plots.cpp PartPatternOf), drawn in
+  section-local plot metres by parts.fs (stone, brick, planks, metal, glass, tiles, marble, gems, logs,
+  lamp glow, machine casing, conveyor, cable, farmland, hull).
+- Item icons: src/space/itemicons.* paints every item at startup (one atlas); --shot-icons.
+- Particles: src/engine/particles.* (body-local, pooled, rlgl billboards); emitters in terraintool
+  (dig/place/chop/bucket), rocket.cpp Exhaust, src/space/ambience.* (rain splashes, fireflies, machine
+  smoke, campfire flame); --shot-particles.
+- Lighting review leftovers for the user: tonemapping (ACES), hemisphere/SH ambient + SSAO, GGX specular.
+  Staggering the far cascade was rejected (planet spin makes a stale map shimmer).
+- Don't run screenshot benches while another game instance runs (e.g. a background bisect): chunk
+  loading slows and shots show a half-loaded world.
+
+## Plan 5 answers (user, 2026-11-12) - all approved, order B -> C -> A -> machine models -> D
+- A: procedural code-built animal models (glTF slot later); predators only chase (no kills yet);
+  machine models after the animals.
+- B: all 10 biomes (jungle, savanna, desert dunes, badlands/mesas, temperate forest, meadow, swamp,
+  taiga, tundra, alpine); regional size (2-5 km, several near spawn); save-breaking is fine.
+- C: dramatic terrain tied to biomes, with a good variety of flat building spots as well as
+  interesting ones; floating islands rare; ravines and cave mouths in the same pass.
+- D: some PBR; stylized look - higher resolution than Minecraft but fairly unrealistic.

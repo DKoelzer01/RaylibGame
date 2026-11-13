@@ -71,7 +71,7 @@ void DebugUI_Draw(Scene& world) {
             ImGui::SameLine();
             ImGui::TextDisabled("(also reload automatically on save)");
             if (world.shadowMap.depth.id > 0 && ImGui::TreeNode("Shadow map")) {
-                rlImGuiImageSize(&world.shadowMap.depth, 256, 256);
+                ImGui::TextDisabled("Hardware-compare depth texture: shown by the debug draw overlay instead.");
                 ImGui::TreePop();
             }
         }

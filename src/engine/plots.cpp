@@ -235,6 +235,45 @@ static Color PartColor(PartType t) {
     }
 }
 
+// Surface pattern of a part (parts.fs draws it procedurally; the id rides in the vertex colour's alpha).
+enum PartPattern : unsigned char {
+    PatConcrete = 0, PatStone, PatMetal, PatGlass, PatDirt, PatTiles, PatPlanks, PatPolished, PatBrick, PatPlaster,
+    PatGem, PatLog, PatClay, PatIce, PatCoal, PatLamp, PatMarble,
+    PatMachine = 20, PatConveyor, PatCable, PatFarmland, PatHull
+};
+static unsigned char PartPatternOf(const Part& p) {
+    if (IsShape(p.type)) {
+        const std::string item = GetBuildMaterial(p.material).item;
+        auto ends = [&](const char* s) { const size_t n = strlen(s); return item.size() >= n && item.compare(item.size() - n, n, s) == 0; };
+        if (ends("_planks")) return PatPlanks;
+        if (ends("_log")) return PatLog;
+        if (ends("_plaster")) return PatPlaster;
+        if (ends("_glass") || item == "glass") return PatGlass;
+        if (ends("_block")) return PatGem;
+        if (item == "stone") return PatStone;
+        if (item == "iron_plate") return PatMetal;
+        if (item == "dirt") return PatDirt;
+        if (item == "heat_shield_tile") return PatTiles;
+        if (item == "brick") return PatBrick;
+        if (item == "marble" || item == "limestone") return PatMarble;
+        if (item == "granite" || item == "basalt" || item == "sandstone") return PatPolished;
+        if (item == "clay") return PatClay;
+        if (item == "ice") return PatIce;
+        if (item == "coal") return PatCoal;
+        if (item == "lamp") return PatLamp;
+        return PatConcrete;
+    }
+    switch (p.type) {
+        case PartType::Chest: case PartType::Fence: case PartType::Gate: return PatPlanks;
+        case PartType::Kiln: case PartType::CokeOven: case PartType::BlastFurnace: case PartType::Campfire: return PatBrick;
+        case PartType::Conveyor: return PatConveyor;
+        case PartType::Cable: return PatCable;
+        case PartType::Pipe: case PartType::Outlet: return PatMetal;
+        case PartType::Farmland: return PatFarmland;
+        default: return IsRocketPart(p.type) ? PatHull : PatMachine;
+    }
+}
+
 // Cells of a part in part space, each with its shape.
 static void PartCells(PartType t, std::vector<std::pair<Int3, CellShape>>& out) {
     out.clear();
@@ -509,6 +548,7 @@ void Plot::buildSection(Int3 key, Section& s, const std::vector<Int3>& sectionCe
         const Part& pp = parts[ref.part];
         Color color = IsShape(pp.type) ? GetBuildMaterial(pp.material).color : PartColor(pp.type);
         if (pp.type == PartType::Block && IsShape(pp.type)) color = { (unsigned char)(color.r * 0.92f), (unsigned char)(color.g * 0.92f), (unsigned char)(color.b * 0.92f), 255 };
+        color.a = PartPatternOf(pp); // the surface pattern id (parts.fs)
         const Vector3 base = { (float)(c.x - lo.x), (float)(c.y - lo.y), (float)(c.z - lo.z) };
         // Cube faces, clipped by the shape's planes; full faces against a full neighbour are hidden.
         for (int f = 0; f < 6; ++f) {
@@ -521,7 +561,7 @@ void Plot::buildSection(Int3 key, Section& s, const std::vector<Int3>& sectionCe
                 if (CellShapeAt(*this, nc, ns) && ns.full) continue;
             }
             const float shade = f == 3 ? 1.0f : f == 2 ? 0.7f : 0.85f + 0.05f * (f & 1);
-            Color fc = { (unsigned char)(color.r * shade), (unsigned char)(color.g * shade), (unsigned char)(color.b * shade), 255 };
+            Color fc = { (unsigned char)(color.r * shade), (unsigned char)(color.g * shade), (unsigned char)(color.b * shade), color.a };
             EmitPoly(poly, kFaceN[f], base, fc, pos, nrm, col);
         }
         // Caps on the cutting planes.
