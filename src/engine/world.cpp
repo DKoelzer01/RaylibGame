@@ -6,6 +6,8 @@
 #include "worldtypes.h"
 #include "factory.h"
 #include "fluid.h"
+#include "terraingpu.h"
+#include <chrono>
 
 #include <raymath.h>
 #include <rlgl.h>
@@ -357,13 +359,41 @@ static void RequestNode(Planetoid& p, const NodeKey& key, float priority) {
     const uint64_t id = p.id;
     std::shared_ptr<std::atomic<uint32_t>> wanted = p.nodes.at(key)->wanted;
     wanted->store(version);
-    Jobs().submit(priority, [field, edits, id, key, version, wanted] {
+    // Plan 6 step 4: planets sample the density block on the GPU (terraingpu.h). The worker prepares the
+    // height grid and submits; the main thread's pump dispatches batches and queues the second half
+    // (edits, marching cubes) back on the workers. Identical results to the CPU path.
+    const bool gpu = TerrainGpu_Available();
+    Jobs().submit(priority, [field, edits, id, key, version, wanted, gpu, priority] {
         if (wanted->load() != version) return; // superseded or freed while queued
         PROFILE_SCOPE("Build chunk");
         ChunkMeshData data;
         data.planetoidId = id;
         data.key = key;
         data.version = version;
+        const auto* pf = gpu ? dynamic_cast<const PlanetField*>(field.get()) : nullptr;
+        if (pf) {
+            const auto t0 = std::chrono::steady_clock::now();
+            GpuBlockJob job;
+            job.block = ChunkBlockOf(key);
+            if (pf->prepareBlock(job.block.origin, job.block.stride, job.block.E, job.block.footprint, job.grid) &&
+                pf->blockIslands(job.block.origin, job.block.stride, job.block.E, job.islands, 64)) {
+                const float prepMs = std::chrono::duration<float, std::milli>(std::chrono::steady_clock::now() - t0).count();
+                job.keep = field;
+                job.field = pf;
+                job.wanted = [wanted, version] { return wanted->load() == version; };
+                auto shared = std::make_shared<ChunkMeshData>(std::move(data));
+                job.done = [field, edits, shared, wanted, version, priority, prepMs](std::shared_ptr<const std::vector<float>> batch, size_t offset) {
+                    Jobs().submit(priority, [field, edits, shared, wanted, version, prepMs, batch, offset] {
+                        if (wanted->load() != version) return;
+                        BuildChunkMeshFromBase(*field, *edits, *shared, batch->data() + offset, prepMs);
+                        std::lock_guard<std::mutex> lock(resultsMutex);
+                        results.push_back(std::move(*shared));
+                    });
+                };
+                TerrainGpu_Submit(std::move(job));
+                return;
+            }
+        }
         BuildChunkMesh(*field, *edits, data);
         std::lock_guard<std::mutex> lock(resultsMutex);
         results.push_back(std::move(data));
@@ -561,7 +591,7 @@ static void IntegrateResult(const ChunkMeshData& r) {
 
 static bool PipelineIdle() {
     std::lock_guard<std::mutex> lock(resultsMutex);
-    return Jobs().idle() && results.empty() && pendingUploads.empty();
+    return Jobs().idle() && results.empty() && pendingUploads.empty() && TerrainGpu_Pending() == 0;
 }
 
 static bool AnyLodPending(Scene& world) {
@@ -629,6 +659,7 @@ void advanceBodies(Scene& world, float dt) {
 
 void worldUpdate(Scene& world, float uploadBudgetMs) {
     PROFILE_FUNCTION();
+    TerrainGpu_Pump(); // GPU density blocks (Plan 6 step 4): finished batches back to the workers, the next batch out
     // Ring rocks near the camera become voxel bodies (and back) before this frame's LOD selection.
     for (auto& ring : Rings()) ring->update(world, world.renderOrigin + world.camera.position);
 

@@ -247,3 +247,187 @@ float elevationBase(vec3 dir, float fp) {
     precise float r = h + biomeShape(dir, h, fp);
     return r;
 }
+
+// ---------------------------------------------------------------------------------------------
+// Density near the surface (Plan 6 step 4, #147): PlanetField::densityNear and its parts (terrain3D,
+// rockFeature, caves, floatingIsland) from voxel.cpp. More uniforms: mantleRadius, islandCount; and the
+// includer defines islandData(i, k): vec4 k of island i: (cell x, y, z, ok), (dir, waist), (r, depth, -, -).
+
+#define ISO_LEVEL 0.5
+#define DENSITY_GRADIENT 0.25
+#define K_TUNNEL_LEVEL 0.096
+#define K_CAVERN_LEVEL 0.68
+#define K_BAND_BELOW 16.0
+#define K_BAND_ABOVE 50.0
+#define K_BOULDER_CELL 24.0
+#define K_BOULDER_MAX 5.0
+#define K_ISLAND_CELL 4000.0
+
+uniform float mantleRadius;
+int islandCount = 0;   // set per block by the includer
+
+float waveSin(float x) {
+    precise float u = x * 0.15915494, f = u - floor(u);
+    precise float r = f < 0.5 ? 16.0 * f * (0.5 - f) : -16.0 * (f - 0.5) * (1.0 - f);
+    return r;
+}
+float vlen(vec3 v) { precise float s = v.x * v.x + v.y * v.y + v.z * v.z; return xsqrt(s); }
+float vdot(vec3 a, vec3 b) { precise float s = a.x * b.x + a.y * b.y + a.z * b.z; return s; }
+
+// PlanetField::terrain3D with the column given (mask, f).
+float terrain3D(vec3 p, float d, float surface, float fp, float mask, float f) {
+    if (planetMoon != 0 || d < 1e-3) return 0.0;
+    precise float h = d - surface;
+    if (h < -K_BAND_BELOW || h > K_BAND_ABOVE) return 0.0;
+    vec3 dir = vec3(xdiv(p.x, d), xdiv(p.y, d), xdiv(p.z, d));
+    if (mask <= 0.0) return 0.0;
+    precise float amp = 16.0 * (0.5 + 1.5 * f), top = 20.0 + 26.0 * f;
+    precise float hs = h * 0.6;
+    precise vec3 q = vec3(p.x - dir.x * hs, p.y - dir.y * hs, p.z - dir.z * hs);
+    precise float w = 9.0 * fractalLimited(N_WARP3, 2, fp, q.x, q.y, q.z);
+    q = vec3(q.x + w, q.y - 0.7 * w, q.z + 0.4 * w);
+    precise float n = fractalLimited(N_CLIFFS, 3, fp, q.x, q.y, q.z);
+    precise float shape = n + 0.3 * (1.0 - 2.0 * abs(n)) + 0.15;
+    precise float fade = (1.0 - tSmooth(3.0, top, h)) * tSmooth(-16.0, -8.0, h);
+    precise float r = max(amp * mask * shape * fade, -3.0);
+    return r;
+}
+
+uint pondHash(int x, int y, int z, uint seed) {
+    uint h = uint(x) * 73856093u ^ uint(y) * 19349663u ^ uint(z) * 83492791u ^ seed * 2654435761u;
+    h ^= h >> 16; h *= 0x7feb352du; h ^= h >> 15; h *= 0x846ca68bu; h ^= h >> 16;
+    return h;
+}
+float pondUnit(inout uint h) { h = h * 1664525u + 1013904223u; precise float r = float(h >> 8) * (1.0 / 16777216.0); return r; }
+
+// PlanetField::rockFeature: metres inside the nearest tor or boulder (< 0 outside).
+float rockFeature(vec3 p, float d, float surface, float fp) {
+    if (planetMoon != 0 || d < 1e-3) return -1e9;
+    precise float w = clamp(2.0 - xdiv(fp, 4.0), 0.0, 1.0);
+    precise float h = d - surface;
+    if (w <= 0.0 || h > 9.0 || h < -3.0) return -1e9;
+    precise float elev = surface - planetRadius;
+    if (elev < 4.0) return -1e9;
+    precise float best = -1e9;
+    precise float mask = tSmooth(0.5, 0.75, fractal(N_ROCK_MASK, 2, p.x, p.y, p.z) + 0.2 * tSmooth(150.0, 600.0, elev));
+    vec3 dir = vec3(xdiv(p.x, d), xdiv(p.y, d), xdiv(p.z, d));
+    precise vec3 s = vec3(dir.x * planetRadius, dir.y * planetRadius, dir.z * planetRadius);
+    if (mask > 0.0) {
+        precise float n = fractal(N_ROCKS, 2, s.x, s.y, s.z);
+        precise float top = (3.0 + 9.0 * mask) * (0.6 + 0.4 * snoise(s.x * 0.01, s.y * 0.01, s.z * 0.01));
+        precise float ff = clamp(xdiv(h, max(top, 0.5)), 0.0, 1.0);
+        precise float thr = 0.3 - 0.06 * ff * ff + 0.04 * waveSin(h * 2.1 + n * 9.0) * (1.0 - tSmooth(0.35, 0.7, ff));
+        precise float side = (n - thr) * 14.0;
+        best = max(best, min(side, top - h) * w);
+    }
+    precise float reach = K_BOULDER_MAX * 1.3;
+    int x0 = int(floor(xdiv(s.x - reach, K_BOULDER_CELL))), x1 = int(floor(xdiv(s.x + reach, K_BOULDER_CELL)));
+    int y0 = int(floor(xdiv(s.y - reach, K_BOULDER_CELL))), y1 = int(floor(xdiv(s.y + reach, K_BOULDER_CELL)));
+    int z0 = int(floor(xdiv(s.z - reach, K_BOULDER_CELL))), z1 = int(floor(xdiv(s.z + reach, K_BOULDER_CELL)));
+    for (int cz = z0; cz <= z1; ++cz)
+        for (int cy = y0; cy <= y1; ++cy)
+            for (int cx = x0; cx <= x1; ++cx) {
+                uint hh = pondHash(cx, cy, cz, uint(planetRadius * 3.0) ^ 0xb01du);
+                if (!(pondUnit(hh) < 0.16)) continue;
+                precise float ux = pondUnit(hh);
+                precise float uy = pondUnit(hh);
+                precise float uz = pondUnit(hh);
+                precise vec3 c = vec3((float(cx) + ux) * K_BOULDER_CELL, (float(cy) + uy) * K_BOULDER_CELL, (float(cz) + uz) * K_BOULDER_CELL);
+                precise float len = vlen(c);
+                if (!(len > 1.0)) continue;
+                precise float il = xdiv(1.0, len);
+                precise vec3 bdir = vec3(c.x * il, c.y * il, c.z * il);
+                precise vec3 q = vec3(bdir.x * planetRadius, bdir.y * planetRadius, bdir.z * planetRadius);
+                if (!(int(floor(xdiv(q.x, K_BOULDER_CELL))) == cx && int(floor(xdiv(q.y, K_BOULDER_CELL))) == cy && int(floor(xdiv(q.z, K_BOULDER_CELL))) == cz)) continue;
+                precise float u = pondUnit(hh);
+                precise float br = 1.2 + (K_BOULDER_MAX - 1.2) * u * u;
+                precise float lift = br * (0.1 + 0.3 * pondUnit(hh));
+                precise vec3 dd = vec3(bdir.x - dir.x, bdir.y - dir.y, bdir.z - dir.z);
+                precise float horiz = vlen(dd) * planetRadius;
+                if (horiz > br * 1.3) continue;
+                precise float vert = xdiv(h - lift, 0.75);
+                precise float lump = 0.25 * br * fractal(N_ROCKS, 2, p.x * 1.7, p.y * 1.7, p.z * 1.7);
+                precise float rr = horiz * horiz + vert * vert;
+                best = max(best, (br + lump - xsqrt(rr)) * w);
+            }
+    return best;
+}
+
+float islandTop(vec3 p, float q) {
+    precise float hills = fractal(N_DETAIL, 2, p.x * 1.4, p.y * 1.4, p.z * 1.4);
+    precise float t = 4.0 + 10.0 * max(hills, -0.2) * (1.0 - q * q);
+    const float step_ = 5.0;
+    precise float terr = xdiv(t, step_), fr = terr - floor(terr);
+    precise float terraced = (floor(terr) + tSmooth(0.65, 0.9, fr)) * step_;
+    precise float cliffMask = tSmooth(0.0, 0.3, fractal(N_RUGGED, 1, p.x * 8.0, p.y * 8.0, p.z * 8.0));
+    t += (terraced - t) * cliffMask;
+    precise float r = t + 2.0 * (1.0 - q);
+    return r;
+}
+
+vec4 islandData(int i, int k);
+
+// PlanetField::floatingIsland: metres inside an island (< 0 outside).
+float floatingIsland(vec3 p, float d) {
+    precise float sc = xdiv(planetRadius, d);
+    precise vec3 s = vec3(p.x * sc, p.y * sc, p.z * sc);
+    ivec3 cell = ivec3(int(floor(xdiv(s.x, K_ISLAND_CELL))), int(floor(xdiv(s.y, K_ISLAND_CELL))), int(floor(xdiv(s.z, K_ISLAND_CELL))));
+    int found = -1;
+    for (int i = 0; i < islandCount; ++i) {
+        vec4 c = islandData(i, 0);
+        if (ivec3(c.xyz) == cell) { found = i; break; }
+    }
+    if (found < 0) return -1e9;
+    vec4 dw = islandData(found, 1), rd = islandData(found, 2);
+    vec3 idir = dw.xyz;
+    float waist = dw.w, ir = rd.x, idepth = rd.y;
+    precise float pd = vdot(p, idir);
+    precise float along = pd - waist;
+    if (along > 30.0 || along < -idepth - 6.0) return -1e9;
+    precise vec3 lat3 = vec3(p.x - idir.x * pd, p.y - idir.y * pd, p.z - idir.z * pd);
+    precise float lateral = vlen(lat3);
+    if (lateral > ir * 1.5) return -1e9;
+    precise float wobble = 0.35 * fractal(N_DETAIL, 2, p.x * 0.8, p.y * 0.8, p.z * 0.8) + 0.1 * fractal(N_DETAIL, 2, p.x * 2.5, p.y * 2.5, p.z * 2.5);
+    precise float lump = fractal(N_DETAIL, 2, p.x * 2.0 + 31.0, p.y * 2.0, p.z * 2.0);
+    precise float rr = ir * (1.0 + wobble), q = clamp(xdiv(lateral, rr), 0.0, 1.0);
+    precise float top = islandTop(p, q);
+    precise float oq = 1.0 - q;
+    precise float bottom = -idepth * (0.75 + 0.25 * lump) * (oq * xsqrt(xsqrt(oq))) - 2.0;
+    return min(min(top - along, along - bottom), rr - lateral);
+}
+
+// PlanetField::densityNear with the column given.
+float densityNear(vec3 p, float d, float surface, float fp, float cmask, float cf) {
+    precise float v = ISO_LEVEL + DENSITY_GRADIENT * (surface - d);
+    precise float depth = surface - d;
+    if (depth < K_BAND_BELOW && depth > -K_BAND_ABOVE) v += DENSITY_GRADIENT * terrain3D(p, d, surface, fp, cmask, cf);
+    if (abs(depth) < 6.0) v += DENSITY_GRADIENT * 1.5 * fractalLimited(N_DETAIL, 2, fp, p.x, p.y * 1.3, p.z);
+    if (depth < 3.0 && depth > -9.0) {
+        precise float m = rockFeature(p, d, surface, fp);
+        if (m > -4.0) v = max(v, ISO_LEVEL + DENSITY_GRADIENT * m);
+    }
+    precise float caveWeight = clamp(2.0 - xdiv(fp, 8.0), 0.0, 1.0);
+    precise float caveTop = 5.0;
+    if (depth < 14.0 && depth > -3.0 && caveWeight > 0.0 && planetMoon == 0) caveTop = 5.0 - 7.5 * tSmooth(0.3, 0.45, fractal(N_CAVE_MOUTHS, 1, p.x, p.y, p.z));
+    if (caveWeight > 0.0 && depth > caveTop && d > mantleRadius + 20.0) {
+        precise float near_ = 2.0 * max(fp, 1.0) + 2.0;
+        precise float m = 1e9;
+        precise float a = abs(fractal(N_CAVES_A, 2, p.x, p.y, p.z));
+        if ((a - K_TUNNEL_LEVEL) * 100.0 <= near_) {
+            precise float fade = min(1.0, xdiv(depth - caveTop, 8.0)) * min(1.0, xdiv(d - mantleRadius - 20.0, 10.0));
+            precise float t = max(a, abs(fractal(N_CAVES_B, 2, p.x, p.y, p.z)));
+            m = (t - K_TUNNEL_LEVEL) * 100.0 + (1.0 - fade * caveWeight) * 20.0;
+        }
+        if (depth > 30.0 && d > mantleRadius + 40.0) {
+            precise float fade = min(1.0, xdiv(depth - 30.0, 20.0)) * min(1.0, xdiv(d - mantleRadius - 40.0, 20.0));
+            precise float c = fractal(N_CAVERNS, 2, p.x, p.y * 1.4, p.z);
+            m = min(m, (K_CAVERN_LEVEL - c) * 120.0 + (1.0 - fade * caveWeight) * 30.0);
+        }
+        if (m < near_) v = min(v, ISO_LEVEL + DENSITY_GRADIENT * m);
+    }
+    if (depth < -15.0 && planetMoon == 0) {
+        precise float m = floatingIsland(p, d);
+        if (m > -4.0) v = max(v, ISO_LEVEL + DENSITY_GRADIENT * m);
+    }
+    return v;
+}

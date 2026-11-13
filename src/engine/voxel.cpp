@@ -158,6 +158,12 @@ static float Smoothstep(float a, float b, float x) {
     const float t = std::clamp((x - a) / (b - a), 0.0f, 1.0f);
     return t * t * (3.0f - 2.0f * t);
 }
+// A sine-like wave from arithmetic only (two parabolas per period, within ~5% of sin): the density field avoids
+// sinf / powf so its GPU port (resources/compute/terrain.glsl) computes exactly the same.
+static float WaveSin(float x) {
+    const float u = x * 0.15915494f, f = u - floorf(u);
+    return f < 0.5f ? 16.0f * f * (0.5f - f) : -16.0f * (f - 0.5f) * (1.0f - f);
+}
 
 PlanetField::PlanetField(unsigned int seed, float radius_, bool moon_)
     : radius(radius_), mantleRadius(radius_ * (1.0f - 0.015f)), moon(moon_) {
@@ -618,7 +624,7 @@ float PlanetField::rockFeature(Vector3 p, float d, float surface, float fp) cons
         const float n = rocks.fractal(2, s.x, s.y, s.z);
         const float top = (3.0f + 9.0f * mask) * (0.6f + 0.4f * rocks.noise(s.x * 0.01f, s.y * 0.01f, s.z * 0.01f));
         const float f = std::clamp(h / std::max(top, 0.5f), 0.0f, 1.0f);
-        const float thr = 0.3f - 0.06f * f * f + 0.04f * sinf(h * 2.1f + n * 9.0f) * (1.0f - Smoothstep(0.35f, 0.7f, f));  // flared top; strata on the walls only (on the crown they made ridges)
+        const float thr = 0.3f - 0.06f * f * f + 0.04f * WaveSin(h * 2.1f + n * 9.0f) * (1.0f - Smoothstep(0.35f, 0.7f, f));  // flared top; strata on the walls only (on the crown they made ridges)
         const float side = (n - thr) * 14.0f;                   // ~metres in from the wall
         best = std::max(best, std::min(side, top - h) * w);
     }
@@ -676,7 +682,7 @@ float PlanetField::rockFeature(Vector3 p, float d, float surface, float fp) cons
 // flat building land).
 float PlanetField::ruggedness(Vector3 dir, float elev) const {
     const float x = dir.x * radius, y = dir.y * radius, z = dir.z * radius;
-    const float t = 30.0f - 44.0f * powf(fabsf(dir.y), 1.5f) - 6.5f * std::max(elev, 0.0f) / 1000.0f + 7.0f * tempNoise.fractal(1, x, y, z);
+    const float t = 30.0f - 44.0f * (fabsf(dir.y) * sqrtf(fabsf(dir.y))) - 6.5f * std::max(elev, 0.0f) / 1000.0f + 7.0f * tempNoise.fractal(1, x, y, z);
     const float m = std::clamp(0.5f + 0.85f * moistNoise.fractal(1, x, y, z) + 0.08f * (1.0f - Smoothstep(10.0f, 150.0f, elev)), 0.0f, 1.0f);
     const float hot = Smoothstep(16.0f, 20.0f, t), cold = 1.0f - Smoothstep(5.0f, 9.0f, t), temperate = (1.0f - hot) * (1.0f - cold);
     float f = 0.35f;  // forests and other temperate land: some
@@ -786,7 +792,7 @@ float PlanetField::floatingIsland(Vector3 p, float d) const {
     const float lump = detail.fractal(2, p.x * 2.0f + 31.0f, p.y * 2.0f, p.z * 2.0f);
     const float rr = is.r * (1.0f + wobble), q = std::clamp(lateral / rr, 0.0f, 1.0f);
     const float top = IslandTop(*this, p, q);
-    const float bottom = -is.depth * (0.75f + 0.25f * lump) * powf(1.0f - q, 1.3f) - 2.0f;
+    const float bottom = -is.depth * (0.75f + 0.25f * lump) * ((1.0f - q) * sqrtf(sqrtf(1.0f - q))) - 2.0f;
     return std::min({ top - along, along - bottom, rr - lateral });
 }
 
@@ -866,16 +872,46 @@ float PlanetField::densityNear(Vector3 p, float d, float surface, float fp, cons
 }
 
 void PlanetField::baseDensityBlock(Vector3 o, float stride, int S, float fp, float* out) const {
+    BlockGrid g;
+    if (!prepareBlock(o, stride, S, fp, g)) { DensityField::baseDensityBlock(o, stride, S, fp, out); return; }
+    sampleBlock(o, stride, S, fp, g, out);
+}
+
+bool PlanetField::blockIslands(Vector3 o, float stride, int S, std::vector<float>& out, int maxCells) const {
+    out.clear();
+    if (moon) return true;
+    // The cells of the samples' sea-level points: bounded by the cells of the block corners' projections
+    // (a block is small next to a 4 km cell, so its projection is close to the corners' box).
+    const float ext = stride * (float)(S - 1);
+    int lo[3] = { INT32_MAX, INT32_MAX, INT32_MAX }, hi[3] = { INT32_MIN, INT32_MIN, INT32_MIN };
+    for (int k = 0; k < 8; ++k) {
+        const Vector3 q = { o.x + ((k & 1) ? ext : 0.0f), o.y + ((k & 2) ? ext : 0.0f), o.z + ((k & 4) ? ext : 0.0f) };
+        const float d = Vector3Length(q);
+        if (d < 1.0f) return false;
+        const Vector3 s = Vector3Scale(q, radius / d);
+        const int c[3] = { (int)floorf(s.x / kIslandCell), (int)floorf(s.y / kIslandCell), (int)floorf(s.z / kIslandCell) };
+        for (int a = 0; a < 3; ++a) { lo[a] = std::min(lo[a], c[a] - 1); hi[a] = std::max(hi[a], c[a] + 1); }
+    }
+    if ((hi[0] - lo[0] + 1) * (hi[1] - lo[1] + 1) * (hi[2] - lo[2] + 1) > maxCells) return false;
+    for (int z = lo[2]; z <= hi[2]; ++z)
+        for (int y = lo[1]; y <= hi[1]; ++y)
+            for (int x = lo[0]; x <= hi[0]; ++x) {
+                IslandInfo is;
+                if (!IslandInCell(*this, x, y, z, is)) continue;
+                const float e[12] = { (float)x, (float)y, (float)z, 1.0f, is.dir.x, is.dir.y, is.dir.z, is.waist, is.r, is.depth, 0.0f, 0.0f };
+                out.insert(out.end(), e, e + 12);
+            }
+    return true;
+}
+
+bool PlanetField::prepareBlock(Vector3 o, float stride, int S, float fp, BlockGrid& g) const {
     const float ext = stride * (float)(S - 1);
     const Vector3 c = { o.x + 0.5f * ext, o.y + 0.5f * ext, o.z + 0.5f * ext };
     const float dc = sqrtf(c.x * c.x + c.y * c.y + c.z * c.z), halfDiag = 0.8661f * ext;
     const float outer = radius + maxElevation, inner = radius + minElevation;
     // Blocks wholly outside the surface band take the cheap per-sample paths anyway; blocks too large
     // for a tangent-plane grid (near the centre) fall back to the per-sample loop too.
-    if (dc - halfDiag > outer + 4.0f || dc + halfDiag < inner - 4.0f || halfDiag > 0.5f * dc) {
-        DensityField::baseDensityBlock(o, stride, S, fp, out);
-        return;
-    }
+    if (dc - halfDiag > outer + 4.0f || dc + halfDiag < inner - 4.0f || halfDiag > 0.5f * dc) return false;
     // Height map on a gnomonic grid tangent at the block centre's direction: every sample along the
     // same line of sight from the planet centre shares one height, so a 35^3 block needs ~35^2
     // height evaluations instead of 35^3. Bilinear interpolation at one stride spacing is accurate
@@ -895,8 +931,10 @@ void PlanetField::baseDensityBlock(Vector3 o, float stride, int S, float fp, flo
     const float du = std::max(stride, fp) / radius;
     const int nu = std::min(256, (int)ceilf((umax - umin) / du) + 2), nv = std::min(256, (int)ceilf((vmax - vmin) / du) + 2);
     const float su = (umax - umin) / (float)(nu - 1), sv = (vmax - vmin) / (float)(nv - 1);
-    std::vector<float> h((size_t)nu * nv);
-    std::vector<Column3D> cols((size_t)nu * nv);
+    std::vector<float>& h = g.h;
+    std::vector<Column3D>& cols = g.cols;
+    h.assign((size_t)nu * nv, 0.0f);
+    cols.assign((size_t)nu * nv, Column3D{});
     for (int j = 0; j < nv; ++j)
         for (int i = 0; i < nu; ++i) {
             const float u = umin + i * su, v = vmin + j * sv;
@@ -904,6 +942,18 @@ void PlanetField::baseDensityBlock(Vector3 o, float stride, int S, float fp, flo
             h[(size_t)j * nu + i] = elevation(gdir, fp);
             cols[(size_t)j * nu + i] = terrain3DColumn(gdir, h[(size_t)j * nu + i]); // the 3D band's column strength, once per node
         }
+    g.n = n; g.t1 = t1; g.t2 = t2;
+    g.umin = umin; g.vmin = vmin; g.su = su; g.sv = sv; g.nu = nu; g.nv = nv;
+    return true;
+}
+
+void PlanetField::sampleBlock(Vector3 o, float stride, int S, float fp, const BlockGrid& g, float* out) const {
+    const float outer = radius + maxElevation, inner = radius + minElevation;
+    const Vector3 n = g.n, t1 = g.t1, t2 = g.t2;
+    const float umin = g.umin, vmin = g.vmin, su = g.su, sv = g.sv;
+    const int nu = g.nu, nv = g.nv;
+    const std::vector<float>& h = g.h;
+    const std::vector<Column3D>& cols = g.cols;
     size_t idx = 0;
     for (int z = 0; z < S; ++z)
         for (int y = 0; y < S; ++y)
@@ -1092,24 +1142,39 @@ bool PlanetField::editable(Vector3 p) const {
 // Chunk meshing (worker thread)
 // ---------------------------------------------------------------------------------------------
 
+ChunkBlock ChunkBlockOf(const NodeKey& key) {
+    // Sample one extra layer on every side (E = S + 2 per axis): normals are central differences of
+    // this grid, so they need no extra field evaluations, and neighbouring chunks see the same
+    // samples on their shared face (consistent lighting across seams).
+    ChunkBlock b;
+    b.stride = (float)key.stride();
+    b.E = CHUNK_SIZE + 4;
+    b.origin = Vector3AddValue(key.origin(), -b.stride);
+    // Footprint at least 1 m: the generated terrain keeps no detail finer than it had on the 1 m lattice
+    // (finer nodes exist for edits: the dig spheres), and sub-metre octaves would only cost.
+    b.footprint = std::max(b.stride, 1.0f);
+    return b;
+}
+
 void BuildChunkMesh(const DensityField& field, const TerrainDeltas& deltas, ChunkMeshData& out) {
     const auto t0 = std::chrono::steady_clock::now();
+    const ChunkBlock b = ChunkBlockOf(out.key);
+    std::vector<float> base((size_t)b.E * b.E * b.E);
+    field.baseDensityBlock(b.origin, b.stride, b.E, b.footprint, base.data());
+    BuildChunkMeshFromBase(field, deltas, out, base.data(), std::chrono::duration<float, std::milli>(std::chrono::steady_clock::now() - t0).count());
+}
+
+void BuildChunkMeshFromBase(const DensityField& field, const TerrainDeltas& deltas, ChunkMeshData& out, const float* base, float sampledMs) {
+    const auto t0 = std::chrono::steady_clock::now() - std::chrono::duration_cast<std::chrono::steady_clock::duration>(std::chrono::duration<float, std::milli>(sampledMs));
     const int cells = CHUNK_SIZE + 1;        // +1 cell overlap with the positive neighbours (LOD crack cover)
     const int S = cells + 1;                 // samples per axis
     const float stride = (float)out.key.stride();
     const Vector3 origin = out.key.origin();
-
-    // Sample one extra layer on every side (E = S + 2 per axis): normals are central differences of
-    // this grid, so they need no extra field evaluations, and neighbouring chunks see the same
-    // samples on their shared face (consistent lighting across seams). `base` keeps the unedited
-    // values for materials ("original surface" vs "dug out").
+    // `base` (E = S + 2 per axis, ChunkBlockOf) keeps the unedited values for materials ("original surface"
+    // vs "dug out").
     const int E = S + 2;
-    std::vector<float> base((size_t)E * E * E);
     const Vector3 eo = Vector3AddValue(origin, -stride);
-    // Footprint at least 1 m: the generated terrain keeps no detail finer than it had on the 1 m lattice
-    // (finer nodes exist for edits: the dig spheres), and sub-metre octaves would only cost.
-    field.baseDensityBlock(eo, stride, E, std::max(stride, 1.0f), base.data());
-    std::vector<float> ext = base;
+    std::vector<float> ext(base, base + (size_t)E * E * E);
     // Player edits: the delta lattice at the samples (lattice points at every stride; coarse nodes
     // point-sample it, so big excavations show from afar). Cost depends on the edited chunks here,
     // never on how many strokes the world has had.
@@ -1139,7 +1204,7 @@ void BuildChunkMesh(const DensityField& field, const TerrainDeltas& deltas, Chun
                 }
             }
     }
-    auto at = [&](const std::vector<float>& g, int x, int y, int z) { return g[((size_t)z * E + y) * E + x]; }; // extended coords
+    auto at = [&](const float* g, int x, int y, int z) { return g[((size_t)z * E + y) * E + x]; }; // extended coords
 
     std::vector<float> dens((size_t)S * S * S);
     bool anySolid = false, anyEmpty = false;
@@ -1147,7 +1212,7 @@ void BuildChunkMesh(const DensityField& field, const TerrainDeltas& deltas, Chun
     for (int z = 0; z < S; ++z)
         for (int y = 0; y < S; ++y)
             for (int x = 0; x < S; ++x, ++i) {
-                const float d = at(ext, x + 1, y + 1, z + 1);
+                const float d = at(ext.data(), x + 1, y + 1, z + 1);
                 dens[i] = d;
                 if (d >= ISO_LEVEL) anySolid = true; else anyEmpty = true;
             }
@@ -1155,9 +1220,9 @@ void BuildChunkMesh(const DensityField& field, const TerrainDeltas& deltas, Chun
     out.sampleMs = std::chrono::duration<float, std::milli>(std::chrono::steady_clock::now() - t0).count();
     // Density gradient at an inner sample (inner coords), by central differences on the extended grid.
     auto gradient = [&](int x, int y, int z) {
-        return Vector3{ at(ext, x + 2, y + 1, z + 1) - at(ext, x, y + 1, z + 1),
-                        at(ext, x + 1, y + 2, z + 1) - at(ext, x + 1, y, z + 1),
-                        at(ext, x + 1, y + 1, z + 2) - at(ext, x + 1, y + 1, z) };
+        return Vector3{ at(ext.data(), x + 2, y + 1, z + 1) - at(ext.data(), x, y + 1, z + 1),
+                        at(ext.data(), x + 1, y + 2, z + 1) - at(ext.data(), x + 1, y, z + 1),
+                        at(ext.data(), x + 1, y + 1, z + 2) - at(ext.data(), x + 1, y + 1, z) };
     };
     if (anySolid && anyEmpty) {
         std::vector<Vector3> verts;
