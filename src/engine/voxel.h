@@ -350,6 +350,7 @@ struct ChunkMeshData {
     bool overflow = false;                 // > 65535 vertices: mesh dropped
     float buildMs = 0.0f;
     float sampleMs = 0.0f;                 // part of buildMs spent sampling the density field
+    float priority = 0.0f;                 // as requested: < 0 edits (urgent), else distance / (1 + level) (#258 upload order)
 };
 
 // Samples the field over node `key` (CHUNK_SIZE+1 cells at the node stride, i.e. one cell of

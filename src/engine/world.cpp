@@ -1,4 +1,5 @@
 #include "world.h"
+#include "terrainarena.h"
 #include "ring.h"
 #include "player.h"
 #include "jobsystem.h"
@@ -13,6 +14,9 @@
 #include <raymath.h>
 #include <rlgl.h>
 #include <algorithm>
+#include <climits>
+#include <cstdint>
+#include <cstdlib>
 #include <chrono>
 #include <cmath>
 #include <cstdio>
@@ -36,6 +40,10 @@ namespace {
     // ---- Async chunk pipeline -------------------------------------------------------------
     // Declared before the job system so it is destroyed after the workers are joined.
     std::mutex resultsMutex;
+    std::atomic<long long> gRequests{ 0 }, gBuilt{ 0 }, gSkipped{ 0 }, gDropped{ 0 }; // streaming counters (#258)
+    // RAYLIBGAME_STREAM_OLD=1: the streaming before #258/#261 (no request cap, no retention, no telescope keep, no free
+    // cap, FIFO uploads), an A/B switch for --bench-fly.
+    const bool gStreamOld = [] { const char* e = getenv("RAYLIBGAME_STREAM_OLD"); return e && e[0] == '1'; }();
     std::vector<ChunkMeshData> results;        // filled by workers
     std::deque<ChunkMeshData> pendingUploads;  // main thread only
     std::unique_ptr<JobSystem> jobs;
@@ -348,6 +356,7 @@ void Planetoid::drawDepthOnly(const RenderContext& ctx) {
 // ---------------------------------------------------------------------------------------------
 
 static void RequestNode(Planetoid& p, const NodeKey& key, float priority) {
+    ++gRequests;
     const uint32_t version = ++p.requestedVersion[key];
     if (p.nodes.find(key) == p.nodes.end()) {
         auto chunk = std::make_unique<Chunk>();
@@ -365,12 +374,13 @@ static void RequestNode(Planetoid& p, const NodeKey& key, float priority) {
     // (edits, marching cubes) back on the workers. Identical results to the CPU path.
     const bool gpu = TerrainGpu_Available();
     Jobs().submit(priority, [field, edits, id, key, version, wanted, gpu, priority] {
-        if (wanted->load() != version) return; // superseded or freed while queued
+        if (wanted->load() != version) { ++gSkipped; return; } // superseded or freed while queued
         PROFILE_SCOPE("Build chunk");
         ChunkMeshData data;
         data.planetoidId = id;
         data.key = key;
         data.version = version;
+        data.priority = priority;
         const auto* pf = gpu ? dynamic_cast<const PlanetField*>(field.get()) : nullptr;
         if (pf) {
             const auto t0 = std::chrono::steady_clock::now();
@@ -386,10 +396,11 @@ static void RequestNode(Planetoid& p, const NodeKey& key, float priority) {
                 auto shared = std::make_shared<ChunkMeshData>(std::move(data));
                 job.done = [field, edits, shared, wanted, version, priority, prepMs](std::shared_ptr<const std::vector<float>> batch, size_t offset) {
                     Jobs().submit(priority, [field, edits, shared, wanted, version, prepMs, batch, offset] {
-                        if (wanted->load() != version) return;
+                        if (wanted->load() != version) { ++gSkipped; return; }
                         BuildChunkMeshFromBase(*field, *edits, *shared, batch->data() + offset, prepMs);
                         std::lock_guard<std::mutex> lock(resultsMutex);
                         results.push_back(std::move(*shared));
+                        ++gBuilt;
                     });
                 };
                 TerrainGpu_Submit(std::move(job));
@@ -399,6 +410,7 @@ static void RequestNode(Planetoid& p, const NodeKey& key, float priority) {
         BuildChunkMesh(*field, *edits, data);
         std::lock_guard<std::mutex> lock(resultsMutex);
         results.push_back(std::move(data));
+        ++gBuilt;
     });
 }
 
@@ -497,13 +509,43 @@ static void UpdateLod(Planetoid& p, Vector3 cameraRender) {
             CollectDesired(p, { p.rootLevel, -1 + (i & 1), -1 + ((i >> 1) & 1), -1 + ((i >> 2) & 1) }, view, desired);
     }
     std::unordered_set<NodeKey> desiredSet(desired.begin(), desired.end());
+    const double now = GetTime();
 
+    // New builds, nearest and coarsest first, at most kMaxNewRequests a frame (#258): flying fast asked for every
+    // newly desired node at once and filled the queue with builds that were stale before they started.
+    const size_t kMaxNewRequests = gStreamOld ? SIZE_MAX : 96;
+    std::vector<std::pair<float, NodeKey>> toRequest;
     for (const NodeKey& k : desired) {
         if (p.requestedVersion.find(k) != p.requestedVersion.end()) continue;
         const Vector3 lo = k.origin();
-        // Nearest and coarsest first: fill the view quickly, then refine.
         const float dist = LodDistance(view, lo, Vector3AddValue(lo, k.size()));
-        RequestNode(p, k, dist / (1.0f + k.level));
+        toRequest.push_back({ dist / (1.0f + k.level), k });
+    }
+    if (toRequest.size() > kMaxNewRequests) {
+        std::partial_sort(toRequest.begin(), toRequest.begin() + kMaxNewRequests, toRequest.end(), [](const auto& a, const auto& b) { return a.first < b.first; });
+        toRequest.resize(kMaxNewRequests);
+        p.lodDirty = true; // the rest next frame
+    }
+    for (const auto& r : toRequest) RequestNode(p, r.second, r.first);
+    for (const NodeKey& k : desired) if (auto it = p.nodes.find(k); it != p.nodes.end()) it->second->lastWanted = now;
+    // Telescope (#261): while zoomed, the normal selection stays resident (not drawn), so closing it has nothing
+    // to regenerate - closing froze the game while the coarse nodes in the view cone were built again.
+    std::unordered_set<NodeKey> keepSet;
+    if (view.zoom > 1.0f && !gStreamOld) {
+        std::vector<NodeKey> unzoomed;
+        LodView plain{ camLocal };
+        if (p.flat) {
+            const float rs = kVoxelSize * (float)(CHUNK_SIZE << p.rootLevel);
+            const int cx = (int)floorf(camLocal.x / rs), cz = (int)floorf(camLocal.z / rs);
+            const int y0 = (int)floorf(p.minHeight / rs), y1 = (int)floorf(p.maxHeight / rs);
+            for (int z = cz - 2; z <= cz + 2; ++z)
+                for (int x = cx - 2; x <= cx + 2; ++x)
+                    for (int y = y0; y <= y1; ++y) CollectDesired(p, { p.rootLevel, x, y, z }, plain, unzoomed);
+        } else {
+            for (int i = 0; i < 8; ++i)
+                CollectDesired(p, { p.rootLevel, -1 + (i & 1), -1 + ((i >> 1) & 1), -1 + ((i >> 2) & 1) }, plain, unzoomed);
+        }
+        for (const NodeKey& k : unzoomed) if (auto it = p.nodes.find(k); it != p.nodes.end()) { keepSet.insert(k); it->second->lastWanted = now; }
     }
 
     // Previously drawn nodes that are no longer desired, kept while a desired overlap is pending.
@@ -563,15 +605,25 @@ static void UpdateLod(Planetoid& p, Vector3 cameraRender) {
         c->clipMax.z = drawn.count({ k.level, k.x, k.y, k.z + 1 }) ? o.z + s : 1e30f;
     }
 
-    // Free nodes that are neither desired nor on screen (late results for them are dropped).
+    // Free nodes that are neither desired nor on screen (late results for them are dropped). A built node that was
+    // wanted in the last few seconds stays (while the terrain arena has room): moving back and forth or across a
+    // split distance reuses it instead of building it again (#258). A node still building is freed at once, which
+    // cancels its queued work. At most kMaxFrees a frame: freeing thousands at once (closing the telescope) hitched.
+    const double kRetainSeconds = gStreamOld ? 0.0 : 4.0;
+    const int kMaxFrees = gStreamOld ? INT_MAX : 256;
+    const ArenaStats as = TerrainArena_Stats();
+    const bool roomy = as.vertexCapacity == 0 || as.vertices < as.vertexCapacity * 4 / 5;
     std::unordered_set<const Chunk*> onScreen(p.drawList.begin(), p.drawList.end());
+    int frees = 0;
     for (auto it = p.nodes.begin(); it != p.nodes.end();) {
-        if (!desiredSet.count(it->first) && !onScreen.count(it->second.get())) {
-            p.requestedVersion.erase(it->first);
-            it = p.nodes.erase(it);
-        } else {
-            ++it;
-        }
+        const Chunk* c = it->second.get();
+        const bool keep = desiredSet.count(it->first) || onScreen.count(c) || keepSet.count(it->first) ||
+                          (c->ready && roomy && now - c->lastWanted < kRetainSeconds);
+        if (keep) { ++it; continue; }
+        if (frees >= kMaxFrees) { p.lodDirty = true; ++it; continue; } // the rest next frame
+        p.requestedVersion.erase(it->first);
+        it = p.nodes.erase(it);
+        ++frees;
     }
 }
 
@@ -579,7 +631,7 @@ static void IntegrateResult(const ChunkMeshData& r) {
     Planetoid* p = Planetoid::find(r.planetoidId);
     if (!p) return;                                                        // planetoid was destroyed
     auto v = p->requestedVersion.find(r.key);
-    if (v == p->requestedVersion.end() || v->second != r.version) return;  // superseded or freed
+    if (v == p->requestedVersion.end() || v->second != r.version) { ++gDropped; return; } // superseded or freed
     auto it = p->nodes.find(r.key);
     if (it == p->nodes.end()) return;
 
@@ -673,6 +725,27 @@ void worldUpdate(Scene& world, float uploadBudgetMs) {
         results.clear();
     }
 
+    // Uploads nearest first (#258): edits, then by the distance from the camera now (the queue was FIFO, so near
+    // ground waited behind far nodes requested earlier). Nodes nobody wants any more drop out in IntegrateResult.
+    if (pendingUploads.size() > 1 && !gStreamOld) {
+        std::unordered_map<uint64_t, Vector3> camOf;
+        for (auto& obj : world.objects)
+            if (auto* p = dynamic_cast<Planetoid*>(obj.get())) camOf[p->id] = p->toLocal(world.camera.position);
+        auto rank = [&](const ChunkMeshData& d) {
+            if (d.priority < 0.0f) return d.priority - 1e9f;
+            auto it = camOf.find(d.planetoidId);
+            if (it == camOf.end()) return 1e9f;
+            const Vector3 lo = d.key.origin();
+            return DistanceToBox(it->second, lo, Vector3AddValue(lo, d.key.size())) / (1.0f + d.key.level);
+        };
+        std::vector<std::pair<float, size_t>> order;
+        order.reserve(pendingUploads.size());
+        for (size_t i = 0; i < pendingUploads.size(); ++i) order.push_back({ rank(pendingUploads[i]), i });
+        std::stable_sort(order.begin(), order.end(), [](const auto& a, const auto& b) { return a.first < b.first; });
+        std::deque<ChunkMeshData> sorted;
+        for (const auto& o : order) sorted.push_back(std::move(pendingUploads[o.second]));
+        pendingUploads.swap(sorted);
+    }
     // GPU uploads are the only main-thread cost; cap them per frame so streaming never hitches.
     const auto t0 = std::chrono::steady_clock::now();
     int uploads = 0;
@@ -698,6 +771,7 @@ void worldUpdate(Scene& world, float uploadBudgetMs) {
     stats.pendingUploads = (int)pendingUploads.size();
     stats.uploadsLastFrame = uploads;
     stats.workerThreads = (int)Jobs().threadCount();
+    stats.requests = gRequests; stats.built = gBuilt; stats.skippedStale = gSkipped; stats.droppedResults = gDropped;
     stats.avgBuildMs = buildCount ? (float)(buildMsTotal / buildCount) : 0.0f;
     stats.avgSampleMs = buildCount ? (float)(sampleMsTotal / buildCount) : 0.0f;
     stats.chunks = stats.nodes = stats.edits = 0;

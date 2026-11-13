@@ -796,6 +796,7 @@ int main(int argc, char** argv)
 
     const double benchWarmup = 2.0;
     double benchStart = 0.0, benchMaxFrame = 0.0;
+    std::vector<float> benchFrameTimes; // every timed frame (s): percentiles at the end (#258)
     long benchFrames = 0;
     if (bench) {
         gameState = 1;
@@ -4785,6 +4786,7 @@ int main(int argc, char** argv)
                 ++benchTimedFrames;
                 benchMeasuring = true;
                 if (GetFrameTime() > benchMaxFrame) benchMaxFrame = GetFrameTime();
+                benchFrameTimes.push_back(GetFrameTime());
             }
             if ((benchFlySpeed > 0.0f || benchFlyAlt < 1e8f) && benchStart >= 0.0) {
                 // --bench-fly V: the camera flies a great circle over body 0 at V m/s, 150 m above the
@@ -4824,6 +4826,15 @@ int main(int argc, char** argv)
                 GpuTimer_PrintCpu();
                 if (TerrainArena_Available()) { const ArenaStats as = TerrainArena_Stats(); printf("bench: terrain arena: %d / %d vertices, %d / %d indices, %.1f chunk draws per multi-draw\n", as.vertices, as.vertexCapacity, as.indices, as.indexCapacity, as.draws / (double)std::max(1, as.flushes)); }
                 { const TerrainGpuStats ts = TerrainGpu_Stats(); const WorldStats& ws = GetWorldStats(); printf("bench: terrain gpu: %lld blocks in %lld batches, avg batch latency %.2f ms; chunk build avg %.2f ms (sampling part %.2f ms)\n", ts.blocks, ts.batches, ts.avgLatencyMs, ws.avgBuildMs, ws.avgSampleMs); }
+                {   // Streaming (#258): how much work flying asked for and threw away; frame time spread.
+                    const WorldStats& ws = GetWorldStats();
+                    std::vector<float> ft = benchFrameTimes;
+                    std::sort(ft.begin(), ft.end());
+                    auto pct = [&](double q) { return ft.empty() ? 0.0f : ft[std::min(ft.size() - 1, (size_t)(q * ft.size()))] * 1000.0f; };
+                    int over20 = 0; for (float f : ft) over20 += f > 0.020f ? 1 : 0;
+                    printf("bench: streaming: %lld requests, %lld built, %lld skipped stale, %lld results dropped; %d nodes alive; frame ms p50 %.2f p95 %.2f p99 %.2f, %d frames over 20 ms\n",
+                           ws.requests, ws.built, ws.skippedStale, ws.droppedResults, ws.nodes, pct(0.5), pct(0.95), pct(0.99), over20);
+                }
                 if (crackCheck) {
                     // Holes between chunks show the magenta clear colour (look down at terrain that fills the view).
                     Image shot = LoadImageFromScreen();
