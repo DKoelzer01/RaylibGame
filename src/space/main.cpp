@@ -39,6 +39,9 @@
 #include "machinemodels.h"
 #include "gpucompute.h"
 #include "terraingpu.h"
+#ifdef _WIN32
+extern "C" __declspec(dllimport) int __stdcall MessageBoxA(void*, const char*, const char*, unsigned int); // the GL 4.3 error box (no windows.h: it clashes with raylib)
+#endif
 #include "instancebatch.h"
 #include "navigation.h"
 #include "viewmodel.h"
@@ -495,6 +498,18 @@ int main(int argc, char** argv)
     } else {
         InitWindow(1920, 1080, "RaylibGame bench");
         SetTargetFPS(std::max(0, benchFps)); // --fps N caps it (frame-rate-dependence checks); 0 = uncapped
+    }
+    if (!IsWindowReady()) {
+        // raylib is built for an OpenGL 4.3 core context (compute shaders, multi-draw indirect, SSBOs): without
+        // it there is no window and no fallback renderer (#185). Say so instead of exiting silently.
+        const char* msg = "RaylibGame needs a graphics card and driver with OpenGL 4.3 or newer.\n\n"
+                          "The OpenGL 4.3 context could not be created. Update the graphics driver, or run the game on the "
+                          "dedicated GPU if this machine has two.";
+        fprintf(stderr, "%s\n", msg);
+#ifdef _WIN32
+        MessageBoxA(nullptr, msg, "RaylibGame: OpenGL 4.3 required", 0x10u /* MB_ICONERROR */);
+#endif
+        return 1;
     }
     SetExitKey(KEY_NULL);
     SetTraceLogLevel(LOG_WARNING); // Set log level to warning to reduce output noise

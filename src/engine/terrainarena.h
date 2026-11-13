@@ -14,8 +14,8 @@
 // baseInstance; lighting.vs / depth.vs take this path when the uniform `arenaDraw` is 1, and the fragment
 // shader's matModel is the body's rotation (shared by its chunks).
 //
-// Needs GL 4.3 (multi-draw indirect, compute). Without it TerrainArena_Available() is false and chunks keep
-// their own raylib meshes and per-chunk draws (the old path, also used with RAYLIBGAME_ARENA=0).
+// The game requires GL 4.3 (#185). TerrainArena_Available() is false only with RAYLIBGAME_ARENA=0 or if the cull shader
+// fails to compile (e.g. no fp64): then chunks keep their own raylib meshes and per-chunk draws.
 
 #include <raylib.h>
 #include <cstdint>

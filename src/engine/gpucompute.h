@@ -2,7 +2,8 @@
 #define GPUCOMPUTE_H
 
 // GPU compute (OpenGL 4.3 compute shaders + SSBOs through rlgl). The game is built for a 4.3 context;
-// Compute_Available() is false on drivers without it and callers keep their CPU paths.
+// The game requires a 4.3 context (#185: no window without it), so Compute_Available() is normally true; callers keep their CPU
+// paths for the off switches and for a compute shader that fails to compile.
 //
 // Shaders live in resources/compute/*.comp and may `#include "file"` (relative to the shader), the same
 // expansion HotShader does. Buffers are SSBOs bound by index (layout(std430, binding = N)).

@@ -101,9 +101,9 @@ no auto-add, so:
 - Plan 2 (early game, done): https://claude.ai/artifact/RL22kZ7VBMugAFgGRPS3cE
 - Plan 3 (Terra tiers, space): https://claude.ai/artifact/XVw45AC6vwYitbdhaeP2xL - M21-M24 done (M24 on PR #28).
 - Plan 4 (flowing water): https://claude.ai/artifact/27xL5j1zkirSe8pDZgPz59
-- Plan 6 (GPU terrain generation + GPU-driven drawing, approved 2026-11-12: whole plan, GL 4.6 gl_DrawID with
-  the 4.3 fallback, CPU terrain as a tested fallback): https://claude.ai/artifact/VJdKtUZEpBg5uefnqewRyZ - issues #143
-  (steps #144-#150), under #128 Graphics Pipeline Overhaul.
+- Plan 6 (GPU terrain generation + GPU-driven drawing, approved 2026-11-12): https://claude.ai/artifact/VJdKtUZEpBg5uefnqewRyZ -
+  issues #143 (steps #144-#150), under #128. Done: steps 1-4 + 7 (PRs #153, #157, #179); step 5 deferred (#148), step 6
+  not needed (#149: GPU density is bit-identical, collision keeps the CPU field). One path on GL 4.3 (base-instance records).
 - Plan 5 (art, life, world variety): https://claude.ai/artifact/5igt2VrsTyNhZ3BZ94teHX - A animal models/AI, B biomes,
   C Minecraft-style 3D terrain, D authored textures await the user's answers; the light items are done on art-pass-5.
 - `CurrentIssues.md` (untracked, the user's playtest list): erase lines once fully resolved; mark
@@ -145,6 +145,9 @@ World and rendering
   0..1, infinite far, GL_GREATER) in ONE pass (no far/mid/near depth ranges or clears); RAYLIBGAME_REVZ=0 = old passes.
   Terrain arena (#144, terrainarena.*): one multi-draw-indirect per body per pass; RAYLIBGAME_ARENA=0 = per-chunk draws.
   (Old note "remaining time is present/composition" was wrong: it was CPU/GPU serialization.)
+- OpenGL 4.3 is required (user, 2026-11-13, #185): raylib is built for a 4.3 core context, so without it there is no window
+  (main.cpp shows an error box). There is no 3.3 renderer; RAYLIBGAME_ARENA=0 / RAYLIBGAME_REVZ=0 / RAYLIBGAME_GPU_TERRAIN=0
+  are A/B and debugging switches on a 4.3 context, not fallbacks for older hardware.
 - Terrain lattice 0.25 m (kVoxelSize; RAYLIBGAME_VOXEL_1M builds the old 1 m one): digs carve exactly the
   previewed sphere (--test-dig-shape IoU 0.85). Delta chunks hold sparse 4^3 bricks; regions are RGN5.
 - Shadows (2026-11-12): two cascades (near +-32 m, far +-200 m, 2048 each), bilinear PCF, normal-offset
@@ -177,7 +180,7 @@ Water (Plan 4, user answers)
    (PlanetField::claimPond) and finite; static chunk water shows only over the original bed near by.
 5. Parallelism and GPU compute (user, 2026-11-11): audit main-thread work for the job system;
    raylib built with GRAPHICS_API_OPENGL_43 exposes compute shaders + SSBOs (rlgl) - candidates
-   are the water sim, chunk density/meshing, foliage placement; keep a GL 3.3 fallback.
+   are the water sim, chunk density/meshing, foliage placement. (The GL 3.3 fallback was dropped: "OpenGL 4.3 is required" under World and rendering.)
    Done (da1cde5): shader hot-reload checks throttled to 2/s (frame 2.93 -> 2.55 ms), water brick
    classification on the job pool (worst step 26.8 -> 11.9 ms). GPU compute not adopted: it needs a GL 4.3
    raylib build and a shader copy of the density field that the CPU (collisions, queries) would still
