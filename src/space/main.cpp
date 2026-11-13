@@ -810,7 +810,8 @@ int main(int argc, char** argv)
         world.debugDraw = startWithOverlay;
         player.flyMode = benchWalkSeconds <= 0.0 && !benchWalkMode; // the bench drives the camera directly unless walking
         player.autoWalk = benchWalkMode && !benchStandMode;           // --bench-walk: walk through the measured window (--bench-stand: stand)
-        player.flyFollow = false;                                     // the bench drives the camera itself
+        player.flyFollow = true;                                     // #127: the bench camera rides the body under it (sphere of influence), as the game's fly camera does; it
+                                                                      // stood still in absolute space while the planet spun past (benches that place the camera every frame override it)
         benchStart = -1.0; // starts once the world has finished streaming in
     }
 
@@ -4817,8 +4818,13 @@ int main(int argc, char** argv)
                 }
             }
             double t = (benchStart < 0.0) ? 0.0 : GetTime() - benchStart;
+            // #127: how far the camera moves against the planet over the timed window (a still bench view: ~0).
+            static DVec3 benchCamLocal0{};
+            static bool benchCamLocalSet = false;
+            Planetoid* benchBody0 = world.objects.empty() ? nullptr : dynamic_cast<Planetoid*>(world.objects[0].get());
             if (benchStart >= 0.0 && t > benchWarmup) {
                 benchFrames++;
+                if (!benchCamLocalSet && benchBody0) { benchCamLocal0 = benchBody0->toLocalD(world.renderOrigin + world.camera.position); benchCamLocalSet = true; }
                 ++benchTimedFrames;
                 benchMeasuring = true;
                 if (GetFrameTime() > benchMaxFrame) benchMaxFrame = GetFrameTime();
@@ -4876,6 +4882,7 @@ int main(int argc, char** argv)
                     benchFrames, benchSeconds, 1000.0 / avgMs, avgMs, benchMaxFrame * 1000.0, benchUpdateMs / std::max(1L, benchTimedFrames), benchDrawMs / std::max(1L, benchTimedFrames));
                 printf("%s", line);
                 SaveFileText("bench.txt", (char*)line);
+                if (benchCamLocalSet && benchBody0) printf("bench: camera drift against the planet over the timed window: %.2f m (#127)\n", (benchBody0->toLocalD(world.renderOrigin + world.camera.position) - benchCamLocal0).length());
                 GpuTimer_Print();
                 GpuTimer_PrintCpu();
                 if (TerrainArena_Available()) { const ArenaStats as = TerrainArena_Stats(); printf("bench: terrain arena: %d / %d vertices, %d / %d indices, %.1f chunk draws per multi-draw; uploads %lld staged, %lld direct\n", as.vertices, as.vertexCapacity, as.indices, as.indexCapacity, as.draws / (double)std::max(1, as.flushes), as.staged, as.direct); }
