@@ -280,7 +280,7 @@ int TerrainArena_Flush(unsigned int shaderId, bool positionsOnly, const ArenaBod
     S.cull.use();
     const GLuint prog = S.cull.id;
     glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, S.table);
-    glBindBufferRange(GL_SHADER_STORAGE_BUFFER, 1, S.list, (GLintptr)(base * sizeof(GLuint)), (GLsizeiptr)(n * sizeof(GLuint)));
+    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 1, S.list); // whole buffer: a range bind needs GL_SHADER_STORAGE_BUFFER_OFFSET_ALIGNMENT-aligned offsets (it failed, and the pass culled a stale list)
     glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 2, S.indirect);
     glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 3, S.records);
     glUniform1ui(glGetUniformLocation(prog, "count"), (GLuint)n);

@@ -30,7 +30,7 @@ uniform float overlap;     // (CHUNK_SIZE + 1) / CHUNK_SIZE: the bounds include 
 void main() {
     uint i = gl_GlobalInvocationID.x;
     if (i >= count) return;
-    Chunk c = chunks[slots[i]];
+    Chunk c = chunks[slots[base + i]];
     vec3 o = c.originSize.xyz;
     float h = c.originSize.w * 0.5;
     bool vis = true;
