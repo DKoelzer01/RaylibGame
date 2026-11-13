@@ -22,6 +22,7 @@ uniform vec3 fogColor;
 uniform float fogDensity;
 uniform vec4 fogShell;
 uniform float fadeEnd;
+uniform float alphaToCoverage; // 1: the fade is written as alpha (GL_SAMPLE_ALPHA_TO_COVERAGE on)
 uniform vec3 barkTint;   // per species (trees.h WoodSpeciesInfo); 1 for bushes and stones
 uniform vec3 leafTint;
 
@@ -49,8 +50,13 @@ void main()
 {
     float dist = length(viewPos - fragPosition);
     float fade = clamp((fadeEnd - dist) / (fadeEnd * 0.25), 0.0, 1.0);
-    vec2 cell = floor(gl_FragCoord.xy);
-    if (fract(sin(dot(cell, vec2(12.9898, 78.233))) * 43758.5453) > fade) discard;
+    fade = fade * fade * (3.0 - 2.0 * fade);
+    if (alphaToCoverage > 0.5) {
+        if (fade <= 0.0) discard; // the rest: alpha as sample coverage (#141, #252), smooth, no sorting
+    } else {
+        vec2 cell = floor(gl_FragCoord.xy);
+        if (fract(sin(dot(cell, vec2(12.9898, 78.233))) * 43758.5453) > fade) discard;
+    }
 
     vec3 n = normalize(fragNormal);
     float lat = fragLatitude;
@@ -87,5 +93,5 @@ void main()
         fogDist = max(0.0, min(t1, fogDist) - max(t0, 0.0));
     }
     color = mix(color, fogColor, clamp(1.0 - exp(-fogDensity * fogDist), 0.0, 1.0));
-    finalColor = vec4(pow(color, vec3(1.0 / 2.2)), 1.0);
+    finalColor = vec4(pow(color, vec3(1.0 / 2.2)), alphaToCoverage > 0.5 ? fade : 1.0);
 }
