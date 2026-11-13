@@ -339,6 +339,24 @@ void BuildTile(const PlanetField& f, const TerrainDeltas& edits, const PlantRemo
                 normal = Vector3Normalize(Vector3Subtract(dir, Vector3Add(Vector3Scale(t1, (e1 - e) / step), Vector3Scale(t2, (e2 - e) / step))));
                 const float slope = 1.0f - Vector3DotProduct(normal, dir);
                 if (slope > (tree ? 0.12f : stone ? 0.3f : 0.2f)) continue;
+                // The drawn surface is the density field (3D band, crags, tors), up to metres off the height map
+                // (#34: bushes and stones floated or sank). Walk down from 3 m above it to the first solid sample,
+                // at the footprint the finest chunks mesh with, and interpolate the crossing.
+                auto dens = [&](float hh) { return f.density(Vector3Scale(dir, R + e + hh), &edits, 1.0f); };
+                float prevH = 3.0f, prevD = dens(prevH);
+                if (prevD >= ISO_LEVEL) continue;                    // buried under an overhang or a tor
+                bool found = false;
+                for (float hh = 2.75f; hh >= -4.0f; hh -= 0.25f) {
+                    const float d = dens(hh);
+                    if (d >= ISO_LEVEL) {
+                        const float t = (ISO_LEVEL - prevD) / std::max(d - prevD, 1e-6f); // air above (prevD < ISO), solid here
+                        ground = Vector3Scale(dir, R + e + prevH + (hh - prevH) * t);
+                        found = true;
+                        break;
+                    }
+                    prevH = hh; prevD = d;
+                }
+                if (!found) continue;
             }
             const VoxelMaterial m = f.materialLod(Vector3Subtract(ground, Vector3Scale(dir, 0.3f)), 1.0f, 0.0f, normal);
             if (m != VoxelMaterial::Grass && m != VoxelMaterial::Regolith && !(stone && m == VoxelMaterial::Gravel)) continue;
