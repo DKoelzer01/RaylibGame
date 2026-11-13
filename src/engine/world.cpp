@@ -479,6 +479,52 @@ static void CollectDesired(const Planetoid& p, const NodeKey& key, const LodView
     out.push_back(key);
 }
 
+// A set of node keys for the LOD selection: open addressing, buffers kept between calls (#258/#204: the selection
+// rebuilt six std::unordered_sets of thousands of keys every time the camera moved, a heap allocation per insert;
+// it was ~2 ms a frame flying).
+struct FlatKeySet {
+    std::vector<NodeKey> keys;
+    std::vector<uint8_t> used;
+    size_t mask = 0, n = 0;
+    static size_t Hash(const NodeKey& k) {
+        uint64_t h = (uint64_t)(uint32_t)k.x * 0x9E3779B97F4A7C15ull ^ (uint64_t)(uint32_t)k.y * 0xC2B2AE3D27D4EB4Full ^
+                     (uint64_t)(uint32_t)k.z * 0x165667B19E3779F9ull ^ (uint64_t)(uint32_t)k.level * 0x27D4EB2F165667C5ull;
+        h ^= h >> 31; h *= 0xBF58476D1CE4E5B9ull; h ^= h >> 29;
+        return (size_t)h;
+    }
+    void reset(size_t expected) {
+        size_t cap = 16;
+        while (cap < expected * 2 + 16) cap <<= 1;
+        if (keys.size() != cap) { keys.resize(cap); used.assign(cap, 0); }
+        else std::fill(used.begin(), used.end(), 0);
+        mask = cap - 1; n = 0;
+    }
+    bool insert(const NodeKey& k) { // true if it was not in yet
+        if ((n + 1) * 2 > keys.size()) grow();
+        for (size_t i = Hash(k) & mask;; i = (i + 1) & mask) {
+            if (!used[i]) { used[i] = 1; keys[i] = k; ++n; return true; }
+            if (keys[i] == k) return false;
+        }
+    }
+    size_t count(const NodeKey& k) const {
+        if (keys.empty()) return 0;
+        for (size_t i = Hash(k) & mask;; i = (i + 1) & mask) {
+            if (!used[i]) return 0;
+            if (keys[i] == k) return 1;
+        }
+    }
+    bool empty() const { return n == 0; }
+private:
+    void grow() {
+        std::vector<NodeKey> old;
+        std::vector<uint8_t> oldUsed;
+        old.swap(keys); oldUsed.swap(used);
+        keys.resize(old.size() * 2); used.assign(keys.size(), 0);
+        mask = keys.size() - 1; n = 0;
+        for (size_t i = 0; i < old.size(); ++i) if (oldUsed[i]) insert(old[i]);
+    }
+};
+
 // Decide which nodes to build and draw. Old nodes stay on screen until every desired node that
 // overlaps them is ready, so LOD changes never open holes.
 static void UpdateLod(Planetoid& p, Vector3 cameraRender) {
@@ -508,7 +554,9 @@ static void UpdateLod(Planetoid& p, Vector3 cameraRender) {
         for (int i = 0; i < 8; ++i)
             CollectDesired(p, { p.rootLevel, -1 + (i & 1), -1 + ((i >> 1) & 1), -1 + ((i >> 2) & 1) }, view, desired);
     }
-    std::unordered_set<NodeKey> desiredSet(desired.begin(), desired.end());
+    static FlatKeySet desiredSet;
+    desiredSet.reset(desired.size());
+    for (const NodeKey& k : desired) desiredSet.insert(k);
     const double now = GetTime();
 
     // New builds, nearest and coarsest first, at most kMaxNewRequests a frame (#258): flying fast asked for every
@@ -530,7 +578,8 @@ static void UpdateLod(Planetoid& p, Vector3 cameraRender) {
     for (const NodeKey& k : desired) if (auto it = p.nodes.find(k); it != p.nodes.end()) it->second->lastWanted = now;
     // Telescope (#261): while zoomed, the normal selection stays resident (not drawn), so closing it has nothing
     // to regenerate - closing froze the game while the coarse nodes in the view cone were built again.
-    std::unordered_set<NodeKey> keepSet;
+    static FlatKeySet keepSet;
+    keepSet.reset(64);
     if (view.zoom > 1.0f && !gStreamOld) {
         std::vector<NodeKey> unzoomed;
         LodView plain{ camLocal };
@@ -552,15 +601,17 @@ static void UpdateLod(Planetoid& p, Vector3 cameraRender) {
     // Overlap tests walk ancestors through hash sets (comparing every drawn node with every desired
     // one cost ~3 ms a frame with thousands of nodes while flying).
     auto parentOf = [](const NodeKey& k) { return NodeKey{ k.level + 1, k.x >> 1, k.y >> 1, k.z >> 1 }; };
-    std::unordered_set<NodeKey> pendingDesired, pendingWithin; // pending nodes, and every node containing one
+    static FlatKeySet pendingDesired, pendingWithin; // pending nodes, and every node containing one
+    pendingDesired.reset(desired.size()); pendingWithin.reset(desired.size());
     for (const NodeKey& d : desired) {
         if (auto n = p.nodes.find(d); n != p.nodes.end() && n->second->ready) continue; // not requested yet (the per-frame cap) counts as pending
         pendingDesired.insert(d);
         for (NodeKey k = d; k.level <= p.rootLevel; k = parentOf(k))
-            if (!pendingWithin.insert(k).second) break; // its ancestors are in already
+            if (!pendingWithin.insert(k)) break; // its ancestors are in already
     }
     std::vector<Chunk*> retained;
-    std::unordered_set<NodeKey> retainedSet;
+    static FlatKeySet retainedSet;
+    retainedSet.reset(256);
     for (Chunk* c : p.drawList) {
         if (desiredSet.count(c->key)) continue;
         bool keep = pendingWithin.count(c->key) > 0;                // a pending desired node lies inside it
@@ -593,7 +644,8 @@ static void UpdateLod(Planetoid& p, Vector3 cameraRender) {
 
     // Clip the one-cell overlap on axes where the +neighbour is drawn at the same level (it would
     // duplicate that neighbour's surface and z-fight); keep it toward other levels to hide cracks.
-    std::unordered_set<NodeKey> drawn;
+    static FlatKeySet drawn; // also "on screen" for the frees below
+    drawn.reset(p.drawList.size());
     for (Chunk* c : p.drawList) drawn.insert(c->key);
     for (Chunk* c : p.drawList) {
         const NodeKey k = c->key;
@@ -615,11 +667,10 @@ static void UpdateLod(Planetoid& p, Vector3 cameraRender) {
     const int kMaxFrees = gStreamOld ? INT_MAX : 256;
     const ArenaStats as = TerrainArena_Stats();
     const bool roomy = as.vertexCapacity == 0 || as.vertices < as.vertexCapacity * 4 / 5;
-    std::unordered_set<const Chunk*> onScreen(p.drawList.begin(), p.drawList.end());
     int frees = 0;
     for (auto it = p.nodes.begin(); it != p.nodes.end();) {
         const Chunk* c = it->second.get();
-        const bool keep = desiredSet.count(it->first) || onScreen.count(c) || keepSet.count(it->first) ||
+        const bool keep = desiredSet.count(it->first) || drawn.count(it->first) || keepSet.count(it->first) ||
                           (c->ready && roomy && now - c->lastWanted < kRetainSeconds);
         if (keep) { ++it; continue; }
         if (frees >= kMaxFrees) { p.lodDirty = true; ++it; continue; } // the rest next frame
@@ -760,14 +811,13 @@ void worldUpdate(Scene& world, float uploadBudgetMs) {
 
     GpuTimer_CpuMark("w-uploads");
     // LOD after uploads, so this frame's draw list already includes nodes that just finished.
-    for (auto& obj : world.objects) {
-        if (auto* p = dynamic_cast<Planetoid*>(obj.get())) {
-            UpdateLod(*p, world.camera.position);
-            if (p->trees) p->trees->update(*p, p->toLocal(world.camera.position));
-        }
-    }
+    for (auto& obj : world.objects)
+        if (auto* p = dynamic_cast<Planetoid*>(obj.get())) UpdateLod(*p, world.camera.position);
+    GpuTimer_CpuMark("w-lod");
+    for (auto& obj : world.objects)
+        if (auto* p = dynamic_cast<Planetoid*>(obj.get()); p && p->trees) p->trees->update(*p, p->toLocal(world.camera.position));
 
-    GpuTimer_CpuMark("w-lod+trees");
+    GpuTimer_CpuMark("w-trees");
     stats.queuedJobs = (int)Jobs().queued();
     stats.runningJobs = Jobs().running();
     stats.pendingUploads = (int)pendingUploads.size();
