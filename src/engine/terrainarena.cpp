@@ -1,5 +1,7 @@
 #include "terrainarena.h"
 #include "voxel.h"
+#include "frustum.h"
+#include "gpucompute.h"
 #include "utils/logger.h"
 
 #include "external/glad.h"
@@ -20,6 +22,9 @@ namespace {
     constexpr size_t kPosBytes = 12;
 
     struct Command { GLuint count, instanceCount, firstIndex; GLint baseVertex; GLuint baseInstance; };
+    static_assert(sizeof(Command) == 20, "indirect command");
+    struct TableEntry { float origin[3], size; float clip[4]; GLuint iCount, iFirst, vFirst, pad; }; // chunk_cull.comp Chunk
+    static_assert(sizeof(TableEntry) == 48, "chunk table entry");
 
     // First-fit range allocator over [0, cap), free ranges coalesced.
     struct Ranges {
@@ -51,11 +56,20 @@ namespace {
 
     struct State {
         bool tried = false, ok = false;
-        GLuint vao = 0, vaoDepth = 0, pos = 0, attr = 0, ibo = 0, records = 0, indirect = 0;
+        GLuint vao = 0, vaoDepth = 0, pos = 0, attr = 0, ibo = 0;
+        GLuint table = 0, list = 0, records = 0, indirect = 0;
         Ranges verts, idx;
-        std::vector<float> rec;
-        std::vector<Command> cmds;
-        Matrix firstModel{};  // the first queued chunk: its rotation (shared by the body's chunks) is the shader's matModel
+        int tableCap = 0;
+        std::vector<int> freeSlots;
+        int slotCount = 0;
+        // The per-pass command / record / list ring: each flush takes the next n entries (wrapping), so a
+        // compute pass never rewrites entries a draw issued just before it may still read.
+        int ringCap = 0, ringPos = 0;
+        std::vector<GLuint> queued;
+        ComputeProgram cull;
+        struct CullLocs { GLint count, base, rot, scale, offset, texPeriod, useFrustum, planes, useColumn, colPoint, colDir, colRadius, overlap; } cl{}; // looked up once
+        struct DrawLocs { GLuint shader; GLint arena, viewProj, model; };
+        std::vector<DrawLocs> drawLocs; // per draw shader (hot reload makes new ids)
         int draws = 0, flushes = 0;
     } S;
 
@@ -96,11 +110,11 @@ namespace {
     }
 
     // A bigger buffer with the old contents copied over.
-    GLuint Regrow(GLuint old, size_t oldBytes, size_t newBytes) {
+    GLuint Regrow(GLuint old, size_t oldBytes, size_t newBytes, GLenum usage = GL_STATIC_DRAW) {
         GLuint b = 0;
         glGenBuffers(1, &b);
         glBindBuffer(GL_COPY_WRITE_BUFFER, b);
-        glBufferData(GL_COPY_WRITE_BUFFER, (GLsizeiptr)newBytes, nullptr, GL_STATIC_DRAW);
+        glBufferData(GL_COPY_WRITE_BUFFER, (GLsizeiptr)newBytes, nullptr, usage);
         if (old && oldBytes) {
             glBindBuffer(GL_COPY_READ_BUFFER, old);
             glCopyBufferSubData(GL_COPY_READ_BUFFER, GL_COPY_WRITE_BUFFER, 0, 0, (GLsizeiptr)oldBytes);
@@ -111,14 +125,36 @@ namespace {
         return b;
     }
 
+    void EnsureRing(int n) {
+        if (n <= S.ringCap) return;
+        int cap = std::max(S.ringCap, 8192);
+        while (cap < n * 4) cap *= 2; // room for a frame's passes before wrapping
+        // Contents need not survive (each flush writes what it draws).
+        GLuint old[] = { S.list, S.indirect, S.records };
+        glDeleteBuffers(3, old);
+        S.list = Regrow(0, 0, (size_t)cap * sizeof(GLuint), GL_DYNAMIC_DRAW);
+        S.indirect = Regrow(0, 0, (size_t)cap * sizeof(Command), GL_DYNAMIC_COPY);
+        S.records = Regrow(0, 0, (size_t)cap * kRecordTexels * 16, GL_DYNAMIC_COPY);
+        S.ringCap = cap;
+        S.ringPos = 0;
+        BindAttributes();
+    }
+
     bool Init() {
         if (S.tried) return S.ok;
         S.tried = true;
         const char* env = getenv("RAYLIBGAME_ARENA");
         if (env && env[0] == '0') { logger.logf("[Arena] off (RAYLIBGAME_ARENA=0)\n"); return false; }
-        if (rlGetVersion() != RL_OPENGL_43 || !glad_glMultiDrawElementsIndirect || !glad_glCopyBufferSubData) {
-            logger.logf("[Arena] multi-draw indirect unavailable: per-chunk draws\n");
+        if (rlGetVersion() != RL_OPENGL_43 || !glad_glMultiDrawElementsIndirect || !glad_glCopyBufferSubData || !Compute_Available()) {
+            logger.logf("[Arena] multi-draw indirect / compute unavailable: per-chunk draws\n");
             return false;
+        }
+        if (!S.cull.load("resources/compute/chunk_cull.comp")) { logger.logf("[Arena] chunk_cull.comp failed: per-chunk draws\n"); return false; }
+        {
+            const GLuint p = S.cull.id;
+            auto L = [p](const char* n) { return glGetUniformLocation(p, n); };
+            S.cl = { L("count"), L("base"), L("rot"), L("scale"), L("offset"), L("texPeriod"), L("useFrustum"), L("planes"),
+                     L("useColumn"), L("colPoint"), L("colDir"), L("colRadius"), L("overlap") };
         }
         const int v0 = 4 << 20, i0 = 24 << 20; // about a planet walk's working set (5.7 M vertices seen); grows as needed
         S.pos = Regrow(0, 0, (size_t)v0 * kPosBytes);
@@ -126,13 +162,13 @@ namespace {
         S.ibo = Regrow(0, 0, (size_t)i0 * sizeof(uint16_t));
         S.verts.grow(v0);
         S.idx.grow(i0);
+        S.tableCap = 4096;
+        S.table = Regrow(0, 0, (size_t)S.tableCap * sizeof(TableEntry));
         glGenVertexArrays(1, &S.vao);
         glGenVertexArrays(1, &S.vaoDepth);
-        glGenBuffers(1, &S.records);
-        glGenBuffers(1, &S.indirect);
-        BindAttributes();
+        EnsureRing(1); // creates the ring buffers and binds the VAOs
         S.ok = true;
-        logger.logf("[Arena] terrain mesh arena: %d vertices, %d indices\n", v0, i0);
+        logger.logf("[Arena] terrain mesh arena: %d vertices, %d indices, GPU chunk culling\n", v0, i0);
         return true;
     }
 
@@ -162,6 +198,20 @@ namespace {
         }
         return off;
     }
+    int AllocSlot() {
+        if (!S.freeSlots.empty()) { const int s = S.freeSlots.back(); S.freeSlots.pop_back(); return s; }
+        if (S.slotCount >= S.tableCap) {
+            const int newCap = S.tableCap * 2;
+            S.table = Regrow(S.table, (size_t)S.tableCap * sizeof(TableEntry), (size_t)newCap * sizeof(TableEntry));
+            S.tableCap = newCap;
+        }
+        return S.slotCount++;
+    }
+    void WriteTable(int slot, const void* data, size_t bytes, size_t offset = 0) {
+        glBindBuffer(GL_COPY_WRITE_BUFFER, S.table);
+        glBufferSubData(GL_COPY_WRITE_BUFFER, (GLintptr)(slot * sizeof(TableEntry) + offset), (GLsizeiptr)bytes, data);
+        glBindBuffer(GL_COPY_WRITE_BUFFER, 0);
+    }
 }
 
 bool TerrainArena_Available() { return Init(); }
@@ -185,6 +235,7 @@ ArenaAlloc TerrainArena_Upload(const ChunkMeshData& d) {
     a.vCount = nv;
     a.iFirst = AllocIndices(ni);
     a.iCount = ni;
+    a.slot = AllocSlot();
     glBindBuffer(GL_ARRAY_BUFFER, S.pos);
     glBufferSubData(GL_ARRAY_BUFFER, (GLintptr)a.vFirst * kPosBytes, (GLsizeiptr)nv * kPosBytes, d.positions.data());
     glBindBuffer(GL_ARRAY_BUFFER, S.attr);
@@ -194,52 +245,94 @@ ArenaAlloc TerrainArena_Upload(const ChunkMeshData& d) {
     glBindBuffer(GL_COPY_WRITE_BUFFER, S.ibo);
     glBufferSubData(GL_COPY_WRITE_BUFFER, (GLintptr)a.iFirst * sizeof(uint16_t), (GLsizeiptr)ni * sizeof(uint16_t), d.indices.data());
     glBindBuffer(GL_COPY_WRITE_BUFFER, 0);
+    const Vector3 o = d.key.origin();
+    TableEntry e{};
+    e.origin[0] = o.x; e.origin[1] = o.y; e.origin[2] = o.z; e.size = d.key.size();
+    e.clip[0] = e.clip[1] = e.clip[2] = 1e30f;
+    e.iCount = (GLuint)ni; e.iFirst = (GLuint)a.iFirst; e.vFirst = (GLuint)a.vFirst;
+    WriteTable(a.slot, &e, sizeof(e));
+    a.clip = { 1e30f, 1e30f, 1e30f };
     return a;
 }
 
 void TerrainArena_Free(ArenaAlloc& a) {
-    if (a.vFirst >= 0 && S.ok) S.verts.release(a.vFirst, a.vCount);
-    if (a.iFirst >= 0 && S.ok) S.idx.release(a.iFirst, a.iCount);
+    if (S.ok) {
+        if (a.vFirst >= 0) S.verts.release(a.vFirst, a.vCount);
+        if (a.iFirst >= 0) S.idx.release(a.iFirst, a.iCount);
+        if (a.slot >= 0) S.freeSlots.push_back(a.slot);
+    }
     a = ArenaAlloc{};
 }
 
-void TerrainArena_Add(const ArenaAlloc& a, const Matrix& m, Vector3 texOrigin, Vector3 clip) {
+void TerrainArena_Queue(ArenaAlloc& a, Vector3 clip) {
     if (!a.valid()) return;
-    const float r[kRecordTexels * 4] = {
-        m.m0, m.m4, m.m8, m.m12,  m.m1, m.m5, m.m9, m.m13,  m.m2, m.m6, m.m10, m.m14,
-        texOrigin.x, texOrigin.y, texOrigin.z, 0.0f,  clip.x, clip.y, clip.z, 0.0f };
-    const GLuint index = (GLuint)S.cmds.size();
-    if (index == 0) S.firstModel = m;
-    S.rec.insert(S.rec.end(), r, r + kRecordTexels * 4);
-    S.cmds.push_back({ (GLuint)a.iCount, 1u, (GLuint)a.iFirst, (GLint)a.vFirst, index });
+    if (clip.x != a.clip.x || clip.y != a.clip.y || clip.z != a.clip.z) {
+        const float c[4] = { clip.x, clip.y, clip.z, 0.0f };
+        WriteTable(a.slot, c, sizeof(c), offsetof(TableEntry, clip));
+        a.clip = clip;
+    }
+    S.queued.push_back((GLuint)a.slot);
 }
 
-void TerrainArena_Flush(unsigned int shaderId, bool positionsOnly) {
-    if (S.cmds.empty()) return;
-    const int n = (int)S.cmds.size();
-    glBindBuffer(GL_ARRAY_BUFFER, S.records); // new storage each flush (orphaned): the VAOs keep the buffer name
-    glBufferData(GL_ARRAY_BUFFER, (GLsizeiptr)(S.rec.size() * sizeof(float)), S.rec.data(), GL_STREAM_DRAW);
-    glBindBuffer(GL_ARRAY_BUFFER, 0);
-    glBindBuffer(GL_DRAW_INDIRECT_BUFFER, S.indirect);
-    glBufferData(GL_DRAW_INDIRECT_BUFFER, (GLsizeiptr)(n * sizeof(Command)), S.cmds.data(), GL_STREAM_DRAW);
+int TerrainArena_Flush(unsigned int shaderId, bool positionsOnly, const ArenaBody& body, const ArenaCull& cull) {
+    const int n = (int)S.queued.size();
+    if (n == 0) return 0;
+    EnsureRing(n);
+    if (S.ringPos + n > S.ringCap) S.ringPos = 0;
+    const int base = S.ringPos;
+    S.ringPos += n;
 
+    // Cull + build the commands and records on the GPU.
+    glBindBuffer(GL_COPY_WRITE_BUFFER, S.list);
+    glBufferSubData(GL_COPY_WRITE_BUFFER, (GLintptr)(base * sizeof(GLuint)), (GLsizeiptr)(n * sizeof(GLuint)), S.queued.data());
+    glBindBuffer(GL_COPY_WRITE_BUFFER, 0);
+    S.cull.use();
+    const GLuint prog = S.cull.id;
+    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, S.table);
+    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 1, S.list); // whole buffer: a range bind needs GL_SHADER_STORAGE_BUFFER_OFFSET_ALIGNMENT-aligned offsets (it failed, and the pass culled a stale list)
+    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 2, S.indirect);
+    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 3, S.records);
+    glUniform1ui(S.cl.count, (GLuint)n);
+    glUniform1ui(S.cl.base, (GLuint)base);
+    glUniformMatrix3dv(S.cl.rot, 1, GL_TRUE, body.rot);
+    glUniform1d(S.cl.scale, body.scale);
+    glUniform3d(S.cl.offset, body.offset[0], body.offset[1], body.offset[2]);
+    glUniform1d(S.cl.texPeriod, body.texPeriod);
+    extern bool frustumCullingEnabled;
+    const bool useFrustum = cull.frustum && frustumCullingEnabled;
+    glUniform1i(S.cl.useFrustum, useFrustum ? 1 : 0);
+    if (useFrustum) glUniform4fv(S.cl.planes, 6, (const float*)cull.frustum->planes);
+    glUniform1i(S.cl.useColumn, cull.colRadius > 0.0f ? 1 : 0);
+    glUniform3f(S.cl.colPoint, cull.colPoint.x, cull.colPoint.y, cull.colPoint.z);
+    glUniform3f(S.cl.colDir, cull.colDir.x, cull.colDir.y, cull.colDir.z);
+    glUniform1f(S.cl.colRadius, cull.colRadius);
+    glUniform1f(S.cl.overlap, (CHUNK_SIZE + 1.0f) / CHUNK_SIZE);
+    glDispatchCompute((GLuint)((n + 63) / 64), 1, 1);
+    glMemoryBarrier(GL_COMMAND_BARRIER_BIT | GL_VERTEX_ATTRIB_ARRAY_BARRIER_BIT);
+
+    // Draw.
     const Matrix viewProj = MatrixMultiply(rlGetMatrixModelview(), rlGetMatrixProjection());
-    const GLint locArena = glGetUniformLocation(shaderId, "arenaDraw");
-    const GLint locVP = glGetUniformLocation(shaderId, "matViewProj");
-    const GLint locModel = glGetUniformLocation(shaderId, "matModel");
+    const State::DrawLocs* dl = nullptr;
+    for (const auto& d : S.drawLocs) if (d.shader == shaderId) dl = &d;
+    if (!dl) {
+        S.drawLocs.push_back({ shaderId, glGetUniformLocation(shaderId, "arenaDraw"), glGetUniformLocation(shaderId, "matViewProj"), glGetUniformLocation(shaderId, "matModel") });
+        dl = &S.drawLocs.back();
+    }
+    const GLint locArena = dl->arena, locVP = dl->viewProj, locModel = dl->model;
     glUseProgram(shaderId);
     if (locArena >= 0) glUniform1i(locArena, 1);
     if (locVP >= 0) rlSetUniformMatrix(locVP, viewProj);
-    if (locModel >= 0) rlSetUniformMatrix(locModel, S.firstModel); // fragment normals: body rotation
+    if (locModel >= 0) rlSetUniformMatrix(locModel, body.rs); // fragment normals: body rotation
+    glBindBuffer(GL_DRAW_INDIRECT_BUFFER, S.indirect);
     glBindVertexArray(positionsOnly ? S.vaoDepth : S.vao);
-    glMultiDrawElementsIndirect(GL_TRIANGLES, GL_UNSIGNED_SHORT, nullptr, n, 0);
+    glMultiDrawElementsIndirect(GL_TRIANGLES, GL_UNSIGNED_SHORT, (const void*)(size_t)(base * sizeof(Command)), n, 0);
     glBindVertexArray(0);
     if (locArena >= 0) glUniform1i(locArena, 0); // other meshes drawn with this shader use their own uniforms
     glBindBuffer(GL_DRAW_INDIRECT_BUFFER, 0);
     S.draws += n;
     S.flushes++;
-    S.rec.clear();
-    S.cmds.clear();
+    S.queued.clear();
+    return n;
 }
 
 ArenaStats TerrainArena_Stats() {
@@ -252,9 +345,10 @@ ArenaStats TerrainArena_Stats() {
 
 void TerrainArena_Unload() {
     if (!S.ok) { S = State{}; return; }
-    GLuint bufs[] = { S.pos, S.attr, S.ibo, S.records, S.indirect };
-    glDeleteBuffers(5, bufs);
+    GLuint bufs[] = { S.pos, S.attr, S.ibo, S.table, S.list, S.records, S.indirect };
+    glDeleteBuffers(7, bufs);
     GLuint vaos[] = { S.vao, S.vaoDepth };
     glDeleteVertexArrays(2, vaos);
+    S.cull.unload();
     S = State{};
 }

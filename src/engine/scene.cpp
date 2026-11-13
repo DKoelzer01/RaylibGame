@@ -862,7 +862,7 @@ void Scene::drawUI(int gamestate) {
     if (gamestate != 0) {
         DrawFPS(10, 10);
         const DVec3 cw = cameraWorld();
-        DrawText(TextFormat("Camera: %.1f %.1f %.1f   meshes drawn: %d   [F3] debug",
+        DrawText(TextFormat("Camera: %.1f %.1f %.1f   meshes: %d   [F3] debug",
                  cw.x, cw.y, cw.z, lastDrawCalls), 10, 30, 20, GREEN);
     }
     for (const auto& obj : uiObjects) obj->draw(none);
