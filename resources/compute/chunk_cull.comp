@@ -1,0 +1,61 @@
+#version 430
+// Plan 6 step 2 (#145): culls one body's listed terrain chunks for one view and writes the indirect draw
+// commands and per-draw records the terrain arena draws (terrainarena.cpp). One thread per listed chunk.
+// Placement is done in double precision (chunks lie up to ~60 km from the body centre; the result is
+// relative to the floating render origin and small), as ChunkPlacer does on the CPU.
+// Culled chunks keep their command with instanceCount 0, so the list order (nearest first) is kept.
+layout(local_size_x = 64) in;
+
+struct Chunk { vec4 originSize; vec4 clip; uvec4 draw; };   // body-local origin + size; chunk-local clip; iCount, iFirst, vFirst
+layout(std430, binding = 0) readonly buffer Table { Chunk chunks[]; };
+layout(std430, binding = 1) readonly buffer List { uint slots[]; };
+struct Cmd { uint count; uint instances; uint firstIndex; int baseVertex; uint baseInstance; };
+layout(std430, binding = 2) writeonly buffer Cmds { Cmd cmds[]; };
+layout(std430, binding = 3) writeonly buffer Recs { vec4 recs[]; };   // 5 per draw: model rows 0-2, texturing origin, clip
+
+uniform uint count;        // listed chunks
+uniform uint base;         // this flush's first entry in the command / record ring
+uniform dmat3 rot;         // body rotation
+uniform double scale;
+uniform dvec3 offset;      // body position - render origin
+uniform double texPeriod;  // texture repeat (m): the texturing origin is the chunk origin wrapped to it
+uniform int useFrustum;
+uniform vec4 planes[6];    // render space
+uniform int useColumn;     // shadow passes: the light box's column, body-local
+uniform vec3 colPoint;
+uniform vec3 colDir;
+uniform float colRadius;
+uniform float overlap;     // (CHUNK_SIZE + 1) / CHUNK_SIZE: the bounds include the overlap cell
+
+void main() {
+    uint i = gl_GlobalInvocationID.x;
+    if (i >= count) return;
+    Chunk c = chunks[slots[i]];
+    vec3 o = c.originSize.xyz;
+    float h = c.originSize.w * 0.5;
+    bool vis = true;
+    if (useColumn == 1) {
+        vec3 v = o + vec3(h) - colPoint;
+        float along = dot(v, colDir), reach = colRadius + h * 1.75;
+        if (dot(v, v) - along * along > reach * reach) vis = false;
+    }
+    dmat3 rs = rot * scale;
+    vec3 t = vec3(offset + rot * dvec3(o) * scale);
+    mat3 m = mat3(rs);
+    if (vis && useFrustum == 1) {
+        float hh = h * overlap;
+        vec3 centre = m * vec3(hh) + t;
+        float r = hh * 1.7320508 * float(scale);
+        for (int k = 0; k < 6; ++k)
+            if (dot(planes[k].xyz, centre) + planes[k].w < -r) { vis = false; break; }
+    }
+    uint e = base + i;
+    cmds[e] = Cmd(c.draw.x, vis ? 1u : 0u, c.draw.y, int(c.draw.z), e);
+    recs[e * 5u + 0u] = vec4(m[0].x, m[1].x, m[2].x, t.x);
+    recs[e * 5u + 1u] = vec4(m[0].y, m[1].y, m[2].y, t.y);
+    recs[e * 5u + 2u] = vec4(m[0].z, m[1].z, m[2].z, t.z);
+    dvec3 od = dvec3(o);
+    vec3 tex = vec3(od - floor(od / texPeriod) * texPeriod);
+    recs[e * 5u + 3u] = vec4(tex, 0.0);
+    recs[e * 5u + 4u] = vec4(c.clip.xyz, 0.0);
+}

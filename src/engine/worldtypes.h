@@ -41,6 +41,7 @@ public:
     // Replace the mesh with freshly built data (main thread: uploads to the GPU).
     void setMesh(const ChunkMeshData& data);
     bool hasMesh() const { return mesh.vaoId > 0 || arena.valid(); }
+    Vector3 clipLocal() const { const Vector3 o = key.origin(); return { clipMax.x - o.x, clipMax.y - o.y, clipMax.z - o.z }; } // 1e30 stays "no clip"
 
     // `model` = the chunk's full model matrix (Planetoid::chunkModel: translation in double).
     void drawChunk(const RenderContext& ctx, const Matrix& model);

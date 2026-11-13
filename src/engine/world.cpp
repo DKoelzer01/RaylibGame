@@ -157,6 +157,16 @@ namespace {
             m.m14 = (float)(offset.z + (r[2][0] * o.x + r[2][1] * o.y + r[2][2] * o.z) * s);
             return m;
         }
+        // The same placement for the terrain arena's GPU culling pass (chunk_cull.comp).
+        ArenaBody arena(float texScale) const {
+            ArenaBody b;
+            for (int i = 0; i < 3; ++i) for (int j = 0; j < 3; ++j) b.rot[i * 3 + j] = r[i][j];
+            b.scale = s;
+            b.offset[0] = offset.x; b.offset[1] = offset.y; b.offset[2] = offset.z;
+            b.rs = rs;
+            b.texPeriod = 1.0 / std::max(texScale, 1e-6f);
+            return b;
+        }
     };
 }
 
@@ -256,8 +266,15 @@ void Planetoid::draw(const RenderContext& ctx) {
     batch.setUniform(ctx.sunOccluderLoc, occluder, SHADER_UNIFORM_VEC4);
     RenderContext c2 = ctx;
     c2.batch = &batch;
-    for (Chunk* c : drawList) c->drawChunk(c2, placer.model(c->key));
-    TerrainArena_Flush(ctx.terrainMaterial->shader.id); // the arena chunks: one multi-draw
+    // Arena chunks are only listed: placement and culling run on the GPU (chunk_cull.comp), one multi-draw.
+    for (Chunk* c : drawList) {
+        if (c->arena.valid()) { if (c->isActive) TerrainArena_Queue(c->arena, c->clipLocal()); continue; }
+        c->drawChunk(c2, placer.model(c->key));
+    }
+    ArenaCull cull;
+    cull.frustum = ctx.frustum;
+    const int n = TerrainArena_Flush(ctx.terrainMaterial->shader.id, false, placer.arena(ctx.texScale), cull);
+    if (ctx.drawCalls) *ctx.drawCalls += n; // listed (the GPU culls some of them)
 }
 
 void Planetoid::drawTransparent(const RenderContext& ctx) {
@@ -309,14 +326,18 @@ void Planetoid::drawDepthOnly(const RenderContext& ctx) {
     const float rL = column ? ctx.cullAxisRadius / std::max(scale, 1e-6f) : 0.0f;
     for (Chunk* c : drawList) {
         if (column) {
+            // Cheap and drops most of the list: done here, so the GPU pass gets no zero-instance commands for them.
             const float h = c->key.size() * 0.5f;
             const Vector3 v = Vector3Subtract(Vector3AddValue(c->key.origin(), h), pL);
             const float along = Vector3DotProduct(v, dL), reach = rL + h * 1.75f;
             if (Vector3LengthSqr(v) - along * along > reach * reach) continue;
         }
+        if (c->arena.valid()) { if (c->isActive) TerrainArena_Queue(c->arena, c->clipLocal()); continue; } // frustum-culled on the GPU (depth ignores the clip)
         c->drawChunkDepth(c2, placer.model(c->key));
     }
-    TerrainArena_Flush(ctx.depthMaterial->shader.id, true);
+    ArenaCull cull;
+    cull.frustum = ctx.frustum;
+    TerrainArena_Flush(ctx.depthMaterial->shader.id, true, placer.arena(ctx.texScale), cull);
 }
 
 // ---------------------------------------------------------------------------------------------
