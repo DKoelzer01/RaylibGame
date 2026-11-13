@@ -11,6 +11,8 @@
 #include <algorithm>
 #include <cstdlib>
 #include <cstring>
+#include <cstdint>
+#include <deque>
 #include <map>
 
 extern "C" void* glfwGetProcAddress(const char* name); // raylib links GLFW
@@ -240,6 +242,59 @@ namespace {
 
 bool TerrainArena_Available() { return Init(); }
 
+// #286: chunk uploads through a persistently mapped staging ring (4.4 buffer storage): the data is copied into the
+// ring and moved into the arena by the GPU (glCopyBufferSubData), so the driver never has to stall or shadow-copy a
+// glBufferSubData into an arena buffer that queued draws still read. Each upload's range is fenced; space comes back
+// as fences pass. A full ring falls back to glBufferSubData for that upload (never waits).
+// RAYLIBGAME_UPLOAD_STAGING=0 turns it off (A/B).
+namespace {
+    struct Staging {
+        bool tried = false, ok = false;
+        GLuint buf = 0;
+        unsigned char* ptr = nullptr;
+        size_t cap = 0, head = 0;
+        struct Span { size_t start, end; GLsync fence; };
+        std::deque<Span> pending;
+        long long staged = 0, direct = 0;
+    } St;
+
+    bool StagingInit() {
+        if (St.tried) return St.ok;
+        St.tried = true;
+        const char* e = getenv("RAYLIBGAME_UPLOAD_STAGING");
+        if ((e && e[0] == '0') || !GL_Caps().bufferStorage) { logger.logf("[Arena] uploads: glBufferSubData\n"); return false; }
+        St.cap = 16u << 20;
+        glGenBuffers(1, &St.buf);
+        glBindBuffer(GL_COPY_READ_BUFFER, St.buf);
+        const GLbitfield flags = GL_MAP_WRITE_BIT | GL_MAP_PERSISTENT_BIT | GL_MAP_COHERENT_BIT;
+        glBufferStorage(GL_COPY_READ_BUFFER, (GLsizeiptr)St.cap, nullptr, flags);
+        St.ptr = (unsigned char*)glMapBufferRange(GL_COPY_READ_BUFFER, 0, (GLsizeiptr)St.cap, flags);
+        glBindBuffer(GL_COPY_READ_BUFFER, 0);
+        if (!St.ptr) { glDeleteBuffers(1, &St.buf); St.buf = 0; logger.logf("[Arena] uploads: glBufferSubData (staging map failed)\n"); return false; }
+        St.ok = true;
+        logger.logf("[Arena] uploads: persistent mapped staging ring (%zu MB)\n", St.cap >> 20);
+        return true;
+    }
+
+    // Room for `bytes` in the ring (16-byte aligned start), or SIZE_MAX if the GPU still reads what is there.
+    size_t StagingAlloc(size_t bytes) {
+        while (!St.pending.empty()) { // spans the GPU has finished copying
+            const GLenum r = glClientWaitSync(St.pending.front().fence, 0, 0);
+            if (r != GL_ALREADY_SIGNALED && r != GL_CONDITION_SATISFIED) break;
+            glDeleteSync(St.pending.front().fence);
+            St.pending.pop_front();
+        }
+        if (bytes > St.cap / 2) return SIZE_MAX;
+        size_t start = (St.head + 15) & ~(size_t)15;
+        if (start + bytes > St.cap) start = 0; // wrap
+        const size_t end = start + bytes;
+        for (const auto& s : St.pending) // overlaps a range still being copied
+            if (start < s.end && s.start < end) return SIZE_MAX;
+        St.head = end;
+        return start;
+    }
+}
+
 ArenaAlloc TerrainArena_Upload(const ChunkMeshData& d) {
     ArenaAlloc a;
     if (!Init() || d.positions.empty() || d.indices.empty()) return a;
@@ -260,15 +315,37 @@ ArenaAlloc TerrainArena_Upload(const ChunkMeshData& d) {
     a.iFirst = AllocIndices(ni);
     a.iCount = ni;
     a.slot = AllocSlot();
-    glBindBuffer(GL_ARRAY_BUFFER, S.pos);
-    glBufferSubData(GL_ARRAY_BUFFER, (GLintptr)a.vFirst * kPosBytes, (GLsizeiptr)nv * kPosBytes, d.positions.data());
-    glBindBuffer(GL_ARRAY_BUFFER, S.attr);
-    glBufferSubData(GL_ARRAY_BUFFER, (GLintptr)a.vFirst * sizeof(Attr), (GLsizeiptr)nv * sizeof(Attr), v.data());
-    glBindBuffer(GL_ARRAY_BUFFER, 0);
-    // The element buffer binding is VAO state: upload through COPY_WRITE so no VAO is disturbed.
-    glBindBuffer(GL_COPY_WRITE_BUFFER, S.ibo);
-    glBufferSubData(GL_COPY_WRITE_BUFFER, (GLintptr)a.iFirst * sizeof(uint16_t), (GLsizeiptr)ni * sizeof(uint16_t), d.indices.data());
-    glBindBuffer(GL_COPY_WRITE_BUFFER, 0);
+    const size_t posBytes = (size_t)nv * kPosBytes, attrBytes = (size_t)nv * sizeof(Attr), idxBytes = (size_t)ni * sizeof(uint16_t);
+    const size_t at = StagingInit() ? StagingAlloc(posBytes + attrBytes + idxBytes + 32) : SIZE_MAX;
+    if (at != SIZE_MAX) {
+        // Into the staging ring, then copied into the arena on the GPU (#286).
+        const size_t oPos = at, oAttr = (oPos + posBytes + 15) & ~(size_t)15, oIdx = (oAttr + attrBytes + 15) & ~(size_t)15;
+        memcpy(St.ptr + oPos, d.positions.data(), posBytes);
+        memcpy(St.ptr + oAttr, v.data(), attrBytes);
+        memcpy(St.ptr + oIdx, d.indices.data(), idxBytes);
+        glBindBuffer(GL_COPY_READ_BUFFER, St.buf);
+        glBindBuffer(GL_COPY_WRITE_BUFFER, S.pos);
+        glCopyBufferSubData(GL_COPY_READ_BUFFER, GL_COPY_WRITE_BUFFER, (GLintptr)oPos, (GLintptr)a.vFirst * kPosBytes, (GLsizeiptr)posBytes);
+        glBindBuffer(GL_COPY_WRITE_BUFFER, S.attr);
+        glCopyBufferSubData(GL_COPY_READ_BUFFER, GL_COPY_WRITE_BUFFER, (GLintptr)oAttr, (GLintptr)a.vFirst * sizeof(Attr), (GLsizeiptr)attrBytes);
+        glBindBuffer(GL_COPY_WRITE_BUFFER, S.ibo);
+        glCopyBufferSubData(GL_COPY_READ_BUFFER, GL_COPY_WRITE_BUFFER, (GLintptr)oIdx, (GLintptr)a.iFirst * sizeof(uint16_t), (GLsizeiptr)idxBytes);
+        glBindBuffer(GL_COPY_WRITE_BUFFER, 0);
+        glBindBuffer(GL_COPY_READ_BUFFER, 0);
+        St.pending.push_back({ at, oIdx + idxBytes, glFenceSync(GL_SYNC_GPU_COMMANDS_COMPLETE, 0) });
+        ++St.staged;
+    } else {
+        glBindBuffer(GL_ARRAY_BUFFER, S.pos);
+        glBufferSubData(GL_ARRAY_BUFFER, (GLintptr)a.vFirst * kPosBytes, (GLsizeiptr)posBytes, d.positions.data());
+        glBindBuffer(GL_ARRAY_BUFFER, S.attr);
+        glBufferSubData(GL_ARRAY_BUFFER, (GLintptr)a.vFirst * sizeof(Attr), (GLsizeiptr)attrBytes, v.data());
+        glBindBuffer(GL_ARRAY_BUFFER, 0);
+        // The element buffer binding is VAO state: upload through COPY_WRITE so no VAO is disturbed.
+        glBindBuffer(GL_COPY_WRITE_BUFFER, S.ibo);
+        glBufferSubData(GL_COPY_WRITE_BUFFER, (GLintptr)a.iFirst * sizeof(uint16_t), (GLsizeiptr)idxBytes, d.indices.data());
+        glBindBuffer(GL_COPY_WRITE_BUFFER, 0);
+        ++St.direct;
+    }
     const Vector3 o = d.key.origin();
     TableEntry e{};
     e.origin[0] = o.x; e.origin[1] = o.y; e.origin[2] = o.z; e.size = d.key.size();
@@ -383,10 +460,16 @@ ArenaStats TerrainArena_Stats() {
     s.vertices = S.verts.used; s.vertexCapacity = S.verts.cap;
     s.indices = S.idx.used; s.indexCapacity = S.idx.cap;
     s.draws = S.draws; s.flushes = S.flushes;
+    s.staged = St.staged; s.direct = St.direct;
     return s;
 }
 
 void TerrainArena_Unload() {
+    if (St.ok) {
+        for (auto& s : St.pending) glDeleteSync(s.fence);
+        glDeleteBuffers(1, &St.buf); // unmaps it
+    }
+    St = Staging{};
     if (!S.ok) { S = State{}; return; }
     GLuint bufs[] = { S.pos, S.attr, S.ibo, S.table, S.list, S.records, S.indirect, S.compacted, S.counts };
     glDeleteBuffers(9, bufs);

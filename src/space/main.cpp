@@ -4878,7 +4878,7 @@ int main(int argc, char** argv)
                 SaveFileText("bench.txt", (char*)line);
                 GpuTimer_Print();
                 GpuTimer_PrintCpu();
-                if (TerrainArena_Available()) { const ArenaStats as = TerrainArena_Stats(); printf("bench: terrain arena: %d / %d vertices, %d / %d indices, %.1f chunk draws per multi-draw\n", as.vertices, as.vertexCapacity, as.indices, as.indexCapacity, as.draws / (double)std::max(1, as.flushes)); }
+                if (TerrainArena_Available()) { const ArenaStats as = TerrainArena_Stats(); printf("bench: terrain arena: %d / %d vertices, %d / %d indices, %.1f chunk draws per multi-draw; uploads %lld staged, %lld direct\n", as.vertices, as.vertexCapacity, as.indices, as.indexCapacity, as.draws / (double)std::max(1, as.flushes), as.staged, as.direct); }
                 { const TerrainGpuStats ts = TerrainGpu_Stats(); const WorldStats& ws = GetWorldStats(); printf("bench: terrain gpu: %lld blocks in %lld batches, avg batch latency %.2f ms; chunk build avg %.2f ms (sampling part %.2f ms)\n", ts.blocks, ts.batches, ts.avgLatencyMs, ws.avgBuildMs, ws.avgSampleMs); }
                 {   // Streaming (#258): how much work flying asked for and threw away; frame time spread.
                     const WorldStats& ws = GetWorldStats();
