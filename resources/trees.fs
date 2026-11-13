@@ -35,7 +35,9 @@ vec3 climateFoliage(vec3 temperate, vec3 dry, vec3 cold, vec3 lush, vec3 swampC,
     if (fragClimate.z < 0.5)
         return lat < 0.35 ? mix(dry, temperate, smoothstep(0.15, 0.35, lat)) : mix(temperate, cold, smoothstep(0.45, 0.7, lat));
     float t = fragClimate.x, m = fragClimate.y;
-    vec3 c = temperate;
+    // Temperate land has its own gentle gradient, as the ground (#254): cooler blue-green, warmer yellower, wetter deeper.
+    vec3 c = temperate * mix(vec3(0.9, 1.0, 1.02), vec3(1.1, 1.05, 0.86), smoothstep(8.0, 17.0, t));
+    c *= mix(vec3(1.08, 1.04, 0.9), vec3(0.88, 1.0, 0.9), smoothstep(0.3, 0.68, m));
     c = mix(c, dry, smoothstep(0.66, 0.5, m) * smoothstep(16.0, 20.0, t));
     c = mix(c, lush, smoothstep(18.0, 23.0, t) * smoothstep(0.56, 0.7, m));
     c = mix(c, swampC, smoothstep(0.68, 0.8, m) * smoothstep(10.0, 18.0, t));

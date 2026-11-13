@@ -10,6 +10,7 @@ in vec3 fragLocalNormal;
 in vec3 fragChunkPos;   // chunk-local (overlap clipping)
 in float fragSky;       // 1 = open to the sky, 0 = buried (caves, deep pits)
 in vec2 fragCanopy;     // planets: forest canopy cover and latitude (painted in beyond the real trees)
+flat in float fragClimate; // the packed climate, per triangle (#254: interpolated, it striped the biome tints)
 in float fragOreKind;   // planets: which ore, (1 + kind) / 8 (0 none)
 in float fragMacro;     // planets: slow brightness / warmth variation (70-250 m), per vertex (lighting.vs)
 
@@ -120,14 +121,15 @@ vec3 triplanarNormal(sampler2D tex, Triplanar t, vec3 n)
 #include "shadow.glsl"
 float shadowFactor(vec3 worldPos, vec3 n, vec3 l) { return sunShadowNormal(worldPos, n, l, 4); }
 
-// Biome tints (Plan 5 B) from the climate packed in fragCanopy.y by the mesher: 1 + temperature step
-// (0-62 over -30..40 C) + moisture as the fraction; 0 = no climate (asteroids, caves, old meshes).
+// Biome tints (Plan 5 B) from the climate packed by the mesher: 2 + temperature step (0-62 over
+// -30..40 C) + moisture as the fraction; below 1.5 = no climate (asteroids, caves, old meshes). Read flat:
+// interpolated across a triangle the packing swept through whole steps and striped the tints (#254).
 bool decodeClimate(out float temp, out float moist)
 {
-    float y = fragCanopy.y;
-    temp = (floor(y) - 1.0) / 62.0 * 70.0 - 30.0;
+    float y = fragClimate;
+    temp = (floor(y) - 2.0) / 62.0 * 70.0 - 30.0;
     moist = fract(y);
-    return y >= 1.0;
+    return y >= 1.5;
 }
 // Multiplier for one material layer's colour: grass dries to straw on the savanna and in deserts,
 // deepens in the jungle, dulls in the cold and turns olive in swamps; dirt darkens to mud where wet
@@ -140,7 +142,10 @@ vec3 biomeTint(int material, float temp, float moist)
         float lush = smoothstep(18.0, 23.0, temp) * smoothstep(0.56, 0.7, moist);
         float cold = smoothstep(9.0, 3.0, temp);
         float swamp = smoothstep(0.68, 0.8, moist);
-        vec3 t = vec3(1.0);
+        // Temperate land has its own gentle gradient (#254: it all read as the default green): cooler a little
+        // blue-green, warmer a little yellow; wetter deeper, drier paler.
+        vec3 t = mix(vec3(0.9, 1.0, 1.02), vec3(1.1, 1.05, 0.86), smoothstep(8.0, 17.0, temp));
+        t *= mix(vec3(1.08, 1.04, 0.9), vec3(0.88, 1.0, 0.9), smoothstep(0.3, 0.68, moist));
         t = mix(t, vec3(2.0, 1.3, 0.45), dry);
         t = mix(t, vec3(0.72, 1.02, 0.68), lush);
         t = mix(t, vec3(0.92, 0.92, 0.95), cold);
