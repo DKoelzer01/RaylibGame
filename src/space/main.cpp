@@ -478,11 +478,14 @@ int main(int argc, char** argv)
     if (msaa) SetConfigFlags(FLAG_MSAA_4X_HINT);
     bool nativeWindow = false; // --native-window: a bench in the game's own window (borderless, monitor-sized), uncapped
     for (int i = 1; i < argc; ++i) if (std::string(argv[i]) == "--native-window") nativeWindow = true;
+    bool exclusive = false; // --fullscreen: exclusive fullscreen (bypasses the desktop compositor)
+    for (int i = 1; i < argc; ++i) if (std::string(argv[i]) == "--fullscreen") { exclusive = true; nativeWindow = true; }
     if (!bench || nativeWindow) {
         SetConfigFlags(FLAG_WINDOW_RESIZABLE); // Allow window resizing
         SetConfigFlags(FLAG_WINDOW_UNDECORATED); // Remove window decorations for a cleaner look
         SetConfigFlags(FLAG_WINDOW_HIGHDPI); // Enable High DPI support
-        InitWindow(GetMonitorWidth(0), GetMonitorHeight(0), "My first RAYLIB program!");
+        if (exclusive) SetConfigFlags(FLAG_FULLSCREEN_MODE);
+        InitWindow(GetMonitorWidth(0), GetMonitorHeight(0), "RaylibGame");
         // No VSync: cap at the monitor's refresh rate instead (VSync on a 60 Hz desktop locked the game to 60).
         SetTargetFPS(bench ? std::max(0, benchFps) : benchFps >= 0 ? benchFps : std::max(60, GetMonitorRefreshRate(GetCurrentMonitor())));
     } else {
@@ -4720,6 +4723,8 @@ int main(int argc, char** argv)
                 rlImGuiEnd();
                 GpuTimer_Mark("imgui");
             }
+            rlDrawRenderBatchActive(); // the batched 2D (HUD text, bars, minimap) flushes here, not inside EndDrawing
+            GpuTimer_Mark("2d-flush");
         EndDrawing();
         GpuTimer_Mark("swap+poll");
         PROFILE_FRAME();
