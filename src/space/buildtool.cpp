@@ -237,7 +237,10 @@ void BuildTool_Draw3D(Scene& world) {
     auto box = [&](const Plot& p, Int3 c, Color col) {
         Vector3 v[8];
         for (int i = 0; i < 8; ++i) {
-            const Vector3 l = p.toBody({ (c.x + (i & 1)) * kCellSize, (c.y + ((i >> 1) & 1)) * kCellSize, (c.z + ((i >> 2) & 1)) * kCellSize });
+            // Inflated 2 cm so the lines stand off the faces of the blocks they outline (they z-fought, #199).
+            constexpr float kPad = 0.02f;
+            auto edge = [](int cell, int hi) { return (cell + hi) * kCellSize + (hi ? kPad : -kPad); };
+            const Vector3 l = p.toBody({ edge(c.x, i & 1), edge(c.y, (i >> 1) & 1), edge(c.z, (i >> 2) & 1) });
             v[i] = body.toWorld(l);
         }
         const int e[12][2] = { { 0, 1 }, { 2, 3 }, { 4, 5 }, { 6, 7 }, { 0, 2 }, { 1, 3 }, { 4, 6 }, { 5, 7 }, { 0, 4 }, { 1, 5 }, { 2, 6 }, { 3, 7 } };
