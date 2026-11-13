@@ -1,4 +1,5 @@
 #include "terraingpu.h"
+#include "gputimer.h"
 #include "gpucompute.h"
 #include "utils/logger.h"
 
@@ -9,6 +10,8 @@
 #include <cstdlib>
 #include <cstring>
 #include <deque>
+#include <atomic>
+#include <memory>
 #include <mutex>
 
 namespace {
@@ -18,8 +21,41 @@ namespace {
     constexpr int kMaxBlocks = 32;          // per batch
     constexpr int kSlots = 2;               // batches in flight
 
+    // Readback (#267): the samples are copied on the GPU into a persistently mapped buffer, and the workers read them
+    // there; the main thread no longer copies a multi-MB batch out with glGetBufferSubData (~0.7 ms a frame while
+    // streaming). A ring of them, each busy until the last worker drops its slice.
+    struct Readback { GLuint buf = 0; float* ptr = nullptr; size_t cap = 0; std::atomic<bool> busy{ false }; };
+    constexpr int kRing = 6;
+    Readback ring[kRing];
+    bool ringOk = false;
+
+    // A free ring buffer of at least `bytes` (re-created bigger if needed), marked busy; -1 if none is free.
+    int AcquireRing(size_t bytes) {
+        for (int i = 0; i < kRing; ++i) {
+            Readback& r = ring[i];
+            if (r.busy.load()) continue;
+            if (r.cap < bytes) {
+                if (r.buf) glDeleteBuffers(1, &r.buf);
+                size_t cap = 1u << 20;
+                while (cap < bytes) cap <<= 1;
+                glGenBuffers(1, &r.buf);
+                glBindBuffer(GL_COPY_WRITE_BUFFER, r.buf);
+                const GLbitfield flags = GL_MAP_READ_BIT | GL_MAP_PERSISTENT_BIT | GL_MAP_COHERENT_BIT;
+                glBufferStorage(GL_COPY_WRITE_BUFFER, (GLsizeiptr)cap, nullptr, flags | GL_CLIENT_STORAGE_BIT);
+                r.ptr = (float*)glMapBufferRange(GL_COPY_WRITE_BUFFER, 0, (GLsizeiptr)cap, flags);
+                glBindBuffer(GL_COPY_WRITE_BUFFER, 0);
+                if (!r.ptr) { glDeleteBuffers(1, &r.buf); r.buf = 0; r.cap = 0; ringOk = false; logger.logf("[TerrainGpu] persistent map failed: readback by copy\n"); return -1; }
+                r.cap = cap;
+            }
+            r.busy.store(true);
+            return i;
+        }
+        return -1;
+    }
+
     struct Slot {
         ComputeBuffer grid, islands, out, blocks;
+        int rb = -1;                        // the ring buffer this batch is copied into (-1: read back by copy)
         GLsync fence = nullptr;
         std::vector<GpuBlockJob> jobs;
         std::vector<size_t> outOffset;      // per job (samples)
@@ -57,6 +93,10 @@ namespace {
             return false;
         }
         S.ok = true;
+        // RAYLIBGAME_GPU_READBACK_COPY=1: the old copy readback (A/B).
+        const char* rbEnv = getenv("RAYLIBGAME_GPU_READBACK_COPY");
+        ringOk = GLAD_GL_ARB_buffer_storage && glad_glBufferStorage && glad_glMapBufferRange && glad_glCopyBufferSubData && !(rbEnv && rbEnv[0] == '1');
+        logger.logf("[TerrainGpu] readback: %s\n", ringOk ? "persistent mapped ring" : "copy");
         logger.logf("[TerrainGpu] density blocks on the GPU\n");
         return true;
     }
@@ -77,7 +117,7 @@ namespace {
     }
 
     // Uploads the slot's jobs (all of one field) and dispatches them; sets the fence.
-    void Dispatch(Slot& sl) {
+    void Dispatch(Slot& sl, bool readback = false) { // readback: into the mapped ring when it can (the streaming pump)
         const PlanetField& pf = *sl.jobs.front().field;
         SetField(pf);
         std::vector<BlockGpu> blocks;
@@ -116,6 +156,15 @@ namespace {
         S.prog.use();
         rlComputeShaderDispatch((unsigned)((maxN + 63) / 64), (unsigned)blocks.size(), 1);
         glMemoryBarrier(GL_BUFFER_UPDATE_BARRIER_BIT);
+        sl.rb = readback && ringOk ? AcquireRing(out * 4) : -1;
+        if (sl.rb >= 0) { // the samples into the mapped ring buffer, on the GPU
+            glBindBuffer(GL_COPY_READ_BUFFER, sl.out.id);
+            glBindBuffer(GL_COPY_WRITE_BUFFER, ring[sl.rb].buf);
+            glCopyBufferSubData(GL_COPY_READ_BUFFER, GL_COPY_WRITE_BUFFER, 0, 0, (GLsizeiptr)(out * 4));
+            glBindBuffer(GL_COPY_READ_BUFFER, 0);
+            glBindBuffer(GL_COPY_WRITE_BUFFER, 0);
+            // (coherent mapping: the fence wait makes the copy visible; no client-mapped barrier needed)
+        }
         sl.fence = glFenceSync(GL_SYNC_GPU_COMMANDS_COMPLETE, 0);
         glFlush();
         sl.t0 = GetTime();
@@ -155,8 +204,30 @@ void TerrainGpu_Pump() {
         if (!sl.fence || !Done(sl, 0)) continue;
         glDeleteSync(sl.fence);
         sl.fence = nullptr;
-        auto all = std::make_shared<std::vector<float>>(sl.outCount);
-        sl.out.download(all->data(), (unsigned)(sl.outCount * 4));
+        // A CPU buffer from a pool (a fresh multi-MB zero-filled vector per batch was allocated on the main thread);
+        // it comes back when the last worker drops its slice.
+        static std::mutex poolM;
+        static std::vector<std::vector<float>*> pool;
+        auto pooled = [&]() {
+            std::vector<float>* buf = nullptr;
+            { std::lock_guard<std::mutex> l(poolM); if (!pool.empty()) { buf = pool.back(); pool.pop_back(); } }
+            if (!buf) buf = new std::vector<float>();
+            if (buf->size() < sl.outCount) buf->resize(sl.outCount);
+            std::shared_ptr<std::vector<float>> v(buf, [](std::vector<float>* p) { std::lock_guard<std::mutex> l(poolM); pool.push_back(p); });
+            return v;
+        };
+        // #267: the batch was copied on the GPU into a mapped ring buffer: the workers read it there (released when
+        // the last slice is done). Otherwise it is read back by copy.
+        std::shared_ptr<const float> all;
+        if (sl.rb >= 0) {
+            Readback* r = &ring[sl.rb];
+            all = std::shared_ptr<const float>(r->ptr, [r](const float*) { r->busy.store(false); });
+            sl.rb = -1;
+        } else {
+            auto v = pooled();
+            sl.out.download(v->data(), (unsigned)(sl.outCount * 4));
+            all = std::shared_ptr<const float>(v, v->data());
+        }
         S.latencyMs += (GetTime() - sl.t0) * 1000.0;
         // The first batch of each field is checked against the CPU once (one block, ~4 ms): the GPU path rests
         // on bit-exact results (collision reads the CPU field), which another driver might not give (FMA,
@@ -166,19 +237,21 @@ void TerrainGpu_Pump() {
             const size_t n = (size_t)j.block.E * j.block.E * j.block.E;
             std::vector<float> cpu(n);
             j.field->sampleBlock(j.block.origin, j.block.stride, j.block.E, j.block.footprint, j.grid, cpu.data());
-            if (memcmp(cpu.data(), all->data() + sl.outOffset[0], n * sizeof(float)) != 0) {
+            if (memcmp(cpu.data(), all.get() + sl.outOffset[0], n * sizeof(float)) != 0) {
                 logger.logf("[TerrainGpu] GPU density differs from the CPU on this driver: density blocks back on the CPU\n");
                 S.disabled = true;
             } else {
                 S.verified = j.field;
             }
         }
-        if (S.disabled) {
+        if (S.disabled) { // redone on the CPU, into a writable buffer (the ring is mapped read-only)
+            auto v = pooled();
             for (size_t k = 0; k < sl.jobs.size(); ++k) {
                 GpuBlockJob& j = sl.jobs[k];
                 if (j.wanted && !j.wanted()) continue;
-                j.field->sampleBlock(j.block.origin, j.block.stride, j.block.E, j.block.footprint, j.grid, all->data() + sl.outOffset[k]);
+                j.field->sampleBlock(j.block.origin, j.block.stride, j.block.E, j.block.footprint, j.grid, v->data() + sl.outOffset[k]);
             }
+            all = std::shared_ptr<const float>(v, v->data());
         }
         for (size_t k = 0; k < sl.jobs.size(); ++k) {
             GpuBlockJob& j = sl.jobs[k];
@@ -210,12 +283,12 @@ void TerrainGpu_Pump() {
                 const size_t n = (size_t)j.block.E * j.block.E * j.block.E;
                 auto cpu = std::make_shared<std::vector<float>>(n);
                 j.field->sampleBlock(j.block.origin, j.block.stride, j.block.E, j.block.footprint, j.grid, cpu->data());
-                j.done(cpu, 0);
+                j.done(std::shared_ptr<const float>(cpu, cpu->data()), 0);
             }
             sl.jobs.clear();
             continue;
         }
-        Dispatch(sl);
+        Dispatch(sl, true);
     }
 }
 

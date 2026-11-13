@@ -394,10 +394,10 @@ static void RequestNode(Planetoid& p, const NodeKey& key, float priority) {
                 job.wanted = [wanted, version] { return wanted->load() == version; };
                 job.priority = priority; // edits (negative) go ahead of background LOD builds
                 auto shared = std::make_shared<ChunkMeshData>(std::move(data));
-                job.done = [field, edits, shared, wanted, version, priority, prepMs](std::shared_ptr<const std::vector<float>> batch, size_t offset) {
+                job.done = [field, edits, shared, wanted, version, priority, prepMs](std::shared_ptr<const float> batch, size_t offset) {
                     Jobs().submit(priority, [field, edits, shared, wanted, version, prepMs, batch, offset] {
                         if (wanted->load() != version) { ++gSkipped; return; }
-                        BuildChunkMeshFromBase(*field, *edits, *shared, batch->data() + offset, prepMs);
+                        BuildChunkMeshFromBase(*field, *edits, *shared, batch.get() + offset, prepMs);
                         std::lock_guard<std::mutex> lock(resultsMutex);
                         results.push_back(std::move(*shared));
                         ++gBuilt;
