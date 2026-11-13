@@ -257,6 +257,7 @@ void Scene::applyLightingShader() {
     // Always on its own unit: two samplers of different types (sampler2D / sampler2DArray) on one unit
     // make draws fail, and an unset sampler would default to unit 0, the albedo map's.
     { const int unit = ChunkBatch::kLayersUnit; if (locTerrainLayers >= 0) SetShaderValue(s, locTerrainLayers, &unit, SHADER_UNIFORM_INT); }
+    { const int unit = kTerrainDetailUnit; const int loc = GetShaderLocation(s, "terrainDetail"); if (loc >= 0) SetShaderValue(s, loc, &unit, SHADER_UNIFORM_INT); }
     const Vector3 noClip = { 1e30f, 1e30f, 1e30f }; // default for anything that is not a chunk
     SetShaderValue(s, locChunkClip, &noClip, SHADER_UNIFORM_VEC3);
 
