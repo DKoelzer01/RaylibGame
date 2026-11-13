@@ -463,7 +463,10 @@ void GameUI_Draw(Scene& world) {
 void GameUI_DrawHUD(Scene& world) {
     // Speeds against the body you are near (its co-rotating surface frame, as the rocket HUD's "surface" speed): the
     // world velocity includes the planet's spin and orbit, which read as 60-90 m/s while hovering (#239).
-    auto relSpeed = [&](Vector3 v) {
+    // On the ground the player's velocity is already relative to the surface (Player::stepPhysics): only
+    // world-frame velocities (airborne, fly mode, the ship) take the surface's motion out.
+    auto relSpeed = [&](Vector3 v, bool surfaceRelative = false) {
+        if (surfaceRelative) return Vector3Length(v);
         const Vector3 at = (player.position - world.renderOrigin).toFloat();
         Planetoid* body = player.nearest ? player.nearest : NearestPlanetoid(world, at); // fly mode never sets nearest
         return body ? Vector3Length(Vector3Subtract(v, body->surfaceVelocity(at))) : Vector3Length(v);
@@ -480,7 +483,7 @@ void GameUI_DrawHUD(Scene& world) {
     DrawRectangle(w - 220, 70, (int)(200 * player.jetpackFuel), 12, SKYBLUE);
     DrawText("JET", w - 260, 68, 16, RAYWHITE);
     const char* mode = player.flyMode ? "FLY (F)" : player.grounded ? "WALK" : player.gravity >= 0.5f ? "AIR" : "SPACE";
-    DrawText(TextFormat("%s   g %.1f   %.1f m/s", mode, player.gravity, relSpeed(player.velocity)), w - 220, 90, 16, RAYWHITE);
+    DrawText(TextFormat("%s   g %.1f   %.1f m/s", mode, player.gravity, relSpeed(player.velocity, player.grounded)), w - 220, 90, 16, RAYWHITE);
     DrawText(TextFormat("dampeners %s (B)", player.dampeners ? "on" : "off"), w - 220, 110, 16, player.dampeners ? RAYWHITE : ORANGE);
     if (GetTime() < toastUntil) DrawText(toast.c_str(), 10, GetScreenHeight() - 90, 20, YELLOW);
 }
