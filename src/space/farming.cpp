@@ -1,4 +1,5 @@
 #include "farming.h"
+#include "fluid.h"
 #include "audio.h"
 #include "buildtool.h"
 #include "gameui.h"
@@ -44,7 +45,7 @@ namespace {
     const CropDef* Crop(const std::string& id) { LoadCrops(); for (const CropDef& c : crops) if (c.id == id) return &c; return nullptr; }
 
     // Crop state per farmland part: "<body name>|<plot id>|<part>" -> crop and growth (0..1).
-    struct Growing { std::string crop; float growth = 0.0f; float rate = 0.0f; }; // rate: 1, or 2 by water (worked out once; 0 = not yet)
+    struct Growing { std::string crop; float growth = 0.0f; float rate = 0.0f; double wetChecked = -1e9; bool flowing = false; }; // rate: 1, or 2 by static water (worked out once; 0 = not yet); flowing: moving water within 4 m (checked every 2 s)
     std::map<std::string, Growing> fields;
 
     std::string Key(const Planetoid& body, const Plot& plot, int part) { return body.name + "|" + std::to_string(plot.id) + "|" + std::to_string(part); }
@@ -98,7 +99,9 @@ void Farm_Update(Scene& world, float dt) {
         // more than 3 km away grow at their own rate).
         const bool rainy = (Weather_Here().kind == WeatherKind::Rain || Weather_Here().kind == WeatherKind::Storm) && body == player.nearest &&
                            Vector3Distance(top, body->toLocal((player.position - world.renderOrigin).toFloat())) < 3000.0f;
-        const float rate = g.rate * (rainy ? 1.5f : 1.0f);
+        // Irrigation by moving water (a channel dug to the field, water carried in a bucket).
+        if (g.rate < 2.0f && GetTime() - g.wetChecked > 2.0) { g.wetChecked = GetTime(); g.flowing = Fluid::StandingWaterNear(*body, top, 4.0f); }
+        const float rate = std::max(g.rate, g.flowing ? 2.0f : 0.0f) * (rainy ? 1.5f : 1.0f);
         g.growth = std::min(1.0f, g.growth + dt * rate / c->growSeconds);
         ++it;
     }

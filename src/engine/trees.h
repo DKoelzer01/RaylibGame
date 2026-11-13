@@ -15,7 +15,8 @@
 //
 // Drawing: per body, one instance buffer per variant over all loaded tiles, rebuilt (a few times a
 // second at most) when tiles arrive or leave, positioned relative to an anchor near the camera.
-// Trees draw to ~1 km, bushes to ~300 m, both with a dithered fade.
+// Trees draw to kTreeDrawDistance (2 km), bushes to ~300 m, both with a dithered fade; past the trees
+// the terrain shader paints their canopy in (lighting.fs, treeDistance).
 //
 // Collision: each tree trunk is a vertical capsule for the player and the ship (bushes are soft).
 //
@@ -38,10 +39,20 @@ class PlanetField;
 class Planetoid;
 struct RenderContext;
 
-constexpr int kTreeVariants = 9;            // 0-3 broadleaf, 4-5 conifer, 6-8 bush
-constexpr int kFirstBush = 6;
+// Tree variants are species x 2 shapes: 0-1 oak, 2-3 birch, 4-5 maple (broadleaf), 6-7 pine, 8-9 spruce
+// (conifers); then 10-12 bushes and 13 loose stones.
+constexpr int kTreeVariants = 14;
+constexpr int kFirstBush = 10;
+constexpr int kStoneVariant = 13;           // loose stones on the ground: picked up for stone (the first stone tools)
+// Wood species: what a tree drops when felled (its log) and how it is drawn (bark and leaf tints
+// over the shader's latitude colours). An area has a dominant species (60%) and two others (20% each).
+enum class WoodSpecies : uint8_t { Oak, Birch, Maple, Pine, Spruce, Count };
+struct WoodSpeciesDef { const char* log; const char* name; bool conifer; Vector3 bark, leaf; };
+const WoodSpeciesDef& WoodSpeciesInfo(WoodSpecies s);
+inline WoodSpecies SpeciesOfVariant(int v) { return (WoodSpecies)(v / 2); }  // trees only (v < kFirstBush)
+
 constexpr float kTreeTileSize = 64.0f;      // m
-constexpr float kTreeDrawDistance = 1000.0f;
+inline float kTreeDrawDistance = 2000.0f;    // trees (simple meshes past kTreeNearDistance); --tree-dist
 constexpr float kBushDrawDistance = 300.0f;
 constexpr float kTreeNearDistance = 200.0f; // full meshes inside this, simple ones beyond
 
@@ -64,6 +75,7 @@ struct Plant {
     float scale;
     int variant;
     bool tree() const { return variant < kFirstBush; }
+    bool stone() const { return variant == kStoneVariant; }
 };
 struct PlantHit {
     Plant plant;
@@ -106,7 +118,7 @@ public:
     // Trunks within `range` of a body-local point.
     void trunksNear(Vector3 local, float range, std::vector<Trunk>& out) const;
     // The nearest loaded plant (tree or bush) to a body-local point.
-    bool nearestPlant(Vector3 local, float range, bool tree, Plant& out) const;
+    bool nearestPlant(Vector3 local, float range, bool tree, Plant& out, bool stone = false) const; // stone: loose stones (else bushes when !tree)
     // The nearest plant a body-local ray hits within maxDistance.
     bool raycast(Vector3 localOrigin, Vector3 localDir, float maxDistance, PlantHit& hit) const;
     // Chop / harvest: gone now, regrows later.
@@ -118,6 +130,8 @@ public:
 
     int loadedTiles() const { return (int)tiles.size(); }
     int instanceCount() const { return drawnInstances; }
+    // Tests: trees per species in loaded tiles within `range` of a body-local point.
+    void speciesCounts(Vector3 local, float range, int out[(int)WoodSpecies::Count]) const;
 
 private:
     struct Shared;                             // results queue shared with worker jobs

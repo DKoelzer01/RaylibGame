@@ -1,8 +1,10 @@
 #include "scene.h"
+#include "gputimer.h"
 #include "utils/logger.h"
 #include "profiler.h"
 #include "worldtypes.h"
 #include "world.h"
+#include "trees.h"
 #include <raylib.h>
 #include <rlgl.h>
 #include <cmath>
@@ -17,6 +19,11 @@ bool benchMode = false; // set by the game executables (--bench)
 // ---------------------------------------------------------------------------------------------
 
 bool HotShader::reloadIfChanged(bool force) {
+    // Two file stats per shader cost ~20 us each on Windows: 20 a frame was ~0.35 ms of the main
+    // thread. Look at most twice a second (each shader keeps its own clock).
+    const double now = GetTime();
+    if (!force && now - lastCheck < 0.5) return false;
+    lastCheck = now;
     const long vt = GetFileModTime(vsPath.c_str());
     const long ft = GetFileModTime(fsPath.c_str());
     if (!force && vt == vsTime && ft == fsTime) return false;
@@ -127,12 +134,15 @@ Scene::Scene(std::string name, bool isActive)
     water.reloadIfChanged(true);
     grass.reloadIfChanged(true);
     trees.reloadIfChanged(true);
+    treeDepth.reloadIfChanged(true);
     farSphere.reloadIfChanged(true);
     parts.reloadIfChanged(true);
     atmosphereShader.reloadIfChanged(true);
     atmosphereDome = LoadModelFromMesh(GenMeshCube(1.0f, 1.0f, 1.0f));
 
     shadowMap = LoadShadowmapRenderTexture(SHADOW_MAP_SIZE, SHADOW_MAP_SIZE);
+    shadowNear = LoadShadowmapRenderTexture(SHADOW_MAP_SIZE, SHADOW_MAP_SIZE);
+    terrainMaterial.maps[MATERIAL_MAP_HEIGHT].texture = shadowNear.depth; // a spare slot: the near cascade
     terrainMaterial.maps[MATERIAL_MAP_BRDF].texture = shadowMap.depth;
 
     depth.reloadIfChanged(true);
@@ -162,6 +172,7 @@ void Scene::applyLightingShader() {
     s.locs[SHADER_LOC_MAP_NORMAL]    = GetShaderLocation(s, "normalTexture");
     s.locs[SHADER_LOC_MAP_ROUGHNESS] = GetShaderLocation(s, "roughAoTexture");
     s.locs[SHADER_LOC_MAP_BRDF]      = GetShaderLocation(s, "shadowMap");
+    s.locs[SHADER_LOC_MAP_HEIGHT]    = GetShaderLocation(s, "shadowMapNear");
     locViewPos    = GetShaderLocation(s, "viewPos");
     locLightSpace = GetShaderLocation(s, "lightSpaceMatrix");
     locAmbient    = GetShaderLocation(s, "ambient");
@@ -249,6 +260,7 @@ void Scene::drawScene(int gamestate) {
     water.reloadIfChanged();
     grass.reloadIfChanged();
     trees.reloadIfChanged();
+    treeDepth.reloadIfChanged();
     farSphere.reloadIfChanged();
     parts.reloadIfChanged();
     atmosphereShader.reloadIfChanged();
@@ -273,13 +285,14 @@ void Scene::drawScene(int gamestate) {
         upHint = ground->dirToWorld({ 0, 1, 0 });
         if (fabsf(Vector3DotProduct(upHint, Vector3Normalize(sunDirection))) > 0.99f) upHint = ground->dirToWorld({ 0, 0, 1 });
     }
-    // Snapping happens in double precision so floating-origin rebases don't jump it.
-    Vector3 centre = camera.position;
-    {
+    // Two cascades (shadow pass below): a sharp near box (shadowNearHalfExtent, ~3 cm texels) and the
+    // wide one (shadowHalfExtent, ~20 cm). Each box centre is snapped to whole texels of its own map,
+    // in double precision so floating-origin rebases don't jump it.
+    auto snapCentre = [&](float halfExtent) {
         const Vector3 f = Vector3Normalize(Vector3Negate(sunDirection));
         const Vector3 r = Vector3Normalize(Vector3CrossProduct(f, upHint));
         const Vector3 u = Vector3CrossProduct(r, f);
-        const double texel = 2.0 * shadowHalfExtent / (double)SHADOW_MAP_SIZE;
+        const double texel = 2.0 * halfExtent / (double)SHADOW_MAP_SIZE;
         // Relative to an anchor fixed on the body near the camera (a 256 m grid): about the body's
         // centre, the sun's slow turn (0.1 deg/s on Terra) still swept the grid 60 km out at 105 m/s.
         DVec3 cw = ground ? ground->toLocalD(cameraWorld()) : cameraWorld();
@@ -295,8 +308,9 @@ void Scene::drawScene(int gamestate) {
             return DVec3{ a.x * s, a.y * s, a.z * s };
         };
         const DVec3 snapped = snapAxis(r) + snapAxis(u) + snapAxis(f) + anchor;
-        centre = ((ground ? ground->toWorldD(snapped) : snapped) - renderOrigin).toFloat();
-    }
+        return ((ground ? ground->toWorldD(snapped) : snapped) - renderOrigin).toFloat();
+    };
+    const Vector3 centre = snapCentre(shadowHalfExtent);
     const Vector3 lightPos = Vector3Add(centre, Vector3Scale(Vector3Normalize(sunDirection), sunDistance));
     if (!lights.empty()) {
         lights[0].position = lightPos;
@@ -305,47 +319,70 @@ void Scene::drawScene(int gamestate) {
         lights[0].color = { k, k, (unsigned char)std::min(255, k + 6), 255 };
     }
 
-    Camera3D lightCam = { 0 };
-    lightCam.position = lightPos;
-    lightCam.target = centre;
-    lightCam.up = upHint;
-    lightCam.projection = CAMERA_ORTHOGRAPHIC;
-    lightCam.fovy = shadowHalfExtent * 2.0f; // raylib ortho: half-height = fovy/2
-
     // --- Shadow pass ---
-    // Read the light's matrices back from rlgl inside BeginMode3D so the shader's lightSpaceMatrix is
+    // Read the light's matrices back from rlgl inside BeginMode3D so the shader's light matrix is
     // exactly what the depth pass rendered with. (DrawMesh overwrites any hand-set "mvp" uniform.)
     const double defaultNear = rlGetCullDistanceNear(), defaultFar = rlGetCullDistanceFar();
+    auto renderCascade = [&](RenderTexture2D& target, float halfExtent, Vector3 boxCentre, Matrix& outMatrix, bool probe) {
+        Camera3D lightCam = { 0 };
+        lightCam.position = Vector3Add(boxCentre, Vector3Scale(Vector3Normalize(sunDirection), sunDistance));
+        lightCam.target = boxCentre;
+        lightCam.up = upHint;
+        lightCam.projection = CAMERA_ORTHOGRAPHIC;
+        lightCam.fovy = halfExtent * 2.0f; // raylib ortho: half-height = fovy/2
+        BeginTextureMode(target);
+            ClearBackground(WHITE);
+            BeginMode3D(lightCam);
+                const Matrix lightView = rlGetMatrixModelview();
+                const Matrix lightProj = rlGetMatrixProjection();
+                outMatrix = MatrixMultiply(lightView, lightProj); // raymath order: view, then projection
+                if (probe && shadowProbe) {
+                    const Vector3 wp = (shadowProbe() - renderOrigin).toFloat();
+                    const Matrix& m = outMatrix;
+                    const float x = m.m0 * wp.x + m.m4 * wp.y + m.m8 * wp.z + m.m12, y = m.m1 * wp.x + m.m5 * wp.y + m.m9 * wp.z + m.m13;
+                    const Vector2 tx = { (x * 0.5f + 0.5f) * SHADOW_MAP_SIZE, (y * 0.5f + 0.5f) * SHADOW_MAP_SIZE };
+                    if (shadowProbeHave) {
+                        // Whole-texel jumps are the box re-snapping; the fraction is the ground sliding.
+                        const float dx = tx.x - shadowProbeLast.x, dy = tx.y - shadowProbeLast.y;
+                        shadowProbeSlide += sqrtf((dx - roundf(dx)) * (dx - roundf(dx)) + (dy - roundf(dy)) * (dy - roundf(dy)));
+                    }
+                    shadowProbeLast = tx; shadowProbeHave = true;
+                }
+                const Frustum lightFrustum = Frustum::fromViewProj(outMatrix);
+                RenderContext shadowCtx;
+                shadowCtx.depthMaterial = &depthMaterial;
+                shadowCtx.frustum = &lightFrustum;
+                shadowCtx.renderOrigin = renderOrigin;
+                shadowCtx.cullAxisPoint = boxCentre; shadowCtx.cullAxisDir = Vector3Normalize(sunDirection);
+                shadowCtx.cullAxisRadius = halfExtent * 1.4143f; // the ortho box's corners
+                for (const auto& obj : objects) obj->drawDepthOnly(shadowCtx);
+                for (const auto& obj : rootObject.children) obj->drawDepthOnly(shadowCtx);
+                // Trees and bushes: the instanced tree vertex shader (same sway) with the depth-only
+                // fragment shader.
+                if (treeDepth.shader.id > 0 && foliageEnabled) {
+                    rlDrawRenderBatchActive();
+                    Shader& ts = treeDepth.shader;
+                    rlEnableShader(ts.id);
+                    rlSetUniformMatrix(GetShaderLocation(ts, "matViewProj"), outMatrix);
+                    const float now = (float)fmod(GetTime(), 3600.0);
+                    rlSetUniform(GetShaderLocation(ts, "time"), &now, RL_SHADER_UNIFORM_FLOAT, 1);
+                    RenderContext tctx = shadowCtx;
+                    tctx.treeShader = &ts;
+                    tctx.treeModelLoc = GetShaderLocation(ts, "matModel");
+                    tctx.treeOccluderLoc = tctx.treeFadeLoc = tctx.treeBarkLoc = tctx.treeLeafLoc = -1;
+                    for (const auto& obj : objects)
+                        if (auto* p = dynamic_cast<Planetoid*>(obj.get()); p && p->isActive && p->trees) p->trees->draw(*p, tctx);
+                    rlDisableShader();
+                }
+            EndMode3D();
+        EndTextureMode();
+    };
     {
     PROFILE_SCOPE("Shadow pass");
     rlSetClipPlanes(1.0, sunDistance * 2.0);
-    BeginTextureMode(shadowMap);
-        ClearBackground(WHITE);
-        BeginMode3D(lightCam);
-            const Matrix lightView = rlGetMatrixModelview();
-            const Matrix lightProj = rlGetMatrixProjection();
-            lightSpaceMatrix = MatrixMultiply(lightView, lightProj); // raymath order: view, then projection
-            if (shadowProbe) {
-                const Vector3 wp = (shadowProbe() - renderOrigin).toFloat();
-                const Matrix& m = lightSpaceMatrix;
-                const float x = m.m0 * wp.x + m.m4 * wp.y + m.m8 * wp.z + m.m12, y = m.m1 * wp.x + m.m5 * wp.y + m.m9 * wp.z + m.m13;
-                const Vector2 tx = { (x * 0.5f + 0.5f) * SHADOW_MAP_SIZE, (y * 0.5f + 0.5f) * SHADOW_MAP_SIZE };
-                if (shadowProbeHave) {
-                    // Whole-texel jumps are the box re-snapping; the fraction is the ground sliding.
-                    const float dx = tx.x - shadowProbeLast.x, dy = tx.y - shadowProbeLast.y;
-                    shadowProbeSlide += sqrtf((dx - roundf(dx)) * (dx - roundf(dx)) + (dy - roundf(dy)) * (dy - roundf(dy)));
-                }
-                shadowProbeLast = tx; shadowProbeHave = true;
-            }
-            const Frustum lightFrustum = Frustum::fromViewProj(lightSpaceMatrix);
-            RenderContext shadowCtx;
-            shadowCtx.depthMaterial = &depthMaterial;
-            shadowCtx.frustum = &lightFrustum;
-            shadowCtx.renderOrigin = renderOrigin;
-            for (const auto& obj : objects) obj->drawDepthOnly(shadowCtx);
-            for (const auto& obj : rootObject.children) obj->drawDepthOnly(shadowCtx);
-        EndMode3D();
-    EndTextureMode();
+    renderCascade(shadowMap, shadowHalfExtent, centre, lightSpaceMatrix, true);
+    renderCascade(shadowNear, shadowNearHalfExtent, snapCentre(shadowNearHalfExtent), lightSpaceNear, false);
+    GpuTimer_Mark("shadow");
     rlSetClipPlanes(defaultNear, defaultFar);
     }
 
@@ -353,6 +390,17 @@ void Scene::drawScene(int gamestate) {
     PROFILE_SCOPE("Main pass");
     Shader& s = lighting.shader;
     SetShaderValueMatrix(s, locLightSpace, lightSpaceMatrix);
+    {   // Distant forests: the canopy tint takes over where the real trees fade out.
+        const float treeDist = kTreeDrawDistance;
+        SetShaderValue(s, GetShaderLocation(s, "treeDistance"), &treeDist, SHADER_UNIFORM_FLOAT);
+    }
+    // Cascades: the near one's matrix; each cascade's texel in metres and the depth range (the bias
+    // is sized from them: a texel's worth along the normal, and a slope term in depth units).
+    SetShaderValueMatrix(s, GetShaderLocation(s, "lightSpaceNear"), lightSpaceNear);
+    const float shadowTexels[2] = { 2.0f * shadowNearHalfExtent / SHADOW_MAP_SIZE, 2.0f * shadowHalfExtent / SHADOW_MAP_SIZE };
+    SetShaderValue(s, GetShaderLocation(s, "shadowTexel"), shadowTexels, SHADER_UNIFORM_VEC2);
+    const float shadowDepthRange = (float)(sunDistance * 2.0 - 1.0);
+    SetShaderValue(s, GetShaderLocation(s, "shadowDepthRange"), &shadowDepthRange, SHADER_UNIFORM_FLOAT);
     SetShaderValue(s, locTexScale, &texScale, SHADER_UNIFORM_FLOAT);
     SetShaderValue(s, locPalette, &materialPalette, SHADER_UNIFORM_INT);
     // Atmosphere: by day near a planet the air hazes distant terrain toward the horizon sky colour and
@@ -414,11 +462,25 @@ void Scene::drawScene(int gamestate) {
             SetShaderValue(as, GetShaderLocation(as, "density"), &atmDensity, SHADER_UNIFORM_FLOAT);
             const float overcast = std::clamp(weatherCloud, 0.0f, 1.0f) * std::min(1.0f, atmDensity * 3.0f);
             SetShaderValue(as, GetShaderLocation(as, "overcast"), &overcast, SHADER_UNIFORM_FLOAT);
+            {   // Clouds: the camera in the planet's frame, and the layer's radius (none without air).
+                const Vector3 rel = Vector3Subtract(camera.position, atmosphere.centre);
+                const Vector3 camLocal = Vector3Add(Vector3Add(Vector3Scale(atmosphere.toLocalX, rel.x), Vector3Scale(atmosphere.toLocalY, rel.y)), Vector3Scale(atmosphere.toLocalZ, rel.z));
+                const float shell = atmosphere.enabled ? atmosphere.radius + atmosphere.cloudHeight : 0.0f;
+                const float cover = std::clamp(weatherCloud, 0.0f, 1.0f);
+                SetShaderValue(as, GetShaderLocation(as, "camLocal"), &camLocal, SHADER_UNIFORM_VEC3);
+                SetShaderValue(as, GetShaderLocation(as, "toLocalX"), &atmosphere.toLocalX, SHADER_UNIFORM_VEC3);
+                SetShaderValue(as, GetShaderLocation(as, "toLocalY"), &atmosphere.toLocalY, SHADER_UNIFORM_VEC3);
+                SetShaderValue(as, GetShaderLocation(as, "toLocalZ"), &atmosphere.toLocalZ, SHADER_UNIFORM_VEC3);
+                SetShaderValue(as, GetShaderLocation(as, "cloudShell"), &shell, SHADER_UNIFORM_FLOAT);
+                SetShaderValue(as, GetShaderLocation(as, "cloudDrift"), &cloudDrift, SHADER_UNIFORM_VEC3);
+                SetShaderValue(as, GetShaderLocation(as, "cloudCover"), &cover, SHADER_UNIFORM_FLOAT);
+            }
             atmosphereDome.materials[0].shader = as;
             DrawModel(atmosphereDome, (Vector3){ 0, 0, 0 }, 1.0f, WHITE);
         }
         rlEnableBackfaceCulling();
         rlEnableDepthMask();
+        GpuTimer_Mark("sky");
 
         // Far pass: bodies whose nearest possible surface is beyond kFarSplit (the moon, the ring,
         // the planet seen from orbit) are drawn first with clip planes fitted to them, then the depth
@@ -519,11 +581,12 @@ void Scene::drawScene(int gamestate) {
             ClearDepthBuffer();
             rlSetClipPlanes(nearDefault, farDefault);
             BeginMode3D(camera);
+            GpuTimer_Mark("far");
         }
 
 
         // Trees and bushes: one instanced draw per variant per body. The mid pass draws the simple
-        // far meshes (trees reach 1 km, past the near/mid split); the near pass draws them all.
+        // far meshes (trees reach kTreeDrawDistance, past the near/mid split); the near pass draws them all.
         // Foliage lighting (grass, trees): the sun's shadow map and the headlamp, as the terrain gets.
         auto setFoliageLighting = [&](Shader& sh) {
             const int slot = 6;
@@ -531,6 +594,15 @@ void Scene::drawScene(int gamestate) {
             rlEnableTexture(shadowMap.depth.id);
             rlSetUniform(GetShaderLocation(sh, "shadowMap"), &slot, RL_SHADER_UNIFORM_INT, 1);
             rlSetUniformMatrix(GetShaderLocation(sh, "lightSpaceMatrix"), lightSpaceMatrix);
+            const int slotNear = 7;
+            rlActiveTextureSlot(slotNear);
+            rlEnableTexture(shadowNear.depth.id);
+            rlSetUniform(GetShaderLocation(sh, "shadowMapNear"), &slotNear, RL_SHADER_UNIFORM_INT, 1);
+            rlSetUniformMatrix(GetShaderLocation(sh, "lightSpaceNear"), lightSpaceNear);
+            const float texels[2] = { 2.0f * shadowNearHalfExtent / SHADOW_MAP_SIZE, 2.0f * shadowHalfExtent / SHADOW_MAP_SIZE };
+            rlSetUniform(GetShaderLocation(sh, "shadowTexel"), texels, RL_SHADER_UNIFORM_VEC2, 1);
+            const float depthRange = (float)(sunDistance * 2.0 - 1.0);
+            rlSetUniform(GetShaderLocation(sh, "shadowDepthRange"), &depthRange, RL_SHADER_UNIFORM_FLOAT, 1);
             const int res = shadowMap.depth.width;
             rlSetUniform(GetShaderLocation(sh, "shadowMapResolution"), &res, RL_SHADER_UNIFORM_INT, 1);
             float lamp[4] = { 0, 0, 0, 0 }, target[4] = { 0, 0, 0, 0 };
@@ -565,6 +637,8 @@ void Scene::drawScene(int gamestate) {
             tctx.treeModelLoc = GetShaderLocation(ts, "matModel");
             tctx.treeOccluderLoc = GetShaderLocation(ts, "sunOccluder");
             tctx.treeFadeLoc = GetShaderLocation(ts, "fadeEnd");
+            tctx.treeBarkLoc = GetShaderLocation(ts, "barkTint");
+            tctx.treeLeafLoc = GetShaderLocation(ts, "leafTint");
             for (const auto& obj : objects)
                 if (auto* p = dynamic_cast<Planetoid*>(obj.get()); p && !isFar(p) && p->trees) p->trees->draw(*p, tctx, onlyLod);
             rlDisableShader();
@@ -592,6 +666,7 @@ void Scene::drawScene(int gamestate) {
             ClearDepthBuffer();
             rlSetClipPlanes(nearDefault, kNearSplit);
             BeginMode3D(camera);
+            GpuTimer_Mark("mid");
         }
 
         const Frustum viewFrustum = Frustum::fromViewProj(MatrixMultiply(rlGetMatrixModelview(), rlGetMatrixProjection()));
@@ -601,6 +676,7 @@ void Scene::drawScene(int gamestate) {
         for (const auto& obj : objects) if (obj && !isFar(obj.get())) obj->draw(ctx);
         for (const auto& obj : rootObject.children) if (obj) obj->draw(ctx);
         if (drawPassExtra) drawPassExtra(ctx, false);
+        GpuTimer_Mark("near");
 
         // Foliage: grass tufts on near chunks (instanced; one draw per chunk with grass in range).
         if (grass.shader.id > 0 && foliageEnabled) {
@@ -633,7 +709,9 @@ void Scene::drawScene(int gamestate) {
             rlEnableBackfaceCulling();
             rlDisableShader();
         }
+        GpuTimer_Mark("grass");
         drawTrees(-1);
+        GpuTimer_Mark("trees");
 
         // Transparent pass (sea surfaces) after everything opaque. Depth writes stay on: where LOD
         // nodes overlap, the second copy of the same surface then fails the depth test instead of
@@ -662,10 +740,12 @@ void Scene::drawScene(int gamestate) {
                 }
             }
         }
+        GpuTimer_Mark("water");
         if (onDraw3D) onDraw3D();
     EndMode3D();
     rlSetClipPlanes(nearDefault, farDefault); // the passes above narrowed them
     lastDrawCalls = drawCalls;
+    GpuTimer_Mark("draw3d");
 
     if (debugDraw) {
         // Depth texture preview (red channel = depth).
@@ -707,10 +787,12 @@ Scene::~Scene() {
     water.unload();
     grass.unload();
     trees.unload();
+    treeDepth.unload();
     farSphere.unload();
     parts.unload();
     atmosphereShader.unload();
     UnloadShadowmapRenderTexture(shadowMap);
+    UnloadShadowmapRenderTexture(shadowNear);
 }
 
 // ---------------------------------------------------------------------------------------------

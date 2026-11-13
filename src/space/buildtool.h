@@ -1,6 +1,8 @@
 #ifndef BUILDTOOL_H
 #define BUILDTOOL_H
 
+#include <string>
+
 class Scene;
 class Planetoid;
 class Plot;
@@ -23,6 +25,8 @@ extern BuildToolState buildTool;
 void BuildTool_Update(Scene& world, bool inputEnabled, bool usable);
 void BuildTool_Draw3D(Scene& world);
 void BuildTool_DrawHUD();
+float BuildTool_BreakProgress();   // 0..1 while LMB is held on a part (the HUD bar under the crosshair)
+bool BuildTool_AimingPart();       // the crosshair is on a built part in reach (LMB breaks it)
 // Place a part on a plot (charging its cost unless creative or charge is false) and lay its
 // foundation against the ground. Used by the tool and by scripted tests.
 bool BuildTool_Place(Planetoid& body, Plot& plot, const Part& part, bool charge);
@@ -31,5 +35,6 @@ void BuildTool_LayFoundation(Planetoid& body, Plot& plot, const Part& part);
 // Machines: looking at one shows its state (factory snapshot); I inserts items, O takes outputs.
 void Machine_Update(Scene& world, bool inputEnabled);
 void Machine_DrawHUD();
+bool IsMachineItem(const std::string& id); // an item that builds a machine part (chests don't take these)
 
 #endif

@@ -40,7 +40,7 @@ float ToolWear_Left(const std::string& id) {
 bool ToolWear_RepairCost(const std::string& id, std::string& item, int& count) {
     const ToolSpec t = ToolOf(id);
     if (ToolDurability(t) <= 0) return false;
-    static const char* kHead[] = { "", "gravel", "iron_ingot", "steel_ingot", "titanium_ingot" };
+    static const char* kHead[] = { "", "stone", "iron_ingot", "steel_ingot", "titanium_ingot" };
     item = kHead[t.tier];
     count = t.tier == 1 ? 2 : 1;
     return true;

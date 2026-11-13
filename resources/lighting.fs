@@ -46,6 +46,7 @@ uniform vec4 sunOccluder;       // planet: render-space centre + radius of a sph
 uniform vec3 fogColor;          // linear
 uniform float fogDensity;       // 0 = off
 uniform vec4 fogShell;          // atmosphere: render-space centre + outer radius (w = 0: fog the whole distance)
+uniform float treeDistance;     // real trees are drawn to here (m); the canopy tint takes over near it
 
 out vec4 finalColor;
 
@@ -95,20 +96,57 @@ vec3 triplanarNormal(sampler2D tex, Triplanar t, vec3 n)
     return normalize(tnX.zyx * t.w.x + tnY.xzy * t.w.y + tnZ.xyz * t.w.z);
 }
 
-// 1.0 = fully lit, 0.0 = fully shadowed. 3x3 PCF.
+// Shadows: two cascades (the near box ~3 cm texels, the wide one ~20 cm). 1.0 = fully lit.
+uniform sampler2D shadowMapNear;
+uniform mat4 lightSpaceNear;
+uniform vec2 shadowTexel;       // metres per texel: near, far
+uniform float shadowDepthRange; // metres the light's depth spans
+// A bilinear-filtered compare: the four texels around the point, each lit or not, blended by where
+// the point falls between them (a smooth edge instead of a texel step).
+float shadowTap(sampler2D map, vec2 uv, float z, float res)
+{
+    vec2 st = uv * res - 0.5;
+    vec2 i = floor(st), f = st - i;
+    vec2 b = (i + 0.5) / res;
+    float d = 1.0 / res;
+    float a0 = step(z, texture(map, b).r), a1 = step(z, texture(map, b + vec2(d, 0.0)).r);
+    float a2 = step(z, texture(map, b + vec2(0.0, d)).r), a3 = step(z, texture(map, b + vec2(d, d)).r);
+    return mix(mix(a0, a1, f.x), mix(a2, a3, f.x), f.y);
+}
+// One cascade: the lookup moved about a texel along the normal (no self-shadowing on flat-shaded
+// triangles: the drifting light/dark triangle pattern) plus a slope-scaled depth bias of a texel or
+// two; a 2x2 of bilinear taps half a texel either side (smooth edges ~2 texels wide, 16 fetches).
+float cascadeShadow(sampler2D map, mat4 m, vec3 worldPos, vec3 n, vec3 l, float texelM, out bool inside)
+{
+    float ndl = clamp(dot(n, l), 0.0, 1.0);
+    vec4 ls = m * vec4(worldPos + n * texelM * (1.5 - 0.5 * ndl), 1.0);
+    vec3 p = ls.xyz / ls.w * 0.5 + 0.5;
+    inside = p.x > 0.01 && p.x < 0.99 && p.y > 0.01 && p.y < 0.99 && p.z <= 1.0;
+    if (!inside) return 1.0;
+    float slope = sqrt(max(1.0 - ndl * ndl, 0.0)) / max(ndl, 0.2);
+    float z = p.z - texelM * (0.5 + 1.0 * min(slope, 4.0)) / shadowDepthRange;
+    float res = float(shadowMapResolution);
+    return 0.25 * (shadowTap(map, p.xy + vec2(-0.5, -0.5) / res, z, res) + shadowTap(map, p.xy + vec2(0.5, -0.5) / res, z, res)
+                 + shadowTap(map, p.xy + vec2(-0.5, 0.5) / res, z, res) + shadowTap(map, p.xy + vec2(0.5, 0.5) / res, z, res));
+}
 float shadowFactor(vec3 worldPos, vec3 n, vec3 l)
 {
-    vec4 ls = lightSpaceMatrix * vec4(worldPos, 1.0);
-    vec3 p = ls.xyz / ls.w * 0.5 + 0.5;
-    if (p.x < 0.0 || p.x > 1.0 || p.y < 0.0 || p.y > 1.0 || p.z > 1.0) return 1.0; // outside the shadow box
-    float bias = max(0.002 * (1.0 - dot(n, l)), 0.0005);
-    vec2 texel = vec2(1.0 / float(shadowMapResolution));
-    // A widely spaced 3x3 filter (2 texels apart): softer edges from rocks, trees and builds at 9 taps.
-    float lit = 0.0;
-    for (int x = -1; x <= 1; x++)
-        for (int y = -1; y <= 1; y++)
-            lit += (p.z - bias > texture(shadowMap, p.xy + texel * 2.0 * vec2(x, y)).r) ? 0.0 : 1.0;
-    return lit / 9.0;
+    if (shadowMapResolution <= 0) return 1.0;
+    bool inNear, inFar;
+    float s = cascadeShadow(shadowMapNear, lightSpaceNear, worldPos, n, l, shadowTexel.x, inNear);
+    if (inNear) return s;
+    return cascadeShadow(shadowMap, lightSpaceMatrix, worldPos, n, l, shadowTexel.y, inFar);
+}
+
+// Smooth value noise in [0, 1] (macro variation of the terrain colour).
+float hash3(vec3 p) { p = mod(p, 289.0); return fract(sin(dot(p, vec3(127.1, 311.7, 74.7))) * 43758.5453); } // mod: sin() of huge arguments bands
+float vnoise(vec3 p)
+{
+    vec3 i = floor(p), f = fract(p);
+    f = f * f * (3.0 - 2.0 * f);
+    float x00 = mix(hash3(i), hash3(i + vec3(1, 0, 0)), f.x), x10 = mix(hash3(i + vec3(0, 1, 0)), hash3(i + vec3(1, 1, 0)), f.x);
+    float x01 = mix(hash3(i + vec3(0, 0, 1)), hash3(i + vec3(1, 0, 1)), f.x), x11 = mix(hash3(i + vec3(0, 1, 1)), hash3(i + vec3(1, 1, 1)), f.x);
+    return mix(mix(x00, x10, f.y), mix(x01, x11, f.y), f.z);
 }
 
 void main()
@@ -119,16 +157,20 @@ void main()
     // normal into world space for lighting.
     vec3 localNormal = normalize(fragLocalNormal);
     Triplanar tp = makeTriplanar(fragTexPos, localNormal);
+    float farMix = smoothstep(60.0, 280.0, length(viewPos - fragPosition));
+    Triplanar tpFar = makeTriplanar(fragTexPos * 0.21 + vec3(17.3, 5.1, 9.7), localNormal);
 
     // The base rock / roughness maps feed the asteroid and fantasy palettes; the planet palette takes
     // its colours from the texture layers instead, so it skips these six fetches.
     vec3 albedo = vec3(0.5);
     vec2 roughAo = vec2(0.8, 1.0);
+    // Planets bump from their own layers below (the crater normal map is not used: three fetches saved).
+    vec3 normal = geomNormal;
     if (palette != 2) {
         albedo = pow(sampleTriplanar(colorTexture, tp).rgb, vec3(2.2)); // sRGB -> linear
         roughAo = sampleTriplanar(roughAoTexture, tp).rg;
+        normal = normalize(mat3(matModel) * triplanarNormal(normalTexture, tp, localNormal));
     }
-    vec3 normal = normalize(mat3(matModel) * triplanarNormal(normalTexture, tp, localNormal));
 
     float rough = roughAo.r;
     float ao = roughAo.g;
@@ -173,6 +215,8 @@ void main()
             float wi = w8[i] / max(total, 0.001);
             if (wi < 0.01) continue;
             vec3 c = sampleLayer(tp, layerOf[i]);
+            // Far away the repeat of one scale shows: blend in the same layer ~5x larger.
+            if (farMix > 0.01) c = mix(c, sampleLayer(tpFar, layerOf[i]), 0.55 * farMix);
             if (i == 3) {
                 // Ore: flecks of the mineral's colour in the stone, by kind (iron rust, copper green,
                 // tin pale, coal black, bauxite red, ilmenite dark violet).
@@ -187,10 +231,13 @@ void main()
             bump += bumpOf[i] * wi;
         }
         albedo = a;
+        // Slow brightness and warmth changes over ~70-250 m break up what tiling is left.
+        float macro = vnoise(fragTexPos / 70.0) * 0.6 + vnoise(fragTexPos / 250.0) * 0.4;
+        albedo *= mix(vec3(0.84, 0.86, 0.9), vec3(1.14, 1.1, 1.02), macro);
         if (fragCanopy.x > 0.01) {
-            // Distant forests: where the real trees (drawn to 1 km) fade out, the ground takes the
+            // Distant forests: where the real trees (drawn to treeDistance) fade out, the ground takes the
             // colour of their crowns, by latitude as the trees do, broken up a little by the texture.
-            float c = fragCanopy.x * smoothstep(650.0, 950.0, length(viewPos - fragPosition));
+            float c = fragCanopy.x * smoothstep(0.65 * treeDistance, 0.95 * treeDistance, length(viewPos - fragPosition));
             float lat = fragCanopy.y;
             vec3 dry = vec3(0.22, 0.27, 0.07), temperate = vec3(0.09, 0.27, 0.05), cold = vec3(0.05, 0.17, 0.08);
             vec3 crowns = lat < 0.35 ? mix(dry, temperate, smoothstep(0.15, 0.35, lat)) : mix(temperate, cold, smoothstep(0.45, 0.7, lat));

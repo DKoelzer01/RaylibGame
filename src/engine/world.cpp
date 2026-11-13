@@ -5,6 +5,7 @@
 #include "utils/logger.h"
 #include "worldtypes.h"
 #include "factory.h"
+#include "fluid.h"
 
 #include <raymath.h>
 #include <rlgl.h>
@@ -66,7 +67,7 @@ Planetoid::Planetoid(std::string name, DVec3 wp, Vector3 rotation, float scale, 
     surfaceGravity = AutoSurfaceGravity(BodyKind::Asteroid, radius_ * scale); // generateWorld may override
     gravityRadius = radius_ * scale * PlanetoidField::MEAN_SURFACE;         // the terrain's mean surface
     // Smallest level whose 2x2x2 root nodes (coords -1..0) cover the body plus room for added material.
-    while ((float)(CHUNK_SIZE << rootLevel) < radius + 24.0f) rootLevel++;
+    while (kVoxelSize * (float)(CHUNK_SIZE << rootLevel) < radius + 24.0f) rootLevel++;
     planetoidRegistry[id] = this;
 }
 
@@ -80,7 +81,7 @@ Planetoid::Planetoid(std::string name, DVec3 wp, std::shared_ptr<const EmptyFiel
     surfaceGravity = 0.0f;
     gravityRadius = 1.0f;
     vehicle = true;
-    while ((float)(CHUNK_SIZE << rootLevel) < radius + 4.0f) rootLevel++;
+    while (kVoxelSize * (float)(CHUNK_SIZE << rootLevel) < radius + 4.0f) rootLevel++;
     planetoidRegistry[id] = this;
 }
 
@@ -92,7 +93,7 @@ Planetoid::Planetoid(std::string name, DVec3 wp, std::shared_ptr<const TerrainFi
     flat = true;
     minHeight = terrain->minHeight;
     maxHeight = terrain->maxHeight;
-    rootLevel = 4; // 512-voxel root tiles, a 5x5 grid around the camera (~1.3 km view range)
+    rootLevel = 4 + kVoxelShift; // 512 m root tiles, a 5x5 grid around the camera (~1.3 km view range)
     planetoidRegistry[id] = this;
 }
 
@@ -165,6 +166,11 @@ Matrix Planetoid::localModel(const DVec3& anchorLocal, const DVec3& renderOrigin
 
 Matrix Planetoid::chunkModel(const Chunk& chunk, const DVec3& renderOrigin) const {
     return ChunkPlacer(*this, renderOrigin).model(chunk.key);
+}
+
+VoxelMaterial Planetoid::materialAt(Vector3 local) const {
+    if (edits) { const int m = edits->materialAt(local); if (m >= 0) return (VoxelMaterial)m; }
+    return field->material(local, field->baseDensity(local));
 }
 
 float Planetoid::densityAt(Vector3 local) const {
@@ -267,6 +273,7 @@ void Planetoid::drawTransparent(const RenderContext& ctx) {
     }
     std::sort(order.begin(), order.end(), [](const auto& a, const auto& b) { return a.first < b.first; });
     for (auto& o : order) o.second->drawWater(c2, placer.model(o.second->key));
+    Fluid::Draw(*this, ctx, batch); // flowing water (after the static surfaces it continues)
 }
 
 void Planetoid::drawFoliage(const RenderContext& ctx) {
@@ -275,7 +282,7 @@ void Planetoid::drawFoliage(const RenderContext& ctx) {
     const Vector3 c = (worldPos - ctx.renderOrigin).toFloat();
     const float occluder[4] = { c.x, c.y, c.z, std::max(0.0f, radius - 60.0f) * scale }; // night side, as for terrain
     rlSetUniform(ctx.grassOccluderLoc, occluder, RL_SHADER_UNIFORM_VEC4, 1);
-    for (Chunk* ch : drawList) if (ch->key.level == 0) ch->drawGrass(ctx, placer.model(ch->key));
+    for (Chunk* ch : drawList) if (ch->key.stride() <= 1.0f) ch->drawGrass(ctx, placer.model(ch->key)); // the levels that carry grass (foliage.cpp)
 }
 
 void Planetoid::drawDepthOnly(const RenderContext& ctx) {
@@ -287,7 +294,20 @@ void Planetoid::drawDepthOnly(const RenderContext& ctx) {
     ChunkBatch batch(*ctx.depthMaterial);
     RenderContext c2 = ctx;
     c2.batch = &batch;
-    for (Chunk* c : drawList) c->drawChunkDepth(c2, placer.model(c->key));
+    // Pre-cull against the light box's column in body-local space: most chunks of the draw list lie far
+    // outside it, and working out their model matrix (double precision) was most of the pass's CPU time.
+    const bool column = ctx.cullAxisRadius > 0.0f;
+    const Vector3 pL = column ? toLocal(ctx.cullAxisPoint) : Vector3{}, dL = column ? dirToLocal(ctx.cullAxisDir) : Vector3{};
+    const float rL = column ? ctx.cullAxisRadius / std::max(scale, 1e-6f) : 0.0f;
+    for (Chunk* c : drawList) {
+        if (column) {
+            const float h = c->key.size() * 0.5f;
+            const Vector3 v = Vector3Subtract(Vector3AddValue(c->key.origin(), h), pL);
+            const float along = Vector3DotProduct(v, dL), reach = rL + h * 1.75f;
+            if (Vector3LengthSqr(v) - along * along > reach * reach) continue;
+        }
+        c->drawChunkDepth(c2, placer.model(c->key));
+    }
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -404,7 +424,7 @@ static void UpdateLod(Planetoid& p, Vector3 cameraRender) {
     std::vector<NodeKey> desired;
     if (p.flat) {
         // Open world: a grid of root tiles around the camera, spanning the terrain height band.
-        const float rs = (float)(CHUNK_SIZE << p.rootLevel);
+        const float rs = kVoxelSize * (float)(CHUNK_SIZE << p.rootLevel);
         const int cx = (int)floorf(camLocal.x / rs), cz = (int)floorf(camLocal.z / rs);
         const int y0 = (int)floorf(p.minHeight / rs), y1 = (int)floorf(p.maxHeight / rs);
         for (int z = cz - 2; z <= cz + 2; ++z)
@@ -452,6 +472,16 @@ static void UpdateLod(Planetoid& p, Vector3 cameraRender) {
         if (!retainedSet.empty())
             for (NodeKey k = parentOf(d); !coveredByCoarser && k.level <= p.rootLevel; k = parentOf(k)) coveredByCoarser = retainedSet.count(k) > 0;
         if (!coveredByCoarser) draw.push_back(c);
+    }
+    // Nearest first (front to back): the depth test then rejects most of the terrain hidden behind
+    // nearer hills before the (costly) terrain shader runs on it. Unsorted, much of the screen was
+    // shaded two or three times over: about a quarter of the frame.
+    {
+        std::vector<std::pair<float, Chunk*>> byDist;
+        byDist.reserve(draw.size());
+        for (Chunk* c : draw) { const Vector3 lo = c->key.origin(); byDist.push_back({ DistanceToBox(camLocal, lo, Vector3AddValue(lo, c->key.size())), c }); }
+        std::sort(byDist.begin(), byDist.end(), [](const auto& a, const auto& b) { return a.first < b.first; });
+        for (size_t i = 0; i < draw.size(); ++i) draw[i] = byDist[i].second;
     }
     p.drawList = std::move(draw);
 
@@ -549,7 +579,19 @@ void advanceBodies(Scene& world, float dt) {
     for (auto& obj : world.objects) {
         auto* p = dynamic_cast<Planetoid*>(obj.get());
         if (!p) continue;
-        p->rotation = Vector3Add(p->rotation, Vector3Scale(p->spin, dt));
+        if (p->spin.x != 0.0f || p->spin.y != 0.0f || p->spin.z != 0.0f) {
+            float* r[3] = { &p->rotation.x, &p->rotation.y, &p->rotation.z };
+            const float s[3] = { p->spin.x, p->spin.y, p->spin.z };
+            for (int k = 0; k < 3; ++k) {
+                // Something else (a load, a script) set the angle: take it over.
+                if (!p->spinAngleSet || (float)p->spinAngle[k] != *r[k]) p->spinAngle[k] = *r[k];
+                double a = fmod(p->spinAngle[k] + (double)s[k] * dt, 360.0);
+                if (a < 0.0) a += 360.0;
+                p->spinAngle[k] = a;
+                *r[k] = (float)a;
+            }
+            p->spinAngleSet = true;
+        }
         if (p->orbitParent) { PlaceBodyOnOrbit(*p); moved = true; } // parents come first in the list
     }
     if (moved) world.syncRenderPositions();
@@ -669,7 +711,7 @@ bool RaycastTerrain(Scene& world, Ray ray, float maxDistance, TerrainHit& hit) {
                     hit.point = worldPoint;
                     hit.distance = dist;
                     hit.normal = Vector3Normalize(Vector3Subtract(p->toWorld(Vector3Add(local, p->field->normal(local, p->edits.get()))), worldPoint));
-                    hit.material = p->field->material(local, p->field->baseDensity(local));
+                    hit.material = p->materialAt(local);
                 }
                 break;
             }
@@ -709,6 +751,20 @@ void ApplyTerrainEdits(Planetoid& p, const TerrainEdit* edits, size_t count) {
     for (const NodeKey& k : touched) RequestNode(p, k, -1.0f - (float)k.level * 0.01f); // ahead of background work
     if (p.trees)
         for (size_t i = 0; i < count; i += std::max<size_t>(1, count / 64)) p.trees->onEdit(edits[i].center, edits[i].radius, p.edits);
+    // Flowing water: wake it, or start it where the edit opens space next to water.
+    for (size_t i = 0; i < count; i += std::max<size_t>(1, count / 64)) Fluid::OnTerrainEdit(p, edits[i].center, edits[i].radius);
+}
+
+void RequestRemesh(Planetoid& p, Vector3 c, float r) {
+    std::vector<NodeKey> touched;
+    for (auto& entry : p.nodes) {
+        const NodeKey& k = entry.first;
+        const Vector3 nlo = k.origin();
+        const Vector3 nhi = Vector3AddValue(nlo, k.size() * (CHUNK_SIZE + 1.0f) / CHUNK_SIZE);
+        if (DistanceToBox(c, nlo, nhi) > r + k.stride() + 1.0f) continue;
+        touched.push_back(k);
+    }
+    for (const NodeKey& k : touched) RequestNode(p, k, -1.0f - (float)k.level * 0.01f);
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -862,7 +918,7 @@ void generateWorld(Scene& world) {
             auto field = std::make_shared<PlanetField>(seed, radius, kind == BodyKind::Moon);
             p->gravityRadius = radius;
             p->rootLevel = 0;
-            while ((float)(CHUNK_SIZE << p->rootLevel) < field->maxRadius() + 24.0f) p->rootLevel++;
+            while (kVoxelSize * (float)(CHUNK_SIZE << p->rootLevel) < field->maxRadius() + 24.0f) p->rootLevel++;
             p->field = field;
             if (kind == BodyKind::Planet) {
                 field->foliage = true;
@@ -943,6 +999,7 @@ void BeginWorldStreaming() { generationStart = GetTime(); buildMsTotal = sampleM
 void regenerateWorld(Scene& world) {
     Jobs().clearQueued();  // in-flight jobs finish; their results are dropped (planetoid ids are gone)
     Factory::Reset();      // machines belong to the old bodies
+    Fluid::Reset();        // so does flowing water
     player.nearest = nullptr; // every body goes (the player refinds its ground next update)
     gRings.clear();        // before their parent bodies go
     world.objects.clear(); // releases chunk meshes
@@ -979,19 +1036,57 @@ static std::string RegionFile(const std::string& dir, int body, TerrainDeltas::K
 static void EncodeChunk(const DeltaChunk& c, std::vector<uint16_t>& out) {
     out.clear();
     const int n = kDeltaChunk * kDeltaChunk * kDeltaChunk;
+    thread_local std::vector<int16_t> dense(DeltaChunk::kN);
+    c.toDense(dense.data());
+    const int16_t* d = dense.data();
     int i = 0;
     while (i < n) {
         int zeros = 0;
-        while (i < n && c.d[i] == 0 && zeros < 65535) { ++i; ++zeros; }
+        while (i < n && d[i] == 0 && zeros < 65535) { ++i; ++zeros; }
         const int start = i;
-        while (i < n && c.d[i] != 0 && i - start < 65535) ++i;
+        while (i < n && d[i] != 0 && i - start < 65535) ++i;
         out.push_back((uint16_t)zeros);
         out.push_back((uint16_t)(i - start));
-        for (int k = start; k < i; ++k) out.push_back((uint16_t)c.d[k]);
+        for (int k = start; k < i; ++k) out.push_back((uint16_t)d[k]);
     }
 }
 
 static bool DecodeChunk(const uint16_t* in, size_t words, DeltaChunk& c) {
+    const int n = kDeltaChunk * kDeltaChunk * kDeltaChunk;
+    thread_local std::vector<int16_t> dense(DeltaChunk::kN);
+    std::fill(dense.begin(), dense.end(), (int16_t)0);
+    int i = 0;
+    size_t w = 0;
+    while (w + 1 < words) {
+        const int zeros = in[w++], count = in[w++];
+        if (i + zeros + count > n || w + count > words) return false;
+        i += zeros;
+        for (int k = 0; k < count; ++k) dense[i++] = (int16_t)in[w++];
+    }
+    c.fromDense(dense.data());
+    return true;
+}
+
+// The placed-material channel: the same run-length layout, one uint16 per material byte.
+static void EncodeMaterials(const DeltaChunk& c, std::vector<uint16_t>& out) {
+    out.clear();
+    const int n = kDeltaChunk * kDeltaChunk * kDeltaChunk;
+    int i = 0;
+    bool any = false;
+    for (int k = 0; k < n && !any; ++k) any = c.mat(k) != 0;
+    if (!any) return; // nothing placed: an empty channel
+    while (i < n) {
+        int zeros = 0;
+        while (i < n && c.mat(i) == 0 && zeros < 65535) { ++i; ++zeros; }
+        const int start = i;
+        while (i < n && c.mat(i) != 0 && i - start < 65535) ++i;
+        out.push_back((uint16_t)zeros);
+        out.push_back((uint16_t)(i - start));
+        for (int k = start; k < i; ++k) out.push_back((uint16_t)c.mat(k));
+    }
+}
+
+static bool DecodeMaterials(const uint16_t* in, size_t words, DeltaChunk& c) {
     const int n = kDeltaChunk * kDeltaChunk * kDeltaChunk;
     int i = 0;
     size_t w = 0;
@@ -999,7 +1094,7 @@ static bool DecodeChunk(const uint16_t* in, size_t words, DeltaChunk& c) {
         const int zeros = in[w++], count = in[w++];
         if (i + zeros + count > n || w + count > words) return false;
         i += zeros;
-        for (int k = 0; k < count; ++k) c.d[i++] = (int16_t)in[w++];
+        for (int k = 0; k < count; ++k) c.setMat(i++, (uint8_t)std::min<int>(in[w++], (int)VoxelMaterial::Count));
     }
     return true;
 }
@@ -1007,17 +1102,21 @@ static bool DecodeChunk(const uint16_t* in, size_t words, DeltaChunk& c) {
 static bool WriteRegion(const std::string& path, const std::vector<std::pair<TerrainDeltas::Key, const DeltaChunk*>>& chunks) {
     FILE* f = fopen(path.c_str(), "wb");
     if (!f) return false;
-    fwrite("RGN3", 1, 4, f);
+    // RGN5: RGN4 (RGN3's run-length densities, then the placed-material channel coded the same way)
+    // on the kVoxelSize lattice.
+    fwrite("RGN5", 1, 4, f);
     const int32_t n = (int32_t)chunks.size();
     fwrite(&n, 4, 1, f);
-    std::vector<uint16_t> enc;
+    std::vector<uint16_t> enc, encM;
     for (const auto& c : chunks) {
         int cx, cy, cz;
         TerrainDeltas::Unpack(c.first, cx, cy, cz);
         EncodeChunk(*c.second, enc);
-        const int32_t hdr[4] = { cx, cy, cz, (int32_t)(enc.size() * 2) };
-        fwrite(hdr, 4, 4, f);
+        EncodeMaterials(*c.second, encM);
+        const int32_t hdr[5] = { cx, cy, cz, (int32_t)(enc.size() * 2), (int32_t)(encM.size() * 2) };
+        fwrite(hdr, 4, 5, f);
         fwrite(enc.data(), 2, enc.size(), f);
+        fwrite(encM.data(), 2, encM.size(), f);
     }
     fclose(f);
     return true;
@@ -1031,28 +1130,36 @@ static bool ReadRegion(const std::string& path, TerrainDeltasBuilder& b) {
     bool ok = fread(magic, 1, 4, f) == 4 && fread(&n, 4, 1, f) == 1;
     // RGN3: run-length, deltas in 1/64 steps. RGN2 (run-length) and RGN1 (DEFLATE) stored 1/256
     // steps: scaled down on load.
-    const bool rle = ok && (memcmp(magic, "RGN3", 4) == 0 || memcmp(magic, "RGN2", 4) == 0);
-    const int legacy = ok && memcmp(magic, "RGN3", 4) != 0 ? 4 : 1;
-    auto rescale = [legacy](DeltaChunk& c) { if (legacy > 1) for (int16_t& v : c.d) v = (int16_t)lroundf(v / (float)legacy); };
+    // RGN1-4 sit on the old 1 m lattice: their edits would land in the wrong place on the kVoxelSize one
+    // (a save-breaking change, 2026-11-12), so they are skipped.
+    if (ok && memcmp(magic, "RGN5", 4) != 0) { logger.logf("[World] %s: terrain edits on the old 1 m lattice, skipped\n", path.c_str()); fclose(f); return true; }
+    const bool v4 = ok && memcmp(magic, "RGN5", 4) == 0; // + the placed-material channel
+    const bool rle = ok && (v4 || memcmp(magic, "RGN3", 4) == 0 || memcmp(magic, "RGN2", 4) == 0);
+    const int legacy = ok && !v4 && memcmp(magic, "RGN3", 4) != 0 ? 4 : 1;
+    auto rescale = [legacy](DeltaChunk& c) { if (legacy > 1) for (int i = 0; i < DeltaChunk::kN; ++i) c.set(i, (int16_t)lroundf(c.get(i) / (float)legacy)); };
     ok = ok && (rle || memcmp(magic, "RGN1", 4) == 0);
     std::vector<unsigned char> comp;
     for (int32_t i = 0; ok && i < n; ++i) {
-        int32_t hdr[4];
-        if (fread(hdr, 4, 4, f) != 4 || hdr[3] <= 0) { ok = false; break; }
+        int32_t hdr[5] = {};
+        if (fread(hdr, 4, v4 ? 5 : 4, f) != (size_t)(v4 ? 5 : 4) || hdr[3] <= 0 || hdr[4] < 0) { ok = false; break; }
         comp.resize((size_t)hdr[3]);
         if (fread(comp.data(), 1, comp.size(), f) != comp.size()) { ok = false; break; }
         if (rle) {
             auto chunk = std::make_shared<DeltaChunk>();
             if (!DecodeChunk((const uint16_t*)comp.data(), comp.size() / 2, *chunk)) { ok = false; break; }
+            if (hdr[4] > 0) {
+                std::vector<unsigned char> mats((size_t)hdr[4]);
+                if (fread(mats.data(), 1, mats.size(), f) != mats.size() || !DecodeMaterials((const uint16_t*)mats.data(), mats.size() / 2, *chunk)) { ok = false; break; }
+            }
             rescale(*chunk);
             b.setChunk(TerrainDeltas::KeyOf(hdr[0], hdr[1], hdr[2]), chunk);
             continue;
         }
         int size = 0;
         unsigned char* raw = DecompressData(comp.data(), (int)comp.size(), &size);
-        if (raw && size == (int)sizeof(DeltaChunk::d)) {
+        if (raw && size == (int)(DeltaChunk::kN * sizeof(int16_t))) {
             auto chunk = std::make_shared<DeltaChunk>();
-            memcpy(chunk->d, raw, sizeof(chunk->d));
+            for (int i = 0; i < DeltaChunk::kN; ++i) chunk->set(i, ((const int16_t*)raw)[i]);
             rescale(*chunk);
             b.setChunk(TerrainDeltas::KeyOf(hdr[0], hdr[1], hdr[2]), chunk);
         } else ok = false;
@@ -1112,7 +1219,7 @@ bool SaveWorld(Scene& world) {
     const DVec3 tgtWorld = world.renderOrigin + world.camera.target;
     // v4: the system definition is stored in the save, so a save reloads the system it was made in
     // even if bodies.txt has changed since.
-    fprintf(f, "RAYLIBGAME_SAVE 10\n");
+    fprintf(f, "RAYLIBGAME_SAVE 11\n");
     fprintf(f, "seed %u\nbodies %zu\n", worldGen.lastSeed, worldGen.system.bodies.size());
     for (const BodyDef& b : worldGen.system.bodies) fprintf(f, "%s\n", FormatBodyDef(b).c_str());
     fprintf(f, "time %.6f\n", worldTime); // v5: the world clock (orbits)
@@ -1141,6 +1248,7 @@ bool SaveWorld(Scene& world) {
         // v8: build plots and their parts.
         if (p->plots) p->plots->save(f); else fprintf(f, "plots 0\n");
         Factory::Save(f, p->id); // v9: machine contents
+        Fluid::Save(f, p->id);   // v11: flowing water
         regionsWritten += SaveBodyRegions(*p, bodyIndex, dir);
     }
     // v10: ring rocks a visit changed (edits, plots), whether they are voxel bodies now or not.
@@ -1154,11 +1262,12 @@ bool LoadWorldSave(Scene& world) {
     FILE* f = fopen(SAVE_PATH, "r");
     if (!f) return false;
     int version = 0;
-    if (fscanf(f, "RAYLIBGAME_SAVE %d", &version) != 1 || version < 2 || version > 10) {
+    if (fscanf(f, "RAYLIBGAME_SAVE %d", &version) != 1 || version < 2 || version > 11) {
         fclose(f);
         logger.logf("[World] %s: unsupported save version %d\n", SAVE_PATH, version);
         return false;
     }
+    Fluid::Reset(); // the save carries its own water
     unsigned int seed = 0;
     SystemDef sys;
     double c[6];
@@ -1250,6 +1359,7 @@ bool LoadWorldSave(Scene& world) {
         if (version >= 8 && !plots->load(f)) logger.logf("[World] %s: damaged plot data\n", SAVE_PATH);
         if (body) body->plots = plots->plots.empty() ? nullptr : std::move(plots);
         if (version >= 9) Factory::Load(f, body ? body->id : 0); // machine contents, applied when the layouts reach the simulation
+        if (version >= 11) Fluid::Load(f, body ? body->id : 0); // flowing water (classified again as it loads)
         if (body) {
             body->edits = deltas;
             body->rotation = rot;
@@ -1359,6 +1469,7 @@ bool IsUnderwater(Scene& world, Vector3 renderPoint) {
     const float d = Vector3Length(local);
     const float sea = pf->seaLevelRadius();
     if (sea <= 0.0f || d < 1.0f) return false;
+    if (Fluid::Wet(*p, local)) return true; // flowing water
     const Vector3 dir = Vector3Scale(local, 1.0f / d);
     // The water surface here: the sea, or a river or pond above it.
     float surface = sea;

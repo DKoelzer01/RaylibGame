@@ -15,19 +15,20 @@ struct ChunkMeshData;
 // point is above sea level. Same seed, same grass; nothing is stored. Digging re-meshes the chunk,
 // and the new (dug) surface is dirt, so the grass there is gone.
 //
-// Each tuft instance is 8 floats: position (chunk-local, mesh frame), scale (m), body-local up
+// Each tuft instance is 8 floats: position (chunk-local, mesh frame), scale (m) + 10 * variant, body-local up
 // (xyz) and a hash in [0, 1) for rotation, lean and colour variation.
 constexpr int kGrassFloats = 8;
-constexpr float kGrassPerSquareMetre = 4.0f;
-constexpr float kGrassDrawDistance = 70.0f; // fully faded out by here (m)
+constexpr float kGrassPerSquareMetre = 7.0f;
+constexpr int kGrassVariants = 3;            // sparse tuft, clump, dense clump (foliage.cpp)
+inline float kGrassDrawDistance = 100.0f;    // fully faded out by here (m); --grass-dist
 extern bool foliageEnabled;  // draw foliage (bench: --no-foliage)
 
 void ScatterGrass(const DensityField& field, ChunkMeshData& out); // worker thread
 
-// GPU side, per chunk: a VAO pairing the shared tuft mesh with this chunk's instance buffer.
+// GPU side, per chunk: VAOs pairing the shared tuft meshes with this chunk's instance buffer.
 struct FoliageGpu {
-    unsigned int vao = 0, vbo = 0;
-    int count = 0;
+    unsigned int vao[kGrassVariants] = {}, vbo = 0;  // a VAO per variant over one instance buffer
+    int count[kGrassVariants] = {};
 };
 void Foliage_Upload(FoliageGpu& g, const std::vector<float>& instances); // main thread
 void Foliage_Release(FoliageGpu& g);

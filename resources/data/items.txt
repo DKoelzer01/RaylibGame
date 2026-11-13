@@ -13,14 +13,15 @@ power_cell      | Power cell      |  20 | 250,220, 80 | Recharges suit power.
 concrete        | Lunacrete       | block | 200,200,190 | Dense building material.
 glass           | Glass           | 200 | 190,225,235 | Melted from sand. Lenses and windows.
 telescope       | Telescope       |   tool | 200,170,110 | T to raise it, wheel to zoom. Spot the moon and the ring from the ground.
-wood            | Wood            | 999 | 150,105, 60 | Logs from felled trees. Fuel and building material.
+any_planks      | Any planks      | 999 | 166,120, 74 | Planks of any wood: recipes that need wood take whichever planks you carry (saw logs into planks, Tab).
+any_log         | Any log         | 999 | 120, 84, 50 | A log of any tree.
 fibre           | Plant fibre     | 999 | 170,190,110 | Tough stems from bushes. Twists into rope.
 berries         | Berries         | 200 | 190, 40, 70 | Wild berries. Edible.
 rope            | Rope            | 200 | 200,170,120 | Twisted plant fibre.
 clay            | Clay            | 999 | 170,120, 95 | Wet earth. Moulds into crucibles; bricks for kilns and ovens.
 crucible_mold   | Crucible mould  |  20 | 175,125,100 | Unfired clay crucible. Fire it in a campfire.
 fired_crucible  | Fired crucible  |  20 | 190, 90, 60 | Holds molten metal. The key to the stone age.
-charcoal        | Charcoal        | 999 |  45, 40, 38 | Wood baked in a campfire. Burns hotter and longer than wood.
+charcoal        | Charcoal        | 999 |  45, 40, 38 | Wood baked in a campfire. Burns hotter and longer than logs.
 coal            | Coal            | 999 |  30, 30, 32 | From coal deposits underground. Good fuel; bakes into coke.
 coke            | Coke            | 999 |  70, 70, 78 | Baked coal. Burns hot enough to make steel.
 vacuum_tube     | Vacuum tube     | 200 | 210,200,150 | The first circuit element.
@@ -28,7 +29,9 @@ basic_circuit   | Basic circuit   | 200 |  60,140, 70 | Circuit board for LV mac
 lv_hull         | LV machine hull |  20 | 130,132,140 | Steel casing for LV machines.
 conveyor        | Conveyor        | 999 |  60, 62, 66 | Moves items between machines (build part).
 cable           | Copper cable    | 999 | 184,110, 60 | Carries power between machines (build part).
-campfire        | Campfire        |  20 | 200, 90, 40 | Burns wood: bakes charcoal, fires clay.
+pipe            | Water pipe      | 999 |  96,116,140 | Carries water from a water pump to outlets (build part: join them face to face).
+water_outlet    | Water outlet    | 999 |  60,120,190 | Pours out the water a pump sends down its pipes (build part).
+campfire        | Campfire        |  20 | 200, 90, 40 | Burns logs and planks: bakes charcoal, fires clay.
 kiln            | Kiln            |  20 | 150, 95, 70 | Fuel-fired: smelts ore into ingots, sand into glass, alloys bronze.
 coke_oven       | Coke oven       |  20 | 120, 80, 60 | Bakes coal into coke (no fuel needed).
 blast_furnace   | Blast furnace   |  20 |  90, 70, 70 | Burns coke to make steel from iron.
@@ -50,7 +53,7 @@ rocket_fuel     | Rocket fuel     | 200 | 200, 80, 40 | 100 kg of fuel. Look at 
 # Milestone 8: ore processing, MV, HV
 ore_washer      | Ore washer      |  20 |  70,120,170 | LV: washes crushed ore with water into purified ore.
 centrifuge      | Centrifuge      |  20 | 160,160,170 | LV: splits purified ore into dust and a byproduct.
-water_pump      | Water pump      |  20 |  50, 90,160 | LV: pumps water.
+water_pump      | Water pump      |  20 |  50, 90,160 | LV: lifts water from under it (a river, a pond, the sea) into pipes; outlets pour it out. Needs power.
 mv_generator    | MV generator    |  20 | 200, 90, 50 | Burns coal or coke for MV power (128 V).
 electrolyzer    | Electrolyzer    |  20 | 180,180, 80 | MV: splits water into hydrogen and oxygen; bauxite dust into aluminium.
 chemical_reactor | Chemical reactor | 20 | 120,160,120 | MV: coal and hydrogen into polyethylene.
@@ -102,7 +105,8 @@ wool             | Wool             |   999 | 235,235,225 | Shorn from woolbacks
 hide             | Hide             |   999 | 160,110,70  | From plains runners and hornhides. Leather for suits.
 feather          | Feather          |   999 | 230,220,210 | From cluckers.
 shears           | Shears           |  tool | 180,180,190 | Shear a woolback for wool (look at it, O).
-bucket           | Bucket           |  tool | 160,160,170 | Milk a hornhide (look at it, O).
+bucket           | Bucket           |  tool | 160,160,170 | Hold it (hotbar): RMB scoops 1 m^3 of water from a river, pond, the sea or a channel. Milks a hornhide (look at it, O).
+water_bucket     | Water bucket     |  tool |  70,120,200 | A bucket of water (1 m^3): RMB pours it where you look (water a field, fill a basin).
 fence            | Fence            | block | 130,95,60   | A 1 m wooden panel. Animals can't cross it: build a pen.
 gate             | Gate             | block | 165,120,70  | A fence panel you can walk through; animals can't.
 # Environmental suit (plan 2, milestone 13): suits and modules, fitted in the inventory's Suit tab.
@@ -134,9 +138,13 @@ station_core       | Station core       | block | 230,220,120 | Build it onto a 
 oak_log            |  Oak log          |   999 | 120,84,50   | From broadleaf trees. Saw into oak planks (Tab).
 birch_log          |  Birch log        |   999 | 220,214,200 | From the pale broadleaf trees. Saw into birch planks (Tab).
 pine_log           |  Pine log         |   999 | 110,76,46   | From conifers. Saw into pine planks (Tab).
+maple_log          |  Maple log        |   999 | 128,70,52   | From the red-leaved broadleaf trees. Saw into maple planks (Tab).
+spruce_log         |  Spruce log       |   999 | 84,60,44    | From the dark, dense conifers. Saw into spruce planks (Tab).
 oak_planks         | Oak planks        |   999 | 158,112,66  | Warm brown planks: build any shape with them.
 birch_planks       | Birch planks      |   999 | 214,196,152 | Pale planks: build any shape with them.
 pine_planks        | Pine planks       |   999 | 176,132,82  | Light brown planks: build any shape with them.
+maple_planks       | Maple planks      |   999 | 182,104,78  | Reddish planks: build any shape with them.
+spruce_planks      | Spruce planks     |   999 | 112,82,58   | Dark brown planks: build any shape with them.
 granite            | Granite           |   999 | 168,146,140 | Speckled pink-grey stone, from mountain rock. A building material.
 basalt             | Basalt            |   999 | 62,62,68    | Dark stone from deep rock, the sea floor and the moon. A building material.
 sandstone          | Sandstone         |   999 | 212,182,132 | Warm yellow stone from low coastal land. A building material.
@@ -175,3 +183,13 @@ amethyst_block     | Amethyst block     |   999 | 150,100,200 | Polished amethys
 ruby_block         | Ruby block         |   999 | 196,40,70   | Polished ruby: build any shape with it.
 sapphire_block     | Sapphire block     |   999 | 50,80,196   | Polished sapphire: build any shape with it.
 emerald_block      | Emerald block      |   999 | 40,176,110  | Polished emerald: build any shape with it.
+# Moon and ring (M24, tiers 9-10): materials carried home to build Terra's EV machines.
+anorthite          | Anorthite          |   999 | 222,220,212 | Pale moon rock. The arc furnace smelts it into aluminium.
+helium3            | Helium-3           |   999 | 200,232,255 | Fusion fuel: a trace in moon regolith that the centrifuge separates.
+nickel_iron_ore    | Nickel-iron        |   999 | 150,140,120 | Metal straight from ring rocks: the arc furnace splits it into nickel and iron.
+superconductor     | Superconductor     |   999 | 120,160,230 | Platinum wire cooled by ice: carries current without loss (EV machines).
+ev_hull            | EV machine hull    |    20 | 170,175,190 | Titanium-alloy casing laced with superconductor, for EV (2048 V) machines.
+fusion_reactor     | Fusion reactor     |    20 | 230,120,255 | EV generator (2048 V): burns helium-3.
+mass_driver        | Mass driver        |    20 | 160,170,190 | EV: fires cargo capsules to orbit along a magnetic rail.
+cargo_capsule      | Cargo capsule      |   999 | 200,200,210 | Packed cargo for the mass driver.
+launched_capsule   | Orbital delivery   |   999 | 255,220,120 | A cargo capsule the mass driver put in orbit.

@@ -37,7 +37,7 @@ namespace {
     }
 }
 
-static bool IsMachineItem(const std::string& id) {
+bool IsMachineItem(const std::string& id) {
     for (int t = 0; t < (int)PartType::Count; ++t) if (id == PartCostItem((PartType)t) && IsMachine((PartType)t)) return true;
     return false;
 }
@@ -78,11 +78,58 @@ bool BuildTool_Place(Planetoid& body, Plot& plot, const Part& part, bool charge)
     return true;
 }
 
+// Breaking built parts: LMB held on a part for kBreakHold seconds (in build mode or out of it; a
+// part in front of the ground takes the click from the terrain tool). A short hold, so a stray click
+// never deletes a wall.
+namespace {
+    constexpr float kBreakHold = 0.45f;
+    const Plot* breakPlot = nullptr;
+    int breakPart = -1;
+    float breakHeld = 0.0f;
+    bool breakAiming = false;
+}
+
+float BuildTool_BreakProgress() { return breakAiming && breakHeld > 0.0f ? std::min(1.0f, breakHeld / kBreakHold) : 0.0f; }
+bool BuildTool_AimingPart() { return breakAiming; }
+
+static void UpdateBreak(Scene& world, bool inputEnabled) {
+    breakAiming = false;
+    Planetoid* body = player.nearest;
+    if (!body || !body->plots || player.flyMode) { breakHeld = 0.0f; breakPart = -1; return; }
+    const Vector3 dir = Vector3Normalize(Vector3Subtract(world.camera.target, world.camera.position));
+    const Vector3 lo = body->toLocal(world.camera.position), ld = body->dirToLocal(dir);
+    float best = buildTool.active ? buildTool.reach : terrainTool.reach;
+    Plot* hitPlot = nullptr;
+    Int3 hitCell{};
+    for (auto& pl : body->plots->plots) {
+        Int3 c, f; float d;
+        if (pl->raycast(lo, ld, best, c, f, d)) { best = d; hitPlot = pl.get(); hitCell = c; }
+    }
+    if (!hitPlot) { breakHeld = 0.0f; breakPart = -1; return; }
+    TerrainHit th;
+    if (RaycastTerrain(world, Ray{ world.camera.position, dir }, best, th) && th.planetoid == body && th.distance < best * body->scale) { breakHeld = 0.0f; breakPart = -1; return; }
+    const int part = hitPlot->partAt(hitCell);
+    if (part < 0) { breakHeld = 0.0f; breakPart = -1; return; }
+    breakAiming = true;
+    if (!inputEnabled || !IsMouseButtonDown(MOUSE_BUTTON_LEFT)) { breakHeld = std::min(breakHeld, 0.0f); breakPart = -1; return; }
+    if (hitPlot != breakPlot || part != breakPart) { breakPlot = hitPlot; breakPart = part; breakHeld = std::max(breakHeld, 0.0f); }
+    breakHeld += GetFrameTime();
+    if (breakHeld < kBreakHold) return;
+    const Part removed = hitPlot->parts[part];
+    if (hitPlot->remove(part)) {
+        if (!terrainTool.creative) inventory.add(PartItem(removed), PartCostCount(removed.type));
+        Audio_Play(Sfx::Dig, 0.5f, 1.3f);
+    }
+    breakPart = -1;
+    breakHeld = -0.15f; // a breath before the next part (holding on clears a wall part by part)
+}
+
 void BuildTool_Update(Scene& world, bool inputEnabled, bool usable) {
-    if (!usable) { buildTool.active = false; return; }
+    if (!usable) { buildTool.active = false; breakAiming = false; breakHeld = 0.0f; return; }
+    UpdateBreak(world, inputEnabled);
     if (inputEnabled && IsKeyPressed(KEY_G)) {
         buildTool.active = !buildTool.active;
-        GameUI_Toast(buildTool.active ? "Build mode: wheel shape, R/V rotate, RMB place, LMB remove, B save blueprint, N blueprints (G to leave)" : "Build mode off");
+        GameUI_Toast(buildTool.active ? "Build mode: wheel shape, R/V rotate, RMB place, hold LMB remove, B save blueprint, N blueprints (G to leave)" : "Build mode off");
     }
     aim = Aim{};
     if (!buildTool.active) return;
@@ -119,6 +166,17 @@ void BuildTool_Update(Scene& world, bool inputEnabled, bool usable) {
     if (hitPlot && (!terrain || bestPart <= th.distance)) {
         aim.plot = hitPlot;
         aim.part.origin = { hitCell.x + hitFace.x, hitCell.y + hitFace.y, hitCell.z + hitFace.z };
+        {   // A part bigger than a cell grows from its origin, which could reach back into the block
+            // aimed at: slide it out along the aimed face until every cell of it is in front of that face.
+            std::vector<std::pair<Int3, CellShape>> fp;
+            Plot::Footprint(aim.part, fp);
+            int behind = 0;
+            for (const auto& c : fp) {
+                const int d = (c.first.x - hitCell.x) * hitFace.x + (c.first.y - hitCell.y) * hitFace.y + (c.first.z - hitCell.z) * hitFace.z;
+                behind = std::max(behind, 1 - d);
+            }
+            aim.part.origin = { aim.part.origin.x + hitFace.x * behind, aim.part.origin.y + hitFace.y * behind, aim.part.origin.z + hitFace.z * behind };
+        }
         aim.removePlot = hitPlot;
         aim.removePart = hitPlot->partAt(hitCell);
     } else if (terrain) {
@@ -159,13 +217,7 @@ void BuildTool_Update(Scene& world, bool inputEnabled, bool usable) {
             target = body->plots->plotFor(aim.newOrigin, 0.0f, true);
         }
         if (BuildTool_Place(*body, *target, aim.part, true)) Audio_Play(Sfx::Build, 0.5f, 1.2f);
-    } else if (IsMouseButtonPressed(MOUSE_BUTTON_LEFT) && aim.removePlot && aim.removePart >= 0) {
-        const Part removed = aim.removePlot->parts[aim.removePart];
-        if (aim.removePlot->remove(aim.removePart)) {
-            if (!terrainTool.creative) inventory.add(PartItem(removed), PartCostCount(removed.type));
-            Audio_Play(Sfx::Dig, 0.5f, 1.3f);
-        }
-    }
+    } // LMB on a part: UpdateBreak (a short hold)
 }
 
 void BuildTool_Draw3D(Scene& world) {
@@ -202,6 +254,15 @@ void BuildTool_Draw3D(Scene& world) {
 }
 
 void BuildTool_DrawHUD() {
+    {   // The bar under the crosshair: a part breaking (amber, filling) or the swing recovering (white).
+        const int bx = GetScreenWidth() / 2 - 30, by = GetScreenHeight() / 2 + 20, bw = 60;
+        const float brk = BuildTool_BreakProgress(), cd = buildTool.active ? 0.0f : TerrainTool_Cooldown();
+        if (brk > 0.0f || cd > 0.0f) {
+            DrawRectangle(bx - 1, by - 1, bw + 2, 6, Fade(BLACK, 0.55f));
+            if (brk > 0.0f) DrawRectangle(bx, by, (int)(bw * brk), 4, Color{ 255, 180, 60, 255 });
+            else DrawRectangle(bx, by, (int)(bw * (1.0f - cd)), 4, Fade(RAYWHITE, 0.85f));
+        }
+    }
     if (!buildTool.active) return;
     Blueprint_DrawHUD();
     const PartType t = (PartType)buildTool.part;
@@ -250,6 +311,13 @@ void Machine_Update(Scene& world, bool inputEnabled) {
         if (fb && fp && IsKeyPressed(KEY_O)) Farm_Harvest(*fb, *fp, machineAim.part);
         return;
     }
+    // RMB (outside build mode, where RMB places parts) opens the machine's own screen: its slots
+    // beside the inventory, like the player's.
+    if (!buildTool.active && IsMouseButtonPressed(MOUSE_BUTTON_RIGHT)) {
+        GameUI_OpenContainer(machineAim.body, machineAim.plot, machineAim.part, (int)machineAim.type);
+        Audio_Play(Sfx::Pickup, 0.3f, 1.0f);
+        return;
+    }
     if (IsKeyPressed(KEY_I)) {
         // Everything in the inventory the machine might take: fuel for generators, recipe inputs,
         // anything for a chest (the simulation hands back what does not fit).
@@ -266,7 +334,7 @@ void Machine_Update(Scene& world, bool inputEnabled) {
 }
 
 void Machine_DrawHUD() {
-    if (machineAim.part < 0) return;
+    if (machineAim.part < 0 || GameUI_ContainerOpen()) return; // the open screen watches its own machine
     if (machineAim.type == PartType::Farmland) {
         Planetoid* fb = Planetoid::find(machineAim.body);
         Plot* fp = fb && fb->plots ? fb->plots->byId(machineAim.plot) : nullptr;
@@ -284,5 +352,5 @@ void Machine_DrawHUD() {
     DrawText(TextFormat("in: %s", v.input.c_str()), x, y + 40, 16, RAYWHITE);
     DrawText(TextFormat("out: %s", v.output.c_str()), x, y + 60, 16, RAYWHITE);
     if (v.energyMax > 0) DrawText(TextFormat("charge %d / %d EU", v.energy, v.energyMax), x, y + 80, 16, YELLOW);
-    else DrawText("I put items in   O take the output", x, y + 80, 16, Fade(RAYWHITE, 0.7f));
+    else DrawText("RMB open   I put items in   O take the output", x, y + 80, 16, Fade(RAYWHITE, 0.7f));
 }

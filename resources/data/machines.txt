@@ -2,15 +2,15 @@
 #   power: none (runs by itself), fuel (burns fuel while working), eu (draws from cables),
 #          generator (burns fuel into EU at its voltage), storage (chest), battery
 # A machine refuses power from a network above its voltage. Fuel burn times are in fuels.
-campfire        | 0  | fuel      | 0  | wood charcoal
-kiln            | 0  | fuel      | 0  | wood charcoal coal coke
+campfire        | 0  | fuel      | 0  | oak_log birch_log maple_log pine_log spruce_log oak_planks birch_planks maple_planks pine_planks spruce_planks charcoal
+kiln            | 0  | fuel      | 0  | oak_log birch_log maple_log pine_log spruce_log oak_planks birch_planks maple_planks pine_planks spruce_planks charcoal coal coke
 coke_oven       | 0  | none      | 0  |
 blast_furnace   | 0  | fuel      | 0  | coke
-boiler          | 8  | generator | 8  | wood charcoal coal coke
+boiler          | 8  | generator | 8  | oak_log birch_log maple_log pine_log spruce_log oak_planks birch_planks maple_planks pine_planks spruce_planks charcoal coal coke
 forge_hammer    | 8  | eu        | 0  |
 alloy_smelter   | 8  | eu        | 0  |
 steam_macerator | 8  | eu        | 0  |
-generator       | 32 | generator | 32 | wood charcoal coal coke
+generator       | 32 | generator | 32 | oak_log birch_log maple_log pine_log spruce_log oak_planks birch_planks maple_planks pine_planks spruce_planks charcoal coal coke
 furnace         | 32 | eu        | 0  |
 macerator       | 32 | eu        | 0  |
 chest           | 0  | storage   | 0  |
@@ -26,8 +26,20 @@ hv_generator    | 512 | generator | 512 | coke
 arc_furnace     | 512 | eu        | 0  |
 refinery        | 512 | eu        | 0  |
 precision_assembler | 512 | eu    | 0  |
+fusion_reactor  | 2048 | generator | 2048 | helium3
+mass_driver     | 2048 | eu       | 0  |
 # fuel | burn ticks (20 a second)
-fuel wood 400
+fuel oak_log 1200
+fuel birch_log 1200
+fuel maple_log 1200
+fuel pine_log 1200
+fuel spruce_log 1200
+fuel oak_planks 300
+fuel birch_planks 300
+fuel maple_planks 300
+fuel pine_planks 300
+fuel spruce_planks 300
 fuel charcoal 1600
 fuel coal 1600
 fuel coke 3200
+fuel helium3 12000

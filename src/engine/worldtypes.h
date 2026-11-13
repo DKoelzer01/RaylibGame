@@ -60,6 +60,8 @@ public:
     float gravityRadius = 0.0f;                          // mean surface: inverse-square outside, linear inside
     float radius;
     Vector3 spin = { 0, 0, 0 };                          // degrees per second about X/Y/Z
+    double spinAngle[3] = { 0, 0, 0 };                   // rotation kept in double and wrapped to [0, 360): float Euler angles grown by spin*dt lose precision over a long session
+    bool spinAngleSet = false;
     // Circular orbit around another body (bodies.txt orbit=): advanced analytically from the world
     // clock in advanceBodies(), in the parent's equatorial (XZ) plane. orbitParent is validated by id.
     Planetoid* orbitParent = nullptr;
@@ -120,6 +122,7 @@ public:
     bool useFarSphere(const RenderContext& ctx) const;  // far enough (zoom included) and baked
 
     float densityAt(Vector3 local) const; // includes edits; main-thread helper (raycasts)
+    VoxelMaterial materialAt(Vector3 local) const; // the material there: placed ground's own, else the field's
     // Velocity (world units/s) of the body-fixed point currently at renderPoint, from the spin.
     Vector3 surfaceVelocity(Vector3 renderPoint) const;
     // Body-local direction <-> world direction (rotation only).

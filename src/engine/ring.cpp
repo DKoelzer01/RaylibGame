@@ -22,6 +22,7 @@ namespace {
     constexpr double kRebinSeconds = 5.0;
     constexpr double kSmallReach = 40000.0;  // small rocks are drawn within this (if big enough on screen)
     constexpr float kMinAngularSize = 0.0006f; // ~1 pixel at 1080p
+    constexpr float kRockReach = 50000.0f;   // rocks are drawn within this distance; the band beyond
     constexpr int kMaxPromoted = 16;
     constexpr float kMeanSurface = 0.72f;    // the asteroid field's mean surface, as a fraction of its radius
 
@@ -331,6 +332,10 @@ void RingSystem::drawRocks(Scene& world, const RenderContext& ctx, bool rebuild)
             const float d = Vector3Distance(pos, world.camera.position);
             const float vr = r.radius * kMeanSurface;
             if (vr / std::max(d, 1.0f) < kMinAngularSize) return;
+            // Beyond the mid pass's far plane (60 km, cut by depth along the view, not distance) a rock
+            // would show only toward the screen's edges, where its depth is less: cut every rock at one
+            // distance instead, inside that plane (the band draws the ring beyond).
+            if (d > kRockReach) return;
             // A view cone, not the pass frustum: the mid pass builds the list and its frustum starts at 1.8 km.
             const Vector3 to = Vector3Subtract(pos, world.camera.position);
             if (d > vr * 2.0f && Vector3DotProduct(to, fwd) < 0.45f * d - vr * 1.4f) return;

@@ -10,6 +10,18 @@
 #include <mutex>
 #include <random>
 
+// Bark and leaf tints multiply the shader's bark brown and latitude leaf colour.
+const WoodSpeciesDef& WoodSpeciesInfo(WoodSpecies s) {
+    static const WoodSpeciesDef kDefs[(int)WoodSpecies::Count] = {
+        { "oak_log",    "oak",    false, { 1.0f, 1.0f, 1.0f },  { 1.0f, 1.0f, 1.0f } },
+        { "birch_log",  "birch",  false, { 3.7f, 5.5f, 8.6f },  { 1.45f, 1.35f, 0.8f } },  // white bark, light yellow-green
+        { "maple_log",  "maple",  false, { 1.2f, 0.85f, 0.8f }, { 4.4f, 0.55f, 0.6f } },   // red-orange crowns
+        { "pine_log",   "pine",   true,  { 1.15f, 1.0f, 0.9f }, { 1.0f, 1.0f, 1.0f } },
+        { "spruce_log", "spruce", true,  { 0.75f, 0.7f, 0.7f }, { 0.7f, 0.85f, 1.7f } },   // dark blue-green
+    };
+    return kDefs[std::clamp((int)s, 0, (int)WoodSpecies::Count - 1)];
+}
+
 namespace {
 
 // ---------------------------------------------------------------------------------------------
@@ -24,12 +36,13 @@ struct VariantMesh {
     int vertexCount = 0;
 };
 VariantMesh gVariants[2][kTreeVariants]; // [0] full, [1] far (a few prisms)
+unsigned char gStoneFlag = 0; // set while building the loose-stone mesh: its vertices draw grey (colour b)
 std::once_flag gVariantsOnce;
 
 void Emit(VariantMesh& m, Vector3 p, Vector3 n, bool leaf, unsigned char shade) {
     m.pos.insert(m.pos.end(), { p.x, p.y, p.z });
     m.nrm.insert(m.nrm.end(), { n.x, n.y, n.z });
-    m.col.insert(m.col.end(), { (unsigned char)(leaf ? 255 : 0), shade, 0, 255 });
+    m.col.insert(m.col.end(), { (unsigned char)(leaf ? 255 : 0), shade, gStoneFlag, 255 });
 }
 
 void Quad(VariantMesh& m, Vector3 a, Vector3 b, Vector3 c, Vector3 d, Vector3 centre, bool leaf, unsigned char shade) {
@@ -65,17 +78,21 @@ void Prism(VariantMesh& m, Vector3 a, Vector3 b, float w0, float w1, float twist
 float U(std::mt19937& r) { return std::uniform_real_distribution<float>(0.0f, 1.0f)(r); }
 unsigned char Shade(std::mt19937& r) { return (unsigned char)(90 + (int)(U(r) * 140.0f)); }
 
-void Broadleaf(VariantMesh& m, unsigned int seed) {
+// Shape knobs per species: height, crown size, trunk thickness, branch count.
+struct BroadleafShape { float h = 1.0f, crown = 1.0f, trunk = 1.0f; int branches = 0; };
+struct ConiferShape { float h = 1.0f, width = 1.0f; int layers = 0; };
+
+void Broadleaf(VariantMesh& m, unsigned int seed, BroadleafShape sh = {}) {
     std::mt19937 r(seed);
-    const float H = 4.2f + 1.6f * U(r);
+    const float H = (4.2f + 1.6f * U(r)) * sh.h;
     const Vector3 lean = { (U(r) - 0.5f) * 0.6f, 0.0f, (U(r) - 0.5f) * 0.6f };
     auto trunkAt = [&](float y) { const float f = y / H; return Vector3{ lean.x * f * f, y, lean.z * f * f }; };
     // Trunk: three stacked tapering segments, slightly bent.
     const float ys[4] = { -0.4f, H * 0.35f, H * 0.7f, H };
-    const float ws[4] = { 0.62f, 0.45f, 0.34f, 0.24f };
-    for (int k = 0; k < 3; ++k) Prism(m, trunkAt(ys[k]), trunkAt(ys[k + 1]), ws[k], ws[k + 1], 0.2f * k, false, Shade(r));
+    const float ws[4] = { 0.62f * sh.trunk, 0.45f * sh.trunk, 0.34f * sh.trunk, 0.24f * sh.trunk };
+    for (int s = 0; s < 3; ++s) Prism(m, trunkAt(ys[s]), trunkAt(ys[s + 1]), ws[s], ws[s + 1], 0.2f * s, false, Shade(r));
     // Branches up and out, each ending in a leaf block.
-    const int nb = 3 + (int)(U(r) * 3.0f);
+    const int nb = 3 + (int)(U(r) * 3.0f) + sh.branches;
     const float yaw0 = U(r) * 2.0f * PI;
     for (int k = 0; k < nb; ++k) {
         const float y = H * (0.5f + 0.4f * U(r));
@@ -86,27 +103,27 @@ void Broadleaf(VariantMesh& m, unsigned int seed) {
         const Vector3 dir = { cosf(el) * cosf(yaw), sinf(el), cosf(el) * sinf(yaw) };
         const Vector3 e = Vector3Add(s, Vector3Scale(dir, len));
         Prism(m, s, e, 0.2f, 0.12f, U(r), false, Shade(r));
-        const float c = 1.7f + 1.1f * U(r);
+        const float c = (1.7f + 1.1f * U(r)) * sh.crown;
         Prism(m, Vector3Subtract(e, { 0, c * 0.4f, 0 }), Vector3Add(e, { 0, c * 0.6f, 0 }), c, c * 0.85f, U(r) * 1.5f, true, Shade(r));
     }
     // Crown.
-    const float c = 2.5f + 0.9f * U(r);
+    const float c = (2.5f + 0.9f * U(r)) * sh.crown;
     const Vector3 top = trunkAt(H);
     Prism(m, Vector3Subtract(top, { 0, 0.9f, 0 }), Vector3Add(top, { 0, c - 0.6f, 0 }), c, c * 0.8f, U(r) * 1.5f, true, Shade(r));
-    m.trunkRadius = 0.3f;
+    m.trunkRadius = 0.3f * sh.trunk;
     m.trunkHeight = H;
 }
 
-void Conifer(VariantMesh& m, unsigned int seed) {
+void Conifer(VariantMesh& m, unsigned int seed, ConiferShape sh = {}) {
     std::mt19937 r(seed);
-    const float H = 8.5f + 2.0f * U(r);
+    const float H = (8.5f + 2.0f * U(r)) * sh.h;
     Prism(m, { 0, -0.4f, 0 }, { 0, H, 0 }, 0.5f, 0.12f, 0.0f, false, Shade(r));
     // Stacked leaf slabs, wide at the bottom, turned alternately.
-    const int n = 6 + (int)(U(r) * 2.0f);
+    const int n = 6 + (int)(U(r) * 2.0f) + sh.layers;
     for (int k = 0; k < n; ++k) {
         const float f = (float)k / (n - 1);
         const float y = 1.6f + f * (H - 2.2f);
-        const float w = 3.8f * (1.0f - f) + 0.8f;
+        const float w = (3.8f * (1.0f - f) + 0.8f) * sh.width;
         Prism(m, { 0, y, 0 }, { 0, y + 1.5f, 0 }, w, w * 0.5f, k * 0.785f + U(r) * 0.3f, true, Shade(r));
     }
     Prism(m, { 0, H - 0.2f, 0 }, { 0, H + 0.9f, 0 }, 0.7f, 0.15f, 0.4f, true, Shade(r));
@@ -126,6 +143,22 @@ void Bush(VariantMesh& m, unsigned int seed) {
     m.trunkHeight = 0.0f;
 }
 
+// Loose stones: two to four low, tilted lumps a hand or two across, lying on the ground.
+void Stones(VariantMesh& m, unsigned int seed) {
+    std::mt19937 r(seed);
+    gStoneFlag = 255;
+    const int n = 2 + (int)(U(r) * 3.0f);
+    for (int k = 0; k < n; ++k) {
+        const float c = 0.22f + 0.28f * U(r);
+        const Vector3 o = { (U(r) - 0.5f) * 0.8f, 0.0f, (U(r) - 0.5f) * 0.8f };
+        const Vector3 tilt = { (U(r) - 0.5f) * 0.3f, 0.0f, (U(r) - 0.5f) * 0.3f };
+        Prism(m, Vector3Subtract(o, { 0, c * 0.25f, 0 }), Vector3Add(Vector3Add(o, tilt), { 0, c * 0.45f, 0 }), c, c * 0.7f, U(r) * 1.5f, false, Shade(r));
+    }
+    gStoneFlag = 0;
+    m.trunkRadius = 0.0f;
+    m.trunkHeight = 0.0f;
+}
+
 // Far meshes: the same silhouette from a few prisms (trunk + crown; trunk + two cones; one block).
 void FarFrom(const VariantMesh& full, int v, VariantMesh& m) {
     float lo[3] = { 1e9f, 1e9f, 1e9f }, hi[3] = { -1e9f, -1e9f, -1e9f };
@@ -136,7 +169,7 @@ void FarFrom(const VariantMesh& full, int v, VariantMesh& m) {
     const Vector3 c = { (lo[0] + hi[0]) * 0.5f, 0.0f, (lo[2] + hi[2]) * 0.5f };
     const unsigned char shade = 160;
     if (full.trunkHeight > 0.0f) Prism(m, { 0, -0.4f, 0 }, { c.x, lo[1] + 0.3f, c.z }, full.trunkRadius * 2.0f, full.trunkRadius * 1.4f, 0.0f, false, shade);
-    if (v >= 4 && v < kFirstBush) {
+    if (v < kFirstBush && WoodSpeciesInfo(SpeciesOfVariant(v)).conifer) {
         const float mid = lo[1] + (hi[1] - lo[1]) * 0.55f;
         Prism(m, { c.x, lo[1], c.z }, { c.x, mid, c.z }, w, w * 0.6f, 0.785f, true, shade);
         Prism(m, { c.x, mid, c.z }, { c.x, hi[1], c.z }, w * 0.6f, 0.15f, 0.0f, true, shade);
@@ -150,11 +183,20 @@ void FarFrom(const VariantMesh& full, int v, VariantMesh& m) {
 void BuildVariants() {
     for (int v = 0; v < kTreeVariants; ++v) {
         VariantMesh& m = gVariants[0][v];
-        if (v < 4) Broadleaf(m, 1000u + v * 7919u);
-        else if (v < kFirstBush) Conifer(m, 2000u + v * 7919u);
+        if (v < kFirstBush) {
+            // Two shapes per species (oak broad and heavy, birch tall and slender, maple round and full;
+            // pine tall and sparse, spruce dense and broad).
+            static const BroadleafShape kBroad[3] = { { 1.0f, 1.25f, 1.3f, 2 }, { 1.35f, 0.65f, 0.7f, 0 }, { 1.05f, 1.1f, 1.0f, 1 } };
+            static const ConiferShape kCone[2] = { { 1.2f, 0.75f, -1 }, { 0.9f, 1.1f, 2 } };
+            const int sp = (int)SpeciesOfVariant(v);
+            if (WoodSpeciesInfo((WoodSpecies)sp).conifer) Conifer(m, 2000u + v * 7919u, kCone[sp - (int)WoodSpecies::Pine]);
+            else Broadleaf(m, 1000u + v * 7919u, kBroad[sp]);
+        }
+        else if (v == kStoneVariant) Stones(m, 4000u + v * 7919u);
         else Bush(m, 3000u + v * 7919u);
         m.vertexCount = (int)(m.pos.size() / 3);
-        FarFrom(m, v, gVariants[1][v]);
+        if (v == kStoneVariant) gVariants[1][v] = m; // already a few prisms (and no crown for FarFrom to fit)
+        else FarFrom(m, v, gVariants[1][v]);
         gVariants[1][v].vertexCount = (int)(gVariants[1][v].pos.size() / 3);
     }
 }
@@ -243,12 +285,14 @@ void BuildTile(const PlanetField& f, const TerrainDeltas& edits, const PlantRemo
             const float forest = Forest(Vector3Scale(dir, R), seed);
             const float pTree = TreeChanceFromForest(forest, fabsf(dir.y));
             const float pBush = 0.05f + 0.3f * Smooth(0.35f, 0.6f, forest);
+            const float pStone = 0.025f;                                  // loose stones: the first stone tools' stone
             const bool tree = roll < pTree;
-            if (!tree && roll >= pTree + pBush) continue;
+            const bool stone = !tree && roll >= pTree + pBush && roll < pTree + pBush + pStone;
+            if (!tree && !stone && roll >= pTree + pBush) continue;
             const float lat = fabsf(dir.y);
             if (lat > 0.86f) continue;                                  // polar: nothing grows
             const float e = f.elevation(dir);
-            if (e < 4.0f || e > (tree ? 900.0f : 1100.0f)) continue;   // beach / sea, above the tree line
+            if (e < 4.0f || e > (tree ? 900.0f : stone ? 1300.0f : 1100.0f)) continue;   // beach / sea, above the tree line
             // Slope from the height a few metres away.
             const Vector3 t1 = Vector3Normalize(Vector3CrossProduct(dir, fabsf(dir.y) < 0.9f ? Vector3{ 0, 1, 0 } : Vector3{ 1, 0, 0 }));
             const Vector3 t2 = Vector3CrossProduct(t1, dir);
@@ -257,20 +301,33 @@ void BuildTile(const PlanetField& f, const TerrainDeltas& edits, const PlantRemo
             const float e2 = f.elevation(Vector3Normalize(Vector3Add(dir, Vector3Scale(t2, ang))));
             const Vector3 normal = Vector3Normalize(Vector3Subtract(dir, Vector3Add(Vector3Scale(t1, (e1 - e) / step), Vector3Scale(t2, (e2 - e) / step))));
             const float slope = 1.0f - Vector3DotProduct(normal, dir);
-            if (slope > (tree ? 0.12f : 0.2f)) continue;
+            if (slope > (tree ? 0.12f : stone ? 0.3f : 0.2f)) continue;
             const Vector3 ground = Vector3Scale(dir, R + e);
             const VoxelMaterial m = f.materialLod(Vector3Subtract(ground, Vector3Scale(dir, 0.3f)), 1.0f, 0.0f, normal);
-            if (m != VoxelMaterial::Grass && m != VoxelMaterial::Regolith) continue;
+            if (m != VoxelMaterial::Grass && m != VoxelMaterial::Regolith && !(stone && m == VoxelMaterial::Gravel)) continue;
             // Solid ground underfoot and open air above (caves, ravines, edits).
             if (!solid(Vector3Subtract(ground, Vector3Scale(dir, 1.0f))) || !solid(Vector3Subtract(ground, Vector3Scale(dir, 4.0f)))) continue;
             if (solid(Vector3Add(ground, Vector3Scale(dir, 1.5f))) || (tree && solid(Vector3Add(ground, Vector3Scale(dir, 6.0f))))) continue;
             int v;
             float scale;
             if (tree) {
-                // Broadleaf in the temperate band, mixing into conifers from ~40 degrees and up high.
-                const bool conifer = lat > 0.66f + 0.12f * (h - 0.5f) || e > 550.0f + 300.0f * (h - 0.5f);
-                v = conifer ? 4 + (int)(h * 2.0f) % 2 : (int)(h * 4.0f) % 4;
+                // Broadleaf woods (oak, birch, maple) in the temperate band; conifer woods (pine, spruce,
+                // birch) from ~40 degrees and up high, mixing at the edge. Each area (a ~400 m noise
+                // patch) has a dominant species: 60% of its trees, the other two 20% each.
+                const bool cold = lat > 0.66f + 0.12f * (h - 0.5f) || e > 550.0f + 300.0f * (h - 0.5f);
+                static const WoodSpecies kWarm[3] = { WoodSpecies::Oak, WoodSpecies::Maple, WoodSpecies::Birch };
+                static const WoodSpecies kCold[3] = { WoodSpecies::Pine, WoodSpecies::Spruce, WoodSpecies::Birch };
+                const float area = ValueNoise(Vector3Scale(Vector3Scale(dir, R), 1.0f / 400.0f), seed ^ 0x7a3c19u);
+                const int dom = std::min(2, (int)(Smooth(0.3f, 0.7f, area) * 3.0f));
+                const float pick = Unit(s);
+                const int k = pick < 0.6f ? dom : pick < 0.8f ? (dom + 1) % 3 : (dom + 2) % 3;
+                const WoodSpecies sp = (cold ? kCold : kWarm)[k];
+                v = (int)sp * 2 + (int)(h * 2.0f) % 2;
                 scale = 0.6f + 0.7f * sz + 0.35f * forest;
+                if (sp == WoodSpecies::Birch) scale *= 0.85f; // slender
+            } else if (stone) {
+                v = kStoneVariant;
+                scale = 0.8f + 0.6f * sz;
             } else {
                 v = kFirstBush + (int)(h * 3.0f) % 3;
                 scale = 0.7f + 0.7f * sz;
@@ -296,7 +353,7 @@ void BuildTile(const PlanetField& f, const TerrainDeltas& edits, const PlantRemo
                 out.trunks.push_back({ p, dir, vm.trunkHeight * scale, vm.trunkRadius * scale });
                 out.plants.push_back({ id, p, dir, vm.trunkHeight * scale, vm.trunkRadius * scale, scale, v });
             } else {
-                out.plants.push_back({ id, p, dir, 1.2f * scale, 0.7f * scale, scale, v });
+                out.plants.push_back({ id, p, dir, (stone ? 0.5f : 1.2f) * scale, 0.7f * scale, scale, v });
             }
         }
 }
@@ -490,6 +547,13 @@ void TreeSystem::draw(const Planetoid& body, const RenderContext& ctx, int onlyL
         if (onlyLod >= 0 && lod != onlyLod) continue;
         const float fade = v < kFirstBush ? kTreeDrawDistance : kBushDrawDistance;
         rlSetUniform(ctx.treeFadeLoc, &fade, RL_SHADER_UNIFORM_FLOAT, 1);
+        if (ctx.treeBarkLoc >= 0) {
+            const Vector3 one = { 1.0f, 1.0f, 1.0f };
+            const Vector3 bark = v < kFirstBush ? WoodSpeciesInfo(SpeciesOfVariant(v)).bark : one;
+            const Vector3 leaf = v < kFirstBush ? WoodSpeciesInfo(SpeciesOfVariant(v)).leaf : one;
+            rlSetUniform(ctx.treeBarkLoc, &bark, RL_SHADER_UNIFORM_VEC3, 1);
+            rlSetUniform(ctx.treeLeafLoc, &leaf, RL_SHADER_UNIFORM_VEC3, 1);
+        }
         rlEnableVertexArray(vao[slot]);
         rlDrawVertexArrayInstanced(0, Variant(v, lod).vertexCount, count[slot]);
         rlDisableVertexArray();
@@ -604,16 +668,27 @@ void TreeSystem::addClearing(Vector3 c, float r) {
         if (kv.second.ready && Vector3Distance(kv.second.centre, c) < r + kTreeTileSize) request(kv.first, kv.second, 0.0f);
 }
 
-bool TreeSystem::nearestPlant(Vector3 local, float range, bool tree, Plant& out) const {
+bool TreeSystem::nearestPlant(Vector3 local, float range, bool tree, Plant& out, bool stone) const {
     float best = range;
     bool found = false;
     for (const auto& kv : tiles) {
         if (!kv.second.ready || Vector3Distance(kv.second.centre, local) > range + kTreeTileSize) continue;
         for (const Plant& p : kv.second.plants) {
-            if (p.tree() != tree) continue;
+            if (p.tree() != tree || p.stone() != stone) continue;
             const float d = Vector3Distance(p.base, local);
             if (d < best) { best = d; out = p; found = true; }
         }
     }
     return found;
+}
+
+void TreeSystem::speciesCounts(Vector3 local, float range, int out[(int)WoodSpecies::Count]) const {
+    for (int s = 0; s < (int)WoodSpecies::Count; ++s) out[s] = 0;
+    for (const auto& kv : tiles) {
+        const TreeTile& t = kv.second;
+        if (!t.ready) continue;
+        for (int v = 0; v < kFirstBush; ++v)
+            for (size_t k = 0; k + 7 < t.inst[v].size(); k += 8)
+                if (Vector3Distance({ t.inst[v][k], t.inst[v][k + 1], t.inst[v][k + 2] }, local) < range) ++out[(int)SpeciesOfVariant(v)];
+    }
 }

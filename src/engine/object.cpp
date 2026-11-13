@@ -98,6 +98,18 @@ void Chunk::releaseMesh() {
     waterMesh = Mesh{};
 }
 
+// Once a chunk mesh is on the GPU, nothing reads its vertex arrays again (drawing goes through the
+// VAO; DrawMesh only tests `indices` to pick an indexed draw). Freeing them keeps the terrain from
+// holding a second, CPU-side copy of every mesh: around 60 bytes a vertex.
+static void DropCpuVertexData(Mesh& m) {
+    MemFree(m.vertices);   m.vertices = nullptr;
+    MemFree(m.normals);    m.normals = nullptr;
+    MemFree(m.colors);     m.colors = nullptr;
+    MemFree(m.texcoords);  m.texcoords = nullptr;
+    MemFree(m.texcoords2); m.texcoords2 = nullptr;
+    MemFree(m.tangents);   m.tangents = nullptr;
+}
+
 template <typename T>
 static T* CopyToRaylib(const std::vector<T>& v) {
     T* p = (T*)MemAlloc((unsigned int)(v.size() * sizeof(T)));
@@ -117,6 +129,7 @@ void Chunk::setMesh(const ChunkMeshData& data) {
         if (!data.waterDepth.empty()) waterMesh.texcoords = CopyToRaylib(data.waterDepth);
         waterMesh.indices = CopyToRaylib(data.waterIndices);
         UploadMesh(&waterMesh, false);
+        if (waterMesh.vaoId > 0) DropCpuVertexData(waterMesh);
     }
     Foliage_Upload(grass, data.grass);
     if (data.positions.empty()) return; // node has no terrain surface
@@ -130,6 +143,7 @@ void Chunk::setMesh(const ChunkMeshData& data) {
     if (!data.tangents.empty()) mesh.tangents = CopyToRaylib(data.tangents);       // w: sky exposure
     mesh.indices = CopyToRaylib(data.indices);
     UploadMesh(&mesh, false);
+    if (mesh.vaoId > 0) DropCpuVertexData(mesh);
 }
 
 bool Chunk::visible(const RenderContext& ctx, const Matrix& model) const {
@@ -247,7 +261,7 @@ void Chunk::drawChunkDepth(const RenderContext& ctx, const Matrix& m) {
 }
 
 void Chunk::drawGrass(const RenderContext& ctx, const Matrix& m) {
-    if (!isActive || !grass.vao || !ctx.grassShader) return;
+    if (!isActive || !grass.vbo || !ctx.grassShader) return;
     // Only near chunks: grass is gone (faded) by kGrassDrawDistance.
     const float h = key.size() * 0.5f;
     const Vector3 centre = Vector3Transform({ h, h, h }, m);

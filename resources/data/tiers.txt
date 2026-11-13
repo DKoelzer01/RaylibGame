@@ -1,15 +1,15 @@
 # Tiers (Current Objectives): tier | name | gate item (used only by a tier without tasks) | the hint under the tasks
 # Indented task lines under a tier: task | <kind and target> | text. A tier opens the next when all are done:
 #   get <item> <n> (n obtained, ever) - place <item> (that machine placed) - orbit - visit moon | visit ring
-0 | Primitive        | fired_crucible   | Chop trees for wood, harvest bushes for fibre, dig dirt and stone. Make clay from dirt, mould a crucible (Tab) and fire it in a campfire (G to place, I to feed it wood).
-    task | get wood 4             | Chop a tree for wood (LMB on a trunk)
+0 | Primitive        | fired_crucible   | Chop trees for logs (saw them into planks, Tab), harvest bushes for fibre, dig dirt and stone. Make clay from dirt, mould a crucible (Tab) and fire it in a campfire (G to place, I to feed it logs or planks).
+    task | get any_log 2          | Chop a tree for logs (LMB on a trunk)
     task | get fibre 2            | Harvest a bush for fibre
-    task | get gravel 4           | Dig dirt with your hands until you have 4 gravel
+    task | get stone 4            | Pick up loose stones (LMB) until you have 4 stone
     task | get stone_pickaxe 1    | Craft a stone pickaxe (Tab)
     task | get stone 8            | Dig stone with the pickaxe
-    task | place campfire         | Place a campfire (G) and feed it wood (I)
+    task | place campfire         | Place a campfire (G) and feed it logs or planks (I)
     task | get fired_crucible 1   | Mould a crucible from clay and fire it in the campfire
-1 | Stone age        | bronze_ingot     | Build a kiln. Dig deep for copper and tin ore (veins below 8 m), smelt them in the kiln (fuel: wood, charcoal, coal) and alloy 3 copper + 1 tin into bronze.
+1 | Stone age        | bronze_ingot     | Build a kiln. Dig deep for copper and tin ore (veins below 8 m), smelt them in the kiln (fuel: logs, planks, charcoal, coal) and alloy 3 copper + 1 tin into bronze.
     task | do eat 1               | Eat something (berries from bushes: bind food to the hotbar)
     task | place kiln             | Build and place a kiln
     task | get copper_ore 4       | Find copper ore (deposits and pockets below 8 m)
@@ -32,6 +32,7 @@
     task | get vacuum_tube 1      | Craft a vacuum tube
     task | do till 1              | Till a field (a shovel or hoe: RMB on soft ground)
     task | do plant 1             | Plant seeds on the farmland (look at it, I)
+    task | do pour 1              | Carry water to it: a bucket (hotbar, RMB) scoops 1 m^3 and pours it; water within 4 m doubles growth
     task | do modules 2           | Fit a second suit module (Tab > Suit)
 4 | LV electric      | electric_furnace | Basic circuits on a steel hull make your first LV machine. Power it from an LV generator (32 V; steam machines refuse it).
     task | get basic_circuit 1    | Craft a basic circuit
@@ -70,3 +71,14 @@
 8 | Space            | -                | The ring 50 km up (the huge rocks goliath, bastion and pebble), then the moon.
     task | visit ring             | Visit the asteroid ring 50 km up
     task | visit moon             | Land on the moon
+9 | Fusion           | fusion_reactor   | Bring the moon and the ring home: anorthite (moon rock) smelts into aluminium, the centrifuge pulls helium-3 out of moon regolith, ring rocks hold nickel-iron, platinum and iridium. Superconductors make the first EV (2048 V) machine: a fusion reactor burning helium-3.
+    task | get anorthite 16       | Mine anorthite on the moon (its pale rock)
+    task | get helium3 2          | Separate helium-3 from moon regolith (centrifuge)
+    task | get nickel_iron_ore 8  | Mine nickel-iron from ring rocks
+    task | get platinum_ingot 2   | Smelt platinum from ring rocks (arc furnace)
+    task | get superconductor 8   | Make superconductors (precision assembler: platinum, copper wire, ice)
+    task | place fusion_reactor   | Build a fusion reactor on Terra and fuel it with helium-3
+10 | Mass driver     | mass_driver      | Iridium from the ring's rock cores finishes the EV hull; a mass driver on the fusion reactor's power fires cargo capsules to orbit.
+    task | get iridium_ingot 1    | Smelt iridium from ring rock cores
+    task | place mass_driver      | Build a mass driver and power it from the fusion reactor
+    task | get launched_capsule 1 | Launch a cargo capsule to orbit

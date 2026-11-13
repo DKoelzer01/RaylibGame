@@ -14,3 +14,6 @@ aluminium  | Aluminium  | 190,205,220 | dust ingot plate
 ilmenite   | Ilmenite   | 70,60,60    | ore crushed purified dust
 titanium   | Titanium   | 200,170,210 | dust ingot plate
 titanium_alloy | Titanium alloy | 170,150,200 | ingot plate
+# Ring metals (M24): from ring rocks, smelted in the arc furnace.
+platinum   | Platinum   | 215,215,205 | ore ingot
+iridium    | Iridium    | 185,195,205 | ore ingot

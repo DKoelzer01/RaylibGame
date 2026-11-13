@@ -180,9 +180,14 @@ PlanetField::PlanetField(unsigned int seed, float radius_, bool moon_)
     ravines = SeededNoise(rng, 5.0f / radius);       // narrow canyons where this crosses zero
     ravineMask = SeededNoise(rng, 3.0f / radius);    // ...only in some regions
     streams = SeededNoise(rng, 1.0f / 900.0f);        // small streams where this crosses zero (added last)
+    rocks = SeededNoise(rng, 1.0f / 22.0f);           // outcrop fins and crags (playtest 4)
+    rockMask = SeededNoise(rng, 1.0f / 340.0f);       // ...only in rocky patches
+    rugged = SeededNoise(rng, 1.0f / 1600.0f);        // 3D terrain (plan item 6): where hills turn to cliffs
+    cliffs = SeededNoise(rng, 1.0f / 45.0f);          // ...their shape (ridged, stretched upward)
+    warp3 = SeededNoise(rng, 1.0f / 70.0f);           // ...and its domain warp (leaning crests, undercuts)
     // Bounds of elevation() below (each noise term is in [-1, 1]).
     if (moon) { minElevation = -90.0f; maxElevation = 340.0f; }
-    else { minElevation = -740.0f; maxElevation = 1690.0f; }
+    else { minElevation = -740.0f; maxElevation = 1690.0f + 30.0f; } // + the 3D terrain band
 }
 
 // River valleys: 70 m deep, with a flat floodplain floor (valley-noise units < kValleyFloor, room for
@@ -259,6 +264,7 @@ namespace {
         return h;
     }
     float PondUnit(uint32_t& h) { h = h * 1664525u + 1013904223u; return (h >> 8) * (1.0f / 16777216.0f); }
+    uint64_t PondId(int x, int y, int z) { return ((uint64_t)(x & 0x1FFFFF) << 42) | ((uint64_t)(y & 0x1FFFFF) << 21) | (uint64_t)(z & 0x1FFFFF); }
     constexpr float kPondReach = 70.0f;    // a pond's effect (embankment) ends within this of its centre
     // The pond cells whose pond could reach within `reach` of surface point s (usually just one).
     template <class F> void ForPondCellsNear(Vector3 s, float reach, F&& f) {
@@ -357,12 +363,23 @@ float PlanetField::elevation(Vector3 dir, float fp) const {
     // water, then sides rising 0.3 m per m) cut into higher ground, low banks where the ground dips
     // below the water, and the channel bed. The valley stays resolved further out than the channel.
     if (const RiverNetwork* net = rivers()) {
-        // Next to a lake, the ground is banked up 0.3 m above its surface, fading out over 140 m, so
-        // the water stays in (the outflow river below cuts through it).
-        float lv, ld;
-        if (net->lakeRim(dir, lv, ld) && h < lv + 0.3f) h += (lv + 0.3f - h) * (1.0f - Smoothstep(0.0f, 140.0f, ld));
+        // Lakes (rivers.h): the level is held under the land around the basin, so the shore is the
+        // terrain's own. Between the samples that checked it the ground may still dip lower; a low
+        // bank in the outer part of the water region (at most 4 m of fill, 0.3 m above the water)
+        // keeps the water in there, and fades out beyond the region.
+        float lv = 0.0f, lout = 0.0f;
+        const bool nearLake = net->lakeAt(dir, lv, lout);
+        const bool inLake = nearLake && lout < RiverNetwork::kLakeMargin;
+        if (nearLake && lout > 0.0f && h < lv + 0.3f) {
+            const float M = RiverNetwork::kLakeMargin;
+            const float k = Smoothstep(0.3f * M, 0.8f * M, lout) * (1.0f - Smoothstep(1.2f * M, 2.0f * M, lout));
+            h += std::min(lv + 0.3f - h, 4.0f) * k;
+        }
         const RiverNetwork::Hit rh = net->nearest(dir, RiverNetwork::kMaxReach);
-        if (rh.found) {
+        // In a lake, only a river arriving at the lake's level shapes the ground (its valley and bed
+        // lead into the lake; no banks, which stood up out of the water as sand ridges); the outflow
+        // and any other river leave the lake alone.
+        if (rh.found && (!inLake || fabsf(rh.level - lv) < 1.0f)) {
             const float d = rh.dist, half = rh.halfWidth;
             const float flat = 2.5f * half, reach = std::min(flat + 200.0f, RiverNetwork::kMaxReach);
             const float allowed = rh.level + 0.5f + std::max(0.0f, d - flat) * 0.3f;
@@ -370,7 +387,7 @@ float PlanetField::elevation(Vector3 dir, float fp) const {
             if (h > allowed) h += (allowed - h) * vw;
             const float cw = std::clamp(2.0f - fp / (4.0f * half), 0.0f, 1.0f) * Smoothstep(-2.0f, 0.5f, l.h); // not out at sea
             const float bank = rh.level + 0.4f;
-            if (h < bank && d < half + 12.0f) h += (bank - h) * (1.0f - Smoothstep(half, half + 12.0f, d)) * cw;
+            if (!inLake && h < bank && d < half + 12.0f) h += (bank - h) * (1.0f - Smoothstep(half, half + 12.0f, d)) * cw;
             if (d < half) {
                 const float t = 1.0f - (d / half) * (d / half);
                 const float bed = rh.level + 0.3f - (rh.depth + 0.3f) * t;
@@ -405,17 +422,19 @@ float PlanetField::waterElevation(Vector3 dir, float fp) const {
     if (moon) return kNoWater;
     float w = kNoWater;
     if (const RiverNetwork* net = rivers()) {
-        if (fp < 128.0f) {
+        // A lake's water is its level over its whole region (the terrain decides the shore); rivers
+        // in it take its level. Lakes are big: kept out to coarse levels of detail.
+        float lake;
+        if (fp < 1024.0f && net->lakeAt(dir, lake)) w = lake;
+        else if (fp < 128.0f) {
             const RiverNetwork::Hit rh = net->nearest(dir, 60.0f);
             if (rh.found && rh.dist < rh.halfWidth * 1.05f) w = rh.level;
         }
-        float lake;
-        if (fp < 256.0f && net->lakeAt(dir, lake)) w = std::max(w, lake);
     }
     if (fp >= 96.0f) return w; // ponds are not resolved (their bowls fade out by here)
     ForPondCellsNear(Vector3Scale(dir, radius), kPondReach, [&](int x, int y, int z) {
         const Pond p = pondOfCell(x, y, z);
-        if (p.exists && Vector3Distance(dir, p.dir) * radius < p.r * 1.05f) w = std::max(w, p.level);
+        if (p.exists && !pondClaimed(PondId(x, y, z)) && Vector3Distance(dir, p.dir) * radius < p.r * 1.05f) w = std::max(w, p.level);
     });
     return w;
 }
@@ -424,15 +443,58 @@ bool PlanetField::inlandWaterNear(Vector3 dir, float extent, float fp) const {
     if (moon) return false;
     const float sx = dir.x * radius, sy = dir.y * radius, sz = dir.z * radius;
     // Each kind only where samples resolve it (as in elevation() and waterElevation()).
-    if (fp < 256.0f) if (const RiverNetwork* net = rivers()) if (net->waterNear(dir, extent)) return true;
+    if (const RiverNetwork* net = rivers()) {
+        if (fp < 1024.0f && net->lakeNear(dir, extent)) return true;
+        if (fp < 256.0f && net->riverNear(dir, extent)) return true;
+    }
     if (fp >= 96.0f) return false;
     bool near = false;
     ForPondCellsNear({ sx, sy, sz }, kPondReach + extent, [&](int x, int y, int z) {
         if (near) return;
         const Pond p = pondOfCell(x, y, z);
-        if (p.exists && Vector3Distance(dir, p.dir) * radius < p.r * 1.05f + extent) near = true;
+        if (p.exists && !pondClaimed(PondId(x, y, z)) && Vector3Distance(dir, p.dir) * radius < p.r * 1.05f + extent) near = true;
     });
     return near;
+}
+
+PlanetField::WaterSource PlanetField::waterSourceAt(Vector3 dir) const {
+    WaterSource s;
+    if (moon) return s;
+    if (const RiverNetwork* net = rivers()) {
+        float lake;
+        if (net->lakeAt(dir, lake)) { s.kind = 2; s.level = lake; }
+        else {
+            const RiverNetwork::Hit rh = net->nearest(dir, 60.0f);
+            if (rh.found && rh.dist < rh.halfWidth * 1.05f) { s.kind = 1; s.level = rh.level; }
+        }
+    }
+    ForPondCellsNear(Vector3Scale(dir, radius), kPondReach, [&](int x, int y, int z) {
+        const Pond p = pondOfCell(x, y, z);
+        if (!p.exists || p.level <= s.level || Vector3Distance(dir, p.dir) * radius >= p.r * 1.05f) return;
+        const uint64_t id = PondId(x, y, z);
+        if (pondClaimed(id)) return;
+        s.kind = 3; s.level = p.level; s.pond = id; s.pondDir = p.dir; s.pondR = p.r;
+    });
+    return s;
+}
+
+void PlanetField::claimPond(uint64_t id) const {
+    std::lock_guard<std::mutex> lock(pondState->m);
+    if (pondState->claimed.insert(id).second) pondState->n++;
+}
+bool PlanetField::pondClaimed(uint64_t id) const {
+    if (pondState->n.load(std::memory_order_relaxed) == 0) return false;
+    std::lock_guard<std::mutex> lock(pondState->m);
+    return pondState->claimed.count(id) > 0;
+}
+std::vector<uint64_t> PlanetField::claimedPonds() const {
+    std::lock_guard<std::mutex> lock(pondState->m);
+    return std::vector<uint64_t>(pondState->claimed.begin(), pondState->claimed.end());
+}
+void PlanetField::clearClaimedPonds() const {
+    std::lock_guard<std::mutex> lock(pondState->m);
+    pondState->claimed.clear();
+    pondState->n = 0;
 }
 
 PlanetField::RiverState::~RiverState() = default;
@@ -465,11 +527,122 @@ float PlanetField::baseDensityLod(Vector3 p, float fp) const {
     return densityNear(p, d, surface, fp);
 }
 
+namespace {
+    constexpr float kBoulderCell = 24.0f;  // m: at most one boulder per cell
+    constexpr float kBoulderMax = 5.0f;    // m: largest boulder radius
+    struct Boulder { bool exists; Vector3 dir; float r, lift; };
+}
+
+// Rock outcrops and boulders (playtest 4: "all terrain is round"). Both are unions with the ground,
+// so they mine and collide like any rock, and both fade out where samples are too coarse to show them.
+// - Outcrops: tors in rocky patches (a 340 m mask, more on high ground): columns with vertical cliff
+//   sides, 3-12 m tall, their tops flaring into a lip (small overhangs), strata on the walls.
+// - Boulders: at most one per 24 m cell (owned by the cell its sea-level point lies in, like ponds),
+//   1.2-5 m across, sunk 10-40% into the ground, lumpy; none under water or on beaches.
+// Returns metres inside the nearest feature (< 0 outside it).
+float PlanetField::rockFeature(Vector3 p, float d, float surface, float fp) const {
+    if (moon || d < 1e-3f) return -1e9f;
+    const float w = std::clamp(2.0f - fp / 4.0f, 0.0f, 1.0f);
+    const float h = d - surface;                      // metres above the height-map ground
+    if (w <= 0.0f || h > 9.0f || h < -3.0f) return -1e9f;
+    const float elev = surface - radius;
+    if (elev < 4.0f) return -1e9f;                    // sea, beaches, shallows
+    float best = -1e9f;
+    // Outcrops.
+    const float mask = Smoothstep(0.5f, 0.75f, rockMask.fractal(2, p.x, p.y, p.z) + 0.2f * Smoothstep(150.0f, 600.0f, elev));
+    const Vector3 dir = { p.x / d, p.y / d, p.z / d };
+    const Vector3 s = Vector3Scale(dir, radius);
+    if (mask > 0.0f) {
+        // Tors: the footprint is noise at the sea-level point, the same all the way up a column, so
+        // the sides are vertical cliffs; each tor's top height varies, its top flares a little
+        // (an overhang lip) and rough strata break the lower walls.
+        const float n = rocks.fractal(2, s.x, s.y, s.z);
+        const float top = (3.0f + 9.0f * mask) * (0.6f + 0.4f * rocks.noise(s.x * 0.01f, s.y * 0.01f, s.z * 0.01f));
+        const float f = std::clamp(h / std::max(top, 0.5f), 0.0f, 1.0f);
+        const float thr = 0.3f - 0.06f * f * f + 0.04f * sinf(h * 2.1f + n * 9.0f) * (1.0f - Smoothstep(0.35f, 0.7f, f));  // flared top; strata on the walls only (on the crown they made ridges)
+        const float side = (n - thr) * 14.0f;                   // ~metres in from the wall
+        best = std::max(best, std::min(side, top - h) * w);
+    }
+    // Boulders.
+    const float reach = kBoulderMax * 1.3f;
+    const int x0 = (int)floorf((s.x - reach) / kBoulderCell), x1 = (int)floorf((s.x + reach) / kBoulderCell);
+    const int y0 = (int)floorf((s.y - reach) / kBoulderCell), y1 = (int)floorf((s.y + reach) / kBoulderCell);
+    const int z0 = (int)floorf((s.z - reach) / kBoulderCell), z1 = (int)floorf((s.z + reach) / kBoulderCell);
+    for (int cz = z0; cz <= z1; ++cz)
+        for (int cy = y0; cy <= y1; ++cy)
+            for (int cx = x0; cx <= x1; ++cx) {
+                struct Entry { int x, y, z; const PlanetField* f; Boulder b; };
+                thread_local Entry cache[1024];
+                Entry& e = cache[PondHash(cx, cy, cz, 91u) & 1023u];
+                if (!(e.f == this && e.x == cx && e.y == cy && e.z == cz)) {
+                    Boulder b{ false, { 0, 0, 0 }, 0, 0 };
+                    uint32_t hh = PondHash(cx, cy, cz, (uint32_t)(radius * 3.0f) ^ 0xb01du);
+                    if (PondUnit(hh) < 0.16f) {
+                        const Vector3 c = { (cx + PondUnit(hh)) * kBoulderCell, (cy + PondUnit(hh)) * kBoulderCell, (cz + PondUnit(hh)) * kBoulderCell };
+                        const float len = Vector3Length(c);
+                        if (len > 1.0f) {
+                            b.dir = Vector3Scale(c, 1.0f / len);
+                            const Vector3 q = Vector3Scale(b.dir, radius);
+                            if ((int)floorf(q.x / kBoulderCell) == cx && (int)floorf(q.y / kBoulderCell) == cy && (int)floorf(q.z / kBoulderCell) == cz) {
+                                const float u = PondUnit(hh);
+                                b.r = 1.2f + (kBoulderMax - 1.2f) * u * u;  // mostly small
+                                b.lift = b.r * (0.1f + 0.3f * PondUnit(hh));
+                                b.exists = true;
+                            }
+                        }
+                    }
+                    e = { cx, cy, cz, this, b };
+                }
+                const Boulder& b = e.b;
+                if (!b.exists) continue;
+                const float horiz = Vector3Distance(dir, b.dir) * radius;
+                if (horiz > b.r * 1.3f) continue;
+                const float vert = (h - b.lift) / 0.75f;      // a little squat
+                const float lump = 0.25f * b.r * rocks.fractal(2, p.x * 1.7f, p.y * 1.7f, p.z * 1.7f);
+                best = std::max(best, (b.r + lump - sqrtf(horiz * horiz + vert * vert)) * w);
+            }
+    return best;
+}
+
+// 3D terrain (plan item 6): a band of full 3D noise from 16 m under the height map to 26 m over it.
+// Where a regional mask (~1.6 km patches, more of it the higher the land) makes the land rugged,
+// smooth noise stretched upward (features ~2.5x taller than wide: cliff faces), edged with its ridged
+// form, and domain-warped
+// (crests lean: overhangs, undercuts) raises ridges and carves alcoves, up to 12 m either way.
+// The beaches and the low land by the sea stay smooth. Coarse levels of detail keep its low octaves,
+// so far silhouettes match near ones. Returns metres added to the surface here (+ solid, - carved).
+float PlanetField::terrain3D(Vector3 p, float d, float surface, float fp) const {
+    if (moon || d < 1e-3f) return 0.0f;
+    const float h = d - surface;
+    if (h < -16.0f || h > 26.0f) return 0.0f;
+    const float elev = surface - radius;
+    if (elev < 6.0f) return 0.0f;
+    const float mask = Smoothstep(0.0f, 0.4f, rugged.fractal(2, p.x, p.y, p.z)) * Smoothstep(6.0f, 60.0f, elev);
+    if (mask <= 0.0f) return 0.0f;
+    const Vector3 dir = { p.x / d, p.y / d, p.z / d };
+    Vector3 q = Vector3Subtract(p, Vector3Scale(dir, h * 0.6f)); // vertical stretch
+    const float w = 9.0f * warp3.fractalLimited(2, fp, q.x, q.y, q.z);
+    q = { q.x + w, q.y - 0.7f * w, q.z + 0.4f * w };
+    const float n = cliffs.fractalLimited(3, fp, q.x, q.y, q.z);
+    // Smooth warped noise gives the body (overhangs as thick as they are wide); a little of its ridged
+    // form sharpens the rock edges. (All-ridged made paper-thin shelves high up.)
+    const float shape = n + 0.3f * (1.0f - 2.0f * fabsf(n)) + 0.15f;
+    const float fade = (1.0f - Smoothstep(3.0f, 20.0f, h)) * Smoothstep(-16.0f, -8.0f, h); // shelves 2-8 m up, not floating sheets
+    // Raised more than carved: hills and cliffs rise, alcoves are their undercuts (deep carving read as
+    // pits in the plains), so dips stop at 3 m.
+    return std::max(16.0f * mask * shape * fade, -3.0f);
+}
+
 // Everything after the height map, shared by single samples and blocks so both agree exactly.
 float PlanetField::densityNear(Vector3 p, float d, float surface, float fp) const {
     float v = ISO_LEVEL + DENSITY_GRADIENT * (surface - d);
     const float depth = surface - d;
+    if (depth < 16.0f && depth > -26.0f) v += DENSITY_GRADIENT * terrain3D(p, d, surface, fp); // hills, cliffs, overhangs
     if (fabsf(depth) < 6.0f) v += DENSITY_GRADIENT * 1.5f * detail.fractalLimited(2, fp, p.x, p.y * 1.3f, p.z); // crags, overhangs
+    if (depth < 3.0f && depth > -9.0f) {
+        const float m = rockFeature(p, d, surface, fp);
+        if (m > -4.0f) v = std::max(v, ISO_LEVEL + DENSITY_GRADIENT * m);
+    }
     // Caves, from a few metres down to 20 m above the mantle (which stays intact). Each cave shape is
     // its own distance field in metres, combined with min(): rock density grows with depth, so
     // subtracting a fixed amount would only carve shallow caves.
@@ -523,7 +696,9 @@ void PlanetField::baseDensityBlock(Vector3 o, float stride, int S, float fp, flo
         const float u = Vector3DotProduct(q, t1) / s, v = Vector3DotProduct(q, t2) / s;
         umin = std::min(umin, u); umax = std::max(umax, u); vmin = std::min(vmin, v); vmax = std::max(vmax, v);
     }
-    const float du = stride / radius;
+    // Spaced at the footprint (>= 1 m), not the stride: nodes finer than 1 m (for edits) interpolate a
+    // height map that has no finer detail anyway.
+    const float du = std::max(stride, fp) / radius;
     const int nu = std::min(256, (int)ceilf((umax - umin) / du) + 2), nv = std::min(256, (int)ceilf((vmax - vmin) / du) + 2);
     const float su = (umax - umin) / (float)(nu - 1), sv = (vmax - vmin) / (float)(nv - 1);
     std::vector<float> h((size_t)nu * nv);
@@ -599,13 +774,17 @@ VoxelMaterial PlanetField::materialSky(Vector3 p, float base, float fp, Vector3 
     // `base` (the unedited density) tells undug ground (near the iso level) from dug-out ground.
     const Vector3 up = { p.x / d, p.y / d, p.z / d };
     const float surfaceElevation = elevation(up, fp);
-    const float depth = radius + surfaceElevation - d; // against the surface this LOD meshes
+    // Against the surface this LOD meshes, moved by the 3D terrain band (a carved alcove 10 m under the
+    // height map is open air, not buried rock: it keeps its sky light and surface materials).
+    const float depth = radius + surfaceElevation - d + terrain3D(p, d, radius + surfaceElevation, fp);
     // A coarse LOD mesh strays from the height map it approximates by up to a couple of samples, so
     // its "depth" must allow for that, or whole patches of surface read as buried (black, no sun) and
     // take underground materials (seen from orbit as black triangles on peaks and rings along the grid).
     const float slack = fp > 1.0f ? 2.0f * fp : 0.0f;
     sky = std::clamp(1.0f - (depth - 2.0f - slack) / 8.0f, 0.0f, 1.0f); // buried more than ~10 m: no sky (caves, deep pits)
     if (moon) return depth < 2.5f + slack ? VoxelMaterial::Regolith : VoxelMaterial::Rock; // grey dust over rock (asteroid palette)
+    // Outcrops and boulders are bare rock (snow still caps them up high, below).
+    if (depth < 2.5f + slack && surfaceElevation < 1050.0f && rockFeature(p, d, radius + surfaceElevation, fp) > -0.35f) return VoxelMaterial::Rock;
     if (depth < 2.5f + slack) {
         // Surface biome from height above sea level, latitude, slope and a climate wobble. The top
         // ~0.6 m is the surface material; below it a soil layer (dirt under grass, sand under sand,
@@ -665,7 +844,9 @@ void BuildChunkMesh(const DensityField& field, const TerrainDeltas& deltas, Chun
     const int E = S + 2;
     std::vector<float> base((size_t)E * E * E);
     const Vector3 eo = Vector3AddValue(origin, -stride);
-    field.baseDensityBlock(eo, stride, E, stride, base.data());
+    // Footprint at least 1 m: the generated terrain keeps no detail finer than it had on the 1 m lattice
+    // (finer nodes exist for edits: the dig spheres), and sub-metre octaves would only cost.
+    field.baseDensityBlock(eo, stride, E, std::max(stride, 1.0f), base.data());
     std::vector<float> ext = base;
     // Player edits: the delta lattice at the samples (lattice points at every stride; coarse nodes
     // point-sample it, so big excavations show from afar). Cost depends on the edited chunks here,
@@ -673,7 +854,8 @@ void BuildChunkMesh(const DensityField& field, const TerrainDeltas& deltas, Chun
     std::vector<std::pair<TerrainDeltas::Key, const DeltaChunk*>> near;
     deltas.chunksIn(eo, Vector3AddValue(eo, (E - 1) * stride), near);
     if (!near.empty()) {
-        const int st = (int)stride, ox = (int)lroundf(eo.x), oy = (int)lroundf(eo.y), oz = (int)lroundf(eo.z);
+        // Lattice indices (kVoxelSize apart): a node of level L samples every 2^L-th lattice point.
+        const int st = out.key.latticeStride(), ox = (int)lroundf(eo.x / kVoxelSize), oy = (int)lroundf(eo.y / kVoxelSize), oz = (int)lroundf(eo.z / kVoxelSize);
         auto chunkAt = [&](int cx, int cy, int cz) -> const DeltaChunk* {
             const TerrainDeltas::Key key = TerrainDeltas::KeyOf(cx, cy, cz);
             for (const auto& c : near) if (c.first == key) return c.second;
@@ -691,7 +873,7 @@ void BuildChunkMesh(const DensityField& field, const TerrainDeltas& deltas, Chun
                     if (cx != lastCx) { lastCx = cx; c = chunkAt(cx, cy, cz); }
                     if (!c) continue;
                     const int lx = wx - cx * kDeltaChunk, ly = wy - cy * kDeltaChunk, lz = wz - cz * kDeltaChunk;
-                    ext[k] += c->d[(lz * kDeltaChunk + ly) * kDeltaChunk + lx] * kDeltaStep;
+                    ext[k] += c->get((lz * kDeltaChunk + ly) * kDeltaChunk + lx) * kDeltaStep;
                 }
             }
     }
@@ -754,7 +936,8 @@ void BuildChunkMesh(const DensityField& field, const TerrainDeltas& deltas, Chun
                 const Vector3 n = gl > 1e-6f ? Vector3Scale(grad, -1.0f / gl) : field.fallbackUp(p);
                 const float b = at(base, x0 + 1, y0 + 1, z0 + 1) * (1.0f - t) + at(base, x1 + 1, y1 + 1, z1 + 1) * t;
                 float sky = 1.0f;
-                const VoxelMaterial m = field.materialSky(p, b, stride, n, sky);
+                VoxelMaterial m = field.materialSky(p, b, stride, n, sky);
+                if (!near.empty()) { const int placed = deltas.materialAt(p); if (placed >= 0) m = (VoxelMaterial)placed; } // placed ground keeps its material
                 out.tangents[v * 4 + 3] = sky;
                 if (m == VoxelMaterial::Ore) {
                     // Which ore (the shader colours each kind): 1 + kind, over 8.
@@ -812,11 +995,33 @@ void BuildChunkMesh(const DensityField& field, const TerrainDeltas& deltas, Chun
             auto lat = [&](int i) { return std::min(i * L, S - 1); };
             if (inland) {
                 level.resize((size_t)LN * LN * LN);
+                // Raw levels on the lattice and one node beyond it on every side (the neighbouring
+                // chunks' nodes: lattices of chunks at the same level line up), so a dry node on the
+                // chunk's edge sees wet ones next door and both chunks' surfaces meet at the seam.
+                const int LE = LN + 2;
+                auto coord = [&](int i) { return i < 0 ? -L : i >= LN ? lat(LN - 1) + L : lat(i); };
+                std::vector<float> raw((size_t)LE * LE * LE);
+                auto R = [&](int x, int y, int z) -> float& { return raw[((size_t)(z + 1) * LE + (y + 1)) * LE + (x + 1)]; };
+                auto P = [&](int x, int y, int z) { return Vector3{ origin.x + coord(x) * stride, origin.y + coord(y) * stride, origin.z + coord(z) * stride }; };
+                for (int z = -1; z <= LN; ++z)
+                    for (int y = -1; y <= LN; ++y)
+                        for (int x = -1; x <= LN; ++x)
+                            R(x, y, z) = pf->waterElevation(Vector3Normalize(P(x, y, z)), (float)stride);
+                // A dry point next to wet ones takes the lower of their level and just under its own
+                // ground, not sea level: between them the interpolated surface then stays level out to
+                // where the shore rises, or runs just under low ground, instead of sloping down across
+                // it (sheets of water at chunk corners). Dry points with no wet neighbour: sea level.
                 for (int z = 0; z < LN; ++z)
                     for (int y = 0; y < LN; ++y)
                         for (int x = 0; x < LN; ++x) {
-                            const Vector3 p = { origin.x + lat(x) * stride, origin.y + lat(y) * stride, origin.z + lat(z) * stride };
-                            const float w = pf->waterElevation(Vector3Normalize(p), (float)stride);
+                            float w = R(x, y, z);
+                            if (w == PlanetField::kNoWater) {
+                                float wet = PlanetField::kNoWater;
+                                for (int c = -1; c <= 1; ++c)
+                                    for (int b = -1; b <= 1; ++b)
+                                        for (int a = -1; a <= 1; ++a) wet = std::max(wet, R(x + a, y + b, z + c));
+                                w = wet == PlanetField::kNoWater ? 0.0f : std::min(wet, pf->elevation(Vector3Normalize(P(x, y, z)), (float)stride) - 2.0f);
+                            }
                             level[((size_t)z * LN + y) * LN + x] = sea + std::max(0.0f, w);
                         }
             }
@@ -863,7 +1068,7 @@ void BuildChunkMesh(const DensityField& field, const TerrainDeltas& deltas, Chun
                     // cave walls.
                     const Vector3 wc = Vector3Add(origin, Vector3Scale(c, stride));
                     const float wl = Vector3Length(wc);
-                    if (wl > 1.0f && planetField->elevation(Vector3Scale(wc, 1.0f / wl), (float)stride) > wl - sea + 1.0f) continue;
+                    if (wl > 1.0f && planetField->elevation(Vector3Scale(wc, 1.0f / wl), (float)stride) > wl - sea + (stride <= 2.0f ? 0.15f : 1.0f)) continue; // near: only over the original bed (dug ground beside it is the simulation's)
                 }
                 for (int e = 0; e < 3; ++e) {
                     int& r = remap[wi[t + e]];

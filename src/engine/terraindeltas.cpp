@@ -2,6 +2,7 @@
 #include "voxel.h"
 #include "tools.h"
 
+#include <raymath.h>
 #include <algorithm>
 #include <cmath>
 
@@ -32,11 +33,12 @@ float TerrainDeltas::at(int x, int y, int z) const {
     const int cx = FloorDiv(x, kDeltaChunk), cy = FloorDiv(y, kDeltaChunk), cz = FloorDiv(z, kDeltaChunk);
     auto it = chunks.find(KeyOf(cx, cy, cz));
     if (it == chunks.end()) return 0.0f;
-    return it->second->d[Idx(x - cx * kDeltaChunk, y - cy * kDeltaChunk, z - cz * kDeltaChunk)] * kDeltaStep;
+    return it->second->get(Idx(x - cx * kDeltaChunk, y - cy * kDeltaChunk, z - cz * kDeltaChunk)) * kDeltaStep;
 }
 
-float TerrainDeltas::sample(Vector3 p) const {
+float TerrainDeltas::sample(Vector3 pos) const {
     if (chunks.empty()) return 0.0f;
+    const Vector3 p = Vector3Scale(pos, 1.0f / kVoxelSize); // lattice coordinates
     const int x0 = (int)floorf(p.x), y0 = (int)floorf(p.y), z0 = (int)floorf(p.z);
     const float fx = p.x - x0, fy = p.y - y0, fz = p.z - z0;
     const float c00 = at(x0, y0, z0) * (1 - fx) + at(x0 + 1, y0, z0) * fx;
@@ -46,7 +48,27 @@ float TerrainDeltas::sample(Vector3 p) const {
     return (c00 * (1 - fy) + c10 * fy) * (1 - fz) + (c01 * (1 - fy) + c11 * fy) * fz;
 }
 
-void TerrainDeltas::chunksIn(Vector3 lo, Vector3 hi, std::vector<std::pair<Key, const DeltaChunk*>>& out) const {
+int TerrainDeltas::materialAt(Vector3 pos) const {
+    if (chunks.empty()) return -1;
+    const Vector3 p = Vector3Scale(pos, 1.0f / kVoxelSize);
+    auto mat = [&](int x, int y, int z) -> int {
+        const int cx = FloorDiv(x, kDeltaChunk), cy = FloorDiv(y, kDeltaChunk), cz = FloorDiv(z, kDeltaChunk);
+        auto it = chunks.find(KeyOf(cx, cy, cz));
+        if (it == chunks.end()) return -1;
+        return (int)it->second->mat(Idx(x - cx * kDeltaChunk, y - cy * kDeltaChunk, z - cz * kDeltaChunk)) - 1;
+    };
+    const int m = mat((int)lroundf(p.x), (int)lroundf(p.y), (int)lroundf(p.z));
+    if (m >= 0) return m;
+    const int x0 = (int)floorf(p.x), y0 = (int)floorf(p.y), z0 = (int)floorf(p.z);
+    for (int k = 0; k < 8; ++k) {
+        const int c = mat(x0 + (k & 1), y0 + ((k >> 1) & 1), z0 + ((k >> 2) & 1));
+        if (c >= 0) return c;
+    }
+    return -1;
+}
+
+void TerrainDeltas::chunksIn(Vector3 loPos, Vector3 hiPos, std::vector<std::pair<Key, const DeltaChunk*>>& out) const {
+    const Vector3 lo = Vector3Scale(loPos, 1.0f / kVoxelSize), hi = Vector3Scale(hiPos, 1.0f / kVoxelSize); // lattice coordinates
     out.clear();
     if (chunks.empty()) return;
     const int x0 = FloorDiv((int)floorf(lo.x), kDeltaChunk), x1 = FloorDiv((int)floorf(hi.x), kDeltaChunk);
@@ -72,19 +94,19 @@ void TerrainDeltas::chunksIn(Vector3 lo, Vector3 hi, std::vector<std::pair<Key, 
 void TerrainDeltasBuilder::apply(const TerrainEdit& e, const DensityField& field, std::unordered_set<TerrainDeltas::Key>* touched) {
     next->strokes++;
     // A carve also lowers solid points just outside the sphere, so the meshed surface sits on it.
-    const float r = e.carve ? e.radius + 2.0f : e.radius;
-    const int x0 = (int)floorf(e.center.x - r), x1 = (int)ceilf(e.center.x + r);
-    const int y0 = (int)floorf(e.center.y - r), y1 = (int)ceilf(e.center.y + r);
-    const int z0 = (int)floorf(e.center.z - r), z1 = (int)ceilf(e.center.z + r);
+    const float r = e.carve ? e.radius + 1.0f : e.radius; // 1 m: enough on the 0.25 m lattice (2 m touched 8 delta chunks a stroke)
+    const int x0 = (int)floorf((e.center.x - r) / kVoxelSize), x1 = (int)ceilf((e.center.x + r) / kVoxelSize); // lattice indices
+    const int y0 = (int)floorf((e.center.y - r) / kVoxelSize), y1 = (int)ceilf((e.center.y + r) / kVoxelSize); // lattice indices
+    const int z0 = (int)floorf((e.center.z - r) / kVoxelSize), z1 = (int)ceilf((e.center.z + r) / kVoxelSize); // lattice indices
     DeltaChunk* chunk = nullptr;
     TerrainDeltas::Key chunkKey = ~0ull;
     for (int z = z0; z <= z1; ++z)
         for (int y = y0; y <= y1; ++y)
             for (int x = x0; x <= x1; ++x) {
-                const float dx = x - e.center.x, dy = y - e.center.y, dz = z - e.center.z;
+                const Vector3 p = { x * kVoxelSize, y * kVoxelSize, z * kVoxelSize }; // the lattice point, body-local
+                const float dx = p.x - e.center.x, dy = p.y - e.center.y, dz = p.z - e.center.z;
                 const float d2 = dx * dx + dy * dy + dz * dz;
                 if (d2 >= r * r) continue;
-                const Vector3 p = { (float)x, (float)y, (float)z };
                 if (!field.editable(p)) continue; // e.g. a planet's mantle
                 const float dist = sqrtf(d2);
                 const float t = 1.0f - dist / r;
@@ -108,13 +130,21 @@ void TerrainDeltasBuilder::apply(const TerrainEdit& e, const DensityField& field
                     }
                     if (touched) touched->insert(k);
                 }
-                int16_t& v = chunk->d[Idx(x - cx * kDeltaChunk, y - cy * kDeltaChunk, z - cz * kDeltaChunk)];
+                const int i = Idx(x - cx * kDeltaChunk, y - cy * kDeltaChunk, z - cz * kDeltaChunk);
+                const int16_t v = chunk->get(i);
                 if (e.carve) {
                     const float base = field.baseDensity(p);
-                    if (e.softOnly && base >= ISO_LEVEL && !IsSoft(field.material(p, base))) continue;
-                    if (base + v * kDeltaStep > carveTo) v = (int16_t)std::clamp((int)lroundf((carveTo - base) / kDeltaStep), -32767, 32767);
+                    // Placed ground digs like what it is (placed gravel with a shovel), not the rock below.
+                    const int placed = (int)chunk->mat(i) - 1;
+                    const VoxelMaterial was = placed >= 0 ? (VoxelMaterial)placed : base >= ISO_LEVEL ? field.material(p, base) : VoxelMaterial::Regolith;
+                    if (e.softOnly && (base + v * kDeltaStep) >= ISO_LEVEL && !IsSoft(was)) continue;
+                    if (base + v * kDeltaStep > carveTo) {
+                        chunk->set(i, (int16_t)std::clamp((int)lroundf((carveTo - base) / kDeltaStep), -32767, 32767));
+                        if (dist < e.radius) chunk->setMat(i, 0); // dug out: what is exposed below shows its own material
+                    }
                 } else {
-                    v = (int16_t)std::clamp((int)lroundf(v + add / kDeltaStep), -32767, 32767);
+                    chunk->set(i, (int16_t)std::clamp((int)lroundf(v + add / kDeltaStep), -32767, 32767));
+                    if (e.paint >= 0 && t > 0.15f) chunk->setMat(i, (uint8_t)(e.paint + 1));
                 }
             }
 }

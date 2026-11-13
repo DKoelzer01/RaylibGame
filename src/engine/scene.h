@@ -29,6 +29,7 @@ struct HotShader {
     std::string vsPath, fsPath;
     Shader shader{};
     long vsTime = 0, fsTime = 0;
+    double lastCheck = -1e9;     // reloadIfChanged looks at the files at most twice a second
 
     // Returns true when a new shader was swapped in (callers must re-apply locations/uniforms).
     bool reloadIfChanged(bool force = false);
@@ -52,6 +53,7 @@ class Scene {
         HotShader water{ "resources/water.vs", "resources/water.fs" };
         HotShader grass{ "resources/grass.vs", "resources/grass.fs" };
         HotShader trees{ "resources/trees.vs", "resources/trees.fs" };
+        HotShader treeDepth{ "resources/trees.vs", "resources/depth.fs" }; // trees and bushes in the shadow pass
         HotShader farSphere{ "resources/farsphere.vs", "resources/farsphere.fs" };
         HotShader parts{ "resources/parts.vs", "resources/parts.fs" };
         HotShader atmosphereShader{ "resources/skybox.vs", "resources/atmosphere.fs" };
@@ -66,12 +68,17 @@ class Scene {
             float radius = 0.0f;          // sea level
             float height = 25000.0f;      // fades out from sea level to this altitude
             float hazeHeight = 8000.0f;   // haze (fog) lies in this layer: looking up through it, distant bodies stay clear
+            Vector3 toLocalX = { 1, 0, 0 }, toLocalY = { 0, 1, 0 }, toLocalZ = { 0, 0, 1 }; // planet-local images of the world axes (clouds)
+            float cloudHeight = 1500.0f;  // the cloud layer, above sea level (m)
         } atmosphere;
 
         Material terrainMaterial{};   // lighting shader + albedo/normal/rough-ao maps + shadow map
         TextureArray terrainLayers{};     // dirt/sand/gravel/grass/snow/ice/stone layers (planet palette)
         Material depthMaterial{};     // depth shader only
         RenderTexture2D shadowMap{};  // depth-only FBO; shadowMap.depth is the sampled texture
+        RenderTexture2D shadowNear{}; // the near cascade (sharp shadows close by)
+        Matrix lightSpaceNear = MatrixIdentity();
+        float shadowNearHalfExtent = 32.0f; // half-width of the near cascade's box (2048 texels: ~3 cm)
         Matrix lightSpaceMatrix = MatrixIdentity();
         // Tests: a world point whose sub-texel drift across the shadow map is summed (shadows crawling).
         std::function<DVec3()> shadowProbe;
@@ -96,6 +103,7 @@ class Scene {
         float fogDensity = 0.0f;         // 0 = no fog
         float weatherCloud = 0.0f;       // weather (set by the game each frame): cloud cover 0..1 greys the sky, dims the sun
         float weatherFog = 0.0f;         // ground fog 0..1 (thick at 1: ~60 m visibility)
+        Vector3 cloudDrift = { 0, 0, 0 }; // weather: how far the wind has carried the clouds (planet-local m)
         std::function<void()> onDraw3D;  // extra world-space drawing at the end of the main pass
         // Extra geometry in the depth passes (rings, ring.h): range and draw in the far pass, draw in
         // the mid and near passes (rebuild = the first of the frame).

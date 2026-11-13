@@ -23,8 +23,9 @@
 extern "C" { typedef void (*PfnClearVm)(unsigned int); extern PfnClearVm glad_glClear; }
 
 namespace {
-    // Bob: phase advances half a turn a step (0.75 m walked); the hand traces a figure eight.
-    constexpr float kStep = 0.75f;
+    // Bob: phase advances half a turn every 1.8 m walked (it was 0.75 m: two to three times too
+    // busy in play); the hand traces a figure eight.
+    constexpr float kStep = 1.8f;
     constexpr float kBobUp = 0.015f, kBobSide = 0.010f;
     float phase = 0.0f, amp = 0.0f;
     Vector3 bob{ 0, 0, 0 };
@@ -97,7 +98,7 @@ void Viewmodel_Update(Scene& world, float dt) {
     bob = { kBobSide * sinf(phase) * amp, -kBobUp * sinf(phase) * sinf(phase) * amp, 0.0f };
     // Swing on each stroke or chop; dip when what is held changes.
     if (terrainTool.swings != seenSwings) { seenSwings = terrainTool.swings; swing = 0.0f; }
-    swing = std::min(1.0f, swing + dt / 0.28f);
+    swing = std::min(1.0f, swing + dt / std::max(terrainTool.swingTime, 0.1f)); // one swing per cooldown
     const std::string now = Held();
     if (now != held) { held = now; dip = 0.0f; }
     dip = std::min(1.0f, dip + dt / 0.25f);
@@ -146,10 +147,11 @@ void Viewmodel_Draw(Scene& world) {
             Box(local({ 0, 0.07f, -0.08f }, { 10, 20, 0 }), { 0.11f, 0.11f, 0.11f }, def ? def->color : GRAY, light);
         }
     } else {
-        // A tool: a wooden handle rising forward out of the fist, its head at the top.
+        // A tool: a wooden handle rising nearly upright out of the fist (leaning a little forward and
+        // in), its head across the top. It leaned 52 degrees forward and read as lying along the view.
         const Color wood = { 120, 84, 50, 255 }, head = TierColour(tool.tier);
         // Scaled to 0.65: full size, the head filled the upper right of the view.
-        const Matrix handle = MatrixMultiply(MatrixScale(0.65f, 0.65f, 0.65f), local({ 0, 0.09f, -0.07f }, { -52, 0, 0 }));
+        const Matrix handle = MatrixMultiply(MatrixScale(0.65f, 0.65f, 0.65f), local({ 0, 0.09f, -0.07f }, { -14, 0, 10 }));
         Box(handle, { 0.028f, 0.42f, 0.028f }, wood, light);
         auto onHandle = [&](Vector3 p, Vector3 rotDeg = { 0, 0, 0 }) { return MatrixMultiply(At(p, rotDeg), handle); };
         switch (tool.type) {

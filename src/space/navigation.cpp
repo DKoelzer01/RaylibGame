@@ -197,14 +197,17 @@ struct MapView {
 MapView minimap, bigMap;
 std::string minimapBody;
 int minimapTilesVersion = -1;
+double minimapAt = -1e9;     // when the last minimap render started
+Shader miniMask{};           // discards outside the minimap circle (the image itself is square)
 bool mapOpen = false;
 Vector3 mapCentre{ 0, 0, 0 };          // body-local unit direction
 std::string mapBody;
 int mapZoom = 1;                       // index into kZooms (4 m a pixel)
 const float kZooms[] = { 2.0f, 4.0f, 8.0f, 16.0f, 32.0f, 64.0f };
 constexpr int kMapPixels = 640;
-constexpr int kMiniPixels = 176;
-constexpr float kMiniMetres = 300.0f;
+constexpr int kMiniPixels = 256;             // the minimap image: a margin around the view (it shifts as you move)
+constexpr float kMiniMetres = 440.0f;        // ...metres across
+constexpr float kMiniView = 300.0f;          // metres the minimap circle shows
 bool dragging = false, dragMoved = false; // a drag pans; a press and release in place is a click
 Vector2 dragFrom{};
 double mapDirtyAt = -1.0;
@@ -298,14 +301,17 @@ void Nav_Update(Scene& world, bool inputEnabled) {
         if (set.size() != before) ++exploredVersion[h.body->name];
         if (set.size() != before) { size_t all = 0; for (const auto& kv : explored) all += kv.second.size(); QuestBook_AtLeast("explored", (double)all); }
     }
-    // Minimap: re-rendered when the player has moved 10 m off its centre, or new ground shows.
+    // Minimap: re-rendered when the player has moved 40 m off its centre (the image has 70 m of margin
+    // around the circle), every 2 s while moving, or when new ground shows.
     minimap.take();
     if (h.body && HasMap() && !minimap.pending) {
         const int ver = exploredVersion[h.body->name];
         const bool moved = !minimap.shown || minimapBody != h.body->name ||
-                           Vector3Distance(minimap.shown->centre, h.up) * h.field->radius > 10.0f;
+                           Vector3Distance(minimap.shown->centre, h.up) * h.field->radius > 40.0f ||
+                           (GetTime() - minimapAt > 2.0 && Vector3Distance(minimap.shown->centre, h.up) * h.field->radius > 1.0f);
         if (moved || ver != minimapTilesVersion) {
-            minimap.pending = StartImage(h, h.up, kMiniMetres / kMiniPixels, kMiniPixels, kMiniPixels, true);
+            minimap.pending = StartImage(h, h.up, kMiniMetres / kMiniPixels, kMiniPixels, kMiniPixels, false); // square: masked when drawn
+            minimapAt = GetTime();
             minimapBody = h.body->name;
             minimapTilesVersion = ver;
         }
@@ -338,7 +344,7 @@ void Nav_Update(Scene& world, bool inputEnabled) {
         }
         if (IsMouseButtonReleased(MOUSE_BUTTON_LEFT) && dragging) {
             const Vector2 d = Vector2Subtract(mouse, dragFrom);
-            if (!dragMoved && Vector2Length(d) <= 4.0f && inside && bigMap.shown && !bigMap.pending) {
+            if (!dragMoved && Vector2Length(d) <= 4.0f && inside && bigMap.shown && !bigMap.pending && mapDirtyAt < 0.0) { // only on a settled view (the image is the view)
                 // A click: a waypoint there.
                 const MapImage& m = *bigMap.shown;
                 const Vector3 dir = PixelDir(m, (mouse.x - r.x) * scale, (mouse.y - r.y) * scale);
@@ -351,12 +357,14 @@ void Nav_Update(Scene& world, bool inputEnabled) {
         if (IsMouseButtonPressed(MOUSE_BUTTON_RIGHT) && inside && bigMap.shown) {
             // Remove the waypoint nearest the cursor (within 14 px).
             const MapImage& m = *bigMap.shown;
+            const float k = m.mpp / mpp; // the image as the view draws it (see Nav_DrawMap)
+            const Vector2 off = OnImage(m, mapCentre);
             int best = -1;
             float bestD = 14.0f;
             for (size_t i = 0; i < waypoints.size(); ++i) {
                 if (waypoints[i].body != h.body->name) continue;
                 const Vector2 p = OnImage(m, waypoints[i].dir);
-                const Vector2 s = { r.x + r.width * 0.5f + p.x / scale, r.y + r.height * 0.5f + p.y / scale };
+                const Vector2 s = { r.x + r.width * 0.5f + (p.x - off.x) * k / scale, r.y + r.height * 0.5f + (p.y - off.y) * k / scale };
                 const float dd = Vector2Distance(s, mouse);
                 if (dd < bestD) { bestD = dd; best = (int)i; }
             }
@@ -365,7 +373,7 @@ void Nav_Update(Scene& world, bool inputEnabled) {
         if (IsKeyPressed(KEY_C)) { mapCentre = h.up; mapDirtyAt = GetTime(); } // back to the player
     }
     // Re-render after the view settles (a short pause, so dragging doesn't queue a render a frame).
-    if (mapDirtyAt >= 0.0 && GetTime() - mapDirtyAt > 0.12 && !bigMap.pending) {
+    if (mapDirtyAt >= 0.0 && GetTime() - mapDirtyAt > 0.05 && !bigMap.pending) {
         bigMap.pending = StartImage(h, mapCentre, kZooms[mapZoom], kMapPixels, kMapPixels, false);
         mapDirtyAt = -1.0;
     }
@@ -425,12 +433,28 @@ void Nav_DrawHUD(Scene& world) {
     const Vector2 c = { sw - rad - 20.0f, 150.0f + rad };
     const float rot = heading >= 0.0f ? -heading : 0.0f;
     DrawCircleV(c, rad + 4.0f, Fade(BLACK, 0.55f));
-    // The image is centred where it was rendered; shift it by how far the player has moved since.
+    // The image is centred where it was rendered and wider than the circle; shift it by how far the
+    // player has moved since, and clip it to the circle as it is drawn (the mask no longer moves with
+    // the image).
     const Vector2 off = OnImage(m, h.up);
-    const float k = size / m.W;
+    const float k = size / (m.W * kMiniView / kMiniMetres); // screen pixels per image pixel
+    const float drawn = m.W * k;
     const float sr = sinf(rot * DEG2RAD), cr = cosf(rot * DEG2RAD);
     const Vector2 shift = { -(off.x * cr - off.y * sr) * k, -(off.x * sr + off.y * cr) * k };
-    DrawTexturePro(minimap.tex, { 0, 0, (float)m.W, (float)m.H }, { c.x + shift.x, c.y + shift.y, size, size }, { rad, rad }, rot, WHITE);
+    if (!miniMask.id) {
+        static const char* fs =
+            "#version 330\n"
+            "in vec2 fragTexCoord; in vec4 fragColor; uniform sampler2D texture0; uniform vec4 colDiffuse; uniform vec3 circle; out vec4 finalColor;\n"
+            "void main() { if (distance(gl_FragCoord.xy, circle.xy) > circle.z) discard; finalColor = texture(texture0, fragTexCoord) * colDiffuse * fragColor; }\n";
+        miniMask = LoadShaderFromMemory(nullptr, fs);
+    }
+    // gl_FragCoord is in framebuffer pixels from the bottom left.
+    const float sx = (float)GetRenderWidth() / std::max(1, GetScreenWidth()), sy = (float)GetRenderHeight() / std::max(1, GetScreenHeight());
+    const float circle[3] = { c.x * sx, (float)GetRenderHeight() - c.y * sy, rad * sx };
+    BeginShaderMode(miniMask);
+    SetShaderValue(miniMask, GetShaderLocation(miniMask, "circle"), circle, SHADER_UNIFORM_VEC3);
+    DrawTexturePro(minimap.tex, { 0, 0, (float)m.W, (float)m.H }, { c.x + shift.x, c.y + shift.y, drawn, drawn }, { drawn * 0.5f, drawn * 0.5f }, rot, WHITE);
+    EndShaderMode();
     DrawRing(c, rad, rad + 3.0f, 0, 360, 48, Fade(RAYWHITE, 0.6f));
     // Waypoints and the start on it.
     auto onMini = [&](Vector3 dir, Color col) {
@@ -466,12 +490,23 @@ void Nav_DrawMap(Scene& world) {
     DrawRectangle(0, 0, GetScreenWidth(), GetScreenHeight(), Fade(BLACK, 0.7f));
     const Rectangle r = MapRect();
     DrawRectangleRec(r, { 16, 19, 26, 255 });
-    if (bigMap.tex.id && bigMap.shown) DrawTexturePro(bigMap.tex, { 0, 0, (float)bigMap.shown->W, (float)bigMap.shown->H }, r, { 0, 0 }, 0.0f, WHITE);
+    // The last rendered image is drawn where the current view puts it (shifted while dragging, scaled
+    // after a zoom), so the map follows the cursor at once and the fresh render only sharpens it.
+    if (bigMap.tex.id && bigMap.shown) {
+        const MapImage& m = *bigMap.shown;
+        const float scale = m.W / r.width, k = m.mpp / kZooms[mapZoom];
+        const Vector2 off = Vector3LengthSqr(mapCentre) > 0.5f ? OnImage(m, mapCentre) : Vector2{ 0, 0 };
+        const Rectangle dst = { r.x + r.width * 0.5f - (m.W * 0.5f + off.x) * k / scale, r.y + r.height * 0.5f - (m.H * 0.5f + off.y) * k / scale, m.W * k / scale, m.H * k / scale };
+        BeginScissorMode((int)r.x, (int)r.y, (int)r.width, (int)r.height);
+        DrawTexturePro(bigMap.tex, { 0, 0, (float)m.W, (float)m.H }, dst, { 0, 0 }, 0.0f, WHITE);
+        EndScissorMode();
+    }
     DrawRectangleLinesEx(r, 2.0f, Fade(RAYWHITE, 0.5f));
     if (bigMap.shown && h.body) {
         const MapImage& m = *bigMap.shown;
-        const float scale = m.W / r.width;
-        auto toScreen = [&](Vector3 dir) { const Vector2 p = OnImage(m, dir); return Vector2{ r.x + r.width * 0.5f + p.x / scale, r.y + r.height * 0.5f + p.y / scale }; };
+        const float scale = m.W / r.width, k = m.mpp / kZooms[mapZoom];
+        const Vector2 off = Vector3LengthSqr(mapCentre) > 0.5f ? OnImage(m, mapCentre) : Vector2{ 0, 0 };
+        auto toScreen = [&](Vector3 dir) { const Vector2 p = OnImage(m, dir); return Vector2{ r.x + r.width * 0.5f + (p.x - off.x) * k / scale, r.y + r.height * 0.5f + (p.y - off.y) * k / scale }; };
         BeginScissorMode((int)r.x, (int)r.y, (int)r.width, (int)r.height);
         if (hasStart && startBody == h.body->name) DrawMarker(toScreen(startDir), GREEN, "Start", 7.0f);
         for (const Waypoint& w : waypoints) if (w.body == h.body->name) DrawMarker(toScreen(w.dir), GOLD, w.name.c_str(), 7.0f);
@@ -484,7 +519,7 @@ void Nav_DrawMap(Scene& world) {
                      Vector2Add(Vector2Subtract(p, Vector2Scale(f, 7.0f)), Vector2Scale(sd, 7.0f)), SKYBLUE);
         EndScissorMode();
         // Scale bar: 100 m .. 10 km.
-        const float metresPerScreenPx = m.mpp * scale;
+        const float metresPerScreenPx = kZooms[mapZoom] * scale;
         float bar = 100.0f;
         while (bar / metresPerScreenPx < 80.0f) bar *= 2.0f;
         const int bw = (int)(bar / metresPerScreenPx), bx = (int)r.x + 16, by = (int)(r.y + r.height) - 24;

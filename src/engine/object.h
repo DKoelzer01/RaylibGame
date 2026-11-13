@@ -62,7 +62,10 @@ struct RenderContext {
     Shader* partShader = nullptr;         // build plots (plots.h)
     int partOccluderLoc = -1;
     Shader* treeShader = nullptr;         // foliage: trees and bushes
-    int treeModelLoc = -1, treeOccluderLoc = -1, treeFadeLoc = -1;
+    int treeModelLoc = -1, treeOccluderLoc = -1, treeFadeLoc = -1, treeBarkLoc = -1, treeLeafLoc = -1;
+    // Shadow pass: the light box's column (render space): chunks farther than this from the axis are skipped
+    // before their model matrix is worked out (radius < 0: no pre-cull).
+    Vector3 cullAxisPoint{}, cullAxisDir{}; float cullAxisRadius = -1.0f;
 };
 
 extern bool frustumCullingEnabled; // debug toggle

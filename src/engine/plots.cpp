@@ -26,6 +26,8 @@ const char* PartName(PartType t) {
         case PartType::Pane: return "pane";
         case PartType::Post: return "post";
         case PartType::Conveyor: return "conveyor";
+        case PartType::Pipe: return "water pipe";
+        case PartType::Outlet: return "water outlet";
         case PartType::Cable: return "cable";
         case PartType::Chest: return "chest";
         case PartType::Generator: return "generator";
@@ -56,6 +58,8 @@ const char* PartName(PartType t) {
         case PartType::ArcFurnace: return "arc furnace";
         case PartType::Refinery: return "refinery";
         case PartType::PrecisionAssembler: return "precision assembler";
+        case PartType::FusionReactor: return "fusion reactor";
+        case PartType::MassDriver: return "mass driver";
         case PartType::Farmland: return "farmland";
         case PartType::Fence: return "fence";
         case PartType::Gate: return "gate";
@@ -99,6 +103,8 @@ const char* PartMachineName(PartType t) {
         case PartType::ArcFurnace: return "arc_furnace";
         case PartType::Refinery: return "refinery";
         case PartType::PrecisionAssembler: return "precision_assembler";
+        case PartType::FusionReactor: return "fusion_reactor";
+        case PartType::MassDriver: return "mass_driver";
         default: return nullptr;
     }
 }
@@ -106,6 +112,8 @@ const char* PartCostItem(PartType t) {
     switch (t) {
 
         case PartType::Conveyor: return "conveyor";
+        case PartType::Pipe: return "pipe";
+        case PartType::Outlet: return "water_outlet";
         case PartType::Cable: return "cable";
         case PartType::Furnace: return "electric_furnace"; // the item; "furnace" is its recipe map
         case PartType::Farmland: return "farmland";
@@ -126,7 +134,6 @@ namespace {
     const BuildMaterial kBuildMaterials[] = {
         { "concrete", "Concrete", { 168, 166, 158, 255 } },
         { "stone", "Stone", { 122, 122, 128, 255 } },
-        { "wood", "Wood", { 150, 108, 64, 255 } },
         { "iron_plate", "Iron", { 118, 122, 130, 255 } },
         { "glass", "Glass", { 172, 212, 226, 255 } },
         { "dirt", "Packed dirt", { 120, 90, 60, 255 } },
@@ -135,6 +142,8 @@ namespace {
         { "oak_planks", "Oak", { 158, 112, 66, 255 } },
         { "birch_planks", "Birch", { 214, 196, 152, 255 } },
         { "pine_planks", "Pine", { 176, 132, 82, 255 } },
+        { "maple_planks", "Maple", { 182, 104, 78, 255 } },
+        { "spruce_planks", "Spruce", { 112, 82, 58, 255 } },
         { "granite", "Granite", { 168, 146, 140, 255 } },
         { "basalt", "Basalt", { 62, 62, 68, 255 } },
         { "sandstone", "Sandstone", { 212, 182, 132, 255 } },
@@ -160,6 +169,15 @@ namespace {
         { "ruby_block", "Ruby", { 196, 40, 70, 255 } },
         { "sapphire_block", "Sapphire", { 50, 80, 196, 255 } },
         { "emerald_block", "Emerald", { 40, 176, 110, 255 } },
+        // Raw resources as blocks (playtest 4): logs of each wood (bark colours), clay, ice and coal.
+        { "oak_log", "Oak log", { 92, 66, 42, 255 } },
+        { "birch_log", "Birch log", { 226, 222, 210, 255 } },
+        { "maple_log", "Maple log", { 110, 64, 50, 255 } },
+        { "pine_log", "Pine log", { 104, 74, 50, 255 } },
+        { "spruce_log", "Spruce log", { 70, 52, 40, 255 } },
+        { "clay", "Clay", { 170, 120, 95, 255 } },
+        { "ice", "Ice", { 176, 214, 240, 255 } },
+        { "coal", "Coal", { 36, 36, 40, 255 } },
     };
 }
 int BuildMaterialCount() { return (int)(sizeof(kBuildMaterials) / sizeof(kBuildMaterials[0])); }
@@ -174,6 +192,8 @@ static Color PartColor(PartType t) {
 
         case PartType::Block: return { 150, 148, 142, 255 };
         case PartType::Conveyor: return { 60, 62, 66, 255 };
+        case PartType::Pipe: return { 96, 116, 140, 255 };
+        case PartType::Outlet: return { 60, 120, 190, 255 };
         case PartType::Cable: return { 184, 110, 60, 255 };       // copper
         case PartType::Chest: return { 150, 105, 60, 255 };       // wood
         case PartType::Generator: return { 180, 60, 45, 255 };
@@ -204,6 +224,8 @@ static Color PartColor(PartType t) {
         case PartType::ArcFurnace: return { 90, 90, 110, 255 };
         case PartType::Refinery: return { 140, 110, 160, 255 };
         case PartType::PrecisionAssembler: return { 100, 140, 180, 255 };
+        case PartType::FusionReactor: return { 200, 110, 240, 255 };
+        case PartType::MassDriver: return { 150, 160, 185, 255 };
         case PartType::Farmland: return { 86, 60, 38, 255 };
         case PartType::Fence: return { 130, 95, 60, 255 };
         case PartType::Gate: return { 165, 120, 70, 255 };
@@ -218,7 +240,7 @@ static void PartCells(PartType t, std::vector<std::pair<Int3, CellShape>>& out) 
     out.clear();
     CellShape full;
     switch (t) {
-        case PartType::Cube: case PartType::Conveyor: case PartType::Cable: case PartType::Guidance: case PartType::LandingLeg:
+        case PartType::Cube: case PartType::Conveyor: case PartType::Cable: case PartType::Guidance: case PartType::LandingLeg: case PartType::Pipe: case PartType::Outlet:
             out.push_back({ { 0, 0, 0 }, full }); break;
         case PartType::Block: case PartType::Chest: case PartType::Generator: case PartType::Furnace: case PartType::Macerator: case PartType::Battery:
         case PartType::Campfire: case PartType::Kiln: case PartType::CokeOven: case PartType::BlastFurnace: case PartType::Boiler:
@@ -226,7 +248,7 @@ static void PartCells(PartType t, std::vector<std::pair<Int3, CellShape>>& out) 
         case PartType::RocketEngine: case PartType::FuelTank: case PartType::Cockpit: case PartType::Cabin: case PartType::StationCore:
         case PartType::OreWasher: case PartType::Centrifuge: case PartType::WaterPump: case PartType::MvGenerator: case PartType::Electrolyzer:
         case PartType::ChemicalReactor: case PartType::Miner: case PartType::HvGenerator: case PartType::ArcFurnace: case PartType::Refinery:
-        case PartType::PrecisionAssembler:
+        case PartType::PrecisionAssembler: case PartType::FusionReactor: case PartType::MassDriver:
             for (int z = 0; z < 2; ++z) for (int y = 0; y < 2; ++y) for (int x = 0; x < 2; ++x) out.push_back({ { x, y, z }, full });
             break;
         case PartType::Farmland: // 1 m square, half a metre deep

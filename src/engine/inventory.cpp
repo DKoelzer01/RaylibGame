@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstring>
 #include <fstream>
 #include <sstream>
 
@@ -150,6 +151,15 @@ ItemKind KindOf(const std::string& id) {
     return d ? d->kind : ItemKind::Resource;
 }
 
+// Recipe wildcards: "any_planks" takes planks of any wood, "any_log" any log.
+bool ItemMatches(const std::string& want, const std::string& have) {
+    if (want == have) return true;
+    auto ends = [&](const char* suf) { const size_t n = strlen(suf); return have.size() > n && have.compare(have.size() - n, n, suf) == 0; };
+    if (want == "any_planks") return ends("_planks");
+    if (want == "any_log") return ends("_log");
+    return false;
+}
+
 int StackLimit(const std::string& id) {
     switch (KindOf(id)) {
         case ItemKind::Tool: return 1;
@@ -205,12 +215,12 @@ bool Inventory::removeAmount(const std::string& id, double amount) {
     const int64_t want = ToCenti(amount);
     if (want <= 0) return true;
     int64_t have = 0;
-    for (const InvSlot& s : slots) if (!s.empty() && s.id == id) have += s.centi;
+    for (const InvSlot& s : slots) if (!s.empty() && ItemMatches(id, s.id)) have += s.centi;
     if (have < want) return false;
     int64_t left = want;
     for (int i = kSlots - 1; i >= 0 && left > 0; --i) { // from the last stacks, so the first stay put
         InvSlot& s = slots[i];
-        if (s.empty() || s.id != id) continue;
+        if (s.empty() || !ItemMatches(id, s.id)) continue;
         const int64_t take = std::min(left, s.centi);
         s.centi -= take; left -= take;
         if (s.centi <= 0) s = InvSlot{};
@@ -220,13 +230,13 @@ bool Inventory::removeAmount(const std::string& id, double amount) {
 
 double Inventory::amount(const std::string& id) const {
     int64_t c = 0;
-    for (const InvSlot& s : slots) if (!s.empty() && s.id == id) c += s.centi;
+    for (const InvSlot& s : slots) if (!s.empty() && ItemMatches(id, s.id)) c += s.centi;
     return c / 100.0;
 }
 
 int Inventory::count(const std::string& id) const {
     int64_t c = 0;
-    for (const InvSlot& s : slots) if (!s.empty() && s.id == id) c += s.centi;
+    for (const InvSlot& s : slots) if (!s.empty() && ItemMatches(id, s.id)) c += s.centi;
     return (int)(c / 100);
 }
 
@@ -303,6 +313,15 @@ const char* OreKindOf(const Planetoid& body, Vector3 local) {
             if (k >= 0) return PlanetField::OreKindName(k);
         }
         return "iron_ore"; // (ore material where oreKind finds none: only at a different detail level)
+    }
+    if (body.ringRock >= 0) {
+        // Ring rocks (M24): metal-rich - nickel-iron most, then iron, platinum, a little iridium and copper
+        // (deposits ~48 m across, as on asteroids).
+        const int x = (int)floorf(local.x / 48.0f), y = (int)floorf(local.y / 48.0f), z = (int)floorf(local.z / 48.0f);
+        uint32_t h = (uint32_t)x * 73856093u ^ (uint32_t)y * 19349663u ^ (uint32_t)z * 83492791u ^ (body.seed + 17u) * 2654435761u;
+        h ^= h >> 16; h *= 0x7feb352du; h ^= h >> 15; h *= 0x846ca68bu; h ^= h >> 16;
+        const unsigned r = h % 100;
+        return r < 45 ? "nickel_iron_ore" : r < 65 ? "iron_ore" : r < 80 ? "platinum_ore" : r < 86 ? "iridium_ore" : "copper_ore";
     }
     return OreKindAt(local, body.seed);
 }

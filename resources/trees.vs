@@ -17,6 +17,7 @@ out vec3 fragPosition;
 out vec3 fragNormal;
 out float fragLeaf;
 out float fragShade;
+out float fragStone;
 out float fragHash;
 out float fragLatitude;
 out float fragHeight;
@@ -42,6 +43,7 @@ void main()
     fragNormal = normalize(mat3(matModel) * n);
     fragLeaf = leaf;
     fragShade = vertexColor.g;
+    fragStone = vertexColor.b;  // loose stones: grey rock
     fragHash = h;
     fragLatitude = abs(up.y);
     fragHeight = v.y;

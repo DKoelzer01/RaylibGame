@@ -31,7 +31,7 @@ std::vector<NearChest> Storage_NearbyChests(Scene& world, float radius) {
 int Storage_CountNearby(Scene& world, const std::string& item) {
     int n = 0;
     for (const NearChest& c : Storage_NearbyChests(world))
-        for (const auto& s : Factory::ChestContents(c.body, c.plot, c.part)) if (s.first == item) n += s.second;
+        for (const auto& s : Factory::ChestContents(c.body, c.plot, c.part)) if (ItemMatches(item, s.first)) n += s.second;
     return n;
 }
 
@@ -40,9 +40,10 @@ bool Storage_Pull(Scene& world, const std::string& item, int count) {
     int left = count;
     for (const NearChest& c : Storage_NearbyChests(world)) {
         for (const auto& s : Factory::ChestContents(c.body, c.plot, c.part)) {
-            if (s.first != item || left <= 0) continue;
+            if (!ItemMatches(item, s.first) || left <= 0) continue;
+            const std::string what = s.first; // a wildcard pulls the real item
             const int k = std::min(left, s.second);
-            Factory::Take(c.body, c.plot, c.part, item, k);
+            Factory::Take(c.body, c.plot, c.part, what, k);
             left -= k;
         }
         if (left <= 0) break;
