@@ -22,6 +22,7 @@ struct GpuBlockJob {
     PlanetField::BlockGrid grid;
     std::vector<float> islands;                     // PlanetField::blockIslands
     std::function<bool()> wanted;                   // false: dropped (superseded)
+    float priority = 0.0f;                          // the build job's (lower first: edits are negative)
     // Main thread: the batch's samples (shared by its blocks) and this block's first one (E^3 floats).
     std::function<void(std::shared_ptr<const std::vector<float>>, size_t)> done;
 };

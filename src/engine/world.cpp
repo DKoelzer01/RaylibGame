@@ -381,6 +381,7 @@ static void RequestNode(Planetoid& p, const NodeKey& key, float priority) {
                 job.keep = field;
                 job.field = pf;
                 job.wanted = [wanted, version] { return wanted->load() == version; };
+                job.priority = priority; // edits (negative) go ahead of background LOD builds
                 auto shared = std::make_shared<ChunkMeshData>(std::move(data));
                 job.done = [field, edits, shared, wanted, version, priority, prepMs](std::shared_ptr<const std::vector<float>> batch, size_t offset) {
                     Jobs().submit(priority, [field, edits, shared, wanted, version, prepMs, batch, offset] {

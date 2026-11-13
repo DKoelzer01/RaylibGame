@@ -7,6 +7,7 @@
 #include <raylib.h>
 #include <algorithm>
 #include <cstdlib>
+#include <cstring>
 #include <deque>
 #include <mutex>
 
@@ -33,6 +34,8 @@ namespace {
         std::mutex m;
         std::deque<GpuBlockJob> queue;
         const PlanetField* field = nullptr;   // whose uniforms are set
+        const PlanetField* verified = nullptr; // checked against the CPU (its first batch)
+        bool disabled = false;                 // a GPU / CPU mismatch turned the GPU path off
         long long blocks = 0, batches = 0;
         double latencyMs = 0.0;
     } S;
@@ -60,7 +63,8 @@ namespace {
 
     void SetField(const PlanetField& pf) {
         S.prog.use();
-        if (S.field == &pf) return;
+        // Uploaded on every dispatch (22 vec4s): a cache keyed on the field pointer went stale when a reloaded
+        // world's new field landed at the old one's address (PR #179 review).
         std::vector<float> params;
         pf.gpuNoiseParams(params);
         rlSetUniform(S.prog.uniform("noiseParams"), params.data(), RL_SHADER_UNIFORM_VEC4, (int)params.size() / 4);
@@ -126,11 +130,15 @@ namespace {
     }
 }
 
-bool TerrainGpu_Available() { return Init(); }
+bool TerrainGpu_Available() { return Init() && !S.disabled; }
 
 void TerrainGpu_Submit(GpuBlockJob&& job) {
     std::lock_guard<std::mutex> lock(S.m);
-    S.queue.push_back(std::move(job));
+    // In priority order (lower first, FIFO among equals): a dig's remesh (negative) goes ahead of the
+    // background LOD builds instead of waiting behind them.
+    auto it = S.queue.end();
+    while (it != S.queue.begin() && std::prev(it)->priority > job.priority) --it;
+    S.queue.insert(it, std::move(job));
 }
 
 int TerrainGpu_Pending() {
@@ -150,6 +158,28 @@ void TerrainGpu_Pump() {
         auto all = std::make_shared<std::vector<float>>(sl.outCount);
         sl.out.download(all->data(), (unsigned)(sl.outCount * 4));
         S.latencyMs += (GetTime() - sl.t0) * 1000.0;
+        // The first batch of each field is checked against the CPU once (one block, ~4 ms): the GPU path rests
+        // on bit-exact results (collision reads the CPU field), which another driver might not give (FMA,
+        // denormals, sqrt). On any difference the GPU path turns off and this batch is redone on the CPU.
+        if (!sl.jobs.empty() && S.verified != sl.jobs.front().field) {
+            const GpuBlockJob& j = sl.jobs.front();
+            const size_t n = (size_t)j.block.E * j.block.E * j.block.E;
+            std::vector<float> cpu(n);
+            j.field->sampleBlock(j.block.origin, j.block.stride, j.block.E, j.block.footprint, j.grid, cpu.data());
+            if (memcmp(cpu.data(), all->data() + sl.outOffset[0], n * sizeof(float)) != 0) {
+                logger.logf("[TerrainGpu] GPU density differs from the CPU on this driver: density blocks back on the CPU\n");
+                S.disabled = true;
+            } else {
+                S.verified = j.field;
+            }
+        }
+        if (S.disabled) {
+            for (size_t k = 0; k < sl.jobs.size(); ++k) {
+                GpuBlockJob& j = sl.jobs[k];
+                if (j.wanted && !j.wanted()) continue;
+                j.field->sampleBlock(j.block.origin, j.block.stride, j.block.E, j.block.footprint, j.grid, all->data() + sl.outOffset[k]);
+            }
+        }
         for (size_t k = 0; k < sl.jobs.size(); ++k) {
             GpuBlockJob& j = sl.jobs[k];
             if (j.wanted && !j.wanted()) continue;
@@ -172,6 +202,19 @@ void TerrainGpu_Pump() {
             }
         }
         if (sl.jobs.empty()) break;
+        if (S.disabled) {
+            // Turned off after a mismatch: whatever was still queued is sampled on the CPU (once; new builds
+            // no longer come here, TerrainGpu_Available is false).
+            for (GpuBlockJob& j : sl.jobs) {
+                if (j.wanted && !j.wanted()) continue;
+                const size_t n = (size_t)j.block.E * j.block.E * j.block.E;
+                auto cpu = std::make_shared<std::vector<float>>(n);
+                j.field->sampleBlock(j.block.origin, j.block.stride, j.block.E, j.block.footprint, j.grid, cpu->data());
+                j.done(cpu, 0);
+            }
+            sl.jobs.clear();
+            continue;
+        }
         Dispatch(sl);
     }
 }
@@ -179,9 +222,13 @@ void TerrainGpu_Pump() {
 bool TerrainGpu_SampleBlock(const PlanetField& pf, Vector3 o, float stride, int SS, float fp,
                             const PlanetField::BlockGrid& g, const std::vector<float>& islands, float* out) {
     if (!Init()) return false;
-    // Wait for anything in flight, then use slot 0 synchronously.
-    for (Slot& sl : S.slots) if (sl.fence) { while (!Done(sl, 1000000000ull)) {} }
-    TerrainGpu_Pump(); // hands out the finished batches
+    // Tests only, with nothing streaming: refuse (the caller samples on the CPU) rather than share slot 0 with
+    // queued or in-flight chunk builds.
+    {
+        std::lock_guard<std::mutex> lock(S.m);
+        if (!S.queue.empty()) return false;
+    }
+    for (const Slot& s : S.slots) if (s.fence || !s.jobs.empty()) return false;
     Slot& sl = S.slots[0];
     GpuBlockJob j;
     j.field = &pf;
@@ -208,11 +255,15 @@ TerrainGpuStats TerrainGpu_Stats() {
 void TerrainGpu_Unload() {
     for (Slot& sl : S.slots) {
         if (sl.fence) glDeleteSync(sl.fence);
+        sl.fence = nullptr;
+        sl.jobs.clear();
+        sl.outOffset.clear();
         sl.grid.destroy(); sl.islands.destroy(); sl.out.destroy(); sl.blocks.destroy();
     }
     S.prog.unload();
     std::lock_guard<std::mutex> lock(S.m);
     S.queue.clear();
     S.tried = S.ok = false;
-    S.field = nullptr;
+    S.field = S.verified = nullptr;
+    S.disabled = false;
 }

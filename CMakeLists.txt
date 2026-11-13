@@ -79,7 +79,7 @@ if(ENABLE_TRACY)
     target_link_libraries(engine PUBLIC Tracy::TracyClient) # also defines TRACY_ENABLE for everything
 endif()
 if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
-    target_compile_options(engine PRIVATE -Wall -Wno-missing-braces)
+    target_compile_options(engine PRIVATE -Wall -Wno-missing-braces -ffp-contract=off) # no FMA contraction: the GPU terrain port (terrain.glsl) matches the CPU bit for bit
 endif()
 
 function(add_game target dir)
