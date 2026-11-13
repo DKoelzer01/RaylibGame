@@ -360,6 +360,22 @@ PlanetField::Pond PlanetField::pondOfCell(int cx, int cy, int cz) const {
     return p;
 }
 
+float PlanetField::elevationBase(Vector3 dir, float fp) const {
+    const Land l = land(dir, fp);
+    if (moon) return l.h;
+    const float h = l.h + l.detail;
+    return h + biomeShape(dir, h, fp);
+}
+
+void PlanetField::gpuNoiseParams(std::vector<float>& out) const {
+    // Order = the N_* indices in resources/compute/terrain.glsl.
+    const SimplexNoise* fields[] = { &continents, &ridges, &hills, &valleys, &detail, &cavesA, &cavesB, &veins, &climate,
+                                     &caverns, &ravines, &ravineMask, &streams, &rocks, &rockMask, &rugged, &cliffs, &warp3,
+                                     &tempNoise, &moistNoise, &biomeJitter, &caveMouths };
+    out.clear();
+    for (const SimplexNoise* f : fields) { float p[4]; f->gpuParams(p); out.insert(out.end(), p, p + 4); }
+}
+
 float PlanetField::elevation(Vector3 dir, float fp) const {
     const Land l = land(dir, fp);
     if (moon) return l.h;
@@ -440,7 +456,10 @@ float PlanetField::biomeShape(Vector3 dir, float h, float fp) const {
         // (up to ~9 m); gone where samples are too far apart to show them. Fade near the coast.
         const float warp = 2.2f * biomeJitter.fractal(2, x * 0.25f, y * 0.25f, z * 0.25f);
         const float u = (x * 0.8f + z * 0.6f) / 55.0f + warp;
-        const float crest = powf(0.5f + 0.5f * sinf(u * 6.2831853f), 2.2f);
+        // Crest profile: a smoothed triangle wave, squared (close to (0.5 + 0.5 sin)^2.2, which it replaced:
+        // only floor and arithmetic, so the GPU port (terrain.glsl) computes exactly the same).
+        const float fu = u - floorf(u), tri = 1.0f - fabsf(2.0f * fu - 1.0f), sm = tri * tri * (3.0f - 2.0f * tri);
+        const float crest = sm * sm;
         const float swell = 0.55f + 0.45f * moistNoise.fractal(1, x * 6.0f, y * 6.0f, z * 6.0f);
         dh += desert * crest * 9.0f * swell * smooth(4.0f, 20.0f, h) * std::clamp(2.0f - fp / 24.0f, 0.0f, 1.0f);
     }
@@ -927,7 +946,7 @@ PlanetField::Climate PlanetField::climateAt(Vector3 dir, float elev) const {
     const float lat = fabsf(dir.y);
     const float x = dir.x * radius, y = dir.y * radius, z = dir.z * radius;
     // Warm at the equator, cold at the poles; 6.5 C colder per km of height; regional patches +-7 C.
-    c.temp = 30.0f - 44.0f * powf(lat, 1.5f) - 6.5f * std::max(elev, 0.0f) / 1000.0f + 7.0f * tempNoise.fractal(2, x, y, z);
+    c.temp = 30.0f - 44.0f * (lat * sqrtf(lat)) - 6.5f * std::max(elev, 0.0f) / 1000.0f + 7.0f * tempNoise.fractal(2, x, y, z);
     // Moisture: regional wet and dry patches, wetter in the lowlands near the sea.
     c.moist = 0.5f + 0.85f * moistNoise.fractal(3, x, y, z) + 0.08f * (1.0f - Smoothstep(10.0f, 150.0f, elev)); // noise sits mostly in +-0.4
     c.moist = std::clamp(c.moist, 0.0f, 1.0f);

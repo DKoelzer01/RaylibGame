@@ -33,6 +33,9 @@ public:
     // spikes), and the result keeps fractal(octaves)'s normalisation, so detail is dropped, not
     // rescaled. footprint <= 0: identical to fractal(octaves).
     float fractalLimited(size_t octaves, float footprint, float x, float y, float z) const;
+    // The parameters a GPU port needs (terrain.glsl): frequency, seed x, y, z. Amplitude 1, lacunarity 2,
+    // persistence 0.5 for every field the terrain uses.
+    void gpuParams(float out[4]) const { out[0] = mFrequency; out[1] = mSeedX; out[2] = mSeedY; out[3] = mSeedZ; }
 
     /**
      * Constructor of to initialize a fractal noise summation

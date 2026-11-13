@@ -621,6 +621,60 @@ int main(int argc, char** argv)
             return 0;
         }
     for (int i = 1; i < argc; ++i)
+        if (std::string(argv[i]) == "--test-terrain-gpu") {
+            // Plan 6 step 3 (#146): the GPU port of the height map (resources/compute/terrain.glsl) against
+            // PlanetField::elevationBase over 1M points: random directions (half near the start, half anywhere)
+            // and footprints 0-1024 m. Gate: every height within 1e-4 m.
+            Planetoid* p = dynamic_cast<Planetoid*>(world.objects[0].get());
+            const auto* pf = p ? dynamic_cast<const PlanetField*>(p->field.get()) : nullptr;
+            ComputeProgram prog;
+            if (!pf || !prog.load("resources/compute/terrain_test.comp")) { printf("bench: terrain gpu: no planet or shader -> FAIL\n"); return 1; }
+            const int N = 1 << 20;
+            std::vector<float> in(N * 4);
+            std::mt19937 rng(11);
+            std::uniform_real_distribution<float> u(-1.0f, 1.0f);
+            const Vector3 home = pf->findSpawnDir(p->seed);
+            const Vector3 t1 = Vector3Normalize(Vector3CrossProduct(home, { 0, 1, 0 })), t2 = Vector3CrossProduct(t1, home);
+            const float fps[] = { 0.0f, 0.0f, 0.25f, 1.0f, 2.0f, 4.0f, 8.0f, 16.0f, 32.0f, 64.0f, 128.0f, 256.0f, 512.0f, 1024.0f };
+            for (int k = 0; k < N; ++k) {
+                Vector3 d;
+                if (k & 1) d = Vector3Normalize(Vector3Add(home, Vector3Add(Vector3Scale(t1, 5000.0f * u(rng) / pf->radius), Vector3Scale(t2, 5000.0f * u(rng) / pf->radius))));
+                else { do d = { u(rng), u(rng), u(rng) }; while (Vector3LengthSqr(d) < 0.01f || Vector3LengthSqr(d) > 1.0f); d = Vector3Normalize(d); }
+                in[k * 4] = d.x; in[k * 4 + 1] = d.y; in[k * 4 + 2] = d.z;
+                in[k * 4 + 3] = fps[(rng() >> 4) % (sizeof(fps) / sizeof(fps[0]))];
+            }
+            std::vector<float> params;
+            pf->gpuNoiseParams(params);
+            ComputeBuffer bin, bout;
+            bin.create(N * 16, in.data(), false);
+            bout.create(N * 4, nullptr, true);
+            prog.use();
+            rlSetUniform(prog.uniform("noiseParams"), params.data(), RL_SHADER_UNIFORM_VEC4, (int)params.size() / 4);
+            prog.setFloat("planetRadius", pf->radius);
+            prog.setInt("planetMoon", 0);
+            prog.setUint("count", (unsigned)N);
+            bin.bind(0); bout.bind(1);
+            const double g0 = GetTime();
+            prog.dispatch((N + 63) / 64);
+            std::vector<float> gpu(N);
+            bout.download(gpu.data(), N * 4);
+            const double gpuMs = (GetTime() - g0) * 1000.0;
+            const double c0 = GetTime();
+            std::vector<float> cpu(N);
+            for (int k = 0; k < N; ++k) cpu[k] = pf->elevationBase({ in[k * 4], in[k * 4 + 1], in[k * 4 + 2] }, in[k * 4 + 3]);
+            const double cpuMs = (GetTime() - c0) * 1000.0;
+            double worst = 0.0; int over = 0, exact = 0, worstK = 0;
+            for (int k = 0; k < N; ++k) {
+                const double e = fabs((double)gpu[k] - cpu[k]);
+                if (e > worst) { worst = e; worstK = k; }
+                over += e > 1e-4; exact += e == 0.0;
+            }
+            printf("bench: terrain gpu: %d points, %d exact, %d over 1e-4 m, worst %.3g m (cpu %.4f gpu %.4f at fp %.2f); cpu %.0f ms (1 thread), gpu %.1f ms (incl. readback) -> %s\n",
+                   N, exact, over, worst, cpu[worstK], gpu[worstK], in[worstK * 4 + 3], cpuMs, gpuMs, over == 0 ? "PASS" : "FAIL");
+            bin.destroy(); bout.destroy(); prog.unload();
+            return over == 0 ? 0 : 1;
+        }
+    for (int i = 1; i < argc; ++i)
         if (std::string(argv[i]) == "--profile-density") {
             // Plan item 7: what terrain sampling costs, part by part, over 200k points within 20 m of the
             // surface around the start (one thread, ns per call).

@@ -177,6 +177,9 @@ public:
     // Surface height above sea level along a unit direction; footprint > 0 leaves out detail finer
     // than samples that far apart (see SimplexNoise::fractalLimited).
     float elevation(Vector3 dir, float footprint = 0.0f) const;
+    float elevationBase(Vector3 dir, float footprint = 0.0f) const; // land + detail + biome landforms: no rivers, lakes, ponds (Plan 6: GPU port check)
+    // The terrain noise fields in a fixed order for the GPU port (terrain.glsl): frequency + seed per field.
+    void gpuNoiseParams(std::vector<float>& out) const;
     // Inland water (planets): rivers of the drainage network (rivers.h) in channels they carve, lakes
     // in filled depressions, and
     // ponds (12-38 m, flat surface, a low embankment where the ground falls away) in some
