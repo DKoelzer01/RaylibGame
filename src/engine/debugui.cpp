@@ -95,7 +95,8 @@ void DebugUI_Draw(Scene& world) {
         if (ImGui::CollapsingHeader("Chunk streaming", ImGuiTreeNodeFlags_DefaultOpen)) {
             const WorldStats& s = GetWorldStats();
             ImGui::Text("Meshes drawn: %d   LOD nodes: %d   edits: %d", s.chunks, s.nodes, s.edits);
-            ImGui::SliderFloat("LOD factor", &lodSettings.lodFactor, 0.5f, 6.0f, "%.2f");
+            ImGui::SliderFloat("Terrain detail (LOD factor)", &lodSettings.detailFactor, 0.5f, 6.0f, "%.2f"); // #297: the setting; lodFactor follows it (lower while flying)
+            ImGui::Text("LOD factor in effect: %.2f%s", lodSettings.lodFactor, lodSettings.fast ? " (moving fast)" : "");
             ImGui::Text("Jobs queued: %d   running: %d / %d threads", s.queuedJobs, s.runningJobs, s.workerThreads);
             ImGui::Text("Uploads: %d pending, %d last frame", s.pendingUploads, s.uploadsLastFrame);
             ImGui::Text("Avg chunk build: %.2f ms   last world load: %.2f s", s.avgBuildMs, s.lastGenerationSeconds);
