@@ -212,7 +212,7 @@ void Ambience_Update(Scene& world, float dt) {
             if (!SmokyMachine(part.type)) continue;
             const Vector3 base = plot->toBody({ (part.origin.x + 1) * kCellSize, part.origin.y * kCellSize, (part.origin.z + 1) * kCellSize });
             if (Vector3Distance(base, local) > 120.0f) continue;
-            if (Factory::View(body->id, plot->id, (int)i).status != MachineStatus::Working) continue;
+            if (!Factory::Working(body->id, plot->id, (int)i)) continue;
             const bool campfire = part.type == PartType::Campfire;
             ParticleBurst smoke;
             smoke.kind = ParticleKind::Smoke; smoke.color = campfire ? Color{ 190, 188, 185, 255 } : Color{ 150, 148, 145, 255 };

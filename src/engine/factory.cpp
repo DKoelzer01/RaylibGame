@@ -226,6 +226,8 @@ std::tuple<uint64_t, uint32_t, int> watchKey{ 0, 0, -1 };
 MachineView watchView;
 std::map<std::tuple<uint64_t, uint32_t, int>, std::vector<std::pair<int, int>>> chestView; // chests of plots near the player: (item, count)
 std::map<std::tuple<uint64_t, uint32_t, int>, int> pumpView;     // water pumps (every plot): water units in their outputs
+inline uint64_t WorkingKey(uint64_t body, uint32_t plot, int part) { return (body * 1315423911ull) ^ ((uint64_t)plot << 24) ^ (uint64_t)(uint32_t)part; }
+std::unordered_set<uint64_t> workingView;                          // machines working on near plots (viewMutex)
 FactoryStats stats;
 
 std::thread simThread;
@@ -607,6 +609,9 @@ void SimLoop() {
                 for (auto& r : back) results.push_back(r);
                 chestView.clear();
                 pumpView.clear();
+                workingView.clear(); // machines working on the plots near the player (models, smoke: Factory::Working)
+                for (const PlotSim& ps : plots)
+                    if (ps.nearPlayer) for (const Machine& m : ps.machines) if (m.status == MachineStatus::Working) workingView.insert(WorkingKey(ps.body, ps.plot, m.part));
                 for (const PlotSim& ps : plots)
                     for (const Machine& m : ps.machines)
                         if (m.type == PartType::WaterPump) { int w = 0; for (int i = 0; i < kSlots; ++i) if (m.out[i].count > 0) w += m.out[i].count; pumpView[std::make_tuple(ps.body, ps.plot, m.part)] = w; }
@@ -836,4 +841,9 @@ int Factory::PumpWater(uint64_t body, uint32_t plot, int part) {
 void Factory::Drain(uint64_t body, uint32_t plot, int part, const std::string& item, int count) {
     std::lock_guard<std::mutex> q(queueMutex);
     itemQueue.push_back({ 5, body, plot, part, tables.item(item), count });
+}
+
+bool Factory::Working(uint64_t body, uint32_t plot, int part) {
+    std::lock_guard<std::mutex> v(viewMutex);
+    return workingView.count(WorkingKey(body, plot, part)) > 0;
 }
