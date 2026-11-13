@@ -828,7 +828,7 @@ int main(int argc, char** argv)
         world.debugDraw = startWithOverlay;
         player.flyMode = benchWalkSeconds <= 0.0 && !benchWalkMode; // the bench drives the camera directly unless walking
         player.autoWalk = benchWalkMode && !benchStandMode;           // --bench-walk: walk through the measured window (--bench-stand: stand)
-        player.flyFollow = true;                                     // #127: the bench camera rides the body under it (sphere of influence), as the game's fly camera does; it
+        player.flyFollow = benchFlySpeed <= 0.0f && benchFlyAlt >= 1e8f; // #298: --bench-fly places the camera itself every frame (the carry undid it). #127: the bench camera rides the body under it (sphere of influence), as the game's fly camera does; it
                                                                       // stood still in absolute space while the planet spun past (benches that place the camera every frame override it)
         benchStart = -1.0; // starts once the world has finished streaming in
     }
