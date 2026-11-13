@@ -869,6 +869,7 @@ Scene::~Scene() {
         UnloadTexture(terrainMaterial.maps[MATERIAL_MAP_NORMAL].texture);
         UnloadTexture(terrainMaterial.maps[MATERIAL_MAP_ROUGHNESS].texture);
         UnloadTextureArray(terrainLayers);
+        TerrainArena_Unload();
     }
     // Free the maps arrays only; shaders and textures are released explicitly here.
     MemFree(terrainMaterial.maps);

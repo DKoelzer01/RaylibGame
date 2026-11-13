@@ -84,6 +84,7 @@ void GameObject::drawDepthOnly(const RenderContext& ctx) {
 Chunk::~Chunk() { wanted->store(0); releaseMesh(); }
 
 void Chunk::releaseMesh() {
+    TerrainArena_Free(arena);
     if (mesh.vaoId > 0) {
         UnloadMesh(mesh); // frees GPU buffers and the MemAlloc'd CPU arrays
     } else {
@@ -133,6 +134,7 @@ void Chunk::setMesh(const ChunkMeshData& data) {
     }
     Foliage_Upload(grass, data.grass);
     if (data.positions.empty()) return; // node has no terrain surface
+    if (TerrainArena_Available()) { arena = TerrainArena_Upload(data); return; } // shared buffers, one draw per pass
     mesh.vertexCount = (int)(data.positions.size() / 3);
     mesh.triangleCount = (int)(data.indices.size() / 3);
     mesh.vertices = CopyToRaylib(data.positions);
@@ -215,7 +217,7 @@ void ChunkBatch::draw(const Mesh& mesh, const Matrix& model) {
 }
 
 void Chunk::drawChunk(const RenderContext& ctx, const Matrix& m) {
-    if (!isActive || mesh.vaoId == 0 || !ctx.terrainMaterial) return;
+    if (!isActive || !hasMesh() || !ctx.terrainMaterial) return;
     if (!visible(ctx, m)) return;
     // Per-chunk uniforms. Both stay small far from a body's centre: the texturing origin is the
     // chunk origin wrapped to the texture's repeat (computed in double, so neighbouring chunks still
@@ -225,7 +227,9 @@ void Chunk::drawChunk(const RenderContext& ctx, const Matrix& m) {
     auto wrap = [period](float v) { return (float)(fmod(fmod((double)v, period) + period, period)); };
     const Vector3 texOrigin = { wrap(o.x), wrap(o.y), wrap(o.z) };
     const Vector3 clip = { clipMax.x - o.x, clipMax.y - o.y, clipMax.z - o.z }; // 1e30 stays "no clip"
-    if (ctx.batch) {
+    if (arena.valid()) {
+        TerrainArena_Add(arena, m, texOrigin, clip); // drawn by the body's TerrainArena_Flush
+    } else if (ctx.batch) {
         ctx.batch->setUniform(ctx.chunkOriginLoc, &texOrigin, SHADER_UNIFORM_VEC3);
         ctx.batch->setUniform(ctx.chunkClipLoc, &clip, SHADER_UNIFORM_VEC3);
         ctx.batch->draw(mesh, m);
@@ -254,9 +258,10 @@ void Chunk::drawWater(const RenderContext& ctx, const Matrix& m) {
 }
 
 void Chunk::drawChunkDepth(const RenderContext& ctx, const Matrix& m) {
-    if (!isActive || mesh.vaoId == 0 || !ctx.depthMaterial) return;
+    if (!isActive || !hasMesh() || !ctx.depthMaterial) return;
     if (!visible(ctx, m)) return;
-    if (ctx.batch) ctx.batch->draw(mesh, m);
+    if (arena.valid()) TerrainArena_Add(arena, m, {}, { 1e30f, 1e30f, 1e30f });
+    else if (ctx.batch) ctx.batch->draw(mesh, m);
     else DrawMesh(mesh, *ctx.depthMaterial, m);
 }
 

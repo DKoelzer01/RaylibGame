@@ -257,6 +257,7 @@ void Planetoid::draw(const RenderContext& ctx) {
     RenderContext c2 = ctx;
     c2.batch = &batch;
     for (Chunk* c : drawList) c->drawChunk(c2, placer.model(c->key));
+    TerrainArena_Flush(ctx.terrainMaterial->shader.id); // the arena chunks: one multi-draw
 }
 
 void Planetoid::drawTransparent(const RenderContext& ctx) {
@@ -315,6 +316,7 @@ void Planetoid::drawDepthOnly(const RenderContext& ctx) {
         }
         c->drawChunkDepth(c2, placer.model(c->key));
     }
+    TerrainArena_Flush(ctx.depthMaterial->shader.id, true);
 }
 
 // ---------------------------------------------------------------------------------------------

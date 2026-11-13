@@ -19,7 +19,8 @@ uniform sampler2D roughAoTexture;  // MATERIAL_MAP_ROUGHNESS: R = roughness, G =
 uniform sampler2DArray terrainLayers; // planet palette: dirt, sand, gravel, grass, snow, ice, stone (terrainlayers.h)
 uniform sampler2DArray terrainDetail; // its detail maps: normal XY, roughness, AO (unit 12)
 
-uniform mat4 matModel;          // body-local -> world (set by DrawMesh); see lighting.vs about matNormal
+flat in vec3 fragClipMax;     // chunk-local overlap clip (lighting.vs: a uniform or the arena record)
+uniform mat4 matModel;          // body-local -> world (DrawMesh, or the arena flush: all chunks of a body share the rotation)
 uniform float texScale;            // world units -> texture repeats
 
 #define MAX_LIGHTS          4
@@ -39,7 +40,6 @@ uniform Light lights[MAX_LIGHTS];
 uniform vec4 ambient;
 uniform vec3 viewPos;
 uniform int palette;            // 0 = space materials, 1 = fantasy, 2 = planet (texture layers)
-uniform vec3 chunkClipMax;      // chunk-local: discard beyond this (see Chunk::clipMax)
 uniform vec4 sunOccluder;       // planet: render-space centre + radius of a sphere that blocks the sun (w = 0: none)
 uniform vec3 fogColor;          // linear
 uniform float fogDensity;       // 0 = off
@@ -157,7 +157,7 @@ float vnoise(vec3 p)
 
 void main()
 {
-    if (any(greaterThan(fragChunkPos, chunkClipMax))) discard;
+    if (any(greaterThan(fragChunkPos, fragClipMax))) discard;
     vec3 geomNormal = normalize(fragNormal);
     // Texture in body-local space so the pattern is fixed to the rock, then bring the bumped
     // normal into world space for lighting.
