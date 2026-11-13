@@ -880,7 +880,7 @@ int main(int argc, char** argv)
                         suffocateSettle = settleDrift;
                     } else if (survival.deaths > 0 && !survival.dead) {
                         printf("bench: suffocate: while dead the camera drifted %.3f m in the body's frame (#231) -> %s\n", suffocateDrift, suffocateDrift < 0.01 ? "PASS" : "FAIL");
-                        const float d = Vector3Length(Vector3Subtract(player.velocity, player.nearest ? player.nearest->surfaceVelocity((player.position - world.renderOrigin).toFloat()) : Vector3{ 0, 0, 0 }));
+                        const float d = Vector3Length(Vector3Subtract(player.velocity, !player.grounded && player.nearest ? player.nearest->surfaceVelocity((player.position - world.renderOrigin).toFloat()) : Vector3{ 0, 0, 0 }));
                         printf("bench: suffocated and respawned after %.1f s; O2 %.0f HP %.0f, moving %.1f m/s against the ground, deaths %d\n",
                                GetTime() - suffocateStart, survival.oxygen, survival.health, d, survival.deaths);
                         benchSuffocate = false;
@@ -4667,13 +4667,14 @@ int main(int argc, char** argv)
                     // Dead (until the respawn): the view stays exactly where the player died, held in the frame of the
                     // body they were on - player.update is skipped, so nothing else carried it with the spinning,
                     // orbiting planet (it drifted off at ~100 m/s, or kept the death velocity; #231).
-                    static Planetoid* deathBody = nullptr;
+                    static uint64_t deathId = 0; // re-resolved each frame: the body may be destroyed while dead (ring rocks, regen)
                     static DVec3 deathLocal{};
                     static Vector3 deathForward{}, deathUp{};
                     static bool held = false;
                     if (!alive && !loading) {
                         if (!held) {
-                            deathBody = player.nearest;
+                            Planetoid* deathBody = player.nearest;
+                            deathId = deathBody ? deathBody->id : 0;
                             if (deathBody) {
                                 deathLocal = deathBody->toLocalD(player.position);
                                 deathForward = deathBody->dirToLocal(player.forward);
@@ -4681,7 +4682,7 @@ int main(int argc, char** argv)
                             }
                             held = true;
                         }
-                        if (deathBody) {
+                        if (Planetoid* deathBody = deathId ? Planetoid::find(deathId) : nullptr) {
                             player.position = deathBody->toWorldD(deathLocal);
                             player.forward = deathBody->dirToWorld(deathForward);
                             player.up = deathBody->dirToWorld(deathUp);
@@ -4689,7 +4690,7 @@ int main(int argc, char** argv)
                         player.velocity = { 0, 0, 0 };
                     } else {
                         held = false;
-                        deathBody = nullptr;
+                        deathId = 0;
                     }
                 }
                 Survival_OnLanding(player.impactSpeed);
@@ -4956,7 +4957,7 @@ int main(int argc, char** argv)
                     // --perf-log (#204): every 5 s, the per-pass averages to log.txt, tagged by how the player moved (average
                     // speed, and mouse-look turning) so "standing" and "moving" can be compared from a real session.
                     static double perfT0 = GetTime(), perfSpeed = 0.0, perfLook = 0.0; static long perfN = 0;
-                    perfSpeed += Vector3Length(Vector3Subtract(player.velocity, player.nearest ? player.nearest->surfaceVelocity((player.position - world.renderOrigin).toFloat()) : Vector3{ 0, 0, 0 })); /* against the ground: the world velocity includes the planet's spin */ perfLook += Vector2Length(GetMouseDelta()); ++perfN;
+                    perfSpeed += Vector3Length(Vector3Subtract(player.velocity, !player.grounded && player.nearest ? player.nearest->surfaceVelocity((player.position - world.renderOrigin).toFloat()) : Vector3{ 0, 0, 0 })); /* against the ground: airborne velocity is world-frame and includes the planet's spin (grounded it is surface-relative already) */ perfLook += Vector2Length(GetMouseDelta()); ++perfN;
                     if (GetTime() - perfT0 >= 5.0) {
                         const double sp = perfSpeed / std::max(1L, perfN), lk = perfLook / std::max(1L, perfN);
                         GpuTimer_LogAndReset(TextFormat("%s (speed %.1f m/s, look %.1f px/frame, %d FPS)", sp > 0.5 || lk > 0.5 ? "MOVING" : "still", sp, lk, GetFPS()));
