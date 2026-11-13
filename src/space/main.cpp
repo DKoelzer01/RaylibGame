@@ -175,6 +175,7 @@ int main(int argc, char** argv)
     bool cursorLocked = false;     // DisableCursor while playing (#205)
     bool perfLog = false;          // --perf-log: per-pass CPU/GPU averages to log.txt every 5 s in normal play, tagged moving/still (#204)
     float benchFlySpeed = 0.0f;    // --bench-fly V: the camera flies over body 0 at V m/s through the bench (LOD streaming)
+    bool benchFlyBack = false;     // --bench-fly-back: fly out for half the bench, then back the same way (chunk cache, #295)
     float benchFlyAlt = 1e9f;      // --bench-fly-alt A: fly at A m relative to sea level instead (negative: underwater, looking up)
     bool hasSpawnDir = false;      // --spawn-dir x y z: where --test-walk / --test-stand spawn on body 0
     Vector3 spawnDir = { 0, 1, 0 };
@@ -186,6 +187,7 @@ int main(int argc, char** argv)
     int benchMineStrokes = 0;     // --test-mine N: dig N strokes at the feet, craft, build (after any walk test)
     bool mineStarted = false, mineStoppedEarly = false;
     int minePhase = 0, minedStrokes = 0, mineCrafted = 0;
+    bool benchPreloadSpawn = false; double preloadT0 = -1.0; // --preload-spawn: time the spawn preload ring (#294)
     double benchFlySeconds = 0.0, flyStart = -1.0; // --test-fly S: autopilot the ship to the nearest other asteroid
     bool benchSuffocate = false;   // --test-suffocate: run out of oxygen away from the ship, die, respawn
     double benchOrbitSeconds = 0.0, orbitStart = -1.0; // --test-orbit S: coast on a circular orbit for S seconds
@@ -364,6 +366,7 @@ int main(int argc, char** argv)
         if (std::string(argv[i]) == "--bench-stand") { benchWalkMode = true; benchStandMode = true; }
         if (std::string(argv[i]) == "--perf-log") perfLog = true;
         if (std::string(argv[i]) == "--bench-fly" && i + 1 < argc) benchFlySpeed = (float)atof(argv[i + 1]);
+        if (std::string(argv[i]) == "--bench-fly-back") benchFlyBack = true;
         if (std::string(argv[i]) == "--bench-fly-alt" && i + 1 < argc) benchFlyAlt = (float)atof(argv[i + 1]);
         if (std::string(argv[i]) == "--spawn-dir" && i + 3 < argc) { hasSpawnDir = true; spawnDir = Vector3Normalize({ (float)atof(argv[i + 1]), (float)atof(argv[i + 2]), (float)atof(argv[i + 3]) }); }
         if (std::string(argv[i]) == "--test-suffocate") benchSuffocate = true;
@@ -506,6 +509,9 @@ int main(int argc, char** argv)
         if (std::string(argv[i]) == "--count" && i + 1 < argc) worldGen.count = atoi(argv[i + 1]);
         if (std::string(argv[i]) == "--system" && i + 1 < argc) worldGen.systemRadius = (float)atof(argv[i + 1]);
         if (std::string(argv[i]) == "--lod" && i + 1 < argc) lodSettings.lodFactor = (float)atof(argv[i + 1]);
+        if (std::string(argv[i]) == "--preload" && i + 1 < argc) lodSettings.preloadRadius = (float)atof(argv[i + 1]); // m, 0 = off (#294)
+        if (std::string(argv[i]) == "--cache-verts" && i + 1 < argc) lodSettings.cacheVertices = (int)(atof(argv[i + 1]) * 1048576.0); // millions (#295)
+        if (std::string(argv[i]) == "--preload-spawn") benchPreloadSpawn = true; // bench: the spawn preload as a new game does it, timed
         if (std::string(argv[i]) == "--first" && i + 3 < argc) { worldGen.hasFirst = true; worldGen.first = { (float)atof(argv[i+1]), (float)atof(argv[i+2]), (float)atof(argv[i+3]) }; }
     }
     const bool bench = benchSeconds > 0.0;
@@ -828,16 +834,25 @@ int main(int argc, char** argv)
         world.debugDraw = startWithOverlay;
         player.flyMode = benchWalkSeconds <= 0.0 && !benchWalkMode; // the bench drives the camera directly unless walking
         player.autoWalk = benchWalkMode && !benchStandMode;           // --bench-walk: walk through the measured window (--bench-stand: stand)
-        player.flyFollow = true;                                     // #127: the bench camera rides the body under it (sphere of influence), as the game's fly camera does; it
+        player.flyFollow = benchFlySpeed <= 0.0f && benchFlyAlt >= 1e8f; // #298: --bench-fly places the camera itself every frame (the carry undid it). #127: the bench camera rides the body under it (sphere of influence), as the game's fly camera does; it
                                                                       // stood still in absolute space while the planet spun past (benches that place the camera every frame override it)
         benchStart = -1.0; // starts once the world has finished streaming in
+        if (benchPreloadSpawn) { BeginSpawnPreload(); preloadT0 = GetTime(); }
     }
 
     while (windowKeepAlive && !WindowShouldClose())
     {
         GpuTimer_CpuFrameStart(); GpuTimer_BeginFrame();
+        if (preloadT0 >= 0.0 && !SpawnPreloadPending()) {
+            const WorldStats& ws = GetWorldStats();
+            printf("bench: spawn preload: %d ring nodes built in %.2f s; arena %.1f M vertices, %d nodes alive\n",
+                   ws.preloadNodes, GetTime() - preloadT0, TerrainArena_Stats().vertices / 1048576.0, ws.nodes);
+            preloadT0 = -1.0;
+        }
         if (bench && !loading) { // scripted tests wait out the loading screen (a half-built world is no game state)
-            if (benchStart < 0.0) {
+            if (benchStart < 0.0 && preloadT0 >= 0.0) {
+                // --preload-spawn: the timed window starts after the spawn preload, as play does
+            } else if (benchStart < 0.0) {
                 if (WorldIdle() && benchDigStrokes > 0) {
                     // Scripted edit test: carve a shaft straight down under the player.
                     TerrainHit hit;
@@ -4854,9 +4869,11 @@ int main(int argc, char** argv)
                 Planetoid* b = dynamic_cast<Planetoid*>(world.objects[0].get());
                 const auto* pf = b ? dynamic_cast<const PlanetField*>(b->field.get()) : nullptr;
                 if (pf) {
-                    const double ang = benchFlySpeed * t / (double)pf->radius;
+                    const double half = benchWarmup + benchSeconds * 0.5;
+                    const bool back = benchFlyBack && t > half;
+                    const double ang = benchFlySpeed * (back ? 2.0 * half - t : t) / (double)pf->radius;
                     const Vector3 dir = { (float)cos(ang) * 0.8f, 0.6f, (float)sin(ang) * 0.8f };       // body-local, 37 deg north
-                    const Vector3 ahead = { -(float)sin(ang) * 0.8f, 0.0f, (float)cos(ang) * 0.8f };
+                    const Vector3 ahead = Vector3Scale(Vector3{ -(float)sin(ang) * 0.8f, 0.0f, (float)cos(ang) * 0.8f }, back ? -1.0f : 1.0f);
                     const float alt = benchFlyAlt < 1e8f ? pf->radius + benchFlyAlt : pf->radius + std::max(0.0f, pf->elevation(dir)) + 150.0f;
                     const DVec3 pos = b->toWorldD(DVec3(Vector3Scale(dir, alt)));
                     const float look = benchFlyAlt < 0.0f ? alt + 80.0f : alt - 60.0f; // underwater: look up at the surface
@@ -4913,6 +4930,8 @@ int main(int argc, char** argv)
                     int over20 = 0; for (float f : ft) over20 += f > 0.020f ? 1 : 0;
                     printf("bench: streaming: %lld requests, %lld built, %lld skipped stale, %lld results dropped; %d nodes alive; frame ms p50 %.2f p95 %.2f p99 %.2f, %d frames over 20 ms\n",
                            ws.requests, ws.built, ws.skippedStale, ws.droppedResults, ws.nodes, pct(0.5), pct(0.95), pct(0.99), over20);
+                    printf("bench: preload: %d ring nodes, %d built; cache: %d nodes, %lld evicted; arena %.1f M vertices\n",
+                           ws.preloadNodes, ws.preloadReady, ws.cachedNodes, ws.evicted, TerrainArena_Stats().vertices / 1048576.0);
                 }
                 if (crackCheck) {
                     // Holes between chunks show the magenta clear colour (look down at terrain that fills the view).
@@ -5199,12 +5218,13 @@ int main(int argc, char** argv)
         }
         // Menus: the result of last frame's clicks (the menus draw, and see clicks, in BeginDrawing).
         {
-            auto enterGame = [&] {
+            auto enterGame = [&](bool fresh = true) {
                 HideCursor();
                 gameState = 1;
                 mainMenu.isActive = false;
                 world.isActive = true;
                 loading = !bench; loadStart = GetTime(); loadMax = 1; // the loading screen until the terrain around you is in
+                if (fresh && !bench) BeginSpawnPreload(); // a new or loaded world: the ring around the spawn first (#294)
             };
             auto toMenu = [&] {
                 ShowCursor();
@@ -5226,7 +5246,7 @@ int main(int argc, char** argv)
                     if (LoadWorldSave(world)) { worldFresh = false; enterGame(); }
                     else GameUI_Toast(TextFormat("Could not load %s", m.path.c_str()));
                     break;
-                case MenuAction::Resume: enterGame(); loading = false; break;
+                case MenuAction::Resume: enterGame(false); loading = false; break;
                 case MenuAction::Save: GameUI_Toast(SaveWorld(world) ? "Saved" : "Save failed"); break;
                 case MenuAction::SaveAndQuit:
                     if (!SaveWorld(world)) GameUI_Toast("Save failed");
@@ -5286,17 +5306,19 @@ int main(int argc, char** argv)
                     // (it used to show you standing in a void among trees and water while the ground popped in).
                     const size_t pending = WorldJobs().queued() + WorldJobs().running();
                     loadMax = std::max(loadMax, pending);
-                    const float progress = WorldIdle() ? 1.0f : 1.0f - (float)pending / (float)loadMax;
+                    float ringProgress = 1.0f;
+                    const bool preparing = SpawnPreloadPending(&ringProgress); // first load: the 300 m ring around the spawn (#294)
+                    const float progress = preparing ? ringProgress : WorldIdle() ? 1.0f : 1.0f - (float)pending / (float)loadMax;
                     DrawRectangle(0, 0, GetScreenWidth(), GetScreenHeight(), BLACK);
                     const int bw = GetScreenWidth() / 3, bx = (GetScreenWidth() - bw) / 2, by = GetScreenHeight() / 2;
-                    DrawText("Building the world", bx, by - 40, 28, RAYWHITE);
+                    DrawText(preparing ? "Preparing spawn" : "Building the world", bx, by - 40, 28, RAYWHITE);
                     DrawRectangle(bx, by, bw, 14, Fade(RAYWHITE, 0.15f));
                     DrawRectangle(bx, by, (int)(bw * std::clamp(progress, 0.02f, 1.0f)), 14, SKYBLUE);
                     // Entering the game holds it half a second; a spawn only until the streamer has had a few
                     // frames to queue the new place and has built it (where it is built already: at once).
                     ++loadFrames;
-                    const bool built = spawnLoad ? WorldIdle() && loadFrames >= 3 : WorldIdle() && GetTime() - loadStart > 0.5;
-                    if (built || GetTime() - loadStart > 20.0) {
+                    const bool built = !preparing && (spawnLoad ? WorldIdle() && loadFrames >= 3 : WorldIdle() && GetTime() - loadStart > 0.5);
+                    if (built || GetTime() - loadStart > (preparing ? 90.0 : 20.0)) {
                         if (bench) printf("bench: loading screen after a spawn: %d frames, %.2f s\n", loadFrames, GetTime() - loadStart);
                         loading = false; spawnLoad = false;
                     }

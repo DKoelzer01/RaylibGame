@@ -198,16 +198,26 @@ namespace {
         return true;
     }
 
+    void GrowVerts(int newCap) {
+        const int oldCap = S.verts.cap;
+        S.pos = Regrow(S.pos, (size_t)oldCap * kPosBytes, (size_t)newCap * kPosBytes);
+        S.attr = Regrow(S.attr, (size_t)oldCap * sizeof(Attr), (size_t)newCap * sizeof(Attr));
+        S.verts.grow(newCap);
+        BindAttributes();
+        logger.logf("[Arena] vertices grown to %d\n", newCap);
+    }
+    void GrowIndices(int newCap) {
+        const int oldCap = S.idx.cap;
+        S.ibo = Regrow(S.ibo, (size_t)oldCap * sizeof(uint16_t), (size_t)newCap * sizeof(uint16_t));
+        S.idx.grow(newCap);
+        BindAttributes();
+        logger.logf("[Arena] indices grown to %d\n", newCap);
+    }
     // Grows by half (not double: a doubled multi-hundred-MB buffer would be mostly empty) until n fits.
     int AllocVerts(int n) {
         int off = S.verts.alloc(n);
         while (off < 0) {
-            const int oldCap = S.verts.cap, newCap = std::max(oldCap + oldCap / 2, oldCap + n);
-            S.pos = Regrow(S.pos, (size_t)oldCap * kPosBytes, (size_t)newCap * kPosBytes);
-            S.attr = Regrow(S.attr, (size_t)oldCap * sizeof(Attr), (size_t)newCap * sizeof(Attr));
-            S.verts.grow(newCap);
-            BindAttributes();
-            logger.logf("[Arena] vertices grown to %d\n", newCap);
+            GrowVerts(std::max(S.verts.cap + S.verts.cap / 2, S.verts.cap + n));
             off = S.verts.alloc(n);
         }
         return off;
@@ -215,11 +225,7 @@ namespace {
     int AllocIndices(int n) {
         int off = S.idx.alloc(n);
         while (off < 0) {
-            const int oldCap = S.idx.cap, newCap = std::max(oldCap + oldCap / 2, oldCap + n);
-            S.ibo = Regrow(S.ibo, (size_t)oldCap * sizeof(uint16_t), (size_t)newCap * sizeof(uint16_t));
-            S.idx.grow(newCap);
-            BindAttributes();
-            logger.logf("[Arena] indices grown to %d\n", newCap);
+            GrowIndices(std::max(S.idx.cap + S.idx.cap / 2, S.idx.cap + n));
             off = S.idx.alloc(n);
         }
         return off;
@@ -453,6 +459,13 @@ int TerrainArena_Flush(unsigned int shaderId, bool positionsOnly, const ArenaBod
     S.flushes++;
     S.queued.clear();
     return n;
+}
+
+// Grow ahead of need (#295): a regrow copies the whole buffers (over a GB with the preload ring), a long hitch mid-walk.
+void TerrainArena_Reserve(int vertices, int indices) {
+    if (!Init()) return;
+    if (S.verts.cap < vertices) GrowVerts(vertices);
+    if (S.idx.cap < indices) GrowIndices(indices);
 }
 
 ArenaStats TerrainArena_Stats() {

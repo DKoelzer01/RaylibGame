@@ -31,6 +31,9 @@ bool TerrainGpu_Available();
 void TerrainGpu_Submit(GpuBlockJob&& job);          // any thread
 void TerrainGpu_Pump();                             // main thread, once a frame
 int TerrainGpu_Pending();                           // queued + in flight
+// Blocks at or above backgroundFrom (the preload ring, #296) are batched gently while throttled: at most one batch of
+// a few blocks a frame, after everything else, so background builds never crowd the frame.
+void TerrainGpu_SetBackground(float backgroundFrom, bool throttle);
 // Synchronous (tests): dispatch, wait, read back. False if unavailable.
 bool TerrainGpu_SampleBlock(const PlanetField& pf, Vector3 origin, float stride, int S, float footprint,
                             const PlanetField::BlockGrid& grid, const std::vector<float>& islands, float* out);
