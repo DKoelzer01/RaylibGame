@@ -266,10 +266,11 @@ int main(int argc, char** argv)
     bool menuOk = true;
     int wallPhase = 0; bool wallOk = true;
     double wallStart = 0.0, wallMaxStep = 0.0, wallMaxStepAt = 0.0;
-    float wallMaxImpact = 0.0f, wallMinHealth = 100.0f, wallMaxSpeed = 0.0f;
+    float wallMaxImpact = 0.0f, wallMinHealth = 100.0f, wallMaxSpeed = 0.0f; int wallCamInside = 0; // frames with the camera inside terrain (#255)
     bool benchLedge = false; int ledgePhase = 0, ledgePass = 0; bool ledgeOk = true, ledgeAir = false; double ledgeStart = 0.0, ledgeAirStart = 0.0; float ledgeV0 = 0.0f, ledgeExcess = 0.0f; float ledgeWalk0 = 0.0f;
     bool benchTor = false; int torPhase = 0, torHeading = 0, torFlicker = 0, torPops = 0; double torStart = 0.0, torAirAt = -1.0, torMaxStep = 0.0; float torMaxUp = 0.0f; Vector3 torDir{}; DVec3 torLast{}; bool torWasGrounded = true; // --test-tor (#242)
     bool benchMachines = false; int machPhase = 0; double machStart = 0.0; // --test-machines (#193 #194 #229)
+    bool benchFall = false; int fallPhase = 0, fallIdx = 0; bool fallOk = true; double fallStart = 0.0; // --test-fall (#263)
     DVec3 wallLast{};
     bool benchTrees = false;       // --test-trees: walk into a tree trunk
     bool benchChop = false;        // --test-chop: fell a tree, save/reload, regrow
@@ -379,6 +380,7 @@ int main(int argc, char** argv)
         if (std::string(argv[i]) == "--test-ledge") benchLedge = true; // walk and sprint off a pit edge (#240)
         if (std::string(argv[i]) == "--test-tor") benchTor = true; // walk across a low (beach) tor crown, logging collision pops (#242)
         if (std::string(argv[i]) == "--test-machines") benchMachines = true; // fuel slot, crafts consumed at the end, the boiler's water and heat
+        if (std::string(argv[i]) == "--test-fall") benchFall = true; // drops from 3-100 m: fall damage by height
         if (std::string(argv[i]) == "--test-menus") benchMenus = true;
         if (std::string(argv[i]) == "--test-water") benchWater = true;
         if (std::string(argv[i]) == "--test-flyfollow") benchFlyFollow = true;
@@ -1262,6 +1264,7 @@ int main(int argc, char** argv)
                         if (step > wallMaxStep) { wallMaxStep = step; wallMaxStepAt = t; }
                         if (step > 0.2) printf("bench: wall: %.2f m move at %.2f s (grounded %d, dt %.4f, v %.1f, contact dot %.2f, body density at feet %.2f)\n", step, t, player.grounded ? 1 : 0, GetFrameTime(), Vector3Length(player.velocity), player.lastContactDot, p->densityAt(p->toLocal(Vector3Add(feet, Vector3Scale(player.up, player.radius)))));
                         wallMaxImpact = std::max(wallMaxImpact, player.impactSpeed);
+                        if (p->densityAt(p->toLocal(world.camera.position)) >= ISO_LEVEL) ++wallCamInside;
                         wallMinHealth = std::min(wallMinHealth, survival.health);
                         wallMaxSpeed = std::max(wallMaxSpeed, Vector3Length(Vector3Subtract(player.velocity, player.grounded ? Vector3{ 0, 0, 0 } : p->surfaceVelocity(feet))));
                     }
@@ -1323,8 +1326,36 @@ int main(int argc, char** argv)
                         const bool pass = survival.deaths == 0 && wallMinHealth > 90.0f && wallMaxStep < 1.0;
                         printf("bench: tight corner 6 s: largest frame move %.2f m (at %.1f s), top speed vs ground %.1f m/s, worst impact %.1f m/s, health %.0f, deaths %d: %s\n",
                                wallMaxStep, wallMaxStepAt, wallMaxSpeed, wallMaxImpact, wallMinHealth, survival.deaths, pass ? "PASS" : "FAIL");
-                        printf("bench: wall: %s\n", wallOk && pass ? "PASS" : "FAIL");
+                        printf("bench: wall: camera inside terrain in %d frames (#255)\n", wallCamInside);
+                        printf("bench: wall: %s\n", wallOk && pass && wallCamInside == 0 ? "PASS" : "FAIL");
                         benchWall = false;
+                    }
+                } else if (benchFall && (fallPhase > 0 || WorldIdle())) {
+                    // --test-fall (#263): drops onto flat ground near the start. Expected on Terra (g 5.9, safe 6 m/s, x8.5):
+                    // 3 m none, 10 m ~41, 20 m ~79, 30 m and 100 m fatal.
+                    Planetoid* p = dynamic_cast<Planetoid*>(world.objects[0].get());
+                    const float heights[] = { 3.0f, 10.0f, 20.0f, 30.0f, 100.0f };
+                    const float lo[] = { 0.0f, 25.0f, 60.0f, 100.0f, 100.0f }, hi[] = { 0.0f, 55.0f, 95.0f, 1e9f, 1e9f };
+                    if (fallPhase == 0) {
+                        player.spawnOn(world, *p, StartSpawnDir(*p));
+                        fallPhase = 1; fallStart = GetTime();
+                    } else if (fallPhase == 1 && GetTime() - fallStart > 1.5 && player.grounded) {
+                        survival.health = 100.0f; survival.dead = false;
+                        player.spawnOn(world, *p, StartSpawnDir(*p));
+                        player.position = player.position + DVec3(Vector3Scale(player.up, heights[fallIdx]));
+                        fallPhase = 2; fallStart = GetTime();
+                    } else if (fallPhase == 2 && (player.grounded || survival.dead) && GetTime() - fallStart > 0.3) {
+                        const float lost = 100.0f - std::max(survival.health, 0.0f);
+                        const bool dead = survival.dead || survival.health <= 0.0f;
+                        const bool pass = lost >= lo[fallIdx] - 0.01f && lost <= hi[fallIdx] + 0.01f;
+                        printf("bench: fall: %.0f m: lost %.0f health%s (expected %.0f-%s) -> %s\n", heights[fallIdx], lost, dead ? " (dead)" : "", lo[fallIdx],
+                               hi[fallIdx] > 1e8f ? "fatal" : TextFormat("%.0f", hi[fallIdx]), pass ? "ok" : "FAIL");
+                        fallOk = fallOk && pass;
+                        if (dead) Survival_Respawn(world);
+                        if (++fallIdx < 5) { fallPhase = 1; fallStart = GetTime() - 1.0; }
+                        else { printf("bench: fall: %s\n", fallOk ? "PASS" : "FAIL"); survival.health = 100.0f; benchFall = false; }
+                    } else if (fallPhase == 2 && GetTime() - fallStart > 30.0) {
+                        printf("bench: fall: %.0f m: never landed -> FAIL\n", heights[fallIdx]); benchFall = false;
                     }
                 } else if (benchMachines && (machPhase > 0 || WorldIdle())) {
                     // --test-machines: the fuel slot (#194), inputs consumed when a craft ends and a craft cancelled when
@@ -4727,7 +4758,7 @@ int main(int argc, char** argv)
                         }
                         benchWalkSeconds = 0.0;
                     }
-                } else if ((WorldIdle() && benchDigStrokes == 0 && !benchPaint && !benchSaveLoad && benchWalkSeconds <= 0.0 && benchMineStrokes == 0 && minePhase != 2 && benchFlySeconds <= 0.0 && !benchSuffocate && benchOrbitSeconds <= 0.0 && !benchRide && !benchPark && !benchGravity && !benchPrecision && !benchMantle && !benchAirJump && !benchMoon && !benchHole && !benchWall && !benchLedge && !benchTor && !benchMachines && !benchMenus && !benchWater && !benchFlyFollow && !benchHotbar && !benchInventory && !benchMap && !benchViewmodel && !benchQuests && !benchHunger && !benchFarm && !benchAnimals && !benchThreats && benchShotTabs == 0 && !benchForest && !benchFlow && !benchPond && !benchBucket && !benchPump && !benchTerrain && !benchShadow && !benchParticles && !benchBiomes && !benchOil && !benchSpring && !benchShotAnimals && !benchShotMachines && benchShotBiomes < 0 && !benchFarForest && !benchRecipes && !benchWeather && !benchDecor && !benchMaterials && !benchDamage && !benchCrafting && !benchSuit && !benchTools && !benchRivers && !benchRing && !benchRocket && !benchStation && !benchBlueprint && !benchSmallBody && !benchTrees && !benchChop && benchPersist == 0 && benchBuild == 0 && benchFactory == 0 && !benchProgression) || GetTime() > 600.0) {
+                } else if ((WorldIdle() && benchDigStrokes == 0 && !benchPaint && !benchSaveLoad && benchWalkSeconds <= 0.0 && benchMineStrokes == 0 && minePhase != 2 && benchFlySeconds <= 0.0 && !benchSuffocate && benchOrbitSeconds <= 0.0 && !benchRide && !benchPark && !benchGravity && !benchPrecision && !benchMantle && !benchAirJump && !benchMoon && !benchHole && !benchWall && !benchLedge && !benchTor && !benchMachines && !benchFall && !benchMenus && !benchWater && !benchFlyFollow && !benchHotbar && !benchInventory && !benchMap && !benchViewmodel && !benchQuests && !benchHunger && !benchFarm && !benchAnimals && !benchThreats && benchShotTabs == 0 && !benchForest && !benchFlow && !benchPond && !benchBucket && !benchPump && !benchTerrain && !benchShadow && !benchParticles && !benchBiomes && !benchOil && !benchSpring && !benchShotAnimals && !benchShotMachines && benchShotBiomes < 0 && !benchFarForest && !benchRecipes && !benchWeather && !benchDecor && !benchMaterials && !benchDamage && !benchCrafting && !benchSuit && !benchTools && !benchRivers && !benchRing && !benchRocket && !benchStation && !benchBlueprint && !benchSmallBody && !benchTrees && !benchChop && benchPersist == 0 && benchBuild == 0 && benchFactory == 0 && !benchProgression) || GetTime() > 600.0) {
                     benchStart = GetTime();
                     printf("bench: world ready after %.2f s (%d chunks, avg build %.2f ms of which sampling %.2f ms, %d worker threads)\n",
                         GetWorldStats().lastGenerationSeconds, GetWorldStats().chunks, GetWorldStats().avgBuildMs, GetWorldStats().avgSampleMs, GetWorldStats().workerThreads);
@@ -4896,7 +4927,7 @@ int main(int argc, char** argv)
                         deathId = 0;
                     }
                 }
-                Survival_OnLanding(player.impactSpeed);
+                Survival_OnLanding(player.landingSpeed); // floor touchdowns only (#263, #255)
                 Rocket_Update(world, gameInput && alive, frameDt); // on foot: aim at a rocket (E boards, I fuels)
             }
             if (ship.piloted && ship.lastImpact > 12.0f) survival.health -= (ship.lastImpact - 12.0f) * 3.0f; // crash damage
