@@ -151,6 +151,8 @@ void Weather_Draw3D(Scene& world) {
     if (!pf || d < 1.0f) return;
     const Vector3 up = Vector3Scale(local, 1.0f / d);
     if (d < pf->radius + pf->elevation(up) - 3.0f) return; // underground: no rain in the tunnels
+    // Above the cloud layer (and in orbit): none (#154). High peaks keep their snow: the cap follows the ground up.
+    if (d > pf->radius + std::max(pf->elevation(up), 0.0f) + world.atmosphere.cloudHeight) return;
     const Vector3 cam = world.camera.position;
     const Vector3 upW = p->dirToWorld(up);
     Vector3 e = Vector3CrossProduct(upW, { 0, 0, 1 });
