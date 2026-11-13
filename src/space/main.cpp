@@ -35,6 +35,7 @@
 #include "itemicons.h"
 #include "particles.h"
 #include "ambience.h"
+#include "machinemodels.h"
 #include "navigation.h"
 #include "viewmodel.h"
 #include "farming.h"
@@ -198,6 +199,8 @@ int main(int argc, char** argv)
     bool benchBiomes = false; int benchShotBiomes = -1; // --test-biomes, --shot-biomes
     bool benchOil = false; int oilPhase = 0; double oilT0 = 0.0; // --test-oil
     bool benchSpring = false; int springPhase = 0; double springT0 = 0.0; // --test-spring
+    bool benchShotAnimals = false; int animalShotPhase = 0; // --shot-animals
+    bool benchShotMachines = false; int machineShotPhase = 0; // --shot-machines
     bool benchParticles = false; int particlePhase = 0; double particleT0 = 0.0; Vector3 particleEye{}, particleAt{}; // --shot-particles
     bool benchShadow = false; int shadowPhase = 0; double shadowT0 = 0.0; Vector3 shadowEye{}, shadowAt{}; // --shot-shadow
     bool benchFarForest = false; int farForestPhase = 0; double farForestT0 = 0.0; Vector3 farForestEye{}, farForestAt{}; // --shot-far-forest
@@ -368,6 +371,8 @@ int main(int argc, char** argv)
         if (std::string(argv[i]) == "--test-biomes") benchBiomes = true;
         if (std::string(argv[i]) == "--test-oil") benchOil = true;
         if (std::string(argv[i]) == "--test-spring") benchSpring = true;
+        if (std::string(argv[i]) == "--shot-animals") benchShotAnimals = true;
+        if (std::string(argv[i]) == "--shot-machines") benchShotMachines = true;
         if (std::string(argv[i]) == "--shot-biomes") benchShotBiomes = 0;
         if (std::string(argv[i]) == "--shot-far-forest") benchFarForest = true;
         if (std::string(argv[i]) == "--test-recipes") benchRecipes = true;
@@ -528,7 +533,7 @@ int main(int argc, char** argv)
     bool spawnLoad = false;        // raised by a spawn or teleport (not entering the game): no minimum time
     int loadFrames = 0;
     int seenSpawns = 0;
-    world.onDraw3D = [&world] { Farm_Draw3D(world); Animals_Draw3D(world); Weather_Draw3D(world); Particles_Draw(world); if (!ship.piloted && !buildTool.active && !Rocket_Boarded()) TerrainTool_Draw3D(); BuildTool_Draw3D(world); };
+    world.onDraw3D = [&world] { Farm_Draw3D(world); Animals_Draw3D(world); Machines_Draw3D(world); Weather_Draw3D(world); Particles_Draw(world); if (!ship.piloted && !buildTool.active && !Rocket_Boarded()) TerrainTool_Draw3D(); BuildTool_Draw3D(world); };
     terrainTool.till = [&world](Planetoid& body, Vector3 ground) { return Farm_Till(world, body, ground); }; // a shovel's RMB
     terrainTool.swapHeld = [](const std::string& from, const std::string& to, const char* ev) { // a bucket filled or emptied
         const int s = Hotbar_Selected();
@@ -2276,6 +2281,68 @@ int main(int argc, char** argv)
                             printf("bench: spring: %.1f m^3 of moving water, %.1f of it within 3 m of the spring (a stream: most runs off) -> %s\n", total, nearSrc, ok ? "PASS" : "FAIL");
                             printf("bench: spring: bench_spring.png\n");
                             benchSpring = false;
+                        }
+                    }
+                } else if (benchShotAnimals && (animalShotPhase > 0 || WorldIdle())) {
+                    // --shot-animals (Plan 5 A): one of each kind in a row, side-on, 9 m in front (bench_animals_models.png).
+                    Planetoid* p = dynamic_cast<Planetoid*>(world.objects[0].get());
+                    const PlanetField* pf = p ? dynamic_cast<const PlanetField*>(p->field.get()) : nullptr;
+                    static double t0 = 0.0; static Vector3 eye{}, at{};
+                    if (!pf) benchShotAnimals = false;
+                    else if (animalShotPhase == 0) {
+                        Animals_Reset(); Animals_SetThreats(false);
+                        player.flyMode = true;
+                        const Vector3 me = p->toLocal((player.position - world.renderOrigin).toFloat());
+                        const Vector3 up = Vector3Normalize(me);
+                        const Vector3 t1 = Vector3Normalize(Vector3CrossProduct(up, { 0, 1, 0 })), t2 = Vector3CrossProduct(t1, up);
+                        auto ground = [&](Vector3 q) { const Vector3 d = Vector3Normalize(q); return Vector3Scale(d, pf->radius + pf->elevation(d)); };
+                        const char* kinds[] = { "woolback", "plains_runner", "clucker", "hornhide", "thornback", "dusk_stalker" };
+                        for (int k = 0; k < 6; ++k) Animals_Spawn(world, *p, kinds[k], ground(Vector3Add(me, Vector3Add(Vector3Scale(t1, -6.5f + 2.6f * k), Vector3Scale(t2, 9.0f)))), 1, false, 0.0f);
+                        at = ground(Vector3Add(me, Vector3Scale(t2, 9.0f)));
+                        eye = Vector3Add(ground(me), Vector3Scale(up, 2.2f));
+                        sunOverride = true; sunArg = p->dirToWorld(Vector3Normalize(Vector3Add(up, Vector3Scale(Vector3Subtract(t1, t2), 0.5f)))); // daylight, from behind the camera
+                        animalShotPhase = 1; t0 = GetTime();
+                    } else {
+                        const Vector3 up = Vector3Normalize(at);
+                        world.camera.position = p->toWorld(eye); world.camera.target = p->toWorld(Vector3Add(at, Vector3Scale(up, 0.6f))); world.camera.up = p->dirToWorld(up);
+                        player.position = world.renderOrigin + world.camera.position;
+                        if (GetTime() - t0 > 4.0) {
+                            TakeScreenshot("bench_animals_models.png");
+                            printf("bench: animals: bench_animals_models.png (%d animals)\n", Animals_Count());
+                            Animals_SetThreats(true);
+                            benchShotAnimals = false;
+                        }
+                    }
+                } else if (benchShotMachines && (machineShotPhase > 0 || WorldIdle())) {
+                    // --shot-machines (Plan 5): every machine type in two rows on a plot ahead (bench_machines.png).
+                    Planetoid* p = dynamic_cast<Planetoid*>(world.objects[0].get());
+                    static double t0 = 0.0; static Vector3 eye{}, at{};
+                    if (!p) benchShotMachines = false;
+                    else if (machineShotPhase == 0) {
+                        player.flyMode = true;
+                        const Vector3 feet = (player.position - world.renderOrigin).toFloat();
+                        const Vector3 fwd = Vector3Normalize(Vector3Subtract(world.camera.target, world.camera.position));
+                        const Vector3 flat = Vector3Normalize(Vector3Subtract(fwd, Vector3Scale(player.up, Vector3DotProduct(fwd, player.up))));
+                        if (!p->plots) p->plots = std::make_unique<PlotSet>();
+                        Plot* plot = p->plots->plotFor(p->toLocal(Vector3Add(Vector3Add(feet, Vector3Scale(flat, 10.0f)), Vector3Scale(player.up, 1.0f))), 0.0f, true);
+                        const PartType types[] = { PartType::Chest, PartType::Generator, PartType::Furnace, PartType::Macerator, PartType::Battery, PartType::Campfire, PartType::Kiln,
+                                                   PartType::CokeOven, PartType::BlastFurnace, PartType::Boiler, PartType::ForgeHammer, PartType::AlloySmelter, PartType::SteamMacerator,
+                                                   PartType::OreWasher, PartType::Centrifuge, PartType::WaterPump, PartType::MvGenerator, PartType::Electrolyzer, PartType::ChemicalReactor,
+                                                   PartType::Miner, PartType::HvGenerator, PartType::ArcFurnace, PartType::Refinery, PartType::PrecisionAssembler, PartType::FusionReactor, PartType::MassDriver };
+                        int k = 0, placed = 0;
+                        for (PartType t : types) { placed += plot->place({ t, { (k % 13) * 4 - 24, 2, (k / 13) * 6 }, 0 }) >= 0 ? 1 : 0; ++k; }
+                        printf("bench: machines: placed %d of %d types\n", placed, k);
+                        at = p->toLocal(Vector3Add(Vector3Add(feet, Vector3Scale(flat, 12.0f)), Vector3Scale(player.up, 1.5f)));
+                        eye = p->toLocal(Vector3Add(feet, Vector3Scale(player.up, 6.0f)));
+                        sunOverride = true; sunArg = Vector3Normalize(Vector3Add(player.up, Vector3Scale(Vector3Negate(flat), 0.7f))); // daylight from behind
+                        machineShotPhase = 1; t0 = GetTime();
+                    } else {
+                        world.camera.position = p->toWorld(eye); world.camera.target = p->toWorld(at); world.camera.up = p->dirToWorld(Vector3Normalize(eye));
+                        player.position = world.renderOrigin + world.camera.position;
+                        if (GetTime() - t0 > 3.0) {
+                            TakeScreenshot("bench_machines.png");
+                            printf("bench: machines: bench_machines.png\n");
+                            benchShotMachines = false;
                         }
                     }
                 } else if (benchBiomes && WorldIdle()) {
@@ -4252,7 +4319,7 @@ int main(int argc, char** argv)
                         }
                         benchWalkSeconds = 0.0;
                     }
-                } else if ((WorldIdle() && benchDigStrokes == 0 && !benchPaint && !benchSaveLoad && benchWalkSeconds <= 0.0 && benchMineStrokes == 0 && minePhase != 2 && benchFlySeconds <= 0.0 && !benchSuffocate && benchOrbitSeconds <= 0.0 && !benchRide && !benchPark && !benchGravity && !benchPrecision && !benchMantle && !benchAirJump && !benchMoon && !benchHole && !benchWall && !benchMenus && !benchWater && !benchFlyFollow && !benchHotbar && !benchInventory && !benchMap && !benchViewmodel && !benchQuests && !benchHunger && !benchFarm && !benchAnimals && !benchThreats && benchShotTabs == 0 && !benchForest && !benchFlow && !benchPond && !benchBucket && !benchPump && !benchTerrain && !benchShadow && !benchParticles && !benchBiomes && !benchOil && !benchSpring && benchShotBiomes < 0 && !benchFarForest && !benchRecipes && !benchWeather && !benchDecor && !benchMaterials && !benchDamage && !benchCrafting && !benchSuit && !benchTools && !benchRivers && !benchRing && !benchRocket && !benchStation && !benchBlueprint && !benchSmallBody && !benchTrees && !benchChop && benchPersist == 0 && benchBuild == 0 && benchFactory == 0 && !benchProgression) || GetTime() > 600.0) {
+                } else if ((WorldIdle() && benchDigStrokes == 0 && !benchPaint && !benchSaveLoad && benchWalkSeconds <= 0.0 && benchMineStrokes == 0 && minePhase != 2 && benchFlySeconds <= 0.0 && !benchSuffocate && benchOrbitSeconds <= 0.0 && !benchRide && !benchPark && !benchGravity && !benchPrecision && !benchMantle && !benchAirJump && !benchMoon && !benchHole && !benchWall && !benchMenus && !benchWater && !benchFlyFollow && !benchHotbar && !benchInventory && !benchMap && !benchViewmodel && !benchQuests && !benchHunger && !benchFarm && !benchAnimals && !benchThreats && benchShotTabs == 0 && !benchForest && !benchFlow && !benchPond && !benchBucket && !benchPump && !benchTerrain && !benchShadow && !benchParticles && !benchBiomes && !benchOil && !benchSpring && !benchShotAnimals && !benchShotMachines && benchShotBiomes < 0 && !benchFarForest && !benchRecipes && !benchWeather && !benchDecor && !benchMaterials && !benchDamage && !benchCrafting && !benchSuit && !benchTools && !benchRivers && !benchRing && !benchRocket && !benchStation && !benchBlueprint && !benchSmallBody && !benchTrees && !benchChop && benchPersist == 0 && benchBuild == 0 && benchFactory == 0 && !benchProgression) || GetTime() > 600.0) {
                     benchStart = GetTime();
                     printf("bench: world ready after %.2f s (%d chunks, avg build %.2f ms of which sampling %.2f ms, %d worker threads)\n",
                         GetWorldStats().lastGenerationSeconds, GetWorldStats().chunks, GetWorldStats().avgBuildMs, GetWorldStats().avgSampleMs, GetWorldStats().workerThreads);

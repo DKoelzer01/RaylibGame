@@ -56,6 +56,9 @@ namespace Factory {
     // take the results of item commands (into the inventory).
     void Sync(Scene& world);
     MachineView View(uint64_t bodyId, uint32_t plotId, int part);
+    // Whether a machine on a plot near the player is working (any number of calls a frame: models, smoke).
+    // View() follows one machine at a time (the open machine screen) - never call it for many machines.
+    bool Working(uint64_t bodyId, uint32_t plotId, int part);
     FactoryStats Stats();
     // Player item transfers (queued for the next tick).
     void Insert(uint64_t bodyId, uint32_t plotId, int part, const std::string& item, int count);

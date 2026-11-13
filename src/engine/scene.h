@@ -92,6 +92,7 @@ class Scene {
         Vector3 sunDirection = { 1.0f, 0.0f, 0.0f };
         float shadowHalfExtent = 200.0f;   // half-width of the orthographic shadow box
         float sunDistance = 500.0f;
+        Vector3 shadowSunLocal{ 0, 1, 0 }; uint64_t shadowSunBody = 0; // the stepped shadow light direction (ground frame)
 
         bool debugDraw = false;  // F3: light marker, shadow box, shadow-map preview
         bool cameraInputEnabled = true;  // false while the debug UI owns the mouse

@@ -341,16 +341,25 @@ void Scene::drawScene(int gamestate) {
     // turns with it: the texels then stay put on the ground (bar the sun's own slow motion).
     Planetoid* ground = NearestPlanetoid(*this, camera.position);
     if (ground && ground->flat) ground = nullptr;
+    // The shadow light direction is held fixed in the ground's frame and moved in steps (0.12 deg, every ~1.2 s on
+    // Terra): following the sun every frame slid the whole texel grid across the ground (~1.5 near texels/s),
+    // which showed as shadows rippling and shimmering. Shading still uses the true sun.
+    Vector3 shadowSun = Vector3Normalize(sunDirection);
+    if (ground) {
+        const Vector3 trueLocal = ground->dirToLocal(shadowSun);
+        if (shadowSunBody != ground->id || Vector3DotProduct(trueLocal, shadowSunLocal) < cosf(0.12f * DEG2RAD)) { shadowSunLocal = trueLocal; shadowSunBody = ground->id; }
+        shadowSun = ground->dirToWorld(shadowSunLocal);
+    }
     Vector3 upHint = (fabsf(sunDirection.y) > 0.99f) ? Vector3{ 0, 0, 1 } : Vector3{ 0, 1, 0 };
     if (ground) {
         upHint = ground->dirToWorld({ 0, 1, 0 });
-        if (fabsf(Vector3DotProduct(upHint, Vector3Normalize(sunDirection))) > 0.99f) upHint = ground->dirToWorld({ 0, 0, 1 });
+        if (fabsf(Vector3DotProduct(upHint, shadowSun)) > 0.99f) upHint = ground->dirToWorld({ 0, 0, 1 });
     }
     // Two cascades (shadow pass below): a sharp near box (shadowNearHalfExtent, ~3 cm texels) and the
     // wide one (shadowHalfExtent, ~20 cm). Each box centre is snapped to whole texels of its own map,
     // in double precision so floating-origin rebases don't jump it.
     auto snapCentre = [&](float halfExtent) {
-        const Vector3 f = Vector3Normalize(Vector3Negate(sunDirection));
+        const Vector3 f = Vector3Negate(shadowSun);
         const Vector3 r = Vector3Normalize(Vector3CrossProduct(f, upHint));
         const Vector3 u = Vector3CrossProduct(r, f);
         const double texel = 2.0 * halfExtent / (double)SHADOW_MAP_SIZE;
@@ -372,7 +381,7 @@ void Scene::drawScene(int gamestate) {
         return ((ground ? ground->toWorldD(snapped) : snapped) - renderOrigin).toFloat();
     };
     const Vector3 centre = snapCentre(shadowHalfExtent);
-    const Vector3 lightPos = Vector3Add(centre, Vector3Scale(Vector3Normalize(sunDirection), sunDistance));
+    const Vector3 lightPos = Vector3Add(centre, Vector3Scale(shadowSun, sunDistance));
     if (!lights.empty()) {
         lights[0].position = lightPos;
         lights[0].target = centre;
@@ -386,7 +395,7 @@ void Scene::drawScene(int gamestate) {
     const double defaultNear = rlGetCullDistanceNear(), defaultFar = rlGetCullDistanceFar();
     auto renderCascade = [&](RenderTexture2D& target, float halfExtent, Vector3 boxCentre, Matrix& outMatrix, bool probe) {
         Camera3D lightCam = { 0 };
-        lightCam.position = Vector3Add(boxCentre, Vector3Scale(Vector3Normalize(sunDirection), sunDistance));
+        lightCam.position = Vector3Add(boxCentre, Vector3Scale(shadowSun, sunDistance));
         lightCam.target = boxCentre;
         lightCam.up = upHint;
         lightCam.projection = CAMERA_ORTHOGRAPHIC;
@@ -414,7 +423,7 @@ void Scene::drawScene(int gamestate) {
                 shadowCtx.depthMaterial = &depthMaterial;
                 shadowCtx.frustum = &lightFrustum;
                 shadowCtx.renderOrigin = renderOrigin;
-                shadowCtx.cullAxisPoint = boxCentre; shadowCtx.cullAxisDir = Vector3Normalize(sunDirection);
+                shadowCtx.cullAxisPoint = boxCentre; shadowCtx.cullAxisDir = shadowSun;
                 shadowCtx.cullAxisRadius = halfExtent * 1.4143f; // the ortho box's corners
                 for (const auto& obj : objects) obj->drawDepthOnly(shadowCtx);
                 for (const auto& obj : rootObject.children) obj->drawDepthOnly(shadowCtx);
