@@ -1,0 +1,40 @@
+#version 430
+// #286: compacts one flush's culled draw commands (chunk_cull.comp keeps culled chunks with instanceCount 0)
+// into a dense list in the same order (nearest first: early-Z), and writes how many there are for
+// glMultiDrawElementsIndirectCount. One workgroup: each thread takes a run of consecutive commands, a prefix sum
+// over the 1024 run counts gives each run its output position. Records stay where the cull pass wrote them:
+// each command keeps its baseInstance, which picks its record.
+layout(local_size_x = 1024) in;
+
+struct Cmd { uint count; uint instances; uint firstIndex; int baseVertex; uint baseInstance; };
+layout(std430, binding = 0) readonly buffer In { Cmd cmdsIn[]; };
+layout(std430, binding = 1) writeonly buffer Out { Cmd cmdsOut[]; };
+layout(std430, binding = 2) writeonly buffer Count { uint drawCount[]; };
+
+uniform uint count;   // commands in this flush
+uniform uint base;    // its first entry in the ring (input, output and the count slot)
+
+shared uint sums[1024];
+
+void main() {
+    uint t = gl_LocalInvocationID.x;
+    uint per = (count + 1023u) / 1024u;
+    uint first = min(t * per, count), last = min(first + per, count);
+    uint mine = 0u;
+    for (uint i = first; i < last; ++i) mine += cmdsIn[base + i].instances > 0u ? 1u : 0u;
+    sums[t] = mine;
+    barrier();
+    // Inclusive scan (Hillis-Steele) over the 1024 run counts.
+    for (uint off = 1u; off < 1024u; off <<= 1) {
+        uint v = t >= off ? sums[t - off] : 0u;
+        barrier();
+        sums[t] += v;
+        barrier();
+    }
+    uint dst = base + sums[t] - mine; // exclusive
+    for (uint i = first; i < last; ++i) {
+        Cmd c = cmdsIn[base + i];
+        if (c.instances > 0u) { cmdsOut[dst] = c; ++dst; }
+    }
+    if (t == 1023u) drawCount[base] = sums[1023];
+}

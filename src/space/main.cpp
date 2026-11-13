@@ -29,6 +29,7 @@
 #include "camera.h"
 #include "survival.h"
 #include "telescope.h"
+#include "glcaps.h"
 #include "buildtool.h"
 #include "progression_test.h"
 #include "menus.h"
@@ -540,6 +541,7 @@ int main(int argc, char** argv)
 #endif
         return 1;
     }
+    GL_Caps(); // log the GL version and the optional 4.4-4.6 paths available (#286)
     SetExitKey(KEY_NULL);
     SetTraceLogLevel(LOG_WARNING); // Set log level to warning to reduce output noise
     rlSetClipPlanes(0.5, 60000.0); // space scale: see other bodies kilometres away (0.2 m near walls: see the frame loop)
@@ -808,7 +810,8 @@ int main(int argc, char** argv)
         world.debugDraw = startWithOverlay;
         player.flyMode = benchWalkSeconds <= 0.0 && !benchWalkMode; // the bench drives the camera directly unless walking
         player.autoWalk = benchWalkMode && !benchStandMode;           // --bench-walk: walk through the measured window (--bench-stand: stand)
-        player.flyFollow = false;                                     // the bench drives the camera itself
+        player.flyFollow = true;                                     // #127: the bench camera rides the body under it (sphere of influence), as the game's fly camera does; it
+                                                                      // stood still in absolute space while the planet spun past (benches that place the camera every frame override it)
         benchStart = -1.0; // starts once the world has finished streaming in
     }
 
@@ -4815,8 +4818,13 @@ int main(int argc, char** argv)
                 }
             }
             double t = (benchStart < 0.0) ? 0.0 : GetTime() - benchStart;
+            // #127: how far the camera moves against the planet over the timed window (a still bench view: ~0).
+            static DVec3 benchCamLocal0{};
+            static bool benchCamLocalSet = false;
+            Planetoid* benchBody0 = world.objects.empty() ? nullptr : dynamic_cast<Planetoid*>(world.objects[0].get());
             if (benchStart >= 0.0 && t > benchWarmup) {
                 benchFrames++;
+                if (!benchCamLocalSet && benchBody0) { benchCamLocal0 = benchBody0->toLocalD(world.renderOrigin + world.camera.position); benchCamLocalSet = true; }
                 ++benchTimedFrames;
                 benchMeasuring = true;
                 if (GetFrameTime() > benchMaxFrame) benchMaxFrame = GetFrameTime();
@@ -4874,9 +4882,10 @@ int main(int argc, char** argv)
                     benchFrames, benchSeconds, 1000.0 / avgMs, avgMs, benchMaxFrame * 1000.0, benchUpdateMs / std::max(1L, benchTimedFrames), benchDrawMs / std::max(1L, benchTimedFrames));
                 printf("%s", line);
                 SaveFileText("bench.txt", (char*)line);
+                if (benchCamLocalSet && benchBody0) printf("bench: camera drift against the planet over the timed window: %.2f m (#127)\n", (benchBody0->toLocalD(world.renderOrigin + world.camera.position) - benchCamLocal0).length());
                 GpuTimer_Print();
                 GpuTimer_PrintCpu();
-                if (TerrainArena_Available()) { const ArenaStats as = TerrainArena_Stats(); printf("bench: terrain arena: %d / %d vertices, %d / %d indices, %.1f chunk draws per multi-draw\n", as.vertices, as.vertexCapacity, as.indices, as.indexCapacity, as.draws / (double)std::max(1, as.flushes)); }
+                if (TerrainArena_Available()) { const ArenaStats as = TerrainArena_Stats(); printf("bench: terrain arena: %d / %d vertices, %d / %d indices, %.1f chunk draws per multi-draw; uploads %lld staged, %lld direct\n", as.vertices, as.vertexCapacity, as.indices, as.indexCapacity, as.draws / (double)std::max(1, as.flushes), as.staged, as.direct); }
                 { const TerrainGpuStats ts = TerrainGpu_Stats(); const WorldStats& ws = GetWorldStats(); printf("bench: terrain gpu: %lld blocks in %lld batches, avg batch latency %.2f ms; chunk build avg %.2f ms (sampling part %.2f ms)\n", ts.blocks, ts.batches, ts.avgLatencyMs, ws.avgBuildMs, ws.avgSampleMs); }
                 {   // Streaming (#258): how much work flying asked for and threw away; frame time spread.
                     const WorldStats& ws = GetWorldStats();

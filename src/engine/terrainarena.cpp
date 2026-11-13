@@ -2,6 +2,7 @@
 #include "voxel.h"
 #include "frustum.h"
 #include "gpucompute.h"
+#include "glcaps.h"
 #include "utils/logger.h"
 
 #include "external/glad.h"
@@ -10,7 +11,11 @@
 #include <algorithm>
 #include <cstdlib>
 #include <cstring>
+#include <cstdint>
+#include <deque>
 #include <map>
+
+extern "C" void* glfwGetProcAddress(const char* name); // raylib links GLFW
 
 namespace {
     constexpr int kRecordLocation = 9;     // per-draw attributes 9-13, after raylib's default attributes (0-8)
@@ -58,6 +63,12 @@ namespace {
         bool tried = false, ok = false;
         GLuint vao = 0, vaoDepth = 0, pos = 0, attr = 0, ibo = 0;
         GLuint table = 0, list = 0, records = 0, indirect = 0;
+        // #286 indirect count (4.6 / ARB_indirect_parameters): the visible commands compacted in order, and their count.
+        typedef void (__stdcall* PfnDrawCount)(GLenum, GLenum, const void*, GLintptr, GLsizei, GLsizei);
+        PfnDrawCount drawCount = nullptr;
+        GLuint compacted = 0, counts = 0;
+        ComputeProgram compact;
+        GLint cpCount = -1, cpBase = -1;
         Ranges verts, idx;
         int tableCap = 0;
         std::vector<int> freeSlots;
@@ -130,11 +141,16 @@ namespace {
         int cap = std::max(S.ringCap, 8192);
         while (cap < n * 4) cap *= 2; // room for a frame's passes before wrapping
         // Contents need not survive (each flush writes what it draws).
-        GLuint old[] = { S.list, S.indirect, S.records };
-        glDeleteBuffers(3, old);
+        GLuint old[] = { S.list, S.indirect, S.records, S.compacted, S.counts };
+        glDeleteBuffers(5, old);
+        S.compacted = S.counts = 0;
         S.list = Regrow(0, 0, (size_t)cap * sizeof(GLuint), GL_DYNAMIC_DRAW);
         S.indirect = Regrow(0, 0, (size_t)cap * sizeof(Command), GL_DYNAMIC_COPY);
         S.records = Regrow(0, 0, (size_t)cap * kRecordTexels * 16, GL_DYNAMIC_COPY);
+        if (S.drawCount) {
+            S.compacted = Regrow(0, 0, (size_t)cap * sizeof(Command), GL_DYNAMIC_COPY);
+            S.counts = Regrow(0, 0, (size_t)cap * sizeof(GLuint), GL_DYNAMIC_COPY); // one per flush, at its ring base
+        }
         S.ringCap = cap;
         S.ringPos = 0;
         BindAttributes();
@@ -155,6 +171,16 @@ namespace {
             auto L = [p](const char* n) { return glGetUniformLocation(p, n); };
             S.cl = { L("count"), L("base"), L("rot"), L("scale"), L("offset"), L("texPeriod"), L("useFrustum"), L("planes"),
                      L("useColumn"), L("colPoint"), L("colDir"), L("colRadius"), L("overlap") };
+        }
+        {   // #286: RAYLIBGAME_INDIRECT_COUNT=1 draws only the visible commands (compacted in order, indirect count draws).
+            const char* ic = getenv("RAYLIBGAME_INDIRECT_COUNT");
+            if (GL_Caps().indirectParameters && ic && ic[0] == '1') { // opt-in: measured no faster on an RTX 5070 (empty commands cost ~nothing there)
+                S.drawCount = (State::PfnDrawCount)glfwGetProcAddress("glMultiDrawElementsIndirectCount");
+                if (!S.drawCount) S.drawCount = (State::PfnDrawCount)glfwGetProcAddress("glMultiDrawElementsIndirectCountARB");
+                if (S.drawCount && !S.compact.load("resources/compute/chunk_compact.comp")) S.drawCount = nullptr;
+                if (S.drawCount) { S.cpCount = glGetUniformLocation(S.compact.id, "count"); S.cpBase = glGetUniformLocation(S.compact.id, "base"); }
+            }
+            logger.logf("[Arena] draws: %s\n", S.drawCount ? "indirect count (visible chunks compacted in order)" : "all listed commands (culled ones empty)");
         }
         const int v0 = 4 << 20, i0 = 24 << 20; // about a planet walk's working set (5.7 M vertices seen); grows as needed
         S.pos = Regrow(0, 0, (size_t)v0 * kPosBytes);
@@ -216,6 +242,59 @@ namespace {
 
 bool TerrainArena_Available() { return Init(); }
 
+// #286: chunk uploads through a persistently mapped staging ring (4.4 buffer storage): the data is copied into the
+// ring and moved into the arena by the GPU (glCopyBufferSubData), so the driver never has to stall or shadow-copy a
+// glBufferSubData into an arena buffer that queued draws still read. Each upload's range is fenced; space comes back
+// as fences pass. A full ring falls back to glBufferSubData for that upload (never waits).
+// RAYLIBGAME_UPLOAD_STAGING=0 turns it off (A/B).
+namespace {
+    struct Staging {
+        bool tried = false, ok = false;
+        GLuint buf = 0;
+        unsigned char* ptr = nullptr;
+        size_t cap = 0, head = 0;
+        struct Span { size_t start, end; GLsync fence; };
+        std::deque<Span> pending;
+        long long staged = 0, direct = 0;
+    } St;
+
+    bool StagingInit() {
+        if (St.tried) return St.ok;
+        St.tried = true;
+        const char* e = getenv("RAYLIBGAME_UPLOAD_STAGING");
+        if ((e && e[0] == '0') || !GL_Caps().bufferStorage) { logger.logf("[Arena] uploads: glBufferSubData\n"); return false; }
+        St.cap = 16u << 20;
+        glGenBuffers(1, &St.buf);
+        glBindBuffer(GL_COPY_READ_BUFFER, St.buf);
+        const GLbitfield flags = GL_MAP_WRITE_BIT | GL_MAP_PERSISTENT_BIT | GL_MAP_COHERENT_BIT;
+        glBufferStorage(GL_COPY_READ_BUFFER, (GLsizeiptr)St.cap, nullptr, flags);
+        St.ptr = (unsigned char*)glMapBufferRange(GL_COPY_READ_BUFFER, 0, (GLsizeiptr)St.cap, flags);
+        glBindBuffer(GL_COPY_READ_BUFFER, 0);
+        if (!St.ptr) { glDeleteBuffers(1, &St.buf); St.buf = 0; logger.logf("[Arena] uploads: glBufferSubData (staging map failed)\n"); return false; }
+        St.ok = true;
+        logger.logf("[Arena] uploads: persistent mapped staging ring (%zu MB)\n", St.cap >> 20);
+        return true;
+    }
+
+    // Room for `bytes` in the ring (16-byte aligned start), or SIZE_MAX if the GPU still reads what is there.
+    size_t StagingAlloc(size_t bytes) {
+        while (!St.pending.empty()) { // spans the GPU has finished copying
+            const GLenum r = glClientWaitSync(St.pending.front().fence, 0, 0);
+            if (r != GL_ALREADY_SIGNALED && r != GL_CONDITION_SATISFIED) break;
+            glDeleteSync(St.pending.front().fence);
+            St.pending.pop_front();
+        }
+        if (bytes > St.cap / 2) return SIZE_MAX;
+        size_t start = (St.head + 15) & ~(size_t)15;
+        if (start + bytes > St.cap) start = 0; // wrap
+        const size_t end = start + bytes;
+        for (const auto& s : St.pending) // overlaps a range still being copied
+            if (start < s.end && s.start < end) return SIZE_MAX;
+        St.head = end;
+        return start;
+    }
+}
+
 ArenaAlloc TerrainArena_Upload(const ChunkMeshData& d) {
     ArenaAlloc a;
     if (!Init() || d.positions.empty() || d.indices.empty()) return a;
@@ -236,15 +315,37 @@ ArenaAlloc TerrainArena_Upload(const ChunkMeshData& d) {
     a.iFirst = AllocIndices(ni);
     a.iCount = ni;
     a.slot = AllocSlot();
-    glBindBuffer(GL_ARRAY_BUFFER, S.pos);
-    glBufferSubData(GL_ARRAY_BUFFER, (GLintptr)a.vFirst * kPosBytes, (GLsizeiptr)nv * kPosBytes, d.positions.data());
-    glBindBuffer(GL_ARRAY_BUFFER, S.attr);
-    glBufferSubData(GL_ARRAY_BUFFER, (GLintptr)a.vFirst * sizeof(Attr), (GLsizeiptr)nv * sizeof(Attr), v.data());
-    glBindBuffer(GL_ARRAY_BUFFER, 0);
-    // The element buffer binding is VAO state: upload through COPY_WRITE so no VAO is disturbed.
-    glBindBuffer(GL_COPY_WRITE_BUFFER, S.ibo);
-    glBufferSubData(GL_COPY_WRITE_BUFFER, (GLintptr)a.iFirst * sizeof(uint16_t), (GLsizeiptr)ni * sizeof(uint16_t), d.indices.data());
-    glBindBuffer(GL_COPY_WRITE_BUFFER, 0);
+    const size_t posBytes = (size_t)nv * kPosBytes, attrBytes = (size_t)nv * sizeof(Attr), idxBytes = (size_t)ni * sizeof(uint16_t);
+    const size_t at = StagingInit() ? StagingAlloc(posBytes + attrBytes + idxBytes + 32) : SIZE_MAX;
+    if (at != SIZE_MAX) {
+        // Into the staging ring, then copied into the arena on the GPU (#286).
+        const size_t oPos = at, oAttr = (oPos + posBytes + 15) & ~(size_t)15, oIdx = (oAttr + attrBytes + 15) & ~(size_t)15;
+        memcpy(St.ptr + oPos, d.positions.data(), posBytes);
+        memcpy(St.ptr + oAttr, v.data(), attrBytes);
+        memcpy(St.ptr + oIdx, d.indices.data(), idxBytes);
+        glBindBuffer(GL_COPY_READ_BUFFER, St.buf);
+        glBindBuffer(GL_COPY_WRITE_BUFFER, S.pos);
+        glCopyBufferSubData(GL_COPY_READ_BUFFER, GL_COPY_WRITE_BUFFER, (GLintptr)oPos, (GLintptr)a.vFirst * kPosBytes, (GLsizeiptr)posBytes);
+        glBindBuffer(GL_COPY_WRITE_BUFFER, S.attr);
+        glCopyBufferSubData(GL_COPY_READ_BUFFER, GL_COPY_WRITE_BUFFER, (GLintptr)oAttr, (GLintptr)a.vFirst * sizeof(Attr), (GLsizeiptr)attrBytes);
+        glBindBuffer(GL_COPY_WRITE_BUFFER, S.ibo);
+        glCopyBufferSubData(GL_COPY_READ_BUFFER, GL_COPY_WRITE_BUFFER, (GLintptr)oIdx, (GLintptr)a.iFirst * sizeof(uint16_t), (GLsizeiptr)idxBytes);
+        glBindBuffer(GL_COPY_WRITE_BUFFER, 0);
+        glBindBuffer(GL_COPY_READ_BUFFER, 0);
+        St.pending.push_back({ at, oIdx + idxBytes, glFenceSync(GL_SYNC_GPU_COMMANDS_COMPLETE, 0) });
+        ++St.staged;
+    } else {
+        glBindBuffer(GL_ARRAY_BUFFER, S.pos);
+        glBufferSubData(GL_ARRAY_BUFFER, (GLintptr)a.vFirst * kPosBytes, (GLsizeiptr)posBytes, d.positions.data());
+        glBindBuffer(GL_ARRAY_BUFFER, S.attr);
+        glBufferSubData(GL_ARRAY_BUFFER, (GLintptr)a.vFirst * sizeof(Attr), (GLsizeiptr)attrBytes, v.data());
+        glBindBuffer(GL_ARRAY_BUFFER, 0);
+        // The element buffer binding is VAO state: upload through COPY_WRITE so no VAO is disturbed.
+        glBindBuffer(GL_COPY_WRITE_BUFFER, S.ibo);
+        glBufferSubData(GL_COPY_WRITE_BUFFER, (GLintptr)a.iFirst * sizeof(uint16_t), (GLsizeiptr)idxBytes, d.indices.data());
+        glBindBuffer(GL_COPY_WRITE_BUFFER, 0);
+        ++St.direct;
+    }
     const Vector3 o = d.key.origin();
     TableEntry e{};
     e.origin[0] = o.x; e.origin[1] = o.y; e.origin[2] = o.z; e.size = d.key.size();
@@ -308,6 +409,17 @@ int TerrainArena_Flush(unsigned int shaderId, bool positionsOnly, const ArenaBod
     glUniform1f(S.cl.colRadius, cull.colRadius);
     glUniform1f(S.cl.overlap, (CHUNK_SIZE + 1.0f) / CHUNK_SIZE);
     glDispatchCompute((GLuint)((n + 63) / 64), 1, 1);
+    if (S.drawCount) {
+        // #286: the visible commands compacted in order, and their count (chunk_compact.comp).
+        glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
+        S.compact.use();
+        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, S.indirect);
+        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 1, S.compacted);
+        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 2, S.counts);
+        glUniform1ui(S.cpCount, (GLuint)n);
+        glUniform1ui(S.cpBase, (GLuint)base);
+        glDispatchCompute(1, 1, 1);
+    }
     glMemoryBarrier(GL_COMMAND_BARRIER_BIT | GL_VERTEX_ATTRIB_ARRAY_BARRIER_BIT);
 
     // Draw.
@@ -323,9 +435,17 @@ int TerrainArena_Flush(unsigned int shaderId, bool positionsOnly, const ArenaBod
     if (locArena >= 0) glUniform1i(locArena, 1);
     if (locVP >= 0) rlSetUniformMatrix(locVP, viewProj);
     if (locModel >= 0) rlSetUniformMatrix(locModel, body.rs); // fragment normals: body rotation
-    glBindBuffer(GL_DRAW_INDIRECT_BUFFER, S.indirect);
     glBindVertexArray(positionsOnly ? S.vaoDepth : S.vao);
-    glMultiDrawElementsIndirect(GL_TRIANGLES, GL_UNSIGNED_SHORT, (const void*)(size_t)(base * sizeof(Command)), n, 0);
+    if (S.drawCount) {
+        constexpr GLenum kParameterBuffer = 0x80EE; // GL_PARAMETER_BUFFER
+        glBindBuffer(GL_DRAW_INDIRECT_BUFFER, S.compacted);
+        glBindBuffer(kParameterBuffer, S.counts);
+        S.drawCount(GL_TRIANGLES, GL_UNSIGNED_SHORT, (const void*)(size_t)(base * sizeof(Command)), (GLintptr)(base * sizeof(GLuint)), n, 0);
+        glBindBuffer(kParameterBuffer, 0);
+    } else {
+        glBindBuffer(GL_DRAW_INDIRECT_BUFFER, S.indirect);
+        glMultiDrawElementsIndirect(GL_TRIANGLES, GL_UNSIGNED_SHORT, (const void*)(size_t)(base * sizeof(Command)), n, 0);
+    }
     glBindVertexArray(0);
     if (locArena >= 0) glUniform1i(locArena, 0); // other meshes drawn with this shader use their own uniforms
     glBindBuffer(GL_DRAW_INDIRECT_BUFFER, 0);
@@ -340,15 +460,22 @@ ArenaStats TerrainArena_Stats() {
     s.vertices = S.verts.used; s.vertexCapacity = S.verts.cap;
     s.indices = S.idx.used; s.indexCapacity = S.idx.cap;
     s.draws = S.draws; s.flushes = S.flushes;
+    s.staged = St.staged; s.direct = St.direct;
     return s;
 }
 
 void TerrainArena_Unload() {
+    if (St.ok) {
+        for (auto& s : St.pending) glDeleteSync(s.fence);
+        glDeleteBuffers(1, &St.buf); // unmaps it
+    }
+    St = Staging{};
     if (!S.ok) { S = State{}; return; }
-    GLuint bufs[] = { S.pos, S.attr, S.ibo, S.table, S.list, S.records, S.indirect };
-    glDeleteBuffers(7, bufs);
+    GLuint bufs[] = { S.pos, S.attr, S.ibo, S.table, S.list, S.records, S.indirect, S.compacted, S.counts };
+    glDeleteBuffers(9, bufs);
     GLuint vaos[] = { S.vao, S.vaoDepth };
     glDeleteVertexArrays(2, vaos);
     S.cull.unload();
+    S.compact.unload();
     S = State{};
 }

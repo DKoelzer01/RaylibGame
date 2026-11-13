@@ -461,7 +461,10 @@ void Scene::drawScene(int gamestate) {
                     tctx.treeModelLoc = GetShaderLocation(ts, "matModel");
                     tctx.treeOccluderLoc = tctx.treeFadeLoc = tctx.treeBarkLoc = tctx.treeLeafLoc = -1;
                     for (const auto& obj : objects)
-                        if (auto* p = dynamic_cast<Planetoid*>(obj.get()); p && p->isActive && p->trees) p->trees->draw(*p, tctx);
+                        if (auto* p = dynamic_cast<Planetoid*>(obj.get()); p && p->isActive && p->trees) {
+                            p->trees->setShadowSun(p->dirToLocal(shadowSun));
+                            p->trees->draw(*p, tctx, -1, probe ? 1 : 2); // only the casters near this cascade's column
+                        }
                     rlDisableShader();
                 }
             EndMode3D();

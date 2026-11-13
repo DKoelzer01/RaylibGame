@@ -1,4 +1,5 @@
 #include "terraingpu.h"
+#include "glcaps.h"
 #include "gputimer.h"
 #include "gpucompute.h"
 #include "utils/logger.h"
@@ -95,7 +96,7 @@ namespace {
         S.ok = true;
         // RAYLIBGAME_GPU_READBACK_COPY=1: the old copy readback (A/B).
         const char* rbEnv = getenv("RAYLIBGAME_GPU_READBACK_COPY");
-        ringOk = GLAD_GL_ARB_buffer_storage && glad_glBufferStorage && glad_glMapBufferRange && glad_glCopyBufferSubData && !(rbEnv && rbEnv[0] == '1');
+        ringOk = GL_Caps().bufferStorage && glad_glCopyBufferSubData && !(rbEnv && rbEnv[0] == '1');
         logger.logf("[TerrainGpu] readback: %s\n", ringOk ? "persistent mapped ring" : "copy");
         logger.logf("[TerrainGpu] density blocks on the GPU\n");
         return true;
