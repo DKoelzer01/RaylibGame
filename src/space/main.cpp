@@ -4031,8 +4031,19 @@ int main(int argc, char** argv)
                         survival.oxygen = 50.0f;
                         Hotbar_Press(8, false); // key 9: oxygen canister
                         const bool used = inventory.count("oxygen_canister") == 0 && survival.oxygen > 90.0f;
+                        // #272: in build mode, a key bound to a pickaxe not carried changes nothing (the selection, build
+                        // mode); carried, it goes into the hand and build mode ends.
+                        Hotbar_Press(1, false);
+                        Hotbar_Bind(5, "titanium_pickaxe");
+                        const int sel0 = Hotbar_Selected();
+                        Hotbar_Press(5, false);
+                        const bool unownedKept = Hotbar_Selected() == sel0 && buildTool.active && terrainTool.heldTool != "titanium_pickaxe";
+                        inventory.add("titanium_pickaxe", 1);
+                        Hotbar_Press(5, false);
+                        const bool ownedTaken = Hotbar_Selected() == 5 && !buildTool.active && terrainTool.heldTool == "titanium_pickaxe";
+                        printf("bench: hotbar: unowned pickaxe key in build mode: selection and build mode kept %d; owned: in hand, build mode off %d (#272)\n", unownedKept, ownedTaken);
                         Hotbar_Press(0, false); // key 1: an empty slot, bare hands
-                        const bool toolMode = !buildTool.active;
+                        const bool toolMode = !buildTool.active && unownedKept && ownedTaken;
                         const bool saved = SaveWorld(world), loaded = saved && LoadWorldSave(world);
                         Planetoid* q = dynamic_cast<Planetoid*>(world.objects[0].get());
                         int woodParts = 0, concreteParts = 0;

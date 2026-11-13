@@ -38,7 +38,7 @@ namespace {
     std::string Held() {
         if (buildTool.active) {
             const std::string& s = Hotbar_Slot(Hotbar_Selected());
-            return s == kHotbarTerrainTool ? std::string() : s;
+            return s == kHotbarTerrainTool || inventory.count(s) <= 0 ? std::string() : s; // only what is carried (#272)
         }
         return inventory.count(terrainTool.heldTool) > 0 ? terrainTool.heldTool : std::string();
     }
