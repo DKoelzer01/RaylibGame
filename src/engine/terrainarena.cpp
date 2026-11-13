@@ -2,6 +2,7 @@
 #include "voxel.h"
 #include "frustum.h"
 #include "gpucompute.h"
+#include "glcaps.h"
 #include "utils/logger.h"
 
 #include "external/glad.h"
@@ -11,6 +12,8 @@
 #include <cstdlib>
 #include <cstring>
 #include <map>
+
+extern "C" void* glfwGetProcAddress(const char* name); // raylib links GLFW
 
 namespace {
     constexpr int kRecordLocation = 9;     // per-draw attributes 9-13, after raylib's default attributes (0-8)
@@ -58,6 +61,12 @@ namespace {
         bool tried = false, ok = false;
         GLuint vao = 0, vaoDepth = 0, pos = 0, attr = 0, ibo = 0;
         GLuint table = 0, list = 0, records = 0, indirect = 0;
+        // #286 indirect count (4.6 / ARB_indirect_parameters): the visible commands compacted in order, and their count.
+        typedef void (__stdcall* PfnDrawCount)(GLenum, GLenum, const void*, GLintptr, GLsizei, GLsizei);
+        PfnDrawCount drawCount = nullptr;
+        GLuint compacted = 0, counts = 0;
+        ComputeProgram compact;
+        GLint cpCount = -1, cpBase = -1;
         Ranges verts, idx;
         int tableCap = 0;
         std::vector<int> freeSlots;
@@ -130,11 +139,16 @@ namespace {
         int cap = std::max(S.ringCap, 8192);
         while (cap < n * 4) cap *= 2; // room for a frame's passes before wrapping
         // Contents need not survive (each flush writes what it draws).
-        GLuint old[] = { S.list, S.indirect, S.records };
-        glDeleteBuffers(3, old);
+        GLuint old[] = { S.list, S.indirect, S.records, S.compacted, S.counts };
+        glDeleteBuffers(5, old);
+        S.compacted = S.counts = 0;
         S.list = Regrow(0, 0, (size_t)cap * sizeof(GLuint), GL_DYNAMIC_DRAW);
         S.indirect = Regrow(0, 0, (size_t)cap * sizeof(Command), GL_DYNAMIC_COPY);
         S.records = Regrow(0, 0, (size_t)cap * kRecordTexels * 16, GL_DYNAMIC_COPY);
+        if (S.drawCount) {
+            S.compacted = Regrow(0, 0, (size_t)cap * sizeof(Command), GL_DYNAMIC_COPY);
+            S.counts = Regrow(0, 0, (size_t)cap * sizeof(GLuint), GL_DYNAMIC_COPY); // one per flush, at its ring base
+        }
         S.ringCap = cap;
         S.ringPos = 0;
         BindAttributes();
@@ -155,6 +169,16 @@ namespace {
             auto L = [p](const char* n) { return glGetUniformLocation(p, n); };
             S.cl = { L("count"), L("base"), L("rot"), L("scale"), L("offset"), L("texPeriod"), L("useFrustum"), L("planes"),
                      L("useColumn"), L("colPoint"), L("colDir"), L("colRadius"), L("overlap") };
+        }
+        {   // #286: RAYLIBGAME_INDIRECT_COUNT=1 draws only the visible commands (compacted in order, indirect count draws).
+            const char* ic = getenv("RAYLIBGAME_INDIRECT_COUNT");
+            if (GL_Caps().indirectParameters && ic && ic[0] == '1') { // opt-in: measured no faster on an RTX 5070 (empty commands cost ~nothing there)
+                S.drawCount = (State::PfnDrawCount)glfwGetProcAddress("glMultiDrawElementsIndirectCount");
+                if (!S.drawCount) S.drawCount = (State::PfnDrawCount)glfwGetProcAddress("glMultiDrawElementsIndirectCountARB");
+                if (S.drawCount && !S.compact.load("resources/compute/chunk_compact.comp")) S.drawCount = nullptr;
+                if (S.drawCount) { S.cpCount = glGetUniformLocation(S.compact.id, "count"); S.cpBase = glGetUniformLocation(S.compact.id, "base"); }
+            }
+            logger.logf("[Arena] draws: %s\n", S.drawCount ? "indirect count (visible chunks compacted in order)" : "all listed commands (culled ones empty)");
         }
         const int v0 = 4 << 20, i0 = 24 << 20; // about a planet walk's working set (5.7 M vertices seen); grows as needed
         S.pos = Regrow(0, 0, (size_t)v0 * kPosBytes);
@@ -308,6 +332,17 @@ int TerrainArena_Flush(unsigned int shaderId, bool positionsOnly, const ArenaBod
     glUniform1f(S.cl.colRadius, cull.colRadius);
     glUniform1f(S.cl.overlap, (CHUNK_SIZE + 1.0f) / CHUNK_SIZE);
     glDispatchCompute((GLuint)((n + 63) / 64), 1, 1);
+    if (S.drawCount) {
+        // #286: the visible commands compacted in order, and their count (chunk_compact.comp).
+        glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
+        S.compact.use();
+        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, S.indirect);
+        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 1, S.compacted);
+        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 2, S.counts);
+        glUniform1ui(S.cpCount, (GLuint)n);
+        glUniform1ui(S.cpBase, (GLuint)base);
+        glDispatchCompute(1, 1, 1);
+    }
     glMemoryBarrier(GL_COMMAND_BARRIER_BIT | GL_VERTEX_ATTRIB_ARRAY_BARRIER_BIT);
 
     // Draw.
@@ -323,9 +358,17 @@ int TerrainArena_Flush(unsigned int shaderId, bool positionsOnly, const ArenaBod
     if (locArena >= 0) glUniform1i(locArena, 1);
     if (locVP >= 0) rlSetUniformMatrix(locVP, viewProj);
     if (locModel >= 0) rlSetUniformMatrix(locModel, body.rs); // fragment normals: body rotation
-    glBindBuffer(GL_DRAW_INDIRECT_BUFFER, S.indirect);
     glBindVertexArray(positionsOnly ? S.vaoDepth : S.vao);
-    glMultiDrawElementsIndirect(GL_TRIANGLES, GL_UNSIGNED_SHORT, (const void*)(size_t)(base * sizeof(Command)), n, 0);
+    if (S.drawCount) {
+        constexpr GLenum kParameterBuffer = 0x80EE; // GL_PARAMETER_BUFFER
+        glBindBuffer(GL_DRAW_INDIRECT_BUFFER, S.compacted);
+        glBindBuffer(kParameterBuffer, S.counts);
+        S.drawCount(GL_TRIANGLES, GL_UNSIGNED_SHORT, (const void*)(size_t)(base * sizeof(Command)), (GLintptr)(base * sizeof(GLuint)), n, 0);
+        glBindBuffer(kParameterBuffer, 0);
+    } else {
+        glBindBuffer(GL_DRAW_INDIRECT_BUFFER, S.indirect);
+        glMultiDrawElementsIndirect(GL_TRIANGLES, GL_UNSIGNED_SHORT, (const void*)(size_t)(base * sizeof(Command)), n, 0);
+    }
     glBindVertexArray(0);
     if (locArena >= 0) glUniform1i(locArena, 0); // other meshes drawn with this shader use their own uniforms
     glBindBuffer(GL_DRAW_INDIRECT_BUFFER, 0);
@@ -345,10 +388,11 @@ ArenaStats TerrainArena_Stats() {
 
 void TerrainArena_Unload() {
     if (!S.ok) { S = State{}; return; }
-    GLuint bufs[] = { S.pos, S.attr, S.ibo, S.table, S.list, S.records, S.indirect };
-    glDeleteBuffers(7, bufs);
+    GLuint bufs[] = { S.pos, S.attr, S.ibo, S.table, S.list, S.records, S.indirect, S.compacted, S.counts };
+    glDeleteBuffers(9, bufs);
     GLuint vaos[] = { S.vao, S.vaoDepth };
     glDeleteVertexArrays(2, vaos);
     S.cull.unload();
+    S.compact.unload();
     S = State{};
 }
