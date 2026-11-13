@@ -102,6 +102,7 @@ class Scene {
         int lastDrawCalls = 0;
         int materialPalette = 0;         // lighting.fs: 0 = space materials, 1 = fantasy
         bool drawSkybox = true;          // false: the game clears to a sky colour instead
+        Color clearColor = BLACK;        // the scene target's clear (scenetarget.h; --crack-check: magenta)
         Vector3 fogColor = { 0, 0, 0 };  // linear-space fog colour (fantasy: sky haze)
         float fogDensity = 0.0f;         // 0 = no fog
         float weatherCloud = 0.0f;       // weather (set by the game each frame): cloud cover 0..1 greys the sky, dims the sun

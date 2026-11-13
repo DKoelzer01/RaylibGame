@@ -4,6 +4,7 @@
 #include "profiler.h"
 #include "worldtypes.h"
 #include "world.h"
+#include "scenetarget.h"
 #include "trees.h"
 #include <raylib.h>
 #include <rlgl.h>
@@ -529,7 +530,12 @@ void Scene::drawScene(int gamestate) {
 
     // --- Main pass ---
     int drawCalls = 0;
+    // Reverse-Z float depth (#135): one depth range from centimetres to infinity, so the far / mid / near
+    // passes below collapse into one (no depth clears, no near/far plane juggling).
+    const bool revZ = SceneTarget_Available();
+    if (revZ) SceneTarget_Begin(clearColor);
     BeginMode3D(camera);
+    if (revZ) SceneTarget_ApplyProjection();
         rlDisableBackfaceCulling();
         rlDisableDepthMask();
         if (drawSkybox) DrawModel(skybox, (Vector3){0, 0, 0}, 1.0f, WHITE); // skybox.vs strips translation and scales the cube
@@ -672,9 +678,11 @@ void Scene::drawScene(int gamestate) {
         };
         prepareWater();
         if (!farBodies.empty() || farExtra) {
-            EndMode3D();
-            rlSetClipPlanes(std::max(1.0, farMin * 0.9), farMax * 1.05 + 100.0);
-            BeginMode3D(camera);
+            if (!revZ) {
+                EndMode3D();
+                rlSetClipPlanes(std::max(1.0, farMin * 0.9), farMax * 1.05 + 100.0);
+                BeginMode3D(camera);
+            }
             const Frustum farFrustum = Frustum::fromViewProj(MatrixMultiply(rlGetMatrixModelview(), rlGetMatrixProjection()));
             ctx.frustum = &farFrustum;
             for (Object* o : farBodies) o->draw(ctx);
@@ -684,10 +692,12 @@ void Scene::drawScene(int gamestate) {
             rlEnableBackfaceCulling();
             EndWaterStencil();
             if (drawFarExtra) drawFarExtra(ctx); // translucent ring band, depth-tested against the far bodies
-            EndMode3D();
-            ClearDepthBuffer();
-            rlSetClipPlanes(nearDefault, farDefault);
-            BeginMode3D(camera);
+            if (!revZ) {
+                EndMode3D();
+                ClearDepthBuffer();
+                rlSetClipPlanes(nearDefault, farDefault);
+                BeginMode3D(camera);
+            }
             GpuTimer_Mark("far");
         }
 
@@ -729,7 +739,7 @@ void Scene::drawScene(int gamestate) {
         // 10 km, so far LOD seams and shorelines z-fought. Chunks straddling the split are drawn in
         // both passes; each pass clips to its range (and frustum-culls chunks outside it).
         const double kNearSplit = 2000.0;
-        {
+        if (!revZ) {
             EndMode3D();
             rlSetClipPlanes(kNearSplit * 0.9, farDefault);
             BeginMode3D(camera);
@@ -756,7 +766,7 @@ void Scene::drawScene(int gamestate) {
         ctx.frustum = &viewFrustum;
         for (const auto& obj : objects) if (obj && !isFar(obj.get())) obj->draw(ctx);
         for (const auto& obj : rootObject.children) if (obj) obj->draw(ctx);
-        if (drawPassExtra) drawPassExtra(ctx, false);
+        if (drawPassExtra) drawPassExtra(ctx, revZ); // one pass: it also rebuilds (the mid pass did)
         GpuTimer_Mark("near");
         KickGpu();
 
@@ -832,6 +842,7 @@ void Scene::drawScene(int gamestate) {
         if (onDraw3D) onDraw3D();
         frameLighting = nullptr;
     EndMode3D();
+    if (revZ) SceneTarget_End();
     rlSetClipPlanes(nearDefault, farDefault); // the passes above narrowed them
     lastDrawCalls = drawCalls;
     GpuTimer_Mark("draw3d");
@@ -870,6 +881,7 @@ Scene::~Scene() {
         UnloadTexture(terrainMaterial.maps[MATERIAL_MAP_ROUGHNESS].texture);
         UnloadTextureArray(terrainLayers);
         TerrainArena_Unload();
+        SceneTarget_Unload();
     }
     // Free the maps arrays only; shaders and textures are released explicitly here.
     MemFree(terrainMaterial.maps);
