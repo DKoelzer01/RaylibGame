@@ -271,6 +271,7 @@ int main(int argc, char** argv)
     bool benchTor = false; int torPhase = 0, torHeading = 0, torFlicker = 0, torPops = 0; double torStart = 0.0, torAirAt = -1.0, torMaxStep = 0.0; float torMaxUp = 0.0f; Vector3 torDir{}; DVec3 torLast{}; bool torWasGrounded = true; // --test-tor (#242)
     bool benchMachines = false; int machPhase = 0; double machStart = 0.0; // --test-machines (#193 #194 #229)
     bool benchFall = false; int fallPhase = 0, fallIdx = 0; bool fallOk = true; double fallStart = 0.0; // --test-fall (#263)
+    bool benchTeleClose = false; int teleCPhase = 0; double teleCStart = 0.0, teleCWorst = 0.0; long long teleCReq0 = 0; // --test-telescope-close (#261)
     DVec3 wallLast{};
     bool benchTrees = false;       // --test-trees: walk into a tree trunk
     bool benchChop = false;        // --test-chop: fell a tree, save/reload, regrow
@@ -381,6 +382,7 @@ int main(int argc, char** argv)
         if (std::string(argv[i]) == "--test-tor") benchTor = true; // walk across a low (beach) tor crown, logging collision pops (#242)
         if (std::string(argv[i]) == "--test-machines") benchMachines = true; // fuel slot, crafts consumed at the end, the boiler's water and heat
         if (std::string(argv[i]) == "--test-fall") benchFall = true; // drops from 3-100 m: fall damage by height
+        if (std::string(argv[i]) == "--test-telescope-close") benchTeleClose = true; // zoom 16x at the horizon, close: worst frame after (#261)
         if (std::string(argv[i]) == "--test-menus") benchMenus = true;
         if (std::string(argv[i]) == "--test-water") benchWater = true;
         if (std::string(argv[i]) == "--test-flyfollow") benchFlyFollow = true;
@@ -1330,6 +1332,38 @@ int main(int argc, char** argv)
                         printf("bench: wall: camera inside terrain in %d frames (#255)\n", wallCamInside);
                         printf("bench: wall: %s\n", wallOk && pass && wallCamInside == 0 ? "PASS" : "FAIL");
                         benchWall = false;
+                    }
+                } else if (benchTeleClose && (teleCPhase > 0 || WorldIdle())) {
+                    // --test-telescope-close (#261): look at the horizon through the telescope at 16x until the zoomed view
+                    // has loaded, close it, and report the worst frame and the builds asked for over the next 4 s.
+                    Planetoid* p = dynamic_cast<Planetoid*>(world.objects[0].get());
+                    const double t = GetTime() - teleCStart;
+                    if (teleCPhase == 0) {
+                        player.spawnOn(world, *p, StartSpawnDir(*p));
+                        inventory.add("telescope", 1);
+                        teleCPhase = 1; teleCStart = GetTime();
+                    } else if (teleCPhase == 1 && t > 1.5 && player.grounded) {
+                        player.forward = Vector3Normalize(Vector3Subtract(player.forward, Vector3Scale(player.up, Vector3DotProduct(player.forward, player.up)))); // level: the horizon
+                        Telescope_SetActive(world, true);
+                        telescope.zoom = 16.0f;
+                        teleCPhase = 2; teleCStart = GetTime();
+                    } else if (teleCPhase == 2) {
+                        telescope.zoom = 16.0f;
+                        if ((t > 3.0 && WorldIdle()) || t > 20.0) {
+                            printf("bench: telescope close: zoomed view loaded in %.1f s (%d nodes)\n", t, GetWorldStats().nodes);
+                            teleCReq0 = GetWorldStats().requests;
+                            Telescope_SetActive(world, false);
+                            teleCWorst = 0.0;
+                            teleCPhase = 3; teleCStart = GetTime();
+                        }
+                    } else if (teleCPhase == 3) {
+                        teleCWorst = std::max(teleCWorst, (double)GetFrameTime());
+                        if (t > 4.0) {
+                            const long long req = GetWorldStats().requests - teleCReq0;
+                            printf("bench: telescope close: worst frame in the 4 s after closing %.1f ms, %lld builds asked for, %d nodes -> %s\n",
+                                   teleCWorst * 1000.0, req, GetWorldStats().nodes, teleCWorst < 0.025 ? "PASS" : "FAIL");
+                            benchTeleClose = false;
+                        }
                     }
                 } else if (benchFall && (fallPhase > 0 || WorldIdle())) {
                     // --test-fall (#263): drops onto flat ground near the start. Expected on Terra (g 5.9, safe 6 m/s, x8.5):
@@ -4774,7 +4808,7 @@ int main(int argc, char** argv)
                         }
                         benchWalkSeconds = 0.0;
                     }
-                } else if ((WorldIdle() && benchDigStrokes == 0 && !benchPaint && !benchSaveLoad && benchWalkSeconds <= 0.0 && benchMineStrokes == 0 && minePhase != 2 && benchFlySeconds <= 0.0 && !benchSuffocate && benchOrbitSeconds <= 0.0 && !benchRide && !benchPark && !benchGravity && !benchPrecision && !benchMantle && !benchAirJump && !benchMoon && !benchHole && !benchWall && !benchLedge && !benchTor && !benchMachines && !benchFall && !benchMenus && !benchWater && !benchFlyFollow && !benchHotbar && !benchInventory && !benchMap && !benchViewmodel && !benchQuests && !benchHunger && !benchFarm && !benchAnimals && !benchThreats && benchShotTabs == 0 && !benchForest && !benchFlow && !benchPond && !benchBucket && !benchPump && !benchTerrain && !benchShadow && !benchParticles && !benchBiomes && !benchOil && !benchSpring && !benchShotAnimals && !benchShotMachines && benchShotBiomes < 0 && !benchFarForest && !benchRecipes && !benchWeather && !benchDecor && !benchMaterials && !benchDamage && !benchCrafting && !benchSuit && !benchTools && !benchRivers && !benchRing && !benchRocket && !benchStation && !benchBlueprint && !benchSmallBody && !benchTrees && !benchChop && benchPersist == 0 && benchBuild == 0 && benchFactory == 0 && !benchProgression) || GetTime() > 600.0) {
+                } else if ((WorldIdle() && benchDigStrokes == 0 && !benchPaint && !benchSaveLoad && benchWalkSeconds <= 0.0 && benchMineStrokes == 0 && minePhase != 2 && benchFlySeconds <= 0.0 && !benchSuffocate && benchOrbitSeconds <= 0.0 && !benchRide && !benchPark && !benchGravity && !benchPrecision && !benchMantle && !benchAirJump && !benchMoon && !benchHole && !benchWall && !benchLedge && !benchTor && !benchMachines && !benchFall && !benchTeleClose && !benchMenus && !benchWater && !benchFlyFollow && !benchHotbar && !benchInventory && !benchMap && !benchViewmodel && !benchQuests && !benchHunger && !benchFarm && !benchAnimals && !benchThreats && benchShotTabs == 0 && !benchForest && !benchFlow && !benchPond && !benchBucket && !benchPump && !benchTerrain && !benchShadow && !benchParticles && !benchBiomes && !benchOil && !benchSpring && !benchShotAnimals && !benchShotMachines && benchShotBiomes < 0 && !benchFarForest && !benchRecipes && !benchWeather && !benchDecor && !benchMaterials && !benchDamage && !benchCrafting && !benchSuit && !benchTools && !benchRivers && !benchRing && !benchRocket && !benchStation && !benchBlueprint && !benchSmallBody && !benchTrees && !benchChop && benchPersist == 0 && benchBuild == 0 && benchFactory == 0 && !benchProgression) || GetTime() > 600.0) {
                     benchStart = GetTime();
                     printf("bench: world ready after %.2f s (%d chunks, avg build %.2f ms of which sampling %.2f ms, %d worker threads)\n",
                         GetWorldStats().lastGenerationSeconds, GetWorldStats().chunks, GetWorldStats().avgBuildMs, GetWorldStats().avgSampleMs, GetWorldStats().workerThreads);
