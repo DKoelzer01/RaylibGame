@@ -907,7 +907,10 @@ void GpuTick(int n) {
             Site* site = G.ownerSite[slot];
             if (!br || !site) continue;
             const unsigned fl = flags[slot];
-            if (fl & 1u) {
+            // A brick the CPU reclassified since that dispatch (upload pending) or is reclassifying now (not ready:
+            // a worker reads its fill) keeps the CPU state: the GPU's older fill would put water back into cells
+            // that became solid (PR #129 review).
+            if ((fl & 1u) && br->ready && !br->upload) {
                 G.a.download(cells.data(), kCellsPerBrick * 4, slot * kCellsPerBrick * 4);
                 for (int i = 0; i < B3; ++i) {
                     br->fill[i] = (uint8_t)(cells[i] & 255u);
@@ -995,16 +998,17 @@ void GpuTick(int n) {
     rlSetUniform(G.step.uniform("visc"), visc, RL_SHADER_UNIFORM_INT, 8);
     rlSetUniform(G.step.uniform("minSpread"), spread, RL_SHADER_UNIFORM_INT, 8);
     G.nbrs.bind(2); G.list.bind(3); G.inS.bind(4); G.flags.bind(5);
-    const unsigned groups = (unsigned)list.size() * kCellsPerBrick / 64u;
+    const unsigned bricks = (unsigned)list.size(); // 2D dispatch: 64 groups of 64 cells per brick, one row per brick
     for (int k = 0; k < n; ++k) {
-        G.step.setInt("pass", 0); G.a.bind(0); G.b.bind(1); G.step.dispatch(groups);
-        G.step.setInt("pass", 1); G.b.bind(0); G.a.bind(1); G.step.dispatch(groups);
+        G.step.setInt("pass", 0); G.a.bind(0); G.b.bind(1); G.step.dispatch(kCellsPerBrick / 64u, bricks);
+        G.step.setInt("pass", 1); G.b.bind(0); G.a.bind(1); G.step.dispatch(kCellsPerBrick / 64u, bricks);
     }
     G.lastList = list;
     G.lastN = n;
 }
 
 void GpuReset() {
+    if (G.capacity > 0) { std::vector<unsigned> zeros(G.capacity, 0u); G.flags.upload(zeros.data(), G.capacity * 4); } // no stale face requests on reused slots
     for (Brick*& o : G.owner) o = nullptr;
     for (Site*& o : G.ownerSite) o = nullptr;
     G.lastList.clear();
@@ -1103,7 +1107,9 @@ void Fluid::LoadKinds(const char* path) {
     }
     for (int i = 0; i < 8; ++i) {
         const Kind& k = kinds[std::min(i, (int)kinds.size() - 1)];
-        kindVisc[i] = k.viscosity; kindMinSpread[i] = k.minSpread;
+        // The GPU step conserves water only with viscosity >= 4 (four neighbours may each take diff / visc).
+        if (k.viscosity < 4 && i < (int)kinds.size()) logger.logf("[Fluid] %s: viscosity %d below 4, using 4\n", k.id.c_str(), k.viscosity);
+        kindVisc[i] = std::max(k.viscosity, 4); kindMinSpread[i] = k.minSpread;
     }
 }
 int Fluid::KindCount() { return (int)kinds.size(); }
