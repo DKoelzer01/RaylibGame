@@ -4913,7 +4913,7 @@ int main(int argc, char** argv)
                     // --perf-log (#204): every 5 s, the per-pass averages to log.txt, tagged by how the player moved (average
                     // speed, and mouse-look turning) so "standing" and "moving" can be compared from a real session.
                     static double perfT0 = GetTime(), perfSpeed = 0.0, perfLook = 0.0; static long perfN = 0;
-                    perfSpeed += Vector3Length(player.velocity); perfLook += Vector2Length(GetMouseDelta()); ++perfN;
+                    perfSpeed += Vector3Length(Vector3Subtract(player.velocity, player.nearest ? player.nearest->surfaceVelocity((player.position - world.renderOrigin).toFloat()) : Vector3{ 0, 0, 0 })); /* against the ground: the world velocity includes the planet's spin */ perfLook += Vector2Length(GetMouseDelta()); ++perfN;
                     if (GetTime() - perfT0 >= 5.0) {
                         const double sp = perfSpeed / std::max(1L, perfN), lk = perfLook / std::max(1L, perfN);
                         GpuTimer_LogAndReset(TextFormat("%s (speed %.1f m/s, look %.1f px/frame, %d FPS)", sp > 0.5 || lk > 0.5 ? "MOVING" : "still", sp, lk, GetFPS()));

@@ -7,6 +7,7 @@
 #include "factory.h"
 #include "fluid.h"
 #include "terraingpu.h"
+#include "gputimer.h"
 #include <chrono>
 
 #include <raymath.h>
@@ -660,7 +661,9 @@ void advanceBodies(Scene& world, float dt) {
 
 void worldUpdate(Scene& world, float uploadBudgetMs) {
     PROFILE_FUNCTION();
+    GpuTimer_CpuMark("w-before");
     TerrainGpu_Pump(); // GPU density blocks (Plan 6 step 4): finished batches back to the workers, the next batch out
+    GpuTimer_CpuMark("w-gpu-pump");
     // Ring rocks near the camera become voxel bodies (and back) before this frame's LOD selection.
     for (auto& ring : Rings()) ring->update(world, world.renderOrigin + world.camera.position);
 
@@ -680,6 +683,7 @@ void worldUpdate(Scene& world, float uploadBudgetMs) {
         if (std::chrono::duration<float, std::milli>(std::chrono::steady_clock::now() - t0).count() > uploadBudgetMs) break;
     }
 
+    GpuTimer_CpuMark("w-uploads");
     // LOD after uploads, so this frame's draw list already includes nodes that just finished.
     for (auto& obj : world.objects) {
         if (auto* p = dynamic_cast<Planetoid*>(obj.get())) {
@@ -688,6 +692,7 @@ void worldUpdate(Scene& world, float uploadBudgetMs) {
         }
     }
 
+    GpuTimer_CpuMark("w-lod+trees");
     stats.queuedJobs = (int)Jobs().queued();
     stats.runningJobs = Jobs().running();
     stats.pendingUploads = (int)pendingUploads.size();
