@@ -5098,7 +5098,8 @@ int main(int argc, char** argv)
             } else if (menuStep == 3 && menuFrames == 30) { TakeScreenshot("bench_menu_pause.png"); pendingMenu.action = MenuAction::SaveAndQuit; menuStep = 4; menuFrames = 0; }
             else if (menuStep == 4 && menuFrames == 5) {
                 menuOk &= gameState == 0;
-                printf("bench: menus: Save & Quit -> main menu: %s\n", gameState == 0 ? "yes" : "NO");
+                printf("bench: menus: Save & Quit -> main menu: %s; old world unloaded (%zu bodies left, #270): %s\n", gameState == 0 ? "yes" : "NO", world.objects.size(), world.objects.empty() ? "yes" : "NO");
+                menuOk &= world.objects.empty();
                 pendingMenu.action = MenuAction::LoadGame; pendingMenu.path = "saves/bench.sav"; menuStep = 5; menuFrames = 0;
             } else if (menuStep == 5 && menuFrames == 5) {
                 menuOk &= gameState == 1;
@@ -5139,6 +5140,14 @@ int main(int argc, char** argv)
                 case MenuAction::Save: GameUI_Toast(SaveWorld(world) ? "Saved" : "Save failed"); break;
                 case MenuAction::SaveAndQuit:
                     if (!SaveWorld(world)) GameUI_Toast("Save failed");
+                    // Nothing of the old world keeps running behind the menu (#270): jobs, the factory, water,
+                    // streaming, bodies and their GPU meshes, animals, particles. New Game and Load build a world again.
+                    if (telescope.active) Telescope_SetActive(world, false);
+                    player.flyMode = false;
+                    unloadWorld(world);
+                    Animals_Reset();
+                    Particles_Clear();
+                    worldFresh = false;
                     toMenu();
                     break;
                 case MenuAction::Exit: windowKeepAlive = false; break;

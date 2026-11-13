@@ -69,6 +69,8 @@ struct TerrainHit {
 void worldHandler(Scene& world);
 void generateWorld(Scene& world);      // creates planetoids; chunks stream in via worldUpdate()
 void regenerateWorld(Scene& world);
+// Drops the whole world (jobs, machines, water, rings, bodies and their GPU meshes): quitting to the main menu (#270).
+void unloadWorld(Scene& world);
 void BeginWorldStreaming();            // for games that add bodies themselves: WorldIdle() waits for them
 void loadWorld(Scene& world);          // extra objects from assets/scenes/world
 
