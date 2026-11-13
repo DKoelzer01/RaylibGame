@@ -30,6 +30,8 @@ public:
     std::shared_ptr<std::atomic<uint32_t>> wanted = std::make_shared<std::atomic<uint32_t>>(0);
     NodeKey key{};
     bool ready = false;   // a build result has arrived at least once
+    bool background = false; // its latest build was requested by the preload ring (#296): the view re-requests it at its own priority
+    bool inRing = false;     // part of the body's current preload ring: kept resident (#294)
     double lastWanted = 0.0; // when the LOD last selected (or kept) it: undesired nodes stay a few s for reuse (#258)
     // Body-local upper bound for fragments. Nodes overlap their +x/+y/+z neighbours by one cell to
     // hide cracks between LOD levels; where the neighbour on an axis is drawn at the same level the
@@ -94,6 +96,7 @@ public:
     // UpdateLod skips work while nothing changed: the camera (in body space) stayed within 1 m of
     // where the node selection was last made and no chunk results or edits arrived.
     bool lodDirty = true;
+    double lastFreeSweep = -1e9; // GetTime() of the last pass over every node for frees and cache evictions (#295)
     Vector3 lodCamLocal = { 1e30f, 1e30f, 1e30f };
 
     Planetoid(std::string name, DVec3 worldPos, Vector3 rotation, float scale, unsigned int seed, float radius);
