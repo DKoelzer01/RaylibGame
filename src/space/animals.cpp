@@ -19,6 +19,7 @@
 #include <rlgl.h>
 #include <algorithm>
 #include <chrono>
+#include <sstream>
 #include <cmath>
 #include <cstring>
 #include <unordered_map>
@@ -46,6 +47,7 @@ struct Species {
     int herdMin = 2, herdMax = 5;
     float latMin = 0.0f, latMax = 0.8f;
     std::vector<Biome> biomes;         // Plan 5 B: where herds live (empty: by latitude)
+    bool biped = false, wool = false, horns = false, spikes = false, beak = false, tail = false, ears = false, longBody = false; // model (Plan 5 A)
 };
 std::vector<Species> species;
 bool speciesLoaded = false;
@@ -87,6 +89,10 @@ void LoadSpecies() {
         sscanf(c[11].c_str(), "%d %d", &s.herdMin, &s.herdMax);
         sscanf(c[12].c_str(), "%f %f", &s.latMin, &s.latMax);
         if (c.size() > 13) for (const auto& bn : Split(c[13], ',')) for (int b = 0; b < (int)Biome::Count; ++b) if (bn == BiomeName((Biome)b)) s.biomes.push_back((Biome)b);
+        if (c.size() > 14) { // the model (Plan 5 A): quad or biped, then features
+            std::istringstream ms(c[14]); std::string w;
+            while (ms >> w) { if (w == "biped") s.biped = true; else if (w == "wool") s.wool = true; else if (w == "horns") s.horns = true; else if (w == "spikes") s.spikes = true; else if (w == "beak") s.beak = true; else if (w == "tail") s.tail = true; else if (w == "ears") s.ears = true; else if (w == "long") s.longBody = true; }
+        }
         species.push_back(s);
     }
     fclose(f);
@@ -116,6 +122,13 @@ struct Animal {
     uint32_t rng = 1;
     double angryUntil = -1.0, lastBite = -1.0; // hostile: charging until (world time); the last bite
     float daylight = 0.0f;                     // night hunters: seconds of daylight seen (they leave)
+    // Plan 5 A: needs (0..1) that drive the choice between grazing, wandering and resting; the herd; a
+    // chase target (predators); the gait for the walk animation.
+    float hunger = 0.3f, fatigue = 0.2f;
+    int chase = -1;                             // predators: the animal index being chased (this update)
+    Vector3 herdCentre{}; int herdSize = 0;
+    float gait = 0.0f, moveSpeed = 0.0f;        // leg cycle (radians) and the last speed (m/s)
+    float stuckTime = 0.0f;                     // seconds without progress while trying to move
 };
 std::vector<Animal> animals;
 std::unordered_map<std::string, std::unordered_set<uint64_t>> spawnedTiles; // body -> herd tiles decided
@@ -417,6 +430,34 @@ void Animals_Update(Scene& world, float dt, float worldDt, bool inputEnabled) {
             }
         }
     }
+    // Ecology (Plan 5 A), twice a second over the animals near the player: predators (the hostile kinds)
+    // pick the nearest prey within 30 m to chase (chase only: no kills yet, per the user); prey that spots a
+    // predator within 18 m bolts; each herd's centre (same kind within 40 m) for cohesion.
+    static double ecoAt = 0.0;
+    if (here && GetTime() > ecoAt) {
+        ecoAt = GetTime() + 0.5;
+        std::vector<int> near;
+        for (size_t i = 0; i < animals.size(); ++i)
+            if (animals[i].body == here->name && Vector3Distance(animals[i].pos, playerLocal) < 300.0f) near.push_back((int)i);
+        for (int i : near) {
+            Animal& a = animals[i];
+            const Species& s = species[a.species];
+            a.chase = -1;
+            Vector3 centre{}; int herd = 0;
+            float bestPrey = 30.0f, bestThreat = 18.0f;
+            for (int j : near) {
+                if (j == i) continue;
+                const Animal& b = animals[j];
+                const float d = Vector3Distance(a.pos, b.pos);
+                const Species& t = species[b.species];
+                if (b.species == a.species && d < 40.0f) { centre = Vector3Add(centre, b.pos); ++herd; }
+                if (s.hostile && !t.hostile && d < bestPrey && threatsOn) { bestPrey = d; a.chase = j; }
+                if (!s.hostile && t.hostile && d < bestThreat && threatsOn) { bestThreat = d; a.fleeTimer = std::max(a.fleeTimer, 3.0f); a.fleeFrom = b.pos; }
+            }
+            a.herdCentre = herd ? Vector3Scale(centre, 1.0f / herd) : a.pos;
+            a.herdSize = herd;
+        }
+    }
     std::vector<int> gone;
     std::unordered_map<std::string, Planetoid*> bodies;
     for (size_t i = 0; i < animals.size(); ++i) {
@@ -493,23 +534,46 @@ void Animals_Update(Scene& world, float dt, float worldDt, bool inputEnabled) {
             a.fleeTimer = 4.0f;
             a.fleeFrom = playerLocal;
             continue;
+        } else if (s.hostile && a.chase >= 0 && a.chase < (int)animals.size() && animals[a.chase].body == a.body &&
+                   Vector3Distance(animals[a.chase].pos, a.pos) < 35.0f && !(s.night && !dark)) {
+            // A predator after prey (Plan 5 A; chase only): it runs at it; close in, the prey bolts.
+            a.state = State::Hunt;
+            toward = Vector3Subtract(animals[a.chase].pos, a.pos);
+            steer = true;
+            speed = s.run * 0.75f;
+            Animal& prey = animals[a.chase];
+            if (Vector3Distance(prey.pos, a.pos) < 6.0f) { prey.fleeTimer = std::max(prey.fleeTimer, 3.0f); prey.fleeFrom = a.pos; }
         } else if (dark || (sameBody && Weather_StormHere())) { // night, or a storm: they shelter and rest
             a.state = State::Rest; // night
+            a.fatigue = std::max(0.0f, a.fatigue - step / 90.0f);
         } else {
+            // Needs (Plan 5 A): hunger grows (grazing eats it down), so does tiredness (resting sleeps it off);
+            // when the current activity runs out, the strongest pull wins - graze, wander (more so when the
+            // herd has drifted off: it heads back to it), or lie down for a rest.
+            a.hunger = std::min(1.0f, a.hunger + step / 240.0f);
+            a.fatigue = std::min(1.0f, a.fatigue + step / (a.state == State::Walk ? 300.0f : 600.0f));
+            if (a.state == State::Graze) a.hunger = std::max(0.0f, a.hunger - step / 25.0f);
+            if (a.state == State::Rest) a.fatigue = std::max(0.0f, a.fatigue - step / 40.0f);
+            const float herdAway = a.herdSize > 0 ? Vector3Distance(a.herdCentre, a.pos) : 0.0f;
             a.timer -= step;
             if (a.timer <= 0.0f) {
-                const bool walk = Rand01(a.rng) < 0.55f;
-                a.state = walk ? State::Walk : State::Graze;
-                if (walk) a.heading += (Rand01(a.rng) - 0.5f) * 2.2f;
-                a.timer = walk ? 2.0f + 5.0f * Rand01(a.rng) : 2.0f + 6.0f * Rand01(a.rng);
+                const float graze = a.hunger * 1.2f + 0.1f * Rand01(a.rng);
+                const float walk = 0.35f + (herdAway > 12.0f ? 0.6f : 0.0f) + 0.25f * Rand01(a.rng);
+                const float rest = a.fatigue * 1.1f + 0.05f * Rand01(a.rng);
+                a.state = graze >= walk && graze >= rest ? State::Graze : walk >= rest ? State::Walk : State::Rest;
+                if (a.state == State::Walk) a.heading += (Rand01(a.rng) - 0.5f) * 2.2f;
+                a.timer = a.state == State::Walk ? 2.0f + 5.0f * Rand01(a.rng) : a.state == State::Rest ? 8.0f + 10.0f * Rand01(a.rng) : 2.0f + 6.0f * Rand01(a.rng);
             }
-            if (a.state == State::Walk) speed = s.walk;
+            if (a.state == State::Walk) {
+                speed = s.walk;
+                if (herdAway > 12.0f) { toward = Vector3Subtract(a.herdCentre, a.pos); steer = true; } // back to the herd
+            }
         }
         if (steer) {
             const float x = Vector3DotProduct(toward, east), y = Vector3DotProduct(toward, north);
             if (x * x + y * y > 1e-6f) a.heading = atan2f(y, x);
         }
-        if (speed <= 0.0f) continue;
+        if (speed <= 0.0f) { a.moveSpeed = 0.0f; continue; }
         // Move along the surface; turn away from water, cliffs and build parts.
         const Vector3 fwd = Vector3Add(Vector3Scale(east, cosf(a.heading)), Vector3Scale(north, sinf(a.heading)));
         const float stepLen = speed * step * (0.6f + 0.4f * a.age);
@@ -519,8 +583,19 @@ void Animals_Update(Scene& world, float dt, float worldDt, bool inputEnabled) {
         const bool ok = Ground(*field, nd, at, e) &&
                         fabsf(Vector3Length(at) - Vector3Length(a.pos)) <= stepLen * 0.84f + 0.05f && // < 40 degrees
                         !BlockedAlong(*body, a.pos, at, height);
-        if (ok) a.pos = at;
-        else { a.heading += PI * (0.6f + 0.6f * Rand01(a.rng)); a.timer = 1.0f + Rand01(a.rng); }
+        if (ok) {
+            a.pos = at;
+            a.moveSpeed = speed;
+            a.gait += stepLen / std::max(0.25f, s.size.x * 0.45f) * PI; // one stride per ~0.9 body lengths
+            a.stuckTime = 0.0f;
+        } else {
+            // Blocked (water, a cliff, a wall): turn away; stuck a while, turn harder and pick a new activity.
+            a.moveSpeed = 0.0f;
+            a.stuckTime += step;
+            a.heading += PI * (0.6f + 0.6f * Rand01(a.rng)) * (a.stuckTime > 2.0f ? 1.5f : 1.0f);
+            a.timer = 1.0f + Rand01(a.rng);
+            if (a.stuckTime > 4.0f) { a.state = State::Graze; a.stuckTime = 0.0f; }
+        }
     }
     // Penned: build parts within 30 m in all eight directions around an animal near the player
     // (checked every 2 s; the quest's "pen two animals").
@@ -607,6 +682,92 @@ void Animals_Update(Scene& world, float dt, float worldDt, bool inputEnabled) {
     lastUpdateMs = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
 }
 
+// The animal model (Plan 5 A): built from boxes in the animal's frame (x right, y up, z forward), proportioned
+// from animals.txt (length, height, width) and its model features. Legs swing on the gait (trot: diagonal
+// pairs; bipeds alternate) with knees bending on the back swing; the head dips to graze; resting folds the
+// legs and lowers the body; the tail sways. Box() draws one part rotated about its own top (a joint).
+template <typename ShadeFn>
+static void DrawAnimalModel(const Species& s, const Animal& a, ShadeFn shade) {
+    const Vector3 sz = s.size;                       // length (z), height (y), width (x)
+    const float t = (float)GetTime();
+    const bool resting = a.state == State::Rest, grazing = a.state == State::Graze && a.moveSpeed <= 0.0f;
+    const float legH = sz.y * (s.biped ? 0.45f : 0.42f);
+    const float lower = resting ? legH * 0.75f : 0.0f;              // folded legs: the body sinks
+    const float swing = std::min(0.75f, a.moveSpeed * 0.22f);       // stride angle grows with speed
+    auto box = [&](Vector3 at, Vector3 size, float pitchDeg, float yawDeg, Color c) {
+        rlPushMatrix();
+        rlTranslatef(at.x, at.y, at.z);
+        if (yawDeg != 0.0f) rlRotatef(yawDeg, 0, 1, 0);
+        if (pitchDeg != 0.0f) rlRotatef(pitchDeg, 1, 0, 0);
+        DrawCube({ 0, -size.y * 0.5f, 0 }, size.x, size.y, size.z, c);  // hangs from its joint
+        rlPopMatrix();
+    };
+    // Body: a torso with a deeper chest and a slightly narrower rump.
+    const float bodyY = legH - lower, bodyH = sz.y - legH, len = sz.x * (s.longBody ? 1.1f : 1.0f);
+    const float breathe = 1.0f + 0.015f * sinf(t * 1.7f + a.rng % 7);
+    const Color bodyC = shade(s.body, 1.0f);
+    DrawCube({ 0, bodyY + bodyH * 0.5f, len * 0.08f }, sz.z * breathe, bodyH * breathe, len * 0.62f, bodyC);
+    DrawCube({ 0, bodyY + bodyH * 0.45f, -len * 0.28f }, sz.z * 0.9f, bodyH * 0.88f, len * 0.4f, shade(s.body, 0.93f));
+    if (s.wool)   // fleece: puffy lumps over the back
+        for (int k = 0; k < 3; ++k) DrawCube({ (k - 1) * sz.z * 0.18f, bodyY + bodyH * 0.92f, len * (0.2f - 0.22f * k) }, sz.z * 0.6f, bodyH * 0.35f, len * 0.3f, shade(s.body, 1.08f));
+    if (s.spikes) // a ridge of spines down the back
+        for (int k = 0; k < 5; ++k) box({ 0, bodyY + bodyH + 0.12f * sz.y, len * (0.3f - 0.15f * k) }, { sz.z * 0.08f, sz.y * 0.22f, len * 0.06f }, 180.0f - 20.0f, 0.0f, shade(s.head, 0.8f));
+    // Neck and head: forward and up; down to the grass when grazing; a little bob while walking.
+    // The neck hangs along -y from its base: a pitch of -125 deg points it forward and up, -55 forward and down.
+    const float neckPitch = grazing ? -55.0f : resting ? -100.0f : -125.0f + 6.0f * sinf(a.gait * 2.0f) * (swing > 0.0f ? 1.0f : 0.0f);
+    const Vector3 neckBase = { 0, bodyY + bodyH * 0.75f, len * 0.36f };
+    const float neckLen = sz.y * (s.biped ? 0.35f : 0.5f);
+    rlPushMatrix();
+    rlTranslatef(neckBase.x, neckBase.y, neckBase.z);
+    rlRotatef(neckPitch, 1, 0, 0);                 // the neck hangs "down" from its base, rotated up and forward
+    DrawCube({ 0, -neckLen * 0.5f, 0 }, sz.z * 0.38f, neckLen, sz.z * 0.38f, shade(s.body, 0.97f));
+    rlTranslatef(0, -neckLen, 0);
+    rlRotatef(-neckPitch + (grazing ? 40.0f : 0.0f), 1, 0, 0); // the head held level (nose down when grazing)
+    const float hs = std::min(sz.y, sz.z) * (s.biped ? 0.5f : 0.55f);
+    const Color headC = shade(s.head, 1.0f);
+    DrawCube({ 0, 0, hs * 0.25f }, hs * 0.8f, hs * 0.85f, hs * 1.05f, headC);
+    DrawCube({ 0, -hs * 0.15f, hs * 0.85f }, hs * 0.55f, hs * 0.5f, hs * 0.5f, shade(s.head, 0.9f));            // snout
+    if (s.beak) DrawCube({ 0, -hs * 0.05f, hs * 0.95f }, hs * 0.3f, hs * 0.22f, hs * 0.45f, shade({ 230, 170, 50, 255 }, 1.0f));
+    DrawCube({ hs * 0.25f, hs * 0.15f, hs * 0.75f }, hs * 0.1f, hs * 0.1f, hs * 0.05f, shade({ 20, 20, 20, 255 }, 1.0f)); // eyes
+    DrawCube({ -hs * 0.25f, hs * 0.15f, hs * 0.75f }, hs * 0.1f, hs * 0.1f, hs * 0.05f, shade({ 20, 20, 20, 255 }, 1.0f));
+    if (s.ears) {
+        const float flick = 8.0f * sinf(t * 2.3f + a.rng % 11);
+        box({ hs * 0.32f, hs * 0.45f, 0 }, { hs * 0.18f, hs * 0.4f, hs * 0.08f }, 180.0f + 20.0f + flick, -20.0f, headC);
+        box({ -hs * 0.32f, hs * 0.45f, 0 }, { hs * 0.18f, hs * 0.4f, hs * 0.08f }, 180.0f + 20.0f - flick, 20.0f, headC);
+    }
+    if (s.horns) {
+        const Color hc = shade({ 225, 215, 190, 255 }, 1.0f);
+        box({ hs * 0.3f, hs * 0.4f, hs * 0.1f }, { hs * 0.12f, hs * 0.55f, hs * 0.12f }, 180.0f + 35.0f, -35.0f, hc);
+        box({ -hs * 0.3f, hs * 0.4f, hs * 0.1f }, { hs * 0.12f, hs * 0.55f, hs * 0.12f }, 180.0f + 35.0f, 35.0f, hc);
+    }
+    rlPopMatrix();
+    // Tail: from the rump, swaying.
+    if (s.tail) {
+        const float sway = 18.0f * sinf(t * 2.5f + a.rng % 13) + (a.moveSpeed > 0.0f ? 10.0f * sinf(a.gait) : 0.0f);
+        box({ 0, bodyY + bodyH * 0.8f, -len * 0.48f }, { sz.z * 0.12f, sz.y * (s.biped ? 0.3f : 0.45f), sz.z * 0.12f }, s.biped ? 140.0f : 35.0f, sway, shade(s.body, 0.85f));
+    }
+    // Legs: two segments, swinging from the hips; diagonal pairs in step (bipeds: alternating).
+    const int legs = s.biped ? 2 : 4;
+    const Color legC = shade(s.body, 0.8f);
+    for (int l = 0; l < legs; ++l) {
+        const bool right = l & 1, front = s.biped ? true : (l & 2) != 0;
+        const float phase = s.biped ? (right ? PI : 0.0f) : ((right != front) ? PI : 0.0f);
+        const float ang = resting ? 80.0f : swing * sinf(a.gait + phase) * RAD2DEG;
+        const float knee = resting ? -150.0f : std::max(0.0f, -sinf(a.gait + phase)) * swing * 60.0f;
+        const Vector3 hip = { (right ? 0.32f : -0.32f) * sz.z, bodyY + bodyH * 0.15f, s.biped ? 0.0f : (front ? 0.3f : -0.33f) * len };
+        const float upper = legH * 0.55f, lowerLen = legH * 0.5f, w = sz.z * (s.biped ? 0.1f : 0.16f);
+        rlPushMatrix();
+        rlTranslatef(hip.x, hip.y, hip.z);
+        rlRotatef(ang, 1, 0, 0);
+        DrawCube({ 0, -upper * 0.5f, 0 }, w * 1.15f, upper, w * 1.15f, legC);
+        rlTranslatef(0, -upper, 0);
+        rlRotatef(front ? -knee : knee, 1, 0, 0);
+        DrawCube({ 0, -lowerLen * 0.5f, 0 }, w, lowerLen, w, legC);
+        DrawCube({ 0, -lowerLen, w * 0.15f }, w * 1.1f, w * 0.5f, w * 1.4f, shade(s.head, 0.6f));   // hoof / foot
+        rlPopMatrix();
+    }
+}
+
 void Animals_Draw3D(Scene& world) {
     if (animals.empty()) return;
     const Vector3 sun = Vector3Normalize(world.sunDirection);
@@ -632,15 +793,8 @@ void Animals_Draw3D(Scene& world) {
         rlPushMatrix();
         rlMultMatrixf(MatrixToFloat(m));
         rlScalef(k, k, k);
-        const Vector3 sz = s.size; // length (forward), height, width
-        const float legH = sz.y * 0.35f;
-        DrawCube({ 0, legH + (sz.y - legH) * 0.5f, 0 }, sz.z, sz.y - legH, sz.x, shade(s.body, 1.0f));                     // body
-        DrawCubeWires({ 0, legH + (sz.y - legH) * 0.5f, 0 }, sz.z, sz.y - legH, sz.x, shade(s.body, 0.6f));
-        const float hs = std::min(sz.y, sz.z) * 0.55f;
-        DrawCube({ 0, sz.y * 0.8f, sz.x * 0.5f + hs * 0.4f }, hs * 0.8f, hs, hs, shade(s.head, 1.0f));                // head
-        for (int l = 0; l < 4; ++l)                                                                                       // legs
-            DrawCube({ (l & 1 ? 0.3f : -0.3f) * sz.z, legH * 0.5f, (l & 2 ? 0.35f : -0.35f) * sz.x }, sz.z * 0.15f, legH, sz.z * 0.15f, shade(s.body, 0.75f));
-        if ((int)i == aimed) DrawCubeWires({ 0, sz.y * 0.5f, 0 }, sz.z * 1.15f, sz.y * 1.1f, sz.x * 1.15f, YELLOW);
+        DrawAnimalModel(s, a, shade);
+        if ((int)i == aimed) DrawCubeWires({ 0, s.size.y * 0.5f, 0 }, s.size.z * 1.15f, s.size.y * 1.1f, s.size.x * 1.15f, YELLOW);
         rlPopMatrix();
     }
 }
