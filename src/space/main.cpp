@@ -4537,6 +4537,7 @@ int main(int argc, char** argv)
                     }
         }
         if (crackCheck) world.drawSkybox = false;
+        if (crackCheck) world.clearColor = MAGENTA;
         while (world.lights.size() < 3) world.lights.push_back(Light{});
         {
             Light& lamp = world.lights[1];
