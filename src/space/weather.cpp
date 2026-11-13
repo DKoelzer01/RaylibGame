@@ -161,7 +161,7 @@ void Weather_Draw3D(Scene& world) {
     const Vector3 n = Vector3CrossProduct(upW, e);
     const bool snow = here.kind == WeatherKind::Snow;
     const int count = (int)(snow ? 1600 * here.precipitation : 1600 * here.precipitation);
-    const float fall = snow ? 1.2f : 9.0f, span = 24.0f, height = 16.0f;
+    const float fall = snow ? 1.2f : 24.0f, span = 24.0f, height = 16.0f; // rain read slow at 9 m/s on screen (#33)
     const Vector3 windW = p->dirToWorld(here.wind);
     const double t = GetTime();
     rlBegin(RL_LINES);
@@ -179,7 +179,8 @@ void Weather_Draw3D(Scene& world) {
             rlVertex3f(pos.x - e.x * s, pos.y - e.y * s, pos.z - e.z * s); rlVertex3f(pos.x + e.x * s, pos.y + e.y * s, pos.z + e.z * s);
             rlVertex3f(pos.x - n.x * s, pos.y - n.y * s, pos.z - n.z * s); rlVertex3f(pos.x + n.x * s, pos.y + n.y * s, pos.z + n.z * s);
         } else {
-            const Vector3 streak = Vector3Add(Vector3Scale(upW, 0.7f), Vector3Scale(windW, 0.04f));
+            // A motion-blur streak along the drop's velocity (down at `fall`, carried by the wind), ~50 ms long.
+            const Vector3 streak = Vector3Add(Vector3Scale(upW, fall * 0.05f), Vector3Scale(windW, -0.05f));
             rlColor4ub(185, 200, 225, 190);
             rlVertex3f(pos.x, pos.y, pos.z);
             rlVertex3f(pos.x + streak.x, pos.y + streak.y, pos.z + streak.z);
