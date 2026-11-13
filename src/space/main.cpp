@@ -151,6 +151,18 @@ static void StartNewWorld(Scene& world, bool reset) {
 
 int main(int argc, char** argv)
 {
+    // Data and shaders are read from resources/ relative to the working directory. Launched from Explorer
+    // (or a build dir) that is the exe's folder, which has no resources/ next to it: the game found nothing and
+    // crashed (#234). Use the first of the working directory, the exe's folder and its parents that has it.
+    if (!DirectoryExists("resources")) {
+        std::string dir = GetApplicationDirectory();
+        for (int up = 0; up < 6 && !dir.empty(); ++up) {
+            if (DirectoryExists((dir + "resources").c_str())) { ChangeDirectory(dir.c_str()); break; }
+            const size_t cut = dir.find_last_of("/\\", dir.size() >= 2 ? dir.size() - 2 : std::string::npos);
+            if (cut == std::string::npos) break;
+            dir = dir.substr(0, cut + 1);
+        }
+    }
     double benchSeconds = 0.0;
     bool startWithOverlay = false;
     int benchDigStrokes = 0;     // --test-dig N: dig N strokes at the crosshair once the world is loaded
