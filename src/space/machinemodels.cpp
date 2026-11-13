@@ -1,5 +1,6 @@
 #include "machinemodels.h"
 #include "factory.h"
+#include "instancebatch.h"
 #include "plots.h"
 #include "scene.h"
 #include "world.h"
@@ -23,9 +24,9 @@ Color Shade(Color c, float light, float m = 1.0f) {
 
 struct Painter {
     float light;
-    void cube(Vector3 c, Vector3 s, Color col, float m = 1.0f) const { DrawCube(c, s.x, s.y, s.z, Shade(col, light, m)); }
-    void glow(Vector3 c, Vector3 s, Color col) const { DrawCube(c, s.x, s.y, s.z, col); } // unlit (lit doors, hot coils)
-    void cyl(Vector3 base, float rTop, float rBottom, float h, Color col, float m = 1.0f, int slices = 10) const { DrawCylinder(base, rTop, rBottom, h, slices, Shade(col, light, m)); }
+    void cube(Vector3 c, Vector3 s, Color col, float m = 1.0f) const { IB_Cube(c, s, Shade(col, 1.0f, m)); } // lit by the batch shader
+    void glow(Vector3 c, Vector3 s, Color col) const { IB_Cube(c, s, col, true); } // unlit (lit doors, hot coils)
+    void cyl(Vector3 base, float rTop, float rBottom, float h, Color col, float m = 1.0f, int = 10) const { IB_Cylinder(base, rTop, rBottom, h, Shade(col, 1.0f, m)); }
 };
 
 const Color kSteel = { 140, 144, 150, 255 }, kDarkSteel = { 70, 72, 78, 255 }, kBrick = { 150, 80, 60, 255 }, kCopper = { 190, 110, 60, 255 };

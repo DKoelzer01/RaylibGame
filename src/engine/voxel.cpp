@@ -672,21 +672,29 @@ float PlanetField::ruggedness(Vector3 dir, float elev) const {
     return std::clamp(f, 0.0f, 1.0f);
 }
 
-float PlanetField::terrain3D(Vector3 p, float d, float surface, float fp) const {
+// The column part of the 3D band (Plan 5 C): where and how strongly, from the surface point of a column -
+// regional rugged patches, wider and stronger in dramatic biomes, none in meadows and swamps. Depends only on
+// the column, so blocks compute it once per height-grid node (baseDensityBlock) instead of per sample.
+PlanetField::Column3D PlanetField::terrain3DColumn(Vector3 dir, float elev) const {
+    Column3D c;
+    if (moon || elev < 6.0f) return c;
+    const Vector3 s = Vector3Scale(dir, radius + elev);
+    const float rn = rugged.fractal(2, s.x, s.y, s.z);
+    if (rn < -0.25f) return c;
+    const float f = ruggedness(dir, elev);
+    c.mask = Smoothstep(-0.25f * f, 0.4f - 0.15f * f, rn) * Smoothstep(6.0f, 60.0f, elev) * Smoothstep(0.0f, 0.2f, f);
+    c.f = f;
+    return c;
+}
+
+float PlanetField::terrain3D(Vector3 p, float d, float surface, float fp, const Column3D* col) const {
     if (moon || d < 1e-3f) return 0.0f;
     const float h = d - surface;
     if (h < -kBand3DBelow || h > kBand3DAbove) return 0.0f;
-    const float elev = surface - radius;
-    if (elev < 6.0f) return 0.0f;
-    // Where: regional rugged patches, wider and stronger in dramatic biomes, none in meadows and swamps
-    // (Plan 5 C). The patch noise first (cheap rejection), then the biome.
-    const float rn = rugged.fractal(2, p.x, p.y, p.z);
-    if (rn < -0.25f) return 0.0f;
     const Vector3 dir = { p.x / d, p.y / d, p.z / d };
-    const float f = ruggedness(dir, elev);
-    const float mask = Smoothstep(-0.25f * f, 0.4f - 0.15f * f, rn) * Smoothstep(6.0f, 60.0f, elev) * Smoothstep(0.0f, 0.2f, f);
-    if (mask <= 0.0f) return 0.0f;
-    const float amp = 16.0f * (0.5f + 1.5f * f), top = 20.0f + 26.0f * f; // up to ~32 m of rise, shelves up to ~40 m
+    const Column3D c = col ? *col : terrain3DColumn(dir, surface - radius);
+    if (c.mask <= 0.0f) return 0.0f;
+    const float amp = 16.0f * (0.5f + 1.5f * c.f), top = 20.0f + 26.0f * c.f; // up to ~32 m of rise, shelves up to ~46 m
     Vector3 q = Vector3Subtract(p, Vector3Scale(dir, h * 0.6f)); // vertical stretch
     const float w = 9.0f * warp3.fractalLimited(2, fp, q.x, q.y, q.z);
     q = { q.x + w, q.y - 0.7f * w, q.z + 0.4f * w };
@@ -697,7 +705,7 @@ float PlanetField::terrain3D(Vector3 p, float d, float surface, float fp) const 
     const float fade = (1.0f - Smoothstep(3.0f, top, h)) * Smoothstep(-16.0f, -8.0f, h); // shelves up the band, not floating sheets
     // Raised more than carved: hills and cliffs rise, alcoves are their undercuts (deep carving read as
     // pits in the plains), so dips stop at 3 m.
-    return std::max(amp * mask * shape * fade, -3.0f);
+    return std::max(amp * c.mask * shape * fade, -3.0f);
 }
 
 // Floating islands (Plan 5 C, user: big enough for a small/medium factory): one in ~8% of the 4 km cells on
@@ -795,10 +803,10 @@ int PlanetField::floatingIslandsNear(Vector3 dir, float range, std::vector<Vecto
 }
 
 // Everything after the height map, shared by single samples and blocks so both agree exactly.
-float PlanetField::densityNear(Vector3 p, float d, float surface, float fp) const {
+float PlanetField::densityNear(Vector3 p, float d, float surface, float fp, const Column3D* col) const {
     float v = ISO_LEVEL + DENSITY_GRADIENT * (surface - d);
     const float depth = surface - d;
-    if (depth < kBand3DBelow && depth > -kBand3DAbove) v += DENSITY_GRADIENT * terrain3D(p, d, surface, fp); // hills, cliffs, overhangs
+    if (depth < kBand3DBelow && depth > -kBand3DAbove) v += DENSITY_GRADIENT * terrain3D(p, d, surface, fp, col); // hills, cliffs, overhangs
     if (fabsf(depth) < 6.0f) v += DENSITY_GRADIENT * 1.5f * detail.fractalLimited(2, fp, p.x, p.y * 1.3f, p.z); // crags, overhangs
     if (depth < 3.0f && depth > -9.0f) {
         const float m = rockFeature(p, d, surface, fp);
@@ -869,10 +877,13 @@ void PlanetField::baseDensityBlock(Vector3 o, float stride, int S, float fp, flo
     const int nu = std::min(256, (int)ceilf((umax - umin) / du) + 2), nv = std::min(256, (int)ceilf((vmax - vmin) / du) + 2);
     const float su = (umax - umin) / (float)(nu - 1), sv = (vmax - vmin) / (float)(nv - 1);
     std::vector<float> h((size_t)nu * nv);
+    std::vector<Column3D> cols((size_t)nu * nv);
     for (int j = 0; j < nv; ++j)
         for (int i = 0; i < nu; ++i) {
             const float u = umin + i * su, v = vmin + j * sv;
-            h[(size_t)j * nu + i] = elevation(Vector3Normalize(Vector3Add(n, Vector3Add(Vector3Scale(t1, u), Vector3Scale(t2, v)))), fp);
+            const Vector3 gdir = Vector3Normalize(Vector3Add(n, Vector3Add(Vector3Scale(t1, u), Vector3Scale(t2, v))));
+            h[(size_t)j * nu + i] = elevation(gdir, fp);
+            cols[(size_t)j * nu + i] = terrain3DColumn(gdir, h[(size_t)j * nu + i]); // the 3D band's column strength, once per node
         }
     size_t idx = 0;
     for (int z = 0; z < S; ++z)
@@ -882,6 +893,7 @@ void PlanetField::baseDensityBlock(Vector3 o, float stride, int S, float fp, flo
                 const float d = sqrtf(p.x * p.x + p.y * p.y + p.z * p.z);
                 if (d > outer + 4.0f) { out[idx] = ISO_LEVEL + DENSITY_GRADIENT * (outer - d); continue; }
                 float surface = inner;
+                Column3D col;
                 if (d >= inner - 4.0f) {
                     const float s = Vector3DotProduct(p, n);
                     const float fu = std::clamp((Vector3DotProduct(p, t1) / s - umin) / su, 0.0f, (float)(nu - 1) - 1e-3f);
@@ -891,8 +903,12 @@ void PlanetField::baseDensityBlock(Vector3 o, float stride, int S, float fp, flo
                     const float* r0 = &h[(size_t)iv * nu + iu];
                     const float* r1 = r0 + nu;
                     surface = radius + (r0[0] * (1 - au) + r0[1] * au) * (1 - av) + (r1[0] * (1 - au) + r1[1] * au) * av;
+                    const Column3D* c0 = &cols[(size_t)iv * nu + iu];
+                    const Column3D* c1 = c0 + nu;
+                    col.mask = (c0[0].mask * (1 - au) + c0[1].mask * au) * (1 - av) + (c1[0].mask * (1 - au) + c1[1].mask * au) * av;
+                    col.f = (c0[0].f * (1 - au) + c0[1].f * au) * (1 - av) + (c1[0].f * (1 - au) + c1[1].f * au) * av;
                 }
-                out[idx] = densityNear(p, d, surface, fp);
+                out[idx] = densityNear(p, d, surface, fp, &col);
             }
 }
 

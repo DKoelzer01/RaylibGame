@@ -103,9 +103,16 @@ extern "C" {
     typedef void (*PfnStencilOp)(unsigned int, unsigned int, unsigned int);
     extern PfnEnable glad_glEnable;
     extern PfnEnable glad_glDisable;
+    typedef void (*PfnFlush)();
+    extern PfnFlush glad_glFlush;
     extern PfnStencilFunc glad_glStencilFunc;
     extern PfnStencilOp glad_glStencilOp;
 }
+// Hand the queued commands to the GPU now (pass boundaries): without this the driver held the whole frame
+// until the swap, so the GPU only started once the CPU had finished submitting, and CPU and GPU ran one
+// after the other each frame instead of overlapping.
+void KickGpu() { rlDrawRenderBatchActive(); if (glad_glFlush) glad_glFlush(); }
+
 static void BeginWaterStencil() {
     rlDrawRenderBatchActive();
     if (!glad_glStencilFunc || !glad_glStencilOp) return;
@@ -453,6 +460,7 @@ void Scene::drawScene(int gamestate) {
     renderCascade(shadowMap, shadowHalfExtent, centre, lightSpaceMatrix, true);
     renderCascade(shadowNear, shadowNearHalfExtent, snapCentre(shadowNearHalfExtent), lightSpaceNear, false);
     GpuTimer_Mark("shadow");
+    KickGpu();
     rlSetClipPlanes(defaultNear, defaultFar);
     }
 
@@ -738,6 +746,7 @@ void Scene::drawScene(int gamestate) {
             rlSetClipPlanes(nearDefault, kNearSplit);
             BeginMode3D(camera);
             GpuTimer_Mark("mid");
+            KickGpu();
         }
 
         const Frustum viewFrustum = Frustum::fromViewProj(MatrixMultiply(rlGetMatrixModelview(), rlGetMatrixProjection()));
@@ -748,6 +757,7 @@ void Scene::drawScene(int gamestate) {
         for (const auto& obj : rootObject.children) if (obj) obj->draw(ctx);
         if (drawPassExtra) drawPassExtra(ctx, false);
         GpuTimer_Mark("near");
+        KickGpu();
 
         // Foliage: grass tufts on near chunks (instanced; one draw per chunk with grass in range).
         if (grass.shader.id > 0 && foliageEnabled) {
@@ -783,6 +793,7 @@ void Scene::drawScene(int gamestate) {
         GpuTimer_Mark("grass");
         drawTrees(-1);
         GpuTimer_Mark("trees");
+        KickGpu();
 
         // Transparent pass (sea surfaces) after everything opaque. Depth writes stay on: where LOD
         // nodes overlap, the second copy of the same surface then fails the depth test instead of
@@ -812,7 +823,13 @@ void Scene::drawScene(int gamestate) {
             }
         }
         GpuTimer_Mark("water");
+        // Extra drawing (animals, machine details, particles) gets the frame's lighting: sun shadows and the headlamp
+        // binder, sun, ambient and fog (InstanceBatch uses them).
+        frameLighting = setFoliageLighting;
+        frameSun = sun; frameAmbient = effAmbient; frameFog = effFog; frameFogDensity = effFogDensity;
+        frameFogShell = { atmosphere.centre.x, atmosphere.centre.y, atmosphere.centre.z, atmosphere.enabled && effFogDensity < 0.06f ? atmosphere.radius + atmosphere.hazeHeight : 0.0f };
         if (onDraw3D) onDraw3D();
+        frameLighting = nullptr;
     EndMode3D();
     rlSetClipPlanes(nearDefault, farDefault); // the passes above narrowed them
     lastDrawCalls = drawCalls;

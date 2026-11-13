@@ -1,4 +1,5 @@
 #include "animals.h"
+#include "instancebatch.h"
 #include "audio.h"
 #include "buildtool.h"
 #include "gameui.h"
@@ -686,6 +687,7 @@ void Animals_Update(Scene& world, float dt, float worldDt, bool inputEnabled) {
 // from animals.txt (length, height, width) and its model features. Legs swing on the gait (trot: diagonal
 // pairs; bipeds alternate) with knees bending on the back swing; the head dips to graze; resting folds the
 // legs and lowers the body; the tail sways. Box() draws one part rotated about its own top (a joint).
+static inline void DrawCubeB(Vector3 p, float w, float h, float l, Color c) { IB_Cube(p, { w, h, l }, c); } // batched, lit (instancebatch.h)
 template <typename ShadeFn>
 static void DrawAnimalModel(const Species& s, const Animal& a, ShadeFn shade) {
     const Vector3 sz = s.size;                       // length (z), height (y), width (x)
@@ -699,17 +701,17 @@ static void DrawAnimalModel(const Species& s, const Animal& a, ShadeFn shade) {
         rlTranslatef(at.x, at.y, at.z);
         if (yawDeg != 0.0f) rlRotatef(yawDeg, 0, 1, 0);
         if (pitchDeg != 0.0f) rlRotatef(pitchDeg, 1, 0, 0);
-        DrawCube({ 0, -size.y * 0.5f, 0 }, size.x, size.y, size.z, c);  // hangs from its joint
+        DrawCubeB({ 0, -size.y * 0.5f, 0 }, size.x, size.y, size.z, c);  // hangs from its joint
         rlPopMatrix();
     };
     // Body: a torso with a deeper chest and a slightly narrower rump.
     const float bodyY = legH - lower, bodyH = sz.y - legH, len = sz.x * (s.longBody ? 1.1f : 1.0f);
     const float breathe = 1.0f + 0.015f * sinf(t * 1.7f + a.rng % 7);
     const Color bodyC = shade(s.body, 1.0f);
-    DrawCube({ 0, bodyY + bodyH * 0.5f, len * 0.08f }, sz.z * breathe, bodyH * breathe, len * 0.62f, bodyC);
-    DrawCube({ 0, bodyY + bodyH * 0.45f, -len * 0.28f }, sz.z * 0.9f, bodyH * 0.88f, len * 0.4f, shade(s.body, 0.93f));
+    DrawCubeB({ 0, bodyY + bodyH * 0.5f, len * 0.08f }, sz.z * breathe, bodyH * breathe, len * 0.62f, bodyC);
+    DrawCubeB({ 0, bodyY + bodyH * 0.45f, -len * 0.28f }, sz.z * 0.9f, bodyH * 0.88f, len * 0.4f, shade(s.body, 0.93f));
     if (s.wool)   // fleece: puffy lumps over the back
-        for (int k = 0; k < 3; ++k) DrawCube({ (k - 1) * sz.z * 0.18f, bodyY + bodyH * 0.92f, len * (0.2f - 0.22f * k) }, sz.z * 0.6f, bodyH * 0.35f, len * 0.3f, shade(s.body, 1.08f));
+        for (int k = 0; k < 3; ++k) DrawCubeB({ (k - 1) * sz.z * 0.18f, bodyY + bodyH * 0.92f, len * (0.2f - 0.22f * k) }, sz.z * 0.6f, bodyH * 0.35f, len * 0.3f, shade(s.body, 1.08f));
     if (s.spikes) // a ridge of spines down the back
         for (int k = 0; k < 5; ++k) box({ 0, bodyY + bodyH + 0.12f * sz.y, len * (0.3f - 0.15f * k) }, { sz.z * 0.08f, sz.y * 0.22f, len * 0.06f }, 180.0f - 20.0f, 0.0f, shade(s.head, 0.8f));
     // Neck and head: forward and up; down to the grass when grazing; a little bob while walking.
@@ -720,16 +722,16 @@ static void DrawAnimalModel(const Species& s, const Animal& a, ShadeFn shade) {
     rlPushMatrix();
     rlTranslatef(neckBase.x, neckBase.y, neckBase.z);
     rlRotatef(neckPitch, 1, 0, 0);                 // the neck hangs "down" from its base, rotated up and forward
-    DrawCube({ 0, -neckLen * 0.5f, 0 }, sz.z * 0.38f, neckLen, sz.z * 0.38f, shade(s.body, 0.97f));
+    DrawCubeB({ 0, -neckLen * 0.5f, 0 }, sz.z * 0.38f, neckLen, sz.z * 0.38f, shade(s.body, 0.97f));
     rlTranslatef(0, -neckLen, 0);
     rlRotatef(-neckPitch + (grazing ? 40.0f : 0.0f), 1, 0, 0); // the head held level (nose down when grazing)
     const float hs = std::min(sz.y, sz.z) * (s.biped ? 0.5f : 0.55f);
     const Color headC = shade(s.head, 1.0f);
-    DrawCube({ 0, 0, hs * 0.25f }, hs * 0.8f, hs * 0.85f, hs * 1.05f, headC);
-    DrawCube({ 0, -hs * 0.15f, hs * 0.85f }, hs * 0.55f, hs * 0.5f, hs * 0.5f, shade(s.head, 0.9f));            // snout
-    if (s.beak) DrawCube({ 0, -hs * 0.05f, hs * 0.95f }, hs * 0.3f, hs * 0.22f, hs * 0.45f, shade({ 230, 170, 50, 255 }, 1.0f));
-    DrawCube({ hs * 0.25f, hs * 0.15f, hs * 0.75f }, hs * 0.1f, hs * 0.1f, hs * 0.05f, shade({ 20, 20, 20, 255 }, 1.0f)); // eyes
-    DrawCube({ -hs * 0.25f, hs * 0.15f, hs * 0.75f }, hs * 0.1f, hs * 0.1f, hs * 0.05f, shade({ 20, 20, 20, 255 }, 1.0f));
+    DrawCubeB({ 0, 0, hs * 0.25f }, hs * 0.8f, hs * 0.85f, hs * 1.05f, headC);
+    DrawCubeB({ 0, -hs * 0.15f, hs * 0.85f }, hs * 0.55f, hs * 0.5f, hs * 0.5f, shade(s.head, 0.9f));            // snout
+    if (s.beak) DrawCubeB({ 0, -hs * 0.05f, hs * 0.95f }, hs * 0.3f, hs * 0.22f, hs * 0.45f, shade({ 230, 170, 50, 255 }, 1.0f));
+    DrawCubeB({ hs * 0.25f, hs * 0.15f, hs * 0.75f }, hs * 0.1f, hs * 0.1f, hs * 0.05f, shade({ 20, 20, 20, 255 }, 1.0f)); // eyes
+    DrawCubeB({ -hs * 0.25f, hs * 0.15f, hs * 0.75f }, hs * 0.1f, hs * 0.1f, hs * 0.05f, shade({ 20, 20, 20, 255 }, 1.0f));
     if (s.ears) {
         const float flick = 8.0f * sinf(t * 2.3f + a.rng % 11);
         box({ hs * 0.32f, hs * 0.45f, 0 }, { hs * 0.18f, hs * 0.4f, hs * 0.08f }, 180.0f + 20.0f + flick, -20.0f, headC);
@@ -759,11 +761,11 @@ static void DrawAnimalModel(const Species& s, const Animal& a, ShadeFn shade) {
         rlPushMatrix();
         rlTranslatef(hip.x, hip.y, hip.z);
         rlRotatef(ang, 1, 0, 0);
-        DrawCube({ 0, -upper * 0.5f, 0 }, w * 1.15f, upper, w * 1.15f, legC);
+        DrawCubeB({ 0, -upper * 0.5f, 0 }, w * 1.15f, upper, w * 1.15f, legC);
         rlTranslatef(0, -upper, 0);
         rlRotatef(front ? -knee : knee, 1, 0, 0);
-        DrawCube({ 0, -lowerLen * 0.5f, 0 }, w, lowerLen, w, legC);
-        DrawCube({ 0, -lowerLen, w * 0.15f }, w * 1.1f, w * 0.5f, w * 1.4f, shade(s.head, 0.6f));   // hoof / foot
+        DrawCubeB({ 0, -lowerLen * 0.5f, 0 }, w, lowerLen, w, legC);
+        DrawCubeB({ 0, -lowerLen, w * 0.15f }, w * 1.1f, w * 0.5f, w * 1.4f, shade(s.head, 0.6f));   // hoof / foot
         rlPopMatrix();
     }
 }
@@ -787,7 +789,7 @@ void Animals_Draw3D(Scene& world) {
         const Vector3 u = body->dirToWorld(lup);
         const Vector3 r = Vector3CrossProduct(u, f); // right-handed (r, u, f)
         const float k = 0.6f + 0.4f * a.age;
-        const float light = 0.45f + 0.55f * std::clamp(Vector3DotProduct(sun, u) * 2.0f + 0.5f, 0.0f, 1.0f);
+        const float light = 1.0f; // lit by the instance batch shader (sun, shadows, headlamp)
         auto shade = [&](Color c, float m) { return Color{ (unsigned char)(c.r * light * m), (unsigned char)(c.g * light * m), (unsigned char)(c.b * light * m), 255 }; };
         Matrix m = { r.x, u.x, f.x, base.x, r.y, u.y, f.y, base.y, r.z, u.z, f.z, base.z, 0, 0, 0, 1 };
         rlPushMatrix();

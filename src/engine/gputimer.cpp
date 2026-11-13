@@ -10,27 +10,31 @@
 // glad's GL entry points, as raylib loads them (the same trick as viewmodel.cpp's glClear).
 extern "C" {
     typedef void (*PfnGenQueries)(int, unsigned int*);
-    typedef void (*PfnQueryCounter)(unsigned int, unsigned int);
+    typedef void (*PfnBeginQuery)(unsigned int, unsigned int);
+    typedef void (*PfnEndQuery)(unsigned int);
     typedef void (*PfnGetQueryObjectiv)(unsigned int, unsigned int, int*);
     typedef void (*PfnGetQueryObjectui64v)(unsigned int, unsigned int, uint64_t*);
     extern PfnGenQueries glad_glGenQueries;
-    extern PfnQueryCounter glad_glQueryCounter;
+    extern PfnBeginQuery glad_glBeginQuery;
+    extern PfnEndQuery glad_glEndQuery;
     extern PfnGetQueryObjectiv glad_glGetQueryObjectiv;
     extern PfnGetQueryObjectui64v glad_glGetQueryObjectui64v;
 }
 
+// Each segment between two marks is a GL_TIME_ELAPSED query: the GPU time the commands in it took to
+// execute. (Timestamp queries, used before, were stamped as the commands were submitted on this driver:
+// queued work showed up as "swap+poll" - 2.5 ms that glFinish proved was draw work, not presenting.)
 namespace {
-    constexpr unsigned int kTimestamp = 0x8E28, kResult = 0x8866, kResultAvailable = 0x8867;
+    constexpr unsigned int kTimeElapsed = 0x88BF, kResult = 0x8866, kResultAvailable = 0x8867;
     constexpr int kFrames = 4, kMarks = 24;
     struct Slot { unsigned int q[kMarks + 1] = {}; const char* name[kMarks + 1] = {}; int used = 0; bool pending = false; };
     Slot slots[kFrames];
     int cur = -1;
-    bool enabled = false, made = false;
+    bool enabled = false, made = false, open = false;
     struct Sum { const char* name; double ms; };
     std::vector<Sum> sums;
     long frames = 0;
     double totalMs = 0.0;
-    // CPU time between marks on the main thread (same names), for frames while enabled.
     std::vector<Sum> cpuSums;
     long cpuFrames = 0;
     std::chrono::steady_clock::time_point cpuLast;
@@ -40,28 +44,24 @@ namespace {
         v.push_back({ name, ms });
     }
 
-    bool Ready() { return glad_glGenQueries && glad_glQueryCounter && glad_glGetQueryObjectiv && glad_glGetQueryObjectui64v; }
+    bool Ready() { return glad_glGenQueries && glad_glBeginQuery && glad_glEndQuery && glad_glGetQueryObjectiv && glad_glGetQueryObjectui64v; }
 
     void Collect(Slot& s) {
         if (!s.pending) return;
         s.pending = false;
-        if (s.used < 2) return;
+        if (s.used < 1) return;
         int avail = 0;
         glad_glGetQueryObjectiv(s.q[s.used - 1], kResultAvailable, &avail);
         if (!avail) return; // dropped rather than waited for
-        std::vector<uint64_t> t(s.used);
-        for (int i = 0; i < s.used; ++i) glad_glGetQueryObjectui64v(s.q[i], kResult, &t[i]);
-        for (int i = 1; i < s.used; ++i) {
-            const double ms = (double)(t[i] - t[i - 1]) / 1e6;
-            Sum* hit = nullptr;
-            for (Sum& x : sums) if (strcmp(x.name, s.name[i]) == 0) { hit = &x; break; }
-            if (!hit) { sums.push_back({ s.name[i], 0.0 }); hit = &sums.back(); }
-            hit->ms += ms;
+        double frame = 0.0;
+        for (int i = 0; i < s.used; ++i) {
+            uint64_t ns = 0;
+            glad_glGetQueryObjectui64v(s.q[i], kResult, &ns);
+            const double ms = (double)ns / 1e6;
+            AddTo(sums, s.name[i], ms);
+            frame += ms;
         }
-        static uint64_t prevEnd = 0;
-        if (prevEnd && t[0] > prevEnd && t[0] - prevEnd < 100000000ull) AddTo(sums, "(between frames)", (double)(t[0] - prevEnd) / 1e6);
-        prevEnd = t[s.used - 1];
-        totalMs += (double)(t[s.used - 1] - t[0]) / 1e6;
+        totalMs += frame;
         ++frames;
     }
 }
@@ -71,24 +71,33 @@ void GpuTimer_Enable(bool on) { enabled = on && Ready(); }
 void GpuTimer_BeginFrame() {
     if (!enabled) return;
     if (!made) { for (Slot& s : slots) glad_glGenQueries(kMarks + 1, s.q); made = true; }
+    if (open && cur >= 0) { // the previous frame's last segment (after its last mark: the swap) ends here
+        rlDrawRenderBatchActive();
+        glad_glEndQuery(kTimeElapsed);
+        open = false;
+    }
     cur = (cur + 1) % kFrames;
     Collect(slots[cur]); // written kFrames frames ago
     Slot& s = slots[cur];
     s.used = 0;
     s.pending = true;
-    GpuTimer_Mark("start");
+    s.name[0] = "start";
+    glad_glBeginQuery(kTimeElapsed, s.q[0]);
+    open = true;
 }
 
 void GpuTimer_CpuMark(const char* name);
 void GpuTimer_Mark(const char* name) {
-    if (!enabled || cur < 0) return;
+    if (!enabled || cur < 0 || !open) return;
     Slot& s = slots[cur];
-    if (s.used > kMarks) return;
+    if (s.used >= kMarks) return;
     GpuTimer_CpuMark(name);
     rlDrawRenderBatchActive(); // raylib's batched draws belong to the pass that made them
-    s.name[s.used] = name;
-    glad_glQueryCounter(s.q[s.used], kTimestamp);
+    glad_glEndQuery(kTimeElapsed);
+    s.name[s.used] = name;          // this segment ends at the mark: charged to its name
     ++s.used;
+    s.name[s.used] = "(between frames)";
+    glad_glBeginQuery(kTimeElapsed, s.q[s.used]); // the next one runs until the next mark (or frame)
 }
 
 void GpuTimer_Print() {

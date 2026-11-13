@@ -1,5 +1,6 @@
 #include "fluid.h"
 #include "cubemarch.h"
+#include "gpucompute.h"
 #include "jobsystem.h"
 #include "object.h"
 #include "terraindeltas.h"
@@ -15,6 +16,7 @@
 #include <chrono>
 #include <cstdio>
 #include <cstring>
+#include <cstdlib>
 #include <cmath>
 #include <deque>
 #include <map>
@@ -61,6 +63,8 @@ struct Brick {
     bool published = false;
     bool changed = true;            // since the last publish
     uint8_t meshedKinds = 0;        // non-water kinds with a mesh now (remesh / drop them too)
+    int slot = -1;                  // GPU mode: its place in the GPU brick pool (-1: none yet)
+    bool upload = false;            // GPU mode: the whole brick (cells, flags, targets) goes up next tick
 };
 
 struct Site {
@@ -215,6 +219,7 @@ void Classify(const Site& s, Brick& b, const BodyRef& ref, std::vector<PondClaim
             }
         }
     b.ready = true;
+    b.upload = true; // GPU mode: the classified brick goes up whole
     b.keepFill = false;
     b.active = true; b.idle = 0; b.meshDirty = true; b.changed = true;
 }
@@ -237,6 +242,16 @@ inline bool Next(Brick* b, int x, int y, int z, int dx, int dy, int dz, Neighbou
 }
 
 void Touch(Brick* b) { b->active = true; b->idle = 0; b->meshDirty = true; b->changed = true; }
+
+// GPU mode (fluid on compute shaders): CPU-side changes to the mirror (buckets, pumps, springs, levelling) go
+// to the GPU as deltas next tick; bricks waiting for a full upload take theirs from the mirror instead.
+bool gpuMode = false;
+struct GpuDeltaRec { Brick* b; int i; int d; uint8_t kind; };
+std::vector<GpuDeltaRec> gpuDeltas;
+inline void GpuDelta(Brick* b, int i, int d) {
+    if (!gpuMode || d == 0 || b->slot < 0 || b->upload) return;
+    gpuDeltas.push_back({ b, i, d, (uint8_t)CellKind(b->flags[i]) });
+}
 
 // Kinds don't mix: fluid moves only into an empty cell or one of its own kind; an empty cell
 // takes the kind of what first flows in.
@@ -269,6 +284,7 @@ void StepSpring(Site& s, Site::Spring& sp) {
         if (add <= 0) return;
         TakeKind(b, i, (uint8_t)(sp.kind << kKindShift));
         b->fill[i] = (uint8_t)(b->fill[i] + add);
+        GpuDelta(b, i, add);
         sp.acc -= (float)add;
         Touch(b); ++dbgSrc;
         return;
@@ -439,7 +455,7 @@ void LevelSite(Site& s) {
                 const int di = (int)lroundf(d);
                 const int nf = std::clamp((int)now + di, 0, 255);
                 carry = d - (float)(nf - (int)now);
-                if (nf != c.b->fill[c.i]) { if (nf > 0) TakeKind(c.b, c.i, kind0); c.b->fill[c.i] = (uint8_t)nf; Touch(c.b); ++dbgLevel; }
+                if (nf != c.b->fill[c.i]) { if (nf > 0) TakeKind(c.b, c.i, kind0); GpuDelta(c.b, c.i, nf - (int)c.b->fill[c.i]); c.b->fill[c.i] = (uint8_t)nf; Touch(c.b); ++dbgLevel; }
             }
         }
     }
@@ -667,6 +683,7 @@ void ApplyCommand(const Command& c) {
             TakeKind(b, i, (uint8_t)(c.fluid << kKindShift));
             const int add = (int)std::min(left, 255.0f - b->fill[i]);
             b->fill[i] = (uint8_t)(b->fill[i] + add);
+            GpuDelta(b, i, add);
             left -= add;
             Touch(b);
         }
@@ -683,7 +700,7 @@ void ApplyCommand(const Command& c) {
                 if (!s->cell(ci + di, cj + dj, ck + dk, b, i) || b->fill[i] == 0) continue;
                 if (CellKind(b->flags[i]) != c.fluid) continue; // only the asked-for fluid
                 const int t = (int)std::min(want, (float)b->fill[i]);
-                if (!(b->flags[i] & kSource)) b->fill[i] = (uint8_t)(b->fill[i] - t);
+                if (!(b->flags[i] & kSource)) { b->fill[i] = (uint8_t)(b->fill[i] - t); GpuDelta(b, i, -t); }
                 want -= t;
                 Touch(b);
             }
@@ -742,7 +759,8 @@ void RunJob() {
     const int n = kSubsteps * std::max(1, speed.load());
     for (int k = 0; k < n; ++k) {
         ++stepCount;
-        for (auto& s : sites) StepSite(*s, (int)(stepCount & 3));
+        if (gpuMode) { for (auto& s : sites) for (Site::Spring& sp : s->springs) StepSpring(*s, sp); } // the GPU runs the cells (GpuTick)
+        else for (auto& s : sites) StepSite(*s, (int)(stepCount & 3));
         if (stepCount % kLevelEvery == 0) for (auto& s : sites) LevelSite(*s);
     }
     const auto t1 = std::chrono::steady_clock::now();
@@ -813,6 +831,191 @@ void RunJob() {
     }
 }
 
+// ---------------------------------------------------------------------------------------------
+// GPU mode: the cells live in a GPU brick pool; once a tick (main thread, no job running) the last
+// tick's results come back for the bricks that changed, new and reclassified bricks and the CPU's deltas
+// go up, and the next substeps run as compute dispatches (resources/compute/fluid_step.comp).
+// ---------------------------------------------------------------------------------------------
+
+struct GpuState {
+    bool init = false, ok = false;
+    ComputeProgram step, delta;
+    ComputeBuffer a, b, nbrs, list, inS, flags, deltas;
+    int capacity = 0;                      // bricks
+    std::vector<Brick*> owner;             // slot -> brick
+    std::vector<Site*> ownerSite;
+    std::vector<int> lastList;             // slots processed by the last dispatch
+    int lastN = 0;                         // substeps in it
+    bool nbrDirty = false;
+} G;
+
+constexpr unsigned kCellsPerBrick = (unsigned)B3;
+
+bool GpuInit() {
+    if (G.init) return G.ok;
+    G.init = true;
+    G.ok = Compute_Available() && G.step.load("resources/compute/fluid_step.comp") && G.delta.load("resources/compute/fluid_delta.comp");
+    if (G.ok) {
+        G.list.create(64 * 4); G.deltas.create(64 * 16); G.inS.create(64 * 4); G.flags.create(64 * 4); G.nbrs.create(64 * 24);
+        G.a.create(64 * kCellsPerBrick * 4); G.b.create(64 * kCellsPerBrick * 4);
+        G.capacity = 64;
+        G.owner.assign(64, nullptr); G.ownerSite.assign(64, nullptr);
+        const std::vector<unsigned> zeros(64, 0u);
+        G.flags.upload(zeros.data(), 64 * 4);
+    }
+    TraceLog(LOG_WARNING, "Fluid: %s", G.ok ? "GPU compute" : "CPU (no compute)");
+    return G.ok;
+}
+
+void GpuGrow(int need) {
+    if (need <= G.capacity) return;
+    int cap = G.capacity;
+    while (cap < need) cap *= 2;
+    auto grow = [](ComputeBuffer& buf, unsigned bytesOld, unsigned bytesNew) {
+        ComputeBuffer nb; nb.create(bytesNew);
+        rlCopyShaderBuffer(nb.id, buf.id, 0, 0, bytesOld);
+        buf.destroy(); buf = nb;
+    };
+    grow(G.a, G.capacity * kCellsPerBrick * 4, cap * kCellsPerBrick * 4);
+    grow(G.b, G.capacity * kCellsPerBrick * 4, cap * kCellsPerBrick * 4);
+    grow(G.flags, G.capacity * 4, cap * 4);
+    G.inS.resize(cap * 4);
+    G.nbrs.resize(cap * 24);
+    const std::vector<unsigned> zeros(cap - G.capacity, 0u);
+    G.flags.upload(zeros.data(), (unsigned)zeros.size() * 4, G.capacity * 4);
+    G.owner.resize(cap, nullptr); G.ownerSite.resize(cap, nullptr);
+    G.capacity = cap;
+    G.nbrDirty = true;
+}
+
+void GpuUploadBrick(const Brick& b) {
+    static std::vector<unsigned> packed(kCellsPerBrick);
+    for (int i = 0; i < B3; ++i) packed[i] = b.fill[i] | ((unsigned)b.flags[i] << 8) | ((unsigned)b.target[i] << 16);
+    G.a.upload(packed.data(), kCellsPerBrick * 4, b.slot * kCellsPerBrick * 4);
+    G.b.upload(packed.data(), kCellsPerBrick * 4, b.slot * kCellsPerBrick * 4);
+}
+
+void GpuTick(int n) {
+    // 1. Results of the last dispatch: which bricks changed (and want neighbours), then their cells.
+    if (!G.lastList.empty()) {
+        std::vector<unsigned> flags(G.capacity);
+        G.flags.download(flags.data(), G.capacity * 4);
+        static std::vector<unsigned> cells(kCellsPerBrick);
+        static const int d[6][3] = { { -1, 0, 0 }, { 1, 0, 0 }, { 0, -1, 0 }, { 0, 1, 0 }, { 0, 0, -1 }, { 0, 0, 1 } };
+        for (int slot : G.lastList) {
+            Brick* br = G.owner[slot];
+            Site* site = G.ownerSite[slot];
+            if (!br || !site) continue;
+            const unsigned fl = flags[slot];
+            // A brick the CPU reclassified since that dispatch (upload pending) or is reclassifying now (not ready:
+            // a worker reads its fill) keeps the CPU state: the GPU's older fill would put water back into cells
+            // that became solid (PR #129 review).
+            if ((fl & 1u) && br->ready && !br->upload) {
+                G.a.download(cells.data(), kCellsPerBrick * 4, slot * kCellsPerBrick * 4);
+                for (int i = 0; i < B3; ++i) {
+                    br->fill[i] = (uint8_t)(cells[i] & 255u);
+                    br->flags[i] = (uint8_t)((br->flags[i] & ~kKindMask) | (((cells[i] >> 8) & 255u) & kKindMask));
+                }
+                Touch(br);
+                for (Brick* o : br->nbr) if (o) { o->active = true; o->idle = 0; }
+            } else if (br->active && (br->idle += G.lastN) > kSleepSteps) {
+                br->active = false;
+            }
+            for (int face = 0; face < 6; ++face)
+                if (fl & (2u << face)) site->ensure(br->bi + d[face][0], br->bj + d[face][1], br->bk + d[face][2]);
+        }
+        std::fill(flags.begin(), flags.end(), 0u);
+        G.flags.upload(flags.data(), G.capacity * 4);
+        G.lastList.clear();
+    }
+    // 2. Slots for classified bricks; whole bricks up.
+    int used = 0;
+    for (Brick* o : G.owner) used += o ? 1 : 0;
+    for (auto& s : sites)
+        for (auto& kv : s->bricks) {
+            Brick& br = *kv.second;
+            if (!br.ready) continue;
+            if (br.slot < 0) {
+                GpuGrow(used + 1);
+                int slot = 0;
+                while (G.owner[slot]) ++slot;
+                br.slot = slot; G.owner[slot] = &br; G.ownerSite[slot] = s.get();
+                ++used;
+                G.nbrDirty = true;
+                br.upload = true;
+            }
+            if (br.upload) { GpuUploadBrick(br); br.upload = false; br.active = true; br.idle = 0; G.nbrDirty = true; }
+        }
+    if (G.nbrDirty) {
+        std::vector<int> nb(G.capacity * 6, -1);
+        for (int slot = 0; slot < G.capacity; ++slot)
+            if (Brick* br = G.owner[slot])
+                for (int f = 0; f < 6; ++f) nb[slot * 6 + f] = (br->nbr[f] && br->nbr[f]->ready && br->nbr[f]->slot >= 0) ? br->nbr[f]->slot : -1;
+        G.nbrs.upload(nb.data(), G.capacity * 24);
+        G.nbrDirty = false;
+    }
+    // 3. The CPU's deltas (summed per cell).
+    if (!gpuDeltas.empty()) {
+        struct D { unsigned cell; int delta; unsigned kind; unsigned pad; };
+        std::unordered_map<unsigned, D> merged;
+        for (const GpuDeltaRec& r : gpuDeltas) {
+            if (r.b->slot < 0) continue;
+            const unsigned cell = (unsigned)r.b->slot * kCellsPerBrick + (unsigned)r.i;
+            D& dd = merged[cell];
+            dd.cell = cell; dd.delta += r.d; dd.kind = r.kind;
+        }
+        gpuDeltas.clear();
+        std::vector<D> list;
+        for (auto& kv : merged) if (kv.second.delta) list.push_back(kv.second);
+        if (!list.empty()) {
+            if (G.deltas.bytes < list.size() * sizeof(D)) G.deltas.resize((unsigned)(list.size() * 2 * sizeof(D)));
+            G.deltas.upload(list.data(), (unsigned)(list.size() * sizeof(D)));
+            G.delta.use();
+            G.delta.setUint("count", (unsigned)list.size());
+            G.a.bind(0); G.deltas.bind(1); G.flags.bind(2);
+            G.delta.dispatch(((unsigned)list.size() + 63) / 64);
+            for (const D& dd : list) if (Brick* br = G.owner[dd.cell / kCellsPerBrick]) { br->active = true; br->idle = 0; }
+        }
+    }
+    // 4. The bricks to run: the awake ones and their neighbours (flux only between bricks both in the set).
+    std::vector<unsigned> inS(G.capacity, 0u);
+    std::vector<int> list;
+    for (int slot = 0; slot < G.capacity; ++slot) {
+        Brick* br = G.owner[slot];
+        if (!br || !br->active) continue;
+        if (!inS[slot]) { inS[slot] = 1; list.push_back(slot); }
+        for (Brick* o : br->nbr) if (o && o->slot >= 0 && !inS[o->slot]) { inS[o->slot] = 1; list.push_back(o->slot); }
+    }
+    if (list.empty()) return;
+    G.inS.upload(inS.data(), G.capacity * 4);
+    if (G.list.bytes < list.size() * 4) G.list.resize((unsigned)(list.size() * 8));
+    G.list.upload(list.data(), (unsigned)(list.size() * 4));
+    // 5. n substeps: vertical A -> B, sideways B -> A.
+    G.step.use();
+    G.step.setUint("count", (unsigned)list.size());
+    int visc[8], spread[8];
+    for (int k = 0; k < 8; ++k) { visc[k] = kindVisc[k]; spread[k] = kindMinSpread[k]; }
+    rlSetUniform(G.step.uniform("visc"), visc, RL_SHADER_UNIFORM_INT, 8);
+    rlSetUniform(G.step.uniform("minSpread"), spread, RL_SHADER_UNIFORM_INT, 8);
+    G.nbrs.bind(2); G.list.bind(3); G.inS.bind(4); G.flags.bind(5);
+    const unsigned bricks = (unsigned)list.size(); // 2D dispatch: 64 groups of 64 cells per brick, one row per brick
+    for (int k = 0; k < n; ++k) {
+        G.step.setInt("pass", 0); G.a.bind(0); G.b.bind(1); G.step.dispatch(kCellsPerBrick / 64u, bricks);
+        G.step.setInt("pass", 1); G.b.bind(0); G.a.bind(1); G.step.dispatch(kCellsPerBrick / 64u, bricks);
+    }
+    G.lastList = list;
+    G.lastN = n;
+}
+
+void GpuReset() {
+    if (G.capacity > 0) { std::vector<unsigned> zeros(G.capacity, 0u); G.flags.upload(zeros.data(), G.capacity * 4); } // no stale face requests on reused slots
+    for (Brick*& o : G.owner) o = nullptr;
+    for (Site*& o : G.ownerSite) o = nullptr;
+    G.lastList.clear();
+    gpuDeltas.clear();
+    G.nbrDirty = true;
+}
+
 } // namespace
 
 // ---------------------------------------------------------------------------------------------
@@ -822,6 +1025,7 @@ void RunJob() {
 void Fluid::Reset() {
     WaitIdle();
     std::lock_guard<std::mutex> lock(simMx);
+    GpuReset(); // the GPU pool forgets its bricks (before the sites holding them go)
     // Ponds taken over come back as static water (a load re-claims the ones it stored).
     for (auto& s : sites)
         if (Planetoid* p = Planetoid::find(s->body))
@@ -903,7 +1107,9 @@ void Fluid::LoadKinds(const char* path) {
     }
     for (int i = 0; i < 8; ++i) {
         const Kind& k = kinds[std::min(i, (int)kinds.size() - 1)];
-        kindVisc[i] = k.viscosity; kindMinSpread[i] = k.minSpread;
+        // The GPU step conserves water only with viscosity >= 4 (four neighbours may each take diff / visc).
+        if (k.viscosity < 4 && i < (int)kinds.size()) logger.logf("[Fluid] %s: viscosity %d below 4, using 4\n", k.id.c_str(), k.viscosity);
+        kindVisc[i] = std::max(k.viscosity, 4); kindMinSpread[i] = k.minSpread;
     }
 }
 int Fluid::KindCount() { return (int)kinds.size(); }
@@ -948,6 +1154,9 @@ void Fluid::Update(Scene& world, float dt) {
     { std::lock_guard<std::mutex> c(cmdMx); work = !commands.empty(); }
     {
         std::lock_guard<std::mutex> lock(simMx); // free: no job is running
+        static bool decided = false;
+        if (!decided) { decided = true; gpuMode = !getenv("FLUID_CPU") && GpuInit(); }
+        if (gpuMode && !G.lastList.empty()) work = true; // the last dispatch's results still to read back
         for (auto& s : sites) {
             if (!s->pending.empty()) work = true;
             for (auto& kv : s->bricks) if (kv.second->active || kv.second->meshDirty) { work = true; break; }
@@ -962,6 +1171,9 @@ void Fluid::Update(Scene& world, float dt) {
         for (uint64_t id : ids)
             if (Planetoid* p = Planetoid::find(id)) refs[id] = { p->field, p->edits, dynamic_cast<const PlanetField*>(p->field.get()) };
     }
+    // GPU substeps: twice the CPU's - the order-independent GPU step moves water one cell a substep, where the
+    // CPU's in-place sweep carried it several cells along the sweep.
+    if (gpuMode) { std::lock_guard<std::mutex> lock(simMx); GpuTick(2 * kSubsteps * std::max(1, speed.load())); }
     (void)world;
     running = true;
     WorldJobs().submit(-0.5f, [] { RunJob(); running = false; });

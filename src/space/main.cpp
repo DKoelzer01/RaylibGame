@@ -36,6 +36,8 @@
 #include "particles.h"
 #include "ambience.h"
 #include "machinemodels.h"
+#include "gpucompute.h"
+#include "instancebatch.h"
 #include "navigation.h"
 #include "viewmodel.h"
 #include "farming.h"
@@ -478,11 +480,14 @@ int main(int argc, char** argv)
     if (msaa) SetConfigFlags(FLAG_MSAA_4X_HINT);
     bool nativeWindow = false; // --native-window: a bench in the game's own window (borderless, monitor-sized), uncapped
     for (int i = 1; i < argc; ++i) if (std::string(argv[i]) == "--native-window") nativeWindow = true;
+    bool exclusive = false; // --fullscreen: exclusive fullscreen (bypasses the desktop compositor)
+    for (int i = 1; i < argc; ++i) if (std::string(argv[i]) == "--fullscreen") { exclusive = true; nativeWindow = true; }
     if (!bench || nativeWindow) {
         SetConfigFlags(FLAG_WINDOW_RESIZABLE); // Allow window resizing
         SetConfigFlags(FLAG_WINDOW_UNDECORATED); // Remove window decorations for a cleaner look
         SetConfigFlags(FLAG_WINDOW_HIGHDPI); // Enable High DPI support
-        InitWindow(GetMonitorWidth(0), GetMonitorHeight(0), "My first RAYLIB program!");
+        if (exclusive) SetConfigFlags(FLAG_FULLSCREEN_MODE);
+        InitWindow(GetMonitorWidth(0), GetMonitorHeight(0), "RaylibGame");
         // No VSync: cap at the monitor's refresh rate instead (VSync on a 60 Hz desktop locked the game to 60).
         SetTargetFPS(bench ? std::max(0, benchFps) : benchFps >= 0 ? benchFps : std::max(60, GetMonitorRefreshRate(GetCurrentMonitor())));
     } else {
@@ -498,6 +503,30 @@ int main(int argc, char** argv)
     itemDB.load("resources/data/items.txt", "resources/data/recipes.txt");
     Fluid::LoadKinds("resources/data/fluids.txt"); // water, crude oil, ... (fluid.h)
     ItemIcons_Init(); // one painted icon per item (itemicons.h)
+    for (int i = 1; i < argc; ++i)
+        if (std::string(argv[i]) == "--test-compute") {
+            // GPU compute self-test: 1M values through a compute shader, read back and checked.
+            const unsigned n = 1u << 20;
+            std::vector<unsigned> v(n);
+            for (unsigned k = 0; k < n; ++k) v[k] = k * 3u;
+            ComputeProgram prog; ComputeBuffer buf;
+            bool ok = Compute_Available() && prog.load("resources/compute/selftest.comp");
+            if (ok) {
+                buf.create(n * 4, v.data());
+                prog.use(); prog.setUint("count", n); buf.bind(0);
+                const double t0 = GetTime();
+                prog.dispatch(n / 64);
+                std::vector<unsigned> r(n);
+                buf.download(r.data(), n * 4);
+                const double ms = (GetTime() - t0) * 1000.0;
+                int bad = 0;
+                for (unsigned k = 0; k < n; ++k) if (r[k] != k * 3u * 2u + k) ++bad;
+                ok = bad == 0;
+                printf("bench: compute: GL %s, 1M values dispatched and read back in %.2f ms, %d wrong\n", Compute_Available() ? "4.3" : "3.3", ms, bad);
+                buf.destroy(); prog.unload();
+            }
+            printf("bench: compute: %s\n", ok ? "PASS" : "FAIL (no compute)");
+        }
     for (int i = 1; i < argc; ++i)
         if (std::string(argv[i]) == "--shot-icons") printf("bench: icons: %d items -> bench_icons.png (%s)\n", (int)itemDB.items().size(), ItemIcons_SaveSheet("bench_icons.png") ? "saved" : "FAILED");
     GameSave_Register();
@@ -533,7 +562,7 @@ int main(int argc, char** argv)
     bool spawnLoad = false;        // raised by a spawn or teleport (not entering the game): no minimum time
     int loadFrames = 0;
     int seenSpawns = 0;
-    world.onDraw3D = [&world] { Farm_Draw3D(world); Animals_Draw3D(world); Machines_Draw3D(world); Weather_Draw3D(world); Particles_Draw(world); if (!ship.piloted && !buildTool.active && !Rocket_Boarded()) TerrainTool_Draw3D(); BuildTool_Draw3D(world); };
+    world.onDraw3D = [&world] { Farm_Draw3D(world); Animals_Draw3D(world); Machines_Draw3D(world); InstanceBatch_Flush(world); Weather_Draw3D(world); Particles_Draw(world); if (!ship.piloted && !buildTool.active && !Rocket_Boarded()) TerrainTool_Draw3D(); BuildTool_Draw3D(world); };
     terrainTool.till = [&world](Planetoid& body, Vector3 ground) { return Farm_Till(world, body, ground); }; // a shovel's RMB
     terrainTool.swapHeld = [](const std::string& from, const std::string& to, const char* ev) { // a bucket filled or emptied
         const int s = Hotbar_Selected();
@@ -4720,6 +4749,8 @@ int main(int argc, char** argv)
                 rlImGuiEnd();
                 GpuTimer_Mark("imgui");
             }
+            rlDrawRenderBatchActive(); // the batched 2D (HUD text, bars, minimap) flushes here, not inside EndDrawing
+            GpuTimer_Mark("2d-flush");
         EndDrawing();
         GpuTimer_Mark("swap+poll");
         PROFILE_FRAME();
