@@ -67,6 +67,9 @@ namespace {
         int ringCap = 0, ringPos = 0;
         std::vector<GLuint> queued;
         ComputeProgram cull;
+        struct CullLocs { GLint count, base, rot, scale, offset, texPeriod, useFrustum, planes, useColumn, colPoint, colDir, colRadius, overlap; } cl{}; // looked up once
+        struct DrawLocs { GLuint shader; GLint arena, viewProj, model; };
+        std::vector<DrawLocs> drawLocs; // per draw shader (hot reload makes new ids)
         int draws = 0, flushes = 0;
     } S;
 
@@ -147,6 +150,12 @@ namespace {
             return false;
         }
         if (!S.cull.load("resources/compute/chunk_cull.comp")) { logger.logf("[Arena] chunk_cull.comp failed: per-chunk draws\n"); return false; }
+        {
+            const GLuint p = S.cull.id;
+            auto L = [p](const char* n) { return glGetUniformLocation(p, n); };
+            S.cl = { L("count"), L("base"), L("rot"), L("scale"), L("offset"), L("texPeriod"), L("useFrustum"), L("planes"),
+                     L("useColumn"), L("colPoint"), L("colDir"), L("colRadius"), L("overlap") };
+        }
         const int v0 = 4 << 20, i0 = 24 << 20; // about a planet walk's working set (5.7 M vertices seen); grows as needed
         S.pos = Regrow(0, 0, (size_t)v0 * kPosBytes);
         S.attr = Regrow(0, 0, (size_t)v0 * sizeof(Attr));
@@ -283,29 +292,33 @@ int TerrainArena_Flush(unsigned int shaderId, bool positionsOnly, const ArenaBod
     glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 1, S.list); // whole buffer: a range bind needs GL_SHADER_STORAGE_BUFFER_OFFSET_ALIGNMENT-aligned offsets (it failed, and the pass culled a stale list)
     glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 2, S.indirect);
     glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 3, S.records);
-    glUniform1ui(glGetUniformLocation(prog, "count"), (GLuint)n);
-    glUniform1ui(glGetUniformLocation(prog, "base"), (GLuint)base);
-    glUniformMatrix3dv(glGetUniformLocation(prog, "rot"), 1, GL_TRUE, body.rot);
-    glUniform1d(glGetUniformLocation(prog, "scale"), body.scale);
-    glUniform3d(glGetUniformLocation(prog, "offset"), body.offset[0], body.offset[1], body.offset[2]);
-    glUniform1d(glGetUniformLocation(prog, "texPeriod"), body.texPeriod);
+    glUniform1ui(S.cl.count, (GLuint)n);
+    glUniform1ui(S.cl.base, (GLuint)base);
+    glUniformMatrix3dv(S.cl.rot, 1, GL_TRUE, body.rot);
+    glUniform1d(S.cl.scale, body.scale);
+    glUniform3d(S.cl.offset, body.offset[0], body.offset[1], body.offset[2]);
+    glUniform1d(S.cl.texPeriod, body.texPeriod);
     extern bool frustumCullingEnabled;
     const bool useFrustum = cull.frustum && frustumCullingEnabled;
-    glUniform1i(glGetUniformLocation(prog, "useFrustum"), useFrustum ? 1 : 0);
-    if (useFrustum) glUniform4fv(glGetUniformLocation(prog, "planes"), 6, (const float*)cull.frustum->planes);
-    glUniform1i(glGetUniformLocation(prog, "useColumn"), cull.colRadius > 0.0f ? 1 : 0);
-    glUniform3f(glGetUniformLocation(prog, "colPoint"), cull.colPoint.x, cull.colPoint.y, cull.colPoint.z);
-    glUniform3f(glGetUniformLocation(prog, "colDir"), cull.colDir.x, cull.colDir.y, cull.colDir.z);
-    glUniform1f(glGetUniformLocation(prog, "colRadius"), cull.colRadius);
-    glUniform1f(glGetUniformLocation(prog, "overlap"), (CHUNK_SIZE + 1.0f) / CHUNK_SIZE);
+    glUniform1i(S.cl.useFrustum, useFrustum ? 1 : 0);
+    if (useFrustum) glUniform4fv(S.cl.planes, 6, (const float*)cull.frustum->planes);
+    glUniform1i(S.cl.useColumn, cull.colRadius > 0.0f ? 1 : 0);
+    glUniform3f(S.cl.colPoint, cull.colPoint.x, cull.colPoint.y, cull.colPoint.z);
+    glUniform3f(S.cl.colDir, cull.colDir.x, cull.colDir.y, cull.colDir.z);
+    glUniform1f(S.cl.colRadius, cull.colRadius);
+    glUniform1f(S.cl.overlap, (CHUNK_SIZE + 1.0f) / CHUNK_SIZE);
     glDispatchCompute((GLuint)((n + 63) / 64), 1, 1);
     glMemoryBarrier(GL_COMMAND_BARRIER_BIT | GL_VERTEX_ATTRIB_ARRAY_BARRIER_BIT);
 
     // Draw.
     const Matrix viewProj = MatrixMultiply(rlGetMatrixModelview(), rlGetMatrixProjection());
-    const GLint locArena = glGetUniformLocation(shaderId, "arenaDraw");
-    const GLint locVP = glGetUniformLocation(shaderId, "matViewProj");
-    const GLint locModel = glGetUniformLocation(shaderId, "matModel");
+    const State::DrawLocs* dl = nullptr;
+    for (const auto& d : S.drawLocs) if (d.shader == shaderId) dl = &d;
+    if (!dl) {
+        S.drawLocs.push_back({ shaderId, glGetUniformLocation(shaderId, "arenaDraw"), glGetUniformLocation(shaderId, "matViewProj"), glGetUniformLocation(shaderId, "matModel") });
+        dl = &S.drawLocs.back();
+    }
+    const GLint locArena = dl->arena, locVP = dl->viewProj, locModel = dl->model;
     glUseProgram(shaderId);
     if (locArena >= 0) glUniform1i(locArena, 1);
     if (locVP >= 0) rlSetUniformMatrix(locVP, viewProj);

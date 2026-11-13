@@ -7,7 +7,8 @@
 // plane and 0 at infinity, and GL_GREATER. Float depth is close to logarithmic that way: centimetres up
 // close and metres at 100 km+ in one range, so the far / mid / near passes with their own depth ranges
 // and the depth clears between them are not needed (Scene::drawScene draws one pass when this is on).
-// Then the colour is blitted to the window; the HUD and the hands draw on the window as before.
+// Then the colour is resolved to a single-sample texture and drawn to the window by a fullscreen pass (works
+// whatever the window's format and sample count); the HUD and the hands draw on the window as before.
 //
 // Off (old passes) without clip control or the framebuffer, or with RAYLIBGAME_REVZ=0.
 
@@ -15,7 +16,7 @@
 
 bool SceneTarget_Available();
 // Binds the target (created / resized to the window), sets reverse-Z depth state and clears it.
-void SceneTarget_Begin(Color clear);
+bool SceneTarget_Begin(Color clear);   // false: not available (or the target failed): draw the old passes
 // Replaces the current projection (after BeginMode3D) with the infinite reversed one of the same field
 // of view, aspect and near plane.
 void SceneTarget_ApplyProjection();

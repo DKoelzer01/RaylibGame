@@ -228,7 +228,7 @@ void Chunk::drawChunk(const RenderContext& ctx, const Matrix& m) {
     const Vector3 texOrigin = { wrap(o.x), wrap(o.y), wrap(o.z) };
     const Vector3 clip = { clipMax.x - o.x, clipMax.y - o.y, clipMax.z - o.z }; // 1e30 stays "no clip"
     if (arena.valid()) {
-        TerrainArena_Queue(arena, clip); // normally queued by the body without a model (Planetoid::draw); culled on the GPU
+        return; // arena chunks are queued and drawn by their body (Planetoid::draw), never one at a time
     } else if (ctx.batch) {
         ctx.batch->setUniform(ctx.chunkOriginLoc, &texOrigin, SHADER_UNIFORM_VEC3);
         ctx.batch->setUniform(ctx.chunkClipLoc, &clip, SHADER_UNIFORM_VEC3);
@@ -260,8 +260,8 @@ void Chunk::drawWater(const RenderContext& ctx, const Matrix& m) {
 void Chunk::drawChunkDepth(const RenderContext& ctx, const Matrix& m) {
     if (!isActive || !hasMesh() || !ctx.depthMaterial) return;
     if (!visible(ctx, m)) return;
-    if (arena.valid()) TerrainArena_Queue(arena, { 1e30f, 1e30f, 1e30f });
-    else if (ctx.batch) ctx.batch->draw(mesh, m);
+    if (arena.valid()) return; // queued and drawn by the body (Planetoid::drawDepthOnly)
+    if (ctx.batch) ctx.batch->draw(mesh, m);
     else DrawMesh(mesh, *ctx.depthMaterial, m);
 }
 

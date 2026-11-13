@@ -103,11 +103,11 @@ uint sideFlux(uint aSlot, int ax, int ay, int az, uint a, uint bSlot, int bx, in
 }
 
 void main() {
-    uint gid = gl_GlobalInvocationID.x;
-    uint li = gid / 4096u;
+    // 2D dispatch (64 x bricks): any number of bricks in one dispatch (x stays far under GL's 65535 minimum).
+    uint li = gl_WorkGroupID.y;
     if (li >= count) return;
     uint slot = list[li];
-    uint local = gid % 4096u;
+    uint local = gl_WorkGroupID.x * 64u + gl_LocalInvocationID.x;
     int x = int(local % 16u), y = int((local / 16u) % 16u), z = int(local / 256u);
     int g = int(slot * 4096u + local);
     uint c = inC[g];
