@@ -47,6 +47,7 @@ C++ raylib 5.5 planetoid survival game. `src/engine` (static lib), `src/space` -
 - Plan 2 (early game, done): https://claude.ai/artifact/RL22kZ7VBMugAFgGRPS3cE
 - Plan 3 (Terra tiers, space): https://claude.ai/artifact/XVw45AC6vwYitbdhaeP2xL - M21-M24 done (M24 on PR #28).
 - Plan 4 (flowing water): https://claude.ai/artifact/27xL5j1zkirSe8pDZgPz59
+- Plan 6 (GPU terrain generation + GPU-driven drawing, awaiting approval): https://claude.ai/artifact/VJdKtUZEpBg5uefnqewRyZ
 - Plan 5 (art, life, world variety): https://claude.ai/artifact/5igt2VrsTyNhZ3BZ94teHX - A animal models/AI, B biomes,
   C Minecraft-style 3D terrain, D authored textures await the user's answers; the light items are done on art-pass-5.
 - `CurrentIssues.md` (untracked, the user's playtest list): erase lines once fully resolved; mark
@@ -83,7 +84,8 @@ World and rendering
 - Clouds: a shell 1.5 km up in atmosphere.fs, in the planet frame, drifting with the wind; cover
   never below ~0.22 so a few are always out.
 - Perf: chunks draw nearest-first (early-Z), CPU copies of chunk meshes are freed after upload.
-  Remaining frame time is mostly present/composition, not our passes.
+  Scene::KickGpu (glFlush) at pass boundaries: without it CPU and GPU ran serialized (+25% FPS). GPU timer = elapsed queries.
+  (Old note "remaining time is present/composition" was wrong: it was CPU/GPU serialization.)
 - Terrain lattice 0.25 m (kVoxelSize; RAYLIBGAME_VOXEL_1M builds the old 1 m one): digs carve exactly the
   previewed sphere (--test-dig-shape IoU 0.85). Delta chunks hold sparse 4^3 bricks; regions are RGN5.
 - Shadows (2026-11-12): two cascades (near +-32 m, far +-200 m, 2048 each), bilinear PCF, normal-offset
