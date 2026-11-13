@@ -30,6 +30,9 @@ if(USE_SYSTEM_RAYLIB)
 else()
     set(BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
     set(BUILD_GAMES OFF CACHE BOOL "" FORCE)
+    # OpenGL 4.3 core (Plan: GPU compute for the fluid sim and terrain): compute shaders and SSBOs through
+    # rlgl. The game checks rlGetVersion() and keeps CPU paths for 3.3-only GPUs.
+    set(OPENGL_VERSION "4.3" CACHE STRING "" FORCE)
     FetchContent_Declare(raylib
         GIT_REPOSITORY https://github.com/raysan5/raylib.git
         GIT_TAG 5.5

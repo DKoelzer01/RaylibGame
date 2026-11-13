@@ -36,6 +36,7 @@
 #include "particles.h"
 #include "ambience.h"
 #include "machinemodels.h"
+#include "gpucompute.h"
 #include "navigation.h"
 #include "viewmodel.h"
 #include "farming.h"
@@ -501,6 +502,30 @@ int main(int argc, char** argv)
     itemDB.load("resources/data/items.txt", "resources/data/recipes.txt");
     Fluid::LoadKinds("resources/data/fluids.txt"); // water, crude oil, ... (fluid.h)
     ItemIcons_Init(); // one painted icon per item (itemicons.h)
+    for (int i = 1; i < argc; ++i)
+        if (std::string(argv[i]) == "--test-compute") {
+            // GPU compute self-test: 1M values through a compute shader, read back and checked.
+            const unsigned n = 1u << 20;
+            std::vector<unsigned> v(n);
+            for (unsigned k = 0; k < n; ++k) v[k] = k * 3u;
+            ComputeProgram prog; ComputeBuffer buf;
+            bool ok = Compute_Available() && prog.load("resources/compute/selftest.comp");
+            if (ok) {
+                buf.create(n * 4, v.data());
+                prog.use(); prog.setUint("count", n); buf.bind(0);
+                const double t0 = GetTime();
+                prog.dispatch(n / 64);
+                std::vector<unsigned> r(n);
+                buf.download(r.data(), n * 4);
+                const double ms = (GetTime() - t0) * 1000.0;
+                int bad = 0;
+                for (unsigned k = 0; k < n; ++k) if (r[k] != k * 3u * 2u + k) ++bad;
+                ok = bad == 0;
+                printf("bench: compute: GL %s, 1M values dispatched and read back in %.2f ms, %d wrong\n", Compute_Available() ? "4.3" : "3.3", ms, bad);
+                buf.destroy(); prog.unload();
+            }
+            printf("bench: compute: %s\n", ok ? "PASS" : "FAIL (no compute)");
+        }
     for (int i = 1; i < argc; ++i)
         if (std::string(argv[i]) == "--shot-icons") printf("bench: icons: %d items -> bench_icons.png (%s)\n", (int)itemDB.items().size(), ItemIcons_SaveSheet("bench_icons.png") ? "saved" : "FAILED");
     GameSave_Register();
