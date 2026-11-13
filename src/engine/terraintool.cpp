@@ -16,10 +16,6 @@
 #include <map>
 #include <string>
 
-// The depth test is flipped to draw the mining sphere only where it lies behind the terrain (inside
-// the material): opengl32 exports glDepthFunc itself (GL 1.1), so no loader is needed.
-extern "C" __declspec(dllimport) void __stdcall glDepthFunc(unsigned int func);
-static constexpr unsigned int kGlGreater = 0x0204, kGlLequal = 0x0203;
 
 TerrainToolSettings terrainTool;
 
