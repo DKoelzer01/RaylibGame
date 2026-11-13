@@ -8,6 +8,7 @@
 
 #include <raylib.h>
 #include <raymath.h>
+#include <rlgl.h>
 #include <algorithm>
 #include <cstdio>
 #include <ctime>
@@ -137,11 +138,16 @@ bool Blueprint_Keys(Planetoid* body, Plot* lookingAt) {
     return false;
 }
 
-void Blueprint_DrawGhost(Planetoid& body, const Plot& frame, Int3 origin, bool ok) {
+void Blueprint_DrawGhost(Planetoid& body, const Plot& frame, Int3 origin, bool ok, const DVec3& renderOrigin) {
     const Blueprint* bp = Blueprint_Active();
     if (!bp) return;
     std::vector<std::pair<Int3, CellShape>> fp;
     const Color col = ok ? Fade(SKYBLUE, 0.8f) : Fade(RED, 0.8f);
+    // In plot coordinates under the plot's double-precision model, as its blocks are drawn (#271).
+    rlDrawRenderBatchActive();
+    rlPushMatrix();
+    rlMultMatrixf(MatrixToFloat(frame.cellModel(body, renderOrigin)));
+    struct PopAtEnd { ~PopAtEnd() { rlDrawRenderBatchActive(); rlPopMatrix(); } } popAtEnd;
     for (const Part& p : bp->parts) {
         Part q = p;
         q.origin = { origin.x + p.origin.x, origin.y + p.origin.y, origin.z + p.origin.z };
@@ -150,7 +156,7 @@ void Blueprint_DrawGhost(Planetoid& body, const Plot& frame, Int3 origin, bool o
             // Edges of the cell (12 lines).
             Vector3 v[8];
             for (int i = 0; i < 8; ++i)
-                v[i] = body.toWorld(frame.toBody({ (c.first.x + (i & 1)) * kCellSize, (c.first.y + ((i >> 1) & 1)) * kCellSize, (c.first.z + ((i >> 2) & 1)) * kCellSize }));
+                v[i] = { (c.first.x + (i & 1)) * kCellSize, (c.first.y + ((i >> 1) & 1)) * kCellSize, (c.first.z + ((i >> 2) & 1)) * kCellSize };
             const int e[12][2] = { { 0, 1 }, { 2, 3 }, { 4, 5 }, { 6, 7 }, { 0, 2 }, { 1, 3 }, { 4, 6 }, { 5, 7 }, { 0, 4 }, { 1, 5 }, { 2, 6 }, { 3, 7 } };
             for (auto& ed : e) DrawLine3D(v[ed[0]], v[ed[1]], col);
         }

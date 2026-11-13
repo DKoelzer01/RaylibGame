@@ -103,6 +103,9 @@ public:
     // Plot space <-> body-local.
     Vector3 toPlot(Vector3 bodyLocal) const;
     Vector3 toBody(Vector3 plotPos) const;
+    // Plot coordinates (metres along east, up, north from the origin) to render space, built in double the way the
+    // plot meshes are (lines and boxes drawn under it stay on the blocks as the planet turns, #271).
+    Matrix cellModel(const Planetoid& body, const DVec3& renderOrigin) const;
     Int3 cellAt(Vector3 plotPos) const;
 
     // The cells a part would occupy, with each cell's shape (in plot cell space).
