@@ -3868,7 +3868,11 @@ int main(int argc, char** argv)
                         static const char* shots[4] = { "bench_hands.png", "bench_hands_pickaxe.png", "bench_hands_axe.png", "bench_hands_shovel.png" };
                         static const char* next[4] = { "stone_pickaxe", "iron_axe", "steel_shovel", "" };
                         TakeScreenshot(shots[vmPhase - 4]);
-                        if (next[vmPhase - 4][0]) { inventory.add(next[vmPhase - 4], 1); terrainTool.heldTool = next[vmPhase - 4]; }
+                        if (next[vmPhase - 4][0]) { // into the hand as a player does: on a hotbar key, pressed (setting heldTool alone drew bare hands)
+                            inventory.add(next[vmPhase - 4], 1);
+                            Hotbar_Bind(vmPhase - 3, next[vmPhase - 4]);
+                            Hotbar_Press(vmPhase - 3, false);
+                        }
                         vmPhase++; vmStart = GetTime();
                     } else if (vmPhase == 8) {
                         const bool pass = vmStillMax < 1e-5f && vmMaxX <= 0.0101f && vmMaxY <= 0.0151f && vmMaxX > 0.003f && vmSigns >= 4; // a side swing every 1.8 m walked: about 5 in 10 m

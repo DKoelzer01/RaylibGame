@@ -52,7 +52,7 @@ namespace {
         const Vector3 h = Vector3Scale(size, 0.5f);
         Vector3 v[8];
         for (int i = 0; i < 8; ++i) v[i] = Vector3Transform({ (i & 1) ? h.x : -h.x, (i & 2) ? h.y : -h.y, (i & 4) ? h.z : -h.z }, m);
-        static const int faces[6][4] = { { 0, 2, 6, 4 }, { 1, 5, 7, 3 }, { 0, 4, 5, 1 }, { 2, 3, 7, 6 }, { 0, 1, 3, 2 }, { 4, 6, 7, 5 } };
+        static const int faces[6][4] = { { 0, 4, 6, 2 }, { 1, 3, 7, 5 }, { 0, 1, 5, 4 }, { 2, 6, 7, 3 }, { 0, 2, 3, 1 }, { 4, 5, 7, 6 } }; // counter-clockwise from outside (#273: they were inside out)
         static const Vector3 normals[6] = { { -1, 0, 0 }, { 1, 0, 0 }, { 0, -1, 0 }, { 0, 1, 0 }, { 0, 0, -1 }, { 0, 0, 1 } };
         const Vector3 lightDir = Vector3Normalize({ -0.45f, 0.8f, 0.4f });
         Matrix rot = m; rot.m12 = rot.m13 = rot.m14 = 0.0f;
@@ -156,23 +156,24 @@ void Viewmodel_Draw(Scene& world) {
         auto onHandle = [&](Vector3 p, Vector3 rotDeg = { 0, 0, 0 }) { return MatrixMultiply(At(p, rotDeg), handle); };
         switch (tool.type) {
             case ToolType::Pickaxe:
-                Box(onHandle({ 0, 0.2f, 0 }), { 0.32f, 0.04f, 0.045f }, head, light);
-                Box(onHandle({ 0.17f, 0.18f, 0 }, { 0, 0, -25 }), { 0.06f, 0.03f, 0.035f }, head, light);
-                Box(onHandle({ -0.17f, 0.18f, 0 }, { 0, 0, 25 }), { 0.06f, 0.03f, 0.035f }, head, light);
+                Box(onHandle({ 0, 0.2f, 0 }), { 0.045f, 0.04f, 0.32f }, head, light); // the head runs along the view (#273)
+                Box(onHandle({ 0, 0.18f, 0.17f }, { 25, 0, 0 }), { 0.035f, 0.03f, 0.06f }, head, light);
+                Box(onHandle({ 0, 0.18f, -0.17f }, { -25, 0, 0 }), { 0.035f, 0.03f, 0.06f }, head, light);
                 break;
             case ToolType::Axe:
-                Box(onHandle({ 0.06f, 0.17f, 0 }), { 0.12f, 0.1f, 0.02f }, head, light);
+                Box(onHandle({ 0, 0.17f, -0.06f }), { 0.02f, 0.1f, 0.12f }, head, light); // the blade points away (#273)
                 break;
             case ToolType::Shovel:
                 Box(onHandle({ 0, 0.27f, 0 }), { 0.15f, 0.17f, 0.018f }, head, light);
                 break;
             case ToolType::Hoe: // a flat blade at right angles to the top of the handle
-                Box(onHandle({ 0, 0.2f, 0.06f }), { 0.14f, 0.025f, 0.12f }, head, light);
+                Box(onHandle({ 0, 0.2f, -0.06f }), { 0.14f, 0.025f, 0.12f }, head, light); // the blade reaches away from you (#273)
                 break;
             default: break;
         }
     }
 
+    rlDrawRenderBatchActive(); // the quads are batched: draw them before culling comes back on (#273)
     rlEnableBackfaceCulling();
     EndMode3D();
     rlSetClipPlanes(nearDefault, farDefault);
