@@ -29,6 +29,7 @@
 #include "camera.h"
 #include "survival.h"
 #include "telescope.h"
+#include "glcaps.h"
 #include "buildtool.h"
 #include "progression_test.h"
 #include "menus.h"
@@ -540,6 +541,7 @@ int main(int argc, char** argv)
 #endif
         return 1;
     }
+    GL_Caps(); // log the GL version and the optional 4.4-4.6 paths available (#286)
     SetExitKey(KEY_NULL);
     SetTraceLogLevel(LOG_WARNING); // Set log level to warning to reduce output noise
     rlSetClipPlanes(0.5, 60000.0); // space scale: see other bodies kilometres away (0.2 m near walls: see the frame loop)
