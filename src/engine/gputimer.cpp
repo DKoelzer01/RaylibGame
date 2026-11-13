@@ -5,7 +5,9 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <string>
 #include <vector>
+#include "utils/logger.h"
 
 // glad's GL entry points, as raylib loads them (the same trick as viewmodel.cpp's glClear).
 extern "C" {
@@ -127,4 +129,21 @@ void GpuTimer_PrintCpu() {
     printf("bench: cpu per frame (avg of %ld):", cpuFrames);
     for (const Sum& x : cpuSums) { printf(" %s %.2f", x.name, x.ms / cpuFrames); total += x.ms; }
     printf(" | total %.2f ms\n", total / cpuFrames);
+}
+
+void GpuTimer_LogAndReset(const char* tag) {
+    // In-game perf log (#204): the same per-pass averages as the bench lines, to log.txt, then start over.
+    std::string g = "[Perf] ", c = "[Perf] ";
+    char buf[128];
+    snprintf(buf, sizeof(buf), "%s gpu per frame (%ld):", tag, frames); g += buf;
+    for (const Sum& x : sums) { snprintf(buf, sizeof(buf), " %s %.2f", x.name, frames ? x.ms / frames : 0.0); g += buf; }
+    snprintf(buf, sizeof(buf), " | total %.2f ms\n", frames ? totalMs / frames : 0.0); g += buf;
+    double total = 0.0;
+    snprintf(buf, sizeof(buf), "%s cpu per frame (%ld):", tag, cpuFrames); c += buf;
+    for (const Sum& x : cpuSums) { snprintf(buf, sizeof(buf), " %s %.2f", x.name, cpuFrames ? x.ms / cpuFrames : 0.0); c += buf; total += x.ms; }
+    snprintf(buf, sizeof(buf), " | total %.2f ms\n", cpuFrames ? total / cpuFrames : 0.0); c += buf;
+    logger.logf("%s", g.c_str());
+    logger.logf("%s", c.c_str());
+    sums.clear(); frames = 0; totalMs = 0.0;
+    cpuSums.clear(); cpuFrames = 0;
 }

@@ -158,6 +158,9 @@ int main(int argc, char** argv)
     bool benchSaveLoad = false;  // --test-saveload: then save, reload from disk, and bench the reloaded world
     double benchWalkSeconds = 0.0; // --test-walk S: spawn on the surface and auto-walk forward for S seconds
     bool benchWalkMode = false;    // --bench-walk: the player walks forward for the whole bench (frame time while streaming)
+    bool benchStandMode = false;   // --bench-stand: as --bench-walk, but standing still at the start (#204: walking vs standing, same view)
+    bool cursorLocked = false;     // DisableCursor while playing (#205)
+    bool perfLog = false;          // --perf-log: per-pass CPU/GPU averages to log.txt every 5 s in normal play, tagged moving/still (#204)
     float benchFlySpeed = 0.0f;    // --bench-fly V: the camera flies over body 0 at V m/s through the bench (LOD streaming)
     float benchFlyAlt = 1e9f;      // --bench-fly-alt A: fly at A m relative to sea level instead (negative: underwater, looking up)
     bool hasSpawnDir = false;      // --spawn-dir x y z: where --test-walk / --test-stand spawn on body 0
@@ -336,6 +339,8 @@ int main(int argc, char** argv)
         if (std::string(argv[i]) == "--no-eye-smooth") player.eyeSmoothing = false;
         if (std::string(argv[i]) == "--test-planet-walk" && i + 1 < argc) { walkTargetM = atof(argv[i + 1]); benchWalkSeconds = 600.0; } // gate: 1 km on the planet
         if (std::string(argv[i]) == "--bench-walk") benchWalkMode = true;
+        if (std::string(argv[i]) == "--bench-stand") { benchWalkMode = true; benchStandMode = true; }
+        if (std::string(argv[i]) == "--perf-log") perfLog = true;
         if (std::string(argv[i]) == "--bench-fly" && i + 1 < argc) benchFlySpeed = (float)atof(argv[i + 1]);
         if (std::string(argv[i]) == "--bench-fly-alt" && i + 1 < argc) benchFlyAlt = (float)atof(argv[i + 1]);
         if (std::string(argv[i]) == "--spawn-dir" && i + 3 < argc) { hasSpawnDir = true; spawnDir = Vector3Normalize({ (float)atof(argv[i + 1]), (float)atof(argv[i + 2]), (float)atof(argv[i + 3]) }); }
@@ -777,7 +782,7 @@ int main(int argc, char** argv)
         if (!benchAtSave) world.camera.position = Vector3Add(world.camera.target, benchCamOffset);
         world.debugDraw = startWithOverlay;
         player.flyMode = benchWalkSeconds <= 0.0 && !benchWalkMode; // the bench drives the camera directly unless walking
-        player.autoWalk = benchWalkMode;                              // --bench-walk: walk through the measured window
+        player.autoWalk = benchWalkMode && !benchStandMode;           // --bench-walk: walk through the measured window (--bench-stand: stand)
         player.flyFollow = false;                                     // the bench drives the camera itself
         benchStart = -1.0; // starts once the world has finished streaming in
     }
@@ -4516,25 +4521,35 @@ int main(int argc, char** argv)
                 break;
             }
         } else if (!IsWindowFocused()) {
-            ShowCursor();
+            if (cursorLocked) { EnableCursor(); cursorLocked = false; }
             BeginDrawing();
             EndDrawing();
             continue;
-        } else if (gameState == 1) {
-            if (DebugUI_IsOpen() || GameUI_InventoryOpen() || Nav_MapOpen()) ShowCursor(); else HideCursor();
+        }
+        {
+            // The cursor (#204, #205): locked while playing (DisableCursor: hidden, raw relative motion, no
+            // warping) and free in menus and UIs, switched only when that changes. It used to be hidden and warped
+            // back to the centre with SetMousePosition every frame: a blocking OS call per frame (benches skip it,
+            // so they never showed the frame-rate drop while moving and looking) that also lost the motion between
+            // warps (choppy look at low frame rates).
+            const bool wantLock = !bench && gameState == 1 && !(DebugUI_IsOpen() || GameUI_InventoryOpen() || Nav_MapOpen());
+            if (wantLock != cursorLocked) {
+                if (wantLock) DisableCursor(); else EnableCursor();
+                cursorLocked = wantLock;
+            }
         }
         if (!bench && IsKeyPressed(KEY_F1)) {
             DebugUI_Toggle();
-            if (!DebugUI_IsOpen()) SetMousePosition(GetScreenWidth()/2, GetScreenHeight()/2);
+            // (relocking the cursor centres it)
         }
         if (!bench && gameState == 1 && IsKeyPressed(KEY_TAB)) {
             GameUI_ToggleInventory();
-            if (!GameUI_InventoryOpen()) SetMousePosition(GetScreenWidth()/2, GetScreenHeight()/2);
+            // (relocking the cursor centres it)
         }
         // M: the map (aboard a rocket M is its orbit map).
         if (!bench && gameState == 1 && IsKeyPressed(KEY_M) && !Rocket_Boarded() && !GameUI_InventoryOpen() && !DebugUI_IsOpen()) {
             Nav_ToggleMap();
-            if (!Nav_MapOpen()) SetMousePosition(GetScreenWidth()/2, GetScreenHeight()/2);
+            // (relocking the cursor centres it)
         }
         const bool uiOpen = DebugUI_IsOpen() || GameUI_InventoryOpen() || Nav_MapOpen();
         if (!bench && !telescope.active && !DebugUI_IsOpen()) world.camera.fovy = settings.fov; // Settings (the telescope zooms from it)
@@ -4783,8 +4798,8 @@ int main(int argc, char** argv)
             // Esc in game pauses (unless it closes the inventory or build mode first); the pause menu
             // handles Esc itself (resume, or back out of Settings).
             if (gameState == 1 && m.action == MenuAction::None && IsKeyPressed(KEY_ESCAPE)) {
-                if (Nav_MapOpen()) { Nav_CloseMap(); SetMousePosition(GetScreenWidth() / 2, GetScreenHeight() / 2); }
-                else if (GameUI_InventoryOpen()) { GameUI_ToggleInventory(); SetMousePosition(GetScreenWidth() / 2, GetScreenHeight() / 2); }
+                if (Nav_MapOpen()) Nav_CloseMap();
+                else if (GameUI_InventoryOpen()) GameUI_ToggleInventory();
                 else if (buildTool.active) buildTool.active = false;
                 else { ShowCursor(); Menu_ResetPause(); gameState = 2; justPaused = true; }
             }
@@ -4795,7 +4810,7 @@ int main(int argc, char** argv)
         GpuTimer_Mark("pre-draw (uploads, updates)");
         BeginDrawing();
             ClearBackground(crackCheck ? MAGENTA : BLACK); // --crack-check: holes in the terrain show magenta
-            GpuTimer_Enable(benchMeasuring); GpuTimer_Mark("clear");
+            GpuTimer_Enable(benchMeasuring || perfLog); GpuTimer_Mark("clear");
             GpuTimer_CpuMark("begin-draw");
             if (gameState == 0) {
                 pendingMenu = Menu_Main();
@@ -4838,7 +4853,18 @@ int main(int argc, char** argv)
                         loading = false; spawnLoad = false;
                     }
                 }
-                if (!bench && !uiOpen) SetMousePosition(GetScreenWidth()/2, GetScreenHeight()/2);
+                // (No per-frame cursor warp: the cursor is locked with DisableCursor while playing, #204 / #205.)
+                if (perfLog) {
+                    // --perf-log (#204): every 5 s, the per-pass averages to log.txt, tagged by how the player moved (average
+                    // speed, and mouse-look turning) so "standing" and "moving" can be compared from a real session.
+                    static double perfT0 = GetTime(), perfSpeed = 0.0, perfLook = 0.0; static long perfN = 0;
+                    perfSpeed += Vector3Length(player.velocity); perfLook += Vector2Length(GetMouseDelta()); ++perfN;
+                    if (GetTime() - perfT0 >= 5.0) {
+                        const double sp = perfSpeed / std::max(1L, perfN), lk = perfLook / std::max(1L, perfN);
+                        GpuTimer_LogAndReset(TextFormat("%s (speed %.1f m/s, look %.1f px/frame, %d FPS)", sp > 0.5 || lk > 0.5 ? "MOVING" : "still", sp, lk, GetFPS()));
+                        perfT0 = GetTime(); perfSpeed = perfLook = 0.0; perfN = 0;
+                    }
+                }
             } else if (gameState == 2) {
                 world.drawScene(gameState);
                 world.drawUI(gameState);

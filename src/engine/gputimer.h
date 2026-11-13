@@ -14,5 +14,7 @@ void GpuTimer_Print();                 // "bench: gpu ..." averages per pass, th
 void GpuTimer_CpuFrameStart();          // top of the frame loop
 void GpuTimer_CpuMark(const char* name);
 void GpuTimer_PrintCpu();
+// In-game perf log (#204, --perf-log): the averages so far to log.txt (tagged), then reset.
+void GpuTimer_LogAndReset(const char* tag);
 
 #endif
