@@ -267,6 +267,7 @@ int main(int argc, char** argv)
     int wallPhase = 0; bool wallOk = true;
     double wallStart = 0.0, wallMaxStep = 0.0, wallMaxStepAt = 0.0;
     float wallMaxImpact = 0.0f, wallMinHealth = 100.0f, wallMaxSpeed = 0.0f;
+    bool benchLedge = false; int ledgePhase = 0, ledgePass = 0; bool ledgeOk = true, ledgeAir = false; double ledgeStart = 0.0, ledgeAirStart = 0.0; float ledgeV0 = 0.0f, ledgeExcess = 0.0f; float ledgeWalk0 = 0.0f;
     DVec3 wallLast{};
     bool benchTrees = false;       // --test-trees: walk into a tree trunk
     bool benchChop = false;        // --test-chop: fell a tree, save/reload, regrow
@@ -373,6 +374,7 @@ int main(int argc, char** argv)
         if (std::string(argv[i]) == "--test-moon") benchMoon = true;
         if (std::string(argv[i]) == "--test-hole") benchHole = true;
         if (std::string(argv[i]) == "--test-wall") benchWall = true;
+        if (std::string(argv[i]) == "--test-ledge") benchLedge = true; // walk and sprint off a pit edge (#240)
         if (std::string(argv[i]) == "--test-menus") benchMenus = true;
         if (std::string(argv[i]) == "--test-water") benchWater = true;
         if (std::string(argv[i]) == "--test-flyfollow") benchFlyFollow = true;
@@ -1319,6 +1321,47 @@ int main(int argc, char** argv)
                                wallMaxStep, wallMaxStepAt, wallMaxSpeed, wallMaxImpact, wallMinHealth, survival.deaths, pass ? "PASS" : "FAIL");
                         printf("bench: wall: %s\n", wallOk && pass ? "PASS" : "FAIL");
                         benchWall = false;
+                    }
+                } else if (benchLedge && (ledgePhase > 0 || WorldIdle())) {
+                    // --test-ledge (#240): walk, then sprint, off the sharp lip of a dug pit. In the first
+                    // 0.2 s of the fall the downward speed must come from gravity alone (g*t): the edge
+                    // must not throw the player down.
+                    Planetoid* p = dynamic_cast<Planetoid*>(world.objects[0].get());
+                    const double t = GetTime() - ledgeStart;
+                    const Vector3 feet = (player.position - world.renderOrigin).toFloat();
+                    if (ledgePhase == 0) {
+                        player.spawnOn(world, *p, StartSpawnDir(*p));
+                        ledgeWalk0 = player.walkSpeed;
+                        ledgeStart = GetTime();
+                        ledgePhase = 1;
+                    } else if (ledgePhase == 1 && t > 1.5 && player.grounded) {
+                        if (ledgePass == 0) {
+                            const Vector3 flat = Vector3Normalize(Vector3Subtract(player.forward, Vector3Scale(player.up, Vector3DotProduct(player.forward, player.up))));
+                            player.forward = flat;
+                            for (int k = 0; k < 5; ++k) // a pit ~5 m wide and deep, its lip 2.5 m ahead
+                                ApplyTerrainEdit(*p, TerrainEdit{ p->toLocal(Vector3Add(feet, Vector3Add(Vector3Scale(flat, 5.0f), Vector3Scale(player.up, -1.5f * k)))), 2.5f, -10.0f });
+                        }
+                        player.walkSpeed = ledgeWalk0 * (ledgePass == 1 ? player.runMultiplier : 1.0f);
+                        player.autoWalk = true;
+                        ledgeAir = false; ledgeExcess = 0.0f;
+                        ledgePhase = 2; ledgeStart = GetTime();
+                    } else if (ledgePhase == 2) {
+                        const float vUp = Vector3DotProduct(Vector3Subtract(player.velocity, player.grounded ? Vector3{ 0, 0, 0 } : p->surfaceVelocity(feet)), player.up);
+                        if (!ledgeAir && !player.grounded) { ledgeAir = true; ledgeAirStart = GetTime(); ledgeV0 = vUp; }
+                        if (ledgeAir) {
+                            const float ta = (float)(GetTime() - ledgeAirStart);
+                            if (ta <= 0.2f) ledgeExcess = std::max(ledgeExcess, -vUp - player.gravity * ta);
+                        }
+                        if ((ledgeAir && GetTime() - ledgeAirStart > 0.3) || t > 6.0) {
+                            player.autoWalk = false;
+                            player.walkSpeed = ledgeWalk0;
+                            const bool pass = ledgeAir && ledgeExcess < 0.5f;
+                            printf("bench: ledge %s: left the ground at %.2f m/s vertical, worst extra downward speed in 0.2 s %.2f m/s: %s\n",
+                                   ledgePass == 0 ? "walk" : "sprint", ledgeV0, ledgeExcess, pass ? "PASS" : "FAIL");
+                            ledgeOk = ledgeOk && pass;
+                            if (++ledgePass < 2) { ledgePhase = 0; }
+                            else { printf("bench: ledge: %s\n", ledgeOk ? "PASS" : "FAIL"); benchLedge = false; }
+                        }
                     }
                 } else if (benchRivers && (riverPhase > 0 || WorldIdle())) {
                     // --test-rivers: the drainage network. Along every river the water level never rises
@@ -4481,7 +4524,7 @@ int main(int argc, char** argv)
                         }
                         benchWalkSeconds = 0.0;
                     }
-                } else if ((WorldIdle() && benchDigStrokes == 0 && !benchPaint && !benchSaveLoad && benchWalkSeconds <= 0.0 && benchMineStrokes == 0 && minePhase != 2 && benchFlySeconds <= 0.0 && !benchSuffocate && benchOrbitSeconds <= 0.0 && !benchRide && !benchPark && !benchGravity && !benchPrecision && !benchMantle && !benchAirJump && !benchMoon && !benchHole && !benchWall && !benchMenus && !benchWater && !benchFlyFollow && !benchHotbar && !benchInventory && !benchMap && !benchViewmodel && !benchQuests && !benchHunger && !benchFarm && !benchAnimals && !benchThreats && benchShotTabs == 0 && !benchForest && !benchFlow && !benchPond && !benchBucket && !benchPump && !benchTerrain && !benchShadow && !benchParticles && !benchBiomes && !benchOil && !benchSpring && !benchShotAnimals && !benchShotMachines && benchShotBiomes < 0 && !benchFarForest && !benchRecipes && !benchWeather && !benchDecor && !benchMaterials && !benchDamage && !benchCrafting && !benchSuit && !benchTools && !benchRivers && !benchRing && !benchRocket && !benchStation && !benchBlueprint && !benchSmallBody && !benchTrees && !benchChop && benchPersist == 0 && benchBuild == 0 && benchFactory == 0 && !benchProgression) || GetTime() > 600.0) {
+                } else if ((WorldIdle() && benchDigStrokes == 0 && !benchPaint && !benchSaveLoad && benchWalkSeconds <= 0.0 && benchMineStrokes == 0 && minePhase != 2 && benchFlySeconds <= 0.0 && !benchSuffocate && benchOrbitSeconds <= 0.0 && !benchRide && !benchPark && !benchGravity && !benchPrecision && !benchMantle && !benchAirJump && !benchMoon && !benchHole && !benchWall && !benchLedge && !benchMenus && !benchWater && !benchFlyFollow && !benchHotbar && !benchInventory && !benchMap && !benchViewmodel && !benchQuests && !benchHunger && !benchFarm && !benchAnimals && !benchThreats && benchShotTabs == 0 && !benchForest && !benchFlow && !benchPond && !benchBucket && !benchPump && !benchTerrain && !benchShadow && !benchParticles && !benchBiomes && !benchOil && !benchSpring && !benchShotAnimals && !benchShotMachines && benchShotBiomes < 0 && !benchFarForest && !benchRecipes && !benchWeather && !benchDecor && !benchMaterials && !benchDamage && !benchCrafting && !benchSuit && !benchTools && !benchRivers && !benchRing && !benchRocket && !benchStation && !benchBlueprint && !benchSmallBody && !benchTrees && !benchChop && benchPersist == 0 && benchBuild == 0 && benchFactory == 0 && !benchProgression) || GetTime() > 600.0) {
                     benchStart = GetTime();
                     printf("bench: world ready after %.2f s (%d chunks, avg build %.2f ms of which sampling %.2f ms, %d worker threads)\n",
                         GetWorldStats().lastGenerationSeconds, GetWorldStats().chunks, GetWorldStats().avgBuildMs, GetWorldStats().avgSampleMs, GetWorldStats().workerThreads);
