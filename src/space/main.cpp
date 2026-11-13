@@ -269,6 +269,7 @@ int main(int argc, char** argv)
     float wallMaxImpact = 0.0f, wallMinHealth = 100.0f, wallMaxSpeed = 0.0f;
     bool benchLedge = false; int ledgePhase = 0, ledgePass = 0; bool ledgeOk = true, ledgeAir = false; double ledgeStart = 0.0, ledgeAirStart = 0.0; float ledgeV0 = 0.0f, ledgeExcess = 0.0f; float ledgeWalk0 = 0.0f;
     bool benchTor = false; int torPhase = 0, torHeading = 0, torFlicker = 0, torPops = 0; double torStart = 0.0, torAirAt = -1.0, torMaxStep = 0.0; float torMaxUp = 0.0f; Vector3 torDir{}; DVec3 torLast{}; bool torWasGrounded = true; // --test-tor (#242)
+    bool benchMachines = false; int machPhase = 0; double machStart = 0.0; // --test-machines (#193 #194 #229)
     DVec3 wallLast{};
     bool benchTrees = false;       // --test-trees: walk into a tree trunk
     bool benchChop = false;        // --test-chop: fell a tree, save/reload, regrow
@@ -377,6 +378,7 @@ int main(int argc, char** argv)
         if (std::string(argv[i]) == "--test-wall") benchWall = true;
         if (std::string(argv[i]) == "--test-ledge") benchLedge = true; // walk and sprint off a pit edge (#240)
         if (std::string(argv[i]) == "--test-tor") benchTor = true; // walk across a low (beach) tor crown, logging collision pops (#242)
+        if (std::string(argv[i]) == "--test-machines") benchMachines = true; // fuel slot, crafts consumed at the end, the boiler's water and heat
         if (std::string(argv[i]) == "--test-menus") benchMenus = true;
         if (std::string(argv[i]) == "--test-water") benchWater = true;
         if (std::string(argv[i]) == "--test-flyfollow") benchFlyFollow = true;
@@ -1323,6 +1325,74 @@ int main(int argc, char** argv)
                                wallMaxStep, wallMaxStepAt, wallMaxSpeed, wallMaxImpact, wallMinHealth, survival.deaths, pass ? "PASS" : "FAIL");
                         printf("bench: wall: %s\n", wallOk && pass ? "PASS" : "FAIL");
                         benchWall = false;
+                    }
+                } else if (benchMachines && (machPhase > 0 || WorldIdle())) {
+                    // --test-machines: the fuel slot (#194), inputs consumed when a craft ends and a craft cancelled when
+                    // its input is taken (#193), the boiler's water, heat and banked fire without a cable (#229).
+                    Planetoid* p = dynamic_cast<Planetoid*>(world.objects[0].get());
+                    if (machPhase == 0) {
+                        player.spawnOn(world, *p, StartSpawnDir(*p));
+                        machPhase = 1; machStart = GetTime();
+                    } else if (machPhase == 1 && GetTime() - machStart > 1.5 && player.grounded) {
+                        bool ok = true;
+                        auto check = [&](bool c, const char* what) { printf("bench: machines: %s: %s\n", what, c ? "ok" : "FAILED"); ok = ok && c; };
+                        const Vector3 feet = (player.position - world.renderOrigin).toFloat();
+                        const Vector3 flat = Vector3Normalize(Vector3Subtract(player.forward, Vector3Scale(player.up, Vector3DotProduct(player.forward, player.up))));
+                        if (!p->plots) p->plots = std::make_unique<PlotSet>();
+                        Plot* plot = p->plots->plotFor(p->toLocal(Vector3Add(Vector3Add(feet, Vector3Scale(flat, 12.0f)), Vector3Scale(player.up, 2.0f))), 0.0f, true);
+                        const int fire = plot->place({ PartType::Campfire, { 0, 0, 0 }, 0 });
+                        const int kiln = plot->place({ PartType::Kiln, { 4, 0, 0 }, 0 });
+                        const int boiler = plot->place({ PartType::Boiler, { 8, 0, 0 }, 0 });
+                        Factory::Sync(world);
+                        Factory::WaitTicks(3);
+                        Factory::SetSpeed(20);
+                        auto view = [&](int part) { Factory::View(p->id, plot->id, part); Factory::WaitTicks(2); Factory::Sync(world); return Factory::View(p->id, plot->id, part); };
+                        auto inputCount = [](const MachineView& v, const char* item) { int n = 0; for (const auto& s : v.inSlots) if (s.first == item) n += s.second; return n; };
+                        auto outputCount = [](const MachineView& v, const char* item) { int n = 0; for (const auto& s : v.outSlots) if (s.first == item) n += s.second; return n; };
+                        // #194: logs in a campfire (it also chars them): the first load lights the empty fuel slot, the next goes to the inputs.
+                        Factory::Seed(p->id, plot->id, fire, "oak_log", 5);
+                        MachineView v = view(fire);
+                        check(v.hasFuelSlot && v.fuelSlot.first == "oak_log" && v.fuelSlot.second >= 4 && inputCount(v, "oak_log") == 0, "logs light an empty fuel slot");
+                        Factory::Seed(p->id, plot->id, fire, "oak_log", 3);
+                        v = view(fire);
+                        check(inputCount(v, "oak_log") > 0 || outputCount(v, "charcoal") > 0, "more logs go to the inputs (to char), not the fuel");
+                        // #193: kiln, ore in, coal as fuel; mid-craft the ore is still in the input slot; taking it cancels the craft.
+                        Factory::Seed(p->id, plot->id, kiln, "coal", 4);
+                        Factory::Seed(p->id, plot->id, kiln, "iron_ore", 1);
+                        Factory::WaitTicks(60);
+                        v = view(kiln);
+                        check(v.fuelSlot.first == "coal" && v.duration > 0 && v.progress > 0 && inputCount(v, "iron_ore") == 1, "mid-craft the ore is still in the input slot");
+                        Factory::TakeSlot(p->id, plot->id, kiln, 0, 0);
+                        Factory::WaitTicks(400);
+                        v = view(kiln);
+                        check(v.duration == 0 && outputCount(v, "iron_ingot") == 0, "taking the ore out cancels the craft");
+                        Factory::Seed(p->id, plot->id, kiln, "iron_ore", 1);
+                        Factory::WaitTicks(400);
+                        v = view(kiln);
+                        check(outputCount(v, "iron_ingot") == 1 && inputCount(v, "iron_ore") == 0, "a finished craft takes its ore and makes an ingot");
+                        // #229: a boiler without a cable: fuel alone does nothing (no water); a bucket of water lights it, it heats
+                        // up, then banks its fire (no load) and the empty bucket comes back.
+                        Factory::Seed(p->id, plot->id, boiler, "coal", 8);
+                        Factory::WaitTicks(40);
+                        v = view(boiler);
+                        check(v.status == MachineStatus::NoWater && v.heat == 0 && v.waterMax > 0, "fuel without water: no water, cold");
+                        inventory.add("water_bucket", 1);
+                        const int buckets0 = inventory.count("bucket");
+                        if (inventory.remove("water_bucket", 1)) Factory::Insert(p->id, plot->id, boiler, "water_bucket", 1);
+                        Factory::WaitTicks(200);
+                        v = view(boiler);
+                        const int heatMid = v.heat;
+                        check(heatMid > 0 && heatMid < v.heatMax && v.water < 1000 && inventory.count("bucket") == buckets0 + 1, "a bucket of water: it heats up; the empty bucket comes back");
+                        Factory::WaitTicks(400);
+                        v = view(boiler);
+                        const int water1 = v.water;
+                        Factory::WaitTicks(400);
+                        v = view(boiler);
+                        printf("bench: machines: boiler heat %d / %d, water %d -> %d L over 400 banked ticks, status %s\n", v.heat, v.heatMax, water1, v.water, MachineStatusName(v.status));
+                        check(v.heat == v.heatMax && v.status == MachineStatus::NoLoad && water1 - v.water <= 60, "hot with no load: the fire is banked (about 1 tick in 8)");
+                        Factory::SetSpeed(1);
+                        printf("bench: machines: %s\n", ok ? "PASS" : "FAIL");
+                        benchMachines = false;
                     }
                 } else if (benchTor && (torPhase > 0 || WorldIdle())) {
                     // --test-tor (#242): the lowest-lying tor near the start (beach country, 4-40 m up), the player
@@ -4657,7 +4727,7 @@ int main(int argc, char** argv)
                         }
                         benchWalkSeconds = 0.0;
                     }
-                } else if ((WorldIdle() && benchDigStrokes == 0 && !benchPaint && !benchSaveLoad && benchWalkSeconds <= 0.0 && benchMineStrokes == 0 && minePhase != 2 && benchFlySeconds <= 0.0 && !benchSuffocate && benchOrbitSeconds <= 0.0 && !benchRide && !benchPark && !benchGravity && !benchPrecision && !benchMantle && !benchAirJump && !benchMoon && !benchHole && !benchWall && !benchLedge && !benchTor && !benchMenus && !benchWater && !benchFlyFollow && !benchHotbar && !benchInventory && !benchMap && !benchViewmodel && !benchQuests && !benchHunger && !benchFarm && !benchAnimals && !benchThreats && benchShotTabs == 0 && !benchForest && !benchFlow && !benchPond && !benchBucket && !benchPump && !benchTerrain && !benchShadow && !benchParticles && !benchBiomes && !benchOil && !benchSpring && !benchShotAnimals && !benchShotMachines && benchShotBiomes < 0 && !benchFarForest && !benchRecipes && !benchWeather && !benchDecor && !benchMaterials && !benchDamage && !benchCrafting && !benchSuit && !benchTools && !benchRivers && !benchRing && !benchRocket && !benchStation && !benchBlueprint && !benchSmallBody && !benchTrees && !benchChop && benchPersist == 0 && benchBuild == 0 && benchFactory == 0 && !benchProgression) || GetTime() > 600.0) {
+                } else if ((WorldIdle() && benchDigStrokes == 0 && !benchPaint && !benchSaveLoad && benchWalkSeconds <= 0.0 && benchMineStrokes == 0 && minePhase != 2 && benchFlySeconds <= 0.0 && !benchSuffocate && benchOrbitSeconds <= 0.0 && !benchRide && !benchPark && !benchGravity && !benchPrecision && !benchMantle && !benchAirJump && !benchMoon && !benchHole && !benchWall && !benchLedge && !benchTor && !benchMachines && !benchMenus && !benchWater && !benchFlyFollow && !benchHotbar && !benchInventory && !benchMap && !benchViewmodel && !benchQuests && !benchHunger && !benchFarm && !benchAnimals && !benchThreats && benchShotTabs == 0 && !benchForest && !benchFlow && !benchPond && !benchBucket && !benchPump && !benchTerrain && !benchShadow && !benchParticles && !benchBiomes && !benchOil && !benchSpring && !benchShotAnimals && !benchShotMachines && benchShotBiomes < 0 && !benchFarForest && !benchRecipes && !benchWeather && !benchDecor && !benchMaterials && !benchDamage && !benchCrafting && !benchSuit && !benchTools && !benchRivers && !benchRing && !benchRocket && !benchStation && !benchBlueprint && !benchSmallBody && !benchTrees && !benchChop && benchPersist == 0 && benchBuild == 0 && benchFactory == 0 && !benchProgression) || GetTime() > 600.0) {
                     benchStart = GetTime();
                     printf("bench: world ready after %.2f s (%d chunks, avg build %.2f ms of which sampling %.2f ms, %d worker threads)\n",
                         GetWorldStats().lastGenerationSeconds, GetWorldStats().chunks, GetWorldStats().avgBuildMs, GetWorldStats().avgSampleMs, GetWorldStats().workerThreads);

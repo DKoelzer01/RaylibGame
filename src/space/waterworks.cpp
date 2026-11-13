@@ -29,13 +29,16 @@ void Waterworks_Update(Scene& world, float dt) {
         for (auto& pl : body->plots->plots) {
             // The plot's pumps, pipe cells and outlets.
             std::vector<int> pumps;
-            std::unordered_map<int64_t, int> pipes, outlets; // cell -> part
+            std::unordered_map<int64_t, int> pipes, outlets, tanks; // cell -> part (tanks: machines that take water, boilers #229)
             for (int i = 0; i < (int)pl->parts.size(); ++i) {
                 const Part& part = pl->parts[i];
                 if (part.type == PartType::WaterPump) pumps.push_back(i);
                 else if (part.type == PartType::Pipe || part.type == PartType::Outlet) {
                     Plot::Footprint(part, fp);
                     for (auto& c : fp) (part.type == PartType::Pipe ? pipes : outlets)[CellKey(c.first)] = i;
+                } else if (Factory::TakesWater(part.type)) {
+                    Plot::Footprint(part, fp);
+                    for (auto& c : fp) tanks[CellKey(c.first)] = i;
                 }
             }
             if (pumps.empty()) continue;
@@ -51,6 +54,7 @@ void Waterworks_Update(Scene& world, float dt) {
                 for (const Int3& c : pumpCells) if (c.y == minY) { bottom = Vector3Add(bottom, { (float)c.x, (float)c.y, (float)c.z }); ++nb; }
                 bottom = Vector3Scale(bottom, 1.0f / std::max(1, nb));
                 std::unordered_set<int64_t> seen, outs;
+                std::unordered_set<int> tankParts; // boilers on the network: they fill from it
                 std::deque<Int3> q;
                 for (const Int3& c : pumpCells) { seen.insert(CellKey(c)); q.push_back(c); }
                 const int d[6][3] = { { 1, 0, 0 }, { -1, 0, 0 }, { 0, 1, 0 }, { 0, -1, 0 }, { 0, 0, 1 }, { 0, 0, -1 } };
@@ -61,10 +65,11 @@ void Waterworks_Update(Scene& world, float dt) {
                         const int64_t k = CellKey(n);
                         if (seen.count(k)) continue;
                         if (outlets.count(k)) { outs.insert(k); seen.insert(k); continue; }
+                        if (tanks.count(k)) { tankParts.insert(tanks[k]); seen.insert(k); continue; }
                         if (pipes.count(k)) { seen.insert(k); q.push_back(n); }
                     }
                 }
-                if (outs.empty()) continue; // nowhere to send it: the pump fills up and stops
+                if (outs.empty() && tankParts.empty()) continue; // nowhere to send it: the pump fills up and stops
                 ++stats.networks;
                 // Each outlet part once, however many of its cells touch the network.
                 std::unordered_set<int> outParts;
@@ -79,7 +84,8 @@ void Waterworks_Update(Scene& world, float dt) {
                 if (got <= 0.0f) { ++stats.dry; continue; }
                 Factory::Drain(body->id, pl->id, pump, "water", std::min(units, (int)ceilf(got / kWaterPerUnit - 1e-4f)));
                 stats.pumped += got;
-                const float each = got / (float)outParts.size();
+                const float each = got / (float)(outParts.size() + tankParts.size());
+                for (int part : tankParts) Factory::AddWater(body->id, pl->id, part, (int)(each * 1000.0f)); // m^3 to litres
                 for (int part : outParts) {
                     Plot::Footprint(pl->parts[part], fp);
                     const Int3 c = fp.empty() ? pl->parts[part].origin : fp[0].first;

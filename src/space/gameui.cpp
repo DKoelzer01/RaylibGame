@@ -136,7 +136,12 @@ static void DrawGrid() {
                 const std::string id = grid[i].id;
                 const int n = (int)grid[i].amount();
                 if (!ContainerTakes(id)) GameUI_Toast(TextFormat("The %s doesn't take %s", PartName(container.type), itemDB.find(id) ? itemDB.find(id)->name.c_str() : id.c_str()));
-                else if (n > 0 && inventory.remove(id, n)) { Factory::Insert(container.body, container.plot, container.part, id, n); Audio_Play(Sfx::Pickup, 0.4f, 0.8f); }
+                else if (n > 0 && inventory.remove(id, n)) {
+                    // Shift+click: into the fuel slot (#194; fuel that is also a recipe input otherwise fills only an empty fuel slot).
+                    if (IsKeyDown(KEY_LEFT_SHIFT) || IsKeyDown(KEY_RIGHT_SHIFT)) Factory::InsertFuel(container.body, container.plot, container.part, id, n);
+                    else Factory::Insert(container.body, container.plot, container.part, id, n);
+                    Audio_Play(Sfx::Pickup, 0.4f, 0.8f);
+                }
                 held = -1;
             } else if (held < 0) { if (!grid[i].empty()) held = i; }
             else { inventory.swapSlots(held, i); held = -1; }
@@ -278,16 +283,17 @@ static void DrawCrafting() {
 
 // A machine's or chest's screen: status, progress and charge, then its slots (input and output for
 // machines, 16 for a chest). Click a slot to take its stack; click an inventory cell to put one in.
-static void DrawSlots(const std::vector<std::pair<std::string, int>>& slots, bool output, int cols) {
+static void DrawSlots(const std::vector<std::pair<std::string, int>>& slots, int which, int cols) { // which: 0 inputs, 1 outputs, 2 fuel
+    const bool output = which == 1;
     ImDrawList* dl = ImGui::GetWindowDrawList();
     const float cell = 54.0f, gap = 4.0f;
     for (int i = 0; i < (int)slots.size(); ++i) {
         if (i % cols != 0) ImGui::SameLine(0.0f, gap);
-        ImGui::PushID(i + (output ? 1000 : 0));
+        ImGui::PushID(i + which * 1000);
         const ImVec2 p = ImGui::GetCursorScreenPos(), q(p.x + cell, p.y + cell);
         const bool clicked = ImGui::InvisibleButton("slot", ImVec2(cell, cell));
         const bool hover = ImGui::IsItemHovered();
-        dl->AddRectFilled(p, q, output ? IM_COL32(40, 36, 28, 220) : IM_COL32(30, 32, 36, 220), 4.0f);
+        dl->AddRectFilled(p, q, which == 2 ? IM_COL32(52, 30, 20, 220) : output ? IM_COL32(40, 36, 28, 220) : IM_COL32(30, 32, 36, 220), 4.0f);
         const auto& s = slots[i];
         if (s.second > 0) {
             DrawItemIcon(dl, ImVec2(p.x + cell * 0.18f, p.y), cell * 0.64f, s.first);
@@ -299,7 +305,7 @@ static void DrawSlots(const std::vector<std::pair<std::string, int>>& slots, boo
             dl->AddRectFilled(ImVec2(q.x - sz.x - 6, p.y + 2), ImVec2(q.x - 2, p.y + sz.y + 2), IM_COL32(0, 0, 0, 160), 2.0f);
             dl->AddText(ImVec2(q.x - sz.x - 4, p.y + 2), IM_COL32(255, 255, 255, 255), amt);
             if (hover) ImGui::SetTooltip("%s x%d\n%s\n(click to take)", d ? d->name.c_str() : s.first.c_str(), s.second, d ? d->description.c_str() : "");
-            if (clicked) { Factory::TakeSlot(container.body, container.plot, container.part, i, output); Audio_Play(Sfx::Pickup, 0.4f, 1.2f); }
+            if (clicked) { Factory::TakeSlot(container.body, container.plot, container.part, i, which); Audio_Play(Sfx::Pickup, 0.4f, 1.2f); }
         }
         dl->AddRect(p, q, hover ? IM_COL32(200, 200, 200, 255) : IM_COL32(70, 72, 78, 255), 4.0f, 0, 1.0f);
         ImGui::PopID();
@@ -320,10 +326,18 @@ static void DrawContainer() {
     else if (v.energy > 0 && container.type != PartType::Chest) ImGui::Text("Fuel / charge: %d", v.energy);
     const bool chest = container.type == PartType::Chest;
     ImGui::TextUnformatted(chest ? "Storage" : "Input");
-    DrawSlots(v.inSlots, false, chest ? 8 : 4);
+    DrawSlots(v.inSlots, 0, chest ? 8 : 4);
+    if (v.hasFuelSlot) { // #194: fuel has its own slot (a recipe input that is also fuel is never burnt)
+        ImGui::TextUnformatted("Fuel");
+        DrawSlots({ v.fuelSlot }, 2, 1);
+    }
+    if (v.waterMax > 0) { // #229: boilers need water and heat up before full steam
+        ImGui::ProgressBar((float)v.water / (float)v.waterMax, ImVec2(300.0f, 0.0f), TextFormat("Water %d / %d L", v.water, v.waterMax));
+        ImGui::ProgressBar((float)v.heat / (float)std::max(1, v.heatMax), ImVec2(300.0f, 0.0f), TextFormat("Heat %d%%", 100 * v.heat / std::max(1, v.heatMax)));
+    }
     if (!chest) {
         ImGui::TextUnformatted("Output");
-        DrawSlots(v.outSlots, true, 4);
+        DrawSlots(v.outSlots, 1, 4);
     }
     ImGui::Spacing();
     if (ImGui::Button("Put in all (I)") || IsKeyPressed(KEY_I)) {
@@ -344,7 +358,7 @@ static void DrawContainer() {
         else Factory::Extract(container.body, container.plot, container.part);
         Audio_Play(Sfx::Pickup, 0.4f, 1.2f);
     }
-    ImGui::TextDisabled(chest ? "Click an inventory stack to store it; click a slot to take it" : "Click an inventory stack to load it (fuel, ingredients); click a slot to take it");
+    ImGui::TextDisabled(chest ? "Click an inventory stack to store it; click a slot to take it" : "Click an inventory stack to load it (Shift+click: into the fuel slot); click a slot to take it");
 }
 
 // The open container must still exist (not broken) and be within reach.
