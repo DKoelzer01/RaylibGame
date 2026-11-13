@@ -17,6 +17,7 @@ uniform sampler2D colorTexture;    // MATERIAL_MAP_ALBEDO
 uniform sampler2D normalTexture;   // MATERIAL_MAP_NORMAL (OpenGL convention, tangent space)
 uniform sampler2D roughAoTexture;  // MATERIAL_MAP_ROUGHNESS: R = roughness, G = ambient occlusion
 uniform sampler2DArray terrainLayers; // planet palette: dirt, sand, gravel, grass, snow, ice, stone (terrainlayers.h)
+uniform sampler2DArray terrainDetail; // its detail maps: normal XY, roughness, AO (unit 12)
 
 uniform mat4 matModel;          // body-local -> world (set by DrawMesh); see lighting.vs about matNormal
 uniform float texScale;            // world units -> texture repeats
@@ -77,6 +78,18 @@ vec3 sampleLayer(Triplanar t, float layer)
     if (t.w.y > 0.02) { c += texture(terrainLayers, vec3(t.uvY, layer)).rgb * t.w.y; sum += t.w.y; }
     if (t.w.z > 0.02) { c += texture(terrainLayers, vec3(t.uvZ, layer)).rgb * t.w.z; sum += t.w.z; }
     return pow(c / max(sum, 1e-4), vec3(2.2));
+}
+
+// Terrain detail maps (terrainlayers.h, Plan 5 D): RG tangent normal XY, B roughness, A ambient occlusion.
+// Adds one layer's slopes, k-weighted, to the per-axis sums and returns its (roughness, ao).
+vec2 sampleDetail(Triplanar t, float layer, float k, inout vec2 dX, inout vec2 dY, inout vec2 dZ)
+{
+    vec2 ra = vec2(0.0);
+    float sum = 0.0;
+    if (t.w.x > 0.02) { vec4 d = texture(terrainDetail, vec3(t.uvX, layer)); dX += (d.xy * 2.0 - 1.0) * k; ra += d.zw * t.w.x; sum += t.w.x; }
+    if (t.w.y > 0.02) { vec4 d = texture(terrainDetail, vec3(t.uvY, layer)); dY += (d.xy * 2.0 - 1.0) * k; ra += d.zw * t.w.y; sum += t.w.y; }
+    if (t.w.z > 0.02) { vec4 d = texture(terrainDetail, vec3(t.uvZ, layer)); dZ += (d.xy * 2.0 - 1.0) * k; ra += d.zw * t.w.z; sum += t.w.z; }
+    return ra / max(sum, 1e-4);
 }
 
 // Triplanar normal mapping, "whiteout" blend (Ben Golus). Uses the sign of the geometric normal
@@ -203,9 +216,11 @@ void main()
         const float roughOf[8] = float[8](0.75, 0.95, 0.15, 0.35, 0.9, 0.85, 0.95, 0.7);
         // Strength of the (asteroid rock) normal map per material: rocky ones only; on grass, dirt and
         // sand its craters read as the asteroid texture showing through.
-        const float bumpOf[8] = float[8](1.0, 0.12, 0.15, 0.9, 0.08, 0.6, 0.05, 0.15); // normal-map strength
+        const float bumpOf[8] = float[8](1.0, 0.8, 0.6, 1.0, 0.7, 1.0, 0.7, 0.5); // detail normal strength
         vec3 a = vec3(0.0);
-        float r = 0.0, bump = 0.0;
+        float r = 0.0, aoSum = 0.0;
+        float near = 1.0 - farMix;               // detail maps fade out with distance (mips flatten them anyway)
+        vec2 dX = vec2(0.0), dY = vec2(0.0), dZ = vec2(0.0);
         for (int i = 0; i < 8; i++) {
             float wi = w8[i] / max(total, 0.001);
             if (wi < 0.01) continue;
@@ -228,8 +243,10 @@ void main()
                 c += mineral * glint * 0.6;
             }
             a += c * wi;
-            r += roughOf[i] * wi;
-            bump += bumpOf[i] * wi;
+            vec2 ra = vec2(roughOf[i], 1.0);
+            if (near > 0.01) ra = mix(ra, sampleDetail(tp, layerOf[i], wi * bumpOf[i] * near, dX, dY, dZ), near);
+            r += ra.x * wi;
+            aoSum += ra.y * wi;
         }
         albedo = a;
         // Slow brightness and warmth changes over ~70-250 m break up what tiling is left.
@@ -248,25 +265,21 @@ void main()
             vec2 crown = floor(fragTexPos.xz / 5.0); // ~5 m dapple, like the prism crowns
             crowns *= 0.75 + 0.5 * fract(sin(dot(crown, vec2(12.9898, 78.233))) * 43758.5453);
             albedo = mix(albedo, crowns * 0.5, c); // crowns in their own shade read darker than open grass
-            rough = mix(rough, 0.95, c);
+            r = mix(r, 0.95, c);
         }
         rough = r;
-        // Bumps from each layer's own texture (its brightness as a height, through screen-space
-        // derivatives), not the asteroid's crater normal map, which showed through on sand, gravel
-        // and cave walls.
-        {
-            vec3 nGeom = normalize(mat3(matModel) * localNormal);
-            float hgt = dot(a, vec3(0.333)) * bump * 0.06;
-            vec3 dpdx = dFdx(fragPosition), dpdy = dFdy(fragPosition);
-            float dhdx = dFdx(hgt), dhdy = dFdy(hgt);
-            vec3 r1 = cross(dpdy, nGeom), r2 = cross(nGeom, dpdx);
-            float det = dot(dpdx, r1);
-            vec3 grad = sign(det) * (dhdx * r1 + dhdy * r2);
-            // Guard the derivatives: across triangle edges (and edge-on) they jump, which drew dark seams.
-            vec3 tilt = abs(det) > 1e-10 ? grad / abs(det) : vec3(0.0);
-            float tl = length(tilt);
-            if (tl > 0.35) tilt *= 0.35 / tl;
-            normal = normalize(nGeom - tilt);
+        ao = aoSum;
+        albedo *= mix(1.0, ao, 0.35);            // cavities read in direct light too (stylized)
+        // Normals from the layers' detail maps, triplanar "whiteout" blend (as triplanarNormal) of the
+        // weighted per-axis slopes, in body-local space, then to world.
+        if (near > 0.01) {
+            vec3 n = localNormal;
+            vec3 tX = vec3(dX + n.zy, abs(n.x)), tY = vec3(dY + n.xz, abs(n.y)), tZ = vec3(dZ + n.xy, abs(n.z));
+            tX.z *= sign(n.x); tY.z *= sign(n.y); tZ.z *= sign(n.z);
+            vec3 bumped = normalize(tX.zyx * tp.w.x + tY.xzy * tp.w.y + tZ.xyz * tp.w.z);
+            normal = normalize(mat3(matModel) * bumped);
+        } else {
+            normal = normalize(mat3(matModel) * localNormal);
         }
         shinyMaterials = (w8[2] + w8[3] + 0.3 * w8[7]) / max(total, 0.001);
     } else {

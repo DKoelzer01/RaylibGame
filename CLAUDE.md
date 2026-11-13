@@ -42,12 +42,36 @@ C++ raylib 5.5 planetoid survival game. `src/engine` (static lib), `src/space` -
 - Save-breaking changes are fine (early development); note them in the PR. No compatibility shims
   needed, but old region formats (RGN1-3) still load.
 
+## GitHub issues (required before starting work)
+
+- Every task needs a GitHub issue BEFORE any work starts (code, shaders, data, tests, or a plan doc
+  section). First search for a matching issue: `gh issue list --state all --search "<keywords>"`.
+  If one matches, use it, and reopen it if it was closed but the problem is back. If none matches, file one
+  with `gh issue create`: a title naming the problem or feature, a body with the problem/request, the cause
+  if known, and the planned fix, plus labels (bug/enhancement plus area labels: rendering, shadows,
+  terrain, water, physics, camera, ui, performance, tests, ...).
+- A batch of several tasks gets one issue per task. Group related ones as sub-issues
+  (`gh issue create --parent <n>`) under a tracking issue (e.g. #128 Graphics Pipeline Overhaul,
+  #143 Plan 6).
+- Reference the issue in commit messages (`(#N)`) and in PR bodies (a "Fixes" list with the numbers).
+  PRs target develop, not the default branch (main), so "Fixes #N" does NOT auto-close: close the
+  issues by hand (`gh issue close N --comment "Fixed in #PR"`) once the PR merges. Until then, label them
+  `fixed in open PR`.
+- Playtest items: each CurrentIssues.md line has a matching issue. Fixed-but-unconfirmed items carry
+  `needs playtest`; deferred ones carry `deferred`. Keep the issue and the CurrentIssues.md line in sync.
+- Bugs found along the way (a failing test, a regression) get their own issue, even when fixed in
+  the same branch.
+- Exempt: answering a question, read-only investigation, and triage itself (which comments on the
+  issue it triages).
+
 ## Plans and trackers
 
 - Plan 2 (early game, done): https://claude.ai/artifact/RL22kZ7VBMugAFgGRPS3cE
 - Plan 3 (Terra tiers, space): https://claude.ai/artifact/XVw45AC6vwYitbdhaeP2xL - M21-M24 done (M24 on PR #28).
 - Plan 4 (flowing water): https://claude.ai/artifact/27xL5j1zkirSe8pDZgPz59
-- Plan 6 (GPU terrain generation + GPU-driven drawing, awaiting approval): https://claude.ai/artifact/VJdKtUZEpBg5uefnqewRyZ
+- Plan 6 (GPU terrain generation + GPU-driven drawing, approved 2026-11-12: whole plan, GL 4.6 gl_DrawID with
+  the 4.3 fallback, CPU terrain as a tested fallback): https://claude.ai/artifact/VJdKtUZEpBg5uefnqewRyZ - issues #143
+  (steps #144-#150), under #128 Graphics Pipeline Overhaul.
 - Plan 5 (art, life, world variety): https://claude.ai/artifact/5igt2VrsTyNhZ3BZ94teHX - A animal models/AI, B biomes,
   C Minecraft-style 3D terrain, D authored textures await the user's answers; the light items are done on art-pass-5.
 - `CurrentIssues.md` (untracked, the user's playtest list): erase lines once fully resolved; mark

@@ -13,8 +13,12 @@
 enum TerrainLayer { LayerDirt = 0, LayerSand, LayerGravel, LayerGrass, LayerSnow, LayerIce, LayerStone, LayerCount };
 const char* TerrainLayerName(int layer);
 
+// Terrain layers come with a second array, the detail maps (Plan 5 D, stylized PBR): RG = tangent-space
+// normal XY, B = roughness, A = ambient occlusion; generated from each layer's albedo brightness, or
+// assets/textures/terrain/<name>_detail.png. Bound with the colour array to unit kTerrainDetailUnit.
+constexpr int kTerrainDetailUnit = 12;
 struct TextureArray {
-    unsigned int id = 0;
+    unsigned int id = 0, detailId = 0;
     int size = 0, layers = 0;
 };
 
@@ -23,5 +27,6 @@ void UnloadTextureArray(TextureArray& t);
 void BindTextureArray(int unit, const TextureArray& t);
 void UnbindTextureArray(int unit);
 Image GenerateTerrainLayerImage(int layer, int size); // the placeholder art for one layer
+Image GenerateTerrainLayerDetail(int layer, const Image& albedo); // its detail map (RGBA8 albedo in)
 
 #endif

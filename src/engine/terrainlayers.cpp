@@ -169,6 +169,80 @@ Image GenerateTerrainLayerImage(int layer, int size) {
     return img;
 }
 
+
+// --- Detail maps (Plan 5 D: stylized PBR) ---
+// Each layer's height is its albedo brightness, softened (a 3x3 blur drops the per-pixel speckle) and
+// signed per layer (ice cracks are grooves although they are bright). From it: a tangent-space normal
+// (RG), roughness (B: per layer, rougher in the hollows) and ambient occlusion (A: hollows below their
+// surroundings darken).
+namespace {
+    struct LayerSurface { float bump, rough, roughVar, aoStrength, invert; };
+    const LayerSurface kSurface[LayerCount] = {
+        //        bump  rough  var   ao    invert
+        /*dirt*/ { 5.0f, 0.92f, 0.06f, 2.5f, 0.0f },
+        /*sand*/ { 3.0f, 0.86f, 0.06f, 1.5f, 0.0f },
+        /*grav*/ { 7.0f, 0.78f, 0.15f, 3.5f, 0.0f },
+        /*gras*/ { 4.0f, 0.88f, 0.08f, 2.0f, 0.0f },
+        /*snow*/ { 2.0f, 0.62f, 0.10f, 1.0f, 0.0f },
+        /*ice */ { 2.5f, 0.10f, 0.12f, 0.8f, 1.0f },
+        /*ston*/ { 6.0f, 0.68f, 0.20f, 3.0f, 0.0f },
+    };
+
+    // Periodic box blur (separable), radius r.
+    std::vector<float> BoxBlur(const std::vector<float>& h, int size, int r) {
+        std::vector<float> tmp(h.size()), out(h.size());
+        const float inv = 1.0f / (2 * r + 1);
+        for (int y = 0; y < size; ++y)
+            for (int x = 0; x < size; ++x) {
+                float s = 0.0f;
+                for (int k = -r; k <= r; ++k) s += h[y * size + ((x + k + size) % size)];
+                tmp[y * size + x] = s * inv;
+            }
+        for (int y = 0; y < size; ++y)
+            for (int x = 0; x < size; ++x) {
+                float s = 0.0f;
+                for (int k = -r; k <= r; ++k) s += tmp[((y + k + size) % size) * size + x];
+                out[y * size + x] = s * inv;
+            }
+        return out;
+    }
+}
+
+Image GenerateTerrainLayerDetail(int layer, const Image& albedo) {
+    const int size = albedo.width;
+    const LayerSurface& S = kSurface[std::clamp(layer, 0, LayerCount - 1)];
+    const Color* px = (const Color*)albedo.data;
+    std::vector<float> h(size * size);
+    for (int i = 0; i < size * size; ++i) {
+        const float l = (0.299f * px[i].r + 0.587f * px[i].g + 0.114f * px[i].b) / 255.0f;
+        h[i] = S.invert > 0.5f ? 1.0f - l : l;
+    }
+    h = BoxBlur(h, size, 1);
+    const std::vector<float> wide = BoxBlur(h, size, 6);
+    // Normalise the height to its own range so the bump strength means the same for every layer.
+    float lo = 1e9f, hi = -1e9f;
+    for (float v : h) { lo = std::min(lo, v); hi = std::max(hi, v); }
+    const float span = std::max(hi - lo, 1e-3f);
+    Image img = GenImageColor(size, size, BLACK);
+    Color* out = (Color*)img.data;
+    auto H = [&](int x, int y) { return (h[((y + size) % size) * size + ((x + size) % size)] - lo) / span; };
+    for (int y = 0; y < size; ++y)
+        for (int x = 0; x < size; ++x) {
+            // Slope per texel times the bump; the texture covers ~1 texel per 1/size of a tile.
+            const float dx = (H(x + 1, y) - H(x - 1, y)) * 0.5f * S.bump;
+            const float dy = (H(x, y + 1) - H(x, y - 1)) * 0.5f * S.bump;
+            const float inv = 1.0f / sqrtf(dx * dx + dy * dy + 1.0f);
+            const float nx = -dx * inv, ny = -dy * inv;
+            const float hv = H(x, y);
+            const float hollow = std::max(0.0f, (wide[y * size + x] - lo) / span - hv); // below the neighbourhood
+            const float rough = std::clamp(S.rough + S.roughVar * (0.5f - hv) * 2.0f, 0.05f, 1.0f);
+            const float ao = std::clamp(1.0f - hollow * S.aoStrength, 0.35f, 1.0f);
+            out[y * size + x] = { (unsigned char)std::lround((nx * 0.5f + 0.5f) * 255.0f), (unsigned char)std::lround((ny * 0.5f + 0.5f) * 255.0f),
+                                  (unsigned char)std::lround(rough * 255.0f), (unsigned char)std::lround(ao * 255.0f) };
+        }
+    return img;
+}
+
 TextureArray LoadTerrainLayers(int size) {
     TextureArray t;
     if (!glad_glTexImage3D || !glad_glGenTextures) { logger.logf("[Terrain] texture arrays unavailable\n"); return t; }
@@ -177,13 +251,34 @@ TextureArray LoadTerrainLayers(int size) {
     glad_glGenTextures(1, &t.id);
     glad_glBindTexture(GL_TEXTURE_2D_ARRAY_, t.id);
     glad_glTexImage3D(GL_TEXTURE_2D_ARRAY_, 0, (int)GL_RGBA8_, size, size, LayerCount, 0, GL_RGBA_, GL_UNSIGNED_BYTE_, nullptr);
+    std::vector<Image> albedos;
     for (int layer = 0; layer < LayerCount; ++layer) {
         const char* path = TextFormat("assets/textures/terrain/%s.png", TerrainLayerName(layer));
         Image img = FileExists(path) ? LoadImage(path) : GenerateTerrainLayerImage(layer, size);
         ImageFormat(&img, PIXELFORMAT_UNCOMPRESSED_R8G8B8A8);
         if (img.width != size || img.height != size) ImageResize(&img, size, size);
         glad_glTexSubImage3D(GL_TEXTURE_2D_ARRAY_, 0, 0, 0, layer, size, size, 1, GL_RGBA_, GL_UNSIGNED_BYTE_, img.data);
-        UnloadImage(img);
+        albedos.push_back(img);
+    }
+    glad_glGenerateMipmap(GL_TEXTURE_2D_ARRAY_);
+    glad_glTexParameteri(GL_TEXTURE_2D_ARRAY_, GL_TEXTURE_MIN_FILTER_, (int)GL_LINEAR_MIPMAP_LINEAR_);
+    glad_glTexParameteri(GL_TEXTURE_2D_ARRAY_, GL_TEXTURE_MAG_FILTER_, (int)GL_LINEAR_);
+    glad_glTexParameteri(GL_TEXTURE_2D_ARRAY_, GL_TEXTURE_WRAP_S_, (int)GL_REPEAT_);
+    glad_glTexParameteri(GL_TEXTURE_2D_ARRAY_, GL_TEXTURE_WRAP_T_, (int)GL_REPEAT_);
+    if (glad_glTexParameterf) glad_glTexParameterf(GL_TEXTURE_2D_ARRAY_, GL_TEXTURE_MAX_ANISOTROPY_, 8.0f);
+    // Detail array: normal XY, roughness, AO per layer (assets/textures/terrain/<name>_detail.png overrides).
+    const double t0 = GetTime();
+    glad_glGenTextures(1, &t.detailId);
+    glad_glBindTexture(GL_TEXTURE_2D_ARRAY_, t.detailId);
+    glad_glTexImage3D(GL_TEXTURE_2D_ARRAY_, 0, (int)GL_RGBA8_, size, size, LayerCount, 0, GL_RGBA_, GL_UNSIGNED_BYTE_, nullptr);
+    for (int layer = 0; layer < LayerCount; ++layer) {
+        const char* path = TextFormat("assets/textures/terrain/%s_detail.png", TerrainLayerName(layer));
+        Image d = FileExists(path) ? LoadImage(path) : GenerateTerrainLayerDetail(layer, albedos[layer]);
+        ImageFormat(&d, PIXELFORMAT_UNCOMPRESSED_R8G8B8A8);
+        if (d.width != size || d.height != size) ImageResize(&d, size, size);
+        glad_glTexSubImage3D(GL_TEXTURE_2D_ARRAY_, 0, 0, 0, layer, size, size, 1, GL_RGBA_, GL_UNSIGNED_BYTE_, d.data);
+        UnloadImage(d);
+        UnloadImage(albedos[layer]);
     }
     glad_glGenerateMipmap(GL_TEXTURE_2D_ARRAY_);
     glad_glTexParameteri(GL_TEXTURE_2D_ARRAY_, GL_TEXTURE_MIN_FILTER_, (int)GL_LINEAR_MIPMAP_LINEAR_);
@@ -192,21 +287,29 @@ TextureArray LoadTerrainLayers(int size) {
     glad_glTexParameteri(GL_TEXTURE_2D_ARRAY_, GL_TEXTURE_WRAP_T_, (int)GL_REPEAT_);
     if (glad_glTexParameterf) glad_glTexParameterf(GL_TEXTURE_2D_ARRAY_, GL_TEXTURE_MAX_ANISOTROPY_, 8.0f);
     glad_glBindTexture(GL_TEXTURE_2D_ARRAY_, 0);
-    logger.logf("[Terrain] %d terrain layers (%dx%d) in texture array %u\n", LayerCount, size, size, t.id);
+    logger.logf("[Terrain] %d terrain layers (%dx%d) in texture array %u, detail maps %u (%.0f ms)\n", LayerCount, size, size, t.id, t.detailId,
+                (GetTime() - t0) * 1000.0);
     return t;
 }
 
 void UnloadTextureArray(TextureArray& t) {
     if (t.id && glad_glDeleteTextures) glad_glDeleteTextures(1, &t.id);
+    if (t.detailId && glad_glDeleteTextures) glad_glDeleteTextures(1, &t.detailId);
     t = TextureArray{};
 }
 
 void BindTextureArray(int unit, const TextureArray& t) {
     glad_glActiveTexture(GL_TEXTURE0_ + unit);
     glad_glBindTexture(GL_TEXTURE_2D_ARRAY_, t.id);
+    if (t.detailId) {
+        glad_glActiveTexture(GL_TEXTURE0_ + kTerrainDetailUnit);
+        glad_glBindTexture(GL_TEXTURE_2D_ARRAY_, t.detailId);
+    }
 }
 
 void UnbindTextureArray(int unit) {
     glad_glActiveTexture(GL_TEXTURE0_ + unit);
+    glad_glBindTexture(GL_TEXTURE_2D_ARRAY_, 0);
+    glad_glActiveTexture(GL_TEXTURE0_ + kTerrainDetailUnit);
     glad_glBindTexture(GL_TEXTURE_2D_ARRAY_, 0);
 }
