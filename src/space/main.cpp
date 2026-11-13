@@ -268,6 +268,7 @@ int main(int argc, char** argv)
     double wallStart = 0.0, wallMaxStep = 0.0, wallMaxStepAt = 0.0;
     float wallMaxImpact = 0.0f, wallMinHealth = 100.0f, wallMaxSpeed = 0.0f;
     bool benchLedge = false; int ledgePhase = 0, ledgePass = 0; bool ledgeOk = true, ledgeAir = false; double ledgeStart = 0.0, ledgeAirStart = 0.0; float ledgeV0 = 0.0f, ledgeExcess = 0.0f; float ledgeWalk0 = 0.0f;
+    bool benchTor = false; int torPhase = 0, torHeading = 0, torFlicker = 0, torPops = 0; double torStart = 0.0, torAirAt = -1.0, torMaxStep = 0.0; float torMaxUp = 0.0f; Vector3 torDir{}; DVec3 torLast{}; bool torWasGrounded = true; // --test-tor (#242)
     DVec3 wallLast{};
     bool benchTrees = false;       // --test-trees: walk into a tree trunk
     bool benchChop = false;        // --test-chop: fell a tree, save/reload, regrow
@@ -375,6 +376,7 @@ int main(int argc, char** argv)
         if (std::string(argv[i]) == "--test-hole") benchHole = true;
         if (std::string(argv[i]) == "--test-wall") benchWall = true;
         if (std::string(argv[i]) == "--test-ledge") benchLedge = true; // walk and sprint off a pit edge (#240)
+        if (std::string(argv[i]) == "--test-tor") benchTor = true; // walk across a low (beach) tor crown, logging collision pops (#242)
         if (std::string(argv[i]) == "--test-menus") benchMenus = true;
         if (std::string(argv[i]) == "--test-water") benchWater = true;
         if (std::string(argv[i]) == "--test-flyfollow") benchFlyFollow = true;
@@ -1321,6 +1323,87 @@ int main(int argc, char** argv)
                                wallMaxStep, wallMaxStepAt, wallMaxSpeed, wallMaxImpact, wallMinHealth, survival.deaths, pass ? "PASS" : "FAIL");
                         printf("bench: wall: %s\n", wallOk && pass ? "PASS" : "FAIL");
                         benchWall = false;
+                    }
+                } else if (benchTor && (torPhase > 0 || WorldIdle())) {
+                    // --test-tor (#242): the lowest-lying tor near the start (beach country, 4-40 m up), the player
+                    // put on its crown and walked out across it at eight headings. Walking on a crown must not pop:
+                    // per-frame moves stay small, no upward speed without a jump, grounding doesn't flicker.
+                    Planetoid* p = dynamic_cast<Planetoid*>(world.objects[0].get());
+                    const auto* pf = p ? dynamic_cast<const PlanetField*>(p->field.get()) : nullptr;
+                    const double t = GetTime() - torStart;
+                    const Vector3 feet = (player.position - world.renderOrigin).toFloat();
+                    const DVec3 local = p->toLocalD(player.position);
+                    if (torPhase == 0) {
+                        const Vector3 up = StartSpawnDirLocal(*p);
+                        const Vector3 t1 = Vector3Normalize(Vector3CrossProduct(up, fabsf(up.y) < 0.9f ? Vector3{ 0, 1, 0 } : Vector3{ 1, 0, 0 }));
+                        const Vector3 t2 = Vector3CrossProduct(t1, up);
+                        float best = 1e9f;
+                        for (int i = -240; pf && i <= 240; ++i)
+                            for (int j = -240; j <= 240; ++j) {
+                                const float dd = 25.0f * sqrtf((float)(i * i + j * j));
+                                if (dd >= best) continue;
+                                const Vector3 dir = Vector3Normalize(Vector3Add(up, Vector3Add(Vector3Scale(t1, 25.0f * i / pf->radius), Vector3Scale(t2, 25.0f * j / pf->radius))));
+                                const float e = pf->elevation(dir);
+                                if (e < 4.0f || e > 40.0f) continue;
+                                const float surf = pf->radius + e;
+                                if (pf->rockFeature(Vector3Scale(dir, surf + 2.0f), surf + 2.0f, surf, 1.0f) > 1.0f) { best = dd; torDir = dir; }
+                            }
+                        if (best > 1e8f) { printf("bench: tor: no low tor within 6 km -> FAIL\n"); benchTor = false; }
+                        else {
+                            printf("bench: tor: a tor %.0f m from the start at %.1f m elevation\n", best, pf->elevation(torDir));
+                            if (getenv("TOR_PROFILE")) { // debug: the top solid height across the tor, two directions
+                                const float base = pf->radius + pf->elevation(torDir);
+                                for (int ax = 0; ax < 2; ++ax) {
+                                    const Vector3 a = ax ? t2 : t1;
+                                    printf("bench: tor: profile %d:", ax);
+                                    for (float x = -14.0f; x <= 14.0f; x += 0.5f) {
+                                        const Vector3 d = Vector3Normalize(Vector3Add(torDir, Vector3Scale(a, x / pf->radius)));
+                                        float top = -99.0f;
+                                        for (float hh = 16.0f; hh > -4.0f; hh -= 0.05f)
+                                            if (p->densityAt(Vector3Scale(d, base + hh)) >= ISO_LEVEL) { top = hh; break; }
+                                        printf(" %.2f", top);
+                                    }
+                                    printf("\n");
+                                }
+                            }
+                            player.spawnOn(world, *p, p->dirToWorld(torDir));
+                            torPhase = 1; torStart = GetTime();
+                        }
+                    } else if (torPhase == 1 && t > 3.0 && WorldIdle() && player.grounded) {
+                        // Respawn on the crown for each heading; walk out from its middle.
+                        player.spawnOn(world, *p, p->dirToWorld(torDir));
+                        torPhase = 2; torStart = GetTime();
+                    } else if (torPhase == 2 && t > 1.0 && player.grounded) {
+                        const Vector3 flat = Vector3Normalize(Vector3Subtract(player.forward, Vector3Scale(player.up, Vector3DotProduct(player.forward, player.up))));
+                        player.forward = Vector3Transform(flat, MatrixRotate(player.up, 45.0f * DEG2RAD * torHeading));
+                        player.autoWalk = true;
+                        torPhase = 3; torStart = GetTime(); torLast = local; torWasGrounded = true; torAirAt = -1.0;
+                    } else if (torPhase == 3) {
+                        const DVec3 dl = local - torLast;
+                        const double step = dl.length();
+                        const float upMove = (float)(dl.x * player.up.x + dl.y * player.up.y + dl.z * player.up.z);
+                        const float vUp = Vector3DotProduct(Vector3Subtract(player.velocity, player.grounded ? Vector3{ 0, 0, 0 } : p->surfaceVelocity(feet)), player.up);
+                        if (step > torMaxStep) torMaxStep = step;
+                        if (upMove > 0.06f) { ++torPops; printf("bench: tor: heading %d pop %.3f m up at %.2f s (grounded %d, contact dot %.2f, v up %.2f)\n", torHeading, upMove, t, player.grounded ? 1 : 0, player.lastContactDot, vUp); }
+                        if (!player.grounded && vUp > torMaxUp) torMaxUp = vUp;
+                        if (torWasGrounded && !player.grounded) torAirAt = GetTime();
+                        if (!torWasGrounded && player.grounded && torAirAt > 0.0 && GetTime() - torAirAt < 0.15) {
+                            ++torFlicker;
+                            printf("bench: tor: heading %d ground flicker (%.0f ms in the air) at %.2f s, contact dot %.2f\n", torHeading, (GetTime() - torAirAt) * 1000.0, t, player.lastContactDot);
+                        }
+                        torWasGrounded = player.grounded;
+                        torLast = local;
+                        // Off the crown (a fall started) or 2.5 s: next heading.
+                        if (t > 2.5 || (!player.grounded && vUp < -3.0f)) {
+                            player.autoWalk = false;
+                            if (++torHeading < 8) { torPhase = 1; torStart = GetTime() - 3.0; }
+                            else {
+                                const bool pass = torPops <= 1 && torMaxStep < 0.6; // the #242 defect: repeated pops (sinking into the crown, shoved out); one-frame flickers at the crown edge and ramp hops are reported only
+                                printf("bench: tor: 8 headings: %d pops, %d ground flickers, top upward speed %.2f m/s, largest frame move %.2f m -> %s\n",
+                                       torPops, torFlicker, torMaxUp, torMaxStep, pass ? "PASS" : "FAIL");
+                                benchTor = false;
+                            }
+                        }
                     }
                 } else if (benchLedge && (ledgePhase > 0 || WorldIdle())) {
                     // --test-ledge (#240): walk, then sprint, off the sharp lip of a dug pit. In the first
@@ -4524,7 +4607,7 @@ int main(int argc, char** argv)
                         }
                         benchWalkSeconds = 0.0;
                     }
-                } else if ((WorldIdle() && benchDigStrokes == 0 && !benchPaint && !benchSaveLoad && benchWalkSeconds <= 0.0 && benchMineStrokes == 0 && minePhase != 2 && benchFlySeconds <= 0.0 && !benchSuffocate && benchOrbitSeconds <= 0.0 && !benchRide && !benchPark && !benchGravity && !benchPrecision && !benchMantle && !benchAirJump && !benchMoon && !benchHole && !benchWall && !benchLedge && !benchMenus && !benchWater && !benchFlyFollow && !benchHotbar && !benchInventory && !benchMap && !benchViewmodel && !benchQuests && !benchHunger && !benchFarm && !benchAnimals && !benchThreats && benchShotTabs == 0 && !benchForest && !benchFlow && !benchPond && !benchBucket && !benchPump && !benchTerrain && !benchShadow && !benchParticles && !benchBiomes && !benchOil && !benchSpring && !benchShotAnimals && !benchShotMachines && benchShotBiomes < 0 && !benchFarForest && !benchRecipes && !benchWeather && !benchDecor && !benchMaterials && !benchDamage && !benchCrafting && !benchSuit && !benchTools && !benchRivers && !benchRing && !benchRocket && !benchStation && !benchBlueprint && !benchSmallBody && !benchTrees && !benchChop && benchPersist == 0 && benchBuild == 0 && benchFactory == 0 && !benchProgression) || GetTime() > 600.0) {
+                } else if ((WorldIdle() && benchDigStrokes == 0 && !benchPaint && !benchSaveLoad && benchWalkSeconds <= 0.0 && benchMineStrokes == 0 && minePhase != 2 && benchFlySeconds <= 0.0 && !benchSuffocate && benchOrbitSeconds <= 0.0 && !benchRide && !benchPark && !benchGravity && !benchPrecision && !benchMantle && !benchAirJump && !benchMoon && !benchHole && !benchWall && !benchLedge && !benchTor && !benchMenus && !benchWater && !benchFlyFollow && !benchHotbar && !benchInventory && !benchMap && !benchViewmodel && !benchQuests && !benchHunger && !benchFarm && !benchAnimals && !benchThreats && benchShotTabs == 0 && !benchForest && !benchFlow && !benchPond && !benchBucket && !benchPump && !benchTerrain && !benchShadow && !benchParticles && !benchBiomes && !benchOil && !benchSpring && !benchShotAnimals && !benchShotMachines && benchShotBiomes < 0 && !benchFarForest && !benchRecipes && !benchWeather && !benchDecor && !benchMaterials && !benchDamage && !benchCrafting && !benchSuit && !benchTools && !benchRivers && !benchRing && !benchRocket && !benchStation && !benchBlueprint && !benchSmallBody && !benchTrees && !benchChop && benchPersist == 0 && benchBuild == 0 && benchFactory == 0 && !benchProgression) || GetTime() > 600.0) {
                     benchStart = GetTime();
                     printf("bench: world ready after %.2f s (%d chunks, avg build %.2f ms of which sampling %.2f ms, %d worker threads)\n",
                         GetWorldStats().lastGenerationSeconds, GetWorldStats().chunks, GetWorldStats().avgBuildMs, GetWorldStats().avgSampleMs, GetWorldStats().workerThreads);
