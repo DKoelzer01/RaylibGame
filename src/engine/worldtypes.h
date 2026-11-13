@@ -15,12 +15,14 @@
 #include "trees.h"
 #include "farsphere.h"
 #include "plots.h"
+#include "terrainarena.h"
 
 // One octree LOD node of a planetoid's surface. Its mesh is built from the planetoid's density
 // field on a worker thread and only uploaded here.
 class Chunk : public Object {
 public:
-    Mesh mesh{};          // GPU mesh (empty if the node contains no surface)
+    Mesh mesh{};          // GPU mesh (empty if the node contains no surface; unused with the terrain arena)
+    ArenaAlloc arena{};   // terrain arena ranges (terrainarena.h), when the arena is available
     Mesh waterMesh{};     // sea surface in this node (empty if none)
     FoliageGpu grass{};   // grass tufts (finest level only)
     // The build version this node still wants (0 once freed). Queued jobs check it and skip work
@@ -38,7 +40,7 @@ public:
 
     // Replace the mesh with freshly built data (main thread: uploads to the GPU).
     void setMesh(const ChunkMeshData& data);
-    bool hasMesh() const { return mesh.vaoId > 0; }
+    bool hasMesh() const { return mesh.vaoId > 0 || arena.valid(); }
 
     // `model` = the chunk's full model matrix (Planetoid::chunkModel: translation in double).
     void drawChunk(const RenderContext& ctx, const Matrix& model);

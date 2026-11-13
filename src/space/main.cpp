@@ -7,6 +7,7 @@
 #include <random>
 #include <chrono>
 #include <array>
+#include "terrainarena.h"
 #include "mainmenu.h"
 #include "world.h"
 #include "scene.h"
@@ -4397,6 +4398,7 @@ int main(int argc, char** argv)
                 SaveFileText("bench.txt", (char*)line);
                 GpuTimer_Print();
                 GpuTimer_PrintCpu();
+                if (TerrainArena_Available()) { const ArenaStats as = TerrainArena_Stats(); printf("bench: terrain arena: %d / %d vertices, %d / %d indices, %.1f chunk draws per multi-draw\n", as.vertices, as.vertexCapacity, as.indices, as.indexCapacity, as.draws / (double)std::max(1, as.flushes)); }
                 if (crackCheck) {
                     // Holes between chunks show the magenta clear colour (look down at terrain that fills the view).
                     Image shot = LoadImageFromScreen();
