@@ -532,8 +532,7 @@ void Scene::drawScene(int gamestate) {
     int drawCalls = 0;
     // Reverse-Z float depth (#135): one depth range from centimetres to infinity, so the far / mid / near
     // passes below collapse into one (no depth clears, no near/far plane juggling).
-    const bool revZ = SceneTarget_Available();
-    if (revZ) SceneTarget_Begin(clearColor);
+    const bool revZ = SceneTarget_Available() && SceneTarget_Begin(clearColor); // false (e.g. a failed resize): old passes
     BeginMode3D(camera);
     if (revZ) SceneTarget_ApplyProjection();
         rlDisableBackfaceCulling();
