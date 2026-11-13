@@ -1274,13 +1274,14 @@ void BuildChunkMeshFromBase(const DensityField& field, const TerrainDeltas& delt
                         out.tangents[v * 4 + 2] = (k + 1) / 8.0f;
                     }
                 }
-                if (planetLife && sky > 0.5f) {
-                    // The climate (Plan 5 B) for the terrain shader's biome tints, packed in y: 1 + the
-                    // temperature step (0-62 over -30..40 C) + moisture in the fraction (0 = no climate).
+                if (planetLife) { // under overhangs too: there was no climate where the sky was hidden, so no tint (#254)
+                    // The climate (Plan 5 B) for the terrain shader's biome tints, packed in y: 2 + the
+                    // temperature step (0-62 over -30..40 C) + moisture in the fraction (0 = no climate). The shader reads it
+                    // flat (per triangle): interpolated, the packing swept through whole steps and striped the tint (#254).
                     const float d = Vector3Length(p);
                     const Vector3 up = Vector3Scale(p, 1.0f / d);
                     const PlanetField::Climate cl = planetLife->climateAt(up, d - planetLife->radius);
-                    out.tangents[v * 4 + 1] = 1.0f + floorf(std::clamp((cl.temp + 30.0f) / 70.0f, 0.0f, 1.0f) * 62.0f) + std::min(cl.moist, 0.999f);
+                    out.tangents[v * 4 + 1] = 2.0f + floorf(std::clamp((cl.temp + 30.0f) / 70.0f, 0.0f, 1.0f) * 62.0f) + std::min(cl.moist, 0.999f); // from 2 (#254)
                     // Distant forests: canopy cover (x), painted in where the real trees fade out.
                     if (sky > 0.9f && (m == VoxelMaterial::Grass || m == VoxelMaterial::Regolith)) {
                         const float steep = 1.0f - Vector3DotProduct(n, up);

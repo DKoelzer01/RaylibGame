@@ -1063,13 +1063,17 @@ void generateWorld(Scene& world) {
 
 void BeginWorldStreaming() { generationStart = GetTime(); buildMsTotal = sampleMsTotal = 0.0; buildCount = 0; }
 
-void regenerateWorld(Scene& world) {
+void unloadWorld(Scene& world) {
     Jobs().clearQueued();  // in-flight jobs finish; their results are dropped (planetoid ids are gone)
     Factory::Reset();      // machines belong to the old bodies
     Fluid::Reset();        // so does flowing water
     player.nearest = nullptr; // every body goes (the player refinds its ground next update)
     gRings.clear();        // before their parent bodies go
     world.objects.clear(); // releases chunk meshes
+}
+
+void regenerateWorld(Scene& world) {
+    unloadWorld(world);
     generateWorld(world);
 }
 

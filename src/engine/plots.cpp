@@ -609,6 +609,15 @@ Plot::~Plot() {
     for (auto& kv : sections) if (kv.second.mesh.vaoId) UnloadMesh(kv.second.mesh);
 }
 
+Matrix Plot::cellModel(const Planetoid& body, const DVec3& renderOrigin) const {
+    const Matrix bodyM = body.localModel(origin, renderOrigin);
+    Matrix r = MatrixIdentity();
+    r.m0 = east.x; r.m4 = up.x; r.m8 = north.x;
+    r.m1 = east.y; r.m5 = up.y; r.m9 = north.y;
+    r.m2 = east.z; r.m6 = up.z; r.m10 = north.z;
+    return MatrixMultiply(r, bodyM);
+}
+
 static Matrix PlotSectionModel(const Plot& p, const Planetoid& body, const RenderContext& ctx, Int3 key) {
     const float s = kSectionCells * kCellSize;
     const Vector3 off = Vector3Add(Vector3Add(Vector3Scale(p.east, key.x * s), Vector3Scale(p.up, key.y * s)), Vector3Scale(p.north, key.z * s));

@@ -48,7 +48,7 @@ void main()
     fragHash = h;
     fragLatitude = abs(up.y);
     float cl = length(instUpHash.xyz);
-    fragClimate = cl > 1.5 ? vec3((floor(cl) - 1.0) / 62.0 * 70.0 - 30.0, fract(cl), 1.0) : vec3(0.0);
+    fragClimate = cl > 1.5 ? vec3((floor(cl) - 2.0) / 62.0 * 70.0 - 30.0, fract(cl), 1.0) : vec3(0.0); // codes from 2 (#254)
     fragHeight = v.y;
     gl_Position = matViewProj * vec4(fragPosition, 1.0);
 }

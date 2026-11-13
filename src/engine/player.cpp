@@ -60,7 +60,7 @@ void Player::update(Scene& world, bool inputEnabled, float dt) {
         }
         groundBody = nullptr;
     }
-    impactSpeed = 0.0f; // per-frame; cleared before the fly-mode early return too
+    impactSpeed = landingSpeed = 0.0f; // per-frame; cleared before the fly-mode early return too
     jetpackFiring = false;
     if (flyMode) {
         // Carry the camera with its reference body's motion since recordFly() (after last frame's input).
@@ -362,13 +362,30 @@ void Player::stepPhysics(Scene& world, float dt, Vector3 wish, bool jetUp, bool 
     // Airborne, velocity is world-frame but the terrain already stands where it will be at the end of
     // this frame (and update() carried us with it): move relative to its surface.
     const Vector3 frameVel = (!wasGrounded && nearest) ? nearest->surfaceVelocity(feet) : Vector3{ 0, 0, 0 };
-    feet = Vector3Add(feet, Vector3Scale(Vector3Subtract(velocity, frameVel), dt));
+    const Vector3 move = Vector3Scale(Vector3Subtract(velocity, frameVel), dt);
+    const Vector3 feetBefore = feet;
+    feet = Vector3Add(feet, move);
     collideFrameVel = (wasGrounded || !nearest) ? Vector3{ 0, 0, 0 } : nearest->surfaceVelocity(feet);
+    const Vector3 vPre = velocity; // before the push-out and the ground probe touch it
     grounded = resolveCollisions(world, feet);
     collideTrunks(feet);
     // Just jumped: the probe below the feet would still find the slope (they have risen only a few cm)
     // and re-ground the player, cancelling the jump. Collisions still push out; only grounding waits.
     if (jumpLock > 0.0f) { grounded = false; jumpLock = std::max(0.0f, jumpLock - dt); }
+    // Touchdown (#263): the speed into the floor, from the velocity before collisions, however the landing was
+    // found (a push-out, or the ground probe's skin, which at fall speeds is most landings and recorded nothing).
+    // Only walkable floors land you (groundNormal); walls and ceilings never count as landings (#255).
+    if (!wasGrounded && grounded) landingSpeed = std::max(landingSpeed, -Vector3DotProduct(Vector3Subtract(vPre, collideFrameVel), groundNormal));
+    // Wedged (#255): airborne, meant to fall but held up by steep walls (a V, an overhang corner), the fall speed
+    // must not build up while the walls stop it (it reached lethal speeds in a second or two).
+    if (!grounded) {
+        const float meantDown = -Vector3DotProduct(move, up);
+        const float wentDown = -Vector3DotProduct(Vector3Subtract(feet, feetBefore), up);
+        if (meantDown > 0.005f && wentDown < 0.25f * meantDown) {
+            const float vDown = Vector3DotProduct(Vector3Subtract(velocity, frameVel), up);
+            if (vDown < -1.0f) velocity = Vector3Add(velocity, Vector3Scale(up, -1.0f - vDown));
+        }
+    }
     // Just landed: on the ground velocity is relative to the surface (as the walking code expects), so
     // take the ground's own motion out now rather than leave a world-frame velocity for a frame.
     if (!wasGrounded && grounded) velocity = Vector3Subtract(velocity, collideFrameVel);
@@ -516,7 +533,19 @@ bool Player::resolveCollisions(Scene&, Vector3& feet) {
 void Player::applyToCamera(Scene& world) const {
     if (flyMode) return;
     const Vector3 feet = (position - world.renderOrigin).toFloat();
-    world.camera.position = Vector3Add(feet, Vector3Scale(up, eyeHeight + eyeOffset));
+    Vector3 eye = Vector3Add(feet, Vector3Scale(up, eyeHeight + eyeOffset));
+    // The eye sits at the head sphere's top (and the smoothing can lift it 0.25 m more), outside the collision
+    // shape: keep it 0.25 m clear of the terrain (the near plane's reach), pushed out along the surface normal,
+    // so it never looks through a ceiling or an overhang (#255).
+    if (nearest) {
+        float dist; Vector3 n;
+        const float clearance = 0.25f;
+        if (TerrainSurfaceDistance(*nearest, eye, dist, n) && dist < clearance) {
+            const bool inside = nearest->densityAt(nearest->toLocal(eye)) >= ISO_LEVEL;
+            eye = Vector3Add(eye, Vector3Scale(n, (inside ? std::max(0.0f, -dist) : 0.0f) + clearance - std::max(dist, 0.0f)));
+        }
+    }
+    world.camera.position = eye;
     world.camera.target = Vector3Add(world.camera.position, forward);
     // Reduce motion: the camera's up follows the ground's gently (no lurch when it changes).
     if (smoothMotion && Vector3Length(cameraUp) > 0.5f) cameraUp = Vector3Normalize(Vector3Lerp(cameraUp, up, std::min(1.0f, 4.0f * GetFrameTime())));
