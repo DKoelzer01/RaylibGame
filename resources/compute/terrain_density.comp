@@ -1,0 +1,56 @@
+#version 430
+// Plan 6 step 4 (#147): every sample of a batch of density blocks on the GPU (PlanetField::sampleBlock): the
+// surface from the CPU's gnomonic height grid (bilinear, as on the CPU), then densityNear. Work group y =
+// block, x covers that block's S^3 samples (origin + (x, y, z) * stride). Matches the CPU exactly
+// (--test-terrain-gpu).
+layout(local_size_x = 64) in;
+#include "terrain.glsl"
+
+struct Block {
+    vec4 o;    // origin, stride
+    vec4 n;    // grid normal, footprint
+    vec4 t1;   // tangent 1, umin
+    vec4 t2;   // tangent 2, vmin
+    vec4 s;    // su, sv, -, -
+    ivec4 a;   // S, nu, nv, grid offset (nodes)
+    ivec4 b;   // island offset (islands), island count, output offset (samples), -
+};
+layout(std430, binding = 0) readonly buffer Grid { vec4 grid[]; };       // per node: elevation, 3D mask, f, -
+layout(std430, binding = 1) readonly buffer Islands { vec4 islands[]; }; // 3 per island
+layout(std430, binding = 2) writeonly buffer Out { float density[]; };
+layout(std430, binding = 3) readonly buffer Blocks { Block blocks[]; };
+int gIslandOff = 0;
+vec4 islandData(int i, int k) { return islands[(gIslandOff + i) * 3 + k]; }
+
+uniform float outerR, innerR;   // radius + max / min elevation
+
+void main() {
+    Block B = blocks[gl_WorkGroupID.y];
+    uint i = gl_GlobalInvocationID.x;
+    int S = B.a.x;
+    if (i >= uint(S * S * S)) return;
+    gIslandOff = B.b.x;
+    islandCount = B.b.y;
+    uint outI = uint(B.b.z) + i;
+    float stride = B.o.w, fp = B.n.w;
+    int nu = B.a.y, nv = B.a.z, g0 = B.a.w;
+    int x = int(i) % S, y = (int(i) / S) % S, z = int(i) / (S * S);
+    precise vec3 p = vec3(B.o.x + float(x) * stride, B.o.y + float(y) * stride, B.o.z + float(z) * stride);
+    precise float d = vlen(p);
+    if (d > outerR + 4.0) { density[outI] = ISO_LEVEL + DENSITY_GRADIENT * (outerR - d); return; }
+    precise float surface = innerR;
+    precise float cmask = 0.0, cf = 0.0;
+    if (d >= innerR - 4.0) {
+        precise float s = vdot(p, B.n.xyz);
+        precise float fu = clamp(xdiv(xdiv(vdot(p, B.t1.xyz), s) - B.t1.w, B.s.x), 0.0, float(nu - 1) - 1e-3);
+        precise float fv = clamp(xdiv(xdiv(vdot(p, B.t2.xyz), s) - B.t2.w, B.s.y), 0.0, float(nv - 1) - 1e-3);
+        int iu = int(fu), iv = int(fv);
+        precise float au = fu - float(iu), av = fv - float(iv);
+        int k0 = g0 + iv * nu + iu, k1 = k0 + nu;
+        vec4 a0 = grid[k0], b0 = grid[k0 + 1], a1 = grid[k1], b1 = grid[k1 + 1];
+        surface = planetRadius + (a0.x * (1.0 - au) + b0.x * au) * (1.0 - av) + (a1.x * (1.0 - au) + b1.x * au) * av;
+        cmask = (a0.y * (1.0 - au) + b0.y * au) * (1.0 - av) + (a1.y * (1.0 - au) + b1.y * au) * av;
+        cf = (a0.z * (1.0 - au) + b0.z * au) * (1.0 - av) + (a1.z * (1.0 - au) + b1.z * au) * av;
+    }
+    density[outI] = densityNear(p, d, surface, fp, cmask, cf);
+}

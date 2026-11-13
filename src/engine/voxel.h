@@ -177,6 +177,9 @@ public:
     // Surface height above sea level along a unit direction; footprint > 0 leaves out detail finer
     // than samples that far apart (see SimplexNoise::fractalLimited).
     float elevation(Vector3 dir, float footprint = 0.0f) const;
+    float elevationBase(Vector3 dir, float footprint = 0.0f) const; // land + detail + biome landforms: no rivers, lakes, ponds (Plan 6: GPU port check)
+    // The terrain noise fields in a fixed order for the GPU port (terrain.glsl): frequency + seed per field.
+    void gpuNoiseParams(std::vector<float>& out) const;
     // Inland water (planets): rivers of the drainage network (rivers.h) in channels they carve, lakes
     // in filled depressions, and
     // ponds (12-38 m, flat surface, a low embankment where the ground falls away) in some
@@ -252,6 +255,27 @@ public:
     struct Column3D { float mask = 0.0f, f = 0.0f; };          // the 3D band's per-column strength (Plan 5 C)
     Column3D terrain3DColumn(Vector3 dir, float elev) const;
     float terrain3D(Vector3 p, float d, float surface, float footprint, const Column3D* col = nullptr) const;
+
+    // baseDensityBlock in two halves (Plan 6 step 4, #147): the height map on a gnomonic grid tangent at the
+    // block centre (rivers, lakes, ponds included: CPU), then every sample from it (densityNear: on the CPU
+    // here, or on the GPU, terrain_density.comp, with identical results). prepareBlock returns false for
+    // blocks that take the per-sample path instead (wholly outside the surface band, or too large).
+    struct BlockGrid {
+        Vector3 n{}, t1{}, t2{};
+        float umin = 0, vmin = 0, su = 1, sv = 1;
+        int nu = 0, nv = 0;
+        std::vector<float> h;            // elevation per node
+        std::vector<Column3D> cols;      // 3D band strength per node
+    };
+    bool prepareBlock(Vector3 origin, float stride, int S, float footprint, BlockGrid& g) const;
+    void sampleBlock(Vector3 origin, float stride, int S, float footprint, const BlockGrid& g, float* out) const;
+    // The floating islands (Plan 5 C) whose 4 km cells a block's samples may fall in, for the GPU: per island
+    // (cell x, y, z, ok), (dir xyz, waist), (r, depth, 0, 0). False when too many cells (> maxCells).
+    bool blockIslands(Vector3 origin, float stride, int S, std::vector<float>& out, int maxCells) const;
+    float mantleRadiusValue() const { return mantleRadius; }
+    float minElevationValue() const { return minElevation; }
+    float maxElevationValue() const { return maxElevation; }
+    bool isMoon() const { return moon; }
 private:
     struct RiverState { std::once_flag once; std::unique_ptr<RiverNetwork> net; ~RiverState(); };
     struct PondState { std::mutex m; std::unordered_set<uint64_t> claimed; std::atomic<int> n{ 0 }; };
@@ -332,6 +356,11 @@ struct ChunkMeshData {
 // overlap with the +x/+y/+z neighbours to hide cracks between LOD levels) and runs marching cubes.
 // Thread-safe: touches only its arguments.
 void BuildChunkMesh(const DensityField& field, const TerrainDeltas& deltas, ChunkMeshData& out);
+// The density block a chunk build samples (E^3 at origin + i * stride, the given footprint), and the build's
+// second half from that block (edits, marching cubes, materials): Plan 6 step 4 samples the block on the GPU.
+struct ChunkBlock { Vector3 origin{}; float stride = 1.0f, footprint = 1.0f; int E = 0; };
+ChunkBlock ChunkBlockOf(const NodeKey& key);
+void BuildChunkMeshFromBase(const DensityField& field, const TerrainDeltas& deltas, ChunkMeshData& out, const float* base, float sampledMs);
 
 
 #endif

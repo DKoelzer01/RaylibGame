@@ -5,6 +5,7 @@
 #include "worldtypes.h"
 #include "world.h"
 #include "scenetarget.h"
+#include "terraingpu.h"
 #include "trees.h"
 #include <raylib.h>
 #include <rlgl.h>
@@ -881,6 +882,7 @@ Scene::~Scene() {
         UnloadTextureArray(terrainLayers);
         TerrainArena_Unload();
         SceneTarget_Unload();
+        TerrainGpu_Unload();
     }
     // Free the maps arrays only; shaders and textures are released explicitly here.
     MemFree(terrainMaterial.maps);
