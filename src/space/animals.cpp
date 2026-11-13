@@ -130,6 +130,9 @@ struct Animal {
     Vector3 herdCentre{}; int herdSize = 0;
     float gait = 0.0f, moveSpeed = 0.0f;        // leg cycle (radians) and the last speed (m/s)
     float stuckTime = 0.0f;                     // seconds without progress while trying to move
+    float settleIn = 0.0f;                      // seconds to the next ground check (#223)
+    float detourSide = 0.0f;                    // +1 / -1: the side it goes round an obstacle on (0: none)
+    float detourHeading = 0.0f, detourTime = 0.0f;   // the detour being followed, and for how much longer (s)
 };
 std::vector<Animal> animals;
 std::unordered_map<std::string, std::unordered_set<uint64_t>> spawnedTiles; // body -> herd tiles decided
@@ -157,10 +160,34 @@ Planetoid* BodyNamed(Scene& world, const std::string& name) {
     return nullptr;
 }
 
-// The surface point under a body-local direction, and whether an animal may stand there.
-bool Ground(const PlanetField& pf, Vector3 dir, Vector3& at, float& elevation) {
-    elevation = pf.elevation(dir);
-    at = Vector3Scale(dir, pf.radius + elevation);
+// Solid enough to block an animal (a wall, an overhang): ~0.4 m into rock. Thin near-iso films hover just over the
+// ground in places (density within ~0.06 of iso); they must not stop a walk.
+constexpr float kRockMargin = 0.1f;
+
+// The surface point under a body-local direction, and whether an animal may stand there. The ground is the
+// density field (#223: the height map ignored the 3D band, crags, tors, digs and builds, so animals walked
+// through them): searched down from `above` metres over radius `ref` to `below` under it, in 0.25 m steps
+// with the crossing interpolated. ref < 0 (spawning): around the height map, the whole 3D band. Fails where
+// the start is inside rock (a wall or overhang) or nothing solid is in reach (a cliff or a hole).
+bool Ground(const Planetoid& body, const PlanetField& pf, Vector3 dir, Vector3& at, float& elevation,
+            float ref = -1.0f, float above = 0.0f, float below = 0.0f) {
+    if (ref < 0.0f) { ref = pf.radius + pf.elevation(dir); above = 30.0f; below = 16.0f; }
+    auto dens = [&](float r) { return body.densityAt(Vector3Scale(dir, r)); };
+    float prevR = ref + above, prevD = dens(prevR);
+    if (prevD >= ISO_LEVEL + kRockMargin) return false;
+    bool found = false;
+    for (float r = prevR - 0.25f; r >= ref - below - 1e-4f; r -= 0.25f) {
+        const float d = dens(r);
+        if (d >= ISO_LEVEL && prevD < ISO_LEVEL) { // air above, solid here (a start inside a thin film looks on down)
+            const float t = std::clamp((ISO_LEVEL - prevD) / std::max(d - prevD, 1e-6f), 0.0f, 1.0f);
+            at = Vector3Scale(dir, prevR + (r - prevR) * t);
+            found = true;
+            break;
+        }
+        prevR = r; prevD = d;
+    }
+    if (!found) return false;
+    elevation = Vector3Length(at) - pf.radius;
     if (elevation < 0.3f) return false; // the sea
     if (pf.inlandWaterNear(dir, 0.0f)) {
         const float w = pf.waterElevation(dir);
@@ -264,7 +291,7 @@ void SpawnHerds(Scene& world, Planetoid& body, const PlanetField& pf, Vector3 up
             const Species& s = species[fit[(size_t)(Rand01(h) * fit.size()) % fit.size()]];
             if (s.hostile && Vector3Distance(Vector3Scale(centre, pf.radius), Vector3Scale(StartDir(body, pf), pf.radius)) < 500.0f) continue; // a safe start
             Vector3 at; float e;
-            if (!Ground(pf, centre, at, e) || e > 900.0f) continue; // no herds at sea or above the tree line
+            if (!Ground(body, pf, centre, at, e) || e > 900.0f) continue; // no herds at sea or above the tree line
             const int n = s.herdMin + (int)(Rand01(h) * (s.herdMax - s.herdMin + 1));
             Animals_Spawn(world, body, s.id, at, n);
         }
@@ -318,7 +345,7 @@ int Animals_Spawn(Scene& world, Planetoid& body, const std::string& id, Vector3 
         const float r = spread >= 18.0f ? 4.0f + 14.0f * Rand01(h) : spread * Rand01(h), t = 2.0f * PI * Rand01(h);
         const Vector3 d = Vector3Normalize(Vector3Add(Vector3Scale(up, pf->radius), Vector3Add(Vector3Scale(east, r * cosf(t)), Vector3Scale(north, r * sinf(t)))));
         Vector3 at; float e;
-        if (!Ground(*pf, d, at, e)) continue;
+        if (!Ground(body, *pf, d, at, e)) continue;
         Animal a;
         a.species = si;
         a.body = body.name;
@@ -477,6 +504,14 @@ void Animals_Update(Scene& world, float dt, float worldDt, bool inputEnabled) {
         if (dist > 300.0f) continue;
         float step = dt;
         if (dist > 80.0f) { if ((frameNo + (int)i) % 4) continue; step = dt * 4.0f; }
+        if ((a.settleIn -= step) <= 0.0f) {
+            a.settleIn = 1.0f;
+            // Settle (#223): ground dug out from under it drops it onto what is left (up to 3 m); inside rock
+            // (an older save, ground built over it) or over a deeper hole, it goes to the surface found from above.
+            const Vector3 d = Vector3Normalize(a.pos);
+            Vector3 g; float ge;
+            if (Ground(*body, *field, d, g, ge, Vector3Length(a.pos), 0.6f, 3.0f) || Ground(*body, *field, d, g, ge)) a.pos = g;
+        }
         const Vector3 up = Vector3Normalize(a.pos);
         Vector3 east, north;
         TangentFrame(up, east, north);
@@ -576,14 +611,45 @@ void Animals_Update(Scene& world, float dt, float worldDt, bool inputEnabled) {
         }
         if (speed <= 0.0f) { a.moveSpeed = 0.0f; continue; }
         // Move along the surface; turn away from water, cliffs and build parts.
-        const Vector3 fwd = Vector3Add(Vector3Scale(east, cosf(a.heading)), Vector3Scale(north, sinf(a.heading)));
         const float stepLen = speed * step * (0.6f + 0.4f * a.age);
-        const Vector3 nd = Vector3Normalize(Vector3Add(a.pos, Vector3Scale(fwd, stepLen)));
         Vector3 at; float e;
         const float height = s.size.y * (0.6f + 0.4f * a.age);
-        const bool ok = Ground(*field, nd, at, e) &&
-                        fabsf(Vector3Length(at) - Vector3Length(a.pos)) <= stepLen * 0.84f + 0.05f && // < 40 degrees
-                        !BlockedAlong(*body, a.pos, at, height);
+        // The ground ahead within a 40 degree climb or drop of where it stands (a steeper step is a wall or a
+        // cliff), with room for its body above (no walking under overhangs into rock).
+        // A small ledge (up to 0.35 m, less for small kinds) can be stepped up or hopped down whatever the stride:
+        // the 0.25 m terrain lattice and digs make steps the old height map never had.
+        const float reach = std::max(stepLen * 0.84f + 0.05f, std::min(0.35f, height * 0.45f));
+        // Going somewhere (chasing, fleeing, following, back to the herd) it leaps ledges up to 1.3x its height (1.2 m at
+        // most) and hops down 1.5 m; grazing and wandering it keeps to small steps. Taller cliffs still stop it.
+        const float reachUp = steer ? std::max(reach, std::min(1.2f, height * 1.3f)) : reach;
+        const float reachDown = steer ? std::max(reach, 1.5f) : reach;
+        auto tryStep = [&](float heading) {
+            const Vector3 fwd = Vector3Add(Vector3Scale(east, cosf(heading)), Vector3Scale(north, sinf(heading)));
+            const Vector3 nd = Vector3Normalize(Vector3Add(a.pos, Vector3Scale(fwd, stepLen)));
+            return Ground(*body, *field, nd, at, e, Vector3Length(a.pos), reachUp, reachDown) &&
+                   body->densityAt(Vector3Add(at, Vector3Scale(nd, height * 0.8f))) < ISO_LEVEL + kRockMargin &&
+                   !BlockedAlong(*body, a.pos, at, height);
+        };
+        // Heading somewhere (the player, the herd, away from a threat) and blocked: go round (#223: real terrain has
+        // ledges, pits and basins the height map hid). The detour is held for a while - following the obstacle on one
+        // side, turning as far as backing off - before aiming at the target again, so a pocket or a long ledge
+        // doesn't trap it pushing straight into the same edge.
+        if (steer && a.detourTime > 0.0f) { a.detourTime -= step; a.heading = a.detourHeading; }
+        else if (a.detourTime > 0.0f) a.detourTime = 0.0f;
+        bool ok = tryStep(a.heading);
+        if (ok && a.detourTime <= 0.0f) a.detourSide = 0.0f;
+        if (!ok && steer) {
+            if (a.detourSide == 0.0f) a.detourSide = Rand01(a.rng) < 0.5f ? 1.0f : -1.0f;
+            for (float turn : { 0.5f, 1.0f, 1.6f, 2.2f, 3.1f })
+                for (float side : { a.detourSide, -a.detourSide })
+                    if (!ok && tryStep(a.heading + side * turn)) {
+                        ok = true;
+                        a.heading += side * turn;
+                        a.detourSide = side;
+                        a.detourHeading = a.heading;
+                        a.detourTime = 1.5f;
+                    }
+        }
         if (ok) {
             a.pos = at;
             a.moveSpeed = speed;

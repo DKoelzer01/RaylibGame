@@ -108,8 +108,8 @@ static Vector3 StartSpawnDir(Planetoid& body) {
     return { 0, 1, 0 };
 }
 
-// A new game on the world as generated: the player at the start, the ship parked ahead, a
-// clearing for both, the starting kit. `reset` also clears what a previous game left behind
+// A new game on the world as generated: the player at the start, a
+// clearing (no tree on the spot), the starting kit. `reset` also clears what a previous game left behind
 // (inventory, quest tier, survival state).
 static void StartNewWorld(Scene& world, bool reset) {
     if (reset) {
@@ -3381,6 +3381,7 @@ int main(int argc, char** argv)
                         check(threatSpawned == 1 && d0 > 40.0f && d0 < 65.0f, "a stalker comes out of the dark 45-60 m away");
                         step(15.0f);
                         threatBite = 100.0f - survival.health;
+                        if (threatBite <= 0.0f) printf("bench: threats: the stalker ended %.1f m away after 15 s\n", nearestNight());
                         check(threatBite > 0.0f, "it hunts the player down and bites");
                         // A campfire beside the player: no more bites; the stalker keeps its distance.
                         survival.health = 100.0f;
@@ -3442,7 +3443,7 @@ int main(int argc, char** argv)
                         const Vector3 up = Vector3Normalize(me);
                         Vector3 east = Vector3Normalize(Vector3CrossProduct({ 0, 1, 0 }, up));
                         const Vector3 north = Vector3CrossProduct(up, east);
-                        auto onGround = [&](int i) { const Vector3 a = Animals_Position(i); return fabsf(Vector3Length(a) - (pf->radius + pf->elevation(Vector3Normalize(a)))) < 0.05f; };
+                        auto onGround = [&](int i) { const Vector3 a = Animals_Position(i), u = Vector3Normalize(a); return p->densityAt(Vector3Add(a, Vector3Scale(u, 0.15f))) < ISO_LEVEL && p->densityAt(Vector3Subtract(a, Vector3Scale(u, 0.15f))) >= ISO_LEVEL; }; // on the density surface (#223), not the height map
                         auto step = [&](float seconds) { for (float t = 0.0f; t < seconds; t += 0.1f) Animals_Update(world, 0.1f, 0.1f, false); };
                         animalNatural = Animals_Count(); // herds placed around the player as it arrived
                         check(animalNatural > 0, "herds spawn around the player");
@@ -3478,7 +3479,10 @@ int main(int argc, char** argv)
                         // second press eats.
                         {
                             Animals_Reset();
-                            Animals_Spawn(world, *p, "woolback", Vector3Add(me, Vector3Scale(east, 12.0f)), 1, false, 0.5f);
+                            // Behind the player (a ~1.2 m natural ledge lies east of the start, seed 42): animals now go round ledges
+                            // and build parts instead of walking through them (#223).
+                            const Vector3 ahead = Vector3Normalize(p->dirToLocal(Vector3Subtract(player.forward, Vector3Scale(player.up, Vector3DotProduct(player.forward, player.up)))));
+                            Animals_Spawn(world, *p, "woolback", Vector3Subtract(me, Vector3Scale(ahead, 12.0f)), 1, false, 0.5f);
                             const float h0 = Animals_Count() ? Vector3Distance(Animals_Position(0), me) : 0.0f;
                             inventory.add("berries", 2);
                             Hotbar_Bind(8, "berries");
@@ -3559,6 +3563,29 @@ int main(int argc, char** argv)
                         if (FILE* f = fopen(path.c_str(), "r")) { loadExtrasHook(f); fclose(f); }
                         remove(path.c_str());
                         check(Animals_Count() == before && Vector3Distance(Animals_Position(0), pos0) < 0.01f, "saved and loaded");
+                        // Terrain (#223): a pit dug under a standing animal drops it onto the pit floor; animals
+                        // grazing around a 4 m pit for a minute never end up inside the ground or in the air.
+                        {
+                            Animals_Reset();
+                            const Vector3 pitAt = Vector3Add(me, Vector3Scale(north, 25.0f));
+                            Animals_Spawn(world, *p, "woolback", pitAt, 1, false, 0.0f);
+                            const float r0 = Vector3Length(Animals_Position(0));
+                            ApplyTerrainEdit(*p, TerrainEdit{ Animals_Position(0), 2.0f, -10.0f });
+                            step(2.5f);
+                            const float dropped = r0 - Vector3Length(Animals_Position(0));
+                            check(Animals_Count() == 1 && dropped > 0.8f && onGround(0), "an animal over a dug hole drops onto its floor");
+                            Animals_Reset();
+                            const Vector3 u = Vector3Normalize(pitAt);
+                            for (int k = 1; k < 4; ++k) ApplyTerrainEdit(*p, TerrainEdit{ Vector3Subtract(pitAt, Vector3Scale(u, 1.2f * k)), 2.4f, -10.0f });
+                            Animals_Spawn(world, *p, "woolback", Vector3Add(pitAt, Vector3Scale(east, 4.0f)), 6, false, 3.0f);
+                            int bad = 0, samples = 0;
+                            for (float t = 0.0f; t < 60.0f; t += 0.1f) {
+                                Animals_Update(world, 0.1f, 0.1f, false);
+                                for (int i = 0; i < Animals_Count(); ++i) { ++samples; bad += onGround(i) ? 0 : 1; }
+                            }
+                            printf("bench: animals: around a dug pit for a minute: %d of %d samples off the ground, hole drop %.2f m\n", bad, samples, dropped);
+                            check(samples > 0 && bad <= samples / 100, "animals stay on the ground around a dug pit");
+                        }
                         // 200 within 300 m: the update stays under 1 ms.
                         Animals_Reset();
                         for (int k = 0; k < 20; ++k) Animals_Spawn(world, *p, "woolback", Vector3Add(me, Vector3Add(Vector3Scale(east, -150.0f + 15.0f * k), Vector3Scale(north, 40.0f))), 10);
