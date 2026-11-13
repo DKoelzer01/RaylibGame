@@ -135,7 +135,7 @@ void Hotbar_Update(Scene&, bool inputEnabled, bool piloting) {
     const std::string& cur = slots[selected];
     const bool inHand = cur.empty() || cur == terrainTool.heldTool || Survival_IsFood(cur) || Animals_IsFeed(cur);
     if (!buildTool.active && !inHand) {
-        for (int i = 0; i < kHotbarSlots; ++i) if (slots[i].empty()) { selected = i; break; } terrainTool.holdingItem = false;
+        for (int i = 0; i < kHotbarSlots; ++i) if (slots[i].empty()) { selected = i; break; }
         terrainTool.heldTool.clear();
     }
     // A tool lost (or never carried) falls back to bare hands.
@@ -152,9 +152,13 @@ void Hotbar_Update(Scene&, bool inputEnabled, bool piloting) {
             if (i != selected && inventory.count(slots[i]) <= 0) free = i;
         if (free >= 0) Hotbar_Bind(free, s.id);
     }
-    if (!inputEnabled) return;
-    const int k = Hotbar_KeySlot();
-    if (k >= 0) Select(k, piloting);
+    if (inputEnabled) {
+        const int k = Hotbar_KeySlot();
+        if (k >= 0) Select(k, piloting);
+    }
+    // Food or feed really in hand (not just selected: the last one eaten or fed leaves bare hands): RMB
+    // never places terrain with it (#201). Derived each frame so it cannot go stale.
+    terrainTool.holdingItem = !Hotbar_HeldFood().empty();
 }
 
 void Hotbar_DrawHUD(bool piloting) {
