@@ -392,8 +392,15 @@ void Player::stepPhysics(Scene& world, float dt, Vector3 wish, bool jetUp, bool 
             const Vector3 probe = ll > 1e-4f ? Vector3Add(feet, Vector3Scale(level, ahead / ll)) : feet;
             const float depth = 0.4f + 1.6f * ahead; // ~58 degrees: steeper than walkable
             bool ground = false;
-            for (float k = 0.1f; k <= depth && !ground; k += 0.15f)
-                ground = p.densityAt(p.toLocal(Vector3Subtract(probe, Vector3Scale(up, k)))) >= ISO_LEVEL;
+            for (float k = 0.1f; k <= depth && !ground; k += 0.15f) {
+                const Vector3 at = Vector3Subtract(probe, Vector3Scale(up, k));
+                ground = p.densityAt(p.toLocal(at)) >= ISO_LEVEL;
+                if (!ground && p.plots) // built parts count as ground too (stairs, platform steps)
+                    for (auto& pl : p.plots->plots) {
+                        Vector3 c = p.toLocal(at), nl;
+                        if (pl->collideSphere(c, 0.08f / p.scale, nl)) { ground = true; break; }
+                    }
+            }
             if (!ground) velocity = level;
         }
     }
