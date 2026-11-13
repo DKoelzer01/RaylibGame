@@ -149,3 +149,4 @@ ev_hull 1            = titanium_alloy_plate 4, superconductor 4, iridium_ingot 1
 fusion_reactor 1     = ev_hull 1, superconductor 8, advanced_circuit 2, platinum_ingot 2
 mass_driver 1        = ev_hull 1, superconductor 12, steel_plate 8, advanced_circuit 1
 cargo_capsule 1      = aluminium_plate 4, iron_plate 2
+fibre 2           = cactus 1

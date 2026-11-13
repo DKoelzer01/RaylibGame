@@ -185,9 +185,12 @@ PlanetField::PlanetField(unsigned int seed, float radius_, bool moon_)
     rugged = SeededNoise(rng, 1.0f / 1600.0f);        // 3D terrain (plan item 6): where hills turn to cliffs
     cliffs = SeededNoise(rng, 1.0f / 45.0f);          // ...their shape (ridged, stretched upward)
     warp3 = SeededNoise(rng, 1.0f / 70.0f);           // ...and its domain warp (leaning crests, undercuts)
+    tempNoise = SeededNoise(rng, 1.0f / 4200.0f);     // biomes (Plan 5 B): regional warm and cool patches
+    moistNoise = SeededNoise(rng, 1.0f / 3200.0f);    // ...wet and dry ones
+    biomeJitter = SeededNoise(rng, 1.0f / 90.0f);     // ...and a fine wobble that interleaves their borders
     // Bounds of elevation() below (each noise term is in [-1, 1]).
     if (moon) { minElevation = -90.0f; maxElevation = 340.0f; }
-    else { minElevation = -740.0f; maxElevation = 1690.0f + 30.0f; } // + the 3D terrain band
+    else { minElevation = -740.0f; maxElevation = 1690.0f + 30.0f + 15.0f; } // + the 3D terrain band + biome landforms (dunes, mesas)
 }
 
 // River valleys: 70 m deep, with a flat floodplain floor (valley-noise units < kValleyFloor, room for
@@ -359,6 +362,7 @@ float PlanetField::elevation(Vector3 dir, float fp) const {
     const Land l = land(dir, fp);
     if (moon) return l.h;
     float h = l.h + l.detail;
+    h += biomeShape(dir, h, fp);
     // Rivers of the drainage network: a valley (a floodplain 2.5 channel half-widths across at the
     // water, then sides rising 0.3 m per m) cut into higher ground, low banks where the ground dips
     // below the water, and the channel bed. The valley stays resolved further out than the channel.
@@ -416,6 +420,40 @@ float PlanetField::elevation(Vector3 dir, float fp) const {
         });
     }
     return h;
+}
+
+float PlanetField::biomeShape(Vector3 dir, float h, float fp) const {
+    if (moon || h < 2.0f) return 0.0f;
+    const Climate c = climateAt(dir, h);
+    auto smooth = [](float a, float b, float x) { const float t = std::clamp((x - a) / (b - a), 0.0f, 1.0f); return t * t * (3.0f - 2.0f * t); };
+    const float hot = smooth(16.0f, 20.0f, c.temp);
+    const float desert = hot * smooth(0.27f, 0.2f, c.moist);
+    const float badlands = hot * smooth(0.2f, 0.27f, c.moist) * (1.0f - smooth(0.36f, 0.42f, c.moist));
+    const float swamp = smooth(0.7f, 0.82f, c.moist) * smooth(9.0f, 15.0f, c.temp) * (1.0f - smooth(60.0f, 110.0f, h));
+    if (desert + badlands + swamp < 1e-3f) return 0.0f;
+    const float x = dir.x * radius, y = dir.y * radius, z = dir.z * radius;
+    float dh = 0.0f;
+    if (desert > 0.0f && fp < 48.0f) {
+        // Dunes: ~55 m crests across the prevailing wind, wandering, their height swelling and fading
+        // (up to ~9 m); gone where samples are too far apart to show them. Fade near the coast.
+        const float warp = 2.2f * biomeJitter.fractal(2, x * 0.25f, y * 0.25f, z * 0.25f);
+        const float u = (x * 0.8f + z * 0.6f) / 55.0f + warp;
+        const float crest = powf(0.5f + 0.5f * sinf(u * 6.2831853f), 2.2f);
+        const float swell = 0.55f + 0.45f * moistNoise.fractal(1, x * 6.0f, y * 6.0f, z * 6.0f);
+        dh += desert * crest * 9.0f * swell * smooth(4.0f, 20.0f, h) * std::clamp(2.0f - fp / 24.0f, 0.0f, 1.0f);
+    }
+    if (badlands > 0.0f) {
+        // Mesas: the height in 14 m steps, each step a flat top that rises sharply at its edge.
+        const float step = 14.0f, t = h / step, f = t - floorf(t);
+        const float terraced = (floorf(t) + smooth(0.72f, 0.92f, f)) * step;
+        dh += (terraced - h) * badlands;
+    }
+    if (swamp > 0.0f) {
+        // Swamps: pulled down toward a low, gently rolling floor 2-5 m above the sea.
+        const float floorH = 3.5f + 1.5f * biomeJitter.fractal(1, x, y, z);
+        if (h > floorH) dh += (floorH - h) * 0.85f * swamp;
+    }
+    return dh;
 }
 
 float PlanetField::waterElevation(Vector3 dir, float fp) const {
@@ -729,6 +767,56 @@ void PlanetField::baseDensityBlock(Vector3 o, float stride, int S, float fp, flo
             }
 }
 
+// ---------------------------------------------------------------------------------------------
+// Biomes (Plan 5 B)
+// ---------------------------------------------------------------------------------------------
+
+const char* BiomeName(Biome b) {
+    static const char* names[(int)Biome::Count] = { "Ocean", "Jungle", "Savanna", "Desert", "Badlands", "Forest", "Meadow", "Swamp", "Taiga", "Tundra", "Alpine", "Polar" };
+    return (int)b < (int)Biome::Count ? names[(int)b] : "?";
+}
+
+PlanetField::Climate PlanetField::climateAt(Vector3 dir, float elev) const {
+    Climate c;
+    if (moon) { c.temp = -20.0f; c.moist = 0.0f; return c; }
+    const float lat = fabsf(dir.y);
+    const float x = dir.x * radius, y = dir.y * radius, z = dir.z * radius;
+    // Warm at the equator, cold at the poles; 6.5 C colder per km of height; regional patches +-7 C.
+    c.temp = 30.0f - 44.0f * powf(lat, 1.5f) - 6.5f * std::max(elev, 0.0f) / 1000.0f + 7.0f * tempNoise.fractal(2, x, y, z);
+    // Moisture: regional wet and dry patches, wetter in the lowlands near the sea.
+    c.moist = 0.5f + 0.85f * moistNoise.fractal(3, x, y, z) + 0.08f * (1.0f - Smoothstep(10.0f, 150.0f, elev)); // noise sits mostly in +-0.4
+    c.moist = std::clamp(c.moist, 0.0f, 1.0f);
+    return c;
+}
+
+Biome PlanetField::biomeOf(const Climate& c, float elev) const {
+    if (moon) return Biome::Polar;
+    if (elev < 0.0f) return Biome::Ocean;
+    if (c.temp < -12.0f) return Biome::Polar;
+    if (elev > 850.0f) return Biome::Alpine;
+    if (c.temp < -2.0f) return Biome::Tundra;
+    if (c.temp < 7.0f) return c.moist > 0.3f ? Biome::Taiga : Biome::Tundra;
+    if (c.temp < 19.0f) {
+        if (c.moist < 0.33f) return Biome::Meadow;
+        if (c.moist > 0.74f && elev < 90.0f) return Biome::Swamp;
+        return Biome::Forest;
+    }
+    if (c.moist < 0.24f) return Biome::Desert;
+    if (c.moist < 0.37f) return Biome::Badlands;
+    if (c.moist < 0.58f) return Biome::Savanna;
+    if (c.moist > 0.8f && elev < 70.0f) return Biome::Swamp;
+    return Biome::Jungle;
+}
+
+Biome PlanetField::biomeAt(Vector3 dir, float elev) const {
+    Climate c = climateAt(dir, elev);
+    // A fine wobble (~90 m) on the climate: neighbouring biomes interleave over ~100-150 m at a border.
+    const float j = biomeJitter.fractal(2, dir.x * radius, dir.y * radius, dir.z * radius);
+    c.temp += 1.2f * j;
+    c.moist += 0.035f * j;
+    return biomeOf(c, elev);
+}
+
 Vector3 PlanetField::findSpawnDir(unsigned int seed) const {
     std::mt19937 rng(seed ^ 0x5eedu);
     std::uniform_real_distribution<float> unit(0.0f, 1.0f);
@@ -758,9 +846,12 @@ Vector3 PlanetField::findSpawnDir(unsigned int seed) const {
             if (baseDensity(Vector3Scale(dir, radius + e - depth)) < ISO_LEVEL) { solid = false; break; }
         if (!solid) continue;
         // Prefer flat, low ground: good enough is good enough.
-        const float score = -slope * 100.0f - e * 0.01f;
+        // Start in a temperate forest or meadow (Plan 5 B); other biomes only when none is found.
+        const Biome b = biomeAt(dir, e);
+        const bool temperate = b == Biome::Forest || b == Biome::Meadow;
+        const float score = -slope * 100.0f - e * 0.01f - (temperate ? 0.0f : 1000.0f);
         if (score > bestScore) { bestScore = score; best = dir; }
-        if (slope < 0.01f) break;
+        if (slope < 0.01f && temperate) break;
     }
     return best;
 }
@@ -804,8 +895,14 @@ VoxelMaterial PlanetField::materialSky(Vector3 p, float base, float fp, Vector3 
         if (slope > 0.45f) return VoxelMaterial::Rock;                                                       // cliffs: bare stone
         if (e < -80.0f) return VoxelMaterial::Gravel;                                                        // deep sea floor
         if (e < 6.0f + 4.0f * wobble) return VoxelMaterial::Sand;                                            // beaches, shallows
+        // Biomes (Plan 5 B). The terrain shader tints each by the climate (red sand in the badlands,
+        // dry grass on the savanna, dark mud in swamps).
+        const Biome biome = biomeAt(up, e);
+        if (biome == Biome::Desert) return VoxelMaterial::Sand;                                              // dunes all the way down
+        if (biome == Biome::Badlands) return slope > 0.18f ? VoxelMaterial::Rock : skin ? VoxelMaterial::Sand : VoxelMaterial::Rock; // red sand over banded rock
         if (slope > 0.3f || e > 800.0f + 100.0f * wobble) return VoxelMaterial::Gravel;                     // scree, alpine
-        if (lat > 0.62f + 0.06f * wobble) return skin ? VoxelMaterial::Gravel : VoxelMaterial::Regolith;    // tundra: stony ground over dirt
+        if (biome == Biome::Tundra) return skin ? VoxelMaterial::Gravel : VoxelMaterial::Regolith;          // tundra: stony ground over dirt
+        if (biome == Biome::Swamp && skin && rocks.fractal(1, p.x * 0.12f, p.y * 0.12f, p.z * 0.12f) > 0.15f) return VoxelMaterial::Regolith; // mud flats between the reeds
         // Grassland. Undug ground facing up is turf all the way down to the soil layer (the mesh strays
         // from the height map, which used to bare patches of dirt); dug ground is dirt.
         const bool natural = base < ISO_LEVEL + DENSITY_GRADIENT * (1.0f + slack);
@@ -947,14 +1044,18 @@ void BuildChunkMesh(const DensityField& field, const TerrainDeltas& deltas, Chun
                         out.tangents[v * 4 + 2] = (k + 1) / 8.0f;
                     }
                 }
-                if (planetLife && sky > 0.9f && (m == VoxelMaterial::Grass || m == VoxelMaterial::Regolith)) {
-                    // Distant forests: canopy cover (x) and latitude (y) for the terrain shader, which
-                    // paints them in where the real trees fade out.
+                if (planetLife && sky > 0.5f) {
+                    // The climate (Plan 5 B) for the terrain shader's biome tints, packed in y: 1 + the
+                    // temperature step (0-62 over -30..40 C) + moisture in the fraction (0 = no climate).
                     const float d = Vector3Length(p);
                     const Vector3 up = Vector3Scale(p, 1.0f / d);
-                    const float steep = 1.0f - Vector3DotProduct(n, up);
-                    out.tangents[v * 4 + 0] = TreeCanopy(up, planetLife->radius, d - planetLife->radius, planetLife->foliageSeed) * std::clamp(1.0f - (steep - 0.1f) / 0.15f, 0.0f, 1.0f);
-                    out.tangents[v * 4 + 1] = fabsf(up.y);
+                    const PlanetField::Climate cl = planetLife->climateAt(up, d - planetLife->radius);
+                    out.tangents[v * 4 + 1] = 1.0f + floorf(std::clamp((cl.temp + 30.0f) / 70.0f, 0.0f, 1.0f) * 62.0f) + std::min(cl.moist, 0.999f);
+                    // Distant forests: canopy cover (x), painted in where the real trees fade out.
+                    if (sky > 0.9f && (m == VoxelMaterial::Grass || m == VoxelMaterial::Regolith)) {
+                        const float steep = 1.0f - Vector3DotProduct(n, up);
+                        out.tangents[v * 4 + 0] = TreeCanopy(up, planetLife->radius, d - planetLife->radius, planetLife->foliageSeed, planetLife) * std::clamp(1.0f - (steep - 0.1f) / 0.15f, 0.0f, 1.0f);
+                    }
                 }
                 out.positions[v * 3 + 0] = lp.x;
                 out.positions[v * 3 + 1] = lp.y;

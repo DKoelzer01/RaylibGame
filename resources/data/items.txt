@@ -193,3 +193,8 @@ fusion_reactor     | Fusion reactor     |    20 | 230,120,255 | EV generator (20
 mass_driver        | Mass driver        |    20 | 160,170,190 | EV: fires cargo capsules to orbit along a magnetic rail.
 cargo_capsule      | Cargo capsule      |   999 | 200,200,210 | Packed cargo for the mass driver.
 launched_capsule   | Orbital delivery   |   999 | 255,220,120 | A cargo capsule the mass driver put in orbit.
+# Biome resources (Plan 5 B)
+crude_oil        | Crude oil        | 200 | 34, 26, 20  | From oil seeps in warm lands (scoop the black pools with a bucket). A refinery makes rocket fuel of it; a chemical reactor, plastic.
+cactus           | Cactus           | 999 | 92,140, 72  | From desert and badlands scrub. Chewy and watery (edible); splits into fibre.
+rubber           | Rubber           | 200 | 66, 58, 46  | Latex from jungle trees, set. A chemical reactor makes plastic of it.
+peat             | Peat             | 999 | 72, 52, 36  | Dug from swamp ground. Burns slowly in campfires, kilns, boilers and generators.

@@ -45,6 +45,7 @@ struct Species {
     bool night = false;                              // a night hunter: spawns near the player after dark, leaves at dawn
     int herdMin = 2, herdMax = 5;
     float latMin = 0.0f, latMax = 0.8f;
+    std::vector<Biome> biomes;         // Plan 5 B: where herds live (empty: by latitude)
 };
 std::vector<Species> species;
 bool speciesLoaded = false;
@@ -85,6 +86,7 @@ void LoadSpecies() {
         s.night = c[10] == "night";
         sscanf(c[11].c_str(), "%d %d", &s.herdMin, &s.herdMax);
         sscanf(c[12].c_str(), "%f %f", &s.latMin, &s.latMax);
+        if (c.size() > 13) for (const auto& bn : Split(c[13], ',')) for (int b = 0; b < (int)Biome::Count; ++b) if (bn == BiomeName((Biome)b)) s.biomes.push_back((Biome)b);
         species.push_back(s);
     }
     fclose(f);
@@ -235,9 +237,14 @@ void SpawnHerds(Scene& world, Planetoid& body, const PlanetField& pf, Vector3 up
             uint32_t h = Hash(key, body.seed ^ 0xa11a7u);
             if (Rand01(h) > 0.35f) continue; // about a third of the tiles hold a herd
             const float lat = fabsf(centre.y);
+            const Biome tileBiome = pf.biomeAt(centre, pf.elevation(centre, 16.0f)); // Plan 5 B: herds by biome
+            auto livesHere = [&](const Species& sp) {
+                if (sp.biomes.empty()) return lat >= sp.latMin && lat <= sp.latMax;
+                return std::find(sp.biomes.begin(), sp.biomes.end(), tileBiome) != sp.biomes.end();
+            };
             std::vector<int> fit;
             for (size_t i = 0; i < species.size(); ++i)
-                if (lat >= species[i].latMin && lat <= species[i].latMax && species[i].herdMax > 0 && !species[i].night && !(species[i].hostile && worldDifficulty == 0))
+                if (livesHere(species[i]) && species[i].herdMax > 0 && !species[i].night && !(species[i].hostile && worldDifficulty == 0))
                     fit.push_back((int)i);
             if (fit.empty()) continue;
             const Species& s = species[fit[(size_t)(Rand01(h) * fit.size()) % fit.size()]];

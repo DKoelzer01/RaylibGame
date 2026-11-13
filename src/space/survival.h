@@ -59,6 +59,7 @@ float Survival_FoodValue(const std::string& id);
 void Survival_OnLanding(float impactSpeed);   // fall damage
 void Survival_Respawn(Scene& world);
 void Survival_DrawHUD();
+const char* Survival_BiomeName();   // the biome where the player stands ("" off-planet)
 
 // Lightweight objective tracker for the vertical slice.
 void Objectives_Update(Scene& world);

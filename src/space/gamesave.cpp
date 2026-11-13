@@ -11,6 +11,7 @@
 #include "farming.h"
 #include "animals.h"
 #include "particles.h"
+#include "ambience.h"
 #include "suit.h"
 #include "toolwear.h"
 #include "recipebook.h"
@@ -52,6 +53,7 @@ void GameSave_Register() {
         Farm_Reset();
         Animals_Reset();
         Particles_Clear();
+        Ambience_Reset();
         Station_Reset();
         Suit_Reset();
         ToolWear_Reset();

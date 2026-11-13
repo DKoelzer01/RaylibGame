@@ -56,6 +56,7 @@ namespace {
     // The air temperature where the player stands (deg C), or NaN in vacuum (the suit regulates):
     // 32 at the equator falling to about -25 at the poles, 6.5 colder per km of height, +-7 between
     // noon and midnight, and underground drifting toward a cave's steady 12.
+    Biome hereBiome = Biome::Count; // where the player stands, as of the last update (Count: none)
     float AirTemperature(Scene& world) {
         Planetoid* p = player.nearest;
         if (!p || !world.atmosphere.enabled) return NAN;
@@ -67,15 +68,20 @@ namespace {
         const Vector3 up = Vector3Scale(local, 1.0f / d);
         const float height = d - pf->radius;                  // above sea level
         if (height > survival.breathableAltitude) return NAN; // above the air: the suit regulates
-        const float lat = fabsf(up.y);
         const float sun = Vector3DotProduct(Vector3Normalize(world.sunDirection), player.up); // -1 midnight .. 1 noon
-        float t = 32.0f - 57.0f * powf(lat, 1.5f) - 6.5f * std::max(height, 0.0f) / 1000.0f + 7.0f * sun;
-        const float depth = pf->elevation(up) - height;       // below the surface here
+        // The biome climate (Plan 5 B) at the ground here, colder with height above it; dry places swing
+        // more between day and night (deserts: +-14 C, jungles and swamps: +-5).
+        const float ground = pf->elevation(up);
+        const PlanetField::Climate c = pf->climateAt(up, ground);
+        hereBiome = pf->biomeAt(up, ground);
+        float t = c.temp - 6.5f * std::max(height - std::max(ground, 0.0f), 0.0f) / 1000.0f + (5.0f + 9.0f * (1.0f - c.moist)) * sun;
+        const float depth = ground - height;                  // below the surface here
         if (depth > 3.0f) t += (12.0f - t) * std::min(1.0f, (depth - 3.0f) / 12.0f);
         return t;
     }
 }
 
+const char* Survival_BiomeName() { return hereBiome == Biome::Count ? "" : BiomeName(hereBiome); }
 bool Survival_IsFood(const std::string& id) { LoadFoods(); return foods.count(id) > 0; }
 float Survival_FoodValue(const std::string& id) { LoadFoods(); auto it = foods.find(id); return it == foods.end() ? 0.0f : it->second.value; }
 
@@ -232,6 +238,7 @@ void Survival_DrawHUD() {
         const SuitStats& st = Suit_Stats();
         const char* note = T < 5.0f ? (st.cold <= 0.0f ? "  cold: regulated" : st.cold < 1.0f ? "  cold: insulated" : "  cold: hungrier") : T > 35.0f ? (st.heatProof ? "  heat: regulated" : "  heat") : "";
         DrawText(TextFormat("%.0f C%s", T, note), x + std::max(wO2, wPwr) + 20, y + 68, 16, tc);
+        if (hereBiome != Biome::Count) DrawText(BiomeName(hereBiome), x + std::max(wO2, wPwr) + 20, y + 46 + (GetTime() < survival.sickUntil ? -66 : 0), 16, Fade(RAYWHITE, 0.75f));
     }
     const int tx = x + std::max(wO2, wPwr) + 20;
     if (GetTime() < survival.sickUntil) DrawText("SICK", tx, y + 46, 16, ORANGE);

@@ -74,7 +74,9 @@ WeatherState Weather_At(Scene& world, Vector3 dir, double time) {
     // Cloud: wetter near the equator and the coasts' latitudes, with slow daily swings.
     const float base = 0.5f + 0.5f * fields.cloud.fractal(4, s.x, s.y, s.z);
     const float humid = 0.5f + 0.5f * fields.humid.fractal(2, dir.x * R, dir.y * R, dir.z * R + (float)(time * 0.05));
-    w.cloud = std::clamp(base * 0.85f + humid * 0.3f - 0.1f, 0.0f, 1.0f);
+    // Plan 5 B: the biome climate's moisture - deserts seldom cloud over, jungles and swamps often do.
+    const float moist = pf->climateAt(dir, std::max(pf->elevation(dir, 64.0f), 0.0f)).moist;
+    w.cloud = std::clamp(base * 0.85f + humid * 0.3f - 0.1f + (moist - 0.5f) * 0.45f, 0.0f, 1.0f);
     const float T = TempAt(world, *p, *pf, dir);
     if (w.cloud > 0.62f) {
         w.precipitation = std::clamp((w.cloud - 0.62f) / 0.25f, 0.0f, 1.0f);

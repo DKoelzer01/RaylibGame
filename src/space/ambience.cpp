@@ -8,6 +8,10 @@
 #include "voxel.h"
 #include "world.h"
 #include "worldtypes.h"
+#include "fluid.h"
+#include "trees.h"
+#include <unordered_set>
+#include <vector>
 #include <raymath.h>
 #include <algorithm>
 #include <cmath>
@@ -47,8 +51,112 @@ namespace {
     }
 }
 
+// Natural fluid sources (Plan 5), all through Fluid::AddSource (a rate and a head):
+// - oil seeps in warm biomes (desert, badlands, savanna, jungle, swamp): a shallow basin is cut (saved
+//   with the terrain edits) and the seep's head lies just under its rim, so the pool fills and rests;
+// - water springs on hillsides in wet temperate and cold biomes (forest, meadow, taiga, jungle, alpine):
+//   no basin, the head above the ground, so the water overflows and runs downhill as a stream.
+// Each type has a grid of cells on the sea-level sphere; a hashed share of the cells hold one, at a hashed
+// point, where the biome and height suit it. Sources are registered when the player first comes within
+// 160 m in a session (the fluid save keeps them and their fluid; re-registering replaces them).
+namespace {
+    struct SourceType { const char* fluid; float cell, share, rate, minElev, maxElev; uint32_t salt; bool basin; };
+    const SourceType kSourceTypes[] = {
+        { "crude_oil", 800.0f, 0.33f, 0.08f, 3.0f, 600.0f, 0x0115eedu, true },   // seeps: pools
+        { "water", 900.0f, 0.22f, 0.06f, 30.0f, 800.0f, 0x5291e5u, false },     // springs: streams
+    };
+    constexpr int kSourceTypeCount = (int)(sizeof(kSourceTypes) / sizeof(kSourceTypes[0]));
+    std::unordered_set<uint64_t> seededSeeps;
+    double seepClock = 0.0;
+    uint32_t SeepHash(int x, int y, int z, uint32_t seed) {
+        uint32_t h = (uint32_t)x * 73856093u ^ (uint32_t)y * 19349663u ^ (uint32_t)z * 83492791u ^ seed * 2654435761u;
+        h ^= h >> 15; h *= 2246822519u; h ^= h >> 13; h *= 3266489917u; h ^= h >> 16;
+        return h;
+    }
+    bool Suits(int type, Biome b) {
+        if (type == 0) return b == Biome::Desert || b == Biome::Badlands || b == Biome::Savanna || b == Biome::Jungle || b == Biome::Swamp;
+        return b == Biome::Forest || b == Biome::Meadow || b == Biome::Taiga || b == Biome::Jungle || b == Biome::Alpine;
+    }
+    int SourcesNear(const Planetoid& body, Vector3 local, float range, int type, std::vector<Vector3>& out) {
+        out.clear();
+        const SourceType& st = kSourceTypes[type];
+        const auto* pf = dynamic_cast<const PlanetField*>(body.field.get());
+        if (!pf || pf->moon) return 0;
+        const float r = Vector3Length(local);
+        if (r < 1.0f) return 0;
+        const Vector3 s = Vector3Scale(local, pf->radius / r); // on the sea-level sphere
+        const int cx = (int)floorf(s.x / st.cell), cy = (int)floorf(s.y / st.cell), cz = (int)floorf(s.z / st.cell);
+        const int R = (int)ceilf(range / st.cell) + 1;
+        for (int dz = -R; dz <= R; ++dz)
+            for (int dy = -R; dy <= R; ++dy)
+                for (int dx = -R; dx <= R; ++dx) {
+                    const uint32_t h = SeepHash(cx + dx, cy + dy, cz + dz, body.seed ^ st.salt);
+                    if ((h & 1023) > (uint32_t)(st.share * 1023.0f)) continue;
+                    const Vector3 c = { (cx + dx + ((h >> 10) & 255) / 255.0f) * st.cell, (cy + dy + ((h >> 18) & 255) / 255.0f) * st.cell, (cz + dz + ((h >> 26) & 63) / 63.0f) * st.cell };
+                    const float cl = Vector3Length(c);
+                    if (cl < 1.0f) continue;
+                    const Vector3 dir = Vector3Scale(c, 1.0f / cl);
+                    // The point must be in this cell's own patch of the sphere (each cell owns its source).
+                    const Vector3 onSphere = Vector3Scale(dir, pf->radius);
+                    if ((int)floorf(onSphere.x / st.cell) != cx + dx || (int)floorf(onSphere.y / st.cell) != cy + dy || (int)floorf(onSphere.z / st.cell) != cz + dz) continue;
+                    const float e = pf->elevation(dir);
+                    if (e < st.minElev || e > st.maxElev || !Suits(type, pf->biomeAt(dir, e))) continue;
+                    const Vector3 at = Vector3Scale(dir, pf->radius + e);
+                    if (Vector3Distance(at, local) <= range) out.push_back(at);
+                }
+        return (int)out.size();
+    }
+}
+
+void Ambience_Reset() { seededSeeps.clear(); seepClock = 0.0; } // a new world or a load: sources re-check their basin, clearing and registration
+
+int Ambience_SeepsNear(const Planetoid& body, Vector3 local, float range, std::vector<Vector3>& out) { return SourcesNear(body, local, range, 0, out); }
+int Ambience_SpringsNear(const Planetoid& body, Vector3 local, float range, std::vector<Vector3>& out) { return SourcesNear(body, local, range, 1, out); }
+
+static void UpdateSeeps(Planetoid& body, Vector3 local, float dt) {
+    seepClock += dt;
+    if (seepClock < 0.5) return;
+    seepClock = 0.0;
+    static std::vector<Vector3> found;
+    for (int type = 0; type < kSourceTypeCount; ++type) {
+        const SourceType& st = kSourceTypes[type];
+        if (!SourcesNear(body, local, 160.0f, type, found)) continue;
+        for (const Vector3& at : found) {
+            const Vector3 up = Vector3Normalize(at);
+            const uint64_t key = (((uint64_t)(int64_t)lroundf(at.x) * 73856093ull) ^ ((uint64_t)(int64_t)lroundf(at.y) * 19349663ull) ^ ((uint64_t)(int64_t)lroundf(at.z) * 83492791ull)) + (uint64_t)type; // by place (a load makes new body ids)
+            if (!seededSeeps.count(key)) {
+                seededSeeps.insert(key);
+                const int kind = Fluid::KindByName(st.fluid);
+                if (kind < 0) continue;
+                if (st.basin) {
+                    // A bowl ~5 m across and ~1 m deep: the sphere's bottom 1 m into the ground.
+                    TerrainEdit e{};
+                    e.center = Vector3Add(at, Vector3Scale(up, 2.6f)); e.radius = 3.6f; e.carve = true; e.softOnly = false;
+                    ApplyTerrainEdit(body, e);
+                }
+                if (body.trees) body.trees->addClearing(at, st.basin ? 5.0f : 2.0f); // no plants floating over it
+                // On the real ground (the mesh strays from the height map): the first solid going down.
+                float floorH = -1.0f;
+                for (float h = 8.0f; h > -5.0f; h -= 0.1f) if (body.densityAt(Vector3Add(at, Vector3Scale(up, h))) >= ISO_LEVEL) { floorH = h; break; }
+                const Vector3 src = Vector3Add(at, Vector3Scale(up, floorH + 0.3f));
+                // Basins: the head just under the rim (fills and rests). Springs: 1.2 m over the ground (overflows).
+                const float head = st.basin ? std::max(0.3f, -0.15f - (floorH + 0.3f)) : 1.2f;
+                Fluid::AddSource(body, src, kind, st.rate, head);
+                continue;
+            }
+            if (GetRandomValue(0, 2) == 0) { // bubbles breaking the surface: gas in a seep, the welling of a spring
+                ParticleBurst b;
+                b.kind = ParticleKind::Splash; b.color = st.basin ? Color{ 40, 32, 26, 230 } : Color{ 190, 215, 240, 200 };
+                b.count = 3; b.size = 0.07f; b.life = 0.5f; b.speed = 0.8f; b.spread = 0.4f;
+                Particles_Emit(body, Vector3Add(at, Vector3Scale(up, 0.1f)), b);
+            }
+        }
+    }
+}
+
 void Ambience_Update(Scene& world, float dt) {
-    Planetoid* body = player.nearest;
+    // The body underfoot (when the player isn't colliding with one yet, e.g. flying or just spawned: the nearest).
+    Planetoid* body = player.nearest ? player.nearest : NearestPlanetoid(world, (player.position - world.renderOrigin).toFloat());
     if (!body || dt <= 0.0f) return;
     const auto* pf = dynamic_cast<const PlanetField*>(body->field.get());
     if (!pf) return;
@@ -58,6 +166,7 @@ void Ambience_Update(Scene& world, float dt) {
     const Vector3 up = Vector3Scale(local, 1.0f / r);
     const float surface = pf->radius + pf->elevation(up);
     const bool outdoors = r > surface - 3.0f && r < surface + 60.0f;
+    UpdateSeeps(*body, local, dt); // oil seeps in warm biomes
     const WeatherState& w = Weather_Here();
 
     // Rain splashes: ~150 a second in a downpour, on the ground (or the sea) within 14 m.

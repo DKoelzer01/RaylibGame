@@ -114,7 +114,10 @@ void ScatterGrass(const DensityField& field, ChunkMeshData& out) {
                               : var == 1 ? 0.35f + 0.3f * su
                                          : 0.42f + 0.35f * su;
             // The variant rides in the scale (scale + 10 * variant); grouped by variant for one draw each.
-            byVariant[var].insert(byVariant[var].end(), { p.x, p.y, p.z, scale + 10.0f * var, up.x, up.y, up.z, h });
+            // The climate (Plan 5 B) rides in the up vector's length (the shader normalises it): the packed
+            // code the mesher left in the vertex's tangent.y (1 + temperature step + moisture; 1 = none).
+            const float code = std::max(1.0f, out.tangents[4 * i0 + 1]);
+            byVariant[var].insert(byVariant[var].end(), { p.x, p.y, p.z, scale + 10.0f * var, up.x * code, up.y * code, up.z * code, h });
         }
     }
     for (auto& v : byVariant) out.grass.insert(out.grass.end(), v.begin(), v.end());

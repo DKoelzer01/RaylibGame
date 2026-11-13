@@ -8,3 +8,4 @@ raw_meat       | 8  | raw
 cooked_meat    | 30
 egg            | 10
 milk           | 12
+cactus         | 3

@@ -72,6 +72,8 @@ namespace std {
 // 4-5 in texcoord (xy), 6-7 in texcoord2 (xy), so they interpolate smoothly across triangles.
 // Asteroids use 0-3; planets all eight (Regolith is rendered as dirt there).
 enum class VoxelMaterial : uint8_t { Rock = 0, Regolith = 1, Ice = 2, Ore = 3, Sand = 4, Gravel = 5, Grass = 6, Snow = 7, Count };
+enum class Biome : uint8_t { Ocean = 0, Jungle, Savanna, Desert, Badlands, Forest, Meadow, Swamp, Taiga, Tundra, Alpine, Polar, Count };
+const char* BiomeName(Biome b);
 const char* VoxelMaterialName(VoxelMaterial m);
 
 // A spherical density brush in planetoid-local space. strength < 0 digs, > 0 adds.
@@ -167,7 +169,7 @@ public:
     bool foliage = false;         // grows trees (planets with life); the terrain paints distant canopy
     unsigned int foliageSeed = 0; // the tree system's seed (TreeCanopy matches its forests)
     unsigned int oreSeed = 0;     // ore deposits (oreKind)
-    SimplexNoise continents, ridges, hills, valleys, detail, cavesA, cavesB, veins, climate, caverns, ravines, ravineMask, streams, rocks, rockMask, rugged, cliffs, warp3;
+    SimplexNoise continents, ridges, hills, valleys, detail, cavesA, cavesB, veins, climate, caverns, ravines, ravineMask, streams, rocks, rockMask, rugged, cliffs, warp3, tempNoise, moistNoise, biomeJitter;
     static constexpr float kTunnelLevel = 0.096f; // worm tunnel where both cave fields are within this of zero
     static constexpr float kCavernLevel = 0.68f;  // cavern where the cavern field exceeds this (rare)
 
@@ -212,6 +214,16 @@ public:
     // A body-local direction to a good start spot: temperate latitude, flat grassland a little above
     // the sea, solid ground underfoot (no cave mouth). Deterministic for a seed.
     Vector3 findSpawnDir(unsigned int seed) const;
+    // Biomes (Plan 5 B): climate from latitude, height and regional noise (2-5 km patches); the biome
+    // from it (Whittaker-style: temperature x moisture). biomeAt jitters the climate a little at a fine
+    // scale so borders interleave instead of running as hard lines; tints use the smooth climate.
+    struct Climate { float temp = 15.0f, moist = 0.5f; }; // temp in C (annual mean at the surface), moist 0..1
+    Climate climateAt(Vector3 dir, float elev) const;
+    Biome biomeAt(Vector3 dir, float elev) const;
+    Biome biomeOf(const Climate& c, float elev) const;
+    // Biome landforms (Plan 5 B) added to the height before rivers carve it: desert dunes, badlands
+    // mesas (flat tops on steep risers), swamps flattened toward the water table.
+    float biomeShape(Vector3 dir, float h, float fp) const;
     float baseDensity(Vector3 p) const override { return baseDensityLod(p, 0.0f); }
     float baseDensityLod(Vector3 p, float footprint) const override;
     void baseDensityBlock(Vector3 origin, float stride, int S, float footprint, float* out) const override;

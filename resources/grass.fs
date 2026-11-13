@@ -8,6 +8,7 @@ in vec3 fragUp;
 in float fragHeight;
 in float fragHash;
 in float fragLatitude;
+in vec3 fragClimate;   // temperature (C), moisture, 1 if known (Plan 5 B biomes)
 in float fragBlade;
 
 uniform vec3 viewPos;
@@ -22,6 +23,20 @@ uniform float fadeEnd;      // fully gone here (m)
 // Sun shadows (two cascades, hardware PCF) and the headlamp.
 #include "shadow.glsl"
 out vec4 finalColor;
+// Foliage colour by climate (Plan 5 B): temperate green, straw-olive where warm and dry, deep in the
+// jungle, dark blue-green in the cold, olive in swamps. Without a climate: by latitude as before.
+vec3 climateFoliage(vec3 temperate, vec3 dry, vec3 cold, vec3 lush, vec3 swampC, float lat)
+{
+    if (fragClimate.z < 0.5)
+        return lat < 0.35 ? mix(dry, temperate, smoothstep(0.15, 0.35, lat)) : mix(temperate, cold, smoothstep(0.45, 0.7, lat));
+    float t = fragClimate.x, m = fragClimate.y;
+    vec3 c = temperate;
+    c = mix(c, dry, smoothstep(0.66, 0.5, m) * smoothstep(16.0, 20.0, t));
+    c = mix(c, lush, smoothstep(18.0, 23.0, t) * smoothstep(0.56, 0.7, m));
+    c = mix(c, swampC, smoothstep(0.68, 0.8, m) * smoothstep(10.0, 18.0, t));
+    c = mix(c, cold, smoothstep(9.0, 3.0, t));
+    return c;
+}
 
 void main()
 {
@@ -33,11 +48,10 @@ void main()
     if (dither > fade) discard;
 
     vec3 temperate = vec3(0.10, 0.30, 0.05);
-    vec3 dry = vec3(0.32, 0.33, 0.08);
+    vec3 dry = vec3(0.40, 0.35, 0.11);   // straw
     vec3 cold = vec3(0.20, 0.24, 0.10);
     float lat = fragLatitude;
-    vec3 albedo = lat < 0.35 ? mix(dry, temperate, smoothstep(0.15, 0.35, lat))
-                             : mix(temperate, cold, smoothstep(0.5, 0.7, lat));
+    vec3 albedo = climateFoliage(temperate, dry, cold, vec3(0.06, 0.26, 0.04), vec3(0.16, 0.22, 0.06), lat);
     albedo *= 0.8 + 0.4 * fragHash;
     albedo *= 0.85 + 0.3 * fragBlade;      // blades in a clump differ a little
     // Self-shadowed lower half (the clump and its neighbours shade it), sunlit tips.

@@ -163,6 +163,7 @@ TreeTileKey TreeTileOf(Vector3 dir, float radius);
 Vector3 TreeTileCentreDir(const TreeTileKey& key, float radius);
 // Fraction of the ground under tree crowns around a body-local direction (the same forest field
 // and odds as the placement), for painting distant forests into the terrain.
-float TreeCanopy(Vector3 dir, float radius, float elevation, unsigned int seed);
+class PlanetField;
+float TreeCanopy(Vector3 dir, float radius, float elevation, unsigned int seed, const PlanetField* field = nullptr); // field: by its biomes (Plan 5 B)
 
 #endif

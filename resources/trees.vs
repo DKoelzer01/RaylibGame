@@ -20,6 +20,7 @@ out float fragShade;
 out float fragStone;
 out float fragHash;
 out float fragLatitude;
+out vec3 fragClimate;      // Plan 5 B: temperature (C), moisture, 1 if known (packed in the up vector's length)
 out float fragHeight;
 
 void main()
@@ -46,6 +47,8 @@ void main()
     fragStone = vertexColor.b;  // loose stones: grey rock
     fragHash = h;
     fragLatitude = abs(up.y);
+    float cl = length(instUpHash.xyz);
+    fragClimate = cl > 1.5 ? vec3((floor(cl) - 1.0) / 62.0 * 70.0 - 30.0, fract(cl), 1.0) : vec3(0.0);
     fragHeight = v.y;
     gl_Position = matViewProj * vec4(fragPosition, 1.0);
 }

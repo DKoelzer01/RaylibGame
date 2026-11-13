@@ -98,6 +98,39 @@ vec3 triplanarNormal(sampler2D tex, Triplanar t, vec3 n)
 #include "shadow.glsl"
 float shadowFactor(vec3 worldPos, vec3 n, vec3 l) { return sunShadowNormal(worldPos, n, l, 4); }
 
+// Biome tints (Plan 5 B) from the climate packed in fragCanopy.y by the mesher: 1 + temperature step
+// (0-62 over -30..40 C) + moisture as the fraction; 0 = no climate (asteroids, caves, old meshes).
+bool decodeClimate(out float temp, out float moist)
+{
+    float y = fragCanopy.y;
+    temp = (floor(y) - 1.0) / 62.0 * 70.0 - 30.0;
+    moist = fract(y);
+    return y >= 1.0;
+}
+// Multiplier for one material layer's colour: grass dries to straw on the savanna and in deserts,
+// deepens in the jungle, dulls in the cold and turns olive in swamps; dirt darkens to mud where wet
+// and reddens in the badlands, as does sand.
+vec3 biomeTint(int material, float temp, float moist)
+{
+    float red = smoothstep(16.0, 21.0, temp) * smoothstep(0.2, 0.27, moist) * (1.0 - smoothstep(0.36, 0.44, moist));
+    if (material == 6) {   // grass
+        float dry = smoothstep(0.66, 0.5, moist) * smoothstep(16.0, 20.0, temp);
+        float lush = smoothstep(18.0, 23.0, temp) * smoothstep(0.56, 0.7, moist);
+        float cold = smoothstep(9.0, 3.0, temp);
+        float swamp = smoothstep(0.68, 0.8, moist);
+        vec3 t = vec3(1.0);
+        t = mix(t, vec3(2.0, 1.3, 0.45), dry);
+        t = mix(t, vec3(0.72, 1.02, 0.68), lush);
+        t = mix(t, vec3(0.92, 0.92, 0.95), cold);
+        t = mix(t, vec3(0.82, 0.86, 0.55), swamp);
+        return t;
+    }
+    if (material == 1) return mix(mix(vec3(1.0), vec3(1.3, 0.82, 0.62), red), vec3(0.55, 0.5, 0.45), smoothstep(0.72, 0.88, moist)); // dirt -> red / mud
+    if (material == 4) return mix(vec3(1.0), vec3(1.22, 0.72, 0.5), red);                                                                // sand -> red sand
+    if (material == 0) return mix(vec3(1.0), vec3(1.25, 0.85, 0.7), red * 0.8);                                                         // banded red rock
+    return vec3(1.0);
+}
+
 // Smooth value noise in [0, 1] (macro variation of the terrain colour).
 float hash3(vec3 p) { p = mod(p, 289.0); return fract(sin(dot(p, vec3(127.1, 311.7, 74.7))) * 43758.5453); } // mod: sin() of huge arguments bands
 float vnoise(vec3 p)
@@ -162,6 +195,8 @@ void main()
         float w8[8] = float[8](fragColor.r, fragColor.g, fragColor.b, fragColor.a,
                                fragTexCoord.x, fragTexCoord.y, fragTexCoord2.x, fragTexCoord2.y);
         float total = 0.0;
+        float ctemp, cmoist;
+        bool hasClimate = decodeClimate(ctemp, cmoist);
         for (int i = 0; i < 8; i++) total += w8[i];
         // material -> texture layer: stone, dirt, ice, ore (stone, rusted), sand, gravel, grass, snow
         const float layerOf[8] = float[8](6.0, 0.0, 5.0, 6.0, 1.0, 2.0, 3.0, 4.0);
@@ -177,6 +212,7 @@ void main()
             vec3 c = sampleLayer(tp, layerOf[i]);
             // Far away the repeat of one scale shows: blend in the same layer ~5x larger.
             if (farMix > 0.01) c = mix(c, sampleLayer(tpFar, layerOf[i]), 0.55 * farMix);
+            if (hasClimate) c *= biomeTint(i, ctemp, cmoist);
             if (i == 3) {
                 // Ore: flecks of the mineral's colour in the stone, by kind (iron rust, copper green,
                 // tin pale, coal black, bauxite red, ilmenite dark violet).
@@ -203,9 +239,12 @@ void main()
             // Distant forests: where the real trees (drawn to treeDistance) fade out, the ground takes the
             // colour of their crowns, by latitude as the trees do, broken up a little by the texture.
             float c = fragCanopy.x * smoothstep(0.65 * treeDistance, 0.95 * treeDistance, length(viewPos - fragPosition));
-            float lat = fragCanopy.y;
+            float ct, cm;
+            bool cl = decodeClimate(ct, cm);
             vec3 dry = vec3(0.22, 0.27, 0.07), temperate = vec3(0.09, 0.27, 0.05), cold = vec3(0.05, 0.17, 0.08);
-            vec3 crowns = lat < 0.35 ? mix(dry, temperate, smoothstep(0.15, 0.35, lat)) : mix(temperate, cold, smoothstep(0.45, 0.7, lat));
+            // By the climate as the trees are coloured: dry olive where warm and dry, lush in the temperate
+            // and wet warm lands, dark blue-green in the cold.
+            vec3 crowns = cl ? mix(mix(temperate, dry, smoothstep(0.5, 0.25, cm) * smoothstep(12.0, 22.0, ct)), cold, smoothstep(8.0, 0.0, ct)) : temperate;
             vec2 crown = floor(fragTexPos.xz / 5.0); // ~5 m dapple, like the prism crowns
             crowns *= 0.75 + 0.5 * fract(sin(dot(crown, vec2(12.9898, 78.233))) * 43758.5453);
             albedo = mix(albedo, crowns * 0.5, c); // crowns in their own shade read darker than open grass

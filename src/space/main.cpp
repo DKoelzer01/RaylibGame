@@ -116,6 +116,7 @@ static void StartNewWorld(Scene& world, bool reset) {
         Farm_Reset();
         Animals_Reset();
         Particles_Clear();
+        Ambience_Reset();
         Station_Reset();
         Suit_Reset();
         ToolWear_Reset();
@@ -193,6 +194,9 @@ int main(int argc, char** argv)
     bool benchTools = false, toolsOk = true; int toolsPhase = 0, toolsLife = 0, toolsTilled = 0; double toolsStart = 0.0; // --test-tools
     bool benchSuit = false, suitOk = true; int suitPhase = 0; double suitStart = 0.0; float suitFoodRatio = 0.0f, suitWater = 0.0f, suitRebreather = 0.0f; // --test-suit
     int benchShotTabs = 0; // --shot-tabs
+    bool benchBiomes = false; int benchShotBiomes = -1; // --test-biomes, --shot-biomes
+    bool benchOil = false; int oilPhase = 0; double oilT0 = 0.0; // --test-oil
+    bool benchSpring = false; int springPhase = 0; double springT0 = 0.0; // --test-spring
     bool benchParticles = false; int particlePhase = 0; double particleT0 = 0.0; Vector3 particleEye{}, particleAt{}; // --shot-particles
     bool benchShadow = false; int shadowPhase = 0; double shadowT0 = 0.0; Vector3 shadowEye{}, shadowAt{}; // --shot-shadow
     bool benchFarForest = false; int farForestPhase = 0; double farForestT0 = 0.0; Vector3 farForestEye{}, farForestAt{}; // --shot-far-forest
@@ -360,6 +364,10 @@ int main(int argc, char** argv)
         if (std::string(argv[i]) == "--shot-terrain") benchTerrain = true;
         if (std::string(argv[i]) == "--shot-shadow") benchShadow = true;
         if (std::string(argv[i]) == "--shot-particles") benchParticles = true;
+        if (std::string(argv[i]) == "--test-biomes") benchBiomes = true;
+        if (std::string(argv[i]) == "--test-oil") benchOil = true;
+        if (std::string(argv[i]) == "--test-spring") benchSpring = true;
+        if (std::string(argv[i]) == "--shot-biomes") benchShotBiomes = 0;
         if (std::string(argv[i]) == "--shot-far-forest") benchFarForest = true;
         if (std::string(argv[i]) == "--test-recipes") benchRecipes = true;
         if (std::string(argv[i]) == "--test-weather") benchWeather = true;
@@ -482,6 +490,7 @@ int main(int argc, char** argv)
     DebugUI_Init();
     if (!bench) Audio_Init();
     itemDB.load("resources/data/items.txt", "resources/data/recipes.txt");
+    Fluid::LoadKinds("resources/data/fluids.txt"); // water, crude oil, ... (fluid.h)
     ItemIcons_Init(); // one painted icon per item (itemicons.h)
     for (int i = 1; i < argc; ++i)
         if (std::string(argv[i]) == "--shot-icons") printf("bench: icons: %d items -> bench_icons.png (%s)\n", (int)itemDB.items().size(), ItemIcons_SaveSheet("bench_icons.png") ? "saved" : "FAILED");
@@ -1955,6 +1964,9 @@ int main(int argc, char** argv)
                     for (const ItemDef& d : itemDB.items()) // wildcards: any planks (any log) is had once one kind is
                         for (const char* w : { "any_planks", "any_log" }) if (d.id != w && ItemMatches(w, d.id)) { Rule u; u.in = { d.id }; u.out = { w }; rules.push_back(u); }
                     { Rule u; u.in = { "bucket" }; u.out = { "water_bucket" }; rules.push_back(u); } // scooping water
+                    // Plan 5 biome resources: oil seeps (a bucket), desert scrub, jungle trees, swamp digging.
+                    { Rule u; u.in = { "bucket" }; u.out = { "crude_oil" }; rules.push_back(u); }
+                    { Rule u; u.in = {}; u.out = { "cactus", "rubber", "peat" }; rules.push_back(u); }
                     char buf[1024];
                     if (FILE* f = fopen("resources/data/machine_recipes.txt", "r")) {
                         while (fgets(buf, sizeof buf, f)) {
@@ -2086,6 +2098,207 @@ int main(int argc, char** argv)
                         GameUI_ToggleInventory();
                         benchShotTabs = 0;
                     }
+                } else if (benchShotBiomes >= 0 && (benchShotBiomes > 0 || WorldIdle())) {
+                    // --shot-biomes (Plan 5 B): the nearest deep patch of each biome, seen from 30 m up looking
+                    // out across it (bench_biome_<name>.png).
+                    static const Biome kShots[] = { Biome::Desert, Biome::Badlands, Biome::Savanna, Biome::Jungle, Biome::Swamp, Biome::Taiga, Biome::Meadow, Biome::Tundra, Biome::Forest, Biome::Alpine };
+                    constexpr int kShotCount = (int)(sizeof(kShots) / sizeof(kShots[0]));
+                    static Vector3 dirs[kShotCount];
+                    static double t0 = 0.0; static bool waiting = false;
+                    Planetoid* p = dynamic_cast<Planetoid*>(world.objects[0].get());
+                    const PlanetField* pf = p ? dynamic_cast<const PlanetField*>(p->field.get()) : nullptr;
+                    if (!pf) { benchShotBiomes = -1; }
+                    else if (benchShotBiomes == 0) {
+                        const Vector3 home = pf->findSpawnDir(p->seed);
+                        std::mt19937 rng(11);
+                        std::uniform_real_distribution<float> u(-1.0f, 1.0f);
+                        float best[kShotCount];
+                        for (int k = 0; k < kShotCount; ++k) { best[k] = -2.0f; dirs[k] = home; }
+                        for (int i = 0; i < 60000; ++i) {
+                            Vector3 d = { u(rng), u(rng), u(rng) };
+                            if (Vector3LengthSqr(d) > 1.0f || Vector3LengthSqr(d) < 1e-4f) continue;
+                            d = Vector3Normalize(d);
+                            const float close = Vector3DotProduct(d, home);
+                            const float e = pf->elevation(d, 32.0f);
+                            if (e < 6.0f) continue;
+                            const Biome b = pf->biomeAt(d, e);
+                            for (int k = 0; k < kShotCount; ++k) {
+                                if (b != kShots[k] || close <= best[k]) continue;
+                                // Deep in it: the same biome 200 m out on four sides.
+                                const Vector3 t1 = Vector3Normalize(Vector3CrossProduct(d, { 0, 1, 0 })), t2 = Vector3CrossProduct(t1, d);
+                                bool deep = true;
+                                for (int s = 0; s < 4 && deep; ++s) {
+                                    const Vector3 q = Vector3Normalize(Vector3Add(d, Vector3Scale(s < 2 ? t1 : t2, (s & 1 ? 200.0f : -200.0f) / pf->radius)));
+                                    deep = pf->biomeAt(q, pf->elevation(q, 32.0f)) == b;
+                                }
+                                if (deep) { best[k] = close; dirs[k] = d; }
+                            }
+                        }
+                        for (int k = 0; k < kShotCount; ++k) printf("bench: biomes: nearest %s %.0f km away%s\n", BiomeName(kShots[k]), acosf(std::clamp(best[k], -1.0f, 1.0f)) * pf->radius / 1000.0f, best[k] < -1.5f ? " (none found)" : "");
+                        benchShotBiomes = 1; waiting = false;
+                    } else {
+                        const int k = benchShotBiomes - 1;
+                        if (k >= kShotCount) { printf("bench: biomes: shots done\n"); benchShotBiomes = -1; }
+                        else if (!waiting) {
+                            player.spawnOn(world, *p, dirs[k]);
+                            player.flyMode = true;
+                            waiting = true; t0 = GetTime();
+                        } else {
+                            const Vector3 up = dirs[k];
+                            const Vector3 t1 = Vector3Normalize(Vector3CrossProduct(up, { 0, 1, 0 }));
+                            const float e = std::max(pf->elevation(up), 0.0f);
+                            const Vector3 eye = Vector3Scale(up, pf->radius + e + 30.0f);
+                            const Vector3 look = Vector3Normalize(Vector3Add(up, Vector3Scale(t1, 160.0f / pf->radius)));
+                            const Vector3 at = Vector3Scale(look, pf->radius + std::max(pf->elevation(look), 0.0f));
+                            world.camera.position = p->toWorld(eye); world.camera.target = p->toWorld(at); world.camera.up = p->dirToWorld(up);
+                            player.position = world.renderOrigin + world.camera.position;
+                            sunOverride = true; sunArg = p->dirToWorld(Vector3Normalize(Vector3Add(up, Vector3Scale(Vector3CrossProduct(up, t1), 0.7f))));
+                            if (GetTime() - t0 > 4.0 && WorldIdle()) {
+                                if (GetTime() - t0 > 6.0) {
+                                    TakeScreenshot(TextFormat("bench_biome_%s.png", BiomeName(kShots[k])));
+                                    printf("bench: biomes: bench_biome_%s.png\n", BiomeName(kShots[k]));
+                                    ++benchShotBiomes; waiting = false;
+                                }
+                            } else if (GetTime() - t0 > 60.0) { printf("bench: biomes: %s never loaded\n", BiomeName(kShots[k])); ++benchShotBiomes; waiting = false; }
+                        }
+                    }
+                } else if (benchOil && (oilPhase > 0 || WorldIdle())) {
+                    // --test-oil (Plan 5 B): the nearest oil seep to the start wells up crude oil (fluid sim,
+                    // oil cells), a bucket takes some, it survives save + load; bench_oil.png.
+                    Planetoid* p = dynamic_cast<Planetoid*>(world.objects[0].get());
+                    const PlanetField* pf = p ? dynamic_cast<const PlanetField*>(p->field.get()) : nullptr;
+                    static Vector3 seep{}; static float before = 0.0f;
+                    const double t = GetTime() - oilT0;
+                    if (!pf) { printf("bench: oil: needs the planet -> FAIL\n"); benchOil = false; }
+                    else if (oilPhase == 0) {
+                        const Vector3 home = Vector3Scale(pf->findSpawnDir(p->seed), pf->radius);
+                        std::vector<Vector3> found;
+                        float best = 1e30f;
+                        for (float range : { 4000.0f, 12000.0f, 30000.0f }) {
+                            Ambience_SeepsNear(*p, home, range, found);
+                            for (const Vector3& s : found) { const float d = Vector3Distance(s, home); if (d < best) { best = d; seep = s; } }
+                            if (best < 1e29f) break;
+                        }
+                        if (best > 1e29f) { printf("bench: oil: no seep within 30 km -> FAIL\n"); benchOil = false; }
+                        else {
+                            const Vector3 up = Vector3Normalize(seep);
+                            printf("bench: oil: nearest seep %.1f km from the start (%s)\n", best / 1000.0f, BiomeName(pf->biomeAt(up, pf->elevation(up))));
+                            player.spawnOn(world, *p, up);
+                            player.flyMode = true;
+                            oilPhase = 1; oilT0 = GetTime();
+                        }
+                    } else {
+                        const Vector3 up = Vector3Normalize(seep);
+                        const Vector3 t1 = Vector3Normalize(Vector3CrossProduct(up, { 0, 1, 0 }));
+                        const Vector3 eye = Vector3Add(Vector3Add(seep, Vector3Scale(t1, 7.0f)), Vector3Scale(up, 4.0f));
+                        world.camera.position = p->toWorld(eye); world.camera.target = p->toWorld(seep); world.camera.up = p->dirToWorld(up);
+                        player.position = world.renderOrigin + world.camera.position;
+                        sunOverride = true; sunArg = p->dirToWorld(Vector3Normalize(Vector3Add(up, Vector3Scale(t1, 0.6f))));
+                        const Vector3 pool = Vector3Add(seep, Vector3Scale(up, 0.3f));
+                        const float oil = Fluid::FluidAt(*p, pool, 4.0f, Fluid::KindByName("crude_oil"));
+                        if (oilPhase == 1 && t > 25.0) {
+
+                            before = oil;
+                            const float took = Fluid::Take(*p, pool, 1.0f, 2.5f, Fluid::KindByName("crude_oil"));
+            { const Fluid::Stats fs = Fluid::GetStats(); printf("bench: oil: %.1f m^3 in the pool after 25 s (water near: %.1f m^3); a bucket takes %.1f; sources %d, sites %d, bricks %d, other fluid %.1f m^3, kinds %d\n", oil, Fluid::WaterAt(*p, pool, 2.0f), took, Fluid::SourceCount(), fs.sites, fs.bricks, fs.otherVolume, Fluid::KindCount()); }
+                            oilPhase = 2; oilT0 = GetTime();
+                        } else if (oilPhase == 2 && t > 3.0) {
+                            const bool saved = SaveWorld(world), loaded = saved && LoadWorldSave(world);
+                            printf("bench: oil: after the bucket %.1f m^3; saved %d, loaded %d\n", oil, (int)saved, (int)loaded);
+                            oilPhase = 3; oilT0 = GetTime(); Fluid::SetSpeed(8); // fast-forward: the seep fills its basin to its head and rests
+                        } else if (oilPhase == 3 && t > 6.0 && Fluid::Asleep()) {
+                            Fluid::SetSpeed(1);
+                            TakeScreenshot("bench_oil.png");
+                            const bool ok = before >= 1.0f && oil >= 3.0f && Fluid::SourceCount() >= 1;
+                            printf("bench: oil: after the load the seep (%d source) filled its basin and rested at %.1f m^3 (equilibrium) -> %s\n", Fluid::SourceCount(), oil, ok ? "PASS" : "FAIL");
+                            benchOil = false;
+                        } else if (oilPhase == 3 && t > 90.0) { Fluid::SetSpeed(1); printf("bench: oil: no equilibrium after the load (%.1f m^3) -> FAIL\n", oil); benchOil = false; }
+                    }
+                } else if (benchSpring && (springPhase > 0 || WorldIdle())) {
+                    // --test-spring (Plan 5): the nearest water spring to the start (Fluid::AddSource, head above the
+                    // ground) runs off as a stream: after a while most of its water is well away from it; bench_spring.png.
+                    Planetoid* p = dynamic_cast<Planetoid*>(world.objects[0].get());
+                    const PlanetField* pf = p ? dynamic_cast<const PlanetField*>(p->field.get()) : nullptr;
+                    static Vector3 spring{};
+                    const double t = GetTime() - springT0;
+                    if (!pf) { printf("bench: spring: needs the planet -> FAIL\n"); benchSpring = false; }
+                    else if (springPhase == 0) {
+                        const Vector3 home = Vector3Scale(pf->findSpawnDir(p->seed), pf->radius);
+                        std::vector<Vector3> found;
+                        float best = 1e30f;
+                        for (float range : { 3000.0f, 10000.0f }) {
+                            Ambience_SpringsNear(*p, home, range, found);
+                            for (const Vector3& s : found) { const float d = Vector3Distance(s, home); if (d < best) { best = d; spring = s; } }
+                            if (best < 1e29f) break;
+                        }
+                        if (best > 1e29f) { printf("bench: spring: none within 10 km -> FAIL\n"); benchSpring = false; }
+                        else {
+                            const Vector3 up = Vector3Normalize(spring);
+                            printf("bench: spring: nearest %.1f km from the start (%s, %.0f m up)\n", best / 1000.0f, BiomeName(pf->biomeAt(up, pf->elevation(up))), pf->elevation(up));
+                            player.spawnOn(world, *p, up);
+                            player.flyMode = true;
+                            springPhase = 1; springT0 = GetTime();
+                        }
+                    } else {
+                        const Vector3 up = Vector3Normalize(spring);
+                        const Vector3 t1 = Vector3Normalize(Vector3CrossProduct(up, { 0, 1, 0 }));
+                        const Vector3 eye = Vector3Add(Vector3Add(spring, Vector3Scale(t1, 18.0f)), Vector3Scale(up, 26.0f)); // well above: the ground can stand above the height map
+                        world.camera.position = p->toWorld(eye); world.camera.target = p->toWorld(spring); world.camera.up = p->dirToWorld(up);
+                        player.position = world.renderOrigin + world.camera.position;
+                        sunOverride = true; sunArg = p->dirToWorld(Vector3Normalize(Vector3Add(up, Vector3Scale(t1, 0.6f))));
+                        if (springPhase == 1 && t > 5.0) { Fluid::SetSpeed(6); springPhase = 2; springT0 = GetTime(); }
+                        else if (springPhase == 2 && t > 30.0) {
+                            Fluid::SetSpeed(1);
+                            TakeScreenshot("bench_spring.png");
+                            const float total = (float)Fluid::GetStats().volume, nearSrc = Fluid::FluidAt(*p, spring, 3.0f, 0);
+                            const bool ok = Fluid::SourceCount() >= 1 && total > 5.0f && nearSrc < 0.6f * total;
+                            printf("bench: spring: %.1f m^3 of moving water, %.1f of it within 3 m of the spring (a stream: most runs off) -> %s\n", total, nearSrc, ok ? "PASS" : "FAIL");
+                            printf("bench: spring: bench_spring.png\n");
+                            benchSpring = false;
+                        }
+                    }
+                } else if (benchBiomes && WorldIdle()) {
+                    // --test-biomes (Plan 5 B): biome shares over the land, the biomes within 5 km of the
+                    // start (regional: several in reach), and the start's own (a temperate one).
+                    Planetoid* p = dynamic_cast<Planetoid*>(world.objects[0].get());
+                    const PlanetField* pf = p ? dynamic_cast<const PlanetField*>(p->field.get()) : nullptr;
+                    benchBiomes = false;
+                    if (!pf) printf("bench: biomes: needs the planet -> FAIL\n");
+                    else {
+                        int count[(int)Biome::Count] = {}, land = 0;
+                        std::mt19937 rng(7);
+                        std::uniform_real_distribution<float> u(-1.0f, 1.0f);
+                        for (int i = 0; i < 40000; ++i) {
+                            Vector3 d = { u(rng), u(rng), u(rng) };
+                            if (Vector3LengthSqr(d) > 1.0f || Vector3LengthSqr(d) < 1e-4f) { --i; continue; }
+                            d = Vector3Normalize(d);
+                            const float e = pf->elevation(d, 64.0f);
+                            if (e < 0.0f) continue;
+                            ++land; ++count[(int)pf->biomeAt(d, e)];
+                        }
+                        const Vector3 home = pf->findSpawnDir(p->seed);
+                        const Biome start = pf->biomeAt(home, pf->elevation(home));
+                        const Vector3 t1 = Vector3Normalize(Vector3CrossProduct(home, { 0, 1, 0 })), t2 = Vector3CrossProduct(t1, home);
+                        int nearCount[(int)Biome::Count] = {};
+                        for (float a = -5000.0f; a <= 5000.0f; a += 100.0f)
+                            for (float b = -5000.0f; b <= 5000.0f; b += 100.0f) {
+                                if (a * a + b * b > 25e6f) continue;
+                                const Vector3 d = Vector3Normalize(Vector3Add(home, Vector3Add(Vector3Scale(t1, a / pf->radius), Vector3Scale(t2, b / pf->radius))));
+                                const float e = pf->elevation(d, 64.0f);
+                                ++nearCount[(int)pf->biomeAt(d, e)];
+                            }
+                        int kinds = 0, nearKinds = 0;
+                        printf("bench: biomes: land share:");
+                        for (int b = 1; b < (int)Biome::Count; ++b) {
+                            printf(" %s %.1f%%", BiomeName((Biome)b), 100.0f * count[b] / std::max(land, 1));
+                            if (b != (int)Biome::Polar && count[b] > 0) ++kinds;
+                            if (b != (int)Biome::Ocean && nearCount[b] > 20) ++nearKinds;
+                        }
+                        printf("\nbench: biomes: within 5 km of the start:");
+                        for (int b = 0; b < (int)Biome::Count; ++b) if (nearCount[b]) printf(" %s %d", BiomeName((Biome)b), nearCount[b]);
+                        const bool ok = kinds == 10 && nearKinds >= 3 && (start == Biome::Forest || start == Biome::Meadow);
+                        printf("\nbench: biomes: %d of 10 land biomes on the planet, %d near the start, start in %s -> %s\n", kinds, nearKinds, BiomeName(start), ok ? "PASS" : "FAIL");
+                    }
                 } else if (benchParticles && (particlePhase > 0 || WorldIdle())) {
                     // --shot-particles: every particle kind in front of a standing camera: a smoke column,
                     // a flame with sparks, a dig puff with clods, water splashes and fireflies (bench_particles.png).
@@ -2208,7 +2421,7 @@ int main(int argc, char** argv)
                             float cover = 0.0f;
                             for (float r = 1000.0f; r <= 2200.0f; r += 200.0f) {
                                 const Vector3 d = Vector3Normalize(Vector3Add(home, Vector3Scale(flat, r / pf->radius)));
-                                cover += TreeCanopy(d, pf->radius, pf->elevation(d), pf->foliageSeed);
+                                cover += TreeCanopy(d, pf->radius, pf->elevation(d), pf->foliageSeed, pf);
                             }
                             if (cover > best) { best = cover; bestDir = flat; }
                         }
@@ -3983,7 +4196,7 @@ int main(int argc, char** argv)
                         }
                         benchWalkSeconds = 0.0;
                     }
-                } else if ((WorldIdle() && benchDigStrokes == 0 && !benchPaint && !benchSaveLoad && benchWalkSeconds <= 0.0 && benchMineStrokes == 0 && minePhase != 2 && benchFlySeconds <= 0.0 && !benchSuffocate && benchOrbitSeconds <= 0.0 && !benchRide && !benchPark && !benchGravity && !benchPrecision && !benchMantle && !benchAirJump && !benchMoon && !benchHole && !benchWall && !benchMenus && !benchWater && !benchFlyFollow && !benchHotbar && !benchInventory && !benchMap && !benchViewmodel && !benchQuests && !benchHunger && !benchFarm && !benchAnimals && !benchThreats && benchShotTabs == 0 && !benchForest && !benchFlow && !benchPond && !benchBucket && !benchPump && !benchTerrain && !benchShadow && !benchParticles && !benchFarForest && !benchRecipes && !benchWeather && !benchDecor && !benchMaterials && !benchDamage && !benchCrafting && !benchSuit && !benchTools && !benchRivers && !benchRing && !benchRocket && !benchStation && !benchBlueprint && !benchSmallBody && !benchTrees && !benchChop && benchPersist == 0 && benchBuild == 0 && benchFactory == 0 && !benchProgression) || GetTime() > 600.0) {
+                } else if ((WorldIdle() && benchDigStrokes == 0 && !benchPaint && !benchSaveLoad && benchWalkSeconds <= 0.0 && benchMineStrokes == 0 && minePhase != 2 && benchFlySeconds <= 0.0 && !benchSuffocate && benchOrbitSeconds <= 0.0 && !benchRide && !benchPark && !benchGravity && !benchPrecision && !benchMantle && !benchAirJump && !benchMoon && !benchHole && !benchWall && !benchMenus && !benchWater && !benchFlyFollow && !benchHotbar && !benchInventory && !benchMap && !benchViewmodel && !benchQuests && !benchHunger && !benchFarm && !benchAnimals && !benchThreats && benchShotTabs == 0 && !benchForest && !benchFlow && !benchPond && !benchBucket && !benchPump && !benchTerrain && !benchShadow && !benchParticles && !benchBiomes && !benchOil && !benchSpring && benchShotBiomes < 0 && !benchFarForest && !benchRecipes && !benchWeather && !benchDecor && !benchMaterials && !benchDamage && !benchCrafting && !benchSuit && !benchTools && !benchRivers && !benchRing && !benchRocket && !benchStation && !benchBlueprint && !benchSmallBody && !benchTrees && !benchChop && benchPersist == 0 && benchBuild == 0 && benchFactory == 0 && !benchProgression) || GetTime() > 600.0) {
                     benchStart = GetTime();
                     printf("bench: world ready after %.2f s (%d chunks, avg build %.2f ms of which sampling %.2f ms, %d worker threads)\n",
                         GetWorldStats().lastGenerationSeconds, GetWorldStats().chunks, GetWorldStats().avgBuildMs, GetWorldStats().avgSampleMs, GetWorldStats().workerThreads);
