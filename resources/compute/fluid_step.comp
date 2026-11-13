@@ -1,0 +1,159 @@
+#version 430
+// Flowing fluids on the GPU (fluid.cpp, GPU mode): one substep is two dispatches of this shader.
+//  pass 0 (vertical): A -> B. Each cell exchanges with the cell below and above: the pair (upper, lower)
+//    moves min(fill upper, room lower) down, computed identically by both cells, so it conserves exactly.
+//  pass 1 (sideways): B -> A. Each resting cell (on something solid, full or of another kind) exchanges
+//    with its four side neighbours: (f_a - f_b) / viscosity, both sides computing the same pair flux.
+//    Then sources reset to their level, specks evaporate, and changes are flagged per brick.
+// Cells: uint = fill (bits 0-7) | flags (8-15: 1 solid, 2 source, 4 static, 8 dug, kind in 13-15) | target (16-23).
+// Bricks: 16^3 cells, slot * 4096 + x + 16 y + 256 z (z up). Only processed bricks (in this dispatch's list)
+// exchange; a flux toward an unprocessed or missing brick is zero (and a missing one is requested).
+layout(local_size_x = 64) in;
+layout(std430, binding = 0) buffer CellsIn  { uint inC[]; };
+layout(std430, binding = 1) buffer CellsOut { uint outC[]; };
+layout(std430, binding = 2) readonly buffer Nbr { int nbr[]; };      // slot * 6 + face (-x +x -y +y -z +z), -1 none
+layout(std430, binding = 3) readonly buffer List { uint list[]; };   // processed slots
+layout(std430, binding = 4) readonly buffer InS { uint inS[]; };     // per slot: 1 = processed this dispatch
+layout(std430, binding = 5) buffer Flags { uint flagsOut[]; };      // per slot: bit 0 changed, bits 1-6 face requests
+uniform uint count;        // processed slots
+uniform int pass;          // 0 vertical, 1 sideways
+uniform int visc[8];       // per kind: sideways flow divisor
+uniform int minSpread[8];  // per kind: thinnest film that spreads
+
+const uint SOLID = 1u, SOURCE = 2u, DUG = 8u;
+uint F(uint c) { return c & 255u; }
+uint FL(uint c) { return (c >> 8) & 255u; }
+uint TG(uint c) { return (c >> 16) & 255u; }
+uint KIND(uint c) { return (FL(c) >> 5) & 7u; }
+uint pack(uint f, uint fl, uint tg) { return (f & 255u) | ((fl & 255u) << 8) | ((tg & 255u) << 16); }
+
+// The neighbour cell (dx,dy,dz one of +-1 on one axis): global index, or -1 when its brick is missing.
+// processed: whether that brick is in this dispatch.
+int neighbour(uint slot, int x, int y, int z, int dx, int dy, int dz, out bool processed, out int face) {
+    x += dx; y += dy; z += dz;
+    face = -1;
+    if (x < 0) { face = 0; x += 16; } else if (x >= 16) { face = 1; x -= 16; }
+    else if (y < 0) { face = 2; y += 16; } else if (y >= 16) { face = 3; y -= 16; }
+    else if (z < 0) { face = 4; z += 16; } else if (z >= 16) { face = 5; z -= 16; }
+    int s = int(slot);
+    if (face >= 0) { s = nbr[slot * 6u + uint(face)]; if (s < 0) { processed = false; return -1; } }
+    processed = inS[uint(s)] != 0u;
+    return s * 4096 + x + 16 * y + 256 * z;
+}
+
+// Reading a cell: the pass's input for processed bricks; an unprocessed brick's cells never change, and in
+// the sideways pass its current value lives in the output buffer (A) - B holds a stale copy.
+uint readCell(int g, bool processed) { return (pass == 1 && !processed) ? outC[g] : inC[g]; }
+
+// Vertical pair flux from the upper cell u to the lower cell l (both values), l's processed state.
+uint downFlux(uint u, uint l, bool lProc, bool lExists) {
+    if (!lExists || !lProc) return 0u;
+    if ((FL(u) & SOLID) != 0u || (FL(l) & SOLID) != 0u) return 0u;
+    if ((FL(l) & SOURCE) != 0u) return 0u;                       // static water takes nothing in
+    if ((FL(u) & SOURCE) != 0u && (FL(l) & DUG) == 0u) return 0u; // sources feed dug cells only
+    if (F(l) > 0u && F(u) > 0u && KIND(l) != KIND(u)) return 0u;  // kinds don't mix
+    return min(F(u), 255u - F(l));
+}
+
+// Whether a cell rests (can spread sideways): on solid, a full cell, or another fluid kind.
+bool rests(uint slot, int x, int y, int z, uint c) {
+    bool proc; int face;
+    int g = neighbour(slot, x, y, z, 0, 0, -1, proc, face);
+    if (g < 0) return false;                                      // below not there yet: wait
+    uint b = readCell(g, proc);
+    if ((FL(b) & SOLID) != 0u) return true;
+    return F(b) == 255u || (F(b) > 0u && KIND(b) != KIND(c));
+}
+
+// The kind an empty cell takes when fluids could flow in: the fullest resting side neighbour's (ties: lowest face).
+uint kindFor(uint slot, int x, int y, int z) {
+    uint best = 0u, kind = 0u;
+    for (int k = 0; k < 4; ++k) {
+        int dx = k == 0 ? -1 : k == 1 ? 1 : 0, dy = k == 2 ? -1 : k == 3 ? 1 : 0;
+        bool proc; int face;
+        int g = neighbour(slot, x, y, z, dx, dy, 0, proc, face);
+        if (g < 0) continue;
+        uint c = readCell(g, proc);
+        if ((FL(c) & SOLID) != 0u || F(c) <= best) continue;
+        best = F(c); kind = KIND(c);
+    }
+    return kind;
+}
+
+// Sideways pair flux from cell a (at slot/x/y/z) to its neighbour b (value, position). Both cells call this
+// with the same arguments for the pair, so the result agrees.
+uint sideFlux(uint aSlot, int ax, int ay, int az, uint a, uint bSlot, int bx, int by, int bz, uint b, bool aProc, bool bProc) {
+    if (!aProc || !bProc) return 0u;
+    if ((FL(a) & SOLID) != 0u || (FL(b) & SOLID) != 0u) return 0u;
+    if ((FL(b) & SOURCE) != 0u) return 0u;
+    if ((FL(a) & SOURCE) != 0u && (FL(b) & DUG) == 0u) return 0u;
+    uint fa = F(a), fb = F(b);
+    uint ka = KIND(a);
+    if (fa < uint(minSpread[ka])) return 0u;
+    if (fb > 0u) { if (KIND(b) != ka) return 0u; }
+    else if (kindFor(bSlot, bx, by, bz) != ka) return 0u;
+    if (fa <= fb) return 0u;
+    uint v = uint(visc[ka]);
+    uint diff = fa - fb;
+    if (diff < v) return 0u;
+    uint m = diff / v;
+    if (fb == 0u && m < uint(minSpread[ka])) return 0u;         // no trickles into dry cells
+    if (!rests(aSlot, ax, ay, az, a)) return 0u;
+    return m;
+}
+
+void main() {
+    uint gid = gl_GlobalInvocationID.x;
+    uint li = gid / 4096u;
+    if (li >= count) return;
+    uint slot = list[li];
+    uint local = gid % 4096u;
+    int x = int(local % 16u), y = int((local / 16u) % 16u), z = int(local / 256u);
+    int g = int(slot * 4096u + local);
+    uint c = inC[g];
+    uint fl = FL(c);
+    if ((fl & SOLID) != 0u) { outC[g] = c; return; }
+    int f = int(F(c));
+    uint kind = KIND(c);
+    if (pass == 0) {
+        bool pB, pA; int fB, fA;
+        int gb = neighbour(slot, x, y, z, 0, 0, -1, pB, fB);
+        int ga = neighbour(slot, x, y, z, 0, 0, 1, pA, fA);
+        uint below = gb >= 0 ? inC[gb] : 0u, above = ga >= 0 ? inC[ga] : 0u;
+        uint outF = f > 0 ? downFlux(c, below, pB, gb >= 0) : 0u;
+        uint inF = ga >= 0 ? downFlux(above, c, true, true) * uint(pA) : 0u;
+        if (gb < 0 && f > 0 && (fl & SOURCE) == 0u) atomicOr(flagsOut[slot], 1u << uint(1 + fB));
+        int nf = f - int(outF) + int(inF);
+        if (f == 0 && inF > 0u) kind = KIND(above);
+        outC[g] = pack(uint(clamp(nf, 0, 255)), (fl & 31u) | (kind << 5), TG(c));
+        return;
+    }
+    // Sideways.
+    int net = 0;
+    uint inKind = kind;
+    uint best = 0u;
+    for (int k = 0; k < 4; ++k) {
+        int dx = k == 0 ? -1 : k == 1 ? 1 : 0, dy = k == 2 ? -1 : k == 3 ? 1 : 0;
+        bool pN; int face;
+        int gn = neighbour(slot, x, y, z, dx, dy, 0, pN, face);
+        if (gn < 0) {
+            if (f >= minSpread[kind] && (fl & SOURCE) == 0u && rests(slot, x, y, z, c)) atomicOr(flagsOut[slot], 1u << uint(1 + face));
+            continue;
+        }
+        uint n = readCell(gn, pN);
+        uint nSlot = uint(gn) / 4096u, nl = uint(gn) % 4096u;
+        int nx = int(nl % 16u), ny = int((nl / 16u) % 16u), nz = int(nl / 256u);
+        uint out1 = f > 0 ? sideFlux(slot, x, y, z, c, nSlot, nx, ny, nz, n, true, pN) : 0u;
+        uint in1 = F(n) > 0u ? sideFlux(nSlot, nx, ny, nz, n, slot, x, y, z, c, pN, true) : 0u;
+        net += int(in1) - int(out1);
+        if (in1 > best) { best = in1; inKind = KIND(n); }
+    }
+    int nf = clamp(f + net, 0, 255);
+    if (f == 0 && nf > 0) kind = inKind;
+    if ((fl & SOURCE) != 0u) nf = int(TG(c));                            // sources hold their level
+    else if (nf > 0 && nf <= 3 && rests(slot, x, y, z, c)) nf = 0;          // a resting speck soaks away
+    uint old = outC[g];                                                   // this substep's start (A)
+    uint res = pack(uint(nf), (fl & 31u) | (kind << 5), TG(c));
+    if (F(old) != uint(nf)) atomicOr(flagsOut[slot], 1u);
+    outC[g] = res;
+}
