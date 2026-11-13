@@ -105,7 +105,8 @@ no auto-add, so:
   issues #143 (steps #144-#150), under #128. Done: steps 1-4 + 7 (PRs #153, #157, #179); step 5 deferred (#148), step 6
   not needed (#149: GPU density is bit-identical, collision keeps the CPU field). One path on GL 4.3 (base-instance records).
 - Plan 5 (art, life, world variety): https://claude.ai/artifact/5igt2VrsTyNhZ3BZ94teHX - A animal models/AI, B biomes,
-  C Minecraft-style 3D terrain, D authored textures await the user's answers; the light items are done on art-pass-5.
+  C Minecraft-style 3D terrain, D stylized PBR terrain: all built (light items #29, B #30, C #31, A + machine models #32, D #152),
+  in review, not merged; status table at the top of the doc.
 - `CurrentIssues.md` (untracked, the user's playtest list): erase lines once fully resolved; mark
   deferred or changed-needs-confirmation items inline.
 
