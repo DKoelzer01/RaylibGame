@@ -4810,9 +4810,27 @@ int main(int argc, char** argv)
                     static int lastSec = -1;
                     if ((int)t != lastSec) {
                         lastSec = (int)t;
+                        if (getenv("FLY_SHOTS") ? lastSec >= 3 : (lastSec == 8 || lastSec == 10 || lastSec == 12)) TakeScreenshot(TextFormat("bench_fly_%02d.png", lastSec)); // mid-flight views
                         const WorldStats& s = GetWorldStats();
                         printf("bench: fly t=%2d s  %5.1f km flown  nodes %5d  drawn %4d  queued %4d  %.0f FPS\n", (int)t,
                                benchFlySpeed * t / 1000.0, s.nodes, s.chunks, s.queuedJobs, (double)GetFPS());
+                    }
+                    // --crack-check while flying: every 10th frame count the magenta (cleared, nothing drawn) pixels below the
+                    // horizon band; a frame with holes is logged and the worst saved (streaming holes are brief).
+                    static long flyFrame = 0;
+                    static int worstHoles = 0;
+                    if (crackCheck && (++flyFrame % 10) == 0) {
+                        Image shot = LoadImageFromScreen();
+                        Color* px = LoadImageColors(shot);
+                        int holes = 0;
+                        for (int y = shot.height / 3; y < shot.height; y += 2)
+                            for (int x = 0; x < shot.width; x += 2) { const Color c = px[y * shot.width + x]; holes += (c.r > 200 && c.g < 60 && c.b > 200) ? 1 : 0; }
+                        UnloadImageColors(px);
+                        if (holes > 50) {
+                            printf("bench: fly holes: t=%.2f s, %d magenta samples\n", t, holes);
+                            if (holes > worstHoles) { worstHoles = holes; ExportImage(shot, "bench_fly_holes.png"); }
+                        }
+                        UnloadImage(shot);
                     }
                 }
             }

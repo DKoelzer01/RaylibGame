@@ -554,7 +554,7 @@ static void UpdateLod(Planetoid& p, Vector3 cameraRender) {
     auto parentOf = [](const NodeKey& k) { return NodeKey{ k.level + 1, k.x >> 1, k.y >> 1, k.z >> 1 }; };
     std::unordered_set<NodeKey> pendingDesired, pendingWithin; // pending nodes, and every node containing one
     for (const NodeKey& d : desired) {
-        if (p.nodes.at(d)->ready) continue;
+        if (auto n = p.nodes.find(d); n != p.nodes.end() && n->second->ready) continue; // not requested yet (the per-frame cap) counts as pending
         pendingDesired.insert(d);
         for (NodeKey k = d; k.level <= p.rootLevel; k = parentOf(k))
             if (!pendingWithin.insert(k).second) break; // its ancestors are in already
@@ -570,7 +570,9 @@ static void UpdateLod(Planetoid& p, Vector3 cameraRender) {
     }
     std::vector<Chunk*> draw = retained;
     for (const NodeKey& d : desired) {
-        Chunk* c = p.nodes.at(d).get();
+        auto n = p.nodes.find(d);
+        if (n == p.nodes.end()) continue; // requested on a later frame (#258 cap)
+        Chunk* c = n->second.get();
         if (!c->ready) continue;
         bool coveredByCoarser = false;
         if (!retainedSet.empty())
