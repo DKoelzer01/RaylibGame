@@ -239,7 +239,7 @@ public:
         float sky;
         return materialSky(p, base, footprint, normal, sky);
     }
-    VoxelMaterial materialSky(Vector3 p, float base, float footprint, Vector3 normal, float& sky) const override;
+    VoxelMaterial materialSky(Vector3 p, float base, float footprint, Vector3 normal, float& sky) const override { return materialSkyHinted(p, base, footprint, normal, sky, nullptr, nullptr); }
     Vector3 fallbackUp(Vector3 p) const override;
     bool editable(Vector3 p) const override;
     // The river drainage network (rivers.h), built on first use; nullptr on moons.
@@ -253,6 +253,9 @@ public:
     float rockFeature(Vector3 p, float d, float surface, float footprint) const;
     // 3D terrain: metres the surface is raised (+) or carved (-) here by the 3D noise band (0 outside it).
     struct Column3D { float mask = 0.0f, f = 0.0f; };          // the 3D band's per-column strength (Plan 5 C)
+    // With the height-map elevation and 3D-band column at p already known (gridSurface, from the chunk's block grid):
+    // chunk meshing (#148) skips re-evaluating the height map at every vertex (~80% of the per-vertex cost).
+    VoxelMaterial materialSkyHinted(Vector3 p, float base, float footprint, Vector3 normal, float& sky, const float* elevHint, const Column3D* colHint) const;
     Column3D terrain3DColumn(Vector3 dir, float elev) const;
     float terrain3D(Vector3 p, float d, float surface, float footprint, const Column3D* col = nullptr) const;
 
@@ -269,6 +272,8 @@ public:
     };
     bool prepareBlock(Vector3 origin, float stride, int S, float footprint, BlockGrid& g) const;
     void sampleBlock(Vector3 origin, float stride, int S, float footprint, const BlockGrid& g, float* out) const;
+    // The elevation and 3D-band column at p as sampleBlock interpolates them from the grid (false: p outside the surface band).
+    bool gridSurface(const BlockGrid& g, Vector3 p, float& elev, Column3D& col) const;
     // The floating islands (Plan 5 C) whose 4 km cells a block's samples may fall in, for the GPU: per island
     // (cell x, y, z, ok), (dir xyz, waist), (r, depth, 0, 0). False when too many cells (> maxCells).
     bool blockIslands(Vector3 origin, float stride, int S, std::vector<float>& out, int maxCells) const;
@@ -361,7 +366,8 @@ void BuildChunkMesh(const DensityField& field, const TerrainDeltas& deltas, Chun
 // second half from that block (edits, marching cubes, materials): Plan 6 step 4 samples the block on the GPU.
 struct ChunkBlock { Vector3 origin{}; float stride = 1.0f, footprint = 1.0f; int E = 0; };
 ChunkBlock ChunkBlockOf(const NodeKey& key);
-void BuildChunkMeshFromBase(const DensityField& field, const TerrainDeltas& deltas, ChunkMeshData& out, const float* base, float sampledMs);
+// grid: the block's height grid when it was sampled from one (PlanetField::prepareBlock): materials read the surface from it.
+void BuildChunkMeshFromBase(const DensityField& field, const TerrainDeltas& deltas, ChunkMeshData& out, const float* base, float sampledMs, const PlanetField::BlockGrid* grid = nullptr);
 
 
 #endif
