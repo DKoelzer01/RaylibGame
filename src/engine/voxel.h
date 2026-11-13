@@ -169,7 +169,7 @@ public:
     bool foliage = false;         // grows trees (planets with life); the terrain paints distant canopy
     unsigned int foliageSeed = 0; // the tree system's seed (TreeCanopy matches its forests)
     unsigned int oreSeed = 0;     // ore deposits (oreKind)
-    SimplexNoise continents, ridges, hills, valleys, detail, cavesA, cavesB, veins, climate, caverns, ravines, ravineMask, streams, rocks, rockMask, rugged, cliffs, warp3, tempNoise, moistNoise, biomeJitter;
+    SimplexNoise continents, ridges, hills, valleys, detail, cavesA, cavesB, veins, climate, caverns, ravines, ravineMask, streams, rocks, rockMask, rugged, cliffs, warp3, tempNoise, moistNoise, biomeJitter, caveMouths;
     static constexpr float kTunnelLevel = 0.096f; // worm tunnel where both cave fields are within this of zero
     static constexpr float kCavernLevel = 0.68f;  // cavern where the cavern field exceeds this (rare)
 
@@ -224,6 +224,10 @@ public:
     // Biome landforms (Plan 5 B) added to the height before rivers carve it: desert dunes, badlands
     // mesas (flat tops on steep risers), swamps flattened toward the water table.
     float biomeShape(Vector3 dir, float h, float fp) const;
+    float ruggedness(Vector3 dir, float elev) const;
+    float floatingIsland(Vector3 p, float d) const;  // Plan 5 C: metres inside a floating island (< 0 outside)
+    int floatingIslandsNear(Vector3 dir, float range, std::vector<Vector3>& out) const;
+    bool islandTopAt(Vector3 dir, float& topRadius) const; // a floating island over this column: its top (radius from the centre) // Plan 5 C: 0 flat (meadows, swamps) .. 1 dramatic (badlands, mountains)
     float baseDensity(Vector3 p) const override { return baseDensityLod(p, 0.0f); }
     float baseDensityLod(Vector3 p, float footprint) const override;
     void baseDensityBlock(Vector3 origin, float stride, int S, float footprint, float* out) const override;
