@@ -3374,6 +3374,9 @@ int main(int argc, char** argv)
                         survival.health = 100.0f;
                         // Night: a stalker comes.
                         world.sunDirection = p->dirToWorld(Vector3Negate(up));
+                        // A fixed spawn direction: animals walk the real terrain now (#223) and have no pathfinding yet
+                        // (#253), so one that comes out beyond a cliff can't reach the player.
+                        SetRandomSeed(3);
                         Animals_RefreshNow();
                         Animals_Update(world, 0.1f, 0.1f, false);
                         threatSpawned = Animals_NightCount();
@@ -3563,6 +3566,26 @@ int main(int argc, char** argv)
                         if (FILE* f = fopen(path.c_str(), "r")) { loadExtrasHook(f); fclose(f); }
                         remove(path.c_str());
                         check(Animals_Count() == before && Vector3Distance(Animals_Position(0), pos0) < 0.01f, "saved and loaded");
+                        // Aim (#222): an animal 4 m ahead in the crosshair is aimed (the terrain tool holds off); with
+                        // ground raised between, the ground is what's aimed at.
+                        {
+                            Animals_Reset();
+                            const Vector3 fwdL = Vector3Normalize(p->dirToLocal(Vector3Subtract(player.forward, Vector3Scale(player.up, Vector3DotProduct(player.forward, player.up)))));
+                            Animals_Spawn(world, *p, "woolback", Vector3Add(me, Vector3Scale(fwdL, 4.0f)), 1, false, 0.0f);
+                            const Vector3 eye = Vector3Add(me, Vector3Scale(up, 1.6f));
+                            const Vector3 body = Vector3Add(Animals_Position(0), Vector3Scale(Vector3Normalize(Animals_Position(0)), 0.4f));
+                            const Camera3D keep = world.camera;
+                            world.camera.position = p->toWorld(eye);
+                            world.camera.target = p->toWorld(body);
+                            Animals_Aim(world, false);
+                            const bool aimedOpen = Animals_Aiming();
+                            ApplyTerrainEdit(*p, TerrainEdit{ Vector3Lerp(eye, body, 0.5f), 0.7f, 10.0f });
+                            Animals_Aim(world, false);
+                            const bool aimedBehind = Animals_Aiming();
+                            world.camera = keep;
+                            check(aimedOpen && !aimedBehind, "aim: an animal in view is aimed, one behind a mound is not");
+                            Animals_Reset();
+                        }
                         // Terrain (#223): a pit dug under a standing animal drops it onto the pit floor; animals
                         // grazing around a 4 m pit for a minute never end up inside the ground or in the air.
                         {
@@ -4937,6 +4960,7 @@ int main(int argc, char** argv)
         GpuTimer_CpuMark("world+lights");
         if (gameState == 1) Hotbar_Update(world, gameInput && alive, ship.piloted);
         if (gameState == 1) BuildTool_Update(world, gameInput && alive, !ship.piloted && !Rocket_Boarded() && !player.flyMode && !telescope.active && alive);
+        if (gameState == 1 && !loading) Animals_Aim(world, gameInput && alive && !ship.piloted); // this frame's camera (#222)
         if (gameState == 1) TerrainTool_Update(world, gameInput && alive && !Animals_Aiming(), !ship.piloted && !Rocket_Boarded() && !telescope.active && !buildTool.active); // F5/F9 work aboard too
         {   // Tool wear: each stroke, chop or hit with the held tool (the swing counter covers them all).
             static int lastSwings = 0;

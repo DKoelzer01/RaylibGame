@@ -137,6 +137,7 @@ struct Animal {
 std::vector<Animal> animals;
 std::unordered_map<std::string, std::unordered_set<uint64_t>> spawnedTiles; // body -> herd tiles decided
 int aimed = -1;
+static bool hitLatch = false; // LMB went to an animal: the terrain tool waits for its release (#222)
 double lastSpawnCheck = -1.0, lastHit = -1.0, lastPenCheck = -10.0, lastFireScan = -10.0, lastNightSpawn = -10.0;
 std::vector<Vector3> fires; // campfires near the player (body-local)
 bool threatsOn = true;     // off in bench runs except --test-threats
@@ -328,7 +329,7 @@ bool Animals_IsFeed(const std::string& id) { LoadSpecies(); for (const Species& 
 const std::string& Animals_Body(int i) { static const std::string none; return i >= 0 && i < (int)animals.size() ? animals[i].body : none; }
 bool Animals_Wild(int i) { return i >= 0 && i < (int)animals.size() && species[animals[i].species].wild; }
 bool Animals_Hostile(int i) { return i >= 0 && i < (int)animals.size() && species[animals[i].species].hostile; }
-bool Animals_Aiming() { return aimed >= 0; }
+bool Animals_Aiming() { return aimed >= 0 || hitLatch; }
 int Animals_YoungCount() { int n = 0; for (const Animal& a : animals) n += a.age < 1.0f ? 1 : 0; return n; }
 
 int Animals_Spawn(Scene& world, Planetoid& body, const std::string& id, Vector3 local, int count, bool young, float spread) {
@@ -703,31 +704,48 @@ void Animals_Update(Scene& world, float dt, float worldDt, bool inputEnabled) {
             break;
         }
     }
-    // Aim (within 5 m along the crosshair) and the player's actions.
+    lastUpdateMs = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+}
+
+// Aim along the crosshair and the player's actions on the aimed animal (#222). Called after the camera is placed
+// for this frame (Animals_Update ran on last frame's), right before the terrain tool, which holds off while
+// Animals_Aiming(). The nearer of an animal and the ground wins: an animal behind a slope or a rock is not aimed.
+// Reach matches the tool's. After a hit LMB stays with the animals until released, so a held button doesn't dig
+// the ground behind one that bolted.
+void Animals_Aim(Scene& world, bool inputEnabled) {
+    Planetoid* here = player.nearest;
+    const double now = WorldTime();
+    if (!IsMouseButtonDown(MOUSE_BUTTON_LEFT)) hitLatch = false;
     aimed = -1;
     if (here && !player.flyMode) {
+        const Vector3 dirW = Vector3Normalize(Vector3Subtract(world.camera.target, world.camera.position));
         const Vector3 o = here->toLocal(world.camera.position);
-        const Vector3 d = here->dirToLocal(Vector3Normalize(Vector3Subtract(world.camera.target, world.camera.position)));
-        float best = 5.0f;
+        const Vector3 d = here->dirToLocal(dirW);
+        float best = std::max(5.0f, terrainTool.reach);
         for (size_t i = 0; i < animals.size(); ++i) {
             const Animal& a = animals[i];
             if (a.body != here->name) continue;
             const Species& s = species[a.species];
             const float scale = 0.6f + 0.4f * a.age;
             const Vector3 c = Vector3Add(a.pos, Vector3Scale(Vector3Normalize(a.pos), s.size.y * 0.5f * scale));
-            const float r = 0.5f * std::max(s.size.x, s.size.y) * scale + 0.1f;
             const Vector3 oc = Vector3Subtract(c, o);
             const float t = Vector3DotProduct(oc, d);
+            // The body's sphere (half its length or height), a little wider with distance: easier to land a hit.
+            const float r = 0.5f * std::max(s.size.z, s.size.y) * scale + 0.1f + 0.03f * std::max(t, 0.0f);
             if (t < 0.0f || t > best) continue;
             if (Vector3Length(Vector3Subtract(oc, Vector3Scale(d, t))) > r) continue;
             best = t; aimed = (int)i;
         }
+        // Ground in front of it: the terrain is what's aimed at.
+        TerrainHit th;
+        if (aimed >= 0 && RaycastTerrain(world, Ray{ world.camera.position, dirW }, best, th) && th.distance < best - 0.3f) aimed = -1;
     }
     if (aimed >= 0 && inputEnabled && !buildTool.active) {
         Animal& a = animals[aimed];
         const Species& s = species[a.species];
         if (IsMouseButtonPressed(MOUSE_BUTTON_LEFT) && GetTime() - lastHit > 0.35) {
             lastHit = GetTime();
+            hitLatch = true;
             const ToolSpec t = ToolOf(terrainTool.heldTool);
             ++terrainTool.swings;
             Animals_Hit(aimed, t.type == ToolType::Hands ? 2.0f : 3.0f + 3.0f * t.tier);
@@ -746,7 +764,6 @@ void Animals_Update(Scene& world, float dt, float worldDt, bool inputEnabled) {
             }
         }
     }
-    lastUpdateMs = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
 }
 
 // The animal model (Plan 5 A): built from boxes in the animal's frame (x right, y up, z forward), proportioned
