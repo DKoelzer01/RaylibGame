@@ -317,6 +317,8 @@ int main(int argc, char** argv)
     int spinPhase = 0;
     Vector3 spinCamLocal{}, spinTgtLocal{};
     double suffocateStart = -1.0;
+    double suffocateDrift = 0.0;    // --test-suffocate: how far the dead camera drifted in the body frame (#231)
+    double suffocateSettle = 0.0;   // ...and how far the eye smoothing moved it in the first 0.2 s
     DVec3 flyFrom{};
     float flyEnergy = 0.0f, flyMaxSpeed = 0.0f;
     DVec3 walkFrom{};
@@ -851,7 +853,19 @@ int main(int argc, char** argv)
                         survival.health = 15.0f;
                         survival.breathableAltitude = -1e9f; // no air to breathe (the planet's would refill the suit)
                         suffocateStart = GetTime();
+                    } else if (survival.dead && player.nearest) {
+                        // #231: while dead the camera holds its place in the body's frame (drift over the death).
+                        static DVec3 firstLocal{};
+                        static bool have = false;
+                        static double deadAt = -1.0, settleDrift = 0.0;
+                        if (deadAt < 0.0) deadAt = GetTime();
+                        const DVec3 camLocal = player.nearest->toLocalD(world.renderOrigin + world.camera.position);
+                        if (!have) firstLocal = camLocal; // the first dead frame: how far the eye smoothing then settles
+                        if (GetTime() - deadAt < 0.2) { settleDrift = std::max(settleDrift, (camLocal - firstLocal).length()); firstLocal = camLocal; have = true; }
+                        else suffocateDrift = std::max(suffocateDrift, (camLocal - firstLocal).length()); // held after that
+                        suffocateSettle = settleDrift;
                     } else if (survival.deaths > 0 && !survival.dead) {
+                        printf("bench: suffocate: while dead the camera drifted %.3f m in the body's frame (#231) -> %s\n", suffocateDrift, suffocateDrift < 0.01 ? "PASS" : "FAIL");
                         const float d = Vector3Length(Vector3Subtract(player.velocity, player.nearest ? player.nearest->surfaceVelocity((player.position - world.renderOrigin).toFloat()) : Vector3{ 0, 0, 0 }));
                         printf("bench: suffocated and respawned after %.1f s; O2 %.0f HP %.0f, moving %.1f m/s against the ground, deaths %d\n",
                                GetTime() - suffocateStart, survival.oxygen, survival.health, d, survival.deaths);
@@ -4594,6 +4608,35 @@ int main(int argc, char** argv)
                 ship.update(world, false, frameDt);
                 Suit_Apply(world, frameDt); // the worn suit and modules: walk, jetpack, grip, the scanner
                 if (alive && !loading) player.update(world, gameInput, frameDt);
+                {
+                    // Dead (until the respawn): the view stays exactly where the player died, held in the frame of the
+                    // body they were on - player.update is skipped, so nothing else carried it with the spinning,
+                    // orbiting planet (it drifted off at ~100 m/s, or kept the death velocity; #231).
+                    static Planetoid* deathBody = nullptr;
+                    static DVec3 deathLocal{};
+                    static Vector3 deathForward{}, deathUp{};
+                    static bool held = false;
+                    if (!alive && !loading) {
+                        if (!held) {
+                            deathBody = player.nearest;
+                            if (deathBody) {
+                                deathLocal = deathBody->toLocalD(player.position);
+                                deathForward = deathBody->dirToLocal(player.forward);
+                                deathUp = deathBody->dirToLocal(player.up);
+                            }
+                            held = true;
+                        }
+                        if (deathBody) {
+                            player.position = deathBody->toWorldD(deathLocal);
+                            player.forward = deathBody->dirToWorld(deathForward);
+                            player.up = deathBody->dirToWorld(deathUp);
+                        }
+                        player.velocity = { 0, 0, 0 };
+                    } else {
+                        held = false;
+                        deathBody = nullptr;
+                    }
+                }
                 Survival_OnLanding(player.impactSpeed);
                 Rocket_Update(world, gameInput && alive, frameDt); // on foot: aim at a rocket (E boards, I fuels)
             }
