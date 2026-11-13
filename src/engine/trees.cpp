@@ -310,24 +310,36 @@ void BuildTile(const PlanetField& f, const TerrainDeltas& edits, const PlantRemo
             if (roll >= pTreeMax + pBushBase * kMaxBushFactor + pStoneBase * kMaxStoneFactor) continue;
             const float lat = fabsf(dir.y);
             if (lat > 0.86f) continue;                                  // polar: nothing grows
-            const float e = f.elevation(dir);
-            const Biome biome = f.biomeAt(dir, e);
+            // Floating islands (Plan 5 C) have woods on their tops: the column's ground is the island's top.
+            float islandTop = 0.0f;
+            const bool onIsland = f.islandTopAt(dir, islandTop);
+            const float e = onIsland ? islandTop - R : f.elevation(dir);
+            const Biome biome = onIsland ? Biome::Forest : f.biomeAt(dir, e);
             const BiomeFlora flora = FloraOf(biome);
             const float pTree = std::max(TreeChanceFromForest(forest, flora.trees), flora.cover), pBush = pBushBase * flora.bushes, pStone = pStoneBase * flora.stones;
             const bool tree = roll < pTree;
             const bool stone = !tree && roll >= pTree + pBush && roll < pTree + pBush + pStone;
             if (!tree && !stone && roll >= pTree + pBush) continue;
-            if (e < 4.0f || e > (tree ? 900.0f : stone ? 1300.0f : 1100.0f)) continue;   // beach / sea, above the tree line
-            // Slope from the height a few metres away.
-            const Vector3 t1 = Vector3Normalize(Vector3CrossProduct(dir, fabsf(dir.y) < 0.9f ? Vector3{ 0, 1, 0 } : Vector3{ 1, 0, 0 }));
-            const Vector3 t2 = Vector3CrossProduct(t1, dir);
-            const float step = 3.0f, ang = step / (R + e);
-            const float e1 = f.elevation(Vector3Normalize(Vector3Add(dir, Vector3Scale(t1, ang))));
-            const float e2 = f.elevation(Vector3Normalize(Vector3Add(dir, Vector3Scale(t2, ang))));
-            const Vector3 normal = Vector3Normalize(Vector3Subtract(dir, Vector3Add(Vector3Scale(t1, (e1 - e) / step), Vector3Scale(t2, (e2 - e) / step))));
-            const float slope = 1.0f - Vector3DotProduct(normal, dir);
-            if (slope > (tree ? 0.12f : stone ? 0.3f : 0.2f)) continue;
-            const Vector3 ground = Vector3Scale(dir, R + e);
+            if (!onIsland && (e < 4.0f || e > (tree ? 900.0f : stone ? 1300.0f : 1100.0f))) continue;   // beach / sea, above the tree line
+            Vector3 normal = dir;
+            Vector3 ground = Vector3Scale(dir, R + e);
+            if (onIsland) {
+                // The island's real top (hills, terraces): the first solid going down; no trees on its cliffs.
+                bool found = false;
+                for (float hh = 6.0f; hh > -10.0f && !found; hh -= 0.25f)
+                    if (solid(Vector3Scale(dir, R + e + hh))) { ground = Vector3Scale(dir, R + e + hh + 0.1f); found = true; }
+                if (!found) continue;
+            } else {
+                // Slope from the height a few metres away.
+                const Vector3 t1 = Vector3Normalize(Vector3CrossProduct(dir, fabsf(dir.y) < 0.9f ? Vector3{ 0, 1, 0 } : Vector3{ 1, 0, 0 }));
+                const Vector3 t2 = Vector3CrossProduct(t1, dir);
+                const float step = 3.0f, ang = step / (R + e);
+                const float e1 = f.elevation(Vector3Normalize(Vector3Add(dir, Vector3Scale(t1, ang))));
+                const float e2 = f.elevation(Vector3Normalize(Vector3Add(dir, Vector3Scale(t2, ang))));
+                normal = Vector3Normalize(Vector3Subtract(dir, Vector3Add(Vector3Scale(t1, (e1 - e) / step), Vector3Scale(t2, (e2 - e) / step))));
+                const float slope = 1.0f - Vector3DotProduct(normal, dir);
+                if (slope > (tree ? 0.12f : stone ? 0.3f : 0.2f)) continue;
+            }
             const VoxelMaterial m = f.materialLod(Vector3Subtract(ground, Vector3Scale(dir, 0.3f)), 1.0f, 0.0f, normal);
             if (m != VoxelMaterial::Grass && m != VoxelMaterial::Regolith && !(stone && m == VoxelMaterial::Gravel)) continue;
             // Solid ground underfoot and open air above (caves, ravines, edits).

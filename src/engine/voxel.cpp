@@ -153,6 +153,7 @@ VoxelMaterial TerrainField::material(Vector3 p, float base) const {
 // PlanetField (planets and moons)
 // ---------------------------------------------------------------------------------------------
 
+constexpr float kBand3DBelow = 16.0f, kBand3DAbove = 50.0f; // the 3D terrain band around the height map (Plan 5 C: up to 50 m up)
 static float Smoothstep(float a, float b, float x) {
     const float t = std::clamp((x - a) / (b - a), 0.0f, 1.0f);
     return t * t * (3.0f - 2.0f * t);
@@ -188,9 +189,10 @@ PlanetField::PlanetField(unsigned int seed, float radius_, bool moon_)
     tempNoise = SeededNoise(rng, 1.0f / 4200.0f);     // biomes (Plan 5 B): regional warm and cool patches
     moistNoise = SeededNoise(rng, 1.0f / 3200.0f);    // ...wet and dry ones
     biomeJitter = SeededNoise(rng, 1.0f / 90.0f);     // ...and a fine wobble that interleaves their borders
+    caveMouths = SeededNoise(rng, 1.0f / 700.0f);     // Plan 5 C: regions where cave tunnels break the surface
     // Bounds of elevation() below (each noise term is in [-1, 1]).
     if (moon) { minElevation = -90.0f; maxElevation = 340.0f; }
-    else { minElevation = -740.0f; maxElevation = 1690.0f + 30.0f + 15.0f; } // + the 3D terrain band + biome landforms (dunes, mesas)
+    else { minElevation = -740.0f; maxElevation = 1690.0f + 50.0f + 15.0f; } // + the 3D terrain band + biome landforms (dunes, mesas)
 }
 
 // River valleys: 70 m deep, with a flat floodplain floor (valley-noise units < kValleyFloor, room for
@@ -649,15 +651,42 @@ float PlanetField::rockFeature(Vector3 p, float d, float surface, float fp) cons
 // (crests lean: overhangs, undercuts) raises ridges and carves alcoves, up to 12 m either way.
 // The beaches and the low land by the sea stay smooth. Coarse levels of detail keep its low octaves,
 // so far silhouettes match near ones. Returns metres added to the surface here (+ solid, - carved).
+// How dramatic the 3D terrain is here (Plan 5 C), 0..1, from a cheap one-octave climate (the 3D term runs per
+// density sample) blended smoothly so biome borders don't step: badlands and the high mountains most, taiga and
+// jungle (karst) a fair amount, forests some, savanna and deserts a little, meadows and swamps not at all (the
+// flat building land).
+float PlanetField::ruggedness(Vector3 dir, float elev) const {
+    const float x = dir.x * radius, y = dir.y * radius, z = dir.z * radius;
+    const float t = 30.0f - 44.0f * powf(fabsf(dir.y), 1.5f) - 6.5f * std::max(elev, 0.0f) / 1000.0f + 7.0f * tempNoise.fractal(1, x, y, z);
+    const float m = std::clamp(0.5f + 0.85f * moistNoise.fractal(1, x, y, z) + 0.08f * (1.0f - Smoothstep(10.0f, 150.0f, elev)), 0.0f, 1.0f);
+    const float hot = Smoothstep(16.0f, 20.0f, t), cold = 1.0f - Smoothstep(5.0f, 9.0f, t), temperate = (1.0f - hot) * (1.0f - cold);
+    float f = 0.35f;  // forests and other temperate land: some
+    f += (0.15f - f) * hot * Smoothstep(0.26f, 0.2f, m);                                        // desert
+    f += (1.0f - f) * hot * Smoothstep(0.18f, 0.25f, m) * (1.0f - Smoothstep(0.38f, 0.45f, m)); // badlands
+    f += (0.25f - f) * hot * Smoothstep(0.38f, 0.45f, m) * (1.0f - Smoothstep(0.55f, 0.62f, m)); // savanna
+    f += (0.55f - f) * hot * Smoothstep(0.55f, 0.62f, m);                                        // jungle
+    f += (0.0f - f) * temperate * Smoothstep(0.37f, 0.29f, m);                                   // meadow
+    f += (0.6f - f) * cold * Smoothstep(0.25f, 0.35f, m);                                        // taiga
+    f += (0.0f - f) * Smoothstep(0.68f, 0.78f, m) * (1.0f - Smoothstep(60.0f, 110.0f, elev));    // swamp
+    f += (0.9f - f) * Smoothstep(600.0f, 850.0f, elev);                                          // alpine
+    return std::clamp(f, 0.0f, 1.0f);
+}
+
 float PlanetField::terrain3D(Vector3 p, float d, float surface, float fp) const {
     if (moon || d < 1e-3f) return 0.0f;
     const float h = d - surface;
-    if (h < -16.0f || h > 26.0f) return 0.0f;
+    if (h < -kBand3DBelow || h > kBand3DAbove) return 0.0f;
     const float elev = surface - radius;
     if (elev < 6.0f) return 0.0f;
-    const float mask = Smoothstep(0.0f, 0.4f, rugged.fractal(2, p.x, p.y, p.z)) * Smoothstep(6.0f, 60.0f, elev);
-    if (mask <= 0.0f) return 0.0f;
+    // Where: regional rugged patches, wider and stronger in dramatic biomes, none in meadows and swamps
+    // (Plan 5 C). The patch noise first (cheap rejection), then the biome.
+    const float rn = rugged.fractal(2, p.x, p.y, p.z);
+    if (rn < -0.25f) return 0.0f;
     const Vector3 dir = { p.x / d, p.y / d, p.z / d };
+    const float f = ruggedness(dir, elev);
+    const float mask = Smoothstep(-0.25f * f, 0.4f - 0.15f * f, rn) * Smoothstep(6.0f, 60.0f, elev) * Smoothstep(0.0f, 0.2f, f);
+    if (mask <= 0.0f) return 0.0f;
+    const float amp = 16.0f * (0.5f + 1.5f * f), top = 20.0f + 26.0f * f; // up to ~32 m of rise, shelves up to ~40 m
     Vector3 q = Vector3Subtract(p, Vector3Scale(dir, h * 0.6f)); // vertical stretch
     const float w = 9.0f * warp3.fractalLimited(2, fp, q.x, q.y, q.z);
     q = { q.x + w, q.y - 0.7f * w, q.z + 0.4f * w };
@@ -665,17 +694,111 @@ float PlanetField::terrain3D(Vector3 p, float d, float surface, float fp) const 
     // Smooth warped noise gives the body (overhangs as thick as they are wide); a little of its ridged
     // form sharpens the rock edges. (All-ridged made paper-thin shelves high up.)
     const float shape = n + 0.3f * (1.0f - 2.0f * fabsf(n)) + 0.15f;
-    const float fade = (1.0f - Smoothstep(3.0f, 20.0f, h)) * Smoothstep(-16.0f, -8.0f, h); // shelves 2-8 m up, not floating sheets
+    const float fade = (1.0f - Smoothstep(3.0f, top, h)) * Smoothstep(-16.0f, -8.0f, h); // shelves up the band, not floating sheets
     // Raised more than carved: hills and cliffs rise, alcoves are their undercuts (deep carving read as
     // pits in the plains), so dips stop at 3 m.
-    return std::max(16.0f * mask * shape * fade, -3.0f);
+    return std::max(amp * mask * shape * fade, -3.0f);
+}
+
+// Floating islands (Plan 5 C, user: big enough for a small/medium factory): one in ~8% of the 4 km cells on
+// the sea-level sphere, kept inside its cell. 100-250 m across with a lobed outline; a grassy top with hills
+// (~50 m features, up to ~14 m high) terraced into small cliffs in places; a stone underside 40-80 m deep,
+// lumpy and tapering; hung 30-60 m above the ground (land below 700 m) or the sea. Trees grow on the tops
+// (trees.cpp asks islandTopAt). The ground height under each island is cached per thread.
+namespace {
+    constexpr float kIslandCell = 4000.0f;
+    struct IslandInfo { Vector3 dir; float waist, r, depth; bool ok; };
+}
+static bool IslandInCell(const PlanetField& pf, int cx, int cy, int cz, IslandInfo& out) {
+    uint32_t h = (uint32_t)cx * 73856093u ^ (uint32_t)cy * 19349663u ^ (uint32_t)cz * 83492791u ^ (pf.oreSeed + 0x15a7du) * 2654435761u;
+    h ^= h >> 15; h *= 2246822519u; h ^= h >> 13;
+    if ((h & 1023) > 82) return false;
+    thread_local std::unordered_map<int64_t, IslandInfo> cache;
+    const int64_t key = ((int64_t)(cx + 32768) << 32) ^ ((int64_t)(cy + 32768) << 16) ^ (int64_t)(cz + 32768) ^ ((int64_t)pf.oreSeed << 48);
+    auto it = cache.find(key);
+    if (it == cache.end()) {
+        if (cache.size() > 4096) cache.clear();
+        IslandInfo is{};
+        auto u = [&](int shift) { return ((h >> shift) & 255) / 255.0f; };
+        const Vector3 c = { (cx + 0.15f + 0.7f * u(10)) * kIslandCell, (cy + 0.15f + 0.7f * u(18)) * kIslandCell, (cz + 0.15f + 0.7f * u(24)) * kIslandCell };
+        is.dir = Vector3Normalize(c);
+        const Vector3 own = Vector3Scale(is.dir, pf.radius);
+        is.ok = (int)floorf(own.x / kIslandCell) == cx && (int)floorf(own.y / kIslandCell) == cy && (int)floorf(own.z / kIslandCell) == cz;
+        const float e = is.ok ? pf.elevation(is.dir, 64.0f) : 0.0f;
+        is.ok = is.ok && e < 700.0f && fabsf(is.dir.y) < 0.85f;
+        is.r = 50.0f + 75.0f * u(5);                          // 100-250 m across
+        is.depth = 40.0f + 40.0f * u(2);                       // stone underside 40-80 m deep
+        is.waist = pf.radius + std::max(e, 0.0f) + is.depth + 30.0f + 30.0f * u(14); // its lowest point 30-60 m up
+        it = cache.emplace(key, is).first;
+    }
+    out = it->second;
+    return out.ok;
+}
+
+// The top surface over an island point (metres above the waist), q = 0 centre .. 1 rim, p for the noise.
+static float IslandTop(const PlanetField& pf, Vector3 p, float q) {
+    const float hills = pf.detail.fractal(2, p.x * 1.4f, p.y * 1.4f, p.z * 1.4f);         // ~50 m hills
+    float t = 4.0f + 10.0f * std::max(hills, -0.2f) * (1.0f - q * q);                     // fall away toward the rim
+    const float step = 5.0f, terr = t / step, fr = terr - floorf(terr);
+    const float terraced = (floorf(terr) + Smoothstep(0.65f, 0.9f, fr)) * step;          // small cliffs
+    const float cliffMask = Smoothstep(0.0f, 0.3f, pf.rugged.fractal(1, p.x * 8.0f, p.y * 8.0f, p.z * 8.0f));
+    t += (terraced - t) * cliffMask;
+    return t + 2.0f * (1.0f - q);                                                         // a dome overall
+}
+
+float PlanetField::floatingIsland(Vector3 p, float d) const {
+    const Vector3 s = Vector3Scale(p, radius / d);
+    IslandInfo is;
+    if (!IslandInCell(*this, (int)floorf(s.x / kIslandCell), (int)floorf(s.y / kIslandCell), (int)floorf(s.z / kIslandCell), is)) return -1e9f;
+    const float along = Vector3DotProduct(p, is.dir) - is.waist;           // up from the island's waist
+    if (along > 30.0f || along < -is.depth - 6.0f) return -1e9f;
+    const float lateral = Vector3Length(Vector3Subtract(p, Vector3Scale(is.dir, Vector3DotProduct(p, is.dir))));
+    if (lateral > is.r * 1.5f) return -1e9f;
+    // Irregular: a lobed outline (~100 m and ~30 m lobes), a lumpy underside of uneven depth.
+    const float wobble = 0.35f * detail.fractal(2, p.x * 0.8f, p.y * 0.8f, p.z * 0.8f) + 0.1f * detail.fractal(2, p.x * 2.5f, p.y * 2.5f, p.z * 2.5f);
+    const float lump = detail.fractal(2, p.x * 2.0f + 31.0f, p.y * 2.0f, p.z * 2.0f);
+    const float rr = is.r * (1.0f + wobble), q = std::clamp(lateral / rr, 0.0f, 1.0f);
+    const float top = IslandTop(*this, p, q);
+    const float bottom = -is.depth * (0.75f + 0.25f * lump) * powf(1.0f - q, 1.3f) - 2.0f;
+    return std::min({ top - along, along - bottom, rr - lateral });
+}
+
+bool PlanetField::islandTopAt(Vector3 dir, float& topRadius) const {
+    if (moon) return false;
+    const Vector3 s = Vector3Scale(dir, radius);
+    IslandInfo is;
+    if (!IslandInCell(*this, (int)floorf(s.x / kIslandCell), (int)floorf(s.y / kIslandCell), (int)floorf(s.z / kIslandCell), is)) return false;
+    const Vector3 p = Vector3Scale(dir, is.waist);
+    const float lateral = Vector3Length(Vector3Subtract(p, Vector3Scale(is.dir, Vector3DotProduct(p, is.dir))));
+    const float wobble = 0.35f * detail.fractal(2, p.x * 0.8f, p.y * 0.8f, p.z * 0.8f) + 0.1f * detail.fractal(2, p.x * 2.5f, p.y * 2.5f, p.z * 2.5f);
+    const float q = lateral / (is.r * (1.0f + wobble));
+    if (q > 0.92f) return false;
+    topRadius = is.waist + IslandTop(*this, p, q);
+    return true;
+}
+
+// Floating islands within range of a direction (tests, maps): their centres (body-local, at the waist).
+int PlanetField::floatingIslandsNear(Vector3 dir, float range, std::vector<Vector3>& out) const {
+    out.clear();
+    if (moon) return 0;
+    const Vector3 s = Vector3Scale(Vector3Normalize(dir), radius);
+    const int R = (int)ceilf(range / kIslandCell) + 1;
+    const int cx0 = (int)floorf(s.x / kIslandCell), cy0 = (int)floorf(s.y / kIslandCell), cz0 = (int)floorf(s.z / kIslandCell);
+    for (int dz = -R; dz <= R; ++dz)
+        for (int dy = -R; dy <= R; ++dy)
+            for (int dx = -R; dx <= R; ++dx) {
+                IslandInfo is;
+                if (!IslandInCell(*this, cx0 + dx, cy0 + dy, cz0 + dz, is)) continue;
+                if (Vector3Distance(Vector3Scale(is.dir, radius), s) <= range) out.push_back(Vector3Scale(is.dir, is.waist));
+            }
+    return (int)out.size();
 }
 
 // Everything after the height map, shared by single samples and blocks so both agree exactly.
 float PlanetField::densityNear(Vector3 p, float d, float surface, float fp) const {
     float v = ISO_LEVEL + DENSITY_GRADIENT * (surface - d);
     const float depth = surface - d;
-    if (depth < 16.0f && depth > -26.0f) v += DENSITY_GRADIENT * terrain3D(p, d, surface, fp); // hills, cliffs, overhangs
+    if (depth < kBand3DBelow && depth > -kBand3DAbove) v += DENSITY_GRADIENT * terrain3D(p, d, surface, fp); // hills, cliffs, overhangs
     if (fabsf(depth) < 6.0f) v += DENSITY_GRADIENT * 1.5f * detail.fractalLimited(2, fp, p.x, p.y * 1.3f, p.z); // crags, overhangs
     if (depth < 3.0f && depth > -9.0f) {
         const float m = rockFeature(p, d, surface, fp);
@@ -689,13 +812,17 @@ float PlanetField::densityNear(Vector3 p, float d, float surface, float fp) cons
     // - Caverns: rare chambers tens of metres across where a low-frequency field peaks, 30 m+ down.
     // Coarse LOD samples can't resolve them, so both fade out there.
     const float caveWeight = std::clamp(2.0f - fp / 8.0f, 0.0f, 1.0f);
-    if (caveWeight > 0.0f && depth > 5.0f && d > mantleRadius + 20.0f) {
+    // Cave mouths (Plan 5 C): in some regions (~15%) tunnels may reach up through the surface, so caves are found
+    // by walking; elsewhere they stay 5 m+ down. Only looked up for shallow samples.
+    float caveTop = 5.0f;
+    if (depth < 14.0f && depth > -3.0f && caveWeight > 0.0f && !moon) caveTop = 5.0f - 7.5f * Smoothstep(0.3f, 0.45f, caveMouths.fractal(1, p.x, p.y, p.z));
+    if (caveWeight > 0.0f && depth > caveTop && d > mantleRadius + 20.0f) {
         const float near = 2.0f * std::max(fp, 1.0f) + 2.0f; // farther than this from a cave = plain rock for meshing
         float m = 1e9f;                                        // metres to the nearest cave wall (< 0 inside)
         // A tunnel needs both fields near zero: if the first alone rules one out, skip the second.
         const float a = fabsf(cavesA.fractal(2, p.x, p.y, p.z));
         if ((a - kTunnelLevel) * 100.0f <= near) {
-            const float fade = std::min(1.0f, (depth - 5.0f) / 8.0f) * std::min(1.0f, (d - mantleRadius - 20.0f) / 10.0f);
+            const float fade = std::min(1.0f, (depth - caveTop) / 8.0f) * std::min(1.0f, (d - mantleRadius - 20.0f) / 10.0f);
             const float t = std::max(a, fabsf(cavesB.fractal(2, p.x, p.y, p.z)));
             m = (t - kTunnelLevel) * 100.0f + (1.0f - fade * caveWeight) * 20.0f;
         }
@@ -706,6 +833,8 @@ float PlanetField::densityNear(Vector3 p, float d, float surface, float fp) cons
         }
         if (m < near) v = std::min(v, ISO_LEVEL + DENSITY_GRADIENT * m);
     }
+    // Floating islands (Plan 5 C, rare): only for samples well above the ground.
+    if (depth < -15.0f && !moon) { const float m = floatingIsland(p, d); if (m > -4.0f) v = std::max(v, ISO_LEVEL + DENSITY_GRADIENT * m); }
     return v;
 }
 
@@ -874,6 +1003,7 @@ VoxelMaterial PlanetField::materialSky(Vector3 p, float base, float fp, Vector3 
     const float slack = fp > 1.0f ? 2.0f * fp : 0.0f;
     sky = std::clamp(1.0f - (depth - 2.0f - slack) / 8.0f, 0.0f, 1.0f); // buried more than ~10 m: no sky (caves, deep pits)
     if (moon) return depth < 2.5f + slack ? VoxelMaterial::Regolith : VoxelMaterial::Rock; // grey dust over rock (asteroid palette)
+    if (depth < -15.0f) return Vector3DotProduct(normal, up) > 0.35f ? VoxelMaterial::Grass : VoxelMaterial::Rock; // floating islands: turf on top, rock beneath
     // Outcrops and boulders are bare rock (snow still caps them up high, below).
     if (depth < 2.5f + slack && surfaceElevation < 1050.0f && rockFeature(p, d, radius + surfaceElevation, fp) > -0.35f) return VoxelMaterial::Rock;
     if (depth < 2.5f + slack) {

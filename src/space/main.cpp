@@ -157,6 +157,7 @@ int main(int argc, char** argv)
     double walkStart = -1.0;
     bool benchStandOnly = false; // --test-stand S: like --test-walk but standing still
     int walkJolts = 0, walkJoltFrames = 0, walkSteepFrames = 0, walkSteepJolts = 0; double walkJoltMax = 0.0, walkSlopeMax = 0.0;
+    int walkUnsticks = 0; // --test-planet-walk: times the walker had to jump or turn to get unstuck
     double standCamMax = 0.0; float standFwdMax = 0.0f, standUpMax = 0.0f, standTexelSlide = 0.0f; int standFrames = 0, standJitterFrames = 0;
     int benchMineStrokes = 0;     // --test-mine N: dig N strokes at the feet, craft, build (after any walk test)
     bool mineStarted = false, mineStoppedEarly = false;
@@ -2138,6 +2139,26 @@ int main(int argc, char** argv)
                         benchShotBiomes = 1; waiting = false;
                     } else {
                         const int k = benchShotBiomes - 1;
+                        if (k == kShotCount) {
+                            // One more: the nearest floating island (Plan 5 C), from 70 m off at its height.
+                            static Vector3 isl{}; static int islPhase = 0; static double islT0 = 0.0;
+                            if (islPhase == 0) {
+                                std::vector<Vector3> found;
+                                const Vector3 home = pf->findSpawnDir(p->seed);
+                                pf->floatingIslandsNear(home, 40000.0f, found);
+                                float best = 1e30f;
+                                for (const Vector3& c : found) { const float dd = Vector3Distance(Vector3Normalize(c), home); if (dd < best) { best = dd; isl = c; } }
+                                if (found.empty()) { printf("bench: biomes: no floating island within 40 km\n"); ++benchShotBiomes; }
+                                else { player.spawnOn(world, *p, Vector3Normalize(isl)); player.flyMode = true; islPhase = 1; islT0 = GetTime(); }
+                            } else {
+                                const Vector3 up = Vector3Normalize(isl);
+                                const Vector3 t1 = Vector3Normalize(Vector3CrossProduct(up, { 0, 1, 0 }));
+                                const Vector3 eye = Vector3Add(Vector3Add(isl, Vector3Scale(t1, 330.0f)), Vector3Scale(up, -15.0f)); // from the side, a little below the top: the whole island and its underside
+                                world.camera.position = p->toWorld(eye); world.camera.target = p->toWorld(isl); world.camera.up = p->dirToWorld(up);
+                                player.position = world.renderOrigin + world.camera.position;
+                                if (GetTime() - islT0 > 6.0 && WorldIdle()) { TakeScreenshot("bench_biome_island.png"); printf("bench: biomes: bench_biome_island.png\n"); ++benchShotBiomes; islPhase = 0; }
+                            }
+                        } else
                         if (k >= kShotCount) { printf("bench: biomes: shots done\n"); benchShotBiomes = -1; }
                         else if (!waiting) {
                             player.spawnOn(world, *p, dirs[k]);
@@ -2287,6 +2308,23 @@ int main(int argc, char** argv)
                                 const float e = pf->elevation(d, 64.0f);
                                 ++nearCount[(int)pf->biomeAt(d, e)];
                             }
+                        {   // Plan 5 C: floating islands near the start
+                            std::vector<Vector3> isl;
+                            pf->floatingIslandsNear(home, 25000.0f, isl);
+                            float bestI = 1e30f;
+                            for (const Vector3& c : isl) bestI = std::min(bestI, Vector3Distance(Vector3Scale(Vector3Normalize(c), pf->radius), Vector3Scale(home, pf->radius)));
+                            printf("bench: biomes: %d floating islands within 25 km, the nearest %.1f km away\n", (int)isl.size(), bestI < 1e29f ? bestI / 1000.0f : -1.0f);
+                        }
+                        int mouths = 0, probes = 0; // Plan 5 C: open ground 2 m under the surface (cave mouths), on a 25 m grid within 2 km
+                        for (float a = -2000.0f; a <= 2000.0f; a += 25.0f)
+                            for (float b = -2000.0f; b <= 2000.0f; b += 25.0f) {
+                                const Vector3 d = Vector3Normalize(Vector3Add(home, Vector3Add(Vector3Scale(t1, a / pf->radius), Vector3Scale(t2, b / pf->radius))));
+                                const float e = pf->elevation(d);
+                                if (e < 2.0f) continue;
+                                ++probes;
+                                if (pf->baseDensity(Vector3Scale(d, pf->radius + e - 2.0f)) < ISO_LEVEL && pf->baseDensity(Vector3Scale(d, pf->radius + e - 6.0f)) < ISO_LEVEL) ++mouths;
+                            }
+                        printf("bench: biomes: cave openings: %d of %d land columns within 2 km open 2-6 m down\n", mouths, probes);
                         int kinds = 0, nearKinds = 0;
                         printf("bench: biomes: land share:");
                         for (int b = 1; b < (int)Biome::Count; ++b) {
@@ -2485,7 +2523,7 @@ int main(int argc, char** argv)
                         }
                         world.camera.position = p->toWorld(eye); world.camera.target = p->toWorld(low ? Vector3Add(eye, Vector3Add(Vector3Scale(terrainOut, 50.0f), Vector3Scale(up, -4.0f))) : terrainAt); world.camera.up = p->dirToWorld(up);
                         player.position = world.renderOrigin + world.camera.position;
-                        if (t > 4.0) {
+                        if (t > 4.0 && WorldIdle()) { // the chunks there built (a 4 s timer alone shot a half-loaded world)
                             TakeScreenshot(low ? "bench_terrain_low.png" : "bench_terrain.png");
                             if (low) { printf("bench: terrain: bench_terrain.png, bench_terrain_low.png\n"); benchTerrain = false; }
                             else { terrainPhase = 2; terrainT0 = GetTime(); }
@@ -4177,12 +4215,30 @@ int main(int argc, char** argv)
                         lastCam = cam; lastFwd = fwd; lastUp = up; have = true;
                     }
                     { const DVec3 here = start->toLocalD(player.position); walkPath += (here - walkLast).length(); walkLast = here; }
+                    if (!benchStandOnly && player.autoWalk) {
+                        // Getting unstuck, as a player would (overhangs, cliffs and boulders are part of the world, the
+                        // walker adapts): every 1.5 s, under 1 m of progress means stuck - jump first; still stuck, turn
+                        // aside (alternating sides, wider each time) and walk on.
+                        static double checkAt = 0.0; static DVec3 checkPos{}; static int stuck = 0; static int unsticks = 0;
+                        if (GetTime() - walkStart < 0.1) { checkAt = GetTime() + 1.5; checkPos = start->toLocalD(player.position); stuck = 0; unsticks = 0; }
+                        if (GetTime() > checkAt) {
+                            const DVec3 here = start->toLocalD(player.position);
+                            if ((here - checkPos).length() < 1.0) {
+                                ++stuck; ++unsticks;
+                                if (stuck == 1) player.autoJump = true;
+                                else player.forward = Vector3Normalize(Vector3RotateByQuaternion(player.forward, QuaternionFromAxisAngle(player.up, (stuck % 2 ? 1.0f : -1.0f) * DEG2RAD * std::min(70.0f * (stuck - 1), 160.0f))));
+                            } else stuck = 0;
+                            checkPos = here; checkAt = GetTime() + 1.5;
+                        }
+                        walkUnsticks = unsticks;
+                    }
                     if (GetTime() - walkStart > benchWalkSeconds || (walkTargetM > 0.0 && walkPath >= walkTargetM)) {
                         player.autoWalk = false;
                         const double dist = (start->toLocalD(player.position) - walkFrom).length();
                         const float alt = Vector3Distance(feet, start->position);
                         printf("bench: walked %.1f m in %.1f s, grounded %.0f%% of frames, density at body %.2f..%.2f (solid >= %.2f), %.1f m from centre\n",
                                dist, GetTime() - walkStart, 100.0 * walkGroundedFrames / std::max(1, walkFrames), walkMinDensity, walkMaxDensity, ISO_LEVEL, alt);
+                        if (!benchStandOnly) printf("bench: walk: got unstuck %d times (jumped, then turned aside)\n", walkUnsticks);
                         if (!benchStandOnly) printf("bench: walk camera: %d jolts (eye height step changes > 3 mm between frames) in %d grounded frames (%d of %d on ground over 20 deg), worst %.1f mm, steepest ground %.0f deg\n",
                                                     walkJolts, walkJoltFrames, walkSteepJolts, walkSteepFrames, walkJoltMax, walkSlopeMax);
                         if (benchStandOnly) printf("bench: standing still %d frames: camera moved at most %.4f m per frame in the ground's frame, view turned %.4f deg, up %.4f deg; the ground slid %.2f shadow texels/s: %s\n", standFrames, standCamMax, standFwdMax, standUpMax, standTexelSlide / std::max(0.1, GetTime() - walkStart - 1.0),
