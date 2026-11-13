@@ -30,6 +30,7 @@ public:
     std::shared_ptr<std::atomic<uint32_t>> wanted = std::make_shared<std::atomic<uint32_t>>(0);
     NodeKey key{};
     bool ready = false;   // a build result has arrived at least once
+    double lastWanted = 0.0; // when the LOD last selected (or kept) it: undesired nodes stay a few s for reuse (#258)
     // Body-local upper bound for fragments. Nodes overlap their +x/+y/+z neighbours by one cell to
     // hide cracks between LOD levels; where the neighbour on an axis is drawn at the same level the
     // overlap would just duplicate (and z-fight with) its surface, so it is clipped on that axis.
