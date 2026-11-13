@@ -823,7 +823,13 @@ void Scene::drawScene(int gamestate) {
             }
         }
         GpuTimer_Mark("water");
+        // Extra drawing (animals, machine details, particles) gets the frame's lighting: sun shadows and the headlamp
+        // binder, sun, ambient and fog (InstanceBatch uses them).
+        frameLighting = setFoliageLighting;
+        frameSun = sun; frameAmbient = effAmbient; frameFog = effFog; frameFogDensity = effFogDensity;
+        frameFogShell = { atmosphere.centre.x, atmosphere.centre.y, atmosphere.centre.z, atmosphere.enabled && effFogDensity < 0.06f ? atmosphere.radius + atmosphere.hazeHeight : 0.0f };
         if (onDraw3D) onDraw3D();
+        frameLighting = nullptr;
     EndMode3D();
     rlSetClipPlanes(nearDefault, farDefault); // the passes above narrowed them
     lastDrawCalls = drawCalls;

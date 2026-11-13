@@ -108,6 +108,9 @@ class Scene {
         float weatherFog = 0.0f;         // ground fog 0..1 (thick at 1: ~60 m visibility)
         Vector3 cloudDrift = { 0, 0, 0 }; // weather: how far the wind has carried the clouds (planet-local m)
         std::function<void()> onDraw3D;  // extra world-space drawing at the end of the main pass
+        std::function<void(Shader&)> frameLighting;  // set during onDraw3D: binds shadow cascades + headlamp to a shader
+        Vector3 frameSun{ 0, 1, 0 }, frameAmbient{}, frameFog{}; float frameFogDensity = 0.0f;
+        Vector4 frameFogShell{};
         // Extra geometry in the depth passes (rings, ring.h): range and draw in the far pass, draw in
         // the mid and near passes (rebuild = the first of the frame).
         std::function<bool(double& dmin, double& dmax)> farExtraRange;
