@@ -17,7 +17,7 @@
     task | get copper_ingot 3     | Smelt copper ingots in the kiln
     task | get bronze_ingot 1     | Alloy bronze: 3 copper and 1 tin in the kiln
 2 | Bronze and steam | steel_ingot      | A boiler and copper cables power steam machines (8 V). Hammer plates, crush ore, bake coal into coke in a coke oven, and burn coke in a blast furnace to turn iron into steel.
-    task | place boiler           | Place a steam boiler and feed it fuel
+    task | place boiler           | Place a steam boiler and feed it fuel and water
     task | place forge_hammer     | Place a forge hammer and cable it to the boiler
     task | get bronze_plate 4     | Hammer 4 bronze plates
     task | place coke_oven        | Build a coke oven

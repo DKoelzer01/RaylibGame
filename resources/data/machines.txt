@@ -1,4 +1,4 @@
-# Machines (build parts, 1 m): part | volts (0: no power) | power | EU per tick produced | fuels
+# Machines (build parts, 1 m): part | volts (0: no power) | power | EU per tick produced | fuels | water (litres per tick of burning; boilers)
 #   power: none (runs by itself), fuel (burns fuel while working), eu (draws from cables),
 #          generator (burns fuel into EU at its voltage), storage (chest), battery
 # A machine refuses power from a network above its voltage. Fuel burn times are in fuels.
@@ -6,7 +6,7 @@ campfire        | 0  | fuel      | 0  | oak_log birch_log maple_log pine_log spr
 kiln            | 0  | fuel      | 0  | oak_log birch_log maple_log pine_log spruce_log oak_planks birch_planks maple_planks pine_planks spruce_planks charcoal coal coke peat
 coke_oven       | 0  | none      | 0  |
 blast_furnace   | 0  | fuel      | 0  | coke
-boiler          | 8  | generator | 8  | oak_log birch_log maple_log pine_log spruce_log oak_planks birch_planks maple_planks pine_planks spruce_planks charcoal coal coke peat
+boiler          | 8  | generator | 8  | oak_log birch_log maple_log pine_log spruce_log oak_planks birch_planks maple_planks pine_planks spruce_planks charcoal coal coke peat | 1
 forge_hammer    | 8  | eu        | 0  |
 alloy_smelter   | 8  | eu        | 0  |
 steam_macerator | 8  | eu        | 0  |
