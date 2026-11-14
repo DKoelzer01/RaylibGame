@@ -2052,8 +2052,10 @@ int main(int argc, char** argv)
                         inventory.add("stone", 2);
                         const int stone1 = inventory.count("stone");
                         check(ToolWear_Repair("stone_pickaxe") && ToolWear_Used("stone_pickaxe") == 0 && inventory.count("stone") == stone1 - 2, "repaired for 2 stone");
+                        Hotbar_Bind(3, "stone_pickaxe");
                         ToolWear_OnStroke("stone_pickaxe", life);
                         check(inventory.count("stone_pickaxe") == 0, "broke at its durability");
+                        check(Hotbar_Slot(3).empty(), "the broken tool left the hotbar (#209)");
                         toolsLife = life;
                         // An iron hoe: look at the ground just ahead and till.
                         inventory.add("iron_hoe", 1);

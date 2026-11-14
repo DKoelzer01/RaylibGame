@@ -21,6 +21,7 @@ void Hotbar_Reset();                                  // the default bindings
 void Hotbar_Update(Scene& world, bool inputEnabled, bool piloting);
 void Hotbar_DrawHUD(bool piloting);
 void Hotbar_Bind(int slot, const std::string& id);    // slot 0..9 (key 1 .. key 0)
+void Hotbar_Unbind(const std::string& id);            // quietly empty its slot (a broken tool, #209); the hand empties if it held it
 const std::string& Hotbar_Slot(int slot);
 int Hotbar_Selected();
 std::string Hotbar_HeldFood();                        // the food or animal feed in hand (a selected slot), or ""

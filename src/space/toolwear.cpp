@@ -3,6 +3,7 @@
 #include "gameui.h"
 #include "inventory.h"
 #include "tools.h"
+#include "hotbar.h"
 #include "imgui.h"
 
 #include <raylib.h>
@@ -25,6 +26,9 @@ void ToolWear_OnStroke(const std::string& id, int strokes) {
     }
     u = 0;
     inventory.remove(id, 1);
+    // The last of it broke: it leaves the hotbar (#209: the binding stayed, an empty slot showing the tool).
+    if (inventory.count(id) <= 0)
+        Hotbar_Unbind(id);
     Audio_Play(Sfx::Error, 0.6f, 0.7f);
     GameUI_Toast(TextFormat("Your %s %s broke", ToolTierName(t.tier), ToolTypeName(t.type)));
 }
