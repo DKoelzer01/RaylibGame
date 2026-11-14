@@ -1265,13 +1265,13 @@ void ApplyTerrainEdits(Planetoid& p, const TerrainEdit* edits, size_t count) {
     for (size_t i = 0; i < count; i += std::max<size_t>(1, count / 64)) Fluid::OnTerrainEdit(p, edits[i].center, edits[i].radius);
 }
 
-void RequestRemesh(Planetoid& p, Vector3 c, float r) {
+void RequestRemesh(Planetoid& p, Vector3 c, float r, float strideReach) {
     std::vector<NodeKey> touched;
     for (auto& entry : p.nodes) {
         const NodeKey& k = entry.first;
         const Vector3 nlo = k.origin();
         const Vector3 nhi = Vector3AddValue(nlo, k.size() * (CHUNK_SIZE + 1.0f) / CHUNK_SIZE);
-        if (DistanceToBox(c, nlo, nhi) > r + k.stride() + 1.0f) continue;
+        if (DistanceToBox(c, nlo, nhi) > r + strideReach * k.stride() + 1.0f) continue;
         touched.push_back(k);
     }
     for (const NodeKey& k : touched) RequestNode(p, k, -1.0f - (float)k.level * 0.01f);

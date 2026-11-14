@@ -241,6 +241,24 @@ void Player::update(Scene& world, bool inputEnabled, float dt) {
         }
         eyeStep = known ? dz + (eyeOffset - offBefore) : 0.0f; // tests: the eye's height change this update, ground frame
         eyeStepKnown = known;
+        // Sideways (#255), in the air too (wedged in a crevice the player is often not grounded): the same low-passed
+        // velocity, a short time constant and a 3 cm leash so walking off or stopping never trails visibly.
+        Vector3 dh = { 0, 0, 0 };
+        if (known) {
+            const DVec3 d = eyeBody->toLocalD(position) - eyeFrom;
+            const Vector3 u = eyeBody->dirToLocal(up);
+            dh = Vector3Subtract(Vector3Scale(Vector3{ (float)d.x, (float)d.y, (float)d.z }, eyeBody->scale), Vector3Scale(u, dz));
+        }
+        if (eyeSmoothing && known && eyeOffsetBody == eyeBody->id && Vector3Length(dh) < 0.5f) {
+            eyeVh = Vector3Lerp(eyeVh, Vector3Scale(dh, 1.0f / dt), 1.0f - expf(-dt / 0.05f));
+            eyeOffsetH = Vector3Scale(Vector3Add(eyeOffsetH, Vector3Subtract(Vector3Scale(eyeVh, dt), dh)), expf(-dt * 10.0f));
+            const float len = Vector3Length(eyeOffsetH);
+            if (len > 0.03f) eyeOffsetH = Vector3Scale(eyeOffsetH, 0.03f / len);
+        } else {
+            eyeVh = known ? Vector3Scale(dh, 1.0f / dt) : Vector3{ 0, 0, 0 };
+            eyeOffsetH = { 0, 0, 0 };
+        }
+        eyeOffsetBody = known ? eyeBody->id : 0;
     }
     if (!grounded && nearest) {
         airBody = nearest;
@@ -435,7 +453,13 @@ bool Player::resolveCollisions(Scene&, Vector3& feet) {
     if (!nearest) return false;
     Planetoid& p = *nearest;
     bool onGround = false;
-    const float offsets[2] = { radius, eyeHeight - radius };
+    // A capsule (#255): sphere centres from `radius` up to the eye, 0.23 m apart (no waist: the two spheres at 0.45 and
+    // 1.15 m left a 0.28 m neck that jagged rock poked into), its top 0.45 m over the eye so the camera (eye smoothing
+    // +-0.25 m, 0.2 m near plane) stays inside the collision volume and can't see through ceilings. Each pass pushes
+    // out of the deepest contact only: two spheres pushing along different normals on jagged rock fought each other.
+    constexpr int kSamples = 6;
+    float offsets[kSamples];
+    for (int i = 0; i < kSamples; ++i) offsets[i] = radius + (eyeHeight - radius) * (float)i / (float)(kSamples - 1);
     // The linear estimate (iso - density) / |gradient| is only a distance where the density behaves
     // like one; dig and build edits (big density steps) break that, and it reported contacts in open
     // air that pushed up to 1 m per iteration, sometimes into the ground (the "wall launch"). So each
@@ -443,9 +467,17 @@ bool Player::resolveCollisions(Scene&, Vector3& feet) {
     // total push in a frame is capped.
     auto solid = [&](Vector3 c) { return p.densityAt(p.toLocal(c)) >= ISO_LEVEL; };
     float pushBudget = 0.6f;
-    for (int iter = 0; iter < 4 && pushBudget > 0.0f; ++iter) {
+    for (int iter = 0; iter < 6 && pushBudget > 0.0f; ++iter) {
         bool moved = false;
-        for (float off : offsets) {
+        // Contacts deepest first; one push per pass (the next pass re-measures).
+        struct Cand { float d, off; } cand[kSamples]; int nc = 0;
+        for (float o2 : offsets) {
+            float d2; Vector3 n2;
+            if (TerrainSurfaceDistance(p, Vector3Add(feet, Vector3Scale(up, o2)), d2, n2) && d2 < radius) cand[nc++] = { d2, o2 };
+        }
+        std::sort(cand, cand + nc, [](const Cand& a, const Cand& b) { return a.d < b.d; });
+        for (int ci = 0; ci < nc && !moved; ++ci) {
+            const float off = cand[ci].off;
             float dist; Vector3 n;
             const Vector3 c = Vector3Add(feet, Vector3Scale(up, off));
             if (!TerrainSurfaceDistance(p, c, dist, n) || dist >= radius) continue;
@@ -534,16 +566,47 @@ void Player::applyToCamera(Scene& world) const {
     if (flyMode) return;
     const Vector3 feet = (position - world.renderOrigin).toFloat();
     Vector3 eye = Vector3Add(feet, Vector3Scale(up, eyeHeight + eyeOffset));
+    if (nearest && eyeOffsetBody == nearest->id) { // sideways smoothing (#255); dirToWorld normalises, so scale back
+        const float len = Vector3Length(eyeOffsetH);
+        if (len > 1e-6f) eye = Vector3Add(eye, Vector3Scale(nearest->dirToWorld(eyeOffsetH), len));
+    }
+    lastEyePush = 0.0f;
     // The eye sits at the head sphere's top (and the smoothing can lift it 0.25 m more), outside the collision
-    // shape: keep it 0.25 m clear of the terrain (the near plane's reach), pushed out along the surface normal,
-    // so it never looks through a ceiling or an overhang (#255).
+    // shape: keep it 0.25 m clear of the terrain (the near plane's reach) so it never looks through a ceiling or an
+    // overhang (#255). It was pushed out along the surface normal each frame: against jagged walls and overhangs
+    // that normal and the push size swung between facets frame to frame and the camera shook (and inside rock the
+    // normal could flip: metre jumps). Now the eye only moves down the body's axis toward the head sphere's centre,
+    // which the collision keeps clear: the highest point of that segment with the clearance (a short search). It
+    // drops there at once (never into the rock) and comes back up eased (~0.15 s): one direction, one number.
     if (nearest) {
-        float dist; Vector3 n;
         const float clearance = 0.25f;
-        if (TerrainSurfaceDistance(*nearest, eye, dist, n) && dist < clearance) {
-            const bool inside = nearest->densityAt(nearest->toLocal(eye)) >= ISO_LEVEL;
-            eye = Vector3Add(eye, Vector3Scale(n, (inside ? std::max(0.0f, -dist) : 0.0f) + clearance - std::max(dist, 0.0f)));
+        auto clear = [&](Vector3 q) {
+            float dist; Vector3 n;
+            if (!TerrainSurfaceDistance(*nearest, q, dist, n)) return true;
+            return dist >= clearance && nearest->densityAt(nearest->toLocal(q)) < ISO_LEVEL;
+        };
+        const Vector3 headCentre = Vector3Add(feet, Vector3Scale(up, eyeHeight - radius));
+        const float span = Vector3Distance(headCentre, eye); // ~0.45 m (+ the eye offset)
+        float want = 0.0f;                                   // how far below the nominal eye
+        if (!clear(eye)) {
+            float lo = 0.0f, hi = span;                      // lo: blocked, hi: clear (or the centre)
+            for (int i = 0; i < 7; ++i) {
+                const float mid = 0.5f * (lo + hi);
+                if (clear(Vector3Subtract(eye, Vector3Scale(up, mid)))) hi = mid; else lo = mid;
+            }
+            want = hi;
         }
+        const float dt = GetFrameTime();
+        if (dt <= 0.0f || dt > 0.25f) eyeDrop = want;
+        else if (want > eyeDrop) {
+            // Down eased too (~40 ms) while the eye where it is now keeps 12 cm; closer than that, at once.
+            float dist; Vector3 n;
+            const Vector3 now = Vector3Subtract(eye, Vector3Scale(up, eyeDrop));
+            const bool roomy = !TerrainSurfaceDistance(*nearest, now, dist, n) || (dist >= 0.12f && nearest->densityAt(nearest->toLocal(now)) < ISO_LEVEL);
+            eyeDrop = roomy ? eyeDrop + (want - eyeDrop) * (1.0f - expf(-dt / 0.04f)) : want;
+        } else eyeDrop += (want - eyeDrop) * (1.0f - expf(-dt / 0.15f)); // back up eased
+        eye = Vector3Subtract(eye, Vector3Scale(up, eyeDrop));
+        lastEyePush = eyeDrop;
     }
     world.camera.position = eye;
     world.camera.target = Vector3Add(world.camera.position, forward);

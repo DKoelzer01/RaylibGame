@@ -95,7 +95,9 @@ void Survival_OnLanding(float impactSpeed) {
 }
 
 void Survival_Respawn(Scene& world) {
-    survival.oxygen = survival.power = survival.health = 100.0f;
+    survival.oxygen = survival.health = 100.0f;
+    // Power is kept as it was (#256): respawning used to refill it, and with it the jetpack (which recharges from it on
+    // the ground). Whether the starting suit has power or a jetpack at all is #217.
     survival.food = std::max(survival.food, 60.0f);
     survival.sickUntil = 0.0f;
     survival.vacuumTime = 0.0f;

@@ -16,6 +16,9 @@ class Scene;
 void IB_Cube(Vector3 centre, Vector3 size, Color color, bool glow = false);
 // A cylinder from `base` up (local +y) `height`, radius rBottom at the base and rTop at the top.
 void IB_Cylinder(Vector3 base, float rTop, float rBottom, float height, Color color, bool glow = false);
+// How buried the instances pushed from now on are (0 open .. 1 ~10 m+ underground): scales their sky light, as for
+// parts and terrain (#284). Reset to 0 by the caller when done.
+void IB_SetBuried(float buried);
 void InstanceBatch_Flush(Scene& world);
 int InstanceBatch_LastCount();   // instances drawn last flush (tests)
 void InstanceBatch_Unload();

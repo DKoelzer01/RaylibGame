@@ -40,6 +40,10 @@ struct Player {
     bool swimUp = false, swimDown = false;
     float eyeOffset = 0.0f;           // camera height smoothing (metres along up, see update)
     float eyeVz = 0.0f;               // low-passed vertical speed of the feet in the ground frame
+    // The same sideways (#255): walking into jagged walls, the collision push-out moved the feet back and forth by
+    // centimetres each frame. Body-local, at most 3 cm, so starting and stopping never visibly trail.
+    Vector3 eyeOffsetH = { 0, 0, 0 }, eyeVh = { 0, 0, 0 };
+    uint64_t eyeOffsetBody = 0;
     bool eyeSmoothing = true;         // tests: --no-eye-smooth turns it off (A/B)
     float eyeStep = 0.0f;             // tests: the eye's height change in the last update (ground frame, m)
     bool eyeStepKnown = false;
@@ -67,6 +71,8 @@ struct Player {
     void anchorTo(Planetoid& body);
     void update(Scene& world, bool inputEnabled, float dt);
     void applyToCamera(Scene& world) const;  // camera at the eye, looking along forward
+    mutable float lastEyePush = 0.0f;         // how far applyToCamera pushed the eye out of the terrain last frame (m; #255 tests)
+    mutable float eyeDrop = 0.0f;              // how far the eye is lowered toward the head sphere's centre to keep it out of the terrain (#255)
     // Fly mode follows the reference body (the nearest whose sphere of influence holds the camera):
     // its spin and motion within 2 radii, its motion only further out. recordFly() runs after the
     // camera's own input each frame (Scene::drawScene); update() then carries it with the body.

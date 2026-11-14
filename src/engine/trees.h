@@ -124,6 +124,7 @@ public:
     void onEdit(Vector3 localCentre, float radius, std::shared_ptr<const TerrainDeltas> edits);
     // Trunks within `range` of a body-local point.
     void trunksNear(Vector3 local, float range, std::vector<Trunk>& out) const;
+    void plantsNear(Vector3 local, float range, std::vector<Plant>& out) const; // trees, bushes and stones (tests)
     // The nearest loaded plant (tree or bush) to a body-local point.
     bool nearestPlant(Vector3 local, float range, bool tree, Plant& out, bool stone = false) const; // stone: loose stones (else bushes when !tree)
     // The nearest plant a body-local ray hits within maxDistance.
