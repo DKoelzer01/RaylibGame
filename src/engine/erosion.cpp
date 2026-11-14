@@ -139,7 +139,9 @@ void PlanetErosion::build(const std::function<float(Vector3)>& height, float pla
     std::vector<uint8_t> outlet(cells);
     for (size_t c = 0; c < cells; ++c) {
         outlet[c] = h0[c] <= 0.0f;
-        U[c] = h0[c] > 0.0f ? p.uplift * h0[c] / maxH0 : 0.0f;
+        // A floor of 5% for all land: uplift only in proportion to the input left wide low plains dead flat, with
+        // straight 8-direction river traces across them (#355, seed 7).
+        U[c] = h0[c] > 0.0f ? p.uplift * (0.05f + 0.95f * h0[c] / maxH0) : 0.0f;
         h[c] = h0[c] > 0.0f ? h0[c] * 0.1f : h0[c];
     }
     std::vector<float> hf(cells), area(cells);
@@ -147,6 +149,7 @@ void PlanetErosion::build(const std::function<float(Vector3)>& height, float pla
     std::vector<uint8_t> seen(cells);
     order.reserve(cells);
     using Item = std::pair<float, int>;
+    int step = 0;
     auto flood = [&] {
         std::priority_queue<Item, std::vector<Item>, std::greater<Item>> pq;
         std::fill(seen.begin(), seen.end(), 0);
@@ -164,7 +167,7 @@ void PlanetErosion::build(const std::function<float(Vector3)>& height, float pla
                 const int o = nb[(size_t)c * 8 + k];
                 if (o < 0 || seen[o]) continue;
                 seen[o] = 1;
-                hf[o] = std::max(h[o], hf[c] + 1e-3f);
+                hf[o] = std::max(h[o], hf[c] + 1e-3f * (1.0f + 4.0f * Hash3(o, step, 7, seed))); // jittered across flats: no straight traces
                 receiver[o] = c;
                 pq.push({ hf[o], o });
             }
@@ -183,7 +186,7 @@ void PlanetErosion::build(const std::function<float(Vector3)>& height, float pla
         for (size_t c = 0; c < cells; ++c) area[c] = cellArea[c];
         for (size_t k = order.size(); k-- > 0;) { const int c = order[k]; if (receiver[c] != c) area[receiver[c]] += area[c]; }
     };
-    for (int step = 0; step < p.steps; ++step) {
+    for (step = 0; step < p.steps; ++step) {
         if (step % std::max(1, p.floodEvery) == 0) flood();
         // Implicit stream power, receivers first (`order` rises on the filled surface).
         for (int c : order) {
