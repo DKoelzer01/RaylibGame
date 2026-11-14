@@ -81,7 +81,7 @@ planet() {
     run --seed 42 --bench 3 --test-decor
     run --seed 42 --bench 3 --test-weather
     run --seed 42 --bench 3 --test-flow
-    run --seed 42 --bench 5 --test-flow-sea
+    RAYLIBGAME_EROSION=1 run --seed 42 --bench 5 --test-flow-sea # the erosion bake's rivers (#190; the noise terrain's river mouths stand over the sea)
     run --seed 42 --bench 3 --test-pond
     run --seed 42 --bench 3 --test-bucket
     run --seed 42 --bench 3 --test-pump
