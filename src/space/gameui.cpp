@@ -487,6 +487,26 @@ void GameUI_DrawHUD(Scene& world) {
         return body ? Vector3Length(Vector3Subtract(v, body->surfaceVelocity(at))) : Vector3Length(v);
     };
     const int w = GetScreenWidth();
+    if (player.speedVignette) {
+        // Speed vignette (#168, comfort): the screen edges darken with speed against the ground (from ~8 m/s) and with
+        // fast turning (from ~120 deg/s), eased in and out; at most half dark.
+        static Vector3 lastFwd{}; static float strength = 0.0f;
+        const float dt = std::max(GetFrameTime(), 1e-4f);
+        const Vector3 fwd = Vector3Normalize(Vector3Subtract(world.camera.target, world.camera.position));
+        const float turn = Vector3LengthSqr(lastFwd) > 0.5f ? acosf(std::clamp(Vector3DotProduct(fwd, lastFwd), -1.0f, 1.0f)) * RAD2DEG / dt : 0.0f;
+        lastFwd = fwd;
+        const float speed = relSpeed(player.velocity, player.grounded);
+        const float want = std::clamp(std::clamp((speed - 8.0f) / 20.0f, 0.0f, 1.0f) + std::clamp((turn - 120.0f) / 240.0f, 0.0f, 1.0f), 0.0f, 1.0f);
+        strength += (want - strength) * (1.0f - expf(-dt * 4.0f));
+        if (strength > 0.01f) {
+            const int h = GetScreenHeight(), band = (int)(0.22f * std::min(w, h));
+            const Color dark = Fade(BLACK, 0.5f * strength), clear = Fade(BLACK, 0.0f);
+            DrawRectangleGradientH(0, 0, band, h, dark, clear);
+            DrawRectangleGradientH(w - band, 0, band, h, clear, dark);
+            DrawRectangleGradientV(0, 0, w, band, dark, clear);
+            DrawRectangleGradientV(0, h - band, w, band, clear, dark);
+        }
+    }
     if (inventory.overflowed) { GameUI_Toast("Inventory full: some items were lost"); inventory.overflowed = false; }
     if (ship.piloted) {
         DrawText(TextFormat("SHIP  %.0f m/s", relSpeed(ship.velocity)), w - 220, 70, 20, SKYBLUE);

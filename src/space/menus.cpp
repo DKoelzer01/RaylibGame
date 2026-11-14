@@ -122,6 +122,17 @@ namespace {
             }
             y += h + 6 * s;
         }
+        {   // Camera smoothing (#168): how much the eye's small bumps (collision push-out on rough ground) are filtered.
+            const int fs = (int)(h * 0.5f);
+            DrawText("Camera smoothing", (int)x, (int)(y + (h - fs) * 0.5f), fs, kText);
+            const char* names[] = { "Off", "Low", "Default", "High" };
+            for (int k = 0; k < 4; ++k) {
+                const Rectangle b = { x + w * 0.38f + k * (h * 2.4f), y + h * 0.1f, h * 2.2f, h * 0.8f };
+                if (Button(b, settings.cameraSmoothing == k ? TextFormat("[%s]", names[k]) : names[k])) { settings.cameraSmoothing = k; changed = true; }
+            }
+            y += h + 6 * s;
+        }
+        changed |= Toggle({ x, y, w, h }, "Speed vignette", settings.speedVignette); y += h + 6 * s;
         {   // Terrain detail (#297): how far out the terrain keeps its finer levels (the LOD factor). Flying drops to Low.
             const int fs = (int)(h * 0.5f);
             DrawText("Terrain detail", (int)x, (int)(y + (h - fs) * 0.5f), fs, kText);
@@ -177,6 +188,8 @@ void Settings_Load() {
             else if (!strcmp(key, "handbob")) settings.handBob = std::clamp((int)v, 0, 2);
             else if (!strcmp(key, "difficulty")) settings.difficulty = std::clamp((int)v, 0, 2);
             else if (!strcmp(key, "terraindetail")) settings.terrainDetail = std::clamp((int)v, 0, 3);
+            else if (!strcmp(key, "camerasmoothing")) settings.cameraSmoothing = std::clamp((int)v, 0, 3);
+            else if (!strcmp(key, "speedvignette")) settings.speedVignette = v != 0.0f;
         }
         fclose(f);
     }
@@ -190,6 +203,7 @@ void Settings_Save() {
             settings.foliage ? 1 : 0, settings.fpsCap, settings.vsync ? 1 : 0, settings.reduceMotion ? 1 : 0);
     fprintf(f, "showhands %d\nhandbob %d\n", settings.showHands ? 1 : 0, settings.handBob);
     fprintf(f, "difficulty %d\n", settings.difficulty);
+    fprintf(f, "terraindetail %d\ncamerasmoothing %d\nspeedvignette %d\n", settings.terrainDetail, settings.cameraSmoothing, settings.speedVignette ? 1 : 0); // (terrain detail was never saved, #297)
     fclose(f);
 }
 
@@ -203,6 +217,8 @@ void Settings_Apply() {
     if (settings.vsync) SetWindowState(FLAG_VSYNC_HINT); else ClearWindowState(FLAG_VSYNC_HINT);
     SetTargetFPS(settings.fpsCap > 0 ? settings.fpsCap : (settings.vsync ? 0 : std::max(60, GetMonitorRefreshRate(GetCurrentMonitor()))));
     player.smoothMotion = settings.reduceMotion;
+    { const float kScale[] = { 1.0f, 0.5f, 1.0f, 2.4f }; const int k = std::clamp(settings.cameraSmoothing, 0, 3); player.eyeSmoothing = k > 0; player.eyeSmoothScale = kScale[k]; } // #168
+    player.speedVignette = settings.speedVignette;
 }
 
 std::string Menu_NewSavePath() {

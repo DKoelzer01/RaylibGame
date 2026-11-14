@@ -229,10 +229,11 @@ void Player::update(Scene& world, bool inputEnabled, float dt) {
         }
         if (eyeSmoothing && known && grounded && fabsf(dz) < 1.0f) {
             const float vz = dz / dt;
-            eyeVz += (vz - eyeVz) * (1.0f - expf(-dt / 0.10f));
+            const float sc = std::max(0.1f, eyeSmoothScale); // #168: the setting scales the filter and the leash
+            eyeVz += (vz - eyeVz) * (1.0f - expf(-dt / (0.10f * sc)));
             eyeOffset += eyeVz * dt - dz;
-            eyeOffset *= expf(-dt * 5.0f);
-            eyeOffset = std::clamp(eyeOffset, -0.25f, 0.25f);
+            eyeOffset *= expf(-dt * 5.0f / sc);
+            eyeOffset = std::clamp(eyeOffset, -0.25f * sc, 0.25f * sc);
         } else {
             // In the air (jumps, falls, a frame of lost contact) the eye follows the body and eases
             // out what is left; the speed is kept so landing again on a slope doesn't lag.

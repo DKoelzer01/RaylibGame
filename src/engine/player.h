@@ -44,7 +44,9 @@ struct Player {
     // centimetres each frame. Body-local, at most 3 cm, so starting and stopping never visibly trail.
     Vector3 eyeOffsetH = { 0, 0, 0 }, eyeVh = { 0, 0, 0 };
     uint64_t eyeOffsetBody = 0;
-    bool eyeSmoothing = true;         // tests: --no-eye-smooth turns it off (A/B)
+    bool eyeSmoothing = true;         // tests: --no-eye-smooth turns it off (A/B); the Camera smoothing setting Off too
+    float eyeSmoothScale = 1.0f;      // Camera smoothing (#168): Low 0.5, Default 1, High 2.4 (time constant and leash scale)
+    bool speedVignette = false;       // Speed vignette setting (#168): darken the screen edges when moving or turning fast
     float eyeStep = 0.0f;             // tests: the eye's height change in the last update (ground frame, m)
     bool eyeStepKnown = false;
 
