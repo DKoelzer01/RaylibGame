@@ -36,6 +36,13 @@ C++ raylib 5.5 planetoid survival game. `src/engine` (static lib), `src/space` -
   about them.
 - Stop stale regression runs by command line (`*regression.sh*`, game.exe under `\Temp\tmp.*`);
   TaskStop does not kill the child scripts.
+- Check on every test run 15-45 s after starting it (user, 2026-11-14): run it in the background and look at its
+  output early, so an error or a stall is caught then, not after the whole timeout.
+- `--test-planet-walk M` (#363, user 2026-11-14): M metres as 100 m legs at places drawn from the seed (teleports
+  between legs, hovering while each place loads; every other leg prefers ground above 300 m). PASS = most legs walked
+  and never under the surface or inside solid; a leg lost to a death or a 45 s timeout on rough ground is not a failure.
+  Don't tailor the picks to walkable ground: the test is meant to sample the terrain.
+- Slow frames: any bench frame over 20 ms prints "bench: slow frame" with its CPU passes over 1 ms and the time.
 - Bench helpers: per-pass GPU + CPU timings print at the end of every --bench run (gputimer.*);
   `--native-window` (the game's borderless monitor-size window), `--no-msaa`,
   `--load` / `--at-save` (bench saves/world.sav from its own camera; copy a save into a temp dir
@@ -111,6 +118,11 @@ no auto-add, so:
 - Plan 2 (early game, done): https://claude.ai/artifact/RL22kZ7VBMugAFgGRPS3cE
 - Plan 3 (Terra tiers, space): https://claude.ai/artifact/XVw45AC6vwYitbdhaeP2xL - M21-M24 done (M24 on PR #28).
 - Plan 4 (flowing water): https://claude.ai/artifact/27xL5j1zkirSe8pDZgPz59
+- Plan 7 (erosion-shaped terrain + all-voxel water, #351): https://claude.ai/artifact/EXix8zmVSS2WRUSLAsovJg - on branch m49-erosion
+  behind RAYLIBGAME_EROSION=1 (the 3D band is off then; RAYLIBGAME_3D=0/1 overrides). Bake: erosion.* (200 m planet + 50 m faces, ERO4 cache
+  <save>.erosion, hash = world fingerprint, ponds list); gullies (ErosionGullies, RAYLIBGAME_GULLIES=0 A/B); glacial (RAYLIBGAME_GLACIAL);
+  rivers on the bake grid, carve-only water (--water-stats raises nothing). Tests: --test-flow-sea, --test-pond, --test-pump-hand, --test-hover.
+  Open questions for the user are on #351.
 - Plan 6 (GPU terrain generation + GPU-driven drawing, approved 2026-11-12): https://claude.ai/artifact/VJdKtUZEpBg5uefnqewRyZ -
   issues #143 (steps #144-#150), under #128. Done: steps 1-4 + 7 (PRs #153, #157, #179); step 5 deferred (#148), step 6
   not needed (#149: GPU density is bit-identical, collision keeps the CPU field). One path on GL 4.3 (base-instance records).

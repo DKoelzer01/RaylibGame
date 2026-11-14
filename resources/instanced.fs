@@ -17,6 +17,7 @@ uniform vec4 fogShell;
 uniform vec4 sunOccluder; // the nearest planet blocks the sun (night side), as for parts (#284)
 
 #include "shadow.glsl"
+#include "hemisphere.glsl"
 
 out vec4 finalColor;
 
@@ -41,7 +42,7 @@ void main()
         float sun = ndl > 0.0 ? sunVis * ndl * sunShadowNormal(fragPosition, n, sunDir, 1) * fragSky : 0.0;
         vec3 v = normalize(viewPos - fragPosition);
         float spec = pow(max(dot(n, normalize(sunDir + v)), 0.0), 32.0) * 0.1 * sun;
-        color = albedo * (ambient * (1.4 + 0.3 * n.y) * fragSky + vec3(1.0, 0.96, 0.88) * sun + lampLight(fragPosition, n)) + vec3(spec);
+        color = albedo * ((hemiOn() ? hemiAmbient(ambient, n) * 1.4 : ambient * (1.4 + 0.3 * n.y)) * fragSky + vec3(1.0, 0.96, 0.88) * sun + lampLight(fragPosition, n)) + vec3(spec);
     }
     float dist = length(viewPos - fragPosition), fogDist = dist;
     if (fogShell.w > 0.0) {

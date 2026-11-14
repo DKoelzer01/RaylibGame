@@ -159,6 +159,11 @@ void Survival_Update(Scene& world, float dt, bool inputEnabled) {
         }
         survival.power = std::max(0.0f, survival.power - (1.0f / Suit_Stats().power) * (survival.powerDrainPerSec
                                                           + (survival.headlamp && !ship.piloted ? survival.headlampPowerPerSec : 0.0f)) * dt);
+        // Flight pack hover (#163): a slow, steady drain in the air (~7 min of the full bar), three times that
+        // boosting (Shift); at zero it cuts out.
+        if (player.hovering && !player.grounded)
+            survival.power = std::max(0.0f, survival.power - (IsKeyDown(KEY_LEFT_SHIFT) ? 0.75f : 0.25f) / Suit_Stats().power * dt);
+        player.hoverPowered = survival.power > 0.0f;
         // Firing the jetpack only burns fuel; recharging the tank (on the ground) is what costs suit
         // power, and only as far as the power left can pay for.
         const float refilled = player.jetpackFuel - survival.lastJetpackFuel;

@@ -1,6 +1,8 @@
 #include <unordered_map>
 #include <cstring>
 #include "voxel.h"
+#include "erosion.h"
+#include <thread>
 #include "rivers.h"
 #include "foliage.h"
 #include "trees.h"
@@ -193,6 +195,8 @@ PlanetField::PlanetField(unsigned int seed, float radius_, bool moon_)
     riverSeed = seed;
     riverState = std::make_shared<RiverState>();
     gridCache = std::make_shared<GridNodeCache>();
+    erosionState = std::make_shared<ErosionState>();
+    fieldSeed = seed;
     std::mt19937 rng(seed);
     // Large features scale with the body (a moon gets proportionally sized basins and ridges);
     // hills, detail, caves and veins are absolute sizes, so they feel the same everywhere.
@@ -234,6 +238,41 @@ static float ValleyCarve(float v) {
     return t * t * 70.0f;
 }
 
+
+struct PlanetField::ErosionState { std::atomic<bool> active{ false }; PlanetErosion bake; std::once_flag pondOnce; std::unordered_map<uint64_t, int> pondByCell; }; // pondByCell: 260 m pond cell -> the bake's pond there (#360)
+
+const PlanetErosion* PlanetField::erosion() const {
+    return erosionState && erosionState->active.load(std::memory_order_acquire) ? &erosionState->bake : nullptr;
+}
+
+void PlanetField::bakeErosion(const std::string& cachePath) {
+    if (moon || !erosionState) return;
+    // The whole planet (Plan 7 step 1, #355), on the raw land; then switched on. Loaded from cachePath when a bake of
+    // this seed and radius is there (a world load reads it instead of baking again). Any river network built before
+    // came from the raw land: start a fresh one, built on first use from the eroded land.
+    PlanetErosion& b = erosionState->bake;
+    const bool loaded = !cachePath.empty() && b.load(cachePath, radius, fieldSeed);
+    if (!loaded) {
+        ErosionParams p;
+        auto envf = [](const char* n, float v) { const char* e = getenv(n); return e ? (float)atof(e) : v; }; // tuning
+        p.k = envf("RAYLIBGAME_EROSION_K", p.k); p.steps = (int)envf("RAYLIBGAME_EROSION_STEPS", (float)p.steps);
+        p.cell = envf("RAYLIBGAME_EROSION_CELL", p.cell); p.uplift = envf("RAYLIBGAME_EROSION_UPLIFT", p.uplift);
+        p.start = envf("RAYLIBGAME_EROSION_START", p.start);
+        p.glacial = envf("RAYLIBGAME_GLACIAL", p.glacial); p.glacialLine = envf("RAYLIBGAME_GLACIAL_LINE", p.glacialLine);
+        p.refine = (int)envf("RAYLIBGAME_EROSION_REFINE", (float)p.refine); p.refineSteps = (int)envf("RAYLIBGAME_EROSION_REFINE_STEPS", (float)p.refineSteps);
+        const int threads = std::max(1u, std::thread::hardware_concurrency());
+        b.build([this](Vector3 d, float fp) { return land(d, fp).h; }, radius, fieldSeed, p, threads);
+        if (!cachePath.empty()) b.save(cachePath);
+        printf("erosion: baked the planet, %d cells at %.0f m + %d at %.0f m, in %.1f s (coarse %.1f s, faces %.1f s): cut up to %.0f m, raised up to %.0f m, hash %016llx\n",
+               b.cells(), p.cell, b.fineCells(), b.fineCell(), b.buildSeconds, b.coarseSeconds, b.refineSeconds, b.maxCut, b.maxRaise, (unsigned long long)b.hash());
+    } else {
+        printf("erosion: loaded %s (%d cells, hash %016llx)\n", cachePath.c_str(), b.cells(), (unsigned long long)b.hash());
+    }
+    printf("erosion: %zu ponds from the bake (#360)\n", b.ponds().size());
+    erosionState->active.store(true, std::memory_order_release);
+    riverState = std::make_shared<RiverState>();
+}
+float PlanetField::profileLandHeight(Vector3 dir, float fp) const { return land(dir, fp).h; }
 PlanetField::Land PlanetField::land(Vector3 dir, float fp) const {
     const float sx = dir.x * radius, sy = dir.y * radius, sz = dir.z * radius; // the surface point (m)
     Land l{ 0, 0, 0, 1, 0, 0, 1, 0 };
@@ -248,13 +287,25 @@ PlanetField::Land PlanetField::land(Vector3 dir, float fp) const {
     const float base = c < 0.0f ? c * 650.0f : c * 200.0f;        // ocean floor down to -650 m, gentle land
     const float landMask = Smoothstep(-0.02f, 0.06f, c);
     const float mountainMask = Smoothstep(0.08f, 0.35f, c);      // ranges only well inland
-    float h = base;
-    if (mountainMask > 0.0f) {
-        const float r = 1.0f - fabsf(ridges.fractalLimited(5, fp, sx, sy, sz)); // ridged: sharp crests
-        l.ridge = r * r * r * 1400.0f * mountainMask; // the height the ranges add here
-        h += l.ridge;
+    // With the erosion bake (Plan 7, #356) the baked height replaces the noise relief (base, ranges, hills), and gullies
+    // steered by its slope add the 5-100 m detail (#357). l.ridge then comes from the height (the rivers' and ponds'
+    // mountain mask, until terrain-first water replaces them).
+    const PlanetErosion* eroded = erosion();
+    float h;
+    if (eroded) {
+        const PlanetErosion::Slope s = eroded->slopeAt(dir, fp);
+        h = s.h;
+        if (gGullies && fp < 450.0f) h += ErosionGullies({ sx, sy, sz }, dir, s.grad, fp, fieldSeed, Smoothstep(2.0f, 15.0f, s.h));
+        l.ridge = std::max(0.0f, h - 150.0f);
+    } else {
+        h = base;
+        if (mountainMask > 0.0f) {
+            const float r = 1.0f - fabsf(ridges.fractalLimited(5, fp, sx, sy, sz)); // ridged: sharp crests
+            l.ridge = r * r * r * 1400.0f * mountainMask; // the height the ranges add here
+            h += l.ridge;
+        }
+        h += hills.fractalLimited(3, fp, sx, sy, sz) * (25.0f + 60.0f * mountainMask);
     }
-    h += hills.fractalLimited(3, fp, sx, sy, sz) * (25.0f + 60.0f * mountainMask);
     // (River valleys are carved by the drainage network's rivers in elevation(); the old valley-noise
     // valleys and streams are gone, so l.valley and l.stream stay at 1: none.)
     const float valleyWeight = landMask * std::clamp(2.0f - fp / 64.0f, 0.0f, 1.0f);
@@ -312,11 +363,14 @@ namespace {
 }
 
 float PlanetField::riverWeight(const Land& l) const {
-    // Rivers on land valleys, not in the mountains, above the sea (they meet it at the coast).
+    // Rivers on land valleys, not in the mountains, above the sea (they meet it at the coast). With the bake the
+    // network follows its drainage, which starts high in the ranges (#359): no mountain or altitude cut.
+    if (erosion()) return l.valleyWeight * Smoothstep(1.0f, 6.0f, l.h);
     return l.valleyWeight * (1.0f - Smoothstep(80.0f, 250.0f, l.ridge)) * Smoothstep(1.0f, 6.0f, l.h) * (1.0f - Smoothstep(700.0f, 900.0f, l.h));
 }
 
 float PlanetField::broadLand(const Land& l, Vector3 dir, float smoothFp) const {
+    if (const PlanetErosion* e = erosion()) return e->heightAt(dir, smoothFp);
     const float sx = dir.x * radius, sy = dir.y * radius, sz = dir.z * radius;
     const float base = l.c < 0.0f ? l.c * 650.0f : l.c * 200.0f;
     return base + l.ridge + hills.fractalLimited(3, smoothFp, sx, sy, sz) * (25.0f + 60.0f * l.mountain) - ValleyCarve(l.valley) * l.valleyWeight;
@@ -357,6 +411,50 @@ PlanetField::Pond PlanetField::pondOfCell(int cx, int cy, int cz) const {
     if (e.f == this && e.x == cx && e.y == cy && e.z == cz) return e.p;
     Pond p{ false, { 0, 0, 0 }, 0, 0, 0 };
     uint32_t h = PondHash(cx, cy, cz, (uint32_t)(radius * 7.0f) ^ 0x9e37u);
+    if (const PlanetErosion* ero = moon ? nullptr : erosion()) {
+        // Ponds from the bake (#360): the small closed depressions its 50 m refinement left, by the 260 m cell their
+        // centre lies in (the largest when two share one). The level is held 0.3 m under the ground sampled around the
+        // rim (the runtime ground has detail and gullies the bake has not); the bowl only cuts (elevation()).
+        std::call_once(erosionState->pondOnce, [this, ero] {
+            auto& idx = erosionState->pondByCell;
+            const auto& ponds = ero->ponds();
+            for (int i = 0; i < (int)ponds.size(); ++i) {
+                const Vector3 s = Vector3Scale(ponds[i].dir, radius);
+                const uint64_t key = PondId((int)floorf(s.x / kPondCell), (int)floorf(s.y / kPondCell), (int)floorf(s.z / kPondCell));
+                auto it = idx.find(key);
+                if (it == idx.end() || ponds[it->second].r < ponds[i].r) idx[key] = i;
+            }
+        });
+        const auto it = erosionState->pondByCell.find(PondId(cx, cy, cz));
+        if (it != erosionState->pondByCell.end()) {
+            const PlanetErosion::Pond& bp = ero->ponds()[it->second];
+            const Vector3 t1 = Vector3Normalize(Vector3CrossProduct(bp.dir, fabsf(bp.dir.y) < 0.9f ? Vector3{ 0, 1, 0 } : Vector3{ 1, 0, 0 }));
+            const Vector3 t2 = Vector3CrossProduct(t1, bp.dir);
+            float rim = 1e30f;
+            for (int k = 0; k < 8; ++k) {
+                const float a = k * (PI / 4.0f), s = bp.r * 1.15f / radius;
+                rim = std::min(rim, elevationBase(Vector3Normalize(Vector3Add(bp.dir, Vector3Add(Vector3Scale(t1, cosf(a) * s), Vector3Scale(t2, sinf(a) * s)))), 8.0f));
+            }
+            const float level = std::min(bp.level, rim - 0.3f);
+            const float bottom = elevationBase(bp.dir, 8.0f);
+            // The bowl cuts down to the level where the middle stands higher; a middle far below it is a ravine or a
+            // gully the bake has not (one pond's middle lay 129 m under its level): no pond there.
+            // Ponds stand apart from the network's water: none in a lake's region or by a river (one 16 m from a river
+            // inside a lake's region never settled once drained).
+            bool apart = true;
+            if (const RiverNetwork* net = rivers()) {
+                float lv, lo;
+                const RiverNetwork::Hit rh = net->nearest(bp.dir, bp.r + 40.0f);
+                apart = !net->lakeAt(bp.dir, lv, lo) && !(rh.found && rh.dist < bp.r + rh.halfWidth + 20.0f);
+            }
+            if (apart && level > 1.0f && level - bottom > -1.0f && level - bottom < 6.0f) {
+                p.exists = true; p.dir = bp.dir; p.r = bp.r; p.level = level;
+                p.depth = std::clamp(bp.depth, 1.2f, 4.0f);
+            }
+        }
+        e = { cx, cy, cz, this, p };
+        return p;
+    }
     if (!moon && PondUnit(h) < 0.4f) {
         const Vector3 c = { (cx + 0.2f + 0.6f * PondUnit(h)) * kPondCell, (cy + 0.2f + 0.6f * PondUnit(h)) * kPondCell, (cz + 0.2f + 0.6f * PondUnit(h)) * kPondCell };
         const float len = Vector3Length(c);
@@ -413,6 +511,8 @@ float PlanetField::elevation(Vector3 dir, float fp) const {
     // Rivers of the drainage network: a valley (a floodplain 2.5 channel half-widths across at the
     // water, then sides rising 0.3 m per m) cut into higher ground, low banks where the ground dips
     // below the water, and the channel bed. The valley stays resolved further out than the channel.
+    // With the bake, water only cuts (#359): no lake bank, river bank or raised bed (they made pedestals and levees).
+    const bool carveOnly = erosion() != nullptr;
     if (const RiverNetwork* net = rivers()) {
         // Lakes (rivers.h): the level is held under the land around the basin, so the shore is the
         // terrain's own. Between the samples that checked it the ground may still dip lower; a low
@@ -421,28 +521,29 @@ float PlanetField::elevation(Vector3 dir, float fp) const {
         float lv = 0.0f, lout = 0.0f;
         const bool nearLake = net->lakeAt(dir, lv, lout);
         const bool inLake = nearLake && lout < RiverNetwork::kLakeMargin;
-        if (nearLake && lout > 0.0f && h < lv + 0.3f) {
+        if (!carveOnly && nearLake && lout > 0.0f && h < lv + 0.3f) {
             const float M = RiverNetwork::kLakeMargin;
             const float k = Smoothstep(0.3f * M, 0.8f * M, lout) * (1.0f - Smoothstep(1.2f * M, 2.0f * M, lout));
             h += std::min(lv + 0.3f - h, 4.0f) * k;
         }
-        const RiverNetwork::Hit rh = net->nearest(dir, RiverNetwork::kMaxReach);
+        const RiverNetwork::Hit rh = net->nearest(dir, net->reach());
         // In a lake, only a river arriving at the lake's level shapes the ground (its valley and bed
         // lead into the lake; no banks, which stood up out of the water as sand ridges); the outflow
         // and any other river leave the lake alone.
         if (rh.found && (!inLake || fabsf(rh.level - lv) < 1.0f)) {
             const float d = rh.dist, half = rh.halfWidth;
-            const float flat = 2.5f * half, reach = std::min(flat + 200.0f, RiverNetwork::kMaxReach);
+            // With the bake the valleys are the terrain's own: only the channel and its near banks are cut (#359).
+            const float flat = 2.5f * half, reach = std::min(flat + (carveOnly ? 60.0f : 200.0f), net->reach());
             const float allowed = rh.level + 0.5f + std::max(0.0f, d - flat) * 0.3f;
             const float vw = (1.0f - Smoothstep(reach * 0.7f, reach, d)) * std::clamp(2.0f - fp / 512.0f, 0.0f, 1.0f);
             if (h > allowed) h += (allowed - h) * vw;
             const float cw = std::clamp(2.0f - fp / (4.0f * half), 0.0f, 1.0f) * Smoothstep(-2.0f, 0.5f, l.h); // not out at sea
             const float bank = rh.level + 0.4f;
-            if (!inLake && h < bank && d < half + 12.0f) h += (bank - h) * (1.0f - Smoothstep(half, half + 12.0f, d)) * cw;
+            if (!carveOnly && !inLake && h < bank && d < half + 12.0f) h += (bank - h) * (1.0f - Smoothstep(half, half + 12.0f, d)) * cw;
             if (d < half) {
                 const float t = 1.0f - (d / half) * (d / half);
                 const float bed = rh.level + 0.3f - (rh.depth + 0.3f) * t;
-                h += (bed - h) * cw;
+                if (!carveOnly || bed < h) h += (bed - h) * cw;
             }
         }
     }
@@ -463,7 +564,7 @@ float PlanetField::elevation(Vector3 dir, float fp) const {
                 target = std::max(h, p.level + 0.4f);                               // an embankment 0.4 m above the water...
                 target = target + (h - target) * Smoothstep(p.r, 1.8f * p.r, dist); // ...blending out to the ground
             }
-            h += (target - h) * pw;
+            if (!carveOnly || target < h) h += (target - h) * pw; // with the bake: the bowl only cuts, no embankment (#360)
         });
     }
     return h;
@@ -513,7 +614,8 @@ float PlanetField::waterElevation(Vector3 dir, float fp) const {
         // A lake's water is its level over its whole region (the terrain decides the shore); rivers
         // in it take its level. Lakes are big: kept out to coarse levels of detail.
         float lake;
-        if (fp < 1024.0f && net->lakeAt(dir, lake)) w = lake;
+        int lid = -1; float lo = 0.0f;
+        if (fp < 1024.0f && net->lakeAt(dir, lake, lo, lid) && lo < RiverNetwork::kLakeMargin) { const uint64_t cid = drainableLake(lid); if (!cid || !pondClaimed(cid)) w = lake; }
         else if (fp < 128.0f) {
             const RiverNetwork::Hit rh = net->nearest(dir, 60.0f);
             if (rh.found && rh.dist < rh.halfWidth * 1.05f) w = rh.level;
@@ -550,7 +652,17 @@ PlanetField::WaterSource PlanetField::waterSourceAt(Vector3 dir) const {
     if (moon) return s;
     if (const RiverNetwork* net = rivers()) {
         float lake;
-        if (net->lakeAt(dir, lake)) { s.kind = 2; s.level = lake; }
+        int lid = -1; float lo = 0.0f;
+        if (net->lakeAt(dir, lake, lo, lid) && lo < RiverNetwork::kLakeMargin) {
+            if (const uint64_t cid = drainableLake(lid)) {
+                // A small lake (#360): finite, taken over like a pond the first time water moves there; once claimed
+                // its static water is gone (the simulation holds what is left).
+                if (!pondClaimed(cid)) {
+                    const RiverNetwork::LakeInfo& li = net->lakeInfo(lid);
+                    s.kind = 3; s.level = lake; s.pond = cid; s.pondDir = li.dir; s.pondR = li.r; s.pondDepth = li.depth + 1.0f;
+                }
+            } else { s.kind = 2; s.level = lake; }
+        }
         else {
             const RiverNetwork::Hit rh = net->nearest(dir, 60.0f);
             if (rh.found && rh.dist < rh.halfWidth * 1.05f) { s.kind = 1; s.level = rh.level; }
@@ -564,6 +676,15 @@ PlanetField::WaterSource PlanetField::waterSourceAt(Vector3 dir) const {
         s.kind = 3; s.level = p.level; s.pond = id; s.pondDir = p.dir; s.pondR = p.r;
     });
     return s;
+}
+
+uint64_t PlanetField::drainableLake(int lakeId) const {
+    // Small lakes are finite (user, 2026-11-13: large lakes cannot be drained): at most 2 of the bake's 200 m cells
+    // (~8 ha). Only with the bake: there the random ponds are gone and these replace them.
+    constexpr int kDrainableCells = 0; // off: a 2-cell lake held ~486,000 m^3 and did not settle (#360); ponds come from the bake instead
+    const RiverNetwork* net = erosion() ? rivers() : nullptr;
+    if (!net || lakeId < 0 || net->lakeInfo(lakeId).cells > kDrainableCells) return 0;
+    return (1ull << 63) | (uint64_t)lakeId;
 }
 
 void PlanetField::claimPond(uint64_t id) const {
@@ -588,9 +709,26 @@ void PlanetField::clearClaimedPonds() const {
 PlanetField::RiverState::~RiverState() = default;
 
 const RiverNetwork* PlanetField::rivers() const {
-    if (moon || !riverState) return nullptr;
+    static const bool noRivers = getenv("RAYLIBGAME_NO_RIVERS") != nullptr; // profiling (#365): no river or lake overlay
+    if (moon || !riverState || noRivers) return nullptr;
     std::call_once(riverState->once, [this] {
-        riverState->net = std::make_unique<RiverNetwork>(radius, riverSeed, [this](Vector3 d) { return land(d, 256.0f).h; });
+        RiverNetwork::Params rp;
+        if (erosion()) {
+            // Terrain-first rivers (Plan 7 step 5, #359): on the bake's own 200 m grid, from ~2 km^2 of drainage (upland
+            // streams), barely meandering (the baked valleys already wind), each level held under the full ground
+            // along its curve (rivers only cut now).
+            rp.cell = 200.0f; rp.riverArea = 2.0e6f; rp.meander = 0.05f; rp.maxReach = 180.0f; rp.lakeDepth = 2.5f;
+            rp.fineHeight = [this](Vector3 d) { return elevationBase(d, 8.0f); };
+        }
+        const auto t0 = std::chrono::steady_clock::now();
+        // With the bake, the network sees the baked surface itself: land() adds the gullies (+-75 m at this footprint),
+        // whose troughs read as closed basins: phantom lakes 130 m under the ground and canyons cut to them (#360).
+        const PlanetErosion* ero = erosion();
+        riverState->net = std::make_unique<RiverNetwork>(radius, riverSeed, [this, ero](Vector3 d) {
+            return ero ? ero->heightAt(d, 256.0f) : land(d, 256.0f).h; // (ice shelves: the network's own rule)
+        }, rp);
+        printf("rivers: network built in %.2f s (%d cells of %.0f m)\n", std::chrono::duration<float>(std::chrono::steady_clock::now() - t0).count(),
+               riverState->net->stats().cells, riverState->net->stats().cellSize);
     });
     return riverState->net.get();
 }
@@ -725,7 +863,7 @@ float PlanetField::ruggedness(Vector3 dir, float elev) const {
 // the column, so blocks compute it once per height-grid node (baseDensityBlock) instead of per sample.
 PlanetField::Column3D PlanetField::terrain3DColumn(Vector3 dir, float elev) const {
     Column3D c;
-    if (moon || elev < 6.0f) return c;
+    if (moon || elev < 6.0f || !gTerrain3D) return c;
     const Vector3 s = Vector3Scale(dir, radius + elev);
     const float rn = rugged.fractal(2, s.x, s.y, s.z);
     if (rn < -0.25f) return c;
@@ -1140,8 +1278,9 @@ Vector3 PlanetField::findSpawnDir(unsigned int seed) const {
         if (it == cache.end()) {
             const Vector3 t1 = Vector3Normalize(Vector3CrossProduct(best, { 0, 1, 0 })), t2 = Vector3CrossProduct(t1, best);
             float bestDist = 1e30f; Vector3 rim = best;
-            for (float e = -6000.0f; e <= 6000.0f; e += 24.0f)
-                for (float nn = -6000.0f; nn <= 6000.0f; nn += 24.0f) {
+            for (int pass = 0; pass < 2 && bestDist > 1e29f; ++pass) // 6 km at 24 m; then 20 km at 60 m (#360)
+                for (float e = pass ? -20000.0f : -6000.0f; e <= (pass ? 20000.0f : 6000.0f); e += pass ? 60.0f : 24.0f)
+                for (float nn = pass ? -20000.0f : -6000.0f; nn <= (pass ? 20000.0f : 6000.0f); nn += pass ? 60.0f : 24.0f) {
                     const float dist = sqrtf(e * e + nn * nn);
                     if (dist >= bestDist) continue;
                     const Vector3 d = Vector3Normalize(Vector3Add(best, Vector3Add(Vector3Scale(t1, e / radius), Vector3Scale(t2, nn / radius))));
@@ -1149,7 +1288,7 @@ Vector3 PlanetField::findSpawnDir(unsigned int seed) const {
                     if (ws.kind != 3) continue;
                     bestDist = dist;
                     const Vector3 out = Vector3Normalize(Vector3CrossProduct(ws.pondDir, { 0, 1, 0 }));
-                    rim = Vector3Normalize(Vector3Add(ws.pondDir, Vector3Scale(out, ws.pondR / radius)));
+                    rim = getenv("RAYLIBGAME_POND_CENTRE") ? ws.pondDir : Vector3Normalize(Vector3Add(ws.pondDir, Vector3Scale(out, ws.pondR / radius))); // (centre: #367 checks)
                 }
             it = cache.emplace(this, rim).first;
         }
@@ -1227,6 +1366,16 @@ VoxelMaterial PlanetField::materialSkyHinted(Vector3 p, float base, float fp, Ve
         if (e > 0.0f && inlandWaterNear(up, 0.0f)) {
             const float w = waterElevation(up, fp);
             if (w != kNoWater && e < w + 0.6f) return w - e > 1.4f ? VoxelMaterial::Gravel : VoxelMaterial::Sand;
+        }
+        // A pond the simulation took over keeps its bed (#189: it turned to grass and trees grew in the pond). Only
+        // claimed ponds need this (the others are inland water above); nothing to do until one is.
+        if (e > 0.0f && fp < 96.0f && pondState->n.load(std::memory_order_relaxed) > 0) {
+            float pl = kNoWater;
+            ForPondCellsNear(Vector3Scale(up, radius), kPondReach, [&](int x, int y, int z) {
+                const Pond pd = pondOfCell(x, y, z);
+                if (pd.exists && pondClaimed(PondId(x, y, z)) && Vector3Distance(up, pd.dir) * radius < pd.r * 1.05f) pl = std::max(pl, pd.level);
+            });
+            if (pl != kNoWater && e < pl + 0.6f) return pl - e > 1.4f ? VoxelMaterial::Gravel : VoxelMaterial::Sand;
         }
         if (slope > 0.45f) return VoxelMaterial::Rock;                                                       // cliffs: bare stone
         if (e < -80.0f) return VoxelMaterial::Gravel;                                                        // deep sea floor
@@ -1658,4 +1807,24 @@ const char* GemForStone(const char* stone) {
     if (strcmp(stone, "basalt") == 0) return "sapphire";
     if (strcmp(stone, "limestone") == 0) return "emerald";
     return nullptr;
+}
+
+bool PlanetField::pondCovers(uint64_t claimId, Vector3 dir) const {
+    if (!(claimId >> 63)) return true; // a random pond: its circle is its extent
+    const RiverNetwork* net = rivers();
+    float level, outside; int id;
+    return net && net->lakeAt(dir, level, outside, id) && outside < RiverNetwork::kLakeMargin && drainableLake(id) == claimId;
+}
+
+std::string PlanetField::debugColumn(Vector3 dir) const {
+    char buf[512];
+    const Land l = land(dir, 0.0f);
+    int n = snprintf(buf, sizeof(buf), "land %.1f (fp 256: %.1f) base %.1f final %.1f", l.h, land(dir, 256.0f).h, elevationBase(dir, 0.0f), elevation(dir, 0.0f));
+    if (const RiverNetwork* net = rivers()) {
+        const RiverNetwork::Hit rh = net->nearest(dir, net->reach());
+        if (rh.found) n += snprintf(buf + n, sizeof(buf) - n, "; river %.0f m away, level %.1f, half %.1f", rh.dist, rh.level, rh.halfWidth);
+        float lv, lo; int id;
+        if (net->lakeAt(dir, lv, lo, id)) n += snprintf(buf + n, sizeof(buf) - n, "; lake %d level %.1f outside %.0f", id, lv, lo);
+    }
+    return buf;
 }

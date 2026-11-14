@@ -40,7 +40,8 @@ int kindVisc[8] = { 5, 5, 5, 5, 5, 5, 5, 5 }, kindMinSpread[8] = { 10, 10, 10, 1
 constexpr int kSiteBricks = 16;        // a site reaches +-16 bricks (256 m) from its origin
 constexpr float kSiteJoin = 180.0f;    // a disturbance within this of a site's origin joins it
 constexpr int kEvaporate = 3;          // resting specks this thin (~1 cm) dry up
-constexpr int kSubsteps = 3;           // simulation steps per 20 Hz tick (water moves a cell a step)
+constexpr int kSubsteps = 3;           // CPU simulation steps per 50 ms (water moves a cell a step)
+constexpr double kTickSeconds = 0.025; // a tick (a job + meshes) every 25 ms: water moved in 1-3 cell jumps every 50-100 ms, hard to follow (#366)
 constexpr int kSleepSteps = 120;       // 2 s without change: a brick sleeps
 constexpr int kLevelEvery = 15;        // levelling pass every 0.25 s
 constexpr int kInitPerStep = 24;       // bricks classified per step, in parallel on the worker pool (each a few ms)
@@ -56,6 +57,7 @@ struct Brick {
     Brick* nbr[6] = {};             // -x +x -y +y -z +z
     bool ready = false;             // cells classified (solid / source)
     bool keepFill = false;          // loaded from a save: the classification keeps the stored water
+    bool fillPond = false;          // classified again for a pond take-over: its water goes in once (#189)
     bool active = true;
     int idle = 0;
     bool meshDirty = true;
@@ -74,7 +76,7 @@ struct Site {
     std::unordered_map<int64_t, std::unique_ptr<Brick>> bricks;
     std::deque<Brick*> pending;     // waiting for classification
     std::vector<uint64_t> ponds;    // ponds this site took over
-    struct PondInfo { Vector3 dir; float r, level; };
+    struct PondInfo { Vector3 dir; float r, level; uint64_t id = 0; float depth = 4.0f; }; // id: the claim (a lake's: its cells are its extent, #360)
     std::vector<PondInfo> pondInfo; // their extent (this session: a load keeps the stored water instead)
     // Sources with a rate and a head (springs, seeps): site cell, kind, fill units added per step at most,
     // and the level (site cells, fractional) the fluid surface over it is held to.
@@ -165,7 +167,7 @@ std::map<std::pair<int, int64_t>, GpuMesh> gpu;  // main thread
 
 // Cells of a brick: solid from the terrain density (edits included); open cells inside static water
 // are sources (infinite) or, for ponds, take the pond over.
-struct PondClaim { uint64_t id; Vector3 dir; float r, level; };
+struct PondClaim { uint64_t id; Vector3 dir; float r, level, depth; };
 // Runs in parallel over bricks (pool jobs): it writes only its own brick; ponds it finds are reported
 // in `claims` and taken over after the batch (RunJob), never here.
 void Classify(const Site& s, Brick& b, const BodyRef& ref, std::vector<PondClaim>& claims) {
@@ -182,19 +184,22 @@ void Classify(const Site& s, Brick& b, const BodyRef& ref, std::vector<PondClaim
             const Vector3 dir = Vector3Scale(mid, 1.0f / ml);
             float bed = 0.0f, level = -1e9f;
             int kind = 0;                               // 1 river, 2 lake, 4 sea: infinite; 5 a pond taken over: finite
+            PlanetField::WaterSource pondHere;           // a pond not taken over yet over this column
+            bool dugInPond = false;                     // an edit opened a cell in its water: take it over
             if (pf) {
                 bed = pf->radius + pf->elevation(dir);
                 if (bed < sea) { level = sea; kind = 4; } // the sea
                 const PlanetField::WaterSource ws = pf->waterSourceAt(dir);
                 if (ws.kind == 3 && bed < sea + ws.level) {
-                    // A pond: the simulation takes it over (finite water from here on); reported to RunJob,
-                    // which hides its static surface and queues every brick of its water.
-                    bool known = false;
-                    for (const PondClaim& c : claims) known = known || c.id == ws.pond;
-                    if (!known) { claims.push_back({ ws.pond, ws.pondDir, ws.pondR, ws.level }); ponds.push_back({ ws.pondDir, ws.pondR, ws.level }); }
-                } else if (ws.kind && ws.kind != 3 && sea + ws.level > level) { level = sea + ws.level; kind = ws.kind; } // a pond (even its rim, above the level) is never an infinite source
+                    // A pond: the simulation takes it over (finite water from here on) once a cell an edit opened lies in
+                    // its water (#189: any edit near a pond took it over, its bed turned to grass and trees grew in it).
+                    // Checked in the cells below; reported to RunJob, which hides its static surface and (re)queues
+                    // every brick of its water.
+                    pondHere = ws;
+                } else if (kind != 4 && ws.kind && ws.kind != 3 && sea + ws.level > level) { // at sea the sea's level wins (#190: a river mouth's higher level fed the sea columns: overfilled channels that never slept)
+                    level = sea + ws.level; kind = ws.kind; } // a pond (even its rim, above the level) is never an infinite source
                 for (const Site::PondInfo& p : ponds)
-                    if (Vector3Distance(dir, p.dir) * pf->radius < p.r * 1.05f && sea + p.level > level) { level = sea + p.level; kind = 5; }
+                    if (Vector3Distance(dir, p.dir) * pf->radius < p.r * 1.05f && sea + p.level > level && pf->pondCovers(p.id, dir)) { level = sea + p.level; kind = 5; }
             }
             const float top = pf ? bed + 14.0f : 1e9f;  // tors, boulders and detail stay below this
             for (int z = 0; z < B; ++z) {
@@ -206,6 +211,7 @@ void Classify(const Site& s, Brick& b, const BodyRef& ref, std::vector<PondClaim
                 // Dug: open only because of an edit. Static water feeds only these (the real ground has
                 // crags the height map doesn't: natural dips by a river are not to be flooded).
                 if (!solid && r < bed + 4.0f && r < top && ref.field->density(c, nullptr) >= ISO_LEVEL) fl |= kDug;
+                if ((fl & kDug) && pondHere.kind == 3 && r - 0.5f < sea + pondHere.level) dugInPond = true;
                 uint8_t tg = 0;
                 if (!solid && kind && r - 0.5f < level && r > bed - 0.5f) {
                     tg = (uint8_t)std::clamp((int)lroundf((level - (r - 0.5f)) * 255.0f), 0, 255);
@@ -214,13 +220,18 @@ void Classify(const Site& s, Brick& b, const BodyRef& ref, std::vector<PondClaim
                 if (b.keepFill && !solid && !(fl & kSource) && b.fill[i] > 0) fl |= (b.flags[i] & kKindMask); // kept fluid stays its kind
                 b.flags[i] = fl;
                 b.target[i] = (fl & kSource) ? tg : 0;
-                if (b.keepFill) { if (solid) b.fill[i] = 0; else if (fl & kSource) b.fill[i] = tg; }
+                if (b.keepFill) { if (solid) b.fill[i] = 0; else if (fl & kSource) b.fill[i] = tg; else if (b.fillPond && kind == 5) b.fill[i] = std::max(b.fill[i], tg); }
                 else b.fill[i] = solid ? 0 : tg;
+            }
+            if (dugInPond) {
+                bool known = false;
+                for (const PondClaim& c : claims) known = known || c.id == pondHere.pond;
+                if (!known) { claims.push_back({ pondHere.pond, pondHere.pondDir, pondHere.pondR, pondHere.level, pondHere.pondDepth }); ponds.push_back({ pondHere.pondDir, pondHere.pondR, pondHere.level, pondHere.pond, pondHere.pondDepth }); }
             }
         }
     b.ready = true;
     b.upload = true; // GPU mode: the classified brick goes up whole
-    b.keepFill = false;
+    b.keepFill = false; b.fillPond = false;
     b.active = true; b.idle = 0; b.meshDirty = true; b.changed = true;
 }
 
@@ -744,19 +755,36 @@ void RunJob() {
                 // Take the pond over: no static surface (the chunks around it rebuild); queue its bricks.
                 pf->claimPond(c.id);
                 w.s->ponds.push_back(c.id);
-                w.s->pondInfo.push_back({ c.dir, c.r, c.level });
+                w.s->pondInfo.push_back({ c.dir, c.r, c.level, c.id, c.depth });
                 const Vector3 pc = Vector3Scale(c.dir, pf->radius + c.level);
                 { std::lock_guard<std::mutex> lock(pubMx); remeshQueue.push_back({ w.s->body, { pc.x, pc.y, pc.z, c.r * 1.3f + 8.0f } }); } // remeshed with 5 strides of reach: coarse nodes draw the static water up to 4 lattice samples out (#251)
                 int pci, pcj, pck;
                 w.s->cellOf(pc, pci, pcj, pck);
                 const int rc = (int)ceilf(c.r * 1.1f) + 1;
-                for (int bk = FloorDiv(pck - 8, B); bk <= FloorDiv(pck, B); ++bk)
-                    for (int bj = FloorDiv(pcj - rc, B); bj <= FloorDiv(pcj + rc, B); ++bj)
-                        for (int bi = FloorDiv(pci - rc, B); bi <= FloorDiv(pci + rc, B); ++bi) w.s->ensure(bi, bj, bk);
+                // Down to the bed (ponds ~4 m; a small lake its own depth, #360), and for a lake only the brick columns
+                // over its cells (its bounding circle is mostly dry ground).
+                const int depthCells = std::max(8, (int)ceilf(c.depth) + 2);
+                for (int bj = FloorDiv(pcj - rc, B); bj <= FloorDiv(pcj + rc, B); ++bj)
+                    for (int bi = FloorDiv(pci - rc, B); bi <= FloorDiv(pci + rc, B); ++bi) {
+                        if (c.id >> 63) {
+                            const Vector3 m = w.s->cellCentre(bi * B + B / 2, bj * B + B / 2, pck);
+                            const float ml = Vector3Length(m);
+                            if (ml < 1.0f || !pf->pondCovers(c.id, Vector3Scale(m, 1.0f / ml))) continue;
+                        }
+                        for (int bk = FloorDiv(pck - depthCells, B); bk <= FloorDiv(pck, B); ++bk) {
+                            // Bricks classified before the take-over hold none of its water: classify them again (#189).
+                            if (Brick* eb = w.s->find(bi, bj, bk); eb && eb->ready) { eb->ready = false; eb->keepFill = true; eb->fillPond = true; w.s->pending.push_front(eb); }
+                            else w.s->ensure(bi, bj, bk);
+                        }
+                    }
             }
         }
     }
-    const int n = kSubsteps * std::max(1, speed.load());
+    // CPU steps: kSubsteps per 50 ms on average (spring rates assume it), whatever the tick (#366: ticks every 25 ms).
+    static double stepAcc = 0.0;
+    stepAcc += kSubsteps * (kTickSeconds / 0.05);
+    int n = (int)stepAcc; stepAcc -= n;
+    n *= std::max(1, speed.load());
     for (int k = 0; k < n; ++k) {
         ++stepCount;
         if (gpuMode) { for (auto& s : sites) for (Site::Spring& sp : s->springs) StepSpring(*s, sp); } // the GPU runs the cells (GpuTick)
@@ -783,7 +811,7 @@ void RunJob() {
                     if (k) { st.otherVolume += b.fill[i] / 255.0; present |= (uint8_t)(1 << k); }
                     else st.volume += b.fill[i] / 255.0;
                 }
-            if (b.meshDirty && stepCount - b.lastMesh >= 2) {
+            if (b.meshDirty && stepCount - b.lastMesh >= 1) {
                 MeshOut m;
                 MeshBrick(*s, b, m);
                 b.meshDirty = false; b.lastMesh = (int)stepCount;
@@ -1148,8 +1176,8 @@ void Fluid::Update(Scene& world, float dt) {
 
     // A step every 50 ms when the last one has finished (the job owns the state while it runs).
     accum += dt;
-    if (accum < 0.05 || running.load()) return;
-    accum = std::min(accum - 0.05, 0.1);
+    if (accum < kTickSeconds || running.load()) return;
+    accum = std::min(accum - kTickSeconds, 0.1);
     bool work;
     { std::lock_guard<std::mutex> c(cmdMx); work = !commands.empty(); }
     {
@@ -1173,7 +1201,7 @@ void Fluid::Update(Scene& world, float dt) {
     }
     // GPU substeps: twice the CPU's - the order-independent GPU step moves water one cell a substep, where the
     // CPU's in-place sweep carried it several cells along the sweep.
-    if (gpuMode) { std::lock_guard<std::mutex> lock(simMx); GpuTick(2 * kSubsteps * std::max(1, speed.load())); }
+    if (gpuMode) { std::lock_guard<std::mutex> lock(simMx); GpuTick((int)lround(2 * kSubsteps * (kTickSeconds / 0.05)) * std::max(1, speed.load())); } // 120 a second, as before
     (void)world;
     running = true;
     WorldJobs().submit(-0.5f, [] { RunJob(); running = false; });

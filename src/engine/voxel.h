@@ -77,6 +77,13 @@ enum class Biome : uint8_t { Ocean = 0, Jungle, Savanna, Desert, Badlands, Fores
 inline int gSpawnBiome = -1;
 // Bench override (--bench-pond): findSpawnDir returns the rim of the nearest pond (#251 crack checks).
 inline bool gSpawnPond = false;
+// Erosion bake (Plan 7, #355): RAYLIBGAME_EROSION=1 bakes the whole planet at world creation (erosion.h); off until the plan's gate.
+inline bool gErosionPrototype = false;
+// The 3D surface band (cliffs, overhangs: terrain3D). Off while the erosion bake is being tested (user, 2026-11-13: keep
+// it out of the erosion comparisons); RAYLIBGAME_3D=1 turns it back on.
+inline bool gTerrain3D = true;
+inline bool gGullies = true; // erosion-filter gullies on the baked height (#357); RAYLIBGAME_GULLIES=0 for A/B
+class PlanetErosion;
 const char* BiomeName(Biome b);
 const char* VoxelMaterialName(VoxelMaterial m);
 
@@ -181,6 +188,7 @@ public:
     // Surface height above sea level along a unit direction; footprint > 0 leaves out detail finer
     // than samples that far apart (see SimplexNoise::fractalLimited).
     float elevation(Vector3 dir, float footprint = 0.0f) const;
+    std::string debugColumn(Vector3 dir) const; // tests: the height terms at dir (land, base, rivers, lakes, ponds)
     float elevationBase(Vector3 dir, float footprint = 0.0f) const; // land + detail + biome landforms: no rivers, lakes, ponds (Plan 6: GPU port check)
     // The terrain noise fields in a fixed order for the GPU port (terrain.glsl): frequency + seed per field.
     void gpuNoiseParams(std::vector<float>& out) const;
@@ -210,7 +218,11 @@ public:
     bool wetBed(Vector3 local) const;
     // The static water at a direction and its kind (flowing water, fluid.h): 0 none, 1 river, 2 lake,
     // 3 pond; level above sea level. Ponds carry an id and their centre and radius.
-    struct WaterSource { int kind = 0; float level = kNoWater; uint64_t pond = 0; Vector3 pondDir{}; float pondR = 0.0f; };
+    struct WaterSource { int kind = 0; float level = kNoWater; uint64_t pond = 0; Vector3 pondDir{}; float pondR = 0.0f, pondDepth = 4.0f; };
+    // Small lakes of the network (#360): finite, taken over like ponds. Its claim id (bit 63 set: never a pond cell id),
+    // or 0 when the lake is large (infinite) or there is no bake.
+    uint64_t drainableLake(int lakeId) const;
+    bool pondCovers(uint64_t claimId, Vector3 dir) const; // a drainable lake's cells (or margin) hold dir; ponds: true
     WaterSource waterSourceAt(Vector3 dir) const;
     // A pond the water simulation took over: its static surface is gone (waterElevation and
     // inlandWaterNear skip it). Thread-safe; saved by the simulation.
@@ -294,6 +306,17 @@ private:
     // stacked blocks of a column read the same nodes. Sharded; a shard is dropped when full.
     struct GridNodeCache;
     std::shared_ptr<GridNodeCache> gridCache;
+    // Erosion bake (#352 prototype): built on first use, around the start (fieldSeed's findSpawnDir).
+    struct ErosionState;
+    std::shared_ptr<ErosionState> erosionState;
+    unsigned int fieldSeed = 0;
+    const PlanetErosion* erosion() const;
+public:
+    // Bake erosion around the start (#352 prototype, gErosionPrototype): once, on the main thread, before the field is
+    // shared with the workers.
+    void bakeErosion(const std::string& cachePath); // loads the bake from cachePath when it matches, else bakes and saves it
+    float profileLandHeight(Vector3 dir, float footprint) const; // land(dir, fp).h, for --profile-density
+private:
     std::shared_ptr<RiverState> riverState;
     unsigned int riverSeed = 0;
     float densityNear(Vector3 p, float d, float surface, float footprint, const Column3D* col = nullptr) const; // after the height map
