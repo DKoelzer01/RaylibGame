@@ -194,6 +194,7 @@ int main(int argc, char** argv)
     bool benchRide = false;        // --test-ride: stand on a spinning body, then jump
     bool benchPark = false;        // --test-park: park the ship on a spinning body
     bool sunOverride = false;      // --sun x y z: sun direction (e.g. to test night-side lighting)
+    bool benchDay = false;         // --day: a mid-morning sun over the start (perf benches: shadows and all, #291)
     int benchFps = -1;             // --fps N: cap the frame rate (0 = uncapped); default: bench uncapped, play at the monitor refresh rate
     bool lookDown = false;         // --look-down: tilt the player view toward the ground (lighting tests)
     Vector3 sunArg = { 1, 0, 0 };
@@ -345,13 +346,14 @@ int main(int argc, char** argv)
     double walkTargetM = 0.0, walkPath = 0.0; // --test-planet-walk M: walk M metres (path, body frame), then PASS/FAIL
     DVec3 walkLast{};
     Vector3 benchCamOffset = { -70.0f, 35.0f, 70.0f }; // --cam dx dy dz: bench camera offset from the planetoid
+    bool benchCamGiven = false;   // --cam given: use the offset (otherwise a planet bench looks along the surface from 40 m up, #291)
     for (int i = 1; i < argc; ++i) {
         if (std::string(argv[i]) == "--bench") benchSeconds = (i + 1 < argc) ? atof(argv[i + 1]) : 10.0;
         if (std::string(argv[i]) == "--ui") DebugUI_Toggle(); // open the debug panel at start
         if (std::string(argv[i]) == "--seed" && i + 1 < argc) worldGen.seed = (unsigned int)strtoul(argv[i + 1], nullptr, 10);
         if (std::string(argv[i]) == "--nocull") frustumCullingEnabled = false;
         if (std::string(argv[i]) == "--overlay") startWithOverlay = true;
-        if (std::string(argv[i]) == "--cam" && i + 3 < argc) { benchCamOffset = { (float)atof(argv[i+1]), (float)atof(argv[i+2]), (float)atof(argv[i+3]) }; }
+        if (std::string(argv[i]) == "--cam" && i + 3 < argc) { benchCamGiven = true; benchCamOffset = { (float)atof(argv[i+1]), (float)atof(argv[i+2]), (float)atof(argv[i+3]) }; }
         if (std::string(argv[i]) == "--test-dig" && i + 1 < argc) benchDigStrokes = atoi(argv[i + 1]);
         if (std::string(argv[i]) == "--test-paint") benchPaint = true;
         if (std::string(argv[i]) == "--test-saveload") benchSaveLoad = true;
@@ -439,6 +441,7 @@ int main(int argc, char** argv)
         if (std::string(argv[i]) == "--grass-dist" && i + 1 < argc) kGrassDrawDistance = (float)atof(argv[i + 1]);
         if (std::string(argv[i]) == "--tree-dist" && i + 1 < argc) kTreeDrawDistance = (float)atof(argv[i + 1]);
         if (std::string(argv[i]) == "--sun" && i + 3 < argc) { sunOverride = true; sunArg = Vector3Normalize({ (float)atof(argv[i + 1]), (float)atof(argv[i + 2]), (float)atof(argv[i + 3]) }); }
+        if (std::string(argv[i]) == "--day") benchDay = true;
         if (std::string(argv[i]) == "--look-down") lookDown = true;
         if (std::string(argv[i]) == "--fps" && i + 1 < argc) benchFps = atoi(argv[i + 1]);
         if (std::string(argv[i]) == "--headlamp") survival.headlamp = true;      // lamp on from the start
@@ -806,7 +809,22 @@ int main(int argc, char** argv)
         gameState = 1;
         mainMenu.isActive = false;
         world.isActive = true;
-        if (!benchAtSave) world.camera.position = Vector3Add(world.camera.target, benchCamOffset);
+        Planetoid* benchPlanet = world.objects.empty() ? nullptr : dynamic_cast<Planetoid*>(world.objects[0].get());
+        if (!benchAtSave && !benchCamGiven && benchPlanet && dynamic_cast<const PlanetField*>(benchPlanet->field.get())) {
+            // A planet (#291): 40 m above the start, looking ahead along the surface and a little down (the asteroid
+            // offset below put the camera under the terrain). It rides the planet from here (#127).
+            const Vector3 feet = (player.position - world.renderOrigin).toFloat();
+            const Vector3 ahead = Vector3Normalize(Vector3Subtract(player.forward, Vector3Scale(player.up, Vector3DotProduct(player.forward, player.up))));
+            world.camera.position = Vector3Add(feet, Vector3Scale(player.up, 40.0f));
+            world.camera.target = Vector3Add(world.camera.position, Vector3Subtract(Vector3Scale(ahead, 100.0f), Vector3Scale(player.up, 25.0f)));
+            world.camera.up = player.up;
+        } else if (!benchAtSave) world.camera.position = Vector3Add(world.camera.target, benchCamOffset);
+        if (benchDay) { // mid-morning over the start: 45 degrees up, from ahead-left (shadows fall toward the camera's right)
+            const Vector3 ahead = Vector3Normalize(Vector3Subtract(player.forward, Vector3Scale(player.up, Vector3DotProduct(player.forward, player.up))));
+            const Vector3 side = Vector3CrossProduct(ahead, player.up);
+            sunOverride = true;
+            sunArg = Vector3Normalize(Vector3Add(Vector3Scale(player.up, 0.7f), Vector3Add(Vector3Scale(ahead, 0.5f), Vector3Scale(side, -0.5f))));
+        }
         world.debugDraw = startWithOverlay;
         player.flyMode = benchWalkSeconds <= 0.0 && !benchWalkMode; // the bench drives the camera directly unless walking
         player.autoWalk = benchWalkMode && !benchStandMode;           // --bench-walk: walk through the measured window (--bench-stand: stand)

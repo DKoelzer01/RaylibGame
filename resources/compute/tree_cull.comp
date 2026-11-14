@@ -1,0 +1,30 @@
+#version 430
+// Main-view tree culling (#292): one thread per instance of one tree variant. Instances whose bounding sphere (the
+// variant mesh's radius x the instance scale, centred on its base) lies outside the view frustum are dropped; the rest
+// are appended to a compacted instance buffer and counted into this variant's indirect draw command
+// (glDrawArraysIndirect). Trees in a 2 km disc are mostly outside a ~60 degree view: the vertex work was spent on all.
+layout(local_size_x = 64) in;
+
+layout(std430, binding = 0) readonly buffer In { vec4 inst[]; };      // 2 vec4 per instance: pos + scale, up + hash
+layout(std430, binding = 1) writeonly buffer Out { vec4 outInst[]; };
+struct Cmd { uint count; uint instanceCount; uint first; uint baseInstance; };
+layout(std430, binding = 2) buffer Cmds { Cmd cmds[]; };
+
+uniform uint n;          // instances of this variant
+uniform uint cmdIndex;   // its command
+uniform mat4 model;      // anchor-relative body-local -> render space (TreeSystem::draw's matModel)
+uniform float radius;    // variant mesh bounding radius (m, at scale 1)
+uniform vec4 planes[6];  // render space, inside: dot(n, p) + d >= 0
+
+void main() {
+    uint i = gl_GlobalInvocationID.x;
+    if (i >= n) return;
+    vec4 ps = inst[2u * i];
+    vec3 c = (model * vec4(ps.xyz, 1.0)).xyz;
+    float r = radius * ps.w * length(model[0].xyz);
+    for (int k = 0; k < 6; ++k)
+        if (dot(planes[k].xyz, c) + planes[k].w < -r) return;
+    uint o = atomicAdd(cmds[cmdIndex].instanceCount, 1u);
+    outInst[2u * o] = ps;
+    outInst[2u * o + 1u] = inst[2u * i + 1u];
+}
