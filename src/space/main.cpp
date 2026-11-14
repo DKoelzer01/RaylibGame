@@ -271,6 +271,7 @@ int main(int argc, char** argv)
     int wallPhase = 0; bool wallOk = true;
     double wallStart = 0.0, wallMaxStep = 0.0, wallMaxStepAt = 0.0;
     float wallMaxImpact = 0.0f, wallMinHealth = 100.0f, wallMaxSpeed = 0.0f; int wallCamInside = 0; // frames with the camera inside terrain (#255)
+    int wallCamShake = 0; double wallCamShakeMax = 0.0; DVec3 wallCamPrev{}, wallCamStepPrev{}; int wallCamKnown = 0, wallCamShakePushed = 0, wallCamShakeGrounded = 0; // camera shake (#255)
     bool benchLedge = false; int ledgePhase = 0, ledgePass = 0; bool ledgeOk = true, ledgeAir = false; double ledgeStart = 0.0, ledgeAirStart = 0.0; float ledgeV0 = 0.0f, ledgeExcess = 0.0f; float ledgeWalk0 = 0.0f;
     bool benchTor = false; int torPhase = 0, torHeading = 0, torFlicker = 0, torPops = 0; double torStart = 0.0, torAirAt = -1.0, torMaxStep = 0.0; float torMaxUp = 0.0f; Vector3 torDir{}; DVec3 torLast{}; bool torWasGrounded = true; // --test-tor (#242)
     bool benchMachines = false; int machPhase = 0; double machStart = 0.0; // --test-machines (#193 #194 #229)
@@ -1309,6 +1310,18 @@ int main(int argc, char** argv)
                         if (step > 0.2) printf("bench: wall: %.2f m move at %.2f s (grounded %d, dt %.4f, v %.1f, contact dot %.2f, body density at feet %.2f)\n", step, t, player.grounded ? 1 : 0, GetFrameTime(), Vector3Length(player.velocity), player.lastContactDot, p->densityAt(p->toLocal(Vector3Add(feet, Vector3Scale(player.up, player.radius)))));
                         wallMaxImpact = std::max(wallMaxImpact, player.impactSpeed);
                         if (p->densityAt(p->toLocal(world.camera.position)) >= ISO_LEVEL) ++wallCamInside;
+                        {   // Shake (#255): the change of the camera's per-frame step on the body (smooth motion: ~0; a jumping
+                            // keep-out correction or push-out: centimetres).
+                            const DVec3 cam = p->toLocalD(world.renderOrigin + world.camera.position);
+                            const DVec3 stepNow = cam - wallCamPrev;
+                            if (wallCamKnown >= 2) {
+                                const double s = (stepNow - wallCamStepPrev).length();
+                                if (s > 0.005) { ++wallCamShake; if (player.lastEyePush > 0.0f) ++wallCamShakePushed; if (player.grounded) ++wallCamShakeGrounded; }
+                                if (s > 0.02 && getenv("WALL_DEBUG")) printf("SHAKE t=%.3f phase %d s=%.1f mm push=%.3f grounded=%d feetstep=%.1f mm\n", t, wallPhase, s * 1000.0, player.lastEyePush, player.grounded ? 1 : 0, (local - wallLast).length() * 1000.0);
+                                wallCamShakeMax = std::max(wallCamShakeMax, s);
+                            }
+                            wallCamPrev = cam; wallCamStepPrev = stepNow; ++wallCamKnown;
+                        }
                         wallMinHealth = std::min(wallMinHealth, survival.health);
                         wallMaxSpeed = std::max(wallMaxSpeed, Vector3Length(Vector3Subtract(player.velocity, player.grounded ? Vector3{ 0, 0, 0 } : p->surfaceVelocity(feet))));
                     }
@@ -1371,6 +1384,7 @@ int main(int argc, char** argv)
                         printf("bench: tight corner 6 s: largest frame move %.2f m (at %.1f s), top speed vs ground %.1f m/s, worst impact %.1f m/s, health %.0f, deaths %d: %s\n",
                                wallMaxStep, wallMaxStepAt, wallMaxSpeed, wallMaxImpact, wallMinHealth, survival.deaths, pass ? "PASS" : "FAIL");
                         printf("bench: wall: camera inside terrain in %d frames (#255)\n", wallCamInside);
+                        printf("bench: wall: camera shake: %d frames over 5 mm (change of its per-frame step; %d with the eye pushed out of the terrain, %d grounded), worst %.1f mm (#255)\n", wallCamShake, wallCamShakePushed, wallCamShakeGrounded, wallCamShakeMax * 1000.0);
                         printf("bench: wall: %s\n", wallOk && pass && wallCamInside == 0 ? "PASS" : "FAIL");
                         benchWall = false;
                     }
