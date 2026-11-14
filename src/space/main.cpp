@@ -235,6 +235,7 @@ int main(int argc, char** argv)
     bool benchPump = false; int pumpPhase = 0, pumpCable = -1; double pumpT0 = 0.0, pumpedAtCut = 0.0; uint32_t pumpPlot = 0; Vector3 pumpBasin{}; float pumpRise = 0.0f; // --test-pump
     bool benchBucket = false; int bucketPhase = 0, bucketTrips = 0; double bucketT0 = 0.0; Vector3 bucketWater{}, bucketBasin{}, bucketField{}; // --test-bucket
     bool benchPond = false; int pondPhase = 0; double pondT0 = 0.0; Vector3 pondDirB{}, pondOutB{}, pondPit{}, pondMid{}; float pondLevelB = 0.0f, pondRB = 0.0f; // --test-pond
+    bool benchFlowSea = false; // --test-flow-sea (#190): the flow test from the sea instead of inland water
     bool benchFlow = false; int flowPhase = 0; double flowStart = 0.0, flowEdit = 0.0, flowReachT = -1.0, flowCaveT = -1.0, flowSleepT = -1.0; Vector3 flowDir{}, flowOut{}, flowEnd{}, flowCave{}; float flowLevel = 0.0f; // --test-flow
     bool benchForest = false; int forestPhase = 0; double forestStart = 0.0; Vector3 forestCam{}, forestTarget{}, forestUp{}; bool outcropHigh = false; // --shot-forest (--outcrop-high: the highest outcrop in range, not the nearest)
     bool benchRecipes = false; // --test-recipes
@@ -423,6 +424,7 @@ int main(int argc, char** argv)
         if (std::string(argv[i]) == "--shot-forest") benchForest = true;
         if (std::string(argv[i]) == "--outcrop-high") outcropHigh = true;
         if (std::string(argv[i]) == "--test-flow") benchFlow = true;
+        if (std::string(argv[i]) == "--test-flow-sea") { benchFlow = true; benchFlowSea = true; } // #190: the channel from the sea
         if (std::string(argv[i]) == "--test-pond") benchPond = true;
         if (std::string(argv[i]) == "--test-bucket") benchBucket = true;
         if (std::string(argv[i]) == "--test-pump") benchPump = true;
@@ -3506,8 +3508,12 @@ int main(int argc, char** argv)
                                 const float dist = sqrtf(e * e + n * n);
                                 if (dist >= best) continue;
                                 const Vector3 d = Vector3Normalize(Vector3Add(home, Vector3Add(Vector3Scale(t1, e / pf->radius), Vector3Scale(t2, n / pf->radius))));
-                                const PlanetField::WaterSource ws = pf->waterSourceAt(d);
-                                if (!ws.kind || ws.kind == 3 || ws.level <= 2.0f || pf->elevation(d) > ws.level - 1.5f) continue;
+                                PlanetField::WaterSource ws;
+                                if (benchFlowSea) { ws.kind = 4; ws.level = 0.0f; if (pf->elevation(d) > -1.5f) continue; } // the sea, 1.5 m+ deep (#190)
+                                else {
+                                    ws = pf->waterSourceAt(d);
+                                    if (!ws.kind || ws.kind == 3 || ws.level <= 2.0f || pf->elevation(d) > ws.level - 1.5f) continue;
+                                }
                                 // A shore within 25 m in one of four directions, low enough to cut through.
                                 const Vector3 outs[4] = { t1, Vector3Negate(t1), t2, Vector3Negate(t2) };
                                 for (const Vector3& o : outs) {

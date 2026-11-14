@@ -195,7 +195,8 @@ void Classify(const Site& s, Brick& b, const BodyRef& ref, std::vector<PondClaim
                     // Checked in the cells below; reported to RunJob, which hides its static surface and (re)queues
                     // every brick of its water.
                     pondHere = ws;
-                } else if (ws.kind && ws.kind != 3 && sea + ws.level > level) { level = sea + ws.level; kind = ws.kind; } // a pond (even its rim, above the level) is never an infinite source
+                } else if (kind != 4 && ws.kind && ws.kind != 3 && sea + ws.level > level) { // at sea the sea's level wins (#190: a river mouth's higher level fed the sea columns: overfilled channels that never slept)
+                    level = sea + ws.level; kind = ws.kind; } // a pond (even its rim, above the level) is never an infinite source
                 for (const Site::PondInfo& p : ponds)
                     if (Vector3Distance(dir, p.dir) * pf->radius < p.r * 1.05f && sea + p.level > level && pf->pondCovers(p.id, dir)) { level = sea + p.level; kind = 5; }
             }
