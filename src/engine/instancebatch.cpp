@@ -1,5 +1,8 @@
 #include "instancebatch.h"
 #include "scene.h"
+#include "world.h"
+#include "worldtypes.h"
+#include <algorithm>
 
 #include <raymath.h>
 #include <rlgl.h>
@@ -15,6 +18,7 @@ namespace {
     Shape cubeShape, cylShape;
     HotShader shader{ "resources/instanced.vs", "resources/instanced.fs" };
     bool ready = false;
+    float buried = 0.0f; // IB_SetBuried (#284)
 
     void Push(std::vector<Inst>& to, const Matrix& m, Color c, float p0, bool glow) {
         Inst in;
@@ -22,7 +26,7 @@ namespace {
         const float r[12] = { m.m0, m.m4, m.m8, m.m12, m.m1, m.m5, m.m9, m.m13, m.m2, m.m6, m.m10, m.m14 };
         for (int k = 0; k < 12; ++k) in.row[k] = r[k];
         in.color[0] = c.r / 255.0f; in.color[1] = c.g / 255.0f; in.color[2] = c.b / 255.0f; in.color[3] = c.a / 255.0f;
-        in.params[0] = p0; in.params[1] = glow ? 1.0f : 0.0f; in.params[2] = in.params[3] = 0.0f;
+        in.params[0] = p0; in.params[1] = glow ? 1.0f : 0.0f; in.params[2] = buried; in.params[3] = 0.0f;
         to.push_back(in);
     }
 
@@ -124,6 +128,8 @@ void IB_Cylinder(Vector3 base, float rTop, float rBottom, float height, Color co
     Push(cyls, m, color, rTop / rb, glow);
 }
 
+void IB_SetBuried(float b) { buried = std::clamp(b, 0.0f, 1.0f); }
+
 void InstanceBatch_Flush(Scene& world) {
     lastCount = 0;
     if (cubes.empty() && cyls.empty()) return;
@@ -141,6 +147,14 @@ void InstanceBatch_Flush(Scene& world) {
     v3("fogColor", world.frameFog);
     rlSetUniform(rlGetLocationUniform(id, "fogDensity"), &world.frameFogDensity, RL_SHADER_UNIFORM_FLOAT, 1);
     rlSetUniform(rlGetLocationUniform(id, "fogShell"), &world.frameFogShell, RL_SHADER_UNIFORM_VEC4, 1);
+    {   // The night side (#284): the nearest planet or moon blocks the sun, as for parts (Planetoid::draw).
+        float occ[4] = { 0, 0, 0, 0 };
+        if (const Planetoid* p = NearestPlanetoid(world, world.camera.position); p && (p->kind == BodyKind::Planet || p->kind == BodyKind::Moon)) {
+            const Vector3 c = (p->worldPos - world.renderOrigin).toFloat();
+            occ[0] = c.x; occ[1] = c.y; occ[2] = c.z; occ[3] = std::max(0.0f, p->radius - 60.0f) * p->scale;
+        }
+        rlSetUniform(rlGetLocationUniform(id, "sunOccluder"), occ, RL_SHADER_UNIFORM_VEC4, 1);
+    }
     if (world.frameLighting) { world.frameLighting(shader.shader); rlEnableShader(id); }
     rlDisableBackfaceCulling(); // instances may be mirrored (the plot frame is left-handed)
     Draw(cubeShape, cubes, 0, viewProj);

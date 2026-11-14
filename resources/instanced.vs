@@ -18,6 +18,7 @@ out vec3 fragPosition;
 out vec3 fragNormal;
 out vec4 fragColor;
 out float fragGlow;
+out float fragSky;     // 1 open .. 0 buried (IB_SetBuried, #284)
 
 void main()
 {
@@ -34,5 +35,6 @@ void main()
     fragNormal = normalize(transpose(inverse(mat3(model))) * n); // non-uniform scales
     fragColor = instColor;
     fragGlow = instParams.y;
+    fragSky = 1.0 - clamp(instParams.z, 0.0, 1.0);
     gl_Position = matViewProj * world;
 }

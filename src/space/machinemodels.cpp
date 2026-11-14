@@ -213,7 +213,7 @@ void DrawMachine(PartType type, const Frame& f, const Painter& p, bool working) 
 
 // Per plot, rebuilt when its version changes: each machine's floor centre (plot metres), size and facing.
 namespace {
-    struct MachineSpot { int part; PartType type; Vector3 floorPlot; Frame f; };
+    struct MachineSpot { int part; PartType type; Vector3 floorPlot; Frame f; float buried = 0.0f; }; // buried: 1 - sky exposure (#284)
     struct PlotCache { uint32_t version = 0xFFFFFFFFu; std::vector<MachineSpot> spots; };
     std::unordered_map<uint64_t, PlotCache> plotCache; // key: body id ^ plot id
 }
@@ -256,6 +256,13 @@ void Machines_Draw3D(Scene& world) {
                     if (Vector3LengthSqr(front) < 0.5f) front = { 0, 0, 1 };
                     s.f.front = Vector3Normalize(front);
                     s.f.yawDeg = atan2f(s.f.front.x, s.f.front.z) * RAD2DEG;
+                    if (body->field) { // sky exposure 1 m over the floor: the terrain's rule, as plot cells (#216, #284)
+                        const Vector3 at = plot->toBody({ s.floorPlot.x, s.floorPlot.y + 1.0f, s.floorPlot.z });
+                        const float len = Vector3Length(at);
+                        float sky = 1.0f;
+                        if (len > 1.0f) body->field->materialSky(at, 1.0f, 1.0f, Vector3Scale(at, 1.0f / len), sky);
+                        s.buried = 1.0f - sky;
+                    }
                     pc.spots.push_back(s);
                 }
             }
@@ -280,13 +287,23 @@ void Machines_Draw3D(Scene& world) {
     }
     for (const Pending& q : pending) {
         const MachineSpot& s = *q.spot;
-        const Vector3 base = q.body->toWorld(q.plot->toBody(s.floorPlot));
         const bool working = Factory::Working(q.body->id, q.plot->id, s.part);
-        const Matrix mm = { q.e.x, q.u.x, q.n.x, base.x, q.e.y, q.u.y, q.n.y, base.y, q.e.z, q.u.z, q.n.z, base.z, 0, 0, 0, 1 };
+        // The plot's own model, its translation in double (#284): placed through the float toWorld ~60 km from the
+        // planet's centre (~4 mm steps, float trig every frame) the details shook against the casing, which is drawn
+        // with the double localModel. Plot axes in body space, then the body's rotation and the anchor's offset.
+        const Plot& pl = *q.plot;
+        const Vector3 off = Vector3Add(Vector3Add(Vector3Scale(pl.east, s.floorPlot.x), Vector3Scale(pl.up, s.floorPlot.y)), Vector3Scale(pl.north, s.floorPlot.z));
+        Matrix axes = MatrixIdentity();
+        axes.m0 = pl.east.x; axes.m4 = pl.up.x; axes.m8 = pl.north.x;
+        axes.m1 = pl.east.y; axes.m5 = pl.up.y; axes.m9 = pl.north.y;
+        axes.m2 = pl.east.z; axes.m6 = pl.up.z; axes.m10 = pl.north.z;
+        const Matrix mm = MatrixMultiply(axes, q.body->localModel(DVec3(pl.origin.x + off.x, pl.origin.y + off.y, pl.origin.z + off.z), world.renderOrigin));
         Painter pp; pp.light = q.light;
         rlPushMatrix();
         rlMultMatrixf(MatrixToFloat(mm));
+        IB_SetBuried(s.buried);
         DrawMachine(s.type, s.f, pp, working);
+        IB_SetBuried(0.0f);
         ++drawnLastFrame;
         rlPopMatrix();
     }
