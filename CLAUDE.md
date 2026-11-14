@@ -12,15 +12,27 @@ C++ raylib 5.5 planetoid survival game. `src/engine` (static lib), `src/space` -
   configured with `-DGAME_OUTPUT_DIR=<dir>/bin`.
 - While the user is playtesting, never close their game.exe. Other game processes (old bench or
   regression copies) may be stopped.
-- No python on this machine. Use the Edit tool (not sed) for strings containing `\n`; `perl -0`
-  multi-line substitutions silently fail on CRLF files - prefer Edit.
+- New worktree: copy the gitignored `CMakeUserPresets.json` in; configure with
+  `-DGAME_OUTPUT_DIR=<worktree>/build/check/bin`; if the first configure fails reading `a.exe` (antivirus scan), rerun it.
+- No python on this machine. Source files are CRLF: use the Edit tool for multi-line edits; `perl -0`/sed
+  multi-line substitutions and perl replacements containing `\n` silently fail or insert literal newlines.
+- Gotcha: main.cpp's argv loop is a braceless `for (...) if (...)`; inserting a new `if` before it steals its body.
 
 ## Testing
 
 - Light tests per change: the scripted benches for the feature touched and its neighbours
   (`game.exe --seed 42 --bench 3 --test-<name>`), plus a screenshot (bench.png) when visuals change.
-- Full regression (`tools/regression.sh planet`, `EXE=... SNAPSHOT=1`) takes a long time: run it only
-  before merging a stack of PRs, after review and spot tests (user, 2026-11-13). Minor targeted tests are fine.
+- Full regression (`tools/regression.sh planet`, `EXE=... SNAPSHOT=1`): ONE run only, after ALL fixes are in and
+  the PRs are merge-ready (user, 2026-11-14), never between fix rounds; re-check failures with targeted runs
+  first. `regression.sh planet` includes the "eroded" set (`RAYLIBGAME_EROSION=1`; the first run bakes ~80 s).
+  Minor targeted tests are fine any time.
+- Known flaky: `--test-progression` (power chain, #372), `--test-animals` flee distance (#373). Re-run before
+  treating a failure as a regression.
+- Perf numbers are invalid while another agent compiles or benches; compare A/B under the same conditions.
+  `RAYLIBGAME_GPU_VERIFY_ALL=1` checks every GPU density block against the CPU (slow: ~20 FPS).
+- Bench gotchas: `player.placeAt` sets the velocity itself (passing body-local coordinates to
+  `surfaceVelocity` killed the player); start a bench clock after the loading screen (set start = -1, take
+  `GetTime()` on the next frame); `BuildTool_Update` needs `player.nearest` set.
 - Gate any test run on the build's exit code (`cmake --build ... > log && game.exe ...`): a failed build
   plus a stale exe runs a plain game window. Never start benches while the user playtests.
 - Perf benches: `--bench 20 --bench-fly 60` (streaming; prints "bench: streaming:" counters, frame
@@ -53,7 +65,8 @@ C++ raylib 5.5 planetoid survival game. `src/engine` (static lib), `src/space` -
 
 - Branch per batch; stacked PRs merge only via the merge-async API, and GitHub does NOT retarget
   the next stacked PR - PATCH its base to develop before merging it.
-- Merging needs the user's explicit OK. Commit/push only when the work calls for it.
+- Merging needs the user's explicit OK, and only after their playtest of the branch, when they say so
+  (user, 2026-11-14). Commit/push only when the work calls for it.
 - Commit trailers: `Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>` and
   `Claude-Session: <session link>`; PR bodies end with the Claude Code line and the session link.
 - Save-breaking changes are fine (early development); note them in the PR. No compatibility shims
@@ -74,6 +87,9 @@ C++ raylib 5.5 planetoid survival game. `src/engine` (static lib), `src/space` -
   PRs target develop, not the default branch (main), so "Fixes #N" does NOT auto-close: close the
   issues by hand (`gh issue close N --comment "Fixed in #PR"`) once the PR merges. Until then, label them
   `fixed in open PR`.
+- Close an issue only when its fix is merged into develop (then board Done), never on playtest alone
+  (user, 2026-11-14). A playtest confirmation before the merge removes `needs playtest`, adds
+  `playtest confirmed`, and keeps the issue In review.
 - Playtest items: each CurrentIssues.md line has a matching issue. Fixed-but-unconfirmed items carry
   `needs playtest`; deferred ones carry `deferred`. Keep the issue and the CurrentIssues.md line in sync.
 - Bugs found along the way (a failing test, a regression) get their own issue, even when fixed in
@@ -84,16 +100,17 @@ C++ raylib 5.5 planetoid survival game. `src/engine` (static lib), `src/space` -
 ### Project board (keep it current)
 
 Board: "RaylibGame Roadmap", https://github.com/users/DKoelzer01/projects/5 (project number 5,
-owner DKoelzer01, id `PVT_kwHOAe7Hf84BrZzd`). Every open issue belongs on it, with all four fields set. It has
-no auto-add, so:
-- **New issue:** add it right after `gh issue create` and set Status, Priority, Size and Kind:
+owner DKoelzer01, id `PVT_kwHOAe7Hf84BrZzd`). Every open issue belongs on it, with all four fields set. The
+board's auto-add workflow adds new issues itself, but sets no fields, so:
+- **New issue:** right after `gh issue create`, set Status, Priority, Size and Kind. `item-add` either adds it or fails
+  with "Content already exists" (auto-add was first); then look the item id up instead:
   `gh project item-add 5 --owner DKoelzer01 --url <issue url> --format json --jq .id` gives the item id, then
   `gh project item-edit --project-id PVT_kwHOAe7Hf84BrZzd --id <item id> --field-id <field> --single-select-option-id <option>`
   once per field. Find an existing item's id with
   `gh project item-list 5 --owner DKoelzer01 --limit 500 --format json --jq '.items[] | select(.content.number==N) | .id'`.
 - **Status as work moves:** Backlog (not started) -> Ready (requirements clear, unblocked) -> In progress
-  (starting work) -> In review (fixed/built in an open PR; also label `fixed in open PR`) -> Done (merged,
-  issue closed; or playtest-confirmed for `needs playtest` items).
+  (starting work) -> In review (fixed/built in an open PR; also label `fixed in open PR`) -> Done (merged
+  into develop, issue closed).
 - **Priority:** P0 now (current plan / blocking), P1 next, P2 later, P3 someday. Follow the user's order in
   #158 (features) and #128 (graphics). Don't raise a priority on your own; propose it in the summary instead.
 - **Size:** XS < 1 h, S ~ half a session, M ~ 1 session, L 2-3 sessions, XL a milestone of several
@@ -118,26 +135,43 @@ no auto-add, so:
 - Plan 2 (early game, done): https://claude.ai/artifact/RL22kZ7VBMugAFgGRPS3cE
 - Plan 3 (Terra tiers, space): https://claude.ai/artifact/XVw45AC6vwYitbdhaeP2xL - M21-M24 done (M24 on PR #28).
 - Plan 4 (flowing water): https://claude.ai/artifact/27xL5j1zkirSe8pDZgPz59
-- Plan 7 (erosion-shaped terrain + all-voxel water, #351): https://claude.ai/artifact/EXix8zmVSS2WRUSLAsovJg - on branch m49-erosion
-  behind RAYLIBGAME_EROSION=1 (the 3D band is off then; RAYLIBGAME_3D=0/1 overrides). Bake: erosion.* (200 m planet + 50 m faces, ERO4 cache
-  <save>.erosion, hash = world fingerprint, ponds list); gullies (ErosionGullies, RAYLIBGAME_GULLIES=0 A/B); glacial (RAYLIBGAME_GLACIAL);
-  rivers on the bake grid, carve-only water (--water-stats raises nothing). Tests: --test-flow-sea, --test-pond, --test-pump-hand, --test-hover.
-  Open questions for the user are on #351.
+- **Current plans:** Plan 7 (erosion-shaped terrain + all-voxel water, #351):
+  https://claude.ai/artifact/EXix8zmVSS2WRUSLAsovJg - merged into develop (#371) behind RAYLIBGAME_EROSION=1; the gate is #362.
+  Plan 8: https://claude.ai/artifact/LFnRaLaCPdgEPsuX7L6dJb (PR #374, branch m51-plan8, waits on the user's playtest).
+  Roadmap trackers: #158 features, #128 graphics, #303 multiplayer; playtest findings #187, #250.
+- Plan 7 details: with RAYLIBGAME_EROSION=1 the 3D band is off (RAYLIBGAME_3D=0/1 overrides). Gullies (ErosionGullies,
+  RAYLIBGAME_GULLIES=0 A/B); glacial (RAYLIBGAME_GLACIAL); rivers on the bake grid, carve-only water (--water-stats raises
+  nothing). Tests: --test-flow-sea, --test-pond, --test-pump-hand, --test-hover. Open questions for the user are on #351.
 - Plan 6 (GPU terrain generation + GPU-driven drawing, approved 2026-11-12): https://claude.ai/artifact/VJdKtUZEpBg5uefnqewRyZ -
   issues #143 (steps #144-#150), under #128. Done: steps 1-4 + 7 (PRs #153, #157, #179); step 5 deferred (#148), step 6
   not needed (#149: GPU density is bit-identical, collision keeps the CPU field). One path on GL 4.3 (base-instance records).
 - Plan 5 (art, life, world variety): https://claude.ai/artifact/5igt2VrsTyNhZ3BZ94teHX - A animal models/AI, B biomes,
-  C Minecraft-style 3D terrain, D stylized PBR terrain: all built (light items #29, B #30, C #31, A + machine models #32, D #152),
-  in review, not merged; status table at the top of the doc.
-- Open trackers (2026-11-13): #128 Graphics Pipeline Overhaul (GL caps #286, perf #290/#292), #204 FPS
-  while moving, #267 stale-chunk cancel + parallel uploads (partly done), #262 render distance + background
-  preload (next), #250 playtest 6 findings, #187. Someday: WebGPU/Vulkan port issue (P3).
-- Stack awaiting review + merge (2026-11-13): #265 m39-physics -> #281 m40-machines -> #282 m41-player ->
-  #287 m42-streaming -> #289 m43-gl46 -> #293 m44-fps. Worktree for agent work: ../RaylibGame-m42.
+  C 3D terrain, D stylized PBR terrain: all built and merged.
 - `CurrentIssues.md` (untracked, the user's playtest list): erase lines once fully resolved; mark
   deferred or changed-needs-confirmation items inline.
 
+## Architecture notes
+
+- Erosion (Plan 7): the bake runs on a thread behind a progress screen (the `gWorldGenWait` hook). Cache
+  `<save>.erosion` (ERO6) keyed on `ErosionParams` + `kErosionBakeVersion`: bump the version on ANY bake code change,
+  or stale bakes load. Cliff lips (#357) live in `Column3D` and must match `terrain.glsl` /
+  `terrain_density.comp` bit-exactly (the grid is 2 vec4 per node); `--test-terrain-gpu` checks it.
+- Sky light: `fragSky` from depth below the surface, times a short-ray openness probe (#369: terrain via chunk
+  samples, parts via plot cells); `RAYLIBGAME_SKY_PROBES=0` for A/B. Moonlight scale defaults to 0.25
+  (`RAYLIBGAME_MOONLIGHT`).
+- Inventory: 45 grid cells + 10 hotbar cells (indices 45-54). `Hotbar_Bind` moves a stack (items must be carried);
+  `Inventory::preferred` = the selected hotbar cell is used first.
+- Terrain internals still worth knowing: `PlanetField::rockFeature` (tors, boulders) and `terrain3D` (the 3D band);
+  SSE2 `SimplexNoise::noise4` is bit-identical to `noise()` (`--profile-density` checks it); static water feeds only
+  dug cells, and ponds are taken over by the fluid sim (`PlanetField::claimPond`) and become finite.
+
 ## Decisions (playtest 2026-11-11 and after)
+
+Player and building (2026-11-14)
+- Player collision capsule 1.7 m tall (5 spheres at most 0.23 m apart; `RAYLIBGAME_PLAYER_HEIGHT` for A/B); 2 m
+  doorways and tunnels must pass.
+- Parts face automatically (from the hit face and view) until the player presses R/V.
+- The Help tab is a Factoriopedia-style database; its "Discovered only" choice is saved per world.
 
 Controls and tools
 - Hotbar starts empty; an empty slot is bare hands (no "Hands" item). Loose fillers (gravel, sand,
@@ -225,52 +259,8 @@ Water (Plan 4, user answers)
   per cell; down, then sideways; a slow levelling pass for U-bends / cave pressure), surface meshed
   with marching cubes on the fill amounts. Replaces the per-column span design.
 
-## History: playtest batches (branch playtest-fixes-4, merged)
-
-1. Controls: camera jitter on steep slopes - done (eye smoothing, d0ecdf3), confirm in play.
-2. UI: right-click container/machine inventories like the player's; crafting as an icon grid with
-   hover tooltips (name, cost, description) - done (30111b8; --shot-tabs checks a chest slot take).
-3. World: 60/20/20 tree mix per area + more wood types, recipes take any planks (log -> planks of its
-   wood), placeable log/stone blocks, rocks/boulders/cliffs/overhangs, less far-LOD texture tiling -
-   done (c75af72): five woods (WoodSpeciesInfo), any_planks/any_log wildcards (ItemMatches), tors and
-   boulders in PlanetField::rockFeature, two-scale terrain texturing; --shot-forest.
-4. Flowing water F1-F6 (3D voxel sim) - done: src/engine/fluid.*, src/space/waterworks.*; tests --test-flow,
-   --test-pond, --test-bucket, --test-pump. Static water feeds only dug cells; ponds are taken over
-   (PlanetField::claimPond) and finite; static chunk water shows only over the original bed near by.
-5. Parallelism and GPU compute (user, 2026-11-11): audit main-thread work for the job system;
-   raylib built with GRAPHICS_API_OPENGL_43 exposes compute shaders + SSBOs (rlgl) - candidates
-   are the water sim, chunk density/meshing, foliage placement. (The GL 3.3 fallback was dropped: "OpenGL 4.3 is required" under World and rendering.)
-   Done (da1cde5): shader hot-reload checks throttled to 2/s (frame 2.93 -> 2.55 ms), water brick
-   classification on the job pool (worst step 26.8 -> 11.9 ms). GPU compute not adopted: it needs a GL 4.3
-   raylib build and a shader copy of the density field that the CPU (collisions, queries) would still
-   need too; revisit only if a CPU system becomes the bottleneck.
-5b. M24 moon and ring tiers - done (15fae76 + the ladder gate: --test-progression ev, PASS).
-6. 3D terrain (user, 2026-11-12): full 3D noise for hills and cliffs with natural overhangs and
-   alcoves, on top of the height map and the tors/boulders (PlanetField::rockFeature). Plan: a 3D
-   displacement band around the surface (~-15..+25 m), strength from a regional "rugged" mask and
-   the slope (gentle plains stay smooth), domain-warped ridged noise for cliffs and undercuts;
-   material = rock where the 3D term carves or builds; removes floating bits (no solid fully above
-   open air beyond a few m). Systems that assume a height map must use density near the surface:
-   tree/stone placement (already checks density), static water bed, spawn, map, materialSky depth.
-   Coarse LOD keeps the low octaves so far silhouettes match. Gate: --shot-terrain (cliff and
-   overhang screenshots), --crack-check, --test-planet-walk, chunk build time within +30%.
-   Built: PlanetField::terrain3D (smooth warped noise stretched upward + a little ridged, raised more
-   than carved, dips capped at 3 m; mask from rugged noise and elevation); materialSky depth follows it;
-   --shot-terrain. Tuning history: all-ridged made paper-thin shelves, deep carving made pits.
-7. Chunk generation speed (2026-11-12): builds already run in parallel on the job pool (one job per
-   chunk, ~7 ms each, 3-5 ms of it density sampling). Next: SIMD noise (4-8 samples at once, the
-   biggest win), a per-region height-map cache shared across chunks and LOD levels, cheap
-   all-rock/all-air rejection before full sampling; split a single chunk across threads only for
-   urgent rebuilds. Do this with or right after 6 (3D noise adds sampling cost).
-   Built: SimplexNoise::noise4 (SSE2, bit-identical to noise(), checked by --profile-density) used by
-   fractal/fractalLimited 4 octaves at a time (density sample ~1.7x faster); river pieces carry a
-   bounding sphere for nearest(). --profile-density prints ns per call by part.
-Deferred by the user: moon mining launch, motion sickness.
-Follow-ups done (2026-11-12, after the issue list): minimap mask at draw time (f4afeb0), tor strata kept to
-the walls (5e19f49; --shot-forest --outcrop-high), planet spin as a wrapped double (d187759), trees cast
-shadows (d591eee), sparse 4^3 bricks in delta chunks (66f2dbf; --test-persist prints delta memory), fuller
-grass + longer view distances (8201a55; --shot-shadow adds bench_grass.png, --shot-far-forest). Full planet
-regression 47/47 on 040f1eb. All CurrentIssues items are "changed - confirm in play".
+Deferred by the user: moon mining launch (#116), motion sickness (#117; comfort options are #168). The history of
+the earlier playtest batches is in git history and the closed issues.
 
 ## Art pass (branch art-pass-5, 2026-11-12, Plan 5 light items)
 
