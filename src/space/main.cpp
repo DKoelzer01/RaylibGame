@@ -277,6 +277,7 @@ int main(int argc, char** argv)
     bool benchLedge = false; int ledgePhase = 0, ledgePass = 0; bool ledgeOk = true, ledgeAir = false; double ledgeStart = 0.0, ledgeAirStart = 0.0; float ledgeV0 = 0.0f, ledgeExcess = 0.0f; float ledgeWalk0 = 0.0f;
     bool benchTor = false; int torPhase = 0, torHeading = 0, torFlicker = 0, torPops = 0; double torStart = 0.0, torAirAt = -1.0, torMaxStep = 0.0; float torMaxUp = 0.0f; Vector3 torDir{}; DVec3 torLast{}; bool torWasGrounded = true; // --test-tor (#242)
     bool benchMachines = false; int machPhase = 0; double machStart = 0.0; // --test-machines (#193 #194 #229)
+    bool benchHover = false; int hoverPhase = 0; double hoverStart = 0.0; // --test-hover (#163)
     bool benchFall = false; int fallPhase = 0, fallIdx = 0; bool fallOk = true; double fallStart = 0.0; // --test-fall (#263)
     bool benchTeleClose = false; int teleCPhase = 0; double teleCStart = 0.0, teleCWorst = 0.0; long long teleCReq0 = 0; // --test-telescope-close (#261)
     DVec3 wallLast{};
@@ -407,6 +408,7 @@ int main(int argc, char** argv)
         if (std::string(argv[i]) == "--test-ledge") benchLedge = true; // walk and sprint off a pit edge (#240)
         if (std::string(argv[i]) == "--test-tor") benchTor = true; // walk across a low (beach) tor crown, logging collision pops (#242)
         if (std::string(argv[i]) == "--test-machines") benchMachines = true; // fuel slot, crafts consumed at the end, the boiler's water and heat
+        if (std::string(argv[i]) == "--test-hover") benchHover = true; // the flight pack (#163)
         if (std::string(argv[i]) == "--test-fall") benchFall = true; // drops from 3-100 m: fall damage by height
         if (std::string(argv[i]) == "--test-telescope-close") benchTeleClose = true; // zoom 16x at the horizon, close: worst frame after (#261)
         if (std::string(argv[i]) == "--test-menus") benchMenus = true;
@@ -1503,6 +1505,49 @@ int main(int argc, char** argv)
                                    teleCWorst * 1000.0, req, GetWorldStats().nodes, teleCWorst < 0.025 ? "PASS" : "FAIL");
                             benchTeleClose = false;
                         }
+                    }
+                } else if (benchHover && (hoverPhase > 0 || WorldIdle())) {
+                    // --test-hover (#163): with the flight pack fitted, a drop from 100 m is caught by the fall safety (no
+                    // damage), then hovering holds the position (no drift) and the height.
+                    Planetoid* p = dynamic_cast<Planetoid*>(world.objects[0].get());
+                    static DVec3 held{}; static double heldT = 0.0; static float ground = 0.0f;
+                    const double t = GetTime() - hoverStart;
+                    if (hoverPhase == 0) {
+                        player.spawnOn(world, *p, StartSpawnDir(*p));
+                        inventory.add("flight_pack", 1);
+                        Suit_Reset(); Suit_Fit("flight_pack");
+                        hoverPhase = 1; hoverStart = GetTime();
+                    } else if (hoverPhase == 1 && t > 1.5 && player.grounded) {
+                        survival.health = 100.0f; survival.dead = false; survival.power = 100.0f;
+                        ground = (float)p->toLocalD(player.position).length();
+                        player.position = player.position + DVec3(Vector3Scale(player.up, 100.0f));
+                        hoverPhase = 2; hoverStart = GetTime();
+                    } else if (hoverPhase == 2) {
+                        // Measured from 1.5 s after the catch: the teleport up leaves a grounded (surface-relative) velocity read as
+                        // world-frame (~84 m/s of spin), which the hover brakes first.
+                        static double caughtT = -1.0;
+                        if (player.hovering && caughtT < 0.0) caughtT = GetTime();
+                        if (caughtT > 0.0 && GetTime() - caughtT > 1.5) { held = p->toLocalD(player.position); heldT = GetTime(); hoverPhase = 3; }
+                        else if (player.grounded || survival.dead || t > 20.0) {
+                            printf("bench: hover: the fall was not caught (grounded %d, dead %d, health %.0f) -> FAIL\n", player.grounded, survival.dead, survival.health);
+                            benchHover = false;
+                        }
+                    } else if (hoverPhase == 3 && GetTime() - heldT <= 3.0) {
+                        static double lastP = 0.0;
+                        if (GetTime() - lastP > 0.5) {
+                            lastP = GetTime();
+                            const Vector3 at = (player.position - world.renderOrigin).toFloat();
+                            const Vector3 rel = Vector3Subtract(player.velocity, p->surfaceVelocity(at));
+                            const float vUp = Vector3DotProduct(rel, player.up);
+                            printf("bench: hover dbg: rel speed %.2f m/s (up %.2f), drift so far %.2f m, grounded %d\n", Vector3Length(rel), vUp, (float)(p->toLocalD(player.position) - held).length(), player.grounded);
+                        }
+                    } else if (hoverPhase == 3 && GetTime() - heldT > 3.0) {
+                        const DVec3 now = p->toLocalD(player.position);
+                        const float drift = (float)(now - held).length(), height = (float)now.length() - ground;
+                        const bool pass = player.hovering && !player.grounded && survival.health > 99.0f && drift < 0.5f && height > 5.0f;
+                        printf("bench: hover: caught the 100 m fall, health %.0f; hovering %.0f m up, drifted %.2f m in 3 s, suit power %.1f -> %s\n",
+                               survival.health, height, drift, survival.power, pass ? "PASS" : "FAIL");
+                        player.hovering = false; benchHover = false;
                     }
                 } else if (benchFall && (fallPhase > 0 || WorldIdle())) {
                     // --test-fall (#263): drops onto flat ground near the start. Expected on Terra (g 5.9, safe 6 m/s, x8.5):
@@ -5053,7 +5098,7 @@ int main(int argc, char** argv)
                         }
                         benchWalkSeconds = 0.0;
                     }
-                } else if ((WorldIdle() && benchDigStrokes == 0 && !benchPaint && !benchSaveLoad && benchWalkSeconds <= 0.0 && benchMineStrokes == 0 && minePhase != 2 && benchFlySeconds <= 0.0 && !benchSuffocate && benchOrbitSeconds <= 0.0 && !benchRide && !benchPark && !benchGravity && !benchPrecision && !benchMantle && !benchAirJump && !benchMoon && !benchHole && !benchWall && !benchLedge && !benchTor && !benchMachines && !benchFall && !benchTeleClose && !benchMenus && !benchWater && !benchFlyFollow && !benchHotbar && !benchInventory && !benchMap && !benchViewmodel && !benchQuests && !benchHunger && !benchFarm && !benchAnimals && !benchThreats && benchShotTabs == 0 && !benchForest && !benchFlow && !benchPond && !benchBucket && !benchPump && !benchTerrain && !benchShadow && !benchParticles && !benchBiomes && !benchOil && !benchSpring && !benchShotAnimals && !benchShotMachines && benchShotBiomes < 0 && !benchFarForest && !benchRecipes && !benchWeather && !benchDecor && !benchMaterials && !benchDamage && !benchCrafting && !benchSuit && !benchTools && !benchRivers && !benchRing && !benchRocket && !benchStation && !benchBlueprint && !benchSmallBody && !benchTrees && !benchChop && benchPersist == 0 && benchBuild == 0 && benchFactory == 0 && !benchProgression) || GetTime() > 600.0) {
+                } else if ((WorldIdle() && benchDigStrokes == 0 && !benchPaint && !benchSaveLoad && benchWalkSeconds <= 0.0 && benchMineStrokes == 0 && minePhase != 2 && benchFlySeconds <= 0.0 && !benchSuffocate && benchOrbitSeconds <= 0.0 && !benchRide && !benchPark && !benchGravity && !benchPrecision && !benchMantle && !benchAirJump && !benchMoon && !benchHole && !benchWall && !benchLedge && !benchTor && !benchMachines && !benchFall && !benchHover && !benchTeleClose && !benchMenus && !benchWater && !benchFlyFollow && !benchHotbar && !benchInventory && !benchMap && !benchViewmodel && !benchQuests && !benchHunger && !benchFarm && !benchAnimals && !benchThreats && benchShotTabs == 0 && !benchForest && !benchFlow && !benchPond && !benchBucket && !benchPump && !benchTerrain && !benchShadow && !benchParticles && !benchBiomes && !benchOil && !benchSpring && !benchShotAnimals && !benchShotMachines && benchShotBiomes < 0 && !benchFarForest && !benchRecipes && !benchWeather && !benchDecor && !benchMaterials && !benchDamage && !benchCrafting && !benchSuit && !benchTools && !benchRivers && !benchRing && !benchRocket && !benchStation && !benchBlueprint && !benchSmallBody && !benchTrees && !benchChop && benchPersist == 0 && benchBuild == 0 && benchFactory == 0 && !benchProgression) || GetTime() > 600.0) {
                     benchStart = GetTime();
                     printf("bench: world ready after %.2f s (%d chunks, avg build %.2f ms of which sampling %.2f ms, %d worker threads)\n",
                         GetWorldStats().lastGenerationSeconds, GetWorldStats().chunks, GetWorldStats().avgBuildMs, GetWorldStats().avgSampleMs, GetWorldStats().workerThreads);

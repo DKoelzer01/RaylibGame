@@ -51,6 +51,7 @@ planet() {
     run --seed 9 --bench 3 --test-wall
     run --seed 42 --bench 3 --test-ledge
     run --seed 42 --bench 3 --test-fall
+    run --seed 42 --bench 5 --test-hover
     run --seed 42 --bench 3 --test-telescope-close
     run --seed 1 --bench 3 --test-tor
     run --seed 42 --bench 3 --test-menus
@@ -80,6 +81,7 @@ planet() {
     run --seed 42 --bench 3 --test-decor
     run --seed 42 --bench 3 --test-weather
     run --seed 42 --bench 3 --test-flow
+    run --seed 42 --bench 5 --test-flow-sea
     run --seed 42 --bench 3 --test-pond
     run --seed 42 --bench 3 --test-bucket
     run --seed 42 --bench 3 --test-pump

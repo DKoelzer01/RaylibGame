@@ -90,6 +90,7 @@ void Recompute() {
         else if (e == "thermal") { s.cold = 0.0f; s.heatProof = true; }
         else if (e == "grip") s.grip = true;
         else if (e == "scanner") s.scanner = true;
+        else if (e == "hover") s.hover = true;
     }
     stats = s;
 }
@@ -189,6 +190,7 @@ void Suit_Apply(Scene& world, float dt) {
     if (fitted.empty() && !FindSuit(worn)) Suit_Reset();
     player.walkSpeed = kWalk * stats.walk;
     player.jetpackFuelPerSec = kJetFuel / stats.jetFuel;
+    player.canHover = stats.hover; // #163
     player.jetpackAccel = kJetAccel * stats.jetThrust;
     player.walkableCos = stats.grip ? 0.3f : kWalkableCos; // ~73 deg with grip boots
     if (stats.scanner && GetTime() - lastScan > 1.0) { lastScan = GetTime(); Scan(world); }

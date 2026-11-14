@@ -119,6 +119,7 @@ battery_pack       | Battery pack       |  tool | 250,210,70  | Suit module: +50
 insulation_module  | Insulation         |  tool | 235,235,225 | Suit module: the cold costs much less food.
 rebreather         | Rebreather         |  tool | 70,140,200  | Suit module: oxygen lasts longer underwater.
 thruster_pack      | Thruster pack      |  tool | 200,110,60  | Suit module: +60% jetpack fuel and thrust.
+flight_pack        | Flight pack        |  tool | 90,150,220  | Suit module (MV): hover with H - holds height, no drift; Space/Ctrl climb and descend, Shift boosts. Runs on suit power; catches a fatal fall.
 lamp_upgrade       | Lamp upgrade       |  tool | 255,244,200 | Suit module: a longer headlamp beam.
 thermal_regulator  | Thermal regulator  |  tool | 230,120,90  | Suit module: steady body temperature in heat and cold.
 ore_scanner        | Ore scanner        |  tool | 255,190,110 | Suit module: shows the nearest ore within 64 m.

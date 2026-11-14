@@ -89,6 +89,7 @@ battery_pack 1       = power_cell 2, copper_wire 4
 insulation_module 1  = wool 6, cloth 2
 rebreather 1         = glass 2, bronze_plate 2, cloth 1
 thruster_pack 1      = steel_plate 4, basic_circuit 2
+flight_pack 1        = mv_hull 1, good_circuit 2, thruster_pack 1
 lamp_upgrade 1       = glass 2, copper_wire 2, basic_circuit 1
 thermal_regulator 1  = copper_wire 6, basic_circuit 2, cloth 2
 ore_scanner 1        = basic_circuit 3, copper_wire 4, glass 1

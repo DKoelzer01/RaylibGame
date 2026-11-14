@@ -177,6 +177,14 @@ void Player::update(Scene& world, bool inputEnabled, float dt) {
         jetUp = IsKeyDown(KEY_SPACE);
         jetDown = IsKeyDown(KEY_LEFT_CONTROL);
         if (IsKeyPressed(KEY_B)) dampeners = !dampeners;
+        if (IsKeyPressed(KEY_H) && canHover) hovering = !hovering; // flight pack (#163)
+    }
+    if (!canHover || !hoverPowered) hovering = false;
+    // Fall safety (#163): a charged flight pack catches a fall faster than 12 m/s against the ground below.
+    if (canHover && hoverPowered && !hovering && !grounded && !inWater && gravity >= 0.5f && nearest) {
+        const Vector3 at = (position - world.renderOrigin).toFloat();
+        const float vUp = Vector3DotProduct(Vector3Subtract(velocity, nearest->surfaceVelocity(at)), up);
+        if (vUp < -12.0f) hovering = true;
     }
     if (autoJump) { jump = true; autoJump = false; }
     // Jump buffer: a press is remembered briefly, so it is not lost on a frame where "grounded"
@@ -329,7 +337,15 @@ void Player::stepPhysics(Scene& world, float dt, Vector3 wish, bool jetUp, bool 
             jumpLock = 0.15f;
         }
         Vector3 thrust = { 0, 0, 0 };
-        if (inGravity) {
+        if (hovering && inGravity && !inWater) {
+            // Hover (#163): the velocity eases fast to the wished one against the ground below (no drift when the keys
+            // are let go); Space/Ctrl climb and descend. Gravity is cancelled below; no jetpack fuel.
+            const Vector3 surface = nearest ? nearest->surfaceVelocity(feet) : Vector3{ 0, 0, 0 };
+            Vector3 target = Vector3Add(surface, Vector3Scale(wish, hoverSpeed));
+            if (jetUp) target = Vector3Add(target, Vector3Scale(up, hoverClimb));
+            if (jetDown) target = Vector3Subtract(target, Vector3Scale(up, hoverClimb));
+            velocity = Vector3Add(target, Vector3Scale(Vector3Subtract(velocity, target), expf(-10.0f * dt)));
+        } else if (inGravity) {
             // Air control (free, no fuel): steer toward the wished walking velocity relative to the
             // ground below - enough to reach a ledge mid-jump. With no input, momentum is untouched.
             if (Vector3Length(wish) > 0.0f) {
@@ -345,8 +361,8 @@ void Player::stepPhysics(Scene& world, float dt, Vector3 wish, bool jetUp, bool 
         }
         // Jetpack (Space up / Ctrl down, and WASD in deep space) burns fuel; recharging it on the ground
         // is what costs suit power (see the survival code).
-        if (jetUp) thrust = Vector3Add(thrust, up);
-        if (jetDown) thrust = Vector3Subtract(thrust, up);
+        if (jetUp && !hovering) thrust = Vector3Add(thrust, up);
+        if (jetDown && !hovering) thrust = Vector3Subtract(thrust, up);
         const float tl = Vector3Length(thrust);
         if (tl > 0.0f && jetpackFuel > 0.0f) {
             velocity = Vector3Add(velocity, Vector3Scale(thrust, jetpackAccel * dt / std::max(tl, 1.0f)));
@@ -364,6 +380,7 @@ void Player::stepPhysics(Scene& world, float dt, Vector3 wish, bool jetUp, bool 
     // orbit is then followed by the frame carry): the world's planet pull on the ground of a ring rock
     // shoved the player off it.
     Vector3 gAccel = Vector3Scale(grounded || airFelt ? gFelt : gvec, gravityScale * dt);
+    if (hovering && !grounded && !inWater && gravity >= 0.5f) gAccel = { 0, 0, 0 }; // the flight pack holds the height (#163)
     if (inWater && !grounded) {
         // Swimming: buoyancy all but cancels gravity, the water drags (relative to the ground's frame),
         // Space swims up and Ctrl down (no jetpack under water).
