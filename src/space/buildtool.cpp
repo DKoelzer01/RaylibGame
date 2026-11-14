@@ -166,9 +166,28 @@ void BuildTool_Update(Scene& world, bool inputEnabled, bool usable) {
         }
     TerrainHit th;
     const bool terrain = RaycastTerrain(world, Ray{ world.camera.position, dir }, buildTool.reach, th) && th.planetoid == body;
+    // A part bigger than a cell is centred on the aimed point across the face it is placed on (#196: a 2x2 machine hung
+    // off one corner of the aimed cell). `normal` is the face's axis (a plot axis); the other two axes move the
+    // footprint so its middle is nearest the hit point (in cells).
+    auto centreOn = [&](Plot& pl, Int3 normal, Vector3 hitBodyLocal) {
+        std::vector<std::pair<Int3, CellShape>> fp;
+        Plot::Footprint(aim.part, fp);
+        if (fp.size() <= 1) return;
+        Int3 lo{ INT32_MAX, INT32_MAX, INT32_MAX }, hi{ INT32_MIN, INT32_MIN, INT32_MIN };
+        for (const auto& c : fp) {
+            lo = { std::min(lo.x, c.first.x), std::min(lo.y, c.first.y), std::min(lo.z, c.first.z) };
+            hi = { std::max(hi.x, c.first.x), std::max(hi.y, c.first.y), std::max(hi.z, c.first.z) };
+        }
+        const Vector3 h = Vector3Scale(pl.toPlot(hitBodyLocal), 1.0f / kCellSize);
+        auto shift = [](float hv, int a, int b) { return (int)lroundf(hv - 0.5f * (float)(a + b + 1)); };
+        if (normal.x == 0) aim.part.origin.x += shift(h.x, lo.x, hi.x);
+        if (normal.y == 0) aim.part.origin.y += shift(h.y, lo.y, hi.y);
+        if (normal.z == 0) aim.part.origin.z += shift(h.z, lo.z, hi.z);
+    };
     if (hitPlot && (!terrain || bestPart <= th.distance)) {
         aim.plot = hitPlot;
         aim.part.origin = { hitCell.x + hitFace.x, hitCell.y + hitFace.y, hitCell.z + hitFace.z };
+        centreOn(*hitPlot, hitFace, Vector3Add(lo, Vector3Scale(ld, bestPart)));
         {   // A part bigger than a cell grows from its origin, which could reach back into the block
             // aimed at: slide it out along the aimed face until every cell of it is in front of that face.
             std::vector<std::pair<Int3, CellShape>> fp;
@@ -189,6 +208,7 @@ void BuildTool_Update(Scene& world, bool inputEnabled, bool usable) {
             aim.plot = near;
             // The cell just above the ground at the aim.
             aim.part.origin = near->cellAt(near->toPlot(Vector3Add(ground, Vector3Scale(near->up, 0.1f))));
+            centreOn(*near, Int3{ 0, 1, 0 }, ground); // on the ground: the bottom face's middle at the aim
         } else {
             aim.newOrigin = ground;
             aim.part.origin = { 0, 0, 0 };
