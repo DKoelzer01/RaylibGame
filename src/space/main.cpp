@@ -508,7 +508,8 @@ int main(int argc, char** argv)
         if (std::string(argv[i]) == "--bodies" && i + 1 < argc) worldGen.bodiesPath = argv[i + 1];   // system definition file
         if (std::string(argv[i]) == "--count" && i + 1 < argc) worldGen.count = atoi(argv[i + 1]);
         if (std::string(argv[i]) == "--system" && i + 1 < argc) worldGen.systemRadius = (float)atof(argv[i + 1]);
-        if (std::string(argv[i]) == "--lod" && i + 1 < argc) lodSettings.lodFactor = (float)atof(argv[i + 1]);
+        if (std::string(argv[i]) == "--lod" && i + 1 < argc) lodSettings.detailFactor = (float)atof(argv[i + 1]); // terrain detail (#297)
+        if (std::string(argv[i]) == "--lod-fast" && i + 1 < argc) lodSettings.fastFactor = (float)atof(argv[i + 1]); // when flying (99: no drop)
         if (std::string(argv[i]) == "--preload" && i + 1 < argc) lodSettings.preloadRadius = (float)atof(argv[i + 1]); // m, 0 = off (#294)
         if (std::string(argv[i]) == "--cache-verts" && i + 1 < argc) lodSettings.cacheVertices = (int)(atof(argv[i + 1]) * 1048576.0); // millions (#295)
         if (std::string(argv[i]) == "--preload-spawn") benchPreloadSpawn = true; // bench: the spawn preload as a new game does it, timed

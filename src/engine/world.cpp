@@ -780,7 +780,12 @@ static int UpdateLod(Planetoid& p, Vector3 cameraRender) {
     }
 
     size_t cachedCount = cached.size();
-    auto over = [&] { return cachedVerts > lodSettings.cacheVertices || cachedCount > (size_t)lodSettings.cacheNodes; };
+    // Also while the terrain arena is over 85% full: the cache must never make it regrow (a GB-sized copy: a 30 ms frame
+    // closing the telescope, whose zoomed nodes all landed in the cache at once). The old 4 s hold had this check.
+    const ArenaStats as = TerrainArena_Stats();
+    long long arenaUsed = as.vertices;
+    const long long arenaLimit = (long long)as.vertexCapacity * 85 / 100;
+    auto over = [&] { return cachedVerts > lodSettings.cacheVertices || cachedCount > (size_t)lodSettings.cacheNodes || (as.vertexCapacity > 0 && arenaUsed > arenaLimit); };
     if (!cached.empty() && over()) {
         std::sort(cached.begin(), cached.end(), [](const auto& a, const auto& b) { return a.first < b.first; });
         size_t i = 0;
@@ -788,6 +793,7 @@ static int UpdateLod(Planetoid& p, Vector3 cameraRender) {
             if (frees >= kMaxFrees) { p.lodDirty = true; p.lastFreeSweep = -1e9; break; }
             auto it = p.nodes.find(cached[i].second);
             cachedVerts -= vertsOf(*it->second);
+            arenaUsed -= vertsOf(*it->second);
             p.requestedVersion.erase(it->first);
             p.nodes.erase(it);
             --cachedCount;
@@ -824,7 +830,7 @@ static void UpdatePreload(Planetoid& p, Vector3 cameraRender, int& spare) {
     // preload ignores this.
     {
         const double dt = now - ring.lastTime;
-        if (ring.lastCam.x < 1e29f && dt > 0.0 && dt < 1.0) {
+        if (ring.lastCam.x < 1e29f && dt > 0.0 && dt < 1.0 && Vector3DistanceSqr(c, ring.lastCam) < 50.0f * 50.0f) { // a bigger step is a teleport
             const float v = Vector3Distance(c, ring.lastCam) / (float)dt, a = (float)std::min(1.0, dt * 4.0);
             ring.speed += (v - ring.speed) * a;
         }
@@ -839,7 +845,7 @@ static void UpdatePreload(Planetoid& p, Vector3 cameraRender, int& spare) {
         rp.planet = p.flat ? nullptr : dynamic_cast<const PlanetField*>(p.field.get());
         rp.flat = p.flat; rp.minHeight = p.minHeight; rp.maxHeight = p.maxHeight;
         rp.occluder = p.field->occluderRadius() * p.scale;
-        rp.lodFactor = lodSettings.lodFactor;
+        rp.lodFactor = lodSettings.detailFactor; // the walking detail: the ring is paused when moving fast anyway (#297)
         rp.rootLevel = p.rootLevel;
         rp.c = c; rp.r = r;
         const float lc = Vector3Length(c);
@@ -878,6 +884,15 @@ static void UpdatePreload(Planetoid& p, Vector3 cameraRender, int& spare) {
             if (auto it = p.nodes.find(k); it != p.nodes.end()) { it->second->inRing = true; ring.ready += it->second->ready ? 1 : 0; }
         ring.cursor = 0; ring.complete = false;
         p.lodDirty = true; // the free loop now protects the new ring
+        // Room for it in the terrain arena now, while the ring is still mostly unbuilt: growing later, full, is a
+        // GB-sized copy (a 30 ms frame closing the telescope at Medium detail). ~770 vertices a ring node (seed 42,
+        // Medium), plus a full cache and the view: a re-centred ring's old part goes to the cache.
+        const ArenaStats as = TerrainArena_Stats();
+        const long long need = (long long)ring.keys.size() * 800 + lodSettings.cacheVertices + (4 << 20);
+        if (need > as.vertexCapacity) { // (Reserve creates the arena if it is not up yet)
+            const double ipv = std::max(6.0, as.vertices > 0 ? (double)as.indices / as.vertices : 6.0);
+            TerrainArena_Reserve((int)std::min<long long>(need, INT_MAX / 2), (int)std::min<long long>((long long)(need * ipv), INT_MAX / 2));
+        }
     }
     while (!paused && spare > 0 && ring.cursor < ring.keys.size()) {
         const NodeKey& k = ring.keys[ring.cursor++];
@@ -1043,6 +1058,33 @@ void worldUpdate(Scene& world, float uploadBudgetMs) {
 
     GpuTimer_CpuMark("w-uploads");
     // LOD after uploads, so this frame's draw list already includes nodes that just finished.
+    // Terrain detail (#297): the player's setting, at most fastFactor while the camera moves fast against the nearest
+    // body (hysteresis between slowSpeed and fastSpeed). A change re-selects every body; a changed setting also
+    // re-collects the preload rings (they are built at the setting's detail).
+    {
+        LodSettings& s = lodSettings;
+        static Vector3 lastLocal{}; static uint64_t lastBody = 0; static double lastT = 0.0; static float speed = 0.0f;
+        static float lastDetail = -1.0f;
+        const double now = GetTime();
+        if (Planetoid* nb = NearestPlanetoid(world, world.camera.position)) {
+            const Vector3 l = nb->toLocal(world.camera.position);
+            const double dt = now - lastT;
+            if (nb->id == lastBody && dt > 0.0 && dt < 1.0 && Vector3DistanceSqr(l, lastLocal) < 50.0f * 50.0f) // a bigger step is a teleport
+                speed += (Vector3Distance(l, lastLocal) / (float)dt - speed) * (float)std::min(1.0, dt * 4.0);
+            lastLocal = l; lastBody = nb->id;
+        }
+        lastT = now;
+        if (s.fast ? speed < s.slowSpeed : speed > s.fastSpeed) s.fast = !s.fast;
+        const float factor = gStreamOld ? s.detailFactor : s.fast ? std::min(s.detailFactor, s.fastFactor) : s.detailFactor;
+        if (factor != s.lodFactor) {
+            s.lodFactor = factor;
+            for (auto& obj : world.objects) if (auto* p = dynamic_cast<Planetoid*>(obj.get())) p->lodDirty = true;
+        }
+        if (s.detailFactor != lastDetail) {
+            if (lastDetail >= 0.0f) for (auto& [id, ring] : gPreload) { ring.centre = { 1e30f, 1e30f, 1e30f }; ring.job.reset(); }
+            lastDetail = s.detailFactor;
+        }
+    }
     int viewRequests = 0;
     for (auto& obj : world.objects)
         if (auto* p = dynamic_cast<Planetoid*>(obj.get())) viewRequests += UpdateLod(*p, world.camera.position);
@@ -1067,12 +1109,12 @@ void worldUpdate(Scene& world, float uploadBudgetMs) {
         stats.evicted = gEvicted;
         if (gPreloadUrgent && complete) {
             gPreloadUrgent = false;
-            // Still behind the loading screen: grow the terrain arena once for what play adds - a re-centred ring's
-            // new part (about a third of it) and a full cache - so it never regrows (a GB-sized copy) mid-walk.
+            // Still behind the loading screen: grow the terrain arena once to the real ring plus a full cache and the
+            // view (the estimate at the ring install may be short), so it never regrows (a GB-sized copy) mid-walk.
             const ArenaStats as = TerrainArena_Stats();
             if (as.vertices > 0) {
                 const double ipv = (double)as.indices / as.vertices;
-                const long long v = (long long)as.vertices + as.vertices / 3 + lodSettings.cacheVertices;
+                const long long v = (long long)as.vertices + lodSettings.cacheVertices + (4 << 20);
                 TerrainArena_Reserve((int)std::min<long long>(v, INT_MAX / 2), (int)std::min<long long>((long long)(v * ipv), INT_MAX / 2));
             }
         }

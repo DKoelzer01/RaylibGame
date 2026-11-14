@@ -37,7 +37,14 @@ extern WorldGenSettings worldGen;
 bool ReloadSystemDef();        // worldGen.bodiesPath -> worldGen.system (+ overrides); false on errors
 
 struct LodSettings {
-    float lodFactor = 2.0f; // split a node while the camera is closer than lodFactor * node size
+    float lodFactor = 2.5f; // split a node while the camera is closer than lodFactor * node size (in effect now)
+    // Terrain detail (#297): detailFactor is the player's setting (menus: Low 2 / Medium 2.5 / High 3 / Ultra 4).
+    // Moving faster than fastSpeed against the nearest body (flying) uses at most fastFactor until back under
+    // slowSpeed: the finer selection cost ~4.5 ms of GPU streaming a frame at 60 m/s and is not seen at speed.
+    float detailFactor = 2.5f;
+    float fastFactor = 2.0f;
+    float fastSpeed = 15.0f, slowSpeed = 10.0f; // m/s
+    bool fast = false;      // using fastFactor now
     // Zoomed view (telescope): nodes inside the view cone refine as if zoom times closer. Set with
     // SetLodZoom, which re-selects LOD when the zoom or the aim changes.
     float zoom = 1.0f;

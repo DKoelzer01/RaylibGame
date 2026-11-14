@@ -4,6 +4,7 @@
 #include "telescope.h"
 #include "audio.h"
 #include "foliage.h"
+#include "world.h"
 
 #include <raylib.h>
 #include <algorithm>
@@ -121,6 +122,16 @@ namespace {
             }
             y += h + 6 * s;
         }
+        {   // Terrain detail (#297): how far out the terrain keeps its finer levels (the LOD factor). Flying drops to Low.
+            const int fs = (int)(h * 0.5f);
+            DrawText("Terrain detail", (int)x, (int)(y + (h - fs) * 0.5f), fs, kText);
+            const char* names[] = { "Low", "Medium", "High", "Ultra" };
+            for (int k = 0; k < 4; ++k) {
+                const Rectangle b = { x + w * 0.38f + k * (h * 2.4f), y + h * 0.1f, h * 2.2f, h * 0.8f };
+                if (Button(b, settings.terrainDetail == k ? TextFormat("[%s]", names[k]) : names[k])) { settings.terrainDetail = k; changed = true; }
+            }
+            y += h + 6 * s;
+        }
         {   // Difficulty for the next new world (each world keeps its own).
             const int fs = (int)(h * 0.5f);
             DrawText("New worlds", (int)x, (int)(y + (h - fs) * 0.5f), fs, kText);
@@ -165,6 +176,7 @@ void Settings_Load() {
             else if (!strcmp(key, "showhands")) settings.showHands = v != 0.0f;
             else if (!strcmp(key, "handbob")) settings.handBob = std::clamp((int)v, 0, 2);
             else if (!strcmp(key, "difficulty")) settings.difficulty = std::clamp((int)v, 0, 2);
+            else if (!strcmp(key, "terraindetail")) settings.terrainDetail = std::clamp((int)v, 0, 3);
         }
         fclose(f);
     }
@@ -187,6 +199,7 @@ void Settings_Apply() {
     telescope.baseFov = settings.fov; // the camera's fov is set by the game each frame it is not zoomed
     Audio_SetMasterVolume(settings.volume);
     foliageEnabled = settings.foliage;
+    { const float kDetail[] = { 2.0f, 2.5f, 3.0f, 4.0f }; lodSettings.detailFactor = kDetail[std::clamp(settings.terrainDetail, 0, 3)]; } // #297
     if (settings.vsync) SetWindowState(FLAG_VSYNC_HINT); else ClearWindowState(FLAG_VSYNC_HINT);
     SetTargetFPS(settings.fpsCap > 0 ? settings.fpsCap : (settings.vsync ? 0 : std::max(60, GetMonitorRefreshRate(GetCurrentMonitor()))));
     player.smoothMotion = settings.reduceMotion;

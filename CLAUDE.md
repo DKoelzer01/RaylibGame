@@ -191,6 +191,13 @@ GL features and streaming (2026-11-13, stack #287-#293)
   15 m/s. A ball-shaped ring reached 300 m down into caves (415k nodes, 80 M vertices) - keep it on the ground.
   Unwanted built nodes go to an LRU cache (8 M vertices / 40k nodes, ring and view not counted); the arena is
   grown once behind the spawn screen so it never regrows (GB copy) mid-walk. WorldIdle() ignores ring builds.
+  The cache also evicts while the arena is over 85% full, and a ring install reserves nodes x 800 + cache + 4 M
+  vertices up front (#300: a late regrow was a 30 ms frame closing the telescope).
+- Terrain detail (#297): a settings choice Low/Medium/High/Ultra = LOD factor 2 / 2.5 / 3 / 4, default Medium. It
+  only sharpens mid-range terrain (the planet is selected to the horizon already). Above 15 m/s against the nearest
+  body (back under 10) the factor drops to 2: at 3, flying 60 m/s cost 4.5 ms GPU streaming a frame (115 FPS).
+  Seed 42 at Medium: still 267 / walk 250 / fly 262 FPS. Benches: `--lod F` sets the detail, `--lod-fast F` the
+  flying factor (99 = no drop); benches do not read settings.txt.
 - Tree shadows: caster sets per cascade chosen by distance to the sun axis (1.26 -> 0.09 ms); main view
   culled on the GPU (tree_cull.comp + glDrawArraysIndirect).
 - Fly camera follows the body whose sphere of influence it is in, rotating with it within 2 radii (#127).
