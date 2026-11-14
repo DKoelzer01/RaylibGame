@@ -3894,8 +3894,8 @@ int main(int argc, char** argv)
                         if (t - lastPrint >= 5.0) {
                             lastPrint = t;
                             const Fluid::Stats s = Fluid::GetStats();
-                            printf("bench: flow t=%3.0f s: %d sites, %d bricks (%d awake), %.0f wet cells, %.1f m^3, step %.2f ms (max %.2f), mesh %.2f ms, %d meshes; changes d%lld s%lld r%lld l%lld\n",
-                                   t, s.sites, s.bricks, s.activeBricks, s.wetCells, s.volume, s.stepMs, s.maxStepMs, s.meshMs, s.meshes, s.dbg[0], s.dbg[1], s.dbg[2], s.dbg[3]);
+                            printf("bench: flow t=%3.0f s: %d sites, %d bricks (%d awake), %.0f wet cells, %.1f m^3, step %.2f ms (max %.2f), publish %.2f ms; changes d%lld s%lld r%lld l%lld\n",
+                                   t, s.sites, s.bricks, s.activeBricks, s.wetCells, s.volume, s.stepMs, s.maxStepMs, s.meshMs, s.dbg[0], s.dbg[1], s.dbg[2], s.dbg[3]);
                         }
                         if (flowReachT >= 0.0 && flowCaveT >= 0.0 && flowSleepT < 0.0 && Fluid::Asleep()) flowSleepT = t;
                         if (t > 6.0 && t < 7.0) TakeScreenshot("bench_flow.png");
@@ -5487,7 +5487,9 @@ int main(int argc, char** argv)
                            ws.requests, ws.built, ws.skippedStale, ws.droppedResults, ws.nodes, pct(0.5), pct(0.95), pct(0.99), over20);
                     printf("bench: preload: %d ring nodes, %d built; cache: %d nodes, %lld evicted; arena %.1f M vertices\n",
                            ws.preloadNodes, ws.preloadReady, ws.cachedNodes, ws.evicted, TerrainArena_Stats().vertices / 1048576.0);
-                    if (ws.waterBuilds) printf("bench: water redraws: %lld chunk water rebuilds, avg %.2f ms on a worker (#360)\n", ws.waterBuilds, ws.waterMs / ws.waterBuilds);
+                    if (ws.waterBuilds || ws.waterFullBuilds)
+                        printf("bench: water redraws: %lld chunk water rebuilds, avg %.2f ms on a worker, total %.0f ms; %lld full builds for water; caches %.1f MB (#360)\n",
+                               ws.waterBuilds, ws.waterBuilds ? ws.waterMs / ws.waterBuilds : 0.0, ws.waterMs, ws.waterFullBuilds, ws.waterCacheBytes / 1048576.0);
                 }
                 if (crackCheck) {
                     // Holes between chunks show the magenta clear colour (look down at terrain that fills the view).

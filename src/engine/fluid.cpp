@@ -198,7 +198,9 @@ void Classify(const Site& s, Brick& b, const BodyRef& ref, uint8_t& faces) {
                 else b.fill[i] = solid ? 0 : tg;
             }
         }
-    if (b.keepFill) faces = 0; // a kept brick's pond was pulled in when it was first classified
+    // Kept (loaded or reclassified) bricks pull their pond neighbours in too (#382 review): ensure() is a no-op for those
+    // that exist; one never classified (saved mid pull-in, an old save's claimed pond) comes in fresh with its generated
+    // water, so a drained brick never borders the generated pond (a wall of water at the brick face).
     b.ready = true;
     b.upload = true; // GPU mode: the classified brick goes up whole
     b.keepFill = false;
@@ -1041,7 +1043,9 @@ void Fluid::BindKindUniforms(const Shader& shader) {
         col[k * 4 + 3] = k == 0 ? 0.0f : std::max(kd.opacity, 0.01f); // water keeps its own look (a = 0)
         glow[k] = kd.glow;
     }
-    const int colLoc = GetShaderLocation(shader, "fluidColors"), glowLoc = GetShaderLocation(shader, "fluidGlows");
+    // Locations looked up once per shader program (a hot reload makes a new id).
+    static unsigned cachedId = 0; static int colLoc = -1, glowLoc = -1;
+    if (shader.id != cachedId) { cachedId = shader.id; colLoc = GetShaderLocation(shader, "fluidColors"); glowLoc = GetShaderLocation(shader, "fluidGlows"); }
     if (colLoc >= 0) rlSetUniform(colLoc, col, RL_SHADER_UNIFORM_VEC4, 8);
     if (glowLoc >= 0) rlSetUniform(glowLoc, glow, RL_SHADER_UNIFORM_FLOAT, 8);
 }
@@ -1216,7 +1220,7 @@ void Fluid::Load(FILE* f, uint64_t bodyId) {
         s->index = (int)sites.size();
         for (size_t i = 0; i < np; ++i) {
             unsigned long long id = 0;
-            if (fscanf(f, " %llu", &id) != 1) return; // old saves: ponds taken over (#360: no more claims; drained bricks were not stored, so those ponds refill)
+            if (fscanf(f, " %llu", &id) != 1) break; // old saves: ponds taken over (#360: no more claims; their drained bricks were not stored: the pond refills, pulled in whole)
         }
         int ns = 0; // sources (springs, seeps): "springs N" then one per line
         if (fscanf(f, " springs %d", &ns) == 1)
@@ -1275,4 +1279,9 @@ std::string Fluid::DebugCell(const Planetoid& body, Vector3 local) {
 
 bool Fluid::Simulated(const Planetoid& body, Vector3 local) {
     return WaterField::CellFill(*WaterField::Current(), body.id, local, 0) >= 0;
+}
+
+bool Fluid::GeneratedWaterValid(uint64_t body, Vector3 local) {
+    const int f = WaterField::CellFill(*WaterField::Current(), body, local, 0);
+    return f < 0 || f > 0;
 }

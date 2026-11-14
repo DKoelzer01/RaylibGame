@@ -76,6 +76,7 @@ struct WorldStats {
     int cachedNodes = 0;                    // built nodes kept only by the cache (#295)
     long long evicted = 0;                  // cache evictions since start
     long long waterBuilds = 0; double waterMs = 0.0; // water-only chunk redraws (#360) since start, their worker time
+    long long waterFullBuilds = 0; long long waterCacheBytes = 0; // full builds asked for by water; chunk water caches now
 };
 
 struct TerrainHit {

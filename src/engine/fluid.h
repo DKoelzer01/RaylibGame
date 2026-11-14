@@ -42,7 +42,7 @@ namespace Fluid {
     // A new world or a load: forget everything (waits for a running step).
     void Reset();
     // Main thread, once a frame: hands queued commands to the next step, starts a step job when one is
-    // due and the last has finished, uploads finished brick meshes.
+    // due and the last has finished, publishes the cells (waterfield.h: the chunks redraw their water).
     void Update(Scene& world, float dt);
     // A terrain edit on a body (body-local centre, radius): wakes water there, refreshes solidity, and
     // starts a site if the edit opens space next to water.
@@ -54,6 +54,9 @@ namespace Fluid {
     // Queries (main thread, from the last published step).
     bool Wet(const Planetoid& body, Vector3 local);                       // under moving water
     bool Simulated(const Planetoid& body, Vector3 local);                 // a simulated cell decides here (else the generated water)
+    // Whether generated water claimed at this body-local point (just under its surface) is still there: no simulated
+    // cell decides here, or one does and holds water (a drained pond is dry). Thread-safe (snapshot).
+    bool GeneratedWaterValid(uint64_t body, Vector3 local);
     float SurfaceAbove(const Planetoid& body, Vector3 local, float reach); // height of the water surface over this point (m, < 0: none within reach)
     bool StandingWaterNear(const Planetoid& body, Vector3 local, float range); // irrigation
     float WaterAt(const Planetoid& body, Vector3 local, float radius);    // m^3 of water (moving or static) within radius
@@ -96,7 +99,7 @@ namespace Fluid {
     void Load(FILE* f, uint64_t bodyId);
 
     struct Stats {
-        int sites = 0, bricks = 0, activeBricks = 0, meshes = 0, basinBricks = 0; // basinBricks: holding a pond's (finite) water
+        int sites = 0, bricks = 0, activeBricks = 0, basinBricks = 0; // basinBricks: holding a pond's (finite) water
         double wetCells = 0.0, volume = 0.0;  // cells with water, m^3 (non-source)
         double otherVolume = 0.0;             // m^3 of other fluids (oil, ...)
         double stepMs = 0.0, maxStepMs = 0.0, meshMs = 0.0;

@@ -370,8 +370,17 @@ struct ChunkWaterGen { bool seaSpan = false, inland = false; int LN = 0; std::ve
 struct ChunkWaterCache {
     std::vector<float> dens;
     ChunkWaterGen gen;
-    std::shared_ptr<const PlanetField::BlockGrid> grid;
+    std::shared_ptr<const PlanetField::BlockGrid> grid; // shared with the build that made it (not a copy)
+    long long counted = 0; // bytes it adds to ChunkWaterCacheBytes
+    ChunkWaterCache();
+    ~ChunkWaterCache();
+    ChunkWaterCache(const ChunkWaterCache&) = delete;
+    ChunkWaterCache& operator=(const ChunkWaterCache&) = delete;
 };
+// Bytes held by all chunk water caches (benches; past kChunkWaterCacheCap no new ones are kept: those chunks redraw
+// their water with a full build instead).
+long long ChunkWaterCacheBytes();
+constexpr long long kChunkWaterCacheCap = 128ll << 20;
 
 // CPU-side result of meshing one chunk (produced on a worker thread).
 struct ChunkMeshData {
@@ -410,7 +419,9 @@ void BuildChunkMesh(const DensityField& field, const TerrainDeltas& deltas, Chun
 struct ChunkBlock { Vector3 origin{}; float stride = 1.0f, footprint = 1.0f; int E = 0; };
 ChunkBlock ChunkBlockOf(const NodeKey& key);
 // grid: the block's height grid when it was sampled from one (PlanetField::prepareBlock): materials read the surface from it.
-void BuildChunkMeshFromBase(const DensityField& field, const TerrainDeltas& deltas, ChunkMeshData& out, const float* base, float sampledMs, const PlanetField::BlockGrid* grid = nullptr);
+// gridShared: the same grid when the caller holds it in a shared_ptr (the water cache keeps it instead of a copy).
+void BuildChunkMeshFromBase(const DensityField& field, const TerrainDeltas& deltas, ChunkMeshData& out, const float* base, float sampledMs, const PlanetField::BlockGrid* grid = nullptr,
+                            std::shared_ptr<const PlanetField::BlockGrid> gridShared = nullptr);
 // The water surface alone from a chunk's water cache and the latest published water (WaterField::Current): flowing
 // water redraws without rebuilding the terrain (#360). out.key / planetoidId set by the caller.
 void BuildChunkWater(const DensityField& field, const ChunkWaterCache& cache, ChunkMeshData& out);

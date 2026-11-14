@@ -49,6 +49,7 @@ public:
     std::shared_ptr<const ChunkWaterCache> waterCache;
     bool waterDirty = false, waterBusy = false;
     double waterBuiltAt = -1e9;
+    double waterDrawnAt = 0.0; // last frame it was in the draw list: undrawn nodes drop their water cache (memory)
     void uploadWater(const ChunkMeshData& data);
     bool hasMesh() const { return mesh.vaoId > 0 || arena.valid(); }
     Vector3 clipLocal() const { const Vector3 o = key.origin(); return { clipMax.x - o.x, clipMax.y - o.y, clipMax.z - o.z }; } // 1e30 stays "no clip"

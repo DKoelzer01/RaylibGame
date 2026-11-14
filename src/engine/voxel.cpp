@@ -1621,6 +1621,7 @@ static void MeshChunkWater(const DensityField& field, ChunkMeshData& out, const 
                     if (w >= ISO_LEVEL) anyIn = true; else anyOut = true;
                 }
         if (!anyIn || !anyOut) continue;
+        const size_t v0 = out.waterPositions.size() / 3, i0 = out.waterIndices.size(); // this kind's start
         wv.clear(); wi.clear();
         std::fill(cache.begin(), cache.end(), -1);
         for (int z = 0; z < cells; ++z)
@@ -1631,15 +1632,15 @@ static void MeshChunkWater(const DensityField& field, ChunkMeshData& out, const 
         for (size_t t = 0; t + 2 < wi.size(); t += 3) {
             const Vector3 c = Vector3Scale(Vector3Add(Vector3Add(wv[wi[t]], wv[wi[t + 1]]), wv[wi[t + 2]]), 1.0f / 3.0f);
             if (trilinear(dens, c) >= ISO_LEVEL) continue; // under land
-            {   // A skin over the ground (under ~15 cm deep): not drawn. A plane at the ground's own height broke up over every
-                // ripple of the bed into a grid of spikes (shallow shores, the films a drained pond leaves, #360).
-                const Vector3 wcp = Vector3Add(origin, Vector3Scale(c, stride));
-                const Vector3 down = Vector3Scale(Vector3Normalize(wcp), -kSkin / stride);
-                if (trilinear(dens, Vector3Add(c, down)) >= ISO_LEVEL) continue;
-            }
             const Vector3 wc = Vector3Add(origin, Vector3Scale(c, stride));
             const bool covered = simKind && sim.covered(wc);
-            if (!covered) {
+            if (covered) {
+                // Simulated water as a skin over the ground (under ~15 cm deep): not drawn. Its plane at the ground's own
+                // height broke up over every ripple of the bed into a grid of spikes (the films a drained pond leaves).
+                // Generated shores keep their shallow band (#382 review).
+                const Vector3 down = Vector3Scale(Vector3Normalize(wc), -kSkin / stride);
+                if (trilinear(dens, Vector3Add(c, down)) >= ISO_LEVEL) continue;
+            } else {
                 if (!genKind) continue;
                 if (pf) {
                     // Underground: where the original ground stands over the water (a cave or tunnel under a river, or
@@ -1667,6 +1668,9 @@ static void MeshChunkWater(const DensityField& field, ChunkMeshData& out, const 
                         const float gl = Vector3Length(grad);
                         if (gl > 1e-6f) n = Vector3Scale(grad, -1.0f / gl);
                         depth = std::max(0.3f, sim.depthBelow(bp, kind));
+                        // Over simulated sea or lake cells: no shallower than the generated water around them (a lighter
+                        // square at the edge of a site otherwise: the column count stops at 8 m, #382 review).
+                        if (genKind && pf) depth = std::max(depth, Vector3Length(bp) - sea - groundAt(bp, radial));
                     } else if (pf) {
                         // Depth to the sea floor from the height map (the shader grades clarity and colour by it).
                         const float surfaceE = Vector3Length(bp) - sea; // the water surface's height above sea level
@@ -1679,8 +1683,9 @@ static void MeshChunkWater(const DensityField& field, ChunkMeshData& out, const 
                 out.waterIndices.push_back((unsigned short)r);
             }
         }
+        if (out.waterPositions.size() / 3 > 65535) { out.waterPositions.resize(v0 * 3); out.waterNormals.resize(v0 * 3); out.waterDepth.resize(v0 * 2); out.waterIndices.resize(i0); }
     }
-    if (out.waterPositions.size() / 3 > 65535) { out.waterPositions.clear(); out.waterNormals.clear(); out.waterDepth.clear(); out.waterIndices.clear(); }
+    // (16-bit indices: a kind that would pass 65535 vertices is dropped alone, never the water before it.)
 }
 
 void BuildChunkWater(const DensityField& field, const ChunkWaterCache& cache, ChunkMeshData& out) {
@@ -1694,7 +1699,13 @@ void BuildChunkWater(const DensityField& field, const ChunkWaterCache& cache, Ch
     out.buildMs = std::chrono::duration<float, std::milli>(std::chrono::steady_clock::now() - t0).count();
 }
 
-void BuildChunkMeshFromBase(const DensityField& field, const TerrainDeltas& deltas, ChunkMeshData& out, const float* base, float sampledMs, const PlanetField::BlockGrid* grid) {
+static std::atomic<long long> gWaterCacheBytes{ 0 };
+ChunkWaterCache::ChunkWaterCache() = default;
+ChunkWaterCache::~ChunkWaterCache() { gWaterCacheBytes -= counted; }
+long long ChunkWaterCacheBytes() { return gWaterCacheBytes.load(); }
+
+void BuildChunkMeshFromBase(const DensityField& field, const TerrainDeltas& deltas, ChunkMeshData& out, const float* base, float sampledMs, const PlanetField::BlockGrid* grid,
+                            std::shared_ptr<const PlanetField::BlockGrid> gridShared) {
     const auto t0 = std::chrono::steady_clock::now() - std::chrono::duration_cast<std::chrono::steady_clock::duration>(std::chrono::duration<float, std::milli>(sampledMs));
     const int cells = CHUNK_SIZE + 1;        // +1 cell overlap with the positive neighbours (LOD crack cover)
     const int S = cells + 1;                 // samples per axis
@@ -1848,11 +1859,16 @@ void BuildChunkMeshFromBase(const DensityField& field, const TerrainDeltas& delt
         out.waterSeq = snap->seq;
         ChunkWaterGen gen = GeneratedWaterOf(field, origin, cells, stride, S);
         MeshChunkWater(field, out, dens.data(), grid, gen, sim);
-        if (sim.any()) {
+        if (sim.any() && gWaterCacheBytes.load() < kChunkWaterCacheCap) {
             auto wc = std::make_shared<ChunkWaterCache>();
             wc->dens = dens;
             wc->gen = std::move(gen);
-            if (grid) wc->grid = std::make_shared<const PlanetField::BlockGrid>(*grid);
+            const bool copied = !gridShared && grid;
+            // The grid the build already shares (GPU path), else a copy (the CPU path's grid lives on its stack).
+            if (gridShared) wc->grid = std::move(gridShared);
+            else if (grid) wc->grid = std::make_shared<const PlanetField::BlockGrid>(*grid);
+            wc->counted = (long long)(wc->dens.size() + wc->gen.level.size()) * (long long)sizeof(float) + (copied ? (long long)sizeof(PlanetField::BlockGrid) + (long long)grid->h.size() * 4 + (long long)grid->cols.size() * (long long)sizeof(PlanetField::Column3D) : 0);
+            gWaterCacheBytes += wc->counted;
             out.waterCache = std::move(wc);
         }
     }

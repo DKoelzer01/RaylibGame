@@ -60,6 +60,7 @@ namespace {
     std::atomic<long long> gWaterBuilds{ 0 };  // water-only rebuilds done, and their worker time (ms x 1000)
     std::atomic<long long> gWaterUs{ 0 };
     std::atomic<int> gWaterInFlight{ 0 };      // water-only rebuilds queued or running (capped: they go ahead of view builds)
+    std::atomic<long long> gWaterFullBuilds{ 0 }; // full chunk builds asked for by water (a node without its water cache)
     struct WaterToken { WaterToken() { ++gWaterInFlight; } ~WaterToken() { --gWaterInFlight; } }; // held by a water job's closure (run or dropped)
     std::unique_ptr<JobSystem> jobs;
 
@@ -418,7 +419,7 @@ static void RequestNode(Planetoid& p, const NodeKey& key, float priority) {
                 job.done = [field, edits, shared, wanted, version, priority, prepMs, token, grid](std::shared_ptr<const float> batch, size_t offset) {
                     Jobs().submit(priority, [field, edits, shared, wanted, version, prepMs, batch, offset, token, grid] {
                         if (wanted->load() != version) { ++gSkipped; return; }
-                        BuildChunkMeshFromBase(*field, *edits, *shared, batch.get() + offset, prepMs, grid.get());
+                        BuildChunkMeshFromBase(*field, *edits, *shared, batch.get() + offset, prepMs, grid.get(), grid);
                         std::lock_guard<std::mutex> lock(resultsMutex);
                         results.push_back(std::move(*shared));
                         ++gBuilt;
@@ -1027,7 +1028,10 @@ void advanceBodies(Scene& world, float dt) {
 static void MarkWaterDirty(Planetoid& p, Vector3 lo, Vector3 hi) {
     for (int level = 0; level <= p.rootLevel; ++level) {
         const float s = kVoxelSize * (float)(CHUNK_SIZE << level);
-        const float margin = 2.0f * s / CHUNK_SIZE; // the node's overlap cell and a stride of samples
+        // Nodes whose samples ([origin, origin + (CHUNK_SIZE + 1) * stride]) reach the box: exactly what the chunk's
+        // ChunkSampler tests, so a marked node finds the simulated water (#382 review: a wider margin marked coarse nodes
+        // that found none, and those got a full rebuild every time).
+        const float margin = s / CHUNK_SIZE;
         const int x0 = (int)floorf((lo.x - margin) / s), x1 = (int)floorf(hi.x / s);
         const int y0 = (int)floorf((lo.y - margin) / s), y1 = (int)floorf(hi.y / s);
         const int z0 = (int)floorf((lo.z - margin) / s), z1 = (int)floorf(hi.z / s);
@@ -1041,7 +1045,8 @@ static void MarkWaterDirty(Planetoid& p, Vector3 lo, Vector3 hi) {
     }
 }
 
-static void RequestWater(Planetoid& p, Chunk& c) {
+// Water jobs queue by distance like view builds (#382 review: at -0.5 they went ahead of every view build).
+static void RequestWater(Planetoid& p, Chunk& c, float priority) {
     c.waterBusy = true;
     c.waterDirty = false;
     std::shared_ptr<const DensityField> field = p.field;
@@ -1049,10 +1054,11 @@ static void RequestWater(Planetoid& p, Chunk& c) {
     const uint64_t id = p.id;
     const NodeKey key = c.key;
     auto token = std::make_shared<WaterToken>();
-    Jobs().submit(-0.5f, [field, cache, id, key, token] {
+    Jobs().submit(priority, [field, cache, id, key, token] {
         ChunkMeshData d;
         d.planetoidId = id;
         d.key = key;
+        d.waterCache = cache; // which terrain it was cut by: dropped if the chunk has newer terrain by now
         BuildChunkWater(*field, *cache, d);
         ++gWaterBuilds;
         gWaterUs += (long long)(d.buildMs * 1000.0f);
@@ -1077,20 +1083,43 @@ static void UpdateWater(Scene& world) {
         Chunk& c = *it->second;
         c.waterBusy = false;
         c.waterBuiltAt = now;
+        // Cut by terrain the chunk no longer has (a full build after an edit landed meanwhile): drawn again (#382 review).
+        if (r.waterCache != c.waterCache) { c.waterDirty = true; continue; }
         if (r.waterSeq >= c.waterSeq) c.uploadWater(r);
     }
+    // Water caches only for nodes on screen (#382 review: ring and cached nodes kept ~160 KB each, past 128 MB): a node
+    // out of the draw list for 5 s drops it; drawn again, its next water change costs one full build.
+    static double lastSweep = 0.0;
+    if (now - lastSweep > 2.0) {
+        lastSweep = now;
+        for (auto& obj : world.objects)
+            if (auto* p = dynamic_cast<Planetoid*>(obj.get()))
+                for (auto& n : p->nodes)
+                    if (n.second->waterCache && !n.second->waterBusy && now - n.second->waterDrawnAt > 5.0) n.second->waterCache.reset();
+    }
     int budget = 64; // water jobs a frame
-    const int kWaterInFlight = 8; // at most this many at once: a draining pond near the camera kept ~2000 a second going
+    // In flight at once: half the workers, so streaming always has the rest (a draining pond kept hundreds a second going).
+    const int maxInFlight = std::max(1, (int)Jobs().threadCount() / 2);
     for (auto& obj : world.objects) {
         auto* p = dynamic_cast<Planetoid*>(obj.get());
         if (!p || !p->isActive) continue;
+        const Vector3 cam = p->toLocal(world.camera.position);
         for (Chunk* c : p->drawList) {
-            if (!c->waterDirty || c->waterBusy || !c->ready || budget <= 0 || gWaterInFlight.load() >= kWaterInFlight) continue;
+            c->waterDrawnAt = now;
+            if (!c->waterDirty || c->waterBusy || !c->ready || budget <= 0 || gWaterInFlight.load() >= maxInFlight) continue;
             const double every = c->key.level == 0 ? 0.1 : c->key.level <= 2 ? 0.2 : c->key.level <= 4 ? 0.5 : 1.0;
             if (now - c->waterBuiltAt < every) continue;
             --budget;
-            if (c->waterCache) RequestWater(*p, *c);
-            else { c->waterDirty = false; c->waterBuiltAt = now; RequestNode(*p, c->key, -0.5f - (float)c->key.level * 0.01f); } // first touch: a full build keeps the cache
+            const Vector3 lo = c->key.origin();
+            const float priority = DistanceToBox(cam, lo, Vector3AddValue(lo, c->key.size())) / (1.0f + c->key.level);
+            if (c->waterCache) { RequestWater(*p, *c, priority); continue; }
+            c->waterDirty = false; c->waterBuiltAt = now;
+            // No cache: a full build keeps one - unless no simulated water reaches the node (then nothing to redraw).
+            const WaterField::SnapshotPtr snap = WaterField::Current();
+            const WaterField::ChunkSampler probe(snap.get(), p->id, lo, Vector3AddValue(lo, (CHUNK_SIZE + 1) * c->key.stride()));
+            if (!probe.any()) continue;
+            ++gWaterFullBuilds;
+            RequestNode(*p, c->key, priority);
         }
     }
 }
@@ -1199,6 +1228,7 @@ void worldUpdate(Scene& world, float uploadBudgetMs) {
         for (auto& [id, n] : gCachedCount) stats.cachedNodes += n;
         stats.evicted = gEvicted;
         stats.waterBuilds = gWaterBuilds.load(); stats.waterMs = gWaterUs.load() / 1000.0;
+        stats.waterFullBuilds = gWaterFullBuilds.load(); stats.waterCacheBytes = ChunkWaterCacheBytes();
         if (gPreloadUrgent && complete) {
             gPreloadUrgent = false;
             // Still behind the loading screen: grow the terrain arena once to the real ring plus a full cache and the
@@ -1825,7 +1855,7 @@ bool SaveWorld(Scene& world) {
     const DVec3 tgtWorld = world.renderOrigin + world.camera.target;
     // v4: the system definition is stored in the save, so a save reloads the system it was made in
     // even if bodies.txt has changed since.
-    fprintf(f, "RAYLIBGAME_SAVE 11\n");
+    fprintf(f, "RAYLIBGAME_SAVE 12\n"); // 12 (#360): ponds' water bricks saved even drained; no claimed ponds
     fprintf(f, "seed %u\nbodies %zu\n", worldGen.lastSeed, worldGen.system.bodies.size());
     for (const BodyDef& b : worldGen.system.bodies) fprintf(f, "%s\n", FormatBodyDef(b).c_str());
     fprintf(f, "time %.6f\n", worldTime); // v5: the world clock (orbits)
@@ -1868,7 +1898,7 @@ bool LoadWorldSave(Scene& world) {
     FILE* f = fopen(SAVE_PATH, "r");
     if (!f) return false;
     int version = 0;
-    if (fscanf(f, "RAYLIBGAME_SAVE %d", &version) != 1 || version < 2 || version > 11) {
+    if (fscanf(f, "RAYLIBGAME_SAVE %d", &version) != 1 || version < 2 || version > 12) {
         fclose(f);
         logger.logf("[World] %s: unsupported save version %d\n", SAVE_PATH, version);
         return false;
