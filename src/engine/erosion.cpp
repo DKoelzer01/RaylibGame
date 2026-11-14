@@ -206,9 +206,89 @@ namespace {
         UnloadImage(img);
     }
     bool DumpOn() { const char* e = getenv("RAYLIBGAME_EROSION_DUMP"); return e && e[0] == '1'; }
+
+    // Before/after/difference of one face (#358 evidence): `beforePath` holds an earlier run's heights (int side, then
+    // floats). Writes erosion_compare.png (the 512-cell window with the most change: before | after | difference, 2x)
+    // and erosion_compare_face.png (the whole face, difference over the after hillshade). Difference: red = lowered,
+    // blue = raised, full colour at 150 m.
+    void DumpCompare(const char* beforePath, const float* after, int N, float cell) {
+        FILE* fi = fopen(beforePath, "rb");
+        if (!fi) { printf("erosion: compare: cannot read %s\n", beforePath); return; }
+        int n0 = 0;
+        std::vector<float> before((size_t)N * N);
+        const bool ok = fread(&n0, sizeof n0, 1, fi) == 1 && n0 == N && fread(before.data(), sizeof(float), before.size(), fi) == before.size();
+        fclose(fi);
+        if (!ok) { printf("erosion: compare: %s does not match this face (%d vs %d cells)\n", beforePath, n0, N); return; }
+        auto shadeAt = [&](const float* h, int i, int j) {
+            auto H = [&](int a, int b) { a = std::clamp(a, 0, N - 1); b = std::clamp(b, 0, N - 1); return h[(size_t)b * N + a]; };
+            const float gx = (H(i + 1, j) - H(i - 1, j)) / (2 * cell), gy = (H(i, j + 1) - H(i, j - 1)) / (2 * cell);
+            const Vector3 nrm = Vector3Normalize({ -gx, 1.0f, -gy });
+            return std::clamp(0.35f + 0.75f * Vector3DotProduct(nrm, Vector3Normalize({ -0.6f, 0.7f, -0.4f })), 0.0f, 1.0f);
+        };
+        auto terrain = [&](const float* h, int i, int j) -> Color {
+            const float e = h[(size_t)j * N + i], s = shadeAt(h, i, j);
+            const Vector3 c = e <= 0.0f ? Vector3{ 0.15f, 0.3f, 0.6f } : e < 200.0f ? Vector3{ 0.35f, 0.6f, 0.3f } : e < 700.0f ? Vector3{ 0.5f, 0.5f, 0.35f } : Vector3{ 0.85f, 0.85f, 0.9f };
+            return { (unsigned char)(255 * c.x * s), (unsigned char)(255 * c.y * s), (unsigned char)(255 * c.z * s), 255 };
+        };
+        auto diffColor = [&](int i, int j) -> Color {
+            const float g = 0.25f + 0.6f * shadeAt(after, i, j); // grey hillshade under the colour
+            const float dlt = after[(size_t)j * N + i] - before[(size_t)j * N + i];
+            const float t = std::clamp(fabsf(dlt) / 150.0f, 0.0f, 1.0f), a = fabsf(dlt) < 2.0f ? 0.0f : 0.25f + 0.75f * t;
+            const Vector3 tint = dlt < 0.0f ? Vector3{ 1.0f, 0.15f, 0.1f } : Vector3{ 0.15f, 0.45f, 1.0f };
+            return { (unsigned char)(255 * (g * (1 - a) + tint.x * a)), (unsigned char)(255 * (g * (1 - a) + tint.y * a)), (unsigned char)(255 * (g * (1 - a) + tint.z * a)), 255 };
+        };
+        // Stats, and the window with the most change (summed |difference| on a 32-cell grid).
+        double sum = 0; float maxCutD = 0, maxRaiseD = 0; size_t changed = 0;
+        const int B = 32, nb = N / B;
+        std::vector<double> block((size_t)nb * nb, 0.0);
+        for (int j = 0; j < N; ++j)
+            for (int i = 0; i < N; ++i) {
+                const float dlt = after[(size_t)j * N + i] - before[(size_t)j * N + i];
+                sum += fabsf(dlt); changed += fabsf(dlt) >= 2.0f;
+                maxCutD = std::max(maxCutD, -dlt); maxRaiseD = std::max(maxRaiseD, dlt);
+                if (i / B < nb && j / B < nb) block[(size_t)(j / B) * nb + i / B] += fabsf(dlt);
+            }
+        const int W = std::min(512, N), wb = W / B;
+        int bi = 0, bj = 0; double best = -1;
+        for (int j = 0; j + wb <= nb; ++j)
+            for (int i = 0; i + wb <= nb; ++i) {
+                double s = 0;
+                for (int b = 0; b < wb; ++b) for (int a = 0; a < wb; ++a) s += block[(size_t)(j + b) * nb + i + a];
+                if (s > best) { best = s; bi = i * B; bj = j * B; }
+            }
+        printf("erosion: compare: %zu of %d cells changed by 2 m or more, mean |change| %.2f m, lowered up to %.0f m, raised up to %.0f m; window at cells (%d, %d) %.0f m wide\n",
+               changed, N * N, sum / ((double)N * N), maxCutD, maxRaiseD, bi, bj, W * cell);
+        const int S = 2, gap = 8; // 2x zoom, panels side by side
+        Image img = GenImageColor(3 * W * S + 2 * gap, W * S + 28, { 20, 20, 24, 255 });
+        for (int j = 0; j < W; ++j)
+            for (int i = 0; i < W; ++i) {
+                const Color c[3] = { terrain(before.data(), bi + i, bj + j), terrain(after, bi + i, bj + j), diffColor(bi + i, bj + j) };
+                for (int p = 0; p < 3; ++p) ImageDrawRectangle(&img, p * (W * S + gap) + i * S, 28 + j * S, S, S, c[p]);
+            }
+        ImageDrawText(&img, "BEFORE", 8, 6, 20, RAYWHITE);
+        ImageDrawText(&img, "AFTER", W * S + gap + 8, 6, 20, RAYWHITE);
+        ImageDrawText(&img, "DIFFERENCE  red = lowered  blue = raised  (full at 150 m)", 2 * (W * S + gap) + 8, 6, 20, RAYWHITE);
+        ExportImage(img, "erosion_compare.png");
+        UnloadImage(img);
+        Image face = GenImageColor(N, N, BLACK);
+        for (int j = 0; j < N; ++j) for (int i = 0; i < N; ++i) ImageDrawPixel(&face, i, j, diffColor(i, j));
+        ImageDrawRectangleLines(&face, { (float)bi, (float)bj, (float)W, (float)W }, 3, YELLOW);
+        ExportImage(face, "erosion_compare_face.png");
+        UnloadImage(face);
+    }
+}
+
+uint64_t ErosionParamsKey(const ErosionParams& p) {
+    uint64_t h = 1469598103934665603ull;
+    auto mix = [&h](const void* v, size_t n) { const unsigned char* b = (const unsigned char*)v; for (size_t i = 0; i < n; ++i) { h ^= b[i]; h *= 1099511628211ull; } };
+    const uint32_t ver = kErosionBakeVersion; mix(&ver, sizeof ver);
+    for (float f : { p.cell, p.k, p.m, p.uplift, p.talusSoft, p.talusHard, p.glacial, p.glacialLine, p.start }) mix(&f, sizeof f);
+    for (int i : { p.steps, p.floodEvery, p.refine, p.refineSteps, p.margin }) mix(&i, sizeof i);
+    return h;
 }
 
 void PlanetErosion::build(const std::function<float(Vector3, float)>& height, float planetRadius, unsigned int seedIn, const ErosionParams& p, int threads) {
+    paramsKey = ErosionParamsKey(p);
     const auto t0 = std::chrono::steady_clock::now();
     R = planetRadius; seed = seedIn;
     const int T = std::max(1, threads);
@@ -426,6 +506,12 @@ void PlanetErosion::build(const std::function<float(Vector3, float)>& height, fl
                 std::vector<float> out(fd.cells);
                 for (size_t c = 0; c < fd.cells; ++c) out[c] = fine[(size_t)f * FE * FE + c] * 0.1f;
                 DumpFace("erosion_fine.png", out.data(), FE, fineMetres);
+                // A/B evidence (#358): RAYLIBGAME_EROSION_RAW=path keeps this face's heights; a later run with
+                // RAYLIBGAME_EROSION_COMPARE=path draws that run against this one (before | after | difference).
+                if (const char* rp = getenv("RAYLIBGAME_EROSION_RAW")) {
+                    if (FILE* fo = fopen(rp, "wb")) { fwrite(&FE, sizeof FE, 1, fo); fwrite(out.data(), sizeof(float), out.size(), fo); fclose(fo); }
+                }
+                if (const char* cp = getenv("RAYLIBGAME_EROSION_COMPARE")) DumpCompare(cp, out.data(), FE, fineMetres);
             }
         };
         const int parallelFaces = std::clamp(T / 4, 1, 3); // a face's working set is ~200 MB
@@ -505,10 +591,12 @@ bool PlanetErosion::save(const std::string& path) const {
     int compSize = 0;
     unsigned char* comp = CompressData(raw.data(), (int)raw.size(), &compSize);
     if (!comp) return false;
-    FILE* f = fopen(path.c_str(), "wb");
+    const std::string tmp = path + ".tmp"; // written whole, then renamed: a crash mid-save leaves the old cache (#355 review)
+    FILE* f = fopen(tmp.c_str(), "wb");
     if (!f) { MemFree(comp); return false; }
-    const char magic[4] = { 'E', 'R', 'O', '4' };
+    const char magic[4] = { 'E', 'R', 'O', '5' };
     fwrite(magic, 1, 4, f);
+    fwrite(&paramsKey, sizeof(paramsKey), 1, f);
     fwrite(&n, sizeof(n), 1, f); fwrite(&nf, sizeof(nf), 1, f); fwrite(&fm, sizeof(fm), 1, f); fwrite(&fineMetres, sizeof(fineMetres), 1, f);
     fwrite(&R, sizeof(R), 1, f); fwrite(&seed, sizeof(seed), 1, f); fwrite(&hashValue, sizeof(hashValue), 1, f);
     fwrite(&compSize, sizeof(compSize), 1, f);
@@ -516,16 +604,19 @@ bool PlanetErosion::save(const std::string& path) const {
     const int np = (int)pondList.size();
     fwrite(&np, sizeof(np), 1, f);
     if (np) fwrite(pondList.data(), sizeof(Pond), np, f);
+    const bool written = !ferror(f);
     fclose(f);
     MemFree(comp);
-    return true;
+    if (!written) { remove(tmp.c_str()); return false; }
+    remove(path.c_str()); // rename does not replace an existing file on Windows
+    return rename(tmp.c_str(), path.c_str()) == 0;
 }
 
-bool PlanetErosion::load(const std::string& path, float planetRadius, unsigned int wantSeed) {
+bool PlanetErosion::load(const std::string& path, float planetRadius, unsigned int wantSeed, uint64_t wantKey) {
     FILE* f = fopen(path.c_str(), "rb");
     if (!f) return false;
-    char magic[4]; int N = 0, NF = 0, FM = 0, compSize = 0; float fmet = 0, r = 0; unsigned int s = 0; uint64_t hv = 0;
-    bool ok = fread(magic, 1, 4, f) == 4 && memcmp(magic, "ERO4", 4) == 0 && fread(&N, sizeof(N), 1, f) == 1 && fread(&NF, sizeof(NF), 1, f) == 1 &&
+    char magic[4]; int N = 0, NF = 0, FM = 0, compSize = 0; float fmet = 0, r = 0; unsigned int s = 0; uint64_t hv = 0, key = 0;
+    bool ok = fread(magic, 1, 4, f) == 4 && memcmp(magic, "ERO5", 4) == 0 && fread(&key, sizeof(key), 1, f) == 1 && key == wantKey && fread(&N, sizeof(N), 1, f) == 1 && fread(&NF, sizeof(NF), 1, f) == 1 &&
               fread(&FM, sizeof(FM), 1, f) == 1 && fread(&fmet, sizeof(fmet), 1, f) == 1 && fread(&r, sizeof(r), 1, f) == 1 && fread(&s, sizeof(s), 1, f) == 1 &&
               fread(&hv, sizeof(hv), 1, f) == 1 && fread(&compSize, sizeof(compSize), 1, f) == 1 &&
               N > 0 && N < 4096 && NF >= 0 && NF < 16384 && FM >= 0 && FM < 1024 && compSize > 0 && s == wantSeed && fabsf(r - planetRadius) < 1.0f;
@@ -548,7 +639,7 @@ bool PlanetErosion::load(const std::string& path, float planetRadius, unsigned i
         (k < nc ? coarse[k] : fine[k - nc]) = prev;
     }
     MemFree(raw);
-    n = N; nf = NF; fm = FM; fe = (int)fe2; fineMetres = fmet; R = r; seed = s;
+    n = N; nf = NF; fm = FM; fe = (int)fe2; fineMetres = fmet; R = r; seed = s; paramsKey = key;
     pondList = std::move(pl);
     computeHash();
     if (hashValue != hv) { n = 0; coarse.clear(); fine.clear(); fe = 0; return false; } // damaged

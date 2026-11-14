@@ -251,15 +251,17 @@ void PlanetField::bakeErosion(const std::string& cachePath) {
     // this seed and radius is there (a world load reads it instead of baking again). Any river network built before
     // came from the raw land: start a fresh one, built on first use from the eroded land.
     PlanetErosion& b = erosionState->bake;
-    const bool loaded = !cachePath.empty() && b.load(cachePath, radius, fieldSeed);
+    ErosionParams p;
+    auto envf = [](const char* n, float v) { const char* e = getenv(n); return e ? (float)atof(e) : v; }; // tuning
+    p.k = envf("RAYLIBGAME_EROSION_K", p.k); p.steps = (int)envf("RAYLIBGAME_EROSION_STEPS", (float)p.steps);
+    p.cell = envf("RAYLIBGAME_EROSION_CELL", p.cell); p.uplift = envf("RAYLIBGAME_EROSION_UPLIFT", p.uplift);
+    p.start = envf("RAYLIBGAME_EROSION_START", p.start);
+    p.glacial = envf("RAYLIBGAME_GLACIAL", p.glacial); p.glacialLine = envf("RAYLIBGAME_GLACIAL_LINE", p.glacialLine);
+    p.refine = (int)envf("RAYLIBGAME_EROSION_REFINE", (float)p.refine); p.refineSteps = (int)envf("RAYLIBGAME_EROSION_REFINE_STEPS", (float)p.refineSteps);
+    // The cache must match the seed, radius, parameters and bake code version (#355 review): tuning runs and code
+    // changes bake again instead of loading a stale bake.
+    const bool loaded = !cachePath.empty() && b.load(cachePath, radius, fieldSeed, ErosionParamsKey(p));
     if (!loaded) {
-        ErosionParams p;
-        auto envf = [](const char* n, float v) { const char* e = getenv(n); return e ? (float)atof(e) : v; }; // tuning
-        p.k = envf("RAYLIBGAME_EROSION_K", p.k); p.steps = (int)envf("RAYLIBGAME_EROSION_STEPS", (float)p.steps);
-        p.cell = envf("RAYLIBGAME_EROSION_CELL", p.cell); p.uplift = envf("RAYLIBGAME_EROSION_UPLIFT", p.uplift);
-        p.start = envf("RAYLIBGAME_EROSION_START", p.start);
-        p.glacial = envf("RAYLIBGAME_GLACIAL", p.glacial); p.glacialLine = envf("RAYLIBGAME_GLACIAL_LINE", p.glacialLine);
-        p.refine = (int)envf("RAYLIBGAME_EROSION_REFINE", (float)p.refine); p.refineSteps = (int)envf("RAYLIBGAME_EROSION_REFINE_STEPS", (float)p.refineSteps);
         const int threads = std::max(1u, std::thread::hardware_concurrency());
         b.build([this](Vector3 d, float fp) { return land(d, fp).h; }, radius, fieldSeed, p, threads);
         if (!cachePath.empty()) b.save(cachePath);
