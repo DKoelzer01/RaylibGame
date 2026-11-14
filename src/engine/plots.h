@@ -45,6 +45,7 @@ enum class PartType : uint8_t {
     Slab, Panel, Pane, Post,                                         // detail shapes inside one cell: half height, half thickness, a thin pane, a quarter post (M21)
     Pipe, Outlet,                                                    // water pipes from pumps, and outlets that pour it out (Plan 4, F6)
     FusionReactor, MassDriver,                                       // EV machines of tiers 9-10 (M24)
+    HandPump,                                                        // a hand-worked water pump (#280): hold RMB on it to pump into its pipes
     Count
 };
 inline bool IsMachine(PartType t) { return (t >= PartType::Chest && t <= PartType::SteamMacerator) || (t >= PartType::OreWasher && t <= PartType::PrecisionAssembler) || t == PartType::FusionReactor || t == PartType::MassDriver; }

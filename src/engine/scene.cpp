@@ -517,6 +517,10 @@ void Scene::drawScene(int gamestate) {
         effFog = Vector3Add(effFog, Vector3Scale(skyHorizon, atmDensity));
         effFogDensity += atmDensity / 35000.0f;                    // ~35 km to fade a third of the way
         effAmbient = Vector3Add(effAmbient, Vector3Scale(skyHorizon, 0.06f * atmDensity));
+        // Moonlight (#369, user: stronger): a cool moonlit-sky ambient that fades in as the sun goes down (the hemisphere
+        // ambient makes it come from above). RAYLIBGAME_MOONLIGHT scales it (0: the old near-black nights).
+        static const float moonScale = getenv("RAYLIBGAME_MOONLIGHT") ? (float)atof(getenv("RAYLIBGAME_MOONLIGHT")) : 1.0f;
+        effAmbient = Vector3Add(effAmbient, Vector3Scale({ 0.055f, 0.07f, 0.105f }, (1.0f - day) * atmDensity * moonScale));
         // Weather: cloud cover greys the haze and lifts the (diffuse) ambient a little; ground fog
         // thickens the haze near the ground.
         const Vector3 grey = Vector3Scale({ 0.30f, 0.32f, 0.35f }, day);
@@ -533,6 +537,10 @@ void Scene::drawScene(int gamestate) {
                                  atmosphere.enabled && !underwater ? atmosphere.radius + atmosphere.hazeHeight : 0.0f };
         SetShaderValue(s, locFogShell, shell, SHADER_UNIFORM_VEC4);
     }
+    // Hemisphere ambient (#130): the local up at the camera, or zero (off: flat ambient; RAYLIBGAME_HEMI=0 for A/B).
+    static const bool hemiOff = getenv("RAYLIBGAME_HEMI") && getenv("RAYLIBGAME_HEMI")[0] == '0';
+    const Vector3 hemiUp = atmosphere.enabled && !hemiOff ? atmUp : Vector3{ 0, 0, 0 };
+    SetShaderValue(s, GetShaderLocation(s, "ambientUp"), &hemiUp, SHADER_UNIFORM_VEC3);
     const float ambient[4] = { effAmbient.x, effAmbient.y, effAmbient.z, 1.0f };
     SetShaderValue(s, locAmbient, ambient, SHADER_UNIFORM_VEC4);
     SetShaderValue(s, locViewPos, &camera.position, SHADER_UNIFORM_VEC3);
@@ -664,6 +672,7 @@ void Scene::drawScene(int gamestate) {
             SetShaderValue(ps, GetShaderLocation(ps, "sunDir"), &sun, SHADER_UNIFORM_VEC3);
             SetShaderValue(ps, GetShaderLocation(ps, "viewPos"), &camera.position, SHADER_UNIFORM_VEC3);
             SetShaderValue(ps, GetShaderLocation(ps, "ambient"), &effAmbient, SHADER_UNIFORM_VEC3);
+            SetShaderValue(ps, GetShaderLocation(ps, "ambientUp"), &hemiUp, SHADER_UNIFORM_VEC3);
             SetShaderValue(ps, GetShaderLocation(ps, "fogColor"), &effFog, SHADER_UNIFORM_VEC3);
             SetShaderValue(ps, GetShaderLocation(ps, "fogDensity"), &effFogDensity, SHADER_UNIFORM_FLOAT);
             SetShaderValue(ps, GetShaderLocation(ps, "fogShell"), pshell, SHADER_UNIFORM_VEC4);
@@ -730,6 +739,7 @@ void Scene::drawScene(int gamestate) {
             rlSetUniform(GetShaderLocation(ts, "sunDir"), &sun, RL_SHADER_UNIFORM_VEC3, 1);
             rlSetUniform(GetShaderLocation(ts, "viewPos"), &camera.position, RL_SHADER_UNIFORM_VEC3, 1);
             rlSetUniform(GetShaderLocation(ts, "ambient"), &effAmbient, RL_SHADER_UNIFORM_VEC3, 1);
+            rlSetUniform(GetShaderLocation(ts, "ambientUp"), &hemiUp, RL_SHADER_UNIFORM_VEC3, 1);
             rlSetUniform(GetShaderLocation(ts, "fogColor"), &effFog, RL_SHADER_UNIFORM_VEC3, 1);
             rlSetUniform(GetShaderLocation(ts, "fogDensity"), &effFogDensity, RL_SHADER_UNIFORM_FLOAT, 1);
             rlSetUniform(GetShaderLocation(ts, "fogShell"), shell, RL_SHADER_UNIFORM_VEC4, 1);
@@ -808,6 +818,7 @@ void Scene::drawScene(int gamestate) {
             rlSetUniform(GetShaderLocation(gs, "sunDir"), &sun, RL_SHADER_UNIFORM_VEC3, 1);
             rlSetUniform(GetShaderLocation(gs, "viewPos"), &camera.position, RL_SHADER_UNIFORM_VEC3, 1);
             rlSetUniform(GetShaderLocation(gs, "ambient"), &effAmbient, RL_SHADER_UNIFORM_VEC3, 1);
+            rlSetUniform(GetShaderLocation(gs, "ambientUp"), &hemiUp, RL_SHADER_UNIFORM_VEC3, 1);
             rlSetUniform(GetShaderLocation(gs, "fogColor"), &effFog, RL_SHADER_UNIFORM_VEC3, 1);
             rlSetUniform(GetShaderLocation(gs, "fogDensity"), &effFogDensity, RL_SHADER_UNIFORM_FLOAT, 1);
             rlSetUniform(GetShaderLocation(gs, "fogShell"), shell, RL_SHADER_UNIFORM_VEC4, 1);
@@ -867,7 +878,7 @@ void Scene::drawScene(int gamestate) {
         // Extra drawing (animals, machine details, particles) gets the frame's lighting: sun shadows and the headlamp
         // binder, sun, ambient and fog (InstanceBatch uses them).
         frameLighting = setFoliageLighting;
-        frameSun = sun; frameAmbient = effAmbient; frameFog = effFog; frameFogDensity = effFogDensity;
+        frameSun = sun; frameAmbient = effAmbient; frameFog = effFog; frameFogDensity = effFogDensity; frameAmbientUp = hemiUp;
         frameFogShell = { atmosphere.centre.x, atmosphere.centre.y, atmosphere.centre.z, atmosphere.enabled && effFogDensity < 0.06f ? atmosphere.radius + atmosphere.hazeHeight : 0.0f };
         if (onDraw3D) onDraw3D();
         frameLighting = nullptr;

@@ -54,6 +54,7 @@ rocket_fuel     | Rocket fuel     | 200 | 200, 80, 40 | 100 kg of fuel. Look at 
 ore_washer      | Ore washer      |  20 |  70,120,170 | LV: washes crushed ore with water into purified ore.
 centrifuge      | Centrifuge      |  20 | 160,160,170 | LV: splits purified ore into dust and a byproduct.
 water_pump      | Water pump      |  20 |  50, 90,160 | LV: lifts water from under it (a river, a pond, the sea) into pipes; outlets pour it out. Needs power.
+hand_pump       | Hand pump       |  20 | 120, 90, 60 | Early water without power: placed over water (a river, a pond, the sea), hold RMB on it to pump 50 L/s into the pipes it touches (boilers, outlets).
 mv_generator    | MV generator    |  20 | 200, 90, 50 | Burns coal or coke for MV power (128 V).
 electrolyzer    | Electrolyzer    |  20 | 180,180, 80 | MV: splits water into hydrogen and oxygen; bauxite dust into aluminium.
 chemical_reactor | Chemical reactor | 20 | 120,160,120 | MV: coal and hydrogen into polyethylene.
@@ -119,6 +120,7 @@ battery_pack       | Battery pack       |  tool | 250,210,70  | Suit module: +50
 insulation_module  | Insulation         |  tool | 235,235,225 | Suit module: the cold costs much less food.
 rebreather         | Rebreather         |  tool | 70,140,200  | Suit module: oxygen lasts longer underwater.
 thruster_pack      | Thruster pack      |  tool | 200,110,60  | Suit module: +60% jetpack fuel and thrust.
+flight_pack        | Flight pack        |  tool | 90,150,220  | Suit module (MV): hover with H - holds height, no drift; Space/Ctrl climb and descend, Shift boosts. Runs on suit power; catches a fatal fall.
 lamp_upgrade       | Lamp upgrade       |  tool | 255,244,200 | Suit module: a longer headlamp beam.
 thermal_regulator  | Thermal regulator  |  tool | 230,120,90  | Suit module: steady body temperature in heat and cold.
 ore_scanner        | Ore scanner        |  tool | 255,190,110 | Suit module: shows the nearest ore within 64 m.

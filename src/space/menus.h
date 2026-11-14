@@ -27,6 +27,8 @@ struct GameSettings {
     bool showHands = true;          // the hands and held tool (a fixed reference in view: motion sickness)
     int handBob = 0;                // 0 full, 1 reduced, 2 off
     int terrainDetail = 1;          // 0 Low, 1 Medium, 2 High, 3 Ultra: LOD factor 2 / 2.5 / 3 / 4 (#297)
+    int cameraSmoothing = 2;        // 0 Off, 1 Low, 2 Default, 3 High: eye smoothing strength (#168)
+    bool speedVignette = false;     // darken the screen edges when moving or turning fast (#168)
     int difficulty = 1;             // new worlds: 0 peaceful (no threats, slower hunger, extra food), 1 normal, 2 hard (no Map, hungrier, fiercer nights)
 };
 extern GameSettings settings;

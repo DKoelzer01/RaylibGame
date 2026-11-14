@@ -209,3 +209,11 @@ bool Hotbar_LoadLine(const char* tok, FILE* f) {
     if (fscanf(f, " %d %63s", &slot, id) == 2 && slot >= 0 && slot < kHotbarSlots) slots[slot] = strcmp(id, "-") == 0 || strcmp(id, kHotbarTerrainTool) == 0 ? "" : id; // the old "Hands" slot is an empty one now
     return true;
 }
+
+void Hotbar_Unbind(const std::string& id) {
+    for (int i = 0; i < kHotbarSlots; ++i) {
+        if (slots[i] != id) continue;
+        slots[i].clear();
+        if (i == selected) { terrainTool.heldTool.clear(); terrainTool.holdingItem = false; } // bare hands now
+    }
+}

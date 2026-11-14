@@ -889,8 +889,11 @@ static void UpdatePreload(Planetoid& p, Vector3 cameraRender, int& spare) {
         // GB-sized copy (a 30 ms frame closing the telescope at Medium detail). ~770 vertices a ring node (seed 42,
         // Medium), plus a full cache and the view: a re-centred ring's old part goes to the cache.
         const ArenaStats as = TerrainArena_Stats();
-        const long long need = (long long)ring.keys.size() * 800 + lodSettings.cacheVertices + (4 << 20);
-        if (need > as.vertexCapacity) { // (Reserve creates the arena if it is not up yet)
+        // The estimate is generous (26 M of 44.6 M used on seed 42): regrow only when it passes the capacity by more than
+        // 10%, with 10% headroom. A re-centred ring 2 nodes larger than the spawn ring regrew it whole: a 57 ms frame (#364).
+        long long need = (long long)ring.keys.size() * 800 + lodSettings.cacheVertices + (4 << 20);
+        if (need > as.vertexCapacity + as.vertexCapacity / 10) { // (Reserve creates the arena if it is not up yet)
+            need += need / 10;
             const double ipv = std::max(6.0, as.vertices > 0 ? (double)as.indices / as.vertices : 6.0);
             TerrainArena_Reserve((int)std::min<long long>(need, INT_MAX / 2), (int)std::min<long long>((long long)(need * ipv), INT_MAX / 2));
         }
@@ -1426,6 +1429,7 @@ void generateWorld(Scene& world) {
             // Planet terrain: radius is sea level, where gravity's reference surface sits too; the
             // LOD root must also cover the highest mountains.
             auto field = std::make_shared<PlanetField>(seed, radius, kind == BodyKind::Moon);
+            if (gErosionPrototype && kind == BodyKind::Planet) field->bakeErosion(std::string(WorldSavePath()) + ".erosion"); // Plan 7 (#355): the save's bake, or a new one
             p->gravityRadius = radius;
             p->rootLevel = 0;
             while (kVoxelSize * (float)(CHUNK_SIZE << p->rootLevel) < field->maxRadius() + 24.0f) p->rootLevel++;

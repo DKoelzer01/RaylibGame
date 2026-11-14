@@ -119,6 +119,7 @@ vec3 triplanarNormal(sampler2D tex, Triplanar t, vec3 n)
 // Sun shadows: two cascades, hardware PCF (shadow.glsl). The far map is MATERIAL_MAP_BRDF, the near one
 // MATERIAL_MAP_HEIGHT.
 #include "shadow.glsl"
+#include "hemisphere.glsl"
 float shadowFactor(vec3 worldPos, vec3 n, vec3 l) { return sunShadowNormal(worldPos, n, l, 4); }
 
 // Biome tints (Plan 5 B) from the climate packed by the mesher: 2 + temperature step (0-62 over
@@ -345,7 +346,7 @@ void main()
         direct += (albedo * NdotL + spec) * lights[i].color.rgb * shadow * atten;
     }
 
-    vec3 color = ambient.rgb * albedo * ao * fragSky + direct + emissive;
+    vec3 color = hemiAmbient(ambient.rgb, normal) * albedo * ao * fragSky + direct + emissive;
     // Fog over the part of the view ray inside the air (fogShell: render-space centre + outer radius;
     // w = 0: the whole distance), so a moon or ring far beyond the atmosphere stays visible.
     float fogDist = length(viewPos - fragPosition);

@@ -25,6 +25,10 @@ struct Player {
     bool flyMode = false;             // F: free-fly dev camera (no gravity/collision)
     int spawns = 0;                   // counts spawnOn/placeAt: the game raises the loading screen on a new one
     float jetpackFuel = 1.0f;         // 0..1, recharges on the ground
+    // Flight pack (#163): H toggles hover - height held, no drift; Space/Ctrl climb/descend, Shift boosts. It runs
+    // on suit power (survival drains it, hoverPowered off at zero) and switches itself on in a fast fall.
+    bool canHover = false, hovering = false, hoverPowered = true;
+    float hoverSpeed = 6.0f, hoverClimb = 5.0f;
     bool jetpackFiring = false;       // fuel was burnt this update (survival / audio / HUD)
     Planetoid* nearest = nullptr;     // body we collide with (gravity comes from every body)
     float gravity = 0.0f;             // current acceleration magnitude (HUD/debug)
@@ -44,7 +48,9 @@ struct Player {
     // centimetres each frame. Body-local, at most 3 cm, so starting and stopping never visibly trail.
     Vector3 eyeOffsetH = { 0, 0, 0 }, eyeVh = { 0, 0, 0 };
     uint64_t eyeOffsetBody = 0;
-    bool eyeSmoothing = true;         // tests: --no-eye-smooth turns it off (A/B)
+    bool eyeSmoothing = true;         // tests: --no-eye-smooth turns it off (A/B); the Camera smoothing setting Off too
+    float eyeSmoothScale = 1.0f;      // Camera smoothing (#168): Low 0.5, Default 1, High 2.4 (time constant and leash scale)
+    bool speedVignette = false;       // Speed vignette setting (#168): darken the screen edges when moving or turning fast
     float eyeStep = 0.0f;             // tests: the eye's height change in the last update (ground frame, m)
     bool eyeStepKnown = false;
 

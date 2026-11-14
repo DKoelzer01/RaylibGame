@@ -15,7 +15,19 @@
 
 class RiverNetwork {
 public:
+    // The network's grid and rivers. With the erosion bake (Plan 7 step 5, #359): the bake's 200 m cells, rivers from
+    // ~2 km^2 of drainage (upland streams), little meander (the baked valleys already wind), and fineHeight: each
+    // link's level is also held under the fine ground sampled along its curve (no bank fill holds it up any more).
+    struct Params {
+        float cell = 420.0f;            // m, target cell size
+        float riverArea = 7.06e6f;      // m^2 drained before a river starts
+        float meander = 0.18f;          // sideways swing, fraction of a link's length (at most 70 m)
+        std::function<float(Vector3)> fineHeight; // optional: the full ground height (m), sampled along the links
+        float maxReach = 300.0f;        // m: the valley carving's reach from a centreline (the index covers it)
+        float lakeDepth = 6.0f;         // m: a filled depression deeper than this holds water (a lake, or with the bake a pond)
+    };
     // height(dir): smooth land height (m above sea level) for a unit direction.
+    RiverNetwork(float radius, unsigned int seed, const std::function<float(Vector3)>& height, const Params& params);
     RiverNetwork(float radius, unsigned int seed, const std::function<float(Vector3)>& height);
 
     // The river closest to a point (body-local unit direction), within `reach` metres of its centreline.
@@ -32,6 +44,12 @@ public:
     // kLakeMargin around them. Here: the lake's level and how far outside its cells (0 inside, m);
     // reported out to 2 * kLakeMargin (the bank fades out there), so water only where outside < kLakeMargin.
     bool lakeAt(Vector3 dir, float& level, float& outside) const;
+    bool lakeAt(Vector3 dir, float& level, float& outside, int& id) const; // also the lake's id (lakeInfo)
+    // Each lake's extent (#360: the small ones are finite, drained by digs): the centre, a radius covering its cells,
+    // its level, depth (level - lowest cell) and size in cells.
+    struct LakeInfo { Vector3 dir{ 0, 1, 0 }; float r = 0.0f, level = 0.0f, depth = 0.0f; int cells = 0; };
+    const LakeInfo& lakeInfo(int id) const { return lakes[id]; }
+    float cellSize() const { return cell; }
     bool lakeAt(Vector3 dir, float& level) const { float o; return lakeAt(dir, level, o) && o < kLakeMargin; } // lake water here
     bool lakeNear(Vector3 dir, float extent) const;  // cheap: a lake's water region within `extent` m may be here
     bool riverNear(Vector3 dir, float extent) const; // cheap: a river within `extent` m may be here
@@ -39,7 +57,7 @@ public:
     static constexpr float kLakeMargin = 60.0f;
 
     // Tests and stats.
-    struct Stats { int cells = 0, landCells = 0, riverCells = 0, lakeCells = 0, mouths = 0; float cellSize = 0.0f, longestKm = 0.0f; };
+    struct Stats { int cells = 0, landCells = 0, riverCells = 0, lakeCells = 0, mouths = 0, riverCellsAbove700 = 0; float cellSize = 0.0f, longestKm = 0.0f, highestSource = 0.0f; };
     Stats stats() const { return st; }
     // Every river link: the level never rises and the width never shrinks going downstream; returns
     // the number of links checked and the worst rise (m) / shrink (m) seen.
@@ -49,9 +67,10 @@ public:
     void longestPath(float step, std::vector<Vector3>& dirs, std::vector<float>& levels) const;
 
     static constexpr float kMaxReach = 300.0f; // valley carving reaches at most this far from a centreline
+    float reach() const { return reachM; }    // this network's reach (Params::maxReach)
 
 private:
-    float R = 1.0f, cell = 420.0f;
+    float R = 1.0f, cell = 420.0f, reachM = kMaxReach;
     int n = 1; // cells per face edge
     std::vector<float> h, F, L, hw, dep;
     std::vector<int> parent, mainChild;
@@ -59,6 +78,8 @@ private:
     std::vector<unsigned char> river, lake;
     std::vector<float> lakeLevel;          // per lake cell: its basin's water level (m)
     std::vector<unsigned char> lakeSteps;  // cells to the nearest lake cell (capped at 255)
+    std::vector<int> lakeIdOf;             // per cell: its lake's id, or -1
+    std::vector<LakeInfo> lakes;
     struct Piece { Vector3 a, b; float la, lb, wa, wb, da, db; Vector3 mid{}; float halfLen = 0.0f; }; // positions in metres (body-local); mid/halfLen: a bounding sphere for nearest()
     std::vector<Piece> pieces;
     std::vector<std::vector<int>> index; // cell -> pieces within reach

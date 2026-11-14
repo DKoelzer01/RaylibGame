@@ -60,6 +60,7 @@ const char* PartName(PartType t) {
         case PartType::PrecisionAssembler: return "precision assembler";
         case PartType::FusionReactor: return "fusion reactor";
         case PartType::MassDriver: return "mass driver";
+        case PartType::HandPump: return "hand pump";
         case PartType::Farmland: return "farmland";
         case PartType::Fence: return "fence";
         case PartType::Gate: return "gate";
@@ -126,6 +127,7 @@ const char* PartCostItem(PartType t) {
         case PartType::Cockpit: return "cockpit";
         case PartType::Guidance: return "guidance_computer";
         case PartType::LandingLeg: return "landing_leg";
+        case PartType::HandPump: return "hand_pump"; // not a machine: no factory entry (#280)
         default: { const char* m = PartMachineName(t); return m ? m : "concrete"; }
     }
 }
@@ -226,6 +228,7 @@ static Color PartColor(PartType t) {
         case PartType::PrecisionAssembler: return { 100, 140, 180, 255 };
         case PartType::FusionReactor: return { 200, 110, 240, 255 };
         case PartType::MassDriver: return { 150, 160, 185, 255 };
+        case PartType::HandPump: return { 120, 90, 60, 255 };
         case PartType::Farmland: return { 86, 60, 38, 255 };
         case PartType::Fence: return { 130, 95, 60, 255 };
         case PartType::Gate: return { 165, 120, 70, 255 };
@@ -287,7 +290,7 @@ static void PartCells(PartType t, std::vector<std::pair<Int3, CellShape>>& out) 
         case PartType::RocketEngine: case PartType::FuelTank: case PartType::Cockpit: case PartType::Cabin: case PartType::StationCore:
         case PartType::OreWasher: case PartType::Centrifuge: case PartType::WaterPump: case PartType::MvGenerator: case PartType::Electrolyzer:
         case PartType::ChemicalReactor: case PartType::Miner: case PartType::HvGenerator: case PartType::ArcFurnace: case PartType::Refinery:
-        case PartType::PrecisionAssembler: case PartType::FusionReactor: case PartType::MassDriver:
+        case PartType::PrecisionAssembler: case PartType::FusionReactor: case PartType::MassDriver: case PartType::HandPump:
             for (int z = 0; z < 2; ++z) for (int y = 0; y < 2; ++y) for (int x = 0; x < 2; ++x) out.push_back({ { x, y, z }, full });
             break;
         case PartType::Farmland: // 1 m square, half a metre deep

@@ -144,6 +144,7 @@ void InstanceBatch_Flush(Scene& world) {
     v3("viewPos", world.camera.position);
     v3("sunDir", world.frameSun);
     v3("ambient", world.frameAmbient);
+    v3("ambientUp", world.frameAmbientUp); // #130
     v3("fogColor", world.frameFog);
     rlSetUniform(rlGetLocationUniform(id, "fogDensity"), &world.frameFogDensity, RL_SHADER_UNIFORM_FLOAT, 1);
     rlSetUniform(rlGetLocationUniform(id, "fogShell"), &world.frameFogShell, RL_SHADER_UNIFORM_VEC4, 1);

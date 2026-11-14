@@ -10,10 +10,13 @@
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
+#include <string>
 
 namespace {
     double accum = 0.0;
     WaterworksStats stats;
+    std::unordered_map<std::string, float> handPumped; // "body/plot/part" -> m^3 pumped by hand since the last pass (#280)
+    std::string HandKey(uint64_t body, uint32_t plot, int part) { return std::to_string(body) + "/" + std::to_string(plot) + "/" + std::to_string(part); }
     inline int64_t CellKey(Int3 c) { return ((int64_t)(c.x + 100000) << 40) | ((int64_t)(c.y + 100000) << 20) | (int64_t)(c.z + 100000); }
 }
 
@@ -32,7 +35,7 @@ void Waterworks_Update(Scene& world, float dt) {
             std::unordered_map<int64_t, int> pipes, outlets, tanks; // cell -> part (tanks: machines that take water, boilers #229)
             for (int i = 0; i < (int)pl->parts.size(); ++i) {
                 const Part& part = pl->parts[i];
-                if (part.type == PartType::WaterPump) pumps.push_back(i);
+                if (part.type == PartType::WaterPump || part.type == PartType::HandPump) pumps.push_back(i);
                 else if (part.type == PartType::Pipe || part.type == PartType::Outlet) {
                     Plot::Footprint(part, fp);
                     for (auto& c : fp) (part.type == PartType::Pipe ? pipes : outlets)[CellKey(c.first)] = i;
@@ -75,14 +78,17 @@ void Waterworks_Update(Scene& world, float dt) {
                 std::unordered_set<int> outParts;
                 for (int64_t k : outs) outParts.insert(outlets[k]);
                 stats.outlets += (int)outParts.size();
-                const int units = Factory::PumpWater(body->id, pl->id, pump); // less what earlier drains still have queued
+                const bool byHand = pl->parts[pump].type == PartType::HandPump;
+                float handM3 = 0.0f;
+                if (byHand) { auto it = handPumped.find(HandKey(body->id, pl->id, pump)); if (it != handPumped.end()) { handM3 = it->second; handPumped.erase(it); } }
+                const int units = byHand ? (int)ceilf(handM3 / kWaterPerUnit) : Factory::PumpWater(body->id, pl->id, pump); // less what earlier drains still have queued
                 if (units <= 0) continue;
                 // From under the pump; only the units the world actually gave leave the pump (a dry or short
                 // intake keeps the rest).
                 const Vector3 intake = Vector3Subtract(pl->toBody({ (bottom.x + 0.5f) * kCellSize, bottom.y * kCellSize, (bottom.z + 0.5f) * kCellSize }), Vector3Scale(pl->up, 0.7f));
-                const float got = Fluid::Take(*body, intake, units * kWaterPerUnit, 1.6f);
+                const float got = Fluid::Take(*body, intake, byHand ? handM3 : units * kWaterPerUnit, 1.6f);
                 if (got <= 0.0f) { ++stats.dry; continue; }
-                Factory::Drain(body->id, pl->id, pump, "water", std::min(units, (int)ceilf(got / kWaterPerUnit - 1e-4f)));
+                if (!byHand) Factory::Drain(body->id, pl->id, pump, "water", std::min(units, (int)ceilf(got / kWaterPerUnit - 1e-4f)));
                 stats.pumped += got;
                 const float each = got / (float)(outParts.size() + tankParts.size());
                 for (int part : tankParts) Factory::AddWater(body->id, pl->id, part, (int)(each * 1000.0f)); // m^3 to litres
@@ -97,3 +103,7 @@ void Waterworks_Update(Scene& world, float dt) {
 }
 
 WaterworksStats Waterworks_Stats() { return stats; }
+
+void Waterworks_HandPump(uint64_t body, uint32_t plot, int part, float dt) {
+    handPumped[HandKey(body, plot, part)] += kHandPumpRate * dt;
+}

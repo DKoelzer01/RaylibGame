@@ -156,6 +156,12 @@ void DrawMachine(PartType type, const Frame& f, const Painter& p, bool working) 
         p.cube({ 0.3f, 0.15f, 0 }, { 0.14f, 0.12f, 0.14f }, kPaint);           // a marker to see it spin
         rlPopMatrix();
         break;
+    case PartType::HandPump: // (#280) a wooden post with a lever and a spout, its intake pipe down into the water
+        p.cyl({ x0 + 0.2f, -0.6f, z0 + 0.2f }, 0.07f, 0.07f, 0.6f + top + 0.3f, kSteel);
+        p.cube({ 0.0f, top + 0.35f, 0.0f }, { 0.16f, 0.7f, 0.16f }, { 110, 80, 55, 255 });
+        p.cube({ 0.22f, top + 0.68f, 0.0f }, { 0.55f, 0.05f, 0.06f }, kSteel);
+        p.cyl({ -0.1f, top + 0.45f, 0.0f }, 0.04f, 0.04f, 0.18f, kSteel);
+        break;
     case PartType::WaterPump:
         p.cyl({ x0 + 0.2f, -0.6f, z0 + 0.2f }, 0.08f, 0.08f, 0.6f + top + 0.3f, kSteel); // the intake pipe
         p.cyl({ 0.1f, top, 0.1f }, 0.28f, 0.28f, 0.45f, { 70, 120, 190, 255 }); // tank
@@ -290,7 +296,7 @@ void Machines_Draw3D(Scene& world) {
                 pc.spots.clear();
                 for (size_t i = 0; i < plot->parts.size(); ++i) {
                     const Part& part = plot->parts[i];
-                    if (part.type == PartType::Count || !IsMachine(part.type)) continue;
+                    if (part.type == PartType::Count || (!IsMachine(part.type) && part.type != PartType::HandPump)) continue;
                     MachineSpot s;
                     if (!SpotOf(*plot, i, s)) continue;
                     if (body->field) { // sky exposure 1 m over the floor: the terrain's rule, as plot cells (#216, #284)
@@ -352,7 +358,7 @@ bool Machine_RaycastDetails(const Plot& plot, Vector3 o, Vector3 d, float maxDis
     // Chimneys stand out of the casing's cells (#285): a box round each, in plot metres (slab test).
     bool hit = false;
     for (size_t i = 0; i < plot.parts.size(); ++i) {
-        if (plot.parts[i].type == PartType::Count || !IsMachine(plot.parts[i].type)) continue;
+        if (plot.parts[i].type == PartType::Count || (!IsMachine(plot.parts[i].type) && plot.parts[i].type != PartType::HandPump)) continue;
         MachineSpot s;
         Stack st[4];
         if (!SpotOf(plot, i, s)) continue;

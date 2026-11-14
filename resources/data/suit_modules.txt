@@ -7,6 +7,7 @@ battery_pack       | power      | 0.5  | +50% suit power
 insulation_module  | insulation | 0.4  | feel only 40% of the cold's extra hunger
 rebreather         | underwater | 0.5  | oxygen lasts 4x longer underwater
 thruster_pack      | jetpack    | 0.6  | +60% jetpack fuel and thrust
+flight_pack        | hover      | 1.0  | Hover (H): holds height, Space/Ctrl climb/descend, Shift boosts; runs on suit power; catches fatal falls
 lamp_upgrade       | lamp       | 1.0  | headlamp reaches twice as far
 thermal_regulator  | thermal    | 1    | no cold hunger, no heat damage
 ore_scanner        | scanner    | 1    | shows the nearest ore within 64 m
