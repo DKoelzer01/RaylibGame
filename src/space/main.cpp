@@ -1397,11 +1397,11 @@ int main(int argc, char** argv)
                     const double t = GetTime() - doorStart;
                     Plot* plot = p->plots ? p->plots->byId(doorPlot) : nullptr;
                     const float laneZ[2] = { 2.25f, 8.25f }; // plot metres: the openings' centres (cells 3-5 and 15-17)
+                    constexpr int kDoorY = 60; constexpr float kDoorFloor = (kDoorY + 1) * 0.5f; // the slab 30 m up: no ground or trees in the lanes
                     auto placeInLane = [&](int lane) {
-                        const Vector3 at = p->toWorld(plot->toBody({ 1.5f, 0.5f + 0.3f, laneZ[lane] }));
-                        player.placeAt(world, *p, at);
-                        player.velocity = p->surfaceVelocity(p->toLocal(at));
-                        player.forward = Vector3Normalize(Vector3Subtract(p->toWorld(plot->toBody({ 2.0f, 0.5f, laneZ[lane] })), p->toWorld(plot->toBody({ 1.0f, 0.5f, laneZ[lane] }))));
+                        const Vector3 at = p->toWorld(plot->toBody({ 1.5f, kDoorFloor + 0.3f, laneZ[lane] }));
+                        player.placeAt(world, *p, at); // sets the velocity to the surface's there (render coordinates)
+                        player.forward = Vector3Normalize(Vector3Subtract(p->toWorld(plot->toBody({ 2.0f, kDoorFloor, laneZ[lane] })), p->toWorld(plot->toBody({ 1.0f, kDoorFloor, laneZ[lane] }))));
                     };
                     if (doorPhase == 0) {
                         player.spawnOn(world, *p, StartSpawnDir(*p));
@@ -1415,8 +1415,8 @@ int main(int argc, char** argv)
                         plot = p->plots->plotFor(th.local, 0.0f, true);
                         doorPlot = plot->id;
                         int placed = 0;
-                        auto put = [&](Int3 c) { if (BuildTool_Place(*p, *plot, { PartType::Cube, c, 0 }, false)) ++placed; };
-                        for (int z = 0; z < 21; ++z) for (int x = 0; x < 16; ++x) put({ x, 0, z });     // floor slab, 8 x 10.5 m
+                        auto put = [&](Int3 c) { if (BuildTool_Place(*p, *plot, { PartType::Cube, { c.x, c.y + kDoorY, c.z }, 0 }, false)) ++placed; };
+                        for (int z = 0; z < 21; ++z) for (int x = 0; x < 16; ++x) put({ x, 0, z });     // floor slab, 8 x 10.5 m (cells relative to the slab row)
                         // Walls at x cell 8 (4.0-4.5 m), 4 m high; the openings: z cells 3-5 up to y 4 (2.0 m) and 15-17 up to y 3 (1.5 m).
                         for (int y = 1; y <= 8; ++y)
                             for (int z = 0; z < 21; ++z) {
@@ -1425,20 +1425,38 @@ int main(int argc, char** argv)
                                 put({ 8, y, z });
                             }
                         for (int y = 1; y <= 8; ++y) for (int x = 0; x < 16; ++x) put({ x, y, 10 }); // a divider between the lanes
+                        for (int y = 1; y <= 4; ++y) {                                                   // rails: nobody walks off 30 m up
+                            for (int x = 0; x < 16; ++x) { put({ x, y, 0 }); put({ x, y, 20 }); }
+                            for (int z = 0; z < 21; ++z) { put({ 0, y, z }); put({ 15, y, z }); }
+                        }
                         printf("bench: doorway: %d parts placed on plot %u\n", placed, plot->id);
                         doorLane = 0; placeInLane(0);
-                        doorPhase = 2; doorStart = GetTime();
+                        doorPhase = 2; doorStart = -1.0; // the clock starts when play resumes: placeAt raises the loading screen
+                    } else if (doorPhase == 2 && doorStart < 0.0) {
+                        doorStart = GetTime();
                     } else if (doorPhase == 2 && t > 1.0) {
-                        player.autoWalk = true;
-                        player.forward = Vector3Normalize(Vector3Subtract(p->toWorld(plot->toBody({ 2.0f, 0.5f, laneZ[doorLane] })), p->toWorld(plot->toBody({ 1.0f, 0.5f, laneZ[doorLane] }))));
-                        if (t > 7.0) {
-                            player.autoWalk = false;
-                            const Vector3 lf = plot->toPlot(p->toLocal((player.position - world.renderOrigin).toFloat()));
+                        const Vector3 lf = plot->toPlot(p->toLocal((player.position - world.renderOrigin).toFloat()));
+                        // Walk the lane; stop once past the wall (pressing the far rail would only bank impact speed).
+                        player.autoWalk = lf.x < 6.0f && t < 7.0;
+                        player.forward = Vector3Normalize(Vector3Subtract(p->toWorld(plot->toBody({ 2.0f, kDoorFloor, laneZ[doorLane] })), p->toWorld(plot->toBody({ 1.0f, kDoorFloor, laneZ[doorLane] }))));
+                        if (getenv("DOOR_DEBUG")) {
+                            static float lastHealth = 100.0f;
+                            if (survival.health < lastHealth - 0.01f)
+                                printf("DOOR hurt t=%.2f: health %.0f -> %.0f, landing %.2f m/s, impact %.2f m/s, grounded %d, y %.2f, v %.2f along up\n", t, lastHealth, survival.health,
+                                       player.landingSpeed, player.impactSpeed, player.grounded ? 1 : 0, lf.y - kDoorFloor, Vector3DotProduct(player.velocity, player.up));
+                            lastHealth = survival.health;
+                            static int lastTick = -1;
+                            if ((int)(t * 2.0) != lastTick) {
+                                lastTick = (int)(t * 2.0);
+                                printf("DOOR lane %d t=%.1f: x %.2f y %.2f z %.2f grounded %d health %.0f deaths %d\n", doorLane, t, lf.x, lf.y - kDoorFloor, lf.z, player.grounded ? 1 : 0, survival.health, survival.deaths);
+                            }
+                        }
+                        if (t > 7.5) { // half a second standing still before the verdict and the next placement
                             const bool through = lf.x > 5.5f;
-                            doorPass[doorLane] = doorLane == 0 ? through : (!through && lf.x < 4.0f);
-                            printf("bench: doorway: %s opening: the player ended %.2f m along the lane (the wall is at 4.0-4.5 m): %s -> %s\n",
-                                   doorLane == 0 ? "2.0 m" : "1.5 m", lf.x, through ? "walked through" : "stopped", doorPass[doorLane] ? "PASS" : "FAIL");
-                            if (doorLane == 0) { doorLane = 1; placeInLane(1); doorStart = GetTime(); }
+                            doorPass[doorLane] = survival.deaths == 0 && (doorLane == 0 ? through : (!through && lf.x < 4.0f));
+                            printf("bench: doorway: %s opening: the player ended %.2f m along the lane (the wall is at 4.0-4.5 m), feet %.2f m over the slab top, %.2f m across (opening centre %.2f), deaths %d: %s -> %s\n",
+                                   doorLane == 0 ? "2.0 m" : "1.5 m", lf.x, lf.y - kDoorFloor, lf.z, laneZ[doorLane], survival.deaths, through ? "walked through" : "stopped", doorPass[doorLane] ? "PASS" : "FAIL");
+                            if (doorLane == 0) { doorLane = 1; placeInLane(1); doorStart = -1.0; }
                             else {
                                 printf("bench: doorway: player %.2f m tall: %s\n", player.height, doorPass[0] && doorPass[1] ? "PASS" : "FAIL");
                                 benchDoorway = false;
@@ -3896,7 +3914,7 @@ int main(int argc, char** argv)
                         const Vector3 up = Vector3Normalize(me);
                         Vector3 east = Vector3Normalize(Vector3CrossProduct({ 0, 1, 0 }, up));
                         const Vector3 north = Vector3CrossProduct(up, east);
-                        auto onGround = [&](int i) { const Vector3 a = Animals_Position(i), u = Vector3Normalize(a); return p->densityAt(Vector3Add(a, Vector3Scale(u, 0.15f))) < ISO_LEVEL && p->densityAt(Vector3Subtract(a, Vector3Scale(u, 0.15f))) >= ISO_LEVEL; }; // on the density surface (#223), not the height map
+                        auto onGround = [&](int i, float tol = 0.15f) { const Vector3 a = Animals_Position(i), u = Vector3Normalize(a); return p->densityAt(Vector3Add(a, Vector3Scale(u, tol))) < ISO_LEVEL && p->densityAt(Vector3Subtract(a, Vector3Scale(u, tol))) >= ISO_LEVEL; }; // on the density surface (#223), not the height map
                         auto step = [&](float seconds) { for (float t = 0.0f; t < seconds; t += 0.1f) Animals_Update(world, 0.1f, 0.1f, false); };
                         animalNatural = Animals_Count(); // herds placed around the player as it arrived
                         check(animalNatural > 0, "herds spawn around the player");
@@ -4051,12 +4069,24 @@ int main(int argc, char** argv)
                             const Vector3 u = Vector3Normalize(pitAt);
                             for (int k = 1; k < 4; ++k) ApplyTerrainEdit(*p, TerrainEdit{ Vector3Subtract(pitAt, Vector3Scale(u, 1.2f * k)), 2.4f, -10.0f });
                             Animals_Spawn(world, *p, "woolback", Vector3Add(pitAt, Vector3Scale(east, 4.0f)), 6, false, 3.0f);
-                            int bad = 0, samples = 0;
+                            // Animals find the ground in 0.25 m steps with a linear guess between them (animals.cpp Ground), so on
+                            // the pit's dug edges they stand up to ~0.25 m off the true surface (#373: every "inside" sample was
+                            // within 0.25 m of air). Count only what is off by more than that step.
+                            constexpr float kPitTol = 0.3f;
+                            int bad = 0, samples = 0, inAir = 0, buried = 0, worstRun = 0;
+                            std::vector<int> run(64, 0); // consecutive off-ground samples per animal
                             for (float t = 0.0f; t < 60.0f; t += 0.1f) {
                                 Animals_Update(world, 0.1f, 0.1f, false);
-                                for (int i = 0; i < Animals_Count(); ++i) { ++samples; bad += onGround(i) ? 0 : 1; }
+                                for (int i = 0; i < Animals_Count() && i < 64; ++i) {
+                                    ++samples;
+                                    if (onGround(i, kPitTol)) { run[i] = 0; continue; }
+                                    ++bad; worstRun = std::max(worstRun, ++run[i]);
+                                    const Vector3 a = Animals_Position(i), u = Vector3Normalize(a);
+                                    if (p->densityAt(Vector3Subtract(a, Vector3Scale(u, kPitTol))) < ISO_LEVEL) ++inAir; else ++buried;
+                                }
                             }
-                            printf("bench: animals: around a dug pit for a minute: %d of %d samples off the ground, hole drop %.2f m\n", bad, samples, dropped);
+                            printf("bench: animals: around a dug pit for a minute: %d of %d samples more than %.2f m off the ground (%d in the air, %d inside it; longest run %d), hole drop %.2f m\n",
+                                   bad, samples, kPitTol, inAir, buried, worstRun, dropped);
                             check(samples > 0 && bad <= samples / 100, "animals stay on the ground around a dug pit");
                         }
                         // 200 within 300 m: the update stays under 1 ms.
