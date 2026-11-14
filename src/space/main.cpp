@@ -367,6 +367,10 @@ int main(int argc, char** argv)
         if (std::string(argv[i]) == "--perf-log") perfLog = true;
         if (std::string(argv[i]) == "--bench-fly" && i + 1 < argc) benchFlySpeed = (float)atof(argv[i + 1]);
         if (std::string(argv[i]) == "--bench-fly-back") benchFlyBack = true;
+        if (std::string(argv[i]) == "--bench-biome" && i + 1 < argc) { // start the bench (and the player) in the nearest deep patch of a biome (#133 checks)
+            for (int b = 0; b < (int)Biome::Count; ++b) if (!strcmp(BiomeName((Biome)b), argv[i + 1])) gSpawnBiome = b;
+            if (gSpawnBiome < 0) printf("bench: --bench-biome: unknown biome %s\n", argv[i + 1]);
+        }
         if (std::string(argv[i]) == "--bench-fly-alt" && i + 1 < argc) benchFlyAlt = (float)atof(argv[i + 1]);
         if (std::string(argv[i]) == "--spawn-dir" && i + 3 < argc) { hasSpawnDir = true; spawnDir = Vector3Normalize({ (float)atof(argv[i + 1]), (float)atof(argv[i + 2]), (float)atof(argv[i + 3]) }); }
         if (std::string(argv[i]) == "--test-suffocate") benchSuffocate = true;

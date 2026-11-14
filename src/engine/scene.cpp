@@ -784,6 +784,10 @@ void Scene::drawScene(int gamestate) {
         ctx.terrainMaterial = &terrainMaterial;
         ctx.depthMaterial = &depthMaterial;
         ctx.frustum = &viewFrustum;
+        // Trees first (#133): they cover much of the ground in forests, so the costly terrain shader is then
+        // rejected by the depth test under the canopy instead of shading ground the trees paint over.
+        drawTrees(-1);
+        GpuTimer_Mark("trees");
         for (const auto& obj : objects) if (obj && !isFar(obj.get())) obj->draw(ctx);
         for (const auto& obj : rootObject.children) if (obj) obj->draw(ctx);
         if (drawPassExtra) drawPassExtra(ctx, revZ); // one pass: it also rebuilds (the mid pass did)
@@ -830,8 +834,6 @@ void Scene::drawScene(int gamestate) {
             rlDisableShader();
         }
         GpuTimer_Mark("grass");
-        drawTrees(-1);
-        GpuTimer_Mark("trees");
         KickGpu();
 
         // Transparent pass (sea surfaces) after everything opaque. Depth writes stay on: where LOD
