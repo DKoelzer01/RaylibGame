@@ -40,7 +40,8 @@ int kindVisc[8] = { 5, 5, 5, 5, 5, 5, 5, 5 }, kindMinSpread[8] = { 10, 10, 10, 1
 constexpr int kSiteBricks = 16;        // a site reaches +-16 bricks (256 m) from its origin
 constexpr float kSiteJoin = 180.0f;    // a disturbance within this of a site's origin joins it
 constexpr int kEvaporate = 3;          // resting specks this thin (~1 cm) dry up
-constexpr int kSubsteps = 3;           // simulation steps per 20 Hz tick (water moves a cell a step)
+constexpr int kSubsteps = 3;           // CPU simulation steps per 50 ms (water moves a cell a step)
+constexpr double kTickSeconds = 0.025; // a tick (a job + meshes) every 25 ms: water moved in 1-3 cell jumps every 50-100 ms, hard to follow (#366)
 constexpr int kSleepSteps = 120;       // 2 s without change: a brick sleeps
 constexpr int kLevelEvery = 15;        // levelling pass every 0.25 s
 constexpr int kInitPerStep = 24;       // bricks classified per step, in parallel on the worker pool (each a few ms)
@@ -779,7 +780,11 @@ void RunJob() {
             }
         }
     }
-    const int n = kSubsteps * std::max(1, speed.load());
+    // CPU steps: kSubsteps per 50 ms on average (spring rates assume it), whatever the tick (#366: ticks every 25 ms).
+    static double stepAcc = 0.0;
+    stepAcc += kSubsteps * (kTickSeconds / 0.05);
+    int n = (int)stepAcc; stepAcc -= n;
+    n *= std::max(1, speed.load());
     for (int k = 0; k < n; ++k) {
         ++stepCount;
         if (gpuMode) { for (auto& s : sites) for (Site::Spring& sp : s->springs) StepSpring(*s, sp); } // the GPU runs the cells (GpuTick)
@@ -806,7 +811,7 @@ void RunJob() {
                     if (k) { st.otherVolume += b.fill[i] / 255.0; present |= (uint8_t)(1 << k); }
                     else st.volume += b.fill[i] / 255.0;
                 }
-            if (b.meshDirty && stepCount - b.lastMesh >= 2) {
+            if (b.meshDirty && stepCount - b.lastMesh >= 1) {
                 MeshOut m;
                 MeshBrick(*s, b, m);
                 b.meshDirty = false; b.lastMesh = (int)stepCount;
@@ -1171,8 +1176,8 @@ void Fluid::Update(Scene& world, float dt) {
 
     // A step every 50 ms when the last one has finished (the job owns the state while it runs).
     accum += dt;
-    if (accum < 0.05 || running.load()) return;
-    accum = std::min(accum - 0.05, 0.1);
+    if (accum < kTickSeconds || running.load()) return;
+    accum = std::min(accum - kTickSeconds, 0.1);
     bool work;
     { std::lock_guard<std::mutex> c(cmdMx); work = !commands.empty(); }
     {
@@ -1196,7 +1201,7 @@ void Fluid::Update(Scene& world, float dt) {
     }
     // GPU substeps: twice the CPU's - the order-independent GPU step moves water one cell a substep, where the
     // CPU's in-place sweep carried it several cells along the sweep.
-    if (gpuMode) { std::lock_guard<std::mutex> lock(simMx); GpuTick(2 * kSubsteps * std::max(1, speed.load())); }
+    if (gpuMode) { std::lock_guard<std::mutex> lock(simMx); GpuTick((int)lround(2 * kSubsteps * (kTickSeconds / 0.05)) * std::max(1, speed.load())); } // 120 a second, as before
     (void)world;
     running = true;
     WorldJobs().submit(-0.5f, [] { RunJob(); running = false; });
