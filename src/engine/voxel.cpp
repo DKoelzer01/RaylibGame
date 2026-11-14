@@ -651,7 +651,7 @@ const RiverNetwork* PlanetField::rivers() const {
             // Terrain-first rivers (Plan 7 step 5, #359): on the bake's own 200 m grid, from ~2 km^2 of drainage (upland
             // streams), barely meandering (the baked valleys already wind), each level held under the full ground
             // along its curve (rivers only cut now).
-            rp.cell = 200.0f; rp.riverArea = 2.0e6f; rp.meander = 0.05f; rp.maxReach = 180.0f;
+            rp.cell = 200.0f; rp.riverArea = 2.0e6f; rp.meander = 0.05f; rp.maxReach = 180.0f; rp.lakeDepth = 2.5f;
             rp.fineHeight = [this](Vector3 d) { return elevationBase(d, 8.0f); };
         }
         const auto t0 = std::chrono::steady_clock::now();

@@ -24,6 +24,7 @@ public:
         float meander = 0.18f;          // sideways swing, fraction of a link's length (at most 70 m)
         std::function<float(Vector3)> fineHeight; // optional: the full ground height (m), sampled along the links
         float maxReach = 300.0f;        // m: the valley carving's reach from a centreline (the index covers it)
+        float lakeDepth = 6.0f;         // m: a filled depression deeper than this holds water (a lake, or with the bake a pond)
     };
     // height(dir): smooth land height (m above sea level) for a unit direction.
     RiverNetwork(float radius, unsigned int seed, const std::function<float(Vector3)>& height, const Params& params);

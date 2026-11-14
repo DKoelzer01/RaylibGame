@@ -16,7 +16,6 @@ namespace {
 
     constexpr float kDrop = 0.8f;         // water below the smooth land at a river node
     constexpr float kMinLevel = 0.3f;     // at the sea
-    constexpr float kLakeDepth = 6.0f;    // a filled depression this deep is a lake
 
     uint32_t Hash(uint32_t x, uint32_t seed) {
         uint32_t h = x * 2654435761u ^ seed * 0x9e3779b9u;
@@ -164,7 +163,7 @@ RiverNetwork::RiverNetwork(float radius, unsigned int seed, const std::function<
                 for (int k = 0; k < 8; ++k)
                     if (nb[k] >= 0 && filled[nb[k]] && group[nb[k]] < 0) { group[nb[k]] = s; cells.push_back(nb[k]); }
             }
-            if (level - lowest <= kLakeDepth || level <= 1.0f) continue; // a shallow dip: no lake
+            if (level - lowest <= params.lakeDepth || level <= 1.0f) continue; // a shallow dip: no lake
             // The land just outside: on each edge to a cell outside the basin, and kLakeMargin beyond.
             float rim = 1e30f;
             for (int c : cells) {
@@ -189,7 +188,7 @@ RiverNetwork::RiverNetwork(float radius, unsigned int seed, const std::function<
                 }
             }
             level = std::min(level, rim - 3.0f);
-            if (level - lowest <= kLakeDepth || level <= 1.0f) continue;
+            if (level - lowest <= params.lakeDepth || level <= 1.0f) continue;
             for (int c : cells) { lake[c] = 1; lakeLevel[c] = level; ++st.lakeCells; }
         }
     }
