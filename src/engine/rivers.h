@@ -15,7 +15,18 @@
 
 class RiverNetwork {
 public:
+    // The network's grid and rivers. With the erosion bake (Plan 7 step 5, #359): the bake's 200 m cells, rivers from
+    // ~2 km^2 of drainage (upland streams), little meander (the baked valleys already wind), and fineHeight: each
+    // link's level is also held under the fine ground sampled along its curve (no bank fill holds it up any more).
+    struct Params {
+        float cell = 420.0f;            // m, target cell size
+        float riverArea = 7.06e6f;      // m^2 drained before a river starts
+        float meander = 0.18f;          // sideways swing, fraction of a link's length (at most 70 m)
+        std::function<float(Vector3)> fineHeight; // optional: the full ground height (m), sampled along the links
+        float maxReach = 300.0f;        // m: the valley carving's reach from a centreline (the index covers it)
+    };
     // height(dir): smooth land height (m above sea level) for a unit direction.
+    RiverNetwork(float radius, unsigned int seed, const std::function<float(Vector3)>& height, const Params& params);
     RiverNetwork(float radius, unsigned int seed, const std::function<float(Vector3)>& height);
 
     // The river closest to a point (body-local unit direction), within `reach` metres of its centreline.
@@ -39,7 +50,7 @@ public:
     static constexpr float kLakeMargin = 60.0f;
 
     // Tests and stats.
-    struct Stats { int cells = 0, landCells = 0, riverCells = 0, lakeCells = 0, mouths = 0; float cellSize = 0.0f, longestKm = 0.0f; };
+    struct Stats { int cells = 0, landCells = 0, riverCells = 0, lakeCells = 0, mouths = 0, riverCellsAbove700 = 0; float cellSize = 0.0f, longestKm = 0.0f, highestSource = 0.0f; };
     Stats stats() const { return st; }
     // Every river link: the level never rises and the width never shrinks going downstream; returns
     // the number of links checked and the worst rise (m) / shrink (m) seen.
@@ -49,9 +60,10 @@ public:
     void longestPath(float step, std::vector<Vector3>& dirs, std::vector<float>& levels) const;
 
     static constexpr float kMaxReach = 300.0f; // valley carving reaches at most this far from a centreline
+    float reach() const { return reachM; }    // this network's reach (Params::maxReach)
 
 private:
-    float R = 1.0f, cell = 420.0f;
+    float R = 1.0f, cell = 420.0f, reachM = kMaxReach;
     int n = 1; // cells per face edge
     std::vector<float> h, F, L, hw, dep;
     std::vector<int> parent, mainChild;

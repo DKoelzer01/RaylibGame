@@ -361,7 +361,9 @@ namespace {
 }
 
 float PlanetField::riverWeight(const Land& l) const {
-    // Rivers on land valleys, not in the mountains, above the sea (they meet it at the coast).
+    // Rivers on land valleys, not in the mountains, above the sea (they meet it at the coast). With the bake the
+    // network follows its drainage, which starts high in the ranges (#359): no mountain or altitude cut.
+    if (erosion()) return l.valleyWeight * Smoothstep(1.0f, 6.0f, l.h);
     return l.valleyWeight * (1.0f - Smoothstep(80.0f, 250.0f, l.ridge)) * Smoothstep(1.0f, 6.0f, l.h) * (1.0f - Smoothstep(700.0f, 900.0f, l.h));
 }
 
@@ -407,7 +409,8 @@ PlanetField::Pond PlanetField::pondOfCell(int cx, int cy, int cz) const {
     if (e.f == this && e.x == cx && e.y == cy && e.z == cz) return e.p;
     Pond p{ false, { 0, 0, 0 }, 0, 0, 0 };
     uint32_t h = PondHash(cx, cy, cz, (uint32_t)(radius * 7.0f) ^ 0x9e37u);
-    if (!moon && PondUnit(h) < 0.4f) {
+    // With the bake the random ponds retire (#359): their bowls and embankments forced the ground to them.
+    if (!moon && !erosion() && PondUnit(h) < 0.4f) {
         const Vector3 c = { (cx + 0.2f + 0.6f * PondUnit(h)) * kPondCell, (cy + 0.2f + 0.6f * PondUnit(h)) * kPondCell, (cz + 0.2f + 0.6f * PondUnit(h)) * kPondCell };
         const float len = Vector3Length(c);
         if (len > 1.0f) {
@@ -463,6 +466,8 @@ float PlanetField::elevation(Vector3 dir, float fp) const {
     // Rivers of the drainage network: a valley (a floodplain 2.5 channel half-widths across at the
     // water, then sides rising 0.3 m per m) cut into higher ground, low banks where the ground dips
     // below the water, and the channel bed. The valley stays resolved further out than the channel.
+    // With the bake, water only cuts (#359): no lake bank, river bank or raised bed (they made pedestals and levees).
+    const bool carveOnly = erosion() != nullptr;
     if (const RiverNetwork* net = rivers()) {
         // Lakes (rivers.h): the level is held under the land around the basin, so the shore is the
         // terrain's own. Between the samples that checked it the ground may still dip lower; a low
@@ -471,28 +476,29 @@ float PlanetField::elevation(Vector3 dir, float fp) const {
         float lv = 0.0f, lout = 0.0f;
         const bool nearLake = net->lakeAt(dir, lv, lout);
         const bool inLake = nearLake && lout < RiverNetwork::kLakeMargin;
-        if (nearLake && lout > 0.0f && h < lv + 0.3f) {
+        if (!carveOnly && nearLake && lout > 0.0f && h < lv + 0.3f) {
             const float M = RiverNetwork::kLakeMargin;
             const float k = Smoothstep(0.3f * M, 0.8f * M, lout) * (1.0f - Smoothstep(1.2f * M, 2.0f * M, lout));
             h += std::min(lv + 0.3f - h, 4.0f) * k;
         }
-        const RiverNetwork::Hit rh = net->nearest(dir, RiverNetwork::kMaxReach);
+        const RiverNetwork::Hit rh = net->nearest(dir, net->reach());
         // In a lake, only a river arriving at the lake's level shapes the ground (its valley and bed
         // lead into the lake; no banks, which stood up out of the water as sand ridges); the outflow
         // and any other river leave the lake alone.
         if (rh.found && (!inLake || fabsf(rh.level - lv) < 1.0f)) {
             const float d = rh.dist, half = rh.halfWidth;
-            const float flat = 2.5f * half, reach = std::min(flat + 200.0f, RiverNetwork::kMaxReach);
+            // With the bake the valleys are the terrain's own: only the channel and its near banks are cut (#359).
+            const float flat = 2.5f * half, reach = std::min(flat + (carveOnly ? 60.0f : 200.0f), net->reach());
             const float allowed = rh.level + 0.5f + std::max(0.0f, d - flat) * 0.3f;
             const float vw = (1.0f - Smoothstep(reach * 0.7f, reach, d)) * std::clamp(2.0f - fp / 512.0f, 0.0f, 1.0f);
             if (h > allowed) h += (allowed - h) * vw;
             const float cw = std::clamp(2.0f - fp / (4.0f * half), 0.0f, 1.0f) * Smoothstep(-2.0f, 0.5f, l.h); // not out at sea
             const float bank = rh.level + 0.4f;
-            if (!inLake && h < bank && d < half + 12.0f) h += (bank - h) * (1.0f - Smoothstep(half, half + 12.0f, d)) * cw;
+            if (!carveOnly && !inLake && h < bank && d < half + 12.0f) h += (bank - h) * (1.0f - Smoothstep(half, half + 12.0f, d)) * cw;
             if (d < half) {
                 const float t = 1.0f - (d / half) * (d / half);
                 const float bed = rh.level + 0.3f - (rh.depth + 0.3f) * t;
-                h += (bed - h) * cw;
+                if (!carveOnly || bed < h) h += (bed - h) * cw;
             }
         }
     }
@@ -640,7 +646,18 @@ PlanetField::RiverState::~RiverState() = default;
 const RiverNetwork* PlanetField::rivers() const {
     if (moon || !riverState) return nullptr;
     std::call_once(riverState->once, [this] {
-        riverState->net = std::make_unique<RiverNetwork>(radius, riverSeed, [this](Vector3 d) { return land(d, 256.0f).h; });
+        RiverNetwork::Params rp;
+        if (erosion()) {
+            // Terrain-first rivers (Plan 7 step 5, #359): on the bake's own 200 m grid, from ~2 km^2 of drainage (upland
+            // streams), barely meandering (the baked valleys already wind), each level held under the full ground
+            // along its curve (rivers only cut now).
+            rp.cell = 200.0f; rp.riverArea = 2.0e6f; rp.meander = 0.05f; rp.maxReach = 180.0f;
+            rp.fineHeight = [this](Vector3 d) { return elevationBase(d, 8.0f); };
+        }
+        const auto t0 = std::chrono::steady_clock::now();
+        riverState->net = std::make_unique<RiverNetwork>(radius, riverSeed, [this](Vector3 d) { return land(d, 256.0f).h; }, rp);
+        printf("rivers: network built in %.2f s (%d cells of %.0f m)\n", std::chrono::duration<float>(std::chrono::steady_clock::now() - t0).count(),
+               riverState->net->stats().cells, riverState->net->stats().cellSize);
     });
     return riverState->net.get();
 }

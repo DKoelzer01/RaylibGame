@@ -1764,6 +1764,7 @@ int main(int argc, char** argv)
                             riverLongest = s.longestKm; riverBuild = (float)buildS; riverWet = wetShare;
                             printf("bench: rivers: network built in %.2f s: %d cells of %.0f m, %d land, %d river (%.1f%%), %d lake cells, %d mouths; %d links: worst rise %.5f m, worst narrowing %.5f m\n",
                                    buildS, s.cells, s.cellSize, s.landCells, s.riverCells, 100.0f * s.riverCells / std::max(1, s.landCells), s.lakeCells, s.mouths, links, rise, shrink);
+                            printf("bench: rivers: %d river cells above 700 m, highest source at %.0f m (#359)\n", s.riverCellsAbove700, s.highestSource);
                             printf("bench: rivers: longest %.1f km, walked every 5 m: %.0f%% wet, longest dry run %.0f m, worst rise %.3f m, from %.1f m to %.1f m\n",
                                    s.longestKm, 100.0f * wetShare, worstDry, worstUp, levels.empty() ? 0.0f : levels.front(), levels.empty() ? 0.0f : levels.back());
                             // A look at a river: the nearest to the start (every 150 m within 8 km).

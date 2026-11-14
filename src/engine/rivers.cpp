@@ -5,14 +5,15 @@
 #include <cmath>
 #include <queue>
 #include <thread>
+#include <chrono>
+#include <cstdio>
+#include <cstdlib>
 
 namespace {
     const Vector3 kN[6] = { { 1, 0, 0 }, { -1, 0, 0 }, { 0, 1, 0 }, { 0, -1, 0 }, { 0, 0, 1 }, { 0, 0, -1 } };
     const Vector3 kU[6] = { { 0, 1, 0 }, { 0, 1, 0 }, { 0, 0, 1 }, { 0, 0, 1 }, { 1, 0, 0 }, { 1, 0, 0 } };
     const Vector3 kV[6] = { { 0, 0, 1 }, { 0, 0, -1 }, { 1, 0, 0 }, { -1, 0, 0 }, { 0, 1, 0 }, { 0, -1, 0 } };
 
-    constexpr float kTargetCell = 420.0f; // m
-    constexpr float kRiverArea = 40.0f;   // cells draining here before a river starts (~7 km^2)
     constexpr float kDrop = 0.8f;         // water below the smooth land at a river node
     constexpr float kMinLevel = 0.3f;     // at the sea
     constexpr float kLakeDepth = 6.0f;    // a filled depression this deep is a lake
@@ -70,10 +71,14 @@ void RiverNetwork::neighbours(int c, int out[8]) const {
         }
 }
 
-RiverNetwork::RiverNetwork(float radius, unsigned int seed, const std::function<float(Vector3)>& height) {
+RiverNetwork::RiverNetwork(float radius, unsigned int seed, const std::function<float(Vector3)>& height, const Params& params) {
     R = radius;
-    n = std::max(4, (int)ceilf(0.5f * PI * R / kTargetCell));
+    n = std::max(4, (int)ceilf(0.5f * PI * R / params.cell));
     cell = 0.5f * PI * R / n;
+    const float riverCells = params.riverArea / (cell * cell); // cells draining here before a river starts
+    auto tStage = std::chrono::steady_clock::now();
+    const bool timeStages = getenv("RAYLIBGAME_RIVER_TIMING") != nullptr;
+    auto stage = [&](const char* what) { if (!timeStages) return; const auto t = std::chrono::steady_clock::now(); printf("rivers: before %s: %.2f s\n", what, std::chrono::duration<float>(t - tStage).count()); tStage = t; };
     const int N = 6 * n * n;
     st.cells = N; st.cellSize = cell;
     h.assign(N, 0.0f);
@@ -84,6 +89,18 @@ RiverNetwork::RiverNetwork(float radius, unsigned int seed, const std::function<
             pool.emplace_back([&, t] { for (int c = t; c < N; c += T) h[c] = height(centre(c)); });
         for (auto& th : pool) th.join();
     }
+    // The 8 neighbours of every cell, once, on threads: neighbours() costs trigonometry per call, and the flood and
+    // the lake distances below called it ~20 M times (2.9 s of a 3.6 s build on the 200 m grid, #359).
+    std::vector<int> nbTable((size_t)N * 8);
+    {
+        const int T = std::max(1u, std::min(16u, std::thread::hardware_concurrency()));
+        std::vector<std::thread> pool;
+        for (int t = 0; t < T; ++t)
+            pool.emplace_back([&, t] { for (int c = t; c < N; c += T) neighbours(c, &nbTable[(size_t)c * 8]); });
+        for (auto& th : pool) th.join();
+    }
+    auto nbOf = [&nbTable](int c, int out[8]) { std::copy_n(&nbTable[(size_t)c * 8], 8, out); };
+    stage("heights + neighbours");
     // Priority flood from the sea: each cell drains to the cell that reached it; depressions fill to
     // their spill level (+1 cm per cell so every filled cell still drains).
     F.assign(N, 0.0f);
@@ -101,7 +118,7 @@ RiverNetwork::RiverNetwork(float radius, unsigned int seed, const std::function<
     while (!q.empty()) {
         const int c = q.top().second; q.pop();
         order.push_back(c);
-        neighbours(c, nb);
+        nbOf(c, nb);
         for (int k = 0; k < 8; ++k) {
             const int m = nb[k];
             if (m < 0 || seen[m]) continue;
@@ -111,6 +128,7 @@ RiverNetwork::RiverNetwork(float radius, unsigned int seed, const std::function<
             q.push({ F[m], m });
         }
     }
+    stage("flood");
     // Flow: each land cell adds itself, downstream.
     acc.assign(N, 0.0f);
     for (int c = 0; c < N; ++c) if (h[c] >= 0.0f) acc[c] = 1.0f;
@@ -121,8 +139,9 @@ RiverNetwork::RiverNetwork(float radius, unsigned int seed, const std::function<
     for (int c = 0; c < N; ++c) {
         if (h[c] < 0.0f) continue;
         ++st.landCells;
-        if (acc[c] >= kRiverArea) { river[c] = 1; ++st.riverCells; }
+        if (acc[c] >= riverCells) { river[c] = 1; ++st.riverCells; }
     }
+    stage("flow");
     // Lakes: each basin the flood filled (connected filled land cells) that is deep enough. Its
     // level is one value over the whole basin, and is held 3 m under the land just outside it (the
     // basin's edges, and kLakeMargin beyond them): the flood saw only cell centres, and between
@@ -141,7 +160,7 @@ RiverNetwork::RiverNetwork(float radius, unsigned int seed, const std::function<
                 const int c = cells[i];
                 level = std::min(level, F[c]);
                 lowest = std::min(lowest, h[c]);
-                neighbours(c, nb);
+                nbOf(c, nb);
                 for (int k = 0; k < 8; ++k)
                     if (nb[k] >= 0 && filled[nb[k]] && group[nb[k]] < 0) { group[nb[k]] = s; cells.push_back(nb[k]); }
             }
@@ -149,7 +168,7 @@ RiverNetwork::RiverNetwork(float radius, unsigned int seed, const std::function<
             // The land just outside: on each edge to a cell outside the basin, and kLakeMargin beyond.
             float rim = 1e30f;
             for (int c : cells) {
-                neighbours(c, nb);
+                nbOf(c, nb);
                 const Vector3 pc = Vector3Scale(centre(c), R);
                 for (int k = 0; k < 8; ++k) {
                     const int m = nb[k];
@@ -174,6 +193,7 @@ RiverNetwork::RiverNetwork(float radius, unsigned int seed, const std::function<
             for (int c : cells) { lake[c] = 1; lakeLevel[c] = level; ++st.lakeCells; }
         }
     }
+    stage("lakes");
     // Steps from each cell to the nearest lake cell (breadth first), for cheap "lake near" tests.
     lakeSteps.assign(N, 255);
     {
@@ -182,15 +202,69 @@ RiverNetwork::RiverNetwork(float radius, unsigned int seed, const std::function<
         for (int d = 1; d < 255 && !frontier.empty(); ++d) {
             next.clear();
             for (int c : frontier) {
-                neighbours(c, nb);
+                nbOf(c, nb);
                 for (int k = 0; k < 8; ++k) if (nb[k] >= 0 && lakeSteps[nb[k]] == 255) { lakeSteps[nb[k]] = (unsigned char)d; next.push_back(nb[k]); }
             }
             frontier.swap(next);
         }
     }
+    stage("lake distances");
+    // The largest tributary of each node (the curves pass through it).
+    mainChild.assign(N, -1);
+    for (int c = 0; c < N; ++c) {
+        if (!river[c]) continue;
+        const int p = parent[c];
+        if (p >= 0 && (mainChild[p] < 0 || acc[c] > acc[mainChild[p]])) mainChild[p] = c;
+    }
+    // Curves: each link c -> parent as K pieces, Catmull-Rom through the neighbouring nodes plus a meander that
+    // vanishes at the nodes (so links join up). The points first: the levels below sample the ground along them.
+    constexpr int K = 8;
+    std::vector<int> curveOf(N, -1);
+    std::vector<Vector3> curvePts;
+    for (int c = 0; c < N; ++c) {
+        if (!river[c] || parent[c] < 0) continue;
+        const int p = parent[c];
+        const bool sea = !river[p];
+        const Vector3 P1 = Vector3Scale(centre(c), R), P2 = Vector3Scale(centre(p), R);
+        const Vector3 P0 = mainChild[c] >= 0 ? Vector3Scale(centre(mainChild[c]), R) : Vector3Add(P1, Vector3Subtract(P1, P2));
+        const Vector3 P3 = !sea && parent[p] >= 0 ? Vector3Scale(centre(parent[p]), R) : Vector3Add(P2, Vector3Subtract(P2, P1));
+        const float segLen = Vector3Distance(P1, P2);
+        const uint32_t hs = Hash((uint32_t)c, seed);
+        const float amp = ((hs >> 8) * (1.0f / 16777216.0f) * 2.0f - 1.0f) * std::min(params.meander * segLen, 70.0f);
+        curveOf[c] = (int)curvePts.size();
+        curvePts.push_back(P1);
+        for (int k = 1; k <= K; ++k) {
+            const float t = (float)k / K;
+            Vector3 q2 = CatmullRom(P0, P1, P2, P3, t);
+            const Vector3 up = Vector3Normalize(q2);
+            const Vector3 tan = Vector3Subtract(CatmullRom(P0, P1, P2, P3, std::min(1.0f, t + 0.01f)), CatmullRom(P0, P1, P2, P3, std::max(0.0f, t - 0.01f)));
+            const Vector3 side = Vector3Normalize(Vector3CrossProduct(up, tan));
+            q2 = Vector3Add(q2, Vector3Scale(side, amp * sinf(PI * t)));
+            curvePts.push_back(Vector3Scale(Vector3Normalize(q2), R));
+        }
+    }
+    stage("curves");
+    // The fine ground along each link (#359): with no bank fill, a level above it would stand on nothing.
+    std::vector<float> fineMin(N, 1e30f);
+    if (params.fineHeight) {
+        std::vector<int> links;
+        for (int c = 0; c < N; ++c) if (curveOf[c] >= 0) links.push_back(c);
+        const int T = std::max(1u, std::min(16u, std::thread::hardware_concurrency()));
+        std::vector<std::thread> pool;
+        for (int t = 0; t < T; ++t)
+            pool.emplace_back([&, t] {
+                for (size_t i = t; i < links.size(); i += T) {
+                    const int c = links[i];
+                    float m = 1e30f;
+                    for (int k = 0; k <= K; ++k) m = std::min(m, params.fineHeight(Vector3Normalize(curvePts[curveOf[c] + k])));
+                    fineMin[c] = m;
+                }
+            });
+        for (auto& th : pool) th.join();
+    }
+    stage("fine ground");
     // Levels: a running minimum downstream (children before parents in reverse flood order).
     L.assign(N, 0.0f); hw.assign(N, 0.0f); dep.assign(N, 0.0f);
-    mainChild.assign(N, -1);
     // A floor: no river runs below the next lake downstream (it must arrive at the lake's surface).
     // The floor only falls going downstream (a lake's level is above anything it drains to), and so
     // does the running minimum, so their maximum does too.
@@ -203,57 +277,48 @@ RiverNetwork::RiverNetwork(float radius, unsigned int seed, const std::function<
     for (int k = (int)order.size() - 1; k >= 0; --k) {
         const int c = order[k];
         if (!river[c]) continue;
-        L[c] = std::max(floorLevel[c], std::min(lake[c] ? lakeLevel[c] : F[c] - kDrop, minChild[c]));
-        const float s = sqrtf(acc[c] / kRiverArea);
+        L[c] = std::max(floorLevel[c], std::min(lake[c] ? lakeLevel[c] : std::min(F[c], fineMin[c]) - kDrop, minChild[c]));
+        const float s = sqrtf(acc[c] * cell * cell / 7.06e6f); // widths by drained area (m^2): as before for the same river
         hw[c] = std::min(3.0f + 2.5f * s, 45.0f);
         dep[c] = std::min(1.2f + 0.6f * s, 6.0f);
-        const int p = parent[c];
-        if (p >= 0) {
-            minChild[p] = std::min(minChild[p], L[c]);
-            if (mainChild[p] < 0 || acc[c] > acc[mainChild[p]]) mainChild[p] = c;
-        }
+        if (parent[c] >= 0) minChild[parent[c]] = std::min(minChild[parent[c]], L[c]);
+        if (h[c] > 700.0f) ++st.riverCellsAbove700;
+        if (mainChild[c] < 0) st.highestSource = std::max(st.highestSource, h[c]);
     }
-    // Curves: each link c -> parent as 8 pieces, Catmull-Rom through the neighbouring nodes plus a
-    // meander that vanishes at the nodes (so links join up).
     for (int c = 0; c < N; ++c) {
-        if (!river[c] || parent[c] < 0) continue;
+        if (curveOf[c] < 0) continue;
         const int p = parent[c];
         const bool sea = !river[p];
         if (sea) ++st.mouths;
-        const Vector3 P1 = Vector3Scale(centre(c), R), P2 = Vector3Scale(centre(p), R);
-        const Vector3 P0 = mainChild[c] >= 0 ? Vector3Scale(centre(mainChild[c]), R) : Vector3Add(P1, Vector3Subtract(P1, P2));
-        const Vector3 P3 = !sea && parent[p] >= 0 ? Vector3Scale(centre(parent[p]), R) : Vector3Add(P2, Vector3Subtract(P2, P1));
         const float la = L[c], lb = sea ? kMinLevel : L[p];
         const float wa = hw[c], wb = sea ? hw[c] * 1.2f : hw[p];
         const float da = dep[c], db = sea ? dep[c] : dep[p];
-        const float segLen = Vector3Distance(P1, P2);
-        const uint32_t hs = Hash((uint32_t)c, seed);
-        const float amp = ((hs >> 8) * (1.0f / 16777216.0f) * 2.0f - 1.0f) * std::min(0.18f * segLen, 70.0f);
-        constexpr int K = 8;
-        Vector3 prev = P1;
         for (int k = 1; k <= K; ++k) {
-            const float t = (float)k / K;
-            Vector3 q2 = CatmullRom(P0, P1, P2, P3, t);
-            const Vector3 up = Vector3Normalize(q2);
-            const Vector3 tan = Vector3Subtract(CatmullRom(P0, P1, P2, P3, std::min(1.0f, t + 0.01f)), CatmullRom(P0, P1, P2, P3, std::max(0.0f, t - 0.01f)));
-            const Vector3 side = Vector3Normalize(Vector3CrossProduct(up, tan));
-            q2 = Vector3Add(q2, Vector3Scale(side, amp * sinf(PI * t)));
-            q2 = Vector3Scale(Vector3Normalize(q2), R);
-            const float t0 = (float)(k - 1) / K;
-            pieces.push_back({ prev, q2, la + (lb - la) * t0, la + (lb - la) * t, wa + (wb - wa) * t0, wa + (wb - wa) * t, da + (db - da) * t0, da + (db - da) * t });
-            pieces.back().mid = Vector3Scale(Vector3Add(prev, q2), 0.5f); pieces.back().halfLen = 0.5f * Vector3Distance(prev, q2);
-            prev = q2;
+            const float t = (float)k / K, t0 = (float)(k - 1) / K;
+            const Vector3 a = curvePts[curveOf[c] + k - 1], b = curvePts[curveOf[c] + k];
+            pieces.push_back({ a, b, la + (lb - la) * t0, la + (lb - la) * t, wa + (wb - wa) * t0, wa + (wb - wa) * t, da + (db - da) * t0, da + (db - da) * t });
+            pieces.back().mid = Vector3Scale(Vector3Add(a, b), 0.5f); pieces.back().halfLen = 0.5f * Vector3Distance(a, b);
         }
     }
+    stage("levels + pieces");
+    // Index: each piece in every cell within the carving reach of it (one ring of 420 m cells; two of 200 m ones).
     index.assign(N, {});
+    reachM = params.maxReach;
+    const int rings = std::max(1, (int)ceilf(reachM / cell));
+    std::vector<int> near, frontier, next;
     for (int i = 0; i < (int)pieces.size(); ++i) {
         const Vector3 mid = Vector3Scale(Vector3Add(pieces[i].a, pieces[i].b), 0.5f);
-        const int m = cellOf(Vector3Normalize(mid));
-        index[m].push_back(i);
-        neighbours(m, nb);
-        for (int k = 0; k < 8; ++k) if (nb[k] >= 0) index[nb[k]].push_back(i);
+        near.assign(1, cellOf(Vector3Normalize(mid)));
+        frontier = near;
+        for (int r = 0; r < rings; ++r) {
+            next.clear();
+            for (int c : frontier) { nbOf(c, nb); for (int k = 0; k < 8; ++k) if (nb[k] >= 0 && std::find(near.begin(), near.end(), nb[k]) == near.end()) { near.push_back(nb[k]); next.push_back(nb[k]); } }
+            frontier.swap(next);
+        }
+        for (int c : near) index[c].push_back(i);
     }
     for (auto& v : index) { std::sort(v.begin(), v.end()); v.erase(std::unique(v.begin(), v.end()), v.end()); }
+    stage("index");
     // The longest river (source to sea), for stats and tests.
     std::vector<float> len(N, 0.0f);
     for (int k = (int)order.size() - 1; k >= 0; --k) { const int c = order[k]; if (river[c] && parent[c] >= 0) len[parent[c]] = std::max(len[parent[c]], len[c] + cell); }
@@ -367,3 +432,5 @@ void RiverNetwork::longestPath(float step, std::vector<Vector3>& dirs, std::vect
         }
     }
 }
+
+RiverNetwork::RiverNetwork(float radius, unsigned int seed, const std::function<float(Vector3)>& height) : RiverNetwork(radius, seed, height, Params()) {}
