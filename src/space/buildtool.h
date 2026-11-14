@@ -17,6 +17,8 @@ struct BuildToolState {
     bool active = false;
     int part = 0;           // PartType
     int orient = 0;         // 0..23
+    bool orientManual = false; // #196: R/V pressed: the orientation sticks; otherwise parts face the player automatically
+    int autoPart = -1;          // the part the automatic facing was last reset for (another part: automatic again)
     int material = 0;       // BuildMaterial index for shapes
     float reach = 8.0f;
 };
@@ -27,6 +29,7 @@ void BuildTool_Draw3D(Scene& world);
 void BuildTool_DrawHUD();
 float BuildTool_BreakProgress();   // 0..1 while LMB is held on a part (the HUD bar under the crosshair)
 bool BuildTool_AimingPart();       // the crosshair is on a built part in reach (LMB breaks it)
+int BuildTool_AimOrient();        // the aimed placement's orientation (0..23), -1 without an aim (#196 test)
 // Place a part on a plot (charging its cost unless creative or charge is false) and lay its
 // foundation against the ground. Used by the tool and by scripted tests.
 bool BuildTool_Place(Planetoid& body, Plot& plot, const Part& part, bool charge);

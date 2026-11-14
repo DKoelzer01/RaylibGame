@@ -247,6 +247,7 @@ int main(int argc, char** argv)
     bool benchTerrain = false; int terrainPhase = 0; double terrainT0 = 0.0; Vector3 terrainAt{}, terrainOut{}; // --shot-terrain
     bool benchShelter = false; int shelterPhase = 0; double shelterT0 = 0.0; Vector3 shelterEye{}, shelterLook{}; // --shot-shelter (#369)
     bool benchRoom = false; int roomPhase = 0; double roomT0 = 0.0; uint32_t roomPlot = 0; Vector3 roomEye{}, roomLook{}; // --shot-room (#369)
+    bool benchFacing = false; // --test-facing (#196)
     bool benchPumpHand = false; // --test-pump-hand (#280): the pump test with a hand pump worked for 60 s
     bool benchPumpBoiler = false; int pumpBoilerPart = -1; // --test-pump-boiler (#229 review): the pipes end at a full boiler; the world loses no water
     bool benchPump = false; int pumpPhase = 0, pumpCable = -1; double pumpT0 = 0.0, pumpedAtCut = 0.0; uint32_t pumpPlot = 0; Vector3 pumpBasin{}; float pumpRise = 0.0f; // --test-pump
@@ -458,6 +459,7 @@ int main(int argc, char** argv)
         if (std::string(argv[i]) == "--shot-terrain") benchTerrain = true;
         if (std::string(argv[i]) == "--shot-shelter") benchShelter = true;
         if (std::string(argv[i]) == "--shot-room") benchRoom = true;
+        if (std::string(argv[i]) == "--test-facing") benchFacing = true;
         if (std::string(argv[i]) == "--shot-shadow") benchShadow = true;
         if (std::string(argv[i]) == "--shot-particles") benchParticles = true;
         if (std::string(argv[i]) == "--test-biomes") benchBiomes = true;
@@ -3302,6 +3304,56 @@ int main(int argc, char** argv)
                             benchFarForest = false;
                         }
                     }
+                } else if (benchFacing && WorldIdle()) {
+                    // --test-facing (#196): parts face the player until R/V. Ground aims from four headings put the front
+                    // (local +z) toward the camera; a wall aim puts it out of the wall; a hand rotation sticks while the
+                    // camera turns; another part faces the player again.
+                    Planetoid* p = dynamic_cast<Planetoid*>(world.objects[0].get());
+                    player.spawnOn(world, *p, StartSpawnDir(*p));
+                    const Vector3 feet = (player.position - world.renderOrigin).toFloat();
+                    const Vector3 flat = Vector3Normalize(Vector3Subtract(player.forward, Vector3Scale(player.up, Vector3DotProduct(player.forward, player.up))));
+                    TerrainHit th;
+                    RaycastTerrain(world, Ray{ Vector3Add(Vector3Add(feet, Vector3Scale(flat, 6.0f)), Vector3Scale(player.up, 20.0f)), Vector3Negate(player.up) }, 60.0f, th);
+                    if (!p->plots) p->plots = std::make_unique<PlotSet>();
+                    Plot* plot = p->plots->plotFor(th.local, 0.0f, true);
+                    BuildTool_Place(*p, *plot, { PartType::Cube, { 0, 1, 0 }, 0 }, false); // a block standing on the ground
+                    const Camera3D keep = world.camera;
+                    const bool flyKeep = player.flyMode;
+                    buildTool.active = true;
+                    buildTool.part = (int)PartType::Furnace;
+                    player.nearest = p; // the build tool aims on the nearest body (set by the player's own update)
+                    auto lookFrom = [&](Vector3 eyePlot, Vector3 atPlot) {
+                        world.camera.position = p->toWorld(plot->toBody(eyePlot));
+                        world.camera.target = p->toWorld(plot->toBody(atPlot));
+                        world.camera.up = p->dirToWorld(plot->up);
+                        BuildTool_Update(world, false, true);
+                        return BuildTool_AimOrient();
+                    };
+                    auto front = [](int o) { const int* m = Orientation(std::max(o, 0)); return Int3{ m[2], m[5], m[8] }; };
+                    int good = 0;
+                    const Int3 heads[4] = { { 1, 0, 0 }, { -1, 0, 0 }, { 0, 0, 1 }, { 0, 0, -1 } };
+                    for (const Int3& h : heads) { // the camera 4 m out along h, aiming at the ground 2.5 m out: the front should point back at it
+                        const Vector3 at = { 0.25f + 2.5f * h.x, 0.5f, 0.25f + 2.5f * h.z };
+                        const int o = lookFrom({ at.x + 2.0f * h.x, 2.2f, at.z + 2.0f * h.z }, at);
+                        const Int3 f = front(o);
+                        const bool ok = o >= 0 && f.x == h.x && f.y == 0 && f.z == h.z;
+                        good += ok;
+                        printf("bench: facing: ground, camera toward (%d, 0, %d): orient %d, front (%d, %d, %d) %s\n", h.x, h.z, o, f.x, f.y, f.z, ok ? "ok" : "WRONG");
+                    }
+                    const int ow = lookFrom({ 3.0f, 0.75f, 0.25f }, { 0.25f, 0.75f, 0.25f }); // the block's +x face
+                    const bool wallOk = front(ow).x == 1 && front(ow).y == 0 && front(ow).z == 0;
+                    printf("bench: facing: on the block's +x face: front (%d, %d, %d) %s\n", front(ow).x, front(ow).y, front(ow).z, wallOk ? "ok" : "WRONG");
+                    buildTool.orientManual = true; // as after R
+                    const int om = lookFrom({ 0.25f, 2.2f, -4.0f }, { 0.25f, 0.5f, -2.0f });
+                    const bool stuck = om == ow;
+                    printf("bench: facing: rotated by hand, then turned: orient %d -> %d %s\n", ow, om, stuck ? "(kept) ok" : "CHANGED");
+                    buildTool.part = (int)PartType::Generator; // another part: automatic again
+                    const int oa = lookFrom({ 0.25f, 2.2f, -4.0f }, { 0.25f, 0.5f, -2.0f });
+                    const bool reset = front(oa).z == -1 && !buildTool.orientManual;
+                    printf("bench: facing: another part: front (%d, %d, %d), automatic %s\n", front(oa).x, front(oa).y, front(oa).z, reset ? "ok" : "WRONG");
+                    world.camera = keep; player.flyMode = flyKeep; buildTool.active = false;
+                    printf("bench: facing: %s\n", good == 4 && wallOk && stuck && reset ? "PASS" : "FAIL");
+                    benchFacing = false;
                 } else if (benchRoom && (roomPhase > 0 || WorldIdle())) {
                     // --shot-room (#369): a stone room 5 x 5 m, 3 m high, roofed, a doorway 1.5 m wide in one wall; at night, from
                     // inside by the far wall, looking back at the doorway. Unlit, the room should be near black.
@@ -5343,7 +5395,7 @@ int main(int argc, char** argv)
                         }
                         benchWalkSeconds = 0.0;
                     }
-                } else if ((WorldIdle() && benchDigStrokes == 0 && !benchPaint && !benchSaveLoad && benchWalkSeconds <= 0.0 && benchMineStrokes == 0 && minePhase != 2 && benchFlySeconds <= 0.0 && !benchSuffocate && benchOrbitSeconds <= 0.0 && !benchRide && !benchPark && !benchGravity && !benchPrecision && !benchMantle && !benchAirJump && !benchMoon && !benchHole && !benchWall && !benchDoorway && !benchLedge && !benchTor && !benchMachines && !benchFall && !benchHover && !benchTeleClose && !benchMenus && !benchWater && !benchFlyFollow && !benchHotbar && !benchInventory && !benchMap && !benchViewmodel && !benchQuests && !benchHunger && !benchFarm && !benchAnimals && !benchThreats && benchShotTabs == 0 && !benchForest && !benchFlow && !benchPond && !benchBucket && !benchPump && !benchTerrain && !benchShelter && !benchRoom && !benchShadow && !benchParticles && !benchBiomes && !benchOil && !benchSpring && !benchShotAnimals && !benchShotMachines && benchShotBiomes < 0 && !benchFarForest && !benchRecipes && !benchWeather && !benchDecor && !benchMaterials && !benchDamage && !benchCrafting && !benchSuit && !benchTools && !benchRivers && !benchRing && !benchRocket && !benchStation && !benchBlueprint && !benchSmallBody && !benchTrees && !benchChop && benchPersist == 0 && benchBuild == 0 && benchFactory == 0 && !benchProgression) || GetTime() > 600.0) {
+                } else if ((WorldIdle() && benchDigStrokes == 0 && !benchPaint && !benchSaveLoad && benchWalkSeconds <= 0.0 && benchMineStrokes == 0 && minePhase != 2 && benchFlySeconds <= 0.0 && !benchSuffocate && benchOrbitSeconds <= 0.0 && !benchRide && !benchPark && !benchGravity && !benchPrecision && !benchMantle && !benchAirJump && !benchMoon && !benchHole && !benchWall && !benchDoorway && !benchLedge && !benchTor && !benchMachines && !benchFall && !benchHover && !benchTeleClose && !benchMenus && !benchWater && !benchFlyFollow && !benchHotbar && !benchInventory && !benchMap && !benchViewmodel && !benchQuests && !benchHunger && !benchFarm && !benchAnimals && !benchThreats && benchShotTabs == 0 && !benchForest && !benchFlow && !benchPond && !benchBucket && !benchPump && !benchTerrain && !benchShelter && !benchRoom && !benchFacing && !benchShadow && !benchParticles && !benchBiomes && !benchOil && !benchSpring && !benchShotAnimals && !benchShotMachines && benchShotBiomes < 0 && !benchFarForest && !benchRecipes && !benchWeather && !benchDecor && !benchMaterials && !benchDamage && !benchCrafting && !benchSuit && !benchTools && !benchRivers && !benchRing && !benchRocket && !benchStation && !benchBlueprint && !benchSmallBody && !benchTrees && !benchChop && benchPersist == 0 && benchBuild == 0 && benchFactory == 0 && !benchProgression) || GetTime() > 600.0) {
                     benchStart = GetTime();
                     printf("bench: world ready after %.2f s (%d chunks, avg build %.2f ms of which sampling %.2f ms, %d worker threads)\n",
                         GetWorldStats().lastGenerationSeconds, GetWorldStats().chunks, GetWorldStats().avgBuildMs, GetWorldStats().avgSampleMs, GetWorldStats().workerThreads);

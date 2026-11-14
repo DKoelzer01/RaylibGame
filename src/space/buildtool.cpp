@@ -94,6 +94,7 @@ namespace {
 
 float BuildTool_BreakProgress() { return breakAiming && breakHeld > 0.0f ? std::min(1.0f, breakHeld / kBreakHold) : 0.0f; }
 bool BuildTool_AimingPart() { return breakAiming; }
+int BuildTool_AimOrient() { return aim.plot || aim.newOrigin.x != 0.0f || aim.newOrigin.y != 0.0f || aim.newOrigin.z != 0.0f ? (int)aim.part.orient : -1; }
 
 static void UpdateBreak(Scene& world, bool inputEnabled) {
     breakAiming = false;
@@ -132,8 +133,10 @@ void BuildTool_Update(Scene& world, bool inputEnabled, bool usable) {
     UpdateBreak(world, inputEnabled);
     if (inputEnabled && IsKeyPressed(KEY_G)) {
         buildTool.active = !buildTool.active;
-        GameUI_Toast(buildTool.active ? "Build mode: wheel shape, R/V rotate, RMB place, hold LMB remove, B save blueprint, N blueprints (G to leave)" : "Build mode off");
+        buildTool.orientManual = false; // parts face you again (#196)
+        GameUI_Toast(buildTool.active ? "Build mode: wheel shape, parts face you (R/V rotate by hand), RMB place, hold LMB remove, B save blueprint, N blueprints (G to leave)" : "Build mode off");
     }
+    if (buildTool.part != buildTool.autoPart) { buildTool.autoPart = buildTool.part; buildTool.orientManual = false; } // another part: automatic facing
     aim = Aim{};
     if (!buildTool.active) return;
     if (inputEnabled) {
@@ -145,8 +148,12 @@ void BuildTool_Update(Scene& world, bool inputEnabled, bool usable) {
             k = (k + (wheel > 0 ? 1 : kShapeCount - 1)) % kShapeCount;
             buildTool.part = (int)kShapes[k];
         }
-        if (IsKeyPressed(KEY_R)) buildTool.orient = RotateOrientation(buildTool.orient, 1);
-        if (IsKeyPressed(KEY_V)) buildTool.orient = RotateOrientation(buildTool.orient, 0);
+        if (IsKeyPressed(KEY_R) || IsKeyPressed(KEY_V)) {
+            if (!buildTool.orientManual) GameUI_Toast("Rotating by hand (parts face you again with the next part, or G)");
+            buildTool.orientManual = true; // the orientation sticks from now on (#196); it starts from the automatic one shown
+            buildTool.autoPart = buildTool.part;
+            buildTool.orient = RotateOrientation(buildTool.orient, IsKeyPressed(KEY_R) ? 1 : 0);
+        }
     }
     Planetoid* body = player.nearest;
     if (!body) return;
@@ -184,8 +191,25 @@ void BuildTool_Update(Scene& world, bool inputEnabled, bool usable) {
         if (normal.y == 0) aim.part.origin.y += shift(h.y, lo.y, hi.y);
         if (normal.z == 0) aim.part.origin.z += shift(h.z, lo.z, hi.z);
     };
+    // Automatic facing (#196, until R/V is pressed): the part's front (its local +z, where machines have their door)
+    // turns toward the player - on a wall, out of the wall; on the ground or a floor, back along the view.
+    auto faceToward = [&](Int3 target) {
+        if (buildTool.orientManual) return;
+        int o = 0;
+        for (int k = 0; k < 4; ++k, o = RotateOrientation(o, 1)) {
+            const int* m = Orientation(o);
+            if (m[2] == target.x && m[5] == target.y && m[8] == target.z) break;
+        }
+        buildTool.orient = o;          // shown, and where a hand rotation starts from
+        aim.part.orient = (uint8_t)o;
+    };
+    auto towardViewer = [&](const Plot& pl) {
+        const float vx = Vector3DotProduct(ld, pl.east), vz = Vector3DotProduct(ld, pl.north);
+        return fabsf(vx) > fabsf(vz) ? Int3{ vx > 0.0f ? -1 : 1, 0, 0 } : Int3{ 0, 0, vz > 0.0f ? -1 : 1 };
+    };
     if (hitPlot && (!terrain || bestPart <= th.distance)) {
         aim.plot = hitPlot;
+        faceToward(hitFace.y == 0 ? hitFace : towardViewer(*hitPlot));
         aim.part.origin = { hitCell.x + hitFace.x, hitCell.y + hitFace.y, hitCell.z + hitFace.z };
         centreOn(*hitPlot, hitFace, Vector3Add(lo, Vector3Scale(ld, bestPart)));
         {   // A part bigger than a cell grows from its origin, which could reach back into the block
@@ -206,6 +230,7 @@ void BuildTool_Update(Scene& world, bool inputEnabled, bool usable) {
         Plot* near = body->plots ? body->plots->plotFor(ground, 6.0f, false) : nullptr;
         if (near) {
             aim.plot = near;
+            faceToward(towardViewer(*near));
             // The cell just above the ground at the aim.
             aim.part.origin = near->cellAt(near->toPlot(Vector3Add(ground, Vector3Scale(near->up, 0.1f))));
             centreOn(*near, Int3{ 0, 1, 0 }, ground); // on the ground: the bottom face's middle at the aim

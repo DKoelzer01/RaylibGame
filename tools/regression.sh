@@ -50,6 +50,7 @@ planet() {
     run --seed 42 --bench 3 --test-wall
     run --seed 9 --bench 3 --test-wall
     run --seed 42 --bench 3 --test-doorway # 2 m openings pass, 1.5 m ones stop the 1.7 m player (#255)
+    run --seed 42 --bench 2 --test-facing # parts face the player until R/V (#196)
     run --seed 42 --bench 3 --test-ledge
     run --seed 42 --bench 3 --test-fall
     run --seed 42 --bench 5 --test-hover
