@@ -48,13 +48,13 @@ namespace {
     struct Domain {
         size_t cells = 0;
         std::vector<Vector3> dir;
-        std::vector<float> cellArea, h, U, rockK, hardness, strata;
+        std::vector<float> cellArea, h, U, rockK, hardness, strata, glacier;
         std::vector<uint8_t> outlet;
     };
 
     // Rock and uplift of a domain from its input heights (h0) and the planet's highest input (maxH0).
     void SetRock(Domain& d, const std::vector<float>& h0, float maxH0, float R, unsigned int seed, const ErosionParams& p) {
-        d.U.resize(d.cells); d.rockK.resize(d.cells); d.hardness.resize(d.cells); d.strata.resize(d.cells);
+        d.U.resize(d.cells); d.rockK.resize(d.cells); d.hardness.resize(d.cells); d.strata.resize(d.cells); d.glacier.resize(d.cells);
         for (size_t c = 0; c < d.cells; ++c) {
             const Vector3 q = Vector3Scale(d.dir[c], R / 25000.0f);
             d.hardness[c] = ValueNoise(q, seed ^ 0xA11u);
@@ -63,6 +63,13 @@ namespace {
             // A floor of 5% for all land: uplift only in proportion to the input left wide low plains dead flat, with
             // straight 8-direction river traces across them (#355, seed 7).
             d.U[c] = h0[c] > 0.0f ? p.uplift * (0.05f + 0.95f * h0[c] / maxH0) : 0.0f;
+            // Ice-age glaciers (#358): above a snowline of p.glacialLine m at the equator, falling to sea level by
+            // |latitude| ~0.8; full strength 300 m above it.
+            {
+                const float lat = fabsf(d.dir[c].y);
+                const float line = p.glacialLine * (1.0f - std::clamp((lat - 0.3f) / 0.5f, 0.0f, 1.0f));
+                d.glacier[c] = p.glacial > 0.0f ? std::clamp((h0[c] - line) / 300.0f, 0.0f, 1.0f) : 0.0f;
+            }
         }
     }
 
@@ -120,13 +127,37 @@ namespace {
             for (size_t k = order.size(); k-- > 0;) { const int c = order[k]; if (receiver[c] != c) area[receiver[c]] += area[c]; }
         };
         for (step = 0; step < steps; ++step) {
-            if (step % std::max(1, p.floodEvery) == 0) flood();
+            if (step % std::max(1, p.floodEvery) == 0) {
+                flood();
+                // Glacial troughs (#358): ice fills each valley to a thickness growing with its drainage area (~45 m
+                // at 1 km^2, at most 200 m); valley walls standing below that ice surface are ground back, so V
+                // valleys widen into U troughs. Per flood interval, a share of the wall above the floor goes.
+                if (p.glacial > 0.0f)
+                    for (int c : order) {
+                        const float g = d.glacier[c];
+                        if (g <= 0.0f || d.outlet[c]) continue;
+                        const float ice = g * std::min(200.0f, 1.4f * powf(area[c], 0.25f));
+                        if (ice < 5.0f) continue;
+                        const float top = d.h[c] + ice;
+                        for (int k = 0; k < 8; ++k) {
+                            const int o = nbOf((size_t)c, k);
+                            if (o < 0 || d.outlet[o] || d.h[o] <= d.h[c] || d.h[o] >= top) continue;
+                            d.h[o] -= 0.15f * g * (d.h[o] - d.h[c]) * (1.0f - (d.h[o] - d.h[c]) / ice);
+                        }
+                    }
+            }
             for (int c : order) { // implicit stream power, receivers first
                 const int r = receiver[c];
                 if (r == c || d.outlet[c]) continue;
                 if (hf[c] > d.h[c] + 1e-3f) { d.h[c] += d.U[c]; continue; } // a filled depression: a lake bed, no incision
                 const float L = Vector3Distance(d.dir[c], d.dir[r]) * R;
-                const float f = erodibility(c, d.h[c]) * powf(area[c], p.m) / L;
+                float f = erodibility(c, d.h[c]) * powf(area[c], p.m) / L;
+                if (const float g = d.glacier[c]; g > 0.0f) {
+                    // Glacial: erosion grows more slowly with drainage area (A^0.25, matched to the fluvial rate at
+                    // 1 km^2 and p.glacial x it), so it reaches up to the valley heads: cirques, steep headwalls.
+                    const float fg = erodibility(c, d.h[c]) * p.glacial * 31.6f * powf(area[c], 0.25f) / L;
+                    f += (fg - f) * g;
+                }
                 d.h[c] = std::max((d.h[c] + d.U[c] + f * d.h[r]) / (1.0f + f), d.h[r]);
             }
             if (step % 2 == 1) // talus: slopes steeper than the rock holds slump (half the excess moves down)
