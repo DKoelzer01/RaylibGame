@@ -774,7 +774,7 @@ static inline void DrawCubeB(Vector3 p, float w, float h, float l, Color c) { IB
 template <typename ShadeFn>
 static void DrawAnimalModel(const Species& s, const Animal& a, ShadeFn shade) {
     const Vector3 sz = s.size;                       // length (z), height (y), width (x)
-    const float t = (float)GetTime();
+    const float t = (float)GameClock();
     const bool resting = a.state == State::Rest, grazing = a.state == State::Graze && a.moveSpeed <= 0.0f;
     const float legH = sz.y * (s.biped ? 0.45f : 0.42f);
     const float lower = resting ? legH * 0.75f : 0.0f;              // folded legs: the body sinks

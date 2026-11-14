@@ -59,13 +59,13 @@ void Door(const Painter& p, const Frame& f, bool working, float wFrac = 0.45f, f
     const float depth = (fabsf(f.front.x) > 0.5f ? f.w : f.d) * 0.5f;
     const Vector3 c = { 0, f.h * 0.35f, depth + 0.01f }, s = { f.w * wFrac, f.h * hFrac, 0.03f };
     p.cube({ c.x, c.y, c.z - 0.005f }, { s.x + 0.08f, s.y + 0.08f, 0.02f }, kDarkSteel);
-    if (working) p.glow(c, s, Color{ (unsigned char)(220 + 35 * sinf((float)GetTime() * 7.0f)), 120, 40, 255 });
+    if (working) p.glow(c, s, Color{ (unsigned char)(220 + 35 * sinf((float)GameClock() * 7.0f)), 120, 40, 255 });
     else p.cube(c, s, { 30, 28, 26, 255 });
     rlPopMatrix();
 }
 
 void DrawMachine(PartType type, const Frame& f, const Painter& p, bool working) {
-    const float t = (float)GetTime();
+    const float t = (float)GameClock();
     const float spin = working ? t : 0.0f;
     const float x0 = -f.w * 0.5f, z0 = -f.d * 0.5f, top = f.h;
     {   // chimneys (one table with the smoke, #220)

@@ -87,6 +87,14 @@ struct TerrainHit {
 };
 
 void worldHandler(Scene& world);
+// The simulation's frame time: GetFrameTime(), or a fixed step while recording (#375: --fixed-dt, implied by --record)
+// so captures are reproducible. Gameplay code reads this; UI timing keeps the real clock.
+inline float gFixedFrameTime = 0.0f;
+inline float GameFrameTime() { return gFixedFrameTime > 0.0f ? gFixedFrameTime : GetFrameTime(); }
+// The clock visual animation reads (wind, sway, flicker, weather flashes): the real one, or the sum of the fixed steps while
+// recording (#375), so two captures of the same scene match frame for frame. main.cpp advances it.
+inline double gGameClock = 0.0;
+inline double GameClock() { return gFixedFrameTime > 0.0f ? gGameClock : GetTime(); }
 void generateWorld(Scene& world);      // creates planetoids; chunks stream in via worldUpdate()
 void regenerateWorld(Scene& world);
 // Drops the whole world (jobs, machines, water, rings, bodies and their GPU meshes): quitting to the main menu (#270).

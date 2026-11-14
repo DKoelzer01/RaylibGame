@@ -126,7 +126,7 @@ void Viewmodel_Draw(Scene& world) {
     float target = (0.08f + 0.27f * day) * sky + 0.65f * day * sunVis * sky;
     if (survival.headlamp) target = std::max(target, 0.8f);
     static float light = -1.0f;
-    const float dtl = GetFrameTime();
+    const float dtl = GameFrameTime();
     light = light < 0.0f || dtl <= 0.0f ? target : light + (target - light) * (1.0f - expf(-dtl / 0.15f));
 
     rlDrawRenderBatchActive();

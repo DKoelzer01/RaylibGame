@@ -32,6 +32,7 @@
 #include "telescope.h"
 #include "glcaps.h"
 #include "buildtool.h"
+#include "recorder.h"
 #include "progression_test.h"
 #include "menus.h"
 #include "hotbar.h"
@@ -385,6 +386,7 @@ int main(int argc, char** argv)
     if (const char* c = getenv("RAYLIBGAME_CLIFFS")) gCliffs = c[0] == '1';
     if (const char* c = getenv("RAYLIBGAME_SKY_PROBES")) gSkyProbes = c[0] == '1'; // #369 A/B
     for (int i = 1; i < argc; ++i) {
+        if (Recorder_ParseArg(argc, argv, i)) continue; // --record and friends (#375)
         if (std::string(argv[i]) == "--bench") benchSeconds = (i + 1 < argc) ? atof(argv[i + 1]) : 10.0;
         if (std::string(argv[i]) == "--ui") DebugUI_Toggle(); // open the debug panel at start
         if (std::string(argv[i]) == "--seed" && i + 1 < argc) worldGen.seed = (unsigned int)strtoul(argv[i + 1], nullptr, 10);
@@ -971,8 +973,11 @@ int main(int argc, char** argv)
         }
     }
 
+    Recorder_Start(); // --record (#375): fixed frame time, seeded random values, the capture folder
     while (windowKeepAlive && !WindowShouldClose())
     {
+        if (Recorder_Finished()) break; // a --record capture is complete
+        Recorder_Update(WorldIdle() && !loading); // its start delay (after the loading screen), F10 in normal play
         GpuTimer_CpuFrameStart(); GpuTimer_BeginFrame();
         if (preloadT0 >= 0.0 && !SpawnPreloadPending()) {
             const WorldStats& ws = GetWorldStats();
@@ -3557,7 +3562,7 @@ int main(int argc, char** argv)
                         if (benchPumpHand && pumpPhase == 1) // working the hand pump (RMB held), until the "power" is cut
                             if (Plot* hp = p->plots ? p->plots->byId(pumpPlot) : nullptr)
                                 for (int i = 0; i < (int)hp->parts.size(); ++i)
-                                    if (hp->parts[i].type == PartType::HandPump) Waterworks_HandPump(p->id, pumpPlot, i, GetFrameTime());
+                                    if (hp->parts[i].type == PartType::HandPump) Waterworks_HandPump(p->id, pumpPlot, i, GameFrameTime());
                         if (t - lastPrint >= 5.0) {
                             lastPrint = t;
                             Plot* plot = p->plots ? p->plots->byId(pumpPlot) : nullptr;
@@ -4842,7 +4847,7 @@ int main(int argc, char** argv)
                             const Vector3 step = Vector3Subtract(l, airPrevLocal);
                             const Vector3 n = Vector3Normalize(l);
                             airDist += Vector3Length(Vector3Subtract(step, Vector3Scale(n, Vector3DotProduct(step, n)))); // level distance, body frame
-                            airTime += GetFrameTime();
+                            airTime += GameFrameTime();
                         } else if (airTime > 0.2f) {
                             airPowerAir = survival.power;
                             printf("bench: air jump: %.2f s airborne, %.1f m level relative to the ground (%.2f m/s, walk %.1f m/s); fuel %.2f -> %.2f, suit power %.2f -> %.2f\n",
@@ -5556,7 +5561,8 @@ int main(int argc, char** argv)
         const bool alive = !survival.dead;
         // One clamped frame time for everything that moves (bodies, ship, player): clamping only the
         // player let the ground spin away under it during a slow frame.
-        const float frameDt = std::min(GetFrameTime(), 0.1f);
+        const float frameDt = std::min(GameFrameTime(), 0.1f); // fixed while recording (#375)
+        gGameClock += frameDt; // the animation clock while recording (GameClock)
         // A spawn or teleport: the loading screen until the terrain there is built (play and tests pause).
         if (player.spawns != seenSpawns) { seenSpawns = player.spawns; if (gameState == 1) { loading = true; spawnLoad = true; loadStart = GetTime(); loadMax = 1; loadFrames = 0; } }
         GpuTimer_CpuMark("bench-logic");
@@ -5845,6 +5851,7 @@ int main(int argc, char** argv)
                 { const double d0 = GetTime(); world.drawScene(gameState); if (benchMeasuring) benchDrawMs += (GetTime() - d0) * 1000.0; }
                 player.recordFly(world); // after the fly camera's input (in drawScene): the pose to carry next frame
                 Viewmodel_Draw(world);   // the hands, over the world
+                if (Recorder_WantsFrame(false)) { rlDrawRenderBatchActive(); Recorder_Capture(); } // --record-hud 0: before the UI
                 world.drawUI(gameState);
                 Telescope_DrawHUD(world);
                 BuildTool_DrawHUD();
@@ -5911,10 +5918,13 @@ int main(int argc, char** argv)
             }
             rlDrawRenderBatchActive(); // the batched 2D (HUD text, bars, minimap) flushes here, not inside EndDrawing
             GpuTimer_Mark("2d-flush");
+            if (Recorder_WantsFrame(true)) Recorder_Capture(); // the finished frame, HUD included (#375)
+            Recorder_FrameDone();
         EndDrawing();
         GpuTimer_Mark("swap+poll");
         PROFILE_FRAME();
     }
+    Recorder_Shutdown(); // the frames still queued, the GIF and the contact sheet (#375)
 
     }   // scenes destroyed here, while the GL context still exists
     DebugUI_Shutdown();

@@ -454,7 +454,7 @@ void Scene::drawScene(int gamestate) {
                     Shader& ts = treeDepth.shader;
                     rlEnableShader(ts.id);
                     rlSetUniformMatrix(GetShaderLocation(ts, "matViewProj"), outMatrix);
-                    const float now = (float)fmod(GetTime(), 3600.0);
+                    const float now = (float)fmod(GameClock(), 3600.0);
                     rlSetUniform(GetShaderLocation(ts, "time"), &now, RL_SHADER_UNIFORM_FLOAT, 1);
                     RenderContext tctx = shadowCtx;
                     tctx.treeShader = &ts;
@@ -687,7 +687,7 @@ void Scene::drawScene(int gamestate) {
         // Sea surface material, set up once for the far, mid and near passes.
         auto prepareWater = [&] {
             Shader& ws = water.shader;
-            const float now = (float)fmod(GetTime(), 3600.0);
+            const float now = (float)fmod(GameClock(), 3600.0);
             SetShaderValue(ws, GetShaderLocation(ws, "viewPos"), &camera.position, SHADER_UNIFORM_VEC3);
             SetShaderValue(ws, GetShaderLocation(ws, "sunDir"), &sun, SHADER_UNIFORM_VEC3);
             SetShaderValue(ws, GetShaderLocation(ws, "skyColor"), &skyHorizon, SHADER_UNIFORM_VEC3);
@@ -735,7 +735,7 @@ void Scene::drawScene(int gamestate) {
             rlEnableShader(ts.id);
             const Matrix vp = MatrixMultiply(rlGetMatrixModelview(), rlGetMatrixProjection());
             rlSetUniformMatrix(GetShaderLocation(ts, "matViewProj"), vp);
-            const float now = (float)fmod(GetTime(), 3600.0);
+            const float now = (float)fmod(GameClock(), 3600.0);
             const float shell[4] = { atmosphere.centre.x, atmosphere.centre.y, atmosphere.centre.z,
                                      atmosphere.enabled && effFogDensity < 0.06f ? atmosphere.radius + atmosphere.hazeHeight : 0.0f };
             rlSetUniform(GetShaderLocation(ts, "sunDir"), &sun, RL_SHADER_UNIFORM_VEC3, 1);
@@ -813,7 +813,7 @@ void Scene::drawScene(int gamestate) {
             rlEnableShader(gs.id);
             const Matrix vp = MatrixMultiply(rlGetMatrixModelview(), rlGetMatrixProjection());
             rlSetUniformMatrix(GetShaderLocation(gs, "matViewProj"), vp);
-            const float now = (float)fmod(GetTime(), 3600.0);
+            const float now = (float)fmod(GameClock(), 3600.0);
             const float fadeEnd = kGrassDrawDistance;
             const float shell[4] = { atmosphere.centre.x, atmosphere.centre.y, atmosphere.centre.z,
                                      atmosphere.enabled && effFogDensity < 0.06f ? atmosphere.radius + atmosphere.hazeHeight : 0.0f };

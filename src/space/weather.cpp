@@ -130,14 +130,14 @@ void Weather_Update(Scene& world, float dt) {
     world.cloudDrift = Vector3Add(world.cloudDrift, Vector3Scale(here.wind, -dt * 3.0f)); // clouds move with the wind (a little faster than at the ground)
     // Lightning in a storm: a flash every 6-20 s, thunder a moment later.
     if (here.kind == WeatherKind::Storm) {
-        if (GetTime() > nextFlash) {
+        if (GameClock() > nextFlash) {
             flash = 1.0f;
-            lastFlash = GetTime();
-            nextFlash = GetTime() + 6.0 + 14.0 * (double)GetRandomValue(0, 1000) / 1000.0;
-            thunderAt = GetTime() + 0.6 + 1.8 * (double)GetRandomValue(0, 1000) / 1000.0;
+            lastFlash = GameClock();
+            nextFlash = GameClock() + 6.0 + 14.0 * (double)GetRandomValue(0, 1000) / 1000.0;
+            thunderAt = GameClock() + 0.6 + 1.8 * (double)GetRandomValue(0, 1000) / 1000.0;
         }
     }
-    if (thunderAt > 0.0 && GetTime() > thunderAt) { Audio_Play(Sfx::Dig, 1.0f, 0.25f); Audio_Play(Sfx::Build, 0.7f, 0.2f); thunderAt = -1.0; }
+    if (thunderAt > 0.0 && GameClock() > thunderAt) { Audio_Play(Sfx::Dig, 1.0f, 0.25f); Audio_Play(Sfx::Build, 0.7f, 0.2f); thunderAt = -1.0; }
     flash = std::max(0.0f, flash - dt * 3.0f);
 }
 
@@ -163,7 +163,7 @@ void Weather_Draw3D(Scene& world) {
     const int count = (int)(snow ? 1600 * here.precipitation : 1600 * here.precipitation);
     const float fall = snow ? 1.2f : 24.0f, span = 24.0f, height = 16.0f; // rain read slow at 9 m/s on screen (#33)
     const Vector3 windW = p->dirToWorld(here.wind);
-    const double t = GetTime();
+    const double t = GameClock();
     rlBegin(RL_LINES);
     for (int i = 0; i < count; ++i) {
         // Each drop: a fixed column around the camera, falling and wrapping (no state kept).

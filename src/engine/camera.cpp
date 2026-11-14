@@ -1,4 +1,5 @@
 #include "camera.h"
+#include "world.h" // GameFrameTime (#375)
 
 float cameraMoveSpeed = 30.0f;
 
@@ -12,7 +13,7 @@ FlyInput ReadFlyInput() {
     if (IsKeyDown(KEY_LEFT_CONTROL)) in.up -= 1.0f;
     const float keyTurn = 1.5f;        // radians / second (arrow keys, roll)
     const float mouse = 0.003f;        // radians / pixel (already frame-rate independent)
-    const float dt = GetFrameTime();
+    const float dt = GameFrameTime();
     const Vector2 m = GetMouseDelta();
     in.yaw = -m.x * mouse;
     in.pitch = -m.y * mouse;
@@ -55,5 +56,5 @@ void ApplyFlyInput(Camera3D* camera, const FlyInput& in, float dt) {
 // pitch, Q / E (or Z / C) roll, WASD moves along the view and camera right, Space / Ctrl along the
 // camera's up; Shift / Alt double the speed.
 void customUpdateCamera(Camera3D* camera) {
-    ApplyFlyInput(camera, ReadFlyInput(), GetFrameTime());
+    ApplyFlyInput(camera, ReadFlyInput(), GameFrameTime());
 }

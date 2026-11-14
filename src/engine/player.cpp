@@ -621,7 +621,7 @@ void Player::applyToCamera(Scene& world) const {
             }
             want = hi;
         }
-        const float dt = GetFrameTime();
+        const float dt = GameFrameTime();
         if (dt <= 0.0f || dt > 0.25f) eyeDrop = want;
         else if (want > eyeDrop) {
             // Down eased too (~40 ms) while the eye where it is now keeps 12 cm; closer than that, at once.
@@ -636,7 +636,7 @@ void Player::applyToCamera(Scene& world) const {
     world.camera.position = eye;
     world.camera.target = Vector3Add(world.camera.position, forward);
     // Reduce motion: the camera's up follows the ground's gently (no lurch when it changes).
-    if (smoothMotion && Vector3Length(cameraUp) > 0.5f) cameraUp = Vector3Normalize(Vector3Lerp(cameraUp, up, std::min(1.0f, 4.0f * GetFrameTime())));
+    if (smoothMotion && Vector3Length(cameraUp) > 0.5f) cameraUp = Vector3Normalize(Vector3Lerp(cameraUp, up, std::min(1.0f, 4.0f * GameFrameTime())));
     else cameraUp = up;
     world.camera.up = cameraUp;
 }

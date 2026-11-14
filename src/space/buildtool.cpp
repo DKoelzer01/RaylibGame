@@ -117,7 +117,7 @@ static void UpdateBreak(Scene& world, bool inputEnabled) {
     breakAiming = true;
     if (!inputEnabled || !IsMouseButtonDown(MOUSE_BUTTON_LEFT)) { breakHeld = std::min(breakHeld, 0.0f); breakPart = -1; return; }
     if (hitPlot != breakPlot || part != breakPart) { breakPlot = hitPlot; breakPart = part; breakHeld = std::max(breakHeld, 0.0f); }
-    breakHeld += GetFrameTime();
+    breakHeld += GameFrameTime();
     if (breakHeld < kBreakHold) return;
     const Part removed = hitPlot->parts[part];
     if (hitPlot->remove(part)) {
@@ -371,7 +371,7 @@ void Machine_Update(Scene& world, bool inputEnabled) {
     if (machineAim.type == PartType::HandPump) {
         // Hand pump (#280): hold RMB (outside build mode) to work it; the water goes down its pipes at the next pass.
         if (!buildTool.active && IsMouseButtonDown(MOUSE_BUTTON_RIGHT)) {
-            Waterworks_HandPump(machineAim.body, machineAim.plot, machineAim.part, GetFrameTime());
+            Waterworks_HandPump(machineAim.body, machineAim.plot, machineAim.part, GameFrameTime());
             static double nextSound = 0.0;
             if (GetTime() > nextSound) { Audio_Play(Sfx::Pickup, 0.25f, 0.6f); nextSound = GetTime() + 0.6; }
         }
