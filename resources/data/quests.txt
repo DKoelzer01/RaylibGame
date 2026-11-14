@@ -9,7 +9,9 @@ line | suit      | Suit      | 110,170,240
 line | explorer  | Explorer  | 230,140,90
 
 node | f1 | farming | tier 1     | do till 1        | Till your first farmland      | root_seeds 2
-node | f2 | farming | f1         | do harvest 1     | Harvest a ripe crop            | grain_seeds 3
+node | f1p | farming | f1        | do plant 1       | Plant seeds on the farmland (look at it, I) | root_seeds 2
+node | f1w | farming | f1p       | do pour 1        | Water it: a bucket (hotbar, RMB) pours 1 m^3; water within 4 m doubles growth | bucket 1
+node | f2 | farming | f1w        | do harvest 1     | Harvest a ripe crop            | grain_seeds 3
 node | f3 | farming | f2         | get bread 1      | Bake bread in a campfire       | flax_seeds 2
 node | f4 | farming | f3         | do harvest 10    | Harvest ten crops              | iron_hoe 1
 
@@ -24,6 +26,8 @@ node | s2 | suit | s1            | get field_suit 1 | Make a field suit         
 node | s3 | suit | s2            | do modules 4     | Fill a field suit's slots      | power_cell 2
 node | s4 | suit | s3, tier 6    | get explorer_suit 1 | Make an explorer suit       | battery_pack 1
 
+node | e0 | explorer | -          | do waypoint 1    | Mark a waypoint on the map (M, click where) | berries 2
+node | e0f | explorer | -         | do eat 1         | Eat something (berries from bushes: bind food to the hotbar) | berries 4
 node | e1 | explorer | -          | do explored 20   | Explore 20 map tiles           | berries 4
 node | e2 | explorer | e1         | do nights 1      | Survive a night                | cooked_meat 2
 node | e3 | explorer | e2         | do waypoint 3    | Mark three waypoints           | power_cell 1
