@@ -5066,6 +5066,10 @@ int main(int argc, char** argv)
         // A spawn or teleport: the loading screen until the terrain there is built (play and tests pause).
         if (player.spawns != seenSpawns) { seenSpawns = player.spawns; if (gameState == 1) { loading = true; spawnLoad = true; loadStart = GetTime(); loadMax = 1; loadFrames = 0; } }
         GpuTimer_CpuMark("bench-logic");
+        // Benches that place the camera themselves (shots, tours): take that as the pose the fly-follow carries, or the
+        // carry in player.update put the camera back where it was last frame (#298: since 4720ba4 the biome and machine
+        // shots all showed the start, and --bench-fly never moved).
+        if (bench && player.flyMode && player.flyFollow) player.recordFly(world);
         advanceBodies(world, gameState == 1 && !loading ? frameDt * timeScale * Rocket_Warp() : 0.0f); // bodies only spin while playing (warped with a coasting rocket); before riders update
         if (gameState == 1) {
             ship.lastImpact = 0.0f;
