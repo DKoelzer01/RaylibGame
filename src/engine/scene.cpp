@@ -117,6 +117,14 @@ extern "C" {
 // after the other each frame instead of overlapping.
 void KickGpu() { rlDrawRenderBatchActive(); if (glad_glFlush) glad_glFlush(); }
 
+// MSAA sample count of the 3D pass (the scene target is made with the window's), read once: a glGet each frame
+// can stall the driver (#204, #267).
+static int SceneSamples() {
+    static int samples = -1;
+    if (samples < 0) { samples = 0; if (glad_glGetIntegerv) glad_glGetIntegerv(0x80A9, &samples); } // GL_SAMPLES
+    return samples;
+}
+
 static void BeginWaterStencil() {
     rlDrawRenderBatchActive();
     if (!glad_glStencilFunc || !glad_glStencilOp) return;
@@ -732,8 +740,7 @@ void Scene::drawScene(int gamestate) {
             tctx.treeBarkLoc = GetShaderLocation(ts, "barkTint");
             tctx.treeLeafLoc = GetShaderLocation(ts, "leafTint");
             // The fade at the draw distance as for grass (#141, #252): alpha-to-coverage under MSAA, dither otherwise.
-            int samples = 0;
-            if (glad_glGetIntegerv) glad_glGetIntegerv(0x80A9, &samples); // GL_SAMPLES of the bound framebuffer
+            const int samples = SceneSamples(); // the window's (= the scene target's) sample count, read once
             const float a2c = samples > 1 ? 1.0f : 0.0f;
             rlSetUniform(GetShaderLocation(ts, "alphaToCoverage"), &a2c, RL_SHADER_UNIFORM_FLOAT, 1);
             if (a2c > 0.0f) { rlDisableColorBlend(); glad_glEnable(0x809E); }    // GL_SAMPLE_ALPHA_TO_COVERAGE
@@ -808,8 +815,7 @@ void Scene::drawScene(int gamestate) {
             // The fade at the edge of the draw distance (#241): under MSAA the fade alpha becomes sample
             // coverage (alpha-to-coverage: smooth, no blending or sorting); single-sampled it falls back
             // to the dithered discard.
-            int samples = 0;
-            if (glad_glGetIntegerv) glad_glGetIntegerv(0x80A9, &samples); // GL_SAMPLES of the bound framebuffer
+            const int samples = SceneSamples(); // the window's (= the scene target's) sample count, read once
             const float a2c = samples > 1 ? 1.0f : 0.0f;
             rlSetUniform(GetShaderLocation(gs, "alphaToCoverage"), &a2c, RL_SHADER_UNIFORM_FLOAT, 1);
             if (a2c > 0.0f) { rlDisableColorBlend(); glad_glEnable(0x809E); }                        // GL_SAMPLE_ALPHA_TO_COVERAGE

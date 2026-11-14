@@ -55,6 +55,9 @@ struct WorldStats {
     float avgBuildMs = 0.0f;            // worker time per chunk (sampling + meshing + normals)
     float avgSampleMs = 0.0f;           // of which sampling the density field
     float lastGenerationSeconds = 0.0f; // from generateWorld() until every chunk was uploaded
+    // Streaming counters since start (#258): builds asked for, finished, skipped as stale before or during the
+    // build, and results dropped on arrival (the node was freed or rebuilt meanwhile).
+    long long requests = 0, built = 0, skippedStale = 0, droppedResults = 0;
 };
 
 struct TerrainHit {
