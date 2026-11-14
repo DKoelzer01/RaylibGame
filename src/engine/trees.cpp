@@ -403,7 +403,7 @@ void BuildTile(const PlanetField& f, const TerrainDeltas& edits, const PlantRemo
             const Vector3 p = Vector3Subtract(ground, Vector3Scale(dir, 0.15f)); // sink the base a little
             // The climate (Plan 5 B) in the up vector's length, packed as for the terrain (trees.vs decodes it).
             const PlanetField::Climate cl = f.climateAt(dir, e);
-            const float code = 1.0f + floorf(std::clamp((cl.temp + 30.0f) / 70.0f, 0.0f, 1.0f) * 62.0f) + std::min(cl.moist, 0.999f);
+            const float code = 2.0f + floorf(std::clamp((cl.temp + 30.0f) / 70.0f, 0.0f, 1.0f) * 62.0f) + std::min(cl.moist, 0.999f); // from 2: below 1.5 means no climate (#254)
             out.inst[v].insert(out.inst[v].end(), { p.x, p.y, p.z, scale, dir.x * code, dir.y * code, dir.z * code, h });
             out.ids[v].push_back(id);
             const VariantMesh& vm = Variant(v);

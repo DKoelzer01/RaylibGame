@@ -36,6 +36,7 @@ out vec3 fragLocalNormal;  // moving/spinning body and don't swim when the float
 out vec3 fragChunkPos;     // chunk-local position (overlap clipping)
 out float fragSky;         // 1 = open to the sky, 0 = buried (scales sunlight)
 out vec2 fragCanopy;       // planets: distant forest canopy cover (x) and latitude (y)
+flat out float fragClimate; // planets: the packed climate (2 + temperature step + moisture), per triangle (#254)
 out float fragOreKind;     // planets: which ore (1 + kind) / 8, 0 none
 out float fragMacro;       // slow (70-250 m) brightness variation for the planet palette (per vertex: #183)
 flat out vec3 fragClipMax;
@@ -75,6 +76,7 @@ void main()
     fragChunkPos = vertexPosition;
     fragSky = vertexTangent.w;
     fragCanopy = vertexTangent.xy;
+    fragClimate = vertexTangent.y;
     fragOreKind = vertexTangent.z;
     fragMacro = vnoise(fragTexPos / 70.0) * 0.6 + vnoise(fragTexPos / 250.0) * 0.4;
     fragLocalNormal = vertexNormal;

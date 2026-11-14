@@ -12,6 +12,7 @@
 #include "blueprint.h"
 
 #include <raymath.h>
+#include <rlgl.h>
 #include <algorithm>
 #include <cmath>
 
@@ -221,7 +222,6 @@ void BuildTool_Update(Scene& world, bool inputEnabled, bool usable) {
 }
 
 void BuildTool_Draw3D(Scene& world) {
-    (void)world;
     if (!buildTool.active || !aim.body) return;
     Planetoid& body = *aim.body;
     const Plot* frame = aim.plot;
@@ -235,20 +235,25 @@ void BuildTool_Draw3D(Scene& world) {
         frame = &preview;
     }
     auto box = [&](const Plot& p, Int3 c, Color col) {
+        // In plot coordinates under the plot's own double-precision model, as the blocks are drawn: float corners
+        // 60 km out drifted off them and shook as the planet turned (#271).
         Vector3 v[8];
         for (int i = 0; i < 8; ++i) {
             // Inflated 2 cm so the lines stand off the faces of the blocks they outline (they z-fought, #199).
             constexpr float kPad = 0.02f;
             auto edge = [](int cell, int hi) { return (cell + hi) * kCellSize + (hi ? kPad : -kPad); };
-            const Vector3 l = p.toBody({ edge(c.x, i & 1), edge(c.y, (i >> 1) & 1), edge(c.z, (i >> 2) & 1) });
-            v[i] = body.toWorld(l);
+            v[i] = { edge(c.x, i & 1), edge(c.y, (i >> 1) & 1), edge(c.z, (i >> 2) & 1) };
         }
+        rlDrawRenderBatchActive();
+        rlPushMatrix();
+        rlMultMatrixf(MatrixToFloat(p.cellModel(body, world.renderOrigin)));
         const int e[12][2] = { { 0, 1 }, { 2, 3 }, { 4, 5 }, { 6, 7 }, { 0, 2 }, { 1, 3 }, { 4, 6 }, { 5, 7 }, { 0, 4 }, { 1, 5 }, { 2, 6 }, { 3, 7 } };
         for (auto& ed : e) DrawLine3D(v[ed[0]], v[ed[1]], col);
+        rlPopMatrix();
     };
     std::vector<std::pair<Int3, CellShape>> fp;
     Plot::Footprint(aim.part, fp);
-    if (Blueprint_Active()) Blueprint_DrawGhost(body, *frame, aim.part.origin, true); // the whole blueprint instead of one part
+    if (Blueprint_Active()) Blueprint_DrawGhost(body, *frame, aim.part.origin, true, world.renderOrigin); // the whole blueprint instead of one part
     else for (const auto& c : fp) box(*frame, c.first, aim.canPlace ? GREEN : RED);
     if (aim.removePlot && aim.removePart >= 0) {
         Plot::Footprint(aim.removePlot->parts[aim.removePart], fp);

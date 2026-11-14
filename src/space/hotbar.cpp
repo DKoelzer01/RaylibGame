@@ -59,29 +59,34 @@ namespace {
         }
         if (Survival_IsUsable(id)) { Survival_UseItem(id); return; } // consumables don't change the selection
         if (piloting) return;
-        selected = slot;
-        terrainTool.holdingItem = false;
-        if (id == kHotbarTerrainTool) { buildTool.active = false; terrainTool.heldTool.clear(); return; }
+        // The selection moves only once the choice is valid (#272): an error (not carried, can't be used) leaves the
+        // hand and build mode as they were.
+        auto take = [&]() { selected = slot; terrainTool.holdingItem = false; };
+        if (id == kHotbarTerrainTool) { take(); buildTool.active = false; terrainTool.heldTool.clear(); return; }
         if (id == "bucket" || id == "water_bucket") { // in hand: RMB scoops / pours water (terraintool)
             if (inventory.count(id) <= 0) { GameUI_Toast(TextFormat("No %s", ShortName(id))); Audio_Play(Sfx::Error, 0.3f); return; }
+            take();
             buildTool.active = false;
             terrainTool.heldTool = id;
             return;
         }
         if (KindOf(id) == ItemKind::Tool && ToolOf(id).type != ToolType::Hands) {
             if (inventory.count(id) <= 0) { GameUI_Toast(TextFormat("No %s", ShortName(id))); Audio_Play(Sfx::Error, 0.3f); return; }
+            take();
             buildTool.active = false;
             terrainTool.heldTool = id;
             return;
         }
         if (TerrainTool_IsFiller(id) && BuildMaterialForItem(id.c_str()) < 0) { // loose ground (gravel, sand): in hand, RMB places it
             if (inventory.count(id) <= 0) { GameUI_Toast(TextFormat("No %s", ShortName(id))); Audio_Play(Sfx::Error, 0.3f); return; }
+            take();
             buildTool.active = false;
             terrainTool.heldTool = id;
             return;
         }
         const int m = BuildMaterialForItem(id.c_str());
         if (m >= 0) {
+            take();
             buildTool.active = true;
             buildTool.material = m;
             if (!IsShape((PartType)buildTool.part)) buildTool.part = (int)PartType::Cube;
@@ -89,6 +94,7 @@ namespace {
         }
         const PartType t = PartForItem(id);
         if (t != PartType::Count) {
+            take();
             buildTool.active = true;
             buildTool.part = (int)t;
             return;

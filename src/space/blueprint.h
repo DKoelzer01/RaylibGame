@@ -32,7 +32,7 @@ void Blueprint_SetActive(int index);                // -1: none
 int Blueprint_Place(Planetoid& body, Plot& plot, const Blueprint& bp, Int3 origin, bool charge, std::string& missing);
 // Build-mode hooks: B / N keys (true when a key was used), the ghost and the parts list.
 bool Blueprint_Keys(Planetoid* body, Plot* lookingAt);
-void Blueprint_DrawGhost(Planetoid& body, const Plot& frame, Int3 origin, bool ok);
+void Blueprint_DrawGhost(Planetoid& body, const Plot& frame, Int3 origin, bool ok, const DVec3& renderOrigin);
 void Blueprint_DrawHUD();
 
 #endif

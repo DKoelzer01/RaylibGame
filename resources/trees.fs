@@ -22,6 +22,7 @@ uniform vec3 fogColor;
 uniform float fogDensity;
 uniform vec4 fogShell;
 uniform float fadeEnd;
+uniform float alphaToCoverage; // 1: the fade is written as alpha (GL_SAMPLE_ALPHA_TO_COVERAGE on)
 uniform vec3 barkTint;   // per species (trees.h WoodSpeciesInfo); 1 for bushes and stones
 uniform vec3 leafTint;
 
@@ -35,7 +36,9 @@ vec3 climateFoliage(vec3 temperate, vec3 dry, vec3 cold, vec3 lush, vec3 swampC,
     if (fragClimate.z < 0.5)
         return lat < 0.35 ? mix(dry, temperate, smoothstep(0.15, 0.35, lat)) : mix(temperate, cold, smoothstep(0.45, 0.7, lat));
     float t = fragClimate.x, m = fragClimate.y;
-    vec3 c = temperate;
+    // Temperate land has its own gentle gradient, as the ground (#254): cooler blue-green, warmer yellower, wetter deeper.
+    vec3 c = temperate * mix(vec3(0.9, 1.0, 1.02), vec3(1.1, 1.05, 0.86), smoothstep(8.0, 17.0, t));
+    c *= mix(vec3(1.08, 1.04, 0.9), vec3(0.88, 1.0, 0.9), smoothstep(0.3, 0.68, m));
     c = mix(c, dry, smoothstep(0.66, 0.5, m) * smoothstep(16.0, 20.0, t));
     c = mix(c, lush, smoothstep(18.0, 23.0, t) * smoothstep(0.56, 0.7, m));
     c = mix(c, swampC, smoothstep(0.68, 0.8, m) * smoothstep(10.0, 18.0, t));
@@ -47,8 +50,13 @@ void main()
 {
     float dist = length(viewPos - fragPosition);
     float fade = clamp((fadeEnd - dist) / (fadeEnd * 0.25), 0.0, 1.0);
-    vec2 cell = floor(gl_FragCoord.xy);
-    if (fract(sin(dot(cell, vec2(12.9898, 78.233))) * 43758.5453) > fade) discard;
+    fade = fade * fade * (3.0 - 2.0 * fade);
+    if (alphaToCoverage > 0.5) {
+        if (fade <= 0.0) discard; // the rest: alpha as sample coverage (#141, #252), smooth, no sorting
+    } else {
+        vec2 cell = floor(gl_FragCoord.xy);
+        if (fract(sin(dot(cell, vec2(12.9898, 78.233))) * 43758.5453) > fade) discard;
+    }
 
     vec3 n = normalize(fragNormal);
     float lat = fragLatitude;
@@ -85,5 +93,5 @@ void main()
         fogDist = max(0.0, min(t1, fogDist) - max(t0, 0.0));
     }
     color = mix(color, fogColor, clamp(1.0 - exp(-fogDensity * fogDist), 0.0, 1.0));
-    finalColor = vec4(pow(color, vec3(1.0 / 2.2)), 1.0);
+    finalColor = vec4(pow(color, vec3(1.0 / 2.2)), alphaToCoverage > 0.5 ? fade : 1.0);
 }

@@ -85,10 +85,12 @@ const char* Survival_BiomeName() { return hereBiome == Biome::Count ? "" : Biome
 bool Survival_IsFood(const std::string& id) { LoadFoods(); return foods.count(id) > 0; }
 float Survival_FoodValue(const std::string& id) { LoadFoods(); auto it = foods.find(id); return it == foods.end() ? 0.0f : it->second.value; }
 
+// Fall damage from the speed into the floor at touchdown (#263). On Terra (g 5.9): a 3 m drop is safe, 20 m takes
+// ~79, 30 m ~108 (fatal); servo legs make ~6 m safe.
 void Survival_OnLanding(float impactSpeed) {
-    const float safe = Suit_Stats().servo ? 12.0f : 9.0f; // servo legs soften landings
+    const float safe = Suit_Stats().servo ? 8.5f : 6.0f; // servo legs soften landings
     if (impactSpeed <= safe || survival.dead) return;
-    survival.health -= (impactSpeed - safe) * 8.0f;
+    survival.health -= (impactSpeed - safe) * 8.5f;
     Audio_Play(Sfx::Error, 0.6f, 0.6f);
 }
 

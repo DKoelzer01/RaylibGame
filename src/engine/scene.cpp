@@ -731,8 +731,16 @@ void Scene::drawScene(int gamestate) {
             tctx.treeFadeLoc = GetShaderLocation(ts, "fadeEnd");
             tctx.treeBarkLoc = GetShaderLocation(ts, "barkTint");
             tctx.treeLeafLoc = GetShaderLocation(ts, "leafTint");
+            // The fade at the draw distance as for grass (#141, #252): alpha-to-coverage under MSAA, dither otherwise.
+            int samples = 0;
+            if (glad_glGetIntegerv) glad_glGetIntegerv(0x80A9, &samples); // GL_SAMPLES of the bound framebuffer
+            const float a2c = samples > 1 ? 1.0f : 0.0f;
+            rlSetUniform(GetShaderLocation(ts, "alphaToCoverage"), &a2c, RL_SHADER_UNIFORM_FLOAT, 1);
+            if (a2c > 0.0f) { rlDisableColorBlend(); glad_glEnable(0x809E); }    // GL_SAMPLE_ALPHA_TO_COVERAGE
             for (const auto& obj : objects)
                 if (auto* p = dynamic_cast<Planetoid*>(obj.get()); p && !isFar(p) && p->trees) p->trees->draw(*p, tctx, onlyLod);
+            rlDrawRenderBatchActive();
+            if (a2c > 0.0f) { glad_glDisable(0x809E); rlEnableColorBlend(); }
             rlDisableShader();
         };
 

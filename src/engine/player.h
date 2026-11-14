@@ -33,7 +33,8 @@ struct Player {
     bool dampeners = true;            // B: inertial dampeners (deep space only)
     bool autoJump = false;            // tests: jump once on the next update
     float lastContactDot = 0.0f;      // debug: dot(contact normal, up) of the last collision
-    float impactSpeed = 0.0f;         // hardest collision speed this frame (fall damage)
+    float impactSpeed = 0.0f;         // hardest collision speed this frame (any contact: tests, launches)
+    float landingSpeed = 0.0f;        // speed into the floor at touchdown this frame (fall damage, #263)
     Vector3 groundNormal = { 0, 1, 0 }; // contact normal while grounded
     bool inWater = false;             // the body's middle is in water (swimming: buoyancy, drag, Space/Ctrl swim)
     bool swimUp = false, swimDown = false;
