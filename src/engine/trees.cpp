@@ -5,6 +5,8 @@
 
 #include <raymath.h>
 #include <rlgl.h>
+#include "gpucompute.h"
+#include "external/glad.h"
 #include <algorithm>
 #include <cmath>
 #include <mutex>
@@ -34,6 +36,7 @@ struct VariantMesh {
     float trunkRadius = 0.0f, trunkHeight = 0.0f;
     unsigned int vboPos = 0, vboNrm = 0, vboCol = 0;
     int vertexCount = 0;
+    float boundRadius = 0.0f;         // max vertex distance from the base (m at scale 1): the GPU view cull (#292)
 };
 VariantMesh gVariants[2][kTreeVariants]; // [0] full, [1] far (a few prisms)
 unsigned char gStoneFlag = 0; // set while building the loose-stone mesh: its vertices draw grey (colour b)
@@ -210,6 +213,7 @@ void EnsureVariantGpu() {
             m.vboPos = rlLoadVertexBuffer(m.pos.data(), (int)(m.pos.size() * sizeof(float)), false);
             m.vboNrm = rlLoadVertexBuffer(m.nrm.data(), (int)(m.nrm.size() * sizeof(float)), false);
             m.vboCol = rlLoadVertexBuffer(m.col.data(), (int)m.col.size(), false);
+            for (size_t k = 0; k + 2 < m.pos.size(); k += 3) m.boundRadius = std::max(m.boundRadius, sqrtf(m.pos[k] * m.pos[k] + m.pos[k + 1] * m.pos[k + 1] + m.pos[k + 2] * m.pos[k + 2]));
         }
 }
 
@@ -454,6 +458,11 @@ TreeSystem::~TreeSystem() {
             if (vao[s][slot]) rlUnloadVertexArray(vao[s][slot]);
             if (vbo[s][slot]) rlUnloadVertexBuffer(vbo[s][slot]);
         }
+    for (int slot = 0; slot < 2 * kTreeVariants; ++slot) {
+        if (culledVao[slot]) rlUnloadVertexArray(culledVao[slot]);
+        if (culledVbo[slot]) rlUnloadVertexBuffer(culledVbo[slot]);
+    }
+    if (cmdBuf) glDeleteBuffers(1, &cmdBuf);
 }
 
 void TreeSystem::request(const TreeTileKey& key, TreeTile& tile, float priority) {
@@ -602,7 +611,41 @@ void TreeSystem::rebuildBatches(Vector3 camLocal) {
                 rlSetVertexAttribute(11, 4, RL_FLOAT, false, stride, 4 * sizeof(float)); rlEnableVertexAttribute(11); rlSetVertexAttributeDivisor(11, 1);
                 rlDisableVertexArray();
                 rlDisableVertexBuffer();
+                if (s == 0) {
+                    // #292: room for the visible instances of this slot (the view cull writes them), and a VAO on it.
+                    if (culledVao[slot]) { rlUnloadVertexArray(culledVao[slot]); culledVao[slot] = 0; }
+                    if (culledVbo[slot]) { rlUnloadVertexBuffer(culledVbo[slot]); culledVbo[slot] = 0; }
+                    culledVao[slot] = rlLoadVertexArray();
+                    rlEnableVertexArray(culledVao[slot]);
+                    rlEnableVertexBuffer(m.vboPos); rlSetVertexAttribute(0, 3, RL_FLOAT, false, 0, 0); rlEnableVertexAttribute(0);
+                    rlEnableVertexBuffer(m.vboNrm); rlSetVertexAttribute(1, 3, RL_FLOAT, false, 0, 0); rlEnableVertexAttribute(1);
+                    rlEnableVertexBuffer(m.vboCol); rlSetVertexAttribute(2, 4, RL_UNSIGNED_BYTE, true, 0, 0); rlEnableVertexAttribute(2);
+                    culledVbo[slot] = rlLoadVertexBuffer(nullptr, (int)(buf[s][lod].size() * sizeof(float)), true);
+                    rlSetVertexAttribute(10, 4, RL_FLOAT, false, stride, 0); rlEnableVertexAttribute(10); rlSetVertexAttributeDivisor(10, 1);
+                    rlSetVertexAttribute(11, 4, RL_FLOAT, false, stride, 4 * sizeof(float)); rlEnableVertexAttribute(11); rlSetVertexAttributeDivisor(11, 1);
+                    rlDisableVertexArray();
+                    rlDisableVertexBuffer();
+                }
             }
+    }
+}
+
+// #292: the main view's tree culling program (tree_cull.comp), loaded once; off with RAYLIBGAME_TREE_CULL=0.
+namespace {
+    ComputeProgram gTreeCull;
+    int gTreeCullState = 0; // 0 untried, 1 ok, -1 unavailable
+    GLint gTcN = -1, gTcCmd = -1, gTcModel = -1, gTcRadius = -1, gTcPlanes = -1;
+    bool TreeCullReady() {
+        if (gTreeCullState == 0) {
+            const char* e = getenv("RAYLIBGAME_TREE_CULL");
+            gTreeCullState = (e && e[0] == '0') || !Compute_Available() || !gTreeCull.load("resources/compute/tree_cull.comp") ? -1 : 1;
+            if (gTreeCullState == 1) {
+                const GLuint p = gTreeCull.id;
+                gTcN = glGetUniformLocation(p, "n"); gTcCmd = glGetUniformLocation(p, "cmdIndex"); gTcModel = glGetUniformLocation(p, "model");
+                gTcRadius = glGetUniformLocation(p, "radius"); gTcPlanes = glGetUniformLocation(p, "planes");
+            }
+        }
+        return gTreeCullState == 1;
     }
 }
 
@@ -614,6 +657,36 @@ void TreeSystem::draw(const Planetoid& body, const RenderContext& ctx, int onlyL
     const Vector3 c = (body.worldPos - ctx.renderOrigin).toFloat();
     const float occluder[4] = { c.x, c.y, c.z, std::max(0.0f, body.radius - 60.0f) * body.scale };
     rlSetUniform(ctx.treeOccluderLoc, occluder, RL_SHADER_UNIFORM_VEC4, 1);
+    // #292: the main view culls on the GPU first (all slots), then draws each slot's visible instances indirectly.
+    const bool gpuCull = set == 0 && ctx.frustum && TreeCullReady();
+    if (gpuCull) {
+        constexpr int kCmds = 2 * kTreeVariants;
+        GLuint cmds[kCmds][4];
+        for (int slot = 0; slot < kCmds; ++slot) {
+            const int v = slot % kTreeVariants, lod = slot / kTreeVariants;
+            cmds[slot][0] = (GLuint)Variant(v, lod).vertexCount; cmds[slot][1] = 0; cmds[slot][2] = 0; cmds[slot][3] = 0;
+        }
+        if (!cmdBuf) { glGenBuffers(1, &cmdBuf); glBindBuffer(GL_DRAW_INDIRECT_BUFFER, cmdBuf); glBufferData(GL_DRAW_INDIRECT_BUFFER, sizeof(cmds), nullptr, GL_DYNAMIC_DRAW); }
+        glBindBuffer(GL_DRAW_INDIRECT_BUFFER, cmdBuf);
+        glBufferSubData(GL_DRAW_INDIRECT_BUFFER, 0, sizeof(cmds), cmds);
+        glBindBuffer(GL_DRAW_INDIRECT_BUFFER, 0);
+        glUseProgram(gTreeCull.id);
+        glUniformMatrix4fv(gTcModel, 1, GL_FALSE, MatrixToFloat(model));
+        glUniform4fv(gTcPlanes, 6, (const float*)ctx.frustum->planes);
+        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 2, cmdBuf);
+        for (int slot = 0; slot < kCmds; ++slot) {
+            const int v = slot % kTreeVariants, lod = slot / kTreeVariants;
+            if (!count[0][slot] || !culledVbo[slot] || (onlyLod >= 0 && lod != onlyLod)) continue;
+            glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, vbo[0][slot]);
+            glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 1, culledVbo[slot]);
+            glUniform1ui(gTcN, (GLuint)count[0][slot]);
+            glUniform1ui(gTcCmd, (GLuint)slot);
+            glUniform1f(gTcRadius, Variant(v, lod).boundRadius);
+            glDispatchCompute((GLuint)((count[0][slot] + 63) / 64), 1, 1);
+        }
+        glMemoryBarrier(GL_COMMAND_BARRIER_BIT | GL_VERTEX_ATTRIB_ARRAY_BARRIER_BIT);
+        glUseProgram(ctx.treeShader->id);
+    }
     for (int slot = 0; slot < 2 * kTreeVariants; ++slot) {
         if (!count[set][slot]) continue;
         const int v = slot % kTreeVariants, lod = slot / kTreeVariants;
@@ -627,9 +700,17 @@ void TreeSystem::draw(const Planetoid& body, const RenderContext& ctx, int onlyL
             rlSetUniform(ctx.treeBarkLoc, &bark, RL_SHADER_UNIFORM_VEC3, 1);
             rlSetUniform(ctx.treeLeafLoc, &leaf, RL_SHADER_UNIFORM_VEC3, 1);
         }
-        rlEnableVertexArray(vao[set][slot]);
-        rlDrawVertexArrayInstanced(0, Variant(v, lod).vertexCount, count[set][slot]);
-        rlDisableVertexArray();
+        if (gpuCull && culledVao[slot]) {
+            glBindVertexArray(culledVao[slot]);
+            glBindBuffer(GL_DRAW_INDIRECT_BUFFER, cmdBuf);
+            glDrawArraysIndirect(GL_TRIANGLES, (const void*)(size_t)(slot * 4 * sizeof(GLuint)));
+            glBindBuffer(GL_DRAW_INDIRECT_BUFFER, 0);
+            glBindVertexArray(0);
+        } else {
+            rlEnableVertexArray(vao[set][slot]);
+            rlDrawVertexArrayInstanced(0, Variant(v, lod).vertexCount, count[set][slot]);
+            rlDisableVertexArray();
+        }
         if (ctx.drawCalls) ++*ctx.drawCalls;
     }
 }

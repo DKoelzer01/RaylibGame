@@ -19,9 +19,15 @@ C++ raylib 5.5 planetoid survival game. `src/engine` (static lib), `src/space` -
 
 - Light tests per change: the scripted benches for the feature touched and its neighbours
   (`game.exe --seed 42 --bench 3 --test-<name>`), plus a screenshot (bench.png) when visuals change.
-- Full regression (`tools/regression.sh planet`, `EXE=... SNAPSHOT=1`) only at milestones/PRs - and,
-  per the user (2026-11-11), NOT until the current playtest feature set (incl. flowing water) is done.
-  Minor targeted tests for PRs are fine.
+- Full regression (`tools/regression.sh planet`, `EXE=... SNAPSHOT=1`) takes a long time: run it only
+  before merging a stack of PRs, after review and spot tests (user, 2026-11-13). Minor targeted tests are fine.
+- Gate any test run on the build's exit code (`cmake --build ... > log && game.exe ...`): a failed build
+  plus a stale exe runs a plain game window. Never start benches while the user playtests.
+- Perf benches: `--bench 20 --bench-fly 60` (streaming; prints "bench: streaming:" counters, frame
+  percentiles and camera drift), `--bench-walk`, `--day` (mid-morning sun; seed 42 starts at night). A
+  plain planet `--bench` starts 40 m above the spawn looking along the ground (`--cam` = old offset).
+  Other tests added 2026-11-13: --test-ledge, --test-tor (seed 1), --test-machines, --test-fall,
+  --test-telescope-close (all in tools/regression.sh).
 - Leave space/asteroid tests (--test-rocket, --test-ring, asteroid scenes) out unless the change is
   about them.
 - Stop stale regression runs by command line (`*regression.sh*`, game.exe under `\Temp\tmp.*`);
@@ -107,6 +113,11 @@ no auto-add, so:
 - Plan 5 (art, life, world variety): https://claude.ai/artifact/5igt2VrsTyNhZ3BZ94teHX - A animal models/AI, B biomes,
   C Minecraft-style 3D terrain, D stylized PBR terrain: all built (light items #29, B #30, C #31, A + machine models #32, D #152),
   in review, not merged; status table at the top of the doc.
+- Open trackers (2026-11-13): #128 Graphics Pipeline Overhaul (GL caps #286, perf #290/#292), #204 FPS
+  while moving, #267 stale-chunk cancel + parallel uploads (partly done), #262 render distance + background
+  preload (next), #250 playtest 6 findings, #187. Someday: WebGPU/Vulkan port issue (P3).
+- Stack awaiting review + merge (2026-11-13): #265 m39-physics -> #281 m40-machines -> #282 m41-player ->
+  #287 m42-streaming -> #289 m43-gl46 -> #293 m44-fps. Worktree for agent work: ../RaylibGame-m42.
 - `CurrentIssues.md` (untracked, the user's playtest list): erase lines once fully resolved; mark
   deferred or changed-needs-confirmation items inline.
 
@@ -159,6 +170,22 @@ World and rendering
   bushes 300 m. The user trades a few FPS for view distance (walk bench ~220 FPS). Draw distances are
   runtime values (--grass-dist, --tree-dist); the terrain canopy tint follows treeDistance.
 
+GL features and streaming (2026-11-13, stack #287-#293)
+- The driver hands out a 4.3 core context with newer features as extensions; src/engine/glcaps.* (`GL_Caps()`)
+  detects them at runtime and each path falls back when missing. `RAYLIBGAME_GL_LIMIT=43` forces the 4.3 paths.
+- A/B switches: RAYLIBGAME_STREAM_OLD=1 (old streaming), RAYLIBGAME_GPU_READBACK_COPY=1 (old readback),
+  RAYLIBGAME_UPLOAD_STAGING=0 (direct uploads), RAYLIBGAME_TREE_CULL=0 (no GPU tree culling),
+  RAYLIBGAME_INDIRECT_COUNT=1 (opt-in multi-draw-indirect-count with chunk_compact.comp: measured no gain).
+- Streaming: <= 96 requests per frame, nodes kept 4 s after last wanted while the arena is < 80% full, frees
+  capped at 256/frame, nearest-first uploads, telescope keeps the zoom-1 selection resident. GPU readback =
+  persistent mapped ring; uploads go through a 16 MB persistent write ring with per-upload fences.
+- Tree shadows: caster sets per cascade chosen by distance to the sun axis (1.26 -> 0.09 ms); main view
+  culled on the GPU (tree_cull.comp + glDrawArraysIndirect).
+- Fly camera follows the body whose sphere of influence it is in, rotating with it within 2 radii (#127).
+- Gameplay in the same stack: boilers need fuel + water (pumps fill them), generators are demand driven;
+  fall damage safe below 6 m/s (8.5 with servo legs); animals walk on the density surface with ledge
+  reach/detours. Ravines are generated (voxel.cpp), not streaming holes. There is no start ship.
+
 Water (Plan 4, user answers)
 - Sea, rivers and large lakes (> ~1 km^2) are infinite; rivers can be diverted; small lakes/ponds
   are finite once disturbed. The sea can flood a channel dug inland below sea level.
@@ -167,7 +194,7 @@ Water (Plan 4, user answers)
   per cell; down, then sideways; a slow levelling pass for U-bends / cave pressure), surface meshed
   with marching cubes on the fill amounts. Replaces the per-column span design.
 
-## Remaining playtest batches (branch playtest-fixes-4)
+## History: playtest batches (branch playtest-fixes-4, merged)
 
 1. Controls: camera jitter on steep slopes - done (eye smoothing, d0ecdf3), confirm in play.
 2. UI: right-click container/machine inventories like the player's; crafting as an icon grid with

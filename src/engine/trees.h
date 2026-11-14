@@ -159,6 +159,8 @@ private:
     unsigned int vao[kTreeSets][2 * kTreeVariants] = {}, vbo[kTreeSets][2 * kTreeVariants] = {};
     int count[kTreeSets][2 * kTreeVariants] = {};
     Vector3 shadowSunLocal = { 0, 0, 0 };     // (0: unknown, the caster sets use distance from the camera)
+    // Main-view GPU culling (#292): per slot of set 0, the visible instances (compacted) and its VAO; one command buffer.
+    unsigned int culledVao[2 * kTreeVariants] = {}, culledVbo[2 * kTreeVariants] = {}, cmdBuf = 0;
     Vector3 lastWantCam = { 1e30f, 0, 0 };    // tile set recomputed after the camera moves 16 m
     int drawnInstances = 0;
 
