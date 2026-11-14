@@ -43,6 +43,13 @@ struct LodSettings {
     float zoom = 1.0f;
     Vector3 zoomDir = { 0, 0, 1 };  // render-space view direction
     float zoomHalfAngle = 0.0f;     // rad, to the screen corners
+    // Preload ring (#294/#296): every node the LOD would pick from any camera point within preloadRadius (m) of the
+    // player is built in spare streaming time and kept resident (not drawn); it re-centres as the player moves. 0: off.
+    float preloadRadius = 300.0f;
+    // Chunk cache (#295): built nodes nobody wants (not in view, not in the preload ring) stay until they hold more than cacheVertices
+    // (per body) or more than cacheNodes nodes; then the least recently wanted go first.
+    int cacheVertices = 8 << 20;   // ~580 MB of GPU memory (72 bytes a vertex with its indices)
+    int cacheNodes = 40000;
 };
 extern LodSettings lodSettings;
 void SetLodZoom(Scene& world, float zoom, Vector3 dir, float halfAngle); // zoom 1: off
@@ -58,6 +65,9 @@ struct WorldStats {
     // Streaming counters since start (#258): builds asked for, finished, skipped as stale before or during the
     // build, and results dropped on arrival (the node was freed or rebuilt meanwhile).
     long long requests = 0, built = 0, skippedStale = 0, droppedResults = 0;
+    int preloadNodes = 0, preloadReady = 0; // the preload ring(s) around the camera (#294)
+    int cachedNodes = 0;                    // built nodes kept only by the cache (#295)
+    long long evicted = 0;                  // cache evictions since start
 };
 
 struct TerrainHit {
@@ -90,6 +100,10 @@ std::vector<std::unique_ptr<RingSystem>>& Rings();
 void SetWorldTime(double t);
 void worldUpdate(Scene& world, float uploadBudgetMs = 3.0f); // LOD, streaming, uploads
 bool WorldIdle();                      // no queued/running jobs and nothing left to upload
+// Spawn preload (#294): from now until the ring around the camera is built, ring builds run at full rate (no
+// spare-time gate). SpawnPreloadPending is true until then; progress 0..1.
+void BeginSpawnPreload();
+bool SpawnPreloadPending(float* progress = nullptr);
 const WorldStats& GetWorldStats();
 
 bool RaycastTerrain(Scene& world, Ray ray, float maxDistance, TerrainHit& hit);

@@ -61,6 +61,7 @@ int TerrainArena_Flush(unsigned int shaderId, bool positionsOnly, const ArenaBod
 
 struct ArenaStats { int vertices = 0, vertexCapacity = 0, indices = 0, indexCapacity = 0, draws = 0, flushes = 0; long long staged = 0, direct = 0; }; // uploads through the staging ring / glBufferSubData (#286)
 ArenaStats TerrainArena_Stats();
+void TerrainArena_Reserve(int vertices, int indices); // capacity at least this (one regrow each), e.g. behind a loading screen
 void TerrainArena_Unload();
 
 #endif

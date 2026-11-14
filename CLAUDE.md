@@ -28,6 +28,10 @@ C++ raylib 5.5 planetoid survival game. `src/engine` (static lib), `src/space` -
   plain planet `--bench` starts 40 m above the spawn looking along the ground (`--cam` = old offset).
   Other tests added 2026-11-13: --test-ledge, --test-tor (seed 1), --test-machines, --test-fall,
   --test-telescope-close (all in tools/regression.sh).
+- Streaming benches (#262): `--preload R` (m, 0 = off), `--cache-verts M` (millions), `--preload-spawn` (time the
+  spawn preload first, as a new game does: prints "bench: spawn preload:"), `--bench-fly-back` (fly out, then back:
+  the cache should spare the return). "bench: preload:" prints ring/cache counts. The planet is the default
+  bodies.txt (bodies_planet.txt is gone: a missing --bodies file falls back to the old asteroid system).
 - Leave space/asteroid tests (--test-rocket, --test-ring, asteroid scenes) out unless the change is
   about them.
 - Stop stale regression runs by command line (`*regression.sh*`, game.exe under `\Temp\tmp.*`);
@@ -176,9 +180,17 @@ GL features and streaming (2026-11-13, stack #287-#293)
 - A/B switches: RAYLIBGAME_STREAM_OLD=1 (old streaming), RAYLIBGAME_GPU_READBACK_COPY=1 (old readback),
   RAYLIBGAME_UPLOAD_STAGING=0 (direct uploads), RAYLIBGAME_TREE_CULL=0 (no GPU tree culling),
   RAYLIBGAME_INDIRECT_COUNT=1 (opt-in multi-draw-indirect-count with chunk_compact.comp: measured no gain).
-- Streaming: <= 96 requests per frame, nodes kept 4 s after last wanted while the arena is < 80% full, frees
-  capped at 256/frame, nearest-first uploads, telescope keeps the zoom-1 selection resident. GPU readback =
-  persistent mapped ring; uploads go through a 16 MB persistent write ring with per-upload fences.
+- Streaming: <= 96 requests per frame, frees capped at 256/frame, nearest-first uploads, telescope keeps the
+  zoom-1 selection resident. GPU readback = persistent mapped ring; uploads go through a 16 MB persistent write
+  ring with per-upload fences.
+- Preload ring + chunk cache (#262: #294-#296, 2026-11-13): every node the LOD would pick from a camera within
+  300 m of the player along the ground (0-8 m over it; nodes touching +-12 m of the height map) is built and kept
+  resident, not drawn. A new or loaded game shows "Preparing spawn" until it is built (~8 s, ~38k nodes,
+  ~27 M vertices = ~2 GB VRAM on seed 42); afterwards it re-centres every 75 m in spare time only (the view's
+  unused request budget, a short queue, 1 ms of uploads, one 8-block GPU batch a frame) and pauses above
+  15 m/s. A ball-shaped ring reached 300 m down into caves (415k nodes, 80 M vertices) - keep it on the ground.
+  Unwanted built nodes go to an LRU cache (8 M vertices / 40k nodes, ring and view not counted); the arena is
+  grown once behind the spawn screen so it never regrows (GB copy) mid-walk. WorldIdle() ignores ring builds.
 - Tree shadows: caster sets per cascade chosen by distance to the sun axis (1.26 -> 0.09 ms); main view
   culled on the GPU (tree_cull.comp + glDrawArraysIndirect).
 - Fly camera follows the body whose sphere of influence it is in, rotating with it within 2 radii (#127).

@@ -44,6 +44,15 @@ namespace {
     // RAYLIBGAME_STREAM_OLD=1: the streaming before #258/#261 (no request cap, no retention, no telescope keep, no free
     // cap, FIFO uploads), an A/B switch for --bench-fly.
     const bool gStreamOld = [] { const char* e = getenv("RAYLIBGAME_STREAM_OLD"); return e && e[0] == '1'; }();
+    // Preload-ring builds (#296) are queued at this priority plus their distance rank: after every view build.
+    constexpr float kBackgroundPriority = 1e7f;
+    long long gEvicted = 0;                    // cache evictions (#295)
+    bool gPreloadUrgent = false;               // spawn preload (#294): ring builds without the spare-time gate
+    std::atomic<int> gForegroundBuilds{ 0 };   // view/edit builds whose closures are alive (#296)
+    struct ForegroundToken {
+        ForegroundToken() { ++gForegroundBuilds; }
+        ~ForegroundToken() { --gForegroundBuilds; }
+    };
     std::vector<ChunkMeshData> results;        // filled by workers
     std::deque<ChunkMeshData> pendingUploads;  // main thread only
     std::unique_ptr<JobSystem> jobs;
@@ -367,13 +376,18 @@ static void RequestNode(Planetoid& p, const NodeKey& key, float priority) {
     std::shared_ptr<const DensityField> field = p.field;
     std::shared_ptr<const TerrainDeltas> edits = p.edits;
     const uint64_t id = p.id;
-    std::shared_ptr<std::atomic<uint32_t>> wanted = p.nodes.at(key)->wanted;
+    Chunk& node = *p.nodes.at(key);
+    node.background = priority >= kBackgroundPriority;
+    std::shared_ptr<std::atomic<uint32_t>> wanted = node.wanted;
     wanted->store(version);
+    // View and edit builds hold a token until their closures are gone (built, skipped, or dropped inside the GPU
+    // pump): WorldIdle waits for those only, not for the preload ring's background builds (#296).
+    std::shared_ptr<ForegroundToken> token = node.background ? nullptr : std::make_shared<ForegroundToken>();
     // Plan 6 step 4: planets sample the density block on the GPU (terraingpu.h). The worker prepares the
     // height grid and submits; the main thread's pump dispatches batches and queues the second half
     // (edits, marching cubes) back on the workers. Identical results to the CPU path.
     const bool gpu = TerrainGpu_Available();
-    Jobs().submit(priority, [field, edits, id, key, version, wanted, gpu, priority] {
+    Jobs().submit(priority, [field, edits, id, key, version, wanted, gpu, priority, token] {
         if (wanted->load() != version) { ++gSkipped; return; } // superseded or freed while queued
         PROFILE_SCOPE("Build chunk");
         ChunkMeshData data;
@@ -394,8 +408,8 @@ static void RequestNode(Planetoid& p, const NodeKey& key, float priority) {
                 job.wanted = [wanted, version] { return wanted->load() == version; };
                 job.priority = priority; // edits (negative) go ahead of background LOD builds
                 auto shared = std::make_shared<ChunkMeshData>(std::move(data));
-                job.done = [field, edits, shared, wanted, version, priority, prepMs](std::shared_ptr<const float> batch, size_t offset) {
-                    Jobs().submit(priority, [field, edits, shared, wanted, version, prepMs, batch, offset] {
+                job.done = [field, edits, shared, wanted, version, priority, prepMs, token](std::shared_ptr<const float> batch, size_t offset) {
+                    Jobs().submit(priority, [field, edits, shared, wanted, version, prepMs, batch, offset, token] {
                         if (wanted->load() != version) { ++gSkipped; return; }
                         BuildChunkMeshFromBase(*field, *edits, *shared, batch.get() + offset, prepMs);
                         std::lock_guard<std::mutex> lock(resultsMutex);
@@ -479,6 +493,86 @@ static void CollectDesired(const Planetoid& p, const NodeKey& key, const LodView
     out.push_back(key);
 }
 
+// The root nodes a selection descends from: the body's 2x2x2 roots, or (open world) a grid of root tiles around
+// the camera spanning the terrain height band.
+template <class F>
+static void ForEachRoot(const Planetoid& p, Vector3 camLocal, F&& f) {
+    if (p.flat) {
+        const float rs = kVoxelSize * (float)(CHUNK_SIZE << p.rootLevel);
+        const int cx = (int)floorf(camLocal.x / rs), cz = (int)floorf(camLocal.z / rs);
+        const int y0 = (int)floorf(p.minHeight / rs), y1 = (int)floorf(p.maxHeight / rs);
+        for (int z = cz - 2; z <= cz + 2; ++z)
+            for (int x = cx - 2; x <= cx + 2; ++x)
+                for (int y = y0; y <= y1; ++y) f(NodeKey{ p.rootLevel, x, y, z });
+    } else {
+        for (int i = 0; i < 8; ++i) f(NodeKey{ p.rootLevel, -1 + (i & 1), -1 + ((i >> 1) & 1), -1 + ((i >> 2) & 1) });
+    }
+}
+
+// Preload ring (#294): every node CollectDesired would pick from SOME camera point of a region around the player -
+// all level-0 chunks near it plus the coarser shells around them - so walking anywhere in it needs no new builds. A
+// node is picked from q when q is at least lodFactor * size away and its parent is split from q; over the region that
+// is (nearest point) dmin < lodFactor * parent size and (farthest) dmax >= lodFactor * size.
+// The region follows the ground on planets: points within r of the centre along the surface and from kRingBelow under
+// to kRingAbove over the ground (walking and jumping; the margin below covers overhangs and the height map's missing
+// fine detail). A ball of radius r instead reached 300 m down into the caves: 415k nodes, 80 M vertices (#294).
+// Elsewhere (asteroids, open world) it is the ball. Runs on a worker: it samples the ground once per node visited.
+struct RingParams {
+    std::shared_ptr<const DensityField> field;
+    const PlanetField* planet = nullptr; // the ground-following region; null: the ball
+    bool flat = false;
+    float minHeight = 0, maxHeight = 0, occluder = 0, lodFactor = 2.0f;
+    int rootLevel = 0;
+    Vector3 c{}, cHigh{}, up{};  // centre, the region's highest point (horizon test), the local vertical
+    float r = 0;
+};
+static constexpr float kRingBelow = 8.0f, kRingAbove = 8.0f, kRingBand = 12.0f;
+static constexpr float kRingMaxSpeed = 15.0f; // m/s: faster than running, the ring pauses
+
+// Nearest and farthest distance from the region to the box (both approximate, erring towards more nodes).
+// Returns whether the box reaches the ground band (kRingBand around the height map): only those are preloaded, the
+// rest (caves under the walking region, which the view also builds within 32 m but nobody sees) loads on demand.
+static bool RingDistances(const RingParams& rp, const NodeKey& key, Vector3 lo, Vector3 hi, float& dmin, float& dmax) {
+    if (!rp.planet) {
+        const float d = DistanceToBox(rp.c, lo, hi);
+        dmin = d - rp.r; dmax = d + rp.r;
+        return true;
+    }
+    const float half = 0.5f * key.size(), hd = 1.7320508f * half;
+    const Vector3 b = Vector3AddValue(lo, half);
+    const float rb = Vector3Length(b);
+    const float ground = rp.planet->radius + rp.planet->elevation(Vector3Scale(b, 1.0f / std::max(rb, 1e-3f)), key.size());
+    const Vector3 w = Vector3Subtract(b, rp.c);
+    const float wv = Vector3DotProduct(w, rp.up);
+    const float wh = Vector3Length(Vector3Subtract(w, Vector3Scale(rp.up, wv)));
+    const float dh = std::max(0.0f, wh - rp.r);
+    const float dv = std::max({ 0.0f, ground - kRingBelow - rb, rb - (ground + kRingAbove) });
+    dmin = sqrtf(dh * dh + dv * dv) - hd;
+    const float fv = std::max(fabsf(rb - (ground - kRingBelow)), fabsf(rb - (ground + kRingAbove)));
+    dmax = sqrtf((wh + rp.r) * (wh + rp.r) + fv * fv);
+    return fabsf(rb - ground) < hd + kRingBand;
+}
+
+static void CollectRing(const RingParams& rp, const NodeKey& key, std::vector<NodeKey>& out) {
+    const Vector3 lo = key.origin();
+    const Vector3 hi = Vector3AddValue(lo, key.size());
+    if (rp.flat) {
+        if (hi.y < rp.minHeight - 8.0f || lo.y > rp.maxHeight + 8.0f) return;
+    } else {
+        if (DistanceToBox({ 0, 0, 0 }, lo, hi) > rp.field->maxRadius() + 24.0f) return;
+        const float far = Vector3Length({ std::max(fabsf(lo.x), fabsf(hi.x)), std::max(fabsf(lo.y), fabsf(hi.y)), std::max(fabsf(lo.z), fabsf(hi.z)) });
+        if (far < rp.field->minRadius()) return;
+        if (BehindHorizon(rp.cHigh, lo, hi, rp.occluder)) return;
+    }
+    float dmin, dmax;
+    if (!RingDistances(rp, key, lo, hi, dmin, dmax)) return;
+    const float split = rp.lodFactor * key.size();
+    if (key.level == 0 || dmax >= split) out.push_back(key);
+    if (key.level > 0 && dmin < split)
+        for (int i = 0; i < 8; ++i)
+            CollectRing(rp, { key.level - 1, key.x * 2 + (i & 1), key.y * 2 + ((i >> 1) & 1), key.z * 2 + ((i >> 2) & 1) }, out);
+}
+
 // A set of node keys for the LOD selection: open addressing, buffers kept between calls (#258/#204: the selection
 // rebuilt six std::unordered_sets of thousands of keys every time the camera moved, a heap allocation per insert;
 // it was ~2 ms a frame flying).
@@ -525,9 +619,24 @@ private:
     }
 };
 
+// A body's preload ring (#294/#296): its node keys (nearest/coarsest first), requested in spare streaming time,
+// kept resident but not drawn. Main thread only.
+struct PreloadRing {
+    Vector3 centre = { 1e30f, 1e30f, 1e30f }; // body-local
+    std::vector<NodeKey> keys;
+    size_t cursor = 0;   // keys before it have been requested (or were already there)
+    int ready = 0;       // keys flagged inRing that have a build (counted as they are flagged or built)
+    bool complete = true;
+    struct Job { Vector3 centre{}; std::vector<NodeKey> keys; std::atomic<bool> done{ false }; };
+    std::shared_ptr<Job> job; // the next ring, being collected on a worker
+    Vector3 lastCam = { 1e30f, 1e30f, 1e30f }; double lastTime = 0.0; float speed = 0.0f; // camera speed against the body, smoothed
+};
+static std::unordered_map<uint64_t, PreloadRing> gPreload;
+static std::unordered_map<uint64_t, int> gCachedCount; // per body, from its last LOD update (#295)
+
 // Decide which nodes to build and draw. Old nodes stay on screen until every desired node that
-// overlaps them is ready, so LOD changes never open holes.
-static void UpdateLod(Planetoid& p, Vector3 cameraRender) {
+// overlaps them is ready, so LOD changes never open holes. Returns how many builds it requested.
+static int UpdateLod(Planetoid& p, Vector3 cameraRender) {
     PROFILE_FUNCTION();
     const Vector3 camLocal = p.toLocal(cameraRender);
     LodView view{ camLocal };
@@ -538,22 +647,11 @@ static void UpdateLod(Planetoid& p, Vector3 cameraRender) {
     }
     // Nothing to do while the camera (in body space) stays within 1 m of the last selection and no
     // results or edits arrived: the smallest node splits at lodFactor * 32 m, so 1 m is invisible.
-    if (!p.lodDirty && Vector3DistanceSqr(camLocal, p.lodCamLocal) < 1.0f) return;
+    if (!p.lodDirty && Vector3DistanceSqr(camLocal, p.lodCamLocal) < 1.0f) return 0;
     p.lodDirty = false;
     p.lodCamLocal = camLocal;
     std::vector<NodeKey> desired;
-    if (p.flat) {
-        // Open world: a grid of root tiles around the camera, spanning the terrain height band.
-        const float rs = kVoxelSize * (float)(CHUNK_SIZE << p.rootLevel);
-        const int cx = (int)floorf(camLocal.x / rs), cz = (int)floorf(camLocal.z / rs);
-        const int y0 = (int)floorf(p.minHeight / rs), y1 = (int)floorf(p.maxHeight / rs);
-        for (int z = cz - 2; z <= cz + 2; ++z)
-            for (int x = cx - 2; x <= cx + 2; ++x)
-                for (int y = y0; y <= y1; ++y) CollectDesired(p, { p.rootLevel, x, y, z }, view, desired);
-    } else {
-        for (int i = 0; i < 8; ++i)
-            CollectDesired(p, { p.rootLevel, -1 + (i & 1), -1 + ((i >> 1) & 1), -1 + ((i >> 2) & 1) }, view, desired);
-    }
+    ForEachRoot(p, camLocal, [&](const NodeKey& r) { CollectDesired(p, r, view, desired); });
     static FlatKeySet desiredSet;
     desiredSet.reset(desired.size());
     for (const NodeKey& k : desired) desiredSet.insert(k);
@@ -564,7 +662,11 @@ static void UpdateLod(Planetoid& p, Vector3 cameraRender) {
     const size_t kMaxNewRequests = gStreamOld ? SIZE_MAX : 96;
     std::vector<std::pair<float, NodeKey>> toRequest;
     for (const NodeKey& k : desired) {
-        if (p.requestedVersion.find(k) != p.requestedVersion.end()) continue;
+        if (p.requestedVersion.find(k) != p.requestedVersion.end()) {
+            // Queued by the preload ring (background priority) and not built yet: the view wants it now (#296).
+            auto n = p.nodes.find(k);
+            if (n == p.nodes.end() || n->second->ready || !n->second->background) continue;
+        }
         const Vector3 lo = k.origin();
         const float dist = LodDistance(view, lo, Vector3AddValue(lo, k.size()));
         toRequest.push_back({ dist / (1.0f + k.level), k });
@@ -583,17 +685,7 @@ static void UpdateLod(Planetoid& p, Vector3 cameraRender) {
     if (view.zoom > 1.0f && !gStreamOld) {
         std::vector<NodeKey> unzoomed;
         LodView plain{ camLocal };
-        if (p.flat) {
-            const float rs = kVoxelSize * (float)(CHUNK_SIZE << p.rootLevel);
-            const int cx = (int)floorf(camLocal.x / rs), cz = (int)floorf(camLocal.z / rs);
-            const int y0 = (int)floorf(p.minHeight / rs), y1 = (int)floorf(p.maxHeight / rs);
-            for (int z = cz - 2; z <= cz + 2; ++z)
-                for (int x = cx - 2; x <= cx + 2; ++x)
-                    for (int y = y0; y <= y1; ++y) CollectDesired(p, { p.rootLevel, x, y, z }, plain, unzoomed);
-        } else {
-            for (int i = 0; i < 8; ++i)
-                CollectDesired(p, { p.rootLevel, -1 + (i & 1), -1 + ((i >> 1) & 1), -1 + ((i >> 2) & 1) }, plain, unzoomed);
-        }
+        ForEachRoot(p, camLocal, [&](const NodeKey& r) { CollectDesired(p, r, plain, unzoomed); });
         for (const NodeKey& k : unzoomed) if (auto it = p.nodes.find(k); it != p.nodes.end()) { keepSet.insert(k); it->second->lastWanted = now; }
     }
 
@@ -659,25 +751,149 @@ static void UpdateLod(Planetoid& p, Vector3 cameraRender) {
         c->clipMax.z = drawn.count({ k.level, k.x, k.y, k.z + 1 }) ? o.z + s : 1e30f;
     }
 
-    // Free nodes that are neither desired nor on screen (late results for them are dropped). A built node that was
-    // wanted in the last few seconds stays (while the terrain arena has room): moving back and forth or across a
-    // split distance reuses it instead of building it again (#258). A node still building is freed at once, which
-    // cancels its queued work. At most kMaxFrees a frame: freeing thousands at once (closing the telescope) hitched.
-    const double kRetainSeconds = gStreamOld ? 0.0 : 4.0;
+    // Free nodes that are neither desired, on screen, kept for the telescope nor in the preload ring (late results for
+    // them are dropped). A node still building is freed at once, which cancels its queued work. Built ones go to the
+    // chunk cache (#295): they stay until the cached nodes hold more than cacheVertices or the body has more than
+    // cacheNodes nodes, then the least recently wanted go first - turning around or doubling back reuses them
+    // instead of building them again (it was a fixed 4 s hold, #258). At most kMaxFrees a frame: freeing thousands at
+    // once (closing the telescope) hitched.
     const int kMaxFrees = gStreamOld ? INT_MAX : 256;
-    const ArenaStats as = TerrainArena_Stats();
-    const bool roomy = as.vertexCapacity == 0 || as.vertices < as.vertexCapacity * 4 / 5;
+    // The full pass costs ~1-3 ms with the preload ring's ~40k nodes: at most 4 times a second (or straight on when it
+    // stopped at kMaxFrees). Undesired builds are cancelled up to 0.25 s later.
+    if (!gStreamOld && now - p.lastFreeSweep < 0.25) return (int)toRequest.size();
+    p.lastFreeSweep = now;
+    std::vector<std::pair<double, NodeKey>> cached;
     int frees = 0;
+
+    auto vertsOf = [](const Chunk& c) -> long long { return c.arena.valid() ? c.arena.vCount : c.mesh.vertexCount; };
+    long long cachedVerts = 0; // the cache's own vertices: the preload ring and the view are not counted against it
     for (auto it = p.nodes.begin(); it != p.nodes.end();) {
         const Chunk* c = it->second.get();
-        const bool keep = desiredSet.count(it->first) || drawn.count(it->first) || keepSet.count(it->first) ||
-                          (c->ready && roomy && now - c->lastWanted < kRetainSeconds);
+        if (c->inRing) { ++it; continue; } // most nodes: no lookups
+        const bool keep = desiredSet.count(it->first) || drawn.count(it->first) || keepSet.count(it->first);
         if (keep) { ++it; continue; }
-        if (frees >= kMaxFrees) { p.lodDirty = true; ++it; continue; } // the rest next frame
+        if (c->ready && !gStreamOld) { cached.push_back({ c->lastWanted, it->first }); cachedVerts += vertsOf(*c); ++it; continue; }
+        if (frees >= kMaxFrees) { p.lodDirty = true; p.lastFreeSweep = -1e9; ++it; continue; } // the rest next frame
         p.requestedVersion.erase(it->first);
         it = p.nodes.erase(it);
         ++frees;
     }
+
+    size_t cachedCount = cached.size();
+    auto over = [&] { return cachedVerts > lodSettings.cacheVertices || cachedCount > (size_t)lodSettings.cacheNodes; };
+    if (!cached.empty() && over()) {
+        std::sort(cached.begin(), cached.end(), [](const auto& a, const auto& b) { return a.first < b.first; });
+        size_t i = 0;
+        for (; i < cached.size() && over(); ++i) {
+            if (frees >= kMaxFrees) { p.lodDirty = true; p.lastFreeSweep = -1e9; break; }
+            auto it = p.nodes.find(cached[i].second);
+            cachedVerts -= vertsOf(*it->second);
+            p.requestedVersion.erase(it->first);
+            p.nodes.erase(it);
+            --cachedCount;
+            ++frees;
+            ++gEvicted;
+        }
+        cached.erase(cached.begin(), cached.begin() + (std::ptrdiff_t)i);
+    }
+    gCachedCount[p.id] = (int)cached.size();
+    return (int)toRequest.size();
+}
+
+// Preload ring step (#294/#296) for one body: re-centre on the camera when it moved a quarter of the radius, then
+// request up to `spare` ring nodes nobody asked for yet (background priority, so the view's builds go first).
+static void UpdatePreload(Planetoid& p, Vector3 cameraRender, int& spare) {
+    PreloadRing& ring = gPreload[p.id];
+    const float r = lodSettings.preloadRadius / std::max(p.scale, 1e-6f);
+    const Vector3 c = p.toLocal(cameraRender);
+    bool near = r > 0.0f && !gStreamOld && !p.vehicle && p.field;
+    if (near && !p.flat) {
+        const float dc = Vector3Length(c); // the ball must reach the terrain band
+        near = dc - r < p.field->maxRadius() + 24.0f && dc + r > p.field->minRadius();
+    }
+    if (!near) {
+        if (!ring.keys.empty()) { // its nodes go to the cache
+            for (const NodeKey& k : ring.keys) if (auto it = p.nodes.find(k); it != p.nodes.end()) it->second->inRing = false;
+            ring = PreloadRing{}; p.lodDirty = true;
+        }
+        return;
+    }
+    const double now = GetTime();
+    // Paused while the camera moves faster than running pace against the body (flying, falling): the ring there would
+    // be stale before it was built, and its builds cost ~1.7 ms of GPU time a frame flying at 55 m/s (#296). The spawn
+    // preload ignores this.
+    {
+        const double dt = now - ring.lastTime;
+        if (ring.lastCam.x < 1e29f && dt > 0.0 && dt < 1.0) {
+            const float v = Vector3Distance(c, ring.lastCam) / (float)dt, a = (float)std::min(1.0, dt * 4.0);
+            ring.speed += (v - ring.speed) * a;
+        }
+        ring.lastCam = c; ring.lastTime = now;
+    }
+    const bool paused = !gPreloadUrgent && ring.speed > kRingMaxSpeed;
+    // Moved a quarter of the radius from the ring (or the one being collected): collect the next one on a worker.
+    const Vector3 aimed = ring.job ? ring.job->centre : ring.centre;
+    if (!ring.job && !paused && Vector3DistanceSqr(c, aimed) > r * r / 16.0f) {
+        RingParams rp;
+        rp.field = p.field;
+        rp.planet = p.flat ? nullptr : dynamic_cast<const PlanetField*>(p.field.get());
+        rp.flat = p.flat; rp.minHeight = p.minHeight; rp.maxHeight = p.maxHeight;
+        rp.occluder = p.field->occluderRadius() * p.scale;
+        rp.lodFactor = lodSettings.lodFactor;
+        rp.rootLevel = p.rootLevel;
+        rp.c = c; rp.r = r;
+        const float lc = Vector3Length(c);
+        rp.up = p.flat ? Vector3{ 0, 1, 0 } : lc > 1e-3f ? Vector3Scale(c, 1.0f / lc) : Vector3{ 0, 1, 0 };
+        rp.cHigh = p.flat ? c : Vector3Add(c, Vector3Scale(rp.up, rp.planet ? kRingAbove + 64.0f : r));
+        auto job = std::make_shared<PreloadRing::Job>();
+        job->centre = c;
+        ring.job = job;
+        ring.complete = false;
+        std::vector<NodeKey> roots;
+        ForEachRoot(p, c, [&](const NodeKey& k) { roots.push_back(k); });
+        Jobs().submit(0.0f, [rp, job, roots] {
+            PROFILE_SCOPE("Preload ring");
+            for (const NodeKey& k : roots) CollectRing(rp, k, job->keys);
+            std::vector<std::pair<float, NodeKey>> order;
+            order.reserve(job->keys.size());
+            for (const NodeKey& k : job->keys) {
+                const Vector3 lo = k.origin();
+                order.push_back({ DistanceToBox(rp.c, lo, Vector3AddValue(lo, k.size())) / (1.0f + k.level), k });
+            }
+            std::sort(order.begin(), order.end(), [](const auto& a, const auto& b) { return a.first < b.first; });
+            for (size_t i = 0; i < order.size(); ++i) job->keys[i] = order[i].second;
+            job->done.store(true);
+        });
+    }
+    if (ring.job && ring.job->done.load()) {
+        for (const NodeKey& k : ring.keys) // the old ring becomes the freshest part of the cache
+            if (auto it = p.nodes.find(k); it != p.nodes.end()) { it->second->lastWanted = now; it->second->inRing = false; }
+        ring.centre = ring.job->centre;
+        ring.keys = std::move(ring.job->keys);
+        ring.job.reset();
+        // Flag the new ring's existing nodes (kept from now on) and count the built ones; nodes flagged later are
+        // counted when flagged (the cursor below) or when their first build arrives (IntegrateResult).
+        ring.ready = 0;
+        for (const NodeKey& k : ring.keys)
+            if (auto it = p.nodes.find(k); it != p.nodes.end()) { it->second->inRing = true; ring.ready += it->second->ready ? 1 : 0; }
+        ring.cursor = 0; ring.complete = false;
+        p.lodDirty = true; // the free loop now protects the new ring
+    }
+    while (!paused && spare > 0 && ring.cursor < ring.keys.size()) {
+        const NodeKey& k = ring.keys[ring.cursor++];
+        if (p.requestedVersion.find(k) != p.requestedVersion.end()) { // built, building or cached already
+            if (auto it = p.nodes.find(k); it != p.nodes.end() && !it->second->inRing) {
+                it->second->inRing = true; // the view made it after the ring was installed
+                ring.ready += it->second->ready ? 1 : 0;
+            }
+            continue;
+        }
+        const Vector3 lo = k.origin();
+        RequestNode(p, k, kBackgroundPriority + DistanceToBox(c, lo, Vector3AddValue(lo, k.size())) / (1.0f + k.level));
+        p.nodes.at(k)->inRing = true;
+        --spare;
+    }
+    if (!ring.job) ring.complete = ring.cursor >= ring.keys.size() && ring.ready >= (int)ring.keys.size();
 }
 
 static void IntegrateResult(const ChunkMeshData& r) {
@@ -692,19 +908,29 @@ static void IntegrateResult(const ChunkMeshData& r) {
     sampleMsTotal += r.sampleMs;
     buildCount++;
     if (r.overflow) logger.logf("[ERROR] Node L%d (%d,%d,%d) exceeds 65535 vertices; skipped\n", r.key.level, r.key.x, r.key.y, r.key.z);
+    const bool wasReady = it->second->ready;
     it->second->setMesh(r);
-    p->lodDirty = true; // readiness changed: the draw list may change
+    if (!wasReady && it->second->inRing)
+        if (auto ring = gPreload.find(p->id); ring != gPreload.end()) ++ring->second.ready; // (#294 progress)
+    // Readiness changed: the draw list may change. Not for a preload-ring build (#296): the view did not ask for
+    // it (it re-requests a ring node it wants), and re-selecting after every background upload cost frame time.
+    if (!it->second->background) p->lodDirty = true;
 }
 
+// Idle for the view: no view or edit build alive, and none of their results waiting for upload. The preload ring's
+// background builds do not count (#296): loading screens and scripted tests would wait seconds for the ring.
 static bool PipelineIdle() {
+    if (gForegroundBuilds.load() != 0) return false; // a result is pushed before its build's token is released
     std::lock_guard<std::mutex> lock(resultsMutex);
-    return Jobs().idle() && results.empty() && pendingUploads.empty() && TerrainGpu_Pending() == 0;
+    for (const ChunkMeshData& r : results) if (r.priority < kBackgroundPriority) return false;
+    for (const ChunkMeshData& r : pendingUploads) if (r.priority < kBackgroundPriority) return false;
+    return true;
 }
 
 static bool AnyLodPending(Scene& world) {
     for (auto& obj : world.objects)
         if (auto* p = dynamic_cast<Planetoid*>(obj.get()))
-            for (auto& n : p->nodes) if (!n.second->ready) return true;
+            for (auto& n : p->nodes) if (!n.second->ready && !n.second->background) return true;
     return false;
 }
 
@@ -767,6 +993,7 @@ void advanceBodies(Scene& world, float dt) {
 void worldUpdate(Scene& world, float uploadBudgetMs) {
     PROFILE_FUNCTION();
     GpuTimer_CpuMark("w-before");
+    TerrainGpu_SetBackground(kBackgroundPriority, !gPreloadUrgent); // preload-ring blocks: gently, except during the spawn preload
     TerrainGpu_Pump(); // GPU density blocks (Plan 6 step 4): finished batches back to the workers, the next batch out
     GpuTimer_CpuMark("w-gpu-pump");
     // Ring rocks near the camera become voxel bodies (and back) before this frame's LOD selection.
@@ -786,6 +1013,7 @@ void worldUpdate(Scene& world, float uploadBudgetMs) {
             if (auto* p = dynamic_cast<Planetoid*>(obj.get())) camOf[p->id] = p->toLocal(world.camera.position);
         auto rank = [&](const ChunkMeshData& d) {
             if (d.priority < 0.0f) return d.priority - 1e9f;
+            if (d.priority >= kBackgroundPriority) return d.priority + 1e9f; // preload ring (#296): after the view's
             auto it = camOf.find(d.planetoidId);
             if (it == camOf.end()) return 1e9f;
             const Vector3 lo = d.key.origin();
@@ -802,7 +1030,11 @@ void worldUpdate(Scene& world, float uploadBudgetMs) {
     // GPU uploads are the only main-thread cost; cap them per frame so streaming never hitches.
     const auto t0 = std::chrono::steady_clock::now();
     int uploads = 0;
+    // Preload-ring results (sorted last) get at most 1 ms of it outside the spawn preload: spare time only (#296).
+    const float backgroundBudgetMs = gPreloadUrgent ? uploadBudgetMs : std::min(uploadBudgetMs, 1.0f);
     while (!pendingUploads.empty()) {
+        const float elapsed = std::chrono::duration<float, std::milli>(std::chrono::steady_clock::now() - t0).count();
+        if (uploads > 0 && pendingUploads.front().priority >= kBackgroundPriority && elapsed > backgroundBudgetMs) break;
         IntegrateResult(pendingUploads.front());
         pendingUploads.pop_front();
         uploads++;
@@ -811,9 +1043,41 @@ void worldUpdate(Scene& world, float uploadBudgetMs) {
 
     GpuTimer_CpuMark("w-uploads");
     // LOD after uploads, so this frame's draw list already includes nodes that just finished.
+    int viewRequests = 0;
     for (auto& obj : world.objects)
-        if (auto* p = dynamic_cast<Planetoid*>(obj.get())) UpdateLod(*p, world.camera.position);
+        if (auto* p = dynamic_cast<Planetoid*>(obj.get())) viewRequests += UpdateLod(*p, world.camera.position);
     GpuTimer_CpuMark("w-lod");
+    // Preload rings (#294/#296) get the request budget the view left unused this frame, and only while the build
+    // queue is short, so they never hold up what is on screen. During the spawn preload they run at full rate.
+    {
+        const int kViewCap = 96, kUrgentCap = 256;
+        const int backlog = (int)Jobs().queued() + TerrainGpu_Pending();
+        int spare = gPreloadUrgent ? kUrgentCap - viewRequests
+                                   : (backlog < 2 * (int)Jobs().threadCount() ? kViewCap - viewRequests : 0);
+        spare = std::max(spare, 0);
+        std::unordered_set<uint64_t> alive;
+        for (auto& obj : world.objects)
+            if (auto* p = dynamic_cast<Planetoid*>(obj.get())) { UpdatePreload(*p, world.camera.position, spare); alive.insert(p->id); }
+        for (auto it = gPreload.begin(); it != gPreload.end();) it = alive.count(it->first) ? std::next(it) : gPreload.erase(it);
+        for (auto it = gCachedCount.begin(); it != gCachedCount.end();) it = alive.count(it->first) ? std::next(it) : gCachedCount.erase(it);
+        stats.preloadNodes = stats.preloadReady = stats.cachedNodes = 0;
+        bool complete = true;
+        for (auto& [id, ring] : gPreload) { stats.preloadNodes += (int)ring.keys.size(); stats.preloadReady += ring.ready; complete &= ring.complete; }
+        for (auto& [id, n] : gCachedCount) stats.cachedNodes += n;
+        stats.evicted = gEvicted;
+        if (gPreloadUrgent && complete) {
+            gPreloadUrgent = false;
+            // Still behind the loading screen: grow the terrain arena once for what play adds - a re-centred ring's
+            // new part (about a third of it) and a full cache - so it never regrows (a GB-sized copy) mid-walk.
+            const ArenaStats as = TerrainArena_Stats();
+            if (as.vertices > 0) {
+                const double ipv = (double)as.indices / as.vertices;
+                const long long v = (long long)as.vertices + as.vertices / 3 + lodSettings.cacheVertices;
+                TerrainArena_Reserve((int)std::min<long long>(v, INT_MAX / 2), (int)std::min<long long>((long long)(v * ipv), INT_MAX / 2));
+            }
+        }
+    }
+    GpuTimer_CpuMark("w-preload");
     for (auto& obj : world.objects)
         if (auto* p = dynamic_cast<Planetoid*>(obj.get()); p && p->trees) p->trees->update(*p, p->toLocal(world.camera.position));
 
@@ -846,6 +1110,16 @@ void worldUpdate(Scene& world, float uploadBudgetMs) {
 
 // False until a (re)generation has fully streamed in, and while edits/LOD changes are building.
 bool WorldIdle() { return generationStart < 0.0 && PipelineIdle(); }
+
+void BeginSpawnPreload() {
+    gPreloadUrgent = lodSettings.preloadRadius > 0.0f && !gStreamOld;
+    for (auto& [id, ring] : gPreload) { ring.centre = { 1e30f, 1e30f, 1e30f }; ring.job.reset(); } // re-centre on the camera as it is now
+}
+
+bool SpawnPreloadPending(float* progress) {
+    if (progress) *progress = stats.preloadNodes ? (float)stats.preloadReady / (float)stats.preloadNodes : 1.0f;
+    return gPreloadUrgent;
+}
 
 const WorldStats& GetWorldStats() { return stats; }
 

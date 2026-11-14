@@ -21,6 +21,9 @@ namespace {
 
     constexpr int kMaxBlocks = 32;          // per batch
     constexpr int kSlots = 2;               // batches in flight
+    constexpr int kMaxBackgroundBlocks = 8; // per batch of background blocks while throttled (#296)
+    float gBackgroundFrom = 3.0e38f;
+    bool gBackgroundThrottle = false;
 
     // Readback (#267): the samples are copied on the GPU into a persistently mapped buffer, and the workers read them
     // there; the main thread no longer copies a multi-MB batch out with glGetBufferSubData (~0.7 ms a frame while
@@ -198,6 +201,8 @@ int TerrainGpu_Pending() {
     return n;
 }
 
+void TerrainGpu_SetBackground(float from, bool throttle) { gBackgroundFrom = from; gBackgroundThrottle = throttle; }
+
 void TerrainGpu_Pump() {
     if (!S.ok) return;
     // Finished batches: hand out their samples.
@@ -261,19 +266,27 @@ void TerrainGpu_Pump() {
         }
         sl.jobs.clear();
     }
-    // Free slots: the next batch (blocks of one field, still wanted).
+    // Free slots: the next batch (blocks of one field, still wanted). The queue is in priority order, so background
+    // blocks (#296) only come after the rest; while throttled, one small batch of them a frame.
+    bool backgroundSent = false;
     for (Slot& sl : S.slots) {
         if (sl.fence || !sl.jobs.empty()) continue;
         {
             std::lock_guard<std::mutex> lock(S.m);
             const PlanetField* f = nullptr;
+            int background = 0;
             for (auto it = S.queue.begin(); it != S.queue.end() && (int)sl.jobs.size() < kMaxBlocks;) {
                 if (it->wanted && !it->wanted()) { it = S.queue.erase(it); continue; }
+                if (gBackgroundThrottle && it->priority >= gBackgroundFrom) { // the rest of the queue is background too
+                    if (backgroundSent || background >= kMaxBackgroundBlocks) break;
+                    ++background;
+                }
                 if (f && it->field != f) { ++it; continue; }
                 f = it->field;
                 sl.jobs.push_back(std::move(*it));
                 it = S.queue.erase(it);
             }
+            if (background > 0) backgroundSent = true;
         }
         if (sl.jobs.empty()) break;
         if (S.disabled) {
