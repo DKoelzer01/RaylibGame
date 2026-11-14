@@ -246,6 +246,7 @@ int main(int argc, char** argv)
     bool benchFarForest = false; int farForestPhase = 0; double farForestT0 = 0.0; Vector3 farForestEye{}, farForestAt{}; // --shot-far-forest
     bool benchTerrain = false; int terrainPhase = 0; double terrainT0 = 0.0; Vector3 terrainAt{}, terrainOut{}; // --shot-terrain
     bool benchShelter = false; int shelterPhase = 0; double shelterT0 = 0.0; Vector3 shelterEye{}, shelterLook{}; // --shot-shelter (#369)
+    bool benchRoom = false; int roomPhase = 0; double roomT0 = 0.0; uint32_t roomPlot = 0; Vector3 roomEye{}, roomLook{}; // --shot-room (#369)
     bool benchPumpHand = false; // --test-pump-hand (#280): the pump test with a hand pump worked for 60 s
     bool benchPumpBoiler = false; int pumpBoilerPart = -1; // --test-pump-boiler (#229 review): the pipes end at a full boiler; the world loses no water
     bool benchPump = false; int pumpPhase = 0, pumpCable = -1; double pumpT0 = 0.0, pumpedAtCut = 0.0; uint32_t pumpPlot = 0; Vector3 pumpBasin{}; float pumpRise = 0.0f; // --test-pump
@@ -456,6 +457,7 @@ int main(int argc, char** argv)
         if (std::string(argv[i]) == "--test-pump-boiler") { benchPump = true; benchPumpBoiler = true; }
         if (std::string(argv[i]) == "--shot-terrain") benchTerrain = true;
         if (std::string(argv[i]) == "--shot-shelter") benchShelter = true;
+        if (std::string(argv[i]) == "--shot-room") benchRoom = true;
         if (std::string(argv[i]) == "--shot-shadow") benchShadow = true;
         if (std::string(argv[i]) == "--shot-particles") benchParticles = true;
         if (std::string(argv[i]) == "--test-biomes") benchBiomes = true;
@@ -3300,6 +3302,44 @@ int main(int argc, char** argv)
                             benchFarForest = false;
                         }
                     }
+                } else if (benchRoom && (roomPhase > 0 || WorldIdle())) {
+                    // --shot-room (#369): a stone room 5 x 5 m, 3 m high, roofed, a doorway 1.5 m wide in one wall; at night, from
+                    // inside by the far wall, looking back at the doorway. Unlit, the room should be near black.
+                    Planetoid* p = dynamic_cast<Planetoid*>(world.objects[0].get());
+                    if (roomPhase == 0) {
+                        player.spawnOn(world, *p, StartSpawnDir(*p));
+                        roomPhase = 1; roomT0 = GetTime();
+                    } else if (roomPhase == 1 && GetTime() - roomT0 > 1.0 && player.grounded) {
+                        const Vector3 feet = (player.position - world.renderOrigin).toFloat();
+                        const Vector3 flat = Vector3Normalize(Vector3Subtract(player.forward, Vector3Scale(player.up, Vector3DotProduct(player.forward, player.up))));
+                        TerrainHit th;
+                        RaycastTerrain(world, Ray{ Vector3Add(Vector3Add(feet, Vector3Scale(flat, 8.0f)), Vector3Scale(player.up, 20.0f)), Vector3Negate(player.up) }, 60.0f, th);
+                        if (!p->plots) p->plots = std::make_unique<PlotSet>();
+                        Plot* plot = p->plots->plotFor(th.local, 0.0f, true);
+                        roomPlot = plot->id;
+                        constexpr int kY = 4; // two metres up: no ground inside the room
+                        int placed = 0;
+                        auto put = [&](int x, int y, int z) { if (BuildTool_Place(*p, *plot, { PartType::Cube, { x, y + kY, z }, 0 }, false)) ++placed; };
+                        for (int z = 0; z < 10; ++z) for (int x = 0; x < 10; ++x) { put(x, 0, z); put(x, 7, z); } // floor and roof
+                        for (int y = 1; y <= 6; ++y)
+                            for (int k = 0; k < 10; ++k) {
+                                put(k, y, 9); put(0, y, k); put(9, y, k);
+                                if (!(k >= 4 && k <= 6 && y <= 4)) put(k, y, 0); // the doorway: 1.5 m wide, 2 m high
+                            }
+                        printf("bench: room: %d parts\n", placed);
+                        roomEye = plot->toBody({ 2.5f, (kY + 1) * kCellSize + 1.6f, 4.25f });
+                        roomLook = plot->toBody({ 2.5f, (kY + 1) * kCellSize + 1.0f, 0.0f });
+                        player.flyMode = true;
+                        roomPhase = 2; roomT0 = GetTime();
+                    } else if (roomPhase == 2) {
+                        world.camera.position = p->toWorld(roomEye); world.camera.target = p->toWorld(roomLook); world.camera.up = p->dirToWorld(Vector3Normalize(roomEye));
+                        player.position = world.renderOrigin + world.camera.position;
+                        if (GetTime() - roomT0 > 3.0) {
+                            TakeScreenshot("bench_room.png");
+                            printf("bench: room: bench_room.png (sky probes %s)\n", gSkyProbes ? "on" : "off");
+                            benchRoom = false;
+                        }
+                    }
                 } else if (benchShelter && (shelterPhase > 0 || WorldIdle())) {
                     // --shot-shelter (#369): a pit 4 m deep with a tunnel off its side under ~2.5 m of rock; at night, from the
                     // pit, looking into the tunnel. Depth alone keeps the tunnel ~75% sky-lit; the overhead rays darken it.
@@ -5303,7 +5343,7 @@ int main(int argc, char** argv)
                         }
                         benchWalkSeconds = 0.0;
                     }
-                } else if ((WorldIdle() && benchDigStrokes == 0 && !benchPaint && !benchSaveLoad && benchWalkSeconds <= 0.0 && benchMineStrokes == 0 && minePhase != 2 && benchFlySeconds <= 0.0 && !benchSuffocate && benchOrbitSeconds <= 0.0 && !benchRide && !benchPark && !benchGravity && !benchPrecision && !benchMantle && !benchAirJump && !benchMoon && !benchHole && !benchWall && !benchDoorway && !benchLedge && !benchTor && !benchMachines && !benchFall && !benchHover && !benchTeleClose && !benchMenus && !benchWater && !benchFlyFollow && !benchHotbar && !benchInventory && !benchMap && !benchViewmodel && !benchQuests && !benchHunger && !benchFarm && !benchAnimals && !benchThreats && benchShotTabs == 0 && !benchForest && !benchFlow && !benchPond && !benchBucket && !benchPump && !benchTerrain && !benchShelter && !benchShadow && !benchParticles && !benchBiomes && !benchOil && !benchSpring && !benchShotAnimals && !benchShotMachines && benchShotBiomes < 0 && !benchFarForest && !benchRecipes && !benchWeather && !benchDecor && !benchMaterials && !benchDamage && !benchCrafting && !benchSuit && !benchTools && !benchRivers && !benchRing && !benchRocket && !benchStation && !benchBlueprint && !benchSmallBody && !benchTrees && !benchChop && benchPersist == 0 && benchBuild == 0 && benchFactory == 0 && !benchProgression) || GetTime() > 600.0) {
+                } else if ((WorldIdle() && benchDigStrokes == 0 && !benchPaint && !benchSaveLoad && benchWalkSeconds <= 0.0 && benchMineStrokes == 0 && minePhase != 2 && benchFlySeconds <= 0.0 && !benchSuffocate && benchOrbitSeconds <= 0.0 && !benchRide && !benchPark && !benchGravity && !benchPrecision && !benchMantle && !benchAirJump && !benchMoon && !benchHole && !benchWall && !benchDoorway && !benchLedge && !benchTor && !benchMachines && !benchFall && !benchHover && !benchTeleClose && !benchMenus && !benchWater && !benchFlyFollow && !benchHotbar && !benchInventory && !benchMap && !benchViewmodel && !benchQuests && !benchHunger && !benchFarm && !benchAnimals && !benchThreats && benchShotTabs == 0 && !benchForest && !benchFlow && !benchPond && !benchBucket && !benchPump && !benchTerrain && !benchShelter && !benchRoom && !benchShadow && !benchParticles && !benchBiomes && !benchOil && !benchSpring && !benchShotAnimals && !benchShotMachines && benchShotBiomes < 0 && !benchFarForest && !benchRecipes && !benchWeather && !benchDecor && !benchMaterials && !benchDamage && !benchCrafting && !benchSuit && !benchTools && !benchRivers && !benchRing && !benchRocket && !benchStation && !benchBlueprint && !benchSmallBody && !benchTrees && !benchChop && benchPersist == 0 && benchBuild == 0 && benchFactory == 0 && !benchProgression) || GetTime() > 600.0) {
                     benchStart = GetTime();
                     printf("bench: world ready after %.2f s (%d chunks, avg build %.2f ms of which sampling %.2f ms, %d worker threads)\n",
                         GetWorldStats().lastGenerationSeconds, GetWorldStats().chunks, GetWorldStats().avgBuildMs, GetWorldStats().avgSampleMs, GetWorldStats().workerThreads);

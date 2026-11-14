@@ -554,6 +554,33 @@ void Plot::buildSection(Int3 key, Section& s, const std::vector<Int3>& sectionCe
             const float len = Vector3Length(centre);
             if (len > 1.0f) field->materialSky(centre, 1.0f, 1.0f, Vector3Scale(centre, 1.0f / len), cellSky);
         }
+        // Under a roof (#369): five rays from each face through the plot's own cells (up, and four tilted 45 degrees,
+        // 0.5-12 m); building blocks stop them, glass and small parts let light by. The open share (the up ray counts
+        // double) dims a room's walls and floor, black a few metres from a window or a door.
+        auto faceSky = [&](Vector3 centre, Vector3 n) {
+            if (!gSkyProbes) return cellSky;
+            static const Vector3 dirs[5] = { { 0, 1, 0 }, { 0.7071f, 0.7071f, 0 }, { -0.7071f, 0.7071f, 0 }, { 0, 0.7071f, 0.7071f }, { 0, 0.7071f, -0.7071f } };
+            static const float dist[8] = { 1.0f, 1.5f, 2.0f, 3.0f, 4.0f, 6.0f, 10.0f, 16.0f }; // cells (0.5 m)
+            const Vector3 o = Vector3Add(centre, Vector3Scale(n, 0.6f));
+            float open = 0.0f;
+            for (int r = 0; r < 5; ++r) {
+                bool blocked = false;
+                for (float s : dist) {
+                    const Vector3 q = Vector3Add(o, Vector3Scale(dirs[r], s));
+                    const Int3 qc = { (int)floorf(q.x), (int)floorf(q.y), (int)floorf(q.z) };
+                    auto it = cells.find(qc);
+                    if (it == cells.end()) continue;
+                    const Part& bp = parts[it->second.part];
+                    if (IsShape(bp.type) && PartPatternOf(bp) != PatGlass) { blocked = true; break; }
+                }
+                if (!blocked) open += r == 0 ? 2.0f : 1.0f;
+            }
+            return std::min(cellSky, std::clamp(open / 6.0f * 1.5f, 0.0f, 1.0f));
+        };
+        size_t emitted = pos.size() / 3;
+        auto pushSky = [&](float fs) { for (size_t v = emitted; v < pos.size() / 3; ++v) { sky.push_back(1.0f - fs); sky.push_back(0.0f); } emitted = pos.size() / 3; };
+        auto polyCentre = [](const std::vector<Vector3>& poly) { Vector3 m{}; for (const Vector3& v : poly) m = Vector3Add(m, v); return Vector3Scale(m, 1.0f / (float)poly.size()); };
+        const Vector3 cellLo = { (float)c.x, (float)c.y, (float)c.z };
         const size_t firstVertex = pos.size() / 3;
         const CellRef& ref = cells.at(c);
         const CellShape& shape = ref.shape;
@@ -575,6 +602,7 @@ void Plot::buildSection(Int3 key, Section& s, const std::vector<Int3>& sectionCe
             const float shade = f == 3 ? 1.0f : f == 2 ? 0.7f : 0.85f + 0.05f * (f & 1);
             Color fc = { (unsigned char)(color.r * shade), (unsigned char)(color.g * shade), (unsigned char)(color.b * shade), color.a };
             EmitPoly(poly, kFaceN[f], base, fc, pos, nrm, col);
+            pushSky(faceSky(Vector3Add(cellLo, polyCentre(poly)), kFaceN[f]));
         }
         // Caps on the cutting planes.
         for (int i = 0; i < shape.planes; ++i) {
@@ -591,8 +619,10 @@ void Plot::buildSection(Int3 key, Section& s, const std::vector<Int3>& sectionCe
             }
             for (int j = 0; j < shape.planes; ++j) if (j != i) Clip(poly, shape.n[j], shape.d[j]);
             EmitPoly(poly, n, base, color, pos, nrm, col);
+            if (!poly.empty()) pushSky(faceSky(Vector3Add(cellLo, polyCentre(poly)), n)); else pushSky(cellSky);
         }
-        for (size_t v = firstVertex; v < pos.size() / 3; ++v) { sky.push_back(1.0f - cellSky); sky.push_back(0.0f); } // as "buried": meshes without it read 0 = open sky
+        pushSky(cellSky); // anything emitted without a face of its own; "buried" = 1 - sky (meshes without it read 0 = open)
+        (void)firstVertex;
     }
     if (pos.empty()) return;
     s.mesh.vertexCount = (int)(pos.size() / 3);
