@@ -909,6 +909,9 @@ void Factory::MovePlot(uint64_t fromBody, uint32_t fromPlot, uint64_t toBody, ui
 
 bool Factory::Accepts(PartType type, const std::string& item) {
     LoadRecipes();
+    // Storage takes anything (#283): looked up first, items no recipe or fuel list had interned (food, tools, gems,
+    // dyes...) were refused before the storage rule was reached. Insert interns the name.
+    if (Def(type).power == Power::Storage) return !item.empty();
     const int id = tables.find(item);
     return id >= 0 && ::Accepts(type, id);
 }

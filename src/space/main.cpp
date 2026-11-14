@@ -2143,6 +2143,8 @@ int main(int argc, char** argv)
                     } else if (craftPhase == 5 && GetTime() - craftStart > 0.5) {
                         craftInChest = Storage_CountNearby(world, "iron_ingot");
                         check(craftInChest == craftInv0 + 4, "the chest holds the deposited iron");
+                        // #283: a chest takes anything, also items no recipe or fuel list names (they were refused).
+                        check(Factory::Accepts(PartType::Chest, "cooked_meat") && Factory::Accepts(PartType::Chest, "ruby") && Factory::Accepts(PartType::Chest, "bench_never_seen_item_283"), "a chest accepts food, gems and unknown items (#283)");
                         if (craftPlot && craftChest >= 0) craftPlot->remove(craftChest);
                         printf("bench: crafting: discovery reveals recipes, an unlock gates one, search works; a nearby chest counted, pulled from, deposited into (%d iron there) -> %s\n",
                                craftInChest, craftOk ? "PASS" : "FAIL");
