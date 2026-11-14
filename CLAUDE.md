@@ -118,6 +118,11 @@ no auto-add, so:
 - Plan 2 (early game, done): https://claude.ai/artifact/RL22kZ7VBMugAFgGRPS3cE
 - Plan 3 (Terra tiers, space): https://claude.ai/artifact/XVw45AC6vwYitbdhaeP2xL - M21-M24 done (M24 on PR #28).
 - Plan 4 (flowing water): https://claude.ai/artifact/27xL5j1zkirSe8pDZgPz59
+- Plan 7 (erosion-shaped terrain + all-voxel water, #351): https://claude.ai/artifact/EXix8zmVSS2WRUSLAsovJg - on branch m49-erosion
+  behind RAYLIBGAME_EROSION=1 (the 3D band is off then; RAYLIBGAME_3D=0/1 overrides). Bake: erosion.* (200 m planet + 50 m faces, ERO4 cache
+  <save>.erosion, hash = world fingerprint, ponds list); gullies (ErosionGullies, RAYLIBGAME_GULLIES=0 A/B); glacial (RAYLIBGAME_GLACIAL);
+  rivers on the bake grid, carve-only water (--water-stats raises nothing). Tests: --test-flow-sea, --test-pond, --test-pump-hand, --test-hover.
+  Open questions for the user are on #351.
 - Plan 6 (GPU terrain generation + GPU-driven drawing, approved 2026-11-12): https://claude.ai/artifact/VJdKtUZEpBg5uefnqewRyZ -
   issues #143 (steps #144-#150), under #128. Done: steps 1-4 + 7 (PRs #153, #157, #179); step 5 deferred (#148), step 6
   not needed (#149: GPU density is bit-identical, collision keeps the CPU field). One path on GL 4.3 (base-instance records).
