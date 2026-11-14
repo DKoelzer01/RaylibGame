@@ -187,6 +187,7 @@ int main(int argc, char** argv)
     int benchMineStrokes = 0;     // --test-mine N: dig N strokes at the feet, craft, build (after any walk test)
     bool mineStarted = false, mineStoppedEarly = false;
     int minePhase = 0, minedStrokes = 0, mineCrafted = 0;
+    bool benchWaterStats = false; // --water-stats: how much the water shaping raises/cuts the ground (#251)
     bool benchPreloadSpawn = false; double preloadT0 = -1.0; // --preload-spawn: time the spawn preload ring (#294)
     double benchFlySeconds = 0.0, flyStart = -1.0; // --test-fly S: autopilot the ship to the nearest other asteroid
     bool benchSuffocate = false;   // --test-suffocate: run out of oxygen away from the ship, die, respawn
@@ -368,6 +369,7 @@ int main(int argc, char** argv)
         if (std::string(argv[i]) == "--perf-log") perfLog = true;
         if (std::string(argv[i]) == "--bench-fly" && i + 1 < argc) benchFlySpeed = (float)atof(argv[i + 1]);
         if (std::string(argv[i]) == "--bench-fly-back") benchFlyBack = true;
+        if (std::string(argv[i]) == "--water-stats") benchWaterStats = true;
         if (std::string(argv[i]) == "--bench-pond") gSpawnPond = true; // start at the nearest pond's rim (#251 crack checks)
         if (std::string(argv[i]) == "--bench-biome" && i + 1 < argc) { // start the bench (and the player) in the nearest deep patch of a biome (#133 checks)
             for (int b = 0; b < (int)Biome::Count; ++b) if (!strcmp(BiomeName((Biome)b), argv[i + 1])) gSpawnBiome = b;
@@ -845,6 +847,45 @@ int main(int argc, char** argv)
                                                                       // stood still in absolute space while the planet spun past (benches that place the camera every frame override it)
         benchStart = -1.0; // starts once the world has finished streaming in
         if (benchPreloadSpawn) { BeginSpawnPreload(); preloadT0 = GetTime(); }
+        if (benchWaterStats) {
+            // --water-stats (#251 investigation): how far the water shaping (rivers, lakes, ponds) raises or cuts the
+            // ground: elevation() vs elevationBase() (the land before any water) on a 12 km grid around the start.
+            Planetoid* wp = dynamic_cast<Planetoid*>(world.objects[0].get());
+            const PlanetField* wf = wp ? dynamic_cast<const PlanetField*>(wp->field.get()) : nullptr;
+            if (wf) {
+                const Vector3 home = wf->findSpawnDir(wp->seed);
+                const Vector3 t1 = Vector3Normalize(Vector3CrossProduct(home, { 0, 1, 0 })), t2 = Vector3CrossProduct(t1, home);
+                const char* zone[4] = { "river zone (within half + 12 m)", "lake", "inside a pond", "elsewhere (pond embankments, river valleys)" };
+                long n[4] = {}, fill1[4] = {}, fill3[4] = {}, fill6[4] = {}, cut3[4] = {};
+                float maxFill[4] = {};
+                const float step = 20.0f;
+                for (float e = -6000.0f; e <= 6000.0f; e += step)
+                    for (float nn = -6000.0f; nn <= 6000.0f; nn += step) {
+                        const Vector3 d = Vector3Normalize(Vector3Add(home, Vector3Add(Vector3Scale(t1, e / wf->radius), Vector3Scale(t2, nn / wf->radius))));
+                        const float diff = wf->elevation(d, 1.0f) - wf->elevationBase(d, 1.0f);
+                        int z = 3;
+                        float lv, lo;
+                        const RiverNetwork* net = wf->rivers();
+                        if (net && net->lakeAt(d, lv, lo) && lo < RiverNetwork::kLakeMargin * 2.0f) z = 1;
+                        else if (net) { const RiverNetwork::Hit h = net->nearest(d, 60.0f); if (h.found && h.dist < h.halfWidth + 12.0f) z = 0; }
+                        if (z == 3) {
+                            const PlanetField::WaterSource ws = wf->waterSourceAt(d);
+                            if (ws.kind == 3) z = 2;
+                        }
+                        ++n[z];
+                        if (diff > 1.0f) ++fill1[z];
+                        if (diff > 3.0f) ++fill3[z];
+                        if (diff > 6.0f) ++fill6[z];
+                        if (diff < -3.0f) ++cut3[z];
+                        maxFill[z] = std::max(maxFill[z], diff);
+                    }
+                const float cell = step * step / 1e4f; // hectares per sample
+                for (int z = 0; z < 4; ++z)
+                    printf("bench: water stats: %s: %.0f ha; raised > 1 m %.1f ha, > 3 m %.1f ha, > 6 m %.1f ha (max %.1f m); cut > 3 m %.1f ha\n",
+                           zone[z], n[z] * cell, fill1[z] * cell, fill3[z] * cell, fill6[z] * cell, maxFill[z], cut3[z] * cell);
+            }
+            benchWaterStats = false;
+        }
     }
 
     while (windowKeepAlive && !WindowShouldClose())
