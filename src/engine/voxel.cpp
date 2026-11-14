@@ -1288,7 +1288,7 @@ Vector3 PlanetField::findSpawnDir(unsigned int seed) const {
                     if (ws.kind != 3) continue;
                     bestDist = dist;
                     const Vector3 out = Vector3Normalize(Vector3CrossProduct(ws.pondDir, { 0, 1, 0 }));
-                    rim = Vector3Normalize(Vector3Add(ws.pondDir, Vector3Scale(out, ws.pondR / radius)));
+                    rim = getenv("RAYLIBGAME_POND_CENTRE") ? ws.pondDir : Vector3Normalize(Vector3Add(ws.pondDir, Vector3Scale(out, ws.pondR / radius))); // (centre: #367 checks)
                 }
             it = cache.emplace(this, rim).first;
         }
