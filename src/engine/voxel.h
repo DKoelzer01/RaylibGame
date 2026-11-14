@@ -75,6 +75,8 @@ enum class VoxelMaterial : uint8_t { Rock = 0, Regolith = 1, Ice = 2, Ore = 3, S
 enum class Biome : uint8_t { Ocean = 0, Jungle, Savanna, Desert, Badlands, Forest, Meadow, Swamp, Taiga, Tundra, Alpine, Polar, Count };
 // Bench override (--bench-biome): findSpawnDir returns the nearest deep patch of this biome (-1: off).
 inline int gSpawnBiome = -1;
+// Bench override (--bench-pond): findSpawnDir returns the rim of the nearest pond (#251 crack checks).
+inline bool gSpawnPond = false;
 const char* BiomeName(Biome b);
 const char* VoxelMaterialName(VoxelMaterial m);
 
@@ -288,6 +290,10 @@ private:
     struct RiverState { std::once_flag once; std::unique_ptr<RiverNetwork> net; ~RiverState(); };
     struct PondState { std::mutex m; std::unordered_set<uint64_t> claimed; std::atomic<int> n{ 0 }; };
     std::shared_ptr<PondState> pondState = std::make_shared<PondState>();
+    // Height-grid nodes (prepareBlock) on the cube faces' global lattices, shared by the blocks that use them (#251):
+    // stacked blocks of a column read the same nodes. Sharded; a shard is dropped when full.
+    struct GridNodeCache;
+    std::shared_ptr<GridNodeCache> gridCache;
     std::shared_ptr<RiverState> riverState;
     unsigned int riverSeed = 0;
     float densityNear(Vector3 p, float d, float surface, float footprint, const Column3D* col = nullptr) const; // after the height map

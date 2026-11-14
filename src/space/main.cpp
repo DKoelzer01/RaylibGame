@@ -368,6 +368,7 @@ int main(int argc, char** argv)
         if (std::string(argv[i]) == "--perf-log") perfLog = true;
         if (std::string(argv[i]) == "--bench-fly" && i + 1 < argc) benchFlySpeed = (float)atof(argv[i + 1]);
         if (std::string(argv[i]) == "--bench-fly-back") benchFlyBack = true;
+        if (std::string(argv[i]) == "--bench-pond") gSpawnPond = true; // start at the nearest pond's rim (#251 crack checks)
         if (std::string(argv[i]) == "--bench-biome" && i + 1 < argc) { // start the bench (and the player) in the nearest deep patch of a biome (#133 checks)
             for (int b = 0; b < (int)Biome::Count; ++b) if (!strcmp(BiomeName((Biome)b), argv[i + 1])) gSpawnBiome = b;
             if (gSpawnBiome < 0) printf("bench: --bench-biome: unknown biome %s\n", argv[i + 1]);
