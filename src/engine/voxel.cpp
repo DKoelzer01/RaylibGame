@@ -947,6 +947,25 @@ bool PlanetField::prepareBlock(Vector3 o, float stride, int S, float fp, BlockGr
     return true;
 }
 
+bool PlanetField::gridSurface(const BlockGrid& g, Vector3 p, float& elev, Column3D& col) const {
+    const float d = sqrtf(p.x * p.x + p.y * p.y + p.z * p.z);
+    if (g.nu < 2 || g.nv < 2 || d < radius + minElevation - 4.0f || d > radius + maxElevation + 4.0f) return false;
+    const float s = Vector3DotProduct(p, g.n);
+    if (s <= 0.0f) return false;
+    const float fu = std::clamp((Vector3DotProduct(p, g.t1) / s - g.umin) / g.su, 0.0f, (float)(g.nu - 1) - 1e-3f);
+    const float fv = std::clamp((Vector3DotProduct(p, g.t2) / s - g.vmin) / g.sv, 0.0f, (float)(g.nv - 1) - 1e-3f);
+    const int iu = (int)fu, iv = (int)fv;
+    const float au = fu - iu, av = fv - iv;
+    const float* r0 = &g.h[(size_t)iv * g.nu + iu];
+    const float* r1 = r0 + g.nu;
+    elev = (r0[0] * (1 - au) + r0[1] * au) * (1 - av) + (r1[0] * (1 - au) + r1[1] * au) * av;
+    const Column3D* c0 = &g.cols[(size_t)iv * g.nu + iu];
+    const Column3D* c1 = c0 + g.nu;
+    col.mask = (c0[0].mask * (1 - au) + c0[1].mask * au) * (1 - av) + (c1[0].mask * (1 - au) + c1[1].mask * au) * av;
+    col.f = (c0[0].f * (1 - au) + c0[1].f * au) * (1 - av) + (c1[0].f * (1 - au) + c1[1].f * au) * av;
+    return true;
+}
+
 void PlanetField::sampleBlock(Vector3 o, float stride, int S, float fp, const BlockGrid& g, float* out) const {
     const float outer = radius + maxElevation, inner = radius + minElevation;
     const Vector3 n = g.n, t1 = g.t1, t2 = g.t2;
@@ -1067,10 +1086,43 @@ Vector3 PlanetField::findSpawnDir(unsigned int seed) const {
         if (score > bestScore) { bestScore = score; best = dir; }
         if (slope < 0.01f && temperate) break;
     }
+    if (gSpawnBiome >= 0 && gSpawnBiome < (int)Biome::Count) { // bench override: start in that biome (cached per field)
+        static std::mutex m; static std::unordered_map<const PlanetField*, Vector3> cache;
+        std::lock_guard<std::mutex> lock(m);
+        auto it = cache.find(this);
+        if (it == cache.end()) it = cache.emplace(this, nearestBiomeDir(best, (Biome)gSpawnBiome)).first;
+        return it->second;
+    }
     return best;
 }
 
-VoxelMaterial PlanetField::materialSky(Vector3 p, float base, float fp, Vector3 normal, float& sky) const {
+// The nearest deep patch of biome b (the same biome 200 m out on four sides) to home, from 60k random directions;
+// home if none. Used by --bench-biome (gSpawnBiome).
+Vector3 PlanetField::nearestBiomeDir(Vector3 home, Biome b) const {
+    std::mt19937 rng(11);
+    std::uniform_real_distribution<float> u(-1.0f, 1.0f);
+    float best = -2.0f;
+    Vector3 out = home;
+    for (int i = 0; i < 60000; ++i) {
+        Vector3 d = { u(rng), u(rng), u(rng) };
+        if (Vector3LengthSqr(d) > 1.0f || Vector3LengthSqr(d) < 1e-4f) continue;
+        d = Vector3Normalize(d);
+        const float close = Vector3DotProduct(d, home);
+        if (close <= best) continue;
+        const float e = elevation(d, 32.0f);
+        if (e < 6.0f || biomeAt(d, e) != b) continue;
+        const Vector3 t1 = Vector3Normalize(Vector3CrossProduct(d, { 0, 1, 0 })), t2 = Vector3CrossProduct(t1, d);
+        bool deep = true;
+        for (int s = 0; s < 4 && deep; ++s) {
+            const Vector3 q = Vector3Normalize(Vector3Add(d, Vector3Scale(s < 2 ? t1 : t2, (s & 1 ? 200.0f : -200.0f) / radius)));
+            deep = biomeAt(q, elevation(q, 32.0f)) == b;
+        }
+        if (deep) { best = close; out = d; }
+    }
+    return out;
+}
+
+VoxelMaterial PlanetField::materialSkyHinted(Vector3 p, float base, float fp, Vector3 normal, float& sky, const float* elevHint, const Column3D* colHint) const {
     sky = 1.0f;
     const float d = sqrtf(p.x * p.x + p.y * p.y + p.z * p.z);
     if (d < mantleRadius + 0.5f || d < 1e-3f) { sky = 0.0f; return VoxelMaterial::Rock; } // mantle: always deep underground
@@ -1078,10 +1130,10 @@ VoxelMaterial PlanetField::materialSky(Vector3 p, float base, float fp, Vector3 
     // here: cave tunnels take the minimum with it, so cave walls stay rock rather than topsoil).
     // `base` (the unedited density) tells undug ground (near the iso level) from dug-out ground.
     const Vector3 up = { p.x / d, p.y / d, p.z / d };
-    const float surfaceElevation = elevation(up, fp);
+    const float surfaceElevation = elevHint ? *elevHint : elevation(up, fp);
     // Against the surface this LOD meshes, moved by the 3D terrain band (a carved alcove 10 m under the
     // height map is open air, not buried rock: it keeps its sky light and surface materials).
-    const float depth = radius + surfaceElevation - d + terrain3D(p, d, radius + surfaceElevation, fp);
+    const float depth = radius + surfaceElevation - d + terrain3D(p, d, radius + surfaceElevation, fp, colHint);
     // A coarse LOD mesh strays from the height map it approximates by up to a couple of samples, so
     // its "depth" must allow for that, or whole patches of surface read as buried (black, no sun) and
     // take underground materials (seen from orbit as black triangles on peaks and rings along the grid).
@@ -1160,11 +1212,16 @@ void BuildChunkMesh(const DensityField& field, const TerrainDeltas& deltas, Chun
     const auto t0 = std::chrono::steady_clock::now();
     const ChunkBlock b = ChunkBlockOf(out.key);
     std::vector<float> base((size_t)b.E * b.E * b.E);
-    field.baseDensityBlock(b.origin, b.stride, b.E, b.footprint, base.data());
-    BuildChunkMeshFromBase(field, deltas, out, base.data(), std::chrono::duration<float, std::milli>(std::chrono::steady_clock::now() - t0).count());
+    // Planets: sample through the block's height grid (as baseDensityBlock does) and keep it for the materials (#148).
+    PlanetField::BlockGrid grid;
+    const auto* pf = dynamic_cast<const PlanetField*>(&field);
+    const bool gridded = pf && pf->prepareBlock(b.origin, b.stride, b.E, b.footprint, grid);
+    if (gridded) pf->sampleBlock(b.origin, b.stride, b.E, b.footprint, grid, base.data());
+    else field.baseDensityBlock(b.origin, b.stride, b.E, b.footprint, base.data());
+    BuildChunkMeshFromBase(field, deltas, out, base.data(), std::chrono::duration<float, std::milli>(std::chrono::steady_clock::now() - t0).count(), gridded ? &grid : nullptr);
 }
 
-void BuildChunkMeshFromBase(const DensityField& field, const TerrainDeltas& deltas, ChunkMeshData& out, const float* base, float sampledMs) {
+void BuildChunkMeshFromBase(const DensityField& field, const TerrainDeltas& deltas, ChunkMeshData& out, const float* base, float sampledMs, const PlanetField::BlockGrid* grid) {
     const auto t0 = std::chrono::steady_clock::now() - std::chrono::duration_cast<std::chrono::steady_clock::duration>(std::chrono::duration<float, std::milli>(sampledMs));
     const int cells = CHUNK_SIZE + 1;        // +1 cell overlap with the positive neighbours (LOD crack cover)
     const int S = cells + 1;                 // samples per axis
@@ -1246,6 +1303,7 @@ void BuildChunkMeshFromBase(const DensityField& field, const TerrainDeltas& delt
             out.tangents.assign(verts.size() * 4, 0.0f);
             const PlanetField* planetLife = dynamic_cast<const PlanetField*>(&field);
             if (planetLife && !planetLife->foliage) planetLife = nullptr;
+            const PlanetField* gridField = grid ? dynamic_cast<const PlanetField*>(&field) : nullptr;
             for (size_t v = 0; v < verts.size(); ++v) {
                 const Vector3 lp = Vector3Scale(verts[v], stride);     // node-relative, in voxels
                 const Vector3 p = Vector3Add(origin, lp);
@@ -1263,14 +1321,19 @@ void BuildChunkMeshFromBase(const DensityField& field, const TerrainDeltas& delt
                 const Vector3 n = gl > 1e-6f ? Vector3Scale(grad, -1.0f / gl) : field.fallbackUp(p);
                 const float b = at(base, x0 + 1, y0 + 1, z0 + 1) * (1.0f - t) + at(base, x1 + 1, y1 + 1, z1 + 1) * t;
                 float sky = 1.0f;
-                VoxelMaterial m = field.materialSky(p, b, stride, n, sky);
+                // The surface under the vertex from the block's height grid (the one its density was sampled from), not
+                // a fresh height-map evaluation per vertex (#148).
+                float gElev = 0.0f;
+                PlanetField::Column3D gCol;
+                const bool hinted = gridField && gridField->gridSurface(*grid, p, gElev, gCol);
+                VoxelMaterial m = hinted ? gridField->materialSkyHinted(p, b, stride, n, sky, &gElev, &gCol) : field.materialSky(p, b, stride, n, sky);
                 if (!near.empty()) { const int placed = deltas.materialAt(p); if (placed >= 0) m = (VoxelMaterial)placed; } // placed ground keeps its material
                 out.tangents[v * 4 + 3] = sky;
                 if (m == VoxelMaterial::Ore) {
                     // Which ore (the shader colours each kind): 1 + kind, over 8.
                     if (const auto* pfo = dynamic_cast<const PlanetField*>(&field)) {
                         const float dl = Vector3Length(p);
-                        const int k = dl > 1.0f ? pfo->oreKind(p, pfo->radius + pfo->elevation(Vector3Scale(p, 1.0f / dl), (float)stride) - dl) : -1;
+                        const int k = dl > 1.0f ? pfo->oreKind(p, pfo->radius + (hinted ? gElev : pfo->elevation(Vector3Scale(p, 1.0f / dl), (float)stride)) - dl) : -1;
                         out.tangents[v * 4 + 2] = (k + 1) / 8.0f;
                     }
                 }
@@ -1390,6 +1453,12 @@ void BuildChunkMeshFromBase(const DensityField& field, const TerrainDeltas& delt
                 return (c00 * (1 - fy) + c10 * fy) * (1 - fz) + (c01 * (1 - fy) + c11 * fy) * fz;
             };
             const PlanetField* planetField = dynamic_cast<const PlanetField*>(&field);
+            // Height-map elevation under a body point: from the block's grid when there is one (#148), as the terrain.
+            auto groundAt = [&](Vector3 point, Vector3 dir) {
+                float e; PlanetField::Column3D col;
+                if (grid && planetField && planetField->gridSurface(*grid, point, e, col)) return e;
+                return planetField->elevation(dir, (float)stride);
+            };
             std::vector<int> remap(wv.size(), -1);
             for (size_t t = 0; t + 2 < wi.size(); t += 3) {
                 const Vector3 c = Vector3Scale(Vector3Add(Vector3Add(wv[wi[t]], wv[wi[t + 1]]), wv[wi[t + 2]]), 1.0f / 3.0f);
@@ -1400,7 +1469,7 @@ void BuildChunkMeshFromBase(const DensityField& field, const TerrainDeltas& delt
                     // cave walls.
                     const Vector3 wc = Vector3Add(origin, Vector3Scale(c, stride));
                     const float wl = Vector3Length(wc);
-                    if (wl > 1.0f && planetField->elevation(Vector3Scale(wc, 1.0f / wl), (float)stride) > wl - sea + (stride <= 2.0f ? 0.15f : 1.0f)) continue; // near: only over the original bed (dug ground beside it is the simulation's)
+                    if (wl > 1.0f && groundAt(wc, Vector3Scale(wc, 1.0f / wl)) > wl - sea + (stride <= 2.0f ? 0.15f : 1.0f)) continue; // near: only over the original bed (dug ground beside it is the simulation's)
                 }
                 for (int e = 0; e < 3; ++e) {
                     int& r = remap[wi[t + e]];
@@ -1412,7 +1481,7 @@ void BuildChunkMeshFromBase(const DensityField& field, const TerrainDeltas& delt
                         out.waterNormals.insert(out.waterNormals.end(), { n.x, n.y, n.z });
                         // Depth to the sea floor from the height map (the shader grades clarity and colour by it).
                         const float surfaceE = Vector3Length(Vector3Add(origin, lp)) - sea; // the water surface's height above sea level
-                        const float depth = planetField ? std::max(0.0f, surfaceE - planetField->elevation(n, (float)stride)) : 50.0f;
+                        const float depth = planetField ? std::max(0.0f, surfaceE - groundAt(Vector3Add(origin, lp), n)) : 50.0f;
                         out.waterDepth.insert(out.waterDepth.end(), { depth, 0.0f });
                     }
                     out.waterIndices.push_back((unsigned short)r);

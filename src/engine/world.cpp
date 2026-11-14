@@ -408,10 +408,11 @@ static void RequestNode(Planetoid& p, const NodeKey& key, float priority) {
                 job.wanted = [wanted, version] { return wanted->load() == version; };
                 job.priority = priority; // edits (negative) go ahead of background LOD builds
                 auto shared = std::make_shared<ChunkMeshData>(std::move(data));
-                job.done = [field, edits, shared, wanted, version, priority, prepMs, token](std::shared_ptr<const float> batch, size_t offset) {
-                    Jobs().submit(priority, [field, edits, shared, wanted, version, prepMs, batch, offset, token] {
+                auto grid = std::make_shared<const PlanetField::BlockGrid>(job.grid); // the materials read the surface from it (#148)
+                job.done = [field, edits, shared, wanted, version, priority, prepMs, token, grid](std::shared_ptr<const float> batch, size_t offset) {
+                    Jobs().submit(priority, [field, edits, shared, wanted, version, prepMs, batch, offset, token, grid] {
                         if (wanted->load() != version) { ++gSkipped; return; }
-                        BuildChunkMeshFromBase(*field, *edits, *shared, batch.get() + offset, prepMs);
+                        BuildChunkMeshFromBase(*field, *edits, *shared, batch.get() + offset, prepMs, grid.get());
                         std::lock_guard<std::mutex> lock(resultsMutex);
                         results.push_back(std::move(*shared));
                         ++gBuilt;
