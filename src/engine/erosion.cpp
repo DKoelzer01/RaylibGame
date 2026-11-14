@@ -211,7 +211,7 @@ namespace {
     // floats). Writes erosion_compare.png (the 512-cell window with the most change: before | after | difference, 2x)
     // and erosion_compare_face.png (the whole face, difference over the after hillshade). Difference: red = lowered,
     // blue = raised, full colour at 150 m.
-    void DumpCompare(const char* beforePath, const float* after, int N, float cell) {
+    void DumpCompare(const char* beforePath, const float* after, int N, float cell, const Vector3* dirs = nullptr) {
         FILE* fi = fopen(beforePath, "rb");
         if (!fi) { printf("erosion: compare: cannot read %s\n", beforePath); return; }
         int n0 = 0;
@@ -238,14 +238,15 @@ namespace {
             return { (unsigned char)(255 * (g * (1 - a) + tint.x * a)), (unsigned char)(255 * (g * (1 - a) + tint.y * a)), (unsigned char)(255 * (g * (1 - a) + tint.z * a)), 255 };
         };
         // Stats, and the window with the most change (summed |difference| on a 32-cell grid).
-        double sum = 0; float maxCutD = 0, maxRaiseD = 0; size_t changed = 0;
+        double sum = 0; float maxCutD = 0, maxRaiseD = 0; size_t changed = 0, cutAt = 0;
         const int B = 32, nb = N / B;
         std::vector<double> block((size_t)nb * nb, 0.0);
         for (int j = 0; j < N; ++j)
             for (int i = 0; i < N; ++i) {
                 const float dlt = after[(size_t)j * N + i] - before[(size_t)j * N + i];
                 sum += fabsf(dlt); changed += fabsf(dlt) >= 2.0f;
-                maxCutD = std::max(maxCutD, -dlt); maxRaiseD = std::max(maxRaiseD, dlt);
+                if (-dlt > maxCutD) { maxCutD = -dlt; cutAt = (size_t)j * N + i; }
+                maxRaiseD = std::max(maxRaiseD, dlt);
                 if (i / B < nb && j / B < nb) block[(size_t)(j / B) * nb + i / B] += fabsf(dlt);
             }
         const int W = std::min(512, N), wb = W / B;
@@ -258,6 +259,11 @@ namespace {
             }
         printf("erosion: compare: %zu of %d cells changed by 2 m or more, mean |change| %.2f m, lowered up to %.0f m, raised up to %.0f m; window at cells (%d, %d) %.0f m wide\n",
                changed, N * N, sum / ((double)N * N), maxCutD, maxRaiseD, bi, bj, W * cell);
+        if (dirs) { // where to look in the game: RAYLIBGAME_SPAWN_DIR takes these
+            const Vector3 wc = dirs[(size_t)(bj + W / 2) * N + bi + W / 2], dc = dirs[cutAt];
+            printf("erosion: compare: window centre dir %.6f,%.6f,%.6f; deepest cut (%.0f m, %.0f m high after) dir %.6f,%.6f,%.6f\n",
+                   wc.x, wc.y, wc.z, maxCutD, after[cutAt], dc.x, dc.y, dc.z);
+        }
         const int S = 2, gap = 8; // 2x zoom, panels side by side
         Image img = GenImageColor(3 * W * S + 2 * gap, W * S + 28, { 20, 20, 24, 255 });
         for (int j = 0; j < W; ++j)
@@ -511,7 +517,7 @@ void PlanetErosion::build(const std::function<float(Vector3, float)>& height, fl
                 if (const char* rp = getenv("RAYLIBGAME_EROSION_RAW")) {
                     if (FILE* fo = fopen(rp, "wb")) { fwrite(&FE, sizeof FE, 1, fo); fwrite(out.data(), sizeof(float), out.size(), fo); fclose(fo); }
                 }
-                if (const char* cp = getenv("RAYLIBGAME_EROSION_COMPARE")) DumpCompare(cp, out.data(), FE, fineMetres);
+                if (const char* cp = getenv("RAYLIBGAME_EROSION_COMPARE")) DumpCompare(cp, out.data(), FE, fineMetres, fd.dir.data());
             }
         };
         const int parallelFaces = std::clamp(T / 4, 1, 3); // a face's working set is ~200 MB

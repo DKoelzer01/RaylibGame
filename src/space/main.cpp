@@ -100,12 +100,23 @@ static void AimAtTelescopeTarget(Scene& world) {
     }
 }
 
+// RAYLIBGAME_SPAWN_DIR="x,y,z" (body-local) moves the start there, so a bench photographs a chosen place (the erosion
+// compare dump prints its window's direction, #358).
+static bool SpawnDirOverride(Vector3& d) {
+    const char* e = getenv("RAYLIBGAME_SPAWN_DIR");
+    if (!e || sscanf(e, "%f,%f,%f", &d.x, &d.y, &d.z) != 3 || Vector3Length(d) < 1e-6f) return false;
+    d = Vector3Normalize(d);
+    return true;
+}
+
 static Vector3 StartSpawnDirLocal(Planetoid& body) {
+    if (Vector3 d; SpawnDirOverride(d)) return d;
     if (auto* field = dynamic_cast<const PlanetField*>(body.field.get())) return field->findSpawnDir(body.seed);
     return { 0, 1, 0 };
 }
 
 static Vector3 StartSpawnDir(Planetoid& body) {
+    if (Vector3 d; SpawnDirOverride(d)) return body.dirToWorld(d);
     if (auto* field = dynamic_cast<const PlanetField*>(body.field.get())) return body.dirToWorld(field->findSpawnDir(body.seed));
     return { 0, 1, 0 };
 }
