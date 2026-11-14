@@ -471,13 +471,17 @@ bool Player::resolveCollisions(Scene&, Vector3& feet) {
     if (!nearest) return false;
     Planetoid& p = *nearest;
     bool onGround = false;
-    // A capsule (#255): sphere centres from `radius` up to `height - radius`, ~0.27 m apart (no waist: the two spheres at
-    // 0.45 and 1.15 m left a 0.28 m neck that jagged rock poked into). The player is `height` (1.7 m) tall, so 2 m doorways
-    // and tunnels pass (user, 2026-11-14: the first capsule ran up to the eye and made the player 2.05 m); the eye (1.6 m)
-    // sits inside the top sphere, and the eye keep-out below lowers the camera where a ceiling comes closer. Each pass
-    // pushes out of the deepest contact only: two spheres pushing along different normals on jagged rock fought each other.
-    constexpr int kSamples = 4;
-    float offsets[kSamples];
+    // A capsule (#255): sphere centres from `radius` up to `height - radius`, at most 0.23 m apart (no waist: the two
+    // spheres at 0.45 and 1.15 m left a 0.28 m neck that jagged rock poked into). The player is `height` (1.7 m) tall, so
+    // 2 m doorways and tunnels pass (user, 2026-11-14: the first capsule ran up to the eye and made the player 2.05 m;
+    // RAYLIBGAME_PLAYER_HEIGHT=2.05 is that one, for A/B); the eye (1.6 m) sits inside the top sphere, and the eye
+    // keep-out below lowers the camera where a ceiling comes closer. Each pass pushes out of the deepest contact only:
+    // two spheres pushing along different normals on jagged rock fought each other.
+    static const float heightOverride = getenv("RAYLIBGAME_PLAYER_HEIGHT") ? (float)atof(getenv("RAYLIBGAME_PLAYER_HEIGHT")) : 0.0f;
+    if (heightOverride > 2.0f * radius) height = heightOverride;
+    constexpr int kMaxSamples = 8;
+    const int kSamples = std::clamp((int)ceilf((height - 2.0f * radius) / 0.23f - 1e-3f) + 1, 2, kMaxSamples); // 5 at 1.7 m, 6 at 2.05 m
+    float offsets[kMaxSamples];
     for (int i = 0; i < kSamples; ++i) offsets[i] = radius + (height - 2.0f * radius) * (float)i / (float)(kSamples - 1);
     // The linear estimate (iso - density) / |gradient| is only a distance where the density behaves
     // like one; dig and build edits (big density steps) break that, and it reported contacts in open
@@ -489,8 +493,8 @@ bool Player::resolveCollisions(Scene&, Vector3& feet) {
     for (int iter = 0; iter < 6 && pushBudget > 0.0f; ++iter) {
         bool moved = false;
         // Contacts deepest first; one push per pass (the next pass re-measures).
-        struct Cand { float d, off; } cand[kSamples]; int nc = 0;
-        for (float o2 : offsets) {
+        struct Cand { float d, off; } cand[kMaxSamples]; int nc = 0;
+        for (int si = 0; si < kSamples; ++si) { const float o2 = offsets[si];
             float d2; Vector3 n2;
             if (TerrainSurfaceDistance(p, Vector3Add(feet, Vector3Scale(up, o2)), d2, n2) && d2 < radius) cand[nc++] = { d2, o2 };
         }
@@ -536,11 +540,13 @@ bool Player::resolveCollisions(Scene&, Vector3& feet) {
         }
         if (!moved) break;
     }
-    // Build plot parts: the same two spheres pushed out of part shapes (exact convex cells).
+    // Build plot parts: the same capsule spheres pushed out of part shapes (exact convex cells). Only the first
+    // kSamples offsets are set (the array is sized for the tallest override).
     if (p.plots) {
         for (int iter = 0; iter < 2; ++iter)
-            for (float off : offsets)
+            for (int si = 0; si < kSamples; ++si)
                 for (auto& pl : p.plots->plots) {
+                    const float off = offsets[si];
                     const Vector3 before = p.toLocal(Vector3Add(feet, Vector3Scale(up, off)));
                     Vector3 c = before, nl;
                     if (!pl->collideSphere(c, radius / p.scale, nl)) continue;

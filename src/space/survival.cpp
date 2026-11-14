@@ -112,7 +112,7 @@ void Survival_Respawn(Scene& world) {
     } else {
         player.velocity = { 0, 0, 0 };
     }
-    player.impactSpeed = 0.0f;
+    player.impactSpeed = player.landingSpeed = 0.0f; // a landing from before the death must not hurt the respawn
     GameUI_Toast("Respawned at the start");
 }
 
