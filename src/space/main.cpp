@@ -3749,13 +3749,13 @@ int main(int argc, char** argv)
                         if (t - lastPrint >= 5.0) {
                             lastPrint = t;
                             const Fluid::Stats s = Fluid::GetStats();
-                            printf("bench: pond t=%3.0f s: %d bricks (%d awake), %.0f wet cells, %.1f m^3, %d ponds taken over; middle %s, pit %s\n", t, s.bricks, s.activeBricks, s.wetCells, s.volume, s.claimedPonds,
+                            printf("bench: pond t=%3.0f s: %d bricks (%d awake), %.0f wet cells, %.1f m^3, %d bricks of pond water; middle %s, pit %s\n", t, s.bricks, s.activeBricks, s.wetCells, s.volume, s.basinBricks,
                                    Fluid::Wet(*p, pondMid) ? "wet" : "dry", Fluid::Wet(*p, pondPit) ? "wet" : "dry");
                         }
                         if (t > 8.0 && t < 8.1) TakeScreenshot("bench_pond.png");
                         if ((t > 15.0 && Fluid::Asleep()) || t > 150.0) {
                             TakeScreenshot("bench_pond_drained.png");
-                            const bool claimed = Fluid::GetStats().claimedPonds > 0;
+                            const bool claimed = Fluid::GetStats().basinBricks > 0; // the pond is simulated water (#360: no take-over)
                             const bool midDry = !Fluid::Wet(*p, pondMid), pitWet = Fluid::Wet(*p, pondPit);
                             const float vol = (float)Fluid::GetStats().volume;
                             printf("bench: pond: settled after %.0f s: taken over %d, the top 0.3 m of the pond %s, the pit %s, %.1f m^3 of water\n", t, (int)claimed, midDry ? "drained" : "still full", pitWet ? "filled" : "dry", vol);
@@ -3784,7 +3784,7 @@ int main(int argc, char** argv)
                             if (!Fluid::Asleep()) printf("bench: pond: not asleep after 120 s (%d of %d bricks awake): judged as it stands\n", Fluid::GetStats().activeBricks, Fluid::GetStats().bricks);
                             TakeScreenshot("bench_pond_loaded.png");
                             const PlanetField::WaterSource ws = pf->waterSourceAt(pondDirB);
-                            const bool stillClaimed = ws.kind != 3;
+                            const bool stillClaimed = Fluid::Simulated(*p, pondMid); (void)ws; // its cells still decide (drained), not the generated pond
                             const bool midDry = !Fluid::Wet(*p, pondMid), pitWet = Fluid::Wet(*p, pondPit);
                             const bool pass = pondRB > 0.0f && stillClaimed && midDry && pitWet;
                             printf("bench: pond: after the load the pond is %s, its top %s, the pit %s, %.1f m^3 -> %s\n", stillClaimed ? "still taken over" : "back to static water",
@@ -5487,6 +5487,7 @@ int main(int argc, char** argv)
                            ws.requests, ws.built, ws.skippedStale, ws.droppedResults, ws.nodes, pct(0.5), pct(0.95), pct(0.99), over20);
                     printf("bench: preload: %d ring nodes, %d built; cache: %d nodes, %lld evicted; arena %.1f M vertices\n",
                            ws.preloadNodes, ws.preloadReady, ws.cachedNodes, ws.evicted, TerrainArena_Stats().vertices / 1048576.0);
+                    if (ws.waterBuilds) printf("bench: water redraws: %lld chunk water rebuilds, avg %.2f ms on a worker (#360)\n", ws.waterBuilds, ws.waterMs / ws.waterBuilds);
                 }
                 if (crackCheck) {
                     // Holes between chunks show the magenta clear colour (look down at terrain that fills the view).

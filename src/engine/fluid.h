@@ -1,21 +1,22 @@
 #ifndef FLUID_H
 #define FLUID_H
 
-// Flowing water (Plan 4): a sparse 3D cellular simulation, Terraria-style, with 1 m cells.
+// Flowing water (Plan 4): a sparse 3D cellular simulation, Terraria-style, with 1 m cells - the changing part of the
+// one voxel water field (#360, waterfield.h).
 //
-// Static water (the sea, rivers, lakes, ponds: PlanetField::waterElevation) stays the default and is
-// drawn by the terrain chunks. The simulation starts where a terrain edit (or a bucket, a pump) opens
-// space next to water, and keeps every cell it has touched afterwards.
+// Generated water (the sea, rivers, lakes, ponds: PlanetField::waterSourceAt) is computed on demand and never stored.
+// The simulation starts where a terrain edit (or a bucket, a pump, a spring) opens space next to water, and keeps every
+// cell it has touched afterwards: its bricks are the field's stored changes, the truth for their cells.
 //
 // Sites: each disturbed area gets a site, a grid in a tangent frame (east, north, up) anchored at the
 // first disturbance; over a site's 512 m the planet curves by ~0.5 m, so "down" is the frame's -up.
 // A site holds bricks of 16^3 cells allocated where water goes. A cell is solid (terrain density at
 // its centre, edits included) or open, and open cells hold a fill of 0-255 (255 = 1 m^3).
 //
-// Sources: an open cell inside static water is a source. The sea, rivers and lakes are infinite:
-// their cells are topped up to their level every step. Ponds are finite: the first time a site
-// reaches one, the pond is taken over (its static surface disappears, PlanetField::claimPond) and
-// its water becomes ordinary cells that can drain away.
+// Generated water in a brick: the sea, rivers and large lakes are infinite - their open cells are sources topped up to
+// their level every step, feeding only cells an edit opened. Ponds are finite: a brick takes a pond's water as ordinary
+// cells when it is first classified, and pulls in the neighbours that hold more of it, so the pond joins whole and can
+// drain away. There is no take-over: nothing generated is hidden, the chunks draw both as one surface.
 //
 // Step (3 a tick at 20 Hz, on a worker): bottom to top, water falls into the cell below, then what is left evens
 // out with the four side neighbours (a fifth of the difference each; films under ~3 cm stay put). Twice
@@ -23,9 +24,8 @@
 // rising to its source's level), easing toward the level a little at a time. Bricks with no change
 // for 2 s sleep; edits, buckets and moving neighbours wake them.
 //
-// Drawing: marching cubes on the fill field of each changed brick (on the worker), the surface
-// carried into solid cells so it meets the terrain without a gap; cells of static water are left to
-// the chunks' own surface. Uploaded and drawn on the main thread with the water material.
+// Drawing: each tick that changed cells publishes a WaterField snapshot; the chunk mesher draws every fluid surface
+// from it and the generated water at every level of detail, and the chunks the changes touch redraw their water.
 
 #include <raylib.h>
 #include <cstdint>
@@ -47,11 +47,13 @@ namespace Fluid {
     // A terrain edit on a body (body-local centre, radius): wakes water there, refreshes solidity, and
     // starts a site if the edit opens space next to water.
     void OnTerrainEdit(Planetoid& body, Vector3 localCentre, float radius);
-    // In Planetoid::drawTransparent, with the water material bound.
-    void Draw(const Planetoid& body, const RenderContext& ctx, ChunkBatch& batch);
+    // water.fs: the fluid kinds' colours (uniform arrays fluidColors / fluidGlows), with the shader bound. The chunks
+    // draw every fluid surface (waterfield.h); a vertex carries its kind.
+    void BindKindUniforms(const Shader& shader);
 
     // Queries (main thread, from the last published step).
     bool Wet(const Planetoid& body, Vector3 local);                       // under moving water
+    bool Simulated(const Planetoid& body, Vector3 local);                 // a simulated cell decides here (else the generated water)
     float SurfaceAbove(const Planetoid& body, Vector3 local, float reach); // height of the water surface over this point (m, < 0: none within reach)
     bool StandingWaterNear(const Planetoid& body, Vector3 local, float range); // irrigation
     float WaterAt(const Planetoid& body, Vector3 local, float radius);    // m^3 of water (moving or static) within radius
@@ -75,8 +77,8 @@ namespace Fluid {
     const Kind& KindInfo(int kind);
     int KindByName(const std::string& id);   // -1 if unknown
 
-    // Moving fluid by hand or machine (applied at the next step). Static water counts too: taking from
-    // the sea or a river is free (they are infinite); taking from a pond takes it over first.
+    // Moving fluid by hand or machine (applied at the next step). Generated water counts too: taking from
+    // the sea or a river is free (they are infinite); taking from a pond brings it into the simulation (finite).
     float Take(Planetoid& body, Vector3 local, float m3, float radius = 1.5f, int kind = 0); // returns what will be taken
     float Pour(Planetoid& body, Vector3 local, float m3, int kind = 0);                     // returns what will be poured
     float FluidAt(const Planetoid& body, Vector3 local, float radius, int kind);          // m^3 of moving fluid of a kind within radius
@@ -94,7 +96,7 @@ namespace Fluid {
     void Load(FILE* f, uint64_t bodyId);
 
     struct Stats {
-        int sites = 0, bricks = 0, activeBricks = 0, meshes = 0, claimedPonds = 0;
+        int sites = 0, bricks = 0, activeBricks = 0, meshes = 0, basinBricks = 0; // basinBricks: holding a pond's (finite) water
         double wetCells = 0.0, volume = 0.0;  // cells with water, m^3 (non-source)
         double otherVolume = 0.0;             // m^3 of other fluids (oil, ...)
         double stepMs = 0.0, maxStepMs = 0.0, meshMs = 0.0;

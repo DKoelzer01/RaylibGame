@@ -221,17 +221,10 @@ public:
     // The static water at a direction and its kind (flowing water, fluid.h): 0 none, 1 river, 2 lake,
     // 3 pond; level above sea level. Ponds carry an id and their centre and radius.
     struct WaterSource { int kind = 0; float level = kNoWater; uint64_t pond = 0; Vector3 pondDir{}; float pondR = 0.0f, pondDepth = 4.0f; };
-    // Small lakes of the network (#360): finite, taken over like ponds. Its claim id (bit 63 set: never a pond cell id),
+    // Small lakes of the network (#360): finite like ponds. Their id (bit 63 set: never a pond cell id),
     // or 0 when the lake is large (infinite) or there is no bake.
     uint64_t drainableLake(int lakeId) const;
-    bool pondCovers(uint64_t claimId, Vector3 dir) const; // a drainable lake's cells (or margin) hold dir; ponds: true
     WaterSource waterSourceAt(Vector3 dir) const;
-    // A pond the water simulation took over: its static surface is gone (waterElevation and
-    // inlandWaterNear skip it). Thread-safe; saved by the simulation.
-    void claimPond(uint64_t id) const;
-    bool pondClaimed(uint64_t id) const;
-    std::vector<uint64_t> claimedPonds() const;
-    void clearClaimedPonds() const;
     // A body-local direction to a good start spot: temperate latitude, flat grassland a little above
     // the sea, solid ground underfoot (no cave mouth). Deterministic for a seed.
     Vector3 findSpawnDir(unsigned int seed) const;
@@ -304,8 +297,6 @@ public:
     bool isMoon() const { return moon; }
 private:
     struct RiverState { std::once_flag once; std::unique_ptr<RiverNetwork> net; ~RiverState(); };
-    struct PondState { std::mutex m; std::unordered_set<uint64_t> claimed; std::atomic<int> n{ 0 }; };
-    std::shared_ptr<PondState> pondState = std::make_shared<PondState>();
     // Height-grid nodes (prepareBlock) on the cube faces' global lattices, shared by the blocks that use them (#251):
     // stacked blocks of a column read the same nodes. Sharded; a shard is dropped when full.
     struct GridNodeCache;
@@ -371,6 +362,17 @@ public:
     float maxRadius() const override { return 1e9f; } // unbounded horizontally
 };
 
+// Water (#360): the generated water a chunk may hold (GeneratedWaterOf, voxel.cpp): whether the node spans the sea's
+// radius, and the inland levels on a lattice every 4 samples (LN^3, radii; empty when there is no inland water).
+struct ChunkWaterGen { bool seaSpan = false, inland = false; int LN = 0; std::vector<float> level; };
+// What a water-only rebuild of a chunk reuses (kept only for chunks next to simulated water): the terrain density with
+// edits (S^3), the generated levels, and the block's height grid.
+struct ChunkWaterCache {
+    std::vector<float> dens;
+    ChunkWaterGen gen;
+    std::shared_ptr<const PlanetField::BlockGrid> grid;
+};
+
 // CPU-side result of meshing one chunk (produced on a worker thread).
 struct ChunkMeshData {
     uint64_t planetoidId = 0;
@@ -384,7 +386,7 @@ struct ChunkMeshData {
     std::vector<float> tangents;           // (0, 0, 0, sky exposure) per vertex
     std::vector<float> waterPositions;     // sea surface where it meets open air (same frame as positions)
     std::vector<float> waterNormals;
-    std::vector<float> waterDepth;         // per water vertex: (depth to the sea floor in m, 0)
+    std::vector<float> waterDepth;         // per water vertex: (depth to the floor in m, fluid kind: fluids.txt)
     std::vector<unsigned short> waterIndices;
     std::vector<float> grass;              // grass tufts (foliage.h: kGrassFloats each), finest level only
     std::vector<unsigned short> indices;
@@ -392,6 +394,11 @@ struct ChunkMeshData {
     float buildMs = 0.0f;
     float sampleMs = 0.0f;                 // part of buildMs spent sampling the density field
     float priority = 0.0f;                 // as requested: < 0 edits (urgent), else distance / (1 + level) (#258 upload order)
+    // Water (#360): the snapshot the water was meshed from (newer water wins), a water-only rebuild, and the cache
+    // a water-only rebuild needs (set when the chunk touches simulated water).
+    uint64_t waterSeq = 0;
+    bool waterOnly = false;
+    std::shared_ptr<const ChunkWaterCache> waterCache;
 };
 
 // Samples the field over node `key` (CHUNK_SIZE+1 cells at the node stride, i.e. one cell of
@@ -404,6 +411,9 @@ struct ChunkBlock { Vector3 origin{}; float stride = 1.0f, footprint = 1.0f; int
 ChunkBlock ChunkBlockOf(const NodeKey& key);
 // grid: the block's height grid when it was sampled from one (PlanetField::prepareBlock): materials read the surface from it.
 void BuildChunkMeshFromBase(const DensityField& field, const TerrainDeltas& deltas, ChunkMeshData& out, const float* base, float sampledMs, const PlanetField::BlockGrid* grid = nullptr);
+// The water surface alone from a chunk's water cache and the latest published water (WaterField::Current): flowing
+// water redraws without rebuilding the terrain (#360). out.key / planetoidId set by the caller.
+void BuildChunkWater(const DensityField& field, const ChunkWaterCache& cache, ChunkMeshData& out);
 
 
 #endif

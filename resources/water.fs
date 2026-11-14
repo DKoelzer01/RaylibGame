@@ -7,6 +7,7 @@ in vec3 fragNormal;
 in vec3 fragTexPos;
 in vec3 fragChunkPos;
 in float fragDepth;            // depth to the sea floor (m)
+flat in int fragKind;          // fluid kind (fluids.txt; 0 water)
 
 uniform vec3 viewPos;
 uniform vec3 sunDir;           // towards the sun
@@ -16,8 +17,8 @@ uniform vec4 sunOccluder;      // planet: centre + radius blocking the sun (w = 
 uniform vec3 fogColor;         // linear
 uniform float fogDensity;
 uniform float time;
-uniform vec4 fluidColor;       // a > 0: drawing another fluid kind (fluid.cpp): sRGB colour, opacity
-uniform float fluidGlow;       // its emissive strength (lava)
+uniform vec4 fluidColors[8];   // per kind (Fluid::BindKindUniforms): sRGB colour, opacity (a > 0: not water)
+uniform float fluidGlows[8];   // per kind: emissive strength (lava)
 
 #include "shadow.glsl"
 
@@ -64,6 +65,8 @@ void main()
     // blends one water layer per pixel, so overlapping LOD copies don't double up.
     bool below = dot(normalize(fragNormal), v) < 0.0;
     float alpha = below ? 0.8 : clamp(max(mix(1.0, 0.3, clarity), fresnel) + glint, 0.0, 1.0);
+    vec4 fluidColor = fluidColors[clamp(fragKind, 0, 7)];
+    float fluidGlow = fluidGlows[clamp(fragKind, 0, 7)];
     if (fluidColor.a > 0.0) {
         // Another fluid kind (fluid.cpp, fluids.txt): its own colour and opacity, a sky reflection at grazing
         // angles, a faint rainbow sheen on dark ones (oil), a hard sun glint, and its glow (lava).

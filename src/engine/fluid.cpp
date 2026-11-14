@@ -5,6 +5,7 @@
 #include "object.h"
 #include "terraindeltas.h"
 #include "voxel.h"
+#include "waterfield.h"
 #include "world.h"
 #include "worldtypes.h"
 
@@ -29,11 +30,11 @@
 namespace {
 
 constexpr int B = 16, B3 = B * B * B;
-constexpr uint8_t kSolid = 1, kSource = 2, kStatic = 4; // kStatic: inside static water (the chunks draw its surface)
-constexpr uint8_t kDug = 8;            // open only because of an edit: static water may flow into it
-constexpr int kKindShift = 5;          // flag bits 5-7: the cell's fluid kind (0 water .. 7; Fluid::Kind, fluids.txt)
-constexpr uint8_t kKindMask = 0xE0;
-inline int CellKind(uint8_t fl) { return fl >> kKindShift; }
+using WaterField::kSolid; using WaterField::kSource; using WaterField::kStatic; // kStatic: inside infinite generated water
+using WaterField::kDug;                // open only because of an edit: generated infinite water may flow into it
+using WaterField::kKindShift;          // flag bits 5-7: the cell's fluid kind (0 water .. 7; Fluid::Kind, fluids.txt)
+using WaterField::kKindMask;
+using WaterField::CellKind;
 // The kind table, read by the step job (written only at startup): sideways divisor and film limit per kind.
 std::vector<Fluid::Kind> kinds(1);
 int kindVisc[8] = { 5, 5, 5, 5, 5, 5, 5, 5 }, kindMinSpread[8] = { 10, 10, 10, 10, 10, 10, 10, 10 };
@@ -57,14 +58,12 @@ struct Brick {
     Brick* nbr[6] = {};             // -x +x -y +y -z +z
     bool ready = false;             // cells classified (solid / source)
     bool keepFill = false;          // loaded from a save: the classification keeps the stored water
-    bool fillPond = false;          // classified again for a pond take-over: its water goes in once (#189)
+    bool basin = false;             // holds finite generated water (a pond): saved even once drained (#360)
     bool active = true;
     int idle = 0;
-    bool meshDirty = true;
-    int lastMesh = -100;            // step of the last mesh build
-    bool published = false;
     bool changed = true;            // since the last publish
-    uint8_t meshedKinds = 0;        // non-water kinds with a mesh now (remesh / drop them too)
+    std::array<uint8_t, B3> drawn{}, drawnFlags{}; // the cells as the chunks last redrew them (visible changes only)
+    bool drawnSet = false;
     int slot = -1;                  // GPU mode: its place in the GPU brick pool (-1: none yet)
     bool upload = false;            // GPU mode: the whole brick (cells, flags, targets) goes up next tick
 };
@@ -75,9 +74,6 @@ struct Site {
     Vector3 origin{}, e{}, n{}, u{};
     std::unordered_map<int64_t, std::unique_ptr<Brick>> bricks;
     std::deque<Brick*> pending;     // waiting for classification
-    std::vector<uint64_t> ponds;    // ponds this site took over
-    struct PondInfo { Vector3 dir; float r, level; uint64_t id = 0; float depth = 4.0f; }; // id: the claim (a lake's: its cells are its extent, #360)
-    std::vector<PondInfo> pondInfo; // their extent (this session: a load keeps the stored water instead)
     // Sources with a rate and a head (springs, seeps): site cell, kind, fill units added per step at most,
     // and the level (site cells, fractional) the fluid surface over it is held to.
     struct Spring { int ci, cj, ck, kind; float perStep, head; float acc = 0.0f; }; // acc: fill units owed (a slow source adds < 1 a step)
@@ -123,20 +119,6 @@ struct BodyRef {
 
 struct Command { int kind; uint64_t body; Vector3 c; float r, m3; int fluid = 0; float head = 0.0f; }; // 0 edit, 1 take, 2 pour, 3 add a source (r = rate m^3/s); fluid = the kind
 
-struct MeshOut {
-    int site; int64_t key; uint64_t body; DVec3 anchor; int fluid = 0;
-    std::vector<float> pos, nrm, uv;
-    std::vector<unsigned short> idx;
-};
-
-struct PubBrick { std::array<uint8_t, B3> fill{}, flags{}; };
-struct PubSite {
-    uint64_t body = 0; Vector3 origin{}, e{}, n{}, u{};
-    std::unordered_map<int64_t, std::shared_ptr<PubBrick>> bricks;
-};
-
-struct GpuMesh { uint64_t body = 0; DVec3 anchor{}; Mesh mesh{}; int fluid = 0; };
-
 // Simulation state: owned by the step job while it runs (simMx).
 std::mutex simMx;
 std::vector<std::unique_ptr<Site>> sites;
@@ -152,54 +134,43 @@ std::atomic<bool> running{ false };
 std::atomic<int> speed{ 1 };
 double accum = 0.0;
 
-std::mutex pubMx;                                // published results
-std::vector<PubSite> published;
-std::vector<MeshOut> meshQueue;
-std::vector<std::pair<int, int64_t>> meshDrops;  // bricks whose mesh became empty
-std::vector<std::pair<uint64_t, Vector4>> remeshQueue; // claimed ponds: chunks to rebuild (body, local centre + radius)
+// Published results: the cells go out as WaterField snapshots (waterfield.h: the chunks draw them, queries read them).
+std::mutex pubMx;
 Fluid::Stats pubStats;
-
-std::map<std::pair<int, int64_t>, GpuMesh> gpu;  // main thread
 
 // ---------------------------------------------------------------------------------------------
 // Classification
 // ---------------------------------------------------------------------------------------------
 
-// Cells of a brick: solid from the terrain density (edits included); open cells inside static water
-// are sources (infinite) or, for ponds, take the pond over.
-struct PondClaim { uint64_t id; Vector3 dir; float r, level, depth; };
-// Runs in parallel over bricks (pool jobs): it writes only its own brick; ponds it finds are reported
-// in `claims` and taken over after the batch (RunJob), never here.
-void Classify(const Site& s, Brick& b, const BodyRef& ref, std::vector<PondClaim>& claims) {
-    std::vector<Site::PondInfo> ponds = s.pondInfo; // taken over before, and found in this brick
+// Cells of a brick (#360: the one water field): solid from the terrain density (edits included); open cells under
+// generated water hold it. Infinite basins (the sea, rivers, large lakes) give sources held at their level, which feed
+// only cells an edit opened; finite ones (ponds) give ordinary water, once: a brick classified again (an edit) or
+// loaded keeps what it holds, so a drained pond stays drained. There is no take-over: the chunks draw the published
+// cells and the generated water as one surface. `faces` (bits -x +x -y +y -z +z): faces holding finite generated
+// water; RunJob pulls those neighbours in, so a pond joins the simulation whole and drains as one body.
+// Runs in parallel over bricks (pool jobs): it writes only its own brick.
+void Classify(const Site& s, Brick& b, const BodyRef& ref, uint8_t& faces) {
     const PlanetField* pf = ref.pf;
     const float sea = pf ? pf->seaLevelRadius() : 0.0f;
+    b.basin = false;
     for (int y = 0; y < B; ++y)
         for (int x = 0; x < B; ++x) {
-            // The column's ground and static water (from its middle: a column tilts < 0.3 deg in a site).
+            // The column's ground and generated water (from its middle: a column tilts < 0.3 deg in a site).
             const int ci = b.bi * B + x, cj = b.bj * B + y;
             const Vector3 mid = s.cellCentre(ci, cj, b.bk * B + B / 2);
             const float ml = Vector3Length(mid);
             if (ml < 1.0f) continue;
             const Vector3 dir = Vector3Scale(mid, 1.0f / ml);
             float bed = 0.0f, level = -1e9f;
-            int kind = 0;                               // 1 river, 2 lake, 4 sea: infinite; 5 a pond taken over: finite
-            PlanetField::WaterSource pondHere;           // a pond not taken over yet over this column
-            bool dugInPond = false;                     // an edit opened a cell in its water: take it over
+            int kind = 0;                               // 1 river, 2 lake, 4 sea: infinite; 5 a pond: finite
             if (pf) {
                 bed = pf->radius + pf->elevation(dir);
                 if (bed < sea) { level = sea; kind = 4; } // the sea
                 const PlanetField::WaterSource ws = pf->waterSourceAt(dir);
-                if (ws.kind == 3 && bed < sea + ws.level) {
-                    // A pond: the simulation takes it over (finite water from here on) once a cell an edit opened lies in
-                    // its water (#189: any edit near a pond took it over, its bed turned to grass and trees grew in it).
-                    // Checked in the cells below; reported to RunJob, which hides its static surface and (re)queues
-                    // every brick of its water.
-                    pondHere = ws;
-                } else if (kind != 4 && ws.kind && ws.kind != 3 && sea + ws.level > level) { // at sea the sea's level wins (#190: a river mouth's higher level fed the sea columns: overfilled channels that never slept)
-                    level = sea + ws.level; kind = ws.kind; } // a pond (even its rim, above the level) is never an infinite source
-                for (const Site::PondInfo& p : ponds)
-                    if (Vector3Distance(dir, p.dir) * pf->radius < p.r * 1.05f && sea + p.level > level && pf->pondCovers(p.id, dir)) { level = sea + p.level; kind = 5; }
+                if (ws.kind == 3) {
+                    if (bed < sea + ws.level && sea + ws.level > level) { level = sea + ws.level; kind = 5; } // a pond (never an infinite source, even its rim)
+                } else if (kind != 4 && ws.kind && sea + ws.level > level) { // at sea the sea's level wins (#190: a river mouth's higher level fed the sea columns: overfilled channels that never slept)
+                    level = sea + ws.level; kind = ws.kind; }
             }
             const float top = pf ? bed + 14.0f : 1e9f;  // tors, boulders and detail stay below this
             for (int z = 0; z < B; ++z) {
@@ -208,31 +179,30 @@ void Classify(const Site& s, Brick& b, const BodyRef& ref, std::vector<PondClaim
                 const float r = Vector3Length(c);
                 const bool solid = r < top && ref.field->density(c, ref.edits.get()) >= ISO_LEVEL;
                 uint8_t fl = solid ? kSolid : 0;
-                // Dug: open only because of an edit. Static water feeds only these (the real ground has
+                // Dug: open only because of an edit. Infinite water feeds only these (the real ground has
                 // crags the height map doesn't: natural dips by a river are not to be flooded).
                 if (!solid && r < bed + 4.0f && r < top && ref.field->density(c, nullptr) >= ISO_LEVEL) fl |= kDug;
-                if ((fl & kDug) && pondHere.kind == 3 && r - 0.5f < sea + pondHere.level) dugInPond = true;
                 uint8_t tg = 0;
                 if (!solid && kind && r - 0.5f < level && r > bed - 0.5f) {
                     tg = (uint8_t)std::clamp((int)lroundf((level - (r - 0.5f)) * 255.0f), 0, 255);
                     if (tg > 0 && kind != 5) fl |= kSource | kStatic;
+                    if (tg > 0 && kind == 5) {
+                        b.basin = true;
+                        faces |= (x == 0 ? 1 : 0) | (x == B - 1 ? 2 : 0) | (y == 0 ? 4 : 0) | (y == B - 1 ? 8 : 0) | (z == 0 ? 16 : 0) | (z == B - 1 && tg == 255 ? 32 : 0);
+                    }
                 }
                 if (b.keepFill && !solid && !(fl & kSource) && b.fill[i] > 0) fl |= (b.flags[i] & kKindMask); // kept fluid stays its kind
                 b.flags[i] = fl;
                 b.target[i] = (fl & kSource) ? tg : 0;
-                if (b.keepFill) { if (solid) b.fill[i] = 0; else if (fl & kSource) b.fill[i] = tg; else if (b.fillPond && kind == 5) b.fill[i] = std::max(b.fill[i], tg); }
+                if (b.keepFill) { if (solid) b.fill[i] = 0; else if (fl & kSource) b.fill[i] = tg; }
                 else b.fill[i] = solid ? 0 : tg;
             }
-            if (dugInPond) {
-                bool known = false;
-                for (const PondClaim& c : claims) known = known || c.id == pondHere.pond;
-                if (!known) { claims.push_back({ pondHere.pond, pondHere.pondDir, pondHere.pondR, pondHere.level, pondHere.pondDepth }); ponds.push_back({ pondHere.pondDir, pondHere.pondR, pondHere.level, pondHere.pond, pondHere.pondDepth }); }
-            }
         }
+    if (b.keepFill) faces = 0; // a kept brick's pond was pulled in when it was first classified
     b.ready = true;
     b.upload = true; // GPU mode: the classified brick goes up whole
-    b.keepFill = false; b.fillPond = false;
-    b.active = true; b.idle = 0; b.meshDirty = true; b.changed = true;
+    b.keepFill = false;
+    b.active = true; b.idle = 0; b.changed = true;
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -252,7 +222,7 @@ inline bool Next(Brick* b, int x, int y, int z, int dx, int dy, int dz, Neighbou
     return true;
 }
 
-void Touch(Brick* b) { b->active = true; b->idle = 0; b->meshDirty = true; b->changed = true; }
+void Touch(Brick* b) { b->active = true; b->idle = 0; b->changed = true; }
 
 // GPU mode (fluid on compute shaders): CPU-side changes to the mirror (buckets, pumps, springs, levelling) go
 // to the GPU as deltas next tick; bricks waiting for a full upload take theirs from the mirror instead.
@@ -471,105 +441,6 @@ void LevelSite(Site& s) {
         }
     }
 }
-
-// ---------------------------------------------------------------------------------------------
-// Meshing
-// ---------------------------------------------------------------------------------------------
-
-inline int64_t MeshKey(int64_t key, int kind) { return key | ((int64_t)kind << 56); } // a brick's mesh of one fluid kind (0: the brick key)
-void MeshBrick(Site& s, Brick& b, MeshOut& out, int kind = 0) {
-    constexpr int S = B + 1;
-    std::vector<float> D((size_t)S * S * S, -0.5f);
-    std::vector<uint8_t> stat((size_t)S * S * S, 0);
-    auto at = [&](int x, int y, int z, float& d, uint8_t& fl) {
-        Brick* bb; int i;
-        if (!s.cell(b.bi * B + x, b.bj * B + y, b.bk * B + z, bb, i)) { d = -0.5f; fl = 0; return false; }
-        fl = bb->flags[i];
-        d = CellKind(bb->flags[i]) == kind ? bb->fill[i] / 255.0f - 0.5f : -0.5f; // only this kind's fluid
-        return true;
-    };
-    bool any = false;
-    for (int z = 0; z < S; ++z)
-        for (int y = 0; y < S; ++y)
-            for (int x = 0; x < S; ++x) {
-                float d; uint8_t fl;
-                at(x, y, z, d, fl);
-                if (fl & kSolid) {
-                    // Carry the water surface into the rock so it meets the terrain without a gap.
-                    float best = -0.5f;
-                    const int side[4][2] = { { 1, 0 }, { -1, 0 }, { 0, 1 }, { 0, -1 } };
-                    for (auto& sd : side) { float od; uint8_t ofl; if (at(x + sd[0], y + sd[1], z, od, ofl) && !(ofl & kSolid)) best = std::max(best, od); }
-                    d = best;
-                }
-                const size_t k = ((size_t)z * S + y) * S + x;
-                D[k] = d;
-                stat[k] = (fl & kStatic) ? 1 : 0;
-                if (d > 0.0f && !(fl & kStatic) && !(fl & kSolid)) any = true;
-            }
-    out.site = s.index; out.key = MeshKey(Key(b.bi, b.bj, b.bk), kind); out.body = s.body; out.fluid = kind;
-    const Vector3 o = s.cellCentre(b.bi * B, b.bj * B, b.bk * B);
-    out.anchor = DVec3(o);
-    if (!any) return;
-    std::vector<Vector3> verts;
-    std::vector<int> idx;
-    std::vector<int> cache((size_t)S * S * S * 3, -1);
-    for (int z = 0; z < B; ++z)
-        for (int y = 0; y < B; ++y)
-            for (int x = 0; x < B; ++x) marchCube(x, y, z, D, S, verts, idx, cache, 0.0f);
-    if (idx.empty() || verts.size() > 65000) return;
-    auto sample = [&](Vector3 g) { // trilinear D at grid coordinates
-        const int x0 = std::clamp((int)floorf(g.x), 0, S - 2), y0 = std::clamp((int)floorf(g.y), 0, S - 2), z0 = std::clamp((int)floorf(g.z), 0, S - 2);
-        const float fx = g.x - x0, fy = g.y - y0, fz = g.z - z0;
-        auto v = [&](int a, int bq, int c) { return D[((size_t)(z0 + c) * S + (y0 + bq)) * S + (x0 + a)]; };
-        const float c00 = v(0, 0, 0) * (1 - fx) + v(1, 0, 0) * fx, c10 = v(0, 1, 0) * (1 - fx) + v(1, 1, 0) * fx;
-        const float c01 = v(0, 0, 1) * (1 - fx) + v(1, 0, 1) * fx, c11 = v(0, 1, 1) * (1 - fx) + v(1, 1, 1) * fx;
-        return (c00 * (1 - fy) + c10 * fy) * (1 - fz) + (c01 * (1 - fy) + c11 * fy) * fz;
-    };
-    std::vector<int> remap(verts.size(), -1);
-    std::vector<Vector3> nacc;
-    for (size_t t = 0; t + 2 < idx.size(); t += 3) {
-        Vector3 a = verts[idx[t]], bq = verts[idx[t + 1]], c = verts[idx[t + 2]];
-        const Vector3 cen = Vector3Scale(Vector3Add(Vector3Add(a, bq), c), 1.0f / 3.0f);
-        // Static water (the chunks draw its surface) and faces deep in rock are left out.
-        const int sx = std::clamp((int)lroundf(cen.x), 0, S - 1), sy = std::clamp((int)lroundf(cen.y), 0, S - 1), sz = std::clamp((int)lroundf(cen.z), 0, S - 1);
-        if (stat[((size_t)sz * S + sy) * S + sx]) continue;
-        // Outward = down the fill gradient; fix the winding to match.
-        const float h = 0.25f;
-        const Vector3 grad = { sample({ cen.x + h, cen.y, cen.z }) - sample({ cen.x - h, cen.y, cen.z }),
-                               sample({ cen.x, cen.y + h, cen.z }) - sample({ cen.x, cen.y - h, cen.z }),
-                               sample({ cen.x, cen.y, cen.z + h }) - sample({ cen.x, cen.y, cen.z - h }) };
-        Vector3 fn = Vector3CrossProduct(Vector3Subtract(bq, a), Vector3Subtract(c, a));
-        int i0 = idx[t], i1 = idx[t + 1], i2 = idx[t + 2];
-        if (Vector3DotProduct(fn, grad) > 0.0f) { std::swap(i1, i2); fn = Vector3Negate(fn); }
-        const int tri[3] = { i0, i1, i2 };
-        for (int e = 0; e < 3; ++e) {
-            int& r = remap[tri[e]];
-            if (r < 0) {
-                r = (int)nacc.size();
-                const Vector3 g = verts[tri[e]];
-                const Vector3 lp = Vector3Add(Vector3Add(Vector3Scale(s.e, g.x), Vector3Scale(s.n, g.y)), Vector3Scale(s.u, g.z));
-                out.pos.insert(out.pos.end(), { lp.x, lp.y, lp.z });
-                // Depth for the shader's tint: water cells below this point in the column.
-                int depth = 1;
-                for (int z = (int)floorf(g.z); z >= 0 && depth < 8; --z) {
-                    const int gx = std::clamp((int)lroundf(g.x), 0, S - 1), gy = std::clamp((int)lroundf(g.y), 0, S - 1);
-                    if (D[((size_t)z * S + gy) * S + gx] > -0.4f) ++depth; else break;
-                }
-                out.uv.insert(out.uv.end(), { (float)depth, 0.0f });
-                nacc.push_back({ 0, 0, 0 });
-            }
-            nacc[r] = Vector3Add(nacc[r], fn);
-            out.idx.push_back((unsigned short)r);
-        }
-    }
-    for (const Vector3& nv : nacc) {
-        // Body-local normal from grid space.
-        Vector3 g = Vector3Normalize(nv);
-        const Vector3 l = Vector3Add(Vector3Add(Vector3Scale(s.e, g.x), Vector3Scale(s.n, g.y)), Vector3Scale(s.u, g.z));
-        out.nrm.insert(out.nrm.end(), { l.x, l.y, l.z });
-    }
-}
-
 // ---------------------------------------------------------------------------------------------
 // The job
 // ---------------------------------------------------------------------------------------------
@@ -724,9 +595,8 @@ void RunJob() {
     { std::lock_guard<std::mutex> c(cmdMx); cmds.swap(commands); }
     for (const Command& c : cmds) ApplyCommand(c);
     // Classify queued bricks, in parallel on the worker pool (each costs ~4k density samples, a few ms):
-    // this job waits for them, so nothing else touches the site meanwhile. Ponds found are taken over
-    // after the batch.
-    struct Work { Site* s; Brick* b; const BodyRef* ref; std::vector<PondClaim> claims; };
+    // this job waits for them, so nothing else touches the site meanwhile.
+    struct Work { Site* s; Brick* b; const BodyRef* ref; uint8_t faces = 0; };
     std::vector<Work> work;
     for (auto& s : sites) {
         auto rit = refs.find(s->body);
@@ -736,48 +606,23 @@ void RunJob() {
             if (b->ready) continue;
             bool dup = false;
             for (const Work& w : work) dup = dup || w.b == b;
-            if (!dup) work.push_back({ s.get(), b, &rit->second, {} });
+            if (!dup) work.push_back({ s.get(), b, &rit->second, 0 });
         }
     }
     if (!work.empty()) {
         std::atomic<int> left{ (int)work.size() - 1 };
         for (size_t k = 1; k < work.size(); ++k) {
             Work* w = &work[k];
-            WorldJobs().submit(-3.0f, [w, &left] { Classify(*w->s, *w->b, *w->ref, w->claims); left.fetch_sub(1); });
+            WorldJobs().submit(-3.0f, [w, &left] { Classify(*w->s, *w->b, *w->ref, w->faces); left.fetch_sub(1); });
         }
-        Classify(*work[0].s, *work[0].b, *work[0].ref, work[0].claims); // this thread takes one too
+        Classify(*work[0].s, *work[0].b, *work[0].ref, work[0].faces); // this thread takes one too
         while (left.load() > 0) std::this_thread::yield();
+        static const int d[6][3] = { { -1, 0, 0 }, { 1, 0, 0 }, { 0, -1, 0 }, { 0, 1, 0 }, { 0, 0, -1 }, { 0, 0, 1 } };
         for (Work& w : work) {
             for (Brick* o : w.b->nbr) if (o) Touch(o); // neighbours wake: water may now flow in or out
-            const PlanetField* pf = w.ref->pf;
-            for (const PondClaim& c : w.claims) {
-                if (!pf || std::find(w.s->ponds.begin(), w.s->ponds.end(), c.id) != w.s->ponds.end()) continue;
-                // Take the pond over: no static surface (the chunks around it rebuild); queue its bricks.
-                pf->claimPond(c.id);
-                w.s->ponds.push_back(c.id);
-                w.s->pondInfo.push_back({ c.dir, c.r, c.level, c.id, c.depth });
-                const Vector3 pc = Vector3Scale(c.dir, pf->radius + c.level);
-                { std::lock_guard<std::mutex> lock(pubMx); remeshQueue.push_back({ w.s->body, { pc.x, pc.y, pc.z, c.r * 1.3f + 8.0f } }); } // remeshed with 5 strides of reach: coarse nodes draw the static water up to 4 lattice samples out (#251)
-                int pci, pcj, pck;
-                w.s->cellOf(pc, pci, pcj, pck);
-                const int rc = (int)ceilf(c.r * 1.1f) + 1;
-                // Down to the bed (ponds ~4 m; a small lake its own depth, #360), and for a lake only the brick columns
-                // over its cells (its bounding circle is mostly dry ground).
-                const int depthCells = std::max(8, (int)ceilf(c.depth) + 2);
-                for (int bj = FloorDiv(pcj - rc, B); bj <= FloorDiv(pcj + rc, B); ++bj)
-                    for (int bi = FloorDiv(pci - rc, B); bi <= FloorDiv(pci + rc, B); ++bi) {
-                        if (c.id >> 63) {
-                            const Vector3 m = w.s->cellCentre(bi * B + B / 2, bj * B + B / 2, pck);
-                            const float ml = Vector3Length(m);
-                            if (ml < 1.0f || !pf->pondCovers(c.id, Vector3Scale(m, 1.0f / ml))) continue;
-                        }
-                        for (int bk = FloorDiv(pck - depthCells, B); bk <= FloorDiv(pck, B); ++bk) {
-                            // Bricks classified before the take-over hold none of its water: classify them again (#189).
-                            if (Brick* eb = w.s->find(bi, bj, bk); eb && eb->ready) { eb->ready = false; eb->keepFill = true; eb->fillPond = true; w.s->pending.push_front(eb); }
-                            else w.s->ensure(bi, bj, bk);
-                        }
-                    }
-            }
+            // A pond's water at a face: the brick next to it holds more of the pond (#360: it joins whole).
+            for (int f = 0; f < 6; ++f)
+                if (w.faces & (1 << f)) w.s->ensure(w.b->bi + d[f][0], w.b->bj + d[f][1], w.b->bk + d[f][2]);
         }
     }
     // CPU steps: kSubsteps per 50 ms on average (spring rates assume it), whatever the tick (#366: ticks every 25 ms).
@@ -792,10 +637,12 @@ void RunJob() {
         if (stepCount % kLevelEvery == 0) for (auto& s : sites) LevelSite(*s);
     }
     const auto t1 = std::chrono::steady_clock::now();
-    // Publish changed bricks; mesh the dirty ones (each at most every other step).
-    std::vector<MeshOut> meshes;
-    std::vector<std::pair<int, int64_t>> drops;
+    // Publish: a new snapshot of the water field (waterfield.h) sharing every unchanged brick; the changed bricks'
+    // bounds go out with it, so the chunks there redraw their water (the chunk mesher draws all fluid, #360).
     Fluid::Stats st;
+    const WaterField::SnapshotPtr prev = WaterField::Current();
+    std::shared_ptr<WaterField::Snapshot> snap;
+    std::vector<WaterField::Dirty> dirty;
     for (auto& s : sites) {
         ++st.sites;
         for (auto& kv : s->bricks) {
@@ -803,58 +650,68 @@ void RunJob() {
             ++st.bricks;
             if (!b.ready) continue;
             if (b.active) ++st.activeBricks;
-            uint8_t present = 0; // non-water kinds in the brick (bit k)
+            if (b.basin) ++st.basinBricks;
+            uint8_t present = 0; // kinds in the brick (bit k)
             for (int i = 0; i < B3; ++i)
-                if (b.fill[i] && !(b.flags[i] & (kSource | kSolid))) {
-                    st.wetCells += 1.0;
+                if (b.fill[i] && !(b.flags[i] & kSolid)) {
                     const int k = CellKind(b.flags[i]);
-                    if (k) { st.otherVolume += b.fill[i] / 255.0; present |= (uint8_t)(1 << k); }
+                    present |= (uint8_t)(1 << k);
+                    if (b.flags[i] & kSource) continue;
+                    st.wetCells += 1.0;
+                    if (k) st.otherVolume += b.fill[i] / 255.0;
                     else st.volume += b.fill[i] / 255.0;
                 }
-            if (b.meshDirty && stepCount - b.lastMesh >= 1) {
-                MeshOut m;
-                MeshBrick(*s, b, m);
-                b.meshDirty = false; b.lastMesh = (int)stepCount;
-                if (m.idx.empty()) drops.push_back({ s->index, kv.first });
-                else meshes.push_back(std::move(m));
-                // Each other kind present (or meshed before) has a surface of its own, drawn in its colours.
-                for (int k = 1; k < 8; ++k) {
-                    if (!((present | b.meshedKinds) & (1 << k))) continue;
-                    MeshOut mk;
-                    MeshBrick(*s, b, mk, k);
-                    if (mk.idx.empty()) drops.push_back({ s->index, MeshKey(kv.first, k) });
-                    else meshes.push_back(std::move(mk));
+            if (!b.changed) continue;
+            b.changed = false;
+            if (!snap) {
+                snap = std::make_shared<WaterField::Snapshot>();
+                snap->seq = prev->seq + 1;
+                snap->sites.resize(sites.size());
+                for (size_t k = 0; k < sites.size() && k < prev->sites.size(); ++k) snap->sites[k] = prev->sites[k]; // shares the bricks
+                for (auto& o : sites) {
+                    WaterField::Site& ps = snap->sites[o->index];
+                    ps.body = o->body; ps.origin = o->origin; ps.e = o->e; ps.n = o->n; ps.u = o->u;
                 }
-                b.meshedKinds = present;
+            }
+            WaterField::Site& ps = snap->sites[s->index];
+            auto pb = std::make_shared<WaterField::Brick>();
+            pb->fill = b.fill; pb->flags = b.flags; pb->kinds = present;
+            ps.bricks[kv.first] = std::move(pb);
+            Vector3 lo, hi;
+            ps.brickBounds(b.bi, b.bj, b.bk, lo, hi);
+            ps.lo = Vector3Min(ps.lo, lo); ps.hi = Vector3Max(ps.hi, hi);
+            // A cell's surface reaches its neighbours' samples (solid cells carry it, empty ones look below). Only a
+            // visible change redraws the chunks, and only around the cells that changed: some cell 2.5 cm+ off what
+            // they last drew, or its solidity or fluid kind (a body easing by a 255th at a time kept ~2000 chunk
+            // redraws a second going, #360). Those cells are drawn anew; the rest keep what was drawn.
+            int c0[3] = { B, B, B }, c1[3] = { -1, -1, -1 };
+            for (int i = 0; i < B3; ++i) {
+                const bool v = !b.drawnSet || abs((int)b.fill[i] - (int)b.drawn[i]) >= 6 || ((b.flags[i] ^ b.drawnFlags[i]) & kSolid) ||
+                               (b.fill[i] && ((b.flags[i] ^ b.drawnFlags[i]) & kKindMask));
+                if (!v) continue;
+                const int x = i % B, y = (i / B) % B, z = i / (B * B);
+                c0[0] = std::min(c0[0], x); c0[1] = std::min(c0[1], y); c0[2] = std::min(c0[2], z);
+                c1[0] = std::max(c1[0], x); c1[1] = std::max(c1[1], y); c1[2] = std::max(c1[2], z);
+                b.drawn[i] = b.fill[i]; b.drawnFlags[i] = b.flags[i];
+            }
+            b.drawnSet = true;
+            if (c1[0] >= 0) {
+                Vector3 dlo, dhi;
+                ps.cellBounds(b.bi * B + c0[0] - 1, b.bj * B + c0[1] - 1, b.bk * B + c0[2] - 1, b.bi * B + c1[0] + 2, b.bj * B + c1[1] + 2, b.bk * B + c1[2] + 2, dlo, dhi);
+                dirty.push_back({ s->body, dlo, dhi });
             }
         }
-        st.claimedPonds += (int)s->ponds.size();
     }
+    if (snap) WaterField::Publish(std::move(snap), std::move(dirty));
     const auto t2 = std::chrono::steady_clock::now();
     {
         std::lock_guard<std::mutex> p(pubMx);
-        published.resize(sites.size());
-        for (auto& s : sites) {
-            PubSite& ps = published[s->index];
-            ps.body = s->body; ps.origin = s->origin; ps.e = s->e; ps.n = s->n; ps.u = s->u;
-            for (auto& kv : s->bricks) {
-                Brick& b = *kv.second;
-                if (!b.ready || !b.changed) continue;
-                b.changed = false;
-                auto pb = std::make_shared<PubBrick>();
-                pb->fill = b.fill; pb->flags = b.flags;
-                ps.bricks[kv.first] = pb;
-            }
-        }
-        for (auto& m : meshes) meshQueue.push_back(std::move(m));
-        for (auto& d : drops) meshDrops.push_back(d);
         const double stepMs = std::chrono::duration<double, std::milli>(t1 - t0).count();
         st.stepMs = stepMs;
         st.maxStepMs = std::max(pubStats.maxStepMs, stepMs);
         st.meshMs = std::chrono::duration<double, std::milli>(t2 - t1).count();
         st.steps = stepCount;
         st.dbg[0] = dbgDown; st.dbg[1] = dbgSide; st.dbg[2] = dbgSrc; st.dbg[3] = dbgLevel; dbgDown = dbgSide = dbgSrc = dbgLevel = 0;
-        st.meshes = (int)gpu.size();
         pubStats = st;
     }
 }
@@ -1054,21 +911,15 @@ void Fluid::Reset() {
     WaitIdle();
     std::lock_guard<std::mutex> lock(simMx);
     GpuReset(); // the GPU pool forgets its bricks (before the sites holding them go)
-    // Ponds taken over come back as static water (a load re-claims the ones it stored).
-    for (auto& s : sites)
-        if (Planetoid* p = Planetoid::find(s->body))
-            if (const auto* pf = dynamic_cast<const PlanetField*>(p->field.get())) pf->clearClaimedPonds();
     sites.clear();
     refs.clear();
     stepCount = 0;
     { std::lock_guard<std::mutex> c(cmdMx); commands.clear(); }
     {
         std::lock_guard<std::mutex> p(pubMx);
-        published.clear(); meshQueue.clear(); meshDrops.clear(); remeshQueue.clear();
         pubStats = Stats{};
     }
-    for (auto& kv : gpu) if (kv.second.mesh.vaoId) UnloadMesh(kv.second.mesh);
-    gpu.clear();
+    WaterField::Clear(); // only generated water until the simulation publishes again
     accum = 0.0;
 }
 
@@ -1148,32 +999,6 @@ int Fluid::KindByName(const std::string& id) {
 }
 
 void Fluid::Update(Scene& world, float dt) {
-    // Uploads (main thread: GL).
-    std::vector<MeshOut> meshes;
-    std::vector<std::pair<int, int64_t>> drops;
-    std::vector<std::pair<uint64_t, Vector4>> remesh;
-    {
-        std::lock_guard<std::mutex> p(pubMx);
-        meshes.swap(meshQueue); drops.swap(meshDrops); remesh.swap(remeshQueue);
-    }
-    for (auto& d : drops) { auto it = gpu.find(d); if (it != gpu.end()) { if (it->second.mesh.vaoId) UnloadMesh(it->second.mesh); gpu.erase(it); } }
-    for (auto& m : meshes) {
-        GpuMesh& g = gpu[{ m.site, m.key }];
-        if (g.mesh.vaoId) UnloadMesh(g.mesh);
-        g = GpuMesh{};
-        g.body = m.body; g.anchor = m.anchor; g.fluid = m.fluid;
-        Mesh& mesh = g.mesh;
-        mesh.vertexCount = (int)(m.pos.size() / 3);
-        mesh.triangleCount = (int)(m.idx.size() / 3);
-        mesh.vertices = (float*)MemAlloc((unsigned)(m.pos.size() * sizeof(float))); memcpy(mesh.vertices, m.pos.data(), m.pos.size() * sizeof(float));
-        mesh.normals = (float*)MemAlloc((unsigned)(m.nrm.size() * sizeof(float))); memcpy(mesh.normals, m.nrm.data(), m.nrm.size() * sizeof(float));
-        mesh.texcoords = (float*)MemAlloc((unsigned)(m.uv.size() * sizeof(float))); memcpy(mesh.texcoords, m.uv.data(), m.uv.size() * sizeof(float));
-        mesh.indices = (unsigned short*)MemAlloc((unsigned)(m.idx.size() * sizeof(unsigned short))); memcpy(mesh.indices, m.idx.data(), m.idx.size() * sizeof(unsigned short));
-        UploadMesh(&mesh, false);
-    }
-    for (auto& r : remesh)
-        if (Planetoid* p = Planetoid::find(r.first)) RequestRemesh(*p, { r.second.x, r.second.y, r.second.z }, r.second.w, 5.0f);
-
     // A step every 50 ms when the last one has finished (the job owns the state while it runs).
     accum += dt;
     if (accum < kTickSeconds || running.load()) return;
@@ -1187,7 +1012,7 @@ void Fluid::Update(Scene& world, float dt) {
         if (gpuMode && !G.lastList.empty()) work = true; // the last dispatch's results still to read back
         for (auto& s : sites) {
             if (!s->pending.empty()) work = true;
-            for (auto& kv : s->bricks) if (kv.second->active || kv.second->meshDirty) { work = true; break; }
+            for (auto& kv : s->bricks) if (kv.second->active || kv.second->changed) { work = true; break; }
             if (work) break;
         }
         if (!work) return;
@@ -1207,59 +1032,34 @@ void Fluid::Update(Scene& world, float dt) {
     WorldJobs().submit(-0.5f, [] { RunJob(); running = false; });
 }
 
-void Fluid::Draw(const Planetoid& body, const RenderContext& ctx, ChunkBatch& batch) {
-    if (gpu.empty()) return;
-    const double period = 1.0 / std::max(ctx.texScale, 1e-6f);
-    auto wrap = [period](double v) { return (float)(fmod(fmod(v, period) + period, period)); };
-    const Vector3 clip = { 1e9f, 1e9f, 1e9f };
-    batch.setUniform(ctx.waterClipLoc, &clip, SHADER_UNIFORM_VEC3);
-    // Water first, then each other kind in its own colours (water.fs: fluidColor.a > 0 switches to a
-    // dense fluid - the kind's colour and opacity, a sky reflection, a sheen on dark ones, its glow).
-    const int colLoc = ctx.waterMaterial ? GetShaderLocation(ctx.waterMaterial->shader, "fluidColor") : -1;
-    const int glowLoc = ctx.waterMaterial ? GetShaderLocation(ctx.waterMaterial->shader, "fluidGlow") : -1;
-    for (int pass = 0; pass < 8; ++pass) {
-        if (pass > 0) {
-            if (pass >= (int)kinds.size()) break;
-            const Fluid::Kind& k = kinds[pass];
-            const float col[4] = { k.color.r / 255.0f, k.color.g / 255.0f, k.color.b / 255.0f, std::max(k.opacity, 0.01f) };
-            batch.setUniform(colLoc, col, SHADER_UNIFORM_VEC4);
-            batch.setUniform(glowLoc, &k.glow, SHADER_UNIFORM_FLOAT);
-        }
-        for (auto& kv : gpu) {
-            const GpuMesh& g = kv.second;
-            if (g.body != body.id || !g.mesh.vaoId || g.fluid != pass) continue;
-            const Matrix m = body.localModel(g.anchor, ctx.renderOrigin);
-            const Vector3 c = Vector3Transform({ 8, 8, 8 }, m);
-            if (Vector3DistanceSqr(c, ctx.cameraPos) > 1500.0f * 1500.0f) continue;
-            const Vector3 texOrigin = { wrap(g.anchor.x), wrap(g.anchor.y), wrap(g.anchor.z) };
-            batch.setUniform(ctx.waterTexOriginLoc, &texOrigin, SHADER_UNIFORM_VEC3);
-            batch.draw(g.mesh, m);
-            if (ctx.drawCalls) ++*ctx.drawCalls;
-        }
+void Fluid::BindKindUniforms(const Shader& shader) {
+    // water.fs: per fluid kind (a chunk vertex's second texcoord) its colour (sRGB) + opacity, and glow (lava).
+    float col[8 * 4] = {}, glow[8] = {};
+    for (int k = 0; k < (int)kinds.size() && k < 8; ++k) {
+        const Fluid::Kind& kd = kinds[k];
+        col[k * 4 + 0] = kd.color.r / 255.0f; col[k * 4 + 1] = kd.color.g / 255.0f; col[k * 4 + 2] = kd.color.b / 255.0f;
+        col[k * 4 + 3] = k == 0 ? 0.0f : std::max(kd.opacity, 0.01f); // water keeps its own look (a = 0)
+        glow[k] = kd.glow;
     }
-    const float none[4] = { 0, 0, 0, 0 }, noGlow = 0.0f; // back to water for the next body or pass
-    batch.setUniform(colLoc, none, SHADER_UNIFORM_VEC4);
-    batch.setUniform(glowLoc, &noGlow, SHADER_UNIFORM_FLOAT);
+    const int colLoc = GetShaderLocation(shader, "fluidColors"), glowLoc = GetShaderLocation(shader, "fluidGlows");
+    if (colLoc >= 0) rlSetUniform(colLoc, col, RL_SHADER_UNIFORM_VEC4, 8);
+    if (glowLoc >= 0) rlSetUniform(glowLoc, glow, RL_SHADER_UNIFORM_FLOAT, 8);
 }
 
 namespace {
     // A published cell at a body-local point: its fill (0-255) and flags; false if none.
-    bool PubCell(const PubSite& s, Vector3 local, int dk, uint8_t& fill, uint8_t& flags, float* frac = nullptr) {
-        const Vector3 d = Vector3Subtract(local, s.origin);
-        const float fx = Vector3DotProduct(d, s.e), fy = Vector3DotProduct(d, s.n), fz = Vector3DotProduct(d, s.u);
-        const int ci = (int)floorf(fx), cj = (int)floorf(fy), ck = (int)floorf(fz) + dk;
-        auto it = s.bricks.find(Key(FloorDiv(ci, B), FloorDiv(cj, B), FloorDiv(ck, B)));
-        if (it == s.bricks.end()) return false;
-        const int i = Idx(ci - FloorDiv(ci, B) * B, cj - FloorDiv(cj, B) * B, ck - FloorDiv(ck, B) * B);
-        fill = it->second->fill[i]; flags = it->second->flags[i];
+    bool PubCell(const WaterField::Site& s, Vector3 local, int dk, uint8_t& fill, uint8_t& flags, float* frac = nullptr) {
+        float fx, fy, fz;
+        s.frame(local, fx, fy, fz);
+        if (!s.cell((int)floorf(fx), (int)floorf(fy), (int)floorf(fz) + dk, fill, flags)) return false;
         if (frac) *frac = fz - floorf(fz);
         return true;
     }
 }
 
 bool Fluid::Wet(const Planetoid& body, Vector3 local) {
-    std::lock_guard<std::mutex> p(pubMx);
-    for (const PubSite& s : published) {
+    const WaterField::SnapshotPtr snapNow = WaterField::Current();
+    for (const WaterField::Site& s : snapNow->sites) {
         if (s.body != body.id) continue;
         uint8_t f, fl; float frac;
         if (!PubCell(s, local, 0, f, fl, &frac) || (fl & kSolid)) continue;
@@ -1270,8 +1070,8 @@ bool Fluid::Wet(const Planetoid& body, Vector3 local) {
 }
 
 float Fluid::SurfaceAbove(const Planetoid& body, Vector3 local, float reach) {
-    std::lock_guard<std::mutex> p(pubMx);
-    for (const PubSite& s : published) {
+    const WaterField::SnapshotPtr snapNow = WaterField::Current();
+    for (const WaterField::Site& s : snapNow->sites) {
         if (s.body != body.id) continue;
         uint8_t f, fl; float frac;
         if (!PubCell(s, local, 0, f, fl, &frac) || f == 0) continue;
@@ -1288,8 +1088,8 @@ float Fluid::SurfaceAbove(const Planetoid& body, Vector3 local, float reach) {
 float Fluid::WaterAt(const Planetoid& body, Vector3 local, float radius) {
     float total = 0.0f;
     {
-        std::lock_guard<std::mutex> p(pubMx);
-        for (const PubSite& s : published) {
+        const WaterField::SnapshotPtr snapNow = WaterField::Current();
+    for (const WaterField::Site& s : snapNow->sites) {
             if (s.body != body.id) continue;
             const int R = (int)ceilf(radius);
             for (int dk = -R; dk <= R; ++dk)
@@ -1301,8 +1101,8 @@ float Fluid::WaterAt(const Planetoid& body, Vector3 local, float radius) {
                     }
         }
     }
-    // Static water not yet in a site.
-    if (total <= 0.0f) {
+    // Generated water where no simulated cell decides (#360: a drained pond's cells are simulated and dry).
+    if (total <= 0.0f && WaterField::CellFill(*WaterField::Current(), body.id, local, 0) < 0) {
         const auto* pf = dynamic_cast<const PlanetField*>(body.field.get());
         if (pf) {
             const float d = Vector3Length(local);
@@ -1320,8 +1120,8 @@ namespace {
     // Moving fluid within radius, m^3 per kind.
     void FluidVolumes(const Planetoid& body, Vector3 local, float radius, float out[8]) {
         for (int k = 0; k < 8; ++k) out[k] = 0.0f;
-        std::lock_guard<std::mutex> p(pubMx);
-        for (const PubSite& s : published) {
+        const WaterField::SnapshotPtr snapNow = WaterField::Current();
+    for (const WaterField::Site& s : snapNow->sites) {
             if (s.body != body.id) continue;
             const int R = (int)ceilf(radius);
             for (int dk = -R; dk <= R; ++dk)
@@ -1351,8 +1151,8 @@ int Fluid::KindAt(const Planetoid& body, Vector3 local, float radius) {
 
 
 bool Fluid::StandingWaterNear(const Planetoid& body, Vector3 local, float range) {
-    std::lock_guard<std::mutex> p(pubMx);
-    for (const PubSite& s : published) {
+    const WaterField::SnapshotPtr snapNow = WaterField::Current();
+    for (const WaterField::Site& s : snapNow->sites) {
         if (s.body != body.id) continue;
         const int R = (int)ceilf(range);
         for (int dk = -3; dk <= 1; ++dk)
@@ -1378,10 +1178,9 @@ void Fluid::Save(FILE* f, uint64_t bodyId) {
             Brick& b = *kv.second;
             bool any = false;
             for (int i = 0; i < B3 && !any; ++i) any = b.fill[i] && !(b.flags[i] & kSource);
-            if (any) wet.push_back(&b);
+            if (any || b.basin) wet.push_back(&b); // a drained pond's bricks too: loaded fresh they would hold its water again (#360)
         }
-        fprintf(f, "site %.4f %.4f %.4f %.6f %.6f %.6f %.6f %.6f %.6f %zu %zu", s->origin.x, s->origin.y, s->origin.z, s->e.x, s->e.y, s->e.z, s->u.x, s->u.y, s->u.z, s->ponds.size(), wet.size());
-        for (uint64_t id : s->ponds) fprintf(f, " %llu", (unsigned long long)id);
+        fprintf(f, "site %.4f %.4f %.4f %.6f %.6f %.6f %.6f %.6f %.6f %zu %zu", s->origin.x, s->origin.y, s->origin.z, s->e.x, s->e.y, s->e.z, s->u.x, s->u.y, s->u.z, (size_t)0, wet.size()); // 0: claimed ponds are gone (#360)
         fprintf(f, "\n");
         fprintf(f, "springs %zu\n", s->springs.size());
         for (const Site::Spring& sp : s->springs) fprintf(f, "%d %d %d %d %.4f %.3f\n", sp.ci, sp.cj, sp.ck, sp.kind, sp.perStep, sp.head);
@@ -1406,8 +1205,6 @@ void Fluid::Save(FILE* f, uint64_t bodyId) {
 void Fluid::Load(FILE* f, uint64_t bodyId) {
     int n = 0;
     if (fscanf(f, " water %d", &n) != 1) return;
-    Planetoid* body = Planetoid::find(bodyId);
-    const auto* pf = body ? dynamic_cast<const PlanetField*>(body->field.get()) : nullptr;
     WaitIdle();
     std::lock_guard<std::mutex> lock(simMx);
     for (int k = 0; k < n; ++k) {
@@ -1419,7 +1216,7 @@ void Fluid::Load(FILE* f, uint64_t bodyId) {
         s->index = (int)sites.size();
         for (size_t i = 0; i < np; ++i) {
             unsigned long long id = 0;
-            if (fscanf(f, " %llu", &id) == 1) { s->ponds.push_back(id); if (pf) pf->claimPond(id); }
+            if (fscanf(f, " %llu", &id) != 1) return; // old saves: ponds taken over (#360: no more claims; drained bricks were not stored, so those ponds refill)
         }
         int ns = 0; // sources (springs, seeps): "springs N" then one per line
         if (fscanf(f, " springs %d", &ns) == 1)
@@ -1446,7 +1243,7 @@ void Fluid::Load(FILE* f, uint64_t bodyId) {
     }
 }
 
-Fluid::Stats Fluid::GetStats() { std::lock_guard<std::mutex> p(pubMx); Stats s = pubStats; s.meshes = (int)gpu.size(); return s; }
+Fluid::Stats Fluid::GetStats() { std::lock_guard<std::mutex> p(pubMx); return pubStats; }
 
 void Fluid::WaitIdle() {
     while (running.load()) std::this_thread::yield();
@@ -1466,12 +1263,16 @@ bool Fluid::Asleep() {
 }
 
 std::string Fluid::DebugCell(const Planetoid& body, Vector3 local) {
-    std::lock_guard<std::mutex> p(pubMx);
-    for (const PubSite& s : published) {
+    const WaterField::SnapshotPtr snapNow = WaterField::Current();
+    for (const WaterField::Site& s : snapNow->sites) {
         if (s.body != body.id) continue;
         uint8_t f, fl;
         if (!PubCell(s, local, 0, f, fl)) return "no brick";
         return TextFormat("fill %d flags %s%s%s%s", f, (fl & kSolid) ? "S" : "", (fl & kSource) ? "R" : "", (fl & kStatic) ? "T" : "", (fl & kDug) ? "D" : "");
     }
     return "no site";
+}
+
+bool Fluid::Simulated(const Planetoid& body, Vector3 local) {
+    return WaterField::CellFill(*WaterField::Current(), body.id, local, 0) >= 0;
 }
