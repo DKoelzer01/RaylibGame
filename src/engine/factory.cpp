@@ -523,14 +523,22 @@ void TickPlot(PlotSim& ps, int dt, long long& made, int& active) {
         };
         if (m.recipe >= 0 && !inputsHere(tables.recipes[m.recipe])) { m.recipe = -1; m.progress = 0; }
         if (m.recipe < 0) {
-            for (size_t ri = 0; ri < tables.recipes.size(); ++ri) {
-                const Recipe& r = tables.recipes[ri];
-                if (r.machine != m.type) continue;
-                if (m.variant >= 0 && (r.out.empty() || r.out[0].item != m.variant)) continue;
-                if (!inputsHere(r)) continue;
-                m.recipe = (int)ri; m.progress = 0;
-                break;
+            auto usable = [&](const Recipe& r) {
+                return r.machine == m.type && (m.variant < 0 || (!r.out.empty() && r.out[0].item == m.variant)) && inputsHere(r);
+            };
+            // Left to right as the slots are shown (#195): the first stack that some recipe can use picks it; the file
+            // order chose before, so a stack further right could go first.
+            for (int si = 0; si < InSlots(m) && m.recipe < 0; ++si) {
+                if (m.in[si].count <= 0) continue;
+                for (size_t ri = 0; ri < tables.recipes.size(); ++ri) {
+                    const Recipe& r = tables.recipes[ri];
+                    bool uses = false;
+                    for (const Stack& s : r.in) uses |= s.item == m.in[si].item;
+                    if (uses && usable(r)) { m.recipe = (int)ri; m.progress = 0; break; }
+                }
             }
+            for (size_t ri = 0; ri < tables.recipes.size() && m.recipe < 0; ++ri)
+                if (usable(tables.recipes[ri])) { m.recipe = (int)ri; m.progress = 0; }
             if (m.recipe < 0) { m.status = MachineStatus::Idle; continue; } // asleep until items arrive
         }
         const Recipe& r = tables.recipes[m.recipe];
