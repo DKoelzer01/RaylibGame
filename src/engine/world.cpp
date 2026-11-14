@@ -59,6 +59,8 @@ namespace {
     std::vector<ChunkMeshData> waterResults;   // water-only rebuilds (#360), filled by workers (resultsMutex)
     std::atomic<long long> gWaterBuilds{ 0 };  // water-only rebuilds done, and their worker time (ms x 1000)
     std::atomic<long long> gWaterUs{ 0 };
+    std::atomic<int> gWaterInFlight{ 0 };      // water-only rebuilds queued or running (capped: they go ahead of view builds)
+    struct WaterToken { WaterToken() { ++gWaterInFlight; } ~WaterToken() { --gWaterInFlight; } }; // held by a water job's closure (run or dropped)
     std::unique_ptr<JobSystem> jobs;
 
     std::unordered_map<uint64_t, Planetoid*> planetoidRegistry; // main thread only
@@ -1046,7 +1048,8 @@ static void RequestWater(Planetoid& p, Chunk& c) {
     std::shared_ptr<const ChunkWaterCache> cache = c.waterCache;
     const uint64_t id = p.id;
     const NodeKey key = c.key;
-    Jobs().submit(-0.5f, [field, cache, id, key] {
+    auto token = std::make_shared<WaterToken>();
+    Jobs().submit(-0.5f, [field, cache, id, key, token] {
         ChunkMeshData d;
         d.planetoidId = id;
         d.key = key;
@@ -1077,11 +1080,12 @@ static void UpdateWater(Scene& world) {
         if (r.waterSeq >= c.waterSeq) c.uploadWater(r);
     }
     int budget = 64; // water jobs a frame
+    const int kWaterInFlight = 8; // at most this many at once: a draining pond near the camera kept ~2000 a second going
     for (auto& obj : world.objects) {
         auto* p = dynamic_cast<Planetoid*>(obj.get());
         if (!p || !p->isActive) continue;
         for (Chunk* c : p->drawList) {
-            if (!c->waterDirty || c->waterBusy || !c->ready || budget <= 0) continue;
+            if (!c->waterDirty || c->waterBusy || !c->ready || budget <= 0 || gWaterInFlight.load() >= kWaterInFlight) continue;
             const double every = c->key.level == 0 ? 0.1 : c->key.level <= 2 ? 0.2 : c->key.level <= 4 ? 0.5 : 1.0;
             if (now - c->waterBuiltAt < every) continue;
             --budget;
