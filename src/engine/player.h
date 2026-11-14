@@ -56,6 +56,7 @@ struct Player {
 
     // Tunables
     float eyeHeight = 1.6f;
+    float height = 1.7f;     // collision capsule top (#255): 2 m doorways pass
     float radius = 0.45f;
     float walkSpeed = 6.0f;
     float runMultiplier = 2.0f;

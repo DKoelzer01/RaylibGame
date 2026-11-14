@@ -471,13 +471,14 @@ bool Player::resolveCollisions(Scene&, Vector3& feet) {
     if (!nearest) return false;
     Planetoid& p = *nearest;
     bool onGround = false;
-    // A capsule (#255): sphere centres from `radius` up to the eye, 0.23 m apart (no waist: the two spheres at 0.45 and
-    // 1.15 m left a 0.28 m neck that jagged rock poked into), its top 0.45 m over the eye so the camera (eye smoothing
-    // +-0.25 m, 0.2 m near plane) stays inside the collision volume and can't see through ceilings. Each pass pushes
-    // out of the deepest contact only: two spheres pushing along different normals on jagged rock fought each other.
-    constexpr int kSamples = 6;
+    // A capsule (#255): sphere centres from `radius` up to `height - radius`, ~0.27 m apart (no waist: the two spheres at
+    // 0.45 and 1.15 m left a 0.28 m neck that jagged rock poked into). The player is `height` (1.7 m) tall, so 2 m doorways
+    // and tunnels pass (user, 2026-11-14: the first capsule ran up to the eye and made the player 2.05 m); the eye (1.6 m)
+    // sits inside the top sphere, and the eye keep-out below lowers the camera where a ceiling comes closer. Each pass
+    // pushes out of the deepest contact only: two spheres pushing along different normals on jagged rock fought each other.
+    constexpr int kSamples = 4;
     float offsets[kSamples];
-    for (int i = 0; i < kSamples; ++i) offsets[i] = radius + (eyeHeight - radius) * (float)i / (float)(kSamples - 1);
+    for (int i = 0; i < kSamples; ++i) offsets[i] = radius + (height - 2.0f * radius) * (float)i / (float)(kSamples - 1);
     // The linear estimate (iso - density) / |gradient| is only a distance where the density behaves
     // like one; dig and build edits (big density steps) break that, and it reported contacts in open
     // air that pushed up to 1 m per iteration, sometimes into the ground (the "wall launch"). So each
@@ -603,7 +604,7 @@ void Player::applyToCamera(Scene& world) const {
             if (!TerrainSurfaceDistance(*nearest, q, dist, n)) return true;
             return dist >= clearance && nearest->densityAt(nearest->toLocal(q)) < ISO_LEVEL;
         };
-        const Vector3 headCentre = Vector3Add(feet, Vector3Scale(up, eyeHeight - radius));
+        const Vector3 headCentre = Vector3Add(feet, Vector3Scale(up, height - radius)); // the capsule's top sphere
         const float span = Vector3Distance(headCentre, eye); // ~0.45 m (+ the eye offset)
         float want = 0.0f;                                   // how far below the nominal eye
         if (!clear(eye)) {
