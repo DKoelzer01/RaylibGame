@@ -257,11 +257,13 @@ void PlanetField::bakeErosion(const std::string& cachePath) {
         auto envf = [](const char* n, float v) { const char* e = getenv(n); return e ? (float)atof(e) : v; }; // tuning
         p.k = envf("RAYLIBGAME_EROSION_K", p.k); p.steps = (int)envf("RAYLIBGAME_EROSION_STEPS", (float)p.steps);
         p.cell = envf("RAYLIBGAME_EROSION_CELL", p.cell); p.uplift = envf("RAYLIBGAME_EROSION_UPLIFT", p.uplift);
+        p.start = envf("RAYLIBGAME_EROSION_START", p.start);
+        p.refine = (int)envf("RAYLIBGAME_EROSION_REFINE", (float)p.refine); p.refineSteps = (int)envf("RAYLIBGAME_EROSION_REFINE_STEPS", (float)p.refineSteps);
         const int threads = std::max(1u, std::thread::hardware_concurrency());
-        b.build([this, &p](Vector3 d) { return land(d, p.cell).h; }, radius, fieldSeed, p, threads);
+        b.build([this](Vector3 d, float fp) { return land(d, fp).h; }, radius, fieldSeed, p, threads);
         if (!cachePath.empty()) b.save(cachePath);
-        printf("erosion: baked the planet, %d cells at %.0f m, in %.1f s (sampling %.1f s): cut up to %.0f m, raised up to %.0f m, hash %016llx\n",
-               b.cells(), p.cell, b.buildSeconds, b.sampleSeconds, b.maxCut, b.maxRaise, (unsigned long long)b.hash());
+        printf("erosion: baked the planet, %d cells at %.0f m + %d at %.0f m, in %.1f s (coarse %.1f s, faces %.1f s): cut up to %.0f m, raised up to %.0f m, hash %016llx\n",
+               b.cells(), p.cell, b.fineCells(), b.fineCell(), b.buildSeconds, b.coarseSeconds, b.refineSeconds, b.maxCut, b.maxRaise, (unsigned long long)b.hash());
     } else {
         printf("erosion: loaded %s (%d cells, hash %016llx)\n", cachePath.c_str(), b.cells(), (unsigned long long)b.hash());
     }
@@ -282,13 +284,16 @@ PlanetField::Land PlanetField::land(Vector3 dir, float fp) const {
     const float base = c < 0.0f ? c * 650.0f : c * 200.0f;        // ocean floor down to -650 m, gentle land
     const float landMask = Smoothstep(-0.02f, 0.06f, c);
     const float mountainMask = Smoothstep(0.08f, 0.35f, c);      // ranges only well inland
-    float h = base;
+    // With the erosion bake (Plan 7, #356) the baked height replaces the noise relief (base, ranges, hills); l.ridge is
+    // still computed as the ranges' mask for rivers and ponds.
+    const PlanetErosion* eroded = erosion();
+    float h = eroded ? eroded->heightAt(dir, fp) : base;
     if (mountainMask > 0.0f) {
         const float r = 1.0f - fabsf(ridges.fractalLimited(5, fp, sx, sy, sz)); // ridged: sharp crests
         l.ridge = r * r * r * 1400.0f * mountainMask; // the height the ranges add here
-        h += l.ridge;
+        if (!eroded) h += l.ridge;
     }
-    h += hills.fractalLimited(3, fp, sx, sy, sz) * (25.0f + 60.0f * mountainMask);
+    if (!eroded) h += hills.fractalLimited(3, fp, sx, sy, sz) * (25.0f + 60.0f * mountainMask);
     // (River valleys are carved by the drainage network's rivers in elevation(); the old valley-noise
     // valleys and streams are gone, so l.valley and l.stream stay at 1: none.)
     const float valleyWeight = landMask * std::clamp(2.0f - fp / 64.0f, 0.0f, 1.0f);
@@ -303,8 +308,6 @@ PlanetField::Land PlanetField::land(Vector3 dir, float fp) const {
             if (r < 0.006f) h -= sqrtf(1.0f - r / 0.006f) * 90.0f * region * ravineWeight;
         }
     }
-    // The erosion bake's change (#352 prototype): valleys and ridges from the simulation over the noise.
-    if (const PlanetErosion* e = erosion()) h += e->sample(dir);
     l.detail = detail.fractalLimited(2, fp, sx, sy, sz) * 2.5f;
     // Polar ice shelves: near the poles the sea is frozen, so low ground is raised to an ice sheet a
     // couple of metres above sea level (the material rules make it ice).
@@ -353,6 +356,7 @@ float PlanetField::riverWeight(const Land& l) const {
 }
 
 float PlanetField::broadLand(const Land& l, Vector3 dir, float smoothFp) const {
+    if (const PlanetErosion* e = erosion()) return e->heightAt(dir, smoothFp);
     const float sx = dir.x * radius, sy = dir.y * radius, sz = dir.z * radius;
     const float base = l.c < 0.0f ? l.c * 650.0f : l.c * 200.0f;
     return base + l.ridge + hills.fractalLimited(3, smoothFp, sx, sy, sz) * (25.0f + 60.0f * l.mountain) - ValleyCarve(l.valley) * l.valleyWeight;
@@ -761,7 +765,7 @@ float PlanetField::ruggedness(Vector3 dir, float elev) const {
 // the column, so blocks compute it once per height-grid node (baseDensityBlock) instead of per sample.
 PlanetField::Column3D PlanetField::terrain3DColumn(Vector3 dir, float elev) const {
     Column3D c;
-    if (moon || elev < 6.0f) return c;
+    if (moon || elev < 6.0f || !gTerrain3D) return c;
     const Vector3 s = Vector3Scale(dir, radius + elev);
     const float rn = rugged.fractal(2, s.x, s.y, s.z);
     if (rn < -0.25f) return c;
