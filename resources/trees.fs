@@ -28,6 +28,7 @@ uniform vec3 leafTint;
 
 // Sun shadows (two cascades, hardware PCF) and the headlamp.
 #include "shadow.glsl"
+#include "hemisphere.glsl"
 out vec4 finalColor;
 // Foliage colour by climate (Plan 5 B): temperate green, straw-olive where warm and dry, deep in the
 // jungle, dark blue-green in the cold, olive in swamps. Without a climate: by latitude as before.
@@ -81,8 +82,8 @@ void main()
     // are lit from both sides, so their normal faces the sun for the lookup.
     vec3 ns = (fragLeaf > 0.5 && ndl < 0.0) ? -n : n;
     float direct = sunVis * sunShadowNormal(fragPosition, ns, sunDir, 4) * clamp((ndl + wrap) / (1.0 + wrap), 0.0, 1.0);
-    float sky = 0.7 + 0.3 * n.y; // a little more sky from above
-    vec3 color = albedo * (ambient * 1.6 * sky + vec3(1.0, 0.96, 0.88) * direct + lampLight(fragPosition, n));
+    float sky = hemiOn() ? 1.0 : 0.7 + 0.3 * n.y; // a little more sky from above (world y: wrong on a sphere; #130 hemisphere instead)
+    vec3 color = albedo * (hemiAmbient(ambient, n) * 1.6 * sky + vec3(1.0, 0.96, 0.88) * direct + lampLight(fragPosition, n));
 
     float fogDist = dist;
     if (fogShell.w > 0.0) {

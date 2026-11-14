@@ -23,6 +23,7 @@ uniform float alphaToCoverage; // 1: the fade is written as alpha (GL_SAMPLE_ALP
 
 // Sun shadows (two cascades, hardware PCF) and the headlamp.
 #include "shadow.glsl"
+#include "hemisphere.glsl"
 out vec4 finalColor;
 // Foliage colour by climate (Plan 5 B): temperate green, straw-olive where warm and dry, deep in the
 // jungle, dark blue-green in the cold, olive in swamps. Without a climate: by latitude as before.
@@ -77,7 +78,7 @@ void main()
     // Thin blades: light from the ground's angle to the sun, wrapped so backlit grass still glows.
     float ndl = dot(normalize(fragUp), sunDir);
     float direct = sunVis * sunShadowSimple(fragPosition, 1) * clamp(ndl * 0.6 + 0.4, 0.0, 1.0) * smoothstep(-0.05, 0.1, ndl);
-    vec3 color = albedo * (ambient * 1.5 + vec3(1.0, 0.96, 0.88) * direct + lampLight(fragPosition, normalize(fragUp)));
+    vec3 color = albedo * (hemiAmbient(ambient, normalize(fragUp)) * 1.5 + vec3(1.0, 0.96, 0.88) * direct + lampLight(fragPosition, normalize(fragUp)));
 
     float fogDist = dist;
     if (fogShell.w > 0.0) {

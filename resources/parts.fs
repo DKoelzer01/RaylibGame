@@ -23,6 +23,7 @@ uniform float fogDensity;
 uniform vec4 fogShell;
 
 #include "shadow.glsl"
+#include "hemisphere.glsl"
 
 out vec4 finalColor;
 
@@ -203,7 +204,7 @@ void main()
     float sun = sunVis * ndl * (ndl > 0.0 ? sunShadowNormal(fragPosition, n, sunDir, 4) : 0.0) * fragSky;
     vec3 v = normalize(viewPos - fragPosition);
     float specular = pow(max(dot(n, normalize(sunDir + v)), 0.0), mix(16.0, 96.0, spec)) * spec * 0.6 * sun;
-    vec3 color = albedo * (ambient * (1.4 + 0.3 * n.y) * fragSky + vec3(1.0, 0.96, 0.88) * sun + lampLight(fragPosition, n)) + vec3(specular)
+    vec3 color = albedo * ((hemiOn() ? hemiAmbient(ambient, n) * 1.4 : ambient * (1.4 + 0.3 * n.y)) * fragSky + vec3(1.0, 0.96, 0.88) * sun + lampLight(fragPosition, n)) + vec3(specular)
                + albedo * emit * 1.2;
     float dist = length(viewPos - fragPosition), fogDist = dist;
     if (fogShell.w > 0.0) {
