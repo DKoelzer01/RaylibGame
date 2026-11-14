@@ -1,0 +1,26 @@
+{
+  "agent": "space-game",
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "shell": "powershell",
+            "command": "& \"$env:CLAUDE_PROJECT_DIR/.claude/hooks/build-check.ps1\"",
+            "timeout": 240
+          }
+        ]
+      }
+    ]
+  },
+  "permissions": {
+    "allow": [
+      "Bash(cmake --build *)",
+      "PowerShell(cmake --build *)",
+      "Bash(build/check/bin/game.exe *)",
+      "Bash(./build/check/bin/game.exe *)"
+    ]
+  }
+}

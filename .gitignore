@@ -17,4 +17,8 @@ CMakeUserPresets.json
 spin_*.png
 bench_*.png
 settings.txt
+
+# Claude Code: per-user settings, worktrees, and capture output (#376, #375)
+.claude/settings.local.json
+.claude/worktrees/
 captures/
