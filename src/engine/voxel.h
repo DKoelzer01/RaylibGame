@@ -83,6 +83,7 @@ inline bool gErosionPrototype = false;
 // it out of the erosion comparisons); RAYLIBGAME_3D=1 turns it back on.
 inline bool gTerrain3D = true;
 inline bool gGullies = true; // erosion-filter gullies on the baked height (#357); RAYLIBGAME_GULLIES=0 for A/B
+inline bool gCliffs = true;  // cliff bands in hard-rock regions (user 2026-11-14); RAYLIBGAME_CLIFFS=0 for A/B
 class PlanetErosion;
 const char* BiomeName(Biome b);
 const char* VoxelMaterialName(VoxelMaterial m);

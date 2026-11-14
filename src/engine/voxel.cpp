@@ -296,6 +296,7 @@ PlanetField::Land PlanetField::land(Vector3 dir, float fp) const {
         const PlanetErosion::Slope s = eroded->slopeAt(dir, fp);
         h = s.h;
         if (gGullies && fp < 450.0f) h += ErosionGullies({ sx, sy, sz }, dir, s.grad, fp, fieldSeed, Smoothstep(2.0f, 15.0f, s.h));
+        if (gCliffs && fp < 20.0f) h += ErosionCliffs({ sx, sy, sz }, h, s.grad, fp, fieldSeed); // cliff bands (user 2026-11-14)
         l.ridge = std::max(0.0f, h - 150.0f);
     } else {
         h = base;

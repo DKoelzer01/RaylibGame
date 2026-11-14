@@ -586,7 +586,7 @@ namespace {
 float ErosionGullies(Vector3 p, Vector3 dir, Vector3 grad, float footprint, unsigned int seed, float strength) {
     static const float kLambda[6] = { 900.0f, 420.0f, 190.0f, 85.0f, 38.0f, 17.0f };
     constexpr float kTwoPi = 6.28318531f;
-    static const float kGullyAmp = getenv("RAYLIBGAME_GULLY_AMP") ? (float)atof(getenv("RAYLIBGAME_GULLY_AMP")) : 0.11f; // tuning
+    static const float kGullyAmp = getenv("RAYLIBGAME_GULLY_AMP") ? (float)atof(getenv("RAYLIBGAME_GULLY_AMP")) : 0.14f; // tuning (0.11 read as smooth ridges, user 2026-11-14)
     float h = 0.0f;
     if (strength <= 0.0f) return 0.0f;
     // Regions (~3 km) of smoother and more deeply cut ground: not every slope combed alike (variety, user 2026-11-14).
@@ -623,10 +623,33 @@ float ErosionGullies(Vector3 p, Vector3 dir, Vector3 grad, float footprint, unsi
         }
         if (wsum <= 0.0f) continue;
         val /= wsum; dval /= wsum;
+        // Sharp crests, V gullies (user 2026-11-14: ridges were too smooth): x = 0 at a crest, 1 at a gully floor;
+        // x^0.6 rises steeply from the crest. (The bending below keeps the plain stripes' slope.)
+        { const float x = std::clamp(0.5f * (1.0f - val), 0.0f, 1.0f); val = 1.0f - 2.0f * powf(x, 0.6f); }
         const float amp = octaveAmp * lam * sf * fade * strength;
         h += amp * val;
         // The ribs' own slope across the contour bends the next octave: finer gullies run into these.
         grad = Vector3Add(grad, Vector3Scale(across, amp * dval * kTwoPi * inv));
     }
     return h;
+}
+
+float ErosionCliffs(Vector3 p, float h, Vector3 grad, float footprint, unsigned int seed) {
+    // Hard-rock regions (~4 km, a third of the land) step their steep ground into treads and near-vertical risers:
+    // escarpments, ledges and cliff bands. The step is 20-35 m by region; on a slope g a riser stands ~4g steep.
+    const float region = ValueNoise(Vector3Scale(p, 1.0f / 4000.0f), seed ^ 0xC11Fu);
+    static const bool everywhere = getenv("RAYLIBGAME_CLIFFS_EVERYWHERE") != nullptr; // tests: every region hard
+    const float rw = everywhere ? 1.0f : std::clamp((region - 0.55f) / 0.2f, 0.0f, 1.0f);
+    if (rw <= 0.0f || h < 5.0f) return 0.0f;
+    const float step = 20.0f + 15.0f * ValueNoise(Vector3Scale(p, 1.0f / 9000.0f), seed ^ 0x57E9u);
+    const float fade = std::clamp(step / (2.0f * footprint) - 1.0f, 0.0f, 1.0f); // unresolved risers would alias
+    const float sw = std::clamp((Vector3Length(grad) - 0.25f) / 0.35f, 0.0f, 1.0f);
+    const float w = rw * sw * fade;
+    if (w <= 0.0f) return 0.0f;
+    // Each band's offset wanders a little, so ledges are not perfect contour lines.
+    const float t = (h + 6.0f * (ValueNoise(Vector3Scale(p, 1.0f / 300.0f), seed ^ 0x1ED6u) - 0.5f)) / step;
+    const float f = t - floorf(t);
+    const float s = std::clamp((f - 0.72f) / 0.22f, 0.0f, 1.0f);
+    const float terraced = (floorf(t) + s * s * (3.0f - 2.0f * s)) * step;
+    return (terraced - t * step) * w;
 }

@@ -365,6 +365,7 @@ int main(int argc, char** argv)
     if (const char* e = getenv("RAYLIBGAME_EROSION"); e && e[0] == '1') gErosionPrototype = true; // #352 prototype: erosion bake around the start
     if (const char* e3 = getenv("RAYLIBGAME_3D")) gTerrain3D = e3[0] == '1'; else if (gErosionPrototype) gTerrain3D = false; // no 3D band in erosion tests (RAYLIBGAME_3D=0 for baselines)
     if (const char* g = getenv("RAYLIBGAME_GULLIES")) gGullies = g[0] == '1';
+    if (const char* c = getenv("RAYLIBGAME_CLIFFS")) gCliffs = c[0] == '1';
     for (int i = 1; i < argc; ++i) {
         if (std::string(argv[i]) == "--bench") benchSeconds = (i + 1 < argc) ? atof(argv[i + 1]) : 10.0;
         if (std::string(argv[i]) == "--ui") DebugUI_Toggle(); // open the debug panel at start

@@ -85,5 +85,8 @@ private:
 // Strength follows the slope (flat ground stays flat); octaves finer than the sample footprint fade out.
 // p = surface point (m), dir = its unit direction, grad = slopeAt's gradient. Returns a height offset (m).
 float ErosionGullies(Vector3 p, Vector3 dir, Vector3 grad, float footprint, unsigned int seed, float strength);
+// Cliff bands (user 2026-11-14: no cliffs): in hard-rock regions steep ground steps into treads and near-vertical risers
+// 20-35 m apart. Returns a height offset (m); h = the height so far, grad = the baked gradient.
+float ErosionCliffs(Vector3 p, float h, Vector3 grad, float footprint, unsigned int seed);
 
 #endif
