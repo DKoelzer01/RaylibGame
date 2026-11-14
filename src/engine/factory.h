@@ -70,6 +70,7 @@ namespace Factory {
     void InsertFuel(uint64_t bodyId, uint32_t plotId, int part, const std::string& item, int count);
     // Water piped into a machine's tank (boilers), in litres; what doesn't fit is lost.
     void AddWater(uint64_t bodyId, uint32_t plotId, int part, int litres);
+    int TankRoom(uint64_t bodyId, uint32_t plotId, int part); // litres a boiler can still take (less water already sent); 0 if unknown
     bool TakesWater(PartType type);
     void Extract(uint64_t bodyId, uint32_t plotId, int part);
     // Container screen: one slot's whole stack back to the inventory (next tick).

@@ -212,6 +212,7 @@ int main(int argc, char** argv)
     bool benchMoon = false;        // --test-moon: moon orbit vs analytic, standing and jumping on the moon
     bool benchHole = false;        // --test-hole: walk into a fresh pit and build a pillar underfoot on the spinning planet
     bool benchWall = false;        // --test-wall: walk into shaft and tunnel walls (no launches)
+    bool benchDoorway = false; int doorPhase = 0, doorLane = 0; double doorStart = 0.0; uint32_t doorPlot = 0; bool doorPass[2] = { false, false }; // --test-doorway (#255): 2 m openings pass, 1.5 m ones block
     bool benchMenus = false;       // --test-menus: main menu, new game, pause, save & quit, load
     bool benchWater = false;       // --test-water: rivers and ponds near the start, their beds and clay
     bool benchFlyFollow = false;   // --test-flyfollow: the fly camera rides its reference body
@@ -234,6 +235,7 @@ int main(int argc, char** argv)
     bool benchFarForest = false; int farForestPhase = 0; double farForestT0 = 0.0; Vector3 farForestEye{}, farForestAt{}; // --shot-far-forest
     bool benchTerrain = false; int terrainPhase = 0; double terrainT0 = 0.0; Vector3 terrainAt{}, terrainOut{}; // --shot-terrain
     bool benchPumpHand = false; // --test-pump-hand (#280): the pump test with a hand pump worked for 60 s
+    bool benchPumpBoiler = false; int pumpBoilerPart = -1; // --test-pump-boiler (#229 review): the pipes end at a full boiler; the world loses no water
     bool benchPump = false; int pumpPhase = 0, pumpCable = -1; double pumpT0 = 0.0, pumpedAtCut = 0.0; uint32_t pumpPlot = 0; Vector3 pumpBasin{}; float pumpRise = 0.0f; // --test-pump
     bool benchBucket = false; int bucketPhase = 0, bucketTrips = 0; double bucketT0 = 0.0; Vector3 bucketWater{}, bucketBasin{}, bucketField{}; // --test-bucket
     bool benchPond = false; int pondPhase = 0; double pondT0 = 0.0; Vector3 pondDirB{}, pondOutB{}, pondPit{}, pondMid{}; float pondLevelB = 0.0f, pondRB = 0.0f; // --test-pond
@@ -408,6 +410,7 @@ int main(int argc, char** argv)
         if (std::string(argv[i]) == "--test-moon") benchMoon = true;
         if (std::string(argv[i]) == "--test-hole") benchHole = true;
         if (std::string(argv[i]) == "--test-wall") benchWall = true;
+        if (std::string(argv[i]) == "--test-doorway") benchDoorway = true;
         if (std::string(argv[i]) == "--test-ledge") benchLedge = true; // walk and sprint off a pit edge (#240)
         if (std::string(argv[i]) == "--test-tor") benchTor = true; // walk across a low (beach) tor crown, logging collision pops (#242)
         if (std::string(argv[i]) == "--test-machines") benchMachines = true; // fuel slot, crafts consumed at the end, the boiler's water and heat
@@ -434,6 +437,7 @@ int main(int argc, char** argv)
         if (std::string(argv[i]) == "--test-bucket") benchBucket = true;
         if (std::string(argv[i]) == "--test-pump") benchPump = true;
         if (std::string(argv[i]) == "--test-pump-hand") { benchPump = true; benchPumpHand = true; }
+        if (std::string(argv[i]) == "--test-pump-boiler") { benchPump = true; benchPumpBoiler = true; }
         if (std::string(argv[i]) == "--shot-terrain") benchTerrain = true;
         if (std::string(argv[i]) == "--shot-shadow") benchShadow = true;
         if (std::string(argv[i]) == "--shot-particles") benchParticles = true;
@@ -1385,6 +1389,79 @@ int main(int argc, char** argv)
                         progPhase = 2;
                     } else if (progPhase == 2) {
                         if (Progression_Update(world, progressionFull, progressionEv) != 0) benchProgression = false;
+                    }
+                } else if (benchDoorway && (doorPhase > 0 || WorldIdle())) {
+                    // --test-doorway (#255, user 2026-11-14): the player is 1.7 m tall. Two walls on a floor slab, each with a
+                    // 1.5 m wide opening: 2.0 m high (must walk through) and 1.5 m high (must stop). Walk straight at each.
+                    Planetoid* p = dynamic_cast<Planetoid*>(world.objects[0].get());
+                    const double t = GetTime() - doorStart;
+                    Plot* plot = p->plots ? p->plots->byId(doorPlot) : nullptr;
+                    const float laneZ[2] = { 2.25f, 8.25f }; // plot metres: the openings' centres (cells 3-5 and 15-17)
+                    constexpr int kDoorY = 60; constexpr float kDoorFloor = (kDoorY + 1) * 0.5f; // the slab 30 m up: no ground or trees in the lanes
+                    auto placeInLane = [&](int lane) {
+                        const Vector3 at = p->toWorld(plot->toBody({ 1.5f, kDoorFloor + 0.3f, laneZ[lane] }));
+                        player.placeAt(world, *p, at); // sets the velocity to the surface's there (render coordinates)
+                        player.forward = Vector3Normalize(Vector3Subtract(p->toWorld(plot->toBody({ 2.0f, kDoorFloor, laneZ[lane] })), p->toWorld(plot->toBody({ 1.0f, kDoorFloor, laneZ[lane] }))));
+                    };
+                    if (doorPhase == 0) {
+                        player.spawnOn(world, *p, StartSpawnDir(*p));
+                        doorPhase = 1; doorStart = GetTime();
+                    } else if (doorPhase == 1 && t > 1.0 && player.grounded) {
+                        const Vector3 feet = (player.position - world.renderOrigin).toFloat();
+                        const Vector3 flat = Vector3Normalize(Vector3Subtract(player.forward, Vector3Scale(player.up, Vector3DotProduct(player.forward, player.up))));
+                        TerrainHit th;
+                        RaycastTerrain(world, Ray{ Vector3Add(Vector3Add(feet, Vector3Scale(flat, 10.0f)), Vector3Scale(player.up, 20.0f)), Vector3Negate(player.up) }, 60.0f, th);
+                        if (!p->plots) p->plots = std::make_unique<PlotSet>();
+                        plot = p->plots->plotFor(th.local, 0.0f, true);
+                        doorPlot = plot->id;
+                        int placed = 0;
+                        auto put = [&](Int3 c) { if (BuildTool_Place(*p, *plot, { PartType::Cube, { c.x, c.y + kDoorY, c.z }, 0 }, false)) ++placed; };
+                        for (int z = 0; z < 21; ++z) for (int x = 0; x < 16; ++x) put({ x, 0, z });     // floor slab, 8 x 10.5 m (cells relative to the slab row)
+                        // Walls at x cell 8 (4.0-4.5 m), 4 m high; the openings: z cells 3-5 up to y 4 (2.0 m) and 15-17 up to y 3 (1.5 m).
+                        for (int y = 1; y <= 8; ++y)
+                            for (int z = 0; z < 21; ++z) {
+                                if (z >= 3 && z <= 5 && y <= 4) continue;
+                                if (z >= 15 && z <= 17 && y <= 3) continue;
+                                put({ 8, y, z });
+                            }
+                        for (int y = 1; y <= 8; ++y) for (int x = 0; x < 16; ++x) put({ x, y, 10 }); // a divider between the lanes
+                        for (int y = 1; y <= 4; ++y) {                                                   // rails: nobody walks off 30 m up
+                            for (int x = 0; x < 16; ++x) { put({ x, y, 0 }); put({ x, y, 20 }); }
+                            for (int z = 0; z < 21; ++z) { put({ 0, y, z }); put({ 15, y, z }); }
+                        }
+                        printf("bench: doorway: %d parts placed on plot %u\n", placed, plot->id);
+                        doorLane = 0; placeInLane(0);
+                        doorPhase = 2; doorStart = -1.0; // the clock starts when play resumes: placeAt raises the loading screen
+                    } else if (doorPhase == 2 && doorStart < 0.0) {
+                        doorStart = GetTime();
+                    } else if (doorPhase == 2 && t > 1.0) {
+                        const Vector3 lf = plot->toPlot(p->toLocal((player.position - world.renderOrigin).toFloat()));
+                        // Walk the lane; stop once past the wall (pressing the far rail would only bank impact speed).
+                        player.autoWalk = lf.x < 6.0f && t < 7.0;
+                        player.forward = Vector3Normalize(Vector3Subtract(p->toWorld(plot->toBody({ 2.0f, kDoorFloor, laneZ[doorLane] })), p->toWorld(plot->toBody({ 1.0f, kDoorFloor, laneZ[doorLane] }))));
+                        if (getenv("DOOR_DEBUG")) {
+                            static float lastHealth = 100.0f;
+                            if (survival.health < lastHealth - 0.01f)
+                                printf("DOOR hurt t=%.2f: health %.0f -> %.0f, landing %.2f m/s, impact %.2f m/s, grounded %d, y %.2f, v %.2f along up\n", t, lastHealth, survival.health,
+                                       player.landingSpeed, player.impactSpeed, player.grounded ? 1 : 0, lf.y - kDoorFloor, Vector3DotProduct(player.velocity, player.up));
+                            lastHealth = survival.health;
+                            static int lastTick = -1;
+                            if ((int)(t * 2.0) != lastTick) {
+                                lastTick = (int)(t * 2.0);
+                                printf("DOOR lane %d t=%.1f: x %.2f y %.2f z %.2f grounded %d health %.0f deaths %d\n", doorLane, t, lf.x, lf.y - kDoorFloor, lf.z, player.grounded ? 1 : 0, survival.health, survival.deaths);
+                            }
+                        }
+                        if (t > 7.5) { // half a second standing still before the verdict and the next placement
+                            const bool through = lf.x > 5.5f;
+                            doorPass[doorLane] = survival.deaths == 0 && (doorLane == 0 ? through : (!through && lf.x < 4.0f));
+                            printf("bench: doorway: %s opening: the player ended %.2f m along the lane (the wall is at 4.0-4.5 m), feet %.2f m over the slab top, %.2f m across (opening centre %.2f), deaths %d: %s -> %s\n",
+                                   doorLane == 0 ? "2.0 m" : "1.5 m", lf.x, lf.y - kDoorFloor, lf.z, laneZ[doorLane], survival.deaths, through ? "walked through" : "stopped", doorPass[doorLane] ? "PASS" : "FAIL");
+                            if (doorLane == 0) { doorLane = 1; placeInLane(1); doorStart = -1.0; }
+                            else {
+                                printf("bench: doorway: player %.2f m tall: %s\n", player.height, doorPass[0] && doorPass[1] ? "PASS" : "FAIL");
+                                benchDoorway = false;
+                            }
+                        }
                     }
                 } else if (benchWall && (wallPhase > 0 || WorldIdle())) {
                     // --test-wall: a 7 m shaft with a tunnel off its bottom; walk into the walls at eight
@@ -3281,7 +3358,13 @@ int main(int argc, char** argv)
                             while (c.x != tc.x) { c.x += c.x < tc.x ? 1 : -1; pipe(c); }
                             while (c.z != tc.z) { c.z += c.z < tc.z ? 1 : -1; pipe(c); }
                             while (c.y > tc.y + 1) { --c.y; pipe(c); }
-                            const int outlet = plot->place({ PartType::Outlet, { c.x, c.y - 1, c.z }, 0 });
+                            const int outlet = benchPumpBoiler ? -1 : plot->place({ PartType::Outlet, { c.x, c.y - 1, c.z }, 0 });
+                            if (benchPumpBoiler) { // a boiler under the pipe's end instead of the outlet, filled to the brim (four buckets)
+                                const Int3 nbrs[6] = { { c.x, c.y - 1, c.z }, { c.x + 1, c.y, c.z }, { c.x - 1, c.y, c.z }, { c.x, c.y, c.z + 1 }, { c.x, c.y, c.z - 1 }, { c.x, c.y + 1, c.z } };
+                                for (const Int3& at : nbrs) if (pumpBoilerPart < 0) pumpBoilerPart = plot->place({ PartType::Boiler, at, 0 }); // its origin cell touches the pipe's end
+                                if (pumpBoilerPart >= 0) Factory::Seed(p->id, plot->id, pumpBoilerPart, "water_bucket", 4);
+                                printf("bench: pump: boiler %s under the pipe's end\n", pumpBoilerPart >= 0 ? "placed" : "BLOCKED");
+                            }
                             Factory::Seed(p->id, plot->id, gen, "oak_log", 64);
                             printf("bench: pump: river %.0f m from the start; pump at its edge, %d pipes, outlet %s over a bowl 30 m inland and %.1f m higher; generator %d, cable %d\n",
                                    best, pipes, outlet >= 0 ? "placed" : "BLOCKED", pumpRise, gen, pumpCable);
@@ -3305,11 +3388,18 @@ int main(int argc, char** argv)
                             Plot* plot = p->plots ? p->plots->byId(pumpPlot) : nullptr;
                             int pumpPart = -1;
                             if (plot) for (int i = 0; i < (int)plot->parts.size(); ++i) if (plot->parts[i].type == PartType::WaterPump || plot->parts[i].type == PartType::HandPump) pumpPart = i;
-                            const MachineView v = pumpPart >= 0 ? Factory::View(p->id, pumpPlot, pumpPart) : MachineView{};
+                            const MachineView v = pumpPart >= 0 && !benchPumpBoiler ? Factory::View(p->id, pumpPlot, pumpPart) : MachineView{};
                             printf("bench: pump t=%3.0f s: %s, %d networks, pumped %.1f m^3 (%d dry), bowl holds %.1f m^3\n", t, v.valid ? MachineStatusName(v.status) : "-", ws.networks, ws.pumped, ws.dry,
                                    Fluid::WaterAt(*p, pumpBasin, 2.5f));
                         }
-                        if (pumpPhase == 1 && t > 60.0) {
+                        static MachineView bv; // the boiler, watched every frame (Factory::View fills from the tick after it is asked)
+                        if (benchPumpBoiler && pumpBoilerPart >= 0) { const MachineView v2 = Factory::View(p->id, pumpPlot, pumpBoilerPart); if (v2.valid) bv = v2; }
+                        if (benchPumpBoiler && t > 20.0) {
+                            const bool pass = pumpBoilerPart >= 0 && ws.pumped <= 0.05 && bv.water == bv.waterMax && bv.waterMax > 0;
+                            printf("bench: pump-boiler: a full boiler on the network; the pump took %.2f m^3 from the world in 20 s, the boiler holds %d of %d L -> %s\n",
+                                   ws.pumped, bv.water, bv.waterMax, pass ? "PASS" : "FAIL");
+                            benchPump = false;
+                        } else if (pumpPhase == 1 && t > 60.0) {
                             TakeScreenshot("bench_pump.png");
                             // Cut the power.
                             if (Plot* plot = p->plots ? p->plots->byId(pumpPlot) : nullptr) plot->remove(pumpCable);
@@ -3824,7 +3914,7 @@ int main(int argc, char** argv)
                         const Vector3 up = Vector3Normalize(me);
                         Vector3 east = Vector3Normalize(Vector3CrossProduct({ 0, 1, 0 }, up));
                         const Vector3 north = Vector3CrossProduct(up, east);
-                        auto onGround = [&](int i) { const Vector3 a = Animals_Position(i), u = Vector3Normalize(a); return p->densityAt(Vector3Add(a, Vector3Scale(u, 0.15f))) < ISO_LEVEL && p->densityAt(Vector3Subtract(a, Vector3Scale(u, 0.15f))) >= ISO_LEVEL; }; // on the density surface (#223), not the height map
+                        auto onGround = [&](int i, float tol = 0.15f) { const Vector3 a = Animals_Position(i), u = Vector3Normalize(a); return p->densityAt(Vector3Add(a, Vector3Scale(u, tol))) < ISO_LEVEL && p->densityAt(Vector3Subtract(a, Vector3Scale(u, tol))) >= ISO_LEVEL; }; // on the density surface (#223), not the height map
                         auto step = [&](float seconds) { for (float t = 0.0f; t < seconds; t += 0.1f) Animals_Update(world, 0.1f, 0.1f, false); };
                         animalNatural = Animals_Count(); // herds placed around the player as it arrived
                         check(animalNatural > 0, "herds spawn around the player");
@@ -3979,12 +4069,24 @@ int main(int argc, char** argv)
                             const Vector3 u = Vector3Normalize(pitAt);
                             for (int k = 1; k < 4; ++k) ApplyTerrainEdit(*p, TerrainEdit{ Vector3Subtract(pitAt, Vector3Scale(u, 1.2f * k)), 2.4f, -10.0f });
                             Animals_Spawn(world, *p, "woolback", Vector3Add(pitAt, Vector3Scale(east, 4.0f)), 6, false, 3.0f);
-                            int bad = 0, samples = 0;
+                            // Animals find the ground in 0.25 m steps with a linear guess between them (animals.cpp Ground), so on
+                            // the pit's dug edges they stand up to ~0.25 m off the true surface (#373: every "inside" sample was
+                            // within 0.25 m of air). Count only what is off by more than that step.
+                            constexpr float kPitTol = 0.3f;
+                            int bad = 0, samples = 0, inAir = 0, buried = 0, worstRun = 0;
+                            std::vector<int> run(64, 0); // consecutive off-ground samples per animal
                             for (float t = 0.0f; t < 60.0f; t += 0.1f) {
                                 Animals_Update(world, 0.1f, 0.1f, false);
-                                for (int i = 0; i < Animals_Count(); ++i) { ++samples; bad += onGround(i) ? 0 : 1; }
+                                for (int i = 0; i < Animals_Count() && i < 64; ++i) {
+                                    ++samples;
+                                    if (onGround(i, kPitTol)) { run[i] = 0; continue; }
+                                    ++bad; worstRun = std::max(worstRun, ++run[i]);
+                                    const Vector3 a = Animals_Position(i), u = Vector3Normalize(a);
+                                    if (p->densityAt(Vector3Subtract(a, Vector3Scale(u, kPitTol))) < ISO_LEVEL) ++inAir; else ++buried;
+                                }
                             }
-                            printf("bench: animals: around a dug pit for a minute: %d of %d samples off the ground, hole drop %.2f m\n", bad, samples, dropped);
+                            printf("bench: animals: around a dug pit for a minute: %d of %d samples more than %.2f m off the ground (%d in the air, %d inside it; longest run %d), hole drop %.2f m\n",
+                                   bad, samples, kPitTol, inAir, buried, worstRun, dropped);
                             check(samples > 0 && bad <= samples / 100, "animals stay on the ground around a dug pit");
                         }
                         // 200 within 300 m: the update stays under 1 ms.
@@ -5119,7 +5221,7 @@ int main(int argc, char** argv)
                         }
                         benchWalkSeconds = 0.0;
                     }
-                } else if ((WorldIdle() && benchDigStrokes == 0 && !benchPaint && !benchSaveLoad && benchWalkSeconds <= 0.0 && benchMineStrokes == 0 && minePhase != 2 && benchFlySeconds <= 0.0 && !benchSuffocate && benchOrbitSeconds <= 0.0 && !benchRide && !benchPark && !benchGravity && !benchPrecision && !benchMantle && !benchAirJump && !benchMoon && !benchHole && !benchWall && !benchLedge && !benchTor && !benchMachines && !benchFall && !benchHover && !benchTeleClose && !benchMenus && !benchWater && !benchFlyFollow && !benchHotbar && !benchInventory && !benchMap && !benchViewmodel && !benchQuests && !benchHunger && !benchFarm && !benchAnimals && !benchThreats && benchShotTabs == 0 && !benchForest && !benchFlow && !benchPond && !benchBucket && !benchPump && !benchTerrain && !benchShadow && !benchParticles && !benchBiomes && !benchOil && !benchSpring && !benchShotAnimals && !benchShotMachines && benchShotBiomes < 0 && !benchFarForest && !benchRecipes && !benchWeather && !benchDecor && !benchMaterials && !benchDamage && !benchCrafting && !benchSuit && !benchTools && !benchRivers && !benchRing && !benchRocket && !benchStation && !benchBlueprint && !benchSmallBody && !benchTrees && !benchChop && benchPersist == 0 && benchBuild == 0 && benchFactory == 0 && !benchProgression) || GetTime() > 600.0) {
+                } else if ((WorldIdle() && benchDigStrokes == 0 && !benchPaint && !benchSaveLoad && benchWalkSeconds <= 0.0 && benchMineStrokes == 0 && minePhase != 2 && benchFlySeconds <= 0.0 && !benchSuffocate && benchOrbitSeconds <= 0.0 && !benchRide && !benchPark && !benchGravity && !benchPrecision && !benchMantle && !benchAirJump && !benchMoon && !benchHole && !benchWall && !benchDoorway && !benchLedge && !benchTor && !benchMachines && !benchFall && !benchHover && !benchTeleClose && !benchMenus && !benchWater && !benchFlyFollow && !benchHotbar && !benchInventory && !benchMap && !benchViewmodel && !benchQuests && !benchHunger && !benchFarm && !benchAnimals && !benchThreats && benchShotTabs == 0 && !benchForest && !benchFlow && !benchPond && !benchBucket && !benchPump && !benchTerrain && !benchShadow && !benchParticles && !benchBiomes && !benchOil && !benchSpring && !benchShotAnimals && !benchShotMachines && benchShotBiomes < 0 && !benchFarForest && !benchRecipes && !benchWeather && !benchDecor && !benchMaterials && !benchDamage && !benchCrafting && !benchSuit && !benchTools && !benchRivers && !benchRing && !benchRocket && !benchStation && !benchBlueprint && !benchSmallBody && !benchTrees && !benchChop && benchPersist == 0 && benchBuild == 0 && benchFactory == 0 && !benchProgression) || GetTime() > 600.0) {
                     benchStart = GetTime();
                     printf("bench: world ready after %.2f s (%d chunks, avg build %.2f ms of which sampling %.2f ms, %d worker threads)\n",
                         GetWorldStats().lastGenerationSeconds, GetWorldStats().chunks, GetWorldStats().avgBuildMs, GetWorldStats().avgSampleMs, GetWorldStats().workerThreads);

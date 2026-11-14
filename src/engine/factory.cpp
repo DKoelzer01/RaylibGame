@@ -236,6 +236,8 @@ MachineView watchView;
 std::map<std::tuple<uint64_t, uint32_t, int>, std::vector<std::pair<int, int>>> chestView; // chests of plots near the player: (item, count)
 std::map<std::tuple<uint64_t, uint32_t, int>, int> pumpView;     // water pumps (every plot): water units in their outputs
 std::map<std::tuple<uint64_t, uint32_t, int>, int> pumpPending;  // pump water drained (queued) but not yet out of pumpView (viewMutex)
+std::map<std::tuple<uint64_t, uint32_t, int>, int> tankView;     // boilers (every plot): litres of room in their tanks (#229 review)
+std::map<std::tuple<uint64_t, uint32_t, int>, int> tankPending;  // litres sent by AddWater but not yet in a tank (viewMutex)
 inline uint64_t WorkingKey(uint64_t body, uint32_t plot, int part) { return (body * 1315423911ull) ^ ((uint64_t)plot << 24) ^ (uint64_t)(uint32_t)part; }
 std::unordered_set<uint64_t> workingView;                          // machines working on near plots (viewMutex)
 FactoryStats stats;
@@ -262,6 +264,7 @@ int AddItems(Stack* s, int n, int item, int count) {
         if (s[i].count == 0) { s[i].item = item; const int k = std::min(count, kStackMax); s[i].count = k; count -= k; }
     return count;
 }
+bool RoomFor(const Stack* s, int n, int item) { for (int i = 0; i < n; ++i) if (s[i].count == 0 || (s[i].item == item && s[i].count < kStackMax)) return true; return false; }
 int CountItems(const Stack* s, int n, int item) { int c = 0; for (int i = 0; i < n; ++i) if (s[i].item == item) c += s[i].count; return c; }
 void TakeItems(Stack* s, int n, int item, int count) {
     for (int i = 0; i < n && count > 0; ++i)
@@ -441,6 +444,17 @@ void ApplyLayout(const LayoutMsg& L) {
                 else if (tag == "w") m.water = num();
                 else if (tag == "h") m.heat = num();
             }
+            // Saves from before the fuel slot (#194) kept fuel in the inputs: move fuel no recipe of this machine wants
+            // into the fuel slot (#229 review), so an old boiler or furnace still burns it.
+            if (HasFuelSlot(m.type))
+                for (int j = 0; j < InSlots(m); ++j) {
+                    Stack& st = m.in[j];
+                    if (st.count <= 0 || !IsFuel(Def(m.type), st.item) || RecipeWants(m.type, st.item)) continue;
+                    if (m.fuel.count > 0 && m.fuel.item != st.item) continue;
+                    const int k = std::min(st.count, kStackMax - m.fuel.count);
+                    m.fuel.item = st.item; m.fuel.count += k; st.count -= k;
+                    if (!st.count) st.item = -1;
+                }
             pendingStates.erase(pend);
         }
         byPart[part] = (int)next.size();
@@ -588,7 +602,8 @@ void TickPlot(PlotSim& ps, int dt, long long& made, int& active) {
                         Machine& dst = ps.machines[net.machines[(net.rr + s + d) % n]];
                         if (&dst == &src || (chest && dst.type == PartType::Chest) || !Accepts(dst.type, item)) continue;
                         if (dst.type == PartType::Chest && !chest) { if (AddItems(dst.in, kChestSlots, item, 1) == 0) moved = true; }
-                        else if (dst.type != PartType::Chest && CountItems(dst.in, kSlots, item) < kStackMax) {
+                        else if (dst.type != PartType::Chest && CountItems(dst.in, kSlots, item) < kStackMax &&
+                                 !(item == WaterBucketItem() && Def(dst.type).waterPerTick > 0 && !RoomFor(dst.out, kSlots, BucketItem()))) { // the empty bucket needs an output slot (#229 review)
                             int buckets = 0; // fuel to the fuel slot, water buckets into a boiler's tank (its empty bucket to its outputs)
                             if (InsertInto(dst, item, 1, false, buckets) == 0) { moved = true; if (buckets > 0) AddItems(dst.out, kSlots, BucketItem(), buckets); }
                         }
@@ -656,10 +671,16 @@ void SimLoop() {
             std::vector<std::pair<int, int>> back;
             back.swap(refunds); // removed machines' contents (from this tick's layouts)
             std::vector<std::pair<std::tuple<uint64_t, uint32_t, int>, int>> drained; // pump drains applied this tick (pumpPending)
+            std::vector<std::pair<std::tuple<uint64_t, uint32_t, int>, int>> filled;  // tank fills applied this tick (tankPending)
             for (const ItemMsg& im : items) {
                 PlotSim* p = FindPlot(im.body, im.plot);
                 auto it = p ? p->byPart.find(im.part) : decltype(p->byPart.end()){};
-                if (!p || it == p->byPart.end()) { if (im.kind == 0) back.push_back({ im.item, im.count }); if (im.kind == 5) drained.push_back({ std::make_tuple(im.body, im.plot, im.part), im.count }); continue; }
+                if (!p || it == p->byPart.end()) {
+                    if (im.kind == 0) back.push_back({ im.item, im.count });
+                    if (im.kind == 5) drained.push_back({ std::make_tuple(im.body, im.plot, im.part), im.count });
+                    if (im.kind == 7) filled.push_back({ std::make_tuple(im.body, im.plot, im.part), im.count });
+                    continue;
+                }
                 Machine& m = p->machines[it->second];
                 if (im.kind == 0 || im.kind == 2 || im.kind == 6) {
                     int buckets = 0;
@@ -667,7 +688,8 @@ void SimLoop() {
                     if (left > 0 && im.kind != 2) back.push_back({ im.item, left });
                     if (buckets > 0 && im.kind != 2) back.push_back({ BucketItem(), buckets }); // the emptied buckets
                 } else if (im.kind == 7) {
-                    if (Def(m.type).waterPerTick > 0) m.water = std::min(kWaterTank, m.water + im.count);
+                    if (Def(m.type).waterPerTick > 0) m.water = std::min(kWaterTank, m.water + im.count); // Waterworks sends only the room (TankRoom)
+                    filled.push_back({ std::make_tuple(im.body, im.plot, im.part), im.count });
                 } else if (im.kind == 3) {
                     if (m.type == PartType::Chest) { const int k = std::min(im.count, CountItems(m.in, kChestSlots, im.item)); TakeItems(m.in, kChestSlots, im.item, k); if (k > 0) back.push_back({ im.item, k }); }
                 } else if (im.kind == 5) {
@@ -707,6 +729,12 @@ void SimLoop() {
                 pumpView.clear();
                 for (const auto& [k, n] : drained) if (auto pit = pumpPending.find(k); pit != pumpPending.end() && (pit->second -= n) <= 0) pumpPending.erase(pit);
                 if (reset) pumpPending.clear();
+                tankView.clear();
+                for (const auto& [k, n] : filled) if (auto tit = tankPending.find(k); tit != tankPending.end() && (tit->second -= n) <= 0) tankPending.erase(tit);
+                if (reset) tankPending.clear();
+                for (const PlotSim& ps : plots)
+                    for (const Machine& m : ps.machines)
+                        if (Def(m.type).waterPerTick > 0) tankView[std::make_tuple(ps.body, ps.plot, m.part)] = kWaterTank - m.water;
                 workingView.clear(); // machines working on the plots near the player (models, smoke: Factory::Working)
                 for (const PlotSim& ps : plots)
                     if (ps.nearPlayer) for (const Machine& m : ps.machines) if (m.status == MachineStatus::Working) workingView.insert(WorkingKey(ps.body, ps.plot, m.part));
@@ -840,7 +868,17 @@ void Factory::InsertFuel(uint64_t body, uint32_t plot, int part, const std::stri
     std::lock_guard<std::mutex> q(queueMutex);
     itemQueue.push_back({ 6, body, plot, part, tables.item(item), count });
 }
+int Factory::TankRoom(uint64_t body, uint32_t plot, int part) {
+    std::lock_guard<std::mutex> v(viewMutex);
+    const auto key = std::make_tuple(body, plot, part);
+    auto it = tankView.find(key);
+    if (it == tankView.end()) return 0; // not simulated yet: no room until the sim has seen it
+    auto pit = tankPending.find(key);
+    return std::max(0, it->second - (pit == tankPending.end() ? 0 : pit->second)); // less what is already on its way in
+}
 void Factory::AddWater(uint64_t body, uint32_t plot, int part, int litres) {
+    if (litres <= 0) return;
+    { std::lock_guard<std::mutex> v(viewMutex); tankPending[std::make_tuple(body, plot, part)] += litres; } // TankRoom won't offer it twice
     std::lock_guard<std::mutex> q(queueMutex);
     itemQueue.push_back({ 7, body, plot, part, -1, litres });
 }

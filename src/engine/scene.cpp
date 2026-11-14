@@ -517,9 +517,11 @@ void Scene::drawScene(int gamestate) {
         effFog = Vector3Add(effFog, Vector3Scale(skyHorizon, atmDensity));
         effFogDensity += atmDensity / 35000.0f;                    // ~35 km to fade a third of the way
         effAmbient = Vector3Add(effAmbient, Vector3Scale(skyHorizon, 0.06f * atmDensity));
-        // Moonlight (#369, user: stronger): a cool moonlit-sky ambient that fades in as the sun goes down (the hemisphere
-        // ambient makes it come from above). RAYLIBGAME_MOONLIGHT scales it (0: the old near-black nights).
-        static const float moonScale = getenv("RAYLIBGAME_MOONLIGHT") ? (float)atof(getenv("RAYLIBGAME_MOONLIGHT")) : 1.0f;
+        // Moonlight (#369): a cool moonlit-sky ambient that fades in as the sun goes down (the hemisphere ambient makes it
+        // come from above; fragSky keeps it out of buried ground). User 2026-11-14: the first strength (1.0) read almost as
+        // daylight; the old nights (0) were a little too dark: open ground dim, unlit interiors near black. RAYLIBGAME_MOONLIGHT
+        // scales it (1 = the first strength, 0 = the old nights).
+        static const float moonScale = getenv("RAYLIBGAME_MOONLIGHT") ? (float)atof(getenv("RAYLIBGAME_MOONLIGHT")) : 0.25f;
         effAmbient = Vector3Add(effAmbient, Vector3Scale({ 0.055f, 0.07f, 0.105f }, (1.0f - day) * atmDensity * moonScale));
         // Weather: cloud cover greys the haze and lifts the (diffuse) ambient a little; ground fog
         // thickens the haze near the ground.

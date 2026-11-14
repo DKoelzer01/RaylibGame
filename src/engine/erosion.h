@@ -23,6 +23,9 @@
 #include <string>
 #include <vector>
 
+// Bump with any change to the bake's code (Simulate, SetRock, the refinement, the pond extraction): a cache from
+// another version or other parameters is baked again rather than loaded (#355 review).
+constexpr uint32_t kErosionBakeVersion = 5;
 struct ErosionParams {
     float cell = 200.0f;      // m, coarse cell at a face centre (gnomonic cells shrink toward the face edges)
     int steps = 400;
@@ -40,6 +43,7 @@ struct ErosionParams {
     float start = 1.0f;       // the land starts at this fraction of the input: 1 carves into the input relief (0.1 grew
                               // it from low land: heights then follow river length, so narrow coastal ranges came out low)
 };
+uint64_t ErosionParamsKey(const ErosionParams& p); // FNV-1a over every field and kErosionBakeVersion
 
 class PlanetErosion {
 public:
@@ -52,8 +56,8 @@ public:
     struct Slope { float h; Vector3 grad; };
     Slope slopeAt(Vector3 dir, float footprint) const;
     bool ready() const { return n > 0; }
-    bool save(const std::string& path) const;          // ERO4: deltas, split bytes, deflated; the ponds; the hash
-    bool load(const std::string& path, float planetRadius, unsigned int seed); // false: missing, other seed or radius
+    bool save(const std::string& path) const;          // ERO5: the params key, deltas, split bytes, deflated; the ponds; the hash; written to path.tmp, then renamed
+    bool load(const std::string& path, float planetRadius, unsigned int seed, uint64_t paramsKey); // false: missing, other seed, radius, parameters or code version
     uint64_t hash() const { return hashValue; }
     float buildSeconds = 0.0f, coarseSeconds = 0.0f, refineSeconds = 0.0f, maxCut = 0.0f, maxRaise = 0.0f;
     int cells() const { return 6 * n * n; }
@@ -74,6 +78,7 @@ private:
     std::vector<int16_t> fine;     // baked height, 0.1 m, 6 fe^2 (each face with its margin)
     std::vector<Pond> pondList;
     uint64_t hashValue = 0;
+    uint64_t paramsKey = 0;  // ErosionParamsKey of the build (saved with the cache)
     void computeHash();
     float coarseAt(Vector3 dir) const;
     float fineAt(Vector3 dir) const;
