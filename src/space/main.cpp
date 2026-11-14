@@ -1027,6 +1027,31 @@ int main(int argc, char** argv)
                     } else if (chopPhase == 1 && GetTime() - chopStart > 1.0 && player.grounded) {
                         std::vector<Trunk> near;
                         const Vector3 lf = p->toLocal(feet);
+                        {   // #260: bushes and stones are picked on their model: from 2 m off, a ray at the middle of the
+                            // nearest of each hits it, one 0.3 m over its top misses it.
+                            std::vector<Plant> plants;
+                            p->trees->plantsNear(lf, 300.0f, plants);
+                            int checked = 0, ok = 0;
+                            for (int want = 0; want < 2; ++want) { // 0 bush, 1 stone
+                                const Plant* best = nullptr; float bd = 1e9f;
+                                for (const Plant& q : plants) {
+                                    if (q.tree() || q.stone() != (want == 1)) continue;
+                                    const float d = Vector3Distance(q.base, lf);
+                                    if (d < bd) { bd = d; best = &q; }
+                                }
+                                if (!best) continue;
+                                const Vector3 side = Vector3Normalize(Vector3CrossProduct(best->up, Vector3{ 0.3f, 1.0f, 0.2f }));
+                                const float top = best->height; // bushes ~1.2 x scale, stones ~0.5 x scale
+                                for (int k = 0; k < 2; ++k) {
+                                    const Vector3 target = Vector3Add(best->base, Vector3Scale(best->up, k == 0 ? top * 0.3f : top * 1.4f + 0.3f));
+                                    const Vector3 from = Vector3Add(target, Vector3Scale(side, 2.0f));
+                                    PlantHit h;
+                                    const bool hit = p->trees->raycast(from, Vector3Normalize(Vector3Subtract(target, from)), 4.0f, h) && h.plant.id == best->id;
+                                    ++checked; ok += (hit == (k == 0)) ? 1 : 0;
+                                }
+                            }
+                            printf("bench: chop: bush and stone picking (#260): %d of %d rays as expected -> %s\n", ok, checked, ok == checked && checked > 0 ? "PASS" : "FAIL");
+                        }
                         p->trees->trunksNear(lf, 400.0f, near);
                         float best = 1e9f;
                         for (const Trunk& t : near) { const float d = Vector3Distance(t.base, lf); if (d < best && t.radius > 0.15f) { best = d; chopTarget = t; } }

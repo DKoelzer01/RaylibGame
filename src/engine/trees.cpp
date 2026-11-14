@@ -204,6 +204,25 @@ void BuildVariants() {
     }
 }
 const VariantMesh& Variant(int v, int lod = 0) { std::call_once(gVariantsOnce, BuildVariants); return gVariants[lod][v]; }
+// Each variant's extent at scale 1 (#260 picking): height range along up and horizontal reach from the axis.
+struct VariantBounds { float minY = 0.0f, maxY = 1.0f, reach = 0.5f; };
+static const VariantBounds& BoundsOf(int v) {
+    static VariantBounds b[kTreeVariants];
+    static std::once_flag once;
+    std::call_once(once, [] {
+        for (int k = 0; k < kTreeVariants; ++k) {
+            const VariantMesh& m = Variant(k, 0);
+            if (m.pos.size() < 3) continue;
+            VariantBounds vb{ 1e9f, -1e9f, 0.0f };
+            for (size_t i = 0; i + 2 < m.pos.size(); i += 3) {
+                vb.minY = std::min(vb.minY, m.pos[i + 1]); vb.maxY = std::max(vb.maxY, m.pos[i + 1]);
+                vb.reach = std::max(vb.reach, sqrtf(m.pos[i] * m.pos[i] + m.pos[i + 2] * m.pos[i + 2]));
+            }
+            b[k] = vb;
+        }
+    });
+    return b[std::clamp(v, 0, kTreeVariants - 1)];
+}
 
 void EnsureVariantGpu() {
     for (int lod = 0; lod < 2; ++lod)
@@ -746,6 +765,20 @@ void TreeSystem::trunksNear(Vector3 local, float range, std::vector<Trunk>& out)
     }
 }
 
+void TreeSystem::plantsNear(Vector3 local, float range, std::vector<Plant>& out) const {
+    const float r = Vector3Length(local);
+    if (r < 1.0f) return;
+    TreeTileKey keys[9];
+    int n = 0;
+    TilesAround(Vector3Scale(local, 1.0f / r), radius, keys, n);
+    for (int m = 0; m < n; ++m) {
+        auto it = tiles.find(keys[m]);
+        if (it == tiles.end() || !it->second.ready) continue;
+        for (const Plant& p : it->second.plants)
+            if (Vector3Distance(p.base, local) < range) out.push_back(p);
+    }
+}
+
 void TreeSystem::remove(uint64_t id) {
     auto next = std::make_shared<PlantRemovals>(*removed);
     (*next)[id] = WorldTime();
@@ -789,6 +822,34 @@ bool TreeSystem::raycast(Vector3 o, Vector3 d, float maxDistance, PlantHit& best
             auto it = tiles.find(keys[m]);
             if (it == tiles.end() || !it->second.ready) continue;
             for (const Plant& p : it->second.plants) {
+                if (!p.tree()) {
+                    // Bushes and stones (#260): a vertical cylinder fitted to the variant's mesh (its height range and
+                    // horizontal reach, at the plant's scale). The fixed capsule picked stones in the air above them and
+                    // missed bush edges and tops.
+                    const VariantBounds& vb = BoundsOf(p.variant);
+                    const float R = vb.reach * p.scale * 0.85f, y0 = vb.minY * p.scale, y1 = vb.maxY * p.scale;
+                    const Vector3 w = Vector3Subtract(o, p.base);
+                    const float oy = Vector3DotProduct(w, p.up), dy = Vector3DotProduct(d, p.up);
+                    const Vector3 oh = Vector3Subtract(w, Vector3Scale(p.up, oy)), dh = Vector3Subtract(d, Vector3Scale(p.up, dy));
+                    float tIn = 0.0f, tOut = maxDistance;
+                    const float a = Vector3DotProduct(dh, dh), b = Vector3DotProduct(oh, dh), c = Vector3DotProduct(oh, oh) - R * R;
+                    if (a < 1e-8f) { if (c > 0.0f) continue; }                 // straight up/down: inside the circle or not
+                    else {
+                        const float disc = b * b - a * c;
+                        if (disc < 0.0f) continue;
+                        const float sq = sqrtf(disc);
+                        tIn = std::max(tIn, (-b - sq) / a); tOut = std::min(tOut, (-b + sq) / a);
+                    }
+                    if (fabsf(dy) < 1e-8f) { if (oy < y0 || oy > y1) continue; }
+                    else {
+                        float ta = (y0 - oy) / dy, tb = (y1 - oy) / dy;
+                        if (ta > tb) std::swap(ta, tb);
+                        tIn = std::max(tIn, ta); tOut = std::min(tOut, tb);
+                    }
+                    if (tIn > tOut) continue;
+                    if (tIn < best.distance) { best.distance = tIn; best.plant = p; found = true; }
+                    continue;
+                }
                 // Closest approach between the ray and the plant's axis segment (trunk / bush core).
                 const float pick = p.tree() ? std::max(p.radius, 0.35f) : p.radius;
                 const Vector3 a = p.tree() ? p.base : Vector3Add(p.base, Vector3Scale(p.up, 0.2f * p.scale));
