@@ -2800,6 +2800,7 @@ int main(int argc, char** argv)
                         benchShotTabs = 3; frames = 0;
                     } else if (benchShotTabs == 3 && ++frames == 40) {
                         TakeScreenshot("bench_suit.png");
+                        HelpManual_OpenItem("iron_ingot"); // a page with every section: made by hand and in machines, used in, ...
                         GameUI_ShowTab("Help"); // the manual (#354)
                         benchShotTabs = 30; frames = 0;
                     } else if (benchShotTabs == 30 && ++frames == 40) {

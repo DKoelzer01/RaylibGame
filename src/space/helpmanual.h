@@ -1,11 +1,17 @@
 #ifndef HELPMANUAL_H
 #define HELPMANUAL_H
 
-// In-game help manual (#354): the inventory's Help tab. Hand-written topics from resources/data/help.txt ("# Title"
-// lines, then text; "##" comments) and an Items topic generated from items.txt and recipes.txt, so it stays current.
-// A search box filters topics and items.
+// In-game database (#354): the inventory's Help tab, like Factorio's Factoriopedia. Hand-written guides from
+// resources/data/help.txt ("# Title" lines, then text; "##" comments) and a page per item built from the data files
+// (hand and machine recipes, uses, fuels), with links between pages, Back, search, and "Discovered only".
+
+#include <cstdio>
+#include <string>
 
 void HelpManual_DrawTab();               // inside the inventory's ImGui tab bar
-int HelpManual_TopicCount();             // tests: topics loaded (the Items topic included)
+int HelpManual_TopicCount();             // tests: guides loaded, plus the item database
+void HelpManual_OpenItem(const std::string& id); // opens an item's page (the next time the tab draws)
+void HelpManual_Save(FILE* f);           // "Discovered only", with the world
+bool HelpManual_LoadLine(const char* tok, FILE* f);
 
 #endif

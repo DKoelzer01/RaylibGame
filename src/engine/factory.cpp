@@ -883,6 +883,24 @@ void Factory::AddWater(uint64_t body, uint32_t plot, int part, int litres) {
     itemQueue.push_back({ 7, body, plot, part, -1, litres });
 }
 bool Factory::TakesWater(PartType type) { LoadRecipes(); return Def(type).waterPerTick > 0; }
+std::vector<Factory::RecipeInfo> Factory::RecipeList() {
+    LoadRecipes();
+    std::vector<RecipeInfo> out;
+    for (const auto& r : tables.recipes) { // (the factory's own recipe type: "Recipe" alone is ambiguous with the hand recipes here)
+        RecipeInfo ri;
+        ri.machine = r.machine; ri.ticks = r.ticks; ri.eu = r.eu;
+        for (const Stack& s : r.in) ri.in.push_back({ tables.name(s.item), s.count });
+        for (const Stack& s : r.out) ri.out.push_back({ tables.name(s.item), s.count });
+        out.push_back(std::move(ri));
+    }
+    return out;
+}
+std::vector<std::string> Factory::FuelsOf(PartType type) {
+    LoadRecipes();
+    std::vector<std::string> out;
+    for (int f : Def(type).fuels) out.push_back(tables.name(f));
+    return out;
+}
 void Factory::Seed(uint64_t body, uint32_t plot, int part, const std::string& item, int count) {
     std::lock_guard<std::mutex> q(queueMutex);
     itemQueue.push_back({ 2, body, plot, part, tables.item(item), count });

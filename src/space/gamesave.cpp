@@ -5,6 +5,7 @@
 #include "ship.h"
 #include "survival.h"
 #include "hotbar.h"
+#include "helpmanual.h"
 #include "rocket.h"
 #include "terraintool.h"
 #include "navigation.h"
@@ -33,6 +34,7 @@ void GameSave_Register() {
         QuestBook_Save(f);
         fprintf(f, "creative %d\n", terrainTool.creative ? 1 : 0);
         Hotbar_Save(f);
+        HelpManual_Save(f);
         Nav_Save(f);
         Farm_Save(f);
         Animals_Save(f);
@@ -70,6 +72,7 @@ void GameSave_Register() {
             if (strcmp(tok, "food") == 0) { float v = 100.0f; if (fscanf(f, " %f", &v) == 1) survival.food = std::clamp(v, 0.0f, 100.0f); continue; }
             if (strcmp(tok, "creative") == 0) { int c = 0; if (fscanf(f, " %d", &c) == 1) terrainTool.creative = c != 0; continue; }
             if (Hotbar_LoadLine(tok, f)) continue;
+            if (HelpManual_LoadLine(tok, f)) continue;
             if (Nav_LoadLine(tok, f)) continue;
             if (Rocket_LoadLine(tok, f)) continue;
             if (Station_LoadLine(tok, f)) continue;

@@ -72,6 +72,11 @@ namespace Factory {
     void AddWater(uint64_t bodyId, uint32_t plotId, int part, int litres);
     int TankRoom(uint64_t bodyId, uint32_t plotId, int part); // litres a boiler can still take (less water already sent); 0 if unknown
     bool TakesWater(PartType type);
+    // Every machine recipe (machine_recipes.txt) by item id, for the in-game database (#354). ticks/eu: 20 ticks a
+    // second; generators list their fuels as one-input recipes with eu = EU per tick produced.
+    struct RecipeInfo { PartType machine; std::vector<std::pair<std::string, int>> in, out; int ticks = 0, eu = 0; };
+    std::vector<RecipeInfo> RecipeList();
+    std::vector<std::string> FuelsOf(PartType type); // item ids a machine burns (machines.txt)
     void Extract(uint64_t bodyId, uint32_t plotId, int part);
     // Container screen: one slot's whole stack back to the inventory (next tick).
     // which: 0 inputs, 1 outputs, 2 the fuel slot.
