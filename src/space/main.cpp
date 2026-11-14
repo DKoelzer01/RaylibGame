@@ -348,12 +348,19 @@ int main(int argc, char** argv)
     float walkMinDensity = 0, walkMaxDensity = 0;
     int walkGroundedFrames = 0, walkFrames = 0;
     double walkTargetM = 0.0, walkPath = 0.0; // --test-planet-walk M: walk M metres (path, body frame), then PASS/FAIL
+    // Planet walk legs (#363): M metres as 100 m legs at places drawn from the seed, teleporting between them.
+    constexpr double kWalkLegM = 100.0, kWalkLegMaxS = 45.0;
+    int walkLegs = 0, walkLeg = 0, walkLegsDone = 0, walkSettleFrames = 0, walkLegGrounded = 0, walkLegFrames = 0;
+    bool walkLegReady = true;
+    double walkLegStart = 0.0, walkLegPath = 0.0, walkLegSlope = 0.0;
+    int walkLegJumps = 0, walkFellThrough = 0; bool walkLegDied = false; Vector3 walkPickDir{ 0, 1, 0 };
     DVec3 walkLast{};
     Vector3 benchCamOffset = { -70.0f, 35.0f, 70.0f }; // --cam dx dy dz: bench camera offset from the planetoid
     float benchViewHeight = 40.0f; // --bench-height H: a planet bench's view height over the start (m)
     bool benchCamGiven = false;   // --cam given: use the offset (otherwise a planet bench looks along the surface from 40 m up, #291)
     if (const char* e = getenv("RAYLIBGAME_EROSION"); e && e[0] == '1') gErosionPrototype = true; // #352 prototype: erosion bake around the start
     if (const char* e3 = getenv("RAYLIBGAME_3D")) gTerrain3D = e3[0] == '1'; else if (gErosionPrototype) gTerrain3D = false; // no 3D band in erosion tests (RAYLIBGAME_3D=0 for baselines)
+    if (const char* g = getenv("RAYLIBGAME_GULLIES")) gGullies = g[0] == '1';
     for (int i = 1; i < argc; ++i) {
         if (std::string(argv[i]) == "--bench") benchSeconds = (i + 1 < argc) ? atof(argv[i + 1]) : 10.0;
         if (std::string(argv[i]) == "--ui") DebugUI_Toggle(); // open the debug panel at start
@@ -366,7 +373,7 @@ int main(int argc, char** argv)
         if (std::string(argv[i]) == "--test-saveload") benchSaveLoad = true;
         if (std::string(argv[i]) == "--test-walk" && i + 1 < argc) benchWalkSeconds = atof(argv[i + 1]);
         if (std::string(argv[i]) == "--no-eye-smooth") player.eyeSmoothing = false;
-        if (std::string(argv[i]) == "--test-planet-walk" && i + 1 < argc) { walkTargetM = atof(argv[i + 1]); benchWalkSeconds = 600.0; } // gate: 1 km on the planet
+        if (std::string(argv[i]) == "--test-planet-walk" && i + 1 < argc) { walkTargetM = atof(argv[i + 1]); benchWalkSeconds = 600.0; } // gate: 1 km on the planet, in 100 m legs (#363)
         if (std::string(argv[i]) == "--bench-walk") benchWalkMode = true;
         if (std::string(argv[i]) == "--bench-stand") { benchWalkMode = true; benchStandMode = true; }
         if (std::string(argv[i]) == "--perf-log") perfLog = true;
@@ -812,6 +819,8 @@ int main(int argc, char** argv)
                     printf("bench: density profile: noise4 vs noise over 1M points: %d differ, worst %.3g -> %s\n", diff, worst, diff == 0 ? "PASS" : (worst < 1e-5 ? "PASS (rounding)" : "FAIL"));
                 }
                 timeIt("elevation (height map)", [&](size_t k) { return pf->elevation(Vector3Normalize(pts[k])); });
+                timeIt("land (before rivers, ponds)", [&](size_t k) { return pf->profileLandHeight(Vector3Normalize(pts[k]), 1.0f); });
+                for (float fpq : { 1.0f, 30.0f, 100.0f }) { double sum = 0, mx = 0; int nland = 0; for (size_t k = 0; k < pts.size(); ++k) { const Vector3 dq = Vector3Normalize(pts[k]); gGullies = false; const float a = pf->profileLandHeight(dq, fpq); gGullies = true; const float b = pf->profileLandHeight(dq, fpq); if (a > 20.0f) { sum += fabs(b - a); mx = std::max(mx, (double)fabs(b - a)); ++nland; } } printf("bench: gullies at fp %.0f m: mean |dh| %.2f m, max %.1f m over %d land points\n", fpq, nland ? sum / nland : 0.0, mx, nland); }
                 timeIt("terrain3D (3D band)", [&](size_t k) { const float d = Vector3Length(pts[k]); return pf->terrain3D(pts[k], d, surf[k], 1.0f); });
                 timeIt("rockFeature (tors, boulders)", [&](size_t k) { const float d = Vector3Length(pts[k]); return pf->rockFeature(pts[k], d, surf[k], 1.0f); });
                 timeIt("density (all, no edits)", [&](size_t k) { return pf->density(pts[k], nullptr, 1.0f); });
@@ -4836,6 +4845,17 @@ int main(int argc, char** argv)
                         benchMineStrokes = 0;
                         minePhase = 3;
                     }
+                } else if (WorldIdle() && benchWalkSeconds > 0.0 && walkLegs > 0 && !walkLegReady) {
+                    // Planet walk, after a teleport (#363): the leg starts once the new place has loaded (idle) and a
+                    // few frames have settled the player on the ground.
+                    Planetoid* start = dynamic_cast<Planetoid*>(world.objects[0].get());
+                    // First idle frame: the place has loaded; set the player on it and let gravity back on.
+                    if (++walkSettleFrames == 1) { player.spawnOn(world, *start, walkPickDir); player.flyMode = false; }
+                    if (walkSettleFrames >= 30) {
+                        walkLegReady = true; player.autoWalk = true;
+                        walkLegStart = GetTime(); walkLegPath = walkPath; walkLast = start->toLocalD(player.position);
+                        walkLegGrounded = walkLegFrames = 0; walkLegSlope = 0.0;
+                    }
                 } else if (WorldIdle() && benchWalkSeconds > 0.0) {
                     // Scripted walk: spawn on the surface and walk forward; checks gravity + collision.
                     if (walkStart < 0.0) {
@@ -4847,6 +4867,8 @@ int main(int argc, char** argv)
                         walkFrom = start->toLocalD(player.position); // body frame: the spin carries the walker too
                         walkMinDensity = 1e9f; walkMaxDensity = -1e9f; walkGroundedFrames = walkFrames = 0;
                         walkLast = walkFrom; walkPath = 0.0;
+                        walkLegStart = walkStart; walkLegPath = 0.0; walkLeg = 0; walkLegReady = true;
+                        walkLegs = walkTargetM > 0.0 ? std::max(1, (int)lround(walkTargetM / kWalkLegM)) : 0;
                     }
                     Planetoid* start = dynamic_cast<Planetoid*>(world.objects[0].get());
                     const Vector3 feet = (player.position - world.renderOrigin).toFloat();
@@ -4855,6 +4877,18 @@ int main(int argc, char** argv)
                     walkMaxDensity = std::max(walkMaxDensity, d);
                     walkFrames++;
                     walkGroundedFrames += player.grounded ? 1 : 0;
+                    walkLegFrames++; walkLegGrounded += player.grounded ? 1 : 0;
+                    if (walkLegs > 0) {
+                        // Deaths (falls off what the walker strides into) lose the leg, not the test (user, 2026-11-14).
+                        if (survival.dead) walkLegDied = true;
+                        // Falling through the world is the failure: the body 30 m under the height-map surface.
+                        if (const PlanetField* pfw = dynamic_cast<const PlanetField*>(start->field.get())) {
+                            const Vector3 lp = start->toLocal(feet);
+                            const float alt = Vector3Length(lp);
+                            if (alt > 1.0f && alt < pfw->radius + pfw->elevation(Vector3Scale(lp, 1.0f / alt)) - 30.0f) ++walkFellThrough;
+                        }
+                    }
+                    if (player.grounded) walkLegSlope = std::max(walkLegSlope, (double)acosf(std::clamp(Vector3DotProduct(player.groundNormal, player.up), -1.0f, 1.0f)) * RAD2DEG);
                     if (!benchStandOnly && GetTime() - walkStart > 1.0) {
                         // Walking: the eye height (ground frame) should change smoothly. A jolt is a change of
                         // more than 3 mm in its per-frame step while grounded (bumps felt as camera shake).
@@ -4903,13 +4937,18 @@ int main(int argc, char** argv)
                         }
                         lastCam = cam; lastFwd = fwd; lastUp = up; have = true;
                     }
-                    { const DVec3 here = start->toLocalD(player.position); walkPath += (here - walkLast).length(); walkLast = here; }
+                    {   // A jump of more than 20 m in a frame is a teleport (a respawn), not walking: not counted, reported.
+                        const DVec3 here = start->toLocalD(player.position);
+                        const double step = (here - walkLast).length();
+                        if (step < 20.0) walkPath += step; else ++walkLegJumps;
+                        walkLast = here;
+                    }
                     if (!benchStandOnly && player.autoWalk) {
                         // Getting unstuck, as a player would (overhangs, cliffs and boulders are part of the world, the
                         // walker adapts): every 1.5 s, under 1 m of progress means stuck - jump first; still stuck, turn
                         // aside (alternating sides, wider each time) and walk on.
                         static double checkAt = 0.0; static DVec3 checkPos{}; static int stuck = 0; static int unsticks = 0;
-                        if (GetTime() - walkStart < 0.1) { checkAt = GetTime() + 1.5; checkPos = start->toLocalD(player.position); stuck = 0; unsticks = 0; }
+                        if (GetTime() - walkLegStart < 0.1) { checkAt = GetTime() + 1.5; checkPos = start->toLocalD(player.position); stuck = 0; unsticks = 0; }
                         if (GetTime() > checkAt) {
                             const DVec3 here = start->toLocalD(player.position);
                             if ((here - checkPos).length() < 1.0) {
@@ -4921,7 +4960,46 @@ int main(int argc, char** argv)
                         }
                         walkUnsticks = unsticks;
                     }
-                    if (GetTime() - walkStart > benchWalkSeconds || (walkTargetM > 0.0 && walkPath >= walkTargetM)) {
+                    if (walkLegs > 0 && (walkPath - walkLegPath >= kWalkLegM || GetTime() - walkLegStart > kWalkLegMaxS || walkLegDied)) {
+                        // A leg is done (#363): note it, then teleport to the next place, or finish.
+                        const PlanetField* pfw = dynamic_cast<const PlanetField*>(start->field.get());
+                        const Vector3 here = Vector3Normalize(start->toLocal((player.position - world.renderOrigin).toFloat()));
+                        const double legM = walkPath - walkLegPath, legS = GetTime() - walkLegStart;
+                        const double legGround = 100.0 * walkLegGrounded / std::max(1, walkLegFrames);
+                        walkLegsDone += legM >= kWalkLegM && walkLegJumps == 0 && !walkLegDied ? 1 : 0;
+                        printf("bench: planet walk leg %d/%d: %.0f m in %.1f s at %.0f m elevation, grounded %.0f%%, unstuck %d times, steepest ground %.0f deg%s%s\n",
+                               walkLeg + 1, walkLegs, legM, legS, pfw ? pfw->elevation(here) : 0.0f, legGround, walkUnsticks, walkLegSlope,
+                               walkLegDied ? " (died)" : legM >= kWalkLegM ? "" : " (timed out)", walkLegJumps ? " (displaced mid-leg)" : "");
+                        if (++walkLeg < walkLegs) {
+                            // The next place: land drawn from the seed; every other leg prefers ground above 300 m (slopes).
+                            std::mt19937 rng(9173u * (unsigned)(walkLeg + 1) + worldGen.seed);
+                            std::uniform_real_distribution<float> U(-1.0f, 1.0f);
+                            Vector3 pick = here;
+                            for (int tries = 0; tries < 400; ++tries) {
+                                const Vector3 dq = Vector3Normalize({ U(rng), U(rng) * 0.8f, U(rng) });
+                                const float e = pfw ? pfw->elevation(dq, 4.0f) : 10.0f;
+                                if (e < 3.0f || e > 2500.0f || (pfw && pfw->waterElevation(dq, 4.0f) > e - 0.5f)) continue;
+                                pick = dq;
+                                if (walkLeg % 2 == 0 || e > 300.0f || tries > 300) break;
+                            }
+                            // Hover (fly mode) while the place loads: walking on half-loaded ground fell through it.
+                            walkPickDir = pick;
+                            player.spawnOn(world, *start, pick);
+                            player.flyMode = true; walkLegJumps = 0; walkLegDied = false;
+                            survival.health = 100.0f; survival.dead = false; // a death on the last leg: back to life here
+                            player.autoWalk = false; walkLegReady = false; walkSettleFrames = 0;
+                            walkLast = start->toLocalD(player.position);
+                        } else {
+                            player.autoWalk = false;
+                            const double pct = 100.0 * walkGroundedFrames / std::max(1, walkFrames);
+                            // Pass (user, 2026-11-14): most legs walked, and never through the world (body under the surface
+                            // or inside solid ground). Steep or deadly legs are part of the terrain, not failures.
+                            const bool pass = walkLegsDone * 2 > walkLegs && walkFellThrough == 0 && walkMaxDensity < ISO_LEVEL;
+                            printf("bench: planet walk %d of %d legs of %.0f m completed in %.1f s, grounded %.0f%%, %d frames under the surface, deepest body density %.2f (solid >= %.2f): %s\n",
+                                   walkLegsDone, walkLegs, kWalkLegM, GetTime() - walkStart, pct, walkFellThrough, walkMaxDensity, ISO_LEVEL, pass ? "PASS" : "FAIL");
+                            walkTargetM = 0.0; walkLegs = 0; benchWalkSeconds = 0.0;
+                        }
+                    } else if (walkLegs == 0 && (GetTime() - walkStart > benchWalkSeconds || (walkTargetM > 0.0 && walkPath >= walkTargetM))) {
                         player.autoWalk = false;
                         const double dist = (start->toLocalD(player.position) - walkFrom).length();
                         const float alt = Vector3Distance(feet, start->position);

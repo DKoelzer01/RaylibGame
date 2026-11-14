@@ -36,6 +36,11 @@ C++ raylib 5.5 planetoid survival game. `src/engine` (static lib), `src/space` -
   about them.
 - Stop stale regression runs by command line (`*regression.sh*`, game.exe under `\Temp\tmp.*`);
   TaskStop does not kill the child scripts.
+- `--test-planet-walk M` (#363, user 2026-11-14): M metres as 100 m legs at places drawn from the seed (teleports
+  between legs, hovering while each place loads; every other leg prefers ground above 300 m). PASS = most legs walked
+  and never under the surface or inside solid; a leg lost to a death or a 45 s timeout on rough ground is not a failure.
+  Don't tailor the picks to walkable ground: the test is meant to sample the terrain.
+- Slow frames: any bench frame over 20 ms prints "bench: slow frame" with its CPU passes over 1 ms and the time.
 - Bench helpers: per-pass GPU + CPU timings print at the end of every --bench run (gputimer.*);
   `--native-window` (the game's borderless monitor-size window), `--no-msaa`,
   `--load` / `--at-save` (bench saves/world.sav from its own camera; copy a save into a temp dir
