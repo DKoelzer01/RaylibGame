@@ -29,7 +29,7 @@ enum class PartType : uint8_t;
 
 constexpr int kTicksPerSecond = 20;
 
-enum class MachineStatus : uint8_t { Idle, Working, NoPower, Overvoltage, OutputFull, NoFuel };
+enum class MachineStatus : uint8_t { Idle, Working, NoPower, Overvoltage, OutputFull, NoFuel, NoLoad, NoWater };
 const char* MachineStatusName(MachineStatus s);
 
 struct MachineView {             // published per machine each tick
@@ -38,6 +38,10 @@ struct MachineView {             // published per machine each tick
     int energy = 0, energyMax = 0;  // buffer (generators: fuel ticks left)
     std::string input, output;      // "iron_ore x3"
     std::vector<std::pair<std::string, int>> inSlots, outSlots; // per slot ("", 0 when empty); chests use inSlots
+    bool hasFuelSlot = false;       // fuel-burning machines and generators (#194)
+    std::pair<std::string, int> fuelSlot;
+    int water = 0, waterMax = 0;    // litres in its tank (boilers, #229)
+    int heat = 0, heatMax = 0;      // boilers warm up before they make full steam
     bool valid = false;
 };
 
@@ -62,9 +66,15 @@ namespace Factory {
     FactoryStats Stats();
     // Player item transfers (queued for the next tick).
     void Insert(uint64_t bodyId, uint32_t plotId, int part, const std::string& item, int count);
+    // The same, into the fuel slot (Shift+click: an item that is both fuel and a recipe input goes to the inputs by default).
+    void InsertFuel(uint64_t bodyId, uint32_t plotId, int part, const std::string& item, int count);
+    // Water piped into a machine's tank (boilers), in litres; what doesn't fit is lost.
+    void AddWater(uint64_t bodyId, uint32_t plotId, int part, int litres);
+    bool TakesWater(PartType type);
     void Extract(uint64_t bodyId, uint32_t plotId, int part);
     // Container screen: one slot's whole stack back to the inventory (next tick).
-    void TakeSlot(uint64_t bodyId, uint32_t plotId, int part, int slot, bool output);
+    // which: 0 inputs, 1 outputs, 2 the fuel slot.
+    void TakeSlot(uint64_t bodyId, uint32_t plotId, int part, int slot, int which);
     // Water pumps (waterworks): water units in a pump's outputs (as of the last tick), and removing
     // them as they go down its pipes.
     int PumpWater(uint64_t bodyId, uint32_t plotId, int part);

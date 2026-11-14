@@ -160,9 +160,18 @@ namespace {
         return plot->partCount() == before + 1;
     }
     void Give(const std::string& machine, const std::string& item, int count) {
-        if (item.rfind("any_", 0) == 0) { // a wildcard: the real items carried
-            for (const auto& kv : inventory.all())
-                if (count > 0 && ItemMatches(item, kv.first)) { const int k = std::min(count, kv.second); Give(machine, kv.first, k); count -= k; }
+        if (item.rfind("any_", 0) == 0) { // a wildcard: the real items carried, the most plentiful first
+            std::vector<std::pair<int, std::string>> have;  // (fuel slots hold one kind: the biggest pile fuels best)
+            for (const auto& kv : inventory.all()) if (ItemMatches(item, kv.first) && kv.second > 0) have.push_back({ kv.second, kv.first });
+            std::sort(have.rbegin(), have.rend());
+            // What its fuel slot already burns goes first (it takes one kind at a time; a player sees the slot).
+            Factory::View(body->id, plot->id, parts[machine]);
+            Factory::WaitTicks(2);
+            const MachineView v = Factory::View(body->id, plot->id, parts[machine]);
+            if (v.hasFuelSlot && v.fuelSlot.second > 0)
+                std::stable_partition(have.begin(), have.end(), [&](const std::pair<int, std::string>& h) { return h.second == v.fuelSlot.first; });
+            for (const auto& h : have)
+                if (count > 0) { const int k = std::min(count, h.first); Give(machine, h.second, k); count -= k; }
             return;
         }
         count = std::min(count, inventory.count(item));
@@ -172,6 +181,15 @@ namespace {
     bool Collect(const std::string& machine, const std::string& item, int want) {
         static std::map<std::string, double> lastTake; // per machine (one shared timer starved the second of two)
         if (GetTime() - lastTake[machine] > 0.25) { lastTake[machine] = GetTime(); Factory::Extract(body->id, plot->id, parts[machine]); }
+        // The boiler needs water (#229): a bucket now and then, as a player scooping from the river would (a full
+        // tank refuses it and it comes back).
+        static double lastWater = 0.0;
+        if (parts.count("boiler") && GetTime() - lastWater > 1.0) {
+            lastWater = GetTime();
+            if (inventory.count("water_bucket") == 0) inventory.add("water_bucket", 1);
+            if (inventory.remove("water_bucket", 1)) Factory::Insert(body->id, plot->id, parts["boiler"], "water_bucket", 1);
+            if (inventory.count("bucket") > 0) inventory.remove("bucket", inventory.count("bucket")); // the empties (refilled at the river)
+        }
         return inventory.count(item) >= want;
     }
 
