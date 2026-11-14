@@ -22,6 +22,7 @@ class Planetoid;
 void Animals_Update(Scene& world, float dt, float worldDt, bool inputEnabled);
 void Animals_Draw3D(Scene& world);
 void Animals_DrawHUD();
+void Animals_Aim(Scene& world, bool inputEnabled); // this frame's aim and actions (after the camera is placed, before the terrain tool)
 bool Animals_Aiming();                    // the crosshair is on an animal (the terrain tool holds off)
 void Animals_Reset();
 void Animals_Save(FILE* f);

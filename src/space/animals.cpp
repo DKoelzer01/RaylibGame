@@ -130,10 +130,14 @@ struct Animal {
     Vector3 herdCentre{}; int herdSize = 0;
     float gait = 0.0f, moveSpeed = 0.0f;        // leg cycle (radians) and the last speed (m/s)
     float stuckTime = 0.0f;                     // seconds without progress while trying to move
+    float settleIn = 0.0f;                      // seconds to the next ground check (#223)
+    float detourSide = 0.0f;                    // +1 / -1: the side it goes round an obstacle on (0: none)
+    float detourHeading = 0.0f, detourTime = 0.0f;   // the detour being followed, and for how much longer (s)
 };
 std::vector<Animal> animals;
 std::unordered_map<std::string, std::unordered_set<uint64_t>> spawnedTiles; // body -> herd tiles decided
 int aimed = -1;
+static bool hitLatch = false; // LMB went to an animal: the terrain tool waits for its release (#222)
 double lastSpawnCheck = -1.0, lastHit = -1.0, lastPenCheck = -10.0, lastFireScan = -10.0, lastNightSpawn = -10.0;
 std::vector<Vector3> fires; // campfires near the player (body-local)
 bool threatsOn = true;     // off in bench runs except --test-threats
@@ -157,10 +161,34 @@ Planetoid* BodyNamed(Scene& world, const std::string& name) {
     return nullptr;
 }
 
-// The surface point under a body-local direction, and whether an animal may stand there.
-bool Ground(const PlanetField& pf, Vector3 dir, Vector3& at, float& elevation) {
-    elevation = pf.elevation(dir);
-    at = Vector3Scale(dir, pf.radius + elevation);
+// Solid enough to block an animal (a wall, an overhang): ~0.4 m into rock. Thin near-iso films hover just over the
+// ground in places (density within ~0.06 of iso); they must not stop a walk.
+constexpr float kRockMargin = 0.1f;
+
+// The surface point under a body-local direction, and whether an animal may stand there. The ground is the
+// density field (#223: the height map ignored the 3D band, crags, tors, digs and builds, so animals walked
+// through them): searched down from `above` metres over radius `ref` to `below` under it, in 0.25 m steps
+// with the crossing interpolated. ref < 0 (spawning): around the height map, the whole 3D band. Fails where
+// the start is inside rock (a wall or overhang) or nothing solid is in reach (a cliff or a hole).
+bool Ground(const Planetoid& body, const PlanetField& pf, Vector3 dir, Vector3& at, float& elevation,
+            float ref = -1.0f, float above = 0.0f, float below = 0.0f) {
+    if (ref < 0.0f) { ref = pf.radius + pf.elevation(dir); above = 30.0f; below = 16.0f; }
+    auto dens = [&](float r) { return body.densityAt(Vector3Scale(dir, r)); };
+    float prevR = ref + above, prevD = dens(prevR);
+    if (prevD >= ISO_LEVEL + kRockMargin) return false;
+    bool found = false;
+    for (float r = prevR - 0.25f; r >= ref - below - 1e-4f; r -= 0.25f) {
+        const float d = dens(r);
+        if (d >= ISO_LEVEL && prevD < ISO_LEVEL) { // air above, solid here (a start inside a thin film looks on down)
+            const float t = std::clamp((ISO_LEVEL - prevD) / std::max(d - prevD, 1e-6f), 0.0f, 1.0f);
+            at = Vector3Scale(dir, prevR + (r - prevR) * t);
+            found = true;
+            break;
+        }
+        prevR = r; prevD = d;
+    }
+    if (!found) return false;
+    elevation = Vector3Length(at) - pf.radius;
     if (elevation < 0.3f) return false; // the sea
     if (pf.inlandWaterNear(dir, 0.0f)) {
         const float w = pf.waterElevation(dir);
@@ -264,7 +292,7 @@ void SpawnHerds(Scene& world, Planetoid& body, const PlanetField& pf, Vector3 up
             const Species& s = species[fit[(size_t)(Rand01(h) * fit.size()) % fit.size()]];
             if (s.hostile && Vector3Distance(Vector3Scale(centre, pf.radius), Vector3Scale(StartDir(body, pf), pf.radius)) < 500.0f) continue; // a safe start
             Vector3 at; float e;
-            if (!Ground(pf, centre, at, e) || e > 900.0f) continue; // no herds at sea or above the tree line
+            if (!Ground(body, pf, centre, at, e) || e > 900.0f) continue; // no herds at sea or above the tree line
             const int n = s.herdMin + (int)(Rand01(h) * (s.herdMax - s.herdMin + 1));
             Animals_Spawn(world, body, s.id, at, n);
         }
@@ -301,7 +329,7 @@ bool Animals_IsFeed(const std::string& id) { LoadSpecies(); for (const Species& 
 const std::string& Animals_Body(int i) { static const std::string none; return i >= 0 && i < (int)animals.size() ? animals[i].body : none; }
 bool Animals_Wild(int i) { return i >= 0 && i < (int)animals.size() && species[animals[i].species].wild; }
 bool Animals_Hostile(int i) { return i >= 0 && i < (int)animals.size() && species[animals[i].species].hostile; }
-bool Animals_Aiming() { return aimed >= 0; }
+bool Animals_Aiming() { return aimed >= 0 || hitLatch; }
 int Animals_YoungCount() { int n = 0; for (const Animal& a : animals) n += a.age < 1.0f ? 1 : 0; return n; }
 
 int Animals_Spawn(Scene& world, Planetoid& body, const std::string& id, Vector3 local, int count, bool young, float spread) {
@@ -318,7 +346,7 @@ int Animals_Spawn(Scene& world, Planetoid& body, const std::string& id, Vector3 
         const float r = spread >= 18.0f ? 4.0f + 14.0f * Rand01(h) : spread * Rand01(h), t = 2.0f * PI * Rand01(h);
         const Vector3 d = Vector3Normalize(Vector3Add(Vector3Scale(up, pf->radius), Vector3Add(Vector3Scale(east, r * cosf(t)), Vector3Scale(north, r * sinf(t)))));
         Vector3 at; float e;
-        if (!Ground(*pf, d, at, e)) continue;
+        if (!Ground(body, *pf, d, at, e)) continue;
         Animal a;
         a.species = si;
         a.body = body.name;
@@ -477,6 +505,14 @@ void Animals_Update(Scene& world, float dt, float worldDt, bool inputEnabled) {
         if (dist > 300.0f) continue;
         float step = dt;
         if (dist > 80.0f) { if ((frameNo + (int)i) % 4) continue; step = dt * 4.0f; }
+        if ((a.settleIn -= step) <= 0.0f) {
+            a.settleIn = 1.0f;
+            // Settle (#223): ground dug out from under it drops it onto what is left (up to 3 m); inside rock
+            // (an older save, ground built over it) or over a deeper hole, it goes to the surface found from above.
+            const Vector3 d = Vector3Normalize(a.pos);
+            Vector3 g; float ge;
+            if (Ground(*body, *field, d, g, ge, Vector3Length(a.pos), 0.6f, 3.0f) || Ground(*body, *field, d, g, ge)) a.pos = g;
+        }
         const Vector3 up = Vector3Normalize(a.pos);
         Vector3 east, north;
         TangentFrame(up, east, north);
@@ -576,14 +612,45 @@ void Animals_Update(Scene& world, float dt, float worldDt, bool inputEnabled) {
         }
         if (speed <= 0.0f) { a.moveSpeed = 0.0f; continue; }
         // Move along the surface; turn away from water, cliffs and build parts.
-        const Vector3 fwd = Vector3Add(Vector3Scale(east, cosf(a.heading)), Vector3Scale(north, sinf(a.heading)));
         const float stepLen = speed * step * (0.6f + 0.4f * a.age);
-        const Vector3 nd = Vector3Normalize(Vector3Add(a.pos, Vector3Scale(fwd, stepLen)));
         Vector3 at; float e;
         const float height = s.size.y * (0.6f + 0.4f * a.age);
-        const bool ok = Ground(*field, nd, at, e) &&
-                        fabsf(Vector3Length(at) - Vector3Length(a.pos)) <= stepLen * 0.84f + 0.05f && // < 40 degrees
-                        !BlockedAlong(*body, a.pos, at, height);
+        // The ground ahead within a 40 degree climb or drop of where it stands (a steeper step is a wall or a
+        // cliff), with room for its body above (no walking under overhangs into rock).
+        // A small ledge (up to 0.35 m, less for small kinds) can be stepped up or hopped down whatever the stride:
+        // the 0.25 m terrain lattice and digs make steps the old height map never had.
+        const float reach = std::max(stepLen * 0.84f + 0.05f, std::min(0.35f, height * 0.45f));
+        // Going somewhere (chasing, fleeing, following, back to the herd) it leaps ledges up to 1.3x its height (1.2 m at
+        // most) and hops down 1.5 m; grazing and wandering it keeps to small steps. Taller cliffs still stop it.
+        const float reachUp = steer ? std::max(reach, std::min(1.2f, height * 1.3f)) : reach;
+        const float reachDown = steer ? std::max(reach, 1.5f) : reach;
+        auto tryStep = [&](float heading) {
+            const Vector3 fwd = Vector3Add(Vector3Scale(east, cosf(heading)), Vector3Scale(north, sinf(heading)));
+            const Vector3 nd = Vector3Normalize(Vector3Add(a.pos, Vector3Scale(fwd, stepLen)));
+            return Ground(*body, *field, nd, at, e, Vector3Length(a.pos), reachUp, reachDown) &&
+                   body->densityAt(Vector3Add(at, Vector3Scale(nd, height * 0.8f))) < ISO_LEVEL + kRockMargin &&
+                   !BlockedAlong(*body, a.pos, at, height);
+        };
+        // Heading somewhere (the player, the herd, away from a threat) and blocked: go round (#223: real terrain has
+        // ledges, pits and basins the height map hid). The detour is held for a while - following the obstacle on one
+        // side, turning as far as backing off - before aiming at the target again, so a pocket or a long ledge
+        // doesn't trap it pushing straight into the same edge.
+        if (steer && a.detourTime > 0.0f) { a.detourTime -= step; a.heading = a.detourHeading; }
+        else if (a.detourTime > 0.0f) a.detourTime = 0.0f;
+        bool ok = tryStep(a.heading);
+        if (ok && a.detourTime <= 0.0f) a.detourSide = 0.0f;
+        if (!ok && steer) {
+            if (a.detourSide == 0.0f) a.detourSide = Rand01(a.rng) < 0.5f ? 1.0f : -1.0f;
+            for (float turn : { 0.5f, 1.0f, 1.6f, 2.2f, 3.1f })
+                for (float side : { a.detourSide, -a.detourSide })
+                    if (!ok && tryStep(a.heading + side * turn)) {
+                        ok = true;
+                        a.heading += side * turn;
+                        a.detourSide = side;
+                        a.detourHeading = a.heading;
+                        a.detourTime = 1.5f;
+                    }
+        }
         if (ok) {
             a.pos = at;
             a.moveSpeed = speed;
@@ -637,31 +704,48 @@ void Animals_Update(Scene& world, float dt, float worldDt, bool inputEnabled) {
             break;
         }
     }
-    // Aim (within 5 m along the crosshair) and the player's actions.
+    lastUpdateMs = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+}
+
+// Aim along the crosshair and the player's actions on the aimed animal (#222). Called after the camera is placed
+// for this frame (Animals_Update ran on last frame's), right before the terrain tool, which holds off while
+// Animals_Aiming(). The nearer of an animal and the ground wins: an animal behind a slope or a rock is not aimed.
+// Reach matches the tool's. After a hit LMB stays with the animals until released, so a held button doesn't dig
+// the ground behind one that bolted.
+void Animals_Aim(Scene& world, bool inputEnabled) {
+    Planetoid* here = player.nearest;
+    const double now = WorldTime();
+    if (!IsMouseButtonDown(MOUSE_BUTTON_LEFT)) hitLatch = false;
     aimed = -1;
     if (here && !player.flyMode) {
+        const Vector3 dirW = Vector3Normalize(Vector3Subtract(world.camera.target, world.camera.position));
         const Vector3 o = here->toLocal(world.camera.position);
-        const Vector3 d = here->dirToLocal(Vector3Normalize(Vector3Subtract(world.camera.target, world.camera.position)));
-        float best = 5.0f;
+        const Vector3 d = here->dirToLocal(dirW);
+        float best = std::max(5.0f, terrainTool.reach);
         for (size_t i = 0; i < animals.size(); ++i) {
             const Animal& a = animals[i];
             if (a.body != here->name) continue;
             const Species& s = species[a.species];
             const float scale = 0.6f + 0.4f * a.age;
             const Vector3 c = Vector3Add(a.pos, Vector3Scale(Vector3Normalize(a.pos), s.size.y * 0.5f * scale));
-            const float r = 0.5f * std::max(s.size.x, s.size.y) * scale + 0.1f;
             const Vector3 oc = Vector3Subtract(c, o);
             const float t = Vector3DotProduct(oc, d);
+            // The body's sphere (half its length or height), a little wider with distance: easier to land a hit.
+            const float r = 0.5f * std::max(s.size.z, s.size.y) * scale + 0.1f + 0.03f * std::max(t, 0.0f);
             if (t < 0.0f || t > best) continue;
             if (Vector3Length(Vector3Subtract(oc, Vector3Scale(d, t))) > r) continue;
             best = t; aimed = (int)i;
         }
+        // Ground in front of it: the terrain is what's aimed at.
+        TerrainHit th;
+        if (aimed >= 0 && RaycastTerrain(world, Ray{ world.camera.position, dirW }, best, th) && th.distance < best - 0.3f) aimed = -1;
     }
     if (aimed >= 0 && inputEnabled && !buildTool.active) {
         Animal& a = animals[aimed];
         const Species& s = species[a.species];
         if (IsMouseButtonPressed(MOUSE_BUTTON_LEFT) && GetTime() - lastHit > 0.35) {
             lastHit = GetTime();
+            hitLatch = true;
             const ToolSpec t = ToolOf(terrainTool.heldTool);
             ++terrainTool.swings;
             Animals_Hit(aimed, t.type == ToolType::Hands ? 2.0f : 3.0f + 3.0f * t.tier);
@@ -680,7 +764,6 @@ void Animals_Update(Scene& world, float dt, float worldDt, bool inputEnabled) {
             }
         }
     }
-    lastUpdateMs = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
 }
 
 // The animal model (Plan 5 A): built from boxes in the animal's frame (x right, y up, z forward), proportioned

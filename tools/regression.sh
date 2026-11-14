@@ -49,6 +49,7 @@ planet() {
     run --seed 42 --bench 3 --test-wall
     run --seed 9 --bench 3 --test-wall
     run --seed 42 --bench 3 --test-ledge
+    run --seed 1 --bench 3 --test-tor
     run --seed 42 --bench 3 --test-menus
     run --seed 42 --bench 3 --test-water
     run --seed 9 --bench 3 --test-water

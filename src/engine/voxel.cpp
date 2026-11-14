@@ -609,7 +609,7 @@ float PlanetField::rockFeature(Vector3 p, float d, float surface, float fp) cons
     if (moon || d < 1e-3f) return -1e9f;
     const float w = std::clamp(2.0f - fp / 4.0f, 0.0f, 1.0f);
     const float h = d - surface;                      // metres above the height-map ground
-    if (w <= 0.0f || h > 9.0f || h < -3.0f) return -1e9f;
+    if (w <= 0.0f || h > 14.0f || h < -3.0f) return -1e9f; // tops reach 12 m: a lower cap cut crowns flat with a density jump (#242)
     const float elev = surface - radius;
     if (elev < 4.0f) return -1e9f;                    // sea, beaches, shallows
     float best = -1e9f;
@@ -833,7 +833,7 @@ float PlanetField::densityNear(Vector3 p, float d, float surface, float fp, cons
     const float depth = surface - d;
     if (depth < kBand3DBelow && depth > -kBand3DAbove) v += DENSITY_GRADIENT * terrain3D(p, d, surface, fp, col); // hills, cliffs, overhangs
     if (fabsf(depth) < 6.0f) v += DENSITY_GRADIENT * 1.5f * detail.fractalLimited(2, fp, p.x, p.y * 1.3f, p.z); // crags, overhangs
-    if (depth < 3.0f && depth > -9.0f) {
+    if (depth < 3.0f && depth > -14.0f) {
         const float m = rockFeature(p, d, surface, fp);
         if (m > -4.0f) v = std::max(v, ISO_LEVEL + DENSITY_GRADIENT * m);
     }
