@@ -252,7 +252,8 @@ RiverNetwork::RiverNetwork(float radius, unsigned int seed, const std::function<
     }
     stage("curves");
     // The fine ground along each link (#359): with no bank fill, a level above it would stand on nothing.
-    std::vector<float> fineMin(N, 1e30f);
+    std::vector<float> fineMin(N, 1e30f), pointGround; // pointGround: the fine ground at each curve point (#190)
+    if (params.fineHeight) pointGround.assign(curvePts.size(), 1e30f);
     if (params.fineHeight) {
         std::vector<int> links;
         for (int c = 0; c < N; ++c) if (curveOf[c] >= 0) links.push_back(c);
@@ -263,7 +264,7 @@ RiverNetwork::RiverNetwork(float radius, unsigned int seed, const std::function<
                 for (size_t i = t; i < links.size(); i += T) {
                     const int c = links[i];
                     float m = 1e30f;
-                    for (int k = 0; k <= K; ++k) m = std::min(m, params.fineHeight(Vector3Normalize(curvePts[curveOf[c] + k])));
+                    for (int k = 0; k <= K; ++k) { const float g = params.fineHeight(Vector3Normalize(curvePts[curveOf[c] + k])); pointGround[curveOf[c] + k] = g; m = std::min(m, g); }
                     fineMin[c] = m;
                 }
             });
@@ -296,18 +297,38 @@ RiverNetwork::RiverNetwork(float radius, unsigned int seed, const std::function<
         if (h[c] > 700.0f) ++st.riverCellsAbove700;
         if (mainChild[c] < 0) st.highestSource = std::max(st.highestSource, h[c]);
     }
+    // The level at each curve point: interpolated along the link, and with the fine ground (#190) at the sea where the
+    // ground there is already under it (the coarse cells put the mouth offshore of the real coast, so a river stood
+    // 1.2 m over the sea at the shoreline: the flowing water overfilled and never settled). Upstream first, a running
+    // minimum within each link and from its children, so the level never rises downstream.
+    std::vector<float> pointLevel(curvePts.size(), 0.0f), endCap(N, 1e30f);
+    for (int k = (int)order.size() - 1; k >= 0; --k) {
+        const int c = order[k];
+        if (curveOf[c] < 0) continue;
+        const int p = parent[c];
+        const float la = L[c], lb = !river[p] ? kMinLevel : L[p];
+        float run = endCap[c];
+        for (int i = 0; i <= K; ++i) {
+            float lv = la + (lb - la) * (float)i / K;
+            // Only at a real coast: the link's cell is lowland by the sea (inland, ground under 0 m is a ravine, a gully
+            // or a basin, and dropping the river there cut a canyon), and never under the next lake downstream.
+            if (!pointGround.empty() && pointGround[curveOf[c] + i] < 0.0f && h[c] < 3.0f) lv = std::max(floorLevel[c], std::min(lv, kMinLevel));
+            run = std::min(run, lv);
+            pointLevel[curveOf[c] + i] = run;
+        }
+        endCap[p] = std::min(endCap[p], run);
+    }
     for (int c = 0; c < N; ++c) {
         if (curveOf[c] < 0) continue;
         const int p = parent[c];
         const bool sea = !river[p];
         if (sea) ++st.mouths;
-        const float la = L[c], lb = sea ? kMinLevel : L[p];
         const float wa = hw[c], wb = sea ? hw[c] * 1.2f : hw[p];
         const float da = dep[c], db = sea ? dep[c] : dep[p];
         for (int k = 1; k <= K; ++k) {
             const float t = (float)k / K, t0 = (float)(k - 1) / K;
             const Vector3 a = curvePts[curveOf[c] + k - 1], b = curvePts[curveOf[c] + k];
-            pieces.push_back({ a, b, la + (lb - la) * t0, la + (lb - la) * t, wa + (wb - wa) * t0, wa + (wb - wa) * t, da + (db - da) * t0, da + (db - da) * t });
+            pieces.push_back({ a, b, pointLevel[curveOf[c] + k - 1], pointLevel[curveOf[c] + k], wa + (wb - wa) * t0, wa + (wb - wa) * t, da + (db - da) * t0, da + (db - da) * t });
             pieces.back().mid = Vector3Scale(Vector3Add(a, b), 0.5f); pieces.back().halfLen = 0.5f * Vector3Distance(a, b);
         }
     }

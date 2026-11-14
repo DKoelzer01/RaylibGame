@@ -3583,6 +3583,12 @@ int main(int argc, char** argv)
                         else {
                             const float shore = (float)flowStart;
                             printf("bench: flow: water %.0f m from the start, level %.1f m, shore %.0f m out\n", best, flowLevel, shore);
+                            if (getenv("FLOWDBG"))
+                                for (float s = shore - 8.0f; s <= shore + 2.0f; s += 2.0f) {
+                                    const Vector3 q = Vector3Normalize(Vector3Add(flowDir, Vector3Scale(flowOut, s / pf->radius)));
+                                    const PlanetField::WaterSource wq = pf->waterSourceAt(q);
+                                    printf("bench: flow dbg column %+.0f m from the shore: source kind %d level %.2f; %s\n", s - shore, wq.kind, wq.level, pf->debugColumn(q).c_str());
+                                }
                             // The channel: from 2 m inside the water to 14 m past the shore, its floor 1.5 m under the
                             // water; then a 10 m shaft and a chamber of radius 3.
                             std::vector<TerrainEdit> cut;
