@@ -73,6 +73,8 @@ namespace std {
 // Asteroids use 0-3; planets all eight (Regolith is rendered as dirt there).
 enum class VoxelMaterial : uint8_t { Rock = 0, Regolith = 1, Ice = 2, Ore = 3, Sand = 4, Gravel = 5, Grass = 6, Snow = 7, Count };
 enum class Biome : uint8_t { Ocean = 0, Jungle, Savanna, Desert, Badlands, Forest, Meadow, Swamp, Taiga, Tundra, Alpine, Polar, Count };
+// Bench override (--bench-biome): findSpawnDir returns the nearest deep patch of this biome (-1: off).
+inline int gSpawnBiome = -1;
 const char* BiomeName(Biome b);
 const char* VoxelMaterialName(VoxelMaterial m);
 
@@ -217,6 +219,7 @@ public:
     // A body-local direction to a good start spot: temperate latitude, flat grassland a little above
     // the sea, solid ground underfoot (no cave mouth). Deterministic for a seed.
     Vector3 findSpawnDir(unsigned int seed) const;
+    Vector3 nearestBiomeDir(Vector3 home, Biome b) const; // nearest deep patch of b (home if none)
     // Biomes (Plan 5 B): climate from latitude, height and regional noise (2-5 km patches); the biome
     // from it (Whittaker-style: temperature x moisture). biomeAt jitters the climate a little at a fine
     // scale so borders interleave instead of running as hard lines; tints use the smooth climate.

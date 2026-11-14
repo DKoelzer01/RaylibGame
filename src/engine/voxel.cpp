@@ -1086,7 +1086,40 @@ Vector3 PlanetField::findSpawnDir(unsigned int seed) const {
         if (score > bestScore) { bestScore = score; best = dir; }
         if (slope < 0.01f && temperate) break;
     }
+    if (gSpawnBiome >= 0 && gSpawnBiome < (int)Biome::Count) { // bench override: start in that biome (cached per field)
+        static std::mutex m; static std::unordered_map<const PlanetField*, Vector3> cache;
+        std::lock_guard<std::mutex> lock(m);
+        auto it = cache.find(this);
+        if (it == cache.end()) it = cache.emplace(this, nearestBiomeDir(best, (Biome)gSpawnBiome)).first;
+        return it->second;
+    }
     return best;
+}
+
+// The nearest deep patch of biome b (the same biome 200 m out on four sides) to home, from 60k random directions;
+// home if none. Used by --bench-biome (gSpawnBiome).
+Vector3 PlanetField::nearestBiomeDir(Vector3 home, Biome b) const {
+    std::mt19937 rng(11);
+    std::uniform_real_distribution<float> u(-1.0f, 1.0f);
+    float best = -2.0f;
+    Vector3 out = home;
+    for (int i = 0; i < 60000; ++i) {
+        Vector3 d = { u(rng), u(rng), u(rng) };
+        if (Vector3LengthSqr(d) > 1.0f || Vector3LengthSqr(d) < 1e-4f) continue;
+        d = Vector3Normalize(d);
+        const float close = Vector3DotProduct(d, home);
+        if (close <= best) continue;
+        const float e = elevation(d, 32.0f);
+        if (e < 6.0f || biomeAt(d, e) != b) continue;
+        const Vector3 t1 = Vector3Normalize(Vector3CrossProduct(d, { 0, 1, 0 })), t2 = Vector3CrossProduct(t1, d);
+        bool deep = true;
+        for (int s = 0; s < 4 && deep; ++s) {
+            const Vector3 q = Vector3Normalize(Vector3Add(d, Vector3Scale(s < 2 ? t1 : t2, (s & 1 ? 200.0f : -200.0f) / radius)));
+            deep = biomeAt(q, elevation(q, 32.0f)) == b;
+        }
+        if (deep) { best = close; out = d; }
+    }
+    return out;
 }
 
 VoxelMaterial PlanetField::materialSkyHinted(Vector3 p, float base, float fp, Vector3 normal, float& sky, const float* elevHint, const Column3D* colHint) const {
