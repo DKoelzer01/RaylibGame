@@ -6,6 +6,7 @@ in vec3 fragPosition;
 in vec3 fragNormal;
 in vec4 fragColor;
 in float fragGlow;
+in float fragSky;
 
 uniform vec3 viewPos;
 uniform vec3 sunDir;
@@ -13,6 +14,7 @@ uniform vec3 ambient;
 uniform vec3 fogColor;
 uniform float fogDensity;
 uniform vec4 fogShell;
+uniform vec4 sunOccluder; // the nearest planet blocks the sun (night side), as for parts (#284)
 
 #include "shadow.glsl"
 
@@ -27,11 +29,19 @@ void main()
     } else {
         vec3 n = normalize(fragNormal);
         if (!gl_FrontFacing) n = -n;
+        // The planet's night side and how buried the instance is (#284): as parts.fs, so machine details match
+        // the casings and parts around them.
+        float sunVis = 1.0;
+        if (sunOccluder.w > 0.0) {
+            vec3 oc = fragPosition - sunOccluder.xyz;
+            float b = dot(oc, sunDir), c = dot(oc, oc) - sunOccluder.w * sunOccluder.w;
+            if (b < 0.0) sunVis *= smoothstep(sunOccluder.w - max(sunOccluder.w * 0.04, -b * 0.03), sunOccluder.w + max(sunOccluder.w * 0.04, -b * 0.03), sqrt(max(c + sunOccluder.w * sunOccluder.w - b * b, 0.0)));
+        }
         float ndl = max(dot(n, sunDir), 0.0);
-        float sun = ndl > 0.0 ? ndl * sunShadowNormal(fragPosition, n, sunDir, 1) : 0.0;
+        float sun = ndl > 0.0 ? sunVis * ndl * sunShadowNormal(fragPosition, n, sunDir, 1) * fragSky : 0.0;
         vec3 v = normalize(viewPos - fragPosition);
         float spec = pow(max(dot(n, normalize(sunDir + v)), 0.0), 32.0) * 0.1 * sun;
-        color = albedo * (ambient * (1.4 + 0.3 * n.y) + vec3(1.0, 0.96, 0.88) * sun + lampLight(fragPosition, n)) + vec3(spec);
+        color = albedo * (ambient * (1.4 + 0.3 * n.y) * fragSky + vec3(1.0, 0.96, 0.88) * sun + lampLight(fragPosition, n)) + vec3(spec);
     }
     float dist = length(viewPos - fragPosition), fogDist = dist;
     if (fogShell.w > 0.0) {

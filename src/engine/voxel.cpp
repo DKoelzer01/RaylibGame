@@ -1,3 +1,5 @@
+#include <unordered_map>
+#include <cstring>
 #include "voxel.h"
 #include "rivers.h"
 #include "foliage.h"
@@ -165,11 +167,32 @@ static float WaveSin(float x) {
     return f < 0.5f ? 16.0f * f * (0.5f - f) : -16.0f * (f - 0.5f) * (1.0f - f);
 }
 
+struct PlanetField::GridNodeCache {
+    struct Key {
+        long long i, j; uint32_t fp; int face;
+        bool operator==(const Key& o) const { return i == o.i && j == o.j && fp == o.fp && face == o.face; }
+    };
+    struct Hash {
+        size_t operator()(const Key& k) const {
+            uint64_t h = (uint64_t)k.i * 0x9E3779B97F4A7C15ull ^ (uint64_t)k.j * 0xC2B2AE3D27D4EB4Full ^ ((uint64_t)k.fp << 3 | (uint64_t)k.face) * 0x165667B19E3779F9ull;
+            h ^= h >> 31; h *= 0xBF58476D1CE4E5B9ull; h ^= h >> 29;
+            return (size_t)h;
+        }
+    };
+    struct Node { float h; Column3D col; };
+    static constexpr int kShards = 64;
+    static constexpr size_t kShardCap = 1u << 14; // ~1M nodes in all (~60 MB)
+    struct Shard { std::mutex m; std::unordered_map<Key, Node, Hash> map; };
+    Shard shards[kShards];
+    Shard& shardOf(const Key& k) { return shards[Hash()(k) >> 58]; }
+};
+
 PlanetField::PlanetField(unsigned int seed, float radius_, bool moon_)
     : radius(radius_), mantleRadius(radius_ * (1.0f - 0.015f)), moon(moon_) {
     oreSeed = seed ^ 0x0e5e0e5u;
     riverSeed = seed;
     riverState = std::make_shared<RiverState>();
+    gridCache = std::make_shared<GridNodeCache>();
     std::mt19937 rng(seed);
     // Large features scale with the body (a moon gets proportionally sized basins and ridges);
     // hills, detail, caves and veins are absolute sizes, so they feel the same everywhere.
@@ -916,31 +939,55 @@ bool PlanetField::prepareBlock(Vector3 o, float stride, int S, float fp, BlockGr
     // same line of sight from the planet centre shares one height, so a 35^3 block needs ~35^2
     // height evaluations instead of 35^3. Bilinear interpolation at one stride spacing is accurate
     // to centimetres (the finest height detail kept at this footprint is >= 2 strides long).
-    const Vector3 n = { c.x / dc, c.y / dc, c.z / dc };
-    const Vector3 t1 = Vector3Normalize(fabsf(n.y) < 0.9f ? Vector3CrossProduct(n, { 0, 1, 0 }) : Vector3CrossProduct(n, { 1, 0, 0 }));
-    const Vector3 t2 = Vector3CrossProduct(n, t1);
+    // The plane is the cube face of the block's direction and the nodes sit on that face's global lattice (#251):
+    // neighbouring blocks of a level share their nodes, so the interpolated surface is one function across them.
+    // A grid tangent at each block's own centre interpolated a shared border from different nodes, and where the
+    // height map kinks (pond bowls and banks, river beds) the borders disagreed: cracks along chunk seams. Only
+    // the 12 cube edges still join two lattices.
+    const int ax = fabsf(c.x) >= fabsf(c.y) && fabsf(c.x) >= fabsf(c.z) ? 0 : fabsf(c.y) >= fabsf(c.z) ? 1 : 2;
+    const float sgn = (ax == 0 ? c.x : ax == 1 ? c.y : c.z) >= 0.0f ? 1.0f : -1.0f;
+    Vector3 n{}, t1{}, t2{};
+    if (ax == 0)      { n = { sgn, 0, 0 }; t1 = { 0, 1, 0 }; t2 = { 0, 0, 1 }; }
+    else if (ax == 1) { n = { 0, sgn, 0 }; t1 = { 0, 0, 1 }; t2 = { 1, 0, 0 }; }
+    else              { n = { 0, 0, sgn }; t1 = { 1, 0, 0 }; t2 = { 0, 1, 0 }; }
     float umin = 1e30f, umax = -1e30f, vmin = 1e30f, vmax = -1e30f;
     for (int k = 0; k < 8; ++k) {
         const Vector3 q = { o.x + ((k & 1) ? ext : 0.0f), o.y + ((k & 2) ? ext : 0.0f), o.z + ((k & 4) ? ext : 0.0f) };
         const float s = Vector3DotProduct(q, n);
+        if (s <= 1e-3f) return false; // reaches past the face's hemisphere (only huge blocks): the per-sample path
         const float u = Vector3DotProduct(q, t1) / s, v = Vector3DotProduct(q, t2) / s;
         umin = std::min(umin, u); umax = std::max(umax, u); vmin = std::min(vmin, v); vmax = std::max(vmax, v);
     }
-    // Spaced at the footprint (>= 1 m), not the stride: nodes finer than 1 m (for edits) interpolate a
-    // height map that has no finer detail anyway.
-    const float du = std::max(stride, fp) / radius;
-    const int nu = std::min(256, (int)ceilf((umax - umin) / du) + 2), nv = std::min(256, (int)ceilf((vmax - vmin) / du) + 2);
-    const float su = (umax - umin) / (float)(nu - 1), sv = (vmax - vmin) / (float)(nv - 1);
+    // Spaced at the footprint (>= 1 m) at the face centre, not the stride: nodes finer than 1 m (for edits)
+    // interpolate a height map that has no finer detail anyway. Gnomonic spacing tightens toward the face edges.
+    const double du = (double)std::max(stride, fp) / radius;
+    const long long i0 = (long long)floor(umin / du) - 1, j0 = (long long)floor(vmin / du) - 1;
+    const int nu = (int)std::min<long long>(256, (long long)ceil(umax / du) + 2 - i0), nv = (int)std::min<long long>(256, (long long)ceil(vmax / du) + 2 - j0);
+    umin = (float)(i0 * du); vmin = (float)(j0 * du);
+    const float su = (float)du, sv = (float)du;
     std::vector<float>& h = g.h;
     std::vector<Column3D>& cols = g.cols;
     h.assign((size_t)nu * nv, 0.0f);
     cols.assign((size_t)nu * nv, Column3D{});
     for (int j = 0; j < nv; ++j)
         for (int i = 0; i < nu; ++i) {
-            const float u = umin + i * su, v = vmin + j * sv;
+            // Shared with the other blocks on this lattice (stacked blocks of a column read the same nodes).
+            GridNodeCache::Key key{ i0 + i, j0 + j, 0u, ax * 2 + (sgn > 0.0f ? 1 : 0) };
+            memcpy(&key.fp, &fp, sizeof(float));
+            GridNodeCache::Shard& sh = gridCache->shardOf(key);
+            {
+                std::lock_guard<std::mutex> lock(sh.m);
+                if (auto it = sh.map.find(key); it != sh.map.end()) { h[(size_t)j * nu + i] = it->second.h; cols[(size_t)j * nu + i] = it->second.col; continue; }
+            }
+            const float u = (float)((i0 + i) * du), v = (float)((j0 + j) * du); // from the global index: identical in every block
             const Vector3 gdir = Vector3Normalize(Vector3Add(n, Vector3Add(Vector3Scale(t1, u), Vector3Scale(t2, v))));
-            h[(size_t)j * nu + i] = elevation(gdir, fp);
-            cols[(size_t)j * nu + i] = terrain3DColumn(gdir, h[(size_t)j * nu + i]); // the 3D band's column strength, once per node
+            const float e = elevation(gdir, fp);
+            const Column3D col = terrain3DColumn(gdir, e); // the 3D band's column strength, once per node
+            h[(size_t)j * nu + i] = e;
+            cols[(size_t)j * nu + i] = col;
+            std::lock_guard<std::mutex> lock(sh.m);
+            if (sh.map.size() >= GridNodeCache::kShardCap) sh.map.clear();
+            sh.map.emplace(key, GridNodeCache::Node{ e, col });
         }
     g.n = n; g.t1 = t1; g.t2 = t2;
     g.umin = umin; g.vmin = vmin; g.su = su; g.sv = sv; g.nu = nu; g.nv = nv;
@@ -1085,6 +1132,28 @@ Vector3 PlanetField::findSpawnDir(unsigned int seed) const {
         const float score = -slope * 100.0f - e * 0.01f - (temperate ? 0.0f : 1000.0f);
         if (score > bestScore) { bestScore = score; best = dir; }
         if (slope < 0.01f && temperate) break;
+    }
+    if (gSpawnPond && !moon) { // bench override: the rim of the nearest pond within 6 km (cached per field)
+        static std::mutex m; static std::unordered_map<const PlanetField*, Vector3> cache;
+        std::lock_guard<std::mutex> lock(m);
+        auto it = cache.find(this);
+        if (it == cache.end()) {
+            const Vector3 t1 = Vector3Normalize(Vector3CrossProduct(best, { 0, 1, 0 })), t2 = Vector3CrossProduct(t1, best);
+            float bestDist = 1e30f; Vector3 rim = best;
+            for (float e = -6000.0f; e <= 6000.0f; e += 24.0f)
+                for (float nn = -6000.0f; nn <= 6000.0f; nn += 24.0f) {
+                    const float dist = sqrtf(e * e + nn * nn);
+                    if (dist >= bestDist) continue;
+                    const Vector3 d = Vector3Normalize(Vector3Add(best, Vector3Add(Vector3Scale(t1, e / radius), Vector3Scale(t2, nn / radius))));
+                    const WaterSource ws = waterSourceAt(d);
+                    if (ws.kind != 3) continue;
+                    bestDist = dist;
+                    const Vector3 out = Vector3Normalize(Vector3CrossProduct(ws.pondDir, { 0, 1, 0 }));
+                    rim = Vector3Normalize(Vector3Add(ws.pondDir, Vector3Scale(out, ws.pondR / radius)));
+                }
+            it = cache.emplace(this, rim).first;
+        }
+        return it->second;
     }
     if (gSpawnBiome >= 0 && gSpawnBiome < (int)Biome::Count) { // bench override: start in that biome (cached per field)
         static std::mutex m; static std::unordered_map<const PlanetField*, Vector3> cache;

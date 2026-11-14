@@ -109,10 +109,25 @@ void Viewmodel_Update(Scene& world, float dt) {
 void Viewmodel_Draw(Scene& world) {
     visible = settings.showHands && !player.flyMode && !Rocket_Boarded() && !telescope.active && !survival.dead;
     if (!visible) return;
-    // Light: daylight from the sun's height over the player's horizon, or the headlamp.
-    const float sunUp = Vector3DotProduct(Vector3Normalize(world.sunDirection), player.up);
-    float light = 0.28f + 0.72f * std::clamp((sunUp + 0.15f) / 0.4f, 0.0f, 1.0f);
-    if (survival.headlamp) light = std::max(light, 0.8f);
+    // Light (#203): it came only from the sun's height (0.28 at night at least), so the hands glowed in caves, in the
+    // shade and at night. Now: sky light scaled by how buried the eye is (the terrain's own rule), sunlight only when
+    // no terrain stands between the eye and the sun (one ray), the headlamp; eased so walking into shade doesn't pop.
+    const Vector3 sunDir = Vector3Normalize(world.sunDirection);
+    const float sunUp = Vector3DotProduct(sunDir, player.up);
+    const float day = std::clamp((sunUp + 0.15f) / 0.4f, 0.0f, 1.0f);
+    float sky = 1.0f, sunVis = day > 0.0f ? 1.0f : 0.0f;
+    if (Planetoid* b = player.nearest) {
+        const Vector3 eye = world.camera.position, l = b->toLocal(eye);
+        const float len = Vector3Length(l);
+        if (b->field && len > 1.0f) b->field->materialSky(l, 1.0f, 1.0f, Vector3Scale(l, 1.0f / len), sky);
+        TerrainHit th;
+        if (sunVis > 0.0f && RaycastTerrain(world, Ray{ Vector3Add(eye, Vector3Scale(sunDir, 0.3f)), sunDir }, 120.0f, th)) sunVis = 0.0f;
+    }
+    float target = (0.08f + 0.27f * day) * sky + 0.65f * day * sunVis * sky;
+    if (survival.headlamp) target = std::max(target, 0.8f);
+    static float light = -1.0f;
+    const float dtl = GetFrameTime();
+    light = light < 0.0f || dtl <= 0.0f ? target : light + (target - light) * (1.0f - expf(-dtl / 0.15f));
 
     rlDrawRenderBatchActive();
     if (glad_glClear) glad_glClear(0x00000100); // depth only: the hands draw over the world, never into it

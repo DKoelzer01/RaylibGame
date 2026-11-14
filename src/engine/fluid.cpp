@@ -746,7 +746,7 @@ void RunJob() {
                 w.s->ponds.push_back(c.id);
                 w.s->pondInfo.push_back({ c.dir, c.r, c.level });
                 const Vector3 pc = Vector3Scale(c.dir, pf->radius + c.level);
-                { std::lock_guard<std::mutex> lock(pubMx); remeshQueue.push_back({ w.s->body, { pc.x, pc.y, pc.z, c.r * 1.3f + 8.0f } }); }
+                { std::lock_guard<std::mutex> lock(pubMx); remeshQueue.push_back({ w.s->body, { pc.x, pc.y, pc.z, c.r * 1.3f + 8.0f } }); } // remeshed with 5 strides of reach: coarse nodes draw the static water up to 4 lattice samples out (#251)
                 int pci, pcj, pck;
                 w.s->cellOf(pc, pci, pcj, pck);
                 const int rc = (int)ceilf(c.r * 1.1f) + 1;
@@ -1144,7 +1144,7 @@ void Fluid::Update(Scene& world, float dt) {
         UploadMesh(&mesh, false);
     }
     for (auto& r : remesh)
-        if (Planetoid* p = Planetoid::find(r.first)) RequestRemesh(*p, { r.second.x, r.second.y, r.second.z }, r.second.w);
+        if (Planetoid* p = Planetoid::find(r.first)) RequestRemesh(*p, { r.second.x, r.second.y, r.second.z }, r.second.w, 5.0f);
 
     // A step every 50 ms when the last one has finished (the job owns the state while it runs).
     accum += dt;

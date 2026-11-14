@@ -57,6 +57,9 @@ ItemKind KindOf(const std::string& id);
 int StackLimit(const std::string& id); // whole units per slot
 // Recipe wildcards: "any_planks" matches planks of any wood (oak_planks, ...), "any_log" any log.
 bool ItemMatches(const std::string& want, const std::string& have);
+// Wildcards (any_planks, any_log) are recipe tags matched by ItemMatches, not items: never added to an inventory or
+// listed in the Creative tab (#269).
+inline bool IsWildcardItem(const std::string& id) { return id.rfind("any_", 0) == 0; }
 
 // One grid cell. Amounts are hundredths (2 decimal places), so resources can be fractional.
 struct InvSlot {

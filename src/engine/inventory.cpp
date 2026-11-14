@@ -191,6 +191,7 @@ void Inventory::addFractional(const std::string& id, float amount) {
 
 double Inventory::addAmount(const std::string& id, double amount) {
     if (amount <= 0.0 || id.empty()) return 0.0;
+    if (IsWildcardItem(id)) return amount; // a recipe tag (any_planks), never an item you hold (#269)
     // Tools and blocks come in whole units.
     int64_t left = KindOf(id) == ItemKind::Resource ? ToCenti(amount) : (int64_t)floor(amount + 1e-6) * 100;
     const int64_t cap = (int64_t)StackLimit(id) * 100;

@@ -1,4 +1,5 @@
 #include "ambience.h"
+#include "machinemodels.h"
 #include "weather.h"
 #include "particles.h"
 #include "factory.h"
@@ -210,16 +211,19 @@ void Ambience_Update(Scene& world, float dt) {
         for (size_t i = 0; i < plot->parts.size(); ++i) {
             const Part& part = plot->parts[i];
             if (!SmokyMachine(part.type)) continue;
-            const Vector3 base = plot->toBody({ (part.origin.x + 1) * kCellSize, part.origin.y * kCellSize, (part.origin.z + 1) * kCellSize });
-            if (Vector3Distance(base, local) > 120.0f) continue;
+            // From the chimney tops of the model (#220: the base assumed the footprint ran +x/+z from the origin cell,
+            // so rotated machines smoked from the opposite corner, in the air).
+            Vector3 tops[4];
+            const int nTops = Machine_SmokePoints(*plot, i, tops, 4);
+            if (nTops == 0 || Vector3Distance(tops[0], local) > 120.0f) continue;
             if (!Factory::Working(body->id, plot->id, (int)i)) continue;
             const bool campfire = part.type == PartType::Campfire;
             ParticleBurst smoke;
             smoke.kind = ParticleKind::Smoke; smoke.color = campfire ? Color{ 190, 188, 185, 255 } : Color{ 150, 148, 145, 255 };
             smoke.count = std::max(1, (int)(tick * 8.0f)); smoke.size = campfire ? 0.35f : 0.5f; smoke.life = 4.5f; smoke.speed = 0.9f; smoke.spread = 0.25f;
             smoke.dir = plot->up;
-            const Vector3 top = Vector3Add(base, Vector3Scale(plot->up, campfire ? 0.5f : 1.05f));
-            Particles_Emit(*body, top, smoke);
+            for (int k = 0; k < nTops; ++k) Particles_Emit(*body, tops[k], smoke);
+            const Vector3 base = Vector3Subtract(tops[0], Vector3Scale(plot->up, 0.5f)); // the campfire's floor (its smoke point is 0.5 m up)
             if (campfire) {
                 ParticleBurst fire;
                 fire.kind = ParticleKind::Fire; fire.color = { 255, 120, 30, 255 };

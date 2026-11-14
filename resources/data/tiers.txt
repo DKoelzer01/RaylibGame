@@ -10,7 +10,6 @@
     task | place campfire         | Place a campfire (G) and feed it logs or planks (I)
     task | get fired_crucible 1   | Mould a crucible from clay and fire it in the campfire
 1 | Stone age        | bronze_ingot     | Build a kiln. Dig deep for copper and tin ore (veins below 8 m), smelt them in the kiln (fuel: logs, planks, charcoal, coal) and alloy 3 copper + 1 tin into bronze.
-    task | do eat 1               | Eat something (berries from bushes: bind food to the hotbar)
     task | place kiln             | Build and place a kiln
     task | get copper_ore 4       | Find copper ore (deposits and pockets below 8 m)
     task | get tin_ore 2          | Find tin ore
@@ -24,15 +23,11 @@
     task | get coke 2             | Bake coal into coke
     task | place blast_furnace    | Build a blast furnace
     task | get steel_ingot 1      | Make steel from iron and coke
-    task | do penned 2            | Pen two animals: feed them (I) to lead them, then fence them in
 3 | Steel            | vacuum_tube      | Glass (sand in a kiln), copper wire and a steel plate make a vacuum tube: the first circuit.
     task | get sand 8             | Dig sand on a beach or riverbank
     task | get glass 2            | Melt sand into glass in the kiln
     task | get copper_wire 4      | Draw copper wire (Tab)
     task | get vacuum_tube 1      | Craft a vacuum tube
-    task | do till 1              | Till a field (a shovel or hoe: RMB on soft ground)
-    task | do plant 1             | Plant seeds on the farmland (look at it, I)
-    task | do pour 1              | Carry water to it: a bucket (hotbar, RMB) scoops 1 m^3 and pours it; water within 4 m doubles growth
     task | do modules 2           | Fit a second suit module (Tab > Suit)
 4 | LV electric      | electric_furnace | Basic circuits on a steel hull make your first LV machine. Power it from an LV generator (32 V; steam machines refuse it).
     task | get basic_circuit 1    | Craft a basic circuit
@@ -41,7 +36,6 @@
     task | get electric_furnace 1 | Craft an electric furnace
     task | place generator        | Place the LV generator
     task | place electric_furnace | Place the electric furnace and cable it to the generator
-    task | do waypoint 1          | Mark a waypoint on the map (M, click where)
     task | get field_suit 1       | Craft a field suit (steel plate, cloth, hide) and wear it (Tab > Suit)
 5 | MV electric      | aluminium_ingot  | Process ore for more: a macerator crushes it (x2), an ore washer and a water pump purify it, a centrifuge splits off byproducts (iron: nickel, copper: gold). MV (128 V): an MV generator powers an electrolyzer (water: hydrogen and oxygen) and a chemical reactor (polyethylene for good circuits). Electrolyse bauxite dust into aluminium. A miner works the deposit under it.
     task | place macerator        | Place a macerator: crushed ore smelts to twice the ingots
