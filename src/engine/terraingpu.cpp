@@ -137,10 +137,14 @@ namespace {
             b.t1[0] = g.t1.x; b.t1[1] = g.t1.y; b.t1[2] = g.t1.z; b.t1[3] = g.umin;
             b.t2[0] = g.t2.x; b.t2[1] = g.t2.y; b.t2[2] = g.t2.z; b.t2[3] = g.vmin;
             b.s[0] = g.su; b.s[1] = g.sv;
-            b.a[0] = j.block.E; b.a[1] = g.nu; b.a[2] = g.nv; b.a[3] = (int)(grid.size() / 4);
+            b.a[0] = j.block.E; b.a[1] = g.nu; b.a[2] = g.nv; b.a[3] = (int)(grid.size() / 8); // nodes (two vec4 each)
             b.b[0] = (int)(isl.size() / 12); b.b[1] = (int)(j.islands.size() / 12); b.b[2] = (int)out;
             blocks.push_back(b);
-            for (size_t k = 0; k < g.h.size(); ++k) { const float v[4] = { g.h[k], g.cols[k].mask, g.cols[k].f, 0.0f }; grid.insert(grid.end(), v, v + 4); }
+            for (size_t k = 0; k < g.h.size(); ++k) { // per node: elevation, 3D mask, f, lip top | lip thick, lip margin (#357), -, -
+                const PlanetField::Column3D& c = g.cols[k];
+                const float v[8] = { g.h[k], c.mask, c.f, c.lipTop, c.lipThick, c.lipMargin, 0.0f, 0.0f };
+                grid.insert(grid.end(), v, v + 8);
+            }
             isl.insert(isl.end(), j.islands.begin(), j.islands.end());
             sl.outOffset.push_back(out);
             const int n = j.block.E * j.block.E * j.block.E;
@@ -238,7 +242,29 @@ void TerrainGpu_Pump() {
         // The first batch of each field is checked against the CPU once (one block, ~4 ms): the GPU path rests
         // on bit-exact results (collision reads the CPU field), which another driver might not give (FMA,
         // denormals, sqrt). On any difference the GPU path turns off and this batch is redone on the CPU.
-        if (!sl.jobs.empty() && S.verified != sl.jobs.front().field) {
+        // RAYLIBGAME_GPU_VERIFY_ALL=1 (tests, #357): every block of every batch against the CPU, counting the blocks
+        // that differ (printed at exit) instead of switching the GPU path off.
+        static const bool verifyAll = getenv("RAYLIBGAME_GPU_VERIFY_ALL") && getenv("RAYLIBGAME_GPU_VERIFY_ALL")[0] == '1';
+        if (verifyAll && !S.disabled) {
+            static long long checked = 0, differ = 0;
+            static bool reported = (atexit([] { printf("bench: terrain gpu verify: %lld blocks checked, %lld differ from the CPU\n", checked, differ); }), true);
+            (void)reported;
+            for (size_t k = 0; k < sl.jobs.size(); ++k) {
+                const GpuBlockJob& j = sl.jobs[k];
+                const size_t n = (size_t)j.block.E * j.block.E * j.block.E;
+                std::vector<float> cpu(n);
+                j.field->sampleBlock(j.block.origin, j.block.stride, j.block.E, j.block.footprint, j.grid, cpu.data());
+                ++checked;
+                if (memcmp(cpu.data(), all.get() + sl.outOffset[k], n * sizeof(float)) != 0) {
+                    if (differ++ < 5) {
+                        size_t bad = 0; float worst = 0.0f;
+                        for (size_t q = 0; q < n; ++q) { const float e = fabsf(cpu[q] - all.get()[sl.outOffset[k] + q]); if (e > 0.0f) ++bad; worst = std::max(worst, e); }
+                        printf("bench: terrain gpu verify: block at (%.1f, %.1f, %.1f) stride %.2f: %zu of %zu samples differ, worst %.3g\n",
+                               j.block.origin.x, j.block.origin.y, j.block.origin.z, j.block.stride, bad, n, worst);
+                    }
+                }
+            }
+        } else if (!sl.jobs.empty() && S.verified != sl.jobs.front().field) {
             const GpuBlockJob& j = sl.jobs.front();
             const size_t n = (size_t)j.block.E * j.block.E * j.block.E;
             std::vector<float> cpu(n);

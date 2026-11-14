@@ -270,11 +270,13 @@ public:
     // Rock outcrops and boulders near the surface: metres inside the nearest one (< 0 outside).
     float rockFeature(Vector3 p, float d, float surface, float footprint) const;
     // 3D terrain: metres the surface is raised (+) or carved (-) here by the 3D noise band (0 outside it).
-    struct Column3D { float mask = 0.0f, f = 0.0f; };          // the 3D band's per-column strength (Plan 5 C)
+    struct Column3D { float mask = 0.0f, f = 0.0f; float lipTop = 0.0f, lipThick = 0.0f, lipMargin = -1000.0f; }; // the 3D band's per-column strength (Plan 5 C); a cliff lip over the column (#357: ErosionCliffLip, top over the surface)
     // With the height-map elevation and 3D-band column at p already known (gridSurface, from the chunk's block grid):
     // chunk meshing (#148) skips re-evaluating the height map at every vertex (~80% of the per-vertex cost).
     VoxelMaterial materialSkyHinted(Vector3 p, float base, float footprint, Vector3 normal, float& sky, const float* elevHint, const Column3D* colHint) const;
     Column3D terrain3DColumn(Vector3 dir, float elev) const;
+    void cliffLipColumn(Vector3 dir, float footprint, float elev, Column3D& col) const; // #357: the erosion cliff lip over a column (nothing without the bake)
+    Vector3 uphillAt(Vector3 dir) const; // the eroded height's gradient (body frame, m per m; zero without the bake): benches face cliffs
     float terrain3D(Vector3 p, float d, float surface, float footprint, const Column3D* col = nullptr) const;
 
     // baseDensityBlock in two halves (Plan 6 step 4, #147): the height map on a gnomonic grid tangent at the

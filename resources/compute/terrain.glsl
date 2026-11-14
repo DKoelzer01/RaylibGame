@@ -397,13 +397,19 @@ float floatingIsland(vec3 p, float d) {
 }
 
 // PlanetField::densityNear with the column given.
-float densityNear(vec3 p, float d, float surface, float fp, float cmask, float cf) {
+float densityNear(vec3 p, float d, float surface, float fp, float cmask, float cf, float lipTop, float lipThick, float lipMargin) {
     precise float v = ISO_LEVEL + DENSITY_GRADIENT * (surface - d);
     precise float depth = surface - d;
     if (depth < K_BAND_BELOW && depth > -K_BAND_ABOVE) v += DENSITY_GRADIENT * terrain3D(p, d, surface, fp, cmask, cf);
     if (abs(depth) < 6.0) v += DENSITY_GRADIENT * 1.5 * fractalLimited(N_DETAIL, 2, fp, p.x, p.y * 1.3, p.z);
     if (depth < 3.0 && depth > -14.0) {
         precise float m = rockFeature(p, d, surface, fp);
+        if (m > -4.0) v = max(v, ISO_LEVEL + DENSITY_GRADIENT * m);
+    }
+    // A cliff lip over the column (#357; the column's lip comes from the grid, as on the CPU).
+    if (depth < 2.0 && depth > -45.0 && lipThick > 0.05) {
+        precise float top = surface + lipTop;
+        precise float m = min(min(d - (top - lipThick), top - d), lipMargin);
         if (m > -4.0) v = max(v, ISO_LEVEL + DENSITY_GRADIENT * m);
     }
     precise float caveWeight = clamp(2.0 - xdiv(fp, 8.0), 0.0, 1.0);

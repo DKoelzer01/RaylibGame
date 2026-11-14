@@ -750,3 +750,50 @@ float ErosionCliffs(Vector3 p, float h, Vector3 grad, float footprint, unsigned 
     const float terraced = (floorf(t) + s * s * (3.0f - 2.0f * s)) * step;
     return (terraced - t * step) * w;
 }
+
+bool ErosionCliffRegion(Vector3 p, unsigned int seed) {
+    static const bool everywhere = getenv("RAYLIBGAME_CLIFFS_EVERYWHERE") != nullptr;
+    return everywhere || ValueNoise(Vector3Scale(p, 1.0f / 4000.0f), seed ^ 0xC11Fu) > 0.55f;
+}
+
+CliffLip ErosionCliffLip(Vector3 p, float h, Vector3 grad, float footprint, unsigned int seed, float final) {
+    // The same bands as ErosionCliffs: t counts bands up the original slope, f = 0.72-0.94 is a band's riser, so a column
+    // with f < 0.72 stands on the tread below it, (0.72 - f) * step / |grad| metres out from the riser's foot.
+    CliffLip lip;
+    static const bool off = getenv("RAYLIBGAME_CLIFF_LIPS") && getenv("RAYLIBGAME_CLIFF_LIPS")[0] == '0'; // A/B
+    if (off) return lip;
+    const float region = ValueNoise(Vector3Scale(p, 1.0f / 4000.0f), seed ^ 0xC11Fu);
+    static const bool everywhere = getenv("RAYLIBGAME_CLIFFS_EVERYWHERE") != nullptr;
+    const float rw = everywhere ? 1.0f : std::clamp((region - 0.55f) / 0.2f, 0.0f, 1.0f);
+    if (rw <= 0.0f || h < 5.0f) return lip;
+    const float step = 20.0f + 15.0f * ValueNoise(Vector3Scale(p, 1.0f / 9000.0f), seed ^ 0x57E9u);
+    const float fade = std::clamp(step / (2.0f * footprint) - 1.0f, 0.0f, 1.0f);
+    const float gm = Vector3Length(grad);
+    const float sw = std::clamp((gm - 0.25f) / 0.35f, 0.0f, 1.0f);
+    // A lip is a few metres of rock: only fine LODs resolve it (full to a 4 m footprint, gone by 8 m).
+    // Only over full-strength bands: a half-formed terrace has no vertical riser, and a lip on it read as a ribbon of rock
+    // lying along the contour.
+    const float wt = rw * sw * fade, s = std::clamp((wt - 0.5f) / 0.4f, 0.0f, 1.0f);
+    const float w = s * s * (3.0f - 2.0f * s) * std::clamp(2.0f - footprint / 4.0f, 0.0f, 1.0f);
+    if (w <= 0.05f) return lip;
+    const float wob = 6.0f * (ValueNoise(Vector3Scale(p, 1.0f / 300.0f), seed ^ 0x1ED6u) - 0.5f);
+    const float t = (h + wob) / step, k = floorf(t), f = t - k;
+    // Past the riser's top (the tread above): no lip. A lip there would meet the next band's lower tread in the grid's
+    // interpolation and leave a slab floating between the two.
+    if (f > 0.94f) return lip;
+    // The ground must still stand where the terraces put it: a river, pond or dig cut below the tread would leave the lip
+    // floating over a gorge (one stood 135 m up).
+    {
+        const float sr = std::clamp((f - 0.72f) / 0.22f, 0.0f, 1.0f);
+        const float terracedH = h + ((k + sr * sr * (3.0f - 2.0f * sr)) * step - t * step) * wt;
+        if (final < terracedH - 2.0f) return lip;
+    }
+    const float dist = (0.72f - f) * step / std::max(gm, 0.05f);                       // m out from the riser's foot
+    const float flute = ValueNoise(Vector3Scale(p, 1.0f / 6.0f), seed ^ 0xF1A7u);       // vertical flutes along the face
+    const float reach = (2.5f + 4.0f * flute) * w;                                        // 2.5-6.5 m out
+    const float face = (0.2f + 0.1f * ValueNoise(Vector3Scale(p, 1.0f / 40.0f), seed ^ 0x7D1Eu)) * step * w; // thick at the face
+    lip.thick = face * std::clamp(1.0f - std::max(dist, 0.0f) / std::max(reach, 0.1f), 0.0f, 1.0f);
+    lip.margin = reach - dist;
+    lip.topRel = ((k + 1.0f) * step - wob) - final; // the riser's top: the tread above
+    return lip;
+}

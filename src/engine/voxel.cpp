@@ -275,6 +275,23 @@ void PlanetField::bakeErosion(const std::string& cachePath) {
     riverState = std::make_shared<RiverState>();
 }
 float PlanetField::profileLandHeight(Vector3 dir, float fp) const { return land(dir, fp).h; }
+Vector3 PlanetField::uphillAt(Vector3 dir) const {
+    const PlanetErosion* eroded = erosion();
+    return eroded ? eroded->slopeAt(dir, 1.0f).grad : Vector3{ 0, 0, 0 };
+}
+void PlanetField::cliffLipColumn(Vector3 dir, float fp, float elev, Column3D& col) const {
+    // The height before the cliff terraces, as land() builds it (the bake, then its gullies): the lip's band and its
+    // distance from the riser follow the same t as ErosionCliffs.
+    const PlanetErosion* eroded = erosion();
+    if (!eroded || !gCliffs || fp >= 8.0f || moon) return;
+    const Vector3 s3 = Vector3Scale(dir, radius);
+    if (!ErosionCliffRegion(s3, fieldSeed)) return; // most of the planet: one value-noise lookup
+    const PlanetErosion::Slope s = eroded->slopeAt(dir, fp);
+    float h = s.h;
+    if (gGullies && fp < 450.0f) h += ErosionGullies(s3, dir, s.grad, fp, fieldSeed, Smoothstep(2.0f, 15.0f, s.h));
+    const CliffLip lip = ErosionCliffLip(s3, h, s.grad, fp, fieldSeed, elev);
+    col.lipTop = lip.topRel; col.lipThick = lip.thick; col.lipMargin = lip.margin;
+}
 PlanetField::Land PlanetField::land(Vector3 dir, float fp) const {
     const float sx = dir.x * radius, sy = dir.y * radius, sz = dir.z * radius; // the surface point (m)
     Land l{ 0, 0, 0, 1, 0, 0, 1, 0 };
@@ -1001,6 +1018,18 @@ float PlanetField::densityNear(Vector3 p, float d, float surface, float fp, cons
         const float m = rockFeature(p, d, surface, fp);
         if (m > -4.0f) v = std::max(v, ISO_LEVEL + DENSITY_GRADIENT * m);
     }
+    // A cliff lip over the column (#357): rock from lipTop - lipThick to lipTop over the surface, out to its reach
+    // (lipMargin > 0 inside it). Blocks interpolate the column from the grid; single samples look it up.
+    if (depth < 2.0f && depth > -45.0f) {
+        Column3D own;
+        const Column3D* c = col;
+        if (!c) { cliffLipColumn(Vector3Scale(p, 1.0f / d), fp, surface - radius, own); c = &own; }
+        if (c->lipThick > 0.05f) {
+            const float top = surface + c->lipTop;
+            const float m = std::min(std::min(d - (top - c->lipThick), top - d), c->lipMargin);
+            if (m > -4.0f) v = std::max(v, ISO_LEVEL + DENSITY_GRADIENT * m);
+        }
+    }
     // Caves, from a few metres down to 20 m above the mantle (which stays intact). Each cave shape is
     // its own distance field in metres, combined with min(): rock density grows with depth, so
     // subtracting a fixed amount would only carve shallow caves.
@@ -1123,7 +1152,8 @@ bool PlanetField::prepareBlock(Vector3 o, float stride, int S, float fp, BlockGr
             const float u = (float)((i0 + i) * du), v = (float)((j0 + j) * du); // from the global index: identical in every block
             const Vector3 gdir = Vector3Normalize(Vector3Add(n, Vector3Add(Vector3Scale(t1, u), Vector3Scale(t2, v))));
             const float e = elevation(gdir, fp);
-            const Column3D col = terrain3DColumn(gdir, e); // the 3D band's column strength, once per node
+            Column3D col = terrain3DColumn(gdir, e); // the 3D band's column strength, once per node
+            cliffLipColumn(gdir, fp, e, col);        // and a cliff lip over it (#357)
             h[(size_t)j * nu + i] = e;
             cols[(size_t)j * nu + i] = col;
             std::lock_guard<std::mutex> lock(sh.m);
@@ -1133,6 +1163,13 @@ bool PlanetField::prepareBlock(Vector3 o, float stride, int S, float fp, BlockGr
     g.n = n; g.t1 = t1; g.t2 = t2;
     g.umin = umin; g.vmin = vmin; g.su = su; g.sv = sv; g.nu = nu; g.nv = nv;
     return true;
+}
+
+// The cliff lip (#357) between four grid nodes, bilinear like the rest of the column (the GPU copy: terrain_density.comp).
+static inline void LerpLip(const PlanetField::Column3D* c0, const PlanetField::Column3D* c1, float au, float av, PlanetField::Column3D& col) {
+    col.lipTop = (c0[0].lipTop * (1 - au) + c0[1].lipTop * au) * (1 - av) + (c1[0].lipTop * (1 - au) + c1[1].lipTop * au) * av;
+    col.lipThick = (c0[0].lipThick * (1 - au) + c0[1].lipThick * au) * (1 - av) + (c1[0].lipThick * (1 - au) + c1[1].lipThick * au) * av;
+    col.lipMargin = (c0[0].lipMargin * (1 - au) + c0[1].lipMargin * au) * (1 - av) + (c1[0].lipMargin * (1 - au) + c1[1].lipMargin * au) * av;
 }
 
 bool PlanetField::gridSurface(const BlockGrid& g, Vector3 p, float& elev, Column3D& col) const {
@@ -1151,6 +1188,7 @@ bool PlanetField::gridSurface(const BlockGrid& g, Vector3 p, float& elev, Column
     const Column3D* c1 = c0 + g.nu;
     col.mask = (c0[0].mask * (1 - au) + c0[1].mask * au) * (1 - av) + (c1[0].mask * (1 - au) + c1[1].mask * au) * av;
     col.f = (c0[0].f * (1 - au) + c0[1].f * au) * (1 - av) + (c1[0].f * (1 - au) + c1[1].f * au) * av;
+    LerpLip(c0, c1, au, av, col);
     return true;
 }
 
@@ -1183,6 +1221,7 @@ void PlanetField::sampleBlock(Vector3 o, float stride, int S, float fp, const Bl
                     const Column3D* c1 = c0 + nu;
                     col.mask = (c0[0].mask * (1 - au) + c0[1].mask * au) * (1 - av) + (c1[0].mask * (1 - au) + c1[1].mask * au) * av;
                     col.f = (c0[0].f * (1 - au) + c0[1].f * au) * (1 - av) + (c1[0].f * (1 - au) + c1[1].f * au) * av;
+                    LerpLip(c0, c1, au, av, col);
                 }
                 out[idx] = densityNear(p, d, surface, fp, &col);
             }

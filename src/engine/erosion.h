@@ -93,5 +93,13 @@ float ErosionGullies(Vector3 p, Vector3 dir, Vector3 grad, float footprint, unsi
 // Cliff bands (user 2026-11-14: no cliffs): in hard-rock regions steep ground steps into treads and near-vertical risers
 // 20-35 m apart. Returns a height offset (m); h = the height so far, grad = the baked gradient.
 float ErosionCliffs(Vector3 p, float h, Vector3 grad, float footprint, unsigned int seed);
+// The overhanging lip of a cliff band's riser over a column (#357, Plan 8 item 1): rock reaching out from the riser's
+// top over the tread below, thick at the face and thinning to nothing at its reach, so the foot of the cliff has room to
+// build under. p: the column's surface point (m), h: its height before the cliff terraces, final: its finished
+// elevation. topRel = the lip's top over the column's surface (m), thick = its thickness there (m), margin = how far
+// (m) the column lies inside the lip's reach (< 0: outside). thick 0: no lip.
+struct CliffLip { float topRel = 0.0f, thick = 0.0f, margin = -1000.0f; };
+bool ErosionCliffRegion(Vector3 p, unsigned int seed); // inside a hard-rock cliff region at all (cheap)
+CliffLip ErosionCliffLip(Vector3 p, float h, Vector3 grad, float footprint, unsigned int seed, float final);
 
 #endif

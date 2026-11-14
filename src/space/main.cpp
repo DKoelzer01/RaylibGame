@@ -374,6 +374,7 @@ int main(int argc, char** argv)
     DVec3 walkLast{};
     Vector3 benchCamOffset = { -70.0f, 35.0f, 70.0f }; // --cam dx dy dz: bench camera offset from the planetoid
     float benchViewHeight = 40.0f; // --bench-height H: a planet bench's view height over the start (m)
+    float benchPitch = -999.0f; bool benchUphill = false; // --bench-pitch DEG (up > 0), --bench-uphill: face up the eroded slope (#357 cliff shots)
     bool benchCamGiven = false;   // --cam given: use the offset (otherwise a planet bench looks along the surface from 40 m up, #291)
     if (const char* e = getenv("RAYLIBGAME_EROSION"); e && e[0] == '1') gErosionPrototype = true; // #352 prototype: erosion bake around the start
     if (const char* e3 = getenv("RAYLIBGAME_3D")) gTerrain3D = e3[0] == '1'; else if (gErosionPrototype) gTerrain3D = false; // no 3D band in erosion tests (RAYLIBGAME_3D=0 for baselines)
@@ -399,6 +400,8 @@ int main(int argc, char** argv)
         if (std::string(argv[i]) == "--bench-fly-back") benchFlyBack = true;
         if (std::string(argv[i]) == "--water-stats") benchWaterStats = true;
         if (std::string(argv[i]) == "--bench-height" && i + 1 < argc) benchViewHeight = (float)atof(argv[i + 1]);
+        if (std::string(argv[i]) == "--bench-pitch" && i + 1 < argc) benchPitch = (float)atof(argv[i + 1]);
+        if (std::string(argv[i]) == "--bench-uphill") benchUphill = true;
         if (std::string(argv[i]) == "--bench-pond") gSpawnPond = true; // start at the nearest pond's rim (#251 crack checks)
         if (std::string(argv[i]) == "--bench-biome" && i + 1 < argc) { // start the bench (and the player) in the nearest deep patch of a biome (#133 checks)
             for (int b = 0; b < (int)Biome::Count; ++b) if (!strcmp(BiomeName((Biome)b), argv[i + 1])) gSpawnBiome = b;
@@ -720,6 +723,32 @@ int main(int argc, char** argv)
             return 0;
         }
     for (int i = 1; i < argc; ++i)
+        if (std::string(argv[i]) == "--find-cliff-lip") {
+            // #357: the column with the tallest cliff lip over it within 20 km of the start (for screenshots: feed the
+            // printed direction to RAYLIBGAME_SPAWN_DIR). Needs RAYLIBGAME_EROSION=1.
+            Planetoid* p = dynamic_cast<Planetoid*>(world.objects[0].get());
+            const auto* pf = p ? dynamic_cast<const PlanetField*>(p->field.get()) : nullptr;
+            if (!pf) return 1;
+            const Vector3 home = pf->findSpawnDir(p->seed);
+            const Vector3 t1 = Vector3Normalize(Vector3CrossProduct(home, { 0, 1, 0 })), t2 = Vector3CrossProduct(t1, home);
+            float best = 0.0f; Vector3 bestDir = home; PlanetField::Column3D bc;
+            int lips = 0, cols = 0;
+            for (float e = -20000.0f; e <= 20000.0f; e += 20.0f)
+                for (float n = -20000.0f; n <= 20000.0f; n += 20.0f) {
+                    const Vector3 d = Vector3Normalize(Vector3Add(home, Vector3Add(Vector3Scale(t1, e / pf->radius), Vector3Scale(t2, n / pf->radius))));
+                    ++cols;
+                    PlanetField::Column3D c;
+                    pf->cliffLipColumn(d, 1.0f, pf->elevation(d, 1.0f), c);
+                    if (c.lipThick <= 0.5f || c.lipMargin <= 1.0f || c.lipTop < c.lipThick + 4.0f) continue; // a lip with room under it
+                    ++lips;
+                    const float score = (c.lipTop - c.lipThick) * std::min(c.lipThick, 6.0f);
+                    if (score > best) { best = score; bestDir = d; bc = c; }
+                }
+            printf("bench: cliff lips: %d of %d columns (20 m apart) under a lip; tallest: dir %.6f,%.6f,%.6f, lip %.1f-%.1f m over the ground, %.1f m thick, %.1f m inside its reach\n",
+                   lips, cols, bestDir.x, bestDir.y, bestDir.z, bc.lipTop - bc.lipThick, bc.lipTop, bc.lipThick, bc.lipMargin);
+            return 0;
+        }
+    for (int i = 1; i < argc; ++i)
         if (std::string(argv[i]) == "--test-terrain-gpu") {
             // Plan 6 step 3 (#146): the GPU port of the height map (resources/compute/terrain.glsl) against
             // PlanetField::elevationBase over 1M points: random directions (half near the start, half anywhere)
@@ -865,9 +894,20 @@ int main(int argc, char** argv)
             // A planet (#291): 40 m above the start, looking ahead along the surface and a little down (the asteroid
             // offset below put the camera under the terrain). It rides the planet from here (#127).
             const Vector3 feet = (player.position - world.renderOrigin).toFloat();
-            const Vector3 ahead = Vector3Normalize(Vector3Subtract(player.forward, Vector3Scale(player.up, Vector3DotProduct(player.forward, player.up))));
+            Vector3 ahead = Vector3Normalize(Vector3Subtract(player.forward, Vector3Scale(player.up, Vector3DotProduct(player.forward, player.up))));
+            if (benchUphill) // --bench-uphill (#357): face up the eroded slope, toward the cliff above
+                if (const auto* pfb = dynamic_cast<const PlanetField*>(benchPlanet->field.get())) {
+                    const Vector3 dl = Vector3Normalize(benchPlanet->toLocal(feet));
+                    const Vector3 g = benchPlanet->dirToWorld(pfb->uphillAt(dl));
+                    const Vector3 gt = Vector3Subtract(g, Vector3Scale(player.up, Vector3DotProduct(g, player.up)));
+                    if (Vector3Length(gt) > 1e-4f) ahead = Vector3Normalize(gt);
+                }
             world.camera.position = Vector3Add(feet, Vector3Scale(player.up, benchViewHeight)); // --bench-height (overviews, #352)
             world.camera.target = Vector3Add(world.camera.position, Vector3Subtract(Vector3Scale(ahead, std::max(100.0f, 2.5f * benchViewHeight)), Vector3Scale(player.up, std::max(25.0f, 0.8f * benchViewHeight))));
+            if (benchPitch > -90.0f) { // --bench-pitch DEG: level view tilted up (> 0) or down
+                const float a = benchPitch * DEG2RAD;
+                world.camera.target = Vector3Add(world.camera.position, Vector3Add(Vector3Scale(ahead, 100.0f * cosf(a)), Vector3Scale(player.up, 100.0f * sinf(a))));
+            }
             world.camera.up = player.up;
         } else if (!benchAtSave) world.camera.position = Vector3Add(world.camera.target, benchCamOffset);
         if (benchDay) { // mid-morning over the start: 45 degrees up, from ahead-left (shadows fall toward the camera's right)
