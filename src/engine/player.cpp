@@ -453,7 +453,13 @@ bool Player::resolveCollisions(Scene&, Vector3& feet) {
     if (!nearest) return false;
     Planetoid& p = *nearest;
     bool onGround = false;
-    const float offsets[2] = { radius, eyeHeight - radius };
+    // A capsule (#255): sphere centres from `radius` up to the eye, 0.23 m apart (no waist: the two spheres at 0.45 and
+    // 1.15 m left a 0.28 m neck that jagged rock poked into), its top 0.45 m over the eye so the camera (eye smoothing
+    // +-0.25 m, 0.2 m near plane) stays inside the collision volume and can't see through ceilings. Each pass pushes
+    // out of the deepest contact only: two spheres pushing along different normals on jagged rock fought each other.
+    constexpr int kSamples = 6;
+    float offsets[kSamples];
+    for (int i = 0; i < kSamples; ++i) offsets[i] = radius + (eyeHeight - radius) * (float)i / (float)(kSamples - 1);
     // The linear estimate (iso - density) / |gradient| is only a distance where the density behaves
     // like one; dig and build edits (big density steps) break that, and it reported contacts in open
     // air that pushed up to 1 m per iteration, sometimes into the ground (the "wall launch"). So each
@@ -461,9 +467,17 @@ bool Player::resolveCollisions(Scene&, Vector3& feet) {
     // total push in a frame is capped.
     auto solid = [&](Vector3 c) { return p.densityAt(p.toLocal(c)) >= ISO_LEVEL; };
     float pushBudget = 0.6f;
-    for (int iter = 0; iter < 4 && pushBudget > 0.0f; ++iter) {
+    for (int iter = 0; iter < 6 && pushBudget > 0.0f; ++iter) {
         bool moved = false;
-        for (float off : offsets) {
+        // Contacts deepest first; one push per pass (the next pass re-measures).
+        struct Cand { float d, off; } cand[kSamples]; int nc = 0;
+        for (float o2 : offsets) {
+            float d2; Vector3 n2;
+            if (TerrainSurfaceDistance(p, Vector3Add(feet, Vector3Scale(up, o2)), d2, n2) && d2 < radius) cand[nc++] = { d2, o2 };
+        }
+        std::sort(cand, cand + nc, [](const Cand& a, const Cand& b) { return a.d < b.d; });
+        for (int ci = 0; ci < nc && !moved; ++ci) {
+            const float off = cand[ci].off;
             float dist; Vector3 n;
             const Vector3 c = Vector3Add(feet, Vector3Scale(up, off));
             if (!TerrainSurfaceDistance(p, c, dist, n) || dist >= radius) continue;

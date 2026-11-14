@@ -1256,6 +1256,8 @@ int main(int argc, char** argv)
                         player.placeAt(world, *p, top);
                         player.velocity = p->surfaceVelocity(top);
                         buildPhase = 2;
+                        buildStart = -1.0; // the 2 s count starts when play resumes: placeAt raises the loading screen (it took 2.4 s once)
+                    } else if (buildPhase == 2 && buildStart < 0.0) {
                         buildStart = GetTime();
                     } else if (buildPhase == 2 && GetTime() - buildStart > 2.0) {
                         Plot* plot = buildPlot;
