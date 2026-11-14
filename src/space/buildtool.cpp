@@ -1,3 +1,4 @@
+#include "machinemodels.h"
 #include "buildtool.h"
 #include "survival.h"
 #include "farming.h"
@@ -304,11 +305,21 @@ void Machine_Update(Scene& world, bool inputEnabled) {
     float best = 6.0f;
     for (auto& pl : body->plots->plots) {
         Int3 c, f; float d;
-        if (!pl->raycast(lo, ld, best, c, f, d)) continue;
-        const int part = pl->partAt(c);
-        if (part < 0 || (!IsMachine(pl->parts[part].type) && pl->parts[part].type != PartType::Farmland)) continue;
-        best = d;
-        machineAim = { body->id, pl->id, part, pl->parts[part].type };
+        if (pl->raycast(lo, ld, best, c, f, d)) {
+            const int part = pl->partAt(c);
+            if (part >= 0 && (IsMachine(pl->parts[part].type) || pl->parts[part].type == PartType::Farmland)) {
+                best = d;
+                machineAim = { body->id, pl->id, part, pl->parts[part].type };
+            }
+        }
+        // Chimneys stick out of the cells (#285): aimable too, when nearer.
+        const Vector3 po = pl->toPlot(lo);
+        const Vector3 pd = { Vector3DotProduct(ld, pl->east), Vector3DotProduct(ld, pl->up), Vector3DotProduct(ld, pl->north) };
+        int dp = -1; float dd = 0.0f;
+        if (Vector3Length(po) < 200.0f && Machine_RaycastDetails(*pl, po, pd, best, dp, dd)) {
+            best = dd;
+            machineAim = { body->id, pl->id, dp, pl->parts[dp].type };
+        }
     }
     if (machineAim.part < 0 || !inputEnabled) return;
     if (machineAim.type == PartType::Farmland) {

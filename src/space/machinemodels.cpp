@@ -347,3 +347,32 @@ void Machines_Draw3D(Scene& world) {
     rlDrawRenderBatchActive();
     rlEnableBackfaceCulling();
 }
+
+bool Machine_RaycastDetails(const Plot& plot, Vector3 o, Vector3 d, float maxDist, int& part, float& dist) {
+    // Chimneys stand out of the casing's cells (#285): a box round each, in plot metres (slab test).
+    bool hit = false;
+    for (size_t i = 0; i < plot.parts.size(); ++i) {
+        if (plot.parts[i].type == PartType::Count || !IsMachine(plot.parts[i].type)) continue;
+        MachineSpot s;
+        Stack st[4];
+        if (!SpotOf(plot, i, s)) continue;
+        const int n = Stacks(s.type, s.f, st);
+        for (int k = 0; k < n; ++k) {
+            const float r = st[k].r * 1.25f;
+            const Vector3 lo = { s.floorPlot.x + st[k].x - r, s.floorPlot.y + s.f.h, s.floorPlot.z + st[k].z - r };
+            const Vector3 hi = { s.floorPlot.x + st[k].x + r, s.floorPlot.y + s.f.h + st[k].h + 0.06f, s.floorPlot.z + st[k].z + r };
+            float t0 = 0.0f, t1 = maxDist;
+            const float oa[3] = { o.x, o.y, o.z }, da[3] = { d.x, d.y, d.z }, la[3] = { lo.x, lo.y, lo.z }, ha[3] = { hi.x, hi.y, hi.z };
+            bool miss = false;
+            for (int a = 0; a < 3 && !miss; ++a) {
+                if (fabsf(da[a]) < 1e-8f) { miss = oa[a] < la[a] || oa[a] > ha[a]; continue; }
+                float ta = (la[a] - oa[a]) / da[a], tb = (ha[a] - oa[a]) / da[a];
+                if (ta > tb) std::swap(ta, tb);
+                t0 = std::max(t0, ta); t1 = std::min(t1, tb);
+                miss = t0 > t1;
+            }
+            if (!miss && t0 < maxDist) { maxDist = t0; part = (int)i; dist = t0; hit = true; }
+        }
+    }
+    return hit;
+}

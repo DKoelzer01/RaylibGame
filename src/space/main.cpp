@@ -5139,7 +5139,6 @@ int main(int argc, char** argv)
             Factory::Sync(world);                                // machine layouts in, items out
             Fluid::Update(world, frameDt);                       // flowing water: commands in, a step job, meshes up
             Waterworks_Update(world, frameDt);                   // pumps send water down pipes to outlets
-            Machine_Update(world, gameInput && alive && !ship.piloted);
             Objectives_Update(world);
             if (bench && lookDown && !ship.piloted) {
                 const Vector3 t = Vector3Subtract(player.forward, Vector3Scale(player.up, Vector3DotProduct(player.forward, player.up)));
@@ -5147,6 +5146,7 @@ int main(int argc, char** argv)
             }
             if (bench && benchTelescope > 0.0f && !ship.piloted) AimAtTelescopeTarget(world);
             if (!ship.piloted && !Rocket_Boarded()) player.applyToCamera(world);
+            Machine_Update(world, gameInput && alive && !ship.piloted); // after the camera: aims with this frame's view (#285, as #222)
             Telescope_Update(world, gameInput && alive && !Rocket_Boarded(), !ship.piloted && !player.flyMode && alive && !buildTool.active); // aboard, T moves fuel
             if (bench && benchTelescope > 0.0f) { Telescope_SetActive(world, true); telescope.zoom = benchTelescope; Telescope_Update(world, false, !ship.piloted); }
         }

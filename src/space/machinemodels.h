@@ -17,5 +17,8 @@ int Machines_DrawnCount(); // tests: machines given models last frame
 // flames), body-local. Returns how many (at most max).
 class Plot;
 int Machine_SmokePoints(const Plot& plot, size_t part, Vector3* outBody, int max);
+// The machine details outside the casing's cells (chimneys) along a ray in plot metres (#285): the nearest part hit
+// within maxDist.
+bool Machine_RaycastDetails(const Plot& plot, Vector3 origin, Vector3 dir, float maxDist, int& part, float& dist);
 
 #endif
