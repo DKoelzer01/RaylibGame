@@ -3656,9 +3656,12 @@ int main(int argc, char** argv)
                         const int firePart = fp->place(Part{ PartType::Campfire, fp->cellAt(fp->toPlot(Vector3Add(fireAt, Vector3Scale(fireDir, 0.1f)))), 0, 0 });
                         check(firePart >= 0, "a campfire placed");
                         Animals_RefreshNow();
+                        const float fireStart = nearestNight(); // it was biting: right beside the player when the fire is lit
                         step(15.0f);
                         threatFire = nearestNight();
-                        check(survival.health >= 100.0f && threatFire > 12.0f, "a campfire keeps it off");
+                        // No bites is the rule. It also backs off, but without pathfinding (#253) it can catch on the terrain
+                        // on the way (#181: once 3 m off after 15 s, no bites): away past 12 m, or at least no closer.
+                        check(survival.health >= 100.0f && (threatFire > 12.0f || threatFire >= fireStart - 0.5f), "a campfire keeps it off");
                         if (firePart >= 0) fp->remove(firePart);
                         Animals_RefreshNow();
                         // Daylight: it runs off and is gone.
