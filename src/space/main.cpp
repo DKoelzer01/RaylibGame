@@ -350,7 +350,9 @@ int main(int argc, char** argv)
     double walkTargetM = 0.0, walkPath = 0.0; // --test-planet-walk M: walk M metres (path, body frame), then PASS/FAIL
     DVec3 walkLast{};
     Vector3 benchCamOffset = { -70.0f, 35.0f, 70.0f }; // --cam dx dy dz: bench camera offset from the planetoid
+    float benchViewHeight = 40.0f; // --bench-height H: a planet bench's view height over the start (m)
     bool benchCamGiven = false;   // --cam given: use the offset (otherwise a planet bench looks along the surface from 40 m up, #291)
+    if (const char* e = getenv("RAYLIBGAME_EROSION"); e && e[0] == '1') gErosionPrototype = true; // #352 prototype: erosion bake around the start
     for (int i = 1; i < argc; ++i) {
         if (std::string(argv[i]) == "--bench") benchSeconds = (i + 1 < argc) ? atof(argv[i + 1]) : 10.0;
         if (std::string(argv[i]) == "--ui") DebugUI_Toggle(); // open the debug panel at start
@@ -370,6 +372,7 @@ int main(int argc, char** argv)
         if (std::string(argv[i]) == "--bench-fly" && i + 1 < argc) benchFlySpeed = (float)atof(argv[i + 1]);
         if (std::string(argv[i]) == "--bench-fly-back") benchFlyBack = true;
         if (std::string(argv[i]) == "--water-stats") benchWaterStats = true;
+        if (std::string(argv[i]) == "--bench-height" && i + 1 < argc) benchViewHeight = (float)atof(argv[i + 1]);
         if (std::string(argv[i]) == "--bench-pond") gSpawnPond = true; // start at the nearest pond's rim (#251 crack checks)
         if (std::string(argv[i]) == "--bench-biome" && i + 1 < argc) { // start the bench (and the player) in the nearest deep patch of a biome (#133 checks)
             for (int b = 0; b < (int)Biome::Count; ++b) if (!strcmp(BiomeName((Biome)b), argv[i + 1])) gSpawnBiome = b;
@@ -830,8 +833,8 @@ int main(int argc, char** argv)
             // offset below put the camera under the terrain). It rides the planet from here (#127).
             const Vector3 feet = (player.position - world.renderOrigin).toFloat();
             const Vector3 ahead = Vector3Normalize(Vector3Subtract(player.forward, Vector3Scale(player.up, Vector3DotProduct(player.forward, player.up))));
-            world.camera.position = Vector3Add(feet, Vector3Scale(player.up, 40.0f));
-            world.camera.target = Vector3Add(world.camera.position, Vector3Subtract(Vector3Scale(ahead, 100.0f), Vector3Scale(player.up, 25.0f)));
+            world.camera.position = Vector3Add(feet, Vector3Scale(player.up, benchViewHeight)); // --bench-height (overviews, #352)
+            world.camera.target = Vector3Add(world.camera.position, Vector3Subtract(Vector3Scale(ahead, std::max(100.0f, 2.5f * benchViewHeight)), Vector3Scale(player.up, std::max(25.0f, 0.8f * benchViewHeight))));
             world.camera.up = player.up;
         } else if (!benchAtSave) world.camera.position = Vector3Add(world.camera.target, benchCamOffset);
         if (benchDay) { // mid-morning over the start: 45 degrees up, from ahead-left (shadows fall toward the camera's right)

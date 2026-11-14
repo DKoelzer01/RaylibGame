@@ -1,6 +1,7 @@
 #include <unordered_map>
 #include <cstring>
 #include "voxel.h"
+#include "erosion.h"
 #include "rivers.h"
 #include "foliage.h"
 #include "trees.h"
@@ -193,6 +194,8 @@ PlanetField::PlanetField(unsigned int seed, float radius_, bool moon_)
     riverSeed = seed;
     riverState = std::make_shared<RiverState>();
     gridCache = std::make_shared<GridNodeCache>();
+    erosionState = std::make_shared<ErosionState>();
+    fieldSeed = seed;
     std::mt19937 rng(seed);
     // Large features scale with the body (a moon gets proportionally sized basins and ridges);
     // hills, detail, caves and veins are absolute sizes, so they feel the same everywhere.
@@ -234,6 +237,31 @@ static float ValleyCarve(float v) {
     return t * t * 70.0f;
 }
 
+
+struct PlanetField::ErosionState { std::atomic<bool> active{ false }; ErosionBake bake; Vector3 centre{}; };
+
+const ErosionBake* PlanetField::erosion() const {
+    return erosionState && erosionState->active.load(std::memory_order_acquire) ? &erosionState->bake : nullptr;
+}
+
+void PlanetField::bakeErosion(unsigned int spawnSeed) {
+    if (moon || !erosionState) return;
+    // Around the start as it is without erosion (the game's own spawn search), on the raw land; then switched on.
+    // The river network built meanwhile (the spawn search reads elevation()) came from the raw land: start a fresh
+    // one, built on first use from the eroded land.
+    const Vector3 centre = findSpawnDir(spawnSeed);
+    ErosionParams p;
+    auto envf = [](const char* n, float v) { const char* e = getenv(n); return e ? (float)atof(e) : v; }; // prototype tuning
+    p.k = envf("RAYLIBGAME_EROSION_K", p.k); p.relax = envf("RAYLIBGAME_EROSION_RELAX", p.relax);
+    p.diffusion = envf("RAYLIBGAME_EROSION_DIFF", p.diffusion);
+    p.upliftMode = envf("RAYLIBGAME_EROSION_UPLIFT", 0.0f) > 0.5f; p.steps = (int)envf("RAYLIBGAME_EROSION_STEPS", (float)p.steps);
+    erosionState->bake.build([this, &p](Vector3 d) { return land(d, p.dx).h; }, centre, radius, p);
+    erosionState->centre = centre;
+    erosionState->active.store(true, std::memory_order_release);
+    riverState = std::make_shared<RiverState>();
+    printf("erosion: baked %.0f km at %.0f m in %.2f s (%d steps): cut up to %.1f m, raised up to %.1f m\n",
+           p.extent / 1000.0f, p.dx, erosionState->bake.buildSeconds, p.steps, erosionState->bake.maxCut, erosionState->bake.maxFill);
+}
 PlanetField::Land PlanetField::land(Vector3 dir, float fp) const {
     const float sx = dir.x * radius, sy = dir.y * radius, sz = dir.z * radius; // the surface point (m)
     Land l{ 0, 0, 0, 1, 0, 0, 1, 0 };
@@ -269,6 +297,8 @@ PlanetField::Land PlanetField::land(Vector3 dir, float fp) const {
             if (r < 0.006f) h -= sqrtf(1.0f - r / 0.006f) * 90.0f * region * ravineWeight;
         }
     }
+    // The erosion bake's change (#352 prototype): valleys and ridges from the simulation over the noise.
+    if (const ErosionBake* e = erosion()) { float d, w; if (e->sample(dir, d, w)) h += d * w; }
     l.detail = detail.fractalLimited(2, fp, sx, sy, sz) * 2.5f;
     // Polar ice shelves: near the poles the sea is frozen, so low ground is raised to an ice sheet a
     // couple of metres above sea level (the material rules make it ice).
@@ -1098,6 +1128,7 @@ Biome PlanetField::biomeAt(Vector3 dir, float elev) const {
 }
 
 Vector3 PlanetField::findSpawnDir(unsigned int seed) const {
+    if (erosion()) return erosionState->centre; // prototype (#352): the start stays where the bake is centred
     std::mt19937 rng(seed ^ 0x5eedu);
     std::uniform_real_distribution<float> unit(0.0f, 1.0f);
     Vector3 best = { 0, 1, 0 };

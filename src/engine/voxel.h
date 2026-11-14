@@ -77,6 +77,9 @@ enum class Biome : uint8_t { Ocean = 0, Jungle, Savanna, Desert, Badlands, Fores
 inline int gSpawnBiome = -1;
 // Bench override (--bench-pond): findSpawnDir returns the rim of the nearest pond (#251 crack checks).
 inline bool gSpawnPond = false;
+// Erosion bake prototype (#352): RAYLIBGAME_EROSION=1 erodes a 25 km region around the start at 100 m (erosion.h).
+inline bool gErosionPrototype = false;
+class ErosionBake;
 const char* BiomeName(Biome b);
 const char* VoxelMaterialName(VoxelMaterial m);
 
@@ -294,6 +297,16 @@ private:
     // stacked blocks of a column read the same nodes. Sharded; a shard is dropped when full.
     struct GridNodeCache;
     std::shared_ptr<GridNodeCache> gridCache;
+    // Erosion bake (#352 prototype): built on first use, around the start (fieldSeed's findSpawnDir).
+    struct ErosionState;
+    std::shared_ptr<ErosionState> erosionState;
+    unsigned int fieldSeed = 0;
+    const ErosionBake* erosion() const;
+public:
+    // Bake erosion around the start (#352 prototype, gErosionPrototype): once, on the main thread, before the field is
+    // shared with the workers.
+    void bakeErosion(unsigned int spawnSeed);
+private:
     std::shared_ptr<RiverState> riverState;
     unsigned int riverSeed = 0;
     float densityNear(Vector3 p, float d, float surface, float footprint, const Column3D* col = nullptr) const; // after the height map
