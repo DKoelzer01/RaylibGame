@@ -82,6 +82,7 @@ inline bool gErosionPrototype = false;
 // The 3D surface band (cliffs, overhangs: terrain3D). Off while the erosion bake is being tested (user, 2026-11-13: keep
 // it out of the erosion comparisons); RAYLIBGAME_3D=1 turns it back on.
 inline bool gTerrain3D = true;
+inline bool gGullies = true; // erosion-filter gullies on the baked height (#357); RAYLIBGAME_GULLIES=0 for A/B
 class PlanetErosion;
 const char* BiomeName(Biome b);
 const char* VoxelMaterialName(VoxelMaterial m);
@@ -309,6 +310,7 @@ public:
     // Bake erosion around the start (#352 prototype, gErosionPrototype): once, on the main thread, before the field is
     // shared with the workers.
     void bakeErosion(const std::string& cachePath); // loads the bake from cachePath when it matches, else bakes and saves it
+    float profileLandHeight(Vector3 dir, float footprint) const; // land(dir, fp).h, for --profile-density
 private:
     std::shared_ptr<RiverState> riverState;
     unsigned int riverSeed = 0;

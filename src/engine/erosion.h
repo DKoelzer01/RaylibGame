@@ -45,6 +45,10 @@ public:
     void build(const std::function<float(Vector3, float)>& height, float planetRadius, unsigned int seed, const ErosionParams& p, int threads);
     // The baked height (m above sea level) at dir for a sample footprint (m): fine grid under 2 fine cells, else coarse.
     float heightAt(Vector3 dir, float footprint) const;
+    // The height and its uphill gradient (m per m, in the tangent plane at dir): central differences one cell apart, so
+    // the gradient is continuous (the gullies' direction must not jump at cell borders).
+    struct Slope { float h; Vector3 grad; };
+    Slope slopeAt(Vector3 dir, float footprint) const;
     bool ready() const { return n > 0; }
     bool save(const std::string& path) const;          // ERO3: deltas, split bytes, deflated, with the hash
     bool load(const std::string& path, float planetRadius, unsigned int seed); // false: missing, other seed or radius
@@ -67,5 +71,12 @@ private:
     float coarseAt(Vector3 dir) const;
     float fineAt(Vector3 dir) const;
 };
+
+// Gullies (Plan 7 step 3, #357): an erosion-filter noise. Each octave (900, 420, 190, 85, 38, 17 m) is a sum of cosine stripes
+// running down the slope, one kernel per corner of a 3D lattice (no cube-face seams), so the ribs and gullies follow
+// the baked drainage; each octave's slope bends the next one's direction (small gullies branch into larger ones).
+// Strength follows the slope (flat ground stays flat); octaves finer than the sample footprint fade out.
+// p = surface point (m), dir = its unit direction, grad = slopeAt's gradient. Returns a height offset (m).
+float ErosionGullies(Vector3 p, Vector3 dir, Vector3 grad, float footprint, unsigned int seed, float strength);
 
 #endif

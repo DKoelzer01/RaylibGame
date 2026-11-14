@@ -270,6 +270,7 @@ void PlanetField::bakeErosion(const std::string& cachePath) {
     erosionState->active.store(true, std::memory_order_release);
     riverState = std::make_shared<RiverState>();
 }
+float PlanetField::profileLandHeight(Vector3 dir, float fp) const { return land(dir, fp).h; }
 PlanetField::Land PlanetField::land(Vector3 dir, float fp) const {
     const float sx = dir.x * radius, sy = dir.y * radius, sz = dir.z * radius; // the surface point (m)
     Land l{ 0, 0, 0, 1, 0, 0, 1, 0 };
@@ -284,16 +285,25 @@ PlanetField::Land PlanetField::land(Vector3 dir, float fp) const {
     const float base = c < 0.0f ? c * 650.0f : c * 200.0f;        // ocean floor down to -650 m, gentle land
     const float landMask = Smoothstep(-0.02f, 0.06f, c);
     const float mountainMask = Smoothstep(0.08f, 0.35f, c);      // ranges only well inland
-    // With the erosion bake (Plan 7, #356) the baked height replaces the noise relief (base, ranges, hills); l.ridge is
-    // still computed as the ranges' mask for rivers and ponds.
+    // With the erosion bake (Plan 7, #356) the baked height replaces the noise relief (base, ranges, hills), and gullies
+    // steered by its slope add the 5-100 m detail (#357). l.ridge then comes from the height (the rivers' and ponds'
+    // mountain mask, until terrain-first water replaces them).
     const PlanetErosion* eroded = erosion();
-    float h = eroded ? eroded->heightAt(dir, fp) : base;
-    if (mountainMask > 0.0f) {
-        const float r = 1.0f - fabsf(ridges.fractalLimited(5, fp, sx, sy, sz)); // ridged: sharp crests
-        l.ridge = r * r * r * 1400.0f * mountainMask; // the height the ranges add here
-        if (!eroded) h += l.ridge;
+    float h;
+    if (eroded) {
+        const PlanetErosion::Slope s = eroded->slopeAt(dir, fp);
+        h = s.h;
+        if (gGullies && fp < 450.0f) h += ErosionGullies({ sx, sy, sz }, dir, s.grad, fp, fieldSeed, Smoothstep(2.0f, 15.0f, s.h));
+        l.ridge = std::max(0.0f, h - 150.0f);
+    } else {
+        h = base;
+        if (mountainMask > 0.0f) {
+            const float r = 1.0f - fabsf(ridges.fractalLimited(5, fp, sx, sy, sz)); // ridged: sharp crests
+            l.ridge = r * r * r * 1400.0f * mountainMask; // the height the ranges add here
+            h += l.ridge;
+        }
+        h += hills.fractalLimited(3, fp, sx, sy, sz) * (25.0f + 60.0f * mountainMask);
     }
-    if (!eroded) h += hills.fractalLimited(3, fp, sx, sy, sz) * (25.0f + 60.0f * mountainMask);
     // (River valleys are carved by the drainage network's rivers in elevation(); the old valley-noise
     // valleys and streams are gone, so l.valley and l.stream stay at 1: none.)
     const float valleyWeight = landMask * std::clamp(2.0f - fp / 64.0f, 0.0f, 1.0f);

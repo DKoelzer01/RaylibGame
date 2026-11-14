@@ -451,3 +451,79 @@ bool PlanetErosion::load(const std::string& path, float planetRadius, unsigned i
     if (hashValue != hv) { n = 0; coarse.clear(); fine.clear(); fe = 0; return false; } // damaged
     return true;
 }
+
+PlanetErosion::Slope PlanetErosion::slopeAt(Vector3 dv, float footprint) const {
+    Slope s{ heightAt(dv, footprint), { 0, 0, 0 } };
+    if (n <= 0) return s;
+    const bool fineGrid = fe > 0 && footprint < 2.0f * fineMetres;
+    const float step = fineGrid ? fineMetres : 2.0f * R / n; // one cell (the face-centre size; near enough elsewhere)
+    const Vector3 a = Vector3Normalize(Vector3CrossProduct(dv, fabsf(dv.y) < 0.9f ? Vector3{ 0, 1, 0 } : Vector3{ 1, 0, 0 }));
+    const Vector3 b = Vector3CrossProduct(dv, a);
+    const float k = step / R;
+    auto at = [&](Vector3 t, float sgn) { return heightAt(Vector3Normalize(Vector3Add(dv, Vector3Scale(t, sgn * k))), footprint); };
+    const float ga = (at(a, 1.0f) - at(a, -1.0f)) / (2.0f * step), gb = (at(b, 1.0f) - at(b, -1.0f)) / (2.0f * step);
+    s.grad = Vector3Add(Vector3Scale(a, ga), Vector3Scale(b, gb));
+    return s;
+}
+
+namespace {
+    // sin and cos of 2 pi x by a refined parabola (error ~1e-3): cheap, and the same on every platform.
+    inline void SinCos2Pi(float x, float& s, float& c) {
+        auto sn = [](float u) { // u in [-0.5, 0.5]
+            float y = 8.0f * u - 16.0f * u * fabsf(u);
+            return 0.225f * (y * fabsf(y) - y) + y;
+        };
+        float u = x - floorf(x + 0.5f);
+        s = sn(u);
+        u += 0.25f; u -= floorf(u + 0.5f);
+        c = sn(u);
+    }
+}
+
+float ErosionGullies(Vector3 p, Vector3 dir, Vector3 grad, float footprint, unsigned int seed, float strength) {
+    static const float kLambda[6] = { 900.0f, 420.0f, 190.0f, 85.0f, 38.0f, 17.0f };
+    constexpr float kTwoPi = 6.28318531f;
+    static const float kGullyAmp = getenv("RAYLIBGAME_GULLY_AMP") ? (float)atof(getenv("RAYLIBGAME_GULLY_AMP")) : 0.11f; // tuning
+    float h = 0.0f;
+    if (strength <= 0.0f) return 0.0f;
+    // Regions (~3 km) of smoother and more deeply cut ground: not every slope combed alike (variety, user 2026-11-14).
+    strength *= 0.3f + 1.0f * ValueNoise(Vector3Scale(p, 1.0f / 3000.0f), seed ^ 0x6A11u);
+    // Strength from the baked slope (the bent gradient below only steers): flat ground stays flat at every octave.
+    // Grows with the slope, full only on steep (~42 deg) ground: gentle hills get mild ribs and stay walkable, mountain
+    // sides get deep gullies (at 0.14 x and full strength from ~19 deg, 120 m hills reached 57 deg, #363).
+    const float sfl = std::clamp(Vector3Length(grad) / 0.9f, 0.0f, 1.0f), sf = sfl * sqrtf(sfl);
+    if (sf <= 0.0f) return 0.0f;
+    float octaveAmp = kGullyAmp; // x 0.72 an octave: each finer octave adds less slope (0.88, 0.63, 0.46, ... at full strength)
+    for (int o = 0; o < 6; ++o, octaveAmp *= 0.72f) {
+        const float lam = kLambda[o];
+        const float fade = std::clamp(lam / (2.0f * footprint) - 1.0f, 0.0f, 1.0f);
+        if (fade <= 0.0f) break;
+        const float slope = Vector3Length(grad);
+        if (slope < 1e-4f) continue;
+        const Vector3 across = Vector3Scale(Vector3CrossProduct(dir, grad), 1.0f / slope); // unit, along the contour
+        const float inv = 1.0f / lam;
+        const float fx = p.x * inv, fy = p.y * inv, fz = p.z * inv;
+        const int x0 = (int)floorf(fx), y0 = (int)floorf(fy), z0 = (int)floorf(fz);
+        float val = 0.0f, dval = 0.0f, wsum = 0.0f;
+        for (int c = 0; c < 8; ++c) {
+            const int cx = x0 + (c & 1), cy = y0 + ((c >> 1) & 1), cz = z0 + (c >> 2);
+            const float ox = fx - cx, oy = fy - cy, oz = fz - cz;
+            const float r2 = ox * ox + oy * oy + oz * oz;
+            if (r2 >= 1.2f) continue;
+            float w = 1.0f - r2 / 1.2f;
+            w *= w;
+            float sn, cs;
+            SinCos2Pi(ox * across.x + oy * across.y + oz * across.z + Hash3(cx, cy, cz, seed + 31u * o), sn, cs);
+            val += w * cs;
+            dval -= w * sn;
+            wsum += w;
+        }
+        if (wsum <= 0.0f) continue;
+        val /= wsum; dval /= wsum;
+        const float amp = octaveAmp * lam * sf * fade * strength;
+        h += amp * val;
+        // The ribs' own slope across the contour bends the next octave: finer gullies run into these.
+        grad = Vector3Add(grad, Vector3Scale(across, amp * dval * kTwoPi * inv));
+    }
+    return h;
+}
