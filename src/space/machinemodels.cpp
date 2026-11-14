@@ -37,6 +37,21 @@ void Chimney(const Painter& p, const Frame& f, float x, float z, float r, float 
     p.cyl({ x, f.h + h, z }, r * 1.2f, r * 1.2f, 0.06f, kDarkSteel);
 }
 
+// Each machine's chimneys (frame metres: x east, z north from the floor centre; r, h; colour). One table for the
+// model and the smoke (Machine_SmokePoints, #220).
+struct Stack { float x, z, r, h; Color c; };
+int Stacks(PartType type, const Frame& f, Stack* out) {
+    const float x0 = -f.w * 0.5f, z0 = -f.d * 0.5f;
+    switch (type) {
+    case PartType::Kiln:           out[0] = { x0 + 0.2f, z0 + 0.2f, 0.1f, 0.6f, kBrick }; return 1;
+    case PartType::CokeOven:       out[0] = { x0 + 0.2f, z0 + 0.2f, 0.09f, 0.7f, kBrick }; out[1] = { -x0 - 0.2f, z0 + 0.2f, 0.09f, 0.7f, kBrick }; return 2;
+    case PartType::BlastFurnace:   out[0] = { 0, 0, 0.16f, 1.2f, kBrick }; return 1;
+    case PartType::Boiler:         out[0] = { x0 + 0.15f, z0 + 0.15f, 0.07f, 0.8f, kDarkSteel }; return 1;
+    case PartType::SteamMacerator: out[0] = { x0 + 0.15f, z0 + 0.15f, 0.06f, 0.5f, kDarkSteel }; return 1;
+    default: return 0;
+    }
+}
+
 // The door on the front face (front = +z after the yaw): dark when idle, glowing when working.
 void Door(const Painter& p, const Frame& f, bool working, float wFrac = 0.45f, float hFrac = 0.45f) {
     rlPushMatrix();
@@ -53,18 +68,18 @@ void DrawMachine(PartType type, const Frame& f, const Painter& p, bool working) 
     const float t = (float)GetTime();
     const float spin = working ? t : 0.0f;
     const float x0 = -f.w * 0.5f, z0 = -f.d * 0.5f, top = f.h;
+    {   // chimneys (one table with the smoke, #220)
+        Stack st[4];
+        for (int i = 0, n = Stacks(type, f, st); i < n; ++i) Chimney(p, f, st[i].x, st[i].z, st[i].r, st[i].h, st[i].c);
+    }
     switch (type) {
     case PartType::Kiln:
-        Chimney(p, f, x0 + 0.2f, z0 + 0.2f, 0.1f, 0.6f, kBrick);
         Door(p, f, working);
         break;
     case PartType::CokeOven:
-        Chimney(p, f, x0 + 0.2f, z0 + 0.2f, 0.09f, 0.7f, kBrick);
-        Chimney(p, f, -x0 - 0.2f, z0 + 0.2f, 0.09f, 0.7f, kBrick);
         Door(p, f, working, 0.6f, 0.35f);
         break;
     case PartType::BlastFurnace:
-        Chimney(p, f, 0, 0, 0.16f, 1.2f, kBrick);
         p.cyl({ 0, top + 0.5f, 0 }, 0.22f, 0.22f, 0.1f, kDarkSteel); // a charging ring
         Door(p, f, working, 0.35f, 0.3f);
         break;
@@ -90,7 +105,6 @@ void DrawMachine(PartType type, const Frame& f, const Painter& p, bool working) 
         rlPushMatrix(); rlTranslatef(0, top + 0.22f, 0); rlRotatef(90, 0, 0, 1);
         p.cyl({ 0, -f.w * 0.42f, 0 }, 0.2f, 0.2f, f.w * 0.84f, kCopper);    // a horizontal tank
         rlPopMatrix();
-        Chimney(p, f, x0 + 0.15f, z0 + 0.15f, 0.07f, 0.8f, kDarkSteel);
         p.cyl({ -x0 - 0.2f, top + 0.42f, 0 }, 0.06f, 0.06f, 0.04f, { 230, 230, 230, 255 }); // gauge
         break;
     case PartType::ForgeHammer: {
@@ -109,7 +123,7 @@ void DrawMachine(PartType type, const Frame& f, const Painter& p, bool working) 
         rlPushMatrix(); rlTranslatef(0, top + 0.12f, f.d * 0.5f + 0.02f); rlRotatef(spin * 400.0f, 0, 0, 1);
         p.cube({ 0, 0, 0 }, { 0.3f, 0.05f, 0.04f }, kDarkSteel); p.cube({ 0, 0, 0 }, { 0.05f, 0.3f, 0.04f }, kDarkSteel); // grinder wheel
         rlPopMatrix();
-        if (type == PartType::SteamMacerator) Chimney(p, f, x0 + 0.15f, z0 + 0.15f, 0.06f, 0.5f, kDarkSteel);
+
         break;
     case PartType::Generator:
     case PartType::MvGenerator:
@@ -216,6 +230,40 @@ namespace {
     struct MachineSpot { int part; PartType type; Vector3 floorPlot; Frame f; float buried = 0.0f; }; // buried: 1 - sky exposure (#284)
     struct PlotCache { uint32_t version = 0xFFFFFFFFu; std::vector<MachineSpot> spots; };
     std::unordered_map<uint64_t, PlotCache> plotCache; // key: body id ^ plot id
+
+    // A machine's frame from its footprint: the floor centre in plot metres, size and facing.
+    bool SpotOf(const Plot& plot, size_t i, MachineSpot& s) {
+        static thread_local std::vector<std::pair<Int3, CellShape>> fp;
+        const Part& part = plot.parts[i];
+        Plot::Footprint(part, fp);
+        if (fp.empty()) return false;
+        Int3 lo = fp[0].first, hi = fp[0].first;
+        for (auto& c : fp) { lo = { std::min(lo.x, c.first.x), std::min(lo.y, c.first.y), std::min(lo.z, c.first.z) }; hi = { std::max(hi.x, c.first.x), std::max(hi.y, c.first.y), std::max(hi.z, c.first.z) }; }
+        s.part = (int)i; s.type = part.type;
+        s.floorPlot = { (lo.x + hi.x + 1) * 0.5f * kCellSize, lo.y * kCellSize, (lo.z + hi.z + 1) * 0.5f * kCellSize };
+        s.f.w = (hi.x - lo.x + 1) * kCellSize; s.f.h = (hi.y - lo.y + 1) * kCellSize; s.f.d = (hi.z - lo.z + 1) * kCellSize;
+        const int* m = Orientation(part.orient);
+        Vector3 front = { (float)m[2], 0.0f, (float)m[8] };              // the part's +z, flattened
+        if (Vector3LengthSqr(front) < 0.5f) front = { 0, 0, 1 };
+        s.f.front = Vector3Normalize(front);
+        s.f.yawDeg = atan2f(s.f.front.x, s.f.front.z) * RAD2DEG;
+        return true;
+    }
+}
+
+int Machine_SmokePoints(const Plot& plot, size_t part, Vector3* outBody, int max) {
+    MachineSpot s;
+    if (max <= 0 || part >= plot.parts.size() || !SpotOf(plot, part, s)) return 0;
+    Stack st[4];
+    const int n = Stacks(s.type, s.f, st);
+    int k = 0;
+    for (int i = 0; i < n && k < max; ++i) // the chimney tops (#220: the smoke came off the wrong corner, in the air)
+        outBody[k++] = plot.toBody({ s.floorPlot.x + st[i].x, s.floorPlot.y + s.f.h + st[i].h + 0.06f, s.floorPlot.z + st[i].z });
+    if (k == 0) { // no chimney: off the middle of the top (the campfire: just over its flames)
+        const float up = s.type == PartType::Campfire ? 0.5f : s.f.h + 0.05f;
+        outBody[k++] = plot.toBody({ s.floorPlot.x, s.floorPlot.y + up, s.floorPlot.z });
+    }
+    return k;
 }
 
 static int drawnLastFrame = 0;
@@ -243,19 +291,8 @@ void Machines_Draw3D(Scene& world) {
                 for (size_t i = 0; i < plot->parts.size(); ++i) {
                     const Part& part = plot->parts[i];
                     if (part.type == PartType::Count || !IsMachine(part.type)) continue;
-                    Plot::Footprint(part, fp);
-                    if (fp.empty()) continue;
-                    Int3 lo = fp[0].first, hi = fp[0].first;
-                    for (auto& c : fp) { lo = { std::min(lo.x, c.first.x), std::min(lo.y, c.first.y), std::min(lo.z, c.first.z) }; hi = { std::max(hi.x, c.first.x), std::max(hi.y, c.first.y), std::max(hi.z, c.first.z) }; }
                     MachineSpot s;
-                    s.part = (int)i; s.type = part.type;
-                    s.floorPlot = { (lo.x + hi.x + 1) * 0.5f * kCellSize, lo.y * kCellSize, (lo.z + hi.z + 1) * 0.5f * kCellSize };
-                    s.f.w = (hi.x - lo.x + 1) * kCellSize; s.f.h = (hi.y - lo.y + 1) * kCellSize; s.f.d = (hi.z - lo.z + 1) * kCellSize;
-                    const int* m = Orientation(part.orient);
-                    Vector3 front = { (float)m[2], 0.0f, (float)m[8] };              // the part's +z, flattened
-                    if (Vector3LengthSqr(front) < 0.5f) front = { 0, 0, 1 };
-                    s.f.front = Vector3Normalize(front);
-                    s.f.yawDeg = atan2f(s.f.front.x, s.f.front.z) * RAD2DEG;
+                    if (!SpotOf(*plot, i, s)) continue;
                     if (body->field) { // sky exposure 1 m over the floor: the terrain's rule, as plot cells (#216, #284)
                         const Vector3 at = plot->toBody({ s.floorPlot.x, s.floorPlot.y + 1.0f, s.floorPlot.z });
                         const float len = Vector3Length(at);

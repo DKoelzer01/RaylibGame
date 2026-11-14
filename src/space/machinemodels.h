@@ -1,6 +1,9 @@
 #ifndef MACHINEMODELS_H
 #define MACHINEMODELS_H
 
+#include <raylib.h>
+#include <cstddef>
+
 // Machine models (Plan 5, after the animals): details built from boxes and cylinders over each machine's
 // patterned casing (plots.cpp draws the casing itself): chimneys, hoppers, drums, tanks, pipes, doors,
 // coils, drills, dishes - one set per machine type - and a working animation (spinning drums and fans,
@@ -10,5 +13,9 @@
 class Scene;
 void Machines_Draw3D(Scene& world);
 int Machines_DrawnCount(); // tests: machines given models last frame
+// Where a working machine's smoke comes out (#220): its chimney tops, or the middle of its top (campfire: over the
+// flames), body-local. Returns how many (at most max).
+class Plot;
+int Machine_SmokePoints(const Plot& plot, size_t part, Vector3* outBody, int max);
 
 #endif
