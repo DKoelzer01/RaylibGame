@@ -188,6 +188,7 @@ public:
     // Surface height above sea level along a unit direction; footprint > 0 leaves out detail finer
     // than samples that far apart (see SimplexNoise::fractalLimited).
     float elevation(Vector3 dir, float footprint = 0.0f) const;
+    std::string debugColumn(Vector3 dir) const; // tests: the height terms at dir (land, base, rivers, lakes, ponds)
     float elevationBase(Vector3 dir, float footprint = 0.0f) const; // land + detail + biome landforms: no rivers, lakes, ponds (Plan 6: GPU port check)
     // The terrain noise fields in a fixed order for the GPU port (terrain.glsl): frequency + seed per field.
     void gpuNoiseParams(std::vector<float>& out) const;
@@ -217,7 +218,11 @@ public:
     bool wetBed(Vector3 local) const;
     // The static water at a direction and its kind (flowing water, fluid.h): 0 none, 1 river, 2 lake,
     // 3 pond; level above sea level. Ponds carry an id and their centre and radius.
-    struct WaterSource { int kind = 0; float level = kNoWater; uint64_t pond = 0; Vector3 pondDir{}; float pondR = 0.0f; };
+    struct WaterSource { int kind = 0; float level = kNoWater; uint64_t pond = 0; Vector3 pondDir{}; float pondR = 0.0f, pondDepth = 4.0f; };
+    // Small lakes of the network (#360): finite, taken over like ponds. Its claim id (bit 63 set: never a pond cell id),
+    // or 0 when the lake is large (infinite) or there is no bake.
+    uint64_t drainableLake(int lakeId) const;
+    bool pondCovers(uint64_t claimId, Vector3 dir) const; // a drainable lake's cells (or margin) hold dir; ponds: true
     WaterSource waterSourceAt(Vector3 dir) const;
     // A pond the water simulation took over: its static surface is gone (waterElevation and
     // inlandWaterNear skip it). Thread-safe; saved by the simulation.

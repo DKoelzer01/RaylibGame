@@ -75,7 +75,7 @@ namespace {
 
     // Stream power + talus for `steps` steps (see erosion.h). nbOf(c, k) = the k-th of 8 neighbours or -1.
     template <class NB>
-    void Simulate(Domain& d, NB&& nbOf, int steps, const ErosionParams& p, float R, unsigned int seed, float kScale) {
+    void Simulate(Domain& d, NB&& nbOf, int steps, const ErosionParams& p, float R, unsigned int seed, float kScale, std::vector<float>* filledOut = nullptr) {
         const size_t cells = d.cells;
         const float stratumOffset = Hash3(1, 2, 3, seed) * 120.0f;
         auto capRock = [&](float hc) { return fmodf(hc + stratumOffset + 1200.0f, 120.0f) < 36.0f; }; // the hard 30% of each 120 m band
@@ -173,6 +173,7 @@ namespace {
                     }
                 }
         }
+        if (filledOut) { flood(); *filledOut = hf; } // the depressions left (ponds, #360): filled heights of the result
     }
 
     // Bilinear on one face of a 6 x side^2 grid (values at cell centres); u, v in face coordinates, the side cells
@@ -307,6 +308,7 @@ void PlanetErosion::build(const std::function<float(Vector3, float)>& height, fl
     // ---- Each face at `refine` x the resolution, with a margin past its edges ----
     const auto t1r = std::chrono::steady_clock::now();
     nf = fm = fe = 0; fine.clear(); fineMetres = 0.0f;
+    std::vector<Pond> facePonds[6]; // per face (faces run in parallel)
     if (p.refine >= 2) {
         nf = N * p.refine; fm = p.margin; fe = nf + 2 * fm;
         fineMetres = p.cell / p.refine;
@@ -337,7 +339,7 @@ void PlanetErosion::build(const std::function<float(Vector3, float)>& height, fl
                     fd.dir[(size_t)j * FE + i] = Vector3Normalize(Vector3Add(nrm, Vector3Add(Vector3Scale(a1, u), Vector3Scale(a2, v))));
                     fd.cellArea[(size_t)j * FE + i] = sideF * sideF / powf(1.0f + u * u + v * v, 1.5f);
                 }
-            std::vector<float> fh0(fd.cells);
+            std::vector<float> fh0(fd.cells), filled;
             {
                 std::vector<std::thread> pool;
                 for (int t = 0; t < sampleThreads; ++t)
@@ -356,9 +358,70 @@ void PlanetErosion::build(const std::function<float(Vector3, float)>& height, fl
             Simulate(fd, [FE](size_t c, int k) {
                 const int i = (int)(c % FE) + di[k], j = (int)(c / FE) + dj[k];
                 return (i < 0 || j < 0 || i >= FE || j >= FE) ? -1 : j * FE + i;
-            }, p.refineSteps, p, R, seed, kScale);
+            }, p.refineSteps, p, R, seed, kScale, &filled);
+            {   // Hold the fine grid to the coarse one at large scales (#360): the refinement's own uplift and erosion drift
+                // it by tens of metres (70 m in seed 42's ranges), so the coarse LOD, and the rivers and lakes built on it,
+                // disagreed with the near ground (a lake 130 m under it). Fine = coarse + the high-pass part of
+                // (fine - coarse): the drift is box-blurred over ~6 fine cells and taken out.
+                std::vector<float> drift(fd.cells, 0.0f), tmp(fd.cells, 0.0f);
+                for (size_t c = 0; c < fd.cells; ++c) drift[c] = fh0[c] > 0.0f ? fd.h[c] - coarseUnscaledAt(fd.dir[c]) : 0.0f;
+                const int rad = 3 * p.refine / 2;
+                for (int pass = 0; pass < 2; ++pass) { // separable box blur: rows, then columns
+                    const std::vector<float>& src = pass == 0 ? drift : tmp;
+                    std::vector<float>& dst = pass == 0 ? tmp : drift;
+                    std::vector<float> out(fd.cells);
+                    for (int j = 0; j < FE; ++j)
+                        for (int i = 0; i < FE; ++i) {
+                            float s = 0.0f; int cnt = 0;
+                            for (int k = -rad; k <= rad; ++k) {
+                                const int ii = pass == 0 ? i + k : i, jj = pass == 0 ? j : j + k;
+                                if (ii < 0 || jj < 0 || ii >= FE || jj >= FE) continue;
+                                s += src[(size_t)jj * FE + ii]; ++cnt;
+                            }
+                            out[(size_t)j * FE + i] = s / cnt;
+                        }
+                    dst = std::move(out);
+                }
+                for (size_t c = 0; c < fd.cells; ++c)
+                    if (fh0[c] > 0.0f && !fd.outlet[c]) { fd.h[c] -= drift[c]; filled[c] -= drift[c]; }
+            }
             for (size_t c = 0; c < fd.cells; ++c)
                 fine[(size_t)f * FE * FE + c] = Q(fh0[c] <= 0.0f ? fh0[c] : std::max(0.5f, fd.h[c] * scale));
+            // Ponds (#360): the closed depressions the refinement left in this face's own cells (not its margin, which
+            // is another face's): components of cells the flood filled by more than 0.4 m, at most 12 cells, 0.8 m+ deep.
+            {
+                const int lo = fm, hi = fm + nf;
+                auto wet = [&](size_t q) { return !fd.outlet[q] && fh0[q] > 0.0f && (filled[q] - fd.h[q]) * scale > 0.4f; };
+                std::vector<uint8_t> seenP(fd.cells, 0);
+                std::vector<size_t> stack, members;
+                for (int j = lo; j < hi; ++j)
+                    for (int i = lo; i < hi; ++i) {
+                        const size_t c0 = (size_t)j * FE + i;
+                        if (seenP[c0] || !wet(c0)) continue;
+                        members.clear(); stack.assign(1, c0); seenP[c0] = 1;
+                        bool edge = false;
+                        while (!stack.empty()) {
+                            const size_t q = stack.back(); stack.pop_back();
+                            members.push_back(q);
+                            const int qi = (int)(q % FE), qj = (int)(q / FE);
+                            for (int k = 0; k < 8; ++k) {
+                                const int oi = qi + di[k], oj = qj + dj[k];
+                                if (oi < 0 || oj < 0 || oi >= FE || oj >= FE) continue;
+                                const size_t o = (size_t)oj * FE + oi;
+                                if (seenP[o] || !wet(o)) continue;
+                                if (oi < lo || oj < lo || oi >= hi || oj >= hi) { edge = true; continue; }
+                                seenP[o] = 1; stack.push_back(o);
+                            }
+                        }
+                        if (edge || members.size() > 12) continue;
+                        float level = -1e9f, low = 1e9f; Vector3 sum{ 0, 0, 0 };
+                        for (size_t q : members) { level = std::max(level, filled[q]); low = std::min(low, fd.h[q]); sum = Vector3Add(sum, fd.dir[q]); }
+                        level *= scale; low *= scale;
+                        if (level - low < 0.8f) continue;
+                        const float r = std::clamp(sqrtf((float)members.size() * fineMetres * fineMetres / PI) + 6.0f, 12.0f, 60.0f);
+                        facePonds[f].push_back({ Vector3Normalize(sum), r, level, level - low });
+                    }
+            }
             if (DumpOn() && f == dumpFace) {
                 std::vector<float> out(fd.cells);
                 for (size_t c = 0; c < fd.cells; ++c) out[c] = fine[(size_t)f * FE * FE + c] * 0.1f;
@@ -372,6 +435,8 @@ void PlanetErosion::build(const std::function<float(Vector3, float)>& height, fl
             for (auto& th : pool) th.join();
         }
     }
+    pondList.clear();
+    for (const auto& fp2 : facePonds) pondList.insert(pondList.end(), fp2.begin(), fp2.end()); // face order: deterministic
     refineSeconds = std::chrono::duration<float>(std::chrono::steady_clock::now() - t1r).count();
     computeHash();
     buildSeconds = std::chrono::duration<float>(std::chrono::steady_clock::now() - t0).count();
@@ -422,6 +487,7 @@ void PlanetErosion::computeHash() {
     uint64_t hv = 1469598103934665603ull; // FNV-1a over the stored grids
     for (int16_t q : coarse) hv = (hv ^ (uint16_t)q) * 1099511628211ull;
     for (int16_t q : fine) hv = (hv ^ (uint16_t)q) * 1099511628211ull;
+    for (const Pond& pd : pondList) for (float v : { pd.dir.x, pd.dir.y, pd.dir.z, pd.r, pd.level, pd.depth }) { uint32_t b; memcpy(&b, &v, 4); hv = (hv ^ b) * 1099511628211ull; }
     hashValue = hv;
 }
 
@@ -441,12 +507,15 @@ bool PlanetErosion::save(const std::string& path) const {
     if (!comp) return false;
     FILE* f = fopen(path.c_str(), "wb");
     if (!f) { MemFree(comp); return false; }
-    const char magic[4] = { 'E', 'R', 'O', '3' };
+    const char magic[4] = { 'E', 'R', 'O', '4' };
     fwrite(magic, 1, 4, f);
     fwrite(&n, sizeof(n), 1, f); fwrite(&nf, sizeof(nf), 1, f); fwrite(&fm, sizeof(fm), 1, f); fwrite(&fineMetres, sizeof(fineMetres), 1, f);
     fwrite(&R, sizeof(R), 1, f); fwrite(&seed, sizeof(seed), 1, f); fwrite(&hashValue, sizeof(hashValue), 1, f);
     fwrite(&compSize, sizeof(compSize), 1, f);
     fwrite(comp, 1, compSize, f);
+    const int np = (int)pondList.size();
+    fwrite(&np, sizeof(np), 1, f);
+    if (np) fwrite(pondList.data(), sizeof(Pond), np, f);
     fclose(f);
     MemFree(comp);
     return true;
@@ -456,12 +525,14 @@ bool PlanetErosion::load(const std::string& path, float planetRadius, unsigned i
     FILE* f = fopen(path.c_str(), "rb");
     if (!f) return false;
     char magic[4]; int N = 0, NF = 0, FM = 0, compSize = 0; float fmet = 0, r = 0; unsigned int s = 0; uint64_t hv = 0;
-    bool ok = fread(magic, 1, 4, f) == 4 && memcmp(magic, "ERO3", 4) == 0 && fread(&N, sizeof(N), 1, f) == 1 && fread(&NF, sizeof(NF), 1, f) == 1 &&
+    bool ok = fread(magic, 1, 4, f) == 4 && memcmp(magic, "ERO4", 4) == 0 && fread(&N, sizeof(N), 1, f) == 1 && fread(&NF, sizeof(NF), 1, f) == 1 &&
               fread(&FM, sizeof(FM), 1, f) == 1 && fread(&fmet, sizeof(fmet), 1, f) == 1 && fread(&r, sizeof(r), 1, f) == 1 && fread(&s, sizeof(s), 1, f) == 1 &&
               fread(&hv, sizeof(hv), 1, f) == 1 && fread(&compSize, sizeof(compSize), 1, f) == 1 &&
               N > 0 && N < 4096 && NF >= 0 && NF < 16384 && FM >= 0 && FM < 1024 && compSize > 0 && s == wantSeed && fabsf(r - planetRadius) < 1.0f;
     std::vector<unsigned char> comp;
     if (ok) { comp.resize(compSize); ok = fread(comp.data(), 1, compSize, f) == (size_t)compSize; }
+    std::vector<Pond> pl;
+    if (ok) { int np = 0; ok = fread(&np, sizeof(np), 1, f) == 1 && np >= 0 && np < 10000000; if (ok && np) { pl.resize(np); ok = fread(pl.data(), sizeof(Pond), np, f) == (size_t)np; } }
     fclose(f);
     if (!ok) return false;
     int rawSize = 0;
@@ -478,6 +549,7 @@ bool PlanetErosion::load(const std::string& path, float planetRadius, unsigned i
     }
     MemFree(raw);
     n = N; nf = NF; fm = FM; fe = (int)fe2; fineMetres = fmet; R = r; seed = s;
+    pondList = std::move(pl);
     computeHash();
     if (hashValue != hv) { n = 0; coarse.clear(); fine.clear(); fe = 0; return false; } // damaged
     return true;

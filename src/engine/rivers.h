@@ -44,6 +44,12 @@ public:
     // kLakeMargin around them. Here: the lake's level and how far outside its cells (0 inside, m);
     // reported out to 2 * kLakeMargin (the bank fades out there), so water only where outside < kLakeMargin.
     bool lakeAt(Vector3 dir, float& level, float& outside) const;
+    bool lakeAt(Vector3 dir, float& level, float& outside, int& id) const; // also the lake's id (lakeInfo)
+    // Each lake's extent (#360: the small ones are finite, drained by digs): the centre, a radius covering its cells,
+    // its level, depth (level - lowest cell) and size in cells.
+    struct LakeInfo { Vector3 dir{ 0, 1, 0 }; float r = 0.0f, level = 0.0f, depth = 0.0f; int cells = 0; };
+    const LakeInfo& lakeInfo(int id) const { return lakes[id]; }
+    float cellSize() const { return cell; }
     bool lakeAt(Vector3 dir, float& level) const { float o; return lakeAt(dir, level, o) && o < kLakeMargin; } // lake water here
     bool lakeNear(Vector3 dir, float extent) const;  // cheap: a lake's water region within `extent` m may be here
     bool riverNear(Vector3 dir, float extent) const; // cheap: a river within `extent` m may be here
@@ -72,6 +78,8 @@ private:
     std::vector<unsigned char> river, lake;
     std::vector<float> lakeLevel;          // per lake cell: its basin's water level (m)
     std::vector<unsigned char> lakeSteps;  // cells to the nearest lake cell (capped at 255)
+    std::vector<int> lakeIdOf;             // per cell: its lake's id, or -1
+    std::vector<LakeInfo> lakes;
     struct Piece { Vector3 a, b; float la, lb, wa, wb, da, db; Vector3 mid{}; float halfLen = 0.0f; }; // positions in metres (body-local); mid/halfLen: a bounding sphere for nearest()
     std::vector<Piece> pieces;
     std::vector<std::vector<int>> index; // cell -> pieces within reach

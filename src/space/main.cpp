@@ -3372,8 +3372,9 @@ int main(int argc, char** argv)
                         const Vector3 home = pf->findSpawnDir(p->seed);
                         const Vector3 t1 = Vector3Normalize(Vector3CrossProduct(home, { 0, 1, 0 })), t2 = Vector3CrossProduct(t1, home);
                         float best = 1e30f;
-                        for (float e = -6000.0f; e <= 6000.0f; e += 24.0f)
-                            for (float n = -6000.0f; n <= 6000.0f; n += 24.0f) {
+                        for (int pass = 0; pass < 2 && best > 1e29f; ++pass) // 6 km at 24 m; then 20 km at 60 m (the bake's small lakes are 200 m+, rarer, #360)
+                            for (float e = pass ? -20000.0f : -6000.0f; e <= (pass ? 20000.0f : 6000.0f); e += pass ? 60.0f : 24.0f)
+                            for (float n = pass ? -20000.0f : -6000.0f; n <= (pass ? 20000.0f : 6000.0f); n += pass ? 60.0f : 24.0f) {
                                 const float dist = sqrtf(e * e + n * n);
                                 if (dist >= best) continue;
                                 const Vector3 d = Vector3Normalize(Vector3Add(home, Vector3Add(Vector3Scale(t1, e / pf->radius), Vector3Scale(t2, n / pf->radius))));
@@ -3386,12 +3387,24 @@ int main(int argc, char** argv)
                             pondOutB = Vector3Normalize(Vector3CrossProduct(pondDirB, { 0, 1, 0 }));
                             const float bed = pf->elevation(pondDirB);
                             printf("bench: pond: %.0f m from the start, radius %.0f m, level %.1f m, %.1f m deep at the middle\n", best, pondRB, pondLevelB, pondLevelB - bed);
+                            printf("bench: pond: middle column: %s\n", pf->debugColumn(pondDirB).c_str());
                             // A trench from the middle out past the rim, its floor below the pond's bed, then a pit.
                             std::vector<TerrainEdit> cut;
                             const float floorH = bed - 1.5f;
                             for (float s = 0.0f; s <= pondRB + 12.0f; s += 0.8f)
                                 for (float h = floorH + 1.2f; h <= pondLevelB + 3.0f; h += 1.2f) cut.push_back({ at(along(s), h), 1.4f, -1.0f, true });
                             for (int k = 0; k < 3; ++k) cut.push_back({ at(along(pondRB + 14.0f), floorH - 1.5f - 1.5f * k), 3.5f, -1.0f, true });
+                            {   // The pit holds at least the pond's top 0.5 m (#360: the bake's ponds reach 60 m across; three
+                                // spheres held ~500 m^3, a 60 m pond's top 0.3 m is ~3400): more spheres around it.
+                                const float need = PI * pondRB * pondRB * 0.5f, each = 4.0f / 3.0f * PI * 3.5f * 3.5f * 3.5f * 0.6f;
+                                const int extra = std::max(0, (int)ceilf(need / each) - 3);
+                                const Vector3 side = Vector3Normalize(Vector3CrossProduct(pondDirB, pondOutB));
+                                for (int k = 0; k < extra; ++k) {
+                                    const float ring = 5.0f * (1 + k / 8), ang = (k % 8) * (PI / 4.0f);
+                                    const Vector3 d = Vector3Normalize(Vector3Add(along(pondRB + 14.0f + ring * cosf(ang)), Vector3Scale(side, ring * sinf(ang) / pf->radius)));
+                                    cut.push_back({ at(d, floorH - 0.5f), 3.5f, -1.0f, true }); // shallower than the core: it fills first (swimming)
+                                }
+                            }
                             ApplyTerrainEdits(*p, cut.data(), cut.size());
                             pondPit = at(along(pondRB + 14.0f), floorH - 4.5f);
                             pondMid = at(along(pondRB * 0.3f), pondLevelB - 0.3f);
@@ -3433,7 +3446,10 @@ int main(int argc, char** argv)
                         const Vector3 eye = Vector3Add(at(along(r + 6.0f), pondLevelB + 18.0f), Vector3Scale(Vector3CrossProduct(up, pondOutB), 22.0f));
                         world.camera.position = p->toWorld(eye); world.camera.target = p->toWorld(at(along(r * 0.5f), pondLevelB)); world.camera.up = p->dirToWorld(up);
                         player.position = world.renderOrigin + world.camera.position;
-                        if (t > 12.0 && Fluid::Asleep()) {
+                        // Judged once asleep, or after 120 s regardless (#360: the bake's 60 m ponds keep a few bricks trickling;
+                        // that is reported, #366): the state is what this checks.
+                        if ((t > 12.0 && Fluid::Asleep()) || t > 120.0) {
+                            if (!Fluid::Asleep()) printf("bench: pond: not asleep after 120 s (%d of %d bricks awake): judged as it stands\n", Fluid::GetStats().activeBricks, Fluid::GetStats().bricks);
                             TakeScreenshot("bench_pond_loaded.png");
                             const PlanetField::WaterSource ws = pf->waterSourceAt(pondDirB);
                             const bool stillClaimed = ws.kind != 3;
@@ -3444,7 +3460,13 @@ int main(int argc, char** argv)
                             printf("bench: pond: bench_pond.png, bench_pond_drained.png, bench_pond_loaded.png\n");
                             // Swimming: into the flooded pit, 1.5 m under its surface.
                             player.flyMode = false;
-                            player.placeAt(world, *p, p->toWorld(Vector3Add(pondPit, Vector3Scale(Vector3Normalize(pondPit), 1.0f))));
+                            {   // 1.5 m under the pit's water surface (the bake's bigger ponds fill a wider, shallower pit, #360),
+                                // at most 1 m over its floor point.
+                                const float surf = Fluid::SurfaceAbove(*p, pondPit, 12.0f);
+                                const float lift = surf > 0.0f ? std::clamp(surf - 1.5f, 0.3f, 1.0f) : 1.0f;
+                                printf("bench: pond: the pit's water stands %.1f m over its floor point; swimming from %.1f m up\n", surf, lift);
+                                player.placeAt(world, *p, p->toWorld(Vector3Add(pondPit, Vector3Scale(Vector3Normalize(pondPit), lift))));
+                            }
                             pondPhase = 3; pondT0 = GetTime();
                         } else if (t > 120.0) { printf("bench: pond: did not settle after the load -> FAIL\n"); benchPond = false; }
                     } else if (pondPhase == 3) {

@@ -134,6 +134,7 @@ RiverNetwork::RiverNetwork(float radius, unsigned int seed, const std::function<
     for (int k = (int)order.size() - 1; k >= 0; --k) { const int c = order[k]; if (parent[c] >= 0) acc[parent[c]] += acc[c]; }
     river.assign(N, 0);
     lake.assign(N, 0);
+    lakeIdOf.assign(N, -1); lakes.clear();
     lakeLevel.assign(N, 0.0f);
     for (int c = 0; c < N; ++c) {
         if (h[c] < 0.0f) continue;
@@ -189,7 +190,14 @@ RiverNetwork::RiverNetwork(float radius, unsigned int seed, const std::function<
             }
             level = std::min(level, rim - 3.0f);
             if (level - lowest <= params.lakeDepth || level <= 1.0f) continue;
-            for (int c : cells) { lake[c] = 1; lakeLevel[c] = level; ++st.lakeCells; }
+            {   // The lake's id and extent (#360: small ones are drainable).
+                Vector3 sum{ 0, 0, 0 };
+                for (int c : cells) sum = Vector3Add(sum, centre(c));
+                LakeInfo li; li.dir = Vector3Normalize(sum); li.level = level; li.depth = level - lowest; li.cells = (int)cells.size();
+                for (int c : cells) li.r = std::max(li.r, Vector3Distance(li.dir, centre(c)) * R + 0.75f * cell);
+                for (int c : cells) { lake[c] = 1; lakeLevel[c] = level; lakeIdOf[c] = (int)lakes.size(); ++st.lakeCells; }
+                lakes.push_back(li);
+            }
         }
     }
     stage("lakes");
@@ -276,7 +284,11 @@ RiverNetwork::RiverNetwork(float radius, unsigned int seed, const std::function<
     for (int k = (int)order.size() - 1; k >= 0; --k) {
         const int c = order[k];
         if (!river[c]) continue;
-        L[c] = std::max(floorLevel[c], std::min(lake[c] ? lakeLevel[c] : std::min(F[c], fineMin[c]) - kDrop, minChild[c]));
+        // The fine ground lowers a level by at most 8 m: a ravine or deep gully crossing the link (90 m) dragged the
+        // level down, the running minimum carried it on and the valley carving dug a canyon to it (#359). Over such a
+        // notch the water spans it.
+        const float fineCap = std::min(F[c], std::max(fineMin[c], F[c] - 8.0f));
+        L[c] = std::max(floorLevel[c], std::min(lake[c] ? lakeLevel[c] : fineCap - kDrop, minChild[c]));
         const float s = sqrtf(acc[c] * cell * cell / 7.06e6f); // widths by drained area (m^2): as before for the same river
         hw[c] = std::min(3.0f + 2.5f * s, 45.0f);
         dep[c] = std::min(1.2f + 0.6f * s, 6.0f);
@@ -358,9 +370,12 @@ float RiverNetwork::distToCell(Vector3 d, int c) const {
     return sqrtf(ea * ea + eb * eb) * R;
 }
 
-bool RiverNetwork::lakeAt(Vector3 dir, float& level, float& outside) const {
+bool RiverNetwork::lakeAt(Vector3 dir, float& level, float& outside) const { int id; return lakeAt(dir, level, outside, id); }
+
+bool RiverNetwork::lakeAt(Vector3 dir, float& level, float& outside, int& id) const {
     const int c = cellOf(dir);
-    if (lake[c]) { level = lakeLevel[c]; outside = 0.0f; return true; }
+    id = -1;
+    if (lake[c]) { level = lakeLevel[c]; outside = 0.0f; id = lakeIdOf[c]; return true; }
     if (lakeSteps[c] != 1) return false;
     // Next to a lake: within the margin of a lake cell (the nearest; the highest on a tie).
     int nb[8];
@@ -371,7 +386,7 @@ bool RiverNetwork::lakeAt(Vector3 dir, float& level, float& outside) const {
         if (m < 0 || !lake[m]) continue;
         const float d = distToCell(dir, m);
         if (d >= 2.0f * kLakeMargin) continue; // the water ends at the margin; the bank fades out by twice it
-        if (!found || d < outside - 0.01f || (d < outside + 0.01f && lakeLevel[m] > level)) { level = lakeLevel[m]; outside = d; found = true; }
+        if (!found || d < outside - 0.01f || (d < outside + 0.01f && lakeLevel[m] > level)) { level = lakeLevel[m]; outside = d; id = lakeIdOf[m]; found = true; }
     }
     return found;
 }

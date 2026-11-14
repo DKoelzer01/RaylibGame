@@ -52,13 +52,17 @@ public:
     struct Slope { float h; Vector3 grad; };
     Slope slopeAt(Vector3 dir, float footprint) const;
     bool ready() const { return n > 0; }
-    bool save(const std::string& path) const;          // ERO3: deltas, split bytes, deflated, with the hash
+    bool save(const std::string& path) const;          // ERO4: deltas, split bytes, deflated; the ponds; the hash
     bool load(const std::string& path, float planetRadius, unsigned int seed); // false: missing, other seed or radius
     uint64_t hash() const { return hashValue; }
     float buildSeconds = 0.0f, coarseSeconds = 0.0f, refineSeconds = 0.0f, maxCut = 0.0f, maxRaise = 0.0f;
     int cells() const { return 6 * n * n; }
     int fineCells() const { return 6 * fe * fe; }
     float fineCell() const { return fe > 0 ? fineMetres : 0.0f; }
+    // Ponds (#360): the small closed depressions the 50 m refinement left (at most 12 cells): centre, a radius, the
+    // spill level (m above sea level) and depth. Water levels come from these; PlanetField places its ponds here.
+    struct Pond { Vector3 dir; float r, level, depth; };
+    const std::vector<Pond>& ponds() const { return pondList; }
 
 private:
     int n = 0;                     // coarse cells per face side
@@ -68,6 +72,7 @@ private:
     int nf = 0, fm = 0, fe = 0;    // fine cells per face side, margin, extended side (nf + 2 fm)
     float fineMetres = 0.0f;
     std::vector<int16_t> fine;     // baked height, 0.1 m, 6 fe^2 (each face with its margin)
+    std::vector<Pond> pondList;
     uint64_t hashValue = 0;
     void computeHash();
     float coarseAt(Vector3 dir) const;

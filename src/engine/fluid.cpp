@@ -74,7 +74,7 @@ struct Site {
     std::unordered_map<int64_t, std::unique_ptr<Brick>> bricks;
     std::deque<Brick*> pending;     // waiting for classification
     std::vector<uint64_t> ponds;    // ponds this site took over
-    struct PondInfo { Vector3 dir; float r, level; };
+    struct PondInfo { Vector3 dir; float r, level; uint64_t id = 0; float depth = 4.0f; }; // id: the claim (a lake's: its cells are its extent, #360)
     std::vector<PondInfo> pondInfo; // their extent (this session: a load keeps the stored water instead)
     // Sources with a rate and a head (springs, seeps): site cell, kind, fill units added per step at most,
     // and the level (site cells, fractional) the fluid surface over it is held to.
@@ -165,7 +165,7 @@ std::map<std::pair<int, int64_t>, GpuMesh> gpu;  // main thread
 
 // Cells of a brick: solid from the terrain density (edits included); open cells inside static water
 // are sources (infinite) or, for ponds, take the pond over.
-struct PondClaim { uint64_t id; Vector3 dir; float r, level; };
+struct PondClaim { uint64_t id; Vector3 dir; float r, level, depth; };
 // Runs in parallel over bricks (pool jobs): it writes only its own brick; ponds it finds are reported
 // in `claims` and taken over after the batch (RunJob), never here.
 void Classify(const Site& s, Brick& b, const BodyRef& ref, std::vector<PondClaim>& claims) {
@@ -191,10 +191,10 @@ void Classify(const Site& s, Brick& b, const BodyRef& ref, std::vector<PondClaim
                     // which hides its static surface and queues every brick of its water.
                     bool known = false;
                     for (const PondClaim& c : claims) known = known || c.id == ws.pond;
-                    if (!known) { claims.push_back({ ws.pond, ws.pondDir, ws.pondR, ws.level }); ponds.push_back({ ws.pondDir, ws.pondR, ws.level }); }
+                    if (!known) { claims.push_back({ ws.pond, ws.pondDir, ws.pondR, ws.level, ws.pondDepth }); ponds.push_back({ ws.pondDir, ws.pondR, ws.level, ws.pond, ws.pondDepth }); }
                 } else if (ws.kind && ws.kind != 3 && sea + ws.level > level) { level = sea + ws.level; kind = ws.kind; } // a pond (even its rim, above the level) is never an infinite source
                 for (const Site::PondInfo& p : ponds)
-                    if (Vector3Distance(dir, p.dir) * pf->radius < p.r * 1.05f && sea + p.level > level) { level = sea + p.level; kind = 5; }
+                    if (Vector3Distance(dir, p.dir) * pf->radius < p.r * 1.05f && sea + p.level > level && pf->pondCovers(p.id, dir)) { level = sea + p.level; kind = 5; }
             }
             const float top = pf ? bed + 14.0f : 1e9f;  // tors, boulders and detail stay below this
             for (int z = 0; z < B; ++z) {
@@ -744,15 +744,24 @@ void RunJob() {
                 // Take the pond over: no static surface (the chunks around it rebuild); queue its bricks.
                 pf->claimPond(c.id);
                 w.s->ponds.push_back(c.id);
-                w.s->pondInfo.push_back({ c.dir, c.r, c.level });
+                w.s->pondInfo.push_back({ c.dir, c.r, c.level, c.id, c.depth });
                 const Vector3 pc = Vector3Scale(c.dir, pf->radius + c.level);
                 { std::lock_guard<std::mutex> lock(pubMx); remeshQueue.push_back({ w.s->body, { pc.x, pc.y, pc.z, c.r * 1.3f + 8.0f } }); } // remeshed with 5 strides of reach: coarse nodes draw the static water up to 4 lattice samples out (#251)
                 int pci, pcj, pck;
                 w.s->cellOf(pc, pci, pcj, pck);
                 const int rc = (int)ceilf(c.r * 1.1f) + 1;
-                for (int bk = FloorDiv(pck - 8, B); bk <= FloorDiv(pck, B); ++bk)
-                    for (int bj = FloorDiv(pcj - rc, B); bj <= FloorDiv(pcj + rc, B); ++bj)
-                        for (int bi = FloorDiv(pci - rc, B); bi <= FloorDiv(pci + rc, B); ++bi) w.s->ensure(bi, bj, bk);
+                // Down to the bed (ponds ~4 m; a small lake its own depth, #360), and for a lake only the brick columns
+                // over its cells (its bounding circle is mostly dry ground).
+                const int depthCells = std::max(8, (int)ceilf(c.depth) + 2);
+                for (int bj = FloorDiv(pcj - rc, B); bj <= FloorDiv(pcj + rc, B); ++bj)
+                    for (int bi = FloorDiv(pci - rc, B); bi <= FloorDiv(pci + rc, B); ++bi) {
+                        if (c.id >> 63) {
+                            const Vector3 m = w.s->cellCentre(bi * B + B / 2, bj * B + B / 2, pck);
+                            const float ml = Vector3Length(m);
+                            if (ml < 1.0f || !pf->pondCovers(c.id, Vector3Scale(m, 1.0f / ml))) continue;
+                        }
+                        for (int bk = FloorDiv(pck - depthCells, B); bk <= FloorDiv(pck, B); ++bk) w.s->ensure(bi, bj, bk);
+                    }
             }
         }
     }

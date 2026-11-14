@@ -36,6 +36,8 @@ C++ raylib 5.5 planetoid survival game. `src/engine` (static lib), `src/space` -
   about them.
 - Stop stale regression runs by command line (`*regression.sh*`, game.exe under `\Temp\tmp.*`);
   TaskStop does not kill the child scripts.
+- Check on every test run 15-45 s after starting it (user, 2026-11-14): run it in the background and look at its
+  output early, so an error or a stall is caught then, not after the whole timeout.
 - `--test-planet-walk M` (#363, user 2026-11-14): M metres as 100 m legs at places drawn from the seed (teleports
   between legs, hovering while each place loads; every other leg prefers ground above 300 m). PASS = most legs walked
   and never under the surface or inside solid; a leg lost to a death or a 45 s timeout on rough ground is not a failure.
