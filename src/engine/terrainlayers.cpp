@@ -1,4 +1,5 @@
 #include "terrainlayers.h"
+#include "glcaps.h"
 #include "utils/logger.h"
 
 #include <rlgl.h>
@@ -265,7 +266,7 @@ TextureArray LoadTerrainLayers(int size) {
     glad_glTexParameteri(GL_TEXTURE_2D_ARRAY_, GL_TEXTURE_MAG_FILTER_, (int)GL_LINEAR_);
     glad_glTexParameteri(GL_TEXTURE_2D_ARRAY_, GL_TEXTURE_WRAP_S_, (int)GL_REPEAT_);
     glad_glTexParameteri(GL_TEXTURE_2D_ARRAY_, GL_TEXTURE_WRAP_T_, (int)GL_REPEAT_);
-    if (glad_glTexParameterf) glad_glTexParameterf(GL_TEXTURE_2D_ARRAY_, GL_TEXTURE_MAX_ANISOTROPY_, 8.0f);
+    if (glad_glTexParameterf && GL_Caps().anisotropic) glad_glTexParameterf(GL_TEXTURE_2D_ARRAY_, GL_TEXTURE_MAX_ANISOTROPY_, std::min(8.0f, GL_Caps().maxAnisotropy)); // only where supported (#286)
     // Detail array: normal XY, roughness, AO per layer (assets/textures/terrain/<name>_detail.png overrides).
     const double t0 = GetTime();
     glad_glGenTextures(1, &t.detailId);
@@ -285,7 +286,7 @@ TextureArray LoadTerrainLayers(int size) {
     glad_glTexParameteri(GL_TEXTURE_2D_ARRAY_, GL_TEXTURE_MAG_FILTER_, (int)GL_LINEAR_);
     glad_glTexParameteri(GL_TEXTURE_2D_ARRAY_, GL_TEXTURE_WRAP_S_, (int)GL_REPEAT_);
     glad_glTexParameteri(GL_TEXTURE_2D_ARRAY_, GL_TEXTURE_WRAP_T_, (int)GL_REPEAT_);
-    if (glad_glTexParameterf) glad_glTexParameterf(GL_TEXTURE_2D_ARRAY_, GL_TEXTURE_MAX_ANISOTROPY_, 8.0f);
+    if (glad_glTexParameterf && GL_Caps().anisotropic) glad_glTexParameterf(GL_TEXTURE_2D_ARRAY_, GL_TEXTURE_MAX_ANISOTROPY_, std::min(8.0f, GL_Caps().maxAnisotropy)); // only where supported (#286)
     glad_glBindTexture(GL_TEXTURE_2D_ARRAY_, 0);
     logger.logf("[Terrain] %d terrain layers (%dx%d) in texture array %u, detail maps %u (%.0f ms)\n", LayerCount, size, size, t.id, t.detailId,
                 (GetTime() - t0) * 1000.0);

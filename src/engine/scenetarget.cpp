@@ -1,4 +1,5 @@
 #include "scenetarget.h"
+#include "glcaps.h"
 #include "utils/logger.h"
 
 #include "external/glad.h"
@@ -79,19 +80,7 @@ namespace {
 
     // glClipControl is core in 4.5 or ARB_clip_control: a non-null proc address alone does not prove the
     // context exposes it.
-    bool ClipControlSupported() {
-        GLint major = 0, minor = 0;
-        glGetIntegerv(GL_MAJOR_VERSION, &major);
-        glGetIntegerv(GL_MINOR_VERSION, &minor);
-        if (major > 4 || (major == 4 && minor >= 5)) return true;
-        GLint n = 0;
-        glGetIntegerv(GL_NUM_EXTENSIONS, &n);
-        for (GLint i = 0; i < n; ++i) {
-            const char* e = (const char*)glGetStringi(GL_EXTENSIONS, (GLuint)i);
-            if (e && strcmp(e, "GL_ARB_clip_control") == 0) return true;
-        }
-        return false;
-    }
+    bool ClipControlSupported() { return GL_Caps().clipControl; } // 4.5 or ARB_clip_control (glcaps, #286)
 
     bool Init() {
         if (S.tried) return S.ok;

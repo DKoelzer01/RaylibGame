@@ -449,12 +449,11 @@ TreeSystem::TreeSystem(std::shared_ptr<const PlanetField> f, unsigned int s)
 
 TreeSystem::~TreeSystem() {
     shared->alive = false;
-    for (int v = 0; v < kTreeVariants; ++v) {
-        if (vao[v]) rlUnloadVertexArray(vao[v]);
-        if (vao[v + kTreeVariants]) rlUnloadVertexArray(vao[v + kTreeVariants]);
-        if (vbo[v + kTreeVariants]) rlUnloadVertexBuffer(vbo[v + kTreeVariants]);
-        if (vbo[v]) rlUnloadVertexBuffer(vbo[v]);
-    }
+    for (int s = 0; s < kTreeSets; ++s)
+        for (int slot = 0; slot < 2 * kTreeVariants; ++slot) {
+            if (vao[s][slot]) rlUnloadVertexArray(vao[s][slot]);
+            if (vbo[s][slot]) rlUnloadVertexBuffer(vbo[s][slot]);
+        }
 }
 
 void TreeSystem::request(const TreeTileKey& key, TreeTile& tile, float priority) {
@@ -554,10 +553,15 @@ void TreeSystem::rebuildBatches(Vector3 camLocal) {
     anchor = DVec3(camLocal);
     EnsureVariantGpu();
     drawnInstances = 0;
-    std::vector<float> buf[2];
+    // Set 0: everything drawn (to the draw distance). Sets 1 and 2: the shadow casters for the far (+-200 m) and
+    // near (+-32 m) cascades, only the trees within reach of their boxes (with room for long low-sun shadows and
+    // the 40 m the camera may move before the next rebuild): the shadow passes drew the whole 2 km forest twice,
+    // ~1.3 ms a frame flying, for boxes a few hundred metres across.
+    const float setReach[kTreeSets] = { 1e30f, kTreeShadowFarReach, kTreeShadowNearReach };
+    std::vector<float> buf[kTreeSets][2];
     for (int v = 0; v < kTreeVariants; ++v) {
         const float reach = v < kFirstBush ? kTreeDrawDistance : kBushDrawDistance;
-        buf[0].clear(); buf[1].clear();
+        for (auto& s : buf) { s[0].clear(); s[1].clear(); }
         for (auto& kv : tiles) {
             const TreeTile& t = kv.second;
             if (!t.ready || t.inst[v].empty() || Vector3Distance(t.centre, camLocal) > reach + kTreeTileSize) continue;
@@ -565,34 +569,45 @@ void TreeSystem::rebuildBatches(Vector3 camLocal) {
                 const float x = (float)(t.inst[v][k] - anchor.x), y = (float)(t.inst[v][k + 1] - anchor.y), z = (float)(t.inst[v][k + 2] - anchor.z);
                 const float d2 = x * x + y * y + z * z;
                 if (d2 > reach * reach) continue;
-                std::vector<float>& b = buf[d2 < kTreeNearDistance * kTreeNearDistance ? 0 : 1];
-                b.insert(b.end(), { x, y, z, t.inst[v][k + 3], t.inst[v][k + 4], t.inst[v][k + 5], t.inst[v][k + 6], t.inst[v][k + 7] });
+                const int lod = d2 < kTreeNearDistance * kTreeNearDistance ? 0 : 1;
+                const float inst[8] = { x, y, z, t.inst[v][k + 3], t.inst[v][k + 4], t.inst[v][k + 5], t.inst[v][k + 6], t.inst[v][k + 7] };
+                // Casters: near the sun axis through the camera (the cascades' boxes are centred there and run along it);
+                // without a sun direction yet, by distance from the camera.
+                const float along = x * shadowSunLocal.x + y * shadowSunLocal.y + z * shadowSunLocal.z;
+                const bool sunKnown = shadowSunLocal.x != 0.0f || shadowSunLocal.y != 0.0f || shadowSunLocal.z != 0.0f;
+                const float perp2 = sunKnown ? std::max(0.0f, d2 - along * along) : d2;
+                for (int s = 0; s < kTreeSets; ++s)
+                    if (s == 0 || perp2 <= setReach[s] * setReach[s]) buf[s][lod].insert(buf[s][lod].end(), inst, inst + 8);
             }
         }
-        for (int lod = 0; lod < 2; ++lod) {
-            const int slot = v + lod * kTreeVariants;
-            if (vao[slot]) { rlUnloadVertexArray(vao[slot]); vao[slot] = 0; }
-            if (vbo[slot]) { rlUnloadVertexBuffer(vbo[slot]); vbo[slot] = 0; }
-            count[slot] = (int)(buf[lod].size() / 8);
-            if (!count[slot]) continue;
-            drawnInstances += count[slot];
-            const VariantMesh& m = Variant(v, lod);
-            vao[slot] = rlLoadVertexArray();
-            rlEnableVertexArray(vao[slot]);
-            rlEnableVertexBuffer(m.vboPos); rlSetVertexAttribute(0, 3, RL_FLOAT, false, 0, 0); rlEnableVertexAttribute(0);
-            rlEnableVertexBuffer(m.vboNrm); rlSetVertexAttribute(1, 3, RL_FLOAT, false, 0, 0); rlEnableVertexAttribute(1);
-            rlEnableVertexBuffer(m.vboCol); rlSetVertexAttribute(2, 4, RL_UNSIGNED_BYTE, true, 0, 0); rlEnableVertexAttribute(2);
-            vbo[slot] = rlLoadVertexBuffer(buf[lod].data(), (int)(buf[lod].size() * sizeof(float)), false);
-            const int stride = 8 * (int)sizeof(float);
-            rlSetVertexAttribute(10, 4, RL_FLOAT, false, stride, 0); rlEnableVertexAttribute(10); rlSetVertexAttributeDivisor(10, 1);
-            rlSetVertexAttribute(11, 4, RL_FLOAT, false, stride, 4 * sizeof(float)); rlEnableVertexAttribute(11); rlSetVertexAttributeDivisor(11, 1);
-            rlDisableVertexArray();
-            rlDisableVertexBuffer();
-        }
+        for (int s = 0; s < kTreeSets; ++s)
+            for (int lod = 0; lod < 2; ++lod) {
+                const int slot = v + lod * kTreeVariants;
+                unsigned int& va = vao[s][slot];
+                unsigned int& vb = vbo[s][slot];
+                if (va) { rlUnloadVertexArray(va); va = 0; }
+                if (vb) { rlUnloadVertexBuffer(vb); vb = 0; }
+                count[s][slot] = (int)(buf[s][lod].size() / 8);
+                if (!count[s][slot]) continue;
+                if (s == 0) drawnInstances += count[s][slot];
+                const VariantMesh& m = Variant(v, lod);
+                va = rlLoadVertexArray();
+                rlEnableVertexArray(va);
+                rlEnableVertexBuffer(m.vboPos); rlSetVertexAttribute(0, 3, RL_FLOAT, false, 0, 0); rlEnableVertexAttribute(0);
+                rlEnableVertexBuffer(m.vboNrm); rlSetVertexAttribute(1, 3, RL_FLOAT, false, 0, 0); rlEnableVertexAttribute(1);
+                rlEnableVertexBuffer(m.vboCol); rlSetVertexAttribute(2, 4, RL_UNSIGNED_BYTE, true, 0, 0); rlEnableVertexAttribute(2);
+                vb = rlLoadVertexBuffer(buf[s][lod].data(), (int)(buf[s][lod].size() * sizeof(float)), false);
+                const int stride = 8 * (int)sizeof(float);
+                rlSetVertexAttribute(10, 4, RL_FLOAT, false, stride, 0); rlEnableVertexAttribute(10); rlSetVertexAttributeDivisor(10, 1);
+                rlSetVertexAttribute(11, 4, RL_FLOAT, false, stride, 4 * sizeof(float)); rlEnableVertexAttribute(11); rlSetVertexAttributeDivisor(11, 1);
+                rlDisableVertexArray();
+                rlDisableVertexBuffer();
+            }
     }
 }
 
-void TreeSystem::draw(const Planetoid& body, const RenderContext& ctx, int onlyLod) {
+void TreeSystem::draw(const Planetoid& body, const RenderContext& ctx, int onlyLod, int set) {
+    set = std::clamp(set, 0, kTreeSets - 1);
     if (!drawnInstances || !ctx.treeShader) return;
     const Matrix model = body.localModel(anchor, ctx.renderOrigin);
     rlSetUniformMatrix(ctx.treeModelLoc, model);
@@ -600,7 +615,7 @@ void TreeSystem::draw(const Planetoid& body, const RenderContext& ctx, int onlyL
     const float occluder[4] = { c.x, c.y, c.z, std::max(0.0f, body.radius - 60.0f) * body.scale };
     rlSetUniform(ctx.treeOccluderLoc, occluder, RL_SHADER_UNIFORM_VEC4, 1);
     for (int slot = 0; slot < 2 * kTreeVariants; ++slot) {
-        if (!count[slot]) continue;
+        if (!count[set][slot]) continue;
         const int v = slot % kTreeVariants, lod = slot / kTreeVariants;
         if (onlyLod >= 0 && lod != onlyLod) continue;
         const float fade = v < kFirstBush ? kTreeDrawDistance : kBushDrawDistance;
@@ -612,8 +627,8 @@ void TreeSystem::draw(const Planetoid& body, const RenderContext& ctx, int onlyL
             rlSetUniform(ctx.treeBarkLoc, &bark, RL_SHADER_UNIFORM_VEC3, 1);
             rlSetUniform(ctx.treeLeafLoc, &leaf, RL_SHADER_UNIFORM_VEC3, 1);
         }
-        rlEnableVertexArray(vao[slot]);
-        rlDrawVertexArrayInstanced(0, Variant(v, lod).vertexCount, count[slot]);
+        rlEnableVertexArray(vao[set][slot]);
+        rlDrawVertexArrayInstanced(0, Variant(v, lod).vertexCount, count[set][slot]);
         rlDisableVertexArray();
         if (ctx.drawCalls) ++*ctx.drawCalls;
     }

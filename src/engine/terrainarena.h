@@ -59,7 +59,7 @@ void TerrainArena_Queue(ArenaAlloc& a, Vector3 clip);
 // number queued (drawn or culled).
 int TerrainArena_Flush(unsigned int shaderId, bool positionsOnly, const ArenaBody& body, const ArenaCull& cull);
 
-struct ArenaStats { int vertices = 0, vertexCapacity = 0, indices = 0, indexCapacity = 0, draws = 0, flushes = 0; };
+struct ArenaStats { int vertices = 0, vertexCapacity = 0, indices = 0, indexCapacity = 0, draws = 0, flushes = 0; long long staged = 0, direct = 0; }; // uploads through the staging ring / glBufferSubData (#286)
 ArenaStats TerrainArena_Stats();
 void TerrainArena_Unload();
 

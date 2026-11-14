@@ -55,6 +55,10 @@ constexpr float kTreeTileSize = 64.0f;      // m
 inline float kTreeDrawDistance = 2000.0f;    // trees (simple meshes past kTreeNearDistance); --tree-dist
 constexpr float kBushDrawDistance = 300.0f;
 constexpr float kTreeNearDistance = 200.0f; // full meshes inside this, simple ones beyond
+// Shadow casters (#204 perf): trees within these of the camera go into the far / near cascade passes (boxes +-200 m and
+// +-32 m, plus long low-sun shadows and the 40 m the camera may move between batch rebuilds).
+constexpr float kTreeShadowFarReach = 355.0f, kTreeShadowNearReach = 115.0f; // from the sun axis through the camera: box half-diagonal + 40 m drift + 30 m tree
+constexpr int kTreeSets = 3; // draw set 0: all; 1: far-cascade casters; 2: near-cascade casters
 
 struct TreeTileKey {
     int face, i, j;
@@ -112,7 +116,10 @@ public:
     // finished tiles, rebuild the draw batches when needed.
     void update(Planetoid& body, Vector3 camLocal);
     // Instanced draw (tree shader bound by the scene; its view-projection set).
-    void draw(const Planetoid& body, const RenderContext& ctx, int onlyLod = -1); // onlyLod 1: simple far meshes only (the mid pass)
+    void draw(const Planetoid& body, const RenderContext& ctx, int onlyLod = -1, int set = 0); // onlyLod 1: simple far meshes only (the mid pass); set: 0 all, 1/2 the far/near shadow casters
+    // The shadow cascades' axis (body-local direction toward the sun): the caster sets are trees near it. Rebuilds the
+    // sets when it turns more than ~1 degree.
+    void setShadowSun(Vector3 dirLocal) { if (dirLocal.x * shadowSunLocal.x + dirLocal.y * shadowSunLocal.y + dirLocal.z * shadowSunLocal.z < 0.99985f) { shadowSunLocal = dirLocal; batchDirty = true; } }
     // A terrain edit: rebuild tiles it reaches (trees lose their ground, new ground may grow some).
     void onEdit(Vector3 localCentre, float radius, std::shared_ptr<const TerrainDeltas> edits);
     // Trunks within `range` of a body-local point.
@@ -149,8 +156,9 @@ private:
     bool batchDirty = true;
     double lastBatch = -1.0;
     // Two detail levels: [0..kTreeVariants) full meshes near the camera, then simple far meshes.
-    unsigned int vao[2 * kTreeVariants] = {}, vbo[2 * kTreeVariants] = {};
-    int count[2 * kTreeVariants] = {};
+    unsigned int vao[kTreeSets][2 * kTreeVariants] = {}, vbo[kTreeSets][2 * kTreeVariants] = {};
+    int count[kTreeSets][2 * kTreeVariants] = {};
+    Vector3 shadowSunLocal = { 0, 0, 0 };     // (0: unknown, the caster sets use distance from the camera)
     Vector3 lastWantCam = { 1e30f, 0, 0 };    // tile set recomputed after the camera moves 16 m
     int drawnInstances = 0;
 
