@@ -245,6 +245,7 @@ int main(int argc, char** argv)
     bool benchShadow = false; int shadowPhase = 0; double shadowT0 = 0.0; Vector3 shadowEye{}, shadowAt{}; // --shot-shadow
     bool benchFarForest = false; int farForestPhase = 0; double farForestT0 = 0.0; Vector3 farForestEye{}, farForestAt{}; // --shot-far-forest
     bool benchTerrain = false; int terrainPhase = 0; double terrainT0 = 0.0; Vector3 terrainAt{}, terrainOut{}; // --shot-terrain
+    bool benchShelter = false; int shelterPhase = 0; double shelterT0 = 0.0; Vector3 shelterEye{}, shelterLook{}; // --shot-shelter (#369)
     bool benchPumpHand = false; // --test-pump-hand (#280): the pump test with a hand pump worked for 60 s
     bool benchPumpBoiler = false; int pumpBoilerPart = -1; // --test-pump-boiler (#229 review): the pipes end at a full boiler; the world loses no water
     bool benchPump = false; int pumpPhase = 0, pumpCable = -1; double pumpT0 = 0.0, pumpedAtCut = 0.0; uint32_t pumpPlot = 0; Vector3 pumpBasin{}; float pumpRise = 0.0f; // --test-pump
@@ -380,6 +381,7 @@ int main(int argc, char** argv)
     if (const char* e3 = getenv("RAYLIBGAME_3D")) gTerrain3D = e3[0] == '1'; else if (gErosionPrototype) gTerrain3D = false; // no 3D band in erosion tests (RAYLIBGAME_3D=0 for baselines)
     if (const char* g = getenv("RAYLIBGAME_GULLIES")) gGullies = g[0] == '1';
     if (const char* c = getenv("RAYLIBGAME_CLIFFS")) gCliffs = c[0] == '1';
+    if (const char* c = getenv("RAYLIBGAME_SKY_PROBES")) gSkyProbes = c[0] == '1'; // #369 A/B
     for (int i = 1; i < argc; ++i) {
         if (std::string(argv[i]) == "--bench") benchSeconds = (i + 1 < argc) ? atof(argv[i + 1]) : 10.0;
         if (std::string(argv[i]) == "--ui") DebugUI_Toggle(); // open the debug panel at start
@@ -453,6 +455,7 @@ int main(int argc, char** argv)
         if (std::string(argv[i]) == "--test-pump-hand") { benchPump = true; benchPumpHand = true; }
         if (std::string(argv[i]) == "--test-pump-boiler") { benchPump = true; benchPumpBoiler = true; }
         if (std::string(argv[i]) == "--shot-terrain") benchTerrain = true;
+        if (std::string(argv[i]) == "--shot-shelter") benchShelter = true;
         if (std::string(argv[i]) == "--shot-shadow") benchShadow = true;
         if (std::string(argv[i]) == "--shot-particles") benchParticles = true;
         if (std::string(argv[i]) == "--test-biomes") benchBiomes = true;
@@ -3297,6 +3300,34 @@ int main(int argc, char** argv)
                             benchFarForest = false;
                         }
                     }
+                } else if (benchShelter && (shelterPhase > 0 || WorldIdle())) {
+                    // --shot-shelter (#369): a pit 4 m deep with a tunnel off its side under ~2.5 m of rock; at night, from the
+                    // pit, looking into the tunnel. Depth alone keeps the tunnel ~75% sky-lit; the overhead rays darken it.
+                    Planetoid* p = dynamic_cast<Planetoid*>(world.objects[0].get());
+                    if (shelterPhase == 0) {
+                        player.spawnOn(world, *p, StartSpawnDir(*p));
+                        shelterPhase = 1; shelterT0 = GetTime();
+                    } else if (shelterPhase == 1 && GetTime() - shelterT0 > 1.0) {
+                        const Vector3 feet = p->toLocal((player.position - world.renderOrigin).toFloat());
+                        const Vector3 up = Vector3Normalize(feet);
+                        const Vector3 fl = p->dirToLocal(player.forward);
+                        const Vector3 fw = Vector3Normalize(Vector3Subtract(fl, Vector3Scale(up, Vector3DotProduct(fl, up))));
+                        const Vector3 pit = Vector3Add(feet, Vector3Scale(fw, 4.0f));
+                        for (int k = 0; k < 3; ++k) ApplyTerrainEdit(*p, TerrainEdit{ Vector3Subtract(pit, Vector3Scale(up, 1.2f * k)), 2.2f, -10.0f });
+                        for (int k = 1; k <= 6; ++k) ApplyTerrainEdit(*p, TerrainEdit{ Vector3Add(Vector3Subtract(pit, Vector3Scale(up, 3.0f)), Vector3Scale(fw, 1.6f * k)), 1.4f, -10.0f });
+                        shelterEye = Vector3Subtract(Vector3Subtract(pit, Vector3Scale(up, 1.8f)), Vector3Scale(fw, 1.0f));
+                        shelterLook = Vector3Add(Vector3Subtract(pit, Vector3Scale(up, 3.2f)), Vector3Scale(fw, 6.0f));
+                        player.flyMode = true;
+                        shelterPhase = 2; shelterT0 = GetTime();
+                    } else if (shelterPhase == 2) {
+                        world.camera.position = p->toWorld(shelterEye); world.camera.target = p->toWorld(shelterLook); world.camera.up = p->dirToWorld(Vector3Normalize(shelterEye));
+                        player.position = world.renderOrigin + world.camera.position;
+                        if (GetTime() - shelterT0 > 4.0 && WorldIdle()) {
+                            TakeScreenshot("bench_shelter.png");
+                            printf("bench: shelter: bench_shelter.png (sky probes %s)\n", gSkyProbes ? "on" : "off");
+                            benchShelter = false;
+                        }
+                    }
                 } else if (benchTerrain && (terrainPhase > 0 || WorldIdle())) {
                     // --shot-terrain (plan item 6): the nearest strongly rugged land (the 3D band at full
                     // strength), seen from the air (bench_terrain.png) and from the ground (bench_terrain_low.png).
@@ -5272,7 +5303,7 @@ int main(int argc, char** argv)
                         }
                         benchWalkSeconds = 0.0;
                     }
-                } else if ((WorldIdle() && benchDigStrokes == 0 && !benchPaint && !benchSaveLoad && benchWalkSeconds <= 0.0 && benchMineStrokes == 0 && minePhase != 2 && benchFlySeconds <= 0.0 && !benchSuffocate && benchOrbitSeconds <= 0.0 && !benchRide && !benchPark && !benchGravity && !benchPrecision && !benchMantle && !benchAirJump && !benchMoon && !benchHole && !benchWall && !benchDoorway && !benchLedge && !benchTor && !benchMachines && !benchFall && !benchHover && !benchTeleClose && !benchMenus && !benchWater && !benchFlyFollow && !benchHotbar && !benchInventory && !benchMap && !benchViewmodel && !benchQuests && !benchHunger && !benchFarm && !benchAnimals && !benchThreats && benchShotTabs == 0 && !benchForest && !benchFlow && !benchPond && !benchBucket && !benchPump && !benchTerrain && !benchShadow && !benchParticles && !benchBiomes && !benchOil && !benchSpring && !benchShotAnimals && !benchShotMachines && benchShotBiomes < 0 && !benchFarForest && !benchRecipes && !benchWeather && !benchDecor && !benchMaterials && !benchDamage && !benchCrafting && !benchSuit && !benchTools && !benchRivers && !benchRing && !benchRocket && !benchStation && !benchBlueprint && !benchSmallBody && !benchTrees && !benchChop && benchPersist == 0 && benchBuild == 0 && benchFactory == 0 && !benchProgression) || GetTime() > 600.0) {
+                } else if ((WorldIdle() && benchDigStrokes == 0 && !benchPaint && !benchSaveLoad && benchWalkSeconds <= 0.0 && benchMineStrokes == 0 && minePhase != 2 && benchFlySeconds <= 0.0 && !benchSuffocate && benchOrbitSeconds <= 0.0 && !benchRide && !benchPark && !benchGravity && !benchPrecision && !benchMantle && !benchAirJump && !benchMoon && !benchHole && !benchWall && !benchDoorway && !benchLedge && !benchTor && !benchMachines && !benchFall && !benchHover && !benchTeleClose && !benchMenus && !benchWater && !benchFlyFollow && !benchHotbar && !benchInventory && !benchMap && !benchViewmodel && !benchQuests && !benchHunger && !benchFarm && !benchAnimals && !benchThreats && benchShotTabs == 0 && !benchForest && !benchFlow && !benchPond && !benchBucket && !benchPump && !benchTerrain && !benchShelter && !benchShadow && !benchParticles && !benchBiomes && !benchOil && !benchSpring && !benchShotAnimals && !benchShotMachines && benchShotBiomes < 0 && !benchFarForest && !benchRecipes && !benchWeather && !benchDecor && !benchMaterials && !benchDamage && !benchCrafting && !benchSuit && !benchTools && !benchRivers && !benchRing && !benchRocket && !benchStation && !benchBlueprint && !benchSmallBody && !benchTrees && !benchChop && benchPersist == 0 && benchBuild == 0 && benchFactory == 0 && !benchProgression) || GetTime() > 600.0) {
                     benchStart = GetTime();
                     printf("bench: world ready after %.2f s (%d chunks, avg build %.2f ms of which sampling %.2f ms, %d worker threads)\n",
                         GetWorldStats().lastGenerationSeconds, GetWorldStats().chunks, GetWorldStats().avgBuildMs, GetWorldStats().avgSampleMs, GetWorldStats().workerThreads);

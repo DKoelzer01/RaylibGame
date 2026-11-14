@@ -84,6 +84,7 @@ inline bool gErosionPrototype = false;
 inline bool gTerrain3D = true;
 inline bool gGullies = true; // erosion-filter gullies on the baked height (#357); RAYLIBGAME_GULLIES=0 for A/B
 inline bool gCliffs = true;  // cliff bands in hard-rock regions (user 2026-11-14); RAYLIBGAME_CLIFFS=0 for A/B
+inline bool gSkyProbes = true; // sky light under overhangs from short rays (#369); RAYLIBGAME_SKY_PROBES=0 for A/B
 class PlanetErosion;
 const char* BiomeName(Biome b);
 const char* VoxelMaterialName(VoxelMaterial m);

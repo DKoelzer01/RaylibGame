@@ -1481,6 +1481,53 @@ void BuildChunkMesh(const DensityField& field, const TerrainDeltas& deltas, Chun
     BuildChunkMeshFromBase(field, deltas, out, base.data(), std::chrono::duration<float, std::milli>(std::chrono::steady_clock::now() - t0).count(), gridded ? &grid : nullptr);
 }
 
+// Sky light under overhangs (#369, Plan 8 item 2): the depth under the height map darkens caves and pits, but ground
+// under rock that stands over it (a cliff lip, a 3D-band shelf, a tor, a dug-out hollow) read as open sky. Five short
+// rays (up, and four tilted 45 degrees) through the block's own samples (edits included): the open share sets the light,
+// the up ray counting double, so a shelter's mouth is dim and a few metres in is black. The up ray continues past the
+// block through the full field to 12 m (so block borders don't show), and a cliff lip over the column (#357) roofs it.
+static float OverheadOpenness(const DensityField& field, const TerrainDeltas& deltas, const float* ext, int E, Vector3 eo, float stride,
+                              Vector3 p, const PlanetField::Column3D* col, const float* elev) {
+    const float d = Vector3Length(p);
+    if (d < 1e-3f) return 1.0f;
+    const Vector3 up = Vector3Scale(p, 1.0f / d);
+    // Under a cliff lip: dark from its edge inwards (margin = metres inside the lip's reach).
+    float lipShade = 1.0f;
+    if (col && elev && col->lipThick > 0.05f && col->lipMargin > 0.0f)
+        if (const auto* pf = dynamic_cast<const PlanetField*>(&field); pf && d < pf->radius + *elev + col->lipTop - col->lipThick + 0.5f) // below its underside
+            lipShade = std::clamp(1.0f - col->lipMargin / 4.0f, 0.0f, 1.0f);
+    const Vector3 t1 = Vector3Normalize(Vector3CrossProduct(up, fabsf(up.y) < 0.9f ? Vector3{ 0, 1, 0 } : Vector3{ 1, 0, 0 }));
+    const Vector3 t2 = Vector3CrossProduct(up, t1);
+    const Vector3 dirs[5] = { up,
+        Vector3Normalize(Vector3Add(up, t1)), Vector3Normalize(Vector3Subtract(up, t1)),
+        Vector3Normalize(Vector3Add(up, t2)), Vector3Normalize(Vector3Subtract(up, t2)) };
+    // Past the block only where something can stand over the ground there: the 3D band, a cliff lip (no column info:
+    // assume so). On plain height-map ground nothing natural is above a surface vertex beyond its own block.
+    const bool mayRoof = !col || col->mask > 0.0f || col->lipThick > 0.0f;
+    auto blockSolid = [&](Vector3 q, bool& inside) {
+        const float fx = (q.x - eo.x) / stride, fy = (q.y - eo.y) / stride, fz = (q.z - eo.z) / stride;
+        const int x = (int)lroundf(fx), y = (int)lroundf(fy), z = (int)lroundf(fz);
+        inside = x >= 0 && y >= 0 && z >= 0 && x < E && y < E && z < E;
+        return inside && ext[((size_t)z * E + y) * E + x] >= ISO_LEVEL;
+    };
+    float open = 0.0f;
+    for (int r = 0; r < 5; ++r) {
+        bool blocked = false, inside = true;
+        // Eight distances, closer together near the vertex (a low roof matters most), from clear of its own surface.
+        static const float kDist[8] = { 1.0f, 1.5f, 2.0f, 3.0f, 4.0f, 6.0f, 8.0f, 12.0f };
+        int k = 0;
+        for (; k < 8 && !blocked; ++k) {
+            if (blockSolid(Vector3Add(p, Vector3Scale(dirs[r], kDist[k])), inside)) blocked = true;
+            if (!inside) break;
+        }
+        if (!blocked && !inside && r == 0 && mayRoof) // the up ray beyond the block: the rest from the full field
+            for (; k < 8 && !blocked; k += 2)
+                blocked = field.density(Vector3Add(p, Vector3Scale(up, kDist[k])), &deltas, std::max(stride, 1.0f)) >= ISO_LEVEL;
+        if (!blocked) open += r == 0 ? 2.0f : 1.0f;
+    }
+    return std::min(std::clamp(open / 6.0f * 1.5f, 0.0f, 1.0f), lipShade);
+}
+
 void BuildChunkMeshFromBase(const DensityField& field, const TerrainDeltas& deltas, ChunkMeshData& out, const float* base, float sampledMs, const PlanetField::BlockGrid* grid) {
     const auto t0 = std::chrono::steady_clock::now() - std::chrono::duration_cast<std::chrono::steady_clock::duration>(std::chrono::duration<float, std::milli>(sampledMs));
     const int cells = CHUNK_SIZE + 1;        // +1 cell overlap with the positive neighbours (LOD crack cover)
@@ -1588,6 +1635,7 @@ void BuildChunkMeshFromBase(const DensityField& field, const TerrainDeltas& delt
                 const bool hinted = gridField && gridField->gridSurface(*grid, p, gElev, gCol);
                 VoxelMaterial m = hinted ? gridField->materialSkyHinted(p, b, stride, n, sky, &gElev, &gCol) : field.materialSky(p, b, stride, n, sky);
                 if (!near.empty()) { const int placed = deltas.materialAt(p); if (placed >= 0) m = (VoxelMaterial)placed; } // placed ground keeps its material
+                if (gSkyProbes && sky > 0.02f && stride <= 2.0f) sky *= OverheadOpenness(field, deltas, ext.data(), E, eo, stride, p, hinted ? &gCol : nullptr, hinted ? &gElev : nullptr);
                 out.tangents[v * 4 + 3] = sky;
                 if (m == VoxelMaterial::Ore) {
                     // Which ore (the shader colours each kind): 1 + kind, over 8.
