@@ -387,6 +387,7 @@ static void DrawCreative() {
     ImGui::BeginChild("creativeitems");
     int shown = 0;
     for (const ItemDef& d : itemDB.items()) {
+        if (IsWildcardItem(d.id)) continue; // tags, not items (#269)
         std::string name = d.name;
         for (char& c : name) c = (char)tolower(c);
         if (!f.empty() && name.find(f) == std::string::npos && d.id.find(f) == std::string::npos) continue;
