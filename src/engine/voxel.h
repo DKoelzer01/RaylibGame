@@ -77,9 +77,9 @@ enum class Biome : uint8_t { Ocean = 0, Jungle, Savanna, Desert, Badlands, Fores
 inline int gSpawnBiome = -1;
 // Bench override (--bench-pond): findSpawnDir returns the rim of the nearest pond (#251 crack checks).
 inline bool gSpawnPond = false;
-// Erosion bake prototype (#352): RAYLIBGAME_EROSION=1 erodes a 25 km region around the start at 100 m (erosion.h).
+// Erosion bake (Plan 7, #355): RAYLIBGAME_EROSION=1 bakes the whole planet at world creation (erosion.h); off until the plan's gate.
 inline bool gErosionPrototype = false;
-class ErosionBake;
+class PlanetErosion;
 const char* BiomeName(Biome b);
 const char* VoxelMaterialName(VoxelMaterial m);
 
@@ -301,11 +301,11 @@ private:
     struct ErosionState;
     std::shared_ptr<ErosionState> erosionState;
     unsigned int fieldSeed = 0;
-    const ErosionBake* erosion() const;
+    const PlanetErosion* erosion() const;
 public:
     // Bake erosion around the start (#352 prototype, gErosionPrototype): once, on the main thread, before the field is
     // shared with the workers.
-    void bakeErosion(unsigned int spawnSeed);
+    void bakeErosion(const std::string& cachePath); // loads the bake from cachePath when it matches, else bakes and saves it
 private:
     std::shared_ptr<RiverState> riverState;
     unsigned int riverSeed = 0;
