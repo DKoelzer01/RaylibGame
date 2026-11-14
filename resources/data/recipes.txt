@@ -37,6 +37,7 @@ battery 1         = lv_hull 1, power_cell 2
 ore_washer 1      = lv_hull 1, basic_circuit 1, steel_plate 4
 centrifuge 1      = lv_hull 1, basic_circuit 2, copper_wire 8
 water_pump 1      = lv_hull 1, basic_circuit 1, iron_plate 4
+hand_pump 1       = any_planks 4, bronze_plate 2
 mv_hull 1         = steel_plate 4, copper_wire 8
 mv_generator 1    = mv_hull 1, basic_circuit 2, steel_plate 6
 electrolyzer 1    = mv_hull 1, basic_circuit 2, copper_wire 16

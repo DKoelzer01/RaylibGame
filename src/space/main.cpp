@@ -232,6 +232,7 @@ int main(int argc, char** argv)
     bool benchShadow = false; int shadowPhase = 0; double shadowT0 = 0.0; Vector3 shadowEye{}, shadowAt{}; // --shot-shadow
     bool benchFarForest = false; int farForestPhase = 0; double farForestT0 = 0.0; Vector3 farForestEye{}, farForestAt{}; // --shot-far-forest
     bool benchTerrain = false; int terrainPhase = 0; double terrainT0 = 0.0; Vector3 terrainAt{}, terrainOut{}; // --shot-terrain
+    bool benchPumpHand = false; // --test-pump-hand (#280): the pump test with a hand pump worked for 60 s
     bool benchPump = false; int pumpPhase = 0, pumpCable = -1; double pumpT0 = 0.0, pumpedAtCut = 0.0; uint32_t pumpPlot = 0; Vector3 pumpBasin{}; float pumpRise = 0.0f; // --test-pump
     bool benchBucket = false; int bucketPhase = 0, bucketTrips = 0; double bucketT0 = 0.0; Vector3 bucketWater{}, bucketBasin{}, bucketField{}; // --test-bucket
     bool benchPond = false; int pondPhase = 0; double pondT0 = 0.0; Vector3 pondDirB{}, pondOutB{}, pondPit{}, pondMid{}; float pondLevelB = 0.0f, pondRB = 0.0f; // --test-pond
@@ -430,6 +431,7 @@ int main(int argc, char** argv)
         if (std::string(argv[i]) == "--test-pond") benchPond = true;
         if (std::string(argv[i]) == "--test-bucket") benchBucket = true;
         if (std::string(argv[i]) == "--test-pump") benchPump = true;
+        if (std::string(argv[i]) == "--test-pump-hand") { benchPump = true; benchPumpHand = true; }
         if (std::string(argv[i]) == "--shot-terrain") benchTerrain = true;
         if (std::string(argv[i]) == "--shot-shadow") benchShadow = true;
         if (std::string(argv[i]) == "--shot-particles") benchParticles = true;
@@ -3253,7 +3255,7 @@ int main(int argc, char** argv)
                             const Vector3 o = Vector3Subtract(plot->toPlot(Vector3Add(intakeAt, out)), plot->toPlot(intakeAt));
                             const bool alongX = fabsf(o.x) >= fabsf(o.z);
                             const int dir = (alongX ? o.x : o.z) > 0.0f ? 1 : -1;
-                            plot->place({ PartType::WaterPump, pc, 0 });
+                            plot->place({ benchPumpHand ? PartType::HandPump : PartType::WaterPump, pc, 0 }); // --test-pump-hand: the hand pump (#280)
                             // Power: a generator behind the pump, joined by a cable cell.
                             auto off = [&](Int3 c, int a) { return alongX ? Int3{ c.x + a, c.y, c.z } : Int3{ c.x, c.y, c.z + a }; };
                             const int gen = plot->place({ PartType::Generator, off(pc, dir > 0 ? -3 : 3), 0 });
@@ -3285,11 +3287,15 @@ int main(int argc, char** argv)
                         player.position = world.renderOrigin + world.camera.position;
                         static double lastPrint = 0.0;
                         const WaterworksStats ws = Waterworks_Stats();
+                        if (benchPumpHand && pumpPhase == 1) // working the hand pump (RMB held), until the "power" is cut
+                            if (Plot* hp = p->plots ? p->plots->byId(pumpPlot) : nullptr)
+                                for (int i = 0; i < (int)hp->parts.size(); ++i)
+                                    if (hp->parts[i].type == PartType::HandPump) Waterworks_HandPump(p->id, pumpPlot, i, GetFrameTime());
                         if (t - lastPrint >= 5.0) {
                             lastPrint = t;
                             Plot* plot = p->plots ? p->plots->byId(pumpPlot) : nullptr;
                             int pumpPart = -1;
-                            if (plot) for (int i = 0; i < (int)plot->parts.size(); ++i) if (plot->parts[i].type == PartType::WaterPump) pumpPart = i;
+                            if (plot) for (int i = 0; i < (int)plot->parts.size(); ++i) if (plot->parts[i].type == PartType::WaterPump || plot->parts[i].type == PartType::HandPump) pumpPart = i;
                             const MachineView v = pumpPart >= 0 ? Factory::View(p->id, pumpPlot, pumpPart) : MachineView{};
                             printf("bench: pump t=%3.0f s: %s, %d networks, pumped %.1f m^3 (%d dry), bowl holds %.1f m^3\n", t, v.valid ? MachineStatusName(v.status) : "-", ws.networks, ws.pumped, ws.dry,
                                    Fluid::WaterAt(*p, pumpBasin, 2.5f));
@@ -3303,7 +3309,7 @@ int main(int argc, char** argv)
                         } else if (pumpPhase == 2 && t > 75.0) {
                             const double after = ws.pumped - pumpedAtCut;
                             const float bowl = Fluid::WaterAt(*p, pumpBasin, 2.5f);
-                            const bool pass = pumpedAtCut >= 10.0 && bowl >= 5.0f && after <= 1.0;
+                            const bool pass = benchPumpHand ? (pumpedAtCut >= 2.0 && bowl >= 1.0f && after <= 0.5) : (pumpedAtCut >= 10.0 && bowl >= 5.0f && after <= 1.0); // by hand: 50 L/s
                             printf("bench: pump: pumped %.1f m^3 in 60 s (%.1f m up), the bowl holds %.1f m^3; after cutting the cable %.1f m^3 more -> %s\n",
                                    pumpedAtCut, pumpRise, bowl, after, pass ? "PASS" : "FAIL");
                             benchPump = false;

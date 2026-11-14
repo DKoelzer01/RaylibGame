@@ -15,6 +15,11 @@ class Scene;
 constexpr float kWaterPerUnit = 0.5f; // m^3 per water unit (a pump makes one a second)
 
 void Waterworks_Update(Scene& world, float dt);
+// Hand pump (#280): the player works it (hold RMB on it): dt seconds of pumping, 50 litres a second, sent down its
+// pipes at the next pass like a water pump's units (no power; no water under it: nothing).
+constexpr float kHandPumpRate = 0.05f; // m^3 a second
+#include <cstdint>
+void Waterworks_HandPump(uint64_t body, uint32_t plot, int part, float dt);
 
 struct WaterworksStats { int pumps = 0, networks = 0, outlets = 0; double pumped = 0.0; int dry = 0; };
 WaterworksStats Waterworks_Stats(); // totals since the start (pumped m^3), and the last pass (pumps, networks, outlets, dry)

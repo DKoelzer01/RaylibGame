@@ -54,6 +54,7 @@ rocket_fuel     | Rocket fuel     | 200 | 200, 80, 40 | 100 kg of fuel. Look at 
 ore_washer      | Ore washer      |  20 |  70,120,170 | LV: washes crushed ore with water into purified ore.
 centrifuge      | Centrifuge      |  20 | 160,160,170 | LV: splits purified ore into dust and a byproduct.
 water_pump      | Water pump      |  20 |  50, 90,160 | LV: lifts water from under it (a river, a pond, the sea) into pipes; outlets pour it out. Needs power.
+hand_pump       | Hand pump       |  20 | 120, 90, 60 | Early water without power: placed over water (a river, a pond, the sea), hold RMB on it to pump 50 L/s into the pipes it touches (boilers, outlets).
 mv_generator    | MV generator    |  20 | 200, 90, 50 | Burns coal or coke for MV power (128 V).
 electrolyzer    | Electrolyzer    |  20 | 180,180, 80 | MV: splits water into hydrogen and oxygen; bauxite dust into aluminium.
 chemical_reactor | Chemical reactor | 20 | 120,160,120 | MV: coal and hydrogen into polyethylene.

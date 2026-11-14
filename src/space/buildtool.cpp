@@ -1,5 +1,6 @@
 #include "machinemodels.h"
 #include "buildtool.h"
+#include "waterworks.h"
 #include "survival.h"
 #include "farming.h"
 #include "audio.h"
@@ -307,7 +308,7 @@ void Machine_Update(Scene& world, bool inputEnabled) {
         Int3 c, f; float d;
         if (pl->raycast(lo, ld, best, c, f, d)) {
             const int part = pl->partAt(c);
-            if (part >= 0 && (IsMachine(pl->parts[part].type) || pl->parts[part].type == PartType::Farmland)) {
+            if (part >= 0 && (IsMachine(pl->parts[part].type) || pl->parts[part].type == PartType::Farmland || pl->parts[part].type == PartType::HandPump)) {
                 best = d;
                 machineAim = { body->id, pl->id, part, pl->parts[part].type };
             }
@@ -322,6 +323,15 @@ void Machine_Update(Scene& world, bool inputEnabled) {
         }
     }
     if (machineAim.part < 0 || !inputEnabled) return;
+    if (machineAim.type == PartType::HandPump) {
+        // Hand pump (#280): hold RMB (outside build mode) to work it; the water goes down its pipes at the next pass.
+        if (!buildTool.active && IsMouseButtonDown(MOUSE_BUTTON_RIGHT)) {
+            Waterworks_HandPump(machineAim.body, machineAim.plot, machineAim.part, GetFrameTime());
+            static double nextSound = 0.0;
+            if (GetTime() > nextSound) { Audio_Play(Sfx::Pickup, 0.25f, 0.6f); nextSound = GetTime() + 0.6; }
+        }
+        return;
+    }
     if (machineAim.type == PartType::Farmland) {
         // Farmland: I plants seeds you carry, O harvests a ripe crop.
         Planetoid* fb = Planetoid::find(machineAim.body);
@@ -358,6 +368,13 @@ void Machine_DrawHUD() {
         Planetoid* fb = Planetoid::find(machineAim.body);
         Plot* fp = fb && fb->plots ? fb->plots->byId(machineAim.plot) : nullptr;
         if (fb && fp) Farm_DrawAimHUD(*fb, *fp, machineAim.part);
+        return;
+    }
+    if (machineAim.type == PartType::HandPump) {
+        const int x = GetScreenWidth() / 2 + 20, y = GetScreenHeight() / 2 + 40;
+        DrawRectangle(x - 8, y - 6, 380, 52, Fade(BLACK, 0.55f));
+        DrawText("hand pump", x, y, 20, SKYBLUE);
+        DrawText(TextFormat("hold RMB to pump %.0f L/s into its pipes", kHandPumpRate * 1000.0f), x, y + 24, 16, RAYWHITE);
         return;
     }
     const MachineView v = Factory::View(machineAim.body, machineAim.plot, machineAim.part);

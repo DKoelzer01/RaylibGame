@@ -85,6 +85,7 @@ planet() {
     run --seed 42 --bench 3 --test-pond
     run --seed 42 --bench 3 --test-bucket
     run --seed 42 --bench 3 --test-pump
+    run --seed 42 --bench 5 --test-pump-hand
     run --seed 42 --bench 3 --test-oil
     run --seed 42 --bench 3 --test-spring
 }
