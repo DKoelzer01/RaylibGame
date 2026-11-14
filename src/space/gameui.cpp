@@ -22,6 +22,7 @@
 #include "itemicons.h"
 #include "plots.h"
 #include "worldtypes.h"
+#include "helpmanual.h"
 #include <raymath.h>
 
 namespace {
@@ -461,6 +462,10 @@ void GameUI_Draw(Scene& world) {
             }
             if (ImGui::BeginTabItem("Suit", nullptr, forceTab == "Suit" ? ImGuiTabItemFlags_SetSelected : 0)) {
                 Suit_DrawTab();
+                ImGui::EndTabItem();
+            }
+            if (ImGui::BeginTabItem("Help", nullptr, forceTab == "Help" ? ImGuiTabItemFlags_SetSelected : 0)) { // the manual (#354)
+                HelpManual_DrawTab();
                 ImGui::EndTabItem();
             }
             if (ImGui::BeginTabItem("Creative")) {

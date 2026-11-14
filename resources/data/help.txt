@@ -1,0 +1,53 @@
+## The in-game help manual (#354): "# Title" starts a topic; the lines under it are its text (a blank line = a new
+## paragraph). Lines starting with "##" are comments. The Items topic is generated from items.txt and recipes.txt.
+
+# Controls
+WASD walk, Shift run, Space jump. In the air, Space and Ctrl fire the jetpack up and down (it refills on the ground, which costs suit power).
+LMB mines, digs and chops; hold LMB on a built part to break it. RMB places the loose ground (dirt, sand, gravel) in your hand.
+1-0 pick hotbar slots: an empty slot is bare hands. Hover an item in the inventory and press a number to put it on that key.
+Tab opens the inventory (crafting, quests, the quest tree, the suit, this manual). G toggles build mode. T looks through the telescope. L switches the headlamp. F5 saves.
+Looking at a machine: RMB opens it, I puts matching items in, O takes the outputs. On farmland: I plants seeds, O harvests.
+With a flight pack fitted, H toggles hover.
+
+# Survival
+Four bars: oxygen, suit power, health and food. Terra's air is breathable; under water, in caves without air and in space your oxygen drains (a rebreather slows it under water).
+Suit power drains slowly, faster with the headlamp on, and pays for refilling the jetpack. Oxygen canisters and power cells on the hotbar top the bars up.
+Food: press its hotbar key once to hold it, again to eat it. Cold weather makes you hungrier (insulated suits help); heat hurts without a thermal regulator.
+Falls faster than about 6 m/s hurt (servo legs raise that). Dying sends you back to your spawn.
+
+# Tools and wear
+Your first tools are stone: pick up loose stones with LMB (1-2 stone each) and craft a stone pickaxe, axe or hoe in the Crafting tab.
+Tools wear with use and show a warning when nearly worn out; repair them in the inventory before they break. A tool that breaks leaves your hotbar.
+Better tools (bronze, iron, steel...) dig harder rock and work faster.
+
+# Building
+G enters build mode. The mouse wheel picks the shape, R and V rotate it, RMB places, holding LMB removes a part.
+Parts are built from the material in your hand (stone, planks, concrete...); machines are placed from the hotbar like blocks.
+Parts snap to a 0.5 m grid on a build plot, which starts where you place the first part. B saves the plot you look at as a blueprint; N cycles your blueprints.
+
+# Machines and power
+Early machines burn fuel (a campfire, a kiln, the coke oven). The steam boiler needs fuel and water: fill it with buckets, a hand pump placed against it, or a water pump's pipes.
+Generators make power for electric machines through cables. Power comes in tiers (LV, MV, HV...): a machine needs a supply of its own tier.
+Ore processing (macerator, ore washer, centrifuge) gets more metal out of each ore. The quest tree shows what each tier unlocks.
+
+# Water
+The sea, rivers and large lakes never run dry. Ponds are finite: dig a channel from one and it drains.
+Water flows into holes and channels you dig next to it. Buckets scoop and pour 1 cubic metre.
+Pumps lift water from under them into pipes; outlets pour it out and boilers fill from them. A hand pump (no power) pumps while you hold RMB on it.
+
+# Farming
+Till soil with a hoe to make farmland. Plant seeds on it (I) and harvest ripe crops (O). Fields near water grow better; buckets and outlets can water them.
+
+# Animals
+Animals live in herds. Hold a food an animal eats and it follows you; lead it into a pen of fences and gates (you can walk through a gate, animals can't).
+Some animals are dangerous, mostly at night. Keep your distance or build walls.
+
+# The map and the telescope
+T looks through the telescope: zoom in to see far terrain, the moon and the ring. The map item shows the land around you and what you have found (not on Hard).
+
+# Flight pack
+An MV suit module (crafted from an MV hull, good circuits and a thruster pack). Fit it in the Suit tab, then H toggles hover: you hold your height with no drift, WASD moves (Shift is faster), Space and Ctrl climb and descend.
+Hovering drains suit power, faster when boosting. A charged flight pack catches you if you fall too fast.
+
+# Rockets and space
+Rockets are built from parts: engines, fuel tanks, a cockpit, a guidance computer and landing legs. The moon and the asteroid ring hold materials Terra doesn't; the quest tree shows the way there.

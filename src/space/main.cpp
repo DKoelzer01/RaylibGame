@@ -21,6 +21,7 @@
 #include "player.h"
 #include "inventory.h"
 #include "gameui.h"
+#include "helpmanual.h"
 #include "gamesave.h"
 #include "audio.h"
 #include "rlImGui.h"
@@ -2663,6 +2664,11 @@ int main(int argc, char** argv)
                         benchShotTabs = 3; frames = 0;
                     } else if (benchShotTabs == 3 && ++frames == 40) {
                         TakeScreenshot("bench_suit.png");
+                        GameUI_ShowTab("Help"); // the manual (#354)
+                        benchShotTabs = 30; frames = 0;
+                    } else if (benchShotTabs == 30 && ++frames == 40) {
+                        TakeScreenshot("bench_help.png");
+                        printf("bench: help manual: %d topics (bench_help.png)\n", HelpManual_TopicCount());
                         GameUI_ShowTab("Crafting");
                         benchShotTabs = 4; frames = 0;
                     } else if (benchShotTabs == 4 && ++frames == 40) {
