@@ -35,7 +35,7 @@ namespace {
     std::vector<Thumb> thumbs;     // for the contact sheet: every frame, 240 px wide
 
     // The writer thread: PNGs (ExportImage is slow) and the GIF, in order.
-    struct Job { Image img; std::string path; bool gif = false; bool end = false; };
+    struct Job { Image img; std::string path; bool gif = false; bool end = false; int centis = 2; };
     std::deque<Job> queue;
     std::mutex m;
     std::condition_variable cv, cvRoom;
@@ -45,6 +45,11 @@ namespace {
     bool gifStarted = false;
     std::string gifPath;
     int gifCentis = 2;
+    // GIF pacing (#375: the GIF played ~1.2x fast): delays are whole centiseconds, at least 2 (viewers clamp shorter ones),
+    // so one GIF frame is held until the next capture at least 2 cs later, for the time up to it, the rounding carried on:
+    // the GIF lasts exactly as long as the capture.
+    Image gifPending{};
+    double gifPendingAt = 0.0, gifEmittedCs = 0.0;
 
     uint64_t Hash(const Image& img) {
         uint64_t h = 1469598103934665603ull;
@@ -75,7 +80,7 @@ namespace {
             }
             if (j.gif) {
                 if (!gifStarted) { msf_gif_begin(&gifState, j.img.width, j.img.height); gifStarted = true; }
-                msf_gif_frame(&gifState, (uint8_t*)j.img.data, gifCentis, 16, j.img.width * 4);
+                msf_gif_frame(&gifState, (uint8_t*)j.img.data, j.centis, 16, j.img.width * 4);
             } else {
                 ExportImage(j.img, j.path.c_str());
             }
@@ -171,6 +176,9 @@ namespace {
     void End() {
         if (!active) return;
         active = false;
+        if (gifPending.data) { // the last GIF frame: one capture interval
+            Job j{ gifPending, "", true, false }; j.centis = std::max(2, gifCentis); Push(j); gifPending = Image{};
+        }
         if (writerRunning) { Push(Job{ Image{}, "", false, true }); writer.join(); writerRunning = false; }
         std::string sheetPath = "-";
         if (wantSheet && !thumbs.empty()) {
@@ -267,7 +275,16 @@ void Recorder_Capture() {
     const float dt = fixedDt > 0.0f ? fixedDt : 1.0f / 60.0f;
     const float t = (float)(captured * every) * dt;
     if (wantSheet) { Image s = ImageCopy(img); ImageResize(&s, 240, std::max(1, img.height * 240 / std::max(1, img.width))); thumbs.push_back({ s, captured, t }); }
-    if (wantGif) { Image g = ImageCopy(img); ImageResize(&g, 640, std::max(1, img.height * 640 / std::max(1, img.width))); Push(Job{ g, "", true, false }); }
+    if (wantGif) {
+        const double nowCs = 100.0 * (double)t;            // this capture's time in the recording
+        if (!gifPending.data) { gifEmittedCs = nowCs; }
+        else if (nowCs - gifEmittedCs >= 2.0) {            // the held frame lasts until now
+            const int d = (int)std::lround(nowCs - gifEmittedCs);
+            Job j{ gifPending, "", true, false }; j.centis = d; Push(j);
+            gifEmittedCs += d; gifPending = Image{};
+        }
+        if (!gifPending.data) { Image g = ImageCopy(img); ImageResize(&g, 640, std::max(1, img.height * 640 / std::max(1, img.width))); gifPending = g; gifPendingAt = nowCs; }
+    }
     Push(Job{ img, TextFormat("%s/frame_%04d.png", dir.c_str(), captured), false, false });
     ++captured;
     if (captured >= framesWanted) End();
