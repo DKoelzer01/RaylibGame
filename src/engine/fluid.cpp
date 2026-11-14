@@ -56,6 +56,7 @@ struct Brick {
     Brick* nbr[6] = {};             // -x +x -y +y -z +z
     bool ready = false;             // cells classified (solid / source)
     bool keepFill = false;          // loaded from a save: the classification keeps the stored water
+    bool fillPond = false;          // classified again for a pond take-over: its water goes in once (#189)
     bool active = true;
     int idle = 0;
     bool meshDirty = true;
@@ -182,16 +183,18 @@ void Classify(const Site& s, Brick& b, const BodyRef& ref, std::vector<PondClaim
             const Vector3 dir = Vector3Scale(mid, 1.0f / ml);
             float bed = 0.0f, level = -1e9f;
             int kind = 0;                               // 1 river, 2 lake, 4 sea: infinite; 5 a pond taken over: finite
+            PlanetField::WaterSource pondHere;           // a pond not taken over yet over this column
+            bool dugInPond = false;                     // an edit opened a cell in its water: take it over
             if (pf) {
                 bed = pf->radius + pf->elevation(dir);
                 if (bed < sea) { level = sea; kind = 4; } // the sea
                 const PlanetField::WaterSource ws = pf->waterSourceAt(dir);
                 if (ws.kind == 3 && bed < sea + ws.level) {
-                    // A pond: the simulation takes it over (finite water from here on); reported to RunJob,
-                    // which hides its static surface and queues every brick of its water.
-                    bool known = false;
-                    for (const PondClaim& c : claims) known = known || c.id == ws.pond;
-                    if (!known) { claims.push_back({ ws.pond, ws.pondDir, ws.pondR, ws.level, ws.pondDepth }); ponds.push_back({ ws.pondDir, ws.pondR, ws.level, ws.pond, ws.pondDepth }); }
+                    // A pond: the simulation takes it over (finite water from here on) once a cell an edit opened lies in
+                    // its water (#189: any edit near a pond took it over, its bed turned to grass and trees grew in it).
+                    // Checked in the cells below; reported to RunJob, which hides its static surface and (re)queues
+                    // every brick of its water.
+                    pondHere = ws;
                 } else if (ws.kind && ws.kind != 3 && sea + ws.level > level) { level = sea + ws.level; kind = ws.kind; } // a pond (even its rim, above the level) is never an infinite source
                 for (const Site::PondInfo& p : ponds)
                     if (Vector3Distance(dir, p.dir) * pf->radius < p.r * 1.05f && sea + p.level > level && pf->pondCovers(p.id, dir)) { level = sea + p.level; kind = 5; }
@@ -206,6 +209,7 @@ void Classify(const Site& s, Brick& b, const BodyRef& ref, std::vector<PondClaim
                 // Dug: open only because of an edit. Static water feeds only these (the real ground has
                 // crags the height map doesn't: natural dips by a river are not to be flooded).
                 if (!solid && r < bed + 4.0f && r < top && ref.field->density(c, nullptr) >= ISO_LEVEL) fl |= kDug;
+                if ((fl & kDug) && pondHere.kind == 3 && r - 0.5f < sea + pondHere.level) dugInPond = true;
                 uint8_t tg = 0;
                 if (!solid && kind && r - 0.5f < level && r > bed - 0.5f) {
                     tg = (uint8_t)std::clamp((int)lroundf((level - (r - 0.5f)) * 255.0f), 0, 255);
@@ -214,13 +218,18 @@ void Classify(const Site& s, Brick& b, const BodyRef& ref, std::vector<PondClaim
                 if (b.keepFill && !solid && !(fl & kSource) && b.fill[i] > 0) fl |= (b.flags[i] & kKindMask); // kept fluid stays its kind
                 b.flags[i] = fl;
                 b.target[i] = (fl & kSource) ? tg : 0;
-                if (b.keepFill) { if (solid) b.fill[i] = 0; else if (fl & kSource) b.fill[i] = tg; }
+                if (b.keepFill) { if (solid) b.fill[i] = 0; else if (fl & kSource) b.fill[i] = tg; else if (b.fillPond && kind == 5) b.fill[i] = std::max(b.fill[i], tg); }
                 else b.fill[i] = solid ? 0 : tg;
+            }
+            if (dugInPond) {
+                bool known = false;
+                for (const PondClaim& c : claims) known = known || c.id == pondHere.pond;
+                if (!known) { claims.push_back({ pondHere.pond, pondHere.pondDir, pondHere.pondR, pondHere.level, pondHere.pondDepth }); ponds.push_back({ pondHere.pondDir, pondHere.pondR, pondHere.level, pondHere.pond, pondHere.pondDepth }); }
             }
         }
     b.ready = true;
     b.upload = true; // GPU mode: the classified brick goes up whole
-    b.keepFill = false;
+    b.keepFill = false; b.fillPond = false;
     b.active = true; b.idle = 0; b.meshDirty = true; b.changed = true;
 }
 
@@ -760,7 +769,11 @@ void RunJob() {
                             const float ml = Vector3Length(m);
                             if (ml < 1.0f || !pf->pondCovers(c.id, Vector3Scale(m, 1.0f / ml))) continue;
                         }
-                        for (int bk = FloorDiv(pck - depthCells, B); bk <= FloorDiv(pck, B); ++bk) w.s->ensure(bi, bj, bk);
+                        for (int bk = FloorDiv(pck - depthCells, B); bk <= FloorDiv(pck, B); ++bk) {
+                            // Bricks classified before the take-over hold none of its water: classify them again (#189).
+                            if (Brick* eb = w.s->find(bi, bj, bk); eb && eb->ready) { eb->ready = false; eb->keepFill = true; eb->fillPond = true; w.s->pending.push_front(eb); }
+                            else w.s->ensure(bi, bj, bk);
+                        }
                     }
             }
         }

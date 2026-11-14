@@ -3432,6 +3432,11 @@ int main(int argc, char** argv)
                             const bool midDry = !Fluid::Wet(*p, pondMid), pitWet = Fluid::Wet(*p, pondPit);
                             const float vol = (float)Fluid::GetStats().volume;
                             printf("bench: pond: settled after %.0f s: taken over %d, the top 0.3 m of the pond %s, the pit %s, %.1f m^3 of water\n", t, (int)claimed, midDry ? "drained" : "still full", pitWet ? "filled" : "dry", vol);
+                            {   // #189: the taken-over pond keeps its bed: no trees grow in it.
+                                std::vector<Trunk> trunks;
+                                if (p->trees) p->trees->trunksNear(at(pondDirB, pondLevelB), pondRB * 0.8f, trunks);
+                                printf("bench: pond: %zu trees inside the taken-over pond -> %s\n", trunks.size(), trunks.empty() ? "PASS" : "FAIL");
+                            }
                             const bool saved = SaveWorld(world);
                             // Away 300 m, load, back.
                             player.placeAt(world, *p, p->toWorld(at(along(pondRB + 300.0f), pf->elevation(along(pondRB + 300.0f)) + 2.0f)));

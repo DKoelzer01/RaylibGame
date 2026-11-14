@@ -1367,6 +1367,16 @@ VoxelMaterial PlanetField::materialSkyHinted(Vector3 p, float base, float fp, Ve
             const float w = waterElevation(up, fp);
             if (w != kNoWater && e < w + 0.6f) return w - e > 1.4f ? VoxelMaterial::Gravel : VoxelMaterial::Sand;
         }
+        // A pond the simulation took over keeps its bed (#189: it turned to grass and trees grew in the pond). Only
+        // claimed ponds need this (the others are inland water above); nothing to do until one is.
+        if (e > 0.0f && fp < 96.0f && pondState->n.load(std::memory_order_relaxed) > 0) {
+            float pl = kNoWater;
+            ForPondCellsNear(Vector3Scale(up, radius), kPondReach, [&](int x, int y, int z) {
+                const Pond pd = pondOfCell(x, y, z);
+                if (pd.exists && pondClaimed(PondId(x, y, z)) && Vector3Distance(up, pd.dir) * radius < pd.r * 1.05f) pl = std::max(pl, pd.level);
+            });
+            if (pl != kNoWater && e < pl + 0.6f) return pl - e > 1.4f ? VoxelMaterial::Gravel : VoxelMaterial::Sand;
+        }
         if (slope > 0.45f) return VoxelMaterial::Rock;                                                       // cliffs: bare stone
         if (e < -80.0f) return VoxelMaterial::Gravel;                                                        // deep sea floor
         if (e < 6.0f + 4.0f * wobble) return VoxelMaterial::Sand;                                            // beaches, shallows
