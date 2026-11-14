@@ -570,6 +570,16 @@ int Progression_Update(Scene& world, bool fullLadder, bool evLadder) {
         printf("bench: progression: FAIL at \"%s\" (logs %d, copper %d/%d ore/ingot, tin %d/%d, iron %d/%d, coal %d, bronze %d, steel %d/%d)\n", steps[current].name.c_str(),
                inventory.count("any_log"), inventory.count("copper_ore"), inventory.count("copper_ingot"), inventory.count("tin_ore"), inventory.count("tin_ingot"),
                inventory.count("iron_ore"), inventory.count("iron_ingot"), inventory.count("coal"), inventory.count("bronze_ingot"), inventory.count("steel_ingot"), inventory.count("steel_plate"));
+        // Every placed machine's state (#372: the electrolyse step failed now and then with no clue why).
+        for (const auto& [name, part] : parts) {
+            Factory::View(body->id, plot->id, part); // watch it; the view fills from the next tick
+            Factory::WaitTicks(2);
+            const MachineView v = Factory::View(body->id, plot->id, part);
+            if (!v.valid) continue;
+            printf("bench: progression:   %s: %s, progress %d/%d, energy %d/%d, in [%s], out [%s]%s\n", name.c_str(), MachineStatusName(v.status), v.progress, v.duration,
+                   v.energy, v.energyMax, v.input.c_str(), v.output.c_str(), v.hasFuelSlot ? TextFormat(", fuel %s x%d", v.fuelSlot.first.c_str(), v.fuelSlot.second) : "");
+        }
+        printf("bench: progression:   inventory: water %d, hydrogen %d, oxygen %d\n", inventory.count("water"), inventory.count("hydrogen"), inventory.count("oxygen"));
         Factory::SetSpeed(1);
         return -1;
     }
