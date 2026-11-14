@@ -66,7 +66,7 @@ namespace {
     long buildCount = 0;
 
     JobSystem& Jobs() {
-        if (!jobs) jobs = std::make_unique<JobSystem>();
+        if (!jobs) { jobs = std::make_unique<JobSystem>(); jobs->setBackgroundFrom(kBackgroundPriority); } // ring builds are background (#296)
         return *jobs;
     }
 }
@@ -858,7 +858,7 @@ static void UpdatePreload(Planetoid& p, Vector3 cameraRender, int& spare) {
         ring.complete = false;
         std::vector<NodeKey> roots;
         ForEachRoot(p, c, [&](const NodeKey& k) { roots.push_back(k); });
-        Jobs().submit(0.0f, [rp, job, roots] {
+        Jobs().submit(0.0f, /* background (#296): not counted by WorldIdle */ [rp, job, roots] {
             PROFILE_SCOPE("Preload ring");
             for (const NodeKey& k : roots) CollectRing(rp, k, job->keys);
             std::vector<std::pair<float, NodeKey>> order;
@@ -870,7 +870,7 @@ static void UpdatePreload(Planetoid& p, Vector3 cameraRender, int& spare) {
             std::sort(order.begin(), order.end(), [](const auto& a, const auto& b) { return a.first < b.first; });
             for (size_t i = 0; i < order.size(); ++i) job->keys[i] = order[i].second;
             job->done.store(true);
-        });
+        }, true);
     }
     if (ring.job && ring.job->done.load()) {
         for (const NodeKey& k : ring.keys) // the old ring becomes the freshest part of the cache
@@ -936,10 +936,12 @@ static void IntegrateResult(const ChunkMeshData& r) {
     if (!it->second->background) p->lodDirty = true;
 }
 
-// Idle for the view: no view or edit build alive, and none of their results waiting for upload. The preload ring's
+// Idle for the view: no view or edit build alive, no other foreground job (tree tiles, water classification, the
+// far-sphere bake, minimap rows: #296 review), and none of their results waiting for upload. The preload ring's
 // background builds do not count (#296): loading screens and scripted tests would wait seconds for the ring.
 static bool PipelineIdle() {
     if (gForegroundBuilds.load() != 0) return false; // a result is pushed before its build's token is released
+    if (!Jobs().foregroundIdle()) return false;
     std::lock_guard<std::mutex> lock(resultsMutex);
     for (const ChunkMeshData& r : results) if (r.priority < kBackgroundPriority) return false;
     for (const ChunkMeshData& r : pendingUploads) if (r.priority < kBackgroundPriority) return false;

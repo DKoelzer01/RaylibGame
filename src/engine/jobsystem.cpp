@@ -21,17 +21,19 @@ JobSystem::~JobSystem() {
     for (std::thread& t : workers) t.join();
 }
 
-void JobSystem::submit(float priority, std::function<void()> fn) {
+void JobSystem::submit(float priority, std::function<void()> fn, bool background) {
+    const bool fg = !background && priority < backgroundFrom.load();
     {
         std::lock_guard<std::mutex> lock(mutex);
-        jobs.push(Job{ priority, nextSeq++, std::move(fn) });
+        if (fg) ++foreground; // under the lock with the push, so clearQueued's count stays in step
+        jobs.push(Job{ priority, nextSeq++, std::move(fn), fg });
     }
     cv.notify_one();
 }
 
 void JobSystem::clearQueued() {
     std::lock_guard<std::mutex> lock(mutex);
-    jobs = {};
+    while (!jobs.empty()) { if (jobs.top().foreground) --foreground; jobs.pop(); }
 }
 
 size_t JobSystem::queued() const {
@@ -42,15 +44,18 @@ size_t JobSystem::queued() const {
 void JobSystem::workerLoop() {
     for (;;) {
         std::function<void()> fn;
+        bool fg = false;
         {
             std::unique_lock<std::mutex> lock(mutex);
             cv.wait(lock, [this] { return stopping || !jobs.empty(); });
             if (stopping) return;
             fn = std::move(const_cast<Job&>(jobs.top()).fn);
+            fg = jobs.top().foreground;
             jobs.pop();
             active++; // under the lock, so idle() never sees queued==0 && running==0 mid-handoff
         }
         fn();
         active--;
+        if (fg) --foreground; // after the job, so a job that submits follow-ups keeps the count above zero
     }
 }
