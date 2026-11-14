@@ -709,7 +709,8 @@ void PlanetField::clearClaimedPonds() const {
 PlanetField::RiverState::~RiverState() = default;
 
 const RiverNetwork* PlanetField::rivers() const {
-    if (moon || !riverState) return nullptr;
+    static const bool noRivers = getenv("RAYLIBGAME_NO_RIVERS") != nullptr; // profiling (#365): no river or lake overlay
+    if (moon || !riverState || noRivers) return nullptr;
     std::call_once(riverState->once, [this] {
         RiverNetwork::Params rp;
         if (erosion()) {
