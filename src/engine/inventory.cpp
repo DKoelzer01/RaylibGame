@@ -201,12 +201,20 @@ double Inventory::addAmount(const std::string& id, double amount) {
         const int64_t put = std::min(left, cap - s.centi);
         if (put > 0) { s.centi += put; left -= put; }
     }
-    for (InvSlot& s : slots) {       // then fill empty cells in order
-        if (left <= 0) break;
-        if (!s.empty()) continue;
-        const int64_t put = std::min(left, cap);
-        s.id = id; s.centi = put; left -= put;
-    }
+    // Then empty cells: tools first take an empty hotbar cell (they go to hand, as the old hotbar bound new tools), the
+    // rest fill the main grid and only then the hotbar (#209).
+    auto fill = [&](int from, int to) {
+        for (int i = from; i < to && left > 0; ++i) {
+            InvSlot& s = slots[i];
+            if (!s.empty()) continue;
+            const int64_t put = std::min(left, cap);
+            s.id = id; s.centi = put; left -= put;
+        }
+    };
+    const bool tool = KindOf(id) == ItemKind::Tool;
+    if (tool) fill(kGrid, kSlots);
+    fill(0, kGrid);
+    if (!tool) fill(kGrid, kSlots);
     if (left > 0) overflowed = true;
     obtained[id] += (KindOf(id) == ItemKind::Resource ? ToCenti(amount) : (int64_t)floor(amount + 1e-6) * 100) / 100.0 - left / 100.0;
     return left / 100.0;
@@ -219,13 +227,18 @@ bool Inventory::removeAmount(const std::string& id, double amount) {
     for (const InvSlot& s : slots) if (!s.empty() && ItemMatches(id, s.id)) have += s.centi;
     if (have < want) return false;
     int64_t left = want;
-    for (int i = kSlots - 1; i >= 0 && left > 0; --i) { // from the last stacks, so the first stay put
+    auto takeFrom = [&](int i) {
         InvSlot& s = slots[i];
-        if (s.empty() || !ItemMatches(id, s.id)) continue;
+        if (left <= 0 || s.empty() || !ItemMatches(id, s.id)) return;
         const int64_t take = std::min(left, s.centi);
         s.centi -= take; left -= take;
         if (s.centi <= 0) s = InvSlot{};
-    }
+    };
+    // The preferred cell first (the hotbar cell in hand: its tool wears, its blocks run out), then the main grid from
+    // its last stacks (so the first stay put), then the other hotbar cells.
+    if (preferred >= 0 && preferred < kSlots) takeFrom(preferred);
+    for (int i = kGrid - 1; i >= 0 && left > 0; --i) takeFrom(i);
+    for (int i = kSlots - 1; i >= kGrid && left > 0; --i) takeFrom(i);
     return true;
 }
 
@@ -280,7 +293,7 @@ void Inventory::swapSlots(int a, int b) {
 
 void Inventory::sort() {
     std::unordered_map<std::string, int64_t> total;
-    for (const InvSlot& s : slots) if (!s.empty()) total[s.id] += s.centi;
+    for (int k = 0; k < kGrid; ++k) if (!slots[k].empty()) total[slots[k].id] += slots[k].centi; // the hotbar stays as it is
     std::vector<std::pair<std::string, int64_t>> items(total.begin(), total.end());
     std::sort(items.begin(), items.end(), [](const auto& x, const auto& y) {
         const ItemKind kx = KindOf(x.first), ky = KindOf(y.first);
@@ -289,11 +302,11 @@ void Inventory::sort() {
         const ItemDef* dy = itemDB.find(y.first);
         return (dx ? dx->name : x.first) < (dy ? dy->name : y.first);
     });
-    for (auto& s : slots) s = InvSlot{};
+    for (int k = 0; k < kGrid; ++k) slots[k] = InvSlot{};
     size_t i = 0;
     for (auto& it : items) {
         const int64_t cap = (int64_t)StackLimit(it.first) * 100;
-        for (int64_t left = it.second; left > 0 && i < slots.size(); ++i) {
+        for (int64_t left = it.second; left > 0 && i < (size_t)kGrid; ++i) {
             const int64_t put = std::min(left, cap);
             slots[i].id = it.first; slots[i].centi = put; left -= put;
         }

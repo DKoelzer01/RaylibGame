@@ -17,8 +17,13 @@
 const char* const kHotbarTerrainTool = "tool:terrain";
 
 namespace {
-    std::string slots[kHotbarSlots];
     int selected = 0;
+    // The hotbar is the inventory's last 10 cells (#209): a slot holds a real stack; empty = bare hands.
+    const std::string kNone;
+    const std::string& CellId(int slot) {
+        const InvSlot& s = inventory.grid()[Inventory::kGrid + slot];
+        return s.empty() ? kNone : s.id;
+    }
     const int kKeys[kHotbarSlots] = { KEY_ONE, KEY_TWO, KEY_THREE, KEY_FOUR, KEY_FIVE, KEY_SIX, KEY_SEVEN, KEY_EIGHT, KEY_NINE, KEY_ZERO };
 
     // A part type placed from this item (machines, conveyors, cables), or Count.
@@ -42,7 +47,7 @@ namespace {
     }
 
     void Select(int slot, bool piloting) {
-        const std::string& id = slots[slot];
+        const std::string id = CellId(slot); // a copy: using the item can empty the cell
         if (id.empty()) { // an empty slot is bare hands
             if (piloting) return;
             selected = slot; buildTool.active = false; terrainTool.heldTool.clear(); terrainTool.holdingItem = false;
@@ -105,24 +110,29 @@ namespace {
 }
 
 void Hotbar_Reset() {
-    // Empty: an empty slot is bare hands; tools bind themselves as they are made, the rest by the player.
-    for (int i = 0; i < kHotbarSlots; ++i) slots[i].clear();
+    // The cells are the inventory's (cleared with it); an empty slot is bare hands, new tools land in empty slots.
     selected = 0;
     terrainTool.holdingItem = false;
 }
 
 void Hotbar_Bind(int slot, const std::string& id) {
+    // Moves a stack of the item into the slot's cell (swapping what was there out), the main grid's first.
     if (slot < 0 || slot >= kHotbarSlots) return;
-    for (auto& s : slots) if (s == id) s.clear(); // one slot per item
-    slots[slot] = id;
+    auto& g = inventory.grid();
+    const int cell = Inventory::kGrid + slot;
+    if (!g[cell].empty() && g[cell].id == id) return;
+    int from = -1;
+    for (int i = 0; i < Inventory::kSlots && from < 0; ++i) if (i != cell && !g[i].empty() && g[i].id == id) from = i;
+    if (from < 0) return; // not carried
+    if (!g[cell].empty() && g[from].id != g[cell].id) std::swap(g[from], g[cell]); else inventory.swapSlots(from, cell);
     GameUI_Toast(TextFormat("%s on key %d", ShortName(id), (slot + 1) % 10));
 }
 
-const std::string& Hotbar_Slot(int slot) { return slots[slot]; }
+const std::string& Hotbar_Slot(int slot) { return slot >= 0 && slot < kHotbarSlots ? CellId(slot) : kNone; }
 int Hotbar_Selected() { return selected; }
 std::string Hotbar_HeldFood() {
     if (selected < 0 || selected >= kHotbarSlots || buildTool.active || !terrainTool.heldTool.empty()) return "";
-    const std::string& id = slots[selected];
+    const std::string& id = CellId(selected);
     return (Survival_IsFood(id) || Animals_IsFeed(id)) && inventory.count(id) > 0 ? id : "";
 }
 
@@ -138,26 +148,16 @@ void Hotbar_Update(Scene&, bool inputEnabled, bool piloting) {
     if (!initialised) { Hotbar_Reset(); initialised = true; }
     // G (build mode on/off) is the build tool's; keep the selection in step with it.
     // Leaving build mode with a block selected: the hand goes empty (to an empty slot, if there is one).
-    const std::string& cur = slots[selected];
+    inventory.preferred = Inventory::kGrid + selected; // use comes out of the slot in hand first (#209)
+    const std::string cur = CellId(selected);
     const bool inHand = cur.empty() || cur == terrainTool.heldTool || Survival_IsFood(cur) || Animals_IsFeed(cur);
     if (!buildTool.active && !inHand) {
-        for (int i = 0; i < kHotbarSlots; ++i) if (slots[i].empty()) { selected = i; break; }
+        for (int i = 0; i < kHotbarSlots; ++i) if (CellId(i).empty()) { selected = i; break; }
         terrainTool.heldTool.clear();
     }
     // A tool lost (or never carried) falls back to bare hands.
     if (!terrainTool.heldTool.empty() && inventory.count(terrainTool.heldTool) <= 0) terrainTool.heldTool.clear();
-    // New tools go on the hotbar: the first empty slot, else the first whose item isn't carried.
-    for (const InvSlot& s : inventory.grid()) {
-        if (s.empty() || KindOf(s.id) != ItemKind::Tool || ToolOf(s.id).type == ToolType::Hands) continue;
-        bool bound = false;
-        for (const auto& b : slots) bound |= b == s.id;
-        if (bound) continue;
-        int free = -1;
-        for (int i = 0; i < kHotbarSlots && free < 0; ++i) if (slots[i].empty()) free = i;
-        for (int i = 0; i < kHotbarSlots && free < 0; ++i)
-            if (i != selected && inventory.count(slots[i]) <= 0) free = i;
-        if (free >= 0) Hotbar_Bind(free, s.id);
-    }
+    // (New tools land in an empty slot by themselves: Inventory::addAmount, #209.)
     if (inputEnabled) {
         const int k = Hotbar_KeySlot();
         if (k >= 0) Select(k, piloting);
@@ -173,7 +173,8 @@ void Hotbar_DrawHUD(bool piloting) {
     const int x0 = (GetScreenWidth() - w) / 2, y0 = GetScreenHeight() - size - 44;
     for (int i = 0; i < n; ++i) {
         const int x = x0 + i * (size + gap);
-        const std::string& id = slots[i];
+        const std::string& id = CellId(i);
+        const int held = (int)inventory.grid()[Inventory::kGrid + i].amount(); // this slot's own stack
         const bool sel = !piloting && i == selected;
         DrawRectangle(x, y0, size, size, Fade(BLACK, sel ? 0.65f : 0.45f));
         DrawRectangleLines(x, y0, size, size, sel ? SKYBLUE : Fade(RAYWHITE, 0.35f));
@@ -184,9 +185,9 @@ void Hotbar_DrawHUD(bool piloting) {
             const float is = (float)size - 28.0f; // the painted icon (itemicons.h), between the slot number and the name
             if (ItemIcons_Has(id)) ItemIcons_Draw(id, { x + (size - is) * 0.5f, (float)y0 + 8.0f, is, is });
             else if (d) DrawRectangle(x + size / 2 - 9, y0 + 14, 18, 18, d->color);
-            DrawText(TextFormat("%d", inventory.count(id)), x + size - 4 - MeasureText(TextFormat("%d", inventory.count(id)), 14), y0 + 3, 14, RAYWHITE);
+            if (KindOf(id) != ItemKind::Tool) DrawText(TextFormat("%d", held), x + size - 4 - MeasureText(TextFormat("%d", held), 14), y0 + 3, 14, RAYWHITE);
             const float left = ToolWear_Left(id); // a worn tool: a bar along the bottom, green to red
-            if (left < 1.0f && inventory.count(id) > 0) {
+            if (left < 1.0f && held > 0) {
                 DrawRectangle(x + 4, y0 + size - 4, size - 8, 3, Fade(BLACK, 0.6f));
                 DrawRectangle(x + 4, y0 + size - 4, (int)((size - 8) * left), 3, ColorLerp(RED, GREEN, left));
             }
@@ -198,22 +199,22 @@ void Hotbar_DrawHUD(bool piloting) {
     }
 }
 
-void Hotbar_Save(FILE* f) {
-    for (int i = 0; i < kHotbarSlots; ++i) fprintf(f, "hotbar %d %s\n", i, slots[i].empty() ? "-" : slots[i].c_str());
-}
+void Hotbar_Save(FILE*) {} // the slots are inventory cells now (their "slot 45-54" lines, #209)
 
 bool Hotbar_LoadLine(const char* tok, FILE* f) {
     if (strcmp(tok, "hotbar") != 0) return false;
     int slot = -1;
     char id[64] = {};
-    if (fscanf(f, " %d %63s", &slot, id) == 2 && slot >= 0 && slot < kHotbarSlots) slots[slot] = strcmp(id, "-") == 0 || strcmp(id, kHotbarTerrainTool) == 0 ? "" : id; // the old "Hands" slot is an empty one now
+    // An older save's binding (#209: before the hotbar held stacks): move a stack of the item into the slot (the inventory's
+    // "slot" lines come first in the file).
+    if (fscanf(f, " %d %63s", &slot, id) == 2 && slot >= 0 && slot < kHotbarSlots && strcmp(id, "-") != 0 && strcmp(id, kHotbarTerrainTool) != 0) {
+        auto& g = inventory.grid();
+        for (int i = 0; i < Inventory::kGrid; ++i) if (!g[i].empty() && g[i].id == id) { std::swap(g[i], g[Inventory::kGrid + slot]); break; }
+    }
     return true;
 }
 
-void Hotbar_Unbind(const std::string& id) {
-    for (int i = 0; i < kHotbarSlots; ++i) {
-        if (slots[i] != id) continue;
-        slots[i].clear();
-        if (i == selected) { terrainTool.heldTool.clear(); terrainTool.holdingItem = false; } // bare hands now
-    }
+void Hotbar_Unbind(const std::string&) {
+    // A broken tool's slot is already empty (its cell held the stack, #209): the hand goes bare if that was the slot in hand.
+    if (CellId(selected).empty()) { terrainTool.heldTool.clear(); terrainTool.holdingItem = false; }
 }

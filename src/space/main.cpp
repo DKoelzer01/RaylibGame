@@ -4501,18 +4501,19 @@ int main(int argc, char** argv)
                     int tools = 0;
                     for (const InvSlot& s : inventory.grid()) if (s.id == "telescope") { ++tools; check(s.centi == 100, "tools stack to 1"); }
                     check(tools == 3, "three telescopes in three slots");
+                    check(inventory.grid()[Inventory::kGrid].id == "telescope" && inventory.grid()[Inventory::kGrid + 2].id == "telescope", "new tools go to empty hotbar slots (#209)");
                     inventory.add("conveyor", 300);
                     int conv = 0;
                     for (const InvSlot& s : inventory.grid()) if (s.id == "conveyor") ++conv;
                     check(conv == 2 && inventory.count("conveyor") == 300, "blocks stack to 256");
                     inventory.add("stone", 9000);
-                    check(inventory.count("stone") == 9000 && inventory.grid()[5].centi == 819200, "resources stack to 8192");
+                    check(inventory.count("stone") == 9000 && inventory.grid()[2].id == "stone" && inventory.grid()[2].centi == 819200, "resources stack to 8192 (main grid first; the hotbar holds the tools)");
                     for (int i = 0; i < 1000; ++i) inventory.addFractional("iron_ore", 0.0123f);
                     check(fabs(inventory.amount("iron_ore") - 12.30) < 0.02 && inventory.count("iron_ore") == 12, "fractional amounts to 0.01");
                     check(inventory.removeAmount("iron_ore", 0.25) && fabs(inventory.amount("iron_ore") - 12.05) < 0.02, "remove a fraction");
                     check(!inventory.remove("stone", 9001), "can't remove more than held");
                     inventory.sort();
-                    check(KindOf(inventory.grid()[0].id) == ItemKind::Tool && inventory.count("stone") == 9000, "sort: tools first, nothing lost");
+                    check(KindOf(inventory.grid()[0].id) == ItemKind::Block && inventory.grid()[Inventory::kGrid].id == "telescope" && inventory.count("stone") == 9000, "sort: the main grid by kind, the hotbar kept, nothing lost");
                     // Full: 45 slots of 8192 regolith; the rest is refused and flagged.
                     inventory.clear();
                     const double left = inventory.addAmount("regolith", 8192.0 * Inventory::kSlots + 10.0);
@@ -4543,7 +4544,7 @@ int main(int argc, char** argv)
                     inventory.clear();
                     if (FILE* f = fopen(path.c_str(), "r")) { loadExtrasHook(f); fclose(f); }
                     remove(path.c_str());
-                    check(inventory.grid()[7].id == "telescope" && fabs(inventory.amount("copper_ore") - 12.34) < 0.001 && inventory.count("kiln") == 2, "save and load keep slots and fractions");
+                    check(inventory.grid()[7].id == "copper_ore" && inventory.grid()[Inventory::kGrid].id == "telescope" && fabs(inventory.amount("copper_ore") - 12.34) < 0.001 && inventory.count("kiln") == 2, "save and load keep slots and fractions");
                     check(terrainTool.creative, "creative mode is saved");
                     terrainTool.creative = false;
                     printf("bench: inventory: %s\n", ok ? "PASS" : "FAIL");
@@ -4558,9 +4559,9 @@ int main(int argc, char** argv)
                     if (ok) {
                         player.spawnOn(world, *p, StartSpawnDir(*p));
                         inventory.clear();
-                        Hotbar_Reset(); // empty: bind what the test uses (slot 1 stays empty: bare hands)
-                        Hotbar_Bind(1, "concrete"); Hotbar_Bind(3, "oak_planks"); Hotbar_Bind(8, "oxygen_canister");
+                        Hotbar_Reset(); // empty: put what the test uses on the hotbar (slot 1 stays empty: bare hands)
                         inventory.add("concrete", 20); inventory.add("oak_planks", 10); inventory.add("oxygen_canister", 1);
+                        Hotbar_Bind(1, "concrete"); Hotbar_Bind(3, "oak_planks"); Hotbar_Bind(8, "oxygen_canister"); // the stacks move there (#209)
                         const Vector3 home = StartSpawnDirLocal(*p);
                         const Vector3 t1 = Vector3Normalize(Vector3CrossProduct(home, { 0, 1, 0 }));
                         const Vector3 d = Vector3Normalize(Vector3Add(home, Vector3Scale(t1, 10.0f / pf->radius)));
@@ -4584,17 +4585,19 @@ int main(int argc, char** argv)
                         survival.oxygen = 50.0f;
                         Hotbar_Press(8, false); // key 9: oxygen canister
                         const bool used = inventory.count("oxygen_canister") == 0 && survival.oxygen > 90.0f;
-                        // #272: in build mode, a key bound to a pickaxe not carried changes nothing (the selection, build
-                        // mode); carried, it goes into the hand and build mode ends.
+                        // #272 / #209: slots hold real stacks, so an item not carried can't be in one: an empty slot is bare
+                        // hands (build mode ends). A new pickaxe lands in a free hotbar slot; moved to slot 6 and pressed,
+                        // it goes into the hand and build mode ends.
                         Hotbar_Press(1, false);
-                        Hotbar_Bind(5, "titanium_pickaxe");
-                        const int sel0 = Hotbar_Selected();
                         Hotbar_Press(5, false);
-                        const bool unownedKept = Hotbar_Selected() == sel0 && buildTool.active && terrainTool.heldTool != "titanium_pickaxe";
+                        const bool unownedKept = Hotbar_Selected() == 5 && !buildTool.active && terrainTool.heldTool.empty();
+                        Hotbar_Press(1, false);
                         inventory.add("titanium_pickaxe", 1);
+                        const bool landed = inventory.grid()[Inventory::kGrid].id == "titanium_pickaxe"; // the first free slot (key 1)
+                        Hotbar_Bind(5, "titanium_pickaxe");
                         Hotbar_Press(5, false);
-                        const bool ownedTaken = Hotbar_Selected() == 5 && !buildTool.active && terrainTool.heldTool == "titanium_pickaxe";
-                        printf("bench: hotbar: unowned pickaxe key in build mode: selection and build mode kept %d; owned: in hand, build mode off %d (#272)\n", unownedKept, ownedTaken);
+                        const bool ownedTaken = landed && Hotbar_Selected() == 5 && !buildTool.active && terrainTool.heldTool == "titanium_pickaxe" && Hotbar_Slot(0).empty();
+                        printf("bench: hotbar: an empty slot in build mode is bare hands %d; a new pickaxe lands in a free slot, moved to key 6 and taken in hand %d (#272, #209)\n", unownedKept, ownedTaken);
                         Hotbar_Press(0, false); // key 1: an empty slot, bare hands
                         const bool toolMode = !buildTool.active && unownedKept && ownedTaken;
                         const bool saved = SaveWorld(world), loaded = saved && LoadWorldSave(world);

@@ -128,10 +128,13 @@ static void DrawGrid() {
     const float cell = 54.0f, gap = 4.0f;
     ImDrawList* dl = ImGui::GetWindowDrawList();
     for (int i = 0; i < Inventory::kSlots; ++i) {
-        if (i % Inventory::kCols != 0) ImGui::SameLine(0.0f, gap);
+        // The 9 x 5 grid, then the hotbar's 10 cells in a row under it (#209: real slots; drop stacks into them).
+        if (i == Inventory::kGrid) { ImGui::Dummy(ImVec2(0.0f, 2.0f)); ImGui::TextDisabled("Hotbar (keys 1-0)"); }
+        else if (i < Inventory::kGrid ? i % Inventory::kCols != 0 : true) ImGui::SameLine(0.0f, gap);
         ImGui::PushID(i);
         const ImVec2 p = ImGui::GetCursorScreenPos();
-        if (ImGui::InvisibleButton("cell", ImVec2(cell, cell))) {
+        const float cw = i < Inventory::kGrid ? cell : (Inventory::kCols * cell - gap) / (float)Inventory::kHotbar; // the hotbar row as wide as the grid
+        if (ImGui::InvisibleButton("cell", ImVec2(cw, cell))) {
             if (GameUI_ContainerOpen() && !grid[i].empty()) {
                 // A container is open: the stack goes into it (what doesn't fit comes back next tick).
                 const std::string id = grid[i].id;
@@ -149,11 +152,11 @@ static void DrawGrid() {
         }
         const bool hover = ImGui::IsItemHovered();
         const InvSlot& s = grid[i];
-        const ImVec2 q(p.x + cell, p.y + cell);
+        const ImVec2 q(p.x + cw, p.y + cell);
         dl->AddRectFilled(p, q, IM_COL32(30, 32, 36, 220), 4.0f);
         if (!s.empty()) {
             const ItemDef* d = itemDB.find(s.id);
-            DrawItemIcon(dl, ImVec2(p.x + cell * 0.18f, p.y), cell * 0.64f, s.id);
+            DrawItemIcon(dl, ImVec2(p.x + (cw - cell * 0.64f) * 0.5f, p.y), cell * 0.64f, s.id);
             const std::string name = d ? d->name.substr(0, 7) : s.id.substr(0, 7);
             dl->AddText(ImVec2(p.x + 4, q.y - 18), IM_COL32(220, 220, 220, 255), name.c_str());
             if (KindOf(s.id) != ItemKind::Tool) {
@@ -167,9 +170,10 @@ static void DrawGrid() {
                                   KindName(KindOf(s.id)), s.amount(), StackLimit(s.id), d ? d->description.c_str() : "",
                                   GameUI_ContainerOpen() ? TextFormat("click to put it in the %s", PartName(container.type)) : "click to move");
                 const int k = Hotbar_KeySlot();
-                if (k >= 0) Hotbar_Bind(k, s.id);
+                if (k >= 0) inventory.swapSlots(i, Inventory::kGrid + k); // into that hotbar slot (its stack comes here)
             }
         }
+        if (i >= Inventory::kGrid) dl->AddText(ImVec2(p.x + 3, p.y + 1), IM_COL32(150, 150, 150, 255), TextFormat("%d", (i - Inventory::kGrid + 1) % 10));
         const ImU32 edge = i == held ? IM_COL32(255, 210, 80, 255) : hover ? IM_COL32(200, 200, 200, 255) : IM_COL32(70, 72, 78, 255);
         dl->AddRect(p, q, edge, 4.0f, 0, i == held ? 2.5f : 1.0f);
         ImGui::PopID();

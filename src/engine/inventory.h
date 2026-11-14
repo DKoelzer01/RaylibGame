@@ -71,7 +71,9 @@ struct InvSlot {
 
 class Inventory {
 public:
-    static constexpr int kCols = 9, kRows = 5, kSlots = kCols * kRows;
+    // The 9 x 5 grid, then the hotbar's 10 cells (#209: the hotbar holds real stacks; keys 1-0 = cells kGrid..kSlots-1).
+    static constexpr int kCols = 9, kRows = 5, kGrid = kCols * kRows, kHotbar = 10, kSlots = kGrid + kHotbar;
+    int preferred = -1; // a cell used first when taking items out (the selected hotbar cell: the tool in hand wears)
     Inventory() : slots(kSlots) {}
     // Mining produces fractional amounts: hundredths go into the grid, smaller remainders carry over.
     void addFractional(const std::string& id, float amount);
@@ -97,7 +99,7 @@ public:
     std::vector<InvSlot>& grid() { return slots; }
     const std::vector<InvSlot>& grid() const { return slots; }
     void swapSlots(int a, int b);  // move/swap two cells, merging same items up to the stack limit
-    void sort();                   // by kind, then name; merges partial stacks
+    void sort();                   // the main grid by kind, then name; merges partial stacks (the hotbar stays as it is)
     bool overflowed = false;       // set when something did not fit; the game clears it after warning
 private:
     // Room for `id` across the grid in hundredths (existing stacks plus empty slots).
