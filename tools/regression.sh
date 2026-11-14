@@ -1,6 +1,6 @@
 #!/bin/bash
 # Regression: the scripted --test-* gates and benchmarks, run one after another.
-#   tools/regression.sh [planet|space|all]        (default: all)
+#   tools/regression.sh [planet|eroded|space|all] (default: all; planet includes eroded, the RAYLIBGAME_EROSION=1 gates)
 # Environment:
 #   EXE=path      the game to run (default build/check/bin/game.exe)
 #   SNAPSHOT=1    copy the exe and resources/ to a temp folder first, so you can keep editing and
@@ -93,6 +93,22 @@ planet() {
     run --seed 42 --bench 3 --test-spring
 }
 
+# The erosion-baked world (Plan 7 gate, #362): the gates the #355 review asked for, with RAYLIBGAME_EROSION=1. The first
+# run bakes the world (~1-2 min, saved as saves/bench.sav.erosion in the run folder); the rest load it (~0.1 s).
+eroded() {
+    export RAYLIBGAME_EROSION=1
+    run --seed 42 --bench 10
+    run --seed 42 --bench 5 --test-stand 3 --look-down --crack-check
+    run --seed 42 --bench 5 --test-planet-walk 1000
+    run --seed 42 --bench 3 --test-pond
+    run --seed 42 --bench 3 --test-rivers
+    run --seed 42 --bench 5 --test-flow-sea
+    run --seed 42 --bench 3 --test-build 2000
+    run --seed 42 --bench 20 --bench-walk
+    run --seed 42 --bench 20 --bench-fly 60
+    unset RAYLIBGAME_EROSION
+}
+
 space() {
     run --seed 42 --bench 3 --test-ring
     run --seed 42 --bench 3 --test-blueprint
@@ -105,10 +121,11 @@ space() {
 }
 
 case "$set_name" in
-    planet) planet ;;
+    planet) planet; eroded ;;
+    eroded) eroded ;;
     space) space ;;
-    all) planet; space ;;
-    *) echo "usage: $0 [planet|space|all]"; exit 2 ;;
+    all) planet; eroded; space ;;
+    *) echo "usage: $0 [planet|eroded|space|all]"; exit 2 ;;
 esac
 pass=$(grep -c "PASS" "$log"); fail=$(grep -c "FAIL" "$log")
 echo "=== regression ($set_name): $pass PASS, $fail FAIL"

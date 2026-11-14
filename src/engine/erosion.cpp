@@ -8,6 +8,12 @@
 #include <cstring>
 #include <queue>
 #include <thread>
+#include <atomic>
+
+// Bake progress 0..1 for the loading screen (#362): the coarse planet pass is the first 30%, the six face refinements the rest.
+static std::atomic<float> gBakeProgress{ 0.0f };
+static constexpr int kPieces = 16; // the cache file deflates in this many pieces at once (#362)
+float ErosionBakeProgress() { return gBakeProgress.load(std::memory_order_relaxed); }
 
 namespace {
     // The cube faces as PlanetField::prepareBlock lays them out (#251): face = axis * 2 + (positive ? 1 : 0).
@@ -127,6 +133,7 @@ namespace {
             for (size_t k = order.size(); k-- > 0;) { const int c = order[k]; if (receiver[c] != c) area[receiver[c]] += area[c]; }
         };
         for (step = 0; step < steps; ++step) {
+            if (kScale == 1.0f) gBakeProgress.store(0.3f * (float)step / (float)std::max(1, steps), std::memory_order_relaxed); // the coarse pass
             if (step % std::max(1, p.floodEvery) == 0) {
                 flood();
                 // Glacial troughs (#358): ice fills each valley to a thickness growing with its drainage area (~45 m
@@ -294,6 +301,7 @@ uint64_t ErosionParamsKey(const ErosionParams& p) {
 }
 
 void PlanetErosion::build(const std::function<float(Vector3, float)>& height, float planetRadius, unsigned int seedIn, const ErosionParams& p, int threads) {
+    gBakeProgress.store(0.0f, std::memory_order_relaxed);
     paramsKey = ErosionParamsKey(p);
     const auto t0 = std::chrono::steady_clock::now();
     R = planetRadius; seed = seedIn;
@@ -525,6 +533,7 @@ void PlanetErosion::build(const std::function<float(Vector3, float)>& height, fl
             std::vector<std::thread> pool;
             for (int f = f0; f < std::min(6, f0 + parallelFaces); ++f) pool.emplace_back(refineFace, f, std::max(1, T / parallelFaces));
             for (auto& th : pool) th.join();
+            gBakeProgress.store(0.3f + 0.7f * (float)std::min(6, f0 + parallelFaces) / 6.0f, std::memory_order_relaxed);
         }
     }
     pondList.clear();
@@ -594,25 +603,41 @@ bool PlanetErosion::save(const std::string& path) const {
         const uint16_t dq = (uint16_t)(all[k] - prev); prev = all[k];
         raw[k] = (unsigned char)(dq & 0xFF); raw[all.size() + k] = (unsigned char)(dq >> 8);
     }
-    int compSize = 0;
-    unsigned char* comp = CompressData(raw.data(), (int)raw.size(), &compSize);
-    if (!comp) return false;
+    // ERO6 (#362): deflated as kPieces pieces in parallel. One deflate of the ~50 MB took 40 s after a 60-80 s bake.
+    std::vector<unsigned char*> comp(kPieces, nullptr);
+    std::vector<int> compSize(kPieces, 0), rawLen(kPieces, 0);
+    {
+        const size_t per = (raw.size() + kPieces - 1) / kPieces;
+        std::vector<std::thread> pool;
+        for (int k = 0; k < kPieces; ++k) {
+            const size_t a = std::min(raw.size(), per * k), b = std::min(raw.size(), per * (k + 1));
+            rawLen[k] = (int)(b - a);
+            pool.emplace_back([&, k, a] { if (rawLen[k] > 0) comp[k] = CompressData(raw.data() + a, rawLen[k], &compSize[k]); });
+        }
+        for (auto& t : pool) t.join();
+    }
+    auto freeAll = [&] { for (unsigned char* c : comp) if (c) MemFree(c); };
+    for (int k = 0; k < kPieces; ++k) if (rawLen[k] > 0 && !comp[k]) { freeAll(); return false; }
     const std::string tmp = path + ".tmp"; // written whole, then renamed: a crash mid-save leaves the old cache (#355 review)
     FILE* f = fopen(tmp.c_str(), "wb");
-    if (!f) { MemFree(comp); return false; }
-    const char magic[4] = { 'E', 'R', 'O', '5' };
+    if (!f) { freeAll(); return false; }
+    const char magic[4] = { 'E', 'R', 'O', '6' };
     fwrite(magic, 1, 4, f);
     fwrite(&paramsKey, sizeof(paramsKey), 1, f);
     fwrite(&n, sizeof(n), 1, f); fwrite(&nf, sizeof(nf), 1, f); fwrite(&fm, sizeof(fm), 1, f); fwrite(&fineMetres, sizeof(fineMetres), 1, f);
     fwrite(&R, sizeof(R), 1, f); fwrite(&seed, sizeof(seed), 1, f); fwrite(&hashValue, sizeof(hashValue), 1, f);
-    fwrite(&compSize, sizeof(compSize), 1, f);
-    fwrite(comp, 1, compSize, f);
+    const int pieces = kPieces;
+    fwrite(&pieces, sizeof(pieces), 1, f);
+    for (int k = 0; k < kPieces; ++k) {
+        fwrite(&rawLen[k], sizeof(int), 1, f); fwrite(&compSize[k], sizeof(int), 1, f);
+        if (compSize[k] > 0) fwrite(comp[k], 1, compSize[k], f);
+    }
     const int np = (int)pondList.size();
     fwrite(&np, sizeof(np), 1, f);
     if (np) fwrite(pondList.data(), sizeof(Pond), np, f);
     const bool written = !ferror(f);
     fclose(f);
-    MemFree(comp);
+    freeAll();
     if (!written) { remove(tmp.c_str()); return false; }
     remove(path.c_str()); // rename does not replace an existing file on Windows
     return rename(tmp.c_str(), path.c_str()) == 0;
@@ -621,22 +646,45 @@ bool PlanetErosion::save(const std::string& path) const {
 bool PlanetErosion::load(const std::string& path, float planetRadius, unsigned int wantSeed, uint64_t wantKey) {
     FILE* f = fopen(path.c_str(), "rb");
     if (!f) return false;
-    char magic[4]; int N = 0, NF = 0, FM = 0, compSize = 0; float fmet = 0, r = 0; unsigned int s = 0; uint64_t hv = 0, key = 0;
-    bool ok = fread(magic, 1, 4, f) == 4 && memcmp(magic, "ERO5", 4) == 0 && fread(&key, sizeof(key), 1, f) == 1 && key == wantKey && fread(&N, sizeof(N), 1, f) == 1 && fread(&NF, sizeof(NF), 1, f) == 1 &&
+    char magic[4]; int N = 0, NF = 0, FM = 0, pieces = 0; float fmet = 0, r = 0; unsigned int s = 0; uint64_t hv = 0, key = 0;
+    bool ok = fread(magic, 1, 4, f) == 4 && memcmp(magic, "ERO6", 4) == 0 && fread(&key, sizeof(key), 1, f) == 1 && key == wantKey && fread(&N, sizeof(N), 1, f) == 1 && fread(&NF, sizeof(NF), 1, f) == 1 &&
               fread(&FM, sizeof(FM), 1, f) == 1 && fread(&fmet, sizeof(fmet), 1, f) == 1 && fread(&r, sizeof(r), 1, f) == 1 && fread(&s, sizeof(s), 1, f) == 1 &&
-              fread(&hv, sizeof(hv), 1, f) == 1 && fread(&compSize, sizeof(compSize), 1, f) == 1 &&
-              N > 0 && N < 4096 && NF >= 0 && NF < 16384 && FM >= 0 && FM < 1024 && compSize > 0 && s == wantSeed && fabsf(r - planetRadius) < 1.0f;
-    std::vector<unsigned char> comp;
-    if (ok) { comp.resize(compSize); ok = fread(comp.data(), 1, compSize, f) == (size_t)compSize; }
+              fread(&hv, sizeof(hv), 1, f) == 1 && fread(&pieces, sizeof(pieces), 1, f) == 1 &&
+              N > 0 && N < 4096 && NF >= 0 && NF < 16384 && FM >= 0 && FM < 1024 && pieces > 0 && pieces <= 256 && s == wantSeed && fabsf(r - planetRadius) < 1.0f;
+    std::vector<std::vector<unsigned char>> comp(ok ? pieces : 0);
+    std::vector<int> rawLen(comp.size(), 0);
+    for (size_t k = 0; ok && k < comp.size(); ++k) {
+        int cs = 0;
+        ok = fread(&rawLen[k], sizeof(int), 1, f) == 1 && fread(&cs, sizeof(int), 1, f) == 1 && rawLen[k] >= 0 && cs >= 0;
+        if (ok) { comp[k].resize(cs); ok = cs == 0 || fread(comp[k].data(), 1, cs, f) == (size_t)cs; }
+    }
     std::vector<Pond> pl;
     if (ok) { int np = 0; ok = fread(&np, sizeof(np), 1, f) == 1 && np >= 0 && np < 10000000; if (ok && np) { pl.resize(np); ok = fread(pl.data(), sizeof(Pond), np, f) == (size_t)np; } }
     fclose(f);
     if (!ok) return false;
-    int rawSize = 0;
-    unsigned char* raw = DecompressData(comp.data(), compSize, &rawSize);
-    if (!raw) return false;
     const size_t nc = (size_t)6 * N * N, fe2 = NF > 0 ? (size_t)NF + 2 * FM : 0, nfine = (size_t)6 * fe2 * fe2;
-    if ((size_t)rawSize != (nc + nfine) * 2) { MemFree(raw); return false; }
+    size_t rawSize = 0;
+    for (int len : rawLen) rawSize += (size_t)len;
+    if (rawSize != (nc + nfine) * 2) return false;
+    std::vector<unsigned char> rawBuf(rawSize);
+    {   // the pieces in parallel (#362)
+        std::atomic<bool> good{ true };
+        std::vector<std::thread> pool;
+        size_t at = 0;
+        for (size_t k = 0; k < comp.size(); ++k) {
+            pool.emplace_back([&, k, at] {
+                if (rawLen[k] == 0) return;
+                int got = 0;
+                unsigned char* d = DecompressData(comp[k].data(), (int)comp[k].size(), &got);
+                if (!d || got != rawLen[k]) good = false; else memcpy(rawBuf.data() + at, d, (size_t)got);
+                if (d) MemFree(d);
+            });
+            at += (size_t)rawLen[k];
+        }
+        for (auto& t : pool) t.join();
+        if (!good) return false;
+    }
+    const unsigned char* raw = rawBuf.data();
     coarse.resize(nc); fine.resize(nfine);
     const size_t total = nc + nfine;
     int16_t prev = 0;
@@ -644,7 +692,6 @@ bool PlanetErosion::load(const std::string& path, float planetRadius, unsigned i
         prev = (int16_t)(prev + (int16_t)(raw[k] | (raw[total + k] << 8)));
         (k < nc ? coarse[k] : fine[k - nc]) = prev;
     }
-    MemFree(raw);
     n = N; nf = NF; fm = FM; fe = (int)fe2; fineMetres = fmet; R = r; seed = s; paramsKey = key;
     pondList = std::move(pl);
     computeHash();

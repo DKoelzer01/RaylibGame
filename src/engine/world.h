@@ -88,6 +88,10 @@ struct TerrainHit {
 
 void worldHandler(Scene& world);
 void generateWorld(Scene& world);      // creates planetoids; chunks stream in via worldUpdate()
+// Long steps of world generation (the erosion bake, #362) run on a thread; meanwhile this is called on the main thread
+// (~60 times a second) with the progress 0..1 and what is happening, so the game can draw a loading screen and keep
+// the window responsive. Unset (tests): generation just waits.
+extern std::function<void(float progress, const char* what)> gWorldGenWait;
 void regenerateWorld(Scene& world);
 // Drops the whole world (jobs, machines, water, rings, bodies and their GPU meshes): quitting to the main menu (#270).
 void unloadWorld(Scene& world);

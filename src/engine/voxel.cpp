@@ -260,15 +260,19 @@ void PlanetField::bakeErosion(const std::string& cachePath) {
     p.refine = (int)envf("RAYLIBGAME_EROSION_REFINE", (float)p.refine); p.refineSteps = (int)envf("RAYLIBGAME_EROSION_REFINE_STEPS", (float)p.refineSteps);
     // The cache must match the seed, radius, parameters and bake code version (#355 review): tuning runs and code
     // changes bake again instead of loading a stale bake.
+    const auto tl0 = std::chrono::steady_clock::now();
     const bool loaded = !cachePath.empty() && b.load(cachePath, radius, fieldSeed, ErosionParamsKey(p));
+    const float loadMs = std::chrono::duration<float, std::milli>(std::chrono::steady_clock::now() - tl0).count();
     if (!loaded) {
         const int threads = std::max(1u, std::thread::hardware_concurrency());
         b.build([this](Vector3 d, float fp) { return land(d, fp).h; }, radius, fieldSeed, p, threads);
+        const auto ts0 = std::chrono::steady_clock::now();
         if (!cachePath.empty()) b.save(cachePath);
+        printf("erosion: cache saved in %.1f s\n", std::chrono::duration<float>(std::chrono::steady_clock::now() - ts0).count());
         printf("erosion: baked the planet, %d cells at %.0f m + %d at %.0f m, in %.1f s (coarse %.1f s, faces %.1f s): cut up to %.0f m, raised up to %.0f m, hash %016llx\n",
                b.cells(), p.cell, b.fineCells(), b.fineCell(), b.buildSeconds, b.coarseSeconds, b.refineSeconds, b.maxCut, b.maxRaise, (unsigned long long)b.hash());
     } else {
-        printf("erosion: loaded %s (%d cells, hash %016llx)\n", cachePath.c_str(), b.cells(), (unsigned long long)b.hash());
+        printf("erosion: loaded %s (%d cells, hash %016llx) in %.0f ms\n", cachePath.c_str(), b.cells(), (unsigned long long)b.hash(), loadMs);
     }
     printf("erosion: %zu ponds from the bake (#360)\n", b.ponds().size());
     erosionState->active.store(true, std::memory_order_release);

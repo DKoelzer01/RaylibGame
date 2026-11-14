@@ -109,6 +109,8 @@ static bool SpawnDirOverride(Vector3& d) {
     return true;
 }
 
+static bool gInFrame = false; // between the main loop's BeginDrawing and EndDrawing (#362: gWorldGenWait must not nest a frame)
+
 static Vector3 StartSpawnDirLocal(Planetoid& body) {
     if (Vector3 d; SpawnDirOverride(d)) return d;
     if (auto* field = dynamic_cast<const PlanetField*>(body.field.get())) return field->findSpawnDir(body.seed);
@@ -591,6 +593,21 @@ int main(int argc, char** argv)
         InitWindow(1920, 1080, "RaylibGame bench");
         SetTargetFPS(std::max(0, benchFps)); // --fps N caps it (frame-rate-dependence checks); 0 = uncapped
     }
+    // A long world-generation step (the erosion bake, #362) runs on a thread; meanwhile draw the loading screen with its
+    // progress, so the window stays responsive. From inside a frame (the debug menu's Regenerate) just wait.
+    gWorldGenWait = [bench](float progress, const char* what) {
+        if (gInFrame || !IsWindowReady()) { std::this_thread::sleep_for(std::chrono::milliseconds(20)); return; }
+        static double lastPrint = -10.0;
+        if (bench && GetTime() - lastPrint > 5.0) { lastPrint = GetTime(); printf("bench: world generation: %s %.0f%%\n", what, progress * 100.0f); }
+        BeginDrawing();
+        ClearBackground(BLACK);
+        const int bw = GetScreenWidth() / 3, bx = (GetScreenWidth() - bw) / 2, by = GetScreenHeight() / 2;
+        DrawText(what, bx, by - 40, 28, RAYWHITE);
+        DrawRectangle(bx, by, bw, 14, Fade(RAYWHITE, 0.15f));
+        DrawRectangle(bx, by, (int)(bw * std::clamp(progress, 0.02f, 1.0f)), 14, SKYBLUE);
+        DrawText("A new world's terrain is shaped once (about a minute); loading it later is quick.", bx, by + 26, 16, Fade(RAYWHITE, 0.6f));
+        EndDrawing();
+    };
     if (!IsWindowReady()) {
         // raylib is built for an OpenGL 4.3 core context (compute shaders, multi-draw indirect, SSBOs): without
         // it there is no window and no fallback renderer (#185). Say so instead of exiting silently.
@@ -5836,6 +5853,7 @@ int main(int argc, char** argv)
 
         GpuTimer_Mark("pre-draw (uploads, updates)");
         BeginDrawing();
+        gInFrame = true; // (#362: world generation started from inside a frame - the debug menu - must not draw its own)
             ClearBackground(crackCheck ? MAGENTA : BLACK); // --crack-check: holes in the terrain show magenta
             GpuTimer_Enable(benchMeasuring || perfLog); GpuTimer_Mark("clear");
             GpuTimer_CpuMark("begin-draw");
@@ -5912,6 +5930,7 @@ int main(int argc, char** argv)
             rlDrawRenderBatchActive(); // the batched 2D (HUD text, bars, minimap) flushes here, not inside EndDrawing
             GpuTimer_Mark("2d-flush");
         EndDrawing();
+        gInFrame = false;
         GpuTimer_Mark("swap+poll");
         PROFILE_FRAME();
     }
