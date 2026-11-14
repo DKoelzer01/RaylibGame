@@ -30,10 +30,18 @@ The script builds `build/check` first (it stops if the build fails), runs the ga
 The game resolves the root: `RAYLIBGAME_CAPTURE_ROOT` if set; else the Claude media store on deweyserver, `\\DEWEYSERVER\files\claude-media\raylib-captures`, when reachable; else `%USERPROFILE%\RaylibCaptures`. The root is kept under 10 GB (`RAYLIBGAME_CAPTURE_MAX_GB`): the oldest captures are deleted first. Don't rely on old captures existing; re-capture a baseline when you need one. Captures never go in the repo. The user can also press **F10** in normal play to record (`<root>/<date>/<HHMMSS>/`, every 2 frames, up to 600, GIF + sheet).
 
 ## Look at it
-1. Read `sheet.png` with the Read tool (UNC paths work: `\\DEWEYSERVER\files\...`): the whole run at a glance.
-2. Read individual `frame_NNNN.png` files where something changes or looks wrong.
-3. Before/after: capture the old build (or the fix disabled via its A/B switch) first, then the fix with `-Compare <first capture>`, and read both sheets.
-4. Describe what you see concretely (what, where in the frame, which frames) and tie it to the code.
+1. Read the contact sheet: the whole run at a glance. Either:
+   - `mcp__deweyserver__media_get(path="raylib-captures/<YYYY-MM-DD>/<name>-<HHMMSS>")` (path relative to the media store
+     root; a capture folder returns its `sheet.png`, scaled to `max_width`, default 1280), or
+   - the Read tool on the printed `sheet.png` path (UNC paths work: `\\DEWEYSERVER\files\...`; local captures under
+     `%USERPROFILE%\RaylibCaptures` need Read).
+2. Look at single frames where something changes or looks wrong: `media_get(path=<capture>, frame=N)` (use
+   `max_width=0` for full size when details matter), or Read `frame_NNNN.png`.
+3. To find captures (also ones the user recorded with F10): `mcp__deweyserver__media_list(path="raylib-captures")` lists
+   days newest first; `path="raylib-captures/<day>"` lists captures with frame counts and whether a sheet or GIF exists.
+   The media tools are read-only; only the game writes captures.
+4. Before/after: capture the old build (or the fix disabled via its A/B switch) first, then the fix with `-Compare <first capture>`, and read both sheets.
+5. Describe what you see concretely (what, where in the frame, which frames) and tie it to the code.
 
 ## Give it to the user
 Report the `capture.gif` path (and the sheet). Don't paste images into chat.
