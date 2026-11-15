@@ -127,6 +127,8 @@ void Weather_Update(Scene& world, float dt) {
     // Above the air or underground the sky is not overhead.
     world.weatherCloud = here.cloud;
     world.weatherFog = here.fog;
+    // Rain rings on water (#407): rain and storms (snow falls on water without them).
+    world.weatherRain = (here.kind == WeatherKind::Rain || here.kind == WeatherKind::Storm) ? here.precipitation : 0.0f;
     world.cloudDrift = Vector3Add(world.cloudDrift, Vector3Scale(here.wind, -dt * 3.0f)); // clouds move with the wind (a little faster than at the ground)
     // Lightning in a storm: a flash every 6-20 s, thunder a moment later.
     if (here.kind == WeatherKind::Storm) {

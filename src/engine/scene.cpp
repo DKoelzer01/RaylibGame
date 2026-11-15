@@ -694,6 +694,7 @@ void Scene::drawScene(int gamestate) {
             SetShaderValue(ws, GetShaderLocation(ws, "fogColor"), &effFog, SHADER_UNIFORM_VEC3);
             SetShaderValue(ws, GetShaderLocation(ws, "fogDensity"), &effFogDensity, SHADER_UNIFORM_FLOAT);
             SetShaderValue(ws, GetShaderLocation(ws, "time"), &now, SHADER_UNIFORM_FLOAT);
+            SetShaderValue(ws, GetShaderLocation(ws, "rain"), &weatherRain, SHADER_UNIFORM_FLOAT);
             waterMaterial.shader = ws;
             ctx.waterMaterial = &waterMaterial;
             ctx.waterTexOriginLoc = GetShaderLocation(ws, "chunkTexOrigin");

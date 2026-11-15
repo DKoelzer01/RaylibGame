@@ -226,6 +226,7 @@ int main(int argc, char** argv)
     bool benchDoorway = false; int doorPhase = 0, doorLane = 0; double doorStart = 0.0; uint32_t doorPlot = 0; bool doorPass[2] = { false, false }; // --test-doorway (#255): 2 m openings pass, 1.5 m ones block
     bool benchMenus = false;       // --test-menus: main menu, new game, pause, save & quit, load
     bool benchWater = false;       // --test-water: rivers and ponds near the start, their beds and clay
+    bool benchRain = false;        // --rain: hold rain at the player for any bench (rain rings on water, #407)
     bool benchFlyFollow = false;   // --test-flyfollow: the fly camera rides its reference body
     bool benchHotbar = false;      // --test-hotbar: materials and consumables from the hotbar
     bool benchInventory = false;   // --test-inventory: grid stacking, fractions, sorting, saves
@@ -442,6 +443,7 @@ int main(int argc, char** argv)
         if (std::string(argv[i]) == "--test-telescope-close") benchTeleClose = true; // zoom 16x at the horizon, close: worst frame after (#261)
         if (std::string(argv[i]) == "--test-menus") benchMenus = true;
         if (std::string(argv[i]) == "--test-water") benchWater = true;
+        if (std::string(argv[i]) == "--rain") benchRain = true;
         if (std::string(argv[i]) == "--test-flyfollow") benchFlyFollow = true;
         if (std::string(argv[i]) == "--test-hotbar") benchHotbar = true;
         if (std::string(argv[i]) == "--test-inventory") benchInventory = true;
@@ -5930,6 +5932,7 @@ int main(int argc, char** argv)
             }
             Factory::Sync(world);                                // machine layouts in, items out
             Fluid::Update(world, frameDt);                       // flowing water: commands in, a step job, meshes up
+            if (bench && benchRain) { static bool raining = false; if (!raining) { raining = true; Weather_Force((int)WeatherKind::Rain); } }
             Waterworks_Update(world, frameDt);                   // pumps send water down pipes to outlets
             Objectives_Update(world);
             if (bench && lookDown && !ship.piloted) {

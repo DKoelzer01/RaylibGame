@@ -18,6 +18,7 @@ uniform vec4 sunOccluder;      // planet: centre + radius blocking the sun (w = 
 uniform vec3 fogColor;         // linear
 uniform float fogDensity;
 uniform float time;
+uniform float rain;            // 0..1 rain falling (weather): rings on the surface (#407)
 uniform vec4 fluidColors[8];   // per kind (Fluid::BindKindUniforms): sRGB colour, opacity (a > 0: not water)
 uniform float fluidGlows[8];   // per kind: emissive strength (lava)
 
@@ -52,6 +53,32 @@ void main()
     if (speed > 0.01) {
         float s = dot(p, fdir) * k * 13.0 - time * speed * k * 13.0; // crests moving downstream at the current's speed
         bump += fdir * cos(s) * 0.03 * min(speed, 1.5);
+    }
+    // Rain rings (#407): while it rains, a ring spreads from a drop in some cells of a 0.5 m grid laid in the surface's
+    // own plane, each over 0.7 s; the share of cells with a drop follows the rain. A Gaussian band, its slope tilting
+    // the normal.
+    if (rain > 0.02 && dist < 60.0) {
+        vec3 nr = normalize(fragNormal);
+        vec3 t1 = normalize(cross(nr, abs(nr.y) < 0.9 ? vec3(0.0, 1.0, 0.0) : vec3(1.0, 0.0, 0.0)));
+        vec3 t2 = cross(nr, t1);
+        const float cellM = 0.5, period = 0.7;
+        vec2 uv = vec2(dot(p, t1), dot(p, t2)) / cellM;
+        vec2 cell = floor(uv);
+        vec2 slope = vec2(0.0);
+        for (int j = -1; j <= 1; ++j)
+            for (int i = -1; i <= 1; ++i) {
+                vec2 c = cell + vec2(float(i), float(j));
+                vec3 hsh = fract(sin(vec3(dot(c, vec2(127.1, 311.7)), dot(c, vec2(269.5, 183.3)), dot(c, vec2(419.2, 371.9)))) * 43758.5453);
+                float t = time / period + hsh.z;
+                float life = fract(t);
+                if (fract(sin(dot(c + floor(t) * 0.37, vec2(12.9898, 78.233))) * 43758.5453) > rain * 0.7) continue; // no drop this time
+                vec2 d = uv - (c + hsh.xy);
+                float r = length(d);
+                float x = (r - life * 1.2) * 10.0;                     // the band's centre runs out to 0.6 m
+                float dh = -2.0 * x * 10.0 * exp(-x * x) * (1.0 - life); // d(height)/dr, fading as it spreads
+                if (r > 1e-3) slope += dh * d / r;
+            }
+        bump -= (t1 * slope.x + t2 * slope.y) * (0.012 / cellM) * rain;
     }
     bump *= rippleFade;
     n = normalize(n + bump - n * dot(bump, n));
