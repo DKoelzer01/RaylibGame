@@ -180,7 +180,7 @@ board's auto-add workflow adds new issues itself, but sets no fields, so:
   references to `LocalSession()`'s members). Replication refers to `NetId`s (`netid.h`): bodies by creation order, ring
   rocks by name hash + index, animals/vehicles/stations allocated and saved. Benches can find a frame with no sim step:
   wait a little after a teleport before reading `grounded`. Transport (#310): `src/engine/net.*` over GameNetworkingSockets,
-  only with `-DENABLE_GNS=ON -DGNS_ROOT=<prebuilt>` (protobuf 3.21 + GNS 1.4.1 built with w64devkit, BCrypt; recipe on #310;
+  only with `-DENABLE_GNS=ON` after `tools/build_gns.sh` (~2-7 min) builds protobuf 3.21 + GNS 1.4.1 (pinned, w64devkit, BCrypt) into the gitignored `deps/gns/install` (the default GNS_ROOT;
   +4 MB exe), else stubs; `--test-net` (loopback echo) SKIPs without it.
 - Inventory: 45 grid cells + 10 hotbar cells (indices 45-54). `Hotbar_Bind` moves a stack (items must be carried);
   `Inventory::preferred` = the selected hotbar cell is used first.
