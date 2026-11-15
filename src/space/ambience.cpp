@@ -159,6 +159,8 @@ static void UpdateSeeps(Planetoid& body, Vector3 local, float dt) {
 // Splashes and wakes (#408): a burst where the player drops into water, droplets off the waterline while wading or
 // swimming at the surface. Speeds are taken in the body's frame from the feet's track (the world velocity carries
 // the planet's spin).
+static float gFireDistance = 1e9f; // m to the nearest working fire machine (smoke loop below), for drying off (#418)
+float Ambience_FireDistance() { return gFireDistance; }
 static int gSplashBursts = 0;
 int Ambience_SplashBursts() { return gSplashBursts; }
 static void UpdateSplashes(Scene& world, const Planetoid& body, Vector3 feet, Vector3 up, float dt) {
@@ -189,10 +191,14 @@ static void UpdateSplashes(Scene& world, const Planetoid& body, Vector3 feet, Ve
     wasWet = feetWet;
     // Wading or swimming at the surface (the waterline between the feet and the head) and moving: droplets off it.
     if (feetWet && hs > 0.8f && !wetAt(player.height)) {
-        float lo = 0.05f, hi = player.height; // the waterline, to ~3 cm
-        for (int k = 0; k < 6; ++k) { const float mid = 0.5f * (lo + hi); if (wetAt(mid)) lo = mid; else hi = mid; }
         wakeDue = std::min(wakeDue + dt * hs * 6.0f, 10.0f);
+        float lo = -1.0f; // the waterline, found once a droplet is due (to ~3 cm)
         while (wakeDue >= 1.0f) {
+            if (lo < 0.0f) {
+                lo = 0.05f;
+                float hi = player.height;
+                for (int k = 0; k < 6; ++k) { const float mid = 0.5f * (lo + hi); if (wetAt(mid)) lo = mid; else hi = mid; }
+            }
             wakeDue -= 1.0f;
             ParticleBurst s;
             s.kind = ParticleKind::Splash; s.color = drop;
@@ -210,36 +216,45 @@ static void UpdateSplashes(Scene& world, const Planetoid& body, Vector3 feet, Ve
 static std::vector<Vector3> gLandings; // body-local
 static int gMistPuffs = 0;
 int Ambience_MistPuffs() { return gMistPuffs; }
-static void UpdateMist(const Planetoid& body, Vector3 player, float dt) {
+static void UpdateMist(const Planetoid& body, Vector3 here, float dt) {
     static float scanDue = 0.0f, puffDue = 0.0f;
+    static const Planetoid* lastBody = nullptr;
+    if (lastBody != &body) { lastBody = &body; gLandings.clear(); scanDue = 0.0f; } // a new body or world: none carried over
     if ((scanDue -= dt) <= 0.0f) {
         scanDue = 0.5f;
         gLandings.clear();
         const WaterField::SnapshotPtr snap = WaterField::Current();
+        constexpr int B = WaterField::kBrick;
         for (const WaterField::Site& s : snap->sites) {
             if (s.body != body.id || s.bricks.empty()) continue;
-            if (player.x < s.lo.x - 25 || player.y < s.lo.y - 25 || player.z < s.lo.z - 25 || player.x > s.hi.x + 25 || player.y > s.hi.y + 25 || player.z > s.hi.z + 25) continue;
+            if (here.x < s.lo.x - 25 || here.y < s.lo.y - 25 || here.z < s.lo.z - 25 || here.x > s.hi.x + 25 || here.y > s.hi.y + 25 || here.z > s.hi.z + 25) continue;
             for (const auto& kv : s.bricks) {
+                if (gLandings.size() >= 24) break;
+                if (!(kv.second->kinds & 1)) continue; // water only
                 const int bi = (int)((kv.first >> 22) & 2047) - 1024, bj = (int)((kv.first >> 11) & 2047) - 1024, bk = (int)(kv.first & 2047) - 1024;
                 Vector3 blo, bhi;
                 s.brickBounds(bi, bj, bk, blo, bhi);
-                const Vector3 mid = Vector3Scale(Vector3Add(blo, bhi), 0.5f);
-                if (Vector3Distance(mid, player) > 25.0f + 14.0f) continue;
-                if (!(kv.second->kinds & 1)) continue; // water only
+                if (Vector3Distance(Vector3Scale(Vector3Add(blo, bhi), 0.5f), here) > 25.0f + 14.0f) continue;
                 const WaterField::Brick& b = *kv.second;
-                for (int z = 0; z < WaterField::kBrick && gLandings.size() < 24; ++z)
-                    for (int y = 0; y < WaterField::kBrick; ++y)
-                        for (int x = 0; x < WaterField::kBrick; ++x) {
+                // A cell's fill and flags: inside this brick by index (the main thread: no hash lookup per cell), at its
+                // edges through the site.
+                auto at = [&](int x, int y, int z, uint8_t& f, uint8_t& fl) {
+                    if (z >= 0 && z < B) { const int j = WaterField::CellIdx(x, y, z); f = b.fill[j]; fl = b.flags[j]; return true; }
+                    return s.cell(bi * B + x, bj * B + y, bk * B + z, f, fl);
+                };
+                for (int z = 0; z < B && gLandings.size() < 24; ++z)
+                    for (int y = 0; y < B && gLandings.size() < 24; ++y)
+                        for (int x = 0; x < B && gLandings.size() < 24; ++x) {
                             const int i = WaterField::CellIdx(x, y, z);
                             if (b.fill[i] == 0 || (b.flags[i] & WaterField::kSolid) || WaterField::CellKind(b.flags[i]) != 0) continue;
-                            const int ci = bi * WaterField::kBrick + x, cj = bj * WaterField::kBrick + y, ck = bk * WaterField::kBrick + z;
                             uint8_t f1, fl1, f2, fl2, f0, fl0;
-                            if (!s.cell(ci, cj, ck + 1, f1, fl1) || f1 == 0 || f1 >= 230 || (fl1 & WaterField::kSolid)) continue; // falling into it
-                            if (!s.cell(ci, cj, ck + 2, f2, fl2) || f2 == 0 || f2 >= 230 || (fl2 & WaterField::kSolid)) continue; // a column, not a ripple
-                            const bool landsOn = !s.cell(ci, cj, ck - 1, f0, fl0) || (fl0 & WaterField::kSolid) || f0 >= 230;
+                            if (!at(x, y, z + 1, f1, fl1) || f1 == 0 || f1 >= 230 || (fl1 & WaterField::kSolid)) continue; // falling into it
+                            if (!at(x, y, z + 2, f2, fl2) || f2 == 0 || f2 >= 230 || (fl2 & WaterField::kSolid)) continue; // a column, not a ripple
+                            const bool landsOn = !at(x, y, z - 1, f0, fl0) || (fl0 & WaterField::kSolid) || f0 >= 230;
                             if (!landsOn) continue;
+                            const int ci = bi * B + x, cj = bj * B + y, ck = bk * B + z;
                             const Vector3 p = Vector3Add(s.origin, Vector3Add(Vector3Add(Vector3Scale(s.e, ci + 0.5f), Vector3Scale(s.n, cj + 0.5f)), Vector3Scale(s.u, ck + b.fill[i] / 255.0f)));
-                            if (Vector3Distance(p, player) > 25.0f) continue;
+                            if (Vector3Distance(p, here) > 25.0f) continue;
                             bool near = false; // one plume per 1.5 m
                             for (const Vector3& q : gLandings) if (Vector3DistanceSqr(q, p) < 2.25f) { near = true; break; }
                             if (!near) gLandings.push_back(p);
@@ -314,9 +329,11 @@ void Ambience_Update(Scene& world, float dt) {
 
     // Smoke from working fire machines within 120 m (checked ten times a second).
     smokeClock += dt;
-    if (smokeClock < 0.1f || !body->plots) return;
+    if (smokeClock < 0.1f) return;
+    if (!body->plots) { gFireDistance = 1e9f; return; }
     const float tick = smokeClock;
     smokeClock = 0.0f;
+    gFireDistance = 1e9f;
     for (auto& plot : body->plots->plots) {
         if (Vector3Distance(plot->toBody({ 0, 0, 0 }), local) > 160.0f) continue;
         for (size_t i = 0; i < plot->parts.size(); ++i) {
@@ -328,6 +345,7 @@ void Ambience_Update(Scene& world, float dt) {
             const int nTops = Machine_SmokePoints(*plot, i, tops, 4);
             if (nTops == 0 || Vector3Distance(tops[0], local) > 120.0f) continue;
             if (!Factory::Working(body->id, plot->id, (int)i)) continue;
+            gFireDistance = std::min(gFireDistance, Vector3Distance(Vector3Subtract(tops[0], Vector3Scale(plot->up, 0.5f)), local)); // a fire to dry by (#418)
             const bool campfire = part.type == PartType::Campfire;
             ParticleBurst smoke;
             smoke.kind = ParticleKind::Smoke; smoke.color = campfire ? Color{ 190, 188, 185, 255 } : Color{ 150, 148, 145, 255 };

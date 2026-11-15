@@ -3862,8 +3862,8 @@ int main(int argc, char** argv)
                         }
                     } else if (pondPhase == 4 && t > 2.5) {
                         const int bursts = Ambience_SplashBursts() - pondSplash0;
-                        printf("bench: pond: dropped into the pit from 3 m: %d splash burst(s), in water %s -> %s\n", bursts, player.inWater ? "yes" : "no",
-                               bursts == 1 ? "PASS" : "FAIL");
+                        printf("bench: pond: dropped into the pit from 3 m: %d splash burst(s), in water %s, wetness %.2f -> %s\n", bursts, player.inWater ? "yes" : "no",
+                               survival.wetness, bursts == 1 && survival.wetness > 0.99f ? "PASS" : "FAIL"); // #408, #418
                         printf("bench: pond: %d mist puffs over the whole test (a draining pond has no falls: few or none, #406)\n", Ambience_MistPuffs());
                         benchPond = false;
                     }

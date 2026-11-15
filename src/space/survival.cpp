@@ -12,6 +12,7 @@
 #include "worldtypes.h"
 #include "voxel.h"
 #include "scene.h"
+#include "ambience.h"
 
 #include <algorithm>
 #include <cmath>
@@ -57,6 +58,7 @@ namespace {
     // 32 at the equator falling to about -25 at the poles, 6.5 colder per km of height, +-7 between
     // noon and midnight, and underground drifting toward a cave's steady 12.
     Biome hereBiome = Biome::Count; // where the player stands, as of the last update (Count: none)
+    float hereDepth = 0.0f;         // m under the ground's surface (over 3: sheltered from rain), as of the last update
     float AirTemperature(Scene& world) {
         Planetoid* p = player.nearest;
         if (!p || !world.atmosphere.enabled) return NAN;
@@ -76,6 +78,7 @@ namespace {
         hereBiome = pf->biomeAt(up, ground);
         float t = c.temp - 6.5f * std::max(height - std::max(ground, 0.0f), 0.0f) / 1000.0f + (5.0f + 9.0f * (1.0f - c.moist)) * sun;
         const float depth = ground - height;                  // below the surface here
+        hereDepth = depth;
         if (depth > 3.0f) t += (12.0f - t) * std::min(1.0f, (depth - 3.0f) / 12.0f);
         return t;
     }
@@ -101,6 +104,7 @@ void Survival_Respawn(Scene& world) {
     survival.food = std::max(survival.food, 60.0f);
     survival.sickUntil = 0.0f;
     survival.vacuumTime = 0.0f;
+    survival.wetness = 0.0f;
     survival.dead = false;
     player.flyMode = false; // otherwise the free-fly camera would put the player back where they died
     // Wake up at the start, at rest with the ground there (spawnOn sets the velocity to the surface's:
@@ -192,11 +196,25 @@ void Survival_Update(Scene& world, float dt, bool inputEnabled) {
         if (w.kind == WeatherKind::Rain || w.kind == WeatherKind::Storm) survival.temperature -= 4.0f * w.precipitation;
         else if (w.kind == WeatherKind::Snow) survival.temperature -= 3.0f * w.precipitation;
     }
+    {   // Wet (#418): soaked by a swim; rain wets you in ~20 s under open sky; dries in ~4 min at 10 C, faster when
+        // warmer and four times faster within 4 m of a working fire.
+        const WeatherState& w = Weather_Here();
+        const bool air = !std::isnan(survival.temperature);
+        const bool rainOn = air && (w.kind == WeatherKind::Rain || w.kind == WeatherKind::Storm) && w.precipitation > 0.1f && hereDepth < 3.0f;
+        if (player.inWater) survival.wetness = 1.0f;
+        else if (rainOn) survival.wetness = std::min(1.0f, survival.wetness + 0.05f * w.precipitation * dt);
+        else if (!air || survival.inLifeSupport) survival.wetness = std::max(0.0f, survival.wetness - dt / 60.0f); // the suit or the cockpit dries you
+        else {
+            float dry = (1.0f + std::max(0.0f, survival.temperature - 10.0f) / 10.0f) / 240.0f;
+            if (Ambience_FireDistance() < 4.0f) dry *= 4.0f;
+            survival.wetness = std::max(0.0f, survival.wetness - dry * dt);
+        }
+    }
     {
         const Vector3 flat = Vector3Subtract(player.velocity, Vector3Scale(player.up, Vector3DotProduct(player.velocity, player.up)));
         const bool active = player.jetpackFiring || (player.grounded && Vector3Length(flat) > player.walkSpeed * 1.1f);
         float drain = survival.foodDrainPerSec * (active ? 1.6f : 1.0f) * Suit_Stats().food * Difficulty_HungerScale();
-        const float T = survival.temperature;
+        const float T = survival.temperature - 6.0f * survival.wetness; // wet, the air feels colder (#418)
         if (!std::isnan(T) && T < 5.0f) drain *= 1.0f + Suit_Stats().cold * (5.0f - T) / 15.0f; // insulation, the regulator
         if (GetTime() < survival.sickUntil) drain *= 2.0f;
         if (!survival.inLifeSupport) survival.food = std::max(0.0f, survival.food - drain * dt);
@@ -246,7 +264,8 @@ void Survival_DrawHUD() {
         const Color tc = T < 5.0f ? Color{ 130, 190, 255, 255 } : T > 35.0f ? Color{ 255, 140, 70, 255 } : Fade(RAYWHITE, 0.8f);
         const SuitStats& st = Suit_Stats();
         const char* note = T < 5.0f ? (st.cold <= 0.0f ? "  cold: regulated" : st.cold < 1.0f ? "  cold: insulated" : "  cold: hungrier") : T > 35.0f ? (st.heatProof ? "  heat: regulated" : "  heat") : "";
-        DrawText(TextFormat("%.0f C%s", T, note), x + std::max(wO2, wPwr) + 20, y + 68, 16, tc);
+        const char* wet = survival.wetness > 0.6f ? "  wet" : survival.wetness > 0.15f ? "  damp" : ""; // #418
+        DrawText(TextFormat("%.0f C%s%s", T, note, wet), x + std::max(wO2, wPwr) + 20, y + 68, 16, tc);
         if (hereBiome != Biome::Count) DrawText(BiomeName(hereBiome), x + std::max(wO2, wPwr) + 20, y + 46 + (GetTime() < survival.sickUntil ? -66 : 0), 16, Fade(RAYWHITE, 0.75f));
     }
     const int tx = x + std::max(wO2, wPwr) + 20;

@@ -129,6 +129,16 @@ void Weather_Update(Scene& world, float dt) {
     world.weatherFog = here.fog;
     // Rain rings on water (#407): rain and storms (snow falls on water without them).
     world.weatherRain = (here.kind == WeatherKind::Rain || here.kind == WeatherKind::Storm) ? here.precipitation : 0.0f;
+    {   // None underground, as for the rain streaks (Weather_Draw3D): a cave pool shows no rings while it rains outside.
+        Planetoid* rp = StartBody(world);
+        const PlanetField* rpf = rp ? dynamic_cast<const PlanetField*>(rp->field.get()) : nullptr;
+        if (!rpf || (player.nearest && player.nearest != rp)) world.weatherRain = 0.0f; // nearest is unset while flying
+        else {
+            const Vector3 local = rp->toLocal((player.position - world.renderOrigin).toFloat());
+            const float d = Vector3Length(local);
+            if (d < 1.0f || d < rpf->radius + rpf->elevation(Vector3Scale(local, 1.0f / d)) - 3.0f) world.weatherRain = 0.0f;
+        }
+    }
     world.cloudDrift = Vector3Add(world.cloudDrift, Vector3Scale(here.wind, -dt * 3.0f)); // clouds move with the wind (a little faster than at the ground)
     // Lightning in a storm: a flash every 6-20 s, thunder a moment later.
     if (here.kind == WeatherKind::Storm) {

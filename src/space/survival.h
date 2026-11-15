@@ -29,6 +29,9 @@ struct SurvivalState {
     // vacuum (the suit regulates). Below 5 C food drains faster; above 35 C slow damage.
     float temperature = 20.0f;
     float sickUntil = 0.0f;                                   // raw meat: food drains faster for a while
+    // Wet (#418): 1 after a swim, rises in rain under open sky, dries over minutes (faster when warm, by a fire).
+    // Wet, the air feels up to 6 C colder (the cold's hunger cost).
+    float wetness = 0.0f;
     bool inLifeSupport = false;
     float breathableAltitude = 15000.0f;                      // a planet's air is breathable below this (m above sea level)
     float airRefillPerSec = 4.0f;                             // suit oxygen top-up from breathable air

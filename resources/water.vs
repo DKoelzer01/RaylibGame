@@ -16,9 +16,13 @@ out vec3 fragChunkPos;  // chunk-local (overlap clipping)
 out float fragDepth;     // depth to the sea floor (m)
 flat out int fragKind;   // fluid kind
 out vec4 fragFlow;       // the current: xyz direction (body-aligned, as fragTexPos), w speed (m/s)
+out vec3 fragNormalBody; // body-aligned (the patterns laid on the surface: rain rings, foam)
+flat out mat3 fragBodyToWorld; // body-aligned vectors (bumps) to world space
 
 void main()
 {
+    fragNormalBody = normalize(vertexNormal);
+    fragBodyToWorld = mat3(normalize(matModel[0].xyz), normalize(matModel[1].xyz), normalize(matModel[2].xyz)); // rotation only
     fragPosition = vec3(matModel * vec4(vertexPosition, 1.0));
     fragNormal = normalize(mat3(matModel) * vertexNormal);
     fragTexPos = vertexPosition + chunkTexOrigin;
