@@ -2906,7 +2906,20 @@ int main(int argc, char** argv)
                     if (!missing.empty()) { printf(" unreachable:"); for (const auto& m : missing) printf(" %s", m.c_str()); }
                     printf("\nbench: recipes: %zu items nothing uses (end products or loose ends):", unused.size());
                     for (const auto& m : unused) printf(" %s", m.c_str());
-                    printf("\nbench: recipes: %s\n", missing.empty() ? "PASS" : "FAIL");
+                    // #214: ores only go into smelting and ore processing; every product is made from ingots (plates, wire...).
+                    static const char* kOreMachines[] = { "kiln", "electric_furnace", "steam_macerator", "macerator", "arc_furnace", "blast_furnace",
+                                                          "electrolyzer", "chemical_reactor", "ore_washer", "thermal_centrifuge" };
+                    std::vector<std::string> oreUses;
+                    for (const Rule& u : rules)
+                        for (const std::string& in : u.in) {
+                            if (in.size() < 4 || in.compare(in.size() - 4, 4, "_ore") != 0) continue;
+                            bool ok = false;
+                            for (const char* m : kOreMachines) ok = ok || u.machine == m;
+                            if (!ok) oreUses.push_back((u.machine.empty() ? std::string("hand") : u.machine) + ": " + (u.out.empty() ? std::string("?") : u.out[0]) + " from " + in);
+                        }
+                    printf("\nbench: recipes: ore outside smelting/processing (#214): %zu", oreUses.size());
+                    for (const auto& s : oreUses) printf("  [%s]", s.c_str());
+                    printf("\nbench: recipes: %s\n", missing.empty() && oreUses.empty() ? "PASS" : "FAIL");
                     benchRecipes = false;
                 } else if (benchShotTabs > 0 && (benchShotTabs > 1 || WorldIdle())) {
                     // --shot-tabs: screenshots of the Quest tree (some progress) and Suit tabs.
