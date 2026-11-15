@@ -1988,6 +1988,7 @@ void BuildChunkMeshFromBase(const DensityField& field, const TerrainDeltas& delt
             out.texcoords2.assign(verts.size() * 2, 0.0f);
             out.tangents.assign(verts.size() * 4, 0.0f);
             out.occlusion.assign(verts.size(), 0.0f);
+            out.matIds.assign(verts.size(), 0);
             const PlanetField* planetLife = dynamic_cast<const PlanetField*>(&field);
             if (planetLife && !planetLife->foliage) planetLife = nullptr;
             const PlanetField* gridField = grid ? dynamic_cast<const PlanetField*>(&field) : nullptr;
@@ -2071,6 +2072,7 @@ void BuildChunkMeshFromBase(const DensityField& field, const TerrainDeltas& delt
                 out.normals[v * 3 + 1] = n.y;
                 out.normals[v * 3 + 2] = n.z;
                 const int mi = (int)m; // one-hot weight in the material's channel (see VoxelMaterial)
+                out.matIds[v] = (unsigned char)mi; // #480: the arena's per-chunk palette
                 if (mi < 4) out.colors[v * 4 + mi] = 255;
                 else if (mi < 6) out.texcoords[v * 2 + (mi - 4)] = 1.0f;
                 else out.texcoords2[v * 2 + (mi - 6)] = 1.0f;

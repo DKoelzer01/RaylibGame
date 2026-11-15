@@ -2,10 +2,10 @@
 
 // Input vertex attributes
 in vec3 vertexPosition;
-in vec2 vertexTexCoord;   // chunks: material weights 4-5 (sand, gravel)
-in vec2 vertexTexCoord2;  // chunks: material weights 6-7 (grass, snow)
+in vec4 vertexTexCoord;   // chunks: material weights 4-5 (sand, gravel); arena: palette slot weights 0-3 (#480)
+in vec4 vertexTexCoord2;  // chunks: material weights 6-7 (grass, snow)
 in vec3 vertexNormal;
-in vec4 vertexColor;
+in vec4 vertexColor;      // chunks: material weights 0-3; arena: slot weights 4-7
 in vec4 vertexTangent;    // chunks: w = sky exposure (default attribute (0,0,0,1): fully exposed)
 layout(location = 14) in float vertexOcclusion; // terrain arena: ambient occlusion 0 open .. 1 enclosed (#132); other meshes: 0
 // Terrain arena (terrainarena.h): this draw's record, instanced attributes picked by the command's baseInstance.
@@ -14,6 +14,7 @@ layout(location = 10) in vec4 arenaRow1;
 layout(location = 11) in vec4 arenaRow2;
 layout(location = 12) in vec4 arenaTexOrigin;
 layout(location = 13) in vec4 arenaClip;
+layout(location = 15) in uvec4 arenaPalette;  // arena: the chunk's 8 material ids, a byte each (x, y)
 
 // Set by DrawMesh() from the material's shader locations
 uniform mat4 mvp;
@@ -25,6 +26,7 @@ uniform vec3 chunkTexOrigin;
 uniform vec3 chunkClipMax;      // chunk-local: the fragment shader discards beyond this (Chunk::clipMax)
 // Terrain arena (Plan 6 step 1): one multi-draw for all chunks of a body (per-draw data in the arena attributes above).
 uniform int arenaDraw;
+uniform int palette;            // lighting.fs's: 2 = planet (reads the palette slots), else the asteroid/fantasy base materials
 uniform mat4 matViewProj;
 
 out vec3 fragPosition;     // world (render) space: lighting, shadows, fog
@@ -43,6 +45,10 @@ flat out float fragClimate; // planets: the packed climate (2 + temperature step
 out float fragOreKind;     // planets: which ore (1 + kind) / 8, 0 none
 out float fragMacro;       // slow (70-250 m) brightness variation for the planet palette (per vertex: #183)
 flat out vec3 fragClipMax;
+// #480: material weights per palette slot (16) and the slots' material ids (bytes; lighting.fs reads materials by id).
+// Per-chunk draws (no arena) carry the 8 legacy weights with the identity palette 0-7.
+out vec4 fragMatW[2];
+flat out uvec4 fragPalette;
 
 // Smooth value noise in [0, 1] (the planet palette's macro variation; was per pixel in lighting.fs).
 float hash3(vec3 p) { p = mod(p, 289.0); return fract(sin(dot(p, vec3(127.1, 311.7, 74.7))) * 43758.5453); }
@@ -67,9 +73,26 @@ void main()
     }
     vec4 world = model * vec4(vertexPosition, 1.0);
     fragPosition = world.xyz;
-    fragTexCoord = vertexTexCoord;
-    fragTexCoord2 = vertexTexCoord2;
+    fragTexCoord = vertexTexCoord.xy;
+    fragTexCoord2 = vertexTexCoord2.xy;
     fragColor = vertexColor;
+    if (arenaDraw == 1) {
+        fragMatW[0] = vertexTexCoord; fragMatW[1] = vertexColor;
+        fragPalette = arenaPalette;
+        // The 4 base materials' weights for the asteroid palettes (lighting.fs: rock, regolith, ice, ore in fragColor).
+        vec4 base = vec4(0.0);
+        if (palette != 2) // the planet palette reads the slots; skipping this loop there saves ~0.65 ms of near pass
+        for (int s = 0; s < 8; ++s) {
+            uint id = (arenaPalette[s >> 2] >> (8u * uint(s & 3))) & 255u;
+            if (id < 4u) base[id] += fragMatW[s >> 2][s & 3];
+        }
+        fragColor = base;
+        fragTexCoord = vec2(0.0);
+        fragTexCoord2 = vec2(0.0);
+    } else {
+        fragMatW[0] = vertexColor; fragMatW[1] = vec4(vertexTexCoord.xy, vertexTexCoord2.xy);
+        fragPalette = uvec4(0x03020100u, 0x07060504u, 0u, 0u);
+    }
     // w = 0: normals are directions and must not pick up the model translation.
     // Normal to world space via the model matrix. raylib also provides matNormal, but in testing its value
     // did not follow per-draw model rotations (normals stayed in body space on spinning bodies), so we

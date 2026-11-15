@@ -6283,6 +6283,7 @@ int main(int argc, char** argv)
                 GpuTimer_PrintCpu();
                 GpuMem_Report("end of bench"); // --vram (#302)
                 if (TerrainArena_Available()) { const ArenaStats as = TerrainArena_Stats(); printf("bench: terrain arena: %d / %d vertices, %d / %d indices, %.1f chunk draws per multi-draw; uploads %lld staged, %lld direct\n", as.vertices, as.vertexCapacity, as.indices, as.indexCapacity, as.draws / (double)std::max(1, as.flushes), as.staged, as.direct); }
+                if (TerrainArena_Available()) { long long pu[17]; TerrainArena_PaletteUse(pu); printf("bench: material palette (#480): chunks by distinct materials:"); for (int k = 1; k <= 16; ++k) if (pu[k]) printf(" %d:%lld", k, pu[k]); printf("\n"); }
                 { const TerrainGpuStats ts = TerrainGpu_Stats(); const WorldStats& ws = GetWorldStats(); printf("bench: terrain gpu: %lld blocks in %lld batches, avg batch latency %.2f ms; chunk build avg %.2f ms (sampling part %.2f ms)\n", ts.blocks, ts.batches, ts.avgLatencyMs, ws.avgBuildMs, ws.avgSampleMs); }
                 {   // Streaming (#258): how much work flying asked for and threw away; frame time spread.
                     const WorldStats& ws = GetWorldStats();
