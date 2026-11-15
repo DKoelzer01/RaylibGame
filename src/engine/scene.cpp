@@ -1,5 +1,6 @@
 #include "scene.h"
 #include "gpumem.h"
+#include "headless.h"
 #include "gputimer.h"
 #include "utils/logger.h"
 #include "profiler.h"
@@ -336,6 +337,7 @@ void Scene::loadTerrainTextures() {
 
 void Scene::drawScene(int gamestate) {
     if (!isActive) return;
+    if (Headless()) { ++gHeadlessSkippedDraws; return; } // #311: no GPU work at all (the bench camera is set by the tests)
     PROFILE_FUNCTION();
 
     // --- Hot reload: only touches the GPU when a shader file actually changed ---

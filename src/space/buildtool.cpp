@@ -5,6 +5,7 @@
 #include "survival.h"
 #include "farming.h"
 #include "audio.h"
+#include "gamerng.h"
 #include "gameui.h"
 #include "inventory.h"
 #include "player.h"
@@ -140,7 +141,7 @@ static void UpdateBreak(Scene& world, const PlayerInput& in) {
     const Part removed = hitPlot->parts[part];
     if (hitPlot->remove(part)) {
         if (removed.type == PartType::Meteorite && !terrainTool.creative) { // (#177) space rock: nickel-iron, now and then platinum or iridium ore
-            const int n = GetRandomValue(6, 10), pt = GetRandomValue(0, 99) < 35 ? 2 : 0, ir = GetRandomValue(0, 99) < 12 ? 1 : 0;
+            const int n = GameRng_Int(6, 10), pt = GameRng_Int(0, 99) < 35 ? 2 : 0, ir = GameRng_Int(0, 99) < 12 ? 1 : 0; // the authority rolls (#316)
             inventory.add("nickel_iron_ore", n);
             if (pt) inventory.add("platinum_ore", pt);
             if (ir) inventory.add("iridium_ore", ir);

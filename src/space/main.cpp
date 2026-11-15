@@ -16,6 +16,7 @@
 #include "netid.h"
 #include "net.h"
 #include "gamerng.h"
+#include "headless.h"
 #include "joininfo.h"
 #include "scene.h"
 #include "object.h"
@@ -292,6 +293,7 @@ int main(int argc, char** argv)
     bool benchDoorway = false; int doorPhase = 0, doorLane = 0; double doorStart = 0.0; uint32_t doorPlot = 0; bool doorPass[2] = { false, false }; // --test-doorway (#255): 2 m openings pass, 1.5 m ones block
     bool benchMenus = false;       // --test-menus: main menu, new game, pause, save & quit, load
     bool benchMeteor = false;      // --test-meteor (#177)
+    bool benchHeadless = false;    // --test-headless (#311): the sim runs with --headless, nothing drawn
     bool benchTrapping = false;    // --test-trapping (#176)
     bool benchFishing = false;     // --test-fishing (#176)
     bool benchStructures = false;  // --test-structures: ruins, wrecks and wonders (#164)
@@ -552,6 +554,7 @@ int main(int argc, char** argv)
         if (std::string(argv[i]) == "--test-fishing") benchFishing = true;
         if (std::string(argv[i]) == "--test-trapping") benchTrapping = true;
         if (std::string(argv[i]) == "--test-meteor") benchMeteor = true;
+        if (std::string(argv[i]) == "--test-headless") benchHeadless = true;
         if (std::string(argv[i]) == "--test-pickups") benchPickups = true;
         if (std::string(argv[i]) == "--shot-inventory") shotInventory = true;
         if (std::string(argv[i]) == "--test-foundation") benchFoundation = true;
@@ -738,12 +741,19 @@ int main(int argc, char** argv)
     bool msaa = true;
     for (int i = 1; i < argc; ++i) if (std::string(argv[i]) == "--no-msaa") msaa = false;
     if (!bench) { Settings_Load(); if (settings.terrainDetail == 0) msaa = false; } // #302 (user 2026-11-15): Low runs without MSAA (VRAM); benches use --no-msaa
+    for (int i = 1; i < argc; ++i) if (std::string(argv[i]) == "--headless") gHeadless = true; // #311: simulate, draw nothing
+    if (benchHeadless) gHeadless = true;
+    if (gHeadless) msaa = false;
     if (msaa) SetConfigFlags(FLAG_MSAA_4X_HINT);
     bool nativeWindow = false; // --native-window: a bench in the game's own window (borderless, monitor-sized), uncapped
     for (int i = 1; i < argc; ++i) if (std::string(argv[i]) == "--native-window") nativeWindow = true;
     bool exclusive = false; // --fullscreen: exclusive fullscreen (bypasses the desktop compositor)
     for (int i = 1; i < argc; ++i) if (std::string(argv[i]) == "--fullscreen") { exclusive = true; nativeWindow = true; }
-    if (!bench || nativeWindow) {
+    if (gHeadless) { // #311: a hidden window for the GL context the loaders still need; nothing is drawn into it
+        SetConfigFlags(FLAG_WINDOW_HIDDEN);
+        InitWindow(320, 180, "RaylibGame headless");
+        SetTargetFPS(bench ? std::max(0, benchFps) : kSimHz); // a server ticks at the sim rate
+    } else if (!bench || nativeWindow) {
         SetConfigFlags(FLAG_WINDOW_RESIZABLE); // Allow window resizing
         SetConfigFlags(FLAG_WINDOW_UNDECORATED); // Remove window decorations for a cleaner look
         SetConfigFlags(FLAG_WINDOW_HIGHDPI); // Enable High DPI support
@@ -6828,7 +6838,7 @@ int main(int argc, char** argv)
         // 40 m off: a crater (the ground's middle now air) with a meteorite at its bottom. bench_meteor.png looks at it.
         if (benchMeteor && gameState == 1 && !loading && WorldIdle()) {
             static int mf = 0;
-            static bool landed = false, crater = false;
+            static bool landed = false, crater = false, meteorRolled = false;
             static Vector3 ground{};
             Planetoid* p = dynamic_cast<Planetoid*>(world.objects[0].get());
             const auto* pf = dynamic_cast<const PlanetField*>(p->field.get());
@@ -6842,8 +6852,10 @@ int main(int argc, char** argv)
                 const Vector3 t2 = Vector3CrossProduct(t1, up);
                 for (int k = 0; k < 8 && !landed; ++k) {
                     const float b = k * 0.785f;
+                    const uint64_t rngBefore = GameRng_State();
                     if (Events_TestImpact(world, *p, 40.0f, b)) {
                         landed = true;
+                        meteorRolled = GameRng_State() != rngBefore; // the meteorite's roll came from the authority's stream (#316)
                         const Vector3 d = Vector3Normalize(Vector3Add(up, Vector3Scale(Vector3Add(Vector3Scale(t1, cosf(b)), Vector3Scale(t2, sinf(b))), 40.0f / pf->radius)));
                         ground = Vector3Scale(d, pf->radius + pf->elevation(d));
                         crater = p->densityAt(Vector3Subtract(ground, Vector3Scale(d, 1.5f))) < ISO_LEVEL; // 1.5 m under the old ground: now air
@@ -6867,10 +6879,32 @@ int main(int argc, char** argv)
                 TakeScreenshot("bench_meteor.png");
                 int meteorites = 0;
                 if (p->plots) for (auto& pl : p->plots->plots) for (const Part& part : pl->parts) meteorites += part.type == PartType::Meteorite;
-                const bool ok = Events_ShowerOn() && Events_Streaks() > 0 && landed && crater && meteorites >= 1;
-                printf("bench: meteor: shower on %d, %d streaks drawn, landed %d, crater %d, meteorites %d (bench_meteor.png) -> %s\n",
-                       (int)Events_ShowerOn(), Events_Streaks(), (int)landed, (int)crater, meteorites, ok ? "PASS" : "FAIL");
+                const bool ok = Events_ShowerOn() && Events_Streaks() > 0 && landed && crater && meteorites >= 1 && meteorRolled;
+                printf("bench: meteor: shower on %d, %d streaks drawn, landed %d, crater %d, meteorites %d, game rng rolled %d (bench_meteor.png) -> %s\n",
+                       (int)Events_ShowerOn(), Events_Streaks(), (int)landed, (int)crater, meteorites, (int)meteorRolled, ok ? "PASS" : "FAIL");
                 benchMeteor = false;
+            }
+        }
+        // --test-headless (#311, with --bench 12): the world runs with nothing drawn - the sim steps at its rate, the player
+        // stands on streamed ground (collision uses the CPU field), animals live; drawScene is skipped every frame.
+        if (benchHeadless && gameState == 1 && !loading && WorldIdle()) {
+            static double t0 = -1.0;
+            static long long tick0 = 0, draws0 = 0;
+            static DVec3 pos0{}; // body-local (the planet spins and orbits)
+            Planetoid* hb = dynamic_cast<Planetoid*>(world.objects[0].get());
+            const DVec3 local = hb ? hb->toLocalD(player.position) : player.position;
+            static double settle = -1.0; // stand the player on the spawn first (the bench starts it 40 m up, flying)
+            if (settle < 0.0) { settle = GetTime(); player.flyMode = false; if (hb) player.spawnOn(world, *hb, StartSpawnDir(*hb)); }
+            else if (GetTime() - settle < 2.0) {}
+            else if (t0 < 0.0) { t0 = GetTime(); tick0 = SimTick(); draws0 = gHeadlessSkippedDraws; pos0 = local; }
+            else if (GetTime() - t0 > 8.0) {
+                const double secs = GetTime() - t0, simSecs = (double)(SimTick() - tick0) / kSimHz;
+                const long long skipped = gHeadlessSkippedDraws - draws0;
+                const float moved = (float)(local - pos0).length();
+                const bool ok = gHeadless && simSecs > 0.8 * secs && skipped > 0 && survival.deaths == 0 && !survival.dead && moved < 2.0f;
+                printf("bench: headless: %.1f s of sim in %.1f s, %lld scene draws skipped, grounded %d, moved %.2f m, %d animals, deaths %d -> %s\n",
+                       simSecs, secs, skipped, (int)player.grounded, moved, Animals_Count(), survival.deaths, ok ? "PASS" : "FAIL");
+                benchHeadless = false;
             }
         }
         // --test-trapping (#176): a snare set down from the hand at the ground ahead; aged 2 h of world time it holds a
@@ -7147,9 +7181,9 @@ int main(int argc, char** argv)
             } else if (gameState == 1) {
                 { const double d0 = GetTime(); world.drawScene(gameState); if (benchMeasuring) benchDrawMs += (GetTime() - d0) * 1000.0; }
                 player.recordFly(world); // after the fly camera's input (in drawScene): the pose to carry next frame
-                if (!noHud)                 Viewmodel_Draw(world);   // the hands, over the world
+                if (!noHud && !gHeadless) Viewmodel_Draw(world);   // the hands, over the world
                 if (Recorder_WantsFrame(false)) { rlDrawRenderBatchActive(); Recorder_Capture(); } // --record-hud 0: before the UI
-                if (!noHud) { // --no-hud: clean shots (the menu slides, #386)
+                if (!noHud && !gHeadless) { // --no-hud: clean shots (the menu slides, #386); --headless: nothing (#311)
                 world.drawUI(gameState);
                 Telescope_DrawHUD(world);
                 BuildTool_DrawHUD();
@@ -7214,7 +7248,7 @@ int main(int argc, char** argv)
                 if (!justPaused) pendingMenu = m; // the Esc that opened it is not also a "resume"
             }
             justPaused = false;
-            if (gameState != 0) {
+            if (gameState != 0 && !gHeadless) {
                 GpuTimer_Mark("hud");
                 rlImGuiBegin();
                 DebugUI_Draw(world);

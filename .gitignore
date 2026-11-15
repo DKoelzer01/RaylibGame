@@ -22,3 +22,4 @@ settings.txt
 .claude/settings.local.json
 .claude/worktrees/
 captures/
+deps/

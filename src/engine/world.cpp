@@ -1271,8 +1271,14 @@ void worldUpdate(Scene& world, float uploadBudgetMs) {
     TerrainGpu_SetBackground(kBackgroundPriority, !gPreloadUrgent); // preload-ring blocks: gently, except during the spawn preload
     TerrainGpu_Pump(); // GPU density blocks (Plan 6 step 4): finished batches back to the workers, the next batch out
     GpuTimer_CpuMark("w-gpu-pump");
-    // Ring rocks near the camera become voxel bodies (and back) before this frame's LOD selection.
-    for (auto& ring : Rings()) ring->update(world, world.renderOrigin + world.camera.position);
+    // Ring rocks near the camera and near every interest centre (every player, #318) become voxel bodies (and back)
+    // before this frame's LOD selection.
+    if (!Rings().empty()) {
+        std::vector<DVec3> foci{ world.renderOrigin + world.camera.position };
+        for (const InterestCentre& c : gInterestCentres)
+            if (const Planetoid* b = Planetoid::find(c.body)) foci.push_back(b->toWorldD(DVec3(c.local)));
+        for (auto& ring : Rings()) ring->update(world, foci);
+    }
 
     {
         std::lock_guard<std::mutex> lock(resultsMutex);

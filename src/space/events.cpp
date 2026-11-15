@@ -1,6 +1,7 @@
 #include "events.h"
 #include "audio.h"
 #include "buildtool.h"
+#include "gamerng.h"
 #include "gameui.h"
 #include "particles.h"
 #include "player.h"
@@ -35,7 +36,7 @@ namespace {
     std::vector<Glow> glows;
 
     uint32_t Hash(uint64_t x) { x ^= x >> 33; x *= 0xff51afd7ed558ccdull; x ^= x >> 33; x *= 0xc4ceb9fe1a85ec53ull; x ^= x >> 33; return (uint32_t)x; }
-    float Rand() { return (float)GetRandomValue(0, 1000000) / 1000000.0f; }
+    float Rand() { return (float)GetRandomValue(0, 1000000) / 1000000.0f; } // cosmetic only (streaks); impacts roll GameRng (#316)
 
     bool DarkAt(Scene& world, const Planetoid& body, Vector3 local) {
         return Vector3DotProduct(Vector3Normalize(world.sunDirection), body.dirToWorld(Vector3Normalize(local))) < -0.1f;
@@ -64,7 +65,7 @@ namespace {
         if (!body.plots) body.plots = std::make_unique<PlotSet>();
         Plot* plot = body.plots->plotFor(bottom, 0.0f, true);
         if (plot) {
-            const Part m{ PartType::Meteorite, plot->cellAt(plot->toPlot(bottom)), (uint8_t)GetRandomValue(0, 23), 0 };
+            const Part m{ PartType::Meteorite, plot->cellAt(plot->toPlot(bottom)), (uint8_t)GameRng_Int(0, 23), 0 };
             if (plot->place(m) >= 0) BuildTool_LayFoundation(body, *plot, m);
         }
         if (body.trees) body.trees->addClearing(ground, 6.0f);
@@ -115,7 +116,10 @@ void Events_Update(Scene& world, float dt) {
         const double f = (now - showerStart) / kShowerLength;
         if ((impactsDone == 0 && f > 0.33) || (impactsDone == 1 && f > 0.72)) {
             ++impactsDone;
-            for (int tries = 0; tries < 6; ++tries) if (Impact(world, *body, 80.0f + 100.0f * Rand(), Rand() * 2.0f * PI)) break;
+            for (int tries = 0; tries < 6; ++tries) { // where it lands changes the world: the authority rolls it (#316)
+                const float dist = 80.0f + 100.0f * GameRng_Unit(), bearing = GameRng_Unit() * 2.0f * PI;
+                if (Impact(world, *body, dist, bearing)) break;
+            }
         }
         if ((nextStreak -= dt) <= 0.0f) { // a streak high over the player, crossing the sky
             nextStreak = 0.12f + 0.35f * Rand();
