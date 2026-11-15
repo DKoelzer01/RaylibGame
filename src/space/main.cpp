@@ -5901,12 +5901,17 @@ int main(int argc, char** argv)
                 if (perfLog) {
                     // --perf-log (#204): every 5 s, the per-pass averages to log.txt, tagged by how the player moved (average
                     // speed, and mouse-look turning) so "standing" and "moving" can be compared from a real session.
-                    static double perfT0 = GetTime(), perfSpeed = 0.0, perfLook = 0.0; static long perfN = 0;
-                    perfSpeed += Vector3Length(Vector3Subtract(player.velocity, !player.grounded && player.nearest ? player.nearest->surfaceVelocity((player.position - world.renderOrigin).toFloat()) : Vector3{ 0, 0, 0 })); /* against the ground: airborne velocity is world-frame and includes the planet's spin (grounded it is surface-relative already) */ perfLook += Vector2Length(GetMouseDelta()); ++perfN;
+                    static double perfT0 = GetTime(), perfSpeed = 0.0, perfLook = 0.0; static long perfN = 0, perfLoading = 0;
+                    // On the loading screen the player is held (no nearest body yet: the velocity is the planet's spin, which
+                    // read as "MOVING 89 m/s", #387): those frames count as loading, not movement.
+                    if (loading) ++perfLoading;
+                    else perfSpeed +=Vector3Length(Vector3Subtract(player.velocity, !player.grounded && player.nearest ? player.nearest->surfaceVelocity((player.position - world.renderOrigin).toFloat()) : Vector3{ 0, 0, 0 })); /* against the ground: airborne velocity is world-frame and includes the planet's spin (grounded it is surface-relative already) */ perfLook += Vector2Length(GetMouseDelta()); ++perfN;
                     if (GetTime() - perfT0 >= 5.0) {
-                        const double sp = perfSpeed / std::max(1L, perfN), lk = perfLook / std::max(1L, perfN);
-                        GpuTimer_LogAndReset(TextFormat("%s (speed %.1f m/s, look %.1f px/frame, %d FPS)", sp > 0.5 || lk > 0.5 ? "MOVING" : "still", sp, lk, GetFPS()));
-                        perfT0 = GetTime(); perfSpeed = perfLook = 0.0; perfN = 0;
+                        const long played = std::max(1L, perfN - perfLoading);
+                        const double sp = perfSpeed / played, lk = perfLook / std::max(1L, perfN);
+                        const char* tag = perfLoading * 2 > perfN ? "LOADING" : sp > 0.5 || lk > 0.5 ? "MOVING" : "still";
+                        GpuTimer_LogAndReset(TextFormat("%s (speed %.1f m/s, look %.1f px/frame, %d FPS)", tag, sp, lk, GetFPS()));
+                        perfT0 = GetTime(); perfSpeed = perfLook = 0.0; perfN = 0; perfLoading = 0;
                     }
                 }
             } else if (gameState == 2) {
