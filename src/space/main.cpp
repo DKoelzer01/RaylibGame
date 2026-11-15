@@ -2009,7 +2009,10 @@ int main(int argc, char** argv)
                     } else if (factPhase == 5) {
                         Planetoid* p2 = dynamic_cast<Planetoid*>(world.objects[0].get());
                         const MachineView chest = Factory::View(p2->id, factPlot, factSeeds[0][2] + 1);
-                        if (GetTime() - factStart > 2.0) {
+                        // Wait for the reloaded layout to reach the factory (10,000 machines: no fixed time; #495), then 1 s more.
+                        static double validAt = -1.0;
+                        if (chest.valid && validAt < 0.0) { validAt = GetTime(); printf("bench: factory: the chest is back in the factory %.2f s after the reload\n", validAt - factStart); }
+                        if ((validAt >= 0.0 && GetTime() - validAt > 1.0) || GetTime() - factStart > 30.0) {
                             printf("bench: factory: first chest before save %s, after reload %s -> %s\n", factChestBefore.c_str(), chest.input.c_str(),
                                    chest.valid && chest.input != "-" && !chest.input.empty() ? "PASS" : "FAIL");
                             // Then remove that chest: what it held must come back to the inventory.
