@@ -78,7 +78,7 @@ using SnapshotPtr = std::shared_ptr<const Snapshot>;
 // The latest published snapshot (never null; empty before the first publish).
 SnapshotPtr Current();
 // The simulation publishes a new snapshot with the body-local boxes whose water changed (the chunks there redraw).
-struct Dirty { uint64_t body; Vector3 lo, hi; };
+struct Dirty { uint64_t body; Vector3 lo, hi; int mag = 255; }; // mag: the largest fill change in it (255: new, solidity, kind)
 void Publish(SnapshotPtr snap, std::vector<Dirty>&& dirty);
 void Clear();                         // a new world / a load
 void TakeDirty(std::vector<Dirty>& out); // main thread: boxes since the last call

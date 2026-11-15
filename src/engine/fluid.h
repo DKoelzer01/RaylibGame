@@ -99,12 +99,14 @@ namespace Fluid {
     void Load(FILE* f, uint64_t bodyId);
 
     struct Stats {
-        int sites = 0, bricks = 0, activeBricks = 0, basinBricks = 0; // basinBricks: holding a pond's (finite) water
+        int sites = 0, bricks = 0, activeBricks = 0, basinBricks = 0, settled = 0; // basinBricks: holding a pond's (finite) water
         double wetCells = 0.0, volume = 0.0;  // cells with water, m^3 (non-source)
         double otherVolume = 0.0;             // m^3 of other fluids (oil, ...)
         double stepMs = 0.0, maxStepMs = 0.0, meshMs = 0.0;
         long long steps = 0;
         long long dbg[4] = {};     // tests: cell changes in the last tick by kind (down, side, source refill, levelling)
+        long long dbgTotal[4] = {}; // the same since the start
+        long long wakes[2] = {};    // settled bricks woken: by the GPU step (drift), by a CPU change (Touch: levelling, commands)
     };
     Stats GetStats();
     void WaitIdle();            // tests: until no step job is running

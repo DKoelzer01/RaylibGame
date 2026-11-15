@@ -1025,7 +1025,7 @@ void advanceBodies(Scene& world, float dt) {
 // terrain density they kept (ChunkWaterCache). A node without that cache gets one full rebuild instead.
 // ---------------------------------------------------------------------------------------------
 
-static void MarkWaterDirty(Planetoid& p, Vector3 lo, Vector3 hi) {
+static void MarkWaterDirty(Planetoid& p, Vector3 lo, Vector3 hi, int mag, double now) {
     for (int level = 0; level <= p.rootLevel; ++level) {
         const float s = kVoxelSize * (float)(CHUNK_SIZE << level);
         // Nodes whose samples ([origin, origin + (CHUNK_SIZE + 1) * stride]) reach the box: exactly what the chunk's
@@ -1040,7 +1040,10 @@ static void MarkWaterDirty(Planetoid& p, Vector3 lo, Vector3 hi) {
             for (int y = y0; y <= y1; ++y)
                 for (int x = x0; x <= x1; ++x) {
                     auto it = p.nodes.find(NodeKey{ level, x, y, z });
-                    if (it != p.nodes.end()) it->second->waterDirty = true;
+                    if (it == p.nodes.end()) continue;
+                    Chunk& c = *it->second;
+                    if (!c.waterDirty) { c.waterDirty = true; c.waterDirtySince = now; c.waterMag = 0; }
+                    c.waterMag = std::max(c.waterMag, mag);
                 }
     }
 }
@@ -1049,6 +1052,7 @@ static void MarkWaterDirty(Planetoid& p, Vector3 lo, Vector3 hi) {
 static void RequestWater(Planetoid& p, Chunk& c, float priority) {
     c.waterBusy = true;
     c.waterDirty = false;
+    c.waterMag = 0;
     std::shared_ptr<const DensityField> field = p.field;
     std::shared_ptr<const ChunkWaterCache> cache = c.waterCache;
     const uint64_t id = p.id;
@@ -1068,13 +1072,13 @@ static void RequestWater(Planetoid& p, Chunk& c, float priority) {
 }
 
 static void UpdateWater(Scene& world) {
+    const double now = GetTime();
     std::vector<WaterField::Dirty> dirty;
     WaterField::TakeDirty(dirty);
     for (const WaterField::Dirty& d : dirty)
-        if (Planetoid* p = Planetoid::find(d.body)) MarkWaterDirty(*p, d.lo, d.hi);
+        if (Planetoid* p = Planetoid::find(d.body)) MarkWaterDirty(*p, d.lo, d.hi, d.mag, now);
     std::vector<ChunkMeshData> done;
     { std::lock_guard<std::mutex> lock(resultsMutex); done.swap(waterResults); }
-    const double now = GetTime();
     for (ChunkMeshData& r : done) {
         Planetoid* p = Planetoid::find(r.planetoidId);
         if (!p) continue;
@@ -1084,7 +1088,7 @@ static void UpdateWater(Scene& world) {
         c.waterBusy = false;
         c.waterBuiltAt = now;
         // Cut by terrain the chunk no longer has (a full build after an edit landed meanwhile): drawn again (#382 review).
-        if (r.waterCache != c.waterCache) { c.waterDirty = true; continue; }
+        if (r.waterCache != c.waterCache) { c.waterDirty = true; c.waterMag = 255; c.waterDirtySince = now; continue; }
         if (r.waterSeq >= c.waterSeq) c.uploadWater(r);
     }
     // Water caches only for nodes on screen (#382 review: ring and cached nodes kept ~160 KB each, past 128 MB): a node
@@ -1107,11 +1111,18 @@ static void UpdateWater(Scene& world) {
         for (Chunk* c : p->drawList) {
             c->waterDrawnAt = now;
             if (!c->waterDirty || c->waterBusy || !c->ready || budget <= 0 || gWaterInFlight.load() >= maxInFlight) continue;
-            const double every = c->key.level == 0 ? 0.1 : c->key.level <= 2 ? 0.2 : c->key.level <= 4 ? 0.5 : 1.0;
-            if (now - c->waterBuiltAt < every) continue;
-            --budget;
             const Vector3 lo = c->key.origin();
-            const float priority = DistanceToBox(cam, lo, Vector3AddValue(lo, c->key.size())) / (1.0f + c->key.level);
+            const float dist = DistanceToBox(cam, lo, Vector3AddValue(lo, c->key.size()));
+            // Redraw rate by level and by distance (#381): 10 a second within 10 m, down to once a second from 100 m.
+            const double byLevel = c->key.level == 0 ? 0.1 : c->key.level <= 2 ? 0.2 : c->key.level <= 4 ? 0.5 : 1.0;
+            const double every = std::max(byLevel, std::clamp((double)dist / 100.0, 0.1, 1.0));
+            if (now - c->waterBuiltAt < every) continue;
+            // Coarser nodes wait for a change they can show (their samples are 0.5-8 m apart: a 2.5 cm step is invisible
+            // there), or 3 s (#381).
+            static const int kShowMag[5] = { 0, 8, 13, 26, 51 };
+            if (c->waterMag < kShowMag[std::min(c->key.level, 4)] && now - c->waterDirtySince < 3.0) continue;
+            --budget;
+            const float priority = dist / (1.0f + c->key.level);
             if (c->waterCache) { RequestWater(*p, *c, priority); continue; }
             c->waterDirty = false; c->waterBuiltAt = now;
             // No cache: a full build keeps one - unless no simulated water reaches the node (then nothing to redraw).

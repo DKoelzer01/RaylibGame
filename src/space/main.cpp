@@ -3749,8 +3749,8 @@ int main(int argc, char** argv)
                         if (t - lastPrint >= 5.0) {
                             lastPrint = t;
                             const Fluid::Stats s = Fluid::GetStats();
-                            printf("bench: pond t=%3.0f s: %d bricks (%d awake), %.0f wet cells, %.1f m^3, %d bricks of pond water; middle %s, pit %s\n", t, s.bricks, s.activeBricks, s.wetCells, s.volume, s.basinBricks,
-                                   Fluid::Wet(*p, pondMid) ? "wet" : "dry", Fluid::Wet(*p, pondPit) ? "wet" : "dry");
+                            printf("bench: pond t=%3.0f s: %d bricks (%d awake), %.0f wet cells, %.1f m^3, %d bricks of pond water; middle %s, pit %s; %d settled, woken gpu %lld cpu %lld; changes (total) d%lld s%lld r%lld l%lld\n", t, s.bricks, s.activeBricks, s.wetCells, s.volume, s.basinBricks,
+                                   Fluid::Wet(*p, pondMid) ? "wet" : "dry", Fluid::Wet(*p, pondPit) ? "wet" : "dry", s.settled, s.wakes[0], s.wakes[1], s.dbgTotal[0], s.dbgTotal[1], s.dbgTotal[2], s.dbgTotal[3]);
                         }
                         if (t > 8.0 && t < 8.1) TakeScreenshot("bench_pond.png");
                         if ((t > 15.0 && Fluid::Asleep()) || t > 150.0) {

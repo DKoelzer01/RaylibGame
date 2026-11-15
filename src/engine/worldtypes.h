@@ -50,6 +50,8 @@ public:
     bool waterDirty = false, waterBusy = false;
     double waterBuiltAt = -1e9;
     double waterDrawnAt = 0.0; // last frame it was in the draw list: undrawn nodes drop their water cache (memory)
+    int waterMag = 0;          // the largest fill change marked since its last redraw (coarse levels wait for a bigger one)
+    double waterDirtySince = 0.0;
     void uploadWater(const ChunkMeshData& data);
     bool hasMesh() const { return mesh.vaoId > 0 || arena.valid(); }
     Vector3 clipLocal() const { const Vector3 o = key.origin(); return { clipMax.x - o.x, clipMax.y - o.y, clipMax.z - o.z }; } // 1e30 stays "no clip"

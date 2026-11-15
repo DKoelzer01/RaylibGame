@@ -44,6 +44,8 @@ constexpr int kEvaporate = 3;          // resting specks this thin (~1 cm) dry u
 constexpr int kSubsteps = 3;           // CPU simulation steps per 50 ms (water moves a cell a step)
 constexpr double kTickSeconds = 0.025; // a tick (a job + meshes) every 25 ms: water moved in 1-3 cell jumps every 50-100 ms, hard to follow (#366)
 constexpr int kSleepSteps = 120;       // 2 s without change: a brick sleeps
+constexpr int kSettleSteps = 180;      // 3 s window: a brick whose cells all moved less than kSettleDiff in it sleeps (#366)
+constexpr int kSettleDiff = 4;         // fill units (1.6 cm)
 constexpr int kLevelEvery = 15;        // levelling pass every 0.25 s
 constexpr int kInitPerStep = 24;       // bricks classified per step, in parallel on the worker pool (each a few ms)
 constexpr int kMaxBricks = 4096;       // per site
@@ -62,6 +64,8 @@ struct Brick {
     bool active = true;
     int idle = 0;
     bool changed = true;            // since the last publish
+    std::array<uint8_t, B3> check{}; long long checkStep = -1; // the cells a settle window ago (#366: resting water sleeps)
+    bool settled = false;           // put to sleep resting (#366): small changes (the GPU step at its edge) do not wake it
     std::array<uint8_t, B3> drawn{}, drawnFlags{}; // the cells as the chunks last redrew them (visible changes only)
     bool drawnSet = false;
     int slot = -1;                  // GPU mode: its place in the GPU brick pool (-1: none yet)
@@ -125,6 +129,7 @@ std::vector<std::unique_ptr<Site>> sites;
 std::unordered_map<uint64_t, BodyRef> refs;     // snapshot handed to the job
 long long stepCount = 0;
 Fluid::Stats stats;
+long long settledTotal = 0;     // bricks put to sleep resting (#366), since the start
 long long dbgDown = 0, dbgSide = 0, dbgSrc = 0, dbgLevel = 0; // tests: changes by kind (since the last publish)
 
 // Main thread <-> job.
@@ -224,7 +229,8 @@ inline bool Next(Brick* b, int x, int y, int z, int dx, int dy, int dz, Neighbou
     return true;
 }
 
-void Touch(Brick* b) { b->active = true; b->idle = 0; b->changed = true; }
+long long wakeGpu = 0, wakeTouch = 0; // settled bricks woken (stats)
+void Touch(Brick* b) { if (b->settled) ++wakeTouch; b->active = true; b->idle = 0; b->changed = true; b->settled = false; }
 
 // GPU mode (fluid on compute shaders): CPU-side changes to the mirror (buckets, pumps, springs, levelling) go
 // to the GPU as deltas next tick; bricks waiting for a full upload take theirs from the mirror instead.
@@ -438,7 +444,7 @@ void LevelSite(Site& s) {
                 const int di = (int)lroundf(d);
                 const int nf = std::clamp((int)now + di, 0, 255);
                 carry = d - (float)(nf - (int)now);
-                if (nf != c.b->fill[c.i]) { if (nf > 0) TakeKind(c.b, c.i, kind0); GpuDelta(c.b, c.i, nf - (int)c.b->fill[c.i]); c.b->fill[c.i] = (uint8_t)nf; Touch(c.b); ++dbgLevel; }
+                if (nf != c.b->fill[c.i]) { if (nf > 0) TakeKind(c.b, c.i, kind0); GpuDelta(c.b, c.i, nf - (int)c.b->fill[c.i]); c.b->fill[c.i] = (uint8_t)nf; if (c.b->settled && abs(nf - (int)c.b->check[c.i]) <= 2 * kSettleDiff) c.b->changed = true; else Touch(c.b); ++dbgLevel; } // a resting brick: small levelling nudges do not wake it (#366)
             }
         }
     }
@@ -663,6 +669,19 @@ void RunJob() {
                     if (k) st.otherVolume += b.fill[i] / 255.0;
                     else st.volume += b.fill[i] / 255.0;
                 }
+            // Resting water sleeps (#366): an awake brick whose cells all stayed within kSettleDiff of where they were
+            // kSettleSteps ago is put to sleep, though films still trickle back and forth in it (a drained pond kept
+            // 30-50 bricks awake for minutes, and their changes kept the chunks redrawing, #381). Water moving into it
+            // wakes it again (Touch); a real flow changes some cell by more than that within the window.
+            if (b.active) {
+                if (b.checkStep < 0) { b.check = b.fill; b.checkStep = stepCount; }
+                else if (stepCount - b.checkStep >= kSettleSteps) {
+                    int maxd = 0;
+                    for (int i = 0; i < B3 && maxd <= kSettleDiff; ++i) maxd = std::max(maxd, abs((int)b.fill[i] - (int)b.check[i]));
+                    if (maxd <= kSettleDiff) { b.active = false; b.idle = kSleepSteps + 1; b.settled = true; ++settledTotal; }
+                    b.check = b.fill; b.checkStep = stepCount;
+                }
+            } else b.checkStep = -1;
             if (!b.changed) continue;
             b.changed = false;
             if (!snap) {
@@ -686,21 +705,26 @@ void RunJob() {
             // visible change redraws the chunks, and only around the cells that changed: some cell 2.5 cm+ off what
             // they last drew, or its solidity or fluid kind (a body easing by a 255th at a time kept ~2000 chunk
             // redraws a second going, #360). Those cells are drawn anew; the rest keep what was drawn.
-            int c0[3] = { B, B, B }, c1[3] = { -1, -1, -1 };
+            // Per 8^3 octant of the brick (#381: one box over scattered changes marked a whole brick's chunks).
+            int c0[8][3], c1[8][3], mag[8] = {}; // mag: the largest change in each (coarse chunks wait for a bigger one, world.cpp)
+            for (int o = 0; o < 8; ++o) { c0[o][0] = c0[o][1] = c0[o][2] = B; c1[o][0] = c1[o][1] = c1[o][2] = -1; }
             for (int i = 0; i < B3; ++i) {
                 const bool v = !b.drawnSet || abs((int)b.fill[i] - (int)b.drawn[i]) >= 6 || ((b.flags[i] ^ b.drawnFlags[i]) & kSolid) ||
                                (b.fill[i] && ((b.flags[i] ^ b.drawnFlags[i]) & kKindMask));
                 if (!v) continue;
                 const int x = i % B, y = (i / B) % B, z = i / (B * B);
-                c0[0] = std::min(c0[0], x); c0[1] = std::min(c0[1], y); c0[2] = std::min(c0[2], z);
-                c1[0] = std::max(c1[0], x); c1[1] = std::max(c1[1], y); c1[2] = std::max(c1[2], z);
+                const int o = (x >> 3) | ((y >> 3) << 1) | ((z >> 3) << 2);
+                mag[o] = std::max(mag[o], (!b.drawnSet || ((b.flags[i] ^ b.drawnFlags[i]) & (kSolid | kKindMask))) ? 255 : abs((int)b.fill[i] - (int)b.drawn[i]));
+                c0[o][0] = std::min(c0[o][0], x); c0[o][1] = std::min(c0[o][1], y); c0[o][2] = std::min(c0[o][2], z);
+                c1[o][0] = std::max(c1[o][0], x); c1[o][1] = std::max(c1[o][1], y); c1[o][2] = std::max(c1[o][2], z);
                 b.drawn[i] = b.fill[i]; b.drawnFlags[i] = b.flags[i];
             }
             b.drawnSet = true;
-            if (c1[0] >= 0) {
+            for (int o = 0; o < 8; ++o) {
+                if (c1[o][0] < 0) continue;
                 Vector3 dlo, dhi;
-                ps.cellBounds(b.bi * B + c0[0] - 1, b.bj * B + c0[1] - 1, b.bk * B + c0[2] - 1, b.bi * B + c1[0] + 2, b.bj * B + c1[1] + 2, b.bk * B + c1[2] + 2, dlo, dhi);
-                dirty.push_back({ s->body, dlo, dhi });
+                ps.cellBounds(b.bi * B + c0[o][0] - 1, b.bj * B + c0[o][1] - 1, b.bk * B + c0[o][2] - 1, b.bi * B + c1[o][0] + 2, b.bj * B + c1[o][1] + 2, b.bk * B + c1[o][2] + 2, dlo, dhi);
+                dirty.push_back({ s->body, dlo, dhi, mag[o] });
             }
         }
     }
@@ -713,7 +737,11 @@ void RunJob() {
         st.maxStepMs = std::max(pubStats.maxStepMs, stepMs);
         st.meshMs = std::chrono::duration<double, std::milli>(t2 - t1).count();
         st.steps = stepCount;
+        static long long tot[4] = {}; tot[0] += dbgDown; tot[1] += dbgSide; tot[2] += dbgSrc; tot[3] += dbgLevel;
+        for (int k = 0; k < 4; ++k) st.dbgTotal[k] = tot[k];
+        st.wakes[0] = wakeGpu; st.wakes[1] = wakeTouch;
         st.dbg[0] = dbgDown; st.dbg[1] = dbgSide; st.dbg[2] = dbgSrc; st.dbg[3] = dbgLevel; dbgDown = dbgSide = dbgSrc = dbgLevel = 0;
+        st.settled = (int)settledTotal;
         pubStats = st;
     }
 }
@@ -799,10 +827,14 @@ void GpuTick(int n) {
             // that became solid (PR #129 review).
             if ((fl & 1u) && br->ready && !br->upload) {
                 G.a.download(cells.data(), kCellsPerBrick * 4, slot * kCellsPerBrick * 4);
+                int drift = 0; // how far a settled brick's cells moved from where it settled
                 for (int i = 0; i < B3; ++i) {
                     br->fill[i] = (uint8_t)(cells[i] & 255u);
                     br->flags[i] = (uint8_t)((br->flags[i] & ~kKindMask) | (((cells[i] >> 8) & 255u) & kKindMask));
+                    if (br->settled) drift = std::max(drift, abs((int)br->fill[i] - (int)br->check[i]));
                 }
+                if (br->settled && drift <= kSettleDiff) { br->changed = true; continue; } // a resting brick at the edge of a dispatch: stays asleep (#366)
+                if (br->settled) { ++wakeGpu; br->settled = false; }
                 Touch(br);
                 for (Brick* o : br->nbr) if (o) { o->active = true; o->idle = 0; }
             } else if (br->active && (br->idle += G.lastN) > kSleepSteps) {
@@ -861,7 +893,7 @@ void GpuTick(int n) {
             G.delta.setUint("count", (unsigned)list.size());
             G.a.bind(0); G.deltas.bind(1); G.flags.bind(2);
             G.delta.dispatch(((unsigned)list.size() + 63) / 64);
-            for (const D& dd : list) if (Brick* br = G.owner[dd.cell / kCellsPerBrick]) { br->active = true; br->idle = 0; }
+            for (const D& dd : list) if (Brick* br = G.owner[dd.cell / kCellsPerBrick]) { if (!br->settled) { br->active = true; br->idle = 0; } } // a settled brick took a CPU nudge (levelling) asleep
         }
     }
     // 4. The bricks to run: the awake ones and their neighbours (flux only between bricks both in the set).
