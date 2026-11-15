@@ -46,7 +46,7 @@ namespace {
     void Toast(const std::string& msg);
     int HitsToFell(const Plant& p) {
         if (!p.tree()) return 1;
-        return std::max(1, (int)lroundf((4.0f + 6.0f * p.chopSize()) * ChopFactor(tool))); // follows the trunk (#274): a sapling ~5, a medium tree 10-15, a giant ~55 (bare hands x2)
+        return std::max(1, (int)lroundf((4.0f + 9.0f * p.trunkVolume()) * ChopFactor(tool))); // the trunk's volume (#274, user 2026-11-15): a giant oak ~190 stone-axe hits (~1 min), a medium tree 10-25, a sapling ~5; better axes proportionally faster
     }
 
     ToolSpec HeldTool() {

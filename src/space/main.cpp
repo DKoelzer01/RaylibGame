@@ -6739,7 +6739,7 @@ int main(int argc, char** argv)
                     const float v = tree.chopSize();
                     printf("bench: giant: class %d (%s) %.0f m away: trunk %.1f m x r %.2f m, chop size x%.2f -> %d stone-axe hits, %d logs\n", cls,
                            WoodSpeciesInfo(SpeciesOfVariant(tree.variant)).name, Vector3Distance(me, tree.base), tree.height, tree.radius, v,
-                           (int)lroundf(4.0f + 6.0f * v), std::clamp((int)lroundf(3.0f * v), 1, 48));
+                           (int)lroundf(4.0f + 9.0f * tree.trunkVolume()), std::clamp((int)lroundf(3.0f * v), 1, 48));
                     player.flyMode = true;
                 }
             }
