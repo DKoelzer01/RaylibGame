@@ -1812,9 +1812,15 @@ static void MeshChunkWater(const DensityField& field, ChunkMeshData& out, const 
                     if (simKind && sim.covered(bp)) {
                         // Moving fluid: the surface's own normal (falls, steps), the fluid under it for the tint.
                         const float h = 0.5f;
-                        const Vector3 grad = { trilinear(wd.data(), { g.x + h, g.y, g.z }) - trilinear(wd.data(), { g.x - h, g.y, g.z }),
-                                               trilinear(wd.data(), { g.x, g.y + h, g.z }) - trilinear(wd.data(), { g.x, g.y - h, g.z }),
-                                               trilinear(wd.data(), { g.x, g.y, g.z + h }) - trilinear(wd.data(), { g.x, g.y, g.z - h }) };
+                        // Central differences kept inside the sample grid, divided by the step actually taken: at a chunk's
+                        // lower faces the lookup clamped to the edge and halved that axis's difference, which tilted the
+                        // normal of a surface not aligned with the axes - a shading line along chunk borders.
+                        const float lo = 0.0f, hiG = (float)(S - 1);
+                        auto d = [&](float c) { return std::pair<float, float>{ std::max(lo, c - h), std::min(hiG, c + h) }; };
+                        const auto [x0, x1] = d(g.x); const auto [y0, y1] = d(g.y); const auto [z0, z1] = d(g.z);
+                        const Vector3 grad = { (trilinear(wd.data(), { x1, g.y, g.z }) - trilinear(wd.data(), { x0, g.y, g.z })) / std::max(1e-3f, x1 - x0),
+                                               (trilinear(wd.data(), { g.x, y1, g.z }) - trilinear(wd.data(), { g.x, y0, g.z })) / std::max(1e-3f, y1 - y0),
+                                               (trilinear(wd.data(), { g.x, g.y, z1 }) - trilinear(wd.data(), { g.x, g.y, z0 })) / std::max(1e-3f, z1 - z0) };
                         const float gl = Vector3Length(grad);
                         if (gl > 1e-6f) n = Vector3Scale(grad, -1.0f / gl);
                         depth = std::max(0.3f, sim.depthBelow(bp, kind));
