@@ -12,6 +12,7 @@
 #include "world.h"
 #include "playerinput.h"
 #include "playersession.h"
+#include "netid.h"
 #include "scene.h"
 #include "object.h"
 #include "utils/logger.h"
@@ -336,6 +337,7 @@ int main(int argc, char** argv)
     bool benchTor = false; int torPhase = 0, torHeading = 0, torFlicker = 0, torPops = 0; double torStart = 0.0, torAirAt = -1.0, torMaxStep = 0.0; float torMaxUp = 0.0f; Vector3 torDir{}; DVec3 torLast{}; bool torWasGrounded = true; // --test-tor (#242)
     bool benchMachines = false; int machPhase = 0; double machStart = 0.0; // --test-machines (#193 #194 #229)
     bool benchHover = false; int hoverPhase = 0; double hoverStart = 0.0; // --test-hover (#163)
+    bool benchNetIds = false;      // --test-netids: stable network ids over a save and load (#317)
     bool benchFall = false; int fallPhase = 0, fallIdx = 0; bool fallOk = true; double fallStart = 0.0; // --test-fall (#263)
     bool benchTeleClose = false; int teleCPhase = 0; double teleCStart = 0.0, teleCWorst = 0.0; long long teleCReq0 = 0; // --test-telescope-close (#261)
     DVec3 wallLast{};
@@ -474,6 +476,7 @@ int main(int argc, char** argv)
         if (std::string(argv[i]) == "--test-tor") benchTor = true; // walk across a low (beach) tor crown, logging collision pops (#242)
         if (std::string(argv[i]) == "--test-machines") benchMachines = true; // fuel slot, crafts consumed at the end, the boiler's water and heat
         if (std::string(argv[i]) == "--test-hover") benchHover = true; // the flight pack (#163)
+        if (std::string(argv[i]) == "--test-netids") benchNetIds = true; // stable network ids (#317)
         if (std::string(argv[i]) == "--test-fall") benchFall = true; // drops from 3-100 m: fall damage by height
         if (std::string(argv[i]) == "--test-telescope-close") benchTeleClose = true; // zoom 16x at the horizon, close: worst frame after (#261)
         if (std::string(argv[i]) == "--test-menus") benchMenus = true;
@@ -1781,6 +1784,37 @@ int main(int argc, char** argv)
                                survival.health, height, drift, survival.power, pass ? "PASS" : "FAIL");
                         player.hovering = false; benchHover = false;
                     }
+                } else if (benchNetIds && WorldIdle()) {
+                    // --test-netids (#317): bodies carry their creation-order ids; animals get allocated ids that survive a save
+                    // and load unchanged; allocation after the load never reuses one; a body is found by its id again.
+                    benchNetIds = false;
+                    Planetoid* p = dynamic_cast<Planetoid*>(world.objects[0].get());
+                    int bodies = 0, bodyOk = 0;
+                    std::set<uint64_t> bodyIds;
+                    for (auto& obj : world.objects)
+                        if (auto* q = dynamic_cast<Planetoid*>(obj.get()); q && q->ringRock < 0 && !q->vehicle) {
+                            const bool ok = NetId_Kind(q->netId) == NetKind::Body && NetId_Value(q->netId) == (uint64_t)bodies && Planetoid::findNet(q->netId) == q;
+                            bodyOk += ok ? 1 : 0; ++bodies; bodyIds.insert(q->netId);
+                        }
+                    player.spawnOn(world, *p, StartSpawnDir(*p));
+                    const Vector3 me = p->toLocal((player.position - world.renderOrigin).toFloat());
+                    Animals_Spawn(world, *p, "woolback", me, 4);
+                    std::map<uint64_t, std::string> before; // id -> species/body (the order may change on a load)
+                    for (int i = 0; i < Animals_Count(); ++i) before[Animals_NetId(i)] = Animals_Body(i);
+                    const bool unique = (int)before.size() == Animals_Count() && !before.count(0);
+                    const bool saved = SaveWorld(world) && LoadWorldSave(world);
+                    std::map<uint64_t, std::string> after;
+                    for (int i = 0; i < Animals_Count(); ++i) after[Animals_NetId(i)] = Animals_Body(i);
+                    std::set<uint64_t> bodyIdsAfter;
+                    for (auto& obj : world.objects)
+                        if (auto* q = dynamic_cast<Planetoid*>(obj.get()); q && q->ringRock < 0 && !q->vehicle) bodyIdsAfter.insert(q->netId);
+                    const NetId fresh = NetId_Allocate(NetKind::Animal);
+                    const bool freshNew = !after.count(fresh) && NetId_Kind(fresh) == NetKind::Animal;
+                    const bool pass = bodies > 0 && bodyOk == bodies && bodyIds == bodyIdsAfter && unique && saved && Animals_Count() > 0 && before == after && freshNew;
+                    printf("bench: netids: %d bodies (%d with their creation-order id, same after the load: %s); %d animals, unique ids %s, "
+                           "kept over save/load %s; a new id after the load is fresh: %s -> %s\n",
+                           bodies, bodyOk, bodyIds == bodyIdsAfter ? "yes" : "no", Animals_Count(), unique ? "yes" : "no",
+                           before == after ? "yes" : "no", freshNew ? "yes" : "no", pass ? "PASS" : "FAIL");
                 } else if (benchFall && (fallPhase > 0 || WorldIdle())) {
                     // --test-fall (#263): drops onto flat ground near the start. Expected on Terra (g 5.9, safe 6 m/s, x8.5):
                     // 3 m none, 10 m ~41, 20 m ~79, 30 m and 100 m fatal.
@@ -5494,7 +5528,7 @@ int main(int argc, char** argv)
                         }
                         benchWalkSeconds = 0.0;
                     }
-                } else if ((WorldIdle() && benchDigStrokes == 0 && !benchPaint && !benchSaveLoad && benchWalkSeconds <= 0.0 && benchMineStrokes == 0 && minePhase != 2 && benchFlySeconds <= 0.0 && !benchSuffocate && benchOrbitSeconds <= 0.0 && !benchRide && !benchPark && !benchGravity && !benchPrecision && !benchMantle && !benchAirJump && !benchMoon && !benchHole && !benchWall && !benchDoorway && !benchLedge && !benchTor && !benchMachines && !benchFall && !benchHover && !benchTeleClose && !benchMenus && !benchWater && !benchFlyFollow && !benchHotbar && !benchInventory && !benchMap && !benchViewmodel && !benchQuests && !benchHunger && !benchFarm && !benchAnimals && !benchThreats && benchShotTabs == 0 && !benchForest && !benchFlow && !benchPond && !benchBucket && !benchPump && !benchTerrain && !benchShelter && !benchRoom && !benchFacing && !benchShadow && !benchParticles && !benchBiomes && !benchOil && !benchSpring && !benchShotAnimals && !benchShotMachines && benchShotBiomes < 0 && !benchFarForest && !benchRecipes && !benchWeather && !benchDecor && !benchMaterials && !benchDamage && !benchCrafting && !benchSuit && !benchTools && !benchRivers && !benchRing && !benchRocket && !benchStation && !benchBlueprint && !benchSmallBody && !benchTrees && !benchChop && benchPersist == 0 && benchBuild == 0 && benchFactory == 0 && !benchProgression) || GetTime() > 600.0) {
+                } else if ((WorldIdle() && benchDigStrokes == 0 && !benchPaint && !benchSaveLoad && benchWalkSeconds <= 0.0 && benchMineStrokes == 0 && minePhase != 2 && benchFlySeconds <= 0.0 && !benchSuffocate && benchOrbitSeconds <= 0.0 && !benchRide && !benchPark && !benchGravity && !benchPrecision && !benchMantle && !benchAirJump && !benchMoon && !benchHole && !benchWall && !benchDoorway && !benchLedge && !benchTor && !benchMachines && !benchFall && !benchHover && !benchNetIds && !benchTeleClose && !benchMenus && !benchWater && !benchFlyFollow && !benchHotbar && !benchInventory && !benchMap && !benchViewmodel && !benchQuests && !benchHunger && !benchFarm && !benchAnimals && !benchThreats && benchShotTabs == 0 && !benchForest && !benchFlow && !benchPond && !benchBucket && !benchPump && !benchTerrain && !benchShelter && !benchRoom && !benchFacing && !benchShadow && !benchParticles && !benchBiomes && !benchOil && !benchSpring && !benchShotAnimals && !benchShotMachines && benchShotBiomes < 0 && !benchFarForest && !benchRecipes && !benchWeather && !benchDecor && !benchMaterials && !benchDamage && !benchCrafting && !benchSuit && !benchTools && !benchRivers && !benchRing && !benchRocket && !benchStation && !benchBlueprint && !benchSmallBody && !benchTrees && !benchChop && benchPersist == 0 && benchBuild == 0 && benchFactory == 0 && !benchProgression) || GetTime() > 600.0) {
                     benchStart = GetTime();
                     printf("bench: world ready after %.2f s (%d chunks, avg build %.2f ms of which sampling %.2f ms, %d worker threads)\n",
                         GetWorldStats().lastGenerationSeconds, GetWorldStats().chunks, GetWorldStats().avgBuildMs, GetWorldStats().avgSampleMs, GetWorldStats().workerThreads);

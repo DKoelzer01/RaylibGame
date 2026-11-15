@@ -19,11 +19,12 @@
 #include "suit.h"
 #include "toolwear.h"
 #include "recipebook.h"
+#include "netid.h"
 
 #include <cstdint>
 
 struct PlayerSession {
-    uint32_t id = 0;                 // 0 = the local player (network ids: #317)
+    NetId netId = NetId_Make(NetKind::Player, 0); // 0 = the local player; a server issues ids (or SteamIDs) later (#317)
     Player player;
     Inventory inventory;
     SurvivalState survival;

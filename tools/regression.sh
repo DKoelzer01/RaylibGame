@@ -61,6 +61,7 @@ planet() {
     run --seed 9 --bench 3 --test-water
     run --seed 42 --bench 3 --test-flyfollow
     run --seed 42 --bench 3 --test-hotbar
+    run --seed 42 --bench 3 --test-netids # stable network ids over a save and load (#317)
     run --seed 9 --bench 20 --bench-fly 200
     run --seed 9 --bench 10 --bench-fly 200 --no-foliage
     run --seed 42 --bench 3 --test-smallbody

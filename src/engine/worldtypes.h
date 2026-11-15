@@ -60,6 +60,7 @@ private:
 class Planetoid : public Object {
 public:
     const uint64_t id;                                   // stable handle for async results
+    uint64_t netId = 0;                                  // stable across runs and machines (netid.h, #317); 0 until assigned
     unsigned int seed;
     BodyKind kind = BodyKind::Asteroid;
     float surfaceGravity = 9.81f;                        // m/s^2 at gravityRadius
@@ -138,6 +139,7 @@ public:
     Quaternion rotationQuat() const; // body orientation (local -> world), for riding along with spin
 
     static Planetoid* find(uint64_t id); // nullptr once destroyed
+    static Planetoid* findNet(uint64_t netId); // by NetId (#317); nullptr if no such body is loaded
 };
 
 #endif

@@ -1,4 +1,5 @@
 #include "rocket.h"
+#include "netid.h"
 #include "playerinput.h"
 // The input of the current Rocket_Update (#312): its flight step and camera read it.
 static const PlayerInput* gRocketIn = &PlayerInput::None();
@@ -257,6 +258,7 @@ namespace {
         float extent = 2.0f;
         for (const auto& kv : plotPtr->cells) extent = std::max(extent, Vector3Length(CellCentre(kv.first)) + 1.0f);
         auto veh = std::make_unique<Planetoid>("rocket", originW, std::make_shared<EmptyField>(extent), extent);
+        veh->netId = NetId_Allocate(NetKind::Vehicle); // stable, saved (#317)
         veh->parent = &world.rootObject;
         veh->plots = std::make_unique<PlotSet>();
         std::unique_ptr<Plot> plot = body->plots->release(plotPtr);
@@ -977,11 +979,17 @@ void Rocket_Save(FILE* f) {
     Planetoid* v = Vehicle();
     v->plots->save(f);
     Factory::Save(f, v->id); // its machines' contents
+    fprintf(f, "rocket_id %llu\n", (unsigned long long)v->netId); // its own line: older builds skip it (#317)
 }
 
 bool Rocket_LoadLine(const char* tok, FILE* f) {
     if (!gWorld) return false;
     Scene& world = *gWorld;
+    if (strcmp(tok, "rocket_id") == 0) { // #317
+        unsigned long long id = 0;
+        if (fscanf(f, " %llu", &id) == 1 && id != 0) { if (Planetoid* v = Vehicle()) v->netId = id; NetId_Note(id); }
+        return true;
+    }
     if (strcmp(tok, "rocket") != 0) return false;
     char kind[16] = {};
     if (fscanf(f, " %15s", kind) != 1) return true;
@@ -1003,6 +1011,7 @@ bool Rocket_LoadLine(const char* tok, FILE* f) {
     float extent = 2.0f;
     for (const auto& kv : p->cells) extent = std::max(extent, Vector3Length(CellCentre(kv.first)) + 1.0f);
     auto veh = std::make_unique<Planetoid>("rocket", com, std::make_shared<EmptyField>(extent), extent);
+    veh->netId = NetId_Allocate(NetKind::Vehicle); // a save from before #317; its "rocket_id" line replaces it
     veh->parent = &world.rootObject;
     veh->plots = std::move(plots);
     vehicleId = veh->id;

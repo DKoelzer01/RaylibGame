@@ -1,4 +1,5 @@
 #include "animals.h"
+#include "netid.h"
 #include "playerinput.h"
 #include "instancebatch.h"
 #include "audio.h"
@@ -109,6 +110,7 @@ enum class State : uint8_t { Graze, Walk, Flee, Follow, Rest, Hunt };
 
 struct Animal {
     int species = 0;
+    uint64_t netId = 0;          // stable, saved (netid.h, #317)
     std::string body;            // the body's name (saves); its pointer is looked up by id each frame
     Vector3 pos{};               // body-local, on the surface
     float heading = 0.0f;        // radians from east toward north, in the local tangent frame
@@ -358,6 +360,7 @@ int Animals_Spawn(Scene& world, Planetoid& body, const std::string& id, Vector3 
         a.rng = h ^ (uint32_t)(animals.size() * 7919u);
         a.timer = 1.0f + 4.0f * Rand01(h);
         a.productReady = WorldTime();
+        a.netId = NetId_Allocate(NetKind::Animal);
         animals.push_back(a);
         ++made;
     }
@@ -697,6 +700,7 @@ void Animals_Update(Scene& world, float dt, float worldDt, bool inputEnabled) {
             young.health = species[a.species].health * 0.5f;
             young.followUntil = -1.0;
             young.rng = a.rng ^ 0x9e37u;
+            young.netId = NetId_Allocate(NetKind::Animal);
             const bool seen = here && here->name == a.body; // before the push: it may move the vector (a, b)
             const std::string kind = species[a.species].name;
             animals.push_back(young);
@@ -900,15 +904,20 @@ void Animals_DrawHUD() {
 }
 
 void Animals_Save(FILE* f) {
-    for (const Animal& a : animals)
+    for (const Animal& a : animals) {
         fprintf(f, "animal %s %s %f %f %f %f %f %f %d %.2f %.2f\n", species[a.species].id.c_str(), a.body.c_str(), a.pos.x, a.pos.y, a.pos.z,
                 a.heading, a.health, a.age, a.fed ? 1 : 0, a.lastBred, a.productReady);
+        fprintf(f, "animal_id %llu\n", (unsigned long long)a.netId); // its own line: older builds skip it (#317)
+    }
     for (const auto& kv : spawnedTiles) {
         fprintf(f, "animal_tiles %s %zu", kv.first.c_str(), kv.second.size());
         for (uint64_t k : kv.second) fprintf(f, " %llu", (unsigned long long)k);
         fprintf(f, "\n");
     }
 }
+
+static int lastLoaded = -1; // the animal the next "animal_id" line belongs to
+uint64_t Animals_NetId(int index) { return index >= 0 && index < (int)animals.size() ? animals[index].netId : 0; }
 
 bool Animals_LoadLine(const char* tok, FILE* f) {
     LoadSpecies();
@@ -918,7 +927,20 @@ bool Animals_LoadLine(const char* tok, FILE* f) {
         int fed = 0;
         if (fscanf(f, " %63s %127s %f %f %f %f %f %f %d %lf %lf", id, body, &a.pos.x, &a.pos.y, &a.pos.z, &a.heading, &a.health, &a.age, &fed, &a.lastBred, &a.productReady) == 11) {
             a.species = SpeciesIndex(id);
-            if (a.species >= 0) { a.body = body; a.fed = fed != 0; a.rng = (uint32_t)animals.size() * 7919u + 1u; animals.push_back(a); }
+            if (a.species >= 0) {
+                a.body = body; a.fed = fed != 0; a.rng = (uint32_t)animals.size() * 7919u + 1u;
+                a.netId = NetId_Allocate(NetKind::Animal); // a save from before #317; its "animal_id" line replaces it
+                animals.push_back(a);
+                lastLoaded = (int)animals.size() - 1;
+            } else lastLoaded = -1;
+        }
+        return true;
+    }
+    if (strcmp(tok, "animal_id") == 0) {
+        unsigned long long id = 0;
+        if (fscanf(f, " %llu", &id) == 1 && id != 0 && lastLoaded >= 0 && lastLoaded < (int)animals.size()) {
+            animals[lastLoaded].netId = (uint64_t)id;
+            NetId_Note((uint64_t)id);
         }
         return true;
     }

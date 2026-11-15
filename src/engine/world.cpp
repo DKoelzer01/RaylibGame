@@ -1,4 +1,5 @@
 #include "world.h"
+#include "netid.h"
 #include "terrainarena.h"
 #include "ring.h"
 #include "player.h"
@@ -120,6 +121,12 @@ Planetoid::Planetoid(std::string name, DVec3 wp, std::shared_ptr<const TerrainFi
 Planetoid* Planetoid::find(uint64_t id) {
     auto it = planetoidRegistry.find(id);
     return it == planetoidRegistry.end() ? nullptr : it->second;
+}
+
+Planetoid* Planetoid::findNet(uint64_t netId) {
+    if (netId == 0) return nullptr;
+    for (const auto& kv : planetoidRegistry) if (kv.second->netId == netId) return kv.second;
+    return nullptr;
 }
 
 Vector3 Planetoid::toLocal(Vector3 world) const { return Vector3Transform(world, MatrixInvert(localTransform())); }
@@ -1485,6 +1492,7 @@ void generateWorld(Scene& world) {
     PROFILE_FUNCTION();
     if (!worldGen.systemLoaded) ReloadSystemDef();
     gRings.clear();
+    NetId_Reset(); // a new world: allocated ids start again (a load sets the counter from its save, #317)
     worldGen.lastSeed = worldGen.seed ? worldGen.seed : rd();
     gen.seed(worldGen.lastSeed);
     logger.logf("Generating world (seed %u, %zu definitions from %s)...\n", worldGen.lastSeed, worldGen.system.bodies.size(), worldGen.bodiesPath.c_str());
@@ -1516,6 +1524,7 @@ void generateWorld(Scene& world) {
         p->spin = { 0.0f, spin, 0.0f };
         p->surfaceGravity = d.gravity >= 0.0f ? d.gravity : AutoSurfaceGravity(kind, radius);
         p->parent = &world.rootObject;
+        p->netId = NetId_Make(NetKind::Body, (uint64_t)index); // the creation order: the same for every run of the system (#317)
         byName[name] = p.get();
         world.objects.push_back(std::move(p));
         ++index;
