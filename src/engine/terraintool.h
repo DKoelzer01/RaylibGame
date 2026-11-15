@@ -18,6 +18,8 @@ struct TerrainToolSettings {
     bool creative = false;       // building costs nothing
     bool holdingItem = false;    // food or feed in hand (hotbar): RMB never places terrain with it (#201)
     bool terraform = false;      // debug (F1): the old brush tool - dig and fill any material, wheel resizes
+    bool sphereFill = false;     // #228: RMB with a filler in hand adds an exact sphere (R toggles, Ctrl+wheel sizes), paid by volume
+    float fillRadius = 1.0f;     // its radius (m)
     std::string heldTool;        // the tool item in hand (hotbar); empty or not carried: bare hands
     int swings = 0;              // counts mining strokes and chops (the hands animate a swing on each)
     float swingTime = 0.3f;      // how long the current swing takes (its cooldown): the hands animate over it
@@ -38,6 +40,7 @@ bool TerrainTool_Chop();     // one swing at the aimed plant (scripted tests); t
 bool TerrainTool_Bucket(class Scene& world); // the bucket in hand: scoop or pour (RMB; scripted tests call it after aiming)
 bool TerrainTool_AimingPlant(uint64_t* id = nullptr);
 bool TerrainTool_LastHit(class Planetoid*& body, Vector3& local, Vector3& normalWorld); // the crosshair's terrain hit (placing torches, #218)
+bool TerrainTool_TestFill(); // --test-fill (#228): an exact sphere of dirt, paid by volume
 class Planetoid;
 bool TerrainTool_DigAt(Planetoid& p, Vector3 local);              // tests: dig a point, gain what it held
 bool TerrainTool_HarvestNearest(Planetoid& p, Vector3 local, bool tree, bool stone = false); // tests: fell / harvest the nearest plant (or pick up stones)

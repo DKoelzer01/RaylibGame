@@ -197,6 +197,7 @@ bool TerrainTool_Bucket(Scene& world) {
     return true;
 }
 
+static int FillerMaterial(const std::string& item); // below
 void TerrainTool_Update(Scene& world, bool inputEnabled, bool editEnabled) {
     PROFILE_FUNCTION();
     const Vector3 dir = Vector3Normalize(Vector3Subtract(world.camera.target, world.camera.position));
@@ -231,6 +232,13 @@ void TerrainTool_Update(Scene& world, bool inputEnabled, bool editEnabled) {
         if (modWheel && wheel != 0.0f) terrainTool.brushRadius = std::clamp(terrainTool.brushRadius * (wheel > 0 ? 1.15f : 1.0f / 1.15f), 1.0f, 24.0f);
     }
 
+    // Sphere fill (#228): R with a filler in hand switches RMB between a soft blob and an exact sphere; Ctrl+wheel sizes it.
+    if (!terrainTool.terraform && FillerMaterial(terrainTool.heldTool) >= 0) {
+        if (IsKeyPressed(KEY_R)) { terrainTool.sphereFill = !terrainTool.sphereFill; Toast(terrainTool.sphereFill ? "Sphere fill: RMB adds an exact sphere (Ctrl+wheel: size)" : "Sphere fill off: RMB places soil"); }
+        const float wheel = GetMouseWheelMove();
+        const bool modWheel = IsKeyDown(KEY_LEFT_CONTROL) || IsKeyDown(KEY_RIGHT_CONTROL) || IsKeyDown(KEY_LEFT_ALT) || IsKeyDown(KEY_RIGHT_ALT);
+        if (terrainTool.sphereFill && modWheel && wheel != 0.0f) terrainTool.fillRadius = std::clamp(terrainTool.fillRadius + (wheel > 0 ? 0.25f : -0.25f), 0.5f, 3.0f);
+    }
     // Buckets (Plan 4, F5): RMB with an empty bucket scoops 1 m^3 of water (static or flowing) from
     // the first water along the view within reach; RMB with a full one pours it where you look.
     const bool bucket = terrainTool.heldTool == "bucket" || terrainTool.heldTool == "water_bucket";
@@ -448,6 +456,51 @@ static void StrokeParticles(const Planetoid& p, Vector3 local, VoxelMaterial m, 
     Particles_Emit(p, local, clods);
 }
 
+// Sphere fill (#228): the sphere sits on the aimed surface (its centre 0.4 radius out along the normal, so it joins
+// the ground), and costs what it adds: the lattice points inside it that are air now, 2 items a cubic metre (as digging
+// yields).
+static constexpr float kFillOut = 0.4f;
+static Vector3 FillCentre(const Planetoid& p, float r) {
+    const Vector3 localNormal = Vector3Normalize(Vector3Subtract(p.toLocal(Vector3Add(hit.point, hit.normal)), hit.local));
+    return Vector3Add(hit.local, Vector3Scale(localNormal, kFillOut * r));
+}
+static float FillCost(const Planetoid& p, Vector3 c, float r) {
+    int air = 0;
+    const int x0 = (int)floorf((c.x - r) / kVoxelSize), x1 = (int)ceilf((c.x + r) / kVoxelSize);
+    const int y0 = (int)floorf((c.y - r) / kVoxelSize), y1 = (int)ceilf((c.y + r) / kVoxelSize);
+    const int z0 = (int)floorf((c.z - r) / kVoxelSize), z1 = (int)ceilf((c.z + r) / kVoxelSize);
+    for (int z = z0; z <= z1; ++z)
+        for (int y = y0; y <= y1; ++y)
+            for (int x = x0; x <= x1; ++x) {
+                const Vector3 q = { x * kVoxelSize, y * kVoxelSize, z * kVoxelSize };
+                if (Vector3DistanceSqr(q, c) >= r * r) continue;
+                if (p.densityAt(q) < ISO_LEVEL) ++air;
+            }
+    const float s = p.scale;
+    return air * kVoxelSize * kVoxelSize * kVoxelSize * s * s * s * 2.0f;
+}
+static bool FillStroke(Planetoid& p) {
+    const float r = terrainTool.fillRadius / p.scale;
+    const Vector3 c = FillCentre(p, r);
+    // Pay with the filler in hand (what gets placed), by the volume added.
+    const std::string held = terrainTool.heldTool;
+    const int paint = FillerMaterial(held);
+    if (paint < 0) return false;
+    const float cost = FillCost(p, c, r);
+    if (cost < 0.05f) { Toast("Already solid there"); return false; }
+    if (!terrainTool.creative && !inventory.removeAmount(held, cost)) {
+        Toast(TextFormat("Need %.1f %s for this fill (have %.1f)", cost, held.c_str(), inventory.amount(held)));
+        Audio_Play(Sfx::Error, 0.5f);
+        return false;
+    }
+    TerrainEdit e{};
+    e.center = c; e.radius = r; e.fill = true; e.paint = paint;
+    StrokeParticles(p, hit.local, hit.material, false);
+    ApplyTerrainEdit(p, e);
+    Audio_Play(Sfx::Build, 0.6f, 0.8f);
+    return true;
+}
+
 // One stroke at the current crosshair hit (also used by scripted tests). Tools carve exactly the
 // sphere shown (what lies inside it, of what the tool can dig, is collected); RMB places soil.
 bool TerrainTool_Stroke(bool dig) {
@@ -483,6 +536,7 @@ bool TerrainTool_Stroke(bool dig) {
         if (any) { Audio_Play(Sfx::Dig, 0.5f, 0.7f); ++terrainTool.swings; return true; }
         return false;
     }
+    if (!dig && terrainTool.sphereFill && FillerMaterial(terrainTool.heldTool) >= 0) return FillStroke(p); // #228
     if (!dig) {
         int paint = -1;
         if (!PayFiller(paint)) return false;
@@ -571,6 +625,14 @@ void TerrainTool_Draw3D() {
         DrawSphereWires(hit.point, terrainTool.brushRadius, 8, 12, c);
         return;
     }
+    if (terrainTool.sphereFill && FillerMaterial(terrainTool.heldTool) >= 0 && !digging) { // #228: the sphere it will add
+        Planetoid& p = *hit.planetoid;
+        const float r = terrainTool.fillRadius / p.scale;
+        const Vector3 c = p.toWorld(FillCentre(p, r));
+        if (Vector3Distance(c, hit.point) + 0.3f > hit.distance && hit.distance < terrainTool.fillRadius * 1.2f) return; // round the camera
+        DrawSphereWires(c, terrainTool.fillRadius, 8, 14, Fade(adding ? Color{ 120, 255, 160, 255 } : Color{ 120, 220, 255, 255 }, 0.8f));
+        return;
+    }
     // The dig's mouth: a circle on the surface where the sphere cuts it (DigCentre), depth-tested like
     // anything else, so it never shows through structures, foliage or hills.
     const float radius = MiningRadius() * sqrtf(1.0f - kDigSink * kDigSink);
@@ -614,6 +676,16 @@ void TerrainTool_DrawHUD() {
         else {
             DrawText(TextFormat("%s  %.1f m   %s", hit.material == VoxelMaterial::Ore ? hitItem.c_str() : name, hit.distance, held.c_str()), cx + 14, cy + 10, 20, RAYWHITE);
             if (!rule.can) DrawText(rule.why.c_str(), cx + 14, cy + 34, 18, Color{ 255, 120, 90, 255 });
+            if (FillerMaterial(terrainTool.heldTool) >= 0) { // #228: the fill mode, and what a sphere here costs
+                if (terrainTool.sphereFill) {
+                    Planetoid& p = *hit.planetoid;
+                    const float r = terrainTool.fillRadius / p.scale;
+                    static double costAt = -1.0; static float cost = 0.0f;
+                    if (GetTime() - costAt > 0.2) { costAt = GetTime(); cost = FillCost(p, FillCentre(p, r), r); }
+                    DrawText(TextFormat("sphere fill %.2f m: %.1f %s (have %.1f)   R: soil   Ctrl+wheel: size", terrainTool.fillRadius, cost, terrainTool.heldTool.c_str(), inventory.amount(terrainTool.heldTool)),
+                             cx + 14, cy + 58, 18, Color{ 140, 230, 255, 255 });
+                } else DrawText("R: sphere fill", cx + 14, cy + 58, 18, Fade(RAYWHITE, 0.6f));
+            }
         }
     }
     DrawText(terrainTool.terraform ? "LMB dig  RMB fill  Ctrl+wheel brush  G build  1-0 hotbar  Tab inventory  T telescope  L lamp  F fly  F5 save  F1 debug"
@@ -674,4 +746,30 @@ bool TerrainTool_LastHit(Planetoid*& body, Vector3& local, Vector3& normalWorld)
     if (!hasHit || !hit.planetoid) return false;
     body = hit.planetoid; local = hit.local; normalWorld = hit.normal;
     return true;
+}
+
+bool TerrainTool_TestFill() {
+    // --test-fill (#228): a 1 m sphere of dirt on the aimed ground: it costs exactly the air it fills (2 a m^3), leaves no
+    // air inside, and has a sharp edge (air 0.35 m outside it, solid 0.2 m inside).
+    if (!hasHit || !hit.planetoid) { printf("bench: fill: nothing aimed at -> FAIL\n"); return false; }
+    Planetoid& p = *hit.planetoid;
+    terrainTool.heldTool = "dirt";
+    inventory.add("dirt", 30);
+    terrainTool.sphereFill = true;
+    terrainTool.fillRadius = 1.0f;
+    const float r = 1.0f / p.scale;
+    const Vector3 c = FillCentre(p, r);
+    const Vector3 n = Vector3Normalize(Vector3Subtract(c, hit.local));
+    const float cost = FillCost(p, c, r);
+    const double before = inventory.amount("dirt");
+    const bool stroke = TerrainTool_Stroke(false);
+    const double paid = before - inventory.amount("dirt");
+    const float left = FillCost(p, c, r);
+    const bool edge = p.densityAt(Vector3Add(c, Vector3Scale(n, r + 0.35f))) < ISO_LEVEL;
+    const bool inside = p.densityAt(Vector3Add(c, Vector3Scale(n, r - 0.2f))) >= ISO_LEVEL;
+    const bool ok = stroke && fabs(paid - cost) < 0.02 && cost > 0.5f && cost < 8.5f && left < 0.05f && edge && inside;
+    printf("bench: fill: a 1 m sphere of dirt cost %.2f (paid %.2f; a whole sphere would be 8.38), air left inside %.2f, sharp edge %d, solid inside %d -> %s\n",
+           cost, paid, left, (int)edge, (int)inside, ok ? "PASS" : "FAIL");
+    terrainTool.sphereFill = false;
+    return ok;
 }

@@ -254,6 +254,7 @@ int main(int argc, char** argv)
     bool benchWall = false;        // --test-wall: walk into shaft and tunnel walls (no launches)
     bool benchDoorway = false; int doorPhase = 0, doorLane = 0; double doorStart = 0.0; uint32_t doorPlot = 0; bool doorPass[2] = { false, false }; // --test-doorway (#255): 2 m openings pass, 1.5 m ones block
     bool benchMenus = false;       // --test-menus: main menu, new game, pause, save & quit, load
+    bool benchFill = false;        // --test-fill: an exact sphere of dirt (#228)
     bool benchLamps = false;       // --test-lamps: 100 lamp cubes light the ground (#139)
     bool benchGiant = false;       // --shot-giant: one tree of each size class (#274)
     bool benchTorch = false;       // --test-torch: a held torch lights the ground (#218)
@@ -488,6 +489,7 @@ int main(int argc, char** argv)
         if (std::string(argv[i]) == "--test-torch") benchTorch = true;
         if (std::string(argv[i]) == "--shot-giant") benchGiant = true;
         if (std::string(argv[i]) == "--test-lamps") benchLamps = true;
+        if (std::string(argv[i]) == "--test-fill") benchFill = true;
         if (std::string(argv[i]) == "--test-pickups") benchPickups = true;
         if (std::string(argv[i]) == "--shot-inventory") shotInventory = true;
         if (std::string(argv[i]) == "--test-foundation") benchFoundation = true;
@@ -6130,6 +6132,16 @@ int main(int argc, char** argv)
                 gf = 0; have = false;
                 if (++cls == kTreeClasses) { printf("bench: giant: done (bench_tree_0..3.png)\n"); benchGiant = false; }
             }
+        }
+        // --test-fill (#228): standing at the start looking at the ground 3 m ahead, an exact sphere of dirt.
+        if (benchFill && gameState == 1 && !loading && WorldIdle()) {
+            static int ff = 0;
+            Planetoid* p = dynamic_cast<Planetoid*>(world.objects[0].get());
+            ++ff;
+            if (ff == 5) { player.flyMode = false; player.spawnOn(world, *p, StartSpawnDir(*p)); }
+            if (ff >= 8 && ff < 30) player.forward = Vector3Normalize(Vector3Subtract(Vector3Scale(Vector3Normalize(Vector3Subtract(player.forward, Vector3Scale(player.up, Vector3DotProduct(player.forward, player.up)))), 0.8f), Vector3Scale(player.up, 0.5f)));
+            if (ff == 30) TerrainTool_TestFill();
+            if (ff == 70) { TakeScreenshot("bench_fill.png"); printf("bench: fill: bench_fill.png\n"); benchFill = false; }
         }
         // --test-lamps (#139): at the dawn start (dark), 100 lamp cubes on a 2 m grid round the player light the ground.
         if (benchLamps && gameState == 1 && !loading && WorldIdle()) {

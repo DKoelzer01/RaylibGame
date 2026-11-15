@@ -95,7 +95,8 @@ void TerrainDeltasBuilder::apply(const TerrainEdit& e, const DensityField& field
     next->strokes++;
     // A carve also lowers solid points just outside the sphere, so the meshed surface sits on it.
     const float reach = e.box ? sqrtf(e.half.x * e.half.x + e.half.y * e.half.y + e.half.z * e.half.z) : e.radius;
-    const float r = e.carve ? reach + 1.0f : reach; // 1 m: enough on the 0.25 m lattice (2 m touched 8 delta chunks a stroke)
+    const bool csg = e.carve || e.fill; // exact shapes (carve, #228 fill) also move points just outside them
+    const float r = csg ? reach + 1.0f : reach; // 1 m: enough on the 0.25 m lattice (2 m touched 8 delta chunks a stroke)
     // Signed distance to the carved shape (the sphere, or the oriented box, #210): < 0 inside.
     auto shapeDist = [&](float dx, float dy, float dz, float dist) {
         if (!e.box) return dist - e.radius;
@@ -122,7 +123,7 @@ void TerrainDeltasBuilder::apply(const TerrainEdit& e, const DensityField& field
                 const float t = 1.0f - dist / r;
                 float add = e.strength * t * t * (3.0f - 2.0f * t);
                 float carveTo = 0.0f; // carve: the density this point may have at most
-                const float sd = e.carve ? shapeDist(dx, dy, dz, dist) : 0.0f;
+                const float sd = csg ? shapeDist(dx, dy, dz, dist) : 0.0f;
                 if (e.carve) carveTo = ISO_LEVEL + DENSITY_GRADIENT * sd;
                 const int cx = (int)floorf((float)x / kDeltaChunk), cy = (int)floorf((float)y / kDeltaChunk), cz = (int)floorf((float)z / kDeltaChunk);
                 const TerrainDeltas::Key k = TerrainDeltas::KeyOf(cx, cy, cz);
@@ -152,6 +153,13 @@ void TerrainDeltasBuilder::apply(const TerrainEdit& e, const DensityField& field
                     if (base + v * kDeltaStep > carveTo) {
                         chunk->set(i, (int16_t)std::clamp((int)lroundf((carveTo - base) / kDeltaStep), -32767, 32767));
                         if (sd < 0.0f) chunk->setMat(i, 0); // dug out: what is exposed below shows its own material
+                    }
+                } else if (e.fill) {
+                    const float base = field.baseDensity(p);
+                    const float fillTo = ISO_LEVEL - DENSITY_GRADIENT * sd;
+                    if (base + v * kDeltaStep < fillTo) {
+                        chunk->set(i, (int16_t)std::clamp((int)ceilf((fillTo - base) / kDeltaStep), -32767, 32767)); // up: never just under iso inside
+                        if (e.paint >= 0 && sd < kVoxelSize) chunk->setMat(i, (uint8_t)(e.paint + 1)); // the shell shows it too
                     }
                 } else {
                     chunk->set(i, (int16_t)std::clamp((int)lroundf(v + add / kDeltaStep), -32767, 32767));
