@@ -174,7 +174,7 @@ std::shared_ptr<MapImage> StartImage(const Here& h, Vector3 centre, float mpp, i
     const int block = 16;
     for (int y = 0; y < H; y += block) {
         const int y1 = std::min(H, y + block);
-        WorldJobs().submit(circle ? 300.0f : 200.0f, [m, y, y1] { RenderRows(*m, y, y1); });
+        JobSystem::tagNext(JobTag::NavMap); WorldJobs().submit(circle ? 300.0f : 200.0f, [m, y, y1] { RenderRows(*m, y, y1); });
     }
     return m;
 }

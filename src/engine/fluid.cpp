@@ -751,7 +751,7 @@ void RunJob() {
         std::atomic<int> left{ (int)work.size() - 1 };
         for (size_t k = 1; k < work.size(); ++k) {
             Work* w = &work[k];
-            WorldJobs().submit(-3.0f, [w, &left] { Classify(*w->s, *w->b, *w->ref, w->faces); left.fetch_sub(1); });
+            JobSystem::tagNext(JobTag::Fluid); WorldJobs().submit(-3.0f, [w, &left] { Classify(*w->s, *w->b, *w->ref, w->faces); left.fetch_sub(1); });
         }
         Classify(*work[0].s, *work[0].b, *work[0].ref, work[0].faces); // this thread takes one too
         while (left.load() > 0) std::this_thread::yield();
@@ -1367,7 +1367,7 @@ void Fluid::Update(Scene& world, float dt) {
     if (gpuMode) { std::lock_guard<std::mutex> lock(simMx); GpuTick((int)lround(2 * kSubsteps * (kTickSeconds / 0.05)) * std::max(1, speed.load())); } // 120 a second, as before
     (void)world;
     running = true;
-    WorldJobs().submit(-0.5f, [] { RunJob(); running = false; });
+    JobSystem::tagNext(JobTag::Fluid); WorldJobs().submit(-0.5f, [] { RunJob(); running = false; });
 }
 
 void Fluid::BindKindUniforms(const Shader& shader) {

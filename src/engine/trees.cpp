@@ -536,6 +536,7 @@ void TreeSystem::request(const TreeTileKey& key, TreeTile& tile, float priority)
     auto cl = clearings;
     const double now = WorldTime();
     const uint32_t sd = seed;
+    JobSystem::tagNext(JobTag::Trees);
     WorldJobs().submit(priority, [sh, fld, ed, rm, cl, now, sd, key, version] {
         if (!sh->alive) return;
         TreeTile t;

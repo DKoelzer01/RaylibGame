@@ -252,6 +252,7 @@ int main(int argc, char** argv)
     bool benchStandMode = false;   // --bench-stand: as --bench-walk, but standing still at the start (#204: walking vs standing, same view)
     bool cursorLocked = false;     // DisableCursor while playing (#205)
     bool perfLog = false;          // --perf-log: per-pass CPU/GPU averages to log.txt every 5 s in normal play, tagged moving/still (#204)
+    double playNewSeconds = 0.0;   // --play-new S (#387): start a new game as the menu does (settings, spawn preload), quit S seconds after entering
     float benchFlySpeed = 0.0f;    // --bench-fly V: the camera flies over body 0 at V m/s through the bench (LOD streaming)
     bool benchFlyBack = false;     // --bench-fly-back: fly out for half the bench, then back the same way (chunk cache, #295)
     float benchFlyAlt = 1e9f;      // --bench-fly-alt A: fly at A m relative to sea level instead (negative: underwater, looking up)
@@ -503,7 +504,8 @@ int main(int argc, char** argv)
         if (std::string(argv[i]) == "--test-planet-walk" && i + 1 < argc) { walkTargetM = atof(argv[i + 1]); benchWalkSeconds = 600.0; } // gate: 1 km on the planet, in 100 m legs (#363)
         if (std::string(argv[i]) == "--bench-walk") benchWalkMode = true;
         if (std::string(argv[i]) == "--bench-stand") { benchWalkMode = true; benchStandMode = true; }
-        if (std::string(argv[i]) == "--perf-log") perfLog = true;
+        if (std::string(argv[i]) == "--perf-log") { perfLog = true; gJobLog = true; }
+        if (std::string(argv[i]) == "--play-new" && i + 1 < argc) playNewSeconds = atof(argv[i + 1]);
         if (std::string(argv[i]) == "--bench-fly" && i + 1 < argc) benchFlySpeed = (float)atof(argv[i + 1]);
         if (std::string(argv[i]) == "--bench-fly-back") benchFlyBack = true;
         if (std::string(argv[i]) == "--water-stats") benchWaterStats = true;
@@ -1214,9 +1216,12 @@ int main(int argc, char** argv)
     }
 
     Recorder_Start(); // --record (#375): fixed frame time, seeded random values, the capture folder
+    if (playNewSeconds > 0.0) pendingMenu.action = MenuAction::NewGame; // --play-new (#387): the main menu's New Game, at once
+    double playNewStart = -1.0;
     while (windowKeepAlive && !WindowShouldClose())
     {
         if (Recorder_Finished()) break; // a --record capture is complete
+        if (playNewSeconds > 0.0 && gameState == 1) { if (playNewStart < 0.0) playNewStart = GetTime(); else if (GetTime() - playNewStart > playNewSeconds) break; }
         Recorder_Update(WorldIdle() && !loading); // its start delay (after the loading screen), F10 in normal play
         GpuTimer_CpuFrameStart(); GpuTimer_BeginFrame();
         if (preloadT0 >= 0.0 && !SpawnPreloadPending()) {

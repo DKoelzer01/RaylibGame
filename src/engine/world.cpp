@@ -507,6 +507,7 @@ static void RequestNode(Planetoid& p, const NodeKey& key, float priority) {
     // height grid and submits; the main thread's pump dispatches batches and queues the second half
     // (edits, marching cubes) back on the workers. Identical results to the CPU path.
     const bool gpu = TerrainGpu_Available();
+    JobSystem::tagNext(JobTag::ChunkPrep);
     Jobs().submit(priority, [field, edits, id, key, version, wanted, gpu, priority, token] {
         if (wanted->load() != version) { ++gSkipped; return; } // superseded or freed while queued
         PROFILE_SCOPE("Build chunk");
@@ -530,6 +531,7 @@ static void RequestNode(Planetoid& p, const NodeKey& key, float priority) {
                 auto shared = std::make_shared<ChunkMeshData>(std::move(data));
                 auto grid = std::make_shared<const PlanetField::BlockGrid>(job.grid); // the materials read the surface from it (#148)
                 job.done = [field, edits, shared, wanted, version, priority, prepMs, token, grid](std::shared_ptr<const float> batch, size_t offset) {
+                    JobSystem::tagNext(JobTag::ChunkMesh);
                     Jobs().submit(priority, [field, edits, shared, wanted, version, prepMs, batch, offset, token, grid] {
                         if (wanted->load() != version) { ++gSkipped; return; }
                         BuildChunkMeshFromBase(*field, *edits, *shared, batch.get() + offset, prepMs, grid.get(), grid);
@@ -988,6 +990,7 @@ static void UpdatePreload(Planetoid& p, Vector3 cameraRender, int& spare) {
         ring.complete = false;
         std::vector<NodeKey> roots;
         ForEachRoot(p, c, [&](const NodeKey& k) { roots.push_back(k); });
+        JobSystem::tagNext(JobTag::RingCollect);
         Jobs().submit(0.0f, /* background (#296): not counted by WorldIdle */ [rp, job, roots] {
             PROFILE_SCOPE("Preload ring");
             for (const NodeKey& k : roots) CollectRing(rp, k, job->keys);
@@ -1188,6 +1191,7 @@ static void RequestWater(Planetoid& p, Chunk& c, float priority) {
     const uint64_t id = p.id;
     const NodeKey key = c.key;
     auto token = std::make_shared<WaterToken>();
+    JobSystem::tagNext(JobTag::WaterRebuild);
     Jobs().submit(priority, [field, cache, id, key, token] {
         ChunkMeshData d;
         d.planetoidId = id;
@@ -1412,6 +1416,33 @@ void worldUpdate(Scene& world, float uploadBudgetMs) {
             stats.nodes += (int)p->nodes.size();
             for (Chunk* c : p->drawList) stats.chunks += c->hasMesh() ? 1 : 0;
             stats.edits += (int)p->edits->strokes;
+        }
+    }
+    if (gJobLog) {
+        // #387: every second, the job queue and what was submitted / finished per kind, to log.txt and stdout.
+        static double t0 = -1.0;
+        static long long sub0[(int)JobTag::Count] = {}, done0[(int)JobTag::Count] = {};
+        static long long req0 = 0, built0 = 0;
+        static double ftSum = 0.0, ftMax = 0.0; static int ftN = 0;
+        ftSum += GetFrameTime(); ftMax = std::max(ftMax, (double)GetFrameTime()); ++ftN;
+        const double now = GetTime();
+        if (t0 < 0.0) t0 = now;
+        if (now - t0 >= 1.0) {
+            std::string mix;
+            for (int k = 0; k < (int)JobTag::Count; ++k) {
+                const JobTag tg = (JobTag)k;
+                const long long s = Jobs().submittedOf(tg), d = Jobs().doneOf(tg), q = Jobs().queuedOf(tg);
+                if (s - sub0[k] || d - done0[k] || q)
+                    mix += TextFormat(" %s q%lld +%lld -%lld", JobTagName(tg), q, s - sub0[k], d - done0[k]);
+                sub0[k] = s; done0[k] = d;
+            }
+            const char* line = TextFormat("[jobs] %.0f s: frame avg %.1f max %.1f ms; queued %d running %d fg %s | gpu pending %d, uploads pending %d | requests +%lld built +%lld, nodes %d |%s\n",
+                                          now, 1000.0 * ftSum / std::max(1, ftN), 1000.0 * ftMax, (int)Jobs().queued(), Jobs().running(), Jobs().foregroundIdle() ? "idle" : "busy", TerrainGpu_Pending(),
+                                          (int)pendingUploads.size(), (long long)gRequests - req0, (long long)gBuilt - built0, stats.nodes, mix.c_str());
+            printf("%s", line);
+            logger.logf("%s", line);
+            req0 = gRequests; built0 = gBuilt; ftSum = ftMax = 0.0; ftN = 0;
+            t0 = now;
         }
     }
 

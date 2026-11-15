@@ -106,15 +106,17 @@ FarSphere::FarSphere(std::shared_ptr<const PlanetField> field, bool foliage, uns
     // (colours and normals need the neighbouring rows).
     auto bk = bake;
     for (int y0 = 0; y0 < b.H; y0 += kRowsPerJob) {
-        WorldJobs().submit(2000.0f, [bk, y0] {
+        JobSystem::tagNext(JobTag::FarSphere); WorldJobs().submit(2000.0f, [bk, y0] {
             Bake& b = *bk;
             const float footprint = 2.0f * PI * b.field->radius / b.W;
             const int y1 = std::min(b.H, y0 + kRowsPerJob);
             for (int y = y0; y < y1; ++y)
                 for (int x = 0; x < b.W; ++x) b.elev[(size_t)y * b.W + x] = b.field->elevation(TexelDir(x, y, b.W, b.H), footprint);
             if (b.elevRowsDone.fetch_add(y1 - y0) + (y1 - y0) == b.H)
-                for (int s0 = 0; s0 < b.H; s0 += kRowsPerJob)
+                for (int s0 = 0; s0 < b.H; s0 += kRowsPerJob) {
+                    JobSystem::tagNext(JobTag::FarSphere);
                     WorldJobs().submit(2000.0f, [bk, s0] { ShadeRows(*bk, s0, std::min(bk->H, s0 + kRowsPerJob)); });
+                }
         });
     }
 }
