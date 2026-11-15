@@ -30,6 +30,7 @@ bool Animals_LoadLine(const char* tok, FILE* f);
 
 // Tests.
 int Animals_Count();
+void Animals_PathStats(int& plans, int& found, double& avgMs, double& worstMs); // route planning (#253): counts and cost
 int Animals_Spawn(Scene& world, Planetoid& body, const std::string& species, Vector3 bodyLocal, int count, bool young = false, float spread = 18.0f);
 int Animals_Nearest(Vector3 bodyLocal, float range);          // index or -1
 Vector3 Animals_Position(int index);                           // body-local

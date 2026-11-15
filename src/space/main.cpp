@@ -305,6 +305,8 @@ int main(int argc, char** argv)
     bool benchMaterials = false, matOk = true; int matPhase = 0, matPlaced = 0; double matStart = 0.0; std::string matKinds; Vector3 matCamPos{}, matCamTarget{}, matCamUp{ 0, 1, 0 }; // --test-materials
     bool benchDamage = false, damageOk = true; int damagePhase = 0; double damageStart = 0.0; float damageThrust = 0.0f, damageRepaired = 0.0f, damageVacuum = 0.0f; // --test-damage
     bool benchCrafting = false, craftOk = true; int craftPhase = 0, craftChest = -1, craftInv0 = 0, craftWood0 = 0, craftDeposited = 0, craftInChest = 0; double craftStart = 0.0; Plot* craftPlot = nullptr; // --test-crafting
+    int threatSeed = 3; // --threat-seed N (#253)
+    bool benchAnimalPath = false; int animalPathPhase = 0; double animalPathStart = 0.0; // --test-animal-path (#253)
     bool benchThreats = false, threatsOk = true; int threatPhase = 0; double threatStart = 0.0; float threatBite = 0.0f, threatFire = 0.0f, threatRam = 0.0f; int threatSpawned = 0, threatLeft = 0, threatPeaceful = 0; // --test-threats
     bool benchAnimals = false; int animalPhase = 0, animalCount = 0; double animalStart = 0.0, animalMs = 0.0; int animalNatural = 0; float penWorst = 0.0f, animalLured = 0.0f, animalSpread = 0.0f, animalFled = 0.0f, animalFollow = 0.0f; // --test-animals
     int hungerPhase = 0, farmPhase = 0; double hungerStart = 0.0, farmStart = 0.0; bool hungerOk = false; float hungerTemp = 0.0f, hungerDrain = 0.0f, farmQuarter = 0.0f, farmGrowth = 0.0f;
@@ -505,6 +507,8 @@ int main(int argc, char** argv)
         if (std::string(argv[i]) == "--test-farm") benchFarm = true;
         if (std::string(argv[i]) == "--test-animals") benchAnimals = true;
         if (std::string(argv[i]) == "--test-threats") benchThreats = true;
+        if (std::string(argv[i]) == "--threat-seed" && i + 1 < argc) threatSeed = atoi(argv[i + 1]);
+        if (std::string(argv[i]) == "--test-animal-path") benchAnimalPath = true;
         if (std::string(argv[i]) == "--shot-tabs") benchShotTabs = 1;
         if (std::string(argv[i]) == "--shot-forest") benchForest = true;
         if (std::string(argv[i]) == "--outcrop-high") outcropHigh = true;
@@ -659,7 +663,7 @@ int main(int argc, char** argv)
     const bool bench = benchSeconds > 0.0;
     benchMode = bench;
     if (bench) SetWorldSavePath("saves/bench.sav"); // tests save and load; keep the player's F5 save out of it
-    if (bench && !benchThreats) Animals_SetThreats(false); // hostile animals and night spawns would upset other tests
+    if (bench && !benchThreats && !benchAnimalPath) Animals_SetThreats(false); // hostile animals and night spawns would upset other tests
 
     bool msaa = true;
     for (int i = 1; i < argc; ++i) if (std::string(argv[i]) == "--no-msaa") msaa = false;
@@ -4139,6 +4143,58 @@ int main(int argc, char** argv)
                             benchForest = false;
                         }
                     }
+                } else if (benchAnimalPath && (animalPathPhase > 0 || WorldIdle())) {
+                    // --test-animal-path (#253): at night a dusk stalker inside a U-shaped pocket of build cubes (a 3.5 m
+                    // wall 16 m wide, 10 m off, wings 10 m long reaching away; open on the far side) must find its way
+                    // out and round to bite the player within 40 s. Without route planning it pushes into the wall.
+                    Planetoid* p = dynamic_cast<Planetoid*>(world.objects[0].get());
+                    if (animalPathPhase == 0) {
+                        player.spawnOn(world, *p, StartSpawnDir(*p));
+                        animalPathPhase = 1; animalPathStart = GetTime();
+                    } else if (animalPathPhase == 1 && GetTime() - animalPathStart > 1.5 && player.grounded) {
+                        const auto* pf = dynamic_cast<const PlanetField*>(p->field.get());
+                        const Vector3 me = p->toLocal((player.position - world.renderOrigin).toFloat());
+                        const Vector3 up = Vector3Normalize(me);
+                        const Vector3 t1 = Vector3Normalize(Vector3CrossProduct(up, fabsf(up.y) < 0.9f ? Vector3{ 0, 1, 0 } : Vector3{ 1, 0, 0 }));
+                        const Vector3 t2 = Vector3CrossProduct(t1, up);
+                        auto onGround = [&](float a, float b) { const Vector3 d = Vector3Normalize(Vector3Add(me, Vector3Add(Vector3Scale(t1, a), Vector3Scale(t2, b)))); return Vector3Scale(d, pf->radius + pf->elevation(d)); };
+                        if (!p->plots) p->plots = std::make_unique<PlotSet>();
+                        Plot* pl = p->plots->plotFor(onGround(0.0f, 15.0f), 0.0f, true);
+                        int cubes = 0;
+                        auto wall = [&](float a0, float b0, float a1, float b1) {
+                            const float len = sqrtf((a1 - a0) * (a1 - a0) + (b1 - b0) * (b1 - b0));
+                            for (float s = 0.0f; s <= len; s += 0.25f) {
+                                const Vector3 g = onGround(a0 + (a1 - a0) * s / len, b0 + (b1 - b0) * s / len);
+                                const Vector3 gu = Vector3Normalize(g);
+                                for (float h = -1.0f; h <= 3.5f; h += 0.25f) {
+                                    const Int3 c = pl->cellAt(pl->toPlot(Vector3Add(g, Vector3Scale(gu, h))));
+                                    if (pl->partAt(c) < 0 && pl->place(Part{ PartType::Cube, c, 0, 0 }) >= 0) ++cubes;
+                                }
+                            }
+                        };
+                        wall(-8.0f, 10.0f, 8.0f, 10.0f);  // the wall facing the player
+                        wall(-8.0f, 10.0f, -8.0f, 20.0f); // the wings, away from the player
+                        wall(8.0f, 10.0f, 8.0f, 20.0f);
+                        worldDifficulty = 1;
+                        Animals_SetThreats(true);
+                        Animals_Reset();
+                        survival.health = 100.0f;
+                        world.sunDirection = p->dirToWorld(Vector3Negate(up));
+                        const int n = Animals_Spawn(world, *p, "dusk_stalker", onGround(0.0f, 15.0f), 1, false, 0.1f);
+                        float t = 0.0f, closest = 1e9f;
+                        while (t < 40.0f && survival.health >= 100.0f) {
+                            Animals_Update(world, 0.1f, 0.1f, false);
+                            t += 0.1f;
+                            if (Animals_Count() > 0) closest = std::min(closest, Vector3Distance(Animals_Position(0), me));
+                        }
+                        int plans, found; double avgMs, worstMs; Animals_PathStats(plans, found, avgMs, worstMs);
+                        const bool ok = n == 1 && cubes > 100 && survival.health < 100.0f;
+                        printf("bench: animal-path: %d cubes; the stalker %s after %.1f s (closest %.1f m); route plans %d (%d reached), %.2f ms each, worst %.2f ms: %s\n",
+                               cubes, survival.health < 100.0f ? "came round and bit" : "never reached the player", t, closest, plans, found, avgMs, worstMs, ok ? "PASS" : "FAIL");
+                        Animals_Reset();
+                        survival.health = 100.0f;
+                        benchAnimalPath = false;
+                    }
                 } else if (benchThreats && (threatPhase > 0 || WorldIdle())) {
                     // --test-threats: after dark a dusk stalker comes 45-60 m out and hunts (a bite hurts); a
                     // campfire keeps it off; daylight sends it away; peaceful worlds get none; a thornback
@@ -4158,9 +4214,9 @@ int main(int argc, char** argv)
                         survival.health = 100.0f;
                         // Night: a stalker comes.
                         world.sunDirection = p->dirToWorld(Vector3Negate(up));
-                        // A fixed spawn direction: animals walk the real terrain now (#223) and have no pathfinding yet
-                        // (#253), so one that comes out beyond a cliff can't reach the player.
-                        SetRandomSeed(3);
+                        // A fixed spawn direction by default: animals walk the real terrain (#223); with route planning (#253)
+                        // any direction should work (loop --threat-seed to check).
+                        SetRandomSeed((unsigned)threatSeed); // --threat-seed N: other spawn directions (#253; default 3)
                         Animals_RefreshNow();
                         Animals_Update(world, 0.1f, 0.1f, false);
                         threatSpawned = Animals_NightCount();
@@ -4214,6 +4270,8 @@ int main(int argc, char** argv)
                         check(fell || Animals_Count() == 0, "fought off");
                         printf("bench: threats: night stalker at %.0f m, bit for %.0f; by a campfire it kept %.0f m off, no bites; gone by day (%d left); peaceful %d; thornback rammed for %.0f -> %s\n",
                                d0, threatBite, threatFire, threatLeft, threatPeaceful, threatRam, threatsOk ? "PASS" : "FAIL");
+                        { int plans, found; double avgMs, worstMs; Animals_PathStats(plans, found, avgMs, worstMs);
+                          printf("bench: threats: route plans %d (%d reached the goal), %.2f ms each, worst %.2f ms (#253)\n", plans, found, avgMs, worstMs); }
                         Animals_Reset();
                         survival.health = 100.0f;
                         benchThreats = false;
@@ -4307,7 +4365,7 @@ int main(int argc, char** argv)
                                     const Vector3 col = Vector3Normalize(pen->toBody({ (cx + 0.5f) * kCellSize, 0.0f, (cz + 0.5f) * kCellSize }));
                                     const int g = pen->cellAt(pen->toPlot(Vector3Scale(col, pf->radius + pf->elevation(col)))).y;
                                     const bool gate = side == 0 && a == 0;
-                                    for (int y = g - 2; y <= g; y += 2) {
+                                    for (int y = g - 2; y <= g + 2; y += 2) { // to g+3: the density surface can stand over the height map, and fleeing animals with routes (#253) find any gap
                                         Part fp{ gate ? PartType::Gate : PartType::Fence, { cx, y, cz }, alongX ? across : (uint8_t)0, 0 };
                                         ++wallsTried;
                                         walls += pen->place(fp) >= 0 ? 1 : 0;
@@ -5545,7 +5603,7 @@ int main(int argc, char** argv)
                         }
                         benchWalkSeconds = 0.0;
                     }
-                } else if ((WorldIdle() && benchDigStrokes == 0 && !benchPaint && !benchSaveLoad && benchWalkSeconds <= 0.0 && benchMineStrokes == 0 && minePhase != 2 && benchFlySeconds <= 0.0 && !benchSuffocate && benchOrbitSeconds <= 0.0 && !benchRide && !benchPark && !benchGravity && !benchPrecision && !benchMantle && !benchAirJump && !benchMoon && !benchHole && !benchWall && !benchDoorway && !benchLedge && !benchTor && !benchMachines && !benchFall && !benchHover && !benchTeleClose && !benchMenus && !benchWater && !benchFlyFollow && !benchHotbar && !benchInventory && !benchMap && !benchViewmodel && !benchQuests && !benchHunger && !benchFarm && !benchAnimals && !benchThreats && benchShotTabs == 0 && !benchForest && !benchFlow && !benchPond && !benchBucket && !benchPump && !benchTerrain && !benchShelter && !benchRoom && !benchFacing && !benchShadow && !benchParticles && !benchBiomes && !benchOil && !benchSpring && !benchShotAnimals && !benchShotMachines && benchShotBiomes < 0 && !benchFarForest && !benchRecipes && !benchWeather && !benchDecor && !benchMaterials && !benchDamage && !benchCrafting && !benchSuit && !benchTools && !benchRivers && !benchRing && !benchRocket && !benchStation && !benchBlueprint && !benchSmallBody && !benchTrees && !benchChop && benchPersist == 0 && benchBuild == 0 && benchFactory == 0 && !benchProgression) || GetTime() > 600.0) {
+                } else if ((WorldIdle() && benchDigStrokes == 0 && !benchPaint && !benchSaveLoad && benchWalkSeconds <= 0.0 && benchMineStrokes == 0 && minePhase != 2 && benchFlySeconds <= 0.0 && !benchSuffocate && benchOrbitSeconds <= 0.0 && !benchRide && !benchPark && !benchGravity && !benchPrecision && !benchMantle && !benchAirJump && !benchMoon && !benchHole && !benchWall && !benchDoorway && !benchLedge && !benchTor && !benchMachines && !benchFall && !benchHover && !benchTeleClose && !benchMenus && !benchWater && !benchFlyFollow && !benchHotbar && !benchInventory && !benchMap && !benchViewmodel && !benchQuests && !benchHunger && !benchFarm && !benchAnimals && !benchThreats && !benchAnimalPath && benchShotTabs == 0 && !benchForest && !benchFlow && !benchPond && !benchBucket && !benchPump && !benchTerrain && !benchShelter && !benchRoom && !benchFacing && !benchShadow && !benchParticles && !benchBiomes && !benchOil && !benchSpring && !benchShotAnimals && !benchShotMachines && benchShotBiomes < 0 && !benchFarForest && !benchRecipes && !benchWeather && !benchDecor && !benchMaterials && !benchDamage && !benchCrafting && !benchSuit && !benchTools && !benchRivers && !benchRing && !benchRocket && !benchStation && !benchBlueprint && !benchSmallBody && !benchTrees && !benchChop && benchPersist == 0 && benchBuild == 0 && benchFactory == 0 && !benchProgression) || GetTime() > 600.0) {
                     benchStart = GetTime();
                     printf("bench: world ready after %.2f s (%d chunks, avg build %.2f ms of which sampling %.2f ms, %d worker threads)\n",
                         GetWorldStats().lastGenerationSeconds, GetWorldStats().chunks, GetWorldStats().avgBuildMs, GetWorldStats().avgSampleMs, GetWorldStats().workerThreads);

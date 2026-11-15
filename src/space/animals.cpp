@@ -25,6 +25,7 @@
 #include <cstring>
 #include <unordered_map>
 #include <unordered_set>
+#include <queue>
 #include <vector>
 
 namespace {
@@ -133,6 +134,9 @@ struct Animal {
     float settleIn = 0.0f;                      // seconds to the next ground check (#223)
     float detourSide = 0.0f;                    // +1 / -1: the side it goes round an obstacle on (0: none)
     float detourHeading = 0.0f, detourTime = 0.0f;   // the detour being followed, and for how much longer (s)
+    std::vector<Vector3> path;                  // a planned route (#253): body-local ground points, next first
+    Vector3 pathGoal{};                         // where the route was planned to (replanned when the goal moves on)
+    float pathAge = 0.0f, planWait = 0.0f;      // seconds on this route; no new plan before this runs out (s)
 };
 std::vector<Animal> animals;
 std::unordered_map<std::string, std::unordered_set<uint64_t>> spawnedTiles; // body -> herd tiles decided
@@ -214,6 +218,89 @@ bool BlockedAlong(const Planetoid& body, Vector3 from, Vector3 to, float height)
         if (BlockedByParts(body, at, Vector3Normalize(at), height)) return true;
     }
     return false;
+}
+
+// Pathfinding (#253): A* on a 1 m grid in the tangent plane around the animal (+-kPathCells), each cell's ground
+// found with the same probe and limits as a step (ledge up/down from the cell it is reached from, headroom, build
+// parts). Cells are probed lazily and the search is capped, so a plan costs a few ms at most; with no route
+// within the cap it returns the part of the way that gets closest, if that is real progress.
+constexpr int kPathCells = 40;          // grid half-width (m): 81 x 81 cells
+constexpr int kPathMaxExpand = 1500;
+int gPathPlans = 0, gPathFound = 0;     // tests: plans made and routes found
+double gPathMs = 0.0, gPathWorstMs = 0.0;
+
+bool PlanPath(const Planetoid& body, const PlanetField& pf, Vector3 from, Vector3 goal, float height, float reachUp, float reachDown,
+              std::vector<Vector3>& out) {
+    const auto t0 = std::chrono::steady_clock::now();
+    ++gPathPlans;
+    out.clear();
+    const Vector3 up = Vector3Normalize(from);
+    Vector3 east, north;
+    TangentFrame(up, east, north);
+    constexpr int W = 2 * kPathCells + 1;
+    const Vector3 g = Vector3Subtract(goal, from);
+    const int gx = std::clamp((int)lroundf(Vector3DotProduct(g, east)), -kPathCells, kPathCells);
+    const int gy = std::clamp((int)lroundf(Vector3DotProduct(g, north)), -kPathCells, kPathCells);
+    auto idx = [&](int x, int y) { return (y + kPathCells) * W + (x + kPathCells); };
+    static std::vector<float> cost, failR; static std::vector<int> parent; static std::vector<Vector3> ground; static std::vector<uint8_t> state;
+    cost.assign(W * W, 1e30f); parent.assign(W * W, -1); ground.assign(W * W, Vector3{}); state.assign(W * W, 0); failR.assign(W * W, 0.0f); // 0 unseen, 1 ground known, 2 probe failed (from failR), 3 closed
+    auto heur = [&](int x, int y) { return sqrtf((float)((x - gx) * (x - gx) + (y - gy) * (y - gy))); };
+    struct Node { float f; int i; bool operator<(const Node& o) const { return f > o.f; } };
+    std::priority_queue<Node> open;
+    const int s = idx(0, 0), goalI = idx(gx, gy);
+    cost[s] = 0.0f; ground[s] = from; state[s] = 1;
+    open.push({ heur(0, 0), s });
+    int best = s, expanded = 0;
+    float bestH = heur(0, 0);
+    while (!open.empty() && expanded < kPathMaxExpand) {
+        // A 3 ms budget: past it, the part of the way that gets closest (the animal plans on from its end).
+        if ((expanded & 15) == 15 && std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count() > 3.0) break;
+        const Node n = open.top(); open.pop();
+        if (state[n.i] == 3) continue;
+        state[n.i] = 3;
+        ++expanded;
+        const int x = n.i % W - kPathCells, y = n.i / W - kPathCells;
+        const float h = heur(x, y);
+        if (h < bestH) { bestH = h; best = n.i; }
+        if (n.i == goalI) break;
+        const Vector3 at = ground[n.i];
+        const float r = Vector3Length(at);
+        for (int dy = -1; dy <= 1; ++dy)
+            for (int dx = -1; dx <= 1; ++dx) {
+                if (!dx && !dy) continue;
+                const int nx = x + dx, ny = y + dy;
+                if (nx < -kPathCells || nx > kPathCells || ny < -kPathCells || ny > kPathCells) continue;
+                const int j = idx(nx, ny);
+                if (state[j] == 3) continue;
+                Vector3 gj; float e;
+                // A cell's ground is probed once and reused from other neighbours when it is within their ledge reach;
+                // a failed probe is retried only from a height over 0.8 m different (a cell under a cliff seen from
+                // above may be reachable from below).
+                if (state[j] == 1) {
+                    gj = ground[j];
+                    const float dz = Vector3Length(gj) - r;
+                    if (dz > reachUp || dz < -reachDown || BlockedAlong(body, at, gj, height)) continue;
+                } else {
+                    if (state[j] == 2 && fabsf(failR[j] - r) < 0.8f) continue;
+                    const Vector3 dir = Vector3Normalize(Vector3Add(from, Vector3Add(Vector3Scale(east, (float)nx), Vector3Scale(north, (float)ny))));
+                    if (!Ground(body, pf, dir, gj, e, r, reachUp, reachDown) || body.densityAt(Vector3Add(gj, Vector3Scale(dir, height * 0.8f))) >= ISO_LEVEL + kRockMargin ||
+                        BlockedAlong(body, at, gj, height)) { state[j] = 2; failR[j] = r; continue; }
+                    ground[j] = gj; state[j] = 1;
+                }
+                const float c = cost[n.i] + Vector3Distance(at, gj) + 0.5f * fabsf(Vector3Length(gj) - r);
+                if (c < cost[j]) { cost[j] = c; parent[j] = n.i; open.push({ c + heur(nx, ny), j }); }
+            }
+    }
+    const bool reached = best == goalI || bestH < 1.5f;
+    // Partial routes only when they get at least 4 m closer: otherwise the local detour does as well.
+    if (best != s && (reached || heur(0, 0) - bestH > 4.0f)) {
+        for (int i = best; i != s && i >= 0; i = parent[i]) out.push_back(ground[i]);
+        std::reverse(out.begin(), out.end());
+    }
+    if (reached) ++gPathFound;
+    const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+    gPathMs += ms; gPathWorstMs = std::max(gPathWorstMs, ms);
+    return !out.empty();
 }
 
 // An animal at `pos` is penned when build parts stand within 30 m in all eight directions.
@@ -487,6 +574,8 @@ void Animals_Update(Scene& world, float dt, float worldDt, bool inputEnabled) {
             a.herdSize = herd;
         }
     }
+    static const bool pathsOn = !(getenv("RAYLIBGAME_ANIMAL_PATHS") && getenv("RAYLIBGAME_ANIMAL_PATHS")[0] == '0'); // A/B
+    int plansLeft = pathsOn ? 1 : 0; // route plans this update (#253)
     std::vector<int> gone;
     std::unordered_map<std::string, Planetoid*> bodies;
     for (size_t i = 0; i < animals.size(); ++i) {
@@ -610,6 +699,21 @@ void Animals_Update(Scene& world, float dt, float worldDt, bool inputEnabled) {
             const float x = Vector3DotProduct(toward, east), y = Vector3DotProduct(toward, north);
             if (x * x + y * y > 1e-6f) a.heading = atan2f(y, x);
         }
+        // A planned route (#253): head for its next point while the goal stays put (within 6 m) and the route is fresh.
+        // Fleeing, the goal is a point 25 m on away from the threat.
+        a.planWait = std::max(0.0f, a.planWait - step);
+        const Vector3 goalPt = !steer ? a.pos : a.state == State::Flee && Vector3Length(toward) > 1e-3f
+            ? Vector3Add(a.pos, Vector3Scale(Vector3Normalize(toward), 25.0f)) : Vector3Add(a.pos, toward);
+        if (!a.path.empty()) {
+            a.pathAge += step;
+            if (!steer || speed <= 0.0f || a.pathAge > 10.0f || Vector3Distance(a.pathGoal, goalPt) > 6.0f) a.path.clear();
+            while (!a.path.empty() && Vector3Distance(a.path.front(), a.pos) < 0.7f) a.path.erase(a.path.begin());
+            if (!a.path.empty()) {
+                const Vector3 w = Vector3Subtract(a.path.front(), a.pos);
+                a.heading = atan2f(Vector3DotProduct(w, north), Vector3DotProduct(w, east));
+                a.detourTime = 0.0f;
+            }
+        }
         if (speed <= 0.0f) { a.moveSpeed = 0.0f; continue; }
         // Move along the surface; turn away from water, cliffs and build parts.
         const float stepLen = speed * step * (0.6f + 0.4f * a.age);
@@ -639,6 +743,19 @@ void Animals_Update(Scene& world, float dt, float worldDt, bool inputEnabled) {
         else if (a.detourTime > 0.0f) a.detourTime = 0.0f;
         bool ok = tryStep(a.heading);
         if (ok && a.detourTime <= 0.0f) a.detourSide = 0.0f;
+        if (!ok && steer && !a.path.empty()) { a.path.clear(); a.planWait = 1.0f; } // the route's step failed (a thin wall between cells)
+        // Blocked on the way somewhere: plan a route round (one plan a frame for all animals, then a 3 s wait after a
+        // failed one); the local detour below covers the time between.
+        if (!ok && steer && a.path.empty() && a.planWait <= 0.0f && plansLeft > 0) {
+            --plansLeft;
+            if (PlanPath(*body, *field, a.pos, goalPt, height, std::max(reachUp, 0.35f), std::max(reachDown, 0.35f), a.path)) {
+                a.pathGoal = goalPt; a.pathAge = 0.0f; a.planWait = 1.0f;
+                const Vector3 w = Vector3Subtract(a.path.front(), a.pos);
+                a.heading = atan2f(Vector3DotProduct(w, north), Vector3DotProduct(w, east));
+                a.detourTime = 0.0f;
+                ok = tryStep(a.heading);
+            } else a.planWait = 3.0f;
+        }
         if (!ok && steer) {
             if (a.detourSide == 0.0f) a.detourSide = Rand01(a.rng) < 0.5f ? 1.0f : -1.0f;
             for (float turn : { 0.5f, 1.0f, 1.6f, 2.2f, 3.1f })
@@ -929,4 +1046,8 @@ bool Animals_LoadLine(const char* tok, FILE* f) {
         return true;
     }
     return false;
+}
+
+void Animals_PathStats(int& plans, int& found, double& avgMs, double& worstMs) {
+    plans = gPathPlans; found = gPathFound; avgMs = gPathPlans ? gPathMs / gPathPlans : 0.0; worstMs = gPathWorstMs;
 }
