@@ -35,8 +35,9 @@ out vec3 fragNormal;       // world space
 out vec3 fragTexPos;       // body-aligned texturing position (wrapped): textures stay attached to a
 out vec3 fragLocalNormal;  // moving/spinning body and don't swim when the floating origin shifts
 out vec3 fragChunkPos;     // chunk-local position (overlap clipping)
-out float fragSky;         // 1 = open to the sky, 0 = buried (scales sunlight)
-out float fragOcclusion;   // #132
+centroid out float fragSky;  // 1 = open to the sky, 0 = buried (scales sunlight). Centroid (#402): with MSAA, samples past a triangle edge
+                            // extrapolated it below 0 (negative light, NaN through the gamma pow)
+centroid out float fragOcclusion; // #132 (centroid: as fragSky)
 out vec2 fragCanopy;       // planets: distant forest canopy cover (x) and latitude (y)
 flat out float fragClimate; // planets: the packed climate (2 + temperature step + moisture), per triangle (#254)
 out float fragOreKind;     // planets: which ore (1 + kind) / 8, 0 none

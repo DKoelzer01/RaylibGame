@@ -8,8 +8,8 @@ in vec3 fragNormal;     // world space
 in vec3 fragTexPos;     // body-aligned, wrapped to the texture repeat (texturing)
 in vec3 fragLocalNormal;
 in vec3 fragChunkPos;   // chunk-local (overlap clipping)
-in float fragSky;       // 1 = open to the sky, 0 = buried (caves, deep pits)
-in float fragOcclusion; // short-range ambient occlusion (#132): 0 open .. 1 enclosed
+centroid in float fragSky;       // 1 = open to the sky, 0 = buried (caves, deep pits); centroid: #402
+centroid in float fragOcclusion; // short-range ambient occlusion (#132): 0 open .. 1 enclosed
 in vec2 fragCanopy;     // planets: forest canopy cover and latitude (painted in beyond the real trees)
 flat in float fragClimate; // the packed climate, per triangle (#254: interpolated, it striped the biome tints)
 in float fragOreKind;   // planets: which ore, (1 + kind) / 8 (0 none)
