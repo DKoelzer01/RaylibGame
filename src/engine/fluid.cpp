@@ -452,7 +452,7 @@ void StepSite(Site& s, int parity) {
                             moved = true; ++dbgSide;
                         }
                     }
-                    if (f > 0 && f <= kEvaporate && !src && (!belowOpen || belowFull)) { f = 0; moved = true; } // a resting speck soaks away
+                    if (f > 0 && f <= kEvaporate && !src && !belowOpen) { f = 0; moved = true; } // a speck on the ground soaks away (on water it stays: that water's surface, #454)
                     b->fill[i] = (uint8_t)f;
                 }
         // Sources hold their level.

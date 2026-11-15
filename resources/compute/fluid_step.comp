@@ -73,6 +73,13 @@ bool rests(uint slot, int x, int y, int z, uint c) {
     return F(b) >= CAP(b) || (F(b) > 0u && KIND(b) != KIND(c)); // full: at its capacity (#454)
 }
 
+// Whether a cell lies on solid ground (not on fluid): only there does a speck soak away.
+bool onGround(uint slot, int x, int y, int z) {
+    bool proc; int face;
+    int g = neighbour(slot, x, y, z, 0, 0, -1, proc, face);
+    return g >= 0 && (FL(readCell(g, proc)) & SOLID) != 0u;
+}
+
 // The kind an empty cell takes when fluids could flow in: the fullest resting side neighbour's (ties: lowest face).
 uint kindFor(uint slot, int x, int y, int z) {
     uint best = 0u, kind = 0u;
@@ -197,7 +204,9 @@ void main() {
     int nf = clamp(f + net, 0, 255);
     if (f == 0 && nf > 0) kind = inKind;
     if ((fl & SOURCE) != 0u) nf = int(TG(c));                            // sources hold their level
-    else if (evaporate != 0 && nf > 0 && nf <= 3 && rests(slot, x, y, z, c)) nf = 0;          // a resting speck soaks away
+    // A speck on the ground soaks away; on water it is that water's surface and stays (#454: a body over cells that hold
+    // little lost the remainder of every fall into them, ~15% of a draining pond).
+    else if (evaporate != 0 && nf > 0 && nf <= 3 && onGround(slot, x, y, z)) nf = 0;
     uint old = outC[g];                                                   // this substep's start (A)
     uint res = pack(uint(nf), (fl & 31u) | (kind << 5), c);
     if (F(old) != uint(nf)) atomicOr(flagsOut[slot], 1u);
