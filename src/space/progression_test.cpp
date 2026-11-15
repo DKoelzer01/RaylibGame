@@ -226,7 +226,7 @@ namespace {
         add("craft and place a kiln", [] { return Craft("kiln", 1) && Place("kiln", PartType::Kiln, { 3, 0, 0 }); });
         add("smelt copper", [] { static bool fed = false; if (!fed) { fed = true; Give("kiln", "copper_ore", 38); Give("kiln", "any_log", 8); } return Collect("kiln", "copper_ingot", 38); });
         add("smelt tin", [] { static bool fed = false; if (!fed) { fed = true; Give("kiln", "tin_ore", 8); Give("kiln", "any_log", 2); } return Collect("kiln", "tin_ingot", 8); });
-        add("smelt iron", [] { static bool fed = false; if (!fed) { fed = true; Give("kiln", "iron_ore", 38); Give("kiln", "any_log", 10); } return Collect("kiln", "iron_ingot", 38); });
+        add("smelt iron", [] { static bool fed = false; if (!fed) { fed = true; Give("kiln", "iron_ore", 50); Give("kiln", "any_log", 12); } return Collect("kiln", "iron_ingot", 50); }); // plates come from ingots now (#212); 2 ore stay for the electric furnace
         add("alloy 28 bronze", [] {
             static bool fed = false;
             if (!fed) { fed = true; Give("kiln", "copper_ingot", 21); Give("kiln", "tin_ingot", 7); Give("kiln", "any_log", 3); }

@@ -17,6 +17,8 @@
 
 #include "imgui.h"
 #include <string>
+#include <algorithm>
+#include <cmath>
 
 #include "buildtool.h"
 #include "itemicons.h"
@@ -484,6 +486,48 @@ void GameUI_Draw(Scene& world) {
     ImGui::End();
 }
 
+// Pickup feed (#208): "+N item" lines in the bottom right, newest at the bottom, each fading out ~3 s after its last
+// pickup; more of an item still on screen adds to its line (digging shows one growing "+12.35 Dirt").
+namespace {
+    struct Pickup { std::string id; double amount; double t; };
+    std::vector<Pickup> pickups;
+    constexpr double kPickupShow = 3.0, kPickupFade = 0.7;
+    constexpr size_t kPickupLines = 6;
+    void OnPickup(const std::string& id, double amount) {
+        const double now = GetTime();
+        for (size_t i = 0; i < pickups.size(); ++i)
+            if (pickups[i].id == id && now - pickups[i].t < kPickupShow) {
+                Pickup p = pickups[i];
+                p.amount += amount; p.t = now;
+                pickups.erase(pickups.begin() + (long)i);
+                pickups.push_back(p); // the freshest line goes to the bottom
+                return;
+            }
+        pickups.push_back({ id, amount, now });
+        if (pickups.size() > 12) pickups.erase(pickups.begin());
+    }
+    void DrawPickups() {
+        const double now = GetTime();
+        pickups.erase(std::remove_if(pickups.begin(), pickups.end(), [&](const Pickup& p) { return now - p.t > kPickupShow; }), pickups.end());
+        const int w = GetScreenWidth(), h = GetScreenHeight(), line = 26, icon = 22;
+        const size_t first = pickups.size() > kPickupLines ? pickups.size() - kPickupLines : 0;
+        int y = h - 140 - (int)(pickups.size() - first) * line;
+        for (size_t i = first; i < pickups.size(); ++i, y += line) {
+            const Pickup& p = pickups[i];
+            const float a = (float)std::clamp((kPickupShow - (now - p.t)) / kPickupFade, 0.0, 1.0);
+            const ItemDef* def = itemDB.find(p.id);
+            const double r = std::round(p.amount);
+            const char* txt = fabs(p.amount - r) < 0.005 ? TextFormat("+%.0f %s", r, def ? def->name.c_str() : p.id.c_str())
+                                                          : TextFormat("+%.2f %s", p.amount, def ? def->name.c_str() : p.id.c_str());
+            const int tw = MeasureText(txt, 20), x = w - 30 - tw;
+            DrawRectangle(x - icon - 14, y - 2, tw + icon + 22, line - 2, Fade(BLACK, 0.35f * a));
+            ItemIcons_Draw(p.id, { (float)(x - icon - 8), (float)y, (float)icon, (float)icon }, Fade(WHITE, a));
+            DrawText(txt, x, y + 2, 20, Fade(RAYWHITE, a));
+        }
+    }
+}
+void GameUI_InitPickupFeed() { inventory.onAdded = OnPickup; }
+
 void GameUI_DrawHUD(Scene& world) {
     // Speeds against the body you are near (its co-rotating surface frame, as the rocket HUD's "surface" speed): the
     // world velocity includes the planet's spin and orbit, which read as 60-90 m/s while hovering (#239).
@@ -517,6 +561,7 @@ void GameUI_DrawHUD(Scene& world) {
         }
     }
     if (inventory.overflowed) { GameUI_Toast("Inventory full: some items were lost"); inventory.overflowed = false; }
+    DrawPickups(); // #208
     if (ship.piloted) {
         DrawText(TextFormat("SHIP  %.0f m/s", relSpeed(ship.velocity)), w - 220, 70, 20, SKYBLUE);
         if (GetTime() < toastUntil) DrawText(toast.c_str(), 10, GetScreenHeight() - 90, 20, YELLOW);

@@ -27,7 +27,7 @@ steam_macerator | copper_dust 1    | copper_ore 1              | 200 | 4
 steam_macerator | tin_dust 1       | tin_ore 1                 | 200 | 4
 steam_macerator | iron_dust 1      | iron_ore 1                | 200 | 4
 steam_macerator | sand 1           | stone 1                   | 100 | 2
-furnace         | iron_plate 1     | iron_ore 1                | 200 | 8
+furnace         | iron_ingot 1     | iron_ore 1                | 200 | 8
 furnace         | iron_ingot 1     | iron_dust 1               | 100 | 8
 furnace         | copper_ingot 1   | copper_dust 1             | 100 | 8
 furnace         | glass 1          | sand 4                    | 160 | 8

@@ -107,12 +107,12 @@ void GameSave_Register() {
                 long long c = 0;
                 if (fscanf(f, " %d %63s %lld", &i, id, &c) == 3 && i >= 0 && i < Inventory::kSlots && c > 0 && itemDB.find(id)) {
                     InvSlot& s = inventory.grid()[i];
-                    if (s.empty()) { s.id = id; s.centi = c; } else inventory.addAmount(id, c / 100.0);
+                    if (s.empty()) { s.id = id; s.centi = c; } else { ++inventory.muted; inventory.addAmount(id, c / 100.0); --inventory.muted; } // no pickup feed for a load (#208)
                 }
             } else if (strcmp(tok, "item") == 0) {
                 char id[64] = {};
                 int n = 0;
-                if (fscanf(f, " %63s %d", id, &n) == 2) inventory.add(id, n);
+                if (fscanf(f, " %63s %d", id, &n) == 2) { ++inventory.muted; inventory.add(id, n); --inventory.muted; }
             }
         }
     };

@@ -216,7 +216,9 @@ double Inventory::addAmount(const std::string& id, double amount) {
     fill(0, kGrid);
     if (!tool) fill(kGrid, kSlots);
     if (left > 0) overflowed = true;
-    obtained[id] += (KindOf(id) == ItemKind::Resource ? ToCenti(amount) : (int64_t)floor(amount + 1e-6) * 100) / 100.0 - left / 100.0;
+    const double added = (KindOf(id) == ItemKind::Resource ? ToCenti(amount) : (int64_t)floor(amount + 1e-6) * 100) / 100.0 - left / 100.0;
+    obtained[id] += added;
+    if (onAdded && muted <= 0 && added > 0.0) onAdded(id, added); // the pickup feed (#208)
     return left / 100.0;
 }
 

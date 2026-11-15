@@ -1,5 +1,5 @@
 # output count = input count, input count ...   (crafted by hand from the inventory screen)
-iron_plate 1      = iron_ore 3
+iron_plate 1      = iron_ingot 2
 water 1           = ice 2
 oxygen_canister 1 = water 2, iron_plate 1
 power_cell 1      = iron_plate 2, regolith 4

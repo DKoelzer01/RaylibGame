@@ -759,7 +759,6 @@ void Animals_Aim(Scene& world, bool inputEnabled) {
             else {
                 inventory.add(s.product, s.product == "wool" ? 2 : 1);
                 a.productReady = now + s.regrow;
-                GameUI_Toast(TextFormat("+%s", s.product.c_str()));
                 Audio_Play(Sfx::Pickup, 0.5f);
             }
         }

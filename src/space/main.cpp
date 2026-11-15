@@ -241,6 +241,8 @@ int main(int argc, char** argv)
     bool benchDoorway = false; int doorPhase = 0, doorLane = 0; double doorStart = 0.0; uint32_t doorPlot = 0; bool doorPass[2] = { false, false }; // --test-doorway (#255): 2 m openings pass, 1.5 m ones block
     bool benchMenus = false;       // --test-menus: main menu, new game, pause, save & quit, load
     bool benchTime = false;        // --test-time: dawn start (#259), a +6 h jump carries the player (#275)
+    bool benchPickups = false;     // --test-pickups: the pickup feed (#208): repeats merge, a screenshot while it shows
+    int pickupFrames = 0;
     int timeStep = 0, timeFrames = 0; float timeElev0 = 0.0f; Vector3 timeLocal0 = { 0, 0, 0 }; bool timeOk = true;
     bool benchWater = false;       // --test-water: rivers and ponds near the start, their beds and clay
     bool benchFlyFollow = false;   // --test-flyfollow: the fly camera rides its reference body
@@ -455,6 +457,7 @@ int main(int argc, char** argv)
         if (std::string(argv[i]) == "--test-telescope-close") benchTeleClose = true; // zoom 16x at the horizon, close: worst frame after (#261)
         if (std::string(argv[i]) == "--test-menus") benchMenus = true;
         if (std::string(argv[i]) == "--test-time") benchTime = true;
+        if (std::string(argv[i]) == "--test-pickups") benchPickups = true;
         if (std::string(argv[i]) == "--test-water") benchWater = true;
         if (std::string(argv[i]) == "--test-flyfollow") benchFlyFollow = true;
         if (std::string(argv[i]) == "--test-hotbar") benchHotbar = true;
@@ -633,6 +636,7 @@ int main(int argc, char** argv)
     itemDB.load("resources/data/items.txt", "resources/data/recipes.txt");
     Fluid::LoadKinds("resources/data/fluids.txt"); // water, crude oil, ... (fluid.h)
     ItemIcons_Init(); // one painted icon per item (itemicons.h)
+    GameUI_InitPickupFeed(); // "+N item" in the bottom right (#208)
     for (int i = 1; i < argc; ++i)
         if (std::string(argv[i]) == "--test-compute") {
             // GPU compute self-test: 1M values through a compute shader, read back and checked.
@@ -5788,6 +5792,18 @@ int main(int argc, char** argv)
             lastSwings = terrainTool.swings;
         }
 
+        // --test-pickups (#208): dug stone in three bits (one merged line), a log and a tool; a screenshot while they show.
+        if (benchPickups && gameState == 1 && !loading && WorldIdle()) {
+            ++pickupFrames;
+            if (pickupFrames == 5) { inventory.addFractional("stone", 1.25f); inventory.add("oak_log", 3); }
+            if (pickupFrames == 15) inventory.addFractional("stone", 1.25f);
+            if (pickupFrames == 25) { inventory.addFractional("stone", 0.5f); inventory.add("stone_pickaxe", 1); }
+            if (pickupFrames == 40) {
+                TakeScreenshot("bench_pickups.png");
+                printf("bench: pickups: screenshot bench_pickups.png (expect +3 Stone, +3 Oak Log, +1 Stone Pickaxe)\n");
+                benchPickups = false;
+            }
+        }
         // --test-time (#259, #275): a new game's dawn start (the sun ~4 deg under the spawn's horizon, rising), then a +6 h
         // jump through the debug time skip: the sun higher, and the player carried along (same body-local spot, grounded).
         if (benchTime && gameState == 1 && !loading && WorldIdle()) {

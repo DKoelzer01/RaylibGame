@@ -134,7 +134,6 @@ int Farm_Harvest(Planetoid& body, Plot& plot, int part) {
     const int seeds = 1 + (GetRandomValue(0, 1));
     inventory.add(c->yield, c->yieldCount);
     inventory.add(c->seed, seeds);
-    GameUI_Toast(TextFormat("+%d %s  +%d seeds", c->yieldCount, c->yield.c_str(), seeds));
     QuestBook_Count("harvest");
     Audio_Play(Sfx::Pickup, 0.5f);
     fields.erase(it);

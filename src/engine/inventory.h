@@ -6,6 +6,7 @@
 #include <unordered_map>
 #include <cstdint>
 #include <vector>
+#include <functional>
 
 #include "voxel.h"
 
@@ -101,6 +102,10 @@ public:
     void swapSlots(int a, int b);  // move/swap two cells, merging same items up to the stack limit
     void sort();                   // the main grid by kind, then name; merges partial stacks (the hotbar stays as it is)
     bool overflowed = false;       // set when something did not fit; the game clears it after warning
+    // Pickup feed (#208): called with what actually went in (not what overflowed); the game sets it on the player's
+    // inventory. muted > 0 (loading a save) skips it.
+    std::function<void(const std::string&, double)> onAdded;
+    int muted = 0;
 private:
     // Room for `id` across the grid in hundredths (existing stacks plus empty slots).
     int64_t room(const std::string& id) const;
