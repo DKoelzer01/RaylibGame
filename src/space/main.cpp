@@ -7102,7 +7102,7 @@ int main(int argc, char** argv)
                 printf("bench: menus: title screen with no world (no bodies, no jobs, no terrain arena, #503): %s\n", noWorld ? "yes" : "NO");
                 TakeScreenshot("bench_menu_main.png"); pendingMenu.action = MenuAction::NewGame; menuStep = 2; menuFrames = 0;
             }
-            else if (menuStep == 2 && menuFrames > 60 && WorldIdle()) {
+            else if (menuStep == 2 && menuFrames > 60 && WorldIdle() && !loading) { // (New Game spawns the player: wait out its loading screen)
                 menuOk &= gameState == 1;
                 printf("bench: menus: New Game -> in game: %s\n", gameState == 1 ? "yes" : "NO");
                 menuEsc = true; menuStep = 3; menuFrames = 0; // pause through the in-game Esc check, as a key press does
