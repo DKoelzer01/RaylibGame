@@ -221,6 +221,9 @@ void TerrainGpu_ClearQueued() {
     S.queue.clear(); // their fields (the old world's, with its erosion bake) go with them
 }
 
+static std::atomic<bool> gHold{ false };
+void TerrainGpu_SetHold(bool hold) { gHold.store(hold); }
+
 void TerrainGpu_SetBackground(float from, bool throttle) { gBackgroundFrom = from; gBackgroundThrottle = throttle; }
 
 void TerrainGpu_Pump() {
@@ -319,6 +322,7 @@ void TerrainGpu_Pump() {
             int background = 0, skipped = 0;
             for (auto it = S.queue.begin(); it != S.queue.end() && (int)sl.jobs.size() < kMaxBlocks;) {
                 GpuBlockJob& j = it->second;
+                if (gHold.load() && j.priority >= 0.0f) break; // #387 back-pressure: only edits while the uploads catch up
                 if (j.wanted && !j.wanted()) { it = S.queue.erase(it); continue; }
                 if (gBackgroundThrottle && j.priority >= gBackgroundFrom) { // the rest of the queue is background too
                     if (backgroundSent || background >= kMaxBackgroundBlocks) break;

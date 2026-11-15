@@ -62,7 +62,8 @@ namespace {
         ~ForegroundToken() { --gForegroundBuilds; }
     };
     std::vector<ChunkMeshData> results;        // filled by workers
-    std::deque<ChunkMeshData> pendingUploads;  // main thread only
+    std::vector<ChunkMeshData> pendingUploads; // main thread only; unordered (#387: worldUpdate picks the nearest each frame)
+    constexpr size_t kUploadBacklogCap = 4096; // results waiting for upload past which no new GPU batches go out (#387)
     std::vector<ChunkMeshData> waterResults;   // water-only rebuilds (#360), filled by workers (resultsMutex)
     std::atomic<long long> gWaterBuilds{ 0 };  // water-only rebuilds done, and their worker time (ms x 1000)
     std::atomic<long long> gWaterUs{ 0 };
@@ -1292,7 +1293,13 @@ void worldUpdate(Scene& world, float uploadBudgetMs) {
 
     // Uploads nearest first (#258): edits, then by the distance from the camera now (the queue was FIFO, so near
     // ground waited behind far nodes requested earlier). Nodes nobody wants any more drop out in IntegrateResult.
-    if (pendingUploads.size() > 1 && !gStreamOld) {
+    // #387: only the few that fit this frame are picked (an O(n) rank + nth_element), not the whole backlog sorted and
+    // moved every frame (15-26 ms a frame at 12-18k pending, which slowed the frames that drain it: a spiral).
+    static const float kBudgetOverride = getenv("RAYLIBGAME_UPLOAD_BUDGET_MS") ? (float)atof(getenv("RAYLIBGAME_UPLOAD_BUDGET_MS")) : -1.0f; // tests: force a backlog
+    if (kBudgetOverride >= 0.0f) uploadBudgetMs = kBudgetOverride;
+    const size_t kPick = gPreloadUrgent ? 1024 : 64; // at most this many uploads a frame (the spawn preload takes more)
+    std::vector<size_t> pick;
+    if (!pendingUploads.empty()) {
         std::unordered_map<uint64_t, Vector3> camOf;
         for (auto& obj : world.objects)
             if (auto* p = dynamic_cast<Planetoid*>(obj.get())) camOf[p->id] = p->toLocal(world.camera.position);
@@ -1306,25 +1313,36 @@ void worldUpdate(Scene& world, float uploadBudgetMs) {
         };
         std::vector<std::pair<float, size_t>> order;
         order.reserve(pendingUploads.size());
-        for (size_t i = 0; i < pendingUploads.size(); ++i) order.push_back({ rank(pendingUploads[i]), i });
-        std::stable_sort(order.begin(), order.end(), [](const auto& a, const auto& b) { return a.first < b.first; });
-        std::deque<ChunkMeshData> sorted;
-        for (const auto& o : order) sorted.push_back(std::move(pendingUploads[o.second]));
-        pendingUploads.swap(sorted);
+        for (size_t i = 0; i < pendingUploads.size(); ++i) order.push_back({ gStreamOld ? (float)i : rank(pendingUploads[i]), i });
+        const size_t k = std::min(kPick, order.size());
+        auto byRank = [](const auto& a, const auto& b) { return a.first < b.first || (a.first == b.first && a.second < b.second); };
+        if (k < order.size()) std::nth_element(order.begin(), order.begin() + (k - 1), order.end(), byRank);
+        std::sort(order.begin(), order.begin() + k, byRank);
+        for (size_t i = 0; i < k; ++i) pick.push_back(order[i].second);
     }
     // GPU uploads are the only main-thread cost; cap them per frame so streaming never hitches.
     const auto t0 = std::chrono::steady_clock::now();
     int uploads = 0;
-    // Preload-ring results (sorted last) get at most 1 ms of it outside the spawn preload: spare time only (#296).
+    // Preload-ring results (ranked last) get at most 1 ms of it outside the spawn preload: spare time only (#296).
     const float backgroundBudgetMs = gPreloadUrgent ? uploadBudgetMs : std::min(uploadBudgetMs, 1.0f);
-    while (!pendingUploads.empty()) {
+    std::vector<size_t> done;
+    for (size_t idx : pick) {
         const float elapsed = std::chrono::duration<float, std::milli>(std::chrono::steady_clock::now() - t0).count();
-        if (uploads > 0 && pendingUploads.front().priority >= kBackgroundPriority && elapsed > backgroundBudgetMs) break;
-        IntegrateResult(pendingUploads.front());
-        pendingUploads.pop_front();
+        if (uploads > 0 && pendingUploads[idx].priority >= kBackgroundPriority && elapsed > backgroundBudgetMs) break;
+        IntegrateResult(pendingUploads[idx]);
+        done.push_back(idx);
         uploads++;
         if (std::chrono::duration<float, std::milli>(std::chrono::steady_clock::now() - t0).count() > uploadBudgetMs) break;
     }
+    // Out of the backlog: swap-remove, highest index first so the indices still to remove stay valid.
+    std::sort(done.begin(), done.end(), std::greater<size_t>());
+    for (size_t idx : done) {
+        if (idx + 1 != pendingUploads.size()) pendingUploads[idx] = std::move(pendingUploads.back());
+        pendingUploads.pop_back();
+    }
+    // Back-pressure (#387): while the upload backlog is long, no new GPU density batches (finished ones are still
+    // collected), so results can't pile up faster than frames take them.
+    TerrainGpu_SetHold(pendingUploads.size() > kUploadBacklogCap);
 
     UpdateWater(world); // simulated water: chunks redraw their water surface (#360)
     GpuTimer_CpuMark("w-uploads");
@@ -1436,9 +1454,9 @@ void worldUpdate(Scene& world, float uploadBudgetMs) {
                     mix += TextFormat(" %s q%lld +%lld -%lld", JobTagName(tg), q, s - sub0[k], d - done0[k]);
                 sub0[k] = s; done0[k] = d;
             }
-            const char* line = TextFormat("[jobs] %.0f s: frame avg %.1f max %.1f ms; queued %d running %d fg %s | gpu pending %d, uploads pending %d | requests +%lld built +%lld, nodes %d |%s\n",
+            const char* line = TextFormat("[jobs] %.0f s: frame avg %.1f max %.1f ms; queued %d running %d fg %s | gpu pending %d, uploads pending %d%s | requests +%lld built +%lld, nodes %d |%s\n",
                                           now, 1000.0 * ftSum / std::max(1, ftN), 1000.0 * ftMax, (int)Jobs().queued(), Jobs().running(), Jobs().foregroundIdle() ? "idle" : "busy", TerrainGpu_Pending(),
-                                          (int)pendingUploads.size(), (long long)gRequests - req0, (long long)gBuilt - built0, stats.nodes, mix.c_str());
+                                          (int)pendingUploads.size(), pendingUploads.size() > kUploadBacklogCap ? " (hold)" : "", (long long)gRequests - req0, (long long)gBuilt - built0, stats.nodes, mix.c_str());
             printf("%s", line);
             logger.logf("%s", line);
             req0 = gRequests; built0 = gBuilt; ftSum = ftMax = 0.0; ftN = 0;
@@ -1830,9 +1848,18 @@ void generateWorld(Scene& world) {
 
 void BeginWorldStreaming() { generationStart = GetTime(); buildMsTotal = sampleMsTotal = 0.0; buildCount = 0; }
 
+// #387: everything queued for the old world's streaming: the GPU density queue (its blocks stayed wanted and kept the old
+// world and its bake alive), finished results and the upload backlog (18k stayed pending at the menu after a quit).
+void World_ClearStreamingQueues() {
+    TerrainGpu_ClearQueued();
+    { std::lock_guard<std::mutex> lock(resultsMutex); results.clear(); waterResults.clear(); }
+    pendingUploads.clear();
+    TerrainGpu_SetHold(false);
+}
+
 void unloadWorld(Scene& world) {
     Jobs().clearQueued();  // in-flight jobs finish; their results are dropped (planetoid ids are gone)
-    TerrainGpu_ClearQueued(); // #387: and the GPU density queue (its blocks stayed wanted and kept the old world alive)
+    World_ClearStreamingQueues(); // #387 (first: nothing queued to wait for; again below for what lands meanwhile)
     // Let the running builds finish now (#270: they kept the workers busy behind the main menu). A worker can be waiting on
     // a GPU density batch, so keep pumping those meanwhile (only batches in flight: the queue was just cleared). Bounded: a
     // stuck job must not hang the quit.
@@ -1845,6 +1872,7 @@ void unloadWorld(Scene& world) {
     player.nearest = nullptr; // every body goes (the player refinds its ground next update)
     gRings.clear();        // before their parent bodies go
     world.objects.clear(); // releases chunk meshes (and their arena ranges)
+    World_ClearStreamingQueues(); // #387: queued GPU blocks, results and uploads of the old world
     gPreload.clear();      // the preload rings and cache counts of the old bodies
     gCachedCount.clear();
     // The GPU side of the old world (#270): the terrain arena (grown to the last world's size: hundreds of MB) and the GPU

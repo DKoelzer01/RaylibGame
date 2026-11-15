@@ -7271,9 +7271,9 @@ int main(int argc, char** argv)
             // The New World screen's choice from last frame (#504). --test-menus creates with its own seed after a moment.
             NewWorldChoice nw = pendingNewWorld;
             pendingNewWorld = NewWorldChoice{};
-            if (gameState == 3 && benchMenus && nw.kind == NewWorldChoice::None) {
+            if (gameState == 3 && (benchMenus || playNewSeconds > 0.0) && nw.kind == NewWorldChoice::None) { // --play-new (#387) too
                 ++newWorldFrames;
-                if (newWorldFrames == 15) { TakeScreenshot("bench_menu_newworld.png"); printf("bench: menus: New Game -> the New World screen (#504): yes\n"); }
+                if (newWorldFrames == 15 && benchMenus) { TakeScreenshot("bench_menu_newworld.png"); printf("bench: menus: New Game -> the New World screen (#504): yes\n"); }
                 if (newWorldFrames == 20) { nw.kind = NewWorldChoice::Create; nw.seed = worldGen.seed; }
             }
             if (gameState == 3 && nw.kind == NewWorldChoice::Create) {

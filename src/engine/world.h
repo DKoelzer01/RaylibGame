@@ -145,6 +145,7 @@ std::vector<std::unique_ptr<RingSystem>>& Rings();
 void SetWorldTime(double t);
 void worldUpdate(Scene& world, float uploadBudgetMs = 3.0f); // LOD, streaming, uploads
 bool WorldIdle();                      // no queued/running jobs and nothing left to upload
+void World_ClearStreamingQueues();     // #387: drop queued GPU blocks, results and pending uploads (unloadWorld calls it)
 inline bool gJobLog = false;           // --perf-log: the job queue and mix every second (#387)
 // Spawn preload (#294): from now until the ring around the camera is built, ring builds run at full rate (no
 // spare-time gate). SpawnPreloadPending is true until then; progress 0..1.
