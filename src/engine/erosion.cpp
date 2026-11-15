@@ -369,6 +369,7 @@ uint64_t ErosionParamsKey(const ErosionParams& p) {
     const uint32_t ver = kErosionBakeVersion; mix(&ver, sizeof ver);
     for (float f : { p.cell, p.k, p.m, p.uplift, p.talusSoft, p.talusHard, p.glacial, p.glacialLine, p.start, p.wind }) mix(&f, sizeof f);
     for (int i : { p.steps, p.floodEvery, p.refine, p.refineSteps, p.margin }) mix(&i, sizeof i);
+    if (p.landKey) mix(&p.landKey, sizeof p.landKey); // #504: a world's generation parameters (0: defaults, old caches still load)
     return h;
 }
 

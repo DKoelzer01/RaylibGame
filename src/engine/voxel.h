@@ -12,6 +12,7 @@
 #include <unordered_set>
 
 #include "SimplexNoise.h"
+#include "worldgenparams.h"
 
 extern const int CHUNK_SIZE;          // cells per chunk edge (samples per edge = CHUNK_SIZE + 1)
 // The finest terrain cell (body-local units, metres on planets): the edit lattice spacing and the
@@ -188,6 +189,9 @@ public:
     float mantleRadius;           // edits stop below this
     bool moon;
     float minElevation, maxElevation; // the surface stays inside [radius + min, radius + max]
+    WorldGenParams gen;           // the world's generation parameters (#504): defaults = the terrain as before
+    // Before any sampling or the erosion bake: the parameters, and the elevation bounds they need (taller ranges).
+    void setGenParams(const WorldGenParams& p);
     bool foliage = false;         // grows trees (planets with life); the terrain paints distant canopy
     unsigned int foliageSeed = 0; // the tree system's seed (TreeCanopy matches its forests)
     unsigned int oreSeed = 0;     // ore deposits (oreKind)
