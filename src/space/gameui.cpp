@@ -144,10 +144,89 @@ static void CellName(ImDrawList* dl, ImVec2 p, ImVec2 q, const std::string& name
     dl->PopClipRect();
 }
 
-// The grid: click a cell to pick its stack up, click another to drop it there (swapping, or merging
-// the same item); hover and press 1-0 to put the item on the hotbar.
+// The stack on the cursor (#192): picked out of its cell, it follows the mouse until it is put down; whatever is still
+// held when the inventory closes goes back in.
+static InvSlot cursorStack;
+static void ReturnCursorStack() {
+    if (cursorStack.empty()) return;
+    ++inventory.muted; // not a pickup (#208)
+    inventory.addAmount(cursorStack.id, cursorStack.amount());
+    --inventory.muted;
+    cursorStack = InvSlot{};
+}
+// Puts up to `centi` of the cursor stack into a cell (empty, or the same item up to its stack limit).
+static void DropInto(InvSlot& cell, int64_t centi) {
+    if (cursorStack.empty()) return;
+    if (!cell.empty() && cell.id != cursorStack.id) return;
+    const int64_t room = (int64_t)StackLimit(cursorStack.id) * 100 - (cell.empty() ? 0 : cell.centi);
+    const int64_t put = std::min({ centi, cursorStack.centi, room });
+    if (put <= 0) return;
+    if (cell.empty()) { cell.id = cursorStack.id; cell.centi = 0; }
+    cell.centi += put;
+    cursorStack.centi -= put;
+    if (cursorStack.centi <= 0) cursorStack = InvSlot{};
+}
+// Shift+click: the stack to the other part (grid <-> hotbar), onto the same item first, then an empty cell.
+static void QuickMove(std::vector<InvSlot>& grid, int i) {
+    if (grid[i].empty()) return;
+    const bool toHotbar = i < Inventory::kGrid;
+    const int from = toHotbar ? Inventory::kGrid : 0, to = toHotbar ? Inventory::kSlots : Inventory::kGrid;
+    InvSlot moving = grid[i];
+    grid[i] = InvSlot{};
+    const int64_t cap = (int64_t)StackLimit(moving.id) * 100;
+    for (int pass = 0; pass < 2 && moving.centi > 0; ++pass)
+        for (int k = from; k < to && moving.centi > 0; ++k) {
+            InvSlot& c = grid[k];
+            if (pass == 0 ? (c.empty() || c.id != moving.id) : !c.empty()) continue;
+            if (c.empty()) { c.id = moving.id; c.centi = 0; }
+            const int64_t put = std::min(moving.centi, cap - c.centi);
+            c.centi += put; moving.centi -= put;
+        }
+    if (moving.centi > 0) { if (grid[i].empty()) grid[i] = moving; else { cursorStack = moving; ReturnCursorStack(); } } // no room: it stays
+}
+
+// One click on cell i of the player's inventory (#192): left picks up / puts down / merges / swaps (Shift: quick-move to the other
+// part), right takes half or, holding a stack, puts one down.
+static void CellClick(int i, bool right, bool shift) {
+    auto& grid = inventory.grid();
+    if (right) {
+        if (cursorStack.empty() && !grid[i].empty()) { // half of it (whole units; the larger half stays)
+            const int64_t half = (grid[i].centi / 100 / 2) * 100;
+            if (half > 0) { cursorStack.id = grid[i].id; cursorStack.centi = half; grid[i].centi -= half; }
+        } else if (!cursorStack.empty()) DropInto(grid[i], std::min<int64_t>(100, cursorStack.centi)); // one unit (or what fraction is left)
+        return;
+    }
+    if (cursorStack.empty() && shift) QuickMove(grid, i);
+    else if (cursorStack.empty()) { if (!grid[i].empty()) { cursorStack = grid[i]; grid[i] = InvSlot{}; } } // picked up
+    else if (grid[i].empty() || grid[i].id == cursorStack.id) DropInto(grid[i], cursorStack.centi); // put down / merged (what doesn't fit stays held)
+    else std::swap(grid[i], cursorStack); // swapped: the cell's stack is held now
+}
+
+bool GameUI_TestCursorStack() {
+    auto& g = inventory.grid();
+    auto amt = [&](int i, const char* id) { return !g[i].empty() && g[i].id == id ? g[i].centi / 100 : (int64_t)0; };
+    ReturnCursorStack();
+    inventory.clear();
+    ++inventory.muted; inventory.add("stone", 10); inventory.add("oak_log", 3); --inventory.muted; // cells 0 and 1
+    bool ok = true;
+    auto check = [&](bool c, const char* what) { if (!c) { printf("bench: inventory cursor: %s: NO\n", what); ok = false; } };
+    CellClick(0, false, false); check(cursorStack.id == "stone" && cursorStack.centi == 1000 && g[0].empty(), "click picks the stack up");
+    CellClick(5, false, false); check(amt(5, "stone") == 10 && cursorStack.empty(), "click puts it down");
+    CellClick(5, true, false);  check(amt(5, "stone") == 5 && cursorStack.centi == 500, "right-click takes half");
+    CellClick(6, true, false);  check(amt(6, "stone") == 1 && cursorStack.centi == 400, "right-click puts one down");
+    CellClick(6, false, false); check(amt(6, "stone") == 5 && cursorStack.empty(), "click merges the rest");
+    CellClick(1, false, false); CellClick(6, false, false); check(amt(6, "oak_log") == 3 && cursorStack.id == "stone" && cursorStack.centi == 500, "click on another item swaps");
+    CellClick(1, false, false); check(amt(1, "stone") == 5 && cursorStack.empty(), "...and puts the swapped stack down");
+    CellClick(6, false, true);  check(g[6].empty() && amt(Inventory::kGrid, "oak_log") == 3, "Shift-click moves to the hotbar");
+    CellClick(5, false, false); ReturnCursorStack(); check(cursorStack.empty() && inventory.count("stone") == 10, "a held stack goes back in when the window closes");
+    printf("bench: inventory cursor (#192): %s\n", ok ? "PASS" : "FAIL");
+    return ok;
+}
+
+// The grid (#192): click a cell to pick its stack up onto the cursor, click a cell to put it down (merging the same item,
+// swapping another); right-click takes half, or with a stack held puts one down; Shift+click moves a stack between the grid
+// and the hotbar. Hover and press 1-0 to put the item on the hotbar. With a container open a click sends the stack into it.
 static void DrawGrid() {
-    static int held = -1;
     auto& grid = inventory.grid();
     const float cell = 54.0f, gap = 4.0f;
     ImDrawList* dl = ImGui::GetWindowDrawList();
@@ -170,10 +249,9 @@ static void DrawGrid() {
                     else Factory::Insert(container.body, container.plot, container.part, id, n);
                     Audio_Play(Sfx::Pickup, 0.4f, 0.8f);
                 }
-                held = -1;
-            } else if (held < 0) { if (!grid[i].empty()) held = i; }
-            else { inventory.swapSlots(held, i); held = -1; }
+            } else if (!GameUI_ContainerOpen()) CellClick(i, false, IsKeyDown(KEY_LEFT_SHIFT) || IsKeyDown(KEY_RIGHT_SHIFT));
         }
+        if (!GameUI_ContainerOpen() && ImGui::IsItemClicked(ImGuiMouseButton_Right)) CellClick(i, true, false);
         const bool hover = ImGui::IsItemHovered();
         const InvSlot& s = grid[i];
         const ImVec2 q(p.x + cw, p.y + cell);
@@ -197,12 +275,11 @@ static void DrawGrid() {
             }
         }
         if (i >= Inventory::kGrid) dl->AddText(ImVec2(p.x + 3, p.y + 1), IM_COL32(150, 150, 150, 255), TextFormat("%d", (i - Inventory::kGrid + 1) % 10));
-        const ImU32 edge = i == held ? IM_COL32(255, 210, 80, 255) : hover ? IM_COL32(200, 200, 200, 255) : IM_COL32(70, 72, 78, 255);
-        dl->AddRect(p, q, edge, 4.0f, 0, i == held ? 2.5f : 1.0f);
+        const ImU32 edge = hover ? IM_COL32(200, 200, 200, 255) : IM_COL32(70, 72, 78, 255);
+        dl->AddRect(p, q, edge, 4.0f, 0, 1.0f);
         ImGui::PopID();
     }
-    if (held >= 0 && grid[held].empty()) held = -1;
-    if (ImGui::Button("Sort")) { inventory.sort(); held = -1; }
+    if (ImGui::Button("Sort")) { ReturnCursorStack(); inventory.sort(); }
     ImGui::SameLine();
     // Deposit (button or Q): items a nearby chest already holds go into it.
     const int nChests = uiWorld ? (int)Storage_NearbyChests(*uiWorld).size() : 0;
@@ -211,11 +288,16 @@ static void DrawGrid() {
         const int kinds = Storage_Deposit(*uiWorld);
         GameUI_Toast(kinds > 0 ? TextFormat("Deposited %d kind%s of item into nearby chests", kinds, kinds > 1 ? "s" : "") : "Nothing here matches what the nearby chests hold");
         if (kinds > 0) Audio_Play(Sfx::Pickup, 0.5f, 0.8f);
-        held = -1;
     }
     ImGui::EndDisabled();
     ImGui::SameLine();
-    ImGui::TextDisabled(held >= 0 ? "Click a cell to drop the stack" : nChests > 0 ? TextFormat("%d chest%s within reach", nChests, nChests > 1 ? "s" : "") : "Tools 1, blocks 256, resources 8192");
+    ImGui::TextDisabled(!cursorStack.empty() ? "Click: put it down  right-click: one"  : nChests > 0 ? TextFormat("%d chest%s within reach", nChests, nChests > 1 ? "s" : "") : "Tools 1, blocks 256, resources 8192");
+    if (!cursorStack.empty()) { // the held stack follows the mouse, over everything (#192)
+        ImDrawList* fg = ImGui::GetForegroundDrawList();
+        const ImVec2 m = ImGui::GetMousePos();
+        DrawItemIcon(fg, ImVec2(m.x - 18.0f, m.y - 18.0f), 36.0f, cursorStack.id);
+        if (KindOf(cursorStack.id) != ItemKind::Tool) fg->AddText(ImVec2(m.x + 12.0f, m.y + 8.0f), IM_COL32(255, 255, 255, 255), AmountText(cursorStack).c_str());
+    }
 }
 
 // Hand crafting: the recipes you know (every ingredient discovered, and any unlock met), searchable,
@@ -443,7 +525,7 @@ static void DrawCreative() {
 void GameUI_Draw(Scene& world) {
     uiWorld = &world;
     RecipeBook_Update(); // new recipes: a toast
-    if (!inventoryOpen) { container.open = false; return; }
+    if (!inventoryOpen) { ReturnCursorStack(); container.open = false; return; } // a stack still held goes back in (#192)
     CheckContainer(world);
     const ImGuiIO& io = ImGui::GetIO();
     ImGui::SetNextWindowPos(ImVec2(io.DisplaySize.x * 0.5f, io.DisplaySize.y * 0.5f), ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));

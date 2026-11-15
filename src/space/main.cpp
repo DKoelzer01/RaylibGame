@@ -245,6 +245,7 @@ int main(int argc, char** argv)
     bool shotInventory = false;    // --shot-inventory: long item names in their cells (#219)
     bool benchFoundation = false;  // --test-foundation: a part half in the ground clears its cell and nothing else (#210)
     bool shotPreview = false;      // --shot-preview: the build preview in the part's real shape (#197)
+    bool testInvCursor = false;    // --test-inv-cursor (#192)
     int pickupFrames = 0;
     int timeStep = 0, timeFrames = 0; float timeElev0 = 0.0f; Vector3 timeLocal0 = { 0, 0, 0 }; bool timeOk = true;
     bool benchWater = false;       // --test-water: rivers and ponds near the start, their beds and clay
@@ -464,6 +465,7 @@ int main(int argc, char** argv)
         if (std::string(argv[i]) == "--shot-inventory") shotInventory = true;
         if (std::string(argv[i]) == "--test-foundation") benchFoundation = true;
         if (std::string(argv[i]) == "--shot-preview") shotPreview = true;
+        if (std::string(argv[i]) == "--test-inv-cursor") testInvCursor = true;
         if (std::string(argv[i]) == "--test-water") benchWater = true;
         if (std::string(argv[i]) == "--test-flyfollow") benchFlyFollow = true;
         if (std::string(argv[i]) == "--test-hotbar") benchHotbar = true;
@@ -5859,6 +5861,7 @@ int main(int argc, char** argv)
                        placed ? "yes" : "NO", cleared ? "yes" : "NO", kept ? "yes" : "NO", worst, placed && cleared && kept ? "PASS" : "FAIL");
             }
         }
+        if (testInvCursor && gameState == 1 && !loading && WorldIdle()) { testInvCursor = false; GameUI_TestCursorStack(); }
         // --shot-preview (#197): a slope previewed on the ground next to a block (green), then into the block (red).
         if (shotPreview && gameState == 1 && !loading && WorldIdle()) {
             static int f = 0;
