@@ -1,8 +1,19 @@
 #include "jobsystem.h"
 
 #include <algorithm>
+#include <cstdlib>
+#ifdef _WIN32
+// Not <windows.h> (its names clash with raylib's): the two calls the workers need (#387).
+extern "C" __declspec(dllimport) void* __stdcall GetCurrentThread();
+extern "C" __declspec(dllimport) int __stdcall SetThreadPriority(void* thread, int priority);
+#endif
 
 JobSystem::JobSystem(unsigned threadCount) {
+    // #387: the workers run below normal priority, so a busy machine (compiles, browsers) takes their time, not the main
+    // thread's (under a 12-way compile: 17 -> 11 ms frames while streaming, worst 39 -> 11 ms after; spawn preload not slower).
+    // A/B: RAYLIBGAME_JOB_PRIORITY=normal, RAYLIBGAME_JOB_THREADS=N workers.
+    if (const char* e = getenv("RAYLIBGAME_JOB_THREADS"); e && threadCount == 0) threadCount = (unsigned)std::max(1, atoi(e));
+    if (const char* e = getenv("RAYLIBGAME_JOB_PRIORITY")) lowPriority = e[0] != 'n'; // default low (#387); =normal for A/B
     if (threadCount == 0) {
         const unsigned hw = std::thread::hardware_concurrency();
         threadCount = std::max(1u, hw > 1 ? hw - 1 : 1u); // leave a core for the main/render thread
@@ -53,6 +64,9 @@ size_t JobSystem::queued() const {
 }
 
 void JobSystem::workerLoop() {
+#ifdef _WIN32
+    if (lowPriority) SetThreadPriority(GetCurrentThread(), -1); // THREAD_PRIORITY_BELOW_NORMAL
+#endif
     for (;;) {
         std::function<void()> fn;
         bool fg = false;

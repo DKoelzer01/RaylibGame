@@ -1216,12 +1216,20 @@ int main(int argc, char** argv)
     }
 
     Recorder_Start(); // --record (#375): fixed frame time, seeded random values, the capture folder
-    if (playNewSeconds > 0.0) pendingMenu.action = MenuAction::NewGame; // --play-new (#387): the main menu's New Game, at once
+    // --play-new (#387): the main menu's New Game. RAYLIBGAME_PLAYNEW_REGEN=1: after 15 s on the menu (the launch world streaming
+    // behind it), and as a regenerated world (as loading a save or a second New Game does).
+    const bool playNewRegen = getenv("RAYLIBGAME_PLAYNEW_REGEN") && getenv("RAYLIBGAME_PLAYNEW_REGEN")[0] == '1';
+    if (playNewSeconds > 0.0 && !playNewRegen) pendingMenu.action = MenuAction::NewGame;
+    bool playNewIssued = playNewSeconds > 0.0 && !playNewRegen;
     double playNewStart = -1.0;
     while (windowKeepAlive && !WindowShouldClose())
     {
         if (Recorder_Finished()) break; // a --record capture is complete
-        if (playNewSeconds > 0.0 && gameState == 1) { if (playNewStart < 0.0) playNewStart = GetTime(); else if (GetTime() - playNewStart > playNewSeconds) break; }
+        if (playNewSeconds > 0.0 && !playNewIssued && gameState == 0 && GetTime() > 15.0) { worldFresh = false; pendingMenu.action = MenuAction::NewGame; playNewIssued = true; }
+        if (playNewSeconds > 0.0 && gameState == 1) {
+            if (playNewStart < 0.0) playNewStart = GetTime(); else if (GetTime() - playNewStart > playNewSeconds) break;
+            gFakeLook = loading ? Vector2{ 0.0f, 0.0f } : Vector2{ 40.0f, 0.0f }; // look around as the playtester did (#387: 11-81 px/frame)
+        }
         Recorder_Update(WorldIdle() && !loading); // its start delay (after the loading screen), F10 in normal play
         GpuTimer_CpuFrameStart(); GpuTimer_BeginFrame();
         if (preloadT0 >= 0.0 && !SpawnPreloadPending()) {

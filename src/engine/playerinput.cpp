@@ -34,6 +34,7 @@ void PlayerInput_BeginFrame() {
         if (Released(kBinding[a])) f.released |= bit;
     }
     f.look = GetMouseDelta();
+    f.look.x += gFakeLook.x; f.look.y += gFakeLook.y;
     f.wheel = GetMouseWheelMove();
     for (int i = 0; i < 10; ++i) if (IsKeyPressed(kSlotKeys[i])) { f.slot = i; break; }
     frameIn = f;

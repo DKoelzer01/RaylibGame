@@ -1831,6 +1831,7 @@ void BeginWorldStreaming() { generationStart = GetTime(); buildMsTotal = sampleM
 
 void unloadWorld(Scene& world) {
     Jobs().clearQueued();  // in-flight jobs finish; their results are dropped (planetoid ids are gone)
+    TerrainGpu_ClearQueued(); // #387: and the GPU density queue (its blocks stayed wanted and kept the old world alive)
     Factory::Reset();      // machines belong to the old bodies
     Fluid::Reset();        // so does flowing water
     player.nearest = nullptr; // every body goes (the player refinds its ground next update)

@@ -12,6 +12,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <deque>
+#include <map>
 #include <atomic>
 #include <memory>
 #include <mutex>
@@ -23,6 +24,7 @@ namespace {
     constexpr int kMaxBlocks = 32;          // per batch
     constexpr int kSlots = 2;               // batches in flight
     constexpr int kMaxBackgroundBlocks = 8; // per batch of background blocks while throttled (#296)
+    constexpr int kMaxSkipped = 256;        // other bodies' blocks a batch looks past before it is sent as it is (#387)
     float gBackgroundFrom = 3.0e38f;
     bool gBackgroundThrottle = false;
 
@@ -74,7 +76,11 @@ namespace {
         ComputeProgram prog;
         Slot slots[kSlots];
         std::mutex m;
-        std::deque<GpuBlockJob> queue;
+        // In priority order (lower first, FIFO among equals by submission number). A map, not a deque (#387): view blocks
+        // inserted ahead of the preload ring's long background tail, and blocks taken out of the middle, moved every job
+        // behind them (O(n) under the lock the main thread's pump waits on), which grew with the queue until 3 FPS.
+        std::map<std::pair<float, uint64_t>, GpuBlockJob> queue;
+        uint64_t nextSeq = 0;
         const PlanetField* field = nullptr;   // whose uniforms are set
         // Fields checked against the CPU (their first batch). A set, not one pointer: with the planet and its moon both
         // streaming, batches alternate between them and a single pointer re-ran the CPU check (a whole block sampled on
@@ -198,9 +204,8 @@ void TerrainGpu_Submit(GpuBlockJob&& job) {
     std::lock_guard<std::mutex> lock(S.m);
     // In priority order (lower first, FIFO among equals): a dig's remesh (negative) goes ahead of the
     // background LOD builds instead of waiting behind them.
-    auto it = S.queue.end();
-    while (it != S.queue.begin() && std::prev(it)->priority > job.priority) --it;
-    S.queue.insert(it, std::move(job));
+    const float priority = job.priority;
+    S.queue.emplace(std::make_pair(priority, S.nextSeq++), std::move(job));
 }
 
 int TerrainGpu_Pending() {
@@ -208,6 +213,11 @@ int TerrainGpu_Pending() {
     int n = (int)S.queue.size();
     for (const Slot& sl : S.slots) n += (int)sl.jobs.size();
     return n;
+}
+
+void TerrainGpu_ClearQueued() {
+    std::lock_guard<std::mutex> lock(S.m);
+    S.queue.clear(); // their fields (the old world's, with its erosion bake) go with them
 }
 
 void TerrainGpu_SetBackground(float from, bool throttle) { gBackgroundFrom = from; gBackgroundThrottle = throttle; }
@@ -305,16 +315,21 @@ void TerrainGpu_Pump() {
         {
             std::lock_guard<std::mutex> lock(S.m);
             const PlanetField* f = nullptr;
-            int background = 0;
+            int background = 0, skipped = 0;
             for (auto it = S.queue.begin(); it != S.queue.end() && (int)sl.jobs.size() < kMaxBlocks;) {
-                if (it->wanted && !it->wanted()) { it = S.queue.erase(it); continue; }
-                if (gBackgroundThrottle && it->priority >= gBackgroundFrom) { // the rest of the queue is background too
+                GpuBlockJob& j = it->second;
+                if (j.wanted && !j.wanted()) { it = S.queue.erase(it); continue; }
+                if (gBackgroundThrottle && j.priority >= gBackgroundFrom) { // the rest of the queue is background too
                     if (backgroundSent || background >= kMaxBackgroundBlocks) break;
                     ++background;
                 }
-                if (f && it->field != f) { ++it; continue; }
-                f = it->field;
-                sl.jobs.push_back(std::move(*it));
+                if (f && j.field != f) { // another body's block: the next batch takes it (#387: don't walk the whole queue)
+                    if (++skipped > kMaxSkipped) break;
+                    ++it;
+                    continue;
+                }
+                f = j.field;
+                sl.jobs.push_back(std::move(j));
                 it = S.queue.erase(it);
             }
             if (background > 0) backgroundSent = true;

@@ -31,6 +31,7 @@ bool TerrainGpu_Available();
 void TerrainGpu_Submit(GpuBlockJob&& job);          // any thread
 void TerrainGpu_Pump();                             // main thread, once a frame
 int TerrainGpu_Pending();                           // queued + in flight
+void TerrainGpu_ClearQueued();                      // drop the queued blocks (a world unloads: #387); batches in flight finish
 // Blocks at or above backgroundFrom (the preload ring, #296) are batched gently while throttled: at most one batch of
 // a few blocks a frame, after everything else, so background builds never crowd the frame.
 void TerrainGpu_SetBackground(float backgroundFrom, bool throttle);

@@ -67,6 +67,7 @@ private:
     std::atomic<long long> queuedBy[(int)JobTag::Count]{}, submittedBy[(int)JobTag::Count]{}, doneBy[(int)JobTag::Count]{};
     uint64_t nextSeq = 0;
     bool stopping = false;
+    bool lowPriority = true;           // #387: workers below normal priority (RAYLIBGAME_JOB_PRIORITY=normal: off)
 };
 
 #endif
