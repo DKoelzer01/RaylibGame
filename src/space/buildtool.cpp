@@ -1,5 +1,6 @@
 #include "machinemodels.h"
 #include "buildtool.h"
+#include "playerinput.h"
 #include "waterworks.h"
 #include "survival.h"
 #include "farming.h"
@@ -109,7 +110,7 @@ float BuildTool_BreakProgress() { return breakAiming && breakHeld > 0.0f ? std::
 bool BuildTool_AimingPart() { return breakAiming; }
 int BuildTool_AimOrient() { return aim.plot || aim.newOrigin.x != 0.0f || aim.newOrigin.y != 0.0f || aim.newOrigin.z != 0.0f ? (int)aim.part.orient : -1; }
 
-static void UpdateBreak(Scene& world, bool inputEnabled) {
+static void UpdateBreak(Scene& world, const PlayerInput& in) {
     breakAiming = false;
     Planetoid* body = player.nearest;
     if (!body || !body->plots || player.flyMode) { breakHeld = 0.0f; breakPart = -1; return; }
@@ -128,7 +129,7 @@ static void UpdateBreak(Scene& world, bool inputEnabled) {
     const int part = hitPlot->partAt(hitCell);
     if (part < 0) { breakHeld = 0.0f; breakPart = -1; return; }
     breakAiming = true;
-    if (!inputEnabled || !IsMouseButtonDown(MOUSE_BUTTON_LEFT)) { breakHeld = std::min(breakHeld, 0.0f); breakPart = -1; return; }
+    if (!in.down(Act::Primary)) { breakHeld = std::min(breakHeld, 0.0f); breakPart = -1; return; }
     if (hitPlot != breakPlot || part != breakPart) { breakPlot = hitPlot; breakPart = part; breakHeld = std::max(breakHeld, 0.0f); }
     breakHeld += GameFrameTime();
     if (breakHeld < kBreakHold) return;
@@ -141,10 +142,10 @@ static void UpdateBreak(Scene& world, bool inputEnabled) {
     breakHeld = -0.15f; // a breath before the next part (holding on clears a wall part by part)
 }
 
-void BuildTool_Update(Scene& world, bool inputEnabled, bool usable) {
+void BuildTool_Update(Scene& world, const PlayerInput& in, bool usable) {
     if (!usable) { buildTool.active = false; breakAiming = false; breakHeld = 0.0f; return; }
-    UpdateBreak(world, inputEnabled);
-    if (inputEnabled && IsKeyPressed(KEY_G)) {
+    UpdateBreak(world, in);
+    if (in.hit(Act::BuildMode)) {
         buildTool.active = !buildTool.active;
         buildTool.orientManual = false; // parts face you again (#196)
         GameUI_Toast(buildTool.active ? "Build mode: wheel shape, parts face you (R/V rotate by hand), RMB place, hold LMB remove, B save blueprint, N blueprints (G to leave)" : "Build mode off");
@@ -152,8 +153,8 @@ void BuildTool_Update(Scene& world, bool inputEnabled, bool usable) {
     if (buildTool.part != buildTool.autoPart) { buildTool.autoPart = buildTool.part; buildTool.orientManual = false; } // another part: automatic facing
     aim = Aim{};
     if (!buildTool.active) return;
-    if (inputEnabled) {
-        const float wheel = GetMouseWheelMove();
+    if (in.enabled) {
+        const float wheel = in.wheel;
         // The wheel picks the shape (any shape from the selected material); machines come from the hotbar.
         if (IsShape((PartType)buildTool.part) && wheel != 0.0f) { // step through kShapes
             int k = 0;
@@ -161,11 +162,11 @@ void BuildTool_Update(Scene& world, bool inputEnabled, bool usable) {
             k = (k + (wheel > 0 ? 1 : kShapeCount - 1)) % kShapeCount;
             buildTool.part = (int)kShapes[k];
         }
-        if (IsKeyPressed(KEY_R) || IsKeyPressed(KEY_V)) {
+        if (in.hit(Act::Rotate) || in.hit(Act::Flip)) {
             if (!buildTool.orientManual) GameUI_Toast("Rotating by hand (parts face you again with the next part, or G)");
             buildTool.orientManual = true; // the orientation sticks from now on (#196); it starts from the automatic one shown
             buildTool.autoPart = buildTool.part;
-            buildTool.orient = RotateOrientation(buildTool.orient, IsKeyPressed(KEY_R) ? 1 : 0);
+            buildTool.orient = RotateOrientation(buildTool.orient, in.hit(Act::Rotate) ? 1 : 0);
         }
     }
     Planetoid* body = player.nearest;
@@ -257,9 +258,9 @@ void BuildTool_Update(Scene& world, bool inputEnabled, bool usable) {
     if (aim.plot) aim.canPlace = aim.plot->canPlace(aim.part);
     else aim.canPlace = true;
 
-    if (!inputEnabled) return;
+    if (!in.enabled) return;
     if (Blueprint_Keys(body, aim.removePlot)) return; // B saves the plot looked at, N cycles blueprints
-    if (const Blueprint* bp = Blueprint_Active(); bp && IsMouseButtonPressed(MOUSE_BUTTON_RIGHT)) {
+    if (const Blueprint* bp = Blueprint_Active(); bp && in.hit(Act::Secondary)) {
         Plot* target = aim.plot;
         if (!target) {
             if (!body->plots) body->plots = std::make_unique<PlotSet>();
@@ -271,7 +272,7 @@ void BuildTool_Update(Scene& world, bool inputEnabled, bool usable) {
         if (n > 0) Audio_Play(Sfx::Build, 0.5f, 1.0f);
         return;
     }
-    if (IsMouseButtonPressed(MOUSE_BUTTON_RIGHT) && aim.canPlace) {
+    if (in.hit(Act::Secondary) && aim.canPlace) {
         Plot* target = aim.plot;
         if (!target) {
             if (!body->plots) body->plots = std::make_unique<PlotSet>();
@@ -383,7 +384,7 @@ namespace {
     struct MachineAim { uint64_t body = 0; uint32_t plot = 0; int part = -1; PartType type = PartType::Count; } machineAim;
 }
 
-void Machine_Update(Scene& world, bool inputEnabled) {
+void Machine_Update(Scene& world, const PlayerInput& in) {
     machineAim = MachineAim{};
     Planetoid* body = player.nearest;
     if (!body || !body->plots || player.flyMode) return;
@@ -408,10 +409,10 @@ void Machine_Update(Scene& world, bool inputEnabled) {
             machineAim = { body->id, pl->id, dp, pl->parts[dp].type };
         }
     }
-    if (machineAim.part < 0 || !inputEnabled) return;
+    if (machineAim.part < 0 || !in.enabled) return;
     if (machineAim.type == PartType::HandPump) {
         // Hand pump (#280): hold RMB (outside build mode) to work it; the water goes down its pipes at the next pass.
-        if (!buildTool.active && IsMouseButtonDown(MOUSE_BUTTON_RIGHT)) {
+        if (!buildTool.active && in.down(Act::Secondary)) {
             Waterworks_HandPump(machineAim.body, machineAim.plot, machineAim.part, GameFrameTime());
             static double nextSound = 0.0;
             if (GetTime() > nextSound) { Audio_Play(Sfx::Pickup, 0.25f, 0.6f); nextSound = GetTime() + 0.6; }
@@ -422,18 +423,18 @@ void Machine_Update(Scene& world, bool inputEnabled) {
         // Farmland: I plants seeds you carry, O harvests a ripe crop.
         Planetoid* fb = Planetoid::find(machineAim.body);
         Plot* fp = fb && fb->plots ? fb->plots->byId(machineAim.plot) : nullptr;
-        if (fb && fp && IsKeyPressed(KEY_I)) Farm_Plant(*fb, *fp, machineAim.part);
-        if (fb && fp && IsKeyPressed(KEY_O)) Farm_Harvest(*fb, *fp, machineAim.part);
+        if (fb && fp && in.hit(Act::Insert)) Farm_Plant(*fb, *fp, machineAim.part);
+        if (fb && fp && in.hit(Act::Extract)) Farm_Harvest(*fb, *fp, machineAim.part);
         return;
     }
     // RMB (outside build mode, where RMB places parts) opens the machine's own screen: its slots
     // beside the inventory, like the player's.
-    if (!buildTool.active && IsMouseButtonPressed(MOUSE_BUTTON_RIGHT)) {
+    if (!buildTool.active && in.hit(Act::Secondary)) {
         GameUI_OpenContainer(machineAim.body, machineAim.plot, machineAim.part, (int)machineAim.type);
         Audio_Play(Sfx::Pickup, 0.3f, 1.0f);
         return;
     }
-    if (IsKeyPressed(KEY_I)) {
+    if (in.hit(Act::Insert)) {
         // Everything in the inventory the machine might take: fuel for generators, recipe inputs,
         // anything for a chest (the simulation hands back what does not fit).
         // A chest takes the hand's raw materials only (not tools and machines).
@@ -445,7 +446,7 @@ void Machine_Update(Scene& world, bool inputEnabled) {
         }
         Audio_Play(Sfx::Pickup, 0.4f, 0.8f);
     }
-    if (IsKeyPressed(KEY_O)) { Factory::Extract(machineAim.body, machineAim.plot, machineAim.part); Audio_Play(Sfx::Pickup, 0.4f, 1.2f); }
+    if (in.hit(Act::Extract)) { Factory::Extract(machineAim.body, machineAim.plot, machineAim.part); Audio_Play(Sfx::Pickup, 0.4f, 1.2f); }
 }
 
 void Machine_DrawHUD() {

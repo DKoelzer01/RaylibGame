@@ -1,4 +1,6 @@
 #include "hotbar.h"
+#include "playerinput.h"
+#include "world.h" // GameFrameTime
 #include "toolwear.h"
 #include "buildtool.h"
 #include "itemicons.h"
@@ -164,7 +166,7 @@ int Hotbar_KeySlot() {
 
 void Hotbar_Press(int slot, bool piloting) { if (slot >= 0 && slot < kHotbarSlots) Select(slot, piloting); }
 
-void Hotbar_Update(Scene&, bool inputEnabled, bool piloting) {
+void Hotbar_Update(Scene&, const PlayerInput& in, bool piloting) {
     static bool initialised = false;
     if (!initialised) { Hotbar_Reset(); initialised = true; }
     // G (build mode on/off) is the build tool's; keep the selection in step with it.
@@ -179,15 +181,15 @@ void Hotbar_Update(Scene&, bool inputEnabled, bool piloting) {
     // A tool lost (or never carried) falls back to bare hands.
     if (!terrainTool.heldTool.empty() && inventory.count(terrainTool.heldTool) <= 0) terrainTool.heldTool.clear();
     // (New tools land in an empty slot by themselves: Inventory::addAmount, #209.)
-    if (inputEnabled) {
-        const int k = Hotbar_KeySlot();
+    if (in.enabled) {
+        const int k = in.slot;
         if (k >= 0) Select(k, piloting);
     }
     // Food or feed really in hand (not just selected: the last one eaten or fed leaves bare hands): RMB
     // never places terrain with it (#201). Derived each frame so it cannot go stale.
     terrainTool.holdingItem = !Hotbar_HeldFood().empty();
     // Eating (#202): hold right-click with food in hand for kEatSeconds (a bar under the crosshair); letting go cancels.
-    UpdateEating(GetFrameTime(), inputEnabled && !piloting && IsMouseButtonDown(MOUSE_BUTTON_RIGHT));
+    UpdateEating(GameFrameTime(), !piloting && in.down(Act::Secondary));
 }
 
 bool Hotbar_TestEatHold(float seconds) { // tests: hold right-click this long (in 1/60 s steps); true if a bite was eaten

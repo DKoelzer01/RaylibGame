@@ -1,4 +1,5 @@
 #include "animals.h"
+#include "playerinput.h"
 #include "instancebatch.h"
 #include "audio.h"
 #include "buildtool.h"
@@ -712,10 +713,10 @@ void Animals_Update(Scene& world, float dt, float worldDt, bool inputEnabled) {
 // Animals_Aiming(). The nearer of an animal and the ground wins: an animal behind a slope or a rock is not aimed.
 // Reach matches the tool's. After a hit LMB stays with the animals until released, so a held button doesn't dig
 // the ground behind one that bolted.
-void Animals_Aim(Scene& world, bool inputEnabled) {
+void Animals_Aim(Scene& world, const PlayerInput& in) {
     Planetoid* here = player.nearest;
     const double now = WorldTime();
-    if (!IsMouseButtonDown(MOUSE_BUTTON_LEFT)) hitLatch = false;
+    if (!in.down(Act::Primary)) hitLatch = false;
     aimed = -1;
     if (here && !player.flyMode) {
         const Vector3 dirW = Vector3Normalize(Vector3Subtract(world.camera.target, world.camera.position));
@@ -740,18 +741,18 @@ void Animals_Aim(Scene& world, bool inputEnabled) {
         TerrainHit th;
         if (aimed >= 0 && RaycastTerrain(world, Ray{ world.camera.position, dirW }, best, th) && th.distance < best - 0.3f) aimed = -1;
     }
-    if (aimed >= 0 && inputEnabled && !buildTool.active) {
+    if (aimed >= 0 && in.enabled && !buildTool.active) {
         Animal& a = animals[aimed];
         const Species& s = species[a.species];
-        if (IsMouseButtonPressed(MOUSE_BUTTON_LEFT) && SimTime() - lastHit > 0.35) {
+        if (in.hit(Act::Primary) && SimTime() - lastHit > 0.35) {
             lastHit = SimTime();
             hitLatch = true;
             const ToolSpec t = ToolOf(terrainTool.heldTool);
             ++terrainTool.swings;
             Animals_Hit(aimed, t.type == ToolType::Hands ? 2.0f : 3.0f + 3.0f * t.tier);
-        } else if (IsKeyPressed(KEY_I)) {
+        } else if (in.hit(Act::Insert)) {
             Animals_Feed(aimed);
-        } else if (IsKeyPressed(KEY_O)) {
+        } else if (in.hit(Act::Extract)) {
             if (s.product.empty() || s.product == "-") GameUI_Toast(TextFormat("A %s gives nothing but meat", s.name.c_str()));
             else if (a.age < 1.0f) GameUI_Toast("Too young");
             else if (now < a.productReady) GameUI_Toast(TextFormat("Not yet (%.0f s)", a.productReady - now));

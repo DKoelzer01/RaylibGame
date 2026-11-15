@@ -85,7 +85,8 @@ void Rocket_SetMapView(bool on);
 float Rocket_MaxTemperature();     // hottest the leading face got (tests)
 bool Rocket_AimingCockpit();                   // on foot, looking at a rocket's cockpit (E boards it)
 // Once a frame. On foot: the launch-check panel, E boards, I loads fuel. Aboard: flight and camera.
-void Rocket_Update(Scene& world, bool inputEnabled, float dt);
+struct PlayerInput;
+void Rocket_Update(Scene& world, const PlayerInput& in, float dt);
 void Rocket_DrawHUD(Scene& world);
 RocketTelemetry Rocket_Telemetry(Scene& world);
 

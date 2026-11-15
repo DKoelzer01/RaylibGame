@@ -1,5 +1,7 @@
 #include "rocket.h"
-#include "siminput.h"
+#include "playerinput.h"
+// The input of the current Rocket_Update (#312): its flight step and camera read it.
+static const PlayerInput* gRocketIn = &PlayerInput::None();
 #include "survival.h"
 #include "station.h"
 #include "buildtool.h"
@@ -461,12 +463,12 @@ namespace {
         if (input && autopilot == RocketAutopilot::Off && st.guidance > 0) {
             const Vector3 ax = Vector3RotateByQuaternion({ 1, 0, 0 }, rot), az = Vector3RotateByQuaternion({ 0, 0, 1 }, rot), ay = Up();
             Vector3 cmd = { 0, 0, 0 };
-            if (IsKeyDown(KEY_W)) cmd = Vector3Add(cmd, ax);
-            if (IsKeyDown(KEY_S)) cmd = Vector3Subtract(cmd, ax);
-            if (IsKeyDown(KEY_A)) cmd = Vector3Add(cmd, az);
-            if (IsKeyDown(KEY_D)) cmd = Vector3Subtract(cmd, az);
-            if (IsKeyDown(KEY_Z)) cmd = Vector3Add(cmd, ay);
-            if (IsKeyDown(KEY_C)) cmd = Vector3Subtract(cmd, ay);
+            if (gRocketIn->down(Act::Forward)) cmd = Vector3Add(cmd, ax);
+            if (gRocketIn->down(Act::Back)) cmd = Vector3Subtract(cmd, ax);
+            if (gRocketIn->down(Act::Left)) cmd = Vector3Add(cmd, az);
+            if (gRocketIn->down(Act::Right)) cmd = Vector3Subtract(cmd, az);
+            if (gRocketIn->down(Act::RollLeft)) cmd = Vector3Add(cmd, ay);
+            if (gRocketIn->down(Act::RollRight)) cmd = Vector3Subtract(cmd, ay);
             if (Vector3Length(cmd) > 0.0f) { angVel = Vector3Add(angVel, Vector3Scale(Vector3Normalize(cmd), kTurnAccel * h)); turning = true; }
         }
         if (ap.steer) SteerToward(ap.dir, st.guidance, h);
@@ -564,8 +566,8 @@ namespace {
             centre = body->toWorldD(DVec3(plot->toBody(c)));
             U = body->dirToWorld(plot->up);
         }
-        if (!IsKeyDown(KEY_LEFT_ALT)) {
-            const Vector2 md = SimMouseDelta();
+        if (!gRocketIn->down(Act::FreeLook)) {
+            const Vector2 md = gRocketIn->look;
             camYaw -= md.x * 0.004f;
             camPitch = std::clamp(camPitch + md.y * 0.004f, -1.2f, 1.4f);
         }
@@ -686,7 +688,9 @@ bool Rocket_Exit(Scene& world) {
 void Rocket_SetThrottle(float t) { throttle = std::clamp(t, 0.0f, 1.0f); }
 void Rocket_SetAutopilot(RocketAutopilot mode, double target) { autopilot = mode; autoTarget = target; }
 
-void Rocket_Update(Scene& world, bool input, float dt) {
+void Rocket_Update(Scene& world, const PlayerInput& in, float dt) {
+    gRocketIn = &in; // (the flight step and the camera read it)
+    const bool input = in.enabled;
     Load();
     aimCockpit = false;
     aimPlot = 0;
@@ -711,24 +715,24 @@ void Rocket_Update(Scene& world, bool input, float dt) {
         aimPlot = hit->id;
         aimCockpit = hit->parts[hitPart].type == PartType::Cockpit || hit->parts[hitPart].type == PartType::Cabin;
         if (!input) return;
-        if (SimKeyPressed(KEY_I)) {
+        if (in.hit(Act::Insert)) {
             const int n = Rocket_LoadFuel(*hit, 1 << 20);
             const int air = Rocket_LoadAir(*hit, 1 << 20);
             if (n > 0 || air > 0) GameUI_Toast(TextFormat("Loaded %d rocket fuel (%.0f kg), %d oxygen canister(s) (%d min of air)", n, n * fuelPerItem, air, air * 10));
             else GameUI_Toast("Nothing to load (rocket fuel, oxygen canisters), or it is full");
         }
-        if (aimCockpit && SimKeyPressed(KEY_E)) { Rocket_Board(world, *body, *hit); GameUI_Toast("Aboard: P autopilot (to orbit / down to land), Shift throttle up, Ctrl down, X cut, W/S/A/D/Z/C steer, M map, E leave"); }
+        if (aimCockpit && in.hit(Act::Use)) { Rocket_Board(world, *body, *hit); GameUI_Toast("Aboard: P autopilot (to orbit / down to land), Shift throttle up, Ctrl down, X cut, W/S/A/D/Z/C steer, M map, E leave"); }
         return;
     }
     // Aboard.
     Plot* plot = CurrentPlot();
     if (!plot) { state = RocketState::None; return; }
     if (input) {
-        if (IsKeyDown(KEY_LEFT_SHIFT)) throttle = std::min(1.0f, throttle + dt * 0.6f);
-        if (IsKeyDown(KEY_LEFT_CONTROL)) throttle = std::max(0.0f, throttle - dt * 0.6f);
-        if (SimKeyPressed(KEY_X)) throttle = 0.0f;
-        if (SimKeyPressed(KEY_M)) mapView = !mapView;
-        if (SimKeyPressed(KEY_P)) { // the autopilot: to orbit, or (in orbit) down to a landing; again: manual
+        if (in.down(Act::Sprint)) throttle = std::min(1.0f, throttle + dt * 0.6f);
+        if (in.down(Act::Down)) throttle = std::max(0.0f, throttle - dt * 0.6f);
+        if (in.hit(Act::Brake)) throttle = 0.0f;
+        if (in.hit(Act::Map)) mapView = !mapView;
+        if (in.hit(Act::Autopilot)) { // the autopilot: to orbit, or (in orbit) down to a landing; again: manual
             if (autopilot != RocketAutopilot::Off) { autopilot = RocketAutopilot::Off; GameUI_Toast("Autopilot off: manual control"); }
             else {
                 const RocketTelemetry t = Rocket_Telemetry(world);
@@ -737,16 +741,16 @@ void Rocket_Update(Scene& world, bool input, float dt) {
                 else { autopilot = RocketAutopilot::Ascent; autoTarget = 45000.0; GameUI_Toast("Autopilot: gravity turn to a 45 km orbit"); }
             }
         }
-        if (SimKeyPressed(KEY_PERIOD)) Rocket_SetWarp(warpLevel + 1);
-        if (SimKeyPressed(KEY_COMMA)) Rocket_SetWarp(warpLevel - 1);
+        if (in.hit(Act::WarpUp)) Rocket_SetWarp(warpLevel + 1);
+        if (in.hit(Act::WarpDown)) Rocket_SetWarp(warpLevel - 1);
         // Stations: K deploys the core (in orbit) or docks (near one); docked, T / Shift+T move fuel, U undocks.
-        if (SimKeyPressed(KEY_K) && state == RocketState::Flying) { if (Station_Nearest(world, com, 400.0f)) Rocket_Dock(); else Rocket_DeployStation(); }
-        if (SimKeyPressed(KEY_T) && Rocket_DockedAtStation()) {
-            const float kg = Rocket_TransferFuel(IsKeyDown(KEY_LEFT_SHIFT) ? -500.0f : 500.0f);
+        if (in.hit(Act::Dock) && state == RocketState::Flying) { if (Station_Nearest(world, com, 400.0f)) Rocket_Dock(); else Rocket_DeployStation(); }
+        if (in.hit(Act::Transfer) && Rocket_DockedAtStation()) {
+            const float kg = Rocket_TransferFuel(in.down(Act::Sprint) ? -500.0f : 500.0f);
             GameUI_Toast(kg > 0.0f ? TextFormat("Took %.0f kg of fuel from the station", kg) : kg < 0.0f ? TextFormat("Gave the station %.0f kg of fuel", -kg) : "No fuel to move (or no room)");
         }
-        if (SimKeyPressed(KEY_U) && Rocket_DockedAtStation()) Rocket_Undock();
-        if (state == RocketState::OnPad && SimKeyPressed(KEY_E)) { Rocket_Exit(world); return; }
+        if (in.hit(Act::Undock) && Rocket_DockedAtStation()) Rocket_Undock();
+        if (state == RocketState::OnPad && in.hit(Act::Use)) { Rocket_Exit(world); return; }
     }
     if (state == RocketState::OnPad) {
         Planetoid* body = PadBody();
@@ -755,7 +759,7 @@ void Rocket_Update(Scene& world, bool input, float dt) {
         if (CockpitCentre(*body, *plot, seat)) player.position = seat;
         const RocketStats st = Rocket_Stats(*plot, body);
         if (throttle > 0.0f && st.ready && throttle * st.thrust > (st.dryMass + st.fuel) * body->surfaceGravity) Launch(world);
-        else if (throttle > 0.0f && !st.ready && input && IsKeyDown(KEY_LEFT_SHIFT)) GameUI_Toast(TextFormat("Not ready: needs %s", st.missing.front().c_str()));
+        else if (throttle > 0.0f && !st.ready && input && in.down(Act::Sprint)) GameUI_Toast(TextFormat("Not ready: needs %s", st.missing.front().c_str()));
         if (autopilot == RocketAutopilot::Ascent && st.ready) { throttle = 1.0f; Launch(world); }
     }
     if (state == RocketState::Flying) {

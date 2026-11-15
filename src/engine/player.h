@@ -8,6 +8,7 @@
 
 class Scene;
 class Planetoid;
+struct PlayerInput;
 
 // First-person character for small bodies:
 // - gravity is summed over every body (GravityAt) and "up" follows it, so you can walk all
@@ -76,7 +77,7 @@ struct Player {
     void placeAt(Scene& world, Planetoid& body, Vector3 renderFeet);
     // Ride along with body from the next update on (else one slow frame leaves you behind its spin).
     void anchorTo(Planetoid& body);
-    void update(Scene& world, bool inputEnabled, float dt); // one simulation step (SimDt, #315)
+    void update(Scene& world, const PlayerInput& in, float dt); // one simulation step (SimDt, #315) with that step's input (#312)
     // Mouse look, once per frame (not per simulation step, so the view turns smoothly at any frame rate; #315).
     void look(Vector2 mouseDelta);
     // The feet to draw from (#315): between the last two simulation steps by alpha (SimAlpha), in the frame of the body

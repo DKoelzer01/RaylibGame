@@ -1,5 +1,5 @@
 #include "survival.h"
-#include "siminput.h"
+#include "playerinput.h"
 #include "suit.h"
 #include "questtree.h"
 #include "weather.h"
@@ -117,7 +117,7 @@ void Survival_Respawn(Scene& world) {
     GameUI_Toast("Respawned at the start");
 }
 
-void Survival_Update(Scene& world, float dt, bool inputEnabled) {
+void Survival_Update(Scene& world, float dt, const PlayerInput& in) {
     if (survival.dead) {
         if (SimTime() - survival.deathTime > 3.0) Survival_Respawn(world);
         return;
@@ -163,7 +163,7 @@ void Survival_Update(Scene& world, float dt, bool inputEnabled) {
         // Flight pack hover (#163): a slow, steady drain in the air (~7 min of the full bar), three times that
         // boosting (Shift); at zero it cuts out.
         if (player.hovering && !player.grounded)
-            survival.power = std::max(0.0f, survival.power - (IsKeyDown(KEY_LEFT_SHIFT) ? 0.75f : 0.25f) / Suit_Stats().power * dt);
+            survival.power = std::max(0.0f, survival.power - (in.down(Act::Sprint) ? 0.75f : 0.25f) / Suit_Stats().power * dt);
         player.hoverPowered = survival.power > 0.0f;
         // Firing the jetpack only burns fuel; recharging the tank (on the ground) is what costs suit
         // power, and only as far as the power left can pay for.
@@ -178,7 +178,7 @@ void Survival_Update(Scene& world, float dt, bool inputEnabled) {
     }
     survival.lastJetpackFuel = player.jetpackFuel;
     if (survival.power <= 0.0f && survival.headlamp && !ship.piloted) { survival.headlamp = false; GameUI_Toast("Headlamp out: no suit power"); }
-    if (inputEnabled && SimKeyPressed(KEY_L)) {
+    if (in.hit(Act::Headlamp)) {
         if (survival.power > 0.0f || ship.piloted) {
             survival.headlamp = !survival.headlamp;
             Audio_Play(Sfx::Build, 0.25f, survival.headlamp ? 1.8f : 1.5f);
@@ -206,7 +206,7 @@ void Survival_Update(Scene& world, float dt, bool inputEnabled) {
         if (!std::isnan(T) && T > 35.0f && !Suit_Stats().heatProof) survival.health -= 0.05f * (T - 35.0f) * dt; // 40 C: 0.25 a second
     }
 
-    if (inputEnabled) {
+    if (in.enabled) {
     }
 
     {   // A night survived (the quest tree): dark fell and day came back without a death.

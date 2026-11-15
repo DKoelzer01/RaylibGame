@@ -1,5 +1,5 @@
 #include "ship.h"
-#include "siminput.h"
+#include "playerinput.h"
 #include "world.h"
 
 #include <rlgl.h>
@@ -27,7 +27,8 @@ bool Ship::playerInRange(const Scene& world, Vector3 playerRender, float range) 
     return spawned && Vector3Distance(playerRender, renderPos(world)) < range;
 }
 
-void Ship::update(Scene& world, bool inputEnabled, float dt) {
+void Ship::update(Scene& world, const PlayerInput& in, float dt) {
+    thrusting = in.down(Act::Forward); // (draw: the engine glow)
     if (!spawned) return;
     PROFILE_FUNCTION();
     dt = std::min(dt, 0.1f);
@@ -37,7 +38,7 @@ void Ship::update(Scene& world, bool inputEnabled, float dt) {
         if ((position - anchorEndPos).length() > 1e-6 || Planetoid::find(anchorId) != anchorBody) {
             anchorBody = nullptr; // moved by something else (parkNear, a load) or the body is gone
         } else if (!piloted || energy <= 0.0f || // no energy, no takeoff: stay anchored
-                   !(autopilot || (inputEnabled && (IsKeyDown(KEY_W) || IsKeyDown(KEY_S) || IsKeyDown(KEY_A) || IsKeyDown(KEY_D) || IsKeyDown(KEY_SPACE) || IsKeyDown(KEY_LEFT_CONTROL))))) {
+                   !(autopilot || (in.down(Act::Forward) || in.down(Act::Back) || in.down(Act::Left) || in.down(Act::Right) || in.down(Act::Jump) || in.down(Act::Down)))) {
             position = anchorBody->toWorldD(anchorLocal);
             const Quaternion now = anchorBody->rotationQuat();
             orientation = QuaternionNormalize(QuaternionMultiply(QuaternionMultiply(now, QuaternionInvert(anchorRotPrev)), orientation));
@@ -54,27 +55,27 @@ void Ship::update(Scene& world, bool inputEnabled, float dt) {
     Vector3 accel = { 0, 0, 0 };
     bool braking = false;
 
-    if (piloted && inputEnabled) {
-        const Vector2 m = SimMouseDelta();
+    if (piloted && in.enabled) {
+        const Vector2 m = in.look;
         Quaternion q = orientation;
         q = QuaternionMultiply(q, QuaternionFromAxisAngle({ 0, 1, 0 }, -m.x * mouseSensitivity));
         q = QuaternionMultiply(q, QuaternionFromAxisAngle({ 1, 0, 0 }, m.y * mouseSensitivity));
         float roll = 0.0f;
-        if (IsKeyDown(KEY_Z)) roll -= turnRate * dt;
-        if (IsKeyDown(KEY_C)) roll += turnRate * dt;
+        if (in.down(Act::RollLeft)) roll -= turnRate * dt;
+        if (in.down(Act::RollRight)) roll += turnRate * dt;
         q = QuaternionMultiply(q, QuaternionFromAxisAngle({ 0, 0, 1 }, roll));
         orientation = QuaternionNormalize(q);
 
         Vector3 dir = { 0, 0, 0 };
-        if (IsKeyDown(KEY_W)) dir = Vector3Add(dir, forward());
-        if (IsKeyDown(KEY_S)) dir = Vector3Subtract(dir, forward());
-        if (IsKeyDown(KEY_D)) dir = Vector3Subtract(dir, right());
-        if (IsKeyDown(KEY_A)) dir = Vector3Add(dir, right());
-        if (IsKeyDown(KEY_SPACE)) dir = Vector3Add(dir, up());
-        if (IsKeyDown(KEY_LEFT_CONTROL)) dir = Vector3Subtract(dir, up());
-        braking = IsKeyDown(KEY_X);
+        if (in.down(Act::Forward)) dir = Vector3Add(dir, forward());
+        if (in.down(Act::Back)) dir = Vector3Subtract(dir, forward());
+        if (in.down(Act::Right)) dir = Vector3Subtract(dir, right());
+        if (in.down(Act::Left)) dir = Vector3Add(dir, right());
+        if (in.down(Act::Jump)) dir = Vector3Add(dir, up());
+        if (in.down(Act::Down)) dir = Vector3Subtract(dir, up());
+        braking = in.down(Act::Brake);
         if (Vector3Length(dir) > 0.0f && energy > 0.0f) {
-            const float boost = IsKeyDown(KEY_LEFT_SHIFT) ? boostMultiplier : 1.0f;
+            const float boost = in.down(Act::Sprint) ? boostMultiplier : 1.0f;
             accel = Vector3Scale(Vector3Normalize(dir), thrust * boost);
             energy = std::max(0.0f, energy - energyPerThrustSec * boost * dt * 0.5f);
         }
@@ -227,7 +228,7 @@ void Ship::draw(const Scene& world) const {
     DrawCube({ 0, 0.75f, 1.0f }, 1.4f, 0.7f, 1.8f, { 90, 170, 230, 255 });       // canopy
     DrawCube({ 0, -0.1f, -0.6f }, 6.5f, 0.18f, 1.8f, { 110, 115, 125, 255 });    // wings
     DrawCubeWires({ 0, -0.1f, -0.6f }, 6.5f, 0.18f, 1.8f, { 50, 50, 60, 255 });
-    const bool firing = piloted && (IsKeyDown(KEY_W) || autopilot);
+    const bool firing = piloted && (thrusting || autopilot);
     const Color glow = firing ? Color{ 255, 170, 60, 255 } : Color{ 120, 80, 50, 255 };
     DrawCube({ -0.8f, 0, -2.7f }, 0.7f, 0.7f, 0.5f, glow);                      // engines
     DrawCube({ 0.8f, 0, -2.7f }, 0.7f, 0.7f, 0.5f, glow);
