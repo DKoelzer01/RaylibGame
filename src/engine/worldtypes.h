@@ -69,6 +69,10 @@ public:
     Vector3 spin = { 0, 0, 0 };                          // degrees per second about X/Y/Z
     double spinAngle[3] = { 0, 0, 0 };                   // rotation kept in double and wrapped to [0, 360): float Euler angles grown by spin*dt lose precision over a long session
     bool spinAngleSet = false;
+    // Spin from the clock (#315): angle = spinPhase + spin * WorldTime(), so any machine with the synced world time (and the
+    // phase: 0 for generated bodies) gets the same angle; re-derived when something else sets the angle or the spin changes.
+    double spinPhase[3] = { 0, 0, 0 };
+    Vector3 spinPhaseFor = { 0, 0, 0 };                  // the spin the phase was taken for
     // Circular orbit around another body (bodies.txt orbit=): advanced analytically from the world
     // clock in advanceBodies(), in the parent's equatorial (XZ) plane. orbitParent is validated by id.
     Planetoid* orbitParent = nullptr;

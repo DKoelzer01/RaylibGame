@@ -1073,14 +1073,18 @@ void advanceBodies(Scene& world, float dt) {
         if (p->spin.x != 0.0f || p->spin.y != 0.0f || p->spin.z != 0.0f) {
             float* r[3] = { &p->rotation.x, &p->rotation.y, &p->rotation.z };
             const float s[3] = { p->spin.x, p->spin.y, p->spin.z };
+            const bool spinChanged = p->spin.x != p->spinPhaseFor.x || p->spin.y != p->spinPhaseFor.y || p->spin.z != p->spinPhaseFor.z;
             for (int k = 0; k < 3; ++k) {
-                // Something else (a load, a script) set the angle: take it over.
-                if (!p->spinAngleSet || (float)p->spinAngle[k] != *r[k]) p->spinAngle[k] = *r[k];
-                double a = fmod(p->spinAngle[k] + (double)s[k] * dt, 360.0);
+                // The angle is a function of the world clock (#315): phase + spin * time. Something else (a load, a script)
+                // set the angle, or the spin changed: take the angle over as the phase at the time before this step.
+                if (!p->spinAngleSet || spinChanged || (float)p->spinAngle[k] != *r[k])
+                    p->spinPhase[k] = (double)*r[k] - (double)s[k] * (worldTime - (double)dt);
+                double a = fmod(p->spinPhase[k] + (double)s[k] * worldTime, 360.0);
                 if (a < 0.0) a += 360.0;
                 p->spinAngle[k] = a;
                 *r[k] = (float)a;
             }
+            p->spinPhaseFor = p->spin;
             p->spinAngleSet = true;
         }
         if (p->orbitParent) { PlaceBodyOnOrbit(*p); moved = true; } // parents come first in the list
