@@ -151,8 +151,10 @@ std::unordered_map<std::string, std::unordered_set<uint64_t>> spawnedTiles; // b
 int aimed = -1;
 static bool hitLatch = false; // LMB went to an animal: the terrain tool waits for its release (#222)
 double lastSpawnCheck = -1.0, lastHit = -1.0, lastPenCheck = -10.0, lastFireScan = -10.0, lastNightSpawn = -10.0;
+double simClock = 0.0; // simulated seconds (sum of worldDt): spawn, ecology, bite and pen timers run on it, not the wall clock, so fixed-step tests are deterministic (#373)
 std::vector<Vector3> fires; // campfires near the player (body-local)
 bool threatsOn = true;     // off in bench runs except --test-threats
+bool naturalSpawns = true;  // herds placed around the player (SpawnHerds); tests that measure their own animals turn it off
 bool NearFire(Vector3 p, float r, Vector3& at) { for (const Vector3& f : fires) if (Vector3Distance(f, p) < r) { at = f; return true; } return false; }
 int pennedNow = 0;
 double lastUpdateMs = 0.0;
@@ -192,7 +194,10 @@ bool Ground(const Planetoid& body, const PlanetField& pf, Vector3 dir, Vector3& 
     bool found = false;
     for (float r = prevR - 0.25f; r >= ref - below - 1e-4f; r -= 0.25f) {
         const float d = dens(r);
-        if (d >= ISO_LEVEL && prevD < ISO_LEVEL) { // air above, solid here (a start inside a thin film looks on down)
+        // Air above, solid here (a start inside a thin film looks on down). The air must be real: 0.3 m over the crossing
+        // still open, not a hairline seam in rock where the density dips a hair under the iso level (#373: animals
+        // were set into such seams, 'inside the ground' for seconds, where the 3D terrain's density hovers near it).
+        if (d >= ISO_LEVEL && prevD < ISO_LEVEL && dens(r + (prevR - r) * 0.5f + 0.3f) < ISO_LEVEL) {
             const float t = std::clamp((ISO_LEVEL - prevD) / std::max(d - prevD, 1e-6f), 0.0f, 1.0f);
             at = Vector3Scale(dir, prevR + (r - prevR) * t);
             found = true;
@@ -419,6 +424,7 @@ Vector3 Animals_Position(int i) { return i >= 0 && i < (int)animals.size() ? ani
 double Animals_LastUpdateMs() { return lastUpdateMs; }
 int Animals_PennedCount() { return pennedNow; }
 void Animals_SetThreats(bool on) { threatsOn = on; }
+void Animals_SetNaturalSpawns(bool on) { naturalSpawns = on; }
 void Animals_RefreshNow() { lastFireScan = -100.0; lastNightSpawn = -100.0; lastPenCheck = -100.0; }
 int Animals_NightCount() { int n = 0; for (const Animal& a : animals) n += species[a.species].night ? 1 : 0; return n; }
 bool Animals_IsFeed(const std::string& id) { LoadSpecies(); for (const Species& s : species) for (const std::string& d : s.diet) if (d == id) return true; return false; }
@@ -525,7 +531,7 @@ void Animals_Update(Scene& world, float dt, float worldDt, bool inputEnabled) {
         for (const InterestCentre& c : centres) if (body && c.body == body->id) best = std::min(best, Vector3Distance(at, c.local));
         return best;
     };
-    if (((here && pf && !player.flyMode) || !gInterestCentres.empty()) && SimTime() - lastSpawnCheck > 1.0) { // (single-player: as before)
+    if (naturalSpawns && ((here && pf && !player.flyMode) || !gInterestCentres.empty()) && SimTime() - lastSpawnCheck > 1.0) { // naturalSpawns: m56 (#373) // (single-player: as before)
         lastSpawnCheck = SimTime();
         for (size_t k = 0; k < centres.size(); ++k) {
             const InterestCentre& c = centres[k];

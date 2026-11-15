@@ -4564,7 +4564,7 @@ int main(int argc, char** argv)
                         auto step = [&](float seconds) { for (float t = 0.0f; t < seconds; t += 0.1f) Animals_Update(world, 0.1f, 0.1f, false); };
                         animalNatural = Animals_Count(); // herds placed around the player as it arrived
                         check(animalNatural > 0, "herds spawn around the player");
-                        Animals_Reset();
+                        Animals_Reset(); Animals_SetNaturalSpawns(false); // #373: on the sim clock the spawn check runs every second of the steps below: new herds would join the measures
                         world.sunDirection = p->dirToWorld(up); // noon: no resting
                         const Vector3 herdAt = Vector3Add(me, Vector3Scale(east, 30.0f));
                         const int made = Animals_Spawn(world, *p, "woolback", herdAt, 6);

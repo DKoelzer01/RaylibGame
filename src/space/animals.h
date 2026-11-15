@@ -48,6 +48,7 @@ bool Animals_Wild(int index);
 bool Animals_Hostile(int index);
 bool Animals_IsFeed(const std::string& item);                   // some animal eats it
 void Animals_SetThreats(bool on);
+void Animals_SetNaturalSpawns(bool on); // herds placed around the player as it moves (tests turn it off to measure their own animals)
 void Animals_RefreshNow();                                     // tests: rescan campfires, allow a night spawn, recheck pens
 int Animals_NightCount();                              // hostile behaviour and night spawns (bench runs: off)
 int Animals_PennedCount();                                   // near the player, last checked (every 2 s)
