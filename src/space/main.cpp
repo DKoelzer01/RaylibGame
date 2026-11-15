@@ -45,6 +45,7 @@
 #include "structures.h"
 #include "fishing.h"
 #include "trapping.h"
+#include "events.h"
 #include "machinemodels.h"
 #include "gpucompute.h"
 #include "terraingpu.h"
@@ -147,6 +148,7 @@ static void StartNewWorld(Scene& world, bool reset, bool dawn) {
         Structures_Reset();
         Fishing_Reset();
         Trapping_Reset();
+        Events_Reset();
         Particles_Clear();
         Ambience_Reset();
         Station_Reset();
@@ -261,6 +263,7 @@ int main(int argc, char** argv)
     bool benchWall = false;        // --test-wall: walk into shaft and tunnel walls (no launches)
     bool benchDoorway = false; int doorPhase = 0, doorLane = 0; double doorStart = 0.0; uint32_t doorPlot = 0; bool doorPass[2] = { false, false }; // --test-doorway (#255): 2 m openings pass, 1.5 m ones block
     bool benchMenus = false;       // --test-menus: main menu, new game, pause, save & quit, load
+    bool benchMeteor = false;      // --test-meteor (#177)
     bool benchTrapping = false;    // --test-trapping (#176)
     bool benchFishing = false;     // --test-fishing (#176)
     bool benchStructures = false;  // --test-structures: ruins, wrecks and wonders (#164)
@@ -505,6 +508,7 @@ int main(int argc, char** argv)
         if (std::string(argv[i]) == "--test-structures") benchStructures = true;
         if (std::string(argv[i]) == "--test-fishing") benchFishing = true;
         if (std::string(argv[i]) == "--test-trapping") benchTrapping = true;
+        if (std::string(argv[i]) == "--test-meteor") benchMeteor = true;
         if (std::string(argv[i]) == "--test-pickups") benchPickups = true;
         if (std::string(argv[i]) == "--shot-inventory") shotInventory = true;
         if (std::string(argv[i]) == "--test-foundation") benchFoundation = true;
@@ -786,7 +790,7 @@ int main(int argc, char** argv)
     bool spawnLoad = false;        // raised by a spawn or teleport (not entering the game): no minimum time
     int loadFrames = 0;
     int seenSpawns = 0;
-    world.onDraw3D = [&world] { Farm_Draw3D(world); Animals_Draw3D(world); Machines_Draw3D(world); InstanceBatch_Flush(world); Weather_Draw3D(world); Particles_Draw(world); if (!ship.piloted && !buildTool.active && !Rocket_Boarded()) TerrainTool_Draw3D(); Fishing_Draw3D(world); BuildTool_Draw3D(world); };
+    world.onDraw3D = [&world] { Farm_Draw3D(world); Animals_Draw3D(world); Machines_Draw3D(world); InstanceBatch_Flush(world); Weather_Draw3D(world); Particles_Draw(world); if (!ship.piloted && !buildTool.active && !Rocket_Boarded()) TerrainTool_Draw3D(); Fishing_Draw3D(world); Events_Draw3D(world); BuildTool_Draw3D(world); };
     terrainTool.till = [&world](Planetoid& body, Vector3 ground) { return Farm_Till(world, body, ground); }; // a shovel's RMB
     terrainTool.swapHeld = [](const std::string& from, const std::string& to, const char* ev) { // a bucket filled or emptied
         const int s = Hotbar_Selected();
@@ -5857,6 +5861,7 @@ int main(int argc, char** argv)
             if (!loading) Structures_Update(world); // ruins, wrecks and wonders near the player (#164)
             if (!loading) Fishing_Update(world, frameDt, gameInput && alive && !ship.piloted); // (#176)
             if (!loading) Trapping_Update(world); // snares (#176)
+            if (!loading) Events_Update(world, frameDt); // meteor showers (#177)
             if (!loading) Weather_Update(world, frameDt * timeScale * gDebugTimeScale); // the sky, rain and snow, lightning
             if (!loading) Ambience_Update(world, frameDt); // rain splashes, fireflies, machine smoke
             Particles_Update(world, frameDt); // smoke, dust, exhaust, splashes (particles.h)
@@ -5910,7 +5915,7 @@ int main(int argc, char** argv)
         if (crackCheck) world.drawSkybox = false;
         if (crackCheck) world.clearColor = MAGENTA;
         while (world.lights.size() < 4) world.lights.push_back(Light{});
-        if (gameState == 1) Ambience_GatherLights(world); else world.localLights.clear(); // lamps, campfires, fire machines (#139)
+        if (gameState == 1) { Ambience_GatherLights(world); Events_AddLights(world); } else world.localLights.clear(); // lamps, campfires, fire machines (#139); meteor impacts (#177)
         {   // Slot 3: a torch in hand (#218), a flickering point light at the hand; it burns down while held in the game.
             static float burnt = 0.0f;
             Light& torch = world.lights[3];
@@ -6213,6 +6218,55 @@ int main(int argc, char** argv)
                        found ? Vector3Distance(at, me) : -1.0f, built ? "built" : "not built", Structures_SitesBuilt(), Structures_LastSkip(), (int)player.flyMode);
                 (void)dummy;
                 benchStructures = false;
+            }
+        }
+        // --test-meteor (#177): a forced shower at the (dark) dawn start: streaks in the sky, and a meteor brought down
+        // 40 m off: a crater (the ground's middle now air) with a meteorite at its bottom. bench_meteor.png looks at it.
+        if (benchMeteor && gameState == 1 && !loading && WorldIdle()) {
+            static int mf = 0;
+            static bool landed = false, crater = false;
+            static Vector3 ground{};
+            Planetoid* p = dynamic_cast<Planetoid*>(world.objects[0].get());
+            const auto* pf = dynamic_cast<const PlanetField*>(p->field.get());
+            ++mf;
+            if (mf == 5) { player.flyMode = false; player.spawnOn(world, *p, StartSpawnDir(*p)); }
+            if (mf == 20) Events_ForceShower();
+            if (mf == 30) {
+                const Vector3 me = p->toLocal((player.position - world.renderOrigin).toFloat());
+                const Vector3 up = Vector3Normalize(me);
+                const Vector3 t1 = Vector3Normalize(Vector3CrossProduct(up, fabsf(up.y) < 0.9f ? Vector3{ 0, 1, 0 } : Vector3{ 1, 0, 0 }));
+                const Vector3 t2 = Vector3CrossProduct(t1, up);
+                for (int k = 0; k < 8 && !landed; ++k) {
+                    const float b = k * 0.785f;
+                    if (Events_TestImpact(world, *p, 40.0f, b)) {
+                        landed = true;
+                        const Vector3 d = Vector3Normalize(Vector3Add(up, Vector3Scale(Vector3Add(Vector3Scale(t1, cosf(b)), Vector3Scale(t2, sinf(b))), 40.0f / pf->radius)));
+                        ground = Vector3Scale(d, pf->radius + pf->elevation(d));
+                        crater = p->densityAt(Vector3Subtract(ground, Vector3Scale(d, 1.5f))) < ISO_LEVEL; // 1.5 m under the old ground: now air
+                    }
+                }
+            }
+            static Vector3 craterEye{}, craterAt{}, craterUp{};
+            if (mf == 32 && landed) { // look at the crater from 16 m back and 9 m up
+                const Vector3 me = p->toLocal((player.position - world.renderOrigin).toFloat());
+                craterUp = Vector3Normalize(ground);
+                const Vector3 back = Vector3Normalize(Vector3Subtract(me, ground));
+                craterEye = Vector3Add(ground, Vector3Add(Vector3Scale(back, 16.0f), Vector3Scale(craterUp, 9.0f)));
+                craterAt = Vector3Subtract(ground, Vector3Scale(craterUp, 2.0f));
+                player.flyMode = true;
+            }
+            if (mf >= 32 && landed) { // the camera itself, each frame (the player's isn't applied in this bench)
+                world.camera.position = p->toWorld(craterEye); world.camera.target = p->toWorld(craterAt); world.camera.up = p->dirToWorld(craterUp);
+                player.position = world.renderOrigin + world.camera.position;
+            }
+            if (mf == 75) {
+                TakeScreenshot("bench_meteor.png");
+                int meteorites = 0;
+                if (p->plots) for (auto& pl : p->plots->plots) for (const Part& part : pl->parts) meteorites += part.type == PartType::Meteorite;
+                const bool ok = Events_ShowerOn() && Events_Streaks() > 0 && landed && crater && meteorites >= 1;
+                printf("bench: meteor: shower on %d, %d streaks drawn, landed %d, crater %d, meteorites %d (bench_meteor.png) -> %s\n",
+                       (int)Events_ShowerOn(), Events_Streaks(), (int)landed, (int)crater, meteorites, ok ? "PASS" : "FAIL");
+                benchMeteor = false;
             }
         }
         // --test-trapping (#176): a snare set down from the hand at the ground ahead; aged 2 h of world time it holds a

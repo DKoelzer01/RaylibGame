@@ -138,7 +138,13 @@ static void UpdateBreak(Scene& world, bool inputEnabled) {
     if (breakHeld < kBreakHold) return;
     const Part removed = hitPlot->parts[part];
     if (hitPlot->remove(part)) {
-        if (!terrainTool.creative) inventory.add(PartItem(removed), PartCostCount(removed.type));
+        if (removed.type == PartType::Meteorite && !terrainTool.creative) { // (#177) space rock: nickel-iron, now and then platinum or iridium ore
+            const int n = GetRandomValue(6, 10), pt = GetRandomValue(0, 99) < 35 ? 2 : 0, ir = GetRandomValue(0, 99) < 12 ? 1 : 0;
+            inventory.add("nickel_iron_ore", n);
+            if (pt) inventory.add("platinum_ore", pt);
+            if (ir) inventory.add("iridium_ore", ir);
+            GameUI_Toast(TextFormat("The meteorite breaks apart: +%d nickel-iron%s%s", n, pt ? ", +2 platinum ore" : "", ir ? ", +1 iridium ore" : ""));
+        } else if (!terrainTool.creative) inventory.add(PartItem(removed), PartCostCount(removed.type));
         Audio_Play(Sfx::Dig, 0.5f, 1.3f);
     }
     breakPart = -1;

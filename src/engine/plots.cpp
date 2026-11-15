@@ -64,6 +64,7 @@ const char* PartName(PartType t) {
         case PartType::HandPump: return "hand pump";
         case PartType::Torch: return "torch";
         case PartType::Snare: return "snare";
+        case PartType::Meteorite: return "meteorite";
         case PartType::Farmland: return "farmland";
         case PartType::Fence: return "fence";
         case PartType::Gate: return "gate";
@@ -133,6 +134,7 @@ const char* PartCostItem(PartType t) {
         case PartType::HandPump: return "hand_pump"; // not a machine: no factory entry (#280)
         case PartType::Torch: return "torch"; // placed from the hand (#218)
         case PartType::Snare: return "snare"; // placed from the hand (#176)
+        case PartType::Meteorite: return "nickel_iron_ore"; // what it is made of (breaking it gives more: buildtool.cpp, #177)
         default: { const char* m = PartMachineName(t); return m ? m : "concrete"; }
     }
 }
@@ -236,6 +238,7 @@ static Color PartColor(PartType t) {
         case PartType::HandPump: return { 120, 90, 60, 255 };
         case PartType::Torch: return { 120, 85, 55, 255 };
         case PartType::Snare: return { 150, 120, 80, 255 };
+        case PartType::Meteorite: return { 70, 62, 58, 255 };
         case PartType::Farmland: return { 86, 60, 38, 255 };
         case PartType::Fence: return { 130, 95, 60, 255 };
         case PartType::Gate: return { 165, 120, 70, 255 };
@@ -282,6 +285,7 @@ static unsigned char PartPatternOf(const Part& p) {
         case PartType::Farmland: return PatFarmland;
         case PartType::Torch: return PatLog; // the shaft; machinemodels draws the flame
         case PartType::Snare: return PatPlanks; // a low wooden frame; machinemodels draws the noose and a catch
+        case PartType::Meteorite: return PatCoal; // dark, pitted
         default: return IsRocketPart(p.type) ? PatHull : PatMachine;
     }
 }
@@ -299,7 +303,7 @@ static void PartCells(PartType t, std::vector<std::pair<Int3, CellShape>>& out) 
         case PartType::RocketEngine: case PartType::FuelTank: case PartType::Cockpit: case PartType::Cabin: case PartType::StationCore:
         case PartType::OreWasher: case PartType::Centrifuge: case PartType::WaterPump: case PartType::MvGenerator: case PartType::Electrolyzer:
         case PartType::ChemicalReactor: case PartType::Miner: case PartType::HvGenerator: case PartType::ArcFurnace: case PartType::Refinery:
-        case PartType::PrecisionAssembler: case PartType::FusionReactor: case PartType::MassDriver: case PartType::HandPump:
+        case PartType::PrecisionAssembler: case PartType::FusionReactor: case PartType::MassDriver: case PartType::HandPump: case PartType::Meteorite:
             for (int z = 0; z < 2; ++z) for (int y = 0; y < 2; ++y) for (int x = 0; x < 2; ++x) out.push_back({ { x, y, z }, full });
             break;
         case PartType::Farmland: // 1 m square, half a metre deep

@@ -1,6 +1,7 @@
 #include "gamesave.h"
 #include "structures.h"
 #include "trapping.h"
+#include "events.h"
 #include "inventory.h"
 #include "player.h"
 #include "world.h"
@@ -42,6 +43,7 @@ void GameSave_Register() {
         Animals_Save(f);
         Structures_Save(f); // #164
         Trapping_Save(f);   // #176
+        Events_Save(f);     // #177
         Suit_Save(f);
         ToolWear_Save(f);
         Rocket_Save(f);
@@ -72,6 +74,7 @@ void GameSave_Register() {
             if (Animals_LoadLine(tok, f)) continue;
             if (Structures_LoadLine(tok, f)) continue;
             if (Trapping_LoadLine(tok, f)) continue;
+            if (Events_LoadLine(tok, f)) continue;
             if (Suit_LoadLine(tok, f)) continue;
             if (ToolWear_LoadLine(tok, f)) continue;
             if (strcmp(tok, "difficulty") == 0) { int d = 1; if (fscanf(f, " %d", &d) == 1) worldDifficulty = std::clamp(d, 0, 2); continue; }
