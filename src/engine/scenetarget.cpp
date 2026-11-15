@@ -46,6 +46,7 @@ in vec2 uv;
 uniform sampler2D scene;
 uniform int tonemap;
 uniform float knee;
+uniform int nanDebug; // RAYLIBGAME_NAN_CHECK=1: non-finite pixels in magenta (#402)
 layout(std430, binding = 5) readonly buffer Exposure { float exposure; float lum; float bad; };
 out vec4 color;
 vec3 kneeCurve(vec3 x) { // identity up to the knee, then an exponential shoulder towards 1 (slope 1 at the knee)
@@ -58,7 +59,7 @@ vec3 aces(vec3 x) { // Narkowicz's fit, with its usual 0.6 pre-scale
 }
 void main() {
     vec3 c = texelFetch(scene, ivec2(gl_FragCoord.xy), 0).rgb;
-    if (any(isnan(c)) || any(isinf(c))) c = vec3(0.0); // a few pixels (~0.1%) come out NaN / Inf; RGBA8 stored them as 0
+    if (any(isnan(c)) || any(isinf(c))) { if (nanDebug == 1) { color = vec4(1.0, 0.0, 1.0, 1.0); return; } c = vec3(0.0); } // ~0.1% of pixels are NaN / Inf (#402); RGBA8 stored them as 0
     vec3 lin = pow(max(c, vec3(0.0)), vec3(2.2)) * (exposure > 0.0 ? exposure : 1.0);
     vec3 t = tonemap == 1 ? aces(lin) : tonemap == 2 ? min(lin, vec3(1.0)) : kneeCurve(lin);
     color = vec4(pow(t, vec3(1.0 / 2.2)), 1.0);
@@ -309,7 +310,11 @@ void SceneTarget_End() {
     glActiveTexture(GL_TEXTURE0);
     glBindTexture(GL_TEXTURE_2D, S.resolveTex);
     glUniform1i(glGetUniformLocation(S.prog, "scene"), 0);
-    if (S.hdr) { glUniform1i(S.locTonemap, S.tonemap); glUniform1f(S.locKnee, S.knee); }
+    if (S.hdr) {
+        static const int nanCheck = getenv("RAYLIBGAME_NAN_CHECK") && getenv("RAYLIBGAME_NAN_CHECK")[0] == '1';
+        glUniform1i(S.locTonemap, S.tonemap); glUniform1f(S.locKnee, S.knee);
+        glUniform1i(glGetUniformLocation(S.prog, "nanDebug"), nanCheck);
+    }
     glBindVertexArray(S.vao);
     glDrawArrays(GL_TRIANGLES, 0, 3);
     glBindVertexArray(0);

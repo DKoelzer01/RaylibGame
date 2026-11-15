@@ -359,5 +359,5 @@ void main()
     }
     float fog = 1.0 - exp(-fogDensity * fogDist);
     color = mix(color, fogColor, clamp(fog, 0.0, 1.0));
-    finalColor = vec4(pow(color, vec3(1.0 / 2.2)), 1.0); // linear -> sRGB
+    finalColor = vec4(pow(max(color, vec3(0.0)), vec3(1.0 / 2.2)), 1.0); // linear -> sRGB
 }

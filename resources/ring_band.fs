@@ -49,5 +49,5 @@ void main()
     float lit = sunVis * (0.35 + 0.65 * abs(sunDir.y));
     vec3 albedo = vec3(0.30, 0.27, 0.24);
     vec3 color = albedo * (ambient * 2.0 + vec3(1.0, 0.97, 0.9) * lit);
-    finalColor = vec4(pow(color, vec3(1.0 / 2.2)), alpha);
+    finalColor = vec4(pow(max(color, vec3(0.0)), vec3(1.0 / 2.2)), alpha);
 }

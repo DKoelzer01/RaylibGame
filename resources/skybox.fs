@@ -22,7 +22,7 @@ void main()
     if (doGamma)// Apply gamma correction
     {
         color = color/(color + vec3(1.0));
-        color = pow(color, vec3(1.0/2.2));
+        color = pow(max(color, vec3(0.0)), vec3(1.0/2.2));
     }
 
     // Calculate final fragment color
