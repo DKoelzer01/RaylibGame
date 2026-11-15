@@ -38,18 +38,33 @@ float fbm(vec3 p) {
 void main()
 {
     vec3 v = normalize(fragPosition);
-    float s = dot(upDir, sunDir);                       // sun height above the horizon
-    float day = smoothstep(-0.18, 0.12, s);
+    float s = dot(upDir, sunDir);                       // sun height above the horizon (sine)
+    // Sunrise and sunset (#276). The day sky is full from just before sunrise to just after sunset (user: switch much
+    // earlier), with a short deep-blue twilight (the blue hour) under it; SkyDayFactor in scene.cpp matches.
+    float day = smoothstep(-0.10, 0.02, s);             // ~-5.7 deg .. +1.1 deg
+    float twilight = smoothstep(-0.22, -0.08, s) * (1.0 - day);
     float h = dot(v, upDir);                            // view height above the horizon
     float horizon = pow(1.0 - clamp(h, 0.0, 1.0), 4.0);
-    vec3 sky = mix(vec3(0.18, 0.42, 0.85), vec3(0.62, 0.75, 0.92), horizon);
+    float lowSun = 1.0 - smoothstep(0.04, 0.35, s);     // the sun low: a deeper zenith, warm light
+    vec3 zenith = mix(vec3(0.18, 0.42, 0.85), vec3(0.09, 0.22, 0.62), lowSun);
+    vec3 sky = mix(zenith, mix(vec3(0.62, 0.75, 0.92), vec3(0.72, 0.70, 0.78), lowSun * 0.6), horizon);
     float mu = dot(v, sunDir);
-    float sunset = clamp(1.0 - abs(s) * 4.0, 0.0, 1.0); // sun near the horizon
-    sky = mix(sky, vec3(1.0, 0.45, 0.15), sunset * pow(max(mu, 0.0), 3.0) * (0.4 + 0.6 * horizon));
     sky *= day;
-    sky = mix(sky, vec3(0.52, 0.55, 0.60) * day, overcast * 0.85);       // cloud cover greys the sky
-    sky += vec3(1.0, 0.9, 0.7) * pow(max(mu, 0.0), 300.0) * day * density * (1.0 - overcast); // glare around the sun
-    float alpha = density * (0.06 + 0.94 * day);                         // night: the stars show through
+    sky += vec3(0.05, 0.09, 0.24) * twilight * (0.6 + 0.4 * horizon);    // the blue hour
+    // The twilight glow: strongest with the sun at the horizon (not dimmed by `day`: it lasts past sunset), toward the
+    // sun and low in the sky; orange-red at the horizon, gold above it.
+    float glow = exp(-(s * s) / (2.0 * 0.07 * 0.07));  // ~4 deg either side of the horizon
+    float toward = pow(max(mu, 0.0), 2.5) * (0.25 + 0.75 * horizon);
+    vec3 glowCol = mix(vec3(1.0, 0.32, 0.10), vec3(1.0, 0.62, 0.30), smoothstep(0.0, 0.25, h));
+    sky += glowCol * glow * toward * 0.9;
+    // The pink anti-solar band (the "belt of Venus") a little above the opposite horizon.
+    float band = smoothstep(0.0, 0.08, h) * (1.0 - smoothstep(0.10, 0.30, h));
+    sky += vec3(0.55, 0.32, 0.45) * glow * pow(max(-mu, 0.0), 1.5) * band * 0.35;
+    float sunset = glow;                                // (the clouds' dusk tint below)
+    sky = mix(sky, vec3(0.52, 0.55, 0.60) * max(day, 0.15 * twilight), overcast * 0.85); // cloud cover greys the sky
+    // Glare around the sun, warmer as it sinks.
+    sky += mix(vec3(1.0, 0.9, 0.7), vec3(1.0, 0.55, 0.25), lowSun) * pow(max(mu, 0.0), 300.0) * max(day, glow) * density * (1.0 - overcast);
+    float alpha = density * (0.06 + 0.94 * max(day, max(twilight * 0.85, glow * toward)));  // night: the stars show through
 
     float cloudA = 0.0;
     // Clouds: where the view ray meets the cloud shell (from below; from above, its near side).
@@ -66,7 +81,7 @@ void main()
             float lit = mix(0.72, 1.0, smoothstep(thr, thr + 0.3, n));    // denser cores read brighter on top, greyer below
             vec3 cloud = vec3(lit) * mix(vec3(1.0), vec3(0.62, 0.64, 0.68), overcast);
             cloud = mix(cloud, vec3(1.0, 0.62, 0.42), sunset * 0.45);    // dusk tints them
-            cloud *= max(day, 0.04);
+            cloud *= max(day, max(0.04, 0.7 * glow));                    // lit by the glow after sunset
             cloudA = a;
             sky = mix(sky, cloud, a * 0.92);
             alpha = max(alpha, a * 0.9 * density);                       // they hide the stars at night too
@@ -75,7 +90,7 @@ void main()
 
     // The sun disc (also in space, where the atmosphere is gone).
     float disc = smoothstep(0.99985, 0.99995, mu) * (1.0 - smoothstep(0.4, 0.8, overcast)) * (1.0 - cloudA);
-    vec3 col = mix(sky, vec3(1.0, 0.97, 0.9), disc);
+    vec3 col = mix(sky, mix(vec3(1.0, 0.97, 0.9), vec3(1.0, 0.45, 0.18), 1.0 - smoothstep(0.0, 0.15, s)), disc); // reddened near the horizon
     alpha = max(alpha, disc);
     finalColor = vec4(col, alpha); // already display (sRGB-ish) colours, like the skybox
 }

@@ -405,8 +405,22 @@ void Scene::drawScene(int gamestate) {
     if (!lights.empty()) {
         lights[0].position = lightPos;
         lights[0].target = centre;
-        const unsigned char k = (unsigned char)(255.0f * (1.0f - 0.7f * std::clamp(weatherCloud, 0.0f, 1.0f))); // cloud cover dims the sun
-        lights[0].color = { k, k, (unsigned char)std::min(255, k + 6), 255 };
+        const float k = 255.0f * (1.0f - 0.7f * std::clamp(weatherCloud, 0.0f, 1.0f)); // cloud cover dims the sun
+        // Low sun (#276): through more air it is dimmer and warmer, Rayleigh-like: transmittance exp(-beta * air mass), the
+        // air mass ~ 1 / sin(elevation) (capped near the horizon), scaled by the air at the camera (none in space).
+        Vector3 tint = { 1.0f, 1.0f, 1.0f };
+        if (atmosphere.enabled) {
+            const Vector3 rel = Vector3Subtract(camera.position, atmosphere.centre);
+            const float d = Vector3Length(rel);
+            const float air = powf(std::clamp(1.0f - (d - atmosphere.radius) / atmosphere.height, 0.0f, 1.0f), 1.5f);
+            if (d > 1e-3f && air > 0.0f) {
+                const float s = Vector3DotProduct(Vector3Scale(rel, 1.0f / d), Vector3Normalize(sunDirection));
+                const float mass = 1.0f / std::max(s, 0.035f) - 1.0f; // 0 overhead, ~28 at the horizon
+                tint = { expf(-0.012f * mass * air), expf(-0.032f * mass * air), expf(-0.075f * mass * air) };
+            }
+        }
+        lights[0].color = { (unsigned char)(k * tint.x), (unsigned char)(k * tint.y), (unsigned char)std::min(255.0f, (k + 6.0f) * tint.z), 255 };
+        sunFade = { 1.0f - tint.x, 1.0f - tint.y, 1.0f - tint.z }; // the same tint for grass, trees, parts and instances
     }
 
     // --- Shadow pass ---
@@ -511,9 +525,11 @@ void Scene::drawScene(int gamestate) {
         const float alt = d - atmosphere.radius;
         atmDensity = powf(std::clamp(1.0f - alt / atmosphere.height, 0.0f, 1.0f), 1.5f);
         const float s = Vector3DotProduct(atmUp, sun);
-        const float t = std::clamp((s + 0.18f) / 0.30f, 0.0f, 1.0f);
+        // The day sky as atmosphere.fs (#276): full from just before sunrise to just after sunset.
+        const float t = std::clamp((s + 0.10f) / 0.12f, 0.0f, 1.0f);
         const float day = t * t * (3.0f - 2.0f * t);
-        skyHorizon = Vector3Scale({ 0.35f, 0.53f, 0.83f }, day); // linear horizon sky
+        const float glow = expf(-(s * s) / (2.0f * 0.07f * 0.07f)); // the twilight glow: the haze takes some of its warmth
+        skyHorizon = Vector3Lerp(Vector3Scale({ 0.35f, 0.53f, 0.83f }, day), Vector3Scale({ 0.62f, 0.36f, 0.22f }, std::max(day, 0.35f)), 0.35f * glow); // linear horizon sky
         effFog = Vector3Add(effFog, Vector3Scale(skyHorizon, atmDensity));
         effFogDensity += atmDensity / 35000.0f;                    // ~35 km to fade a third of the way
         effAmbient = Vector3Add(effAmbient, Vector3Scale(skyHorizon, 0.06f * atmDensity));
@@ -672,6 +688,7 @@ void Scene::drawScene(int gamestate) {
             const float pshell[4] = { atmosphere.centre.x, atmosphere.centre.y, atmosphere.centre.z,
                                       atmosphere.enabled && effFogDensity < 0.06f ? atmosphere.radius + atmosphere.hazeHeight : 0.0f };
             SetShaderValue(ps, GetShaderLocation(ps, "sunDir"), &sun, SHADER_UNIFORM_VEC3);
+            SetShaderValue(ps, GetShaderLocation(ps, "sunFade"), &sunFade, SHADER_UNIFORM_VEC3);
             SetShaderValue(ps, GetShaderLocation(ps, "viewPos"), &camera.position, SHADER_UNIFORM_VEC3);
             SetShaderValue(ps, GetShaderLocation(ps, "ambient"), &effAmbient, SHADER_UNIFORM_VEC3);
             SetShaderValue(ps, GetShaderLocation(ps, "ambientUp"), &hemiUp, SHADER_UNIFORM_VEC3);
@@ -739,6 +756,7 @@ void Scene::drawScene(int gamestate) {
             const float shell[4] = { atmosphere.centre.x, atmosphere.centre.y, atmosphere.centre.z,
                                      atmosphere.enabled && effFogDensity < 0.06f ? atmosphere.radius + atmosphere.hazeHeight : 0.0f };
             rlSetUniform(GetShaderLocation(ts, "sunDir"), &sun, RL_SHADER_UNIFORM_VEC3, 1);
+            rlSetUniform(GetShaderLocation(ts, "sunFade"), &sunFade, RL_SHADER_UNIFORM_VEC3, 1);
             rlSetUniform(GetShaderLocation(ts, "viewPos"), &camera.position, RL_SHADER_UNIFORM_VEC3, 1);
             rlSetUniform(GetShaderLocation(ts, "ambient"), &effAmbient, RL_SHADER_UNIFORM_VEC3, 1);
             rlSetUniform(GetShaderLocation(ts, "ambientUp"), &hemiUp, RL_SHADER_UNIFORM_VEC3, 1);
@@ -818,6 +836,7 @@ void Scene::drawScene(int gamestate) {
             const float shell[4] = { atmosphere.centre.x, atmosphere.centre.y, atmosphere.centre.z,
                                      atmosphere.enabled && effFogDensity < 0.06f ? atmosphere.radius + atmosphere.hazeHeight : 0.0f };
             rlSetUniform(GetShaderLocation(gs, "sunDir"), &sun, RL_SHADER_UNIFORM_VEC3, 1);
+            rlSetUniform(GetShaderLocation(gs, "sunFade"), &sunFade, RL_SHADER_UNIFORM_VEC3, 1);
             rlSetUniform(GetShaderLocation(gs, "viewPos"), &camera.position, RL_SHADER_UNIFORM_VEC3, 1);
             rlSetUniform(GetShaderLocation(gs, "ambient"), &effAmbient, RL_SHADER_UNIFORM_VEC3, 1);
             rlSetUniform(GetShaderLocation(gs, "ambientUp"), &hemiUp, RL_SHADER_UNIFORM_VEC3, 1);

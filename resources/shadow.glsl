@@ -13,6 +13,9 @@ uniform mat4 lightSpaceNear;
 uniform int shadowMapResolution;        // 0: shadows off
 uniform vec2 shadowTexel;               // metres per texel: near, far
 uniform float shadowDepthRange;         // metres the light's depth spans
+// Low-sun tint (#276): 1 - the sun light's colour (warm and dim near the horizon); unset = 0 = white sun.
+uniform vec3 sunFade;
+vec3 sunTint() { return vec3(1.0) - clamp(sunFade, 0.0, 1.0); }
 
 float shadowPcf(sampler2DShadow map, vec3 q, int taps)
 {

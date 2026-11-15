@@ -143,6 +143,7 @@ void InstanceBatch_Flush(Scene& world) {
     auto v3 = [&](const char* n, Vector3 v) { rlSetUniform(rlGetLocationUniform(id, n), &v, RL_SHADER_UNIFORM_VEC3, 1); };
     v3("viewPos", world.camera.position);
     v3("sunDir", world.frameSun);
+    v3("sunFade", world.sunFade); // #276
     v3("ambient", world.frameAmbient);
     v3("ambientUp", world.frameAmbientUp); // #130
     v3("fogColor", world.frameFog);
