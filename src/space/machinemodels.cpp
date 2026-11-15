@@ -99,6 +99,7 @@ float TopReach(PartType type) {
     case PartType::PrecisionAssembler: return 0.95f;
     case PartType::FusionReactor: return 0.29f;
     case PartType::MassDriver: return 1.3f;
+    case PartType::Torch: return 0.25f;
     default: return 0.0f; // Kiln, CokeOven, Chest: nothing over the top but chimneys
     }
 }
@@ -278,6 +279,13 @@ void DrawMachine(PartType type, const Frame& f, const Painter& p, bool working) 
         for (int k = 0; k < 5; ++k) p.cube({ 0, 0, 0.1f + 0.35f * k }, { 0.3f, 0.3f, 0.06f }, working ? kGlass : kCopper);
         rlPopMatrix();
         break;
+    case PartType::Torch: { // (#218) a flame on the quarter-cell post (its low x/z corner: placed torches aren't turned)
+        const float fl = 0.85f + 0.15f * sinf(t * 13.0f) + 0.08f * sinf(t * 29.0f);
+        p.cube({ x0 + 0.125f, top - 0.02f, z0 + 0.125f }, { 0.2f, 0.05f, 0.2f }, kDarkSteel);   // the wrapped head
+        p.glow({ x0 + 0.125f, top + 0.08f * fl, z0 + 0.125f }, { 0.12f, 0.16f * fl, 0.12f }, Color{ 255, (unsigned char)(150 + 40 * fl), 60, 255 });
+        p.glow({ x0 + 0.125f, top + 0.17f * fl, z0 + 0.125f }, { 0.06f, 0.08f, 0.06f }, Color{ 255, 230, 140, 255 });
+        break;
+    }
     case PartType::Chest:
         p.cube({ 0, top - 0.06f, 0 }, { f.w * 1.02f, 0.06f, f.d * 1.02f }, kDarkSteel);  // a banded lid
         rlPushMatrix(); rlRotatef(f.yawDeg, 0, 1, 0);
@@ -367,7 +375,7 @@ void Machines_Draw3D(Scene& world) {
                 pc.spots.clear();
                 for (size_t i = 0; i < plot->parts.size(); ++i) {
                     const Part& part = plot->parts[i];
-                    if (part.type == PartType::Count || (!IsMachine(part.type) && part.type != PartType::HandPump)) continue;
+                    if (part.type == PartType::Count || (!IsMachine(part.type) && part.type != PartType::HandPump && part.type != PartType::Torch)) continue;
                     MachineSpot s;
                     if (!SpotOf(*plot, i, s)) continue;
                     if (body->field) { // sky exposure 1 m over the floor: the terrain's rule, as plot cells (#216, #284)

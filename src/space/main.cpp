@@ -6181,6 +6181,7 @@ int main(int argc, char** argv)
         if (benchTorch && gameState == 1 && !loading && WorldIdle()) {
             static int tf = 0;
             static double lumOff = 0.0;
+            static bool torchPlacedOk = false;
             auto groundLum = [](const char* file) {
                 Image im = LoadImage(file);
                 ImageFormat(&im, PIXELFORMAT_UNCOMPRESSED_R8G8B8A8);
@@ -6202,6 +6203,19 @@ int main(int argc, char** argv)
                 const bool ok = lit && lumOn > lumOff + 4.0;
                 printf("bench: torch: selected %d \"%s\", torches %d, fly %d, piloted %d\n", Hotbar_Selected(), Hotbar_Selected() >= 0 ? Hotbar_Slot(Hotbar_Selected()).c_str() : "", inventory.count("torch"), (int)player.flyMode, (int)ship.piloted);
                 printf("bench: torch: light %d, ground luminance %.1f -> %.1f with a torch in hand: %s\n", (int)lit, lumOff, lumOn, ok ? "PASS" : "FAIL");
+                // Then set one down where the crosshair meets the ground (#218), and put the hand away: it lights the ground.
+                const int before = inventory.count("torch");
+                const bool placedOk = Hotbar_PlaceTorch();
+                torchPlacedOk = placedOk && inventory.count("torch") == before - 1;
+                Hotbar_Press(8, false);
+            }
+            if (tf == 70) {
+                TakeScreenshot("bench_torch_placed.png");
+                const double lumPlaced = groundLum("bench_torch_placed.png");
+                const bool handOff = !(world.lights.size() > 3 && world.lights[3].enabled);
+                const bool ok = torchPlacedOk && handOff && LocalLights_Count() >= 1 && lumPlaced > lumOff + 4.0;
+                printf("bench: torch: placed one %d (light in hand now %d), %d local light(s), ground luminance %.1f -> %.1f from the placed torch: %s\n",
+                       (int)torchPlacedOk, (int)!handOff, LocalLights_Count(), lumOff, lumPlaced, ok ? "PASS" : "FAIL");
                 benchTorch = false;
             }
         }

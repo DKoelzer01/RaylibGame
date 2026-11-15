@@ -11,6 +11,9 @@
 #include "tools.h"
 #include "animals.h"
 #include "telescope.h"
+#include "worldtypes.h"
+#include <raymath.h>
+#include <memory>
 
 #include <raylib.h>
 #include <cstring>
@@ -196,7 +199,9 @@ void Hotbar_Update(Scene&, bool inputEnabled, bool piloting) {
     }
     // Food or feed really in hand (not just selected: the last one eaten or fed leaves bare hands): RMB
     // never places terrain with it (#201). Derived each frame so it cannot go stale.
-    terrainTool.holdingItem = !Hotbar_HeldFood().empty();
+    const bool torchHeld = !buildTool.active && Hotbar_IsLight(CellId(selected)) && inventory.count(CellId(selected)) > 0;
+    terrainTool.holdingItem = !Hotbar_HeldFood().empty() || torchHeld; // a torch in hand: RMB places it, not terrain (#218)
+    if (torchHeld && inputEnabled && !piloting && IsMouseButtonPressed(MOUSE_BUTTON_RIGHT)) Hotbar_PlaceTorch();
     // Eating (#202): hold right-click with food in hand for kEatSeconds (a bar under the crosshair); letting go cancels.
     UpdateEating(GetFrameTime(), inputEnabled && !piloting && IsMouseButtonDown(MOUSE_BUTTON_RIGHT));
 }
@@ -266,4 +271,23 @@ bool Hotbar_LoadLine(const char* tok, FILE* f) {
 void Hotbar_Unbind(const std::string&) {
     // A broken tool's slot is already empty (its cell held the stack, #209): the hand goes bare if that was the slot in hand.
     if (CellId(selected).empty()) { terrainTool.heldTool.clear(); terrainTool.holdingItem = false; }
+}
+
+bool Hotbar_PlaceTorch() {
+    // A torch in hand (#218): RMB stands one where the crosshair meets the ground (a placed torch never burns out; fibre
+    // torches burn too fast to set down). It goes into the cell just off the surface, on the nearest plot.
+    const std::string id = CellId(selected);
+    if (id == "fibre_torch") { GameUI_Toast("Fibre torches burn too fast to set down: craft a torch"); Audio_Play(Sfx::Error, 0.3f); return false; }
+    if (id != "torch" || inventory.count(id) <= 0) return false;
+    Planetoid* body = nullptr; Vector3 local{}, n{};
+    if (!TerrainTool_LastHit(body, local, n) || !body) return false;
+    if (!body->plots) body->plots = std::make_unique<PlotSet>();
+    Plot* pl = body->plots->plotFor(local, 0.0f, true);
+    if (!pl) return false;
+    const Vector3 nl = body->dirToLocal(n);
+    const Part part{ PartType::Torch, pl->cellAt(pl->toPlot(Vector3Add(local, Vector3Scale(nl, 0.15f)))), 0, 0 };
+    if (!pl->canPlace(part)) { GameUI_Toast("No room for a torch there"); Audio_Play(Sfx::Error, 0.3f); return false; }
+    if (!BuildTool_Place(*body, *pl, part, true)) return false;
+    Audio_Play(Sfx::Build, 0.5f, 1.3f);
+    return true;
 }

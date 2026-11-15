@@ -252,7 +252,7 @@ void Ambience_GatherLights(Scene& world) {
     const Vector3 cam = body->toLocal(world.camera.position);
     static int lampMat = -2;
     if (lampMat == -2) lampMat = BuildMaterialForItem("lamp");
-    struct Spot { int part; Vector3 centre; uint8_t kind; }; // kind: 0 lamp, 1 campfire, 2 fire machine, 3 arc furnace
+    struct Spot { int part; Vector3 centre; uint8_t kind; }; // kind: 0 lamp, 1 campfire, 2 fire machine, 3 arc furnace, 4 placed torch
     struct Cached { uint32_t version = 0xFFFFFFFFu; std::vector<Spot> spots; };
     static std::unordered_map<uint64_t, Cached> cache;
     static std::vector<std::pair<Int3, CellShape>> fp;
@@ -267,6 +267,7 @@ void Ambience_GatherLights(Scene& world) {
                 const Part& p = plot->parts[i];
                 int kind = -1;
                 if (p.type == PartType::Campfire) kind = 1;
+                else if (p.type == PartType::Torch) kind = 4;
                 else if (p.type == PartType::ArcFurnace) kind = 3;
                 else if (p.type == PartType::Kiln || p.type == PartType::CokeOven || p.type == PartType::BlastFurnace || p.type == PartType::Furnace ||
                          p.type == PartType::AlloySmelter) kind = 2;
@@ -285,6 +286,11 @@ void Ambience_GatherLights(Scene& world) {
             LocalLight L;
             L.position = body->toWorld(Vector3Add(at, Vector3Scale(plot->up, s.kind == 1 ? 0.3f : 0.0f)));
             if (s.kind == 0) { L.range = 8.0f; L.color = { 1.0f, 0.92f, 0.76f }; L.intensity = 1.1f; }
+            else if (s.kind == 4) { // a placed torch (#218): always lit, flickering, from its flame (top of the post)
+                const float flicker = 0.85f + 0.1f * sinf(t * 13.0f + s.part) + 0.05f * sinf(t * 31.0f + s.part);
+                L.position = body->toWorld(Vector3Add(at, Vector3Scale(plot->up, 0.4f)));
+                L.range = 10.0f; L.color = { 1.0f, 0.62f, 0.3f }; L.intensity = 1.3f * flicker;
+            }
             else {
                 if (!Factory::Working(body->id, plot->id, s.part)) continue;
                 const float flicker = 0.82f + 0.12f * sinf(t * 11.0f + s.part) + 0.06f * sinf(t * 27.3f + 2.0f * s.part);

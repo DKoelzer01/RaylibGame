@@ -669,3 +669,9 @@ float TerrainTool_Cooldown() {
     const double left = nextStrokeAt - GetTime();
     return left <= 0.0 ? 0.0f : std::min(1.0f, (float)(left / std::max(strokeLength, 0.01f)));
 }
+
+bool TerrainTool_LastHit(Planetoid*& body, Vector3& local, Vector3& normalWorld) {
+    if (!hasHit || !hit.planetoid) return false;
+    body = hit.planetoid; local = hit.local; normalWorld = hit.normal;
+    return true;
+}

@@ -61,6 +61,7 @@ const char* PartName(PartType t) {
         case PartType::FusionReactor: return "fusion reactor";
         case PartType::MassDriver: return "mass driver";
         case PartType::HandPump: return "hand pump";
+        case PartType::Torch: return "torch";
         case PartType::Farmland: return "farmland";
         case PartType::Fence: return "fence";
         case PartType::Gate: return "gate";
@@ -128,6 +129,7 @@ const char* PartCostItem(PartType t) {
         case PartType::Guidance: return "guidance_computer";
         case PartType::LandingLeg: return "landing_leg";
         case PartType::HandPump: return "hand_pump"; // not a machine: no factory entry (#280)
+        case PartType::Torch: return "torch"; // placed from the hand (#218)
         default: { const char* m = PartMachineName(t); return m ? m : "concrete"; }
     }
 }
@@ -229,6 +231,7 @@ static Color PartColor(PartType t) {
         case PartType::FusionReactor: return { 200, 110, 240, 255 };
         case PartType::MassDriver: return { 150, 160, 185, 255 };
         case PartType::HandPump: return { 120, 90, 60, 255 };
+        case PartType::Torch: return { 120, 85, 55, 255 };
         case PartType::Farmland: return { 86, 60, 38, 255 };
         case PartType::Fence: return { 130, 95, 60, 255 };
         case PartType::Gate: return { 165, 120, 70, 255 };
@@ -273,6 +276,7 @@ static unsigned char PartPatternOf(const Part& p) {
         case PartType::Cable: return PatCable;
         case PartType::Pipe: case PartType::Outlet: return PatMetal;
         case PartType::Farmland: return PatFarmland;
+        case PartType::Torch: return PatLog; // the shaft; machinemodels draws the flame
         default: return IsRocketPart(p.type) ? PatHull : PatMachine;
     }
 }
@@ -316,6 +320,7 @@ static void PartCells(PartType t, std::vector<std::pair<Int3, CellShape>>& out) 
             out.push_back({ { 0, 0, 0 }, s });
             break;
         }
+        case PartType::Torch: // a quarter-cell post like Post (#218)
         case PartType::Post: {  // a quarter of the cell, up one edge
             CellShape s; s.full = false; s.planes = 2; s.n[0] = { 1, 0, 0 }; s.d[0] = 0.5f; s.n[1] = { 0, 0, 1 }; s.d[1] = 0.5f;
             out.push_back({ { 0, 0, 0 }, s });
