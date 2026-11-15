@@ -242,6 +242,7 @@ int main(int argc, char** argv)
     bool benchMenus = false;       // --test-menus: main menu, new game, pause, save & quit, load
     bool benchTime = false;        // --test-time: dawn start (#259), a +6 h jump carries the player (#275)
     bool benchPickups = false;     // --test-pickups: the pickup feed (#208): repeats merge, a screenshot while it shows
+    bool shotInventory = false;    // --shot-inventory: long item names in their cells (#219)
     int pickupFrames = 0;
     int timeStep = 0, timeFrames = 0; float timeElev0 = 0.0f; Vector3 timeLocal0 = { 0, 0, 0 }; bool timeOk = true;
     bool benchWater = false;       // --test-water: rivers and ponds near the start, their beds and clay
@@ -458,6 +459,7 @@ int main(int argc, char** argv)
         if (std::string(argv[i]) == "--test-menus") benchMenus = true;
         if (std::string(argv[i]) == "--test-time") benchTime = true;
         if (std::string(argv[i]) == "--test-pickups") benchPickups = true;
+        if (std::string(argv[i]) == "--shot-inventory") shotInventory = true;
         if (std::string(argv[i]) == "--test-water") benchWater = true;
         if (std::string(argv[i]) == "--test-flyfollow") benchFlyFollow = true;
         if (std::string(argv[i]) == "--test-hotbar") benchHotbar = true;
@@ -5794,6 +5796,12 @@ int main(int argc, char** argv)
             lastSwings = terrainTool.swings;
         }
 
+        // --shot-inventory (#219): the inventory with long item names (cut to fit; they scroll on hover).
+        if (shotInventory && gameState == 1 && !loading && WorldIdle()) {
+            static int f = 0;
+            if (++f == 5) { inventory.add("oxygen_tank_module", 1); inventory.add("stone_pickaxe", 1); inventory.add("steam_macerator", 1); inventory.add("oak_log", 12); GameUI_ToggleInventory(); }
+            if (f == 30) { TakeScreenshot("bench_inventory.png"); printf("bench: shot: bench_inventory.png\n"); shotInventory = false; }
+        }
         // --test-pickups (#208): dug stone in three bits (one merged line), a log and a tool; a screenshot while they show.
         if (benchPickups && gameState == 1 && !loading && WorldIdle()) {
             ++pickupFrames;

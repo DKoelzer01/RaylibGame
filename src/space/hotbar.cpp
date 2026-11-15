@@ -13,6 +13,7 @@
 
 #include <raylib.h>
 #include <cstring>
+#include <string>
 #include <algorithm>
 
 const char* const kHotbarTerrainTool = "tool:terrain";
@@ -221,10 +222,11 @@ void Hotbar_DrawHUD(bool piloting) {
                 DrawRectangle(x + 4, y0 + size - 4, (int)((size - 8) * left), 3, ColorLerp(RED, GREEN, left));
             }
         }
-        const char* name = ShortName(id);
+        std::string name = ShortName(id);
         int fs = 12;
-        while (fs > 8 && MeasureText(name, fs) > size - 4) --fs;
-        DrawText(name, x + (size - MeasureText(name, fs)) / 2, y0 + size - fs - 6, fs, RAYWHITE);
+        while (fs > 9 && MeasureText(name.c_str(), fs) > size - 4) --fs;
+        while (name.size() > 1 && MeasureText(name.c_str(), fs) > size - 4) name.pop_back(); // still too long: cut (#219: names ran into the next slot)
+        DrawText(name.c_str(), x + (size - MeasureText(name.c_str(), fs)) / 2, y0 + size - fs - 6, fs, RAYWHITE);
     }
     // Eating (#202): its bar under the crosshair, where the swing bar sits.
     if (eatProgress > 0.0f) {

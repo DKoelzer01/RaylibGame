@@ -122,6 +122,28 @@ static std::string AmountText(const InvSlot& s) {
     return TextFormat("%.2f", a);
 }
 
+// An item's name along the bottom of its cell (#219): whole if it fits; otherwise as much as fits, and while hovered the
+// whole name scrolls through the cell (a marquee, clipped to it), pausing at the start.
+static void CellName(ImDrawList* dl, ImVec2 p, ImVec2 q, const std::string& name, bool hover) {
+    const float room = q.x - p.x - 8.0f, y = q.y - 18.0f;
+    const float tw = ImGui::CalcTextSize(name.c_str()).x;
+    if (tw <= room) { dl->AddText(ImVec2(p.x + 4, y), IM_COL32(220, 220, 220, 255), name.c_str()); return; }
+    dl->PushClipRect(ImVec2(p.x + 3, y - 1), ImVec2(q.x - 3, q.y), true);
+    if (hover) {
+        const float gap = 24.0f, speed = 35.0f, pause = 0.6f;    // px, px/s, s at the start of each pass
+        const float period = (tw + gap) / speed + pause;
+        const float t = std::max(0.0f, fmodf((float)ImGui::GetTime(), period) - pause);
+        const float x = p.x + 4 - t * speed;
+        dl->AddText(ImVec2(x, y), IM_COL32(255, 255, 255, 255), name.c_str());
+        dl->AddText(ImVec2(x + tw + gap, y), IM_COL32(255, 255, 255, 255), name.c_str()); // the next pass coming in
+    } else {
+        size_t n = name.size();
+        while (n > 1 && ImGui::CalcTextSize(name.c_str(), name.c_str() + n).x > room) --n;
+        dl->AddText(nullptr, 0.0f, ImVec2(p.x + 4, y), IM_COL32(220, 220, 220, 255), name.c_str(), name.c_str() + n);
+    }
+    dl->PopClipRect();
+}
+
 // The grid: click a cell to pick its stack up, click another to drop it there (swapping, or merging
 // the same item); hover and press 1-0 to put the item on the hotbar.
 static void DrawGrid() {
@@ -159,8 +181,7 @@ static void DrawGrid() {
         if (!s.empty()) {
             const ItemDef* d = itemDB.find(s.id);
             DrawItemIcon(dl, ImVec2(p.x + (cw - cell * 0.64f) * 0.5f, p.y), cell * 0.64f, s.id);
-            const std::string name = d ? d->name.substr(0, 7) : s.id.substr(0, 7);
-            dl->AddText(ImVec2(p.x + 4, q.y - 18), IM_COL32(220, 220, 220, 255), name.c_str());
+            CellName(dl, p, q, d ? d->name : s.id, hover);
             if (KindOf(s.id) != ItemKind::Tool) {
                 const std::string amt = AmountText(s);
                 const ImVec2 sz = ImGui::CalcTextSize(amt.c_str());
@@ -305,8 +326,7 @@ static void DrawSlots(const std::vector<std::pair<std::string, int>>& slots, int
         if (s.second > 0) {
             DrawItemIcon(dl, ImVec2(p.x + cell * 0.18f, p.y), cell * 0.64f, s.first);
             const ItemDef* d = itemDB.find(s.first);
-            const std::string name = d ? d->name.substr(0, 7) : s.first.substr(0, 7);
-            dl->AddText(ImVec2(p.x + 4, q.y - 18), IM_COL32(220, 220, 220, 255), name.c_str());
+            CellName(dl, p, q, d ? d->name : s.first, hover);
             const char* amt = TextFormat("%d", s.second);
             const ImVec2 sz = ImGui::CalcTextSize(amt);
             dl->AddRectFilled(ImVec2(q.x - sz.x - 6, p.y + 2), ImVec2(q.x - 2, p.y + sz.y + 2), IM_COL32(0, 0, 0, 160), 2.0f);
