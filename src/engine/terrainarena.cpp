@@ -27,16 +27,17 @@ extern "C" void* glfwGetProcAddress(const char* name); // raylib links GLFW
 namespace {
     constexpr int kRecordLocation = 9;     // per-draw attributes 9-13, after raylib's default attributes (0-8)
     constexpr int kRecordFloatTexels = 5;  // model rows 0-2, texturing origin, clip (float attributes 9-13)
-    constexpr int kRecordTexels = 6;       // + the material palette (#480: 8 ids in x and y of a uvec4 at location 15; 14 is occlusion)
+    constexpr int kRecordTexels = 6;       // + the material palette (#480: 16 ids, a uvec4 at location 15; 14 is occlusion)
     constexpr int kPaletteLocation = 15;
-    constexpr int kPaletteSlots = 8;       // #480: seed 42 has at most 7 materials in a chunk (99.6% <= 5); 16 cost +32% near pass
+    constexpr int kPaletteSlots = 16;      // #480 (user 2026-11-15: 16, headroom for future biomes; seed 42 has at most 7 in a chunk)
+    constexpr int kPaletteTail = kPaletteSlots + 4; // the packed attributes end with the palette, then the slots in use (a byte, padded)
 
     // Positions in their own stream (the shadow passes read only them); everything else interleaved.
     // The packed vertex (#302: 36 B with the position, was 64): an octahedral normal (2 x snorm16); the material weights per
-    // palette slot (#480: 8 x unorm8; the chunk's palette, in its table entry, names each slot's material: up to 8 of 256
+    // palette slot (#480: 16 x unorm8; the chunk's palette, in its table entry, names each slot's material: up to 16 of 256
     // per chunk); canopy, the climate (bit fields), ore kind and sky as unorm16; ambient occlusion (#132) as unorm16.
     struct Attr { int16_t nrm[2]; unsigned char w[kPaletteSlots]; uint16_t tan[4]; uint16_t occ; unsigned char pad[2]; };
-    static_assert(sizeof(Attr) == 24, "packed terrain attributes");
+    static_assert(sizeof(Attr) == 32, "packed terrain attributes");
     // (The climate in tan[1] is bit fields: see TerrainArena_Upload.)
     constexpr size_t kPosBytes = 12;
 
@@ -118,14 +119,17 @@ namespace {
         glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, (GLsizei)kPosBytes, nullptr);
         glBindBuffer(GL_ARRAY_BUFFER, S.attr);
         const GLsizei st = sizeof(Attr);
-        // Palette slot weights 0-3 and 4-7 at locations 1 and 3 (lighting.vs: vertexTexCoord, vertexColor).
+        // Palette slot weights 0-3, 4-7, 8-11, 12-15 at locations 1, 3, 5, 6 (lighting.vs: vertexTexCoord, vertexColor,
+        // vertexTexCoord2, arenaMatW3).
         glVertexAttribPointer(1, 4, GL_UNSIGNED_BYTE, GL_TRUE, st, (void*)offsetof(Attr, w));
         glVertexAttribPointer(2, 2, GL_SHORT, GL_TRUE, st, (void*)offsetof(Attr, nrm));                 // octahedral (lighting.vs decodes)
         glVertexAttribPointer(3, 4, GL_UNSIGNED_BYTE, GL_TRUE, st, (void*)(offsetof(Attr, w) + 4));
         glVertexAttribPointer(4, 4, GL_UNSIGNED_SHORT, GL_TRUE, st, (void*)offsetof(Attr, tan));        // climate bit fields in y
         glVertexAttribPointer(14, 1, GL_UNSIGNED_SHORT, GL_TRUE, st, (void*)offsetof(Attr, occ)); // #132 (after the records, 9-13)
         glEnableVertexAttribArray(14);
-        for (int a = 0; a <= 4; ++a) glEnableVertexAttribArray(a);
+        glVertexAttribPointer(5, 4, GL_UNSIGNED_BYTE, GL_TRUE, st, (void*)(offsetof(Attr, w) + 8));
+        glVertexAttribPointer(6, 4, GL_UNSIGNED_BYTE, GL_TRUE, st, (void*)(offsetof(Attr, w) + 12));
+        for (int a = 0; a <= 6; ++a) glEnableVertexAttribArray(a);
         BindRecords();
         glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, S.ibo);
         // Depth VAO: positions and records only.
@@ -329,13 +333,13 @@ bool TerrainArena_PackOnWorkers() { return gPackOnWorkers.load(std::memory_order
 void TerrainArena_Pack(const ChunkMeshData& d, std::vector<unsigned char>& out) {
     const int nv = (int)(d.positions.size() / 3);
     // The attributes, then the chunk's palette (#480: kPaletteSlots material ids; unused slots 0).
-    out.assign((size_t)nv * sizeof(Attr) + kPaletteSlots, 0);
+    out.assign((size_t)nv * sizeof(Attr) + kPaletteTail, 0);
     Attr* v = reinterpret_cast<Attr*>(out.data());
     unsigned char* palette = out.data() + (size_t)nv * sizeof(Attr);
     const bool ids = d.matIds.size() >= (size_t)nv;
     const bool uv = d.texcoords.size() >= (size_t)nv * 2, uv2 = d.texcoords2.size() >= (size_t)nv * 2, tan = d.tangents.size() >= (size_t)nv * 4;
     const bool col = d.colors.size() >= (size_t)nv * 4;
-    // Material id -> palette slot, in order of first use. A chunk with more than 8 materials (none seen: 7 at most) shows
+    // Material id -> palette slot, in order of first use. A chunk with more than 16 materials (none seen: 7 at most) shows
     // the extra ones as its first material.
     int slotOf[256];
     std::fill(std::begin(slotOf), std::end(slotOf), -1);
@@ -385,6 +389,7 @@ void TerrainArena_Pack(const ChunkMeshData& d, std::vector<unsigned char>& out) 
         o.pad[0] = o.pad[1] = 0;
     }
     if (ids && distinct > 0) gPaletteUse[std::min(distinct, 16)]++;
+    palette[kPaletteSlots] = (unsigned char)(ids ? std::max(used, 1) : 8); // the slots in use: lighting.fs reads only those groups
 }
 
 ArenaAlloc TerrainArena_Upload(const ChunkMeshData& d) {
@@ -394,7 +399,7 @@ ArenaAlloc TerrainArena_Upload(const ChunkMeshData& d) {
     // Packed on the worker (#302) unless it was built before the arena came up.
     std::vector<unsigned char> local;
     const std::vector<unsigned char>* packed = &d.arenaAttr;
-    if (d.arenaAttr.size() != (size_t)nv * sizeof(Attr) + kPaletteSlots) { TerrainArena_Pack(d, local); packed = &local; }
+    if (d.arenaAttr.size() != (size_t)nv * sizeof(Attr) + kPaletteTail) { TerrainArena_Pack(d, local); packed = &local; }
     const unsigned char* v = packed->data();
     a.vFirst = AllocVerts(nv);
     a.vCount = nv;
@@ -438,6 +443,7 @@ ArenaAlloc TerrainArena_Upload(const ChunkMeshData& d) {
     e.clip[0] = e.clip[1] = e.clip[2] = 1e30f;
     e.iCount = (GLuint)ni; e.iFirst = (GLuint)a.iFirst; e.vFirst = (GLuint)a.vFirst;
     memcpy(e.palette, v + (size_t)nv * sizeof(Attr), kPaletteSlots); // #480: the chunk's materials (chunk_cull.comp copies them into its records)
+    e.pad = v[(size_t)nv * sizeof(Attr) + kPaletteSlots]; // and how many slots it uses (the record's clip.w)
     WriteTable(a.slot, &e, sizeof(e));
     a.clip = { 1e30f, 1e30f, 1e30f };
     return a;

@@ -19,11 +19,12 @@ in float fragMacro;     // planets: slow brightness / warmth variation (70-250 m
 uniform sampler2D colorTexture;    // MATERIAL_MAP_ALBEDO
 uniform sampler2D normalTexture;   // MATERIAL_MAP_NORMAL (OpenGL convention, tangent space)
 uniform sampler2D roughAoTexture;  // MATERIAL_MAP_ROUGHNESS: R = roughness, G = ambient occlusion
-uniform sampler2DArray terrainLayers; // planet palette: dirt, sand, gravel, grass, snow, ice, stone (terrainlayers.h)
+uniform sampler2DArray terrainLayers; // planet palette: dirt, sand, gravel, grass, snow, ice, stone, clay (terrainlayers.h)
 uniform sampler2DArray terrainDetail; // its detail maps: normal XY, roughness, AO (unit 12)
 
 flat in vec3 fragClipMax;     // chunk-local overlap clip (lighting.vs: a uniform or the arena record)
-in vec4 fragMatW[2];          // #480: material weights per palette slot (8)
+in vec4 fragMatW[4];          // #480: material weights per palette slot (16)
+flat in int fragSlots;        // #480: the slots in use (unused groups are not read)
 flat in uvec4 fragPalette;    // #480: each slot's material id, a byte each
 uniform mat4 matModel;          // body-local -> world (DrawMesh, or the arena flush: all chunks of a body share the rotation)
 uniform float texScale;            // world units -> texture repeats
@@ -158,6 +159,7 @@ vec3 biomeTint(int material, float temp, float moist)
     }
     if (material == 1) return mix(mix(vec3(1.0), vec3(1.3, 0.82, 0.62), red), vec3(0.55, 0.5, 0.45), smoothstep(0.72, 0.88, moist)); // dirt -> red / mud
     if (material == 4) return mix(vec3(1.0), vec3(1.22, 0.72, 0.5), red);                                                                // sand -> red sand
+    if (material == 8) return mix(vec3(1.0), vec3(0.72, 0.84, 0.92), 0.8 * smoothstep(0.72, 0.9, moist));                              // clay -> grey-blue (gley) in swamps
     if (material == 0) return mix(vec3(1.0), vec3(1.25, 0.85, 0.7), red * 0.8);                                                         // banded red rock
     return vec3(1.0);
 }
@@ -223,33 +225,39 @@ void main()
     if (palette == 2) {
         // Planet: eight materials from the texture layers (weights 0-3 in the vertex colour, 4-5 in
         // texcoord, 6-7 in texcoord2). Only layers with weight are sampled (usually one or two).
-        // #480: up to 8 materials per chunk, each slot's weight in fragMatW and its material id (a byte) in fragPalette
+        // #480: up to 16 materials per chunk, each slot's weight in fragMatW and its material id (a byte) in fragPalette
         // (per-chunk draws: the 8 legacy weights, identity palette).
         float total = 0.0;
         float ctemp, cmoist;
         bool hasClimate = decodeClimate(ctemp, cmoist);
-        total = dot(fragMatW[0], vec4(1.0)) + dot(fragMatW[1], vec4(1.0));
-        // material id -> texture layer: stone, dirt, ice, ore (stone, rusted), sand, gravel, grass, snow
-        const int kMaterials = 8;
-        const float layerOf[kMaterials] = float[kMaterials](6.0, 0.0, 5.0, 6.0, 1.0, 2.0, 3.0, 4.0);
-        const float roughOf[kMaterials] = float[kMaterials](0.75, 0.95, 0.15, 0.35, 0.9, 0.85, 0.95, 0.7);
+        const bool kGateSlots = false;
+        total = dot(fragMatW[0], vec4(1.0));
+        if (!kGateSlots || fragSlots > 4) total += dot(fragMatW[1], vec4(1.0));
+        if (!kGateSlots || fragSlots > 8) total += dot(fragMatW[2], vec4(1.0)) + dot(fragMatW[3], vec4(1.0));
+        // material id -> texture layer: stone, dirt, ice, ore (stone, rusted), sand, gravel, grass, snow, clay (#206)
+        const int kMaterials = 9;
+        const float layerOf[kMaterials] = float[kMaterials](6.0, 0.0, 5.0, 6.0, 1.0, 2.0, 3.0, 4.0, 7.0);
+        const float roughOf[kMaterials] = float[kMaterials](0.75, 0.95, 0.15, 0.35, 0.9, 0.85, 0.95, 0.7, 0.6);
         // Strength of the (asteroid rock) normal map per material: rocky ones only; on grass, dirt and
         // sand its craters read as the asteroid texture showing through.
-        const float bumpOf[kMaterials] = float[kMaterials](1.0, 0.8, 0.6, 1.0, 0.7, 1.0, 0.7, 0.5); // detail normal strength
-        const float shinyOf[kMaterials] = float[kMaterials](0.0, 0.0, 1.0, 1.0, 0.0, 0.0, 0.0, 0.3); // ice, ore, a little snow
+        const float bumpOf[kMaterials] = float[kMaterials](1.0, 0.8, 0.6, 1.0, 0.7, 1.0, 0.7, 0.5, 0.6); // detail normal strength
+        const float shinyOf[kMaterials] = float[kMaterials](0.0, 0.0, 1.0, 1.0, 0.0, 0.0, 0.0, 0.3, 0.25); // ice, ore, a little snow and wet clay
         vec3 a = vec3(0.0);
         float r = 0.0, aoSum = 0.0, shiny = 0.0;
         // Detail maps fade out by ~120 m (mips flatten them before that; #183: sampling them out to 280 m cost 0.2 ms)
         float near = 1.0 - smoothstep(40.0, 120.0, length(viewPos - fragPosition));
         vec2 dX = vec2(0.0), dY = vec2(0.0), dZ = vec2(0.0);
         // Gather the (at most 4) slots with weight using constant indices only: indexing the varyings with a loop
-        // variable spilled them to local memory (the near pass took 3.3 ms instead of 1.8).
+        // variable spilled them to local memory. Only the slot groups the chunk uses are read (fragSlots, from its
+        // record): 98% of chunks use 4 or fewer, so most fragments interpolate one vec4 of the 16 weights.
         vec4 aw = vec4(0.0);
         ivec4 aid = ivec4(0);
         int n = 0;
         float cut = 0.01 * max(total, 0.001);
 #define TAKE(g, c) { float w_ = fragMatW[g][c]; if (w_ >= cut && n < 4) { aw[n] = w_; aid[n] = int((fragPalette[g] >> (8u * uint(c))) & 255u); n++; } }
-        TAKE(0, 0) TAKE(0, 1) TAKE(0, 2) TAKE(0, 3) TAKE(1, 0) TAKE(1, 1) TAKE(1, 2) TAKE(1, 3)
+        TAKE(0, 0) TAKE(0, 1) TAKE(0, 2) TAKE(0, 3)
+        if (!kGateSlots || fragSlots > 4) { TAKE(1, 0) TAKE(1, 1) TAKE(1, 2) TAKE(1, 3) }
+        if (!kGateSlots || fragSlots > 8) { TAKE(2, 0) TAKE(2, 1) TAKE(2, 2) TAKE(2, 3) TAKE(3, 0) TAKE(3, 1) TAKE(3, 2) TAKE(3, 3) }
 #undef TAKE
         for (int k = 0; k < n; k++) {
             float wi = aw[k] / max(total, 0.001);

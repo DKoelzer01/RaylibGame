@@ -1,7 +1,7 @@
 # Tiers (Current Objectives): tier | name | gate item (used only by a tier without tasks) | the hint under the tasks
 # Indented task lines under a tier: task | <kind and target> | text. A tier opens the next when all are done:
 #   get <item> <n> (n obtained, ever) - place <item> (that machine placed) - orbit - visit moon | visit ring
-0 | Primitive        | fired_crucible   | Chop trees for logs (saw them into planks, Tab), harvest bushes for fibre, dig dirt and stone. Make clay from dirt, mould a crucible (Tab) and fire it in a campfire (G to place, I to feed it logs or planks).
+0 | Primitive        | fired_crucible   | Chop trees for logs (saw them into planks, Tab), harvest bushes for fibre, dig dirt and stone. Find clay (river and pond beds, swamps, now and then a pocket in the dirt), mould a crucible (Tab) and fire it in a campfire (G to place, I to feed it logs or planks).
     task | get any_log 2          | Chop a tree for logs (LMB on a trunk)
     task | get fibre 2            | Harvest a bush for fibre
     task | get stone 4            | Pick up loose stones (LMB) until you have 4 stone

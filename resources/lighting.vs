@@ -3,7 +3,7 @@
 // Input vertex attributes
 in vec3 vertexPosition;
 in vec4 vertexTexCoord;   // chunks: material weights 4-5 (sand, gravel); arena: palette slot weights 0-3 (#480)
-in vec4 vertexTexCoord2;  // chunks: material weights 6-7 (grass, snow)
+in vec4 vertexTexCoord2;  // chunks: material weights 6-7 (grass, snow); arena: slot weights 8-11
 in vec3 vertexNormal;
 in vec4 vertexColor;      // chunks: material weights 0-3; arena: slot weights 4-7
 in vec4 vertexTangent;    // chunks: w = sky exposure (default attribute (0,0,0,1): fully exposed)
@@ -14,7 +14,8 @@ layout(location = 10) in vec4 arenaRow1;
 layout(location = 11) in vec4 arenaRow2;
 layout(location = 12) in vec4 arenaTexOrigin;
 layout(location = 13) in vec4 arenaClip;
-layout(location = 15) in uvec4 arenaPalette;  // arena: the chunk's 8 material ids, a byte each (x, y)
+layout(location = 6) in vec4 arenaMatW3;      // arena: palette slot weights 12-15 (#480)
+layout(location = 15) in uvec4 arenaPalette;  // arena: the chunk's 16 material ids, a byte each
 
 // Set by DrawMesh() from the material's shader locations
 uniform mat4 mvp;
@@ -47,8 +48,9 @@ out float fragMacro;       // slow (70-250 m) brightness variation for the plane
 flat out vec3 fragClipMax;
 // #480: material weights per palette slot (16) and the slots' material ids (bytes; lighting.fs reads materials by id).
 // Per-chunk draws (no arena) carry the 8 legacy weights with the identity palette 0-7.
-out vec4 fragMatW[2];
+out vec4 fragMatW[4];
 flat out uvec4 fragPalette;
+flat out int fragSlots;    // the palette slots in use (arena record clip.w): lighting.fs skips the unused groups
 
 // Smooth value noise in [0, 1] (the planet palette's macro variation; was per pixel in lighting.fs).
 float hash3(vec3 p) { p = mod(p, 289.0); return fract(sin(dot(p, vec3(127.1, 311.7, 74.7))) * 43758.5453); }
@@ -77,12 +79,13 @@ void main()
     fragTexCoord2 = vertexTexCoord2.xy;
     fragColor = vertexColor;
     if (arenaDraw == 1) {
-        fragMatW[0] = vertexTexCoord; fragMatW[1] = vertexColor;
+        fragMatW[0] = vertexTexCoord; fragMatW[1] = vertexColor; fragMatW[2] = vertexTexCoord2; fragMatW[3] = arenaMatW3;
         fragPalette = arenaPalette;
+        fragSlots = int(arenaClip.w + 0.5);
         // The 4 base materials' weights for the asteroid palettes (lighting.fs: rock, regolith, ice, ore in fragColor).
         vec4 base = vec4(0.0);
         if (palette != 2) // the planet palette reads the slots; skipping this loop there saves ~0.65 ms of near pass
-        for (int s = 0; s < 8; ++s) {
+        for (int s = 0; s < 16; ++s) {
             uint id = (arenaPalette[s >> 2] >> (8u * uint(s & 3))) & 255u;
             if (id < 4u) base[id] += fragMatW[s >> 2][s & 3];
         }
@@ -91,7 +94,9 @@ void main()
         fragTexCoord2 = vec2(0.0);
     } else {
         fragMatW[0] = vertexColor; fragMatW[1] = vec4(vertexTexCoord.xy, vertexTexCoord2.xy);
+        fragMatW[2] = vec4(0.0); fragMatW[3] = vec4(0.0);
         fragPalette = uvec4(0x03020100u, 0x07060504u, 0u, 0u);
+        fragSlots = 8;
     }
     // w = 0: normals are directions and must not pick up the model translation.
     // Normal to world space via the model matrix. raylib also provides matNormal, but in testing its value

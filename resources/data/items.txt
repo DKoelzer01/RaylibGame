@@ -1,7 +1,7 @@
 # id | display name | kind (tool, block, or a number: a resource; placeable parts are blocks) | colour r,g,b | description
 stone           | Stone           | 999 | 130,130,135 | Bulk rock. Used to build terrain back up.
 regolith        | Regolith        | 999 | 170,140,100 | Loose surface dust. Building filler.
-dirt            | Dirt            | 999 | 120,90,60   | Soil from the surface. Building filler; makes clay.
+dirt            | Dirt            | 999 | 120,90,60   | Soil from the surface. Building filler.
 sand            | Sand            | 999 | 214,190,140 | Fine grains from beaches and shallows. Building filler.
 gravel          | Gravel          | 999 | 130,126,120 | Loose stones from scree and the sea floor. Building filler.
 ice             | Ice             | 999 | 170,210,240 | Frozen volatiles. Melts into water.
@@ -18,7 +18,7 @@ any_log         | Any log         | 999 | 120, 84, 50 | A log of any tree.
 fibre           | Plant fibre     | 999 | 170,190,110 | Tough stems from bushes. Twists into rope.
 berries         | Berries         | 200 | 190, 40, 70 | Wild berries. Edible.
 rope            | Rope            | 200 | 200,170,120 | Twisted plant fibre.
-clay            | Clay            | 999 | 170,120, 95 | Wet earth. Moulds into crucibles; bricks for kilns and ovens.
+clay            | Clay            | 999 | 170,120, 95 | Dug from river and pond beds, swamps and pockets in the dirt. Moulds into crucibles; bricks for kilns and ovens.
 crucible_mold   | Crucible mould  |  20 | 175,125,100 | Unfired clay crucible. Fire it in a campfire.
 fired_crucible  | Fired crucible  |  20 | 190, 90, 60 | Holds molten metal. The key to the stone age.
 charcoal        | Charcoal        | 999 |  45, 40, 38 | Wood baked in a campfire. Burns hotter and longer than logs.
