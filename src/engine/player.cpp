@@ -1,3 +1,4 @@
+#include "camera.h" // gFlyGravityUp (#232)
 #include "player.h"
 #include "world.h"
 
@@ -77,6 +78,19 @@ void Player::update(Scene& world, bool inputEnabled, float dt) {
                 const Vector3 move = (ref->worldPos - flyBodyPos).toFloat();
                 world.camera.position = Vector3Add(world.camera.position, move);
                 world.camera.target = Vector3Add(world.camera.target, move);
+            }
+        }
+        // Near a body the fly camera keeps the horizon level (#232): its local up while gravity there is felt (> 0.5 m/s^2),
+        // else the free 6-DOF camera (space, near-zero g).
+        {
+            bool rot2 = false;
+            Planetoid* near = flyReference(world, rot2);
+            gFlyGravityUp = { 0, 0, 0 };
+            if (near) {
+                const DVec3 rel = (world.renderOrigin + world.camera.position) - near->worldPos;
+                const double d = rel.length(), R = (double)near->radius * near->scale;
+                const double g = near->surfaceGravity * (R * R) / std::max(d * d, 1.0);
+                if (g > 0.5 && d > 1.0) gFlyGravityUp = { (float)(rel.x / d), (float)(rel.y / d), (float)(rel.z / d) };
             }
         }
         // The free-fly camera (Scene / customUpdateCamera) drives; keep the body under the eye.

@@ -577,6 +577,35 @@ int main(int argc, char** argv)
             }
             printf("bench: flycam moves along its own axes after random turns: worst alignment %.6f (1 = exact); roll turns up %.3f rad/step, view moves %.6f rad\n",
                    worstAxis, rolled / 300.0f, worstRollView);
+            // Near a body (#232): with a tilted local up and a camera started rolled, random turns (roll pressed too) keep the
+            // horizon level once eased in, the pitch inside +-87 deg, W/S/A/D level and Space along up.
+            {
+                const Vector3 g = Vector3Normalize({ 0.3f, 1.0f, -0.2f });
+                Camera3D gc{ { 0, 0, 0 }, { 0, 0.2f, 1 }, Vector3Normalize({ 0.5f, 1, 0 }), 60.0f, CAMERA_PERSPECTIVE };
+                for (int s = 0; s < 60; ++s) ApplyFlyInput(&gc, FlyInput{}, 1.0f / 60.0f, &g); // ease the roll out
+                float worstRoll = 0.0f, maxPitch = 0.0f, worstLevel = 0.0f, worstUp = 1.0f;
+                for (int s = 0; s < 300; ++s) {
+                    FlyInput turn;
+                    turn.yaw = ang(rng); turn.pitch = 2.0f * ang(rng); turn.roll = ang(rng);
+                    ApplyFlyInput(&gc, turn, 1.0f, &g); // dt 1: the up settles at once
+                    const Vector3 f = Vector3Normalize(Vector3Subtract(gc.target, gc.position));
+                    const Vector3 r = Vector3Normalize(Vector3CrossProduct(f, gc.up));
+                    worstRoll = std::max(worstRoll, fabsf(Vector3DotProduct(r, g)));            // right stays level
+                    maxPitch = std::max(maxPitch, fabsf(asinf(std::clamp(Vector3DotProduct(f, g), -1.0f, 1.0f))) * RAD2DEG);
+                    for (int a = 0; a < 3; ++a) {
+                        FlyInput mv;
+                        (a == 0 ? mv.forward : a == 1 ? mv.right : mv.up) = 1.0f;
+                        const Vector3 before = gc.position;
+                        ApplyFlyInput(&gc, mv, 0.1f, &g);
+                        const Vector3 d = Vector3Normalize(Vector3Subtract(gc.position, before));
+                        if (a < 2) worstLevel = std::max(worstLevel, fabsf(Vector3DotProduct(d, g)));
+                        else worstUp = std::min(worstUp, Vector3DotProduct(d, g));
+                    }
+                }
+                const bool ok = worstRoll < 1e-3f && maxPitch <= 87.01f && worstLevel < 1e-3f && worstUp > 0.999f;
+                printf("bench: flycam near a body (#232): horizon tilt %.5f, max pitch %.2f deg, WASD off level %.5f, Space along up %.5f -> %s\n",
+                       worstRoll, maxPitch, worstLevel, worstUp, ok ? "PASS" : "FAIL");
+            }
         }
         if (std::string(argv[i]) == "--spin-rate" && i + 1 < argc) spinRate = (float)atof(argv[i + 1]);
         if (std::string(argv[i]) == "--test-mine" && i + 1 < argc) benchMineStrokes = atoi(argv[i + 1]);
