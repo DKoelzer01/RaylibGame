@@ -5730,8 +5730,8 @@ int main(int argc, char** argv)
         // shots all showed the start, and --bench-fly never moved).
         if (bench && player.flyMode && player.flyFollow) player.recordFly(world);
         // The simulation steps (#315): the gameplay below runs in fixed steps of SimDt() (60 Hz), as many as this frame's
-        // time owes (none on most frames above 60 FPS, two at 30 FPS). Key and button edges are latched for them
-        // (siminput.h); the mouse look turns the view once per frame, and the camera interpolates between steps.
+        // time owes (none on most frames above 60 FPS, two at 30 FPS). Key and button edges are latched for them in
+        // PlayerInput_Step() (playerinput.h); the mouse look turns the view once per frame, the camera interpolates.
         PlayerInput_BeginFrame();
         const int simSteps = SimClock_BeginFrame(frameDt);
         if (gameState == 1 && gameInput && alive && !loading && !ship.piloted && !Rocket_Boarded() && !player.flyMode) player.look(PlayerInput_Frame().look);
