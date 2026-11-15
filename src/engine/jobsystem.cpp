@@ -85,6 +85,7 @@ void JobSystem::workerLoop() {
             active++; // under the lock, so idle() never sees queued==0 && running==0 mid-handoff
         }
         fn();
+        ++finished; // before active drops: done + queued + running never dips mid-handoff
         active--;
         doneBy[(int)tag]++;
         if (fg) --foreground; // after the job, so a job that submits follow-ups keeps the count above zero

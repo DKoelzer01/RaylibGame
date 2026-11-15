@@ -41,6 +41,7 @@ public:
     bool idle() const { return queued() == 0 && running() == 0; }
     bool foregroundIdle() const { return foreground.load() == 0; } // no foreground job queued or running (#296 review)
     unsigned threadCount() const { return (unsigned)workers.size(); }
+    uint64_t done() const { return finished.load(); } // jobs finished so far (a loading bar's work done, #494)
 
 private:
     struct Job {
@@ -63,6 +64,7 @@ private:
     std::condition_variable cv;
     std::atomic<int> active{0};
     std::atomic<int> foreground{0};    // foreground jobs queued + running
+    std::atomic<uint64_t> finished{0};
     std::atomic<float> backgroundFrom{3.0e38f};
     std::atomic<long long> queuedBy[(int)JobTag::Count]{}, submittedBy[(int)JobTag::Count]{}, doneBy[(int)JobTag::Count]{};
     uint64_t nextSeq = 0;
