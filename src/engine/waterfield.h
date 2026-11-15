@@ -105,6 +105,11 @@ private:
     std::vector<const Site*> sites;
     uint8_t kindMask = 0;
     std::unordered_map<int64_t, float> memo; // (site, cell, kind) -> surface height
+    // Per site, over the chunk's box in site cells (+2 margin): water surfaces (NaN: not yet asked) and which bricks are
+    // published (#423: the blended density asks four columns a sample; hashing every one doubled a water rebuild).
+    struct Dense { int c0[3] = {}, n[3] = {}, b0[3] = {}, bn[3] = {}; std::vector<float> surf; std::vector<char> brick; };
+    std::vector<Dense> dense;
+    bool brickAt(int si, int ci, int cj, int ck) const;
     float surface(int si, int ci, int cj, int ck, int kind);
     float openSurface(int si, int ci, int cj, int ck, int kind, int depth);
 };

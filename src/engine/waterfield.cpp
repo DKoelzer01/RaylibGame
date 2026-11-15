@@ -110,8 +110,30 @@ ChunkSampler::ChunkSampler(const Snapshot* snap, uint64_t body, Vector3 lo, Vect
         if (!found) continue;
         sites.push_back(&site);
         kindMask |= kinds;
+        // Dense caches over the box (+2 cells: the blend reads the next column, surfaces read their side neighbours).
+        Dense d;
+        for (int a = 0; a < 3; ++a) { d.c0[a] = (int)floorf(mn[a]) - 2; d.n[a] = (int)floorf(mxv[a]) + 3 - d.c0[a]; }
+        if ((long long)d.n[0] * d.n[1] * d.n[2] <= 262144) d.surf.assign((size_t)d.n[0] * d.n[1] * d.n[2], std::nanf(""));
+        else d.n[0] = d.n[1] = d.n[2] = 0; // a coarse chunk: the memo map only
+        for (int a = 0; a < 3; ++a) { d.b0[a] = FloorDiv(d.c0[a], kBrick); d.bn[a] = FloorDiv(d.c0[a] + std::max(1, d.n[a]) - 1, kBrick) - d.b0[a] + 1; }
+        if ((long long)d.bn[0] * d.bn[1] * d.bn[2] <= 4096) {
+            d.brick.assign((size_t)d.bn[0] * d.bn[1] * d.bn[2], 0);
+            for (int bk = 0; bk < d.bn[2]; ++bk)
+                for (int bj = 0; bj < d.bn[1]; ++bj)
+                    for (int bi = 0; bi < d.bn[0]; ++bi)
+                        d.brick[((size_t)bk * d.bn[1] + bj) * d.bn[0] + bi] = site.brick(d.b0[0] + bi, d.b0[1] + bj, d.b0[2] + bk) ? 1 : 0;
+        }
+        dense.push_back(std::move(d));
     }
     if (!sites.empty()) kindMask |= 1; // water: the published cells may hold none of it here and still decide (a drained pond)
+}
+
+bool ChunkSampler::brickAt(int si, int ci, int cj, int ck) const {
+    const Dense& d = dense[si];
+    const int bi = FloorDiv(ci, kBrick) - d.b0[0], bj = FloorDiv(cj, kBrick) - d.b0[1], bk = FloorDiv(ck, kBrick) - d.b0[2];
+    if (!d.brick.empty() && bi >= 0 && bj >= 0 && bk >= 0 && bi < d.bn[0] && bj < d.bn[1] && bk < d.bn[2])
+        return d.brick[((size_t)bk * d.bn[1] + bj) * d.bn[0] + bi] != 0;
+    return sites[si]->brick(FloorDiv(ci, kBrick), FloorDiv(cj, kBrick), FloorDiv(ck, kBrick)) != nullptr;
 }
 
 float ChunkSampler::openSurface(int si, int ci, int cj, int ck, int kind, int depth) {
@@ -150,9 +172,21 @@ float ChunkSampler::openSurface(int si, int ci, int cj, int ck, int kind, int de
 }
 
 float ChunkSampler::surface(int si, int ci, int cj, int ck, int kind) {
+    // Water in the chunk's box: the dense cache (#423); other kinds and cells outside it: the memo map.
+    float* slot = nullptr;
+    if (kind == 0 && !dense[si].surf.empty()) {
+        const Dense& d = dense[si];
+        const int x = ci - d.c0[0], y = cj - d.c0[1], z = ck - d.c0[2];
+        if (x >= 0 && y >= 0 && z >= 0 && x < d.n[0] && y < d.n[1] && z < d.n[2]) {
+            slot = &dense[si].surf[((size_t)z * d.n[1] + y) * d.n[0] + x];
+            if (!std::isnan(*slot)) return *slot;
+        }
+    }
     const int64_t key = ((int64_t)si << 56) | ((int64_t)kind << 52) | ((int64_t)((ci + 8192) & 0x3FFF) << 28) | ((int64_t)((cj + 8192) & 0x3FFF) << 14) | (int64_t)((ck + 8192) & 0x3FFF);
-    auto it = memo.find(key);
-    if (it != memo.end()) return it->second;
+    if (!slot) {
+        auto it = memo.find(key);
+        if (it != memo.end()) return it->second;
+    }
     const Site& s = *sites[si];
     uint8_t fill, flags;
     float r = kNone;
@@ -179,7 +213,7 @@ float ChunkSampler::surface(int si, int ci, int cj, int ck, int kind) {
             if (up >= ck + 1.0f) r = std::max(r, up);
         }
     }
-    memo.emplace(key, r);
+    if (slot) *slot = r; else memo.emplace(key, r);
     return r;
 }
 
@@ -189,9 +223,32 @@ bool ChunkSampler::density(Vector3 p, int kind, float& wd) {
         float fx, fy, fz;
         s.frame(p, fx, fy, fz);
         const int ci = (int)floorf(fx), cj = (int)floorf(fy), ck = (int)floorf(fz);
-        if (!s.brick(FloorDiv(ci, kBrick), FloorDiv(cj, kBrick), FloorDiv(ck, kBrick))) continue;
-        const float sf = surface(si, ci, cj, ck, kind);
-        wd = sf <= kNone * 0.5f ? ISO_LEVEL - DENSITY_GRADIENT * 0.5f : ISO_LEVEL + DENSITY_GRADIENT * (sf - fz);
+        if (!brickAt(si, ci, cj, ck)) continue;
+        // The density of one column's surface at this height (dry: as if the surface were half a cell under the sample).
+        auto columnDensity = [&](int i, int j) {
+            const float sf = surface(si, i, j, ck, kind);
+            return sf <= kNone * 0.5f ? ISO_LEVEL - DENSITY_GRADIENT * 0.5f : ISO_LEVEL + DENSITY_GRADIENT * (sf - fz);
+        };
+        const float own = columnDensity(ci, cj);
+        // Blended across the four nearest columns (#423): each 1 m column was a flat-topped box, so the water showed 1 m
+        // steps and square blobs. Linear weights from the cell centres slope the surface evenly between columns (smoothstep
+        // weights put each column's whole step at its border: a 1 m grid of ripples on a draining pond), and a dry
+        // neighbour pulls the edge down, rounding it off like surface tension. A column in a brick
+        // that is not published (generated water beyond the simulated part) counts as this one, so no dip forms there.
+        const float gx = fx - 0.5f, gy = fy - 0.5f;
+        const int i0 = (int)floorf(gx), j0 = (int)floorf(gy);
+        const float tx = gx - (float)i0, ty = gy - (float)j0;
+        float sum = 0.0f;
+        for (int b = 0; b < 2; ++b)
+            for (int a = 0; a < 2; ++a) {
+                const int i = i0 + a, j = j0 + b;
+                const float w = (a ? tx : 1.0f - tx) * (b ? ty : 1.0f - ty);
+                if (w <= 0.0f) continue;
+                const bool same = i == ci && j == cj;
+                const bool known = same || brickAt(si, i, j, ck);
+                sum += w * (same ? own : known ? columnDensity(i, j) : own);
+            }
+        wd = sum;
         return true;
     }
     return false;
