@@ -6823,7 +6823,7 @@ int main(int argc, char** argv)
         // 40 m off: a crater (the ground's middle now air) with a meteorite at its bottom. bench_meteor.png looks at it.
         if (benchMeteor && gameState == 1 && !loading && WorldIdle()) {
             static int mf = 0;
-            static bool landed = false, crater = false;
+            static bool landed = false, crater = false, meteorRolled = false;
             static Vector3 ground{};
             Planetoid* p = dynamic_cast<Planetoid*>(world.objects[0].get());
             const auto* pf = dynamic_cast<const PlanetField*>(p->field.get());
@@ -6837,8 +6837,10 @@ int main(int argc, char** argv)
                 const Vector3 t2 = Vector3CrossProduct(t1, up);
                 for (int k = 0; k < 8 && !landed; ++k) {
                     const float b = k * 0.785f;
+                    const uint64_t rngBefore = GameRng_State();
                     if (Events_TestImpact(world, *p, 40.0f, b)) {
                         landed = true;
+                        meteorRolled = GameRng_State() != rngBefore; // the meteorite's roll came from the authority's stream (#316)
                         const Vector3 d = Vector3Normalize(Vector3Add(up, Vector3Scale(Vector3Add(Vector3Scale(t1, cosf(b)), Vector3Scale(t2, sinf(b))), 40.0f / pf->radius)));
                         ground = Vector3Scale(d, pf->radius + pf->elevation(d));
                         crater = p->densityAt(Vector3Subtract(ground, Vector3Scale(d, 1.5f))) < ISO_LEVEL; // 1.5 m under the old ground: now air
@@ -6862,9 +6864,9 @@ int main(int argc, char** argv)
                 TakeScreenshot("bench_meteor.png");
                 int meteorites = 0;
                 if (p->plots) for (auto& pl : p->plots->plots) for (const Part& part : pl->parts) meteorites += part.type == PartType::Meteorite;
-                const bool ok = Events_ShowerOn() && Events_Streaks() > 0 && landed && crater && meteorites >= 1;
+                const bool ok = Events_ShowerOn() && Events_Streaks() > 0 && landed && crater && meteorites >= 1 && meteorRolled;
                 printf("bench: meteor: shower on %d, %d streaks drawn, landed %d, crater %d, meteorites %d (bench_meteor.png) -> %s\n",
-                       (int)Events_ShowerOn(), Events_Streaks(), (int)landed, (int)crater, meteorites, ok ? "PASS" : "FAIL");
+                       (int)Events_ShowerOn(), Events_Streaks(), (int)landed, (int)crater, meteorites, (int)meteorRolled, ok ? "PASS" : "FAIL");
                 benchMeteor = false;
             }
         }
