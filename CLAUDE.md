@@ -102,8 +102,8 @@ C++ raylib 5.5 planetoid survival game. `src/engine` (static lib), `src/space` -
 - Close an issue only when its fix is merged into develop (then board Done), never on playtest alone
   (user, 2026-11-14). A playtest confirmation before the merge removes `needs playtest`, adds
   `playtest confirmed`, and keeps the issue In review.
-- Playtest items: each CurrentIssues.md line has a matching issue. Fixed-but-unconfirmed items carry
-  `needs playtest`; deferred ones carry `deferred`. Keep the issue and the CurrentIssues.md line in sync.
+- Playtest findings are filed as GitHub issues (CurrentIssues.md was retired 2026-11-15, #481).
+  Fixed-but-unconfirmed items carry `needs playtest`; deferred ones carry `deferred`.
 - Bugs found along the way (a failing test, a regression) get their own issue, even when fixed in
   the same branch.
 - Exempt: answering a question, read-only investigation, and triage itself (which comments on the
@@ -159,8 +159,6 @@ board's auto-add workflow adds new issues itself, but sets no fields, so:
   not needed (#149: GPU density is bit-identical, collision keeps the CPU field). One path on GL 4.3 (base-instance records).
 - Plan 5 (art, life, world variety): https://claude.ai/artifact/5igt2VrsTyNhZ3BZ94teHX - A animal models/AI, B biomes,
   C 3D terrain, D stylized PBR terrain: all built and merged.
-- `CurrentIssues.md` (untracked, the user's playtest list): erase lines once fully resolved; mark
-  deferred or changed-needs-confirmation items inline.
 
 ## Architecture notes
 
