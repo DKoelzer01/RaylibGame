@@ -45,6 +45,7 @@
 #include "bugreport.h"
 #include "progression_test.h"
 #include "menus.h"
+#include "newworld.h"
 #include "hotbar.h"
 #include "itemicons.h"
 #include "particles.h"
@@ -1011,6 +1012,7 @@ int main(int argc, char** argv)
             rlSetUniform(prog.uniform("noiseParams"), params.data(), RL_SHADER_UNIFORM_VEC4, (int)params.size() / 4);
             prog.setFloat("planetRadius", pf->radius);
             prog.setInt("planetMoon", 0);
+            { const float gp[4] = { pf->gen.ocean, pf->gen.mountains, pf->gen.roughness, 1.0f / std::max(pf->gen.biomeSize, 0.1f) }; rlSetUniform(prog.uniform("genParams"), gp, RL_SHADER_UNIFORM_VEC4, 1); } // #504
             prog.setUint("count", (unsigned)N);
             bin.bind(0); bout.bind(1);
             const double g0 = GetTime();
@@ -1213,6 +1215,42 @@ int main(int argc, char** argv)
         }
     }
 
+    for (int i = 1; i < argc; ++i)
+        if (std::string(argv[i]) == "--test-newworld") {
+            // The New World screen (#504) on its own: the preview of a random seed builds; then other parameters (more
+            // ocean, taller mountains) rebuild it. Screenshots of both; --record captures the turning planet.
+            Recorder_Start();
+            NewWorld_Open();
+            const double t0 = GetTime();
+            double firstBuild = -1.0, secondBuild = -1.0;
+            bool changed = false, shot1 = false, shot2 = false;
+            while (!WindowShouldClose()) {
+                const double t = GetTime() - t0;
+                Recorder_Update(true);
+                BeginDrawing();
+                NewWorld_Draw();
+                if (Recorder_WantsFrame(true)) Recorder_Capture();
+                EndDrawing();
+                Recorder_FrameDone();
+                if (firstBuild < 0.0 && NewWorld_PreviewBuildSeconds() >= 0.0) firstBuild = NewWorld_PreviewBuildSeconds();
+                if (firstBuild >= 0.0 && !shot1 && t > 3.0) { TakeScreenshot("bench_newworld.png"); shot1 = true; }
+                if (shot1 && !changed) {
+                    WorldGenParams p; p.ocean = 0.6f; p.mountains = 1.8f; p.roughness = 1.5f;
+                    NewWorld_TestSetParams(p);
+                    changed = true;
+                }
+                if (changed && secondBuild < 0.0 && NewWorld_PreviewBuildSeconds() != firstBuild && NewWorld_PreviewBuildSeconds() >= 0.0) secondBuild = NewWorld_PreviewBuildSeconds();
+                if (secondBuild >= 0.0 && !shot2 && t > 7.0) { TakeScreenshot("bench_newworld_changed.png"); shot2 = true; }
+                if ((shot2 && (!Recorder_Active() || Recorder_Finished())) || t > 40.0) break;
+            }
+            Recorder_Shutdown();
+            NewWorld_Shutdown();
+            const bool pass = firstBuild >= 0.0 && secondBuild >= 0.0 && shot1 && shot2;
+            printf("bench: newworld: preview built in %.2f s, rebuilt after a change in %.2f s; bench_newworld.png, bench_newworld_changed.png -> %s\n",
+                   firstBuild, secondBuild, pass ? "PASS" : "FAIL");
+            CloseWindow();
+            return pass ? 0 : 1;
+        }
     Recorder_Start(); // --record (#375): fixed frame time, seeded random values, the capture folder
     while (windowKeepAlive && !WindowShouldClose())
     {

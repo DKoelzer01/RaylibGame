@@ -119,6 +119,7 @@ namespace {
         rlSetUniform(S.prog.uniform("noiseParams"), params.data(), RL_SHADER_UNIFORM_VEC4, (int)params.size() / 4);
         S.prog.setFloat("planetRadius", pf.radius);
         S.prog.setInt("planetMoon", pf.isMoon() ? 1 : 0);
+        { const float gp[4] = { pf.gen.ocean, pf.gen.mountains, pf.gen.roughness, 1.0f / std::max(pf.gen.biomeSize, 0.1f) }; rlSetUniform(S.prog.uniform("genParams"), gp, RL_SHADER_UNIFORM_VEC4, 1); } // #504 (as land(), climateAt())
         S.prog.setFloat("mantleRadius", pf.mantleRadiusValue());
         S.prog.setFloat("outerR", pf.radius + pf.maxElevationValue());
         S.prog.setFloat("innerR", pf.radius + pf.minElevationValue());
