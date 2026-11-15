@@ -23,8 +23,12 @@ namespace {
     constexpr int kRecordTexels = 5;       // model rows 0-2, texturing origin, clip
 
     // Positions in their own stream (the shadow passes read only them); everything else interleaved.
-    struct Attr { float nrm[3], uv[2], uv2[2], tan[4]; unsigned char col[4]; float occ; }; // occ: ambient occlusion (#132), location 14
-    static_assert(sizeof(Attr) == 52, "interleaved terrain attributes");
+    // The packed vertex (#302: 36 B with the position, was 64): an octahedral normal (2 x snorm16); the material weights as
+    // unorm8 (a: rock, regolith, ice, ore; b: sand, gravel, grass, snow); canopy, climate / 66, ore kind and sky as unorm16
+    // (lighting.vs scales the climate back); ambient occlusion (#132) as unorm8. Positions stay float in their own buffer.
+    struct Attr { int16_t nrm[2]; unsigned char col[4], wb[4]; uint16_t tan[4]; uint16_t occ; unsigned char pad[2]; };
+    static_assert(sizeof(Attr) == 24, "packed terrain attributes");
+    // (The climate in tan[1] is bit fields: see TerrainArena_Upload.)
     constexpr size_t kPosBytes = 12;
 
     struct Command { GLuint count, instanceCount, firstIndex; GLint baseVertex; GLuint baseInstance; };
@@ -102,12 +106,12 @@ namespace {
         glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, (GLsizei)kPosBytes, nullptr);
         glBindBuffer(GL_ARRAY_BUFFER, S.attr);
         const GLsizei st = sizeof(Attr);
-        glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, st, (void*)offsetof(Attr, uv));
-        glVertexAttribPointer(2, 3, GL_FLOAT, GL_FALSE, st, (void*)offsetof(Attr, nrm));
+        glVertexAttribPointer(1, 2, GL_UNSIGNED_BYTE, GL_TRUE, st, (void*)offsetof(Attr, wb));          // sand, gravel
+        glVertexAttribPointer(2, 2, GL_SHORT, GL_TRUE, st, (void*)offsetof(Attr, nrm));                 // octahedral (lighting.vs decodes)
         glVertexAttribPointer(3, 4, GL_UNSIGNED_BYTE, GL_TRUE, st, (void*)offsetof(Attr, col));
-        glVertexAttribPointer(4, 4, GL_FLOAT, GL_FALSE, st, (void*)offsetof(Attr, tan));
-        glVertexAttribPointer(5, 2, GL_FLOAT, GL_FALSE, st, (void*)offsetof(Attr, uv2));
-        glVertexAttribPointer(14, 1, GL_FLOAT, GL_FALSE, st, (void*)offsetof(Attr, occ)); // #132 (after the records, 9-13)
+        glVertexAttribPointer(4, 4, GL_UNSIGNED_SHORT, GL_TRUE, st, (void*)offsetof(Attr, tan));        // climate bit fields in y
+        glVertexAttribPointer(5, 2, GL_UNSIGNED_BYTE, GL_TRUE, st, (void*)(offsetof(Attr, wb) + 2));    // grass, snow
+        glVertexAttribPointer(14, 1, GL_UNSIGNED_SHORT, GL_TRUE, st, (void*)offsetof(Attr, occ)); // #132 (after the records, 9-13)
         glEnableVertexAttribArray(14);
         for (int a = 0; a <= 5; ++a) glEnableVertexAttribArray(a);
         BindRecords();
@@ -313,14 +317,35 @@ ArenaAlloc TerrainArena_Upload(const ChunkMeshData& d) {
     std::vector<Attr> v(nv);
     const bool uv = d.texcoords.size() >= (size_t)nv * 2, uv2 = d.texcoords2.size() >= (size_t)nv * 2, tan = d.tangents.size() >= (size_t)nv * 4;
     const bool col = d.colors.size() >= (size_t)nv * 4;
+    auto un8 = [](float x) { return (unsigned char)lroundf(std::clamp(x, 0.0f, 1.0f) * 255.0f); };
+    auto un16 = [](float x) { return (uint16_t)lroundf(std::clamp(x, 0.0f, 1.0f) * 65535.0f); };
+    auto sn16 = [](float x) { return (int16_t)lroundf(std::clamp(x, -1.0f, 1.0f) * 32767.0f); };
     for (int i = 0; i < nv; ++i) {
         Attr& o = v[i];
-        memcpy(o.nrm, &d.normals[i * 3], 12);
-        if (uv) memcpy(o.uv, &d.texcoords[i * 2], 8); else o.uv[0] = o.uv[1] = 0.0f;
-        if (uv2) memcpy(o.uv2, &d.texcoords2[i * 2], 8); else o.uv2[0] = o.uv2[1] = 0.0f;
-        if (tan) memcpy(o.tan, &d.tangents[i * 4], 16); else { o.tan[0] = o.tan[1] = o.tan[2] = 0.0f; o.tan[3] = 1.0f; }
+        // Octahedral normal: project onto the octahedron, fold the lower half over.
+        float nx = d.normals[i * 3], ny = d.normals[i * 3 + 1], nz = d.normals[i * 3 + 2];
+        const float l1 = fabsf(nx) + fabsf(ny) + fabsf(nz);
+        if (l1 > 1e-12f) { nx /= l1; ny /= l1; nz /= l1; } else { nx = 0.0f; ny = 1.0f; nz = 0.0f; }
+        float ox = nx, oy = nz; // the encoding's plane is x/z, folded over y (the octant of -y)
+        if (ny < 0.0f) { ox = (1.0f - fabsf(nz)) * (nx >= 0.0f ? 1.0f : -1.0f); oy = (1.0f - fabsf(nx)) * (nz >= 0.0f ? 1.0f : -1.0f); }
+        o.nrm[0] = sn16(ox); o.nrm[1] = sn16(oy);
         if (col) memcpy(o.col, &d.colors[i * 4], 4); else memset(o.col, 255, 4);
-        o.occ = d.occlusion.size() >= (size_t)nv ? d.occlusion[i] : 0.0f;
+        o.wb[0] = uv ? un8(d.texcoords[i * 2]) : 0; o.wb[1] = uv ? un8(d.texcoords[i * 2 + 1]) : 0;
+        o.wb[2] = uv2 ? un8(d.texcoords2[i * 2]) : 0; o.wb[3] = uv2 ? un8(d.texcoords2[i * 2 + 1]) : 0;
+        if (tan) {
+            // The climate (2 + temperature step 0-62 + moisture < 1; under 1.5: none) as bit fields, so it comes back exact:
+            // (step + 1) * 1024 + moisture * 1023, 0 = none (lighting.vs rebuilds 2 + step + moisture).
+            const float c = d.tangents[i * 4 + 1];
+            uint16_t packed = 0;
+            if (c >= 1.5f) {
+                const int step = std::clamp((int)floorf(c) - 2, 0, 62);
+                packed = (uint16_t)((step + 1) * 1024 + std::clamp((int)lroundf((c - floorf(c)) * 1023.0f), 0, 1023));
+            }
+            o.tan[0] = un16(d.tangents[i * 4]); o.tan[1] = packed;
+            o.tan[2] = un16(d.tangents[i * 4 + 2]); o.tan[3] = un16(d.tangents[i * 4 + 3]);
+        } else { o.tan[0] = o.tan[1] = o.tan[2] = 0; o.tan[3] = 65535; }
+        o.occ = d.occlusion.size() >= (size_t)nv ? un16(d.occlusion[i]) : 0;
+        o.pad[0] = o.pad[1] = 0;
     }
     a.vFirst = AllocVerts(nv);
     a.vCount = nv;

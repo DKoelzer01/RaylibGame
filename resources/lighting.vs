@@ -74,15 +74,25 @@ void main()
     // Normal to world space via the model matrix. raylib also provides matNormal, but in testing its value
     // did not follow per-draw model rotations (normals stayed in body space on spinning bodies), so we
     // don't rely on it. Valid for rotation + uniform scale, which is all the engine uses.
-    fragNormal = normalize(mat3(model) * vertexNormal);
+    // The arena's packed vertex (#302): an octahedral normal, the climate scaled down by 66 (terrainarena.cpp Attr).
+    vec3 nrm = vertexNormal;
+    vec4 tng = vertexTangent;
+    if (arenaDraw == 1) {
+        vec2 e = vertexNormal.xy;
+        nrm = vec3(e.x, 1.0 - abs(e.x) - abs(e.y), e.y);
+        if (nrm.y < 0.0) nrm.xz = (1.0 - abs(nrm.zx)) * vec2(nrm.x >= 0.0 ? 1.0 : -1.0, nrm.z >= 0.0 ? 1.0 : -1.0);
+        nrm = normalize(nrm);
+        { float raw = floor(tng.y * 65535.0 + 0.5); tng.y = raw < 0.5 ? 0.0 : 1.0 + floor(raw / 1024.0) + mod(raw, 1024.0) / 1023.0; } // the climate's bit fields: 2 + step + moisture
+    }
+    fragNormal = normalize(mat3(model) * nrm);
     fragTexPos = vertexPosition + texOrigin;
     fragChunkPos = vertexPosition;
-    fragSky = vertexTangent.w;
+    fragSky = tng.w;
     fragOcclusion = vertexOcclusion;
-    fragCanopy = vertexTangent.xy;
-    fragClimate = vertexTangent.y;
-    fragOreKind = vertexTangent.z;
+    fragCanopy = tng.xy;
+    fragClimate = tng.y;
+    fragOreKind = tng.z;
     fragMacro = vnoise(fragTexPos / 70.0) * 0.6 + vnoise(fragTexPos / 250.0) * 0.4;
-    fragLocalNormal = vertexNormal;
+    fragLocalNormal = nrm;
     gl_Position = arenaDraw == 1 ? matViewProj * world : mvp * vec4(vertexPosition, 1.0);
 }
