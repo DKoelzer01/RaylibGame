@@ -22,6 +22,18 @@ C++ raylib 5.5 planetoid survival game. `src/engine` (static lib), `src/space` -
 
 - Light tests per change: the scripted benches for the feature touched and its neighbours
   (`game.exe --seed 42 --bench 3 --test-<name>`), plus a screenshot (bench.png) when visuals change.
+- **Record what you verify (user, 2026-11-15, #478):** when verifying a graphical change (rendering, shaders,
+  lighting, UI, animation, terrain or water look) or a behaviour change that shows on screen (movement, camera,
+  physics, animals, machines, tools), record the test run with the `capture` skill (the in-game recorder, `--record`)
+  and look at it yourself before claiming the fix, so visual problems are caught without the user. Keep it cheap:
+  - short captures: 30-120 frames, `--record-every` 2-5 unless you're hunting flicker or jitter (then every 1);
+  - look at the contact sheet first, one image via `mcp__deweyserver__media_get(path=<capture>)` (default 1280 px
+    wide; use a smaller `max_width` when that's enough); open single frames (`frame=N`) only where something
+    changes or looks wrong; don't read every frame;
+  - for before/after, use `-Compare` (`--record-compare`) and read its % difference instead of comparing frames by eye;
+  - skip it for changes with nothing to see (data, saves, pure logic covered by a scripted test), and when a
+    recording would cost more than the check is worth (say so in the report);
+  - never while the user playtests, and report the capture path (and the GIF for the user) with the result.
 - Full regression (`tools/regression.sh planet`, `EXE=... SNAPSHOT=1`): ONE run only, after ALL fixes are in and
   the PRs are merge-ready (user, 2026-11-14), never between fix rounds; re-check failures with targeted runs
   first. Erosion is the default terrain (#362, user 2026-11-15; `RAYLIBGAME_EROSION=0` = the old noise terrain for A/B): the first bench on a seed bakes ~80 s, cached with its save after that.
@@ -90,8 +102,8 @@ C++ raylib 5.5 planetoid survival game. `src/engine` (static lib), `src/space` -
 - Close an issue only when its fix is merged into develop (then board Done), never on playtest alone
   (user, 2026-11-14). A playtest confirmation before the merge removes `needs playtest`, adds
   `playtest confirmed`, and keeps the issue In review.
-- Playtest items: each CurrentIssues.md line has a matching issue. Fixed-but-unconfirmed items carry
-  `needs playtest`; deferred ones carry `deferred`. Keep the issue and the CurrentIssues.md line in sync.
+- Playtest findings are filed as GitHub issues (CurrentIssues.md was retired 2026-11-15, #481).
+  Fixed-but-unconfirmed items carry `needs playtest`; deferred ones carry `deferred`.
 - Bugs found along the way (a failing test, a regression) get their own issue, even when fixed in
   the same branch.
 - Exempt: answering a question, read-only investigation, and triage itself (which comments on the
@@ -147,8 +159,6 @@ board's auto-add workflow adds new issues itself, but sets no fields, so:
   not needed (#149: GPU density is bit-identical, collision keeps the CPU field). One path on GL 4.3 (base-instance records).
 - Plan 5 (art, life, world variety): https://claude.ai/artifact/5igt2VrsTyNhZ3BZ94teHX - A animal models/AI, B biomes,
   C 3D terrain, D stylized PBR terrain: all built and merged.
-- `CurrentIssues.md` (untracked, the user's playtest list): erase lines once fully resolved; mark
-  deferred or changed-needs-confirmation items inline.
 
 ## Architecture notes
 
