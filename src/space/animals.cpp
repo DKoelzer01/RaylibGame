@@ -115,6 +115,7 @@ struct Animal {
     Vector3 prevPos{};           // pos and heading before the last simulation step: drawing blends them by SimAlpha (#315)
     float prevHeading = 0.0f;
     bool prevValid = false;
+    int simFrame = -1;           // the update (frameNo) that last simulated it (#318 tests)
     std::string body;            // the body's name (saves); its pointer is looked up by id each frame
     Vector3 pos{};               // body-local, on the surface
     float heading = 0.0f;        // radians from east toward north, in the local tangent frame
@@ -152,6 +153,7 @@ bool NearFire(Vector3 p, float r, Vector3& at) { for (const Vector3& f : fires) 
 int pennedNow = 0;
 double lastUpdateMs = 0.0;
 int frameNo = 0;
+int simulatedNow = 0; // animals within reach of an interest centre in the last update (#318)
 
 float Rand01(uint32_t& s) { s = s * 1664525u + 1013904223u; return (s >> 8) * (1.0f / 16777216.0f); }
 
@@ -418,15 +420,34 @@ void Animals_Update(Scene& world, float dt, float worldDt, bool inputEnabled) {
     const auto t0 = std::chrono::steady_clock::now();
     LoadSpecies();
     ++frameNo;
+    simulatedNow = 0;
     for (Animal& a : animals) { a.prevPos = a.pos; a.prevHeading = a.heading; a.prevValid = true; } // the pose drawing blends from (#315)
     Planetoid* here = player.nearest;
     const PlanetField* pf = here ? dynamic_cast<const PlanetField*>(here->field.get()) : nullptr;
     Vector3 playerLocal{};
     if (here) playerLocal = here->toLocal((player.position - world.renderOrigin).toFloat());
-    if (here && pf && !player.flyMode && SimTime() - lastSpawnCheck > 1.0) {
+    // Interest centres (#318): the local player and every other centre (other players on a server). Herds spawn and animals
+    // are simulated around all of them; player-specific behaviour (fleeing the player, following food in hand, night
+    // hunters, campfires) still looks at the local player only.
+    static std::vector<InterestCentre> centres; // (reused: no allocation per update)
+    centres.clear();
+    if (here) centres.push_back({ here->id, playerLocal });
+    for (const InterestCentre& c : gInterestCentres) centres.push_back(c);
+    auto nearestCentre = [&](const Planetoid* body, Vector3 at) {
+        float best = 1e9f;
+        for (const InterestCentre& c : centres) if (body && c.body == body->id) best = std::min(best, Vector3Distance(at, c.local));
+        return best;
+    };
+    if (((here && pf && !player.flyMode) || !gInterestCentres.empty()) && SimTime() - lastSpawnCheck > 1.0) { // (single-player: as before)
         lastSpawnCheck = SimTime();
-        const float d = Vector3Length(playerLocal);
-        if (d > 1.0f && d - pf->radius < 400.0f) SpawnHerds(world, *here, *pf, Vector3Scale(playerLocal, 1.0f / d));
+        for (size_t k = 0; k < centres.size(); ++k) {
+            const InterestCentre& c = centres[k];
+            Planetoid* b = Planetoid::find(c.body);
+            const PlanetField* cf = b ? dynamic_cast<const PlanetField*>(b->field.get()) : nullptr;
+            if (!cf || (here && k == 0 && player.flyMode)) continue; // (the local player flying: no herds under the camera)
+            const float d = Vector3Length(c.local);
+            if (d > 1.0f && d - cf->radius < 400.0f) SpawnHerds(world, *b, *cf, Vector3Scale(c.local, 1.0f / d));
+        }
     }
     const double now = WorldTime();
     const std::string held = Hotbar_HeldFood(); // its food in the player's hand: animals follow
@@ -476,7 +497,7 @@ void Animals_Update(Scene& world, float dt, float worldDt, bool inputEnabled) {
         ecoAt = SimTime() + 0.5;
         std::vector<int> near;
         for (size_t i = 0; i < animals.size(); ++i)
-            if (animals[i].body == here->name && Vector3Distance(animals[i].pos, playerLocal) < 300.0f) near.push_back((int)i);
+            if (animals[i].body == here->name && nearestCentre(here, animals[i].pos) < 300.0f) near.push_back((int)i);
         for (int i : near) {
             Animal& a = animals[i];
             const Species& s = species[a.species];
@@ -508,10 +529,12 @@ void Animals_Update(Scene& world, float dt, float worldDt, bool inputEnabled) {
         if (!field) continue;
         // Growing up and products run on world time wherever the animal is.
         if (a.age < 1.0f) a.age = std::min(1.0f, a.age + worldDt / 3600.0f);
-        // Only near the player is it simulated; past 80 m a quarter as often.
+        // Only near an interest centre (the player, other players: #318) is it simulated; past 80 m a quarter as often.
         const bool sameBody = body == here;
-        const float dist = sameBody ? Vector3Distance(a.pos, playerLocal) : 1e9f;
+        const float dist = nearestCentre(body, a.pos);
+        const float pdist = sameBody ? Vector3Distance(a.pos, playerLocal) : 1e9f; // to the local player (its own behaviour)
         if (dist > 300.0f) continue;
+        ++simulatedNow; a.simFrame = frameNo;
         float step = dt;
         if (dist > 80.0f) { if ((frameNo + (int)i) % 4) continue; step = dt * 4.0f; }
         if ((a.settleIn -= step) <= 0.0f) {
@@ -533,7 +556,7 @@ void Animals_Update(Scene& world, float dt, float worldDt, bool inputEnabled) {
         // Night hunters: in daylight they run off, and are gone once out of sight (or after 40 s).
         if (s.night && !dark) {
             a.daylight += step;
-            if (a.daylight > 40.0f || (dist > 70.0f && a.daylight > 5.0f)) { gone.push_back((int)i); continue; }
+            if (a.daylight > 40.0f || (pdist > 70.0f && a.daylight > 5.0f)) { gone.push_back((int)i); continue; }
             a.fleeTimer = std::max(a.fleeTimer, 1.0f);
             a.fleeFrom = sameBody ? playerLocal : a.pos;
         }
@@ -545,8 +568,8 @@ void Animals_Update(Scene& world, float dt, float worldDt, bool inputEnabled) {
             Vector3 fire;
             const bool playerSafe = NearFire(playerLocal, 10.0f, fire);
             if (s.night && NearFire(a.pos, 14.0f, fire)) { a.fleeTimer = 3.0f; a.fleeFrom = fire; }
-            else if (s.night) hunting = dark && dist < 70.0f && !playerSafe;
-            else hunting = (dist < 12.0f || now < a.angryUntil) && dist < 30.0f && !playerSafe;
+            else if (s.night) hunting = dark && pdist < 70.0f && !playerSafe;
+            else hunting = (pdist < 12.0f || now < a.angryUntil) && pdist < 30.0f && !playerSafe;
         }
         if (hunting) {
             a.state = State::Hunt;
@@ -554,7 +577,7 @@ void Animals_Update(Scene& world, float dt, float worldDt, bool inputEnabled) {
             steer = true;
             speed = s.run * (s.night ? 0.8f : 1.0f);
             const float reach = 0.5f * s.size.x + 1.0f;
-            if (dist < reach) {
+            if (pdist < reach) {
                 speed = 0.0f;
                 if (SimTime() - a.lastBite > 1.2) {
                     a.lastBite = SimTime();
@@ -570,13 +593,13 @@ void Animals_Update(Scene& world, float dt, float worldDt, bool inputEnabled) {
             toward = Vector3Subtract(a.pos, a.fleeFrom);
             steer = true;
             speed = s.run;
-        } else if (sameBody && dist > 2.5f && (now < a.followUntil || (dist < 16.0f && !held.empty() && std::find(s.diet.begin(), s.diet.end(), held) != s.diet.end()))) {
+        } else if (sameBody && pdist > 2.5f && (now < a.followUntil || (pdist < 16.0f && !held.empty() && std::find(s.diet.begin(), s.diet.end(), held) != s.diet.end()))) {
             // Fed (30 s), or the player holds its food: it follows (wild ones too: the food wins).
             a.state = State::Follow;
             toward = Vector3Subtract(playerLocal, a.pos);
             steer = true;
             speed = std::min(s.run, s.walk * 2.0f);
-        } else if (s.wild && sameBody && dist < 25.0f) {
+        } else if (s.wild && sameBody && pdist < 25.0f) {
             a.fleeTimer = 4.0f;
             a.fleeFrom = playerLocal;
             continue;
@@ -930,6 +953,12 @@ void Animals_Save(FILE* f) {
 }
 
 static int lastLoaded = -1; // the animal the next "animal_id" line belongs to
+int Animals_SimulatedCount() { return simulatedNow; }
+int Animals_SimulatedNear(const Planetoid& body, Vector3 local, float range) {
+    int n = 0;
+    for (const Animal& a : animals) n += a.body == body.name && a.simFrame == frameNo && Vector3Distance(a.pos, local) < range ? 1 : 0;
+    return n;
+}
 uint64_t Animals_NetId(int index) { return index >= 0 && index < (int)animals.size() ? animals[index].netId : 0; }
 
 bool Animals_LoadLine(const char* tok, FILE* f) {

@@ -1239,7 +1239,12 @@ void worldUpdate(Scene& world, float uploadBudgetMs) {
     }
     GpuTimer_CpuMark("w-preload");
     for (auto& obj : world.objects)
-        if (auto* p = dynamic_cast<Planetoid*>(obj.get()); p && p->trees) p->trees->update(*p, p->toLocal(world.camera.position));
+        if (auto* p = dynamic_cast<Planetoid*>(obj.get()); p && p->trees) {
+            std::vector<Vector3> extra; // other interest centres on this body (#318)
+            for (const InterestCentre& c : gInterestCentres) if (c.body == p->id) extra.push_back(c.local);
+            p->trees->setInterest(std::move(extra));
+            p->trees->update(*p, p->toLocal(world.camera.position));
+        }
 
     GpuTimer_CpuMark("w-trees");
     stats.queuedJobs = (int)Jobs().queued();

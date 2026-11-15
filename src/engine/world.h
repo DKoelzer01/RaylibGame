@@ -87,6 +87,11 @@ struct TerrainHit {
 };
 
 void worldHandler(Scene& world);
+// Interest centres (#318): body-local points, besides the camera and the local player, around which world services keep
+// running - tree tiles (trunk collision, plant picking) and animals (spawning and simulation). A server sets one per
+// connected player; tests set them by hand. body = Planetoid::id.
+struct InterestCentre { uint64_t body = 0; Vector3 local{}; };
+inline std::vector<InterestCentre> gInterestCentres;
 // The simulation's frame time: GetFrameTime(), or a fixed step while recording (#375: --fixed-dt, implied by --record)
 // so captures are reproducible. Gameplay code reads this; UI timing keeps the real clock.
 inline float gFixedFrameTime = 0.0f;

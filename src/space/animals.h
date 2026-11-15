@@ -33,6 +33,8 @@ bool Animals_LoadLine(const char* tok, FILE* f);
 // Tests.
 int Animals_Count();
 uint64_t Animals_NetId(int index);                              // its stable id (netid.h, #317)
+int Animals_SimulatedCount();                                   // simulated in the last update: near an interest centre (#318)
+int Animals_SimulatedNear(const Planetoid& body, Vector3 local, float range); // of those, within range of a body-local point
 int Animals_Spawn(Scene& world, Planetoid& body, const std::string& species, Vector3 bodyLocal, int count, bool young = false, float spread = 18.0f);
 int Animals_Nearest(Vector3 bodyLocal, float range);          // index or -1
 Vector3 Animals_Position(int index);                           // body-local

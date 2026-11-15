@@ -52,6 +52,7 @@ const WoodSpeciesDef& WoodSpeciesInfo(WoodSpecies s);
 inline WoodSpecies SpeciesOfVariant(int v) { return (WoodSpecies)(v / 2); }  // trees only (v < kFirstBush)
 
 constexpr float kTreeTileSize = 64.0f;      // m
+constexpr float kTreeInterestRange = 192.0f; // m: tiles kept around other interest centres (other players, #318)
 inline float kTreeDrawDistance = 2000.0f;    // trees (simple meshes past kTreeNearDistance); --tree-dist
 constexpr float kBushDrawDistance = 300.0f;
 constexpr float kTreeNearDistance = 200.0f; // full meshes inside this, simple ones beyond
@@ -115,6 +116,9 @@ public:
     // Main thread, once a frame: request tiles near the camera (body-local), drop far ones, take
     // finished tiles, rebuild the draw batches when needed.
     void update(Planetoid& body, Vector3 camLocal);
+    // Other interest centres on this body (body-local; #318: other players on a server): their nearby tiles stay loaded.
+    void setInterest(std::vector<Vector3> centresLocal) { interest = std::move(centresLocal); }
+    int readyTilesNear(Vector3 local, float range) const; // built tiles whose centre is within range (arc, m)
     // Instanced draw (tree shader bound by the scene; its view-projection set).
     void draw(const Planetoid& body, const RenderContext& ctx, int onlyLod = -1, int set = 0); // onlyLod 1: simple far meshes only (the mid pass); set: 0 all, 1/2 the far/near shadow casters
     // The shadow cascades' axis (body-local direction toward the sun): the caster sets are trees near it. Rebuilds the
@@ -163,6 +167,7 @@ private:
     // Main-view GPU culling (#292): per slot of set 0, the visible instances (compacted) and its VAO; one command buffer.
     unsigned int culledVao[2 * kTreeVariants] = {}, culledVbo[2 * kTreeVariants] = {}, cmdBuf = 0;
     Vector3 lastWantCam = { 1e30f, 0, 0 };    // tile set recomputed after the camera moves 16 m
+    std::vector<Vector3> interest, lastInterest; // other interest centres (#318) and where they were at the last recompute
     int drawnInstances = 0;
 
     void request(const TreeTileKey& key, TreeTile& tile, float priority);

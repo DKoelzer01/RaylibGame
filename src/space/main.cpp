@@ -130,6 +130,25 @@ static Vector3 StartSpawnDir(Planetoid& body) {
     return { 0, 1, 0 };
 }
 
+// Tests with a second player or centre (#314, #318): a world direction about `dist` m from `from` over dry land (the first
+// of 16 headings whose ground stands 5 m over the sea; else the first heading).
+static Vector3 LandDirAt(Planetoid& body, Vector3 from, float dist) {
+    const auto* pf = dynamic_cast<const PlanetField*>(body.field.get());
+    Vector3 e = Vector3CrossProduct(from, { 0, 1, 0 });
+    if (Vector3Length(e) < 0.1f) e = { 1, 0, 0 };
+    e = Vector3Normalize(e);
+    Vector3 firstDir{};
+    for (int k = 0; k < 16; ++k) {
+        const Vector3 side = Vector3RotateByQuaternion(e, QuaternionFromAxisAngle(from, k * (2.0f * PI / 16.0f)));
+        const Vector3 d = Vector3Normalize(Vector3Add(from, Vector3Scale(side, dist / (body.radius * body.scale))));
+        if (k == 0) firstDir = d;
+        if (!pf) return d;
+        const Vector3 l = body.dirToLocal(d);
+        if (pf->radius + pf->elevation(l) > pf->seaLevelRadius() + 5.0f) return d;
+    }
+    return firstDir;
+}
+
 // A new game on the world as generated: the player at the start, a
 // clearing (no tree on the spot), the starting kit. `reset` also clears what a previous game left behind
 // (inventory, quest tier, survival state).
@@ -344,6 +363,7 @@ int main(int argc, char** argv)
     bool benchNetIds = false;      // --test-netids: stable network ids over a save and load (#317)
     bool benchNet = false;         // --test-net: connect by IP over loopback (GameNetworkingSockets, #310)
     bool benchFingerprint = false; // --test-fingerprint: world fingerprint and the gameplay RNG (#316)
+    bool benchInterest = false; int interestPhase = 0; // --test-interest: a second interest centre (#318)
     bool benchTwoPlayers = false; int twoPhase = 0; // --test-two-players: a second Player in its own frame (#314)
     bool benchFall = false; int fallPhase = 0, fallIdx = 0; bool fallOk = true; double fallStart = 0.0; // --test-fall (#263)
     bool benchTeleClose = false; int teleCPhase = 0; double teleCStart = 0.0, teleCWorst = 0.0; long long teleCReq0 = 0; // --test-telescope-close (#261)
@@ -486,6 +506,7 @@ int main(int argc, char** argv)
         if (std::string(argv[i]) == "--test-netids") benchNetIds = true; // stable network ids (#317)
         if (std::string(argv[i]) == "--test-net") benchNet = true; // loopback connect (#310)
         if (std::string(argv[i]) == "--test-fingerprint") benchFingerprint = true; // world fingerprint, game RNG (#316)
+        if (std::string(argv[i]) == "--test-interest") benchInterest = true; // a second interest centre (#318)
         if (std::string(argv[i]) == "--test-two-players") benchTwoPlayers = true; // two players side by side (#314)
         if (std::string(argv[i]) == "--test-fall") benchFall = true; // drops from 3-100 m: fall damage by height
         if (std::string(argv[i]) == "--test-telescope-close") benchTeleClose = true; // zoom 16x at the horizon, close: worst frame after (#261)
@@ -1814,9 +1835,7 @@ int main(int argc, char** argv)
                         const char* env = getenv("RAYLIBGAME_TWO_DIST"); // bench knob: the second player's distance (m)
                         twoDistUsed = env ? (float)atof(env) : 2000.0f;
                         const float twoDist = twoDistUsed;
-                        Vector3 e = Vector3CrossProduct(d0, { 0, 1, 0 });
-                        if (Vector3Length(e) < 0.1f) e = { 1, 0, 0 };
-                        const Vector3 d1 = Vector3Normalize(Vector3Add(d0, Vector3Scale(Vector3Normalize(e), twoDist / (p->radius * p->scale))));
+                        const Vector3 d1 = LandDirAt(*p, d0, twoDist); // over dry land
                         player.spawnOn(world, *p, d0);
                         other.spawnOn(world, *p, d1);
                         otherTick = SimTick();
@@ -1850,6 +1869,44 @@ int main(int argc, char** argv)
                                        apart, w0, g0, worst0, w1, g1, worst1, pass ? "PASS" : "FAIL");
                                 benchTwoPlayers = false;
                             }
+                        }
+                    }
+                } else if (benchInterest && (interestPhase > 0 || WorldIdle())) {
+                    // --test-interest (#318): a second interest centre 2 km from the player (a remote player on a server). Tree
+                    // tiles load around it, and animals placed there are simulated (they move); herds may spawn there too.
+                    static Vector3 centre{};
+                    static int first = 0, placed = 0, before = 0, maxSim = 0;
+                    static std::vector<Vector3> start;
+                    static double t0 = 0.0;
+                    Planetoid* p = dynamic_cast<Planetoid*>(world.objects[0].get());
+                    if (interestPhase == 0) {
+                        const Vector3 d0 = StartSpawnDir(*p);
+                        const Vector3 d1 = LandDirAt(*p, d0, 3000.0f); // over dry land, past the camera's 2 km tree range
+                        player.spawnOn(world, *p, d0);
+                        Player probe; // finds the ground there
+                        probe.spawnOn(world, *p, d1);
+                        centre = p->toLocalD(probe.position).toFloat();
+                        if (!getenv("RAYLIBGAME_NO_INTEREST")) gInterestCentres = { InterestCentre{ p->id, centre } }; // (the A/B: without it)
+                        before = Animals_Count();
+                        first = Animals_Count();
+                        placed = Animals_Spawn(world, *p, "woolback", centre, 3, false, 6.0f);
+                        start.clear();
+                        for (int i = first; i < first + placed; ++i) start.push_back(Animals_Position(i));
+                        interestPhase = 1; t0 = -1.0;
+                    } else if (interestPhase == 1) {
+                        if (t0 < 0.0) t0 = GetTime();
+                        maxSim = std::max(maxSim, Animals_SimulatedNear(*p, centre, 50.0f)); // the ones placed there, simulated
+                        if (GetTime() - t0 > 8.0) {
+                            float moved = 0.0f;
+                            for (int k = 0; k < placed && first + k < Animals_Count(); ++k) moved = std::max(moved, Vector3Distance(Animals_Position(first + k), start[k]));
+                            int nearCentre = 0;
+                            for (int i = 0; i < Animals_Count(); ++i) nearCentre += Vector3Distance(Animals_Position(i), centre) < 300.0f ? 1 : 0;
+                            const int tiles = p->trees ? p->trees->readyTilesNear(centre, 128.0f) : 0;
+                            const bool pass = placed > 0 && maxSim >= placed && tiles > 0;
+                            printf("bench: interest: a centre 3 km away: %d tree tiles built around it, %d animals placed there (%d of them simulated, moved up to %.1f m), %d animals within 300 m of it (%d before) -> %s\n",
+                                   tiles, placed, maxSim, moved, nearCentre, before, pass ? "PASS" : "FAIL");
+                            gInterestCentres.clear();
+                            benchInterest = false;
                         }
                     }
                 } else if (benchFingerprint && WorldIdle()) {
@@ -5659,7 +5716,7 @@ int main(int argc, char** argv)
                         }
                         benchWalkSeconds = 0.0;
                     }
-                } else if ((WorldIdle() && benchDigStrokes == 0 && !benchPaint && !benchSaveLoad && benchWalkSeconds <= 0.0 && benchMineStrokes == 0 && minePhase != 2 && benchFlySeconds <= 0.0 && !benchSuffocate && benchOrbitSeconds <= 0.0 && !benchRide && !benchPark && !benchGravity && !benchPrecision && !benchMantle && !benchAirJump && !benchMoon && !benchHole && !benchWall && !benchDoorway && !benchLedge && !benchTor && !benchMachines && !benchFall && !benchHover && !benchNetIds && !benchNet && !benchTwoPlayers && !benchFingerprint && !benchTeleClose && !benchMenus && !benchWater && !benchFlyFollow && !benchHotbar && !benchInventory && !benchMap && !benchViewmodel && !benchQuests && !benchHunger && !benchFarm && !benchAnimals && !benchThreats && benchShotTabs == 0 && !benchForest && !benchFlow && !benchPond && !benchBucket && !benchPump && !benchTerrain && !benchShelter && !benchRoom && !benchFacing && !benchShadow && !benchParticles && !benchBiomes && !benchOil && !benchSpring && !benchShotAnimals && !benchShotMachines && benchShotBiomes < 0 && !benchFarForest && !benchRecipes && !benchWeather && !benchDecor && !benchMaterials && !benchDamage && !benchCrafting && !benchSuit && !benchTools && !benchRivers && !benchRing && !benchRocket && !benchStation && !benchBlueprint && !benchSmallBody && !benchTrees && !benchChop && benchPersist == 0 && benchBuild == 0 && benchFactory == 0 && !benchProgression) || GetTime() > 600.0) {
+                } else if ((WorldIdle() && benchDigStrokes == 0 && !benchPaint && !benchSaveLoad && benchWalkSeconds <= 0.0 && benchMineStrokes == 0 && minePhase != 2 && benchFlySeconds <= 0.0 && !benchSuffocate && benchOrbitSeconds <= 0.0 && !benchRide && !benchPark && !benchGravity && !benchPrecision && !benchMantle && !benchAirJump && !benchMoon && !benchHole && !benchWall && !benchDoorway && !benchLedge && !benchTor && !benchMachines && !benchFall && !benchHover && !benchNetIds && !benchNet && !benchTwoPlayers && !benchFingerprint && !benchInterest && !benchTeleClose && !benchMenus && !benchWater && !benchFlyFollow && !benchHotbar && !benchInventory && !benchMap && !benchViewmodel && !benchQuests && !benchHunger && !benchFarm && !benchAnimals && !benchThreats && benchShotTabs == 0 && !benchForest && !benchFlow && !benchPond && !benchBucket && !benchPump && !benchTerrain && !benchShelter && !benchRoom && !benchFacing && !benchShadow && !benchParticles && !benchBiomes && !benchOil && !benchSpring && !benchShotAnimals && !benchShotMachines && benchShotBiomes < 0 && !benchFarForest && !benchRecipes && !benchWeather && !benchDecor && !benchMaterials && !benchDamage && !benchCrafting && !benchSuit && !benchTools && !benchRivers && !benchRing && !benchRocket && !benchStation && !benchBlueprint && !benchSmallBody && !benchTrees && !benchChop && benchPersist == 0 && benchBuild == 0 && benchFactory == 0 && !benchProgression) || GetTime() > 600.0) {
                     benchStart = GetTime();
                     printf("bench: world ready after %.2f s (%d chunks, avg build %.2f ms of which sampling %.2f ms, %d worker threads)\n",
                         GetWorldStats().lastGenerationSeconds, GetWorldStats().chunks, GetWorldStats().avgBuildMs, GetWorldStats().avgSampleMs, GetWorldStats().workerThreads);
