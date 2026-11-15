@@ -14,6 +14,10 @@
 static std::atomic<float> gBakeProgress{ 0.0f };
 static constexpr int kPieces = 16; // the cache file deflates in this many pieces at once (#362)
 float ErosionBakeProgress() { return gBakeProgress.load(std::memory_order_relaxed); }
+static std::atomic<bool> gBaking{ false };
+static std::atomic<int> gBakes{ 0 };
+bool ErosionBaking() { return gBaking.load(std::memory_order_relaxed); }
+int ErosionBakeCount() { return gBakes.load(); }
 
 namespace {
     // The cube faces as PlanetField::prepareBlock lays them out (#251): face = axis * 2 + (positive ? 1 : 0).
@@ -375,6 +379,7 @@ uint64_t ErosionParamsKey(const ErosionParams& p) {
 
 void PlanetErosion::build(const std::function<float(Vector3, float)>& height, float planetRadius, unsigned int seedIn, const ErosionParams& p, int threads) {
     gBakeProgress.store(0.0f, std::memory_order_relaxed);
+    struct BakingFlag { BakingFlag() { gBaking.store(true); ++gBakes; } ~BakingFlag() { gBaking.store(false); } } baking; // the loading screen tells a bake from a cache read (#505)
     paramsKey = ErosionParamsKey(p);
     const auto t0 = std::chrono::steady_clock::now();
     R = planetRadius; seed = seedIn;
