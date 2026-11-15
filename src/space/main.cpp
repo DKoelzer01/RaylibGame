@@ -4419,6 +4419,32 @@ int main(int argc, char** argv)
                     Planetoid* p = dynamic_cast<Planetoid*>(world.objects[0].get());
                     if (animalPathPhase == 0) {
                         player.spawnOn(world, *p, StartSpawnDir(*p));
+                        animalPathPhase = 10; animalPathStart = GetTime();
+                    } else if (animalPathPhase == 10 && GetTime() - animalPathStart > 1.0) {
+                        // A flat, dry spot near the start for the pocket (the eroded terrain is rough round the start): the
+                        // test is about getting out of the pocket, not about the hills (#253).
+                        const auto* pf = dynamic_cast<const PlanetField*>(p->field.get());
+                        const Vector3 up0 = Vector3Normalize(p->toLocal((player.position - world.renderOrigin).toFloat()));
+                        const Vector3 u1 = Vector3Normalize(Vector3CrossProduct(up0, fabsf(up0.y) < 0.9f ? Vector3{ 0, 1, 0 } : Vector3{ 1, 0, 0 }));
+                        const Vector3 u2 = Vector3CrossProduct(u1, up0);
+                        auto dirAt = [&](Vector3 c, float a, float b) { return Vector3Normalize(Vector3Add(c, Vector3Scale(Vector3Add(Vector3Scale(u1, a), Vector3Scale(u2, b)), 1.0f / pf->radius))); };
+                        bool found = false;
+                        for (float r = 0.0f; r <= 600.0f && !found; r += 25.0f)
+                            for (int k = 0; k < (r > 0.0f ? 12 : 1) && !found; ++k) {
+                                const Vector3 c = dirAt(up0, r * cosf(k * 0.5236f), r * sinf(k * 0.5236f));
+                                float lo = 1e9f, hi = -1e9f; bool wet = false;
+                                for (int i = -2; i <= 2; ++i) for (int j = -2; j <= 2; ++j) {
+                                    const Vector3 d = dirAt(c, i * 12.0f, j * 12.0f);
+                                    const float e = pf->elevation(d);
+                                    lo = std::min(lo, e); hi = std::max(hi, e);
+                                    wet = wet || e < 1.5f || pf->inlandWaterNear(d, 0.0f);
+                                }
+                                if (!wet && hi - lo < 3.0f) {
+                                    found = true;
+                                    player.placeAt(world, *p, p->toWorld(Vector3Scale(c, pf->radius + pf->elevation(c) + 1.5f)));
+                                    printf("bench: animal-path: a flat spot %.0f m from the start (%.1f m of relief)\n", r, hi - lo);
+                                }
+                            }
                         animalPathPhase = 1; animalPathStart = GetTime();
                     } else if (animalPathPhase == 1 && GetTime() - animalPathStart > 1.5 && player.grounded) {
                         const auto* pf = dynamic_cast<const PlanetField*>(p->field.get());

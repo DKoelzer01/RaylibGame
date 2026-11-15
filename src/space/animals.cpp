@@ -236,85 +236,116 @@ bool BlockedAlong(const Planetoid& body, Vector3 from, Vector3 to, float height)
 
 // Pathfinding (#253): A* on a 1 m grid in the tangent plane around the animal (+-kPathCells), each cell's ground
 // found with the same probe and limits as a step (ledge up/down from the cell it is reached from, headroom, build
-// parts). Cells are probed lazily and the search is capped, so a plan costs a few ms at most; with no route
-// within the cap it returns the part of the way that gets closest, if that is real progress.
+// parts). Cells are probed lazily. One search runs at a time and is resumed across updates: at most kPathFrameMs a
+// frame and kPathTotalMs in all (on eroded terrain a probe costs more, and getting out of a pocket first leads away
+// from the goal, so a single 3 ms slice found nothing). Without a full route it returns the part of the way that gets
+// closest, if that is real progress.
 constexpr int kPathCells = 40;          // grid half-width (m): 81 x 81 cells
-constexpr int kPathMaxExpand = 1500;
+constexpr int kPathMaxExpand = 3000;
+constexpr double kPathFrameMs = 3.0, kPathTotalMs = 60.0;
 int gPathPlans = 0, gPathFound = 0;     // tests: plans made and routes found
-double gPathMs = 0.0, gPathWorstMs = 0.0;
+double gPathMs = 0.0, gPathWorstMs = 0.0; // total ms over all searches; the worst single frame's slice
 
-bool PlanPath(const Planetoid& body, const PlanetField& pf, Vector3 from, Vector3 goal, float height, float reachUp, float reachDown,
-              std::vector<Vector3>& out) {
-    const auto t0 = std::chrono::steady_clock::now();
-    ++gPathPlans;
-    out.clear();
-    const Vector3 up = Vector3Normalize(from);
-    Vector3 east, north;
-    TangentFrame(up, east, north);
-    constexpr int W = 2 * kPathCells + 1;
-    const Vector3 g = Vector3Subtract(goal, from);
-    const int gx = std::clamp((int)lroundf(Vector3DotProduct(g, east)), -kPathCells, kPathCells);
-    const int gy = std::clamp((int)lroundf(Vector3DotProduct(g, north)), -kPathCells, kPathCells);
-    auto idx = [&](int x, int y) { return (y + kPathCells) * W + (x + kPathCells); };
-    static std::vector<float> cost, failR; static std::vector<int> parent; static std::vector<Vector3> ground; static std::vector<uint8_t> state;
-    cost.assign(W * W, 1e30f); parent.assign(W * W, -1); ground.assign(W * W, Vector3{}); state.assign(W * W, 0); failR.assign(W * W, 0.0f); // 0 unseen, 1 ground known, 2 probe failed (from failR), 3 closed
-    auto heur = [&](int x, int y) { return sqrtf((float)((x - gx) * (x - gx) + (y - gy) * (y - gy))); };
+struct PathSearch {
+    static constexpr int W = 2 * kPathCells + 1;
+    bool active = false;
+    int owner = -1;
+    long long lastFrame = 0;
+    const Planetoid* body = nullptr;
+    const PlanetField* pf = nullptr;
+    Vector3 from{}, east{}, north{};
+    float height = 1.0f, reachUp = 0.35f, reachDown = 0.35f;
+    int gx = 0, gy = 0, start = 0, goalI = 0, best = 0, expanded = 0;
+    float bestH = 0.0f;
+    double spentMs = 0.0;
+    std::vector<float> cost, failR;
+    std::vector<int> parent;
+    std::vector<Vector3> ground;
+    std::vector<uint8_t> state; // 0 unseen, 1 ground known, 2 probe failed (from failR), 3 closed
     struct Node { float f; int i; bool operator<(const Node& o) const { return f > o.f; } };
     std::priority_queue<Node> open;
-    const int s = idx(0, 0), goalI = idx(gx, gy);
-    cost[s] = 0.0f; ground[s] = from; state[s] = 1;
-    open.push({ heur(0, 0), s });
-    int best = s, expanded = 0;
-    float bestH = heur(0, 0);
-    while (!open.empty() && expanded < kPathMaxExpand) {
-        // A 3 ms budget: past it, the part of the way that gets closest (the animal plans on from its end).
-        if ((expanded & 15) == 15 && std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count() > 3.0) break;
-        const Node n = open.top(); open.pop();
-        if (state[n.i] == 3) continue;
-        state[n.i] = 3;
-        ++expanded;
-        const int x = n.i % W - kPathCells, y = n.i / W - kPathCells;
-        const float h = heur(x, y);
-        if (h < bestH) { bestH = h; best = n.i; }
-        if (n.i == goalI) break;
-        const Vector3 at = ground[n.i];
+    int idx(int x, int y) const { return (y + kPathCells) * W + (x + kPathCells); }
+    float heur(int x, int y) const { return sqrtf((float)((x - gx) * (x - gx) + (y - gy) * (y - gy))); }
+};
+PathSearch gSearch;
+
+void PathBegin(const Planetoid& body, const PlanetField& pf, Vector3 from, Vector3 goal, float height, float reachUp, float reachDown, int owner, long long frame) {
+    PathSearch& S = gSearch;
+    ++gPathPlans;
+    S.active = true; S.owner = owner; S.lastFrame = frame;
+    S.body = &body; S.pf = &pf; S.from = from; S.height = height; S.reachUp = reachUp; S.reachDown = reachDown;
+    TangentFrame(Vector3Normalize(from), S.east, S.north);
+    const Vector3 g = Vector3Subtract(goal, from);
+    S.gx = std::clamp((int)lroundf(Vector3DotProduct(g, S.east)), -kPathCells, kPathCells);
+    S.gy = std::clamp((int)lroundf(Vector3DotProduct(g, S.north)), -kPathCells, kPathCells);
+    constexpr int N = PathSearch::W * PathSearch::W;
+    S.cost.assign(N, 1e30f); S.parent.assign(N, -1); S.ground.assign(N, Vector3{}); S.state.assign(N, 0); S.failR.assign(N, 0.0f);
+    S.open = {};
+    S.start = S.idx(0, 0); S.goalI = S.idx(S.gx, S.gy);
+    S.cost[S.start] = 0.0f; S.ground[S.start] = from; S.state[S.start] = 1;
+    S.open.push({ S.heur(0, 0), S.start });
+    S.best = S.start; S.bestH = S.heur(0, 0); S.expanded = 0; S.spentMs = 0.0;
+}
+
+// One slice of the search: false while it goes on; true when finished (`out`: the route, empty if none worth taking).
+bool PathStep(std::vector<Vector3>& out, long long frame) {
+    PathSearch& S = gSearch;
+    const auto t0 = std::chrono::steady_clock::now();
+    S.lastFrame = frame;
+    const Planetoid& body = *S.body;
+    const PlanetField& pf = *S.pf;
+    bool done = false;
+    while (true) {
+        if (S.open.empty() || S.expanded >= kPathMaxExpand) { done = true; break; }
+        if ((S.expanded & 15) == 15 && std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count() > kPathFrameMs) break;
+        const PathSearch::Node n = S.open.top(); S.open.pop();
+        if (S.state[n.i] == 3) continue;
+        S.state[n.i] = 3;
+        ++S.expanded;
+        const int x = n.i % PathSearch::W - kPathCells, y = n.i / PathSearch::W - kPathCells;
+        const float h = S.heur(x, y);
+        if (h < S.bestH) { S.bestH = h; S.best = n.i; }
+        if (n.i == S.goalI) { done = true; break; }
+        const Vector3 at = S.ground[n.i];
         const float r = Vector3Length(at);
         for (int dy = -1; dy <= 1; ++dy)
             for (int dx = -1; dx <= 1; ++dx) {
                 if (!dx && !dy) continue;
                 const int nx = x + dx, ny = y + dy;
                 if (nx < -kPathCells || nx > kPathCells || ny < -kPathCells || ny > kPathCells) continue;
-                const int j = idx(nx, ny);
-                if (state[j] == 3) continue;
+                const int j = S.idx(nx, ny);
+                if (S.state[j] == 3) continue;
                 Vector3 gj; float e;
-                // A cell's ground is probed once and reused from other neighbours when it is within their ledge reach;
-                // a failed probe is retried only from a height over 0.8 m different (a cell under a cliff seen from
-                // above may be reachable from below).
-                if (state[j] == 1) {
-                    gj = ground[j];
+                // A cell's ground is probed once and reused from other neighbours within their ledge reach; a failed
+                // probe is retried only from a height over 0.8 m different (a cell under a cliff may be reached from below).
+                if (S.state[j] == 1) {
+                    gj = S.ground[j];
                     const float dz = Vector3Length(gj) - r;
-                    if (dz > reachUp || dz < -reachDown || BlockedAlong(body, at, gj, height)) continue;
+                    if (dz > S.reachUp || dz < -S.reachDown || BlockedAlong(body, at, gj, S.height)) continue;
                 } else {
-                    if (state[j] == 2 && fabsf(failR[j] - r) < 0.8f) continue;
-                    const Vector3 dir = Vector3Normalize(Vector3Add(from, Vector3Add(Vector3Scale(east, (float)nx), Vector3Scale(north, (float)ny))));
-                    if (!Ground(body, pf, dir, gj, e, r, reachUp, reachDown) || body.densityAt(Vector3Add(gj, Vector3Scale(dir, height * 0.8f))) >= ISO_LEVEL + kRockMargin ||
-                        BlockedAlong(body, at, gj, height)) { state[j] = 2; failR[j] = r; continue; }
-                    ground[j] = gj; state[j] = 1;
+                    if (S.state[j] == 2 && fabsf(S.failR[j] - r) < 0.8f) continue;
+                    const Vector3 dir = Vector3Normalize(Vector3Add(S.from, Vector3Add(Vector3Scale(S.east, (float)nx), Vector3Scale(S.north, (float)ny))));
+                    if (!Ground(body, pf, dir, gj, e, r, S.reachUp, S.reachDown) || body.densityAt(Vector3Add(gj, Vector3Scale(dir, S.height * 0.8f))) >= ISO_LEVEL + kRockMargin ||
+                        BlockedAlong(body, at, gj, S.height)) { S.state[j] = 2; S.failR[j] = r; continue; }
+                    S.ground[j] = gj; S.state[j] = 1;
                 }
-                const float c = cost[n.i] + Vector3Distance(at, gj) + 0.5f * fabsf(Vector3Length(gj) - r);
-                if (c < cost[j]) { cost[j] = c; parent[j] = n.i; open.push({ c + heur(nx, ny), j }); }
+                const float c = S.cost[n.i] + Vector3Distance(at, gj) + 0.5f * fabsf(Vector3Length(gj) - r);
+                if (c < S.cost[j]) { S.cost[j] = c; S.parent[j] = n.i; S.open.push({ c + S.heur(nx, ny), j }); }
             }
     }
-    const bool reached = best == goalI || bestH < 1.5f;
+    const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+    S.spentMs += ms; gPathMs += ms; gPathWorstMs = std::max(gPathWorstMs, ms);
+    if (!done && S.spentMs < kPathTotalMs) return false;
+    out.clear();
+    const bool reached = S.best == S.goalI || S.bestH < 1.5f;
     // Partial routes only when they get at least 4 m closer: otherwise the local detour does as well.
-    if (best != s && (reached || heur(0, 0) - bestH > 4.0f)) {
-        for (int i = best; i != s && i >= 0; i = parent[i]) out.push_back(ground[i]);
+    if (S.best != S.start && (reached || S.heur(0, 0) - S.bestH > 4.0f)) {
+        for (int i = S.best; i != S.start && i >= 0; i = S.parent[i]) out.push_back(S.ground[i]);
         std::reverse(out.begin(), out.end());
     }
     if (reached) ++gPathFound;
-    const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
-    gPathMs += ms; gPathWorstMs = std::max(gPathWorstMs, ms);
-    return !out.empty();
+    S.active = false;
+    return true;
 }
 
 // An animal at `pos` is penned when build parts stand within 30 m in all eight directions.
@@ -784,9 +815,17 @@ void Animals_Update(Scene& world, float dt, float worldDt, bool inputEnabled) {
         if (!ok && steer && !a.path.empty()) { a.path.clear(); a.planWait = 1.0f; } // the route's step failed (a thin wall between cells)
         // Blocked on the way somewhere: plan a route round (one plan a frame for all animals, then a 3 s wait after a
         // failed one); the local detour below covers the time between.
-        if (!ok && steer && a.path.empty() && a.planWait <= 0.0f && plansLeft > 0) {
+        // One search at a time, resumed across updates: its owner continues it (standing while it thinks, a few frames);
+        // a search nobody has touched for 30 updates (its animal got going, or was removed) is dropped.
+        if (gSearch.active && frameNo - gSearch.lastFrame > 30) gSearch.active = false;
+        const bool mySearch = gSearch.active && gSearch.owner == (int)i && Vector3Distance(gSearch.from, a.pos) < 3.0f;
+        if (!ok && steer && a.path.empty() && (mySearch || (a.planWait <= 0.0f && !gSearch.active)) && plansLeft > 0) {
             --plansLeft;
-            if (PlanPath(*body, *field, a.pos, goalPt, height, std::max(reachUp, 0.35f), std::max(reachDown, 0.35f), a.path)) {
+            if (!mySearch) PathBegin(*body, *field, a.pos, goalPt, height, std::max(reachUp, 0.35f), std::max(reachDown, 0.35f), (int)i, frameNo);
+            std::vector<Vector3> route;
+            if (!PathStep(route, frameNo)) { a.moveSpeed = 0.0f; continue; } // still searching: wait for it
+            if (!route.empty()) {
+                a.path = std::move(route);
                 a.pathGoal = goalPt; a.pathAge = 0.0f; a.planWait = 1.0f;
                 const Vector3 w = Vector3Subtract(a.path.front(), a.pos);
                 a.heading = atan2f(Vector3DotProduct(w, north), Vector3DotProduct(w, east));
