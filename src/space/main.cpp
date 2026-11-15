@@ -255,6 +255,7 @@ int main(int argc, char** argv)
     bool benchPond = false; int pondPhase = 0; double pondT0 = 0.0; Vector3 pondDirB{}, pondOutB{}, pondPit{}, pondMid{}; float pondLevelB = 0.0f, pondRB = 0.0f; // --test-pond
     bool benchFlowSea = false; // --test-flow-sea (#190): the flow test from the sea instead of inland water
     bool benchFlow = false; int flowPhase = 0; double flowStart = 0.0, flowEdit = 0.0, flowReachT = -1.0, flowCaveT = -1.0, flowSleepT = -1.0; Vector3 flowDir{}, flowOut{}, flowEnd{}, flowCave{}; float flowLevel = 0.0f; // --test-flow
+    float damDrift = 0.0f; // --test-dam: the current mid-channel (0: the check failed)
     bool benchDam = false; int damPhase = 0; double damT0 = 0.0; Vector3 damDir{}, damDown{}, damSide{}, damUp{}, damDn{}; float damLevel = 0.0f, damHW = 0.0f, damDepth = 0.0f, damCrest = 0.0f, damLvU = 0.0f, damLvD = 0.0f, damMaxU = -1e9f, damMinD = 1e9f, damLateD = -1e9f; // --test-dam (#361)
     bool benchForest = false; int forestPhase = 0; double forestStart = 0.0; Vector3 forestCam{}, forestTarget{}, forestUp{}; bool outcropHigh = false; // --shot-forest (--outcrop-high: the highest outcrop in range, not the nearest)
     bool benchRecipes = false; // --test-recipes
@@ -3883,6 +3884,24 @@ int main(int argc, char** argv)
                         }
                         else {
                             damSide = Vector3Normalize(Vector3CrossProduct(damDir, damDown));
+                            printf("bench: dam: river %.0f m from the start: level %.2f m, half-width %.1f m, depth %.1f m\n", best, damLevel, damHW, damDepth);
+                            // First the current (#361) at the dam site, before the dam (nothing released yet): what
+                            // carries a swimmer and pushes a wader (player.cpp) and what water.fs draws. Mid-channel ~1 m/s
+                            // downstream, slower near the bank, none on dry land.
+                            const Vector3 dd = damDir; // mid-channel by the search (a point 60 m along a straight line left the meandering river)
+                            const float lv = pf->waterSourceAt(dd).level;
+                            const Vector3 mid = p->dirToLocal(RiverCurrent(p, p->toWorld(at(dd, lv - 0.5f))));
+                            const Vector3 bank = p->dirToLocal(RiverCurrent(p, p->toWorld(at(off(dd, damSide, damHW + 1.5f), lv - 0.3f))));
+                            const Vector3 dry = p->dirToLocal(RiverCurrent(p, p->toWorld(at(off(dd, damSide, damHW + 20.0f), lv + 3.0f))));
+                            const float ms = Vector3Length(mid), bs = Vector3Length(bank), ds = Vector3Length(dry);
+                            const float along = ms > 0.0f ? Vector3DotProduct(mid, damDown) / ms : 0.0f;
+                            damDrift = (ms > 0.6f && ms < 1.5f && along > 0.9f && bs < ms && ds == 0.0f) ? ms : 0.0f;
+                            printf("bench: dam: the current at the dam site: %.2f m/s mid-channel (%.2f along the river), %.2f by the bank, %.2f on dry land -> %s\n",
+                                   ms, along, bs, ds, damDrift > 0.0f ? "PASS" : "FAIL");
+                            damPhase = 10;
+                        }
+                    } else if (damPhase == 10) {
+                        {
                             // The dam: a wall across the river and 15 m into each bank, from under the bed up to the crest.
                             std::vector<TerrainEdit> wall;
                             for (float w = -(damHW + 15.0f); w <= damHW + 15.0f; w += 0.8f) {
@@ -3893,8 +3912,7 @@ int main(int argc, char** argv)
                             ApplyTerrainEdits(*p, wall.data(), wall.size());
                             damUp = off(damDir, damDown, -12.0f); damDn = off(damDir, damDown, 12.0f);
                             damLvU = pf->waterSourceAt(damUp).level; damLvD = pf->waterSourceAt(damDn).level;
-                            printf("bench: dam: river %.0f m from the start: level %.2f m, half-width %.1f m, depth %.1f m; dam crest %.2f m (%zu edits); "
-                                   "generated level 12 m upstream %.2f, downstream %.2f\n", best, damLevel, damHW, damDepth, damCrest, wall.size(), damLvU, damLvD);
+                            printf("bench: dam: dam crest %.2f m (%zu edits); generated level 12 m upstream %.2f, downstream %.2f\n", damCrest, wall.size(), damLvU, damLvD);
                             player.flyMode = true; sunOverride = true;
                             sunArg = p->dirToWorld(Vector3Normalize(Vector3Add(damDir, Vector3Scale(damSide, 0.5f))));
                             damPhase = 1; damT0 = GetTime();
@@ -3927,7 +3945,7 @@ int main(int argc, char** argv)
                             // below too), so it is reported, not judged.
                             const bool backs = damMaxU >= damLvU + 0.2f && damMaxU >= damCrest - 0.25f, spills = spillT >= 0.0 && su > -1e8f && su <= damCrest + 0.35f;
                             printf("bench: dam: %d reaches released; upstream rose %.2f -> %.2f m (crest %.2f), spilled after %.0f s and holds at %.2f m; downstream %.2f -> lowest %.2f, now %.2f m -> %s\n",
-                                   released, damLvU, damMaxU, damCrest, spillT, su, damLvD, damMinD, damLateD, released >= 1 && backs && spills ? "PASS" : "FAIL");
+                                   released, damLvU, damMaxU, damCrest, spillT, su, damLvD, damMinD, damLateD, released >= 1 && backs && spills && damDrift > 0.0f ? "PASS" : "FAIL");
                             printf("bench: dam: bench_dam.png, bench_dam_end.png\n");
                             benchDam = false;
                         }

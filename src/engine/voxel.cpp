@@ -1574,6 +1574,7 @@ static void MeshChunkWater(const DensityField& field, ChunkMeshData& out, const 
     const uint8_t kinds = sim.any() ? sim.kinds() : 0;
     if (!genAny && !kinds) return;
     const PlanetField* pf = dynamic_cast<const PlanetField*>(&field);
+    const RiverNetwork* rivers = pf ? pf->rivers() : nullptr; // the current on river water (#361)
     const int L = 4, LN = gen.LN;
     auto lat = [&](int i) { return std::min(i * L, S - 1); };
     auto levelAt = [&](int x, int y, int z) {
@@ -1679,11 +1680,24 @@ static void MeshChunkWater(const DensityField& field, ChunkMeshData& out, const 
                     out.waterPositions.insert(out.waterPositions.end(), { lp.x, lp.y, lp.z });
                     out.waterNormals.insert(out.waterNormals.end(), { n.x, n.y, n.z });
                     out.waterDepth.insert(out.waterDepth.end(), { depth, (float)kind });
+                    // The current (#361): generated river water flows downstream, ~1 m/s mid-channel, slower to the banks.
+                    // Lakes, the sea and simulated cells stand still here.
+                    Vector3 flow{}; float speed = 0.0f;
+                    if (kind == 0 && gen.inland && rivers && !(simKind && sim.covered(bp))) {
+                        const RiverNetwork::Hit hr = rivers->nearest(radial, 60.0f);
+                        if (hr.found && hr.dist < hr.halfWidth + 3.0f) {
+                            flow = Vector3Subtract(hr.down, Vector3Scale(radial, Vector3DotProduct(hr.down, radial))); // along the surface
+                            const float fl = Vector3Length(flow);
+                            if (fl > 1e-4f) { flow = Vector3Scale(flow, 1.0f / fl); speed = 1.0f * sqrtf(std::max(0.0f, 1.0f - hr.dist / (hr.halfWidth + 3.0f))); }
+                        }
+                    }
+                    auto enc = [](float c) { return (unsigned char)std::clamp((int)lroundf((c * 0.5f + 0.5f) * 255.0f), 0, 255); };
+                    out.waterFlow.insert(out.waterFlow.end(), { enc(flow.x), enc(flow.y), enc(flow.z), (unsigned char)std::clamp((int)lroundf(speed / 4.0f * 255.0f), 0, 255) });
                 }
                 out.waterIndices.push_back((unsigned short)r);
             }
         }
-        if (out.waterPositions.size() / 3 > 65535) { out.waterPositions.resize(v0 * 3); out.waterNormals.resize(v0 * 3); out.waterDepth.resize(v0 * 2); out.waterIndices.resize(i0); }
+        if (out.waterPositions.size() / 3 > 65535) { out.waterPositions.resize(v0 * 3); out.waterNormals.resize(v0 * 3); out.waterDepth.resize(v0 * 2); out.waterFlow.resize(v0 * 4); out.waterIndices.resize(i0); }
     }
     // (16-bit indices: a kind that would pass 65535 vertices is dropped alone, never the water before it.)
 }

@@ -127,6 +127,9 @@ bool TerrainSurfaceDistance(Planetoid& p, Vector3 renderPoint, float& dist, Vect
 Planetoid* NearestPlanetoid(Scene& world, Vector3 renderPoint); // by distance to the surface radius
 // In the sea: below sea level over open ocean and above its floor (a dry cave below sea level is not).
 bool IsUnderwater(Scene& world, Vector3 renderPoint);
+// A river's current at a point (world-space velocity, m/s; zero outside generated river water, #361): ~1 m/s
+// downstream mid-channel, slower to the banks; a simulated (released, dammed) reach has none here.
+Vector3 RiverCurrent(Planetoid* body, Vector3 renderPoint);
 void SetWorldSavePath(const char* path); // bench runs save to their own file, never the player's
 const char* WorldSavePath();
 class JobSystem;

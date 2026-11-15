@@ -396,6 +396,7 @@ struct ChunkMeshData {
     std::vector<float> waterPositions;     // sea surface where it meets open air (same frame as positions)
     std::vector<float> waterNormals;
     std::vector<float> waterDepth;         // per water vertex: (depth to the floor in m, fluid kind: fluids.txt)
+    std::vector<unsigned char> waterFlow;  // per water vertex (#361): the current, body-local (rgb = dir * 0.5 + 0.5, a = speed / 4 m/s)
     std::vector<unsigned short> waterIndices;
     std::vector<float> grass;              // grass tufts (foliage.h: kGrassFloats each), finest level only
     std::vector<unsigned short> indices;

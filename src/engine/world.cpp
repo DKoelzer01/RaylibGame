@@ -7,6 +7,7 @@
 #include "worldtypes.h"
 #include "factory.h"
 #include "fluid.h"
+#include "rivers.h"
 #include "terraingpu.h"
 #include "gputimer.h"
 #include "waterfield.h"
@@ -2107,6 +2108,25 @@ void loadWorld(Scene& world) {
     file.close();
 }
 
+
+Vector3 RiverCurrent(Planetoid* p, Vector3 renderPoint) {
+    if (!p || !p->field) return { 0, 0, 0 };
+    const auto* pf = dynamic_cast<const PlanetField*>(p->field.get());
+    const RiverNetwork* net = pf ? pf->rivers() : nullptr;
+    if (!net) return { 0, 0, 0 };
+    const Vector3 local = p->toLocal(renderPoint);
+    const float d = Vector3Length(local);
+    if (d < 1.0f || Fluid::Simulated(*p, local)) return { 0, 0, 0 };
+    const Vector3 dir = Vector3Scale(local, 1.0f / d);
+    if (pf->waterSourceAt(dir).kind != 1) return { 0, 0, 0 };   // rivers only
+    const RiverNetwork::Hit h = net->nearest(dir, 60.0f);
+    if (!h.found || h.dist >= h.halfWidth + 3.0f) return { 0, 0, 0 };
+    Vector3 flow = Vector3Subtract(h.down, Vector3Scale(dir, Vector3DotProduct(h.down, dir)));
+    const float fl = Vector3Length(flow);
+    if (fl < 1e-4f) return { 0, 0, 0 };
+    const float speed = sqrtf(std::max(0.0f, 1.0f - h.dist / (h.halfWidth + 3.0f))); // as water.fs shows it (voxel.cpp)
+    return p->dirToWorld(Vector3Scale(flow, speed / fl));
+}
 
 bool IsUnderwater(Scene& world, Vector3 renderPoint) {
     Planetoid* p = NearestPlanetoid(world, renderPoint);

@@ -124,6 +124,7 @@ void Player::update(Scene& world, bool inputEnabled, float dt) {
     nearest = NearestPlanetoid(world, feet);
     // In water when the body's middle is (static or flowing water).
     inWater = !flyMode && IsUnderwater(world, Vector3Add(feet, Vector3Scale(up, 0.9f)));
+    riverCurrent = inWater ? RiverCurrent(nearest, Vector3Add(feet, Vector3Scale(up, 0.9f))) : Vector3{ 0, 0, 0 }; // a river pushes (#361)
     // "Up" is against the summed gravity. Where gravity is too weak to define it (deep space, the
     // balance point between bodies) it is left alone so the view doesn't spin; in the air it turns
     // at most 2 rad/s. On the ground it follows exactly, so walking around a body stays continuous.
@@ -301,6 +302,7 @@ void Player::stepPhysics(Scene& world, float dt, Vector3 wish, bool jetUp, bool 
         const float wl = Vector3Length(wish), al = Vector3Length(along);
         if (al > 1e-4f) along = Vector3Scale(along, wl / al);
         Vector3 walk = Vector3Scale(along, walkSpeed * (inWater ? 0.55f : 1.0f)); // wading is slow
+        walk = Vector3Add(walk, Vector3Scale(Vector3Subtract(riverCurrent, Vector3Scale(n, Vector3DotProduct(riverCurrent, n))), 0.4f)); // wading in a river: pushed downstream (#361)
         if (smoothMotion) {
             // Reduce motion: ease into and out of walking (instant starts and stops are hard to watch).
             const Vector3 cur = Vector3Subtract(velocity, Vector3Scale(n, Vector3DotProduct(velocity, n)));
@@ -385,7 +387,8 @@ void Player::stepPhysics(Scene& world, float dt, Vector3 wish, bool jetUp, bool 
         // Swimming: buoyancy all but cancels gravity, the water drags (relative to the ground's frame),
         // Space swims up and Ctrl down (no jetpack under water).
         gAccel = Vector3Scale(gAccel, 0.12f);
-        const Vector3 frame = nearest ? nearest->surfaceVelocity(feet) : Vector3{ 0, 0, 0 };
+        Vector3 frame = nearest ? nearest->surfaceVelocity(feet) : Vector3{ 0, 0, 0 };
+        frame = Vector3Add(frame, riverCurrent); // a river carries a swimmer downstream (#361)
         velocity = Vector3Add(frame, Vector3Scale(Vector3Subtract(velocity, frame), expf(-1.8f * dt)));
         if (swimUp) velocity = Vector3Add(velocity, Vector3Scale(up, 9.0f * dt));
         if (swimDown) velocity = Vector3Subtract(velocity, Vector3Scale(up, 6.0f * dt));

@@ -131,6 +131,7 @@ void Chunk::uploadWater(const ChunkMeshData& data) {
     waterMesh.vertices = CopyToRaylib(data.waterPositions);
     waterMesh.normals = CopyToRaylib(data.waterNormals);
     if (!data.waterDepth.empty()) waterMesh.texcoords = CopyToRaylib(data.waterDepth);
+    if (!data.waterFlow.empty()) waterMesh.colors = CopyToRaylib(data.waterFlow); // the current (#361)
     waterMesh.indices = CopyToRaylib(data.waterIndices);
     UploadMesh(&waterMesh, false);
     if (waterMesh.vaoId > 0) DropCpuVertexData(waterMesh);
