@@ -94,7 +94,7 @@ using namespace std;
 
 Logger logger("log.txt");
 
-int gameState = 0; // 0: Main Menu, 1: Game, 2: Pause Menu
+int gameState = 0; // 0: Main Menu, 1: Game, 2: Pause Menu, 3: New World screen (#504)
 
 // Where to start on the first body: planets pick temperate grassland (world direction, from the
 // body's seed); asteroids keep the old "top" spot.
@@ -867,6 +867,8 @@ int main(int argc, char** argv)
     if (!bench) Settings_Load();
     bool worldFresh = !world.objects.empty() && !loadSaveAtStart; // a bench's world generated at launch: New Game uses it as it is
     MenuResult pendingMenu;
+    NewWorldChoice pendingNewWorld; // the New World screen's choice, handled at the start of the next frame (#504)
+    int newWorldFrames = 0;
     bool justPaused = false;
     bool loading = false;          // the loading screen is up
     double loadStart = 0.0;
@@ -7212,14 +7214,9 @@ int main(int argc, char** argv)
             pendingMenu = MenuResult{};
             switch (m.action) {
                 case MenuAction::NewGame:
-                    SetWorldSavePath(bench ? "saves/bench.sav" : Menu_NewSavePath().c_str()); // bench runs never touch the player's saves
-                    if (!worldFresh) {
-                        if (!bench) worldGen.seed = 0; // a new seed (benches keep --seed: its erosion bake is cached)
-                        regenerateWorld(world);
-                        StartNewWorld(world, true, !bench);
-                    }
-                    worldFresh = false;
-                    enterGame();
+                    // The New World screen first (#504): seed, terrain parameters, a preview. Its choice is handled below.
+                    NewWorld_Open();
+                    gameState = 3; newWorldFrames = 0;
                     break;
                 case MenuAction::LoadGame:
                     SetWorldSavePath(m.path.c_str());
@@ -7244,6 +7241,27 @@ int main(int argc, char** argv)
                 case MenuAction::ReportBug: BugReport_Open(world); break; // stays paused (#169)
                 case MenuAction::None: break;
             }
+            // The New World screen's choice from last frame (#504). --test-menus creates with its own seed after a moment.
+            NewWorldChoice nw = pendingNewWorld;
+            pendingNewWorld = NewWorldChoice{};
+            if (gameState == 3 && benchMenus && nw.kind == NewWorldChoice::None) {
+                ++newWorldFrames;
+                if (newWorldFrames == 15) { TakeScreenshot("bench_menu_newworld.png"); printf("bench: menus: New Game -> the New World screen (#504): yes\n"); }
+                if (newWorldFrames == 20) { nw.kind = NewWorldChoice::Create; nw.seed = worldGen.seed; }
+            }
+            if (gameState == 3 && nw.kind == NewWorldChoice::Create) {
+                SetWorldSavePath(bench ? "saves/bench.sav" : Menu_NewSavePath().c_str()); // bench runs never touch the player's saves
+                if (!worldFresh) {
+                    if (bench) worldGen.seed = nw.seed; // benches write no parameters beside the save (default terrain)
+                    else NewWorld_Apply(nw);           // the seed, and <save>.worldgen: generateWorld reads it
+                    regenerateWorld(world);            // the erosion bake (or its cache) behind its progress screen
+                    StartNewWorld(world, true, !bench);
+                }
+                worldFresh = false;
+                enterGame();
+            } else if (gameState == 3 && nw.kind == NewWorldChoice::Cancel) {
+                gameState = 0; // back to the title screen; no world was made
+            }
             // Esc in game pauses (unless it closes the inventory or build mode first); the pause menu
             // handles Esc itself (resume, or back out of Settings). Not on the loading screen (#388: Resume skipped it into a
             // half-built world).
@@ -7267,6 +7285,8 @@ int main(int argc, char** argv)
             GpuTimer_CpuMark("begin-draw");
             if (gameState == 0) {
                 pendingMenu = Menu_Main();
+            } else if (gameState == 3) {
+                pendingNewWorld = NewWorld_Draw(); // the New World screen (#504)
             } else if (gameState == 1) {
                 { const double d0 = GetTime(); world.drawScene(gameState); if (benchMeasuring) benchDrawMs += (GetTime() - d0) * 1000.0; }
                 player.recordFly(world); // after the fly camera's input (in drawScene): the pose to carry next frame
@@ -7359,6 +7379,7 @@ int main(int argc, char** argv)
     Recorder_Shutdown(); // the frames still queued, the GIF and the contact sheet (#375)
 
     }   // scenes destroyed here, while the GL context still exists
+    NewWorld_Shutdown(); // a preview build in flight (#504)
     DebugUI_Shutdown();
     Audio_Shutdown();
     Factory::Stop();
