@@ -6865,7 +6865,7 @@ int main(int argc, char** argv)
                 int meteorites = 0;
                 if (p->plots) for (auto& pl : p->plots->plots) for (const Part& part : pl->parts) meteorites += part.type == PartType::Meteorite;
                 const bool ok = Events_ShowerOn() && Events_Streaks() > 0 && landed && crater && meteorites >= 1 && meteorRolled;
-                printf("bench: meteor: shower on %d, %d streaks drawn, landed %d, crater %d, meteorites %d (bench_meteor.png) -> %s\n",
+                printf("bench: meteor: shower on %d, %d streaks drawn, landed %d, crater %d, meteorites %d, game rng rolled %d (bench_meteor.png) -> %s\n",
                        (int)Events_ShowerOn(), Events_Streaks(), (int)landed, (int)crater, meteorites, (int)meteorRolled, ok ? "PASS" : "FAIL");
                 benchMeteor = false;
             }
