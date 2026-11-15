@@ -763,7 +763,35 @@ int main(int argc, char** argv)
     };
 
     for (int i = 1; i < argc; ++i)
-        if (std::string(argv[i]) == "--test-dig-shape") {
+        if (std::string(argv[i]) == "--probe-films") {
+            // #249: thin near-iso films over the ground. An 81 x 81 m square at the start (1 m apart): each column from 3 m
+            // over the surface down to 1 m under it in 5 cm steps; a solid layer above an air gap counts as a film.
+            Planetoid* p = dynamic_cast<Planetoid*>(world.objects[0].get());
+            const auto* pf = p ? dynamic_cast<const PlanetField*>(p->field.get()) : nullptr;
+            if (pf) {
+                const Vector3 home = pf->findSpawnDir(p->seed);
+                const Vector3 t1 = Vector3Normalize(Vector3CrossProduct(home, { 0, 1, 0 })), t2 = Vector3CrossProduct(t1, home);
+                int films = 0, cols = 0; float thickest = 0.0f; Vector3 worstDir = home;
+                for (int a = -40; a <= 40; ++a)
+                    for (int b = -40; b <= 40; ++b) {
+                        const Vector3 d = Vector3Normalize(Vector3Add(home, Vector3Add(Vector3Scale(t1, a / pf->radius), Vector3Scale(t2, b / pf->radius))));
+                        const float surf = pf->radius + pf->elevation(d);
+                        ++cols;
+                        bool seenSolid = false, seenAirBelowSolid = false; float layer = 0.0f;
+                        for (float h = surf + 3.0f; h > surf - 1.0f; h -= 0.05f) { // top down: solid, then air, then solid = a film over a gap
+                            const bool solid = p->densityAt(Vector3Scale(d, h)) >= ISO_LEVEL;
+                            if (solid && !seenSolid) { seenSolid = true; layer = 0.0f; }
+                            else if (solid && seenSolid && !seenAirBelowSolid) layer += 0.05f;
+                            else if (!solid && seenSolid) seenAirBelowSolid = true;
+                            else if (solid && seenAirBelowSolid) { ++films; if (layer + 0.05f > thickest) { thickest = layer + 0.05f; worstDir = d; } break; }
+                        }
+                    }
+                printf("bench: films (#249): %d of %d columns have a solid layer over an air gap within 3 m of the ground (thickest %.2f m) at dir %.6f,%.6f,%.6f -> %s\n",
+                       films, cols, thickest, worstDir.x, worstDir.y, worstDir.z, films == 0 ? "none" : "FOUND");
+            }
+            return 0;
+        }
+        else if (std::string(argv[i]) == "--test-dig-shape") {
             // Digging is what the preview shows: 40 digs (straight down, the tools' radii 0.35-0.85 m, sunk
             // half a radius as the tool does) at random spots; the ground each one removes is compared with
             // the previewed sphere (both within the ground before), sampled every 5 cm: intersection over union.
