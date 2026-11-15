@@ -98,7 +98,7 @@ namespace {
         // hand and build mode as they were.
         auto take = [&]() { selected = slot; terrainTool.holdingItem = false; };
         if (id == kHotbarTerrainTool) { take(); buildTool.active = false; terrainTool.heldTool.clear(); return; }
-        if (id == "bucket" || id == "water_bucket") { // in hand: RMB scoops / pours water (terraintool)
+        if (id == "bucket" || id == "water_bucket" || id == "fishing_rod") { // in hand: RMB scoops / pours water (terraintool), or casts (fishing.cpp, #176)
             if (inventory.count(id) <= 0) { GameUI_Toast(TextFormat("No %s", ShortName(id))); Audio_Play(Sfx::Error, 0.3f); return; }
             take();
             buildTool.active = false;
@@ -200,7 +200,7 @@ void Hotbar_Update(Scene&, bool inputEnabled, bool piloting) {
     // Food or feed really in hand (not just selected: the last one eaten or fed leaves bare hands): RMB
     // never places terrain with it (#201). Derived each frame so it cannot go stale.
     const bool torchHeld = !buildTool.active && Hotbar_IsLight(CellId(selected)) && inventory.count(CellId(selected)) > 0;
-    terrainTool.holdingItem = !Hotbar_HeldFood().empty() || torchHeld; // a torch in hand: RMB places it, not terrain (#218)
+    terrainTool.holdingItem = !Hotbar_HeldFood().empty() || torchHeld || terrainTool.heldTool == "fishing_rod"; // a torch in hand: RMB places it, not terrain (#218); a rod casts (#176)
     if (torchHeld && inputEnabled && !piloting && IsMouseButtonPressed(MOUSE_BUTTON_RIGHT)) Hotbar_PlaceTorch();
     // Eating (#202): hold right-click with food in hand for kEatSeconds (a bar under the crosshair); letting go cancels.
     UpdateEating(GetFrameTime(), inputEnabled && !piloting && IsMouseButtonDown(MOUSE_BUTTON_RIGHT));

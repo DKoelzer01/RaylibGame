@@ -43,6 +43,7 @@
 #include "ambience.h"
 #include "gpumem.h"
 #include "structures.h"
+#include "fishing.h"
 #include "machinemodels.h"
 #include "gpucompute.h"
 #include "terraingpu.h"
@@ -143,6 +144,7 @@ static void StartNewWorld(Scene& world, bool reset, bool dawn) {
         Farm_Reset();
         Animals_Reset();
         Structures_Reset();
+        Fishing_Reset();
         Particles_Clear();
         Ambience_Reset();
         Station_Reset();
@@ -257,6 +259,7 @@ int main(int argc, char** argv)
     bool benchWall = false;        // --test-wall: walk into shaft and tunnel walls (no launches)
     bool benchDoorway = false; int doorPhase = 0, doorLane = 0; double doorStart = 0.0; uint32_t doorPlot = 0; bool doorPass[2] = { false, false }; // --test-doorway (#255): 2 m openings pass, 1.5 m ones block
     bool benchMenus = false;       // --test-menus: main menu, new game, pause, save & quit, load
+    bool benchFishing = false;     // --test-fishing (#176)
     bool benchStructures = false;  // --test-structures: ruins, wrecks and wonders (#164)
     bool vramReport = false;       // --vram: GPU memory per subsystem at the end of a bench (#302)
     bool benchFill = false;        // --test-fill: an exact sphere of dirt (#228)
@@ -497,6 +500,7 @@ int main(int argc, char** argv)
         if (std::string(argv[i]) == "--test-fill") benchFill = true;
         if (std::string(argv[i]) == "--vram") vramReport = true;
         if (std::string(argv[i]) == "--test-structures") benchStructures = true;
+        if (std::string(argv[i]) == "--test-fishing") benchFishing = true;
         if (std::string(argv[i]) == "--test-pickups") benchPickups = true;
         if (std::string(argv[i]) == "--shot-inventory") shotInventory = true;
         if (std::string(argv[i]) == "--test-foundation") benchFoundation = true;
@@ -778,7 +782,7 @@ int main(int argc, char** argv)
     bool spawnLoad = false;        // raised by a spawn or teleport (not entering the game): no minimum time
     int loadFrames = 0;
     int seenSpawns = 0;
-    world.onDraw3D = [&world] { Farm_Draw3D(world); Animals_Draw3D(world); Machines_Draw3D(world); InstanceBatch_Flush(world); Weather_Draw3D(world); Particles_Draw(world); if (!ship.piloted && !buildTool.active && !Rocket_Boarded()) TerrainTool_Draw3D(); BuildTool_Draw3D(world); };
+    world.onDraw3D = [&world] { Farm_Draw3D(world); Animals_Draw3D(world); Machines_Draw3D(world); InstanceBatch_Flush(world); Weather_Draw3D(world); Particles_Draw(world); if (!ship.piloted && !buildTool.active && !Rocket_Boarded()) TerrainTool_Draw3D(); Fishing_Draw3D(world); BuildTool_Draw3D(world); };
     terrainTool.till = [&world](Planetoid& body, Vector3 ground) { return Farm_Till(world, body, ground); }; // a shovel's RMB
     terrainTool.swapHeld = [](const std::string& from, const std::string& to, const char* ev) { // a bucket filled or emptied
         const int s = Hotbar_Selected();
@@ -2872,6 +2876,7 @@ int main(int argc, char** argv)
                     // Plan 5 biome resources: oil seeps (a bucket), desert scrub, jungle trees, swamp digging.
                     { Rule u; u.in = { "bucket" }; u.out = { "crude_oil" }; rules.push_back(u); }
                     { Rule u; u.in = {}; u.out = { "cactus", "rubber", "peat" }; rules.push_back(u); }
+                    { Rule u; u.in = { "fishing_rod" }; u.out = { "raw_cod", "raw_trout", "raw_catfish" }; rules.push_back(u); } // fishing (#176)
                     char buf[1024];
                     if (FILE* f = fopen("resources/data/machine_recipes.txt", "r")) {
                         while (fgets(buf, sizeof buf, f)) {
@@ -5843,6 +5848,7 @@ int main(int argc, char** argv)
             if (!loading) Farm_Update(world, frameDt * timeScale * gDebugTimeScale * Rocket_Warp()); // crops grow on world time
             if (!loading) Animals_Update(world, frameDt, frameDt * timeScale * gDebugTimeScale * Rocket_Warp(), gameInput && alive && !ship.piloted);
             if (!loading) Structures_Update(world); // ruins, wrecks and wonders near the player (#164)
+            if (!loading) Fishing_Update(world, frameDt, gameInput && alive && !ship.piloted); // (#176)
             if (!loading) Weather_Update(world, frameDt * timeScale * gDebugTimeScale); // the sky, rain and snow, lightning
             if (!loading) Ambience_Update(world, frameDt); // rain splashes, fireflies, machine smoke
             Particles_Update(world, frameDt); // smoke, dust, exhaust, splashes (particles.h)
@@ -6201,6 +6207,33 @@ int main(int argc, char** argv)
                 benchStructures = false;
             }
         }
+        // --test-fishing (#176): a cast into the sea near the start lands a cod; reeling in early lands nothing.
+        if (benchFishing && gameState == 1 && !loading && WorldIdle()) {
+            static int ff = 0;
+            Planetoid* p = dynamic_cast<Planetoid*>(world.objects[0].get());
+            const auto* pf = dynamic_cast<const PlanetField*>(p->field.get());
+            if (++ff == 5) player.spawnOn(world, *p, StartSpawnDir(*p));
+            if (ff == 20) {
+                const Vector3 me = p->toLocal((player.position - world.renderOrigin).toFloat());
+                const Vector3 up = Vector3Normalize(me);
+                const Vector3 t1 = Vector3Normalize(Vector3CrossProduct(up, fabsf(up.y) < 0.9f ? Vector3{ 0, 1, 0 } : Vector3{ 1, 0, 0 }));
+                const Vector3 t2 = Vector3CrossProduct(t1, up);
+                Vector3 sea{}; bool found = false;
+                for (float rr = 20.0f; rr < 1500.0f && !found; rr += 20.0f)
+                    for (int k = 0; k < 16 && !found; ++k) {
+                        const float a = k * 0.3927f;
+                        const Vector3 d = Vector3Normalize(Vector3Add(up, Vector3Scale(Vector3Add(Vector3Scale(t1, cosf(a)), Vector3Scale(t2, sinf(a))), rr / pf->radius)));
+                        if (pf->elevation(d) < -2.0f) { sea = Vector3Scale(d, pf->radius - 0.3f); found = true; }
+                    }
+                const std::string caught = found ? Fishing_TestCast(world, *p, sea, false) : std::string();
+                const std::string early = found ? Fishing_TestCast(world, *p, sea, true) : std::string("?");
+                const std::string land = Fishing_CatchAt(*p, me);
+                const bool ok = found && caught == "raw_cod" && early.empty() && inventory.count("raw_cod") >= 1 && (land == "raw_trout" || land == "raw_catfish");
+                printf("bench: fishing: sea %s; a full cast caught \"%s\", reeling in early \"%s\"; inland here it would be %s -> %s\n",
+                       found ? "found" : "NOT found", caught.c_str(), early.c_str(), land.c_str(), ok ? "PASS" : "FAIL");
+                benchFishing = false;
+            }
+        }
         // --test-fill (#228): standing at the start looking at the ground 3 m ahead, an exact sphere of dirt.
         if (benchFill && gameState == 1 && !loading && WorldIdle()) {
             static int ff = 0;
@@ -6438,7 +6471,7 @@ int main(int argc, char** argv)
                 if (!ship.piloted && !buildTool.active) Animals_DrawHUD();
                 Suit_DrawHUD();
                 Weather_DrawHUD();
-                if (!ship.piloted && !telescope.active && !buildTool.active && !Rocket_Boarded()) TerrainTool_DrawHUD();
+                if (!ship.piloted && !telescope.active && !buildTool.active && !Rocket_Boarded()) { TerrainTool_DrawHUD(); Fishing_DrawHUD(); }
                 GameUI_DrawHUD(world);
                 Survival_DrawHUD();
                 Objectives_DrawHUD();

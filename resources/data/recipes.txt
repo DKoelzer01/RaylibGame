@@ -80,6 +80,7 @@ flour 1            = grain 2
 # Animals (milestone 12).
 shears 1           = iron_ingot 2
 bucket 1           = iron_plate 3
+fishing_rod 1      = any_planks 2, rope 1
 fibre 2            = wool 1
 fence 2            = any_planks 3
 gate 1             = any_planks 3, fibre 1
