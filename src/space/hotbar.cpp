@@ -13,11 +13,28 @@
 
 #include <raylib.h>
 #include <cstring>
+#include <algorithm>
 
 const char* const kHotbarTerrainTool = "tool:terrain";
 
 namespace {
     int selected = 0;
+    // Eating (#202): right-click held with food in hand.
+    constexpr float kEatSeconds = 1.2f;
+    float eatProgress = 0.0f;   // 0..1 while the button is held
+    bool eatBlocked = false;    // this press was refused (full): wait for the release
+    int eatenCount = 0;
+    void UpdateEating(float dt, bool held) {
+        const std::string food = held ? Hotbar_HeldFood() : std::string();
+        if (!held || food.empty() || !Survival_IsFood(food)) { eatProgress = 0.0f; eatBlocked = false; return; }
+        if (eatBlocked) return;
+        if (eatProgress == 0.0f && survival.food >= 98.0f) { GameUI_Toast("You are full"); eatBlocked = true; return; }
+        eatProgress += dt / kEatSeconds;
+        if (eatProgress >= 1.0f) {
+            if (Survival_UseItem(food)) ++eatenCount;
+            eatProgress = 0.0f; // holding on eats the next one
+        }
+    }
     // The hotbar is the inventory's last 10 cells (#209): a slot holds a real stack; empty = bare hands.
     const std::string kNone;
     const std::string& CellId(int slot) {
@@ -56,10 +73,13 @@ namespace {
         // Food and animal feed: the first press takes it in hand (animals that eat it follow you); the
         // next press eats it (food only).
         if ((Survival_IsFood(id) || Animals_IsFeed(id)) && !piloting) {
-            if (selected == slot && buildTool.active == false && terrainTool.heldTool.empty()) { if (Survival_IsFood(id)) Survival_UseItem(id); return; }
+            if (selected == slot && buildTool.active == false && terrainTool.heldTool.empty()) { // eating is a held right-click now (#202)
+                if (Survival_IsFood(id)) GameUI_Toast(TextFormat("Hold right-click to eat the %s", ShortName(id)));
+                return;
+            }
             if (inventory.count(id) <= 0) { GameUI_Toast(TextFormat("No %s", ShortName(id))); return; }
             selected = slot; buildTool.active = false; terrainTool.heldTool.clear(); terrainTool.holdingItem = true; // RMB: no terrain (#201)
-            GameUI_Toast(Survival_IsFood(id) ? TextFormat("Holding %s: press %d again to eat", ShortName(id), (slot + 1) % 10) : TextFormat("Holding %s: animals that eat it follow you", ShortName(id)));
+            GameUI_Toast(Survival_IsFood(id) ? TextFormat("Holding %s: hold right-click to eat", ShortName(id)) : TextFormat("Holding %s: animals that eat it follow you", ShortName(id)));
             return;
         }
         if (Survival_IsUsable(id)) { Survival_UseItem(id); return; } // consumables don't change the selection
@@ -165,6 +185,15 @@ void Hotbar_Update(Scene&, bool inputEnabled, bool piloting) {
     // Food or feed really in hand (not just selected: the last one eaten or fed leaves bare hands): RMB
     // never places terrain with it (#201). Derived each frame so it cannot go stale.
     terrainTool.holdingItem = !Hotbar_HeldFood().empty();
+    // Eating (#202): hold right-click with food in hand for kEatSeconds (a bar under the crosshair); letting go cancels.
+    UpdateEating(GetFrameTime(), inputEnabled && !piloting && IsMouseButtonDown(MOUSE_BUTTON_RIGHT));
+}
+
+bool Hotbar_TestEatHold(float seconds) { // tests: hold right-click this long (in 1/60 s steps); true if a bite was eaten
+    const int before = eatenCount;
+    for (float t = 0.0f; t < seconds; t += 1.0f / 60.0f) UpdateEating(1.0f / 60.0f, true);
+    UpdateEating(1.0f / 60.0f, false);
+    return eatenCount > before;
 }
 
 void Hotbar_DrawHUD(bool piloting) {
@@ -196,6 +225,13 @@ void Hotbar_DrawHUD(bool piloting) {
         int fs = 12;
         while (fs > 8 && MeasureText(name, fs) > size - 4) --fs;
         DrawText(name, x + (size - MeasureText(name, fs)) / 2, y0 + size - fs - 6, fs, RAYWHITE);
+    }
+    // Eating (#202): its bar under the crosshair, where the swing bar sits.
+    if (eatProgress > 0.0f) {
+        const int cx = GetScreenWidth() / 2, cy = GetScreenHeight() / 2, bw = 80;
+        DrawRectangle(cx - bw / 2, cy + 22, bw, 6, Fade(BLACK, 0.5f));
+        DrawRectangle(cx - bw / 2, cy + 22, (int)(bw * std::min(eatProgress, 1.0f)), 6, { 120, 200, 90, 255 });
+        DrawText("eating", cx - MeasureText("eating", 14) / 2, cy + 32, 14, Fade(RAYWHITE, 0.8f));
     }
 }
 

@@ -4173,7 +4173,9 @@ int main(int argc, char** argv)
                             const int g0 = inventory.count("berries");
                             survival.food = 50.0f;
                             Hotbar_Press(8, false);
-                            check(inventory.count("berries") == g0 - 1, "the second press eats it");
+                            check(inventory.count("berries") == g0, "the second press doesn't eat (#202)");
+                            check(!Hotbar_TestEatHold(0.5f) && inventory.count("berries") == g0, "a short right-click doesn't eat");
+                            check(Hotbar_TestEatHold(1.3f) && inventory.count("berries") == g0 - 1, "holding right-click 1.2 s eats one");
                             Hotbar_Reset();
                         }
                         // A pen: fences (and a gate) 24 m out around a herd. Scared, they run, but stay inside;
