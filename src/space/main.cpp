@@ -1678,7 +1678,7 @@ int main(int argc, char** argv)
                             }
                             wallCamPrev = cam; wallCamStepPrev = stepNow; ++wallCamKnown;
                         }
-                        wallMinHealth = std::min(wallMinHealth, survival.health);
+                        wallMinHealth = std::min(wallMinHealth, survival.health + survival.fallDamageTaken); // hard landings in the shaft are fall damage, not the wall (#439)
                         wallMaxSpeed = std::max(wallMaxSpeed, Vector3Length(Vector3Subtract(player.velocity, player.grounded ? Vector3{ 0, 0, 0 } : p->surfaceVelocity(feet))));
                     }
                     wallLast = local;
@@ -1708,8 +1708,8 @@ int main(int argc, char** argv)
                         }
                     } else if (wallPhase == 2) {
                         const bool pass = survival.deaths == 0 && wallMinHealth > 90.0f && wallMaxStep < 1.0;
-                        printf("bench: wall shove 9 s: largest frame move %.2f m (at %.1f s), top speed vs ground %.1f m/s, worst impact %.1f m/s, health %.0f, deaths %d: %s\n",
-                               wallMaxStep, wallMaxStepAt, wallMaxSpeed, wallMaxImpact, wallMinHealth, survival.deaths, pass ? "PASS" : "FAIL");
+                        printf("bench: wall shove 9 s: largest frame move %.2f m (at %.1f s), top speed vs ground %.1f m/s, worst impact %.1f m/s, health %.0f not counting fall damage (%.0f so far), deaths %d: %s\n",
+                               wallMaxStep, wallMaxStepAt, wallMaxSpeed, wallMaxImpact, wallMinHealth, survival.fallDamageTaken, survival.deaths, pass ? "PASS" : "FAIL");
                         wallOk = pass;
                         // Tight corners: two crevices narrowing to under the body's width meet in a V ahead;
                         // walk and jump into its point, turning a little either way.
@@ -1722,7 +1722,7 @@ int main(int argc, char** argv)
                                 ApplyTerrainEdit(*p, TerrainEdit{ p->toLocal(Vector3Add(feet, Vector3Add(along, Vector3Scale(player.up, r)))), r, -10.0f });
                             }
                         player.forward = flat;
-                        wallMaxStep = 0.0; wallMaxImpact = 0.0f; wallMaxSpeed = 0.0f; wallMinHealth = survival.health;
+                        wallMaxStep = 0.0; wallMaxImpact = 0.0f; wallMaxSpeed = 0.0f; wallMinHealth = survival.health + survival.fallDamageTaken;
                         wallPhase = 3;
                         wallStart = GetTime();
                     } else if (wallPhase == 3 && t < 7.0) {

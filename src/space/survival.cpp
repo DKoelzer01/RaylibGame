@@ -91,6 +91,7 @@ void Survival_OnLanding(float impactSpeed) {
     const float safe = Suit_Stats().servo ? 8.5f : 6.0f; // servo legs soften landings
     if (impactSpeed <= safe || survival.dead) return;
     survival.health -= (impactSpeed - safe) * 8.5f;
+    survival.fallDamageTaken += (impactSpeed - safe) * 8.5f;
     Audio_Play(Sfx::Error, 0.6f, 0.6f);
 }
 
