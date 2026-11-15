@@ -93,7 +93,11 @@ void Farm_Update(Scene& world, float dt) {
             if (const auto* pf = dynamic_cast<const PlanetField*>(body->field.get())) {
                 const float e = pf->elevation(up);
                 if (e < 3.0f) g.rate = 2.0f; // the sea shore
-                else if (pf->inlandWaterNear(up, 4.0f) && pf->waterElevation(up) != PlanetField::kNoWater) g.rate = 2.0f;
+                else if (pf->inlandWaterNear(up, 4.0f)) {
+                    const float w = pf->waterElevation(up);
+                    // A pond the simulation drained is dry (#360): the generated level no longer holds there.
+                    if (w != PlanetField::kNoWater && Fluid::GeneratedWaterValid(body->id, Vector3Scale(up, pf->radius + w - 0.2f))) g.rate = 2.0f;
+                }
             }
         }
         // Rain on the field speeds it by half again (the weather where the player is: fields

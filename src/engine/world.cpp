@@ -9,8 +9,10 @@
 #include "worldtypes.h"
 #include "factory.h"
 #include "fluid.h"
+#include "rivers.h"
 #include "terraingpu.h"
 #include "gputimer.h"
+#include "waterfield.h"
 #include <chrono>
 
 #include <raymath.h>
@@ -61,6 +63,12 @@ namespace {
     };
     std::vector<ChunkMeshData> results;        // filled by workers
     std::deque<ChunkMeshData> pendingUploads;  // main thread only
+    std::vector<ChunkMeshData> waterResults;   // water-only rebuilds (#360), filled by workers (resultsMutex)
+    std::atomic<long long> gWaterBuilds{ 0 };  // water-only rebuilds done, and their worker time (ms x 1000)
+    std::atomic<long long> gWaterUs{ 0 };
+    std::atomic<int> gWaterInFlight{ 0 };      // water-only rebuilds queued or running (capped: they go ahead of view builds)
+    std::atomic<long long> gWaterFullBuilds{ 0 }; // full chunk builds asked for by water (a node without its water cache)
+    struct WaterToken { WaterToken() { ++gWaterInFlight; } ~WaterToken() { --gWaterInFlight; } }; // held by a water job's closure (run or dropped)
     std::unique_ptr<JobSystem> jobs;
 
     std::unordered_map<uint64_t, Planetoid*> planetoidRegistry; // main thread only
@@ -417,6 +425,7 @@ void Planetoid::drawTransparent(const RenderContext& ctx) {
     const float occluder[4] = { c.x, c.y, c.z, std::max(0.0f, radius - 60.0f) * scale }; // night side, as for terrain
     batch.setUniform(ctx.waterOccluderLoc, occluder, SHADER_UNIFORM_VEC4);
     if (ctx.bindSunLighting) ctx.bindSunLighting(ctx.waterMaterial->shader); // cliffs and builds shade the water (slots 6-7)
+    Fluid::BindKindUniforms(ctx.waterMaterial->shader); // per-vertex fluid kinds (oil, ...): their colours
     RenderContext c2 = ctx;
     c2.batch = &batch;
     // Nearest first: with the stencil set up by the scene (one water layer per pixel), the closest
@@ -430,7 +439,6 @@ void Planetoid::drawTransparent(const RenderContext& ctx) {
     }
     std::sort(order.begin(), order.end(), [](const auto& a, const auto& b) { return a.first < b.first; });
     for (auto& o : order) o.second->drawWater(c2, placer.model(o.second->key));
-    Fluid::Draw(*this, ctx, batch); // flowing water (after the static surfaces it continues)
 }
 
 void Planetoid::drawFoliage(const RenderContext& ctx) {
@@ -524,7 +532,7 @@ static void RequestNode(Planetoid& p, const NodeKey& key, float priority) {
                 job.done = [field, edits, shared, wanted, version, priority, prepMs, token, grid](std::shared_ptr<const float> batch, size_t offset) {
                     Jobs().submit(priority, [field, edits, shared, wanted, version, prepMs, batch, offset, token, grid] {
                         if (wanted->load() != version) { ++gSkipped; return; }
-                        BuildChunkMeshFromBase(*field, *edits, *shared, batch.get() + offset, prepMs, grid.get());
+                        BuildChunkMeshFromBase(*field, *edits, *shared, batch.get() + offset, prepMs, grid.get(), grid);
                         std::lock_guard<std::mutex> lock(resultsMutex);
                         results.push_back(std::move(*shared));
                         ++gBuilt;
@@ -1137,6 +1145,126 @@ void advanceBodies(Scene& world, float dt) {
     if (moved) world.syncRenderPositions();
 }
 
+// ---------------------------------------------------------------------------------------------
+// Water redraws (#360): the chunk mesher draws every fluid surface from the one water field (waterfield.h). The
+// simulation publishes the boxes whose cells changed; the nodes there (every level, found by key arithmetic) are
+// marked, and the drawn ones redraw their water alone - at most every 0.1 s near (0.2 / 0.5 / 1 s coarser) - from the
+// terrain density they kept (ChunkWaterCache). A node without that cache gets one full rebuild instead.
+// ---------------------------------------------------------------------------------------------
+
+static void MarkWaterDirty(Planetoid& p, Vector3 lo, Vector3 hi, int mag, double now) {
+    for (int level = 0; level <= p.rootLevel; ++level) {
+        const float s = kVoxelSize * (float)(CHUNK_SIZE << level);
+        // Nodes whose samples ([origin, origin + (CHUNK_SIZE + 1) * stride]) reach the box: exactly what the chunk's
+        // ChunkSampler tests, so a marked node finds the simulated water (#382 review: a wider margin marked coarse nodes
+        // that found none, and those got a full rebuild every time).
+        const float margin = s / CHUNK_SIZE;
+        const int x0 = (int)floorf((lo.x - margin) / s), x1 = (int)floorf(hi.x / s);
+        const int y0 = (int)floorf((lo.y - margin) / s), y1 = (int)floorf(hi.y / s);
+        const int z0 = (int)floorf((lo.z - margin) / s), z1 = (int)floorf(hi.z / s);
+        if ((long long)(x1 - x0 + 1) * (y1 - y0 + 1) * (z1 - z0 + 1) > 4096) continue;
+        for (int z = z0; z <= z1; ++z)
+            for (int y = y0; y <= y1; ++y)
+                for (int x = x0; x <= x1; ++x) {
+                    auto it = p.nodes.find(NodeKey{ level, x, y, z });
+                    if (it == p.nodes.end()) continue;
+                    Chunk& c = *it->second;
+                    if (!c.waterDirty) { c.waterDirty = true; c.waterDirtySince = now; c.waterMag = 0; }
+                    // Summed, not the largest (#469): each publish is a cell's change of 6+ units since it was last published,
+                    // so a slow rise came as 6-7 at a time and never reached a coarse node's gate (8+): it waited the 3 s
+                    // fallback. Jitter under 6 never publishes, so the sum doesn't add it up.
+                    c.waterMag = std::min(255, c.waterMag + mag);
+                }
+    }
+}
+
+// Water jobs queue by distance like view builds (#382 review: at -0.5 they went ahead of every view build).
+static void RequestWater(Planetoid& p, Chunk& c, float priority) {
+    c.waterBusy = true;
+    c.waterDirty = false;
+    c.waterMag = 0;
+    std::shared_ptr<const DensityField> field = p.field;
+    std::shared_ptr<const ChunkWaterCache> cache = c.waterCache;
+    const uint64_t id = p.id;
+    const NodeKey key = c.key;
+    auto token = std::make_shared<WaterToken>();
+    Jobs().submit(priority, [field, cache, id, key, token] {
+        ChunkMeshData d;
+        d.planetoidId = id;
+        d.key = key;
+        d.waterCache = cache; // which terrain it was cut by: dropped if the chunk has newer terrain by now
+        BuildChunkWater(*field, *cache, d);
+        ++gWaterBuilds;
+        gWaterUs += (long long)(d.buildMs * 1000.0f);
+        std::lock_guard<std::mutex> lock(resultsMutex);
+        waterResults.push_back(std::move(d));
+    });
+}
+
+static void UpdateWater(Scene& world) {
+    const double now = GetTime();
+    std::vector<WaterField::Dirty> dirty;
+    WaterField::TakeDirty(dirty);
+    for (const WaterField::Dirty& d : dirty)
+        if (Planetoid* p = Planetoid::find(d.body)) MarkWaterDirty(*p, d.lo, d.hi, d.mag, now);
+    std::vector<ChunkMeshData> done;
+    { std::lock_guard<std::mutex> lock(resultsMutex); done.swap(waterResults); }
+    for (ChunkMeshData& r : done) {
+        Planetoid* p = Planetoid::find(r.planetoidId);
+        if (!p) continue;
+        auto it = p->nodes.find(r.key);
+        if (it == p->nodes.end()) continue;
+        Chunk& c = *it->second;
+        c.waterBusy = false;
+        c.waterBuiltAt = now;
+        // Cut by terrain the chunk no longer has (a full build after an edit landed meanwhile): drawn again (#382 review).
+        if (r.waterCache != c.waterCache) { c.waterDirty = true; c.waterMag = 255; c.waterDirtySince = now; continue; }
+        if (r.waterSeq >= c.waterSeq) c.uploadWater(r);
+    }
+    // Water caches only for nodes on screen (#382 review: ring and cached nodes kept ~160 KB each, past 128 MB): a node
+    // out of the draw list for 5 s drops it; drawn again, its next water change costs one full build.
+    static double lastSweep = 0.0;
+    if (now - lastSweep > 2.0) {
+        lastSweep = now;
+        for (auto& obj : world.objects)
+            if (auto* p = dynamic_cast<Planetoid*>(obj.get()))
+                for (auto& n : p->nodes)
+                    if (n.second->waterCache && !n.second->waterBusy && now - n.second->waterDrawnAt > 5.0) n.second->waterCache.reset();
+    }
+    int budget = 64; // water jobs a frame
+    // In flight at once: half the workers, so streaming always has the rest (a draining pond kept hundreds a second going).
+    const int maxInFlight = std::max(1, (int)Jobs().threadCount() / 2);
+    for (auto& obj : world.objects) {
+        auto* p = dynamic_cast<Planetoid*>(obj.get());
+        if (!p || !p->isActive) continue;
+        const Vector3 cam = p->toLocal(world.camera.position);
+        for (Chunk* c : p->drawList) {
+            c->waterDrawnAt = now;
+            if (!c->waterDirty || c->waterBusy || !c->ready || budget <= 0 || gWaterInFlight.load() >= maxInFlight) continue;
+            const Vector3 lo = c->key.origin();
+            const float dist = DistanceToBox(cam, lo, Vector3AddValue(lo, c->key.size()));
+            // Redraw rate by level and by distance (#381): 10 a second within 10 m, down to once a second from 100 m.
+            const double byLevel = c->key.level == 0 ? 0.1 : c->key.level <= 2 ? 0.2 : c->key.level <= 4 ? 0.5 : 1.0;
+            const double every = std::max(byLevel, std::clamp((double)dist / 100.0, 0.1, 1.0));
+            if (now - c->waterBuiltAt < every) continue;
+            // Coarser nodes wait for a change they can show (their samples are 0.5-8 m apart: a 2.5 cm step is invisible
+            // there), or 3 s (#381).
+            static const int kShowMag[5] = { 0, 8, 13, 26, 51 };
+            if (c->waterMag < kShowMag[std::min(c->key.level, 4)] && now - c->waterDirtySince < 3.0) continue;
+            --budget;
+            const float priority = dist / (1.0f + c->key.level);
+            if (c->waterCache) { RequestWater(*p, *c, priority); continue; }
+            c->waterDirty = false; c->waterBuiltAt = now;
+            // No cache: a full build keeps one - unless no simulated water reaches the node (then nothing to redraw).
+            const WaterField::SnapshotPtr snap = WaterField::Current();
+            const WaterField::ChunkSampler probe(snap.get(), p->id, lo, Vector3AddValue(lo, (CHUNK_SIZE + 1) * c->key.stride()), true);
+            if (!probe.any()) continue;
+            ++gWaterFullBuilds;
+            RequestNode(*p, c->key, priority);
+        }
+    }
+}
+
 void worldUpdate(Scene& world, float uploadBudgetMs) {
     PROFILE_FUNCTION();
     GpuTimer_CpuMark("w-before");
@@ -1188,6 +1316,7 @@ void worldUpdate(Scene& world, float uploadBudgetMs) {
         if (std::chrono::duration<float, std::milli>(std::chrono::steady_clock::now() - t0).count() > uploadBudgetMs) break;
     }
 
+    UpdateWater(world); // simulated water: chunks redraw their water surface (#360)
     GpuTimer_CpuMark("w-uploads");
     // LOD after uploads, so this frame's draw list already includes nodes that just finished.
     // Terrain detail (#297): the player's setting, at most fastFactor while the camera moves fast against the nearest
@@ -1239,6 +1368,8 @@ void worldUpdate(Scene& world, float uploadBudgetMs) {
         for (auto& [id, ring] : gPreload) { stats.preloadNodes += (int)ring.keys.size(); stats.preloadReady += ring.ready; complete &= ring.complete; }
         for (auto& [id, n] : gCachedCount) stats.cachedNodes += n;
         stats.evicted = gEvicted;
+        stats.waterBuilds = gWaterBuilds.load(); stats.waterMs = gWaterUs.load() / 1000.0;
+        stats.waterFullBuilds = gWaterFullBuilds.load(); stats.waterCacheBytes = ChunkWaterCacheBytes();
         if (gPreloadUrgent && complete) {
             gPreloadUrgent = false;
             // Still behind the loading screen: grow the terrain arena once to the real ring plus a full cache and the
@@ -1398,7 +1529,8 @@ void ApplyTerrainEdits(Planetoid& p, const TerrainEdit* edits, size_t count) {
     if (p.trees)
         for (size_t i = 0; i < count; i += std::max<size_t>(1, count / 64)) p.trees->onEdit(edits[i].center, edits[i].radius, p.edits);
     // Flowing water: wake it, or start it where the edit opens space next to water.
-    for (size_t i = 0; i < count; i += std::max<size_t>(1, count / 64)) Fluid::OnTerrainEdit(p, edits[i].center, edits[i].radius);
+    for (size_t i = 0; i < count; i += std::max<size_t>(1, count / 64))
+        Fluid::OnTerrainEdit(p, edits[i].center, edits[i].radius, !edits[i].carve && edits[i].strength > 0.0f); // adding ground: may dam a river (#361)
 }
 
 void RequestRemesh(Planetoid& p, Vector3 c, float r, float strideReach) {
@@ -1887,7 +2019,7 @@ bool SaveWorld(Scene& world) {
     const DVec3 tgtWorld = world.renderOrigin + world.camera.target;
     // v4: the system definition is stored in the save, so a save reloads the system it was made in
     // even if bodies.txt has changed since.
-    fprintf(f, "RAYLIBGAME_SAVE 11\n");
+    fprintf(f, "RAYLIBGAME_SAVE 12\n"); // 12 (#360): ponds' water bricks saved even drained; no claimed ponds
     fprintf(f, "seed %u\nbodies %zu\n", worldGen.lastSeed, worldGen.system.bodies.size());
     for (const BodyDef& b : worldGen.system.bodies) fprintf(f, "%s\n", FormatBodyDef(b).c_str());
     fprintf(f, "time %.6f\n", worldTime); // v5: the world clock (orbits)
@@ -1930,7 +2062,7 @@ bool LoadWorldSave(Scene& world) {
     FILE* f = fopen(SAVE_PATH, "r");
     if (!f) return false;
     int version = 0;
-    if (fscanf(f, "RAYLIBGAME_SAVE %d", &version) != 1 || version < 2 || version > 11) {
+    if (fscanf(f, "RAYLIBGAME_SAVE %d", &version) != 1 || version < 2 || version > 12) {
         fclose(f);
         logger.logf("[World] %s: unsupported save version %d\n", SAVE_PATH, version);
         return false;
@@ -2128,6 +2260,25 @@ void loadWorld(Scene& world) {
 }
 
 
+Vector3 RiverCurrent(Planetoid* p, Vector3 renderPoint) {
+    if (!p || !p->field) return { 0, 0, 0 };
+    const auto* pf = dynamic_cast<const PlanetField*>(p->field.get());
+    const RiverNetwork* net = pf ? pf->rivers() : nullptr;
+    if (!net) return { 0, 0, 0 };
+    const Vector3 local = p->toLocal(renderPoint);
+    const float d = Vector3Length(local);
+    if (d < 1.0f || Fluid::Simulated(*p, local)) return { 0, 0, 0 };
+    const Vector3 dir = Vector3Scale(local, 1.0f / d);
+    if (pf->waterSourceAt(dir).kind != 1) return { 0, 0, 0 };   // rivers only
+    const RiverNetwork::Hit h = net->nearest(dir, 60.0f);
+    if (!h.found || h.dist >= h.halfWidth + 3.0f) return { 0, 0, 0 };
+    Vector3 flow = Vector3Subtract(h.down, Vector3Scale(dir, Vector3DotProduct(h.down, dir)));
+    const float fl = Vector3Length(flow);
+    if (fl < 1e-4f) return { 0, 0, 0 };
+    const float speed = sqrtf(std::max(0.0f, 1.0f - h.dist / (h.halfWidth + 3.0f))); // as water.fs shows it (voxel.cpp)
+    return p->dirToWorld(Vector3Scale(flow, speed / fl));
+}
+
 bool IsUnderwater(Scene& world, Vector3 renderPoint) {
     Planetoid* p = NearestPlanetoid(world, renderPoint);
     if (!p || !p->field) return false;
@@ -2137,7 +2288,8 @@ bool IsUnderwater(Scene& world, Vector3 renderPoint) {
     const float d = Vector3Length(local);
     const float sea = pf->seaLevelRadius();
     if (sea <= 0.0f || d < 1.0f) return false;
-    if (Fluid::Wet(*p, local)) return true; // flowing water
+    if (Fluid::Wet(*p, local)) return true; // simulated water
+    if (Fluid::Simulated(*p, local)) return false; // a simulated cell decides (#360: a drained pond is dry)
     const Vector3 dir = Vector3Scale(local, 1.0f / d);
     // The water surface here: the sea, or a river or pond above it.
     float surface = sea;

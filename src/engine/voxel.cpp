@@ -7,6 +7,7 @@
 #include "foliage.h"
 #include "trees.h"
 #include "cubemarch.h"
+#include "waterfield.h"
 
 #include <cstring>
 #include <raymath.h>
@@ -651,7 +652,7 @@ float PlanetField::waterElevation(Vector3 dir, float fp) const {
         // in it take its level. Lakes are big: kept out to coarse levels of detail.
         float lake;
         int lid = -1; float lo = 0.0f;
-        if (fp < 1024.0f && net->lakeAt(dir, lake, lo, lid) && lo < RiverNetwork::kLakeMargin) { const uint64_t cid = drainableLake(lid); if (!cid || !pondClaimed(cid)) w = lake; }
+        if (fp < 1024.0f && net->lakeAt(dir, lake, lo, lid) && lo < RiverNetwork::kLakeMargin) w = lake;
         else if (fp < 128.0f) {
             const RiverNetwork::Hit rh = net->nearest(dir, 60.0f);
             if (rh.found && rh.dist < rh.halfWidth * 1.05f) w = rh.level;
@@ -660,7 +661,7 @@ float PlanetField::waterElevation(Vector3 dir, float fp) const {
     if (fp >= 96.0f) return w; // ponds are not resolved (their bowls fade out by here)
     ForPondCellsNear(Vector3Scale(dir, radius), kPondReach, [&](int x, int y, int z) {
         const Pond p = pondOfCell(x, y, z);
-        if (p.exists && !pondClaimed(PondId(x, y, z)) && Vector3Distance(dir, p.dir) * radius < p.r * 1.05f) w = std::max(w, p.level);
+        if (p.exists && Vector3Distance(dir, p.dir) * radius < p.r * 1.05f) w = std::max(w, p.level);
     });
     return w;
 }
@@ -678,7 +679,7 @@ bool PlanetField::inlandWaterNear(Vector3 dir, float extent, float fp) const {
     ForPondCellsNear({ sx, sy, sz }, kPondReach + extent, [&](int x, int y, int z) {
         if (near) return;
         const Pond p = pondOfCell(x, y, z);
-        if (p.exists && !pondClaimed(PondId(x, y, z)) && Vector3Distance(dir, p.dir) * radius < p.r * 1.05f + extent) near = true;
+        if (p.exists && Vector3Distance(dir, p.dir) * radius < p.r * 1.05f + extent) near = true;
     });
     return near;
 }
@@ -691,9 +692,8 @@ PlanetField::WaterSource PlanetField::waterSourceAt(Vector3 dir) const {
         int lid = -1; float lo = 0.0f;
         if (net->lakeAt(dir, lake, lo, lid) && lo < RiverNetwork::kLakeMargin) {
             if (const uint64_t cid = drainableLake(lid)) {
-                // A small lake (#360): finite, taken over like a pond the first time water moves there; once claimed
-                // its static water is gone (the simulation holds what is left).
-                if (!pondClaimed(cid)) {
+                // A small lake (#360): finite water (the simulation drains it like a pond once a region of it is simulated).
+                {
                     const RiverNetwork::LakeInfo& li = net->lakeInfo(lid);
                     s.kind = 3; s.level = lake; s.pond = cid; s.pondDir = li.dir; s.pondR = li.r; s.pondDepth = li.depth + 1.0f;
                 }
@@ -708,7 +708,6 @@ PlanetField::WaterSource PlanetField::waterSourceAt(Vector3 dir) const {
         const Pond p = pondOfCell(x, y, z);
         if (!p.exists || p.level <= s.level || Vector3Distance(dir, p.dir) * radius >= p.r * 1.05f) return;
         const uint64_t id = PondId(x, y, z);
-        if (pondClaimed(id)) return;
         s.kind = 3; s.level = p.level; s.pond = id; s.pondDir = p.dir; s.pondR = p.r;
     });
     return s;
@@ -723,24 +722,6 @@ uint64_t PlanetField::drainableLake(int lakeId) const {
     return (1ull << 63) | (uint64_t)lakeId;
 }
 
-void PlanetField::claimPond(uint64_t id) const {
-    std::lock_guard<std::mutex> lock(pondState->m);
-    if (pondState->claimed.insert(id).second) pondState->n++;
-}
-bool PlanetField::pondClaimed(uint64_t id) const {
-    if (pondState->n.load(std::memory_order_relaxed) == 0) return false;
-    std::lock_guard<std::mutex> lock(pondState->m);
-    return pondState->claimed.count(id) > 0;
-}
-std::vector<uint64_t> PlanetField::claimedPonds() const {
-    std::lock_guard<std::mutex> lock(pondState->m);
-    return std::vector<uint64_t>(pondState->claimed.begin(), pondState->claimed.end());
-}
-void PlanetField::clearClaimedPonds() const {
-    std::lock_guard<std::mutex> lock(pondState->m);
-    pondState->claimed.clear();
-    pondState->n = 0;
-}
 
 PlanetField::RiverState::~RiverState() = default;
 
@@ -1427,16 +1408,6 @@ VoxelMaterial PlanetField::materialSkyHinted(Vector3 p, float base, float fp, Ve
             const float w = waterElevation(up, fp);
             if (w != kNoWater && e < w + 0.6f) return w - e > 1.4f ? VoxelMaterial::Gravel : VoxelMaterial::Sand;
         }
-        // A pond the simulation took over keeps its bed (#189: it turned to grass and trees grew in the pond). Only
-        // claimed ponds need this (the others are inland water above); nothing to do until one is.
-        if (e > 0.0f && fp < 96.0f && pondState->n.load(std::memory_order_relaxed) > 0) {
-            float pl = kNoWater;
-            ForPondCellsNear(Vector3Scale(up, radius), kPondReach, [&](int x, int y, int z) {
-                const Pond pd = pondOfCell(x, y, z);
-                if (pd.exists && pondClaimed(PondId(x, y, z)) && Vector3Distance(up, pd.dir) * radius < pd.r * 1.05f) pl = std::max(pl, pd.level);
-            });
-            if (pl != kNoWater && e < pl + 0.6f) return pl - e > 1.4f ? VoxelMaterial::Gravel : VoxelMaterial::Sand;
-        }
         if (slope > 0.45f) return VoxelMaterial::Rock;                                                       // cliffs: bare stone
         if (e < -80.0f) return VoxelMaterial::Gravel;                                                        // deep sea floor
         if (e < 6.0f + 4.0f * wobble) return VoxelMaterial::Sand;                                            // beaches, shallows
@@ -1556,7 +1527,383 @@ static float OverheadOpenness(const DensityField& field, const TerrainDeltas& de
     return std::min(std::clamp(open / 6.0f * 1.5f, 0.0f, 1.0f), lipShade);
 }
 
-void BuildChunkMeshFromBase(const DensityField& field, const TerrainDeltas& deltas, ChunkMeshData& out, const float* base, float sampledMs, const PlanetField::BlockGrid* grid) {
+// ---------------------------------------------------------------------------------------------
+// Water (#360): one surface for the generated water and the simulation's published cells
+// ---------------------------------------------------------------------------------------------
+
+// The generated water a chunk may hold (never stored, from the field): whether it spans the sea's radius, and
+// inland levels (rivers, lakes, ponds) sampled on a lattice every 4 samples and interpolated (they change slowly),
+// only for nodes near some.
+static ChunkWaterGen GeneratedWaterOf(const DensityField& field, Vector3 origin, int cells, float stride, int S) {
+    ChunkWaterGen g;
+    const float sea = field.seaLevelRadius();
+    if (sea <= 0.0f) return g;
+    const Vector3 lo = origin, hi = Vector3AddValue(origin, cells * stride);
+    const Vector3 nearest = { std::clamp(0.0f, lo.x, hi.x), std::clamp(0.0f, lo.y, hi.y), std::clamp(0.0f, lo.z, hi.z) };
+    const float dmin = Vector3Length(nearest);
+    const float dmax = Vector3Length({ std::max(fabsf(lo.x), fabsf(hi.x)), std::max(fabsf(lo.y), fabsf(hi.y)), std::max(fabsf(lo.z), fabsf(hi.z)) });
+    const PlanetField* pf = dynamic_cast<const PlanetField*>(&field);
+    const Vector3 mid = Vector3Scale(Vector3Add(lo, hi), 0.5f);
+    const float extent = Vector3Distance(lo, hi) * 0.5f;
+    g.seaSpan = dmin < sea && dmax > sea;
+    g.inland = pf && !pf->moon && dmax > sea && dmin < sea + pf->maxElevation && Vector3Length(mid) > 1.0f &&
+               pf->inlandWaterNear(Vector3Normalize(mid), extent, stride);
+    if (!g.inland) return g;
+    const int L = 4, LN = (S - 1 + L - 1) / L + 1;
+    g.LN = LN;
+    auto lat = [&](int i) { return std::min(i * L, S - 1); };
+    g.level.resize((size_t)LN * LN * LN);
+    // Raw levels on the lattice and one node beyond it on every side (the neighbouring chunks' nodes: lattices of
+    // chunks at the same level line up), so a dry node on the chunk's edge sees wet ones next door and both chunks'
+    // surfaces meet at the seam.
+    const int LE = LN + 2;
+    auto coord = [&](int i) { return i < 0 ? -L : i >= LN ? lat(LN - 1) + L : lat(i); };
+    std::vector<float> raw((size_t)LE * LE * LE);
+    auto R = [&](int x, int y, int z) -> float& { return raw[((size_t)(z + 1) * LE + (y + 1)) * LE + (x + 1)]; };
+    auto P = [&](int x, int y, int z) { return Vector3{ origin.x + coord(x) * stride, origin.y + coord(y) * stride, origin.z + coord(z) * stride }; };
+    for (int z = -1; z <= LN; ++z)
+        for (int y = -1; y <= LN; ++y)
+            for (int x = -1; x <= LN; ++x)
+                R(x, y, z) = pf->waterElevation(Vector3Normalize(P(x, y, z)), stride);
+    // A dry point next to wet ones takes the lower of their level and just under its own ground, not sea level:
+    // between them the interpolated surface then stays level out to where the shore rises, or runs just under low
+    // ground, instead of sloping down across it (sheets of water at chunk corners). Dry points with no wet
+    // neighbour: sea level.
+    for (int z = 0; z < LN; ++z)
+        for (int y = 0; y < LN; ++y)
+            for (int x = 0; x < LN; ++x) {
+                float w = R(x, y, z);
+                if (w == PlanetField::kNoWater) {
+                    float wet = PlanetField::kNoWater;
+                    for (int c = -1; c <= 1; ++c)
+                        for (int b = -1; b <= 1; ++b)
+                            for (int a = -1; a <= 1; ++a) wet = std::max(wet, R(x + a, y + b, z + c));
+                    w = wet == PlanetField::kNoWater ? 0.0f : std::min(wet, pf->elevation(Vector3Normalize(P(x, y, z)), stride) - 2.0f);
+                }
+                g.level[((size_t)z * LN + y) * LN + x] = sea + std::max(0.0f, w);
+            }
+    return g;
+}
+
+// Every fluid surface of a chunk from the one water field: per kind, marching cubes on a density that is the
+// published simulation cells' surface where a brick covers the sample (WaterField::ChunkSampler) and the generated
+// water's level elsewhere - the same plane where nothing moved, so the two meet without a seam. Triangles inside
+// the terrain (the chunk's own density) are dropped, so the water meets the shore at the chunk's resolution; the
+// generated water also stays out of caves under it (only over the original bed), the simulated water does not
+// (cave water, dug channels). The vertex's second texcoord carries the fluid kind (water.fs colours it).
+static constexpr float kSkin = 0.15f; // m: water shallower than this over the ground is not drawn (MeshChunkWater)
+static std::atomic<long long> gWaterPhaseNs[4];
+static std::atomic<long long> gWaterSamples[2]; // exact water density samples, all samples (#381)
+void ChunkWaterPhases(long long out[6]) { for (int i = 0; i < 4; ++i) out[i] = gWaterPhaseNs[i].load(); out[4] = gWaterSamples[0].load(); out[5] = gWaterSamples[1].load(); }
+// RAYLIBGAME_WATER_COARSE=0: sample every water density point (no coarse-first skipping), for A/B.
+static const bool kWaterCoarse = [] { const char* e = getenv("RAYLIBGAME_WATER_COARSE"); return !(e && e[0] == '0'); }();
+static long long NowNs() { return std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch()).count(); }
+static void MeshChunkWater(const DensityField& field, ChunkMeshData& out, const float* dens, const PlanetField::BlockGrid* grid,
+                           const ChunkWaterGen& gen, WaterField::ChunkSampler& sim) {
+    const int cells = CHUNK_SIZE + 1, S = cells + 1;
+    const float stride = (float)out.key.stride();
+    const Vector3 origin = out.key.origin();
+    const float sea = field.seaLevelRadius();
+    const bool genAny = sea > 0.0f && (gen.seaSpan || gen.inland);
+    const uint8_t kinds = sim.any() ? sim.kinds() : 0;
+    if (!genAny && !kinds) return;
+    const PlanetField* pf = dynamic_cast<const PlanetField*>(&field);
+    const RiverNetwork* rivers = pf ? pf->rivers() : nullptr; // the current on river water (#361)
+    const int L = 4, LN = gen.LN;
+    auto lat = [&](int i) { return std::min(i * L, S - 1); };
+    auto levelAt = [&](int x, int y, int z) {
+        if (!gen.inland) return sea;
+        const int ix = std::min(x / L, LN - 2), iy = std::min(y / L, LN - 2), iz = std::min(z / L, LN - 2);
+        const float fx = (float)(x - lat(ix)) / std::max(1, lat(ix + 1) - lat(ix)), fy = (float)(y - lat(iy)) / std::max(1, lat(iy + 1) - lat(iy)), fz = (float)(z - lat(iz)) / std::max(1, lat(iz + 1) - lat(iz));
+        auto g = [&](int a, int b, int c) { return gen.level[((size_t)(iz + c) * LN + (iy + b)) * LN + (ix + a)]; };
+        const float c00 = g(0, 0, 0) * (1 - fx) + g(1, 0, 0) * fx, c10 = g(0, 1, 0) * (1 - fx) + g(1, 1, 0) * fx;
+        const float c01 = g(0, 0, 1) * (1 - fx) + g(1, 0, 1) * fx, c11 = g(0, 1, 1) * (1 - fx) + g(1, 1, 1) * fx;
+        return (c00 * (1 - fy) + c10 * fy) * (1 - fz) + (c01 * (1 - fy) + c11 * fy) * fz;
+    };
+    // Trilinear over an S^3 grid in sample coordinates.
+    auto trilinear = [&](const float* f, Vector3 g) {
+        const int x0 = std::clamp((int)floorf(g.x), 0, S - 2), y0 = std::clamp((int)floorf(g.y), 0, S - 2), z0 = std::clamp((int)floorf(g.z), 0, S - 2);
+        const float fx = std::clamp(g.x - x0, 0.0f, 1.0f), fy = std::clamp(g.y - y0, 0.0f, 1.0f), fz = std::clamp(g.z - z0, 0.0f, 1.0f);
+        auto d = [&](int x, int y, int z) { return f[((size_t)z * S + y) * S + x]; };
+        const float c00 = d(x0, y0, z0) * (1 - fx) + d(x0 + 1, y0, z0) * fx, c10 = d(x0, y0 + 1, z0) * (1 - fx) + d(x0 + 1, y0 + 1, z0) * fx;
+        const float c01 = d(x0, y0, z0 + 1) * (1 - fx) + d(x0 + 1, y0, z0 + 1) * fx, c11 = d(x0, y0 + 1, z0 + 1) * (1 - fx) + d(x0 + 1, y0 + 1, z0 + 1) * fx;
+        return (c00 * (1 - fy) + c10 * fy) * (1 - fz) + (c01 * (1 - fy) + c11 * fy) * fz;
+    };
+    // Height-map elevation under a body point: from the block's grid when there is one (#148), as the terrain.
+    auto groundAt = [&](Vector3 point, Vector3 dir) {
+        float e; PlanetField::Column3D col;
+        if (grid && pf && pf->gridSurface(*grid, point, e, col)) return e;
+        return pf->elevation(dir, stride);
+    };
+    std::vector<float> wd((size_t)S * S * S);
+    std::vector<Vector3> wv;
+    std::vector<int> wi;
+    std::vector<int> cache((size_t)S * S * S * 3);
+    // Coarse-first sampling (#381), level-0 chunks only: the coarse lattice lines and, per axis, the blocks a sample lies in
+    // (one between two coarse lines, two on a shared line), the corner lines of the first and its fraction between them
+    // (0 or 1 on a shared line, where the blocks agree).
+    const bool coarse = kWaterCoarse && S >= 4 && out.key.level == 0;
+    std::vector<int> cc, A0, A1, Lo, Hi, work;
+    std::vector<float> T;
+    std::vector<char> mixed, done; // per block: holds a surface (1) or was taken in (2); per sample: exact
+    int NB = 0;
+    if (coarse) {
+        for (int v = 0; v < S - 1; v += 2) cc.push_back(v);
+        cc.push_back(S - 1);
+        NB = (int)cc.size() - 1;
+        auto isC = [&](int v) { return (v & 1) == 0 || v == S - 1; };
+        A0.resize(S); A1.resize(S); Lo.resize(S); Hi.resize(S); T.resize(S);
+        for (int v = 0; v < S; ++v) {
+            if (!isC(v)) A0[v] = A1[v] = (v - 1) / 2;
+            else if (v == S - 1) A0[v] = A1[v] = NB - 1;
+            else { A0[v] = std::max(0, v / 2 - 1); A1[v] = std::min(NB - 1, v / 2); }
+            Lo[v] = cc[A0[v]]; Hi[v] = cc[A0[v] + 1];
+            T[v] = (float)(v - Lo[v]) / (float)(Hi[v] - Lo[v]);
+        }
+        mixed.resize((size_t)NB * NB * NB);
+        done.resize((size_t)S * S * S);
+    }
+    for (int kind = 0; kind < 8; ++kind) {
+        const bool simKind = (kinds >> kind) & 1;
+        const bool genKind = kind == 0 && genAny;
+        if (!simKind && !genKind) continue;
+        size_t k = 0;
+        bool anyIn = false, anyOut = false;
+        long long tPhase = NowNs();
+        auto phase = [&](int i) { const long long t = NowNs(); gWaterPhaseNs[i] += t - tPhase; tPhase = t; };
+        auto exact = [&](int x, int y, int z) {
+            const Vector3 p = { origin.x + x * stride, origin.y + y * stride, origin.z + z * stride };
+            float w;
+            if (!(simKind && sim.density(p, kind, w)))
+                w = genKind ? ISO_LEVEL + DENSITY_GRADIENT * (levelAt(x, y, z) - sqrtf(p.x * p.x + p.y * p.y + p.z * p.z)) : ISO_LEVEL - DENSITY_GRADIENT;
+            return w;
+        };
+        long long exactCount = 0;
+        if (!coarse) {
+            for (int z = 0; z < S; ++z)
+                for (int y = 0; y < S; ++y)
+                    for (int x = 0; x < S; ++x, ++k) wd[k] = exact(x, y, z);
+            exactCount = (long long)S * S * S;
+        } else {
+            // Coarse first (#381): the samples on every other lattice line (and the last), then the 2-sample blocks between
+            // them. A block whose 8 corners are all on one side of the surface, a quarter metre or more from it, holds no
+            // surface; its other samples are interpolated, not asked. Blocks with a corner near or across the surface are
+            // sampled in full, with a one-sample border (the normals read half a sample around their vertices), and a block
+            // one of those exact samples shows on the other side of its corners (a feature thinner than a block) is taken in
+            // as well, until none is left: every cube that makes triangles has exact corners. Fine chunks only: a cell is
+            // 2 blocks across there, so a simulated column (1 m) can't hide between coarse lines (#381 review).
+            auto at = [&](int x, int y, int z) -> float& { return wd[((size_t)z * S + y) * S + x]; };
+            std::fill(done.begin(), done.end(), (char)0);
+            auto ex = [&](int x, int y, int z) {
+                const size_t i = ((size_t)z * S + y) * S + x;
+                if (!done[i]) { wd[i] = exact(x, y, z); done[i] = 1; ++exactCount; }
+                return wd[i];
+            };
+            for (int z : cc) for (int y : cc) for (int x : cc) ex(x, y, z);
+            constexpr float kMargin = 0.25f * DENSITY_GRADIENT; // a quarter metre of the fluid's (or the sea's) surface
+            std::fill(mixed.begin(), mixed.end(), (char)0);
+            for (int bz = 0; bz < NB; ++bz)
+                for (int by = 0; by < NB; ++by)
+                    for (int bx = 0; bx < NB; ++bx) {
+                        bool in = false, outS = false, nearS = false;
+                        for (int c = 0; c < 8; ++c) {
+                            const float w = at(cc[bx + (c & 1)], cc[by + ((c >> 1) & 1)], cc[bz + (c >> 2)]);
+                            if (w >= ISO_LEVEL) in = true; else outS = true;
+                            if (fabsf(w - ISO_LEVEL) < kMargin) nearS = true;
+                        }
+                        if ((in && outS) || nearS) { mixed[((size_t)bz * NB + by) * NB + bx] = 1; work.push_back(((bz * NB) + by) * NB + bx); }
+                    }
+            while (!work.empty()) {
+                const int b = work.back();
+                work.pop_back();
+                const int bx = b % NB, by = (b / NB) % NB, bz = b / (NB * NB);
+                for (int z = std::max(0, cc[bz] - 1); z <= std::min(S - 1, cc[bz + 1] + 1); ++z)
+                    for (int y = std::max(0, cc[by] - 1); y <= std::min(S - 1, cc[by + 1] + 1); ++y)
+                        for (int x = std::max(0, cc[bx] - 1); x <= std::min(S - 1, cc[bx + 1] + 1); ++x) {
+                            if (done[((size_t)z * S + y) * S + x]) continue;
+                            const bool wet = ex(x, y, z) >= ISO_LEVEL;
+                            for (int qz = A0[z]; qz <= A1[z]; ++qz)
+                                for (int qy = A0[y]; qy <= A1[y]; ++qy)
+                                    for (int qx = A0[x]; qx <= A1[x]; ++qx) {
+                                        char& m = mixed[((size_t)qz * NB + qy) * NB + qx];
+                                        if (!m && wet != (at(cc[qx], cc[qy], cc[qz]) >= ISO_LEVEL)) { m = 2; work.push_back((qz * NB + qy) * NB + qx); }
+                                    }
+                        }
+            }
+            for (int z = 0; z < S; ++z)
+                for (int y = 0; y < S; ++y)
+                    for (int x = 0; x < S; ++x) {
+                        if (done[((size_t)z * S + y) * S + x]) continue;
+                        // Trilinear in the first block holding it (its corners all on one side: so is the result).
+                        const float tx = T[x], ty = T[y], tz = T[z];
+                        const int xa = Lo[x], xb = Hi[x], ya = Lo[y], yb = Hi[y], za = Lo[z], zb = Hi[z];
+                        const float c00 = at(xa, ya, za) * (1 - tx) + at(xb, ya, za) * tx, c10 = at(xa, yb, za) * (1 - tx) + at(xb, yb, za) * tx;
+                        const float c01 = at(xa, ya, zb) * (1 - tx) + at(xb, ya, zb) * tx, c11 = at(xa, yb, zb) * (1 - tx) + at(xb, yb, zb) * tx;
+                        at(x, y, z) = (c00 * (1 - ty) + c10 * ty) * (1 - tz) + (c01 * (1 - ty) + c11 * ty) * tz;
+                    }
+        }
+        gWaterSamples[0] += exactCount; gWaterSamples[1] += (long long)S * S * S;
+        for (size_t i = 0; i < (size_t)S * S * S; ++i) { if (wd[i] >= ISO_LEVEL) anyIn = true; else anyOut = true; }
+        phase(0);
+        if (!anyIn || !anyOut) continue;
+        const size_t v0 = out.waterPositions.size() / 3, i0 = out.waterIndices.size(); // this kind's start
+        wv.clear(); wi.clear();
+        std::fill(cache.begin(), cache.end(), -1);
+        if (coarse) {
+            // Coarse sampling: only the blocks that hold a surface can make triangles (a skipped block's cubes all lie on one
+            // side), so march just their cubes. The same triangles as the full sweep, in another order.
+            for (int bz = 0; bz < NB; ++bz)
+                for (int by = 0; by < NB; ++by)
+                    for (int bx = 0; bx < NB; ++bx) {
+                        if (!mixed[((size_t)bz * NB + by) * NB + bx]) continue;
+                        for (int z = cc[bz]; z < cc[bz + 1]; ++z)
+                            for (int y = cc[by]; y < cc[by + 1]; ++y)
+                                for (int x = cc[bx]; x < cc[bx + 1]; ++x) marchCube(x, y, z, wd, S, wv, wi, cache, ISO_LEVEL);
+                    }
+        } else {
+            for (int z = 0; z < cells; ++z)
+                for (int y = 0; y < cells; ++y)
+                    for (int x = 0; x < cells; ++x)
+                        marchCube(x, y, z, wd, S, wv, wi, cache, ISO_LEVEL);
+        }
+        phase(1);
+        // The shore (#423): a triangle crossing the ground keeps only its part out of the ground, cut where its edges
+        // cross the terrain's iso level (linear in the terrain density), so the waterline is a continuous curve instead
+        // of the edge of whichever whole triangles stayed out (the cull below dropped a triangle by its centre).
+        {
+            std::vector<int> clipped;
+            clipped.reserve(wi.size());
+            auto cut = [&](int a, int b, float da, float db) {
+                const float t = da / (da - db); // da, db: terrain density - ISO, of opposite signs
+                wv.push_back(Vector3Lerp(wv[a], wv[b], t));
+                return (int)wv.size() - 1;
+            };
+            // The terrain density at each marched vertex, once (a vertex is shared by ~6 triangles; #381).
+            const size_t nv = wv.size();
+            std::vector<float> vd(nv);
+            for (size_t i = 0; i < nv; ++i) vd[i] = trilinear(dens, wv[i]) - ISO_LEVEL;
+            for (size_t t = 0; t + 2 < wi.size(); t += 3) {
+                int v[3] = { wi[t], wi[t + 1], wi[t + 2] };
+                float d[3];
+                int in = 0;
+                for (int e = 0; e < 3; ++e) { d[e] = vd[v[e]]; in += d[e] >= 0.0f ? 1 : 0; }
+                if (in == 0) { clipped.insert(clipped.end(), { v[0], v[1], v[2] }); continue; }
+                if (in == 3) continue;
+                // Rotate (keeping the winding) so that: one in the ground -> it is first; two -> the one out is last.
+                for (int r = 0; r < 3; ++r) {
+                    const bool ok = in == 1 ? d[0] >= 0.0f : d[2] < 0.0f;
+                    if (ok) break;
+                    std::swap(v[0], v[1]); std::swap(v[1], v[2]); std::swap(d[0], d[1]); std::swap(d[1], d[2]);
+                }
+                if (in == 1) { // X in, Y Z out: the quad P Y Z Q
+                    const int p = cut(v[0], v[1], d[0], d[1]), q = cut(v[0], v[2], d[0], d[2]);
+                    clipped.insert(clipped.end(), { p, v[1], v[2], p, v[2], q });
+                } else {       // X Y in, Z out: the triangle P Z Q
+                    const int p = cut(v[1], v[2], d[1], d[2]), q = cut(v[2], v[0], d[2], d[0]);
+                    clipped.insert(clipped.end(), { p, v[2], q });
+                }
+            }
+            wi.swap(clipped);
+        }
+        phase(2);
+        std::vector<int> remap(wv.size(), -1);
+        for (size_t t = 0; t + 2 < wi.size(); t += 3) {
+            const Vector3 c = Vector3Scale(Vector3Add(Vector3Add(wv[wi[t]], wv[wi[t + 1]]), wv[wi[t + 2]]), 1.0f / 3.0f);
+            if (trilinear(dens, c) >= ISO_LEVEL) continue; // under land
+            const Vector3 wc = Vector3Add(origin, Vector3Scale(c, stride));
+            const bool covered = simKind && sim.covered(wc);
+            if (covered) {
+                // Simulated water as a skin over the ground (under ~15 cm deep): not drawn. Its plane at the ground's own
+                // height broke up over every ripple of the bed into a grid of spikes (the films a drained pond leaves).
+                // Generated shores keep their shallow band (#382 review).
+                const Vector3 down = Vector3Scale(Vector3Normalize(wc), -kSkin / stride);
+                if (trilinear(dens, Vector3Add(c, down)) >= ISO_LEVEL) continue;
+            } else {
+                if (!genKind) continue;
+                if (pf) {
+                    // Underground: where the original ground stands over the water (a cave or tunnel under a river, or
+                    // below sea level) the generated water surface is not open water. Rivers used to line the cave walls.
+                    const float wl = Vector3Length(wc);
+                    if (wl > 1.0f && groundAt(wc, Vector3Scale(wc, 1.0f / wl)) > wl - sea + (stride <= 2.0f ? 0.15f : 1.0f)) continue; // near: only over the original bed
+                }
+            }
+            for (int e = 0; e < 3; ++e) {
+                int& r = remap[wi[t + e]];
+                if (r < 0) {
+                    r = (int)(out.waterPositions.size() / 3);
+                    const Vector3 g = wv[wi[t + e]];
+                    const Vector3 lp = Vector3Scale(g, stride);
+                    const Vector3 bp = Vector3Add(origin, lp);
+                    const Vector3 radial = Vector3Normalize(bp);
+                    Vector3 n = radial; // the sea is a sphere: radial normals
+                    float depth = 50.0f;
+                    if (simKind && sim.covered(bp)) {
+                        // Moving fluid: the surface's own normal (falls, steps), the fluid under it for the tint.
+                        const float h = 0.5f;
+                        // Central differences kept inside the sample grid, divided by the step actually taken: at a chunk's
+                        // lower faces the lookup clamped to the edge and halved that axis's difference, which tilted the
+                        // normal of a surface not aligned with the axes - a shading line along chunk borders.
+                        const float lo = 0.0f, hiG = (float)(S - 1);
+                        auto d = [&](float c) { return std::pair<float, float>{ std::max(lo, c - h), std::min(hiG, c + h) }; };
+                        const auto [x0, x1] = d(g.x); const auto [y0, y1] = d(g.y); const auto [z0, z1] = d(g.z);
+                        const Vector3 grad = { (trilinear(wd.data(), { x1, g.y, g.z }) - trilinear(wd.data(), { x0, g.y, g.z })) / std::max(1e-3f, x1 - x0),
+                                               (trilinear(wd.data(), { g.x, y1, g.z }) - trilinear(wd.data(), { g.x, y0, g.z })) / std::max(1e-3f, y1 - y0),
+                                               (trilinear(wd.data(), { g.x, g.y, z1 }) - trilinear(wd.data(), { g.x, g.y, z0 })) / std::max(1e-3f, z1 - z0) };
+                        const float gl = Vector3Length(grad);
+                        if (gl > 1e-6f) n = Vector3Scale(grad, -1.0f / gl);
+                        depth = std::max(0.3f, sim.depthBelow(bp, kind));
+                        // Over simulated sea or lake cells: no shallower than the generated water around them (a lighter
+                        // square at the edge of a site otherwise: the column count stops at 8 m, #382 review).
+                        if (genKind && pf) depth = std::max(depth, Vector3Length(bp) - sea - groundAt(bp, radial));
+                    } else if (pf) {
+                        // Depth to the sea floor from the height map (the shader grades clarity and colour by it).
+                        const float surfaceE = Vector3Length(bp) - sea; // the water surface's height above sea level
+                        depth = std::max(0.0f, surfaceE - groundAt(bp, radial));
+                    }
+                    out.waterPositions.insert(out.waterPositions.end(), { lp.x, lp.y, lp.z });
+                    out.waterNormals.insert(out.waterNormals.end(), { n.x, n.y, n.z });
+                    out.waterDepth.insert(out.waterDepth.end(), { depth, (float)kind });
+                    // The current (#361): generated river water flows downstream, ~1 m/s mid-channel, slower to the banks.
+                    // Lakes, the sea and simulated cells stand still here.
+                    Vector3 flow{}; float speed = 0.0f;
+                    if (kind == 0 && gen.inland && rivers && !(simKind && sim.covered(bp))) {
+                        const RiverNetwork::Hit hr = rivers->nearest(radial, 60.0f);
+                        if (hr.found && hr.dist < hr.halfWidth + 3.0f) {
+                            flow = Vector3Subtract(hr.down, Vector3Scale(radial, Vector3DotProduct(hr.down, radial))); // along the surface
+                            const float fl = Vector3Length(flow);
+                            if (fl > 1e-4f) { flow = Vector3Scale(flow, 1.0f / fl); speed = 1.0f * sqrtf(std::max(0.0f, 1.0f - hr.dist / (hr.halfWidth + 3.0f))); }
+                        }
+                    }
+                    auto enc = [](float c) { return (unsigned char)std::clamp((int)lroundf((c * 0.5f + 0.5f) * 255.0f), 0, 255); };
+                    out.waterFlow.insert(out.waterFlow.end(), { enc(flow.x), enc(flow.y), enc(flow.z), (unsigned char)std::clamp((int)lroundf(speed / 4.0f * 255.0f), 0, 255) });
+                }
+                out.waterIndices.push_back((unsigned short)r);
+            }
+        }
+        phase(3);
+        if (out.waterPositions.size() / 3 > 65535) { out.waterPositions.resize(v0 * 3); out.waterNormals.resize(v0 * 3); out.waterDepth.resize(v0 * 2); out.waterFlow.resize(v0 * 4); out.waterIndices.resize(i0); }
+    }
+    // (16-bit indices: a kind that would pass 65535 vertices is dropped alone, never the water before it.)
+}
+
+void BuildChunkWater(const DensityField& field, const ChunkWaterCache& cache, ChunkMeshData& out) {
+    const auto t0 = std::chrono::steady_clock::now();
+    const WaterField::SnapshotPtr snap = WaterField::Current();
+    const Vector3 origin = out.key.origin();
+    WaterField::ChunkSampler sim(snap.get(), out.planetoidId, origin, Vector3AddValue(origin, (CHUNK_SIZE + 1) * (float)out.key.stride()));
+    out.waterSeq = snap->seq;
+    out.waterOnly = true;
+    MeshChunkWater(field, out, cache.dens.data(), cache.grid.get(), cache.gen, sim);
+    out.buildMs = std::chrono::duration<float, std::milli>(std::chrono::steady_clock::now() - t0).count();
+}
+
+static std::atomic<long long> gWaterCacheBytes{ 0 };
+ChunkWaterCache::ChunkWaterCache() = default;
+ChunkWaterCache::~ChunkWaterCache() { gWaterCacheBytes -= counted; }
+long long ChunkWaterCacheBytes() { return gWaterCacheBytes.load(); }
+
+void BuildChunkMeshFromBase(const DensityField& field, const TerrainDeltas& deltas, ChunkMeshData& out, const float* base, float sampledMs, const PlanetField::BlockGrid* grid,
+                            std::shared_ptr<const PlanetField::BlockGrid> gridShared) {
     const auto t0 = std::chrono::steady_clock::now() - std::chrono::duration_cast<std::chrono::steady_clock::duration>(std::chrono::duration<float, std::milli>(sampledMs));
     const int cells = CHUNK_SIZE + 1;        // +1 cell overlap with the positive neighbours (LOD crack cover)
     const int S = cells + 1;                 // samples per axis
@@ -1728,128 +2075,25 @@ void BuildChunkMeshFromBase(const DensityField& field, const TerrainDeltas& delt
         }
     }
 
-    // Sea surface: marching cubes on the sea-level sphere over the same samples, keeping only the
-    // triangles that are in open air (their centre is not inside rock), so it shows over oceans and
-    // lakes but not through land. Runs even when the node holds no terrain surface (open ocean).
-    const float sea = field.seaLevelRadius();
-    if (sea > 0.0f) {
-        const Vector3 lo = origin, hi = Vector3AddValue(origin, cells * stride);
-        const Vector3 nearest = { std::clamp(0.0f, lo.x, hi.x), std::clamp(0.0f, lo.y, hi.y), std::clamp(0.0f, lo.z, hi.z) };
-        const float dmin = Vector3Length(nearest);
-        const float dmax = Vector3Length({ std::max(fabsf(lo.x), fabsf(hi.x)), std::max(fabsf(lo.y), fabsf(hi.y)), std::max(fabsf(lo.z), fabsf(hi.z)) });
-        // Inland water (rivers, ponds) above the sea: the surface follows the local water level. It
-        // is sampled on a lattice every 4 samples and interpolated (it changes slowly), and only
-        // for nodes near some.
-        const PlanetField* pf = dynamic_cast<const PlanetField*>(&field);
-        const Vector3 mid = Vector3Scale(Vector3Add(lo, hi), 0.5f);
-        const float extent = Vector3Distance(lo, hi) * 0.5f;
-        const bool inland = pf && !pf->moon && dmax > sea && dmin < sea + pf->maxElevation && Vector3Length(mid) > 1.0f &&
-                            pf->inlandWaterNear(Vector3Normalize(mid), extent, (float)stride);
-        if ((dmin < sea && dmax > sea) || inland) {
-            std::vector<float> wd((size_t)S * S * S);
-            std::vector<float> level; // water surface radius on the lattice
-            const int L = 4, LN = (S - 1 + L - 1) / L + 1;
-            auto lat = [&](int i) { return std::min(i * L, S - 1); };
-            if (inland) {
-                level.resize((size_t)LN * LN * LN);
-                // Raw levels on the lattice and one node beyond it on every side (the neighbouring
-                // chunks' nodes: lattices of chunks at the same level line up), so a dry node on the
-                // chunk's edge sees wet ones next door and both chunks' surfaces meet at the seam.
-                const int LE = LN + 2;
-                auto coord = [&](int i) { return i < 0 ? -L : i >= LN ? lat(LN - 1) + L : lat(i); };
-                std::vector<float> raw((size_t)LE * LE * LE);
-                auto R = [&](int x, int y, int z) -> float& { return raw[((size_t)(z + 1) * LE + (y + 1)) * LE + (x + 1)]; };
-                auto P = [&](int x, int y, int z) { return Vector3{ origin.x + coord(x) * stride, origin.y + coord(y) * stride, origin.z + coord(z) * stride }; };
-                for (int z = -1; z <= LN; ++z)
-                    for (int y = -1; y <= LN; ++y)
-                        for (int x = -1; x <= LN; ++x)
-                            R(x, y, z) = pf->waterElevation(Vector3Normalize(P(x, y, z)), (float)stride);
-                // A dry point next to wet ones takes the lower of their level and just under its own
-                // ground, not sea level: between them the interpolated surface then stays level out to
-                // where the shore rises, or runs just under low ground, instead of sloping down across
-                // it (sheets of water at chunk corners). Dry points with no wet neighbour: sea level.
-                for (int z = 0; z < LN; ++z)
-                    for (int y = 0; y < LN; ++y)
-                        for (int x = 0; x < LN; ++x) {
-                            float w = R(x, y, z);
-                            if (w == PlanetField::kNoWater) {
-                                float wet = PlanetField::kNoWater;
-                                for (int c = -1; c <= 1; ++c)
-                                    for (int b = -1; b <= 1; ++b)
-                                        for (int a = -1; a <= 1; ++a) wet = std::max(wet, R(x + a, y + b, z + c));
-                                w = wet == PlanetField::kNoWater ? 0.0f : std::min(wet, pf->elevation(Vector3Normalize(P(x, y, z)), (float)stride) - 2.0f);
-                            }
-                            level[((size_t)z * LN + y) * LN + x] = sea + std::max(0.0f, w);
-                        }
-            }
-            auto levelAt = [&](int x, int y, int z) {
-                if (!inland) return sea;
-                const int ix = std::min(x / L, LN - 2), iy = std::min(y / L, LN - 2), iz = std::min(z / L, LN - 2);
-                const float fx = (float)(x - lat(ix)) / std::max(1, lat(ix + 1) - lat(ix)), fy = (float)(y - lat(iy)) / std::max(1, lat(iy + 1) - lat(iy)), fz = (float)(z - lat(iz)) / std::max(1, lat(iz + 1) - lat(iz));
-                auto g = [&](int a, int b, int c) { return level[((size_t)(iz + c) * LN + (iy + b)) * LN + (ix + a)]; };
-                const float c00 = g(0, 0, 0) * (1 - fx) + g(1, 0, 0) * fx, c10 = g(0, 1, 0) * (1 - fx) + g(1, 1, 0) * fx;
-                const float c01 = g(0, 0, 1) * (1 - fx) + g(1, 0, 1) * fx, c11 = g(0, 1, 1) * (1 - fx) + g(1, 1, 1) * fx;
-                return (c00 * (1 - fy) + c10 * fy) * (1 - fz) + (c01 * (1 - fy) + c11 * fy) * fz;
-            };
-            size_t k = 0;
-            for (int z = 0; z < S; ++z)
-                for (int y = 0; y < S; ++y)
-                    for (int x = 0; x < S; ++x, ++k) {
-                        const Vector3 p = { origin.x + x * stride, origin.y + y * stride, origin.z + z * stride };
-                        wd[k] = ISO_LEVEL + DENSITY_GRADIENT * (levelAt(x, y, z) - sqrtf(p.x * p.x + p.y * p.y + p.z * p.z));
-                    }
-            std::vector<Vector3> wv;
-            std::vector<int> wi;
-            std::vector<int> cache((size_t)S * S * S * 3, -1);
-            for (int z = 0; z < cells; ++z)
-                for (int y = 0; y < cells; ++y)
-                    for (int x = 0; x < cells; ++x)
-                        marchCube(x, y, z, wd, S, wv, wi, cache, ISO_LEVEL);
-            // Terrain density at a point in sample coordinates (trilinear over the terrain grid).
-            auto terrainAt = [&](Vector3 g) {
-                const int x0 = std::clamp((int)floorf(g.x), 0, S - 2), y0 = std::clamp((int)floorf(g.y), 0, S - 2), z0 = std::clamp((int)floorf(g.z), 0, S - 2);
-                const float fx = g.x - x0, fy = g.y - y0, fz = g.z - z0;
-                auto d = [&](int x, int y, int z) { return dens[((size_t)z * S + y) * S + x]; };
-                const float c00 = d(x0, y0, z0) * (1 - fx) + d(x0 + 1, y0, z0) * fx, c10 = d(x0, y0 + 1, z0) * (1 - fx) + d(x0 + 1, y0 + 1, z0) * fx;
-                const float c01 = d(x0, y0, z0 + 1) * (1 - fx) + d(x0 + 1, y0, z0 + 1) * fx, c11 = d(x0, y0 + 1, z0 + 1) * (1 - fx) + d(x0 + 1, y0 + 1, z0 + 1) * fx;
-                return (c00 * (1 - fy) + c10 * fy) * (1 - fz) + (c01 * (1 - fy) + c11 * fy) * fz;
-            };
-            const PlanetField* planetField = dynamic_cast<const PlanetField*>(&field);
-            // Height-map elevation under a body point: from the block's grid when there is one (#148), as the terrain.
-            auto groundAt = [&](Vector3 point, Vector3 dir) {
-                float e; PlanetField::Column3D col;
-                if (grid && planetField && planetField->gridSurface(*grid, point, e, col)) return e;
-                return planetField->elevation(dir, (float)stride);
-            };
-            std::vector<int> remap(wv.size(), -1);
-            for (size_t t = 0; t + 2 < wi.size(); t += 3) {
-                const Vector3 c = Vector3Scale(Vector3Add(Vector3Add(wv[wi[t]], wv[wi[t + 1]]), wv[wi[t + 2]]), 1.0f / 3.0f);
-                if (terrainAt(c) >= ISO_LEVEL) continue; // under land
-                if (planetField) {
-                    // Underground: where the original ground stands over the water (a cave or tunnel under a
-                    // river, or below sea level) the water surface is not open water. Rivers used to line the
-                    // cave walls.
-                    const Vector3 wc = Vector3Add(origin, Vector3Scale(c, stride));
-                    const float wl = Vector3Length(wc);
-                    if (wl > 1.0f && groundAt(wc, Vector3Scale(wc, 1.0f / wl)) > wl - sea + (stride <= 2.0f ? 0.15f : 1.0f)) continue; // near: only over the original bed (dug ground beside it is the simulation's)
-                }
-                for (int e = 0; e < 3; ++e) {
-                    int& r = remap[wi[t + e]];
-                    if (r < 0) {
-                        r = (int)(out.waterPositions.size() / 3);
-                        const Vector3 lp = Vector3Scale(wv[wi[t + e]], stride);
-                        const Vector3 n = Vector3Normalize(Vector3Add(origin, lp)); // the sea is a sphere: radial normals
-                        out.waterPositions.insert(out.waterPositions.end(), { lp.x, lp.y, lp.z });
-                        out.waterNormals.insert(out.waterNormals.end(), { n.x, n.y, n.z });
-                        // Depth to the sea floor from the height map (the shader grades clarity and colour by it).
-                        const float surfaceE = Vector3Length(Vector3Add(origin, lp)) - sea; // the water surface's height above sea level
-                        const float depth = planetField ? std::max(0.0f, surfaceE - groundAt(Vector3Add(origin, lp), n)) : 50.0f;
-                        out.waterDepth.insert(out.waterDepth.end(), { depth, 0.0f });
-                    }
-                    out.waterIndices.push_back((unsigned short)r);
-                }
-            }
-            if (out.waterPositions.size() / 3 > 65535) { out.waterPositions.clear(); out.waterNormals.clear(); out.waterDepth.clear(); out.waterIndices.clear(); }
+    // Water (#360): the generated water and the simulation's published cells, one surface. Runs even when the node
+    // holds no terrain surface (open ocean). Chunks next to simulated water keep what a water-only rebuild needs.
+    {
+        const WaterField::SnapshotPtr snap = WaterField::Current();
+        WaterField::ChunkSampler sim(snap.get(), out.planetoidId, origin, Vector3AddValue(origin, cells * stride));
+        out.waterSeq = snap->seq;
+        ChunkWaterGen gen = GeneratedWaterOf(field, origin, cells, stride, S);
+        MeshChunkWater(field, out, dens.data(), grid, gen, sim);
+        if (sim.any() && gWaterCacheBytes.load() < kChunkWaterCacheCap) {
+            auto wc = std::make_shared<ChunkWaterCache>();
+            wc->dens = dens;
+            wc->gen = std::move(gen);
+            const bool copied = !gridShared && grid;
+            // The grid the build already shares (GPU path), else a copy (the CPU path's grid lives on its stack).
+            if (gridShared) wc->grid = std::move(gridShared);
+            else if (grid) wc->grid = std::make_shared<const PlanetField::BlockGrid>(*grid);
+            wc->counted = (long long)(wc->dens.size() + wc->gen.level.size()) * (long long)sizeof(float) + (copied ? (long long)sizeof(PlanetField::BlockGrid) + (long long)grid->h.size() * 4 + (long long)grid->cols.size() * (long long)sizeof(PlanetField::Column3D) : 0);
+            gWaterCacheBytes += wc->counted;
+            out.waterCache = std::move(wc);
         }
     }
     ScatterGrass(field, out); // foliage: grass tufts on the finest level (in the build time)
@@ -1961,12 +2205,6 @@ const char* GemForStone(const char* stone) {
     return nullptr;
 }
 
-bool PlanetField::pondCovers(uint64_t claimId, Vector3 dir) const {
-    if (!(claimId >> 63)) return true; // a random pond: its circle is its extent
-    const RiverNetwork* net = rivers();
-    float level, outside; int id;
-    return net && net->lakeAt(dir, level, outside, id) && outside < RiverNetwork::kLakeMargin && drainableLake(id) == claimId;
-}
 
 std::string PlanetField::debugColumn(Vector3 dir) const {
     char buf[512];

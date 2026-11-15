@@ -1,3 +1,4 @@
+#include "fluid.h"
 #include "navigation.h"
 #include "survival.h"
 #include "animals.h"
@@ -106,6 +107,7 @@ float BearingOf(Vector3 up, Vector3 d) {
 struct MapImage {
     std::shared_ptr<const PlanetField> field;
     std::shared_ptr<const TileSet> tiles;
+    uint64_t body = 0;                  // its planetoid (the water field: drained ponds, #360)
     Vector3 centre{}, east{}, north{};  // body-local frame of the image centre
     float mpp = 1.0f;                   // metres per pixel
     int W = 0, H = 0;
@@ -148,7 +150,7 @@ void RenderRows(MapImage& m, int y0, int y1) {
             Vector3 c = SurfaceAlbedo(f, dir, h, slope, f.foliage, f.foliageSeed, water);
             if (!water && f.inlandWaterNear(dir, 0.0f, m.mpp)) {
                 const float w = f.waterElevation(dir, m.mpp);
-                if (w != PlanetField::kNoWater && w > h) { c = { 0.04f, 0.16f, 0.30f }; water = true; }
+                if (w != PlanetField::kNoWater && w > h && Fluid::GeneratedWaterValid(m.body, Vector3Scale(dir, f.radius + w - 0.2f))) { c = { 0.04f, 0.16f, 0.30f }; water = true; } // not a drained pond (#360)
             }
             const float shade = water ? 1.0f : std::clamp(0.55f + 0.75f * Vector3DotProduct(n, light), 0.35f, 1.25f);
             c = Vector3Scale(c, shade * 1.6f); // a little brighter than the lit terrain: a map, not a photo
@@ -160,6 +162,7 @@ void RenderRows(MapImage& m, int y0, int y1) {
 std::shared_ptr<MapImage> StartImage(const Here& h, Vector3 centre, float mpp, int W, int H, bool circle) {
     auto m = std::make_shared<MapImage>();
     m->field = h.field;
+    m->body = h.body->id;
     auto it = explored.find(h.body->name);
     m->tiles = std::make_shared<const TileSet>(it != explored.end() ? it->second : TileSet{});
     m->centre = centre;

@@ -42,6 +42,7 @@ struct Player {
     float landingSpeed = 0.0f;        // speed into the floor at touchdown this frame (fall damage, #263)
     Vector3 groundNormal = { 0, 1, 0 }; // contact normal while grounded
     bool inWater = false;             // the body's middle is in water (swimming: buoyancy, drag, Space/Ctrl swim)
+    Vector3 riverCurrent{ 0, 0, 0 };  // in a river: its current (world m/s, #361): carries a swimmer, pushes a wader
     bool swimUp = false, swimDown = false;
     float eyeOffset = 0.0f;           // camera height smoothing (metres along up, see update)
     float eyeVz = 0.0f;               // low-passed vertical speed of the feet in the ground frame

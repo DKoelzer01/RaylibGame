@@ -1,3 +1,4 @@
+#include "fluid.h"
 #include "animals.h"
 #include "gamerng.h"
 #include "netid.h"
@@ -210,7 +211,8 @@ bool Ground(const Planetoid& body, const PlanetField& pf, Vector3 dir, Vector3& 
     if (elevation < 0.3f) return false; // the sea
     if (pf.inlandWaterNear(dir, 0.0f)) {
         const float w = pf.waterElevation(dir);
-        if (w != PlanetField::kNoWater && w > elevation + 0.3f) return false; // a river or pond deeper than 0.3 m
+        if (w != PlanetField::kNoWater && w > elevation + 0.3f && Fluid::GeneratedWaterValid(body.id, Vector3Scale(dir, pf.radius + w - 0.2f)))
+            return false; // a river or pond deeper than 0.3 m (not one the simulation drained, #360)
     }
     return true;
 }

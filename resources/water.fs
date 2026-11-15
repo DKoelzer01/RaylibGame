@@ -7,6 +7,8 @@ in vec3 fragNormal;
 in vec3 fragTexPos;
 in vec3 fragChunkPos;
 in float fragDepth;            // depth to the sea floor (m)
+flat in int fragKind;          // fluid kind (fluids.txt; 0 water)
+in vec4 fragFlow;              // the current (#361): xyz direction (body-aligned), w speed m/s (0: still water)
 
 uniform vec3 viewPos;
 uniform vec3 sunDir;           // towards the sun
@@ -16,8 +18,8 @@ uniform vec4 sunOccluder;      // planet: centre + radius blocking the sun (w = 
 uniform vec3 fogColor;         // linear
 uniform float fogDensity;
 uniform float time;
-uniform vec4 fluidColor;       // a > 0: drawing another fluid kind (fluid.cpp): sRGB colour, opacity
-uniform float fluidGlow;       // its emissive strength (lava)
+uniform vec4 fluidColors[8];   // per kind (Fluid::BindKindUniforms): sRGB colour, opacity (a > 0: not water)
+uniform float fluidGlows[8];   // per kind: emissive strength (lava)
 
 #include "shadow.glsl"
 
@@ -33,9 +35,25 @@ void main()
     vec3 p = fragTexPos;
     float dist = length(viewPos - fragPosition);
     float rippleFade = 1.0 / (1.0 + dist / 60.0); // ripples finer than a pixel far away only alias
-    vec3 bump = vec3(sin(p.x * k * 7.0 + time * 1.3) + sin(p.z * k * 5.0 - time * 1.1),
-                     0.0,
-                     sin(p.z * k * 9.0 + time * 0.9) + sin(p.y * k * 6.0 + time * 1.7)) * 0.025 * rippleFade;
+    // Rivers carry the ripples downstream (#361): two copies of the pattern advected along the current, each
+    // restarting every 4 s half a period apart and cross-faded, so a speed that varies across the channel never
+    // shears the pattern. Plus crests across the current running downstream, stronger where it is fast.
+    vec3 fdir = fragFlow.xyz;
+    float speed = fragFlow.w;
+    const float T = 4.0;
+    float ph0 = fract(time / T), ph1 = fract(time / T + 0.5);
+    vec3 p0 = p - fdir * speed * ph0 * T, p1 = p - fdir * speed * ph1 * T;
+    vec3 b0 = vec3(sin(p0.x * k * 7.0 + time * 1.3) + sin(p0.z * k * 5.0 - time * 1.1), 0.0,
+                   sin(p0.z * k * 9.0 + time * 0.9) + sin(p0.y * k * 6.0 + time * 1.7));
+    vec3 b1 = vec3(sin(p1.x * k * 7.0 + time * 1.3) + sin(p1.z * k * 5.0 - time * 1.1), 0.0,
+                   sin(p1.z * k * 9.0 + time * 0.9) + sin(p1.y * k * 6.0 + time * 1.7));
+    float w1 = abs(ph0 * 2.0 - 1.0);           // 1 when b0 restarts (ph0 wraps): b1 alone then, mid-cycle
+    vec3 bump = mix(b0, b1, w1) * 0.025;
+    if (speed > 0.01) {
+        float s = dot(p, fdir) * k * 13.0 - time * speed * k * 13.0; // crests moving downstream at the current's speed
+        bump += fdir * cos(s) * 0.03 * min(speed, 1.5);
+    }
+    bump *= rippleFade;
     n = normalize(n + bump - n * dot(bump, n));
 
     vec3 v = normalize(viewPos - fragPosition);
@@ -64,6 +82,8 @@ void main()
     // blends one water layer per pixel, so overlapping LOD copies don't double up.
     bool below = dot(normalize(fragNormal), v) < 0.0;
     float alpha = below ? 0.8 : clamp(max(mix(1.0, 0.3, clarity), fresnel) + glint, 0.0, 1.0);
+    vec4 fluidColor = fluidColors[clamp(fragKind, 0, 7)];
+    float fluidGlow = fluidGlows[clamp(fragKind, 0, 7)];
     if (fluidColor.a > 0.0) {
         // Another fluid kind (fluid.cpp, fluids.txt): its own colour and opacity, a sky reflection at grazing
         // angles, a faint rainbow sheen on dark ones (oil), a hard sun glint, and its glow (lava).
