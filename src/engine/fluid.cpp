@@ -429,8 +429,20 @@ void StepSite(Site& s, int parity) {
                             // neighbour and runs off; the neighbour takes no more than its room.
                             const int diff = (b->shut[i] + f0) - Height(o.b, o.i);
                             if (diff < visc) continue;
-                            const int m = std::min({ diff / visc, f, Cap(o.b, o.i) - (int)o.b->fill[o.i] }); // thicker fluids spread slower
-                            if (o.b->fill[o.i] == 0 && m < minSpread && b->shut[i] <= o.b->shut[o.i]) continue; // no trickles into dry cells (a film's edge holds), unless the ground falls to them (#454)
+                            // A dry cell over a drop (nothing under it holds water): a film at its edge runs off whole (#454:
+                            // left to the viscosity rule its last centimetres stayed stranded up a dug wall). As fluid_step.comp.
+                            bool overDrop = false;
+                            if (o.b->fill[o.i] == 0) {
+                                const int ox = o.i % B, oy = (o.i / B) % B, oz = o.i / (B * B);
+                                Neighbour u;
+                                overDrop = !Next(o.b, ox, oy, oz, 0, 0, -1, u) ||
+                                           (!(u.b->flags[u.i] & kSolid) && u.b->fill[u.i] < Cap(u.b, u.i) && (u.b->fill[u.i] == 0 || SameKind(b, i, u.b, u.i)));
+                            }
+                            const int room = Cap(o.b, o.i) - (int)o.b->fill[o.i];
+                            const int m = overDrop ? std::min(f, room) : std::min({ diff / visc, f, room }); // thicker fluids spread slower
+                            // No trickles into dry cells (a film's edge holds), unless the ground falls to them: a lower ground
+                            // share, or a drop under the cell (more than a speck, so nothing lands to soak away).
+                            if (o.b->fill[o.i] == 0 && m < minSpread && b->shut[i] <= o.b->shut[o.i] && (m <= kEvaporate || !overDrop)) continue;
                             if (m <= 0) continue;
                             TakeKind(o.b, o.i, b->flags[i] & kKindMask);
                             o.b->fill[o.i] = (uint8_t)(o.b->fill[o.i] + m);
@@ -1519,7 +1531,8 @@ float Fluid::VolumeAbove(const Planetoid& body, Vector3 local, float radius, flo
                     const float ex = ci + 0.5f - fx, ey = cj + 0.5f - fy, ez = ck + 0.5f - fz;
                     if (ex * ex + ey * ey + ez * ez > radius * radius) continue;
                     uint8_t f, fl;
-                    if (s.cell(ci, cj, ck, f, fl) && !(fl & (kSolid | kSource)) && CellKind(fl) == 0) vol += f / 255.0;
+                    uint8_t sh = 0;
+                    if (s.cell(ci, cj, ck, f, fl, sh) && !(fl & (kSolid | kSource)) && CellKind(fl) == 0) { vol += f / 255.0; if (f && getenv("VOLDBG")) { uint8_t fb = 0, flb = 0, shb = 0; const bool hb = s.cell(ci, cj, ck - 1, fb, flb, shb); printf("voldbg: cell %d %d %d (+%.1f over) fill %d shut %d; below %s fill %d shut %d\n", di, dj, dk, ck - fz, f, sh, !hb ? "none" : (flb & kSolid) ? "SOLID" : "open", fb, shb); } }
                 }
     }
     return (float)vol;
