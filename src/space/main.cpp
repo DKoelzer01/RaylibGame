@@ -842,6 +842,12 @@ int main(int argc, char** argv)
     worldHandler(world);
     Rocket_Init(&world);
     Station_Init(&world);
+    // The main menu has no world (#503: the erosion bake ran before the title screen). Benches skip the menu: they
+    // generate here (or load, below).
+    if (bench && !loadSaveAtStart && !benchMenus) { // --test-menus starts at the title screen with no world, as a launch does
+        generateWorld(world);
+        if (!world.objects.empty()) world.camera.target = world.objects[0]->position;
+    }
     if (loadSaveAtStart) { // the player's save, read-only; later bench saves still go to bench.sav
         SetWorldSavePath("saves/world.sav");
         if (!LoadWorldSave(world)) printf("bench: --load: could not load saves/world.sav\n");
@@ -853,9 +859,9 @@ int main(int argc, char** argv)
                 printf("body %s %s pos %.3f %.3f %.3f radius %.3f seed %u spin %.4f g %.4f\n", BodyKindName(p->kind), p->name.c_str(), p->worldPos.x, p->worldPos.y, p->worldPos.z,
                        p->radius, p->seed, p->spin.y, p->surfaceGravity);
     }
-    if (!benchAtSave) StartNewWorld(world, false, !bench);
+    if (!benchAtSave && !world.objects.empty()) StartNewWorld(world, false, !bench);
     if (!bench) Settings_Load();
-    bool worldFresh = !loadSaveAtStart; // the world generated at launch: New Game uses it as it is
+    bool worldFresh = !world.objects.empty() && !loadSaveAtStart; // a bench's world generated at launch: New Game uses it as it is
     MenuResult pendingMenu;
     bool justPaused = false;
     bool loading = false;          // the loading screen is up
@@ -1129,9 +1135,9 @@ int main(int argc, char** argv)
     std::vector<float> benchFrameTimes; // every timed frame (s): percentiles at the end (#258)
     long benchFrames = 0;
     if (bench) {
-        gameState = 1;
-        mainMenu.isActive = false;
-        world.isActive = true;
+        gameState = benchMenus ? 0 : 1; // --test-menus: from the title screen
+        mainMenu.isActive = benchMenus;
+        world.isActive = !benchMenus;
         Planetoid* benchPlanet = world.objects.empty() ? nullptr : dynamic_cast<Planetoid*>(world.objects[0].get());
         if (!benchAtSave && !benchCamGiven && benchPlanet && dynamic_cast<const PlanetField*>(benchPlanet->field.get())) {
             // A planet (#291): 40 m above the start, looking ahead along the surface and a little down (the asteroid
@@ -7086,7 +7092,13 @@ int main(int argc, char** argv)
         if (benchMenus) {
             ++menuFrames;
             if (menuStep == 0) { gameState = 0; mainMenu.isActive = true; world.isActive = false; menuStep = 1; menuFrames = 0; }
-            else if (menuStep == 1 && menuFrames == 30) { TakeScreenshot("bench_menu_main.png"); pendingMenu.action = MenuAction::NewGame; menuStep = 2; menuFrames = 0; }
+            else if (menuStep == 1 && menuFrames == 30) {
+                // #503: the title screen comes first, with no world: no bodies (no erosion bake ran), no world jobs.
+                const bool noWorld = world.objects.empty() && WorldJobs().idle() && TerrainArena_Stats().vertexCapacity == 0;
+                menuOk &= noWorld;
+                printf("bench: menus: title screen with no world (no bodies, no jobs, no terrain arena, #503): %s\n", noWorld ? "yes" : "NO");
+                TakeScreenshot("bench_menu_main.png"); pendingMenu.action = MenuAction::NewGame; menuStep = 2; menuFrames = 0;
+            }
             else if (menuStep == 2 && menuFrames > 60 && WorldIdle()) {
                 menuOk &= gameState == 1;
                 printf("bench: menus: New Game -> in game: %s\n", gameState == 1 ? "yes" : "NO");
@@ -7100,6 +7112,11 @@ int main(int argc, char** argv)
                 menuOk &= gameState == 0;
                 printf("bench: menus: Save & Quit -> main menu: %s; old world unloaded (%zu bodies left, #270): %s\n", gameState == 0 ? "yes" : "NO", world.objects.size(), world.objects.empty() ? "yes" : "NO");
                 menuOk &= world.objects.empty();
+                // #270: nothing of it runs or stays allocated behind the menu.
+                const bool down = WorldJobs().idle() && TerrainGpu_Pending() == 0 && TerrainArena_Stats().vertexCapacity == 0;
+                menuOk &= down;
+                printf("bench: menus: behind the menu: %zu jobs queued, %d running, %d GPU batches, arena %d vertices (#270): %s\n",
+                       WorldJobs().queued(), WorldJobs().running(), TerrainGpu_Pending(), TerrainArena_Stats().vertexCapacity, down ? "torn down" : "NOT torn down");
                 pendingMenu.action = MenuAction::LoadGame; pendingMenu.path = "saves/bench.sav"; menuStep = 5; menuFrames = 0;
             } else if (menuStep == 5 && menuFrames == 5) {
                 menuOk &= gameState == 1;
@@ -7150,7 +7167,11 @@ int main(int argc, char** argv)
             switch (m.action) {
                 case MenuAction::NewGame:
                     SetWorldSavePath(bench ? "saves/bench.sav" : Menu_NewSavePath().c_str()); // bench runs never touch the player's saves
-                    if (!worldFresh) { worldGen.seed = 0; regenerateWorld(world); StartNewWorld(world, true, !bench); }
+                    if (!worldFresh) {
+                        if (!bench) worldGen.seed = 0; // a new seed (benches keep --seed: its erosion bake is cached)
+                        regenerateWorld(world);
+                        StartNewWorld(world, true, !bench);
+                    }
                     worldFresh = false;
                     enterGame();
                     break;

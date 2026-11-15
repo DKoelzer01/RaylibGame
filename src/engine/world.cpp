@@ -1636,10 +1636,9 @@ void worldHandler(Scene& world) {
     world.camera.projection = CAMERA_PERSPECTIVE;
 
     world.loadTerrainTextures();
-    generateWorld(world);
     loadWorld(world);
-    // Start out looking at the first planetoid.
-    if (!world.objects.empty()) world.camera.target = world.objects[0]->position;
+    // No bodies yet (#503): New Game generates them (the erosion bake behind its screen), Load Game rebuilds them from the
+    // save, a multiplayer client on its first join. Benches generate at start (main.cpp).
 }
 
 bool ReloadSystemDef() {
@@ -1800,11 +1799,23 @@ void BeginWorldStreaming() { generationStart = GetTime(); buildMsTotal = sampleM
 
 void unloadWorld(Scene& world) {
     Jobs().clearQueued();  // in-flight jobs finish; their results are dropped (planetoid ids are gone)
+    // Let the running builds finish now (#270: they kept the workers busy behind the main menu). A worker can be waiting on
+    // a GPU density batch, so keep pumping those meanwhile. Bounded: a stuck job must not hang the quit.
+    for (int i = 0; i < 3000 && (Jobs().running() > 0 || TerrainGpu_Pending() > 0); ++i) {
+        TerrainGpu_Pump();
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
     Factory::Reset();      // machines belong to the old bodies
     Fluid::Reset();        // so does flowing water
     player.nearest = nullptr; // every body goes (the player refinds its ground next update)
     gRings.clear();        // before their parent bodies go
-    world.objects.clear(); // releases chunk meshes
+    world.objects.clear(); // releases chunk meshes (and their arena ranges)
+    gPreload.clear();      // the preload rings and cache counts of the old bodies
+    gCachedCount.clear();
+    // The GPU side of the old world (#270): the terrain arena (grown to the last world's size: hundreds of MB) and the GPU
+    // density batches (they point at the old field). Both come back on the next world's first use.
+    TerrainArena_Unload();
+    TerrainGpu_Unload();
 }
 
 void regenerateWorld(Scene& world) {
