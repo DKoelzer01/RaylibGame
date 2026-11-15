@@ -7,6 +7,7 @@
 #include <raylib.h>
 class Scene;
 void Ambience_Update(Scene& world, float dt);
+int Ambience_SplashBursts(); // tests: splash bursts so far (the player dropping into water, #408)
 // Oil seeps (Plan 5 B) within range of a body-local point: their surface points (body-local).
 #include <vector>
 class Planetoid;

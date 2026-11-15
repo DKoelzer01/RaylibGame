@@ -155,6 +155,54 @@ static void UpdateSeeps(Planetoid& body, Vector3 local, float dt) {
     }
 }
 
+// Splashes and wakes (#408): a burst where the player drops into water, droplets off the waterline while wading or
+// swimming at the surface. Speeds are taken in the body's frame from the feet's track (the world velocity carries
+// the planet's spin).
+static int gSplashBursts = 0;
+int Ambience_SplashBursts() { return gSplashBursts; }
+static void UpdateSplashes(Scene& world, const Planetoid& body, Vector3 feet, Vector3 up, float dt) {
+    static Vector3 lastFeet{};
+    static const Planetoid* lastBody = nullptr;
+    static bool wasWet = false;
+    static float wakeDue = 0.0f;
+    Vector3 rel = lastBody == &body ? Vector3Scale(Vector3Subtract(feet, lastFeet), 1.0f / dt) : Vector3{ 0, 0, 0 };
+    if (Vector3Length(rel) > 40.0f) rel = { 0, 0, 0 }; // a teleport or a load, not a speed
+    lastFeet = feet; lastBody = &body;
+    const Vector3 feetR = (player.position - world.renderOrigin).toFloat();
+    const Vector3 upW = body.dirToWorld(up);
+    auto wetAt = [&](float h) { return IsUnderwater(world, Vector3Add(feetR, Vector3Scale(upW, h))); };
+    const bool feetWet = !player.flyMode && wetAt(0.05f);
+    const float vUp = Vector3DotProduct(rel, up);
+    const Vector3 horiz = Vector3Subtract(rel, Vector3Scale(up, vUp));
+    const float hs = Vector3Length(horiz);
+    const Color drop = { 200, 220, 245, 215 };
+    if (feetWet && !wasWet && vUp < -2.0f) {
+        // Into the water: the harder, the more and the higher.
+        ParticleBurst b;
+        b.kind = ParticleKind::Splash; b.color = drop;
+        b.count = (int)std::clamp(-vUp * 5.0f, 10.0f, 40.0f); b.size = 0.06f; b.life = 0.7f;
+        b.speed = std::clamp(-vUp * 0.45f, 1.5f, 5.0f); b.spread = 0.55f;
+        Particles_Emit(body, Vector3Add(feet, Vector3Scale(up, 0.1f)), b);
+        ++gSplashBursts;
+    }
+    wasWet = feetWet;
+    // Wading or swimming at the surface (the waterline between the feet and the head) and moving: droplets off it.
+    if (feetWet && hs > 0.8f && !wetAt(player.height)) {
+        float lo = 0.05f, hi = player.height; // the waterline, to ~3 cm
+        for (int k = 0; k < 6; ++k) { const float mid = 0.5f * (lo + hi); if (wetAt(mid)) lo = mid; else hi = mid; }
+        wakeDue = std::min(wakeDue + dt * hs * 6.0f, 10.0f);
+        while (wakeDue >= 1.0f) {
+            wakeDue -= 1.0f;
+            ParticleBurst s;
+            s.kind = ParticleKind::Splash; s.color = drop;
+            s.count = 2; s.size = 0.04f; s.life = 0.4f; s.speed = 0.6f + 0.3f * hs; s.spread = 0.5f;
+            s.baseVel = Vector3Scale(horiz, 0.3f);
+            const Vector3 side = Vector3Normalize(Vector3CrossProduct(up, Vector3Scale(horiz, 1.0f / hs)));
+            Particles_Emit(body, Vector3Add(Vector3Add(feet, Vector3Scale(up, lo)), Vector3Scale(side, Rand(-0.3f, 0.3f))), s);
+        }
+    } else wakeDue = 0.0f;
+}
+
 void Ambience_Update(Scene& world, float dt) {
     // The body underfoot (when the player isn't colliding with one yet, e.g. flying or just spawned: the nearest).
     Planetoid* body = player.nearest ? player.nearest : NearestPlanetoid(world, (player.position - world.renderOrigin).toFloat());
@@ -168,6 +216,7 @@ void Ambience_Update(Scene& world, float dt) {
     const float surface = pf->radius + pf->elevation(up);
     const bool outdoors = r > surface - 3.0f && r < surface + 60.0f;
     UpdateSeeps(*body, local, dt); // oil seeps in warm biomes
+    UpdateSplashes(world, *body, local, up, dt); // the player entering and wading through water
     const WeatherState& w = Weather_Here();
 
     // Rain splashes: ~150 a second in a downpour, on the ground (or the sea) within 14 m.

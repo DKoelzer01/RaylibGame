@@ -253,7 +253,7 @@ int main(int argc, char** argv)
     bool benchPumpBoiler = false; int pumpBoilerPart = -1; // --test-pump-boiler (#229 review): the pipes end at a full boiler; the world loses no water
     bool benchPump = false; int pumpPhase = 0, pumpCable = -1; double pumpT0 = 0.0, pumpedAtCut = 0.0; uint32_t pumpPlot = 0; Vector3 pumpBasin{}; float pumpRise = 0.0f; // --test-pump
     bool benchBucket = false; int bucketPhase = 0, bucketTrips = 0; double bucketT0 = 0.0; Vector3 bucketWater{}, bucketBasin{}, bucketField{}; // --test-bucket
-    bool benchPond = false; int pondPhase = 0; double pondT0 = 0.0; Vector3 pondDirB{}, pondOutB{}, pondPit{}, pondMid{}; float pondLevelB = 0.0f, pondRB = 0.0f; // --test-pond
+    bool benchPond = false; int pondPhase = 0; double pondT0 = 0.0; Vector3 pondDirB{}, pondOutB{}, pondPit{}, pondMid{}; float pondLevelB = 0.0f, pondRB = 0.0f; int pondSplash0 = 0; // --test-pond
     bool benchFlowSea = false; // --test-flow-sea (#190): the flow test from the sea instead of inland water
     bool benchFlow = false; int flowPhase = 0; double flowStart = 0.0, flowEdit = 0.0, flowReachT = -1.0, flowCaveT = -1.0, flowSleepT = -1.0; Vector3 flowDir{}, flowOut{}, flowEnd{}, flowCave{}; float flowLevel = 0.0f; // --test-flow
     float damDrift = 0.0f; // --test-dam: the current mid-channel (0: the check failed)
@@ -3853,9 +3853,18 @@ int main(int argc, char** argv)
                             const bool pass = frames > 0 && inWaterFrames * 10 >= frames * 9 && sink < 1.0f;
                             printf("bench: pond: swimming in the pit: in water %d%% of frames, sank %.2f m/s (falling in air would be ~%.0f m/s) -> %s\n",
                                    frames ? 100 * inWaterFrames / frames : 0, sink, player.gravity * 2.5f * 0.5f, pass ? "PASS" : "FAIL");
-                            benchPond = false;
                             h0 = 0.0f;
+                            // Then a drop into the pit from 3 m over its water: one splash burst (#408).
+                            const float surf = Fluid::SurfaceAbove(*p, pondPit, 12.0f);
+                            player.placeAt(world, *p, p->toWorld(Vector3Add(pondPit, Vector3Scale(Vector3Normalize(pondPit), (surf > 0.0f ? surf : 1.0f) + 3.0f))));
+                            pondSplash0 = Ambience_SplashBursts();
+                            pondPhase = 4; pondT0 = GetTime();
                         }
+                    } else if (pondPhase == 4 && t > 2.5) {
+                        const int bursts = Ambience_SplashBursts() - pondSplash0;
+                        printf("bench: pond: dropped into the pit from 3 m: %d splash burst(s), in water %s -> %s\n", bursts, player.inWater ? "yes" : "no",
+                               bursts == 1 ? "PASS" : "FAIL");
+                        benchPond = false;
                     }
                 } else if (benchPressure && (prPhase > 0 || WorldIdle())) {
                     // --test-pressure (#393): a 12 m shaft by the start filled by a spring: 5 m under its surface reads
