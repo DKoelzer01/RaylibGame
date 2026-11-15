@@ -976,6 +976,10 @@ void GpuFlowRead() {
 
 // Resolve: each live watch to the cells within its radius in bricks on the GPU; one flux block per watched brick.
 void GpuFlowResolve() {
+    {   // Nothing watched now or last time, buffers sized: nothing to rebuild (the common case: no meters or wheels).
+        std::lock_guard<std::mutex> lk(flowMx);
+        if (flowWatches.empty() && G.fluxBlocks == 0 && (int)G.watchOf.size() == G.capacity) return;
+    }
     std::vector<int> watchOf(G.capacity, -1);
     std::vector<std::vector<GpuState::WatchCell>> cells;
     int blocks = 0;
