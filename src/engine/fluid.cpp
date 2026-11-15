@@ -144,7 +144,7 @@ struct PartSolid {
     std::vector<PlotSnap> plots;
     bool solidAt(Vector3 c) const {
         for (const PlotSnap& p : plots) {
-            if (Vector3DistanceSqr(c, p.centre) > (p.radius + 1.0f) * (p.radius + 1.0f)) continue;
+            if (p.solid.empty() || Vector3DistanceSqr(c, p.centre) > (p.radius + 1.0f) * (p.radius + 1.0f)) continue;
             if (p.cellSolid(c)) return true;
             const Vector3 ax[3] = { p.east, p.up, p.north };
             for (const Vector3& a : ax)
@@ -1288,9 +1288,13 @@ static void UpdatePartSnaps(Scene& world) {
                 const Vector3 c = pl->toBody({ (cell.x + 0.5f) * kCellSize, (cell.y + 0.5f) * kCellSize, (cell.z + 0.5f) * kCellSize });
                 lo = Vector3Min(lo, c); hi = Vector3Max(hi, c);
             }
-            if (ps.solid.empty()) continue;
-            ps.centre = Vector3Scale(Vector3Add(lo, hi), 0.5f);
-            ps.radius = Vector3Distance(lo, hi) * 0.5f + kCellSize;
+            // Every plot keeps an entry, an empty one too: the version check above compares them one to one (an
+            // emptied plot left out made the counts differ for good, and the whole snapshot was rebuilt every tick).
+            if (ps.solid.empty()) { ps.centre = ps.origin; ps.radius = 0.0f; } // solidAt skips it
+            else {
+                ps.centre = Vector3Scale(Vector3Add(lo, hi), 0.5f);
+                ps.radius = Vector3Distance(lo, hi) * 0.5f + kCellSize;
+            }
             snap->plots.push_back(std::move(ps));
         }
         // What changed: solid cells added or removed, per plot, as edit commands bucketed to 2 m.
