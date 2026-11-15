@@ -254,6 +254,7 @@ int main(int argc, char** argv)
     bool benchWall = false;        // --test-wall: walk into shaft and tunnel walls (no launches)
     bool benchDoorway = false; int doorPhase = 0, doorLane = 0; double doorStart = 0.0; uint32_t doorPlot = 0; bool doorPass[2] = { false, false }; // --test-doorway (#255): 2 m openings pass, 1.5 m ones block
     bool benchMenus = false;       // --test-menus: main menu, new game, pause, save & quit, load
+    bool benchGiant = false;       // --shot-giant: one tree of each size class (#274)
     bool benchTorch = false;       // --test-torch: a held torch lights the ground (#218)
     bool benchTime = false;        // --test-time: dawn start (#259), a +6 h jump carries the player (#275)
     bool benchPickups = false;     // --test-pickups: the pickup feed (#208): repeats merge, a screenshot while it shows
@@ -482,6 +483,7 @@ int main(int argc, char** argv)
         if (std::string(argv[i]) == "--test-menus") benchMenus = true;
         if (std::string(argv[i]) == "--test-time") benchTime = true;
         if (std::string(argv[i]) == "--test-torch") benchTorch = true;
+        if (std::string(argv[i]) == "--shot-giant") benchGiant = true;
         if (std::string(argv[i]) == "--test-pickups") benchPickups = true;
         if (std::string(argv[i]) == "--shot-inventory") shotInventory = true;
         if (std::string(argv[i]) == "--test-foundation") benchFoundation = true;
@@ -4076,14 +4078,14 @@ int main(int argc, char** argv)
                         const Vector3 me = p->toLocal((player.position - world.renderOrigin).toFloat());
                         const Vector3 up = Vector3Normalize(me);
                         const Vector3 t1 = Vector3Normalize(Vector3CrossProduct(up, fabsf(up.y) < 0.9f ? Vector3{ 0, 1, 0 } : Vector3{ 1, 0, 0 }));
-                        int n[(int)WoodSpecies::Count];
+                        int n[(int)WoodSpecies::Count], cls[kTreeClasses];
                         if (p->trees) {
                             for (const float range : { 150.0f, 600.0f }) {
-                                p->trees->speciesCounts(me, range, n);
+                                p->trees->speciesCounts(me, range, n, cls);
                                 int total = 0; for (int s = 0; s < (int)WoodSpecies::Count; ++s) total += n[s];
                                 printf("bench: forest: %d trees within %.0f m:", total, range);
                                 for (int s = 0; s < (int)WoodSpecies::Count; ++s) printf(" %s %d%%", WoodSpeciesInfo((WoodSpecies)s).name, total ? 100 * n[s] / total : 0);
-                                printf("\n");
+                                printf("; size classes S %d M %d L %d XL %d\n", cls[0], cls[1], cls[2], cls[3]);
                             }
                         }
                         forestCam = Vector3Add(me, Vector3Add(Vector3Scale(up, 30.0f), Vector3Scale(t1, -15.0f)));
@@ -6031,6 +6033,41 @@ int main(int argc, char** argv)
                 TakeScreenshot("bench_pickups.png");
                 printf("bench: pickups: screenshot bench_pickups.png (expect +3 Stone, +3 Oak Log, +1 Stone Pickaxe)\n");
                 benchPickups = false;
+            }
+        }
+        // --shot-giant (#274): the nearest tree of each size class, side by side in turn (bench_tree_<class>.png), with
+        // its trunk, chop hits (stone axe) and logs.
+        if (benchGiant && gameState == 1 && !loading && WorldIdle()) {
+            static int gf = 0, cls = 0;
+            static Plant tree{};
+            static bool have = false;
+            Planetoid* p = dynamic_cast<Planetoid*>(world.objects[0].get());
+            if (gf == 0) {
+                const Vector3 me = p->toLocal((player.position - world.renderOrigin).toFloat());
+                have = p->trees && p->trees->nearestPlant(me, 1500.0f, true, tree, false, cls);
+                if (!have) { printf("bench: giant: no class %d tree within 1.5 km\n", cls); }
+                else {
+                    const float v = tree.chopSize();
+                    printf("bench: giant: class %d (%s) %.0f m away: trunk %.1f m x r %.2f m, chop size x%.2f -> %d stone-axe hits, %d logs\n", cls,
+                           WoodSpeciesInfo(SpeciesOfVariant(tree.variant)).name, Vector3Distance(me, tree.base), tree.height, tree.radius, v,
+                           (int)lroundf(4.0f + 6.0f * v), std::clamp((int)lroundf(3.0f * v), 1, 48));
+                    player.flyMode = true;
+                }
+            }
+            if (have) { // stand off by twice its height, at a third of it up, looking at its middle
+                const Vector3 t1 = Vector3Normalize(Vector3CrossProduct(tree.up, fabsf(tree.up.y) < 0.9f ? Vector3{ 0, 1, 0 } : Vector3{ 1, 0, 0 }));
+                const float d = std::max(8.0f, tree.height * 1.6f);
+                const Vector3 eye = Vector3Add(tree.base, Vector3Add(Vector3Scale(t1, d), Vector3Scale(tree.up, tree.height * 0.35f)));
+                const Vector3 at = Vector3Add(tree.base, Vector3Scale(tree.up, tree.height * 0.55f));
+                world.camera.position = p->toWorld(eye); world.camera.target = p->toWorld(at); world.camera.up = p->dirToWorld(tree.up);
+                player.position = world.renderOrigin + world.camera.position;
+                player.forward = Vector3Normalize(p->dirToWorld(Vector3Subtract(at, eye)));
+                sunOverride = true; sunArg = p->dirToWorld(Vector3Normalize(Vector3Add(tree.up, Vector3Scale(t1, 0.6f))));
+            }
+            if (++gf == 90 || !have) {
+                if (have) { TakeScreenshot(TextFormat("bench_tree_%d.png", cls)); }
+                gf = 0; have = false;
+                if (++cls == kTreeClasses) { printf("bench: giant: done (bench_tree_0..3.png)\n"); benchGiant = false; }
             }
         }
         // --test-torch (#218): at the dawn start (still dark), the ground in front gets brighter with a torch in hand.

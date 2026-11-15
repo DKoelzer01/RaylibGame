@@ -44,7 +44,7 @@ namespace {
     void Toast(const std::string& msg);
     int HitsToFell(const Plant& p) {
         if (!p.tree()) return 1;
-        return std::max(1, (int)lroundf((6 + (int)(p.scale * 4.0f)) * ChopFactor(tool)));
+        return std::max(1, (int)lroundf((4.0f + 6.0f * p.chopSize()) * ChopFactor(tool))); // follows the trunk (#274): a sapling ~5, a medium tree 10-15, a giant ~55 (bare hands x2)
     }
 
     ToolSpec HeldTool() {
@@ -99,7 +99,7 @@ namespace {
         if (p.tree()) {
             // Logs of its species (saw them into planks: recipes take any planks).
             const WoodSpeciesDef& sp = WoodSpeciesInfo(SpeciesOfVariant(p.variant));
-            const int logs = 1 + (int)(p.scale * 2.0f);
+            const int logs = std::clamp((int)lroundf(3.0f * p.chopSize()), 1, 48); // the trunk (#274): 3-5 from a medium tree, ~26 from a giant
             inventory.add(sp.log, logs);
             Toast(TextFormat("+%d %s log%s%s", logs, sp.name, logs > 1 ? "s" : "", biome == Biome::Jungle ? "  +1 rubber" : ""));
             Audio_Play(Sfx::Build, 0.6f, 0.5f);
