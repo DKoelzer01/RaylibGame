@@ -490,6 +490,7 @@ int main(int argc, char** argv)
         if (std::string(argv[i]) == "--test-container-cursor") testContainerCursor = true;
         if (std::string(argv[i]) == "--test-bug-report") testBugReport = 1;
         if (std::string(argv[i]) == "--test-saves") Menu_TestSaves();
+        if (std::string(argv[i]) == "--test-machine-stack") { const bool ok = Machines_TestStack(); fflush(stdout); return ok ? 0 : 1; }
         if (std::string(argv[i]) == "--test-water") benchWater = true;
         if (std::string(argv[i]) == "--test-flyfollow") benchFlyFollow = true;
         if (std::string(argv[i]) == "--test-hotbar") benchHotbar = true;
