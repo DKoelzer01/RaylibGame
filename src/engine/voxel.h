@@ -418,6 +418,7 @@ struct ChunkMeshData {
     std::vector<unsigned short> waterIndices;
     std::vector<float> grass;              // grass tufts (foliage.h: kGrassFloats each), finest level only
     std::vector<unsigned short> indices;
+    std::vector<unsigned char> arenaAttr;  // #302: the terrain arena's packed attributes, filled on the worker (TerrainArena_Pack)
     bool overflow = false;                 // > 65535 vertices: mesh dropped
     float buildMs = 0.0f;
     float sampleMs = 0.0f;                 // part of buildMs spent sampling the density field

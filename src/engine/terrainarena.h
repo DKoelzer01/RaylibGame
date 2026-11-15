@@ -50,6 +50,10 @@ struct ArenaCull {
 
 bool TerrainArena_Available();
 ArenaAlloc TerrainArena_Upload(const ChunkMeshData& data);  // main thread; fills the table entry from data.key
+// #302: the packed vertex attributes (positions stay apart). Any thread; mesh workers call it once the arena is up
+// (TerrainArena_PackOnWorkers) and leave the bytes in ChunkMeshData::arenaAttr for the upload.
+void TerrainArena_Pack(const ChunkMeshData& data, std::vector<unsigned char>& out);
+bool TerrainArena_PackOnWorkers();
 void TerrainArena_Free(ArenaAlloc& a);
 
 // Drawing: queue the LOD-selected chunks of one body (with their current chunk-local clip), then flush with

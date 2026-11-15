@@ -9,6 +9,10 @@
 #include "external/glad.h"
 #include <rlgl.h>
 #include <raymath.h>
+#include <atomic>
+
+// Set once the arena is up: the mesh workers then pack the attributes themselves (TerrainArena_Pack), off the main thread (#302).
+static std::atomic<bool> gPackOnWorkers{ false };
 #include <algorithm>
 #include <cstdlib>
 #include <cstring>
@@ -202,6 +206,7 @@ namespace {
         glGenVertexArrays(1, &S.vaoDepth);
         EnsureRing(1); // creates the ring buffers and binds the VAOs
         S.ok = true;
+        gPackOnWorkers = true;
         logger.logf("[Arena] terrain mesh arena: %d vertices, %d indices, GPU chunk culling\n", v0, i0);
         return true;
     }
@@ -310,16 +315,18 @@ namespace {
     }
 }
 
-ArenaAlloc TerrainArena_Upload(const ChunkMeshData& d) {
-    ArenaAlloc a;
-    if (!Init() || d.positions.empty() || d.indices.empty()) return a;
-    const int nv = (int)(d.positions.size() / 3), ni = (int)d.indices.size();
-    std::vector<Attr> v(nv);
+bool TerrainArena_PackOnWorkers() { return gPackOnWorkers.load(std::memory_order_relaxed); }
+
+void TerrainArena_Pack(const ChunkMeshData& d, std::vector<unsigned char>& out) {
+    const int nv = (int)(d.positions.size() / 3);
+    out.resize((size_t)nv * sizeof(Attr));
+    Attr* v = reinterpret_cast<Attr*>(out.data());
     const bool uv = d.texcoords.size() >= (size_t)nv * 2, uv2 = d.texcoords2.size() >= (size_t)nv * 2, tan = d.tangents.size() >= (size_t)nv * 4;
     const bool col = d.colors.size() >= (size_t)nv * 4;
-    auto un8 = [](float x) { return (unsigned char)lroundf(std::clamp(x, 0.0f, 1.0f) * 255.0f); };
-    auto un16 = [](float x) { return (uint16_t)lroundf(std::clamp(x, 0.0f, 1.0f) * 65535.0f); };
-    auto sn16 = [](float x) { return (int16_t)lroundf(std::clamp(x, -1.0f, 1.0f) * 32767.0f); };
+    // Inline rounding (+0.5 and truncate): lroundf is a library call on mingw, and this loop packs every terrain vertex.
+    auto un8 = [](float x) { return (unsigned char)(int)(std::clamp(x, 0.0f, 1.0f) * 255.0f + 0.5f); };
+    auto un16 = [](float x) { return (uint16_t)(int)(std::clamp(x, 0.0f, 1.0f) * 65535.0f + 0.5f); };
+    auto sn16 = [](float x) { const float s = std::clamp(x, -1.0f, 1.0f) * 32767.0f; return (int16_t)(int)(s + (s >= 0.0f ? 0.5f : -0.5f)); };
     for (int i = 0; i < nv; ++i) {
         Attr& o = v[i];
         // Octahedral normal: project onto the octahedron, fold the lower half over.
@@ -339,7 +346,7 @@ ArenaAlloc TerrainArena_Upload(const ChunkMeshData& d) {
             uint16_t packed = 0;
             if (c >= 1.5f) {
                 const int step = std::clamp((int)floorf(c) - 2, 0, 62);
-                packed = (uint16_t)((step + 1) * 1024 + std::clamp((int)lroundf((c - floorf(c)) * 1023.0f), 0, 1023));
+                packed = (uint16_t)((step + 1) * 1024 + std::clamp((int)((c - floorf(c)) * 1023.0f + 0.5f), 0, 1023));
             }
             o.tan[0] = un16(d.tangents[i * 4]); o.tan[1] = packed;
             o.tan[2] = un16(d.tangents[i * 4 + 2]); o.tan[3] = un16(d.tangents[i * 4 + 3]);
@@ -347,6 +354,17 @@ ArenaAlloc TerrainArena_Upload(const ChunkMeshData& d) {
         o.occ = d.occlusion.size() >= (size_t)nv ? un16(d.occlusion[i]) : 0;
         o.pad[0] = o.pad[1] = 0;
     }
+}
+
+ArenaAlloc TerrainArena_Upload(const ChunkMeshData& d) {
+    ArenaAlloc a;
+    if (!Init() || d.positions.empty() || d.indices.empty()) return a;
+    const int nv = (int)(d.positions.size() / 3), ni = (int)d.indices.size();
+    // Packed on the worker (#302) unless it was built before the arena came up.
+    std::vector<unsigned char> local;
+    const std::vector<unsigned char>* packed = &d.arenaAttr;
+    if (d.arenaAttr.size() != (size_t)nv * sizeof(Attr)) { TerrainArena_Pack(d, local); packed = &local; }
+    const unsigned char* v = packed->data();
     a.vFirst = AllocVerts(nv);
     a.vCount = nv;
     a.iFirst = AllocIndices(ni);
@@ -358,7 +376,7 @@ ArenaAlloc TerrainArena_Upload(const ChunkMeshData& d) {
         // Into the staging ring, then copied into the arena on the GPU (#286).
         const size_t oPos = at, oAttr = (oPos + posBytes + 15) & ~(size_t)15, oIdx = (oAttr + attrBytes + 15) & ~(size_t)15;
         memcpy(St.ptr + oPos, d.positions.data(), posBytes);
-        memcpy(St.ptr + oAttr, v.data(), attrBytes);
+        memcpy(St.ptr + oAttr, v, attrBytes);
         memcpy(St.ptr + oIdx, d.indices.data(), idxBytes);
         glBindBuffer(GL_COPY_READ_BUFFER, St.buf);
         glBindBuffer(GL_COPY_WRITE_BUFFER, S.pos);
@@ -375,7 +393,7 @@ ArenaAlloc TerrainArena_Upload(const ChunkMeshData& d) {
         glBindBuffer(GL_ARRAY_BUFFER, S.pos);
         glBufferSubData(GL_ARRAY_BUFFER, (GLintptr)a.vFirst * kPosBytes, (GLsizeiptr)posBytes, d.positions.data());
         glBindBuffer(GL_ARRAY_BUFFER, S.attr);
-        glBufferSubData(GL_ARRAY_BUFFER, (GLintptr)a.vFirst * sizeof(Attr), (GLsizeiptr)attrBytes, v.data());
+        glBufferSubData(GL_ARRAY_BUFFER, (GLintptr)a.vFirst * sizeof(Attr), (GLsizeiptr)attrBytes, v);
         glBindBuffer(GL_ARRAY_BUFFER, 0);
         // The element buffer binding is VAO state: upload through COPY_WRITE so no VAO is disturbed.
         glBindBuffer(GL_COPY_WRITE_BUFFER, S.ibo);
