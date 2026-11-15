@@ -125,16 +125,19 @@ uint sideFlux(uint aSlot, int ax, int ay, int az, uint a, uint bSlot, int bx, in
     // moves of a substep never overdraw or overfill a cell (a height step can exceed the water itself, #454). Both cells
     // count from the same inputs, so they agree. (A flat quarter cut a stream down a slope to a fraction of its flow.)
     uint room = CAP(b) > fb ? CAP(b) - fb : 0u;
-    uint shareA = fa / max(1u, sideCount(aSlot, ax, ay, az, ha, v, true)), shareB = room / max(1u, sideCount(bSlot, bx, by, bz, hb, v, false));
+    uint nLow = max(1u, sideCount(aSlot, ax, ay, az, ha, v, true));
+    uint shareA = fa / nLow, shareB = room / max(1u, sideCount(bSlot, bx, by, bz, hb, v, false));
     uint m = min(diff / v, min(shareA, shareB));
     // A film at a drop's edge (a dry cell with nothing under it to hold water) runs off whole, its share of it at once:
     // left to the viscosity rule its last centimetres stayed stranded up a dug wall (#454).
     const bool drop = fb == 0u && !rests(bSlot, bx, by, bz, b);
     if (drop) m = min(shareA, shareB);
+    // Into a dry cell: a film with one way down leaves no speck behind (it would soak away), it goes whole.
+    if (fb == 0u && nLow == 1u && fa - m <= 3u && fa <= shareB) m = fa;
     if (m == 0u) return 0u;
-    // No trickles into dry cells (a film's edge holds), unless the ground falls to them: a lower ground share, or a drop under
-    // the cell (more than a speck, so nothing lands to soak away).
-    if (fb == 0u && m < uint(minSpread[ka]) && SH(a) <= SH(b) && (m <= 3u || !drop)) return 0u;
+    // No trickles into dry cells (a film's edge holds), unless the ground falls to them - a lower ground share, or a drop
+    // under the cell - and then more than a speck: a speck landing alone soaks away (water lost, #454).
+    if (fb == 0u && m < uint(minSpread[ka]) && (m <= 3u || (SH(a) <= SH(b) && !drop))) return 0u;
     if (!rests(aSlot, ax, ay, az, a)) return 0u;
     return m;
 }

@@ -439,10 +439,11 @@ void StepSite(Site& s, int parity) {
                                            (!(u.b->flags[u.i] & kSolid) && u.b->fill[u.i] < Cap(u.b, u.i) && (u.b->fill[u.i] == 0 || SameKind(b, i, u.b, u.i)));
                             }
                             const int room = Cap(o.b, o.i) - (int)o.b->fill[o.i];
-                            const int m = overDrop ? std::min(f, room) : std::min({ diff / visc, f, room }); // thicker fluids spread slower
-                            // No trickles into dry cells (a film's edge holds), unless the ground falls to them: a lower ground
-                            // share, or a drop under the cell (more than a speck, so nothing lands to soak away).
-                            if (o.b->fill[o.i] == 0 && m < minSpread && b->shut[i] <= o.b->shut[o.i] && (m <= kEvaporate || !overDrop)) continue;
+                            int m = overDrop ? std::min(f, room) : std::min({ diff / visc, f, room }); // thicker fluids spread slower
+                            if (o.b->fill[o.i] == 0 && f - m <= kEvaporate && f <= room) m = f; // into a dry cell: no speck left behind to soak away
+                            // No trickles into dry cells (a film's edge holds), unless the ground falls to them - a lower ground
+                            // share, or a drop under the cell - and then more than a speck: one landing alone soaks away (#454).
+                            if (o.b->fill[o.i] == 0 && m < minSpread && (m <= kEvaporate || (b->shut[i] <= o.b->shut[o.i] && !overDrop))) continue;
                             if (m <= 0) continue;
                             TakeKind(o.b, o.i, b->flags[i] & kKindMask);
                             o.b->fill[o.i] = (uint8_t)(o.b->fill[o.i] + m);
