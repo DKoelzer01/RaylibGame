@@ -25,7 +25,8 @@ void Hotbar_Unbind(const std::string& id);            // quietly empty its slot 
 const std::string& Hotbar_Slot(int slot);
 int Hotbar_Selected();
 inline bool Hotbar_IsLight(const std::string& id) { return id == "torch" || id == "fibre_torch"; } // held for light (#218)
-bool Hotbar_PlaceTorch();   // the torch in hand onto the ground at the crosshair (RMB; tests call it after aiming), #218
+bool Hotbar_PlaceTorch();   // the torch or snare in hand onto the ground at the crosshair (RMB; tests call it after aiming), #218 #176
+inline bool Hotbar_IsPlaceable(const std::string& id) { return id == "snare"; } // set down from the hand with RMB (#176)
 std::string Hotbar_HeldFood();                        // the food or animal feed in hand (a selected slot), or ""
 bool Hotbar_TestEatHold(float seconds);               // tests (#202): hold right-click this long with food in hand; true if a bite was eaten
 // A number key pressed this frame: its slot (0..9), or -1.

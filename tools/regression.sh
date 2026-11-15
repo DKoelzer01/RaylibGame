@@ -51,6 +51,7 @@ planet() {
     run --seed 42 --bench 5 --test-fill --day
     run --seed 9 --bench 20 --test-structures --day
     run --seed 42 --bench 5 --test-fishing
+    run --seed 42 --bench 5 --test-trapping
     run --seed 42 --bench 3 --test-animal-path
     run --seed 42 --bench 3 --test-progression
     run --seed 42 --bench 3 --test-progression full

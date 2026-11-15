@@ -1,5 +1,6 @@
 #include "machinemodels.h"
 #include "factory.h"
+#include "trapping.h"
 #include "instancebatch.h"
 #include "plots.h"
 #include "scene.h"
@@ -279,6 +280,21 @@ void DrawMachine(PartType type, const Frame& f, const Painter& p, bool working) 
         for (int k = 0; k < 5; ++k) p.cube({ 0, 0, 0.1f + 0.35f * k }, { 0.3f, 0.3f, 0.06f }, working ? kGlass : kCopper);
         rlPopMatrix();
         break;
+    case PartType::Snare: { // (#176) a bent sapling and a noose on the frame; with a catch, a small furry animal in it
+        const float slab = top * 0.5f; // the frame is a half-cell slab
+        const Color wood = { 120, 90, 55, 255 }, cord = { 200, 180, 130, 255 };
+        p.cube({ x0 + 0.06f, slab + 0.18f, 0 }, { 0.04f, 0.36f, 0.04f }, wood);               // the spring pole
+        p.cube({ x0 + 0.2f, slab + 0.36f, 0 }, { 0.3f, 0.03f, 0.03f }, wood);                 // bent over
+        p.cube({ 0.05f, slab + 0.2f, 0 }, { 0.015f, 0.32f, 0.015f }, cord);                   // the line
+        p.cube({ 0.05f, slab + 0.03f, 0 }, { 0.14f, 0.02f, 0.14f }, cord);                    // the noose
+        if (working) {
+            p.cube({ 0.05f, slab + 0.08f, 0.02f }, { 0.16f, 0.1f, 0.24f }, { 130, 105, 80, 255 });   // a hare-sized body
+            p.cube({ 0.05f, slab + 0.14f, 0.15f }, { 0.08f, 0.08f, 0.08f }, { 140, 112, 86, 255 });  // head
+            p.cube({ 0.03f, slab + 0.21f, 0.15f }, { 0.02f, 0.08f, 0.02f }, { 150, 120, 95, 255 });  // ears
+            p.cube({ 0.07f, slab + 0.21f, 0.15f }, { 0.02f, 0.08f, 0.02f }, { 150, 120, 95, 255 });
+        }
+        break;
+    }
     case PartType::Torch: { // (#218) a flame on the quarter-cell post (its low x/z corner: placed torches aren't turned)
         const float fl = 0.85f + 0.15f * sinf(t * 13.0f) + 0.08f * sinf(t * 29.0f);
         p.cube({ x0 + 0.125f, top - 0.02f, z0 + 0.125f }, { 0.2f, 0.05f, 0.2f }, kDarkSteel);   // the wrapped head
@@ -375,7 +391,7 @@ void Machines_Draw3D(Scene& world) {
                 pc.spots.clear();
                 for (size_t i = 0; i < plot->parts.size(); ++i) {
                     const Part& part = plot->parts[i];
-                    if (part.type == PartType::Count || (!IsMachine(part.type) && part.type != PartType::HandPump && part.type != PartType::Torch)) continue;
+                    if (part.type == PartType::Count || (!IsMachine(part.type) && part.type != PartType::HandPump && part.type != PartType::Torch && part.type != PartType::Snare)) continue;
                     MachineSpot s;
                     if (!SpotOf(*plot, i, s)) continue;
                     if (body->field) { // sky exposure 1 m over the floor: the terrain's rule, as plot cells (#216, #284)
@@ -409,7 +425,7 @@ void Machines_Draw3D(Scene& world) {
     }
     for (const Pending& q : pending) {
         const MachineSpot& s = *q.spot;
-        const bool working = Factory::Working(q.body->id, q.plot->id, s.part);
+        const bool working = s.type == PartType::Snare ? Trapping_HasCatch(q.body->id, q.plot->id, s.part) : Factory::Working(q.body->id, q.plot->id, s.part); // a snare: "working" = holding a catch (#176)
         // The plot's own model, its translation in double (#284): placed through the float toWorld ~60 km from the
         // planet's centre (~4 mm steps, float trig every frame) the details shook against the casing, which is drawn
         // with the double localModel. Plot axes in body space, then the body's rotation and the anchor's offset.

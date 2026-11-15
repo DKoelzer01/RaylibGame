@@ -111,6 +111,7 @@ shears           | Shears           |  tool | 180,180,190 | Shear a woolback for
 bucket           | Bucket           |  tool | 160,160,170 | Hold it (hotbar): RMB scoops 1 m^3 of water from a river, pond, the sea or a channel. Milks a hornhide (look at it, O).
 water_bucket     | Water bucket     |  tool |  70,120,200 | A bucket of water (1 m^3): RMB pours it where you look (water a field, fill a basin).
 fishing_rod      | Fishing rod      |  tool | 150,110, 70 | Hold it (hotbar): RMB on water casts; when a fish bites, RMB again to land it. Sea, rivers and lakes hold different fish.
+snare            | Snare            |  20 | 170,140, 90 | Set it on the ground (hold it, RMB): now and then it catches small game. Walk up to it to collect.
 raw_cod          | Raw cod          |   999 | 190,190,200 | A sea fish. Better cooked (campfire).
 raw_trout        | Raw trout        |   999 | 170,150,140 | A river and lake fish. Better cooked (campfire).
 raw_catfish      | Raw catfish      |   999 | 120,110, 90 | Caught in warm waters. Better cooked (campfire).

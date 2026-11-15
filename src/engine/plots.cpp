@@ -63,6 +63,7 @@ const char* PartName(PartType t) {
         case PartType::MassDriver: return "mass driver";
         case PartType::HandPump: return "hand pump";
         case PartType::Torch: return "torch";
+        case PartType::Snare: return "snare";
         case PartType::Farmland: return "farmland";
         case PartType::Fence: return "fence";
         case PartType::Gate: return "gate";
@@ -131,6 +132,7 @@ const char* PartCostItem(PartType t) {
         case PartType::LandingLeg: return "landing_leg";
         case PartType::HandPump: return "hand_pump"; // not a machine: no factory entry (#280)
         case PartType::Torch: return "torch"; // placed from the hand (#218)
+        case PartType::Snare: return "snare"; // placed from the hand (#176)
         default: { const char* m = PartMachineName(t); return m ? m : "concrete"; }
     }
 }
@@ -233,6 +235,7 @@ static Color PartColor(PartType t) {
         case PartType::MassDriver: return { 150, 160, 185, 255 };
         case PartType::HandPump: return { 120, 90, 60, 255 };
         case PartType::Torch: return { 120, 85, 55, 255 };
+        case PartType::Snare: return { 150, 120, 80, 255 };
         case PartType::Farmland: return { 86, 60, 38, 255 };
         case PartType::Fence: return { 130, 95, 60, 255 };
         case PartType::Gate: return { 165, 120, 70, 255 };
@@ -278,6 +281,7 @@ static unsigned char PartPatternOf(const Part& p) {
         case PartType::Pipe: case PartType::Outlet: return PatMetal;
         case PartType::Farmland: return PatFarmland;
         case PartType::Torch: return PatLog; // the shaft; machinemodels draws the flame
+        case PartType::Snare: return PatPlanks; // a low wooden frame; machinemodels draws the noose and a catch
         default: return IsRocketPart(p.type) ? PatHull : PatMachine;
     }
 }
@@ -306,6 +310,7 @@ static void PartCells(PartType t, std::vector<std::pair<Int3, CellShape>>& out) 
             for (int z = 0; z < 2; ++z) for (int y = 0; y < 2; ++y) out.push_back({ { 0, y, z }, s });
             break;
         }
+        case PartType::Snare: // a low trap frame: the Slab shape (#176)
         case PartType::Slab: {  // the lower half of the cell
             CellShape s; s.full = false; s.planes = 1; s.n[0] = { 0, 1, 0 }; s.d[0] = 0.5f;
             out.push_back({ { 0, 0, 0 }, s });

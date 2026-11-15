@@ -47,6 +47,7 @@ enum class PartType : uint8_t {
     FusionReactor, MassDriver,                                       // EV machines of tiers 9-10 (M24)
     HandPump,                                                        // a hand-worked water pump (#280): hold RMB on it to pump into its pipes
     Torch,                                                           // a placed torch (#218): a thin post with a flame, lights its surroundings (#139)
+    Snare,                                                           // a snare on the ground (#176): small game gets caught now and then (trapping.cpp)
     Count
 };
 inline bool IsMachine(PartType t) { return (t >= PartType::Chest && t <= PartType::SteamMacerator) || (t >= PartType::OreWasher && t <= PartType::PrecisionAssembler) || t == PartType::FusionReactor || t == PartType::MassDriver; }

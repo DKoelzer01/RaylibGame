@@ -87,7 +87,7 @@ namespace {
             GameUI_Toast(Survival_IsFood(id) ? TextFormat("Holding %s: hold right-click to eat", ShortName(id)) : TextFormat("Holding %s: animals that eat it follow you", ShortName(id)));
             return;
         }
-        if (Hotbar_IsLight(id) && !piloting) { // a torch (#218): held for its light; LMB still digs with bare hands
+        if ((Hotbar_IsLight(id) || Hotbar_IsPlaceable(id)) && !piloting) { // a torch (#218): held for its light; a snare (#176): set down with RMB; LMB still digs with bare hands
             if (inventory.count(id) <= 0) { GameUI_Toast(TextFormat("No %s", ShortName(id))); return; }
             selected = slot; buildTool.active = false; terrainTool.heldTool.clear(); terrainTool.holdingItem = true;
             return;
@@ -180,7 +180,7 @@ void Hotbar_Update(Scene&, bool inputEnabled, bool piloting) {
     // Leaving build mode with a block selected: the hand goes empty (to an empty slot, if there is one).
     inventory.preferred = Inventory::kGrid + selected; // use comes out of the slot in hand first (#209)
     const std::string cur = CellId(selected);
-    const bool inHand = cur.empty() || cur == terrainTool.heldTool || Survival_IsFood(cur) || Animals_IsFeed(cur) || Hotbar_IsLight(cur);
+    const bool inHand = cur.empty() || cur == terrainTool.heldTool || Survival_IsFood(cur) || Animals_IsFeed(cur) || Hotbar_IsLight(cur) || Hotbar_IsPlaceable(cur);
     if (!buildTool.active && !inHand) {
         for (int i = 0; i < kHotbarSlots; ++i) if (CellId(i).empty()) { selected = i; break; }
         terrainTool.heldTool.clear();
@@ -199,7 +199,7 @@ void Hotbar_Update(Scene&, bool inputEnabled, bool piloting) {
     }
     // Food or feed really in hand (not just selected: the last one eaten or fed leaves bare hands): RMB
     // never places terrain with it (#201). Derived each frame so it cannot go stale.
-    const bool torchHeld = !buildTool.active && Hotbar_IsLight(CellId(selected)) && inventory.count(CellId(selected)) > 0;
+    const bool torchHeld = !buildTool.active && (Hotbar_IsLight(CellId(selected)) || Hotbar_IsPlaceable(CellId(selected))) && inventory.count(CellId(selected)) > 0;
     terrainTool.holdingItem = !Hotbar_HeldFood().empty() || torchHeld || terrainTool.heldTool == "fishing_rod"; // a torch in hand: RMB places it, not terrain (#218); a rod casts (#176)
     if (torchHeld && inputEnabled && !piloting && IsMouseButtonPressed(MOUSE_BUTTON_RIGHT)) Hotbar_PlaceTorch();
     // Eating (#202): hold right-click with food in hand for kEatSeconds (a bar under the crosshair); letting go cancels.
@@ -278,7 +278,7 @@ bool Hotbar_PlaceTorch() {
     // torches burn too fast to set down). It goes into the cell just off the surface, on the nearest plot.
     const std::string id = CellId(selected);
     if (id == "fibre_torch") { GameUI_Toast("Fibre torches burn too fast to set down: craft a torch"); Audio_Play(Sfx::Error, 0.3f); return false; }
-    if (id != "torch" || inventory.count(id) <= 0) return false;
+    if ((id != "torch" && id != "snare") || inventory.count(id) <= 0) return false;
     Planetoid* body = nullptr; Vector3 local{}, n{};
     if (!TerrainTool_LastHit(body, local, n) || !body) return false;
     if (!body->plots) body->plots = std::make_unique<PlotSet>();
@@ -286,8 +286,8 @@ bool Hotbar_PlaceTorch() {
     if (!pl) pl = body->plots->plotFor(local, 0.0f, true);
     if (!pl) return false;
     const Vector3 nl = body->dirToLocal(n);
-    const Part part{ PartType::Torch, pl->cellAt(pl->toPlot(Vector3Add(local, Vector3Scale(nl, 0.15f)))), 0, 0 };
-    if (!pl->canPlace(part)) { GameUI_Toast("No room for a torch there"); Audio_Play(Sfx::Error, 0.3f); return false; }
+    const Part part{ id == "snare" ? PartType::Snare : PartType::Torch, pl->cellAt(pl->toPlot(Vector3Add(local, Vector3Scale(nl, 0.15f)))), 0, 0 };
+    if (!pl->canPlace(part)) { GameUI_Toast(TextFormat("No room for a %s there", id.c_str())); Audio_Play(Sfx::Error, 0.3f); return false; }
     if (!BuildTool_Place(*body, *pl, part, true)) return false;
     Audio_Play(Sfx::Build, 0.5f, 1.3f);
     return true;

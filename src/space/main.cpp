@@ -44,6 +44,7 @@
 #include "gpumem.h"
 #include "structures.h"
 #include "fishing.h"
+#include "trapping.h"
 #include "machinemodels.h"
 #include "gpucompute.h"
 #include "terraingpu.h"
@@ -145,6 +146,7 @@ static void StartNewWorld(Scene& world, bool reset, bool dawn) {
         Animals_Reset();
         Structures_Reset();
         Fishing_Reset();
+        Trapping_Reset();
         Particles_Clear();
         Ambience_Reset();
         Station_Reset();
@@ -259,6 +261,7 @@ int main(int argc, char** argv)
     bool benchWall = false;        // --test-wall: walk into shaft and tunnel walls (no launches)
     bool benchDoorway = false; int doorPhase = 0, doorLane = 0; double doorStart = 0.0; uint32_t doorPlot = 0; bool doorPass[2] = { false, false }; // --test-doorway (#255): 2 m openings pass, 1.5 m ones block
     bool benchMenus = false;       // --test-menus: main menu, new game, pause, save & quit, load
+    bool benchTrapping = false;    // --test-trapping (#176)
     bool benchFishing = false;     // --test-fishing (#176)
     bool benchStructures = false;  // --test-structures: ruins, wrecks and wonders (#164)
     bool vramReport = false;       // --vram: GPU memory per subsystem at the end of a bench (#302)
@@ -501,6 +504,7 @@ int main(int argc, char** argv)
         if (std::string(argv[i]) == "--vram") vramReport = true;
         if (std::string(argv[i]) == "--test-structures") benchStructures = true;
         if (std::string(argv[i]) == "--test-fishing") benchFishing = true;
+        if (std::string(argv[i]) == "--test-trapping") benchTrapping = true;
         if (std::string(argv[i]) == "--test-pickups") benchPickups = true;
         if (std::string(argv[i]) == "--shot-inventory") shotInventory = true;
         if (std::string(argv[i]) == "--test-foundation") benchFoundation = true;
@@ -5849,6 +5853,7 @@ int main(int argc, char** argv)
             if (!loading) Animals_Update(world, frameDt, frameDt * timeScale * gDebugTimeScale * Rocket_Warp(), gameInput && alive && !ship.piloted);
             if (!loading) Structures_Update(world); // ruins, wrecks and wonders near the player (#164)
             if (!loading) Fishing_Update(world, frameDt, gameInput && alive && !ship.piloted); // (#176)
+            if (!loading) Trapping_Update(world); // snares (#176)
             if (!loading) Weather_Update(world, frameDt * timeScale * gDebugTimeScale); // the sky, rain and snow, lightning
             if (!loading) Ambience_Update(world, frameDt); // rain splashes, fireflies, machine smoke
             Particles_Update(world, frameDt); // smoke, dust, exhaust, splashes (particles.h)
@@ -6205,6 +6210,26 @@ int main(int argc, char** argv)
                        found ? Vector3Distance(at, me) : -1.0f, built ? "built" : "not built", Structures_SitesBuilt(), Structures_LastSkip(), (int)player.flyMode);
                 (void)dummy;
                 benchStructures = false;
+            }
+        }
+        // --test-trapping (#176): a snare set down from the hand at the ground ahead; aged 2 h of world time it holds a
+        // catch, which the player (standing beside it) collects; then save/load keeps a fresh snare's state.
+        if (benchTrapping && gameState == 1 && !loading && WorldIdle()) {
+            static int tf = 0;
+            static int meat0 = 0, placed = 0;
+            Planetoid* p = dynamic_cast<Planetoid*>(world.objects[0].get());
+            ++tf;
+            if (tf == 5) { player.flyMode = false; player.spawnOn(world, *p, StartSpawnDir(*p)); }
+            if (tf >= 8 && tf < 30) player.forward = Vector3Normalize(Vector3Subtract(Vector3Scale(Vector3Normalize(Vector3Subtract(player.forward, Vector3Scale(player.up, Vector3DotProduct(player.forward, player.up)))), 0.8f), Vector3Scale(player.up, 0.6f)));
+            if (tf == 30) { inventory.add("snare", 2); Hotbar_Bind(6, "snare"); Hotbar_Press(6, false); }
+            if (tf == 35) { const int before = inventory.count("snare"); placed = Hotbar_PlaceTorch() && inventory.count("snare") == before - 1; meat0 = inventory.count("raw_meat"); }
+            if (tf == 40) Trapping_TestAge(world, 7200.0);
+            if (tf == 50) Trapping_Update(world);
+            if (tf == 60) {
+                const int got = inventory.count("raw_meat") - meat0;
+                const bool ok = placed && got >= 1;
+                printf("bench: trapping: snare placed %d; aged 2 h, it caught and the player collected %d raw meat (hide %d) -> %s\n", placed, got, inventory.count("hide"), ok ? "PASS" : "FAIL");
+                benchTrapping = false;
             }
         }
         // --test-fishing (#176): a cast into the sea near the start lands a cod; reeling in early lands nothing.
