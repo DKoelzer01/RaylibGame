@@ -45,23 +45,36 @@ bool IsMachineItem(const std::string& id) {
     return false;
 }
 
-// Foundation: clear terrain inside the part's cells and fill under its bottom cells.
+// Foundation (#210): the terrain inside the part's cells is subtracted, exactly those boxes (a carve, as mining, but with
+// no yield), and nothing else changes: no fill under it, no brush reaching past it (the plot carries parts above ground).
 void BuildTool_LayFoundation(Planetoid& body, Plot& plot, const Part& part) {
     std::vector<std::pair<Int3, CellShape>> fp;
     Plot::Footprint(part, fp);
+    // The plot's axes in body-local space.
+    const Vector3 o = plot.toBody({ 0, 0, 0 });
+    const Vector3 ax = Vector3Normalize(Vector3Subtract(plot.toBody({ 1, 0, 0 }), o));
+    const Vector3 ay = Vector3Normalize(Vector3Subtract(plot.toBody({ 0, 1, 0 }), o));
+    const Vector3 az = Vector3Normalize(Vector3Subtract(plot.toBody({ 0, 0, 1 }), o));
+    const float h = 0.5f * kCellSize;
     std::vector<TerrainEdit> edits;
     for (const auto& c : fp) {
         const Vector3 centre = plot.toBody({ (c.first.x + 0.5f) * kCellSize, (c.first.y + 0.5f) * kCellSize, (c.first.z + 0.5f) * kCellSize });
-        // Clear only inside the cell (a 0.55 m brush dug ~0.3 m past the part into whatever it was built against).
-        if (body.densityAt(centre) > ISO_LEVEL - 0.15f) edits.push_back({ centre, 0.3f, -1.6f });
-        const bool bottom = plot.partAt({ c.first.x, c.first.y - 1, c.first.z }) < 0;
-        if (bottom) {
-            // Only a small gap to real ground is filled (air just under the part, ground within ~1 m);
-            // parts higher up are carried by the plot, not propped on mounds of terrain.
-            const Vector3 below = plot.toBody({ (c.first.x + 0.5f) * kCellSize, (c.first.y - 0.35f) * kCellSize, (c.first.z + 0.5f) * kCellSize });
-            const Vector3 ground = plot.toBody({ (c.first.x + 0.5f) * kCellSize, c.first.y * kCellSize - 1.0f, (c.first.z + 0.5f) * kCellSize });
-            if (body.densityAt(below) < ISO_LEVEL && body.densityAt(ground) >= ISO_LEVEL) edits.push_back({ below, 0.45f, 0.8f });
+        // Anything solid in the cell? (its centre and corners)
+        bool solid = body.densityAt(centre) >= ISO_LEVEL;
+        for (int k = 0; k < 8 && !solid; ++k) {
+            const Vector3 corner = Vector3Add(centre, Vector3Add(Vector3Scale(ax, (k & 1) ? h * 0.95f : -h * 0.95f),
+                                   Vector3Add(Vector3Scale(ay, (k & 2) ? h * 0.95f : -h * 0.95f), Vector3Scale(az, (k & 4) ? h * 0.95f : -h * 0.95f))));
+            solid = body.densityAt(corner) >= ISO_LEVEL;
         }
+        if (!solid) continue;
+        TerrainEdit e{};
+        e.center = centre;
+        e.carve = true;
+        e.box = true;
+        e.half = { h, h, h };
+        e.ax = ax; e.ay = ay; e.az = az;
+        e.radius = h * 1.7320508f; // its bounding reach (dirty chunks, trees, fluid)
+        edits.push_back(e);
     }
     if (!edits.empty()) ApplyTerrainEdits(body, edits.data(), edits.size());
 }

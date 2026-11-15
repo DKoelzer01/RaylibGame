@@ -243,6 +243,7 @@ int main(int argc, char** argv)
     bool benchTime = false;        // --test-time: dawn start (#259), a +6 h jump carries the player (#275)
     bool benchPickups = false;     // --test-pickups: the pickup feed (#208): repeats merge, a screenshot while it shows
     bool shotInventory = false;    // --shot-inventory: long item names in their cells (#219)
+    bool benchFoundation = false;  // --test-foundation: a part half in the ground clears its cell and nothing else (#210)
     int pickupFrames = 0;
     int timeStep = 0, timeFrames = 0; float timeElev0 = 0.0f; Vector3 timeLocal0 = { 0, 0, 0 }; bool timeOk = true;
     bool benchWater = false;       // --test-water: rivers and ponds near the start, their beds and clay
@@ -460,6 +461,7 @@ int main(int argc, char** argv)
         if (std::string(argv[i]) == "--test-time") benchTime = true;
         if (std::string(argv[i]) == "--test-pickups") benchPickups = true;
         if (std::string(argv[i]) == "--shot-inventory") shotInventory = true;
+        if (std::string(argv[i]) == "--test-foundation") benchFoundation = true;
         if (std::string(argv[i]) == "--test-water") benchWater = true;
         if (std::string(argv[i]) == "--test-flyfollow") benchFlyFollow = true;
         if (std::string(argv[i]) == "--test-hotbar") benchHotbar = true;
@@ -5796,6 +5798,36 @@ int main(int argc, char** argv)
             lastSwings = terrainTool.swings;
         }
 
+        // --test-foundation (#210): a block placed half into the ground 8 m ahead clears its own cell, and the ground just
+        // outside it (0.3 m beside and below) is untouched.
+        if (benchFoundation && gameState == 1 && !loading && WorldIdle()) {
+            benchFoundation = false;
+            Planetoid* p = world.objects.empty() ? nullptr : dynamic_cast<Planetoid*>(world.objects[0].get());
+            const Vector3 feet = (player.position - world.renderOrigin).toFloat();
+            const Vector3 flat = Vector3Normalize(Vector3Subtract(player.forward, Vector3Scale(player.up, Vector3DotProduct(player.forward, player.up))));
+            TerrainHit th;
+            const Vector3 above = Vector3Add(Vector3Add(feet, Vector3Scale(flat, 8.0f)), Vector3Scale(player.up, 6.0f));
+            if (!p || !RaycastTerrain(world, Ray{ above, Vector3Negate(player.up) }, 200.0f, th)) { printf("bench: foundation: no ground -> FAIL\n"); }
+            else {
+                if (!p->plots) p->plots = std::make_unique<PlotSet>();
+                Plot* plot = p->plots->plotFor(th.local, 0.0f, true);
+                const Int3 cell = plot->cellAt(plot->toPlot(th.local));
+                auto at = [&](float fx, float fy, float fz) { return plot->toBody({ (cell.x + fx) * kCellSize, (cell.y + fy) * kCellSize, (cell.z + fz) * kCellSize }); };
+                // Probes: the cell's centre and lower middle (inside); 0.3 m outside each side face and under the bottom.
+                const float o = 0.3f / kCellSize;
+                const Vector3 inside[2] = { at(0.5f, 0.5f, 0.5f), at(0.5f, 0.15f, 0.5f) };
+                const Vector3 outside[5] = { at(-o, 0.2f, 0.5f), at(1.0f + o, 0.2f, 0.5f), at(0.5f, 0.2f, -o), at(0.5f, 0.2f, 1.0f + o), at(0.5f, -o, 0.5f) };
+                float before[5];
+                for (int k = 0; k < 5; ++k) before[k] = p->densityAt(outside[k]);
+                const bool placed = BuildTool_Place(*p, *plot, { PartType::Cube, cell, 0 }, false);
+                bool cleared = true, kept = true;
+                for (const Vector3& v : inside) cleared &= p->densityAt(v) < ISO_LEVEL;
+                float worst = 0.0f;
+                for (int k = 0; k < 5; ++k) { const float d = fabsf(p->densityAt(outside[k]) - before[k]); worst = std::max(worst, d); kept &= d < 0.02f; }
+                printf("bench: foundation: placed %s, its cell cleared %s, ground 0.3 m outside unchanged %s (largest change %.3f) -> %s\n",
+                       placed ? "yes" : "NO", cleared ? "yes" : "NO", kept ? "yes" : "NO", worst, placed && cleared && kept ? "PASS" : "FAIL");
+            }
+        }
         // --shot-inventory (#219): the inventory with long item names (cut to fit; they scroll on hover).
         if (shotInventory && gameState == 1 && !loading && WorldIdle()) {
             static int f = 0;

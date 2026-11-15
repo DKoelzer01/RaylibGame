@@ -99,6 +99,11 @@ struct TerrainEdit {
     bool carve = false;
     bool softOnly = false; // carve: only soft ground (dirt, sand, gravel, snow); rock stays (no pickaxe)
     int paint = -1;        // adding: the VoxelMaterial the added ground is made of (-1: the field's own)
+    // Carve an oriented box instead of the sphere (#210: a part's cells, exactly): half extents along the unit axes
+    // ax/ay/az (body-local), centred on `center`. Set `radius` to its bounding reach (the half extents' length): the
+    // dirty-chunk, tree and fluid bounds use it.
+    bool box = false;
+    Vector3 half{ 0, 0, 0 }, ax{ 1, 0, 0 }, ay{ 0, 1, 0 }, az{ 0, 0, 1 };
 };
 #include "terraindeltas.h"
 

@@ -94,7 +94,17 @@ void TerrainDeltas::chunksIn(Vector3 loPos, Vector3 hiPos, std::vector<std::pair
 void TerrainDeltasBuilder::apply(const TerrainEdit& e, const DensityField& field, std::unordered_set<TerrainDeltas::Key>* touched) {
     next->strokes++;
     // A carve also lowers solid points just outside the sphere, so the meshed surface sits on it.
-    const float r = e.carve ? e.radius + 1.0f : e.radius; // 1 m: enough on the 0.25 m lattice (2 m touched 8 delta chunks a stroke)
+    const float reach = e.box ? sqrtf(e.half.x * e.half.x + e.half.y * e.half.y + e.half.z * e.half.z) : e.radius;
+    const float r = e.carve ? reach + 1.0f : reach; // 1 m: enough on the 0.25 m lattice (2 m touched 8 delta chunks a stroke)
+    // Signed distance to the carved shape (the sphere, or the oriented box, #210): < 0 inside.
+    auto shapeDist = [&](float dx, float dy, float dz, float dist) {
+        if (!e.box) return dist - e.radius;
+        const float lx = fabsf(dx * e.ax.x + dy * e.ax.y + dz * e.ax.z) - e.half.x;
+        const float ly = fabsf(dx * e.ay.x + dy * e.ay.y + dz * e.ay.z) - e.half.y;
+        const float lz = fabsf(dx * e.az.x + dy * e.az.y + dz * e.az.z) - e.half.z;
+        const float ox = std::max(lx, 0.0f), oy = std::max(ly, 0.0f), oz = std::max(lz, 0.0f);
+        return sqrtf(ox * ox + oy * oy + oz * oz) + std::min(std::max(lx, std::max(ly, lz)), 0.0f);
+    };
     const int x0 = (int)floorf((e.center.x - r) / kVoxelSize), x1 = (int)ceilf((e.center.x + r) / kVoxelSize); // lattice indices
     const int y0 = (int)floorf((e.center.y - r) / kVoxelSize), y1 = (int)ceilf((e.center.y + r) / kVoxelSize); // lattice indices
     const int z0 = (int)floorf((e.center.z - r) / kVoxelSize), z1 = (int)ceilf((e.center.z + r) / kVoxelSize); // lattice indices
@@ -112,7 +122,8 @@ void TerrainDeltasBuilder::apply(const TerrainEdit& e, const DensityField& field
                 const float t = 1.0f - dist / r;
                 float add = e.strength * t * t * (3.0f - 2.0f * t);
                 float carveTo = 0.0f; // carve: the density this point may have at most
-                if (e.carve) carveTo = ISO_LEVEL + DENSITY_GRADIENT * (dist - e.radius);
+                const float sd = e.carve ? shapeDist(dx, dy, dz, dist) : 0.0f;
+                if (e.carve) carveTo = ISO_LEVEL + DENSITY_GRADIENT * sd;
                 const int cx = (int)floorf((float)x / kDeltaChunk), cy = (int)floorf((float)y / kDeltaChunk), cz = (int)floorf((float)z / kDeltaChunk);
                 const TerrainDeltas::Key k = TerrainDeltas::KeyOf(cx, cy, cz);
                 if (k != chunkKey) {
@@ -140,7 +151,7 @@ void TerrainDeltasBuilder::apply(const TerrainEdit& e, const DensityField& field
                     if (e.softOnly && (base + v * kDeltaStep) >= ISO_LEVEL && !IsSoft(was)) continue;
                     if (base + v * kDeltaStep > carveTo) {
                         chunk->set(i, (int16_t)std::clamp((int)lroundf((carveTo - base) / kDeltaStep), -32767, 32767));
-                        if (dist < e.radius) chunk->setMat(i, 0); // dug out: what is exposed below shows its own material
+                        if (sd < 0.0f) chunk->setMat(i, 0); // dug out: what is exposed below shows its own material
                     }
                 } else {
                     chunk->set(i, (int16_t)std::clamp((int)lroundf(v + add / kDeltaStep), -32767, 32767));
