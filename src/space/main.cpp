@@ -6,6 +6,7 @@
 #include <vector>
 #include <random>
 #include <chrono>
+#include <thread>
 #include <array>
 #include "terrainarena.h"
 #include "mainmenu.h"
@@ -13,6 +14,7 @@
 #include "playerinput.h"
 #include "playersession.h"
 #include "netid.h"
+#include "net.h"
 #include "scene.h"
 #include "object.h"
 #include "utils/logger.h"
@@ -338,6 +340,7 @@ int main(int argc, char** argv)
     bool benchMachines = false; int machPhase = 0; double machStart = 0.0; // --test-machines (#193 #194 #229)
     bool benchHover = false; int hoverPhase = 0; double hoverStart = 0.0; // --test-hover (#163)
     bool benchNetIds = false;      // --test-netids: stable network ids over a save and load (#317)
+    bool benchNet = false;         // --test-net: connect by IP over loopback (GameNetworkingSockets, #310)
     bool benchFall = false; int fallPhase = 0, fallIdx = 0; bool fallOk = true; double fallStart = 0.0; // --test-fall (#263)
     bool benchTeleClose = false; int teleCPhase = 0; double teleCStart = 0.0, teleCWorst = 0.0; long long teleCReq0 = 0; // --test-telescope-close (#261)
     DVec3 wallLast{};
@@ -477,6 +480,7 @@ int main(int argc, char** argv)
         if (std::string(argv[i]) == "--test-machines") benchMachines = true; // fuel slot, crafts consumed at the end, the boiler's water and heat
         if (std::string(argv[i]) == "--test-hover") benchHover = true; // the flight pack (#163)
         if (std::string(argv[i]) == "--test-netids") benchNetIds = true; // stable network ids (#317)
+        if (std::string(argv[i]) == "--test-net") benchNet = true; // loopback connect (#310)
         if (std::string(argv[i]) == "--test-fall") benchFall = true; // drops from 3-100 m: fall damage by height
         if (std::string(argv[i]) == "--test-telescope-close") benchTeleClose = true; // zoom 16x at the horizon, close: worst frame after (#261)
         if (std::string(argv[i]) == "--test-menus") benchMenus = true;
@@ -1783,6 +1787,37 @@ int main(int argc, char** argv)
                         printf("bench: hover: caught the 100 m fall, health %.0f; hovering %.0f m up, drifted %.2f m in 3 s, suit power %.1f -> %s\n",
                                survival.health, height, drift, survival.power, pass ? "PASS" : "FAIL");
                         player.hovering = false; benchHover = false;
+                    }
+                } else if (benchNet && WorldIdle()) {
+                    // --test-net (#310): host on a loopback port and connect to it from the same process; a reliable message
+                    // goes out and its echo comes back. SKIP when built without ENABLE_GNS.
+                    benchNet = false;
+                    std::string err;
+                    if (!Net_Available()) printf("bench: net: built without ENABLE_GNS -> SKIP\n");
+                    else if (!Net_Init(err)) printf("bench: net: init failed (%s) -> FAIL\n", err.c_str());
+                    else {
+                        const uint16_t port = 27315;
+                        const bool hosting = Net_Host(port);
+                        const uint32_t client = hosting ? Net_Connect(TextFormat("127.0.0.1:%d", port)) : 0;
+                        bool sent = false, echoed = false, served = false;
+                        const double t0 = GetTime();
+                        while (client && GetTime() - t0 < 5.0 && !echoed) {
+                            Net_Poll();
+                            if (!sent && Net_IsConnected(client)) { const char hi[] = "hello"; sent = Net_Send(client, hi, sizeof(hi), true); }
+                            std::vector<NetMessage> in;
+                            Net_Receive(in);
+                            for (const NetMessage& m : in) {
+                                const std::string text(m.data.begin(), m.data.end());
+                                if (m.conn != client && text.rfind("hello", 0) == 0) { const char back[] = "echo"; served = Net_Send(m.conn, back, sizeof(back), true); }
+                                else if (m.conn == client && text.rfind("echo", 0) == 0) echoed = true;
+                            }
+                            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+                        }
+                        const int conns = Net_ConnectionCount();
+                        printf("bench: net: listen on %d %s, client connected %s, server echoed %s, echo back %s in %.0f ms (%d connections) -> %s\n", port,
+                               hosting ? "yes" : "no", sent ? "yes" : "no", served ? "yes" : "no", echoed ? "yes" : "no", (GetTime() - t0) * 1000.0, conns,
+                               hosting && sent && served && echoed ? "PASS" : "FAIL");
+                        Net_Shutdown();
                     }
                 } else if (benchNetIds && WorldIdle()) {
                     // --test-netids (#317): bodies carry their creation-order ids; animals get allocated ids that survive a save
@@ -5528,7 +5563,7 @@ int main(int argc, char** argv)
                         }
                         benchWalkSeconds = 0.0;
                     }
-                } else if ((WorldIdle() && benchDigStrokes == 0 && !benchPaint && !benchSaveLoad && benchWalkSeconds <= 0.0 && benchMineStrokes == 0 && minePhase != 2 && benchFlySeconds <= 0.0 && !benchSuffocate && benchOrbitSeconds <= 0.0 && !benchRide && !benchPark && !benchGravity && !benchPrecision && !benchMantle && !benchAirJump && !benchMoon && !benchHole && !benchWall && !benchDoorway && !benchLedge && !benchTor && !benchMachines && !benchFall && !benchHover && !benchNetIds && !benchTeleClose && !benchMenus && !benchWater && !benchFlyFollow && !benchHotbar && !benchInventory && !benchMap && !benchViewmodel && !benchQuests && !benchHunger && !benchFarm && !benchAnimals && !benchThreats && benchShotTabs == 0 && !benchForest && !benchFlow && !benchPond && !benchBucket && !benchPump && !benchTerrain && !benchShelter && !benchRoom && !benchFacing && !benchShadow && !benchParticles && !benchBiomes && !benchOil && !benchSpring && !benchShotAnimals && !benchShotMachines && benchShotBiomes < 0 && !benchFarForest && !benchRecipes && !benchWeather && !benchDecor && !benchMaterials && !benchDamage && !benchCrafting && !benchSuit && !benchTools && !benchRivers && !benchRing && !benchRocket && !benchStation && !benchBlueprint && !benchSmallBody && !benchTrees && !benchChop && benchPersist == 0 && benchBuild == 0 && benchFactory == 0 && !benchProgression) || GetTime() > 600.0) {
+                } else if ((WorldIdle() && benchDigStrokes == 0 && !benchPaint && !benchSaveLoad && benchWalkSeconds <= 0.0 && benchMineStrokes == 0 && minePhase != 2 && benchFlySeconds <= 0.0 && !benchSuffocate && benchOrbitSeconds <= 0.0 && !benchRide && !benchPark && !benchGravity && !benchPrecision && !benchMantle && !benchAirJump && !benchMoon && !benchHole && !benchWall && !benchDoorway && !benchLedge && !benchTor && !benchMachines && !benchFall && !benchHover && !benchNetIds && !benchNet && !benchTeleClose && !benchMenus && !benchWater && !benchFlyFollow && !benchHotbar && !benchInventory && !benchMap && !benchViewmodel && !benchQuests && !benchHunger && !benchFarm && !benchAnimals && !benchThreats && benchShotTabs == 0 && !benchForest && !benchFlow && !benchPond && !benchBucket && !benchPump && !benchTerrain && !benchShelter && !benchRoom && !benchFacing && !benchShadow && !benchParticles && !benchBiomes && !benchOil && !benchSpring && !benchShotAnimals && !benchShotMachines && benchShotBiomes < 0 && !benchFarForest && !benchRecipes && !benchWeather && !benchDecor && !benchMaterials && !benchDamage && !benchCrafting && !benchSuit && !benchTools && !benchRivers && !benchRing && !benchRocket && !benchStation && !benchBlueprint && !benchSmallBody && !benchTrees && !benchChop && benchPersist == 0 && benchBuild == 0 && benchFactory == 0 && !benchProgression) || GetTime() > 600.0) {
                     benchStart = GetTime();
                     printf("bench: world ready after %.2f s (%d chunks, avg build %.2f ms of which sampling %.2f ms, %d worker threads)\n",
                         GetWorldStats().lastGenerationSeconds, GetWorldStats().chunks, GetWorldStats().avgBuildMs, GetWorldStats().avgSampleMs, GetWorldStats().workerThreads);

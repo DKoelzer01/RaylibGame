@@ -12,6 +12,11 @@ endif()
 option(USE_SYSTEM_RAYLIB "Link a prebuilt raylib at RAYLIB_PATH instead of fetching raylib 5.5" OFF)
 set(RAYLIB_PATH "C:/raylib/raylib" CACHE PATH "raylib source tree containing src/libraylib.a (USE_SYSTEM_RAYLIB only)")
 option(ENABLE_TRACY "Build with the Tracy profiler client (connect with tracy-profiler v0.11.1)" OFF)
+# Multiplayer transport (#310): Valve's GameNetworkingSockets, prebuilt with this compiler (static, BCrypt crypto, protobuf
+# 3.21): GNS_ROOT holds include/steam/*.h, lib/libGameNetworkingSockets_s.a and lib/libprotobuf.a. Off: src/engine/net.*
+# builds as stubs (Net_Available() false).
+option(ENABLE_GNS "Build with GameNetworkingSockets (multiplayer transport) from GNS_ROOT" OFF)
+set(GNS_ROOT "" CACHE PATH "Prebuilt GameNetworkingSockets + protobuf (ENABLE_GNS only)")
 set(GAME_OUTPUT_DIR "${CMAKE_SOURCE_DIR}" CACHE PATH "Where game.exe is written (default: repo root, which is also the working directory they expect)")
 
 include(FetchContent)
@@ -77,6 +82,15 @@ target_link_libraries(engine PUBLIC raylib imgui)
 target_compile_definitions(engine PUBLIC PLATFORM_DESKTOP)
 if(ENABLE_TRACY)
     target_link_libraries(engine PUBLIC Tracy::TracyClient) # also defines TRACY_ENABLE for everything
+endif()
+if(ENABLE_GNS)
+    if(NOT EXISTS "${GNS_ROOT}/lib/libGameNetworkingSockets_s.a" OR NOT EXISTS "${GNS_ROOT}/lib/libprotobuf.a")
+        message(FATAL_ERROR "ENABLE_GNS: GNS_ROOT (${GNS_ROOT}) needs lib/libGameNetworkingSockets_s.a and lib/libprotobuf.a")
+    endif()
+    target_include_directories(engine PUBLIC "${GNS_ROOT}/include")
+    target_compile_definitions(engine PUBLIC RAYLIBGAME_GNS STEAMNETWORKINGSOCKETS_STATIC_LINK)
+    target_link_libraries(engine PUBLIC "${GNS_ROOT}/lib/libGameNetworkingSockets_s.a" "${GNS_ROOT}/lib/libprotobuf.a"
+        ws2_32 winmm bcrypt iphlpapi crypt32)
 endif()
 if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
     target_compile_options(engine PRIVATE -Wall -Wno-missing-braces -ffp-contract=off) # no FMA contraction: the GPU terrain port (terrain.glsl) matches the CPU bit for bit
