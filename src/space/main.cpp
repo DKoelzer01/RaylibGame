@@ -1331,11 +1331,14 @@ int main(int argc, char** argv)
                         p->trees->setRemovals(p->trees->removals()); // rebuild its tiles at the new time
                         chopPhase = 4; chopStart = GetTime();
                         chopSaved = savedGone;
-                    } else if (chopPhase == 4 && GetTime() - chopStart > 3.0) {
+                    } else if (chopPhase == 4 && GetTime() - chopStart > 1.0) {
+                        // The tiles rebuild on worker threads: poll up to 20 s (a fixed 3 s missed it under load, #465).
                         const bool back = present(chopId);
-                        printf("bench: chop: %.0f min later it has regrown: %s -> %s\n", (kRegrowDelay + kRegrowTime) / 60.0, back ? "yes" : "no",
-                               chopFelled && chopSaved && back ? "PASS" : "FAIL");
-                        benchChop = false;
+                        if (back || GetTime() - chopStart >= 20.0) {
+                            printf("bench: chop: %.0f min later it has regrown: %s (after %.1f s) -> %s\n", (kRegrowDelay + kRegrowTime) / 60.0, back ? "yes" : "no",
+                                   GetTime() - chopStart, chopFelled && chopSaved && back ? "PASS" : "FAIL");
+                            benchChop = false;
+                        }
                     }
                 } else if (benchTrees && (treePhase > 0 || WorldIdle())) {
                     // --test-trees: walk into the nearest tree trunk; the player must stop at its bark.
