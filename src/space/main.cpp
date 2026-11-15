@@ -256,6 +256,7 @@ int main(int argc, char** argv)
     bool benchFlowSea = false; // --test-flow-sea (#190): the flow test from the sea instead of inland water
     bool benchFlow = false; int flowPhase = 0; double flowStart = 0.0, flowEdit = 0.0, flowReachT = -1.0, flowCaveT = -1.0, flowSleepT = -1.0; Vector3 flowDir{}, flowOut{}, flowEnd{}, flowCave{}; float flowLevel = 0.0f; // --test-flow
     float damDrift = 0.0f; // --test-dam: the current mid-channel (0: the check failed)
+    bool benchPartWall = false; int pwPhase = 0; double pwT0 = 0.0; Plot* pwPlot = nullptr; std::vector<int> pwParts; bool pwHeld = false, pwWestWet = false; // --test-part-wall (#391)
     bool benchDam = false; int damPhase = 0; double damT0 = 0.0; Vector3 damDir{}, damDown{}, damSide{}, damUp{}, damDn{}; float damLevel = 0.0f, damHW = 0.0f, damDepth = 0.0f, damCrest = 0.0f, damLvU = 0.0f, damLvD = 0.0f, damMaxU = -1e9f, damMinD = 1e9f, damLateD = -1e9f; // --test-dam (#361)
     bool benchForest = false; int forestPhase = 0; double forestStart = 0.0; Vector3 forestCam{}, forestTarget{}, forestUp{}; bool outcropHigh = false; // --shot-forest (--outcrop-high: the highest outcrop in range, not the nearest)
     bool benchRecipes = false; // --test-recipes
@@ -453,6 +454,7 @@ int main(int argc, char** argv)
         if (std::string(argv[i]) == "--outcrop-high") outcropHigh = true;
         if (std::string(argv[i]) == "--test-flow") benchFlow = true;
         if (std::string(argv[i]) == "--test-dam") benchDam = true; // #361: a dam backs a river up and it spills over
+        if (std::string(argv[i]) == "--test-part-wall") benchPartWall = true; // #391: a wall of build blocks holds water
         if (std::string(argv[i]) == "--test-flow-sea") { benchFlow = true; benchFlowSea = true; } // #190: the channel from the sea
         if (std::string(argv[i]) == "--test-pond") benchPond = true;
         if (std::string(argv[i]) == "--test-bucket") benchBucket = true;
@@ -3836,6 +3838,61 @@ int main(int argc, char** argv)
                             h0 = 0.0f;
                         }
                     }
+                } else if (benchPartWall && (pwPhase > 0 || WorldIdle())) {
+                    // --test-part-wall (#391): a trench on dry ground with a wall of stone blocks across its middle; water
+                    // poured into the west half stays there while the wall stands, and runs east once it is taken down.
+                    Planetoid* p = dynamic_cast<Planetoid*>(world.objects[0].get());
+                    const PlanetField* pf = p ? dynamic_cast<const PlanetField*>(p->field.get()) : nullptr;
+                    if (!pf) { printf("bench: part-wall: needs the planet -> FAIL\n"); benchPartWall = false; }
+                    else {
+                        auto at = [&](float x, float y) { return pwPlot->toBody({ x, y, 0.0f }); }; // along the trench (plot east), metres
+                        const double t = GetTime() - pwT0;
+                        if (pwPhase == 0) {
+                            const Vector3 d = StartSpawnDir(*p);
+                            // The real ground (the 3D terrain stands up to metres over the height map): first solid down the column.
+                            float gh = pf->elevation(d) + 8.0f;
+                            while (gh > pf->elevation(d) - 8.0f && p->densityAt(Vector3Scale(d, pf->radius + gh)) < ISO_LEVEL) gh -= 0.1f;
+                            const Vector3 here = Vector3Scale(d, pf->radius + gh);
+                            if (!p->plots) p->plots = std::make_unique<PlotSet>();
+                            pwPlot = p->plots->plotFor(here, 0.0f, true);
+                            // The trench: 16 m along the plot's east axis, ~2.8 m wide, its floor ~2.4 m down.
+                            std::vector<TerrainEdit> cut;
+                            for (float x = -8.0f; x <= 8.0f; x += 0.8f) { cut.push_back({ at(x, -1.0f), 1.4f, -1.0f, true }); cut.push_back({ at(x, 0.2f), 1.4f, -1.0f, true }); } // open to the sky
+                            ApplyTerrainEdits(*p, cut.data(), cut.size());
+                            // The wall: 1 m stone blocks across it at x = 0, from 4 m down to 1 m up, 4 m to either side.
+                            for (int y = -8; y <= 2; y += 2)
+                                for (int z = -8; z <= 6; z += 2) {
+                                    const int idx = pwPlot->place({ PartType::Block, { -1, y, z }, 0, (uint8_t)std::max(0, BuildMaterialForItem("stone")) });
+                                    if (idx >= 0) pwParts.push_back(idx);
+                                }
+                            for (float x : { -6.5f, -4.5f, -2.5f }) Fluid::Pour(*p, at(x, -1.5f), 6.0f); // into the west half (a pour fills one column, <= 6 m^3)
+                            sunOverride = true; sunArg = p->dirToWorld(Vector3Normalize(Vector3Add(Vector3Normalize(here), Vector3Scale(pwPlot->north, 0.4f)))); // midday
+                            printf("bench: part-wall: trench dug, %zu blocks in the wall, 18 m^3 poured west of it\n", pwParts.size());
+                            player.flyMode = true;
+                            pwPhase = 1; pwT0 = GetTime();
+                        } else {
+                            // Watch from above the wall, looking along the trench.
+                            const Vector3 up = Vector3Normalize(at(0.0f, 0.0f));
+                            world.camera.position = p->toWorld(Vector3Add(at(5.0f, 6.0f), Vector3Scale(pwPlot->north, 6.0f))); world.camera.target = p->toWorld(at(-2.0f, -1.5f));
+                            world.camera.up = p->dirToWorld(up);
+                            player.position = world.renderOrigin + world.camera.position;
+                            auto wetAt = [&](float x) { for (float y = -2.6f; y <= -0.8f; y += 0.2f) if (Fluid::Wet(*p, at(x, y))) return true; return false; };
+                            const bool west = wetAt(-4.0f), east = wetAt(4.0f);
+                            if (pwPhase == 1 && t > 25.0) {
+                                pwWestWet = west; pwHeld = west && !east;
+                                TakeScreenshot("bench_part_wall.png");
+                                printf("bench: part-wall: after 25 s the west half is %s, the east half %s -> %s\n", west ? "wet" : "dry", east ? "wet" : "dry", pwHeld ? "held" : "NOT held");
+                                for (int idx : pwParts) pwPlot->remove(idx);
+                                pwPhase = 2; pwT0 = GetTime();
+                            } else if (pwPhase == 2 && (east || t > 30.0)) {
+                                TakeScreenshot("bench_part_wall_open.png");
+                                printf("bench: part-wall: wall removed: the east half is %s after %.1f s -> %s\n", east ? "wet" : "dry", t,
+                                       pwHeld && east ? "PASS" : "FAIL");
+                                printf("bench: part-wall: bench_part_wall.png, bench_part_wall_open.png\n");
+                                benchPartWall = false;
+                            }
+                        }
+                    }
                 } else if (benchDam && (damPhase > 0 || WorldIdle())) {
                     // --test-dam (#361, Plan 7 step 7 gate): build a dam across the nearest small river. Adding ground into the
                     // river releases its reach: the water backs up behind the dam, the reach below it drains, and once the pool
@@ -5534,7 +5591,7 @@ int main(int argc, char** argv)
                         }
                         benchWalkSeconds = 0.0;
                     }
-                } else if ((WorldIdle() && benchDigStrokes == 0 && !benchPaint && !benchSaveLoad && benchWalkSeconds <= 0.0 && benchMineStrokes == 0 && minePhase != 2 && benchFlySeconds <= 0.0 && !benchSuffocate && benchOrbitSeconds <= 0.0 && !benchRide && !benchPark && !benchGravity && !benchPrecision && !benchMantle && !benchAirJump && !benchMoon && !benchHole && !benchWall && !benchDoorway && !benchLedge && !benchTor && !benchMachines && !benchFall && !benchHover && !benchTeleClose && !benchMenus && !benchWater && !benchFlyFollow && !benchHotbar && !benchInventory && !benchMap && !benchViewmodel && !benchQuests && !benchHunger && !benchFarm && !benchAnimals && !benchThreats && benchShotTabs == 0 && !benchForest && !benchFlow && !benchDam && !benchPond && !benchBucket && !benchPump && !benchTerrain && !benchShelter && !benchRoom && !benchFacing && !benchShadow && !benchParticles && !benchBiomes && !benchOil && !benchSpring && !benchShotAnimals && !benchShotMachines && benchShotBiomes < 0 && !benchFarForest && !benchRecipes && !benchWeather && !benchDecor && !benchMaterials && !benchDamage && !benchCrafting && !benchSuit && !benchTools && !benchRivers && !benchRing && !benchRocket && !benchStation && !benchBlueprint && !benchSmallBody && !benchTrees && !benchChop && benchPersist == 0 && benchBuild == 0 && benchFactory == 0 && !benchProgression) || GetTime() > 600.0) {
+                } else if ((WorldIdle() && benchDigStrokes == 0 && !benchPaint && !benchSaveLoad && benchWalkSeconds <= 0.0 && benchMineStrokes == 0 && minePhase != 2 && benchFlySeconds <= 0.0 && !benchSuffocate && benchOrbitSeconds <= 0.0 && !benchRide && !benchPark && !benchGravity && !benchPrecision && !benchMantle && !benchAirJump && !benchMoon && !benchHole && !benchWall && !benchDoorway && !benchLedge && !benchTor && !benchMachines && !benchFall && !benchHover && !benchTeleClose && !benchMenus && !benchWater && !benchFlyFollow && !benchHotbar && !benchInventory && !benchMap && !benchViewmodel && !benchQuests && !benchHunger && !benchFarm && !benchAnimals && !benchThreats && benchShotTabs == 0 && !benchForest && !benchFlow && !benchDam && !benchPartWall && !benchPond && !benchBucket && !benchPump && !benchTerrain && !benchShelter && !benchRoom && !benchFacing && !benchShadow && !benchParticles && !benchBiomes && !benchOil && !benchSpring && !benchShotAnimals && !benchShotMachines && benchShotBiomes < 0 && !benchFarForest && !benchRecipes && !benchWeather && !benchDecor && !benchMaterials && !benchDamage && !benchCrafting && !benchSuit && !benchTools && !benchRivers && !benchRing && !benchRocket && !benchStation && !benchBlueprint && !benchSmallBody && !benchTrees && !benchChop && benchPersist == 0 && benchBuild == 0 && benchFactory == 0 && !benchProgression) || GetTime() > 600.0) {
                     benchStart = GetTime();
                     printf("bench: world ready after %.2f s (%d chunks, avg build %.2f ms of which sampling %.2f ms, %d worker threads)\n",
                         GetWorldStats().lastGenerationSeconds, GetWorldStats().chunks, GetWorldStats().avgBuildMs, GetWorldStats().avgSampleMs, GetWorldStats().workerThreads);

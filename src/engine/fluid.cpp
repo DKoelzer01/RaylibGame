@@ -3,6 +3,7 @@
 #include "gpucompute.h"
 #include "jobsystem.h"
 #include "object.h"
+#include "plots.h"
 #include "rivers.h"
 #include "terraindeltas.h"
 #include "voxel.h"
@@ -124,11 +125,42 @@ struct Site {
     }
 };
 
+// Build parts as solid for water (#391): an immutable copy of each plot's solid cells, made on the main thread when a
+// plot's version changes and read by the classification jobs. A fluid cell is solid when any of seven points in it
+// (its centre and +-0.35 m along the plot's axes) lies in a solid part cell: plot cells are 0.5 m and turned against
+// the site's grid, so one block's wall at any angle still holds water.
+struct PlotSnap {
+    uint32_t id = 0, version = 0;
+    Vector3 origin{}, east{}, up{}, north{}, centre{};
+    float radius = 0.0f;                 // a sphere around its solid cells (body-local), for a quick reject
+    std::unordered_set<Int3> solid;      // plot cells whose shape holds the cell's centre
+    bool cellSolid(Vector3 q) const {
+        const Vector3 d = Vector3Subtract(q, origin);
+        const Int3 c{ (int)floorf(Vector3DotProduct(d, east) / kCellSize), (int)floorf(Vector3DotProduct(d, up) / kCellSize), (int)floorf(Vector3DotProduct(d, north) / kCellSize) };
+        return solid.count(c) > 0;
+    }
+};
+struct PartSolid {
+    std::vector<PlotSnap> plots;
+    bool solidAt(Vector3 c) const {
+        for (const PlotSnap& p : plots) {
+            if (Vector3DistanceSqr(c, p.centre) > (p.radius + 1.0f) * (p.radius + 1.0f)) continue;
+            if (p.cellSolid(c)) return true;
+            const Vector3 ax[3] = { p.east, p.up, p.north };
+            for (const Vector3& a : ax)
+                if (p.cellSolid(Vector3Add(c, Vector3Scale(a, 0.35f))) || p.cellSolid(Vector3Subtract(c, Vector3Scale(a, 0.35f)))) return true;
+        }
+        return false;
+    }
+};
+
 struct BodyRef {
     std::shared_ptr<const DensityField> field;
     std::shared_ptr<const TerrainDeltas> edits;
     const PlanetField* pf = nullptr;
+    std::shared_ptr<const PartSolid> parts; // build parts (#391), or null
 };
+std::unordered_map<uint64_t, std::shared_ptr<const PartSolid>> partSnaps; // per body (main thread): its plots' solid cells (#391)
 
 struct Command { int kind; uint64_t body; Vector3 c; float r, m3; int fluid = 0; float head = 0.0f; }; // 0 edit, 1 take, 2 pour, 3 add a source (r = rate m^3/s); fluid = the kind
 
@@ -201,7 +233,7 @@ void Classify(const Site& s, Brick& b, const BodyRef& ref, uint8_t& faces) {
                 const int i = Idx(x, y, z);
                 const Vector3 c = s.cellCentre(ci, cj, b.bk * B + z);
                 const float r = Vector3Length(c);
-                const bool solid = r < top && ref.field->density(c, ref.edits.get()) >= ISO_LEVEL;
+                const bool solid = (r < top && ref.field->density(c, ref.edits.get()) >= ISO_LEVEL) || (ref.parts && ref.parts->solidAt(c)); // build parts hold water too (#391)
                 uint8_t fl = solid ? kSolid : 0;
                 // Dug: open only because of an edit. Infinite water feeds only these (the real ground has
                 // crags the height map doesn't: natural dips by a river are not to be flooded).
@@ -1041,6 +1073,7 @@ void Fluid::Reset() {
     WaitIdle();
     std::lock_guard<std::mutex> lock(simMx);
     GpuReset(); // the GPU pool forgets its bricks (before the sites holding them go)
+    partSnaps.clear(); // build parts are read again from the new world (#391)
     sites.clear();
     refs.clear();
     stepCount = 0;
@@ -1135,11 +1168,75 @@ int Fluid::KindByName(const std::string& id) {
     return -1;
 }
 
+// Build parts (#391), main thread: each body's plots are copied into an immutable PartSolid when a plot's version
+// changes; the cells that became solid or open are sent as terrain-edit commands (2 m buckets), so the bricks there
+// are reclassified, a site starts where parts go into water, and solid added into a river releases the reach (#361).
+static void UpdatePartSnaps(Scene& world) {
+    for (auto& o : world.objects) {
+        Planetoid* p = dynamic_cast<Planetoid*>(o.get());
+        if (!p || !p->plots || !dynamic_cast<const PlanetField*>(p->field.get())) continue;
+        const auto old = partSnaps.find(p->id);
+        bool same = old != partSnaps.end() && old->second->plots.size() == p->plots->plots.size();
+        if (same)
+            for (size_t i = 0; i < p->plots->plots.size() && same; ++i)
+                same = old->second->plots[i].id == p->plots->plots[i]->id && old->second->plots[i].version == p->plots->plots[i]->version;
+        if (same) continue;
+        auto snap = std::make_shared<PartSolid>();
+        for (const auto& pl : p->plots->plots) {
+            PlotSnap ps;
+            ps.id = pl->id; ps.version = pl->version;
+            ps.origin = pl->origin.toFloat(); ps.east = pl->east; ps.up = pl->up; ps.north = pl->north;
+            Vector3 lo{ 1e30f, 1e30f, 1e30f }, hi{ -1e30f, -1e30f, -1e30f };
+            for (const auto& [cell, ref] : pl->cells) {
+                bool in = ref.shape.full;
+                if (!in) { // a sloped or cut shape: solid where it holds the cell's centre
+                    in = true;
+                    for (int k = 0; k < ref.shape.planes; ++k) in = in && Vector3DotProduct(ref.shape.n[k], { 0.5f, 0.5f, 0.5f }) <= ref.shape.d[k];
+                }
+                if (!in) continue;
+                ps.solid.insert(cell);
+                const Vector3 c = pl->toBody({ (cell.x + 0.5f) * kCellSize, (cell.y + 0.5f) * kCellSize, (cell.z + 0.5f) * kCellSize });
+                lo = Vector3Min(lo, c); hi = Vector3Max(hi, c);
+            }
+            if (ps.solid.empty()) continue;
+            ps.centre = Vector3Scale(Vector3Add(lo, hi), 0.5f);
+            ps.radius = Vector3Distance(lo, hi) * 0.5f + kCellSize;
+            snap->plots.push_back(std::move(ps));
+        }
+        // What changed: solid cells added or removed, per plot, as edit commands bucketed to 2 m.
+        std::unordered_map<int64_t, std::pair<Vector3, bool>> buckets;
+        auto note = [&](const PlotSnap& ps, const Int3& cell, bool added) {
+            const Vector3 c = Vector3Add(ps.origin, Vector3Add(Vector3Add(Vector3Scale(ps.east, (cell.x + 0.5f) * kCellSize), Vector3Scale(ps.up, (cell.y + 0.5f) * kCellSize)), Vector3Scale(ps.north, (cell.z + 0.5f) * kCellSize)));
+            const int64_t k = Key((int)floorf(c.x / 2.0f), (int)floorf(c.y / 2.0f), (int)floorf(c.z / 2.0f));
+            auto it = buckets.find(k);
+            if (it == buckets.end()) buckets[k] = { c, added }; else it->second.second = it->second.second || added;
+        };
+        const PartSolid* prev = old != partSnaps.end() ? old->second.get() : nullptr;
+        for (const PlotSnap& ps : snap->plots) {
+            const PlotSnap* was = nullptr;
+            if (prev) for (const PlotSnap& q : prev->plots) if (q.id == ps.id) was = &q;
+            for (const Int3& c : ps.solid) if (!was || !was->solid.count(c)) note(ps, c, true);
+            if (was) for (const Int3& c : was->solid) if (!ps.solid.count(c)) note(ps, c, false);
+        }
+        if (prev)
+            for (const PlotSnap& q : prev->plots) {
+                bool kept = false;
+                for (const PlotSnap& ps : snap->plots) kept = kept || ps.id == q.id;
+                if (!kept) for (const Int3& c : q.solid) note(q, c, false); // a whole plot gone
+            }
+        partSnaps[p->id] = snap;
+        if (old == partSnaps.end() && buckets.size() > 4096) continue; // a load: nothing moved yet, sites classify with it
+        std::lock_guard<std::mutex> c(cmdMx);
+        for (const auto& [k, v] : buckets) commands.push_back({ 0, p->id, v.first, 1.6f, v.second ? 1.0f : 0.0f });
+    }
+}
+
 void Fluid::Update(Scene& world, float dt) {
     // A step every 50 ms when the last one has finished (the job owns the state while it runs).
     accum += dt;
     if (accum < kTickSeconds || running.load()) return;
     accum = std::min(accum - kTickSeconds, 0.1);
+    UpdatePartSnaps(world); // build parts placed or removed: refresh the water there (#391)
     bool work;
     { std::lock_guard<std::mutex> c(cmdMx); work = !commands.empty(); }
     {
@@ -1159,7 +1256,10 @@ void Fluid::Update(Scene& world, float dt) {
         { std::lock_guard<std::mutex> c(cmdMx); for (auto& cm : commands) ids.insert(cm.body); }
         refs.clear();
         for (uint64_t id : ids)
-            if (Planetoid* p = Planetoid::find(id)) refs[id] = { p->field, p->edits, dynamic_cast<const PlanetField*>(p->field.get()) };
+            if (Planetoid* p = Planetoid::find(id)) {
+                auto ps = partSnaps.find(id);
+                refs[id] = { p->field, p->edits, dynamic_cast<const PlanetField*>(p->field.get()), ps != partSnaps.end() ? ps->second : nullptr };
+            }
     }
     // GPU substeps: twice the CPU's - the order-independent GPU step moves water one cell a substep, where the
     // CPU's in-place sweep carried it several cells along the sweep.

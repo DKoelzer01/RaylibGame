@@ -86,6 +86,7 @@ planet() {
     RAYLIBGAME_EROSION=1 run --seed 42 --bench 5 --test-flow-sea # the erosion bake's rivers (#190; the noise terrain's river mouths stand over the sea)
     RAYLIBGAME_EROSION=1 run --seed 42 --bench 3 --test-dam # #361: a dam backs a released river reach up and it spills over (eroded valleys)
     run --seed 42 --bench 3 --test-pond
+    run --seed 42 --bench 3 --test-part-wall # #391: a wall of build blocks holds water; taken down, the water runs on
     run --seed 42 --bench 3 --test-bucket
     run --seed 42 --bench 3 --test-pump
     run --seed 42 --bench 5 --test-pump-hand
