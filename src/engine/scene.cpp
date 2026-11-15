@@ -657,6 +657,9 @@ void Scene::drawScene(int gamestate) {
         rlEnableBackfaceCulling();
         rlEnableDepthMask();
         GpuTimer_Mark("sky");
+        // Local lights (#139): kept, binned into screen tiles and uploaded now that the view and projection are set.
+        LocalLights_Upload(localLights, camera.position);
+        LocalLights_Bind(lighting.shader);
 
         // Far pass: bodies whose nearest possible surface is beyond kFarSplit (the moon, the ring,
         // the planet seen from orbit) are drawn first with clip planes fitted to them, then the depth
@@ -740,6 +743,7 @@ void Scene::drawScene(int gamestate) {
             }
             rlSetUniform(GetShaderLocation(sh, "torchPos"), torch, RL_SHADER_UNIFORM_VEC4, 1);
             rlSetUniform(GetShaderLocation(sh, "torchColor"), torchCol, RL_SHADER_UNIFORM_VEC4, 1);
+            LocalLights_Bind(sh); // lamps, campfires, glowing machines (#139)
             rlActiveTextureSlot(0);
         };
         if (parts.shader.id > 0) {

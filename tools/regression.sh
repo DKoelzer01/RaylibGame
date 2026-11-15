@@ -47,6 +47,7 @@ planet() {
     run --seed 42 --bench 3 --test-machines
     run --test-machine-stack
     run --seed 42 --bench 3 --test-torch
+    run --seed 42 --bench 5 --test-lamps
     run --seed 42 --bench 3 --test-animal-path
     run --seed 42 --bench 3 --test-progression
     run --seed 42 --bench 3 --test-progression full

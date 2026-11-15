@@ -346,6 +346,7 @@ void main()
         }
         direct += (albedo * NdotL + spec) * lights[i].color.rgb * shadow * atten;
     }
+    direct += albedo * localLights(fragPosition, normal); // lamps, campfires, glowing machines (#139)
 
     // Ambient occlusion (#132) darkens the ambient term only: dug holes and crevices read under flat sky light.
     float occlusionAO = 1.0 - 0.75 * clamp(fragOcclusion, 0.0, 1.0);

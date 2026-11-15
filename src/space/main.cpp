@@ -254,6 +254,7 @@ int main(int argc, char** argv)
     bool benchWall = false;        // --test-wall: walk into shaft and tunnel walls (no launches)
     bool benchDoorway = false; int doorPhase = 0, doorLane = 0; double doorStart = 0.0; uint32_t doorPlot = 0; bool doorPass[2] = { false, false }; // --test-doorway (#255): 2 m openings pass, 1.5 m ones block
     bool benchMenus = false;       // --test-menus: main menu, new game, pause, save & quit, load
+    bool benchLamps = false;       // --test-lamps: 100 lamp cubes light the ground (#139)
     bool benchGiant = false;       // --shot-giant: one tree of each size class (#274)
     bool benchTorch = false;       // --test-torch: a held torch lights the ground (#218)
     bool benchTime = false;        // --test-time: dawn start (#259), a +6 h jump carries the player (#275)
@@ -486,6 +487,7 @@ int main(int argc, char** argv)
         if (std::string(argv[i]) == "--test-time") benchTime = true;
         if (std::string(argv[i]) == "--test-torch") benchTorch = true;
         if (std::string(argv[i]) == "--shot-giant") benchGiant = true;
+        if (std::string(argv[i]) == "--test-lamps") benchLamps = true;
         if (std::string(argv[i]) == "--test-pickups") benchPickups = true;
         if (std::string(argv[i]) == "--shot-inventory") shotInventory = true;
         if (std::string(argv[i]) == "--test-foundation") benchFoundation = true;
@@ -5882,6 +5884,7 @@ int main(int argc, char** argv)
         if (crackCheck) world.drawSkybox = false;
         if (crackCheck) world.clearColor = MAGENTA;
         while (world.lights.size() < 4) world.lights.push_back(Light{});
+        if (gameState == 1) Ambience_GatherLights(world); else world.localLights.clear(); // lamps, campfires, fire machines (#139)
         {   // Slot 3: a torch in hand (#218), a flickering point light at the hand; it burns down while held in the game.
             static float burnt = 0.0f;
             Light& torch = world.lights[3];
@@ -6126,6 +6129,52 @@ int main(int argc, char** argv)
                 if (have) { TakeScreenshot(TextFormat("bench_tree_%d.png", cls)); }
                 gf = 0; have = false;
                 if (++cls == kTreeClasses) { printf("bench: giant: done (bench_tree_0..3.png)\n"); benchGiant = false; }
+            }
+        }
+        // --test-lamps (#139): at the dawn start (dark), 100 lamp cubes on a 2 m grid round the player light the ground.
+        if (benchLamps && gameState == 1 && !loading && WorldIdle()) {
+            static int lf = 0;
+            static double lumOff = 0.0;
+            static int placed = 0;
+            auto groundLum = [](const char* file) {
+                Image im = LoadImage(file);
+                ImageFormat(&im, PIXELFORMAT_UNCOMPRESSED_R8G8B8A8);
+                const Color* px = (const Color*)im.data;
+                double sum = 0.0; int n = 0;
+                for (int y = im.height * 5 / 10; y < im.height * 9 / 10; y += 2)
+                    for (int x = im.width * 2 / 10; x < im.width * 8 / 10; x += 2) { const Color c = px[y * im.width + x]; sum += 0.2126 * c.r + 0.7152 * c.g + 0.0722 * c.b; ++n; }
+                UnloadImage(im);
+                return n ? sum / n : 0.0;
+            };
+            Planetoid* p = dynamic_cast<Planetoid*>(world.objects[0].get());
+            ++lf;
+            if (lf == 5) { player.flyMode = false; player.spawnOn(world, *p, StartSpawnDir(*p)); }
+            if (lf >= 8 && lf < 70) player.forward = Vector3Normalize(Vector3Subtract(Vector3Scale(Vector3Normalize(Vector3Subtract(player.forward, Vector3Scale(player.up, Vector3DotProduct(player.forward, player.up)))), 0.8f), Vector3Scale(player.up, 0.6f)));
+            if (lf == 25) {
+                TakeScreenshot("bench_lamps_off.png"); lumOff = groundLum("bench_lamps_off.png");
+                const auto* pf = dynamic_cast<const PlanetField*>(p->field.get());
+                const Vector3 me = p->toLocal((player.position - world.renderOrigin).toFloat());
+                const Vector3 up = Vector3Normalize(me);
+                const Vector3 t1 = Vector3Normalize(Vector3CrossProduct(up, fabsf(up.y) < 0.9f ? Vector3{ 0, 1, 0 } : Vector3{ 1, 0, 0 }));
+                const Vector3 t2 = Vector3CrossProduct(t1, up);
+                if (!p->plots) p->plots = std::make_unique<PlotSet>();
+                const int lampMat = BuildMaterialForItem("lamp");
+                Plot* pl = p->plots->plotFor(me, 0.0f, true);
+                for (int i = -5; i < 5; ++i)
+                    for (int j = -5; j < 5; ++j) {
+                        if (abs(2 * i + 1) <= 1 && abs(2 * j + 1) <= 1) continue; // not on the player
+                        const Vector3 d = Vector3Normalize(Vector3Add(me, Vector3Add(Vector3Scale(t1, 2.0f * i + 1.0f), Vector3Scale(t2, 2.0f * j + 1.0f))));
+                        const Vector3 at = Vector3Scale(d, pf->radius + pf->elevation(d) + 0.3f);
+                        placed += pl->place(Part{ PartType::Cube, pl->cellAt(pl->toPlot(at)), 0, (uint8_t)std::max(0, lampMat) }) >= 0 ? 1 : 0;
+                    }
+            }
+            if (lf == 60) {
+                TakeScreenshot("bench_lamps.png");
+                const double lumOn = groundLum("bench_lamps.png");
+                const bool ok = placed >= 90 && LocalLights_Count() >= 90 && lumOn > lumOff + 6.0;
+                printf("bench: lamps: %d lamp cubes placed, %d local lights uploaded (busiest tile %d), ground luminance %.1f -> %.1f: %s\n",
+                       placed, LocalLights_Count(), LocalLights_MaxPerTile(), lumOff, lumOn, ok ? "PASS" : "FAIL");
+                benchLamps = false;
             }
         }
         // --test-torch (#218): at the dawn start (still dark), the ground in front gets brighter with a torch in hand.

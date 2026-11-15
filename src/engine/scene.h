@@ -12,6 +12,7 @@
 #include "rlgl.h"
 #include "raymath.h"
 #include "rlights.h"
+#include "locallights.h"
 
 #include <string>
 #include <vector>
@@ -50,6 +51,7 @@ class Scene {
         Camera3D camera{}; // Camera for the scene
 
         std::vector<Light> lights; // Array of lights in the scene
+        std::vector<LocalLight> localLights; // lamps, campfires, glowing machines, render space: filled by the game each frame (#139)
         HotShader lighting{ "resources/lighting.vs", "resources/lighting.fs" };
         HotShader depth{ "resources/depth.vs", "resources/depth.fs" };
         HotShader water{ "resources/water.vs", "resources/water.fs" };
