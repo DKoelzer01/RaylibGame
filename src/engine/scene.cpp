@@ -364,7 +364,50 @@ void Scene::drawScene(int gamestate) {
     // The shadow light direction is held fixed in the ground's frame and moved in steps (0.12 deg, every ~1.2 s on
     // Terra): following the sun every frame slid the whole texel grid across the ground (~1.5 near texels/s),
     // which showed as shadows rippling and shimmering. Shading still uses the true sun.
-    Vector3 shadowSun = Vector3Normalize(sunDirection);
+    // Moonlight (#224): with the sun well under the horizon and the moon over it, the directional light (and its shadow
+    // cascades) follows the moon: cool, a few percent of the sun times its phase. The sky keeps the real sun. The switch
+    // happens deep in twilight, where both lights are ~0, so it never pops; the moon's strength rises from there.
+    lightDirection = Vector3Normalize(sunDirection);
+    moonLight = 0.0f;
+    if (atmosphere.enabled) {
+        const Vector3 rel = Vector3Subtract(camera.position, atmosphere.centre);
+        const float d = Vector3Length(rel);
+        if (d > 1e-3f) {
+            const Vector3 up = Vector3Scale(rel, 1.0f / d);
+            const float sSun = Vector3DotProduct(up, lightDirection);
+            const float night = std::clamp((-0.04f - sSun) / 0.08f, 0.0f, 1.0f); // ~-2.3 deg .. -6.9 deg
+            if (night > 0.0f)
+                for (auto& obj : objects) {
+                    const auto* m = dynamic_cast<const Planetoid*>(obj.get());
+                    if (!m || m->kind != BodyKind::Moon) continue;
+                    const Vector3 toMoon = Vector3Normalize(Vector3Subtract(m->position, camera.position));
+                    const float sMoon = Vector3DotProduct(up, toMoon);
+                    if (sMoon <= 0.02f) continue; // under the horizon
+                    // The lit fraction seen from here: (1 - cos(elongation)) / 2 (full opposite the sun).
+                    moonPhase = 0.5f * (1.0f - Vector3DotProduct(toMoon, Vector3Normalize(sunDirection)));
+                    if (night >= 0.5f) {
+                        lightDirection = toMoon;
+                        moonLight = std::clamp((night - 0.5f) / 0.5f, 0.0f, 1.0f) * std::clamp((sMoon - 0.02f) / 0.1f, 0.0f, 1.0f);
+                    }
+                    break;
+                }
+            // RAYLIBGAME_MOON_FORCE=1 (tests, #224): a full moon 45 deg up whenever it is night, wherever the moon really is.
+            static const bool forceMoon = getenv("RAYLIBGAME_MOON_FORCE") && getenv("RAYLIBGAME_MOON_FORCE")[0] == '1';
+            if (forceMoon && night >= 0.5f) {
+                Vector3 east = Vector3CrossProduct({ 0, 1, 0 }, up);
+                east = Vector3LengthSqr(east) > 1e-6f ? Vector3Normalize(east) : Vector3{ 1, 0, 0 };
+                lightDirection = Vector3Normalize(Vector3Add(up, east));
+                moonPhase = 1.0f;
+                moonLight = std::clamp((night - 0.5f) / 0.5f, 0.0f, 1.0f);
+            }
+        }
+    }
+    {   // RAYLIBGAME_MOON_LOG=1: the moon light's state every ~2 s (#224 tuning)
+        static const bool moonLog = getenv("RAYLIBGAME_MOON_LOG") && getenv("RAYLIBGAME_MOON_LOG")[0] == '1';
+        static int frame = 0;
+        if (moonLog && ++frame % 120 == 0) printf("moon: light %.2f, phase %.2f, %s\n", moonLight, moonPhase, moonLight > 0.0f ? "the moon lights" : "the sun lights (or nothing)");
+    }
+    Vector3 shadowSun = lightDirection;
     if (ground) {
         const Vector3 trueLocal = ground->dirToLocal(shadowSun);
         if (shadowSunBody != ground->id || Vector3DotProduct(trueLocal, shadowSunLocal) < cosf(0.12f * DEG2RAD)) { shadowSunLocal = trueLocal; shadowSunBody = ground->id; }
@@ -419,8 +462,17 @@ void Scene::drawScene(int gamestate) {
                 tint = { expf(-0.012f * mass * air), expf(-0.032f * mass * air), expf(-0.075f * mass * air) };
             }
         }
-        lights[0].color = { (unsigned char)(k * tint.x), (unsigned char)(k * tint.y), (unsigned char)std::min(255.0f, (k + 6.0f) * tint.z), 255 };
-        sunFade = { 1.0f - tint.x, 1.0f - tint.y, 1.0f - tint.z }; // the same tint for grass, trees, parts and instances
+        if (moonLight > 0.0f || Vector3DotProduct(lightDirection, Vector3Normalize(sunDirection)) < 0.999f) {
+            // The moon (#224): cool and dim (RAYLIBGAME_MOONLIGHT_DIRECT scales it; 0.025 of the sun at full moon).
+            static const float direct = getenv("RAYLIBGAME_MOONLIGHT_DIRECT") ? (float)atof(getenv("RAYLIBGAME_MOONLIGHT_DIRECT")) : 0.025f;
+            const float m = direct * moonLight * std::clamp(0.15f + 0.85f * moonPhase, 0.0f, 1.0f) * (1.0f - 0.7f * std::clamp(weatherCloud, 0.0f, 1.0f));
+            tint = { 0.62f * m, 0.72f * m, 0.95f * m };
+            lights[0].color = { (unsigned char)std::lround(255.0f * tint.x), (unsigned char)std::lround(255.0f * tint.y), (unsigned char)std::lround(255.0f * tint.z), 255 };
+            sunFade = { 1.0f - tint.x, 1.0f - tint.y, 1.0f - tint.z };
+        } else {
+            lights[0].color = { (unsigned char)(k * tint.x), (unsigned char)(k * tint.y), (unsigned char)std::min(255.0f, (k + 6.0f) * tint.z), 255 };
+            sunFade = { 1.0f - tint.x, 1.0f - tint.y, 1.0f - tint.z }; // the same tint for grass, trees, parts and instances
+        }
     }
 
     // --- Shadow pass ---
@@ -538,7 +590,7 @@ void Scene::drawScene(int gamestate) {
         // daylight; the old nights (0) were a little too dark: open ground dim, unlit interiors near black. RAYLIBGAME_MOONLIGHT
         // scales it (1 = the first strength, 0 = the old nights).
         static const float moonScale = getenv("RAYLIBGAME_MOONLIGHT") ? (float)atof(getenv("RAYLIBGAME_MOONLIGHT")) : 0.25f;
-        effAmbient = Vector3Add(effAmbient, Vector3Scale({ 0.055f, 0.07f, 0.105f }, (1.0f - day) * atmDensity * moonScale));
+        effAmbient = Vector3Add(effAmbient, Vector3Scale({ 0.055f, 0.07f, 0.105f }, (1.0f - day) * atmDensity * moonScale * (1.0f - 0.5f * moonLight))); // half of it while the moon lights directly (#224)
         // Weather: cloud cover greys the haze and lifts the (diffuse) ambient a little; ground fog
         // thickens the haze near the ground.
         const Vector3 grey = Vector3Scale({ 0.30f, 0.32f, 0.35f }, day);
@@ -642,11 +694,11 @@ void Scene::drawScene(int gamestate) {
         ctx.sunOccluderLoc = locSunOccluder;
         ctx.scenePalette = materialPalette;
         ctx.cameraPos = camera.position;
-        ctx.sunDir = sun;
+        ctx.sunDir = sun; // far bodies and rings: lit by the real sun (the moon light is for the ground around the player, #224)
         ctx.ambient = effAmbient;
         if (farSphere.shader.id > 0) {
             Shader& fs = farSphere.shader;
-            SetShaderValue(fs, GetShaderLocation(fs, "sunDir"), &sun, SHADER_UNIFORM_VEC3);
+            SetShaderValue(fs, GetShaderLocation(fs, "sunDir"), &lightDirection, SHADER_UNIFORM_VEC3);
             SetShaderValue(fs, GetShaderLocation(fs, "viewPos"), &camera.position, SHADER_UNIFORM_VEC3);
             SetShaderValue(fs, GetShaderLocation(fs, "ambient"), &effAmbient, SHADER_UNIFORM_VEC3);
             const float fshell[4] = { atmosphere.centre.x, atmosphere.centre.y, atmosphere.centre.z,
@@ -687,7 +739,7 @@ void Scene::drawScene(int gamestate) {
             Shader& ps = parts.shader;
             const float pshell[4] = { atmosphere.centre.x, atmosphere.centre.y, atmosphere.centre.z,
                                       atmosphere.enabled && effFogDensity < 0.06f ? atmosphere.radius + atmosphere.hazeHeight : 0.0f };
-            SetShaderValue(ps, GetShaderLocation(ps, "sunDir"), &sun, SHADER_UNIFORM_VEC3);
+            SetShaderValue(ps, GetShaderLocation(ps, "sunDir"), &lightDirection, SHADER_UNIFORM_VEC3);
             SetShaderValue(ps, GetShaderLocation(ps, "sunFade"), &sunFade, SHADER_UNIFORM_VEC3);
             SetShaderValue(ps, GetShaderLocation(ps, "viewPos"), &camera.position, SHADER_UNIFORM_VEC3);
             SetShaderValue(ps, GetShaderLocation(ps, "ambient"), &effAmbient, SHADER_UNIFORM_VEC3);
@@ -706,7 +758,7 @@ void Scene::drawScene(int gamestate) {
             Shader& ws = water.shader;
             const float now = (float)fmod(GameClock(), 3600.0);
             SetShaderValue(ws, GetShaderLocation(ws, "viewPos"), &camera.position, SHADER_UNIFORM_VEC3);
-            SetShaderValue(ws, GetShaderLocation(ws, "sunDir"), &sun, SHADER_UNIFORM_VEC3);
+            SetShaderValue(ws, GetShaderLocation(ws, "sunDir"), &lightDirection, SHADER_UNIFORM_VEC3);
             SetShaderValue(ws, GetShaderLocation(ws, "skyColor"), &skyHorizon, SHADER_UNIFORM_VEC3);
             SetShaderValue(ws, GetShaderLocation(ws, "fogColor"), &effFog, SHADER_UNIFORM_VEC3);
             SetShaderValue(ws, GetShaderLocation(ws, "fogDensity"), &effFogDensity, SHADER_UNIFORM_FLOAT);
@@ -755,7 +807,7 @@ void Scene::drawScene(int gamestate) {
             const float now = (float)fmod(GameClock(), 3600.0);
             const float shell[4] = { atmosphere.centre.x, atmosphere.centre.y, atmosphere.centre.z,
                                      atmosphere.enabled && effFogDensity < 0.06f ? atmosphere.radius + atmosphere.hazeHeight : 0.0f };
-            rlSetUniform(GetShaderLocation(ts, "sunDir"), &sun, RL_SHADER_UNIFORM_VEC3, 1);
+            rlSetUniform(GetShaderLocation(ts, "sunDir"), &lightDirection, RL_SHADER_UNIFORM_VEC3, 1);
             rlSetUniform(GetShaderLocation(ts, "sunFade"), &sunFade, RL_SHADER_UNIFORM_VEC3, 1);
             rlSetUniform(GetShaderLocation(ts, "viewPos"), &camera.position, RL_SHADER_UNIFORM_VEC3, 1);
             rlSetUniform(GetShaderLocation(ts, "ambient"), &effAmbient, RL_SHADER_UNIFORM_VEC3, 1);
@@ -835,7 +887,7 @@ void Scene::drawScene(int gamestate) {
             const float fadeEnd = kGrassDrawDistance;
             const float shell[4] = { atmosphere.centre.x, atmosphere.centre.y, atmosphere.centre.z,
                                      atmosphere.enabled && effFogDensity < 0.06f ? atmosphere.radius + atmosphere.hazeHeight : 0.0f };
-            rlSetUniform(GetShaderLocation(gs, "sunDir"), &sun, RL_SHADER_UNIFORM_VEC3, 1);
+            rlSetUniform(GetShaderLocation(gs, "sunDir"), &lightDirection, RL_SHADER_UNIFORM_VEC3, 1);
             rlSetUniform(GetShaderLocation(gs, "sunFade"), &sunFade, RL_SHADER_UNIFORM_VEC3, 1);
             rlSetUniform(GetShaderLocation(gs, "viewPos"), &camera.position, RL_SHADER_UNIFORM_VEC3, 1);
             rlSetUniform(GetShaderLocation(gs, "ambient"), &effAmbient, RL_SHADER_UNIFORM_VEC3, 1);
@@ -899,7 +951,7 @@ void Scene::drawScene(int gamestate) {
         // Extra drawing (animals, machine details, particles) gets the frame's lighting: sun shadows and the headlamp
         // binder, sun, ambient and fog (InstanceBatch uses them).
         frameLighting = setFoliageLighting;
-        frameSun = sun; frameAmbient = effAmbient; frameFog = effFog; frameFogDensity = effFogDensity; frameAmbientUp = hemiUp;
+        frameSun = lightDirection; frameAmbient = effAmbient; frameFog = effFog; frameFogDensity = effFogDensity; frameAmbientUp = hemiUp;
         frameFogShell = { atmosphere.centre.x, atmosphere.centre.y, atmosphere.centre.z, atmosphere.enabled && effFogDensity < 0.06f ? atmosphere.radius + atmosphere.hazeHeight : 0.0f };
         if (onDraw3D) onDraw3D();
         frameLighting = nullptr;
