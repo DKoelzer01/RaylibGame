@@ -163,7 +163,7 @@ board's auto-add workflow adds new issues itself, but sets no fields, so:
   now unclamped. The composite decodes, applies auto-exposure (log-average of a 64x36 sample grid, never brightens:
   nights stay as tuned), tonemaps (default "knee": today's look up to 0.8, highlights roll off; RAYLIBGAME_TONEMAP=aces|clip)
   and re-encodes. RAYLIBGAME_HDR=0 = the old RGBA8 target; RAYLIBGAME_EXPOSURE_LOG=1 prints exposure/luminance.
-- Multiplayer phase 1 (#304, PRs #435/#438/#440 and the net-id PR): gameplay runs in fixed 60 Hz steps (`simclock.h`:
+- Multiplayer phase 1 (#304, PRs #435, #438, #440, #442): gameplay runs in fixed 60 Hz steps (`simclock.h`:
   `SimTime()`/`SimDt()`, never `GetTime()` in sim code; the camera interpolates the player by `SimAlpha()`; mouse look is
   per frame). Gameplay reads `PlayerInput` (`playerinput.h`; `PlayerInput_Step()` in steps, `PlayerInput_Frame()` for the
   per-frame tools), never `IsKey*`/`IsMouse*`. Per-player state lives in `PlayerSession` (`player`, `inventory`, ... are
