@@ -3761,7 +3761,22 @@ int main(int argc, char** argv)
                             const bool claimed = Fluid::GetStats().basinBricks > 0; // the pond is simulated water (#360: no take-over)
                             const bool midDry = !Fluid::Wet(*p, pondMid), pitWet = Fluid::Wet(*p, pondPit);
                             const float vol = (float)Fluid::GetStats().volume;
-                            printf("bench: pond: settled after %.0f s: taken over %d, the top 0.3 m of the pond %s, the pit %s, %.1f m^3 of water\n", t, (int)claimed, midDry ? "drained" : "still full", pitWet ? "filled" : "dry", vol);
+                            printf("bench: pond: settled after %.0f s: taken over %d, the top 0.3 m of the pond %s, the pit %s, %.1f m^3 of water, %lld pond faces pinned at the site edge\n", t, (int)claimed, midDry ? "drained" : "still full", pitWet ? "filled" : "dry", vol, Fluid::GetStats().pinnedFaces);
+                            // #385: farming, animals and the map ask GeneratedWaterValid 0.2 m under the generated level. The
+                            // pond only drops ~0.35 m (its middle still holds water, and they rightly say so): judge a shore
+                            // column the drain left dry, its bed 0.05-0.25 m under the old level.
+                            bool readersDry = true;
+                            {
+                                float shore = -1.0f;
+                                for (float s = 0.0f; s <= pondRB + 4.0f && shore < 0.0f; s += 0.5f) {
+                                    const float bed = pf->elevation(along(-s));
+                                    if (bed > pondLevelB - 0.25f && bed < pondLevelB - 0.05f && !Fluid::Wet(*p, at(along(-s), bed + 0.05f))) shore = s;
+                                }
+                                if (shore >= 0.0f) {
+                                    readersDry = !Fluid::GeneratedWaterValid(p->id, at(along(-shore), pondLevelB - 0.2f));
+                                    printf("bench: pond: farming, animals and the map read the drained shore (%.1f m out) as %s -> %s\n", shore, readersDry ? "dry" : "water", readersDry ? "PASS" : "FAIL");
+                                } else printf("bench: pond: no drained shore column found to check the readers on\n");
+                            }
                             {   // #189: the taken-over pond keeps its bed: no trees grow in it.
                                 std::vector<Trunk> trunks;
                                 if (p->trees) p->trees->trunksNear(at(pondDirB, pondLevelB), pondRB * 0.8f, trunks);
@@ -3773,7 +3788,7 @@ int main(int argc, char** argv)
                             const bool loaded = saved && LoadWorldSave(world);
                             printf("bench: pond: saved %d, went 300 m away, loaded %d\n", (int)saved, (int)loaded);
                             pondPhase = 2; pondT0 = GetTime();
-                            pondRB = claimed && midDry && pitWet ? pondRB : -pondRB; // remember the first result
+                            pondRB = claimed && midDry && pitWet && readersDry ? pondRB : -pondRB; // remember the first result
                         }
                     } else if (pondPhase == 2) {
                         const Vector3 up = pondDirB;
