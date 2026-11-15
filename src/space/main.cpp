@@ -261,6 +261,7 @@ int main(int argc, char** argv)
     bool shotPreview = false;      // --shot-preview: the build preview in the part's real shape (#197)
     bool testInvCursor = false;    // --test-inv-cursor (#192)
     bool noHud = false;            // --no-hud: no HUD, hands or overlay in play (clean screenshots: the menu slides, #386)
+    bool testVein = false;         // --test-vein (#207)
     bool testContainerCursor = false; // --test-container-cursor (#192): a chest with the same slot behaviour as the inventory
     int testBugReport = 0;         // --test-bug-report (#169): frames since the scripted report was sent (0: not asked)
     int pickupFrames = 0;
@@ -485,6 +486,7 @@ int main(int argc, char** argv)
         if (std::string(argv[i]) == "--shot-preview") shotPreview = true;
         if (std::string(argv[i]) == "--test-inv-cursor") testInvCursor = true;
         if (std::string(argv[i]) == "--no-hud") noHud = true;
+        if (std::string(argv[i]) == "--test-vein") testVein = true;
         if (std::string(argv[i]) == "--test-container-cursor") testContainerCursor = true;
         if (std::string(argv[i]) == "--test-bug-report") testBugReport = 1;
         if (std::string(argv[i]) == "--test-saves") Menu_TestSaves();
@@ -5946,6 +5948,10 @@ int main(int argc, char** argv)
                 if (f == 38) { TakeScreenshot("bench_preview.png"); printf("bench: shot: bench_preview.png (a slope on the ground)\n"); }
                 if (f == 78) { TakeScreenshot("bench_preview_red.png"); printf("bench: shot: bench_preview_red.png (into the block)\n"); shotPreview = false; }
             }
+        }
+        if (testVein && gameState == 1 && !loading && WorldIdle()) { // #207
+            testVein = false;
+            if (auto* vp = dynamic_cast<Planetoid*>(world.objects[0].get())) TerrainTool_TestVein(*vp, StartSpawnDirLocal(*vp));
         }
         // --test-bug-report (#169): a scripted report to RAYLIBGAME_BUG_RELAY; BugReport_Update prints the relay's answer.
         if (testBugReport > 0 && gameState == 1 && !loading && WorldIdle()) {

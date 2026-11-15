@@ -41,6 +41,7 @@ class Planetoid;
 bool TerrainTool_DigAt(Planetoid& p, Vector3 local);              // tests: dig a point, gain what it held
 bool TerrainTool_HarvestNearest(Planetoid& p, Vector3 local, bool tree, bool stone = false); // tests: fell / harvest the nearest plant (or pick up stones)
 void TerrainTool_Draw3D();                                // inside BeginMode3D (Scene::onDraw3D)
+bool TerrainTool_TestVein(Planetoid& body, Vector3 homeDir); // --test-vein (#207): a deposit mined 93% by hand comes loose
 void TerrainTool_DrawHUD();                               // 2D, after the scene
 
 #endif

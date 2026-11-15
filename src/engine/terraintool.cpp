@@ -14,6 +14,7 @@
 #include <algorithm>
 #include <cstring>
 #include <map>
+#include <unordered_map>
 #include <string>
 
 
@@ -292,6 +293,97 @@ static bool PayFiller(int& paint) {
     return false;
 }
 
+// Ore veins (#207): once a deposit is ~92% mined, the rest comes out by itself (into the inventory, no tool wear). A deposit
+// is sampled once (1.5 m grid over its blob: the points that were ore, and their original density); later checks only
+// add the edits, so a check is ~1 ms. Noise pockets (small) are left as they are.
+namespace {
+    struct VeinSamples { std::vector<Vector3> pts; std::vector<float> base; bool done = false; };
+    std::unordered_map<uint64_t, VeinSamples> veinCache;
+}
+static void CheckOreVein(Planetoid& p, Vector3 local) {
+    const auto* pf = dynamic_cast<const PlanetField*>(p.field.get());
+    Vector3 c; float rad; int kind;
+    if (!pf || !pf->depositAt(local, c, rad, kind)) return;
+    const uint64_t key = p.id * 0x9e3779b97f4a7c15ull ^ ((uint64_t)(int64_t)floorf(c.x) * 73856093u) ^ ((uint64_t)(int64_t)floorf(c.y) * 19349663u) ^ ((uint64_t)(int64_t)floorf(c.z) * 83492791u);
+    VeinSamples& v = veinCache[key];
+    if (v.done) return;
+    constexpr float kStep = 1.5f;
+    if (v.pts.empty()) {
+        const float reach = rad * 1.4f;
+        for (float z = -reach; z <= reach; z += kStep)
+            for (float y = -reach; y <= reach; y += kStep)
+                for (float x = -reach; x <= reach; x += kStep) {
+                    if (x * x + y * y + z * z > reach * reach) continue;
+                    const Vector3 q = Vector3Add(c, { x, y, z });
+                    const float d = Vector3Length(q);
+                    if (d < 1.0f) continue;
+                    const float depth = pf->radius + pf->elevation(Vector3Scale(q, 1.0f / d)) - d;
+                    if (pf->oreKind(q, depth) != kind) continue;
+                    const float base = p.field->density(q, nullptr, 0.0f);
+                    if (base < ISO_LEVEL) continue; // a cave through it: never ore to mine
+                    v.pts.push_back(q);
+                    v.base.push_back(base);
+                }
+        if (v.pts.empty()) { v.done = true; return; }
+    }
+    std::vector<Vector3> left;
+    for (size_t i = 0; i < v.pts.size(); ++i)
+        if (v.base[i] + (p.edits ? p.edits->sample(v.pts[i]) : 0.0f) >= ISO_LEVEL) left.push_back(v.pts[i]);
+    if (v.pts.size() < 12 || (float)left.size() > 0.08f * (float)v.pts.size()) return;
+    v.done = true;
+    if (left.empty()) return;
+    std::vector<TerrainEdit> edits;
+    for (const Vector3& q : left) { TerrainEdit e{}; e.center = q; e.radius = 1.3f; e.carve = true; edits.push_back(e); } // 1.3 m: the whole 1.5 m cell (its diagonal), no ore left between
+    ApplyTerrainEdits(p, edits.data(), edits.size());
+    const char* item = PlanetField::OreKindName(kind);
+    const float amount = (float)left.size() * kStep * kStep * kStep * 2.0f * p.scale * p.scale * p.scale; // 2 items a m^3, as digging
+    if (item) {
+        inventory.addFractional(item, amount);
+        Toast(TextFormat("The rest of the vein comes loose: %.0f %s", amount, item));
+    }
+    Audio_Play(Sfx::Dig, 0.7f, 0.7f);
+}
+
+bool TerrainTool_TestVein(Planetoid& p, Vector3 home) {
+    // #207: the first deposit within ~400 m of `home` (a body-local direction) with enough ore: mine 93% of its ore samples
+    // directly, run the check: the rest must come loose and land in the inventory.
+    const auto* pf = dynamic_cast<const PlanetField*>(p.field.get());
+    if (!pf) return false;
+    const Vector3 t1 = Vector3Normalize(Vector3CrossProduct(home, { 0, 1, 0 })), t2 = Vector3CrossProduct(t1, home);
+    for (int a = -4; a <= 4; ++a)
+        for (int b = -4; b <= 4; ++b) {
+            const Vector3 d = Vector3Normalize(Vector3Add(home, Vector3Add(Vector3Scale(t1, a * 96.0f / pf->radius), Vector3Scale(t2, b * 96.0f / pf->radius))));
+            for (float depth = 6.0f; depth < 90.0f; depth += 12.0f) {
+                const Vector3 q = Vector3Scale(d, pf->radius + pf->elevation(d) - depth);
+                Vector3 c; float rad; int kind;
+                if (!pf->depositAt(q, c, rad, kind)) continue;
+                const float cd = Vector3Length(c);
+                const float cdepth = pf->radius + pf->elevation(Vector3Scale(c, 1.0f / cd)) - cd;
+                if (pf->oreKind(c, cdepth) != kind) continue; // its middle is ore (deep enough for the kind)
+                veinCache.clear();
+                CheckOreVein(p, c); // samples it (nothing mined: nothing happens)
+                const uint64_t key = p.id * 0x9e3779b97f4a7c15ull ^ ((uint64_t)(int64_t)floorf(c.x) * 73856093u) ^ ((uint64_t)(int64_t)floorf(c.y) * 19349663u) ^ ((uint64_t)(int64_t)floorf(c.z) * 83492791u);
+                VeinSamples& v = veinCache[key];
+                if (v.pts.size() < 40) continue;
+                std::vector<TerrainEdit> mine;
+                for (size_t i = 0; i < v.pts.size() * 93 / 100; ++i) { TerrainEdit e{}; e.center = v.pts[i]; e.radius = 0.8f; e.carve = true; mine.push_back(e); }
+                ApplyTerrainEdits(p, mine.data(), mine.size());
+                const char* item = PlanetField::OreKindName(kind);
+                const double before = inventory.amount(item);
+                CheckOreVein(p, c);
+                const double got = inventory.amount(item) - before;
+                size_t left = 0;
+                for (size_t i = 0; i < v.pts.size(); ++i) left += v.base[i] + (p.edits ? p.edits->sample(v.pts[i]) : 0.0f) >= ISO_LEVEL;
+                const bool ok = v.done && got > 0.0 && left == 0;
+                printf("bench: vein (#207): a %s deposit (r %.1f m, %zu ore samples), 93%% mined by hand: the rest came loose %s (+%.1f %s, %zu left) -> %s\n",
+                       item, rad, v.pts.size(), v.done ? "yes" : "NO", got, item, left, ok ? "PASS" : "FAIL");
+                return ok;
+            }
+        }
+    printf("bench: vein (#207): no deposit near the start -> FAIL\n");
+    return false;
+}
+
 // The old brush (debug): any material, soft-edged, yield by the brush volume.
 static bool BrushStroke(bool digging) {
     Planetoid& p = *hit.planetoid;
@@ -464,6 +556,8 @@ bool TerrainTool_Stroke(bool dig) {
     e.softOnly = softOnly;
     StrokeParticles(p, hit.local, hit.material, true);
     ApplyTerrainEdit(p, e);
+    if (!softOnly) for (int k = 0; k < PlanetField::kOreKindCount; ++k) // a stroke that took ore: the vein may be nearly done (#207)
+        if (const char* oreName = PlanetField::OreKindName(k); oreName && got.count(oreName)) { CheckOreVein(p, hit.local); break; }
     Audio_Play(Sfx::Dig, 0.5f, 0.85f + 0.3f * (float)GetRandomValue(0, 100) / 100.0f);
     ++terrainTool.swings;
     return true;

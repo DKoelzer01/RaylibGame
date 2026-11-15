@@ -1893,6 +1893,14 @@ int PlanetField::oreKind(Vector3 p, float depth) const {
     return -1;
 }
 
+bool PlanetField::depositAt(Vector3 p, Vector3& centre, float& radius, int& kind) const {
+    if (moon) return false;
+    const Deposit d = DepositOf((int)floorf(p.x / kDepositCell), (int)floorf(p.y / kDepositCell), (int)floorf(p.z / kDepositCell), oreSeed);
+    if (!d.exists) return false;
+    centre = d.centre; radius = d.radius; kind = d.kind;
+    return true;
+}
+
 int PlanetField::depositNear(Vector3 p, float reach) const {
     const int x0 = (int)floorf((p.x - reach) / kDepositCell), x1 = (int)floorf((p.x + reach) / kDepositCell);
     const int y0 = (int)floorf((p.y - reach) / kDepositCell), y1 = (int)floorf((p.y + reach) / kDepositCell);

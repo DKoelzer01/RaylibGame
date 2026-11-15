@@ -218,6 +218,9 @@ public:
     static const char* OreKindName(int kind);   // "iron_ore", "copper_ore", "tin_ore", "coal", "bauxite_ore", "ilmenite_ore"
     int oreKind(Vector3 p, float depth) const;
     int depositNear(Vector3 p, float reach) const; // the kind of a deposit within `reach` m, or -1 (miners)
+    // The ore deposit whose cell holds p (#207: a vein mined out): its centre, radius (the blob reaches ~1.35x it with its
+    // lumpiness) and kind; false if the cell has none.
+    bool depositAt(Vector3 p, Vector3& centre, float& radius, int& kind) const;
     // The kind of stone that rock is here (M21, building variety): an item id - marble in rare deep
     // pockets, basalt deep down and under the sea, granite in the mountains, sandstone on low coastal
     // land, limestone elsewhere (in broad regions).
