@@ -1044,7 +1044,10 @@ static void MarkWaterDirty(Planetoid& p, Vector3 lo, Vector3 hi, int mag, double
                     if (it == p.nodes.end()) continue;
                     Chunk& c = *it->second;
                     if (!c.waterDirty) { c.waterDirty = true; c.waterDirtySince = now; c.waterMag = 0; }
-                    c.waterMag = std::max(c.waterMag, mag);
+                    // Summed, not the largest (#469): each publish is a cell's change of 6+ units since it was last published,
+                    // so a slow rise came as 6-7 at a time and never reached a coarse node's gate (8+): it waited the 3 s
+                    // fallback. Jitter under 6 never publishes, so the sum doesn't add it up.
+                    c.waterMag = std::min(255, c.waterMag + mag);
                 }
     }
 }
@@ -1128,7 +1131,7 @@ static void UpdateWater(Scene& world) {
             c->waterDirty = false; c->waterBuiltAt = now;
             // No cache: a full build keeps one - unless no simulated water reaches the node (then nothing to redraw).
             const WaterField::SnapshotPtr snap = WaterField::Current();
-            const WaterField::ChunkSampler probe(snap.get(), p->id, lo, Vector3AddValue(lo, (CHUNK_SIZE + 1) * c->key.stride()));
+            const WaterField::ChunkSampler probe(snap.get(), p->id, lo, Vector3AddValue(lo, (CHUNK_SIZE + 1) * c->key.stride()), true);
             if (!probe.any()) continue;
             ++gWaterFullBuilds;
             RequestNode(*p, c->key, priority);

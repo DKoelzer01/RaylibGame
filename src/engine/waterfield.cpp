@@ -77,7 +77,7 @@ int CellFill(const Snapshot& s, uint64_t body, Vector3 local, int kind, float* f
 // Chunk sampler
 // ---------------------------------------------------------------------------------------------
 
-ChunkSampler::ChunkSampler(const Snapshot* snap, uint64_t body, Vector3 lo, Vector3 hi) {
+ChunkSampler::ChunkSampler(const Snapshot* snap, uint64_t body, Vector3 lo, Vector3 hi, bool probeOnly) {
     blend = Vector3Distance(lo, hi) < 70.0f; // a box up to ~40 m across (levels 0-2): coarser samples are wider apart than a cell (#381)
     if (!snap) return;
     for (const Site& site : snap->sites) {
@@ -111,6 +111,7 @@ ChunkSampler::ChunkSampler(const Snapshot* snap, uint64_t body, Vector3 lo, Vect
         if (!found) continue;
         sites.push_back(&site);
         kindMask |= kinds;
+        if (probeOnly) return; // any() is all the caller asks (#381 review: the caches cost up to ~1 MB a call)
         // Dense caches over the box (+2 cells: the blend reads the next column, surfaces read their side neighbours).
         Dense d;
         for (int a = 0; a < 3; ++a) { d.c0[a] = (int)floorf(mn[a]) - 2; d.n[a] = (int)floorf(mxv[a]) + 3 - d.c0[a]; }

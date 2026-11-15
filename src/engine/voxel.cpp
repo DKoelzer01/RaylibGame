@@ -1611,6 +1611,30 @@ static void MeshChunkWater(const DensityField& field, ChunkMeshData& out, const 
     std::vector<Vector3> wv;
     std::vector<int> wi;
     std::vector<int> cache((size_t)S * S * S * 3);
+    // Coarse-first sampling (#381), level-0 chunks only: the coarse lattice lines and, per axis, the blocks a sample lies in
+    // (one between two coarse lines, two on a shared line), the corner lines of the first and its fraction between them
+    // (0 or 1 on a shared line, where the blocks agree).
+    const bool coarse = kWaterCoarse && S >= 4 && out.key.level == 0;
+    std::vector<int> cc, A0, A1, Lo, Hi, work;
+    std::vector<float> T;
+    std::vector<char> mixed, done; // per block: holds a surface (1) or was taken in (2); per sample: exact
+    int NB = 0;
+    if (coarse) {
+        for (int v = 0; v < S - 1; v += 2) cc.push_back(v);
+        cc.push_back(S - 1);
+        NB = (int)cc.size() - 1;
+        auto isC = [&](int v) { return (v & 1) == 0 || v == S - 1; };
+        A0.resize(S); A1.resize(S); Lo.resize(S); Hi.resize(S); T.resize(S);
+        for (int v = 0; v < S; ++v) {
+            if (!isC(v)) A0[v] = A1[v] = (v - 1) / 2;
+            else if (v == S - 1) A0[v] = A1[v] = NB - 1;
+            else { A0[v] = std::max(0, v / 2 - 1); A1[v] = std::min(NB - 1, v / 2); }
+            Lo[v] = cc[A0[v]]; Hi[v] = cc[A0[v] + 1];
+            T[v] = (float)(v - Lo[v]) / (float)(Hi[v] - Lo[v]);
+        }
+        mixed.resize((size_t)NB * NB * NB);
+        done.resize((size_t)S * S * S);
+    }
     for (int kind = 0; kind < 8; ++kind) {
         const bool simKind = (kinds >> kind) & 1;
         const bool genKind = kind == 0 && genAny;
@@ -1627,10 +1651,7 @@ static void MeshChunkWater(const DensityField& field, ChunkMeshData& out, const 
             return w;
         };
         long long exactCount = 0;
-        std::vector<int> cc;      // coarse lattice lines (coarse sampling)
-        std::vector<char> mixed;  // per block: holds (or nearly holds) a surface
-        int NB = 0;
-        if (!kWaterCoarse || S < 4) {
+        if (!coarse) {
             for (int z = 0; z < S; ++z)
                 for (int y = 0; y < S; ++y)
                     for (int x = 0; x < S; ++x, ++k) wd[k] = exact(x, y, z);
@@ -1638,17 +1659,21 @@ static void MeshChunkWater(const DensityField& field, ChunkMeshData& out, const 
         } else {
             // Coarse first (#381): the samples on every other lattice line (and the last), then the 2-sample blocks between
             // them. A block whose 8 corners are all on one side of the surface, a quarter metre or more from it, holds no
-            // surface (within one interpolation piece the field is multilinear: it stays between its corners); its other
-            // samples are interpolated, not asked. Blocks with a corner near or across the surface are sampled in full, so
-            // every cube that makes triangles has exact corners. Most of a chunk is far from any water surface.
-            for (int v = 0; v < S - 1; v += 2) cc.push_back(v);
-            cc.push_back(S - 1);
-            NB = (int)cc.size() - 1;
-            auto isC = [&](int v) { return (v & 1) == 0 || v == S - 1; };
+            // surface; its other samples are interpolated, not asked. Blocks with a corner near or across the surface are
+            // sampled in full, with a one-sample border (the normals read half a sample around their vertices), and a block
+            // one of those exact samples shows on the other side of its corners (a feature thinner than a block) is taken in
+            // as well, until none is left: every cube that makes triangles has exact corners. Fine chunks only: a cell is
+            // 2 blocks across there, so a simulated column (1 m) can't hide between coarse lines (#381 review).
             auto at = [&](int x, int y, int z) -> float& { return wd[((size_t)z * S + y) * S + x]; };
-            for (int z : cc) for (int y : cc) for (int x : cc) { at(x, y, z) = exact(x, y, z); ++exactCount; }
+            std::fill(done.begin(), done.end(), (char)0);
+            auto ex = [&](int x, int y, int z) {
+                const size_t i = ((size_t)z * S + y) * S + x;
+                if (!done[i]) { wd[i] = exact(x, y, z); done[i] = 1; ++exactCount; }
+                return wd[i];
+            };
+            for (int z : cc) for (int y : cc) for (int x : cc) ex(x, y, z);
             constexpr float kMargin = 0.25f * DENSITY_GRADIENT; // a quarter metre of the fluid's (or the sea's) surface
-            mixed.assign((size_t)NB * NB * NB, 0);
+            std::fill(mixed.begin(), mixed.end(), (char)0);
             for (int bz = 0; bz < NB; ++bz)
                 for (int by = 0; by < NB; ++by)
                     for (int bx = 0; bx < NB; ++bx) {
@@ -1658,50 +1683,36 @@ static void MeshChunkWater(const DensityField& field, ChunkMeshData& out, const 
                             if (w >= ISO_LEVEL) in = true; else outS = true;
                             if (fabsf(w - ISO_LEVEL) < kMargin) nearS = true;
                         }
-                        mixed[((size_t)bz * NB + by) * NB + bx] = (in && outS) || nearS;
+                        if ((in && outS) || nearS) { mixed[((size_t)bz * NB + by) * NB + bx] = 1; work.push_back(((bz * NB) + by) * NB + bx); }
                     }
-            // Per axis, once: the blocks a sample lies in (one between two coarse lines, two on a shared line), the corner
-            // lines of the first and its fraction between them (0 or 1 on a shared line, where the blocks agree).
-            std::vector<int> A0(S), A1(S), Lo(S), Hi(S);
-            std::vector<float> T(S);
-            for (int v = 0; v < S; ++v) {
-                if (!isC(v)) A0[v] = A1[v] = (v - 1) / 2;
-                else if (v == S - 1) A0[v] = A1[v] = NB - 1;
-                else { A0[v] = std::max(0, v / 2 - 1); A1[v] = std::min(NB - 1, v / 2); }
-                Lo[v] = cc[A0[v]]; Hi[v] = cc[A0[v] + 1];
-                T[v] = (float)(v - Lo[v]) / (float)(Hi[v] - Lo[v]);
+            while (!work.empty()) {
+                const int b = work.back();
+                work.pop_back();
+                const int bx = b % NB, by = (b / NB) % NB, bz = b / (NB * NB);
+                for (int z = std::max(0, cc[bz] - 1); z <= std::min(S - 1, cc[bz + 1] + 1); ++z)
+                    for (int y = std::max(0, cc[by] - 1); y <= std::min(S - 1, cc[by + 1] + 1); ++y)
+                        for (int x = std::max(0, cc[bx] - 1); x <= std::min(S - 1, cc[bx + 1] + 1); ++x) {
+                            if (done[((size_t)z * S + y) * S + x]) continue;
+                            const bool wet = ex(x, y, z) >= ISO_LEVEL;
+                            for (int qz = A0[z]; qz <= A1[z]; ++qz)
+                                for (int qy = A0[y]; qy <= A1[y]; ++qy)
+                                    for (int qx = A0[x]; qx <= A1[x]; ++qx) {
+                                        char& m = mixed[((size_t)qz * NB + qy) * NB + qx];
+                                        if (!m && wet != (at(cc[qx], cc[qy], cc[qz]) >= ISO_LEVEL)) { m = 2; work.push_back((qz * NB + qy) * NB + qx); }
+                                    }
+                        }
             }
             for (int z = 0; z < S; ++z)
-                for (int y = 0; y < S; ++y) {
-                    const bool cyz = isC(y) && isC(z);
+                for (int y = 0; y < S; ++y)
                     for (int x = 0; x < S; ++x) {
-                        if (cyz && isC(x)) continue;
-                        const int x0 = A0[x], x1 = A1[x], y0 = A0[y], y1 = A1[y], z0 = A0[z], z1 = A1[z];
-                        bool need = false;
-                        for (int bz = z0; bz <= z1 && !need; ++bz)
-                            for (int by = y0; by <= y1 && !need; ++by)
-                                for (int bx = x0; bx <= x1 && !need; ++bx) need = mixed[((size_t)bz * NB + by) * NB + bx] != 0;
-                        if (need) {
-                            const float w = at(x, y, z) = exact(x, y, z);
-                            ++exactCount;
-                            // A skipped block sharing this sample with a mixed one, on the other side of the surface here (a
-                            // feature thinner than a block): its cubes cross after all, so it is marched too (bit 1).
-                            for (int bz = z0; bz <= z1; ++bz)
-                                for (int by = y0; by <= y1; ++by)
-                                    for (int bx = x0; bx <= x1; ++bx) {
-                                        char& m = mixed[((size_t)bz * NB + by) * NB + bx];
-                                        if (!m && ((w >= ISO_LEVEL) != (at(cc[bx], cc[by], cc[bz]) >= ISO_LEVEL))) m = 2;
-                                    }
-                            continue;
-                        }
-                        // Trilinear in the first block holding it.
+                        if (done[((size_t)z * S + y) * S + x]) continue;
+                        // Trilinear in the first block holding it (its corners all on one side: so is the result).
                         const float tx = T[x], ty = T[y], tz = T[z];
                         const int xa = Lo[x], xb = Hi[x], ya = Lo[y], yb = Hi[y], za = Lo[z], zb = Hi[z];
                         const float c00 = at(xa, ya, za) * (1 - tx) + at(xb, ya, za) * tx, c10 = at(xa, yb, za) * (1 - tx) + at(xb, yb, za) * tx;
                         const float c01 = at(xa, ya, zb) * (1 - tx) + at(xb, ya, zb) * tx, c11 = at(xa, yb, zb) * (1 - tx) + at(xb, yb, zb) * tx;
                         at(x, y, z) = (c00 * (1 - ty) + c10 * ty) * (1 - tz) + (c01 * (1 - ty) + c11 * ty) * tz;
                     }
-                }
         }
         gWaterSamples[0] += exactCount; gWaterSamples[1] += (long long)S * S * S;
         for (size_t i = 0; i < (size_t)S * S * S; ++i) { if (wd[i] >= ISO_LEVEL) anyIn = true; else anyOut = true; }
@@ -1710,7 +1721,7 @@ static void MeshChunkWater(const DensityField& field, ChunkMeshData& out, const 
         const size_t v0 = out.waterPositions.size() / 3, i0 = out.waterIndices.size(); // this kind's start
         wv.clear(); wi.clear();
         std::fill(cache.begin(), cache.end(), -1);
-        if (NB > 0) {
+        if (coarse) {
             // Coarse sampling: only the blocks that hold a surface can make triangles (a skipped block's cubes all lie on one
             // side), so march just their cubes. The same triangles as the full sweep, in another order.
             for (int bz = 0; bz < NB; ++bz)

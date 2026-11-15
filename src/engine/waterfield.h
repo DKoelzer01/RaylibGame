@@ -22,6 +22,7 @@
 namespace WaterField {
 
 constexpr int kBrick = 16, kBrick3 = kBrick * kBrick * kBrick;
+static_assert(kBrick == 16, "ChunkSampler::brickAt / cellAt index with >> 4 and & 15");
 // Cell flags (fluid.cpp): solid; a source (infinite generated water, held at its level); inside generated
 // infinite water; open only because of an edit; a sink (a source that also takes water in and drops what is
 // over its level: the downstream end of a released river reach, #361); the fluid kind in bits 5-7.
@@ -92,7 +93,8 @@ int CellFill(const Snapshot& s, uint64_t body, Vector3 local, int kind, float* f
 // gradient as the generated water so both meet as one surface).
 class ChunkSampler {
 public:
-    ChunkSampler(const Snapshot* snap, uint64_t body, Vector3 lo, Vector3 hi);
+    // probeOnly: just whether any() (no dense caches, stops at the first site; for the main thread).
+    ChunkSampler(const Snapshot* snap, uint64_t body, Vector3 lo, Vector3 hi, bool probeOnly = false);
     bool any() const { return !sites.empty(); }  // some published brick reaches the box
     uint8_t kinds() const { return kindMask; }    // fluid kinds present (bit k)
     // Water density (ISO + gradient * (surface - height)) of kind `kind` at a body-local point; false where no

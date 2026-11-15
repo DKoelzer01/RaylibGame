@@ -660,9 +660,10 @@ void ApplyCommand(const Command& c) {
         const bool near = (s && SiteHasWaterNear(*s, c.c, c.r)) || StaticWaterNear(ref, c.c, c.r);
         if (!s && !near) return;
         if (!s) s = SiteFor(c.body, c.c, true);
-        if (near) EnsureAround(*s, c.c, c.r);
-        if (near && c.m3 > 0.0f) MaybeRelease(*s, ref, c.c, c.r); // ground added into a river: release the reach (#361)
-        else {
+        if (near) {
+            EnsureAround(*s, c.c, c.r);
+            if (c.m3 > 0.0f) MaybeRelease(*s, ref, c.c, c.r); // ground added into a river: release the reach (#361)
+        } else {
             // Only bricks that exist: their solidity changed.
             int ci, cj, ck; s->cellOf(c.c, ci, cj, ck);
             const int R = (int)ceilf(c.r) + 2;
@@ -1175,9 +1176,10 @@ void Fluid::OnTerrainEdit(Planetoid& body, Vector3 localCentre, float radius, bo
 Vector3 Fluid::FlowAt(const Planetoid& body, Vector3 local, float radius) {
     std::lock_guard<std::mutex> lk(flowMx);
     const double now = GetTime();
+    radius = std::max(0.5f, radius); // as stored: a smaller radius matched no watch and added one every call (#392 review)
     for (FlowWatch& w : flowWatches)
         if (w.body == body.id && fabsf(w.r - radius) < 0.01f && Vector3DistanceSqr(w.local, local) < 0.25f) { w.lastAsk = now; return w.value; }
-    FlowWatch w; w.body = body.id; w.local = local; w.r = std::max(0.5f, radius); w.lastAsk = now;
+    FlowWatch w; w.body = body.id; w.local = local; w.r = radius; w.lastAsk = now;
     flowWatches.push_back(w);
     return { 0, 0, 0 };
 }

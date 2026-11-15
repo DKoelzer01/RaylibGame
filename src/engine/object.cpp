@@ -144,7 +144,8 @@ void Chunk::setMesh(const ChunkMeshData& data) {
     const bool keepWater = data.waterSeq < waterSeq;
     releaseMesh(keepWater);
     waterCache = data.waterCache;
-    if (keepWater) waterDirty = true;
+    // A change it must show (the kept water is cut by the old terrain): not held back by the coarse nodes' gate (#381 review).
+    if (keepWater) { waterDirty = true; waterMag = 255; waterDirtySince = GetTime(); }
     else uploadWater(data);
     Foliage_Upload(grass, data.grass);
     if (data.positions.empty()) return; // node has no terrain surface
