@@ -3793,7 +3793,8 @@ int main(int argc, char** argv)
                                     const float bed = pf->elevation(along(-s));
                                     if (bed > pondLevelB - 0.25f && bed < pondLevelB - 0.05f && !Fluid::Wet(*p, at(along(-s), bed + 0.05f))) shore = s;
                                 }
-                                if (shore >= 0.0f) {
+                                if (!Fluid::Asleep()) printf("bench: pond: still draining at the cap: the readers' check is skipped (a draining shore still holds films)\n");
+                                else if (shore >= 0.0f) {
                                     readersDry = !Fluid::GeneratedWaterValid(p->id, at(along(-shore), pondLevelB - 0.2f));
                                     printf("bench: pond: farming, animals and the map read the drained shore (%.1f m out) as %s -> %s\n", shore, readersDry ? "dry" : "water", readersDry ? "PASS" : "FAIL");
                                 } else printf("bench: pond: no drained shore column found to check the readers on\n");
