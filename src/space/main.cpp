@@ -382,6 +382,7 @@ int main(int argc, char** argv)
     float waterLevel = 0.0f;
     int menuStep = 0, menuFrames = 0;
     bool menuOk = true;
+    bool menuEsc = false; // --test-menus: an Esc press for the in-game Esc check, as if the key went down this frame
     int wallPhase = 0; bool wallOk = true;
     double wallStart = 0.0, wallMaxStep = 0.0, wallMaxStepAt = 0.0;
     float wallMaxImpact = 0.0f, wallMinHealth = 100.0f, wallMaxSpeed = 0.0f; int wallCamInside = 0; // frames with the camera inside terrain (#255)
@@ -7055,8 +7056,12 @@ int main(int argc, char** argv)
             else if (menuStep == 2 && menuFrames > 60 && WorldIdle()) {
                 menuOk &= gameState == 1;
                 printf("bench: menus: New Game -> in game: %s\n", gameState == 1 ? "yes" : "NO");
-                Menu_ResetPause(); gameState = 2; justPaused = true; menuStep = 3; menuFrames = 0;
-            } else if (menuStep == 3 && menuFrames == 30) { TakeScreenshot("bench_menu_pause.png"); pendingMenu.action = MenuAction::SaveAndQuit; menuStep = 4; menuFrames = 0; }
+                menuEsc = true; menuStep = 3; menuFrames = 0; // pause through the in-game Esc check, as a key press does
+            } else if (menuStep == 3 && menuFrames == 30) {
+                menuOk &= gameState == 2;
+                printf("bench: menus: Esc in play -> pause menu: %s\n", gameState == 2 ? "yes" : "NO");
+                TakeScreenshot("bench_menu_pause.png"); pendingMenu.action = MenuAction::SaveAndQuit; menuStep = 4; menuFrames = 0;
+            }
             else if (menuStep == 4 && menuFrames == 5) {
                 menuOk &= gameState == 0;
                 printf("bench: menus: Save & Quit -> main menu: %s; old world unloaded (%zu bodies left, #270): %s\n", gameState == 0 ? "yes" : "NO", world.objects.size(), world.objects.empty() ? "yes" : "NO");
@@ -7065,13 +7070,28 @@ int main(int argc, char** argv)
             } else if (menuStep == 5 && menuFrames == 5) {
                 menuOk &= gameState == 1;
                 printf("bench: menus: Load Game -> in game: %s\n", gameState == 1 ? "yes" : "NO");
-                // #388: Resume from a pause taken on the loading screen keeps the loading screen (benches load without one).
-                loading = true; pendingMenu.action = MenuAction::Resume; menuStep = 6; menuFrames = 0;
+                // #388: the loading screen as entering a world raises it (benches load without one), then Esc on it.
+                loading = true; spawnLoad = false; loadStart = GetTime(); loadMax = 1; loadFrames = 0;
+                menuEsc = true; menuStep = 6; menuFrames = 0;
             } else if (menuStep == 6 && menuFrames == 2) {
+                const bool ignored = gameState == 1 && loading;
+                menuOk &= ignored;
+                printf("bench: menus: Esc on the loading screen does not pause (#388): %s\n", ignored ? "yes" : "NO");
+                TakeScreenshot("bench_menu_loading_esc.png");
+                // Resume from a pause taken on the loading screen (older builds allowed one) keeps the loading screen.
+                pendingMenu.action = MenuAction::Resume; menuStep = 7; menuFrames = 0;
+            } else if (menuStep == 7 && menuFrames == 2) {
                 const bool kept = loading && gameState == 1;
                 menuOk &= kept;
+                printf("bench: menus: Resume during loading keeps the loading screen (#388): %s\n", kept ? "yes" : "NO");
+                menuStep = 8; menuFrames = 0;
+            } else if (menuStep == 8 && (!loading || menuFrames > 1800)) {
+                // The loading screen still ends on its own once the world is built (0.5 s minimum on entering).
+                const bool ended = !loading && gameState == 1;
+                menuOk &= ended;
+                printf("bench: menus: the loading screen then ends by itself after %.2f s: %s -> %s\n", GetTime() - loadStart,
+                       ended ? "yes" : "NO", menuOk ? "PASS" : "FAIL");
                 loading = false;
-                printf("bench: menus: Resume during loading keeps the loading screen (#388): %s -> %s\n", kept ? "yes" : "NO", menuOk ? "PASS" : "FAIL");
                 benchMenus = false;
             }
         }
@@ -7126,7 +7146,9 @@ int main(int argc, char** argv)
             // Esc in game pauses (unless it closes the inventory or build mode first); the pause menu
             // handles Esc itself (resume, or back out of Settings). Not on the loading screen (#388: Resume skipped it into a
             // half-built world).
-            if (gameState == 1 && !loading && m.action == MenuAction::None && IsKeyPressed(KEY_ESCAPE)) {
+            const bool escPressed = IsKeyPressed(KEY_ESCAPE) || menuEsc;
+            menuEsc = false;
+            if (gameState == 1 && !loading && m.action == MenuAction::None && escPressed) {
                 if (Nav_MapOpen()) Nav_CloseMap();
                 else if (GameUI_InventoryOpen()) GameUI_ToggleInventory();
                 else if (buildTool.active) buildTool.active = false;
