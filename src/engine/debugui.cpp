@@ -76,6 +76,36 @@ void DebugUI_Draw(Scene& world) {
             }
         }
 
+        // --- Time of day (#275): spins the planet (and moves the orbits), the player rides along ---
+        if (ImGui::CollapsingHeader("Time of day", ImGuiTreeNodeFlags_DefaultOpen)) {
+            const double day = BodyDaySeconds(world), hour = day / 24.0;
+            const float elev = SunElevationAtCamera(world);
+            ImGui::Text("Sun %+.1f deg over the horizon%s", elev, day > 0.0 ? "" : " (this body doesn't spin)");
+            ImGui::SliderFloat("Time scale", &gDebugTimeScale, 1.0f, 600.0f, "x%.0f", ImGuiSliderFlags_Logarithmic);
+            if (day > 0.0) {
+                if (ImGui::Button("+1 h")) gTimeSkipSeconds += hour;
+                ImGui::SameLine();
+                if (ImGui::Button("+6 h")) gTimeSkipSeconds += 6.0 * hour;
+                ImGui::SameLine();
+                // Dawn: the sun 2 degrees under the horizon, rising; dusk: setting at the horizon. Noon: half way between
+                // sunrise and sunset (the next one).
+                if (ImGui::Button("Dawn")) { const double t = SecondsToSunElevationAtCamera(world, -2.0f, true); if (t > 0.0) gTimeSkipSeconds += t; }
+                ImGui::SameLine();
+                if (ImGui::Button("Noon")) {
+                    const double rise = SecondsToSunElevationAtCamera(world, 0.0f, true), set = SecondsToSunElevationAtCamera(world, 0.0f, false);
+                    if (rise > 0.0 && set > 0.0) {
+                        double noon = set > rise ? 0.5 * (rise + set) : 0.5 * (rise - day + set); // sun up now: the noon between the last sunrise and the next sunset
+                        if (noon < 1.0) noon += day;
+                        gTimeSkipSeconds += noon;
+                    }
+                }
+                ImGui::SameLine();
+                if (ImGui::Button("Dusk")) { const double t = SecondsToSunElevationAtCamera(world, 0.0f, false); if (t > 0.0) gTimeSkipSeconds += t; }
+                ImGui::TextDisabled("F8: +1 h while this panel is open");
+                if (IsKeyPressed(KEY_F8)) gTimeSkipSeconds += hour;
+            }
+        }
+
         // --- Camera ---
         if (ImGui::CollapsingHeader("Audio")) {
             float vol = Audio_GetMasterVolume();

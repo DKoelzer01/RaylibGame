@@ -95,6 +95,20 @@ inline float GameFrameTime() { return gFixedFrameTime > 0.0f ? gFixedFrameTime :
 // recording (#375), so two captures of the same scene match frame for frame. main.cpp advances it.
 inline double gGameClock = 0.0;
 inline double GameClock() { return gFixedFrameTime > 0.0f ? gGameClock : GetTime(); }
+// Time of day (#275): the debug UI's time-scale multiplier (bodies spin and orbit this much faster) and a pending jump
+// in seconds of world time, applied by the next advanceBodies (main.cpp), which carries riders along.
+inline float gDebugTimeScale = 1.0f;
+inline double gTimeSkipSeconds = 0.0;
+// World seconds until the sun (scene.sunDirection) stands at elevDeg over a body-local point's horizon, rising (true) or
+// setting, from the body's spin alone (within one rotation; -1 when the body doesn't spin or the sun never gets there).
+// The sign of the spin and BodyRotationD's conventions are handled numerically: sampled over a day, then bisected.
+double SecondsToSunElevation(const Planetoid& body, Vector3 localPoint, Vector3 sunDir, float elevDeg, bool rising);
+// The same for the camera's spot on the body it is nearest (debug UI: dawn / noon / dusk); -1 when there is none.
+double SecondsToSunElevationAtCamera(const Scene& world, float elevDeg, bool rising);
+// One hour of the nearest body's day (its rotation period / 24), in world seconds; 0 when it doesn't spin.
+double BodyHourSeconds(const Scene& world);
+double BodyDaySeconds(const Scene& world);                 // the nearest body's rotation period (0: no spin)
+float SunElevationAtCamera(const Scene& world);            // degrees over the horizon at the camera's spot on that body
 void generateWorld(Scene& world);      // creates planetoids; chunks stream in via worldUpdate()
 void regenerateWorld(Scene& world);
 // Drops the whole world (jobs, machines, water, rings, bodies and their GPU meshes): quitting to the main menu (#270).

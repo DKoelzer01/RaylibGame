@@ -125,7 +125,8 @@ static Vector3 StartSpawnDir(Planetoid& body) {
 // A new game on the world as generated: the player at the start, a
 // clearing (no tree on the spot), the starting kit. `reset` also clears what a previous game left behind
 // (inventory, quest tier, survival state).
-static void StartNewWorld(Scene& world, bool reset) {
+// dawn (#259): a new world starts just before sunrise at the spawn (not for benches: they keep their fixed start).
+static void StartNewWorld(Scene& world, bool reset, bool dawn) {
     if (reset) {
         inventory.clear();
         QuestBook_Reset();
@@ -146,6 +147,18 @@ static void StartNewWorld(Scene& world, bool reset) {
     }
     Planetoid* start = world.objects.empty() ? nullptr : dynamic_cast<Planetoid*>(world.objects[0].get());
     if (start) {
+        // Dawn at the spawn (#259): the planet's spin phase set so the sun is 4 degrees under the spawn's horizon and
+        // rising (~16 game minutes before sunrise), before the player is placed (the spawn direction is body-local).
+        // The phase is solved numerically from the spin, so its sign and the rotation conventions don't matter.
+        if (dawn) {
+            const double t = SecondsToSunElevation(*start, StartSpawnDirLocal(*start), world.sunDirection, -4.0f, true);
+            if (t >= 0.0) {
+                const Vector3 s = start->spin;
+                auto wrap = [](double a) { a = fmod(a, 360.0); return a < 0.0 ? a + 360.0 : a; };
+                start->rotation = { (float)wrap(start->rotation.x + s.x * t), (float)wrap(start->rotation.y + s.y * t), (float)wrap(start->rotation.z + s.z * t) };
+                world.syncRenderPositions();
+            }
+        }
         player.spawnOn(world, *start, StartSpawnDir(*start));
         Nav_SetStart(start->name, StartSpawnDir(*start));
         const Vector3 feet = (player.position - world.renderOrigin).toFloat();
@@ -226,6 +239,8 @@ int main(int argc, char** argv)
     bool benchWall = false;        // --test-wall: walk into shaft and tunnel walls (no launches)
     bool benchDoorway = false; int doorPhase = 0, doorLane = 0; double doorStart = 0.0; uint32_t doorPlot = 0; bool doorPass[2] = { false, false }; // --test-doorway (#255): 2 m openings pass, 1.5 m ones block
     bool benchMenus = false;       // --test-menus: main menu, new game, pause, save & quit, load
+    bool benchTime = false;        // --test-time: dawn start (#259), a +6 h jump carries the player (#275)
+    int timeStep = 0, timeFrames = 0; float timeElev0 = 0.0f; Vector3 timeLocal0 = { 0, 0, 0 }; bool timeOk = true;
     bool benchWater = false;       // --test-water: rivers and ponds near the start, their beds and clay
     bool benchFlyFollow = false;   // --test-flyfollow: the fly camera rides its reference body
     bool benchHotbar = false;      // --test-hotbar: materials and consumables from the hotbar
@@ -438,6 +453,7 @@ int main(int argc, char** argv)
         if (std::string(argv[i]) == "--test-fall") benchFall = true; // drops from 3-100 m: fall damage by height
         if (std::string(argv[i]) == "--test-telescope-close") benchTeleClose = true; // zoom 16x at the horizon, close: worst frame after (#261)
         if (std::string(argv[i]) == "--test-menus") benchMenus = true;
+        if (std::string(argv[i]) == "--test-time") benchTime = true;
         if (std::string(argv[i]) == "--test-water") benchWater = true;
         if (std::string(argv[i]) == "--test-flyfollow") benchFlyFollow = true;
         if (std::string(argv[i]) == "--test-hotbar") benchHotbar = true;
@@ -663,7 +679,7 @@ int main(int argc, char** argv)
                 printf("body %s %s pos %.3f %.3f %.3f radius %.3f seed %u spin %.4f g %.4f\n", BodyKindName(p->kind), p->name.c_str(), p->worldPos.x, p->worldPos.y, p->worldPos.z,
                        p->radius, p->seed, p->spin.y, p->surfaceGravity);
     }
-    if (!benchAtSave) StartNewWorld(world, false);
+    if (!benchAtSave) StartNewWorld(world, false, !bench);
     if (!bench) Settings_Load();
     bool worldFresh = !loadSaveAtStart; // the world generated at launch: New Game uses it as it is
     MenuResult pendingMenu;
@@ -5570,7 +5586,12 @@ int main(int argc, char** argv)
         // carry in player.update put the camera back where it was last frame (#298: since 4720ba4 the biome and machine
         // shots all showed the start, and --bench-fly never moved).
         if (bench && player.flyMode && player.flyFollow) player.recordFly(world);
-        advanceBodies(world, gameState == 1 && !loading ? frameDt * timeScale * Rocket_Warp() : 0.0f); // bodies only spin while playing (warped with a coasting rocket); before riders update
+        // Time of day (#275): the debug UI's time scale multiplies --time-scale; its jumps (+1 h, dawn, ...) are applied here
+        // in one step, so orbits and world time move too, and the riders below are carried along.
+        const bool playing = gameState == 1 && !loading;
+        const double timeSkip = playing ? gTimeSkipSeconds : 0.0;
+        if (playing) gTimeSkipSeconds = 0.0;
+        advanceBodies(world, playing ? (float)(frameDt * timeScale * gDebugTimeScale * Rocket_Warp() + timeSkip) : 0.0f); // bodies only spin while playing (warped with a coasting rocket); before riders update
         if (gameState == 1) {
             ship.lastImpact = 0.0f;
             Station_Update(world); // stations on their orbits, before anything rides on them
@@ -5623,9 +5644,9 @@ int main(int argc, char** argv)
             if (!loading) Survival_Update(world, frameDt, gameInput);
             if (!loading) Nav_Update(world, !bench && Nav_MapOpen()); // exploration, the map
             if (!loading) Viewmodel_Update(world, frameDt);
-            if (!loading) Farm_Update(world, frameDt * timeScale * Rocket_Warp()); // crops grow on world time
-            if (!loading) Animals_Update(world, frameDt, frameDt * timeScale * Rocket_Warp(), gameInput && alive && !ship.piloted);
-            if (!loading) Weather_Update(world, frameDt * timeScale); // the sky, rain and snow, lightning
+            if (!loading) Farm_Update(world, frameDt * timeScale * gDebugTimeScale * Rocket_Warp()); // crops grow on world time
+            if (!loading) Animals_Update(world, frameDt, frameDt * timeScale * gDebugTimeScale * Rocket_Warp(), gameInput && alive && !ship.piloted);
+            if (!loading) Weather_Update(world, frameDt * timeScale * gDebugTimeScale); // the sky, rain and snow, lightning
             if (!loading) Ambience_Update(world, frameDt); // rain splashes, fireflies, machine smoke
             Particles_Update(world, frameDt); // smoke, dust, exhaust, splashes (particles.h)
             // Autosave every 5 minutes of play (incremental: only regions changed since the last save).
@@ -5759,6 +5780,34 @@ int main(int argc, char** argv)
             lastSwings = terrainTool.swings;
         }
 
+        // --test-time (#259, #275): a new game's dawn start (the sun ~4 deg under the spawn's horizon, rising), then a +6 h
+        // jump through the debug time skip: the sun higher, and the player carried along (same body-local spot, grounded).
+        if (benchTime && gameState == 1 && !loading && WorldIdle()) {
+            ++timeFrames;
+            Planetoid* body = world.objects.empty() ? nullptr : dynamic_cast<Planetoid*>(world.objects[0].get());
+            auto feetLocal = [&] { return body->toLocal((player.position - world.renderOrigin).toFloat()); };
+            if (!body) { printf("bench: time: no body -> FAIL\n"); benchTime = false; }
+            else if (timeStep == 0 && timeFrames == 5) { StartNewWorld(world, false, true); timeStep = 1; timeFrames = 0; }
+            else if (timeStep == 1 && timeFrames == 60) {
+                timeElev0 = SunElevationAtCamera(world);
+                const double rise = SecondsToSunElevationAtCamera(world, 0.0f, true), hour = BodyHourSeconds(world);
+                const bool ok = timeElev0 > -6.0f && timeElev0 < -2.0f && rise > 0.0 && rise < 2.0 * hour;
+                timeOk &= ok;
+                printf("bench: time: dawn start: sun %.2f deg, sunrise in %.0f s (%.2f h): %s\n", timeElev0, rise, rise / std::max(hour, 1e-9), ok ? "yes" : "NO");
+                timeLocal0 = feetLocal();
+                gTimeSkipSeconds = 6.0 * hour;
+                timeStep = 2; timeFrames = 0;
+            } else if (timeStep == 2 && timeFrames == 90) {
+                const float e = SunElevationAtCamera(world);
+                const float moved = Vector3Distance(feetLocal(), timeLocal0);
+                const bool ok = e > timeElev0 + 20.0f && moved < 1.0f && player.grounded;
+                timeOk &= ok;
+                printf("bench: time: +6 h: sun %.2f -> %.2f deg, player moved %.2f m on the body, grounded %s: %s -> %s\n", timeElev0, e, moved,
+                       player.grounded ? "yes" : "no", ok ? "yes" : "NO", timeOk ? "PASS" : "FAIL");
+                TakeScreenshot("bench_time.png");
+                benchTime = false;
+            }
+        }
         // --test-menus: the menu flow without clicks: main menu (screenshot), New Game, pause
         // (screenshot), Save & Quit to Menu, Load Game; each step's state is checked.
         if (benchMenus) {
@@ -5809,7 +5858,7 @@ int main(int argc, char** argv)
             switch (m.action) {
                 case MenuAction::NewGame:
                     SetWorldSavePath(bench ? "saves/bench.sav" : Menu_NewSavePath().c_str()); // bench runs never touch the player's saves
-                    if (!worldFresh) { worldGen.seed = 0; regenerateWorld(world); StartNewWorld(world, true); }
+                    if (!worldFresh) { worldGen.seed = 0; regenerateWorld(world); StartNewWorld(world, true, !bench); }
                     worldFresh = false;
                     enterGame();
                     break;

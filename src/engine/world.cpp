@@ -135,6 +135,76 @@ static void BodyRotationD(const Vector3& rotationDeg, double r[3][3]) {
     r[2][0] = cz * sy * cx + sz * sx;  r[2][1] = sz * sy * cx - cz * sx;  r[2][2] = cy * cx;
 }
 
+double SecondsToSunElevation(const Planetoid& body, Vector3 localPoint, Vector3 sunDir, float elevDeg, bool rising) {
+    const Vector3 s = body.spin;
+    const double rate = std::max({ fabs((double)s.x), fabs((double)s.y), fabs((double)s.z) });
+    const double len = sqrt((double)localPoint.x * localPoint.x + (double)localPoint.y * localPoint.y + (double)localPoint.z * localPoint.z);
+    if (rate < 1e-9 || len < 1e-6) return -1.0;
+    const double period = 360.0 / rate;
+    const double ux = localPoint.x / len, uy = localPoint.y / len, uz = localPoint.z / len;
+    const double sl = sqrt((double)sunDir.x * sunDir.x + (double)sunDir.y * sunDir.y + (double)sunDir.z * sunDir.z);
+    auto elevation = [&](double t) { // degrees, after t more seconds of spin
+        const Vector3 rot = { (float)fmod(body.rotation.x + s.x * t, 360.0), (float)fmod(body.rotation.y + s.y * t, 360.0), (float)fmod(body.rotation.z + s.z * t, 360.0) };
+        double r[3][3];
+        BodyRotationD(rot, r);
+        const double wx = r[0][0] * ux + r[0][1] * uy + r[0][2] * uz, wy = r[1][0] * ux + r[1][1] * uy + r[1][2] * uz, wz = r[2][0] * ux + r[2][1] * uy + r[2][2] * uz;
+        const double d = (wx * sunDir.x + wy * sunDir.y + wz * sunDir.z) / std::max(sl, 1e-9);
+        return asin(std::clamp(d, -1.0, 1.0)) * RAD2DEG;
+    };
+    const int n = 2880; // 30 s steps on a one-hour day
+    double t0 = 0.0, e0 = elevation(0.0);
+    for (int i = 1; i <= n; ++i) {
+        const double t1 = period * i / n, e1 = elevation(t1);
+        const bool crosses = (e0 - elevDeg) * (e1 - elevDeg) <= 0.0 && e0 != e1 && (rising ? e1 > e0 : e1 < e0);
+        if (crosses && i > 1) { // (not the sample we start on: "dawn" pressed at dawn goes to the next one)
+            double a = t0, b = t1;
+            for (int k = 0; k < 40; ++k) { const double m = 0.5 * (a + b); if ((elevation(a) - elevDeg) * (elevation(m) - elevDeg) <= 0.0) b = m; else a = m; }
+            return 0.5 * (a + b);
+        }
+        t0 = t1; e0 = e1;
+    }
+    return -1.0;
+}
+
+namespace {
+    const Planetoid* NearestBody(const Scene& world, Vector3& local) {
+        const Planetoid* best = nullptr;
+        float bestGap = 1e30f;
+        for (const auto& obj : world.objects) {
+            const auto* p = dynamic_cast<const Planetoid*>(obj.get());
+            if (!p || p->vehicle) continue;
+            const Vector3 l = p->toLocal(world.camera.position);
+            const float gap = Vector3Length(l) - p->radius;
+            if (gap < bestGap) { bestGap = gap; best = p; local = l; }
+        }
+        return best;
+    }
+}
+
+double SecondsToSunElevationAtCamera(const Scene& world, float elevDeg, bool rising) {
+    Vector3 local{};
+    const Planetoid* p = NearestBody(world, local);
+    return p ? SecondsToSunElevation(*p, local, world.sunDirection, elevDeg, rising) : -1.0;
+}
+
+double BodyDaySeconds(const Scene& world) {
+    Vector3 local{};
+    const Planetoid* p = NearestBody(world, local);
+    if (!p) return 0.0;
+    const double rate = std::max({ fabs((double)p->spin.x), fabs((double)p->spin.y), fabs((double)p->spin.z) });
+    return rate > 1e-9 ? 360.0 / rate : 0.0;
+}
+
+double BodyHourSeconds(const Scene& world) { return BodyDaySeconds(world) / 24.0; }
+
+float SunElevationAtCamera(const Scene& world) {
+    Vector3 local{};
+    const Planetoid* p = NearestBody(world, local);
+    if (!p || Vector3Length(local) < 1e-3f) return 0.0f;
+    const Vector3 up = p->dirToWorld(Vector3Normalize(local));
+    return asinf(std::clamp(Vector3DotProduct(up, Vector3Normalize(world.sunDirection)), -1.0f, 1.0f)) * RAD2DEG;
+}
+
 DVec3 Planetoid::toWorldD(const DVec3& l) const {
     double r[3][3];
     BodyRotationD(rotation, r);
