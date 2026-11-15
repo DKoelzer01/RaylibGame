@@ -43,6 +43,12 @@ namespace {
     uint64_t padBody = 0;        // OnPad: the body and plot
     uint32_t padPlot = 0;
     uint64_t vehicleId = 0;      // Flying: the vehicle body (it carries the plot)
+    // Render interpolation (#315): the centre of mass relative to the dominant body and the attitude after the last two
+    // simulation steps; Rocket_View draws the vehicle and places the camera between them by SimAlpha.
+    DVec3 prevRel{}, curRel{};
+    Quaternion prevRot = { 0, 0, 0, 1 }, curRot = { 0, 0, 0, 1 };
+    uint64_t interpBody = 0;
+    bool interpValid = false;
     DVec3 com{};                 // world, centre of mass
     Vector3 vel{};               // world, m/s
     Quaternion rot = { 0, 0, 0, 1 }; // plot-local -> world
@@ -547,7 +553,8 @@ namespace {
         }
     }
 
-    void ApplyCamera(Scene& world) {
+    // The chase camera (per frame, Rocket_View): around `at` (flying: the drawn centre of mass), or the pad rocket.
+    void ApplyCamera(Scene& world, const DVec3& at) {
         Plot* plot = CurrentPlot();
         if (!plot) return;
         DVec3 centre;
@@ -555,9 +562,9 @@ namespace {
         float size = 4.0f;
         for (const auto& kv : plot->cells) size = std::max(size, Vector3Length(CellCentre(kv.first)));
         if (state == RocketState::Flying) {
-            centre = com;
-            Planetoid* b = Dominant(world, com);
-            U = b ? Vector3Normalize((com - b->worldPos).toFloat()) : Up();
+            centre = at;
+            Planetoid* b = Dominant(world, at);
+            U = b ? Vector3Normalize((at - b->worldPos).toFloat()) : Up();
         } else {
             Planetoid* body = PadBody();
             if (!body) return;
@@ -567,11 +574,6 @@ namespace {
             c = Vector3Scale(c, 1.0f / std::max(1, n));
             centre = body->toWorldD(DVec3(plot->toBody(c)));
             U = body->dirToWorld(plot->up);
-        }
-        if (!gRocketIn->down(Act::FreeLook)) {
-            const Vector2 md = gRocketIn->look;
-            camYaw -= md.x * 0.004f;
-            camPitch = std::clamp(camPitch + md.y * 0.004f, -1.2f, 1.4f);
         }
         Vector3 F = Vector3CrossProduct(U, { 0, 0, 1 });
         if (Vector3Length(F) < 0.1f) F = Vector3CrossProduct(U, { 1, 0, 0 });
@@ -765,11 +767,19 @@ void Rocket_Update(Scene& world, const PlayerInput& in, float dt) {
         if (autopilot == RocketAutopilot::Ascent && st.ready) { throttle = 1.0f; Launch(world); }
     }
     if (state == RocketState::Flying) {
+        SyncVehicle(world); // the simulated pose again (Rocket_View drew it between steps)
         int steps = std::max(1, (int)ceil(dt / kMaxStep));
         const float h = dt / steps;
         for (int i = 0; i < steps && state == RocketState::Flying; ++i) FlightStep(world, h, input);
         if (state == RocketState::Flying) {
             SyncVehicle(world);
+            if (Planetoid* b = Dominant(world, com)) { // render interpolation (#315)
+                const DVec3 rel = com - b->worldPos;
+                const bool cont = interpValid && interpBody == b->id && (rel - curRel).length() < 5000.0;
+                prevRel = cont ? curRel : rel; prevRot = cont ? curRot : rot;
+                curRel = rel; curRot = rot;
+                interpBody = b->id; interpValid = true;
+            } else interpValid = false;
             Plot* vp = VehiclePlot();
             DVec3 seat = com;
             if (vp) for (const Part& p : vp->parts) if (p.type == PartType::Cockpit) { seat = ToWorld({ (p.origin.x + 1.0f) * kCellSize, (p.origin.y + 1.0f) * kCellSize, -(p.origin.z + 1.0f) * kCellSize }); break; }
@@ -790,7 +800,31 @@ void Rocket_Update(Scene& world, const PlayerInput& in, float dt) {
         }
         if (!ok) { warpLevel = 0; GameUI_Toast("Time warp off"); }
     }
-    ApplyCamera(world);
+    if (state != RocketState::Flying) interpValid = false;
+}
+
+void Rocket_View(Scene& world, const PlayerInput& frameIn, float alpha) {
+    if (state == RocketState::None) return;
+    if (!frameIn.down(Act::FreeLook)) { // the chase camera turns once per frame (smooth at any frame rate, #315)
+        camYaw -= frameIn.look.x * 0.004f;
+        camPitch = std::clamp(camPitch + frameIn.look.y * 0.004f, -1.2f, 1.4f);
+    }
+    DVec3 at = com;
+    if (state == RocketState::Flying && interpValid) {
+        if (Planetoid* b = Planetoid::find(interpBody)) {
+            // Between the last two steps in the dominant body's (non-rotating) frame; the vehicle is drawn there too.
+            const double a = std::clamp((double)alpha, 0.0, 1.0);
+            at = b->worldPos + prevRel + (curRel - prevRel) * a;
+            const Quaternion q = QuaternionSlerp(prevRot, curRot, (float)a);
+            if (Planetoid* v = Vehicle()) {
+                v->worldPos = at - DVec3(Vector3RotateByQuaternion(comLocal, q));
+                const Vector3 ex = Vector3RotateByQuaternion({ 1, 0, 0 }, q), ey = Vector3RotateByQuaternion({ 0, 1, 0 }, q), ez = Vector3RotateByQuaternion({ 0, 0, 1 }, q);
+                v->rotation = EulerFromBasis(ex, ey, ez);
+                world.syncRenderPositions();
+            }
+        }
+    }
+    ApplyCamera(world, at);
 }
 
 RocketTelemetry Rocket_Telemetry(Scene& world) {

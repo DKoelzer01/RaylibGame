@@ -111,6 +111,9 @@ enum class State : uint8_t { Graze, Walk, Flee, Follow, Rest, Hunt };
 struct Animal {
     int species = 0;
     uint64_t netId = 0;          // stable, saved (netid.h, #317)
+    Vector3 prevPos{};           // pos and heading before the last simulation step: drawing blends them by SimAlpha (#315)
+    float prevHeading = 0.0f;
+    bool prevValid = false;
     std::string body;            // the body's name (saves); its pointer is looked up by id each frame
     Vector3 pos{};               // body-local, on the surface
     float heading = 0.0f;        // radians from east toward north, in the local tangent frame
@@ -414,6 +417,7 @@ void Animals_Update(Scene& world, float dt, float worldDt, bool inputEnabled) {
     const auto t0 = std::chrono::steady_clock::now();
     LoadSpecies();
     ++frameNo;
+    for (Animal& a : animals) { a.prevPos = a.pos; a.prevHeading = a.heading; a.prevValid = true; } // the pose drawing blends from (#315)
     Planetoid* here = player.nearest;
     const PlanetField* pf = here ? dynamic_cast<const PlanetField*>(here->field.get()) : nullptr;
     Vector3 playerLocal{};
@@ -866,13 +870,21 @@ void Animals_Draw3D(Scene& world) {
         auto bit = bodies.find(a.body);
         Planetoid* body = bit != bodies.end() ? bit->second : (bodies[a.body] = BodyNamed(world, a.body));
         if (!body) continue;
-        const Vector3 base = body->toWorld(a.pos);
+        // Between the last two simulation steps (#315): smooth at any frame rate (a jump over 2 m is a teleport).
+        Vector3 at = a.pos;
+        float heading = a.heading;
+        if (a.prevValid && Vector3Distance(a.prevPos, a.pos) < 2.0f) {
+            const float al = SimAlpha();
+            at = Vector3Lerp(a.prevPos, a.pos, al);
+            heading = a.prevHeading + remainderf(a.heading - a.prevHeading, 2.0f * PI) * al;
+        }
+        const Vector3 base = body->toWorld(at);
         if (Vector3Distance(base, world.camera.position) > 160.0f) continue;
         const Species& s = species[a.species];
-        const Vector3 lup = Vector3Normalize(a.pos);
+        const Vector3 lup = Vector3Normalize(at);
         Vector3 east, north;
         TangentFrame(lup, east, north);
-        const Vector3 f = body->dirToWorld(Vector3Add(Vector3Scale(east, cosf(a.heading)), Vector3Scale(north, sinf(a.heading))));
+        const Vector3 f = body->dirToWorld(Vector3Add(Vector3Scale(east, cosf(heading)), Vector3Scale(north, sinf(heading))));
         const Vector3 u = body->dirToWorld(lup);
         const Vector3 r = Vector3CrossProduct(u, f); // right-handed (r, u, f)
         const float k = 0.6f + 0.4f * a.age;

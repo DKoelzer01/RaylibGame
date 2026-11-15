@@ -87,6 +87,7 @@ bool Rocket_AimingCockpit();                   // on foot, looking at a rocket's
 // Once a frame. On foot: the launch-check panel, E boards, I loads fuel. Aboard: flight and camera.
 struct PlayerInput;
 void Rocket_Update(Scene& world, const PlayerInput& in, float dt);
+void Rocket_View(Scene& world, const PlayerInput& frameIn, float alpha); // per frame: chase camera, vehicle drawn between steps (#315)
 void Rocket_DrawHUD(Scene& world);
 RocketTelemetry Rocket_Telemetry(Scene& world);
 
