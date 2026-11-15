@@ -10,6 +10,7 @@
 #include "terrainarena.h"
 #include "mainmenu.h"
 #include "world.h"
+#include "siminput.h"
 #include "scene.h"
 #include "object.h"
 #include "utils/logger.h"
@@ -1519,13 +1520,13 @@ int main(int argc, char** argv)
                             printf("bench: factory: first chest before save %s, after reload %s -> %s\n", factChestBefore.c_str(), chest.input.c_str(),
                                    chest.valid && chest.input != "-" && !chest.input.empty() ? "PASS" : "FAIL");
                             // Then remove that chest: what it held must come back to the inventory.
-                            factRefundBefore = inventory.count("iron_plate");
+                            factRefundBefore = inventory.count("iron_ingot") + inventory.count("iron_plate"); // the furnaces make ingots since #212 (#434)
                             if (Plot* pl = p2->plots ? p2->plots->byId(factPlot) : nullptr) pl->remove(factSeeds[0][2] + 1);
                             factPhase = 6; factStart = GetTime();
                         }
                     } else if (factPhase == 6 && GetTime() - factStart > 2.0) {
-                        const int got = inventory.count("iron_plate") - factRefundBefore;
-                        printf("bench: factory: removed the chest: %d iron plates back in the inventory -> %s\n", got, got > 0 ? "PASS" : "FAIL");
+                        const int got = inventory.count("iron_ingot") + inventory.count("iron_plate") - factRefundBefore;
+                        printf("bench: factory: removed the chest: %d iron ingots or plates back in the inventory -> %s\n", got, got > 0 ? "PASS" : "FAIL");
                         benchFactory = 0;
                     }
                 } else if (benchProgression && (progPhase > 0 || WorldIdle())) {
@@ -1758,7 +1759,7 @@ int main(int argc, char** argv)
                         static double caughtT = -1.0;
                         if (player.hovering && caughtT < 0.0) caughtT = GetTime();
                         if (caughtT > 0.0 && GetTime() - caughtT > 1.5) { held = p->toLocalD(player.position); heldT = GetTime(); hoverPhase = 3; }
-                        else if (player.grounded || survival.dead || t > 20.0) {
+                        else if ((player.grounded && t > 0.1) || survival.dead || t > 20.0) { // (t: a frame may run no sim step, #315)
                             printf("bench: hover: the fall was not caught (grounded %d, dead %d, health %.0f) -> FAIL\n", player.grounded, survival.dead, survival.health);
                             benchHover = false;
                         }
@@ -5658,27 +5659,35 @@ int main(int argc, char** argv)
         // carry in player.update put the camera back where it was last frame (#298: since 4720ba4 the biome and machine
         // shots all showed the start, and --bench-fly never moved).
         if (bench && player.flyMode && player.flyFollow) player.recordFly(world);
+        // The simulation steps (#315): the gameplay below runs in fixed steps of SimDt() (60 Hz), as many as this frame's
+        // time owes (none on most frames above 60 FPS, two at 30 FPS). Key and button edges are latched for them
+        // (siminput.h); the mouse look turns the view once per frame, and the camera interpolates between steps.
+        SimInput_BeginFrame();
+        const int simSteps = SimClock_BeginFrame(frameDt);
+        if (gameState == 1 && gameInput && alive && !loading && !ship.piloted && !Rocket_Boarded() && !player.flyMode) player.look(GetMouseDelta());
+        for (int simStep = 0; simStep < simSteps; ++simStep) {
+        const float simDt = SimDt();
+        const bool alive = !survival.dead; // (may change within the frame's steps)
         // Time of day (#275): the debug UI's time scale multiplies --time-scale; its jumps (+1 h, dawn, ...) are applied here
         // in one step, so orbits and world time move too, and the riders below are carried along.
         const bool playing = gameState == 1 && !loading;
         const double timeSkip = playing ? gTimeSkipSeconds : 0.0;
         if (playing) gTimeSkipSeconds = 0.0;
-        advanceBodies(world, playing ? (float)(frameDt * timeScale * gDebugTimeScale * Rocket_Warp() + timeSkip) : 0.0f); // bodies only spin while playing (warped with a coasting rocket); before riders update
+        advanceBodies(world, playing ? (float)(simDt * timeScale * gDebugTimeScale * Rocket_Warp() + timeSkip) : 0.0f); // bodies only spin while playing (warped with a coasting rocket); before riders update
         if (gameState == 1) {
             ship.lastImpact = 0.0f;
             Station_Update(world); // stations on their orbits, before anything rides on them
             if (ship.piloted) {
-                ship.update(world, gameInput && alive, frameDt);
-                ship.applyChaseCamera(world);
+                ship.update(world, gameInput && alive, simDt);
                 player.position = ship.position; // the pilot rides inside
                 player.velocity = ship.velocity;
             } else if (Rocket_Boarded()) {
-                ship.update(world, false, frameDt);
-                Rocket_Update(world, gameInput && alive, frameDt * timeScale * Rocket_Warp()); // flight (and its camera)
+                ship.update(world, false, simDt);
+                Rocket_Update(world, gameInput && alive, simDt * timeScale * Rocket_Warp()); // flight (and its camera)
             } else {
-                ship.update(world, false, frameDt);
-                Suit_Apply(world, frameDt); // the worn suit and modules: walk, jetpack, grip, the scanner
-                if (alive && !loading) player.update(world, gameInput, frameDt);
+                ship.update(world, false, simDt);
+                Suit_Apply(world, simDt); // the worn suit and modules: walk, jetpack, grip, the scanner
+                if (alive && !loading) player.update(world, gameInput, simDt);
                 {
                     // Dead (until the respawn): the view stays exactly where the player died, held in the frame of the
                     // body they were on - player.update is skipped, so nothing else carried it with the spinning,
@@ -5710,15 +5719,27 @@ int main(int argc, char** argv)
                     }
                 }
                 Survival_OnLanding(player.landingSpeed); // floor touchdowns only (#263, #255)
-                Rocket_Update(world, gameInput && alive, frameDt); // on foot: aim at a rocket (E boards, I fuels)
+                Rocket_Update(world, gameInput && alive, simDt); // on foot: aim at a rocket (E boards, I fuels)
             }
             if (ship.piloted && ship.lastImpact > 12.0f) survival.health -= (ship.lastImpact - 12.0f) * 3.0f; // crash damage
-            if (!loading) Survival_Update(world, frameDt, gameInput);
+            if (!loading) Survival_Update(world, simDt, gameInput);
+            if (!loading) Farm_Update(world, simDt * timeScale * gDebugTimeScale * Rocket_Warp()); // crops grow on world time
+            if (!loading) Animals_Update(world, simDt, simDt * timeScale * gDebugTimeScale * Rocket_Warp(), gameInput && alive && !ship.piloted);
+            if (!loading) Weather_Update(world, simDt * timeScale * gDebugTimeScale); // the sky, rain and snow, lightning
+            Factory::Sync(world);                                // machine layouts in, items out
+            Factory::Advance(simDt);                             // the factory thread runs its ticks on the sim clock (#315)
+            Fluid::Update(world, simDt);                         // flowing water: commands in, a step job, meshes up
+            Waterworks_Update(world, simDt);                     // pumps send water down pipes to outlets
+            Objectives_Update(world);
+        }
+        SimInput_EndStep();
+        SimClock_EndStep();
+        }
+        if (gameState == 1) {
+            // Per frame: the view, the HUD's helpers and client-only effects (not simulation, #315).
+            if (ship.piloted) ship.applyChaseCamera(world);
             if (!loading) Nav_Update(world, !bench && Nav_MapOpen(), !bench && gameInput && !Nav_MapOpen()); // exploration, the map, the minimap zoom (#278)
             if (!loading) Viewmodel_Update(world, frameDt);
-            if (!loading) Farm_Update(world, frameDt * timeScale * gDebugTimeScale * Rocket_Warp()); // crops grow on world time
-            if (!loading) Animals_Update(world, frameDt, frameDt * timeScale * gDebugTimeScale * Rocket_Warp(), gameInput && alive && !ship.piloted);
-            if (!loading) Weather_Update(world, frameDt * timeScale * gDebugTimeScale); // the sky, rain and snow, lightning
             if (!loading) Ambience_Update(world, frameDt); // rain splashes, fireflies, machine smoke
             Particles_Update(world, frameDt); // smoke, dust, exhaust, splashes (particles.h)
             // Autosave every 5 minutes of play (incremental: only regions changed since the last save).
@@ -5727,10 +5748,6 @@ int main(int argc, char** argv)
                 lastAutosave = GetTime();
                 if (SaveWorld(world)) GameUI_Toast("Autosaved");
             }
-            Factory::Sync(world);                                // machine layouts in, items out
-            Fluid::Update(world, frameDt);                       // flowing water: commands in, a step job, meshes up
-            Waterworks_Update(world, frameDt);                   // pumps send water down pipes to outlets
-            Objectives_Update(world);
             if (bench && lookDown && !ship.piloted) {
                 const Vector3 t = Vector3Subtract(player.forward, Vector3Scale(player.up, Vector3DotProduct(player.forward, player.up)));
                 player.forward = Vector3Normalize(Vector3Subtract(Vector3Scale(Vector3Normalize(t), 0.8f), player.up)); // ~50 deg down

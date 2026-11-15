@@ -76,8 +76,13 @@ struct Player {
     void placeAt(Scene& world, Planetoid& body, Vector3 renderFeet);
     // Ride along with body from the next update on (else one slow frame leaves you behind its spin).
     void anchorTo(Planetoid& body);
-    void update(Scene& world, bool inputEnabled, float dt);
-    void applyToCamera(Scene& world) const;  // camera at the eye, looking along forward
+    void update(Scene& world, bool inputEnabled, float dt); // one simulation step (SimDt, #315)
+    // Mouse look, once per frame (not per simulation step, so the view turns smoothly at any frame rate; #315).
+    void look(Vector2 mouseDelta);
+    // The feet to draw from (#315): between the last two simulation steps by alpha (SimAlpha), in the frame of the body
+    // they were on, so walking looks smooth while the simulation steps at 60 Hz. `position` when nothing to blend.
+    DVec3 renderPosition(float alpha) const;
+    void applyToCamera(Scene& world) const;  // camera at the eye (renderPosition), looking along forward
     mutable float lastEyePush = 0.0f;         // how far applyToCamera pushed the eye out of the terrain last frame (m; #255 tests)
     mutable float eyeDrop = 0.0f;              // how far the eye is lowered toward the head sphere's centre to keep it out of the terrain (#255)
     // Fly mode follows the reference body (the nearest whose sphere of influence holds the camera):
@@ -88,6 +93,10 @@ struct Player {
     Planetoid* flyReference(Scene& world, bool& rotate) const;
 
 private:
+    // Render interpolation (#315): the feet after the last two steps, local to interpBody; interpSpawns detects teleports.
+    uint64_t interpBody = 0;
+    DVec3 interpPrev{}, interpCur{};
+    int interpSpawns = -1;
     DVec3 groundLocal{};              // feet in the ground body's local space, double (follows its spin exactly)
     Planetoid* groundBody = nullptr;
     uint64_t groundId = 0;            // validates groundBody (bodies can be destroyed, e.g. world regen)

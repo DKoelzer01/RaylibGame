@@ -95,6 +95,8 @@ inline float GameFrameTime() { return gFixedFrameTime > 0.0f ? gFixedFrameTime :
 // recording (#375), so two captures of the same scene match frame for frame. main.cpp advances it.
 inline double gGameClock = 0.0;
 inline double GameClock() { return gFixedFrameTime > 0.0f ? gGameClock : GetTime(); }
+// The simulation clock (#315): SimTime() / SimDt() / SimAlpha(), see simclock.h.
+#include "simclock.h"
 // Time of day (#275): the debug UI's time-scale multiplier (bodies spin and orbit this much faster) and a pending jump
 // in seconds of world time, applied by the next advanceBodies (main.cpp), which carries riders along.
 inline float gDebugTimeScale = 1.0f;

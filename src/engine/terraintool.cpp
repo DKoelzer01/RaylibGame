@@ -23,7 +23,7 @@ namespace {
     TerrainHit hit;
     bool hasHit = false;
     bool digging = false, adding = false;
-    double nextStrokeAt = 0.0;   // the next swing may start then (GetTime)
+    double nextStrokeAt = 0.0;   // the next swing may start then (SimTime, #315)
     Vector3 aimLocal{};          // the view direction, body-local, at the last hit (digs go into the ground along it)
     float strokeLength = 0.5f;   // the current cooldown's length (the HUD bar)
     std::string toast;
@@ -239,7 +239,7 @@ void TerrainTool_Update(Scene& world, bool inputEnabled, bool editEnabled) {
     // One swing per cooldown, and the cooldown runs whether the button is held or not, so clicking
     // fast is no faster than holding (it was: a release reset the timer). The swing animation lasts
     // exactly the cooldown (terrainTool.swingTime), and the HUD bar under the crosshair shows it.
-    const double now = GetTime();
+    const double now = SimTime();
     if (!(digging || adding) || !(hasHit || (digging && hasPlant))) return;
     if (now < nextStrokeAt) return;
     const double base = now - nextStrokeAt < 0.1 ? nextStrokeAt : now; // held on: keep the beat (frame-rate independent)
@@ -571,6 +571,6 @@ bool TerrainTool_HarvestNearest(Planetoid& p, Vector3 local, bool tree, bool sto
 bool TerrainTool_IsFiller(const std::string& item) { return FillerMaterial(item) >= 0; }
 
 float TerrainTool_Cooldown() {
-    const double left = nextStrokeAt - GetTime();
+    const double left = nextStrokeAt - SimTime();
     return left <= 0.0 ? 0.0f : std::min(1.0f, (float)(left / std::max(strokeLength, 0.01f)));
 }

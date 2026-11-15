@@ -3,6 +3,7 @@
 #include "plots.h"
 #include "utils/logger.h"
 #include "worldtypes.h"
+#include "simclock.h"
 #include "scene.h"
 #include <raymath.h>
 
@@ -250,6 +251,21 @@ std::atomic<long long> tickCount{ 0 };
 std::atomic<int> simSpeed{ 1 };
 std::condition_variable tickCv;
 std::mutex tickCvMutex;
+// The sim clock (#315): the main thread grants ticks from its simulation steps (Factory::Advance) and WaitTicks; the
+// thread runs one per credit, so the factory pauses with the game and keeps its pace at any frame rate.
+std::atomic<long long> tickCredit{ 0 };
+std::condition_variable creditCv;
+std::mutex creditMutex;
+double creditAccum = 0.0; // main thread: fractional ticks owed
+void GrantTicks(long long n, long long cap) {
+    {
+        std::lock_guard<std::mutex> lk(creditMutex);
+        long long c = tickCredit.load() + n;
+        if (cap > 0 && c > cap) c = std::max(tickCredit.load(), cap); // don't race to catch up after a stall (never drops WaitTicks credit)
+        tickCredit = c;
+    }
+    creditCv.notify_all();
+}
 
 std::unordered_map<std::string, uint32_t> sentVersions; // main thread: layouts already sent
 
@@ -646,10 +662,15 @@ void FillView(const PlotSim& ps, int part, MachineView& v) {
 
 void SimLoop() {
     using clk = std::chrono::steady_clock;
-    auto next = clk::now();
     double emaMs = 0.0, maxMs = 0.0;
     while (running) {
-        next += std::chrono::microseconds(1000000 / (kTicksPerSecond * std::max(1, simSpeed.load()))); // tests may run the clock faster
+        {   // One tick per credit from the sim clock (#315).
+            std::unique_lock<std::mutex> lk(creditMutex);
+            creditCv.wait_for(lk, std::chrono::milliseconds(100), [] { return tickCredit.load() > 0 || !running; });
+            if (!running) break;
+            if (tickCredit.load() <= 0) continue;
+            --tickCredit;
+        }
         const auto t0 = clk::now();
         {
             std::lock_guard<std::mutex> lock(simMutex);
@@ -766,8 +787,6 @@ void SimLoop() {
         }
         tickCount++;
         tickCv.notify_all();
-        std::this_thread::sleep_until(next);
-        if (clk::now() > next + std::chrono::milliseconds(250)) next = clk::now(); // don't race to catch up after a stall
     }
 }
 
@@ -799,8 +818,8 @@ void Factory::Reset() {
 void Factory::Sync(Scene& world) {
     if (!running) Start();
     static double lastNear = 0.0;
-    const bool nearCheck = GetTime() - lastNear > 0.5;
-    if (nearCheck) lastNear = GetTime();
+    const bool nearCheck = SimTime() - lastNear > 0.5 || SimTime() < lastNear;
+    if (nearCheck) lastNear = SimTime();
     for (auto& obj : world.objects) {
         auto* body = dynamic_cast<Planetoid*>(obj.get());
         if (!body || !body->plots) continue;
@@ -933,8 +952,18 @@ void Factory::Seed(uint64_t body, uint32_t plot, int part, const std::string& it
     itemQueue.push_back({ 2, body, plot, part, tables.item(item), count });
 }
 
+void Factory::Advance(float simDt) {
+    const int speed = std::max(1, simSpeed.load());
+    creditAccum += (double)simDt * kTicksPerSecond * speed;
+    const long long n = (long long)creditAccum;
+    creditAccum -= (double)n;
+    if (n > 0) GrantTicks(n, std::max(2, kTicksPerSecond * speed / 4)); // at most 250 ms behind
+}
+
 void Factory::WaitTicks(int n) {
     const long long target = tickCount.load() + n;
+    GrantTicks(n, 0); // tests wait on the main thread, which grants no steps meanwhile
+
     std::unique_lock<std::mutex> lk(tickCvMutex);
     tickCv.wait_for(lk, std::chrono::seconds(30), [&] { return tickCount.load() >= target; });
 }

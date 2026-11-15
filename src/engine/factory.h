@@ -97,7 +97,8 @@ namespace Factory {
     void Seed(uint64_t bodyId, uint32_t plotId, int part, const std::string& item, int count);
     // Whether a machine type takes an item (recipe input, fuel, or a chest).
     bool Accepts(PartType type, const std::string& item);
-    void WaitTicks(int n);                           // block until n more ticks have run
+    void Advance(float simDt);                       // one simulation step (#315): grants the ticks it owes (20 Hz x speed)
+    void WaitTicks(int n);                           // run n more ticks now and block until they have
     void SetSpeed(int multiplier);                   // tests: run the 20 Hz clock this many times faster
     // Saves: machine contents per body index (the plots themselves are saved with the body).
     void Save(FILE* f, uint64_t bodyId);

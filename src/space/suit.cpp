@@ -193,7 +193,7 @@ void Suit_Apply(Scene& world, float dt) {
     player.canHover = stats.hover; // #163
     player.jetpackAccel = kJetAccel * stats.jetThrust;
     player.walkableCos = stats.grip ? 0.3f : kWalkableCos; // ~73 deg with grip boots
-    if (stats.scanner && GetTime() - lastScan > 1.0) { lastScan = GetTime(); Scan(world); }
+    if (stats.scanner && SimTime() - lastScan > 1.0) { lastScan = SimTime(); Scan(world); }
     if (!stats.scanner) scanDist = -1.0f;
 }
 

@@ -1,4 +1,5 @@
 #include "ship.h"
+#include "siminput.h"
 #include "world.h"
 
 #include <rlgl.h>
@@ -54,7 +55,7 @@ void Ship::update(Scene& world, bool inputEnabled, float dt) {
     bool braking = false;
 
     if (piloted && inputEnabled) {
-        const Vector2 m = GetMouseDelta();
+        const Vector2 m = SimMouseDelta();
         Quaternion q = orientation;
         q = QuaternionMultiply(q, QuaternionFromAxisAngle({ 0, 1, 0 }, -m.x * mouseSensitivity));
         q = QuaternionMultiply(q, QuaternionFromAxisAngle({ 1, 0, 0 }, m.y * mouseSensitivity));

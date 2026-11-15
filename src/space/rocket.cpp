@@ -1,4 +1,5 @@
 #include "rocket.h"
+#include "siminput.h"
 #include "survival.h"
 #include "station.h"
 #include "buildtool.h"
@@ -564,7 +565,7 @@ namespace {
             U = body->dirToWorld(plot->up);
         }
         if (!IsKeyDown(KEY_LEFT_ALT)) {
-            const Vector2 md = GetMouseDelta();
+            const Vector2 md = SimMouseDelta();
             camYaw -= md.x * 0.004f;
             camPitch = std::clamp(camPitch + md.y * 0.004f, -1.2f, 1.4f);
         }
@@ -710,13 +711,13 @@ void Rocket_Update(Scene& world, bool input, float dt) {
         aimPlot = hit->id;
         aimCockpit = hit->parts[hitPart].type == PartType::Cockpit || hit->parts[hitPart].type == PartType::Cabin;
         if (!input) return;
-        if (IsKeyPressed(KEY_I)) {
+        if (SimKeyPressed(KEY_I)) {
             const int n = Rocket_LoadFuel(*hit, 1 << 20);
             const int air = Rocket_LoadAir(*hit, 1 << 20);
             if (n > 0 || air > 0) GameUI_Toast(TextFormat("Loaded %d rocket fuel (%.0f kg), %d oxygen canister(s) (%d min of air)", n, n * fuelPerItem, air, air * 10));
             else GameUI_Toast("Nothing to load (rocket fuel, oxygen canisters), or it is full");
         }
-        if (aimCockpit && IsKeyPressed(KEY_E)) { Rocket_Board(world, *body, *hit); GameUI_Toast("Aboard: P autopilot (to orbit / down to land), Shift throttle up, Ctrl down, X cut, W/S/A/D/Z/C steer, M map, E leave"); }
+        if (aimCockpit && SimKeyPressed(KEY_E)) { Rocket_Board(world, *body, *hit); GameUI_Toast("Aboard: P autopilot (to orbit / down to land), Shift throttle up, Ctrl down, X cut, W/S/A/D/Z/C steer, M map, E leave"); }
         return;
     }
     // Aboard.
@@ -725,9 +726,9 @@ void Rocket_Update(Scene& world, bool input, float dt) {
     if (input) {
         if (IsKeyDown(KEY_LEFT_SHIFT)) throttle = std::min(1.0f, throttle + dt * 0.6f);
         if (IsKeyDown(KEY_LEFT_CONTROL)) throttle = std::max(0.0f, throttle - dt * 0.6f);
-        if (IsKeyPressed(KEY_X)) throttle = 0.0f;
-        if (IsKeyPressed(KEY_M)) mapView = !mapView;
-        if (IsKeyPressed(KEY_P)) { // the autopilot: to orbit, or (in orbit) down to a landing; again: manual
+        if (SimKeyPressed(KEY_X)) throttle = 0.0f;
+        if (SimKeyPressed(KEY_M)) mapView = !mapView;
+        if (SimKeyPressed(KEY_P)) { // the autopilot: to orbit, or (in orbit) down to a landing; again: manual
             if (autopilot != RocketAutopilot::Off) { autopilot = RocketAutopilot::Off; GameUI_Toast("Autopilot off: manual control"); }
             else {
                 const RocketTelemetry t = Rocket_Telemetry(world);
@@ -736,16 +737,16 @@ void Rocket_Update(Scene& world, bool input, float dt) {
                 else { autopilot = RocketAutopilot::Ascent; autoTarget = 45000.0; GameUI_Toast("Autopilot: gravity turn to a 45 km orbit"); }
             }
         }
-        if (IsKeyPressed(KEY_PERIOD)) Rocket_SetWarp(warpLevel + 1);
-        if (IsKeyPressed(KEY_COMMA)) Rocket_SetWarp(warpLevel - 1);
+        if (SimKeyPressed(KEY_PERIOD)) Rocket_SetWarp(warpLevel + 1);
+        if (SimKeyPressed(KEY_COMMA)) Rocket_SetWarp(warpLevel - 1);
         // Stations: K deploys the core (in orbit) or docks (near one); docked, T / Shift+T move fuel, U undocks.
-        if (IsKeyPressed(KEY_K) && state == RocketState::Flying) { if (Station_Nearest(world, com, 400.0f)) Rocket_Dock(); else Rocket_DeployStation(); }
-        if (IsKeyPressed(KEY_T) && Rocket_DockedAtStation()) {
+        if (SimKeyPressed(KEY_K) && state == RocketState::Flying) { if (Station_Nearest(world, com, 400.0f)) Rocket_Dock(); else Rocket_DeployStation(); }
+        if (SimKeyPressed(KEY_T) && Rocket_DockedAtStation()) {
             const float kg = Rocket_TransferFuel(IsKeyDown(KEY_LEFT_SHIFT) ? -500.0f : 500.0f);
             GameUI_Toast(kg > 0.0f ? TextFormat("Took %.0f kg of fuel from the station", kg) : kg < 0.0f ? TextFormat("Gave the station %.0f kg of fuel", -kg) : "No fuel to move (or no room)");
         }
-        if (IsKeyPressed(KEY_U) && Rocket_DockedAtStation()) Rocket_Undock();
-        if (state == RocketState::OnPad && IsKeyPressed(KEY_E)) { Rocket_Exit(world); return; }
+        if (SimKeyPressed(KEY_U) && Rocket_DockedAtStation()) Rocket_Undock();
+        if (state == RocketState::OnPad && SimKeyPressed(KEY_E)) { Rocket_Exit(world); return; }
     }
     if (state == RocketState::OnPad) {
         Planetoid* body = PadBody();

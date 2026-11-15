@@ -414,8 +414,8 @@ void Animals_Update(Scene& world, float dt, float worldDt, bool inputEnabled) {
     const PlanetField* pf = here ? dynamic_cast<const PlanetField*>(here->field.get()) : nullptr;
     Vector3 playerLocal{};
     if (here) playerLocal = here->toLocal((player.position - world.renderOrigin).toFloat());
-    if (here && pf && !player.flyMode && GetTime() - lastSpawnCheck > 1.0) {
-        lastSpawnCheck = GetTime();
+    if (here && pf && !player.flyMode && SimTime() - lastSpawnCheck > 1.0) {
+        lastSpawnCheck = SimTime();
         const float d = Vector3Length(playerLocal);
         if (d > 1.0f && d - pf->radius < 400.0f) SpawnHerds(world, *here, *pf, Vector3Scale(playerLocal, 1.0f / d));
     }
@@ -423,8 +423,8 @@ void Animals_Update(Scene& world, float dt, float worldDt, bool inputEnabled) {
     const std::string held = Hotbar_HeldFood(); // its food in the player's hand: animals follow
     const Vector3 sun = Vector3Normalize(world.sunDirection);
     // Campfires near the player (refreshed every second): night hunters keep away from them.
-    if (here && GetTime() - lastFireScan > 1.0) {
-        lastFireScan = GetTime();
+    if (here && SimTime() - lastFireScan > 1.0) {
+        lastFireScan = SimTime();
         fires.clear();
         if (here->plots)
             for (const auto& pl : here->plots->plots)
@@ -436,8 +436,8 @@ void Animals_Update(Scene& world, float dt, float worldDt, bool inputEnabled) {
     }
     // Night threats (not on peaceful): every 12 s after dark, a dusk stalker comes out of the dark 45-60 m
     // away, up to 2 near the player (3 on hard) - not underground, flying, or by a campfire.
-    if (here && pf && threatsOn && !player.flyMode && !survival.dead && Difficulty_ThreatScale() > 0.0f && GetTime() - lastNightSpawn > 12.0) {
-        lastNightSpawn = GetTime();
+    if (here && pf && threatsOn && !player.flyMode && !survival.dead && Difficulty_ThreatScale() > 0.0f && SimTime() - lastNightSpawn > 12.0) {
+        lastNightSpawn = SimTime();
         const Vector3 up = Vector3Normalize(playerLocal);
         const bool dark = Vector3DotProduct(Vector3Normalize(world.sunDirection), here->dirToWorld(up)) < -0.1f;
         const bool surface = Vector3Length(playerLocal) > pf->radius + pf->elevation(up) - 6.0f;
@@ -463,8 +463,8 @@ void Animals_Update(Scene& world, float dt, float worldDt, bool inputEnabled) {
     // pick the nearest prey within 30 m to chase (chase only: no kills yet, per the user); prey that spots a
     // predator within 18 m bolts; each herd's centre (same kind within 40 m) for cohesion.
     static double ecoAt = 0.0;
-    if (here && GetTime() > ecoAt) {
-        ecoAt = GetTime() + 0.5;
+    if (here && SimTime() > ecoAt) {
+        ecoAt = SimTime() + 0.5;
         std::vector<int> near;
         for (size_t i = 0; i < animals.size(); ++i)
             if (animals[i].body == here->name && Vector3Distance(animals[i].pos, playerLocal) < 300.0f) near.push_back((int)i);
@@ -547,8 +547,8 @@ void Animals_Update(Scene& world, float dt, float worldDt, bool inputEnabled) {
             const float reach = 0.5f * s.size.x + 1.0f;
             if (dist < reach) {
                 speed = 0.0f;
-                if (GetTime() - a.lastBite > 1.2) {
-                    a.lastBite = GetTime();
+                if (SimTime() - a.lastBite > 1.2) {
+                    a.lastBite = SimTime();
                     survival.health -= 8.0f * Difficulty_ThreatScale();
                     Audio_Play(Sfx::Error, 0.7f, 0.5f);
                     GameUI_Toast(TextFormat("The %s %s you!", s.name.c_str(), s.night ? "bites" : "rams"));
@@ -667,8 +667,8 @@ void Animals_Update(Scene& world, float dt, float worldDt, bool inputEnabled) {
     }
     // Penned: build parts within 30 m in all eight directions around an animal near the player
     // (checked every 2 s; the quest's "pen two animals").
-    if (here && GetTime() - lastPenCheck > 2.0) {
-        lastPenCheck = GetTime();
+    if (here && SimTime() - lastPenCheck > 2.0) {
+        lastPenCheck = SimTime();
         int n = 0;
         for (const Animal& a : animals) {
             if (a.body != here->name || Vector3Distance(a.pos, playerLocal) > 120.0f) continue;
@@ -743,8 +743,8 @@ void Animals_Aim(Scene& world, bool inputEnabled) {
     if (aimed >= 0 && inputEnabled && !buildTool.active) {
         Animal& a = animals[aimed];
         const Species& s = species[a.species];
-        if (IsMouseButtonPressed(MOUSE_BUTTON_LEFT) && GetTime() - lastHit > 0.35) {
-            lastHit = GetTime();
+        if (IsMouseButtonPressed(MOUSE_BUTTON_LEFT) && SimTime() - lastHit > 0.35) {
+            lastHit = SimTime();
             hitLatch = true;
             const ToolSpec t = ToolOf(terrainTool.heldTool);
             ++terrainTool.swings;

@@ -1,4 +1,5 @@
 #include "recipebook.h"
+#include "simclock.h"
 #include "gameui.h"
 #include "inventory.h"
 #include "survival.h"
@@ -63,8 +64,8 @@ void RecipeBook_Reset() { known.clear(); primed = false; lastCheck = -10.0; }
 int RecipeBook_KnownCount() { int n = 0; for (const Recipe& r : itemDB.recipes()) n += RecipeBook_Known(r) ? 1 : 0; return n; }
 
 void RecipeBook_Update() {
-    if (GetTime() - lastCheck < 1.0 || terrainTool.creative) return;
-    lastCheck = GetTime();
+    if (SimTime() - lastCheck < 1.0 || terrainTool.creative) return;
+    lastCheck = SimTime();
     std::set<std::string> now;
     for (const Recipe& r : itemDB.recipes()) if (RecipeBook_Known(r)) now.insert(r.output);
     if (primed) {

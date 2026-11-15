@@ -1,6 +1,7 @@
 #include "camera.h" // gFlyGravityUp (#232)
 #include "player.h"
 #include "world.h"
+#include "siminput.h"
 
 #include <raymath.h>
 #include <algorithm>
@@ -51,7 +52,7 @@ static Vector3 FeltGravity(Scene& world, Vector3 feet, Planetoid* nearest) {
 }
 void Player::update(Scene& world, bool inputEnabled, float dt) {
     PROFILE_FUNCTION();
-    if (inputEnabled && IsKeyPressed(KEY_F)) {
+    if (inputEnabled && SimKeyPressed(KEY_F)) {
         flyMode = !flyMode;
         velocity = { 0, 0, 0 };
         if (!flyMode) {
@@ -170,12 +171,7 @@ void Player::update(Scene& world, bool inputEnabled, float dt) {
     bool jump = false, jetUp = false, jetDown = false;
     if (autoWalk) wish = Vector3Normalize(Vector3Subtract(forward, Vector3Scale(up, Vector3DotProduct(forward, up))));
     if (inputEnabled) {
-        const Vector2 m = GetMouseDelta();
-        forward = RotateAround(forward, up, -m.x * mouseSensitivity * lookScale);
-        const Vector3 right = Vector3Normalize(Vector3CrossProduct(forward, up));
-        const Vector3 pitched = RotateAround(forward, right, -m.y * mouseSensitivity * lookScale);
-        if (fabsf(Vector3DotProduct(pitched, up)) < 0.985f) forward = pitched; // clamp ~10 deg from straight up/down
-
+        // (mouse look: look(), once per frame)
         const Vector3 flat = Vector3Normalize(Vector3Subtract(forward, Vector3Scale(up, Vector3DotProduct(forward, up))));
         const Vector3 side = Vector3CrossProduct(flat, up);
         // On the ground and in the air under gravity WASD is level (walking / air control); in deep
@@ -187,11 +183,11 @@ void Player::update(Scene& world, bool inputEnabled, float dt) {
         if (IsKeyDown(KEY_A)) wish = Vector3Subtract(wish, side);
         if (Vector3Length(wish) > 0.0f) wish = Vector3Normalize(wish);
         if (IsKeyDown(KEY_LEFT_SHIFT)) wish = Vector3Scale(wish, runMultiplier);
-        jump = IsKeyPressed(KEY_SPACE);
+        jump = SimKeyPressed(KEY_SPACE);
         jetUp = IsKeyDown(KEY_SPACE);
         jetDown = IsKeyDown(KEY_LEFT_CONTROL);
-        if (IsKeyPressed(KEY_B)) dampeners = !dampeners;
-        if (IsKeyPressed(KEY_H) && canHover) hovering = !hovering; // flight pack (#163)
+        if (SimKeyPressed(KEY_B)) dampeners = !dampeners;
+        if (SimKeyPressed(KEY_H) && canHover) hovering = !hovering; // flight pack (#163)
     }
     if (!canHover || !hoverPowered) hovering = false;
     // Fall safety (#163): a charged flight pack catches a fall faster than 12 m/s against the ground below.
@@ -292,6 +288,34 @@ void Player::update(Scene& world, bool inputEnabled, float dt) {
         airBody = nullptr;
     }
     lastEndPosition = position;
+    // Render interpolation (#315): the feet after this step and the one before, in the nearest body's frame. A new
+    // body, a teleport (spawns) or a jump of over 5 m (placed from outside) starts again from here.
+    if (nearest) {
+        const DVec3 l = nearest->toLocalD(position);
+        const bool cont = nearest->id == interpBody && interpSpawns == spawns && (l - interpCur).length() * nearest->scale < 5.0;
+        interpPrev = cont ? interpCur : l;
+        interpCur = l;
+        interpBody = nearest->id;
+        interpSpawns = spawns;
+    } else interpBody = 0;
+}
+
+void Player::look(Vector2 m) {
+    forward = RotateAround(forward, up, -m.x * mouseSensitivity * lookScale);
+    const Vector3 right = Vector3Normalize(Vector3CrossProduct(forward, up));
+    const Vector3 pitched = RotateAround(forward, right, -m.y * mouseSensitivity * lookScale);
+    if (fabsf(Vector3DotProduct(pitched, up)) < 0.985f) forward = pitched; // clamp ~10 deg from straight up/down
+}
+
+DVec3 Player::renderPosition(float alpha) const {
+    if (flyMode || !interpBody || interpSpawns != spawns) return position;
+    const Planetoid* b = Planetoid::find(interpBody);
+    if (!b) return position;
+    // Only while nothing moved the player since the last step (benches, respawns, the death hold): then the body-local
+    // feet still match `position`.
+    if ((b->toWorldD(interpCur) - position).length() > 1e-3) return position;
+    const double a = std::clamp((double)alpha, 0.0, 1.0);
+    return b->toWorldD(interpPrev + (interpCur - interpPrev) * a);
 }
 
 void Player::stepPhysics(Scene& world, float dt, Vector3 wish, bool jetUp, bool jetDown) {
@@ -603,7 +627,7 @@ bool Player::resolveCollisions(Scene&, Vector3& feet) {
 
 void Player::applyToCamera(Scene& world) const {
     if (flyMode) return;
-    const Vector3 feet = (position - world.renderOrigin).toFloat();
+    const Vector3 feet = (renderPosition(SimAlpha()) - world.renderOrigin).toFloat(); // between the last two steps (#315)
     Vector3 eye = Vector3Add(feet, Vector3Scale(up, eyeHeight + eyeOffset));
     if (nearest && eyeOffsetBody == nearest->id) { // sideways smoothing (#255); dirToWorld normalises, so scale back
         const float len = Vector3Length(eyeOffsetH);
