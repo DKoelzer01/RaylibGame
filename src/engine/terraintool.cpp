@@ -234,12 +234,20 @@ void TerrainTool_Update(Scene& world, const PlayerInput& in, bool editEnabled) {
         if (modWheel && wheel != 0.0f) terrainTool.brushRadius = std::clamp(terrainTool.brushRadius * (wheel > 0 ? 1.15f : 1.0f / 1.15f), 1.0f, 24.0f);
     }
 
-    // Sphere fill (#228): R with a filler in hand switches RMB between a soft blob and an exact sphere; Ctrl+wheel sizes it.
+    // Fill shapes (#228, user 2026-11-15): with a filler in hand, Ctrl+wheel steps through the shapes RMB places, as it
+    // does through build shapes: the soft blob, then exact spheres of 0.5-3 m (paid by the volume they fill).
     if (!terrainTool.terraform && FillerMaterial(terrainTool.heldTool) >= 0) {
-        if (in.hit(Act::Rotate)) { terrainTool.sphereFill = !terrainTool.sphereFill; Toast(terrainTool.sphereFill ? "Sphere fill: RMB adds an exact sphere (Ctrl+wheel: size)" : "Sphere fill off: RMB places soil"); }
-        const float wheel = in.wheel;
+        static const float kFillShapes[] = { 0.0f, 0.5f, 1.0f, 1.5f, 2.0f, 3.0f }; // 0: the blob
+        constexpr int kN = (int)(sizeof(kFillShapes) / sizeof(kFillShapes[0]));
         const bool modWheel = in.down(Act::Down) || in.down(Act::FreeLook);
-        if (terrainTool.sphereFill && modWheel && wheel != 0.0f) terrainTool.fillRadius = std::clamp(terrainTool.fillRadius + (wheel > 0 ? 0.25f : -0.25f), 0.5f, 3.0f);
+        if (modWheel && in.wheel != 0.0f) {
+            int k = 0;
+            if (terrainTool.sphereFill) for (int i = 1; i < kN; ++i) if (fabsf(kFillShapes[i] - terrainTool.fillRadius) < 0.01f) k = i;
+            k = (k + (in.wheel > 0 ? 1 : kN - 1)) % kN;
+            terrainTool.sphereFill = k > 0;
+            if (k > 0) terrainTool.fillRadius = kFillShapes[k];
+            Toast(k > 0 ? TextFormat("Fill shape: sphere %.1f m", kFillShapes[k]) : "Fill shape: soft blob");
+        }
     }
     // Buckets (Plan 4, F5): RMB with an empty bucket scoops 1 m^3 of water (static or flowing) from
     // the first water along the view within reach; RMB with a full one pours it where you look.
@@ -684,9 +692,9 @@ void TerrainTool_DrawHUD() {
                     const float r = terrainTool.fillRadius / p.scale;
                     static double costAt = -1.0; static float cost = 0.0f;
                     if (GetTime() - costAt > 0.2) { costAt = GetTime(); cost = FillCost(p, FillCentre(p, r), r, 2); } // an estimate (the stroke counts exactly)
-                    DrawText(TextFormat("sphere fill %.2f m: %.1f %s (have %.1f)   R: soil   Ctrl+wheel: size", terrainTool.fillRadius, cost, terrainTool.heldTool.c_str(), inventory.amount(terrainTool.heldTool)),
+                    DrawText(TextFormat("sphere fill %.2f m: %.1f %s (have %.1f)   Ctrl+wheel: shape", terrainTool.fillRadius, cost, terrainTool.heldTool.c_str(), inventory.amount(terrainTool.heldTool)),
                              cx + 14, cy + 58, 18, Color{ 140, 230, 255, 255 });
-                } else DrawText("R: sphere fill", cx + 14, cy + 58, 18, Fade(RAYWHITE, 0.6f));
+                } else DrawText("fill shape: soft blob   Ctrl+wheel: shape", cx + 14, cy + 58, 18, Fade(RAYWHITE, 0.6f));
             }
         }
     }

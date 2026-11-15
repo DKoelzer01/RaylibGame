@@ -18,7 +18,7 @@ struct TerrainToolSettings {
     bool creative = false;       // building costs nothing
     bool holdingItem = false;    // food or feed in hand (hotbar): RMB never places terrain with it (#201)
     bool terraform = false;      // debug (F1): the old brush tool - dig and fill any material, wheel resizes
-    bool sphereFill = false;     // #228: RMB with a filler in hand adds an exact sphere (R toggles, Ctrl+wheel sizes), paid by volume
+    bool sphereFill = false;     // #228: the fill shape is an exact sphere (else the soft blob); Ctrl+wheel with a filler in hand picks it, paid by volume
     float fillRadius = 1.0f;     // its radius (m)
     std::string heldTool;        // the tool item in hand (hotbar); empty or not carried: bare hands
     int swings = 0;              // counts mining strokes and chops (the hands animate a swing on each)
