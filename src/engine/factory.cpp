@@ -214,7 +214,7 @@ struct LayoutMsg {
     std::vector<std::string> machineVariant;              // per machine: its one output item ("" any)
     std::vector<Int3> conveyors, cables;
 };
-struct ItemMsg { int kind; uint64_t body; uint32_t plot; int part; int item; int count; }; // 0 insert, 1 extract, 2 seed, 3 take (one item from a chest), 4 take slot (item = slot, count: 0 input, 1 output, 2 fuel), 5 drain outputs, 6 insert into the fuel slot, 7 water (count = litres)
+struct ItemMsg { int kind; uint64_t body; uint32_t plot; int part; int item; int count; int amount = 0; }; // amount: kind 8, how many (0 = all) // 0 insert, 1 extract, 2 seed, 3 take (one item from a chest), 4 take slot (item = slot, count: 0 input, 1 output, 2 fuel), 5 drain outputs, 6 insert into the fuel slot, 7 water (count = litres)
 
 std::mutex simMutex;                          // state (sim thread holds it for a tick)
 std::vector<PlotSim> plots;
@@ -228,6 +228,8 @@ struct MoveMsg { uint64_t fromBody; uint32_t fromPlot; uint64_t toBody; uint32_t
 std::vector<MoveMsg> moveQueue;               // plots that changed body / id (rocket launch, landing)
 bool resetRequested = false;
 std::vector<std::pair<int, int>> results;     // sim -> main: (item, count) back to the inventory
+std::vector<std::pair<int, int>> cursorResults; // sim -> main: (item, count) onto the cursor (#192)
+void (*cursorSink)(const std::string&, int) = nullptr;
 std::vector<std::pair<int, int>> refunds;     // sim thread: contents of removed machines (to results)
 
 std::mutex viewMutex;                         // snapshot for the HUD
@@ -668,6 +670,7 @@ void SimLoop() {
                 if (PlotSim* p = FindPlot(mv.fromBody, mv.fromPlot); p && !FindPlot(mv.toBody, mv.toPlot)) { p->body = mv.toBody; p->plot = mv.toPlot; }
             for (const LayoutMsg& L : layouts) ApplyLayout(L);
             for (const auto& n : nears) if (PlotSim* p = FindPlot(n.first, n.second.first)) p->nearPlayer = n.second.second;
+            std::vector<std::pair<int, int>> toCursor; // kind 8 (#192)
             std::vector<std::pair<int, int>> back;
             back.swap(refunds); // removed machines' contents (from this tick's layouts)
             std::vector<std::pair<std::tuple<uint64_t, uint32_t, int>, int>> drained; // pump drains applied this tick (pumpPending)
@@ -699,6 +702,15 @@ void SimLoop() {
                     Stack* s = im.count == 2 ? &m.fuel : im.count ? m.out : m.in;
                     const int n = im.count == 2 ? 1 : im.count ? kSlots : InSlots(m);
                     if (im.item >= 0 && im.item < n && s[im.item].count > 0) { back.push_back({ s[im.item].item, s[im.item].count }); s[im.item] = Stack{}; }
+                } else if (im.kind == 8) { // part of a slot onto the cursor (#192)
+                    Stack* s = im.count == 2 ? &m.fuel : im.count ? m.out : m.in;
+                    const int n = im.count == 2 ? 1 : im.count ? kSlots : InSlots(m);
+                    if (im.item >= 0 && im.item < n && s[im.item].count > 0) {
+                        const int k = im.amount > 0 ? std::min(im.amount, s[im.item].count) : s[im.item].count;
+                        toCursor.push_back({ s[im.item].item, k });
+                        s[im.item].count -= k;
+                        if (s[im.item].count <= 0) s[im.item] = Stack{};
+                    }
                 } else {
                     Stack* s = m.type == PartType::Chest ? m.in : m.out;
                     const int n = m.type == PartType::Chest ? kChestSlots : kSlots;
@@ -725,6 +737,7 @@ void SimLoop() {
                 const auto& [b, pl, part] = watchKey;
                 if (PlotSim* p = FindPlot(b, pl)) FillView(*p, part, watchView); else watchView = MachineView{};
                 for (auto& r : back) results.push_back(r);
+                for (auto& r : toCursor) cursorResults.push_back(r);
                 chestView.clear();
                 pumpView.clear();
                 for (const auto& [k, n] : drained) if (auto pit = pumpPending.find(k); pit != pumpPending.end() && (pit->second -= n) <= 0) pumpPending.erase(pit);
@@ -837,8 +850,22 @@ void Factory::Sync(Scene& world) {
         std::lock_guard<std::mutex> v(viewMutex);
         back.swap(results);
     }
+    std::vector<std::pair<int, int>> cur;
+    {
+        std::lock_guard<std::mutex> v(viewMutex);
+        cur.swap(cursorResults);
+    }
     for (auto& r : back) inventory.add(tables.name(r.first), r.second);
+    for (auto& r : cur) { if (cursorSink) cursorSink(tables.name(r.first), r.second); else inventory.add(tables.name(r.first), r.second); }
 }
+
+void Factory::TakeSlotToCursor(uint64_t body, uint32_t plot, int part, int slot, int which, int count) {
+    std::lock_guard<std::mutex> q(queueMutex);
+    ItemMsg m{ 8, body, plot, part, which == 2 ? 0 : slot, which };
+    m.amount = count;
+    itemQueue.push_back(m);
+}
+void Factory::SetCursorSink(void (*sink)(const std::string&, int)) { cursorSink = sink; }
 
 MachineView Factory::View(uint64_t body, uint32_t plot, int part) {
     std::lock_guard<std::mutex> v(viewMutex);

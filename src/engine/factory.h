@@ -81,6 +81,10 @@ namespace Factory {
     // Container screen: one slot's whole stack back to the inventory (next tick).
     // which: 0 inputs, 1 outputs, 2 the fuel slot.
     void TakeSlot(uint64_t bodyId, uint32_t plotId, int part, int slot, int which);
+    // The same onto the cursor (#192: all inventories behave alike): `count` of the slot's stack (0 = all), delivered by
+    // Sync to the cursor sink (the inventory screen's held stack) instead of the inventory.
+    void TakeSlotToCursor(uint64_t bodyId, uint32_t plotId, int part, int slot, int which, int count);
+    void SetCursorSink(void (*sink)(const std::string& item, int count));
     // Water pumps (waterworks): water units in a pump's outputs (as of the last tick), and removing
     // them as they go down its pipes.
     int PumpWater(uint64_t bodyId, uint32_t plotId, int part);

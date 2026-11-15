@@ -260,6 +260,7 @@ int main(int argc, char** argv)
     bool shotPreview = false;      // --shot-preview: the build preview in the part's real shape (#197)
     bool testInvCursor = false;    // --test-inv-cursor (#192)
     bool noHud = false;            // --no-hud: no HUD, hands or overlay in play (clean screenshots: the menu slides, #386)
+    bool testContainerCursor = false; // --test-container-cursor (#192): a chest with the same slot behaviour as the inventory
     int pickupFrames = 0;
     int timeStep = 0, timeFrames = 0; float timeElev0 = 0.0f; Vector3 timeLocal0 = { 0, 0, 0 }; bool timeOk = true;
     bool benchWater = false;       // --test-water: rivers and ponds near the start, their beds and clay
@@ -481,6 +482,7 @@ int main(int argc, char** argv)
         if (std::string(argv[i]) == "--shot-preview") shotPreview = true;
         if (std::string(argv[i]) == "--test-inv-cursor") testInvCursor = true;
         if (std::string(argv[i]) == "--no-hud") noHud = true;
+        if (std::string(argv[i]) == "--test-container-cursor") testContainerCursor = true;
         if (std::string(argv[i]) == "--test-water") benchWater = true;
         if (std::string(argv[i]) == "--test-flyfollow") benchFlyFollow = true;
         if (std::string(argv[i]) == "--test-hotbar") benchHotbar = true;
@@ -5911,6 +5913,23 @@ int main(int argc, char** argv)
                 if (f == 38) { TakeScreenshot("bench_preview.png"); printf("bench: shot: bench_preview.png (a slope on the ground)\n"); }
                 if (f == 78) { TakeScreenshot("bench_preview_red.png"); printf("bench: shot: bench_preview_red.png (into the block)\n"); shotPreview = false; }
             }
+        }
+        // --test-container-cursor (#192): a chest placed 6 m ahead; its slots behave as the inventory's (cursor, halves, ones, Shift).
+        if (testContainerCursor && gameState == 1 && !loading && WorldIdle()) {
+            testContainerCursor = false;
+            Planetoid* p = dynamic_cast<Planetoid*>(world.objects[0].get());
+            const Vector3 feet = (player.position - world.renderOrigin).toFloat();
+            const Vector3 flat = Vector3Normalize(Vector3Subtract(player.forward, Vector3Scale(player.up, Vector3DotProduct(player.forward, player.up))));
+            TerrainHit th;
+            if (p && RaycastTerrain(world, Ray{ Vector3Add(Vector3Add(feet, Vector3Scale(flat, 6.0f)), Vector3Scale(player.up, 6.0f)), Vector3Negate(player.up) }, 200.0f, th)) {
+                if (!p->plots) p->plots = std::make_unique<PlotSet>();
+                Plot* plot = p->plots->plotFor(th.local, 0.0f, true);
+                const Int3 cell = plot->cellAt(plot->toPlot(Vector3Add(th.local, Vector3Scale(plot->up, 0.1f))));
+                if (BuildTool_Place(*p, *plot, { PartType::Chest, cell, 0 }, false)) {
+                    Factory::Sync(world); Factory::WaitTicks(2); Factory::Sync(world);
+                    GameUI_TestContainerCursor(world, p->id, plot->id, plot->partAt(cell), (int)PartType::Chest);
+                } else printf("bench: container cursor: the chest would not go down -> FAIL\n");
+            } else printf("bench: container cursor: no ground -> FAIL\n");
         }
         // --shot-inventory (#219): the inventory with long item names (cut to fit; they scroll on hover).
         if (shotInventory && gameState == 1 && !loading && WorldIdle()) {

@@ -14,6 +14,7 @@ void GameUI_DrawHUD(Scene& world); // plain raylib 2D HUD (status, toasts)
 void GameUI_Toast(const char* text);
 void GameUI_InitPickupFeed(); // #208: "+N item" lines in the bottom right for everything that enters the inventory
 bool GameUI_TestCursorStack();  // --test-inv-cursor (#192): pick up, put down, halves, ones, merge, swap, quick-move, return
+bool GameUI_TestContainerCursor(Scene& world, uint64_t body, uint32_t plot, int part, int partType); // --test-container-cursor (#192)
 // A machine's or chest's screen (RMB on it): its slots in the inventory window's right column.
 // Clicking an inventory cell puts that stack in; clicking one of its slots takes it out.
 void GameUI_OpenContainer(uint64_t body, uint32_t plot, int part, int partType);
