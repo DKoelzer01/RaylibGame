@@ -72,6 +72,7 @@ void GameSave_Register() {
         Suit_Reset();
         ToolWear_Reset();
         RecipeBook_Reset();
+        Combat_Reset(); // graves: the save holds them all (#165)
         worldDifficulty = 1; // a save without the line: normal
         char tok[64] = {};
         while (fscanf(f, " %63s", tok) == 1 && strcmp(tok, "end_extras") != 0) {
