@@ -74,7 +74,10 @@ namespace {
         std::mutex m;
         std::deque<GpuBlockJob> queue;
         const PlanetField* field = nullptr;   // whose uniforms are set
-        const PlanetField* verified = nullptr; // checked against the CPU (its first batch)
+        // Fields checked against the CPU (their first batch). A set, not one pointer: with the planet and its moon both
+        // streaming, batches alternate between them and a single pointer re-ran the CPU check (a whole block sampled on
+        // the main thread) on every batch (#387).
+        std::vector<const PlanetField*> verified;
         bool disabled = false;                 // a GPU / CPU mismatch turned the GPU path off
         long long blocks = 0, batches = 0;
         double latencyMs = 0.0;
@@ -264,7 +267,7 @@ void TerrainGpu_Pump() {
                     }
                 }
             }
-        } else if (!sl.jobs.empty() && S.verified != sl.jobs.front().field) {
+        } else if (!sl.jobs.empty() && std::find(S.verified.begin(), S.verified.end(), sl.jobs.front().field) == S.verified.end()) {
             const GpuBlockJob& j = sl.jobs.front();
             const size_t n = (size_t)j.block.E * j.block.E * j.block.E;
             std::vector<float> cpu(n);
@@ -273,7 +276,7 @@ void TerrainGpu_Pump() {
                 logger.logf("[TerrainGpu] GPU density differs from the CPU on this driver: density blocks back on the CPU\n");
                 S.disabled = true;
             } else {
-                S.verified = j.field;
+                S.verified.push_back(j.field);
             }
         }
         if (S.disabled) { // redone on the CPU, into a writable buffer (the ring is mapped read-only)
@@ -377,6 +380,7 @@ void TerrainGpu_Unload() {
     std::lock_guard<std::mutex> lock(S.m);
     S.queue.clear();
     S.tried = S.ok = false;
-    S.field = S.verified = nullptr;
+    S.field = nullptr;
+    S.verified.clear();
     S.disabled = false;
 }

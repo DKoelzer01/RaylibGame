@@ -1520,9 +1520,19 @@ static float OverheadOpenness(const DensityField& field, const TerrainDeltas& de
             if (blockSolid(Vector3Add(p, Vector3Scale(dirs[r], kDist[k])), inside)) blocked = true;
             if (!inside) break;
         }
-        if (!blocked && !inside && r == 0 && mayRoof) // the up ray beyond the block: the rest from the full field
-            for (; k < 8 && !blocked; k += 2)
-                blocked = field.density(Vector3Add(p, Vector3Scale(up, kDist[k])), &deltas, std::max(stride, 1.0f)) >= ISO_LEVEL;
+        if (!blocked && !inside && r == 0 && mayRoof) { // the up ray beyond the block: the rest from the field
+            // Straight up stays in this vertex's column, so with the column known (the block's grid) the surface is too:
+            // densityNear skips the height map, which made full density() calls here the bulk of a build in the 3D band
+            // (no erosion: "Preparing spawn" 8 s -> 40 s, #387).
+            const auto* pf = (col && elev) ? dynamic_cast<const PlanetField*>(&field) : nullptr;
+            const float fp = std::max(stride, 1.0f);
+            for (; k < 8 && !blocked; k += 2) {
+                const Vector3 q = Vector3Add(p, Vector3Scale(up, kDist[k]));
+                const float v = pf ? pf->densityInColumn(q, d + kDist[k], *elev, fp, col) + deltas.sample(q)
+                                   : field.density(q, &deltas, fp);
+                blocked = v >= ISO_LEVEL;
+            }
+        }
         if (!blocked) open += r == 0 ? 2.0f : 1.0f;
     }
     return std::min(std::clamp(open / 6.0f * 1.5f, 0.0f, 1.0f), lipShade);

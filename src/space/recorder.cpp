@@ -50,6 +50,11 @@ namespace {
     // the GIF lasts exactly as long as the capture.
     Image gifPending{};
     double gifPendingAt = 0.0, gifEmittedCs = 0.0;
+    // Frame times: the fixed steps with --fixed-dt (--record); in F10 play the real clock since the first frame (the sheet
+    // labelled 0.5 s apart frames 1/60 s apart, #375).
+    double clockStart = 0.0;
+    // F10 finishes in the background (draining PNGs to the share, the GIF, the sheet, pruning: a freeze, #375).
+    std::thread finisher;
 
     uint64_t Hash(const Image& img) {
         uint64_t h = 1469598103934665603ull;
@@ -158,7 +163,9 @@ namespace {
     }
 
     void Begin(const std::string& d) {
+        if (finisher.joinable()) finisher.join(); // the last F10 recording is still being written (shares the writer queue)
         dir = d;
+        clockStart = GetTime();
         std::error_code ec;
         std::filesystem::create_directories(dir, ec);
         active = true; finished = false; captured = 0; rendered = 0;
@@ -172,13 +179,21 @@ namespace {
         writerRunning = true;
     }
 
-    // Finish: drain the writer (and the GIF), then the contact sheet on this thread (it draws text: the GPU font).
-    void End() {
+    // Finish: drain the writer (and the GIF), then the contact sheet (CPU images; ImageDrawText reads the default font's
+    // glyph images) and pruning. On this thread for --record (the run exits after it); for F10 on a finisher thread.
+    void Finish();
+    void End(bool background = false) {
         if (!active) return;
         active = false;
         if (gifPending.data) { // the last GIF frame: one capture interval
-            Job j{ gifPending, "", true, false }; j.centis = std::max(2, gifCentis); Push(j); gifPending = Image{};
+            Job j{ gifPending, "", true, false }; j.centis = std::max(2, gifCentis); gifPending = Image{};
+            if (!background) Push(j);
+            else { std::lock_guard<std::mutex> lk(m); queue.push_back(j); cv.notify_one(); } // never wait for room here
         }
+        if (background) { finisher = std::thread(Finish); return; }
+        Finish();
+    }
+    void Finish() {
         if (writerRunning) { Push(Job{ Image{}, "", false, true }); writer.join(); writerRunning = false; }
         std::string sheetPath = "-";
         if (wantSheet && !thumbs.empty()) {
@@ -234,7 +249,7 @@ void Recorder_Start() {
 
 void Recorder_Update(bool worldReady) {
     if (IsKeyPressed(KEY_F10) && !cli) { // normal play: start / stop a recording for a bug report
-        if (active) End();
+        if (active) End(true);
         else {
             char stamp[32];
             const std::time_t now = std::time(nullptr);
@@ -244,7 +259,7 @@ void Recorder_Update(bool worldReady) {
             waiting = false;
         }
     }
-    if (active && waiting && GetTime() - waitStart >= startDelay && worldReady) { waiting = false; gGameClock = 0.0; } // animation clocks start with the capture
+    if (active && waiting && GetTime() - waitStart >= startDelay && worldReady) { waiting = false; gGameClock = 0.0; clockStart = GetTime(); } // animation clocks start with the capture
 }
 
 bool Recorder_WantsFrame(bool hud) {
@@ -272,8 +287,7 @@ void Recorder_Capture() {
     }
     if (captured == 0) firstHash = h;
     lastHash = h;
-    const float dt = fixedDt > 0.0f ? fixedDt : 1.0f / 60.0f;
-    const float t = (float)(captured * every) * dt;
+    const float t = fixedDt > 0.0f ? (float)(captured * every) * fixedDt : (float)(GetTime() - clockStart);
     if (wantSheet) { Image s = ImageCopy(img); ImageResize(&s, 240, std::max(1, img.height * 240 / std::max(1, img.width))); thumbs.push_back({ s, captured, t }); }
     if (wantGif) {
         const double nowCs = 100.0 * (double)t;            // this capture's time in the recording
@@ -287,11 +301,11 @@ void Recorder_Capture() {
     }
     Push(Job{ img, TextFormat("%s/frame_%04d.png", dir.c_str(), captured), false, false });
     ++captured;
-    if (captured >= framesWanted) End();
+    if (captured >= framesWanted) End(!cli);
 }
 
 void Recorder_FrameDone() { if (active && !waiting) ++rendered; }
 
 bool Recorder_Finished() { return finished; }
 bool Recorder_Active() { return active; }
-void Recorder_Shutdown() { End(); }
+void Recorder_Shutdown() { End(); if (finisher.joinable()) finisher.join(); }

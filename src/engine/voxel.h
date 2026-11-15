@@ -320,6 +320,9 @@ public:
     // shared with the workers.
     void bakeErosion(const std::string& cachePath); // loads the bake from cachePath when it matches, else bakes and saves it
     float profileLandHeight(Vector3 dir, float footprint) const; // land(dir, fp).h, for --profile-density
+    // Base density (no edits) at p, |p| = d, in a column whose surface elevation and Column3D are known (a block grid's):
+    // skips the height map. The sky probe's up ray uses it (#387).
+    float densityInColumn(Vector3 p, float d, float elev, float footprint, const Column3D* col) const { return densityNear(p, d, radius + elev, footprint, col); }
 private:
     std::shared_ptr<RiverState> riverState;
     unsigned int riverSeed = 0;

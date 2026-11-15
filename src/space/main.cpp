@@ -5777,7 +5777,14 @@ int main(int argc, char** argv)
                 pendingMenu.action = MenuAction::LoadGame; pendingMenu.path = "saves/bench.sav"; menuStep = 5; menuFrames = 0;
             } else if (menuStep == 5 && menuFrames == 5) {
                 menuOk &= gameState == 1;
-                printf("bench: menus: Load Game -> in game: %s -> %s\n", gameState == 1 ? "yes" : "NO", menuOk ? "PASS" : "FAIL");
+                printf("bench: menus: Load Game -> in game: %s\n", gameState == 1 ? "yes" : "NO");
+                // #388: Resume from a pause taken on the loading screen keeps the loading screen (benches load without one).
+                loading = true; pendingMenu.action = MenuAction::Resume; menuStep = 6; menuFrames = 0;
+            } else if (menuStep == 6 && menuFrames == 2) {
+                const bool kept = loading && gameState == 1;
+                menuOk &= kept;
+                loading = false;
+                printf("bench: menus: Resume during loading keeps the loading screen (#388): %s -> %s\n", kept ? "yes" : "NO", menuOk ? "PASS" : "FAIL");
                 benchMenus = false;
             }
         }
@@ -5811,7 +5818,7 @@ int main(int argc, char** argv)
                     if (LoadWorldSave(world)) { worldFresh = false; enterGame(); }
                     else GameUI_Toast(TextFormat("Could not load %s", m.path.c_str()));
                     break;
-                case MenuAction::Resume: enterGame(false); loading = false; break;
+                case MenuAction::Resume: { const bool wasLoading = loading; enterGame(false); loading = wasLoading; break; } // a pause during loading (#388) keeps the loading screen
                 case MenuAction::Save: GameUI_Toast(SaveWorld(world) ? "Saved" : "Save failed"); break;
                 case MenuAction::SaveAndQuit:
                     if (!SaveWorld(world)) GameUI_Toast("Save failed");
@@ -5829,8 +5836,9 @@ int main(int argc, char** argv)
                 case MenuAction::None: break;
             }
             // Esc in game pauses (unless it closes the inventory or build mode first); the pause menu
-            // handles Esc itself (resume, or back out of Settings).
-            if (gameState == 1 && m.action == MenuAction::None && IsKeyPressed(KEY_ESCAPE)) {
+            // handles Esc itself (resume, or back out of Settings). Not on the loading screen (#388: Resume skipped it into a
+            // half-built world).
+            if (gameState == 1 && !loading && m.action == MenuAction::None && IsKeyPressed(KEY_ESCAPE)) {
                 if (Nav_MapOpen()) Nav_CloseMap();
                 else if (GameUI_InventoryOpen()) GameUI_ToggleInventory();
                 else if (buildTool.active) buildTool.active = false;
