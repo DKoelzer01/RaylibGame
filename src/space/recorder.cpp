@@ -55,6 +55,8 @@ namespace {
     double clockStart = 0.0;
     // F10 finishes in the background (draining PNGs to the share, the GIF, the sheet, pruning: a freeze, #375).
     std::thread finisher;
+    std::mutex lastDirM;
+    std::string lastDir; // the last finished recording (bug reports, #169)
 
     uint64_t Hash(const Image& img) {
         uint64_t h = 1469598103934665603ull;
@@ -219,6 +221,7 @@ namespace {
         fflush(stdout);
         if (diffFrames > 0) printf("record: compared with %s: %d frames, %.3f%% of pixels differ on average, worst %.3f%% (frame %d)\n", compareDir.c_str(), diffFrames, diffSum / diffFrames, diffMax, diffWorst);
         Prune(dir);
+        { std::lock_guard<std::mutex> lk(lastDirM); lastDir = dir; }
         if (cli && !keepRunning) finished = true;
     }
 }
@@ -309,3 +312,4 @@ void Recorder_FrameDone() { if (active && !waiting) ++rendered; }
 bool Recorder_Finished() { return finished; }
 bool Recorder_Active() { return active; }
 void Recorder_Shutdown() { End(); if (finisher.joinable()) finisher.join(); }
+std::string Recorder_LastDir() { std::lock_guard<std::mutex> lk(lastDirM); return lastDir; }

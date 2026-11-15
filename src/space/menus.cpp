@@ -270,11 +270,12 @@ MenuResult Menu_Pause() {
         if (SettingsPage()) pausePage = Page::Main;
         return r;
     }
-    const Rectangle panel = { Row(0).x - 30 * s, Row(0).y - 30 * s, Row(0).width + 60 * s, Row(3).y + Row(3).height - Row(0).y + 60 * s };
+    const Rectangle panel = { Row(0).x - 30 * s, Row(0).y - 30 * s, Row(0).width + 60 * s, Row(4).y + Row(4).height - Row(0).y + 60 * s };
     DrawRectangleRounded(panel, 0.06f, 6, kPanel);
     if (Button(Row(0), "Resume") || IsKeyPressed(KEY_ESCAPE)) r.action = MenuAction::Resume;
     if (Button(Row(1), "Save")) r.action = MenuAction::Save;
     if (Button(Row(2), "Settings")) pausePage = Page::Settings;
-    if (Button(Row(3), "Save & Quit to Menu")) r.action = MenuAction::SaveAndQuit;
+    if (Button(Row(3), "Report a bug")) r.action = MenuAction::ReportBug; // #169
+    if (Button(Row(4), "Save & Quit to Menu")) r.action = MenuAction::SaveAndQuit;
     return r;
 }

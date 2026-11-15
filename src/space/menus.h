@@ -10,7 +10,7 @@
 
 #include <string>
 
-enum class MenuAction { None, NewGame, LoadGame, Resume, Save, SaveAndQuit, Exit };
+enum class MenuAction { None, NewGame, LoadGame, Resume, Save, SaveAndQuit, Exit, ReportBug }; // ReportBug: the bug report window (#169)
 struct MenuResult {
     MenuAction action = MenuAction::None;
     std::string path;            // LoadGame: the save file

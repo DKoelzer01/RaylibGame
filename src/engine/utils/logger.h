@@ -15,6 +15,9 @@ public:
     // printf-style logging
     void logf(const char* fmt, ...);
 
+    // Writes out what is buffered (a bug report reads log.txt mid-run, #169).
+    void flush() { std::lock_guard<std::mutex> lock(logMutex); logFile.flush(); }
+
 private:
     std::ofstream logFile;
     std::mutex logMutex;

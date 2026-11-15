@@ -34,6 +34,7 @@
 #include "buildtool.h"
 #include "recorder.h"
 #include "slideshow.h"
+#include "bugreport.h"
 #include "progression_test.h"
 #include "menus.h"
 #include "hotbar.h"
@@ -261,6 +262,7 @@ int main(int argc, char** argv)
     bool testInvCursor = false;    // --test-inv-cursor (#192)
     bool noHud = false;            // --no-hud: no HUD, hands or overlay in play (clean screenshots: the menu slides, #386)
     bool testContainerCursor = false; // --test-container-cursor (#192): a chest with the same slot behaviour as the inventory
+    int testBugReport = 0;         // --test-bug-report (#169): frames since the scripted report was sent (0: not asked)
     int pickupFrames = 0;
     int timeStep = 0, timeFrames = 0; float timeElev0 = 0.0f; Vector3 timeLocal0 = { 0, 0, 0 }; bool timeOk = true;
     bool benchWater = false;       // --test-water: rivers and ponds near the start, their beds and clay
@@ -483,6 +485,7 @@ int main(int argc, char** argv)
         if (std::string(argv[i]) == "--test-inv-cursor") testInvCursor = true;
         if (std::string(argv[i]) == "--no-hud") noHud = true;
         if (std::string(argv[i]) == "--test-container-cursor") testContainerCursor = true;
+        if (std::string(argv[i]) == "--test-bug-report") testBugReport = 1;
         if (std::string(argv[i]) == "--test-water") benchWater = true;
         if (std::string(argv[i]) == "--test-flyfollow") benchFlyFollow = true;
         if (std::string(argv[i]) == "--test-hotbar") benchHotbar = true;
@@ -5914,6 +5917,12 @@ int main(int argc, char** argv)
                 if (f == 78) { TakeScreenshot("bench_preview_red.png"); printf("bench: shot: bench_preview_red.png (into the block)\n"); shotPreview = false; }
             }
         }
+        // --test-bug-report (#169): a scripted report to RAYLIBGAME_BUG_RELAY; BugReport_Update prints the relay's answer.
+        if (testBugReport > 0 && gameState == 1 && !loading && WorldIdle()) {
+            if (testBugReport == 1) BugReport_TestSend(world);
+            ++testBugReport;
+            if (testBugReport > 3 && !BugReport_Sending()) { printf("bench: bug report: sent (see the 'bug report:' line)\n"); testBugReport = 0; }
+        }
         // --test-container-cursor (#192): a chest placed 6 m ahead; its slots behave as the inventory's (cursor, halves, ones, Shift).
         if (testContainerCursor && gameState == 1 && !loading && WorldIdle()) {
             testContainerCursor = false;
@@ -6051,6 +6060,7 @@ int main(int argc, char** argv)
                     toMenu();
                     break;
                 case MenuAction::Exit: windowKeepAlive = false; break;
+                case MenuAction::ReportBug: BugReport_Open(world); break; // stays paused (#169)
                 case MenuAction::None: break;
             }
             // Esc in game pauses (unless it closes the inventory or build mode first); the pause menu
@@ -6137,8 +6147,9 @@ int main(int argc, char** argv)
                 }
             } else if (gameState == 2) {
                 world.drawScene(gameState);
+                if (justPaused) BugReport_CaptureScene(); // the world as it paused, for a bug report's screenshot (#169)
                 world.drawUI(gameState);
-                const MenuResult m = Menu_Pause();
+                const MenuResult m = BugReport_IsOpen() ? MenuResult{} : Menu_Pause(); // the bug report window takes the input (#169)
                 if (!justPaused) pendingMenu = m; // the Esc that opened it is not also a "resume"
             }
             justPaused = false;
@@ -6147,6 +6158,8 @@ int main(int argc, char** argv)
                 rlImGuiBegin();
                 DebugUI_Draw(world);
                 GameUI_Draw(world);
+                BugReport_Draw();
+                BugReport_Update();
                 rlImGuiEnd();
                 GpuTimer_Mark("imgui");
             }
