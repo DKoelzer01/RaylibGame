@@ -90,12 +90,25 @@ vec3 fetch(vec2 p) {
     vec3 c = texture(src, p).rgb;
     if (any(isnan(c)) || any(isinf(c))) c = vec3(0.0);
     c = max(c, vec3(0.0));
-    return decode == 1 ? pow(c, vec3(2.2)) : c;
+    if (decode == 0) return c;
+    c = pow(c, vec3(2.2));
+    // Fireflies (#452): a few sub-pixel sun glints on water thousands of times brighter than the scene bloomed into
+    // big white discs. Cap a pixel's luminance before it spreads.
+    float l = dot(c, vec3(0.2126, 0.7152, 0.0722));
+    return l > 16.0 ? c * (16.0 / l) : c;
+}
+// The first level also weights taps by 1 / (1 + luminance) (Karis average): a lone bright pixel can't dominate.
+vec3 tap(vec2 p, float w, inout float wsum) {
+    vec3 c = fetch(p);
+    float k = decode == 1 ? w / (1.0 + dot(c, vec3(0.2126, 0.7152, 0.0722))) : w;
+    wsum += k;
+    return c * k;
 }
 void main() {
     vec2 h = texel * 0.5;
-    vec3 s = fetch(uv) * 4.0 + fetch(uv - h) + fetch(uv + h) + fetch(uv + vec2(h.x, -h.y)) + fetch(uv - vec2(h.x, -h.y));
-    color = vec4(s / 8.0, 1.0);
+    float wsum = 0.0;
+    vec3 s = tap(uv, 4.0, wsum) + tap(uv - h, 1.0, wsum) + tap(uv + h, 1.0, wsum) + tap(uv + vec2(h.x, -h.y), 1.0, wsum) + tap(uv - vec2(h.x, -h.y), 1.0, wsum);
+    color = vec4(s / max(wsum, 1e-4), 1.0);
 }
 )";
     const char* kFsUp = R"(#version 330
