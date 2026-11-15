@@ -35,6 +35,10 @@ namespace {
     size_t current = 0;
     double stepStart = 0.0, testStart = 0.0;
     std::vector<std::string> stepHistory; // the current step, a line a second (#372: printed if it fails)
+    struct PendingGive { std::string machine, item; int count; };
+    std::vector<PendingGive> pendingGives; // deliveries waiting for the factory to take a machine in (#372)
+    int frameNo = 0, placedFrame = -100; // test frames; the last Place()
+    void FlushGives();
     Planetoid* body = nullptr;
     const PlanetField* field = nullptr;
     Plot* plot = nullptr;
@@ -158,6 +162,7 @@ namespace {
         const int before = plot->partCount();
         if (!BuildTool_Place(*body, *plot, { t, cell, 0 }, true)) { printf("bench: progression: could not place a %s\n", name.c_str()); failed = 1; return false; }
         parts[name] = (int)plot->parts.size() - 1;
+        placedFrame = frameNo; // gives wait a few frames: the layout goes to the factory with the next Sync (#372)
         return plot->partCount() == before + 1;
     }
     void Give(const std::string& machine, const std::string& item, int count) {
@@ -176,7 +181,23 @@ namespace {
             return;
         }
         count = std::min(count, inventory.count(item));
-        if (count > 0 && inventory.remove(item, count)) Factory::Insert(body->id, plot->id, parts[machine], item, count);
+        if (count <= 0) return;
+        // The factory takes a just-placed machine's layout on a later frame: an insert for a part it doesn't know is
+        // refunded to the inventory, and the step then waited on a machine with nothing in it (#372; found by the
+        // lighting session). The layout goes over with the next frame's Factory::Sync: deliveries within 3 frames of a Place() wait.
+        if (frameNo - placedFrame < 3) { pendingGives.push_back({ machine, item, count }); return; }
+        if (inventory.remove(item, count)) Factory::Insert(body->id, plot->id, parts[machine], item, count);
+    }
+    void FlushGives() {
+        if (pendingGives.empty() || frameNo - placedFrame < 3) return;
+        Factory::WaitTicks(2); // the factory has taken the layout in
+        std::vector<PendingGive> again;
+        for (const PendingGive& g : pendingGives) {
+            if (frameNo - placedFrame < 3) { again.push_back(g); continue; }
+            const int c = std::min(g.count, inventory.count(g.item));
+            if (c > 0 && inventory.remove(g.item, c)) Factory::Insert(body->id, plot->id, parts[g.machine], g.item, c);
+        }
+        pendingGives.swap(again);
     }
     // Run a machine until `item` reaches `want` in the inventory (taking its output now and then).
     bool Collect(const std::string& machine, const std::string& item, int want) {
@@ -571,6 +592,8 @@ int Progression_Update(Scene& world, bool fullLadder, bool evLadder) {
     }
     if (failed) return -1;
     if (current >= steps.size()) return 1;
+    ++frameNo;
+    FlushGives(); // deliveries to machines the factory had not taken in yet (#372)
     if (steps[current].run()) {
         printf("bench: progression: [%5.1f s] %s (quest tier %d)\n", GetTime() - testStart, steps[current].name.c_str(), QuestBook_Tier());
         ++current;
