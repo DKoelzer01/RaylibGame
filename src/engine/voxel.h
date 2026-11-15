@@ -380,6 +380,8 @@ struct ChunkWaterCache {
 // Bytes held by all chunk water caches (benches; past kChunkWaterCacheCap no new ones are kept: those chunks redraw
 // their water with a full build instead).
 long long ChunkWaterCacheBytes();
+// Water mesh phase times (ns, summed over workers): sampling, marching cubes, shore clip, vertex output (#381),
+void ChunkWaterPhases(long long out[6]); // + exact density samples, all samples
 constexpr long long kChunkWaterCacheCap = 128ll << 20;
 
 // CPU-side result of meshing one chunk (produced on a worker thread).

@@ -1008,7 +1008,7 @@ void GpuFlowResolve() {
     }
     const unsigned need = (unsigned)std::max(1, blocks) * kCellsPerBrick * 16;
     if (G.flux.bytes < need) { // grown (cleared)
-        if (G.flux.id) G.flux.destroy(); G.flux.create(need);
+        if (G.flux.id) { G.flux.destroy(); } G.flux.create(need);
         const std::vector<int> zeros(need / 4, 0);
         G.flux.upload(zeros.data(), need);
     }

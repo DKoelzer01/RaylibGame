@@ -5782,6 +5782,11 @@ int main(int argc, char** argv)
                     if (ws.waterBuilds || ws.waterFullBuilds)
                         printf("bench: water redraws: %lld chunk water rebuilds, avg %.2f ms on a worker, total %.0f ms; %lld full builds for water; caches %.1f MB (#360)\n",
                                ws.waterBuilds, ws.waterBuilds ? ws.waterMs / ws.waterBuilds : 0.0, ws.waterMs, ws.waterFullBuilds, ws.waterCacheBytes / 1048576.0);
+                    if (ws.waterBuilds || ws.waterFullBuilds) {
+                        long long ph[6]; ChunkWaterPhases(ph);
+                        printf("bench: water mesh phases: sampling %.0f ms, marching %.0f ms, shore clip %.0f ms, vertices %.0f ms; %.1f%% of %lld density samples exact (#381)\n",
+                               ph[0] / 1e6, ph[1] / 1e6, ph[2] / 1e6, ph[3] / 1e6, ph[5] ? 100.0 * ph[4] / ph[5] : 0.0, ph[5]);
+                    }
                 }
                 if (crackCheck) {
                     // Holes between chunks show the magenta clear colour (look down at terrain that fills the view).

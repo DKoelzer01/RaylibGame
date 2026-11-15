@@ -107,10 +107,12 @@ private:
     std::unordered_map<int64_t, float> memo; // (site, cell, kind) -> surface height
     // Per site, over the chunk's box in site cells (+2 margin): water surfaces (NaN: not yet asked) and which bricks are
     // published (#423: the blended density asks four columns a sample; hashing every one doubled a water rebuild).
-    struct Dense { int c0[3] = {}, n[3] = {}, b0[3] = {}, bn[3] = {}; std::vector<float> surf; std::vector<char> brick; };
+    struct Dense { int c0[3] = {}, n[3] = {}, b0[3] = {}, bn[3] = {}; std::vector<float> surf; std::vector<const Brick*> brick; };
     std::vector<Dense> dense;
     bool blend = true; // blend columns (#423): only in fine chunks (samples finer than a cell); coarse ones gain nothing (#381)
-    bool brickAt(int si, int ci, int cj, int ck) const;
+    const Brick* brickPtr(int si, int bi, int bj, int bk) const; // by brick coordinates, through the dense cache
+    bool brickAt(int si, int ci, int cj, int ck) const { return brickPtr(si, ci >> 4, cj >> 4, ck >> 4) != nullptr; }
+    bool cellAt(int si, int ci, int cj, int ck, uint8_t& fill, uint8_t& flags) const; // Site::cell through the cache
     float surface(int si, int ci, int cj, int ck, int kind);
     float openSurface(int si, int ci, int cj, int ck, int kind, int depth);
 };

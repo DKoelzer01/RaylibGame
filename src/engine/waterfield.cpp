@@ -118,29 +118,37 @@ ChunkSampler::ChunkSampler(const Snapshot* snap, uint64_t body, Vector3 lo, Vect
         else d.n[0] = d.n[1] = d.n[2] = 0; // a coarse chunk: the memo map only
         for (int a = 0; a < 3; ++a) { d.b0[a] = FloorDiv(d.c0[a], kBrick); d.bn[a] = FloorDiv(d.c0[a] + std::max(1, d.n[a]) - 1, kBrick) - d.b0[a] + 1; }
         if ((long long)d.bn[0] * d.bn[1] * d.bn[2] <= 4096) {
-            d.brick.assign((size_t)d.bn[0] * d.bn[1] * d.bn[2], 0);
+            d.brick.assign((size_t)d.bn[0] * d.bn[1] * d.bn[2], nullptr);
             for (int bk = 0; bk < d.bn[2]; ++bk)
                 for (int bj = 0; bj < d.bn[1]; ++bj)
                     for (int bi = 0; bi < d.bn[0]; ++bi)
-                        d.brick[((size_t)bk * d.bn[1] + bj) * d.bn[0] + bi] = site.brick(d.b0[0] + bi, d.b0[1] + bj, d.b0[2] + bk) ? 1 : 0;
+                        d.brick[((size_t)bk * d.bn[1] + bj) * d.bn[0] + bi] = site.brick(d.b0[0] + bi, d.b0[1] + bj, d.b0[2] + bk);
         }
         dense.push_back(std::move(d));
     }
     if (!sites.empty()) kindMask |= 1; // water: the published cells may hold none of it here and still decide (a drained pond)
 }
 
-bool ChunkSampler::brickAt(int si, int ci, int cj, int ck) const {
+const Brick* ChunkSampler::brickPtr(int si, int bi, int bj, int bk) const {
     const Dense& d = dense[si];
-    const int bi = FloorDiv(ci, kBrick) - d.b0[0], bj = FloorDiv(cj, kBrick) - d.b0[1], bk = FloorDiv(ck, kBrick) - d.b0[2];
-    if (!d.brick.empty() && bi >= 0 && bj >= 0 && bk >= 0 && bi < d.bn[0] && bj < d.bn[1] && bk < d.bn[2])
-        return d.brick[((size_t)bk * d.bn[1] + bj) * d.bn[0] + bi] != 0;
-    return sites[si]->brick(FloorDiv(ci, kBrick), FloorDiv(cj, kBrick), FloorDiv(ck, kBrick)) != nullptr;
+    const int x = bi - d.b0[0], y = bj - d.b0[1], z = bk - d.b0[2];
+    if (!d.brick.empty() && x >= 0 && y >= 0 && z >= 0 && x < d.bn[0] && y < d.bn[1] && z < d.bn[2])
+        return d.brick[((size_t)z * d.bn[1] + y) * d.bn[0] + x];
+    return sites[si]->brick(bi, bj, bk);
+}
+
+// Site::cell without the hash lookup inside the chunk's box (#381: openSurface reads ~10 cells per column).
+bool ChunkSampler::cellAt(int si, int ci, int cj, int ck, uint8_t& fill, uint8_t& flags) const {
+    const Brick* b = brickPtr(si, ci >> 4, cj >> 4, ck >> 4);
+    if (!b) return false;
+    const int i = CellIdx(ci & 15, cj & 15, ck & 15);
+    fill = b->fill[i]; flags = b->flags[i];
+    return true;
 }
 
 float ChunkSampler::openSurface(int si, int ci, int cj, int ck, int kind, int depth) {
-    const Site& s = *sites[si];
     uint8_t fill, flags;
-    if (!s.cell(ci, cj, ck, fill, flags) || (flags & kSolid)) return kNone;
+    if (!cellAt(si, ci, cj, ck, fill, flags) || (flags & kSolid)) return kNone;
     const int f = CellKind(flags) == kind ? fill : 0;
     if (f > 0) {
         if (f < kShallow) {
@@ -148,13 +156,13 @@ float ChunkSampler::openSurface(int si, int ci, int cj, int ck, int kind, int de
             // same level, or deeper water - not as the films a draining body leaves cell by cell, each at its own height
             // over a bed the cell does not know (they read as a grid of spikes, #360).
             uint8_t fb, flb;
-            const bool topsFluid = s.cell(ci, cj, ck - 1, fb, flb) && !(flb & kSolid) && fb >= 255 && CellKind(flb) == kind;
+            const bool topsFluid = cellAt(si, ci, cj, ck - 1, fb, flb) && !(flb & kSolid) && fb >= 255 && CellKind(flb) == kind;
             if (!topsFluid) {
                 static const int side[4][2] = { { 1, 0 }, { -1, 0 }, { 0, 1 }, { 0, -1 } };
                 bool sheet = false;
                 for (const auto& d : side) {
                     uint8_t fo, flo;
-                    if (!s.cell(ci + d[0], cj + d[1], ck, fo, flo) || (flo & kSolid) || fo == 0 || CellKind(flo) != kind) continue;
+                    if (!cellAt(si, ci + d[0], cj + d[1], ck, fo, flo) || (flo & kSolid) || fo == 0 || CellKind(flo) != kind) continue;
                     if (fo >= kShallow || abs((int)fo - f) <= 8) { sheet = true; break; }
                 }
                 if (!sheet) return kNone;
@@ -163,12 +171,12 @@ float ChunkSampler::openSurface(int si, int ci, int cj, int ck, int kind, int de
         if (f < 255) return ck + f / 255.0f;
         // Full: the surface is higher up if the cell above holds this fluid too.
         uint8_t fa, fla;
-        if (depth < 8 && s.cell(ci, cj, ck + 1, fa, fla) && !(fla & kSolid) && fa > 0 && CellKind(fla) == kind) return openSurface(si, ci, cj, ck + 1, kind, depth + 1);
+        if (depth < 8 && cellAt(si, ci, cj, ck + 1, fa, fla) && !(fla & kSolid) && fa > 0 && CellKind(fla) == kind) return openSurface(si, ci, cj, ck + 1, kind, depth + 1);
         return ck + 1.0f;
     }
     // Empty: over fluid, the surface below (so the interpolated surface runs level across the cell border).
     uint8_t fb, flb;
-    if (s.cell(ci, cj, ck - 1, fb, flb) && !(flb & kSolid) && fb > 0 && CellKind(flb) == kind) return (ck - 1) + fb / 255.0f;
+    if (cellAt(si, ci, cj, ck - 1, fb, flb) && !(flb & kSolid) && fb > 0 && CellKind(flb) == kind) return (ck - 1) + fb / 255.0f;
     return kNone;
 }
 
@@ -188,10 +196,9 @@ float ChunkSampler::surface(int si, int ci, int cj, int ck, int kind) {
         auto it = memo.find(key);
         if (it != memo.end()) return it->second;
     }
-    const Site& s = *sites[si];
     uint8_t fill, flags;
     float r = kNone;
-    if (s.cell(ci, cj, ck, fill, flags)) {
+    if (cellAt(si, ci, cj, ck, fill, flags)) {
         const bool solid = flags & kSolid;
         if (!solid) r = openSurface(si, ci, cj, ck, kind, 0);
         uint8_t fb, flb;
@@ -199,7 +206,7 @@ float ChunkSampler::surface(int si, int ci, int cj, int ck, int kind) {
         // neighbour's surface runs on into it, and the terrain (the chunk's own density) cuts it. So the water meets the
         // real shore instead of stopping at a cell's edge as a box (#191; shallow puddles read as a grid of spikes). Not
         // over a ledge (the cell below open): that water is falling, not lying there.
-        if (r <= kNone * 0.5f && (solid || (s.cell(ci, cj, ck - 1, fb, flb) && (flb & kSolid)))) {
+        if (r <= kNone * 0.5f && (solid || (cellAt(si, ci, cj, ck - 1, fb, flb) && (flb & kSolid)))) {
             static const int side[4][2] = { { 1, 0 }, { -1, 0 }, { 0, 1 }, { 0, -1 } };
             for (const auto& d : side) r = std::max(r, openSurface(si, ci + d[0], cj + d[1], ck, kind, 0));
             // Only a surface inside this cell's height: deeper water beside it is under the ground here.
@@ -260,25 +267,25 @@ bool ChunkSampler::density(Vector3 p, int kind, float& wd) {
 }
 
 bool ChunkSampler::covered(Vector3 p) const {
-    for (const Site* s : sites) {
+    for (int si = 0; si < (int)sites.size(); ++si) {
         float fx, fy, fz;
-        s->frame(p, fx, fy, fz);
-        if (s->brick(FloorDiv((int)floorf(fx), kBrick), FloorDiv((int)floorf(fy), kBrick), FloorDiv((int)floorf(fz), kBrick))) return true;
+        sites[si]->frame(p, fx, fy, fz);
+        if (brickAt(si, (int)floorf(fx), (int)floorf(fy), (int)floorf(fz))) return true; // the dense brick cache (#381)
     }
     return false;
 }
 
 float ChunkSampler::depthBelow(Vector3 p, int kind) {
-    for (const Site* s : sites) {
+    for (int si = 0; si < (int)sites.size(); ++si) {
         float fx, fy, fz;
-        s->frame(p, fx, fy, fz);
+        sites[si]->frame(p, fx, fy, fz);
         const int ci = (int)floorf(fx), cj = (int)floorf(fy);
         int ck = (int)floorf(fz);
         uint8_t fill, flags;
-        if (!s->cell(ci, cj, ck, fill, flags)) continue;
+        if (!cellAt(si, ci, cj, ck, fill, flags)) continue;
         float d = 0.0f;
         for (int k = 0; k < 8; ++k, --ck) {
-            if (!s->cell(ci, cj, ck, fill, flags) || (flags & kSolid)) break;
+            if (!cellAt(si, ci, cj, ck, fill, flags) || (flags & kSolid)) break;
             if (CellKind(flags) != kind || fill == 0) { if (k > 0) break; else continue; }
             d += fill / 255.0f;
         }

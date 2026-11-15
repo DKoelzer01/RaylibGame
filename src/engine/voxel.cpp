@@ -1564,6 +1564,12 @@ static ChunkWaterGen GeneratedWaterOf(const DensityField& field, Vector3 origin,
 // generated water also stays out of caves under it (only over the original bed), the simulated water does not
 // (cave water, dug channels). The vertex's second texcoord carries the fluid kind (water.fs colours it).
 static constexpr float kSkin = 0.15f; // m: water shallower than this over the ground is not drawn (MeshChunkWater)
+static std::atomic<long long> gWaterPhaseNs[4];
+static std::atomic<long long> gWaterSamples[2]; // exact water density samples, all samples (#381)
+void ChunkWaterPhases(long long out[6]) { for (int i = 0; i < 4; ++i) out[i] = gWaterPhaseNs[i].load(); out[4] = gWaterSamples[0].load(); out[5] = gWaterSamples[1].load(); }
+// RAYLIBGAME_WATER_COARSE=0: sample every water density point (no coarse-first skipping), for A/B.
+static const bool kWaterCoarse = [] { const char* e = getenv("RAYLIBGAME_WATER_COARSE"); return !(e && e[0] == '0'); }();
+static long long NowNs() { return std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch()).count(); }
 static void MeshChunkWater(const DensityField& field, ChunkMeshData& out, const float* dens, const PlanetField::BlockGrid* grid,
                            const ChunkWaterGen& gen, WaterField::ChunkSampler& sim) {
     const int cells = CHUNK_SIZE + 1, S = cells + 1;
@@ -1611,24 +1617,111 @@ static void MeshChunkWater(const DensityField& field, ChunkMeshData& out, const 
         if (!simKind && !genKind) continue;
         size_t k = 0;
         bool anyIn = false, anyOut = false;
-        for (int z = 0; z < S; ++z)
-            for (int y = 0; y < S; ++y)
-                for (int x = 0; x < S; ++x, ++k) {
-                    const Vector3 p = { origin.x + x * stride, origin.y + y * stride, origin.z + z * stride };
-                    float w;
-                    if (!(simKind && sim.density(p, kind, w)))
-                        w = genKind ? ISO_LEVEL + DENSITY_GRADIENT * (levelAt(x, y, z) - sqrtf(p.x * p.x + p.y * p.y + p.z * p.z)) : ISO_LEVEL - DENSITY_GRADIENT;
-                    wd[k] = w;
-                    if (w >= ISO_LEVEL) anyIn = true; else anyOut = true;
-                }
+        long long tPhase = NowNs();
+        auto phase = [&](int i) { const long long t = NowNs(); gWaterPhaseNs[i] += t - tPhase; tPhase = t; };
+        auto exact = [&](int x, int y, int z) {
+            const Vector3 p = { origin.x + x * stride, origin.y + y * stride, origin.z + z * stride };
+            float w;
+            if (!(simKind && sim.density(p, kind, w)))
+                w = genKind ? ISO_LEVEL + DENSITY_GRADIENT * (levelAt(x, y, z) - sqrtf(p.x * p.x + p.y * p.y + p.z * p.z)) : ISO_LEVEL - DENSITY_GRADIENT;
+            return w;
+        };
+        long long exactCount = 0;
+        std::vector<int> cc;      // coarse lattice lines (coarse sampling)
+        std::vector<char> mixed;  // per block: holds (or nearly holds) a surface
+        int NB = 0;
+        if (!kWaterCoarse || S < 4) {
+            for (int z = 0; z < S; ++z)
+                for (int y = 0; y < S; ++y)
+                    for (int x = 0; x < S; ++x, ++k) wd[k] = exact(x, y, z);
+            exactCount = (long long)S * S * S;
+        } else {
+            // Coarse first (#381): the samples on every other lattice line (and the last), then the 2-sample blocks between
+            // them. A block whose 8 corners are all on one side of the surface, a quarter metre or more from it, holds no
+            // surface (within one interpolation piece the field is multilinear: it stays between its corners); its other
+            // samples are interpolated, not asked. Blocks with a corner near or across the surface are sampled in full, so
+            // every cube that makes triangles has exact corners. Most of a chunk is far from any water surface.
+            for (int v = 0; v < S - 1; v += 2) cc.push_back(v);
+            cc.push_back(S - 1);
+            NB = (int)cc.size() - 1;
+            auto isC = [&](int v) { return (v & 1) == 0 || v == S - 1; };
+            auto at = [&](int x, int y, int z) -> float& { return wd[((size_t)z * S + y) * S + x]; };
+            for (int z : cc) for (int y : cc) for (int x : cc) { at(x, y, z) = exact(x, y, z); ++exactCount; }
+            constexpr float kMargin = 0.25f * DENSITY_GRADIENT; // a quarter metre of the fluid's (or the sea's) surface
+            mixed.assign((size_t)NB * NB * NB, 0);
+            for (int bz = 0; bz < NB; ++bz)
+                for (int by = 0; by < NB; ++by)
+                    for (int bx = 0; bx < NB; ++bx) {
+                        bool in = false, outS = false, nearS = false;
+                        for (int c = 0; c < 8; ++c) {
+                            const float w = at(cc[bx + (c & 1)], cc[by + ((c >> 1) & 1)], cc[bz + (c >> 2)]);
+                            if (w >= ISO_LEVEL) in = true; else outS = true;
+                            if (fabsf(w - ISO_LEVEL) < kMargin) nearS = true;
+                        }
+                        mixed[((size_t)bz * NB + by) * NB + bx] = (in && outS) || nearS;
+                    }
+            // The blocks a sample lies in along one axis: one if it is between two coarse lines, two on a shared line.
+            auto span = [&](int v, int& a0, int& a1) {
+                if (!isC(v)) { a0 = a1 = (v - 1) / 2; return; }
+                if (v == S - 1) { a0 = a1 = NB - 1; return; }
+                a0 = std::max(0, v / 2 - 1); a1 = std::min(NB - 1, v / 2);
+            };
+            for (int z = 0; z < S; ++z)
+                for (int y = 0; y < S; ++y)
+                    for (int x = 0; x < S; ++x) {
+                        if (isC(x) && isC(y) && isC(z)) continue;
+                        int x0, x1, y0, y1, z0, z1;
+                        span(x, x0, x1); span(y, y0, y1); span(z, z0, z1);
+                        bool need = false;
+                        for (int bz = z0; bz <= z1 && !need; ++bz)
+                            for (int by = y0; by <= y1 && !need; ++by)
+                                for (int bx = x0; bx <= x1 && !need; ++bx) need = mixed[((size_t)bz * NB + by) * NB + bx] != 0;
+                        if (need) {
+                            const float w = at(x, y, z) = exact(x, y, z);
+                            ++exactCount;
+                            // A skipped block sharing this sample with a mixed one, on the other side of the surface here (a
+                            // feature thinner than a block): its cubes cross after all, so it is marched too (bit 1).
+                            for (int bz = z0; bz <= z1; ++bz)
+                                for (int by = y0; by <= y1; ++by)
+                                    for (int bx = x0; bx <= x1; ++bx) {
+                                        char& m = mixed[((size_t)bz * NB + by) * NB + bx];
+                                        if (!m && ((w >= ISO_LEVEL) != (at(cc[bx], cc[by], cc[bz]) >= ISO_LEVEL))) m = 2;
+                                    }
+                            continue;
+                        }
+                        // Trilinear in the first block holding it (on a shared line the blocks agree: the fraction there is 0 or 1).
+                        const float tx = (float)(x - cc[x0]) / (cc[x0 + 1] - cc[x0]), ty = (float)(y - cc[y0]) / (cc[y0 + 1] - cc[y0]), tz = (float)(z - cc[z0]) / (cc[z0 + 1] - cc[z0]);
+                        auto C = [&](int a, int b, int c) { return at(cc[x0 + a], cc[y0 + b], cc[z0 + c]); };
+                        const float c00 = C(0, 0, 0) * (1 - tx) + C(1, 0, 0) * tx, c10 = C(0, 1, 0) * (1 - tx) + C(1, 1, 0) * tx;
+                        const float c01 = C(0, 0, 1) * (1 - tx) + C(1, 0, 1) * tx, c11 = C(0, 1, 1) * (1 - tx) + C(1, 1, 1) * tx;
+                        at(x, y, z) = (c00 * (1 - ty) + c10 * ty) * (1 - tz) + (c01 * (1 - ty) + c11 * ty) * tz;
+                    }
+        }
+        gWaterSamples[0] += exactCount; gWaterSamples[1] += (long long)S * S * S;
+        for (size_t i = 0; i < (size_t)S * S * S; ++i) { if (wd[i] >= ISO_LEVEL) anyIn = true; else anyOut = true; }
+        phase(0);
         if (!anyIn || !anyOut) continue;
         const size_t v0 = out.waterPositions.size() / 3, i0 = out.waterIndices.size(); // this kind's start
         wv.clear(); wi.clear();
         std::fill(cache.begin(), cache.end(), -1);
-        for (int z = 0; z < cells; ++z)
-            for (int y = 0; y < cells; ++y)
-                for (int x = 0; x < cells; ++x)
-                    marchCube(x, y, z, wd, S, wv, wi, cache, ISO_LEVEL);
+        if (NB > 0) {
+            // Coarse sampling: only the blocks that hold a surface can make triangles (a skipped block's cubes all lie on one
+            // side), so march just their cubes. The same triangles as the full sweep, in another order.
+            for (int bz = 0; bz < NB; ++bz)
+                for (int by = 0; by < NB; ++by)
+                    for (int bx = 0; bx < NB; ++bx) {
+                        if (!mixed[((size_t)bz * NB + by) * NB + bx]) continue;
+                        for (int z = cc[bz]; z < cc[bz + 1]; ++z)
+                            for (int y = cc[by]; y < cc[by + 1]; ++y)
+                                for (int x = cc[bx]; x < cc[bx + 1]; ++x) marchCube(x, y, z, wd, S, wv, wi, cache, ISO_LEVEL);
+                    }
+        } else {
+            for (int z = 0; z < cells; ++z)
+                for (int y = 0; y < cells; ++y)
+                    for (int x = 0; x < cells; ++x)
+                        marchCube(x, y, z, wd, S, wv, wi, cache, ISO_LEVEL);
+        }
+        phase(1);
         // The shore (#423): a triangle crossing the ground keeps only its part out of the ground, cut where its edges
         // cross the terrain's iso level (linear in the terrain density), so the waterline is a continuous curve instead
         // of the edge of whichever whole triangles stayed out (the cull below dropped a triangle by its centre).
@@ -1640,11 +1733,15 @@ static void MeshChunkWater(const DensityField& field, ChunkMeshData& out, const 
                 wv.push_back(Vector3Lerp(wv[a], wv[b], t));
                 return (int)wv.size() - 1;
             };
+            // The terrain density at each marched vertex, once (a vertex is shared by ~6 triangles; #381).
+            const size_t nv = wv.size();
+            std::vector<float> vd(nv);
+            for (size_t i = 0; i < nv; ++i) vd[i] = trilinear(dens, wv[i]) - ISO_LEVEL;
             for (size_t t = 0; t + 2 < wi.size(); t += 3) {
                 int v[3] = { wi[t], wi[t + 1], wi[t + 2] };
                 float d[3];
                 int in = 0;
-                for (int e = 0; e < 3; ++e) { d[e] = trilinear(dens, wv[v[e]]) - ISO_LEVEL; in += d[e] >= 0.0f ? 1 : 0; }
+                for (int e = 0; e < 3; ++e) { d[e] = vd[v[e]]; in += d[e] >= 0.0f ? 1 : 0; }
                 if (in == 0) { clipped.insert(clipped.end(), { v[0], v[1], v[2] }); continue; }
                 if (in == 3) continue;
                 // Rotate (keeping the winding) so that: one in the ground -> it is first; two -> the one out is last.
@@ -1663,6 +1760,7 @@ static void MeshChunkWater(const DensityField& field, ChunkMeshData& out, const 
             }
             wi.swap(clipped);
         }
+        phase(2);
         std::vector<int> remap(wv.size(), -1);
         for (size_t t = 0; t + 2 < wi.size(); t += 3) {
             const Vector3 c = Vector3Scale(Vector3Add(Vector3Add(wv[wi[t]], wv[wi[t + 1]]), wv[wi[t + 2]]), 1.0f / 3.0f);
@@ -1731,6 +1829,7 @@ static void MeshChunkWater(const DensityField& field, ChunkMeshData& out, const 
                 out.waterIndices.push_back((unsigned short)r);
             }
         }
+        phase(3);
         if (out.waterPositions.size() / 3 > 65535) { out.waterPositions.resize(v0 * 3); out.waterNormals.resize(v0 * 3); out.waterDepth.resize(v0 * 2); out.waterFlow.resize(v0 * 4); out.waterIndices.resize(i0); }
     }
     // (16-bit indices: a kind that would pass 65535 vertices is dropped alone, never the water before it.)
