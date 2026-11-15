@@ -924,13 +924,16 @@ static bool IslandInCell(const PlanetField& pf, int cx, int cy, int cz, IslandIn
     uint32_t h = (uint32_t)cx * 73856093u ^ (uint32_t)cy * 19349663u ^ (uint32_t)cz * 83492791u ^ (pf.oreSeed + 0x15a7du) * 2654435761u;
     h ^= h >> 15; h *= 2246822519u; h ^= h >> 13;
     if ((h & 1023) > 82) return false;
-    thread_local std::unordered_map<int64_t, IslandInfo> cache;
+    // A direct-mapped cache of plain data: nothing to destroy when a worker thread ends (#485: a thread_local
+    // unordered_map here crashed in its destructor at thread exit under MinGW).
+    struct Slot { int64_t key; IslandInfo info; };
+    constexpr int kSlots = 4096;
+    thread_local Slot cache[kSlots];
     thread_local const PlanetField* cacheOwner = nullptr;
-    if (cacheOwner != &pf) { cache.clear(); cacheOwner = &pf; } // one field's cells (#180: the seed was XORed into the cell bits)
+    if (cacheOwner != &pf) { for (Slot& s : cache) s.key = -1; cacheOwner = &pf; } // one field's cells (#180: the seed was XORed into the cell bits)
     const int64_t key = ((int64_t)(cx + 32768) << 32) | ((int64_t)(uint16_t)(cy + 32768) << 16) | (int64_t)(uint16_t)(cz + 32768);
-    auto it = cache.find(key);
-    if (it == cache.end()) {
-        if (cache.size() > 4096) cache.clear();
+    Slot& slot = cache[(uint32_t)((uint64_t)key * 0x9e3779b97f4a7c15ull >> 52) & (kSlots - 1)];
+    if (slot.key != key) {
         IslandInfo is{};
         auto u = [&](int shift) { return ((h >> shift) & 255) / 255.0f; };
         const Vector3 c = { (cx + 0.15f + 0.7f * u(10)) * kIslandCell, (cy + 0.15f + 0.7f * u(18)) * kIslandCell, (cz + 0.15f + 0.7f * u(24)) * kIslandCell };
@@ -942,9 +945,9 @@ static bool IslandInCell(const PlanetField& pf, int cx, int cy, int cz, IslandIn
         is.r = 50.0f + 75.0f * u(5);                          // 100-250 m across
         is.depth = 40.0f + 40.0f * u(2);                       // stone underside 40-80 m deep
         is.waist = pf.radius + std::max(e, 0.0f) + is.depth + 30.0f + 30.0f * u(14); // its lowest point 30-60 m up
-        it = cache.emplace(key, is).first;
+        slot.key = key; slot.info = is;
     }
-    out = it->second;
+    out = slot.info;
     return out.ok;
 }
 
