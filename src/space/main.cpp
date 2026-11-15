@@ -893,6 +893,18 @@ int main(int argc, char** argv)
                 timeIt("rockFeature (tors, boulders)", [&](size_t k) { const float d = Vector3Length(pts[k]); return pf->rockFeature(pts[k], d, surf[k], 1.0f); });
                 timeIt("density (all, no edits)", [&](size_t k) { return pf->density(pts[k], nullptr, 1.0f); });
                 timeIt("waterSourceAt", [&](size_t k) { return (float)pf->waterSourceAt(Vector3Normalize(pts[k])).kind; });
+                if (const RiverNetwork* net = pf->rivers()) {
+                    // The river current (#361) asks this per river water vertex in the chunk mesher: its cost by a river.
+                    timeIt("rivers nearest (60 m)", [&](size_t k) { return net->nearest(Vector3Normalize(pts[k]), 60.0f).dist; });
+                    std::vector<Vector3> onRiver;
+                    for (size_t k = 0; k < pts.size() && onRiver.size() < 20000; ++k) if (pf->waterSourceAt(Vector3Normalize(pts[k])).kind == 1) onRiver.push_back(pts[k]);
+                    if (!onRiver.empty()) {
+                        const auto t0 = std::chrono::steady_clock::now();
+                        float sink2 = 0.0f;
+                        for (int rep = 0; rep < 10; ++rep) for (const Vector3& q : onRiver) sink2 += net->nearest(Vector3Normalize(q), 60.0f).dist;
+                        printf("bench: density profile: %-26s %7.0f ns (%zu river points)%s\n", "rivers nearest on rivers", std::chrono::duration<double, std::nano>(std::chrono::steady_clock::now() - t0).count() / (10.0 * onRiver.size()), onRiver.size(), sink2 < -1.0f ? " " : "");
+                    }
+                }
             }
             return 0;
         }
