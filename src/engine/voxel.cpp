@@ -1660,18 +1660,23 @@ static void MeshChunkWater(const DensityField& field, ChunkMeshData& out, const 
                         }
                         mixed[((size_t)bz * NB + by) * NB + bx] = (in && outS) || nearS;
                     }
-            // The blocks a sample lies in along one axis: one if it is between two coarse lines, two on a shared line.
-            auto span = [&](int v, int& a0, int& a1) {
-                if (!isC(v)) { a0 = a1 = (v - 1) / 2; return; }
-                if (v == S - 1) { a0 = a1 = NB - 1; return; }
-                a0 = std::max(0, v / 2 - 1); a1 = std::min(NB - 1, v / 2);
-            };
+            // Per axis, once: the blocks a sample lies in (one between two coarse lines, two on a shared line), the corner
+            // lines of the first and its fraction between them (0 or 1 on a shared line, where the blocks agree).
+            std::vector<int> A0(S), A1(S), Lo(S), Hi(S);
+            std::vector<float> T(S);
+            for (int v = 0; v < S; ++v) {
+                if (!isC(v)) A0[v] = A1[v] = (v - 1) / 2;
+                else if (v == S - 1) A0[v] = A1[v] = NB - 1;
+                else { A0[v] = std::max(0, v / 2 - 1); A1[v] = std::min(NB - 1, v / 2); }
+                Lo[v] = cc[A0[v]]; Hi[v] = cc[A0[v] + 1];
+                T[v] = (float)(v - Lo[v]) / (float)(Hi[v] - Lo[v]);
+            }
             for (int z = 0; z < S; ++z)
-                for (int y = 0; y < S; ++y)
+                for (int y = 0; y < S; ++y) {
+                    const bool cyz = isC(y) && isC(z);
                     for (int x = 0; x < S; ++x) {
-                        if (isC(x) && isC(y) && isC(z)) continue;
-                        int x0, x1, y0, y1, z0, z1;
-                        span(x, x0, x1); span(y, y0, y1); span(z, z0, z1);
+                        if (cyz && isC(x)) continue;
+                        const int x0 = A0[x], x1 = A1[x], y0 = A0[y], y1 = A1[y], z0 = A0[z], z1 = A1[z];
                         bool need = false;
                         for (int bz = z0; bz <= z1 && !need; ++bz)
                             for (int by = y0; by <= y1 && !need; ++by)
@@ -1689,13 +1694,14 @@ static void MeshChunkWater(const DensityField& field, ChunkMeshData& out, const 
                                     }
                             continue;
                         }
-                        // Trilinear in the first block holding it (on a shared line the blocks agree: the fraction there is 0 or 1).
-                        const float tx = (float)(x - cc[x0]) / (cc[x0 + 1] - cc[x0]), ty = (float)(y - cc[y0]) / (cc[y0 + 1] - cc[y0]), tz = (float)(z - cc[z0]) / (cc[z0 + 1] - cc[z0]);
-                        auto C = [&](int a, int b, int c) { return at(cc[x0 + a], cc[y0 + b], cc[z0 + c]); };
-                        const float c00 = C(0, 0, 0) * (1 - tx) + C(1, 0, 0) * tx, c10 = C(0, 1, 0) * (1 - tx) + C(1, 1, 0) * tx;
-                        const float c01 = C(0, 0, 1) * (1 - tx) + C(1, 0, 1) * tx, c11 = C(0, 1, 1) * (1 - tx) + C(1, 1, 1) * tx;
+                        // Trilinear in the first block holding it.
+                        const float tx = T[x], ty = T[y], tz = T[z];
+                        const int xa = Lo[x], xb = Hi[x], ya = Lo[y], yb = Hi[y], za = Lo[z], zb = Hi[z];
+                        const float c00 = at(xa, ya, za) * (1 - tx) + at(xb, ya, za) * tx, c10 = at(xa, yb, za) * (1 - tx) + at(xb, yb, za) * tx;
+                        const float c01 = at(xa, ya, zb) * (1 - tx) + at(xb, ya, zb) * tx, c11 = at(xa, yb, zb) * (1 - tx) + at(xb, yb, zb) * tx;
                         at(x, y, z) = (c00 * (1 - ty) + c10 * ty) * (1 - tz) + (c01 * (1 - ty) + c11 * ty) * tz;
                     }
+                }
         }
         gWaterSamples[0] += exactCount; gWaterSamples[1] += (long long)S * S * S;
         for (size_t i = 0; i < (size_t)S * S * S; ++i) { if (wd[i] >= ISO_LEVEL) anyIn = true; else anyOut = true; }
