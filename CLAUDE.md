@@ -24,7 +24,7 @@ C++ raylib 5.5 planetoid survival game. `src/engine` (static lib), `src/space` -
   (`game.exe --seed 42 --bench 3 --test-<name>`), plus a screenshot (bench.png) when visuals change.
 - Full regression (`tools/regression.sh planet`, `EXE=... SNAPSHOT=1`): ONE run only, after ALL fixes are in and
   the PRs are merge-ready (user, 2026-11-14), never between fix rounds; re-check failures with targeted runs
-  first. `regression.sh planet` includes the "eroded" set (`RAYLIBGAME_EROSION=1`; the first run bakes ~80 s).
+  first. Erosion is the default terrain (#362, user 2026-11-15; `RAYLIBGAME_EROSION=0` = the old noise terrain for A/B): the first bench on a seed bakes ~80 s, cached with its save after that.
   Minor targeted tests are fine any time.
 - Known flaky: `--test-progression` (power chain, #372), `--test-animals` flee distance (#373). Re-run before
   treating a failure as a regression.
@@ -136,10 +136,10 @@ board's auto-add workflow adds new issues itself, but sets no fields, so:
 - Plan 3 (Terra tiers, space): https://claude.ai/artifact/XVw45AC6vwYitbdhaeP2xL - M21-M24 done (M24 on PR #28).
 - Plan 4 (flowing water): https://claude.ai/artifact/27xL5j1zkirSe8pDZgPz59
 - **Current plans:** Plan 7 (erosion-shaped terrain + all-voxel water, #351):
-  https://claude.ai/artifact/EXix8zmVSS2WRUSLAsovJg - merged into develop (#371) behind RAYLIBGAME_EROSION=1; the gate is #362.
+  https://claude.ai/artifact/EXix8zmVSS2WRUSLAsovJg - merged into develop (#371) on by default since the #362 gate (RAYLIBGAME_EROSION=0: off).
   Plan 8: https://claude.ai/artifact/LFnRaLaCPdgEPsuX7L6dJb (PR #374, branch m51-plan8, waits on the user's playtest).
   Roadmap trackers: #158 features, #128 graphics, #303 multiplayer; playtest findings #187, #250.
-- Plan 7 details: with RAYLIBGAME_EROSION=1 the 3D band is off (RAYLIBGAME_3D=0/1 overrides). Gullies (ErosionGullies,
+- Plan 7 details: with erosion (the default) the 3D band is off (RAYLIBGAME_3D=0/1 overrides). Gullies (ErosionGullies,
   RAYLIBGAME_GULLIES=0 A/B); glacial (RAYLIBGAME_GLACIAL); rivers on the bake grid, carve-only water (--water-stats raises
   nothing). Tests: --test-flow-sea, --test-pond, --test-pump-hand, --test-hover. Open questions for the user are on #351.
 - Plan 6 (GPU terrain generation + GPU-driven drawing, approved 2026-11-12): https://claude.ai/artifact/VJdKtUZEpBg5uefnqewRyZ -

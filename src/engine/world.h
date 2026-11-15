@@ -117,6 +117,10 @@ double BodyHourSeconds(const Scene& world);
 double BodyDaySeconds(const Scene& world);                 // the nearest body's rotation period (0: no spin)
 float SunElevationAtCamera(const Scene& world);            // degrees over the horizon at the camera's spot on that body
 void generateWorld(Scene& world);      // creates planetoids; chunks stream in via worldUpdate()
+// Long steps of world generation (the erosion bake, #362) run on a thread; meanwhile this is called on the main thread
+// (~60 times a second) with the progress 0..1 and what is happening, so the game can draw a loading screen and keep
+// the window responsive. Unset (tests): generation just waits.
+extern std::function<void(float progress, const char* what)> gWorldGenWait;
 void regenerateWorld(Scene& world);
 // A hash of what every machine regenerates from the seed (#316): the seed, each generated body's id, kind and size, and its
 // CPU density field sampled at fixed points (no edits). Client and server compare it at join to catch mismatched builds.

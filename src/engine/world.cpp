@@ -27,6 +27,10 @@
 #include <mutex>
 #include <random>
 #include <unordered_set>
+#include <atomic>
+#include <chrono>
+#include <thread>
+#include "erosion.h"
 
 const int CHUNK_SIZE = 32;
 
@@ -1538,6 +1542,8 @@ bool ReloadSystemDef() {
     return ok;
 }
 
+std::function<void(float, const char*)> gWorldGenWait;
+
 void generateWorld(Scene& world) {
     PROFILE_FUNCTION();
     if (!worldGen.systemLoaded) ReloadSystemDef();
@@ -1560,7 +1566,19 @@ void generateWorld(Scene& world) {
             // Planet terrain: radius is sea level, where gravity's reference surface sits too; the
             // LOD root must also cover the highest mountains.
             auto field = std::make_shared<PlanetField>(seed, radius, kind == BodyKind::Moon);
-            if (gErosionPrototype && kind == BodyKind::Planet) field->bakeErosion(std::string(WorldSavePath()) + ".erosion"); // Plan 7 (#355): the save's bake, or a new one
+            if (gErosionPrototype && kind == BodyKind::Planet) {
+                // Plan 7 (#355): the save's bake, or a new one (~60 s). On a thread (#362, the #355 review): the main
+                // thread keeps drawing the loading screen through gWorldGenWait instead of freezing the window. The field
+                // is only shared (p->field below) once the bake is done.
+                const std::string cache = std::string(WorldSavePath()) + ".erosion";
+                std::atomic<bool> baked{ false };
+                std::thread bake([&] { field->bakeErosion(cache); baked.store(true); });
+                while (!baked.load()) {
+                    if (gWorldGenWait) gWorldGenWait(ErosionBakeProgress(), "Shaping the world (erosion)");
+                    else std::this_thread::sleep_for(std::chrono::milliseconds(20));
+                }
+                bake.join();
+            }
             p->gravityRadius = radius;
             p->rootLevel = 0;
             while (kVoxelSize * (float)(CHUNK_SIZE << p->rootLevel) < field->maxRadius() + 24.0f) p->rootLevel++;

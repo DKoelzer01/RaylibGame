@@ -124,6 +124,8 @@ static bool SpawnDirOverride(Vector3& d) {
     return true;
 }
 
+static bool gInFrame = false; // between the main loop's BeginDrawing and EndDrawing (#362: gWorldGenWait must not nest a frame)
+
 static Vector3 StartSpawnDirLocal(Planetoid& body) {
     if (Vector3 d; SpawnDirOverride(d)) return d;
     if (auto* field = dynamic_cast<const PlanetField*>(body.field.get())) return field->findSpawnDir(body.seed);
@@ -471,7 +473,7 @@ int main(int argc, char** argv)
     float benchViewHeight = 40.0f; // --bench-height H: a planet bench's view height over the start (m)
     float benchPitch = -999.0f; bool benchUphill = false; // --bench-pitch DEG (up > 0), --bench-uphill: face up the eroded slope (#357 cliff shots)
     bool benchCamGiven = false;   // --cam given: use the offset (otherwise a planet bench looks along the surface from 40 m up, #291)
-    if (const char* e = getenv("RAYLIBGAME_EROSION"); e && e[0] == '1') gErosionPrototype = true; // #352 prototype: erosion bake around the start
+    if (const char* e = getenv("RAYLIBGAME_EROSION"); e && e[0]) gErosionPrototype = e[0] != '0'; // on by default (#362, user 2026-11-15); 0: the noise terrain (A/B)
     if (const char* e3 = getenv("RAYLIBGAME_3D")) gTerrain3D = e3[0] == '1'; else if (gErosionPrototype) gTerrain3D = false; // no 3D band in erosion tests (RAYLIBGAME_3D=0 for baselines)
     if (const char* g = getenv("RAYLIBGAME_GULLIES")) gGullies = g[0] == '1';
     if (const char* c = getenv("RAYLIBGAME_CLIFFS")) gCliffs = c[0] == '1';
@@ -744,6 +746,21 @@ int main(int argc, char** argv)
         SetTargetFPS(std::max(0, benchFps)); // --fps N caps it (frame-rate-dependence checks); 0 = uncapped
     }
     if (vramReport && IsWindowReady()) GpuMem_Install(); // --vram (#302): count GPU allocations per subsystem from here on
+    // A long world-generation step (the erosion bake, #362) runs on a thread; meanwhile draw the loading screen with its
+    // progress, so the window stays responsive. From inside a frame (the debug menu's Regenerate) just wait.
+    gWorldGenWait = [bench](float progress, const char* what) {
+        if (gInFrame || !IsWindowReady()) { std::this_thread::sleep_for(std::chrono::milliseconds(20)); return; }
+        static double lastPrint = -10.0;
+        if (bench && GetTime() - lastPrint > 5.0) { lastPrint = GetTime(); printf("bench: world generation: %s %.0f%%\n", what, progress * 100.0f); }
+        BeginDrawing();
+        ClearBackground(BLACK);
+        const int bw = GetScreenWidth() / 3, bx = (GetScreenWidth() - bw) / 2, by = GetScreenHeight() / 2;
+        DrawText(what, bx, by - 40, 28, RAYWHITE);
+        DrawRectangle(bx, by, bw, 14, Fade(RAYWHITE, 0.15f));
+        DrawRectangle(bx, by, (int)(bw * std::clamp(progress, 0.02f, 1.0f)), 14, SKYBLUE);
+        DrawText("A new world's terrain is shaped once (about a minute); loading it later is quick.", bx, by + 26, 16, Fade(RAYWHITE, 0.6f));
+        EndDrawing();
+    };
     if (!IsWindowReady()) {
         // raylib is built for an OpenGL 4.3 core context (compute shaders, multi-draw indirect, SSBOs): without
         // it there is no window and no fallback renderer (#185). Say so instead of exiting silently.
@@ -6790,6 +6807,7 @@ int main(int argc, char** argv)
 
         GpuTimer_Mark("pre-draw (uploads, updates)");
         BeginDrawing();
+        gInFrame = true; // (#362: world generation started from inside a frame - the debug menu - must not draw its own)
             ClearBackground(crackCheck ? MAGENTA : BLACK); // --crack-check: holes in the terrain show magenta
             GpuTimer_Enable(benchMeasuring || perfLog); GpuTimer_Mark("clear");
             GpuTimer_CpuMark("begin-draw");
@@ -6880,6 +6898,7 @@ int main(int argc, char** argv)
             if (Recorder_WantsFrame(true)) Recorder_Capture(); // the finished frame, HUD included (#375)
             Recorder_FrameDone();
         EndDrawing();
+        gInFrame = false;
         GpuTimer_Mark("swap+poll");
         PROFILE_FRAME();
     }

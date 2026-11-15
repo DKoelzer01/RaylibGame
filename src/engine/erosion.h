@@ -25,7 +25,7 @@
 
 // Bump with any change to the bake's code (Simulate, SetRock, the refinement, the pond extraction): a cache from
 // another version or other parameters is baked again rather than loaded (#355 review).
-constexpr uint32_t kErosionBakeVersion = 5;
+constexpr uint32_t kErosionBakeVersion = 6; // 6: wind (aeolian) erosion, #370
 struct ErosionParams {
     float cell = 200.0f;      // m, coarse cell at a face centre (gnomonic cells shrink toward the face edges)
     int steps = 400;
@@ -40,6 +40,8 @@ struct ErosionParams {
     int margin = 64;          // fine cells past each face edge
     float glacial = 1.5f;     // glacial erosion rate (x the fluvial rate at 1 km^2 of drainage); 0: none (#358)
     float glacialLine = 900.0f; // m: the ice-age snowline at the equator (falls to sea level by latitude ~0.8)
+    float wind = 1.0f;        // aeolian erosion strength on dry land (#370; 0: none, e.g. airless bodies). Scales the
+                              // per-step deflation on windward faces and the sand carried downwind.
     float start = 1.0f;       // the land starts at this fraction of the input: 1 carves into the input relief (0.1 grew
                               // it from low land: heights then follow river length, so narrow coastal ranges came out low)
 };
@@ -56,7 +58,7 @@ public:
     struct Slope { float h; Vector3 grad; };
     Slope slopeAt(Vector3 dir, float footprint) const;
     bool ready() const { return n > 0; }
-    bool save(const std::string& path) const;          // ERO5: the params key, deltas, split bytes, deflated; the ponds; the hash; written to path.tmp, then renamed
+    bool save(const std::string& path) const;          // ERO6: the params key, deltas, split bytes, deflated in 16 pieces; the ponds; the hash; written to path.tmp, then renamed
     bool load(const std::string& path, float planetRadius, unsigned int seed, uint64_t paramsKey); // false: missing, other seed, radius, parameters or code version
     uint64_t hash() const { return hashValue; }
     float buildSeconds = 0.0f, coarseSeconds = 0.0f, refineSeconds = 0.0f, maxCut = 0.0f, maxRaise = 0.0f;
@@ -100,6 +102,7 @@ float ErosionCliffs(Vector3 p, float h, Vector3 grad, float footprint, unsigned 
 // (m) the column lies inside the lip's reach (< 0: outside). thick 0: no lip.
 struct CliffLip { float topRel = 0.0f, thick = 0.0f, margin = -1000.0f; };
 bool ErosionCliffRegion(Vector3 p, unsigned int seed); // inside a hard-rock cliff region at all (cheap)
+float ErosionBakeProgress(); // 0..1 while a bake runs (the loading screen, #362)
 CliffLip ErosionCliffLip(Vector3 p, float h, Vector3 grad, float footprint, unsigned int seed, float final);
 
 #endif
