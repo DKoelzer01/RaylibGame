@@ -15,6 +15,8 @@
 #include "playersession.h"
 #include "netid.h"
 #include "net.h"
+#include "gamerng.h"
+#include "joininfo.h"
 #include "scene.h"
 #include "object.h"
 #include "utils/logger.h"
@@ -341,6 +343,7 @@ int main(int argc, char** argv)
     bool benchHover = false; int hoverPhase = 0; double hoverStart = 0.0; // --test-hover (#163)
     bool benchNetIds = false;      // --test-netids: stable network ids over a save and load (#317)
     bool benchNet = false;         // --test-net: connect by IP over loopback (GameNetworkingSockets, #310)
+    bool benchFingerprint = false; // --test-fingerprint: world fingerprint and the gameplay RNG (#316)
     bool benchTwoPlayers = false; int twoPhase = 0; // --test-two-players: a second Player in its own frame (#314)
     bool benchFall = false; int fallPhase = 0, fallIdx = 0; bool fallOk = true; double fallStart = 0.0; // --test-fall (#263)
     bool benchTeleClose = false; int teleCPhase = 0; double teleCStart = 0.0, teleCWorst = 0.0; long long teleCReq0 = 0; // --test-telescope-close (#261)
@@ -482,6 +485,7 @@ int main(int argc, char** argv)
         if (std::string(argv[i]) == "--test-hover") benchHover = true; // the flight pack (#163)
         if (std::string(argv[i]) == "--test-netids") benchNetIds = true; // stable network ids (#317)
         if (std::string(argv[i]) == "--test-net") benchNet = true; // loopback connect (#310)
+        if (std::string(argv[i]) == "--test-fingerprint") benchFingerprint = true; // world fingerprint, game RNG (#316)
         if (std::string(argv[i]) == "--test-two-players") benchTwoPlayers = true; // two players side by side (#314)
         if (std::string(argv[i]) == "--test-fall") benchFall = true; // drops from 3-100 m: fall damage by height
         if (std::string(argv[i]) == "--test-telescope-close") benchTeleClose = true; // zoom 16x at the horizon, close: worst frame after (#261)
@@ -1848,6 +1852,38 @@ int main(int argc, char** argv)
                             }
                         }
                     }
+                } else if (benchFingerprint && WorldIdle()) {
+                    // --test-fingerprint (#316): the world fingerprint is the same for the same seed (regenerated) and differs for
+                    // another seed; the gameplay RNG replays from a seed and continues over a save and load.
+                    benchFingerprint = false;
+                    const unsigned seedWas = worldGen.seed;
+                    const uint64_t fp1 = WorldFingerprint(world), fp1b = WorldFingerprint(world);
+                    regenerateWorld(world);
+                    const uint64_t fp2 = WorldFingerprint(world);
+                    worldGen.seed = worldGen.lastSeed + 1;
+                    regenerateWorld(world);
+                    const uint64_t fp3 = WorldFingerprint(world);
+                    worldGen.seed = seedWas;
+                    regenerateWorld(world);
+                    const uint64_t fp4 = WorldFingerprint(world);
+                    // The RNG: a seed replays; a save and load continue the stream where it was.
+                    GameRng_Seed(1234); int a[8]; for (int& v : a) v = GameRng_Int(0, 1000000);
+                    GameRng_Seed(1234); bool replay = true; for (int v : a) replay &= GameRng_Int(0, 1000000) == v;
+                    for (int k = 0; k < 5; ++k) GameRng_Int(0, 9);
+                    const uint64_t before = GameRng_State();
+                    const bool saved = SaveWorld(world) && LoadWorldSave(world);
+                    const bool kept = GameRng_State() == before;
+                    // The join handshake's world description round-trips and carries this world's fingerprint.
+                    const JoinInfo sent = JoinInfo_FromWorld(world);
+                    JoinInfo got; std::string why;
+                    const bool join = JoinInfo_Read(JoinInfo_Write(sent), got, why) && got.seed == sent.seed && got.bodies == sent.bodies &&
+                                      got.fingerprint == sent.fingerprint && got.fingerprint == WorldFingerprint(world) && !got.bodies.empty();
+                    if (!join) printf("bench: fingerprint: join info: %s\n", why.c_str());
+                    printf("bench: fingerprint: join info %zu bytes, %zu bodies, round trip %s\n", JoinInfo_Write(sent).size(), sent.bodies.size(), join ? "yes" : "no");
+                    const bool pass = fp1 == fp1b && fp1 == fp2 && fp3 != fp1 && fp4 == fp1 && replay && saved && kept && join;
+                    printf("bench: fingerprint: %016llx, same after regenerating %s, another seed differs %s (%016llx), back %s; game RNG replays %s, kept over save/load %s -> %s\n",
+                           (unsigned long long)fp1, fp1 == fp2 && fp1 == fp1b ? "yes" : "no", fp3 != fp1 ? "yes" : "no", (unsigned long long)fp3,
+                           fp4 == fp1 ? "yes" : "no", replay ? "yes" : "no", saved && kept ? "yes" : "no", pass ? "PASS" : "FAIL");
                 } else if (benchNet && WorldIdle()) {
                     // --test-net (#310): host on a loopback port and connect to it from the same process; a reliable message
                     // goes out and its echo comes back. SKIP when built without ENABLE_GNS.
@@ -5623,7 +5659,7 @@ int main(int argc, char** argv)
                         }
                         benchWalkSeconds = 0.0;
                     }
-                } else if ((WorldIdle() && benchDigStrokes == 0 && !benchPaint && !benchSaveLoad && benchWalkSeconds <= 0.0 && benchMineStrokes == 0 && minePhase != 2 && benchFlySeconds <= 0.0 && !benchSuffocate && benchOrbitSeconds <= 0.0 && !benchRide && !benchPark && !benchGravity && !benchPrecision && !benchMantle && !benchAirJump && !benchMoon && !benchHole && !benchWall && !benchDoorway && !benchLedge && !benchTor && !benchMachines && !benchFall && !benchHover && !benchNetIds && !benchNet && !benchTwoPlayers && !benchTeleClose && !benchMenus && !benchWater && !benchFlyFollow && !benchHotbar && !benchInventory && !benchMap && !benchViewmodel && !benchQuests && !benchHunger && !benchFarm && !benchAnimals && !benchThreats && benchShotTabs == 0 && !benchForest && !benchFlow && !benchPond && !benchBucket && !benchPump && !benchTerrain && !benchShelter && !benchRoom && !benchFacing && !benchShadow && !benchParticles && !benchBiomes && !benchOil && !benchSpring && !benchShotAnimals && !benchShotMachines && benchShotBiomes < 0 && !benchFarForest && !benchRecipes && !benchWeather && !benchDecor && !benchMaterials && !benchDamage && !benchCrafting && !benchSuit && !benchTools && !benchRivers && !benchRing && !benchRocket && !benchStation && !benchBlueprint && !benchSmallBody && !benchTrees && !benchChop && benchPersist == 0 && benchBuild == 0 && benchFactory == 0 && !benchProgression) || GetTime() > 600.0) {
+                } else if ((WorldIdle() && benchDigStrokes == 0 && !benchPaint && !benchSaveLoad && benchWalkSeconds <= 0.0 && benchMineStrokes == 0 && minePhase != 2 && benchFlySeconds <= 0.0 && !benchSuffocate && benchOrbitSeconds <= 0.0 && !benchRide && !benchPark && !benchGravity && !benchPrecision && !benchMantle && !benchAirJump && !benchMoon && !benchHole && !benchWall && !benchDoorway && !benchLedge && !benchTor && !benchMachines && !benchFall && !benchHover && !benchNetIds && !benchNet && !benchTwoPlayers && !benchFingerprint && !benchTeleClose && !benchMenus && !benchWater && !benchFlyFollow && !benchHotbar && !benchInventory && !benchMap && !benchViewmodel && !benchQuests && !benchHunger && !benchFarm && !benchAnimals && !benchThreats && benchShotTabs == 0 && !benchForest && !benchFlow && !benchPond && !benchBucket && !benchPump && !benchTerrain && !benchShelter && !benchRoom && !benchFacing && !benchShadow && !benchParticles && !benchBiomes && !benchOil && !benchSpring && !benchShotAnimals && !benchShotMachines && benchShotBiomes < 0 && !benchFarForest && !benchRecipes && !benchWeather && !benchDecor && !benchMaterials && !benchDamage && !benchCrafting && !benchSuit && !benchTools && !benchRivers && !benchRing && !benchRocket && !benchStation && !benchBlueprint && !benchSmallBody && !benchTrees && !benchChop && benchPersist == 0 && benchBuild == 0 && benchFactory == 0 && !benchProgression) || GetTime() > 600.0) {
                     benchStart = GetTime();
                     printf("bench: world ready after %.2f s (%d chunks, avg build %.2f ms of which sampling %.2f ms, %d worker threads)\n",
                         GetWorldStats().lastGenerationSeconds, GetWorldStats().chunks, GetWorldStats().avgBuildMs, GetWorldStats().avgSampleMs, GetWorldStats().workerThreads);

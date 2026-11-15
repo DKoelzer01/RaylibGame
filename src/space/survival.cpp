@@ -1,4 +1,5 @@
 #include "survival.h"
+#include "gamerng.h"
 #include "playerinput.h"
 #include "suit.h"
 #include "questtree.h"
@@ -489,7 +490,7 @@ bool Survival_UseItem(const std::string& id) {
         if (survival.food < 98.0f && inventory.remove(id, 1)) {
             survival.food = std::min(100.0f, survival.food + food.value);
             QuestBook_Count("eat");
-            if (food.raw && GetRandomValue(0, 99) < 30) { survival.sickUntil = (float)SimTime() + 60.0f; GameUI_Toast("You feel sick: cook your meat"); }
+            if (food.raw && GameRng_Int(0, 99) < 30) { survival.sickUntil = (float)SimTime() + 60.0f; GameUI_Toast("You feel sick: cook your meat"); }
             Audio_Play(Sfx::Pickup, 0.5f, 0.8f);
             return true;
         }

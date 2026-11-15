@@ -113,6 +113,9 @@ double BodyDaySeconds(const Scene& world);                 // the nearest body's
 float SunElevationAtCamera(const Scene& world);            // degrees over the horizon at the camera's spot on that body
 void generateWorld(Scene& world);      // creates planetoids; chunks stream in via worldUpdate()
 void regenerateWorld(Scene& world);
+// A hash of what every machine regenerates from the seed (#316): the seed, each generated body's id, kind and size, and its
+// CPU density field sampled at fixed points (no edits). Client and server compare it at join to catch mismatched builds.
+uint64_t WorldFingerprint(const Scene& world);
 // Drops the whole world (jobs, machines, water, rings, bodies and their GPU meshes): quitting to the main menu (#270).
 void unloadWorld(Scene& world);
 void BeginWorldStreaming();            // for games that add bodies themselves: WorldIdle() waits for them

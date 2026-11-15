@@ -1,4 +1,5 @@
 #include "farming.h"
+#include "gamerng.h"
 #include "fluid.h"
 #include "audio.h"
 #include "buildtool.h"
@@ -131,7 +132,7 @@ int Farm_Harvest(Planetoid& body, Plot& plot, int part) {
     const CropDef* c = Crop(it->second.crop);
     if (!c) { fields.erase(it); return 0; }
     if (it->second.growth < 1.0f) { GameUI_Toast(TextFormat("The %s is not ripe yet (%.0f%%)", c->id.c_str(), it->second.growth * 100.0f)); return 0; }
-    const int seeds = 1 + (GetRandomValue(0, 1));
+    const int seeds = 1 + (GameRng_Int(0, 1));
     inventory.add(c->yield, c->yieldCount);
     inventory.add(c->seed, seeds);
     QuestBook_Count("harvest");

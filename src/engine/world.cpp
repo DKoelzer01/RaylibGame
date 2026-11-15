@@ -1,5 +1,6 @@
 #include "world.h"
 #include "netid.h"
+#include "gamerng.h"
 #include "terrainarena.h"
 #include "ring.h"
 #include "player.h"
@@ -121,6 +122,36 @@ Planetoid::Planetoid(std::string name, DVec3 wp, std::shared_ptr<const TerrainFi
 Planetoid* Planetoid::find(uint64_t id) {
     auto it = planetoidRegistry.find(id);
     return it == planetoidRegistry.end() ? nullptr : it->second;
+}
+
+uint64_t WorldFingerprint(const Scene& world) {
+    // FNV-1a over the seed and, per generated body, its id, kind and size plus the CPU density field sampled at fixed
+    // directions and heights (no edits: that is what every machine regenerates from the seed). Float bits are hashed as is.
+    uint64_t h = 1469598103934665603ull;
+    auto mix = [&](const void* data, size_t n) { const uint8_t* b = (const uint8_t*)data; for (size_t i = 0; i < n; ++i) { h ^= b[i]; h *= 1099511628211ull; } };
+    mix(&worldGen.lastSeed, sizeof(worldGen.lastSeed));
+    for (const auto& obj : world.objects) {
+        const auto* p = dynamic_cast<const Planetoid*>(obj.get());
+        if (!p || NetId_Kind(p->netId) != NetKind::Body || !p->field) continue;
+        mix(&p->netId, sizeof(p->netId));
+        const int kind = (int)p->kind;
+        mix(&kind, sizeof(kind));
+        mix(&p->radius, sizeof(p->radius));
+        // Heights where the surface is: around sea level (planets, moons), else through the outer half (asteroids).
+        const float sea = p->field->seaLevelRadius(), top = p->field->maxRadius();
+        const float heights[3] = { sea > 0.0f ? sea - 40.0f : top * 0.5f, sea > 0.0f ? sea + 15.0f : top * 0.75f, sea > 0.0f ? sea + 150.0f : top * 0.95f };
+        for (int i = 0; i < 64; ++i) {
+            // A Fibonacci sphere of directions, three heights each.
+            const float y = 1.0f - 2.0f * (i + 0.5f) / 64.0f, rr = sqrtf(std::max(0.0f, 1.0f - y * y)), a = 2.39996323f * (float)i;
+            const Vector3 dir = { rr * cosf(a), y, rr * sinf(a) };
+            for (float hgt : heights) {
+                const float r = p->flat ? 0.0f : hgt;
+                const float d = p->field->baseDensity(Vector3Scale(dir, r));
+                mix(&d, sizeof(d));
+            }
+        }
+    }
+    return h;
 }
 
 Planetoid* Planetoid::findNet(uint64_t netId) {
@@ -1499,6 +1530,7 @@ void generateWorld(Scene& world) {
     NetId_Reset(); // a new world: allocated ids start again (a load sets the counter from its save, #317)
     worldGen.lastSeed = worldGen.seed ? worldGen.seed : rd();
     gen.seed(worldGen.lastSeed);
+    GameRng_Seed(worldGen.lastSeed); // gameplay rolls follow the seed (a load restores the saved stream, #316)
     logger.logf("Generating world (seed %u, %zu definitions from %s)...\n", worldGen.lastSeed, worldGen.system.bodies.size(), worldGen.bodiesPath.c_str());
 
     // Every body draws the same values in the same order (3 position values, its terrain seed,

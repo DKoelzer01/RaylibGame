@@ -1,4 +1,5 @@
 #include "animals.h"
+#include "gamerng.h"
 #include "netid.h"
 #include "playerinput.h"
 #include "instancebatch.h"
@@ -459,7 +460,7 @@ void Animals_Update(Scene& world, float dt, float worldDt, bool inputEnabled) {
                 Vector3 east, north;
                 TangentFrame(up, east, north);
                 for (int attempt = 0; attempt < 8; ++attempt) { // a dry spot (not water, not by a fire)
-                const float ang = 2.0f * PI * (float)GetRandomValue(0, 1000) / 1000.0f, r = 45.0f + 15.0f * (float)GetRandomValue(0, 1000) / 1000.0f;
+                const float ang = 2.0f * PI * GameRng_Unit(), r = 45.0f + 15.0f * GameRng_Unit();
                 const Vector3 d = Vector3Normalize(Vector3Add(playerLocal, Vector3Add(Vector3Scale(east, r * cosf(ang)), Vector3Scale(north, r * sinf(ang)))));
                 const Vector3 at = Vector3Scale(d, pf->radius + pf->elevation(d));
                 if (!NearFire(at, 14.0f, fire) && Animals_Spawn(world, *here, species[hunter].id, at, 1, false, 0.5f) > 0) break;
