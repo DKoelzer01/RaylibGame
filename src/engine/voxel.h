@@ -78,7 +78,7 @@ inline int gSpawnBiome = -1;
 // Bench override (--bench-pond): findSpawnDir returns the rim of the nearest pond (#251 crack checks).
 inline bool gSpawnPond = false;
 // Erosion bake (Plan 7, #355): RAYLIBGAME_EROSION=1 bakes the whole planet at world creation (erosion.h); off until the plan's gate.
-inline bool gErosionPrototype = false;
+inline bool gErosionPrototype = true; // erosion-baked terrain by default (user 2026-11-15, #362); RAYLIBGAME_EROSION=0: the old noise terrain
 // The 3D surface band (cliffs, overhangs: terrain3D). Off while the erosion bake is being tested (user, 2026-11-13: keep
 // it out of the erosion comparisons); RAYLIBGAME_3D=1 turns it back on.
 inline bool gTerrain3D = true;

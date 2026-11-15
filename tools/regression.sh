@@ -1,6 +1,6 @@
 #!/bin/bash
 # Regression: the scripted --test-* gates and benchmarks, run one after another.
-#   tools/regression.sh [planet|eroded|space|all] (default: all; planet includes eroded, the RAYLIBGAME_EROSION=1 gates)
+#   tools/regression.sh [planet|eroded|space|all] (default: all; erosion is the default terrain since #362: "eroded" keeps its own gates)
 # Environment:
 #   EXE=path      the game to run (default build/check/bin/game.exe)
 #   SNAPSHOT=1    copy the exe and resources/ to a temp folder first, so you can keep editing and
