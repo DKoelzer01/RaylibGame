@@ -237,6 +237,8 @@ public:
     // or 0 when the lake is large (infinite) or there is no bake.
     uint64_t drainableLake(int lakeId) const;
     WaterSource waterSourceAt(Vector3 dir) const;
+    // Tests: the bake's ponds (#487: 309 ponds on seed 42, none near the start).
+    std::vector<Vector3> bakePondsByDistance(Vector3 dir) const; // their centres, nearest first (empty without a bake)
     // A body-local direction to a good start spot: temperate latitude, flat grassland a little above
     // the sea, solid ground underfoot (no cave mouth). Deterministic for a seed.
     Vector3 findSpawnDir(unsigned int seed) const;

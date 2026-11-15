@@ -2223,3 +2223,12 @@ std::string PlanetField::debugColumn(Vector3 dir) const {
     }
     return buf;
 }
+
+std::vector<Vector3> PlanetField::bakePondsByDistance(Vector3 dir) const {
+    std::vector<Vector3> out;
+    const PlanetErosion* ero = moon ? nullptr : erosion();
+    if (!ero) return out;
+    for (const PlanetErosion::Pond& p : ero->ponds()) out.push_back(p.dir);
+    std::sort(out.begin(), out.end(), [&](const Vector3& a, const Vector3& b) { return Vector3DotProduct(dir, a) > Vector3DotProduct(dir, b); });
+    return out;
+}

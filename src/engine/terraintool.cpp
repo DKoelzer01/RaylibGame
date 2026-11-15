@@ -538,8 +538,15 @@ bool TerrainTool_Stroke(bool dig) {
                 for (int b = -1; b <= 1; ++b) {
                     if (a == 0 && b == 0) continue;
                     const Vector3 d = Vector3Normalize(Vector3Add(hit.local, Vector3Add(Vector3Scale(east, (float)a), Vector3Scale(north, (float)b))));
-                    const auto* pf = dynamic_cast<const PlanetField*>(p.field.get());
-                    const Vector3 at = pf ? Vector3Scale(d, pf->radius + pf->elevation(d)) : Vector3Add(hit.local, Vector3Add(Vector3Scale(east, (float)a), Vector3Scale(north, (float)b)));
+                    // The real ground in that column (the density surface, as the aimed square): the height map is off it
+                    // on eroded and 3D terrain, and those squares were missed (#496). Searched 1.5 m either side of the aimed
+                    // square's height, from above; none in reach: no square there.
+                    const float r0 = Vector3Length(hit.local);
+                    Vector3 at{};
+                    bool found = false;
+                    for (float r = r0 + 1.5f; r >= r0 - 1.5f && !found; r -= 0.1f)
+                        if (p.densityAt(Vector3Scale(d, r)) >= ISO_LEVEL) { at = Vector3Scale(d, r); found = true; }
+                    if (!found) continue;
                     any = terrainTool.till(p, at) || any;
                 }
         }

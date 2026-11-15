@@ -350,7 +350,9 @@ bool PathStep(std::vector<Vector3>& out, long long frame) {
     return true;
 }
 
-// An animal at `pos` is penned when build parts stand within 30 m in all eight directions.
+// An animal at `pos` is penned when build parts stand within 30 m in all eight directions, from 1.7 m under its feet
+// to 2.3 m over them: on sloping ground a fence 8 m away stands a metre or more above or below the animal (#477: the
+// old 0.3-1.3 m band at its own height missed fences on eroded terrain).
 bool IsPenned(const Planetoid& body, Vector3 pos) {
     if (!body.plots || body.plots->plots.empty()) return false;
     const Vector3 up = Vector3Normalize(pos);
@@ -362,8 +364,8 @@ bool IsPenned(const Planetoid& body, Vector3 pos) {
         const Vector3 dirT = Vector3Add(Vector3Scale(east, cosf(ang)), Vector3Scale(north, sinf(ang)));
         bool hit = false;
         for (float s = 0.25f; s <= 30.0f && !hit; s += 0.25f) {
-            const Vector3 at = Vector3Scale(Vector3Normalize(Vector3Add(pos, Vector3Scale(dirT, s))), r);
-            hit = BlockedByParts(body, at, Vector3Normalize(at), 1.0f);
+            const Vector3 at = Vector3Scale(Vector3Normalize(Vector3Add(pos, Vector3Scale(dirT, s))), r - 2.0f);
+            hit = BlockedByParts(body, at, Vector3Normalize(at), 4.0f);
         }
         if (!hit) return false;
     }
@@ -491,6 +493,7 @@ int Animals_Spawn(Scene& world, Planetoid& body, const std::string& id, Vector3 
         a.age = young ? 0.0f : 1.0f;
         a.rng = h ^ (uint32_t)(animals.size() * 7919u);
         a.timer = 1.0f + 4.0f * Rand01(h);
+        a.settleIn = Rand01(h); // first ground check spread over a second: a herd spawned together doesn't all probe in one update (#476)
         a.productReady = WorldTime();
         a.netId = NetId_Allocate(NetKind::Animal);
         animals.push_back(a);
@@ -670,8 +673,13 @@ void Animals_Update(Scene& world, float dt, float worldDt, bool inputEnabled) {
             // Settle (#223): ground dug out from under it drops it onto what is left (up to 3 m); inside rock
             // (an older save, ground built over it) or over a deeper hole, it goes to the surface found from above.
             const Vector3 d = Vector3Normalize(a.pos);
+            // Still standing on the ground (solid just under its feet, open 0.3 m over them): nothing to do. Two density
+            // samples instead of a probe of 15 (and its fallback of ~180 on rough ground): the eroded field costs more a
+            // sample, and every animal checked once a second (#476).
+            const bool standing = body->densityAt(Vector3Subtract(a.pos, Vector3Scale(d, 0.15f))) >= ISO_LEVEL &&
+                                  body->densityAt(Vector3Add(a.pos, Vector3Scale(d, 0.3f))) < ISO_LEVEL;
             Vector3 g; float ge;
-            if (Ground(*body, *field, d, g, ge, Vector3Length(a.pos), 0.6f, 3.0f) || Ground(*body, *field, d, g, ge)) a.pos = g;
+            if (!standing && (Ground(*body, *field, d, g, ge, Vector3Length(a.pos), 0.6f, 3.0f) || Ground(*body, *field, d, g, ge))) a.pos = g;
         }
         const Vector3 up = Vector3Normalize(a.pos);
         Vector3 east, north;
