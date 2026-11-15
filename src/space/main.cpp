@@ -293,6 +293,7 @@ int main(int argc, char** argv)
     bool benchDoorway = false; int doorPhase = 0, doorLane = 0; double doorStart = 0.0; uint32_t doorPlot = 0; bool doorPass[2] = { false, false }; // --test-doorway (#255): 2 m openings pass, 1.5 m ones block
     bool benchMenus = false;       // --test-menus: main menu, new game, pause, save & quit, load
     bool benchMeteor = false;      // --test-meteor (#177)
+    bool benchShower = false;      // --test-shower (#316): one world-wide meteor shower, rolled by the authority
     bool benchHeadless = false;    // --test-headless (#311): the sim runs with --headless, nothing drawn
     bool benchTrapping = false;    // --test-trapping (#176)
     bool benchFishing = false;     // --test-fishing (#176)
@@ -554,6 +555,7 @@ int main(int argc, char** argv)
         if (std::string(argv[i]) == "--test-fishing") benchFishing = true;
         if (std::string(argv[i]) == "--test-trapping") benchTrapping = true;
         if (std::string(argv[i]) == "--test-meteor") benchMeteor = true;
+        if (std::string(argv[i]) == "--test-shower") benchShower = true;
         if (std::string(argv[i]) == "--test-headless") benchHeadless = true;
         if (std::string(argv[i]) == "--test-pickups") benchPickups = true;
         if (std::string(argv[i]) == "--shot-inventory") shotInventory = true;
@@ -6205,7 +6207,7 @@ int main(int argc, char** argv)
                         }
                         benchWalkSeconds = 0.0;
                     }
-                } else if ((WorldIdle() && benchDigStrokes == 0 && !benchPaint && !benchSaveLoad && benchWalkSeconds <= 0.0 && benchMineStrokes == 0 && minePhase != 2 && benchFlySeconds <= 0.0 && !benchSuffocate && benchOrbitSeconds <= 0.0 && !benchRide && !benchPark && !benchGravity && !benchPrecision && !benchMantle && !benchAirJump && !benchMoon && !benchHole && !benchWall && !benchDoorway && !benchLedge && !benchTor && !benchMachines && !benchFall && !benchHover && !benchNetIds && !benchNet && !benchTwoPlayers && !benchFingerprint && !benchInterest && !benchTeleClose && !benchMenus && !benchWater && !benchFlyFollow && !benchHotbar && !benchInventory && !benchMap && !benchViewmodel && !benchQuests && !benchHunger && !benchFarm && !benchAnimals && !benchThreats && !benchAnimalPath && !benchDam && !benchFlowMeter && !benchPartWall && !benchPressure && benchShotTabs == 0 && !benchForest && !benchFlow && !benchPond && !benchBucket && !benchPump && !benchTerrain && !benchShelter && !benchRoom && !benchFacing && !benchShadow && !benchParticles && !benchBiomes && !benchOil && !benchSpring && !benchShotAnimals && !benchShotMachines && benchShotBiomes < 0 && !benchFarForest && !benchRecipes && !benchWeather && !benchDecor && !benchMaterials && !benchDamage && !benchCrafting && !benchSuit && !benchTools && !benchRivers && !benchRing && !benchRocket && !benchStation && !benchBlueprint && !benchSmallBody && !benchTrees && !benchChop && benchPersist == 0 && benchBuild == 0 && benchFactory == 0 && !benchProgression) || GetTime() > 600.0) {
+                } else if ((WorldIdle() && benchDigStrokes == 0 && !benchPaint && !benchSaveLoad && benchWalkSeconds <= 0.0 && benchMineStrokes == 0 && minePhase != 2 && benchFlySeconds <= 0.0 && !benchSuffocate && benchOrbitSeconds <= 0.0 && !benchRide && !benchPark && !benchGravity && !benchPrecision && !benchMantle && !benchAirJump && !benchMoon && !benchHole && !benchWall && !benchDoorway && !benchLedge && !benchTor && !benchMachines && !benchFall && !benchHover && !benchNetIds && !benchNet && !benchShower && !benchTwoPlayers && !benchFingerprint && !benchInterest && !benchTeleClose && !benchMenus && !benchWater && !benchFlyFollow && !benchHotbar && !benchInventory && !benchMap && !benchViewmodel && !benchQuests && !benchHunger && !benchFarm && !benchAnimals && !benchThreats && !benchAnimalPath && !benchDam && !benchFlowMeter && !benchPartWall && !benchPressure && benchShotTabs == 0 && !benchForest && !benchFlow && !benchPond && !benchBucket && !benchPump && !benchTerrain && !benchShelter && !benchRoom && !benchFacing && !benchShadow && !benchParticles && !benchBiomes && !benchOil && !benchSpring && !benchShotAnimals && !benchShotMachines && benchShotBiomes < 0 && !benchFarForest && !benchRecipes && !benchWeather && !benchDecor && !benchMaterials && !benchDamage && !benchCrafting && !benchSuit && !benchTools && !benchRivers && !benchRing && !benchRocket && !benchStation && !benchBlueprint && !benchSmallBody && !benchTrees && !benchChop && benchPersist == 0 && benchBuild == 0 && benchFactory == 0 && !benchProgression) || GetTime() > 600.0) {
                     benchStart = GetTime();
                     printf("bench: world ready after %.2f s (%d chunks, avg build %.2f ms of which sampling %.2f ms, %d worker threads)\n",
                         GetWorldStats().lastGenerationSeconds, GetWorldStats().chunks, GetWorldStats().avgBuildMs, GetWorldStats().avgSampleMs, GetWorldStats().workerThreads);
@@ -6883,6 +6885,90 @@ int main(int argc, char** argv)
                 printf("bench: meteor: shower on %d, %d streaks drawn, landed %d, crater %d, meteorites %d, game rng rolled %d (bench_meteor.png) -> %s\n",
                        (int)Events_ShowerOn(), Events_Streaks(), (int)landed, (int)crater, meteorites, (int)meteorRolled, ok ? "PASS" : "FAIL");
                 benchMeteor = false;
+            }
+        }
+        // --test-shower (#316): meteor showers are one world-wide event rolled by the authority. The local player flies 3 km
+        // up (no longer a target, no sky to see); another player (an interest centre) stands 1.5 km away on the ground.
+        //   1. crossing a 10-minute bucket rolls the gameplay RNG (no darkness or position needed);
+        //   2. a client crossing a bucket rolls nothing and starts nothing; it applies the host's shower as sent;
+        //   3. a forced shower starts although the local player is in the air, and both meteorites land at the centre;
+        //   4. the shower is saved and loaded with the world.
+        if (benchShower && gameState == 1 && !loading && WorldIdle()) {
+            static int sf = 0, phase = 0;
+            static bool rolled = false, clientQuiet = false, clientApplied = false, started = false, landed = false, kept = false;
+            static uint32_t count0 = 0;
+            static uint64_t rng0 = 0;
+            static Vector3 centre{};
+            static EventsShower host{};
+            Planetoid* p = dynamic_cast<Planetoid*>(world.objects[0].get());
+            const auto* pf = dynamic_cast<const PlanetField*>(p->field.get());
+            ++sf;
+            auto fly = [&] { // the local player 3 km over the spawn, flying
+                const Vector3 d = p->dirToLocal(StartSpawnDir(*p));
+                player.flyMode = true;
+                player.position = world.renderOrigin + p->toWorld(Vector3Scale(d, pf->radius + 3000.0f));
+                player.velocity = { 0, 0, 0 };
+            };
+            if (phase == 0 && sf == 5) {
+                fly();
+                const Vector3 d0 = p->dirToLocal(StartSpawnDir(*p));
+                const Vector3 side = Vector3Normalize(Vector3CrossProduct(d0, fabsf(d0.y) < 0.9f ? Vector3{ 0, 1, 0 } : Vector3{ 1, 0, 0 }));
+                Vector3 d = d0;
+                for (int k = 0; k < 16; ++k) { // 1.5 km away on dry land
+                    d = Vector3Normalize(Vector3Add(d0, Vector3Scale(Vector3RotateByAxisAngle(side, d0, k * 0.39f), 1500.0f / pf->radius)));
+                    if (pf->elevation(d) > 5.0f) break;
+                }
+                centre = Vector3Scale(d, pf->radius + pf->elevation(d) + 1.0f);
+                gInterestCentres = { InterestCentre{ p->id, centre } };
+                rng0 = GameRng_State(); count0 = Events_ShowerCount();
+                SetWorldTime((floor(WorldTime() / 600.0) + 1.0) * 600.0 + 1.0); // into the next bucket
+                phase = 1; sf = 0;
+            } else if (phase == 1 && sf == 3) {
+                fly();
+                rolled = GameRng_State() != rng0;
+                // As a client: another bucket rolls nothing; the host's shower applies as sent.
+                gNetRole = NetRole::Client;
+                rng0 = GameRng_State(); count0 = Events_ShowerCount();
+                SetWorldTime(WorldTime() + 600.0);
+                phase = 2; sf = 0;
+            } else if (phase == 2 && sf == 3) {
+                clientQuiet = GameRng_State() == rng0 && Events_ShowerCount() == count0;
+                Events_ApplyShower({ WorldTime() - 1.0, WorldTime() + 119.0, count0 + 7 });
+                clientApplied = Events_ShowerOn() && Events_ShowerCount() == count0 + 7;
+                Events_ApplyShower({ -1.0, -1.0, count0 + 7 }); // over
+                gNetRole = NetRole::Offline;
+                count0 = Events_ShowerCount();
+                Events_ForceShower();
+                phase = 3; sf = 0;
+            } else if (phase == 3) {
+                fly();
+                if (sf == 3) started = Events_ShowerOn() && Events_ShowerCount() == count0 + 1;
+                const EventsShower s = Events_GetShower();
+                if (sf == 4) SetWorldTime(s.start + 0.40 * (s.end - s.start));
+                if (sf == 8) SetWorldTime(s.start + 0.80 * (s.end - s.start));
+                if (sf == 12) {
+                    int atPlayer = 0, atCentres = 0;
+                    Events_ImpactTargets(atPlayer, atCentres);
+                    int near = 0;
+                    if (p->plots) for (auto& pl : p->plots->plots) for (const Part& part : pl->parts)
+                        if (part.type == PartType::Meteorite && Vector3Distance(pl->toBody({ (part.origin.x + 0.5f) * kCellSize, 0.0f, (part.origin.z + 0.5f) * kCellSize }), centre) < 260.0f) ++near;
+                    landed = atCentres == 2 && atPlayer == 0 && near >= 1;
+                    printf("bench: shower: meteorites at the centre %d, at the local player %d, meteorite parts near the centre %d (shower %.0f..%.0f s, now %.0f s, started %d)\n", atCentres, atPlayer, near, s.start, s.end, WorldTime(), (int)started);
+                    host = s;
+                    const bool saved = SaveWorld(world);
+                    Events_Reset(); // forget it: the load must bring it back
+                    const bool loaded = saved && LoadWorldSave(world);
+                    kept = loaded;
+                    phase = 4; sf = 0;
+                }
+            } else if (phase == 4 && sf == 3) {
+                const EventsShower s = Events_GetShower();
+                kept = kept && s.id == host.id && fabs(s.start - host.start) < 0.01 && fabs(s.end - host.end) < 0.01;
+                const bool ok = rolled && clientQuiet && clientApplied && started && landed && kept;
+                printf("bench: shower: bucket rolled the game RNG %d, client rolled nothing %d, client applied the host's shower %d, forced shower with the player in the air %d, both meteorites at the other player %d, kept over save/load %d -> %s\n",
+                       (int)rolled, (int)clientQuiet, (int)clientApplied, (int)started, (int)landed, (int)kept, ok ? "PASS" : "FAIL");
+                gInterestCentres.clear();
+                benchShower = false;
             }
         }
         // --test-headless (#311, with --bench 12): the world runs with nothing drawn - the sim steps at its rate, the player

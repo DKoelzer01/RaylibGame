@@ -11,6 +11,12 @@
 #include <string>
 #include <vector>
 
+// This process's part in a game (#316): Offline (single-player) and Host decide world events and roll the gameplay RNG;
+// a Client applies what the host sends and rolls only cosmetics.
+enum class NetRole { Offline, Host, Client };
+inline NetRole gNetRole = NetRole::Offline;
+inline bool Net_IsAuthority() { return gNetRole != NetRole::Client; }
+
 struct NetMessage {
     uint32_t conn = 0;             // the connection it came on
     std::vector<uint8_t> data;
