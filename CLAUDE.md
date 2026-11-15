@@ -159,6 +159,10 @@ board's auto-add workflow adds new issues itself, but sets no fields, so:
 - Sky light: `fragSky` from depth below the surface, times a short-ray openness probe (#369: terrain via chunk
   samples, parts via plot cells); `RAYLIBGAME_SKY_PROBES=0` for A/B. Moonlight scale defaults to 0.25
   (`RAYLIBGAME_MOONLIGHT`).
+- HDR (#131, scenetarget.cpp): the scene target is RGBA16F; world shaders still write display-encoded colour (pow 1/2.2),
+  now unclamped. The composite decodes, applies auto-exposure (log-average of a 64x36 sample grid, never brightens:
+  nights stay as tuned), tonemaps (default "knee": today's look up to 0.8, highlights roll off; RAYLIBGAME_TONEMAP=aces|clip)
+  and re-encodes. RAYLIBGAME_HDR=0 = the old RGBA8 target; RAYLIBGAME_EXPOSURE_LOG=1 prints exposure/luminance.
 - Inventory: 45 grid cells + 10 hotbar cells (indices 45-54). `Hotbar_Bind` moves a stack (items must be carried);
   `Inventory::preferred` = the selected hotbar cell is used first.
 - Terrain internals still worth knowing: `PlanetField::rockFeature` (tors, boulders) and `terrain3D` (the 3D band);

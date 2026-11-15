@@ -885,10 +885,11 @@ void Scene::drawScene(int gamestate) {
         if (onDraw3D) onDraw3D();
         frameLighting = nullptr;
     EndMode3D();
-    if (revZ) SceneTarget_End();
+    GpuTimer_Mark("draw3d");
+    if (revZ) SceneTarget_End(); // resolve, auto-exposure, tonemap to the window (#131)
     rlSetClipPlanes(nearDefault, farDefault); // the passes above narrowed them
     lastDrawCalls = drawCalls;
-    GpuTimer_Mark("draw3d");
+    GpuTimer_Mark("tonemap");
 
     if (debugDraw) {
         // Depth texture preview (red channel = depth), with the hardware compare off while it draws.
