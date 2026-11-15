@@ -19,7 +19,7 @@
 #include <algorithm>
 #include <cmath>
 
-BuildToolState buildTool;
+// (buildTool: the local PlayerSession's, src/space/playersession.cpp, #313)
 
 namespace {
     // The current aim: a placement (plot may be null = a new plot at newOrigin) and/or a part to remove.

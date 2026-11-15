@@ -11,7 +11,7 @@
 #include <sstream>
 
 ItemDB itemDB;
-Inventory inventory;
+// (inventory: the local PlayerSession's, src/space/playersession.cpp, #313)
 
 static std::string Trim(const std::string& s) {
     const size_t a = s.find_first_not_of(" \t\r\n");

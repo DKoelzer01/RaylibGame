@@ -28,7 +28,7 @@ struct TerrainToolSettings {
     // the hotbar slot and counts quest events ("scoop", "pour").
     std::function<void(const std::string& from, const std::string& to, const char* event)> swapHeld;
 };
-extern TerrainToolSettings terrainTool;
+extern TerrainToolSettings& terrainTool; // the local PlayerSession's (#313)
 
 struct PlayerInput;
 void TerrainTool_Update(Scene& world, const PlayerInput& in, bool editEnabled = true); // once per frame before drawing (input: #312); editEnabled=false keeps save/load (F5/F9) only

@@ -17,6 +17,14 @@ class Scene;
 constexpr int kHotbarSlots = 10;
 extern const char* const kHotbarTerrainTool; // "tool:terrain"
 
+// One player's hotbar (#313, in their PlayerSession): the slot in hand and right-click eating (#202).
+struct HotbarState {
+    int selected = 0;
+    float eatProgress = 0.0f;   // 0..1 while the button is held
+    bool eatBlocked = false;    // this press was refused (full): wait for the release
+    int eatenCount = 0;
+};
+
 void Hotbar_Reset();                                  // the default bindings
 struct PlayerInput;
 void Hotbar_Update(Scene& world, const PlayerInput& in, bool piloting);

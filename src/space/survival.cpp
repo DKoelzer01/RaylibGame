@@ -23,7 +23,7 @@
 #include <unordered_map>
 #include <vector>
 
-SurvivalState survival;
+// (survival: the local PlayerSession's, src/space/playersession.cpp, #313)
 int worldDifficulty = 1;
 float Difficulty_HungerScale() { return worldDifficulty == 0 ? 0.6f : worldDifficulty == 2 ? 1.25f : 1.0f; }
 float Difficulty_ThreatScale() { return worldDifficulty == 0 ? 0.0f : worldDifficulty == 2 ? 1.5f : 1.0f; }

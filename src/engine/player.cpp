@@ -8,7 +8,7 @@
 #include <cmath>
 #include <cstdio>
 
-Player player;
+// (player: the local PlayerSession's, src/space/playersession.cpp, #313)
 
 
 static Vector3 RotateAround(Vector3 v, Vector3 axis, float angle) {

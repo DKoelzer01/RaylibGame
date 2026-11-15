@@ -113,6 +113,6 @@ private:
     std::unordered_map<std::string, float> partial;
 };
 
-extern Inventory inventory;
+extern Inventory& inventory;   // the local PlayerSession's (#313)
 
 #endif

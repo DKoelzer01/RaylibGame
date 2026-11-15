@@ -18,7 +18,7 @@
 #include <string>
 
 
-TerrainToolSettings terrainTool;
+// (terrainTool: the local PlayerSession's, src/space/playersession.cpp, #313)
 
 namespace {
     TerrainHit hit;

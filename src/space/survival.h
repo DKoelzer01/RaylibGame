@@ -40,7 +40,7 @@ struct SurvivalState {
     double deathTime = 0.0;
     int deaths = 0;
 };
-extern SurvivalState survival;
+extern SurvivalState& survival; // the local PlayerSession's (#313)
 
 // The world's difficulty (saved with it; new worlds take settings.difficulty): 0 peaceful (no night
 // threats or hostile animals, hunger x0.6, extra food to start), 1 normal, 2 hard (no Map in the

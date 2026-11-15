@@ -1,4 +1,5 @@
 #include "recipebook.h"
+#include "playersession.h"
 #include "simclock.h"
 #include "gameui.h"
 #include "inventory.h"
@@ -15,9 +16,7 @@ namespace {
     struct Unlock { std::string kind, target; double n = 1.0; };
     std::map<std::string, Unlock> unlocks; // output -> its extra condition
     bool loaded = false;
-    std::set<std::string> known;           // outputs known at the last check
-    bool primed = false;                   // the first check after a reset is silent
-    double lastCheck = -10.0;
+    RecipeBookState& R() { return LocalSession().recipes; } // the local player's (#313)
 
     void Load() {
         if (loaded) return;
@@ -59,25 +58,25 @@ bool RecipeBook_Matches(const Recipe& r, const std::string& q) {
     return false;
 }
 
-void RecipeBook_Reset() { known.clear(); primed = false; lastCheck = -10.0; }
+void RecipeBook_Reset() { R().known.clear(); R().primed = false; R().lastCheck = -10.0; }
 
 int RecipeBook_KnownCount() { int n = 0; for (const Recipe& r : itemDB.recipes()) n += RecipeBook_Known(r) ? 1 : 0; return n; }
 
 void RecipeBook_Update() {
-    if (SimTime() - lastCheck < 1.0 || terrainTool.creative) return;
-    lastCheck = SimTime();
+    if (SimTime() - R().lastCheck < 1.0 || terrainTool.creative) return;
+    R().lastCheck = SimTime();
     std::set<std::string> now;
     for (const Recipe& r : itemDB.recipes()) if (RecipeBook_Known(r)) now.insert(r.output);
-    if (primed) {
+    if (R().primed) {
         std::string list;
         int fresh = 0;
         for (const std::string& o : now)
-            if (!known.count(o)) {
+            if (!R().known.count(o)) {
                 if (fresh < 3) { const ItemDef* d = itemDB.find(o); list += (list.empty() ? "" : ", ") + (d ? d->name : o); }
                 ++fresh;
             }
         if (fresh > 0) GameUI_Toast(TextFormat("New recipe%s: %s%s (Tab)", fresh > 1 ? "s" : "", list.c_str(), fresh > 3 ? TextFormat(" and %d more", fresh - 3) : ""));
     }
-    known.swap(now);
-    primed = true;
+    R().known.swap(now);
+    R().primed = true;
 }

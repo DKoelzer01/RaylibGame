@@ -1,4 +1,5 @@
 #include "hotbar.h"
+#include "playersession.h"
 #include "playerinput.h"
 #include "world.h" // GameFrameTime
 #include "toolwear.h"
@@ -21,21 +22,18 @@
 const char* const kHotbarTerrainTool = "tool:terrain";
 
 namespace {
-    int selected = 0;
+    HotbarState& H() { return LocalSession().hotbar; } // the local player's (#313)
     // Eating (#202): right-click held with food in hand.
     constexpr float kEatSeconds = 1.2f;
-    float eatProgress = 0.0f;   // 0..1 while the button is held
-    bool eatBlocked = false;    // this press was refused (full): wait for the release
-    int eatenCount = 0;
     void UpdateEating(float dt, bool held) {
         const std::string food = held ? Hotbar_HeldFood() : std::string();
-        if (!held || food.empty() || !Survival_IsFood(food)) { eatProgress = 0.0f; eatBlocked = false; return; }
-        if (eatBlocked) return;
-        if (eatProgress == 0.0f && survival.food >= 98.0f) { GameUI_Toast("You are full"); eatBlocked = true; return; }
-        eatProgress += dt / kEatSeconds;
-        if (eatProgress >= 1.0f) {
-            if (Survival_UseItem(food)) ++eatenCount;
-            eatProgress = 0.0f; // holding on eats the next one
+        if (!held || food.empty() || !Survival_IsFood(food)) { H().eatProgress = 0.0f; H().eatBlocked = false; return; }
+        if (H().eatBlocked) return;
+        if (H().eatProgress == 0.0f && survival.food >= 98.0f) { GameUI_Toast("You are full"); H().eatBlocked = true; return; }
+        H().eatProgress += dt / kEatSeconds;
+        if (H().eatProgress >= 1.0f) {
+            if (Survival_UseItem(food)) ++H().eatenCount;
+            H().eatProgress = 0.0f; // holding on eats the next one
         }
     }
     // The hotbar is the inventory's last 10 cells (#209): a slot holds a real stack; empty = bare hands.
@@ -70,18 +68,18 @@ namespace {
         const std::string id = CellId(slot); // a copy: using the item can empty the cell
         if (id.empty()) { // an empty slot is bare hands
             if (piloting) return;
-            selected = slot; buildTool.active = false; terrainTool.heldTool.clear(); terrainTool.holdingItem = false;
+            H().selected = slot; buildTool.active = false; terrainTool.heldTool.clear(); terrainTool.holdingItem = false;
             return;
         }
         // Food and animal feed: the first press takes it in hand (animals that eat it follow you); the
         // next press eats it (food only).
         if ((Survival_IsFood(id) || Animals_IsFeed(id)) && !piloting) {
-            if (selected == slot && buildTool.active == false && terrainTool.heldTool.empty()) { // eating is a held right-click now (#202)
+            if (H().selected == slot && buildTool.active == false && terrainTool.heldTool.empty()) { // eating is a held right-click now (#202)
                 if (Survival_IsFood(id)) GameUI_Toast(TextFormat("Hold right-click to eat the %s", ShortName(id)));
                 return;
             }
             if (inventory.count(id) <= 0) { GameUI_Toast(TextFormat("No %s", ShortName(id))); return; }
-            selected = slot; buildTool.active = false; terrainTool.heldTool.clear(); terrainTool.holdingItem = true; // RMB: no terrain (#201)
+            H().selected = slot; buildTool.active = false; terrainTool.heldTool.clear(); terrainTool.holdingItem = true; // RMB: no terrain (#201)
             GameUI_Toast(Survival_IsFood(id) ? TextFormat("Holding %s: hold right-click to eat", ShortName(id)) : TextFormat("Holding %s: animals that eat it follow you", ShortName(id)));
             return;
         }
@@ -89,7 +87,7 @@ namespace {
         if (piloting) return;
         // The selection moves only once the choice is valid (#272): an error (not carried, can't be used) leaves the
         // hand and build mode as they were.
-        auto take = [&]() { selected = slot; terrainTool.holdingItem = false; };
+        auto take = [&]() { H().selected = slot; terrainTool.holdingItem = false; };
         if (id == kHotbarTerrainTool) { take(); buildTool.active = false; terrainTool.heldTool.clear(); return; }
         if (id == "bucket" || id == "water_bucket") { // in hand: RMB scoops / pours water (terraintool)
             if (inventory.count(id) <= 0) { GameUI_Toast(TextFormat("No %s", ShortName(id))); Audio_Play(Sfx::Error, 0.3f); return; }
@@ -134,7 +132,7 @@ namespace {
 
 void Hotbar_Reset() {
     // The cells are the inventory's (cleared with it); an empty slot is bare hands, new tools land in empty slots.
-    selected = 0;
+    H().selected = 0;
     terrainTool.holdingItem = false;
 }
 
@@ -152,10 +150,10 @@ void Hotbar_Bind(int slot, const std::string& id) {
 }
 
 const std::string& Hotbar_Slot(int slot) { return slot >= 0 && slot < kHotbarSlots ? CellId(slot) : kNone; }
-int Hotbar_Selected() { return selected; }
+int Hotbar_Selected() { return H().selected; }
 std::string Hotbar_HeldFood() {
-    if (selected < 0 || selected >= kHotbarSlots || buildTool.active || !terrainTool.heldTool.empty()) return "";
-    const std::string& id = CellId(selected);
+    if (H().selected < 0 || H().selected >= kHotbarSlots || buildTool.active || !terrainTool.heldTool.empty()) return "";
+    const std::string& id = CellId(H().selected);
     return (Survival_IsFood(id) || Animals_IsFeed(id)) && inventory.count(id) > 0 ? id : "";
 }
 
@@ -171,11 +169,11 @@ void Hotbar_Update(Scene&, const PlayerInput& in, bool piloting) {
     if (!initialised) { Hotbar_Reset(); initialised = true; }
     // G (build mode on/off) is the build tool's; keep the selection in step with it.
     // Leaving build mode with a block selected: the hand goes empty (to an empty slot, if there is one).
-    inventory.preferred = Inventory::kGrid + selected; // use comes out of the slot in hand first (#209)
-    const std::string cur = CellId(selected);
+    inventory.preferred = Inventory::kGrid + H().selected; // use comes out of the slot in hand first (#209)
+    const std::string cur = CellId(H().selected);
     const bool inHand = cur.empty() || cur == terrainTool.heldTool || Survival_IsFood(cur) || Animals_IsFeed(cur);
     if (!buildTool.active && !inHand) {
-        for (int i = 0; i < kHotbarSlots; ++i) if (CellId(i).empty()) { selected = i; break; }
+        for (int i = 0; i < kHotbarSlots; ++i) if (CellId(i).empty()) { H().selected = i; break; }
         terrainTool.heldTool.clear();
     }
     // A tool lost (or never carried) falls back to bare hands.
@@ -193,10 +191,10 @@ void Hotbar_Update(Scene&, const PlayerInput& in, bool piloting) {
 }
 
 bool Hotbar_TestEatHold(float seconds) { // tests: hold right-click this long (in 1/60 s steps); true if a bite was eaten
-    const int before = eatenCount;
+    const int before = H().eatenCount;
     for (float t = 0.0f; t < seconds; t += 1.0f / 60.0f) UpdateEating(1.0f / 60.0f, true);
     UpdateEating(1.0f / 60.0f, false);
-    return eatenCount > before;
+    return H().eatenCount > before;
 }
 
 void Hotbar_DrawHUD(bool piloting) {
@@ -207,7 +205,7 @@ void Hotbar_DrawHUD(bool piloting) {
         const int x = x0 + i * (size + gap);
         const std::string& id = CellId(i);
         const int held = (int)inventory.grid()[Inventory::kGrid + i].amount(); // this slot's own stack
-        const bool sel = !piloting && i == selected;
+        const bool sel = !piloting && i == H().selected;
         DrawRectangle(x, y0, size, size, Fade(BLACK, sel ? 0.65f : 0.45f));
         DrawRectangleLines(x, y0, size, size, sel ? SKYBLUE : Fade(RAYWHITE, 0.35f));
         DrawText(TextFormat("%d", (i + 1) % 10), x + 4, y0 + 3, 14, Fade(RAYWHITE, 0.7f));
@@ -231,10 +229,10 @@ void Hotbar_DrawHUD(bool piloting) {
         DrawText(name.c_str(), x + (size - MeasureText(name.c_str(), fs)) / 2, y0 + size - fs - 6, fs, RAYWHITE);
     }
     // Eating (#202): its bar under the crosshair, where the swing bar sits.
-    if (eatProgress > 0.0f) {
+    if (H().eatProgress > 0.0f) {
         const int cx = GetScreenWidth() / 2, cy = GetScreenHeight() / 2, bw = 80;
         DrawRectangle(cx - bw / 2, cy + 22, bw, 6, Fade(BLACK, 0.5f));
-        DrawRectangle(cx - bw / 2, cy + 22, (int)(bw * std::min(eatProgress, 1.0f)), 6, { 120, 200, 90, 255 });
+        DrawRectangle(cx - bw / 2, cy + 22, (int)(bw * std::min(H().eatProgress, 1.0f)), 6, { 120, 200, 90, 255 });
         DrawText("eating", cx - MeasureText("eating", 14) / 2, cy + 32, 14, Fade(RAYWHITE, 0.8f));
     }
 }
@@ -256,5 +254,5 @@ bool Hotbar_LoadLine(const char* tok, FILE* f) {
 
 void Hotbar_Unbind(const std::string&) {
     // A broken tool's slot is already empty (its cell held the stack, #209): the hand goes bare if that was the slot in hand.
-    if (CellId(selected).empty()) { terrainTool.heldTool.clear(); terrainTool.holdingItem = false; }
+    if (CellId(H().selected).empty()) { terrainTool.heldTool.clear(); terrainTool.holdingItem = false; }
 }

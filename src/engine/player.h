@@ -131,6 +131,6 @@ private:
     Vector3 collideFrameVel = { 0, 0, 0 };
 };
 
-extern Player player;
+extern Player& player;         // the local PlayerSession's (src/space/playersession.h, #313)
 
 #endif

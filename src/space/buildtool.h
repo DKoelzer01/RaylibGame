@@ -22,7 +22,7 @@ struct BuildToolState {
     int material = 0;       // BuildMaterial index for shapes
     float reach = 8.0f;
 };
-extern BuildToolState buildTool;
+extern BuildToolState& buildTool; // the local PlayerSession's (#313)
 
 struct PlayerInput;
 void BuildTool_Update(Scene& world, const PlayerInput& in, bool usable);

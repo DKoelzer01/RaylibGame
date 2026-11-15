@@ -11,6 +11,7 @@
 #include "mainmenu.h"
 #include "world.h"
 #include "playerinput.h"
+#include "playersession.h"
 #include "scene.h"
 #include "object.h"
 #include "utils/logger.h"
@@ -5667,7 +5668,9 @@ int main(int argc, char** argv)
         if (gameState == 1 && gameInput && alive && !loading && !ship.piloted && !Rocket_Boarded() && !player.flyMode) player.look(PlayerInput_Frame().look);
         for (int simStep = 0; simStep < simSteps; ++simStep) {
         const float simDt = SimDt();
-        const PlayerInput& stepIn = PlayerInput_Step(); // the local player's input for this step (#312)
+        PlayerSession& session = LocalSession(); // single-player: one session (#313); a server steps each one
+        session.input = PlayerInput_Step();
+        const PlayerInput& stepIn = session.input; // the local player's input for this step (#312)
         const bool alive = !survival.dead; // (may change within the frame's steps)
         // Time of day (#275): the debug UI's time scale multiplies --time-scale; its jumps (+1 h, dawn, ...) are applied here
         // in one step, so orbits and world time move too, and the riders below are carried along.
