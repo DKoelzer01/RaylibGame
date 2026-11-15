@@ -3753,7 +3753,10 @@ int main(int argc, char** argv)
                                    Fluid::Wet(*p, pondMid) ? "wet" : "dry", Fluid::Wet(*p, pondPit) ? "wet" : "dry", s.settled, s.wakes[0], s.wakes[1], s.dbgTotal[0], s.dbgTotal[1], s.dbgTotal[2], s.dbgTotal[3]);
                         }
                         if (t > 8.0 && t < 8.1) TakeScreenshot("bench_pond.png");
-                        if ((t > 15.0 && Fluid::Asleep()) || t > 150.0) {
+                        // The drain into the pit runs ~3 min on seed 42's 35 m pond (levels meet ~180 s); the water sleeps
+                        // within ~10 s of that (#366). A 150 s cap judged it mid-drain, which read as "never settles".
+                        if ((t > 15.0 && Fluid::Asleep()) || t > 240.0) {
+                            if (!Fluid::Asleep()) printf("bench: pond: not asleep after 240 s (%d of %d bricks awake)\n", Fluid::GetStats().activeBricks, Fluid::GetStats().bricks);
                             TakeScreenshot("bench_pond_drained.png");
                             const bool claimed = Fluid::GetStats().basinBricks > 0; // the pond is simulated water (#360: no take-over)
                             const bool midDry = !Fluid::Wet(*p, pondMid), pitWet = Fluid::Wet(*p, pondPit);
