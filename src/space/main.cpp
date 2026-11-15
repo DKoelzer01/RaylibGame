@@ -3864,6 +3864,7 @@ int main(int argc, char** argv)
                         const int bursts = Ambience_SplashBursts() - pondSplash0;
                         printf("bench: pond: dropped into the pit from 3 m: %d splash burst(s), in water %s -> %s\n", bursts, player.inWater ? "yes" : "no",
                                bursts == 1 ? "PASS" : "FAIL");
+                        printf("bench: pond: %d mist puffs over the whole test (a draining pond has no falls: few or none, #406)\n", Ambience_MistPuffs());
                         benchPond = false;
                     }
                 } else if (benchPressure && (prPhase > 0 || WorldIdle())) {
@@ -4222,7 +4223,7 @@ int main(int argc, char** argv)
                             const bool pass = flowReachT >= 0.0 && flowCaveT >= 0.0 && flowSleepT >= 0.0 && s.maxStepMs < 30.0;
                             printf("bench: flow: reached the channel end after %.1f s, the chamber after %.1f s; water stands %.1f m over the chamber floor point (feed level %.1f m above it); asleep after %.1f s; step max %.2f ms -> %s\n",
                                    flowReachT, flowCaveT, caveTop, 14.5f, flowSleepT, s.maxStepMs, pass ? "PASS" : "FAIL");
-                            printf("bench: flow: bench_flow.png, bench_flow_end.png\n");
+                            printf("bench: flow: bench_flow.png, bench_flow_end.png; %d mist puffs where water fell (#406)\n", Ambience_MistPuffs());
                             benchFlow = false;
                         }
                     }

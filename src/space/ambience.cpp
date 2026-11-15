@@ -10,6 +10,7 @@
 #include "world.h"
 #include "worldtypes.h"
 #include "fluid.h"
+#include "waterfield.h"
 #include "trees.h"
 #include <unordered_set>
 #include <vector>
@@ -203,6 +204,66 @@ static void UpdateSplashes(Scene& world, const Planetoid& body, Vector3 feet, Ve
     } else wakeDue = 0.0f;
 }
 
+// Mist where falling water lands (#406): twice a second, the published simulation cells within 25 m are scanned
+// for a falling column (two partly filled cells stacked) landing on a body of water or on solid ground; each landing
+// puffs white mist and spray until the next scan.
+static std::vector<Vector3> gLandings; // body-local
+static int gMistPuffs = 0;
+int Ambience_MistPuffs() { return gMistPuffs; }
+static void UpdateMist(const Planetoid& body, Vector3 player, float dt) {
+    static float scanDue = 0.0f, puffDue = 0.0f;
+    if ((scanDue -= dt) <= 0.0f) {
+        scanDue = 0.5f;
+        gLandings.clear();
+        const WaterField::SnapshotPtr snap = WaterField::Current();
+        for (const WaterField::Site& s : snap->sites) {
+            if (s.body != body.id || s.bricks.empty()) continue;
+            if (player.x < s.lo.x - 25 || player.y < s.lo.y - 25 || player.z < s.lo.z - 25 || player.x > s.hi.x + 25 || player.y > s.hi.y + 25 || player.z > s.hi.z + 25) continue;
+            for (const auto& kv : s.bricks) {
+                const int bi = (int)((kv.first >> 22) & 2047) - 1024, bj = (int)((kv.first >> 11) & 2047) - 1024, bk = (int)(kv.first & 2047) - 1024;
+                Vector3 blo, bhi;
+                s.brickBounds(bi, bj, bk, blo, bhi);
+                const Vector3 mid = Vector3Scale(Vector3Add(blo, bhi), 0.5f);
+                if (Vector3Distance(mid, player) > 25.0f + 14.0f) continue;
+                if (!(kv.second->kinds & 1)) continue; // water only
+                const WaterField::Brick& b = *kv.second;
+                for (int z = 0; z < WaterField::kBrick && gLandings.size() < 24; ++z)
+                    for (int y = 0; y < WaterField::kBrick; ++y)
+                        for (int x = 0; x < WaterField::kBrick; ++x) {
+                            const int i = WaterField::CellIdx(x, y, z);
+                            if (b.fill[i] == 0 || (b.flags[i] & WaterField::kSolid) || WaterField::CellKind(b.flags[i]) != 0) continue;
+                            const int ci = bi * WaterField::kBrick + x, cj = bj * WaterField::kBrick + y, ck = bk * WaterField::kBrick + z;
+                            uint8_t f1, fl1, f2, fl2, f0, fl0;
+                            if (!s.cell(ci, cj, ck + 1, f1, fl1) || f1 == 0 || f1 >= 230 || (fl1 & WaterField::kSolid)) continue; // falling into it
+                            if (!s.cell(ci, cj, ck + 2, f2, fl2) || f2 == 0 || f2 >= 230 || (fl2 & WaterField::kSolid)) continue; // a column, not a ripple
+                            const bool landsOn = !s.cell(ci, cj, ck - 1, f0, fl0) || (fl0 & WaterField::kSolid) || f0 >= 230;
+                            if (!landsOn) continue;
+                            const Vector3 p = Vector3Add(s.origin, Vector3Add(Vector3Add(Vector3Scale(s.e, ci + 0.5f), Vector3Scale(s.n, cj + 0.5f)), Vector3Scale(s.u, ck + b.fill[i] / 255.0f)));
+                            if (Vector3Distance(p, player) > 25.0f) continue;
+                            bool near = false; // one plume per 1.5 m
+                            for (const Vector3& q : gLandings) if (Vector3DistanceSqr(q, p) < 2.25f) { near = true; break; }
+                            if (!near) gLandings.push_back(p);
+                        }
+            }
+        }
+    }
+    if (gLandings.empty()) return;
+    puffDue = std::min(puffDue + dt * 8.0f * (float)gLandings.size(), 20.0f);
+    while (puffDue >= 1.0f) {
+        puffDue -= 1.0f;
+        const Vector3 at = gLandings[(size_t)GetRandomValue(0, (int)gLandings.size() - 1)];
+        ParticleBurst m;
+        m.kind = ParticleKind::Smoke; m.color = { 232, 238, 244, 70 };
+        m.count = 1; m.size = 0.35f; m.life = 1.6f; m.speed = 0.5f; m.spread = 0.9f;
+        Particles_Emit(body, at, m);
+        ParticleBurst s;
+        s.kind = ParticleKind::Splash; s.color = { 210, 225, 245, 200 };
+        s.count = 2; s.size = 0.04f; s.life = 0.5f; s.speed = 1.6f; s.spread = 0.6f;
+        Particles_Emit(body, at, s);
+        ++gMistPuffs;
+    }
+}
+
 void Ambience_Update(Scene& world, float dt) {
     // The body underfoot (when the player isn't colliding with one yet, e.g. flying or just spawned: the nearest).
     Planetoid* body = player.nearest ? player.nearest : NearestPlanetoid(world, (player.position - world.renderOrigin).toFloat());
@@ -217,6 +278,7 @@ void Ambience_Update(Scene& world, float dt) {
     const bool outdoors = r > surface - 3.0f && r < surface + 60.0f;
     UpdateSeeps(*body, local, dt); // oil seeps in warm biomes
     UpdateSplashes(world, *body, local, up, dt); // the player entering and wading through water
+    UpdateMist(*body, local, dt);                // where falling water lands
     const WeatherState& w = Weather_Here();
 
     // Rain splashes: ~150 a second in a downpour, on the ground (or the sea) within 14 m.
