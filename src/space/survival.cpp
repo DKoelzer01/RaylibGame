@@ -14,6 +14,8 @@
 #include "worldtypes.h"
 #include "voxel.h"
 #include "scene.h"
+#include "combat.h"
+#include "playersession.h"
 
 #include <algorithm>
 #include <cmath>
@@ -225,6 +227,7 @@ void Survival_Update(Scene& world, float dt, const PlayerInput& in) {
         survival.deathTime = SimTime();
         survival.deaths++;
         player.autoWalk = false;
+        Combat_OnDeath(LocalSession()); // what is lost, by difficulty (#165)
     }
 }
 
@@ -246,6 +249,8 @@ void Survival_DrawHUD() {
     if (Suit_Stats().powered) Bar(x, y + 22, wPwr, "PWR", survival.power, { 250, 210, 70, 255 }, survival.power < 15.0f); // hidden with no battery pack (#217)
     Bar(x, y + 44, 260, "HP", survival.health, { 230, 70, 70, 255 }, survival.health < 30.0f);
     Bar(x, y + 66, 260, "FOOD", survival.food, { 120, 200, 90, 255 }, survival.food < 15.0f);
+    // Stamina (#165): spent by blocks; only while it is below full, under the others.
+    if (survival.stamina < 99.9f) Bar(x, y + 88, 260, "STA", survival.stamina, { 235, 235, 235, 255 }, survival.stamina < 20.0f);
     // The air temperature, coloured when it costs you (cold: hunger; heat: health).
     const float T = survival.temperature;
     if (!std::isnan(T)) {

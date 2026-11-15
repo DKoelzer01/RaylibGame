@@ -354,7 +354,13 @@ void Player::stepPhysics(Scene& world, float dt, Vector3 wish, bool jetUp, bool 
         (void)vUp;
         // A jump starts from the walking velocity only: keeping the press into a sloped ground would
         // push you downhill on takeoff.
-        if (jumpBuffer > 0.0f) {
+        if (Vector3LengthSqr(pendingPush) > 1e-6f) {
+            // Knocked back (#165): off the ground like a jump, at the push (surface-relative, as grounded velocity is).
+            velocity = pendingPush;
+            grounded = false;
+            jumpBuffer = coyote = 0.0f;
+            jumpLock = 0.15f;
+        } else if (jumpBuffer > 0.0f) {
             velocity = Vector3Add(Vector3Scale(along, walkSpeed), Vector3Scale(up, jumpSpeed));
             grounded = false;
             jumpBuffer = coyote = 0.0f;
@@ -366,6 +372,7 @@ void Player::stepPhysics(Scene& world, float dt, Vector3 wish, bool jetUp, bool 
     } else {
         // Airborne: Newtonian; nothing clamps speed, so you can build up orbital velocity.
         const bool inGravity = gravity >= 0.5f;
+        velocity = Vector3Add(velocity, pendingPush); // knocked back in the air (#165): the push adds to the flight
         if (jumpBuffer > 0.0f && coyote > 0.0f) {
             // Coyote time: just left the ground (or "grounded" flickered off for a frame) - still jump,
             // setting the upward speed relative to the surface below.
@@ -414,6 +421,7 @@ void Player::stepPhysics(Scene& world, float dt, Vector3 wish, bool jetUp, bool 
             velocity = Vector3Add(frame, Vector3Scale(Vector3Subtract(velocity, frame), 1.0f - std::min(1.0f, 0.6f * dt)));
         }
     }
+    pendingPush = { 0, 0, 0 };
     // On the ground (surface-relative velocity) the felt gravity; in the air the world's (a rock's
     // orbit is then followed by the frame carry): the world's planet pull on the ground of a ring rock
     // shoved the player off it.

@@ -13,7 +13,12 @@ With a flight pack fitted, H toggles hover.
 Four bars: oxygen, suit power, health and food. Terra's air is breathable; under water, in caves without air and in space your oxygen drains (a rebreather slows it under water).
 Suit power drains slowly, faster with the headlamp on, and pays for refilling the jetpack. Oxygen canisters and power cells on the hotbar top the bars up.
 Food: press its hotbar key once to hold it, again to eat it. Cold weather makes you hungrier (insulated suits help); heat hurts without a thermal regulator.
-Falls faster than about 6 m/s hurt (servo legs raise that). Dying sends you back to your spawn.
+Falls faster than about 6 m/s hurt (servo legs raise that). Dying sends you back to your spawn, and costs something by the world's difficulty: on Peaceful your tools wear a tenth; on Normal you also lose a tenth of each resource stack; on Hard everything you carried stays in a grave where you died (a cairn, marked on the compass and map) until you walk up to it.
+
+# Combat
+Stamina (the bar that shows under food when it is not full) pays for blocking; it comes back a second after you stop spending it.
+Put a wooden shield in the off-hand cell of the inventory and hold RMB to block: a hit from in front of you loses three quarters of its damage and most of its push. Hits from the side or behind get through. When stamina runs out the guard breaks and the hit lands whole.
+Big hits knock you back.
 
 # Tools and wear
 Your first tools are stone: pick up loose stones with LMB (1-2 stone each) and craft a stone pickaxe, axe or hoe in the Crafting tab.

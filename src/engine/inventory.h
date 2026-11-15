@@ -74,8 +74,12 @@ class Inventory {
 public:
     // The 9 x 5 grid, then the hotbar's 10 cells (#209: the hotbar holds real stacks; keys 1-0 = cells kGrid..kSlots-1).
     static constexpr int kCols = 9, kRows = 5, kGrid = kCols * kRows, kHotbar = 10, kSlots = kGrid + kHotbar;
+    // The off-hand cell (#165) after them: what the other hand holds (a shield: RMB blocks; a torch later). Nothing is
+    // filled into it or taken from it except by hand, and it is used last when paying for something.
+    static constexpr int kOffHand = kSlots, kCells = kSlots + 1;
     int preferred = -1; // a cell used first when taking items out (the selected hotbar cell: the tool in hand wears)
-    Inventory() : slots(kSlots) {}
+    Inventory() : slots(kCells) {}
+    const InvSlot& offHand() const { return slots[kOffHand]; }
     // Mining produces fractional amounts: hundredths go into the grid, smaller remainders carry over.
     void addFractional(const std::string& id, float amount);
     // Returns what did not fit (the grid is full); `overflowed` is set so the game can say so.

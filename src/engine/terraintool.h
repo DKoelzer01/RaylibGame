@@ -21,6 +21,7 @@ struct TerrainToolSettings {
     bool sphereFill = false;     // #228: the fill shape is an exact sphere (else the soft blob); Ctrl+wheel with a filler in hand picks it, paid by volume
     float fillRadius = 1.0f;     // its radius (m)
     std::string heldTool;        // the tool item in hand (hotbar); empty or not carried: bare hands
+    bool rmbBlocks = false;      // a shield in the off hand and nothing RMB uses in hand: RMB blocks, never builds (#165)
     int swings = 0;              // counts mining strokes and chops (the hands animate a swing on each)
     float swingTime = 0.3f;      // how long the current swing takes (its cooldown): the hands animate over it
     int gemBoost = 1;            // tests: multiplies the (rare) odds of a gem or quartz per rock stroke

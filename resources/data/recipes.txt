@@ -65,6 +65,7 @@ heat_shield_tile 4 = clay 4, titanium_alloy_plate 1
 stone_pickaxe 1    = stone 4, any_planks 2, fibre 2
 stone_shovel 1     = stone 2, any_planks 2, fibre 2
 stone_axe 1        = stone 3, any_planks 2, fibre 2
+wooden_shield 1    = any_planks 4, fibre 3
 iron_pickaxe 1     = iron_ingot 3, any_planks 2
 iron_shovel 1      = iron_ingot 2, any_planks 2
 iron_axe 1         = iron_ingot 3, any_planks 2

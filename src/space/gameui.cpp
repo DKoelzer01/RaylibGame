@@ -253,13 +253,16 @@ static void DrawGrid() {
     auto& grid = inventory.grid();
     const float cell = 54.0f, gap = 4.0f;
     ImDrawList* dl = ImGui::GetWindowDrawList();
-    for (int i = 0; i < Inventory::kSlots; ++i) {
-        // The 9 x 5 grid, then the hotbar's 10 cells in a row under it (#209: real slots; drop stacks into them).
+    for (int i = 0; i < Inventory::kCells; ++i) {
+        // The 9 x 5 grid, then the hotbar's 10 cells in a row under it (#209: real slots; drop stacks into them), then
+        // the off-hand cell (#165).
+        const bool hotbar = i >= Inventory::kGrid && i < Inventory::kSlots;
         if (i == Inventory::kGrid) { ImGui::Dummy(ImVec2(0.0f, 2.0f)); ImGui::TextDisabled("Hotbar (keys 1-0)"); }
+        else if (i == Inventory::kOffHand) { ImGui::Dummy(ImVec2(0.0f, 2.0f)); ImGui::TextDisabled("Off hand (a shield: hold RMB to block)"); }
         else if (i < Inventory::kGrid ? i % Inventory::kCols != 0 : true) ImGui::SameLine(0.0f, gap);
         ImGui::PushID(i);
         const ImVec2 p = ImGui::GetCursorScreenPos();
-        const float cw = i < Inventory::kGrid ? cell : (Inventory::kCols * cell - gap) / (float)Inventory::kHotbar; // the hotbar row as wide as the grid
+        const float cw = hotbar ? (Inventory::kCols * cell - gap) / (float)Inventory::kHotbar : cell; // the hotbar row as wide as the grid
         if (ImGui::InvisibleButton("cell", ImVec2(cw, cell))) {
             const bool shift = IsKeyDown(KEY_LEFT_SHIFT) || IsKeyDown(KEY_RIGHT_SHIFT);
             if (GameUI_ContainerOpen() && shift && cursorStack.empty() && !grid[i].empty()) {
@@ -298,7 +301,7 @@ static void DrawGrid() {
                 if (k >= 0) inventory.swapSlots(i, Inventory::kGrid + k); // into that hotbar slot (its stack comes here)
             }
         }
-        if (i >= Inventory::kGrid) dl->AddText(ImVec2(p.x + 3, p.y + 1), IM_COL32(150, 150, 150, 255), TextFormat("%d", (i - Inventory::kGrid + 1) % 10));
+        if (hotbar) dl->AddText(ImVec2(p.x + 3, p.y + 1), IM_COL32(150, 150, 150, 255), TextFormat("%d", (i - Inventory::kGrid + 1) % 10));
         const ImU32 edge = hover ? IM_COL32(200, 200, 200, 255) : IM_COL32(70, 72, 78, 255);
         dl->AddRect(p, q, edge, 4.0f, 0, 1.0f);
         ImGui::PopID();
