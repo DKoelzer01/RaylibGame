@@ -24,6 +24,7 @@ uniform uint count;        // processed slots
 uniform int pass;          // 0 vertical, 1 sideways
 uniform int visc[8];       // per kind: sideways flow divisor
 uniform int minSpread[8];  // per kind: thinnest film that spreads
+uniform int evaporate;     // 1: resting specks soak away (0: tests, water accounting)
 
 const uint SOLID = 1u, SOURCE = 2u, DUG = 8u, SINK = 16u; // a sink: a source that takes water in (reset to its level after: what is over it leaves, #361)
 uint F(uint c) { return c & 255u; }
@@ -196,7 +197,7 @@ void main() {
     int nf = clamp(f + net, 0, 255);
     if (f == 0 && nf > 0) kind = inKind;
     if ((fl & SOURCE) != 0u) nf = int(TG(c));                            // sources hold their level
-    else if (nf > 0 && nf <= 3 && rests(slot, x, y, z, c)) nf = 0;          // a resting speck soaks away
+    else if (evaporate != 0 && nf > 0 && nf <= 3 && rests(slot, x, y, z, c)) nf = 0;          // a resting speck soaks away
     uint old = outC[g];                                                   // this substep's start (A)
     uint res = pack(uint(nf), (fl & 31u) | (kind << 5), c);
     if (F(old) != uint(nf)) atomicOr(flagsOut[slot], 1u);

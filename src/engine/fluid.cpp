@@ -1167,6 +1167,7 @@ void GpuTick(int n) {
     for (int k = 0; k < 8; ++k) { visc[k] = kindVisc[k]; spread[k] = kindMinSpread[k]; }
     rlSetUniform(G.step.uniform("visc"), visc, RL_SHADER_UNIFORM_INT, 8);
     rlSetUniform(G.step.uniform("minSpread"), spread, RL_SHADER_UNIFORM_INT, 8);
+    { static const int evap = getenv("RAYLIBGAME_FLUID_NOEVAP") ? 0 : 1; rlSetUniform(G.step.uniform("evaporate"), &evap, RL_SHADER_UNIFORM_INT, 1); } // tests: specks kept (water accounting, #454)
     GpuFlowResolve(); // which bricks the flow watches need this dispatch (#392)
     G.nbrs.bind(2); G.list.bind(3); G.inS.bind(4); G.flags.bind(5); G.watch.bind(6); G.flux.bind(7);
     const unsigned bricks = (unsigned)list.size(); // 2D dispatch: 64 groups of 64 cells per brick, one row per brick
