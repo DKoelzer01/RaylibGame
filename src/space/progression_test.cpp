@@ -34,6 +34,7 @@ namespace {
     std::vector<Step> steps;
     size_t current = 0;
     double stepStart = 0.0, testStart = 0.0;
+    std::vector<std::string> stepHistory; // the current step, a line a second (#372: printed if it fails)
     Planetoid* body = nullptr;
     const PlanetField* field = nullptr;
     Plot* plot = nullptr;
@@ -181,14 +182,35 @@ namespace {
     bool Collect(const std::string& machine, const std::string& item, int want) {
         static std::map<std::string, double> lastTake; // per machine (one shared timer starved the second of two)
         if (GetTime() - lastTake[machine] > 0.25) { lastTake[machine] = GetTime(); Factory::Extract(body->id, plot->id, parts[machine]); }
-        // The boiler needs water (#229): a bucket now and then, as a player scooping from the river would (a full
-        // tank refuses it and it comes back).
+        // The boiler needs water (#229): a bucket whenever its tank has room for one, as a player keeping it filled
+        // from the river would. Not a bucket a real second (#372): the factory runs at 60x here (~1200 ticks a second at
+        // 1 L a tick of burning), so the tank ran dry now and then; a dry boiler cools as fast as it warms, and each
+        // refill burnt logs warming it again, until the 7 logs were gone with the hammer unpowered.
         static double lastWater = 0.0;
-        if (parts.count("boiler") && GetTime() - lastWater > 1.0) {
-            lastWater = GetTime();
-            if (inventory.count("water_bucket") == 0) inventory.add("water_bucket", 1);
-            if (inventory.remove("water_bucket", 1)) Factory::Insert(body->id, plot->id, parts["boiler"], "water_bucket", 1);
-            if (inventory.count("bucket") > 0) inventory.remove("bucket", inventory.count("bucket")); // the empties (refilled at the river)
+        if (parts.count("boiler") && GetTime() - lastWater > 0.05) {
+            const MachineView b = Factory::View(body->id, plot->id, parts["boiler"]); // watched: fills from the next tick
+            if (!b.valid || b.water <= b.waterMax - 1000) {
+                lastWater = GetTime();
+                if (inventory.count("water_bucket") == 0) inventory.add("water_bucket", 1);
+                if (inventory.remove("water_bucket", 1)) Factory::Insert(body->id, plot->id, parts["boiler"], "water_bucket", 1);
+                if (inventory.count("bucket") > 0) inventory.remove("bucket", inventory.count("bucket")); // the empties (refilled at the river)
+            }
+        }
+        // A second-by-second record of the machine (and the boiler, the generators), printed if the step fails (#372).
+        static double lastNote = 0.0;
+        if (GetTime() - lastNote > 1.0) {
+            lastNote = GetTime();
+            std::string line = TextFormat("t=%3.0f s", GetTime() - stepStart);
+            for (const std::string& name : { machine, std::string("boiler"), std::string("generator"), std::string("generator2") }) {
+                if (!parts.count(name) || (name != machine && line.find(" " + name + ":") != std::string::npos)) continue;
+                const MachineView v = Factory::View(body->id, plot->id, parts[name]);
+                if (!v.valid) continue;
+                line += TextFormat(" | %s: %s %d/%d en %d", name.c_str(), MachineStatusName(v.status), v.progress, v.duration, v.energy);
+                if (v.waterMax > 0) line += TextFormat(" water %d heat %d", v.water, v.heat);
+                if (v.hasFuelSlot) line += TextFormat(" fuel x%d", v.fuelSlot.second);
+            }
+            stepHistory.push_back(line);
+            if (stepHistory.size() > 40) stepHistory.erase(stepHistory.begin());
         }
         return inventory.count(item) >= want;
     }
@@ -553,6 +575,7 @@ int Progression_Update(Scene& world, bool fullLadder, bool evLadder) {
         printf("bench: progression: [%5.1f s] %s (quest tier %d)\n", GetTime() - testStart, steps[current].name.c_str(), QuestBook_Tier());
         ++current;
         stepStart = GetTime();
+        stepHistory.clear();
         if (current >= steps.size()) {
             Factory::SetSpeed(1);
             if (ev) {
@@ -580,6 +603,7 @@ int Progression_Update(Scene& world, bool fullLadder, bool evLadder) {
                    v.energy, v.energyMax, v.input.c_str(), v.output.c_str(), v.hasFuelSlot ? TextFormat(", fuel %s x%d", v.fuelSlot.first.c_str(), v.fuelSlot.second) : "");
         }
         printf("bench: progression:   inventory: water %d, hydrogen %d, oxygen %d\n", inventory.count("water"), inventory.count("hydrogen"), inventory.count("oxygen"));
+        for (const std::string& h : stepHistory) printf("bench: progression:   history %s\n", h.c_str()); // the step's last 40 s (#372)
         Factory::SetSpeed(1);
         return -1;
     }
