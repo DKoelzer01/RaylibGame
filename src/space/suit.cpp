@@ -74,8 +74,8 @@ void Recompute() {
         if (!m) continue;
         const std::string& e = m->effect;
         if (e == "oxygen") s.oxygen += m->value;
-        else if (e == "power") s.power += m->value;
-        else if (e == "jetpack") { s.jetFuel += m->value; s.jetThrust += m->value; }
+        else if (e == "power") { s.power += m->value; s.powered = true; } // #217
+        else if (e == "jetpack") { s.jetFuel += m->value; s.jetThrust += m->value; s.jetpack = true; } // #217
         else if (e == "walk") { s.walk += m->value; s.servo = true; }
         else if (e == "lamp") s.lamp += m->value;
         else if (e == "food") s.food = std::max(0.0f, s.food - m->value);
@@ -185,7 +185,8 @@ void Suit_Apply(Scene& world, float dt) {
     player.walkSpeed = kWalk * S().stats.walk;
     player.jetpackFuelPerSec = kJetFuel / S().stats.jetFuel;
     player.canHover = S().stats.hover; // #163
-    player.jetpackAccel = kJetAccel * S().stats.jetThrust;
+    player.jetpackAccel = S().stats.jetpack && S().stats.powered ? kJetAccel * S().stats.jetThrust : 0.0f; // #217: no thruster pack (or no power), no jetpack
+    if (!S().stats.jetpack || !S().stats.powered) player.jetpackFuel = 0.0f;
     player.walkableCos = S().stats.grip ? 0.3f : kWalkableCos; // ~73 deg with grip boots
     if (S().stats.scanner && SimTime() - S().lastScan > 1.0) { S().lastScan = SimTime(); Scan(world); }
     if (!S().stats.scanner) S().scanDist = -1.0f;

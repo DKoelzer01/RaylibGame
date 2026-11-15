@@ -178,13 +178,14 @@ void Survival_Update(Scene& world, float dt, const PlayerInput& in) {
             survival.power = std::max(0.0f, survival.power - paid * perTank);
         }
     }
+    if (!Suit_Stats().powered) { survival.power = 0.0f; player.hoverPowered = false; } // #217: no battery pack, no suit power at all
     survival.lastJetpackFuel = player.jetpackFuel;
     if (survival.power <= 0.0f && survival.headlamp && !ship.piloted) { survival.headlamp = false; GameUI_Toast("Headlamp out: no suit power"); }
     if (in.hit(Act::Headlamp)) {
         if (survival.power > 0.0f || ship.piloted) {
             survival.headlamp = !survival.headlamp;
             Audio_Play(Sfx::Build, 0.25f, survival.headlamp ? 1.8f : 1.5f);
-        } else GameUI_Toast("No suit power for the headlamp");
+        } else GameUI_Toast(Suit_Stats().powered ? "No suit power for the headlamp" : "The headlamp needs suit power: fit a battery pack (LV)");
     }
     if (survival.oxygen <= 0.0f) survival.health -= survival.suffocationDamagePerSec * dt;
     // Temperature and hunger. Food drains faster running or on the jetpack, in the cold, and
@@ -242,7 +243,7 @@ void Survival_DrawHUD() {
     // Full oxygen in breathable air (#277): no O2 bar and no "BREATHABLE AIR" label; the rows close up from the bottom.
     const bool showO2 = !(survival.oxygen >= 99.9f && survival.breathable && !survival.underwater);
     if (showO2) Bar(x, y, wO2, "O2", survival.oxygen, { 90, 200, 255, 255 }, survival.oxygen < 20.0f);
-    Bar(x, y + 22, wPwr, "PWR", survival.power, { 250, 210, 70, 255 }, survival.power < 15.0f);
+    if (Suit_Stats().powered) Bar(x, y + 22, wPwr, "PWR", survival.power, { 250, 210, 70, 255 }, survival.power < 15.0f); // hidden with no battery pack (#217)
     Bar(x, y + 44, 260, "HP", survival.health, { 230, 70, 70, 255 }, survival.health < 30.0f);
     Bar(x, y + 66, 260, "FOOD", survival.food, { 120, 200, 90, 255 }, survival.food < 15.0f);
     // The air temperature, coloured when it costs you (cold: hunger; heat: health).
@@ -263,7 +264,7 @@ void Survival_DrawHUD() {
         if (Suit_Stats().vacuum) DrawText("VACUUM: suit rated", tx, y + 2, 16, Fade(SKYBLUE, 0.7f));
         else { const bool flash = survival.vacuumTime > 50.0f && fmodf((float)GetTime(), 0.6f) < 0.3f; DrawText(survival.vacuumTime < 60.0f ? TextFormat("VACUUM: suit not rated, %.0f s", 60.0f - survival.vacuumTime) : "VACUUM: suit failing - get to air or a cockpit", tx, y + 2, 16, flash ? RED : ORANGE); }
     }
-    DrawText(TextFormat("O2 canister x%d   power cell x%d   (use from the hotbar)", inventory.count("oxygen_canister"), inventory.count("power_cell")), x, y - 22 + (showO2 ? 0 : 22), 16, Fade(RAYWHITE, 0.8f));
+    DrawText(Suit_Stats().powered ? TextFormat("O2 canister x%d   power cell x%d   (use from the hotbar)", inventory.count("oxygen_canister"), inventory.count("power_cell")) : TextFormat("O2 canister x%d   (use from the hotbar)", inventory.count("oxygen_canister")), x, y - 22 + (showO2 ? 0 : 22), 16, Fade(RAYWHITE, 0.8f));
     if (survival.dead) {
         DrawRectangle(0, 0, GetScreenWidth(), GetScreenHeight(), Fade(BLACK, 0.6f));
         const char* msg = survival.oxygen <= 0.0f ? "You suffocated" : "You died";
@@ -502,6 +503,7 @@ bool Survival_UseItem(const std::string& id) {
     if (id == "oxygen_canister") {
         if (survival.oxygen < 99.0f && inventory.remove("oxygen_canister", 1)) { survival.oxygen = std::min(100.0f, survival.oxygen + 50.0f); Audio_Play(Sfx::Pickup); return true; }
     } else if (id == "power_cell") {
+        if (!Suit_Stats().powered) { GameUI_Toast("A power cell needs a battery pack in the suit (#217)"); Audio_Play(Sfx::Error, 0.4f); return false; }
         // Don't waste a cell on a full store (ship while piloting, otherwise the suit).
         const bool full = survival.power >= 99.0f;
         if (!full && inventory.remove("power_cell", 1)) {

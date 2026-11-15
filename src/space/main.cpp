@@ -1889,8 +1889,8 @@ int main(int argc, char** argv)
                     const double t = GetTime() - hoverStart;
                     if (hoverPhase == 0) {
                         player.spawnOn(world, *p, StartSpawnDir(*p));
-                        inventory.add("flight_pack", 1);
-                        Suit_Reset(); Suit_Fit("flight_pack");
+                        inventory.add("flight_pack", 1); inventory.add("battery_pack", 1); // flight needs suit power (#217)
+                        Suit_Reset(); Suit_Fit("flight_pack"); Suit_Fit("battery_pack");
                         hoverPhase = 1; hoverStart = GetTime();
                     } else if (hoverPhase == 1 && t > 1.5 && player.grounded) {
                         survival.health = 100.0f; survival.dead = false; survival.power = 100.0f;
@@ -2671,7 +2671,11 @@ int main(int argc, char** argv)
                         check(Suit_Wear("explorer_suit") && Suit_Modules().size() == 6 && near(Suit_Stats().oxygen, 1.5f), "the explorer suit");
                         check(inventory.count("basic_suit") == 1, "the old suit back in the inventory");
                         fitOnly("servo_legs");     check(near(player.walkSpeed, walk0 * 1.2f), "servo legs: +20% walk");
-                        fitOnly("thruster_pack");  check(near(player.jetpackFuelPerSec, fuel0 / 1.6f) && near(player.jetpackAccel, thrust0 * 1.6f), "thruster pack: +60% fuel and thrust");
+                        // #217: the basic suit has no jetpack and no power; a thruster pack needs a battery pack's power.
+                        check(thrust0 == 0.0f && !Suit_Stats().powered && survival.power == 0.0f, "the basic suit: no jetpack, no suit power");
+                        fitOnly("thruster_pack");  check(player.jetpackAccel == 0.0f, "a thruster pack alone: no jetpack (no suit power)");
+                        inventory.add("battery_pack", 1); Suit_Fit("battery_pack"); Suit_Apply(world, 0.0f);
+                        check(player.jetpackAccel > 0.0f && near(player.jetpackFuelPerSec, fuel0 / 1.6f), "thruster + battery pack: a jetpack with +60% fuel");
                         fitOnly("oxygen_tank_module"); check(near(Suit_Stats().oxygen, 2.0f), "oxygen tank: +50%");
                         fitOnly("battery_pack");   check(near(Suit_Stats().power, 2.0f), "battery pack: +50%");
                         fitOnly("lamp_upgrade");   check(near(Suit_Stats().lamp, 2.0f), "lamp upgrade");

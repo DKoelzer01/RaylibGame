@@ -727,10 +727,12 @@ void GameUI_DrawHUD(Scene& world) {
         if (GetTime() < toastUntil) DrawText(toast.c_str(), 10, GetScreenHeight() - 90, 20, YELLOW);
         return;
     }
-    // Jetpack fuel bar (top right).
-    DrawRectangle(w - 220, 70, 200, 12, Fade(BLACK, 0.5f));
-    DrawRectangle(w - 220, 70, (int)(200 * player.jetpackFuel), 12, SKYBLUE);
-    DrawText("JET", w - 260, 68, 16, RAYWHITE);
+    // Jetpack fuel bar (top right): only with a jetpack (a thruster pack and suit power, #217).
+    if (player.jetpackAccel > 0.0f) {
+        DrawRectangle(w - 220, 70, 200, 12, Fade(BLACK, 0.5f));
+        DrawRectangle(w - 220, 70, (int)(200 * player.jetpackFuel), 12, SKYBLUE);
+        DrawText("JET", w - 260, 68, 16, RAYWHITE);
+    }
     const char* mode = player.flyMode ? "FLY (F)" : player.grounded ? "WALK" : player.hovering ? "HOVER (H)" : player.gravity >= 0.5f ? "AIR" : "SPACE";
     DrawText(TextFormat("%s   g %.1f   %.1f m/s", mode, player.gravity, relSpeed(player.velocity, player.grounded)), w - 220, 90, 16, RAYWHITE);
     DrawText(TextFormat("dampeners %s (B)", player.dampeners ? "on" : "off"), w - 220, 110, 16, player.dampeners ? RAYWHITE : ORANGE);

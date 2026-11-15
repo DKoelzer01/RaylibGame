@@ -23,6 +23,8 @@ struct SuitStats {
     bool heatProof = false;              // thermal regulator: no heat damage
     bool grip = false, scanner = false, servo = false;
     bool hover = false;                  // flight pack (#163): hover mode (H)
+    bool powered = false;                // a battery pack fitted: suit power at all (#217: the basic suit has none)
+    bool jetpack = false;                // a thruster pack fitted: a jetpack at all (#217: flight comes at MV)
     bool vacuum = false;                 // rated for vacuum (the explorer suit)
 };
 
