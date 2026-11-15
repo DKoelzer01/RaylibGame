@@ -25,7 +25,7 @@
 
 // Bump with any change to the bake's code (Simulate, SetRock, the refinement, the pond extraction): a cache from
 // another version or other parameters is baked again rather than loaded (#355 review).
-constexpr uint32_t kErosionBakeVersion = 5;
+constexpr uint32_t kErosionBakeVersion = 6; // 6: wind (aeolian) erosion, #370
 struct ErosionParams {
     float cell = 200.0f;      // m, coarse cell at a face centre (gnomonic cells shrink toward the face edges)
     int steps = 400;
@@ -40,6 +40,8 @@ struct ErosionParams {
     int margin = 64;          // fine cells past each face edge
     float glacial = 1.5f;     // glacial erosion rate (x the fluvial rate at 1 km^2 of drainage); 0: none (#358)
     float glacialLine = 900.0f; // m: the ice-age snowline at the equator (falls to sea level by latitude ~0.8)
+    float wind = 1.0f;        // aeolian erosion strength on dry land (#370; 0: none, e.g. airless bodies). Scales the
+                              // per-step deflation on windward faces and the sand carried downwind.
     float start = 1.0f;       // the land starts at this fraction of the input: 1 carves into the input relief (0.1 grew
                               // it from low land: heights then follow river length, so narrow coastal ranges came out low)
 };

@@ -81,7 +81,7 @@ namespace {
 
     // Stream power + talus for `steps` steps (see erosion.h). nbOf(c, k) = the k-th of 8 neighbours or -1.
     template <class NB>
-    void Simulate(Domain& d, NB&& nbOf, int steps, const ErosionParams& p, float R, unsigned int seed, float kScale, std::vector<float>* filledOut = nullptr) {
+    void Simulate(Domain& d, NB&& nbOf, int steps, const ErosionParams& p, float R, unsigned int seed, float kScale, std::vector<float>* filledOut = nullptr, std::vector<float>* windOut = nullptr) {
         const size_t cells = d.cells;
         const float stratumOffset = Hash3(1, 2, 3, seed) * 120.0f;
         auto capRock = [&](float hc) { return fmodf(hc + stratumOffset + 1200.0f, 120.0f) < 36.0f; }; // the hard 30% of each 120 m band
@@ -93,6 +93,38 @@ namespace {
         };
         std::vector<float> hf(cells), area(cells);
         std::vector<int> receiver(cells), order;
+        // Wind (#370): per cell its downwind and upwind neighbours (latitude bands: trade winds blowing west and toward the
+        // equator below ~30 deg, westerlies east and poleward to ~60, polar easterlies beyond), the wind's speed there, and
+        // how dry the band is (the subtropical desert belt around 25 deg, a weaker polar one; the wet equator and
+        // mid-latitudes barely).
+        std::vector<int> downwind, upwind;
+        std::vector<float> windSpeed, dryLat, windDelta;
+        if (p.wind > 0.0f) {
+            downwind.assign(cells, -1); upwind.assign(cells, -1); windSpeed.assign(cells, 0.0f); dryLat.assign(cells, 0.0f); windDelta.assign(cells, 0.0f);
+            for (size_t c = 0; c < cells; ++c) {
+                const Vector3 up = d.dir[c];
+                Vector3 east = Vector3CrossProduct({ 0, 1, 0 }, up);
+                if (Vector3LengthSqr(east) < 1e-6f) continue; // the poles: calm
+                east = Vector3Normalize(east);
+                const Vector3 north = Vector3CrossProduct(up, east);
+                const float latDeg = asinf(std::clamp(up.y, -1.0f, 1.0f)) * RAD2DEG, a = fabsf(latDeg), hemi = latDeg >= 0.0f ? 1.0f : -1.0f;
+                Vector3 w; float speed;
+                if (a < 30.0f) { w = Vector3Add(Vector3Scale(east, -1.0f), Vector3Scale(north, -0.35f * hemi)); speed = 1.0f; }      // trades: west, equatorward
+                else if (a < 60.0f) { w = Vector3Add(east, Vector3Scale(north, 0.3f * hemi)); speed = 1.2f; }                         // westerlies: east, poleward
+                else { w = Vector3Add(Vector3Scale(east, -1.0f), Vector3Scale(north, -0.2f * hemi)); speed = 0.8f; }                 // polar easterlies
+                w = Vector3Normalize(w);
+                float bestDown = -2.0f, bestUp = 2.0f;
+                for (int k = 0; k < 8; ++k) {
+                    const int o = nbOf(c, k);
+                    if (o < 0) continue;
+                    const float dot = Vector3DotProduct(Vector3Normalize(Vector3Subtract(d.dir[o], up)), w);
+                    if (dot > bestDown) { bestDown = dot; downwind[c] = o; }
+                    if (dot < bestUp) { bestUp = dot; upwind[c] = o; }
+                }
+                windSpeed[c] = speed;
+                dryLat[c] = expf(-((a - 25.0f) * (a - 25.0f)) / (2.0f * 9.0f * 9.0f)) + 0.4f * expf(-((a - 75.0f) * (a - 75.0f)) / (2.0f * 10.0f * 10.0f));
+            }
+        }
         std::vector<uint8_t> seen(cells);
         order.reserve(cells);
         using Item = std::pair<float, int>;
@@ -179,6 +211,46 @@ namespace {
                         if (excess > 0.0f) { const float mv = 0.5f * excess; d.h[c] -= mv; if (!d.outlet[o]) d.h[o] += mv; }
                     }
                 }
+            if (p.wind > 0.0f && step % 2 == 0) {
+                // Aeolian erosion (#370): on dry land (the latitude belt, away from rivers: large drainage areas are wet) the
+                // wind deflates ground, most on faces turned into it (yardang-like streaks along the wind), and carries
+                // it to the downwind neighbour, where it settles in the lee of ridges and in basins (dune fields). Moved,
+                // not lost (into the sea it is). Applied together after the pass, so the scan order doesn't matter.
+                std::fill(windDelta.begin(), windDelta.end(), 0.0f);
+                for (size_t c = 0; c < cells; ++c) {
+                    const int dn = downwind[c], un = upwind[c];
+                    if (dn < 0 || un < 0 || d.outlet[c] || d.h[c] <= 0.0f) continue;
+                    const float wet = std::clamp((logf(std::max(area[c], 1.0f)) - logf(2.0e6f)) / (logf(2.0e7f) - logf(2.0e6f)), 0.0f, 1.0f);
+                    const float dry = dryLat[c] * (1.0f - wet);
+                    if (dry < 0.02f) continue;
+                    const float L = Vector3Distance(d.dir[c], d.dir[un]) * R;
+                    const float windward = std::max(0.0f, (d.h[c] - d.h[un]) / L); // rising into the wind
+                    const float lee = std::max(0.0f, (d.h[c] - d.h[dn]) / L);       // dropping away downwind: sheltered
+                    const float e = 0.05f * p.wind * dry * windSpeed[c] * (0.3f + 4.0f * std::min(windward, 0.5f)) / (1.0f + 3.0f * lee);
+                    windDelta[c] -= e;
+                    // Saltation carries it several cells downwind (one hop left one-cell stripes: each neighbour gave it
+                    // straight back the next step). It settles at the first sheltered cell: a drop behind a ridge (the lee)
+                    // or a hollow lower than both its up- and downwind neighbours; with none within 8 cells it is spread
+                    // along the path. Into the sea it is lost.
+                    int at = c, path[8], n = 0, dropAt = -1;
+                    for (int hop = 0; hop < 8; ++hop) {
+                        const int nx = downwind[at];
+                        if (nx < 0 || d.outlet[nx]) break;
+                        if (area[nx] > 2.0e7f) { n = 0; break; } // a river: it carries the sand away (it filled channels 74 m deep)
+                        path[n++] = nx;
+                        const float Lh = Vector3Distance(d.dir[at], d.dir[nx]) * R;
+                        const bool leeDrop = d.h[at] - d.h[nx] > 0.12f * Lh;
+                        const int after = downwind[nx];
+                        const bool hollow = after >= 0 && d.h[nx] < d.h[at] && d.h[nx] < d.h[after];
+                        if (hop > 0 && (leeDrop || hollow)) { dropAt = nx; break; }
+                        at = nx;
+                    }
+                    if (dropAt >= 0) windDelta[dropAt] += e;
+                    else if (n > 0) for (int k = 0; k < n; ++k) windDelta[path[k]] += e / n;
+                }
+                for (size_t c = 0; c < cells; ++c) d.h[c] += windDelta[c];
+                if (windOut) { windOut->resize(cells, 0.0f); for (size_t c = 0; c < cells; ++c) (*windOut)[c] += windDelta[c]; } // the wind's own net change (#370 evidence)
+            }
         }
         if (filledOut) { flood(); *filledOut = hf; } // the depressions left (ponds, #360): filled heights of the result
     }
@@ -295,7 +367,7 @@ uint64_t ErosionParamsKey(const ErosionParams& p) {
     uint64_t h = 1469598103934665603ull;
     auto mix = [&h](const void* v, size_t n) { const unsigned char* b = (const unsigned char*)v; for (size_t i = 0; i < n; ++i) { h ^= b[i]; h *= 1099511628211ull; } };
     const uint32_t ver = kErosionBakeVersion; mix(&ver, sizeof ver);
-    for (float f : { p.cell, p.k, p.m, p.uplift, p.talusSoft, p.talusHard, p.glacial, p.glacialLine, p.start }) mix(&f, sizeof f);
+    for (float f : { p.cell, p.k, p.m, p.uplift, p.talusSoft, p.talusHard, p.glacial, p.glacialLine, p.start, p.wind }) mix(&f, sizeof f);
     for (int i : { p.steps, p.floodEvery, p.refine, p.refineSteps, p.margin }) mix(&i, sizeof i);
     return h;
 }
@@ -433,7 +505,7 @@ void PlanetErosion::build(const std::function<float(Vector3, float)>& height, fl
                     fd.dir[(size_t)j * FE + i] = Vector3Normalize(Vector3Add(nrm, Vector3Add(Vector3Scale(a1, u), Vector3Scale(a2, v))));
                     fd.cellArea[(size_t)j * FE + i] = sideF * sideF / powf(1.0f + u * u + v * v, 1.5f);
                 }
-            std::vector<float> fh0(fd.cells), filled;
+            std::vector<float> fh0(fd.cells), filled, windAcc; // windAcc: the wind's net change on the dump face (#370)
             {
                 std::vector<std::thread> pool;
                 for (int t = 0; t < sampleThreads; ++t)
@@ -452,7 +524,7 @@ void PlanetErosion::build(const std::function<float(Vector3, float)>& height, fl
             Simulate(fd, [FE](size_t c, int k) {
                 const int i = (int)(c % FE) + di[k], j = (int)(c / FE) + dj[k];
                 return (i < 0 || j < 0 || i >= FE || j >= FE) ? -1 : j * FE + i;
-            }, p.refineSteps, p, R, seed, kScale, &filled);
+            }, p.refineSteps, p, R, seed, kScale, &filled, DumpOn() && f == dumpFace ? &windAcc : nullptr);
             {   // Hold the fine grid to the coarse one at large scales (#360): the refinement's own uplift and erosion drift
                 // it by tens of metres (70 m in seed 42's ranges), so the coarse LOD, and the rivers and lakes built on it,
                 // disagreed with the near ground (a lake 130 m under it). Fine = coarse + the high-pass part of
@@ -520,6 +592,27 @@ void PlanetErosion::build(const std::function<float(Vector3, float)>& height, fl
                 std::vector<float> out(fd.cells);
                 for (size_t c = 0; c < fd.cells; ++c) out[c] = fine[(size_t)f * FE * FE + c] * 0.1f;
                 DumpFace("erosion_fine.png", out.data(), FE, fineMetres);
+                // The wind's own work on this face (#370), apart from the drainage changes it sets off: erosion_wind.png,
+                // red = deflated, blue = deposited (full colour at 10 m), over the grey hillshade of the result.
+                if (!windAcc.empty()) {
+                    Image img = GenImageColor(FE, FE, BLACK);
+                    double lost = 0.0, laid = 0.0; float maxLost = 0.0f, maxLaid = 0.0f;
+                    auto H = [&](int i, int j) { i = std::clamp(i, 0, FE - 1); j = std::clamp(j, 0, FE - 1); return out[(size_t)j * FE + i]; };
+                    for (int j = 0; j < FE; ++j)
+                        for (int i = 0; i < FE; ++i) {
+                            const float w = windAcc[(size_t)j * FE + i];
+                            if (w < 0.0f) { lost -= w; maxLost = std::max(maxLost, -w); } else { laid += w; maxLaid = std::max(maxLaid, w); }
+                            const float gx = (H(i + 1, j) - H(i - 1, j)) / (2 * fineMetres), gy = (H(i, j + 1) - H(i, j - 1)) / (2 * fineMetres);
+                            const float g = 0.25f + 0.6f * std::clamp(0.35f + 0.75f * Vector3DotProduct(Vector3Normalize({ -gx, 1.0f, -gy }), Vector3Normalize({ -0.6f, 0.7f, -0.4f })), 0.0f, 1.0f);
+                            const float t = std::clamp(fabsf(w) / 10.0f, 0.0f, 1.0f), a = fabsf(w) < 0.2f ? 0.0f : 0.25f + 0.75f * t;
+                            const Vector3 tint = w < 0.0f ? Vector3{ 1.0f, 0.2f, 0.1f } : Vector3{ 0.2f, 0.5f, 1.0f };
+                            const float sea = out[(size_t)j * FE + i] <= 0.0f ? 0.6f : 1.0f;
+                            ImageDrawPixel(&img, i, j, { (unsigned char)(255 * sea * (g * (1 - a) + tint.x * a)), (unsigned char)(255 * sea * (g * (1 - a) + tint.y * a)), (unsigned char)(255 * (g * (1 - a) + tint.z * a)), 255 });
+                        }
+                    ExportImage(img, "erosion_wind.png");
+                    UnloadImage(img);
+                    printf("erosion: wind on the dump face: %.0f m3/m2-cells deflated (deepest %.1f m), %.0f laid down (thickest %.1f m)\n", lost, maxLost, laid, maxLaid);
+                }
                 // A/B evidence (#358): RAYLIBGAME_EROSION_RAW=path keeps this face's heights; a later run with
                 // RAYLIBGAME_EROSION_COMPARE=path draws that run against this one (before | after | difference).
                 if (const char* rp = getenv("RAYLIBGAME_EROSION_RAW")) {

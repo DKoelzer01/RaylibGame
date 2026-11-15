@@ -257,6 +257,7 @@ void PlanetField::bakeErosion(const std::string& cachePath) {
     p.cell = envf("RAYLIBGAME_EROSION_CELL", p.cell); p.uplift = envf("RAYLIBGAME_EROSION_UPLIFT", p.uplift);
     p.start = envf("RAYLIBGAME_EROSION_START", p.start);
     p.glacial = envf("RAYLIBGAME_GLACIAL", p.glacial); p.glacialLine = envf("RAYLIBGAME_GLACIAL_LINE", p.glacialLine);
+    p.wind = envf("RAYLIBGAME_WIND", p.wind); // #370: aeolian erosion (0: off, A/B)
     p.refine = (int)envf("RAYLIBGAME_EROSION_REFINE", (float)p.refine); p.refineSteps = (int)envf("RAYLIBGAME_EROSION_REFINE_STEPS", (float)p.refineSteps);
     // The cache must match the seed, radius, parameters and bake code version (#355 review): tuning runs and code
     // changes bake again instead of loading a stale bake.
