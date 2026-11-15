@@ -226,7 +226,8 @@ void TerrainTool_Update(Scene& world, bool inputEnabled, bool editEnabled) {
 
     if (terrainTool.terraform) {
         const float wheel = GetMouseWheelMove();
-        if (wheel != 0.0f) terrainTool.brushRadius = std::clamp(terrainTool.brushRadius * (wheel > 0 ? 1.15f : 1.0f / 1.15f), 1.0f, 24.0f);
+        const bool modWheel = IsKeyDown(KEY_LEFT_CONTROL) || IsKeyDown(KEY_RIGHT_CONTROL) || IsKeyDown(KEY_LEFT_ALT) || IsKeyDown(KEY_RIGHT_ALT); // #227
+        if (modWheel && wheel != 0.0f) terrainTool.brushRadius = std::clamp(terrainTool.brushRadius * (wheel > 0 ? 1.15f : 1.0f / 1.15f), 1.0f, 24.0f);
     }
 
     // Buckets (Plan 4, F5): RMB with an empty bucket scoops 1 m^3 of water (static or flowing) from
@@ -521,7 +522,7 @@ void TerrainTool_DrawHUD() {
             if (!rule.can) DrawText(rule.why.c_str(), cx + 14, cy + 34, 18, Color{ 255, 120, 90, 255 });
         }
     }
-    DrawText(terrainTool.terraform ? "LMB dig  RMB fill  wheel brush  G build  1-0 hotbar  Tab inventory  T telescope  L lamp  F fly  F5 save  F1 debug"
+    DrawText(terrainTool.terraform ? "LMB dig  RMB fill  Ctrl+wheel brush  G build  1-0 hotbar  Tab inventory  T telescope  L lamp  F fly  F5 save  F1 debug"
                                    : "LMB mine/chop  RMB place soil  G build  1-0 hotbar  Tab inventory  T telescope  L lamp  F fly  F5 save  F1 debug",
              10, y + 30, 20, Fade(RAYWHITE, 0.7f));
     if (GetTime() < toastUntil) DrawText(toast.c_str(), 10, y, 20, YELLOW);

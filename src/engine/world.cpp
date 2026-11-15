@@ -556,7 +556,17 @@ static void CollectDesired(const Planetoid& p, const NodeKey& key, const LodView
         if (far < p.field->minRadius()) return;
         if (BehindHorizon(v.cam, lo, hi, p.field->occluderRadius() * p.scale)) return; // over the horizon
     }
-    if (key.level > 0 && LodDistance(v, lo, hi) < lodSettings.lodFactor * key.size()) {
+    float lodDist = LodDistance(v, lo, hi);
+    static const bool altOn = !(getenv("RAYLIBGAME_LOD_ALT") && getenv("RAYLIBGAME_LOD_ALT")[0] == '0'); // A/B
+    if (altOn && !p.flat && v.zoom <= 1.0f) {
+        // Altitude counts (#257): the box reaches far above the thin surface shell inside it, so rising barely moved the
+        // box distance. No surface in this node is farther out than the highest terrain (or the node's farthest
+        // corner): the camera is at least |cam| - that from it. Near the ground this changes nothing; above the
+        // terrain band (flying, rockets) the LOD coarsens with height.
+        const float farBox = Vector3Length({ std::max(fabsf(lo.x), fabsf(hi.x)), std::max(fabsf(lo.y), fabsf(hi.y)), std::max(fabsf(lo.z), fabsf(hi.z)) });
+        lodDist = std::max(lodDist, Vector3Length(v.cam) - std::min(p.field->maxRadius() + 24.0f, farBox));
+    }
+    if (key.level > 0 && lodDist < lodSettings.lodFactor * key.size()) {
         for (int i = 0; i < 8; ++i)
             CollectDesired(p, { key.level - 1, key.x * 2 + (i & 1), key.y * 2 + ((i >> 1) & 1), key.z * 2 + ((i >> 2) & 1) }, v, out);
         return;

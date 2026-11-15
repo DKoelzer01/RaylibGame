@@ -147,7 +147,7 @@ void BuildTool_Update(Scene& world, bool inputEnabled, bool usable) {
     if (inputEnabled && IsKeyPressed(KEY_G)) {
         buildTool.active = !buildTool.active;
         buildTool.orientManual = false; // parts face you again (#196)
-        GameUI_Toast(buildTool.active ? "Build mode: wheel shape, parts face you (R/V rotate by hand), RMB place, hold LMB remove, B save blueprint, N blueprints (G to leave)" : "Build mode off");
+        GameUI_Toast(buildTool.active ? "Build mode: Ctrl+wheel shape, parts face you (R/V rotate by hand), RMB place, hold LMB remove, B save blueprint, N blueprints (G to leave)" : "Build mode off");
     }
     if (buildTool.part != buildTool.autoPart) { buildTool.autoPart = buildTool.part; buildTool.orientManual = false; } // another part: automatic facing
     aim = Aim{};
@@ -155,7 +155,8 @@ void BuildTool_Update(Scene& world, bool inputEnabled, bool usable) {
     if (inputEnabled) {
         const float wheel = GetMouseWheelMove();
         // The wheel picks the shape (any shape from the selected material); machines come from the hotbar.
-        if (IsShape((PartType)buildTool.part) && wheel != 0.0f) { // step through kShapes
+        const bool modWheel = IsKeyDown(KEY_LEFT_CONTROL) || IsKeyDown(KEY_RIGHT_CONTROL) || IsKeyDown(KEY_LEFT_ALT) || IsKeyDown(KEY_RIGHT_ALT); // #227: the plain wheel scrolls the hotbar
+        if (modWheel && IsShape((PartType)buildTool.part) && wheel != 0.0f) { // Ctrl/Alt + wheel: step through kShapes
             int k = 0;
             for (int i = 0; i < kShapeCount; ++i) if ((int)kShapes[i] == buildTool.part) k = i;
             k = (k + (wheel > 0 ? 1 : kShapeCount - 1)) % kShapeCount;
@@ -370,7 +371,7 @@ void BuildTool_DrawHUD() {
     const char* label = IsShape(t) ? TextFormat("%s %s", GetBuildMaterial(buildTool.material).name, PartName(t)) : PartName(t);
     const char* line = TextFormat("BUILD  %s  (%d %s, have %d)", label, PartCostCount(t), item, inventory.count(item));
     DrawText(line, cx - MeasureText(line, 22) / 2, GetScreenHeight() - 150, 22, SKYBLUE);
-    DrawText(IsShape(t) ? "wheel shape   R / V rotate   RMB place   LMB remove   G leave   1-0 hotbar"
+    DrawText(IsShape(t) ? "Ctrl+wheel shape   wheel hotbar   R / V rotate   RMB place   LMB remove   G leave   1-0 hotbar"
                         : "R / V rotate   RMB place   LMB remove   G leave   1-0 hotbar",
              10, GetScreenHeight() - 30, 20, Fade(RAYWHITE, 0.7f));
 }

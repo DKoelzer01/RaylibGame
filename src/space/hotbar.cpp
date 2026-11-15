@@ -10,6 +10,7 @@
 #include "terraintool.h"
 #include "tools.h"
 #include "animals.h"
+#include "telescope.h"
 
 #include <raylib.h>
 #include <cstring>
@@ -182,6 +183,11 @@ void Hotbar_Update(Scene&, bool inputEnabled, bool piloting) {
     if (inputEnabled) {
         const int k = Hotbar_KeySlot();
         if (k >= 0) Select(k, piloting);
+        // The mouse wheel scrolls the hotbar (#227): down = the next slot, as most games do. With Ctrl or Alt held it is the
+        // mode's own action (build shape, terraform brush); the telescope keeps it for its zoom.
+        const float wheel = GetMouseWheelMove();
+        const bool mod = IsKeyDown(KEY_LEFT_CONTROL) || IsKeyDown(KEY_RIGHT_CONTROL) || IsKeyDown(KEY_LEFT_ALT) || IsKeyDown(KEY_RIGHT_ALT);
+        if (wheel != 0.0f && !mod && !piloting && !telescope.active) Select((selected + (wheel < 0.0f ? 1 : kHotbarSlots - 1)) % kHotbarSlots, piloting);
     }
     // Food or feed really in hand (not just selected: the last one eaten or fed leaves bare hands): RMB
     // never places terrain with it (#201). Derived each frame so it cannot go stale.
