@@ -72,8 +72,12 @@ struct InvSlot {
 
 class Inventory {
 public:
-    // The 9 x 5 grid, then the hotbar's 10 cells (#209: the hotbar holds real stacks; keys 1-0 = cells kGrid..kSlots-1).
-    static constexpr int kCols = 9, kRows = 5, kGrid = kCols * kRows, kHotbar = 10, kSlots = kGrid + kHotbar;
+    // The 10 x 5 grid (as wide as the hotbar, #495), then the hotbar's 10 cells (#209: the hotbar holds real stacks;
+    // keys 1-0 = cells kGrid..kSlots-1).
+    static constexpr int kCols = 10, kRows = 5, kGrid = kCols * kRows, kHotbar = 10, kSlots = kGrid + kHotbar;
+    // Saves before #495 had a 9 x 5 grid: their hotbar and off-hand cells sit kGrid - kOldGrid lower.
+    static constexpr int kOldGrid = 45;
+    static int SavedCell(int i, int savedCols) { return savedCols != kCols && i >= kOldGrid ? i + kGrid - kOldGrid : i; }
     // The off-hand cell (#165) after them: what the other hand holds (a shield: RMB blocks; a torch later). Nothing is
     // filled into it or taken from it except by hand, and it is used last when paying for something.
     static constexpr int kOffHand = kSlots, kCells = kSlots + 1;

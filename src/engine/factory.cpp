@@ -43,7 +43,7 @@ namespace {
 struct Stack { int item = -1, count = 0; };
 constexpr int kSlots = 4;
 constexpr int kStackMax = 64;
-constexpr int kChestSlots = 16;
+constexpr int kChestSlots = Inventory::kGrid; // as many cells as the player's main inventory (#495: 50, drawn 10 wide)
 
 struct Recipe {
     PartType machine;

@@ -392,6 +392,7 @@ int main(int argc, char** argv)
     bool benchTime = false;        // --test-time: dawn start (#259), a +6 h jump carries the player (#275)
     bool benchPickups = false;     // --test-pickups: the pickup feed (#208): repeats merge, a screenshot while it shows
     bool shotInventory = false;    // --shot-inventory: long item names in their cells (#219)
+    bool shotChest = false;        // --shot-chest: a filled chest open beside the inventory (#495: 50 cells, 10 wide)
     bool benchFoundation = false;  // --test-foundation: a part half in the ground clears its cell and nothing else (#210)
     bool shotPreview = false;      // --shot-preview: the build preview in the part's real shape (#197)
     bool testInvCursor = false;    // --test-inv-cursor (#192)
@@ -662,6 +663,7 @@ int main(int argc, char** argv)
         if (std::string(argv[i]) == "--test-headless") benchHeadless = true;
         if (std::string(argv[i]) == "--test-pickups") benchPickups = true;
         if (std::string(argv[i]) == "--shot-inventory") shotInventory = true;
+        if (std::string(argv[i]) == "--shot-chest") shotChest = true;
         if (std::string(argv[i]) == "--test-foundation") benchFoundation = true;
         if (std::string(argv[i]) == "--shot-preview") shotPreview = true;
         if (std::string(argv[i]) == "--test-inv-cursor") testInvCursor = true;
@@ -3878,7 +3880,7 @@ int main(int argc, char** argv)
                         for (int k = 1; k < 8; ++k) allPlaster = make(TextFormat("%s_plaster", colours[k]), 4) && allPlaster;
                         check(allDyes, "every dye crafts");
                         check(allPlaster, "plaster in eight colours");
-                        inventory.clear(); // room for the next crafts (a full 45-slot grid refuses outputs)
+                        inventory.clear(); // room for the next crafts (a full grid refuses outputs)
                         inventory.add("glass", 24); inventory.add("quartz", 2); inventory.add("power_cell", 2);
                         for (const char* c : { "red", "yellow", "green", "blue" }) inventory.add(TextFormat("%s_dye", c), 2);
                         bool glass = true; for (const char* c : { "red", "yellow", "green", "blue" }) glass = make(TextFormat("%s_glass", c), 2) && glass;
@@ -6540,11 +6542,14 @@ int main(int argc, char** argv)
                     check(!inventory.remove("stone", 9001), "can't remove more than held");
                     inventory.sort();
                     check(KindOf(inventory.grid()[0].id) == ItemKind::Block && inventory.grid()[Inventory::kGrid].id == "telescope" && inventory.count("stone") == 9000, "sort: the main grid by kind, the hotbar kept, nothing lost");
-                    // Full: 45 slots of 8192 regolith; the rest is refused and flagged.
+                    // Full: every grid and hotbar cell holds 8192 regolith; the rest is refused and flagged.
                     inventory.clear();
                     const double left = inventory.addAmount("regolith", 8192.0 * Inventory::kSlots + 10.0);
                     check(fabs(left - 10.0) < 0.01 && inventory.overflowed, "a full grid refuses the rest");
                     check(inventory.offHand().empty(), "nothing overflows into the off hand (#165)");
+                    // #495: 10 wide like the hotbar; a 9-wide save's hotbar (45-54) and off hand (55) load at 50-59 and 60.
+                    check(Inventory::kGrid == 50 && Inventory::kOffHand == 60 && Inventory::SavedCell(44, 9) == 44 && Inventory::SavedCell(45, 9) == 50 &&
+                          Inventory::SavedCell(55, 9) == 60 && Inventory::SavedCell(55, 10) == 55, "10 x 5 grid; old saves' hotbar and off hand remapped (#495)");
                     inventory.overflowed = false;
                     // Crafting must not run when the output has no room.
                     const Recipe* rr = nullptr;
@@ -7953,6 +7958,36 @@ int main(int argc, char** argv)
                     GameUI_TestContainerCursor(world, p->id, plot->id, plot->partAt(cell), (int)PartType::Chest);
                 } else printf("bench: container cursor: the chest would not go down -> FAIL\n");
             } else printf("bench: container cursor: no ground -> FAIL\n");
+        }
+        // --shot-chest (#495): a chest 6 m ahead holding a few stacks, open beside the inventory.
+        if (shotChest && gameState == 1 && !loading && WorldIdle()) {
+            static int f = 0;
+            static uint64_t chestBody = 0; static uint32_t chestPlot = 0; static int chestPart = -1;
+            if (++f == 2) { // out of the bench's free-fly camera, onto the ground (a chest screen closes out of reach)
+                if (Planetoid* p0 = dynamic_cast<Planetoid*>(world.objects[0].get())) { player.flyMode = false; player.spawnOn(world, *p0, StartSpawnDir(*p0)); }
+            }
+            if (f == 40) {
+                Planetoid* p = dynamic_cast<Planetoid*>(world.objects[0].get());
+                const Vector3 feet = (player.position - world.renderOrigin).toFloat();
+                const Vector3 flat = Vector3Normalize(Vector3Subtract(player.forward, Vector3Scale(player.up, Vector3DotProduct(player.forward, player.up))));
+                TerrainHit th;
+                if (p && RaycastTerrain(world, Ray{ Vector3Add(Vector3Add(feet, Vector3Scale(flat, 6.0f)), Vector3Scale(player.up, 6.0f)), Vector3Negate(player.up) }, 200.0f, th)) {
+                    if (!p->plots) p->plots = std::make_unique<PlotSet>();
+                    Plot* plot = p->plots->plotFor(th.local, 0.0f, true);
+                    const Int3 cell = plot->cellAt(plot->toPlot(Vector3Add(th.local, Vector3Scale(plot->up, 0.1f))));
+                    if (BuildTool_Place(*p, *plot, { PartType::Chest, cell, 0 }, false)) { chestBody = p->id; chestPlot = plot->id; chestPart = plot->partAt(cell); }
+                }
+                if (chestPart < 0) { printf("bench: shot: no chest placed -> FAIL\n"); shotChest = false; }
+            }
+            if (f == 45 && chestPart >= 0) {
+                Factory::Sync(world);
+                Factory::Insert(chestBody, chestPlot, chestPart, "oak_log", 40);
+                Factory::Insert(chestBody, chestPlot, chestPart, "stone", 64);
+                Factory::Insert(chestBody, chestPlot, chestPart, "iron_ore", 12);
+                inventory.add("stone_pickaxe", 1); inventory.add("oak_log", 12);
+                GameUI_OpenContainer(chestBody, chestPlot, chestPart, (int)PartType::Chest);
+            }
+            if (f == 90) { TakeScreenshot("bench_chest.png"); printf("bench: shot: bench_chest.png\n"); shotChest = false; }
         }
         // --shot-inventory (#219): the inventory with long item names (cut to fit; they scroll on hover).
         if (shotInventory && gameState == 1 && !loading && WorldIdle()) {
