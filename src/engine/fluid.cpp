@@ -3,6 +3,7 @@
 #include "gpucompute.h"
 #include "jobsystem.h"
 #include "object.h"
+#include "rivers.h"
 #include "terraindeltas.h"
 #include "voxel.h"
 #include "waterfield.h"
@@ -31,7 +32,7 @@ namespace {
 
 constexpr int B = 16, B3 = B * B * B;
 using WaterField::kSolid; using WaterField::kSource; using WaterField::kStatic; // kStatic: inside infinite generated water
-using WaterField::kDug;                // open only because of an edit: generated infinite water may flow into it
+using WaterField::kDug; using WaterField::kSink; // kDug: open only because of an edit: generated infinite water may flow into it
 using WaterField::kKindShift;          // flag bits 5-7: the cell's fluid kind (0 water .. 7; Fluid::Kind, fluids.txt)
 using WaterField::kKindMask;
 using WaterField::CellKind;
@@ -63,6 +64,7 @@ struct Brick {
     bool ready = false;             // cells classified (solid / source)
     bool keepFill = false;          // loaded from a save: the classification keeps the stored water
     bool basin = false;             // holds finite generated water (a pond): saved even once drained (#360)
+    bool reach = false;             // inside a released river reach (#361): saved even once drained
     bool active = true;
     int idle = 0;
     bool changed = true;            // since the last publish
@@ -84,6 +86,11 @@ struct Site {
     // and the level (site cells, fractional) the fluid surface over it is held to.
     struct Spring { int ci, cj, ck, kind; float perStep, head; float acc = 0.0f; }; // acc: fill units owed (a slow source adds < 1 a step)
     std::vector<Spring> springs;
+    // Released river reaches (#361): ground added into a river (a dam) turns its static source cells within `r` cells
+    // (horizontally) of the edit into ordinary water. The upstream edge is fed by springs at the reach's discharge
+    // (in `springs`), the downstream edge is a sink held at the generated level; beyond `r` the river stays generated.
+    struct Release { int ci, cj; float r; Vector3 centre, down; };
+    std::vector<Release> releases;
 
     Vector3 cellCentre(int ci, int cj, int ck) const {
         return Vector3Add(origin, Vector3Add(Vector3Add(Vector3Scale(e, ci + 0.5f), Vector3Scale(n, cj + 0.5f)), Vector3Scale(u, ck + 0.5f)));
@@ -159,7 +166,7 @@ Fluid::Stats pubStats;
 void Classify(const Site& s, Brick& b, const BodyRef& ref, uint8_t& faces) {
     const PlanetField* pf = ref.pf;
     const float sea = pf ? pf->seaLevelRadius() : 0.0f;
-    b.basin = false;
+    b.basin = false; b.reach = false;
     for (int y = 0; y < B; ++y)
         for (int x = 0; x < B; ++x) {
             // The column's ground and generated water (from its middle: a column tilts < 0.3 deg in a site).
@@ -180,6 +187,16 @@ void Classify(const Site& s, Brick& b, const BodyRef& ref, uint8_t& faces) {
                     level = sea + ws.level; kind = ws.kind; }
             }
             const float top = pf ? bed + 14.0f : 1e9f;  // tors, boulders and detail stay below this
+            // A released river reach (#361): 1 inside (ordinary water), 2 its downstream edge (a sink at the level).
+            int released = 0;
+            if (kind == 1)
+                for (const Site::Release& rel : s.releases) {
+                    const float d = sqrtf((float)((ci - rel.ci) * (ci - rel.ci) + (cj - rel.cj) * (cj - rel.cj)));
+                    if (d >= rel.r) continue;
+                    released = (d >= rel.r - 2.0f && Vector3DotProduct(Vector3Subtract(mid, rel.centre), rel.down) > 0.0f) ? 2 : 1;
+                    b.reach = true;
+                    break;
+                }
             for (int z = 0; z < B; ++z) {
                 const int i = Idx(x, y, z);
                 const Vector3 c = s.cellCentre(ci, cj, b.bk * B + z);
@@ -192,7 +209,7 @@ void Classify(const Site& s, Brick& b, const BodyRef& ref, uint8_t& faces) {
                 uint8_t tg = 0;
                 if (!solid && kind && r - 0.5f < level && r > bed - 0.5f) {
                     tg = (uint8_t)std::clamp((int)lroundf((level - (r - 0.5f)) * 255.0f), 0, 255);
-                    if (tg > 0 && kind != 5) fl |= kSource | kStatic;
+                    if (tg > 0 && kind != 5) fl |= released == 1 ? kDug : released == 2 ? (kSource | kStatic | kSink) : (kSource | kStatic);
                     if (tg > 0 && kind == 5) {
                         b.basin = true;
                         faces |= (x == 0 ? 1 : 0) | (x == B - 1 ? 2 : 0) | (y == 0 ? 4 : 0) | (y == B - 1 ? 8 : 0) | (z == 0 ? 16 : 0) | (z == B - 1 && tg == 255 ? 32 : 0);
@@ -322,7 +339,7 @@ void StepSite(Site& s, int parity) {
                         if (!(d.b->flags[d.i] & kSolid)) {
                             belowOpen = true;
                             const int room = SameKind(b, i, d.b, d.i) ? 255 - d.b->fill[d.i] : 0; // oil rests on water (and water on oil)
-                            if (room > 0 && !(d.b->flags[d.i] & kSource) && (!src || (d.b->flags[d.i] & kDug))) { // static water takes nothing in
+                            if (room > 0 && (d.b->flags[d.i] & (kSource | kSink)) != kSource && (!src || (d.b->flags[d.i] & kDug))) { // static water takes nothing in
                                 const int m = std::min(f, room);
                                 TakeKind(d.b, d.i, b->flags[i] & kKindMask);
                                 d.b->fill[d.i] = (uint8_t)(d.b->fill[d.i] + m);
@@ -350,7 +367,7 @@ void StepSite(Site& s, int parity) {
                                 continue;
                             }
                             if (o.b->flags[o.i] & kSolid) continue;
-                            if ((o.b->flags[o.i] & kSource) || (src && !(o.b->flags[o.i] & kDug))) continue; // sources feed dug cells only, and take nothing in
+                            if ((o.b->flags[o.i] & (kSource | kSink)) == kSource || (src && !(o.b->flags[o.i] & kDug))) continue; // sources feed dug cells only, and take nothing in
                             if (!SameKind(b, i, o.b, o.i)) continue;
                             const int diff = f0 - o.b->fill[o.i];
                             if (diff < visc) continue;
@@ -543,6 +560,63 @@ void EnsureAround(Site& s, Vector3 c, float r) {
                 }
 }
 
+// Ground added into a river's water (a dam, #361): release the reach around it. Its bricks are (re)classified (the river
+// cells inside become ordinary water, the downstream edge a sink), and the upstream edge gets springs that add the
+// reach's discharge (2 x half-width x depth x 1 m/s, 2-40 m^3/s: the simulation's channel carries no more), with a head
+// 8 m over the level so a backed-up pool keeps rising until it spills. Beyond the reach the river stays generated: a
+// pool that rises past the upstream edge shows a step there.
+constexpr float kReleaseCells = 40.0f;
+void MaybeRelease(Site& s, const BodyRef& ref, Vector3 c, float r) {
+    const PlanetField* pf = ref.pf;
+    if (!pf || !pf->rivers()) return;
+    const float cl = Vector3Length(c);
+    if (cl < 1.0f) return;
+    const Vector3 dir = Vector3Scale(c, 1.0f / cl);
+    const PlanetField::WaterSource ws = pf->waterSourceAt(dir);
+    if (ws.kind != 1) return;                                   // rivers only (lakes and the sea stay as they are)
+    const float sea = pf->seaLevelRadius(), level = sea + ws.level;
+    if (cl - r > level) return;                                 // the edit is above the water
+    int ci, cj, ck;
+    s.cellOf(c, ci, cj, ck);
+    for (const Site::Release& o : s.releases)
+        if ((ci - o.ci) * (ci - o.ci) + (cj - o.cj) * (cj - o.cj) < (int)(o.r * o.r * 0.36f)) return; // already released
+    const RiverNetwork::Hit h = pf->rivers()->nearest(dir, 1e4f);
+    if (!h.found) return;
+    Site::Release rel{ ci, cj, kReleaseCells, c, h.down };
+    s.releases.push_back(rel);
+    // The reach's bricks: the river's depth under the level down, 8 m over it up.
+    int lci, lcj, lck;
+    s.cellOf(Vector3Scale(dir, level), lci, lcj, lck);
+    const int R = (int)rel.r;
+    for (int bk = FloorDiv(lck - (int)h.depth - 3, B); bk <= FloorDiv(lck + 8, B); ++bk)
+        for (int bj = FloorDiv(cj - R, B); bj <= FloorDiv(cj + R, B); ++bj)
+            for (int bi = FloorDiv(ci - R, B); bi <= FloorDiv(ci + R, B); ++bi)
+                if (Brick* b = s.ensure(bi, bj, bk); b && b->ready) {
+                    b->ready = false; b->keepFill = true;
+                    if (std::find(s.pending.begin(), s.pending.end(), b) == s.pending.end()) s.pending.push_front(b);
+                }
+    // Upstream edge: one ring of river columns behind the edit along the flow.
+    std::vector<std::array<int, 3>> up;
+    for (int dy = -R; dy <= R; ++dy)
+        for (int dx = -R; dx <= R; ++dx) {
+            const float d = sqrtf((float)(dx * dx + dy * dy));
+            if (d < rel.r - 2.0f || d >= rel.r - 1.0f) continue;
+            const Vector3 m = s.cellCentre(ci + dx, cj + dy, lck);
+            if (Vector3DotProduct(Vector3Subtract(m, c), rel.down) >= 0.0f) continue;
+            const Vector3 md = Vector3Normalize(m);
+            const PlanetField::WaterSource wq = pf->waterSourceAt(md);
+            if (wq.kind != 1) continue;
+            int bci, bcj, bck;
+            s.cellOf(Vector3Scale(md, pf->radius + pf->elevation(md)), bci, bcj, bck);
+            up.push_back({ ci + dx, cj + dy, bck });
+        }
+    if (up.empty()) return;
+    const float q = std::clamp(2.0f * h.halfWidth * h.depth, 2.0f, 40.0f); // m^3/s
+    const float head = Vector3DotProduct(Vector3Subtract(Vector3Scale(dir, level), s.origin), s.u) + 8.0f;
+    for (const auto& u : up)
+        s.springs.push_back({ u[0], u[1], u[2], 0, q / (float)up.size() * 255.0f / (20.0f * kSubsteps), head });
+}
+
 void ApplyCommand(const Command& c) {
     auto rit = refs.find(c.body);
     if (rit == refs.end()) return;
@@ -554,6 +628,7 @@ void ApplyCommand(const Command& c) {
         if (!s && !near) return;
         if (!s) s = SiteFor(c.body, c.c, true);
         if (near) EnsureAround(*s, c.c, c.r);
+        if (near && c.m3 > 0.0f) MaybeRelease(*s, ref, c.c, c.r); // ground added into a river: release the reach (#361)
         else {
             // Only bricks that exist: their solidity changed.
             int ci, cj, ck; s->cellOf(c.c, ci, cj, ck);
@@ -978,10 +1053,17 @@ void Fluid::Reset() {
     accum = 0.0;
 }
 
-void Fluid::OnTerrainEdit(Planetoid& body, Vector3 localCentre, float radius) {
+void Fluid::OnTerrainEdit(Planetoid& body, Vector3 localCentre, float radius, bool adds) {
     if (!dynamic_cast<const PlanetField*>(body.field.get())) return;
     std::lock_guard<std::mutex> c(cmdMx);
-    commands.push_back({ 0, body.id, localCentre, radius, 0.0f });
+    commands.push_back({ 0, body.id, localCentre, radius, adds ? 1.0f : 0.0f }); // m3 > 0: the edit adds ground
+}
+
+int Fluid::ReleasedReaches() {
+    std::lock_guard<std::mutex> lock(simMx);
+    int n = 0;
+    for (auto& s : sites) n += (int)s->releases.size();
+    return n;
 }
 
 float Fluid::Take(Planetoid& body, Vector3 local, float m3, float radius, int kind) {
@@ -1235,12 +1317,15 @@ void Fluid::Save(FILE* f, uint64_t bodyId) {
             Brick& b = *kv.second;
             bool any = false;
             for (int i = 0; i < B3 && !any; ++i) any = b.fill[i] && !(b.flags[i] & kSource);
-            if (any || b.basin) wet.push_back(&b); // a drained pond's bricks too: loaded fresh they would hold its water again (#360)
+            if (any || b.basin || b.reach) wet.push_back(&b); // a drained pond's bricks too: loaded fresh they would hold its water again (#360)
         }
         fprintf(f, "site %.4f %.4f %.4f %.6f %.6f %.6f %.6f %.6f %.6f %zu %zu", s->origin.x, s->origin.y, s->origin.z, s->e.x, s->e.y, s->e.z, s->u.x, s->u.y, s->u.z, (size_t)0, wet.size()); // 0: claimed ponds are gone (#360)
         fprintf(f, "\n");
         fprintf(f, "springs %zu\n", s->springs.size());
         for (const Site::Spring& sp : s->springs) fprintf(f, "%d %d %d %d %.4f %.3f\n", sp.ci, sp.cj, sp.ck, sp.kind, sp.perStep, sp.head);
+        fprintf(f, "releases %zu\n", s->releases.size()); // released river reaches (#361)
+        for (const Site::Release& r : s->releases)
+            fprintf(f, "%d %d %.2f %.4f %.4f %.4f %.6f %.6f %.6f\n", r.ci, r.cj, r.r, r.centre.x, r.centre.y, r.centre.z, r.down.x, r.down.y, r.down.z);
         for (Brick* b : wet) {
             // Run-length fill (sources and solid cells as 0: they are re-derived on load).
             fprintf(f, "%d %d %d", b->bi, b->bj, b->bk);
@@ -1280,6 +1365,12 @@ void Fluid::Load(FILE* f, uint64_t bodyId) {
             for (int j = 0; j < ns; ++j) {
                 Site::Spring sp{};
                 if (fscanf(f, " %d %d %d %d %f %f", &sp.ci, &sp.cj, &sp.ck, &sp.kind, &sp.perStep, &sp.head) == 6) s->springs.push_back(sp);
+            }
+        int nr = 0; // released river reaches (#361; older saves have none)
+        if (fscanf(f, " releases %d", &nr) == 1)
+            for (int j = 0; j < nr; ++j) {
+                Site::Release r{};
+                if (fscanf(f, " %d %d %f %f %f %f %f %f %f", &r.ci, &r.cj, &r.r, &r.centre.x, &r.centre.y, &r.centre.z, &r.down.x, &r.down.y, &r.down.z) == 9) s->releases.push_back(r);
             }
         for (size_t j = 0; j < nb; ++j) {
             int bi, bj, bk;

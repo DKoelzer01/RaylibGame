@@ -20,7 +20,7 @@ uniform int pass;          // 0 vertical, 1 sideways
 uniform int visc[8];       // per kind: sideways flow divisor
 uniform int minSpread[8];  // per kind: thinnest film that spreads
 
-const uint SOLID = 1u, SOURCE = 2u, DUG = 8u;
+const uint SOLID = 1u, SOURCE = 2u, DUG = 8u, SINK = 16u; // a sink: a source that takes water in (reset to its level after: what is over it leaves, #361)
 uint F(uint c) { return c & 255u; }
 uint FL(uint c) { return (c >> 8) & 255u; }
 uint TG(uint c) { return (c >> 16) & 255u; }
@@ -49,7 +49,7 @@ uint readCell(int g, bool processed) { return (pass == 1 && !processed) ? outC[g
 uint downFlux(uint u, uint l, bool lProc, bool lExists) {
     if (!lExists || !lProc) return 0u;
     if ((FL(u) & SOLID) != 0u || (FL(l) & SOLID) != 0u) return 0u;
-    if ((FL(l) & SOURCE) != 0u) return 0u;                       // static water takes nothing in
+    if ((FL(l) & (SOURCE | SINK)) == SOURCE) return 0u;          // static water takes nothing in (a sink does)
     if ((FL(u) & SOURCE) != 0u && (FL(l) & DUG) == 0u) return 0u; // sources feed dug cells only
     if (F(l) > 0u && F(u) > 0u && KIND(l) != KIND(u)) return 0u;  // kinds don't mix
     return min(F(u), 255u - F(l));
@@ -85,7 +85,7 @@ uint kindFor(uint slot, int x, int y, int z) {
 uint sideFlux(uint aSlot, int ax, int ay, int az, uint a, uint bSlot, int bx, int by, int bz, uint b, bool aProc, bool bProc) {
     if (!aProc || !bProc) return 0u;
     if ((FL(a) & SOLID) != 0u || (FL(b) & SOLID) != 0u) return 0u;
-    if ((FL(b) & SOURCE) != 0u) return 0u;
+    if ((FL(b) & (SOURCE | SINK)) == SOURCE) return 0u;
     if ((FL(a) & SOURCE) != 0u && (FL(b) & DUG) == 0u) return 0u;
     uint fa = F(a), fb = F(b);
     uint ka = KIND(a);

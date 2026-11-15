@@ -23,8 +23,9 @@ namespace WaterField {
 
 constexpr int kBrick = 16, kBrick3 = kBrick * kBrick * kBrick;
 // Cell flags (fluid.cpp): solid; a source (infinite generated water, held at its level); inside generated
-// infinite water; open only because of an edit; the fluid kind in bits 5-7.
-constexpr uint8_t kSolid = 1, kSource = 2, kStatic = 4, kDug = 8;
+// infinite water; open only because of an edit; a sink (a source that also takes water in and drops what is
+// over its level: the downstream end of a released river reach, #361); the fluid kind in bits 5-7.
+constexpr uint8_t kSolid = 1, kSource = 2, kStatic = 4, kDug = 8, kSink = 16;
 constexpr int kKindShift = 5;
 constexpr uint8_t kKindMask = 0xE0;
 inline int CellKind(uint8_t fl) { return fl >> kKindShift; }

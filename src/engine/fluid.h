@@ -45,8 +45,11 @@ namespace Fluid {
     // due and the last has finished, publishes the cells (waterfield.h: the chunks redraw their water).
     void Update(Scene& world, float dt);
     // A terrain edit on a body (body-local centre, radius): wakes water there, refreshes solidity, and
-    // starts a site if the edit opens space next to water.
-    void OnTerrainEdit(Planetoid& body, Vector3 localCentre, float radius);
+    // starts a site if the edit opens space next to water. `adds`: the edit adds ground; into a river's water it
+    // releases that reach (#361): the river there is simulated, fed upstream at its discharge and drained downstream,
+    // so a dam backs the water up and it spills over.
+    void OnTerrainEdit(Planetoid& body, Vector3 localCentre, float radius, bool adds = false);
+    int ReleasedReaches(); // tests: river reaches released (#361)
     // water.fs: the fluid kinds' colours (uniform arrays fluidColors / fluidGlows), with the shader bound. The chunks
     // draw every fluid surface (waterfield.h); a vertex carries its kind.
     void BindKindUniforms(const Shader& shader);

@@ -255,6 +255,7 @@ int main(int argc, char** argv)
     bool benchPond = false; int pondPhase = 0; double pondT0 = 0.0; Vector3 pondDirB{}, pondOutB{}, pondPit{}, pondMid{}; float pondLevelB = 0.0f, pondRB = 0.0f; // --test-pond
     bool benchFlowSea = false; // --test-flow-sea (#190): the flow test from the sea instead of inland water
     bool benchFlow = false; int flowPhase = 0; double flowStart = 0.0, flowEdit = 0.0, flowReachT = -1.0, flowCaveT = -1.0, flowSleepT = -1.0; Vector3 flowDir{}, flowOut{}, flowEnd{}, flowCave{}; float flowLevel = 0.0f; // --test-flow
+    bool benchDam = false; int damPhase = 0; double damT0 = 0.0; Vector3 damDir{}, damDown{}, damSide{}, damUp{}, damDn{}; float damLevel = 0.0f, damHW = 0.0f, damDepth = 0.0f, damCrest = 0.0f, damLvU = 0.0f, damLvD = 0.0f, damMaxU = -1e9f, damMinD = 1e9f, damLateD = -1e9f; // --test-dam (#361)
     bool benchForest = false; int forestPhase = 0; double forestStart = 0.0; Vector3 forestCam{}, forestTarget{}, forestUp{}; bool outcropHigh = false; // --shot-forest (--outcrop-high: the highest outcrop in range, not the nearest)
     bool benchRecipes = false; // --test-recipes
     bool benchWeather = false, weatherOk = true; int weatherPhase = 0, weatherCounts[6] = {}, weatherChanges = 0; double weatherStart = 0.0; float weatherChill = 0.0f; // --test-weather
@@ -450,6 +451,7 @@ int main(int argc, char** argv)
         if (std::string(argv[i]) == "--shot-forest") benchForest = true;
         if (std::string(argv[i]) == "--outcrop-high") outcropHigh = true;
         if (std::string(argv[i]) == "--test-flow") benchFlow = true;
+        if (std::string(argv[i]) == "--test-dam") benchDam = true; // #361: a dam backs a river up and it spills over
         if (std::string(argv[i]) == "--test-flow-sea") { benchFlow = true; benchFlowSea = true; } // #190: the channel from the sea
         if (std::string(argv[i]) == "--test-pond") benchPond = true;
         if (std::string(argv[i]) == "--test-bucket") benchBucket = true;
@@ -3833,6 +3835,103 @@ int main(int argc, char** argv)
                             h0 = 0.0f;
                         }
                     }
+                } else if (benchDam && (damPhase > 0 || WorldIdle())) {
+                    // --test-dam (#361, Plan 7 step 7 gate): build a dam across the nearest small river. Adding ground into the
+                    // river releases its reach: the water backs up behind the dam, the reach below it drains, and once the pool
+                    // reaches the crest it spills over and the water below comes back.
+                    Planetoid* p = dynamic_cast<Planetoid*>(world.objects[0].get());
+                    const PlanetField* pf = p ? dynamic_cast<const PlanetField*>(p->field.get()) : nullptr;
+                    const RiverNetwork* net = pf ? pf->rivers() : nullptr;
+                    auto at = [&](Vector3 dir, float h) { return Vector3Scale(dir, pf->radius + h); };
+                    auto off = [&](Vector3 dir, Vector3 t, float s) { return Vector3Normalize(Vector3Add(dir, Vector3Scale(t, s / pf->radius))); };
+                    // The water surface over a column (m above the radius): the highest wet point from just over the bed up to
+                    // 5 m over the generated level (10 cm steps); dry: -1e9.
+                    auto surfaceAt = [&](Vector3 dir, float level) {
+                        float top = -1e9f;
+                        for (float h = pf->elevation(dir) + 0.15f; h <= level + 5.0f; h += 0.1f)
+                            if (Fluid::Wet(*p, at(dir, h))) top = h; else if (top > -1e8f) break;
+                        return top;
+                    };
+                    if (!pf || !net) { printf("bench: dam: needs a planet with rivers -> FAIL\n"); benchDam = false; }
+                    else if (damPhase == 0) {
+                        const Vector3 home = pf->findSpawnDir(p->seed);
+                        const Vector3 t1 = Vector3Normalize(Vector3CrossProduct(home, { 0, 1, 0 })), t2 = Vector3CrossProduct(t1, home);
+                        float best = 1e30f;
+                        for (float e = -8000.0f; e <= 8000.0f; e += 32.0f)
+                            for (float n = -8000.0f; n <= 8000.0f; n += 32.0f) {
+                                const float dist = sqrtf(e * e + n * n);
+                                if (dist >= best) continue;
+                                const Vector3 d = Vector3Normalize(Vector3Add(home, Vector3Add(Vector3Scale(t1, e / pf->radius), Vector3Scale(t2, n / pf->radius))));
+                                const PlanetField::WaterSource ws = pf->waterSourceAt(d);
+                                if (ws.kind != 1 || ws.level < 2.0f) continue;
+                                const RiverNetwork::Hit h = net->nearest(d, 1e4f);
+                                if (!h.found || h.dist > 1.0f + h.halfWidth * 0.3f || h.halfWidth < 3.0f || h.halfWidth > 12.0f || h.depth < 1.5f) continue;
+                                // In a valley: the valley sides 15 m past the channel stand 1.2 m+ over the water (eroded terrain; noise-terrain rivers are perched), so the pool can rise
+                                // to the crest instead of spreading over a flat floodplain around the dam's ends.
+                                const Vector3 dn = Vector3Normalize(Vector3Subtract(h.down, Vector3Scale(d, Vector3DotProduct(h.down, d))));
+                                const Vector3 sd = Vector3Normalize(Vector3CrossProduct(d, dn));
+                                const float bank = std::min(pf->elevation(off(d, sd, h.halfWidth + 15.0f)), pf->elevation(off(d, sd, -h.halfWidth - 15.0f)));
+                                if (bank < ws.level + 1.2f) continue;
+                                best = dist; damDir = d; damLevel = ws.level; damHW = h.halfWidth; damDepth = h.depth; damCrest = std::min(ws.level + 1.5f, bank - 0.3f);
+                                damDown = dn; // along the ground
+                            }
+                        if (best > 1e29f) {
+                            const char* e = getenv("RAYLIBGAME_EROSION");
+                            if (!e || atoi(e) == 0) printf("bench: dam: no river in a valley within 8 km (noise-terrain rivers are perched over their banks; run with RAYLIBGAME_EROSION=1) -> SKIP\n");
+                            else printf("bench: dam: no small river in a valley within 8 km of the start -> FAIL\n");
+                            benchDam = false;
+                        }
+                        else {
+                            damSide = Vector3Normalize(Vector3CrossProduct(damDir, damDown));
+                            // The dam: a wall across the river and 15 m into each bank, from under the bed up to the crest.
+                            std::vector<TerrainEdit> wall;
+                            for (float w = -(damHW + 15.0f); w <= damHW + 15.0f; w += 0.8f) {
+                                const Vector3 dw = off(damDir, damSide, w);
+                                const float bed = std::min(pf->elevation(dw), damLevel - damDepth);
+                                for (float h = bed - 0.5f; h <= damCrest - 0.6f; h += 0.8f) wall.push_back({ at(dw, h), 1.3f, 5.0f, false });
+                            }
+                            ApplyTerrainEdits(*p, wall.data(), wall.size());
+                            damUp = off(damDir, damDown, -12.0f); damDn = off(damDir, damDown, 12.0f);
+                            damLvU = pf->waterSourceAt(damUp).level; damLvD = pf->waterSourceAt(damDn).level;
+                            printf("bench: dam: river %.0f m from the start: level %.2f m, half-width %.1f m, depth %.1f m; dam crest %.2f m (%zu edits); "
+                                   "generated level 12 m upstream %.2f, downstream %.2f\n", best, damLevel, damHW, damDepth, damCrest, wall.size(), damLvU, damLvD);
+                            player.flyMode = true; sunOverride = true;
+                            sunArg = p->dirToWorld(Vector3Normalize(Vector3Add(damDir, Vector3Scale(damSide, 0.5f))));
+                            damPhase = 1; damT0 = GetTime();
+                        }
+                    } else {
+                        // Watch from the bank, a little downstream, looking across at the dam and the pool behind it.
+                        const Vector3 up = damDir;
+                        const Vector3 eyeDir = off(off(damDir, damSide, damHW + 12.0f), damDown, 22.0f); // high: over the bank trees
+                        world.camera.position = p->toWorld(at(eyeDir, damCrest + 24.0f)); world.camera.target = p->toWorld(at(off(damDir, damDown, -6.0f), damLevel));
+                        world.camera.up = p->dirToWorld(up);
+                        player.position = world.renderOrigin + world.camera.position;
+                        const double t = GetTime() - damT0;
+                        const float su = surfaceAt(damUp, damLvU), sd = surfaceAt(damDn, damLvD);
+                        if (t > 3.0) { damMaxU = std::max(damMaxU, su); damMinD = std::min(damMinD, sd < -1e8f ? damLvD - damDepth : sd); }
+                        static double lastPrint = 0.0, spillT = -1.0;
+                        if (spillT < 0.0 && damMaxU >= damCrest - 0.2f) spillT = t;
+                        if (t - lastPrint >= 5.0) {
+                            lastPrint = t;
+                            const Fluid::Stats s = Fluid::GetStats();
+                            printf("bench: dam t=%3.0f s: upstream surface %s, downstream %s; %d reaches released, %d bricks (%d awake), %.0f m^3, step %.2f ms (max %.2f)\n",
+                                   t, su < -1e8f ? "dry" : TextFormat("%.2f", su), sd < -1e8f ? "dry" : TextFormat("%.2f", sd), Fluid::ReleasedReaches(), s.bricks, s.activeBricks, s.volume, s.stepMs, s.maxStepMs);
+                        }
+                        if (t > 10.0 && t < 10.1) TakeScreenshot("bench_dam.png");
+                        if ((spillT >= 0.0 && t > spillT + 25.0) || t > 240.0) {
+                            damLateD = sd < -1e8f ? damLvD - damDepth : sd;
+                            TakeScreenshot("bench_dam_end.png");
+                            const int released = Fluid::ReleasedReaches();
+                            // Backs up to the crest; spills: the pool then holds there (water leaves over the crest) instead of rising
+                            // on. The reach below keeps the downstream river's level (its sink holds it: a flat river backs up from
+                            // below too), so it is reported, not judged.
+                            const bool backs = damMaxU >= damLvU + 0.2f && damMaxU >= damCrest - 0.25f, spills = spillT >= 0.0 && su > -1e8f && su <= damCrest + 0.35f;
+                            printf("bench: dam: %d reaches released; upstream rose %.2f -> %.2f m (crest %.2f), spilled after %.0f s and holds at %.2f m; downstream %.2f -> lowest %.2f, now %.2f m -> %s\n",
+                                   released, damLvU, damMaxU, damCrest, spillT, su, damLvD, damMinD, damLateD, released >= 1 && backs && spills ? "PASS" : "FAIL");
+                            printf("bench: dam: bench_dam.png, bench_dam_end.png\n");
+                            benchDam = false;
+                        }
+                    }
                 } else if (benchFlow && (flowPhase > 0 || WorldIdle())) {
                     // --test-flow (Plan 4, F2/F3): cut a channel out of the nearest inland water, ending in a
                     // shaft down to a sealed chamber. Water must reach the channel's end, flood the chamber up
@@ -5417,7 +5516,7 @@ int main(int argc, char** argv)
                         }
                         benchWalkSeconds = 0.0;
                     }
-                } else if ((WorldIdle() && benchDigStrokes == 0 && !benchPaint && !benchSaveLoad && benchWalkSeconds <= 0.0 && benchMineStrokes == 0 && minePhase != 2 && benchFlySeconds <= 0.0 && !benchSuffocate && benchOrbitSeconds <= 0.0 && !benchRide && !benchPark && !benchGravity && !benchPrecision && !benchMantle && !benchAirJump && !benchMoon && !benchHole && !benchWall && !benchDoorway && !benchLedge && !benchTor && !benchMachines && !benchFall && !benchHover && !benchTeleClose && !benchMenus && !benchWater && !benchFlyFollow && !benchHotbar && !benchInventory && !benchMap && !benchViewmodel && !benchQuests && !benchHunger && !benchFarm && !benchAnimals && !benchThreats && benchShotTabs == 0 && !benchForest && !benchFlow && !benchPond && !benchBucket && !benchPump && !benchTerrain && !benchShelter && !benchRoom && !benchFacing && !benchShadow && !benchParticles && !benchBiomes && !benchOil && !benchSpring && !benchShotAnimals && !benchShotMachines && benchShotBiomes < 0 && !benchFarForest && !benchRecipes && !benchWeather && !benchDecor && !benchMaterials && !benchDamage && !benchCrafting && !benchSuit && !benchTools && !benchRivers && !benchRing && !benchRocket && !benchStation && !benchBlueprint && !benchSmallBody && !benchTrees && !benchChop && benchPersist == 0 && benchBuild == 0 && benchFactory == 0 && !benchProgression) || GetTime() > 600.0) {
+                } else if ((WorldIdle() && benchDigStrokes == 0 && !benchPaint && !benchSaveLoad && benchWalkSeconds <= 0.0 && benchMineStrokes == 0 && minePhase != 2 && benchFlySeconds <= 0.0 && !benchSuffocate && benchOrbitSeconds <= 0.0 && !benchRide && !benchPark && !benchGravity && !benchPrecision && !benchMantle && !benchAirJump && !benchMoon && !benchHole && !benchWall && !benchDoorway && !benchLedge && !benchTor && !benchMachines && !benchFall && !benchHover && !benchTeleClose && !benchMenus && !benchWater && !benchFlyFollow && !benchHotbar && !benchInventory && !benchMap && !benchViewmodel && !benchQuests && !benchHunger && !benchFarm && !benchAnimals && !benchThreats && benchShotTabs == 0 && !benchForest && !benchFlow && !benchDam && !benchPond && !benchBucket && !benchPump && !benchTerrain && !benchShelter && !benchRoom && !benchFacing && !benchShadow && !benchParticles && !benchBiomes && !benchOil && !benchSpring && !benchShotAnimals && !benchShotMachines && benchShotBiomes < 0 && !benchFarForest && !benchRecipes && !benchWeather && !benchDecor && !benchMaterials && !benchDamage && !benchCrafting && !benchSuit && !benchTools && !benchRivers && !benchRing && !benchRocket && !benchStation && !benchBlueprint && !benchSmallBody && !benchTrees && !benchChop && benchPersist == 0 && benchBuild == 0 && benchFactory == 0 && !benchProgression) || GetTime() > 600.0) {
                     benchStart = GetTime();
                     printf("bench: world ready after %.2f s (%d chunks, avg build %.2f ms of which sampling %.2f ms, %d worker threads)\n",
                         GetWorldStats().lastGenerationSeconds, GetWorldStats().chunks, GetWorldStats().avgBuildMs, GetWorldStats().avgSampleMs, GetWorldStats().workerThreads);

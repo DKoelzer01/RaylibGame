@@ -374,6 +374,7 @@ RiverNetwork::Hit RiverNetwork::nearest(Vector3 dir, float reach) const {
         hit.level = pc.la + (pc.lb - pc.la) * t;
         hit.halfWidth = pc.wa + (pc.wb - pc.wa) * t;
         hit.depth = pc.da + (pc.db - pc.da) * t;
+        hit.down = Vector3Normalize(pc.la >= pc.lb ? Vector3Subtract(pc.b, pc.a) : Vector3Subtract(pc.a, pc.b)); // levels fall downstream
     }
     hit.found = hit.dist < reach;
     return hit;

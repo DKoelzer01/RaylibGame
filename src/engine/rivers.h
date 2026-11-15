@@ -36,6 +36,7 @@ public:
         float dist = 1e30f;          // m from the centreline
         float level = 0.0f;          // water surface (m above sea level)
         float halfWidth = 0.0f, depth = 0.0f;
+        Vector3 down{};              // unit tangent (body-local) pointing downstream (#361)
     };
     Hit nearest(Vector3 dir, float reach) const;
     // Lakes: a whole filled basin of the flood (every cell of it, not only the deep ones) whose level

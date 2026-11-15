@@ -1394,7 +1394,8 @@ void ApplyTerrainEdits(Planetoid& p, const TerrainEdit* edits, size_t count) {
     if (p.trees)
         for (size_t i = 0; i < count; i += std::max<size_t>(1, count / 64)) p.trees->onEdit(edits[i].center, edits[i].radius, p.edits);
     // Flowing water: wake it, or start it where the edit opens space next to water.
-    for (size_t i = 0; i < count; i += std::max<size_t>(1, count / 64)) Fluid::OnTerrainEdit(p, edits[i].center, edits[i].radius);
+    for (size_t i = 0; i < count; i += std::max<size_t>(1, count / 64))
+        Fluid::OnTerrainEdit(p, edits[i].center, edits[i].radius, !edits[i].carve && edits[i].strength > 0.0f); // adding ground: may dam a river (#361)
 }
 
 void RequestRemesh(Planetoid& p, Vector3 c, float r, float strideReach) {
