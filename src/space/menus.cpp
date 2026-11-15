@@ -207,6 +207,12 @@ namespace {
                 if (Button(b, settings.terrainDetail == k ? TextFormat("[%s]", names[k]) : names[k])) { settings.terrainDetail = k; changed = true; }
             }
             y += h + 6 * s;
+            // #302: Low also turns anti-aliasing (MSAA) off to save video memory; that takes a restart.
+            static const int startDetail = settings.terrainDetail;
+            if ((startDetail == 0) != (settings.terrainDetail == 0)) {
+                DrawText("Anti-aliasing changes after a restart (Low: off)", (int)x, (int)y, (int)(h * 0.4f), Fade(kText, 0.7f));
+                y += h * 0.5f;
+            }
         }
         {   // Difficulty for the next new world (each world keeps its own).
             const int fs = (int)(h * 0.5f);
@@ -279,6 +285,7 @@ void Settings_Apply() {
     Audio_SetMasterVolume(settings.volume);
     foliageEnabled = settings.foliage;
     { const float kDetail[] = { 2.0f, 2.5f, 3.0f, 4.0f }; lodSettings.detailFactor = kDetail[std::clamp(settings.terrainDetail, 0, 3)]; } // #297
+    lodSettings.preloadRadius = settings.terrainDetail == 0 ? 150.0f : 300.0f; // #302 (user 2026-11-15): Low keeps a smaller spawn ring (VRAM)
     if (settings.vsync) SetWindowState(FLAG_VSYNC_HINT); else ClearWindowState(FLAG_VSYNC_HINT);
     SetTargetFPS(settings.fpsCap > 0 ? settings.fpsCap : (settings.vsync ? 0 : std::max(60, GetMonitorRefreshRate(GetCurrentMonitor()))));
     player.smoothMotion = settings.reduceMotion;

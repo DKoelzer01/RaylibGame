@@ -737,6 +737,7 @@ int main(int argc, char** argv)
 
     bool msaa = true;
     for (int i = 1; i < argc; ++i) if (std::string(argv[i]) == "--no-msaa") msaa = false;
+    if (!bench) { Settings_Load(); if (settings.terrainDetail == 0) msaa = false; } // #302 (user 2026-11-15): Low runs without MSAA (VRAM); benches use --no-msaa
     if (msaa) SetConfigFlags(FLAG_MSAA_4X_HINT);
     bool nativeWindow = false; // --native-window: a bench in the game's own window (borderless, monitor-sized), uncapped
     for (int i = 1; i < argc; ++i) if (std::string(argv[i]) == "--native-window") nativeWindow = true;
