@@ -256,6 +256,7 @@ int main(int argc, char** argv)
     bool benchFlowSea = false; // --test-flow-sea (#190): the flow test from the sea instead of inland water
     bool benchFlow = false; int flowPhase = 0; double flowStart = 0.0, flowEdit = 0.0, flowReachT = -1.0, flowCaveT = -1.0, flowSleepT = -1.0; Vector3 flowDir{}, flowOut{}, flowEnd{}, flowCave{}; float flowLevel = 0.0f; // --test-flow
     float damDrift = 0.0f; // --test-dam: the current mid-channel (0: the check failed)
+    bool benchPressure = false; int prPhase = 0; double prT0 = 0.0; Vector3 prDir{}; float prGround = 0.0f; // --test-pressure (#393)
     bool benchFlowMeter = false; int fmPhase = 0; double fmT0 = 0.0; Plot* fmPlot = nullptr; // --test-flow-meter (#392)
     bool benchPartWall = false; int pwPhase = 0; double pwT0 = 0.0; Plot* pwPlot = nullptr; std::vector<int> pwParts; bool pwHeld = false, pwWestWet = false; // --test-part-wall (#391)
     bool benchDam = false; int damPhase = 0; double damT0 = 0.0; Vector3 damDir{}, damDown{}, damSide{}, damUp{}, damDn{}; float damLevel = 0.0f, damHW = 0.0f, damDepth = 0.0f, damCrest = 0.0f, damLvU = 0.0f, damLvD = 0.0f, damMaxU = -1e9f, damMinD = 1e9f, damLateD = -1e9f; // --test-dam (#361)
@@ -457,6 +458,7 @@ int main(int argc, char** argv)
         if (std::string(argv[i]) == "--test-dam") benchDam = true; // #361: a dam backs a river up and it spills over
         if (std::string(argv[i]) == "--test-part-wall") benchPartWall = true; // #391: a wall of build blocks holds water
         if (std::string(argv[i]) == "--test-flow-meter") benchFlowMeter = true; // #392: the flow readout reads a known stream
+        if (std::string(argv[i]) == "--test-pressure") benchPressure = true; // #393: hydrostatic pressure in a shaft and a pond
         if (std::string(argv[i]) == "--test-flow-sea") { benchFlow = true; benchFlowSea = true; } // #190: the channel from the sea
         if (std::string(argv[i]) == "--test-pond") benchPond = true;
         if (std::string(argv[i]) == "--test-bucket") benchBucket = true;
@@ -3840,6 +3842,49 @@ int main(int argc, char** argv)
                             h0 = 0.0f;
                         }
                     }
+                } else if (benchPressure && (prPhase > 0 || WorldIdle())) {
+                    // --test-pressure (#393): a 12 m shaft by the start filled by a spring: 5 m under its surface reads
+                    // ~49 kPa (rho g h); 2 m under the nearest pond's generated surface reads ~19.6 kPa.
+                    Planetoid* p = dynamic_cast<Planetoid*>(world.objects[0].get());
+                    const PlanetField* pf = p ? dynamic_cast<const PlanetField*>(p->field.get()) : nullptr;
+                    auto at = [&](Vector3 dir, float h) { return Vector3Scale(dir, pf->radius + h); };
+                    if (!pf) { printf("bench: pressure: needs the planet -> FAIL\n"); benchPressure = false; }
+                    else if (prPhase == 0) {
+                        prDir = StartSpawnDir(*p);
+                        prGround = pf->elevation(prDir) + 8.0f;
+                        while (prGround > pf->elevation(prDir) - 8.0f && p->densityAt(at(prDir, prGround)) < ISO_LEVEL) prGround -= 0.1f;
+                        std::vector<TerrainEdit> cut;
+                        for (float h = prGround - 0.5f; h >= prGround - 12.0f; h -= 0.8f) cut.push_back({ at(prDir, h), 1.6f, -1.0f, true });
+                        ApplyTerrainEdits(*p, cut.data(), cut.size());
+                        Fluid::AddSource(*p, at(prDir, prGround - 12.5f), 0, 3.0f, 11.0f); // fills to ~1.5 m under the rim
+                        printf("bench: pressure: a 12 m shaft dug, a spring at its bottom\n");
+                        prPhase = 1; prT0 = GetTime();
+                    } else if (GetTime() - prT0 > 50.0) {
+                        // The shaft's surface: the top of the wet run up the middle.
+                        float surf = -1e9f;
+                        for (float h = prGround - 12.0f; h <= prGround + 1.0f; h += 0.05f) { if (Fluid::Wet(*p, at(prDir, h))) surf = h; else if (surf > -1e8f) break; }
+                        const float shaftP = surf > -1e8f ? Fluid::PressureAt(*p, at(prDir, surf - 5.0f)) : 0.0f;
+                        // The nearest pond (generated water): 2 m under its level at its middle.
+                        const Vector3 t1 = Vector3Normalize(Vector3CrossProduct(prDir, { 0, 1, 0 })), t2 = Vector3CrossProduct(t1, prDir);
+                        float best = 1e30f, pondP = -1.0f, pondDepth = 0.0f;
+                        for (float e = -6000.0f; e <= 6000.0f; e += 48.0f)
+                            for (float n = -6000.0f; n <= 6000.0f; n += 48.0f) {
+                                const float dist = sqrtf(e * e + n * n);
+                                if (dist >= best) continue;
+                                const Vector3 d = Vector3Normalize(Vector3Add(prDir, Vector3Add(Vector3Scale(t1, e / pf->radius), Vector3Scale(t2, n / pf->radius))));
+                                const PlanetField::WaterSource ws = pf->waterSourceAt(d);
+                                if (ws.kind != 3 || ws.level - pf->elevation(ws.pondDir) < 2.5f) continue;
+                                best = dist; pondDepth = ws.level - pf->elevation(ws.pondDir);
+                                pondP = Fluid::PressureAt(*p, at(ws.pondDir, ws.level - 2.0f));
+                            }
+                        const float wantShaft = 5.0f * 9810.0f, wantPond = 2.0f * 9810.0f;
+                        const bool okShaft = fabsf(shaftP - wantShaft) < 0.1f * wantShaft, okPond = pondP < 0.0f || fabsf(pondP - wantPond) < 0.1f * wantPond;
+                        printf("bench: pressure: the shaft's water stands %.1f m over its bottom; 5 m under its surface %.1f kPa (want %.1f)\n", surf - (prGround - 12.0f), shaftP / 1000.0f, wantShaft / 1000.0f);
+                        if (pondP >= 0.0f) printf("bench: pressure: a pond %.0f m away, %.1f m deep: 2 m under its surface %.1f kPa (want %.1f)\n", best, pondDepth, pondP / 1000.0f, wantPond / 1000.0f);
+                        else printf("bench: pressure: no pond 2.5 m+ deep within 6 km (generated water not checked)\n");
+                        printf("bench: pressure: -> %s\n", okShaft && okPond ? "PASS" : "FAIL");
+                        benchPressure = false;
+                    }
                 } else if (benchFlowMeter && (fmPhase > 0 || WorldIdle())) {
                     // --test-flow-meter (#392): a spring of 1 m^3/s at the head of a 20 m trench that ends in a deep pit; once
                     // the stream runs steady, Fluid::FlowAt across the middle of the trench reads ~1 m^3/s along it.
@@ -5633,7 +5678,7 @@ int main(int argc, char** argv)
                         }
                         benchWalkSeconds = 0.0;
                     }
-                } else if ((WorldIdle() && benchDigStrokes == 0 && !benchPaint && !benchSaveLoad && benchWalkSeconds <= 0.0 && benchMineStrokes == 0 && minePhase != 2 && benchFlySeconds <= 0.0 && !benchSuffocate && benchOrbitSeconds <= 0.0 && !benchRide && !benchPark && !benchGravity && !benchPrecision && !benchMantle && !benchAirJump && !benchMoon && !benchHole && !benchWall && !benchDoorway && !benchLedge && !benchTor && !benchMachines && !benchFall && !benchHover && !benchTeleClose && !benchMenus && !benchWater && !benchFlyFollow && !benchHotbar && !benchInventory && !benchMap && !benchViewmodel && !benchQuests && !benchHunger && !benchFarm && !benchAnimals && !benchThreats && benchShotTabs == 0 && !benchForest && !benchFlow && !benchDam && !benchPartWall && !benchFlowMeter && !benchPond && !benchBucket && !benchPump && !benchTerrain && !benchShelter && !benchRoom && !benchFacing && !benchShadow && !benchParticles && !benchBiomes && !benchOil && !benchSpring && !benchShotAnimals && !benchShotMachines && benchShotBiomes < 0 && !benchFarForest && !benchRecipes && !benchWeather && !benchDecor && !benchMaterials && !benchDamage && !benchCrafting && !benchSuit && !benchTools && !benchRivers && !benchRing && !benchRocket && !benchStation && !benchBlueprint && !benchSmallBody && !benchTrees && !benchChop && benchPersist == 0 && benchBuild == 0 && benchFactory == 0 && !benchProgression) || GetTime() > 600.0) {
+                } else if ((WorldIdle() && benchDigStrokes == 0 && !benchPaint && !benchSaveLoad && benchWalkSeconds <= 0.0 && benchMineStrokes == 0 && minePhase != 2 && benchFlySeconds <= 0.0 && !benchSuffocate && benchOrbitSeconds <= 0.0 && !benchRide && !benchPark && !benchGravity && !benchPrecision && !benchMantle && !benchAirJump && !benchMoon && !benchHole && !benchWall && !benchDoorway && !benchLedge && !benchTor && !benchMachines && !benchFall && !benchHover && !benchTeleClose && !benchMenus && !benchWater && !benchFlyFollow && !benchHotbar && !benchInventory && !benchMap && !benchViewmodel && !benchQuests && !benchHunger && !benchFarm && !benchAnimals && !benchThreats && benchShotTabs == 0 && !benchForest && !benchFlow && !benchDam && !benchPartWall && !benchFlowMeter && !benchPressure && !benchPond && !benchBucket && !benchPump && !benchTerrain && !benchShelter && !benchRoom && !benchFacing && !benchShadow && !benchParticles && !benchBiomes && !benchOil && !benchSpring && !benchShotAnimals && !benchShotMachines && benchShotBiomes < 0 && !benchFarForest && !benchRecipes && !benchWeather && !benchDecor && !benchMaterials && !benchDamage && !benchCrafting && !benchSuit && !benchTools && !benchRivers && !benchRing && !benchRocket && !benchStation && !benchBlueprint && !benchSmallBody && !benchTrees && !benchChop && benchPersist == 0 && benchBuild == 0 && benchFactory == 0 && !benchProgression) || GetTime() > 600.0) {
                     benchStart = GetTime();
                     printf("bench: world ready after %.2f s (%d chunks, avg build %.2f ms of which sampling %.2f ms, %d worker threads)\n",
                         GetWorldStats().lastGenerationSeconds, GetWorldStats().chunks, GetWorldStats().avgBuildMs, GetWorldStats().avgSampleMs, GetWorldStats().workerThreads);

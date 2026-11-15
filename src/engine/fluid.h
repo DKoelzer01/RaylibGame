@@ -68,6 +68,11 @@ namespace Fluid {
     // discharge. Smoothed over ~0.5 s. The first call starts watching the spot (zero until then); keep asking (a watch
     // nobody asks about for 3 s is dropped). Generated (unsimulated) river water: see RiverCurrent (world.h).
     Vector3 FlowAt(const Planetoid& body, Vector3 local, float radius);
+    // Hydrostatic pressure in the water at a point (#393): Pa over the air's (rho g h, h = the head: the free surface of
+    // the body of water the point is in, minus the point's height; a sealed body: its top). 0 out of water. Simulated
+    // water from the published cells (through connected full cells to the surface: U-bends and flooded caves read their
+    // feed level); generated water (sea, rivers, lakes, ponds) from its level.
+    float PressureAt(const Planetoid& body, Vector3 local);
 
     // Fluid kinds (resources/data/fluids.txt; Plan 5): kind 0 is water, the rest by the table (crude oil,
     // later lava...). Every cell holds one kind; kinds don't mix (a fluid flows only into empty cells or

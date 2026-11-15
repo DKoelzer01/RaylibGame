@@ -1385,6 +1385,57 @@ namespace {
     }
 }
 
+float Fluid::PressureAt(const Planetoid& body, Vector3 local) {
+    constexpr float kRhoG = 1000.0f * 9.81f; // Pa per metre of water
+    const WaterField::SnapshotPtr snapNow = WaterField::Current();
+    for (const WaterField::Site& s : snapNow->sites) {
+        if (s.body != body.id) continue;
+        float fx, fy, fz;
+        s.frame(local, fx, fy, fz);
+        const int ci = (int)floorf(fx), cj = (int)floorf(fy), ck = (int)floorf(fz);
+        uint8_t f, fl;
+        if (!s.cell(ci, cj, ck, f, fl)) continue;          // another site, or the generated water decides (below)
+        if ((fl & kSolid) || f == 0) return 0.0f;
+        if (f < 255) return std::max(0.0f, ck + f / 255.0f - fz) * kRhoG; // the surface is in this cell
+        // A full cell: the body's free surface, through connected full cells of this kind (as the levelling pass joins
+        // them): the highest partial cell or empty cell resting on a full one; a sealed body: its top.
+        const uint8_t kind = fl & kKindMask;
+        std::unordered_set<int64_t> seen;
+        std::deque<std::array<int, 3>> q;
+        q.push_back({ ci, cj, ck }); seen.insert(Key(ci, cj, ck));
+        float level = -1e9f, top = (float)ck + 1.0f;
+        static const int d[6][3] = { { 1, 0, 0 }, { -1, 0, 0 }, { 0, 1, 0 }, { 0, -1, 0 }, { 0, 0, 1 }, { 0, 0, -1 } };
+        while (!q.empty() && seen.size() < 20000) {
+            const auto c = q.front(); q.pop_front();
+            top = std::max(top, (float)c[2] + 1.0f);
+            for (const auto& dd : d) {
+                const int nx = c[0] + dd[0], ny = c[1] + dd[1], nz = c[2] + dd[2];
+                uint8_t nf, nfl;
+                if (!s.cell(nx, ny, nz, nf, nfl) || (nfl & kSolid)) continue;
+                if (nf > 0 && (nfl & kKindMask) != kind) continue;
+                if (nf == 255) { if (seen.insert(Key(nx, ny, nz)).second) q.push_back({ nx, ny, nz }); }
+                else if (nf > 0) level = std::max(level, nz + nf / 255.0f);   // a partial cell: the surface
+                else if (dd[2] == 1) level = std::max(level, (float)nz);      // open air right over a full cell
+            }
+        }
+        if (level < -1e8f) level = top; // sealed (or past the search): its top
+        return std::max(0.0f, level - fz) * kRhoG;
+    }
+    // Generated water: the sea, or a river, lake or pond over it (as IsUnderwater).
+    const auto* pf = dynamic_cast<const PlanetField*>(body.field.get());
+    const float dl = Vector3Length(local);
+    if (!pf || dl < 1.0f || pf->seaLevelRadius() <= 0.0f) return 0.0f;
+    const Vector3 dir = Vector3Scale(local, 1.0f / dl);
+    const float sea = pf->seaLevelRadius();
+    float surface = sea;
+    if (dl >= sea - 50.0f && pf->inlandWaterNear(dir, 0.0f)) {
+        const float w = pf->waterElevation(dir);
+        if (w != PlanetField::kNoWater) surface = std::max(surface, sea + w);
+    }
+    if (dl >= surface || dl < pf->radius + pf->elevation(dir)) return 0.0f; // over the water, or in the bed
+    return (surface - dl) * kRhoG;
+}
+
 bool Fluid::Wet(const Planetoid& body, Vector3 local) {
     const WaterField::SnapshotPtr snapNow = WaterField::Current();
     for (const WaterField::Site& s : snapNow->sites) {

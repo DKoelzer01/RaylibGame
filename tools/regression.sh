@@ -88,6 +88,7 @@ planet() {
     run --seed 42 --bench 3 --test-pond
     run --seed 42 --bench 3 --test-part-wall # #391: a wall of build blocks holds water; taken down, the water runs on
     run --seed 42 --bench 3 --test-flow-meter # #392: the flow readout reads a 1 m^3/s stream
+    run --seed 42 --bench 3 --test-pressure # #393: hydrostatic pressure in a filled shaft and a pond
     run --seed 42 --bench 3 --test-bucket
     run --seed 42 --bench 3 --test-pump
     run --seed 42 --bench 5 --test-pump-hand
