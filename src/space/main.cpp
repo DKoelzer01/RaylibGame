@@ -6178,16 +6178,18 @@ int main(int argc, char** argv)
                 else printf("bench: structures: no natural site within 2 km\n");
             }
             if (sf == 80) Structures_TestFill(*p);
-            if (sf == 81) { // look at the first structure from 25 m, a little above
+            static Vector3 shotEye{}, shotAt{}, shotUp{};
+            if (sf == 81) { // look down into the second set (the geode, on -t1, 30 m out) from 9 m back and 12 m up
                 const Vector3 me = p->toLocal((player.position - world.renderOrigin).toFloat());
-                const Vector3 up = Vector3Normalize(me);
-                const Vector3 t1 = Vector3Normalize(Vector3CrossProduct(up, fabsf(up.y) < 0.9f ? Vector3{ 0, 1, 0 } : Vector3{ 1, 0, 0 }));
-                const Vector3 t2 = Vector3CrossProduct(t1, up);
-                const Vector3 target = Vector3Add(me, Vector3Scale(t2, 30.0f)); // the watchtower (the third set, on +t2)
-                const Vector3 eye = Vector3Add(target, Vector3Add(Vector3Scale(t1, -16.0f), Vector3Add(Vector3Scale(t2, 10.0f), Vector3Scale(up, 7.0f))));
+                shotUp = Vector3Normalize(me);
+                const Vector3 t1 = Vector3Normalize(Vector3CrossProduct(shotUp, fabsf(shotUp.y) < 0.9f ? Vector3{ 0, 1, 0 } : Vector3{ 1, 0, 0 }));
+                shotAt = Vector3Subtract(Vector3Add(me, Vector3Scale(t1, -30.0f)), Vector3Scale(shotUp, 4.0f));
+                shotEye = Vector3Add(shotAt, Vector3Add(Vector3Scale(t1, 9.0f), Vector3Scale(shotUp, 16.0f)));
                 player.flyMode = true;
-                player.position = world.renderOrigin + DVec3(p->toWorld(eye));
-                player.forward = Vector3Normalize(p->dirToWorld(Vector3Subtract(Vector3Add(target, Vector3Scale(up, 2.0f)), eye)));
+            }
+            if (sf >= 81 && sf < 160) { // the camera itself, each frame
+                world.camera.position = p->toWorld(shotEye); world.camera.target = p->toWorld(shotAt); world.camera.up = p->dirToWorld(shotUp);
+                player.position = world.renderOrigin + world.camera.position;
             }
             if (sf == 160) {
                 TakeScreenshot("bench_structures.png");

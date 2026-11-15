@@ -35,6 +35,8 @@ struct Set {
     std::vector<Part> parts;       // structure cells (x east, y up, z north before turning), lowest corner 0
     std::vector<Loot> loots;       // chests (also in parts)
     Int3 size{ 1, 1, 1 };          // cells
+    std::vector<std::pair<Vector3, float>> carves; // wonders: spheres cut from the ground (metres from the site centre at ground level; radius)
+    int yOffset = 0;               // the lowest part cell before normalising (parts may sit underground: wonders)
 };
 std::vector<Set> sets;
 bool loaded = false;
@@ -141,6 +143,9 @@ bool LoadSet(const std::string& path, Set& s) {
                 for (auto& c : fp) if (c.first.x >= x0 && c.first.x <= x1 && c.first.y >= y0 && c.first.y <= y1 && c.first.z >= z0 && c.first.z <= z1) return true;
                 return false;
             }), s.parts.end());
+        } else if (cmd == "carve") {
+            Vector3 c; float r;
+            if (ss >> c.x >> c.y >> c.z >> r) s.carves.push_back({ c, r });
         } else if (cmd == "loot") {
             Loot L; if (!(ss >> L.cell.x >> L.cell.y >> L.cell.z >> L.table)) continue;
             s.loots.push_back(L);
@@ -156,6 +161,7 @@ bool LoadSet(const std::string& path, Set& s) {
     for (Part& p : s.parts) p.origin = { p.origin.x - lo.x, p.origin.y - lo.y, p.origin.z - lo.z };
     for (Loot& L : s.loots) L.cell = { L.cell.x - lo.x, L.cell.y - lo.y, L.cell.z - lo.z };
     s.size = { hi.x - lo.x + 1, hi.y - lo.y + 1, hi.z - lo.z + 1 };
+    s.yOffset = lo.y;
     return true;
 }
 
@@ -285,7 +291,18 @@ int BuildSite(Planetoid& body, const PlanetField& pf, const Site& site, bool for
     std::vector<std::pair<Int3, CellShape>> fp;
     Int3 mn{ 1 << 20, 0, 1 << 20 }, mx{ -(1 << 20), 0, -(1 << 20) };
     for (const Part& p : parts) { Footprint(p, fp); for (auto& c : fp) { mn.x = std::min(mn.x, c.first.x); mn.z = std::min(mn.z, c.first.z); mx.x = std::max(mx.x, c.first.x); mx.z = std::max(mx.z, c.first.z); } }
-    const int dy = (int)floorf((lo - e) / kCellSize) - (int)lroundf(S.bury / kCellSize);
+    const int dyGround = (int)floorf((lo - e) / kCellSize) - (int)lroundf(S.bury / kCellSize);
+    const int dy = dyGround + S.yOffset; // parts below the ground (wonders) keep their depth
+    // Wonders shape the ground first (#164): each carve turned with the site, from the site's centre at ground level.
+    for (const auto& c : S.carves) {
+        Vector3 o = c.first;
+        for (int k = 0; k < (site.quarters & 3); ++k) o = { o.z, o.y, -o.x };
+        TerrainEdit ce{};
+        ce.center = plot->toBody({ o.x, o.y + dyGround * kCellSize, o.z });
+        ce.radius = c.second;
+        ce.carve = true;
+        ApplyTerrainEdit(body, ce);
+    }
     const Int3 shift = { -(mn.x + mx.x + 1) / 2, dy, -(mn.z + mx.z + 1) / 2 };
     uint32_t h = site.seed ^ 0xdecaf;
     int placed = 0;
