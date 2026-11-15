@@ -22,8 +22,7 @@
 #include <vector>
 
 namespace {
-    constexpr double kBucket = 600.0, kShowerLength = 120.0;
-    constexpr float kShowerOdds = 0.15f;
+    constexpr double kBucket = kMeteorShowerBucketSeconds, kShowerLength = 120.0;
     long long lastBucket = -1;
     double showerEnd = -1.0, showerStart = -1.0;
     int impactsDone = 0;
@@ -121,7 +120,7 @@ static void SimulateShowers(Scene& world) {
     if (bucket != lastBucket || force) {
         const bool fresh = lastBucket >= 0 || force;                        // not on the first look after loading
         lastBucket = bucket;
-        if (force || (fresh && GameRng_Unit() < kShowerOdds)) {
+        if (force || (fresh && GameRng_Unit() < kMeteorShowerOdds)) {
             showerStart = now; showerEnd = now + kShowerLength; impactsDone = 0; ++showerId;
         }
         force = false;

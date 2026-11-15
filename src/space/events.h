@@ -2,7 +2,7 @@
 #define EVENTS_H
 
 // World events (#177), first: meteor showers. Each 10 minutes of world time the authority (single-player or the host)
-// rolls a 15% chance on the gameplay RNG of ONE world-wide shower (#316, user 2026-11-15): two minutes of streaks
+// rolls kMeteorShowerOdds on the gameplay RNG for ONE world-wide shower (#316, user 2026-11-15): two minutes of streaks
 // across the sky for every player whose sky is dark (cosmetic, per viewer), and two meteors that come down 80-180 m from
 // a player or an interest centre (picked by the same RNG) on dry land. Each impact flashes, throws up dust, carves a
 // crater and leaves a hot, glowing meteorite (PartType::Meteorite) at its bottom: broken apart it gives nickel-iron
@@ -11,6 +11,10 @@
 
 #include <cstdint>
 #include <cstdio>
+
+// Tuning (user, 2026-11-15: 5% for now, to be retuned): the chance of a shower per bucket of world time.
+constexpr float kMeteorShowerOdds = 0.05f;
+constexpr double kMeteorShowerBucketSeconds = 600.0; // 10 game minutes
 
 class Scene;
 class Planetoid;

@@ -6964,11 +6964,25 @@ int main(int argc, char** argv)
             } else if (phase == 4 && sf == 3) {
                 const EventsShower s = Events_GetShower();
                 kept = kept && s.id == host.id && fabs(s.start - host.start) < 0.01 && fabs(s.end - host.end) < 0.01;
-                const bool ok = rolled && clientQuiet && clientApplied && started && landed && kept;
-                printf("bench: shower: bucket rolled the game RNG %d, client rolled nothing %d, client applied the host's shower %d, forced shower with the player in the air %d, both meteorites at the other player %d, kept over save/load %d -> %s\n",
-                       (int)rolled, (int)clientQuiet, (int)clientApplied, (int)started, (int)landed, (int)kept, ok ? "PASS" : "FAIL");
                 gInterestCentres.clear();
-                benchShower = false;
+                count0 = Events_ShowerCount();
+                phase = 5; sf = 0;
+            } else if (phase == 5) {
+                // 5. the rate: one bucket per frame for kRateBuckets buckets; the share that started a shower should be near
+                //    kMeteorShowerOdds (5%, user 2026-11-15). Each jump also ends the previous shower before its meteorites.
+                constexpr int kRateBuckets = 600;
+                SetWorldTime((floor(WorldTime() / kMeteorShowerBucketSeconds) + 1.0) * kMeteorShowerBucketSeconds + 1.0);
+                if (sf > kRateBuckets) {
+                    const int showers = (int)(Events_ShowerCount() - count0);
+                    const double expect = kMeteorShowerOdds * kRateBuckets, sigma = sqrt(expect * (1.0 - kMeteorShowerOdds));
+                    const bool rateOk = fabs(showers - expect) < 4.0 * sigma;
+                    printf("bench: shower: rate %d showers in %d buckets (%.1f%%, expected %.0f%% = %.0f +- %.0f)\n", showers, kRateBuckets,
+                           100.0 * showers / kRateBuckets, 100.0 * kMeteorShowerOdds, expect, 4.0 * sigma);
+                    const bool ok = rolled && clientQuiet && clientApplied && started && landed && kept && rateOk;
+                    printf("bench: shower: bucket rolled the game RNG %d, client rolled nothing %d, client applied the host's shower %d, forced shower with the player in the air %d, both meteorites at the other player %d, kept over save/load %d, rate %d -> %s\n",
+                           (int)rolled, (int)clientQuiet, (int)clientApplied, (int)started, (int)landed, (int)kept, (int)rateOk, ok ? "PASS" : "FAIL");
+                    benchShower = false;
+                }
             }
         }
         // --test-headless (#311, with --bench 12): the world runs with nothing drawn - the sim steps at its rate, the player
