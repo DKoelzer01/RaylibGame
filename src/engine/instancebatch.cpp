@@ -1,5 +1,6 @@
 #include "instancebatch.h"
 #include "gpumem.h"
+#include "locallights.h"
 #include "scene.h"
 #include "world.h"
 #include "worldtypes.h"
@@ -147,6 +148,8 @@ void InstanceBatch_Flush(Scene& world) {
     v3("viewPos", world.camera.position);
     v3("sunDir", world.frameSun);
     v3("sunFade", world.sunFade); // #276
+    LocalLights_Bind(shader.shader); // #139: its samplers on their own units (left at 0 they clash in type: an error on strict drivers), and the lights
+    rlEnableShader(id);
     v3("ambient", world.frameAmbient);
     v3("ambientUp", world.frameAmbientUp); // #130
     v3("fogColor", world.frameFog);

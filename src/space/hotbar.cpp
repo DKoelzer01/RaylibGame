@@ -282,7 +282,8 @@ bool Hotbar_PlaceTorch() {
     Planetoid* body = nullptr; Vector3 local{}, n{};
     if (!TerrainTool_LastHit(body, local, n) || !body) return false;
     if (!body->plots) body->plots = std::make_unique<PlotSet>();
-    Plot* pl = body->plots->plotFor(local, 0.0f, true);
+    Plot* pl = body->plots->plotFor(local, 6.0f, false); // a build within 6 m takes it (as the build tool does); else a plot of its own
+    if (!pl) pl = body->plots->plotFor(local, 0.0f, true);
     if (!pl) return false;
     const Vector3 nl = body->dirToLocal(n);
     const Part part{ PartType::Torch, pl->cellAt(pl->toPlot(Vector3Add(local, Vector3Scale(nl, 0.15f)))), 0, 0 };

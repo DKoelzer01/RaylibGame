@@ -32,6 +32,9 @@ void LocalLights_Upload(const std::vector<LocalLight>& lights, Vector3 cameraPos
     std::sort(order.begin(), order.end());
     if ((int)order.size() > kMaxLocalLights) order.resize(kMaxLocalLights);
     uploaded = (int)order.size();
+    static bool wasEmpty = false;
+    if (uploaded == 0 && wasEmpty && lightTex && tileTex && tx == tilesX && ty == tilesY) { maxPerTile = 0; return; } // nothing near, again: the shaders skip on count 0
+    wasEmpty = uploaded == 0;
     lightData.assign(kMaxLocalLights * 8, 0.0f);
     tileData.assign((size_t)tx * (kLightsPerTile + 1) * ty, 0);
     maxPerTile = 0;

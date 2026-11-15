@@ -464,20 +464,20 @@ static Vector3 FillCentre(const Planetoid& p, float r) {
     const Vector3 localNormal = Vector3Normalize(Vector3Subtract(p.toLocal(Vector3Add(hit.point, hit.normal)), hit.local));
     return Vector3Add(hit.local, Vector3Scale(localNormal, kFillOut * r));
 }
-static float FillCost(const Planetoid& p, Vector3 c, float r) {
+static float FillCost(const Planetoid& p, Vector3 c, float r, int stride = 1) { // stride 2: every other lattice point (the HUD estimate, 8x cheaper)
     int air = 0;
     const int x0 = (int)floorf((c.x - r) / kVoxelSize), x1 = (int)ceilf((c.x + r) / kVoxelSize);
     const int y0 = (int)floorf((c.y - r) / kVoxelSize), y1 = (int)ceilf((c.y + r) / kVoxelSize);
     const int z0 = (int)floorf((c.z - r) / kVoxelSize), z1 = (int)ceilf((c.z + r) / kVoxelSize);
-    for (int z = z0; z <= z1; ++z)
-        for (int y = y0; y <= y1; ++y)
-            for (int x = x0; x <= x1; ++x) {
+    for (int z = z0; z <= z1; z += stride)
+        for (int y = y0; y <= y1; y += stride)
+            for (int x = x0; x <= x1; x += stride) {
                 const Vector3 q = { x * kVoxelSize, y * kVoxelSize, z * kVoxelSize };
                 if (Vector3DistanceSqr(q, c) >= r * r) continue;
                 if (p.densityAt(q) < ISO_LEVEL) ++air;
             }
     const float s = p.scale;
-    return air * kVoxelSize * kVoxelSize * kVoxelSize * s * s * s * 2.0f;
+    return air * (float)(stride * stride * stride) * kVoxelSize * kVoxelSize * kVoxelSize * s * s * s * 2.0f;
 }
 static bool FillStroke(Planetoid& p) {
     const float r = terrainTool.fillRadius / p.scale;
@@ -681,7 +681,7 @@ void TerrainTool_DrawHUD() {
                     Planetoid& p = *hit.planetoid;
                     const float r = terrainTool.fillRadius / p.scale;
                     static double costAt = -1.0; static float cost = 0.0f;
-                    if (GetTime() - costAt > 0.2) { costAt = GetTime(); cost = FillCost(p, FillCentre(p, r), r); }
+                    if (GetTime() - costAt > 0.2) { costAt = GetTime(); cost = FillCost(p, FillCentre(p, r), r, 2); } // an estimate (the stroke counts exactly)
                     DrawText(TextFormat("sphere fill %.2f m: %.1f %s (have %.1f)   R: soil   Ctrl+wheel: size", terrainTool.fillRadius, cost, terrainTool.heldTool.c_str(), inventory.amount(terrainTool.heldTool)),
                              cx + 14, cy + 58, 18, Color{ 140, 230, 255, 255 });
                 } else DrawText("R: sphere fill", cx + 14, cy + 58, 18, Fade(RAYWHITE, 0.6f));
