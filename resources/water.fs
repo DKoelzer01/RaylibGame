@@ -26,6 +26,14 @@ uniform float fluidGlows[8];   // per kind: emissive strength (lava)
 
 out vec4 finalColor;
 
+// Smooth 2D value noise in 0..1 (foam).
+float hash12(vec2 c) { return fract(sin(dot(c, vec2(127.1, 311.7))) * 43758.5453); }
+float valueNoise(vec2 uv) {
+    vec2 i = floor(uv), f = fract(uv);
+    f = f * f * (3.0 - 2.0 * f);
+    return mix(mix(hash12(i), hash12(i + vec2(1.0, 0.0)), f.x), mix(hash12(i + vec2(0.0, 1.0)), hash12(i + vec2(1.0, 1.0)), f.x), f.y);
+}
+
 void main()
 {
     if (any(greaterThan(fragChunkPos, chunkClipMax))) discard;
@@ -109,6 +117,28 @@ void main()
     // blends one water layer per pixel, so overlapping LOD copies don't double up.
     bool below = dot(normalize(fragNormal), v) < 0.0;
     float alpha = below ? 0.8 : clamp(max(mix(1.0, 0.3, clarity), fresnel) + glint, 0.0, 1.0);
+    // Foam (#405): a band along shores (under ~0.35 m deep), white water where the surface tilts steeply (falls, steps)
+    // and on fast currents, broken up by noise that drifts with the current. Up = from the planet's centre.
+    if (!below && dist < 250.0) {
+        vec3 ng = normalize(fragNormal);
+        vec3 up = sunOccluder.w > 0.0 ? normalize(fragPosition - sunOccluder.xyz) : ng;
+        float steep = smoothstep(0.2, 0.55, 1.0 - dot(ng, up));
+        float shore = 1.0 - smoothstep(0.02, 0.35, fragDepth);
+        float rapid = smoothstep(1.2, 2.5, speed);
+        float mask = max(max(shore, steep * 0.8), rapid);
+        if (mask > 0.01) {
+            vec3 t1 = normalize(cross(up, abs(up.y) < 0.9 ? vec3(0.0, 1.0, 0.0) : vec3(1.0, 0.0, 0.0)));
+            vec3 t2 = cross(up, t1);
+            vec3 q = p - fdir * speed * time * 0.8;                 // drifts with the current
+            vec2 uv = vec2(dot(q, t1), dot(q, t2)) * 2.2;
+            float nz = 0.6 * valueNoise(uv) + 0.4 * valueNoise(uv * 2.7 + vec2(17.0, 5.0)); // two smooth octaves
+            nz += 0.15 * sin(time * 2.0 + nz * 6.28);                                       // a slow churn
+            // Streaks and flecks, never a solid sheet: the noise decides most of it, the water shows through.
+            float foam = smoothstep(0.5, 0.9, mask * (0.35 + 1.05 * nz)) * (0.5 + 0.5 * rippleFade);
+            color = mix(color, vec3(0.80, 0.85, 0.86) * (0.25 + 0.75 * light), foam * 0.65);
+            alpha = max(alpha, foam * 0.7);
+        }
+    }
     vec4 fluidColor = fluidColors[clamp(fragKind, 0, 7)];
     float fluidGlow = fluidGlows[clamp(fragKind, 0, 7)];
     if (fluidColor.a > 0.0) {
