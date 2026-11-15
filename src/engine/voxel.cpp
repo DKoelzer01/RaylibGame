@@ -1629,6 +1629,40 @@ static void MeshChunkWater(const DensityField& field, ChunkMeshData& out, const 
             for (int y = 0; y < cells; ++y)
                 for (int x = 0; x < cells; ++x)
                     marchCube(x, y, z, wd, S, wv, wi, cache, ISO_LEVEL);
+        // The shore (#423): a triangle crossing the ground keeps only its part out of the ground, cut where its edges
+        // cross the terrain's iso level (linear in the terrain density), so the waterline is a continuous curve instead
+        // of the edge of whichever whole triangles stayed out (the cull below dropped a triangle by its centre).
+        {
+            std::vector<int> clipped;
+            clipped.reserve(wi.size());
+            auto cut = [&](int a, int b, float da, float db) {
+                const float t = da / (da - db); // da, db: terrain density - ISO, of opposite signs
+                wv.push_back(Vector3Lerp(wv[a], wv[b], t));
+                return (int)wv.size() - 1;
+            };
+            for (size_t t = 0; t + 2 < wi.size(); t += 3) {
+                int v[3] = { wi[t], wi[t + 1], wi[t + 2] };
+                float d[3];
+                int in = 0;
+                for (int e = 0; e < 3; ++e) { d[e] = trilinear(dens, wv[v[e]]) - ISO_LEVEL; in += d[e] >= 0.0f ? 1 : 0; }
+                if (in == 0) { clipped.insert(clipped.end(), { v[0], v[1], v[2] }); continue; }
+                if (in == 3) continue;
+                // Rotate (keeping the winding) so that: one in the ground -> it is first; two -> the one out is last.
+                for (int r = 0; r < 3; ++r) {
+                    const bool ok = in == 1 ? d[0] >= 0.0f : d[2] < 0.0f;
+                    if (ok) break;
+                    std::swap(v[0], v[1]); std::swap(v[1], v[2]); std::swap(d[0], d[1]); std::swap(d[1], d[2]);
+                }
+                if (in == 1) { // X in, Y Z out: the quad P Y Z Q
+                    const int p = cut(v[0], v[1], d[0], d[1]), q = cut(v[0], v[2], d[0], d[2]);
+                    clipped.insert(clipped.end(), { p, v[1], v[2], p, v[2], q });
+                } else {       // X Y in, Z out: the triangle P Z Q
+                    const int p = cut(v[1], v[2], d[1], d[2]), q = cut(v[2], v[0], d[2], d[0]);
+                    clipped.insert(clipped.end(), { p, v[2], q });
+                }
+            }
+            wi.swap(clipped);
+        }
         std::vector<int> remap(wv.size(), -1);
         for (size_t t = 0; t + 2 < wi.size(); t += 3) {
             const Vector3 c = Vector3Scale(Vector3Add(Vector3Add(wv[wi[t]], wv[wi[t + 1]]), wv[wi[t + 2]]), 1.0f / 3.0f);
