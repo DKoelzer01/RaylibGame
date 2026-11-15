@@ -12,11 +12,12 @@ endif()
 option(USE_SYSTEM_RAYLIB "Link a prebuilt raylib at RAYLIB_PATH instead of fetching raylib 5.5" OFF)
 set(RAYLIB_PATH "C:/raylib/raylib" CACHE PATH "raylib source tree containing src/libraylib.a (USE_SYSTEM_RAYLIB only)")
 option(ENABLE_TRACY "Build with the Tracy profiler client (connect with tracy-profiler v0.11.1)" OFF)
-# Multiplayer transport (#310): Valve's GameNetworkingSockets, prebuilt with this compiler (static, BCrypt crypto, protobuf
-# 3.21): GNS_ROOT holds include/steam/*.h, lib/libGameNetworkingSockets_s.a and lib/libprotobuf.a. Off: src/engine/net.*
-# builds as stubs (Net_Available() false).
+# Multiplayer transport (#310): Valve's GameNetworkingSockets, built with this compiler (static, BCrypt crypto, protobuf
+# 3.21) by tools/build_gns.sh into the gitignored deps/gns/install (versions pinned in the script): GNS_ROOT holds
+# include/steam/*.h, lib/libGameNetworkingSockets_s.a and lib/libprotobuf.a. Off: src/engine/net.* builds as stubs
+# (Net_Available() false).
 option(ENABLE_GNS "Build with GameNetworkingSockets (multiplayer transport) from GNS_ROOT" OFF)
-set(GNS_ROOT "" CACHE PATH "Prebuilt GameNetworkingSockets + protobuf (ENABLE_GNS only)")
+set(GNS_ROOT "${CMAKE_SOURCE_DIR}/deps/gns/install" CACHE PATH "GameNetworkingSockets + protobuf built by tools/build_gns.sh (ENABLE_GNS only)")
 set(GAME_OUTPUT_DIR "${CMAKE_SOURCE_DIR}" CACHE PATH "Where game.exe is written (default: repo root, which is also the working directory they expect)")
 
 include(FetchContent)
@@ -85,7 +86,7 @@ if(ENABLE_TRACY)
 endif()
 if(ENABLE_GNS)
     if(NOT EXISTS "${GNS_ROOT}/lib/libGameNetworkingSockets_s.a" OR NOT EXISTS "${GNS_ROOT}/lib/libprotobuf.a")
-        message(FATAL_ERROR "ENABLE_GNS: GNS_ROOT (${GNS_ROOT}) needs lib/libGameNetworkingSockets_s.a and lib/libprotobuf.a")
+        message(FATAL_ERROR "ENABLE_GNS: GNS_ROOT (${GNS_ROOT}) needs lib/libGameNetworkingSockets_s.a and lib/libprotobuf.a: run tools/build_gns.sh first")
     endif()
     target_include_directories(engine PUBLIC "${GNS_ROOT}/include")
     target_compile_definitions(engine PUBLIC RAYLIBGAME_GNS STEAMNETWORKINGSOCKETS_STATIC_LINK)
