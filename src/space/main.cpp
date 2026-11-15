@@ -42,6 +42,7 @@
 #include "particles.h"
 #include "ambience.h"
 #include "gpumem.h"
+#include "structures.h"
 #include "machinemodels.h"
 #include "gpucompute.h"
 #include "terraingpu.h"
@@ -141,6 +142,7 @@ static void StartNewWorld(Scene& world, bool reset, bool dawn) {
         Nav_Reset();
         Farm_Reset();
         Animals_Reset();
+        Structures_Reset();
         Particles_Clear();
         Ambience_Reset();
         Station_Reset();
@@ -255,6 +257,7 @@ int main(int argc, char** argv)
     bool benchWall = false;        // --test-wall: walk into shaft and tunnel walls (no launches)
     bool benchDoorway = false; int doorPhase = 0, doorLane = 0; double doorStart = 0.0; uint32_t doorPlot = 0; bool doorPass[2] = { false, false }; // --test-doorway (#255): 2 m openings pass, 1.5 m ones block
     bool benchMenus = false;       // --test-menus: main menu, new game, pause, save & quit, load
+    bool benchStructures = false;  // --test-structures: ruins, wrecks and wonders (#164)
     bool vramReport = false;       // --vram: GPU memory per subsystem at the end of a bench (#302)
     bool benchFill = false;        // --test-fill: an exact sphere of dirt (#228)
     bool benchLamps = false;       // --test-lamps: 100 lamp cubes light the ground (#139)
@@ -493,6 +496,7 @@ int main(int argc, char** argv)
         if (std::string(argv[i]) == "--test-lamps") benchLamps = true;
         if (std::string(argv[i]) == "--test-fill") benchFill = true;
         if (std::string(argv[i]) == "--vram") vramReport = true;
+        if (std::string(argv[i]) == "--test-structures") benchStructures = true;
         if (std::string(argv[i]) == "--test-pickups") benchPickups = true;
         if (std::string(argv[i]) == "--shot-inventory") shotInventory = true;
         if (std::string(argv[i]) == "--test-foundation") benchFoundation = true;
@@ -5838,6 +5842,7 @@ int main(int argc, char** argv)
             if (!loading) Viewmodel_Update(world, frameDt);
             if (!loading) Farm_Update(world, frameDt * timeScale * gDebugTimeScale * Rocket_Warp()); // crops grow on world time
             if (!loading) Animals_Update(world, frameDt, frameDt * timeScale * gDebugTimeScale * Rocket_Warp(), gameInput && alive && !ship.piloted);
+            if (!loading) Structures_Update(world); // ruins, wrecks and wonders near the player (#164)
             if (!loading) Weather_Update(world, frameDt * timeScale * gDebugTimeScale); // the sky, rain and snow, lightning
             if (!loading) Ambience_Update(world, frameDt); // rain splashes, fireflies, machine smoke
             Particles_Update(world, frameDt); // smoke, dust, exhaust, splashes (particles.h)
@@ -6136,6 +6141,64 @@ int main(int argc, char** argv)
                 if (have) { TakeScreenshot(TextFormat("bench_tree_%d.png", cls)); }
                 gf = 0; have = false;
                 if (++cls == kTreeClasses) { printf("bench: giant: done (bench_tree_0..3.png)\n"); benchGiant = false; }
+            }
+        }
+        // --test-structures (#164): every set built in a row beside the start, its chests filled; then the nearest natural
+        // site within 2 km, and a look at the first one (bench_structures.png).
+        if (benchStructures && gameState == 1 && !loading && WorldIdle()) {
+            static int sf = 0;
+            static bool built = false;
+            Planetoid* p = dynamic_cast<Planetoid*>(world.objects[0].get());
+            ++sf;
+            if (sf == 5) { player.flyMode = false; player.spawnOn(world, *p, StartSpawnDir(*p)); }
+            if (sf == 20) {
+                const Vector3 me = p->toLocal((player.position - world.renderOrigin).toFloat());
+                built = Structures_Test(world, *p, me);
+                Vector3 at; std::string set;
+                if (Structures_NearestSite(*p, me, 2000.0f, at, set)) printf("bench: structures: the nearest natural site is a %s, %.0f m from the start\n", set.c_str(), Vector3Distance(at, me));
+                else printf("bench: structures: no natural site within 2 km\n");
+            }
+            if (sf == 80) Structures_TestFill(*p);
+            if (sf == 81) { // look at the first structure from 25 m, a little above
+                const Vector3 me = p->toLocal((player.position - world.renderOrigin).toFloat());
+                const Vector3 up = Vector3Normalize(me);
+                const Vector3 t1 = Vector3Normalize(Vector3CrossProduct(up, fabsf(up.y) < 0.9f ? Vector3{ 0, 1, 0 } : Vector3{ 1, 0, 0 }));
+                const Vector3 t2 = Vector3CrossProduct(t1, up);
+                const Vector3 target = Vector3Add(me, Vector3Scale(t2, 30.0f)); // the watchtower (the third set, on +t2)
+                const Vector3 eye = Vector3Add(target, Vector3Add(Vector3Scale(t1, -16.0f), Vector3Add(Vector3Scale(t2, 10.0f), Vector3Scale(up, 7.0f))));
+                player.flyMode = true;
+                player.position = world.renderOrigin + DVec3(p->toWorld(eye));
+                player.forward = Vector3Normalize(p->dirToWorld(Vector3Subtract(Vector3Add(target, Vector3Scale(up, 2.0f)), eye)));
+            }
+            if (sf == 160) {
+                TakeScreenshot("bench_structures.png");
+                int items = 0;
+                const int full = Structures_TestCheck(*p, items);
+                const bool ok = built && full == Structures_SetCount() && items > 0;
+                printf("bench: structures: %d of %d chests hold loot (%d items): %s\n", full, Structures_SetCount(), items, ok ? "PASS" : "FAIL");
+                // Then the world's own placement: walk up to the nearest natural site (100 m short of it) and let it build.
+                const Vector3 me = p->toLocal((player.position - world.renderOrigin).toFloat());
+                static Vector3 siteAt{};
+                std::string set;
+                if (Structures_NearestSite(*p, me, 3000.0f, siteAt, set)) {
+                    const Vector3 toward = Vector3Normalize(Vector3Subtract(me, siteAt));
+                    player.flyMode = false;
+                    { const auto* spf = dynamic_cast<const PlanetField*>(p->field.get()); const Vector3 d = Vector3Normalize(Vector3Add(siteAt, Vector3Scale(toward, 100.0f)));
+                      player.placeAt(world, *p, p->toWorld(Vector3Scale(d, spf->radius + spf->elevation(d) + 1.5f))); } // exactly there (spawnOn looks for a safe spot)
+                    printf("bench: structures: going to a %s 100 m away\n", set.c_str());
+                    sf = 1000;
+                } else benchStructures = false;
+            }
+            if (sf == 1200) { // ~3 s later: built (or skipped as unsuitable: water, a slope, a build nearby)?
+                static Vector3 dummy{};
+                Vector3 at; std::string set;
+                const Vector3 me = p->toLocal((player.position - world.renderOrigin).toFloat());
+                const bool found = Structures_NearestSite(*p, me, 400.0f, at, set);
+                const bool built = found && p->plots && p->plots->plotFor(at, 25.0f, false);
+                printf("bench: structures: the %s %.0f m from the player is %s (sites built so far %d; last left out: %s; fly %d)\n", found ? set.c_str() : "site",
+                       found ? Vector3Distance(at, me) : -1.0f, built ? "built" : "not built", Structures_SitesBuilt(), Structures_LastSkip(), (int)player.flyMode);
+                (void)dummy;
+                benchStructures = false;
             }
         }
         // --test-fill (#228): standing at the start looking at the ground 3 m ahead, an exact sphere of dirt.
