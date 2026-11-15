@@ -1,4 +1,5 @@
 #include "menus.h"
+#include "slideshow.h"
 #include "player.h"
 #include "ship.h"
 #include "telescope.h"
@@ -68,6 +69,7 @@ namespace {
     void Backdrop(const char* title) {
         const float s = Scale();
         DrawRectangleGradientV(0, 0, GetScreenWidth(), GetScreenHeight(), { 8, 12, 24, 255 }, { 20, 34, 56, 255 });
+        Slideshow_Draw(0.4f); // screenshots behind the menu (#386; none: the gradient shows)
         const int fs = (int)(64 * s);
         DrawText(title, (GetScreenWidth() - MeasureText(title, fs)) / 2, (int)(GetScreenHeight() * 0.18f), fs, kText);
     }

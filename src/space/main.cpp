@@ -33,6 +33,7 @@
 #include "glcaps.h"
 #include "buildtool.h"
 #include "recorder.h"
+#include "slideshow.h"
 #include "progression_test.h"
 #include "menus.h"
 #include "hotbar.h"
@@ -178,6 +179,18 @@ static void StartNewWorld(Scene& world, bool reset, bool dawn) {
 
 int main(int argc, char** argv)
 {
+    // --to-slide <in.png> <out.jpg> [width]: a screenshot made into a menu slide (#386): scaled to the width (1600 px), JPEG.
+    if (argc >= 4 && std::string(argv[1]) == "--to-slide") {
+        Image img = LoadImage(argv[2]);
+        if (!img.data) { printf("to-slide: cannot read %s\n", argv[2]); return 1; }
+        const int w = argc >= 5 ? atoi(argv[4]) : 1600;
+        if (img.width > w) ImageResize(&img, w, img.height * w / img.width);
+        ImageFormat(&img, PIXELFORMAT_UNCOMPRESSED_R8G8B8);
+        const bool ok = ExportImage(img, argv[3]);
+        printf("to-slide: %s -> %s (%dx%d) %s\n", argv[2], argv[3], img.width, img.height, ok ? "ok" : "FAILED");
+        UnloadImage(img);
+        return ok ? 0 : 1;
+    }
     // Data and shaders are read from resources/ relative to the working directory. Launched from Explorer
     // (or a build dir) that is the exe's folder, which has no resources/ next to it: the game found nothing and
     // crashed (#234). Use the first of the working directory, the exe's folder and its parents that has it.
@@ -246,6 +259,7 @@ int main(int argc, char** argv)
     bool benchFoundation = false;  // --test-foundation: a part half in the ground clears its cell and nothing else (#210)
     bool shotPreview = false;      // --shot-preview: the build preview in the part's real shape (#197)
     bool testInvCursor = false;    // --test-inv-cursor (#192)
+    bool noHud = false;            // --no-hud: no HUD, hands or overlay in play (clean screenshots: the menu slides, #386)
     int pickupFrames = 0;
     int timeStep = 0, timeFrames = 0; float timeElev0 = 0.0f; Vector3 timeLocal0 = { 0, 0, 0 }; bool timeOk = true;
     bool benchWater = false;       // --test-water: rivers and ponds near the start, their beds and clay
@@ -466,6 +480,7 @@ int main(int argc, char** argv)
         if (std::string(argv[i]) == "--test-foundation") benchFoundation = true;
         if (std::string(argv[i]) == "--shot-preview") shotPreview = true;
         if (std::string(argv[i]) == "--test-inv-cursor") testInvCursor = true;
+        if (std::string(argv[i]) == "--no-hud") noHud = true;
         if (std::string(argv[i]) == "--test-water") benchWater = true;
         if (std::string(argv[i]) == "--test-flyfollow") benchFlyFollow = true;
         if (std::string(argv[i]) == "--test-hotbar") benchHotbar = true;
@@ -6042,8 +6057,9 @@ int main(int argc, char** argv)
             } else if (gameState == 1) {
                 { const double d0 = GetTime(); world.drawScene(gameState); if (benchMeasuring) benchDrawMs += (GetTime() - d0) * 1000.0; }
                 player.recordFly(world); // after the fly camera's input (in drawScene): the pose to carry next frame
-                Viewmodel_Draw(world);   // the hands, over the world
+                if (!noHud)                 Viewmodel_Draw(world);   // the hands, over the world
                 if (Recorder_WantsFrame(false)) { rlDrawRenderBatchActive(); Recorder_Capture(); } // --record-hud 0: before the UI
+                if (!noHud) { // --no-hud: clean shots (the menu slides, #386)
                 world.drawUI(gameState);
                 Telescope_DrawHUD(world);
                 BuildTool_DrawHUD();
@@ -6059,6 +6075,7 @@ int main(int argc, char** argv)
                 if (!Rocket_Boarded()) Nav_DrawHUD(world);
                 Rocket_DrawHUD(world); // the orbit map covers the rest
                 Nav_DrawMap(world);    // last: the full map covers everything
+                }
                 if (loading) {
                     // Loading screen: black, with the streaming progress, until the world around you is built
                     // (it used to show you standing in a void among trees and water while the ground popped in).
@@ -6068,6 +6085,7 @@ int main(int argc, char** argv)
                     const bool preparing = SpawnPreloadPending(&ringProgress); // first load: the 300 m ring around the spawn (#294)
                     const float progress = preparing ? ringProgress : WorldIdle() ? 1.0f : 1.0f - (float)pending / (float)loadMax;
                     DrawRectangle(0, 0, GetScreenWidth(), GetScreenHeight(), BLACK);
+                    Slideshow_Draw(0.5f); // screenshots behind the loading bar (#386), carrying on from the menu
                     const int bw = GetScreenWidth() / 3, bx = (GetScreenWidth() - bw) / 2, by = GetScreenHeight() / 2;
                     DrawText(preparing ? "Preparing spawn" : "Building the world", bx, by - 40, 28, RAYWHITE);
                     DrawRectangle(bx, by, bw, 14, Fade(RAYWHITE, 0.15f));
