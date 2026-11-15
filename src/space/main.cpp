@@ -2487,9 +2487,22 @@ int main(int argc, char** argv)
                             const bool under = IsUnderwater(world, p->toWorld(inside));
                             const bool above = IsUnderwater(world, p->toWorld(Vector3Scale(waterDir, pf->radius + waterLevel + 1.0f)));
                             const float bedE = pf->elevation(waterDir);
-                            const Vector3 bed = Vector3Scale(waterDir, pf->radius + bedE - 0.5f);
-                            const float base = pf->baseDensity(bed);
-                            const VoxelMaterial m = pf->material(bed, base);
+                            Vector3 bed = Vector3Scale(waterDir, pf->radius + bedE - 0.5f);
+                            const VoxelMaterial m = pf->material(bed, pf->baseDensity(bed));
+                            // #206: beds are clay, with gravel bars in the deeper middle and sand on the shores; on a bar,
+                            // dig the nearest clay bed within 30 m instead.
+                            if (m != VoxelMaterial::Clay) {
+                                const Vector3 t1 = Vector3Normalize(Vector3CrossProduct(waterDir, { 0, 1, 0 })), t2 = Vector3CrossProduct(waterDir, t1);
+                                bool found = false;
+                                for (float r = 2.0f; r <= 30.0f && !found; r += 2.0f)
+                                    for (int a = 0; a < 24 && !found; ++a) {
+                                        const float ang = a * 2.0f * PI / 24.0f;
+                                        const Vector3 dir = Vector3Normalize(Vector3Add(Vector3Scale(waterDir, pf->radius), Vector3Add(Vector3Scale(t1, cosf(ang) * r), Vector3Scale(t2, sinf(ang) * r))));
+                                        const float e = pf->elevation(dir);
+                                        const Vector3 q = Vector3Scale(dir, pf->radius + e - 0.5f);
+                                        if (pf->material(q, pf->baseDensity(q)) == VoxelMaterial::Clay) { bed = q; found = true; }
+                                    }
+                            }
                             const int clay0 = inventory.count("clay");
                             for (int k = 0; k < 12; ++k) TerrainTool_DigAt(*p, Vector3Subtract(bed, Vector3Scale(waterDir, 0.4f * k)));
                             const int clay = inventory.count("clay") - clay0;
