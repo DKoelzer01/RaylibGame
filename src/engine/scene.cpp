@@ -733,6 +733,13 @@ void Scene::drawScene(int gamestate) {
             }
             rlSetUniform(GetShaderLocation(sh, "lampPos"), lamp, RL_SHADER_UNIFORM_VEC4, 1);
             rlSetUniform(GetShaderLocation(sh, "lampTarget"), target, RL_SHADER_UNIFORM_VEC4, 1);
+            float torch[4] = { 0, 0, 0, 0 }, torchCol[4] = { 0, 0, 0, 0 }; // a held torch (#218): lights[3], a point light
+            if (lights.size() > 3 && lights[3].enabled && lights[3].type == LIGHT_POINT) {
+                torch[0] = lights[3].position.x; torch[1] = lights[3].position.y; torch[2] = lights[3].position.z; torch[3] = std::max(lights[3].target.x, 1.0f);
+                torchCol[0] = lights[3].color.r / 255.0f; torchCol[1] = lights[3].color.g / 255.0f; torchCol[2] = lights[3].color.b / 255.0f; torchCol[3] = lights[3].color.a / 255.0f;
+            }
+            rlSetUniform(GetShaderLocation(sh, "torchPos"), torch, RL_SHADER_UNIFORM_VEC4, 1);
+            rlSetUniform(GetShaderLocation(sh, "torchColor"), torchCol, RL_SHADER_UNIFORM_VEC4, 1);
             rlActiveTextureSlot(0);
         };
         if (parts.shader.id > 0) {

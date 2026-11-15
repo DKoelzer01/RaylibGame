@@ -66,6 +66,18 @@ float sunShadowNormal(vec3 p, vec3 n, vec3 l, int taps)
                              shadowTexel.x * (0.5 + slope), shadowTexel.y * (0.5 + slope), taps);
 }
 
+// A held torch (#218), a point light: render-space position and range (w, 0 off); colour and intensity (a).
+// Terrain gets it through lights[3] (lighting.fs), with the same falloff.
+uniform vec4 torchPos;
+uniform vec4 torchColor;
+vec3 torchLight(vec3 p, vec3 n)
+{
+    if (torchPos.w <= 0.0) return vec3(0.0);
+    vec3 l = normalize(torchPos.xyz - p);
+    float dl = length(torchPos.xyz - p) / torchPos.w;
+    return torchColor.rgb * torchColor.a * 3.0 / (1.0 + dl * dl * 4.0) * max(dot(n, l), 0.35);
+}
+
 // The headlamp (a spot light): render-space position (w = intensity, 0 off) and the beam's end.
 uniform vec4 lampPos;
 uniform vec4 lampTarget;
@@ -77,5 +89,5 @@ vec3 lampLight(vec3 p, vec3 n)
     vec3 l = normalize(lampPos.xyz - p);
     float cone = smoothstep(0.82, 0.95, dot(-l, beam / range));
     float dl = length(lampPos.xyz - p) / range;
-    return vec3(1.0, 0.95, 0.85) * lampPos.w * 3.0 * cone / (1.0 + dl * dl * 4.0) * max(dot(n, l), 0.35);
+    return vec3(1.0, 0.95, 0.85) * lampPos.w * 3.0 * cone / (1.0 + dl * dl * 4.0) * max(dot(n, l), 0.35) + torchLight(p, n);
 }

@@ -24,6 +24,7 @@ void Hotbar_Bind(int slot, const std::string& id);    // slot 0..9 (key 1 .. key
 void Hotbar_Unbind(const std::string& id);            // quietly empty its slot (a broken tool, #209); the hand empties if it held it
 const std::string& Hotbar_Slot(int slot);
 int Hotbar_Selected();
+inline bool Hotbar_IsLight(const std::string& id) { return id == "torch" || id == "fibre_torch"; } // held for light (#218)
 std::string Hotbar_HeldFood();                        // the food or animal feed in hand (a selected slot), or ""
 bool Hotbar_TestEatHold(float seconds);               // tests (#202): hold right-click this long with food in hand; true if a bite was eaten
 // A number key pressed this frame: its slot (0..9), or -1.

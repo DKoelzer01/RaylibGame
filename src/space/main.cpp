@@ -254,6 +254,7 @@ int main(int argc, char** argv)
     bool benchWall = false;        // --test-wall: walk into shaft and tunnel walls (no launches)
     bool benchDoorway = false; int doorPhase = 0, doorLane = 0; double doorStart = 0.0; uint32_t doorPlot = 0; bool doorPass[2] = { false, false }; // --test-doorway (#255): 2 m openings pass, 1.5 m ones block
     bool benchMenus = false;       // --test-menus: main menu, new game, pause, save & quit, load
+    bool benchTorch = false;       // --test-torch: a held torch lights the ground (#218)
     bool benchTime = false;        // --test-time: dawn start (#259), a +6 h jump carries the player (#275)
     bool benchPickups = false;     // --test-pickups: the pickup feed (#208): repeats merge, a screenshot while it shows
     bool shotInventory = false;    // --shot-inventory: long item names in their cells (#219)
@@ -480,6 +481,7 @@ int main(int argc, char** argv)
         if (std::string(argv[i]) == "--test-telescope-close") benchTeleClose = true; // zoom 16x at the horizon, close: worst frame after (#261)
         if (std::string(argv[i]) == "--test-menus") benchMenus = true;
         if (std::string(argv[i]) == "--test-time") benchTime = true;
+        if (std::string(argv[i]) == "--test-torch") benchTorch = true;
         if (std::string(argv[i]) == "--test-pickups") benchPickups = true;
         if (std::string(argv[i]) == "--shot-inventory") shotInventory = true;
         if (std::string(argv[i]) == "--test-foundation") benchFoundation = true;
@@ -5819,7 +5821,30 @@ int main(int argc, char** argv)
         }
         if (crackCheck) world.drawSkybox = false;
         if (crackCheck) world.clearColor = MAGENTA;
-        while (world.lights.size() < 3) world.lights.push_back(Light{});
+        while (world.lights.size() < 4) world.lights.push_back(Light{});
+        {   // Slot 3: a torch in hand (#218), a flickering point light at the hand; it burns down while held in the game.
+            static float burnt = 0.0f;
+            Light& torch = world.lights[3];
+            torch.type = LIGHT_POINT;
+            const std::string& held = Hotbar_Selected() >= 0 ? Hotbar_Slot(Hotbar_Selected()) : std::string();
+            const bool fibre = held == "fibre_torch", lit = (fibre || held == "torch") && inventory.count(held) > 0;
+            torch.enabled = gameState == 1 && lit && !ship.piloted && !survival.dead;
+            if (torch.enabled) {
+                const float t = (float)GetTime();
+                const float flicker = 0.85f + 0.1f * sinf(t * 13.0f) + 0.05f * sinf(t * 31.7f + 1.3f);
+                const Vector3 fwd = Vector3Normalize(Vector3Subtract(world.camera.target, world.camera.position));
+                const Vector3 right = Vector3Normalize(Vector3CrossProduct(fwd, world.camera.up));
+                torch.position = Vector3Add(Vector3Add(world.camera.position, Vector3Scale(right, 0.3f)), Vector3Add(Vector3Scale(world.camera.up, -0.15f), Vector3Scale(fwd, 0.35f)));
+                torch.target = { fibre ? 7.0f : 12.0f, 0.0f, 0.0f };   // range (m)
+                torch.color = fibre ? Color{ 255, 165, 85, (unsigned char)(110 * flicker) } : Color{ 255, 180, 105, (unsigned char)(150 * flicker) };
+                burnt += GetFrameTime();
+                if (burnt >= (fibre ? 90.0f : 300.0f)) { // one burns out; the next in the stack is lit
+                    burnt = 0.0f;
+                    inventory.remove(held, 1);
+                    if (inventory.count(held) == 0) GameUI_Toast(fibre ? "Your fibre torch burnt out" : "Your torch burnt out");
+                }
+            }
+        }
         {
             Light& lamp = world.lights[1];
             lamp.type = LIGHT_SPOT;
@@ -6006,6 +6031,34 @@ int main(int argc, char** argv)
                 TakeScreenshot("bench_pickups.png");
                 printf("bench: pickups: screenshot bench_pickups.png (expect +3 Stone, +3 Oak Log, +1 Stone Pickaxe)\n");
                 benchPickups = false;
+            }
+        }
+        // --test-torch (#218): at the dawn start (still dark), the ground in front gets brighter with a torch in hand.
+        if (benchTorch && gameState == 1 && !loading && WorldIdle()) {
+            static int tf = 0;
+            static double lumOff = 0.0;
+            auto groundLum = [](const char* file) {
+                Image im = LoadImage(file);
+                ImageFormat(&im, PIXELFORMAT_UNCOMPRESSED_R8G8B8A8);
+                const Color* px = (const Color*)im.data;
+                double sum = 0.0; int n = 0;
+                for (int y = im.height * 6 / 10; y < im.height * 9 / 10; y += 2)
+                    for (int x = im.width * 3 / 10; x < im.width * 7 / 10; x += 2) { const Color c = px[y * im.width + x]; sum += 0.2126 * c.r + 0.7152 * c.g + 0.0722 * c.b; ++n; }
+                UnloadImage(im);
+                return n ? sum / n : 0.0;
+            };
+            ++tf;
+            if (tf == 5) { if (Planetoid* p0 = dynamic_cast<Planetoid*>(world.objects[0].get())) { player.flyMode = false; player.spawnOn(world, *p0, StartSpawnDir(*p0)); } inventory.add("torch", 3); Hotbar_Bind(7, "torch"); Hotbar_Press(8, false); }
+            if (tf >= 8 && tf < 40) player.forward = Vector3Normalize(Vector3Subtract(Vector3Scale(Vector3Normalize(Vector3Subtract(player.forward, Vector3Scale(player.up, Vector3DotProduct(player.forward, player.up)))), 0.8f), Vector3Scale(player.up, 0.6f))); // look down at the ground in front
+            if (tf == 20) { TakeScreenshot("bench_torch_off.png"); lumOff = groundLum("bench_torch_off.png"); Hotbar_Press(7, false); }
+            if (tf == 40) {
+                TakeScreenshot("bench_torch.png");
+                const double lumOn = groundLum("bench_torch.png");
+                const bool lit = world.lights.size() > 3 && world.lights[3].enabled;
+                const bool ok = lit && lumOn > lumOff + 4.0;
+                printf("bench: torch: selected %d \"%s\", torches %d, fly %d, piloted %d\n", Hotbar_Selected(), Hotbar_Selected() >= 0 ? Hotbar_Slot(Hotbar_Selected()).c_str() : "", inventory.count("torch"), (int)player.flyMode, (int)ship.piloted);
+                printf("bench: torch: light %d, ground luminance %.1f -> %.1f with a torch in hand: %s\n", (int)lit, lumOff, lumOn, ok ? "PASS" : "FAIL");
+                benchTorch = false;
             }
         }
         // --test-time (#259, #275): a new game's dawn start (the sun ~4 deg under the spawn's horizon, rising), then a +6 h

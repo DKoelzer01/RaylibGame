@@ -84,6 +84,11 @@ namespace {
             GameUI_Toast(Survival_IsFood(id) ? TextFormat("Holding %s: hold right-click to eat", ShortName(id)) : TextFormat("Holding %s: animals that eat it follow you", ShortName(id)));
             return;
         }
+        if (Hotbar_IsLight(id) && !piloting) { // a torch (#218): held for its light; LMB still digs with bare hands
+            if (inventory.count(id) <= 0) { GameUI_Toast(TextFormat("No %s", ShortName(id))); return; }
+            selected = slot; buildTool.active = false; terrainTool.heldTool.clear(); terrainTool.holdingItem = true;
+            return;
+        }
         if (Survival_IsUsable(id)) { Survival_UseItem(id); return; } // consumables don't change the selection
         if (piloting) return;
         // The selection moves only once the choice is valid (#272): an error (not carried, can't be used) leaves the
@@ -172,7 +177,7 @@ void Hotbar_Update(Scene&, bool inputEnabled, bool piloting) {
     // Leaving build mode with a block selected: the hand goes empty (to an empty slot, if there is one).
     inventory.preferred = Inventory::kGrid + selected; // use comes out of the slot in hand first (#209)
     const std::string cur = CellId(selected);
-    const bool inHand = cur.empty() || cur == terrainTool.heldTool || Survival_IsFood(cur) || Animals_IsFeed(cur);
+    const bool inHand = cur.empty() || cur == terrainTool.heldTool || Survival_IsFood(cur) || Animals_IsFeed(cur) || Hotbar_IsLight(cur);
     if (!buildTool.active && !inHand) {
         for (int i = 0; i < kHotbarSlots; ++i) if (CellId(i).empty()) { selected = i; break; }
         terrainTool.heldTool.clear();
