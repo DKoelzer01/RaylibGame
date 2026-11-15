@@ -33,10 +33,10 @@ struct Player {
     bool jetpackFiring = false;       // fuel was burnt this update (survival / audio / HUD)
     Planetoid* nearest = nullptr;     // body we collide with (gravity comes from every body)
     float gravity = 0.0f;             // current acceleration magnitude (HUD/debug)
-    bool autoWalk = false;            // tests: walk forward without input
+    bool autoWalk = false;            // tests: walk forward (main.cpp turns it into PlayerInput: W held, #312)
     float gravityScale = 1.0f;        // spells/effects (e.g. featherfall)
     bool dampeners = true;            // B: inertial dampeners (deep space only)
-    bool autoJump = false;            // tests: jump once on the next update
+    bool autoJump = false;            // tests: jump once on the next update (a Space press in PlayerInput)
     float lastContactDot = 0.0f;      // debug: dot(contact normal, up) of the last collision
     float impactSpeed = 0.0f;         // hardest collision speed this frame (any contact: tests, launches)
     float landingSpeed = 0.0f;        // speed into the floor at touchdown this frame (fall damage, #263)

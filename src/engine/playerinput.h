@@ -33,6 +33,9 @@ struct PlayerInput {
     bool hit(Act a) const { return enabled && (pressed >> (int)a & 1u); }
     bool up(Act a) const { return enabled && (released >> (int)a & 1u); }
     static const PlayerInput& None(); // nothing held or pressed, not enabled
+    // Scripted input (benches, later a remote player): hold or press an action.
+    void hold(Act a) { enabled = true; held |= 1ull << (int)a; }
+    void press(Act a) { enabled = true; pressed |= 1ull << (int)a; }
 };
 
 // The local player's devices. Once a frame, before the simulation steps: PlayerInput_BeginFrame reads raylib.

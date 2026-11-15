@@ -169,7 +169,6 @@ void Player::update(Scene& world, const PlayerInput& in, float dt) {
 
     Vector3 wish = { 0, 0, 0 };
     bool jump = false, jetUp = false, jetDown = false;
-    if (autoWalk) wish = Vector3Normalize(Vector3Subtract(forward, Vector3Scale(up, Vector3DotProduct(forward, up))));
     if (in.enabled) {
         // (mouse look: look(), once per frame)
         const Vector3 flat = Vector3Normalize(Vector3Subtract(forward, Vector3Scale(up, Vector3DotProduct(forward, up))));
@@ -196,7 +195,6 @@ void Player::update(Scene& world, const PlayerInput& in, float dt) {
         const float vUp = Vector3DotProduct(Vector3Subtract(velocity, nearest->surfaceVelocity(at)), up);
         if (vUp < -12.0f) hovering = true;
     }
-    if (autoJump) { jump = true; autoJump = false; }
     // Jump buffer: a press is remembered briefly, so it is not lost on a frame where "grounded"
     // flickers off over bumpy ground (see coyote time in stepPhysics).
     if (jump) jumpBuffer = 0.15f;

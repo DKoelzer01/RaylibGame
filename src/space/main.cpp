@@ -5760,7 +5760,14 @@ int main(int argc, char** argv)
             } else {
                 ship.update(world, PlayerInput::None(), simDt);
                 Suit_Apply(world, simDt); // the worn suit and modules: walk, jetpack, grip, the scanner
-                if (alive && !loading) player.update(world, PlayerInput_If(gameInput, stepIn), simDt);
+                if (alive && !loading) {
+                    // Benches drive the player through the same input struct as the keyboard (#312): autoWalk holds W,
+                    // autoJump presses Space once.
+                    PlayerInput scripted;
+                    if (player.autoWalk) scripted.hold(Act::Forward);
+                    if (player.autoJump) { scripted.press(Act::Jump); player.autoJump = false; }
+                    player.update(world, gameInput ? stepIn : scripted.enabled ? scripted : PlayerInput::None(), simDt);
+                }
                 {
                     // Dead (until the respawn): the view stays exactly where the player died, held in the frame of the
                     // body they were on - player.update is skipped, so nothing else carried it with the spinning,
