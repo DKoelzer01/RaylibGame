@@ -341,6 +341,7 @@ int main(int argc, char** argv)
     bool benchHover = false; int hoverPhase = 0; double hoverStart = 0.0; // --test-hover (#163)
     bool benchNetIds = false;      // --test-netids: stable network ids over a save and load (#317)
     bool benchNet = false;         // --test-net: connect by IP over loopback (GameNetworkingSockets, #310)
+    bool benchTwoPlayers = false; int twoPhase = 0; // --test-two-players: a second Player in its own frame (#314)
     bool benchFall = false; int fallPhase = 0, fallIdx = 0; bool fallOk = true; double fallStart = 0.0; // --test-fall (#263)
     bool benchTeleClose = false; int teleCPhase = 0; double teleCStart = 0.0, teleCWorst = 0.0; long long teleCReq0 = 0; // --test-telescope-close (#261)
     DVec3 wallLast{};
@@ -481,6 +482,7 @@ int main(int argc, char** argv)
         if (std::string(argv[i]) == "--test-hover") benchHover = true; // the flight pack (#163)
         if (std::string(argv[i]) == "--test-netids") benchNetIds = true; // stable network ids (#317)
         if (std::string(argv[i]) == "--test-net") benchNet = true; // loopback connect (#310)
+        if (std::string(argv[i]) == "--test-two-players") benchTwoPlayers = true; // two players side by side (#314)
         if (std::string(argv[i]) == "--test-fall") benchFall = true; // drops from 3-100 m: fall damage by height
         if (std::string(argv[i]) == "--test-telescope-close") benchTeleClose = true; // zoom 16x at the horizon, close: worst frame after (#261)
         if (std::string(argv[i]) == "--test-menus") benchMenus = true;
@@ -1787,6 +1789,64 @@ int main(int argc, char** argv)
                         printf("bench: hover: caught the 100 m fall, health %.0f; hovering %.0f m up, drifted %.2f m in 3 s, suit power %.1f -> %s\n",
                                survival.health, height, drift, survival.power, pass ? "PASS" : "FAIL");
                         player.hovering = false; benchHover = false;
+                    }
+                } else if (benchTwoPlayers && (twoPhase > 0 || WorldIdle())) {
+                    // --test-two-players (#314): a second Player 2 km away walks at the same time as the local one, each stepped
+                    // in its own frame (RenderOriginScope) on the sim clock; the camera stays with the local player. Both must
+                    // walk at about walking speed, mostly grounded, never inside solid ground.
+                    static Player other;
+                    static long long otherTick = 0;
+                    static DVec3 start0{}, start1{};
+                    static double twoStart = 0.0;
+                    static int frames = 0, grounded0 = 0, grounded1 = 0;
+                    static float worst0 = 0.0f, worst1 = 0.0f, twoDistUsed = 2000.0f;
+                    Planetoid* p = dynamic_cast<Planetoid*>(world.objects[0].get());
+                    auto inside = [&](const Player& pl) { // body density at the capsule's middle
+                        const DVec3 mid = pl.position + DVec3(Vector3Scale(pl.up, 0.9f));
+                        return p->densityAt(p->toLocalD(mid).toFloat());
+                    };
+                    if (twoPhase == 0) {
+                        const Vector3 d0 = StartSpawnDir(*p);
+                        const char* env = getenv("RAYLIBGAME_TWO_DIST"); // bench knob: the second player's distance (m)
+                        twoDistUsed = env ? (float)atof(env) : 2000.0f;
+                        const float twoDist = twoDistUsed;
+                        Vector3 e = Vector3CrossProduct(d0, { 0, 1, 0 });
+                        if (Vector3Length(e) < 0.1f) e = { 1, 0, 0 };
+                        const Vector3 d1 = Vector3Normalize(Vector3Add(d0, Vector3Scale(Vector3Normalize(e), twoDist / (p->radius * p->scale))));
+                        player.spawnOn(world, *p, d0);
+                        other.spawnOn(world, *p, d1);
+                        otherTick = SimTick();
+                        twoPhase = 1; twoStart = -1.0;
+                    } else {
+                        // The second player: one update per simulation step since the last frame, in its own frame.
+                        PlayerInput walk;
+                        if (twoPhase == 2) walk.hold(Act::Forward);
+                        for (; otherTick < SimTick(); ++otherTick) {
+                            RenderOriginScope frame(world, other.position);
+                            other.update(world, walk, SimDt());
+                        }
+                        if (twoPhase == 1) {
+                            if (twoStart < 0.0) twoStart = GetTime();
+                            if (GetTime() - twoStart > 2.0 && player.grounded && other.grounded) {
+                                start0 = p->toLocalD(player.position); start1 = p->toLocalD(other.position);
+                                player.autoWalk = true;
+                                twoPhase = 2; twoStart = GetTime();
+                            }
+                        } else if (twoPhase == 2) {
+                            ++frames; grounded0 += player.grounded ? 1 : 0; grounded1 += other.grounded ? 1 : 0;
+                            worst0 = std::max(worst0, inside(player)); worst1 = std::max(worst1, inside(other));
+                            if (GetTime() - twoStart > 5.0) {
+                                player.autoWalk = false;
+                                const double w0 = (p->toLocalD(player.position) - start0).length() * p->scale;
+                                const double w1 = (p->toLocalD(other.position) - start1).length() * p->scale;
+                                const double apart = (other.position - player.position).length();
+                                const float g0 = 100.0f * grounded0 / std::max(1, frames), g1 = 100.0f * grounded1 / std::max(1, frames);
+                                const bool pass = w0 > 15.0 && w1 > 15.0 && g0 > 50.0f && g1 > 50.0f && worst0 < ISO_LEVEL && worst1 < ISO_LEVEL && apart > 0.75 * fabs(twoDistUsed);
+                                printf("bench: two players %.0f m apart: local walked %.1f m (grounded %.0f%%, densest %.2f), second walked %.1f m (grounded %.0f%%, densest %.2f) in 5 s -> %s\n",
+                                       apart, w0, g0, worst0, w1, g1, worst1, pass ? "PASS" : "FAIL");
+                                benchTwoPlayers = false;
+                            }
+                        }
                     }
                 } else if (benchNet && WorldIdle()) {
                     // --test-net (#310): host on a loopback port and connect to it from the same process; a reliable message
@@ -5563,7 +5623,7 @@ int main(int argc, char** argv)
                         }
                         benchWalkSeconds = 0.0;
                     }
-                } else if ((WorldIdle() && benchDigStrokes == 0 && !benchPaint && !benchSaveLoad && benchWalkSeconds <= 0.0 && benchMineStrokes == 0 && minePhase != 2 && benchFlySeconds <= 0.0 && !benchSuffocate && benchOrbitSeconds <= 0.0 && !benchRide && !benchPark && !benchGravity && !benchPrecision && !benchMantle && !benchAirJump && !benchMoon && !benchHole && !benchWall && !benchDoorway && !benchLedge && !benchTor && !benchMachines && !benchFall && !benchHover && !benchNetIds && !benchNet && !benchTeleClose && !benchMenus && !benchWater && !benchFlyFollow && !benchHotbar && !benchInventory && !benchMap && !benchViewmodel && !benchQuests && !benchHunger && !benchFarm && !benchAnimals && !benchThreats && benchShotTabs == 0 && !benchForest && !benchFlow && !benchPond && !benchBucket && !benchPump && !benchTerrain && !benchShelter && !benchRoom && !benchFacing && !benchShadow && !benchParticles && !benchBiomes && !benchOil && !benchSpring && !benchShotAnimals && !benchShotMachines && benchShotBiomes < 0 && !benchFarForest && !benchRecipes && !benchWeather && !benchDecor && !benchMaterials && !benchDamage && !benchCrafting && !benchSuit && !benchTools && !benchRivers && !benchRing && !benchRocket && !benchStation && !benchBlueprint && !benchSmallBody && !benchTrees && !benchChop && benchPersist == 0 && benchBuild == 0 && benchFactory == 0 && !benchProgression) || GetTime() > 600.0) {
+                } else if ((WorldIdle() && benchDigStrokes == 0 && !benchPaint && !benchSaveLoad && benchWalkSeconds <= 0.0 && benchMineStrokes == 0 && minePhase != 2 && benchFlySeconds <= 0.0 && !benchSuffocate && benchOrbitSeconds <= 0.0 && !benchRide && !benchPark && !benchGravity && !benchPrecision && !benchMantle && !benchAirJump && !benchMoon && !benchHole && !benchWall && !benchDoorway && !benchLedge && !benchTor && !benchMachines && !benchFall && !benchHover && !benchNetIds && !benchNet && !benchTwoPlayers && !benchTeleClose && !benchMenus && !benchWater && !benchFlyFollow && !benchHotbar && !benchInventory && !benchMap && !benchViewmodel && !benchQuests && !benchHunger && !benchFarm && !benchAnimals && !benchThreats && benchShotTabs == 0 && !benchForest && !benchFlow && !benchPond && !benchBucket && !benchPump && !benchTerrain && !benchShelter && !benchRoom && !benchFacing && !benchShadow && !benchParticles && !benchBiomes && !benchOil && !benchSpring && !benchShotAnimals && !benchShotMachines && benchShotBiomes < 0 && !benchFarForest && !benchRecipes && !benchWeather && !benchDecor && !benchMaterials && !benchDamage && !benchCrafting && !benchSuit && !benchTools && !benchRivers && !benchRing && !benchRocket && !benchStation && !benchBlueprint && !benchSmallBody && !benchTrees && !benchChop && benchPersist == 0 && benchBuild == 0 && benchFactory == 0 && !benchProgression) || GetTime() > 600.0) {
                     benchStart = GetTime();
                     printf("bench: world ready after %.2f s (%d chunks, avg build %.2f ms of which sampling %.2f ms, %d worker threads)\n",
                         GetWorldStats().lastGenerationSeconds, GetWorldStats().chunks, GetWorldStats().avgBuildMs, GetWorldStats().avgSampleMs, GetWorldStats().workerThreads);
@@ -5766,6 +5826,9 @@ int main(int argc, char** argv)
                     PlayerInput scripted;
                     if (player.autoWalk) scripted.hold(Act::Forward);
                     if (player.autoJump) { scripted.press(Act::Jump); player.autoJump = false; }
+                    // Physics in the player's own frame (#314): render space centred on the feet for the step, whatever the
+                    // camera and the floating origin do (a server runs every player this way).
+                    RenderOriginScope frame(world, player.position);
                     player.update(world, gameInput ? stepIn : scripted.enabled ? scripted : PlayerInput::None(), simDt);
                 }
                 {
