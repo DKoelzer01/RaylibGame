@@ -4155,14 +4155,15 @@ int main(int argc, char** argv)
                         if (best > 1e29f) {
                             // Eroded worlds (#487): the bake's ponds are few (309 on seed 42) and may all be far from the
                             // start; the nearest of them, wherever it is (the test travels there).
-                            Vector3 bd;
-                            if (pf->nearestBakePond(home, bd)) {
+                            // (One inside a lake reads as the lake: the next one then.)
+                            int skipped = 0;
+                            for (const Vector3& bd : pf->bakePondsByDistance(home)) {
                                 const PlanetField::WaterSource ws = pf->waterSourceAt(bd);
-                                if (ws.kind == 3) {
-                                    best = acosf(std::clamp(Vector3DotProduct(home, bd), -1.0f, 1.0f)) * pf->radius;
-                                    pondDirB = ws.pondDir; pondLevelB = ws.level; pondRB = ws.pondR;
-                                    printf("bench: pond: none within 20 km of the start; the bake's nearest pond is %.1f km away\n", best / 1000.0f);
-                                }
+                                if (ws.kind != 3) { ++skipped; continue; }
+                                best = acosf(std::clamp(Vector3DotProduct(home, bd), -1.0f, 1.0f)) * pf->radius;
+                                pondDirB = ws.pondDir; pondLevelB = ws.level; pondRB = ws.pondR;
+                                printf("bench: pond: none within 20 km of the start; the bake's nearest pond is %.1f km away (%d nearer ones lie in lakes)\n", best / 1000.0f, skipped);
+                                break;
                             }
                         }
                         if (best > 1e29f) { printf("bench: pond: no pond within 6 km -> FAIL\n"); benchPond = false; }

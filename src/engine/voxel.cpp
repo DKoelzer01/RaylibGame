@@ -2219,13 +2219,11 @@ std::string PlanetField::debugColumn(Vector3 dir) const {
     return buf;
 }
 
-bool PlanetField::nearestBakePond(Vector3 dir, Vector3& pondDir) const {
+std::vector<Vector3> PlanetField::bakePondsByDistance(Vector3 dir) const {
+    std::vector<Vector3> out;
     const PlanetErosion* ero = moon ? nullptr : erosion();
-    if (!ero || ero->ponds().empty()) return false;
-    float best = -2.0f;
-    for (const PlanetErosion::Pond& p : ero->ponds()) {
-        const float d = Vector3DotProduct(dir, p.dir);
-        if (d > best) { best = d; pondDir = p.dir; }
-    }
-    return true;
+    if (!ero) return out;
+    for (const PlanetErosion::Pond& p : ero->ponds()) out.push_back(p.dir);
+    std::sort(out.begin(), out.end(), [&](const Vector3& a, const Vector3& b) { return Vector3DotProduct(dir, a) > Vector3DotProduct(dir, b); });
+    return out;
 }
