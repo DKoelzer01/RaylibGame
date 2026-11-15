@@ -19,7 +19,7 @@
 // The New World screen (#504). See newworld.h.
 
 namespace {
-    constexpr int kTexW = 512, kTexH = 256;  // the preview's equirectangular map
+    constexpr int kTexW = 1024, kTexH = 512; // the preview's equirectangular map (a build takes ~0.05 s)
     constexpr int kSphereRT = 640;           // the turning planet is drawn into this square, then onto the screen
     const Color kPanel = { 18, 24, 34, 230 }, kButton = { 44, 58, 80, 255 }, kHover = { 70, 96, 132, 255 }, kText = { 230, 236, 245, 255 };
 

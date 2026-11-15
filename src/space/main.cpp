@@ -1229,7 +1229,7 @@ int main(int argc, char** argv)
                 Recorder_Update(true);
                 BeginDrawing();
                 NewWorld_Draw();
-                if (Recorder_WantsFrame(true)) Recorder_Capture();
+                if (Recorder_WantsFrame(true)) { rlDrawRenderBatchActive(); Recorder_Capture(); } // the batch drawn first (the planet, the text)
                 EndDrawing();
                 Recorder_FrameDone();
                 if (firstBuild < 0.0 && NewWorld_PreviewBuildSeconds() >= 0.0) firstBuild = NewWorld_PreviewBuildSeconds();
