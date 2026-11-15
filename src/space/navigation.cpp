@@ -296,8 +296,8 @@ void Nav_Update(Scene& world, bool inputEnabled, bool gameInput) {
     }
     const Here h = Locate(world);
     // Reveal the ground around the player a few times a second.
-    if (h.body && GetTime() - lastReveal > 0.3) {
-        lastReveal = GetTime();
+    if (h.body && SimTime() - lastReveal > 0.3) {
+        lastReveal = SimTime();
         TileSet& set = explored[h.body->name];
         const size_t before = set.size();
         Vector3 east, north;

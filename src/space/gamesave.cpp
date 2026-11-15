@@ -2,6 +2,8 @@
 #include "structures.h"
 #include "trapping.h"
 #include "events.h"
+#include "gamerng.h"
+#include "netid.h"
 #include "inventory.h"
 #include "player.h"
 #include "world.h"
@@ -26,6 +28,8 @@
 
 void GameSave_Register() {
     saveExtrasHook = [](FILE* f) {
+        NetId_Save(f); // first: loads allocate ids for lines from older saves after it (#317)
+        GameRng_Save(f); // the gameplay RNG continues where it was (#316)
         fprintf(f, "player %.6f %.6f %.6f %f %f %f %d %f\n", player.position.x, player.position.y, player.position.z,
                 player.forward.x, player.forward.y, player.forward.z, player.flyMode ? 1 : 0, player.jetpackFuel);
         fprintf(f, "player_up %f %f %f\n", player.up.x, player.up.y, player.up.z);
@@ -69,6 +73,8 @@ void GameSave_Register() {
         worldDifficulty = 1; // a save without the line: normal
         char tok[64] = {};
         while (fscanf(f, " %63s", tok) == 1 && strcmp(tok, "end_extras") != 0) {
+            if (NetId_LoadLine(tok, f)) continue;
+            if (GameRng_LoadLine(tok, f)) continue;
             if (QuestBook_LoadLine(tok, f)) continue;
             if (Farm_LoadLine(tok, f)) continue;
             if (Animals_LoadLine(tok, f)) continue;

@@ -7,6 +7,7 @@
 // inventory fits them. Suit_Apply() turns the worn setup into the player's and survival's numbers
 // every frame.
 
+#include <raylib.h>
 #include <cstdio>
 #include <string>
 #include <vector>
@@ -23,6 +24,18 @@ struct SuitStats {
     bool grip = false, scanner = false, servo = false;
     bool hover = false;                  // flight pack (#163): hover mode (H)
     bool vacuum = false;                 // rated for vacuum (the explorer suit)
+};
+
+// One player's suit (#313, in their PlayerSession): what is worn and fitted, its numbers, and the ore scanner.
+struct SuitState {
+    std::string worn = "basic_suit";
+    std::vector<std::string> fitted = std::vector<std::string>(2);
+    SuitStats stats;
+    // The ore scanner: the nearest deposit within 64 m, looked for once a second.
+    std::string scanKind;
+    float scanDist = -1.0f;
+    Vector3 scanLocal = { 0, 0, 0 };
+    double lastScan = -10.0;
 };
 
 const SuitStats& Suit_Stats();

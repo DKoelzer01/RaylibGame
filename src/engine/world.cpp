@@ -1,4 +1,6 @@
 #include "world.h"
+#include "netid.h"
+#include "gamerng.h"
 #include "terrainarena.h"
 #include "ring.h"
 #include "player.h"
@@ -120,6 +122,42 @@ Planetoid::Planetoid(std::string name, DVec3 wp, std::shared_ptr<const TerrainFi
 Planetoid* Planetoid::find(uint64_t id) {
     auto it = planetoidRegistry.find(id);
     return it == planetoidRegistry.end() ? nullptr : it->second;
+}
+
+uint64_t WorldFingerprint(const Scene& world) {
+    // FNV-1a over the seed and, per generated body, its id, kind and size plus the CPU density field sampled at fixed
+    // directions and heights (no edits: that is what every machine regenerates from the seed). Float bits are hashed as is.
+    uint64_t h = 1469598103934665603ull;
+    auto mix = [&](const void* data, size_t n) { const uint8_t* b = (const uint8_t*)data; for (size_t i = 0; i < n; ++i) { h ^= b[i]; h *= 1099511628211ull; } };
+    mix(&worldGen.lastSeed, sizeof(worldGen.lastSeed));
+    for (const auto& obj : world.objects) {
+        const auto* p = dynamic_cast<const Planetoid*>(obj.get());
+        if (!p || NetId_Kind(p->netId) != NetKind::Body || !p->field) continue;
+        mix(&p->netId, sizeof(p->netId));
+        const int kind = (int)p->kind;
+        mix(&kind, sizeof(kind));
+        mix(&p->radius, sizeof(p->radius));
+        // Heights where the surface is: around sea level (planets, moons), else through the outer half (asteroids).
+        const float sea = p->field->seaLevelRadius(), top = p->field->maxRadius();
+        const float heights[3] = { sea > 0.0f ? sea - 40.0f : top * 0.5f, sea > 0.0f ? sea + 15.0f : top * 0.75f, sea > 0.0f ? sea + 150.0f : top * 0.95f };
+        for (int i = 0; i < 64; ++i) {
+            // A Fibonacci sphere of directions, three heights each.
+            const float y = 1.0f - 2.0f * (i + 0.5f) / 64.0f, rr = sqrtf(std::max(0.0f, 1.0f - y * y)), a = 2.39996323f * (float)i;
+            const Vector3 dir = { rr * cosf(a), y, rr * sinf(a) };
+            for (float hgt : heights) {
+                const float r = p->flat ? 0.0f : hgt;
+                const float d = p->field->baseDensity(Vector3Scale(dir, r));
+                mix(&d, sizeof(d));
+            }
+        }
+    }
+    return h;
+}
+
+Planetoid* Planetoid::findNet(uint64_t netId) {
+    if (netId == 0) return nullptr;
+    for (const auto& kv : planetoidRegistry) if (kv.second->netId == netId) return kv.second;
+    return nullptr;
 }
 
 Vector3 Planetoid::toLocal(Vector3 world) const { return Vector3Transform(world, MatrixInvert(localTransform())); }
@@ -1076,14 +1114,18 @@ void advanceBodies(Scene& world, float dt) {
         if (p->spin.x != 0.0f || p->spin.y != 0.0f || p->spin.z != 0.0f) {
             float* r[3] = { &p->rotation.x, &p->rotation.y, &p->rotation.z };
             const float s[3] = { p->spin.x, p->spin.y, p->spin.z };
+            const bool spinChanged = p->spin.x != p->spinPhaseFor.x || p->spin.y != p->spinPhaseFor.y || p->spin.z != p->spinPhaseFor.z;
             for (int k = 0; k < 3; ++k) {
-                // Something else (a load, a script) set the angle: take it over.
-                if (!p->spinAngleSet || (float)p->spinAngle[k] != *r[k]) p->spinAngle[k] = *r[k];
-                double a = fmod(p->spinAngle[k] + (double)s[k] * dt, 360.0);
+                // The angle is a function of the world clock (#315): phase + spin * time. Something else (a load, a script)
+                // set the angle, or the spin changed: take the angle over as the phase at the time before this step.
+                if (!p->spinAngleSet || spinChanged || (float)p->spinAngle[k] != *r[k])
+                    p->spinPhase[k] = (double)*r[k] - (double)s[k] * (worldTime - (double)dt);
+                double a = fmod(p->spinPhase[k] + (double)s[k] * worldTime, 360.0);
                 if (a < 0.0) a += 360.0;
                 p->spinAngle[k] = a;
                 *r[k] = (float)a;
             }
+            p->spinPhaseFor = p->spin;
             p->spinAngleSet = true;
         }
         if (p->orbitParent) { PlaceBodyOnOrbit(*p); moved = true; } // parents come first in the list
@@ -1207,7 +1249,12 @@ void worldUpdate(Scene& world, float uploadBudgetMs) {
     }
     GpuTimer_CpuMark("w-preload");
     for (auto& obj : world.objects)
-        if (auto* p = dynamic_cast<Planetoid*>(obj.get()); p && p->trees) p->trees->update(*p, p->toLocal(world.camera.position));
+        if (auto* p = dynamic_cast<Planetoid*>(obj.get()); p && p->trees) {
+            std::vector<Vector3> extra; // other interest centres on this body (#318)
+            for (const InterestCentre& c : gInterestCentres) if (c.body == p->id) extra.push_back(c.local);
+            p->trees->setInterest(std::move(extra));
+            p->trees->update(*p, p->toLocal(world.camera.position));
+        }
 
     GpuTimer_CpuMark("w-trees");
     stats.queuedJobs = (int)Jobs().queued();
@@ -1495,8 +1542,10 @@ void generateWorld(Scene& world) {
     PROFILE_FUNCTION();
     if (!worldGen.systemLoaded) ReloadSystemDef();
     gRings.clear();
+    NetId_Reset(); // a new world: allocated ids start again (a load sets the counter from its save, #317)
     worldGen.lastSeed = worldGen.seed ? worldGen.seed : rd();
     gen.seed(worldGen.lastSeed);
+    GameRng_Seed(worldGen.lastSeed); // gameplay rolls follow the seed (a load restores the saved stream, #316)
     logger.logf("Generating world (seed %u, %zu definitions from %s)...\n", worldGen.lastSeed, worldGen.system.bodies.size(), worldGen.bodiesPath.c_str());
 
     // Every body draws the same values in the same order (3 position values, its terrain seed,
@@ -1526,6 +1575,7 @@ void generateWorld(Scene& world) {
         p->spin = { 0.0f, spin, 0.0f };
         p->surfaceGravity = d.gravity >= 0.0f ? d.gravity : AutoSurfaceGravity(kind, radius);
         p->parent = &world.rootObject;
+        p->netId = NetId_Make(NetKind::Body, (uint64_t)index); // the creation order: the same for every run of the system (#317)
         byName[name] = p.get();
         world.objects.push_back(std::move(p));
         ++index;

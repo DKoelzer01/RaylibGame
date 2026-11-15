@@ -22,9 +22,10 @@ struct BuildToolState {
     int material = 0;       // BuildMaterial index for shapes
     float reach = 8.0f;
 };
-extern BuildToolState buildTool;
+extern BuildToolState& buildTool; // the local PlayerSession's (#313)
 
-void BuildTool_Update(Scene& world, bool inputEnabled, bool usable);
+struct PlayerInput;
+void BuildTool_Update(Scene& world, const PlayerInput& in, bool usable);
 void BuildTool_Draw3D(Scene& world);
 void BuildTool_DrawHUD();
 float BuildTool_BreakProgress();   // 0..1 while LMB is held on a part (the HUD bar under the crosshair)
@@ -36,7 +37,7 @@ bool BuildTool_Place(Planetoid& body, Plot& plot, const Part& part, bool charge)
 // Clear terrain inside a part's cells and fill small gaps under it (placing; a rocket landing).
 void BuildTool_LayFoundation(Planetoid& body, Plot& plot, const Part& part);
 // Machines: looking at one shows its state (factory snapshot); I inserts items, O takes outputs.
-void Machine_Update(Scene& world, bool inputEnabled);
+void Machine_Update(Scene& world, const PlayerInput& in);
 void Machine_DrawHUD();
 bool IsMachineItem(const std::string& id); // an item that builds a machine part (chests don't take these)
 

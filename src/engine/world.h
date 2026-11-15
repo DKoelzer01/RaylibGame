@@ -87,6 +87,11 @@ struct TerrainHit {
 };
 
 void worldHandler(Scene& world);
+// Interest centres (#318): body-local points, besides the camera and the local player, around which world services keep
+// running - tree tiles (trunk collision, plant picking) and animals (spawning and simulation). A server sets one per
+// connected player; tests set them by hand. body = Planetoid::id.
+struct InterestCentre { uint64_t body = 0; Vector3 local{}; };
+inline std::vector<InterestCentre> gInterestCentres;
 // The simulation's frame time: GetFrameTime(), or a fixed step while recording (#375: --fixed-dt, implied by --record)
 // so captures are reproducible. Gameplay code reads this; UI timing keeps the real clock.
 inline float gFixedFrameTime = 0.0f;
@@ -95,6 +100,8 @@ inline float GameFrameTime() { return gFixedFrameTime > 0.0f ? gFixedFrameTime :
 // recording (#375), so two captures of the same scene match frame for frame. main.cpp advances it.
 inline double gGameClock = 0.0;
 inline double GameClock() { return gFixedFrameTime > 0.0f ? gGameClock : GetTime(); }
+// The simulation clock (#315): SimTime() / SimDt() / SimAlpha(), see simclock.h.
+#include "simclock.h"
 // Time of day (#275): the debug UI's time-scale multiplier (bodies spin and orbit this much faster) and a pending jump
 // in seconds of world time, applied by the next advanceBodies (main.cpp), which carries riders along.
 inline float gDebugTimeScale = 1.0f;
@@ -111,6 +118,9 @@ double BodyDaySeconds(const Scene& world);                 // the nearest body's
 float SunElevationAtCamera(const Scene& world);            // degrees over the horizon at the camera's spot on that body
 void generateWorld(Scene& world);      // creates planetoids; chunks stream in via worldUpdate()
 void regenerateWorld(Scene& world);
+// A hash of what every machine regenerates from the seed (#316): the seed, each generated body's id, kind and size, and its
+// CPU density field sampled at fixed points (no edits). Client and server compare it at join to catch mismatched builds.
+uint64_t WorldFingerprint(const Scene& world);
 // Drops the whole world (jobs, machines, water, rings, bodies and their GPU meshes): quitting to the main menu (#270).
 void unloadWorld(Scene& world);
 void BeginWorldStreaming();            // for games that add bodies themselves: WorldIdle() waits for them

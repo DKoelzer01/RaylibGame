@@ -1,4 +1,5 @@
 #include "toolwear.h"
+#include "playersession.h"
 #include "audio.h"
 #include "gameui.h"
 #include "inventory.h"
@@ -11,14 +12,14 @@
 #include <map>
 
 namespace {
-    std::map<std::string, int> used; // strokes on the tool in use, per item id
+    std::map<std::string, int>& Used() { return LocalSession().toolWear.used; } // the local player's (#313)
 }
 
 void ToolWear_OnStroke(const std::string& id, int strokes) {
     const ToolSpec t = ToolOf(id);
     const int max = ToolDurability(t);
     if (max <= 0 || strokes <= 0 || inventory.count(id) <= 0) return;
-    int& u = used[id];
+    int& u = Used()[id];
     u += strokes;
     if (u < max) {
         if (u == max - max / 10) GameUI_Toast(TextFormat("Your %s %s is nearly worn out (repair it: Tab)", ToolTierName(t.tier), ToolTypeName(t.type)));
@@ -33,7 +34,7 @@ void ToolWear_OnStroke(const std::string& id, int strokes) {
     GameUI_Toast(TextFormat("Your %s %s broke", ToolTierName(t.tier), ToolTypeName(t.type)));
 }
 
-int ToolWear_Used(const std::string& id) { auto it = used.find(id); return it == used.end() ? 0 : it->second; }
+int ToolWear_Used(const std::string& id) { auto it = Used().find(id); return it == Used().end() ? 0 : it->second; }
 
 float ToolWear_Left(const std::string& id) {
     const int max = ToolDurability(ToolOf(id));
@@ -57,14 +58,14 @@ bool ToolWear_Repair(const std::string& id) {
         GameUI_Toast(TextFormat("Repairing needs %d %s", n, item.c_str()));
         return false;
     }
-    used[id] = 0;
+    Used()[id] = 0;
     Audio_Play(Sfx::Craft, 0.5f);
     return true;
 }
 
 void ToolWear_DrawRepairUI() {
     bool header = false;
-    for (const auto& kv : used) {
+    for (const auto& kv : Used()) {
         if (kv.second <= 0 || inventory.count(kv.first) <= 0) continue;
         if (!header) { ImGui::TextUnformatted("Tool repair"); header = true; }
         std::string item; int n = 0;
@@ -79,15 +80,15 @@ void ToolWear_DrawRepairUI() {
     if (header) ImGui::Separator();
 }
 
-void ToolWear_Reset() { used.clear(); }
+void ToolWear_Reset() { Used().clear(); }
 
 void ToolWear_Save(FILE* f) {
-    for (const auto& kv : used) if (kv.second > 0) fprintf(f, "tool_wear %s %d\n", kv.first.c_str(), kv.second);
+    for (const auto& kv : Used()) if (kv.second > 0) fprintf(f, "tool_wear %s %d\n", kv.first.c_str(), kv.second);
 }
 
 bool ToolWear_LoadLine(const char* tok, FILE* f) {
     if (strcmp(tok, "tool_wear") != 0) return false;
     char id[64] = {}; int n = 0;
-    if (fscanf(f, " %63s %d", id, &n) == 2) used[id] = n;
+    if (fscanf(f, " %63s %d", id, &n) == 2) Used()[id] = n;
     return true;
 }

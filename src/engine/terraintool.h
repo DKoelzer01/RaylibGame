@@ -30,9 +30,10 @@ struct TerrainToolSettings {
     // the hotbar slot and counts quest events ("scoop", "pour").
     std::function<void(const std::string& from, const std::string& to, const char* event)> swapHeld;
 };
-extern TerrainToolSettings terrainTool;
+extern TerrainToolSettings& terrainTool; // the local PlayerSession's (#313)
 
-void TerrainTool_Update(Scene& world, bool inputEnabled, bool editEnabled = true); // once per frame before drawing; editEnabled=false keeps save/load (F5/F9) only
+struct PlayerInput;
+void TerrainTool_Update(Scene& world, const PlayerInput& in, bool editEnabled = true); // once per frame before drawing (input: #312); editEnabled=false keeps save/load (F5/F9) only
 bool TerrainTool_Stroke(bool dig);                         // one dig/build stroke at the last crosshair hit
 bool TerrainTool_IsFiller(const std::string& item);        // bulk ground placed with RMB (dirt, gravel, sand, stone...)
 float TerrainTool_Cooldown();                              // 1 just after a swing .. 0 ready for the next

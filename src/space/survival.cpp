@@ -1,4 +1,6 @@
 #include "survival.h"
+#include "gamerng.h"
+#include "playerinput.h"
 #include "suit.h"
 #include "questtree.h"
 #include "weather.h"
@@ -22,7 +24,7 @@
 #include <unordered_map>
 #include <vector>
 
-SurvivalState survival;
+// (survival: the local PlayerSession's, src/space/playersession.cpp, #313)
 int worldDifficulty = 1;
 float Difficulty_HungerScale() { return worldDifficulty == 0 ? 0.6f : worldDifficulty == 2 ? 1.25f : 1.0f; }
 float Difficulty_ThreatScale() { return worldDifficulty == 0 ? 0.0f : worldDifficulty == 2 ? 1.5f : 1.0f; }
@@ -117,9 +119,9 @@ void Survival_Respawn(Scene& world) {
     GameUI_Toast("Respawned at the start");
 }
 
-void Survival_Update(Scene& world, float dt, bool inputEnabled) {
+void Survival_Update(Scene& world, float dt, const PlayerInput& in) {
     if (survival.dead) {
-        if (GetTime() - survival.deathTime > 3.0) Survival_Respawn(world);
+        if (SimTime() - survival.deathTime > 3.0) Survival_Respawn(world);
         return;
     }
     const Vector3 pr = (player.position - world.renderOrigin).toFloat();
@@ -163,7 +165,7 @@ void Survival_Update(Scene& world, float dt, bool inputEnabled) {
         // Flight pack hover (#163): a slow, steady drain in the air (~7 min of the full bar), three times that
         // boosting (Shift); at zero it cuts out.
         if (player.hovering && !player.grounded)
-            survival.power = std::max(0.0f, survival.power - (IsKeyDown(KEY_LEFT_SHIFT) ? 0.75f : 0.25f) / Suit_Stats().power * dt);
+            survival.power = std::max(0.0f, survival.power - (in.down(Act::Sprint) ? 0.75f : 0.25f) / Suit_Stats().power * dt);
         player.hoverPowered = survival.power > 0.0f;
         // Firing the jetpack only burns fuel; recharging the tank (on the ground) is what costs suit
         // power, and only as far as the power left can pay for.
@@ -178,7 +180,7 @@ void Survival_Update(Scene& world, float dt, bool inputEnabled) {
     }
     survival.lastJetpackFuel = player.jetpackFuel;
     if (survival.power <= 0.0f && survival.headlamp && !ship.piloted) { survival.headlamp = false; GameUI_Toast("Headlamp out: no suit power"); }
-    if (inputEnabled && IsKeyPressed(KEY_L)) {
+    if (in.hit(Act::Headlamp)) {
         if (survival.power > 0.0f || ship.piloted) {
             survival.headlamp = !survival.headlamp;
             Audio_Play(Sfx::Build, 0.25f, survival.headlamp ? 1.8f : 1.5f);
@@ -199,14 +201,14 @@ void Survival_Update(Scene& world, float dt, bool inputEnabled) {
         float drain = survival.foodDrainPerSec * (active ? 1.6f : 1.0f) * Suit_Stats().food * Difficulty_HungerScale();
         const float T = survival.temperature;
         if (!std::isnan(T) && T < 5.0f) drain *= 1.0f + Suit_Stats().cold * (5.0f - T) / 15.0f; // insulation, the regulator
-        if (GetTime() < survival.sickUntil) drain *= 2.0f;
+        if (SimTime() < survival.sickUntil) drain *= 2.0f;
         if (!survival.inLifeSupport) survival.food = std::max(0.0f, survival.food - drain * dt);
         if (survival.food <= 0.0f) survival.health -= survival.starvationDamagePerSec * dt;
         else if (survival.food > 80.0f && survival.oxygen > 0.0f) survival.health = std::min(100.0f, survival.health + survival.wellFedHealPerSec * dt);
         if (!std::isnan(T) && T > 35.0f && !Suit_Stats().heatProof) survival.health -= 0.05f * (T - 35.0f) * dt; // 40 C: 0.25 a second
     }
 
-    if (inputEnabled) {
+    if (in.enabled) {
     }
 
     {   // A night survived (the quest tree): dark fell and day came back without a death.
@@ -219,7 +221,7 @@ void Survival_Update(Scene& world, float dt, bool inputEnabled) {
     if (survival.health <= 0.0f) {
         survival.health = 0.0f;
         survival.dead = true;
-        survival.deathTime = GetTime();
+        survival.deathTime = SimTime();
         survival.deaths++;
         player.autoWalk = false;
     }
@@ -250,10 +252,10 @@ void Survival_DrawHUD() {
         const SuitStats& st = Suit_Stats();
         const char* note = T < 5.0f ? (st.cold <= 0.0f ? "  cold: regulated" : st.cold < 1.0f ? "  cold: insulated" : "  cold: hungrier") : T > 35.0f ? (st.heatProof ? "  heat: regulated" : "  heat") : "";
         DrawText(TextFormat("%.0f C%s", T, note), x + std::max(wO2, wPwr) + 20, y + 68, 16, tc);
-        if (hereBiome != Biome::Count) DrawText(BiomeName(hereBiome), x + std::max(wO2, wPwr) + 20, y + 46 + (GetTime() < survival.sickUntil ? -66 : 0), 16, Fade(RAYWHITE, 0.75f));
+        if (hereBiome != Biome::Count) DrawText(BiomeName(hereBiome), x + std::max(wO2, wPwr) + 20, y + 46 + (SimTime() < survival.sickUntil ? -66 : 0), 16, Fade(RAYWHITE, 0.75f));
     }
     const int tx = x + std::max(wO2, wPwr) + 20;
-    if (GetTime() < survival.sickUntil) DrawText("SICK", tx, y + 46, 16, ORANGE);
+    if (SimTime() < survival.sickUntil) DrawText("SICK", tx, y + 46, 16, ORANGE);
     if (!std::isnan(T) && Weather_Here().kind != WeatherKind::Clear) DrawText(TextFormat("weather: %s", Weather_Name(Weather_Here().kind)), tx, y + 24, 16, Fade(RAYWHITE, 0.75f));
     if (survival.inLifeSupport) DrawText("LIFE SUPPORT", tx, y + 2, 16, SKYBLUE);
     else if (survival.breathable && showO2) DrawText("BREATHABLE AIR", tx, y + 2, 16, Fade(SKYBLUE, 0.7f));
@@ -489,7 +491,7 @@ bool Survival_UseItem(const std::string& id) {
         if (survival.food < 98.0f && inventory.remove(id, 1)) {
             survival.food = std::min(100.0f, survival.food + food.value);
             QuestBook_Count("eat");
-            if (food.raw && GetRandomValue(0, 99) < 30) { survival.sickUntil = (float)GetTime() + 60.0f; GameUI_Toast("You feel sick: cook your meat"); }
+            if (food.raw && GameRng_Int(0, 99) < 30) { survival.sickUntil = (float)SimTime() + 60.0f; GameUI_Toast("You feel sick: cook your meat"); }
             Audio_Play(Sfx::Pickup, 0.5f, 0.8f);
             return true;
         }

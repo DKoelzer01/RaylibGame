@@ -1052,6 +1052,22 @@ void Scene::updateFloatingOrigin() {
     syncRenderPositions();
 }
 
+RenderOriginScope::RenderOriginScope(Scene& s, const DVec3& centre) : scene(s), saved(s.renderOrigin) {
+    const Vector3 d = (centre - saved).toFloat();
+    scene.renderOrigin = centre;
+    scene.camera.position = Vector3Subtract(scene.camera.position, d);
+    scene.camera.target = Vector3Subtract(scene.camera.target, d);
+    scene.syncRenderPositions();
+}
+
+RenderOriginScope::~RenderOriginScope() {
+    const Vector3 d = (scene.renderOrigin - saved).toFloat();
+    scene.renderOrigin = saved;
+    scene.camera.position = Vector3Add(scene.camera.position, d);
+    scene.camera.target = Vector3Add(scene.camera.target, d);
+    scene.syncRenderPositions();
+}
+
 void Scene::setCameraWorld(DVec3 position, DVec3 target) {
     renderOrigin = position;
     camera.position = { 0, 0, 0 };

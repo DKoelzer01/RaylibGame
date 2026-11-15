@@ -1,4 +1,5 @@
 #include "station.h"
+#include "netid.h"
 #include "factory.h"
 #include "plots.h"
 #include "voxel.h"
@@ -24,6 +25,7 @@ namespace {
     };
     std::vector<Station> stations;
     Scene* gScene = nullptr;   // for loads (Station_Init)
+    bool lastStationLoaded = false; // the last "station" line made a station (its "station_id" follows, #317)
 
     double Mu(const Planetoid& b) { const double R = b.gravityRadius > 0.0f ? b.gravityRadius : b.radius * b.scale; return b.surfaceGravity * R * R; }
     DVec3 Cross(const DVec3& a, const DVec3& b) { return DVec3(a.y * b.z - a.z * b.y, a.z * b.x - a.x * b.z, a.x * b.y - a.y * b.x); }
@@ -97,6 +99,7 @@ Planetoid* Station_Create(Scene& world, Planetoid& parent, DVec3 pos, Vector3 ve
     s.rotation = EulerFromQuat(rot);
     if (!Elements(s, pos - parent.worldPos, DVec3(Vector3Subtract(vel, parent.linearVelocity)), WorldTime())) return nullptr;
     auto body = std::make_unique<Planetoid>("station", pos, std::make_shared<EmptyField>(extent), extent);
+    body->netId = NetId_Allocate(NetKind::Station); // stable, saved (#317)
     body->parent = &world.rootObject;
     body->plots = std::make_unique<PlotSet>();
     s.body = body->id;
@@ -164,11 +167,19 @@ void Station_Save(FILE* f) {
                 s.rotation.x, s.rotation.y, s.rotation.z, b->radius);
         b->plots->save(f);
         Factory::Save(f, b->id);
+        fprintf(f, "station_id %llu\n", (unsigned long long)b->netId); // its own line: older builds skip it (#317)
     }
 }
 
 bool Station_LoadLine(const char* tok, FILE* f) {
+    if (strcmp(tok, "station_id") == 0) { // the station loaded last (#317)
+        unsigned long long id = 0;
+        if (fscanf(f, " %llu", &id) == 1 && id != 0 && lastStationLoaded && !stations.empty())
+            if (Planetoid* b = Body(stations.back().body)) { b->netId = id; NetId_Note(id); }
+        return true;
+    }
     if (strcmp(tok, "station") != 0) return false;
+    lastStationLoaded = false;
     char parent[128] = {};
     double rx, ry, rz, vx, vy, vz;
     float ex, ey, ez, extent;
@@ -188,6 +199,7 @@ bool Station_LoadLine(const char* tok, FILE* f) {
     s.rotation = { ex, ey, ez };
     if (!Elements(s, DVec3(rx, ry, rz), DVec3(vx, vy, vz), WorldTime())) return true;
     auto body = std::make_unique<Planetoid>("station", par->worldPos + DVec3(rx, ry, rz), std::make_shared<EmptyField>(extent), extent);
+    body->netId = NetId_Allocate(NetKind::Station); // a save from before #317; its "station_id" line replaces it
     body->parent = &world->rootObject;
     body->plots = std::move(plots);
     s.body = body->id;
@@ -195,6 +207,7 @@ bool Station_LoadLine(const char* tok, FILE* f) {
     world->objects.push_back(std::move(body));
     stations.push_back(s);
     Place(*world, stations.back());
+    lastStationLoaded = true;
     return true;
 }
 

@@ -163,6 +163,15 @@ board's auto-add workflow adds new issues itself, but sets no fields, so:
   now unclamped. The composite decodes, applies auto-exposure (log-average of a 64x36 sample grid, never brightens:
   nights stay as tuned), tonemaps (default "knee": today's look up to 0.8, highlights roll off; RAYLIBGAME_TONEMAP=aces|clip)
   and re-encodes. RAYLIBGAME_HDR=0 = the old RGBA8 target; RAYLIBGAME_EXPOSURE_LOG=1 prints exposure/luminance.
+- Multiplayer phase 1 (#304, PRs #435, #438, #440, #442): gameplay runs in fixed 60 Hz steps (`simclock.h`:
+  `SimTime()`/`SimDt()`, never `GetTime()` in sim code; the camera interpolates the player by `SimAlpha()`; mouse look is
+  per frame). Gameplay reads `PlayerInput` (`playerinput.h`; `PlayerInput_Step()` in steps, `PlayerInput_Frame()` for the
+  per-frame tools), never `IsKey*`/`IsMouse*`. Per-player state lives in `PlayerSession` (`player`, `inventory`, ... are
+  references to `LocalSession()`'s members). Replication refers to `NetId`s (`netid.h`): bodies by creation order, ring
+  rocks by name hash + index, animals/vehicles/stations allocated and saved. Benches can find a frame with no sim step:
+  wait a little after a teleport before reading `grounded`. Transport (#310): `src/engine/net.*` over GameNetworkingSockets,
+  only with `-DENABLE_GNS=ON -DGNS_ROOT=<prebuilt>` (protobuf 3.21 + GNS 1.4.1 built with w64devkit, BCrypt; recipe on #310;
+  +4 MB exe), else stubs; `--test-net` (loopback echo) SKIPs without it.
 - Inventory: 45 grid cells + 10 hotbar cells (indices 45-54). `Hotbar_Bind` moves a stack (items must be carried);
   `Inventory::preferred` = the selected hotbar cell is used first.
 - Terrain internals still worth knowing: `PlanetField::rockFeature` (tors, boulders) and `terrain3D` (the 3D band);

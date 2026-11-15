@@ -70,6 +70,11 @@ planet() {
     run --seed 9 --bench 3 --test-water
     run --seed 42 --bench 3 --test-flyfollow
     run --seed 42 --bench 3 --test-hotbar
+    run --seed 42 --bench 3 --test-netids # stable network ids over a save and load (#317)
+    run --seed 42 --bench 3 --test-net # loopback connect via GameNetworkingSockets; SKIP without ENABLE_GNS (#310)
+    run --seed 42 --bench 3 --test-two-players # a second Player 2 km away in its own frame (#314)
+    run --seed 42 --bench 3 --test-fingerprint # world fingerprint, join info, gameplay RNG (#316)
+    run --seed 42 --bench 3 --test-interest # tree tiles and animals around a second centre 3 km away (#318)
     run --seed 9 --bench 20 --bench-fly 200
     run --seed 9 --bench 10 --bench-fly 200 --no-foliage
     run --seed 42 --bench 3 --test-smallbody

@@ -6,9 +6,17 @@
 // and so on. resources/data/recipe_unlocks.txt can add a further condition per output (a task in
 // the quest book's terms: "explorer_suit | do stalker 1"). Creative mode knows everything.
 
+#include <set>
 #include <string>
 
 struct Recipe;
+
+// One player's recipe book (#313, in their PlayerSession): outputs known at the last check.
+struct RecipeBookState {
+    std::set<std::string> known;
+    bool primed = false;      // the first check after a reset is silent
+    double lastCheck = -10.0;
+};
 
 bool RecipeBook_Known(const Recipe& r);
 bool RecipeBook_Discovered(const std::string& item);

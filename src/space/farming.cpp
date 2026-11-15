@@ -1,4 +1,5 @@
 #include "farming.h"
+#include "gamerng.h"
 #include "fluid.h"
 #include "audio.h"
 #include "buildtool.h"
@@ -100,7 +101,7 @@ void Farm_Update(Scene& world, float dt) {
         const bool rainy = (Weather_Here().kind == WeatherKind::Rain || Weather_Here().kind == WeatherKind::Storm) && body == player.nearest &&
                            Vector3Distance(top, body->toLocal((player.position - world.renderOrigin).toFloat())) < 3000.0f;
         // Irrigation by moving water (a channel dug to the field, water carried in a bucket).
-        if (g.rate < 2.0f && GetTime() - g.wetChecked > 2.0) { g.wetChecked = GetTime(); g.flowing = Fluid::StandingWaterNear(*body, top, 4.0f); }
+        if (g.rate < 2.0f && SimTime() - g.wetChecked > 2.0) { g.wetChecked = SimTime(); g.flowing = Fluid::StandingWaterNear(*body, top, 4.0f); }
         const float rate = std::max(g.rate, g.flowing ? 2.0f : 0.0f) * (rainy ? 1.5f : 1.0f);
         g.growth = std::min(1.0f, g.growth + dt * rate / c->growSeconds);
         ++it;
@@ -131,7 +132,7 @@ int Farm_Harvest(Planetoid& body, Plot& plot, int part) {
     const CropDef* c = Crop(it->second.crop);
     if (!c) { fields.erase(it); return 0; }
     if (it->second.growth < 1.0f) { GameUI_Toast(TextFormat("The %s is not ripe yet (%.0f%%)", c->id.c_str(), it->second.growth * 100.0f)); return 0; }
-    const int seeds = 1 + (GetRandomValue(0, 1));
+    const int seeds = 1 + (GameRng_Int(0, 1));
     inventory.add(c->yield, c->yieldCount);
     inventory.add(c->seed, seeds);
     QuestBook_Count("harvest");

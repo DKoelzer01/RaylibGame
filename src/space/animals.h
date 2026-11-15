@@ -12,6 +12,7 @@
 // over a day), O collects its product (wool with shears, milk with a bucket, eggs), LMB attacks
 // (meat and hide when it falls).
 
+#include <cstdint>
 #include <cstdio>
 #include <string>
 #include <raylib.h>
@@ -22,7 +23,8 @@ class Planetoid;
 void Animals_Update(Scene& world, float dt, float worldDt, bool inputEnabled);
 void Animals_Draw3D(Scene& world);
 void Animals_DrawHUD();
-void Animals_Aim(Scene& world, bool inputEnabled); // this frame's aim and actions (after the camera is placed, before the terrain tool)
+struct PlayerInput;
+void Animals_Aim(Scene& world, const PlayerInput& in); // this frame's aim and actions (after the camera is placed, before the terrain tool)
 bool Animals_Aiming();                    // the crosshair is on an animal (the terrain tool holds off)
 void Animals_Reset();
 void Animals_Save(FILE* f);
@@ -31,6 +33,9 @@ bool Animals_LoadLine(const char* tok, FILE* f);
 // Tests.
 int Animals_Count();
 void Animals_PathStats(int& plans, int& found, double& avgMs, double& worstMs); // route planning (#253): counts and cost
+uint64_t Animals_NetId(int index);                              // its stable id (netid.h, #317)
+int Animals_SimulatedCount();                                   // simulated in the last update: near an interest centre (#318)
+int Animals_SimulatedNear(const Planetoid& body, Vector3 local, float range); // of those, within range of a body-local point
 int Animals_Spawn(Scene& world, Planetoid& body, const std::string& species, Vector3 bodyLocal, int count, bool young = false, float spread = 18.0f);
 int Animals_Nearest(Vector3 bodyLocal, float range);          // index or -1
 Vector3 Animals_Position(int index);                           // body-local

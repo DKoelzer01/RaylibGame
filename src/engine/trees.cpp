@@ -579,25 +579,27 @@ void TreeSystem::update(Planetoid& body, Vector3 camLocal) {
     const Vector3 camDir = Vector3Scale(camLocal, 1.0f / std::max(camR, 1.0f));
     const float altitude = camR - radius;
     const float range = kTreeDrawDistance + kTreeTileSize;
-    std::vector<TreeTileKey> wanted;
-    const bool recompute = Vector3Distance(camLocal, lastWantCam) > 16.0f;
-    if (recompute) lastWantCam = camLocal;
-    if (recompute && altitude < kTreeDrawDistance + 2000.0f) {
+    // Other interest centres (#318: other players on a server): tiles within kTreeInterestRange of them stay loaded too, for
+    // trunk collision and plant picking. Recomputed when the camera or any centre moves 16 m, or the set changes.
+    bool interestMoved = interest.size() != lastInterest.size();
+    for (size_t k = 0; !interestMoved && k < interest.size(); ++k) interestMoved = Vector3Distance(interest[k], lastInterest[k]) > 16.0f;
+    const bool recompute = Vector3Distance(camLocal, lastWantCam) > 16.0f || interestMoved;
+    if (recompute) { lastWantCam = camLocal; lastInterest = interest; }
+    auto want = [&](Vector3 dir, float within) {
         const int N = TilesPerFace(radius);
         const float da = 0.5f * PI / N;
-        const int K = (int)ceilf(range / kTreeTileSize) + 1;
+        const int K = (int)ceilf(within / kTreeTileSize) + 1;
         for (int f = 0; f < 6; ++f) {
-            const float dn = Vector3DotProduct(camDir, kN[f]);
+            const float dn = Vector3DotProduct(dir, kN[f]);
             if (dn < 0.2f) continue;
-            const float a = std::clamp(atanf(Vector3DotProduct(camDir, kU[f]) / dn), -0.25f * PI, 0.25f * PI);
-            const float b = std::clamp(atanf(Vector3DotProduct(camDir, kV[f]) / dn), -0.25f * PI, 0.25f * PI);
+            const float a = std::clamp(atanf(Vector3DotProduct(dir, kU[f]) / dn), -0.25f * PI, 0.25f * PI);
+            const float b = std::clamp(atanf(Vector3DotProduct(dir, kV[f]) / dn), -0.25f * PI, 0.25f * PI);
             const int ic = (int)floorf((a + 0.25f * PI) / da), jc = (int)floorf((b + 0.25f * PI) / da);
             for (int i = std::max(0, ic - K); i <= std::min(N - 1, ic + K); ++i)
                 for (int j = std::max(0, jc - K); j <= std::min(N - 1, jc + K); ++j) {
                     const TreeTileKey key{ f, i, j };
-                    const float arc = acosf(std::clamp(Vector3DotProduct(TreeTileCentreDir(key, radius), camDir), -1.0f, 1.0f)) * radius;
-                    if (arc > range) continue;
-                    wanted.push_back(key);
+                    const float arc = acosf(std::clamp(Vector3DotProduct(TreeTileCentreDir(key, radius), dir), -1.0f, 1.0f)) * radius;
+                    if (arc > within) continue;
                     auto it = tiles.find(key);
                     if (it == tiles.end()) {
                         TreeTile& t = tiles[key];
@@ -605,16 +607,30 @@ void TreeSystem::update(Planetoid& body, Vector3 camLocal) {
                     }
                 }
         }
-    }
-    // Drop tiles well outside the range (hysteresis so the edge doesn't churn).
+    };
+    if (recompute && altitude < kTreeDrawDistance + 2000.0f) want(camDir, range);
+    if (recompute) for (const Vector3& c : interest) want(Vector3Normalize(c), kTreeInterestRange);
+    // Drop tiles well outside every range (hysteresis so the edge doesn't churn).
     for (auto it = tiles.begin(); recompute && it != tiles.end();) {
-        const float arc = acosf(std::clamp(Vector3DotProduct(TreeTileCentreDir(it->first, radius), camDir), -1.0f, 1.0f)) * radius;
-        if (arc > range * 1.25f || altitude > kTreeDrawDistance + 2500.0f) { it = tiles.erase(it); batchDirty = true; }
+        const Vector3 tileDir = TreeTileCentreDir(it->first, radius);
+        const float arc = acosf(std::clamp(Vector3DotProduct(tileDir, camDir), -1.0f, 1.0f)) * radius;
+        bool keep = !(arc > range * 1.25f || altitude > kTreeDrawDistance + 2500.0f);
+        for (const Vector3& c : interest)
+            keep = keep || acosf(std::clamp(Vector3DotProduct(tileDir, Vector3Normalize(c)), -1.0f, 1.0f)) * radius < kTreeInterestRange * 1.5f;
+        if (!keep) { it = tiles.erase(it); batchDirty = true; }
         else ++it;
     }
     const double now = GetTime();
     const bool moved = Vector3Distance(camLocal, Vector3{ (float)anchor.x, (float)anchor.y, (float)anchor.z }) > 40.0f; // keep the near/far split current
     if ((batchDirty || moved) && now - lastBatch > 0.2) rebuildBatches(camLocal);
+}
+
+int TreeSystem::readyTilesNear(Vector3 local, float range) const {
+    const Vector3 dir = Vector3Normalize(local);
+    int n = 0;
+    for (const auto& kv : tiles)
+        if (kv.second.ready && acosf(std::clamp(Vector3DotProduct(TreeTileCentreDir(kv.first, radius), dir), -1.0f, 1.0f)) * radius < range) ++n;
+    return n;
 }
 
 void TreeSystem::rebuildBatches(Vector3 camLocal) {

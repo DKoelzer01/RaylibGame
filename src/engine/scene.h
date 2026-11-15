@@ -148,4 +148,18 @@ class Scene {
         bool terrainTexturesLoaded = false;
 };
 
+// Re-centres render space on `centre` for the scope's lifetime (#314, multiplayer): simulation code inside it (player physics)
+// sees render-space floats relative to its own player, so it is precise and independent of where the camera and the client's
+// floating origin are; a server runs each player in its own scope. The camera moves along; the origin is restored after.
+class RenderOriginScope {
+public:
+    RenderOriginScope(Scene& scene, const DVec3& centre);
+    ~RenderOriginScope();
+    RenderOriginScope(const RenderOriginScope&) = delete;
+    RenderOriginScope& operator=(const RenderOriginScope&) = delete;
+private:
+    Scene& scene;
+    DVec3 saved;
+};
+
 #endif

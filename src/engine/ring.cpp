@@ -1,5 +1,6 @@
 #include "ring.h"
 #include "gpumem.h"
+#include "netid.h"
 #include "factory.h"
 #include "bodies.h"
 #include "player.h"
@@ -253,6 +254,7 @@ void RingSystem::promote(Scene& world, int rock) {
     const RingRock& r = rocks[rock];
     auto p = std::make_unique<Planetoid>(TextFormat("%s_%d", name.c_str(), rock), rockPosition(rock), Vector3{ 0, 0, 0 }, 1.0f, r.seed, r.radius);
     p->kind = BodyKind::Asteroid;
+    p->netId = NetId_Make(NetKind::RingRock, ((uint64_t)NetId_NameHash(name.c_str()) << 32) | (uint32_t)rock); // stable (#317)
     p->spin = { 0.0f, r.spin, 0.0f };
     p->rotation = { 0.0f, (float)fmod(r.spin * WorldTime(), 360.0), 0.0f };
     p->surfaceGravity = RingRockGravity(r.radius * kMeanSurface);

@@ -17,8 +17,17 @@ class Scene;
 constexpr int kHotbarSlots = 10;
 extern const char* const kHotbarTerrainTool; // "tool:terrain"
 
+// One player's hotbar (#313, in their PlayerSession): the slot in hand and right-click eating (#202).
+struct HotbarState {
+    int selected = 0;
+    float eatProgress = 0.0f;   // 0..1 while the button is held
+    bool eatBlocked = false;    // this press was refused (full): wait for the release
+    int eatenCount = 0;
+};
+
 void Hotbar_Reset();                                  // the default bindings
-void Hotbar_Update(Scene& world, bool inputEnabled, bool piloting);
+struct PlayerInput;
+void Hotbar_Update(Scene& world, const PlayerInput& in, bool piloting);
 void Hotbar_DrawHUD(bool piloting);
 void Hotbar_Bind(int slot, const std::string& id);    // slot 0..9 (key 1 .. key 0)
 void Hotbar_Unbind(const std::string& id);            // quietly empty its slot (a broken tool, #209); the hand empties if it held it

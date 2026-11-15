@@ -1,5 +1,7 @@
 #include "terraintool.h"
+#include "gamerng.h"
 #include "world.h"
+#include "playerinput.h"
 #include "inventory.h"
 #include "audio.h"
 #include "particles.h"
@@ -18,13 +20,13 @@
 #include <string>
 
 
-TerrainToolSettings terrainTool;
+// (terrainTool: the local PlayerSession's, src/space/playersession.cpp, #313)
 
 namespace {
     TerrainHit hit;
     bool hasHit = false;
     bool digging = false, adding = false;
-    double nextStrokeAt = 0.0;   // the next swing may start then (GetTime)
+    double nextStrokeAt = 0.0;   // the next swing may start then (SimTime, #315)
     Vector3 aimLocal{};          // the view direction, body-local, at the last hit (digs go into the ground along it)
     float strokeLength = 0.5f;   // the current cooldown's length (the HUD bar)
     std::string toast;
@@ -198,7 +200,7 @@ bool TerrainTool_Bucket(Scene& world) {
 }
 
 static int FillerMaterial(const std::string& item); // below
-void TerrainTool_Update(Scene& world, bool inputEnabled, bool editEnabled) {
+void TerrainTool_Update(Scene& world, const PlayerInput& in, bool editEnabled) {
     PROFILE_FUNCTION();
     const Vector3 dir = Vector3Normalize(Vector3Subtract(world.camera.target, world.camera.position));
     hasHit = RaycastTerrain(world, Ray{ world.camera.position, dir }, player.flyMode ? 150.0f : terrainTool.reach, hit) && !PartInFront(world, dir, hit);
@@ -217,39 +219,39 @@ void TerrainTool_Update(Scene& world, bool inputEnabled, bool editEnabled) {
         rule = DigRuleFor(tool, hit.material, hitItem.c_str());
     }
 
-    if (!inputEnabled) { digging = adding = false; return; }
+    if (!in.enabled) { digging = adding = false; return; }
 
-    if (IsKeyPressed(KEY_F5)) Toast(SaveWorld(world) ? TextFormat("Saved to %s", WorldSavePath()) : "Save failed");
-    if (IsKeyPressed(KEY_F9)) {
+    if (in.hit(Act::Save)) Toast(SaveWorld(world) ? TextFormat("Saved to %s", WorldSavePath()) : "Save failed");
+    if (in.hit(Act::Load)) {
         if (LoadWorldSave(world)) { Toast("Loaded saves/world.sav"); hasHit = false; return; }
         Toast("No save found");
     }
     if (!editEnabled) { digging = adding = false; return; } // e.g. piloting: save/load only
 
     if (terrainTool.terraform) {
-        const float wheel = GetMouseWheelMove();
-        const bool modWheel = IsKeyDown(KEY_LEFT_CONTROL) || IsKeyDown(KEY_RIGHT_CONTROL) || IsKeyDown(KEY_LEFT_ALT) || IsKeyDown(KEY_RIGHT_ALT); // #227
+        const float wheel = in.wheel;
+        const bool modWheel = in.down(Act::Down) || in.down(Act::FreeLook); // Ctrl or Alt (#227: the plain wheel scrolls the hotbar)
         if (modWheel && wheel != 0.0f) terrainTool.brushRadius = std::clamp(terrainTool.brushRadius * (wheel > 0 ? 1.15f : 1.0f / 1.15f), 1.0f, 24.0f);
     }
 
     // Sphere fill (#228): R with a filler in hand switches RMB between a soft blob and an exact sphere; Ctrl+wheel sizes it.
     if (!terrainTool.terraform && FillerMaterial(terrainTool.heldTool) >= 0) {
-        if (IsKeyPressed(KEY_R)) { terrainTool.sphereFill = !terrainTool.sphereFill; Toast(terrainTool.sphereFill ? "Sphere fill: RMB adds an exact sphere (Ctrl+wheel: size)" : "Sphere fill off: RMB places soil"); }
-        const float wheel = GetMouseWheelMove();
-        const bool modWheel = IsKeyDown(KEY_LEFT_CONTROL) || IsKeyDown(KEY_RIGHT_CONTROL) || IsKeyDown(KEY_LEFT_ALT) || IsKeyDown(KEY_RIGHT_ALT);
+        if (in.hit(Act::Rotate)) { terrainTool.sphereFill = !terrainTool.sphereFill; Toast(terrainTool.sphereFill ? "Sphere fill: RMB adds an exact sphere (Ctrl+wheel: size)" : "Sphere fill off: RMB places soil"); }
+        const float wheel = in.wheel;
+        const bool modWheel = in.down(Act::Down) || in.down(Act::FreeLook);
         if (terrainTool.sphereFill && modWheel && wheel != 0.0f) terrainTool.fillRadius = std::clamp(terrainTool.fillRadius + (wheel > 0 ? 0.25f : -0.25f), 0.5f, 3.0f);
     }
     // Buckets (Plan 4, F5): RMB with an empty bucket scoops 1 m^3 of water (static or flowing) from
     // the first water along the view within reach; RMB with a full one pours it where you look.
     const bool bucket = terrainTool.heldTool == "bucket" || terrainTool.heldTool == "water_bucket";
-    if (bucket && IsMouseButtonPressed(MOUSE_BUTTON_RIGHT)) TerrainTool_Bucket(world);
+    if (bucket && in.hit(Act::Secondary)) TerrainTool_Bucket(world);
 
-    digging = IsMouseButtonDown(MOUSE_BUTTON_LEFT);
-    adding = !bucket && !terrainTool.holdingItem && !digging && IsMouseButtonDown(MOUSE_BUTTON_RIGHT); // food / feed in hand never builds (#201)
+    digging = in.down(Act::Primary);
+    adding = !bucket && !terrainTool.holdingItem && !digging && in.down(Act::Secondary); // food / feed in hand never builds (#201)
     // One swing per cooldown, and the cooldown runs whether the button is held or not, so clicking
     // fast is no faster than holding (it was: a release reset the timer). The swing animation lasts
     // exactly the cooldown (terrainTool.swingTime), and the HUD bar under the crosshair shows it.
-    const double now = GetTime();
+    const double now = SimTime();
     if (!(digging || adding) || !(hasHit || (digging && hasPlant))) return;
     if (now < nextStrokeAt) return;
     const double base = now - nextStrokeAt < 0.1 ? nextStrokeAt : now; // held on: keep the beat (frame-rate independent)
@@ -595,12 +597,12 @@ bool TerrainTool_Stroke(bool dig) {
     for (auto& kv : got) inventory.addFractional(kv.first, kv.second);
     if (wet > 0.0f) inventory.addFractional("clay", wet * 0.8f); // river and pond beds hold clay
     if (stoneKindAt) { // rock now and then holds a gem: quartz anywhere, and the gem of its stone kind (M22)
-        const char* gem = GetRandomValue(0, 29999) < 10 * terrainTool.gemBoost ? GemForStone(stoneKindAt) : GetRandomValue(0, 29999) < 16 * terrainTool.gemBoost ? "quartz" : nullptr; // rare: 1 in 3000 strokes a gem, 1 in 1900 quartz (veins later)
+        const char* gem = GameRng_Int(0, 29999) < 10 * terrainTool.gemBoost ? GemForStone(stoneKindAt) : GameRng_Int(0, 29999) < 16 * terrainTool.gemBoost ? "quartz" : nullptr; // rare: 1 in 3000 strokes a gem, 1 in 1900 quartz (veins later)
         if (gem && itemDB.find(gem)) { inventory.add(gem, 1); Toast(TextFormat("+1 %s!", gem)); }
     }
-    if (grass && GetRandomValue(0, 99) < 6) { // grass now and then turns up a seed
+    if (grass && GameRng_Int(0, 99) < 6) { // grass now and then turns up a seed
         static const char* seeds[3] = { "grain_seeds", "root_seeds", "flax_seeds" };
-        const char* s = seeds[GetRandomValue(0, 2)];
+        const char* s = seeds[GameRng_Int(0, 2)];
         if (itemDB.find(s)) { inventory.add(s, 1); Toast(TextFormat("+1 %s from the grass", s)); }
     }
     TerrainEdit e{};
@@ -714,7 +716,7 @@ bool TerrainTool_DigAt(Planetoid& p, Vector3 local) {
     if (strcmp(item, "stone") == 0) if (const auto* pfk = dynamic_cast<const PlanetField*>(p.field.get())) { // its kind of stone, and now and then a gem
         const char* k = pfk->stoneKind(local);
         if (strcmp(k, "stone") != 0) inventory.addFractional(k, 0.4f);
-        const char* gem = GetRandomValue(0, 29999) < 10 * terrainTool.gemBoost ? GemForStone(k) : GetRandomValue(0, 29999) < 16 * terrainTool.gemBoost ? "quartz" : nullptr; // rare: 1 in 3000 strokes a gem, 1 in 1900 quartz (veins later)
+        const char* gem = GameRng_Int(0, 29999) < 10 * terrainTool.gemBoost ? GemForStone(k) : GameRng_Int(0, 29999) < 16 * terrainTool.gemBoost ? "quartz" : nullptr; // rare: 1 in 3000 strokes a gem, 1 in 1900 quartz (veins later)
         if (gem && itemDB.find(gem)) inventory.add(gem, 1);
     }
     if (WetBed(p, local, m)) inventory.addFractional("clay", 0.4f); // beds hold clay
@@ -738,7 +740,7 @@ bool TerrainTool_HarvestNearest(Planetoid& p, Vector3 local, bool tree, bool sto
 bool TerrainTool_IsFiller(const std::string& item) { return FillerMaterial(item) >= 0; }
 
 float TerrainTool_Cooldown() {
-    const double left = nextStrokeAt - GetTime();
+    const double left = nextStrokeAt - SimTime();
     return left <= 0.0 ? 0.0f : std::min(1.0f, (float)(left / std::max(strokeLength, 0.01f)));
 }
 
