@@ -1,4 +1,5 @@
 #include "scene.h"
+#include "gpumem.h"
 #include "gputimer.h"
 #include "utils/logger.h"
 #include "profiler.h"
@@ -146,6 +147,7 @@ static RenderTexture2D LoadShadowmapRenderTexture(int width, int height) {
     target.texture.height = height;
     if (target.id > 0) {
         rlEnableFramebuffer(target.id);
+        GpuMemTag gm149_("shadow maps"); // VRAM accounting (#302)
         target.depth.id = rlLoadTextureDepth(width, height, false);
         target.depth.width = width;
         target.depth.height = height;
@@ -287,6 +289,7 @@ void Scene::reloadShaders() {
 // Mipmapped, trilinear + anisotropic. Without mipmaps a 2K texture minified onto distant terrain
 // samples scattered texels: it shimmers and thrashes the texture cache.
 static Texture2D UploadFiltered(Image& img) {
+    GpuMemTag gm290_("terrain textures"); // VRAM accounting (#302)
     Texture2D t = LoadTextureFromImage(img);
     GenTextureMipmaps(&t);
     SetTextureFilter(t, TEXTURE_FILTER_TRILINEAR);

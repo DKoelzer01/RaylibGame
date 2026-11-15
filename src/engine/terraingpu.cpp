@@ -1,4 +1,5 @@
 #include "terraingpu.h"
+#include "gpumem.h"
 #include "glcaps.h"
 #include "gputimer.h"
 #include "gpucompute.h"
@@ -45,6 +46,7 @@ namespace {
                 glGenBuffers(1, &r.buf);
                 glBindBuffer(GL_COPY_WRITE_BUFFER, r.buf);
                 const GLbitfield flags = GL_MAP_READ_BIT | GL_MAP_PERSISTENT_BIT | GL_MAP_COHERENT_BIT;
+                GpuMemTag gm48_("gpu readback"); // VRAM accounting (#302)
                 glBufferStorage(GL_COPY_WRITE_BUFFER, (GLsizeiptr)cap, nullptr, flags | GL_CLIENT_STORAGE_BIT);
                 r.ptr = (float*)glMapBufferRange(GL_COPY_WRITE_BUFFER, 0, (GLsizeiptr)cap, flags);
                 glBindBuffer(GL_COPY_WRITE_BUFFER, 0);

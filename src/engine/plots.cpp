@@ -1,4 +1,5 @@
 #include "plots.h"
+#include "gpumem.h"
 #include "worldtypes.h"
 
 #include <raymath.h>
@@ -669,6 +670,7 @@ void Plot::buildSection(Int3 key, Section& s, const std::vector<Int3>& sectionCe
     memcpy(s.mesh.colors, col.data(), col.size());
     s.mesh.texcoords = (float*)MemAlloc((unsigned int)(sky.size() * sizeof(float)));
     memcpy(s.mesh.texcoords, sky.data(), sky.size() * sizeof(float));
+    GpuMemTag gm672_("parts"); // VRAM accounting (#302)
     UploadMesh(&s.mesh, false);
 }
 

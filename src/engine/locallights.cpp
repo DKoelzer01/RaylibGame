@@ -1,4 +1,5 @@
 #include "locallights.h"
+#include "gpumem.h"
 #include "external/glad.h"
 #include <raymath.h>
 #include <rlgl.h>
@@ -70,6 +71,7 @@ void LocalLights_Upload(const std::vector<LocalLight>& lights, Vector3 cameraPos
         glBindTexture(GL_TEXTURE_2D, lightTex);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+        GpuMemTag gm73_("local lights"); // VRAM accounting (#302)
         glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA32F, kMaxLocalLights * 2, 1, 0, GL_RGBA, GL_FLOAT, nullptr);
     }
     glBindTexture(GL_TEXTURE_2D, lightTex);
@@ -80,6 +82,7 @@ void LocalLights_Upload(const std::vector<LocalLight>& lights, Vector3 cameraPos
         glBindTexture(GL_TEXTURE_2D, tileTex);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+        GpuMemTag gm83_("local lights"); // VRAM accounting (#302)
         glTexImage2D(GL_TEXTURE_2D, 0, GL_R32I, tx * (kLightsPerTile + 1), ty, 0, GL_RED_INTEGER, GL_INT, nullptr);
         tilesX = tx; tilesY = ty;
     }

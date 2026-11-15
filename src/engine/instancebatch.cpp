@@ -1,4 +1,5 @@
 #include "instancebatch.h"
+#include "gpumem.h"
 #include "scene.h"
 #include "world.h"
 #include "worldtypes.h"
@@ -33,6 +34,7 @@ namespace {
     void BuildShape(Shape& s, const std::vector<float>& posNrm, const std::vector<unsigned short>& idx) {
         s.vao = rlLoadVertexArray();
         rlEnableVertexArray(s.vao);
+        GpuMemTag gm36_("instances"); // VRAM accounting (#302)
         s.vbo = rlLoadVertexBuffer(posNrm.data(), (int)(posNrm.size() * sizeof(float)), false);
         rlSetVertexAttribute(0, 3, RL_FLOAT, false, 6 * sizeof(float), 0);
         rlEnableVertexAttribute(0);
@@ -98,6 +100,7 @@ namespace {
             while (s.instCap < (unsigned)list.size()) s.instCap *= 2;
             rlEnableVertexArray(s.vao);
             rlUnloadVertexBuffer(s.inst);
+            GpuMemTag gm101_("instances"); // VRAM accounting (#302)
             s.inst = rlLoadVertexBuffer(nullptr, (int)(s.instCap * sizeof(Inst)), true);
             for (int a = 0; a < 5; ++a) {
                 rlSetVertexAttribute(10 + a, 4, RL_FLOAT, false, sizeof(Inst), a * 4 * (int)sizeof(float));

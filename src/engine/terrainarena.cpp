@@ -1,4 +1,5 @@
 #include "terrainarena.h"
+#include "gpumem.h"
 #include "voxel.h"
 #include "frustum.h"
 #include "gpucompute.h"
@@ -127,6 +128,7 @@ namespace {
         GLuint b = 0;
         glGenBuffers(1, &b);
         glBindBuffer(GL_COPY_WRITE_BUFFER, b);
+        GpuMemTag gm130_("terrain arena"); // VRAM accounting (#302)
         glBufferData(GL_COPY_WRITE_BUFFER, (GLsizeiptr)newBytes, nullptr, usage);
         if (old && oldBytes) {
             glBindBuffer(GL_COPY_READ_BUFFER, old);
@@ -275,6 +277,7 @@ namespace {
         glGenBuffers(1, &St.buf);
         glBindBuffer(GL_COPY_READ_BUFFER, St.buf);
         const GLbitfield flags = GL_MAP_WRITE_BIT | GL_MAP_PERSISTENT_BIT | GL_MAP_COHERENT_BIT;
+        GpuMemTag gm278_("upload ring"); // VRAM accounting (#302)
         glBufferStorage(GL_COPY_READ_BUFFER, (GLsizeiptr)St.cap, nullptr, flags);
         St.ptr = (unsigned char*)glMapBufferRange(GL_COPY_READ_BUFFER, 0, (GLsizeiptr)St.cap, flags);
         glBindBuffer(GL_COPY_READ_BUFFER, 0);

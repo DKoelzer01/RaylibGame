@@ -41,6 +41,7 @@
 #include "itemicons.h"
 #include "particles.h"
 #include "ambience.h"
+#include "gpumem.h"
 #include "machinemodels.h"
 #include "gpucompute.h"
 #include "terraingpu.h"
@@ -254,6 +255,7 @@ int main(int argc, char** argv)
     bool benchWall = false;        // --test-wall: walk into shaft and tunnel walls (no launches)
     bool benchDoorway = false; int doorPhase = 0, doorLane = 0; double doorStart = 0.0; uint32_t doorPlot = 0; bool doorPass[2] = { false, false }; // --test-doorway (#255): 2 m openings pass, 1.5 m ones block
     bool benchMenus = false;       // --test-menus: main menu, new game, pause, save & quit, load
+    bool vramReport = false;       // --vram: GPU memory per subsystem at the end of a bench (#302)
     bool benchFill = false;        // --test-fill: an exact sphere of dirt (#228)
     bool benchLamps = false;       // --test-lamps: 100 lamp cubes light the ground (#139)
     bool benchGiant = false;       // --shot-giant: one tree of each size class (#274)
@@ -490,6 +492,7 @@ int main(int argc, char** argv)
         if (std::string(argv[i]) == "--shot-giant") benchGiant = true;
         if (std::string(argv[i]) == "--test-lamps") benchLamps = true;
         if (std::string(argv[i]) == "--test-fill") benchFill = true;
+        if (std::string(argv[i]) == "--vram") vramReport = true;
         if (std::string(argv[i]) == "--test-pickups") benchPickups = true;
         if (std::string(argv[i]) == "--shot-inventory") shotInventory = true;
         if (std::string(argv[i]) == "--test-foundation") benchFoundation = true;
@@ -688,6 +691,7 @@ int main(int argc, char** argv)
         InitWindow(1920, 1080, "RaylibGame bench");
         SetTargetFPS(std::max(0, benchFps)); // --fps N caps it (frame-rate-dependence checks); 0 = uncapped
     }
+    if (vramReport && IsWindowReady()) GpuMem_Install(); // --vram (#302): count GPU allocations per subsystem from here on
     if (!IsWindowReady()) {
         // raylib is built for an OpenGL 4.3 core context (compute shaders, multi-draw indirect, SSBOs): without
         // it there is no window and no fallback renderer (#185). Say so instead of exiting silently.
@@ -5683,6 +5687,7 @@ int main(int argc, char** argv)
                 if (benchCamLocalSet && benchBody0) printf("bench: camera drift against the planet over the timed window: %.2f m (#127)\n", (benchBody0->toLocalD(world.renderOrigin + world.camera.position) - benchCamLocal0).length());
                 GpuTimer_Print();
                 GpuTimer_PrintCpu();
+                GpuMem_Report("end of bench"); // --vram (#302)
                 if (TerrainArena_Available()) { const ArenaStats as = TerrainArena_Stats(); printf("bench: terrain arena: %d / %d vertices, %d / %d indices, %.1f chunk draws per multi-draw; uploads %lld staged, %lld direct\n", as.vertices, as.vertexCapacity, as.indices, as.indexCapacity, as.draws / (double)std::max(1, as.flushes), as.staged, as.direct); }
                 { const TerrainGpuStats ts = TerrainGpu_Stats(); const WorldStats& ws = GetWorldStats(); printf("bench: terrain gpu: %lld blocks in %lld batches, avg batch latency %.2f ms; chunk build avg %.2f ms (sampling part %.2f ms)\n", ts.blocks, ts.batches, ts.avgLatencyMs, ws.avgBuildMs, ws.avgSampleMs); }
                 {   // Streaming (#258): how much work flying asked for and threw away; frame time spread.

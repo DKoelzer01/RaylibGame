@@ -1,4 +1,5 @@
 #include "fluid.h"
+#include "gpumem.h"
 #include "cubemarch.h"
 #include "gpucompute.h"
 #include "jobsystem.h"
@@ -1169,6 +1170,7 @@ void Fluid::Update(Scene& world, float dt) {
         mesh.normals = (float*)MemAlloc((unsigned)(m.nrm.size() * sizeof(float))); memcpy(mesh.normals, m.nrm.data(), m.nrm.size() * sizeof(float));
         mesh.texcoords = (float*)MemAlloc((unsigned)(m.uv.size() * sizeof(float))); memcpy(mesh.texcoords, m.uv.data(), m.uv.size() * sizeof(float));
         mesh.indices = (unsigned short*)MemAlloc((unsigned)(m.idx.size() * sizeof(unsigned short))); memcpy(mesh.indices, m.idx.data(), m.idx.size() * sizeof(unsigned short));
+        GpuMemTag gm1172_("water (fluid)"); // VRAM accounting (#302)
         UploadMesh(&mesh, false);
     }
     for (auto& r : remesh)

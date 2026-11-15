@@ -1,4 +1,5 @@
 #include "scenetarget.h"
+#include "gpumem.h"
 #include "glcaps.h"
 #include "utils/logger.h"
 
@@ -193,6 +194,7 @@ void main() {
             S.bloomW[i] = w; S.bloomH[i] = h;
             glGenTextures(1, &S.bloomTex[i]);
             glBindTexture(GL_TEXTURE_2D, S.bloomTex[i]);
+            GpuMemTag gm196_("bloom"); // VRAM accounting (#302)
             glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA16F, w, h, 0, GL_RGBA, GL_HALF_FLOAT, nullptr);
             glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
             glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
@@ -246,6 +248,7 @@ void main() {
         glGenRenderbuffers(1, &S.depth);
         glBindRenderbuffer(GL_RENDERBUFFER, S.color);
         const GLenum colorFormat = S.hdr ? GL_RGBA16F : GL_RGBA8;
+        GpuMemTag gm249_("scene target"); // VRAM accounting (#302)
         if (S.samples > 1) glRenderbufferStorageMultisample(GL_RENDERBUFFER, S.samples, colorFormat, w, h);
         else glRenderbufferStorage(GL_RENDERBUFFER, colorFormat, w, h);
         glBindRenderbuffer(GL_RENDERBUFFER, S.depth);
@@ -260,6 +263,7 @@ void main() {
         // mip chain, whose top level is the scene's average for auto-exposure.
         glGenTextures(1, &S.resolveTex);
         glBindTexture(GL_TEXTURE_2D, S.resolveTex);
+        GpuMemTag gm263_("scene target"); // VRAM accounting (#302)
         if (S.hdr) glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA16F, w, h, 0, GL_RGBA, GL_HALF_FLOAT, nullptr);
         else glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, w, h, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
@@ -339,6 +343,7 @@ void main() {
                 const float init[3] = { S.autoExposure ? 0.0f : 1.0f, 0.0f, 0.0f }; // 0: the first frame takes its target at once
                 glGenBuffers(1, &S.expBuf);
                 glBindBuffer(GL_SHADER_STORAGE_BUFFER, S.expBuf);
+                GpuMemTag gm342_("exposure"); // VRAM accounting (#302)
                 glBufferData(GL_SHADER_STORAGE_BUFFER, sizeof init, init, GL_DYNAMIC_COPY);
                 glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
             }

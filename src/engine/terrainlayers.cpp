@@ -1,4 +1,5 @@
 #include "terrainlayers.h"
+#include "gpumem.h"
 #include "glcaps.h"
 #include "utils/logger.h"
 
@@ -251,6 +252,7 @@ TextureArray LoadTerrainLayers(int size) {
     t.layers = LayerCount;
     glad_glGenTextures(1, &t.id);
     glad_glBindTexture(GL_TEXTURE_2D_ARRAY_, t.id);
+    GpuMemTag gm254_("terrain textures"); // VRAM accounting (#302)
     glad_glTexImage3D(GL_TEXTURE_2D_ARRAY_, 0, (int)GL_RGBA8_, size, size, LayerCount, 0, GL_RGBA_, GL_UNSIGNED_BYTE_, nullptr);
     std::vector<Image> albedos;
     for (int layer = 0; layer < LayerCount; ++layer) {
@@ -271,6 +273,7 @@ TextureArray LoadTerrainLayers(int size) {
     const double t0 = GetTime();
     glad_glGenTextures(1, &t.detailId);
     glad_glBindTexture(GL_TEXTURE_2D_ARRAY_, t.detailId);
+    GpuMemTag gm274_("terrain textures"); // VRAM accounting (#302)
     glad_glTexImage3D(GL_TEXTURE_2D_ARRAY_, 0, (int)GL_RGBA8_, size, size, LayerCount, 0, GL_RGBA_, GL_UNSIGNED_BYTE_, nullptr);
     for (int layer = 0; layer < LayerCount; ++layer) {
         const char* path = TextFormat("assets/textures/terrain/%s_detail.png", TerrainLayerName(layer));

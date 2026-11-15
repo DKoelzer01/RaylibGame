@@ -1,4 +1,5 @@
 #include "farsphere.h"
+#include "gpumem.h"
 #include "jobsystem.h"
 #include "trees.h"
 #include "voxel.h"
@@ -160,6 +161,7 @@ bool FarSphere::ready() {
     if (bake->shadeRowsDone.load() < bake->H) return false;
     auto upload = [&](std::vector<unsigned char>& px) {
         Image img{ px.data(), bake->W, bake->H, 1, PIXELFORMAT_UNCOMPRESSED_R8G8B8A8 };
+        GpuMemTag gm163_("far sphere"); // VRAM accounting (#302)
         Texture2D t = LoadTextureFromImage(img);
         GenTextureMipmaps(&t);
         SetTextureFilter(t, TEXTURE_FILTER_TRILINEAR);

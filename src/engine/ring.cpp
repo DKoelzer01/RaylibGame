@@ -1,4 +1,5 @@
 #include "ring.h"
+#include "gpumem.h"
 #include "factory.h"
 #include "bodies.h"
 #include "player.h"
@@ -82,6 +83,7 @@ namespace {
             for (int k = 0; k < kVariants; ++k) {
                 RockMesh& m = gMeshes[l][k];
                 BuildRock(m, l == 0 ? 2 : 1, k);
+                GpuMemTag gm85_("ring"); // VRAM accounting (#302)
                 m.vboPos = rlLoadVertexBuffer(m.pos.data(), (int)(m.pos.size() * sizeof(float)), false);
                 m.vboNrm = rlLoadVertexBuffer(m.nrm.data(), (int)(m.nrm.size() * sizeof(float)), false);
             }
@@ -103,6 +105,7 @@ namespace {
         gBand.vertexCount = (int)(d.size() / 3);
         gBand.vao = rlLoadVertexArray();
         rlEnableVertexArray(gBand.vao);
+        GpuMemTag gm106_("ring"); // VRAM accounting (#302)
         gBand.vbo = rlLoadVertexBuffer(d.data(), (int)(d.size() * sizeof(float)), false);
         rlSetVertexAttribute(0, 3, RL_FLOAT, false, 0, 0);
         rlEnableVertexAttribute(0);
@@ -376,6 +379,7 @@ void RingSystem::drawRocks(Scene& world, const RenderContext& ctx, bool rebuild)
                 rlEnableVertexArray(vao[s]);
             }
             if (vbo[s]) rlUnloadVertexBuffer(vbo[s]);
+            GpuMemTag gm379_("ring"); // VRAM accounting (#302)
             vbo[s] = rlLoadVertexBuffer(b.data(), (int)(b.size() * sizeof(float)), true);
             const int stride = 12 * (int)sizeof(float);
             rlSetVertexAttribute(10, 4, RL_FLOAT, false, stride, 0); rlEnableVertexAttribute(10); rlSetVertexAttributeDivisor(10, 1);

@@ -1,4 +1,5 @@
 #include "foliage.h"
+#include "gpumem.h"
 #include "voxel.h"
 
 #include <raymath.h>
@@ -63,6 +64,7 @@ namespace {
         }
         for (int var = 0; var < kGrassVariants; ++var)
             variantCount[var] = (var + 1 < kGrassVariants ? variantFirst[var + 1] : (int)(v.size() / 3)) - variantFirst[var];
+        GpuMemTag gm66_("grass"); // VRAM accounting (#302)
         tuftVbo = rlLoadVertexBuffer(v.data(), (int)(v.size() * sizeof(float)), false);
     }
 }
@@ -130,6 +132,7 @@ void Foliage_Upload(FoliageGpu& g, const std::vector<float>& inst) {
     // Instances arrive grouped by variant (ScatterGrass); count each group from the scale's tens.
     const int n = (int)(inst.size() / kGrassFloats);
     for (int i = 0; i < n; ++i) ++g.count[std::clamp((int)(inst[(size_t)i * kGrassFloats + 3] / 10.0f), 0, kGrassVariants - 1)];
+    GpuMemTag gm133_("grass"); // VRAM accounting (#302)
     g.vbo = rlLoadVertexBuffer(inst.data(), (int)(inst.size() * sizeof(float)), false);
     const int stride = kGrassFloats * (int)sizeof(float);
     int first = 0;

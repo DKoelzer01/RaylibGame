@@ -1,4 +1,5 @@
 #include "trees.h"
+#include "gpumem.h"
 #include "jobsystem.h"
 #include "worldtypes.h"
 #include "world.h"
@@ -262,6 +263,7 @@ void EnsureVariantGpu() {
         for (int v = 0; v < kTreeVariants; ++v) {
             VariantMesh& m = const_cast<VariantMesh&>(Variant(v, lod));
             if (m.vboPos) continue;
+            GpuMemTag gm265_("trees"); // VRAM accounting (#302)
             m.vboPos = rlLoadVertexBuffer(m.pos.data(), (int)(m.pos.size() * sizeof(float)), false);
             m.vboNrm = rlLoadVertexBuffer(m.nrm.data(), (int)(m.nrm.size() * sizeof(float)), false);
             m.vboCol = rlLoadVertexBuffer(m.col.data(), (int)m.col.size(), false);
@@ -664,6 +666,7 @@ void TreeSystem::rebuildBatches(Vector3 camLocal) {
                 rlEnableVertexBuffer(m.vboPos); rlSetVertexAttribute(0, 3, RL_FLOAT, false, 0, 0); rlEnableVertexAttribute(0);
                 rlEnableVertexBuffer(m.vboNrm); rlSetVertexAttribute(1, 3, RL_FLOAT, false, 0, 0); rlEnableVertexAttribute(1);
                 rlEnableVertexBuffer(m.vboCol); rlSetVertexAttribute(2, 4, RL_UNSIGNED_BYTE, true, 0, 0); rlEnableVertexAttribute(2);
+                GpuMemTag gm667_("trees"); // VRAM accounting (#302)
                 vb = rlLoadVertexBuffer(buf[s][lod].data(), (int)(buf[s][lod].size() * sizeof(float)), false);
                 const int stride = 8 * (int)sizeof(float);
                 rlSetVertexAttribute(10, 4, RL_FLOAT, false, stride, 0); rlEnableVertexAttribute(10); rlSetVertexAttributeDivisor(10, 1);
@@ -679,6 +682,7 @@ void TreeSystem::rebuildBatches(Vector3 camLocal) {
                     rlEnableVertexBuffer(m.vboPos); rlSetVertexAttribute(0, 3, RL_FLOAT, false, 0, 0); rlEnableVertexAttribute(0);
                     rlEnableVertexBuffer(m.vboNrm); rlSetVertexAttribute(1, 3, RL_FLOAT, false, 0, 0); rlEnableVertexAttribute(1);
                     rlEnableVertexBuffer(m.vboCol); rlSetVertexAttribute(2, 4, RL_UNSIGNED_BYTE, true, 0, 0); rlEnableVertexAttribute(2);
+                    GpuMemTag gm682_("trees"); // VRAM accounting (#302)
                     culledVbo[slot] = rlLoadVertexBuffer(nullptr, (int)(buf[s][lod].size() * sizeof(float)), true);
                     rlSetVertexAttribute(10, 4, RL_FLOAT, false, stride, 0); rlEnableVertexAttribute(10); rlSetVertexAttributeDivisor(10, 1);
                     rlSetVertexAttribute(11, 4, RL_FLOAT, false, stride, 4 * sizeof(float)); rlEnableVertexAttribute(11); rlSetVertexAttributeDivisor(11, 1);
@@ -725,6 +729,7 @@ void TreeSystem::draw(const Planetoid& body, const RenderContext& ctx, int onlyL
             const int v = slot % kTreeVariants, lod = slot / kTreeVariants;
             cmds[slot][0] = (GLuint)Variant(v, lod).vertexCount; cmds[slot][1] = 0; cmds[slot][2] = 0; cmds[slot][3] = 0;
         }
+        GpuMemTag gm728_("trees"); // VRAM accounting (#302)
         if (!cmdBuf) { glGenBuffers(1, &cmdBuf); glBindBuffer(GL_DRAW_INDIRECT_BUFFER, cmdBuf); glBufferData(GL_DRAW_INDIRECT_BUFFER, sizeof(cmds), nullptr, GL_DYNAMIC_DRAW); }
         glBindBuffer(GL_DRAW_INDIRECT_BUFFER, cmdBuf);
         glBufferSubData(GL_DRAW_INDIRECT_BUFFER, 0, sizeof(cmds), cmds);

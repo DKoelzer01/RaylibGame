@@ -1,4 +1,5 @@
 #include "object.h"
+#include "gpumem.h"
 #include "textobject.h"
 #include "gameobject.h"
 #include <raymath.h>
@@ -129,6 +130,7 @@ void Chunk::setMesh(const ChunkMeshData& data) {
         waterMesh.normals = CopyToRaylib(data.waterNormals);
         if (!data.waterDepth.empty()) waterMesh.texcoords = CopyToRaylib(data.waterDepth);
         waterMesh.indices = CopyToRaylib(data.waterIndices);
+        GpuMemTag gm132_("water"); // VRAM accounting (#302)
         UploadMesh(&waterMesh, false);
         if (waterMesh.vaoId > 0) DropCpuVertexData(waterMesh);
     }
@@ -144,6 +146,7 @@ void Chunk::setMesh(const ChunkMeshData& data) {
     if (!data.texcoords2.empty()) mesh.texcoords2 = CopyToRaylib(data.texcoords2); // material weights 6-7
     if (!data.tangents.empty()) mesh.tangents = CopyToRaylib(data.tangents);       // w: sky exposure
     mesh.indices = CopyToRaylib(data.indices);
+    GpuMemTag gm147_("terrain chunks"); // VRAM accounting (#302)
     UploadMesh(&mesh, false);
     if (mesh.vaoId > 0) DropCpuVertexData(mesh);
 }
