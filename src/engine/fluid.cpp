@@ -594,9 +594,10 @@ void EnsureAround(Site& s, Vector3 c, float r) {
 
 // Ground added into a river's water (a dam, #361): release the reach around it. Its bricks are (re)classified (the river
 // cells inside become ordinary water, the downstream edge a sink), and the upstream edge gets springs that add the
-// reach's discharge (2 x half-width x depth x 1 m/s, 2-40 m^3/s: the simulation's channel carries no more), with a head
-// 8 m over the level so a backed-up pool keeps rising until it spills. Beyond the reach the river stays generated: a
-// pool that rises past the upstream edge shows a step there.
+// inflow the simulated channel can carry: ~0.25 m^3/s per metre of width (#432: the cellular step has no momentum, so a
+// gentle surface barely flows; a river's real discharge, 17 m^3/s on a 10 m river, mounded up and flooded the banks), with a
+// head 3 m over the level so a backed-up pool keeps rising until it spills over a low dam. Beyond the reach the river
+// stays generated: a pool that rises past the upstream edge shows a step there.
 constexpr float kReleaseCells = 40.0f;
 void MaybeRelease(Site& s, const BodyRef& ref, Vector3 c, float r) {
     const PlanetField* pf = ref.pf;
@@ -643,8 +644,8 @@ void MaybeRelease(Site& s, const BodyRef& ref, Vector3 c, float r) {
             up.push_back({ ci + dx, cj + dy, bck });
         }
     if (up.empty()) return;
-    const float q = std::clamp(2.0f * h.halfWidth * h.depth, 2.0f, 40.0f); // m^3/s
-    const float head = Vector3DotProduct(Vector3Subtract(Vector3Scale(dir, level), s.origin), s.u) + 8.0f;
+    const float q = std::max(1.0f, std::min({ 0.25f * 2.0f * h.halfWidth, 40.0f, 2.0f * h.halfWidth * h.depth })); // m^3/s (#432)
+    const float head = Vector3DotProduct(Vector3Subtract(Vector3Scale(dir, level), s.origin), s.u) + 3.0f;
     for (const auto& u : up)
         s.springs.push_back({ u[0], u[1], u[2], 0, q / (float)up.size() * 255.0f / (20.0f * kSubsteps), head });
 }

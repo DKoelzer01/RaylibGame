@@ -4017,7 +4017,7 @@ int main(int argc, char** argv)
                                 const Vector3 sd = Vector3Normalize(Vector3CrossProduct(d, dn));
                                 const float bank = std::min(pf->elevation(off(d, sd, h.halfWidth + 15.0f)), pf->elevation(off(d, sd, -h.halfWidth - 15.0f)));
                                 if (bank < ws.level + 1.2f) continue;
-                                best = dist; damDir = d; damLevel = ws.level; damHW = h.halfWidth; damDepth = h.depth; damCrest = std::min(ws.level + 1.5f, bank - 0.3f);
+                                best = dist; damDir = d; damLevel = ws.level; damHW = h.halfWidth; damDepth = h.depth; damCrest = std::min(ws.level + 0.8f, bank - 0.3f); // a low dam: a released reach fills at what its channel carries (#432)
                                 damDown = dn; // along the ground
                             }
                         if (best > 1e29f) {
@@ -4080,7 +4080,7 @@ int main(int argc, char** argv)
                                    t, su < -1e8f ? "dry" : TextFormat("%.2f", su), sd < -1e8f ? "dry" : TextFormat("%.2f", sd), Fluid::ReleasedReaches(), s.bricks, s.activeBricks, s.volume, s.stepMs, s.maxStepMs);
                         }
                         if (t > 10.0 && t < 10.1) TakeScreenshot("bench_dam.png");
-                        if ((spillT >= 0.0 && t > spillT + 25.0) || t > 240.0) {
+                        if ((spillT >= 0.0 && t > spillT + 25.0) || t > 420.0) {
                             damLateD = sd < -1e8f ? damLvD - damDepth : sd;
                             TakeScreenshot("bench_dam_end.png");
                             const int released = Fluid::ReleasedReaches();
