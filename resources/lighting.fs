@@ -9,6 +9,7 @@ in vec3 fragTexPos;     // body-aligned, wrapped to the texture repeat (texturin
 in vec3 fragLocalNormal;
 in vec3 fragChunkPos;   // chunk-local (overlap clipping)
 in float fragSky;       // 1 = open to the sky, 0 = buried (caves, deep pits)
+in float fragOcclusion; // short-range ambient occlusion (#132): 0 open .. 1 enclosed
 in vec2 fragCanopy;     // planets: forest canopy cover and latitude (painted in beyond the real trees)
 flat in float fragClimate; // the packed climate, per triangle (#254: interpolated, it striped the biome tints)
 in float fragOreKind;   // planets: which ore, (1 + kind) / 8 (0 none)
@@ -346,7 +347,9 @@ void main()
         direct += (albedo * NdotL + spec) * lights[i].color.rgb * shadow * atten;
     }
 
-    vec3 color = hemiAmbient(ambient.rgb, normal) * albedo * ao * fragSky + direct + emissive;
+    // Ambient occlusion (#132) darkens the ambient term only: dug holes and crevices read under flat sky light.
+    float occlusionAO = 1.0 - 0.75 * clamp(fragOcclusion, 0.0, 1.0);
+    vec3 color = hemiAmbient(ambient.rgb, normal) * albedo * ao * fragSky * occlusionAO + direct + emissive;
     // Fog over the part of the view ray inside the air (fogShell: render-space centre + outer radius;
     // w = 0: the whole distance), so a moon or ring far beyond the atmosphere stays visible.
     float fogDist = length(viewPos - fragPosition);

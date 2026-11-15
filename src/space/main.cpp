@@ -424,6 +424,7 @@ int main(int argc, char** argv)
     if (const char* g = getenv("RAYLIBGAME_GULLIES")) gGullies = g[0] == '1';
     if (const char* c = getenv("RAYLIBGAME_CLIFFS")) gCliffs = c[0] == '1';
     if (const char* c = getenv("RAYLIBGAME_SKY_PROBES")) gSkyProbes = c[0] == '1'; // #369 A/B
+    if (const char* c = getenv("RAYLIBGAME_AO")) gTerrainAO = c[0] != '0'; // #132 A/B
     for (int i = 1; i < argc; ++i) {
         if (Recorder_ParseArg(argc, argv, i)) continue; // --record and friends (#375)
         if (std::string(argv[i]) == "--bench") benchSeconds = (i + 1 < argc) ? atof(argv[i + 1]) : 10.0;

@@ -1618,6 +1618,7 @@ void BuildChunkMeshFromBase(const DensityField& field, const TerrainDeltas& delt
             out.texcoords.assign(verts.size() * 2, 0.0f);
             out.texcoords2.assign(verts.size() * 2, 0.0f);
             out.tangents.assign(verts.size() * 4, 0.0f);
+            out.occlusion.assign(verts.size(), 0.0f);
             const PlanetField* planetLife = dynamic_cast<const PlanetField*>(&field);
             if (planetLife && !planetLife->foliage) planetLife = nullptr;
             const PlanetField* gridField = grid ? dynamic_cast<const PlanetField*>(&field) : nullptr;
@@ -1647,6 +1648,31 @@ void BuildChunkMeshFromBase(const DensityField& field, const TerrainDeltas& delt
                 if (!near.empty()) { const int placed = deltas.materialAt(p); if (placed >= 0) m = (VoxelMaterial)placed; } // placed ground keeps its material
                 if (gSkyProbes && sky > 0.02f && stride <= 2.0f) sky *= OverheadOpenness(field, deltas, ext.data(), E, eo, stride, p, hinted ? &gCol : nullptr, hinted ? &gElev : nullptr);
                 out.tangents[v * 4 + 3] = sky;
+                // Ambient occlusion (#132): how much of the hemisphere over the vertex is solid within ~1.5 m, from the
+                // block's own samples (edits included): 5 directions (the normal, and four 45 degrees off it) at 0.6 and
+                // 1.4 m. Dug holes, crevices and the foot of walls darken; open ground stays 0. Near LODs only (the
+                // samples are too coarse beyond 2 m spacing).
+                if (gTerrainAO && stride <= 2.0f) {
+                    const Vector3 t1 = Vector3Normalize(Vector3CrossProduct(n, fabsf(n.y) < 0.9f ? Vector3{ 0, 1, 0 } : Vector3{ 1, 0, 0 }));
+                    const Vector3 t2 = Vector3CrossProduct(n, t1);
+                    const Vector3 dirs[5] = { n, Vector3Normalize(Vector3Add(n, t1)), Vector3Normalize(Vector3Subtract(n, t1)),
+                                              Vector3Normalize(Vector3Add(n, t2)), Vector3Normalize(Vector3Subtract(n, t2)) };
+                    auto solidAt = [&](Vector3 e) { // trilinear on the extended block (coords in samples)
+                        e.x = std::clamp(e.x, 0.0f, E - 1.001f); e.y = std::clamp(e.y, 0.0f, E - 1.001f); e.z = std::clamp(e.z, 0.0f, E - 1.001f);
+                        const int x0 = (int)e.x, y0 = (int)e.y, z0 = (int)e.z;
+                        const float fx = e.x - x0, fy = e.y - y0, fz = e.z - z0;
+                        auto A = [&](int x, int y, int z) { return at(ext.data(), x, y, z); };
+                        const float c00 = A(x0, y0, z0) * (1 - fx) + A(x0 + 1, y0, z0) * fx, c10 = A(x0, y0 + 1, z0) * (1 - fx) + A(x0 + 1, y0 + 1, z0) * fx;
+                        const float c01 = A(x0, y0, z0 + 1) * (1 - fx) + A(x0 + 1, y0, z0 + 1) * fx, c11 = A(x0, y0 + 1, z0 + 1) * (1 - fx) + A(x0 + 1, y0 + 1, z0 + 1) * fx;
+                        return (c00 * (1 - fy) + c10 * fy) * (1 - fz) + (c01 * (1 - fy) + c11 * fy) * fz >= ISO_LEVEL;
+                    };
+                    const Vector3 e0 = Vector3AddValue(g, 1.0f); // the vertex in extended-block samples
+                    float occ = 0.0f;
+                    for (int r = 0; r < 5; ++r)
+                        for (float m : { 0.6f, 1.4f })
+                            if (solidAt(Vector3Add(e0, Vector3Scale(dirs[r], m / stride)))) occ += (r == 0 ? 1.5f : 1.0f) * (m < 1.0f ? 1.3f : 0.7f);
+                    out.occlusion[v] = std::clamp(occ / 7.0f, 0.0f, 1.0f);
+                }
                 if (m == VoxelMaterial::Ore) {
                     // Which ore (the shader colours each kind): 1 + kind, over 8.
                     if (const auto* pfo = dynamic_cast<const PlanetField*>(&field)) {

@@ -22,8 +22,8 @@ namespace {
     constexpr int kRecordTexels = 5;       // model rows 0-2, texturing origin, clip
 
     // Positions in their own stream (the shadow passes read only them); everything else interleaved.
-    struct Attr { float nrm[3], uv[2], uv2[2], tan[4]; unsigned char col[4]; };
-    static_assert(sizeof(Attr) == 48, "interleaved terrain attributes");
+    struct Attr { float nrm[3], uv[2], uv2[2], tan[4]; unsigned char col[4]; float occ; }; // occ: ambient occlusion (#132), location 14
+    static_assert(sizeof(Attr) == 52, "interleaved terrain attributes");
     constexpr size_t kPosBytes = 12;
 
     struct Command { GLuint count, instanceCount, firstIndex; GLint baseVertex; GLuint baseInstance; };
@@ -106,6 +106,8 @@ namespace {
         glVertexAttribPointer(3, 4, GL_UNSIGNED_BYTE, GL_TRUE, st, (void*)offsetof(Attr, col));
         glVertexAttribPointer(4, 4, GL_FLOAT, GL_FALSE, st, (void*)offsetof(Attr, tan));
         glVertexAttribPointer(5, 2, GL_FLOAT, GL_FALSE, st, (void*)offsetof(Attr, uv2));
+        glVertexAttribPointer(14, 1, GL_FLOAT, GL_FALSE, st, (void*)offsetof(Attr, occ)); // #132 (after the records, 9-13)
+        glEnableVertexAttribArray(14);
         for (int a = 0; a <= 5; ++a) glEnableVertexAttribArray(a);
         BindRecords();
         glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, S.ibo);
@@ -315,6 +317,7 @@ ArenaAlloc TerrainArena_Upload(const ChunkMeshData& d) {
         if (uv2) memcpy(o.uv2, &d.texcoords2[i * 2], 8); else o.uv2[0] = o.uv2[1] = 0.0f;
         if (tan) memcpy(o.tan, &d.tangents[i * 4], 16); else { o.tan[0] = o.tan[1] = o.tan[2] = 0.0f; o.tan[3] = 1.0f; }
         if (col) memcpy(o.col, &d.colors[i * 4], 4); else memset(o.col, 255, 4);
+        o.occ = d.occlusion.size() >= (size_t)nv ? d.occlusion[i] : 0.0f;
     }
     a.vFirst = AllocVerts(nv);
     a.vCount = nv;

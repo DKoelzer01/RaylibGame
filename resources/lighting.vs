@@ -7,6 +7,7 @@ in vec2 vertexTexCoord2;  // chunks: material weights 6-7 (grass, snow)
 in vec3 vertexNormal;
 in vec4 vertexColor;
 in vec4 vertexTangent;    // chunks: w = sky exposure (default attribute (0,0,0,1): fully exposed)
+layout(location = 14) in float vertexOcclusion; // terrain arena: ambient occlusion 0 open .. 1 enclosed (#132); other meshes: 0
 // Terrain arena (terrainarena.h): this draw's record, instanced attributes picked by the command's baseInstance.
 layout(location = 9) in vec4 arenaRow0;   // model rows 0-2 (render space)
 layout(location = 10) in vec4 arenaRow1;
@@ -35,6 +36,7 @@ out vec3 fragTexPos;       // body-aligned texturing position (wrapped): texture
 out vec3 fragLocalNormal;  // moving/spinning body and don't swim when the floating origin shifts
 out vec3 fragChunkPos;     // chunk-local position (overlap clipping)
 out float fragSky;         // 1 = open to the sky, 0 = buried (scales sunlight)
+out float fragOcclusion;   // #132
 out vec2 fragCanopy;       // planets: distant forest canopy cover (x) and latitude (y)
 flat out float fragClimate; // planets: the packed climate (2 + temperature step + moisture), per triangle (#254)
 out float fragOreKind;     // planets: which ore (1 + kind) / 8, 0 none
@@ -75,6 +77,7 @@ void main()
     fragTexPos = vertexPosition + texOrigin;
     fragChunkPos = vertexPosition;
     fragSky = vertexTangent.w;
+    fragOcclusion = vertexOcclusion;
     fragCanopy = vertexTangent.xy;
     fragClimate = vertexTangent.y;
     fragOreKind = vertexTangent.z;

@@ -84,6 +84,7 @@ inline bool gErosionPrototype = false;
 inline bool gTerrain3D = true;
 inline bool gGullies = true; // erosion-filter gullies on the baked height (#357); RAYLIBGAME_GULLIES=0 for A/B
 inline bool gCliffs = true;  // cliff bands in hard-rock regions (user 2026-11-14); RAYLIBGAME_CLIFFS=0 for A/B
+inline bool gTerrainAO = true; // per-vertex ambient occlusion in chunk meshing (#132); RAYLIBGAME_AO=0 for A/B
 inline bool gSkyProbes = true; // sky light under overhangs from short rays (#369); RAYLIBGAME_SKY_PROBES=0 for A/B
 class PlanetErosion;
 const char* BiomeName(Biome b);
@@ -390,6 +391,7 @@ struct ChunkMeshData {
     std::vector<float> texcoords;          // material weights 4-5
     std::vector<float> texcoords2;         // material weights 6-7
     std::vector<float> tangents;           // (0, 0, 0, sky exposure) per vertex
+    std::vector<float> occlusion;          // per vertex: 0 open .. 1 enclosed, short-range ambient occlusion (#132; near LODs)
     std::vector<float> waterPositions;     // sea surface where it meets open air (same frame as positions)
     std::vector<float> waterNormals;
     std::vector<float> waterDepth;         // per water vertex: (depth to the sea floor in m, 0)
