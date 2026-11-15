@@ -2117,7 +2117,7 @@ void BuildChunkMeshFromBase(const DensityField& field, const TerrainDeltas& delt
         }
     }
     ScatterGrass(field, out); // foliage: grass tufts on the finest level (in the build time)
-    if (TerrainArena_PackOnWorkers() && !out.positions.empty()) TerrainArena_Pack(out, out.arenaAttr); // #302: off the main thread
+    if (TerrainArena_PackOnWorkers() && !out.positions.empty()) TerrainArena_Pack(out, out.arena); // #302: off the main thread
     out.buildMs = std::chrono::duration<float, std::milli>(std::chrono::steady_clock::now() - t0).count();
 }
 

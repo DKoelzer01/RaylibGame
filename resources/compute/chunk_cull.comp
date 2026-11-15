@@ -6,7 +6,7 @@
 // Culled chunks keep their command with instanceCount 0, so the list order (nearest first) is kept.
 layout(local_size_x = 64) in;
 
-struct Chunk { vec4 originSize; vec4 clip; uvec4 draw; uvec4 palette; }; // body-local origin + size; chunk-local clip; iCount, iFirst, vFirst, slots in use; 16 material ids (#480)
+struct Chunk { vec4 originSize; vec4 clip; uvec4 draw; uvec4 palette; }; // body-local origin + size; chunk-local clip; iCount, iFirst, vFirst; 16 material ids (#480)
 layout(std430, binding = 0) readonly buffer Table { Chunk chunks[]; };
 layout(std430, binding = 1) readonly buffer List { uint slots[]; };
 struct Cmd { uint count; uint instances; uint firstIndex; int baseVertex; uint baseInstance; };
@@ -57,6 +57,6 @@ void main() {
     dvec3 od = dvec3(o);
     vec3 tex = vec3(od - floor(od / texPeriod) * texPeriod);
     recs[e * 6u + 3u] = floatBitsToUint(vec4(tex, 0.0));
-    recs[e * 6u + 4u] = floatBitsToUint(vec4(c.clip.xyz, float(c.draw.w))); // w: the palette slots in use (#480)
+    recs[e * 6u + 4u] = floatBitsToUint(vec4(c.clip.xyz, 0.0));
     recs[e * 6u + 5u] = c.palette;
 }

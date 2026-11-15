@@ -401,6 +401,16 @@ void ChunkWaterPhases(long long out[6]); // + exact density samples, all samples
 constexpr long long kChunkWaterCacheCap = 128ll << 20;
 
 // CPU-side result of meshing one chunk (produced on a worker thread).
+// The terrain arena's packed vertices (#302, #480), filled on the mesh worker (TerrainArena_Pack): the attributes, the
+// chunk's material palette, and, when triangles on material borders were split, its own positions and indices.
+struct ArenaPacked {
+    std::vector<unsigned char> attr;          // terrainarena.cpp Attr per vertex
+    std::vector<float> positions;             // empty: the mesh's own (no triangle was split)
+    std::vector<unsigned short> indices;
+    unsigned char palette[16] = {};           // palette slot -> VoxelMaterial id
+    bool valid = false;
+};
+
 struct ChunkMeshData {
     uint64_t planetoidId = 0;
     NodeKey key{};
@@ -420,7 +430,7 @@ struct ChunkMeshData {
     std::vector<float> grass;              // grass tufts (foliage.h: kGrassFloats each), finest level only
     std::vector<unsigned short> indices;
     std::vector<unsigned char> matIds;     // #480: per vertex, its VoxelMaterial id (0-255; the arena packs a per-chunk palette of up to 16)
-    std::vector<unsigned char> arenaAttr;  // #302: the terrain arena's packed attributes, filled on the worker (TerrainArena_Pack)
+    ArenaPacked arena;                     // #302, #480: the terrain arena's packed vertices, filled on the worker
     bool overflow = false;                 // > 65535 vertices: mesh dropped
     float buildMs = 0.0f;
     float sampleMs = 0.0f;                 // part of buildMs spent sampling the density field

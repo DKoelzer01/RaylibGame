@@ -23,11 +23,10 @@ uniform sampler2DArray terrainLayers; // planet palette: dirt, sand, gravel, gra
 uniform sampler2DArray terrainDetail; // its detail maps: normal XY, roughness, AO (unit 12)
 
 flat in vec3 fragClipMax;     // chunk-local overlap clip (lighting.vs: a uniform or the arena record)
-in vec4 fragMatW[4];          // #480: material weights per palette slot (16)
-flat in int fragSlots;        // #480: the slots in use (unused groups are not read)
-flat in uvec4 fragPalette;    // #480: each slot's material id, a byte each
+flat in uint fragMatIds;       // #480 (arena): the triangle's three material ids, 8 bits each (fragColor.xyz: their barycentrics)
 uniform mat4 matModel;          // body-local -> world (DrawMesh, or the arena flush: all chunks of a body share the rotation)
 uniform float texScale;            // world units -> texture repeats
+uniform int arenaDraw;             // 1: a terrain arena multi-draw (lighting.vs; #480: the triangle's palette slots)
 
 #define MAX_LIGHTS          4
 #define LIGHT_DIRECTIONAL   0
@@ -223,17 +222,12 @@ void main()
     }
     float shinyMaterials = w.b + w.a; // ice + ore: extra specular
     if (palette == 2) {
-        // Planet: eight materials from the texture layers (weights 0-3 in the vertex colour, 4-5 in
-        // texcoord, 6-7 in texcoord2). Only layers with weight are sampled (usually one or two).
-        // #480: up to 16 materials per chunk, each slot's weight in fragMatW and its material id (a byte) in fragPalette
-        // (per-chunk draws: the 8 legacy weights, identity palette).
-        float total = 0.0;
+        // Planet: materials from the texture layers, by id. Terrain arena (#480): the triangle's three materials (ids
+        // from the chunk's palette), weighed by the barycentrics in fragColor (corners of one material merged).
+        // Per-chunk draws: the 8 legacy weights (0-3 in the vertex colour, 4-5 in texcoord, 6-7 in texcoord2), ids 0-7.
+        // Only materials with weight are sampled (usually one or two).
         float ctemp, cmoist;
         bool hasClimate = decodeClimate(ctemp, cmoist);
-        const bool kGateSlots = false;
-        total = dot(fragMatW[0], vec4(1.0));
-        if (!kGateSlots || fragSlots > 4) total += dot(fragMatW[1], vec4(1.0));
-        if (!kGateSlots || fragSlots > 8) total += dot(fragMatW[2], vec4(1.0)) + dot(fragMatW[3], vec4(1.0));
         // material id -> texture layer: stone, dirt, ice, ore (stone, rusted), sand, gravel, grass, snow, clay (#206)
         const int kMaterials = 9;
         const float layerOf[kMaterials] = float[kMaterials](6.0, 0.0, 5.0, 6.0, 1.0, 2.0, 3.0, 4.0, 7.0);
@@ -247,20 +241,30 @@ void main()
         // Detail maps fade out by ~120 m (mips flatten them before that; #183: sampling them out to 280 m cost 0.2 ms)
         float near = 1.0 - smoothstep(40.0, 120.0, length(viewPos - fragPosition));
         vec2 dX = vec2(0.0), dY = vec2(0.0), dZ = vec2(0.0);
-        // Gather the (at most 4) slots with weight using constant indices only: indexing the varyings with a loop
-        // variable spilled them to local memory. Only the slot groups the chunk uses are read (fragSlots, from its
-        // record): 98% of chunks use 4 or fewer, so most fragments interpolate one vec4 of the 16 weights.
         vec4 aw = vec4(0.0);
         ivec4 aid = ivec4(0);
         int n = 0;
-        float cut = 0.01 * max(total, 0.001);
-#define TAKE(g, c) { float w_ = fragMatW[g][c]; if (w_ >= cut && n < 4) { aw[n] = w_; aid[n] = int((fragPalette[g] >> (8u * uint(c))) & 255u); n++; } }
-        TAKE(0, 0) TAKE(0, 1) TAKE(0, 2) TAKE(0, 3)
-        if (!kGateSlots || fragSlots > 4) { TAKE(1, 0) TAKE(1, 1) TAKE(1, 2) TAKE(1, 3) }
-        if (!kGateSlots || fragSlots > 8) { TAKE(2, 0) TAKE(2, 1) TAKE(2, 2) TAKE(2, 3) TAKE(3, 0) TAKE(3, 1) TAKE(3, 2) TAKE(3, 3) }
+        float total = 1.0;
+        if (arenaDraw == 1) {
+            int m0 = int(fragMatIds & 255u), m1 = int((fragMatIds >> 8) & 255u), m2 = int((fragMatIds >> 16) & 255u);
+            vec3 b = fragColor.xyz;
+            if (m1 == m0) { b.x += b.y; b.y = 0.0; }
+            if (m2 == m0) { b.x += b.z; b.z = 0.0; } else if (m2 == m1) { b.y += b.z; b.z = 0.0; }
+            aw = vec4(b, 0.0);
+            aid = ivec4(m0, m1, m2, 0);
+            n = 3;
+        } else {
+            vec4 w0 = fragColor, w1 = vec4(fragTexCoord, fragTexCoord2);
+            total = dot(w0, vec4(1.0)) + dot(w1, vec4(1.0));
+            float cut = 0.01 * max(total, 0.001);
+            // Constant indices only (a loop variable indexing the inputs spilled them to local memory).
+#define TAKE(w, c, id) { if (w >= cut && n < 4) { aw[n] = w; aid[n] = id; n++; } }
+            TAKE(w0.x, 0, 0) TAKE(w0.y, 1, 1) TAKE(w0.z, 2, 2) TAKE(w0.w, 3, 3) TAKE(w1.x, 4, 4) TAKE(w1.y, 5, 5) TAKE(w1.z, 6, 6) TAKE(w1.w, 7, 7)
 #undef TAKE
+        }
         for (int k = 0; k < n; k++) {
             float wi = aw[k] / max(total, 0.001);
+            if (wi < 0.01) continue;
             int i = min(aid[k], kMaterials - 1);
             shiny += shinyOf[i] * wi;
             vec3 c = sampleLayer(tp, layerOf[i]);
