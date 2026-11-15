@@ -75,7 +75,8 @@ void LoadLoot() {
     if (!f) return;
     char line[1024];
     while (fgets(line, sizeof line, f)) {
-        if (line[0] == '#' || line[0] == '\n' || line[0] == '\r') continue;
+        line[strcspn(line, "\r\n")] = 0; // CRLF checkouts: a trailing CR would spoil the last word
+        if (line[0] == '#' || line[0] == 0) continue;
         std::stringstream ss(line);
         std::string cell, table;
         bool first = true;
@@ -102,6 +103,7 @@ bool LoadSet(const std::string& path, Set& s) {
     auto add = [&](PartType t, Int3 o, int orient, int mat) { s.parts.push_back({ t, o, (uint8_t)orient, (uint8_t)std::max(0, mat) }); };
     auto matOf = [](const std::string& m) { return IsShape(PartType::Cube) ? BuildMaterialForItem(m.c_str()) : 0; };
     while (fgets(line, sizeof line, f)) {
+        line[strcspn(line, "\r\n")] = 0; // CRLF checkouts: a trailing CR would spoil the last word ("stone\r" is no material)
         if (line[0] == '#') continue;
         std::stringstream ss(line);
         std::string cmd;
