@@ -39,6 +39,8 @@ using WaterField::CellKind;
 std::vector<Fluid::Kind> kinds(1);
 int kindVisc[8] = { 5, 5, 5, 5, 5, 5, 5, 5 }, kindMinSpread[8] = { 10, 10, 10, 10, 10, 10, 10, 10 };
 constexpr int kSiteBricks = 16;        // a site reaches +-16 bricks (256 m) from its origin
+// Tests only: RAYLIBGAME_FLUID_SITE_BRICKS=N shrinks a site so a pond straddles its edge (#384).
+inline int SiteBricks() { static const int n = getenv("RAYLIBGAME_FLUID_SITE_BRICKS") ? std::max(1, atoi(getenv("RAYLIBGAME_FLUID_SITE_BRICKS"))) : kSiteBricks; return n; }
 constexpr float kSiteJoin = 180.0f;    // a disturbance within this of a site's origin joins it
 constexpr int kEvaporate = 3;          // resting specks this thin (~1 cm) dry up
 constexpr int kSubsteps = 3;           // CPU simulation steps per 50 ms (water moves a cell a step)
@@ -90,7 +92,7 @@ struct Site {
         const Vector3 d = Vector3Subtract(local, origin);
         ci = (int)floorf(Vector3DotProduct(d, e)); cj = (int)floorf(Vector3DotProduct(d, n)); ck = (int)floorf(Vector3DotProduct(d, u));
     }
-    bool inRange(int bi, int bj, int bk) const { return abs(bi) <= kSiteBricks && abs(bj) <= kSiteBricks && abs(bk) <= kSiteBricks; }
+    bool inRange(int bi, int bj, int bk) const { const int r = SiteBricks(); return abs(bi) <= r && abs(bj) <= r && abs(bk) <= r; }
     Brick* find(int bi, int bj, int bk) const { auto it = bricks.find(Key(bi, bj, bk)); return it == bricks.end() ? nullptr : it->second.get(); }
     // Allocates (unclassified, queued) if missing and in range; nullptr if out of range or full.
     Brick* ensure(int bi, int bj, int bk) {
@@ -210,6 +212,24 @@ void Classify(const Site& s, Brick& b, const BodyRef& ref, uint8_t& faces) {
     b.upload = true; // GPU mode: the classified brick goes up whole
     b.keepFill = false;
     b.active = true; b.idle = 0; b.changed = true;
+}
+
+// A pond's water at face f whose neighbour brick cannot join (outside the site, or the site is full, #384): the
+// face's water cells hold the pond's generated level as sources, so the pond keeps that level like a lake and feeds
+// a dug channel, instead of draining inside the site against the generated pond's wall at the brick face. Runs right
+// after Classify, before the brick goes up to the GPU (b.upload), on its generated fill.
+long long pinnedFaces = 0;
+void PinPondFace(Brick& b, int f) {
+    ++pinnedFaces;
+    for (int u = 0; u < B; ++u)
+        for (int v = 0; v < B; ++v) {
+            const int m = (f & 1) ? B - 1 : 0;
+            const int x = f < 2 ? m : u, y = f < 2 ? u : (f < 4 ? m : v), z = f < 4 ? v : m;
+            const int i = Idx(x, y, z);
+            if ((b.flags[i] & kSolid) || b.fill[i] == 0) continue;
+            b.flags[i] |= kSource;
+            b.target[i] = b.fill[i];
+        }
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -630,7 +650,7 @@ void RunJob() {
             for (Brick* o : w.b->nbr) if (o) Touch(o); // neighbours wake: water may now flow in or out
             // A pond's water at a face: the brick next to it holds more of the pond (#360: it joins whole).
             for (int f = 0; f < 6; ++f)
-                if (w.faces & (1 << f)) w.s->ensure(w.b->bi + d[f][0], w.b->bj + d[f][1], w.b->bk + d[f][2]);
+                if ((w.faces & (1 << f)) && !w.s->ensure(w.b->bi + d[f][0], w.b->bj + d[f][1], w.b->bk + d[f][2])) PinPondFace(*w.b, f);
         }
     }
     // CPU steps: kSubsteps per 50 ms on average (spring rates assume it), whatever the tick (#366: ticks every 25 ms).
@@ -740,6 +760,7 @@ void RunJob() {
         static long long tot[4] = {}; tot[0] += dbgDown; tot[1] += dbgSide; tot[2] += dbgSrc; tot[3] += dbgLevel;
         for (int k = 0; k < 4; ++k) st.dbgTotal[k] = tot[k];
         st.wakes[0] = wakeGpu; st.wakes[1] = wakeTouch;
+        st.pinnedFaces = pinnedFaces;
         st.dbg[0] = dbgDown; st.dbg[1] = dbgSide; st.dbg[2] = dbgSrc; st.dbg[3] = dbgLevel; dbgDown = dbgSide = dbgSrc = dbgLevel = 0;
         st.settled = (int)settledTotal;
         pubStats = st;
