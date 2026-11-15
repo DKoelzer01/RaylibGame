@@ -36,6 +36,7 @@ inline int FloorDiv(int a, int b) { return a >= 0 ? a / b : -((-a + b - 1) / b);
 
 struct Brick {
     std::array<uint8_t, kBrick3> fill{}, flags{};
+    std::array<uint8_t, kBrick3> shut{}; // the share of an open cell that is ground, at its bottom (#454): holds 255 - shut, water stands at shut + fill
     uint8_t kinds = 0; // bit k: some cell holds fluid of kind k
 };
 
@@ -64,6 +65,15 @@ struct Site {
         if (!b) return false;
         const int i = CellIdx(ci - bi * kBrick, cj - bj * kBrick, ck - bk * kBrick);
         fill = b->fill[i]; flags = b->flags[i];
+        return true;
+    }
+    // The same with the cell's ground share (#454).
+    bool cell(int ci, int cj, int ck, uint8_t& fill, uint8_t& flags, uint8_t& shut) const {
+        const int bi = FloorDiv(ci, kBrick), bj = FloorDiv(cj, kBrick), bk = FloorDiv(ck, kBrick);
+        const Brick* b = brick(bi, bj, bk);
+        if (!b) return false;
+        const int i = CellIdx(ci - bi * kBrick, cj - bj * kBrick, ck - bk * kBrick);
+        fill = b->fill[i]; flags = b->flags[i]; shut = b->shut[i];
         return true;
     }
     // Body-local corners of a brick (its bounds), for dirty regions and the site's bounds.
@@ -115,6 +125,7 @@ private:
     const Brick* brickPtr(int si, int bi, int bj, int bk) const; // by brick coordinates, through the dense cache
     bool brickAt(int si, int ci, int cj, int ck) const { return brickPtr(si, ci >> 4, cj >> 4, ck >> 4) != nullptr; }
     bool cellAt(int si, int ci, int cj, int ck, uint8_t& fill, uint8_t& flags) const; // Site::cell through the cache
+    bool cellAt(int si, int ci, int cj, int ck, uint8_t& fill, uint8_t& flags, uint8_t& shut) const; // with the ground share (#454)
     float surface(int si, int ci, int cj, int ck, int kind);
     float openSurface(int si, int ci, int cj, int ck, int kind, int depth);
 };

@@ -4590,6 +4590,14 @@ int main(int argc, char** argv)
                                 pwWestWet = west; pwHeld = west && !east;
                                 TakeScreenshot("bench_part_wall.png");
                                 printf("bench: part-wall: after 25 s the west half is %s, the east half %s -> %s\n", west ? "wet" : "dry", east ? "wet" : "dry", pwHeld ? "held" : "NOT held");
+                                {   // Water perched up the trench's walls (#454): wet points 0.3-2 m over the pool's surface in the west half.
+                                    auto at3 = [&](float x, float y, float z) { return pwPlot->toBody({ x, y, z }); };
+                                    float surf = -99.0f;
+                                    for (float y = -2.6f; y <= 0.5f; y += 0.05f) if (Fluid::Wet(*p, at3(-4.0f, y, 0.0f))) surf = y;
+                                    // Films a cell or more over the pool: water in cells whose bottom is 0.5 m+ over its surface.
+                                    const float perched = surf > -99.0f ? Fluid::VolumeAbove(*p, at3(-4.0f, surf, 0.0f), 5.0f, 0.5f) : -1.0f;
+                                    printf("bench: part-wall: pool surface %.2f m; %.2f m^3 of water perched 0.5 m+ over it (#454)\n", surf, perched);
+                                }
                                 for (int idx : pwParts) pwPlot->remove(idx);
                                 pwPhase = 2; pwT0 = GetTime();
                             } else if (pwPhase == 2 && (east || t > 30.0)) {
