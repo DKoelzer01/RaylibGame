@@ -181,7 +181,10 @@ bool Ground(const Planetoid& body, const PlanetField& pf, Vector3 dir, Vector3& 
     bool found = false;
     for (float r = prevR - 0.25f; r >= ref - below - 1e-4f; r -= 0.25f) {
         const float d = dens(r);
-        if (d >= ISO_LEVEL && prevD < ISO_LEVEL) { // air above, solid here (a start inside a thin film looks on down)
+        // Air above, solid here (a start inside a thin film looks on down). The air must be real: 0.3 m over the crossing
+        // still open, not a hairline seam in rock where the density dips a hair under the iso level (#373: animals
+        // were set into such seams, 'inside the ground' for seconds, where the 3D terrain's density hovers near it).
+        if (d >= ISO_LEVEL && prevD < ISO_LEVEL && dens(r + (prevR - r) * 0.5f + 0.3f) < ISO_LEVEL) {
             const float t = std::clamp((ISO_LEVEL - prevD) / std::max(d - prevD, 1e-6f), 0.0f, 1.0f);
             at = Vector3Scale(dir, prevR + (r - prevR) * t);
             found = true;
