@@ -19,7 +19,7 @@
 
 class Scene;
 
-void Nav_Update(Scene& world, bool inputEnabled); // once a frame: exploration, the map's input, images
+void Nav_Update(Scene& world, bool inputEnabled, bool gameInput); // once a frame: exploration, the map's input (inputEnabled), images; gameInput: the minimap zoom keys (#278)
 void Nav_DrawHUD(Scene& world);                   // compass (always), minimap (with a Map)
 void Nav_DrawMap(Scene& world);                   // the full-screen map, when open (draw last)
 bool Nav_MapOpen();

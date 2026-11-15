@@ -28,7 +28,7 @@ namespace {
 // ---------------------------------------------------------------------------------------------
 
 constexpr float kTileSize = 256.0f;
-constexpr float kRevealRadius = 150.0f;
+constexpr float kRevealRadius = 450.0f; // #278: 3x (was 150 m); stamped on a 100 m grid (tiles are 256 m)
 const Vector3 kN[6] = { { 1, 0, 0 }, { -1, 0, 0 }, { 0, 1, 0 }, { 0, -1, 0 }, { 0, 0, 1 }, { 0, 0, -1 } };
 const Vector3 kU[6] = { { 0, 1, 0 }, { 0, 1, 0 }, { 0, 0, 1 }, { 0, 0, 1 }, { 1, 0, 0 }, { 1, 0, 0 } };
 const Vector3 kV[6] = { { 0, 0, 1 }, { 0, 0, -1 }, { 1, 0, 0 }, { -1, 0, 0 }, { 0, 1, 0 }, { 0, -1, 0 } };
@@ -208,6 +208,11 @@ constexpr int kMapPixels = 640;
 constexpr int kMiniPixels = 256;             // the minimap image: a margin around the view (it shifts as you move)
 constexpr float kMiniMetres = 440.0f;        // ...metres across
 constexpr float kMiniView = 300.0f;          // metres the minimap circle shows
+// Minimap zoom (#278): - and = (and the keypad) scale the view, the image and the re-render distance.
+const float kMiniZooms[] = { 0.5f, 1.0f, 2.0f, 4.0f };
+int miniZoom = 1;
+bool minimapForce = false;
+float MiniZoom() { return kMiniZooms[miniZoom]; }
 bool dragging = false, dragMoved = false; // a drag pans; a press and release in place is a click
 Vector2 dragFrom{};
 double mapDirtyAt = -1.0;
@@ -282,7 +287,13 @@ float Nav_Bearing(Scene& world, Vector3 dir) {
     return BearingOf(h.up, Vector3Subtract(Vector3Normalize(dir), h.up));
 }
 
-void Nav_Update(Scene& world, bool inputEnabled) {
+void Nav_Update(Scene& world, bool inputEnabled, bool gameInput) {
+    if (gameInput) { // minimap zoom (#278): - out, = (+) in
+        const int was = miniZoom;
+        if (IsKeyPressed(KEY_MINUS) || IsKeyPressed(KEY_KP_SUBTRACT)) miniZoom = std::min(miniZoom + 1, (int)(sizeof(kMiniZooms) / sizeof(kMiniZooms[0])) - 1);
+        if (IsKeyPressed(KEY_EQUAL) || IsKeyPressed(KEY_KP_ADD)) miniZoom = std::max(miniZoom - 1, 0);
+        if (miniZoom != was) minimapForce = true;
+    }
     const Here h = Locate(world);
     // Reveal the ground around the player a few times a second.
     if (h.body && GetTime() - lastReveal > 0.3) {
@@ -292,8 +303,8 @@ void Nav_Update(Scene& world, bool inputEnabled) {
         Vector3 east, north;
         if (!Frame(h.up, east, north)) { east = { 1, 0, 0 }; north = Vector3Normalize(Vector3CrossProduct(h.up, east)); }
         const float R = h.field->radius;
-        for (float a = -kRevealRadius; a <= kRevealRadius; a += 50.0f)
-            for (float b = -kRevealRadius; b <= kRevealRadius; b += 50.0f) {
+        for (float a = -kRevealRadius; a <= kRevealRadius; a += 100.0f)
+            for (float b = -kRevealRadius; b <= kRevealRadius; b += 100.0f) {
                 if (a * a + b * b > kRevealRadius * kRevealRadius) continue;
                 const Vector3 d = Vector3Normalize(Vector3Add(Vector3Scale(h.up, R), Vector3Add(Vector3Scale(east, a), Vector3Scale(north, b))));
                 set.insert(TileKey(d, R));
@@ -307,10 +318,11 @@ void Nav_Update(Scene& world, bool inputEnabled) {
     if (h.body && HasMap() && !minimap.pending) {
         const int ver = exploredVersion[h.body->name];
         const bool moved = !minimap.shown || minimapBody != h.body->name ||
-                           Vector3Distance(minimap.shown->centre, h.up) * h.field->radius > 40.0f ||
+                           Vector3Distance(minimap.shown->centre, h.up) * h.field->radius > 40.0f * MiniZoom() || minimapForce ||
                            (GetTime() - minimapAt > 2.0 && Vector3Distance(minimap.shown->centre, h.up) * h.field->radius > 1.0f);
         if (moved || ver != minimapTilesVersion) {
-            minimap.pending = StartImage(h, h.up, kMiniMetres / kMiniPixels, kMiniPixels, kMiniPixels, false); // square: masked when drawn
+            minimap.pending = StartImage(h, h.up, kMiniMetres * MiniZoom() / kMiniPixels, kMiniPixels, kMiniPixels, false); // square: masked when drawn
+            minimapForce = false;
             minimapAt = GetTime();
             minimapBody = h.body->name;
             minimapTilesVersion = ver;
@@ -437,7 +449,7 @@ void Nav_DrawHUD(Scene& world) {
     // player has moved since, and clip it to the circle as it is drawn (the mask no longer moves with
     // the image).
     const Vector2 off = OnImage(m, h.up);
-    const float k = size / (m.W * kMiniView / kMiniMetres); // screen pixels per image pixel
+    const float k = size * m.mpp / (kMiniView * MiniZoom()); // screen pixels per image pixel (from the shown image's own scale: right while a new zoom renders)
     const float drawn = m.W * k;
     const float sr = sinf(rot * DEG2RAD), cr = cosf(rot * DEG2RAD);
     const Vector2 shift = { -(off.x * cr - off.y * sr) * k, -(off.x * sr + off.y * cr) * k };
@@ -456,6 +468,10 @@ void Nav_DrawHUD(Scene& world) {
     DrawTexturePro(minimap.tex, { 0, 0, (float)m.W, (float)m.H }, { c.x + shift.x, c.y + shift.y, drawn, drawn }, { drawn * 0.5f, drawn * 0.5f }, rot, WHITE);
     EndShaderMode();
     DrawRing(c, rad, rad + 3.0f, 0, 360, 48, Fade(RAYWHITE, 0.6f));
+    { // its scale and zoom keys (#278)
+        const char* t = TextFormat("%.0f m  (-/=)", kMiniView * MiniZoom());
+        DrawText(t, (int)(c.x - MeasureText(t, 14) * 0.5f), (int)(c.y + rad + 8.0f), 14, Fade(RAYWHITE, 0.7f));
+    }
     // Waypoints and the start on it.
     auto onMini = [&](Vector3 dir, Color col) {
         const Vector2 p = OnImage(m, dir);

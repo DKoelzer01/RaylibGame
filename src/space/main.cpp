@@ -5654,7 +5654,7 @@ int main(int argc, char** argv)
             }
             if (ship.piloted && ship.lastImpact > 12.0f) survival.health -= (ship.lastImpact - 12.0f) * 3.0f; // crash damage
             if (!loading) Survival_Update(world, frameDt, gameInput);
-            if (!loading) Nav_Update(world, !bench && Nav_MapOpen()); // exploration, the map
+            if (!loading) Nav_Update(world, !bench && Nav_MapOpen(), !bench && gameInput && !Nav_MapOpen()); // exploration, the map, the minimap zoom (#278)
             if (!loading) Viewmodel_Update(world, frameDt);
             if (!loading) Farm_Update(world, frameDt * timeScale * gDebugTimeScale * Rocket_Warp()); // crops grow on world time
             if (!loading) Animals_Update(world, frameDt, frameDt * timeScale * gDebugTimeScale * Rocket_Warp(), gameInput && alive && !ship.piloted);
