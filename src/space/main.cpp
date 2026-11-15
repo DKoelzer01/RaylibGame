@@ -298,6 +298,10 @@ int main(int argc, char** argv)
     std::string hostSave;          // --host <save> (#311): a dedicated server: load (or create) the save, run headless, listen
     uint16_t hostPort = kDefaultHostPort; // --port N
     bool benchHost = false;        // --test-host (#311): with --host, a loopback client joins
+    bool seedGiven = false;        // --seed N was passed (a --host new world: else a random seed)
+    double autosaveMinutes = kDefaultAutosaveMinutes; // --autosave-minutes N (--host; 0 = off)
+    unsigned hostSaveSeed = 0;     // the seed an existing --host save holds
+    bool hostNewWorld = false;     // --host: the save did not exist yet
     bool benchHeadless = false;    // --test-headless (#311): the sim runs with --headless, nothing drawn
     bool benchTrapping = false;    // --test-trapping (#176)
     bool benchFishing = false;     // --test-fishing (#176)
@@ -499,6 +503,8 @@ int main(int argc, char** argv)
         if (std::string(argv[i]) == "--host" && i + 1 < argc) hostSave = argv[i + 1];
         if (std::string(argv[i]) == "--port" && i + 1 < argc) hostPort = (uint16_t)atoi(argv[i + 1]);
         if (std::string(argv[i]) == "--test-host") benchHost = true;
+        if (std::string(argv[i]) == "--seed") seedGiven = true;
+        if (std::string(argv[i]) == "--autosave-minutes" && i + 1 < argc) autosaveMinutes = atof(argv[i + 1]);
         if (std::string(argv[i]) == "--nocull") frustumCullingEnabled = false;
         if (std::string(argv[i]) == "--overlay") startWithOverlay = true;
         if (std::string(argv[i]) == "--cam" && i + 3 < argc) { benchCamGiven = true; benchCamOffset = { (float)atof(argv[i+1]), (float)atof(argv[i+2]), (float)atof(argv[i+3]) }; }
@@ -752,6 +758,21 @@ int main(int argc, char** argv)
     if (!bench) { Settings_Load(); if (settings.terrainDetail == 0) msaa = false; } // #302 (user 2026-11-15): Low runs without MSAA (VRAM); benches use --no-msaa
     for (int i = 1; i < argc; ++i) if (std::string(argv[i]) == "--headless") gHeadless = true; // #311: simulate, draw nothing
     if (benchHeadless || !hostSave.empty()) gHeadless = true; // a dedicated server (--host) draws nothing either
+    if (!hostSave.empty()) { // --host: the world's seed (user, 2026-11-15) - before the world is generated
+        if (FILE* fs = fopen(hostSave.c_str(), "rb")) { // an existing save keeps its own seed (its "seed N" line)
+            char line[512];
+            while (fgets(line, sizeof line, fs)) if (sscanf(line, "seed %u", &hostSaveSeed) == 1) break;
+            fclose(fs);
+            if (seedGiven) printf("host: %s keeps its own seed %u (--seed ignored)\n", hostSave.c_str(), hostSaveSeed);
+        } else {
+            hostNewWorld = true;
+            if (!seedGiven) { // a random seed (never 0: that is the generator's own "random" value, not printable up front)
+                std::random_device rd;
+                do worldGen.seed = (unsigned int)rd(); while (worldGen.seed == 0);
+                printf("host: no --seed for the new world: random seed %u\n", worldGen.seed);
+            }
+        }
+    }
     if (gHeadless) msaa = false;
     if (msaa) SetConfigFlags(FLAG_MSAA_4X_HINT);
     bool nativeWindow = false; // --native-window: a bench in the game's own window (borderless, monitor-sized), uncapped
@@ -1151,6 +1172,8 @@ int main(int argc, char** argv)
         mainMenu.isActive = false;
         world.isActive = true;
         std::string status;
+        Host_SetAutosaveMinutes(autosaveMinutes);
+        printf("host: autosave %s\n", autosaveMinutes > 0.0 ? TextFormat("every %g minutes, and on shutdown", autosaveMinutes) : "off (still on shutdown)");
         Host_Start(hostPort, status);
         printf("host: %s\n", status.c_str());
     }
@@ -7011,22 +7034,35 @@ int main(int argc, char** argv)
                 }
             }
         }
-        // --test-host (#311, with --host <save>): the dedicated server loaded or created its save and runs headless; a client
-        // opened in this process over loopback sends "join" and gets the world description (its fingerprint must match the
-        // host's world) and the current meteor shower. SKIP without ENABLE_GNS (nothing listens).
+        // --test-host (#311, with --host <save>): the dedicated server loaded or created its save and runs headless.
+        //   - seed (user, 2026-11-15): a new world takes --seed N, else a random seed (printed); an existing save keeps its own;
+        //   - autosave: with a short --autosave-minutes (<= 1) the test waits for one autosave;
+        //   - a client opened in this process over loopback sends "join" and gets the world description (fingerprint and
+        //     seed must match the host's world) and the current meteor shower. That part SKIPs without ENABLE_GNS.
         if (benchHost && gameState == 1 && !loading && WorldIdle()) {
             static uint32_t client = 0;
             static double t0 = -1.0;
             static bool sent = false, gotJoin = false, gotShower = false, sameWorld = false, sameShower = false;
+            if (t0 < 0.0) t0 = GetTime();
             bool saveOnDisk = false;
             if (FILE* fsv = hostSave.empty() ? nullptr : fopen(hostSave.c_str(), "rb")) { fclose(fsv); saveOnDisk = true; }
+            const unsigned expectSeed = hostNewWorld ? worldGen.seed : hostSaveSeed; // given or rolled up front / the save's
+            const bool seedOk = expectSeed != 0 && worldGen.lastSeed == expectSeed;
+            const char* seedHow = !hostNewWorld ? "the save's own" : seedGiven ? "--seed" : "random";
+            const bool wantAutosave = autosaveMinutes > 0.0 && autosaveMinutes <= 1.0;
+            const bool autosaveDone = !wantAutosave || Host_Autosaves() >= 1;
             if (hostSave.empty()) { printf("bench: host: --test-host needs --host <save> -> FAIL\n"); benchHost = false; }
             else if (!Host_Listening()) {
-                printf("bench: host: save %s on disk %d, headless %d, authority %d; not listening (%s) -> SKIP\n", hostSave.c_str(), (int)saveOnDisk,
-                       (int)gHeadless, (int)Net_IsAuthority(), Net_Available() ? "network failed" : "built without ENABLE_GNS");
-                benchHost = false;
+                if (autosaveDone || GetTime() - t0 > 90.0) {
+                    const bool ok = saveOnDisk && gHeadless && Net_IsAuthority() && seedOk && autosaveDone;
+                    printf("bench: host: save %s on disk %d, headless %d, authority %d, seed %u (%s) ok %d, autosaves %d; not listening (%s) -> %s\n",
+                           hostSave.c_str(), (int)saveOnDisk, (int)gHeadless, (int)Net_IsAuthority(), worldGen.lastSeed, seedHow, (int)seedOk, Host_Autosaves(),
+                           Net_Available() ? "network failed" : "built without ENABLE_GNS", ok ? "SKIP (network part)" : "FAIL");
+                    benchHost = false;
+                }
             } else {
-                if (!client) { client = Net_Connect(TextFormat("127.0.0.1:%d", hostPort)); Host_SetLocalClient(client); t0 = GetTime(); }
+                static unsigned joinSeed = 0;
+                if (!client) { client = Net_Connect(TextFormat("127.0.0.1:%d", hostPort)); Host_SetLocalClient(client); }
                 if (client && !sent && Net_IsConnected(client)) sent = Net_Send(client, "join", 4, true);
                 for (const NetMessage& m : Host_TakeLocalClientMessages()) {
                     const std::string text(m.data.begin(), m.data.end());
@@ -7034,6 +7070,7 @@ int main(int argc, char** argv)
                         JoinInfo info; std::string why;
                         gotJoin = JoinInfo_Read(text.substr(1), info, why);
                         sameWorld = gotJoin && info.fingerprint == WorldFingerprint(world);
+                        joinSeed = gotJoin ? info.seed : 0;
                         if (!gotJoin) printf("bench: host: join info unreadable: %s\n", why.c_str());
                     } else if (!text.empty() && text[0] == 'S') {
                         double s = 0.0, e = 0.0; unsigned id = 0;
@@ -7041,11 +7078,11 @@ int main(int argc, char** argv)
                         sameShower = gotShower && id == Events_GetShower().id;
                     }
                 }
-                if ((gotJoin && gotShower) || GetTime() - t0 > 10.0) {
-                    const bool ok = saveOnDisk && gHeadless && sent && sameWorld && sameShower && Host_Joins() == 1;
-                    printf("bench: host: save %s on disk %d, headless %d, listening on %d; loopback client joined %d, world description %d (fingerprint matches %d), shower %d (same %d), joins answered %d in %.0f ms -> %s\n",
-                           hostSave.c_str(), (int)saveOnDisk, (int)gHeadless, hostPort, (int)sent, (int)gotJoin, (int)sameWorld, (int)gotShower, (int)sameShower,
-                           Host_Joins(), (GetTime() - t0) * 1000.0, ok ? "PASS" : "FAIL");
+                if ((gotJoin && gotShower && autosaveDone) || GetTime() - t0 > 90.0) {
+                    const bool ok = saveOnDisk && gHeadless && sent && sameWorld && sameShower && Host_Joins() == 1 && seedOk && joinSeed == worldGen.lastSeed && autosaveDone;
+                    printf("bench: host: save %s on disk %d, headless %d, listening on %d; seed %u (%s) ok %d, sent to the client %d; autosaves %d; loopback client joined %d, world description %d (fingerprint matches %d), shower %d (same %d), joins answered %d after %.1f s -> %s\n",
+                           hostSave.c_str(), (int)saveOnDisk, (int)gHeadless, hostPort, worldGen.lastSeed, seedHow, (int)seedOk, (int)(joinSeed == worldGen.lastSeed),
+                           Host_Autosaves(), (int)sent, (int)gotJoin, (int)sameWorld, (int)gotShower, (int)sameShower, Host_Joins(), GetTime() - t0, ok ? "PASS" : "FAIL");
                     benchHost = false;
                 }
             }
@@ -7433,6 +7470,7 @@ int main(int argc, char** argv)
         PROFILE_FRAME();
     }
     Recorder_Shutdown(); // the frames still queued, the GIF and the contact sheet (#375)
+    if (!hostSave.empty()) Host_SaveOnShutdown(world); // --host: the world on disk before it goes away
 
     }   // scenes destroyed here, while the GL context still exists
     DebugUI_Shutdown();

@@ -3,7 +3,9 @@
 #include "joininfo.h"
 #include "net.h"
 #include "scene.h"
+#include "world.h"
 
+#include <raylib.h>
 #include <cstdio>
 #include <string>
 
@@ -12,12 +14,15 @@ namespace {
     int joins = 0;
     uint32_t localClient = 0;
     std::vector<NetMessage> localInbox;
+    double autosaveSeconds = 0.0, lastSave = -1.0;
+    int autosaves = 0;
 
     void SendText(uint32_t conn, const std::string& text) { Net_Send(conn, text.data(), (uint32_t)text.size(), true); }
 }
 
 bool Host_Start(uint16_t port, std::string& status) {
     gNetRole = NetRole::Host; // the authority either way: the world runs and rolls here
+    lastSave = GetTime();
     if (!Net_Available()) { status = "built without ENABLE_GNS: the world runs, nobody can connect"; return false; }
     std::string err;
     if (!Net_Init(err)) { status = "network init failed: " + err; return false; }
@@ -27,7 +32,17 @@ bool Host_Start(uint16_t port, std::string& status) {
     return true;
 }
 
+void Host_SetAutosaveMinutes(double minutes) { autosaveSeconds = minutes > 0.0 ? minutes * 60.0 : 0.0; }
+
 void Host_Update(Scene& world) {
+    // Autosave (user, 2026-11-15: every 30 minutes by default; --autosave-minutes N, 0 = off). Wall-clock time: a
+    // server's saves protect against crashes, whatever the game clock does.
+    if (autosaveSeconds > 0.0 && lastSave >= 0.0 && GetTime() - lastSave >= autosaveSeconds) {
+        lastSave = GetTime();
+        const bool ok = SaveWorld(world);
+        if (ok) ++autosaves;
+        printf("host: autosave %d to %s %s\n", autosaves, WorldSavePath(), ok ? "done" : "FAILED");
+    }
     if (!listening) return;
     Net_Poll();
     std::vector<NetMessage> in;
@@ -47,6 +62,12 @@ void Host_Update(Scene& world) {
     }
 }
 
+bool Host_SaveOnShutdown(Scene& world) {
+    const bool ok = SaveWorld(world);
+    printf("host: saved on shutdown to %s %s\n", WorldSavePath(), ok ? "done" : "FAILED");
+    return ok;
+}
+
 void Host_Stop() {
     if (listening) Net_Shutdown();
     listening = false;
@@ -57,5 +78,6 @@ void Host_Stop() {
 
 bool Host_Listening() { return listening; }
 int Host_Joins() { return joins; }
+int Host_Autosaves() { return autosaves; }
 void Host_SetLocalClient(uint32_t conn) { localClient = conn; }
 std::vector<NetMessage> Host_TakeLocalClientMessages() { std::vector<NetMessage> out; out.swap(localInbox); return out; }
