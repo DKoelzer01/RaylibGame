@@ -40,6 +40,7 @@ void Settings_Apply();           // to the player, ship, camera, audio, foliage 
 MenuResult Menu_Main();
 MenuResult Menu_Pause();
 void Menu_ResetPause();          // back to the pause menu's first page when it opens
+bool Menu_TestSaves();           // --test-saves (#279): copy, rename and delete a scratch save with regions and bake
 // A new save's file: saves/world.sav, else the first free saves/world_N.sav.
 std::string Menu_NewSavePath();
 

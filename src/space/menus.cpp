@@ -78,6 +78,69 @@ namespace {
         return { (GetScreenWidth() - w) * 0.5f, GetScreenHeight() * top + i * (h + 14.0f * s), w, h };
     }
 
+    // Save management (#279), from the main menu only (no world loaded). A save is every entry of saves/ named
+    // "<name>.sav" or "<name>.sav.<something>": the file, its .regions folder and its .erosion bake cache.
+    std::vector<fs::path> SaveParts(const std::string& name) {
+        std::vector<fs::path> out;
+        std::error_code ec;
+        const std::string base = name + ".sav";
+        for (const auto& e : fs::directory_iterator("saves", ec)) {
+            const std::string f = e.path().filename().string();
+            if (f == base || f.rfind(base + ".", 0) == 0) out.push_back(e.path());
+        }
+        return out;
+    }
+    bool SaveNameOk(const std::string& n) {
+        if (n.empty() || n.size() > 40 || n == "bench") return false;
+        for (char c : n) if (!(isalnum((unsigned char)c) || c == ' ' || c == '_' || c == '-')) return false;
+        return SaveParts(n).empty(); // not taken
+    }
+    bool SaveRename(const std::string& from, const std::string& to) {
+        std::error_code ec;
+        for (const fs::path& p : SaveParts(from)) {
+            const std::string f = p.filename().string();
+            fs::rename(p, fs::path("saves") / (to + f.substr(from.size())), ec);
+            if (ec) return false;
+        }
+        return true;
+    }
+    bool SaveCopy(const std::string& from, const std::string& to) {
+        std::error_code ec;
+        for (const fs::path& p : SaveParts(from)) {
+            const std::string f = p.filename().string();
+            fs::copy(p, fs::path("saves") / (to + f.substr(from.size())), fs::copy_options::recursive, ec);
+            if (ec) return false;
+        }
+        return true;
+    }
+    bool SaveDelete(const std::string& name) {
+        std::error_code ec;
+        for (const fs::path& p : SaveParts(name)) fs::remove_all(p, ec);
+        return SaveParts(name).empty();
+    }
+    bool TestSaveOps() {
+        std::error_code ec;
+        fs::create_directories("saves/zz_test.sav.regions", ec);
+        { FILE* f = fopen("saves/zz_test.sav", "w"); if (f) { fputs("test", f); fclose(f); } }
+        { FILE* f = fopen("saves/zz_test.sav.regions/b1_0_0_0.rgn", "w"); if (f) { fputs("region", f); fclose(f); } }
+        { FILE* f = fopen("saves/zz_test.sav.erosion", "w"); if (f) { fputs("bake", f); fclose(f); } }
+        bool ok = true;
+        auto check = [&](bool c, const char* what) { if (!c) { printf("bench: saves: %s: NO\n", what); ok = false; } };
+        check(SaveParts("zz_test").size() == 3, "a save is its file, regions and bake");
+        check(!SaveNameOk("zz_test") && !SaveNameOk("bad/name") && !SaveNameOk("bench") && SaveNameOk("zz_test2"), "names: taken, bad characters and bench refused");
+        check(SaveCopy("zz_test", "zz_test2") && fs::exists("saves/zz_test2.sav.regions/b1_0_0_0.rgn", ec) && fs::exists("saves/zz_test2.sav.erosion", ec), "copy takes all three");
+        check(SaveRename("zz_test2", "zz_test3") && SaveParts("zz_test2").empty() && SaveParts("zz_test3").size() == 3, "rename moves all three");
+        check(SaveDelete("zz_test3") && SaveDelete("zz_test") && SaveParts("zz_test").empty(), "delete removes all of it");
+        printf("bench: saves (#279): copy, rename, delete of a save with regions and bake -> %s\n", ok ? "PASS" : "FAIL");
+        return ok;
+    }
+
+    // The Load page's row state: which save is being renamed (its text) or waits for a second click to delete.
+    int renaming = -1, deleting = -1;
+    std::string renameText;
+    double deleteAsked = 0.0;
+    std::string saveMessage;
+
     void RefreshSaves() {
         saves.clear();
         std::error_code ec;
@@ -247,11 +310,45 @@ MenuResult Menu_Main() {
         if (saves.empty()) DrawText("No saves yet", (GetScreenWidth() - MeasureText("No saves yet", fs)) / 2, (int)(GetScreenHeight() * 0.38f), fs, Fade(kText, 0.7f));
         saveScroll = std::clamp(saveScroll - GetMouseWheelMove(), 0.0f, std::max(0.0f, (float)saves.size() - 7.0f));
         const int first = (int)saveScroll;
+        bool changed = false;
         for (int i = first; i < (int)saves.size() && i < first + 7; ++i) {
             const SaveEntry& e = saves[i];
-            if (Button(Row(i - first, 620.0f, 0.32f), TextFormat("%s   %s", e.name.c_str(), e.when.c_str()))) { r.action = MenuAction::LoadGame; r.path = e.path; mainPage = Page::Main; }
+            // The row: the save (click to load), then Rename, Copy and Delete (#279).
+            const Rectangle row = Row(i - first, 820.0f, 0.32f);
+            const float sw = 92.0f * s, gap = 8.0f * s;
+            const Rectangle main = { row.x, row.y, row.width - 3 * (sw + gap), row.height };
+            const Rectangle bRen = { main.x + main.width + gap, row.y, sw, row.height }, bCopy = { bRen.x + sw + gap, row.y, sw, row.height }, bDel = { bCopy.x + sw + gap, row.y, sw, row.height };
+            if (renaming == i) { // the name being typed
+                DrawRectangleRounded(main, 0.18f, 6, kHover);
+                const bool ok = SaveNameOk(renameText);
+                const int tfs = (int)(main.height * 0.45f);
+                DrawText(TextFormat("%s%s", renameText.c_str(), fmodf((float)GetTime(), 1.0f) < 0.5f ? "_" : ""), (int)(main.x + 14 * s), (int)(main.y + (main.height - tfs) * 0.5f), tfs, ok || renameText == e.name ? kText : ORANGE);
+                for (int c = GetCharPressed(); c > 0; c = GetCharPressed()) if (c < 128 && renameText.size() < 40) renameText += (char)c;
+                if (IsKeyPressed(KEY_BACKSPACE) && !renameText.empty()) renameText.pop_back();
+                if ((IsKeyPressed(KEY_ENTER) || Button(bRen, "OK")) && ok) {
+                    saveMessage = SaveRename(e.name, renameText) ? TextFormat("Renamed to %s", renameText.c_str()) : "Rename failed";
+                    renaming = -1; changed = true;
+                }
+                if (Button(bCopy, "Cancel") || IsKeyPressed(KEY_ESCAPE)) renaming = -1;
+                continue;
+            }
+            if (Button(main, TextFormat("%s   %s", e.name.c_str(), e.when.c_str()))) { r.action = MenuAction::LoadGame; r.path = e.path; mainPage = Page::Main; }
+            if (Button(bRen, "Rename")) { renaming = i; renameText = e.name; deleting = -1; }
+            if (Button(bCopy, "Copy")) {
+                std::string to = e.name + " copy";
+                for (int k = 2; !SaveNameOk(to) && k < 100; ++k) to = TextFormat("%s copy %d", e.name.c_str(), k);
+                saveMessage = SaveCopy(e.name, to) ? TextFormat("Copied to %s", to.c_str()) : "Copy failed";
+                changed = true;
+            }
+            const bool sure = deleting == i && GetTime() - deleteAsked < 4.0;
+            if (Button(bDel, sure ? "Sure?" : "Delete")) {
+                if (sure) { saveMessage = SaveDelete(e.name) ? TextFormat("Deleted %s", e.name.c_str()) : "Delete failed"; deleting = -1; changed = true; }
+                else { deleting = i; deleteAsked = GetTime(); }
+            }
         }
-        if (Button(Row(7, 300.0f, 0.32f), "Back") || IsKeyPressed(KEY_ESCAPE)) mainPage = Page::Main;
+        if (!saveMessage.empty()) DrawText(saveMessage.c_str(), (GetScreenWidth() - MeasureText(saveMessage.c_str(), fs)) / 2, (int)(Row(7, 300.0f, 0.32f).y - 34 * s), fs, Fade(kText, 0.8f));
+        if (changed) { const float keep = saveScroll; RefreshSaves(); saveScroll = std::min(keep, std::max(0.0f, (float)saves.size() - 7.0f)); }
+        if (renaming < 0 && (Button(Row(7, 300.0f, 0.32f), "Back") || IsKeyPressed(KEY_ESCAPE))) { mainPage = Page::Main; deleting = -1; saveMessage.clear(); }
     } else if (SettingsPage()) {
         mainPage = Page::Main;
     }
@@ -259,6 +356,7 @@ MenuResult Menu_Main() {
 }
 
 void Menu_ResetPause() { pausePage = Page::Main; }
+bool Menu_TestSaves() { return TestSaveOps(); }
 
 MenuResult Menu_Pause() {
     MenuResult r;
