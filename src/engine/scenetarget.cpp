@@ -30,6 +30,14 @@ namespace {
         float knee = 0.8f, key = 0.35f, eMin = 0.35f, eMax = 1.0f, tau = 1.5f;
         GLuint expProg = 0, expBuf = 0;         // the exposure (and the measured luminance) in a 2-float SSBO
         GLint locTonemap = -1, locKnee = -1, locDt = -1, locKey = -1, locEMin = -1, locEMax = -1, locTau = -1;
+        // Bloom (#140): a dual-filter (Kawase) chain on the linear scene, kBloomLevels from half size, mixed into the
+        // composite before exposure and tonemapping (energy-conserving: lerp toward the blur by bloomStrength, no threshold).
+        bool bloom = true;
+        float bloomStrength = 0.04f;
+        static constexpr int kBloomLevels = 6;
+        GLuint bloomTex[kBloomLevels] = {}, bloomFbo[kBloomLevels] = {};
+        int bloomW[kBloomLevels] = {}, bloomH[kBloomLevels] = {};
+        GLuint downProg = 0, upProg = 0;
     } S;
     constexpr GLuint kExposureBinding = 5;
 
@@ -47,6 +55,9 @@ uniform sampler2D scene;
 uniform int tonemap;
 uniform float knee;
 uniform int nanDebug; // RAYLIBGAME_NAN_CHECK=1: non-finite pixels in magenta (#402)
+uniform sampler2D bloomTex; // #140: the blur chain's top level (linear), 0 strength = none
+uniform float bloomStrength;
+uniform float bloomLevels;
 layout(std430, binding = 5) readonly buffer Exposure { float exposure; float lum; float bad; };
 out vec4 color;
 vec3 kneeCurve(vec3 x) { // identity up to the knee, then an exponential shoulder towards 1 (slope 1 at the knee)
@@ -60,9 +71,44 @@ vec3 aces(vec3 x) { // Narkowicz's fit, with its usual 0.6 pre-scale
 void main() {
     vec3 c = texelFetch(scene, ivec2(gl_FragCoord.xy), 0).rgb;
     if (any(isnan(c)) || any(isinf(c))) { if (nanDebug == 1) { color = vec4(1.0, 0.0, 1.0, 1.0); return; } c = vec3(0.0); } // ~0.1% of pixels are NaN / Inf (#402); RGBA8 stored them as 0
-    vec3 lin = pow(max(c, vec3(0.0)), vec3(2.2)) * (exposure > 0.0 ? exposure : 1.0);
+    vec3 lin = pow(max(c, vec3(0.0)), vec3(2.2));
+    if (bloomStrength > 0.0) lin = mix(lin, texture(bloomTex, gl_FragCoord.xy / vec2(textureSize(scene, 0))).rgb / bloomLevels, bloomStrength); // #140
+    lin = lin * (exposure > 0.0 ? exposure : 1.0);
     vec3 t = tonemap == 1 ? aces(lin) : tonemap == 2 ? min(lin, vec3(1.0)) : kneeCurve(lin);
     color = vec4(pow(t, vec3(1.0 / 2.2)), 1.0);
+}
+)";
+    // Bloom blur passes (#140): the dual filter's downsample (centre x4 + four diagonal taps; the first level also decodes
+    // the display-encoded scene to linear and drops NaN/Inf) and upsample (a tent of 8 taps), added level by level.
+    const char* kFsDown = R"(#version 330
+in vec2 uv;
+uniform sampler2D src;
+uniform vec2 texel;
+uniform int decode;
+out vec4 color;
+vec3 fetch(vec2 p) {
+    vec3 c = texture(src, p).rgb;
+    if (any(isnan(c)) || any(isinf(c))) c = vec3(0.0);
+    c = max(c, vec3(0.0));
+    return decode == 1 ? pow(c, vec3(2.2)) : c;
+}
+void main() {
+    vec2 h = texel * 0.5;
+    vec3 s = fetch(uv) * 4.0 + fetch(uv - h) + fetch(uv + h) + fetch(uv + vec2(h.x, -h.y)) + fetch(uv - vec2(h.x, -h.y));
+    color = vec4(s / 8.0, 1.0);
+}
+)";
+    const char* kFsUp = R"(#version 330
+in vec2 uv;
+uniform sampler2D src;
+uniform vec2 texel;
+out vec4 color;
+void main() {
+    vec2 h = texel * 0.5;
+    vec3 s = texture(src, uv + vec2(-2.0 * h.x, 0.0)).rgb + texture(src, uv + vec2(2.0 * h.x, 0.0)).rgb
+           + texture(src, uv + vec2(0.0, -2.0 * h.y)).rgb + texture(src, uv + vec2(0.0, 2.0 * h.y)).rgb
+           + 2.0 * (texture(src, uv + h).rgb + texture(src, uv - h).rgb + texture(src, uv + vec2(h.x, -h.y)).rgb + texture(src, uv + vec2(-h.x, h.y)).rgb);
+    color = vec4(s / 12.0, 1.0);
 }
 )";
     // Auto-exposure (#131): the log-average luminance of a 64 x 36 grid of scene samples (one workgroup) -> a target
@@ -120,6 +166,64 @@ void main() {
         if (S.resolveTex) glDeleteTextures(1, &S.resolveTex);
         S.fbo = S.color = S.depth = S.resolveFbo = S.resolveTex = 0;
         S.w = S.h = 0;
+        for (int i = 0; i < State::kBloomLevels; ++i) {
+            if (S.bloomFbo[i]) glDeleteFramebuffers(1, &S.bloomFbo[i]);
+            if (S.bloomTex[i]) glDeleteTextures(1, &S.bloomTex[i]);
+            S.bloomFbo[i] = S.bloomTex[i] = 0;
+        }
+    }
+
+    // The bloom levels (#140): half, quarter, ... size, RGBA16F, linear filtering.
+    void CreateBloom(int w, int h) {
+        for (int i = 0; i < State::kBloomLevels; ++i) {
+            w = std::max(1, w / 2); h = std::max(1, h / 2);
+            S.bloomW[i] = w; S.bloomH[i] = h;
+            glGenTextures(1, &S.bloomTex[i]);
+            glBindTexture(GL_TEXTURE_2D, S.bloomTex[i]);
+            glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA16F, w, h, 0, GL_RGBA, GL_HALF_FLOAT, nullptr);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+            glGenFramebuffers(1, &S.bloomFbo[i]);
+            glBindFramebuffer(GL_FRAMEBUFFER, S.bloomFbo[i]);
+            glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, S.bloomTex[i], 0);
+        }
+        glBindTexture(GL_TEXTURE_2D, 0);
+        glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    }
+
+    // The bloom chain (#140): down from the resolved scene (decoded to linear) through the levels, then back up adding
+    // each smaller level into the next larger one; level 0 ends as the sum (the composite divides by the count).
+    void RunBloom() {
+        auto pass = [&](GLuint prog, GLuint src, int srcW, int srcH, int dst, bool decode) {
+            glBindFramebuffer(GL_FRAMEBUFFER, S.bloomFbo[dst]);
+            glViewport(0, 0, S.bloomW[dst], S.bloomH[dst]);
+            glUseProgram(prog);
+            glActiveTexture(GL_TEXTURE0);
+            glBindTexture(GL_TEXTURE_2D, src);
+            glUniform1i(glGetUniformLocation(prog, "src"), 0);
+            glUniform2f(glGetUniformLocation(prog, "texel"), 1.0f / srcW, 1.0f / srcH);
+            const GLint dl = glGetUniformLocation(prog, "decode");
+            if (dl >= 0) glUniform1i(dl, decode ? 1 : 0);
+            glDrawArrays(GL_TRIANGLES, 0, 3);
+        };
+        glBindVertexArray(S.vao);
+        glDisable(GL_DEPTH_TEST);
+        glDisable(GL_CULL_FACE);
+        glDisable(GL_BLEND);
+        glBindTexture(GL_TEXTURE_2D, S.resolveTex); // sampled with filtering here (the composite fetches texels)
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        pass(S.downProg, S.resolveTex, S.w, S.h, 0, true);
+        for (int i = 1; i < State::kBloomLevels; ++i) pass(S.downProg, S.bloomTex[i - 1], S.bloomW[i - 1], S.bloomH[i - 1], i, false);
+        glEnable(GL_BLEND);
+        glBlendFunc(GL_ONE, GL_ONE);
+        for (int i = State::kBloomLevels - 1; i > 0; --i) pass(S.upProg, S.bloomTex[i], S.bloomW[i], S.bloomH[i], i - 1, false);
+        glDisable(GL_BLEND);
+        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA); // rlgl's default
+        glBindFramebuffer(GL_FRAMEBUFFER, 0);
+        glBindVertexArray(0);
     }
 
     bool Create(int w, int h) {
@@ -161,6 +265,7 @@ void main() {
             return false;
         }
         S.w = w; S.h = h;
+        if (S.hdr && S.bloom && S.downProg && S.upProg) CreateBloom(w, h); // #140
         logger.logf("[SceneTarget] %dx%d, %d samples, float depth, reverse-Z, %s\n", w, h, S.samples,
                     !S.hdr ? "RGBA8 (RAYLIBGAME_HDR=0)" : S.tonemap == 1 ? "HDR, ACES" : S.tonemap == 2 ? "HDR, clip" : "HDR, knee tonemap");
         return true;
@@ -208,6 +313,16 @@ void main() {
                 S.locEMin = glGetUniformLocation(S.expProg, "eMin");
                 S.locEMax = glGetUniformLocation(S.expProg, "eMax");
                 S.locTau = glGetUniformLocation(S.expProg, "tau");
+                // Bloom (#140): RAYLIBGAME_BLOOM=0 off, RAYLIBGAME_BLOOM_STRENGTH (0.04).
+                if (const char* b = getenv("RAYLIBGAME_BLOOM"); b && b[0] == '0') S.bloom = false;
+                S.bloomStrength = std::clamp(envF("RAYLIBGAME_BLOOM_STRENGTH", S.bloomStrength), 0.0f, 1.0f);
+                if (S.bloom) {
+                    const unsigned bvs = rlCompileShader(kVs, RL_VERTEX_SHADER), dfs = rlCompileShader(kFsDown, RL_FRAGMENT_SHADER);
+                    S.downProg = (bvs && dfs) ? rlLoadShaderProgram(bvs, dfs) : 0;
+                    const unsigned uvs = rlCompileShader(kVs, RL_VERTEX_SHADER), ufs = rlCompileShader(kFsUp, RL_FRAGMENT_SHADER);
+                    S.upProg = (uvs && ufs) ? rlLoadShaderProgram(uvs, ufs) : 0;
+                    if (!S.downProg || !S.upProg) { logger.logf("[SceneTarget] bloom shaders failed: no bloom\n"); S.bloom = false; }
+                }
                 const float init[3] = { S.autoExposure ? 0.0f : 1.0f, 0.0f, 0.0f }; // 0: the first frame takes its target at once
                 glGenBuffers(1, &S.expBuf);
                 glBindBuffer(GL_SHADER_STORAGE_BUFFER, S.expBuf);
@@ -297,6 +412,7 @@ void SceneTarget_End() {
                 printf("exposure: %.3f (scene log-average luminance %.4f; %.0f of 2304 samples NaN/Inf)\n", v[0], v[1], v[2]);
             }
         }
+        if (S.bloom && S.bloomTex[0]) RunBloom(); // #140 (sets its own viewports; the composite below sets the window's)
     }
     S.clipControl(kLowerLeft, kNegOneToOne);
     glDepthFunc(GL_LEQUAL);
@@ -314,6 +430,13 @@ void SceneTarget_End() {
         static const int nanCheck = getenv("RAYLIBGAME_NAN_CHECK") && getenv("RAYLIBGAME_NAN_CHECK")[0] == '1';
         glUniform1i(S.locTonemap, S.tonemap); glUniform1f(S.locKnee, S.knee);
         glUniform1i(glGetUniformLocation(S.prog, "nanDebug"), nanCheck);
+        const bool bloomOn = S.bloom && S.bloomTex[0];
+        glActiveTexture(GL_TEXTURE1);
+        glBindTexture(GL_TEXTURE_2D, bloomOn ? S.bloomTex[0] : 0);
+        glActiveTexture(GL_TEXTURE0);
+        glUniform1i(glGetUniformLocation(S.prog, "bloomTex"), 1);
+        glUniform1f(glGetUniformLocation(S.prog, "bloomStrength"), bloomOn ? S.bloomStrength : 0.0f);
+        glUniform1f(glGetUniformLocation(S.prog, "bloomLevels"), (float)State::kBloomLevels);
     }
     glBindVertexArray(S.vao);
     glDrawArrays(GL_TRIANGLES, 0, 3);
@@ -328,6 +451,8 @@ void SceneTarget_End() {
 void SceneTarget_Unload() {
     if (S.ok) Release();
     if (S.prog) rlUnloadShaderProgram(S.prog);
+    if (S.downProg) rlUnloadShaderProgram(S.downProg);
+    if (S.upProg) rlUnloadShaderProgram(S.upProg);
     if (S.expProg) rlUnloadShaderProgram(S.expProg);
     if (S.expBuf) glDeleteBuffers(1, &S.expBuf);
     if (S.vao) glDeleteVertexArrays(1, &S.vao);
