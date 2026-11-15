@@ -78,6 +78,7 @@ int CellFill(const Snapshot& s, uint64_t body, Vector3 local, int kind, float* f
 // ---------------------------------------------------------------------------------------------
 
 ChunkSampler::ChunkSampler(const Snapshot* snap, uint64_t body, Vector3 lo, Vector3 hi) {
+    blend = Vector3Distance(lo, hi) < 70.0f; // a box up to ~40 m across (levels 0-2): coarser samples are wider apart than a cell (#381)
     if (!snap) return;
     for (const Site& site : snap->sites) {
         if (site.body != body || site.bricks.empty()) continue;
@@ -230,6 +231,10 @@ bool ChunkSampler::density(Vector3 p, int kind, float& wd) {
             return sf <= kNone * 0.5f ? ISO_LEVEL - DENSITY_GRADIENT * 0.5f : ISO_LEVEL + DENSITY_GRADIENT * (sf - fz);
         };
         const float own = columnDensity(ci, cj);
+        // Far from its column's surface (2.5 m+ over or under it), the blend can't put the sample on the other side
+        // (only neighbours 2.5 m higher or lower could: a waterfall's step stays a little sharper): its own value does
+        // (#381: the blend made a water rebuild 1.7x dearer; most samples are well above or below the surface).
+        if (!blend || fabsf(own - ISO_LEVEL) > DENSITY_GRADIENT * 2.5f) { wd = own; return true; }
         // Blended across the four nearest columns (#423): each 1 m column was a flat-topped box, so the water showed 1 m
         // steps and square blobs. Linear weights from the cell centres slope the surface evenly between columns (smoothstep
         // weights put each column's whole step at its border: a 1 m grid of ripples on a draining pond), and a dry

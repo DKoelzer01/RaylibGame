@@ -109,6 +109,7 @@ private:
     // published (#423: the blended density asks four columns a sample; hashing every one doubled a water rebuild).
     struct Dense { int c0[3] = {}, n[3] = {}, b0[3] = {}, bn[3] = {}; std::vector<float> surf; std::vector<char> brick; };
     std::vector<Dense> dense;
+    bool blend = true; // blend columns (#423): only in fine chunks (samples finer than a cell); coarse ones gain nothing (#381)
     bool brickAt(int si, int ci, int cj, int ck) const;
     float surface(int si, int ci, int cj, int ck, int kind);
     float openSurface(int si, int ci, int cj, int ck, int kind, int depth);
