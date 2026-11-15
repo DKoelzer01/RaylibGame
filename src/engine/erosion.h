@@ -103,6 +103,8 @@ float ErosionCliffs(Vector3 p, float h, Vector3 grad, float footprint, unsigned 
 struct CliffLip { float topRel = 0.0f, thick = 0.0f, margin = -1000.0f; };
 bool ErosionCliffRegion(Vector3 p, unsigned int seed); // inside a hard-rock cliff region at all (cheap)
 float ErosionBakeProgress(); // 0..1 while a bake runs (the loading screen, #362)
+bool ErosionBaking();        // a bake is running (not a cache read: #505)
+int ErosionBakeCount();      // bakes run so far (tests: a load must read the cache, #505)
 CliffLip ErosionCliffLip(Vector3 p, float h, Vector3 grad, float footprint, unsigned int seed, float final);
 
 #endif

@@ -1711,7 +1711,8 @@ void generateWorld(Scene& world) {
                 std::atomic<bool> baked{ false };
                 std::thread bake([&] { field->bakeErosion(cache); baked.store(true); });
                 while (!baked.load()) {
-                    if (gWorldGenWait) gWorldGenWait(ErosionBakeProgress(), "Shaping the world (erosion)");
+                    // A cache read (a save's own bake) is "loading"; only a real bake says it shapes the world (#505).
+                    if (gWorldGenWait) gWorldGenWait(ErosionBaking() ? ErosionBakeProgress() : 0.0f, ErosionBaking() ? "Shaping the world (erosion)" : "Loading the world's terrain");
                     else std::this_thread::sleep_for(std::chrono::milliseconds(20));
                 }
                 bake.join();

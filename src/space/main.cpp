@@ -57,6 +57,7 @@
 #include "machinemodels.h"
 #include "gpucompute.h"
 #include "terraingpu.h"
+#include "erosion.h"
 #ifdef _WIN32
 extern "C" __declspec(dllimport) int __stdcall MessageBoxA(void*, const char*, const char*, unsigned int); // the GL 4.3 error box (no windows.h: it clashes with raylib)
 #endif
@@ -385,6 +386,7 @@ int main(int argc, char** argv)
     int menuStep = 0, menuFrames = 0;
     bool menuOk = true;
     bool menuEsc = false; // --test-menus: an Esc press for the in-game Esc check, as if the key went down this frame
+    int menuBakesBeforeLoad = 0; // --test-menus: erosion bakes before Load Game (#505: the load must not bake)
     int wallPhase = 0; bool wallOk = true;
     double wallStart = 0.0, wallMaxStep = 0.0, wallMaxStepAt = 0.0;
     float wallMaxImpact = 0.0f, wallMinHealth = 100.0f, wallMaxSpeed = 0.0f; int wallCamInside = 0; // frames with the camera inside terrain (#255)
@@ -779,7 +781,8 @@ int main(int argc, char** argv)
         DrawText(what, bx, by - 40, 28, RAYWHITE);
         DrawRectangle(bx, by, bw, 14, Fade(RAYWHITE, 0.15f));
         DrawRectangle(bx, by, (int)(bw * std::clamp(progress, 0.02f, 1.0f)), 14, SKYBLUE);
-        DrawText("A new world's terrain is shaped once (about a minute); loading it later is quick.", bx, by + 26, 16, Fade(RAYWHITE, 0.6f));
+        if (strncmp(what, "Shaping", 7) == 0) // a real bake (a cache read is quick and says "Loading", #505)
+            DrawText("A new world's terrain is shaped once (about a minute); loading it later is quick.", bx, by + 26, 16, Fade(RAYWHITE, 0.6f));
         EndDrawing();
     };
     if (!IsWindowReady()) {
@@ -7117,10 +7120,15 @@ int main(int argc, char** argv)
                 menuOk &= down;
                 printf("bench: menus: behind the menu: %zu jobs queued, %d running, %d GPU batches, arena %d vertices (#270): %s\n",
                        WorldJobs().queued(), WorldJobs().running(), TerrainGpu_Pending(), TerrainArena_Stats().vertexCapacity, down ? "torn down" : "NOT torn down");
+                menuBakesBeforeLoad = ErosionBakeCount();
                 pendingMenu.action = MenuAction::LoadGame; pendingMenu.path = "saves/bench.sav"; menuStep = 5; menuFrames = 0;
             } else if (menuStep == 5 && menuFrames == 5) {
                 menuOk &= gameState == 1;
                 printf("bench: menus: Load Game -> in game: %s\n", gameState == 1 ? "yes" : "NO");
+                // #505: a save with its own erosion cache loads it; it never bakes again.
+                const bool cached = !gErosionPrototype || ErosionBakeCount() == menuBakesBeforeLoad;
+                menuOk &= cached;
+                printf("bench: menus: the load read the save's erosion cache, no bake (#505): %s\n", cached ? "yes" : "NO");
                 // #388: the loading screen as entering a world raises it (benches load without one), then Esc on it.
                 loading = true; spawnLoad = false; loadStart = GetTime(); loadMax = 1; loadFrames = 0;
                 menuEsc = true; menuStep = 6; menuFrames = 0;
