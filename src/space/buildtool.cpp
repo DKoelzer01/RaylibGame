@@ -311,10 +311,38 @@ void BuildTool_Draw3D(Scene& world) {
         for (auto& ed : e) DrawLine3D(v[ed[0]], v[ed[1]], col);
         rlPopMatrix();
     };
+    // The part's real shape (#197): each footprint cell's faces (slopes, corners, beams as they will be), translucent
+    // green (or red: can't place) with their edges, inflated 2 cm about the cell centre so they stand off the blocks
+    // around them (#199), both sides drawn.
+    auto ghost = [&](const Plot& p, const std::vector<std::pair<Int3, CellShape>>& cells, Color fill, Color edge) {
+        std::vector<std::vector<Vector3>> faces;
+        rlDrawRenderBatchActive();
+        rlPushMatrix();
+        rlMultMatrixf(MatrixToFloat(p.cellModel(body, world.renderOrigin)));
+        rlDisableBackfaceCulling();
+        rlDisableDepthMask();
+        constexpr float kGrow = 1.0f + 0.04f / kCellSize; // 2 cm each side
+        for (const auto& c : cells) {
+            CellShapeFaces(c.second, faces);
+            const Vector3 lo = { (float)c.first.x, (float)c.first.y, (float)c.first.z };
+            auto toPlot = [&](Vector3 v) { // cell units -> plot metres, grown about the cell centre
+                const Vector3 g = Vector3Add(Vector3Scale(Vector3Subtract(v, { 0.5f, 0.5f, 0.5f }), kGrow), { 0.5f, 0.5f, 0.5f });
+                return Vector3Scale(Vector3Add(lo, g), kCellSize);
+            };
+            for (const auto& poly : faces) {
+                for (size_t i = 1; i + 1 < poly.size(); ++i) DrawTriangle3D(toPlot(poly[0]), toPlot(poly[i]), toPlot(poly[i + 1]), fill);
+                for (size_t i = 0; i < poly.size(); ++i) DrawLine3D(toPlot(poly[i]), toPlot(poly[(i + 1) % poly.size()]), edge);
+            }
+        }
+        rlDrawRenderBatchActive();
+        rlEnableDepthMask();
+        rlEnableBackfaceCulling();
+        rlPopMatrix();
+    };
     std::vector<std::pair<Int3, CellShape>> fp;
     Plot::Footprint(aim.part, fp);
     if (Blueprint_Active()) Blueprint_DrawGhost(body, *frame, aim.part.origin, true, world.renderOrigin); // the whole blueprint instead of one part
-    else for (const auto& c : fp) box(*frame, c.first, aim.canPlace ? GREEN : RED);
+    else ghost(*frame, fp, aim.canPlace ? Fade(GREEN, 0.28f) : Fade(RED, 0.30f), aim.canPlace ? GREEN : RED);
     if (aim.removePlot && aim.removePart >= 0) {
         Plot::Footprint(aim.removePlot->parts[aim.removePart], fp);
         for (const auto& c : fp) box(*aim.removePlot, c.first, Fade(ORANGE, 0.7f));

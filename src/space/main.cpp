@@ -244,6 +244,7 @@ int main(int argc, char** argv)
     bool benchPickups = false;     // --test-pickups: the pickup feed (#208): repeats merge, a screenshot while it shows
     bool shotInventory = false;    // --shot-inventory: long item names in their cells (#219)
     bool benchFoundation = false;  // --test-foundation: a part half in the ground clears its cell and nothing else (#210)
+    bool shotPreview = false;      // --shot-preview: the build preview in the part's real shape (#197)
     int pickupFrames = 0;
     int timeStep = 0, timeFrames = 0; float timeElev0 = 0.0f; Vector3 timeLocal0 = { 0, 0, 0 }; bool timeOk = true;
     bool benchWater = false;       // --test-water: rivers and ponds near the start, their beds and clay
@@ -462,6 +463,7 @@ int main(int argc, char** argv)
         if (std::string(argv[i]) == "--test-pickups") benchPickups = true;
         if (std::string(argv[i]) == "--shot-inventory") shotInventory = true;
         if (std::string(argv[i]) == "--test-foundation") benchFoundation = true;
+        if (std::string(argv[i]) == "--shot-preview") shotPreview = true;
         if (std::string(argv[i]) == "--test-water") benchWater = true;
         if (std::string(argv[i]) == "--test-flyfollow") benchFlyFollow = true;
         if (std::string(argv[i]) == "--test-hotbar") benchHotbar = true;
@@ -5855,6 +5857,37 @@ int main(int argc, char** argv)
                 for (int k = 0; k < 5; ++k) { const float d = fabsf(p->densityAt(outside[k]) - before[k]); worst = std::max(worst, d); kept &= d < 0.02f; }
                 printf("bench: foundation: placed %s, its cell cleared %s, ground 0.3 m outside unchanged %s (largest change %.3f) -> %s\n",
                        placed ? "yes" : "NO", cleared ? "yes" : "NO", kept ? "yes" : "NO", worst, placed && cleared && kept ? "PASS" : "FAIL");
+            }
+        }
+        // --shot-preview (#197): a slope previewed on the ground next to a block (green), then into the block (red).
+        if (shotPreview && gameState == 1 && !loading && WorldIdle()) {
+            static int f = 0;
+            static Plot* plot = nullptr;
+            static Planetoid* p = nullptr;
+            ++f;
+            if (f == 1) {
+                p = dynamic_cast<Planetoid*>(world.objects[0].get());
+                player.spawnOn(world, *p, StartSpawnDir(*p));
+                const Vector3 feet = (player.position - world.renderOrigin).toFloat();
+                const Vector3 flat = Vector3Normalize(Vector3Subtract(player.forward, Vector3Scale(player.up, Vector3DotProduct(player.forward, player.up))));
+                TerrainHit th;
+                RaycastTerrain(world, Ray{ Vector3Add(Vector3Add(feet, Vector3Scale(flat, 6.0f)), Vector3Scale(player.up, 20.0f)), Vector3Negate(player.up) }, 60.0f, th);
+                if (!p->plots) p->plots = std::make_unique<PlotSet>();
+                plot = p->plots->plotFor(th.local, 0.0f, true);
+                BuildTool_Place(*p, *plot, { PartType::Cube, { 0, 1, 0 }, 0 }, false);
+                buildTool.active = true;
+                buildTool.part = (int)PartType::Slope;
+                player.nearest = p;
+            }
+            if (plot && f >= 2) {
+                const bool red = f > 40;
+                const Vector3 eye = red ? Vector3{ 2.6f, 1.6f, 1.9f } : Vector3{ 2.2f, 2.0f, -1.4f }, at = red ? Vector3{ 0.25f, 0.7f, 0.25f } : Vector3{ 1.2f, 0.5f, 0.25f };
+                world.camera.position = p->toWorld(plot->toBody(eye));
+                world.camera.target = p->toWorld(plot->toBody(at));
+                world.camera.up = p->dirToWorld(plot->up);
+                BuildTool_Update(world, false, true);
+                if (f == 38) { TakeScreenshot("bench_preview.png"); printf("bench: shot: bench_preview.png (a slope on the ground)\n"); }
+                if (f == 78) { TakeScreenshot("bench_preview_red.png"); printf("bench: shot: bench_preview_red.png (into the block)\n"); shotPreview = false; }
             }
         }
         // --shot-inventory (#219): the inventory with long item names (cut to fit; they scroll on hover).

@@ -526,6 +526,28 @@ namespace {
     }
 }
 
+void CellShapeFaces(const CellShape& shape, std::vector<std::vector<Vector3>>& out) {
+    out.clear();
+    // The cube's faces clipped by the shape's planes, then the caps on those planes (as Plot::buildSection meshes them).
+    for (int f = 0; f < 6; ++f) {
+        std::vector<Vector3> poly = CubeFace(f);
+        for (int i = 0; i < shape.planes; ++i) Clip(poly, shape.n[i], shape.d[i]);
+        if (poly.size() >= 3) out.push_back(poly);
+    }
+    for (int i = 0; i < shape.planes; ++i) {
+        const Vector3 n = Vector3Normalize(shape.n[i]);
+        const float d = shape.d[i] / Vector3Length(shape.n[i]);
+        const Vector3 t = Vector3Normalize(Vector3CrossProduct(n, fabsf(n.y) < 0.9f ? Vector3{ 0, 1, 0 } : Vector3{ 1, 0, 0 }));
+        const Vector3 b = Vector3CrossProduct(n, t);
+        const Vector3 o = Vector3Scale(n, d);
+        std::vector<Vector3> poly = { Vector3Add(o, Vector3Add(Vector3Scale(t, -3), Vector3Scale(b, -3))), Vector3Add(o, Vector3Add(Vector3Scale(t, 3), Vector3Scale(b, -3))),
+                                      Vector3Add(o, Vector3Add(Vector3Scale(t, 3), Vector3Scale(b, 3))), Vector3Add(o, Vector3Add(Vector3Scale(t, -3), Vector3Scale(b, 3))) };
+        for (int f = 0; f < 6; ++f) Clip(poly, kFaceN[f], f & 1 ? 1.0f : 0.0f);
+        for (int j = 0; j < shape.planes; ++j) if (j != i) Clip(poly, shape.n[j], shape.d[j]);
+        if (poly.size() >= 3) out.push_back(poly);
+    }
+}
+
 void Plot::rebuildDirty(const PlanetField* field) {
     std::unordered_map<Int3, std::vector<Int3>> byDirty;
     bool any = false;

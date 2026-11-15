@@ -80,6 +80,10 @@ const char* PartItem(const Part& p);         // the item it costs and refunds
 
 // A cell's solid shape in cell space [0,1]^3: the cube cut by up to two half-spaces
 // (dot(n, p) <= d keeps the solid side).
+// The face polygons of a cell shape (#197: the build preview), in cell units [0, 1]: the cube's faces clipped by the
+// shape's planes, then the caps on those planes.
+struct CellShape;
+void CellShapeFaces(const CellShape& shape, std::vector<std::vector<Vector3>>& out);
 struct CellShape {
     bool full = true;
     int planes = 0;
