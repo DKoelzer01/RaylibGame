@@ -928,7 +928,9 @@ static bool IslandInCell(const PlanetField& pf, int cx, int cy, int cz, IslandIn
     h ^= h >> 15; h *= 2246822519u; h ^= h >> 13;
     if ((h & 1023) > 82) return false;
     thread_local std::unordered_map<int64_t, IslandInfo> cache;
-    const int64_t key = ((int64_t)(cx + 32768) << 32) ^ ((int64_t)(cy + 32768) << 16) ^ (int64_t)(cz + 32768) ^ ((int64_t)pf.oreSeed << 48);
+    thread_local const PlanetField* cacheOwner = nullptr;
+    if (cacheOwner != &pf) { cache.clear(); cacheOwner = &pf; } // one field's cells (#180: the seed was XORed into the cell bits)
+    const int64_t key = ((int64_t)(cx + 32768) << 32) | ((int64_t)(uint16_t)(cy + 32768) << 16) | (int64_t)(uint16_t)(cz + 32768);
     auto it = cache.find(key);
     if (it == cache.end()) {
         if (cache.size() > 4096) cache.clear();

@@ -397,7 +397,6 @@ int TerrainArena_Flush(unsigned int shaderId, bool positionsOnly, const ArenaBod
     glBufferSubData(GL_COPY_WRITE_BUFFER, (GLintptr)(base * sizeof(GLuint)), (GLsizeiptr)(n * sizeof(GLuint)), S.queued.data());
     glBindBuffer(GL_COPY_WRITE_BUFFER, 0);
     S.cull.use();
-    const GLuint prog = S.cull.id;
     glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, S.table);
     glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 1, S.list); // whole buffer: a range bind needs GL_SHADER_STORAGE_BUFFER_OFFSET_ALIGNMENT-aligned offsets (it failed, and the pass culled a stale list)
     glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 2, S.indirect);

@@ -240,7 +240,11 @@ std::map<std::tuple<uint64_t, uint32_t, int>, int> pumpView;     // water pumps 
 std::map<std::tuple<uint64_t, uint32_t, int>, int> pumpPending;  // pump water drained (queued) but not yet out of pumpView (viewMutex)
 std::map<std::tuple<uint64_t, uint32_t, int>, int> tankView;     // boilers (every plot): litres of room in their tanks (#229 review)
 std::map<std::tuple<uint64_t, uint32_t, int>, int> tankPending;  // litres sent by AddWater but not yet in a tank (viewMutex)
-inline uint64_t WorkingKey(uint64_t body, uint32_t plot, int part) { return (body * 1315423911ull) ^ ((uint64_t)plot << 24) ^ (uint64_t)(uint32_t)part; }
+// A 64-bit mix of (body, plot, part) (#180: the old XOR of shifted fields collided easily).
+inline uint64_t WorkingKey(uint64_t body, uint32_t plot, int part) {
+    auto mix = [](uint64_t x) { x += 0x9e3779b97f4a7c15ull; x = (x ^ (x >> 30)) * 0xbf58476d1ce4e5b9ull; x = (x ^ (x >> 27)) * 0x94d049bb133111ebull; return x ^ (x >> 31); };
+    return mix(mix(body) ^ (((uint64_t)plot << 32) | (uint32_t)part));
+}
 std::unordered_set<uint64_t> workingView;                          // machines working on near plots (viewMutex)
 FactoryStats stats;
 

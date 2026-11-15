@@ -29,7 +29,7 @@ extern "C" {
 namespace {
     constexpr unsigned int kTimeElapsed = 0x88BF, kResult = 0x8866, kResultAvailable = 0x8867;
     constexpr int kFrames = 4, kMarks = 24;
-    struct Slot { unsigned int q[kMarks + 1] = {}; const char* name[kMarks + 1] = {}; int used = 0; bool pending = false; };
+    struct Slot { unsigned int q[kMarks + 1] = {}; const char* name[kMarks + 1] = {}; int used = 0; bool pending = false, tailEnded = false; }; // tailEnded: the segment after the last mark was closed by the next frame (#180)
     Slot slots[kFrames];
     int cur = -1;
     bool enabled = false, made = false, open = false;
@@ -56,19 +56,25 @@ namespace {
         glad_glGetQueryObjectiv(s.q[s.used - 1], kResultAvailable, &avail);
         if (!avail) return; // dropped rather than waited for
         double frame = 0.0;
-        for (int i = 0; i < s.used; ++i) {
+        const int last = s.tailEnded ? s.used : s.used - 1; // the "(between frames)" tail too, when the next frame closed it (#180)
+        if (s.tailEnded) { int tailAvail = 0; glad_glGetQueryObjectiv(s.q[s.used], kResultAvailable, &tailAvail); if (!tailAvail) return; }
+        for (int i = 0; i <= last; ++i) {
             uint64_t ns = 0;
             glad_glGetQueryObjectui64v(s.q[i], kResult, &ns);
             const double ms = (double)ns / 1e6;
             AddTo(sums, s.name[i], ms);
-            frame += ms;
+            if (i < s.used) frame += ms; // the tail (GPU idle between frames included) shows as its own column, outside the total
         }
         totalMs += frame;
         ++frames;
     }
 }
 
-void GpuTimer_Enable(bool on) { enabled = on && Ready(); }
+void GpuTimer_Enable(bool on) {
+    // Turned off with a query open (#180): end it, or it stays open (and the next frame's tail would read a running query).
+    if (!on && enabled && open) { rlDrawRenderBatchActive(); glad_glEndQuery(kTimeElapsed); open = false; }
+    enabled = on && Ready();
+}
 
 void GpuTimer_BeginFrame() {
     if (!enabled) return;
@@ -77,11 +83,13 @@ void GpuTimer_BeginFrame() {
         rlDrawRenderBatchActive();
         glad_glEndQuery(kTimeElapsed);
         open = false;
+        slots[cur].tailEnded = true;
     }
     cur = (cur + 1) % kFrames;
     Collect(slots[cur]); // written kFrames frames ago
     Slot& s = slots[cur];
     s.used = 0;
+    s.tailEnded = false;
     s.pending = true;
     s.name[0] = "start";
     glad_glBeginQuery(kTimeElapsed, s.q[0]);
