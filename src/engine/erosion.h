@@ -42,6 +42,7 @@ struct ErosionParams {
     float glacialLine = 900.0f; // m: the ice-age snowline at the equator (falls to sea level by latitude ~0.8)
     float wind = 1.0f;        // aeolian erosion strength on dry land (#370; 0: none, e.g. airless bodies). Scales the
                               // per-step deflation on windward faces and the sand carried downwind.
+    uint64_t landKey = 0;     // the input land's generation parameters (WorldGenParams::key, #504; 0: the defaults)
     float start = 1.0f;       // the land starts at this fraction of the input: 1 carves into the input relief (0.1 grew
                               // it from low land: heights then follow river length, so narrow coastal ranges came out low)
 };

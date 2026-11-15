@@ -230,6 +230,15 @@ PlanetField::PlanetField(unsigned int seed, float radius_, bool moon_)
     else { minElevation = -740.0f; maxElevation = 1690.0f + 50.0f + 15.0f; } // + the 3D terrain band + biome landforms (dunes, mesas)
 }
 
+void PlanetField::setGenParams(const WorldGenParams& p) {
+    gen = p;
+    if (moon) return;
+    // land(): 200 m of gentle land + the ranges (1400 m x mountains) + hills (85 m x roughness) + detail; the default
+    // parameters give the bounds above exactly.
+    if (p.isDefault()) { maxElevation = 1690.0f + 50.0f + 15.0f; return; }
+    maxElevation = 200.0f + 1400.0f * std::max(p.mountains, 0.0f) + 90.0f * std::max(p.roughness, 1.0f) + 50.0f + 15.0f;
+}
+
 // River valleys: 70 m deep, with a flat floodplain floor (valley-noise units < kValleyFloor, room for
 // the widest river) and sides rising over the next 0.04 units. (A V-shaped floor rose ~27 m across a
 // river's width and tilted its water.)
@@ -261,6 +270,7 @@ void PlanetField::bakeErosion(const std::string& cachePath) {
     p.glacial = envf("RAYLIBGAME_GLACIAL", p.glacial); p.glacialLine = envf("RAYLIBGAME_GLACIAL_LINE", p.glacialLine);
     p.wind = envf("RAYLIBGAME_WIND", p.wind); // #370: aeolian erosion (0: off, A/B)
     p.refine = (int)envf("RAYLIBGAME_EROSION_REFINE", (float)p.refine); p.refineSteps = (int)envf("RAYLIBGAME_EROSION_REFINE_STEPS", (float)p.refineSteps);
+    if (!gen.isDefault()) { p.k *= gen.erosionStrength; p.uplift *= gen.mountains; p.landKey = gen.key(); } // #504: the world's parameters (defaults: the key and bake as before)
     // The cache must match the seed, radius, parameters and bake code version (#355 review): tuning runs and code
     // changes bake again instead of loading a stale bake.
     const auto tl0 = std::chrono::steady_clock::now();
@@ -319,7 +329,7 @@ PlanetField::Land PlanetField::land(Vector3 dir, float fp) const {
         l.h = base + r * r * 250.0f + hills.fractalLimited(3, fp, sx, sy, sz) * 25.0f + detail.fractalLimited(2, fp, sx, sy, sz) * 2.5f;
         return l;
     }
-    const float c = continents.fractalLimited(4, fp, sx, sy, sz); // < 0: ocean, > 0: land
+    const float c = continents.fractalLimited(4, fp, sx, sy, sz) - 0.15f * gen.ocean; // < 0: ocean, > 0: land (#504: ocean shifts it)
     const float base = c < 0.0f ? c * 650.0f : c * 200.0f;        // ocean floor down to -650 m, gentle land
     const float landMask = Smoothstep(-0.02f, 0.06f, c);
     const float mountainMask = Smoothstep(0.08f, 0.35f, c);      // ranges only well inland
@@ -339,10 +349,10 @@ PlanetField::Land PlanetField::land(Vector3 dir, float fp) const {
         h = base;
         if (mountainMask > 0.0f) {
             const float r = 1.0f - fabsf(ridges.fractalLimited(5, fp, sx, sy, sz)); // ridged: sharp crests
-            l.ridge = r * r * r * 1400.0f * mountainMask; // the height the ranges add here
+            l.ridge = r * r * r * 1400.0f * mountainMask * gen.mountains; // the height the ranges add here
             h += l.ridge;
         }
-        h += hills.fractalLimited(3, fp, sx, sy, sz) * (25.0f + 60.0f * mountainMask);
+        h += hills.fractalLimited(3, fp, sx, sy, sz) * (25.0f + 60.0f * mountainMask) * gen.roughness;
     }
     // (River valleys are carved by the drainage network's rivers in elevation(); the old valley-noise
     // valleys and streams are gone, so l.valley and l.stream stay at 1: none.)
@@ -358,7 +368,7 @@ PlanetField::Land PlanetField::land(Vector3 dir, float fp) const {
             if (r < 0.006f) h -= sqrtf(1.0f - r / 0.006f) * 90.0f * region * ravineWeight;
         }
     }
-    l.detail = detail.fractalLimited(2, fp, sx, sy, sz) * 2.5f;
+    l.detail = detail.fractalLimited(2, fp, sx, sy, sz) * 2.5f * gen.roughness;
     // Polar ice shelves: near the poles the sea is frozen, so low ground is raised to an ice sheet a
     // couple of metres above sea level (the material rules make it ice).
     const float iceCap = Smoothstep(0.86f, 0.92f, fabsf(dir.y) + 0.03f * climate.fractalLimited(2, fp, sx, sy, sz));
@@ -1243,7 +1253,8 @@ PlanetField::Climate PlanetField::climateAt(Vector3 dir, float elev) const {
     Climate c;
     if (moon) { c.temp = -20.0f; c.moist = 0.0f; return c; }
     const float lat = fabsf(dir.y);
-    const float x = dir.x * radius, y = dir.y * radius, z = dir.z * radius;
+    const float bs = 1.0f / std::max(gen.biomeSize, 0.1f); // #504: larger biomes = the climate noise stretched
+    const float x = dir.x * radius * bs, y = dir.y * radius * bs, z = dir.z * radius * bs;
     // Warm at the equator, cold at the poles; 6.5 C colder per km of height; regional patches +-7 C.
     c.temp = 30.0f - 44.0f * (lat * sqrtf(lat)) - 6.5f * std::max(elev, 0.0f) / 1000.0f + 7.0f * tempNoise.fractal(2, x, y, z);
     // Moisture: regional wet and dry patches, wetter in the lowlands near the sea.
@@ -2149,7 +2160,7 @@ int PlanetField::oreKind(Vector3 p, float depth) const {
     }
     // Scattered pockets of the common ores and coal, more of them near the surface.
     const float pocket = veins.fractal(1, p.x * 4.0f, p.y * 4.0f, p.z * 4.0f);
-    const float threshold = 0.72f + 0.12f * std::clamp((depth - 20.0f) / 200.0f, 0.0f, 1.0f);
+    const float threshold = 0.72f + 0.12f * std::clamp((depth - 20.0f) / 200.0f, 0.0f, 1.0f) - 0.08f * (gen.resources - 1.0f); // #504: richer, more pockets
     if (pocket > threshold) {
         uint32_t h = OreHash((int)floorf(p.x / 8.0f), (int)floorf(p.y / 8.0f), (int)floorf(p.z / 8.0f), oreSeed ^ 0x5eedu);
         const float r = OreUnit(h);

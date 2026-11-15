@@ -1703,7 +1703,8 @@ void generateWorld(Scene& world) {
             // Planet terrain: radius is sea level, where gravity's reference surface sits too; the
             // LOD root must also cover the highest mountains.
             auto field = std::make_shared<PlanetField>(seed, radius, kind == BodyKind::Moon);
-            if (gErosionPrototype && kind == BodyKind::Planet) {
+            if (kind == BodyKind::Planet) field->setGenParams(WorldGenParams_ForSave(WorldSavePath())); // #504: the New World screen's choice (defaults without one)
+            if (gErosionPrototype && kind == BodyKind::Planet && field->gen.erosion) {
                 // Plan 7 (#355): the save's bake, or a new one (~60 s). On a thread (#362, the #355 review): the main
                 // thread keeps drawing the loading screen through gWorldGenWait instead of freezing the window. The field
                 // is only shared (p->field below) once the bake is done.

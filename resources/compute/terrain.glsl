@@ -33,6 +33,7 @@
 uniform vec4 noiseParams[N_COUNT];
 uniform float planetRadius;
 uniform int planetMoon;
+uniform vec4 genParams;     // #504 WorldGenParams: x ocean, y mountains, z roughness, w 1 / biome size (as PlanetField::land, climateAt)
 
 const int kPerm[256] = int[256](
     151, 160, 137, 91, 90, 15,
@@ -165,17 +166,17 @@ Land landAt(vec3 dir, float fp) {
         l.h = hm;
         return l;
     }
-    precise float c = fractalLimited(N_CONTINENTS, 4, fp, sx, sy, sz);
+    precise float c = fractalLimited(N_CONTINENTS, 4, fp, sx, sy, sz) - 0.15 * genParams.x;
     precise float base = c < 0.0 ? c * 650.0 : c * 200.0;
     precise float landMask = tSmooth(-0.02, 0.06, c);
     precise float mountainMask = tSmooth(0.08, 0.35, c);
     precise float h = base;
     if (mountainMask > 0.0) {
         precise float r = 1.0 - abs(fractalLimited(N_RIDGES, 5, fp, sx, sy, sz));
-        l.ridge = r * r * r * 1400.0 * mountainMask;
+        l.ridge = r * r * r * 1400.0 * mountainMask * genParams.y;
         h += l.ridge;
     }
-    h += fractalLimited(N_HILLS, 3, fp, sx, sy, sz) * (25.0 + 60.0 * mountainMask);
+    h += fractalLimited(N_HILLS, 3, fp, sx, sy, sz) * (25.0 + 60.0 * mountainMask) * genParams.z;
     precise float valleyWeight = landMask * clamp(2.0 - xdiv(fp, 64.0), 0.0, 1.0);
     l.valley = 1.0;
     precise float ravineWeight = landMask * clamp(2.0 - xdiv(fp, 24.0), 0.0, 1.0);
@@ -186,7 +187,7 @@ Land landAt(vec3 dir, float fp) {
             if (r < 0.006) h -= xsqrt(1.0 - xdiv(r, 0.006)) * 90.0 * region * ravineWeight;
         }
     }
-    l.detail = fractalLimited(N_DETAIL, 2, fp, sx, sy, sz) * 2.5;
+    l.detail = fractalLimited(N_DETAIL, 2, fp, sx, sy, sz) * 2.5 * genParams.z;
     precise float iceCap = tSmooth(0.86, 0.92, abs(dir.y) + 0.03 * fractalLimited(N_CLIMATE, 2, fp, sx, sy, sz));
     precise float hd = h + l.detail;
     if (iceCap > 0.0 && hd < 2.0) { hd += (2.0 - hd) * iceCap; h = hd - l.detail; }
@@ -201,7 +202,7 @@ Land landAt(vec3 dir, float fp) {
 vec2 climateAt(vec3 dir, float elev) {
     if (planetMoon != 0) return vec2(-20.0, 0.0);
     precise float lat = abs(dir.y);
-    precise float x = dir.x * planetRadius, y = dir.y * planetRadius, z = dir.z * planetRadius;
+    precise float x = dir.x * planetRadius * genParams.w, y = dir.y * planetRadius * genParams.w, z = dir.z * planetRadius * genParams.w;
     precise float temp = 30.0 - 44.0 * (lat * xsqrt(lat)) - xdiv(6.5 * max(elev, 0.0), 1000.0) + 7.0 * fractal(N_TEMP, 2, x, y, z);
     precise float moist = 0.5 + 0.85 * fractal(N_MOIST, 3, x, y, z) + 0.08 * (1.0 - tSmooth(10.0, 150.0, elev));
     return vec2(temp, clamp(moist, 0.0, 1.0));
