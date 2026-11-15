@@ -218,35 +218,42 @@ int RingSystem::nearestRock(DVec3 w, double* distance) const {
 
 static double PromoteReach(const RingRock& r) { return std::max(250.0, 14.0 * r.radius) + r.radius; }
 
-void RingSystem::update(Scene& world, DVec3 focus) {
+void RingSystem::update(Scene& world, const std::vector<DVec3>& foci) {
     if (Planetoid::find(parentId) != parent) return;
+    if (foci.empty()) return;
     if (bins.empty() || fabs(WorldTime() - binnedAt) > kRebinSeconds) rebin();
-    // Demote rocks left behind (not those with a build plot: its machines need the body).
+    // Demote rocks left behind by every focus (not those with a build plot: its machines need the body).
     for (auto it = promoted.begin(); it != promoted.end();) {
         Planetoid* body = Planetoid::find(it->second);
         const int rock = it->first;
         if (!body) { it = promoted.erase(it); continue; }
-        const double d = (body->worldPos - focus).length();
+        double d = 1e300;
+        for (const DVec3& f : foci) d = std::min(d, (body->worldPos - f).length());
         if (d > 1.6 * PromoteReach(rocks[rock]) && !(body->plots && body->plots->partCount() > 0)) {
             it = promoted.erase(it);
             demote(world, rock, body);
         } else ++it;
     }
-    // Promote nearby rocks, nearest first, up to the cap.
-    const DVec3 rel = focus - parent->worldPos;
-    const double ang = atan2(rel.z, rel.x);
-    const double rho = sqrt(rel.x * rel.x + rel.z * rel.z);
-    if (rho < innerRadius - 3000.0 || rho > outerRadius + 3000.0 || fabs(rel.y) > thickness + 3000.0) return; // far from the band
-    std::vector<std::pair<double, int>> want;
-    ForBinsAround(bins, ang, 3000.0 / innerRadius, [&](int k) {
-        if (promoted.count(k)) return;
-        const double d = (rockPosition(k) - focus).length();
-        if (d < PromoteReach(rocks[k])) want.push_back({ d, k });
-    });
-    std::sort(want.begin(), want.end());
-    for (const auto& w : want) {
-        if ((int)promoted.size() >= kMaxPromoted) break;
-        promote(world, w.second);
+    // Promote rocks near each focus, nearest first, up to kMaxPromoted per focus (#318: every player gets the rocks
+    // around them, however many are already up around the others).
+    const int cap = kMaxPromoted * (int)foci.size();
+    for (const DVec3& focus : foci) {
+        const DVec3 rel = focus - parent->worldPos;
+        const double ang = atan2(rel.z, rel.x);
+        const double rho = sqrt(rel.x * rel.x + rel.z * rel.z);
+        if (rho < innerRadius - 3000.0 || rho > outerRadius + 3000.0 || fabs(rel.y) > thickness + 3000.0) continue; // far from the band
+        std::vector<std::pair<double, int>> want;
+        ForBinsAround(bins, ang, 3000.0 / innerRadius, [&](int k) {
+            const double d = (rockPosition(k) - focus).length();
+            if (d < PromoteReach(rocks[k])) want.push_back({ d, k });
+        });
+        std::sort(want.begin(), want.end());
+        int mine = 0; // this focus's rocks, counting those already up
+        for (const auto& w : want) {
+            if (mine >= kMaxPromoted || (int)promoted.size() >= cap) break;
+            ++mine;
+            if (!promoted.count(w.second)) promote(world, w.second);
+        }
     }
 }
 

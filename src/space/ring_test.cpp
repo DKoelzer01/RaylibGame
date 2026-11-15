@@ -109,10 +109,23 @@ int RingTest_Update(Scene& world) {
             Next();
         }
         break;
-    case 3: // leave
+    case 3: // leave; first a second player (an interest centre, #318) stays at the rock and keeps it a voxel body
         cameraOffset = DVec3(0.0, 20000.0, 0.0);
         PlaceCamera(world, ring);
-        if (T() > 1.5) {
+        if (T() < 1.5) {
+            const DVec3 at = ring.rockPosition(rock) + (ring.rockPosition(rock) - planet->worldPos) * (60.0 / (ring.rockPosition(rock) - planet->worldPos).length());
+            gInterestCentres = { InterestCentre{ planet->id, planet->toLocalD(at).toFloat() } };
+            break;
+        }
+        if (!gInterestCentres.empty()) {
+            const bool kept = ring.promotedBody(rock) != nullptr;
+            printf("bench: ring: camera 20 km away, another player at the rock: voxel body %s (%d voxel rocks)\n", kept ? "kept" : "LOST", ring.promotedCount());
+            ok &= kept;
+            gInterestCentres.clear(); // the other player leaves too
+            phaseStart = GetTime() - 1.5;
+            break;
+        }
+        if (T() > 3.0) {
             const bool gone = ring.promotedBody(rock) == nullptr;
             printf("bench: ring: 20 km away the rock is an instance again: %s (%d voxel rocks)\n", gone ? "yes" : "NO", ring.promotedCount());
             ok &= gone;
