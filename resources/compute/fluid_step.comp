@@ -15,6 +15,11 @@ layout(std430, binding = 2) readonly buffer Nbr { int nbr[]; };      // slot * 6
 layout(std430, binding = 3) readonly buffer List { uint list[]; };   // processed slots
 layout(std430, binding = 4) readonly buffer InS { uint inS[]; };     // per slot: 1 = processed this dispatch
 layout(std430, binding = 5) buffer Flags { uint flagsOut[]; };      // per slot: bit 0 changed, bits 1-6 face requests
+// Flow readout (#392): bricks someone watches (water wheels, meters) get a block of 4096 cells x 4 ints; each cell adds the
+// fill units crossing its two faces on each axis, signed along the axis (+x, +y, +z = up), every substep. The CPU reads the
+// sums each tick (halving: two faces) and clears them.
+layout(std430, binding = 6) readonly buffer Watch { int watchOf[]; }; // per slot: its block, or -1
+layout(std430, binding = 7) buffer Flux { int flux[]; };
 uniform uint count;        // processed slots
 uniform int pass;          // 0 vertical, 1 sideways
 uniform int visc[8];       // per kind: sideways flow divisor
@@ -126,12 +131,15 @@ void main() {
         int nf = f - int(outF) + int(inF);
         if (f == 0 && inF > 0u) kind = KIND(above);
         outC[g] = pack(uint(clamp(nf, 0, 255)), (fl & 31u) | (kind << 5), TG(c));
+        int w = watchOf[slot];
+        if (w >= 0) flux[(uint(w) * 4096u + local) * 4u + 2u] -= int(inF) + int(outF); // down through the top and the bottom face
         return;
     }
     // Sideways.
     int net = 0;
     uint inKind = kind;
     uint best = 0u;
+    int fx = 0, fy = 0; // flow across the faces along +x / +y (#392)
     for (int k = 0; k < 4; ++k) {
         int dx = k == 0 ? -1 : k == 1 ? 1 : 0, dy = k == 2 ? -1 : k == 3 ? 1 : 0;
         bool pN; int face;
@@ -146,6 +154,8 @@ void main() {
         uint out1 = f > 0 ? sideFlux(slot, x, y, z, c, nSlot, nx, ny, nz, n, true, pN) : 0u;
         uint in1 = F(n) > 0u ? sideFlux(nSlot, nx, ny, nz, n, slot, x, y, z, c, pN, true) : 0u;
         net += int(in1) - int(out1);
+        const int along = (k == 0 || k == 2) ? int(in1) - int(out1) : int(out1) - int(in1); // in from the - side, out to the + side
+        if (k < 2) fx += along; else fy += along;
         if (in1 > best) { best = in1; inKind = KIND(n); }
     }
     int nf = clamp(f + net, 0, 255);
@@ -156,4 +166,6 @@ void main() {
     uint res = pack(uint(nf), (fl & 31u) | (kind << 5), TG(c));
     if (F(old) != uint(nf)) atomicOr(flagsOut[slot], 1u);
     outC[g] = res;
+    int w = watchOf[slot];
+    if (w >= 0) { uint fb = (uint(w) * 4096u + local) * 4u; flux[fb] += fx; flux[fb + 1u] += fy; }
 }

@@ -87,6 +87,7 @@ planet() {
     RAYLIBGAME_EROSION=1 run --seed 42 --bench 3 --test-dam # #361: a dam backs a released river reach up and it spills over (eroded valleys)
     run --seed 42 --bench 3 --test-pond
     run --seed 42 --bench 3 --test-part-wall # #391: a wall of build blocks holds water; taken down, the water runs on
+    run --seed 42 --bench 3 --test-flow-meter # #392: the flow readout reads a 1 m^3/s stream
     run --seed 42 --bench 3 --test-bucket
     run --seed 42 --bench 3 --test-pump
     run --seed 42 --bench 5 --test-pump-hand

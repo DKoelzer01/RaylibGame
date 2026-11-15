@@ -890,7 +890,19 @@ struct GpuState {
     std::vector<int> lastList;             // slots processed by the last dispatch
     int lastN = 0;                         // substeps in it
     bool nbrDirty = false;
+    // Flow readout (#392): watched bricks' flux blocks (fluid_step.comp bindings 6-7).
+    ComputeBuffer watch, flux;
+    std::vector<int> watchOf;              // slot -> flux block, -1 (uploaded to `watch`)
+    int fluxBlocks = 0;
+    struct WatchCell { int block, cell; Vector3 e, n, u; };
+    std::vector<std::vector<WatchCell>> watchCells; // per flow watch: its cells as resolved for the last dispatch
 } G;
+
+// Flow watches (#392): Fluid::FlowAt asks for the flow around a point; GpuTick resolves each to cells, reads their flux
+// every tick and publishes a smoothed value. A watch nobody asked about for 3 s is dropped.
+struct FlowWatch { uint64_t body = 0; Vector3 local{}; float r = 1.0f; double lastAsk = 0.0; Vector3 value{}; };
+std::vector<FlowWatch> flowWatches;
+std::mutex flowMx;
 
 constexpr unsigned kCellsPerBrick = (unsigned)B3;
 
@@ -938,6 +950,71 @@ void GpuUploadBrick(const Brick& b) {
     G.b.upload(packed.data(), kCellsPerBrick * 4, b.slot * kCellsPerBrick * 4);
 }
 
+// Flow readout (#392). Read: the flux the last dispatch added in the watched cells, summed per watch into body-local
+// m^3/s (two faces per axis: halved), divided by the watch's diameter in cells (so a watch spanning a channel reads its
+// discharge), smoothed over ~0.5 s; the buffer is cleared for the next dispatch.
+void GpuFlowRead() {
+    if (G.fluxBlocks <= 0 || G.watchCells.empty()) return;
+    std::vector<int> fx((size_t)G.fluxBlocks * kCellsPerBrick * 4);
+    G.flux.download(fx.data(), (unsigned)(fx.size() * 4));
+    const float perSecond = 1.0f / (255.0f * (float)kTickSeconds * (float)std::max(1, speed.load()));
+    std::lock_guard<std::mutex> lk(flowMx);
+    for (size_t w = 0; w < G.watchCells.size() && w < flowWatches.size(); ++w) {
+        Vector3 sum{};
+        for (const auto& c : G.watchCells[w]) {
+            const int* f = &fx[((size_t)c.block * kCellsPerBrick + c.cell) * 4];
+            sum = Vector3Add(sum, Vector3Add(Vector3Add(Vector3Scale(c.e, (float)f[0]), Vector3Scale(c.n, (float)f[1])), Vector3Scale(c.u, (float)f[2])));
+        }
+        const Vector3 q = Vector3Scale(sum, 0.5f * perSecond / std::max(1.0f, 2.0f * flowWatches[w].r));
+        flowWatches[w].value = Vector3Lerp(flowWatches[w].value, q, 0.1f);
+    }
+    std::fill(fx.begin(), fx.end(), 0);
+    G.flux.upload(fx.data(), (unsigned)(fx.size() * 4));
+}
+
+// Resolve: each live watch to the cells within its radius in bricks on the GPU; one flux block per watched brick.
+void GpuFlowResolve() {
+    std::vector<int> watchOf(G.capacity, -1);
+    std::vector<std::vector<GpuState::WatchCell>> cells;
+    int blocks = 0;
+    {
+        std::lock_guard<std::mutex> lk(flowMx);
+        const double now = GetTime();
+        flowWatches.erase(std::remove_if(flowWatches.begin(), flowWatches.end(), [&](const FlowWatch& w) { return now - w.lastAsk > 3.0; }), flowWatches.end());
+        cells.resize(flowWatches.size());
+        for (size_t w = 0; w < flowWatches.size(); ++w) {
+            const FlowWatch& fw = flowWatches[w];
+            Site* s = SiteFor(fw.body, fw.local, false);
+            if (!s) continue;
+            int ci, cj, ck;
+            s->cellOf(fw.local, ci, cj, ck);
+            const int R = (int)ceilf(fw.r);
+            for (int dk = -R; dk <= R; ++dk)
+                for (int dj = -R; dj <= R; ++dj)
+                    for (int di = -R; di <= R; ++di) {
+                        if (di * di + dj * dj + dk * dk > fw.r * fw.r) continue;
+                        Brick* b; int i;
+                        if (!s->cell(ci + di, cj + dj, ck + dk, b, i) || b->slot < 0) continue;
+                        if (watchOf[b->slot] < 0) watchOf[b->slot] = blocks++;
+                        cells[w].push_back({ watchOf[b->slot], i, s->e, s->n, s->u });
+                    }
+        }
+    }
+    if ((int)G.watchOf.size() != G.capacity || watchOf != G.watchOf) {
+        if (G.watch.bytes < (unsigned)G.capacity * 4) { if (G.watch.id) G.watch.destroy(); G.watch.create((unsigned)G.capacity * 4); }
+        G.watch.upload(watchOf.data(), (unsigned)G.capacity * 4);
+        G.watchOf = watchOf;
+    }
+    const unsigned need = (unsigned)std::max(1, blocks) * kCellsPerBrick * 16;
+    if (G.flux.bytes < need) { // grown (cleared)
+        if (G.flux.id) G.flux.destroy(); G.flux.create(need);
+        const std::vector<int> zeros(need / 4, 0);
+        G.flux.upload(zeros.data(), need);
+    }
+    G.fluxBlocks = blocks;
+    G.watchCells = std::move(cells);
+}
+
 void GpuTick(int n) {
     // 1. Results of the last dispatch: which bricks changed (and want neighbours), then their cells.
     if (!G.lastList.empty()) {
@@ -975,6 +1052,7 @@ void GpuTick(int n) {
         G.flags.upload(flags.data(), G.capacity * 4);
         G.lastList.clear();
     }
+    GpuFlowRead(); // 1b. the watched cells' flux since the last read (#392)
     // 2. Slots for classified bricks; whole bricks up.
     int used = 0;
     for (Brick* o : G.owner) used += o ? 1 : 0;
@@ -1044,7 +1122,8 @@ void GpuTick(int n) {
     for (int k = 0; k < 8; ++k) { visc[k] = kindVisc[k]; spread[k] = kindMinSpread[k]; }
     rlSetUniform(G.step.uniform("visc"), visc, RL_SHADER_UNIFORM_INT, 8);
     rlSetUniform(G.step.uniform("minSpread"), spread, RL_SHADER_UNIFORM_INT, 8);
-    G.nbrs.bind(2); G.list.bind(3); G.inS.bind(4); G.flags.bind(5);
+    GpuFlowResolve(); // which bricks the flow watches need this dispatch (#392)
+    G.nbrs.bind(2); G.list.bind(3); G.inS.bind(4); G.flags.bind(5); G.watch.bind(6); G.flux.bind(7);
     const unsigned bricks = (unsigned)list.size(); // 2D dispatch: 64 groups of 64 cells per brick, one row per brick
     for (int k = 0; k < n; ++k) {
         G.step.setInt("pass", 0); G.a.bind(0); G.b.bind(1); G.step.dispatch(kCellsPerBrick / 64u, bricks);
@@ -1090,6 +1169,16 @@ void Fluid::OnTerrainEdit(Planetoid& body, Vector3 localCentre, float radius, bo
     if (!dynamic_cast<const PlanetField*>(body.field.get())) return;
     std::lock_guard<std::mutex> c(cmdMx);
     commands.push_back({ 0, body.id, localCentre, radius, adds ? 1.0f : 0.0f }); // m3 > 0: the edit adds ground
+}
+
+Vector3 Fluid::FlowAt(const Planetoid& body, Vector3 local, float radius) {
+    std::lock_guard<std::mutex> lk(flowMx);
+    const double now = GetTime();
+    for (FlowWatch& w : flowWatches)
+        if (w.body == body.id && fabsf(w.r - radius) < 0.01f && Vector3DistanceSqr(w.local, local) < 0.25f) { w.lastAsk = now; return w.value; }
+    FlowWatch w; w.body = body.id; w.local = local; w.r = std::max(0.5f, radius); w.lastAsk = now;
+    flowWatches.push_back(w);
+    return { 0, 0, 0 };
 }
 
 int Fluid::ReleasedReaches() {

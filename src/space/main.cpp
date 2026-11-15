@@ -256,6 +256,7 @@ int main(int argc, char** argv)
     bool benchFlowSea = false; // --test-flow-sea (#190): the flow test from the sea instead of inland water
     bool benchFlow = false; int flowPhase = 0; double flowStart = 0.0, flowEdit = 0.0, flowReachT = -1.0, flowCaveT = -1.0, flowSleepT = -1.0; Vector3 flowDir{}, flowOut{}, flowEnd{}, flowCave{}; float flowLevel = 0.0f; // --test-flow
     float damDrift = 0.0f; // --test-dam: the current mid-channel (0: the check failed)
+    bool benchFlowMeter = false; int fmPhase = 0; double fmT0 = 0.0; Plot* fmPlot = nullptr; // --test-flow-meter (#392)
     bool benchPartWall = false; int pwPhase = 0; double pwT0 = 0.0; Plot* pwPlot = nullptr; std::vector<int> pwParts; bool pwHeld = false, pwWestWet = false; // --test-part-wall (#391)
     bool benchDam = false; int damPhase = 0; double damT0 = 0.0; Vector3 damDir{}, damDown{}, damSide{}, damUp{}, damDn{}; float damLevel = 0.0f, damHW = 0.0f, damDepth = 0.0f, damCrest = 0.0f, damLvU = 0.0f, damLvD = 0.0f, damMaxU = -1e9f, damMinD = 1e9f, damLateD = -1e9f; // --test-dam (#361)
     bool benchForest = false; int forestPhase = 0; double forestStart = 0.0; Vector3 forestCam{}, forestTarget{}, forestUp{}; bool outcropHigh = false; // --shot-forest (--outcrop-high: the highest outcrop in range, not the nearest)
@@ -455,6 +456,7 @@ int main(int argc, char** argv)
         if (std::string(argv[i]) == "--test-flow") benchFlow = true;
         if (std::string(argv[i]) == "--test-dam") benchDam = true; // #361: a dam backs a river up and it spills over
         if (std::string(argv[i]) == "--test-part-wall") benchPartWall = true; // #391: a wall of build blocks holds water
+        if (std::string(argv[i]) == "--test-flow-meter") benchFlowMeter = true; // #392: the flow readout reads a known stream
         if (std::string(argv[i]) == "--test-flow-sea") { benchFlow = true; benchFlowSea = true; } // #190: the channel from the sea
         if (std::string(argv[i]) == "--test-pond") benchPond = true;
         if (std::string(argv[i]) == "--test-bucket") benchBucket = true;
@@ -3838,6 +3840,46 @@ int main(int argc, char** argv)
                             h0 = 0.0f;
                         }
                     }
+                } else if (benchFlowMeter && (fmPhase > 0 || WorldIdle())) {
+                    // --test-flow-meter (#392): a spring of 1 m^3/s at the head of a 20 m trench that ends in a deep pit; once
+                    // the stream runs steady, Fluid::FlowAt across the middle of the trench reads ~1 m^3/s along it.
+                    Planetoid* p = dynamic_cast<Planetoid*>(world.objects[0].get());
+                    const PlanetField* pf = p ? dynamic_cast<const PlanetField*>(p->field.get()) : nullptr;
+                    if (!pf) { printf("bench: flow-meter: needs the planet -> FAIL\n"); benchFlowMeter = false; }
+                    else {
+                        auto at = [&](float x, float y) { return fmPlot->toBody({ x, y, 0.0f }); };
+                        const double t = GetTime() - fmT0;
+                        if (fmPhase == 0) {
+                            const Vector3 d = StartSpawnDir(*p);
+                            float gh = pf->elevation(d) + 8.0f;
+                            while (gh > pf->elevation(d) - 8.0f && p->densityAt(Vector3Scale(d, pf->radius + gh)) < ISO_LEVEL) gh -= 0.1f;
+                            if (!p->plots) p->plots = std::make_unique<PlotSet>();
+                            fmPlot = p->plots->plotFor(Vector3Scale(d, pf->radius + gh), 0.0f, true); // a frame on the real ground
+                            std::vector<TerrainEdit> cut;
+                            for (float x = -10.0f; x <= 10.0f; x += 0.8f) { cut.push_back({ at(x, -1.0f), 1.4f, -1.0f, true }); cut.push_back({ at(x, 0.2f), 1.4f, -1.0f, true }); }
+                            for (int k = 0; k < 4; ++k) cut.push_back({ at(14.0f, -3.0f - 2.5f * k), 4.0f, -1.0f, true }); // the pit: ~600 m^3
+                            ApplyTerrainEdits(*p, cut.data(), cut.size());
+                            Fluid::AddSource(*p, at(-9.5f, -2.2f), 0, 1.0f, 1.5f);
+                            sunOverride = true; sunArg = p->dirToWorld(Vector3Normalize(at(0.0f, 50.0f)));
+                            player.flyMode = true;
+                            printf("bench: flow-meter: trench and pit dug, a 1 m^3/s spring at the trench's head\n");
+                            fmPhase = 1; fmT0 = GetTime();
+                        } else {
+                            const Vector3 up = Vector3Normalize(at(0.0f, 0.0f));
+                            world.camera.position = p->toWorld(Vector3Add(at(0.0f, 8.0f), Vector3Scale(fmPlot->north, 8.0f))); world.camera.target = p->toWorld(at(0.0f, -1.5f));
+                            world.camera.up = p->dirToWorld(up);
+                            player.position = world.renderOrigin + world.camera.position;
+                            const Vector3 q = Fluid::FlowAt(*p, at(0.0f, -1.8f), 2.0f); // asked every frame: the readout smooths
+                            static double lastPrint = 0.0;
+                            if (t - lastPrint >= 10.0) { lastPrint = t; printf("bench: flow-meter t=%3.0f s: %.2f m^3/s along the trench (%.2f across)\n", t, Vector3DotProduct(q, fmPlot->east), Vector3Length(Vector3Subtract(q, Vector3Scale(fmPlot->east, Vector3DotProduct(q, fmPlot->east))))); }
+                            if (t > 60.0) {
+                                const float along = Vector3DotProduct(q, fmPlot->east);
+                                TakeScreenshot("bench_flow_meter.png");
+                                printf("bench: flow-meter: %.2f m^3/s along the trench from a 1 m^3/s spring -> %s\n", along, along > 0.6f && along < 1.4f ? "PASS" : "FAIL");
+                                benchFlowMeter = false;
+                            }
+                        }
+                    }
                 } else if (benchPartWall && (pwPhase > 0 || WorldIdle())) {
                     // --test-part-wall (#391): a trench on dry ground with a wall of stone blocks across its middle; water
                     // poured into the west half stays there while the wall stands, and runs east once it is taken down.
@@ -5591,7 +5633,7 @@ int main(int argc, char** argv)
                         }
                         benchWalkSeconds = 0.0;
                     }
-                } else if ((WorldIdle() && benchDigStrokes == 0 && !benchPaint && !benchSaveLoad && benchWalkSeconds <= 0.0 && benchMineStrokes == 0 && minePhase != 2 && benchFlySeconds <= 0.0 && !benchSuffocate && benchOrbitSeconds <= 0.0 && !benchRide && !benchPark && !benchGravity && !benchPrecision && !benchMantle && !benchAirJump && !benchMoon && !benchHole && !benchWall && !benchDoorway && !benchLedge && !benchTor && !benchMachines && !benchFall && !benchHover && !benchTeleClose && !benchMenus && !benchWater && !benchFlyFollow && !benchHotbar && !benchInventory && !benchMap && !benchViewmodel && !benchQuests && !benchHunger && !benchFarm && !benchAnimals && !benchThreats && benchShotTabs == 0 && !benchForest && !benchFlow && !benchDam && !benchPartWall && !benchPond && !benchBucket && !benchPump && !benchTerrain && !benchShelter && !benchRoom && !benchFacing && !benchShadow && !benchParticles && !benchBiomes && !benchOil && !benchSpring && !benchShotAnimals && !benchShotMachines && benchShotBiomes < 0 && !benchFarForest && !benchRecipes && !benchWeather && !benchDecor && !benchMaterials && !benchDamage && !benchCrafting && !benchSuit && !benchTools && !benchRivers && !benchRing && !benchRocket && !benchStation && !benchBlueprint && !benchSmallBody && !benchTrees && !benchChop && benchPersist == 0 && benchBuild == 0 && benchFactory == 0 && !benchProgression) || GetTime() > 600.0) {
+                } else if ((WorldIdle() && benchDigStrokes == 0 && !benchPaint && !benchSaveLoad && benchWalkSeconds <= 0.0 && benchMineStrokes == 0 && minePhase != 2 && benchFlySeconds <= 0.0 && !benchSuffocate && benchOrbitSeconds <= 0.0 && !benchRide && !benchPark && !benchGravity && !benchPrecision && !benchMantle && !benchAirJump && !benchMoon && !benchHole && !benchWall && !benchDoorway && !benchLedge && !benchTor && !benchMachines && !benchFall && !benchHover && !benchTeleClose && !benchMenus && !benchWater && !benchFlyFollow && !benchHotbar && !benchInventory && !benchMap && !benchViewmodel && !benchQuests && !benchHunger && !benchFarm && !benchAnimals && !benchThreats && benchShotTabs == 0 && !benchForest && !benchFlow && !benchDam && !benchPartWall && !benchFlowMeter && !benchPond && !benchBucket && !benchPump && !benchTerrain && !benchShelter && !benchRoom && !benchFacing && !benchShadow && !benchParticles && !benchBiomes && !benchOil && !benchSpring && !benchShotAnimals && !benchShotMachines && benchShotBiomes < 0 && !benchFarForest && !benchRecipes && !benchWeather && !benchDecor && !benchMaterials && !benchDamage && !benchCrafting && !benchSuit && !benchTools && !benchRivers && !benchRing && !benchRocket && !benchStation && !benchBlueprint && !benchSmallBody && !benchTrees && !benchChop && benchPersist == 0 && benchBuild == 0 && benchFactory == 0 && !benchProgression) || GetTime() > 600.0) {
                     benchStart = GetTime();
                     printf("bench: world ready after %.2f s (%d chunks, avg build %.2f ms of which sampling %.2f ms, %d worker threads)\n",
                         GetWorldStats().lastGenerationSeconds, GetWorldStats().chunks, GetWorldStats().avgBuildMs, GetWorldStats().avgSampleMs, GetWorldStats().workerThreads);

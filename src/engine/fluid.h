@@ -63,6 +63,11 @@ namespace Fluid {
     float SurfaceAbove(const Planetoid& body, Vector3 local, float reach); // height of the water surface over this point (m, < 0: none within reach)
     bool StandingWaterNear(const Planetoid& body, Vector3 local, float range); // irrigation
     float WaterAt(const Planetoid& body, Vector3 local, float radius);    // m^3 of water (moving or static) within radius
+    // Flow through the simulated water around a point (#392): body-local, its length in m^3/s - the volume crossing the
+    // cells within `radius` per second divided by the sphere's diameter, so a sphere spanning a channel reads its
+    // discharge. Smoothed over ~0.5 s. The first call starts watching the spot (zero until then); keep asking (a watch
+    // nobody asks about for 3 s is dropped). Generated (unsimulated) river water: see RiverCurrent (world.h).
+    Vector3 FlowAt(const Planetoid& body, Vector3 local, float radius);
 
     // Fluid kinds (resources/data/fluids.txt; Plan 5): kind 0 is water, the rest by the table (crude oil,
     // later lava...). Every cell holds one kind; kinds don't mix (a fluid flows only into empty cells or
