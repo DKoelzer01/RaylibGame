@@ -187,7 +187,9 @@ namespace {
         const Vector3 light = Vector3Normalize({ -0.6f, 0.35f, 0.75f });
         SetShaderValue(sphereShader, lightLoc, &light, SHADER_UNIFORM_VEC3);
         rlDisableDepthTest(); // a convex sphere: back faces culled, no depth needed (the menu's GL state stays as it was)
-        sphere.transform = MatrixMultiply(MatrixRotateY(spin), MatrixRotateX(0.35f)); // tilted a little, turning
+        // GenMeshSphere puts its poles on the z axis: turned onto y first (the map's poles at the top and bottom, its
+        // pinch out of sight), then spun about y and tilted toward the viewer a little.
+        sphere.transform = MatrixMultiply(MatrixMultiply(MatrixRotateX(-PI * 0.5f), MatrixRotateY(spin)), MatrixRotateX(0.35f));
         DrawModel(sphere, { 0, 0, 0 }, 1.0f, WHITE);
         rlEnableDepthTest();
         EndMode3D();
