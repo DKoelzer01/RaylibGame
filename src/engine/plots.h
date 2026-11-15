@@ -50,6 +50,7 @@ enum class PartType : uint8_t {
 };
 inline bool IsMachine(PartType t) { return (t >= PartType::Chest && t <= PartType::SteamMacerator) || (t >= PartType::OreWasher && t <= PartType::PrecisionAssembler) || t == PartType::FusionReactor || t == PartType::MassDriver; }
 inline bool IsRocketPart(PartType t) { return (t >= PartType::RocketEngine && t <= PartType::LandingLeg) || t == PartType::Cabin || t == PartType::StationCore; }
+inline bool IsBeam(PartType t) { return t == PartType::Beam2 || t == PartType::Beam4 || t == PartType::Beam8; } // a placement mode now: a line of cubes (#200)
 inline bool IsShape(PartType t) { return t <= PartType::Beam8 || (t >= PartType::Slab && t <= PartType::Post); } // structure: built from a material
 // The shapes in the build wheel's order (the detail shapes of M21 after the beams).
 constexpr PartType kShapes[] = { PartType::Cube, PartType::Block, PartType::Slope, PartType::Corner, PartType::Beam2, PartType::Beam4, PartType::Beam8,
@@ -115,6 +116,8 @@ public:
 
     // The cells a part would occupy, with each cell's shape (in plot cell space).
     static void Footprint(const Part& p, std::vector<std::pair<Int3, CellShape>>& out);
+    // A beam as the single cubes it is placed as (#200): one per cell of its footprint, same material.
+    static void SplitBeam(const Part& beam, std::vector<Part>& out);
     bool canPlace(const Part& p) const;
     int place(const Part& p);           // part index, or -1 if blocked
     bool remove(int partIndex);

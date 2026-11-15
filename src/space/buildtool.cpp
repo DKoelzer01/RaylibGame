@@ -88,7 +88,11 @@ bool BuildTool_Place(Planetoid& body, Plot& plot, const Part& part, bool charge)
         Audio_Play(Sfx::Error, 0.5f);
         return false;
     }
-    plot.place(part);
+    if (IsBeam(t)) { // a line of single cubes (#200): quicker to build, each removed on its own
+        static std::vector<Part> cubes;
+        Plot::SplitBeam(part, cubes);
+        for (const Part& c : cubes) plot.place(c);
+    } else plot.place(part);
     if (IsMachine(part.type) || IsRocketPart(part.type)) QuestBook_NotePlaced(PartCostItem(part.type));
     BuildTool_LayFoundation(body, plot, part);
     return true;

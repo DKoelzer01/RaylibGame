@@ -72,9 +72,9 @@ const char* PartName(PartType t) {
 int PartCostCount(PartType t) {
     switch (t) {
         case PartType::Block: return 4;
-        case PartType::Beam2: return 1;
-        case PartType::Beam4: return 2;
-        case PartType::Beam8: return 4;
+        case PartType::Beam2: return 2; // beams are placed as single cubes (#200): one item a cell, as a cube
+        case PartType::Beam4: return 4;
+        case PartType::Beam8: return 8;
         default: return 1; // cube, slope, corner; connectors and machines: one of their own item
     }
 }
@@ -416,6 +416,13 @@ void Plot::Footprint(const Part& p, std::vector<std::pair<Int3, CellShape>>& out
             s.n[i] = n2;
         }
     }
+}
+
+void Plot::SplitBeam(const Part& beam, std::vector<Part>& out) {
+    std::vector<std::pair<Int3, CellShape>> fp;
+    Footprint(beam, fp);
+    out.clear();
+    for (const auto& c : fp) out.push_back({ PartType::Cube, c.first, 0, beam.material });
 }
 
 bool Plot::canPlace(const Part& p) const {
@@ -882,6 +889,7 @@ bool PlotSet::load(FILE* f) {
         if (Vector3Length(p->east) < 0.1f) p->east = { 1, 0, 0 };
         p->east = Vector3Normalize(p->east);
         p->north = Vector3CrossProduct(p->up, p->east);
+        std::vector<Part> extraCubes;
         for (int k = 0; k < count; ++k) {
             int t, x, y, z, o, m = 0;
             if (fscanf(f, " %d", &t) != 1) return false;
@@ -891,8 +899,16 @@ bool PlotSet::load(FILE* f) {
             // Old saves: beams were iron.
             if (!materials && (t == (int)PartType::Beam2 || t == (int)PartType::Beam4 || t == (int)PartType::Beam8)) m = BuildMaterialForItem("iron_plate");
             // A part that no longer fits still keeps its slot, so the indices after it don't shift.
-            if (p->place({ (PartType)t, { x, y, z }, (uint8_t)o, (uint8_t)std::clamp(m, 0, BuildMaterialCount() - 1) }) < 0) p->parts.push_back(dead);
+            Part part{ (PartType)t, { x, y, z }, (uint8_t)o, (uint8_t)std::clamp(m, 0, BuildMaterialCount() - 1) };
+            if (IsBeam(part.type)) { // beams are single cubes now (#200): the first takes the slot, the rest go on the end
+                std::vector<Part> cubes;
+                Plot::SplitBeam(part, cubes);
+                part = cubes[0];
+                extraCubes.insert(extraCubes.end(), cubes.begin() + 1, cubes.end());
+            }
+            if (p->place(part) < 0) p->parts.push_back(dead);
         }
+        for (const Part& c : extraCubes) p->place(c);
         if (wear) {
             int worn = 0;
             if (fscanf(f, " wear %d %f", &worn, &p->air) != 2) return false;
