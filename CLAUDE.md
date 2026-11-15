@@ -22,6 +22,18 @@ C++ raylib 5.5 planetoid survival game. `src/engine` (static lib), `src/space` -
 
 - Light tests per change: the scripted benches for the feature touched and its neighbours
   (`game.exe --seed 42 --bench 3 --test-<name>`), plus a screenshot (bench.png) when visuals change.
+- **Record what you verify (user, 2026-11-15, #478):** when verifying a graphical change (rendering, shaders,
+  lighting, UI, animation, terrain or water look) or a behaviour change that shows on screen (movement, camera,
+  physics, animals, machines, tools), record the test run with the `capture` skill (the in-game recorder, `--record`)
+  and look at it yourself before claiming the fix, so visual problems are caught without the user. Keep it cheap:
+  - short captures: 30-120 frames, `--record-every` 2-5 unless you're hunting flicker or jitter (then every 1);
+  - look at the contact sheet first, one image via `mcp__deweyserver__media_get(path=<capture>)` (default 1280 px
+    wide; use a smaller `max_width` when that's enough); open single frames (`frame=N`) only where something
+    changes or looks wrong; don't read every frame;
+  - for before/after, use `-Compare` (`--record-compare`) and read its % difference instead of comparing frames by eye;
+  - skip it for changes with nothing to see (data, saves, pure logic covered by a scripted test), and when a
+    recording would cost more than the check is worth (say so in the report);
+  - never while the user playtests, and report the capture path (and the GIF for the user) with the result.
 - Full regression (`tools/regression.sh planet`, `EXE=... SNAPSHOT=1`): ONE run only, after ALL fixes are in and
   the PRs are merge-ready (user, 2026-11-14), never between fix rounds; re-check failures with targeted runs
   first. `regression.sh planet` includes the "eroded" set (`RAYLIBGAME_EROSION=1`; the first run bakes ~80 s).
