@@ -2193,7 +2193,9 @@ StrataColumn PlanetField::strataColumn(Vector3 dir) const {
     // The continent value at a fixed coarse footprint: the bake's cells and the mesher's vertices see the same province.
     const float sx = dir.x * radius, sy = dir.y * radius, sz = dir.z * radius;
     const float c = continents.fractalLimited(4, 2000.0f, sx, sy, sz) - 0.15f * gen.ocean;
-    return Strata_Column({ sx, sy, sz }, c, fieldSeed);
+    StrataColumn col = Strata_Column({ sx, sy, sz }, c, fieldSeed);
+    col.hardShare = (uint8_t)std::clamp(col.hardShare * gen.cliffs, 0.0f, 255.0f); // New World "Cliffs and canyons" (#589)
+    return col;
 }
 
 RockType PlanetField::rockTypeAt(Vector3 p) const {

@@ -312,6 +312,7 @@ NewWorldChoice NewWorld_Draw() {
         if (Button({ r.x + pw * 0.42f, r.y + rowH * 0.1f, rowH * 2.2f, rowH * 0.8f }, params.erosion ? "On" : "Off")) { params.erosion = !params.erosion; Changed(); }
     }
     if (params.erosion && Slider(next(), "Erosion strength", params.erosionStrength, 0.5f, 2.0f, "%.2fx")) Changed();
+    if (params.erosion && Slider(next(), "Cliffs and canyons", params.cliffs, 0.0f, 2.0f, "%.2fx")) Changed(); // #589: resistant rock layers (Plan 9)
     else if (!params.erosion) y += rowH + gap;
     const int noteFs = (int)(17 * s);
     DrawText("The preview shows the base terrain; erosion shapes it when the world is created (about a minute).", (int)px, (int)y, noteFs, Fade(kText, 0.6f));
