@@ -12,6 +12,7 @@
 #include <unordered_set>
 
 #include "SimplexNoise.h"
+#include "strata.h"
 #include "worldgenparams.h"
 
 extern const int CHUNK_SIZE;          // cells per chunk edge (samples per edge = CHUNK_SIZE + 1)
@@ -73,7 +74,8 @@ namespace std {
 // 4-5 in texcoord (xy), 6-7 in texcoord2 (xy), so they interpolate smoothly across triangles.
 // Asteroids use 0-3; planets all eight (Regolith is rendered as dirt there).
 // Ids 0-7 are the legacy weights (per-chunk draws); later ones ride the arena's per-chunk palette (#480: up to 256).
-enum class VoxelMaterial : uint8_t { Rock = 0, Regolith = 1, Ice = 2, Ore = 3, Sand = 4, Gravel = 5, Grass = 6, Snow = 7, Clay = 8, Count };
+enum class VoxelMaterial : uint8_t { Rock = 0, Regolith = 1, Ice = 2, Ore = 3, Sand = 4, Gravel = 5, Grass = 6, Snow = 7, Clay = 8,
+                                    Granite = 9, Basalt = 10, Sandstone = 11, Limestone = 12, Marble = 13, Count }; // 9-13: rock strata (#587)
 enum class Biome : uint8_t { Ocean = 0, Jungle, Savanna, Desert, Badlands, Forest, Meadow, Swamp, Taiga, Tundra, Alpine, Polar, Count };
 // Bench override (--bench-biome): findSpawnDir returns the nearest deep patch of this biome (-1: off).
 inline int gSpawnBiome = -1;
@@ -232,6 +234,10 @@ public:
     // pockets, basalt deep down and under the sea, granite in the mountains, sandstone on low coastal
     // land, limestone elsewhere (in broad regions).
     const char* stoneKind(Vector3 p) const;
+    // Rock strata (#587): the column here (from region-scale fields, as the erosion bake sees it) and the rock at a
+    // body-local point (its layer at the point's height, in the bake's simulation heights).
+    StrataColumn strataColumn(Vector3 dir) const;
+    RockType rockTypeAt(Vector3 p) const;
     // On a river or pond bed (or its wet shore): digging there also turns up clay.
     bool wetBed(Vector3 local) const;
     // The static water at a direction and its kind (flowing water, fluid.h): 0 none, 1 river, 2 lake,

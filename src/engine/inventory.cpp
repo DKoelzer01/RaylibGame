@@ -143,6 +143,11 @@ const char* ItemForMaterial(VoxelMaterial m, bool soil) {
         case VoxelMaterial::Grass: return soil ? "dirt" : "regolith"; // turf: soil
         case VoxelMaterial::Snow: return "ice";
         case VoxelMaterial::Clay: return "clay"; // #206
+        case VoxelMaterial::Granite: return "granite"; // #587: a stratum gives its own rock
+        case VoxelMaterial::Basalt: return "basalt";
+        case VoxelMaterial::Sandstone: return "sandstone";
+        case VoxelMaterial::Limestone: return "limestone";
+        case VoxelMaterial::Marble: return "marble";
         default: return "stone";
     }
 }
@@ -152,12 +157,13 @@ ItemKind KindOf(const std::string& id) {
     return d ? d->kind : ItemKind::Resource;
 }
 
-// Recipe wildcards: "any_planks" takes planks of any wood, "any_log" any log.
+// Recipe wildcards: "any_planks" takes planks of any wood, "any_log" any log, "any_stone" stone or any rock (#587).
 bool ItemMatches(const std::string& want, const std::string& have) {
     if (want == have) return true;
     auto ends = [&](const char* suf) { const size_t n = strlen(suf); return have.size() > n && have.compare(have.size() - n, n, suf) == 0; };
     if (want == "any_planks") return ends("_planks");
     if (want == "any_log") return ends("_log");
+    if (want == "any_stone") return have == "stone" || have == "granite" || have == "basalt" || have == "sandstone" || have == "limestone" || have == "marble"; // #587: any rock
     return false;
 }
 

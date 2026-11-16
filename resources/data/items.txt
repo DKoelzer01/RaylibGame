@@ -15,6 +15,7 @@ glass           | Glass           | 200 | 190,225,235 | Melted from sand. Lenses
 telescope       | Telescope       |   tool | 200,170,110 | T to raise it, wheel to zoom. Spot the moon and the ring from the ground.
 any_planks      | Any planks      | 999 | 166,120, 74 | Planks of any wood: recipes that need wood take whichever planks you carry (saw logs into planks, Tab).
 any_log         | Any log         | 999 | 120, 84, 50 | A log of any tree.
+any_stone       | Any stone       | 999 | 130,130,135 | Stone or any rock: granite, basalt, sandstone, limestone or marble.
 fibre           | Plant fibre     | 999 | 170,190,110 | Tough stems from bushes. Twists into rope.
 berries         | Berries         | 200 | 190, 40, 70 | Wild berries. Edible.
 rope            | Rope            | 200 | 200,170,120 | Twisted plant fibre.

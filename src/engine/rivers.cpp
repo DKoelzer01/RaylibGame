@@ -8,7 +8,6 @@
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
-#include <cstdlib>
 
 namespace {
     const Vector3 kN[6] = { { 1, 0, 0 }, { -1, 0, 0 }, { 0, 1, 0 }, { 0, -1, 0 }, { 0, 0, 1 }, { 0, 0, -1 } };
@@ -16,7 +15,6 @@ namespace {
     const Vector3 kV[6] = { { 0, 0, 1 }, { 0, 0, -1 }, { 1, 0, 0 }, { -1, 0, 0 }, { 0, 1, 0 }, { 0, -1, 0 } };
 
     constexpr float kDrop = 0.8f;         // water below the smooth land at a river node
-    constexpr float kFallMin = 2.0f;      // m: a piece dropping more than this is a waterfall (#540)
     constexpr float kMinLevel = 0.3f;     // at the sea
 
     uint32_t Hash(uint32_t x, uint32_t seed) {
@@ -303,33 +301,15 @@ RiverNetwork::RiverNetwork(float radius, unsigned int seed, const std::function<
     // ground there is already under it (the coarse cells put the mouth offshore of the real coast, so a river stood
     // 1.2 m over the sea at the shoreline: the flowing water overfilled and never settled). Upstream first, a running
     // minimum within each link and from its children, so the level never rises downstream.
-    // With the fine ground (the bake, #540): the level follows the ground, not a straight line between the nodes - that
-    // stood as a wall of water where the ground fell faster than the line (a cliff) and cut a trench where it rose. Each
-    // point takes the highest ground over itself and the next kAhead points (~50 m) less kDrop: a notch narrower than that
-    // is spanned (a gully crossing would otherwise drag the river down, #359), while past a cliff, where the ground stays
-    // low, the level drops - a waterfall, the river going on at the ground below it.
-    constexpr int kAhead = 2;
-    static const bool stepped = !(getenv("RAYLIBGAME_RIVER_STEPS") && getenv("RAYLIBGAME_RIVER_STEPS")[0] == '0'); // 0: the old straight levels (A/B)
     std::vector<float> pointLevel(curvePts.size(), 0.0f), endCap(N, 1e30f);
     for (int k = (int)order.size() - 1; k >= 0; --k) {
         const int c = order[k];
         if (curveOf[c] < 0) continue;
         const int p = parent[c];
         const float la = L[c], lb = !river[p] ? kMinLevel : L[p];
-        const bool follow = stepped && !pointGround.empty() && !lake[c];
-        auto groundAt = [&](int i) { // point i of this link; past its end, on into the parent's curve
-            if (i <= K) return pointGround[curveOf[c] + i];
-            if (river[p] && curveOf[p] >= 0) return pointGround[curveOf[p] + std::min(i - K, K)];
-            return pointGround[curveOf[c] + K];
-        };
         float run = endCap[c];
         for (int i = 0; i <= K; ++i) {
             float lv = la + (lb - la) * (float)i / K;
-            if (follow) {
-                float ahead = -1e30f;
-                for (int j = 0; j <= kAhead; ++j) ahead = std::max(ahead, groundAt(i + j));
-                lv = std::max(floorLevel[c], ahead - kDrop);
-            }
             // Only at a real coast: the link's cell is lowland by the sea (inland, ground under 0 m is a ravine, a gully
             // or a basin, and dropping the river there cut a canyon), and never under the next lake downstream.
             if (!pointGround.empty() && pointGround[curveOf[c] + i] < 0.0f && h[c] < 3.0f) lv = std::max(floorLevel[c], std::min(lv, kMinLevel));
@@ -338,14 +318,6 @@ RiverNetwork::RiverNetwork(float radius, unsigned int seed, const std::function<
         }
         endCap[p] = std::min(endCap[p], run);
     }
-    // Every link ends at the level its parent starts with (#540): a tributary following its own ground arrived above the
-    // main river at the confluence (the surface rose there walking downstream); now it falls into it, as a hanging valley.
-    if (stepped)
-        for (int c = 0; c < N; ++c) {
-            const int p = parent[c];
-            if (curveOf[c] >= 0 && p >= 0 && river[p] && curveOf[p] >= 0)
-                pointLevel[curveOf[c] + K] = std::min(pointLevel[curveOf[c] + K], pointLevel[curveOf[p]]);
-        }
     for (int c = 0; c < N; ++c) {
         if (curveOf[c] < 0) continue;
         const int p = parent[c];
@@ -357,17 +329,7 @@ RiverNetwork::RiverNetwork(float radius, unsigned int seed, const std::function<
             const float t = (float)k / K, t0 = (float)(k - 1) / K;
             const Vector3 a = curvePts[curveOf[c] + k - 1], b = curvePts[curveOf[c] + k];
             pieces.push_back({ a, b, pointLevel[curveOf[c] + k - 1], pointLevel[curveOf[c] + k], wa + (wb - wa) * t0, wa + (wb - wa) * t, da + (db - da) * t0, da + (db - da) * t });
-            Piece& pc = pieces.back();
-            pc.mid = Vector3Scale(Vector3Add(a, b), 0.5f); pc.halfLen = 0.5f * Vector3Distance(a, b);
-            // A waterfall (#540): the level holds to the cliff's edge - where the ground first falls under it - and drops
-            // there, not in a ramp of water standing out over the drop.
-            if (stepped && params.fineHeight && pc.la - pc.lb > kFallMin) {
-                auto ground = [&](float u) { return params.fineHeight(Vector3Normalize(Vector3Lerp(a, b, u))); };
-                float lo = 0.0f, hi = 1.0f;
-                for (int s = 1; s <= 8; ++s) if (ground(s / 8.0f) < pc.la) { hi = s / 8.0f; lo = (s - 1) / 8.0f; break; }
-                if (hi < 1.0f) for (int it = 0; it < 5; ++it) { const float m = 0.5f * (lo + hi); (ground(m) < pc.la ? hi : lo) = m; }
-                pc.fallT = hi;
-            }
+            pieces.back().mid = Vector3Scale(Vector3Add(a, b), 0.5f); pieces.back().halfLen = 0.5f * Vector3Distance(a, b);
         }
     }
     stage("levels + pieces");
@@ -409,7 +371,7 @@ RiverNetwork::Hit RiverNetwork::nearest(Vector3 dir, float reach) const {
         const float d = SegDist(p, pc.a, pc.b, t);
         if (d >= hit.dist) continue;
         hit.dist = d;
-        hit.level = pc.fallT < 0.0f ? pc.la + (pc.lb - pc.la) * t : t < pc.fallT ? pc.la : pc.lb; // a waterfall steps (#540)
+        hit.level = pc.la + (pc.lb - pc.la) * t;
         hit.halfWidth = pc.wa + (pc.wb - pc.wa) * t;
         hit.depth = pc.da + (pc.db - pc.da) * t;
         hit.down = Vector3Normalize(pc.la >= pc.lb ? Vector3Subtract(pc.b, pc.a) : Vector3Subtract(pc.a, pc.b)); // levels fall downstream
@@ -501,36 +463,10 @@ void RiverNetwork::longestPath(float step, std::vector<Vector3>& dirs, std::vect
             for (float s = 0.0f; s < len; s += step) {
                 const float t = s / len;
                 dirs.push_back(Vector3Normalize(Vector3Lerp(pc.a, pc.b, t)));
-                levels.push_back(pc.fallT < 0.0f ? pc.la + (pc.lb - pc.la) * t : t < pc.fallT ? pc.la : pc.lb);
+                levels.push_back(pc.la + (pc.lb - pc.la) * t);
             }
         }
     }
 }
 
 RiverNetwork::RiverNetwork(float radius, unsigned int seed, const std::function<float(Vector3)>& height) : RiverNetwork(radius, seed, height, Params()) {}
-
-void RiverNetwork::forEachCentrePoint(float step, const std::function<void(Vector3, float, float)>& fn) const {
-    for (const Piece& pc : pieces) {
-        const int n = std::max(1, (int)ceilf(2.0f * pc.halfLen / step));
-        for (int i = 0; i < n; ++i) {
-            const float t = (i + 0.5f) / n;
-            const float level = pc.fallT < 0.0f ? pc.la + (pc.lb - pc.la) * t : t < pc.fallT ? pc.la : pc.lb;
-            fn(Vector3Normalize(Vector3Lerp(pc.a, pc.b, t)), level, pc.da + (pc.db - pc.da) * t);
-        }
-    }
-}
-
-std::vector<RiverNetwork::Fall> RiverNetwork::waterfalls() const {
-    std::vector<Fall> out;
-    for (const Piece& pc : pieces) {
-        if (pc.fallT < 0.0f) continue;
-        Fall f;
-        f.lip = Vector3Normalize(Vector3Lerp(pc.a, pc.b, pc.fallT));
-        f.down = Vector3Normalize(Vector3Subtract(pc.b, pc.a));
-        f.drop = pc.la - pc.lb;
-        f.top = pc.la;
-        f.halfWidth = pc.wa + (pc.wb - pc.wa) * pc.fallT;
-        out.push_back(f);
-    }
-    return out;
-}

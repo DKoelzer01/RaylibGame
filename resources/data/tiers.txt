@@ -6,7 +6,7 @@
     task | get fibre 2            | Harvest a bush for fibre
     task | get stone 4            | Pick up loose stones (LMB) until you have 4 stone
     task | get stone_pickaxe 1    | Craft a stone pickaxe (Tab)
-    task | get stone 8            | Dig stone with the pickaxe
+    task | get any_stone 8        | Dig stone with the pickaxe (any rock counts: granite, basalt, sandstone, limestone, marble)
     task | place campfire         | Place a campfire (G) and feed it logs or planks (I)
     task | get fired_crucible 1   | Mould a crucible from clay and fire it in the campfire
 1 | Stone age        | bronze_ingot     | Build a kiln. Dig deep for copper and tin ore (veins below 8 m), smelt them in the kiln (fuel: logs, planks, charcoal, coal) and alloy 3 copper + 1 tin into bronze.

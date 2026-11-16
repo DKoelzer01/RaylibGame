@@ -590,7 +590,7 @@ void PaintItem(Canvas& cv, const ItemDef& d) {
     if (id == "gravel") { Pebbles(cv, c); return; }
     if (id == "ice") { cv.paint(Poly(LumpPoints(cv.seed, 32, 35, 24, 6)), Lin(c), 1.4f, 0.85f); cv.shine(24, 24, 6, 3, 0.6f); return; }
     if (is({ "coal", "charcoal", "coke" })) { Lump(cv, c, 0.35f); return; }
-    if (is({ "stone", "clay", "anorthite" })) { Lump(cv, c, id == "clay" ? 0.04f : 0.12f); return; }
+    if (is({ "stone", "clay", "anorthite", "any_stone" })) { Lump(cv, c, id == "clay" ? 0.04f : 0.12f); return; }
     if (is({ "iron_plate", "polyethylene" })) { Plate(cv, c); return; }
     if (id == "superconductor") { Coil(cv, c); return; }
     if (is({ "water", "milk", "rocket_fuel", "crude_oil" })) { Bottle(cv, c); return; }

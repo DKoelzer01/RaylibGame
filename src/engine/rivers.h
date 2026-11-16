@@ -66,11 +66,6 @@ public:
     // Points along the longest river from its source to the sea (body-local unit directions), every
     // `step` metres, with the level the network gives there.
     void longestPath(float step, std::vector<Vector3>& dirs, std::vector<float>& levels) const;
-    // Every river's centreline every `step` metres: the direction, the water level there (waterfalls step, #540) and the depth.
-    void forEachCentrePoint(float step, const std::function<void(Vector3 dir, float level, float depth)>& fn) const;
-    // The waterfalls (#540): where each is (its lip), how far it drops (m), the downstream tangent, the river's half width.
-    struct Fall { Vector3 lip{}, down{}; float drop = 0.0f, top = 0.0f, halfWidth = 0.0f; };
-    std::vector<Fall> waterfalls() const;
 
     static constexpr float kMaxReach = 300.0f; // valley carving reaches at most this far from a centreline
     float reach() const { return reachM; }    // this network's reach (Params::maxReach)
@@ -86,7 +81,7 @@ private:
     std::vector<unsigned char> lakeSteps;  // cells to the nearest lake cell (capped at 255)
     std::vector<int> lakeIdOf;             // per cell: its lake's id, or -1
     std::vector<LakeInfo> lakes;
-    struct Piece { Vector3 a, b; float la, lb, wa, wb, da, db; Vector3 mid{}; float halfLen = 0.0f; float fallT = -1.0f; }; // positions in metres (body-local); mid/halfLen: a bounding sphere for nearest(); fallT >= 0: a waterfall at that fraction (la before it, lb after, #540)
+    struct Piece { Vector3 a, b; float la, lb, wa, wb, da, db; Vector3 mid{}; float halfLen = 0.0f; }; // positions in metres (body-local); mid/halfLen: a bounding sphere for nearest()
     std::vector<Piece> pieces;
     std::vector<std::vector<int>> index; // cell -> pieces within reach
     Stats st;
