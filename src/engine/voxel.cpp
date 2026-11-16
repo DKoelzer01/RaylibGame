@@ -28,6 +28,7 @@ const char* VoxelMaterialName(VoxelMaterial m) {
         case VoxelMaterial::Gravel: return "gravel";
         case VoxelMaterial::Grass: return "grass";
         case VoxelMaterial::Snow: return "snow";
+        case VoxelMaterial::Clay: return "clay";
         default: return "?";
     }
 }
@@ -1419,10 +1420,15 @@ VoxelMaterial PlanetField::materialSkyHinted(Vector3 p, float base, float fp, Ve
         const bool skin = depth < 0.6f + slack;
         if (lat > 0.93f + 0.03f * wobble || e > 1350.0f + 100.0f * wobble) return VoxelMaterial::Ice;          // polar cap, glaciers
         if (lat > 0.82f + 0.08f * wobble || e > 1050.0f + 150.0f * wobble) return skin ? VoxelMaterial::Snow : VoxelMaterial::Ice;
-        // Inland water: sand on the beds and wet shores, gravel in the deeper middle.
+        // Inland water: sand on the wet shores; the beds of rivers, lakes and ponds are clay (#206), with gravel bars
+        // in the deeper middle.
         if (e > 0.0f && inlandWaterNear(up, 0.0f)) {
             const float w = waterElevation(up, fp);
-            if (w != kNoWater && e < w + 0.6f) return w - e > 1.4f ? VoxelMaterial::Gravel : VoxelMaterial::Sand;
+            if (w != kNoWater && e < w + 0.6f) {
+                if (e > w - 0.3f) return VoxelMaterial::Sand;
+                const float bars = rocks.fractal(1, p.x * 0.08f, p.y * 0.08f, p.z * 0.08f);
+                return w - e > 1.4f && bars > 0.25f ? VoxelMaterial::Gravel : VoxelMaterial::Clay;
+            }
         }
         if (slope > 0.45f) return VoxelMaterial::Rock;                                                       // cliffs: bare stone
         if (e < -80.0f) return VoxelMaterial::Gravel;                                                        // deep sea floor
@@ -1434,12 +1440,18 @@ VoxelMaterial PlanetField::materialSkyHinted(Vector3 p, float base, float fp, Ve
         if (biome == Biome::Badlands) return slope > 0.18f ? VoxelMaterial::Rock : skin ? VoxelMaterial::Sand : VoxelMaterial::Rock; // red sand over banded rock
         if (slope > 0.3f || e > 800.0f + 100.0f * wobble) return VoxelMaterial::Gravel;                     // scree, alpine
         if (biome == Biome::Tundra) return skin ? VoxelMaterial::Gravel : VoxelMaterial::Regolith;          // tundra: stony ground over dirt
-        if (biome == Biome::Swamp && skin && rocks.fractal(1, p.x * 0.12f, p.y * 0.12f, p.z * 0.12f) > 0.15f) return VoxelMaterial::Regolith; // mud flats between the reeds
+        if (biome == Biome::Swamp) { // mud flats between the reeds: clay (#206), and clay under the swamp's turf
+            if (skin && rocks.fractal(1, p.x * 0.12f, p.y * 0.12f, p.z * 0.12f) > 0.15f) return VoxelMaterial::Clay;
+            if (!skin) return VoxelMaterial::Clay;
+        }
         // Grassland. Undug ground facing up is turf all the way down to the soil layer (the mesh strays
         // from the height map, which used to bare patches of dirt); dug ground is dirt.
         const bool natural = base < ISO_LEVEL + DENSITY_GRADIENT * (1.0f + slack);
         if (natural && slope < 0.3f) return VoxelMaterial::Grass;
-        return skin ? VoxelMaterial::Grass : VoxelMaterial::Regolith;                                        // grassland over dirt
+        if (skin) return VoxelMaterial::Grass;
+        // Rare small clay pockets in the dirt (#206: a dry start can still find clay by digging), a metre or two across.
+        if (rocks.fractal(2, p.x * 0.35f + 731.0f, p.y * 0.35f, p.z * 0.35f) > 0.42f) return VoxelMaterial::Clay;
+        return VoxelMaterial::Regolith;                                                                     // grassland over dirt
     }
     // Ore: deposits of one kind, and scattered pockets of the common ores (oreKind).
     if (depth > 3.0f && oreKind(p, depth) >= 0) return VoxelMaterial::Ore;
@@ -2000,6 +2012,7 @@ void BuildChunkMeshFromBase(const DensityField& field, const TerrainDeltas& delt
             out.texcoords2.assign(verts.size() * 2, 0.0f);
             out.tangents.assign(verts.size() * 4, 0.0f);
             out.occlusion.assign(verts.size(), 0.0f);
+            out.matIds.assign(verts.size(), 0);
             const PlanetField* planetLife = dynamic_cast<const PlanetField*>(&field);
             if (planetLife && !planetLife->foliage) planetLife = nullptr;
             const PlanetField* gridField = grid ? dynamic_cast<const PlanetField*>(&field) : nullptr;
@@ -2082,7 +2095,10 @@ void BuildChunkMeshFromBase(const DensityField& field, const TerrainDeltas& delt
                 out.normals[v * 3 + 0] = n.x;
                 out.normals[v * 3 + 1] = n.y;
                 out.normals[v * 3 + 2] = n.z;
-                const int mi = (int)m; // one-hot weight in the material's channel (see VoxelMaterial)
+                out.matIds[v] = (unsigned char)m; // #480: the arena's per-chunk palette
+                // The legacy one-hot weight (per-chunk draws, grass scattering): materials past the 8 channels show as
+                // their nearest (clay as dirt).
+                const int mi = m == VoxelMaterial::Clay ? (int)VoxelMaterial::Regolith : (int)m;
                 if (mi < 4) out.colors[v * 4 + mi] = 255;
                 else if (mi < 6) out.texcoords[v * 2 + (mi - 4)] = 1.0f;
                 else out.texcoords2[v * 2 + (mi - 6)] = 1.0f;
@@ -2113,7 +2129,7 @@ void BuildChunkMeshFromBase(const DensityField& field, const TerrainDeltas& delt
         }
     }
     ScatterGrass(field, out); // foliage: grass tufts on the finest level (in the build time)
-    if (TerrainArena_PackOnWorkers() && !out.positions.empty()) TerrainArena_Pack(out, out.arenaAttr); // #302: off the main thread
+    if (TerrainArena_PackOnWorkers() && !out.positions.empty()) TerrainArena_Pack(out, out.arena); // #302: off the main thread
     out.buildMs = std::chrono::duration<float, std::milli>(std::chrono::steady_clock::now() - t0).count();
 }
 

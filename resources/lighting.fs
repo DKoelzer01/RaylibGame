@@ -19,12 +19,14 @@ in float fragMacro;     // planets: slow brightness / warmth variation (70-250 m
 uniform sampler2D colorTexture;    // MATERIAL_MAP_ALBEDO
 uniform sampler2D normalTexture;   // MATERIAL_MAP_NORMAL (OpenGL convention, tangent space)
 uniform sampler2D roughAoTexture;  // MATERIAL_MAP_ROUGHNESS: R = roughness, G = ambient occlusion
-uniform sampler2DArray terrainLayers; // planet palette: dirt, sand, gravel, grass, snow, ice, stone (terrainlayers.h)
+uniform sampler2DArray terrainLayers; // planet palette: dirt, sand, gravel, grass, snow, ice, stone, clay (terrainlayers.h)
 uniform sampler2DArray terrainDetail; // its detail maps: normal XY, roughness, AO (unit 12)
 
 flat in vec3 fragClipMax;     // chunk-local overlap clip (lighting.vs: a uniform or the arena record)
+flat in uint fragMatIds;       // #480 (arena): the triangle's three material ids, 8 bits each (fragColor.xyz: their barycentrics)
 uniform mat4 matModel;          // body-local -> world (DrawMesh, or the arena flush: all chunks of a body share the rotation)
 uniform float texScale;            // world units -> texture repeats
+uniform int arenaDraw;             // 1: a terrain arena multi-draw (lighting.vs; #480: the triangle's palette slots)
 
 #define MAX_LIGHTS          4
 #define LIGHT_DIRECTIONAL   0
@@ -156,6 +158,7 @@ vec3 biomeTint(int material, float temp, float moist)
     }
     if (material == 1) return mix(mix(vec3(1.0), vec3(1.3, 0.82, 0.62), red), vec3(0.55, 0.5, 0.45), smoothstep(0.72, 0.88, moist)); // dirt -> red / mud
     if (material == 4) return mix(vec3(1.0), vec3(1.22, 0.72, 0.5), red);                                                                // sand -> red sand
+    if (material == 8) return mix(vec3(1.0), vec3(0.72, 0.84, 0.92), 0.8 * smoothstep(0.72, 0.9, moist));                              // clay -> grey-blue (gley) in swamps
     if (material == 0) return mix(vec3(1.0), vec3(1.25, 0.85, 0.7), red * 0.8);                                                         // banded red rock
     return vec3(1.0);
 }
@@ -219,28 +222,51 @@ void main()
     }
     float shinyMaterials = w.b + w.a; // ice + ore: extra specular
     if (palette == 2) {
-        // Planet: eight materials from the texture layers (weights 0-3 in the vertex colour, 4-5 in
-        // texcoord, 6-7 in texcoord2). Only layers with weight are sampled (usually one or two).
-        float w8[8] = float[8](fragColor.r, fragColor.g, fragColor.b, fragColor.a,
-                               fragTexCoord.x, fragTexCoord.y, fragTexCoord2.x, fragTexCoord2.y);
-        float total = 0.0;
+        // Planet: materials from the texture layers, by id. Terrain arena (#480): the triangle's three materials (ids
+        // from the chunk's palette), weighed by the barycentrics in fragColor (corners of one material merged).
+        // Per-chunk draws: the 8 legacy weights (0-3 in the vertex colour, 4-5 in texcoord, 6-7 in texcoord2), ids 0-7.
+        // Only materials with weight are sampled (usually one or two).
         float ctemp, cmoist;
         bool hasClimate = decodeClimate(ctemp, cmoist);
-        for (int i = 0; i < 8; i++) total += w8[i];
-        // material -> texture layer: stone, dirt, ice, ore (stone, rusted), sand, gravel, grass, snow
-        const float layerOf[8] = float[8](6.0, 0.0, 5.0, 6.0, 1.0, 2.0, 3.0, 4.0);
-        const float roughOf[8] = float[8](0.75, 0.95, 0.15, 0.35, 0.9, 0.85, 0.95, 0.7);
+        // material id -> texture layer: stone, dirt, ice, ore (stone, rusted), sand, gravel, grass, snow, clay (#206)
+        const int kMaterials = 9;
+        const float layerOf[kMaterials] = float[kMaterials](6.0, 0.0, 5.0, 6.0, 1.0, 2.0, 3.0, 4.0, 7.0);
+        const float roughOf[kMaterials] = float[kMaterials](0.75, 0.95, 0.15, 0.35, 0.9, 0.85, 0.95, 0.7, 0.6);
         // Strength of the (asteroid rock) normal map per material: rocky ones only; on grass, dirt and
         // sand its craters read as the asteroid texture showing through.
-        const float bumpOf[8] = float[8](1.0, 0.8, 0.6, 1.0, 0.7, 1.0, 0.7, 0.5); // detail normal strength
+        const float bumpOf[kMaterials] = float[kMaterials](1.0, 0.8, 0.6, 1.0, 0.7, 1.0, 0.7, 0.5, 0.6); // detail normal strength
+        const float shinyOf[kMaterials] = float[kMaterials](0.0, 0.0, 1.0, 1.0, 0.0, 0.0, 0.0, 0.3, 0.25); // ice, ore, a little snow and wet clay
         vec3 a = vec3(0.0);
-        float r = 0.0, aoSum = 0.0;
+        float r = 0.0, aoSum = 0.0, shiny = 0.0;
         // Detail maps fade out by ~120 m (mips flatten them before that; #183: sampling them out to 280 m cost 0.2 ms)
         float near = 1.0 - smoothstep(40.0, 120.0, length(viewPos - fragPosition));
         vec2 dX = vec2(0.0), dY = vec2(0.0), dZ = vec2(0.0);
-        for (int i = 0; i < 8; i++) {
-            float wi = w8[i] / max(total, 0.001);
+        vec4 aw = vec4(0.0);
+        ivec4 aid = ivec4(0);
+        int n = 0;
+        float total = 1.0;
+        if (arenaDraw == 1) {
+            int m0 = int(fragMatIds & 255u), m1 = int((fragMatIds >> 8) & 255u), m2 = int((fragMatIds >> 16) & 255u);
+            vec3 b = fragColor.xyz;
+            if (m1 == m0) { b.x += b.y; b.y = 0.0; }
+            if (m2 == m0) { b.x += b.z; b.z = 0.0; } else if (m2 == m1) { b.y += b.z; b.z = 0.0; }
+            aw = vec4(b, 0.0);
+            aid = ivec4(m0, m1, m2, 0);
+            n = 3;
+        } else {
+            vec4 w0 = fragColor, w1 = vec4(fragTexCoord, fragTexCoord2);
+            total = dot(w0, vec4(1.0)) + dot(w1, vec4(1.0));
+            float cut = 0.01 * max(total, 0.001);
+            // Constant indices only (a loop variable indexing the inputs spilled them to local memory).
+#define TAKE(w, c, id) { if (w >= cut && n < 4) { aw[n] = w; aid[n] = id; n++; } }
+            TAKE(w0.x, 0, 0) TAKE(w0.y, 1, 1) TAKE(w0.z, 2, 2) TAKE(w0.w, 3, 3) TAKE(w1.x, 4, 4) TAKE(w1.y, 5, 5) TAKE(w1.z, 6, 6) TAKE(w1.w, 7, 7)
+#undef TAKE
+        }
+        for (int k = 0; k < n; k++) {
+            float wi = aw[k] / max(total, 0.001);
             if (wi < 0.01) continue;
+            int i = min(aid[k], kMaterials - 1);
+            shiny += shinyOf[i] * wi;
             vec3 c = sampleLayer(tp, layerOf[i]);
             // Far away the repeat of one scale shows: blend in the same layer ~5x larger.
             if (farMix > 0.01) c = mix(c, sampleLayerDominant(tpFar, layerOf[i]), 0.55 * farMix); // one fetch: the dominant axis (#183)
@@ -298,7 +324,7 @@ void main()
         } else {
             normal = normalize(mat3(matModel) * localNormal);
         }
-        shinyMaterials = (w8[2] + w8[3] + 0.3 * w8[7]) / max(total, 0.001);
+        shinyMaterials = shiny;
     } else {
         albedo = rock * w.r + regolith * w.g + ice * w.b + ore * w.a;
         rough = rough * (w.r + w.g) + 0.15 * w.b + 0.3 * w.a;

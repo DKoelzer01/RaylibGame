@@ -120,6 +120,25 @@ namespace {
             }
         return inventory.count("sand") >= want;
     }
+    // Clay (#206): a terrain material now (river and pond beds, swamps, rare pockets in the dirt): search outward
+    // from the start through the soil layer and dig what turns up. Prints how far the nearest clay was.
+    bool DigClay(int want) {
+        float first = -1.0f;
+        for (float r = 0.0f; r < 600.0f && inventory.count("clay") < want; r += 4.0f)
+            for (int a = 0; a < (r < 1.0f ? 1 : 64) && inventory.count("clay") < want; ++a) {
+                const float ang = a * 2.0f * PI / 64.0f;
+                const Vector3 d = Offset(cosf(ang) * r, sinf(ang) * r);
+                for (float depth = 0.8f; depth <= 2.2f && inventory.count("clay") < want; depth += 0.7f) {
+                    const Vector3 p = Vector3Subtract(Surface(d), Vector3Scale(d, depth));
+                    const float base = field->baseDensity(p);
+                    if (base < ISO_LEVEL || field->material(p, base) != VoxelMaterial::Clay) continue;
+                    if (first < 0.0f) first = r;
+                    for (int k = 0; k < 4 && inventory.count("clay") < want; ++k) TerrainTool_DigAt(*body, Vector3Subtract(p, Vector3Scale(d, 0.5f * k)));
+                }
+            }
+        printf("bench: progression: nearest clay %.0f m from the start; %d clay\n", first, inventory.count("clay"));
+        return inventory.count("clay") >= want;
+    }
     // Ore: find vein samples of each kind under the area once, then dig them.
     void FindOre() {
         for (float e = -160.0f; e <= 160.0f; e += 4.0f)
@@ -250,7 +269,7 @@ namespace {
             return true;
         });
         add("dig 72 stone", [] { return DigFor("stone", 72, 5.0f); });
-        add("craft clay, a crucible mould and a campfire", [] { return Craft("clay", 28) && Craft("crucible_mold", 1) && Craft("campfire", 1); });
+        add("dig 28 clay (#206: found, not crafted); craft a crucible mould and a campfire", [] { return DigClay(28) && Craft("crucible_mold", 1) && Craft("campfire", 1); });
         add("place the campfire and fire the crucible", [] {
             static bool started = false;
             if (!started) { started = true; if (!Place("campfire", PartType::Campfire, { 0, 0, 0 })) return false; return false; }

@@ -2695,13 +2695,26 @@ int main(int argc, char** argv)
                             const bool under = IsUnderwater(world, p->toWorld(inside));
                             const bool above = IsUnderwater(world, p->toWorld(Vector3Scale(waterDir, pf->radius + waterLevel + 1.0f)));
                             const float bedE = pf->elevation(waterDir);
-                            const Vector3 bed = Vector3Scale(waterDir, pf->radius + bedE - 0.5f);
-                            const float base = pf->baseDensity(bed);
-                            const VoxelMaterial m = pf->material(bed, base);
+                            Vector3 bed = Vector3Scale(waterDir, pf->radius + bedE - 0.5f);
+                            const VoxelMaterial m = pf->material(bed, pf->baseDensity(bed));
+                            // #206: beds are clay, with gravel bars in the deeper middle and sand on the shores; on a bar,
+                            // dig the nearest clay bed within 30 m instead.
+                            if (m != VoxelMaterial::Clay) {
+                                const Vector3 t1 = Vector3Normalize(Vector3CrossProduct(waterDir, { 0, 1, 0 })), t2 = Vector3CrossProduct(waterDir, t1);
+                                bool found = false;
+                                for (float r = 2.0f; r <= 30.0f && !found; r += 2.0f)
+                                    for (int a = 0; a < 24 && !found; ++a) {
+                                        const float ang = a * 2.0f * PI / 24.0f;
+                                        const Vector3 dir = Vector3Normalize(Vector3Add(Vector3Scale(waterDir, pf->radius), Vector3Add(Vector3Scale(t1, cosf(ang) * r), Vector3Scale(t2, sinf(ang) * r))));
+                                        const float e = pf->elevation(dir);
+                                        const Vector3 q = Vector3Scale(dir, pf->radius + e - 0.5f);
+                                        if (pf->material(q, pf->baseDensity(q)) == VoxelMaterial::Clay) { bed = q; found = true; }
+                                    }
+                            }
                             const int clay0 = inventory.count("clay");
                             for (int k = 0; k < 12; ++k) TerrainTool_DigAt(*p, Vector3Subtract(bed, Vector3Scale(waterDir, 0.4f * k)));
                             const int clay = inventory.count("clay") - clay0;
-                            const bool pass = under && !above && clay > 0 && (m == VoxelMaterial::Sand || m == VoxelMaterial::Gravel);
+                            const bool pass = under && !above && clay > 0 && (m == VoxelMaterial::Clay || m == VoxelMaterial::Sand || m == VoxelMaterial::Gravel); // #206: clay beds
                             printf("bench: water: surface %.1f m, bed %.1f m (%s); underwater 0.3 m down: %s, 1 m up: %s; 12 digs in the bed: %d clay -> %s\n",
                                    waterLevel, bedE, VoxelMaterialName(m), under ? "yes" : "no", above ? "yes" : "no", clay, pass ? "PASS" : "FAIL");
                             benchWater = false;
@@ -6506,6 +6519,7 @@ int main(int argc, char** argv)
                 GpuTimer_PrintCpu();
                 GpuMem_Report("end of bench"); // --vram (#302)
                 if (TerrainArena_Available()) { const ArenaStats as = TerrainArena_Stats(); printf("bench: terrain arena: %d / %d vertices, %d / %d indices, %.1f chunk draws per multi-draw; uploads %lld staged, %lld direct\n", as.vertices, as.vertexCapacity, as.indices, as.indexCapacity, as.draws / (double)std::max(1, as.flushes), as.staged, as.direct); }
+                if (TerrainArena_Available()) { long long pu[17]; TerrainArena_PaletteUse(pu); printf("bench: material palette (#480): chunks by distinct materials:"); for (int k = 1; k <= 16; ++k) if (pu[k]) printf(" %d:%lld", k, pu[k]); printf("\n"); }
                 { const TerrainGpuStats ts = TerrainGpu_Stats(); const WorldStats& ws = GetWorldStats(); printf("bench: terrain gpu: %lld blocks in %lld batches, avg batch latency %.2f ms; chunk build avg %.2f ms (sampling part %.2f ms)\n", ts.blocks, ts.batches, ts.avgLatencyMs, ws.avgBuildMs, ws.avgSampleMs); }
                 {   // Streaming (#258): how much work flying asked for and threw away; frame time spread.
                     const WorldStats& ws = GetWorldStats();

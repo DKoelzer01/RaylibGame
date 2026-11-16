@@ -22,6 +22,7 @@
 #include <vector>
 
 struct ChunkMeshData;
+struct ArenaPacked;
 struct Frustum;
 
 struct ArenaAlloc {
@@ -51,8 +52,8 @@ struct ArenaCull {
 bool TerrainArena_Available();
 ArenaAlloc TerrainArena_Upload(const ChunkMeshData& data);  // main thread; fills the table entry from data.key
 // #302: the packed vertex attributes (positions stay apart). Any thread; mesh workers call it once the arena is up
-// (TerrainArena_PackOnWorkers) and leave the bytes in ChunkMeshData::arenaAttr for the upload.
-void TerrainArena_Pack(const ChunkMeshData& data, std::vector<unsigned char>& out);
+// (TerrainArena_PackOnWorkers) and leave the result in ChunkMeshData::arena for the upload.
+void TerrainArena_Pack(const ChunkMeshData& data, ArenaPacked& out);
 bool TerrainArena_PackOnWorkers();
 void TerrainArena_Free(ArenaAlloc& a);
 
@@ -65,6 +66,7 @@ int TerrainArena_Flush(unsigned int shaderId, bool positionsOnly, const ArenaBod
 
 struct ArenaStats { int vertices = 0, vertexCapacity = 0, indices = 0, indexCapacity = 0, draws = 0, flushes = 0; long long staged = 0, direct = 0; }; // uploads through the staging ring / glBufferSubData (#286)
 ArenaStats TerrainArena_Stats();
+void TerrainArena_PaletteUse(long long out[17]); // #480: packed chunks by distinct materials (index 1-16)
 void TerrainArena_Reserve(int vertices, int indices); // capacity at least this (one regrow each), e.g. behind a loading screen
 void TerrainArena_Unload();
 

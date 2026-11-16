@@ -6,12 +6,12 @@
 // Culled chunks keep their command with instanceCount 0, so the list order (nearest first) is kept.
 layout(local_size_x = 64) in;
 
-struct Chunk { vec4 originSize; vec4 clip; uvec4 draw; };   // body-local origin + size; chunk-local clip; iCount, iFirst, vFirst
+struct Chunk { vec4 originSize; vec4 clip; uvec4 draw; uvec4 palette; }; // body-local origin + size; chunk-local clip; iCount, iFirst, vFirst; 16 material ids (#480)
 layout(std430, binding = 0) readonly buffer Table { Chunk chunks[]; };
 layout(std430, binding = 1) readonly buffer List { uint slots[]; };
 struct Cmd { uint count; uint instances; uint firstIndex; int baseVertex; uint baseInstance; };
 layout(std430, binding = 2) writeonly buffer Cmds { Cmd cmds[]; };
-layout(std430, binding = 3) writeonly buffer Recs { vec4 recs[]; };   // 5 per draw: model rows 0-2, texturing origin, clip
+layout(std430, binding = 3) writeonly buffer Recs { uvec4 recs[]; };  // 6 per draw: model rows 0-2, texturing origin, clip (float bits); palette
 
 uniform uint count;        // listed chunks
 uniform uint base;         // this flush's first entry in the command / record ring
@@ -51,11 +51,12 @@ void main() {
     }
     uint e = base + i;
     cmds[e] = Cmd(c.draw.x, vis ? 1u : 0u, c.draw.y, int(c.draw.z), e);
-    recs[e * 5u + 0u] = vec4(m[0].x, m[1].x, m[2].x, t.x);
-    recs[e * 5u + 1u] = vec4(m[0].y, m[1].y, m[2].y, t.y);
-    recs[e * 5u + 2u] = vec4(m[0].z, m[1].z, m[2].z, t.z);
+    recs[e * 6u + 0u] = floatBitsToUint(vec4(m[0].x, m[1].x, m[2].x, t.x));
+    recs[e * 6u + 1u] = floatBitsToUint(vec4(m[0].y, m[1].y, m[2].y, t.y));
+    recs[e * 6u + 2u] = floatBitsToUint(vec4(m[0].z, m[1].z, m[2].z, t.z));
     dvec3 od = dvec3(o);
     vec3 tex = vec3(od - floor(od / texPeriod) * texPeriod);
-    recs[e * 5u + 3u] = vec4(tex, 0.0);
-    recs[e * 5u + 4u] = vec4(c.clip.xyz, 0.0);
+    recs[e * 6u + 3u] = floatBitsToUint(vec4(tex, 0.0));
+    recs[e * 6u + 4u] = floatBitsToUint(vec4(c.clip.xyz, 0.0));
+    recs[e * 6u + 5u] = c.palette;
 }

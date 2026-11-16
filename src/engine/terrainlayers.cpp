@@ -86,7 +86,7 @@ namespace {
 }
 
 const char* TerrainLayerName(int layer) {
-    static const char* names[LayerCount] = { "dirt", "sand", "gravel", "grass", "snow", "ice", "stone" };
+    static const char* names[LayerCount] = { "dirt", "sand", "gravel", "grass", "snow", "ice", "stone", "clay" };
     return layer >= 0 && layer < LayerCount ? names[layer] : "?";
 }
 
@@ -164,6 +164,18 @@ Image GenerateTerrainLayerImage(int layer, int size) {
                     if (lichen > 0.68f) c = Mix(c, { 118, 128, 86, 255 }, std::min(1.0f, (lichen - 0.68f) * 6.0f) * 0.45f);
                     break;
                 }
+                case LayerClay: { // clay (#206): smooth warm terracotta, faint smears, a fine network of drying cracks
+                    const float tone = Fbm(u, v, 4, 4, 81u);
+                    const float smear = ValueNoise(u * 0.5f, v, 24, 82u);
+                    c = Mix({ 150, 92, 64, 255 }, { 196, 134, 98, 255 }, 0.65f * tone + 0.25f * smear);
+                    float f1, f2; uint32_t id;
+                    Worley(u, v, 14, 83u, f1, f2, id);
+                    c = Scale(c, 0.94f + 0.12f * ((id & 0xFF) / 255.0f)); // each crack plate a touch lighter or darker
+                    const float crack = 1.0f - std::clamp((f2 - f1) * 40.0f, 0.0f, 1.0f);
+                    c = Mix(c, { 92, 54, 38, 255 }, crack * 0.85f);
+                    c = Scale(c, 0.97f + 0.06f * Rand01(x, y, 84u));
+                    break;
+                }
                 default: c = MAGENTA;
             }
             px[y * size + x] = c;
@@ -188,6 +200,7 @@ namespace {
         /*snow*/ { 2.0f, 0.62f, 0.10f, 1.0f, 0.0f },
         /*ice */ { 2.5f, 0.10f, 0.12f, 0.8f, 1.0f },
         /*ston*/ { 6.0f, 0.68f, 0.20f, 3.0f, 0.0f },
+        /*clay*/ { 4.0f, 0.55f, 0.12f, 2.0f, 0.0f }, // smooth and a little sheeny; the dark cracks are grooves
     };
 
     // Periodic box blur (separable), radius r.

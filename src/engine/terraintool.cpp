@@ -279,18 +279,11 @@ void TerrainTool_Update(Scene& world, const PlayerInput& in, bool editEnabled) {
     strokeLength = (float)(nextStrokeAt - now);
 }
 
-// Sand, gravel or dirt on a river or pond bed (planets).
-static bool WetBed(Planetoid& p, Vector3 local, VoxelMaterial m) {
-    if (m != VoxelMaterial::Sand && m != VoxelMaterial::Gravel && m != VoxelMaterial::Regolith) return false;
-    const auto* pf = dynamic_cast<const PlanetField*>(p.field.get());
-    return pf && pf->wetBed(local);
-}
-
 // The ground a filler item makes when placed (-1: not a filler).
 static int FillerMaterial(const std::string& item) {
     static const struct { const char* item; VoxelMaterial m; } kFillers[] = {
         { "dirt", VoxelMaterial::Regolith }, { "regolith", VoxelMaterial::Regolith }, { "gravel", VoxelMaterial::Gravel },
-        { "sand", VoxelMaterial::Sand }, { "stone", VoxelMaterial::Rock }, { "concrete", VoxelMaterial::Rock },
+        { "sand", VoxelMaterial::Sand }, { "clay", VoxelMaterial::Clay }, { "stone", VoxelMaterial::Rock }, { "concrete", VoxelMaterial::Rock },
         { "granite", VoxelMaterial::Rock }, { "basalt", VoxelMaterial::Rock }, { "limestone", VoxelMaterial::Rock },
         { "marble", VoxelMaterial::Rock }, { "sandstone", VoxelMaterial::Rock },
     };
@@ -408,7 +401,6 @@ static bool BrushStroke(bool digging) {
     const float r3 = terrainTool.brushRadius * terrainTool.brushRadius * terrainTool.brushRadius;
     if (digging) {
         inventory.addFractional(hitItem, terrainTool.digStrength * r3 * 0.15f);
-        if (WetBed(p, hit.local, hit.material)) inventory.addFractional("clay", terrainTool.digStrength * r3 * 0.06f); // river and pond beds hold clay
         Audio_Play(Sfx::Dig, 0.5f, 0.85f + 0.3f * (float)GetRandomValue(0, 100) / 100.0f);
         ++terrainTool.swings;
     } else {
@@ -450,6 +442,7 @@ static Color DustColor(VoxelMaterial m) {
         case VoxelMaterial::Gravel: return { 128, 124, 118, 255 };
         case VoxelMaterial::Grass: return { 96, 84, 52, 255 };
         case VoxelMaterial::Snow: return { 240, 244, 250, 255 };
+        case VoxelMaterial::Clay: return { 170, 120, 95, 255 };
         default: return { 128, 126, 124, 255 };
     }
 }
@@ -581,7 +574,6 @@ bool TerrainTool_Stroke(bool dig) {
     const Vector3 centre = DigCentre(r);
     const float cell = step * step * step * p.scale * p.scale * p.scale;
     std::map<std::string, float> got;
-    float wet = 0.0f;
     bool grass = false;
     const char* stoneKindAt = nullptr;
     bool swampHere = false; // Plan 5 B: digging swamp ground turns up peat
@@ -605,12 +597,10 @@ bool TerrainTool_Stroke(bool dig) {
                     if (strcmp(stoneKindAt, "stone") != 0) got[stoneKindAt] += cell * 0.8f;
                 }
                 if (strcmp(item, "dirt") == 0) got["gravel"] += cell * 0.4f; // stones in the soil (enough for the first stone tools)
-                if (WetBed(p, q, m)) wet += cell;
                 if (m == VoxelMaterial::Grass) grass = true;
                 if (swampHere && (m == VoxelMaterial::Grass || m == VoxelMaterial::Regolith)) got["peat"] += cell * 0.8f; // Plan 5 B: swamp ground is peat
             }
     for (auto& kv : got) inventory.addFractional(kv.first, kv.second);
-    if (wet > 0.0f) inventory.addFractional("clay", wet * 0.8f); // river and pond beds hold clay
     if (stoneKindAt) { // rock now and then holds a gem: quartz anywhere, and the gem of its stone kind (M22)
         const char* gem = GameRng_Int(0, 29999) < 10 * terrainTool.gemBoost ? GemForStone(stoneKindAt) : GameRng_Int(0, 29999) < 16 * terrainTool.gemBoost ? "quartz" : nullptr; // rare: 1 in 3000 strokes a gem, 1 in 1900 quartz (veins later)
         if (gem && itemDB.find(gem)) { inventory.add(gem, 1); Toast(TextFormat("+1 %s!", gem)); }
@@ -734,7 +724,6 @@ bool TerrainTool_DigAt(Planetoid& p, Vector3 local) {
         const char* gem = GameRng_Int(0, 29999) < 10 * terrainTool.gemBoost ? GemForStone(k) : GameRng_Int(0, 29999) < 16 * terrainTool.gemBoost ? "quartz" : nullptr; // rare: 1 in 3000 strokes a gem, 1 in 1900 quartz (veins later)
         if (gem && itemDB.find(gem)) inventory.add(gem, 1);
     }
-    if (WetBed(p, local, m)) inventory.addFractional("clay", 0.4f); // beds hold clay
     ApplyTerrainEdit(p, TerrainEdit{ local, 1.2f, -0.6f });
     return true;
 }

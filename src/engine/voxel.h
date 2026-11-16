@@ -72,7 +72,8 @@ namespace std {
 // Eight materials. Meshes carry them as per-vertex blend weights: 0-3 in the vertex colour (RGBA),
 // 4-5 in texcoord (xy), 6-7 in texcoord2 (xy), so they interpolate smoothly across triangles.
 // Asteroids use 0-3; planets all eight (Regolith is rendered as dirt there).
-enum class VoxelMaterial : uint8_t { Rock = 0, Regolith = 1, Ice = 2, Ore = 3, Sand = 4, Gravel = 5, Grass = 6, Snow = 7, Count };
+// Ids 0-7 are the legacy weights (per-chunk draws); later ones ride the arena's per-chunk palette (#480: up to 256).
+enum class VoxelMaterial : uint8_t { Rock = 0, Regolith = 1, Ice = 2, Ore = 3, Sand = 4, Gravel = 5, Grass = 6, Snow = 7, Clay = 8, Count };
 enum class Biome : uint8_t { Ocean = 0, Jungle, Savanna, Desert, Badlands, Forest, Meadow, Swamp, Taiga, Tundra, Alpine, Polar, Count };
 // Bench override (--bench-biome): findSpawnDir returns the nearest deep patch of this biome (-1: off).
 inline int gSpawnBiome = -1;
@@ -406,6 +407,16 @@ void ChunkWaterPhases(long long out[6]); // + exact density samples, all samples
 constexpr long long kChunkWaterCacheCap = 128ll << 20;
 
 // CPU-side result of meshing one chunk (produced on a worker thread).
+// The terrain arena's packed vertices (#302, #480), filled on the mesh worker (TerrainArena_Pack): the attributes, the
+// chunk's material palette, and, when triangles on material borders were split, its own positions and indices.
+struct ArenaPacked {
+    std::vector<unsigned char> attr;          // terrainarena.cpp Attr per vertex
+    std::vector<float> positions;             // empty: the mesh's own (no triangle was split)
+    std::vector<unsigned short> indices;
+    unsigned char palette[16] = {};           // palette slot -> VoxelMaterial id
+    bool valid = false;
+};
+
 struct ChunkMeshData {
     uint64_t planetoidId = 0;
     NodeKey key{};
@@ -424,7 +435,8 @@ struct ChunkMeshData {
     std::vector<unsigned short> waterIndices;
     std::vector<float> grass;              // grass tufts (foliage.h: kGrassFloats each), finest level only
     std::vector<unsigned short> indices;
-    std::vector<unsigned char> arenaAttr;  // #302: the terrain arena's packed attributes, filled on the worker (TerrainArena_Pack)
+    std::vector<unsigned char> matIds;     // #480: per vertex, its VoxelMaterial id (0-255; the arena packs a per-chunk palette of up to 16)
+    ArenaPacked arena;                     // #302, #480: the terrain arena's packed vertices, filled on the worker
     bool overflow = false;                 // > 65535 vertices: mesh dropped
     float buildMs = 0.0f;
     float sampleMs = 0.0f;                 // part of buildMs spent sampling the density field
