@@ -36,7 +36,7 @@ void main() {
         float fallen = max(fragUV.y, 0.0), s = fragColor.r;
         const float v0 = 2.2, g = 9.8;
         float tFall = (sqrt(v0 * v0 + 2.0 * g * fallen) - v0) / g; // s
-        float phase = tFall - time;
+        float phase = tFall - time * fragColor.b; // b: animated near, a static sheet far away (#612)
         float streak = noise(vec2(fragUV.x * 22.0, phase * 3.0));
         float fine = noise(vec2(fragUV.x * 61.0, phase * 9.0));
         float white = clamp(0.35 + 0.55 * streak + 0.25 * fine + 0.6 * smoothstep(0.75, 1.0, s) + 0.3 * (1.0 - smoothstep(0.0, 0.12, s)), 0.0, 1.0);
@@ -57,5 +57,5 @@ void main() {
     float dist = length(viewPos - fragPosition);
     float fogF = 1.0 - exp(-dist * fogDensity);
     col = mix(col, fogColor, clamp(fogF, 0.0, 1.0));
-    finalColor = vec4(col, alpha);
+    finalColor = vec4(col, alpha * fragColor.g); // g: fades in from the far range (#612)
 }

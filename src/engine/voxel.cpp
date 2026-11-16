@@ -2026,6 +2026,12 @@ static void MeshChunkWater(const DensityField& field, ChunkMeshData& out, const 
                     // below sea level) the generated water surface is not open water. Rivers used to line the cave walls.
                     const float wl = Vector3Length(wc);
                     if (wl > 1.0f && groundAt(wc, Vector3Scale(wc, 1.0f / wl)) > wl - sea + (stride <= 2.0f ? 0.15f : 1.0f)) continue; // near: only over the original bed
+                    // Steep: generated water lies (nearly) flat - a river's rapids slope at most ~0.4. A steep surface is the
+                    // level lattice interpolated across a waterfall's drop: blobs in the rock behind the fall, and from far
+                    // LODs (their lattice is coarse) a giant slanted sheet (#613). The fall's own sheet draws the water there.
+                    const Vector3 tn = Vector3CrossProduct(Vector3Subtract(wv[wi[t + 1]], wv[wi[t]]), Vector3Subtract(wv[wi[t + 2]], wv[wi[t]]));
+                    const float tl = Vector3Length(tn);
+                    if (wl > 1.0f && tl > 1e-9f && fabsf(Vector3DotProduct(tn, wc)) < 0.7f * tl * wl) continue;
                 }
             }
             for (int e = 0; e < 3; ++e) {

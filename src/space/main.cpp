@@ -3025,6 +3025,15 @@ int main(int argc, char** argv)
                                     printf("bench: rivers: waterfall %.1f km from the start: drops %.1f m from %.1f m, %.0f m wide; look: --view-fall %.6f %.6f %.6f %.5f %.5f %.5f\n",
                                            near[k].first / 1000.0f, f.drop, f.top, 2.0f * f.halfWidth, f.lip.x, f.lip.y, f.lip.z, f.down.x, f.down.y, f.down.z);
                                 }
+                                // And a small one near the start (#614: its effects should be small too): the least drop x width within 6 km.
+                                int small = -1; float smallD = 1e30f;
+                                for (int i = 0; i < (int)falls.size(); ++i)
+                                    if (falls[i].top > 2.0f && Vector3Distance(home, falls[i].lip) * pf->radius < 6000.0f) { const float sz = falls[i].drop * falls[i].halfWidth; if (sz < smallD) { smallD = sz; small = i; } }
+                                if (small >= 0) {
+                                    const auto& f = falls[small];
+                                    printf("bench: rivers: small waterfall %.1f km from the start: drops %.1f m from %.1f m, %.0f m wide; look: --view-fall %.6f %.6f %.6f %.5f %.5f %.5f --view-fall-dist 25\n",
+                                           Vector3Distance(home, f.lip) * pf->radius / 1000.0f, f.drop, f.top, 2.0f * f.halfWidth, f.lip.x, f.lip.y, f.lip.z, f.down.x, f.down.y, f.down.z);
+                                }
                             }
                             // A look at a river: the nearest to the start (every 150 m within 8 km).
                             {
