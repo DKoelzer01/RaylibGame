@@ -308,6 +308,7 @@ int main(int argc, char** argv)
     bool benchPreloadSpawn = false; double preloadT0 = -1.0; // --preload-spawn: time the spawn preload ring (#294)
     float benchUnfocus = 0.0f;    // --bench-unfocus S (#510): unfocused S s during the spawn preload, and while playing (FPS before/after)
     int unfocusPhase = 0; double unfocusT0 = 0.0; long unfocusFrames = 0; double unfocusFpsBefore = 0.0;
+    double unfocusSim0 = 0.0; bool unfocusSimOk = true; // #525: sim time while unfocused (s)
     bool benchUnfocused = false;  // the game sees its window unfocused (scripted: the window itself is never minimized or raised)
     double benchFlySeconds = 0.0, flyStart = -1.0; // --test-fly S: autopilot the ship to the nearest other asteroid
     bool benchSuffocate = false;   // --test-suffocate: run out of oxygen away from the ship, die, respawn
@@ -1415,12 +1416,18 @@ int main(int argc, char** argv)
                 if (unfocusT0 < 0.0) { unfocusT0 = GetTime(); unfocusFrames = 0; } // the measurement starts
                 else {
                     ++unfocusFrames;
-                    if (ut > 5.0) { unfocusFpsBefore = unfocusFrames / ut; benchUnfocused = true; unfocusPhase = 3; unfocusT0 = GetTime(); }
+                    if (ut > 5.0) { unfocusFpsBefore = unfocusFrames / ut; benchUnfocused = true; unfocusPhase = 3; unfocusT0 = GetTime(); unfocusSim0 = SimTime(); }
                 }
             }
-            else if (unfocusPhase == 3 && ut > benchUnfocus) { benchUnfocused = false; unfocusPhase = 4; unfocusT0 = GetTime(); }
+            else if (unfocusPhase == 3 && ut > benchUnfocus) {
+                // #525: the game keeps running behind another window (time of day, physics and the factory all step on it).
+                const double simRan = SimTime() - unfocusSim0;
+                unfocusSimOk = simRan > 0.9 * ut;
+                printf("bench: unfocus: the simulation ran %.2f s of %.2f s unfocused (#525): %s\n", simRan, ut, unfocusSimOk ? "yes" : "NO");
+                benchUnfocused = false; unfocusPhase = 4; unfocusT0 = GetTime();
+            }
             else if (unfocusPhase == 4 && ut > 2.0) { unfocusPhase = 5; unfocusT0 = GetTime(); unfocusFrames = 0; }
-            else if (unfocusPhase == 5) { ++unfocusFrames; if (ut > 5.0) { printf("bench: unfocus: %.1f FPS before %.0f s unfocused while playing, %.1f FPS after\n", unfocusFpsBefore, benchUnfocus, unfocusFrames / ut); unfocusPhase = 6; } }
+            else if (unfocusPhase == 5) { ++unfocusFrames; if (ut > 5.0) { printf("bench: unfocus: %.1f FPS before %.0f s unfocused while playing, %.1f FPS after -> %s\n", unfocusFpsBefore, benchUnfocus, unfocusFrames / ut, unfocusSimOk ? "PASS" : "FAIL"); unfocusPhase = 6; } }
         }
         if (preloadT0 >= 0.0 && !SpawnPreloadPending()) {
             const WorldStats& ws = GetWorldStats();
@@ -6537,8 +6544,8 @@ int main(int argc, char** argv)
             }
         }
         // Unfocused (alt-tab, #510): the frame still runs, so streaming, uploads, the spawn preload and the loading screen
-        // keep going (skipping whole frames stalled the loading, and the backlog cost more on return); the simulation is
-        // paused (no sim time below) and input and the cursor lock are off. Benches, --bench-window and --play-new runs open
+        // keep going (skipping whole frames stalled the loading, and the backlog cost more on return), and so does the
+        // whole game (#525: time of day, physics, the factory; only the pause menu pauses); input and the cursor lock are off. Benches, --bench-window and --play-new runs open
         // unfocused (#387) and ignore focus; --bench-unfocus scripts it (its own window is never minimized or raised).
         const bool focused = benchUnfocus > 0.0f ? !benchUnfocused : (bench || benchWindow || playNewSeconds > 0.0 || IsWindowFocused());
         {
@@ -6602,7 +6609,7 @@ int main(int argc, char** argv)
         // time owes (none on most frames above 60 FPS, two at 30 FPS). Key and button edges are latched for them in
         // PlayerInput_Step() (playerinput.h); the mouse look turns the view once per frame, the camera interpolates.
         PlayerInput_BeginFrame();
-        const int simSteps = SimClock_BeginFrame(focused ? frameDt : 0.0f); // unfocused: the simulation waits (#510; a pause, as #511)
+        const int simSteps = SimClock_BeginFrame(frameDt); // unfocused too (#525): the world keeps running behind another window
         if (gameState == 1 && gameInput && alive && !loading && !ship.piloted && !Rocket_Boarded() && !player.flyMode) player.look(PlayerInput_Frame().look);
         for (int simStep = 0; simStep < simSteps; ++simStep) {
         const float simDt = SimDt();
