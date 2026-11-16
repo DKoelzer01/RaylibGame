@@ -6592,7 +6592,7 @@ int main(int argc, char** argv)
             rlSetClipPlanes(nearPlane, 60000.0);
         }
         const bool gameInput = !bench && focused && !uiOpen && gameState == 1 && !loading;
-        world.cameraInputEnabled = player.flyMode && !uiOpen && !ship.piloted;  // free-fly camera only in fly mode
+        world.cameraInputEnabled = player.flyMode && !uiOpen && !ship.piloted && focused;  // free-fly camera only in fly mode; not behind another window (#539)
         const bool alive = !survival.dead;
         // One clamped frame time for everything that moves (bodies, ship, player): clamping only the
         // player let the ground spin away under it during a slow frame.
