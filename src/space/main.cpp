@@ -1083,7 +1083,7 @@ int main(int argc, char** argv)
                     sum += iou; worst = std::min(worst, iou); ++n;
                 }
                 printf("bench: dig shape: %d digs (radius 0.35-0.85 m, lattice %.2f m): mean IoU with the previewed sphere %.3f, worst %.3f -> %s\n",
-                       n, kVoxelSize, sum / std::max(1, n), worst, sum / std::max(1, n) >= 0.83 && worst >= 0.7 ? "PASS" : "FAIL");
+                       n, kVoxelSize, sum / std::max(1, n), worst, sum / std::max(1, n) >= 0.83 && worst >= 0.65 ? "PASS" : "FAIL"); // worst 0.65 (#532: the floor depends on the ground the 40 digs land on: 0.664-0.715 over seeds 1, 7, 42, 100, 2024 with the carve unchanged)
                 // (#425: the bar was the first measurement itself, 0.85 / 0.73 on 2026-11-12. The carve hasn't changed since, but
                 // the ground at the 40 random spots has (erosion, lips, rock features), and on a 0.25 m lattice the small spheres
                 // score ~0.85 +- 0.01 wherever they land: 0.847 on 2026-11-15. A 1 m lattice scored 0.28, so 0.83 still catches
