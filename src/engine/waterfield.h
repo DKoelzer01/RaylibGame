@@ -38,6 +38,7 @@ struct Brick {
     std::array<uint8_t, kBrick3> fill{}, flags{};
     std::array<uint8_t, kBrick3> shut{}; // the share of an open cell that is ground, at its bottom (#454): holds 255 - shut, water stands at shut + fill
     uint8_t kinds = 0; // bit k: some cell holds fluid of kind k
+    bool moving = false; // its water is moving (the brick is awake): thin films are drawn, not only sheets (#649)
 };
 
 // A simulated region: a tangent frame (east, north, up) of 1 m cells anchored at `origin`.
@@ -111,6 +112,7 @@ public:
     // published cell covers it (the generated water decides there).
     bool density(Vector3 p, int kind, float& wd);
     bool covered(Vector3 p) const;
+    bool moving(Vector3 p) const;                 // a covered point's water is moving (its brick is awake, #649)
     // Metres of fluid in the column under a covered point (up to 8), for the shader's depth tint.
     float depthBelow(Vector3 p, int kind);
 private:

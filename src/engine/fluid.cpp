@@ -90,6 +90,7 @@ struct Brick {
     bool settled = false;           // put to sleep resting (#366): small changes (the GPU step at its edge) do not wake it
     std::array<uint8_t, B3> drawn{}, drawnFlags{}; // the cells as the chunks last redrew them (visible changes only)
     bool drawnSet = false;
+    bool drawnMoving = false;       // published as moving (#649: its thin films are drawn while it is awake)
     int slot = -1;                  // GPU mode: its place in the GPU brick pool (-1: none yet)
     bool upload = false;            // GPU mode: the whole brick (cells, flags, targets) goes up next tick
 };
@@ -934,7 +935,8 @@ void RunJob() {
                     b.check = b.fill; b.checkStep = stepCount;
                 }
             } else b.checkStep = -1;
-            if (!b.changed) continue;
+            const bool movedFlip = b.drawnSet && b.drawnMoving != b.active; // woke or fell asleep: its thin films show or hide (#649)
+            if (!b.changed && !movedFlip) continue;
             b.changed = false;
             if (!snap) {
                 snap = std::make_shared<WaterField::Snapshot>();
@@ -948,7 +950,7 @@ void RunJob() {
             }
             WaterField::Site& ps = snap->sites[s->index];
             auto pb = std::make_shared<WaterField::Brick>();
-            pb->fill = b.fill; pb->flags = b.flags; pb->shut = b.shut; pb->kinds = present;
+            pb->fill = b.fill; pb->flags = b.flags; pb->shut = b.shut; pb->kinds = present; pb->moving = b.active;
             ps.bricks[kv.first] = std::move(pb);
             Vector3 lo, hi;
             ps.brickBounds(b.bi, b.bj, b.bk, lo, hi);
@@ -962,7 +964,7 @@ void RunJob() {
             for (int o = 0; o < 8; ++o) { c0[o][0] = c0[o][1] = c0[o][2] = B; c1[o][0] = c1[o][1] = c1[o][2] = -1; }
             for (int i = 0; i < B3; ++i) {
                 const bool v = !b.drawnSet || abs((int)b.fill[i] - (int)b.drawn[i]) >= 6 || ((b.flags[i] ^ b.drawnFlags[i]) & kSolid) ||
-                               (b.fill[i] && ((b.flags[i] ^ b.drawnFlags[i]) & kKindMask));
+                               (b.fill[i] && ((b.flags[i] ^ b.drawnFlags[i]) & kKindMask)) || (movedFlip && b.fill[i] > 0 && b.fill[i] < 64);
                 if (!v) continue;
                 const int x = i % B, y = (i / B) % B, z = i / (B * B);
                 const int o = (x >> 3) | ((y >> 3) << 1) | ((z >> 3) << 2);
@@ -972,6 +974,7 @@ void RunJob() {
                 b.drawn[i] = b.fill[i]; b.drawnFlags[i] = b.flags[i];
             }
             b.drawnSet = true;
+            b.drawnMoving = b.active;
             for (int o = 0; o < 8; ++o) {
                 if (c1[o][0] < 0) continue;
                 Vector3 dlo, dhi;

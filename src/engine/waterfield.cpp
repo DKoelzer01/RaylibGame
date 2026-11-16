@@ -15,6 +15,7 @@ namespace {
     std::vector<Dirty> dirtyQueue;
     constexpr float kNone = -1e9f;
     constexpr int kShallow = 64; // fills under 25 cm on the ground: drawn only as part of a sheet (openSurface)
+    constexpr int kFilmLift = 13; // a moving film is drawn at least ~5 cm over its ground share (#649)
 
 }
 
@@ -159,6 +160,13 @@ float ChunkSampler::openSurface(int si, int ci, int cj, int ck, int kind, int de
     if (!cellAt(si, ci, cj, ck, fill, flags, sh) || (flags & kSolid)) return kNone;
     const int f = CellKind(flags) == kind ? fill : 0;
     if (f > 0) {
+        const Brick* own = brickPtr(si, ci >> 4, cj >> 4, ck >> 4);
+        if (f < kShallow && own && own->moving) {
+            // A moving film (#649): drawn wherever it is, at least kFilmLift over its ground share - a film running down a
+            // trench or across dry ground showed nothing until it pooled (the water seemed to skip to where it settled).
+            // Resting films keep the sheet rule below (a drained pond's films read as a grid of spikes, #360).
+            return ck + (sh + std::max(f, kFilmLift)) / 255.0f;
+        }
         if (f < kShallow) {
             // Shallow water on no fluid (the ground is in this cell): drawn as part of a sheet - a side neighbour at the
             // same level, or deeper water - not as the films a draining body leaves cell by cell, each at its own height
@@ -270,6 +278,16 @@ bool ChunkSampler::density(Vector3 p, int kind, float& wd) {
             }
         wd = sum;
         return true;
+    }
+    return false;
+}
+
+bool ChunkSampler::moving(Vector3 p) const {
+    for (int si = 0; si < (int)sites.size(); ++si) {
+        float fx, fy, fz;
+        sites[si]->frame(p, fx, fy, fz);
+        const int ci = (int)floorf(fx), cj = (int)floorf(fy), ck = (int)floorf(fz);
+        if (const Brick* b = brickPtr(si, ci >> 4, cj >> 4, ck >> 4)) return b->moving;
     }
     return false;
 }
