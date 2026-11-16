@@ -996,7 +996,6 @@ int main(int argc, char** argv)
     bool justPaused = false;
     bool loading = false;          // the loading screen is up
     double loadStart = 0.0;
-    size_t loadMax = 1;
     bool spawnLoad = false;        // raised by a spawn or teleport (not entering the game): no minimum time
     int loadFrames = 0;
     int seenSpawns = 0;
@@ -6663,7 +6662,7 @@ int main(int argc, char** argv)
         const float frameDt = std::min(GameFrameTime(), 0.1f); // fixed while recording (#375)
         gGameClock += frameDt; // the animation clock while recording (GameClock)
         // A spawn or teleport: the loading screen until the terrain there is built (play and tests pause).
-        if (player.spawns != seenSpawns) { seenSpawns = player.spawns; if (gameState == 1) { loading = true; spawnLoad = true; loadStart = GetTime(); loadMax = 1; loadFrames = 0; } }
+        if (player.spawns != seenSpawns) { seenSpawns = player.spawns; if (gameState == 1) { loading = true; spawnLoad = true; loadStart = GetTime(); loadFrames = 0; } }
         GpuTimer_CpuMark("bench-logic");
         // Benches that place the camera themselves (shots, tours): take that as the pose the fly-follow carries, or the
         // carry in player.update put the camera back where it was last frame (#298: since 4720ba4 the biome and machine
@@ -7569,7 +7568,7 @@ int main(int argc, char** argv)
                 menuOk &= cached;
                 printf("bench: menus: the load read the save's erosion cache, no bake (#505): %s\n", cached ? "yes" : "NO");
                 // #388: the loading screen as entering a world raises it (benches load without one), then Esc on it.
-                loading = true; spawnLoad = false; loadStart = GetTime(); loadMax = 1; loadFrames = 0;
+                loading = true; spawnLoad = false; loadStart = GetTime(); loadFrames = 0;
                 menuEsc = true; menuStep = 6; menuFrames = 0;
             } else if (menuStep == 6 && menuFrames == 2) {
                 const bool ignored = gameState == 1 && loading;
@@ -7614,7 +7613,7 @@ int main(int argc, char** argv)
                 gameState = 1;
                 mainMenu.isActive = false;
                 world.isActive = true;
-                loading = !bench; loadStart = GetTime(); loadMax = 1; // the loading screen until the terrain around you is in
+                loading = !bench; loadStart = GetTime(); // the loading screen until the terrain around you is in
                 if (fresh && !bench) BeginSpawnPreload(); // a new or loaded world: the ring around the spawn first (#294)
             };
             auto toMenu = [&] {
@@ -7726,23 +7725,44 @@ int main(int argc, char** argv)
                 if (loading) {
                     // Loading screen: black, with the streaming progress, until the world around you is built
                     // (it used to show you standing in a void among trees and water while the ground popped in).
+                    // The bar (#494) is work done: the world jobs finished since this screen opened over those plus the ones
+                    // still pending (the old 1 - pending / peak went back and forth as the streamer queued more, and rescaled
+                    // at each new peak). The spawn ring ("Preparing spawn") fills the first 80%. The target never goes back;
+                    // the drawn bar eases toward it and fills to the end before the screen closes.
+                    static double barFor = -1.0;    // the loadStart this bar belongs to
+                    static uint64_t barDone0 = 0;
+                    static float barTarget = 0.0f, barShown = 0.0f, barLowest = 0.0f, barJump = 0.0f; // the worst step back and forward (tests)
+                    static bool barSawRing = false, barClosing = false;
+                    if (barFor != loadStart) { barFor = loadStart; barDone0 = WorldJobs().done(); barTarget = barShown = 0.0f; barLowest = barJump = 0.0f; barSawRing = barClosing = false; }
                     const size_t pending = WorldJobs().queued() + WorldJobs().running();
-                    loadMax = std::max(loadMax, pending);
                     float ringProgress = 1.0f;
                     const bool preparing = SpawnPreloadPending(&ringProgress); // first load: the 300 m ring around the spawn (#294)
-                    const float progress = preparing ? ringProgress : WorldIdle() ? 1.0f : 1.0f - (float)pending / (float)loadMax;
+                    barSawRing |= preparing;
+                    const double doneJobs = (double)(WorldJobs().done() - barDone0);
+                    const float built01 = WorldIdle() ? 1.0f : (float)(doneJobs / std::max(1.0, doneJobs + (double)pending));
+                    float want = preparing ? 0.8f * std::clamp(ringProgress, 0.0f, 1.0f) : barSawRing ? 0.8f + 0.2f * built01 : built01;
+                    if (barClosing) want = 1.0f;
+                    barTarget = std::max(barTarget, want);
+                    const float before = barShown;
+                    barShown += (barTarget - barShown) * (1.0f - expf(-(barClosing ? 25.0f : 8.0f) * std::min(GameFrameTime(), 0.1f))); // the last fill is quick (~0.2 s)
+                    if (barTarget - barShown < 0.002f) barShown = barTarget;
+                    barLowest = std::min(barLowest, barShown - before);
+                    if (!barClosing) barJump = std::max(barJump, barShown - before); // the biggest one-frame step while loading (a jump)
                     DrawRectangle(0, 0, GetScreenWidth(), GetScreenHeight(), BLACK);
                     Slideshow_Draw(0.5f); // screenshots behind the loading bar (#386), carrying on from the menu
                     const int bw = GetScreenWidth() / 3, bx = (GetScreenWidth() - bw) / 2, by = GetScreenHeight() / 2;
                     DrawText(preparing ? "Preparing spawn" : "Building the world", bx, by - 40, 28, RAYWHITE);
                     DrawRectangle(bx, by, bw, 14, Fade(RAYWHITE, 0.15f));
-                    DrawRectangle(bx, by, (int)(bw * std::clamp(progress, 0.02f, 1.0f)), 14, SKYBLUE);
+                    DrawRectangle(bx, by, (int)(bw * std::clamp(barShown, 0.02f, 1.0f)), 14, SKYBLUE);
                     // Entering the game holds it half a second; a spawn only until the streamer has had a few
                     // frames to queue the new place and has built it (where it is built already: at once).
                     ++loadFrames;
                     const bool built = !preparing && (spawnLoad ? WorldIdle() && loadFrames >= 3 : WorldIdle() && GetTime() - loadStart > 0.5);
-                    if (built || GetTime() - loadStart > (preparing ? 90.0 : 20.0)) {
-                        if (bench) printf("bench: loading screen after a spawn: %d frames, %.2f s\n", loadFrames, GetTime() - loadStart);
+                    if (built) barClosing = true; // fill to the end first (a few frames), then close
+                    const bool timedOut = GetTime() - loadStart > (preparing ? 90.0 : 20.0);
+                    if ((barClosing && barShown >= 0.999f) || timedOut) {
+                        if (bench) printf("bench: loading screen after a spawn: %d frames, %.2f s; the bar never went back: %s (worst step %.4f), biggest one-frame step %.3f\n",
+                                          loadFrames, GetTime() - loadStart, barLowest >= 0.0f ? "yes" : "NO", barLowest, barJump);
                         loading = false; spawnLoad = false;
                     }
                 }
