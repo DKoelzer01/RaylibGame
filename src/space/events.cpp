@@ -3,6 +3,7 @@
 #include "buildtool.h"
 #include "gamerng.h"
 #include "gameui.h"
+#include "net.h"
 #include "particles.h"
 #include "player.h"
 #include "plots.h"
@@ -21,11 +22,12 @@
 #include <vector>
 
 namespace {
-    constexpr double kBucket = 600.0, kShowerLength = 120.0;
-    constexpr float kShowerOdds = 0.15f;
+    constexpr double kBucket = kMeteorShowerBucketSeconds, kShowerLength = 120.0;
     long long lastBucket = -1;
     double showerEnd = -1.0, showerStart = -1.0;
     int impactsDone = 0;
+    uint32_t showerId = 0, seenShower = 0;   // showers so far (the host's count on a client); the last one this viewer saw
+    int impactsAtPlayer = 0, impactsAtCentres = 0; // where the meteorites came down (tests)
     bool force = false;
     int streaksDrawn = 0;
 
@@ -35,17 +37,22 @@ namespace {
     struct Glow { std::string body; Vector3 local; double at; };    // impact flashes and hot meteorites (real seconds)
     std::vector<Glow> glows;
 
-    uint32_t Hash(uint64_t x) { x ^= x >> 33; x *= 0xff51afd7ed558ccdull; x ^= x >> 33; x *= 0xc4ceb9fe1a85ec53ull; x ^= x >> 33; return (uint32_t)x; }
     float Rand() { return (float)GetRandomValue(0, 1000000) / 1000000.0f; } // cosmetic only (streaks); impacts roll GameRng (#316)
+
+    // Metres over the ground below (mountains reach 600 m and more over the sea-level radius).
+    float AboveGround(const PlanetField& pf, Vector3 local) {
+        const float r = Vector3Length(local);
+        return r < 1.0f ? 0.0f : r - pf.radius - std::max(pf.elevation(Vector3Scale(local, 1.0f / r)), 0.0f);
+    }
 
     bool DarkAt(Scene& world, const Planetoid& body, Vector3 local) {
         return Vector3DotProduct(Vector3Normalize(world.sunDirection), body.dirToWorld(Vector3Normalize(local))) < -0.1f;
     }
 
-    bool Impact(Scene& world, Planetoid& body, float dist, float bearing) {
+    // A meteor comes down `dist` m from `me` (body-local: a player or an interest centre) on a bearing.
+    bool Impact(Scene& world, Planetoid& body, Vector3 me, float dist, float bearing) {
         const auto* pf = dynamic_cast<const PlanetField*>(body.field.get());
         if (!pf) return false;
-        const Vector3 me = body.toLocal((player.position - world.renderOrigin).toFloat());
         const Vector3 up = Vector3Normalize(me);
         const Vector3 t1 = Vector3Normalize(Vector3CrossProduct(up, fabsf(up.y) < 0.9f ? Vector3{ 0, 1, 0 } : Vector3{ 1, 0, 0 }));
         const Vector3 t2 = Vector3CrossProduct(t1, up);
@@ -78,9 +85,12 @@ namespace {
         sparks.size = 0.12f; sparks.life = 2.0f; sparks.speed = 12.0f; sparks.spread = 0.7f;
         Particles_Emit(body, ground, sparks);
         glows.push_back({ body.name, Vector3Add(bottom, Vector3Scale(d, 0.8f)), GetTime() });
-        const float near = Vector3Distance(ground, me);
-        Audio_Play(Sfx::Dig, std::clamp(1.4f - near / 250.0f, 0.3f, 1.0f), 0.35f);
-        GameUI_Toast(TextFormat("A meteor came down %.0f m away", near));
+        // Heard and announced by the local player when it fell near them (it may have come down by another player).
+        const float near = player.nearest == &body ? Vector3Distance(ground, body.toLocal((player.position - world.renderOrigin).toFloat())) : 1e9f;
+        if (near < 2000.0f) {
+            Audio_Play(Sfx::Dig, std::clamp(1.4f - near / 250.0f, 0.3f, 1.0f), 0.35f);
+            GameUI_Toast(TextFormat("A meteor came down %.0f m away", near));
+        }
         // A last streak, down onto it.
         const Vector3 g = body.toWorld(ground);
         const Vector3 dirDown = Vector3Normalize(Vector3Subtract(g, Vector3Add(g, Vector3Add(Vector3Scale(body.dirToWorld(d), 500.0f), Vector3Scale(body.dirToWorld(t1), 300.0f)))));
@@ -89,38 +99,74 @@ namespace {
     }
 }
 
-void Events_Reset() { lastBucket = -1; showerEnd = showerStart = -1.0; impactsDone = 0; streaks.clear(); glows.clear(); force = false; }
+void Events_Reset() { lastBucket = -1; showerEnd = showerStart = -1.0; showerId = 0; seenShower = 0; impactsDone = 0; streaks.clear(); glows.clear(); force = false; impactsAtCentres = impactsAtPlayer = 0; }
 bool Events_ShowerOn() { return WorldTime() < showerEnd; }
 void Events_ForceShower() { force = true; }
 int Events_Streaks() { return streaksDrawn; }
+uint32_t Events_ShowerCount() { return showerId; }
+void Events_ImpactTargets(int& atPlayer, int& atCentres) { atPlayer = impactsAtPlayer; atCentres = impactsAtCentres; }
+EventsShower Events_GetShower() { return { showerStart, showerEnd, showerId }; }
+void Events_ApplyShower(const EventsShower& s) { // a client: the host's shower, as sent
+    if (s.id != showerId) impactsDone = 2;    // the host lands this shower's meteorites and sends the edits
+    showerStart = s.start; showerEnd = s.end; showerId = s.id;
+}
 
-void Events_Update(Scene& world, float dt) {
-    Planetoid* body = player.nearest;
-    const auto* pf = body ? dynamic_cast<const PlanetField*>(body->field.get()) : nullptr;
-    if (!pf || player.flyMode) return;
-    const Vector3 me = body->toLocal((player.position - world.renderOrigin).toFloat());
-    if (Vector3Length(me) - pf->radius > 400.0f) return;                    // on the ground (or near it) only
+// The authority's part (#316, user 2026-11-15): ONE world-wide shower, rolled on the gameplay RNG once per 10 minutes of
+// world time, wherever the players are and whatever their sky (each sees the streaks only where it is dark). Its two
+// meteorites come down near a player or an interest centre picked by the same RNG.
+static void SimulateShowers(Scene& world) {
     const double now = WorldTime();
     const long long bucket = (long long)floor(now / kBucket);
     if (bucket != lastBucket || force) {
         const bool fresh = lastBucket >= 0 || force;                        // not on the first look after loading
         lastBucket = bucket;
-        const uint32_t h = Hash((uint64_t)bucket * 0x9e3779b97f4a7c15ull ^ (uint64_t)pf->foliageSeed ^ 0x3e7e02u);
-        if (force || (fresh && DarkAt(world, *body, me) && (h & 0xFFFF) / 65535.0f < kShowerOdds)) {
-            showerStart = now; showerEnd = now + kShowerLength; impactsDone = 0;
-            GameUI_Toast("A meteor shower lights up the sky");
+        if (force || (fresh && GameRng_Unit() < kMeteorShowerOdds)) {
+            showerStart = now; showerEnd = now + kShowerLength; impactsDone = 0; ++showerId;
         }
         force = false;
     }
-    if (now < showerEnd) {
-        const double f = (now - showerStart) / kShowerLength;
-        if ((impactsDone == 0 && f > 0.33) || (impactsDone == 1 && f > 0.72)) {
-            ++impactsDone;
-            for (int tries = 0; tries < 6; ++tries) { // where it lands changes the world: the authority rolls it (#316)
-                const float dist = 80.0f + 100.0f * GameRng_Unit(), bearing = GameRng_Unit() * 2.0f * PI;
-                if (Impact(world, *body, dist, bearing)) break;
-            }
+    if (now >= showerEnd) return;
+    const double f = (now - showerStart) / kShowerLength;
+    if (!((impactsDone == 0 && f > 0.33) || (impactsDone == 1 && f > 0.72))) return;
+    ++impactsDone;
+    // Where people are: the local player on (or near) a planet's ground, and every interest centre (other players).
+    struct Target { Planetoid* body; Vector3 local; bool centre; };
+    std::vector<Target> targets;
+    auto onGround = [](Planetoid* b, Vector3 local) {
+        const auto* pf = b ? dynamic_cast<const PlanetField*>(b->field.get()) : nullptr;
+        return pf && AboveGround(*pf, local) < 400.0f;
+    };
+    if (Planetoid* b = player.nearest; b && !player.flyMode) {
+        const Vector3 me = b->toLocal((player.position - world.renderOrigin).toFloat());
+        if (onGround(b, me)) targets.push_back({ b, me, false });
+    }
+    for (const InterestCentre& c : gInterestCentres)
+        if (Planetoid* b = Planetoid::find(c.body); onGround(b, c.local)) targets.push_back({ b, c.local, true });
+    if (targets.empty()) { printf("events: meteor %d burns up: nobody on the ground\n", impactsDone); return; } // unseen
+    const Target& t = targets[GameRng_Int(0, (int)targets.size() - 1)];
+    const char* who = t.centre ? "an interest centre" : "the local player";
+    for (int tries = 0; tries < 6; ++tries) { // where it lands changes the world: the authority rolls it (#316)
+        const float dist = 80.0f + 100.0f * GameRng_Unit(), bearing = GameRng_Unit() * 2.0f * PI;
+        if (Impact(world, *t.body, t.local, dist, bearing)) {
+            ++(t.centre ? impactsAtCentres : impactsAtPlayer);
+            printf("events: meteor %d came down %.0f m from %s\n", impactsDone, dist, who);
+            return;
         }
+    }
+    printf("events: meteor %d fell into water near %s\n", impactsDone, who);
+}
+
+void Events_Update(Scene& world, float dt) {
+    if (Net_IsAuthority()) SimulateShowers(world);
+    // The viewer's part (cosmetic, per client): the toast and streaks, where this player's sky is dark.
+    Planetoid* body = player.nearest;
+    const auto* pf = body ? dynamic_cast<const PlanetField*>(body->field.get()) : nullptr;
+    if (!pf || player.flyMode) return;
+    const Vector3 me = body->toLocal((player.position - world.renderOrigin).toFloat());
+    if (AboveGround(*pf, me) > 400.0f) return;                             // on the ground (or near it) only
+    const double now = WorldTime();
+    if (now < showerEnd && DarkAt(world, *body, me)) {
+        if (seenShower != showerId) { seenShower = showerId; GameUI_Toast("A meteor shower lights up the sky"); }
         if ((nextStreak -= dt) <= 0.0f) { // a streak high over the player, crossing the sky
             nextStreak = 0.12f + 0.35f * Rand();
             const Vector3 up = body->dirToWorld(Vector3Normalize(me));
@@ -165,12 +211,19 @@ void Events_AddLights(Scene& world) {
     }
 }
 
-void Events_Save(FILE* f) { fprintf(f, "events_meteor %lld\n", lastBucket); }
+// "events_meteor bucket start end id impacts" (#316: the shower is world state now; an older save's line has the bucket only)
+void Events_Save(FILE* f) { fprintf(f, "events_meteor %lld %.3f %.3f %u %d\n", lastBucket, showerStart, showerEnd, showerId, impactsDone); }
 bool Events_LoadLine(const char* tok, FILE* f) {
     if (strcmp(tok, "events_meteor") != 0) return false;
-    long long b = -1;
-    if (fscanf(f, " %lld", &b) == 1) lastBucket = b;
+    char line[256] = {};
+    if (!fgets(line, sizeof line, f)) return true;
+    long long b = -1; double s = -1.0, e = -1.0; unsigned id = 0; int done = 0;
+    const int n = sscanf(line, " %lld %lf %lf %u %d", &b, &s, &e, &id, &done);
+    if (n >= 1) lastBucket = b;
+    if (n == 5) { showerStart = s; showerEnd = e; showerId = id; seenShower = id; impactsDone = done; }
     return true;
 }
 
-bool Events_TestImpact(Scene& world, Planetoid& body, float dist, float bearing) { return Impact(world, body, dist, bearing); }
+bool Events_TestImpact(Scene& world, Planetoid& body, float dist, float bearing) {
+    return Impact(world, body, body.toLocal((player.position - world.renderOrigin).toFloat()), dist, bearing);
+}

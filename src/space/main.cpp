@@ -17,6 +17,7 @@
 #include "net.h"
 #include "gamerng.h"
 #include "headless.h"
+#include "hostserver.h"
 #include "joininfo.h"
 #include "scene.h"
 #include "object.h"
@@ -337,6 +338,14 @@ int main(int argc, char** argv)
     bool benchDoorway = false; int doorPhase = 0, doorLane = 0; double doorStart = 0.0; uint32_t doorPlot = 0; bool doorPass[2] = { false, false }; // --test-doorway (#255): 2 m openings pass, 1.5 m ones block
     bool benchMenus = false;       // --test-menus: main menu, new game, pause, save & quit, load
     bool benchMeteor = false;      // --test-meteor (#177)
+    bool benchShower = false;      // --test-shower (#316): one world-wide meteor shower, rolled by the authority
+    std::string hostSave;          // --host <save> (#311): a dedicated server: load (or create) the save, run headless, listen
+    uint16_t hostPort = kDefaultHostPort; // --port N
+    bool benchHost = false;        // --test-host (#311): with --host, a loopback client joins
+    bool seedGiven = false;        // --seed N was passed (a --host new world: else a random seed)
+    double autosaveMinutes = kDefaultAutosaveMinutes; // --autosave-minutes N (--host; 0 = off)
+    unsigned hostSaveSeed = 0;     // the seed an existing --host save holds
+    bool hostNewWorld = false;     // --host: the save did not exist yet
     bool benchHeadless = false;    // --test-headless (#311): the sim runs with --headless, nothing drawn
     bool benchTrapping = false;    // --test-trapping (#176)
     bool benchCombat = false;      // --test-combat: knockback, shield blocks and stamina, deaths by difficulty, the grave (#165)
@@ -539,6 +548,11 @@ int main(int argc, char** argv)
         if (std::string(argv[i]) == "--bench") benchSeconds = (i + 1 < argc) ? atof(argv[i + 1]) : 10.0;
         if (std::string(argv[i]) == "--ui") DebugUI_Toggle(); // open the debug panel at start
         if (std::string(argv[i]) == "--seed" && i + 1 < argc) worldGen.seed = (unsigned int)strtoul(argv[i + 1], nullptr, 10);
+        if (std::string(argv[i]) == "--host" && i + 1 < argc) hostSave = argv[i + 1];
+        if (std::string(argv[i]) == "--port" && i + 1 < argc) hostPort = (uint16_t)atoi(argv[i + 1]);
+        if (std::string(argv[i]) == "--test-host") benchHost = true;
+        if (std::string(argv[i]) == "--seed") seedGiven = true;
+        if (std::string(argv[i]) == "--autosave-minutes" && i + 1 < argc) autosaveMinutes = atof(argv[i + 1]);
         if (std::string(argv[i]) == "--nocull") frustumCullingEnabled = false;
         if (std::string(argv[i]) == "--overlay") startWithOverlay = true;
         if (std::string(argv[i]) == "--cam" && i + 3 < argc) { benchCamGiven = true; benchCamOffset = { (float)atof(argv[i+1]), (float)atof(argv[i+2]), (float)atof(argv[i+3]) }; }
@@ -605,6 +619,7 @@ int main(int argc, char** argv)
         if (std::string(argv[i]) == "--test-trapping") benchTrapping = true;
         if (std::string(argv[i]) == "--test-combat") benchCombat = true;
         if (std::string(argv[i]) == "--test-meteor") benchMeteor = true;
+        if (std::string(argv[i]) == "--test-shower") benchShower = true;
         if (std::string(argv[i]) == "--test-headless") benchHeadless = true;
         if (std::string(argv[i]) == "--test-pickups") benchPickups = true;
         if (std::string(argv[i]) == "--shot-inventory") shotInventory = true;
@@ -799,7 +814,22 @@ int main(int argc, char** argv)
         else LOG_WARN("Log", "settings.txt: unknown log_level '%s'", settings.logLevel.c_str());
     }
     for (int i = 1; i < argc; ++i) if (std::string(argv[i]) == "--headless") gHeadless = true; // #311: simulate, draw nothing
-    if (benchHeadless) gHeadless = true;
+    if (benchHeadless || !hostSave.empty()) gHeadless = true; // a dedicated server (--host) draws nothing either
+    if (!hostSave.empty()) { // --host: the world's seed (user, 2026-11-15) - before the world is generated
+        if (FILE* fs = fopen(hostSave.c_str(), "rb")) { // an existing save keeps its own seed (its "seed N" line)
+            char line[512];
+            while (fgets(line, sizeof line, fs)) if (sscanf(line, "seed %u", &hostSaveSeed) == 1) break;
+            fclose(fs);
+            if (seedGiven) printf("host: %s keeps its own seed %u (--seed ignored)\n", hostSave.c_str(), hostSaveSeed);
+        } else {
+            hostNewWorld = true;
+            if (!seedGiven) { // a random seed (never 0: that is the generator's own "random" value, not printable up front)
+                std::random_device rd;
+                do worldGen.seed = (unsigned int)rd(); while (worldGen.seed == 0);
+                printf("host: no --seed for the new world: random seed %u\n", worldGen.seed);
+            }
+        }
+    }
     if (gHeadless) msaa = false;
     if (msaa) SetConfigFlags(FLAG_MSAA_4X_HINT);
     bool nativeWindow = false; // --native-window: a bench in the game's own window (borderless, monitor-sized), uncapped
@@ -945,7 +975,19 @@ int main(int argc, char** argv)
                 printf("body %s %s pos %.3f %.3f %.3f radius %.3f seed %u spin %.4f g %.4f\n", BodyKindName(p->kind), p->name.c_str(), p->worldPos.x, p->worldPos.y, p->worldPos.z,
                        p->radius, p->seed, p->spin.y, p->surfaceGravity);
     }
-    if (!benchAtSave && !world.objects.empty()) StartNewWorld(world, false, !bench);
+    bool hostLoaded = false;
+    if (!hostSave.empty()) { // --host (#311): the server's world, saved back to the same file
+        SetWorldSavePath(hostSave.c_str());
+        if (FILE* probe = fopen(hostSave.c_str(), "rb")) {
+            fclose(probe);
+            hostLoaded = LoadWorldSave(world);
+            printf("host: %s %s\n", hostLoaded ? "loaded" : "could NOT load", hostSave.c_str());
+        } else printf("host: %s does not exist: a new world from seed %u, saved there\n", hostSave.c_str(), worldGen.seed);
+        // No world exists at launch any more (#503: only benches generate one above), so a new host world is made here.
+        if (!hostLoaded && world.objects.empty()) generateWorld(world);
+    }
+    if (!benchAtSave && !hostLoaded && !world.objects.empty()) StartNewWorld(world, false, !bench);
+    if (!hostSave.empty() && !hostLoaded) SaveWorld(world);
     if (!bench) Settings_Load();
     bool worldFresh = !world.objects.empty() && !loadSaveAtStart; // a bench's world generated at launch: New Game uses it as it is
     MenuResult pendingMenu;
@@ -1223,6 +1265,16 @@ int main(int argc, char** argv)
     double benchStart = 0.0, benchMaxFrame = 0.0;
     std::vector<float> benchFrameTimes; // every timed frame (s): percentiles at the end (#258)
     long benchFrames = 0;
+    if (!hostSave.empty()) { // --host (#311): straight into the world (no menu), listening
+        gameState = 1;
+        mainMenu.isActive = false;
+        world.isActive = true;
+        std::string status;
+        Host_SetAutosaveMinutes(autosaveMinutes);
+        printf("host: autosave %s\n", autosaveMinutes > 0.0 ? TextFormat("every %g minutes, and on shutdown", autosaveMinutes) : "off (still on shutdown)");
+        Host_Start(hostPort, status);
+        printf("host: %s\n", status.c_str());
+    }
     if (bench) {
         gameState = benchMenus ? 0 : 1; // --test-menus: from the title screen
         mainMenu.isActive = benchMenus;
@@ -6441,7 +6493,7 @@ int main(int argc, char** argv)
                         }
                         benchWalkSeconds = 0.0;
                     }
-                } else if ((WorldIdle() && benchDigStrokes == 0 && !benchPaint && !benchSaveLoad && benchWalkSeconds <= 0.0 && benchMineStrokes == 0 && minePhase != 2 && benchFlySeconds <= 0.0 && !benchSuffocate && benchOrbitSeconds <= 0.0 && !benchRide && !benchPark && !benchGravity && !benchPrecision && !benchMantle && !benchAirJump && !benchMoon && !benchHole && !benchWall && !benchDoorway && !benchLedge && !benchTor && !benchMachines && !benchFall && !benchHover && !benchNetIds && !benchNet && !benchTwoPlayers && !benchFingerprint && !benchInterest && !benchTeleClose && !benchMenus && !benchWater && !benchFlyFollow && !benchHotbar && !benchInventory && !benchMap && !benchViewmodel && !benchQuests && !benchHunger && !benchFarm && !benchAnimals && !benchThreats && !benchAnimalPath && !benchDam && !benchFlowMeter && !benchPartWall && !benchPressure && benchShotTabs == 0 && !benchForest && !benchFlow && !benchPond && !benchBucket && !benchPump && !benchTerrain && !benchShelter && !benchRoom && !benchFacing && !benchShadow && !benchParticles && !benchBiomes && !benchOil && !benchSpring && !benchShotAnimals && !benchShotMachines && benchShotBiomes < 0 && !benchFarForest && !benchRecipes && !benchWeather && !benchDecor && !benchMaterials && !benchDamage && !benchCrafting && !benchSuit && !benchTools && !benchRivers && !benchRing && !benchRocket && !benchStation && !benchBlueprint && !benchSmallBody && !benchTrees && !benchChop && benchPersist == 0 && benchBuild == 0 && benchFactory == 0 && !benchCombat && !benchProgression && (benchUnfocus <= 0.0f || unfocusPhase >= 6)) || GetTime() > 600.0) {
+                } else if ((WorldIdle() && benchDigStrokes == 0 && !benchPaint && !benchSaveLoad && benchWalkSeconds <= 0.0 && benchMineStrokes == 0 && minePhase != 2 && benchFlySeconds <= 0.0 && !benchSuffocate && benchOrbitSeconds <= 0.0 && !benchRide && !benchPark && !benchGravity && !benchPrecision && !benchMantle && !benchAirJump && !benchMoon && !benchHole && !benchWall && !benchDoorway && !benchLedge && !benchTor && !benchMachines && !benchFall && !benchHover && !benchNetIds && !benchNet && !benchTwoPlayers && !benchFingerprint && !benchInterest && !benchTeleClose && !benchMenus && !benchWater && !benchFlyFollow && !benchHotbar && !benchInventory && !benchMap && !benchViewmodel && !benchQuests && !benchHunger && !benchFarm && !benchAnimals && !benchThreats && !benchAnimalPath && !benchDam && !benchFlowMeter && !benchPartWall && !benchPressure && benchShotTabs == 0 && !benchForest && !benchFlow && !benchPond && !benchBucket && !benchPump && !benchTerrain && !benchShelter && !benchRoom && !benchFacing && !benchShadow && !benchParticles && !benchBiomes && !benchOil && !benchSpring && !benchShotAnimals && !benchShotMachines && benchShotBiomes < 0 && !benchFarForest && !benchRecipes && !benchWeather && !benchDecor && !benchMaterials && !benchDamage && !benchCrafting && !benchSuit && !benchTools && !benchRivers && !benchRing && !benchRocket && !benchStation && !benchBlueprint && !benchSmallBody && !benchTrees && !benchChop && benchPersist == 0 && benchBuild == 0 && benchFactory == 0 && !benchCombat && !benchHost && !benchShower && !benchProgression && (benchUnfocus <= 0.0f || unfocusPhase >= 6)) || GetTime() > 600.0) {
                     benchStart = GetTime();
                     printf("bench: world ready after %.2f s (%d chunks, avg build %.2f ms of which sampling %.2f ms, %d worker threads)\n",
                         GetWorldStats().lastGenerationSeconds, GetWorldStats().chunks, GetWorldStats().avgBuildMs, GetWorldStats().avgSampleMs, GetWorldStats().workerThreads);
@@ -6717,6 +6769,7 @@ int main(int argc, char** argv)
             if (!loading) Fishing_Update(world, frameDt, gameInput && alive && !ship.piloted); // (#176)
             if (!loading) Trapping_Update(world); // snares (#176)
             if (!loading) Events_Update(world, frameDt); // meteor showers (#177)
+            if (!hostSave.empty()) Host_Update(world); // --host (#311): answer joins
             if (!loading) Ambience_Update(world, frameDt); // rain splashes, fireflies, machine smoke
             Particles_Update(world, frameDt); // smoke, dust, exhaust, splashes (particles.h)
             // Autosave every 5 minutes of play (incremental: only regions changed since the last save).
@@ -7127,6 +7180,157 @@ int main(int argc, char** argv)
                 printf("bench: meteor: shower on %d, %d streaks drawn, landed %d, crater %d, meteorites %d, game rng rolled %d (bench_meteor.png) -> %s\n",
                        (int)Events_ShowerOn(), Events_Streaks(), (int)landed, (int)crater, meteorites, (int)meteorRolled, ok ? "PASS" : "FAIL");
                 benchMeteor = false;
+            }
+        }
+        // --test-shower (#316): meteor showers are one world-wide event rolled by the authority. The local player flies 3 km
+        // up (no longer a target, no sky to see); another player (an interest centre) stands 1.5 km away on the ground.
+        //   1. crossing a 10-minute bucket rolls the gameplay RNG (no darkness or position needed);
+        //   2. a client crossing a bucket rolls nothing and starts nothing; it applies the host's shower as sent;
+        //   3. a forced shower starts although the local player is in the air, and both meteorites land at the centre;
+        //   4. the shower is saved and loaded with the world.
+        if (benchShower && gameState == 1 && !loading && WorldIdle()) {
+            static int sf = 0, phase = 0;
+            static bool rolled = false, clientQuiet = false, clientApplied = false, started = false, landed = false, kept = false;
+            static uint32_t count0 = 0;
+            static uint64_t rng0 = 0;
+            static Vector3 centre{};
+            static EventsShower host{};
+            Planetoid* p = dynamic_cast<Planetoid*>(world.objects[0].get());
+            const auto* pf = dynamic_cast<const PlanetField*>(p->field.get());
+            ++sf;
+            auto fly = [&] { // the local player 3 km over the spawn, flying
+                const Vector3 d = p->dirToLocal(StartSpawnDir(*p));
+                player.flyMode = true;
+                player.position = world.renderOrigin + p->toWorld(Vector3Scale(d, pf->radius + 3000.0f));
+                player.velocity = { 0, 0, 0 };
+            };
+            if (phase == 0 && sf == 5) {
+                fly();
+                const Vector3 d0 = p->dirToLocal(StartSpawnDir(*p));
+                const Vector3 side = Vector3Normalize(Vector3CrossProduct(d0, fabsf(d0.y) < 0.9f ? Vector3{ 0, 1, 0 } : Vector3{ 1, 0, 0 }));
+                Vector3 d = d0;
+                for (int k = 0; k < 16; ++k) { // 1.5 km away on dry land
+                    d = Vector3Normalize(Vector3Add(d0, Vector3Scale(Vector3RotateByAxisAngle(side, d0, k * 0.39f), 1500.0f / pf->radius)));
+                    if (pf->elevation(d) > 5.0f) break;
+                }
+                centre = Vector3Scale(d, pf->radius + pf->elevation(d) + 1.0f);
+                gInterestCentres = { InterestCentre{ p->id, centre } };
+                rng0 = GameRng_State(); count0 = Events_ShowerCount();
+                SetWorldTime((floor(WorldTime() / 600.0) + 1.0) * 600.0 + 1.0); // into the next bucket
+                phase = 1; sf = 0;
+            } else if (phase == 1 && sf == 3) {
+                fly();
+                rolled = GameRng_State() != rng0;
+                // As a client: another bucket rolls nothing; the host's shower applies as sent.
+                gNetRole = NetRole::Client;
+                rng0 = GameRng_State(); count0 = Events_ShowerCount();
+                SetWorldTime(WorldTime() + 600.0);
+                phase = 2; sf = 0;
+            } else if (phase == 2 && sf == 3) {
+                clientQuiet = GameRng_State() == rng0 && Events_ShowerCount() == count0;
+                Events_ApplyShower({ WorldTime() - 1.0, WorldTime() + 119.0, count0 + 7 });
+                clientApplied = Events_ShowerOn() && Events_ShowerCount() == count0 + 7;
+                Events_ApplyShower({ -1.0, -1.0, count0 + 7 }); // over
+                gNetRole = NetRole::Offline;
+                count0 = Events_ShowerCount();
+                Events_ForceShower();
+                phase = 3; sf = 0;
+            } else if (phase == 3) {
+                fly();
+                if (sf == 3) started = Events_ShowerOn() && Events_ShowerCount() == count0 + 1;
+                const EventsShower s = Events_GetShower();
+                if (sf == 4) SetWorldTime(s.start + 0.40 * (s.end - s.start));
+                if (sf == 8) SetWorldTime(s.start + 0.80 * (s.end - s.start));
+                if (sf == 12) {
+                    int atPlayer = 0, atCentres = 0;
+                    Events_ImpactTargets(atPlayer, atCentres);
+                    int near = 0;
+                    if (p->plots) for (auto& pl : p->plots->plots) for (const Part& part : pl->parts)
+                        if (part.type == PartType::Meteorite && Vector3Distance(pl->toBody({ (part.origin.x + 0.5f) * kCellSize, 0.0f, (part.origin.z + 0.5f) * kCellSize }), centre) < 260.0f) ++near;
+                    landed = atCentres == 2 && atPlayer == 0 && near >= 1;
+                    printf("bench: shower: meteorites at the centre %d, at the local player %d, meteorite parts near the centre %d (shower %.0f..%.0f s, now %.0f s, started %d)\n", atCentres, atPlayer, near, s.start, s.end, WorldTime(), (int)started);
+                    host = s;
+                    const bool saved = SaveWorld(world);
+                    Events_Reset(); // forget it: the load must bring it back
+                    const bool loaded = saved && LoadWorldSave(world);
+                    kept = loaded;
+                    phase = 4; sf = 0;
+                }
+            } else if (phase == 4 && sf == 3) {
+                const EventsShower s = Events_GetShower();
+                kept = kept && s.id == host.id && fabs(s.start - host.start) < 0.01 && fabs(s.end - host.end) < 0.01;
+                gInterestCentres.clear();
+                count0 = Events_ShowerCount();
+                phase = 5; sf = 0;
+            } else if (phase == 5) {
+                // 5. the rate: one bucket per frame for kRateBuckets buckets; the share that started a shower should be near
+                //    kMeteorShowerOdds (5%, user 2026-11-15). Each jump also ends the previous shower before its meteorites.
+                constexpr int kRateBuckets = 600;
+                SetWorldTime((floor(WorldTime() / kMeteorShowerBucketSeconds) + 1.0) * kMeteorShowerBucketSeconds + 1.0);
+                if (sf > kRateBuckets) {
+                    const int showers = (int)(Events_ShowerCount() - count0);
+                    const double expect = kMeteorShowerOdds * kRateBuckets, sigma = sqrt(expect * (1.0 - kMeteorShowerOdds));
+                    const bool rateOk = fabs(showers - expect) < 4.0 * sigma;
+                    printf("bench: shower: rate %d showers in %d buckets (%.1f%%, expected %.0f%% = %.0f +- %.0f)\n", showers, kRateBuckets,
+                           100.0 * showers / kRateBuckets, 100.0 * kMeteorShowerOdds, expect, 4.0 * sigma);
+                    const bool ok = rolled && clientQuiet && clientApplied && started && landed && kept && rateOk;
+                    printf("bench: shower: bucket rolled the game RNG %d, client rolled nothing %d, client applied the host's shower %d, forced shower with the player in the air %d, both meteorites at the other player %d, kept over save/load %d, rate %d -> %s\n",
+                           (int)rolled, (int)clientQuiet, (int)clientApplied, (int)started, (int)landed, (int)kept, (int)rateOk, ok ? "PASS" : "FAIL");
+                    benchShower = false;
+                }
+            }
+        }
+        // --test-host (#311, with --host <save>): the dedicated server loaded or created its save and runs headless.
+        //   - seed (user, 2026-11-15): a new world takes --seed N, else a random seed (printed); an existing save keeps its own;
+        //   - autosave: with a short --autosave-minutes (<= 1) the test waits for one autosave;
+        //   - a client opened in this process over loopback sends "join" and gets the world description (fingerprint and
+        //     seed must match the host's world) and the current meteor shower. That part SKIPs without ENABLE_GNS.
+        if (benchHost && gameState == 1 && !loading && WorldIdle()) {
+            static uint32_t client = 0;
+            static double t0 = -1.0;
+            static bool sent = false, gotJoin = false, gotShower = false, sameWorld = false, sameShower = false;
+            if (t0 < 0.0) t0 = GetTime();
+            bool saveOnDisk = false;
+            if (FILE* fsv = hostSave.empty() ? nullptr : fopen(hostSave.c_str(), "rb")) { fclose(fsv); saveOnDisk = true; }
+            const unsigned expectSeed = hostNewWorld ? worldGen.seed : hostSaveSeed; // given or rolled up front / the save's
+            const bool seedOk = expectSeed != 0 && worldGen.lastSeed == expectSeed;
+            const char* seedHow = !hostNewWorld ? "the save's own" : seedGiven ? "--seed" : "random";
+            const bool wantAutosave = autosaveMinutes > 0.0 && autosaveMinutes <= 1.0;
+            const bool autosaveDone = !wantAutosave || Host_Autosaves() >= 1;
+            if (hostSave.empty()) { printf("bench: host: --test-host needs --host <save> -> FAIL\n"); benchHost = false; }
+            else if (!Host_Listening()) {
+                if (autosaveDone || GetTime() - t0 > 90.0) {
+                    const bool ok = saveOnDisk && gHeadless && Net_IsAuthority() && seedOk && autosaveDone;
+                    printf("bench: host: save %s on disk %d, headless %d, authority %d, seed %u (%s) ok %d, autosaves %d; not listening (%s) -> %s\n",
+                           hostSave.c_str(), (int)saveOnDisk, (int)gHeadless, (int)Net_IsAuthority(), worldGen.lastSeed, seedHow, (int)seedOk, Host_Autosaves(),
+                           Net_Available() ? "network failed" : "built without ENABLE_GNS", ok ? "SKIP (network part)" : "FAIL");
+                    benchHost = false;
+                }
+            } else {
+                static unsigned joinSeed = 0;
+                if (!client) { client = Net_Connect(TextFormat("127.0.0.1:%d", hostPort)); Host_SetLocalClient(client); }
+                if (client && !sent && Net_IsConnected(client)) sent = Net_Send(client, "join", 4, true);
+                for (const NetMessage& m : Host_TakeLocalClientMessages()) {
+                    const std::string text(m.data.begin(), m.data.end());
+                    if (!text.empty() && text[0] == 'J') {
+                        JoinInfo info; std::string why;
+                        gotJoin = JoinInfo_Read(text.substr(1), info, why);
+                        sameWorld = gotJoin && info.fingerprint == WorldFingerprint(world);
+                        joinSeed = gotJoin ? info.seed : 0;
+                        if (!gotJoin) printf("bench: host: join info unreadable: %s\n", why.c_str());
+                    } else if (!text.empty() && text[0] == 'S') {
+                        double s = 0.0, e = 0.0; unsigned id = 0;
+                        gotShower = sscanf(text.c_str() + 1, " %lf %lf %u", &s, &e, &id) == 3;
+                        sameShower = gotShower && id == Events_GetShower().id;
+                    }
+                }
+                if ((gotJoin && gotShower && autosaveDone) || GetTime() - t0 > 90.0) {
+                    const bool ok = saveOnDisk && gHeadless && sent && sameWorld && sameShower && Host_Joins() == 1 && seedOk && joinSeed == worldGen.lastSeed && autosaveDone;
+                    printf("bench: host: save %s on disk %d, headless %d, listening on %d; seed %u (%s) ok %d, sent to the client %d; autosaves %d; loopback client joined %d, world description %d (fingerprint matches %d), shower %d (same %d), joins answered %d after %.1f s -> %s\n",
+                           hostSave.c_str(), (int)saveOnDisk, (int)gHeadless, hostPort, worldGen.lastSeed, seedHow, (int)seedOk, (int)(joinSeed == worldGen.lastSeed),
+                           Host_Autosaves(), (int)sent, (int)gotJoin, (int)sameWorld, (int)gotShower, (int)sameShower, Host_Joins(), GetTime() - t0, ok ? "PASS" : "FAIL");
+                    benchHost = false;
+                }
             }
         }
         // --test-headless (#311, with --bench 12): the world runs with nothing drawn - the sim steps at its rate, the player
@@ -7593,12 +7797,14 @@ int main(int argc, char** argv)
         PROFILE_FRAME();
     }
     Recorder_Shutdown(); // the frames still queued, the GIF and the contact sheet (#375)
+    if (!hostSave.empty()) Host_SaveOnShutdown(world); // --host: the world on disk before it goes away
 
     }   // scenes destroyed here, while the GL context still exists
     NewWorld_Shutdown(); // a preview build in flight (#504)
     DebugUI_Shutdown();
     Audio_Shutdown();
     Factory::Stop();
+    Host_Stop();
     CloseWindow();
 }
 

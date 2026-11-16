@@ -181,7 +181,11 @@ board's auto-add workflow adds new issues itself, but sets no fields, so:
   rocks by name hash + index, animals/vehicles/stations allocated and saved. Benches can find a frame with no sim step:
   wait a little after a teleport before reading `grounded`. Transport (#310): `src/engine/net.*` over GameNetworkingSockets,
   only with `-DENABLE_GNS=ON` after `tools/build_gns.sh` (~2-7 min) builds protobuf 3.21 + GNS 1.4.1 (pinned, w64devkit, BCrypt) into the gitignored `deps/gns/install` (the default GNS_ROOT;
-  +4 MB exe), else stubs; `--test-net` (loopback echo) SKIPs without it.
+  +4 MB exe), else stubs; `--test-net` (loopback echo) SKIPs without it. `gNetRole` (net.h): Offline/Host roll gameplay
+  and world events (meteor showers are one world-wide event, #316), a Client applies what the host sends. Dedicated server
+  (#311): `--host <save> [--port N] [--seed N] [--autosave-minutes N]` loads the save (keeping its seed) or creates it (the
+  --seed, else a printed random seed), autosaves every 30 min (0 = off) and on shutdown, runs `--headless` and answers "join" with
+  the JoinInfo + shower (src/space/hostserver.*); `--test-host` (loopback client; SKIP without GNS), `--test-shower`.
 - Inventory: 45 grid cells + 10 hotbar cells (indices 45-54). `Hotbar_Bind` moves a stack (items must be carried);
   `Inventory::preferred` = the selected hotbar cell is used first.
 - Terrain internals still worth knowing: `PlanetField::rockFeature` (tors, boulders) and `terrain3D` (the 3D band);
