@@ -2723,6 +2723,37 @@ int main(int argc, char** argv)
                                     }
                                 if (bestD < 1e29f) printf("bench: rivers: nearest river to the start %.1f km away, its water at %.1f m\n", sqrtf(bestD) / 1000.0f, riverLevel);
                             }
+                            // Canyons (#544): the bake's canyon lines within 30 km of the start - how deep the baked ground
+                            // lies under the land 400 m to either side, and how many carry a river. Information only.
+                            if (gErosionPrototype) {
+                                const Vector3 home = pf->findSpawnDir(p->seed);
+                                const Vector3 t1 = Vector3Normalize(Vector3CrossProduct(home, { 0, 1, 0 })), t2 = Vector3CrossProduct(t1, home);
+                                auto at = [&](Vector3 d, float e, float n) { return Vector3Normalize(Vector3Add(d, Vector3Add(Vector3Scale(t1, e / pf->radius), Vector3Scale(t2, n / pf->radius)))); };
+                                int n = 0, deep = 0, wet = 0; double sum = 0.0; float bestD = 1e30f; Vector3 bestDir{}, bestSide{};
+                                for (float e = -30000.0f; e <= 30000.0f; e += 200.0f)
+                                    for (float n2 = -30000.0f; n2 <= 30000.0f; n2 += 200.0f) {
+                                        const Vector3 d = at(home, e, n2);
+                                        const Vector3 s = Vector3Scale(d, pf->radius);
+                                        if (pf->canyonFault(s.x, s.y, s.z) < 0.8f) continue;
+                                        const float h = pf->elevationBase(d, 8.0f);
+                                        if (h < 5.0f) continue;
+                                        float rim = 0.0f; Vector3 side{};
+                                        for (int k = 0; k < 8; ++k) {
+                                            const float a = k * 0.785398f;
+                                            const Vector3 q = at(d, 400.0f * cosf(a), 400.0f * sinf(a));
+                                            const float hq = pf->elevationBase(q, 8.0f);
+                                            if (hq - h > rim) { rim = hq - h; side = Vector3Subtract(q, d); }
+                                        }
+                                        ++n; sum += rim; deep += rim > 25.0f;
+                                        const RiverNetwork::Hit hit = net->nearest(d, 150.0f);
+                                        wet += hit.found;
+                                        if (rim > 40.0f && e * e + n2 * n2 < bestD) { bestD = e * e + n2 * n2; bestDir = d; bestSide = Vector3Normalize(side); }
+                                    }
+                                printf("bench: canyons: %d samples on canyon lines within 30 km, mean depth under the higher side %.1f m, %.0f%% over 25 m, %.0f%% with a river within 150 m\n",
+                                       n, n ? sum / n : 0.0, 100.0 * deep / std::max(1, n), 100.0 * wet / std::max(1, n));
+                                if (bestD < 1e29f) printf("bench: canyons: nearest deep one %.1f km from the start; look: --view-fall %.6f %.6f %.6f %.5f %.5f %.5f\n",
+                                                          sqrtf(bestD) / 1000.0f, bestDir.x, bestDir.y, bestDir.z, -bestSide.x, -bestSide.y, -bestSide.z);
+                            }
                         }
                         riverOk = ok;
                         if (ok && Vector3Length(riverDir) > 0.5f) { riverPhase = 1; riverStart = GetTime(); player.flyMode = true; sunOverride = true; }

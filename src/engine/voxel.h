@@ -242,6 +242,9 @@ public:
     // Tests (#561): true on this thread = the bake is ignored (erosion() answers nullptr), so land() / elevationBase()
     // give the noise terrain the GPU point kernel ports (it has no bake).
     static inline thread_local bool tIgnoreBake = false;
+    // True while land() answers for the erosion bake's input (#544: canyons go in before the bake).
+    static inline thread_local bool tBakeInput = false;
+    float canyonFault(float sx, float sy, float sz) const; // #544: 0..1 along the canyon lines
     // #588: the cliff face of a steep resistant layer at surface point s (m), height h (final m), the bake's gradient.
     float cliffFace(Vector3 s, float h, Vector3 grad, float fp) const;
     // On a river or pond bed (or its wet shore): digging there also turns up clay.

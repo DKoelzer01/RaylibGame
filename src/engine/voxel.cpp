@@ -300,7 +300,7 @@ void PlanetField::bakeErosion(const std::string& cachePath) {
     const float loadMs = std::chrono::duration<float, std::milli>(std::chrono::steady_clock::now() - tl0).count();
     if (!loaded) {
         const int threads = std::max(1u, std::thread::hardware_concurrency());
-        b.build([this](Vector3 d, float fp) { return land(d, fp).h; }, radius, fieldSeed, p, threads, [this](Vector3 d) { return strataColumn(d); }); // + the rock strata (#587)
+        b.build([this](Vector3 d, float fp) { tBakeInput = true; const float h = land(d, fp).h; tBakeInput = false; return h; }, radius, fieldSeed, p, threads, [this](Vector3 d) { return strataColumn(d); }); // + the rock strata (#587)
         const auto ts0 = std::chrono::steady_clock::now();
         if (!cachePath.empty()) b.save(cachePath);
         LOG_INFO("Erosion", "cache saved in %.1f s\n", std::chrono::duration<float>(std::chrono::steady_clock::now() - ts0).count());
@@ -358,7 +358,14 @@ PlanetField::Land PlanetField::land(Vector3 dir, float fp) const {
     l.valley = 1.0f;
     // Ravines: rare narrow canyons (~60 m wide, up to ~90 m deep, steep sqrt-profile walls) in some
     // land regions, faded out where samples are too far apart to resolve them.
-    const float ravineWeight = landMask * std::clamp(2.0f - fp / 24.0f, 0.0f, 1.0f);
+    // With the bake (#544, Plan 9) they are canyons in its input instead: a ~200 m notch along the same lines (wide enough
+    // for the 50 m grid) on soft rock (strataColumn), which the rivers find and cut, so they come out eroded and wet.
+    // The baked terrain gets no post-bake cut.
+    if (tBakeInput) {
+        const float notch = canyonFault(sx, sy, sz);
+        if (notch > 0.0f) h -= notch * 60.0f * landMask;
+    }
+    const float ravineWeight = eroded || tBakeInput ? 0.0f : landMask * std::clamp(2.0f - fp / 24.0f, 0.0f, 1.0f);
     if (ravineWeight > 0.0f) {
         const float region = Smoothstep(0.25f, 0.4f, ravineMask.fractal(2, sx, sy, sz));
         if (region > 0.0f) {
@@ -2196,7 +2203,18 @@ StrataColumn PlanetField::strataColumn(Vector3 dir) const {
     const float c = continents.fractalLimited(4, 2000.0f, sx, sy, sz) - 0.15f * gen.ocean;
     StrataColumn col = Strata_Column({ sx, sy, sz }, c, fieldSeed);
     col.hardShare = (uint8_t)std::clamp(col.hardShare * gen.cliffs, 0.0f, 255.0f); // New World "Cliffs and canyons" (#589)
+    if (canyonFault(sx, sy, sz) > 0.3f) { col.province = 0; col.hardShare = 0; } // canyon lines are shattered, soft rock (#544)
     return col;
+}
+
+float PlanetField::canyonFault(float sx, float sy, float sz) const {
+    // The ravine lines (zero crossings of `ravines` in the `ravineMask` regions) as a 0..1 notch ~200 m wide (#544).
+    const float region = Smoothstep(0.25f, 0.4f, ravineMask.fractal(2, sx, sy, sz));
+    if (region <= 0.0f) return 0.0f;
+    const float r = fabsf(ravines.fractal(2, sx, sy, sz));
+    if (r >= 0.02f) return 0.0f;
+    const float t = 1.0f - r / 0.02f;
+    return t * t * (3.0f - 2.0f * t) * region;
 }
 
 // The strata column at a body-local point: it varies over kilometres, so it is cached per thread on a 16 m grid (the
