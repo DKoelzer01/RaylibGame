@@ -8,6 +8,7 @@
 // out of Settings). Settings (mouse sensitivity, field of view, volume, foliage, frame cap) are
 // kept in settings.txt.
 
+#include "raylib.h"
 #include <string>
 
 enum class MenuAction { None, NewGame, LoadGame, Resume, Save, SaveAndQuit, Exit, ReportBug }; // ReportBug: the bug report window (#169)
@@ -41,6 +42,8 @@ MenuResult Menu_Main();
 MenuResult Menu_Pause();
 void Menu_ResetPause();          // back to the pause menu's first page when it opens
 bool Menu_TestSaves();           // --test-saves (#279): copy, rename and delete a scratch save with regions and bake
+void Menu_TestSettings(int tab, bool pause); // --shot-settings (#512): open the settings page on a tab (0 Graphics .. 3 Gameplay)
+void Menu_SettingsLayout(float& contentBottom, Rectangle& back); // the last drawn page: its rows' bottom and the Back button
 // A new save's file: saves/world.sav, else the first free saves/world_N.sav.
 std::string Menu_NewSavePath();
 
