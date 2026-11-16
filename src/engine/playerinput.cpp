@@ -29,7 +29,7 @@ void PlayerInput_BeginFrame() {
     f.enabled = true;
     for (int a = 0; a < (int)Act::Count; ++a) {
         const uint64_t bit = 1ull << a;
-        if (Down(kBinding[a])) f.held |= bit;
+        if (Down(kBinding[a]) || (gFakeHeld & bit)) f.held |= bit;
         if (Pressed(kBinding[a])) f.pressed |= bit;
         if (Released(kBinding[a])) f.released |= bit;
     }

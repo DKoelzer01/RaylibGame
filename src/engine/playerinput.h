@@ -46,6 +46,7 @@ void PlayerInput_BeginFrame();
 void PlayerInput_EndStep();
 const PlayerInput& PlayerInput_Frame();
 inline Vector2 gFakeLook = { 0.0f, 0.0f }; // added to the mouse motion every frame (--play-new turning, #387)
+inline uint64_t gFakeHeld = 0; // actions held as if their keys were down (bit = 1 << Act; --play-load walking, #509)
 const PlayerInput& PlayerInput_Step();
 // `in` when enabled, else PlayerInput::None() (the old inputEnabled flags).
 inline const PlayerInput& PlayerInput_If(bool enabled, const PlayerInput& in) { return enabled ? in : PlayerInput::None(); }
