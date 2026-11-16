@@ -5,6 +5,7 @@
 #include "external/msf_gif.h" // raylib bundles msf_gif (its own GIF recording) and exports it
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <condition_variable>
 #include <cstdio>
@@ -34,8 +35,40 @@ namespace {
     struct Thumb { Image img; int frame; float t; };
     std::vector<Thumb> thumbs;     // for the contact sheet: every frame, 240 px wide
 
-    // The writer thread: PNGs (ExportImage is slow) and the GIF, in order.
-    struct Job { Image img; std::string path; bool gif = false; bool end = false; int centis = 2; };
+    // The writer thread takes captured frames in order (hash, compare, contact-sheet thumb, GIF) and hands their PNGs to
+    // a small pool (ExportImage is the slow part). The main thread only reads the screen back (#537: hashing, two resizes
+    // and a single PNG writer behind a full queue on the main thread slowed F10 play to a crawl). F10 drops a frame
+    // when the writer is behind instead of waiting; --record waits (its frames are numbered).
+    struct Job { Image img; std::string path; bool gif = false; bool end = false; int centis = 2; bool frame = false; int index = 0; float t = 0.0f; };
+    std::atomic<int> dropped{0};
+    std::deque<Job> pngQueue;
+    std::mutex pngM;
+    std::condition_variable pngCv, pngRoom;
+    std::vector<std::thread> pngPool;
+    bool pngEnd = false;
+    void PngLoop() {
+        for (;;) {
+            Job j;
+            {
+                std::unique_lock<std::mutex> lk(pngM);
+                pngCv.wait(lk, [] { return !pngQueue.empty() || pngEnd; });
+                if (pngQueue.empty()) return;
+                j = pngQueue.front();
+                pngQueue.pop_front();
+            }
+            pngRoom.notify_all();
+            ExportImage(j.img, j.path.c_str());
+            UnloadImage(j.img);
+        }
+    }
+    void PushPng(Job j) {
+        std::unique_lock<std::mutex> lk(pngM);
+        if (!cli && pngQueue.size() >= 24) { lk.unlock(); UnloadImage(j.img); ++dropped; return; } // F10: skip this PNG
+        pngRoom.wait(lk, [] { return pngQueue.size() < 24; });
+        pngQueue.push_back(j);
+        lk.unlock();
+        pngCv.notify_one();
+    }
     std::deque<Job> queue;
     std::mutex m;
     std::condition_variable cv, cvRoom;
@@ -66,7 +99,48 @@ namespace {
         return h;
     }
 
+    void EmitGif(const Image& img, int centis) {
+        if (!gifStarted) { msf_gif_begin(&gifState, img.width, img.height); gifStarted = true; }
+        msf_gif_frame(&gifState, (uint8_t*)img.data, centis, 16, img.width * 4);
+    }
+
+    // One captured frame, in order, on the writer thread.
+    void ProcessFrame(Job& j) {
+        Image& img = j.img;
+        const uint64_t h = Hash(img);
+        if (!compareDir.empty()) { // the share of pixels that differ (any channel by more than 2) from the same frame of the earlier capture
+            char oldPath[1024]; snprintf(oldPath, sizeof oldPath, "%s/frame_%04d.png", compareDir.c_str(), j.index); // (TextFormat is not thread-safe)
+            Image old = LoadImage(oldPath);
+            if (old.data && old.width == img.width && old.height == img.height) {
+                ImageFormat(&old, PIXELFORMAT_UNCOMPRESSED_R8G8B8A8);
+                const unsigned char* a = (const unsigned char*)img.data; const unsigned char* b = (const unsigned char*)old.data;
+                size_t bad = 0; const size_t px = (size_t)img.width * img.height;
+                for (size_t q = 0; q < px; ++q) if (abs(a[q * 4] - b[q * 4]) > 2 || abs(a[q * 4 + 1] - b[q * 4 + 1]) > 2 || abs(a[q * 4 + 2] - b[q * 4 + 2]) > 2) ++bad;
+                const double share = 100.0 * (double)bad / (double)px;
+                diffSum += share; ++diffFrames;
+                if (share > diffMax) { diffMax = share; diffWorst = j.index; }
+            }
+            if (old.data) UnloadImage(old);
+        }
+        if (j.index == 0) firstHash = h;
+        lastHash = h;
+        if (wantSheet) { Image s = ImageCopy(img); ImageResize(&s, 240, std::max(1, img.height * 240 / std::max(1, img.width))); thumbs.push_back({ s, j.index, j.t }); }
+        if (wantGif) {
+            const double nowCs = 100.0 * (double)j.t;          // this capture's time in the recording
+            if (!gifPending.data) { gifEmittedCs = nowCs; }
+            else if (nowCs - gifEmittedCs >= 2.0) {            // the held frame lasts until now
+                const int d = (int)std::lround(nowCs - gifEmittedCs);
+                EmitGif(gifPending, d); UnloadImage(gifPending);
+                gifEmittedCs += d; gifPending = Image{};
+            }
+            if (!gifPending.data) { Image g = ImageCopy(img); ImageResize(&g, 640, std::max(1, img.height * 640 / std::max(1, img.width))); gifPending = g; gifPendingAt = nowCs; }
+        }
+        PushPng(Job{ img, j.path });
+    }
+
     void WriterLoop() {
+        pngEnd = false;
+        for (int k = 0; k < 3; ++k) pngPool.emplace_back(PngLoop);
         for (;;) {
             Job j;
             {
@@ -76,7 +150,13 @@ namespace {
                 queue.pop_front();
             }
             cvRoom.notify_all();
+            if (j.frame) { ProcessFrame(j); continue; }
             if (j.end) {
+                if (gifPending.data) { EmitGif(gifPending, std::max(2, gifCentis)); UnloadImage(gifPending); gifPending = Image{}; } // the last frame: one interval
+                { std::lock_guard<std::mutex> lk(pngM); pngEnd = true; }
+                pngCv.notify_all();
+                for (std::thread& t : pngPool) t.join();
+                pngPool.clear();
                 if (gifStarted) {
                     MsfGifResult r = msf_gif_end(&gifState);
                     if (r.data) { if (FILE* f = fopen(gifPath.c_str(), "wb")) { fwrite(r.data, r.dataSize, 1, f); fclose(f); } }
@@ -95,12 +175,15 @@ namespace {
         }
     }
 
-    void Push(Job j) {
+    // False when F10 dropped the frame (the writer is behind).
+    bool Push(Job j) {
         std::unique_lock<std::mutex> lk(m);
+        if (!cli && j.frame && queue.size() >= 8) return false;
         cvRoom.wait(lk, [] { return queue.size() < 24; }); // bounded: a slow disk slows the capture, not memory
         queue.push_back(j);
         lk.unlock();
         cv.notify_one();
+        return true;
     }
 
     // Captures live outside the repo, one folder per calendar day (user 2026-11-14): <root>/<YYYY-MM-DD>/<name>. The root is
@@ -170,7 +253,7 @@ namespace {
         clockStart = GetTime();
         std::error_code ec;
         std::filesystem::create_directories(dir, ec);
-        active = true; finished = false; captured = 0; rendered = 0;
+        active = true; finished = false; captured = 0; rendered = 0; dropped = 0;
         waiting = startDelay > 0.0f || cli; waitStart = GetTime();
         firstHash = lastHash = 0;
         thumbs.clear();
@@ -186,12 +269,7 @@ namespace {
     void Finish();
     void End(bool background = false) {
         if (!active) return;
-        active = false;
-        if (gifPending.data) { // the last GIF frame: one capture interval
-            Job j{ gifPending, "", true, false }; j.centis = std::max(2, gifCentis); gifPending = Image{};
-            if (!background) Push(j);
-            else { std::lock_guard<std::mutex> lk(m); queue.push_back(j); cv.notify_one(); } // never wait for room here
-        }
+        active = false; // (the writer emits the last GIF frame when it reaches the end job)
         if (background) { finisher = std::thread(Finish); return; }
         Finish();
     }
@@ -218,6 +296,7 @@ namespace {
         thumbs.clear();
         printf("record: %s frames=%d gif=%s sheet=%s hash=%016llx..%016llx\n", dir.c_str(), captured, wantGif && captured > 0 ? gifPath.c_str() : "-",
                sheetPath.c_str(), (unsigned long long)firstHash, (unsigned long long)lastHash);
+        if (dropped > 0) printf("record: skipped %d frames / PNGs while the writer was behind (F10 keeps the game running, #537)\n", dropped.load());
         fflush(stdout);
         if (diffFrames > 0) printf("record: compared with %s: %d frames, %.3f%% of pixels differ on average, worst %.3f%% (frame %d)\n", compareDir.c_str(), diffFrames, diffSum / diffFrames, diffMax, diffWorst);
         Prune(dir);
@@ -272,37 +351,14 @@ bool Recorder_WantsFrame(bool hud) {
 
 void Recorder_Capture() {
     // Called where WantsFrame said yes; counts rendered frames on the HUD pass (every frame reaches it).
+    // Only the readback here; the writer thread does the rest (#537). F10 skips the frame when the writer is behind.
+    if (!cli) { std::lock_guard<std::mutex> lk(m); if (queue.size() >= 8) { ++dropped; return; } }
     Image img = LoadImageFromScreen();
     ImageFormat(&img, PIXELFORMAT_UNCOMPRESSED_R8G8B8A8);
-    const uint64_t h = Hash(img);
-    if (!compareDir.empty()) { // the share of pixels that differ (any channel by more than 2) from the same frame of the earlier capture
-        Image old = LoadImage(TextFormat("%s/frame_%04d.png", compareDir.c_str(), captured));
-        if (old.data && old.width == img.width && old.height == img.height) {
-            ImageFormat(&old, PIXELFORMAT_UNCOMPRESSED_R8G8B8A8);
-            const unsigned char* a = (const unsigned char*)img.data; const unsigned char* b = (const unsigned char*)old.data;
-            size_t bad = 0; const size_t px = (size_t)img.width * img.height;
-            for (size_t q = 0; q < px; ++q) if (abs(a[q * 4] - b[q * 4]) > 2 || abs(a[q * 4 + 1] - b[q * 4 + 1]) > 2 || abs(a[q * 4 + 2] - b[q * 4 + 2]) > 2) ++bad;
-            const double share = 100.0 * (double)bad / (double)px;
-            diffSum += share; ++diffFrames;
-            if (share > diffMax) { diffMax = share; diffWorst = captured; }
-        }
-        if (old.data) UnloadImage(old);
-    }
-    if (captured == 0) firstHash = h;
-    lastHash = h;
     const float t = fixedDt > 0.0f ? (float)(captured * every) * fixedDt : (float)(GetTime() - clockStart);
-    if (wantSheet) { Image s = ImageCopy(img); ImageResize(&s, 240, std::max(1, img.height * 240 / std::max(1, img.width))); thumbs.push_back({ s, captured, t }); }
-    if (wantGif) {
-        const double nowCs = 100.0 * (double)t;            // this capture's time in the recording
-        if (!gifPending.data) { gifEmittedCs = nowCs; }
-        else if (nowCs - gifEmittedCs >= 2.0) {            // the held frame lasts until now
-            const int d = (int)std::lround(nowCs - gifEmittedCs);
-            Job j{ gifPending, "", true, false }; j.centis = d; Push(j);
-            gifEmittedCs += d; gifPending = Image{};
-        }
-        if (!gifPending.data) { Image g = ImageCopy(img); ImageResize(&g, 640, std::max(1, img.height * 640 / std::max(1, img.width))); gifPending = g; gifPendingAt = nowCs; }
-    }
-    Push(Job{ img, TextFormat("%s/frame_%04d.png", dir.c_str(), captured), false, false });
+    Job j{ img, TextFormat("%s/frame_%04d.png", dir.c_str(), captured) };
+    j.frame = true; j.index = captured; j.t = t;
+    if (!Push(j)) { UnloadImage(img); ++dropped; return; }
     ++captured;
     if (captured >= framesWanted) End(!cli);
 }
