@@ -345,6 +345,10 @@ PlanetField::Land PlanetField::land(Vector3 dir, float fp) const {
         h = s.h;
         if (gGullies && fp < 450.0f) h += ErosionGullies({ sx, sy, sz }, dir, s.grad, fp, fieldSeed, Smoothstep(2.0f, 15.0f, s.h));
         h += cliffFace({ sx, sy, sz }, h, s.grad, fp); // one face per steep resistant layer (#588)
+        { // inside the elevation bound (less its 65 m allowance): the bake and the faces can lift formations (#593)
+            const float top = maxElevation - 65.0f, knee = top - 200.0f;
+            if (h > knee) h = knee + 200.0f * (1.0f - expf(-(h - knee) / 200.0f));
+        }
         l.ridge = std::max(0.0f, h - 150.0f);
     } else {
         h = base;
@@ -382,6 +386,11 @@ PlanetField::Land PlanetField::land(Vector3 dir, float fp) const {
                 h += kw * landMask * Strata_KarstRelief({ sx, sy, sz }, fieldSeed);
         if (const float fw = Strata_FoldWeight({ sx, sy, sz }, fieldSeed); fw > 0.0f && h > 0.0f)
             h += 80.0f * fw * landMask * std::min(gen.cliffs, 1.5f) * Strata_OutcropBump(strataColumn(dir), h, fieldSeed);
+        // Keep the formations inside the field's elevation bound (maxElevation less its 65 m for detail and landforms):
+        // a volcano or a fault on high ground compresses smoothly into the top 200 m instead of poking above the band
+        // the chunk selection trusts (#593: seed 42 reached 1759 m against 1755).
+        const float top = maxElevation - 65.0f, knee = top - 200.0f;
+        if (h > knee) h = knee + 200.0f * (1.0f - expf(-(h - knee) / 200.0f));
     }
     const float ravineWeight = eroded || tBakeInput ? 0.0f : landMask * std::clamp(2.0f - fp / 24.0f, 0.0f, 1.0f);
     if (ravineWeight > 0.0f) {
