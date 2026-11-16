@@ -209,6 +209,7 @@ void Classify(const Site& s, Brick& b, const BodyRef& ref, uint8_t& faces) {
     const PlanetField* pf = ref.pf;
     const float sea = pf ? pf->seaLevelRadius() : 0.0f;
     b.basin = false; b.reach = false;
+    std::vector<float> corner((B + 1) * (B + 1) * (B + 1), NAN); // the density at the cell corners, sampled when first needed
     for (int y = 0; y < B; ++y)
         for (int x = 0; x < B; ++x) {
             // The column's ground and generated water (from its middle: a column tilts < 0.3 deg in a site).
@@ -246,15 +247,30 @@ void Classify(const Site& s, Brick& b, const BodyRef& ref, uint8_t& faces) {
                 const float dc = r < top ? ref.field->density(c, ref.edits.get()) : 0.0f;
                 const bool solid = (r < top && dc >= ISO_LEVEL) || (ref.parts && ref.parts->solidAt(c)); // build parts hold water too (#391)
                 uint8_t fl = solid ? kSolid : 0;
-                // How much of an open cell is ground (#454): 16 samples (2 x 2 across, 4 heights) in cells near the surface.
+                // How much of an open cell is ground (#454), in cells near the surface: 16 points (2 x 2 across, 4 heights)
+                // interpolated from the density at the cell's 8 corners - as marching cubes draws the ground. The corners
+                // are sampled once and shared with the neighbouring cells (16 field samples a cell cost ~40 ms of a step).
                 int sh = 0;
                 if (!solid && ShutOn() && r < top && dc > ISO_LEVEL - 0.75f * DENSITY_GRADIENT / kVoxelSize) {
+                    float d8[8];
+                    for (int k = 0; k < 8; ++k) {
+                        const int ax = x + (k & 1), ay = y + ((k >> 1) & 1), az = z + (k >> 2);
+                        float& d = corner[(az * (B + 1) + ay) * (B + 1) + ax];
+                        if (std::isnan(d)) {
+                            const Vector3 q = Vector3Add(s.origin, Vector3Add(Vector3Add(Vector3Scale(s.e, (float)(ci - x + ax)), Vector3Scale(s.n, (float)(cj - y + ay))), Vector3Scale(s.u, (float)(b.bk * B + az))));
+                            d = ref.field->density(q, ref.edits.get());
+                        }
+                        d8[k] = d;
+                    }
                     int n = 0;
                     for (int a = 0; a < 2; ++a)
                         for (int bb = 0; bb < 2; ++bb)
                             for (int h = 0; h < 4; ++h) {
-                                const Vector3 q = Vector3Add(c, Vector3Add(Vector3Add(Vector3Scale(s.e, a ? 0.25f : -0.25f), Vector3Scale(s.n, bb ? 0.25f : -0.25f)), Vector3Scale(s.u, -0.375f + 0.25f * h)));
-                                n += ref.field->density(q, ref.edits.get()) >= ISO_LEVEL ? 1 : 0;
+                                const float tx = a ? 0.75f : 0.25f, ty = bb ? 0.75f : 0.25f, tz = 0.125f + 0.25f * h;
+                                const float d00 = d8[0] + (d8[1] - d8[0]) * tx, d10 = d8[2] + (d8[3] - d8[2]) * tx;
+                                const float d01 = d8[4] + (d8[5] - d8[4]) * tx, d11 = d8[6] + (d8[7] - d8[6]) * tx;
+                                const float lo = d00 + (d10 - d00) * ty, hi = d01 + (d11 - d01) * ty;
+                                n += lo + (hi - lo) * tz >= ISO_LEVEL ? 1 : 0;
                             }
                     sh = std::min(kMaxShut, n * 255 / 16);
                 }
