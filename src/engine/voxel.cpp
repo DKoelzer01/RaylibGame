@@ -1042,14 +1042,17 @@ float PlanetField::densityNear(Vector3 p, float d, float surface, float fp, cons
     // Cave mouths (Plan 5 C): in some regions (~15%) tunnels may reach up through the surface, so caves are found
     // by walking; elsewhere they stay 5 m+ down. Only looked up for shallow samples.
     float caveTop = 5.0f;
-    if (depth < 14.0f && depth > -3.0f && caveWeight > 0.0f && !moon) caveTop = 5.0f - 7.5f * Smoothstep(0.3f, 0.45f, caveMouths.fractal(1, p.x, p.y, p.z));
+    float mouth = 0.0f; // #549: in mouth regions tunnels open at full width where they meet the surface (no grille)
+    if (depth < 14.0f && depth > -3.0f && caveWeight > 0.0f && !moon) { mouth = Smoothstep(0.3f, 0.45f, caveMouths.fractal(1, p.x, p.y, p.z)); caveTop = 5.0f - 7.5f * mouth; }
     if (caveWeight > 0.0f && depth > caveTop && d > mantleRadius + 20.0f) {
         const float near = 2.0f * std::max(fp, 1.0f) + 2.0f; // farther than this from a cave = plain rock for meshing
         float m = 1e9f;                                        // metres to the nearest cave wall (< 0 inside)
         // A tunnel needs both fields near zero: if the first alone rules one out, skip the second.
         const float a = fabsf(cavesA.fractal(2, p.x, p.y, p.z));
         if ((a - kTunnelLevel) * 100.0f <= near) {
-            const float fade = std::min(1.0f, (depth - caveTop) / 8.0f) * std::min(1.0f, (d - mantleRadius - 20.0f) / 10.0f);
+            float top = std::min(1.0f, (depth - caveTop) / 8.0f);
+            top = top + (1.0f - top) * mouth;
+            const float fade = top * std::min(1.0f, (d - mantleRadius - 20.0f) / 10.0f);
             const float t = std::max(a, fabsf(cavesB.fractal(2, p.x, p.y, p.z)));
             m = (t - kTunnelLevel) * 100.0f + (1.0f - fade * caveWeight) * 20.0f;
         }
