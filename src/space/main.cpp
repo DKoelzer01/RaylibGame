@@ -552,7 +552,6 @@ int main(int argc, char** argv)
     if (const char* e = getenv("RAYLIBGAME_EROSION"); e && e[0]) gErosionPrototype = e[0] != '0'; // on by default (#362, user 2026-11-15); 0: the noise terrain (A/B)
     if (const char* e3 = getenv("RAYLIBGAME_3D")) gTerrain3D = e3[0] == '1'; else if (gErosionPrototype) gTerrain3D = false; // no 3D band in erosion tests (RAYLIBGAME_3D=0 for baselines)
     if (const char* g = getenv("RAYLIBGAME_GULLIES")) gGullies = g[0] == '1';
-    if (const char* c = getenv("RAYLIBGAME_CLIFFS")) gCliffs = c[0] == '1';
     if (const char* c = getenv("RAYLIBGAME_SKY_PROBES")) gSkyProbes = c[0] == '1'; // #369 A/B
     if (const char* c = getenv("RAYLIBGAME_AO")) gTerrainAO = c[0] != '0'; // #132 A/B
     for (int i = 1; i < argc; ++i) {
@@ -1118,32 +1117,6 @@ int main(int argc, char** argv)
                 // score ~0.85 +- 0.01 wherever they land: 0.847 on 2026-11-15. A 1 m lattice scored 0.28, so 0.83 still catches
                 // any real regression.)
             }
-            return 0;
-        }
-    for (int i = 1; i < argc; ++i)
-        if (std::string(argv[i]) == "--find-cliff-lip") {
-            // #357: the column with the tallest cliff lip over it within 20 km of the start (for screenshots: feed the
-            // printed direction to RAYLIBGAME_SPAWN_DIR). Needs RAYLIBGAME_EROSION=1.
-            Planetoid* p = dynamic_cast<Planetoid*>(world.objects[0].get());
-            const auto* pf = p ? dynamic_cast<const PlanetField*>(p->field.get()) : nullptr;
-            if (!pf) return 1;
-            const Vector3 home = pf->findSpawnDir(p->seed);
-            const Vector3 t1 = Vector3Normalize(Vector3CrossProduct(home, { 0, 1, 0 })), t2 = Vector3CrossProduct(t1, home);
-            float best = 0.0f; Vector3 bestDir = home; PlanetField::Column3D bc;
-            int lips = 0, cols = 0;
-            for (float e = -20000.0f; e <= 20000.0f; e += 20.0f)
-                for (float n = -20000.0f; n <= 20000.0f; n += 20.0f) {
-                    const Vector3 d = Vector3Normalize(Vector3Add(home, Vector3Add(Vector3Scale(t1, e / pf->radius), Vector3Scale(t2, n / pf->radius))));
-                    ++cols;
-                    PlanetField::Column3D c;
-                    pf->cliffLipColumn(d, 1.0f, pf->elevation(d, 1.0f), c);
-                    if (c.lipThick <= 0.5f || c.lipMargin <= 1.0f || c.lipTop < c.lipThick + 4.0f) continue; // a lip with room under it
-                    ++lips;
-                    const float score = (c.lipTop - c.lipThick) * std::min(c.lipThick, 6.0f);
-                    if (score > best) { best = score; bestDir = d; bc = c; }
-                }
-            printf("bench: cliff lips: %d of %d columns (20 m apart) under a lip; tallest: dir %.6f,%.6f,%.6f, lip %.1f-%.1f m over the ground, %.1f m thick, %.1f m inside its reach\n",
-                   lips, cols, bestDir.x, bestDir.y, bestDir.z, bc.lipTop - bc.lipThick, bc.lipTop, bc.lipThick, bc.lipMargin);
             return 0;
         }
     for (int i = 1; i < argc; ++i)

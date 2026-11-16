@@ -25,7 +25,7 @@
 
 // Bump with any change to the bake's code (Simulate, SetRock, the refinement, the pond extraction): a cache from
 // another version or other parameters is baked again rather than loaded (#355 review).
-constexpr uint32_t kErosionBakeVersion = 6; // 6: wind (aeolian) erosion, #370
+constexpr uint32_t kErosionBakeVersion = 7; // 7: the noise seed offsets changed (#532: every input differs); 6: wind (aeolian) erosion, #370
 struct ErosionParams {
     float cell = 200.0f;      // m, coarse cell at a face centre (gnomonic cells shrink toward the face edges)
     int steps = 400;
@@ -47,6 +47,7 @@ struct ErosionParams {
                               // it from low land: heights then follow river length, so narrow coastal ranges came out low)
 };
 uint64_t ErosionParamsKey(const ErosionParams& p); // FNV-1a over every field and kErosionBakeVersion
+float NoiseSeedSpanUnits(); // voxel.cpp (#532): the noise seed offset span, in the cache key when not the default
 
 class PlanetErosion {
 public:
@@ -93,19 +94,8 @@ private:
 // Strength follows the slope (flat ground stays flat); octaves finer than the sample footprint fade out.
 // p = surface point (m), dir = its unit direction, grad = slopeAt's gradient. Returns a height offset (m).
 float ErosionGullies(Vector3 p, Vector3 dir, Vector3 grad, float footprint, unsigned int seed, float strength);
-// Cliff bands (user 2026-11-14: no cliffs): in hard-rock regions steep ground steps into treads and near-vertical risers
-// 20-35 m apart. Returns a height offset (m); h = the height so far, grad = the baked gradient.
-float ErosionCliffs(Vector3 p, float h, Vector3 grad, float footprint, unsigned int seed);
-// The overhanging lip of a cliff band's riser over a column (#357, Plan 8 item 1): rock reaching out from the riser's
-// top over the tread below, thick at the face and thinning to nothing at its reach, so the foot of the cliff has room to
-// build under. p: the column's surface point (m), h: its height before the cliff terraces, final: its finished
-// elevation. topRel = the lip's top over the column's surface (m), thick = its thickness there (m), margin = how far
-// (m) the column lies inside the lip's reach (< 0: outside). thick 0: no lip.
-struct CliffLip { float topRel = 0.0f, thick = 0.0f, margin = -1000.0f; };
-bool ErosionCliffRegion(Vector3 p, unsigned int seed); // inside a hard-rock cliff region at all (cheap)
 float ErosionBakeProgress(); // 0..1 while a bake runs (the loading screen, #362)
 bool ErosionBaking();        // a bake is running (not a cache read: #505)
 int ErosionBakeCount();      // bakes run so far (tests: a load must read the cache, #505)
-CliffLip ErosionCliffLip(Vector3 p, float h, Vector3 grad, float footprint, unsigned int seed, float final);
 
 #endif

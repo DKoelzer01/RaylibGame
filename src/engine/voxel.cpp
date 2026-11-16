@@ -126,6 +126,8 @@ static float SeedSpan(float frequency) {
     return gSeedSpanUnits > 0.0f ? std::max(10000.0f, gSeedSpanUnits / frequency) : 10000.0f;
 }
 
+float NoiseSeedSpanUnits() { SeedSpan(1.0f); return gSeedSpanUnits; }
+
 static SimplexNoise SeededNoise(std::mt19937& rng, float frequency) {
     std::uniform_real_distribution<float> unit(0.0f, 1.0f);
     const float span = SeedSpan(frequency);
@@ -313,29 +315,6 @@ Vector3 PlanetField::uphillAt(Vector3 dir) const {
     const PlanetErosion* eroded = erosion();
     return eroded ? eroded->slopeAt(dir, 1.0f).grad : Vector3{ 0, 0, 0 };
 }
-// The last eroded column land() built on this thread (its height before the cliff terraces and its slope): the cliff lip
-// of the same column is asked for right after (grid nodes, single samples), and recomputing the slope and the gullies
-// cost ~1 ms of every chunk's sampling.
-namespace { struct LastErodedLand { const PlanetField* field = nullptr; Vector3 dir{}; float fp = -1.0f, h = 0.0f; Vector3 grad{}; }; thread_local LastErodedLand gLastErodedLand; }
-void PlanetField::cliffLipColumn(Vector3 dir, float fp, float elev, Column3D& col) const {
-    // The height before the cliff terraces, as land() builds it (the bake, then its gullies): the lip's band and its
-    // distance from the riser follow the same t as ErosionCliffs.
-    const PlanetErosion* eroded = erosion();
-    if (!eroded || !gCliffs || fp >= 8.0f || moon) return;
-    const Vector3 s3 = Vector3Scale(dir, radius);
-    if (!ErosionCliffRegion(s3, fieldSeed)) return; // most of the planet: one value-noise lookup
-    float h;
-    Vector3 grad;
-    if (gLastErodedLand.field == this && gLastErodedLand.fp == fp && gLastErodedLand.dir.x == dir.x && gLastErodedLand.dir.y == dir.y && gLastErodedLand.dir.z == dir.z) {
-        h = gLastErodedLand.h; grad = gLastErodedLand.grad; // land() just did this column (#362: grid nodes ask right after elevation())
-    } else {
-        const PlanetErosion::Slope s = eroded->slopeAt(dir, fp);
-        h = s.h; grad = s.grad;
-        if (gGullies && fp < 450.0f) h += ErosionGullies(s3, dir, s.grad, fp, fieldSeed, Smoothstep(2.0f, 15.0f, s.h));
-    }
-    const CliffLip lip = ErosionCliffLip(s3, h, grad, fp, fieldSeed, elev);
-    col.lipTop = lip.topRel; col.lipThick = lip.thick; col.lipMargin = lip.margin;
-}
 PlanetField::Land PlanetField::land(Vector3 dir, float fp) const {
     const float sx = dir.x * radius, sy = dir.y * radius, sz = dir.z * radius; // the surface point (m)
     Land l{ 0, 0, 0, 1, 0, 0, 1, 0 };
@@ -359,8 +338,6 @@ PlanetField::Land PlanetField::land(Vector3 dir, float fp) const {
         const PlanetErosion::Slope s = eroded->slopeAt(dir, fp);
         h = s.h;
         if (gGullies && fp < 450.0f) h += ErosionGullies({ sx, sy, sz }, dir, s.grad, fp, fieldSeed, Smoothstep(2.0f, 15.0f, s.h));
-        gLastErodedLand = { this, dir, fp, h, s.grad }; // the cliff lip of this column reuses it (cliffLipColumn)
-        if (gCliffs && fp < 20.0f) h += ErosionCliffs({ sx, sy, sz }, h, s.grad, fp, fieldSeed); // cliff bands (user 2026-11-14)
         l.ridge = std::max(0.0f, h - 150.0f);
     } else {
         h = base;
@@ -1048,18 +1025,6 @@ float PlanetField::densityNear(Vector3 p, float d, float surface, float fp, cons
         const float m = rockFeature(p, d, surface, fp);
         if (m > -4.0f) v = std::max(v, ISO_LEVEL + DENSITY_GRADIENT * m);
     }
-    // A cliff lip over the column (#357): rock from lipTop - lipThick to lipTop over the surface, out to its reach
-    // (lipMargin > 0 inside it). Blocks interpolate the column from the grid; single samples look it up.
-    if (depth < 2.0f && depth > -45.0f) {
-        Column3D own;
-        const Column3D* c = col;
-        if (!c) { cliffLipColumn(Vector3Scale(p, 1.0f / d), fp, surface - radius, own); c = &own; }
-        if (c->lipThick > 0.05f) {
-            const float top = surface + c->lipTop;
-            const float m = std::min(std::min(d - (top - c->lipThick), top - d), c->lipMargin);
-            if (m > -4.0f) v = std::max(v, ISO_LEVEL + DENSITY_GRADIENT * m);
-        }
-    }
     // Caves, from a few metres down to 20 m above the mantle (which stays intact). Each cave shape is
     // its own distance field in metres, combined with min(): rock density grows with depth, so
     // subtracting a fixed amount would only carve shallow caves.
@@ -1183,7 +1148,6 @@ bool PlanetField::prepareBlock(Vector3 o, float stride, int S, float fp, BlockGr
             const Vector3 gdir = Vector3Normalize(Vector3Add(n, Vector3Add(Vector3Scale(t1, u), Vector3Scale(t2, v))));
             const float e = elevation(gdir, fp);
             Column3D col = terrain3DColumn(gdir, e); // the 3D band's column strength, once per node
-            cliffLipColumn(gdir, fp, e, col);        // and a cliff lip over it (#357)
             h[(size_t)j * nu + i] = e;
             cols[(size_t)j * nu + i] = col;
             std::lock_guard<std::mutex> lock(sh.m);
@@ -1195,12 +1159,6 @@ bool PlanetField::prepareBlock(Vector3 o, float stride, int S, float fp, BlockGr
     return true;
 }
 
-// The cliff lip (#357) between four grid nodes, bilinear like the rest of the column (the GPU copy: terrain_density.comp).
-static inline void LerpLip(const PlanetField::Column3D* c0, const PlanetField::Column3D* c1, float au, float av, PlanetField::Column3D& col) {
-    col.lipTop = (c0[0].lipTop * (1 - au) + c0[1].lipTop * au) * (1 - av) + (c1[0].lipTop * (1 - au) + c1[1].lipTop * au) * av;
-    col.lipThick = (c0[0].lipThick * (1 - au) + c0[1].lipThick * au) * (1 - av) + (c1[0].lipThick * (1 - au) + c1[1].lipThick * au) * av;
-    col.lipMargin = (c0[0].lipMargin * (1 - au) + c0[1].lipMargin * au) * (1 - av) + (c1[0].lipMargin * (1 - au) + c1[1].lipMargin * au) * av;
-}
 
 bool PlanetField::gridSurface(const BlockGrid& g, Vector3 p, float& elev, Column3D& col) const {
     const float d = sqrtf(p.x * p.x + p.y * p.y + p.z * p.z);
@@ -1218,7 +1176,6 @@ bool PlanetField::gridSurface(const BlockGrid& g, Vector3 p, float& elev, Column
     const Column3D* c1 = c0 + g.nu;
     col.mask = (c0[0].mask * (1 - au) + c0[1].mask * au) * (1 - av) + (c1[0].mask * (1 - au) + c1[1].mask * au) * av;
     col.f = (c0[0].f * (1 - au) + c0[1].f * au) * (1 - av) + (c1[0].f * (1 - au) + c1[1].f * au) * av;
-    LerpLip(c0, c1, au, av, col);
     return true;
 }
 
@@ -1251,7 +1208,6 @@ void PlanetField::sampleBlock(Vector3 o, float stride, int S, float fp, const Bl
                     const Column3D* c1 = c0 + nu;
                     col.mask = (c0[0].mask * (1 - au) + c0[1].mask * au) * (1 - av) + (c1[0].mask * (1 - au) + c1[1].mask * au) * av;
                     col.f = (c0[0].f * (1 - au) + c0[1].f * au) * (1 - av) + (c1[0].f * (1 - au) + c1[1].f * au) * av;
-                    LerpLip(c0, c1, au, av, col);
                 }
                 out[idx] = densityNear(p, d, surface, fp, &col);
             }
@@ -1544,25 +1500,20 @@ void BuildChunkMesh(const DensityField& field, const TerrainDeltas& deltas, Chun
 // under rock that stands over it (a cliff lip, a 3D-band shelf, a tor, a dug-out hollow) read as open sky. Five short
 // rays (up, and four tilted 45 degrees) through the block's own samples (edits included): the open share sets the light,
 // the up ray counting double, so a shelter's mouth is dim and a few metres in is black. The up ray continues past the
-// block through the full field to 12 m (so block borders don't show), and a cliff lip over the column (#357) roofs it.
+// block through the full field to 12 m (so block borders don't show).
 static float OverheadOpenness(const DensityField& field, const TerrainDeltas& deltas, const float* ext, int E, Vector3 eo, float stride,
                               Vector3 p, const PlanetField::Column3D* col, const float* elev) {
     const float d = Vector3Length(p);
     if (d < 1e-3f) return 1.0f;
     const Vector3 up = Vector3Scale(p, 1.0f / d);
-    // Under a cliff lip: dark from its edge inwards (margin = metres inside the lip's reach).
-    float lipShade = 1.0f;
-    if (col && elev && col->lipThick > 0.05f && col->lipMargin > 0.0f)
-        if (const auto* pf = dynamic_cast<const PlanetField*>(&field); pf && d < pf->radius + *elev + col->lipTop - col->lipThick + 0.5f) // below its underside
-            lipShade = std::clamp(1.0f - col->lipMargin / 4.0f, 0.0f, 1.0f);
     const Vector3 t1 = Vector3Normalize(Vector3CrossProduct(up, fabsf(up.y) < 0.9f ? Vector3{ 0, 1, 0 } : Vector3{ 1, 0, 0 }));
     const Vector3 t2 = Vector3CrossProduct(up, t1);
     const Vector3 dirs[5] = { up,
         Vector3Normalize(Vector3Add(up, t1)), Vector3Normalize(Vector3Subtract(up, t1)),
         Vector3Normalize(Vector3Add(up, t2)), Vector3Normalize(Vector3Subtract(up, t2)) };
-    // Past the block only where something can stand over the ground there: the 3D band, a cliff lip (no column info:
+    // Past the block only where something can stand over the ground there: the 3D band (no column info:
     // assume so). On plain height-map ground nothing natural is above a surface vertex beyond its own block.
-    const bool mayRoof = !col || col->mask > 0.0f || col->lipThick > 0.0f;
+    const bool mayRoof = !col || col->mask > 0.0f;
     auto blockSolid = [&](Vector3 q, bool& inside) {
         const float fx = (q.x - eo.x) / stride, fy = (q.y - eo.y) / stride, fz = (q.z - eo.z) / stride;
         const int x = (int)lroundf(fx), y = (int)lroundf(fy), z = (int)lroundf(fz);
@@ -1594,7 +1545,7 @@ static float OverheadOpenness(const DensityField& field, const TerrainDeltas& de
         }
         if (!blocked) open += r == 0 ? 2.0f : 1.0f;
     }
-    return std::min(std::clamp(open / 6.0f * 1.5f, 0.0f, 1.0f), lipShade);
+    return std::clamp(open / 6.0f * 1.5f, 0.0f, 1.0f);
 }
 
 // ---------------------------------------------------------------------------------------------
