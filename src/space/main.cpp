@@ -2722,6 +2722,15 @@ int main(int argc, char** argv)
                             printf("bench: rivers: network built in %.2f s: %d cells of %.0f m, %d land, %d river (%.1f%%), %d lake cells, %d mouths; %d links: worst rise %.5f m, worst narrowing %.5f m\n",
                                    buildS, s.cells, s.cellSize, s.landCells, s.riverCells, 100.0f * s.riverCells / std::max(1, s.landCells), s.lakeCells, s.mouths, links, rise, shrink);
                             printf("bench: rivers: %d river cells above 700 m, highest source at %.0f m (#359)\n", s.riverCellsAbove700, s.highestSource);
+                            if (net->bakeNative()) {
+                                // Heads (#625): a river starts as a seep and a trickle, never at a waterfall (unless the ground drops there).
+                                printf("bench: rivers: heads (#625): %d sources, %d with a waterfall in their first 3 links\n", s.heads, s.headFalls);
+                                check(s.headFalls == 0, "no river starts at a waterfall (#625)");
+                                Vector3 hd, dn;
+                                if (net->nearestHead(pf->findSpawnDir(p->seed), 2.0f, hd, dn))
+                                    printf("bench: rivers: a river head %.1f km from the start; look downstream from behind it: --view-fall %.6f %.6f %.6f %.5f %.5f %.5f --view-fall-dist 40\n",
+                                           Vector3Distance(hd, pf->findSpawnDir(p->seed)) * pf->radius / 1000.0f, hd.x, hd.y, hd.z, -dn.x, -dn.y, -dn.z);
+                            }
                             printf("bench: rivers: longest %.1f km, walked every 5 m: %.0f%% wet, longest dry run %.0f m, worst rise %.3f m, from %.1f m to %.1f m\n",
                                    s.longestKm, 100.0f * wetShare, worstDry, worstUp, levels.empty() ? 0.0f : levels.front(), levels.empty() ? 0.0f : levels.back());
                             {   // Walls of water (#540): along every river, water standing more than 3 m deeper than its channel - over
@@ -4616,7 +4625,7 @@ int main(int argc, char** argv)
                                 if (dist >= best) continue;
                                 const Vector3 d = Vector3Normalize(Vector3Add(home, Vector3Add(Vector3Scale(t1, e / pf->radius), Vector3Scale(t2, n / pf->radius))));
                                 const PlanetField::WaterSource ws = pf->waterSourceAt(d);
-                                if ((ws.kind != 1 && ws.kind != 2) || ws.level <= 2.0f || pf->elevation(d) > ws.level - 4.0f) continue; // a river or a lake, 4 m deep or more
+                                if ((ws.kind != 1 && ws.kind != 2) || ws.level <= 2.0f || pf->elevation(d) > ws.level - 7.0f) continue; // a river or a lake 7 m deep or more: over the 6.5 m rock below (#623: with bake-native lakes the nearest 4 m site was 4.7 m deep, the rock stood out of the water and its tunnel stayed dry; 9 m deep in the same lake it fills)
                                 // ...with an open channel: no ground standing in the water over the height map's bed.
                                 const float eb = pf->elevation(d);
                                 bool open = true;
@@ -4649,7 +4658,7 @@ int main(int argc, char** argv)
                             const Vector3 home = pf->findSpawnDir(p->seed);
                             const Vector3 t1 = Vector3Normalize(Vector3CrossProduct(home, { 0, 1, 0 }));
                             const float bed = pf->elevation(wdir);
-                            // Rock on the bed reaching out of the water (as a boulder does), hollowed: a cave inside it whose
+                            // Rock on the bed (a boulder, its top under the surface: the site is 7 m deep), hollowed: a cave inside it whose
                             // cells lie between the bed and the river's level - the generated water's band - roofed by rock.
                             TerrainEdit rock{ Vector3Scale(wdir, pf->radius + bed + 2.5f), 4.0f, 0.0f };
                             rock.fill = true;
@@ -4678,6 +4687,15 @@ int main(int argc, char** argv)
                     } else if (GetTime() - caveWaterT0 > 8.0) {
                         const float inCave = Fluid::WaterAt(*p, caveAt, 0.9f), inHole = Fluid::WaterAt(*p, caveOpenAt, 0.9f);
                         const bool ok = inCave < 0.05f && inHole > 1.0f;
+                        {   // what the generated water is at the tunnel's mouth and beyond it (#623 diagnosis)
+                            const Vector3 up = Vector3Normalize(caveOpenAt), t = Vector3Normalize(Vector3Subtract(caveOpenAt, caveAt));
+                            for (float s = 3.0f; s <= 12.0f; s += 3.0f) {
+                                const Vector3 q = Vector3Normalize(Vector3Add(up, Vector3Scale(t, s / pf->radius)));
+                                const PlanetField::WaterSource ws = pf->waterSourceAt(q);
+                                printf("bench: cave water: %.0f m past the cave: source kind %d level %.2f, ground %.2f, simulated water %.2f m^3\n",
+                                       s, ws.kind, ws.level, pf->elevation(q), Fluid::WaterAt(*p, Vector3Scale(q, Vector3Length(caveOpenAt)), 0.9f));
+                            }
+                        }
                         printf("bench: cave water: %.2f m^3 of water in the roofed cave (want ~0), %.2f m^3 in the one tunnelled out to the river (want > 1) -> %s\n",
                                inCave, inHole, ok ? "PASS" : "FAIL");
                         benchCaveWater = false;

@@ -41,6 +41,8 @@ public:
     // Bake-native: the ground under the channels - h lowered to each piece's bed within its half width and to a 0.6 bank
     // slope just beyond (the lowest of all pieces near, so overlapping ends never leave a ridge, #608). Lakes carve nothing.
     float carve(Vector3 dir, float h) const;
+    // Bake-native: the river head (a source) nearest to dir with water over minLevel, and its downstream direction (#625 looks).
+    bool nearestHead(Vector3 dir, float minLevel, Vector3& head, Vector3& down) const;
 
     // The river closest to a point (body-local unit direction), within `reach` metres of its centreline.
     struct Hit {
@@ -71,7 +73,7 @@ public:
     static constexpr float kLakeMargin = 60.0f;
 
     // Tests and stats.
-    struct Stats { int cells = 0, landCells = 0, riverCells = 0, lakeCells = 0, mouths = 0, riverCellsAbove700 = 0; float cellSize = 0.0f, longestKm = 0.0f, highestSource = 0.0f; };
+    struct Stats { int cells = 0, landCells = 0, riverCells = 0, lakeCells = 0, mouths = 0, riverCellsAbove700 = 0, heads = 0, headFalls = 0; float cellSize = 0.0f, longestKm = 0.0f, highestSource = 0.0f; }; // heads: river sources; headFalls: those with a waterfall in their first 3 links (#625)
     Stats stats() const { return st; }
     // Every river link: the level never rises and the width never shrinks going downstream; returns
     // the number of links checked and the worst rise (m) / shrink (m) seen.

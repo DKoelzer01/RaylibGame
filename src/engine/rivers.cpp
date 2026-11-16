@@ -642,6 +642,9 @@ RiverNetwork::RiverNetwork(const PlanetErosion& ero, float radius, const Params&
     // Links and levels: a node's own level is its lake's, or the filled surface, or its worn channel's ground plus 0.8 of
     // the incision the bake gave it (the water fills most of the channel). Then, upstream first, never above what drains
     // into it, and never under the next lake downstream (a river arrives at a lake's surface).
+    // A river widens and deepens from nothing at its head (#625: one was born 8 m wide at a waterfall): 0 at riverArea, full at 4x.
+    const float riverA = params.riverArea;
+    auto headRamp = [riverA](float a) { return std::clamp((a / riverA - 1.0f) / 3.0f, 0.0f, 1.0f); };
     nodeParent.assign(M, -1);
     std::vector<float> own(M), area(M), L(M, 0.0f), floorL(M, kMinLevel);
     std::vector<int> indeg(M, 0), seaCell(M, -1), mainChildN(M, -1);
@@ -649,7 +652,9 @@ RiverNetwork::RiverNetwork(const PlanetErosion& ero, float radius, const Params&
         const int g = nodeCell[k];
         area[k] = ero.flowArea(g);
         const auto fl = fillLevel.find(g);
-        own[k] = fl != fillLevel.end() ? fl->second : ero.flowHeight(g) + 0.8f * PlanetErosion::IncisionDepth(area[k]);
+        // A head starts as a seep (#625): its water rises from the ground with the drainage (none at riverArea, the full 0.8 of
+        // the incision at 4x it).
+        own[k] = fl != fillLevel.end() ? fl->second : ero.flowHeight(g) + 0.8f * PlanetErosion::IncisionDepth(area[k]) * headRamp(area[k]);
         const int r = ero.flowReceiver(g);
         const auto it = r >= 0 ? nodeOf.find(r) : nodeOf.end();
         if (it != nodeOf.end()) { nodeParent[k] = it->second; ++indeg[it->second]; }
@@ -680,8 +685,8 @@ RiverNetwork::RiverNetwork(const PlanetErosion& ero, float radius, const Params&
         pos[k] = Vector3Normalize(Vector3Add(Vector3Scale(centreN[k], 0.5f), Vector3Add(Vector3Scale(a, 0.25f), Vector3Scale(b, 0.25f))));
     }
     // Pieces: one per link, node to node (or into the sea cell).
-    auto widthOf = [](float a) { const float s = sqrtf(a / 7.06e6f); return std::min(3.0f + 2.5f * s, 45.0f); };
-    auto depthOf = [](float a) { const float s = sqrtf(a / 7.06e6f); return std::min(1.2f + 0.6f * s, 6.0f); };
+    auto widthOf = [&](float a) { const float s = sqrtf(a / 7.06e6f); return std::max(0.4f, std::min(3.0f + 2.5f * s, 45.0f) * headRamp(a)); };
+    auto depthOf = [&](float a) { const float s = sqrtf(a / 7.06e6f); return std::max(0.1f, std::min(1.2f + 0.6f * s, 6.0f) * headRamp(a)); };
     nodePiece.assign(M, -1);
     for (int k = 0; k < M; ++k) {
         const int p = nodeParent[k];
@@ -697,7 +702,8 @@ RiverNetwork::RiverNetwork(const PlanetErosion& ero, float radius, const Params&
         // A waterfall only where the worn ground itself drops steeply (#540; more than 0.4 m per m over the link): there the level
         // holds to where the ground first falls under it. A gentler drop is a rapid, its level along the link: stepping
         // every steep 50 m link wore flat terraces into the slopes.
-        if (params.fineHeight && la - lb > std::max(kFallMin, 0.8f * pc.halfLen)) {
+        // Never near a head (#625): a stream still forming runs down its slope as a rapid.
+        if (params.fineHeight && headRamp(area[k]) >= 1.0f && la - lb > std::max(kFallMin, 0.8f * pc.halfLen)) {
             auto ground = [&](float u) { return params.fineHeight(Vector3Normalize(Vector3Lerp(A, B, u))); };
             float lo = 0.0f, hi = 1.0f;
             for (int s = 1; s <= 8; ++s) if (ground(s / 8.0f) < la) { hi = s / 8.0f; lo = (s - 1) / 8.0f; break; }
@@ -708,6 +714,15 @@ RiverNetwork::RiverNetwork(const PlanetErosion& ero, float radius, const Params&
         pieces.push_back(pc);
         if (mainChildN[k] < 0) st.highestSource = std::max(st.highestSource, ero.flowHeight(nodeCell[k]));
         if (ero.flowHeight(nodeCell[k]) > 700.0f) ++st.riverCellsAbove700;
+    }
+    // Heads (#625): every source, and whether a waterfall comes within its first 3 links.
+    for (int k = 0; k < M; ++k) {
+        if (mainChildN[k] >= 0) continue;
+        ++st.heads;
+        bool fall = false;
+        for (int x = k, prev = -1, n2 = 0; x >= 0 && n2 < 3 && !fall && (prev < 0 || mainChildN[x] == prev); prev = x, x = nodeParent[x], ++n2)
+            fall = pieces[nodePiece[x]].fallT >= 0.0f; // its own stem only (a short tributary joining a falling river is not its head)
+        st.headFalls += fall;
     }
     // The index (the old network's grid, ~200 m cells): each piece in its cell and the ring around it; lakes flagged.
     std::vector<int> nbTable((size_t)N * 8);
@@ -775,6 +790,25 @@ bool RiverNetwork::fineLakeAt(Vector3 dir, float& level, float& outside, int& id
         for (int k2 = 0; k2 < 8; ++k2) if (nb2[k2] >= 0) consider(nb2[k2]);
     }
     return found;
+}
+
+bool RiverNetwork::nearestHead(Vector3 dir, float minLevel, Vector3& head, Vector3& down) const {
+    if (!bake) return false;
+    std::vector<uint8_t> hasChild(nodeParent.size(), 0);
+    for (int p : nodeParent) if (p >= 0) hasChild[p] = 1;
+    float best = 1e30f; int bk = -1;
+    for (int k = 0; k < (int)nodeParent.size(); ++k) {
+        if (hasChild[k] || nodeParent[k] < 0) continue;
+        const Piece& pc = pieces[nodePiece[k]];
+        if (pc.la < minLevel) continue;
+        const float d = Vector3Distance(Vector3Normalize(pc.a), dir);
+        if (d < best) { best = d; bk = k; }
+    }
+    if (bk < 0) return false;
+    const Piece& pc = pieces[nodePiece[bk]];
+    head = Vector3Normalize(pc.a);
+    down = Vector3Normalize(Vector3Subtract(pc.b, pc.a));
+    return true;
 }
 
 float RiverNetwork::carve(Vector3 dir, float h) const {
