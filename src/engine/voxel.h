@@ -238,6 +238,9 @@ public:
     // body-local point (its layer at the point's height, in the bake's simulation heights).
     StrataColumn strataColumn(Vector3 dir) const;
     RockType rockTypeAt(Vector3 p) const;
+    // Tests (#561): true on this thread = the bake is ignored (erosion() answers nullptr), so land() / elevationBase()
+    // give the noise terrain the GPU point kernel ports (it has no bake).
+    static inline thread_local bool tIgnoreBake = false;
     // On a river or pond bed (or its wet shore): digging there also turns up clay.
     bool wetBed(Vector3 local) const;
     // The static water at a direction and its kind (flowing water, fluid.h): 0 none, 1 river, 2 lake,

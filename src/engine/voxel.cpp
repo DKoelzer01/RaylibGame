@@ -274,6 +274,7 @@ static float ValleyCarve(float v) {
 struct PlanetField::ErosionState { std::atomic<bool> active{ false }; PlanetErosion bake; std::once_flag pondOnce; std::unordered_map<uint64_t, int> pondByCell; }; // pondByCell: 260 m pond cell -> the bake's pond there (#360)
 
 const PlanetErosion* PlanetField::erosion() const {
+    if (tIgnoreBake) return nullptr;
     return erosionState && erosionState->active.load(std::memory_order_acquire) ? &erosionState->bake : nullptr;
 }
 

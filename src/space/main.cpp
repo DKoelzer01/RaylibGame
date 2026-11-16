@@ -1161,7 +1161,11 @@ int main(int argc, char** argv)
             const double gpuMs = (GetTime() - g0) * 1000.0;
             const double c0 = GetTime();
             std::vector<float> cpu(N);
+            // The point kernel ports the noise terrain only (no bake): compare against the CPU without it (#561: with erosion
+            // on, eroded CPU heights against the GPU's noise read as a 605 m mismatch).
+            PlanetField::tIgnoreBake = true;
             for (int k = 0; k < N; ++k) cpu[k] = pf->elevationBase({ in[k * 4], in[k * 4 + 1], in[k * 4 + 2] }, in[k * 4 + 3]);
+            PlanetField::tIgnoreBake = false;
             const double cpuMs = (GetTime() - c0) * 1000.0;
             double worst = 0.0; int over = 0, exact = 0, worstK = 0;
             for (int k = 0; k < N; ++k) {
