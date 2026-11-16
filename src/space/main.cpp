@@ -554,6 +554,7 @@ int main(int argc, char** argv)
     if (const char* e3 = getenv("RAYLIBGAME_3D")) gTerrain3D = e3[0] == '1'; else if (gErosionPrototype) gTerrain3D = false; // no 3D band in erosion tests (RAYLIBGAME_3D=0 for baselines)
     if (const char* g = getenv("RAYLIBGAME_GULLIES")) gGullies = g[0] == '1';
     if (const char* g = getenv("RAYLIBGAME_CLIFF_FACES")) gCliffFaces = g[0] == '1'; // #588 A/B
+    if (const char* g = getenv("RAYLIBGAME_FOLDS")) gStrataFolds = g[0] == '1'; // #591 A/B
     if (const char* c = getenv("RAYLIBGAME_SKY_PROBES")) gSkyProbes = c[0] == '1'; // #369 A/B
     if (const char* c = getenv("RAYLIBGAME_AO")) gTerrainAO = c[0] != '0'; // #132 A/B
     for (int i = 1; i < argc; ++i) {
@@ -2816,6 +2817,37 @@ int main(int argc, char** argv)
                                        nf, nf ? designed / nf : 0.0, nf ? baked / nf : 0.0);
                                 if (fD < 1e29f) printf("bench: faults: nearest %.1f km from the start; look: --view-fall %.6f %.6f %.6f %.5f %.5f %.5f\n",
                                                        fD / 1000.0f, fDir.x, fDir.y, fDir.z, fSide.x, fSide.y, fSide.z);
+                                // Folds (#591): local relief (highest - lowest of 5 points 600 m apart) on land inside fold
+                                // regions against land outside them, below 600 m (no mountain ranges).
+                                {
+                                    const int M = 1 << 18;
+                                    int nIn = 0, nOut = 0; double rIn = 0.0, rOut = 0.0, iIn = 0.0;
+                                    for (int i = 0; i < M; ++i) {
+                                        const float y = 1.0f - 2.0f * (i + 0.5f) / M, rr = sqrtf(std::max(0.0f, 1.0f - y * y)), ph = i * 2.39996323f;
+                                        const Vector3 d = { rr * cosf(ph), y, rr * sinf(ph) };
+                                        const float h0 = pf->elevationBase(d, 50.0f);
+                                        if (h0 < 5.0f || h0 > 600.0f) continue;
+                                        const bool foldsOn = gStrataFolds; gStrataFolds = true; // the regions even in the A/B (bake done)
+                                        const float w = pf->foldWeight(Vector3Scale(d, pf->radius));
+                                        gStrataFolds = foldsOn;
+                                        if (w > 0.0f && w < 0.9f) continue;
+                                        const Vector3 u1 = Vector3Normalize(Vector3CrossProduct(d, { 0, 1, 0 })), u2 = Vector3CrossProduct(u1, d);
+                                        // Ridge-scale roughness: |centre - mean of 4 points 150 m away| (base relief cancels).
+                                        auto rough = [&](bool input) {
+                                            PlanetField::tIgnoreBake = PlanetField::tBakeInput = input;
+                                            float sum = 0.0f;
+                                            for (int k = 0; k < 4; ++k)
+                                                sum += pf->elevationBase(Vector3Normalize(Vector3Add(d, Vector3Scale(k & 1 ? u2 : u1, (k < 2 ? 150.0f : -150.0f) / pf->radius))), 50.0f);
+                                            const float r = fabsf(pf->elevationBase(d, 50.0f) - 0.25f * sum);
+                                            PlanetField::tIgnoreBake = PlanetField::tBakeInput = false;
+                                            return r;
+                                        };
+                                        if (w >= 0.9f) { ++nIn; rIn += rough(false); iIn += rough(true); }
+                                        else { ++nOut; rOut += rough(false); }
+                                    }
+                                    printf("bench: folds: ridge roughness (150 m) on low land: %.2f m in fold regions (%d samples; bake input %.2f m), %.2f m elsewhere (%d)\n",
+                                           nIn ? rIn / nIn : 0.0, nIn, nIn ? iIn / nIn : 0.0, nOut ? rOut / nOut : 0.0, nOut);
+                                }
                             }
                         }
                         riverOk = ok;

@@ -40,6 +40,23 @@ StrataColumn Strata_Column(Vector3 s, float continent, unsigned int seed) {
     c.hardShare = (uint8_t)(255.0f * (0.35f + 0.25f * ValueNoise(Scaled(s, 1.0f / 12000.0f), seed ^ 0x5AE2u)));
     c.offset = 300.0f * (ValueNoise(Scaled(s, 1.0f / 8000.0f), seed ^ 0x711Fu) - 0.5f)
              + 70.0f * (ValueNoise(Scaled(s, 1.0f / 2500.0f), seed ^ 0x3A9Bu) - 0.5f);
+    // Cuestas and hogbacks (#591): in rare fold regions (~20 km) the layers dip 5-40% along a regional axis, so each
+    // resistant layer crops out as a ridge along the strike (thick / dip apart: ~200-1600 m) that the bake carves
+    // out of the soft beds: gentle dips give cuestas (a scarp and a long back slope), steep ones hogbacks. Basalt
+    // flows and granite cores don't fold here.
+    if (c.province == 0) {
+        const float w = Strata_FoldWeight(s, seed);
+        if (w > 0.0f) {
+            const float dip = 0.05f + 0.35f * ValueNoise(Scaled(s, 1.0f / 30000.0f), seed ^ 0xF01D1u);
+            const float a = 6.2831853f * ValueNoise(Scaled(s, 1.0f / 40000.0f), seed ^ 0xF01D2u);
+            // Folds (anticlines and synclines ~16 km apart) across an axis in a fixed frame (on a ~20 km region the
+            // sphere is near enough flat): limbs dip up to `dip`. A periodic offset keeps the fade-in at the region's
+            // edge gentle (a planar tilt would sweep through layers metres apart there).
+            const Vector3 axis = { cosf(a), 0.5f * sinf(a), sinf(a) };
+            const float lambda = 2500.0f;
+            c.offset += w * dip * lambda * sinf((s.x * axis.x + s.y * axis.y + s.z * axis.z) / lambda);
+        }
+    }
     // Fault scarps (#590): hard rock on the raised side near the line, so the escarpment stands while the bake wears it.
     float region = 0.0f;
     const float f = FaultField(s, seed, region);
@@ -112,4 +129,16 @@ const char* Strata_Item(RockType r) {
         case RockType::Marble: return "marble";
         default: return "stone";
     }
+}
+
+float Strata_FoldWeight(Vector3 s, unsigned int seed) {
+    if (!gStrataFolds) return 0.0f;
+    const float fold = ValueNoise(Scaled(s, 1.0f / 20000.0f), seed ^ 0xF01D0u);
+    return fold > 0.62f ? std::min(1.0f, (fold - 0.62f) / 0.06f) : 0.0f;
+}
+
+float Strata_OutcropBump(const StrataColumn& c, float h, unsigned int seed) {
+    if (c.province != 0 || Strata_RockAt(c, h, seed) == RockType::Soft) return 0.0f;
+    const float t = (h + c.offset) / c.thick;
+    return sinf(3.14159265f * (t - floorf(t)));
 }

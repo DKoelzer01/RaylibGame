@@ -370,6 +370,10 @@ PlanetField::Land PlanetField::land(Vector3 dir, float fp) const {
         // Fault scarps (#590): a few long faults lift one side 50-300 m (scaled by "Cliffs and canyons"); the bake wears
         // the step into an escarpment with spurs and gullies (hard rock on the raised side: Strata_Column).
         h += Strata_FaultUplift({ sx, sy, sz }, fieldSeed) * landMask * std::min(gen.cliffs, 1.5f);
+        // Cuestas and hogbacks (#591): in fold regions the resistant layers stand up to 80 m proud where they crop out
+        // (the differential erosion the bake's short run can't do alone; it rounds and gullies them).
+        if (const float fw = Strata_FoldWeight({ sx, sy, sz }, fieldSeed); fw > 0.0f && h > 0.0f)
+            h += 80.0f * fw * landMask * std::min(gen.cliffs, 1.5f) * Strata_OutcropBump(strataColumn(dir), h, fieldSeed);
     }
     const float ravineWeight = eroded || tBakeInput ? 0.0f : landMask * std::clamp(2.0f - fp / 24.0f, 0.0f, 1.0f);
     if (ravineWeight > 0.0f) {
