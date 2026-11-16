@@ -1781,6 +1781,7 @@ static ChunkWaterGen GeneratedWaterOf(const DensityField& field, Vector3 origin,
 // generated water also stays out of caves under it (only over the original bed), the simulated water does not
 // (cave water, dug channels). The vertex's second texcoord carries the fluid kind (water.fs colours it).
 static constexpr float kSkin = 0.15f; // m: water shallower than this over the ground is not drawn (MeshChunkWater)
+static constexpr float kSkinMoving = 0.02f; // m: the same for moving water (#649: films are lifted ~5 cm, waterfield.cpp)
 static std::atomic<long long> gWaterPhaseNs[4];
 static std::atomic<long long> gWaterSamples[2]; // exact water density samples, all samples (#381)
 void ChunkWaterPhases(long long out[6]) { for (int i = 0; i < 4; ++i) out[i] = gWaterPhaseNs[i].load(); out[4] = gWaterSamples[0].load(); out[5] = gWaterSamples[1].load(); }
@@ -2001,8 +2002,10 @@ static void MeshChunkWater(const DensityField& field, ChunkMeshData& out, const 
             if (covered) {
                 // Simulated water as a skin over the ground (under ~15 cm deep): not drawn. Its plane at the ground's own
                 // height broke up over every ripple of the bed into a grid of spikes (the films a drained pond leaves).
-                // Generated shores keep their shallow band (#382 review).
-                const Vector3 down = Vector3Scale(Vector3Normalize(wc), -kSkin / stride);
+                // Generated shores keep their shallow band (#382 review). Moving water keeps a thinner skin (#649): a film running
+                // over the ground is drawn (it was hidden, so the water seemed to skip to where it pooled).
+                const float skin = sim.moving(wc) ? kSkinMoving : kSkin;
+                const Vector3 down = Vector3Scale(Vector3Normalize(wc), -skin / stride);
                 if (trilinear(dens, Vector3Add(c, down)) >= ISO_LEVEL) continue;
             } else {
                 if (!genKind) continue;
