@@ -21,5 +21,10 @@ void NewWorld_Shutdown();           // waits for a preview build in flight (prog
 // Tests (--test-newworld): the last preview build's time (s, < 0: none yet), and set the parameters as the sliders do.
 double NewWorld_PreviewBuildSeconds();
 void NewWorld_TestSetParams(const WorldGenParams& p);
+// --seed-survey (#532): the preview's map (same sampling and colours) at w x h for a terrain seed, no GL; the
+// elevations too when `heights` is given.
+#include <raylib.h>
+#include <vector>
+void NewWorld_RenderMap(unsigned int terrainSeed, float radius, const WorldGenParams& p, int w, int h, std::vector<Color>& out, std::vector<float>* heights);
 
 #endif

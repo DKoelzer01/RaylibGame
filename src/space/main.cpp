@@ -48,6 +48,7 @@
 #include "progression_test.h"
 #include "menus.h"
 #include "newworld.h"
+#include "seedsurvey.h"
 #include "hotbar.h"
 #include "itemicons.h"
 #include "particles.h"
@@ -247,6 +248,11 @@ extern const char* kGameVersion; // "<branch> <commit>", generated at build time
 
 int main(int argc, char** argv)
 {
+    // Scripted runs (--bench, --test-*, --shot-*): stdout unbuffered, before any output, so a run killed by a timeout
+    // still shows every result line it reached (#556: the last lines were lost and a finished test looked hung).
+    // (Line buffering is full buffering in the Windows CRT.)
+    for (int i = 1; i < argc; ++i)
+        if (!strncmp(argv[i], "--bench", 7) || !strncmp(argv[i], "--test-", 7) || !strncmp(argv[i], "--shot-", 7)) { setvbuf(stdout, nullptr, _IONBF, 0); break; }
     Log_Open("log.txt");
     Log_SetThreadName("main");
     // --log-level LEVEL (#514): before anything logs. It wins over settings.txt's log_level.
@@ -281,6 +287,8 @@ int main(int argc, char** argv)
             dir = dir.substr(0, cut + 1);
         }
     }
+    // --seed-survey COUNT FIRSTSEED OUTDIR [THREADS] [SUBSET] (#532): how alike different seeds' start planets are. No window.
+    if (argc >= 5 && std::string(argv[1]) == "--seed-survey") return SeedSurvey_Run(argc, argv);
     double benchSeconds = 0.0;
     bool startWithOverlay = false;
     int benchDigStrokes = 0;     // --test-dig N: dig N strokes at the crosshair once the world is loaded
@@ -311,6 +319,7 @@ int main(int argc, char** argv)
     bool benchPreloadSpawn = false; double preloadT0 = -1.0; // --preload-spawn: time the spawn preload ring (#294)
     float benchUnfocus = 0.0f;    // --bench-unfocus S (#510): unfocused S s during the spawn preload, and while playing (FPS before/after)
     int unfocusPhase = 0; double unfocusT0 = 0.0; long unfocusFrames = 0; double unfocusFpsBefore = 0.0;
+    double unfocusSim0 = 0.0; bool unfocusSimOk = true; // #525: sim time while unfocused (s)
     bool benchUnfocused = false;  // the game sees its window unfocused (scripted: the window itself is never minimized or raised)
     double benchFlySeconds = 0.0, flyStart = -1.0; // --test-fly S: autopilot the ship to the nearest other asteroid
     bool benchSuffocate = false;   // --test-suffocate: run out of oxygen away from the ship, die, respawn
@@ -783,6 +792,20 @@ int main(int argc, char** argv)
                 const bool ok = worstRoll < 1e-3f && maxPitch <= 87.01f && worstLevel < 1e-3f && worstUp > 0.999f;
                 printf("bench: flycam near a body (#232): horizon tilt %.5f, max pitch %.2f deg, WASD off level %.5f, Space along up %.5f -> %s\n",
                        worstRoll, maxPitch, worstLevel, worstUp, ok ? "PASS" : "FAIL");
+                // #538: quick turns at 60 FPS (no settling time), looking 40 deg up or down: the horizon never tilts, not even
+                // for the few frames the up used to take to catch up.
+                float worstQuick = 0.0f;
+                for (int s = 0; s < 240; ++s) {
+                    FlyInput turn;
+                    turn.yaw = (s / 20) % 2 ? -0.15f : 0.15f;                   // ~9 rad/s flicks, reversing
+                    turn.pitch = s == 0 ? 0.7f : s == 120 ? -1.4f : 0.0f;      // 40 deg up, then down
+                    ApplyFlyInput(&gc, turn, 1.0f / 60.0f, &g);
+                    const Vector3 f = Vector3Normalize(Vector3Subtract(gc.target, gc.position));
+                    const Vector3 r = Vector3Normalize(Vector3CrossProduct(f, gc.up));
+                    worstQuick = std::max(worstQuick, fabsf(Vector3DotProduct(r, g)));
+                }
+                const bool quickOk = worstQuick < 1e-3f;
+                printf("bench: flycam quick turns at 60 FPS (#538): worst horizon tilt %.5f (sin of the roll) -> %s\n", worstQuick, quickOk ? "PASS" : "FAIL");
             }
         }
         if (std::string(argv[i]) == "--spin-rate" && i + 1 < argc) spinRate = (float)atof(argv[i + 1]);
@@ -1082,7 +1105,7 @@ int main(int argc, char** argv)
                     sum += iou; worst = std::min(worst, iou); ++n;
                 }
                 printf("bench: dig shape: %d digs (radius 0.35-0.85 m, lattice %.2f m): mean IoU with the previewed sphere %.3f, worst %.3f -> %s\n",
-                       n, kVoxelSize, sum / std::max(1, n), worst, sum / std::max(1, n) >= 0.83 && worst >= 0.7 ? "PASS" : "FAIL");
+                       n, kVoxelSize, sum / std::max(1, n), worst, sum / std::max(1, n) >= 0.83 && worst >= 0.65 ? "PASS" : "FAIL"); // worst 0.65 (#532: the floor depends on the ground the 40 digs land on: 0.664-0.715 over seeds 1, 7, 42, 100, 2024 with the carve unchanged)
                 // (#425: the bar was the first measurement itself, 0.85 / 0.73 on 2026-11-12. The carve hasn't changed since, but
                 // the ground at the 40 random spots has (erosion, lips, rock features), and on a 0.25 m lattice the small spheres
                 // score ~0.85 +- 0.01 wherever they land: 0.847 on 2026-11-15. A 1 m lattice scored 0.28, so 0.83 still catches
@@ -1472,12 +1495,18 @@ int main(int argc, char** argv)
                 if (unfocusT0 < 0.0) { unfocusT0 = GetTime(); unfocusFrames = 0; } // the measurement starts
                 else {
                     ++unfocusFrames;
-                    if (ut > 5.0) { unfocusFpsBefore = unfocusFrames / ut; benchUnfocused = true; unfocusPhase = 3; unfocusT0 = GetTime(); }
+                    if (ut > 5.0) { unfocusFpsBefore = unfocusFrames / ut; benchUnfocused = true; unfocusPhase = 3; unfocusT0 = GetTime(); unfocusSim0 = SimTime(); }
                 }
             }
-            else if (unfocusPhase == 3 && ut > benchUnfocus) { benchUnfocused = false; unfocusPhase = 4; unfocusT0 = GetTime(); }
+            else if (unfocusPhase == 3 && ut > benchUnfocus) {
+                // #525: the game keeps running behind another window (time of day, physics and the factory all step on it).
+                const double simRan = SimTime() - unfocusSim0;
+                unfocusSimOk = simRan > 0.9 * ut;
+                printf("bench: unfocus: the simulation ran %.2f s of %.2f s unfocused (#525): %s\n", simRan, ut, unfocusSimOk ? "yes" : "NO");
+                benchUnfocused = false; unfocusPhase = 4; unfocusT0 = GetTime();
+            }
             else if (unfocusPhase == 4 && ut > 2.0) { unfocusPhase = 5; unfocusT0 = GetTime(); unfocusFrames = 0; }
-            else if (unfocusPhase == 5) { ++unfocusFrames; if (ut > 5.0) { printf("bench: unfocus: %.1f FPS before %.0f s unfocused while playing, %.1f FPS after\n", unfocusFpsBefore, benchUnfocus, unfocusFrames / ut); unfocusPhase = 6; } }
+            else if (unfocusPhase == 5) { ++unfocusFrames; if (ut > 5.0) { printf("bench: unfocus: %.1f FPS before %.0f s unfocused while playing, %.1f FPS after -> %s\n", unfocusFpsBefore, benchUnfocus, unfocusFrames / ut, unfocusSimOk ? "PASS" : "FAIL"); unfocusPhase = 6; } }
         }
         if (preloadT0 >= 0.0 && !SpawnPreloadPending()) {
             const WorldStats& ws = GetWorldStats();
@@ -6665,8 +6694,8 @@ int main(int argc, char** argv)
             }
         }
         // Unfocused (alt-tab, #510): the frame still runs, so streaming, uploads, the spawn preload and the loading screen
-        // keep going (skipping whole frames stalled the loading, and the backlog cost more on return); the simulation is
-        // paused (no sim time below) and input and the cursor lock are off. Benches, --bench-window and --play-new runs open
+        // keep going (skipping whole frames stalled the loading, and the backlog cost more on return), and so does the
+        // whole game (#525: time of day, physics, the factory; only the pause menu pauses); input and the cursor lock are off. Benches, --bench-window and --play-new runs open
         // unfocused (#387) and ignore focus; --bench-unfocus scripts it (its own window is never minimized or raised).
         const bool focused = benchUnfocus > 0.0f ? !benchUnfocused : (bench || benchWindow || playNewSeconds > 0.0 || IsWindowFocused());
         {
@@ -6713,7 +6742,7 @@ int main(int argc, char** argv)
             rlSetClipPlanes(nearPlane, 60000.0);
         }
         const bool gameInput = !bench && focused && !uiOpen && gameState == 1 && !loading;
-        world.cameraInputEnabled = player.flyMode && !uiOpen && !ship.piloted;  // free-fly camera only in fly mode
+        world.cameraInputEnabled = player.flyMode && !uiOpen && !ship.piloted && focused;  // free-fly camera only in fly mode; not behind another window (#539)
         const bool alive = !survival.dead;
         // One clamped frame time for everything that moves (bodies, ship, player): clamping only the
         // player let the ground spin away under it during a slow frame.
@@ -6730,7 +6759,7 @@ int main(int argc, char** argv)
         // time owes (none on most frames above 60 FPS, two at 30 FPS). Key and button edges are latched for them in
         // PlayerInput_Step() (playerinput.h); the mouse look turns the view once per frame, the camera interpolates.
         PlayerInput_BeginFrame();
-        const int simSteps = SimClock_BeginFrame(focused ? frameDt : 0.0f); // unfocused: the simulation waits (#510; a pause, as #511)
+        const int simSteps = SimClock_BeginFrame(frameDt); // unfocused too (#525): the world keeps running behind another window
         if (gameState == 1 && gameInput && alive && !loading && !ship.piloted && !Rocket_Boarded() && !player.flyMode) player.look(PlayerInput_Frame().look);
         for (int simStep = 0; simStep < simSteps; ++simStep) {
         const float simDt = SimDt();
@@ -7657,7 +7686,8 @@ int main(int argc, char** argv)
                 pendingMenu.action = MenuAction::SaveAndQuit; menuStep = 10; menuFrames = 0;
             } else if (menuStep == 10 && menuFrames == 3) {
                 const bool fast = lastQuitMs < 1000.0;
-                const bool down = gameState == 0 && WorldJobs().queued() == 0 && TerrainGpu_Pending() == 0 && TerrainArena_Stats().vertexCapacity == 0;
+                // (#556: the teleport's loading screen was still up at the quit; it must not outlive the world)
+                const bool down = gameState == 0 && !loading && WorldJobs().queued() == 0 && TerrainGpu_Pending() == 0 && TerrainArena_Stats().vertexCapacity == 0;
                 menuOk &= fast && down;
                 printf("bench: menus: quit to the menu while streaming took %.0f ms (under 1 s), torn down (#270): %s -> %s\n", lastQuitMs,
                        fast && down ? "yes" : "NO", menuOk ? "PASS" : "FAIL");
@@ -7703,6 +7733,9 @@ int main(int argc, char** argv)
                     player.flyMode = false;
                     { const double q0 = GetTime(); unloadWorld(world); lastQuitMs = (GetTime() - q0) * 1000.0; } // (#270: must never block for seconds)
                     if (bench) printf("bench: quit to the menu: the world unloaded in %.0f ms\n", lastQuitMs);
+                    // A quit from the loading screen (a spawn or teleport in progress, #556) takes it down too: only the in-game
+                    // draw ends it, so it stayed up behind the menu (benches wait out a loading screen and never finished).
+                    loading = false; spawnLoad = false;
                     Animals_Reset();
                     Particles_Clear();
                     worldFresh = false;

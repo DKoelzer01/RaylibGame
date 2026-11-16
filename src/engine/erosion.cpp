@@ -375,6 +375,7 @@ uint64_t ErosionParamsKey(const ErosionParams& p) {
     for (float f : { p.cell, p.k, p.m, p.uplift, p.talusSoft, p.talusHard, p.glacial, p.glacialLine, p.start, p.wind }) mix(&f, sizeof f);
     for (int i : { p.steps, p.floodEvery, p.refine, p.refineSteps, p.margin }) mix(&i, sizeof i);
     if (p.landKey) mix(&p.landKey, sizeof p.landKey); // #504: a world's generation parameters (0: defaults, old caches still load)
+    { const float span = NoiseSeedSpanUnits(); if (span != 64.0f) mix(&span, sizeof span); } // #532: the noise offsets (an A/B span bakes its own)
     return h;
 }
 

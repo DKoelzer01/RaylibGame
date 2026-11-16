@@ -43,12 +43,18 @@ void ApplyFlyInput(Camera3D* camera, const FlyInput& in, float dt, const Vector3
         Vector3 r = Vector3CrossProduct(f, g);
         if (Vector3LengthSqr(r) < 1e-6f) r = Vector3CrossProduct(f, u); // looking straight along up: keep the old right
         r = Vector3Normalize(r);
-        f = Vector3RotateByQuaternion(f, QuaternionFromAxisAngle(g, in.yaw));
-        r = Vector3Normalize(Vector3RotateByQuaternion(r, QuaternionFromAxisAngle(g, in.yaw)));
+        // The up turns with the view (#538): left behind, a quick turn while looking up or down left it tilted against the
+        // new view, a roll that the ease below then took back.
+        const Quaternion yawQ = QuaternionFromAxisAngle(g, in.yaw);
+        f = Vector3RotateByQuaternion(f, yawQ);
+        u = Vector3RotateByQuaternion(u, yawQ);
+        r = Vector3Normalize(Vector3RotateByQuaternion(r, yawQ));
         const float pitchNow = asinf(std::clamp(Vector3DotProduct(f, g), -1.0f, 1.0f));
         const float limit = 87.0f * DEG2RAD;
         const float pitch = std::clamp(pitchNow + in.pitch, -limit, limit) - pitchNow;
-        f = Vector3Normalize(Vector3RotateByQuaternion(f, QuaternionFromAxisAngle(r, pitch))); // about the right: + looks up
+        const Quaternion pitchQ = QuaternionFromAxisAngle(r, pitch);
+        f = Vector3Normalize(Vector3RotateByQuaternion(f, pitchQ)); // about the right: + looks up
+        u = Vector3RotateByQuaternion(u, pitchQ);
         const Vector3 levelUp = Vector3Normalize(Vector3CrossProduct(r, f)); // the up with no roll
         u = Vector3Normalize(Vector3Lerp(u, levelUp, std::min(1.0f, 6.0f * dt)));
         u = Vector3Normalize(Vector3Subtract(u, Vector3Scale(f, Vector3DotProduct(u, f))));
