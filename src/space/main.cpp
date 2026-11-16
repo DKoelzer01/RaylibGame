@@ -402,7 +402,7 @@ int main(int argc, char** argv)
     bool benchFacing = false; // --test-facing (#196)
     bool benchPumpHand = false; // --test-pump-hand (#280): the pump test with a hand pump worked for 60 s
     bool benchPumpBoiler = false; int pumpBoilerPart = -1; // --test-pump-boiler (#229 review): the pipes end at a full boiler; the world loses no water
-    bool benchCaveWater = false; int caveWaterPhase = 0; double caveWaterT0 = 0.0; Vector3 caveAt{}, caveOpenAt{}; // --test-cave-water (#559)
+    bool benchCaveWater = false; int caveWaterPhase = 0; double caveWaterT0 = 0.0; Vector3 caveAt{}, caveOpenAt{}, caveRiverDir{}; float caveLevel = 0.0f, caveDist = 0.0f; // --test-cave-water (#559)
     bool benchPump = false; int pumpPhase = 0, pumpCable = -1; double pumpT0 = 0.0, pumpedAtCut = 0.0; uint32_t pumpPlot = 0; Vector3 pumpBasin{}; float pumpRise = 0.0f; // --test-pump
     bool benchBucket = false; int bucketPhase = 0, bucketTrips = 0; double bucketT0 = 0.0; Vector3 bucketWater{}, bucketBasin{}, bucketField{}; // --test-bucket
     bool benchPond = false; int pondPhase = 0; double pondT0 = 0.0; Vector3 pondDirB{}, pondOutB{}, pondPit{}, pondMid{}; float pondLevelB = 0.0f, pondRB = 0.0f; // --test-pond
@@ -4243,10 +4243,27 @@ int main(int argc, char** argv)
                                 const Vector3 d = Vector3Normalize(Vector3Add(home, Vector3Add(Vector3Scale(t1, e / pf->radius), Vector3Scale(t2, n / pf->radius))));
                                 const PlanetField::WaterSource ws = pf->waterSourceAt(d);
                                 if (ws.kind != 1 || ws.level <= 2.0f || pf->elevation(d) > ws.level - 4.0f) continue; // a river, 4 m deep or more
+                                // ...with an open channel: no ground standing in the water over the height map's bed.
+                                const float eb = pf->elevation(d);
+                                bool open = true;
+                                for (float hgt = eb + 0.5f; hgt < ws.level - 0.3f && open; hgt += 0.75f)
+                                    open = pf->density(Vector3Scale(d, pf->radius + hgt), p->edits.get()) < ISO_LEVEL;
+                                if (!open) continue;
                                 best = dist; wdir = d; level = ws.level;
                             }
                         if (best > 1e29f) { printf("bench: cave water: no river near the start -> FAIL\n"); benchCaveWater = false; }
                         else {
+                            // The water is simulated around the player: go there first (the river can be km from the start).
+                            caveRiverDir = wdir; caveLevel = level; caveDist = best;
+                            player.spawnOn(world, *p, Vector3Normalize(Vector3Add(wdir, Vector3Scale(t1, 30.0f / pf->radius))));
+                            caveWaterPhase = 1; caveWaterT0 = GetTime();
+                        }
+                    } else if (caveWaterPhase == 1) {
+                        if (GetTime() - caveWaterT0 > 4.0 && WorldIdle()) {
+                            const Vector3 wdir = caveRiverDir;
+                            const float level = caveLevel, best = caveDist;
+                            const Vector3 home = pf->findSpawnDir(p->seed);
+                            const Vector3 t1 = Vector3Normalize(Vector3CrossProduct(home, { 0, 1, 0 }));
                             const float bed = pf->elevation(wdir);
                             // Rock on the bed reaching out of the water (as a boulder does), hollowed: a cave inside it whose
                             // cells lie between the bed and the river's level - the generated water's band - roofed by rock.
@@ -4261,11 +4278,19 @@ int main(int argc, char** argv)
                             plot->place({ PartType::Torch, plot->cellAt(plot->toPlot(torchAt)), 0 });
                             Fluid::OnTerrainEdit(*p, caveAt, 5.0f); // as placing a part does: the bricks around it are reclassified
                             // The control: a hole at the bed, open to the water above.
-                            caveOpenAt = Vector3Scale(Vector3Normalize(Vector3Add(wdir, Vector3Scale(t1, 12.0f / pf->radius))), pf->radius + bed - 0.5f); // 12 m beside the rock
+                            // 12 m along the river from the rock (downstream, else upstream), where its channel is open.
+                            const RiverNetwork::Hit rh = pf->rivers() ? pf->rivers()->nearest(wdir, 20.0f) : RiverNetwork::Hit{};
+                            const Vector3 along = rh.found ? rh.down : t1;
+                            for (int sgn = 1; sgn >= -1; sgn -= 2) {
+                                const Vector3 od = Vector3Normalize(Vector3Add(wdir, Vector3Scale(along, sgn * 12.0f / pf->radius)));
+                                const float eo = pf->elevation(od);
+                                caveOpenAt = Vector3Scale(od, pf->radius + eo - 0.5f);
+                                if (pf->density(Vector3Scale(od, pf->radius + eo + 1.5f), p->edits.get()) < ISO_LEVEL) break;
+                            }
                             ApplyTerrainEdit(*p, TerrainEdit{ caveOpenAt, 1.5f, -1.0f, true });
                             printf("bench: cave water: river %.1f km from the start, water at %.1f m over a bed at %.1f m; a rock on the bed hollowed (a roofed cave in the water band), torch placed\n",
                                    best / 1000.0f, level, bed);
-                            caveWaterPhase = 1; caveWaterT0 = GetTime();
+                            caveWaterPhase = 2; caveWaterT0 = GetTime();
                         }
                     } else if (GetTime() - caveWaterT0 > 8.0) {
                         const float inCave = Fluid::WaterAt(*p, caveAt, 0.9f), inHole = Fluid::WaterAt(*p, caveOpenAt, 1.0f);
@@ -4925,8 +4950,11 @@ int main(int argc, char** argv)
                         const Vector3 home = pf->findSpawnDir(p->seed);
                         const Vector3 t1 = Vector3Normalize(Vector3CrossProduct(home, { 0, 1, 0 })), t2 = Vector3CrossProduct(t1, home);
                         float best = 1e30f;
-                        for (float e = -3000.0f; e <= 3000.0f; e += 16.0f)
-                            for (float n = -3000.0f; n <= 3000.0f; n += 16.0f) {
+                        // Out to 3 km, then 6 and 12 km (coarser) if nothing qualifies: a seed's geography is not fixed (#532
+                        // moved every seed's land; seed 42's sea went out of the old 3 km square).
+                        for (float span = 3000.0f; span <= 12000.0f && best > 1e29f; span *= 2.0f)
+                        for (float e = -span; e <= span; e += 16.0f * span / 3000.0f)
+                            for (float n = -span; n <= span; n += 16.0f * span / 3000.0f) {
                                 const float dist = sqrtf(e * e + n * n);
                                 if (dist >= best) continue;
                                 const Vector3 d = Vector3Normalize(Vector3Add(home, Vector3Add(Vector3Scale(t1, e / pf->radius), Vector3Scale(t2, n / pf->radius))));
@@ -4948,7 +4976,7 @@ int main(int argc, char** argv)
                                     }
                                 }
                             }
-                        if (best > 1e29f) { printf("bench: flow: no inland water with a low shore near the start -> FAIL\n"); benchFlow = false; }
+                        if (best > 1e29f) { printf("bench: flow: no water with a low shore within 12 km of the start -> FAIL\n"); benchFlow = false; }
                         else {
                             const float shore = (float)flowStart;
                             printf("bench: flow: water %.0f m from the start, level %.1f m, shore %.0f m out\n", best, flowLevel, shore);
