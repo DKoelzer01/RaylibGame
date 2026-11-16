@@ -1413,7 +1413,10 @@ VoxelMaterial PlanetField::materialSkyHinted(Vector3 p, float base, float fp, Ve
     // A coarse LOD mesh strays from the height map it approximates by up to a couple of samples, so
     // its "depth" must allow for that, or whole patches of surface read as buried (black, no sun) and
     // take underground materials (seen from orbit as black triangles on peaks and rings along the grid).
-    const float slack = fp > 1.0f ? 2.0f * fp : 0.0f;
+    // On steep ground a vertex a sample off sideways stands up to (footprint x gradient) under the height map: the slack
+    // grows as the surface tilts (#541: steep rock walls at mid range read as half-buried - dark blotches, no sky).
+    const float upDot = std::max(0.25f, Vector3DotProduct(normal, up));
+    const float slack = fp > 1.0f ? 2.0f * fp / upDot : 0.0f;
     sky = std::clamp(1.0f - (depth - 2.0f - slack) / 8.0f, 0.0f, 1.0f); // buried more than ~10 m: no sky (caves, deep pits)
     if (moon) return depth < 2.5f + slack ? VoxelMaterial::Regolith : VoxelMaterial::Rock; // grey dust over rock (asteroid palette)
     // Bare rock is its stratum's (#587): granite, basalt, sandstone, limestone, marble, or plain (soft) rock.
