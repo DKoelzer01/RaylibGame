@@ -268,7 +268,7 @@ namespace {
             terrainTool.heldTool = "stone_pickaxe";
             return true;
         });
-        add("dig 72 stone", [] { return DigFor("stone", 72, 5.0f); });
+        add("dig 72 stone (any rock, #587)", [] { return DigFor("any_stone", 72, 5.0f); });
         add("dig 28 clay (#206: found, not crafted); craft a crucible mould and a campfire", [] { return DigClay(28) && Craft("crucible_mold", 1) && Craft("campfire", 1); });
         add("place the campfire and fire the crucible", [] {
             static bool started = false;
@@ -468,7 +468,7 @@ namespace {
     void BuildFull() {
         auto add = [](const std::string& n, std::function<bool()> f) { steps.push_back({ n, std::move(f) }); };
         add("mine for the MV and HV ladder (iron, coal, copper) and dig stone", [] {
-            return MineOre("iron_ore", 185) && MineOre("coal", 530) && MineOre("copper_ore", 160) && DigFor("stone", 40, 6.0f);
+            return MineOre("iron_ore", 185) && MineOre("coal", 530) && MineOre("copper_ore", 160) && DigFor("any_stone", 40, 6.0f);
         });
         add("smelt 170 iron in the kiln", Run("kiln", { { "iron_ore", 170 }, { "coal", 34 } }, "iron_ingot", 170));
         add("smelt 145 copper in the kiln", Run("kiln", { { "copper_ore", 145 }, { "coal", 29 } }, "copper_ingot", 145));

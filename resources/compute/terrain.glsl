@@ -227,12 +227,6 @@ float biomeShape(vec3 dir, float h, float fp) {
         precise float swell = 0.55 + 0.45 * fractal(N_MOIST, 1, x * 6.0, y * 6.0, z * 6.0);
         dh += desert * crest * 9.0 * swell * tSmooth(4.0, 20.0, h) * clamp(2.0 - xdiv(fp, 24.0), 0.0, 1.0);
     }
-    if (badlands > 0.0) {
-        const float step_ = 14.0;
-        precise float t = xdiv(h, step_), f = t - floor(t);
-        precise float terraced = (floor(t) + tSmooth(0.72, 0.92, f)) * step_;
-        dh += (terraced - h) * badlands;
-    }
     if (swamp > 0.0) {
         precise float floorH = 3.5 + 1.5 * fractal(N_BIOME_JITTER, 1, x, y, z);
         if (h > floorH) dh += (floorH - h) * 0.85 * swamp;

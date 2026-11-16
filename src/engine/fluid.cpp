@@ -240,12 +240,37 @@ void Classify(const Site& s, Brick& b, const BodyRef& ref, uint8_t& faces) {
                     b.reach = true;
                     break;
                 }
+            // The column's ground first: generated water reaches a cell only through open cells from the water's surface
+            // down (#559: a cave dug under a river, roofed by rock, filled with the river's water when a torch placed in
+            // it reclassified its brick). Dug through, the brick is reclassified and the river pours in.
+            float dcCol[B];
+            bool solidCol[B];
+            for (int z = 0; z < B; ++z) {
+                const Vector3 c = s.cellCentre(ci, cj, b.bk * B + z);
+                const float r = Vector3Length(c);
+                dcCol[z] = r < top ? ref.field->density(c, ref.edits.get()) : 0.0f;
+                solidCol[z] = (r < top && dcCol[z] >= ISO_LEVEL) || (ref.parts && ref.parts->solidAt(c)); // build parts hold water too (#391)
+            }
+            int coveredTo = -1; // cells at or below this z have ground between them and the water's surface
+            if (kind) {
+                bool roof = false; // ground above the brick, under the level
+                for (int k = B; !roof && k < 2 * B; ++k) {
+                    const Vector3 q = s.cellCentre(ci, cj, b.bk * B + k);
+                    const float rq = Vector3Length(q);
+                    if (rq - 0.5f >= level || rq >= top) break;
+                    roof = ref.field->density(q, ref.edits.get()) >= ISO_LEVEL || (ref.parts && ref.parts->solidAt(q));
+                }
+                if (roof) coveredTo = B - 1;
+                else
+                    for (int z = B - 1; z >= 0; --z)
+                        if (solidCol[z] && Vector3Length(s.cellCentre(ci, cj, b.bk * B + z)) - 0.5f < level) { coveredTo = z - 1; break; }
+            }
             for (int z = 0; z < B; ++z) {
                 const int i = Idx(x, y, z);
                 const Vector3 c = s.cellCentre(ci, cj, b.bk * B + z);
                 const float r = Vector3Length(c);
-                const float dc = r < top ? ref.field->density(c, ref.edits.get()) : 0.0f;
-                const bool solid = (r < top && dc >= ISO_LEVEL) || (ref.parts && ref.parts->solidAt(c)); // build parts hold water too (#391)
+                const float dc = dcCol[z];
+                const bool solid = solidCol[z];
                 uint8_t fl = solid ? kSolid : 0;
                 // How much of an open cell is ground (#454), in cells near the surface: 16 points (2 x 2 across, 4 heights)
                 // interpolated from the density at the cell's 8 corners - as marching cubes draws the ground. The corners
@@ -278,8 +303,11 @@ void Classify(const Site& s, Brick& b, const BodyRef& ref, uint8_t& faces) {
                 // Dug: open only because of an edit. Infinite water feeds only these (the real ground has
                 // crags the height map doesn't: natural dips by a river are not to be flooded).
                 if (!solid && r < bed + 4.0f && r < top && ref.field->density(c, nullptr) >= ISO_LEVEL) fl |= kDug;
+                // An open cell in the water's band under a roof (#559) gets no generated water, but the water may reach it
+                // from the side - a tunnel into a bank, a hollow in built rock: fed like a dug cell, and a sealed cave stays dry.
+                if (!solid && kind && kind != 5 && z <= coveredTo && r - 0.5f < level && r > bed - 0.5f) fl |= kDug;
                 uint8_t tg = 0;
-                if (!solid && kind && r - 0.5f < level && r > bed - 0.5f) {
+                if (!solid && kind && z > coveredTo && r - 0.5f < level && r > bed - 0.5f) {
                     tg = (uint8_t)std::clamp((int)lroundf((level - (r - 0.5f)) * 255.0f), 0, 255);
                     if ((int)tg - sh > 0 && kind != 5) fl |= released == 1 ? kDug : released == 2 ? (kSource | kStatic | kSink) : (kSource | kStatic);
                     if (tg > 0 && kind == 5) {

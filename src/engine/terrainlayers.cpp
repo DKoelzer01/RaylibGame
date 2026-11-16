@@ -86,7 +86,7 @@ namespace {
 }
 
 const char* TerrainLayerName(int layer) {
-    static const char* names[LayerCount] = { "dirt", "sand", "gravel", "grass", "snow", "ice", "stone", "clay", "pebbles", "silt", "mud" };
+    static const char* names[LayerCount] = { "dirt", "sand", "gravel", "grass", "snow", "ice", "stone", "clay", "granite", "basalt", "sandstone", "limestone", "marble", "pebbles", "silt", "mud" };
     return layer >= 0 && layer < LayerCount ? names[layer] : "?";
 }
 
@@ -209,6 +209,43 @@ Image GenerateTerrainLayerImage(int layer, int size) {
                     c = Scale(c, 0.96f + 0.08f * Rand01(x, y, 114u));
                     break;
                 }
+                // Rock strata (#587): the colours and grain of the building blocks (parts.fs polished stone and marble),
+                // as natural rock: no slab seams, joints and bedding instead.
+                case LayerGranite: { // pink-grey, coarse mineral speckle (dark mica, pale feldspar), a few joints
+                    c = Mix({ 150, 128, 122, 255 }, { 186, 164, 156, 255 }, Fbm(u, v, 6, 3, 91u));
+                    const float g = Rand01(x / 2, y / 2, 92u);
+                    if (g > 0.86f) c = Scale(c, 0.55f); else if (g < 0.10f) c = Mix(c, { 226, 206, 198, 255 }, 0.7f);
+                    float f1, f2; uint32_t id;
+                    Worley(u, v, 4, 93u, f1, f2, id);
+                    c = Mix(c, Scale(c, 0.5f), (1.0f - std::clamp((f2 - f1) * 60.0f, 0.0f, 1.0f)) * 0.7f);
+                    break;
+                }
+                case LayerBasalt: { // dark grey, fine grain, columnar cracks
+                    c = Mix({ 46, 46, 52, 255 }, { 78, 78, 86, 255 }, 0.6f * Fbm(u, v, 12, 3, 101u) + 0.2f * Rand01(x, y, 102u));
+                    float f1, f2; uint32_t id;
+                    Worley(u, v, 9, 103u, f1, f2, id);
+                    c = Scale(c, 0.92f + 0.16f * ((id & 0xFF) / 255.0f));
+                    c = Mix(c, { 22, 22, 26, 255 }, (1.0f - std::clamp((f2 - f1) * 45.0f, 0.0f, 1.0f)) * 0.8f);
+                    break;
+                }
+                case LayerSandstone: { // warm tan, wavy bedding, sandy grain
+                    const float bed = 0.5f + 0.5f * sinf((v * 11.0f + 0.6f * Fbm(u, v, 3, 3, 111u)) * 6.2831853f);
+                    c = Mix({ 186, 152, 102, 255 }, { 228, 198, 148, 255 }, 0.45f * bed + 0.35f * Fbm(u, v, 8, 3, 112u));
+                    c = Scale(c, 0.93f + 0.14f * Rand01(x, y, 113u));
+                    break;
+                }
+                case LayerLimestone: { // pale cream-grey, soft mottling, small pits and fossil specks
+                    c = Mix({ 186, 182, 166, 255 }, { 222, 218, 204, 255 }, Fbm(u, v, 6, 4, 121u));
+                    if (ValueNoise(u, v, 64, 122u) > 0.8f) c = Scale(c, 0.78f);
+                    if (Rand01(x, y, 123u) > 0.993f) c = Scale(c, 0.6f);
+                    break;
+                }
+                case LayerMarble: { // near-white, soft grey veins
+                    const float vein = fabsf(sinf((u * 0.8f + v) * 6.2831853f * 2.0f + Fbm(u, v, 4, 4, 131u) * 7.0f));
+                    c = Mix({ 226, 224, 220, 255 }, { 246, 245, 242, 255 }, Fbm(u, v, 6, 3, 132u));
+                    c = Mix(Scale(c, 0.68f), c, std::clamp(vein / 0.12f, 0.0f, 1.0f));
+                    break;
+                }
                 default: c = MAGENTA;
             }
             px[y * size + x] = c;
@@ -234,6 +271,11 @@ namespace {
         /*ice */ { 2.5f, 0.10f, 0.12f, 0.8f, 1.0f },
         /*ston*/ { 6.0f, 0.68f, 0.20f, 3.0f, 0.0f },
         /*clay*/ { 4.0f, 0.55f, 0.12f, 2.0f, 0.0f }, // smooth and a little sheeny; the dark cracks are grooves
+        /*gran*/ { 5.0f, 0.62f, 0.15f, 2.5f, 0.0f }, // rock strata (#587)
+        /*basa*/ { 6.0f, 0.70f, 0.12f, 3.0f, 0.0f },
+        /*sand*/ { 5.0f, 0.80f, 0.10f, 2.5f, 0.0f },
+        /*lime*/ { 4.5f, 0.72f, 0.12f, 2.5f, 0.0f },
+        /*marb*/ { 3.0f, 0.40f, 0.10f, 1.5f, 0.0f },
         /*pebb*/ { 8.0f, 0.60f, 0.15f, 3.5f, 0.0f }, // river stones: big smooth domes (#595)
         /*silt*/ { 2.5f, 0.88f, 0.06f, 1.5f, 0.0f },
         /*mud */ { 3.0f, 0.40f, 0.25f, 1.5f, 0.0f }, // wet: smooth, sheeny in its puddled patches

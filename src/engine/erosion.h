@@ -22,10 +22,13 @@
 #include <functional>
 #include <string>
 #include <vector>
+#include "strata.h"
+
+using StrataFn = std::function<StrataColumn(Vector3)>; // #587: the rock column at a direction (PlanetField::strataColumn)
 
 // Bump with any change to the bake's code (Simulate, SetRock, the refinement, the pond extraction): a cache from
 // another version or other parameters is baked again rather than loaded (#355 review).
-constexpr uint32_t kErosionBakeVersion = 7; // 7: the noise seed offsets changed (#532: every input differs); 6: wind (aeolian) erosion, #370
+constexpr uint32_t kErosionBakeVersion = 9; // 9: canyons in the bake input (#544); 8: rock strata (#587); 7: the noise seed offsets changed (#532); 6: wind (aeolian) erosion, #370
 struct ErosionParams {
     float cell = 200.0f;      // m, coarse cell at a face centre (gnomonic cells shrink toward the face edges)
     int steps = 400;
@@ -52,7 +55,8 @@ float NoiseSeedSpanUnits(); // voxel.cpp (#532): the noise seed offset span, in 
 class PlanetErosion {
 public:
     // height(dir, footprint): the input height (m above sea level), thread-safe. `threads` for sampling and faces.
-    void build(const std::function<float(Vector3, float)>& height, float planetRadius, unsigned int seed, const ErosionParams& p, int threads);
+    // strata (#587): the rock column per cell (layer hardness and erodibility); empty: the old hardness noise and bands.
+    void build(const std::function<float(Vector3, float)>& height, float planetRadius, unsigned int seed, const ErosionParams& p, int threads, const StrataFn& strata = StrataFn());
     // The baked height (m above sea level) at dir for a sample footprint (m): fine grid under 2 fine cells, else coarse.
     float heightAt(Vector3 dir, float footprint) const;
     // The height and its uphill gradient (m per m, in the tangent plane at dir): central differences one cell apart, so
@@ -64,6 +68,7 @@ public:
     bool load(const std::string& path, float planetRadius, unsigned int seed, uint64_t paramsKey); // false: missing, other seed, radius, parameters or code version
     uint64_t hash() const { return hashValue; }
     float buildSeconds = 0.0f, coarseSeconds = 0.0f, refineSeconds = 0.0f, maxCut = 0.0f, maxRaise = 0.0f;
+    float heightScale = 1.0f; // #587: the bake's result = its simulation heights x this (strata are laid in simulation heights)
     int cells() const { return 6 * n * n; }
     int fineCells() const { return 6 * fe * fe; }
     float fineCell() const { return fe > 0 ? fineMetres : 0.0f; }

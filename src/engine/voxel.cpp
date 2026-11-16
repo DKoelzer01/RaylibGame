@@ -30,6 +30,11 @@ const char* VoxelMaterialName(VoxelMaterial m) {
         case VoxelMaterial::Grass: return "grass";
         case VoxelMaterial::Snow: return "snow";
         case VoxelMaterial::Clay: return "clay";
+        case VoxelMaterial::Granite: return "granite";
+        case VoxelMaterial::Basalt: return "basalt";
+        case VoxelMaterial::Sandstone: return "sandstone";
+        case VoxelMaterial::Limestone: return "limestone";
+        case VoxelMaterial::Marble: return "marble";
         case VoxelMaterial::Pebbles: return "pebbles";
         case VoxelMaterial::Silt: return "silt";
         case VoxelMaterial::Mud: return "mud";
@@ -272,6 +277,7 @@ static float ValleyCarve(float v) {
 struct PlanetField::ErosionState { std::atomic<bool> active{ false }; PlanetErosion bake; std::once_flag pondOnce; std::unordered_map<uint64_t, int> pondByCell; }; // pondByCell: 260 m pond cell -> the bake's pond there (#360)
 
 const PlanetErosion* PlanetField::erosion() const {
+    if (tIgnoreBake) return nullptr;
     return erosionState && erosionState->active.load(std::memory_order_acquire) ? &erosionState->bake : nullptr;
 }
 
@@ -297,7 +303,7 @@ void PlanetField::bakeErosion(const std::string& cachePath) {
     const float loadMs = std::chrono::duration<float, std::milli>(std::chrono::steady_clock::now() - tl0).count();
     if (!loaded) {
         const int threads = std::max(1u, std::thread::hardware_concurrency());
-        b.build([this](Vector3 d, float fp) { return land(d, fp).h; }, radius, fieldSeed, p, threads);
+        b.build([this](Vector3 d, float fp) { tBakeInput = true; const float h = land(d, fp).h; tBakeInput = false; return h; }, radius, fieldSeed, p, threads, [this](Vector3 d) { return strataColumn(d); }); // + the rock strata (#587)
         const auto ts0 = std::chrono::steady_clock::now();
         if (!cachePath.empty()) b.save(cachePath);
         LOG_INFO("Erosion", "cache saved in %.1f s\n", std::chrono::duration<float>(std::chrono::steady_clock::now() - ts0).count());
@@ -338,6 +344,7 @@ PlanetField::Land PlanetField::land(Vector3 dir, float fp) const {
         const PlanetErosion::Slope s = eroded->slopeAt(dir, fp);
         h = s.h;
         if (gGullies && fp < 450.0f) h += ErosionGullies({ sx, sy, sz }, dir, s.grad, fp, fieldSeed, Smoothstep(2.0f, 15.0f, s.h));
+        h += cliffFace({ sx, sy, sz }, h, s.grad, fp); // one face per steep resistant layer (#588)
         l.ridge = std::max(0.0f, h - 150.0f);
     } else {
         h = base;
@@ -354,7 +361,14 @@ PlanetField::Land PlanetField::land(Vector3 dir, float fp) const {
     l.valley = 1.0f;
     // Ravines: rare narrow canyons (~60 m wide, up to ~90 m deep, steep sqrt-profile walls) in some
     // land regions, faded out where samples are too far apart to resolve them.
-    const float ravineWeight = landMask * std::clamp(2.0f - fp / 24.0f, 0.0f, 1.0f);
+    // With the bake (#544, Plan 9) they are canyons in its input instead: a ~200 m notch along the same lines (wide enough
+    // for the 50 m grid) on soft rock (strataColumn), which the rivers find and cut, so they come out eroded and wet.
+    // The baked terrain gets no post-bake cut.
+    if (tBakeInput) {
+        const float notch = canyonFault(sx, sy, sz);
+        if (notch > 0.0f) h -= notch * 60.0f * landMask;
+    }
+    const float ravineWeight = eroded || tBakeInput ? 0.0f : landMask * std::clamp(2.0f - fp / 24.0f, 0.0f, 1.0f);
     if (ravineWeight > 0.0f) {
         const float region = Smoothstep(0.25f, 0.4f, ravineMask.fractal(2, sx, sy, sz));
         if (region > 0.0f) {
@@ -635,12 +649,7 @@ float PlanetField::biomeShape(Vector3 dir, float h, float fp) const {
         const float swell = 0.55f + 0.45f * moistNoise.fractal(1, x * 6.0f, y * 6.0f, z * 6.0f);
         dh += desert * crest * 9.0f * swell * smooth(4.0f, 20.0f, h) * std::clamp(2.0f - fp / 24.0f, 0.0f, 1.0f);
     }
-    if (badlands > 0.0f) {
-        // Mesas: the height in 14 m steps, each step a flat top that rises sharply at its edge.
-        const float step = 14.0f, t = h / step, f = t - floorf(t);
-        const float terraced = (floorf(t) + smooth(0.72f, 0.92f, f)) * step;
-        dh += (terraced - h) * badlands;
-    }
+    // (The badlands' 14 m mesa steps went with the cliff terraces, #543: mesas come from caprock strata in the bake, #587.)
     if (swamp > 0.0f) {
         // Swamps: pulled down toward a low, gently rolling floor 2-5 m above the sea.
         const float floorH = 3.5f + 1.5f * biomeJitter.fractal(1, x, y, z);
@@ -1359,6 +1368,18 @@ Vector3 PlanetField::nearestBiomeDir(Vector3 home, Biome b) const {
     return out;
 }
 
+// The surface material of a stratum's rock (#587; soft rock is plain rock).
+static VoxelMaterial RockMaterialOf(RockType r) {
+    switch (r) {
+        case RockType::Granite: return VoxelMaterial::Granite;
+        case RockType::Basalt: return VoxelMaterial::Basalt;
+        case RockType::Sandstone: return VoxelMaterial::Sandstone;
+        case RockType::Limestone: return VoxelMaterial::Limestone;
+        case RockType::Marble: return VoxelMaterial::Marble;
+        default: return VoxelMaterial::Rock;
+    }
+}
+
 VoxelMaterial PlanetField::materialSkyHinted(Vector3 p, float base, float fp, Vector3 normal, float& sky, const float* elevHint, const Column3D* colHint) const {
     sky = 1.0f;
     const float d = sqrtf(p.x * p.x + p.y * p.y + p.z * p.z);
@@ -1377,9 +1398,11 @@ VoxelMaterial PlanetField::materialSkyHinted(Vector3 p, float base, float fp, Ve
     const float slack = fp > 1.0f ? 2.0f * fp : 0.0f;
     sky = std::clamp(1.0f - (depth - 2.0f - slack) / 8.0f, 0.0f, 1.0f); // buried more than ~10 m: no sky (caves, deep pits)
     if (moon) return depth < 2.5f + slack ? VoxelMaterial::Regolith : VoxelMaterial::Rock; // grey dust over rock (asteroid palette)
-    if (depth < -15.0f) return Vector3DotProduct(normal, up) > 0.35f ? VoxelMaterial::Grass : VoxelMaterial::Rock; // floating islands: turf on top, rock beneath
+    // Bare rock is its stratum's (#587): granite, basalt, sandstone, limestone, marble, or plain (soft) rock.
+    auto rockHere = [&] { return RockMaterialOf(rockTypeAt(p)); };
+    if (depth < -15.0f) return Vector3DotProduct(normal, up) > 0.35f ? VoxelMaterial::Grass : rockHere(); // floating islands: turf on top, rock beneath
     // Outcrops and boulders are bare rock (snow still caps them up high, below).
-    if (depth < 2.5f + slack && surfaceElevation < 1050.0f && rockFeature(p, d, radius + surfaceElevation, fp) > -0.35f) return VoxelMaterial::Rock;
+    if (depth < 2.5f + slack && surfaceElevation < 1050.0f && rockFeature(p, d, radius + surfaceElevation, fp) > -0.35f) return rockHere();
     if (depth < 2.5f + slack) {
         // Surface biome from height above sea level, latitude, slope and a climate wobble. The top
         // ~0.6 m is the surface material; below it a soil layer (dirt under grass, sand under sand,
@@ -1428,14 +1451,14 @@ VoxelMaterial PlanetField::materialSkyHinted(Vector3 p, float base, float fp, Ve
                 if (pondShore && patch > -0.3f) return VoxelMaterial::Mud;
             }
         }
-        if (slope > 0.45f) return VoxelMaterial::Rock;                                                       // cliffs: bare stone
+        if (slope > 0.45f) return rockHere();                                                               // cliffs: bare stone
         if (e < -80.0f) return VoxelMaterial::Gravel;                                                        // deep sea floor
         if (e < 6.0f + 4.0f * wobble) return VoxelMaterial::Sand;                                            // beaches, shallows
         // Biomes (Plan 5 B). The terrain shader tints each by the climate (red sand in the badlands,
         // dry grass on the savanna, dark mud in swamps).
         const Biome biome = biomeAt(up, e);
         if (biome == Biome::Desert) return VoxelMaterial::Sand;                                              // dunes all the way down
-        if (biome == Biome::Badlands) return slope > 0.18f ? VoxelMaterial::Rock : skin ? VoxelMaterial::Sand : VoxelMaterial::Rock; // red sand over banded rock
+        if (biome == Biome::Badlands) return slope > 0.18f ? rockHere() : skin ? VoxelMaterial::Sand : rockHere(); // red sand over banded rock
         if (slope > 0.3f || e > 800.0f + 100.0f * wobble) return VoxelMaterial::Gravel;                     // scree, alpine
         if (biome == Biome::Tundra) return skin ? VoxelMaterial::Gravel : VoxelMaterial::Regolith;          // tundra: stony ground over dirt
         if (biome == Biome::Swamp) { // mud flats between the reeds: clay (#206), and clay under the swamp's turf
@@ -1453,7 +1476,7 @@ VoxelMaterial PlanetField::materialSkyHinted(Vector3 p, float base, float fp, Ve
     }
     // Ore: deposits of one kind, and scattered pockets of the common ores (oreKind).
     if (depth > 3.0f && oreKind(p, depth) >= 0) return VoxelMaterial::Ore;
-    return VoxelMaterial::Rock;
+    return rockHere();
 }
 
 Vector3 PlanetField::fallbackUp(Vector3 p) const {
@@ -2091,7 +2114,9 @@ void BuildChunkMeshFromBase(const DensityField& field, const TerrainDeltas& delt
                 out.matIds[v] = (unsigned char)m; // #480: the arena's per-chunk palette
                 // The legacy one-hot weight (per-chunk draws, grass scattering): materials past the 8 channels show as
                 // their nearest (clay as dirt).
-                const int mi = m == VoxelMaterial::Pebbles ? (int)VoxelMaterial::Gravel : (m == VoxelMaterial::Clay || m == VoxelMaterial::Silt || m == VoxelMaterial::Mud) ? (int)VoxelMaterial::Regolith : (int)m;
+                const int mi = m == VoxelMaterial::Pebbles ? (int)VoxelMaterial::Gravel                                              // river stones as gravel (#595)
+                             : (m == VoxelMaterial::Clay || m == VoxelMaterial::Silt || m == VoxelMaterial::Mud) ? (int)VoxelMaterial::Regolith
+                             : (m >= VoxelMaterial::Granite && m <= VoxelMaterial::Marble) ? (int)VoxelMaterial::Rock : (int)m; // rock strata (#587): as rock
                 if (mi < 4) out.colors[v * 4 + mi] = 255;
                 else if (mi < 6) out.texcoords[v * 2 + (mi - 4)] = 1.0f;
                 else out.texcoords2[v * 2 + (mi - 6)] = 1.0f;
@@ -2204,23 +2229,72 @@ int PlanetField::depositNear(Vector3 p, float reach) const {
     return best;
 }
 
-const char* PlanetField::stoneKind(Vector3 p) const {
-    if (moon) return "basalt"; // the maria: dark basalt plains
-    const float d = Vector3Length(p);
-    if (d < 1.0f) return "stone";
-    const Vector3 dir = Vector3Scale(p, 1.0f / d);
-    const float surface = radius + elevation(dir, 8.0f);
-    const float depth = surface - d;
-    // Marble: small pockets below 20 m (the vein noise at a coarse scale).
-    if (depth > 20.0f && fabsf(veins.fractal(1, p.x * 0.2f, p.y * 0.2f, p.z * 0.2f)) < 0.05f) return "marble";
-    if (depth > 60.0f) return "basalt";
-    const Land l = land(dir, 32.0f);
-    if (l.h < 0.0f) return "basalt";            // the sea floor
-    if (l.mountain > 0.4f) return "granite";    // the ranges
-    if (l.h < 25.0f) return "sandstone";        // low coastal land
-    // Broad regions of granite and limestone elsewhere.
-    return climate.fractal(1, p.x * 0.3f, p.y * 0.3f, p.z * 0.3f) > 0.15f ? "granite" : "limestone";
+StrataColumn PlanetField::strataColumn(Vector3 dir) const {
+    // The continent value at a fixed coarse footprint: the bake's cells and the mesher's vertices see the same province.
+    const float sx = dir.x * radius, sy = dir.y * radius, sz = dir.z * radius;
+    const float c = continents.fractalLimited(4, 2000.0f, sx, sy, sz) - 0.15f * gen.ocean;
+    StrataColumn col = Strata_Column({ sx, sy, sz }, c, fieldSeed);
+    col.hardShare = (uint8_t)std::clamp(col.hardShare * gen.cliffs, 0.0f, 255.0f); // New World "Cliffs and canyons" (#589)
+    if (canyonFault(sx, sy, sz) > 0.3f) { col.province = 0; col.hardShare = 0; } // canyon lines are shattered, soft rock (#544)
+    return col;
 }
+
+float PlanetField::canyonFault(float sx, float sy, float sz) const {
+    // The ravine lines (zero crossings of `ravines` in the `ravineMask` regions) as a 0..1 notch ~200 m wide (#544).
+    const float region = Smoothstep(0.25f, 0.4f, ravineMask.fractal(2, sx, sy, sz));
+    if (region <= 0.0f) return 0.0f;
+    const float r = fabsf(ravines.fractal(2, sx, sy, sz));
+    if (r >= 0.02f) return 0.0f;
+    const float t = 1.0f - r / 0.02f;
+    return t * t * (3.0f - 2.0f * t) * region;
+}
+
+// The strata column at a body-local point: it varies over kilometres, so it is cached per thread on a 16 m grid (the
+// mesher asks for every rock vertex, land() for every fine sample on steep rock).
+static const StrataColumn& CachedColumn(const PlanetField& pf, Vector3 p, float d) {
+    struct Entry { const PlanetField* f = nullptr; int32_t x = 0, y = 0, z = 0; StrataColumn c; };
+    thread_local Entry cache[1024];
+    const int32_t qx = (int32_t)floorf(p.x / 16.0f), qy = (int32_t)floorf(p.y / 16.0f), qz = (int32_t)floorf(p.z / 16.0f);
+    Entry& e = cache[((uint32_t)qx * 73856093u ^ (uint32_t)qy * 19349663u ^ (uint32_t)qz * 83492791u) & 1023u];
+    if (e.f != &pf || e.x != qx || e.y != qy || e.z != qz) { e.f = &pf; e.x = qx; e.y = qy; e.z = qz; e.c = pf.strataColumn(Vector3Scale(p, 1.0f / d)); }
+    return e.c;
+}
+
+RockType PlanetField::rockTypeAt(Vector3 p) const {
+    if (moon) return RockType::Basalt; // the maria: dark basalt plains
+    const float d = Vector3Length(p);
+    if (d < 1.0f) return RockType::Soft;
+    const PlanetErosion* eroded = erosion();
+    const float scale = eroded && eroded->heightScale > 0.0f ? eroded->heightScale : 1.0f;
+    return Strata_RockAt(CachedColumn(*this, p, d), (d - radius) / scale, fieldSeed);
+}
+
+float PlanetField::cliffFace(Vector3 s, float h, Vector3 grad, float fp) const {
+    // Plan 9 step 5 (#588): the bake's 50 m grid spreads a resistant layer's outcrop over a cell or two, never sheer.
+    // Where the bake left the ground steep and the layer here is resistant, its height range is redistributed into one
+    // face in the layer's middle half, a ledge above it and a talus apron below; the column keeps its mean height and
+    // the soft layers between stay as the bake made them. One face per resistant layer (they are irregular: 40-150 m,
+    // 35-60% of the layers, warped and tilted), not the regular treads of the old terraces (#543). Granite cores keep
+    // the bake's shape. Fine footprints only (faded out by 32 m).
+    if (!gCliffFaces || fp >= 32.0f || h < 2.0f) return 0.0f;
+    const float steep = Smoothstep(0.6f, 1.2f, Vector3Length(grad));
+    if (steep <= 0.0f) return 0.0f;
+    const float d = Vector3Length(s);
+    if (d < 1.0f) return 0.0f;
+    const StrataColumn& c = CachedColumn(*this, s, d);
+    if (c.province == 1) return 0.0f;
+    const PlanetErosion* eroded = erosion();
+    const float scale = eroded && eroded->heightScale > 0.0f ? eroded->heightScale : 1.0f;
+    const float hs = h / scale;
+    if (Strata_RockAt(c, hs, fieldSeed) == RockType::Soft) return 0.0f;
+    const float thick = (c.province == 2 ? 0.6f : 1.0f) * c.thick;
+    const float t = (hs + c.offset) / thick, f = t - floorf(t);
+    const float face = Smoothstep(0.25f, 0.75f, f);
+    return (face - f) * thick * scale * steep * std::clamp(2.0f - fp / 16.0f, 0.0f, 1.0f);
+}
+
+// The rock item at a point: its stratum's (#587: one data source with the bake and the surface material).
+const char* PlanetField::stoneKind(Vector3 p) const { return Strata_Item(rockTypeAt(p)); }
 
 const char* GemForStone(const char* stone) {
     if (!stone) return nullptr;

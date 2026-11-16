@@ -76,7 +76,7 @@ namespace {
     // "3 x Iron ingot" as a link to its page (or ??? when hidden by "Discovered only").
     void Link(const std::string& id, int count, int uid) {
         ImGui::PushID(uid);
-        if (IsWildcardItem(id)) { ImGui::TextUnformatted((std::to_string(count) + " x " + (id == "any_planks" ? "any planks" : id == "any_log" ? "any log" : id)).c_str()); ImGui::PopID(); return; }
+        if (IsWildcardItem(id)) { ImGui::TextUnformatted((std::to_string(count) + " x " + (id == "any_planks" ? "any planks" : id == "any_log" ? "any log" : id == "any_stone" ? "any stone" : id)).c_str()); ImGui::PopID(); return; }
         if (!Visible(id)) { ImGui::TextDisabled("%d x ???", count); ImGui::PopID(); return; }
         Icon(id, 20.0f);
         ImGui::SameLine();

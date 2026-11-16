@@ -9,7 +9,7 @@
 bool WorldGenParams::isDefault() const {
     const WorldGenParams d;
     return ocean == d.ocean && mountains == d.mountains && roughness == d.roughness && biomeSize == d.biomeSize &&
-           resources == d.resources && erosion == d.erosion && erosionStrength == d.erosionStrength;
+           resources == d.resources && erosion == d.erosion && erosionStrength == d.erosionStrength && cliffs == d.cliffs;
 }
 
 uint64_t WorldGenParams::key() const {
@@ -18,6 +18,7 @@ uint64_t WorldGenParams::key() const {
     mix(&ocean, sizeof ocean); mix(&mountains, sizeof mountains); mix(&roughness, sizeof roughness);
     mix(&biomeSize, sizeof biomeSize); mix(&resources, sizeof resources);
     const int e = erosion ? 1 : 0; mix(&e, sizeof e); mix(&erosionStrength, sizeof erosionStrength);
+    mix(&cliffs, sizeof cliffs); // #589
     return h;
 }
 
@@ -34,6 +35,7 @@ WorldGenParams WorldGenParams_ForSave(const std::string& savePath) {
         else if (!strcmp(key, "resources")) p.resources = v;
         else if (!strcmp(key, "erosion")) p.erosion = v != 0.0f;
         else if (!strcmp(key, "erosionStrength")) p.erosionStrength = v;
+        else if (!strcmp(key, "cliffs")) p.cliffs = v;
     }
     fclose(f);
     return p;
@@ -44,7 +46,7 @@ bool WorldGenParams_Save(const std::string& savePath, const WorldGenParams& p) {
     if (!f) return false;
     // %.9g: the floats come back bit for bit (the bake's cache key hashes them).
     fprintf(f, "ocean %.9g\nmountains %.9g\nroughness %.9g\nbiomeSize %.9g\nresources %.9g\nerosion %d\nerosionStrength %.9g\n",
-            p.ocean, p.mountains, p.roughness, p.biomeSize, p.resources, p.erosion ? 1 : 0, p.erosionStrength);
+            p.ocean, p.mountains, p.roughness, p.biomeSize, p.resources, p.erosion ? 1 : 0, p.erosionStrength, p.cliffs);
     fclose(f);
     return true;
 }

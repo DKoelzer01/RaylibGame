@@ -284,8 +284,9 @@ static int FillerMaterial(const std::string& item) {
     static const struct { const char* item; VoxelMaterial m; } kFillers[] = {
         { "dirt", VoxelMaterial::Regolith }, { "regolith", VoxelMaterial::Regolith }, { "gravel", VoxelMaterial::Gravel },
         { "sand", VoxelMaterial::Sand }, { "clay", VoxelMaterial::Clay }, { "stone", VoxelMaterial::Rock }, { "concrete", VoxelMaterial::Rock },
-        { "granite", VoxelMaterial::Rock }, { "basalt", VoxelMaterial::Rock }, { "limestone", VoxelMaterial::Rock },
-        { "marble", VoxelMaterial::Rock }, { "sandstone", VoxelMaterial::Rock },
+        // Rock strata (#587): placed rock keeps its kind.
+        { "granite", VoxelMaterial::Granite }, { "basalt", VoxelMaterial::Basalt }, { "limestone", VoxelMaterial::Limestone },
+        { "marble", VoxelMaterial::Marble }, { "sandstone", VoxelMaterial::Sandstone },
     };
     for (const auto& f : kFillers) if (item == f.item) return (int)f.m;
     return -1;
@@ -446,6 +447,11 @@ static Color DustColor(VoxelMaterial m) {
         case VoxelMaterial::Pebbles: return { 136, 126, 112, 255 };
         case VoxelMaterial::Silt: return { 150, 132, 104, 255 };
         case VoxelMaterial::Mud: return { 84, 64, 44, 255 };
+        case VoxelMaterial::Granite: return { 168, 146, 140, 255 };
+        case VoxelMaterial::Basalt: return { 62, 62, 68, 255 };
+        case VoxelMaterial::Sandstone: return { 212, 182, 132, 255 };
+        case VoxelMaterial::Limestone: return { 206, 202, 186, 255 };
+        case VoxelMaterial::Marble: return { 236, 234, 230, 255 };
         default: return { 128, 126, 124, 255 };
     }
 }
@@ -595,6 +601,7 @@ bool TerrainTool_Stroke(bool dig) {
                 if (softOnly && !IsSoft(m)) continue;
                 const char* item = ItemAt(p, q, m);
                 got[item] += cell * 2.0f;
+                if (!stoneKindAt && m >= VoxelMaterial::Granite && m <= VoxelMaterial::Marble) stoneKindAt = item; // #587: a stratum's rock hosts its gem
                 if (strcmp(item, "stone") == 0) { // the kind of stone the rock is here (building variety), one look per stroke
                     if (!stoneKindAt) { const auto* pfk = dynamic_cast<const PlanetField*>(p.field.get()); stoneKindAt = pfk ? pfk->stoneKind(hit.local) : "stone"; }
                     if (strcmp(stoneKindAt, "stone") != 0) got[stoneKindAt] += cell * 0.8f;
@@ -721,9 +728,10 @@ bool TerrainTool_DigAt(Planetoid& p, Vector3 local) {
     if (!terrainTool.terraform && !DigRuleFor(HeldTool(), m, item).can) return false;
     inventory.add(item, 1);
     if (strcmp(item, "dirt") == 0) inventory.addFractional("gravel", 0.2f); // stones in the soil
-    if (strcmp(item, "stone") == 0) if (const auto* pfk = dynamic_cast<const PlanetField*>(p.field.get())) { // its kind of stone, and now and then a gem
-        const char* k = pfk->stoneKind(local);
-        if (strcmp(k, "stone") != 0) inventory.addFractional(k, 0.4f);
+    const bool stratum = m >= VoxelMaterial::Granite && m <= VoxelMaterial::Marble; // #587: the item is its rock already
+    if (strcmp(item, "stone") == 0 || stratum) if (const auto* pfk = dynamic_cast<const PlanetField*>(p.field.get())) { // its kind of stone, and now and then a gem
+        const char* k = stratum ? item : pfk->stoneKind(local);
+        if (!stratum && strcmp(k, "stone") != 0) inventory.addFractional(k, 0.4f);
         const char* gem = GameRng_Int(0, 29999) < 10 * terrainTool.gemBoost ? GemForStone(k) : GameRng_Int(0, 29999) < 16 * terrainTool.gemBoost ? "quartz" : nullptr; // rare: 1 in 3000 strokes a gem, 1 in 1900 quartz (veins later)
         if (gem && itemDB.find(gem)) inventory.add(gem, 1);
     }
@@ -734,13 +742,20 @@ bool TerrainTool_DigAt(Planetoid& p, Vector3 local) {
 bool TerrainTool_HarvestNearest(Planetoid& p, Vector3 local, bool tree, bool stone) {
     if (!p.trees) return false;
     Plant plant;
-    if (!p.trees->nearestPlant(local, 400.0f, tree, plant, stone)) return false;
+    // Trees: the smallest class first (#532: seed 42's new start has giant trees nearest, ~200 hits each since #274),
+    // then any; within 400 m, then wider (loaded tree tiles only).
+    bool found = false;
+    for (int cls : { tree ? 0 : -1, -1 }) {
+        for (float r : { 400.0f, 1200.0f, 3000.0f }) if ((found = p.trees->nearestPlant(local, r, tree, plant, stone, cls))) break;
+        if (found) break;
+    }
+    if (!found) return false;
     tool = HeldTool();
     hasPlant = true;
     plantBody = &p;
     plantHit.plant = plant;
     plantHit.distance = 1.0f;
-    for (int i = 0; i < 64; ++i) if (Chop()) return true;
+    for (int i = 0; i < 600; ++i) if (Chop()) return true; // a giant takes ~200 hits with an axe, more bare-handed
     return false;
 }
 

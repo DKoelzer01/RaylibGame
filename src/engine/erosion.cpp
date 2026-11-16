@@ -60,11 +60,14 @@ namespace {
         size_t cells = 0;
         std::vector<Vector3> dir;
         std::vector<float> cellArea, h, U, rockK, hardness, strata, glacier;
+        std::vector<StrataColumn> col;      // #587: the rock column per cell (empty: the old hardness noise and bands)
+        unsigned int strataSeed = 0;
         std::vector<uint8_t> outlet;
     };
 
     // Rock and uplift of a domain from its input heights (h0) and the planet's highest input (maxH0).
-    void SetRock(Domain& d, const std::vector<float>& h0, float maxH0, float R, unsigned int seed, const ErosionParams& p) {
+    void SetRock(Domain& d, const std::vector<float>& h0, float maxH0, float R, unsigned int seed, const ErosionParams& p, const StrataFn* strata = nullptr) {
+        if (strata && *strata) { d.col.resize(d.cells); d.strataSeed = seed; for (size_t c = 0; c < d.cells; ++c) d.col[c] = (*strata)(d.dir[c]); } // #587
         d.U.resize(d.cells); d.rockK.resize(d.cells); d.hardness.resize(d.cells); d.strata.resize(d.cells); d.glacier.resize(d.cells);
         for (size_t c = 0; c < d.cells; ++c) {
             const Vector3 q = Vector3Scale(d.dir[c], R / 25000.0f);
@@ -90,7 +93,9 @@ namespace {
         const size_t cells = d.cells;
         const float stratumOffset = Hash3(1, 2, 3, seed) * 120.0f;
         auto capRock = [&](float hc) { return fmodf(hc + stratumOffset + 1200.0f, 120.0f) < 36.0f; }; // the hard 30% of each 120 m band
+        const bool layered = !d.col.empty(); // #587: the rock column's layer at the cell's current height
         auto erodibility = [&](size_t c, float hc) {
+            if (layered) return p.k * kScale * Strata_Erodibility(Strata_RockAt(d.col[c], hc, d.strataSeed));
             const float k = d.rockK[c] * kScale;
             if (d.strata[c] <= 0.0f) return k;
             const float bandK = capRock(hc) ? 0.15f : 1.6f;
@@ -207,7 +212,8 @@ namespace {
             if (step % 2 == 1) // talus: slopes steeper than the rock holds slump (half the excess moves down)
                 for (size_t c = 0; c < cells; ++c) {
                     if (d.outlet[c]) continue;
-                    const float hard = std::max(d.hardness[c], d.strata[c] * (capRock(d.h[c]) ? 1.0f : 0.0f));
+                    const float hard = layered ? Strata_Hardness(Strata_RockAt(d.col[c], d.h[c], d.strataSeed))
+                                               : std::max(d.hardness[c], d.strata[c] * (capRock(d.h[c]) ? 1.0f : 0.0f));
                     const float maxSlope = p.talusSoft + (p.talusHard - p.talusSoft) * hard;
                     for (int k = 0; k < 8; ++k) {
                         const int o = nbOf(c, k);
@@ -379,7 +385,7 @@ uint64_t ErosionParamsKey(const ErosionParams& p) {
     return h;
 }
 
-void PlanetErosion::build(const std::function<float(Vector3, float)>& height, float planetRadius, unsigned int seedIn, const ErosionParams& p, int threads) {
+void PlanetErosion::build(const std::function<float(Vector3, float)>& height, float planetRadius, unsigned int seedIn, const ErosionParams& p, int threads, const StrataFn& strata) {
     gBakeProgress.store(0.0f, std::memory_order_relaxed);
     struct BakingFlag { BakingFlag() { gBaking.store(true); ++gBakes; } ~BakingFlag() { gBaking.store(false); } } baking; // the loading screen tells a bake from a cache read (#505)
     paramsKey = ErosionParamsKey(p);
@@ -434,7 +440,7 @@ void PlanetErosion::build(const std::function<float(Vector3, float)>& height, fl
     }
     float maxH0 = 1.0f;
     for (float v : h0) maxH0 = std::max(maxH0, v);
-    SetRock(d, h0, maxH0, R, seed, p);
+    SetRock(d, h0, maxH0, R, seed, p, &strata);
     d.outlet.resize(d.cells); d.h.resize(d.cells);
     for (size_t c = 0; c < d.cells; ++c) { d.outlet[c] = h0[c] <= 0.0f; d.h[c] = h0[c] > 0.0f ? h0[c] * p.start : h0[c]; } // start low (uplift mode) or from the input (carve mode)
     Simulate(d, [&](size_t c, int k) { return nb[c * 8 + k]; }, p.steps, p, R, seed, 1.0f);
@@ -450,6 +456,7 @@ void PlanetErosion::build(const std::function<float(Vector3, float)>& height, fl
             scale = std::max(1.0f, a[k]) / std::max(1.0f, b[k]);
         }
     }
+    heightScale = scale; // #587: the strata are laid in simulation heights (materials divide final heights by this)
     n = N;
     coarse.resize(d.cells);
     maxCut = maxRaise = 0.0f;
@@ -520,7 +527,7 @@ void PlanetErosion::build(const std::function<float(Vector3, float)>& height, fl
                     pool.emplace_back([&, t] { for (size_t c = t; c < fd.cells; c += sampleThreads) fh0[c] = height(fd.dir[c], fineMetres); });
                 for (auto& th : pool) th.join();
             }
-            SetRock(fd, fh0, maxH0, R, seed, p);
+            SetRock(fd, fh0, maxH0, R, seed, p, &strata);
             fd.outlet.resize(fd.cells); fd.h.resize(fd.cells);
             for (int j = 0; j < FE; ++j)
                 for (int i = 0; i < FE; ++i) {
@@ -722,11 +729,11 @@ bool PlanetErosion::save(const std::string& path) const {
     const std::string tmp = path + ".tmp"; // written whole, then renamed: a crash mid-save leaves the old cache (#355 review)
     FILE* f = fopen(tmp.c_str(), "wb");
     if (!f) { freeAll(); return false; }
-    const char magic[4] = { 'E', 'R', 'O', '6' };
+    const char magic[4] = { 'E', 'R', 'O', '7' }; // ERO7 (#587): + heightScale after the hash
     fwrite(magic, 1, 4, f);
     fwrite(&paramsKey, sizeof(paramsKey), 1, f);
     fwrite(&n, sizeof(n), 1, f); fwrite(&nf, sizeof(nf), 1, f); fwrite(&fm, sizeof(fm), 1, f); fwrite(&fineMetres, sizeof(fineMetres), 1, f);
-    fwrite(&R, sizeof(R), 1, f); fwrite(&seed, sizeof(seed), 1, f); fwrite(&hashValue, sizeof(hashValue), 1, f);
+    fwrite(&R, sizeof(R), 1, f); fwrite(&seed, sizeof(seed), 1, f); fwrite(&hashValue, sizeof(hashValue), 1, f); fwrite(&heightScale, sizeof(heightScale), 1, f);
     const int pieces = kPieces;
     fwrite(&pieces, sizeof(pieces), 1, f);
     for (int k = 0; k < kPieces; ++k) {
@@ -747,10 +754,10 @@ bool PlanetErosion::save(const std::string& path) const {
 bool PlanetErosion::load(const std::string& path, float planetRadius, unsigned int wantSeed, uint64_t wantKey) {
     FILE* f = fopen(path.c_str(), "rb");
     if (!f) return false;
-    char magic[4]; int N = 0, NF = 0, FM = 0, pieces = 0; float fmet = 0, r = 0; unsigned int s = 0; uint64_t hv = 0, key = 0;
-    bool ok = fread(magic, 1, 4, f) == 4 && memcmp(magic, "ERO6", 4) == 0 && fread(&key, sizeof(key), 1, f) == 1 && key == wantKey && fread(&N, sizeof(N), 1, f) == 1 && fread(&NF, sizeof(NF), 1, f) == 1 &&
+    char magic[4]; int N = 0, NF = 0, FM = 0, pieces = 0; float fmet = 0, r = 0, hs = 1.0f; unsigned int s = 0; uint64_t hv = 0, key = 0;
+    bool ok = fread(magic, 1, 4, f) == 4 && memcmp(magic, "ERO7", 4) == 0 && fread(&key, sizeof(key), 1, f) == 1 && key == wantKey && fread(&N, sizeof(N), 1, f) == 1 && fread(&NF, sizeof(NF), 1, f) == 1 &&
               fread(&FM, sizeof(FM), 1, f) == 1 && fread(&fmet, sizeof(fmet), 1, f) == 1 && fread(&r, sizeof(r), 1, f) == 1 && fread(&s, sizeof(s), 1, f) == 1 &&
-              fread(&hv, sizeof(hv), 1, f) == 1 && fread(&pieces, sizeof(pieces), 1, f) == 1 &&
+              fread(&hv, sizeof(hv), 1, f) == 1 && fread(&hs, sizeof(hs), 1, f) == 1 && fread(&pieces, sizeof(pieces), 1, f) == 1 &&
               N > 0 && N < 4096 && NF >= 0 && NF < 16384 && FM >= 0 && FM < 1024 && pieces > 0 && pieces <= 256 && s == wantSeed && fabsf(r - planetRadius) < 1.0f;
     std::vector<std::vector<unsigned char>> comp(ok ? pieces : 0);
     std::vector<int> rawLen(comp.size(), 0);
@@ -793,7 +800,7 @@ bool PlanetErosion::load(const std::string& path, float planetRadius, unsigned i
         prev = (int16_t)(prev + (int16_t)(raw[k] | (raw[total + k] << 8)));
         (k < nc ? coarse[k] : fine[k - nc]) = prev;
     }
-    n = N; nf = NF; fm = FM; fe = (int)fe2; fineMetres = fmet; R = r; seed = s; paramsKey = key;
+    n = N; nf = NF; fm = FM; fe = (int)fe2; fineMetres = fmet; R = r; seed = s; paramsKey = key; heightScale = hs;
     pondList = std::move(pl);
     computeHash();
     if (hashValue != hv) { n = 0; coarse.clear(); fine.clear(); fe = 0; return false; } // damaged

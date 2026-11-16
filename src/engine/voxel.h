@@ -12,6 +12,7 @@
 #include <unordered_set>
 
 #include "SimplexNoise.h"
+#include "strata.h"
 #include "worldgenparams.h"
 
 extern const int CHUNK_SIZE;          // cells per chunk edge (samples per edge = CHUNK_SIZE + 1)
@@ -73,7 +74,9 @@ namespace std {
 // 4-5 in texcoord (xy), 6-7 in texcoord2 (xy), so they interpolate smoothly across triangles.
 // Asteroids use 0-3; planets all eight (Regolith is rendered as dirt there).
 // Ids 0-7 are the legacy weights (per-chunk draws); later ones ride the arena's per-chunk palette (#480: up to 256).
-enum class VoxelMaterial : uint8_t { Rock = 0, Regolith = 1, Ice = 2, Ore = 3, Sand = 4, Gravel = 5, Grass = 6, Snow = 7, Clay = 8, Pebbles = 9, Silt = 10, Mud = 11, Count }; // 9-11: river beds, floodplains, wet shores (#595)
+enum class VoxelMaterial : uint8_t { Rock = 0, Regolith = 1, Ice = 2, Ore = 3, Sand = 4, Gravel = 5, Grass = 6, Snow = 7, Clay = 8,
+                                    Granite = 9, Basalt = 10, Sandstone = 11, Limestone = 12, Marble = 13,
+                                    Pebbles = 14, Silt = 15, Mud = 16, Count }; // 9-13: rock strata (#587); 14-16: river beds, floodplains, wet shores (#595)
 enum class Biome : uint8_t { Ocean = 0, Jungle, Savanna, Desert, Badlands, Forest, Meadow, Swamp, Taiga, Tundra, Alpine, Polar, Count };
 // Bench override (--bench-biome): findSpawnDir returns the nearest deep patch of this biome (-1: off).
 inline int gSpawnBiome = -1;
@@ -85,6 +88,7 @@ inline bool gErosionPrototype = true; // erosion-baked terrain by default (user 
 // it out of the erosion comparisons); RAYLIBGAME_3D=1 turns it back on.
 inline bool gTerrain3D = true;
 inline bool gGullies = true; // erosion-filter gullies on the baked height (#357); RAYLIBGAME_GULLIES=0 for A/B
+inline bool gCliffFaces = true; // one face per steep resistant layer (#588, Plan 9 step 5); RAYLIBGAME_CLIFF_FACES=0 for A/B
 inline bool gTerrainAO = true; // per-vertex ambient occlusion in chunk meshing (#132); RAYLIBGAME_AO=0 for A/B
 inline bool gSkyProbes = true; // sky light under overhangs from short rays (#369); RAYLIBGAME_SKY_PROBES=0 for A/B
 class PlanetErosion;
@@ -232,6 +236,18 @@ public:
     // pockets, basalt deep down and under the sea, granite in the mountains, sandstone on low coastal
     // land, limestone elsewhere (in broad regions).
     const char* stoneKind(Vector3 p) const;
+    // Rock strata (#587): the column here (from region-scale fields, as the erosion bake sees it) and the rock at a
+    // body-local point (its layer at the point's height, in the bake's simulation heights).
+    StrataColumn strataColumn(Vector3 dir) const;
+    RockType rockTypeAt(Vector3 p) const;
+    // Tests (#561): true on this thread = the bake is ignored (erosion() answers nullptr), so land() / elevationBase()
+    // give the noise terrain the GPU point kernel ports (it has no bake).
+    static inline thread_local bool tIgnoreBake = false;
+    // True while land() answers for the erosion bake's input (#544: canyons go in before the bake).
+    static inline thread_local bool tBakeInput = false;
+    float canyonFault(float sx, float sy, float sz) const; // #544: 0..1 along the canyon lines
+    // #588: the cliff face of a steep resistant layer at surface point s (m), height h (final m), the bake's gradient.
+    float cliffFace(Vector3 s, float h, Vector3 grad, float fp) const;
     // On a river or pond bed (or its wet shore): digging there also turns up clay.
     bool wetBed(Vector3 local) const;
     // The static water at a direction and its kind (flowing water, fluid.h): 0 none, 1 river, 2 lake,
