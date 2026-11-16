@@ -46,10 +46,18 @@ constexpr int kSiteBricks = 16;        // a site reaches +-16 bricks (256 m) fro
 // Tests only: RAYLIBGAME_FLUID_SITE_BRICKS=N shrinks a site so a pond straddles its edge (#384).
 inline int SiteBricks() { static const int n = getenv("RAYLIBGAME_FLUID_SITE_BRICKS") ? std::max(1, atoi(getenv("RAYLIBGAME_FLUID_SITE_BRICKS"))) : kSiteBricks; return n; }
 constexpr float kSiteJoin = 180.0f;    // a disturbance within this of a site's origin joins it
-constexpr int kEvaporate = 3;          // resting specks this thin (~1 cm) dry up
-constexpr unsigned kEvapEvery = 32;     // specks soak away on one step in this many: only the ones that stay put (#454)
+constexpr int kEvaporate = 2;          // resting specks this thin (~8 mm) dry up (user 2026-11-16: puddles should last a while)
+constexpr unsigned kEvapEvery = 1200;   // specks soak away on one step in this many (~10 s on the GPU): only the ones that stay put (#454)
 constexpr int kSubsteps = 3;           // CPU simulation steps per 50 ms (water moves a cell a step)
 constexpr double kTickSeconds = 0.025; // a tick (a job + meshes) every 25 ms: water moved in 1-3 cell jumps every 50-100 ms, hard to follow (#366)
+constexpr float kGpuSubstepSeconds = 0.05f / (2 * kSubsteps); // the GPU runs twice the CPU's substeps: 120 a second (GpuTick)
+// Face-flow friction per kind (#642), from its viscosity (water 5): linear (1/s: a pool's last ripples die out) and
+// quadratic (drag on the speed: a river's speed levels out with its slope; water ~1.4 m/s on a 1:1000 slope 1 m deep).
+inline void KindFriction(int kind, float& lin, float& quad) {
+    const float v = (float)kindVisc[kind] / 5.0f;
+    lin = 0.05f * v;
+    quad = 0.005f * v * v;
+}
 constexpr int kSleepSteps = 120;       // 2 s without change: a brick sleeps
 constexpr int kSettleSteps = 180;      // 3 s window: a brick whose cells all moved less than kSettleDiff in it sleeps (#366)
 constexpr int kSettleDiff = 4;         // fill units (1.6 cm)
@@ -1001,6 +1009,7 @@ struct GpuState {
     bool init = false, ok = false;
     ComputeProgram step, delta;
     ComputeBuffer a, b, nbrs, list, inS, flags, deltas;
+    ComputeBuffer faceP, faceN;            // face flows (#642, fluid_step.comp): applied (a vec4 a cell) / new (two vec4 a cell)
     int capacity = 0;                      // bricks
     std::vector<Brick*> owner;             // slot -> brick
     std::vector<Site*> ownerSite;
@@ -1030,6 +1039,8 @@ bool GpuInit() {
     if (G.ok) {
         G.list.create(64 * 4); G.deltas.create(64 * 16); G.inS.create(64 * 4); G.flags.create(64 * 4); G.nbrs.create(64 * 24);
         G.a.create(64 * kCellsPerBrick * 4); G.b.create(64 * kCellsPerBrick * 4);
+        const std::vector<float> noFlow((size_t)64 * kCellsPerBrick * 8, 0.0f);
+        G.faceP.create(64 * kCellsPerBrick * 16, noFlow.data()); G.faceN.create(64 * kCellsPerBrick * 32, noFlow.data());
         G.capacity = 64;
         G.owner.assign(64, nullptr); G.ownerSite.assign(64, nullptr);
         const std::vector<unsigned> zeros(64, 0u);
@@ -1050,6 +1061,8 @@ void GpuGrow(int need) {
     };
     grow(G.a, G.capacity * kCellsPerBrick * 4, cap * kCellsPerBrick * 4);
     grow(G.b, G.capacity * kCellsPerBrick * 4, cap * kCellsPerBrick * 4);
+    grow(G.faceP, G.capacity * kCellsPerBrick * 16, cap * kCellsPerBrick * 16);
+    grow(G.faceN, G.capacity * kCellsPerBrick * 32, cap * kCellsPerBrick * 32);
     grow(G.flags, G.capacity * 4, cap * 4);
     G.inS.resize(cap * 4);
     G.nbrs.resize(cap * 24);
@@ -1065,6 +1078,8 @@ void GpuUploadBrick(const Brick& b) {
     for (int i = 0; i < B3; ++i) packed[i] = b.fill[i] | ((unsigned)b.flags[i] << 8) | ((unsigned)b.target[i] << 16) | ((unsigned)b.shut[i] << 24); // shut in bits 24-31 (#454)
     G.a.upload(packed.data(), kCellsPerBrick * 4, b.slot * kCellsPerBrick * 4);
     G.b.upload(packed.data(), kCellsPerBrick * 4, b.slot * kCellsPerBrick * 4);
+    static const std::vector<float> noFlow((size_t)kCellsPerBrick * 4, 0.0f); // a (re)classified brick starts at rest (#642)
+    G.faceP.upload(noFlow.data(), kCellsPerBrick * 16, b.slot * kCellsPerBrick * 16);
 }
 
 // Flow readout (#392). Read: the flux the last dispatch added in the watched cells, summed per watch into body-local
@@ -1236,24 +1251,30 @@ void GpuTick(int n) {
     G.inS.upload(inS.data(), G.capacity * 4);
     if (G.list.bytes < list.size() * 4) G.list.resize((unsigned)(list.size() * 8));
     G.list.upload(list.data(), (unsigned)(list.size() * 4));
-    // 5. n substeps: vertical A -> B, sideways B -> A.
+    // 5. n substeps: vertical A -> B, face flows B -> N, apply B, N -> A, P (#642).
     G.step.use();
     G.step.setUint("count", (unsigned)list.size());
-    int visc[8], spread[8];
-    for (int k = 0; k < 8; ++k) { visc[k] = kindVisc[k]; spread[k] = kindMinSpread[k]; }
-    rlSetUniform(G.step.uniform("visc"), visc, RL_SHADER_UNIFORM_INT, 8);
+    int spread[8], visc[8];
+    float fricLin[8], fricQuad[8];
+    for (int k = 0; k < 8; ++k) { spread[k] = kindMinSpread[k]; visc[k] = kindVisc[k]; KindFriction(k, fricLin[k], fricQuad[k]); }
     rlSetUniform(G.step.uniform("minSpread"), spread, RL_SHADER_UNIFORM_INT, 8);
+    rlSetUniform(G.step.uniform("visc"), visc, RL_SHADER_UNIFORM_INT, 8);
+    rlSetUniform(G.step.uniform("frictionLin"), fricLin, RL_SHADER_UNIFORM_FLOAT, 8);
+    rlSetUniform(G.step.uniform("frictionQuad"), fricQuad, RL_SHADER_UNIFORM_FLOAT, 8);
+    const float substepDt = kGpuSubstepSeconds;
+    rlSetUniform(G.step.uniform("dt"), &substepDt, RL_SHADER_UNIFORM_FLOAT, 1);
     static const bool noEvap = getenv("RAYLIBGAME_FLUID_NOEVAP") != nullptr; // tests: specks kept (water accounting, #454)
     static unsigned evapTick = 0;
     GpuFlowResolve(); // which bricks the flow watches need this dispatch (#392)
-    G.nbrs.bind(2); G.list.bind(3); G.inS.bind(4); G.flags.bind(5); G.watch.bind(6); G.flux.bind(7);
+    G.nbrs.bind(2); G.list.bind(3); G.inS.bind(4); G.flags.bind(5); G.watch.bind(6); G.flux.bind(7); G.faceP.bind(8); G.faceN.bind(9);
     const unsigned bricks = (unsigned)list.size(); // 2D dispatch: 64 groups of 64 cells per brick, one row per brick
     for (int k = 0; k < n; ++k) {
         G.step.setInt("pass", 0); G.a.bind(0); G.b.bind(1); G.step.dispatch(kCellsPerBrick / 64u, bricks);
+        G.step.setInt("pass", 1); G.b.bind(0); G.a.bind(1); G.step.dispatch(kCellsPerBrick / 64u, bricks);
         // Specks soak away on one substep in kEvapEvery: one must rest across it. Every substep, a spreading film lost the
         // edge it had just laid down, again and again (#454: 7-12% of a draining pond).
         G.step.setInt("evaporate", !noEvap && ++evapTick % kEvapEvery == 0 ? 1 : 0);
-        G.step.setInt("pass", 1); G.b.bind(0); G.a.bind(1); G.step.dispatch(kCellsPerBrick / 64u, bricks);
+        G.step.setInt("pass", 2); G.step.dispatch(kCellsPerBrick / 64u, bricks);
     }
     G.lastList = list;
     G.lastN = n;
