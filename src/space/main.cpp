@@ -244,6 +244,11 @@ extern const char* kGameVersion; // "<branch> <commit>", generated at build time
 
 int main(int argc, char** argv)
 {
+    // Scripted runs (--bench, --test-*, --shot-*): stdout unbuffered, before any output, so a run killed by a timeout
+    // still shows every result line it reached (#556: the last lines were lost and a finished test looked hung).
+    // (Line buffering is full buffering in the Windows CRT.)
+    for (int i = 1; i < argc; ++i)
+        if (!strncmp(argv[i], "--bench", 7) || !strncmp(argv[i], "--test-", 7) || !strncmp(argv[i], "--shot-", 7)) { setvbuf(stdout, nullptr, _IONBF, 0); break; }
     Log_Open("log.txt");
     Log_SetThreadName("main");
     // --log-level LEVEL (#514): before anything logs. It wins over settings.txt's log_level.
