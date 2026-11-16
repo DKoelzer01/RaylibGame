@@ -806,16 +806,35 @@ int main(int argc, char** argv)
     for (int i = 1; i < argc; ++i) if (std::string(argv[i]) == "--bench-window") benchWindow = true;
     bool exclusive = false; // --fullscreen: exclusive fullscreen (bypasses the desktop compositor)
     for (int i = 1; i < argc; ++i) if (std::string(argv[i]) == "--fullscreen") { exclusive = true; nativeWindow = true; }
+    // #520: who is driving this exe, for the window title: --session <name>, else RAYLIBGAME_SESSION, else the checkout
+    // the exe was built in (an agent's worktree: <checkout>/build/<dir>/bin/game.exe). The user's root game.exe sits in
+    // the main checkout itself (no build/ in its path) and shows no driver.
+    std::string driver;
+    for (int i = 1; i + 1 < argc; ++i) if (std::string(argv[i]) == "--session") driver = argv[i + 1];
+    if (driver.empty() && getenv("RAYLIBGAME_SESSION")) driver = getenv("RAYLIBGAME_SESSION");
+    if (driver.empty()) {
+        std::string dir = GetApplicationDirectory();
+        for (char& c : dir) if (c == '\\') c = '/';
+        const size_t b = dir.rfind("/build/");
+        if (b != std::string::npos) {
+            const std::string checkout = dir.substr(0, b);
+            driver = checkout.substr(checkout.find_last_of('/') + 1);
+        }
+    }
+    // "RaylibGame[ <mode>] - <branch> <commit>[ - <driver>]" (#501 version, #520 mode + driver)
+    auto windowTitle = [&](const char* mode) {
+        return std::string(TextFormat("RaylibGame%s%s - %s", mode[0] ? " " : "", mode, kGameVersion)) + (driver.empty() ? "" : " - " + driver);
+    };
     if (gHeadless) { // #311: a hidden window for the GL context the loaders still need; nothing is drawn into it
         SetConfigFlags(FLAG_WINDOW_HIDDEN);
-        InitWindow(320, 180, "RaylibGame headless");
+        InitWindow(320, 180, windowTitle("headless").c_str());
         SetTargetFPS(bench ? std::max(0, benchFps) : kSimHz); // a server ticks at the sim rate
     } else if ((!bench && !benchWindow && playNewSeconds <= 0.0) || nativeWindow) {
         SetConfigFlags(FLAG_WINDOW_RESIZABLE); // Allow window resizing
         SetConfigFlags(FLAG_WINDOW_UNDECORATED); // Remove window decorations for a cleaner look
         SetConfigFlags(FLAG_WINDOW_HIGHDPI); // Enable High DPI support
         if (exclusive) SetConfigFlags(FLAG_FULLSCREEN_MODE);
-        InitWindow(GetMonitorWidth(0), GetMonitorHeight(0), TextFormat("RaylibGame - %s", kGameVersion)); // #501: branch + commit
+        InitWindow(GetMonitorWidth(0), GetMonitorHeight(0), windowTitle("").c_str()); // #501: branch + commit (#520: + driver)
         // No VSync: cap at the monitor's refresh rate instead (VSync on a 60 Hz desktop locked the game to 60).
         SetTargetFPS(bench ? std::max(0, benchFps) : benchFps >= 0 ? benchFps : std::max(60, GetMonitorRefreshRate(GetCurrentMonitor())));
     } else {
@@ -824,7 +843,7 @@ int main(int argc, char** argv)
         SetConfigFlags(FLAG_WINDOW_UNFOCUSED);
         int winW = playNewSeconds > 0.0 ? 1280 : 1920, winH = playNewSeconds > 0.0 ? 720 : 1080;
         for (int i = 1; i + 2 < argc; ++i) if (std::string(argv[i]) == "--window") { winW = std::max(320, atoi(argv[i + 1])); winH = std::max(240, atoi(argv[i + 2])); } // --window W H (#512: menus at 1280x720)
-        InitWindow(winW, winH, playNewSeconds > 0.0 ? "RaylibGame play-new" : "RaylibGame bench");
+        InitWindow(winW, winH, windowTitle(playNewSeconds > 0.0 ? "play-new" : playLoadSeconds > 0.0 ? "play-load" : "bench").c_str()); // #520
         SetTargetFPS(std::max(0, benchFps)); // --fps N caps it (frame-rate-dependence checks); 0 = uncapped
     }
     if (vramReport && IsWindowReady()) GpuMem_Install(); // --vram (#302): count GPU allocations per subsystem from here on
