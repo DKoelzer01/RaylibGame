@@ -86,7 +86,7 @@ namespace {
 }
 
 const char* TerrainLayerName(int layer) {
-    static const char* names[LayerCount] = { "dirt", "sand", "gravel", "grass", "snow", "ice", "stone", "clay", "granite", "basalt", "sandstone", "limestone", "marble" };
+    static const char* names[LayerCount] = { "dirt", "sand", "gravel", "grass", "snow", "ice", "stone", "clay", "granite", "basalt", "sandstone", "limestone", "marble", "pebbles", "silt", "mud" };
     return layer >= 0 && layer < LayerCount ? names[layer] : "?";
 }
 
@@ -176,6 +176,39 @@ Image GenerateTerrainLayerImage(int layer, int size) {
                     c = Scale(c, 0.97f + 0.06f * Rand01(x, y, 84u));
                     break;
                 }
+                case LayerPebbles: { // river stones (#595): big, smooth, rounded, mixed warm and grey, packed in sand
+                    float f1, f2; uint32_t id;
+                    Worley(u, v, 18, 91u, f1, f2, id);
+                    const float edge = std::clamp((f2 - f1) * 5.0f, 0.0f, 1.0f);
+                    const float hue = (id >> 8 & 0xFF) / 255.0f;
+                    Color stone = hue < 0.4f ? Mix({ 112, 108, 102, 255 }, { 168, 164, 156, 255 }, hue * 2.5f)      // grey
+                                             : hue < 0.75f ? Mix({ 136, 116, 92, 255 }, { 182, 160, 128, 255 }, (hue - 0.4f) * 2.9f) // warm
+                                                           : Mix({ 84, 86, 90, 255 }, { 120, 122, 126, 255 }, (hue - 0.75f) * 4.0f); // dark
+                    stone = Scale(stone, 1.2f - 0.6f * f1 * f1 * 2.0f); // smooth domes: a soft highlight in the middle
+                    c = Mix({ 150, 132, 100, 255 }, stone, edge);         // coarse sand between them
+                    c = Scale(c, 0.95f + 0.1f * Rand01(x, y, 92u));
+                    break;
+                }
+                case LayerSilt: { // floodplain silt (#595): fine pale grey-brown, faint flow streaks, a scatter of dark flecks
+                    const float tone = Fbm(u, v, 6, 4, 101u);
+                    const float streak = ValueNoise(u * 0.25f, v, 40, 102u);
+                    c = Mix({ 138, 122, 96, 255 }, { 176, 160, 130, 255 }, 0.6f * tone + 0.3f * streak);
+                    if (Rand01(x, y, 103u) > 0.988f) c = Scale(c, 0.62f);
+                    float f1, f2; uint32_t id;
+                    Worley(u, v, 9, 104u, f1, f2, id);
+                    const float crack = 1.0f - std::clamp((f2 - f1) * 60.0f, 0.0f, 1.0f); // a few dried cracks
+                    c = Mix(c, { 104, 90, 70, 255 }, crack * 0.5f);
+                    break;
+                }
+                case LayerMud: { // wet mud (#595): dark brown, glossy puddled patches, footprint-like pits
+                    const float tone = Fbm(u, v, 5, 4, 111u);
+                    c = Mix({ 54, 40, 28, 255 }, { 98, 74, 50, 255 }, tone * 1.2f - 0.1f);
+                    const float wet = Fbm(u, v, 3, 3, 112u);
+                    if (wet > 0.55f) c = Mix(c, { 42, 36, 30, 255 }, std::min(1.0f, (wet - 0.55f) * 5.0f) * 0.7f); // standing wet patches
+                    if (ValueNoise(u, v, 64, 113u) > 0.8f) c = Scale(c, 0.78f);
+                    c = Scale(c, 0.96f + 0.08f * Rand01(x, y, 114u));
+                    break;
+                }
                 // Rock strata (#587): the colours and grain of the building blocks (parts.fs polished stone and marble),
                 // as natural rock: no slab seams, joints and bedding instead.
                 case LayerGranite: { // pink-grey, coarse mineral speckle (dark mica, pale feldspar), a few joints
@@ -243,6 +276,9 @@ namespace {
         /*sand*/ { 5.0f, 0.80f, 0.10f, 2.5f, 0.0f },
         /*lime*/ { 4.5f, 0.72f, 0.12f, 2.5f, 0.0f },
         /*marb*/ { 3.0f, 0.40f, 0.10f, 1.5f, 0.0f },
+        /*pebb*/ { 8.0f, 0.60f, 0.15f, 3.5f, 0.0f }, // river stones: big smooth domes (#595)
+        /*silt*/ { 2.5f, 0.88f, 0.06f, 1.5f, 0.0f },
+        /*mud */ { 3.0f, 0.40f, 0.25f, 1.5f, 0.0f }, // wet: smooth, sheeny in its puddled patches
     };
 
     // Periodic box blur (separable), radius r.

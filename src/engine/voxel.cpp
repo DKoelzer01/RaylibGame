@@ -35,6 +35,9 @@ const char* VoxelMaterialName(VoxelMaterial m) {
         case VoxelMaterial::Sandstone: return "sandstone";
         case VoxelMaterial::Limestone: return "limestone";
         case VoxelMaterial::Marble: return "marble";
+        case VoxelMaterial::Pebbles: return "pebbles";
+        case VoxelMaterial::Silt: return "silt";
+        case VoxelMaterial::Mud: return "mud";
         default: return "?";
     }
 }
@@ -1417,14 +1420,41 @@ VoxelMaterial PlanetField::materialSkyHinted(Vector3 p, float base, float fp, Ve
         const bool skin = depth < 0.6f + slack;
         if (lat > 0.93f + 0.03f * wobble || e > 1350.0f + 100.0f * wobble) return VoxelMaterial::Ice;          // polar cap, glaciers
         if (lat > 0.82f + 0.08f * wobble || e > 1050.0f + 150.0f * wobble) return skin ? VoxelMaterial::Snow : VoxelMaterial::Ice;
-        // Inland water: sand on the wet shores; the beds of rivers, lakes and ponds are clay (#206), with gravel bars
-        // in the deeper middle.
-        if (e > 0.0f && inlandWaterNear(up, 0.0f)) {
+        // Inland water: sand on the wet shores. Beds (#595): rivers by how fast they run (the reach's slope) - river
+        // stones in fast reaches, sand with gravel bars at a moderate pace, clay with gravel bars in slow ones (#206: clay
+        // in river beds); lakes and ponds keep clay with gravel bars in the deeper middle.
+        constexpr float kWetReach = 60.0f; // m: floodplains and wet shores this far out
+        if (e > 0.0f && inlandWaterNear(up, kWetReach)) {
+            const RiverNetwork* net = rivers();
+            const RiverNetwork::Hit rh = net && fp < 128.0f ? net->nearest(up, kWetReach + 50.0f) : RiverNetwork::Hit{};
             const float w = waterElevation(up, fp);
+            const float bars = rocks.fractal(1, p.x * 0.08f, p.y * 0.08f, p.z * 0.08f);
             if (w != kNoWater && e < w + 0.6f) {
                 if (e > w - 0.3f) return VoxelMaterial::Sand;
-                const float bars = rocks.fractal(1, p.x * 0.08f, p.y * 0.08f, p.z * 0.08f);
+                const bool river = rh.found && rh.dist < rh.halfWidth * 1.05f && fabsf(rh.level - w) < 0.5f;
+                // The stones and the sand are the bed's skin: clay under them (#206: digging a river bed finds clay).
+                if (river && rh.slope > 0.015f) return skin ? VoxelMaterial::Pebbles : VoxelMaterial::Clay;
+                if (river && rh.slope > 0.003f) return !skin ? VoxelMaterial::Clay : w - e > 1.0f && bars > 0.2f ? VoxelMaterial::Gravel : VoxelMaterial::Sand;
                 return w - e > 1.4f && bars > 0.25f ? VoxelMaterial::Gravel : VoxelMaterial::Clay;
+            }
+            // Beside the water, on the surface skin (#595): floodplains - flat ground a little above a river - take silt in
+            // patches (meadow grass between them); lake and pond shores a band of wet mud.
+            if (skin && Vector3DotProduct(normal, up) > 0.96f) {
+                const float patch = rocks.fractal(2, p.x * 0.05f + 311.0f, p.y * 0.05f, p.z * 0.05f);
+                if (rh.found && rh.dist > rh.halfWidth && rh.dist < rh.halfWidth * 2.5f + 50.0f && e < rh.level + 2.5f && e > rh.level - 0.3f
+                    && patch > -0.05f + 0.25f * Smoothstep(rh.halfWidth, rh.halfWidth * 2.5f + 50.0f, rh.dist))
+                    return VoxelMaterial::Silt;
+                float lv, lo;
+                if (net && fp < 1024.0f && net->lakeAt(up, lv, lo) && lo > 0.0f && lo < 10.0f && e < lv + 1.2f && patch > -0.3f) return VoxelMaterial::Mud;
+                bool pondShore = false;
+                if (fp < 96.0f)
+                    ForPondCellsNear(Vector3Scale(up, radius), kPondReach, [&](int x, int y, int z) {
+                        const Pond pd = pondOfCell(x, y, z);
+                        if (!pd.exists || pondShore) return;
+                        const float dist = Vector3Distance(up, pd.dir) * radius;
+                        pondShore = dist > pd.r * 0.9f && dist < pd.r + 6.0f && e < pd.level + 1.0f && e > pd.level - 0.4f;
+                    });
+                if (pondShore && patch > -0.3f) return VoxelMaterial::Mud;
             }
         }
         if (slope > 0.45f) return rockHere();                                                               // cliffs: bare stone
@@ -2090,7 +2120,9 @@ void BuildChunkMeshFromBase(const DensityField& field, const TerrainDeltas& delt
                 out.matIds[v] = (unsigned char)m; // #480: the arena's per-chunk palette
                 // The legacy one-hot weight (per-chunk draws, grass scattering): materials past the 8 channels show as
                 // their nearest (clay as dirt).
-                const int mi = m == VoxelMaterial::Clay ? (int)VoxelMaterial::Regolith : (int)m >= (int)VoxelMaterial::Granite ? (int)VoxelMaterial::Rock : (int)m; // rock strata (#587): as rock
+                const int mi = m == VoxelMaterial::Pebbles ? (int)VoxelMaterial::Gravel                                              // river stones as gravel (#595)
+                             : (m == VoxelMaterial::Clay || m == VoxelMaterial::Silt || m == VoxelMaterial::Mud) ? (int)VoxelMaterial::Regolith
+                             : (m >= VoxelMaterial::Granite && m <= VoxelMaterial::Marble) ? (int)VoxelMaterial::Rock : (int)m; // rock strata (#587): as rock
                 if (mi < 4) out.colors[v * 4 + mi] = 255;
                 else if (mi < 6) out.texcoords[v * 2 + (mi - 4)] = 1.0f;
                 else out.texcoords2[v * 2 + (mi - 6)] = 1.0f;

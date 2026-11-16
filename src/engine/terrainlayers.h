@@ -11,7 +11,8 @@
 #include <raylib.h>
 
 enum TerrainLayer { LayerDirt = 0, LayerSand, LayerGravel, LayerGrass, LayerSnow, LayerIce, LayerStone, LayerClay,
-                    LayerGranite, LayerBasalt, LayerSandstone, LayerLimestone, LayerMarble, LayerCount }; // 8-12: rock strata (#587)
+                    LayerGranite, LayerBasalt, LayerSandstone, LayerLimestone, LayerMarble,
+                    LayerPebbles, LayerSilt, LayerMud, LayerCount }; // 8-12: rock strata (#587); 13-15: river beds, floodplains, wet shores (#595)
 const char* TerrainLayerName(int layer);
 
 // Terrain layers come with a second array, the detail maps (Plan 5 D, stylized PBR): RG = tangent-space

@@ -444,6 +444,9 @@ static Color DustColor(VoxelMaterial m) {
         case VoxelMaterial::Grass: return { 96, 84, 52, 255 };
         case VoxelMaterial::Snow: return { 240, 244, 250, 255 };
         case VoxelMaterial::Clay: return { 170, 120, 95, 255 };
+        case VoxelMaterial::Pebbles: return { 136, 126, 112, 255 };
+        case VoxelMaterial::Silt: return { 150, 132, 104, 255 };
+        case VoxelMaterial::Mud: return { 84, 64, 44, 255 };
         case VoxelMaterial::Granite: return { 168, 146, 140, 255 };
         case VoxelMaterial::Basalt: return { 62, 62, 68, 255 };
         case VoxelMaterial::Sandstone: return { 212, 182, 132, 255 };

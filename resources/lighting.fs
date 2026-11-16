@@ -229,14 +229,14 @@ void main()
         float ctemp, cmoist;
         bool hasClimate = decodeClimate(ctemp, cmoist);
         // material id -> texture layer: stone, dirt, ice, ore (stone, rusted), sand, gravel, grass, snow, clay (#206),
-        // then the rock strata (#587): granite, basalt, sandstone, limestone, marble
-        const int kMaterials = 14;
-        const float layerOf[kMaterials] = float[kMaterials](6.0, 0.0, 5.0, 6.0, 1.0, 2.0, 3.0, 4.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0);
-        const float roughOf[kMaterials] = float[kMaterials](0.75, 0.95, 0.15, 0.35, 0.9, 0.85, 0.95, 0.7, 0.6, 0.65, 0.75, 0.85, 0.75, 0.45);
+        // then the rock strata (#587): granite, basalt, sandstone, limestone, marble, then pebbles, silt, mud (#595)
+        const int kMaterials = 17;
+        const float layerOf[kMaterials] = float[kMaterials](6.0, 0.0, 5.0, 6.0, 1.0, 2.0, 3.0, 4.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0, 13.0, 14.0, 15.0);
+        const float roughOf[kMaterials] = float[kMaterials](0.75, 0.95, 0.15, 0.35, 0.9, 0.85, 0.95, 0.7, 0.6, 0.65, 0.75, 0.85, 0.75, 0.45, 0.7, 0.9, 0.45);
         // Strength of the (asteroid rock) normal map per material: rocky ones only; on grass, dirt and
         // sand its craters read as the asteroid texture showing through.
-        const float bumpOf[kMaterials] = float[kMaterials](1.0, 0.8, 0.6, 1.0, 0.7, 1.0, 0.7, 0.5, 0.6, 1.0, 1.0, 0.8, 0.8, 0.5); // detail normal strength
-        const float shinyOf[kMaterials] = float[kMaterials](0.0, 0.0, 1.0, 1.0, 0.0, 0.0, 0.0, 0.3, 0.25, 0.15, 0.1, 0.0, 0.05, 0.4); // ice, ore, a little snow, wet clay, polished-ish marble
+        const float bumpOf[kMaterials] = float[kMaterials](1.0, 0.8, 0.6, 1.0, 0.7, 1.0, 0.7, 0.5, 0.6, 1.0, 1.0, 0.8, 0.8, 0.5, 1.0, 0.5, 0.4); // detail normal strength
+        const float shinyOf[kMaterials] = float[kMaterials](0.0, 0.0, 1.0, 1.0, 0.0, 0.0, 0.0, 0.3, 0.25, 0.15, 0.1, 0.0, 0.05, 0.4, 0.2, 0.0, 0.45); // ice, ore, a little snow, wet clay, polished-ish marble, wet stones and mud
         vec3 a = vec3(0.0);
         float r = 0.0, aoSum = 0.0, shiny = 0.0;
         // Detail maps fade out by ~120 m (mips flatten them before that; #183: sampling them out to 280 m cost 0.2 ms)

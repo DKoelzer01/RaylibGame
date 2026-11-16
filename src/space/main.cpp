@@ -2698,6 +2698,39 @@ int main(int argc, char** argv)
                                 int f10 = 0, f30 = 0; float tallest = 0.0f;
                                 for (const auto& f : falls) { f10 += f.drop > 10.0f; f30 += f.drop > 30.0f; tallest = std::max(tallest, f.drop); }
                                 printf("bench: rivers: %zu waterfalls (> 10 m: %d, > 30 m: %d, tallest %.0f m)\n", falls.size(), f10, f30, tallest);
+                                {   // Beds and floodplains (#595), every 500 m along every river: the bed's material by how fast the
+                                    // reach runs, and the ground 25 m to each side where it is a floodplain (flat, < 2.5 m over the water).
+                                    int cls[3] = {}, own[3] = {}, plain = 0, silt = 0;
+                                    net->forEachCentrePoint(500.0f, [&](Vector3 d, float level, float) {
+                                        const RiverNetwork::Hit h = net->nearest(d, 5.0f);
+                                        const float e = pf->elevation(d);
+                                        if (!h.found || e > level - 0.5f || level < 1.0f) return; // a bed under water, inland
+                                        const Vector3 bed = Vector3Scale(d, pf->radius + e - 0.2f);
+                                        const VoxelMaterial m = pf->material(bed, pf->baseDensity(bed));
+                                        float lv, lo;
+                                        if (net->lakeAt(d, lv, lo) && lo < RiverNetwork::kLakeMargin) return; // a lake's bed
+                                        if (m == VoxelMaterial::Ice || m == VoxelMaterial::Snow || m == VoxelMaterial::Rock) return; // frozen, or a rock outcrop in the bed
+                                        const int k = h.slope > 0.015f ? 0 : h.slope > 0.003f ? 1 : 2;
+                                        ++cls[k];
+                                        own[k] += k == 0 ? m == VoxelMaterial::Pebbles
+                                                : k == 1 ? (m == VoxelMaterial::Sand || m == VoxelMaterial::Gravel)
+                                                         : (m == VoxelMaterial::Clay || m == VoxelMaterial::Gravel);
+                                        const Vector3 side = Vector3Normalize(Vector3CrossProduct(d, h.down));
+                                        for (int sgn = -1; sgn <= 1; sgn += 2) {
+                                            const Vector3 q = Vector3Normalize(Vector3Add(d, Vector3Scale(side, sgn * (h.halfWidth + 25.0f) / pf->radius)));
+                                            const float eq = pf->elevation(q);
+                                            if (eq < h.level || eq > h.level + 2.0f || pf->waterElevation(q) != PlanetField::kNoWater) continue;
+                                            const Vector3 g = Vector3Scale(q, pf->radius + eq - 0.2f);
+                                            ++plain;
+                                            silt += pf->material(g, pf->baseDensity(g)) == VoxelMaterial::Silt;
+                                        }
+                                    });
+                                    auto share = [](int a, int b) { return b ? 100.0f * a / b : 0.0f; };
+                                    printf("bench: rivers: beds (#595): fast %d (%.0f%% river stones), moderate %d (%.0f%% sand or gravel), slow %d (%.0f%% clay or gravel); "
+                                           "floodplain points %d (%.0f%% silt)\n", cls[0], share(own[0], cls[0]), cls[1], share(own[1], cls[1]), cls[2], share(own[2], cls[2]), plain, share(silt, plain));
+                                    check(share(own[0], cls[0]) > 60.0f && share(own[1], cls[1]) > 60.0f && share(own[2], cls[2]) > 60.0f, "beds by the river's speed (#595)");
+                                    check(share(silt, plain) > 10.0f, "silt on the floodplains (#595)");
+                                }
                                 const Vector3 home = pf->findSpawnDir(p->seed);
                                 std::vector<std::pair<float, int>> near;
                                 for (int i = 0; i < (int)falls.size(); ++i)
@@ -2888,7 +2921,7 @@ int main(int argc, char** argv)
                             const int clay0 = inventory.count("clay");
                             for (int k = 0; k < 12; ++k) TerrainTool_DigAt(*p, Vector3Subtract(bed, Vector3Scale(waterDir, 0.4f * k)));
                             const int clay = inventory.count("clay") - clay0;
-                            const bool pass = under && !above && clay > 0 && (m == VoxelMaterial::Clay || m == VoxelMaterial::Sand || m == VoxelMaterial::Gravel); // #206: clay beds
+                            const bool pass = under && !above && clay > 0 && (m == VoxelMaterial::Clay || m == VoxelMaterial::Sand || m == VoxelMaterial::Gravel || m == VoxelMaterial::Pebbles); // #206: clay beds (under river stones and sand too, #595)
                             printf("bench: water: surface %.1f m, bed %.1f m (%s); underwater 0.3 m down: %s, 1 m up: %s; 12 digs in the bed: %d clay -> %s\n",
                                    waterLevel, bedE, VoxelMaterialName(m), under ? "yes" : "no", above ? "yes" : "no", clay, pass ? "PASS" : "FAIL");
                             benchWater = false;
