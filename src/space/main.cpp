@@ -405,6 +405,7 @@ int main(int argc, char** argv)
     bool benchFacing = false; // --test-facing (#196)
     bool benchPumpHand = false; // --test-pump-hand (#280): the pump test with a hand pump worked for 60 s
     bool benchPumpBoiler = false; int pumpBoilerPart = -1; // --test-pump-boiler (#229 review): the pipes end at a full boiler; the world loses no water
+    bool benchCaveWater = false; int caveWaterPhase = 0; double caveWaterT0 = 0.0; Vector3 caveAt{}, caveOpenAt{}, caveRiverDir{}; float caveLevel = 0.0f, caveDist = 0.0f; // --test-cave-water (#559)
     bool benchPump = false; int pumpPhase = 0, pumpCable = -1; double pumpT0 = 0.0, pumpedAtCut = 0.0; uint32_t pumpPlot = 0; Vector3 pumpBasin{}; float pumpRise = 0.0f; // --test-pump
     bool benchBucket = false; int bucketPhase = 0, bucketTrips = 0; double bucketT0 = 0.0; Vector3 bucketWater{}, bucketBasin{}, bucketField{}; // --test-bucket
     bool benchPond = false; int pondPhase = 0; double pondT0 = 0.0; Vector3 pondDirB{}, pondOutB{}, pondPit{}, pondMid{}; float pondLevelB = 0.0f, pondRB = 0.0f; // --test-pond
@@ -645,6 +646,7 @@ int main(int argc, char** argv)
         if (std::string(argv[i]) == "--test-saves") Menu_TestSaves();
         if (std::string(argv[i]) == "--test-machine-stack") { const bool ok = Machines_TestStack(); fflush(stdout); return ok ? 0 : 1; }
         if (std::string(argv[i]) == "--test-water") benchWater = true;
+        if (std::string(argv[i]) == "--test-cave-water") benchCaveWater = true;
         if (std::string(argv[i]) == "--test-flyfollow") benchFlyFollow = true;
         if (std::string(argv[i]) == "--test-hotbar") benchHotbar = true;
         if (std::string(argv[i]) == "--test-inventory") benchInventory = true;
@@ -4255,6 +4257,89 @@ int main(int argc, char** argv)
                             else { terrainPhase = 2; terrainT0 = GetTime(); }
                         }
                     }
+                } else if (benchCaveWater && (caveWaterPhase > 0 || WorldIdle())) {
+                    // --test-cave-water (#559): a cave hollowed in rock on a river's bed (roofed, under the water's level) with a torch in it
+                    // stays dry; a hole dug at the bed, open to the river, fills from it.
+                    Planetoid* p = dynamic_cast<Planetoid*>(world.objects[0].get());
+                    const PlanetField* pf = p ? dynamic_cast<const PlanetField*>(p->field.get()) : nullptr;
+                    if (!pf) { printf("bench: cave water: needs the planet -> FAIL\n"); benchCaveWater = false; }
+                    else if (caveWaterPhase == 0) {
+                        const Vector3 home = pf->findSpawnDir(p->seed);
+                        const Vector3 t1 = Vector3Normalize(Vector3CrossProduct(home, { 0, 1, 0 })), t2 = Vector3CrossProduct(t1, home);
+                        float best = 1e30f; Vector3 wdir{}; float level = 0.0f;
+                        for (float span = 3000.0f; span <= 12000.0f && best > 1e29f; span *= 2.0f) // out to 12 km (coarser) if need be
+                        for (float e = -span; e <= span; e += 16.0f * span / 3000.0f)
+                            for (float n = -span; n <= span; n += 16.0f * span / 3000.0f) {
+                                const float dist = sqrtf(e * e + n * n);
+                                if (dist >= best) continue;
+                                const Vector3 d = Vector3Normalize(Vector3Add(home, Vector3Add(Vector3Scale(t1, e / pf->radius), Vector3Scale(t2, n / pf->radius))));
+                                const PlanetField::WaterSource ws = pf->waterSourceAt(d);
+                                if ((ws.kind != 1 && ws.kind != 2) || ws.level <= 2.0f || pf->elevation(d) > ws.level - 4.0f) continue; // a river or a lake, 4 m deep or more
+                                // ...with an open channel: no ground standing in the water over the height map's bed.
+                                const float eb = pf->elevation(d);
+                                bool open = true;
+                                for (float hgt = eb + 0.5f; hgt < ws.level - 0.3f && open; hgt += 0.75f)
+                                    open = pf->density(Vector3Scale(d, pf->radius + hgt), p->edits.get()) < ISO_LEVEL;
+                                if (!open) continue;
+                                // ...and calm and wide: the same water 15 m away all round (no fall, #540), 1.5 m deep or more
+                                // there (a narrow mountain stream left the test's tunnel in the air; any generated water had the bug).
+                                bool calm = true;
+                                const Vector3 probes[4] = { Vector3Scale(t1, 15.0f), Vector3Scale(t1, -15.0f), Vector3Scale(t2, 15.0f), Vector3Scale(t2, -15.0f) };
+                                for (const Vector3& o : probes) {
+                                    const Vector3 q = Vector3Normalize(Vector3Add(d, Vector3Scale(o, 1.0f / pf->radius)));
+                                    const PlanetField::WaterSource wq = pf->waterSourceAt(q);
+                                    calm = calm && wq.kind == ws.kind && fabsf(wq.level - ws.level) < 0.3f && pf->elevation(q) < ws.level - 1.5f;
+                                }
+                                if (!calm) continue;
+                                best = dist; wdir = d; level = ws.level;
+                            }
+                        if (best > 1e29f) { printf("bench: cave water: no calm, deep river or lake within 12 km of the start -> FAIL\n"); benchCaveWater = false; }
+                        else {
+                            // The water is simulated around the player: go there first (the river can be km from the start).
+                            caveRiverDir = wdir; caveLevel = level; caveDist = best;
+                            player.spawnOn(world, *p, Vector3Normalize(Vector3Add(wdir, Vector3Scale(t1, 30.0f / pf->radius))));
+                            caveWaterPhase = 1; caveWaterT0 = GetTime();
+                        }
+                    } else if (caveWaterPhase == 1) {
+                        if (GetTime() - caveWaterT0 > 4.0 && WorldIdle()) {
+                            const Vector3 wdir = caveRiverDir;
+                            const float level = caveLevel, best = caveDist;
+                            const Vector3 home = pf->findSpawnDir(p->seed);
+                            const Vector3 t1 = Vector3Normalize(Vector3CrossProduct(home, { 0, 1, 0 }));
+                            const float bed = pf->elevation(wdir);
+                            // Rock on the bed reaching out of the water (as a boulder does), hollowed: a cave inside it whose
+                            // cells lie between the bed and the river's level - the generated water's band - roofed by rock.
+                            TerrainEdit rock{ Vector3Scale(wdir, pf->radius + bed + 2.5f), 4.0f, 0.0f };
+                            rock.fill = true;
+                            ApplyTerrainEdit(*p, rock);
+                            // Two caves in the rock, across the river from each other: one roofed and walled (the torch in it),
+                            // the control tunnelled out to the river under its surface - the river pours in through the fluid
+                            // simulation. Same rock, same water (a control elsewhere read the released reach's drainage, #361).
+                            const RiverNetwork::Hit rh = pf->rivers() ? pf->rivers()->nearest(wdir, 20.0f) : RiverNetwork::Hit{};
+                            const Vector3 along = rh.found ? rh.down : t1;
+                            const Vector3 side = Vector3Normalize(Vector3CrossProduct(wdir, along));
+                            auto offset = [&](float s, float h) { return Vector3Scale(Vector3Normalize(Vector3Add(wdir, Vector3Scale(side, s / pf->radius))), pf->radius + bed + h); };
+                            caveAt = offset(-1.6f, 1.2f);
+                            ApplyTerrainEdit(*p, TerrainEdit{ caveAt, 1.0f, -1.0f, true });
+                            caveOpenAt = offset(1.6f, 1.2f);
+                            ApplyTerrainEdit(*p, TerrainEdit{ caveOpenAt, 1.0f, -1.0f, true });
+                            for (float s = 2.2f; s <= 6.0f; s += 0.5f) ApplyTerrainEdit(*p, TerrainEdit{ offset(s, 1.2f), 1.0f, -1.0f, true }); // the tunnel out: 2 m across (water cells are 1 m)
+                            if (!p->plots) p->plots = std::make_unique<PlotSet>();
+                            const Vector3 torchAt = Vector3Subtract(caveAt, Vector3Scale(wdir, 0.6f)); // on the cave's floor
+                            Plot* plot = p->plots->plotFor(torchAt, 0.0f, true);
+                            plot->place({ PartType::Torch, plot->cellAt(plot->toPlot(torchAt)), 0 });
+                            Fluid::OnTerrainEdit(*p, caveAt, 6.0f); // as placing a part does: the bricks around it are reclassified
+                            printf("bench: cave water: river or lake %.1f km from the start, water at %.1f m over a bed at %.1f m; a rock on the bed with two caves under the water's level, one roofed (a torch in it), one tunnelled out to the river\n",
+                                   best / 1000.0f, level, bed);
+                            caveWaterPhase = 2; caveWaterT0 = GetTime();
+                        }
+                    } else if (GetTime() - caveWaterT0 > 8.0) {
+                        const float inCave = Fluid::WaterAt(*p, caveAt, 0.9f), inHole = Fluid::WaterAt(*p, caveOpenAt, 0.9f);
+                        const bool ok = inCave < 0.05f && inHole > 1.0f;
+                        printf("bench: cave water: %.2f m^3 of water in the roofed cave (want ~0), %.2f m^3 in the one tunnelled out to the river (want > 1) -> %s\n",
+                               inCave, inHole, ok ? "PASS" : "FAIL");
+                        benchCaveWater = false;
+                    }
                 } else if (benchPump && (pumpPhase > 0 || WorldIdle())) {
                     // --test-pump (Plan 4, F6): a powered water pump at a river's edge sends water through pipes
                     // to an outlet over a bowl dug 30 m inland; the bowl fills; cutting the cable stops it.
@@ -4906,8 +4991,11 @@ int main(int argc, char** argv)
                         const Vector3 home = pf->findSpawnDir(p->seed);
                         const Vector3 t1 = Vector3Normalize(Vector3CrossProduct(home, { 0, 1, 0 })), t2 = Vector3CrossProduct(t1, home);
                         float best = 1e30f;
-                        for (float e = -3000.0f; e <= 3000.0f; e += 16.0f)
-                            for (float n = -3000.0f; n <= 3000.0f; n += 16.0f) {
+                        // Out to 3 km, then 6 and 12 km (coarser) if nothing qualifies: a seed's geography is not fixed (#532
+                        // moved every seed's land; seed 42's sea went out of the old 3 km square).
+                        for (float span = 3000.0f; span <= 12000.0f && best > 1e29f; span *= 2.0f)
+                        for (float e = -span; e <= span; e += 16.0f * span / 3000.0f)
+                            for (float n = -span; n <= span; n += 16.0f * span / 3000.0f) {
                                 const float dist = sqrtf(e * e + n * n);
                                 if (dist >= best) continue;
                                 const Vector3 d = Vector3Normalize(Vector3Add(home, Vector3Add(Vector3Scale(t1, e / pf->radius), Vector3Scale(t2, n / pf->radius))));
@@ -4929,7 +5017,7 @@ int main(int argc, char** argv)
                                     }
                                 }
                             }
-                        if (best > 1e29f) { printf("bench: flow: no inland water with a low shore near the start -> FAIL\n"); benchFlow = false; }
+                        if (best > 1e29f) { printf("bench: flow: no water with a low shore within 12 km of the start -> FAIL\n"); benchFlow = false; }
                         else {
                             const float shore = (float)flowStart;
                             printf("bench: flow: water %.0f m from the start, level %.1f m, shore %.0f m out\n", best, flowLevel, shore);
