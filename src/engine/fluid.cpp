@@ -10,6 +10,7 @@
 #include "voxel.h"
 #include "waterfield.h"
 #include "watersurface.h"
+#include "fluidkernel.h"
 #include "world.h"
 #include "worldtypes.h"
 
@@ -94,6 +95,8 @@ struct Brick {
     std::array<uint8_t, B3> disp{}; // the cells as published: easing toward fill (#366)
     bool dispSet = false, easing = false;
     int slot = -1;                  // GPU mode: its place in the GPU brick pool (-1: none yet)
+    std::vector<FluidKernel::Vec4> faces; // CPU mode: the face flows as applied (#654: momentum between ticks; empty: at rest)
+    int cpuSlot = -1;               // CPU mode: its place in this tick's grid
     bool upload = false;            // GPU mode: the whole brick (cells, flags, targets) goes up next tick
 };
 inline int Cap(const Brick* b, int i) { return 255 - b->shut[i]; }          // what the cell holds (#454)
@@ -340,6 +343,7 @@ void Classify(const Site& s, Brick& b, const BodyRef& ref, uint8_t& faces) {
     // water, so a drained brick never borders the generated pond (a wall of water at the brick face).
     b.ready = true;
     b.upload = true; // GPU mode: the classified brick goes up whole
+    b.faces.clear(); // CPU mode: a (re)classified brick starts at rest (#654)
     b.keepFill = false;
     b.active = true; b.idle = 0; b.changed = true;
 }
@@ -366,21 +370,9 @@ void PinPondFace(Brick& b, int f) {
 // Step
 // ---------------------------------------------------------------------------------------------
 
-struct Neighbour { Brick* b; int i; };
-// A cell's neighbour along an axis (dx, dy, dz one of +-1): crosses into the next brick.
-inline bool Next(Brick* b, int x, int y, int z, int dx, int dy, int dz, Neighbour& out) {
-    x += dx; y += dy; z += dz;
-    int f = -1;
-    if (x < 0) { f = 0; x += B; } else if (x >= B) { f = 1; x -= B; }
-    else if (y < 0) { f = 2; y += B; } else if (y >= B) { f = 3; y -= B; }
-    else if (z < 0) { f = 4; z += B; } else if (z >= B) { f = 5; z -= B; }
-    if (f >= 0) { b = b->nbr[f]; if (!b || !b->ready) return false; }
-    out = { b, Idx(x, y, z) };
-    return true;
-}
-
 long long wakeGpu = 0, wakeTouch = 0; // settled bricks woken (stats)
 void Touch(Brick* b) { if (b->settled) ++wakeTouch; b->active = true; b->idle = 0; b->changed = true; b->settled = false; }
+void CpuTick(int n); // CPU mode: the GPU's step on the CPU (#654), below
 
 // GPU mode (fluid on compute shaders): CPU-side changes to the mirror (buckets, pumps, springs, levelling) go
 // to the GPU as deltas next tick; bricks waiting for a full upload take theirs from the mirror instead.
@@ -394,15 +386,7 @@ inline void GpuDelta(Brick* b, int i, int d) {
 
 // Kinds don't mix: fluid moves only into an empty cell or one of its own kind; an empty cell
 // takes the kind of what first flows in.
-inline bool SameKind(const Brick* a, int ia, const Brick* b, int ib) { return b->fill[ib] == 0 || ((a->flags[ia] ^ b->flags[ib]) & kKindMask) == 0; }
 inline void TakeKind(Brick* to, int it, uint8_t kindBits) { if (to->fill[it] == 0) to->flags[it] = (uint8_t)((to->flags[it] & ~kKindMask) | kindBits); }
-
-// Water moving out of a cell into a missing brick: queue that brick (it takes water from the next
-// step on, once classified).
-void RequestBeyond(Site& s, Brick* b, int x, int y, int z, int dx, int dy, int dz) {
-    const int ci = b->bi * B + x + dx, cj = b->bj * B + y + dy, ck = b->bk * B + z + dz;
-    s.ensure(FloorDiv(ci, B), FloorDiv(cj, B), FloorDiv(ck, B));
-}
 
 // A source with a rate and a head: it adds to the surface cell of its column while that surface is
 // below the head. A basin over it fills to the head and the source rests; a lower rim lets the overflow
@@ -445,97 +429,6 @@ bool SpringWants(const Site& s, const Site::Spring& sp) {
         return sp.head - (ck + Height(b, i) / 255.0f) > 1.0f / 255.0f;
     }
     return false;
-}
-
-void StepSite(Site& s, int parity) {
-    for (Site::Spring& sp : s.springs) StepSpring(s, sp); // springs and seeps
-    std::vector<Brick*> act;
-    for (auto& kv : s.bricks) if (kv.second->ready && kv.second->active) act.push_back(kv.second.get());
-    std::sort(act.begin(), act.end(), [](const Brick* a, const Brick* b) { return a->bk != b->bk ? a->bk < b->bk : a->bj != b->bj ? a->bj < b->bj : a->bi < b->bi; });
-    static const int side[4][2] = { { 1, 0 }, { -1, 0 }, { 0, 1 }, { 0, -1 } };
-    for (Brick* b : act) {
-        bool moved = false;
-        for (int z = 0; z < B; ++z)
-            for (int y = 0; y < B; ++y)
-                for (int x = 0; x < B; ++x) {
-                    const int i = Idx(x, y, z);
-                    int f = b->fill[i];
-                    const int fStart = f; // nothing left the cell this pass: a speck that is resting (#454)
-                    if (f == 0 || (b->flags[i] & kSolid)) continue;
-                    const bool src = b->flags[i] & kSource;
-                    // Down.
-                    Neighbour d;
-                    bool belowOpen = false, belowFull = true;
-                    if (Next(b, x, y, z, 0, 0, -1, d)) {
-                        if (!(d.b->flags[d.i] & kSolid)) {
-                            belowOpen = true;
-                            const int room = SameKind(b, i, d.b, d.i) ? std::max(0, Cap(d.b, d.i) - d.b->fill[d.i]) : 0; // oil rests on water (and water on oil)
-                            if (room > 0 && (d.b->flags[d.i] & (kSource | kSink)) != kSource && (!src || (d.b->flags[d.i] & kDug))) { // static water takes nothing in
-                                const int m = std::min(f, room);
-                                TakeKind(d.b, d.i, b->flags[i] & kKindMask);
-                                d.b->fill[d.i] = (uint8_t)(d.b->fill[d.i] + m);
-                                f -= m;
-                                if (d.b != b) Touch(d.b);
-                                moved = true; ++dbgDown;
-                            }
-                            belowFull = d.b->fill[d.i] >= Cap(d.b, d.i) || !SameKind(b, i, d.b, d.i);
-                        }
-                    } else if (z == 0 && !b->nbr[4]) {
-                        if (!src) RequestBeyond(s, b, x, y, z, 0, 0, -1); // static water never asks for more bricks
-                        belowOpen = true; belowFull = false; // wait for it
-                    }
-                    // Sideways, once the cell rests on something.
-                    const int kd = CellKind(b->flags[i]), visc = kindVisc[kd], minSpread = kindMinSpread[kd]; // per fluid kind
-                    if (f >= minSpread && (!belowOpen || belowFull)) {
-                        const int f0 = f;
-                        for (int k = 0; k < 4; ++k) {
-                            const int kk = (k + parity) & 3;
-                            Neighbour o;
-                            if (!Next(b, x, y, z, side[kk][0], side[kk][1], 0, o)) {
-                                // Out of the allocated region: ask for the brick.
-                                const int nx = x + side[kk][0], ny = y + side[kk][1];
-                                if (!src && (nx < 0 || nx >= B || ny < 0 || ny >= B)) RequestBeyond(s, b, x, y, z, side[kk][0], side[kk][1], 0);
-                                continue;
-                            }
-                            if (o.b->flags[o.i] & kSolid) continue;
-                            if ((o.b->flags[o.i] & (kSource | kSink)) == kSource || (src && !(o.b->flags[o.i] & kDug))) continue; // sources feed dug cells only, and take nothing in
-                            if (!SameKind(b, i, o.b, o.i)) continue;
-                            // Water stands at shut + fill (#454): a film on a half-buried cell stands higher than its open
-                            // neighbour and runs off; the neighbour takes no more than its room.
-                            const int diff = (b->shut[i] + f0) - Height(o.b, o.i);
-                            if (diff < visc) continue;
-                            // A dry cell over a drop (nothing under it holds water): a film at its edge runs off whole (#454:
-                            // left to the viscosity rule its last centimetres stayed stranded up a dug wall). As fluid_step.comp.
-                            bool overDrop = false;
-                            if (o.b->fill[o.i] == 0) {
-                                const int ox = o.i % B, oy = (o.i / B) % B, oz = o.i / (B * B);
-                                Neighbour u;
-                                overDrop = !Next(o.b, ox, oy, oz, 0, 0, -1, u) ||
-                                           (!(u.b->flags[u.i] & kSolid) && u.b->fill[u.i] < Cap(u.b, u.i) && (u.b->fill[u.i] == 0 || SameKind(b, i, u.b, u.i)));
-                            }
-                            const int room = Cap(o.b, o.i) - (int)o.b->fill[o.i];
-                            int m = overDrop ? std::min(f, room) : std::min({ diff / visc, f, room }); // thicker fluids spread slower
-                            if (o.b->fill[o.i] == 0 && f - m <= kEvaporate && f <= room) m = f; // into a dry cell: no speck left behind to soak away
-                            // No trickles into dry cells (a film's edge holds), unless the ground falls to them - a lower ground
-                            // share, or a drop under the cell - and then more than a speck: one landing alone soaks away (#454).
-                            if (o.b->fill[o.i] == 0 && m < minSpread && (m <= kEvaporate || (b->shut[i] <= o.b->shut[o.i] && !overDrop))) continue;
-                            if (m <= 0) continue;
-                            TakeKind(o.b, o.i, b->flags[i] & kKindMask);
-                            o.b->fill[o.i] = (uint8_t)(o.b->fill[o.i] + m);
-                            f -= m;
-                            if (o.b != b) Touch(o.b);
-                            moved = true; ++dbgSide;
-                        }
-                    }
-                    if (f > 0 && f <= kEvaporate && f == fStart && stepCount % kEvapEvery == 0 && !src && !belowOpen) { f = 0; moved = true; } // a resting speck on the ground soaks away (on water it stays: that water's surface, #454)
-                    b->fill[i] = (uint8_t)f;
-                }
-        // Sources hold their level.
-        for (int i = 0; i < B3; ++i)
-            if ((b->flags[i] & kSource) && b->fill[i] != b->target[i]) { b->fill[i] = b->target[i]; moved = true; ++dbgSrc; }
-        if (moved) Touch(b);
-        else if (++b->idle > kSleepSteps) b->active = false;
-    }
 }
 
 // Levelling: bodies of water joined through full cells communicate. Each body's open surfaces (the
@@ -895,10 +788,11 @@ void RunJob() {
     n *= std::max(1, speed.load());
     for (int k = 0; k < n; ++k) {
         ++stepCount;
-        if (gpuMode) { for (auto& s : sites) for (Site::Spring& sp : s->springs) StepSpring(*s, sp); } // the GPU runs the cells (GpuTick)
-        else for (auto& s : sites) StepSite(*s, (int)(stepCount & 3));
+        for (auto& s : sites) for (Site::Spring& sp : s->springs) StepSpring(*s, sp); // the cells: the GPU (GpuTick) or CpuTick below
         if (stepCount % kLevelEvery == 0) for (auto& s : sites) LevelSite(*s);
     }
+    // CPU mode: the GPU's step on the CPU (#654), at its substep count (120 a second).
+    if (!gpuMode) CpuTick((int)lround(2 * kSubsteps * (kTickSeconds / 0.05)) * std::max(1, speed.load()));
     const auto t1 = std::chrono::steady_clock::now();
     // Publish: a new snapshot of the water field (waterfield.h) sharing every unchanged brick; the changed bricks'
     // bounds go out with it, so the chunks there redraw their water (the chunk mesher draws all fluid, #360).
@@ -1304,6 +1198,82 @@ void GpuTick(int n) {
     }
     G.lastList = list;
     G.lastN = n;
+}
+
+// CPU mode (#654: no compute shaders - a headless server, FLUID_CPU=1): the same step as the GPU's (fluidkernel.h) on a grid
+// packed each tick from the awake bricks, their neighbours (processed too, as on the GPU) and the ring past them (read only,
+// for the columns and the cells beside), then unpacked with the GPU readback's rules for waking and sleeping.
+FluidKernel::Grid cpuGrid;
+void CpuTick(int n) {
+    std::vector<Brick*> slots;
+    std::vector<Site*> slotSite;
+    auto add = [&](Brick* b, Site* s) {
+        if (!b || !b->ready || b->cpuSlot >= 0) return;
+        b->cpuSlot = (int)slots.size();
+        slots.push_back(b); slotSite.push_back(s);
+    };
+    std::vector<int> list;
+    for (auto& s : sites)
+        for (auto& kv : s->bricks) {
+            Brick* b = kv.second.get();
+            if (!b->ready || !b->active) continue;
+            add(b, s.get());
+            for (Brick* o : b->nbr) add(o, s.get());
+        }
+    const int processedCount = (int)slots.size();
+    for (int i = 0; i < processedCount; ++i) list.push_back(i);
+    for (int i = 0; i < processedCount; ++i) for (Brick* o : slots[i]->nbr) add(o, slotSite[i]); // read-only ring
+    if (list.empty()) { for (Brick* b : slots) b->cpuSlot = -1; return; }
+    FluidKernel::Grid& g = cpuGrid;
+    const int S = (int)slots.size();
+    if ((int)g.processed.size() < S) g.resize(std::max(S, (int)g.processed.size() * 2));
+    std::fill(g.flags.begin(), g.flags.begin() + S, 0u);
+    for (int i = 0; i < S; ++i) {
+        Brick* b = slots[i];
+        uint32_t* c = &g.a[(size_t)i * B3];
+        for (int k = 0; k < B3; ++k) c[k] = b->fill[k] | ((uint32_t)b->flags[k] << 8) | ((uint32_t)b->target[k] << 16) | ((uint32_t)b->shut[k] << 24);
+        std::copy(c, c + B3, &g.b[(size_t)i * B3]);
+        if (b->faces.size() == (size_t)B3) std::copy(b->faces.begin(), b->faces.end(), &g.faceP[(size_t)i * B3]);
+        else std::fill(&g.faceP[(size_t)i * B3], &g.faceP[(size_t)i * B3] + B3, FluidKernel::Vec4{});
+        for (int f = 0; f < 6; ++f) g.nbr[(size_t)i * 6 + f] = b->nbr[f] && b->nbr[f]->cpuSlot >= 0 ? b->nbr[f]->cpuSlot : -1;
+        g.processed[i] = i < processedCount ? 1 : 0;
+    }
+    FluidKernel::Params p;
+    for (int k = 0; k < 8; ++k) { p.minSpread[k] = kindMinSpread[k]; p.visc[k] = kindVisc[k]; KindFriction(k, p.frictionLin[k], p.frictionQuad[k]); }
+    p.dt = kGpuSubstepSeconds;
+    static const bool noEvap = getenv("RAYLIBGAME_FLUID_NOEVAP") != nullptr;
+    static unsigned evapTick = 0;
+    for (int k = 0; k < n; ++k) {
+        p.evaporate = !noEvap && ++evapTick % kEvapEvery == 0;
+        FluidKernel::Substep(g, p, list);
+    }
+    // Unpack, as the GPU readback (GpuTick 1.).
+    static const int d[6][3] = { { -1, 0, 0 }, { 1, 0, 0 }, { 0, -1, 0 }, { 0, 1, 0 }, { 0, 0, -1 }, { 0, 0, 1 } };
+    for (int i = 0; i < processedCount; ++i) {
+        Brick* br = slots[i];
+        const uint32_t fl = g.flags[i];
+        br->faces.assign(&g.faceP[(size_t)i * B3], &g.faceP[(size_t)i * B3] + B3);
+        if (fl & 1u) {
+            const uint32_t* c = &g.a[(size_t)i * B3];
+            int drift = 0;
+            for (int k = 0; k < B3; ++k) {
+                br->fill[k] = (uint8_t)(c[k] & 255u);
+                br->flags[k] = (uint8_t)((br->flags[k] & ~kKindMask) | (((c[k] >> 8) & 255u) & kKindMask));
+                if (br->settled) drift = std::max(drift, abs((int)br->fill[k] - (int)br->check[k]));
+            }
+            if (br->settled && drift <= kSettleDiff) br->changed = true; // a resting brick at the edge: stays asleep (#366)
+            else {
+                if (br->settled) { ++wakeGpu; br->settled = false; }
+                Touch(br);
+                for (Brick* o : br->nbr) if (o) { o->active = true; o->idle = 0; }
+            }
+        } else if (br->active && (br->idle += n) > kSleepSteps) {
+            br->active = false;
+        }
+        for (int face = 0; face < 6; ++face)
+            if (fl & (2u << face)) slotSite[i]->ensure(br->bi + d[face][0], br->bj + d[face][1], br->bk + d[face][2]);
+    }
+    for (Brick* b : slots) b->cpuSlot = -1;
 }
 
 void GpuReset() {
