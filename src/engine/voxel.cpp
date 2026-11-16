@@ -17,6 +17,7 @@
 #include <chrono>
 #include <cmath>
 #include <random>
+#include <cstdlib>
 
 const char* VoxelMaterialName(VoxelMaterial m) {
     switch (m) {
@@ -112,9 +113,20 @@ Vector3 PlanetoidField::fallbackUp(Vector3 p) const {
 // TerrainField (open world, +Y up)
 // ---------------------------------------------------------------------------------------------
 
+// #532: the seed offsets were drawn in [0, 10000) METRES, so a field with a long wavelength moved by only offset x
+// frequency noise units between seeds (continents on a 60 km planet: at most 0.42 units, while the planet spans 5):
+// every seed sampled nearly the same patch of the noise, and worlds looked alike. Now the span is max(10000 m, U /
+// frequency): at least U = 64 noise units for every field. RAYLIBGAME_SEED_SPAN=U overrides it (0: the old 10 km).
+float gSeedSpanUnits = -1.0f; // < 0: read the environment once
+static float SeedSpan(float frequency) {
+    if (gSeedSpanUnits < 0.0f) { const char* e = getenv("RAYLIBGAME_SEED_SPAN"); gSeedSpanUnits = e ? (float)atof(e) : 64.0f; }
+    return gSeedSpanUnits > 0.0f ? std::max(10000.0f, gSeedSpanUnits / frequency) : 10000.0f;
+}
+
 static SimplexNoise SeededNoise(std::mt19937& rng, float frequency) {
     std::uniform_real_distribution<float> unit(0.0f, 1.0f);
-    return SimplexNoise(frequency, 1.0f, 2.0f, 0.5f, unit(rng) * 10000.0f, unit(rng) * 10000.0f, unit(rng) * 10000.0f);
+    const float span = SeedSpan(frequency);
+    return SimplexNoise(frequency, 1.0f, 2.0f, 0.5f, unit(rng) * span, unit(rng) * span, unit(rng) * span);
 }
 
 TerrainField::TerrainField(unsigned int seed) {

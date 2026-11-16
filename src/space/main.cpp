@@ -48,6 +48,7 @@
 #include "progression_test.h"
 #include "menus.h"
 #include "newworld.h"
+#include "seedsurvey.h"
 #include "hotbar.h"
 #include "itemicons.h"
 #include "particles.h"
@@ -281,6 +282,8 @@ int main(int argc, char** argv)
             dir = dir.substr(0, cut + 1);
         }
     }
+    // --seed-survey COUNT FIRSTSEED OUTDIR [THREADS] [SUBSET] (#532): how alike different seeds' start planets are. No window.
+    if (argc >= 5 && std::string(argv[1]) == "--seed-survey") return SeedSurvey_Run(argc, argv);
     double benchSeconds = 0.0;
     bool startWithOverlay = false;
     int benchDigStrokes = 0;     // --test-dig N: dig N strokes at the crosshair once the world is loaded

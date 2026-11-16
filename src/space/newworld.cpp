@@ -102,6 +102,28 @@ namespace {
         return { (unsigned char)std::min(255.0f, c.r * (0.85f + lift)), (unsigned char)std::min(255.0f, c.g * (0.85f + lift)), (unsigned char)std::min(255.0f, c.b * (0.85f + lift)), 255 };
     }
 
+}
+
+// --seed-survey (#532): the preview's map at any size, single threaded (the caller runs seeds in parallel).
+void NewWorld_RenderMap(unsigned int terrainSeed, float radius, const WorldGenParams& p, int w, int h, std::vector<Color>& out, std::vector<float>* heights) {
+    PlanetField pf(terrainSeed, radius, false);
+    pf.setGenParams(p);
+    out.assign((size_t)w * h, BLACK);
+    if (heights) heights->assign((size_t)w * h, 0.0f);
+    const float fp = 2.0f * PI * radius / kTexW; // the preview's footprint, whatever the size
+    for (int y = 0; y < h; ++y) {
+        const float lat = (0.5f - (y + 0.5f) / h) * PI;
+        for (int x = 0; x < w; ++x) {
+            const float lon = (x + 0.5f) / w * 2.0f * PI;
+            const Vector3 dir = { cosf(lat) * cosf(lon), sinf(lat), cosf(lat) * sinf(lon) };
+            const float e = pf.elevationBase(dir, fp);
+            out[(size_t)y * w + x] = MapColour(pf, dir, e);
+            if (heights) (*heights)[(size_t)y * w + x] = e;
+        }
+    }
+}
+
+namespace {
     // The worker: the start planet's base terrain (no rivers, no bake) sampled on the map, in a few threads.
     void BuildMap(unsigned int terrainSeed, float radius, WorldGenParams p) {
         const auto t0 = std::chrono::steady_clock::now();
