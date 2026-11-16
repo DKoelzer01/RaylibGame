@@ -246,6 +246,7 @@ public:
     // True while land() answers for the erosion bake's input (#544: canyons go in before the bake).
     static inline thread_local bool tBakeInput = false;
     float canyonFault(float sx, float sy, float sz) const; // #544: 0..1 along the canyon lines
+    float canyonLine(float sx, float sy, float sz) const;  // #544: |the ravine field| (0 on a canyon line; the notch is 0.02 wide)
     float faultUplift(Vector3 s) const { return Strata_FaultUplift(s, fieldSeed); } // #590: metres (s = surface point)
     float foldWeight(Vector3 s) const { return Strata_FoldWeight(s, fieldSeed); }   // #591: 0..1
     float volcano(Vector3 s) const { return gen.volcanoes ? Strata_Volcano(s, radius, fieldSeed) : 0.0f; } // #593: metres

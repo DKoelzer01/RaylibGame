@@ -2770,6 +2770,69 @@ int main(int argc, char** argv)
                                     check(share(own[0], cls[0]) > 60.0f && share(own[1], cls[1]) > 60.0f && share(own[2], cls[2]) > 60.0f, "beds by the river's speed (#595)");
                                     check(share(silt, plain) > 10.0f, "silt on the floodplains (#595)");
                                 }
+                                {   // Perched rivers (#547; the measure from the water session's m102): a river running beside lower
+                                    // ground, as along a canyon's edge instead of in it. Every 100 m along every river (outside lakes):
+                                    // the ground 30 m out from either bank more than 5 m under the river's bed. Reported.
+                                    long n = 0, perched = 0;
+                                    net->forEachCentrePoint(100.0f, [&](Vector3 d, float level, float) {
+                                        const RiverNetwork::Hit h = net->nearest(d, 5.0f);
+                                        float lv, lo;
+                                        if (!h.found || level < 1.0f || (net->lakeAt(d, lv, lo) && lo < RiverNetwork::kLakeMargin)) return;
+                                        const float bed = pf->elevation(d);
+                                        const Vector3 side = Vector3Normalize(Vector3CrossProduct(d, h.down));
+                                        bool low = false;
+                                        for (int sgn = -1; sgn <= 1 && !low; sgn += 2)
+                                            low = pf->elevation(Vector3Normalize(Vector3Add(d, Vector3Scale(side, sgn * (h.halfWidth + 30.0f) / pf->radius)))) < bed - 5.0f;
+                                        ++n;
+                                        perched += low;
+                                    });
+                                    printf("bench: rivers: perched (#547): %ld of %ld points every 100 m have ground 5 m+ under the bed 30 m out from a bank (%.2f%%)\n",
+                                           perched, n, 100.0 * perched / std::max(1L, n));
+                                }
+                                if (gErosionPrototype) {
+                                    // Canyons carry rivers (#544, #547), over the whole planet: points ~100 m apart on the canyon lines
+                                    // (notch >= 0.8, on land), how many have a river within 150 m - over the whole line, and past
+                                    // its first 3 km from the head (a stream needs ~2 km^2 of drainage to start). And rim rivers:
+                                    // river points (every 50 m) with ground 15 m+ under their bed 60-250 m to the side, in a canyon.
+                                    const int M = 1 << 22;
+                                    long cn = 0, cwet = 0;
+                                    for (int i = 0; i < M; ++i) {
+                                        const float y = 1.0f - 2.0f * (i + 0.5f) / M, rr = sqrtf(std::max(0.0f, 1.0f - y * y)), ph = i * 2.39996323f;
+                                        const Vector3 d = { rr * cosf(ph), y, rr * sinf(ph) };
+                                        const Vector3 s = Vector3Scale(d, pf->radius);
+                                        if (pf->canyonFault(s.x, s.y, s.z) < 0.8f) continue;
+                                        if (pf->elevationBase(d, 50.0f) < 5.0f) continue;
+                                        ++cn;
+                                        cwet += net->nearest(d, 150.0f).found;
+                                    }
+                                    long rn = 0, rim = 0;
+                                    net->forEachCentrePoint(50.0f, [&](Vector3 d, float level, float) {
+                                        const Vector3 s = Vector3Scale(d, pf->radius);
+                                        if (level < 1.0f || pf->canyonLine(s.x, s.y, s.z) > 0.06f) return; // only near the canyon lines
+                                        const RiverNetwork::Hit h = net->nearest(d, 5.0f);
+                                        if (!h.found) return;
+                                        float lv, lo;
+                                        if (net->lakeAt(d, lv, lo) && lo < RiverNetwork::kLakeMargin) return;
+                                        const float bed = pf->elevation(d);
+                                        const Vector3 side = Vector3Normalize(Vector3CrossProduct(d, h.down));
+                                        bool low = false;
+                                        for (int sgn = -1; sgn <= 1 && !low; sgn += 2)
+                                            for (float off = 60.0f; off <= 250.0f && !low; off += 38.0f) {
+                                                const Vector3 q = Vector3Normalize(Vector3Add(d, Vector3Scale(side, sgn * (h.halfWidth + off) / pf->radius)));
+                                                const Vector3 qs = Vector3Scale(q, pf->radius);
+                                                low = pf->canyonFault(qs.x, qs.y, qs.z) > 0.5f && pf->elevationBase(q, 8.0f) < bed - 15.0f;
+                                            }
+                                        ++rn; rim += low;
+                                    });
+                                    const float wetPct = 100.0f * cwet / std::max(1L, cn), rimPct = 100.0f * rim / std::max(1L, rn);
+                                    printf("bench: canyons: %ld points on canyon lines (planet), %.1f%% with a river within 150 m; %ld river points near canyon lines, %ld (%.2f%%) on a rim above a lower canyon floor\n",
+                                           cn, wetPct, rn, rim, rimPct);
+                                    static const bool graded = !(getenv("RAYLIBGAME_CANYON_GRADE") && getenv("RAYLIBGAME_CANYON_GRADE")[0] == '0');
+                                    if (graded) {
+                                        check(wetPct > 20.0f, "rivers run in the canyons (#544; 18.6% before the grading on seed 42, 25% after; bake-native rivers raise it)");
+                                        check(rimPct < 5.0f, "no rivers on a canyon's rim above its floor (#547)");
+                                    }
+                                }
                                 const Vector3 home = pf->findSpawnDir(p->seed);
                                 std::vector<std::pair<float, int>> near;
                                 for (int i = 0; i < (int)falls.size(); ++i)

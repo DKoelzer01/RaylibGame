@@ -28,7 +28,7 @@ using StrataFn = std::function<StrataColumn(Vector3)>; // #587: the rock column 
 
 // Bump with any change to the bake's code (Simulate, SetRock, the refinement, the pond extraction): a cache from
 // another version or other parameters is baked again rather than loaded (#355 review).
-constexpr uint32_t kErosionBakeVersion = 19; // 19: formations kept inside the elevation bound; 18: // 18: glacial 2.0 (#548); 17: // 16: volcanoes (#593); 15: karst (#592); // 13: fold outcrops raised in the bake input; 12: folded strata (#591); 11: narrower fault steps; 10: fault scarps in the bake input (#590); 9: canyons in the bake input (#544); 8: rock strata (#587); 7: the noise seed offsets changed (#532); 6: wind (aeolian) erosion, #370
+constexpr uint32_t kErosionBakeVersion = 22; // 22: graded canyon floors (#544), divides past 400 m of cut; 19: formations kept inside the elevation bound; 18: // 18: glacial 2.0 (#548); 17: // 16: volcanoes (#593); 15: karst (#592); // 13: fold outcrops raised in the bake input; 12: folded strata (#591); 11: narrower fault steps; 10: fault scarps in the bake input (#590); 9: canyons in the bake input (#544); 8: rock strata (#587); 7: the noise seed offsets changed (#532); 6: wind (aeolian) erosion, #370
 struct ErosionParams {
     float cell = 200.0f;      // m, coarse cell at a face centre (gnomonic cells shrink toward the face edges)
     int steps = 400;
@@ -68,6 +68,7 @@ public:
     bool load(const std::string& path, float planetRadius, unsigned int seed, uint64_t paramsKey); // false: missing, other seed, radius, parameters or code version
     uint64_t hash() const { return hashValue; }
     float buildSeconds = 0.0f, coarseSeconds = 0.0f, refineSeconds = 0.0f, maxCut = 0.0f, maxRaise = 0.0f;
+    std::string profile;      // #605: seconds per pass of the last build()
     float heightScale = 1.0f; // #587: the bake's result = its simulation heights x this (strata are laid in simulation heights)
     int cells() const { return 6 * n * n; }
     int fineCells() const { return 6 * fe * fe; }
