@@ -87,6 +87,7 @@ inline bool gErosionPrototype = true; // erosion-baked terrain by default (user 
 // it out of the erosion comparisons); RAYLIBGAME_3D=1 turns it back on.
 inline bool gTerrain3D = true;
 inline bool gGullies = true; // erosion-filter gullies on the baked height (#357); RAYLIBGAME_GULLIES=0 for A/B
+inline bool gCliffFaces = true; // one face per steep resistant layer (#588, Plan 9 step 5); RAYLIBGAME_CLIFF_FACES=0 for A/B
 inline bool gTerrainAO = true; // per-vertex ambient occlusion in chunk meshing (#132); RAYLIBGAME_AO=0 for A/B
 inline bool gSkyProbes = true; // sky light under overhangs from short rays (#369); RAYLIBGAME_SKY_PROBES=0 for A/B
 class PlanetErosion;
@@ -241,6 +242,8 @@ public:
     // Tests (#561): true on this thread = the bake is ignored (erosion() answers nullptr), so land() / elevationBase()
     // give the noise terrain the GPU point kernel ports (it has no bake).
     static inline thread_local bool tIgnoreBake = false;
+    // #588: the cliff face of a steep resistant layer at surface point s (m), height h (final m), the bake's gradient.
+    float cliffFace(Vector3 s, float h, Vector3 grad, float fp) const;
     // On a river or pond bed (or its wet shore): digging there also turns up clay.
     bool wetBed(Vector3 local) const;
     // The static water at a direction and its kind (flowing water, fluid.h): 0 none, 1 river, 2 lake,

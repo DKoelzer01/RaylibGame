@@ -341,6 +341,7 @@ PlanetField::Land PlanetField::land(Vector3 dir, float fp) const {
         const PlanetErosion::Slope s = eroded->slopeAt(dir, fp);
         h = s.h;
         if (gGullies && fp < 450.0f) h += ErosionGullies({ sx, sy, sz }, dir, s.grad, fp, fieldSeed, Smoothstep(2.0f, 15.0f, s.h));
+        h += cliffFace({ sx, sy, sz }, h, s.grad, fp); // one face per steep resistant layer (#588)
         l.ridge = std::max(0.0f, h - 150.0f);
     } else {
         h = base;
@@ -2198,19 +2199,48 @@ StrataColumn PlanetField::strataColumn(Vector3 dir) const {
     return col;
 }
 
-RockType PlanetField::rockTypeAt(Vector3 p) const {
-    if (moon) return RockType::Basalt; // the maria: dark basalt plains
-    const float d = Vector3Length(p);
-    if (d < 1.0f) return RockType::Soft;
-    // The column varies over kilometres: cached per thread on a 16 m grid (the mesher asks for every rock vertex).
+// The strata column at a body-local point: it varies over kilometres, so it is cached per thread on a 16 m grid (the
+// mesher asks for every rock vertex, land() for every fine sample on steep rock).
+static const StrataColumn& CachedColumn(const PlanetField& pf, Vector3 p, float d) {
     struct Entry { const PlanetField* f = nullptr; int32_t x = 0, y = 0, z = 0; StrataColumn c; };
     thread_local Entry cache[1024];
     const int32_t qx = (int32_t)floorf(p.x / 16.0f), qy = (int32_t)floorf(p.y / 16.0f), qz = (int32_t)floorf(p.z / 16.0f);
     Entry& e = cache[((uint32_t)qx * 73856093u ^ (uint32_t)qy * 19349663u ^ (uint32_t)qz * 83492791u) & 1023u];
-    if (e.f != this || e.x != qx || e.y != qy || e.z != qz) { e.f = this; e.x = qx; e.y = qy; e.z = qz; e.c = strataColumn(Vector3Scale(p, 1.0f / d)); }
+    if (e.f != &pf || e.x != qx || e.y != qy || e.z != qz) { e.f = &pf; e.x = qx; e.y = qy; e.z = qz; e.c = pf.strataColumn(Vector3Scale(p, 1.0f / d)); }
+    return e.c;
+}
+
+RockType PlanetField::rockTypeAt(Vector3 p) const {
+    if (moon) return RockType::Basalt; // the maria: dark basalt plains
+    const float d = Vector3Length(p);
+    if (d < 1.0f) return RockType::Soft;
     const PlanetErosion* eroded = erosion();
     const float scale = eroded && eroded->heightScale > 0.0f ? eroded->heightScale : 1.0f;
-    return Strata_RockAt(e.c, (d - radius) / scale, fieldSeed);
+    return Strata_RockAt(CachedColumn(*this, p, d), (d - radius) / scale, fieldSeed);
+}
+
+float PlanetField::cliffFace(Vector3 s, float h, Vector3 grad, float fp) const {
+    // Plan 9 step 5 (#588): the bake's 50 m grid spreads a resistant layer's outcrop over a cell or two, never sheer.
+    // Where the bake left the ground steep and the layer here is resistant, its height range is redistributed into one
+    // face in the layer's middle half, a ledge above it and a talus apron below; the column keeps its mean height and
+    // the soft layers between stay as the bake made them. One face per resistant layer (they are irregular: 40-150 m,
+    // 35-60% of the layers, warped and tilted), not the regular treads of the old terraces (#543). Granite cores keep
+    // the bake's shape. Fine footprints only (faded out by 32 m).
+    if (!gCliffFaces || fp >= 32.0f || h < 2.0f) return 0.0f;
+    const float steep = Smoothstep(0.6f, 1.2f, Vector3Length(grad));
+    if (steep <= 0.0f) return 0.0f;
+    const float d = Vector3Length(s);
+    if (d < 1.0f) return 0.0f;
+    const StrataColumn& c = CachedColumn(*this, s, d);
+    if (c.province == 1) return 0.0f;
+    const PlanetErosion* eroded = erosion();
+    const float scale = eroded && eroded->heightScale > 0.0f ? eroded->heightScale : 1.0f;
+    const float hs = h / scale;
+    if (Strata_RockAt(c, hs, fieldSeed) == RockType::Soft) return 0.0f;
+    const float thick = (c.province == 2 ? 0.6f : 1.0f) * c.thick;
+    const float t = (hs + c.offset) / thick, f = t - floorf(t);
+    const float face = Smoothstep(0.25f, 0.75f, f);
+    return (face - f) * thick * scale * steep * std::clamp(2.0f - fp / 16.0f, 0.0f, 1.0f);
 }
 
 // The rock item at a point: its stratum's (#587: one data source with the bake and the surface material).

@@ -552,6 +552,7 @@ int main(int argc, char** argv)
     if (const char* e = getenv("RAYLIBGAME_EROSION"); e && e[0]) gErosionPrototype = e[0] != '0'; // on by default (#362, user 2026-11-15); 0: the noise terrain (A/B)
     if (const char* e3 = getenv("RAYLIBGAME_3D")) gTerrain3D = e3[0] == '1'; else if (gErosionPrototype) gTerrain3D = false; // no 3D band in erosion tests (RAYLIBGAME_3D=0 for baselines)
     if (const char* g = getenv("RAYLIBGAME_GULLIES")) gGullies = g[0] == '1';
+    if (const char* g = getenv("RAYLIBGAME_CLIFF_FACES")) gCliffFaces = g[0] == '1'; // #588 A/B
     if (const char* c = getenv("RAYLIBGAME_SKY_PROBES")) gSkyProbes = c[0] == '1'; // #369 A/B
     if (const char* c = getenv("RAYLIBGAME_AO")) gTerrainAO = c[0] != '0'; // #132 A/B
     for (int i = 1; i < argc; ++i) {
