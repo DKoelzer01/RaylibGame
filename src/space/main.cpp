@@ -240,6 +240,8 @@ static void StartNewWorld(Scene& world, bool reset, bool dawn) {
 // camera on the planetoid, prints frame stats to stdout and bench.txt, then exits.
 
 
+extern const char* kGameVersion; // "<branch> <commit>", generated at build time by cmake/game_version.cmake (#501)
+
 int main(int argc, char** argv)
 {
     // --to-slide <in.png> <out.jpg> [width]: a screenshot made into a menu slide (#386): scaled to the width (1600 px), JPEG.
@@ -786,7 +788,7 @@ int main(int argc, char** argv)
         SetConfigFlags(FLAG_WINDOW_UNDECORATED); // Remove window decorations for a cleaner look
         SetConfigFlags(FLAG_WINDOW_HIGHDPI); // Enable High DPI support
         if (exclusive) SetConfigFlags(FLAG_FULLSCREEN_MODE);
-        InitWindow(GetMonitorWidth(0), GetMonitorHeight(0), "RaylibGame");
+        InitWindow(GetMonitorWidth(0), GetMonitorHeight(0), TextFormat("RaylibGame - %s", kGameVersion)); // #501: branch + commit
         // No VSync: cap at the monitor's refresh rate instead (VSync on a 60 Hz desktop locked the game to 60).
         SetTargetFPS(bench ? std::max(0, benchFps) : benchFps >= 0 ? benchFps : std::max(60, GetMonitorRefreshRate(GetCurrentMonitor())));
     } else {

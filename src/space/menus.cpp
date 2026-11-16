@@ -303,10 +303,18 @@ std::string Menu_NewSavePath() {
     }
 }
 
+extern const char* kGameVersion; // "<branch> <commit>", generated at build time (#501)
+
 MenuResult Menu_Main() {
     MenuResult r;
     Backdrop("PLANETOID");
     const float s = Scale();
+    { // #501: which build this is (branch + commit), bottom right, on every main-menu page
+        const int vfs = (int)(18 * s), pad = (int)(12 * s);
+        const int vx = GetScreenWidth() - MeasureText(kGameVersion, vfs) - pad, vy = GetScreenHeight() - vfs - pad;
+        DrawText(kGameVersion, vx + 1, vy + 1, vfs, Fade(BLACK, 0.6f)); // shadow: readable over bright slideshow shots
+        DrawText(kGameVersion, vx, vy, vfs, Fade(kText, 0.75f));
+    }
     if (mainPage == Page::Main) {
         if (Button(Row(0), "New Game")) r.action = MenuAction::NewGame;
         if (Button(Row(1), "Load Game")) { RefreshSaves(); mainPage = Page::Load; }

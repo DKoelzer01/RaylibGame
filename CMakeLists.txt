@@ -102,6 +102,14 @@ function(add_game target dir)
     add_executable(${target} ${GAME_SOURCES})
     target_include_directories(${target} PRIVATE ${dir})
     target_link_libraries(${target} PRIVATE engine)
+    # Version for the window title (#501): branch + commit, regenerated at every build (cmake/game_version.cmake).
+    set(version_src "${CMAKE_BINARY_DIR}/generated/${target}_version.cpp")
+    add_custom_target(${target}_version
+        COMMAND ${CMAKE_COMMAND} -DSRC=${CMAKE_SOURCE_DIR} -DOUT=${version_src} -P ${CMAKE_SOURCE_DIR}/cmake/game_version.cmake
+        BYPRODUCTS ${version_src}
+        COMMENT "" VERBATIM)
+    target_sources(${target} PRIVATE ${version_src})
+    add_dependencies(${target} ${target}_version)
     if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
         target_compile_options(${target} PRIVATE -Wall -Wno-missing-braces)
     endif()
