@@ -578,6 +578,7 @@ uint64_t ErosionParamsKey(const ErosionParams& p) {
     if (p.landKey) mix(&p.landKey, sizeof p.landKey); // #504: a world's generation parameters (0: defaults, old caches still load)
     { const float span = NoiseSeedSpanUnits(); if (span != 64.0f) mix(&span, sizeof span); } // #532: the noise offsets (an A/B span bakes its own)
     if (!gStrataFolds) { const int nf = 0x591; mix(&nf, sizeof nf); }                                    // #591 A/B: RAYLIBGAME_FOLDS=0 bakes its own
+    if (BakeRiversOld()) { const int nr = 0x547; mix(&nr, sizeof nr); } // #547 A/B: no final drainage pass
     if (const char* e = getenv("RAYLIBGAME_CANYON_GRADE"); e && e[0] == '0') { const int ng = 0x544; mix(&ng, sizeof ng); } // #544 A/B: ungraded canyons bake their own
     return h;
 }
@@ -859,6 +860,8 @@ void PlanetErosion::build(const std::function<float(Vector3, float)>& height, fl
     pondList.clear();
     for (const auto& fp2 : facePonds) pondList.insert(pondList.end(), fp2.begin(), fp2.end()); // face order: deterministic
     refineSeconds = std::chrono::duration<float>(std::chrono::steady_clock::now() - t1r).count();
+    flow.clear(); filled.clear(); routeSeconds = 0.0f;
+    if (fe > 0 && !BakeRiversOld()) routeFinal(T); // #547: drainage and channels on the final terrain
     computeHash();
     buildSeconds = std::chrono::duration<float>(std::chrono::steady_clock::now() - t0).count();
     {   // #605: where the time went (wall seconds; the faces' parts are summed over the faces = thread seconds)
@@ -869,9 +872,189 @@ void PlanetErosion::build(const std::function<float(Vector3, float)>& height, fl
         for (int k = 0; k < 6; ++k) { snprintf(pbuf, sizeof pbuf, "%s%s %.2f", k ? ", " : "", kSimParts[k], coarseProf.s[k]); s += pbuf; }
         snprintf(pbuf, sizeof pbuf, "]); faces %.1f s wall, %d at a time; summed over faces: sampling %.2f, rock %.2f, simulate %.2f [", refineSeconds, kParallelFaces(T), ft4[0], ft4[1], ft4[2]); s += pbuf;
         for (int k = 0; k < 6; ++k) { snprintf(pbuf, sizeof pbuf, "%s%s %.2f", k ? ", " : "", kSimParts[k], fs.s[k]); s += pbuf; }
-        snprintf(pbuf, sizeof pbuf, "], drift+ponds %.2f; total %.1f s", ft4[3], buildSeconds); s += pbuf;
+        snprintf(pbuf, sizeof pbuf, "], drift+ponds %.2f; final drainage %.1f s; total %.1f s", ft4[3], routeSeconds, buildSeconds); s += pbuf;
         profile = s;
     }
+}
+
+bool BakeRiversOld() { static const bool old = getenv("RAYLIBGAME_RIVERS_OLD") && getenv("RAYLIBGAME_RIVERS_OLD")[0] == '1'; return old; }
+
+int PlanetErosion::flowCellOf(Vector3 dv) const {
+    const int f = FaceOf(dv);
+    Vector3 nrm, t1, t2; FaceAxes(f, nrm, t1, t2);
+    const float s = Vector3DotProduct(dv, nrm), duf = 2.0f / nf;
+    const int i = std::clamp((int)floorf((Vector3DotProduct(dv, t1) / s + 1.0f) / duf), 0, nf - 1);
+    const int j = std::clamp((int)floorf((Vector3DotProduct(dv, t2) / s + 1.0f) / duf), 0, nf - 1);
+    return (f * nf + j) * nf + i;
+}
+
+Vector3 PlanetErosion::flowDir(int g) const {
+    const int f = g / (nf * nf), r = g % (nf * nf), j = r / nf, i = r % nf;
+    Vector3 nrm, t1, t2; FaceAxes(f, nrm, t1, t2);
+    const float duf = 2.0f / nf, u = -1.0f + (i + 0.5f) * duf, v = -1.0f + (j + 0.5f) * duf;
+    return Vector3Normalize(Vector3Add(nrm, Vector3Add(Vector3Scale(t1, u), Vector3Scale(t2, v))));
+}
+
+void PlanetErosion::flowNeighbours(int g, int out[8]) const {
+    static const int di[8] = { 1, -1, 0, 0, 1, 1, -1, -1 }, dj[8] = { 0, 0, 1, -1, 1, -1, 1, -1 };
+    const int f = g / (nf * nf), r = g % (nf * nf), j = r / nf, i = r % nf;
+    for (int k = 0; k < 8; ++k) {
+        const int ii = i + di[k], jj = j + dj[k];
+        if (ii >= 0 && jj >= 0 && ii < nf && jj < nf) { out[k] = (f * nf + jj) * nf + ii; continue; }
+        Vector3 nrm, t1, t2; FaceAxes(f, nrm, t1, t2);
+        const float duf = 2.0f / nf, u = -1.0f + (ii + 0.5f) * duf, v = -1.0f + (jj + 0.5f) * duf;
+        const int o = flowCellOf(Vector3Normalize(Vector3Add(nrm, Vector3Add(Vector3Scale(t1, u), Vector3Scale(t2, v)))));
+        out[k] = o == g ? -1 : o;
+    }
+}
+
+float PlanetErosion::flowHeight(int g) const {
+    const int f = g / (nf * nf), r = g % (nf * nf), j = r / nf, i = r % nf;
+    return fine[((size_t)f * fe + j + fm) * fe + i + fm] * 0.1f;
+}
+
+int PlanetErosion::flowReceiver(int g) const {
+    const int k = flow[g] & 15;
+    if (k >= 8) return -1;
+    int nb[8];
+    flowNeighbours(g, nb);
+    return nb[k];
+}
+
+float PlanetErosion::flowArea(int g) const {
+    const int cls = flow[g] >> 4;
+    return cls == 0 ? 0.0f : kFlowArea0 * ldexpf(1.41421356f, cls - 1);
+}
+
+float PlanetErosion::IncisionDepth(float area) {
+    // Light: 0.5 m where a stream starts (0.1 km^2), ~2 m at 10 km^2, at most 4 m.
+    return area < kFlowArea0 ? 0.0f : std::min(4.0f, 0.5f * powf(area / kFlowArea0, 0.3f));
+}
+
+void PlanetErosion::routeFinal(int threads) {
+    const auto t0 = std::chrono::steady_clock::now();
+    const int G = 6 * nf * nf;
+    std::vector<float> h(G), hf(G), area(G);
+    std::vector<int> recv(G, -1), order;
+    order.reserve(G);
+    for (int g = 0; g < G; ++g) h[g] = flowHeight(g);
+    // Neighbour tables would be 680 MB at this size: computed per use (across a face edge by direction).
+    auto nbs = [&](int g, int out[8]) { flowNeighbours(g, out); };
+    std::vector<uint8_t> seen(G, 0), outlet(G, 0);
+    for (int g = 0; g < G; ++g) {
+        // The sea, and the polar ice shelves (frozen sea a couple of metres up), as the rivers' network has it.
+        const Vector3 d = flowDir(g);
+        if (h[g] <= 0.0f || (fabsf(d.y) > 0.86f && h[g] < 3.0f)) outlet[g] = 1;
+    }
+    const float duf = 2.0f / nf, side = R * duf;
+    std::vector<int8_t> dirK(G, 15);
+    // One routing: priority flood over 8 neighbours (the bake's own connectivity: its valleys run diagonally too), steepest
+    // descent on the filled surface - with preferD4, the steepest of the 4 side neighbours when one is lower, else of all
+    // 8 - and the drainage area, downstream in reverse flood order.
+    auto route = [&](bool preferD4) {
+        RadixHeap heap;
+        std::fill(seen.begin(), seen.end(), 0);
+        std::fill(recv.begin(), recv.end(), -1);
+        order.clear();
+        for (int g = 0; g < G; ++g) if (outlet[g]) { hf[g] = h[g]; seen[g] = 1; heap.push(RadixHeap::Key(h[g], g)); }
+        int nb[8];
+        while (!heap.empty()) {
+            const int c = (int)(uint32_t)heap.pop();
+            order.push_back(c);
+            nbs(c, nb);
+            for (int k = 0; k < 8; ++k) {
+                const int o = nb[k];
+                if (o < 0 || seen[o]) continue;
+                seen[o] = 1;
+                hf[o] = std::max(h[o], hf[c] + 1e-3f * (1.0f + 4.0f * Hash3(o, 0, 13, seed))); // jittered across flats
+                recv[o] = c;
+                heap.push(RadixHeap::Key(hf[o], o));
+            }
+        }
+        std::vector<std::thread> pool;
+        const int T = std::max(1, threads);
+        for (int t = 0; t < T; ++t)
+            pool.emplace_back([&, t] {
+                int nb2[8];
+                for (int c = t; c < G; c += T) {
+                    dirK[c] = 15;
+                    if (outlet[c] || recv[c] < 0) continue;
+                    nbs(c, nb2);
+                    const Vector3 dc = flowDir(c);
+                    float best = 0.0f; int bestK = -1;
+                    for (int pass = preferD4 ? 0 : 1; pass < 2 && bestK < 0; ++pass)
+                        for (int k = pass == 0 ? 0 : 0; k < (pass == 0 ? 4 : 8); ++k) {
+                            const int o = nb2[k];
+                            if (o < 0 || hf[o] >= hf[c]) continue;
+                            const float s = (hf[c] - hf[o]) / Vector3Distance(dc, flowDir(o));
+                            if (s > best) { best = s; bestK = k; }
+                        }
+                    if (bestK < 0) for (int k = 0; k < 8; ++k) if (nb2[k] == recv[c]) { bestK = k; break; }
+                    dirK[c] = (int8_t)bestK;
+                    recv[c] = nb2[bestK];
+                }
+            });
+        for (auto& th : pool) th.join();
+        for (int g = 0; g < G; ++g) {
+            const int r = g % (nf * nf), j = r / nf, i = r % nf;
+            const float u = -1.0f + (i + 0.5f) * duf, v = -1.0f + (j + 0.5f) * duf;
+            area[g] = side * side / powf(1.0f + u * u + v * v, 1.5f);
+        }
+        for (size_t k = order.size(); k-- > 0;) { const int c = order[k]; if (!outlet[c] && recv[c] >= 0) area[recv[c]] += area[c]; }
+    };
+    route(false);
+    // Diagonal channel links (#547): the line between two diagonal cells crosses the corner of the two cells beside them,
+    // where the bilinear ground stands at the four cells' mean - up to half a V valley's side over the channel, which the
+    // river then cut as a slot. The lower of those two side cells is worn down to the link's middle height, so the
+    // channel steps through it on 4-neighbour links (the second routing prefers those) and the bilinear ground follows.
+    const std::vector<float> h0 = h;
+    {
+        static const int kSideA[8] = { -1, -1, -1, -1, 0, 0, 1, 1 }, kSideB[8] = { -1, -1, -1, -1, 2, 3, 2, 3 }; // NE: E, N; SE: E, S; NW: W, N; SW: W, S
+        int nb[8];
+        for (int c : order) {
+            const int k = dirK[c];
+            if (k < 4 || k > 7 || area[c] < kFlowArea0 || hf[c] - h[c] > 0.05f) continue;
+            nbs(c, nb);
+            const int r = nb[k], a = nb[kSideA[k]], b = nb[kSideB[k]];
+            if (r < 0 || a < 0 || b < 0) continue;
+            const int s = h[a] <= h[b] ? a : b;
+            if (outlet[s]) continue;
+            h[s] = std::min(h[s], 0.5f * (h[c] + h[r]));
+        }
+    }
+    route(true);
+    // Classes, the filled cells, and the incision (channel cells off the filled surface, by their drainage).
+    flow.assign(G, 0);
+    filled.clear();
+    std::vector<float> cut(G, 0.0f);
+    for (int g = 0; g < G; ++g) {
+        int cls = 0;
+        if (area[g] >= kFlowArea0) cls = std::min(15, 1 + (int)floorf(log2f(area[g] / kFlowArea0)));
+        flow[g] = (uint8_t)((outlet[g] ? 15 : (dirK[g] & 15)) | (cls << 4));
+        if (outlet[g]) continue;
+        cut[g] = h0[g] - h[g]; // the corners worn above
+        if (hf[g] - h[g] > 0.05f) filled.push_back({ g, hf[g] });
+        else if (cls > 0) cut[g] += IncisionDepth(flowArea(g));
+    }
+    // Into the stored heights: each face's own cells, and its margin cells from the cell of the face that owns them.
+    for (int f = 0; f < 6; ++f) {
+        Vector3 nrm, t1, t2; FaceAxes(f, nrm, t1, t2);
+        const float span = 1.0f + fm * duf;
+        for (int j = 0; j < fe; ++j)
+            for (int i = 0; i < fe; ++i) {
+                int g;
+                if (i >= fm && j >= fm && i < fm + nf && j < fm + nf) g = (f * nf + (j - fm)) * nf + (i - fm);
+                else {
+                    const float u = -span + (i + 0.5f) * duf, v = -span + (j + 0.5f) * duf;
+                    g = flowCellOf(Vector3Normalize(Vector3Add(nrm, Vector3Add(Vector3Scale(t1, u), Vector3Scale(t2, v)))));
+                }
+                if (cut[g] > 0.0f) {
+                    int16_t& q = fine[((size_t)f * fe + j) * fe + i];
+                    q = Q(std::max(0.5f, q * 0.1f - cut[g]));
+                }
+            }
+    }
+    routeSeconds = std::chrono::duration<float>(std::chrono::steady_clock::now() - t0).count();
 }
 
 float PlanetErosion::coarseAt(Vector3 dv) const {
@@ -920,6 +1103,8 @@ void PlanetErosion::computeHash() {
     for (int16_t q : coarse) hv = (hv ^ (uint16_t)q) * 1099511628211ull;
     for (int16_t q : fine) hv = (hv ^ (uint16_t)q) * 1099511628211ull;
     for (const Pond& pd : pondList) for (float v : { pd.dir.x, pd.dir.y, pd.dir.z, pd.r, pd.level, pd.depth }) { uint32_t b; memcpy(&b, &v, 4); hv = (hv ^ b) * 1099511628211ull; }
+    for (uint8_t q : flow) hv = (hv ^ q) * 1099511628211ull; // #547
+    for (const auto& fc : filled) { uint32_t b; memcpy(&b, &fc.second, 4); hv = ((hv ^ (uint32_t)fc.first) * 1099511628211ull ^ b) * 1099511628211ull; }
     hashValue = hv;
 }
 
@@ -952,7 +1137,7 @@ bool PlanetErosion::save(const std::string& path) const {
     const std::string tmp = path + ".tmp"; // written whole, then renamed: a crash mid-save leaves the old cache (#355 review)
     FILE* f = fopen(tmp.c_str(), "wb");
     if (!f) { freeAll(); return false; }
-    const char magic[4] = { 'E', 'R', 'O', '7' }; // ERO7 (#587): + heightScale after the hash
+    const char magic[4] = { 'E', 'R', 'O', '8' }; // ERO7 (#587): + heightScale after the hash; ERO8 (#547): + the final drainage
     fwrite(magic, 1, 4, f);
     fwrite(&paramsKey, sizeof(paramsKey), 1, f);
     fwrite(&n, sizeof(n), 1, f); fwrite(&nf, sizeof(nf), 1, f); fwrite(&fm, sizeof(fm), 1, f); fwrite(&fineMetres, sizeof(fineMetres), 1, f);
@@ -966,6 +1151,29 @@ bool PlanetErosion::save(const std::string& path) const {
     const int np = (int)pondList.size();
     fwrite(&np, sizeof(np), 1, f);
     if (np) fwrite(pondList.data(), sizeof(Pond), np, f);
+    {   // ERO8 (#547): the final drainage - the flow bytes (deflated in pieces) and the filled cells
+        const int flowLen = (int)flow.size();
+        fwrite(&flowLen, sizeof(flowLen), 1, f);
+        std::vector<unsigned char*> fc(kPieces, nullptr);
+        std::vector<int> fcs(kPieces, 0), flen(kPieces, 0);
+        const size_t per = (flow.size() + kPieces - 1) / kPieces;
+        std::vector<std::thread> pool;
+        for (int k = 0; k < kPieces; ++k) {
+            const size_t a = std::min(flow.size(), per * k), b = std::min(flow.size(), per * (k + 1));
+            flen[k] = (int)(b - a);
+            pool.emplace_back([&, k, a] { if (flen[k] > 0) fc[k] = CompressData(flow.data() + a, flen[k], &fcs[k]); });
+        }
+        for (auto& t : pool) t.join();
+        for (int k = 0; k < kPieces; ++k) {
+            const int cs = fc[k] ? fcs[k] : 0, rl = fc[k] ? flen[k] : 0;
+            fwrite(&rl, sizeof(int), 1, f); fwrite(&cs, sizeof(int), 1, f);
+            if (cs > 0) fwrite(fc[k], 1, cs, f);
+            if (fc[k]) MemFree(fc[k]);
+        }
+        const int nfill = (int)filled.size();
+        fwrite(&nfill, sizeof(nfill), 1, f);
+        for (const auto& fl : filled) { fwrite(&fl.first, sizeof(int), 1, f); fwrite(&fl.second, sizeof(float), 1, f); }
+    }
     const bool written = !ferror(f);
     fclose(f);
     freeAll();
@@ -978,7 +1186,7 @@ bool PlanetErosion::load(const std::string& path, float planetRadius, unsigned i
     FILE* f = fopen(path.c_str(), "rb");
     if (!f) return false;
     char magic[4]; int N = 0, NF = 0, FM = 0, pieces = 0; float fmet = 0, r = 0, hs = 1.0f; unsigned int s = 0; uint64_t hv = 0, key = 0;
-    bool ok = fread(magic, 1, 4, f) == 4 && memcmp(magic, "ERO7", 4) == 0 && fread(&key, sizeof(key), 1, f) == 1 && key == wantKey && fread(&N, sizeof(N), 1, f) == 1 && fread(&NF, sizeof(NF), 1, f) == 1 &&
+    bool ok = fread(magic, 1, 4, f) == 4 && memcmp(magic, "ERO8", 4) == 0 && fread(&key, sizeof(key), 1, f) == 1 && key == wantKey && fread(&N, sizeof(N), 1, f) == 1 && fread(&NF, sizeof(NF), 1, f) == 1 &&
               fread(&FM, sizeof(FM), 1, f) == 1 && fread(&fmet, sizeof(fmet), 1, f) == 1 && fread(&r, sizeof(r), 1, f) == 1 && fread(&s, sizeof(s), 1, f) == 1 &&
               fread(&hv, sizeof(hv), 1, f) == 1 && fread(&hs, sizeof(hs), 1, f) == 1 && fread(&pieces, sizeof(pieces), 1, f) == 1 &&
               N > 0 && N < 4096 && NF >= 0 && NF < 16384 && FM >= 0 && FM < 1024 && pieces > 0 && pieces <= 256 && s == wantSeed && fabsf(r - planetRadius) < 1.0f;
@@ -991,8 +1199,34 @@ bool PlanetErosion::load(const std::string& path, float planetRadius, unsigned i
     }
     std::vector<Pond> pl;
     if (ok) { int np = 0; ok = fread(&np, sizeof(np), 1, f) == 1 && np >= 0 && np < 10000000; if (ok && np) { pl.resize(np); ok = fread(pl.data(), sizeof(Pond), np, f) == (size_t)np; } }
+    std::vector<uint8_t> fl;                       // ERO8 (#547): the final drainage
+    std::vector<std::pair<int, float>> fill;
+    if (ok) {
+        int flowLen = 0;
+        ok = fread(&flowLen, sizeof(flowLen), 1, f) == 1 && flowLen >= 0 && flowLen < 400000000;
+        if (ok) fl.resize(flowLen);
+        size_t at = 0;
+        for (int k = 0; ok && k < kPieces; ++k) {
+            int rl = 0, cs = 0;
+            ok = fread(&rl, sizeof(int), 1, f) == 1 && fread(&cs, sizeof(int), 1, f) == 1 && rl >= 0 && cs >= 0 && at + (size_t)rl <= fl.size();
+            if (!ok || cs == 0) continue;
+            std::vector<unsigned char> buf(cs);
+            ok = fread(buf.data(), 1, cs, f) == (size_t)cs;
+            int got = 0;
+            unsigned char* d = ok ? DecompressData(buf.data(), cs, &got) : nullptr;
+            ok = ok && d && got == rl;
+            if (ok) memcpy(fl.data() + at, d, (size_t)rl);
+            if (d) MemFree(d);
+            at += (size_t)rl;
+        }
+        int nfill = 0;
+        ok = ok && fread(&nfill, sizeof(nfill), 1, f) == 1 && nfill >= 0 && nfill <= flowLen;
+        if (ok) fill.resize(nfill);
+        for (int k = 0; ok && k < nfill; ++k) ok = fread(&fill[k].first, sizeof(int), 1, f) == 1 && fread(&fill[k].second, sizeof(float), 1, f) == 1;
+    }
     fclose(f);
     if (!ok) return false;
+    flow = std::move(fl); filled = std::move(fill);
     const size_t nc = (size_t)6 * N * N, fe2 = NF > 0 ? (size_t)NF + 2 * FM : 0, nfine = (size_t)6 * fe2 * fe2;
     size_t rawSize = 0;
     for (int len : rawLen) rawSize += (size_t)len;

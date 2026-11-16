@@ -2703,7 +2703,15 @@ int main(int argc, char** argv)
                                     prev = std::min(prev, w);
                                 }
                                 if (w != PlanetField::kNoWater && e < w - 0.2f) { ++wet; dryRun = 0.0f; }
-                                else { dryRun += 5.0f; worstDry = std::max(worstDry, dryRun); }
+                                else {
+                                    dryRun += 5.0f; worstDry = std::max(worstDry, dryRun);
+                                    if (dryRun == 500.0f) { // where a long dry run is (diagnosis)
+                                        float lv = 0.0f, lo = 0.0f;
+                                        const bool lk = net->lakeAt(dirs[i], lv, lo);
+                                        printf("bench: rivers: dry 500 m at dir %.6f,%.6f,%.6f: path level %.2f, water %.2f, ground %.2f, lake %d (level %.2f, outside %.0f m)\n",
+                                               dirs[i].x, dirs[i].y, dirs[i].z, levels[i], w == PlanetField::kNoWater ? -999.0f : w, e, lk ? 1 : 0, lv, lo);
+                                    }
+                                }
                             }
                             const float wetShare = dirs.empty() ? 0.0f : (float)wet / dirs.size();
                             check(dirs.size() > 100, "a long river");
@@ -2788,6 +2796,26 @@ int main(int argc, char** argv)
                                     });
                                     printf("bench: rivers: perched (#547): %ld of %ld points every 100 m have ground 5 m+ under the bed 30 m out from a bank (%.2f%%)\n",
                                            perched, n, 100.0 * perched / std::max(1L, n));
+                                }
+                                {   // Slots (#547: "water carves large chunks"): river points (every 100 m, outside lakes) in a trench - on both
+                                    // sides the ground steps 8 m+ up within 20 m of the bank and then stays near flat to 60 m (a natural V valley
+                                    // keeps rising).
+                                    long n = 0, slots = 0;
+                                    net->forEachCentrePoint(100.0f, [&](Vector3 d, float level, float) {
+                                        const RiverNetwork::Hit h = net->nearest(d, 5.0f);
+                                        float lv, lo;
+                                        if (!h.found || level < 1.0f || (net->lakeAt(d, lv, lo) && lo < RiverNetwork::kLakeMargin)) return;
+                                        const Vector3 side = Vector3Normalize(Vector3CrossProduct(d, h.down));
+                                        bool both = true;
+                                        for (int sgn = -1; sgn <= 1 && both; sgn += 2) {
+                                            auto at = [&](float off) { return pf->elevation(Vector3Normalize(Vector3Add(d, Vector3Scale(side, sgn * (h.halfWidth + off) / pf->radius)))); };
+                                            const float e20 = at(20.0f), e60 = at(60.0f);
+                                            both = e20 > level + 8.0f && e60 - e20 < 0.25f * (e20 - level);
+                                        }
+                                        ++n; slots += both;
+                                    });
+                                    printf("bench: rivers: slots (#547): %ld of %ld points every 100 m sit in a trench (8 m+ up within 20 m of both banks, near flat to 60 m) (%.2f%%)\n",
+                                           slots, n, 100.0 * slots / std::max(1L, n));
                                 }
                                 if (gErosionPrototype) {
                                     // Canyons carry rivers (#544, #547), over the whole planet: points ~100 m apart on the canyon lines

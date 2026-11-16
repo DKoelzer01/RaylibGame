@@ -1,4 +1,6 @@
 #include "rivers.h"
+#include "erosion.h"
+#include <unordered_map>
 
 #include <raymath.h>
 #include <algorithm>
@@ -452,6 +454,7 @@ float RiverNetwork::distToCell(Vector3 d, int c) const {
 bool RiverNetwork::lakeAt(Vector3 dir, float& level, float& outside) const { int id; return lakeAt(dir, level, outside, id); }
 
 bool RiverNetwork::lakeAt(Vector3 dir, float& level, float& outside, int& id) const {
+    if (bake) return fineLakeAt(dir, level, outside, id);
     const int c = cellOf(dir);
     id = -1;
     if (lake[c]) { level = lakeLevel[c]; outside = 0.0f; id = lakeIdOf[c]; return true; }
@@ -494,11 +497,43 @@ int RiverNetwork::checkDownstream(float& worstRise, float& worstShrink) const {
         worstShrink = std::max(worstShrink, hw[c] - hw[parent[c]]);
     }
     for (const Piece& pc : pieces) { worstRise = std::max(worstRise, pc.lb - pc.la); worstShrink = std::max(worstShrink, pc.wa - pc.wb); }
+    if (bake) { // bake-native: every node draining into another, and junctions continuous (#607): each piece ends at its outlet's level
+        for (int k = 0; k < (int)nodeParent.size(); ++k) {
+            const int p = nodeParent[k];
+            if (p < 0) continue;
+            ++links;
+            worstRise = std::max(worstRise, fabsf(pieces[nodePiece[k]].lb - pieces[nodePiece[p]].la)); // a step at the junction
+        }
+    }
     return links;
 }
 
 void RiverNetwork::longestPath(float step, std::vector<Vector3>& dirs, std::vector<float>& levels) const {
     dirs.clear(); levels.clear();
+    if (bake) { // bake-native (#547): the node with the longest run to the sea, then its pieces node by node
+        const int M = (int)nodeCell.size();
+        std::vector<float> toSea(M, -1.0f);
+        std::vector<int> chain;
+        for (int k = 0; k < M; ++k) {
+            chain.clear();
+            int x = k;
+            while (x >= 0 && toSea[x] < 0.0f) { chain.push_back(x); x = nodeParent[x]; }
+            float d = x >= 0 ? toSea[x] : 0.0f;
+            for (int i = (int)chain.size() - 1; i >= 0; --i) { d += 2.0f * pieces[nodePiece[chain[i]]].halfLen; toSea[chain[i]] = d; }
+        }
+        int best = -1;
+        for (int k = 0; k < M; ++k) if (best < 0 || toSea[k] > toSea[best]) best = k;
+        for (int x = best; x >= 0; x = nodeParent[x]) {
+            const Piece& pc = pieces[nodePiece[x]];
+            const float len = 2.0f * pc.halfLen;
+            for (float s = 0.0f; s < len; s += step) {
+                const float t = s / len;
+                dirs.push_back(Vector3Normalize(Vector3Lerp(pc.a, pc.b, t)));
+                levels.push_back(pc.fallT < 0.0f ? pc.la + (pc.lb - pc.la) * t : t < pc.fallT ? pc.la : pc.lb);
+            }
+        }
+        return;
+    }
     // The source with the longest run to the sea.
     int best = -1, bestLen = 0;
     for (int c = 0; c < (int)river.size(); ++c) {
@@ -552,4 +587,214 @@ std::vector<RiverNetwork::Fall> RiverNetwork::waterfalls() const {
         out.push_back(f);
     }
     return out;
+}
+
+// ---- Bake-native rivers (#547, #607, #608, #609) ----
+
+RiverNetwork::RiverNetwork(const PlanetErosion& ero, float radius, const Params& params) {
+    bake = &ero;
+    R = radius;
+    n = std::max(4, (int)ceilf(0.5f * PI * R / params.cell)); // the index grid (as the old network's cells)
+    cell = 0.5f * PI * R / n;
+    reachM = params.maxReach;
+    const int N = 6 * n * n, G = ero.flowCells();
+    const float fineM = 0.5f * PI * R / sqrtf((float)G / 6.0f); // ~50 m
+    st.cells = G; st.cellSize = fineM;
+    // The nodes: every bake cell on land draining params.riverArea or more, in cell order.
+    std::unordered_map<int, int> nodeOf;
+    for (int g = 0; g < G; ++g) {
+        if (ero.flowHeight(g) <= 0.0f) continue;
+        ++st.landCells;
+        if (ero.flowArea(g) >= params.riverArea) { nodeOf[g] = (int)nodeCell.size(); nodeCell.push_back(g); }
+    }
+    const int M = (int)nodeCell.size();
+    st.riverCells = M;
+    std::unordered_map<int, float> fillLevel;
+    for (const auto& fc : ero.filledCells()) fillLevel[fc.first] = fc.second;
+    // Lakes: the flood's filled basins deeper than params.lakeDepth (level: the basin's highest filled height - the flood's
+    // jitter climbs across a basin's flat floor, and the lowest stood under the ground at its far side: dry lake beds).
+    {
+        std::unordered_map<int, int> comp;
+        int nb[8];
+        for (const auto& fc : ero.filledCells()) {
+            if (comp.count(fc.first)) continue;
+            std::vector<int> cells(1, fc.first);
+            comp[fc.first] = fc.first;
+            float level = fc.second, lowest = ero.flowHeight(fc.first);
+            for (size_t i = 0; i < cells.size(); ++i) {
+                ero.flowNeighbours(cells[i], nb);
+                for (int k = 0; k < 8; ++k)
+                    if (nb[k] >= 0 && !comp.count(nb[k]) && fillLevel.count(nb[k])) { comp[nb[k]] = fc.first; cells.push_back(nb[k]); }
+                level = std::max(level, fillLevel[cells[i]]);
+                lowest = std::min(lowest, ero.flowHeight(cells[i]));
+            }
+            if (level - lowest <= params.lakeDepth || level <= 1.0f) continue;
+            LakeInfo li; Vector3 sum{ 0, 0, 0 };
+            for (int c : cells) sum = Vector3Add(sum, ero.flowDir(c));
+            li.dir = Vector3Normalize(sum); li.level = level; li.depth = level - lowest; li.cells = (int)cells.size();
+            for (int c : cells) li.r = std::max(li.r, Vector3Distance(li.dir, ero.flowDir(c)) * R + fineM);
+            const int id = (int)lakes.size();
+            for (int c : cells) { fineLake[c] = id; fillLevel[c] = level; }
+            st.lakeCells += (int)cells.size();
+            lakes.push_back(li);
+        }
+    }
+    // Links and levels: a node's own level is its lake's, or the filled surface, or its worn channel's ground plus 0.8 of
+    // the incision the bake gave it (the water fills most of the channel). Then, upstream first, never above what drains
+    // into it, and never under the next lake downstream (a river arrives at a lake's surface).
+    nodeParent.assign(M, -1);
+    std::vector<float> own(M), area(M), L(M, 0.0f), floorL(M, kMinLevel);
+    std::vector<int> indeg(M, 0), seaCell(M, -1), mainChildN(M, -1);
+    for (int k = 0; k < M; ++k) {
+        const int g = nodeCell[k];
+        area[k] = ero.flowArea(g);
+        const auto fl = fillLevel.find(g);
+        own[k] = fl != fillLevel.end() ? fl->second : ero.flowHeight(g) + 0.8f * PlanetErosion::IncisionDepth(area[k]);
+        const int r = ero.flowReceiver(g);
+        const auto it = r >= 0 ? nodeOf.find(r) : nodeOf.end();
+        if (it != nodeOf.end()) { nodeParent[k] = it->second; ++indeg[it->second]; }
+        else { seaCell[k] = r; ++st.mouths; }
+    }
+    std::vector<int> topo; topo.reserve(M); // sources first (Kahn, in node order)
+    for (int k = 0; k < M; ++k) if (indeg[k] == 0) topo.push_back(k);
+    for (size_t i = 0; i < topo.size(); ++i) { const int p = nodeParent[topo[i]]; if (p >= 0 && --indeg[p] == 0) topo.push_back(p); }
+    for (int i = (int)topo.size() - 1; i >= 0; --i) { // downstream first: the next lake's level
+        const int k = topo[i], p = nodeParent[k];
+        const float below = p >= 0 ? floorL[p] : kMinLevel;
+        const auto lk = fineLake.find(nodeCell[k]);
+        floorL[k] = lk != fineLake.end() ? std::max(lakes[lk->second].level, below) : below;
+    }
+    std::vector<float> minChild(M, 1e30f);
+    for (int k : topo) {
+        L[k] = std::max(floorL[k], std::min(own[k], minChild[k]));
+        const int p = nodeParent[k];
+        if (p >= 0) { minChild[p] = std::min(minChild[p], L[k]); if (mainChildN[p] < 0 || area[k] > area[mainChildN[p]]) mainChildN[p] = k; }
+    }
+    // Positions: each node's cell centre eased toward its main tributary's and its outlet's (shared by every link that
+    // meets there, so the curves join exactly and the 50 m grid's stairs soften).
+    std::vector<Vector3> centreN(M), pos(M);
+    for (int k = 0; k < M; ++k) centreN[k] = ero.flowDir(nodeCell[k]);
+    for (int k = 0; k < M; ++k) {
+        const Vector3 a = mainChildN[k] >= 0 ? centreN[mainChildN[k]] : centreN[k];
+        const Vector3 b = nodeParent[k] >= 0 ? centreN[nodeParent[k]] : centreN[k];
+        pos[k] = Vector3Normalize(Vector3Add(Vector3Scale(centreN[k], 0.5f), Vector3Add(Vector3Scale(a, 0.25f), Vector3Scale(b, 0.25f))));
+    }
+    // Pieces: one per link, node to node (or into the sea cell).
+    auto widthOf = [](float a) { const float s = sqrtf(a / 7.06e6f); return std::min(3.0f + 2.5f * s, 45.0f); };
+    auto depthOf = [](float a) { const float s = sqrtf(a / 7.06e6f); return std::min(1.2f + 0.6f * s, 6.0f); };
+    nodePiece.assign(M, -1);
+    for (int k = 0; k < M; ++k) {
+        const int p = nodeParent[k];
+        const Vector3 A = Vector3Scale(pos[k], R);
+        const Vector3 B = p >= 0 ? Vector3Scale(pos[p], R) : Vector3Scale(seaCell[k] >= 0 ? ero.flowDir(seaCell[k]) : pos[k], R);
+        const float la = L[k], lb = p >= 0 ? L[p] : std::min(la, kMinLevel);
+        const float wa = widthOf(area[k]), wb = p >= 0 ? widthOf(area[p]) : wa * 1.2f;
+        const float da = depthOf(area[k]), db = p >= 0 ? depthOf(area[p]) : da;
+        Piece pc{ A, B, la, lb, wa, wb, da, db };
+        pc.mid = Vector3Scale(Vector3Add(A, B), 0.5f); pc.halfLen = 0.5f * Vector3Distance(A, B);
+        pc.reachSlope = std::max(0.0f, la - lb) / std::max(1.0f, 2.0f * pc.halfLen);
+        pc.inLake = fineLake.count(nodeCell[k]) && (p < 0 || fineLake.count(nodeCell[p]));
+        // A waterfall only where the worn ground itself drops steeply (#540; more than 0.4 m per m over the link): there the level
+        // holds to where the ground first falls under it. A gentler drop is a rapid, its level along the link: stepping
+        // every steep 50 m link wore flat terraces into the slopes.
+        if (params.fineHeight && la - lb > std::max(kFallMin, 0.8f * pc.halfLen)) {
+            auto ground = [&](float u) { return params.fineHeight(Vector3Normalize(Vector3Lerp(A, B, u))); };
+            float lo = 0.0f, hi = 1.0f;
+            for (int s = 1; s <= 8; ++s) if (ground(s / 8.0f) < la) { hi = s / 8.0f; lo = (s - 1) / 8.0f; break; }
+            if (hi < 1.0f) for (int it = 0; it < 5; ++it) { const float m = 0.5f * (lo + hi); (ground(m) < la ? hi : lo) = m; }
+            pc.fallT = hi;
+        }
+        nodePiece[k] = (int)pieces.size();
+        pieces.push_back(pc);
+        if (mainChildN[k] < 0) st.highestSource = std::max(st.highestSource, ero.flowHeight(nodeCell[k]));
+        if (ero.flowHeight(nodeCell[k]) > 700.0f) ++st.riverCellsAbove700;
+    }
+    // The index (the old network's grid, ~200 m cells): each piece in its cell and the ring around it; lakes flagged.
+    std::vector<int> nbTable((size_t)N * 8);
+    {
+        const int T = std::max(1u, std::min(16u, std::thread::hardware_concurrency()));
+        std::vector<std::thread> pool;
+        for (int t = 0; t < T; ++t) pool.emplace_back([&, t] { for (int c = t; c < N; c += T) neighbours(c, &nbTable[(size_t)c * 8]); });
+        for (auto& th : pool) th.join();
+    }
+    index.assign(N, {});
+    const int rings = std::max(1, (int)ceilf(reachM / cell));
+    std::vector<int> nearC, frontier, next;
+    for (int i = 0; i < (int)pieces.size(); ++i) {
+        nearC.assign(1, cellOf(Vector3Normalize(pieces[i].mid)));
+        frontier = nearC;
+        for (int r = 0; r < rings; ++r) {
+            next.clear();
+            for (int c : frontier) for (int k = 0; k < 8; ++k) { const int o = nbTable[(size_t)c * 8 + k]; if (o >= 0 && std::find(nearC.begin(), nearC.end(), o) == nearC.end()) { nearC.push_back(o); next.push_back(o); } }
+            frontier.swap(next);
+        }
+        for (int c : nearC) index[c].push_back(i);
+    }
+    lake.assign(N, 0);
+    for (const auto& fl : fineLake) lake[cellOf(ero.flowDir(fl.first))] = 1;
+    lakeSteps.assign(N, 255);
+    {
+        std::vector<int> fr, nx;
+        for (int c = 0; c < N; ++c) if (lake[c]) { lakeSteps[c] = 0; fr.push_back(c); }
+        for (int d = 1; d < 255 && !fr.empty(); ++d) {
+            nx.clear();
+            for (int c : fr) for (int k = 0; k < 8; ++k) { const int o = nbTable[(size_t)c * 8 + k]; if (o >= 0 && lakeSteps[o] == 255) { lakeSteps[o] = (unsigned char)d; nx.push_back(o); } }
+            fr.swap(nx);
+        }
+    }
+    // The longest river (source to sea), for stats and tests.
+    std::vector<float> len(M, 0.0f);
+    for (int k : topo) {
+        const int p = nodeParent[k];
+        const float l = len[k] + 2.0f * pieces[nodePiece[k]].halfLen;
+        if (p >= 0) len[p] = std::max(len[p], l); else st.longestKm = std::max(st.longestKm, l / 1000.0f);
+    }
+}
+
+bool RiverNetwork::fineLakeAt(Vector3 dir, float& level, float& outside, int& id) const {
+    const int g = bake->flowCellOf(dir);
+    id = -1;
+    if (const auto it = fineLake.find(g); it != fineLake.end()) { id = it->second; level = lakes[id].level; outside = 0.0f; return true; }
+    if (lakeSteps[cellOf(dir)] > 1) return false; // no lake cell within ~200 m (cheap)
+    // Beside a lake: the nearest lake cell within two cells (its edge, approximately: the centre less half a cell).
+    const float half = 0.5f * st.cellSize;
+    int nb[8], nb2[8];
+    bool found = false;
+    bake->flowNeighbours(g, nb);
+    auto consider = [&](int m) {
+        const auto it = fineLake.find(m);
+        if (it == fineLake.end()) return;
+        const float d = std::max(0.0f, Vector3Distance(dir, bake->flowDir(m)) * R - half);
+        if (d >= 2.0f * kLakeMargin) return;
+        if (!found || d < outside) { outside = d; level = lakes[it->second].level; id = it->second; found = true; }
+    };
+    for (int k = 0; k < 8; ++k) {
+        if (nb[k] < 0) continue;
+        consider(nb[k]);
+        bake->flowNeighbours(nb[k], nb2);
+        for (int k2 = 0; k2 < 8; ++k2) if (nb2[k2] >= 0) consider(nb2[k2]);
+    }
+    return found;
+}
+
+float RiverNetwork::carve(Vector3 dir, float h) const {
+    const auto& list = index[cellOf(dir)];
+    if (list.empty()) return h;
+    const Vector3 p = Vector3Scale(dir, R);
+    constexpr float kBank = 0.6f, kBankReach = 15.0f; // the bank's slope just beyond the channel, and how far it reaches
+    for (int i : list) {
+        const Piece& pc = pieces[i];
+        if (pc.inLake) continue;
+        if (Vector3Distance(p, pc.mid) - pc.halfLen >= 45.0f + kBankReach) continue;
+        float t;
+        const float d = SegDist(p, pc.a, pc.b, t);
+        const float half = pc.wa + (pc.wb - pc.wa) * t;
+        if (d >= half + kBankReach) continue;
+        const float level = pc.fallT < 0.0f ? pc.la + (pc.lb - pc.la) * t : t < pc.fallT ? pc.la : pc.lb;
+        const float depth = pc.da + (pc.db - pc.da) * t;
+        const float dep = std::min(depth, 1.0f); // light: deeper water only where the worn ground is lower (#609)
+        const float bed = d < half ? level + 0.3f - (dep + 0.3f) * (1.0f - (d / half) * (d / half)) : level + 0.3f + (d - half) * kBank;
+        h = std::min(h, bed);
+    }
+    return h;
 }
