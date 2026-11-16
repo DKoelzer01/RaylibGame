@@ -123,6 +123,8 @@ static float SeedSpan(float frequency) {
     return gSeedSpanUnits > 0.0f ? std::max(10000.0f, gSeedSpanUnits / frequency) : 10000.0f;
 }
 
+float NoiseSeedSpanUnits() { SeedSpan(1.0f); return gSeedSpanUnits; }
+
 static SimplexNoise SeededNoise(std::mt19937& rng, float frequency) {
     std::uniform_real_distribution<float> unit(0.0f, 1.0f);
     const float span = SeedSpan(frequency);

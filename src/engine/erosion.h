@@ -25,7 +25,7 @@
 
 // Bump with any change to the bake's code (Simulate, SetRock, the refinement, the pond extraction): a cache from
 // another version or other parameters is baked again rather than loaded (#355 review).
-constexpr uint32_t kErosionBakeVersion = 6; // 6: wind (aeolian) erosion, #370
+constexpr uint32_t kErosionBakeVersion = 7; // 7: the noise seed offsets changed (#532: every input differs); 6: wind (aeolian) erosion, #370
 struct ErosionParams {
     float cell = 200.0f;      // m, coarse cell at a face centre (gnomonic cells shrink toward the face edges)
     int steps = 400;
@@ -47,6 +47,7 @@ struct ErosionParams {
                               // it from low land: heights then follow river length, so narrow coastal ranges came out low)
 };
 uint64_t ErosionParamsKey(const ErosionParams& p); // FNV-1a over every field and kErosionBakeVersion
+float NoiseSeedSpanUnits(); // voxel.cpp (#532): the noise seed offset span, in the cache key when not the default
 
 class PlanetErosion {
 public:
