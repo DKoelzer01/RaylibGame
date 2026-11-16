@@ -35,7 +35,8 @@ inline int64_t BrickKey(int i, int j, int k) { return ((int64_t)(i + 1024) << 22
 inline int FloorDiv(int a, int b) { return a >= 0 ? a / b : -((-a + b - 1) / b); }
 
 struct Brick {
-    std::array<uint8_t, kBrick3> fill{}, flags{};
+    std::array<uint8_t, kBrick3> fill{}, flags{}; // fill: the simulated water (queries, buckets, pumps: volume is exact)
+    std::array<uint8_t, kBrick3> drawn{};         // the drawn water: easing toward fill (#366), read only by the chunk mesher
     std::array<uint8_t, kBrick3> shut{}; // the share of an open cell that is ground, at its bottom (#454): holds 255 - shut, water stands at shut + fill
     uint8_t kinds = 0; // bit k: some cell holds fluid of kind k
     bool moving = false; // its water is moving (the brick is awake): thin films are drawn, not only sheets (#649)

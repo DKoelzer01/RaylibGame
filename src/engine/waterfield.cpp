@@ -144,14 +144,14 @@ bool ChunkSampler::cellAt(int si, int ci, int cj, int ck, uint8_t& fill, uint8_t
     const Brick* b = brickPtr(si, ci >> 4, cj >> 4, ck >> 4);
     if (!b) return false;
     const int i = CellIdx(ci & 15, cj & 15, ck & 15);
-    fill = b->fill[i]; flags = b->flags[i];
+    fill = b->drawn[i]; flags = b->flags[i]; // the mesher draws the eased water (#366)
     return true;
 }
 bool ChunkSampler::cellAt(int si, int ci, int cj, int ck, uint8_t& fill, uint8_t& flags, uint8_t& shut) const {
     const Brick* b = brickPtr(si, ci >> 4, cj >> 4, ck >> 4);
     if (!b) return false;
     const int i = CellIdx(ci & 15, cj & 15, ck & 15);
-    fill = b->fill[i]; flags = b->flags[i]; shut = b->shut[i];
+    fill = b->drawn[i]; flags = b->flags[i]; shut = b->shut[i];
     return true;
 }
 

@@ -937,9 +937,10 @@ void RunJob() {
                     b.check = b.fill; b.checkStep = stepCount;
                 }
             } else b.checkStep = -1;
-            // The published (drawn, queried) water eases toward the simulated: 40% of the way a tick (25 ms), so a cell the
-            // water reaches fills in over ~0.15 s instead of appearing whole (#366: water read as packets jumping a metre at a
-            // time). Solid cells follow at once. A brick keeps publishing while it eases.
+            // The drawn water eases toward the simulated: 40% of the way a tick (25 ms), so a cell the water reaches fills in
+            // over ~0.15 s instead of appearing whole (#366: water read as packets jumping a metre at a time). Solid cells follow
+            // at once. A brick keeps publishing while it eases. Only the mesher reads the eased copy (WaterField::Brick::drawn);
+            // queries, buckets and pumps read the simulated fill, so the ease never creates or loses water.
             if (b.changed || b.easing) {
                 bool still = false;
                 if (!b.dispSet) { b.disp = b.fill; b.dispSet = true; }
@@ -972,7 +973,7 @@ void RunJob() {
             }
             WaterField::Site& ps = snap->sites[s->index];
             auto pb = std::make_shared<WaterField::Brick>();
-            pb->fill = b.disp; pb->flags = b.flags; pb->shut = b.shut; pb->kinds = present; pb->moving = b.active || b.easing;
+            pb->fill = b.fill; pb->drawn = b.disp; pb->flags = b.flags; pb->shut = b.shut; pb->kinds = present; pb->moving = b.active || b.easing; // queries read the simulated water, the mesher the eased
             ps.bricks[kv.first] = std::move(pb);
             Vector3 lo, hi;
             ps.brickBounds(b.bi, b.bj, b.bk, lo, hi);
