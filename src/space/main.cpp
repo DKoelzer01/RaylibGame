@@ -4023,7 +4023,7 @@ int main(int argc, char** argv)
                         } else if (oilPhase == 3 && t > 6.0 && Fluid::Asleep()) {
                             Fluid::SetSpeed(1);
                             TakeScreenshot("bench_oil.png");
-                            const bool ok = before >= 1.0f && oil >= 3.0f && Fluid::SourceCount() >= 1;
+                            const bool ok = before >= 1.0f && oil >= 0.9f * before && Fluid::SourceCount() >= 1; // refilled to its level before the bucket (#603: the 3 m^3 fitted the old seep; seed 42's nearest basin now rests at 1.7)
                             printf("bench: oil: after the load the seep (%d source) filled its basin and rested at %.1f m^3 (equilibrium) -> %s\n", Fluid::SourceCount(), oil, ok ? "PASS" : "FAIL");
                             benchOil = false;
                         } else if (oilPhase == 3 && t > 90.0) { Fluid::SetSpeed(1); printf("bench: oil: no equilibrium after the load (%.1f m^3) -> FAIL\n", oil); benchOil = false; }
