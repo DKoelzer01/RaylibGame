@@ -29,11 +29,12 @@ void PlayerInput_BeginFrame() {
     f.enabled = true;
     for (int a = 0; a < (int)Act::Count; ++a) {
         const uint64_t bit = 1ull << a;
-        if (Down(kBinding[a])) f.held |= bit;
+        if (Down(kBinding[a]) || (gFakeHeld & bit)) f.held |= bit;
         if (Pressed(kBinding[a])) f.pressed |= bit;
         if (Released(kBinding[a])) f.released |= bit;
     }
     f.look = GetMouseDelta();
+    f.look.x += gFakeLook.x; f.look.y += gFakeLook.y; // --play-load turning (#509)
     f.wheel = GetMouseWheelMove();
     for (int i = 0; i < 10; ++i) if (IsKeyPressed(kSlotKeys[i])) { f.slot = i; break; }
     frameIn = f;

@@ -64,6 +64,7 @@ namespace {
     std::vector<ChunkMeshData> results;        // filled by workers
     std::vector<ChunkMeshData> pendingUploads; // main thread only; unordered (#387: worldUpdate picks the nearest each frame)
     constexpr size_t kUploadBacklogCap = 4096; // results waiting for upload past which no new GPU batches go out (#387)
+    double gUploadMaxMs = 0.0, gUploadLoopMs = 0.0, gWaterUpdMs = 0.0; // the [jobs] line: the slowest upload, the loop total, the slowest UpdateWater (#509)
     std::vector<ChunkMeshData> waterResults;   // water-only rebuilds (#360), filled by workers (resultsMutex)
     std::atomic<long long> gWaterBuilds{ 0 };  // water-only rebuilds done, and their worker time (ms x 1000)
     std::atomic<long long> gWaterUs{ 0 };
@@ -1329,7 +1330,9 @@ void worldUpdate(Scene& world, float uploadBudgetMs) {
     for (size_t idx : pick) {
         const float elapsed = std::chrono::duration<float, std::milli>(std::chrono::steady_clock::now() - t0).count();
         if (uploads > 0 && pendingUploads[idx].priority >= kBackgroundPriority && elapsed > backgroundBudgetMs) break;
+        const auto u0 = std::chrono::steady_clock::now();
         IntegrateResult(pendingUploads[idx]);
+        gUploadMaxMs = std::max(gUploadMaxMs, std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - u0).count());
         done.push_back(idx);
         uploads++;
         if (std::chrono::duration<float, std::milli>(std::chrono::steady_clock::now() - t0).count() > uploadBudgetMs) break;
@@ -1344,7 +1347,10 @@ void worldUpdate(Scene& world, float uploadBudgetMs) {
     // collected), so results can't pile up faster than frames take them.
     TerrainGpu_SetHold(pendingUploads.size() > kUploadBacklogCap);
 
+    const auto w0 = std::chrono::steady_clock::now();
     UpdateWater(world); // simulated water: chunks redraw their water surface (#360)
+    gUploadLoopMs += std::chrono::duration<double, std::milli>(w0 - t0).count();
+    gWaterUpdMs = std::max(gWaterUpdMs, std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - w0).count());
     GpuTimer_CpuMark("w-uploads");
     // LOD after uploads, so this frame's draw list already includes nodes that just finished.
     // Terrain detail (#297): the player's setting, at most fastFactor while the camera moves fast against the nearest
@@ -1441,6 +1447,7 @@ void worldUpdate(Scene& world, float uploadBudgetMs) {
         static double t0 = -1.0;
         static long long sub0[(int)JobTag::Count] = {}, done0[(int)JobTag::Count] = {};
         static long long req0 = 0, built0 = 0;
+        static long long staged0 = 0, direct0 = 0;
         static double ftSum = 0.0, ftMax = 0.0; static int ftN = 0;
         ftSum += GetFrameTime(); ftMax = std::max(ftMax, (double)GetFrameTime()); ++ftN;
         const double now = GetTime();
@@ -1454,12 +1461,13 @@ void worldUpdate(Scene& world, float uploadBudgetMs) {
                     mix += TextFormat(" %s q%lld +%lld -%lld", JobTagName(tg), q, s - sub0[k], d - done0[k]);
                 sub0[k] = s; done0[k] = d;
             }
-            const char* line = TextFormat("[jobs] %.0f s: frame avg %.1f max %.1f ms; queued %d running %d fg %s | gpu pending %d, uploads pending %d%s | requests +%lld built +%lld, nodes %d |%s\n",
+            const ArenaStats as = TerrainArena_Stats();
+            const char* line = TextFormat("[jobs] %.0f s: frame avg %.1f max %.1f ms; queued %d running %d fg %s | gpu pending %d, uploads pending %d%s (staged +%lld direct +%lld, slowest %.1f ms, loop %.0f ms, water max %.1f ms) | requests +%lld built +%lld, nodes %d |%s\n",
                                           now, 1000.0 * ftSum / std::max(1, ftN), 1000.0 * ftMax, (int)Jobs().queued(), Jobs().running(), Jobs().foregroundIdle() ? "idle" : "busy", TerrainGpu_Pending(),
-                                          (int)pendingUploads.size(), pendingUploads.size() > kUploadBacklogCap ? " (hold)" : "", (long long)gRequests - req0, (long long)gBuilt - built0, stats.nodes, mix.c_str());
+                                          (int)pendingUploads.size(), pendingUploads.size() > kUploadBacklogCap ? " (hold)" : "", as.staged - staged0, as.direct - direct0, gUploadMaxMs, gUploadLoopMs, gWaterUpdMs, (long long)gRequests - req0, (long long)gBuilt - built0, stats.nodes, mix.c_str());
             printf("%s", line);
             LOG_INFO("Perf", "%s", line);
-            req0 = gRequests; built0 = gBuilt; ftSum = ftMax = 0.0; ftN = 0;
+            req0 = gRequests; built0 = gBuilt; staged0 = as.staged; direct0 = as.direct; gUploadMaxMs = gUploadLoopMs = gWaterUpdMs = 0.0; ftSum = ftMax = 0.0; ftN = 0;
             t0 = now;
         }
     }

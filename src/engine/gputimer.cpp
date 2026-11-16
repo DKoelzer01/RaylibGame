@@ -118,23 +118,26 @@ void GpuTimer_Print() {
 }
 
 namespace {
-    // Slow frames (benches): a frame's CPU marks, printed when the frame took over 20 ms (at most 10 of them).
+    // Slow frames (benches): a frame's CPU marks, printed when its marks summed over 20 ms or its wall time was over 50 ms (at most 60 of them).
     std::vector<std::pair<const char*, double>> frameMarks;
     double frameMs = 0.0;
     int slowPrinted = 0;
+    std::chrono::steady_clock::time_point frameWallStart{}; // wall time includes what no mark covers (#509: 130-270 ms frames whose marks summed to 5-12 ms)
     const auto gRunStart = std::chrono::steady_clock::now(); // program start (static init)
 }
 
-void GpuTimer_CpuFrameStart() {
-    if (enabled && cpuStarted && frameMs > 20.0 && slowPrinted < 10) {
+void GpuTimer_CpuFrameStart(bool reportSlow) {
+    const auto wallNow = std::chrono::steady_clock::now();
+    const double wallMs = cpuStarted ? std::chrono::duration<double, std::milli>(wallNow - frameWallStart).count() : 0.0;
+    if (reportSlow && enabled && cpuStarted && (frameMs > 20.0 || wallMs > 50.0) && slowPrinted < 60) {
         ++slowPrinted;
-        printf("bench: slow frame %.1f ms (cpu) at %.1f s, frame %ld:", frameMs, std::chrono::duration<double>(std::chrono::steady_clock::now() - gRunStart).count(), cpuFrames);
+        printf("bench: slow frame %.1f ms (cpu), %.1f ms wall (%.1f unmarked) at %.1f s, frame %ld:", frameMs, wallMs, wallMs - frameMs, std::chrono::duration<double>(std::chrono::steady_clock::now() - gRunStart).count(), cpuFrames);
         for (const auto& m : frameMarks) if (m.second > 1.0) printf(" %s %.1f", m.first, m.second);
         printf("\n");
     }
     frameMarks.clear(); frameMs = 0.0;
     if (!enabled) { cpuStarted = false; return; }
-    cpuLast = std::chrono::steady_clock::now();
+    cpuLast = frameWallStart = wallNow;
     cpuStarted = true;
     ++cpuFrames;
 }

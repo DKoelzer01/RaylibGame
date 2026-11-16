@@ -289,6 +289,8 @@ int main(int argc, char** argv)
     bool cursorLocked = false;     // DisableCursor while playing (#205)
     bool perfLog = false;          // --perf-log: per-pass CPU/GPU averages to log.txt every 5 s in normal play, tagged moving/still (#204)
     double playNewSeconds = 0.0;   // --play-new S (#387): start a new game as the menu does (settings, spawn preload), quit S seconds after entering
+    double playLoadSeconds = 0.0;  // --play-load S SAVE (#509): load SAVE as the menu does, then walk and sweep the view for S seconds
+    std::string playLoadPath;
     float benchFlySpeed = 0.0f;    // --bench-fly V: the camera flies over body 0 at V m/s through the bench (LOD streaming)
     bool benchFlyBack = false;     // --bench-fly-back: fly out for half the bench, then back the same way (chunk cache, #295)
     float benchFlyAlt = 1e9f;      // --bench-fly-alt A: fly at A m relative to sea level instead (negative: underwater, looking up)
@@ -543,6 +545,7 @@ int main(int argc, char** argv)
         if (std::string(argv[i]) == "--bench-stand") { benchWalkMode = true; benchStandMode = true; }
         if (std::string(argv[i]) == "--perf-log") { perfLog = true; gJobLog = true; gFpsLog = true; }
         if (std::string(argv[i]) == "--play-new" && i + 1 < argc) playNewSeconds = atof(argv[i + 1]);
+        if (std::string(argv[i]) == "--play-load" && i + 2 < argc) { playLoadSeconds = atof(argv[i + 1]); playLoadPath = argv[i + 2]; }
         if (std::string(argv[i]) == "--bench-fly" && i + 1 < argc) benchFlySpeed = (float)atof(argv[i + 1]);
         if (std::string(argv[i]) == "--bench-fly-back") benchFlyBack = true;
         if (std::string(argv[i]) == "--water-stats") benchWaterStats = true;
@@ -794,7 +797,7 @@ int main(int argc, char** argv)
     for (int i = 1; i < argc; ++i) if (std::string(argv[i]) == "--native-window") nativeWindow = true;
     // --bench-window: the 1920x1080 bench window for runs that are not benches (scripted play, --play-new): the
     // borderless monitor-sized one covers the screen and takes the input of a user at the machine.
-    bool benchWindow = playNewSeconds > 0.0;
+    bool benchWindow = playNewSeconds > 0.0 || playLoadSeconds > 0.0;
     for (int i = 1; i < argc; ++i) if (std::string(argv[i]) == "--bench-window") benchWindow = true;
     bool exclusive = false; // --fullscreen: exclusive fullscreen (bypasses the desktop compositor)
     for (int i = 1; i < argc; ++i) if (std::string(argv[i]) == "--fullscreen") { exclusive = true; nativeWindow = true; }
@@ -1318,6 +1321,7 @@ int main(int argc, char** argv)
     int playStep = 0;
     double playStepAt = 0.0;
     std::string playSave;
+    double playLoadStart = -2.0; // --play-load (#509): -2 load not issued yet, -1 loading, else the walk's start
     while (windowKeepAlive && !WindowShouldClose())
     {
         if (Recorder_Finished()) break; // a --record capture is complete
@@ -1331,8 +1335,20 @@ int main(int argc, char** argv)
             else if (playStep == 5 && gameState == 1 && !loading) { playStep = 6; playStepAt = now; }
             else if (playStep == 6 && now - playStepAt > 30.0) break;
         }
+        // --play-load (#509): the playtest's freezes came walking ~6 m/s through a loaded world while looking around fast
+        // (18-37 px/frame). Walk forward; the view sweeps +-90 degrees every 4 s so the walk still goes somewhere.
+        if (playLoadSeconds > 0.0 && gameState == 0 && pendingMenu.action == MenuAction::None && playLoadStart < -1.5) {
+            pendingMenu.action = MenuAction::LoadGame; pendingMenu.path = playLoadPath; playLoadStart = -1.0;
+        }
+        if (playLoadSeconds > 0.0 && gameState == 1) {
+            if (playLoadStart < 0.0 && !loading) playLoadStart = GetTime();
+            if (playLoadStart >= 0.0 && GetTime() - playLoadStart > playLoadSeconds) break;
+            const double t = playLoadStart >= 0.0 ? GetTime() - playLoadStart : 0.0;
+            gFakeHeld = loading ? 0 : (1ull << (int)Act::Forward) | (fmod(t, 1.5) < 0.1 ? 1ull << (int)Act::Jump : 0ull); // a hop every 1.5 s: a scripted walk gets stuck on rough ground
+            gFakeLook = loading ? Vector2{ 0.0f, 0.0f } : Vector2{ (float)(60.0 * sin(t * PI * 0.5)), 0.0f };
+        }
         Recorder_Update(WorldIdle() && !loading); // its start delay (after the loading screen), F10 in normal play
-        GpuTimer_CpuFrameStart(); GpuTimer_BeginFrame();
+        GpuTimer_CpuFrameStart(!loading); GpuTimer_BeginFrame();
         FpsLog_Frame(gameState == 0 ? "menu" : gameState == 3 ? "newworld" : gameState == 2 ? "paused" : loading ? "loading" : "play");
         if (preloadT0 >= 0.0 && !SpawnPreloadPending()) {
             const WorldStats& ws = GetWorldStats();
@@ -7424,7 +7440,7 @@ int main(int argc, char** argv)
                     // On the loading screen the player is held (no nearest body yet: the velocity is the planet's spin, which
                     // read as "MOVING 89 m/s", #387): those frames count as loading, not movement.
                     if (loading) ++perfLoading;
-                    else perfSpeed +=Vector3Length(Vector3Subtract(player.velocity, !player.grounded && player.nearest ? player.nearest->surfaceVelocity((player.position - world.renderOrigin).toFloat()) : Vector3{ 0, 0, 0 })); /* against the ground: airborne velocity is world-frame and includes the planet's spin (grounded it is surface-relative already) */ perfLook += Vector2Length(GetMouseDelta()); ++perfN;
+                    else perfSpeed +=Vector3Length(Vector3Subtract(player.velocity, !player.grounded && player.nearest ? player.nearest->surfaceVelocity((player.position - world.renderOrigin).toFloat()) : Vector3{ 0, 0, 0 })); /* against the ground: airborne velocity is world-frame and includes the planet's spin (grounded it is surface-relative already) */ perfLook += Vector2Length(PlayerInput_Frame().look); ++perfN;
                     if (GetTime() - perfT0 >= 5.0) {
                         const long played = std::max(1L, perfN - perfLoading);
                         const double sp = perfSpeed / played, lk = perfLook / std::max(1L, perfN);

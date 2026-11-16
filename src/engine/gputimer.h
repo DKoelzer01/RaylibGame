@@ -11,7 +11,7 @@ void GpuTimer_BeginFrame();            // before the first draw of a frame
 void GpuTimer_Mark(const char* name);  // a string literal: the pass that just finished
 void GpuTimer_Print();                 // "bench: gpu ..." averages per pass, then the total
 // CPU time on the main thread between marks: GpuTimer_Mark also marks the CPU side under its name.
-void GpuTimer_CpuFrameStart();          // top of the frame loop
+void GpuTimer_CpuFrameStart(bool reportSlow = true);          // top of the frame loop; reportSlow false: this frame is not reported as slow (loading screens, #509)
 void GpuTimer_CpuMark(const char* name);
 void GpuTimer_PrintCpu();
 // In-game perf log (#204, --perf-log): the averages so far to log.txt (tagged), then reset.
