@@ -4990,10 +4990,8 @@ int main(int argc, char** argv)
                         if (bestRange > 2.0f) { printf("bench: water-speed: no flat dry ground within 600 m -> FAIL\n"); benchWaterSpeed = false; }
                         else {
                             wsSite = Vector3Scale(site, pf->radius + pf->elevation(site));
-                            for (int x = -1; x <= 1; ++x)
-                                for (int y = -1; y <= 1; ++y) // 6 m^3 per pour: a cell column filled 6 cells up
-                                    Fluid::Pour(*p, Vector3Add(Vector3Scale(at(site, (float)x, (float)y), pf->radius + pf->elevation(at(site, (float)x, (float)y))), Vector3Scale(site, 0.3f)), 6.0f);
-                            // Watch from nearly overhead, 28 m up (over the trees), looking down at the column.
+                            // Watch from nearly overhead, 28 m up (over the trees), looking down at the column; pour once the view has
+                            // loaded (phase 3), so a capture sees the whole spread.
                             const Vector3 eyeDir = at(site, -6.0f, 0.0f);
                             player.flyMode = true;
                             const Vector3 eye = Vector3Scale(eyeDir, pf->radius + pf->elevation(site) + 28.0f);
@@ -5001,7 +4999,22 @@ int main(int argc, char** argv)
                             player.placeAt(world, *p, p->toWorld(eye));
                             player.forward = p->dirToWorld(Vector3Normalize(Vector3Subtract(wsSite, eye)));
                             player.applyToCamera(world);
-                            printf("bench: water-speed: site %.0f m from the start, ground within %.1f m over 25 m; poured 54 m^3 as a 3 x 3 x 6 m column\n", Vector3Distance(site, home) * pf->radius, bestRange);
+                            printf("bench: water-speed: site %.0f m from the start, ground within %.1f m over 25 m\n", Vector3Distance(site, home) * pf->radius, bestRange);
+                            wsPhase = 3; wsT0 = GetTime();
+                        }
+                    } else if (wsPhase == 3) {
+                        world.camera.position = p->toWorld(wsEye); world.camera.target = p->toWorld(wsSite);
+                        world.camera.up = p->dirToWorld(Vector3Normalize(wsSite));
+                        player.position = world.renderOrigin + world.camera.position;
+                        if (t > 1.0 && WorldIdle()) {
+                            const Vector3 site = Vector3Normalize(wsSite);
+                            const Vector3 t1 = Vector3Normalize(Vector3CrossProduct(site, { 0, 1, 0 })), t2 = Vector3CrossProduct(t1, site);
+                            for (int x = -1; x <= 1; ++x)
+                                for (int y = -1; y <= 1; ++y) { // 6 m^3 per pour: a cell column filled 6 cells up
+                                    const Vector3 d = Vector3Normalize(Vector3Add(site, Vector3Add(Vector3Scale(t1, x / pf->radius), Vector3Scale(t2, y / pf->radius))));
+                                    Fluid::Pour(*p, Vector3Add(Vector3Scale(d, pf->radius + pf->elevation(d)), Vector3Scale(site, 0.3f)), 6.0f);
+                                }
+                            printf("bench: water-speed: poured 54 m^3 as a 3 x 3 x 6 m column after %.1f s of loading\n", t);
                             wsPhase = 1; wsT0 = GetTime();
                         }
                     } else if (wsPhase == 1) {

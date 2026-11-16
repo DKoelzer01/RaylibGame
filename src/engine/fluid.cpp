@@ -91,6 +91,8 @@ struct Brick {
     std::array<uint8_t, B3> drawn{}, drawnFlags{}; // the cells as the chunks last redrew them (visible changes only)
     bool drawnSet = false;
     bool drawnMoving = false;       // published as moving (#649: its thin films are drawn while it is awake)
+    std::array<uint8_t, B3> disp{}; // the cells as published: easing toward fill (#366)
+    bool dispSet = false, easing = false;
     int slot = -1;                  // GPU mode: its place in the GPU brick pool (-1: none yet)
     bool upload = false;            // GPU mode: the whole brick (cells, flags, targets) goes up next tick
 };
@@ -935,7 +937,27 @@ void RunJob() {
                     b.check = b.fill; b.checkStep = stepCount;
                 }
             } else b.checkStep = -1;
-            const bool movedFlip = b.drawnSet && b.drawnMoving != b.active; // woke or fell asleep: its thin films show or hide (#649)
+            // The published (drawn, queried) water eases toward the simulated: 40% of the way a tick (25 ms), so a cell the
+            // water reaches fills in over ~0.15 s instead of appearing whole (#366: water read as packets jumping a metre at a
+            // time). Solid cells follow at once. A brick keeps publishing while it eases.
+            if (b.changed || b.easing) {
+                bool still = false;
+                if (!b.dispSet) { b.disp = b.fill; b.dispSet = true; }
+                else
+                    for (int i = 0; i < B3; ++i) {
+                        const int f = b.fill[i], d = b.disp[i];
+                        if (f == d) continue;
+                        const int diff = f - d;
+                        int step = diff * 2 / 5;
+                        if ((b.flags[i] & kSolid) || abs(diff) <= 3) step = diff;
+                        else if (step == 0) step = diff > 0 ? 1 : -1;
+                        b.disp[i] = (uint8_t)(d + step);
+                        still = still || b.disp[i] != f;
+                    }
+                if (b.easing || still) b.changed = true;
+                b.easing = still;
+            }
+            const bool movedFlip = b.drawnSet && b.drawnMoving != (b.active || b.easing); // woke or fell asleep: its thin films show or hide (#649)
             if (!b.changed && !movedFlip) continue;
             b.changed = false;
             if (!snap) {
@@ -950,7 +972,7 @@ void RunJob() {
             }
             WaterField::Site& ps = snap->sites[s->index];
             auto pb = std::make_shared<WaterField::Brick>();
-            pb->fill = b.fill; pb->flags = b.flags; pb->shut = b.shut; pb->kinds = present; pb->moving = b.active;
+            pb->fill = b.disp; pb->flags = b.flags; pb->shut = b.shut; pb->kinds = present; pb->moving = b.active || b.easing;
             ps.bricks[kv.first] = std::move(pb);
             Vector3 lo, hi;
             ps.brickBounds(b.bi, b.bj, b.bk, lo, hi);
@@ -963,18 +985,18 @@ void RunJob() {
             int c0[8][3], c1[8][3], mag[8] = {}; // mag: the largest change in each (coarse chunks wait for a bigger one, world.cpp)
             for (int o = 0; o < 8; ++o) { c0[o][0] = c0[o][1] = c0[o][2] = B; c1[o][0] = c1[o][1] = c1[o][2] = -1; }
             for (int i = 0; i < B3; ++i) {
-                const bool v = !b.drawnSet || abs((int)b.fill[i] - (int)b.drawn[i]) >= 6 || ((b.flags[i] ^ b.drawnFlags[i]) & kSolid) ||
-                               (b.fill[i] && ((b.flags[i] ^ b.drawnFlags[i]) & kKindMask)) || (movedFlip && b.fill[i] > 0 && b.fill[i] < 64);
+                const bool v = !b.drawnSet || abs((int)b.disp[i] - (int)b.drawn[i]) >= 6 || ((b.flags[i] ^ b.drawnFlags[i]) & kSolid) ||
+                               (b.disp[i] && ((b.flags[i] ^ b.drawnFlags[i]) & kKindMask)) || (movedFlip && b.disp[i] > 0 && b.disp[i] < 64);
                 if (!v) continue;
                 const int x = i % B, y = (i / B) % B, z = i / (B * B);
                 const int o = (x >> 3) | ((y >> 3) << 1) | ((z >> 3) << 2);
-                mag[o] = std::max(mag[o], (!b.drawnSet || ((b.flags[i] ^ b.drawnFlags[i]) & (kSolid | kKindMask))) ? 255 : abs((int)b.fill[i] - (int)b.drawn[i]));
+                mag[o] = std::max(mag[o], (!b.drawnSet || ((b.flags[i] ^ b.drawnFlags[i]) & (kSolid | kKindMask))) ? 255 : abs((int)b.disp[i] - (int)b.drawn[i]));
                 c0[o][0] = std::min(c0[o][0], x); c0[o][1] = std::min(c0[o][1], y); c0[o][2] = std::min(c0[o][2], z);
                 c1[o][0] = std::max(c1[o][0], x); c1[o][1] = std::max(c1[o][1], y); c1[o][2] = std::max(c1[o][2], z);
-                b.drawn[i] = b.fill[i]; b.drawnFlags[i] = b.flags[i];
+                b.drawn[i] = b.disp[i]; b.drawnFlags[i] = b.flags[i];
             }
             b.drawnSet = true;
-            b.drawnMoving = b.active;
+            b.drawnMoving = b.active || b.easing;
             for (int o = 0; o < 8; ++o) {
                 if (c1[o][0] < 0) continue;
                 Vector3 dlo, dhi;
