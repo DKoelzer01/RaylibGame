@@ -1,8 +1,10 @@
 #include <unordered_map>
+#include <filesystem>
 #include <cstring>
 #include "voxel.h"
 #include "utils/logger.h"
 #include "erosion.h"
+#include "canyons.h"
 #include <thread>
 #include "rivers.h"
 #include "foliage.h"
@@ -274,7 +276,10 @@ static float ValleyCarve(float v) {
 }
 
 
-struct PlanetField::ErosionState { std::atomic<bool> active{ false }; PlanetErosion bake; std::once_flag pondOnce; std::unordered_map<uint64_t, int> pondByCell; }; // pondByCell: 260 m pond cell -> the bake's pond there (#360)
+struct PlanetField::ErosionState {
+    std::atomic<bool> active{ false }; PlanetErosion bake; std::once_flag pondOnce; std::unordered_map<uint64_t, int> pondByCell; // pondByCell: 260 m pond cell -> the bake's pond there (#360)
+    CanyonGrade grade; bool gradeOn = false; // #544: the canyons' graded floors, while the bake reads its input (set before its threads start)
+};
 
 const PlanetErosion* PlanetField::erosion() const {
     if (tIgnoreBake) return nullptr;
@@ -302,13 +307,33 @@ void PlanetField::bakeErosion(const std::string& cachePath) {
     const bool loaded = !cachePath.empty() && b.load(cachePath, radius, fieldSeed, ErosionParamsKey(p));
     const float loadMs = std::chrono::duration<float, std::milli>(std::chrono::steady_clock::now() - tl0).count();
     if (!loaded) {
-        const int threads = std::max(1u, std::thread::hardware_concurrency());
+        int threads = std::max(1u, std::thread::hardware_concurrency());
+        if (const char* e = getenv("RAYLIBGAME_BAKE_THREADS")) threads = std::max(1, atoi(e)); // #605: the determinism check bakes with other counts
+        // Canyon floors graded to drain end to end (#544, #547) before the bake reads its input; RAYLIBGAME_CANYON_GRADE=0: off (A/B).
+        static const bool grade = !(getenv("RAYLIBGAME_CANYON_GRADE") && getenv("RAYLIBGAME_CANYON_GRADE")[0] == '0');
+        if (grade) {
+            CanyonGrade& g = erosionState->grade;
+            g.build(radius, 100.0f, [this](Vector3 d) { return canyonFault(d.x * radius, d.y * radius, d.z * radius); },
+                    [this](Vector3 d) { tBakeInput = true; const float h = land(d, 50.0f).h; tBakeInput = false; return h; }, threads);
+            erosionState->gradeOn = true;
+            LOG_INFO("Erosion", "canyons graded (#544): %d canyons (%d drain both ways from a divide), %.0f km, %d corridor cells of 100 m; floors cut %.1f m on average (up to %.0f m), filled %.1f m (up to %.0f m); %.2f s\n",
+                     g.canyons, g.divided, g.lengthKm, g.corridorCells, g.meanCut, g.maxCut, g.meanFill, g.maxFill, g.seconds);
+        }
         b.build([this](Vector3 d, float fp) { tBakeInput = true; const float h = land(d, fp).h; tBakeInput = false; return h; }, radius, fieldSeed, p, threads, [this](Vector3 d) { return strataColumn(d); }); // + the rock strata (#587)
+        erosionState->gradeOn = false;
+        erosionState->grade = CanyonGrade(); // only the bake's input needs it
         const auto ts0 = std::chrono::steady_clock::now();
-        if (!cachePath.empty()) b.save(cachePath);
+        if (!cachePath.empty()) {
+            // The save's folder may not exist yet (a first bench run): the cache silently went unwritten and every run baked again.
+            std::error_code ec;
+            const std::filesystem::path dirPath = std::filesystem::path(cachePath).parent_path();
+            if (!dirPath.empty()) std::filesystem::create_directories(dirPath, ec);
+            if (!b.save(cachePath)) LOG_WARN("Erosion", "could not write the bake cache %s\n", cachePath.c_str());
+        }
         LOG_INFO("Erosion", "cache saved in %.1f s\n", std::chrono::duration<float>(std::chrono::steady_clock::now() - ts0).count());
         LOG_INFO("Erosion", "baked the planet, %d cells at %.0f m + %d at %.0f m, in %.1f s (coarse %.1f s, faces %.1f s): cut up to %.0f m, raised up to %.0f m, hash %016llx\n",
                b.cells(), p.cell, b.fineCells(), b.fineCell(), b.buildSeconds, b.coarseSeconds, b.refineSeconds, b.maxCut, b.maxRaise, (unsigned long long)b.hash());
+        LOG_INFO("Erosion", "bake profile (#605): %s\n", b.profile.c_str());
     } else {
         LOG_INFO("Erosion", "loaded %s (%d cells, hash %016llx) in %.0f ms\n", cachePath.c_str(), b.cells(), (unsigned long long)b.hash(), loadMs);
     }
@@ -386,6 +411,21 @@ PlanetField::Land PlanetField::land(Vector3 dir, float fp) const {
                 h += kw * landMask * Strata_KarstRelief({ sx, sy, sz }, fieldSeed);
         if (const float fw = Strata_FoldWeight({ sx, sy, sz }, fieldSeed); fw > 0.0f && h > 0.0f)
             h += 80.0f * fw * landMask * std::min(gen.cliffs, 1.5f) * Strata_OutcropBump(strataColumn(dir), h, fieldSeed);
+        // Graded canyon floors (#544, #547; canyons.h): along each canyon line the floor falls toward its outlet, cutting
+        // through the ridges it crosses and filling its dips, so the bake's rivers run along it end to end. The walls
+        // widen with the depth of the cut (soft rock holds ~35 deg), and past the corridors the plain notch stays.
+        if (erosionState && erosionState->gradeOn && landMask > 0.0f) {
+            float cov = 0.0f;
+            const float floorH = erosionState->grade.floorAt(dir, cov);
+            if (cov > 0.0f) {
+                const float hl = h + notch * 60.0f * landMask; // the land without the notch
+                const float D = std::max(0.0f, hl - floorH);
+                const float r0 = 0.02f * std::max(1.0f, D / 75.0f);
+                const float t = std::clamp(1.0f - canyonLine(sx, sy, sz) / r0, 0.0f, 1.0f);
+                const float hg = hl - D * t * t * (3.0f - 2.0f * t);
+                h += (hg - h) * cov * landMask;
+            }
+        }
         // Keep the formations inside the field's elevation bound (maxElevation less its 65 m for detail and landforms):
         // a volcano or a fault on high ground compresses smoothly into the top 200 m instead of poking above the band
         // the chunk selection trusts (#593: seed 42 reached 1759 m against 1755).
@@ -2281,11 +2321,13 @@ StrataColumn PlanetField::strataColumn(Vector3 dir) const {
     return col;
 }
 
+float PlanetField::canyonLine(float sx, float sy, float sz) const { return fabsf(ravines.fractal(2, sx, sy, sz)); }
+
 float PlanetField::canyonFault(float sx, float sy, float sz) const {
     // The ravine lines (zero crossings of `ravines` in the `ravineMask` regions) as a 0..1 notch ~200 m wide (#544).
     const float region = Smoothstep(0.25f, 0.4f, ravineMask.fractal(2, sx, sy, sz));
     if (region <= 0.0f) return 0.0f;
-    const float r = fabsf(ravines.fractal(2, sx, sy, sz));
+    const float r = canyonLine(sx, sy, sz);
     if (r >= 0.02f) return 0.0f;
     const float t = 1.0f - r / 0.02f;
     return t * t * (3.0f - 2.0f * t) * region;

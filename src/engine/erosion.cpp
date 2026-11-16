@@ -19,6 +19,8 @@ static std::atomic<bool> gBaking{ false };
 static std::atomic<int> gBakes{ 0 };
 bool ErosionBaking() { return gBaking.load(std::memory_order_relaxed); }
 int ErosionBakeCount() { return gBakes.load(); }
+// #605 A/B: RAYLIBGAME_BAKE_OLD=1 runs the bake as before its speedups (same result, the old timing).
+static const bool gBakeOld = getenv("RAYLIBGAME_BAKE_OLD") && getenv("RAYLIBGAME_BAKE_OLD")[0] == '1';
 
 namespace {
     // The cube faces as PlanetField::prepareBlock lays them out (#251): face = axis * 2 + (positive ? 1 : 0).
@@ -66,10 +68,15 @@ namespace {
     };
 
     // Rock and uplift of a domain from its input heights (h0) and the planet's highest input (maxH0).
-    void SetRock(Domain& d, const std::vector<float>& h0, float maxH0, float R, unsigned int seed, const ErosionParams& p, const StrataFn* strata = nullptr) {
-        if (strata && *strata) { d.col.resize(d.cells); d.strataSeed = seed; for (size_t c = 0; c < d.cells; ++c) d.col[c] = (*strata)(d.dir[c]); } // #587
+    // Each cell's own values only, so `threads` (interleaved cells) never changes the result (#605).
+    void SetRock(Domain& d, const std::vector<float>& h0, float maxH0, float R, unsigned int seed, const ErosionParams& p, const StrataFn* strata, int threads) {
+        if (strata && *strata) { d.col.resize(d.cells); d.strataSeed = seed; } // #587
         d.U.resize(d.cells); d.rockK.resize(d.cells); d.hardness.resize(d.cells); d.strata.resize(d.cells); d.glacier.resize(d.cells);
-        for (size_t c = 0; c < d.cells; ++c) {
+        const int T = gBakeOld ? 1 : std::max(1, threads);
+        std::vector<std::thread> pool;
+        for (int t = 0; t < T; ++t) pool.emplace_back([&, t] {
+        for (size_t c = t; c < d.cells; c += T) {
+            if (!d.col.empty()) d.col[c] = (*strata)(d.dir[c]);
             const Vector3 q = Vector3Scale(d.dir[c], R / 25000.0f);
             d.hardness[c] = ValueNoise(q, seed ^ 0xA11u);
             d.strata[c] = std::clamp((ValueNoise(Vector3Scale(q, 0.7f), seed ^ 0x57Au) - 0.55f) / 0.15f, 0.0f, 1.0f);
@@ -85,12 +92,141 @@ namespace {
                 d.glacier[c] = p.glacial > 0.0f ? std::clamp((h0[c] - line) / 300.0f, 0.0f, 1.0f) : 0.0f;
             }
         }
+        });
+        for (auto& th : pool) th.join();
     }
+
+    // Seconds per part of Simulate (#605): setup, flood, glacial, stream power, talus, wind.
+    struct SimProfile { double s[6] = {}; void add(const SimProfile& o) { for (int k = 0; k < 6; ++k) s[k] += o.s[k]; } };
+    const char* const kSimParts[6] = { "setup", "flood", "glacial", "stream", "talus", "wind" };
+    // Faces refined at once (a face's working set is ~250 MB): 6, 3, 2 or 1 (whole rounds), at least 2 threads each. Each
+    // face's simulation runs on one thread, so 3 at a time left 13 of 16 threads idle through it (#605).
+    int kParallelFaces(int T) {
+        if (gBakeOld) return std::clamp(T / 4, 1, 3);
+        for (int k : { 6, 3, 2 }) if (T >= 2 * k) return k;
+        return 1;
+    }
+
+    // A monotone radix heap for the priority flood (#605): it pops (height, cell) pairs in exactly the order the binary
+    // heap of std::pair<float, int> did - the keys are the same total order (height first, then the cell index), so the
+    // flood visits the cells in the same order and the bake is unchanged - but pushes are O(1) and pops cheap. Valid
+    // because the flood never pushes a key below the last one popped (filled heights only rise outward).
+    class RadixHeap {
+    public:
+        static uint64_t Key(float h, int c) {
+            uint32_t b; memcpy(&b, &h, 4);
+            b = (b & 0x80000000u) ? ~b : (b | 0x80000000u); // order-preserving float -> unsigned
+            return ((uint64_t)b << 32) | (uint32_t)c;
+        }
+        void push(uint64_t k) { buckets[Bucket(k)].push_back(k); ++count; }
+        bool empty() const { return count == 0; }
+        uint64_t pop() {
+            if (buckets[0].empty()) {
+                int i = 1;
+                while (buckets[i].empty()) ++i;
+                last = *std::min_element(buckets[i].begin(), buckets[i].end());
+                for (uint64_t k : buckets[i]) buckets[Bucket(k)].push_back(k);
+                buckets[i].clear();
+            }
+            const uint64_t k = buckets[0].back(); buckets[0].pop_back(); --count;
+            return k;
+        }
+        void reset() { for (auto& b : buckets) b.clear(); last = 0; count = 0; }
+    private:
+        std::vector<uint64_t> buckets[65];
+        uint64_t last = 0;
+        size_t count = 0;
+        int Bucket(uint64_t k) const { return k == last ? 0 : 64 - __builtin_clzll(k ^ last); }
+    };
+
+    // A barrier for the stream pool: spins briefly, then yields.
+    struct SpinBarrier {
+        explicit SpinBarrier(int n) : n(n) {}
+        void wait() {
+            const int g = gen.load(std::memory_order_acquire);
+            if (count.fetch_add(1, std::memory_order_acq_rel) == n - 1) { count.store(0, std::memory_order_relaxed); gen.fetch_add(1, std::memory_order_release); return; }
+            for (int spins = 0; gen.load(std::memory_order_acquire) == g; ++spins) { if (spins > 20000) std::this_thread::sleep_for(std::chrono::microseconds(100)); else if (spins > 64) std::this_thread::yield(); }
+        }
+        const int n;
+        std::atomic<int> count{ 0 }, gen{ 0 };
+    };
+
+    // The implicit stream power on several threads, with exactly the serial pass's result (#605). The serial pass walks
+    // the flood order and reads each receiver's height as it stands: updated this step when the receiver came earlier in
+    // the order, the step's starting height when later (a back edge). Here each cell gets a level one past its receiver's
+    // (0 on a back edge: its receiver's starting height is saved first), the cells of one level run in parallel, and the
+    // levels in turn; small levels run on the calling thread alone. Every cell computes what the serial pass computes.
+    class StreamPool {
+    public:
+        explicit StreamPool(int threads) : T(threads), bar(threads) { for (int t = 1; t < T; ++t) workers.emplace_back([this, t] { loop(t); }); }
+        ~StreamPool() { quit = true; bar.wait(); for (auto& w : workers) w.join(); }
+        void plan(const std::vector<int>& order, const std::vector<int>& recv, const std::vector<uint8_t>& outlet, const float* heights) {
+            const size_t cells = recv.size();
+            receiver = recv.data(); h = heights;
+            pos.resize(cells); lvl.assign(cells, -1); back.assign(cells, 0); rv.resize(cells); backList.clear();
+            for (size_t k = 0; k < order.size(); ++k) pos[order[k]] = (int)k;
+            int maxLvl = -1;
+            for (int c : order) {
+                const int r = recv[c];
+                if (r == c || outlet[c]) continue;
+                if (pos[r] < pos[c]) lvl[c] = lvl[r] + 1; // an unchanging receiver (-1) puts it at level 0
+                else { lvl[c] = 0; back[c] = 1; backList.push_back(c); }
+                maxLvl = std::max(maxLvl, lvl[c]);
+            }
+            std::vector<int> start(maxLvl + 2, 0);
+            for (int c : order) if (lvl[c] >= 0) ++start[lvl[c] + 1];
+            for (int l = 0; l <= maxLvl; ++l) start[l + 1] += start[l];
+            cellsByLvl.resize(start[maxLvl + 1]);
+            { std::vector<int> at(start.begin(), start.end() - 1); for (int c : order) if (lvl[c] >= 0) cellsByLvl[at[lvl[c]]++] = c; }
+            items.clear();
+            for (int l = 0; l <= maxLvl; ++l) {
+                const bool par = start[l + 1] - start[l] >= kParallelLevel;
+                if (!par && !items.empty() && !items.back().par) items.back().end = start[l + 1];
+                else items.push_back({ start[l], start[l + 1], par });
+            }
+        }
+        template <class F> void stream(F& f) {
+            fn = [](void* ctx, int c, float hr) { (*(F*)ctx)(c, hr); };
+            ctx = &f;
+            for (int c : backList) rv[c] = h[receiver[c]];
+            bar.wait(); // the workers start
+            work(0);
+        }
+    private:
+        static constexpr int kParallelLevel = 4096;
+        struct Item { int begin, end; bool par; };
+        int T;
+        SpinBarrier bar;
+        std::vector<std::thread> workers;
+        std::atomic<bool> quit{ false };
+        const int* receiver = nullptr; const float* h = nullptr;
+        std::vector<int> pos, lvl, cellsByLvl, backList;
+        std::vector<uint8_t> back;
+        std::vector<float> rv;
+        std::vector<Item> items;
+        void (*fn)(void*, int, float) = nullptr; void* ctx = nullptr;
+        float recvH(int c) const { return back[c] ? rv[c] : h[receiver[c]]; }
+        void work(int t) {
+            bool prevSerial = true; // the step's start barrier stands for the first item's
+            for (size_t k = 0; k < items.size(); ++k) {
+                const Item& it = items[k];
+                if (!it.par) { if (t == 0) for (int i = it.begin; i < it.end; ++i) fn(ctx, cellsByLvl[i], recvH(cellsByLvl[i])); prevSerial = true; continue; }
+                if (prevSerial && k > 0) bar.wait(); // the serial levels before it are done
+                for (int i = it.begin + t; i < it.end; i += T) fn(ctx, cellsByLvl[i], recvH(cellsByLvl[i]));
+                bar.wait();                            // the whole level is done
+                prevSerial = false;
+            }
+        }
+        void loop(int t) { for (;;) { bar.wait(); if (quit) return; work(t); } }
+    };
 
     // Stream power + talus for `steps` steps (see erosion.h). nbOf(c, k) = the k-th of 8 neighbours or -1.
     template <class NB>
-    void Simulate(Domain& d, NB&& nbOf, int steps, const ErosionParams& p, float R, unsigned int seed, float kScale, std::vector<float>* filledOut = nullptr, std::vector<float>* windOut = nullptr) {
+    void Simulate(Domain& d, NB&& nbOf, int steps, const ErosionParams& p, float R, unsigned int seed, float kScale, std::vector<float>* filledOut = nullptr, std::vector<float>* windOut = nullptr, SimProfile* prof = nullptr, int threads = 1) {
         const size_t cells = d.cells;
+        using Clock = std::chrono::steady_clock;
+        auto tick = Clock::now();
+        auto lap = [&](int k) { if (!prof) return; const auto t = Clock::now(); prof->s[k] += std::chrono::duration<double>(t - tick).count(); tick = t; }; // #605
         const float stratumOffset = Hash3(1, 2, 3, seed) * 120.0f;
         auto capRock = [&](float hc) { return fmodf(hc + stratumOffset + 1200.0f, 120.0f) < 36.0f; }; // the hard 30% of each 120 m band
         const bool layered = !d.col.empty(); // #587: the rock column's layer at the cell's current height
@@ -101,14 +237,14 @@ namespace {
             const float bandK = capRock(hc) ? 0.15f : 1.6f;
             return k * (1.0f + (bandK - 1.0f) * d.strata[c]);
         };
-        std::vector<float> hf(cells), area(cells);
+        std::vector<float> hf(cells), area(cells), areaM(gBakeOld ? 0 : cells), areaG(gBakeOld ? 0 : cells), recvL(gBakeOld ? 0 : cells);
         std::vector<int> receiver(cells), order;
         // Wind (#370): per cell its downwind and upwind neighbours (latitude bands: trade winds blowing west and toward the
         // equator below ~30 deg, westerlies east and poleward to ~60, polar easterlies beyond), the wind's speed there, and
         // how dry the band is (the subtropical desert belt around 25 deg, a weaker polar one; the wet equator and
         // mid-latitudes barely).
         std::vector<int> downwind, upwind;
-        std::vector<float> windSpeed, dryLat, windDelta;
+        std::vector<float> windSpeed, dryLat, windDelta, windE; std::vector<int> windN, windDrop;
         if (p.wind > 0.0f) {
             downwind.assign(cells, -1); upwind.assign(cells, -1); windSpeed.assign(cells, 0.0f); dryLat.assign(cells, 0.0f); windDelta.assign(cells, 0.0f);
             for (size_t c = 0; c < cells; ++c) {
@@ -136,21 +272,28 @@ namespace {
             }
         }
         std::vector<uint8_t> seen(cells);
+        std::unique_ptr<StreamPool> pool; // #605: the stream power on `threads` threads (the coarse pass; the faces run side by side)
+        if (threads > 1 && !gBakeOld) pool = std::make_unique<StreamPool>(threads);
         order.reserve(cells);
         using Item = std::pair<float, int>;
         int step = 0;
+        RadixHeap rh; // #605: the same pop order as the binary heap (gBakeOld), faster
         auto flood = [&] {
             std::priority_queue<Item, std::vector<Item>, std::greater<Item>> pq;
+            rh.reset();
+            auto push = [&](float v, int c) { if (gBakeOld) pq.push({ v, c }); else rh.push(RadixHeap::Key(v, c)); };
+            auto empty = [&] { return gBakeOld ? pq.empty() : rh.empty(); };
             std::fill(seen.begin(), seen.end(), 0);
             order.clear();
             for (size_t c = 0; c < cells; ++c)
-                if (d.outlet[c]) { hf[c] = d.h[c]; receiver[c] = (int)c; seen[c] = 1; pq.push({ d.h[c], (int)c }); }
-            if (pq.empty()) { // no sea: the lowest cell drains everything
+                if (d.outlet[c]) { hf[c] = d.h[c]; receiver[c] = (int)c; seen[c] = 1; push(d.h[c], (int)c); }
+            if (empty()) { // no sea: the lowest cell drains everything
                 size_t lo = 0; for (size_t c = 1; c < cells; ++c) if (d.h[c] < d.h[lo]) lo = c;
-                hf[lo] = d.h[lo]; receiver[lo] = (int)lo; seen[lo] = 1; pq.push({ d.h[lo], (int)lo });
+                hf[lo] = d.h[lo]; receiver[lo] = (int)lo; seen[lo] = 1; push(d.h[lo], (int)lo);
             }
-            while (!pq.empty()) {
-                const int c = pq.top().second; pq.pop();
+            while (!empty()) {
+                int c;
+                if (gBakeOld) { c = pq.top().second; pq.pop(); } else c = (int)(uint32_t)rh.pop();
                 order.push_back(c);
                 for (int k = 0; k < 8; ++k) {
                     const int o = nbOf((size_t)c, k);
@@ -158,7 +301,7 @@ namespace {
                     seen[o] = 1;
                     hf[o] = std::max(d.h[o], hf[c] + 1e-3f * (1.0f + 4.0f * Hash3(o, step, 7, seed))); // jittered across flats
                     receiver[o] = c;
-                    pq.push({ hf[o], o });
+                    push(hf[o], o);
                 }
             }
             for (int c : order) { // steepest descent on the filled surface (the flood parent where none is lower)
@@ -166,18 +309,27 @@ namespace {
                 float best = 0.0f;
                 for (int k = 0; k < 8; ++k) {
                     const int o = nbOf((size_t)c, k);
-                    if (o < 0) continue;
+                    if (o < 0 || hf[o] >= hf[c]) continue; // not lower: never steeper than 0 (#605: skips the distance)
                     const float s = (hf[c] - hf[o]) / (Vector3Distance(d.dir[c], d.dir[o]) * R);
                     if (s > best) { best = s; receiver[c] = o; }
                 }
             }
             for (size_t c = 0; c < cells; ++c) area[c] = d.cellArea[c];
             for (size_t k = order.size(); k-- > 0;) { const int c = order[k]; if (receiver[c] != c) area[receiver[c]] += area[c]; }
+            if (!gBakeOld) // #605: what the stream power needs per cell changes only here; once per flood, not every step
+                for (size_t c = 0; c < cells; ++c) {
+                    areaM[c] = powf(area[c], p.m);
+                    areaG[c] = powf(area[c], 0.25f);
+                    recvL[c] = Vector3Distance(d.dir[c], d.dir[receiver[c]]) * R;
+                }
         };
+        lap(0);
         for (step = 0; step < steps; ++step) {
             if (kScale == 1.0f) gBakeProgress.store(0.3f * (float)step / (float)std::max(1, steps), std::memory_order_relaxed); // the coarse pass
             if (step % std::max(1, p.floodEvery) == 0) {
                 flood();
+                if (pool) pool->plan(order, receiver, d.outlet, d.h.data());
+                lap(1);
                 // Glacial troughs (#358): ice fills each valley to a thickness growing with its drainage area (~45 m
                 // at 1 km^2, at most 200 m); valley walls standing below that ice surface are ground back, so V
                 // valleys widen into U troughs. Per flood interval, a share of the wall above the floor goes.
@@ -194,21 +346,31 @@ namespace {
                             d.h[o] -= 0.15f * g * (d.h[o] - d.h[c]) * (1.0f - (d.h[o] - d.h[c]) / ice);
                         }
                     }
+                lap(2);
             }
-            for (int c : order) { // implicit stream power, receivers first
+            // Implicit stream power, receivers first. hr: the receiver's height as the serial pass in `order` reads it.
+            auto streamCell = [&](int c, float hr) {
+                if (hf[c] > d.h[c] + 1e-3f) { d.h[c] += d.U[c]; return; } // a filled depression: a lake bed, no incision
                 const int r = receiver[c];
-                if (r == c || d.outlet[c]) continue;
-                if (hf[c] > d.h[c] + 1e-3f) { d.h[c] += d.U[c]; continue; } // a filled depression: a lake bed, no incision
-                const float L = Vector3Distance(d.dir[c], d.dir[r]) * R;
-                float f = erodibility(c, d.h[c]) * powf(area[c], p.m) / L;
+                const float L = gBakeOld ? Vector3Distance(d.dir[c], d.dir[r]) * R : recvL[c];
+                const float ek = erodibility(c, d.h[c]);
+                float f = ek * (gBakeOld ? powf(area[c], p.m) : areaM[c]) / L;
                 if (const float g = d.glacier[c]; g > 0.0f) {
                     // Glacial: erosion grows more slowly with drainage area (A^0.25, matched to the fluvial rate at
                     // 1 km^2 and p.glacial x it), so it reaches up to the valley heads: cirques, steep headwalls.
-                    const float fg = erodibility(c, d.h[c]) * p.glacial * 31.6f * powf(area[c], 0.25f) / L;
+                    const float fg = ek * p.glacial * 31.6f * (gBakeOld ? powf(area[c], 0.25f) : areaG[c]) / L;
                     f += (fg - f) * g;
                 }
-                d.h[c] = std::max((d.h[c] + d.U[c] + f * d.h[r]) / (1.0f + f), d.h[r]);
-            }
+                d.h[c] = std::max((d.h[c] + d.U[c] + f * hr) / (1.0f + f), hr);
+            };
+            if (pool) pool->stream(streamCell);
+            else
+                for (int c : order) {
+                    const int r = receiver[c];
+                    if (r == c || d.outlet[c]) continue;
+                    streamCell(c, d.h[r]);
+                }
+            lap(3);
             if (step % 2 == 1) // talus: slopes steeper than the rock holds slump (half the excess moves down)
                 for (size_t c = 0; c < cells; ++c) {
                     if (d.outlet[c]) continue;
@@ -222,33 +384,35 @@ namespace {
                         if (excess > 0.0f) { const float mv = 0.5f * excess; d.h[c] -= mv; if (!d.outlet[o]) d.h[o] += mv; }
                     }
                 }
+            lap(4);
             if (p.wind > 0.0f && step % 2 == 0) {
                 // Aeolian erosion (#370): on dry land (the latitude belt, away from rivers: large drainage areas are wet) the
                 // wind deflates ground, most on faces turned into it (yardang-like streaks along the wind), and carries
                 // it to the downwind neighbour, where it settles in the lee of ridges and in basins (dune fields). Moved,
                 // not lost (into the sea it is). Applied together after the pass, so the scan order doesn't matter.
                 std::fill(windDelta.begin(), windDelta.end(), 0.0f);
-                for (size_t c = 0; c < cells; ++c) {
+                // One cell: how much it loses (e > 0, or false: none), and where it goes: dropAt, else spread over the n
+                // cells downwind of it (n = 0: lost). Reads only; the heights change after the whole pass.
+                auto windCell = [&](size_t c, float& e, int& n, int& dropAt) {
                     const int dn = downwind[c], un = upwind[c];
-                    if (dn < 0 || un < 0 || d.outlet[c] || d.h[c] <= 0.0f) continue;
+                    if (dn < 0 || un < 0 || d.outlet[c] || d.h[c] <= 0.0f) return false;
                     const float wet = std::clamp((logf(std::max(area[c], 1.0f)) - logf(2.0e6f)) / (logf(2.0e7f) - logf(2.0e6f)), 0.0f, 1.0f);
                     const float dry = dryLat[c] * (1.0f - wet);
-                    if (dry < 0.02f) continue;
+                    if (dry < 0.02f) return false;
                     const float L = Vector3Distance(d.dir[c], d.dir[un]) * R;
                     const float windward = std::max(0.0f, (d.h[c] - d.h[un]) / L); // rising into the wind
                     const float lee = std::max(0.0f, (d.h[c] - d.h[dn]) / L);       // dropping away downwind: sheltered
-                    const float e = 0.05f * p.wind * dry * windSpeed[c] * (0.3f + 4.0f * std::min(windward, 0.5f)) / (1.0f + 3.0f * lee);
-                    windDelta[c] -= e;
+                    e = 0.05f * p.wind * dry * windSpeed[c] * (0.3f + 4.0f * std::min(windward, 0.5f)) / (1.0f + 3.0f * lee);
                     // Saltation carries it several cells downwind (one hop left one-cell stripes: each neighbour gave it
                     // straight back the next step). It settles at the first sheltered cell: a drop behind a ridge (the lee)
                     // or a hollow lower than both its up- and downwind neighbours; with none within 8 cells it is spread
                     // along the path. Into the sea it is lost.
-                    int at = c, path[8], n = 0, dropAt = -1;
+                    int at = (int)c; n = 0; dropAt = -1;
                     for (int hop = 0; hop < 8; ++hop) {
                         const int nx = downwind[at];
                         if (nx < 0 || d.outlet[nx]) break;
                         if (area[nx] > 2.0e7f) { n = 0; break; } // a river: it carries the sand away (it filled channels 74 m deep)
-                        path[n++] = nx;
+                        ++n;
                         const float Lh = Vector3Distance(d.dir[at], d.dir[nx]) * R;
                         const bool leeDrop = d.h[at] - d.h[nx] > 0.12f * Lh;
                         const int after = downwind[nx];
@@ -256,14 +420,34 @@ namespace {
                         if (hop > 0 && (leeDrop || hollow)) { dropAt = nx; break; }
                         at = nx;
                     }
+                    return true;
+                };
+                // Applied in cell order (the sums' order fixes the result): the path is the downwind chain from c.
+                auto windApply = [&](size_t c, float e, int n, int dropAt) {
+                    windDelta[c] -= e;
                     if (dropAt >= 0) windDelta[dropAt] += e;
-                    else if (n > 0) for (int k = 0; k < n; ++k) windDelta[path[k]] += e / n;
-                }
+                    else for (int k = 0, at = downwind[c]; k < n; ++k, at = downwind[at]) windDelta[at] += e / n;
+                };
+                if (threads > 1 && !gBakeOld) { // #605: the cells on threads (contiguous ranges), then applied in order
+                    windE.resize(cells); windN.resize(cells); windDrop.resize(cells);
+                    std::vector<std::thread> team;
+                    const size_t per = (cells + threads - 1) / threads;
+                    for (int t = 0; t < threads; ++t)
+                        team.emplace_back([&, t] {
+                            for (size_t c = per * t, e2 = std::min(cells, per * (t + 1)); c < e2; ++c)
+                                if (!windCell(c, windE[c], windN[c], windDrop[c])) windE[c] = -1.0f;
+                        });
+                    for (auto& th : team) th.join();
+                    for (size_t c = 0; c < cells; ++c) if (windE[c] >= 0.0f) windApply(c, windE[c], windN[c], windDrop[c]);
+                } else
+                    for (size_t c = 0; c < cells; ++c) { float e; int n, dropAt; if (windCell(c, e, n, dropAt)) windApply(c, e, n, dropAt); }
                 for (size_t c = 0; c < cells; ++c) d.h[c] += windDelta[c];
                 if (windOut) { windOut->resize(cells, 0.0f); for (size_t c = 0; c < cells; ++c) (*windOut)[c] += windDelta[c]; } // the wind's own net change (#370 evidence)
+                lap(5);
             }
         }
         if (filledOut) { flood(); *filledOut = hf; } // the depressions left (ponds, #360): filled heights of the result
+        lap(1);
     }
 
     // Bilinear on one face of a 6 x side^2 grid (values at cell centres); u, v in face coordinates, the side cells
@@ -383,6 +567,7 @@ uint64_t ErosionParamsKey(const ErosionParams& p) {
     if (p.landKey) mix(&p.landKey, sizeof p.landKey); // #504: a world's generation parameters (0: defaults, old caches still load)
     { const float span = NoiseSeedSpanUnits(); if (span != 64.0f) mix(&span, sizeof span); } // #532: the noise offsets (an A/B span bakes its own)
     if (!gStrataFolds) { const int nf = 0x591; mix(&nf, sizeof nf); }                                    // #591 A/B: RAYLIBGAME_FOLDS=0 bakes its own
+    if (const char* e = getenv("RAYLIBGAME_CANYON_GRADE"); e && e[0] == '0') { const int ng = 0x544; mix(&ng, sizeof ng); } // #544 A/B: ungraded canyons bake their own
     return h;
 }
 
@@ -433,6 +618,12 @@ void PlanetErosion::build(const std::function<float(Vector3, float)>& height, fl
                 }
             }
     }
+    auto tp = std::chrono::steady_clock::now();
+    auto pt = [&tp]() { const auto t = std::chrono::steady_clock::now(); const double s = std::chrono::duration<double>(t - tp).count(); tp = t; return s; }; // #605: per-pass seconds
+    char pbuf[512];
+    SimProfile coarseProf, faceProf[6];
+    double faceT[6][4] = {}; // per face: sampling, rock, simulation, the rest (drift, ponds, dumps)
+    const double tGrid = pt();
     std::vector<float> h0(d.cells);
     {
         std::vector<std::thread> pool;
@@ -441,10 +632,13 @@ void PlanetErosion::build(const std::function<float(Vector3, float)>& height, fl
     }
     float maxH0 = 1.0f;
     for (float v : h0) maxH0 = std::max(maxH0, v);
-    SetRock(d, h0, maxH0, R, seed, p, &strata);
+    const double tSample = pt();
+    SetRock(d, h0, maxH0, R, seed, p, &strata, T);
+    const double tRock = pt();
     d.outlet.resize(d.cells); d.h.resize(d.cells);
     for (size_t c = 0; c < d.cells; ++c) { d.outlet[c] = h0[c] <= 0.0f; d.h[c] = h0[c] > 0.0f ? h0[c] * p.start : h0[c]; } // start low (uplift mode) or from the input (carve mode)
-    Simulate(d, [&](size_t c, int k) { return nb[c * 8 + k]; }, p.steps, p, R, seed, 1.0f);
+    Simulate(d, [&](size_t c, int k) { return nb[c * 8 + k]; }, p.steps, p, R, seed, 1.0f, nullptr, nullptr, &coarseProf, T);
+    const double tSim = pt();
     // Back to the input's height range: the 99th percentile of land as high as the input's. (Matching only the highest
     // peak left the ranges ~30% lower than the input: p90 1041 -> 723 m on seed 42.)
     float scale = 1.0f;
@@ -521,6 +715,8 @@ void PlanetErosion::build(const std::function<float(Vector3, float)>& height, fl
                     fd.dir[(size_t)j * FE + i] = Vector3Normalize(Vector3Add(nrm, Vector3Add(Vector3Scale(a1, u), Vector3Scale(a2, v))));
                     fd.cellArea[(size_t)j * FE + i] = sideF * sideF / powf(1.0f + u * u + v * v, 1.5f);
                 }
+            auto ft = std::chrono::steady_clock::now();
+            auto flap = [&](int k) { const auto t = std::chrono::steady_clock::now(); faceT[f][k] += std::chrono::duration<double>(t - ft).count(); ft = t; };
             std::vector<float> fh0(fd.cells), filled, windAcc; // windAcc: the wind's net change on the dump face (#370)
             {
                 std::vector<std::thread> pool;
@@ -528,7 +724,9 @@ void PlanetErosion::build(const std::function<float(Vector3, float)>& height, fl
                     pool.emplace_back([&, t] { for (size_t c = t; c < fd.cells; c += sampleThreads) fh0[c] = height(fd.dir[c], fineMetres); });
                 for (auto& th : pool) th.join();
             }
-            SetRock(fd, fh0, maxH0, R, seed, p, &strata);
+            flap(0);
+            SetRock(fd, fh0, maxH0, R, seed, p, &strata, sampleThreads);
+            flap(1);
             fd.outlet.resize(fd.cells); fd.h.resize(fd.cells);
             for (int j = 0; j < FE; ++j)
                 for (int i = 0; i < FE; ++i) {
@@ -540,7 +738,8 @@ void PlanetErosion::build(const std::function<float(Vector3, float)>& height, fl
             Simulate(fd, [FE](size_t c, int k) {
                 const int i = (int)(c % FE) + di[k], j = (int)(c / FE) + dj[k];
                 return (i < 0 || j < 0 || i >= FE || j >= FE) ? -1 : j * FE + i;
-            }, p.refineSteps, p, R, seed, kScale, &filled, DumpOn() && f == dumpFace ? &windAcc : nullptr);
+            }, p.refineSteps, p, R, seed, kScale, &filled, DumpOn() && f == dumpFace ? &windAcc : nullptr, &faceProf[f], sampleThreads); // #605: the face's share of the threads
+            flap(2);
             {   // Hold the fine grid to the coarse one at large scales (#360): the refinement's own uplift and erosion drift
                 // it by tens of metres (70 m in seed 42's ranges), so the coarse LOD, and the rivers and lakes built on it,
                 // disagreed with the near ground (a lake 130 m under it). Fine = coarse + the high-pass part of
@@ -636,8 +835,9 @@ void PlanetErosion::build(const std::function<float(Vector3, float)>& height, fl
                 }
                 if (const char* cp = getenv("RAYLIBGAME_EROSION_COMPARE")) DumpCompare(cp, out.data(), FE, fineMetres, fd.dir.data());
             }
+            flap(3);
         };
-        const int parallelFaces = std::clamp(T / 4, 1, 3); // a face's working set is ~200 MB
+        const int parallelFaces = kParallelFaces(T);
         for (int f0 = 0; f0 < 6; f0 += parallelFaces) {
             std::vector<std::thread> pool;
             for (int f = f0; f < std::min(6, f0 + parallelFaces); ++f) pool.emplace_back(refineFace, f, std::max(1, T / parallelFaces));
@@ -650,6 +850,17 @@ void PlanetErosion::build(const std::function<float(Vector3, float)>& height, fl
     refineSeconds = std::chrono::duration<float>(std::chrono::steady_clock::now() - t1r).count();
     computeHash();
     buildSeconds = std::chrono::duration<float>(std::chrono::steady_clock::now() - t0).count();
+    {   // #605: where the time went (wall seconds; the faces' parts are summed over the faces = thread seconds)
+        SimProfile fs; double ft4[4] = {};
+        for (int f = 0; f < 6; ++f) { fs.add(faceProf[f]); for (int k = 0; k < 4; ++k) ft4[k] += faceT[f][k]; }
+        std::string s;
+        snprintf(pbuf, sizeof pbuf, "coarse %.1f s (grid %.2f, input sampling %.2f on %d threads, rock %.2f, simulate %.2f [", coarseSeconds, tGrid, tSample, T, tRock, tSim); s += pbuf;
+        for (int k = 0; k < 6; ++k) { snprintf(pbuf, sizeof pbuf, "%s%s %.2f", k ? ", " : "", kSimParts[k], coarseProf.s[k]); s += pbuf; }
+        snprintf(pbuf, sizeof pbuf, "]); faces %.1f s wall, %d at a time; summed over faces: sampling %.2f, rock %.2f, simulate %.2f [", refineSeconds, kParallelFaces(T), ft4[0], ft4[1], ft4[2]); s += pbuf;
+        for (int k = 0; k < 6; ++k) { snprintf(pbuf, sizeof pbuf, "%s%s %.2f", k ? ", " : "", kSimParts[k], fs.s[k]); s += pbuf; }
+        snprintf(pbuf, sizeof pbuf, "], drift+ponds %.2f; total %.1f s", ft4[3], buildSeconds); s += pbuf;
+        profile = s;
+    }
 }
 
 float PlanetErosion::coarseAt(Vector3 dv) const {
