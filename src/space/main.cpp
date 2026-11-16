@@ -413,7 +413,7 @@ int main(int argc, char** argv)
     bool benchSuit = false, suitOk = true; int suitPhase = 0; double suitStart = 0.0; float suitFoodRatio = 0.0f, suitWater = 0.0f, suitRebreather = 0.0f; // --test-suit
     int benchShotTabs = 0; // --shot-tabs
     bool benchBiomes = false; int benchShotBiomes = -1; // --test-biomes, --shot-biomes
-    bool benchOil = false; int oilPhase = 0; double oilT0 = 0.0; // --test-oil
+    bool benchOil = false, oilRateOk = false; int oilPhase = 0; double oilT0 = 0.0; // --test-oil
     bool benchSpring = false; int springPhase = 0; double springT0 = 0.0; // --test-spring
     bool benchShotAnimals = false; int animalShotPhase = 0; // --shot-animals
     bool benchShotMachines = false; int machineShotPhase = 0; // --shot-machines
@@ -4251,8 +4251,10 @@ int main(int argc, char** argv)
                         sunOverride = true; sunArg = p->dirToWorld(Vector3Normalize(Vector3Add(up, Vector3Scale(t1, 0.6f))));
                         const Vector3 pool = Vector3Add(seep, Vector3Scale(up, 0.3f));
                         const float oil = Fluid::FluidAt(*p, pool, 4.0f, Fluid::KindByName("crude_oil"));
+                        static float oilAt10 = -1.0f, rateBefore = 0.0f, oilAfter5 = -1.0f; // #651: the fill rate before the save and after the load
+                        if (oilPhase == 1 && t > 10.0 && oilAt10 < 0.0f) oilAt10 = oil;
                         if (oilPhase == 1 && t > 25.0) {
-
+                            rateBefore = (oil - oilAt10) / 15.0f;
                             before = oil;
                             const float took = Fluid::Take(*p, pool, 1.0f, 2.5f, Fluid::KindByName("crude_oil"));
             { const Fluid::Stats fs = Fluid::GetStats(); printf("bench: oil: %.1f m^3 in the pool after 25 s (water near: %.1f m^3); a bucket takes %.1f; sources %d, sites %d, bricks %d, other fluid %.1f m^3, kinds %d\n", oil, Fluid::WaterAt(*p, pool, 2.0f), took, Fluid::SourceCount(), fs.sites, fs.bricks, fs.otherVolume, Fluid::KindCount()); }
@@ -4260,11 +4262,20 @@ int main(int argc, char** argv)
                         } else if (oilPhase == 2 && t > 3.0) {
                             const bool saved = SaveWorld(world), loaded = saved && LoadWorldSave(world);
                             printf("bench: oil: after the bucket %.1f m^3; saved %d, loaded %d\n", oil, (int)saved, (int)loaded);
+                            oilPhase = 4; oilT0 = GetTime();
+                        } else if (oilPhase == 4 && t > 5.0 && oilAfter5 < 0.0f) {
+                            oilAfter5 = oil;
+                        } else if (oilPhase == 4 && t > 20.0) {
+                            // The same seep fills at the same rate after the load (#651: user saw it speed up).
+                            const float rateAfter = (oil - oilAfter5) / 15.0f;
+                            oilRateOk = Fluid::SourceCount() == 1 && rateAfter <= 1.25f * rateBefore + 0.003f;
+                            printf("bench: oil: fill rate %.4f m^3/s before the save (10-25 s), %.4f after the load (5-20 s); %d source(s) (#651) -> %s\n",
+                                   rateBefore, rateAfter, Fluid::SourceCount(), oilRateOk ? "ok" : "FASTER");
                             oilPhase = 3; oilT0 = GetTime(); Fluid::SetSpeed(8); // fast-forward: the seep fills its basin to its head and rests
                         } else if (oilPhase == 3 && t > 6.0 && Fluid::Asleep()) {
                             Fluid::SetSpeed(1);
                             TakeScreenshot("bench_oil.png");
-                            const bool ok = before >= 1.0f && oil >= 0.9f * before && Fluid::SourceCount() >= 1; // refilled to its level before the bucket (#603: the 3 m^3 fitted the old seep; seed 42's nearest basin now rests at 1.7)
+                            const bool ok = oilRateOk && before >= 1.0f && oil >= 0.9f * before && Fluid::SourceCount() >= 1; // refilled to its level before the bucket (#603: the 3 m^3 fitted the old seep; seed 42's nearest basin now rests at 1.7)
                             printf("bench: oil: after the load the seep (%d source) filled its basin and rested at %.1f m^3 (equilibrium) -> %s\n", Fluid::SourceCount(), oil, ok ? "PASS" : "FAIL");
                             benchOil = false;
                         } else if (oilPhase == 3 && t > 90.0) { Fluid::SetSpeed(1); printf("bench: oil: no equilibrium after the load (%.1f m^3) -> FAIL\n", oil); benchOil = false; }
@@ -4982,10 +4993,10 @@ int main(int argc, char** argv)
                             for (int x = -1; x <= 1; ++x)
                                 for (int y = -1; y <= 1; ++y) // 6 m^3 per pour: a cell column filled 6 cells up
                                     Fluid::Pour(*p, Vector3Add(Vector3Scale(at(site, (float)x, (float)y), pf->radius + pf->elevation(at(site, (float)x, (float)y))), Vector3Scale(site, 0.3f)), 6.0f);
-                            // Watch from 14 m away and 16 m up (over the trees), looking down at the column.
-                            const Vector3 eyeDir = at(site, -14.0f, 0.0f);
+                            // Watch from nearly overhead, 28 m up (over the trees), looking down at the column.
+                            const Vector3 eyeDir = at(site, -6.0f, 0.0f);
                             player.flyMode = true;
-                            const Vector3 eye = Vector3Scale(eyeDir, pf->radius + pf->elevation(site) + 16.0f);
+                            const Vector3 eye = Vector3Scale(eyeDir, pf->radius + pf->elevation(site) + 28.0f);
                             wsEye = eye;
                             player.placeAt(world, *p, p->toWorld(eye));
                             player.forward = p->dirToWorld(Vector3Normalize(Vector3Subtract(wsSite, eye)));
@@ -4994,10 +5005,11 @@ int main(int argc, char** argv)
                             wsPhase = 1; wsT0 = GetTime();
                         }
                     } else if (wsPhase == 1) {
-                        // Hold the camera (the player drifts down otherwise; captures watch the spread).
-                        player.placeAt(world, *p, p->toWorld(wsEye));
-                        player.forward = p->dirToWorld(Vector3Normalize(Vector3Subtract(wsSite, wsEye)));
-                        player.applyToCamera(world);
+                        // Hold the camera (the player drifts down otherwise; captures watch the spread). Set directly, as --test-dam
+                        // does: placing the player every frame kept the loading screen up.
+                        world.camera.position = p->toWorld(wsEye); world.camera.target = p->toWorld(wsSite);
+                        world.camera.up = p->dirToWorld(Vector3Normalize(wsSite));
+                        player.position = world.renderOrigin + world.camera.position;
                         // The front: the farthest of 8 rays where water stands within 0.6 m of the ground (sampled every 4 frames).
                         static int frame = 0;
                         if ((++frame & 3) == 0) {
