@@ -154,7 +154,8 @@ namespace {
                 }
             }
         // Deposits of the rarer kinds are worth a trip: prospect further and deeper for any missing.
-        for (const char* rare : { "bauxite_ore", "ilmenite_ore", "coal" }) {
+        // (#532/#593: every kind the ladder mines - a start can sit where the near ground has no copper or iron)
+        for (const char* rare : { "bauxite_ore", "ilmenite_ore", "coal", "iron_ore", "copper_ore", "tin_ore" }) {
             if (orePoints[rare].size() >= 40) continue;
             for (float e = -800.0f; e <= 800.0f && orePoints[rare].size() < 400; e += 8.0f)
                 for (float n = -800.0f; n <= 800.0f && orePoints[rare].size() < 400; n += 8.0f) {
@@ -170,10 +171,23 @@ namespace {
         }
         for (auto& kv : orePoints) printf("bench: progression: %zu %s samples under the area\n", kv.second.size(), kv.first.c_str());
     }
+    // The pickaxe the script last held: when it wears out, a player crafts another (#587's harder strata wear the stone
+    // pickaxe out before the MV ladder; without one the digs failed silently and used up the ore samples).
+    std::string lastPickaxe;
+    bool KeepPickaxe() {
+        if (!terrainTool.heldTool.empty() && inventory.count(terrainTool.heldTool) > 0) { lastPickaxe = terrainTool.heldTool; return true; }
+        if (lastPickaxe.empty() || !Craft(lastPickaxe, 1)) return false;
+        printf("bench: progression: crafted a new %s (the last one wore out)\n", lastPickaxe.c_str());
+        terrainTool.heldTool = lastPickaxe;
+        return true;
+    }
     bool MineOre(const std::string& kind, int want) {
         auto& pts = orePoints[kind];
         size_t& i = oreNext[kind];
-        while (inventory.count(kind) < want && i < pts.size()) TerrainTool_DigAt(*body, pts[i++]);
+        while (inventory.count(kind) < want && i < pts.size()) {
+            if (!KeepPickaxe()) break;
+            TerrainTool_DigAt(*body, pts[i++]);
+        }
         return inventory.count(kind) >= want;
     }
 
@@ -468,7 +482,14 @@ namespace {
     void BuildFull() {
         auto add = [](const std::string& n, std::function<bool()> f) { steps.push_back({ n, std::move(f) }); };
         add("mine for the MV and HV ladder (iron, coal, copper) and dig stone", [] {
-            return MineOre("iron_ore", 185) && MineOre("coal", 530) && MineOre("copper_ore", 160) && DigFor("any_stone", 40, 6.0f);
+            const bool ok = MineOre("iron_ore", 185) && MineOre("coal", 530) && MineOre("copper_ore", 160) && DigFor("any_stone", 40, 6.0f);
+            static bool told = false; // (the step retries every frame)
+            if (!ok && !told && (told = true)) printf("bench: progression: the MV ladder dig stopped at iron %d/185, coal %d/530, copper %d/160, any_stone %d/40 "
+                            "(samples left: iron %zu, coal %zu, copper %zu; holding %s x%d)\n", inventory.count("iron_ore"), inventory.count("coal"),
+                            inventory.count("copper_ore"), inventory.count("any_stone"), orePoints["iron_ore"].size() - oreNext["iron_ore"],
+                            orePoints["coal"].size() - oreNext["coal"], orePoints["copper_ore"].size() - oreNext["copper_ore"],
+                            terrainTool.heldTool.empty() ? "nothing" : terrainTool.heldTool.c_str(), terrainTool.heldTool.empty() ? 0 : inventory.count(terrainTool.heldTool));
+            return ok;
         });
         add("smelt 170 iron in the kiln", Run("kiln", { { "iron_ore", 170 }, { "coal", 34 } }, "iron_ingot", 170));
         add("smelt 145 copper in the kiln", Run("kiln", { { "copper_ore", 145 }, { "coal", 29 } }, "copper_ingot", 145));
