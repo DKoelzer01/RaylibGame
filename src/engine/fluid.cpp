@@ -418,6 +418,23 @@ void StepSpring(Site& s, Site::Spring& sp) {
     }
 }
 
+// Whether a spring would still add (its column's surface is under its head): read-only, as StepSpring walks the column.
+// Fluid::Update steps while one does, though every brick sleeps (#645: a dammed river's inflow stopped once the pool
+// behind the dam settled, so it never rose to the crest).
+bool SpringWants(const Site& s, const Site::Spring& sp) {
+    for (int k = 0; k < 64; ++k) {
+        const int ck = sp.ck + k;
+        if ((float)ck >= sp.head) return false;
+        Brick* b; int i;
+        if (!s.cell(sp.ci, sp.cj, ck, b, i)) return true; // its brick is still to come
+        if (b->flags[i] & kSolid) { if (k < 3) continue; return false; }
+        if (b->fill[i] > 0 && CellKind(b->flags[i]) != sp.kind) return false;
+        if (b->fill[i] >= Cap(b, i)) continue;
+        return sp.head - (ck + Height(b, i) / 255.0f) > 1.0f / 255.0f;
+    }
+    return false;
+}
+
 void StepSite(Site& s, int parity) {
     for (Site::Spring& sp : s.springs) StepSpring(s, sp); // springs and seeps
     std::vector<Brick*> act;
@@ -702,19 +719,32 @@ void MaybeRelease(Site& s, const BodyRef& ref, Vector3 c, float r) {
     if (!h.found) return;
     Site::Release rel{ ci, cj, kReleaseCells, c, h.down };
     s.releases.push_back(rel);
-    // The reach's bricks: the river's depth under the level down, 8 m over it up.
-    int lci, lcj, lck;
-    s.cellOf(Vector3Scale(dir, level), lci, lcj, lck);
+    // The reach's bricks: per brick column, the river's depth under its own level down, 8 m over it up (#645: a reach
+    // that climbs upstream - 16 m over its 40 m on seed 42's test river - had no bricks at its upstream edge).
+    auto levelZ = [&](Vector3 d, float lv) { return Vector3DotProduct(Vector3Subtract(Vector3Scale(d, sea + lv), s.origin), s.u); }; // site height (cells)
     const int R = (int)rel.r;
-    for (int bk = FloorDiv(lck - (int)h.depth - 3, B); bk <= FloorDiv(lck + 8, B); ++bk)
-        for (int bj = FloorDiv(cj - R, B); bj <= FloorDiv(cj + R, B); ++bj)
-            for (int bi = FloorDiv(ci - R, B); bi <= FloorDiv(ci + R, B); ++bi)
+    for (int bj = FloorDiv(cj - R, B); bj <= FloorDiv(cj + R, B); ++bj)
+        for (int bi = FloorDiv(ci - R, B); bi <= FloorDiv(ci + R, B); ++bi) {
+            float lo = 1e30f, hi = -1e30f; // the river levels over the brick column's corners and middle (else the edit's)
+            for (int k = 0; k < 5; ++k) {
+                const int x = bi * B + (k == 4 ? B / 2 : (k & 1) * (B - 1)), y = bj * B + (k == 4 ? B / 2 : (k >> 1) * (B - 1));
+                const Vector3 md = Vector3Normalize(s.cellCentre(x, y, 0));
+                const PlanetField::WaterSource wq = pf->waterSourceAt(md);
+                const float z = levelZ(md, wq.kind == 1 ? wq.level : ws.level);
+                lo = std::min(lo, z); hi = std::max(hi, z);
+            }
+            for (int bk = FloorDiv((int)floorf(lo - h.depth - 3.0f), B); bk <= FloorDiv((int)ceilf(hi + 8.0f), B); ++bk)
                 if (Brick* b = s.ensure(bi, bj, bk); b && b->ready) {
                     b->ready = false; b->keepFill = true;
                     if (std::find(s.pending.begin(), s.pending.end(), b) == s.pending.end()) s.pending.push_front(b);
                 }
-    // Upstream edge: one ring of river columns behind the edit along the flow.
-    std::vector<std::array<int, 3>> up;
+        }
+    int lci, lcj, lck;
+    s.cellOf(Vector3Scale(dir, level), lci, lcj, lck);
+    // Upstream edge: one ring of river columns behind the edit along the flow, each with a head 3 m over its own level
+    // (#645: the edit's level, 16 m under the upstream bed on a climbing reach, held every spring at its head from the start).
+    struct Up { int ci, cj, ck; float head; };
+    std::vector<Up> up;
     for (int dy = -R; dy <= R; ++dy)
         for (int dx = -R; dx <= R; ++dx) {
             const float d = sqrtf((float)(dx * dx + dy * dy));
@@ -726,13 +756,12 @@ void MaybeRelease(Site& s, const BodyRef& ref, Vector3 c, float r) {
             if (wq.kind != 1) continue;
             int bci, bcj, bck;
             s.cellOf(Vector3Scale(md, pf->radius + pf->elevation(md)), bci, bcj, bck);
-            up.push_back({ ci + dx, cj + dy, bck });
+            up.push_back({ ci + dx, cj + dy, bck, levelZ(md, wq.level) + 3.0f });
         }
     if (up.empty()) return;
     const float q = std::max(1.0f, std::min({ 0.25f * 2.0f * h.halfWidth, 40.0f, 2.0f * h.halfWidth * h.depth })); // m^3/s (#432)
-    const float head = Vector3DotProduct(Vector3Subtract(Vector3Scale(dir, level), s.origin), s.u) + 3.0f;
-    for (const auto& u : up)
-        s.springs.push_back({ u[0], u[1], u[2], 0, q / (float)up.size() * 255.0f / (20.0f * kSubsteps), head });
+    for (const Up& u : up)
+        s.springs.push_back({ u.ci, u.cj, u.ck, 0, q / (float)up.size() * 255.0f / (20.0f * kSubsteps), u.head });
 }
 
 void ApplyCommand(const Command& c) {
@@ -1437,6 +1466,7 @@ void Fluid::Update(Scene& world, float dt) {
         for (auto& s : sites) {
             if (!s->pending.empty()) work = true;
             for (auto& kv : s->bricks) if (kv.second->active || kv.second->changed) { work = true; break; }
+            for (const Site::Spring& sp : s->springs) if (!work && SpringWants(*s, sp)) work = true; // #645: inflow continues while everything sleeps
             if (work) break;
         }
         if (!work) return;
