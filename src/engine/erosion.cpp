@@ -10,6 +10,9 @@
 #include <queue>
 #include <thread>
 #include <atomic>
+#include <condition_variable>
+#include <memory>
+#include <mutex>
 
 // Bake progress 0..1 for the loading screen (#362): the coarse planet pass is the first 30%, the six face refinements the rest.
 static std::atomic<float> gBakeProgress{ 0.0f };
@@ -145,7 +148,7 @@ namespace {
         void wait() {
             const int g = gen.load(std::memory_order_acquire);
             if (count.fetch_add(1, std::memory_order_acq_rel) == n - 1) { count.store(0, std::memory_order_relaxed); gen.fetch_add(1, std::memory_order_release); return; }
-            for (int spins = 0; gen.load(std::memory_order_acquire) == g; ++spins) { if (spins > 20000) std::this_thread::sleep_for(std::chrono::microseconds(100)); else if (spins > 64) std::this_thread::yield(); }
+            for (int spins = 0; gen.load(std::memory_order_acquire) == g; ++spins) if (spins > 64) std::this_thread::yield(); // never sleeps: a sleep is a whole timer tick (up to 15.6 ms) per level, #621
         }
         const int n;
         std::atomic<int> count{ 0 }, gen{ 0 };
@@ -159,7 +162,7 @@ namespace {
     class StreamPool {
     public:
         explicit StreamPool(int threads) : T(threads), bar(threads) { for (int t = 1; t < T; ++t) workers.emplace_back([this, t] { loop(t); }); }
-        ~StreamPool() { quit = true; bar.wait(); for (auto& w : workers) w.join(); }
+        ~StreamPool() { { std::lock_guard<std::mutex> l(m); quit = true; ++stepGen; } cv.notify_all(); for (auto& w : workers) w.join(); }
         void plan(const std::vector<int>& order, const std::vector<int>& recv, const std::vector<uint8_t>& outlet, const float* heights) {
             const size_t cells = recv.size();
             receiver = recv.data(); h = heights;
@@ -189,7 +192,7 @@ namespace {
             fn = [](void* ctx, int c, float hr) { (*(F*)ctx)(c, hr); };
             ctx = &f;
             for (int c : backList) rv[c] = h[receiver[c]];
-            bar.wait(); // the workers start
+            { std::lock_guard<std::mutex> l(m); ++stepGen; } cv.notify_all(); // the workers start (they wait on the condition between steps, not spinning)
             work(0);
         }
     private:
@@ -198,7 +201,8 @@ namespace {
         int T;
         SpinBarrier bar;
         std::vector<std::thread> workers;
-        std::atomic<bool> quit{ false };
+        bool quit = false;
+        std::mutex m; std::condition_variable cv; uint64_t stepGen = 0; // the step start (#621)
         const int* receiver = nullptr; const float* h = nullptr;
         std::vector<int> pos, lvl, cellsByLvl, backList;
         std::vector<uint8_t> back;
@@ -207,7 +211,7 @@ namespace {
         void (*fn)(void*, int, float) = nullptr; void* ctx = nullptr;
         float recvH(int c) const { return back[c] ? rv[c] : h[receiver[c]]; }
         void work(int t) {
-            bool prevSerial = true; // the step's start barrier stands for the first item's
+            bool prevSerial = true; // the start signal stands for the first item's barrier
             for (size_t k = 0; k < items.size(); ++k) {
                 const Item& it = items[k];
                 if (!it.par) { if (t == 0) for (int i = it.begin; i < it.end; ++i) fn(ctx, cellsByLvl[i], recvH(cellsByLvl[i])); prevSerial = true; continue; }
@@ -216,8 +220,15 @@ namespace {
                 bar.wait();                            // the whole level is done
                 prevSerial = false;
             }
+            bar.wait(); // the step is done on every thread before the caller moves on (and replans)
         }
-        void loop(int t) { for (;;) { bar.wait(); if (quit) return; work(t); } }
+        void loop(int t) {
+            uint64_t seen = 0;
+            for (;;) {
+                { std::unique_lock<std::mutex> l(m); cv.wait(l, [&] { return stepGen != seen; }); seen = stepGen; if (quit) return; }
+                work(t);
+            }
+        }
     };
 
     // Stream power + talus for `steps` steps (see erosion.h). nbOf(c, k) = the k-th of 8 neighbours or -1.
