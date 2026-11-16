@@ -218,6 +218,9 @@ public:
     // kNoWater. The sea is separate (sea level).
     static constexpr float kNoWater = -1e9f;
     float waterElevation(Vector3 dir, float footprint = 0.0f) const;
+    // The ground beside a river before the river shapes it (#640): elevation() without the channel and with the gullies
+    // and cliff faces faded out, as elevation() does near a river. The bake-native network holds its levels under it.
+    float riverBankHeight(Vector3 dir) const;
     // The generated water's level for the chunk water lattice (#609): waterElevation, plus a narrow stream's level out to
     // about half a lattice step beside it where the ground stands over the water (the terrain hides it there), so a
     // lattice of nodes 4 samples apart does not miss a stream narrower than its spacing.

@@ -2756,7 +2756,7 @@ int main(int argc, char** argv)
                                     // the ground 2 m beyond either edge lies under the level (water that would stand as a wall or spill).
                                     constexpr int kWB = 8;
                                     const float wEdge[kWB] = { 2, 5, 10, 20, 30, 50, 90, 1e9f }, dEdge[kWB] = { 0.5f, 1, 2, 3, 4, 5, 6, 1e9f };
-                                    double wLen[kWB] = {}, dLen[kWB] = {}, total = 0.0, visible = 0.0, spill = 0.0;
+                                    double wLen[kWB] = {}, dLen[kWB] = {}, total = 0.0, visible = 0.0, spill = 0.0, spillDeep[5] = {}, spillWide[5] = {};
                                     float widest = 0.0f;
                                     net->forEachLink([&](const RiverNetwork::Link& L) {
                                         if (L.inLake) return;
@@ -2770,9 +2770,25 @@ int main(int argc, char** argv)
                                         if (wl != PlanetField::kNoWater && wl - pf->elevation(up) > 0.15f) visible += len;
                                         for (int s = -1; s <= 1; s += 2) {
                                             const Vector3 q = Vector3Normalize(Vector3Add(mid, Vector3Scale(side, s * (0.5f * w + 2.0f))));
-                                            if (pf->elevation(q) < lvl - 0.3f) { spill += 0.5 * len; }
+                                            const float deficit = lvl - pf->elevation(q);
+                                            if (deficit > 0.3f) {
+                                                spill += 0.5 * len;
+                                                // How far under the water, and how far out the ground stays under it (#640: lower the level, or
+                                                // fill the low ground beside the river?).
+                                                static const float kDeep[4] = { 1.0f, 2.0f, 5.0f, 10.0f }, kWide[4] = { 6.0f, 14.0f, 30.0f, 60.0f };
+                                                int b = 0; while (b < 4 && deficit >= kDeep[b]) ++b;
+                                                spillDeep[b] += 0.5 * len;
+                                                float out = 2.0f;
+                                                while (out < 60.0f && pf->elevation(Vector3Normalize(Vector3Add(mid, Vector3Scale(side, s * (0.5f * w + out))))) < lvl) out += 4.0f;
+                                                int c = 0; while (c < 4 && out >= kWide[c]) ++c;
+                                                spillWide[c] += 0.5 * len;
+                                            }
                                         }
                                     });
+                                    printf("bench: rivers: ground under the level 2 m past an edge (km): by depth under it <1 m %.0f, 1-2 m %.0f, 2-5 m %.0f, 5-10 m %.0f, >10 m %.0f; "
+                                           "low out to <6 m %.0f, 6-14 m %.0f, 14-30 m %.0f, 30-60 m %.0f, >60 m %.0f (#640)\n",
+                                           spillDeep[0] / 1000.0, spillDeep[1] / 1000.0, spillDeep[2] / 1000.0, spillDeep[3] / 1000.0, spillDeep[4] / 1000.0,
+                                           spillWide[0] / 1000.0, spillWide[1] / 1000.0, spillWide[2] / 1000.0, spillWide[3] / 1000.0, spillWide[4] / 1000.0);
                                     {   // Cameras for captures (#638): the nearest link to the start in each width class, seen from 30 m
                                         // downstream and 9 m up, looking back up the river.
                                         const Vector3 home = pf->findSpawnDir(p->seed);

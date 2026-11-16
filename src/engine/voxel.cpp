@@ -608,6 +608,14 @@ PlanetField::Pond PlanetField::pondOfCell(int cx, int cy, int cz) const {
     return p;
 }
 
+float PlanetField::riverBankHeight(Vector3 dir) const {
+    constexpr float fp = 2.0f; // the banks at the detail a player sees
+    const Land l = land(dir, fp);
+    if (moon) return l.h;
+    const float h = l.h - l.relief + l.detail;
+    return h + biomeShape(dir, h, fp);
+}
+
 float PlanetField::elevationBase(Vector3 dir, float fp) const {
     const Land l = land(dir, fp);
     if (moon) return l.h;
@@ -850,6 +858,7 @@ const RiverNetwork* PlanetField::rivers() const {
         if (ero && ero->hasFlow()) {
             // Bake-native rivers (#547): the bake's own final drainage on its 50 m grid; streams from 1 km^2.
             rp.riverArea = 1.0e6f; rp.lakeDepth = 1.5f;
+            if (!getenv("RAYLIBGAME_RIVER_BANKS_OLD")) rp.bankHeight = [this](Vector3 d) { return riverBankHeight(d); }; // #640 (A/B: =1 off)
             riverState->net = std::make_unique<RiverNetwork>(*ero, radius, rp);
         } else
         // With the bake, the network sees the baked surface itself: land() adds the gullies (+-75 m at this footprint),
@@ -1566,9 +1575,13 @@ VoxelMaterial PlanetField::materialSkyHinted(Vector3 p, float base, float fp, Ve
             // others), more by slow water, less by fast; on gentle ground the same height band spreads wider by itself.
             const float beach = std::clamp(0.45f + 1.3f * patch + 0.5f * mid + (speed == 2 ? 0.25f : speed == 0 ? -0.25f : 0.0f), 0.0f, 1.0f);
             bool keepCover = false; // a shallow margin that keeps the ground's own cover (turf to the water's edge)
+            // In a lake's water a river's channel is the lake's floor (#634: river stones and silt showed on lake floors where a
+            // stream enters or leaves; its pieces cross the lake at the lake's level).
+            float lakeLv = 0.0f, lakeOut = 0.0f;
+            const bool inLake = net && fp < 1024.0f && net->lakeAt(up, lakeLv, lakeOut) && lakeOut < RiverNetwork::kLakeMargin;
             if (w != kNoWater && e < w) { // under the water (ground just over it is the bank's, below: its beach varies)
                 const float deep = w - e; // the water's depth over this ground
-                const bool river = rh.found && rh.dist < rh.halfWidth * 1.05f && fabsf(rh.level - w) < 1.5f; // (a pond in a river stands a little over it)
+                const bool river = !inLake && rh.found && rh.dist < rh.halfWidth * 1.05f && fabsf(rh.level - w) < 1.5f; // (a pond in a river stands a little over it)
                 // The shallow margin (up to ~0.45 m deep, by the beach and ragged) is the waterline's ground - by a small
                 // stream mostly the meadow's own turf, by a river where it has no beach - and the bed beyond it by the speed.
                 if (deep < 0.06f + 0.4f * beach * (0.6f + dither)) {
@@ -1582,7 +1595,7 @@ VoxelMaterial PlanetField::materialSkyHinted(Vector3 p, float base, float fp, Ve
                     return deep > 1.4f && patch > 0.25f ? VoxelMaterial::Gravel : VoxelMaterial::Clay;
                 }
             }
-            if (!keepCover && rh.found && rh.dist > rh.halfWidth * 0.9f) {
+            if (!keepCover && !inLake && rh.found && rh.dist > rh.halfWidth * 0.9f) {
                 // Beside a river.
                 const float edge = std::max(0.0f, rh.dist - rh.halfWidth); // m out from the water's edge
                 const float over = e - rh.level;                            // m over the water
