@@ -141,7 +141,7 @@ static void FpsLog_Frame(const char* state) {
         if (cur && n > 0) {
             const char* line = TextFormat("[fps] %.0f s %s: %d frames in %.1f s (%.0f FPS), avg %.1f ms, worst %.1f ms\n", now, cur, n, now - t0, n / std::max(1e-3, now - t0), 1000.0 * sum / n, 1000.0 * worst);
             printf("%s", line);
-            logger.logf("%s", line);
+            LOG_INFO("%s", line);
         }
         cur = state; t0 = now; sum = worst = 0.0; n = 0;
     };
