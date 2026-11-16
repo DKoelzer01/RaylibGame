@@ -767,6 +767,10 @@ RiverNetwork::RiverNetwork(const PlanetErosion& ero, float radius, const Params&
     }
 }
 
+void RiverNetwork::forEachLink(const std::function<void(const Link&)>& fn) const {
+    for (const Piece& pc : pieces) fn({ pc.a, pc.b, pc.la, pc.lb, 2.0f * pc.wa, 2.0f * pc.wb, pc.da, pc.db, pc.inLake }); // wa/wb are half widths
+}
+
 bool RiverNetwork::fineLakeAt(Vector3 dir, float& level, float& outside, int& id) const {
     const int g = bake->flowCellOf(dir);
     id = -1;

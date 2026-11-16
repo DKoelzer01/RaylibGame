@@ -83,6 +83,9 @@ public:
     void longestPath(float step, std::vector<Vector3>& dirs, std::vector<float>& levels) const;
     // Every river's centreline every `step` metres: the direction, the water level there (waterfalls step, #540) and the depth.
     void forEachCentrePoint(float step, const std::function<void(Vector3 dir, float level, float depth)>& fn) const;
+    // Every link (tests, #638): its ends (body-local m), levels, full widths and depths at each end, and whether it lies in a lake.
+    struct Link { Vector3 a, b; float la, lb, wa, wb, da, db; bool inLake; };
+    void forEachLink(const std::function<void(const Link&)>& fn) const;
     // The waterfalls (#540): where each is (its lip), how far it drops (m), the downstream tangent, the river's half width.
     struct Fall { Vector3 lip{}, down{}; float drop = 0.0f, top = 0.0f, halfWidth = 0.0f; };
     std::vector<Fall> waterfalls() const;
