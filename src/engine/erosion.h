@@ -28,7 +28,7 @@ using StrataFn = std::function<StrataColumn(Vector3)>; // #587: the rock column 
 
 // Bump with any change to the bake's code (Simulate, SetRock, the refinement, the pond extraction): a cache from
 // another version or other parameters is baked again rather than loaded (#355 review).
-constexpr uint32_t kErosionBakeVersion = 17; // 16: volcanoes (#593); 15: karst (#592); // 13: fold outcrops raised in the bake input; 12: folded strata (#591); 11: narrower fault steps; 10: fault scarps in the bake input (#590); 9: canyons in the bake input (#544); 8: rock strata (#587); 7: the noise seed offsets changed (#532); 6: wind (aeolian) erosion, #370
+constexpr uint32_t kErosionBakeVersion = 18; // 18: glacial 2.0 (#548); 17: // 16: volcanoes (#593); 15: karst (#592); // 13: fold outcrops raised in the bake input; 12: folded strata (#591); 11: narrower fault steps; 10: fault scarps in the bake input (#590); 9: canyons in the bake input (#544); 8: rock strata (#587); 7: the noise seed offsets changed (#532); 6: wind (aeolian) erosion, #370
 struct ErosionParams {
     float cell = 200.0f;      // m, coarse cell at a face centre (gnomonic cells shrink toward the face edges)
     int steps = 400;
@@ -41,7 +41,7 @@ struct ErosionParams {
     int refine = 4;           // fine cells per coarse cell (0: no refinement)
     int refineSteps = 100;
     int margin = 64;          // fine cells past each face edge
-    float glacial = 1.5f;     // glacial erosion rate (x the fluvial rate at 1 km^2 of drainage); 0: none (#358)
+    float glacial = 2.0f;     // (#548: 1.5 -> 2, slightly stronger carving) glacial erosion rate (x the fluvial rate at 1 km^2 of drainage); 0: none (#358)
     float glacialLine = 900.0f; // m: the ice-age snowline at the equator (falls to sea level by latitude ~0.8)
     float wind = 1.0f;        // aeolian erosion strength on dry land (#370; 0: none, e.g. airless bodies). Scales the
                               // per-step deflation on windward faces and the sand carried downwind.

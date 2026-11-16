@@ -1430,8 +1430,18 @@ VoxelMaterial PlanetField::materialSkyHinted(Vector3 p, float base, float fp, Ve
         const float slope = 1.0f - std::clamp(Vector3DotProduct(normal, up), -1.0f, 1.0f); // 0 flat .. 1 vertical
         const float e = surfaceElevation;
         const bool skin = depth < 0.6f + slack;
-        if (lat > 0.93f + 0.03f * wobble || e > 1350.0f + 100.0f * wobble) return VoxelMaterial::Ice;          // polar cap, glaciers
-        if (lat > 0.82f + 0.08f * wobble || e > 1050.0f + 150.0f * wobble) return skin ? VoxelMaterial::Snow : VoxelMaterial::Ice;
+        // Snow (#548, user 2026-11-16): today's altitude, varied along the slopes - shaded (poleward-facing) slopes hold it
+        // ~120 m lower, sunny ones lose it ~120 m higher, steep faces shed it (up to +300 m), and a fine noise makes the
+        // edge ragged. Ice only in the coldest hollows: high, flattish and shaded (cirque floors), plus the polar caps.
+        Vector3 pole = { -up.x * up.y, 1.0f - up.y * up.y, -up.z * up.y };   // the tangent toward the nearer pole
+        const float pl = Vector3Length(pole);
+        pole = pl > 1e-4f ? Vector3Scale(pole, (up.y >= 0.0f ? 1.0f : -1.0f) / pl) : Vector3{ 0, 0, 0 };
+        const float shade = std::clamp(Vector3DotProduct(normal, pole) * 3.0f, -1.0f, 1.0f); // +1 facing the pole
+        const float ragged = 45.0f * climate.fractal(2, p.x * 25.0f, p.y * 25.0f, p.z * 25.0f);
+        const float snowLine = 1050.0f + 150.0f * wobble - 120.0f * shade + std::min(300.0f, 900.0f * slope) + ragged;
+        if (lat > 0.93f + 0.03f * wobble) return VoxelMaterial::Ice;                                         // polar cap
+        if (e > snowLine + 250.0f && slope < 0.06f && shade > -0.2f) return VoxelMaterial::Ice;              // cold hollows
+        if (lat > 0.82f + 0.08f * wobble + 0.02f * ragged / 45.0f || e > snowLine) return skin ? VoxelMaterial::Snow : rockHere(); // rock under the snow (ice only in the hollows)
         // Inland water: sand on the wet shores. Beds (#595): rivers by how fast they run (the reach's slope) - river
         // stones in fast reaches, sand with gravel bars at a moderate pace, clay with gravel bars in slow ones (#206: clay
         // in river beds); lakes and ponds keep clay with gravel bars in the deeper middle.
