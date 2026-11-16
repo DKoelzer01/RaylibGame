@@ -174,6 +174,18 @@ float vnoise(vec3 p)
     return mix(mix(x00, x10, f.y), mix(x01, x11, f.y), f.z);
 }
 
+// Value noise in [0, 1] at `scale` features per metre of fragTexPos, rounded so it repeats with the terrain texture:
+// fragTexPos jumps by whole texture periods between chunks, so this noise shows no chunk seams (vnoise above would).
+float periodicNoise(vec3 p, float scale)
+{
+    float per = max(1.0, floor(scale / max(texScale, 1e-4) + 0.5));
+    vec3 q = p * (per * max(texScale, 1e-4)), i = floor(q), f = fract(q);
+    f = f * f * (3.0 - 2.0 * f);
+    float x00 = mix(hash3(mod(i, per)), hash3(mod(i + vec3(1, 0, 0), per)), f.x), x10 = mix(hash3(mod(i + vec3(0, 1, 0), per)), hash3(mod(i + vec3(1, 1, 0), per)), f.x);
+    float x01 = mix(hash3(mod(i + vec3(0, 0, 1), per)), hash3(mod(i + vec3(1, 0, 1), per)), f.x), x11 = mix(hash3(mod(i + vec3(0, 1, 1), per)), hash3(mod(i + vec3(1, 1, 1), per)), f.x);
+    return mix(mix(x00, x10, f.y), mix(x01, x11, f.y), f.z);
+}
+
 void main()
 {
     if (any(greaterThan(fragChunkPos, fragClipMax))) discard;
@@ -263,14 +275,35 @@ void main()
             TAKE(w0.x, 0, 0) TAKE(w0.y, 1, 1) TAKE(w0.z, 2, 2) TAKE(w0.w, 3, 3) TAKE(w1.x, 4, 4) TAKE(w1.y, 5, 5) TAKE(w1.z, 6, 6) TAKE(w1.w, 7, 7)
 #undef TAKE
         }
+        // Height blend (#609): where materials meet, each one's texture "height" (its brightness: stones over the sand between
+        // them, turf over soil) plus a fine noise decides which shows, so an edge is a ragged, soft line through the triangle
+        // instead of the straight cross-fade of the barycentrics (which drew hard, road-like bands along the river banks).
+        vec3 cs[4];
+        float hw[4];
+        float hmax = -1.0;
+        // Two octaves of value noise (~1.8 m and ~0.6 m), phased per material id (consistent across triangles), strong
+        // enough to move an edge across a whole triangle: the edge then wanders instead of following the mesh's stair steps.
+        float blendNoise = 0.6 * periodicNoise(fragTexPos, 0.55) + 0.4 * periodicNoise(fragTexPos + vec3(7.3), 1.6);
         for (int k = 0; k < n; k++) {
+            cs[k] = vec3(0.0); hw[k] = -1.0;
             float wi = aw[k] / max(total, 0.001);
             if (wi < 0.01) continue;
             int i = min(aid[k], kMaterials - 1);
-            shiny += shinyOf[i] * wi;
             vec3 c = sampleLayer(tp, layerOf[i]);
             // Far away the repeat of one scale shows: blend in the same layer ~5x larger.
             if (farMix > 0.01) c = mix(c, sampleLayerDominant(tpFar, layerOf[i]), 0.55 * farMix); // one fetch: the dominant axis (#183)
+            cs[k] = c;
+            hw[k] = wi + 0.25 * (dot(sqrt(c), vec3(0.333)) - 0.5) + 0.5 * sin(6.2832 * (2.0 * blendNoise + float(i) * 0.37));
+            hmax = max(hmax, hw[k]);
+        }
+        float hsum = 0.0;
+        for (int k = 0; k < n; k++) { hw[k] = hw[k] < -0.9 ? 0.0 : max(hw[k] - hmax + 0.45, 0.0); hsum += hw[k]; }
+        for (int k = 0; k < n; k++) {
+            float wi = hw[k] / max(hsum, 1e-4);
+            if (wi < 0.01) continue;
+            int i = min(aid[k], kMaterials - 1);
+            shiny += shinyOf[i] * wi;
+            vec3 c = cs[k];
             if (hasClimate) c *= biomeTint(i, ctemp, cmoist);
             if (i == 3) {
                 // Ore: flecks of the mineral's colour in the stone, by kind (iron rust, copper green,

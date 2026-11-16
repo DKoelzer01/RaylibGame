@@ -19,6 +19,20 @@ namespace {
         return x;
     }
     float Unit(uint32_t& state) { state = Hash(state + 0x9e3779b9U); return (state >> 8) * (1.0f / 16777216.0f); }
+    // Smooth value noise in [0, 1] over body-local metres (cell size 1/f): where the grass edge wanders (#609).
+    float Lattice(int x, int y, int z) { return (Hash((uint32_t)x * 73856093U ^ (uint32_t)y * 19349663U ^ (uint32_t)z * 83492791U) >> 8) * (1.0f / 16777216.0f); }
+    float ValueNoise3(Vector3 p, float f) {
+        const float x = p.x * f, y = p.y * f, z = p.z * f;
+        const float fx0 = floorf(x), fy0 = floorf(y), fz0 = floorf(z);
+        const int x0 = (int)fx0, y0 = (int)fy0, z0 = (int)fz0;
+        float tx = x - fx0, ty = y - fy0, tz = z - fz0;
+        tx = tx * tx * (3 - 2 * tx); ty = ty * ty * (3 - 2 * ty); tz = tz * tz * (3 - 2 * tz);
+        auto L = [&](int a, int b, int c) { return Lattice(x0 + a, y0 + b, z0 + c); };
+        const float c00 = L(0, 0, 0) + (L(1, 0, 0) - L(0, 0, 0)) * tx, c10 = L(0, 1, 0) + (L(1, 1, 0) - L(0, 1, 0)) * tx;
+        const float c01 = L(0, 0, 1) + (L(1, 0, 1) - L(0, 0, 1)) * tx, c11 = L(0, 1, 1) + (L(1, 1, 1) - L(0, 1, 1)) * tx;
+        const float c0 = c00 + (c10 - c00) * ty, c1 = c01 + (c11 - c01) * ty;
+        return c0 + (c1 - c0) * tz;
+    }
 
     Vector3 Vert(const std::vector<float>& v, int i) { return { v[3 * i], v[3 * i + 1], v[3 * i + 2] }; }
 
@@ -83,7 +97,7 @@ void ScatterGrass(const DensityField& field, ChunkMeshData& out) {
         const int i0 = out.indices[3 * t], i1 = out.indices[3 * t + 1], i2 = out.indices[3 * t + 2];
         // Grass is material 6 (texcoords2.x); sky exposure is tangent.w.
         const float g0 = out.texcoords2[2 * i0], g1 = out.texcoords2[2 * i1], g2 = out.texcoords2[2 * i2];
-        if (g0 + g1 + g2 < 1.2f) continue;
+        if (g0 + g1 + g2 < 0.9f) continue; // any grass corner: the edge thins out across its triangles (below)
         if (out.tangents[4 * i0 + 3] + out.tangents[4 * i1 + 3] + out.tangents[4 * i2 + 3] < 2.9f) continue;
         const Vector3 a = Vert(out.positions, i0), b = Vert(out.positions, i1), c = Vert(out.positions, i2);
         const Vector3 cr = Vector3CrossProduct(Vector3Subtract(b, a), Vector3Subtract(c, a));
@@ -100,8 +114,15 @@ void ScatterGrass(const DensityField& field, ChunkMeshData& out) {
             const float w = 1.0f - u - v;
             const Vector3 p = Vector3Add(Vector3Add(Vector3Scale(a, w), Vector3Scale(b, u)), Vector3Scale(c, v));
             if (p.x >= edge || p.y >= edge || p.z >= edge) continue;
-            if (w * g0 + u * g1 + v * g2 < 0.5f) continue;
             const Vector3 local = Vector3Add(origin, p);
+            // At the edge of the turf the blades thin out over the triangle, along a line that wanders with a ~1.5 m noise:
+            // a hard cut at half weight drew the mesh's stair steps along every bank (#609).
+            const float gw = w * g0 + u * g1 + v * g2;
+            if (gw < 0.999f) {
+                const float edgeN = ValueNoise3(local, 0.7f) - 0.5f;
+                const float keep = std::clamp((gw + 0.6f * edgeN - 0.2f) / 0.6f, 0.0f, 1.0f);
+                if (Unit(state) >= keep) continue;
+            }
             const float r = Vector3Length(local);
             if (r < sea + 0.3f) continue;
             const Vector3 up = Vector3Scale(local, 1.0f / r);
