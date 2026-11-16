@@ -763,6 +763,20 @@ int main(int argc, char** argv)
                 const bool ok = worstRoll < 1e-3f && maxPitch <= 87.01f && worstLevel < 1e-3f && worstUp > 0.999f;
                 printf("bench: flycam near a body (#232): horizon tilt %.5f, max pitch %.2f deg, WASD off level %.5f, Space along up %.5f -> %s\n",
                        worstRoll, maxPitch, worstLevel, worstUp, ok ? "PASS" : "FAIL");
+                // #538: quick turns at 60 FPS (no settling time), looking 40 deg up or down: the horizon never tilts, not even
+                // for the few frames the up used to take to catch up.
+                float worstQuick = 0.0f;
+                for (int s = 0; s < 240; ++s) {
+                    FlyInput turn;
+                    turn.yaw = (s / 20) % 2 ? -0.15f : 0.15f;                   // ~9 rad/s flicks, reversing
+                    turn.pitch = s == 0 ? 0.7f : s == 120 ? -1.4f : 0.0f;      // 40 deg up, then down
+                    ApplyFlyInput(&gc, turn, 1.0f / 60.0f, &g);
+                    const Vector3 f = Vector3Normalize(Vector3Subtract(gc.target, gc.position));
+                    const Vector3 r = Vector3Normalize(Vector3CrossProduct(f, gc.up));
+                    worstQuick = std::max(worstQuick, fabsf(Vector3DotProduct(r, g)));
+                }
+                const bool quickOk = worstQuick < 1e-3f;
+                printf("bench: flycam quick turns at 60 FPS (#538): worst horizon tilt %.5f (sin of the roll) -> %s\n", worstQuick, quickOk ? "PASS" : "FAIL");
             }
         }
         if (std::string(argv[i]) == "--spin-rate" && i + 1 < argc) spinRate = (float)atof(argv[i + 1]);
