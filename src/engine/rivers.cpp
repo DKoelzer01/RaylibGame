@@ -400,20 +400,34 @@ RiverNetwork::Hit RiverNetwork::nearest(Vector3 dir, float reach) const {
     const auto& list = index[cellOf(dir)];
     if (list.empty()) return hit;
     const Vector3 p = Vector3Scale(dir, R);
+    // The nearest piece - unless the point lies inside more than one channel (a tributary running beside the main river
+    // in one canyon, two reaches across a bend): then the lowest of those levels, as the higher water would spill into the
+    // lower one (on the strata's cliff bands the nearest one rose 8 m walking down the longest river).
+    Hit inside;
+    inside.level = 1e30f;
+    auto fill = [&](Hit& h, const Piece& pc, float d, float t) {
+        h.dist = d;
+        h.level = pc.fallT < 0.0f ? pc.la + (pc.lb - pc.la) * t : t < pc.fallT ? pc.la : pc.lb; // a waterfall steps (#540)
+        h.halfWidth = pc.wa + (pc.wb - pc.wa) * t;
+        h.depth = pc.da + (pc.db - pc.da) * t;
+        h.down = Vector3Normalize(pc.la >= pc.lb ? Vector3Subtract(pc.b, pc.a) : Vector3Subtract(pc.a, pc.b)); // levels fall downstream
+    };
     for (int i : list) {
         const Piece& pc = pieces[i];
-        // Bounding sphere first: no closer than its surface (most pieces in a cell are far away).
+        // Bounding sphere first: no closer than its surface (most pieces in a cell are far away). A piece can hold the
+        // point within its half width (45 m at most) even when another is nearer.
         const float dc = Vector3Distance(p, pc.mid) - pc.halfLen;
-        if (dc >= hit.dist) continue;
+        if (dc >= std::max(hit.dist, 46.0f)) continue;
         float t;
         const float d = SegDist(p, pc.a, pc.b, t);
-        if (d >= hit.dist) continue;
-        hit.dist = d;
-        hit.level = pc.fallT < 0.0f ? pc.la + (pc.lb - pc.la) * t : t < pc.fallT ? pc.la : pc.lb; // a waterfall steps (#540)
-        hit.halfWidth = pc.wa + (pc.wb - pc.wa) * t;
-        hit.depth = pc.da + (pc.db - pc.da) * t;
-        hit.down = Vector3Normalize(pc.la >= pc.lb ? Vector3Subtract(pc.b, pc.a) : Vector3Subtract(pc.a, pc.b)); // levels fall downstream
+        if (d < hit.dist) fill(hit, pc, d, t);
+        if (d < pc.wa + (pc.wb - pc.wa) * t) {
+            Hit h;
+            fill(h, pc, d, t);
+            if (h.level < inside.level) inside = h;
+        }
     }
+    if (inside.level < 1e29f) hit = inside;
     hit.found = hit.dist < reach;
     return hit;
 }
