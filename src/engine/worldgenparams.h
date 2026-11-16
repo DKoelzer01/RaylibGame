@@ -16,6 +16,8 @@ struct WorldGenParams {
     bool erosion = true;          // the erosion bake (Plan 7; off: the noise terrain)
     float erosionStrength = 1.0f; // 0.5..2: how hard rivers cut (the bake's stream power)
     float cliffs = 1.0f;          // 0..2: cliffs and canyons (#589): the share of resistant rock layers (0: none; Plan 9)
+    bool karst = true;            // karst regions: limestone towers and dolines (#592)
+    bool volcanoes = true;        // volcanoes: cones, calderas, lava caps (#593)
 
     bool isDefault() const;
     uint64_t key() const;         // a hash of every field (the erosion bake's cache key includes it)

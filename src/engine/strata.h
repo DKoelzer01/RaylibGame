@@ -14,7 +14,7 @@
 enum class RockType : uint8_t { Soft = 0, Granite, Basalt, Sandstone, Limestone, Marble, Count };
 
 struct StrataColumn {
-    uint8_t province = 0;   // 0 layered sedimentary rock, 1 a granite core (mountains), 2 basalt (sea floor, volcanic)
+    uint8_t province = 0;   // 0 layered sedimentary rock, 1 a granite core (mountains), 2 basalt (sea floor, volcanic), 3 karst limestone
     uint8_t hardShare = 115; // of 255: the share of resistant layers (sedimentary / basalt flows)
     float offset = 0.0f;    // m: the layers' warp and tilt here (added to the height before layering)
     float thick = 80.0f;    // m: layer thickness
@@ -33,6 +33,9 @@ float Strata_FaultUplift(Vector3 s, unsigned int seed);
 float Strata_FoldWeight(Vector3 s, unsigned int seed);
 // #591: 0..1 across a resistant sedimentary layer at height h (0 in soft beds): a ridge profile for the bake input.
 float Strata_OutcropBump(const StrataColumn& c, float h, unsigned int seed);
+// Karst (#592): 0..1 weight of the karst regions (~10 km), and the towers (+) and dolines (-) there, in metres.
+float Strata_KarstWeight(Vector3 s, unsigned int seed);
+float Strata_KarstRelief(Vector3 s, unsigned int seed);
 inline bool gStrataFolds = true; // #591; RAYLIBGAME_FOLDS=0 for A/B (its own bake cache)
 
 #endif

@@ -372,6 +372,11 @@ PlanetField::Land PlanetField::land(Vector3 dir, float fp) const {
         h += Strata_FaultUplift({ sx, sy, sz }, fieldSeed) * landMask * std::min(gen.cliffs, 1.5f);
         // Cuestas and hogbacks (#591): in fold regions the resistant layers stand up to 80 m proud where they crop out
         // (the differential erosion the bake's short run can't do alone; it rounds and gullies them).
+        // Karst (#592): limestone towers and dolines in karst regions (New World "Karst"); the bake rounds them and the
+        // cliff profile (#588) gives the hard limestone its faces.
+        if (gen.karst && h > 0.0f)
+            if (const float kw = Strata_KarstWeight({ sx, sy, sz }, fieldSeed); kw > 0.0f)
+                h += kw * landMask * Strata_KarstRelief({ sx, sy, sz }, fieldSeed);
         if (const float fw = Strata_FoldWeight({ sx, sy, sz }, fieldSeed); fw > 0.0f && h > 0.0f)
             h += 80.0f * fw * landMask * std::min(gen.cliffs, 1.5f) * Strata_OutcropBump(strataColumn(dir), h, fieldSeed);
     }
@@ -2245,6 +2250,7 @@ StrataColumn PlanetField::strataColumn(Vector3 dir) const {
     const float c = continents.fractalLimited(4, 2000.0f, sx, sy, sz) - 0.15f * gen.ocean;
     StrataColumn col = Strata_Column({ sx, sy, sz }, c, fieldSeed);
     col.hardShare = (uint8_t)std::clamp(col.hardShare * gen.cliffs, 0.0f, 255.0f); // New World "Cliffs and canyons" (#589)
+    if (gen.karst && col.province == 0 && Strata_KarstWeight({ sx, sy, sz }, fieldSeed) > 0.3f) col.province = 3; // karst limestone (#592)
     if (canyonFault(sx, sy, sz) > 0.3f) { col.province = 0; col.hardShare = 0; } // canyon lines are shattered, soft rock (#544)
     return col;
 }

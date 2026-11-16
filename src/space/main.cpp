@@ -1415,7 +1415,16 @@ int main(int argc, char** argv)
             }
             Recorder_Shutdown();
             NewWorld_Shutdown();
-            const bool pass = firstBuild >= 0.0 && secondBuild >= 0.0 && shot1 && shot2;
+            // The .worldgen sidecar round-trips every field (the bake key hashes them: a lost field rebakes the wrong world).
+            WorldGenParams wp; wp.ocean = 0.3f; wp.mountains = 1.7f; wp.roughness = 0.6f; wp.biomeSize = 1.3f; wp.resources = 0.8f;
+            wp.erosion = true; wp.erosionStrength = 1.4f; wp.cliffs = 0.35f; wp.karst = false; wp.volcanoes = false;
+            const std::string sidecar = std::string(GetApplicationDirectory()) + "newworld_test";
+            const bool saved = WorldGenParams_Save(sidecar, wp);
+            const WorldGenParams back = WorldGenParams_ForSave(sidecar);
+            remove((sidecar + ".worldgen").c_str());
+            const bool roundTrip = saved && back.key() == wp.key() && back.cliffs == wp.cliffs && !back.karst && !back.volcanoes;
+            printf("bench: newworld: world settings round-trip through the .worldgen sidecar: %s\n", roundTrip ? "yes" : "NO");
+            const bool pass = firstBuild >= 0.0 && secondBuild >= 0.0 && shot1 && shot2 && roundTrip;
             printf("bench: newworld: preview built in %.2f s, rebuilt after a change in %.2f s; bench_newworld.png, bench_newworld_changed.png -> %s\n",
                    firstBuild, secondBuild, pass ? "PASS" : "FAIL");
             CloseWindow();
@@ -2847,6 +2856,32 @@ int main(int argc, char** argv)
                                     }
                                     printf("bench: folds: ridge roughness (150 m) on low land: %.2f m in fold regions (%d samples; bake input %.2f m), %.2f m elsewhere (%d)\n",
                                            nIn ? rIn / nIn : 0.0, nIn, nIn ? iIn / nIn : 0.0, nOut ? rOut / nOut : 0.0, nOut);
+                                    // Karst (#592): the same roughness inside karst regions, and how many points have a river near.
+                                    int nk = 0, wetK = 0, nl = 0, wetL = 0; double rk = 0.0, ik = 0.0; float kD = 1e30f; Vector3 kDir{};
+                                    for (int i = 0; i < M; ++i) {
+                                        const float y = 1.0f - 2.0f * (i + 0.5f) / M, rr = sqrtf(std::max(0.0f, 1.0f - y * y)), ph = i * 2.39996323f;
+                                        const Vector3 d = { rr * cosf(ph), y, rr * sinf(ph) };
+                                        const float h0 = pf->elevationBase(d, 50.0f);
+                                        if (h0 < 5.0f) continue;
+                                        const bool wet = net->nearest(d, 150.0f).found;
+                                        if (pf->karstWeight(Vector3Scale(d, pf->radius)) < 0.9f) { ++nl; wetL += wet; continue; }
+                                        const Vector3 u1 = Vector3Normalize(Vector3CrossProduct(d, { 0, 1, 0 })), u2 = Vector3CrossProduct(u1, d);
+                                        auto rough = [&](bool input) {
+                                            PlanetField::tIgnoreBake = PlanetField::tBakeInput = input;
+                                            float sum = 0.0f;
+                                            for (int k = 0; k < 4; ++k)
+                                                sum += pf->elevationBase(Vector3Normalize(Vector3Add(d, Vector3Scale(k & 1 ? u2 : u1, (k < 2 ? 150.0f : -150.0f) / pf->radius))), 50.0f);
+                                            const float r = fabsf(pf->elevationBase(d, 50.0f) - 0.25f * sum);
+                                            PlanetField::tIgnoreBake = PlanetField::tBakeInput = false;
+                                            return r;
+                                        };
+                                        ++nk; wetK += wet; rk += rough(false); ik += rough(true);
+                                        const float dist = Vector3Distance(d, pf->findSpawnDir(p->seed)) * pf->radius;
+                                        if (dist < kD) { kD = dist; kDir = d; }
+                                    }
+                                    printf("bench: karst: %d land samples in karst regions: roughness (150 m) %.2f m (bake input %.2f m); a river within 150 m: %.1f%% (elsewhere %.1f%%)\n",
+                                           nk, nk ? rk / nk : 0.0, nk ? ik / nk : 0.0, 100.0 * wetK / std::max(1, nk), 100.0 * wetL / std::max(1, nl));
+                                    if (kD < 1e29f) printf("bench: karst: nearest %.1f km from the start, dir %.6f %.6f %.6f\n", kD / 1000.0f, kDir.x, kDir.y, kDir.z);
                                 }
                             }
                         }

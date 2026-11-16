@@ -67,6 +67,7 @@ StrataColumn Strata_Column(Vector3 s, float continent, unsigned int seed) {
 
 RockType Strata_RockAt(const StrataColumn& c, float h, unsigned int seed) {
     if (c.province == 1) return RockType::Granite;
+    if (c.province == 3) return RockType::Limestone; // karst: massive limestone (#592)
     const float share = c.hardShare / 255.0f;
     if (c.province == 2) {
         // Basalt flows with softer ash beds between them (flows ~0.6 of a layer).
@@ -141,4 +142,40 @@ float Strata_OutcropBump(const StrataColumn& c, float h, unsigned int seed) {
     if (c.province != 0 || Strata_RockAt(c, h, seed) == RockType::Soft) return 0.0f;
     const float t = (h + c.offset) / c.thick;
     return sinf(3.14159265f * (t - floorf(t)));
+}
+
+float Strata_KarstWeight(Vector3 s, unsigned int seed) {
+    const float k = ValueNoise(Scaled(s, 1.0f / 10000.0f), seed ^ 0x4A257u);
+    return k > 0.66f ? std::min(1.0f, (k - 0.66f) / 0.05f) : 0.0f;
+}
+
+float Strata_KarstRelief(Vector3 s, unsigned int seed) {
+    // Jittered 3D Voronoi on a 300 m grid (the surface slices it into a 2D pattern): the nearest feature's cell decides.
+    const float cell = 300.0f;
+    const float gx = s.x / cell, gy = s.y / cell, gz = s.z / cell;
+    const int32_t ix = (int32_t)floorf(gx), iy = (int32_t)floorf(gy), iz = (int32_t)floorf(gz);
+    float best = 1e9f; int32_t bx = 0, by = 0, bz = 0;
+    for (int dz = -1; dz <= 1; ++dz)
+        for (int dy = -1; dy <= 1; ++dy)
+            for (int dx = -1; dx <= 1; ++dx) {
+                const int32_t cx = ix + dx, cy = iy + dy, cz = iz + dz;
+                const float fx = cx + 0.15f + 0.7f * Rand01(cx, cy, cz, seed ^ 0x4A258u) - gx;
+                const float fy = cy + 0.15f + 0.7f * Rand01(cx, cy, cz, seed ^ 0x4A259u) - gy;
+                const float fz = cz + 0.15f + 0.7f * Rand01(cx, cy, cz, seed ^ 0x4A25Au) - gz;
+                const float d2 = fx * fx + fy * fy + fz * fz;
+                if (d2 < best) { best = d2; bx = cx; by = cy; bz = cz; }
+            }
+    const float dist = sqrtf(best) * cell;
+    const float kind = Rand01(bx, by, bz, seed ^ 0x4A25Bu);
+    const float size = Rand01(bx, by, bz, seed ^ 0x4A25Cu);
+    auto smooth = [](float e0, float e1, float x) { float t = std::clamp((x - e0) / (e1 - e0), 0.0f, 1.0f); return t * t * (3.0f - 2.0f * t); };
+    if (kind < 0.55f) { // a tower: 60-200 m tall, 50-140 m in radius, steep sides
+        const float r0 = 50.0f + 90.0f * size;
+        return (60.0f + 140.0f * Rand01(bx, by, bz, seed ^ 0x4A25Du)) * (1.0f - smooth(0.6f * r0, r0, dist));
+    }
+    if (kind > 0.85f) { // a doline: a 15-40 m bowl, 40-90 m in radius
+        const float r0 = 40.0f + 50.0f * size;
+        return -(15.0f + 25.0f * size) * (1.0f - smooth(0.0f, r0, dist));
+    }
+    return 0.0f;
 }
