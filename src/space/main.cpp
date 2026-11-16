@@ -2796,6 +2796,7 @@ int main(int argc, char** argv)
                                     // river points (every 50 m) with ground 15 m+ under their bed 60-250 m to the side, in a canyon.
                                     const int M = 1 << 22;
                                     long cn = 0, cwet = 0;
+                                    float canyonLookD = 1e30f; Vector3 canyonLook{}, canyonLookDown{};
                                     for (int i = 0; i < M; ++i) {
                                         const float y = 1.0f - 2.0f * (i + 0.5f) / M, rr = sqrtf(std::max(0.0f, 1.0f - y * y)), ph = i * 2.39996323f;
                                         const Vector3 d = { rr * cosf(ph), y, rr * sinf(ph) };
@@ -2803,8 +2804,15 @@ int main(int argc, char** argv)
                                         if (pf->canyonFault(s.x, s.y, s.z) < 0.8f) continue;
                                         if (pf->elevationBase(d, 50.0f) < 5.0f) continue;
                                         ++cn;
-                                        cwet += net->nearest(d, 150.0f).found;
+                                        const RiverNetwork::Hit ch = net->nearest(d, 150.0f);
+                                        cwet += ch.found;
+                                        // The nearest to the start, for a look (a river in a canyon, from downstream).
+                                        const float dist = Vector3Distance(d, pf->findSpawnDir(p->seed));
+                                        if (ch.found && ch.level > 2.0f && dist < canyonLookD) { canyonLookD = dist; canyonLook = d; canyonLookDown = ch.down; }
                                     }
+                                    if (canyonLookD < 1e29f)
+                                        printf("bench: canyons: a river in a canyon %.1f km from the start; look: --view-fall %.6f %.6f %.6f %.5f %.5f %.5f --view-fall-dist 250\n",
+                                               canyonLookD * pf->radius / 1000.0f, canyonLook.x, canyonLook.y, canyonLook.z, canyonLookDown.x, canyonLookDown.y, canyonLookDown.z);
                                     long rn = 0, rim = 0;
                                     net->forEachCentrePoint(50.0f, [&](Vector3 d, float level, float) {
                                         const Vector3 s = Vector3Scale(d, pf->radius);
