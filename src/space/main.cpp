@@ -5517,8 +5517,9 @@ int main(int argc, char** argv)
                         if (t - lastPrint >= 5.0) {
                             lastPrint = t;
                             const Fluid::Stats s = Fluid::GetStats();
-                            printf("bench: dam t=%3.0f s: upstream surface %s, downstream %s; %d reaches released, %d bricks (%d awake), %.0f m^3, step %.2f ms (max %.2f)\n",
-                                   t, su < -1e8f ? "dry" : TextFormat("%.2f", su), sd < -1e8f ? "dry" : TextFormat("%.2f", sd), Fluid::ReleasedReaches(), s.bricks, s.activeBricks, s.volume, s.stepMs, s.maxStepMs);
+                            printf("bench: dam t=%3.0f s: upstream surface %s, downstream %s; %d reaches released, %d springs, %d bricks (%d awake), %.0f m^3, step %.2f ms (max %.2f); upstream cell %s\n",
+                                   t, su < -1e8f ? "dry" : TextFormat("%.2f", su), sd < -1e8f ? "dry" : TextFormat("%.2f", sd), Fluid::ReleasedReaches(), Fluid::SourceCount(), s.bricks, s.activeBricks, s.volume, s.stepMs, s.maxStepMs,
+                                   Fluid::DebugCell(*p, at(damUp, damLvU - 0.3f)).c_str());
                         }
                         if (t > 10.0 && t < 10.1) TakeScreenshot("bench_dam.png");
                         if ((spillT >= 0.0 && t > spillT + 25.0) || t > 420.0) {
