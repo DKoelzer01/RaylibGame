@@ -303,6 +303,9 @@ void Classify(const Site& s, Brick& b, const BodyRef& ref, uint8_t& faces) {
                 // Dug: open only because of an edit. Infinite water feeds only these (the real ground has
                 // crags the height map doesn't: natural dips by a river are not to be flooded).
                 if (!solid && r < bed + 4.0f && r < top && ref.field->density(c, nullptr) >= ISO_LEVEL) fl |= kDug;
+                // An open cell in the water's band under a roof (#559) gets no generated water, but the water may reach it
+                // from the side - a tunnel into a bank, a hollow in built rock: fed like a dug cell, and a sealed cave stays dry.
+                if (!solid && kind && kind != 5 && z <= coveredTo && r - 0.5f < level && r > bed - 0.5f) fl |= kDug;
                 uint8_t tg = 0;
                 if (!solid && kind && z > coveredTo && r - 0.5f < level && r > bed - 0.5f) {
                     tg = (uint8_t)std::clamp((int)lroundf((level - (r - 0.5f)) * 255.0f), 0, 255);
