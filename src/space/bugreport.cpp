@@ -107,7 +107,7 @@ namespace {
         for (const char* t : { "title", "body", "labels", "severity", "meta" }) fields.push_back({ t, "<" + (dir / (std::string(t) + ".txt")).string() });
         if (attachShot && shot.data) { const fs::path p = dir / "screenshot.png"; ExportImage(shot, p.string().c_str()); fields.push_back({ "screenshot", "@" + p.string() }); }
         if (attachLog) { // flushed first (it buffers), then read: the logger holds it open
-            logger.flush();
+            Log_Flush();
             std::string text;
             if (FILE* f = fopen("log.txt", "rb")) { char buf[8192]; size_t k; while ((k = fread(buf, 1, sizeof buf, f)) > 0) text.append(buf, k); fclose(f); }
             if (!text.empty() && WriteText(dir / "log.txt", text)) fields.push_back({ "log", "@" + (dir / "log.txt").string() });
@@ -194,5 +194,6 @@ void BugReport_Update() {
     if (!done.exchange(false)) return;
     std::lock_guard<std::mutex> lk(resultM);
     GameUI_Toast(result.c_str());
-    printf("bug report: %s\n", result.c_str());
+    printf("bug report: %s\n", result.c_str()); // stdout too: --test-bugreport reads it
+    if (result.rfind("Bug report not sent", 0) == 0) LOG_WARN("BugReport", "%s", result.c_str()); else LOG_INFO("BugReport", "%s", result.c_str());
 }

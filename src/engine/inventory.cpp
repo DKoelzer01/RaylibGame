@@ -34,13 +34,13 @@ bool ItemDB::load(const char* itemsPath, const char* recipesPath) {
     recipeList.clear();
 
     std::ifstream items(itemsPath);
-    if (!items) { logger.logf("[ERROR] Cannot open %s\n", itemsPath); return false; }
+    if (!items) { LOG_ERROR("Items", "Cannot open %s\n", itemsPath); return false; }
     std::string line;
     while (std::getline(items, line)) {
         line = Trim(line);
         if (line.empty() || line[0] == '#') continue;
         const auto f = Split(line, '|');
-        if (f.size() < 5) { logger.logf("[WARN] items: bad line '%s'\n", line.c_str()); continue; }
+        if (f.size() < 5) { LOG_WARN("Items", "items: bad line '%s'\n", line.c_str()); continue; }
         ItemDef d;
         d.id = f[0];
         d.name = f[1];
@@ -87,7 +87,7 @@ bool ItemDB::load(const char* itemsPath, const char* recipesPath) {
     }
 
     std::ifstream recipes(recipesPath);
-    if (!recipes) { logger.logf("[ERROR] Cannot open %s\n", recipesPath); return false; }
+    if (!recipes) { LOG_ERROR("Items", "Cannot open %s\n", recipesPath); return false; }
     while (std::getline(recipes, line)) {
         line = Trim(line);
         if (line.empty() || line[0] == '#') continue;
@@ -105,7 +105,7 @@ bool ItemDB::load(const char* itemsPath, const char* recipesPath) {
         bool valid = find(r.output) != nullptr && !r.inputs.empty();
         for (auto& in : r.inputs) valid = valid && find(in.first) != nullptr;
         if (valid) recipeList.push_back(r);
-        else logger.logf("[WARN] recipes: unknown item in '%s'\n", line.c_str());
+        else LOG_WARN("Items", "recipes: unknown item in '%s'\n", line.c_str());
     }
     // Placeable parts (machines, conveyors, cables, rocket parts) are blocks: stacks of 256.
     for (int t = 0; t < (int)PartType::Count; ++t)
@@ -114,7 +114,7 @@ bool ItemDB::load(const char* itemsPath, const char* recipesPath) {
             auto it = byId.find(item);
             if (it != byId.end() && itemList[it->second].kind == ItemKind::Resource) itemList[it->second].kind = ItemKind::Block;
         }
-    logger.logf("[Items] %zu items, %zu recipes\n", itemList.size(), recipeList.size());
+    LOG_INFO("Items", "%zu items, %zu recipes\n", itemList.size(), recipeList.size());
     return true;
 }
 

@@ -48,11 +48,11 @@ bool ComputeProgram::load(const std::string& p) {
     if (!Compute_Available()) return false;
     std::vector<std::string> inc;
     const std::string src = LoadShaderSource(p, inc);
-    if (src.empty()) { logger.logf("[ERROR] compute shader %s: not found\n", p.c_str()); return false; }
+    if (src.empty()) { LOG_ERROR("Compute", "compute shader %s: not found\n", p.c_str()); return false; }
     const unsigned int sh = rlCompileShader(src.c_str(), RL_COMPUTE_SHADER);
-    if (sh == 0) { logger.logf("[ERROR] compute shader %s failed to compile\n", p.c_str()); TraceLog(LOG_WARNING, "Compute shader %s failed to compile", p.c_str()); return false; }
+    if (sh == 0) { LOG_ERROR("Compute", "compute shader %s failed to compile\n", p.c_str()); TraceLog(LOG_WARNING, "Compute shader %s failed to compile", p.c_str()); return false; }
     const unsigned int prog = rlLoadComputeShaderProgram(sh);
-    if (prog == 0) { logger.logf("[ERROR] compute shader %s failed to link\n", p.c_str()); return false; }
+    if (prog == 0) { LOG_ERROR("Compute", "compute shader %s failed to link\n", p.c_str()); return false; }
     unload();
     id = prog;
     path = p;

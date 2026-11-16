@@ -245,9 +245,10 @@ namespace {
 void Settings_Load() {
     FILE* f = fopen("settings.txt", "r");
     if (f) {
-        char key[64];
-        float v;
-        while (fscanf(f, " %63s %f", key, &v) == 2) {
+        char key[64], val[64];
+        while (fscanf(f, " %63s %63s", key, val) == 2) { // values are numbers, except log_level's word (#514)
+            const float v = strtof(val, nullptr);
+            if (!strcmp(key, "log_level")) { settings.logLevel = val; continue; }
             if (!strcmp(key, "mouse")) settings.mouseSensitivity = std::clamp(v, 0.2f, 3.0f);
             else if (!strcmp(key, "fov")) settings.fov = std::clamp(v, 30.0f, 100.0f);
             else if (!strcmp(key, "volume")) settings.volume = std::clamp(v, 0.0f, 1.0f);
@@ -275,6 +276,7 @@ void Settings_Save() {
     fprintf(f, "showhands %d\nhandbob %d\n", settings.showHands ? 1 : 0, settings.handBob);
     fprintf(f, "difficulty %d\n", settings.difficulty);
     fprintf(f, "terraindetail %d\ncamerasmoothing %d\nspeedvignette %d\n", settings.terrainDetail, settings.cameraSmoothing, settings.speedVignette ? 1 : 0); // (terrain detail was never saved, #297)
+    if (!settings.logLevel.empty()) fprintf(f, "log_level %s\n", settings.logLevel.c_str()); // set by hand in the file (#514)
     fclose(f);
 }
 

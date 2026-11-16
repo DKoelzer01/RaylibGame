@@ -167,8 +167,8 @@ void GpuTimer_LogAndReset(const char* tag) {
     snprintf(buf, sizeof(buf), "%s cpu per frame (%ld):", tag, cpuFrames); c += buf;
     for (const Sum& x : cpuSums) { snprintf(buf, sizeof(buf), " %s %.2f", x.name, cpuFrames ? x.ms / cpuFrames : 0.0); c += buf; total += x.ms; }
     snprintf(buf, sizeof(buf), " | total %.2f ms\n", cpuFrames ? total / cpuFrames : 0.0); c += buf;
-    logger.logf("%s", g.c_str());
-    logger.logf("%s", c.c_str());
+    LOG_INFO("Perf", "%s", g.c_str());
+    LOG_INFO("Perf", "%s", c.c_str());
     sums.clear(); frames = 0; totalMs = 0.0;
     cpuSums.clear(); cpuFrames = 0;
 }

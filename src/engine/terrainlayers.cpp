@@ -247,7 +247,7 @@ Image GenerateTerrainLayerDetail(int layer, const Image& albedo) {
 
 TextureArray LoadTerrainLayers(int size) {
     TextureArray t;
-    if (!glad_glTexImage3D || !glad_glGenTextures) { logger.logf("[Terrain] texture arrays unavailable\n"); return t; }
+    if (!glad_glTexImage3D || !glad_glGenTextures) { LOG_WARN("Terrain", "texture arrays unavailable\n"); return t; }
     t.size = size;
     t.layers = LayerCount;
     glad_glGenTextures(1, &t.id);
@@ -291,7 +291,7 @@ TextureArray LoadTerrainLayers(int size) {
     glad_glTexParameteri(GL_TEXTURE_2D_ARRAY_, GL_TEXTURE_WRAP_T_, (int)GL_REPEAT_);
     if (glad_glTexParameterf && GL_Caps().anisotropic) glad_glTexParameterf(GL_TEXTURE_2D_ARRAY_, GL_TEXTURE_MAX_ANISOTROPY_, std::min(8.0f, GL_Caps().maxAnisotropy)); // only where supported (#286)
     glad_glBindTexture(GL_TEXTURE_2D_ARRAY_, 0);
-    logger.logf("[Terrain] %d terrain layers (%dx%d) in texture array %u, detail maps %u (%.0f ms)\n", LayerCount, size, size, t.id, t.detailId,
+    LOG_INFO("Terrain", "%d terrain layers (%dx%d) in texture array %u, detail maps %u (%.0f ms)\n", LayerCount, size, size, t.id, t.detailId,
                 (GetTime() - t0) * 1000.0);
     return t;
 }

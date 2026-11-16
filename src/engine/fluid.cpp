@@ -1254,7 +1254,7 @@ void Fluid::LoadKinds(const char* path) {
     for (int i = 0; i < 8; ++i) {
         const Kind& k = kinds[std::min(i, (int)kinds.size() - 1)];
         // The GPU step conserves water only with viscosity >= 4 (four neighbours may each take diff / visc).
-        if (k.viscosity < 4 && i < (int)kinds.size()) logger.logf("[Fluid] %s: viscosity %d below 4, using 4\n", k.id.c_str(), k.viscosity);
+        if (k.viscosity < 4 && i < (int)kinds.size()) LOG_WARN("Fluid", "%s: viscosity %d below 4, using 4\n", k.id.c_str(), k.viscosity);
         kindVisc[i] = std::max(k.viscosity, 4); kindMinSpread[i] = k.minSpread;
     }
 }

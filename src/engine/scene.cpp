@@ -72,7 +72,7 @@ bool HotShader::reloadIfChanged(bool force) {
     Shader s = LoadShaderFromMemory(vsSrc.empty() ? nullptr : vsSrc.c_str(), fsSrc.empty() ? nullptr : fsSrc.c_str());
     // On a compile/link error raylib hands back its default shader instead.
     if (!IsShaderValid(s) || s.id == rlGetShaderIdDefault()) {
-        logger.logf("[ERROR] Shader %s / %s failed to compile; keeping previous version\n", vsPath.c_str(), fsPath.c_str());
+        LOG_ERROR("Shader", "Shader %s / %s failed to compile; keeping previous version\n", vsPath.c_str(), fsPath.c_str());
         TraceLog(LOG_WARNING, "Shader %s failed to compile; keeping previous version", fsPath.c_str());
         return false;
     }

@@ -91,8 +91,8 @@ extern "C" __declspec(dllimport) int __stdcall MessageBoxA(void*, const char*, c
 #endif
 
 using namespace std;
+static bool gLogLevelFromArgs = false; // --log-level given: settings.txt's log_level does not apply (#514)
 
-Logger logger("log.txt");
 
 int gameState = 0; // 0: Main Menu, 1: Game, 2: Pause Menu, 3: New World screen (#504)
 
@@ -220,6 +220,16 @@ static void StartNewWorld(Scene& world, bool reset, bool dawn) {
 
 int main(int argc, char** argv)
 {
+    Log_Open("log.txt");
+    Log_SetThreadName("main");
+    // --log-level LEVEL (#514): before anything logs. It wins over settings.txt's log_level.
+    for (int i = 1; i + 1 < argc; ++i)
+        if (std::string(argv[i]) == "--log-level") {
+            LogLevel l;
+            if (Log_ParseLevel(argv[i + 1], l)) { Log_SetLevel(l); gLogLevelFromArgs = true; }
+            else printf("--log-level: unknown level '%s' (trace, debug, info, warn, error, fatal, off)\n", argv[i + 1]);
+        }
+    Log_StartupChecks();
     // --to-slide <in.png> <out.jpg> [width]: a screenshot made into a menu slide (#386): scaled to the width (1600 px), JPEG.
     if (argc >= 4 && std::string(argv[1]) == "--to-slide") {
         Image img = LoadImage(argv[2]);
@@ -747,19 +757,28 @@ int main(int argc, char** argv)
     bool msaa = true;
     for (int i = 1; i < argc; ++i) if (std::string(argv[i]) == "--no-msaa") msaa = false;
     if (!bench) { Settings_Load(); if (settings.terrainDetail == 0) msaa = false; } // #302 (user 2026-11-15): Low runs without MSAA (VRAM); benches use --no-msaa
+    if (!bench && !gLogLevelFromArgs && !settings.logLevel.empty()) {
+        LogLevel l;
+        if (Log_ParseLevel(settings.logLevel.c_str(), l)) { Log_SetLevel(l); LOG_INFO("Log", "log level %s (settings.txt)", Log_LevelName(l)); }
+        else LOG_WARN("Log", "settings.txt: unknown log_level '%s'", settings.logLevel.c_str());
+    }
     for (int i = 1; i < argc; ++i) if (std::string(argv[i]) == "--headless") gHeadless = true; // #311: simulate, draw nothing
     if (benchHeadless) gHeadless = true;
     if (gHeadless) msaa = false;
     if (msaa) SetConfigFlags(FLAG_MSAA_4X_HINT);
     bool nativeWindow = false; // --native-window: a bench in the game's own window (borderless, monitor-sized), uncapped
     for (int i = 1; i < argc; ++i) if (std::string(argv[i]) == "--native-window") nativeWindow = true;
+    // --bench-window: the 1920x1080 bench window for runs that are not benches (scripted play, --play-new): the
+    // borderless monitor-sized one covers the screen and takes the input of a user at the machine.
+    bool benchWindow = playNewSeconds > 0.0;
+    for (int i = 1; i < argc; ++i) if (std::string(argv[i]) == "--bench-window") benchWindow = true;
     bool exclusive = false; // --fullscreen: exclusive fullscreen (bypasses the desktop compositor)
     for (int i = 1; i < argc; ++i) if (std::string(argv[i]) == "--fullscreen") { exclusive = true; nativeWindow = true; }
     if (gHeadless) { // #311: a hidden window for the GL context the loaders still need; nothing is drawn into it
         SetConfigFlags(FLAG_WINDOW_HIDDEN);
         InitWindow(320, 180, "RaylibGame headless");
         SetTargetFPS(bench ? std::max(0, benchFps) : kSimHz); // a server ticks at the sim rate
-    } else if (!bench || nativeWindow) {
+    } else if ((!bench && !benchWindow) || nativeWindow) {
         SetConfigFlags(FLAG_WINDOW_RESIZABLE); // Allow window resizing
         SetConfigFlags(FLAG_WINDOW_UNDECORATED); // Remove window decorations for a cleaner look
         SetConfigFlags(FLAG_WINDOW_HIGHDPI); // Enable High DPI support
