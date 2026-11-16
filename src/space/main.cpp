@@ -53,6 +53,7 @@
 #include "itemicons.h"
 #include "particles.h"
 #include "ambience.h"
+#include "waterfalls.h"
 #include "gpumem.h"
 #include "structures.h"
 #include "fishing.h"
@@ -208,6 +209,7 @@ static void StartNewWorld(Scene& world, bool reset, bool dawn) {
         Events_Reset();
         Particles_Clear();
         Ambience_Reset();
+        Waterfalls_Reset();
         Station_Reset();
         Suit_Reset();
         ToolWear_Reset();
@@ -384,6 +386,7 @@ int main(int argc, char** argv)
     bool benchMap = false;         // --test-map: compass, exploration, waypoints, map images, saves
     bool benchQuests = false;      // --test-quests: tiers open by their tasks; quest state through a save
     bool benchHunger = false, benchFarm = false; // --test-hunger, --test-farm
+    bool benchViewFall = false; Vector3 benchFallLip{ 0, 1, 0 }, benchFallDown{ 1, 0, 0 }; float benchFallDist = 80.0f; // --view-fall (#540), body-local
     bool benchRivers = false, riverOk = false; int riverPhase = 0; double riverStart = 0.0; float riverLongest = 0.0f, riverBuild = 0.0f, riverWet = 0.0f, riverLevel = 0.0f; Vector3 riverDir{ 0, 0, 0 }; // --test-rivers
     bool benchTools = false, toolsOk = true; int toolsPhase = 0, toolsLife = 0, toolsTilled = 0; double toolsStart = 0.0; // --test-tools
     bool benchSuit = false, suitOk = true; int suitPhase = 0; double suitStart = 0.0; float suitFoodRatio = 0.0f, suitWater = 0.0f, suitRebreather = 0.0f; // --test-suit
@@ -689,6 +692,12 @@ int main(int argc, char** argv)
         if (std::string(argv[i]) == "--test-suit") benchSuit = true;
         if (std::string(argv[i]) == "--test-tools") benchTools = true;
         if (std::string(argv[i]) == "--test-rivers") benchRivers = true;
+        if (std::string(argv[i]) == "--view-fall-dist" && i + 1 < argc) benchFallDist = (float)atof(argv[i + 1]); // --view-fall's distance (m)
+        if (std::string(argv[i]) == "--view-fall" && i + 6 < argc) { // --view-fall LIP DOWN (#540): the bench camera looks at a waterfall
+            benchViewFall = true;
+            benchFallLip = Vector3Normalize({ (float)atof(argv[i + 1]), (float)atof(argv[i + 2]), (float)atof(argv[i + 3]) });
+            benchFallDown = Vector3Normalize({ (float)atof(argv[i + 4]), (float)atof(argv[i + 5]), (float)atof(argv[i + 6]) });
+        }
         if (std::string(argv[i]) == "--test-viewmodel") benchViewmodel = true;
         if (std::string(argv[i]) == "--test-ring") benchRing = true;
         if (std::string(argv[i]) == "--test-rocket") benchRocket = true;
@@ -1022,7 +1031,7 @@ int main(int argc, char** argv)
     bool spawnLoad = false;        // raised by a spawn or teleport (not entering the game): no minimum time
     int loadFrames = 0;
     int seenSpawns = 0;
-    world.onDraw3D = [&world] { Farm_Draw3D(world); Animals_Draw3D(world); Machines_Draw3D(world); InstanceBatch_Flush(world); Weather_Draw3D(world); Particles_Draw(world); if (!ship.piloted && !buildTool.active && !Rocket_Boarded()) TerrainTool_Draw3D(); Fishing_Draw3D(world); Events_Draw3D(world); Combat_DrawGraves(world); BuildTool_Draw3D(world); };
+    world.onDraw3D = [&world] { Farm_Draw3D(world); Animals_Draw3D(world); Machines_Draw3D(world); InstanceBatch_Flush(world); Weather_Draw3D(world); Waterfalls_Draw3D(world); Particles_Draw(world); if (!ship.piloted && !buildTool.active && !Rocket_Boarded()) TerrainTool_Draw3D(); Fishing_Draw3D(world); Events_Draw3D(world); Combat_DrawGraves(world); BuildTool_Draw3D(world); };
     terrainTool.till = [&world](Planetoid& body, Vector3 ground) { return Farm_Till(world, body, ground); }; // a shovel's RMB
     terrainTool.swapHeld = [](const std::string& from, const std::string& to, const char* ev) { // a bucket filled or emptied
         const int s = Hotbar_Selected();
@@ -1321,6 +1330,18 @@ int main(int argc, char** argv)
                 world.camera.target = Vector3Add(world.camera.position, Vector3Add(Vector3Scale(ahead, 100.0f * cosf(a)), Vector3Scale(player.up, 100.0f * sinf(a))));
             }
             world.camera.up = player.up;
+            if (benchViewFall)
+                if (const auto* pfb = dynamic_cast<const PlanetField*>(benchPlanet->field.get())) {
+                    // --view-fall (#540): from --view-fall-dist (80) m downstream of the lip and 0.3 of that up, looking back at it.
+                    const DVec3 lip = DVec3(benchFallLip) * (double)(pfb->radius + pfb->elevation(benchFallLip));
+                    const Vector3 at = (benchPlanet->toWorldD(lip) - world.renderOrigin).toFloat();
+                    const Vector3 upW = benchPlanet->dirToWorld(benchFallLip);
+                    Vector3 downW = benchPlanet->dirToWorld(benchFallDown);
+                    downW = Vector3Normalize(Vector3Subtract(downW, Vector3Scale(upW, Vector3DotProduct(downW, upW))));
+                    world.camera.position = Vector3Add(at, Vector3Add(Vector3Scale(downW, benchFallDist), Vector3Scale(upW, benchFallDist * 0.3f)));
+                    world.camera.target = Vector3Subtract(at, Vector3Scale(upW, 10.0f));
+                    world.camera.up = upW;
+                }
         } else if (!benchAtSave) world.camera.position = Vector3Add(world.camera.target, benchCamOffset);
         if (benchDay) { // mid-morning over the start: 45 degrees up, from ahead-left (shadows fall toward the camera's right)
             const Vector3 ahead = Vector3Normalize(Vector3Subtract(player.forward, Vector3Scale(player.up, Vector3DotProduct(player.forward, player.up))));
@@ -2676,6 +2697,38 @@ int main(int argc, char** argv)
                             printf("bench: rivers: %d river cells above 700 m, highest source at %.0f m (#359)\n", s.riverCellsAbove700, s.highestSource);
                             printf("bench: rivers: longest %.1f km, walked every 5 m: %.0f%% wet, longest dry run %.0f m, worst rise %.3f m, from %.1f m to %.1f m\n",
                                    s.longestKm, 100.0f * wetShare, worstDry, worstUp, levels.empty() ? 0.0f : levels.front(), levels.empty() ? 0.0f : levels.back());
+                            {   // Walls of water (#540): along every river, water standing more than 3 m deeper than its channel - over
+                                // ground that fell away under a level drawn as a straight line between the nodes (a cliff).
+                                long n = 0, walls = 0, walls10 = 0, walls50 = 0, lakeWalls = 0; float worst = 0.0f; Vector3 worstDir{};
+                                net->forEachCentrePoint(10.0f, [&](Vector3 d, float level, float depth) {
+                                    const float excess = level - pf->elevation(d) - depth;
+                                    ++n;
+                                    if (excess > 3.0f) {
+                                        ++walls; walls10 += excess > 10.0f; walls50 += excess > 50.0f;
+                                        float lv, lo;
+                                        if (net->lakeAt(d, lv, lo) && lo < 2.0f * RiverNetwork::kLakeMargin) ++lakeWalls; // a lake's own water, not a river's
+                                    }
+                                    if (excess > worst) { worst = excess; worstDir = d; }
+                                });
+                                printf("bench: rivers: walls of water (#540): %ld of %ld centreline points every 10 m (%.2f%%) stand > 3 m deeper than the channel "
+                                       "(> 10 m: %ld, > 50 m: %ld; in or by a lake: %ld), worst %.1f m at dir %.5f,%.5f,%.5f\n",
+                                       walls, n, 100.0 * walls / std::max(1L, n), walls10, walls50, lakeWalls, worst, worstDir.x, worstDir.y, worstDir.z);
+                                // The waterfalls, and the nearest big ones to the start (their --view-fall, to look).
+                                const std::vector<RiverNetwork::Fall> falls = net->waterfalls();
+                                int f10 = 0, f30 = 0; float tallest = 0.0f;
+                                for (const auto& f : falls) { f10 += f.drop > 10.0f; f30 += f.drop > 30.0f; tallest = std::max(tallest, f.drop); }
+                                printf("bench: rivers: %zu waterfalls (> 10 m: %d, > 30 m: %d, tallest %.0f m)\n", falls.size(), f10, f30, tallest);
+                                const Vector3 home = pf->findSpawnDir(p->seed);
+                                std::vector<std::pair<float, int>> near;
+                                for (int i = 0; i < (int)falls.size(); ++i)
+                                    if (falls[i].drop >= 8.0f && falls[i].top > 2.0f) near.push_back({ Vector3Distance(home, falls[i].lip) * pf->radius, i });
+                                std::sort(near.begin(), near.end());
+                                for (size_t k = 0; k < std::min<size_t>(3, near.size()); ++k) {
+                                    const auto& f = falls[near[k].second];
+                                    printf("bench: rivers: waterfall %.1f km from the start: drops %.1f m from %.1f m, %.0f m wide; look: --view-fall %.6f %.6f %.6f %.5f %.5f %.5f\n",
+                                           near[k].first / 1000.0f, f.drop, f.top, 2.0f * f.halfWidth, f.lip.x, f.lip.y, f.lip.z, f.down.x, f.down.y, f.down.z);
+                                }
+                            }
                             // A look at a river: the nearest to the start (every 150 m within 8 km).
                             {
                                 const Vector3 home = pf->findSpawnDir(p->seed);
@@ -6807,6 +6860,7 @@ int main(int argc, char** argv)
             if (!loading) Events_Update(world, frameDt); // meteor showers (#177)
             if (!hostSave.empty()) Host_Update(world); // --host (#311): answer joins
             if (!loading) Ambience_Update(world, frameDt); // rain splashes, fireflies, machine smoke
+            if (!loading) Waterfalls_Update(world, frameDt); // falls near the camera: sheets, mist and spray (#540)
             Particles_Update(world, frameDt); // smoke, dust, exhaust, splashes (particles.h)
             // Autosave every 5 minutes of play (incremental: only regions changed since the last save).
             static double lastAutosave = GetTime();
