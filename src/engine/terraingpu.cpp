@@ -394,6 +394,10 @@ void TerrainGpu_Unload() {
     for (Slot& sl : S.slots) {
         if (sl.fence) glDeleteSync(sl.fence);
         sl.fence = nullptr;
+        // A batch dropped in flight never reached a worker, so nothing else frees its readback buffer: each quit while
+        // streaming lost one or two of the six (#556). The GPU runs in order, so its pending copy finishes before any reuse.
+        if (sl.rb >= 0) ring[sl.rb].busy.store(false);
+        sl.rb = -1;
         sl.jobs.clear();
         sl.outOffset.clear();
         sl.grid.destroy(); sl.islands.destroy(); sl.out.destroy(); sl.blocks.destroy();

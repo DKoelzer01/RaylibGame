@@ -7374,7 +7374,8 @@ int main(int argc, char** argv)
                 pendingMenu.action = MenuAction::SaveAndQuit; menuStep = 10; menuFrames = 0;
             } else if (menuStep == 10 && menuFrames == 3) {
                 const bool fast = lastQuitMs < 1000.0;
-                const bool down = gameState == 0 && WorldJobs().queued() == 0 && TerrainGpu_Pending() == 0 && TerrainArena_Stats().vertexCapacity == 0;
+                // (#556: the teleport's loading screen was still up at the quit; it must not outlive the world)
+                const bool down = gameState == 0 && !loading && WorldJobs().queued() == 0 && TerrainGpu_Pending() == 0 && TerrainArena_Stats().vertexCapacity == 0;
                 menuOk &= fast && down;
                 printf("bench: menus: quit to the menu while streaming took %.0f ms (under 1 s), torn down (#270): %s -> %s\n", lastQuitMs,
                        fast && down ? "yes" : "NO", menuOk ? "PASS" : "FAIL");
@@ -7420,6 +7421,9 @@ int main(int argc, char** argv)
                     player.flyMode = false;
                     { const double q0 = GetTime(); unloadWorld(world); lastQuitMs = (GetTime() - q0) * 1000.0; } // (#270: must never block for seconds)
                     if (bench) printf("bench: quit to the menu: the world unloaded in %.0f ms\n", lastQuitMs);
+                    // A quit from the loading screen (a spawn or teleport in progress, #556) takes it down too: only the in-game
+                    // draw ends it, so it stayed up behind the menu (benches wait out a loading screen and never finished).
+                    loading = false; spawnLoad = false;
                     Animals_Reset();
                     Particles_Clear();
                     worldFresh = false;
