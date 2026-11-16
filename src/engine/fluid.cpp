@@ -9,6 +9,7 @@
 #include "terraindeltas.h"
 #include "voxel.h"
 #include "waterfield.h"
+#include "watersurface.h"
 #include "world.h"
 #include "worldtypes.h"
 
@@ -1287,6 +1288,7 @@ void Fluid::Reset() {
         pubStats = Stats{};
     }
     WaterField::Clear(); // only generated water until the simulation publishes again
+    WaterSurface::Clear(); // the old world's water surface map (#639): a new field may reuse its address
     accum = 0.0;
 }
 
