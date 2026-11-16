@@ -669,12 +669,7 @@ RiverNetwork::RiverNetwork(const PlanetErosion& ero, float radius, const Params&
         const auto lk = fineLake.find(nodeCell[k]);
         floorL[k] = lk != fineLake.end() ? std::max(lakes[lk->second].level, below) : below;
     }
-    std::vector<float> minChild(M, 1e30f);
-    for (int k : topo) {
-        L[k] = std::max(floorL[k], std::min(own[k], minChild[k]));
-        const int p = nodeParent[k];
-        if (p >= 0) { minChild[p] = std::min(minChild[p], L[k]); if (mainChildN[p] < 0 || area[k] > area[mainChildN[p]]) mainChildN[p] = k; }
-    }
+    for (int k : topo) { const int p = nodeParent[k]; if (p >= 0 && (mainChildN[p] < 0 || area[k] > area[mainChildN[p]])) mainChildN[p] = k; }
     // Positions: each node's cell centre eased toward its main tributary's and its outlet's (shared by every link that
     // meets there, so the curves join exactly and the 50 m grid's stairs soften).
     std::vector<Vector3> centreN(M), pos(M);
@@ -684,10 +679,49 @@ RiverNetwork::RiverNetwork(const PlanetErosion& ero, float radius, const Params&
         const Vector3 b = nodeParent[k] >= 0 ? centreN[nodeParent[k]] : centreN[k];
         pos[k] = Vector3Normalize(Vector3Add(Vector3Scale(centreN[k], 0.5f), Vector3Add(Vector3Scale(a, 0.25f), Vector3Scale(b, 0.25f))));
     }
-    // Pieces: one per link, node to node (or into the sea cell). A head's trickle is at least 1.6 m wide and 0.3 m deep: the
-    // water mesh draws nothing shallower than 0.15 m, so the old 0.8 m x 0.1 m seep showed no water at all (#609).
-    auto widthOf = [&](float a) { const float s = sqrtf(a / 7.06e6f); return std::max(0.8f, std::min(3.0f + 2.5f * s, 45.0f) * headRamp(a)); };
-    auto depthOf = [&](float a) { const float s = sqrtf(a / 7.06e6f); return std::max(0.3f, std::min(1.2f + 0.6f * s, 6.0f) * headRamp(a)); };
+    // Widths and depths by drainage. A head's trickle is at least 2 m wide and 0.5 m deep (#631: a 1.6 m x 0.3 m one showed
+    // as an empty trench - the water mesh draws nothing under 0.15 m, and coarser terrain never resolved the channel).
+    auto widthOf = [&](float a) { const float s = sqrtf(a / 7.06e6f); return std::max(1.0f, std::min(3.0f + 2.5f * s, 45.0f) * headRamp(a)); }; // half width
+    auto depthOf = [&](float a) { const float s = sqrtf(a / 7.06e6f); return std::max(0.5f, std::min(1.2f + 0.6f * s, 6.0f) * headRamp(a)); };
+    // Banks (#640): the bake's level stood over the real ground beside a third of the rivers (the runtime adds detail the
+    // bake's 50 m cells average away), and the water ended there as a wall. Each node's level is held 0.3 m under the bank
+    // ground sampled 2 m and 6 m beyond both edges, at the node and halfway along its link, lowered by at most kMaxLower
+    // (a deeper deficit is a slope the river runs along, not a bank: cutting that far made trenches). In parallel: ~6 field
+    // samples a node.
+    if (params.bankHeight) {
+        constexpr float kMaxLower = 3.0f;
+        const int T = std::max(1u, std::min(16u, std::thread::hardware_concurrency()));
+        std::vector<std::thread> pool;
+        for (int t = 0; t < T; ++t)
+            pool.emplace_back([&, t] {
+                for (int k = t; k < M; k += T) {
+                    if (fillLevel.count(nodeCell[k])) continue; // lakes and filled basins keep the flood's level
+                    const Vector3 P = Vector3Scale(pos[k], R);
+                    const Vector3 Q = nodeParent[k] >= 0 ? Vector3Scale(pos[nodeParent[k]], R) : P;
+                    const Vector3 along = Vector3Length(Vector3Subtract(Q, P)) > 1.0f ? Vector3Normalize(Vector3Subtract(Q, P))
+                                         : Vector3Normalize(Vector3CrossProduct(pos[k], fabsf(pos[k].y) < 0.9f ? Vector3{ 0, 1, 0 } : Vector3{ 1, 0, 0 }));
+                    const Vector3 side = Vector3Normalize(Vector3CrossProduct(along, pos[k]));
+                    const float half = widthOf(area[k]);
+                    float cap = 1e30f;
+                    const Vector3 at[2] = { P, Vector3Scale(Vector3Add(P, Q), 0.5f) };
+                    for (int a = 0; a < 2; ++a)
+                        for (float off : { half + 2.0f, half + 6.0f }) {
+                            if (a == 1 && off > half + 2.0f) continue;
+                            for (int s = -1; s <= 1; s += 2)
+                                cap = std::min(cap, params.bankHeight(Vector3Normalize(Vector3Add(at[a], Vector3Scale(side, s * off)))) - 0.3f);
+                        }
+                    own[k] = std::max(std::min(own[k], cap), own[k] - kMaxLower);
+                }
+            });
+        for (auto& th : pool) th.join();
+    }
+    std::vector<float> minChild(M, 1e30f);
+    for (int k : topo) {
+        L[k] = std::max(floorL[k], std::min(own[k], minChild[k]));
+        const int p = nodeParent[k];
+        if (p >= 0) minChild[p] = std::min(minChild[p], L[k]);
+    }
+    // Pieces: one per link, node to node (or into the sea cell).
     nodePiece.assign(M, -1);
     for (int k = 0; k < M; ++k) {
         const int p = nodeParent[k];
