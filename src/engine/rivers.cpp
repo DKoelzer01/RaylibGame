@@ -684,9 +684,10 @@ RiverNetwork::RiverNetwork(const PlanetErosion& ero, float radius, const Params&
         const Vector3 b = nodeParent[k] >= 0 ? centreN[nodeParent[k]] : centreN[k];
         pos[k] = Vector3Normalize(Vector3Add(Vector3Scale(centreN[k], 0.5f), Vector3Add(Vector3Scale(a, 0.25f), Vector3Scale(b, 0.25f))));
     }
-    // Pieces: one per link, node to node (or into the sea cell).
-    auto widthOf = [&](float a) { const float s = sqrtf(a / 7.06e6f); return std::max(0.4f, std::min(3.0f + 2.5f * s, 45.0f) * headRamp(a)); };
-    auto depthOf = [&](float a) { const float s = sqrtf(a / 7.06e6f); return std::max(0.1f, std::min(1.2f + 0.6f * s, 6.0f) * headRamp(a)); };
+    // Pieces: one per link, node to node (or into the sea cell). A head's trickle is at least 1.6 m wide and 0.3 m deep: the
+    // water mesh draws nothing shallower than 0.15 m, so the old 0.8 m x 0.1 m seep showed no water at all (#609).
+    auto widthOf = [&](float a) { const float s = sqrtf(a / 7.06e6f); return std::max(0.8f, std::min(3.0f + 2.5f * s, 45.0f) * headRamp(a)); };
+    auto depthOf = [&](float a) { const float s = sqrtf(a / 7.06e6f); return std::max(0.3f, std::min(1.2f + 0.6f * s, 6.0f) * headRamp(a)); };
     nodePiece.assign(M, -1);
     for (int k = 0; k < M; ++k) {
         const int p = nodeParent[k];

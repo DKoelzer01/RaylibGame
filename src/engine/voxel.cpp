@@ -758,6 +758,21 @@ float PlanetField::waterElevation(Vector3 dir, float fp) const {
     return w;
 }
 
+float PlanetField::waterElevationMesh(Vector3 dir, float fp) const {
+    const float w = waterElevation(dir, fp);
+    if (w != kNoWater || fp < 0.2f || fp > 8.0f) return w;
+    const RiverNetwork* net = rivers();
+    if (!net || !net->bakeNative()) return w;
+    // The lattice puts a node every 4 samples: a stream narrower than that falls between them (the water at a river's head
+    // was never drawn, #609). Out to half a step from the centreline, a sample whose ground stands over the water takes it.
+    const float ext = 2.0f * fp + 0.5f;
+    const RiverNetwork::Hit rh = net->nearest(dir, ext + 1.0f);
+    if (!rh.found || rh.dist >= ext || rh.dist < rh.halfWidth * 1.05f) return w;
+    float lv, lo;
+    if (net->lakeAt(dir, lv, lo) &&lo < 2.0f * RiverNetwork::kLakeMargin) return w; // lakes keep their own shore
+    return elevation(dir, fp) > rh.level - 0.1f ? rh.level : w;
+}
+
 bool PlanetField::inlandWaterNear(Vector3 dir, float extent, float fp) const {
     if (moon) return false;
     const float sx = dir.x * radius, sy = dir.y * radius, sz = dir.z * radius;
@@ -1513,47 +1528,98 @@ VoxelMaterial PlanetField::materialSkyHinted(Vector3 p, float base, float fp, Ve
         if (lat > 0.93f + 0.03f * wobble) return VoxelMaterial::Ice;                                         // polar cap
         if (e > snowLine + 250.0f && slope < 0.06f && shade > -0.2f) return VoxelMaterial::Ice;              // cold hollows
         if (lat > 0.82f + 0.08f * wobble + 0.02f * ragged / 45.0f || e > snowLine) return skin ? VoxelMaterial::Snow : rockHere(); // rock under the snow (ice only in the hollows)
-        // Inland water: sand on the wet shores. Beds (#595): rivers by how fast they run (the reach's slope) - river
-        // stones in fast reaches, sand with gravel bars at a moderate pace, clay with gravel bars in slow ones (#206: clay
-        // in river beds); lakes and ponds keep clay with gravel bars in the deeper middle.
-        constexpr float kWetReach = 60.0f; // m: floodplains and wet shores this far out
+        // Inland water (#609, playtest 8: "rivers should replace existing terrain materials in the shape that already exists"):
+        // a material swap on the ground as it lies, by how wet it is - its height over the water, its distance from the
+        // water's edge (scaled to the river: a trickle wets almost nothing) and how fast the reach runs. No band of a fixed
+        // width: every edge is a threshold on a smooth wetness dithered by a fine (~1.5 m) and a coarse (~15 m) noise, so
+        // the per-vertex materials blend into ragged, mottled edges instead of a line. Beds by flow speed (#595): river
+        // stones in fast reaches, sand with gravel bars at a moderate pace, silt and sand in slow ones, clay under the skin
+        // (#206: digging a river bed finds clay); lakes and ponds keep clay with gravel bars in the deeper middle.
+        constexpr float kWetReach = 60.0f; // m: floodplains and wet shores at most this far out
         if (e > 0.0f && inlandWaterNear(up, kWetReach)) {
             const RiverNetwork* net = rivers();
             const RiverNetwork::Hit rh = net && fp < 128.0f ? net->nearest(up, kWetReach + 50.0f) : RiverNetwork::Hit{};
             const float w = waterElevation(up, fp);
-            const float bars = rocks.fractal(1, p.x * 0.08f, p.y * 0.08f, p.z * 0.08f);
-            if (w != kNoWater && e < w + 0.6f) {
-                if (e > w - 0.3f) return VoxelMaterial::Sand;
-                const bool river = rh.found && rh.dist < rh.halfWidth * 1.05f && fabsf(rh.level - w) < 0.5f;
-                // The stones and the sand are the bed's skin: clay under them (#206: digging a river bed finds clay).
-                if (river && rh.slope > 0.015f) return skin ? VoxelMaterial::Pebbles : VoxelMaterial::Clay;
-                if (river && rh.slope > 0.003f) return !skin ? VoxelMaterial::Clay : w - e > 1.0f && bars > 0.2f ? VoxelMaterial::Gravel : VoxelMaterial::Sand;
-                return w - e > 1.4f && bars > 0.25f ? VoxelMaterial::Gravel : VoxelMaterial::Clay;
+            const float fine = rocks.fractal(2, p.x * 14.0f + 97.0f, p.y * 14.0f, p.z * 14.0f);   // ~1.5 m mottling
+            const float patch = rocks.fractal(2, p.x * 1.5f + 311.0f, p.y * 1.5f, p.z * 1.5f);    // ~15 m patches
+            const float mid = rocks.fractal(2, p.x * 3.7f + 53.0f, p.y * 3.7f, p.z * 3.7f);       // ~6 m
+            // The edges' threshold noise: mostly the ~6 m one, so an edge is a smooth wandering curve at the vertices (the
+            // 1.5 m one alone flipped single vertices: stair steps); the shader's height blend frays it at the pixel scale.
+            const float dither = 0.25f * fine + 0.5f * mid + 0.25f * patch;
+            const float flat = Vector3DotProduct(normal, up);
+            // A bed's skin is thicker than the turf's: a coarse mesh across a rapid's step strays up to ~1 m under the height map, and
+            // its lower vertices read as buried clay (round terracotta patches in the bed). Digging a bed still finds clay.
+            const bool bedSkin = depth < 1.2f + slack;
+            // Speed class of the reach: 0 fast (stones), 1 moderate (sand, gravel), 2 slow (silt, mud).
+            const int speed = !rh.found ? 2 : rh.slope > 0.015f ? 0 : rh.slope > 0.003f ? 1 : 2;
+            // The ground right at the waterline: cobbles by fast water, sand at a moderate pace, mud with sand by slow water.
+            auto waterline = [&]() {
+                if (!bedSkin) return speed == 0 ? VoxelMaterial::Gravel : VoxelMaterial::Clay;
+                if (speed == 0) return fine > 0.4f ? VoxelMaterial::Gravel : VoxelMaterial::Pebbles;
+                if (speed == 1) return fine > 0.3f ? VoxelMaterial::Gravel : VoxelMaterial::Sand;
+                return patch + 0.5f * fine > 0.15f ? VoxelMaterial::Sand : VoxelMaterial::Mud;
+            };
+            // The river's size: 0 for a trickle (half width 0.8 m at a head), 1 from ~6 m.
+            const float size = rh.found ? std::clamp((rh.halfWidth - 0.8f) / 5.2f, 0.0f, 1.0f) : 1.0f;
+            // How much beach the bank has here (0..1): patches along the river (grass meets the water in some, a strand in
+            // others), more by slow water, less by fast; on gentle ground the same height band spreads wider by itself.
+            const float beach = std::clamp(0.45f + 1.3f * patch + 0.5f * mid + (speed == 2 ? 0.25f : speed == 0 ? -0.25f : 0.0f), 0.0f, 1.0f);
+            bool keepCover = false; // a shallow margin that keeps the ground's own cover (turf to the water's edge)
+            if (w != kNoWater && e < w) { // under the water (ground just over it is the bank's, below: its beach varies)
+                const float deep = w - e; // the water's depth over this ground
+                const bool river = rh.found && rh.dist < rh.halfWidth * 1.05f && fabsf(rh.level - w) < 1.5f; // (a pond in a river stands a little over it)
+                // The shallow margin (up to ~0.45 m deep, by the beach and ragged) is the waterline's ground - by a small
+                // stream mostly the meadow's own turf, by a river where it has no beach - and the bed beyond it by the speed.
+                if (deep < 0.06f + 0.4f * beach * (0.6f + dither)) {
+                    keepCover = river && skin && (dither + 0.5f > 0.3f + 1.4f * size || beach < 0.2f + 0.3f * dither);
+                    if (!keepCover) return waterline();
+                } else {
+                    if (!bedSkin) return VoxelMaterial::Clay;
+                    if (river && speed == 0) return fine > 0.45f ? VoxelMaterial::Gravel : VoxelMaterial::Pebbles;
+                    if (river && speed == 1) return deep > 0.6f && patch + 0.4f * fine > 0.2f ? VoxelMaterial::Gravel : VoxelMaterial::Sand;
+                    if (river) return patch + 0.4f * fine > 0.3f ? VoxelMaterial::Sand : VoxelMaterial::Silt;
+                    return deep > 1.4f && patch > 0.25f ? VoxelMaterial::Gravel : VoxelMaterial::Clay;
+                }
             }
-            // Beside the water, on the surface skin (#595): floodplains - flat ground a little above a river - take silt in
-            // patches (meadow grass between them); lake and pond shores a band of wet mud.
-            if (skin && Vector3DotProduct(normal, up) > 0.96f) {
-                const float patch = rocks.fractal(2, p.x * 0.05f + 311.0f, p.y * 0.05f, p.z * 0.05f);
-                if (rh.found && rh.dist > rh.halfWidth && rh.dist < rh.halfWidth * 2.5f + 50.0f && e < rh.level + 2.5f && e > rh.level - 0.3f
-                    && patch > -0.05f + 0.25f * (net && net->bakeNative() ? Smoothstep(rh.level, rh.level + 2.5f, e) /* by the height over the water: the ground's own shape, #609 */
-                                                   : Smoothstep(rh.halfWidth, rh.halfWidth * 2.5f + 50.0f, rh.dist)))
-                    return VoxelMaterial::Silt;
+            if (!keepCover && rh.found && rh.dist > rh.halfWidth * 0.9f) {
+                // Beside a river.
+                const float edge = std::max(0.0f, rh.dist - rh.halfWidth); // m out from the water's edge
+                const float over = e - rh.level;                            // m over the water
+                // The waterline: a thin wet margin, 0.3 m by a trickle to ~2.5 m by a river (none to ~3.5 m by the beach), only
+                // near the water's own height.
+                const float wl = (0.3f + 2.2f * size) * (0.1f + 1.3f * beach);
+                const float wet = (1.0f - Smoothstep(0.0f, wl, edge)) * (1.0f - Smoothstep(0.1f, (0.5f + 0.4f * size) * (0.3f + 1.2f * beach), over));
+                if (over > -0.5f && wet > 0.5f + 0.7f * dither) return waterline();
+                // Floodplain silt: only by real rivers, on flat ground barely over the water, in ragged patches thinning
+                // out with the distance and the height; none by streams.
+                const float reach = size * size * (rh.halfWidth + 15.0f);
+                const float high = 0.3f + 1.2f * size;
+                const float plain = (1.0f - Smoothstep(0.3f * reach, reach, edge)) * (1.0f - Smoothstep(0.4f * high, high, over));
+                if (skin && flat > 0.97f && reach > 1.0f && over > -0.3f && plain > 0.55f + 0.5f * patch + 0.4f * fine) return VoxelMaterial::Silt;
+            }
+            // Lake and pond shores: wet mud and sand by the height over the level, ragged.
+            if (skin && flat > 0.9f) {
                 float lv, lo;
-                if (net && fp < 1024.0f && net->lakeAt(up, lv, lo) && lo > 0.0f && lo < 10.0f && e < lv + 1.2f && patch > -0.3f) return VoxelMaterial::Mud;
-                bool pondShore = false;
+                if (net && fp < 1024.0f && net->lakeAt(up, lv, lo) && lo < 2.0f * RiverNetwork::kLakeMargin && e > lv - 0.5f) {
+                    const float wet = 1.0f - Smoothstep(0.1f, 0.9f, e - lv);
+                    if (wet > 0.5f + 0.7f * dither) return patch + 0.5f * fine > 0.2f ? VoxelMaterial::Sand : VoxelMaterial::Mud;
+                }
+                float pondWet = 0.0f;
                 if (fp < 96.0f)
                     ForPondCellsNear(Vector3Scale(up, radius), kPondReach, [&](int x, int y, int z) {
                         const Pond pd = pondOfCell(x, y, z);
-                        if (!pd.exists || pondShore) return;
+                        if (!pd.exists) return;
                         const float dist = Vector3Distance(up, pd.dir) * radius;
-                        pondShore = dist > pd.r * 0.9f && dist < pd.r + 6.0f && e < pd.level + 1.0f && e > pd.level - 0.4f;
+                        if (dist > pd.r * 0.9f && dist < pd.r + 6.0f && e > pd.level - 0.4f)
+                            pondWet = std::max(pondWet, 1.0f - Smoothstep(0.1f, 0.8f, e - pd.level));
                     });
-                if (pondShore && patch > -0.3f) return VoxelMaterial::Mud;
+                if (pondWet > 0.5f + 0.7f * dither) return VoxelMaterial::Mud;
             }
         }
         if (slope > 0.45f) return rockHere();                                                               // cliffs: bare stone
         if (e < -80.0f) return VoxelMaterial::Gravel;                                                        // deep sea floor
-        if (e < 6.0f + 4.0f * wobble) return VoxelMaterial::Sand;                                            // beaches, shallows
+        // Beaches, shallows: a ragged edge (#609: the smooth climate wobble alone drew the sand's edge as a line).
+        if (e < 7.5f + 4.0f * wobble && e < 6.0f + 4.0f * wobble + 1.5f * rocks.fractal(2, p.x * 6.0f + 53.0f, p.y * 6.0f, p.z * 6.0f)) return VoxelMaterial::Sand;
         // Biomes (Plan 5 B). The terrain shader tints each by the climate (red sand in the badlands,
         // dry grass on the savanna, dark mud in swamps).
         const Biome biome = biomeAt(up, e);
@@ -1562,7 +1628,7 @@ VoxelMaterial PlanetField::materialSkyHinted(Vector3 p, float base, float fp, Ve
         if (slope > 0.3f || e > 800.0f + 100.0f * wobble) return VoxelMaterial::Gravel;                     // scree, alpine
         if (biome == Biome::Tundra) return skin ? VoxelMaterial::Gravel : VoxelMaterial::Regolith;          // tundra: stony ground over dirt
         if (biome == Biome::Swamp) { // mud flats between the reeds: clay (#206), and clay under the swamp's turf
-            if (skin && rocks.fractal(1, p.x * 0.12f, p.y * 0.12f, p.z * 0.12f) > 0.15f) return VoxelMaterial::Clay;
+            if (skin && rocks.fractal(1, p.x * 0.12f, p.y * 0.12f, p.z * 0.12f) > 0.15f + 0.2f * rocks.fractal(2, p.x * 14.0f + 97.0f, p.y * 14.0f, p.z * 14.0f)) return VoxelMaterial::Clay; // ragged edges (#609)
             if (!skin) return VoxelMaterial::Clay;
         }
         // Grassland. Undug ground facing up is turf all the way down to the soil layer (the mesh strays
@@ -1708,7 +1774,7 @@ static ChunkWaterGen GeneratedWaterOf(const DensityField& field, Vector3 origin,
     for (int z = -1; z <= LN; ++z)
         for (int y = -1; y <= LN; ++y)
             for (int x = -1; x <= LN; ++x)
-                R(x, y, z) = pf->waterElevation(Vector3Normalize(P(x, y, z)), stride);
+                R(x, y, z) = pf->waterElevationMesh(Vector3Normalize(P(x, y, z)), stride);
     // A dry point next to wet ones takes the lower of their level and just under its own ground, not sea level:
     // between them the interpolated surface then stays level out to where the shore rises, or runs just under low
     // ground, instead of sloping down across it (sheets of water at chunk corners). Dry points with no wet

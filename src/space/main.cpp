@@ -2728,8 +2728,8 @@ int main(int argc, char** argv)
                                 check(s.headFalls == 0, "no river starts at a waterfall (#625)");
                                 Vector3 hd, dn;
                                 if (net->nearestHead(pf->findSpawnDir(p->seed), 2.0f, hd, dn))
-                                    printf("bench: rivers: a river head %.1f km from the start; look downstream from behind it: --view-fall %.6f %.6f %.6f %.5f %.5f %.5f --view-fall-dist 40\n",
-                                           Vector3Distance(hd, pf->findSpawnDir(p->seed)) * pf->radius / 1000.0f, hd.x, hd.y, hd.z, -dn.x, -dn.y, -dn.z);
+                                    printf("bench: rivers: a river head %.1f km from the start; look downstream from behind it: --view-fall %.6f %.6f %.6f %.5f %.5f %.5f --view-fall-dist 40 (up it from below: the same with %.5f %.5f %.5f --view-fall-dist 30)\n",
+                                           Vector3Distance(hd, pf->findSpawnDir(p->seed)) * pf->radius / 1000.0f, hd.x, hd.y, hd.z, -dn.x, -dn.y, -dn.z, dn.x, dn.y, dn.z);
                             }
                             printf("bench: rivers: longest %.1f km, walked every 5 m: %.0f%% wet, longest dry run %.0f m, worst rise %.3f m, from %.1f m to %.1f m\n",
                                    s.longestKm, 100.0f * wetShare, worstDry, worstUp, levels.empty() ? 0.0f : levels.front(), levels.empty() ? 0.0f : levels.back());
@@ -2756,36 +2756,70 @@ int main(int argc, char** argv)
                                 printf("bench: rivers: %zu waterfalls (> 10 m: %d, > 30 m: %d, tallest %.0f m)\n", falls.size(), f10, f30, tallest);
                                 {   // Beds and floodplains (#595), every 500 m along every river: the bed's material by how fast the
                                     // reach runs, and the ground 25 m to each side where it is a floodplain (flat, < 2.5 m over the water).
-                                    int cls[3] = {}, own[3] = {}, plain = 0, silt = 0;
+                                    // Banks (#609): the ground beside the water at 1-25 m out from its edge, where it lies near the
+                                    // water's height (-0.3..+2 m, where the old silt band was), by the river's size (stream: half width
+                                    // < 1.5 m, mid, river: >= 6 m): the share taking a wet material (silt, mud, river stones, clay). A
+                                    // road-like band shows as a high share far out; a trickle should wet almost nothing.
+                                    int cls[3] = {}, own[3] = {};
+                                    constexpr int kD = 5;
+                                    const float kDist[kD] = { 1.0f, 3.0f, 6.0f, 12.0f, 25.0f };
+                                    int bankN[3][kD] = {}, bankWet[3][kD] = {}, bankSilt[3][kD] = {};
+                                    const Vector3 home609 = pf->findSpawnDir(p->seed);
+                                    float bestBank[2] = { 1e30f, 1e30f }; Vector3 bankDir[2]{}, bankDown[2]{};
                                     net->forEachCentrePoint(500.0f, [&](Vector3 d, float level, float) {
                                         const RiverNetwork::Hit h = net->nearest(d, 5.0f);
                                         const float e = pf->elevation(d);
-                                        if (!h.found || e > level - 0.5f || level < 1.0f) return; // a bed under water, inland
-                                        const Vector3 bed = Vector3Scale(d, pf->radius + e - 0.2f);
-                                        const VoxelMaterial m = pf->material(bed, pf->baseDensity(bed));
+                                        if (!h.found || level < 1.0f) return; // inland
                                         float lv, lo;
-                                        if (net->lakeAt(d, lv, lo) && lo < RiverNetwork::kLakeMargin) return; // a lake's bed
-                                        if (m == VoxelMaterial::Ice || m == VoxelMaterial::Snow || m == VoxelMaterial::Rock) return; // frozen, or a rock outcrop in the bed
-                                        const int k = h.slope > 0.015f ? 0 : h.slope > 0.003f ? 1 : 2;
-                                        ++cls[k];
-                                        own[k] += k == 0 ? m == VoxelMaterial::Pebbles
-                                                : k == 1 ? (m == VoxelMaterial::Sand || m == VoxelMaterial::Gravel)
-                                                         : (m == VoxelMaterial::Clay || m == VoxelMaterial::Gravel);
-                                        const Vector3 side = Vector3Normalize(Vector3CrossProduct(d, h.down));
-                                        for (int sgn = -1; sgn <= 1; sgn += 2) {
-                                            const Vector3 q = Vector3Normalize(Vector3Add(d, Vector3Scale(side, sgn * (h.halfWidth + 25.0f) / pf->radius)));
-                                            const float eq = pf->elevation(q);
-                                            if (eq < h.level || eq > h.level + 2.0f || pf->waterElevation(q) != PlanetField::kNoWater) continue;
-                                            const Vector3 g = Vector3Scale(q, pf->radius + eq - 0.2f);
-                                            ++plain;
-                                            silt += pf->material(g, pf->baseDensity(g)) == VoxelMaterial::Silt;
+                                        if (net->lakeAt(d, lv, lo) && lo < 2.0f * RiverNetwork::kLakeMargin) return; // a lake's bed or shore
+                                        if (e <= level - 0.5f) { // a bed under water
+                                            const Vector3 bed = Vector3Scale(d, pf->radius + e - 0.2f);
+                                            const VoxelMaterial m = pf->material(bed, pf->baseDensity(bed));
+                                            if (m != VoxelMaterial::Ice && m != VoxelMaterial::Snow && m != VoxelMaterial::Rock) { // not frozen, or a rock outcrop
+                                                const int k = h.slope > 0.015f ? 0 : h.slope > 0.003f ? 1 : 2;
+                                                ++cls[k];
+                                                own[k] += k == 0 ? (m == VoxelMaterial::Pebbles || m == VoxelMaterial::Gravel)
+                                                        : k == 1 ? (m == VoxelMaterial::Sand || m == VoxelMaterial::Gravel)
+                                                                 : (m == VoxelMaterial::Silt || m == VoxelMaterial::Sand || m == VoxelMaterial::Clay || m == VoxelMaterial::Gravel);
+                                            }
                                         }
+                                        const int sz = h.halfWidth < 1.5f ? 0 : h.halfWidth < 6.0f ? 1 : 2;
+                                        if (sz > 0 && h.slope < 0.015f && level > 25.0f) { // the nearest calm mid-size and big river inland of the start (to look at its banks)
+                                            const float ds = Vector3Distance(d, home609);
+                                            if (ds < bestBank[sz - 1]) { bestBank[sz - 1] = ds; bankDir[sz - 1] = d; bankDown[sz - 1] = h.down; }
+                                        }
+                                        const Vector3 side = Vector3Normalize(Vector3CrossProduct(d, h.down));
+                                        for (int sgn = -1; sgn <= 1; sgn += 2)
+                                            for (int i = 0; i < kD; ++i) {
+                                                const Vector3 q = Vector3Normalize(Vector3Add(d, Vector3Scale(side, sgn * (h.halfWidth + kDist[i]) / pf->radius)));
+                                                const float eq = pf->elevation(q);
+                                                if (eq < h.level - 0.3f || eq > h.level + 2.0f || pf->waterElevation(q) != PlanetField::kNoWater) continue;
+                                                const Vector3 g = Vector3Scale(q, pf->radius + eq - 0.2f);
+                                                const VoxelMaterial m = pf->material(g, pf->baseDensity(g));
+                                                ++bankN[sz][i];
+                                                bankWet[sz][i] += m == VoxelMaterial::Silt || m == VoxelMaterial::Mud || m == VoxelMaterial::Pebbles || m == VoxelMaterial::Clay;
+                                                bankSilt[sz][i] += m == VoxelMaterial::Silt;
+                                            }
                                     });
                                     auto share = [](int a, int b) { return b ? 100.0f * a / b : 0.0f; };
-                                    printf("bench: rivers: beds (#595): fast %d (%.0f%% river stones), moderate %d (%.0f%% sand or gravel), slow %d (%.0f%% clay or gravel); "
-                                           "floodplain points %d (%.0f%% silt)\n", cls[0], share(own[0], cls[0]), cls[1], share(own[1], cls[1]), cls[2], share(own[2], cls[2]), plain, share(silt, plain));
+                                    printf("bench: rivers: beds (#595): fast %d (%.0f%% river stones or gravel), moderate %d (%.0f%% sand or gravel), slow %d (%.0f%% silt, sand, clay or gravel)\n",
+                                           cls[0], share(own[0], cls[0]), cls[1], share(own[1], cls[1]), cls[2], share(own[2], cls[2]));
+                                    const char* szName[3] = { "streams (half width < 1.5 m)", "mid (1.5-6 m)", "rivers (>= 6 m)" };
+                                    for (int s2 = 0; s2 < 3; ++s2) {
+                                        printf("bench: rivers: banks (#609), %s: wet ground (silt) at", szName[s2]);
+                                        for (int i = 0; i < kD; ++i) printf(" %.0f m %.0f%% (%.0f%%) n %d%s", kDist[i], share(bankWet[s2][i], bankN[s2][i]), share(bankSilt[s2][i], bankN[s2][i]), bankN[s2][i], i + 1 < kD ? "," : "\n");
+                                    }
+                                    for (int s2 = 0; s2 < 2; ++s2)
+                                        if (bestBank[s2] < 1e29f)
+                                            printf("bench: rivers: nearest calm %s river %.1f km from the start; look upstream along it: --view-fall %.6f %.6f %.6f %.5f %.5f %.5f --view-fall-dist 30\n",
+                                                   s2 ? "big" : "mid-size", bestBank[s2] * pf->radius / 1000.0f, bankDir[s2].x, bankDir[s2].y, bankDir[s2].z, bankDown[s2].x, bankDown[s2].y, bankDown[s2].z);
                                     check(share(own[0], cls[0]) > 60.0f && share(own[1], cls[1]) > 60.0f && share(own[2], cls[2]) > 60.0f, "beds by the river's speed (#595)");
-                                    check(share(silt, plain) > 10.0f, "silt on the floodplains (#595)");
+                                    // A trickle wets almost nothing beyond its edge, and no river lays a road: little wet ground 25 m out.
+                                    check(share(bankWet[0][1] + bankWet[0][2] + bankWet[0][3] + bankWet[0][4], bankN[0][1] + bankN[0][2] + bankN[0][3] + bankN[0][4]) < 3.0f,
+                                          "streams wet almost nothing 3 m+ from their edge (#609)");
+                                    check(share(bankWet[2][4], bankN[2][4]) < 20.0f && share(bankWet[1][3] + bankWet[1][4], bankN[1][3] + bankN[1][4]) < 10.0f,
+                                          "no band of wet ground far from a river (#609)");
+                                    check(share(bankSilt[2][1] + bankSilt[2][2], bankN[2][1] + bankN[2][2]) > 5.0f, "silt in patches on big rivers' floodplains (#595)");
                                 }
                                 {   // Perched rivers (#547; the measure from the water session's m102): a river running beside lower
                                     // ground, as along a canyon's edge instead of in it. Every 100 m along every river (outside lakes):
@@ -5423,6 +5457,9 @@ int main(int argc, char** argv)
                         const double t = GetTime() - flowEdit;
                         if (flowReachT < 0.0 && Fluid::Wet(*p, flowEnd)) flowReachT = t;
                         if (flowCaveT < 0.0 && Fluid::Wet(*p, flowCave)) flowCaveT = t;
+                        // Every step's time seen until the water sleeps (#627): a single worst step is one-off spikes (a brick wake, the OS), so the gate is a rolling mean.
+                        static std::vector<float> flowSteps; static std::vector<double> flowStepT; static long long flowLastStep = -1;
+                        { const Fluid::Stats fs = Fluid::GetStats(); if (fs.steps != flowLastStep) { flowLastStep = fs.steps; if (fs.steps > 0 && flowSleepT < 0.0) { flowSteps.push_back((float)fs.stepMs); flowStepT.push_back(t); } } }
                         static double lastPrint = 0.0;
                         if (t - lastPrint >= 5.0) {
                             lastPrint = t;
@@ -5449,9 +5486,25 @@ int main(int argc, char** argv)
                             TakeScreenshot("bench_flow_end.png");
                             const Fluid::Stats s = Fluid::GetStats();
                             const float caveTop = Fluid::SurfaceAbove(*p, flowCave, 16.0f);
-                            const bool pass = flowReachT >= 0.0 && flowCaveT >= 0.0 && flowSleepT >= 0.0 && s.maxStepMs < 30.0;
-                            printf("bench: flow: reached the channel end after %.1f s, the chamber after %.1f s; water stands %.1f m over the chamber floor point (feed level %.1f m above it); asleep after %.1f s; step max %.2f ms -> %s\n",
-                                   flowReachT, flowCaveT, caveTop, 14.5f, flowSleepT, s.maxStepMs, pass ? "PASS" : "FAIL");
+                            // The gate (#627): the worst 1 s rolling mean of the step time (a sustained cost, not one spike); the
+                            // working steps' percentiles and the single max are printed beside it.
+                            float roll = 0.0f;
+                            for (size_t a = 0, b = 0; b < flowStepT.size(); ++b) {
+                                while (flowStepT[b] - flowStepT[a] > 1.0) ++a;
+                                if (flowStepT[b] - flowStepT[0] < 1.0) continue; // whole windows only (the first step alone is no mean)
+                                float sum = 0.0f; for (size_t k = a; k <= b; ++k) sum += flowSteps[k];
+                                roll = std::max(roll, sum / (float)(b - a + 1));
+                            }
+                            std::vector<float> sorted;
+                            for (float v : flowSteps) if (v > 0.01f) sorted.push_back(v);
+                            std::sort(sorted.begin(), sorted.end());
+                            auto pct = [&](double q) { return sorted.empty() ? 0.0f : sorted[std::min(sorted.size() - 1, (size_t)(q * sorted.size()))]; };
+                            const int over30 = (int)(sorted.end() - std::upper_bound(sorted.begin(), sorted.end(), 30.0f));
+                            const bool pass = flowReachT >= 0.0 && flowCaveT >= 0.0 && flowSleepT >= 0.0 && roll < 30.0f;
+                            printf("bench: flow: %zu steps (%zu working) until asleep: worst 1 s mean %.2f ms (the gate, < 30 ms); working p50 %.2f, p95 %.2f, p99 %.2f ms, %d over 30 ms, max %.2f ms (#627)\n",
+                                   flowSteps.size(), sorted.size(), roll, pct(0.5), pct(0.95), pct(0.99), over30, s.maxStepMs);
+                            printf("bench: flow: reached the channel end after %.1f s, the chamber after %.1f s; water stands %.1f m over the chamber floor point (feed level %.1f m above it); asleep after %.1f s; step 1 s mean %.2f ms (max %.2f) -> %s\n",
+                                   flowReachT, flowCaveT, caveTop, 14.5f, flowSleepT, roll, s.maxStepMs, pass ? "PASS" : "FAIL");
                             printf("bench: flow: bench_flow.png, bench_flow_end.png\n");
                             benchFlow = false;
                         }

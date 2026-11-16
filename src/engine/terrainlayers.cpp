@@ -169,16 +169,16 @@ Image GenerateTerrainLayerImage(int layer, int size) {
                     const float smear = ValueNoise(u * 0.5f, v, 24, 82u);
                     c = Mix({ 150, 92, 64, 255 }, { 196, 134, 98, 255 }, 0.65f * tone + 0.25f * smear);
                     float f1, f2; uint32_t id;
-                    Worley(u, v, 14, 83u, f1, f2, id);
-                    c = Scale(c, 0.94f + 0.12f * ((id & 0xFF) / 255.0f)); // each crack plate a touch lighter or darker
+                    Worley(u, v, 34, 83u, f1, f2, id); // ~0.6 m plates, faint (#609: 1.4 m plates with dark cracks read as paving)
+                    c = Scale(c, 0.97f + 0.06f * ((id & 0xFF) / 255.0f)); // each crack plate a touch lighter or darker
                     const float crack = 1.0f - std::clamp((f2 - f1) * 40.0f, 0.0f, 1.0f);
-                    c = Mix(c, { 92, 54, 38, 255 }, crack * 0.85f);
+                    c = Mix(c, { 112, 68, 48, 255 }, crack * 0.4f);
                     c = Scale(c, 0.97f + 0.06f * Rand01(x, y, 84u));
                     break;
                 }
                 case LayerPebbles: { // river stones (#595): big, smooth, rounded, mixed warm and grey, packed in sand
                     float f1, f2; uint32_t id;
-                    Worley(u, v, 18, 91u, f1, f2, id);
+                    Worley(u, v, 44, 91u, f1, f2, id); // ~0.45 m stones (18 per tile read as 1 m paving slabs, #609)
                     const float edge = std::clamp((f2 - f1) * 5.0f, 0.0f, 1.0f);
                     const float hue = (id >> 8 & 0xFF) / 255.0f;
                     Color stone = hue < 0.4f ? Mix({ 112, 108, 102, 255 }, { 168, 164, 156, 255 }, hue * 2.5f)      // grey
@@ -194,10 +194,10 @@ Image GenerateTerrainLayerImage(int layer, int size) {
                     const float streak = ValueNoise(u * 0.25f, v, 40, 102u);
                     c = Mix({ 138, 122, 96, 255 }, { 176, 160, 130, 255 }, 0.6f * tone + 0.3f * streak);
                     if (Rand01(x, y, 103u) > 0.988f) c = Scale(c, 0.62f);
-                    float f1, f2; uint32_t id;
-                    Worley(u, v, 9, 104u, f1, f2, id);
-                    const float crack = 1.0f - std::clamp((f2 - f1) * 60.0f, 0.0f, 1.0f); // a few dried cracks
-                    c = Mix(c, { 104, 90, 70, 255 }, crack * 0.5f);
+                    // Damp darker patches and a fine grain; no crack plates (#609: 2 m polygons read as a paved road).
+                    const float damp = Fbm(u, v, 5, 3, 104u);
+                    if (damp > 0.55f) c = Mix(c, { 104, 92, 72, 255 }, std::min(1.0f, (damp - 0.55f) * 4.0f) * 0.55f);
+                    c = Scale(c, 0.95f + 0.1f * ValueNoise(u, v, 96, 105u));
                     break;
                 }
                 case LayerMud: { // wet mud (#595): dark brown, glossy puddled patches, footprint-like pits

@@ -208,7 +208,9 @@ namespace {
     }
     std::string Resolve(const std::string& d) {
         const std::filesystem::path p(d);
-        if (p.is_absolute()) return d;
+        // A UNC path (\\server\share\... or //server/...) is absolute too: this libstdc++ does not say so, and one was joined
+        // under the root as <root>/<day>/DEWEYSERVER/files/... (#628).
+        if (p.is_absolute() || (d.size() > 2 && (d[0] == '\\' || d[0] == '/') && (d[1] == '\\' || d[1] == '/'))) return d;
         return CaptureRoot() + "/" + Today("%Y-%m-%d") + "/" + d;
     }
 
