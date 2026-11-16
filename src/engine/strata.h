@@ -27,5 +27,7 @@ RockType Strata_RockAt(const StrataColumn& c, float h, unsigned int seed);
 float Strata_Hardness(RockType r);     // 0 soft .. 1 hardest: the bake's talus limit
 float Strata_Erodibility(RockType r);  // the stream-power multiplier (soft ~1.5, granite 0.15)
 const char* Strata_Item(RockType r);   // its items.txt id ("stone" for soft rock)
+// Fault scarps (#590): metres a few long curved faults raise the land at surface point s (0 off them; the bake input).
+float Strata_FaultUplift(Vector3 s, unsigned int seed);
 
 #endif

@@ -364,6 +364,9 @@ PlanetField::Land PlanetField::land(Vector3 dir, float fp) const {
     if (tBakeInput) {
         const float notch = canyonFault(sx, sy, sz);
         if (notch > 0.0f) h -= notch * 60.0f * landMask;
+        // Fault scarps (#590): a few long faults lift one side 50-300 m (scaled by "Cliffs and canyons"); the bake wears
+        // the step into an escarpment with spurs and gullies (hard rock on the raised side: Strata_Column).
+        h += Strata_FaultUplift({ sx, sy, sz }, fieldSeed) * landMask * std::min(gen.cliffs, 1.5f);
     }
     const float ravineWeight = eroded || tBakeInput ? 0.0f : landMask * std::clamp(2.0f - fp / 24.0f, 0.0f, 1.0f);
     if (ravineWeight > 0.0f) {

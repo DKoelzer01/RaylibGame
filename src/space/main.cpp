@@ -2753,6 +2753,36 @@ int main(int argc, char** argv)
                                        n, n ? sum / n : 0.0, 100.0 * deep / std::max(1, n), 100.0 * wet / std::max(1, n));
                                 if (bestD < 1e29f) printf("bench: canyons: nearest deep one %.1f km from the start; look: --view-fall %.6f %.6f %.6f %.5f %.5f %.5f\n",
                                                           sqrtf(bestD) / 1000.0f, bestDir.x, bestDir.y, bestDir.z, -bestSide.x, -bestSide.y, -bestSide.z);
+                                // Fault scarps (#590): over the whole planet (~1.5 km apart), places where the designed uplift
+                                // steps by > 40 m within 800 m, and the relief the bake left across the same span.
+                                const int N = 1 << 20;
+                                int nf = 0; double designed = 0.0, baked = 0.0; float fD = 1e30f; Vector3 fDir{}, fSide{};
+                                for (int i = 0; i < N; ++i) {
+                                    const float y = 1.0f - 2.0f * (i + 0.5f) / N, rr = sqrtf(std::max(0.0f, 1.0f - y * y)), ph = i * 2.39996323f;
+                                    const Vector3 d = { rr * cosf(ph), y, rr * sinf(ph) };
+                                    const Vector3 s = Vector3Scale(d, pf->radius);
+                                    if (pf->faultUplift(s) <= 0.0f) continue;
+                                    const Vector3 u1 = Vector3Normalize(Vector3CrossProduct(d, { 0, 1, 0 })), u2 = Vector3CrossProduct(u1, d);
+                                    float lo = 1e9f, hi = -1e9f; Vector3 dlo{}, dhi{};
+                                    for (int k = 0; k < 4; ++k) {
+                                        const float a = k * 1.5707963f;
+                                        const Vector3 q = Vector3Normalize(Vector3Add(d, Vector3Scale(Vector3Add(Vector3Scale(u1, cosf(a)), Vector3Scale(u2, sinf(a))), 800.0f / pf->radius)));
+                                        const float up = pf->faultUplift(Vector3Scale(q, pf->radius));
+                                        if (up < lo) { lo = up; dlo = q; }
+                                        if (up > hi) { hi = up; dhi = q; }
+                                    }
+                                    if (hi - lo < 40.0f) continue;
+                                    const float hl = pf->elevationBase(dlo, 50.0f), hh = pf->elevationBase(dhi, 50.0f);
+                                    if (hl < 5.0f || hh < 5.0f) continue;
+
+                                    ++nf; designed += hi - lo; baked += hh - hl;
+                                    const float dist = Vector3Distance(d, pf->findSpawnDir(p->seed)) * pf->radius;
+                                    if (dist < fD) { fD = dist; fDir = dhi; fSide = Vector3Normalize(Vector3Subtract(dlo, dhi)); } // look from the top, down the scarp
+                                }
+                                printf("bench: faults: %d land samples on fault scarps, designed step %.0f m over 1.6 km, baked relief across it %.0f m\n",
+                                       nf, nf ? designed / nf : 0.0, nf ? baked / nf : 0.0);
+                                if (fD < 1e29f) printf("bench: faults: nearest %.1f km from the start; look: --view-fall %.6f %.6f %.6f %.5f %.5f %.5f\n",
+                                                       fD / 1000.0f, fDir.x, fDir.y, fDir.z, fSide.x, fSide.y, fSide.z);
                             }
                         }
                         riverOk = ok;

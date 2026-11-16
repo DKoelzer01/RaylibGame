@@ -24,6 +24,8 @@ namespace {
     Vector3 Scaled(Vector3 s, float inv) { return { s.x * inv, s.y * inv, s.z * inv }; }
 }
 
+namespace { float FaultField(Vector3 s, unsigned int seed, float& region); }
+
 StrataColumn Strata_Column(Vector3 s, float continent, unsigned int seed) {
     StrataColumn c;
     // Provinces: basalt on the sea floor and in rare volcanic regions (~9 km), granite cores in the inland ranges (~15 km
@@ -38,6 +40,11 @@ StrataColumn Strata_Column(Vector3 s, float continent, unsigned int seed) {
     c.hardShare = (uint8_t)(255.0f * (0.35f + 0.25f * ValueNoise(Scaled(s, 1.0f / 12000.0f), seed ^ 0x5AE2u)));
     c.offset = 300.0f * (ValueNoise(Scaled(s, 1.0f / 8000.0f), seed ^ 0x711Fu) - 0.5f)
              + 70.0f * (ValueNoise(Scaled(s, 1.0f / 2500.0f), seed ^ 0x3A9Bu) - 0.5f);
+    // Fault scarps (#590): hard rock on the raised side near the line, so the escarpment stands while the bake wears it.
+    float region = 0.0f;
+    const float f = FaultField(s, seed, region);
+    if (region > 0.0f && f > -0.006f && f < 0.05f && c.province == 0)
+        c.hardShare = (uint8_t)std::max<float>(c.hardShare, 255.0f * (0.6f + 0.25f * region));
     return c;
 }
 
@@ -57,6 +64,30 @@ RockType Strata_RockAt(const StrataColumn& c, float h, unsigned int seed) {
     // Marble: a rare thin band at the foot of a resistant layer.
     if (kind < 0.08f) return t - floorf(t) < 0.35f ? RockType::Marble : RockType::Limestone;
     return kind < 0.55f ? RockType::Sandstone : RockType::Limestone;
+}
+
+namespace {
+    // Fault field (#590): the region weight (0 outside the rare fault regions) and the signed value whose zero crossing
+    // is the fault line (> 0 on the raised side). ~25 km cells give lines tens of km long; a ~6 km warp curves them.
+    float FaultField(Vector3 s, unsigned int seed, float& region) {
+        const float r = ValueNoise(Scaled(s, 1.0f / 40000.0f), seed ^ 0xFA170u);
+        region = r < 0.6f ? 0.0f : std::min(1.0f, (r - 0.6f) / 0.08f);
+        if (region <= 0.0f) return 0.0f;
+        return ValueNoise(Scaled(s, 1.0f / 25000.0f), seed ^ 0xFA171u) - 0.5f
+             + 0.04f * (ValueNoise(Scaled(s, 1.0f / 6000.0f), seed ^ 0xFA172u) - 0.5f);
+    }
+}
+
+float Strata_FaultUplift(Vector3 s, unsigned int seed) {
+    float region = 0.0f;
+    const float f = FaultField(s, seed, region);
+    if (region <= 0.0f) return 0.0f;
+    // A step ~150 m wide (the field changes ~4e-5 per metre): three cells of the bake's 50 m grid, which wears it; steep
+    // enough (~0.8-2) that the cliff profile (#588) gives the hard raised side a face.
+    float t = std::clamp((f + 0.003f) / 0.006f, 0.0f, 1.0f);
+    t = t * t * (3.0f - 2.0f * t);
+    const float offset = 50.0f + 250.0f * ValueNoise(Scaled(s, 1.0f / 30000.0f), seed ^ 0xFA173u);
+    return region * offset * t;
 }
 
 float Strata_Hardness(RockType r) {
