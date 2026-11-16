@@ -408,8 +408,8 @@ public:
 };
 
 // Water (#360): the generated water a chunk may hold (GeneratedWaterOf, voxel.cpp): whether the node spans the sea's
-// radius, and the inland levels on a lattice every 4 samples (LN^3, radii; empty when there is no inland water).
-struct ChunkWaterGen { bool seaSpan = false, inland = false; int LN = 0; std::vector<float> level; };
+// radius, and whether inland water may lie in it (its levels: the water surface map, watersurface.h, #639).
+struct ChunkWaterGen { bool seaSpan = false, inland = false; };
 // What a water-only rebuild of a chunk reuses (kept only for chunks next to simulated water): the terrain density with
 // edits (S^3), the generated levels, and the block's height grid.
 struct ChunkWaterCache {

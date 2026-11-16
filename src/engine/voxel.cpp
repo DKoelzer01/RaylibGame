@@ -12,6 +12,7 @@
 #include "trees.h"
 #include "cubemarch.h"
 #include "waterfield.h"
+#include "watersurface.h"
 
 #include <cstring>
 #include <raymath.h>
@@ -1741,10 +1742,9 @@ static float OverheadOpenness(const DensityField& field, const TerrainDeltas& de
 // Water (#360): one surface for the generated water and the simulation's published cells
 // ---------------------------------------------------------------------------------------------
 
-// The generated water a chunk may hold (never stored, from the field): whether it spans the sea's radius, and
-// inland levels (rivers, lakes, ponds) sampled on a lattice every 4 samples and interpolated (they change slowly),
-// only for nodes near some.
-static ChunkWaterGen GeneratedWaterOf(const DensityField& field, Vector3 origin, int cells, float stride, int S) {
+// The generated water a chunk may hold (never stored, from the field): whether it spans the sea's radius, and whether
+// inland water (rivers, lakes, ponds) may lie in it. Its levels come from the water surface map (watersurface.h, #639).
+static ChunkWaterGen GeneratedWaterOf(const DensityField& field, Vector3 origin, int cells, float stride) {
     ChunkWaterGen g;
     const float sea = field.seaLevelRadius();
     if (sea <= 0.0f) return g;
@@ -1758,40 +1758,6 @@ static ChunkWaterGen GeneratedWaterOf(const DensityField& field, Vector3 origin,
     g.seaSpan = dmin < sea && dmax > sea;
     g.inland = pf && !pf->moon && dmax > sea && dmin < sea + pf->maxElevation && Vector3Length(mid) > 1.0f &&
                pf->inlandWaterNear(Vector3Normalize(mid), extent, stride);
-    if (!g.inland) return g;
-    const int L = 4, LN = (S - 1 + L - 1) / L + 1;
-    g.LN = LN;
-    auto lat = [&](int i) { return std::min(i * L, S - 1); };
-    g.level.resize((size_t)LN * LN * LN);
-    // Raw levels on the lattice and one node beyond it on every side (the neighbouring chunks' nodes: lattices of
-    // chunks at the same level line up), so a dry node on the chunk's edge sees wet ones next door and both chunks'
-    // surfaces meet at the seam.
-    const int LE = LN + 2;
-    auto coord = [&](int i) { return i < 0 ? -L : i >= LN ? lat(LN - 1) + L : lat(i); };
-    std::vector<float> raw((size_t)LE * LE * LE);
-    auto R = [&](int x, int y, int z) -> float& { return raw[((size_t)(z + 1) * LE + (y + 1)) * LE + (x + 1)]; };
-    auto P = [&](int x, int y, int z) { return Vector3{ origin.x + coord(x) * stride, origin.y + coord(y) * stride, origin.z + coord(z) * stride }; };
-    for (int z = -1; z <= LN; ++z)
-        for (int y = -1; y <= LN; ++y)
-            for (int x = -1; x <= LN; ++x)
-                R(x, y, z) = pf->waterElevationMesh(Vector3Normalize(P(x, y, z)), stride);
-    // A dry point next to wet ones takes the lower of their level and just under its own ground, not sea level:
-    // between them the interpolated surface then stays level out to where the shore rises, or runs just under low
-    // ground, instead of sloping down across it (sheets of water at chunk corners). Dry points with no wet
-    // neighbour: sea level.
-    for (int z = 0; z < LN; ++z)
-        for (int y = 0; y < LN; ++y)
-            for (int x = 0; x < LN; ++x) {
-                float w = R(x, y, z);
-                if (w == PlanetField::kNoWater) {
-                    float wet = PlanetField::kNoWater;
-                    for (int c = -1; c <= 1; ++c)
-                        for (int b = -1; b <= 1; ++b)
-                            for (int a = -1; a <= 1; ++a) wet = std::max(wet, R(x + a, y + b, z + c));
-                    w = wet == PlanetField::kNoWater ? 0.0f : std::min(wet, pf->elevation(Vector3Normalize(P(x, y, z)), stride) - 2.0f);
-                }
-                g.level[((size_t)z * LN + y) * LN + x] = sea + std::max(0.0f, w);
-            }
     return g;
 }
 
@@ -1819,16 +1785,13 @@ static void MeshChunkWater(const DensityField& field, ChunkMeshData& out, const 
     if (!genAny && !kinds) return;
     const PlanetField* pf = dynamic_cast<const PlanetField*>(&field);
     const RiverNetwork* rivers = pf ? pf->rivers() : nullptr; // the current on river water (#361)
-    const int L = 4, LN = gen.LN;
-    auto lat = [&](int i) { return std::min(i * L, S - 1); };
+    // Inland levels from the water surface map at this chunk's sample spacing (#639): one shared 2D map, so a stream
+    // narrower than the old per-chunk lattice (every 4 samples) is still drawn and shores don't grow teeth between nodes.
+    std::unique_ptr<WaterSurface::Reader> surf;
+    if (gen.inland && pf) surf = std::make_unique<WaterSurface::Reader>(*pf, stride);
     auto levelAt = [&](int x, int y, int z) {
-        if (!gen.inland) return sea;
-        const int ix = std::min(x / L, LN - 2), iy = std::min(y / L, LN - 2), iz = std::min(z / L, LN - 2);
-        const float fx = (float)(x - lat(ix)) / std::max(1, lat(ix + 1) - lat(ix)), fy = (float)(y - lat(iy)) / std::max(1, lat(iy + 1) - lat(iy)), fz = (float)(z - lat(iz)) / std::max(1, lat(iz + 1) - lat(iz));
-        auto g = [&](int a, int b, int c) { return gen.level[((size_t)(iz + c) * LN + (iy + b)) * LN + (ix + a)]; };
-        const float c00 = g(0, 0, 0) * (1 - fx) + g(1, 0, 0) * fx, c10 = g(0, 1, 0) * (1 - fx) + g(1, 1, 0) * fx;
-        const float c01 = g(0, 0, 1) * (1 - fx) + g(1, 0, 1) * fx, c11 = g(0, 1, 1) * (1 - fx) + g(1, 1, 1) * fx;
-        return (c00 * (1 - fy) + c10 * fy) * (1 - fz) + (c01 * (1 - fy) + c11 * fy) * fz;
+        if (!surf) return sea;
+        return sea + surf->drawLevel(Vector3Normalize({ origin.x + x * stride, origin.y + y * stride, origin.z + z * stride }));
     };
     // Trilinear over an S^3 grid in sample coordinates.
     auto trilinear = [&](const float* f, Vector3 g) {
@@ -2297,7 +2260,7 @@ void BuildChunkMeshFromBase(const DensityField& field, const TerrainDeltas& delt
         const WaterField::SnapshotPtr snap = WaterField::Current();
         WaterField::ChunkSampler sim(snap.get(), out.planetoidId, origin, Vector3AddValue(origin, cells * stride));
         out.waterSeq = snap->seq;
-        ChunkWaterGen gen = GeneratedWaterOf(field, origin, cells, stride, S);
+        ChunkWaterGen gen = GeneratedWaterOf(field, origin, cells, stride);
         MeshChunkWater(field, out, dens.data(), grid, gen, sim);
         if (sim.any() && gWaterCacheBytes.load() < kChunkWaterCacheCap) {
             auto wc = std::make_shared<ChunkWaterCache>();
@@ -2307,7 +2270,7 @@ void BuildChunkMeshFromBase(const DensityField& field, const TerrainDeltas& delt
             // The grid the build already shares (GPU path), else a copy (the CPU path's grid lives on its stack).
             if (gridShared) wc->grid = std::move(gridShared);
             else if (grid) wc->grid = std::make_shared<const PlanetField::BlockGrid>(*grid);
-            wc->counted = (long long)(wc->dens.size() + wc->gen.level.size()) * (long long)sizeof(float) + (copied ? (long long)sizeof(PlanetField::BlockGrid) + (long long)grid->h.size() * 4 + (long long)grid->cols.size() * (long long)sizeof(PlanetField::Column3D) : 0);
+            wc->counted = (long long)wc->dens.size() * (long long)sizeof(float) + (copied ? (long long)sizeof(PlanetField::BlockGrid) + (long long)grid->h.size() * 4 + (long long)grid->cols.size() * (long long)sizeof(PlanetField::Column3D) : 0);
             gWaterCacheBytes += wc->counted;
             out.waterCache = std::move(wc);
         }
