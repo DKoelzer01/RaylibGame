@@ -51,6 +51,7 @@
 #include "itemicons.h"
 #include "particles.h"
 #include "ambience.h"
+#include "waterfalls.h"
 #include "gpumem.h"
 #include "structures.h"
 #include "fishing.h"
@@ -206,6 +207,7 @@ static void StartNewWorld(Scene& world, bool reset, bool dawn) {
         Events_Reset();
         Particles_Clear();
         Ambience_Reset();
+        Waterfalls_Reset();
         Station_Reset();
         Suit_Reset();
         ToolWear_Reset();
@@ -366,7 +368,7 @@ int main(int argc, char** argv)
     bool benchMap = false;         // --test-map: compass, exploration, waypoints, map images, saves
     bool benchQuests = false;      // --test-quests: tiers open by their tasks; quest state through a save
     bool benchHunger = false, benchFarm = false; // --test-hunger, --test-farm
-    bool benchViewFall = false; Vector3 benchFallLip{ 0, 1, 0 }, benchFallDown{ 1, 0, 0 }; // --view-fall (#540), body-local
+    bool benchViewFall = false; Vector3 benchFallLip{ 0, 1, 0 }, benchFallDown{ 1, 0, 0 }; float benchFallDist = 80.0f; // --view-fall (#540), body-local
     bool benchRivers = false, riverOk = false; int riverPhase = 0; double riverStart = 0.0; float riverLongest = 0.0f, riverBuild = 0.0f, riverWet = 0.0f, riverLevel = 0.0f; Vector3 riverDir{ 0, 0, 0 }; // --test-rivers
     bool benchTools = false, toolsOk = true; int toolsPhase = 0, toolsLife = 0, toolsTilled = 0; double toolsStart = 0.0; // --test-tools
     bool benchSuit = false, suitOk = true; int suitPhase = 0; double suitStart = 0.0; float suitFoodRatio = 0.0f, suitWater = 0.0f, suitRebreather = 0.0f; // --test-suit
@@ -666,6 +668,7 @@ int main(int argc, char** argv)
         if (std::string(argv[i]) == "--test-suit") benchSuit = true;
         if (std::string(argv[i]) == "--test-tools") benchTools = true;
         if (std::string(argv[i]) == "--test-rivers") benchRivers = true;
+        if (std::string(argv[i]) == "--view-fall-dist" && i + 1 < argc) benchFallDist = (float)atof(argv[i + 1]); // --view-fall's distance (m)
         if (std::string(argv[i]) == "--view-fall" && i + 6 < argc) { // --view-fall LIP DOWN (#540): the bench camera looks at a waterfall
             benchViewFall = true;
             benchFallLip = Vector3Normalize({ (float)atof(argv[i + 1]), (float)atof(argv[i + 2]), (float)atof(argv[i + 3]) });
@@ -964,7 +967,7 @@ int main(int argc, char** argv)
     bool spawnLoad = false;        // raised by a spawn or teleport (not entering the game): no minimum time
     int loadFrames = 0;
     int seenSpawns = 0;
-    world.onDraw3D = [&world] { Farm_Draw3D(world); Animals_Draw3D(world); Machines_Draw3D(world); InstanceBatch_Flush(world); Weather_Draw3D(world); Particles_Draw(world); if (!ship.piloted && !buildTool.active && !Rocket_Boarded()) TerrainTool_Draw3D(); Fishing_Draw3D(world); Events_Draw3D(world); Combat_DrawGraves(world); BuildTool_Draw3D(world); };
+    world.onDraw3D = [&world] { Farm_Draw3D(world); Animals_Draw3D(world); Machines_Draw3D(world); InstanceBatch_Flush(world); Weather_Draw3D(world); Waterfalls_Draw3D(world); Particles_Draw(world); if (!ship.piloted && !buildTool.active && !Rocket_Boarded()) TerrainTool_Draw3D(); Fishing_Draw3D(world); Events_Draw3D(world); Combat_DrawGraves(world); BuildTool_Draw3D(world); };
     terrainTool.till = [&world](Planetoid& body, Vector3 ground) { return Farm_Till(world, body, ground); }; // a shovel's RMB
     terrainTool.swapHeld = [](const std::string& from, const std::string& to, const char* ev) { // a bucket filled or emptied
         const int s = Hotbar_Selected();
@@ -1255,13 +1258,13 @@ int main(int argc, char** argv)
             world.camera.up = player.up;
             if (benchViewFall)
                 if (const auto* pfb = dynamic_cast<const PlanetField*>(benchPlanet->field.get())) {
-                    // --view-fall (#540): from 80 m downstream of the lip and 25 m up, looking back at it.
+                    // --view-fall (#540): from --view-fall-dist (80) m downstream of the lip and 0.3 of that up, looking back at it.
                     const DVec3 lip = DVec3(benchFallLip) * (double)(pfb->radius + pfb->elevation(benchFallLip));
                     const Vector3 at = (benchPlanet->toWorldD(lip) - world.renderOrigin).toFloat();
                     const Vector3 upW = benchPlanet->dirToWorld(benchFallLip);
                     Vector3 downW = benchPlanet->dirToWorld(benchFallDown);
                     downW = Vector3Normalize(Vector3Subtract(downW, Vector3Scale(upW, Vector3DotProduct(downW, upW))));
-                    world.camera.position = Vector3Add(at, Vector3Add(Vector3Scale(downW, 80.0f), Vector3Scale(upW, 25.0f)));
+                    world.camera.position = Vector3Add(at, Vector3Add(Vector3Scale(downW, benchFallDist), Vector3Scale(upW, benchFallDist * 0.3f)));
                     world.camera.target = Vector3Subtract(at, Vector3Scale(upW, 10.0f));
                     world.camera.up = upW;
                 }
@@ -6754,6 +6757,7 @@ int main(int argc, char** argv)
             if (!loading) Trapping_Update(world); // snares (#176)
             if (!loading) Events_Update(world, frameDt); // meteor showers (#177)
             if (!loading) Ambience_Update(world, frameDt); // rain splashes, fireflies, machine smoke
+            if (!loading) Waterfalls_Update(world, frameDt); // falls near the camera: sheets, mist and spray (#540)
             Particles_Update(world, frameDt); // smoke, dust, exhaust, splashes (particles.h)
             // Autosave every 5 minutes of play (incremental: only regions changed since the last save).
             static double lastAutosave = GetTime();
