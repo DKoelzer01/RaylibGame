@@ -52,7 +52,7 @@ namespace {
                 glBufferStorage(GL_COPY_WRITE_BUFFER, (GLsizeiptr)cap, nullptr, flags | GL_CLIENT_STORAGE_BIT);
                 r.ptr = (float*)glMapBufferRange(GL_COPY_WRITE_BUFFER, 0, (GLsizeiptr)cap, flags);
                 glBindBuffer(GL_COPY_WRITE_BUFFER, 0);
-                if (!r.ptr) { glDeleteBuffers(1, &r.buf); r.buf = 0; r.cap = 0; ringOk = false; logger.logf("[TerrainGpu] persistent map failed: readback by copy\n"); return -1; }
+                if (!r.ptr) { glDeleteBuffers(1, &r.buf); r.buf = 0; r.cap = 0; ringOk = false; LOG_WARN("TerrainGpu", "persistent map failed: readback by copy\n"); return -1; }
                 r.cap = cap;
             }
             r.busy.store(true);
@@ -102,17 +102,17 @@ namespace {
         if (S.tried) return S.ok;
         S.tried = true;
         const char* env = getenv("RAYLIBGAME_GPU_TERRAIN");
-        if (env && env[0] == '0') { logger.logf("[TerrainGpu] off (RAYLIBGAME_GPU_TERRAIN=0)\n"); return false; }
+        if (env && env[0] == '0') { LOG_INFO("TerrainGpu", "off (RAYLIBGAME_GPU_TERRAIN=0)\n"); return false; }
         if (!Compute_Available() || !glad_glFenceSync || !S.prog.load("resources/compute/terrain_density.comp")) {
-            logger.logf("[TerrainGpu] unavailable: density blocks on the CPU\n");
+            LOG_WARN("TerrainGpu", "unavailable: density blocks on the CPU\n");
             return false;
         }
         S.ok = true;
         // RAYLIBGAME_GPU_READBACK_COPY=1: the old copy readback (A/B).
         const char* rbEnv = getenv("RAYLIBGAME_GPU_READBACK_COPY");
         ringOk = GL_Caps().bufferStorage && glad_glCopyBufferSubData && !(rbEnv && rbEnv[0] == '1');
-        logger.logf("[TerrainGpu] readback: %s\n", ringOk ? "persistent mapped ring" : "copy");
-        logger.logf("[TerrainGpu] density blocks on the GPU\n");
+        LOG_INFO("TerrainGpu", "readback: %s\n", ringOk ? "persistent mapped ring" : "copy");
+        LOG_INFO("TerrainGpu", "density blocks on the GPU\n");
         return true;
     }
 
@@ -289,7 +289,7 @@ void TerrainGpu_Pump() {
             std::vector<float> cpu(n);
             j.field->sampleBlock(j.block.origin, j.block.stride, j.block.E, j.block.footprint, j.grid, cpu.data());
             if (memcmp(cpu.data(), all.get() + sl.outOffset[0], n * sizeof(float)) != 0) {
-                logger.logf("[TerrainGpu] GPU density differs from the CPU on this driver: density blocks back on the CPU\n");
+                LOG_WARN("TerrainGpu", "GPU density differs from the CPU on this driver: density blocks back on the CPU\n");
                 S.disabled = true;
             } else {
                 S.verified.push_back(j.field);

@@ -172,12 +172,12 @@ namespace {
         if (S.tried) return S.ok;
         S.tried = true;
         const char* env = getenv("RAYLIBGAME_ARENA");
-        if (env && env[0] == '0') { logger.logf("[Arena] off (RAYLIBGAME_ARENA=0)\n"); return false; }
+        if (env && env[0] == '0') { LOG_INFO("Arena", "off (RAYLIBGAME_ARENA=0)\n"); return false; }
         if (rlGetVersion() != RL_OPENGL_43 || !glad_glMultiDrawElementsIndirect || !glad_glCopyBufferSubData || !Compute_Available()) {
-            logger.logf("[Arena] multi-draw indirect / compute unavailable: per-chunk draws\n");
+            LOG_WARN("Arena", "multi-draw indirect / compute unavailable: per-chunk draws\n");
             return false;
         }
-        if (!S.cull.load("resources/compute/chunk_cull.comp")) { logger.logf("[Arena] chunk_cull.comp failed: per-chunk draws\n"); return false; }
+        if (!S.cull.load("resources/compute/chunk_cull.comp")) { LOG_WARN("Arena", "chunk_cull.comp failed: per-chunk draws\n"); return false; }
         {
             const GLuint p = S.cull.id;
             auto L = [p](const char* n) { return glGetUniformLocation(p, n); };
@@ -192,7 +192,7 @@ namespace {
                 if (S.drawCount && !S.compact.load("resources/compute/chunk_compact.comp")) S.drawCount = nullptr;
                 if (S.drawCount) { S.cpCount = glGetUniformLocation(S.compact.id, "count"); S.cpBase = glGetUniformLocation(S.compact.id, "base"); }
             }
-            logger.logf("[Arena] draws: %s\n", S.drawCount ? "indirect count (visible chunks compacted in order)" : "all listed commands (culled ones empty)");
+            LOG_INFO("Arena", "draws: %s\n", S.drawCount ? "indirect count (visible chunks compacted in order)" : "all listed commands (culled ones empty)");
         }
         const int v0 = 4 << 20, i0 = 24 << 20; // about a planet walk's working set (5.7 M vertices seen); grows as needed
         S.pos = Regrow(0, 0, (size_t)v0 * kPosBytes);
@@ -207,7 +207,7 @@ namespace {
         EnsureRing(1); // creates the ring buffers and binds the VAOs
         S.ok = true;
         gPackOnWorkers = true;
-        logger.logf("[Arena] terrain mesh arena: %d vertices, %d indices, GPU chunk culling\n", v0, i0);
+        LOG_INFO("Arena", "terrain mesh arena: %d vertices, %d indices, GPU chunk culling\n", v0, i0);
         return true;
     }
 
@@ -217,14 +217,14 @@ namespace {
         S.attr = Regrow(S.attr, (size_t)oldCap * sizeof(Attr), (size_t)newCap * sizeof(Attr));
         S.verts.grow(newCap);
         BindAttributes();
-        logger.logf("[Arena] vertices grown to %d\n", newCap);
+        LOG_INFO("Arena", "vertices grown to %d\n", newCap);
     }
     void GrowIndices(int newCap) {
         const int oldCap = S.idx.cap;
         S.ibo = Regrow(S.ibo, (size_t)oldCap * sizeof(uint16_t), (size_t)newCap * sizeof(uint16_t));
         S.idx.grow(newCap);
         BindAttributes();
-        logger.logf("[Arena] indices grown to %d\n", newCap);
+        LOG_INFO("Arena", "indices grown to %d\n", newCap);
     }
     // Grows by half (not double: a doubled multi-hundred-MB buffer would be mostly empty) until n fits.
     int AllocVerts(int n) {
@@ -281,7 +281,7 @@ namespace {
         if (St.tried) return St.ok;
         St.tried = true;
         const char* e = getenv("RAYLIBGAME_UPLOAD_STAGING");
-        if ((e && e[0] == '0') || !GL_Caps().bufferStorage) { logger.logf("[Arena] uploads: glBufferSubData\n"); return false; }
+        if ((e && e[0] == '0') || !GL_Caps().bufferStorage) { LOG_INFO("Arena", "uploads: glBufferSubData\n"); return false; }
         St.cap = 16u << 20;
         glGenBuffers(1, &St.buf);
         glBindBuffer(GL_COPY_READ_BUFFER, St.buf);
@@ -290,9 +290,9 @@ namespace {
         glBufferStorage(GL_COPY_READ_BUFFER, (GLsizeiptr)St.cap, nullptr, flags);
         St.ptr = (unsigned char*)glMapBufferRange(GL_COPY_READ_BUFFER, 0, (GLsizeiptr)St.cap, flags);
         glBindBuffer(GL_COPY_READ_BUFFER, 0);
-        if (!St.ptr) { glDeleteBuffers(1, &St.buf); St.buf = 0; logger.logf("[Arena] uploads: glBufferSubData (staging map failed)\n"); return false; }
+        if (!St.ptr) { glDeleteBuffers(1, &St.buf); St.buf = 0; LOG_WARN("Arena", "uploads: glBufferSubData (staging map failed)\n"); return false; }
         St.ok = true;
-        logger.logf("[Arena] uploads: persistent mapped staging ring (%zu MB)\n", St.cap >> 20);
+        LOG_INFO("Arena", "uploads: persistent mapped staging ring (%zu MB)\n", St.cap >> 20);
         return true;
     }
 

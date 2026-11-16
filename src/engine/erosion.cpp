@@ -1,4 +1,5 @@
 #include "erosion.h"
+#include "utils/logger.h"
 #include <raymath.h>
 #include <algorithm>
 #include <chrono>
@@ -617,7 +618,7 @@ void PlanetErosion::build(const std::function<float(Vector3, float)>& height, fl
                         }
                     ExportImage(img, "erosion_wind.png");
                     UnloadImage(img);
-                    printf("erosion: wind on the dump face: %.0f m3/m2-cells deflated (deepest %.1f m), %.0f laid down (thickest %.1f m)\n", lost, maxLost, laid, maxLaid);
+                    LOG_INFO("Erosion", "wind on the dump face: %.0f m3/m2-cells deflated (deepest %.1f m), %.0f laid down (thickest %.1f m)\n", lost, maxLost, laid, maxLaid);
                 }
                 // A/B evidence (#358): RAYLIBGAME_EROSION_RAW=path keeps this face's heights; a later run with
                 // RAYLIBGAME_EROSION_COMPARE=path draws that run against this one (before | after | difference).

@@ -168,7 +168,7 @@ void LoadRecipes() {
         r.eu = std::max(0, atoi(cols[4].c_str()));
         tables.recipes.push_back(r);
     }
-    logger.logf("[Factory] %zu machine recipes\n", tables.recipes.size());
+    LOG_INFO("Factory", "%zu machine recipes\n", tables.recipes.size());
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -665,6 +665,7 @@ void FillView(const PlotSim& ps, int part, MachineView& v) {
 }
 
 void SimLoop() {
+    Log_SetThreadName("factory");
     using clk = std::chrono::steady_clock;
     double emaMs = 0.0, maxMs = 0.0;
     while (running) {

@@ -19,6 +19,12 @@ option(ENABLE_TRACY "Build with the Tracy profiler client (connect with tracy-pr
 option(ENABLE_GNS "Build with GameNetworkingSockets (multiplayer transport) from GNS_ROOT" OFF)
 set(GNS_ROOT "${CMAKE_SOURCE_DIR}/deps/gns/install" CACHE PATH "GameNetworkingSockets + protobuf built by tools/build_gns.sh (ENABLE_GNS only)")
 set(GAME_OUTPUT_DIR "${CMAKE_SOURCE_DIR}" CACHE PATH "Where game.exe is written (default: repo root, which is also the working directory they expect)")
+# Logging (#514): OFF compiles every LOG_* macro to nothing (arguments not evaluated, no strings in the binary, no
+# log.txt) for shipping builds. RAYLIBGAME_LOG_MIN strips the levels below it at compile time (the runtime level,
+# --log-level or settings.txt's log_level, filters what is left).
+option(RAYLIBGAME_LOGGING "Build with logging (log.txt); OFF for shipping builds" ON)
+set(RAYLIBGAME_LOG_MIN "TRACE" CACHE STRING "Lowest log level compiled in: TRACE, DEBUG, INFO, WARN, ERROR or FATAL")
+set_property(CACHE RAYLIBGAME_LOG_MIN PROPERTY STRINGS TRACE DEBUG INFO WARN ERROR FATAL)
 
 include(FetchContent)
 
@@ -81,6 +87,16 @@ add_library(engine STATIC ${ENGINE_SOURCES})
 target_include_directories(engine PUBLIC src/engine)
 target_link_libraries(engine PUBLIC raylib imgui)
 target_compile_definitions(engine PUBLIC PLATFORM_DESKTOP)
+set(LOG_LEVELS TRACE DEBUG INFO WARN ERROR FATAL)
+list(FIND LOG_LEVELS "${RAYLIBGAME_LOG_MIN}" LOG_MIN_INDEX)
+if(LOG_MIN_INDEX LESS 0)
+    message(FATAL_ERROR "RAYLIBGAME_LOG_MIN must be TRACE, DEBUG, INFO, WARN, ERROR or FATAL (got ${RAYLIBGAME_LOG_MIN})")
+endif()
+if(RAYLIBGAME_LOGGING)
+    target_compile_definitions(engine PUBLIC RAYLIBGAME_LOGGING=1 RAYLIBGAME_LOG_MIN=${LOG_MIN_INDEX})
+else()
+    target_compile_definitions(engine PUBLIC RAYLIBGAME_LOGGING=0 RAYLIBGAME_LOG_MIN=${LOG_MIN_INDEX})
+endif()
 if(ENABLE_TRACY)
     target_link_libraries(engine PUBLIC Tracy::TracyClient) # also defines TRACY_ENABLE for everything
 endif()

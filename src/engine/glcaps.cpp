@@ -33,7 +33,7 @@ const GLCaps& GL_Caps() {
         c.anisotropic = at(4, 6) || has("GL_ARB_texture_filter_anisotropic") || has("GL_EXT_texture_filter_anisotropic");
         if (c.anisotropic) glGetFloatv(0x84FF, &c.maxAnisotropy); // GL_MAX_TEXTURE_MAX_ANISOTROPY
     }
-    logger.logf("[GL] %d.%d, %s / %s%s: clip control %s, buffer storage %s, DSA %s, indirect count %s, draw parameters %s, anisotropy %s (x%.0f)\n",
+    LOG_INFO("GL", "%d.%d, %s / %s%s: clip control %s, buffer storage %s, DSA %s, indirect count %s, draw parameters %s, anisotropy %s (x%.0f)\n",
                 c.major, c.minor, c.vendor.c_str(), c.renderer.c_str(), c.limited ? " (RAYLIBGAME_GL_LIMIT=43)" : "",
                 c.clipControl ? "yes" : "no", c.bufferStorage ? "yes" : "no", c.directStateAccess ? "yes" : "no",
                 c.indirectParameters ? "yes" : "no", c.shaderDrawParameters ? "yes" : "no", c.anisotropic ? "yes" : "no", c.maxAnisotropy);

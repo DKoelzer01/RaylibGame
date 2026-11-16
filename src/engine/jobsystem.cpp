@@ -1,4 +1,6 @@
 #include "jobsystem.h"
+#include "utils/logger.h"
+#include <cstdio>
 
 #include <algorithm>
 #include <cstdlib>
@@ -19,7 +21,7 @@ JobSystem::JobSystem(unsigned threadCount) {
         threadCount = std::max(1u, hw > 1 ? hw - 1 : 1u); // leave a core for the main/render thread
     }
     workers.reserve(threadCount);
-    for (unsigned i = 0; i < threadCount; ++i) workers.emplace_back([this] { workerLoop(); });
+    for (unsigned i = 0; i < threadCount; ++i) workers.emplace_back([this, i] { char name[16]; snprintf(name, sizeof(name), "job%u", i); Log_SetThreadName(name); workerLoop(); }); // named in log lines (#514)
 }
 
 JobSystem::~JobSystem() {

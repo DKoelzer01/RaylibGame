@@ -277,13 +277,13 @@ void main() {
         if (status == GL_FRAMEBUFFER_COMPLETE) status = glCheckFramebufferStatus(GL_FRAMEBUFFER);
         glBindFramebuffer(GL_FRAMEBUFFER, 0);
         if (status != GL_FRAMEBUFFER_COMPLETE) {
-            logger.logf("[SceneTarget] framebuffer incomplete (0x%x): reverse-Z off\n", status);
+            LOG_WARN("SceneTarget", "framebuffer incomplete (0x%x): reverse-Z off\n", status);
             Release();
             return false;
         }
         S.w = w; S.h = h;
         if (S.hdr && S.bloom && S.downProg && S.upProg) CreateBloom(w, h); // #140
-        logger.logf("[SceneTarget] %dx%d, %d samples, float depth, reverse-Z, %s\n", w, h, S.samples,
+        LOG_INFO("SceneTarget", "%dx%d, %d samples, float depth, reverse-Z, %s\n", w, h, S.samples,
                     !S.hdr ? "RGBA8 (RAYLIBGAME_HDR=0)" : S.tonemap == 1 ? "HDR, ACES" : S.tonemap == 2 ? "HDR, clip" : "HDR, knee tonemap");
         return true;
     }
@@ -296,11 +296,11 @@ void main() {
         if (S.tried) return S.ok;
         S.tried = true;
         const char* env = getenv("RAYLIBGAME_REVZ");
-        if (env && env[0] == '0') { logger.logf("[SceneTarget] off (RAYLIBGAME_REVZ=0)\n"); return false; }
-        if (rlGetVersion() != RL_OPENGL_43 || !ClipControlSupported()) { logger.logf("[SceneTarget] no clip control: reverse-Z off\n"); return false; }
+        if (env && env[0] == '0') { LOG_INFO("SceneTarget", "off (RAYLIBGAME_REVZ=0)\n"); return false; }
+        if (rlGetVersion() != RL_OPENGL_43 || !ClipControlSupported()) { LOG_INFO("SceneTarget", "no clip control: reverse-Z off\n"); return false; }
         S.clipControl = (PfnClipControl)glfwGetProcAddress("glClipControl");
         if (!S.clipControl) S.clipControl = (PfnClipControl)glfwGetProcAddress("glClipControlARB");
-        if (!S.clipControl) { logger.logf("[SceneTarget] no glClipControl: reverse-Z off\n"); return false; }
+        if (!S.clipControl) { LOG_INFO("SceneTarget", "no glClipControl: reverse-Z off\n"); return false; }
         // HDR switches (#131): RAYLIBGAME_HDR=0 (RGBA8, no tonemap), RAYLIBGAME_TONEMAP=knee|aces|clip,
         // RAYLIBGAME_AUTO_EXPOSURE=0, RAYLIBGAME_EXPOSURE_KEY / _MIN / _MAX, RAYLIBGAME_TONEMAP_KNEE.
         auto envF = [](const char* n, float d) { const char* v = getenv(n); return v && v[0] ? (float)atof(v) : d; };
@@ -317,7 +317,7 @@ void main() {
             const unsigned cs = rlCompileShader(kCsExposure, RL_COMPUTE_SHADER);
             S.expProg = cs ? rlLoadComputeShaderProgram(cs) : 0;
             if (!S.prog || !S.expProg) {
-                logger.logf("[SceneTarget] HDR shaders failed: RGBA8 target\n");
+                LOG_WARN("SceneTarget", "HDR shaders failed: RGBA8 target\n");
                 if (S.prog) rlUnloadShaderProgram(S.prog);
                 if (S.expProg) rlUnloadShaderProgram(S.expProg);
                 S.prog = S.expProg = 0;
@@ -338,7 +338,7 @@ void main() {
                     S.downProg = (bvs && dfs) ? rlLoadShaderProgram(bvs, dfs) : 0;
                     const unsigned uvs = rlCompileShader(kVs, RL_VERTEX_SHADER), ufs = rlCompileShader(kFsUp, RL_FRAGMENT_SHADER);
                     S.upProg = (uvs && ufs) ? rlLoadShaderProgram(uvs, ufs) : 0;
-                    if (!S.downProg || !S.upProg) { logger.logf("[SceneTarget] bloom shaders failed: no bloom\n"); S.bloom = false; }
+                    if (!S.downProg || !S.upProg) { LOG_WARN("SceneTarget", "bloom shaders failed: no bloom\n"); S.bloom = false; }
                 }
                 const float init[3] = { S.autoExposure ? 0.0f : 1.0f, 0.0f, 0.0f }; // 0: the first frame takes its target at once
                 glGenBuffers(1, &S.expBuf);
@@ -352,7 +352,7 @@ void main() {
             const unsigned vs = rlCompileShader(kVs, RL_VERTEX_SHADER), fs = rlCompileShader(kFs, RL_FRAGMENT_SHADER);
             S.prog = (vs && fs) ? rlLoadShaderProgram(vs, fs) : 0;
         }
-        if (!S.prog) { logger.logf("[SceneTarget] resolve shader failed: reverse-Z off\n"); return false; }
+        if (!S.prog) { LOG_WARN("SceneTarget", "resolve shader failed: reverse-Z off\n"); return false; }
         glGenVertexArrays(1, &S.vao);
         GLint samples = 0;
         glBindFramebuffer(GL_FRAMEBUFFER, 0);

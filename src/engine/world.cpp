@@ -1060,7 +1060,7 @@ static void IntegrateResult(const ChunkMeshData& r) {
     buildMsTotal += r.buildMs;
     sampleMsTotal += r.sampleMs;
     buildCount++;
-    if (r.overflow) logger.logf("[ERROR] Node L%d (%d,%d,%d) exceeds 65535 vertices; skipped\n", r.key.level, r.key.x, r.key.y, r.key.z);
+    if (r.overflow) LOG_ERROR("World", "Node L%d (%d,%d,%d) exceeds 65535 vertices; skipped\n", r.key.level, r.key.x, r.key.y, r.key.z);
     const bool wasReady = it->second->ready;
     it->second->setMesh(r);
     if (!wasReady && it->second->inRing)
@@ -1458,7 +1458,7 @@ void worldUpdate(Scene& world, float uploadBudgetMs) {
                                           now, 1000.0 * ftSum / std::max(1, ftN), 1000.0 * ftMax, (int)Jobs().queued(), Jobs().running(), Jobs().foregroundIdle() ? "idle" : "busy", TerrainGpu_Pending(),
                                           (int)pendingUploads.size(), pendingUploads.size() > kUploadBacklogCap ? " (hold)" : "", (long long)gRequests - req0, (long long)gBuilt - built0, stats.nodes, mix.c_str());
             printf("%s", line);
-            logger.logf("%s", line);
+            LOG_INFO("Perf", "%s", line);
             req0 = gRequests; built0 = gBuilt; ftSum = ftMax = 0.0; ftN = 0;
             t0 = now;
         }
@@ -1466,7 +1466,7 @@ void worldUpdate(Scene& world, float uploadBudgetMs) {
 
     if (generationStart >= 0.0 && PipelineIdle() && !AnyLodPending(world)) {
         stats.lastGenerationSeconds = (float)(GetTime() - generationStart);
-        logger.logf("[World] ready in %.2f s (%d meshes drawn, %d nodes, avg build %.2f ms on %d threads)\n",
+        LOG_INFO("World", "ready in %.2f s (%d meshes drawn, %d nodes, avg build %.2f ms on %d threads)\n",
                     stats.lastGenerationSeconds, stats.chunks, stats.nodes, stats.avgBuildMs, stats.workerThreads);
         TraceLog(LOG_WARNING, "World ready in %.2f s (%d meshes)", stats.lastGenerationSeconds, stats.chunks);
         generationStart = -1.0;
@@ -1695,10 +1695,10 @@ bool ReloadSystemDef() {
     const bool ok = LoadSystemDef(worldGen.bodiesPath, sys);
     if (!ok) {
         if (worldGen.systemLoaded) {
-            logger.logf("[Bodies] keeping the current system\n");
+            LOG_INFO("Bodies", "keeping the current system\n");
             return false;
         }
-        logger.logf("[Bodies] falling back to the built-in start system\n");
+        LOG_WARN("Bodies", "falling back to the built-in start system\n");
         sys = LegacySystemDef(8, 50, 1500.0f, 3.0f, { 64.0f, 0.0f, 0.0f });
     }
     // Command-line overrides (bench): first single body and first ring.
@@ -1738,7 +1738,7 @@ void generateWorld(Scene& world) {
     worldGen.lastSeed = worldGen.seed ? worldGen.seed : rd();
     gen.seed(worldGen.lastSeed);
     GameRng_Seed(worldGen.lastSeed); // gameplay rolls follow the seed (a load restores the saved stream, #316)
-    logger.logf("Generating world (seed %u, %zu definitions from %s)...\n", worldGen.lastSeed, worldGen.system.bodies.size(), worldGen.bodiesPath.c_str());
+    LOG_INFO("World", "Generating world (seed %u, %zu definitions from %s)...\n", worldGen.lastSeed, worldGen.system.bodies.size(), worldGen.bodiesPath.c_str());
 
     // Every body draws the same values in the same order (3 position values, its terrain seed,
     // a size value for ring members, a spin value), so a seed reproduces the system exactly.
@@ -1838,7 +1838,7 @@ void generateWorld(Scene& world) {
         for (auto& obj : world.objects)
             if (auto* p = dynamic_cast<Planetoid*>(obj.get()); p && p->orbitParent && p->ringRock < 0) {
                 const int n = ring->clearLane(p->orbitRadius, p->orbitHeight, p->radius * p->scale);
-                if (n > 0) logger.logf("[World] %s clears %d rocks from ring %s\n", p->name.c_str(), n, ring->name.c_str());
+                if (n > 0) LOG_INFO("World", "%s clears %d rocks from ring %s\n", p->name.c_str(), n, ring->name.c_str());
             }
     world.syncRenderPositions();
     generationStart = GetTime();
@@ -2012,7 +2012,7 @@ static bool ReadRegion(const std::string& path, TerrainDeltasBuilder& b) {
     // steps: scaled down on load.
     // RGN1-4 sit on the old 1 m lattice: their edits would land in the wrong place on the kVoxelSize one
     // (a save-breaking change, 2026-11-12), so they are skipped.
-    if (ok && memcmp(magic, "RGN5", 4) != 0) { logger.logf("[World] %s: terrain edits on the old 1 m lattice, skipped\n", path.c_str()); fclose(f); return true; }
+    if (ok && memcmp(magic, "RGN5", 4) != 0) { LOG_WARN("World", "%s: terrain edits on the old 1 m lattice, skipped\n", path.c_str()); fclose(f); return true; }
     const bool v4 = ok && memcmp(magic, "RGN5", 4) == 0; // + the placed-material channel
     const bool rle = ok && (v4 || memcmp(magic, "RGN3", 4) == 0 || memcmp(magic, "RGN2", 4) == 0);
     const int legacy = ok && !v4 && memcmp(magic, "RGN3", 4) != 0 ? 4 : 1;
@@ -2084,7 +2084,7 @@ std::shared_ptr<const TerrainDeltas> LoadRegionsFor(int body, const std::string&
         FilePathList files = LoadDirectoryFiles(dir.c_str());
         for (unsigned int i = 0; i < files.count; ++i)
             if (std::string(GetFileName(files.paths[i])).rfind(prefix, 0) == 0 && !ReadRegion(files.paths[i], b))
-                logger.logf("[World] %s: damaged region file\n", files.paths[i]);
+                LOG_ERROR("World", "%s: damaged region file\n", files.paths[i]);
         UnloadDirectoryFiles(files);
     }
     b.state().strokes = strokes;
@@ -2134,7 +2134,7 @@ bool SaveWorld(Scene& world) {
     // v10: ring rocks a visit changed (edits, plots), whether they are voxel bodies now or not.
     for (auto& ring : gRings) ring->save(f, dir);
     fclose(f);
-    logger.logf("[World] saved %zu strokes to %s (%d region files written)\n", totalStrokes, SAVE_PATH, regionsWritten);
+    LOG_INFO("World", "saved %zu strokes to %s (%d region files written)\n", totalStrokes, SAVE_PATH, regionsWritten);
     return true;
 }
 
@@ -2144,7 +2144,7 @@ bool LoadWorldSave(Scene& world) {
     int version = 0;
     if (fscanf(f, "RAYLIBGAME_SAVE %d", &version) != 1 || version < 2 || version > 12) {
         fclose(f);
-        logger.logf("[World] %s: unsupported save version %d\n", SAVE_PATH, version);
+        LOG_ERROR("World", "%s: unsupported save version %d\n", SAVE_PATH, version);
         return false;
     }
     Fluid::Reset(); // the save carries its own water
@@ -2167,7 +2167,7 @@ bool LoadWorldSave(Scene& world) {
                 std::string s(line);
                 while (!s.empty() && (s.back() == '\n' || s.back() == '\r')) s.pop_back();
                 ok = ParseBodyDef(s, d, error);
-                if (!ok) logger.logf("[World] %s: body %zu: %s\n", SAVE_PATH, i, error.c_str());
+                if (!ok) LOG_WARN("World", "%s: body %zu: %s\n", SAVE_PATH, i, error.c_str());
                 else sys.bodies.push_back(d);
             }
         }
@@ -2182,7 +2182,7 @@ bool LoadWorldSave(Scene& world) {
     double savedTime = 0.0;
     if (ok && version >= 5) ok = fscanf(f, " time %lf", &savedTime) == 1;
     ok = ok && fscanf(f, " camera %lf %lf %lf %lf %lf %lf", &c[0], &c[1], &c[2], &c[3], &c[4], &c[5]) == 6;
-    if (!ok) { fclose(f); logger.logf("[World] %s: could not read the header\n", SAVE_PATH); return false; }
+    if (!ok) { fclose(f); LOG_ERROR("World", "%s: could not read the header\n", SAVE_PATH); return false; }
 
     worldTime = savedTime; // before regenerating: orbiting bodies are placed for this time
     worldGen.seed = seed;
@@ -2236,7 +2236,7 @@ bool LoadWorldSave(Scene& world) {
         }
         // v8: build plots.
         auto plots = std::make_unique<PlotSet>();
-        if (version >= 8 && !plots->load(f)) logger.logf("[World] %s: damaged plot data\n", SAVE_PATH);
+        if (version >= 8 && !plots->load(f)) LOG_ERROR("World", "%s: damaged plot data\n", SAVE_PATH);
         if (body) body->plots = plots->plots.empty() ? nullptr : std::move(plots);
         if (version >= 9) Factory::Load(f, body ? body->id : 0); // machine contents, applied when the layouts reach the simulation
         if (version >= 11) Fluid::Load(f, body ? body->id : 0); // flowing water (classified again as it loads)
@@ -2257,13 +2257,13 @@ bool LoadWorldSave(Scene& world) {
         else { PlotSet skip; skip.load(f); Factory::ReadSaved(f); }
     }
     fclose(f);
-    logger.logf("[World] loaded %s (seed %u)\n", SAVE_PATH, seed);
+    LOG_INFO("World", "loaded %s (seed %u)\n", SAVE_PATH, seed);
     return true;
 }
 
 void loadWorld(Scene& world) {
     // Load the world scene from a file or initialize it
-    logger.logf("Loading world scene...\n");
+    LOG_INFO("Scene", "Loading world scene...\n");
     std::ifstream file("assets/scenes/world");
     if (!file.is_open()) {
         std::cerr << "Failed to open world scene file." << std::endl;
@@ -2274,7 +2274,7 @@ void loadWorld(Scene& world) {
     while (getline(file, line)) {
         if (line.empty()) continue; // Skip empty lines
 
-        logger.logf("Processing line: %s\n", line.c_str());
+        LOG_DEBUG("Scene", "Processing line: %s\n", line.c_str());
         std::stringstream ss(line);
         std::string cell;
         std::vector<std::string> result;
@@ -2293,7 +2293,7 @@ void loadWorld(Scene& world) {
             float scale = std::stof(result[12]);
 
             if (type == "gameobject") {
-                logger.logf("Creating GameObject: %s\n", name.c_str());
+                LOG_DEBUG("Scene", "Creating GameObject: %s\n", name.c_str());
                 std::string modelPath = "assets/models/" + name + "/" + name + ".obj";
                 std::string texturePath = "assets/models/" + name + "/diffuse.png";
                 Model model;
@@ -2302,8 +2302,8 @@ void loadWorld(Scene& world) {
                     continue;
                 } else {
                     model = LoadModel(modelPath.c_str());
-                    logger.logf("meshCount: %d, materialCount: %d, boneCount: %d\n", model.meshCount, model.materialCount, model.boneCount);
-                    logger.logf("bones: %p, bindPose: %p\n", model.bones, model.bindPose);
+                    LOG_DEBUG("Scene", "meshCount: %d, materialCount: %d, boneCount: %d\n", model.meshCount, model.materialCount, model.boneCount);
+                    LOG_DEBUG("Scene", "bones: %p, bindPose: %p\n", model.bones, model.bindPose);
                     if (model.boneCount > 0 && (model.bones == nullptr || model.bindPose == nullptr)) {
                         model.boneCount = 0;
                         model.bones = nullptr;
@@ -2319,10 +2319,10 @@ void loadWorld(Scene& world) {
                 if (FileExists(texturePath.c_str()) && model.materials != nullptr && model.materials[0].maps != nullptr) {
                     model.materials[0].maps[MATERIAL_MAP_DIFFUSE].texture = LoadTexture(texturePath.c_str());
                 } else {
-                    logger.logf("Texture file does not exist or materials/maps not allocated: %s\n", texturePath.c_str());
+                    LOG_WARN("Scene", "Texture file does not exist or materials/maps not allocated: %s\n", texturePath.c_str());
                 }
                 world.objects.push_back(std::make_unique<GameObject>(type, name, position, rotation, color, scale, model));
-                logger.logf("GameObject created: %s\n", name.c_str());
+                LOG_DEBUG("Scene", "GameObject created: %s\n", name.c_str());
             } else if (type == "text") {
                 world.uiObjects.push_back(std::make_unique<TextObject>(name, position, rotation, color, scale, static_cast<int>(scale * 20))); // Assuming scale is used for font size
             } else if (type == "cube" || type == "sphere") {

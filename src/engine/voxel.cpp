@@ -1,6 +1,7 @@
 #include <unordered_map>
 #include <cstring>
 #include "voxel.h"
+#include "utils/logger.h"
 #include "erosion.h"
 #include <thread>
 #include "rivers.h"
@@ -281,13 +282,13 @@ void PlanetField::bakeErosion(const std::string& cachePath) {
         b.build([this](Vector3 d, float fp) { return land(d, fp).h; }, radius, fieldSeed, p, threads);
         const auto ts0 = std::chrono::steady_clock::now();
         if (!cachePath.empty()) b.save(cachePath);
-        printf("erosion: cache saved in %.1f s\n", std::chrono::duration<float>(std::chrono::steady_clock::now() - ts0).count());
-        printf("erosion: baked the planet, %d cells at %.0f m + %d at %.0f m, in %.1f s (coarse %.1f s, faces %.1f s): cut up to %.0f m, raised up to %.0f m, hash %016llx\n",
+        LOG_INFO("Erosion", "cache saved in %.1f s\n", std::chrono::duration<float>(std::chrono::steady_clock::now() - ts0).count());
+        LOG_INFO("Erosion", "baked the planet, %d cells at %.0f m + %d at %.0f m, in %.1f s (coarse %.1f s, faces %.1f s): cut up to %.0f m, raised up to %.0f m, hash %016llx\n",
                b.cells(), p.cell, b.fineCells(), b.fineCell(), b.buildSeconds, b.coarseSeconds, b.refineSeconds, b.maxCut, b.maxRaise, (unsigned long long)b.hash());
     } else {
-        printf("erosion: loaded %s (%d cells, hash %016llx) in %.0f ms\n", cachePath.c_str(), b.cells(), (unsigned long long)b.hash(), loadMs);
+        LOG_INFO("Erosion", "loaded %s (%d cells, hash %016llx) in %.0f ms\n", cachePath.c_str(), b.cells(), (unsigned long long)b.hash(), loadMs);
     }
-    printf("erosion: %zu ponds from the bake (#360)\n", b.ponds().size());
+    LOG_INFO("Erosion", "%zu ponds from the bake (#360)\n", b.ponds().size());
     erosionState->active.store(true, std::memory_order_release);
     riverState = std::make_shared<RiverState>();
 }
@@ -755,7 +756,7 @@ const RiverNetwork* PlanetField::rivers() const {
         riverState->net = std::make_unique<RiverNetwork>(radius, riverSeed, [this, ero](Vector3 d) {
             return ero ? ero->heightAt(d, 256.0f) : land(d, 256.0f).h; // (ice shelves: the network's own rule)
         }, rp);
-        printf("rivers: network built in %.2f s (%d cells of %.0f m)\n", std::chrono::duration<float>(std::chrono::steady_clock::now() - t0).count(),
+        LOG_INFO("Rivers", "network built in %.2f s (%d cells of %.0f m)\n", std::chrono::duration<float>(std::chrono::steady_clock::now() - t0).count(),
                riverState->net->stats().cells, riverState->net->stats().cellSize);
     });
     return riverState->net.get();
