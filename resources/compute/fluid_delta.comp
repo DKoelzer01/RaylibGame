@@ -16,6 +16,6 @@ void main() {
     int nf = clamp(f + d.delta, 0, 255);
     uint fl = (c >> 8) & 255u;
     if (f == 0 && nf > 0) fl = (fl & 31u) | ((d.kind & 7u) << 5);
-    cells[d.cell] = uint(nf) | (fl << 8) | (c & 0xFF0000u);
+    cells[d.cell] = uint(nf) | (fl << 8) | (c & 0xFFFF0000u); // the target and the ground share (#454) stay
     atomicOr(flagsOut[d.cell / 4096u], 1u);
 }

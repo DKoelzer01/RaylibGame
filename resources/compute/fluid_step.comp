@@ -24,13 +24,16 @@ uniform uint count;        // processed slots
 uniform int pass;          // 0 vertical, 1 sideways
 uniform int visc[8];       // per kind: sideways flow divisor
 uniform int minSpread[8];  // per kind: thinnest film that spreads
+uniform int evaporate;     // 1: resting specks soak away (0: tests, water accounting)
 
 const uint SOLID = 1u, SOURCE = 2u, DUG = 8u, SINK = 16u; // a sink: a source that takes water in (reset to its level after: what is over it leaves, #361)
 uint F(uint c) { return c & 255u; }
 uint FL(uint c) { return (c >> 8) & 255u; }
 uint TG(uint c) { return (c >> 16) & 255u; }
 uint KIND(uint c) { return (FL(c) >> 5) & 7u; }
-uint pack(uint f, uint fl, uint tg) { return (f & 255u) | ((fl & 255u) << 8) | ((tg & 255u) << 16); }
+uint SH(uint c) { return c >> 24; }               // the cell's ground share (#454): it holds 255 - SH, its water stands at SH + F
+uint CAP(uint c) { return 255u - SH(c); }
+uint pack(uint f, uint fl, uint c) { return (f & 255u) | ((fl & 255u) << 8) | (c & 0xFFFF0000u); } // keeps c's target and ground share
 
 // The neighbour cell (dx,dy,dz one of +-1 on one axis): global index, or -1 when its brick is missing.
 // processed: whether that brick is in this dispatch.
@@ -57,7 +60,7 @@ uint downFlux(uint u, uint l, bool lProc, bool lExists) {
     if ((FL(l) & (SOURCE | SINK)) == SOURCE) return 0u;          // static water takes nothing in (a sink does)
     if ((FL(u) & SOURCE) != 0u && (FL(l) & DUG) == 0u) return 0u; // sources feed dug cells only
     if (F(l) > 0u && F(u) > 0u && KIND(l) != KIND(u)) return 0u;  // kinds don't mix
-    return min(F(u), 255u - F(l));
+    return min(F(u), CAP(l) > F(l) ? CAP(l) - F(l) : 0u); // up to its room (#454)
 }
 
 // Whether a cell rests (can spread sideways): on solid, a full cell, or another fluid kind.
@@ -67,7 +70,14 @@ bool rests(uint slot, int x, int y, int z, uint c) {
     if (g < 0) return false;                                      // below not there yet: wait
     uint b = readCell(g, proc);
     if ((FL(b) & SOLID) != 0u) return true;
-    return F(b) == 255u || (F(b) > 0u && KIND(b) != KIND(c));
+    return F(b) >= CAP(b) || (F(b) > 0u && KIND(b) != KIND(c)); // full: at its capacity (#454)
+}
+
+// Whether a cell lies on solid ground (not on fluid): only there does a speck soak away.
+bool onGround(uint slot, int x, int y, int z) {
+    bool proc; int face;
+    int g = neighbour(slot, x, y, z, 0, 0, -1, proc, face);
+    return g >= 0 && (FL(readCell(g, proc)) & SOLID) != 0u;
 }
 
 // The kind an empty cell takes when fluids could flow in: the fullest resting side neighbour's (ties: lowest face).
@@ -85,6 +95,22 @@ uint kindFor(uint slot, int x, int y, int z) {
     return kind;
 }
 
+// Side neighbours (open, there) whose water stands v or more lower than h (lower = true), or v or more higher.
+uint sideCount(uint slot, int x, int y, int z, uint h, uint v, bool lower) {
+    uint n = 0u;
+    for (int k = 0; k < 4; ++k) {
+        int dx = k == 0 ? -1 : k == 1 ? 1 : 0, dy = k == 2 ? -1 : k == 3 ? 1 : 0;
+        bool proc; int face;
+        int g = neighbour(slot, x, y, z, dx, dy, 0, proc, face);
+        if (g < 0) continue;
+        uint c = readCell(g, proc);
+        if ((FL(c) & SOLID) != 0u) continue;
+        uint hc = SH(c) + F(c);
+        if (lower ? hc + v <= h : hc >= h + v) ++n;
+    }
+    return n;
+}
+
 // Sideways pair flux from cell a (at slot/x/y/z) to its neighbour b (value, position). Both cells call this
 // with the same arguments for the pair, so the result agrees.
 uint sideFlux(uint aSlot, int ax, int ay, int az, uint a, uint bSlot, int bx, int by, int bz, uint b, bool aProc, bool bProc) {
@@ -97,12 +123,29 @@ uint sideFlux(uint aSlot, int ax, int ay, int az, uint a, uint bSlot, int bx, in
     if (fa < uint(minSpread[ka])) return 0u;
     if (fb > 0u) { if (KIND(b) != ka) return 0u; }
     else if (kindFor(bSlot, bx, by, bz) != ka) return 0u;
-    if (fa <= fb) return 0u;
+    // Water stands at SH + F (#454): a film on a half-buried cell stands higher than its open neighbour and runs off.
+    uint ha = SH(a) + fa, hb = SH(b) + fb;
+    if (ha <= hb) return 0u;
     uint v = uint(visc[ka]);
-    uint diff = fa - fb;
+    uint diff = ha - hb;
     if (diff < v) return 0u;
-    uint m = diff / v;
-    if (fb == 0u && m < uint(minSpread[ka])) return 0u;         // no trickles into dry cells
+    // The giver's water shared among its side neighbours lower by v or more, the taker's room among those higher: the pair
+    // moves of a substep never overdraw or overfill a cell (a height step can exceed the water itself, #454). Both cells
+    // count from the same inputs, so they agree. (A flat quarter cut a stream down a slope to a fraction of its flow.)
+    uint room = CAP(b) > fb ? CAP(b) - fb : 0u;
+    uint nLow = max(1u, sideCount(aSlot, ax, ay, az, ha, v, true));
+    uint shareA = fa / nLow, shareB = room / max(1u, sideCount(bSlot, bx, by, bz, hb, v, false));
+    uint m = min(diff / v, min(shareA, shareB));
+    // A film at a drop's edge (a dry cell with nothing under it to hold water) runs off whole, its share of it at once:
+    // left to the viscosity rule its last centimetres stayed stranded up a dug wall (#454).
+    const bool drop = fb == 0u && !rests(bSlot, bx, by, bz, b);
+    if (drop) m = min(shareA, shareB);
+    // Into a dry cell: a film with one way down leaves no speck behind (it would soak away), it goes whole.
+    if (fb == 0u && nLow == 1u && fa - m <= 3u && fa <= shareB) m = fa;
+    if (m == 0u) return 0u;
+    // No trickles into dry cells (a film's edge holds), unless the ground falls to them - a lower ground share, or a drop
+    // under the cell - and then more than a speck: a speck landing alone soaks away (water lost, #454).
+    if (fb == 0u && m < uint(minSpread[ka]) && (m <= 3u || (SH(a) <= SH(b) && !drop))) return 0u;
     if (!rests(aSlot, ax, ay, az, a)) return 0u;
     return m;
 }
@@ -130,13 +173,14 @@ void main() {
         if (gb < 0 && f > 0 && (fl & SOURCE) == 0u) atomicOr(flagsOut[slot], 1u << uint(1 + fB));
         int nf = f - int(outF) + int(inF);
         if (f == 0 && inF > 0u) kind = KIND(above);
-        outC[g] = pack(uint(clamp(nf, 0, 255)), (fl & 31u) | (kind << 5), TG(c));
+        outC[g] = pack(uint(clamp(nf, 0, 255)), (fl & 31u) | (kind << 5), c);
         int w = watchOf[slot];
         if (w >= 0) flux[(uint(w) * 4096u + local) * 4u + 2u] -= int(inF) + int(outF); // down through the top and the bottom face
         return;
     }
     // Sideways.
     int net = 0;
+    uint moving = 0u; // in + out across the side faces this substep: a speck in a moving film is not resting (#454)
     uint inKind = kind;
     uint best = 0u;
     int fx = 0, fy = 0; // flow across the faces along +x / +y (#392)
@@ -153,7 +197,7 @@ void main() {
         int nx = int(nl % 16u), ny = int((nl / 16u) % 16u), nz = int(nl / 256u);
         uint out1 = f > 0 ? sideFlux(slot, x, y, z, c, nSlot, nx, ny, nz, n, true, pN) : 0u;
         uint in1 = F(n) > 0u ? sideFlux(nSlot, nx, ny, nz, n, slot, x, y, z, c, pN, true) : 0u;
-        net += int(in1) - int(out1);
+        net += int(in1) - int(out1); moving += in1 + out1;
         const int along = (k == 0 || k == 2) ? int(in1) - int(out1) : int(out1) - int(in1); // in from the - side, out to the + side
         if (k < 2) fx += along; else fy += along;
         if (in1 > best) { best = in1; inKind = KIND(n); }
@@ -161,9 +205,12 @@ void main() {
     int nf = clamp(f + net, 0, 255);
     if (f == 0 && nf > 0) kind = inKind;
     if ((fl & SOURCE) != 0u) nf = int(TG(c));                            // sources hold their level
-    else if (nf > 0 && nf <= 3 && rests(slot, x, y, z, c)) nf = 0;          // a resting speck soaks away
+    // A resting speck on the ground soaks away (one in a moving film does not: erasing a sliding film's thin edge every
+    // substep lost ~12% of a draining pond, #454); on water it is that water's surface and stays (#454: a body over cells that hold
+    // little lost the remainder of every fall into them, ~15% of a draining pond).
+    else if (evaporate != 0 && nf > 0 && nf <= 3 && moving == 0u && onGround(slot, x, y, z)) nf = 0;
     uint old = outC[g];                                                   // this substep's start (A)
-    uint res = pack(uint(nf), (fl & 31u) | (kind << 5), TG(c));
+    uint res = pack(uint(nf), (fl & 31u) | (kind << 5), c);
     if (F(old) != uint(nf)) atomicOr(flagsOut[slot], 1u);
     outC[g] = res;
     int w = watchOf[slot];

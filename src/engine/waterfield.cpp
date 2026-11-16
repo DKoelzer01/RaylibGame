@@ -146,38 +146,45 @@ bool ChunkSampler::cellAt(int si, int ci, int cj, int ck, uint8_t& fill, uint8_t
     fill = b->fill[i]; flags = b->flags[i];
     return true;
 }
+bool ChunkSampler::cellAt(int si, int ci, int cj, int ck, uint8_t& fill, uint8_t& flags, uint8_t& shut) const {
+    const Brick* b = brickPtr(si, ci >> 4, cj >> 4, ck >> 4);
+    if (!b) return false;
+    const int i = CellIdx(ci & 15, cj & 15, ck & 15);
+    fill = b->fill[i]; flags = b->flags[i]; shut = b->shut[i];
+    return true;
+}
 
 float ChunkSampler::openSurface(int si, int ci, int cj, int ck, int kind, int depth) {
-    uint8_t fill, flags;
-    if (!cellAt(si, ci, cj, ck, fill, flags) || (flags & kSolid)) return kNone;
+    uint8_t fill, flags, sh; // sh: the cell's ground share: its water stands at sh + fill (#454)
+    if (!cellAt(si, ci, cj, ck, fill, flags, sh) || (flags & kSolid)) return kNone;
     const int f = CellKind(flags) == kind ? fill : 0;
     if (f > 0) {
         if (f < kShallow) {
             // Shallow water on no fluid (the ground is in this cell): drawn as part of a sheet - a side neighbour at the
             // same level, or deeper water - not as the films a draining body leaves cell by cell, each at its own height
             // over a bed the cell does not know (they read as a grid of spikes, #360).
-            uint8_t fb, flb;
-            const bool topsFluid = cellAt(si, ci, cj, ck - 1, fb, flb) && !(flb & kSolid) && fb >= 255 && CellKind(flb) == kind;
+            uint8_t fb, flb, shb;
+            const bool topsFluid = cellAt(si, ci, cj, ck - 1, fb, flb, shb) && !(flb & kSolid) && fb + shb >= 255 && CellKind(flb) == kind;
             if (!topsFluid) {
                 static const int side[4][2] = { { 1, 0 }, { -1, 0 }, { 0, 1 }, { 0, -1 } };
                 bool sheet = false;
                 for (const auto& d : side) {
-                    uint8_t fo, flo;
-                    if (!cellAt(si, ci + d[0], cj + d[1], ck, fo, flo) || (flo & kSolid) || fo == 0 || CellKind(flo) != kind) continue;
-                    if (fo >= kShallow || abs((int)fo - f) <= 8) { sheet = true; break; }
+                    uint8_t fo, flo, sho;
+                    if (!cellAt(si, ci + d[0], cj + d[1], ck, fo, flo, sho) || (flo & kSolid) || fo == 0 || CellKind(flo) != kind) continue;
+                    if (fo >= kShallow || abs(((int)sho + fo) - ((int)sh + f)) <= 8) { sheet = true; break; }
                 }
                 if (!sheet) return kNone;
             }
         }
-        if (f < 255) return ck + f / 255.0f;
+        if (sh + f < 255) return ck + (sh + f) / 255.0f;
         // Full: the surface is higher up if the cell above holds this fluid too.
         uint8_t fa, fla;
         if (depth < 8 && cellAt(si, ci, cj, ck + 1, fa, fla) && !(fla & kSolid) && fa > 0 && CellKind(fla) == kind) return openSurface(si, ci, cj, ck + 1, kind, depth + 1);
         return ck + 1.0f;
     }
     // Empty: over fluid, the surface below (so the interpolated surface runs level across the cell border).
-    uint8_t fb, flb;
-    if (cellAt(si, ci, cj, ck - 1, fb, flb) && !(flb & kSolid) && fb > 0 && CellKind(flb) == kind) return (ck - 1) + fb / 255.0f;
+    uint8_t fb, flb, shb;
+    if (cellAt(si, ci, cj, ck - 1, fb, flb, shb) && !(flb & kSolid) && fb > 0 && CellKind(flb) == kind) return (ck - 1) + (shb + fb) / 255.0f;
     return kNone;
 }
 

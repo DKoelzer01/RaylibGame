@@ -61,6 +61,8 @@ namespace Fluid {
     // cell decides here, or one does and holds water (a drained pond is dry). Thread-safe (snapshot).
     bool GeneratedWaterValid(uint64_t body, Vector3 local);
     float SurfaceAbove(const Planetoid& body, Vector3 local, float reach); // height of the water surface over this point (m, < 0: none within reach)
+    // Tests (#454): m^3 of water in published cells within `radius` of `local` whose bottom stands `above` m or more over it.
+    float VolumeAbove(const Planetoid& body, Vector3 local, float radius, float above);
     bool StandingWaterNear(const Planetoid& body, Vector3 local, float range); // irrigation
     float WaterAt(const Planetoid& body, Vector3 local, float radius);    // m^3 of water (moving or static) within radius
     // Flow through the simulated water around a point (#392): body-local, its length in m^3/s - the volume crossing the
