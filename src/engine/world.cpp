@@ -1868,13 +1868,12 @@ void World_ClearStreamingQueues() {
 void unloadWorld(Scene& world) {
     Jobs().clearQueued();  // in-flight jobs finish; their results are dropped (planetoid ids are gone)
     World_ClearStreamingQueues(); // #387 (first: nothing queued to wait for; again below for what lands meanwhile)
-    // Let the running builds finish now (#270: they kept the workers busy behind the main menu). A worker can be waiting on
-    // a GPU density batch, so keep pumping those meanwhile (only batches in flight: the queue was just cleared). Bounded: a
-    // stuck job must not hang the quit.
-    for (int i = 0; i < 3000 && (Jobs().running() > 0 || TerrainGpu_Pending() > 0); ++i) {
-        TerrainGpu_Pump();
-        std::this_thread::sleep_for(std::chrono::milliseconds(1));
-    }
+    // The builds already running on the workers (CPU only: a GPU density block is a callback on the main thread, never a
+    // blocked worker) take a few ms; give them up to 300 ms of wall clock, then go on without them (their results are
+    // dropped). Never a count of short sleeps: a 1 ms sleep lasts ~15 ms on Windows, and the old 3000-step cap became a
+    // 23.6 s frame (#270).
+    const auto waitUntil = std::chrono::steady_clock::now() + std::chrono::milliseconds(300);
+    while (Jobs().running() > 0 && std::chrono::steady_clock::now() < waitUntil) std::this_thread::yield();
     Factory::Reset();      // machines belong to the old bodies
     Fluid::Reset();        // so does flowing water
     player.nearest = nullptr; // every body goes (the player refinds its ground next update)
@@ -1884,7 +1883,8 @@ void unloadWorld(Scene& world) {
     gPreload.clear();      // the preload rings and cache counts of the old bodies
     gCachedCount.clear();
     // The GPU side of the old world (#270): the terrain arena (grown to the last world's size: hundreds of MB) and the GPU
-    // density batches (they point at the old field). Both come back on the next world's first use.
+    // density batches, abandoned, not waited for (they point at the old field; their builds' bodies are gone). Both come
+    // back on the next world's first use.
     TerrainArena_Unload();
     TerrainGpu_Unload();
 }
