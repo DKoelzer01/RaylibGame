@@ -52,9 +52,11 @@ get_rows() {
   local nums=("$@") i
   for ((i = 0; i < ${#nums[@]}; i += CHUNK)); do
     local q="query { repository(owner:\"$REPO_OWNER\", name:\"$REPO_NAME\") {"
+    # issueOrPullRequest: a PR number gets its own row instead of failing the whole batch.
+    local sel="number projectItems(first:5) { nodes { id project { id } fieldValues(first:12) {"
+    sel+=" nodes { ... on ProjectV2ItemFieldSingleSelectValue { name field { ... on ProjectV2SingleSelectField { name } } } } } } }"
     for n in "${nums[@]:i:CHUNK}"; do
-      q+=" i$n: issue(number:$n) { number projectItems(first:5) { nodes { id project { id } fieldValues(first:12) {"
-      q+=" nodes { ... on ProjectV2ItemFieldSingleSelectValue { name field { ... on ProjectV2SingleSelectField { name } } } } } } } }"
+      q+=" i$n: issueOrPullRequest(number:$n) { ... on Issue { $sel } ... on PullRequest { $sel } }"
     done
     q+=" } rateLimit { cost remaining resetAt } }"
     # One filter: a "COST ..." line (sent to stderr below) and one TSV row per issue.
@@ -108,12 +110,17 @@ case "$cmd" in
     parse "$@"; [ ${#NUMS[@]} -gt 0 ] || die "$cmd [-s S] [-p P] [-z Z] [-k K] N [N...]"
     [ ${#WANT[@]} -gt 0 ] || die "give at least one of -s -p -z -k"
     declare -A ITEM=() HAVE=()
-    if [ "$cmd" = fill ]; then
-      while IFS=$'\t' read -r n item s p z k; do ITEM[$n]="$item"; HAVE[$n:Status]="$s"; HAVE[$n:Priority]="$p"; HAVE[$n:Size]="$z"; HAVE[$n:Kind]="$k"
-      done < <(get_rows "${NUMS[@]}")
-    fi
+    # Look up existing items first (1 point per 50 issues); only issues not on the board get added.
+    while IFS=$'\t' read -r n item s p z k; do ITEM[$n]="$item"; HAVE[$n:Status]="$s"; HAVE[$n:Priority]="$p"; HAVE[$n:Size]="$z"; HAVE[$n:Kind]="$k"
+    done < <(get_rows "${NUMS[@]}")
     missing=(); for n in "${NUMS[@]}"; do [ -n "${ITEM[$n]:-}" ] || missing+=("$n"); done
-    if [ ${#missing[@]} -gt 0 ]; then while IFS=$'\t' read -r n item; do ITEM[$n]="$item"; done < <(add_items "${missing[@]}"); fi
+    if [ ${#missing[@]} -gt 0 ]; then
+      while IFS=$'\t' read -r n item; do ITEM[$n]="$item"; done < <(add_items "${missing[@]}" 2>/dev/null)
+      # The board's auto-add can win the race for a brand-new issue ("Content already exists"): look the item up again.
+      again=(); for n in "${missing[@]}"; do [ -n "${ITEM[$n]:-}" ] || again+=("$n"); done
+      if [ ${#again[@]} -gt 0 ]; then sleep 3; while IFS=$'\t' read -r n item s p z k; do [ -n "$item" ] && ITEM[$n]="$item"; done < <(get_rows "${again[@]}"); fi
+      for n in "${missing[@]}"; do [ -n "${ITEM[$n]:-}" ] || die "#$n: could not add it to the board"; done
+    fi
     for n in "${NUMS[@]}"; do for f in "${!WANT[@]}"; do
       if [ "$cmd" = set ] || [ -z "${HAVE[$n:$f]:-}" ]; then printf '%s\t%s\t%s\n' "${ITEM[$n]}" "$f" "${WANT[$f]}"; fi
     done; done | set_fields;;
@@ -125,8 +132,9 @@ case "$cmd" in
     echo "created #$num https://github.com/$REPO/issues/$num"
     [ -n "$PARENT" ] && gh api "repos/$REPO/issues/$PARENT/sub_issues" -F "sub_issue_id=$dbid" --silent && echo "linked under #$PARENT"
     if [ ${#WANT[@]} -gt 0 ]; then
-      item=$(add_items "$num" | cut -f2)
-      for f in "${!WANT[@]}"; do printf '%s\t%s\t%s\n' "$item" "$f" "${WANT[$f]}"; done | set_fields
+      # Same path as `set` (lookup, add, retry on the auto-add race).
+      fargs=(); for f in "${!WANT[@]}"; do case "$f" in Status) fargs+=(-s);; Priority) fargs+=(-p);; Size) fargs+=(-z);; Kind) fargs+=(-k);; esac; fargs+=("${WANT[$f]}"); done
+      bash "$0" set "${fargs[@]}" "$num" 2>/dev/null | tail -1
     fi;;
   *) sed -n '2,16p' "$0"; exit 1;;
 esac
