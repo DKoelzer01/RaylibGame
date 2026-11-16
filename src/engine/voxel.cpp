@@ -368,8 +368,8 @@ PlanetField::Land PlanetField::land(Vector3 dir, float fp) const {
     if (eroded) {
         const PlanetErosion::Slope s = eroded->slopeAt(dir, fp);
         h = s.h;
-        if (gGullies && fp < 450.0f) h += ErosionGullies({ sx, sy, sz }, dir, s.grad, fp, fieldSeed, Smoothstep(2.0f, 15.0f, s.h));
-        h += cliffFace({ sx, sy, sz }, h, s.grad, fp); // one face per steep resistant layer (#588)
+        if (gGullies && fp < 450.0f) h += (l.relief = ErosionGullies({ sx, sy, sz }, dir, s.grad, fp, fieldSeed, Smoothstep(2.0f, 15.0f, s.h)));
+        { const float cf = cliffFace({ sx, sy, sz }, h, s.grad, fp); h += cf; l.relief += cf; } // one face per steep resistant layer (#588)
         { // inside the elevation bound (less its 65 m allowance): the bake and the faces can lift formations (#593)
             const float top = maxElevation - 65.0f, knee = top - 200.0f;
             if (h > knee) h = knee + 200.0f * (1.0f - expf(-(h - knee) / 200.0f));
@@ -633,7 +633,21 @@ float PlanetField::elevation(Vector3 dir, float fp) const {
     // below the water, and the channel bed. The valley stays resolved further out than the channel.
     // With the bake, water only cuts (#359): no lake bank, river bank or raised bed (they made pedestals and levees).
     const bool carveOnly = erosion() != nullptr;
-    if (const RiverNetwork* net = rivers()) {
+    const RiverNetwork* netAll = rivers();
+    if (netAll && netAll->bakeNative()) {
+        // Bake-native rivers (#547, #608): the bake already wore the valleys and channels; only the channel itself is
+        // shaped under the water (the lowest of every piece's bed and bank near, faded out where samples are too far
+        // apart to resolve it). No valley carve, no banks, nothing raised.
+        // The gullies and cliff faces are detail drawn from the bake's slope, not its drainage: by a river they fade out,
+        // so the valley floor it runs on is the bake's own (they stood the water as walls over their troughs).
+        if (l.relief != 0.0f) {
+            const RiverNetwork::Hit rh = netAll->nearest(dir, 160.0f);
+            if (rh.found) h -= l.relief * (1.0f - Smoothstep(rh.halfWidth + 20.0f, rh.halfWidth + 140.0f, rh.dist));
+        }
+        const float cw = std::clamp(2.0f - fp / 16.0f, 0.0f, 1.0f) * Smoothstep(-2.0f, 0.5f, l.h);
+        if (cw > 0.0f) { const float c = netAll->carve(dir, h); h += (c - h) * cw; }
+    }
+    else if (const RiverNetwork* net = netAll) {
         // Lakes (rivers.h): the level is held under the land around the basin, so the shore is the
         // terrain's own. Between the samples that checked it the ground may still dip lower; a low
         // bank in the outer part of the water region (at most 4 m of fill, 0.3 m above the water)
@@ -816,9 +830,14 @@ const RiverNetwork* PlanetField::rivers() const {
             rp.fineHeight = [this](Vector3 d) { return elevationBase(d, 8.0f); };
         }
         const auto t0 = std::chrono::steady_clock::now();
+        const PlanetErosion* ero = erosion();
+        if (ero && ero->hasFlow()) {
+            // Bake-native rivers (#547): the bake's own final drainage on its 50 m grid; streams from 1 km^2.
+            rp.riverArea = 1.0e6f; rp.lakeDepth = 1.5f;
+            riverState->net = std::make_unique<RiverNetwork>(*ero, radius, rp);
+        } else
         // With the bake, the network sees the baked surface itself: land() adds the gullies (+-75 m at this footprint),
         // whose troughs read as closed basins: phantom lakes 130 m under the ground and canyons cut to them (#360).
-        const PlanetErosion* ero = erosion();
         riverState->net = std::make_unique<RiverNetwork>(radius, riverSeed, [this, ero](Vector3 d) {
             return ero ? ero->heightAt(d, 256.0f) : land(d, 256.0f).h; // (ice shelves: the network's own rule)
         }, rp);
@@ -1516,7 +1535,8 @@ VoxelMaterial PlanetField::materialSkyHinted(Vector3 p, float base, float fp, Ve
             if (skin && Vector3DotProduct(normal, up) > 0.96f) {
                 const float patch = rocks.fractal(2, p.x * 0.05f + 311.0f, p.y * 0.05f, p.z * 0.05f);
                 if (rh.found && rh.dist > rh.halfWidth && rh.dist < rh.halfWidth * 2.5f + 50.0f && e < rh.level + 2.5f && e > rh.level - 0.3f
-                    && patch > -0.05f + 0.25f * Smoothstep(rh.halfWidth, rh.halfWidth * 2.5f + 50.0f, rh.dist))
+                    && patch > -0.05f + 0.25f * (net && net->bakeNative() ? Smoothstep(rh.level, rh.level + 2.5f, e) /* by the height over the water: the ground's own shape, #609 */
+                                                   : Smoothstep(rh.halfWidth, rh.halfWidth * 2.5f + 50.0f, rh.dist)))
                     return VoxelMaterial::Silt;
                 float lv, lo;
                 if (net && fp < 1024.0f && net->lakeAt(up, lv, lo) && lo > 0.0f && lo < 10.0f && e < lv + 1.2f && patch > -0.3f) return VoxelMaterial::Mud;

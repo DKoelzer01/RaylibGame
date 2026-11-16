@@ -10,8 +10,11 @@
 // split into short pieces kept in a per-cell index, so terrain queries are cheap.
 
 #include <functional>
+#include <unordered_map>
 #include <vector>
 #include <raylib.h>
+
+class PlanetErosion;
 
 class RiverNetwork {
 public:
@@ -29,6 +32,17 @@ public:
     // height(dir): smooth land height (m above sea level) for a unit direction.
     RiverNetwork(float radius, unsigned int seed, const std::function<float(Vector3)>& height, const Params& params);
     RiverNetwork(float radius, unsigned int seed, const std::function<float(Vector3)>& height);
+    // Bake-native rivers (#547, #607-#609): the rivers ARE the bake's final drainage (PlanetErosion::hasFlow) - every
+    // 50 m cell draining params.riverArea or more is a node, linked to the cell it drains to; the water level is the
+    // bake's filled surface (a lake's level in its basins, else the worn channel's ground plus most of its incision), so
+    // it never rises downstream and meets the river it joins at that river's level. No stepped levels, no valley carve.
+    RiverNetwork(const PlanetErosion& bake, float radius, const Params& params);
+    bool bakeNative() const { return bake != nullptr; }
+    // Bake-native: the ground under the channels - h lowered to each piece's bed within its half width and to a 0.6 bank
+    // slope just beyond (the lowest of all pieces near, so overlapping ends never leave a ridge, #608). Lakes carve nothing.
+    float carve(Vector3 dir, float h) const;
+    // Bake-native: the river head (a source) nearest to dir with water over minLevel, and its downstream direction (#625 looks).
+    bool nearestHead(Vector3 dir, float minLevel, Vector3& head, Vector3& down) const;
 
     // The river closest to a point (body-local unit direction), within `reach` metres of its centreline.
     struct Hit {
@@ -59,7 +73,7 @@ public:
     static constexpr float kLakeMargin = 60.0f;
 
     // Tests and stats.
-    struct Stats { int cells = 0, landCells = 0, riverCells = 0, lakeCells = 0, mouths = 0, riverCellsAbove700 = 0; float cellSize = 0.0f, longestKm = 0.0f, highestSource = 0.0f; };
+    struct Stats { int cells = 0, landCells = 0, riverCells = 0, lakeCells = 0, mouths = 0, riverCellsAbove700 = 0, heads = 0, headFalls = 0; float cellSize = 0.0f, longestKm = 0.0f, highestSource = 0.0f; }; // heads: river sources; headFalls: those with a waterfall in their first 3 links (#625)
     Stats stats() const { return st; }
     // Every river link: the level never rises and the width never shrinks going downstream; returns
     // the number of links checked and the worst rise (m) / shrink (m) seen.
@@ -87,7 +101,7 @@ private:
     std::vector<unsigned char> lakeSteps;  // cells to the nearest lake cell (capped at 255)
     std::vector<int> lakeIdOf;             // per cell: its lake's id, or -1
     std::vector<LakeInfo> lakes;
-    struct Piece { Vector3 a, b; float la, lb, wa, wb, da, db; Vector3 mid{}; float halfLen = 0.0f; float fallT = -1.0f; float reachSlope = 0.0f; }; // positions in metres (body-local); mid/halfLen: a bounding sphere for nearest(); fallT >= 0: a waterfall at that fraction (la before it, lb after, #540)
+    struct Piece { Vector3 a, b; float la, lb, wa, wb, da, db; Vector3 mid{}; float halfLen = 0.0f; float fallT = -1.0f; float reachSlope = 0.0f; bool inLake = false; }; // positions in metres (body-local); mid/halfLen: a bounding sphere for nearest(); fallT >= 0: a waterfall at that fraction (la before it, lb after, #540)
     std::vector<Piece> pieces;
     std::vector<std::vector<int>> index; // cell -> pieces within reach
     Stats st;
@@ -96,6 +110,11 @@ private:
     Vector3 centre(int c) const;
     void neighbours(int c, int out[8]) const;
     float distToCell(Vector3 dir, int c) const; // m from a direction to cell c's square (0 inside)
+    // Bake-native (#547)
+    const PlanetErosion* bake = nullptr;
+    std::unordered_map<int, int> fineLake;  // bake cell -> lake id
+    std::vector<int> nodeCell, nodeParent, nodePiece; // per node: its bake cell, the node it drains to (-1: the sea), its piece
+    bool fineLakeAt(Vector3 dir, float& level, float& outside, int& id) const;
 };
 
 #endif

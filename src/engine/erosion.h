@@ -28,7 +28,7 @@ using StrataFn = std::function<StrataColumn(Vector3)>; // #587: the rock column 
 
 // Bump with any change to the bake's code (Simulate, SetRock, the refinement, the pond extraction): a cache from
 // another version or other parameters is baked again rather than loaded (#355 review).
-constexpr uint32_t kErosionBakeVersion = 22; // 22: graded canyon floors (#544), divides past 400 m of cut; 19: formations kept inside the elevation bound; 18: // 18: glacial 2.0 (#548); 17: // 16: volcanoes (#593); 15: karst (#592); // 13: fold outcrops raised in the bake input; 12: folded strata (#591); 11: narrower fault steps; 10: fault scarps in the bake input (#590); 9: canyons in the bake input (#544); 8: rock strata (#587); 7: the noise seed offsets changed (#532); 6: wind (aeolian) erosion, #370
+constexpr uint32_t kErosionBakeVersion = 25; // 25: final drainage, diagonal channel corners worn, channels in the bake (#547); 22: graded canyon floors (#544), divides past 400 m of cut; 19: formations kept inside the elevation bound; 18: // 18: glacial 2.0 (#548); 17: // 16: volcanoes (#593); 15: karst (#592); // 13: fold outcrops raised in the bake input; 12: folded strata (#591); 11: narrower fault steps; 10: fault scarps in the bake input (#590); 9: canyons in the bake input (#544); 8: rock strata (#587); 7: the noise seed offsets changed (#532); 6: wind (aeolian) erosion, #370
 struct ErosionParams {
     float cell = 200.0f;      // m, coarse cell at a face centre (gnomonic cells shrink toward the face edges)
     int steps = 400;
@@ -50,6 +50,7 @@ struct ErosionParams {
                               // it from low land: heights then follow river length, so narrow coastal ranges came out low)
 };
 uint64_t ErosionParamsKey(const ErosionParams& p); // FNV-1a over every field and kErosionBakeVersion
+bool BakeRiversOld(); // #547 A/B: RAYLIBGAME_RIVERS_OLD=1 = the 200 m river network and its carving (no final drainage in the bake)
 float NoiseSeedSpanUnits(); // voxel.cpp (#532): the noise seed offset span, in the cache key when not the default
 
 class PlanetErosion {
@@ -77,6 +78,30 @@ public:
     // spill level (m above sea level) and depth. Water levels come from these; PlanetField places its ponds here.
     struct Pond { Vector3 dir; float r, level, depth; };
     const std::vector<Pond>& ponds() const { return pondList; }
+
+    // Drainage on the final terrain (#547, bake-native rivers): after the faces, one priority flood over every face's own
+    // 50 m cells (a single grid across the face edges) gives each cell its receiver (steepest descent on the filled
+    // surface), drainage area and filled height. Channels are worn into the stored heights right there (a light incision
+    // growing with the drainage), so the terrain and the rivers agree by construction. Cells: g = (face * nf + j) * nf + i.
+    static constexpr float kFlowArea0 = 1.0e5f; // m^2: area class 1 starts here; each class doubles
+    bool hasFlow() const { return !flow.empty(); }
+    int flowCells() const { return 6 * nf * nf; }
+    int flowCellOf(Vector3 dir) const;
+    Vector3 flowDir(int g) const;
+    void flowNeighbours(int g, int out[8]) const;     // -1 where none (8 directions: E W N S NE SE NW SW in i, j)
+    float flowHeight(int g) const;                    // the stored (incised) height, m
+    int flowReceiver(int g) const;                    // the cell it drains to, or -1 (the sea, an outlet)
+    float flowArea(int g) const;                      // m^2 drained through it (its class's middle), 0 under kFlowArea0
+    static float IncisionDepth(float area);           // m the bake wore a channel cell down by
+    // Filled cells (lakes and ponds of the flood): cell -> the water level there (m).
+    const std::vector<std::pair<int, float>>& filledCells() const { return filled; }
+
+private:
+    std::vector<uint8_t> flow;                       // per cell: receiver direction (low 4 bits, 15: none) | area class << 4
+    std::vector<std::pair<int, float>> filled;       // sorted by cell
+    void routeFinal(int threads);                    // the drainage and incision above (build's last pass)
+public:
+    float routeSeconds = 0.0f;
 
 private:
     int n = 0;                     // coarse cells per face side

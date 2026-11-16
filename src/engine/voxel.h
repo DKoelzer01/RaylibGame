@@ -356,7 +356,7 @@ private:
     std::shared_ptr<RiverState> riverState;
     unsigned int riverSeed = 0;
     float densityNear(Vector3 p, float d, float surface, float footprint, const Column3D* col = nullptr) const; // after the height map
-    struct Land { float h, c, mountain, valley, valleyWeight, detail, stream, ridge; };
+    struct Land { float h, c, mountain, valley, valleyWeight, detail, stream, ridge; float relief = 0.0f; }; // relief: what the gullies and cliff faces added to the bake (#547: rivers keep to the bake's own floor)
     Land land(Vector3 dir, float footprint) const;     // the height map before rivers and ponds
     struct Pond { bool exists; Vector3 dir; float r, level, depth; };
     Pond pondOfCell(int cx, int cy, int cz) const;       // deterministic per cell (cached per thread)
