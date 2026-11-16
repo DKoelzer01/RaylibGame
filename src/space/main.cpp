@@ -4729,7 +4729,14 @@ int main(int argc, char** argv)
                             {   // #189: the taken-over pond keeps its bed: no trees grow in it.
                                 std::vector<Trunk> trunks;
                                 if (p->trees) p->trees->trunksNear(at(pondDirB, pondLevelB), pondRB * 0.8f, trunks);
-                                printf("bench: pond: %zu trees inside the taken-over pond -> %s\n", trunks.size(), trunks.empty() ? "PASS" : "FAIL");
+                                // In the bed: within 0.8 of the radius across, standing no higher than the water (trunksNear
+                                // also returned trees on the bank 6 m above it, 35-38 m from the middle of a 34 m pond).
+                                int inBed = 0;
+                                for (const Trunk& tr : trunks) {
+                                    const Vector3 db = Vector3Normalize(tr.base);
+                                    inBed += Vector3Distance(db, pondDirB) * pf->radius < pondRB * 0.8f && Vector3Length(tr.base) - pf->radius < pondLevelB + 0.3f;
+                                }
+                                printf("bench: pond: %d trees inside the taken-over pond (%zu near it, on its banks) -> %s\n", inBed, trunks.size() - inBed, inBed == 0 ? "PASS" : "FAIL");
                             }
                             const bool saved = SaveWorld(world);
                             // Away 300 m, load, back.

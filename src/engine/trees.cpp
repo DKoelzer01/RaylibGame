@@ -416,6 +416,12 @@ void BuildTile(const PlanetField& f, const TerrainDeltas& edits, const PlantRemo
                 }
                 if (!found) continue;
             }
+            // Never under inland water (#189): a pond the fluid simulation took over, a lake or river bed - asked of the
+            // generated water itself, not through the bed's material (the strata, #587, put trees in a taken-over pond).
+            if (f.inlandWaterNear(dir, 0.0f)) {
+                const float w = f.waterElevation(dir, 0.0f);
+                if (w != PlanetField::kNoWater && Vector3Length(ground) - R < w + 0.2f) continue;
+            }
             const VoxelMaterial m = f.materialLod(Vector3Subtract(ground, Vector3Scale(dir, 0.3f)), 1.0f, 0.0f, normal);
             if (m != VoxelMaterial::Grass && m != VoxelMaterial::Regolith && !(stone && m == VoxelMaterial::Gravel)) continue;
             // Solid ground underfoot and open air above (caves, ravines, edits).
