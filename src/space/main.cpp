@@ -128,6 +128,28 @@ static bool SpawnDirOverride(Vector3& d) {
 }
 
 static bool gInFrame = false; // between the main loop's BeginDrawing and EndDrawing (#362: gWorldGenWait must not nest a frame)
+// --perf-log (#387): once a second, the frames per screen state (menu, newworld, bake, loading, play, paused): count,
+// average and worst frame, to stdout and log.txt. Called once per drawn frame.
+static bool gFpsLog = false;
+static void FpsLog_Frame(const char* state) {
+    if (!gFpsLog) return;
+    static const char* cur = nullptr;
+    static double t0 = 0.0, last = 0.0, sum = 0.0, worst = 0.0;
+    static int n = 0;
+    const double now = GetTime();
+    auto flush = [&] {
+        if (cur && n > 0) {
+            const char* line = TextFormat("[fps] %.0f s %s: %d frames in %.1f s (%.0f FPS), avg %.1f ms, worst %.1f ms\n", now, cur, n, now - t0, n / std::max(1e-3, now - t0), 1000.0 * sum / n, 1000.0 * worst);
+            printf("%s", line);
+            logger.logf("%s", line);
+        }
+        cur = state; t0 = now; sum = worst = 0.0; n = 0;
+    };
+    if (!cur || strcmp(cur, state) != 0 || now - t0 >= 1.0) flush();
+    if (last > 0.0) { const double dt = now - last; sum += dt; worst = std::max(worst, dt); ++n; }
+    last = now;
+}
+
 
 static Vector3 StartSpawnDirLocal(Planetoid& body) {
     if (Vector3 d; SpawnDirOverride(d)) return d;
@@ -507,7 +529,7 @@ int main(int argc, char** argv)
         if (std::string(argv[i]) == "--test-planet-walk" && i + 1 < argc) { walkTargetM = atof(argv[i + 1]); benchWalkSeconds = 600.0; } // gate: 1 km on the planet, in 100 m legs (#363)
         if (std::string(argv[i]) == "--bench-walk") benchWalkMode = true;
         if (std::string(argv[i]) == "--bench-stand") { benchWalkMode = true; benchStandMode = true; }
-        if (std::string(argv[i]) == "--perf-log") { perfLog = true; gJobLog = true; }
+        if (std::string(argv[i]) == "--perf-log") { perfLog = true; gJobLog = true; gFpsLog = true; }
         if (std::string(argv[i]) == "--play-new" && i + 1 < argc) playNewSeconds = atof(argv[i + 1]);
         if (std::string(argv[i]) == "--bench-fly" && i + 1 < argc) benchFlySpeed = (float)atof(argv[i + 1]);
         if (std::string(argv[i]) == "--bench-fly-back") benchFlyBack = true;
@@ -759,7 +781,7 @@ int main(int argc, char** argv)
         SetConfigFlags(FLAG_WINDOW_HIDDEN);
         InitWindow(320, 180, "RaylibGame headless");
         SetTargetFPS(bench ? std::max(0, benchFps) : kSimHz); // a server ticks at the sim rate
-    } else if (!bench || nativeWindow) {
+    } else if ((!bench && playNewSeconds <= 0.0) || nativeWindow) {
         SetConfigFlags(FLAG_WINDOW_RESIZABLE); // Allow window resizing
         SetConfigFlags(FLAG_WINDOW_UNDECORATED); // Remove window decorations for a cleaner look
         SetConfigFlags(FLAG_WINDOW_HIGHDPI); // Enable High DPI support
@@ -768,7 +790,10 @@ int main(int argc, char** argv)
         // No VSync: cap at the monitor's refresh rate instead (VSync on a 60 Hz desktop locked the game to 60).
         SetTargetFPS(bench ? std::max(0, benchFps) : benchFps >= 0 ? benchFps : std::max(60, GetMonitorRefreshRate(GetCurrentMonitor())));
     } else {
-        InitWindow(1920, 1080, "RaylibGame bench");
+        // Benches and --play-new (#387): a plain window that opens without taking focus, so an agent run never grabs the
+        // keyboard and mouse of whoever is at the machine.
+        SetConfigFlags(FLAG_WINDOW_UNFOCUSED);
+        InitWindow(playNewSeconds > 0.0 ? 1280 : 1920, playNewSeconds > 0.0 ? 720 : 1080, playNewSeconds > 0.0 ? "RaylibGame play-new" : "RaylibGame bench");
         SetTargetFPS(std::max(0, benchFps)); // --fps N caps it (frame-rate-dependence checks); 0 = uncapped
     }
     if (vramReport && IsWindowReady()) GpuMem_Install(); // --vram (#302): count GPU allocations per subsystem from here on
@@ -776,6 +801,7 @@ int main(int argc, char** argv)
     // progress, so the window stays responsive. From inside a frame (the debug menu's Regenerate) just wait.
     gWorldGenWait = [bench](float progress, const char* what) {
         if (gInFrame || !IsWindowReady()) { std::this_thread::sleep_for(std::chrono::milliseconds(20)); return; }
+        FpsLog_Frame("bake");
         static double lastPrint = -10.0;
         if (bench && GetTime() - lastPrint > 5.0) { lastPrint = GetTime(); printf("bench: world generation: %s %.0f%%\n", what, progress * 100.0f); }
         BeginDrawing();
@@ -1265,22 +1291,28 @@ int main(int argc, char** argv)
             return pass ? 0 : 1;
         }
     Recorder_Start(); // --record (#375): fixed frame time, seeded random values, the capture folder
-    // --play-new (#387): the main menu's New Game. RAYLIBGAME_PLAYNEW_REGEN=1: after 15 s on the menu (the launch world streaming
-    // behind it), and as a regenerated world (as loading a save or a second New Game does).
-    const bool playNewRegen = getenv("RAYLIBGAME_PLAYNEW_REGEN") && getenv("RAYLIBGAME_PLAYNEW_REGEN")[0] == '1';
-    if (playNewSeconds > 0.0 && !playNewRegen) pendingMenu.action = MenuAction::NewGame;
-    bool playNewIssued = playNewSeconds > 0.0 && !playNewRegen;
-    double playNewStart = -1.0;
+    // --play-new S (#387): the menus as a player uses them, for --perf-log. 10 s on the title screen; New Game (the New World
+    // screen creates after a moment) -> bake -> loading -> S s of play; Save & Quit -> 10 s on the title screen; Load that
+    // save -> loading -> 30 s of play; exit.
+    int playStep = 0;
+    double playStepAt = 0.0;
+    std::string playSave;
     while (windowKeepAlive && !WindowShouldClose())
     {
         if (Recorder_Finished()) break; // a --record capture is complete
-        if (playNewSeconds > 0.0 && !playNewIssued && gameState == 0 && GetTime() > 15.0) { worldFresh = false; pendingMenu.action = MenuAction::NewGame; playNewIssued = true; }
-        if (playNewSeconds > 0.0 && gameState == 1) {
-            if (playNewStart < 0.0) playNewStart = GetTime(); else if (GetTime() - playNewStart > playNewSeconds) break;
-            gFakeLook = loading ? Vector2{ 0.0f, 0.0f } : Vector2{ 40.0f, 0.0f }; // look around as the playtester did (#387: 11-81 px/frame)
+        if (playNewSeconds > 0.0) {
+            const double now = GetTime();
+            if (playStep == 0 && gameState == 0 && now > 10.0) { pendingMenu.action = MenuAction::NewGame; playStep = 1; }
+            else if (playStep == 1 && gameState == 1 && !loading) { playStep = 2; playStepAt = now; }
+            else if (playStep == 2 && now - playStepAt > playNewSeconds) { playSave = WorldSavePath(); pendingMenu.action = MenuAction::SaveAndQuit; playStep = 3; }
+            else if (playStep == 3 && gameState == 0) { playStep = 4; playStepAt = now; }
+            else if (playStep == 4 && now - playStepAt > 10.0) { pendingMenu.action = MenuAction::LoadGame; pendingMenu.path = playSave; playStep = 5; }
+            else if (playStep == 5 && gameState == 1 && !loading) { playStep = 6; playStepAt = now; }
+            else if (playStep == 6 && now - playStepAt > 30.0) break;
         }
         Recorder_Update(WorldIdle() && !loading); // its start delay (after the loading screen), F10 in normal play
         GpuTimer_CpuFrameStart(); GpuTimer_BeginFrame();
+        FpsLog_Frame(gameState == 0 ? "menu" : gameState == 3 ? "newworld" : gameState == 2 ? "paused" : loading ? "loading" : "play");
         if (preloadT0 >= 0.0 && !SpawnPreloadPending()) {
             const WorldStats& ws = GetWorldStats();
             printf("bench: spawn preload: %d ring nodes built in %.2f s; arena %.1f M vertices, %d nodes alive\n",
@@ -6394,7 +6426,7 @@ int main(int argc, char** argv)
                 TakeScreenshot("bench.png");
                 break;
             }
-        } else if (!IsWindowFocused()) {
+        } else if (!IsWindowFocused() && !bench && playNewSeconds <= 0.0) { // benches and --play-new run unfocused (#387)
             if (cursorLocked) { EnableCursor(); cursorLocked = false; }
             BeginDrawing();
             EndDrawing();
@@ -6577,7 +6609,11 @@ int main(int argc, char** argv)
 
         GpuTimer_CpuMark("game-update");
         world.updateFloatingOrigin(); // keep the camera near render-space 0 (float precision)
-        { const double w0 = GetTime(); worldUpdate(world, 3.0f); if (benchMeasuring) benchUpdateMs += (GetTime() - w0) * 1000.0; } // LOD + streaming (bodies were spun at the start of the frame)
+        // Upload time a frame: 3 ms in play. On the loading screen (#387) most of the frame: 70% of a frame of at least
+        // 16.7 ms (a 240 FPS cap would leave 2.9 ms; there is nothing to show but progress), so uploads keep up with the
+        // workers instead of following the frame rate.
+        const float uploadBudgetMs = loading ? std::min(30.0f, 0.7f * std::max(1000.0f / 60.0f, GetFrameTime() * 1000.0f)) : 3.0f; // at most 30 ms: Esc stays responsive
+        { const double w0 = GetTime(); worldUpdate(world, uploadBudgetMs); if (benchMeasuring) benchUpdateMs += (GetTime() - w0) * 1000.0; } // LOD + streaming (bodies were spun at the start of the frame)
 
         // Slot 1: headlamp (suit lamp from the eye, or the ship's nose light while piloting).
         // Slot 2: soft glow around the player while the inventory is open.
