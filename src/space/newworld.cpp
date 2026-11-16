@@ -148,7 +148,19 @@ namespace {
         SetTextureFilter(mapTex, TEXTURE_FILTER_BILINEAR);
         sphereRT = LoadRenderTexture(kSphereRT, kSphereRT);
         SetTextureFilter(sphereRT.texture, TEXTURE_FILTER_BILINEAR);
-        sphere = LoadModelFromMesh(GenMeshSphere(1.0f, 64, 128));
+        // par_shapes' sphere has its poles on z, texcoord.x = the polar angle / pi and texcoord.y = the longitude / 2 pi:
+        // the map is the other way round (x longitude, y latitude from the north), so its cold rows ran along a meridian
+        // (#513). Drawn turned z -> y (below), a vertex shows the direction (x, z, -y): latitude pi/2 - phi, longitude
+        // -theta, so the map's uv is (1 - t.y, t.x). The seam vertices par_shapes duplicates stay seamless.
+        Mesh globe = GenMeshSphere(1.0f, 64, 128);
+        for (int i = 0; i < globe.vertexCount; ++i) {
+            float* t = &globe.texcoords[i * 2];
+            const float polar = t[0], around = t[1];
+            t[0] = 1.0f - around;
+            t[1] = polar;
+        }
+        UpdateMeshBuffer(globe, 1, globe.texcoords, globe.vertexCount * 2 * (int)sizeof(float), 0);
+        sphere = LoadModelFromMesh(globe);
         static const char* vs =
             "#version 330\n"
             "in vec3 vertexPosition; in vec2 vertexTexCoord; in vec3 vertexNormal;\n"
