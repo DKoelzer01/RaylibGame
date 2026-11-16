@@ -109,6 +109,10 @@ case "$cmd" in
   set|fill)
     parse "$@"; [ ${#NUMS[@]} -gt 0 ] || die "$cmd [-s S] [-p P] [-z Z] [-k K] N [N...]"
     [ ${#WANT[@]} -gt 0 ] || die "give at least one of -s -p -z -k"
+    # The board holds issues only: refuse pull request numbers (REST: a PR has a pull_request key).
+    for n in "${NUMS[@]}"; do
+      [ "$(gh api "repos/$REPO/issues/$n" --jq 'has("pull_request")')" = "true" ] && die "#$n is a pull request; the board holds issues only"
+    done
     declare -A ITEM=() HAVE=()
     # Look up existing items first (1 point per 50 issues); only issues not on the board get added.
     while IFS=$'\t' read -r n item s p z k; do ITEM[$n]="$item"; HAVE[$n:Status]="$s"; HAVE[$n:Priority]="$p"; HAVE[$n:Size]="$z"; HAVE[$n:Kind]="$k"
