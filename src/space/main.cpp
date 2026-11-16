@@ -248,6 +248,27 @@ static void StartNewWorld(Scene& world, bool reset, bool dawn) {
 
 extern const char* kGameVersion; // "<branch> <commit>", generated at build time by cmake/game_version.cmake (#501)
 
+// --test-build (#602): every live part (plot, type, cell, orientation), to name what appears, or what a save/load adds or loses.
+using PartCensusMap = std::map<std::tuple<uint32_t, int, int, int, int, int>, int>;
+static PartCensusMap PartCensus(const Planetoid* b) {
+    PartCensusMap m;
+    if (b && b->plots) for (const auto& pl : b->plots->plots)
+        for (const Part& q : pl->parts) if (q.type != PartType::Count) ++m[{ pl->id, (int)q.type, q.origin.x, q.origin.y, q.origin.z, q.orient }];
+    return m;
+}
+static int PartCensusDiff(const PartCensusMap& was, const PartCensusMap& now, const char* what, int limit) {
+    int n = 0;
+    for (const auto& kv : now) {
+        const auto it = was.find(kv.first);
+        const int w = it == was.end() ? 0 : it->second;
+        if (kv.second > w && n++ < limit)
+            printf("bench: build: %s: plot %u, part type %d at %d,%d,%d orient %d\n", what, std::get<0>(kv.first), std::get<1>(kv.first),
+                   std::get<2>(kv.first), std::get<3>(kv.first), std::get<4>(kv.first), std::get<5>(kv.first));
+    }
+    return n;
+}
+static PartCensusMap gBuildCensus;
+
 int main(int argc, char** argv)
 {
     // Scripted runs (--bench, --test-*, --shot-*): stdout unbuffered, before any output, so a run killed by a timeout
@@ -1880,6 +1901,7 @@ int main(int argc, char** argv)
                         // A clear 6 x 6 pad outside the walls to stand on.
                         for (int z = 0; z < 6; ++z) for (int x = -8; x < -2; ++x) put(PartType::Cube, { x, 0, z }, 0);
                         buildPlaced = plot->partCount();
+                        gBuildCensus = PartCensus(p);
                         // Stand on the slab: drop the player 2 m above a free corner of it.
                         const Vector3 top = p->toWorld(plot->toBody({ -2.75f, 0.5f + 2.0f, 1.5f })); // over the pad
                         player.placeAt(world, *p, top);
@@ -1893,11 +1915,18 @@ int main(int argc, char** argv)
                         const Vector3 lf = plot->toPlot(p->toLocal((player.position - world.renderOrigin).toFloat()));
                         const bool standing = player.grounded && fabsf(lf.y - 0.5f) < 0.15f;
                         printf("bench: build: the player stands on the slab: %s (feet %.2f m above the plot floor, grounded %d)\n", standing ? "yes" : "NO", lf.y, player.grounded);
+                        // Every live part (plot, type, cell, orientation), to name what a save/load adds or loses (#602).
+                        // Parts that appeared during the 2 s of play (#602), then the save/load round trip itself.
+                        const PartCensusMap before = PartCensus(p);
+                        const int appeared = PartCensusDiff(gBuildCensus, before, "appeared during play", 5);
                         const bool saved = SaveWorld(world), loaded = LoadWorldSave(world);
                         p = dynamic_cast<Planetoid*>(world.objects[0].get());
+                        const PartCensusMap now = PartCensus(p);
+                        const int added = PartCensusDiff(before, now, "added by the load", 5), lost = PartCensusDiff(now, before, "lost by the load", 5);
                         const int after = p->plots ? p->plots->partCount() : 0;
-                        printf("bench: build: save %s, load %s: %d -> %d parts\n", saved ? "ok" : "FAILED", loaded ? "ok" : "FAILED", buildPlaced, after);
-                        buildOk = standing && saved && loaded && after == buildPlaced;
+                        printf("bench: build: save %s, load %s: %d placed, %d appeared during play, %d added and %d lost by the load (%d -> %d parts)\n",
+                               saved ? "ok" : "FAILED", loaded ? "ok" : "FAILED", buildPlaced, appeared, added, lost, buildPlaced, after);
+                        buildOk = standing && saved && loaded && added == 0 && lost == 0 && appeared == 0;
                         // Look at the factory from 30 m for the frame-time measurement.
                         Plot* reloaded = p->plots ? p->plots->plots.front().get() : nullptr;
                         if (reloaded) {
