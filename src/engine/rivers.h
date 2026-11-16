@@ -37,6 +37,7 @@ public:
         float level = 0.0f;          // water surface (m above sea level)
         float halfWidth = 0.0f, depth = 0.0f;
         Vector3 down{};              // unit tangent (body-local) pointing downstream (#361)
+        float slope = 0.0f;          // the reach's fall per metre (its link, ~200 m: flow speed for the bed, #595)
     };
     Hit nearest(Vector3 dir, float reach) const;
     // Lakes: a whole filled basin of the flood (every cell of it, not only the deep ones) whose level
@@ -86,7 +87,7 @@ private:
     std::vector<unsigned char> lakeSteps;  // cells to the nearest lake cell (capped at 255)
     std::vector<int> lakeIdOf;             // per cell: its lake's id, or -1
     std::vector<LakeInfo> lakes;
-    struct Piece { Vector3 a, b; float la, lb, wa, wb, da, db; Vector3 mid{}; float halfLen = 0.0f; float fallT = -1.0f; }; // positions in metres (body-local); mid/halfLen: a bounding sphere for nearest(); fallT >= 0: a waterfall at that fraction (la before it, lb after, #540)
+    struct Piece { Vector3 a, b; float la, lb, wa, wb, da, db; Vector3 mid{}; float halfLen = 0.0f; float fallT = -1.0f; float reachSlope = 0.0f; }; // positions in metres (body-local); mid/halfLen: a bounding sphere for nearest(); fallT >= 0: a waterfall at that fraction (la before it, lb after, #540)
     std::vector<Piece> pieces;
     std::vector<std::vector<int>> index; // cell -> pieces within reach
     Stats st;

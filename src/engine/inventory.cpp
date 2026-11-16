@@ -143,6 +143,8 @@ const char* ItemForMaterial(VoxelMaterial m, bool soil) {
         case VoxelMaterial::Grass: return soil ? "dirt" : "regolith"; // turf: soil
         case VoxelMaterial::Snow: return "ice";
         case VoxelMaterial::Clay: return "clay"; // #206
+        case VoxelMaterial::Pebbles: return "gravel"; // river stones (#595)
+        case VoxelMaterial::Silt: case VoxelMaterial::Mud: return soil ? "dirt" : "regolith"; // floodplain silt, shore mud (#595)
         default: return "stone";
     }
 }

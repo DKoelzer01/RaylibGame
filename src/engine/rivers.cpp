@@ -353,12 +353,16 @@ RiverNetwork::RiverNetwork(float radius, unsigned int seed, const std::function<
         if (sea) ++st.mouths;
         const float wa = hw[c], wb = sea ? hw[c] * 1.2f : hw[p];
         const float da = dep[c], db = sea ? dep[c] : dep[p];
+        // The reach's slope over the whole link (~200 m; its falls included): how fast it runs (#595: the bed material).
+        const float linkLen = std::max(1.0f, Vector3Distance(curvePts[curveOf[c]], curvePts[curveOf[c] + K]));
+        const float reachSlope = std::max(0.0f, pointLevel[curveOf[c]] - pointLevel[curveOf[c] + K]) / linkLen;
         for (int k = 1; k <= K; ++k) {
             const float t = (float)k / K, t0 = (float)(k - 1) / K;
             const Vector3 a = curvePts[curveOf[c] + k - 1], b = curvePts[curveOf[c] + k];
             pieces.push_back({ a, b, pointLevel[curveOf[c] + k - 1], pointLevel[curveOf[c] + k], wa + (wb - wa) * t0, wa + (wb - wa) * t, da + (db - da) * t0, da + (db - da) * t });
             Piece& pc = pieces.back();
             pc.mid = Vector3Scale(Vector3Add(a, b), 0.5f); pc.halfLen = 0.5f * Vector3Distance(a, b);
+            pc.reachSlope = reachSlope;
             // A waterfall (#540): the level holds to the cliff's edge - where the ground first falls under it - and drops
             // there, not in a ramp of water standing out over the drop.
             if (stepped && params.fineHeight && pc.la - pc.lb > kFallMin) {
@@ -413,6 +417,7 @@ RiverNetwork::Hit RiverNetwork::nearest(Vector3 dir, float reach) const {
         hit.halfWidth = pc.wa + (pc.wb - pc.wa) * t;
         hit.depth = pc.da + (pc.db - pc.da) * t;
         hit.down = Vector3Normalize(pc.la >= pc.lb ? Vector3Subtract(pc.b, pc.a) : Vector3Subtract(pc.a, pc.b)); // levels fall downstream
+        hit.slope = pc.reachSlope;
     }
     hit.found = hit.dist < reach;
     return hit;
