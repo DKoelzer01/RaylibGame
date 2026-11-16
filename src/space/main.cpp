@@ -817,7 +817,9 @@ int main(int argc, char** argv)
         // Benches and --play-new (#387): a plain window that opens without taking focus, so an agent run never grabs the
         // keyboard and mouse of whoever is at the machine.
         SetConfigFlags(FLAG_WINDOW_UNFOCUSED);
-        InitWindow(playNewSeconds > 0.0 ? 1280 : 1920, playNewSeconds > 0.0 ? 720 : 1080, playNewSeconds > 0.0 ? "RaylibGame play-new" : "RaylibGame bench");
+        int winW = playNewSeconds > 0.0 ? 1280 : 1920, winH = playNewSeconds > 0.0 ? 720 : 1080;
+        for (int i = 1; i + 2 < argc; ++i) if (std::string(argv[i]) == "--window") { winW = std::max(320, atoi(argv[i + 1])); winH = std::max(240, atoi(argv[i + 2])); } // --window W H (#512: menus at 1280x720)
+        InitWindow(winW, winH, playNewSeconds > 0.0 ? "RaylibGame play-new" : "RaylibGame bench");
         SetTargetFPS(std::max(0, benchFps)); // --fps N caps it (frame-rate-dependence checks); 0 = uncapped
     }
     if (vramReport && IsWindowReady()) GpuMem_Install(); // --vram (#302): count GPU allocations per subsystem from here on
@@ -1311,6 +1313,34 @@ int main(int argc, char** argv)
             const bool pass = firstBuild >= 0.0 && secondBuild >= 0.0 && shot1 && shot2;
             printf("bench: newworld: preview built in %.2f s, rebuilt after a change in %.2f s; bench_newworld.png, bench_newworld_changed.png -> %s\n",
                    firstBuild, secondBuild, pass ? "PASS" : "FAIL");
+            CloseWindow();
+            return pass ? 0 : 1;
+        }
+    for (int i = 1; i < argc; ++i)
+        if (std::string(argv[i]) == "--shot-settings") {
+            // The settings page (#512) in both menus, every tab: a screenshot each, and every row and the Back button on
+            // screen (rows above Back). Run it at more than one size: --window 1280 720.
+            const char* tabs[] = { "graphics", "controls", "audio", "gameplay" };
+            bool pass = true;
+            for (int menu = 0; menu < 2; ++menu)
+                for (int tab = 0; tab < 4; ++tab) {
+                    Menu_TestSettings(tab, menu == 1);
+                    for (int f = 0; f < 3 && !WindowShouldClose(); ++f) { // a few frames: the layout settles, the shot is of a drawn one
+                        BeginDrawing();
+                        ClearBackground(BLACK);
+                        if (menu == 0) Menu_Main(); else Menu_Pause();
+                        EndDrawing();
+                    }
+                    float bottom = 0.0f; Rectangle back{};
+                    Menu_SettingsLayout(bottom, back);
+                    const bool ok = bottom <= back.y && back.y + back.height <= GetScreenHeight() && back.y >= 0.0f;
+                    pass &= ok;
+                    const char* file = TextFormat("bench_settings_%s_%s.png", menu == 0 ? "main" : "pause", tabs[tab]);
+                    TakeScreenshot(file);
+                    printf("bench: settings: %s %s (%dx%d): rows end at %.0f, Back %.0f-%.0f -> %s\n", menu == 0 ? "main" : "pause", tabs[tab],
+                           GetScreenWidth(), GetScreenHeight(), bottom, back.y, back.y + back.height, ok ? "ok" : "OFF SCREEN");
+                }
+            printf("bench: settings (#512): every tab fits with Back on screen -> %s\n", pass ? "PASS" : "FAIL");
             CloseWindow();
             return pass ? 0 : 1;
         }

@@ -163,80 +163,93 @@ namespace {
         saveScroll = 0.0f;
     }
 
-    // The settings page (shared by both menus). Returns true when Back is pressed.
+    // A row of choice buttons: label, then one button per option (the chosen one in brackets). True when one is picked.
+    bool Choice(Rectangle r, const char* label, const char* const* names, int n, int& v) {
+        const int fs = (int)(r.height * 0.5f);
+        DrawText(label, (int)r.x, (int)(r.y + (r.height - fs) * 0.5f), fs, kText);
+        bool picked = false;
+        for (int k = 0; k < n; ++k) {
+            const Rectangle b = { r.x + r.width * 0.38f + k * (r.height * 2.4f), r.y + r.height * 0.1f, r.height * 2.2f, r.height * 0.8f };
+            if (Button(b, v == k ? TextFormat("[%s]", names[k]) : names[k])) { v = k; picked = true; }
+        }
+        return picked;
+    }
+
+    // The settings page (shared by both menus), in tabs (#512: one long list ran its Back button off a 720p screen).
+    // Back is pinned to the bottom edge; if a tab's rows still would not fit above it, they shrink. Returns true on Back.
+    enum class SettingsTab { Graphics, Controls, Audio, Gameplay, Count };
+    SettingsTab settingsTab = SettingsTab::Graphics;
+    float settingsContentBottom = 0.0f; Rectangle settingsBackRect{}; // the last frame's layout (--shot-settings checks it)
     bool SettingsPage() {
         const float s = Scale();
-        const float w = 760.0f * s, h = 52.0f * s;
-        const float x = (GetScreenWidth() - w) * 0.5f;
-        float y = GetScreenHeight() * 0.26f;
+        const float sh = (float)GetScreenHeight(), sw = (float)GetScreenWidth();
+        const float backH = 58 * s, backY = sh - backH - 28 * s;
+        // Tabs under the menu's title (the main menu's at 18%, the pause menu's at 20% of the height).
+        const char* tabNames[] = { "Graphics", "Controls", "Audio", "Gameplay" };
+        const float tabW = 200 * s, tabH = 46 * s, tabGap = 10 * s, tabY = sh * 0.30f;
+        const float tabsX = (sw - (4 * tabW + 3 * tabGap)) * 0.5f;
+        for (int t = 0; t < (int)SettingsTab::Count; ++t) {
+            const Rectangle r = { tabsX + t * (tabW + tabGap), tabY, tabW, tabH };
+            const bool on = (int)settingsTab == t;
+            if (on) DrawRectangleRounded({ r.x - 3, r.y - 3, r.width + 6, r.height + 6 }, 0.2f, 6, Fade(SKYBLUE, 0.7f));
+            if (Button(r, tabNames[t])) settingsTab = (SettingsTab)t;
+        }
+        // The tallest tab holds 5 rows and a note: shrink the rows if that would reach the Back button.
+        const float top = tabY + tabH + 24 * s;
+        const float h = std::min(52.0f * s, (backY - 16 * s - top) / (5 * 1.12f + 0.5f)), gap = h * 0.12f;
+        const float w = 760.0f * s, x = (sw - w) * 0.5f;
+        float y = top;
         bool changed = false;
-        changed |= Slider({ x, y, w, h }, "Mouse sensitivity", settings.mouseSensitivity, 0.2f, 3.0f, "%.2fx"); y += h + 6 * s;
-        changed |= Slider({ x, y, w, h }, "Field of view", settings.fov, 30.0f, 100.0f, "%.0f deg"); y += h + 6 * s;
-        changed |= Slider({ x, y, w, h }, "Volume", settings.volume, 0.0f, 1.0f, "%.2f"); y += h + 6 * s;
-        changed |= Toggle({ x, y, w, h }, "Foliage", settings.foliage); y += h + 6 * s;
-        changed |= Toggle({ x, y, w, h }, "VSync (no tearing)", settings.vsync); y += h + 6 * s;
-        changed |= Toggle({ x, y, w, h }, "Reduce motion", settings.reduceMotion); y += h + 6 * s;
-        changed |= Toggle({ x, y, w, h }, "Show hands", settings.showHands); y += h + 6 * s;
-        {
-            const int fs = (int)(h * 0.5f);
-            DrawText("Hand bob", (int)x, (int)(y + (h - fs) * 0.5f), fs, kText);
-            const char* names[] = { "Full", "Reduced", "Off" };
-            for (int k = 0; k < 3; ++k) {
-                const Rectangle b = { x + w * 0.38f + k * (h * 2.4f), y + h * 0.1f, h * 2.2f, h * 0.8f };
-                if (Button(b, settings.handBob == k ? TextFormat("[%s]", names[k]) : names[k])) { settings.handBob = k; changed = true; }
-            }
-            y += h + 6 * s;
-        }
-        {   // Camera smoothing (#168): how much the eye's small bumps (collision push-out on rough ground) are filtered.
-            const int fs = (int)(h * 0.5f);
-            DrawText("Camera smoothing", (int)x, (int)(y + (h - fs) * 0.5f), fs, kText);
-            const char* names[] = { "Off", "Low", "Default", "High" };
-            for (int k = 0; k < 4; ++k) {
-                const Rectangle b = { x + w * 0.38f + k * (h * 2.4f), y + h * 0.1f, h * 2.2f, h * 0.8f };
-                if (Button(b, settings.cameraSmoothing == k ? TextFormat("[%s]", names[k]) : names[k])) { settings.cameraSmoothing = k; changed = true; }
-            }
-            y += h + 6 * s;
-        }
-        changed |= Toggle({ x, y, w, h }, "Speed vignette", settings.speedVignette); y += h + 6 * s;
-        {   // Terrain detail (#297): how far out the terrain keeps its finer levels (the LOD factor). Flying drops to Low.
-            const int fs = (int)(h * 0.5f);
-            DrawText("Terrain detail", (int)x, (int)(y + (h - fs) * 0.5f), fs, kText);
-            const char* names[] = { "Low", "Medium", "High", "Ultra" };
-            for (int k = 0; k < 4; ++k) {
-                const Rectangle b = { x + w * 0.38f + k * (h * 2.4f), y + h * 0.1f, h * 2.2f, h * 0.8f };
-                if (Button(b, settings.terrainDetail == k ? TextFormat("[%s]", names[k]) : names[k])) { settings.terrainDetail = k; changed = true; }
-            }
-            y += h + 6 * s;
+        auto next = [&] { y += h + gap; };
+        switch (settingsTab) {
+        case SettingsTab::Graphics: {
+            changed |= Slider({ x, y, w, h }, "Field of view", settings.fov, 30.0f, 100.0f, "%.0f deg"); next();
+            // Terrain detail (#297): how far out the terrain keeps its finer levels (the LOD factor). Flying drops to Low.
+            static const char* detail[] = { "Low", "Medium", "High", "Ultra" };
+            changed |= Choice({ x, y, w, h }, "Terrain detail", detail, 4, settings.terrainDetail); next();
+            changed |= Toggle({ x, y, w, h }, "Foliage", settings.foliage); next();
+            changed |= Toggle({ x, y, w, h }, "VSync (no tearing)", settings.vsync); next();
+            static const int caps[] = { 0, 60, 144, 240 };
+            static const char* capNames[] = { "Monitor", "60", "144", "240" };
+            int cap = 0;
+            for (int k = 0; k < 4; ++k) if (settings.fpsCap == caps[k]) cap = k;
+            const int capBefore = settings.fpsCap;
+            if (Choice({ x, y, w, h }, "Frame cap", capNames, 4, cap)) { settings.fpsCap = caps[cap]; changed |= capBefore != caps[cap]; }
+            next();
             // #302: Low also turns anti-aliasing (MSAA) off to save video memory; that takes a restart.
             static const int startDetail = settings.terrainDetail;
-            if ((startDetail == 0) != (settings.terrainDetail == 0)) {
+            if ((startDetail == 0) != (settings.terrainDetail == 0))
                 DrawText("Anti-aliasing changes after a restart (Low: off)", (int)x, (int)y, (int)(h * 0.4f), Fade(kText, 0.7f));
-                y += h * 0.5f;
-            }
+            break;
         }
-        {   // Difficulty for the next new world (each world keeps its own).
-            const int fs = (int)(h * 0.5f);
-            DrawText("New worlds", (int)x, (int)(y + (h - fs) * 0.5f), fs, kText);
-            const char* names[] = { "Peaceful", "Normal", "Hard" };
-            for (int k = 0; k < 3; ++k) {
-                const Rectangle b = { x + w * 0.38f + k * (h * 2.4f), y + h * 0.1f, h * 2.2f, h * 0.8f };
-                if (Button(b, settings.difficulty == k ? TextFormat("[%s]", names[k]) : names[k])) { settings.difficulty = k; changed = true; }
-            }
-            y += h + 6 * s;
+        case SettingsTab::Controls: {
+            changed |= Slider({ x, y, w, h }, "Mouse sensitivity", settings.mouseSensitivity, 0.2f, 3.0f, "%.2fx"); next();
+            // Camera smoothing (#168): how much the eye's small bumps (collision push-out on rough ground) are filtered.
+            static const char* smoothing[] = { "Off", "Low", "Default", "High" };
+            changed |= Choice({ x, y, w, h }, "Camera smoothing", smoothing, 4, settings.cameraSmoothing); next();
+            break;
         }
-        {
-            const int fs = (int)(h * 0.5f);
-            DrawText("Frame cap", (int)x, (int)(y + (h - fs) * 0.5f), fs, kText);
-            const int caps[] = { 0, 60, 144, 240 };
-            const char* names[] = { "Monitor", "60", "144", "240" };
-            for (int k = 0; k < 4; ++k) {
-                const Rectangle b = { x + w * 0.38f + k * (h * 2.4f), y + h * 0.1f, h * 2.2f, h * 0.8f };
-                if (Button(b, settings.fpsCap == caps[k] ? TextFormat("[%s]", names[k]) : names[k])) { settings.fpsCap = caps[k]; changed = true; }
-            }
-            y += h + 6 * s;
+        case SettingsTab::Audio:
+            changed |= Slider({ x, y, w, h }, "Volume", settings.volume, 0.0f, 1.0f, "%.2f"); next();
+            break;
+        case SettingsTab::Gameplay: {
+            // Difficulty for the next new world (each world keeps its own).
+            static const char* difficulty[] = { "Peaceful", "Normal", "Hard" };
+            changed |= Choice({ x, y, w, h }, "New worlds", difficulty, 3, settings.difficulty); next();
+            // Comfort (#168): motion-sickness options.
+            changed |= Toggle({ x, y, w, h }, "Reduce motion", settings.reduceMotion); next();
+            changed |= Toggle({ x, y, w, h }, "Show hands", settings.showHands); next();
+            static const char* bob[] = { "Full", "Reduced", "Off" };
+            changed |= Choice({ x, y, w, h }, "Hand bob", bob, 3, settings.handBob); next();
+            changed |= Toggle({ x, y, w, h }, "Speed vignette", settings.speedVignette); next();
+            break;
         }
+        case SettingsTab::Count: break;
+        }
+        settingsContentBottom = y;
+        settingsBackRect = { (sw - 300 * s) * 0.5f, backY, 300 * s, backH };
         if (changed) Settings_Apply();
-        const bool back = Button({ (GetScreenWidth() - 300 * s) * 0.5f, y + 30 * s, 300 * s, 58 * s }, "Back") || IsKeyPressed(KEY_ESCAPE);
+        const bool back = Button(settingsBackRect, "Back") || IsKeyPressed(KEY_ESCAPE);
         if (back) Settings_Save();
         return back;
     }
@@ -373,6 +386,11 @@ MenuResult Menu_Main() {
 }
 
 void Menu_ResetPause() { pausePage = Page::Main; }
+void Menu_TestSettings(int tab, bool pause) {
+    settingsTab = (SettingsTab)std::clamp(tab, 0, (int)SettingsTab::Count - 1);
+    if (pause) pausePage = Page::Settings; else mainPage = Page::Settings;
+}
+void Menu_SettingsLayout(float& contentBottom, Rectangle& back) { contentBottom = settingsContentBottom; back = settingsBackRect; }
 bool Menu_TestSaves() { return TestSaveOps(); }
 
 MenuResult Menu_Pause() {
