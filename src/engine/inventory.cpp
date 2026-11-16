@@ -173,7 +173,8 @@ static int64_t ToCenti(double amount) { return (int64_t)llround(amount * 100.0);
 int64_t Inventory::room(const std::string& id) const {
     const int64_t cap = (int64_t)StackLimit(id) * 100;
     int64_t r = 0;
-    for (const InvSlot& s : slots) {
+    for (int i = 0; i < kSlots; ++i) { // the grid and the hotbar: nothing is put into the off hand but by hand (#165)
+        const InvSlot& s = slots[i];
         if (s.empty()) r += cap;
         else if (s.id == id) r += std::max<int64_t>(0, cap - s.centi);
     }
@@ -195,7 +196,8 @@ double Inventory::addAmount(const std::string& id, double amount) {
     // Tools and blocks come in whole units.
     int64_t left = KindOf(id) == ItemKind::Resource ? ToCenti(amount) : (int64_t)floor(amount + 1e-6) * 100;
     const int64_t cap = (int64_t)StackLimit(id) * 100;
-    for (InvSlot& s : slots) {       // top up stacks of it first
+    for (int i = 0; i < kSlots; ++i) { // top up stacks of it first (not the off hand's, #165)
+        InvSlot& s = slots[i];
         if (left <= 0) break;
         if (s.empty() || s.id != id) continue;
         const int64_t put = std::min(left, cap - s.centi);
@@ -237,10 +239,11 @@ bool Inventory::removeAmount(const std::string& id, double amount) {
         if (s.centi <= 0) s = InvSlot{};
     };
     // The preferred cell first (the hotbar cell in hand: its tool wears, its blocks run out), then the main grid from
-    // its last stacks (so the first stay put), then the other hotbar cells.
+    // its last stacks (so the first stay put), then the other hotbar cells, the off hand last (#165).
     if (preferred >= 0 && preferred < kSlots) takeFrom(preferred);
     for (int i = kGrid - 1; i >= 0 && left > 0; --i) takeFrom(i);
     for (int i = kSlots - 1; i >= kGrid && left > 0; --i) takeFrom(i);
+    takeFrom(kOffHand);
     return true;
 }
 
@@ -280,7 +283,7 @@ bool Inventory::craft(const Recipe& r) {
 }
 
 void Inventory::swapSlots(int a, int b) {
-    if (a == b || a < 0 || b < 0 || a >= kSlots || b >= kSlots) return;
+    if (a == b || a < 0 || b < 0 || a >= kCells || b >= kCells) return;
     InvSlot& from = slots[a];
     InvSlot& to = slots[b];
     if (!from.empty() && !to.empty() && from.id == to.id) {

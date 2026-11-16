@@ -62,6 +62,9 @@ struct Player {
     float radius = 0.45f;
     float walkSpeed = 6.0f;
     float runMultiplier = 2.0f;
+    // Knockback (#165): a push relative to the ground, applied at the next physics step. On the ground it lifts
+    // you off it like a jump does (grounded velocity is overwritten by walking each step); in the air it adds.
+    Vector3 pendingPush = { 0, 0, 0 };
     float jumpSpeed = 5.0f;
     float jetpackAccel = 9.0f;
     float jetpackFuelPerSec = 0.1f;   // full tank = 10 s of thrust

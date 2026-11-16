@@ -1,6 +1,7 @@
 #include "gamesave.h"
 #include "structures.h"
 #include "trapping.h"
+#include "combat.h"
 #include "events.h"
 #include "gamerng.h"
 #include "netid.h"
@@ -34,7 +35,7 @@ void GameSave_Register() {
                 player.forward.x, player.forward.y, player.forward.z, player.flyMode ? 1 : 0, player.jetpackFuel);
         fprintf(f, "player_up %f %f %f\n", player.up.x, player.up.y, player.up.z);
         fprintf(f, "player_vel %f %f %f\n", player.velocity.x, player.velocity.y, player.velocity.z);
-        for (int i = 0; i < Inventory::kSlots; ++i) {
+        for (int i = 0; i < Inventory::kCells; ++i) { // with the off hand (#165)
             const InvSlot& s = inventory.grid()[i];
             if (!s.empty()) fprintf(f, "slot %d %s %lld\n", i, s.id.c_str(), (long long)s.centi);
         }
@@ -47,6 +48,7 @@ void GameSave_Register() {
         Animals_Save(f);
         Structures_Save(f); // #164
         Trapping_Save(f);   // #176
+        Combat_Save(f);     // graves (#165)
         Events_Save(f);     // #177
         Suit_Save(f);
         ToolWear_Save(f);
@@ -70,6 +72,7 @@ void GameSave_Register() {
         Suit_Reset();
         ToolWear_Reset();
         RecipeBook_Reset();
+        Combat_Reset(); // graves: the save holds them all (#165)
         worldDifficulty = 1; // a save without the line: normal
         char tok[64] = {};
         while (fscanf(f, " %63s", tok) == 1 && strcmp(tok, "end_extras") != 0) {
@@ -80,6 +83,7 @@ void GameSave_Register() {
             if (Animals_LoadLine(tok, f)) continue;
             if (Structures_LoadLine(tok, f)) continue;
             if (Trapping_LoadLine(tok, f)) continue;
+            if (Combat_LoadLine(tok, f)) continue;
             if (Events_LoadLine(tok, f)) continue;
             if (Suit_LoadLine(tok, f)) continue;
             if (ToolWear_LoadLine(tok, f)) continue;
@@ -120,7 +124,7 @@ void GameSave_Register() {
                 char id[64] = {};
                 int i = 0;
                 long long c = 0;
-                if (fscanf(f, " %d %63s %lld", &i, id, &c) == 3 && i >= 0 && i < Inventory::kSlots && c > 0 && itemDB.find(id)) {
+                if (fscanf(f, " %d %63s %lld", &i, id, &c) == 3 && i >= 0 && i < Inventory::kCells && c > 0 && itemDB.find(id)) {
                     InvSlot& s = inventory.grid()[i];
                     if (s.empty()) { s.id = id; s.centi = c; } else { ++inventory.muted; inventory.addAmount(id, c / 100.0); --inventory.muted; } // no pickup feed for a load (#208)
                 }

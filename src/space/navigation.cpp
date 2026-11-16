@@ -273,9 +273,13 @@ int Nav_WaypointCount() { return (int)waypoints.size(); }
 bool Nav_MinimapReady() { return minimap.tex.id != 0; }
 bool Nav_MapImageReady() { return bigMap.tex.id != 0 && !bigMap.pending; }
 
-void Nav_AddWaypoint(const std::string& body, Vector3 dir, const std::string& name) {
+void Nav_AddWaypoint(const std::string& body, Vector3 dir, const std::string& name, bool byPlayer) {
     waypoints.push_back({ body, name, Vector3Normalize(dir) });
-    QuestBook_Count("waypoint");
+    if (byPlayer) QuestBook_Count("waypoint");
+}
+
+void Nav_RemoveWaypoint(const std::string& body, const std::string& name) {
+    waypoints.erase(std::remove_if(waypoints.begin(), waypoints.end(), [&](const Waypoint& w) { return w.body == body && w.name == name; }), waypoints.end());
 }
 
 float Nav_Heading(Scene& world) {

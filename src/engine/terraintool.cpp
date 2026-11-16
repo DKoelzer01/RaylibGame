@@ -255,7 +255,7 @@ void TerrainTool_Update(Scene& world, const PlayerInput& in, bool editEnabled) {
     if (bucket && in.hit(Act::Secondary)) TerrainTool_Bucket(world);
 
     digging = in.down(Act::Primary);
-    adding = !bucket && !terrainTool.holdingItem && !digging && in.down(Act::Secondary); // food / feed in hand never builds (#201)
+    adding = !bucket && !terrainTool.holdingItem && !terrainTool.rmbBlocks && !digging && in.down(Act::Secondary); // food / feed in hand never builds (#201); nor does a block (#165)
     // One swing per cooldown, and the cooldown runs whether the button is held or not, so clicking
     // fast is no faster than holding (it was: a release reset the timer). The swing animation lasts
     // exactly the cooldown (terrainTool.swingTime), and the HUD bar under the crosshair shows it.
