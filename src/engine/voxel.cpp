@@ -374,6 +374,9 @@ PlanetField::Land PlanetField::land(Vector3 dir, float fp) const {
         // (the differential erosion the bake's short run can't do alone; it rounds and gullies them).
         // Karst (#592): limestone towers and dolines in karst regions (New World "Karst"); the bake rounds them and the
         // cliff profile (#588) gives the hard limestone its faces.
+        // Volcanoes (#593): cones 1-3 km high with craters or calderas, on land or rising from the sea as islands; their
+        // basalt flows over soft ash (strataColumn) erode into radial gullies and lava-capped mesas.
+        if (gen.volcanoes) h += Strata_Volcano({ sx, sy, sz }, radius, fieldSeed);
         if (gen.karst && h > 0.0f)
             if (const float kw = Strata_KarstWeight({ sx, sy, sz }, fieldSeed); kw > 0.0f)
                 h += kw * landMask * Strata_KarstRelief({ sx, sy, sz }, fieldSeed);
@@ -2252,6 +2255,7 @@ StrataColumn PlanetField::strataColumn(Vector3 dir) const {
     col.hardShare = (uint8_t)std::clamp(col.hardShare * gen.cliffs, 0.0f, 255.0f); // New World "Cliffs and canyons" (#589)
     if (gen.karst && col.province == 0 && Strata_KarstWeight({ sx, sy, sz }, fieldSeed) > 0.3f) col.province = 3; // karst limestone (#592)
     if (canyonFault(sx, sy, sz) > 0.3f) { col.province = 0; col.hardShare = 0; } // canyon lines are shattered, soft rock (#544)
+    if (gen.volcanoes) { float vw = 0.0f; if (Strata_Volcano({ sx, sy, sz }, radius, fieldSeed, &vw) > 0.0f) col.province = 2; } // lava over ash (#593)
     return col;
 }
 

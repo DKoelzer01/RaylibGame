@@ -36,6 +36,9 @@ float Strata_OutcropBump(const StrataColumn& c, float h, unsigned int seed);
 // Karst (#592): 0..1 weight of the karst regions (~10 km), and the towers (+) and dolines (-) there, in metres.
 float Strata_KarstWeight(Vector3 s, unsigned int seed);
 float Strata_KarstRelief(Vector3 s, unsigned int seed);
+// Volcanoes (#593): metres a volcano adds at surface point s (cones 1-3 km, craters/calderas), 0 off them; weight =
+// 0..1 proximity to the vent (the cone's basalt-and-ash province).
+float Strata_Volcano(Vector3 s, float planetRadius, unsigned int seed, float* weight = nullptr);
 inline bool gStrataFolds = true; // #591; RAYLIBGAME_FOLDS=0 for A/B (its own bake cache)
 
 #endif

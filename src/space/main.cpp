@@ -2882,6 +2882,59 @@ int main(int argc, char** argv)
                                     printf("bench: karst: %d land samples in karst regions: roughness (150 m) %.2f m (bake input %.2f m); a river within 150 m: %.1f%% (elsewhere %.1f%%)\n",
                                            nk, nk ? rk / nk : 0.0, nk ? ik / nk : 0.0, 100.0 * wetK / std::max(1, nk), 100.0 * wetL / std::max(1, nl));
                                     if (kD < 1e29f) printf("bench: karst: nearest %.1f km from the start, dir %.6f %.6f %.6f\n", kD / 1000.0f, kDir.x, kDir.y, kDir.z);
+                                    // Volcanoes (#593): the summits (local maxima of the designed relief on the same sphere of
+                                    // samples, > 900 m), the baked height there against the design, and gullies on the flanks.
+                                    {
+                                        int nv = 0; double designed = 0.0, baked = 0.0, flankRough = 0.0; int nfl = 0, lakes = 0;
+                                        float vD = 1e30f; Vector3 vDir{};
+                                        std::vector<Vector3> peaks;
+                                        for (int i = 0; i < M; ++i) {
+                                            const float y = 1.0f - 2.0f * (i + 0.5f) / M, rr = sqrtf(std::max(0.0f, 1.0f - y * y)), ph = i * 2.39996323f;
+                                            const Vector3 d = { rr * cosf(ph), y, rr * sinf(ph) };
+                                            const float v = pf->volcano(Vector3Scale(d, pf->radius));
+                                            if (v <= 0.0f) continue;
+                                            const Vector3 u1 = Vector3Normalize(Vector3CrossProduct(d, { 0, 1, 0 })), u2 = Vector3CrossProduct(u1, d);
+                                            if (v > 300.0f && v < 0.6f * 3000.0f) { // flanks: gullies = roughness at 150 m
+                                                float sum = 0.0f;
+                                                for (int k = 0; k < 4; ++k)
+                                                    sum += pf->elevationBase(Vector3Normalize(Vector3Add(d, Vector3Scale(k & 1 ? u2 : u1, (k < 2 ? 150.0f : -150.0f) / pf->radius))), 50.0f);
+                                                flankRough += fabsf(pf->elevationBase(d, 50.0f) - 0.25f * sum); ++nfl;
+                                            }
+                                            if (v < 900.0f) continue;
+                                            bool top = true;
+                                            for (const Vector3& q : peaks) if (Vector3Distance(q, d) * pf->radius < 3000.0f) { top = false; break; }
+                                            if (!top) continue;
+                                            // The summit: the highest designed point within 3 km (a coarse climb).
+                                            Vector3 b = d; float bv = v;
+                                            for (int step = 0; step < 60; ++step) {
+                                                bool moved = false;
+                                                for (int k = 0; k < 8; ++k) {
+                                                    const float a = k * 0.785398f;
+                                                    const Vector3 q = Vector3Normalize(Vector3Add(b, Vector3Scale(Vector3Add(Vector3Scale(u1, cosf(a)), Vector3Scale(u2, sinf(a))), 100.0f / pf->radius)));
+                                                    const float qv = pf->volcano(Vector3Scale(q, pf->radius));
+                                                    if (qv > bv) { bv = qv; b = q; moved = true; }
+                                                }
+                                                if (!moved) break;
+                                            }
+                                            bool dup = false;
+                                            for (const Vector3& q : peaks) if (Vector3Distance(q, b) * pf->radius < 3000.0f) { dup = true; break; }
+                                            if (dup) continue;
+                                            peaks.push_back(b);
+                                            ++nv; designed += bv; baked += pf->elevationBase(b, 50.0f);
+                                            int lid = -1; float lake = 0.0f, lo = 0.0f;
+                                            for (int k = 0; k < 9 && lid < 0; ++k) {
+                                                const Vector3 q = k == 0 ? b : Vector3Normalize(Vector3Add(b, Vector3Scale(k & 1 ? u2 : u1, ((k - 1) / 2 + 1) * (k & 2 ? 150.0f : -150.0f) / pf->radius)));
+                                                if (net->lakeAt(q, lake, lo, lid) && lo < RiverNetwork::kLakeMargin) break;
+                                                lid = -1;
+                                            }
+                                            lakes += lid >= 0;
+                                            const float dist = Vector3Distance(b, pf->findSpawnDir(p->seed)) * pf->radius;
+                                            if (dist < vD) { vD = dist; vDir = b; }
+                                        }
+                                        printf("bench: volcanoes: %d summits, designed %.0f m above the base on average, baked ground there %.0f m; %d with a crater lake; flank roughness (150 m) %.2f m\n",
+                                               nv, nv ? designed / nv : 0.0, nv ? baked / nv : 0.0, lakes, nfl ? flankRough / nfl : 0.0);
+                                        if (vD < 1e29f) printf("bench: volcanoes: nearest %.1f km from the start, dir %.6f %.6f %.6f\n", vD / 1000.0f, vDir.x, vDir.y, vDir.z);
+                                    }
                                 }
                             }
                         }

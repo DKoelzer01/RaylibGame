@@ -179,3 +179,42 @@ float Strata_KarstRelief(Vector3 s, unsigned int seed) {
     }
     return 0.0f;
 }
+
+float Strata_Volcano(Vector3 s, float planetRadius, unsigned int seed, float* weight) {
+    // A jittered 20 km grid; 2% of cells hold a volcano at their feature point (projected onto the sphere): ~10 on a
+    // 47 km planet.
+    const float cell = 20000.0f;
+    const float gx = s.x / cell, gy = s.y / cell, gz = s.z / cell;
+    const int32_t ix = (int32_t)floorf(gx), iy = (int32_t)floorf(gy), iz = (int32_t)floorf(gz);
+    const float len = sqrtf(s.x * s.x + s.y * s.y + s.z * s.z);
+    float best = 0.0f, bestW = 0.0f;
+    for (int dz = -1; dz <= 1; ++dz)
+        for (int dy = -1; dy <= 1; ++dy)
+            for (int dx = -1; dx <= 1; ++dx) {
+                const int32_t cx = ix + dx, cy = iy + dy, cz = iz + dz;
+                if (Rand01(cx, cy, cz, seed ^ 0x7015Au) >= 0.02f) continue;
+                Vector3 f = { (cx + Rand01(cx, cy, cz, seed ^ 0x7015Bu)) * cell, (cy + Rand01(cx, cy, cz, seed ^ 0x7015Cu)) * cell,
+                              (cz + Rand01(cx, cy, cz, seed ^ 0x7015Du)) * cell };
+                const float fl = sqrtf(f.x * f.x + f.y * f.y + f.z * f.z);
+                if (fl < 1.0f) continue;
+                f = Scaled(f, planetRadius / fl);
+                const Vector3 sp = Scaled(s, planetRadius / std::max(len, 1.0f));
+                const float dist = sqrtf((sp.x - f.x) * (sp.x - f.x) + (sp.y - f.y) * (sp.y - f.y) + (sp.z - f.z) * (sp.z - f.z));
+                const float H = 1000.0f + 2000.0f * Rand01(cx, cy, cz, seed ^ 0x7015Eu);
+                const float R = 4.0f * H;
+                if (dist >= R) continue;
+                const float q = dist / R;
+                // Concave cone; the summit opens into a crater (small) or a caldera (a quarter of them, wide).
+                const float qc = Rand01(cx, cy, cz, seed ^ 0x7015Fu) < 0.25f ? 0.16f : 0.07f;
+                const float cone = H * (1.0f - q) * (1.0f - q);
+                float h = cone;
+                if (q < qc) {
+                    const float rim = H * (1.0f - qc) * (1.0f - qc);
+                    const float depth = (qc > 0.1f ? 0.25f : 0.12f) * H * (1.0f - (q / qc) * (q / qc));
+                    h = rim - depth;
+                }
+                if (h > best) { best = h; bestW = 1.0f - q; }
+            }
+    if (weight) *weight = bestW;
+    return best;
+}
