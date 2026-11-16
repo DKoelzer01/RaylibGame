@@ -180,6 +180,7 @@ void main() {
     }
     // Sideways.
     int net = 0;
+    uint moving = 0u; // in + out across the side faces this substep: a speck in a moving film is not resting (#454)
     uint inKind = kind;
     uint best = 0u;
     int fx = 0, fy = 0; // flow across the faces along +x / +y (#392)
@@ -196,7 +197,7 @@ void main() {
         int nx = int(nl % 16u), ny = int((nl / 16u) % 16u), nz = int(nl / 256u);
         uint out1 = f > 0 ? sideFlux(slot, x, y, z, c, nSlot, nx, ny, nz, n, true, pN) : 0u;
         uint in1 = F(n) > 0u ? sideFlux(nSlot, nx, ny, nz, n, slot, x, y, z, c, pN, true) : 0u;
-        net += int(in1) - int(out1);
+        net += int(in1) - int(out1); moving += in1 + out1;
         const int along = (k == 0 || k == 2) ? int(in1) - int(out1) : int(out1) - int(in1); // in from the - side, out to the + side
         if (k < 2) fx += along; else fy += along;
         if (in1 > best) { best = in1; inKind = KIND(n); }
@@ -204,9 +205,10 @@ void main() {
     int nf = clamp(f + net, 0, 255);
     if (f == 0 && nf > 0) kind = inKind;
     if ((fl & SOURCE) != 0u) nf = int(TG(c));                            // sources hold their level
-    // A speck on the ground soaks away; on water it is that water's surface and stays (#454: a body over cells that hold
+    // A resting speck on the ground soaks away (one in a moving film does not: erasing a sliding film's thin edge every
+    // substep lost ~12% of a draining pond, #454); on water it is that water's surface and stays (#454: a body over cells that hold
     // little lost the remainder of every fall into them, ~15% of a draining pond).
-    else if (evaporate != 0 && nf > 0 && nf <= 3 && onGround(slot, x, y, z)) nf = 0;
+    else if (evaporate != 0 && nf > 0 && nf <= 3 && moving == 0u && onGround(slot, x, y, z)) nf = 0;
     uint old = outC[g];                                                   // this substep's start (A)
     uint res = pack(uint(nf), (fl & 31u) | (kind << 5), c);
     if (F(old) != uint(nf)) atomicOr(flagsOut[slot], 1u);

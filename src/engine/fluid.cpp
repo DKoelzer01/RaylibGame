@@ -46,6 +46,7 @@ constexpr int kSiteBricks = 16;        // a site reaches +-16 bricks (256 m) fro
 inline int SiteBricks() { static const int n = getenv("RAYLIBGAME_FLUID_SITE_BRICKS") ? std::max(1, atoi(getenv("RAYLIBGAME_FLUID_SITE_BRICKS"))) : kSiteBricks; return n; }
 constexpr float kSiteJoin = 180.0f;    // a disturbance within this of a site's origin joins it
 constexpr int kEvaporate = 3;          // resting specks this thin (~1 cm) dry up
+constexpr unsigned kEvapEvery = 32;     // specks soak away on one step in this many: only the ones that stay put (#454)
 constexpr int kSubsteps = 3;           // CPU simulation steps per 50 ms (water moves a cell a step)
 constexpr double kTickSeconds = 0.025; // a tick (a job + meshes) every 25 ms: water moved in 1-3 cell jumps every 50-100 ms, hard to follow (#366)
 constexpr int kSleepSteps = 120;       // 2 s without change: a brick sleeps
@@ -386,6 +387,7 @@ void StepSite(Site& s, int parity) {
                 for (int x = 0; x < B; ++x) {
                     const int i = Idx(x, y, z);
                     int f = b->fill[i];
+                    const int fStart = f; // nothing left the cell this pass: a speck that is resting (#454)
                     if (f == 0 || (b->flags[i] & kSolid)) continue;
                     const bool src = b->flags[i] & kSource;
                     // Down.
@@ -452,7 +454,7 @@ void StepSite(Site& s, int parity) {
                             moved = true; ++dbgSide;
                         }
                     }
-                    if (f > 0 && f <= kEvaporate && !src && !belowOpen) { f = 0; moved = true; } // a speck on the ground soaks away (on water it stays: that water's surface, #454)
+                    if (f > 0 && f <= kEvaporate && f == fStart && stepCount % kEvapEvery == 0 && !src && !belowOpen) { f = 0; moved = true; } // a resting speck on the ground soaks away (on water it stays: that water's surface, #454)
                     b->fill[i] = (uint8_t)f;
                 }
         // Sources hold their level.
@@ -1167,12 +1169,16 @@ void GpuTick(int n) {
     for (int k = 0; k < 8; ++k) { visc[k] = kindVisc[k]; spread[k] = kindMinSpread[k]; }
     rlSetUniform(G.step.uniform("visc"), visc, RL_SHADER_UNIFORM_INT, 8);
     rlSetUniform(G.step.uniform("minSpread"), spread, RL_SHADER_UNIFORM_INT, 8);
-    { static const int evap = getenv("RAYLIBGAME_FLUID_NOEVAP") ? 0 : 1; rlSetUniform(G.step.uniform("evaporate"), &evap, RL_SHADER_UNIFORM_INT, 1); } // tests: specks kept (water accounting, #454)
+    static const bool noEvap = getenv("RAYLIBGAME_FLUID_NOEVAP") != nullptr; // tests: specks kept (water accounting, #454)
+    static unsigned evapTick = 0;
     GpuFlowResolve(); // which bricks the flow watches need this dispatch (#392)
     G.nbrs.bind(2); G.list.bind(3); G.inS.bind(4); G.flags.bind(5); G.watch.bind(6); G.flux.bind(7);
     const unsigned bricks = (unsigned)list.size(); // 2D dispatch: 64 groups of 64 cells per brick, one row per brick
     for (int k = 0; k < n; ++k) {
         G.step.setInt("pass", 0); G.a.bind(0); G.b.bind(1); G.step.dispatch(kCellsPerBrick / 64u, bricks);
+        // Specks soak away on one substep in kEvapEvery: one must rest across it. Every substep, a spreading film lost the
+        // edge it had just laid down, again and again (#454: 7-12% of a draining pond).
+        G.step.setInt("evaporate", !noEvap && ++evapTick % kEvapEvery == 0 ? 1 : 0);
         G.step.setInt("pass", 1); G.b.bind(0); G.a.bind(1); G.step.dispatch(kCellsPerBrick / 64u, bricks);
     }
     G.lastList = list;
