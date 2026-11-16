@@ -306,6 +306,9 @@ int main(int argc, char** argv)
     int minePhase = 0, minedStrokes = 0, mineCrafted = 0;
     bool benchWaterStats = false; // --water-stats: how much the water shaping raises/cuts the ground (#251)
     bool benchPreloadSpawn = false; double preloadT0 = -1.0; // --preload-spawn: time the spawn preload ring (#294)
+    float benchUnfocus = 0.0f;    // --bench-unfocus S (#510): unfocused S s during the spawn preload, and while playing (FPS before/after)
+    int unfocusPhase = 0; double unfocusT0 = 0.0; long unfocusFrames = 0; double unfocusFpsBefore = 0.0;
+    bool benchUnfocused = false;  // the game sees its window unfocused (scripted: the window itself is never minimized or raised)
     double benchFlySeconds = 0.0, flyStart = -1.0; // --test-fly S: autopilot the ship to the nearest other asteroid
     bool benchSuffocate = false;   // --test-suffocate: run out of oxygen away from the ship, die, respawn
     double benchOrbitSeconds = 0.0, orbitStart = -1.0; // --test-orbit S: coast on a circular orbit for S seconds
@@ -425,6 +428,7 @@ int main(int argc, char** argv)
     bool menuOk = true;
     bool menuEsc = false; // --test-menus: an Esc press for the in-game Esc check, as if the key went down this frame
     int menuBakesBeforeLoad = 0; // --test-menus: erosion bakes before Load Game (#505: the load must not bake)
+    double lastQuitMs = 0.0;     // how long the last quit to the menu took to unload the world (#270)
     int wallPhase = 0; bool wallOk = true;
     double wallStart = 0.0, wallMaxStep = 0.0, wallMaxStepAt = 0.0;
     float wallMaxImpact = 0.0f, wallMinHealth = 100.0f, wallMaxSpeed = 0.0f; int wallCamInside = 0; // frames with the camera inside terrain (#255)
@@ -774,6 +778,7 @@ int main(int argc, char** argv)
         if (std::string(argv[i]) == "--preload" && i + 1 < argc) lodSettings.preloadRadius = (float)atof(argv[i + 1]); // m, 0 = off (#294)
         if (std::string(argv[i]) == "--cache-verts" && i + 1 < argc) lodSettings.cacheVertices = (int)(atof(argv[i + 1]) * 1048576.0); // millions (#295)
         if (std::string(argv[i]) == "--preload-spawn") benchPreloadSpawn = true; // bench: the spawn preload as a new game does it, timed
+        if (std::string(argv[i]) == "--bench-unfocus" && i + 1 < argc) benchUnfocus = (float)atof(argv[i + 1]); // #510
         if (std::string(argv[i]) == "--first" && i + 3 < argc) { worldGen.hasFirst = true; worldGen.first = { (float)atof(argv[i+1]), (float)atof(argv[i+2]), (float)atof(argv[i+3]) }; }
     }
     const bool bench = benchSeconds > 0.0;
@@ -1239,6 +1244,7 @@ int main(int argc, char** argv)
                                                                       // stood still in absolute space while the planet spun past (benches that place the camera every frame override it)
         benchStart = -1.0; // starts once the world has finished streaming in
         if (benchPreloadSpawn) { BeginSpawnPreload(); preloadT0 = GetTime(); }
+        if (benchUnfocus > 0.0f && benchPreloadSpawn) { benchUnfocused = true; unfocusPhase = 1; unfocusT0 = GetTime(); } // #510: alt-tabbed during the preload
         if (benchWaterStats) {
             // --water-stats (#251 investigation): how far the water shaping (rivers, lakes, ponds) raises or cuts the
             // ground: elevation() vs elevationBase() (the land before any water) on a 12 km grid around the start.
@@ -1380,6 +1386,23 @@ int main(int argc, char** argv)
         Recorder_Update(WorldIdle() && !loading); // its start delay (after the loading screen), F10 in normal play
         GpuTimer_CpuFrameStart(!loading); GpuTimer_BeginFrame();
         FpsLog_Frame(gameState == 0 ? "menu" : gameState == 3 ? "newworld" : gameState == 2 ? "paused" : loading ? "loading" : "play");
+        // --bench-unfocus S (#510): 1 unfocused during the preload for S s; then, playing: 2 measure 5 s, 3 unfocused S s,
+        // 4 settle 2 s, 5 measure 5 s, then FPS before/after.
+        if (benchUnfocus > 0.0f) {
+            const double ut = GetTime() - unfocusT0;
+            if (unfocusPhase == 1 && ut > benchUnfocus) { benchUnfocused = false; printf("bench: unfocus: refocused after %.1f s unfocused during the preload\n", ut); unfocusPhase = 2; unfocusT0 = -1.0; }
+            else if (unfocusPhase == 0 && !benchPreloadSpawn) unfocusPhase = 2, unfocusT0 = -1.0;
+            else if (unfocusPhase == 2 && preloadT0 < 0.0 && WorldIdle()) {
+                if (unfocusT0 < 0.0) { unfocusT0 = GetTime(); unfocusFrames = 0; } // the measurement starts
+                else {
+                    ++unfocusFrames;
+                    if (ut > 5.0) { unfocusFpsBefore = unfocusFrames / ut; benchUnfocused = true; unfocusPhase = 3; unfocusT0 = GetTime(); }
+                }
+            }
+            else if (unfocusPhase == 3 && ut > benchUnfocus) { benchUnfocused = false; unfocusPhase = 4; unfocusT0 = GetTime(); }
+            else if (unfocusPhase == 4 && ut > 2.0) { unfocusPhase = 5; unfocusT0 = GetTime(); unfocusFrames = 0; }
+            else if (unfocusPhase == 5) { ++unfocusFrames; if (ut > 5.0) { printf("bench: unfocus: %.1f FPS before %.0f s unfocused while playing, %.1f FPS after\n", unfocusFpsBefore, benchUnfocus, unfocusFrames / ut); unfocusPhase = 6; } }
+        }
         if (preloadT0 >= 0.0 && !SpawnPreloadPending()) {
             const WorldStats& ws = GetWorldStats();
             printf("bench: spawn preload: %d ring nodes built in %.2f s; arena %.1f M vertices, %d nodes alive\n",
@@ -6381,7 +6404,7 @@ int main(int argc, char** argv)
                         }
                         benchWalkSeconds = 0.0;
                     }
-                } else if ((WorldIdle() && benchDigStrokes == 0 && !benchPaint && !benchSaveLoad && benchWalkSeconds <= 0.0 && benchMineStrokes == 0 && minePhase != 2 && benchFlySeconds <= 0.0 && !benchSuffocate && benchOrbitSeconds <= 0.0 && !benchRide && !benchPark && !benchGravity && !benchPrecision && !benchMantle && !benchAirJump && !benchMoon && !benchHole && !benchWall && !benchDoorway && !benchLedge && !benchTor && !benchMachines && !benchFall && !benchHover && !benchNetIds && !benchNet && !benchTwoPlayers && !benchFingerprint && !benchInterest && !benchTeleClose && !benchMenus && !benchWater && !benchFlyFollow && !benchHotbar && !benchInventory && !benchMap && !benchViewmodel && !benchQuests && !benchHunger && !benchFarm && !benchAnimals && !benchThreats && !benchAnimalPath && !benchDam && !benchFlowMeter && !benchPartWall && !benchPressure && benchShotTabs == 0 && !benchForest && !benchFlow && !benchPond && !benchBucket && !benchPump && !benchTerrain && !benchShelter && !benchRoom && !benchFacing && !benchShadow && !benchParticles && !benchBiomes && !benchOil && !benchSpring && !benchShotAnimals && !benchShotMachines && benchShotBiomes < 0 && !benchFarForest && !benchRecipes && !benchWeather && !benchDecor && !benchMaterials && !benchDamage && !benchCrafting && !benchSuit && !benchTools && !benchRivers && !benchRing && !benchRocket && !benchStation && !benchBlueprint && !benchSmallBody && !benchTrees && !benchChop && benchPersist == 0 && benchBuild == 0 && benchFactory == 0 && !benchProgression) || GetTime() > 600.0) {
+                } else if ((WorldIdle() && benchDigStrokes == 0 && !benchPaint && !benchSaveLoad && benchWalkSeconds <= 0.0 && benchMineStrokes == 0 && minePhase != 2 && benchFlySeconds <= 0.0 && !benchSuffocate && benchOrbitSeconds <= 0.0 && !benchRide && !benchPark && !benchGravity && !benchPrecision && !benchMantle && !benchAirJump && !benchMoon && !benchHole && !benchWall && !benchDoorway && !benchLedge && !benchTor && !benchMachines && !benchFall && !benchHover && !benchNetIds && !benchNet && !benchTwoPlayers && !benchFingerprint && !benchInterest && !benchTeleClose && !benchMenus && !benchWater && !benchFlyFollow && !benchHotbar && !benchInventory && !benchMap && !benchViewmodel && !benchQuests && !benchHunger && !benchFarm && !benchAnimals && !benchThreats && !benchAnimalPath && !benchDam && !benchFlowMeter && !benchPartWall && !benchPressure && benchShotTabs == 0 && !benchForest && !benchFlow && !benchPond && !benchBucket && !benchPump && !benchTerrain && !benchShelter && !benchRoom && !benchFacing && !benchShadow && !benchParticles && !benchBiomes && !benchOil && !benchSpring && !benchShotAnimals && !benchShotMachines && benchShotBiomes < 0 && !benchFarForest && !benchRecipes && !benchWeather && !benchDecor && !benchMaterials && !benchDamage && !benchCrafting && !benchSuit && !benchTools && !benchRivers && !benchRing && !benchRocket && !benchStation && !benchBlueprint && !benchSmallBody && !benchTrees && !benchChop && benchPersist == 0 && benchBuild == 0 && benchFactory == 0 && !benchProgression && (benchUnfocus <= 0.0f || unfocusPhase >= 6)) || GetTime() > 600.0) {
                     benchStart = GetTime();
                     printf("bench: world ready after %.2f s (%d chunks, avg build %.2f ms of which sampling %.2f ms, %d worker threads)\n",
                         GetWorldStats().lastGenerationSeconds, GetWorldStats().chunks, GetWorldStats().avgBuildMs, GetWorldStats().avgSampleMs, GetWorldStats().workerThreads);
@@ -6493,19 +6516,19 @@ int main(int argc, char** argv)
                 TakeScreenshot("bench.png");
                 break;
             }
-        } else if (!IsWindowFocused() && !bench && !benchWindow && playNewSeconds <= 0.0) { // benches, --bench-window and --play-new run unfocused (#387)
-            if (cursorLocked) { EnableCursor(); cursorLocked = false; }
-            BeginDrawing();
-            EndDrawing();
-            continue;
         }
+        // Unfocused (alt-tab, #510): the frame still runs, so streaming, uploads, the spawn preload and the loading screen
+        // keep going (skipping whole frames stalled the loading, and the backlog cost more on return); the simulation is
+        // paused (no sim time below) and input and the cursor lock are off. Benches, --bench-window and --play-new runs open
+        // unfocused (#387) and ignore focus; --bench-unfocus scripts it (its own window is never minimized or raised).
+        const bool focused = benchUnfocus > 0.0f ? !benchUnfocused : (bench || benchWindow || playNewSeconds > 0.0 || IsWindowFocused());
         {
             // The cursor (#204, #205): locked while playing (DisableCursor: hidden, raw relative motion, no
             // warping) and free in menus and UIs, switched only when that changes. It used to be hidden and warped
             // back to the centre with SetMousePosition every frame: a blocking OS call per frame (benches skip it,
             // so they never showed the frame-rate drop while moving and looking) that also lost the motion between
             // warps (choppy look at low frame rates).
-            const bool wantLock = !bench && gameState == 1 && !(DebugUI_IsOpen() || GameUI_InventoryOpen() || Nav_MapOpen());
+            const bool wantLock = !bench && focused && gameState == 1 && !(DebugUI_IsOpen() || GameUI_InventoryOpen() || Nav_MapOpen());
             if (wantLock != cursorLocked) {
                 if (wantLock) DisableCursor(); else EnableCursor();
                 cursorLocked = wantLock;
@@ -6542,7 +6565,7 @@ int main(int argc, char** argv)
             }
             rlSetClipPlanes(nearPlane, 60000.0);
         }
-        const bool gameInput = !bench && !uiOpen && gameState == 1 && !loading;
+        const bool gameInput = !bench && focused && !uiOpen && gameState == 1 && !loading;
         world.cameraInputEnabled = player.flyMode && !uiOpen && !ship.piloted;  // free-fly camera only in fly mode
         const bool alive = !survival.dead;
         // One clamped frame time for everything that moves (bodies, ship, player): clamping only the
@@ -6560,7 +6583,7 @@ int main(int argc, char** argv)
         // time owes (none on most frames above 60 FPS, two at 30 FPS). Key and button edges are latched for them in
         // PlayerInput_Step() (playerinput.h); the mouse look turns the view once per frame, the camera interpolates.
         PlayerInput_BeginFrame();
-        const int simSteps = SimClock_BeginFrame(frameDt);
+        const int simSteps = SimClock_BeginFrame(focused ? frameDt : 0.0f); // unfocused: the simulation waits (#510; a pause, as #511)
         if (gameState == 1 && gameInput && alive && !loading && !ship.piloted && !Rocket_Boarded() && !player.flyMode) player.look(PlayerInput_Frame().look);
         for (int simStep = 0; simStep < simSteps; ++simStep) {
         const float simDt = SimDt();
@@ -6679,7 +6702,8 @@ int main(int argc, char** argv)
         // Upload time a frame: 3 ms in play. On the loading screen (#387) most of the frame: 70% of a frame of at least
         // 16.7 ms (a 240 FPS cap would leave 2.9 ms; there is nothing to show but progress), so uploads keep up with the
         // workers instead of following the frame rate.
-        const float uploadBudgetMs = loading ? std::min(30.0f, 0.7f * std::max(1000.0f / 60.0f, GetFrameTime() * 1000.0f)) : 3.0f; // at most 30 ms: Esc stays responsive
+        // Unfocused (#510) takes the loading budget too (its frames are capped at ~30 a second).
+        const float uploadBudgetMs = (loading || !focused) ? std::min(30.0f, 0.7f * std::max(1000.0f / 60.0f, GetFrameTime() * 1000.0f)) : 3.0f; // at most 30 ms: Esc stays responsive
         { const double w0 = GetTime(); worldUpdate(world, uploadBudgetMs); if (benchMeasuring) benchUpdateMs += (GetTime() - w0) * 1000.0; } // LOD + streaming (bodies were spun at the start of the frame)
 
         // Slot 1: headlamp (suit lamp from the eye, or the ship's nose light while piloting).
@@ -7318,9 +7342,23 @@ int main(int argc, char** argv)
                 // The loading screen still ends on its own once the world is built (0.5 s minimum on entering).
                 const bool ended = !loading && gameState == 1;
                 menuOk &= ended;
-                printf("bench: menus: the loading screen then ends by itself after %.2f s: %s -> %s\n", GetTime() - loadStart,
-                       ended ? "yes" : "NO", menuOk ? "PASS" : "FAIL");
+                printf("bench: menus: the loading screen then ends by itself after %.2f s: %s\n", GetTime() - loadStart, ended ? "yes" : "NO");
                 loading = false;
+                // #270: quit while the world streams hard (a far teleport: thousands of builds queued and running).
+                if (Planetoid* p0 = world.objects.empty() ? nullptr : dynamic_cast<Planetoid*>(world.objects[0].get())) {
+                    player.flyMode = false;
+                    player.spawnOn(world, *p0, p0->dirToWorld(Vector3Negate(StartSpawnDirLocal(*p0)))); // the far side
+                }
+                menuStep = 9; menuFrames = 0;
+            } else if (menuStep == 9 && menuFrames == 20) {
+                printf("bench: menus: quitting while streaming: %zu jobs queued, %d running, %d GPU batches\n", WorldJobs().queued(), WorldJobs().running(), TerrainGpu_Pending());
+                pendingMenu.action = MenuAction::SaveAndQuit; menuStep = 10; menuFrames = 0;
+            } else if (menuStep == 10 && menuFrames == 3) {
+                const bool fast = lastQuitMs < 1000.0;
+                const bool down = gameState == 0 && WorldJobs().queued() == 0 && TerrainGpu_Pending() == 0 && TerrainArena_Stats().vertexCapacity == 0;
+                menuOk &= fast && down;
+                printf("bench: menus: quit to the menu while streaming took %.0f ms (under 1 s), torn down (#270): %s -> %s\n", lastQuitMs,
+                       fast && down ? "yes" : "NO", menuOk ? "PASS" : "FAIL");
                 benchMenus = false;
             }
         }
@@ -7361,7 +7399,8 @@ int main(int argc, char** argv)
                     // streaming, bodies and their GPU meshes, animals, particles. New Game and Load build a world again.
                     if (telescope.active) Telescope_SetActive(world, false);
                     player.flyMode = false;
-                    unloadWorld(world);
+                    { const double q0 = GetTime(); unloadWorld(world); lastQuitMs = (GetTime() - q0) * 1000.0; } // (#270: must never block for seconds)
+                    if (bench) printf("bench: quit to the menu: the world unloaded in %.0f ms\n", lastQuitMs);
                     Animals_Reset();
                     Particles_Clear();
                     worldFresh = false;
@@ -7503,6 +7542,12 @@ int main(int argc, char** argv)
             Recorder_FrameDone();
         EndDrawing();
         gInFrame = false;
+        {   // Unfocused (#510): at most ~30 frames a second (the streaming still gets every frame's budget), so a background
+            // window does not burn the GPU. A wait, not SetTargetFPS: the FPS cap the player set is never touched.
+            static double lastFrameEnd = 0.0;
+            if (!focused) { const double el = GetTime() - lastFrameEnd; if (el < 1.0 / 30.0) WaitTime(1.0 / 30.0 - el); }
+            lastFrameEnd = GetTime();
+        }
         GpuTimer_Mark("swap+poll");
         PROFILE_FRAME();
     }
