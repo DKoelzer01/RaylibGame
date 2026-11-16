@@ -164,8 +164,9 @@ board's auto-add workflow adds new issues itself, but sets no fields, so:
 
 - Erosion (Plan 7): the bake runs on a thread behind a progress screen (the `gWorldGenWait` hook). Cache
   `<save>.erosion` (ERO6) keyed on `ErosionParams` + `kErosionBakeVersion`: bump the version on ANY bake code change,
-  or stale bakes load. Cliff lips (#357) live in `Column3D` and must match `terrain.glsl` /
-  `terrain_density.comp` bit-exactly (the grid is 2 vec4 per node); `--test-terrain-gpu` checks it.
+  or stale bakes load. The 3D band's `Column3D` (mask, f) must match `terrain.glsl` / `terrain_density.comp`
+  bit-exactly (the grid is 2 vec4 per node; the second is unused since the cliff terraces and lips went, #543);
+  `--test-terrain-gpu` checks it. Plan 9 (#586): steep terrain comes from formations in the bake input, not post-bake steps.
 - Sky light: `fragSky` from depth below the surface, times a short-ray openness probe (#369: terrain via chunk
   samples, parts via plot cells); `RAYLIBGAME_SKY_PROBES=0` for A/B. Moonlight scale defaults to 0.25
   (`RAYLIBGAME_MOONLIGHT`).

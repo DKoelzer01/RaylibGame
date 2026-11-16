@@ -152,9 +152,9 @@ namespace {
             b.a[0] = j.block.E; b.a[1] = g.nu; b.a[2] = g.nv; b.a[3] = (int)(grid.size() / 8); // nodes (two vec4 each)
             b.b[0] = (int)(isl.size() / 12); b.b[1] = (int)(j.islands.size() / 12); b.b[2] = (int)out;
             blocks.push_back(b);
-            for (size_t k = 0; k < g.h.size(); ++k) { // per node: elevation, 3D mask, f, lip top | lip thick, lip margin (#357), -, -
+            for (size_t k = 0; k < g.h.size(); ++k) { // per node: elevation, 3D mask, f, - | -, -, -, - (the cliff lip went with the terraces, #543; the layout stays)
                 const PlanetField::Column3D& c = g.cols[k];
-                const float v[8] = { g.h[k], c.mask, c.f, c.lipTop, c.lipThick, c.lipMargin, 0.0f, 0.0f };
+                const float v[8] = { g.h[k], c.mask, c.f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f };
                 grid.insert(grid.end(), v, v + 8);
             }
             isl.insert(isl.end(), j.islands.begin(), j.islands.end());
