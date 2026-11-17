@@ -123,6 +123,7 @@ namespace Fluid {
         long long dbgTotal[4] = {}; // the same since the start
         long long wakes[2] = {};    // settled bricks woken: by the GPU step (drift), by a CPU change (Touch: levelling, commands)
         long long pinnedFaces = 0;  // pond faces held as sources: their neighbour brick could not join the site (#384)
+        long long filmFlips = 0;    // bricks whose thin films switched shown/hidden since the start (#660: a blink each)
     };
     Stats GetStats();
     void WaitIdle();            // tests: until no step job is running
