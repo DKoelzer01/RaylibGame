@@ -11,6 +11,9 @@
 #include "waterfield.h"
 #include "watersurface.h"
 #include "fluidkernel.h"
+#include "glcaps.h"
+#include "gputimer.h"
+#include "external/glad.h"
 #include "world.h"
 #include "worldtypes.h"
 
@@ -64,7 +67,7 @@ constexpr int kSettleSteps = 180;      // 3 s window: a brick whose cells all mo
 constexpr int kSettleDiff = 4;         // fill units (1.6 cm)
 constexpr long long kFilmHoldSteps = 300; // 5 s of steps: a brick's films stay drawn this long after it stops moving (#660)
 inline long long FilmHoldSteps() { static const long long h = getenv("RAYLIBGAME_FILM_HOLD") && atoi(getenv("RAYLIBGAME_FILM_HOLD")) == 0 ? 1 : kFilmHoldSteps; return h; } // A/B: =0 no hold
-constexpr int kLevelEvery = 15;        // levelling pass every 0.25 s
+constexpr int kLevelEvery = 60;        // levelling pass every second (#669: every 0.25 s nudged a big pool's cells constantly; the face flows carry the rest)
 constexpr int kInitPerStep = 24;       // bricks classified per step, in parallel on the worker pool (each a few ms)
 constexpr int kMaxBricks = 4096;       // per site
 
@@ -97,6 +100,11 @@ struct Brick {
     std::array<uint8_t, B3> disp{}; // the cells as published: easing toward fill (#366)
     bool dispSet = false, easing = false;
     long long movingStep = -1000000; // the last step it was awake or easing (#660: its films stay drawn a while after)
+    // Its counts for the stats (#669: recounted only when it changes - every brick's 4096 cells every tick cost ~10 ms at 3000 bricks).
+    bool statSet = false;
+    uint8_t statKinds = 0;
+    float statWet = 0.0f, statVolume = 0.0f, statOther = 0.0f;
+    int statSolid = 0; // solid cells (all solid: nothing to run, #669)
     int slot = -1;                  // GPU mode: its place in the GPU brick pool (-1: none yet)
     std::vector<FluidKernel::Vec4> faces; // CPU mode: the face flows as applied (#654: momentum between ticks; empty: at rest)
     int cpuSlot = -1;               // CPU mode: its place in this tick's grid
@@ -377,6 +385,10 @@ long long wakeGpu = 0, wakeTouch = 0; // settled bricks woken (stats)
 long long filmFlips = 0;              // bricks whose films switched shown/hidden (stats, #660)
 void Touch(Brick* b) { if (b->settled) ++wakeTouch; b->active = true; b->idle = 0; b->changed = true; b->settled = false; }
 void CpuTick(int n); // CPU mode: the GPU's step on the CPU (#654), below
+// Whether a neighbour (on face fc of a brick whose water moved) needs waking and running (#669): not a brick of solid rock
+// (water never enters it) nor a dry brick above (water rises into it only through sources, pours or levelling, which wake
+// it). Under and over a big pool they were most of every dispatch.
+inline bool RunsBeside(const Brick& o, int fc) { return !(o.statSet && (o.statSolid == B3 || (fc == 5 && o.statKinds == 0))); }
 
 // GPU mode (fluid on compute shaders): CPU-side changes to the mirror (buckets, pumps, springs, levelling) go
 // to the GPU as deltas next tick; bricks waiting for a full upload take theirs from the mirror instead.
@@ -812,16 +824,22 @@ void RunJob() {
             if (!b.ready) continue;
             if (b.active) ++st.activeBricks;
             if (b.basin) ++st.basinBricks;
-            uint8_t present = 0; // kinds in the brick (bit k)
-            for (int i = 0; i < B3; ++i)
-                if (b.fill[i] && !(b.flags[i] & kSolid)) {
-                    const int k = CellKind(b.flags[i]);
-                    present |= (uint8_t)(1 << k);
-                    if (b.flags[i] & kSource) continue;
-                    st.wetCells += 1.0;
-                    if (k) st.otherVolume += b.fill[i] / 255.0;
-                    else st.volume += b.fill[i] / 255.0;
-                }
+            if (b.changed || !b.statSet) { // kinds in the brick (bit k), wet cells, volumes: recounted when it changed
+                uint8_t kindsHere = 0;
+                int wet = 0, vol = 0, other = 0, solid = 0;
+                for (int i = 0; i < B3; ++i)
+                    if (b.fill[i] && !(b.flags[i] & kSolid)) {
+                        const int k = CellKind(b.flags[i]);
+                        kindsHere |= (uint8_t)(1 << k);
+                        if (b.flags[i] & kSource) continue;
+                        ++wet;
+                        (k ? other : vol) += b.fill[i];
+                    }
+                for (int i = 0; i < B3; ++i) solid += (b.flags[i] & kSolid) ? 1 : 0;
+                b.statSolid = solid; b.statKinds = kindsHere; b.statWet = (float)wet; b.statVolume = vol / 255.0f; b.statOther = other / 255.0f; b.statSet = true;
+            }
+            const uint8_t present = b.statKinds;
+            st.wetCells += b.statWet; st.volume += b.statVolume; st.otherVolume += b.statOther;
             // Resting water sleeps (#366): an awake brick whose cells all stayed within kSettleDiff of where they were
             // kSettleSteps ago is put to sleep, though films still trickle back and forth in it (a drained pond kept
             // 30-50 bricks awake for minutes, and their changes kept the chunks redrawing, #381). Water moving into it
@@ -940,6 +958,12 @@ struct GpuState {
     ComputeProgram step, delta;
     ComputeBuffer a, b, nbrs, list, inS, flags, deltas;
     ComputeBuffer faceP, faceN;            // face flows (#642, fluid_step.comp): applied (a vec4 a cell) / new (two vec4 a cell)
+    // Async readback (#669): the dispatch's flags and its bricks' cells packed (fluid_pack.comp) are copied into a persistent
+    // mapped buffer behind a fence and read the next tick; without buffer storage, the old per-brick downloads.
+    ComputeProgram pack;
+    ComputeBuffer packed;
+    unsigned rbBuf = 0; unsigned char* rbPtr = nullptr; size_t rbCap = 0; void* rbFence = nullptr; size_t rbFlagsBytes = 0;
+    bool asyncRb = false;
     int capacity = 0;                      // bricks
     std::vector<Brick*> owner;             // slot -> brick
     std::vector<Site*> ownerSite;
@@ -975,8 +999,11 @@ bool GpuInit() {
         G.owner.assign(64, nullptr); G.ownerSite.assign(64, nullptr);
         const std::vector<unsigned> zeros(64, 0u);
         G.flags.upload(zeros.data(), 64 * 4);
+        // Async readback (#669): buffer storage for the persistent mapping, the pack pass; else the old downloads.
+        G.asyncRb = !getenv("RAYLIBGAME_FLUID_SYNC_READBACK") && GL_Caps().bufferStorage && glad_glFenceSync && G.pack.load("resources/compute/fluid_pack.comp");
+        if (G.asyncRb) G.packed.create(64 * kCellsPerBrick * 2);
     }
-    TraceLog(LOG_WARNING, "Fluid: %s", G.ok ? "GPU compute" : "CPU (no compute)");
+    TraceLog(LOG_WARNING, "Fluid: %s%s", G.ok ? "GPU compute" : "CPU (no compute)", G.asyncRb ? ", async readback" : "");
     return G.ok;
 }
 
@@ -1084,40 +1111,91 @@ void GpuFlowResolve() {
 void GpuTick(int n) {
     // 1. Results of the last dispatch: which bricks changed (and want neighbours), then their cells.
     if (!G.lastList.empty()) {
-        std::vector<unsigned> flags(G.capacity);
-        G.flags.download(flags.data(), G.capacity * 4);
+        // The flags and packed cells: from the mapped buffer the last dispatch copied into (#669: no stall; the copy was
+        // queued a tick ago), else downloaded.
+        std::vector<unsigned> flagsV;
+        const unsigned* flags = nullptr;
+        const uint32_t* packed = nullptr;
+        if (G.asyncRb && G.rbFence) {
+            glClientWaitSync((GLsync)G.rbFence, GL_SYNC_FLUSH_COMMANDS_BIT, 100000000ull); // at most 100 ms
+            glDeleteSync((GLsync)G.rbFence); G.rbFence = nullptr;
+            flags = (const unsigned*)G.rbPtr;
+            packed = (const uint32_t*)(G.rbPtr + G.rbFlagsBytes);
+        } else {
+            flagsV.resize(G.capacity);
+            G.flags.download(flagsV.data(), G.capacity * 4);
+            flags = flagsV.data();
+        }
+        const int flagSlots = packed ? (int)(G.rbFlagsBytes / 4) : G.capacity;
         static std::vector<unsigned> cells(kCellsPerBrick);
         static const int d[6][3] = { { -1, 0, 0 }, { 1, 0, 0 }, { 0, -1, 0 }, { 0, 1, 0 }, { 0, 0, -1 }, { 0, 0, 1 } };
-        for (int slot : G.lastList) {
+        // A brick the CPU reclassified since that dispatch (upload pending) or is reclassifying now (not ready: a worker reads
+        // its fill) keeps the CPU state: the GPU's older fill would put water back into cells that became solid (PR #129 review).
+        auto takes = [&](size_t li) {
+            const int slot = G.lastList[li];
+            const Brick* br = G.owner[slot];
+            return br && G.ownerSite[slot] && slot < flagSlots && (flags[slot] & 1u) && br->ready && !br->upload;
+        };
+        // The packed cells into the bricks, on the workers (#669: ~3000 bricks x 4096 cells on the main thread took ~10 ms a tick);
+        // drift: how far a settled brick's cells moved from where it settled.
+        std::vector<int> drift(G.lastList.size(), 0);
+        if (packed) {
+            const int n = (int)G.lastList.size();
+            const int parts = std::max(1, std::min(n, (int)std::thread::hardware_concurrency()));
+            auto unpack = [&](int part) {
+                for (int li = part; li < n; li += parts) {
+                    if (!takes((size_t)li)) continue;
+                    Brick* br = G.owner[G.lastList[li]];
+                    const uint32_t* pc = packed + (size_t)li * (kCellsPerBrick / 2);
+                    int dr = 0;
+                    for (int i = 0; i < B3; ++i) {
+                        const uint32_t v = (pc[i >> 1] >> ((i & 1) * 16)) & 0xFFFFu; // fill | kind << 8 (fluid_pack.comp)
+                        br->fill[i] = (uint8_t)(v & 255u);
+                        br->flags[i] = (uint8_t)((br->flags[i] & ~kKindMask) | (((v >> 8) & 7u) << kKindShift));
+                        if (br->settled) dr = std::max(dr, abs((int)br->fill[i] - (int)br->check[i]));
+                    }
+                    drift[li] = dr;
+                }
+            };
+            std::atomic<int> left{ parts - 1 };
+            for (int part = 1; part < parts; ++part) {
+                JobSystem::tagNext(JobTag::Fluid);
+                WorldJobs().submit(-3.0f, [&unpack, &left, part] { unpack(part); left.fetch_sub(1); });
+            }
+            unpack(0);
+            while (left.load() > 0) std::this_thread::yield();
+        }
+        for (size_t li = 0; li < G.lastList.size(); ++li) {
+            const int slot = G.lastList[li];
             Brick* br = G.owner[slot];
             Site* site = G.ownerSite[slot];
-            if (!br || !site) continue;
+            if (!br || !site || slot >= flagSlots) continue;
             const unsigned fl = flags[slot];
-            // A brick the CPU reclassified since that dispatch (upload pending) or is reclassifying now (not ready:
-            // a worker reads its fill) keeps the CPU state: the GPU's older fill would put water back into cells
-            // that became solid (PR #129 review).
-            if ((fl & 1u) && br->ready && !br->upload) {
-                G.a.download(cells.data(), kCellsPerBrick * 4, slot * kCellsPerBrick * 4);
-                int drift = 0; // how far a settled brick's cells moved from where it settled
-                for (int i = 0; i < B3; ++i) {
-                    br->fill[i] = (uint8_t)(cells[i] & 255u);
-                    br->flags[i] = (uint8_t)((br->flags[i] & ~kKindMask) | (((cells[i] >> 8) & 255u) & kKindMask));
-                    if (br->settled) drift = std::max(drift, abs((int)br->fill[i] - (int)br->check[i]));
+            if (takes(li)) {
+                if (!packed) {
+                    G.a.download(cells.data(), kCellsPerBrick * 4, slot * kCellsPerBrick * 4);
+                    for (int i = 0; i < B3; ++i) {
+                        br->fill[i] = (uint8_t)(cells[i] & 255u);
+                        br->flags[i] = (uint8_t)((br->flags[i] & ~kKindMask) | (((cells[i] >> 8) & 255u) & kKindMask));
+                        if (br->settled) drift[li] = std::max(drift[li], abs((int)br->fill[i] - (int)br->check[i]));
+                    }
                 }
-                if (br->settled && drift <= kSettleDiff) { br->changed = true; continue; } // a resting brick at the edge of a dispatch: stays asleep (#366)
+                if (br->settled && drift[li] <= kSettleDiff) { br->changed = true; continue; } // a resting brick at the edge of a dispatch: stays asleep (#366)
                 if (br->settled) { ++wakeGpu; br->settled = false; }
                 Touch(br);
-                for (Brick* o : br->nbr) if (o) { o->active = true; o->idle = 0; }
+                for (int fc = 0; fc < 6; ++fc) if (Brick* o = br->nbr[fc]; o && RunsBeside(*o, fc)) { o->active = true; o->idle = 0; }
             } else if (br->active && (br->idle += G.lastN) > kSleepSteps) {
                 br->active = false;
             }
             for (int face = 0; face < 6; ++face)
                 if (fl & (2u << face)) site->ensure(br->bi + d[face][0], br->bj + d[face][1], br->bk + d[face][2]);
         }
-        std::fill(flags.begin(), flags.end(), 0u);
-        G.flags.upload(flags.data(), G.capacity * 4);
+        static std::vector<unsigned> zeros;
+        zeros.assign(G.capacity, 0u);
+        G.flags.upload(zeros.data(), G.capacity * 4);
         G.lastList.clear();
     }
+    GpuTimer_Mark("fluid-read"); // benches: the readback above (#669)
     GpuFlowRead(); // 1b. the watched cells' flux since the last read (#392)
     // 2. Slots for classified bricks; whole bricks up.
     int used = 0;
@@ -1145,19 +1223,25 @@ void GpuTick(int n) {
         G.nbrs.upload(nb.data(), G.capacity * 24);
         G.nbrDirty = false;
     }
+    GpuTimer_Mark("fluid-upload"); // benches: slots and whole-brick uploads, neighbours (#669)
     // 3. The CPU's deltas (summed per cell).
     if (!gpuDeltas.empty()) {
         struct D { unsigned cell; int delta; unsigned kind; unsigned pad; };
-        std::unordered_map<unsigned, D> merged;
-        for (const GpuDeltaRec& r : gpuDeltas) {
-            if (r.b->slot < 0) continue;
-            const unsigned cell = (unsigned)r.b->slot * kCellsPerBrick + (unsigned)r.i;
-            D& dd = merged[cell];
-            dd.cell = cell; dd.delta += r.d; dd.kind = r.kind;
-        }
+        // Summed per cell by a sort (#669: a hash map of a big pool's levelling nudges took ~10 ms a tick).
+        static std::vector<D> raw;
+        raw.clear();
+        for (const GpuDeltaRec& r : gpuDeltas)
+            if (r.b->slot >= 0) raw.push_back({ (unsigned)r.b->slot * kCellsPerBrick + (unsigned)r.i, r.d, r.kind, 0u });
         gpuDeltas.clear();
+        std::stable_sort(raw.begin(), raw.end(), [](const D& a, const D& b) { return a.cell < b.cell; }); // later deltas' kinds win
         std::vector<D> list;
-        for (auto& kv : merged) if (kv.second.delta) list.push_back(kv.second);
+        for (size_t i = 0; i < raw.size();) {
+            D sum = raw[i];
+            size_t j = i + 1;
+            for (; j < raw.size() && raw[j].cell == sum.cell; ++j) { sum.delta += raw[j].delta; sum.kind = raw[j].kind; }
+            if (sum.delta) list.push_back(sum);
+            i = j;
+        }
         if (!list.empty()) {
             if (G.deltas.bytes < list.size() * sizeof(D)) G.deltas.resize((unsigned)(list.size() * 2 * sizeof(D)));
             G.deltas.upload(list.data(), (unsigned)(list.size() * sizeof(D)));
@@ -1175,12 +1259,20 @@ void GpuTick(int n) {
         Brick* br = G.owner[slot];
         if (!br || !br->active) continue;
         if (!inS[slot]) { inS[slot] = 1; list.push_back(slot); }
-        for (Brick* o : br->nbr) if (o && o->slot >= 0 && !inS[o->slot]) { inS[o->slot] = 1; list.push_back(o->slot); }
+        for (int fc = 0; fc < 6; ++fc) {
+            Brick* o = br->nbr[fc];
+            if (!o || o->slot < 0 || inS[o->slot]) continue;
+            // Not run (#669): a brick of solid rock (water never enters it) or a dry brick above (water only rises into it
+            // through sources, pours or levelling, which wake it): under and over a big pool they were most of the dispatch.
+            if (!o->active && !RunsBeside(*o, fc)) continue;
+            inS[o->slot] = 1; list.push_back(o->slot);
+        }
     }
     if (list.empty()) return;
     G.inS.upload(inS.data(), G.capacity * 4);
     if (G.list.bytes < list.size() * 4) G.list.resize((unsigned)(list.size() * 8));
     G.list.upload(list.data(), (unsigned)(list.size() * 4));
+    GpuTimer_Mark("fluid-list"); // benches: deltas and the brick list (#669)
     // 5. n substeps: vertical A -> B, face flows B -> N, apply B, N -> A, P (#642).
     G.step.use();
     G.step.setUint("count", (unsigned)list.size());
@@ -1208,6 +1300,41 @@ void GpuTick(int n) {
     }
     G.lastList = list;
     G.lastN = n;
+    // 6. Async readback (#669): pack the processed bricks' cells, copy them and the flags into the mapped buffer, fence.
+    if (G.asyncRb) {
+        const size_t packedBytes = (size_t)list.size() * kCellsPerBrick * 2, flagsBytes = (size_t)G.capacity * 4;
+        if (G.packed.bytes < packedBytes) G.packed.resize((unsigned)(packedBytes * 2));
+        G.pack.use();
+        G.pack.setUint("count", (unsigned)list.size());
+        G.a.bind(0); G.list.bind(3); G.packed.bind(10);
+        G.pack.dispatch(kCellsPerBrick / 2 / 64u, bricks);
+        const size_t total = flagsBytes + packedBytes;
+        if (G.rbCap < total) {
+            if (G.rbBuf) { glDeleteBuffers(1, (GLuint*)&G.rbBuf); G.rbBuf = 0; G.rbPtr = nullptr; }
+            size_t cap = 1u << 20;
+            while (cap < total) cap <<= 1;
+            GLuint buf = 0;
+            glGenBuffers(1, &buf);
+            glBindBuffer(GL_COPY_WRITE_BUFFER, buf);
+            const GLbitfield mapFlags = GL_MAP_READ_BIT | GL_MAP_PERSISTENT_BIT | GL_MAP_COHERENT_BIT;
+            GpuMemTag gm_("fluid readback"); // VRAM accounting (#302)
+            glBufferStorage(GL_COPY_WRITE_BUFFER, (GLsizeiptr)cap, nullptr, mapFlags | GL_CLIENT_STORAGE_BIT);
+            G.rbPtr = (unsigned char*)glMapBufferRange(GL_COPY_WRITE_BUFFER, 0, (GLsizeiptr)cap, mapFlags);
+            glBindBuffer(GL_COPY_WRITE_BUFFER, 0);
+            if (!G.rbPtr) { glDeleteBuffers(1, &buf); G.asyncRb = false; TraceLog(LOG_WARNING, "Fluid: persistent map failed: synchronous readback"); return; }
+            G.rbBuf = buf; G.rbCap = cap;
+        }
+        glBindBuffer(GL_COPY_WRITE_BUFFER, G.rbBuf);
+        glBindBuffer(GL_COPY_READ_BUFFER, G.flags.id);
+        glCopyBufferSubData(GL_COPY_READ_BUFFER, GL_COPY_WRITE_BUFFER, 0, 0, (GLsizeiptr)flagsBytes);
+        glBindBuffer(GL_COPY_READ_BUFFER, G.packed.id);
+        glCopyBufferSubData(GL_COPY_READ_BUFFER, GL_COPY_WRITE_BUFFER, 0, (GLintptr)flagsBytes, (GLsizeiptr)packedBytes);
+        glBindBuffer(GL_COPY_READ_BUFFER, 0);
+        glBindBuffer(GL_COPY_WRITE_BUFFER, 0);
+        G.rbFlagsBytes = flagsBytes;
+        G.rbFence = glFenceSync(GL_SYNC_GPU_COMMANDS_COMPLETE, 0);
+        glFlush();
+    }
 }
 
 // CPU mode (#654: no compute shaders - a headless server, FLUID_CPU=1): the same step as the GPU's (fluidkernel.h) on a grid
@@ -1275,7 +1402,7 @@ void CpuTick(int n) {
             else {
                 if (br->settled) { ++wakeGpu; br->settled = false; }
                 Touch(br);
-                for (Brick* o : br->nbr) if (o) { o->active = true; o->idle = 0; }
+                for (int fc = 0; fc < 6; ++fc) if (Brick* o = br->nbr[fc]; o && RunsBeside(*o, fc)) { o->active = true; o->idle = 0; }
             }
         } else if (br->active && (br->idle += n) > kSleepSteps) {
             br->active = false;
@@ -1291,6 +1418,7 @@ void GpuReset() {
     for (Brick*& o : G.owner) o = nullptr;
     for (Site*& o : G.ownerSite) o = nullptr;
     G.lastList.clear();
+    if (G.rbFence) { glDeleteSync((GLsync)G.rbFence); G.rbFence = nullptr; } // the last dispatch's readback is dropped (#669)
     gpuDeltas.clear();
     G.nbrDirty = true;
 }

@@ -263,6 +263,7 @@ void main() {
             bool pN; int face;
             int gn = neighbour(slot, x, y, z, k == 0 ? 1 : 0, k == 1 ? 1 : 0, 0, pN, face);
             if (gn < 0 || !pN) continue;
+            if (F(c) == 0u && F(inC[gn]) == 0u) continue; // two dry cells: nothing flows (#669: most cells are air or rock)
             float q, qm;
             faceFlow(g, c, gn, inC[gn], k == 0 ? P.x : P.y, q, qm);
             if (q == 0.0) continue;
@@ -294,8 +295,8 @@ void main() {
     // Pass 2: apply the face flows.
     float mine[4];
     outward(g, mine);
-    float myScale = giveScale(g, c);
-    uint myRoom = roomShare(g, c);
+    float myScale = -1.0;  // computed when a face first needs them (#669: a dry cell with no flow needs neither)
+    int myRoom = -1;
     int net = 0;
     uint moving = 0u; // in + out across the side faces this substep: a speck in a moving film is not resting (#454)
     uint inKind = kind;
@@ -314,8 +315,10 @@ void main() {
         if (!pN || a == 0.0) continue;
         uint n = readCell(gn, pN);
         // Whole units moved: the giver's scaled amount, at most the taker's share of its room; the fraction carries.
+        if (a > 0.0 && myScale < 0.0) myScale = giveScale(g, c);
+        if (a < 0.0 && myRoom < 0) myRoom = int(roomShare(g, c));
         float sc = a > 0.0 ? myScale : giveScale(gn, n);
-        uint share = a > 0.0 ? roomShare(gn, n) : myRoom;
+        uint share = a > 0.0 ? roomShare(gn, n) : uint(myRoom);
         float mag = abs(a) * sc;
         int units = int(min(floor(mag), float(share)));
         bool clipped = float(units) < floor(mag);                         // by the taker's room
