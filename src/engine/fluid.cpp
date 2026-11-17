@@ -211,9 +211,17 @@ struct PartSolid {
         for (const PlotSnap& p : plots) {
             if (p.solid.empty() || Vector3DistanceSqr(c, p.centre) > (p.radius + 1.0f) * (p.radius + 1.0f)) continue;
             if (p.cellSolid(c)) return true;
+            // Probes inside the fluid cell, 0.35 of its edge from the centre along the plot's axes (#694: a fixed 0.35 m reached past
+            // 0.25 m cells - water stood off every block face and a 1 m hole in a block dam passed ~9% of its flow).
+            // Cells smaller than a plot cell (0.5 m): solid when a part covers the centre or most of the cell (4 of 6 probes) -
+            // exact enough at that size, and a one-block hole opens. Larger cells: any probe, so a half-block panel or pane stays
+            // watertight; the cost is that a one-block hole half a block off the fluid grid stays shut at 1 m cells.
+            const float cs = WaterField::CellSize(), off = 0.35f * cs;
             const Vector3 ax[3] = { p.east, p.up, p.north };
+            int hits = 0;
             for (const Vector3& a : ax)
-                if (p.cellSolid(Vector3Add(c, Vector3Scale(a, 0.35f))) || p.cellSolid(Vector3Subtract(c, Vector3Scale(a, 0.35f)))) return true;
+                hits += (int)p.cellSolid(Vector3Add(c, Vector3Scale(a, off))) + (int)p.cellSolid(Vector3Subtract(c, Vector3Scale(a, off)));
+            if (hits >= (cs < 0.5f ? 4 : 1)) return true;
         }
         return false;
     }

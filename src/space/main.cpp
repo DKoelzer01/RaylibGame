@@ -433,6 +433,7 @@ int main(int argc, char** argv)
     float benchFluidLoad = 0.0f; int flPhase = 0; double flT0 = 0.0; Vector3 flMid{}, flE{}, flN{}; // --test-fluid-load S (#638/#642 perf)
     bool benchDamBreak = false; int dbPhase = 0; double dbT0 = 0.0; float dbPoured = 0.0f, dbFloor = -2.5f; // --test-dam-break (#680: Ritter dam break, physics reference)
     bool benchLeak = false; int lkPhase = 0; double lkT0 = 0.0; float lkPoured = 0.0f; // --test-leak (#680: a hole low in a wall)
+    bool benchLeakParts = false; Plot* lkPlot = nullptr; std::vector<int> lkHole; // --test-leak-parts (#692): the wall is placed stone blocks
     bool benchWaterSpeed = false; int wsPhase = 0; double wsT0 = 0.0, wsFront[3] = { -1, -1, -1 }, wsSleep = -1.0; Vector3 wsSite{}, wsEye{}; float wsMaxFront = 0.0f, wsVol0 = 0.0f; // --test-water-speed (#638)
     bool benchPond = false; int pondPhase = 0; double pondT0 = 0.0; Vector3 pondDirB{}, pondOutB{}, pondPit{}, pondMid{}; float pondLevelB = 0.0f, pondRB = 0.0f; // --test-pond
     bool benchFlowSea = false; // --test-flow-sea (#190): the flow test from the sea instead of inland water
@@ -701,6 +702,7 @@ int main(int argc, char** argv)
         if (std::string(argv[i]) == "--test-fluid-load" && i + 1 < argc) benchFluidLoad = (float)atof(argv[i + 1]); // basin side (m)
         if (std::string(argv[i]) == "--test-dam-break") benchDamBreak = true; // best with --sandbox
         if (std::string(argv[i]) == "--test-leak") benchLeak = true; // best with --sandbox
+        if (std::string(argv[i]) == "--test-leak-parts") benchLeak = benchLeakParts = true; // #692: the wall is placed blocks
         if (std::string(argv[i]) == "--test-pump") benchPump = true;
         if (std::string(argv[i]) == "--test-pump-hand") { benchPump = true; benchPumpHand = true; }
         if (std::string(argv[i]) == "--test-pump-boiler") { benchPump = true; benchPumpBoiler = true; }
@@ -4982,8 +4984,8 @@ int main(int argc, char** argv)
                     Planetoid* p = dynamic_cast<Planetoid*>(world.objects[0].get());
                     const PlanetField* pf = p ? dynamic_cast<const PlanetField*>(p->field.get()) : nullptr;
                     static Vector3 home{}, ax{}, ay{};
-                    static float r0 = 0.0f, h0 = 0.0f, vol1 = -1.0f, vol3 = -1.0f;
-                    const double t = GetTime() - lkT0;
+                    static float r0 = 0.0f, h0 = 0.0f, vol1 = -1.0f, vol3 = -1.0f, pastBefore = 0.0f;
+                    const double t = SimTime() - lkT0;
                     auto pt = [&](float x, float y, float h) {
                         const Vector3 d = Vector3Normalize(Vector3Add(Vector3Scale(home, r0), Vector3Add(Vector3Scale(ax, x), Vector3Scale(ay, y))));
                         return Vector3Scale(d, r0 + h);
@@ -4997,34 +4999,78 @@ int main(int argc, char** argv)
                         return e;
                     };
                     auto depthAt = [&](float x) { const float s = Fluid::SurfaceAbove(*p, pt(x, 0.0f, -2.5f + 0.55f), 4.0f); return s > 0.0f ? s + 0.55f : 0.0f; };
-                    auto past = [&]() { float v = 0.0f; for (float x = 3.0f; x < 40.0f; x += 4.0f) for (float h : { -5.0f, -1.0f }) v += Fluid::WaterAt(*p, pt(x, 0.0f, h), 2.0f); return v; };
+                    auto past = [&]() { float v = 0.0f; for (float x = 4.0f; x < 40.0f; x += 4.0f) for (float h : { -5.0f, -1.0f }) v += Fluid::WaterAt(*p, pt(x, 0.0f, h), 2.0f); return v; };
                     if (!pf) { printf("bench: leak: needs the planet -> FAIL\n"); benchLeak = false; }
                     else {
                         if (lkPhase == 0) {
                             home = pf->findSpawnDir(p->seed);
                             ax = Vector3Normalize(Vector3CrossProduct(home, { 0, 1, 0 })); ay = Vector3CrossProduct(ax, home);
                             r0 = pf->radius + pf->elevation(home);
-                            std::vector<TerrainEdit> cut = { box(-20.0f, 0.0f, -2.0f, 2.0f, -2.5f, 0.0f), box(1.0f, 40.0f, -2.0f, 2.0f, -6.0f, 0.0f) }; // the channel 6 m deep: it never backs up to the hole
+                            if (benchLeakParts) {
+                                // #692: the frame is a build plot's (its east and north along the ground, its origin on it), so the
+                                // blocks sit exactly where the trench is dug.
+                                if (!p->plots) p->plots = std::make_unique<PlotSet>();
+                                lkPlot = p->plots->plotFor(Vector3Scale(home, r0), 0.0f, true);
+                                const Vector3 o = lkPlot->toBody({ 0.0f, 0.0f, 0.0f });
+                                home = Vector3Normalize(o); r0 = Vector3Length(o); ax = lkPlot->east; ay = lkPlot->north;
+                            }
+                            std::vector<TerrainEdit> cut = benchLeakParts
+                                ? std::vector<TerrainEdit>{ box(-20.0f, 2.0f, -2.0f, 2.0f, -2.5f, 3.0f), box(2.0f, 40.0f, -2.0f, 2.0f, -6.0f, 3.0f) } // the dam's slot dug too: blocks fill it
+                                : std::vector<TerrainEdit>{ box(-20.0f, 0.0f, -2.0f, 2.0f, -2.5f, 3.0f), box(2.0f, 40.0f, -2.0f, 2.0f, -6.0f, 3.0f) }; // up through the air (#693: a top at the ground's height left slivers where it stood higher); a 2 m wall (#691: 1 m - one cell at 1 m cells - leaked); the channel 6 m deep: it never backs up to the hole
                             ApplyTerrainEdits(*p, cut.data(), cut.size());
-                            printf("bench: leak: a 20 m reservoir behind a 1 m wall, a channel beyond (cells %.2f m)\n", WaterField::CellSize());
-                            lkPhase = 1; lkT0 = GetTime();
+                            if (benchLeakParts) {
+                                // The dam: 1 m stone blocks, 2 thick (x 0-2 m), from 1 m under the floor to 0.5 m over the ground
+                                // (plot cells are 0.5 m: y -7..-1 up), 1 m into each bank (z -3..3 m). The hole's two blocks (1-2 m over
+                                // the floor, z 0-1 m) come out later.
+                                const uint8_t stone = (uint8_t)std::max(0, BuildMaterialForItem("stone"));
+                                int placed = 0;
+                                lkHole.clear();
+                                for (int cx : { 0, 2 })
+                                    for (int cy = -7; cy <= -1; cy += 2)
+                                        for (int cz = -6; cz <= 4; cz += 2) {
+                                            const int idx = lkPlot->place({ PartType::Block, { cx, cy, cz }, 0, stone });
+                                            if (idx < 0) continue;
+                                            ++placed;
+                                            if (cy == -3 && cz == 0) lkHole.push_back(idx);
+                                        }
+                                printf("bench: leak: a 20 m reservoir behind a 2 m dam of %d placed stone blocks, a channel beyond (cells %.2f m)\n", placed, WaterField::CellSize());
+                            } else printf("bench: leak: a 20 m reservoir behind a 2 m wall, a channel beyond (cells %.2f m)\n", WaterField::CellSize());
+                            lkPhase = 1; lkT0 = SimTime();
                         }
-                        // The camera over the wall, looking down at the hole's side of the reservoir and the channel (the subject).
-                        world.camera.position = p->toWorld(pt(0.5f, -8.0f, 7.0f)); world.camera.target = p->toWorld(pt(0.5f, 0.0f, -1.8f));
+                        // The camera 45 degrees off the channel on its downstream side, 45 degrees up (#691, user: 'see both the
+                        // trench before and after the dam, the hole in the dam, and the edges of the dam'): the hole's outlet faces it.
+                        world.camera.position = p->toWorld(pt(6.0f, -6.0f, 6.0f)); world.camera.target = p->toWorld(pt(0.5f, 0.0f, -1.5f));
                         world.camera.up = p->dirToWorld(home);
                         player.flyMode = true; player.position = world.renderOrigin + world.camera.position;
+                        // Water on the grass beside the reservoir and the channel (#691): a bad fill, or a leak around the edges.
+                        // (3.5 m out, 0.5 m round: clear of the dug edge, which the lattice rounds out to ~2.5 m at 1 m cells)
+                        auto onGrass = [&]() { float v = 0.0f; for (float x = -19.0f; x < 40.0f; x += 3.0f) for (float y : { -3.5f, 3.5f }) v += Fluid::WaterAt(*p, pt(x, y, 0.25f), 0.5f); return v; };
                         if (lkPhase == 1 && t > 1.0 && WorldIdle()) {
+                            // Fill at 5 m^3/s, 1 m^3 at a time moving over the whole floor (#691: a pour every frame - 60 m^3/s -
+                            // piled mounds over the rim faster than water spreads, and they spilled onto the grass).
                             static int k = 0;
-                            const float x = -19.0f + 2.0f * (float)(k % 10), y = (k / 10) % 2 ? 1.0f : -1.0f;
-                            ++k;
-                            lkPoured += Fluid::Pour(*p, pt(x, y, -2.3f), 1.0f);
-                            if (lkPoured >= 160.0f) { lkPhase = 2; lkT0 = GetTime(); }
+                            static double nextPour = 0.0;
+                            if (t >= nextPour) {
+                                nextPour = t + 0.2;
+                                const float x = -19.0f + 2.0f * (float)(k % 10), y = (k / 10) % 2 ? 1.0f : -1.0f;
+                                ++k;
+                                lkPoured += Fluid::Pour(*p, pt(x, y, -2.3f), 1.0f);
+                            }
+                            if (lkPoured >= 160.0f || depthAt(-10.0f) >= 2.0f) { lkPhase = 2; lkT0 = SimTime(); }
                         } else if (lkPhase == 2 && ((t > 8.0 && Fluid::Asleep()) || t > 40.0)) {
+                            const float grass = onGrass();
+                            printf("bench: leak: after the fill %.2f m^3 on the grass beside the trench%s\n", grass, grass > 0.05f ? " -> FAIL (a bad fill)" : "");
                             h0 = depthAt(-10.0f);
-                            std::vector<TerrainEdit> cut = { box(-0.2f, 1.2f, -0.5f, 0.5f, -2.0f, -1.0f) }; // the hole: 1 x 1 m, 0.5-1.5 m over the floor
-                            ApplyTerrainEdits(*p, cut.data(), cut.size());
-                            printf("bench: leak: pool %.2f m deep (%.1f m^3 already past the wall); a 1 x 1 m hole cut 0.5 m over the floor\n", h0, past());
-                            lkPhase = 3; lkT0 = GetTime();
+                            pastBefore = past(); // the wall (or its seams with the ground) must hold until the hole opens
+                            if (benchLeakParts) {
+                                for (int idx : lkHole) lkPlot->remove(idx); // the hole: two blocks out, 1 x 1 m through the dam, 1-2 m over the floor
+                            } else {
+                                std::vector<TerrainEdit> cut = { box(-0.2f, 2.2f, -0.5f, 0.5f, -2.0f, -1.0f) }; // the hole: 1 x 1 m through the wall, 0.5-1.5 m over the floor
+                                ApplyTerrainEdits(*p, cut.data(), cut.size());
+                            }
+                            printf("bench: leak: pool %.2f m deep (%.1f m^3 already past the wall); a 1 x 1 m hole opened %.1f m over the floor%s\n", h0, past(), benchLeakParts ? 1.0f : 0.5f,
+                                   benchLeakParts ? TextFormat(" (%zu blocks taken out)", lkHole.size()) : "");
+                            lkPhase = 3; lkT0 = SimTime();
                         } else if (lkPhase == 3) {
                             if (t > 1.0 && vol1 < 0.0f) vol1 = past();
                             if (t > 3.0 && vol3 < 0.0f) vol3 = past();
@@ -5036,19 +5082,22 @@ int main(int argc, char** argv)
                                        t, depthAt(-10.0f), past(), fs.activeBricks, fs.bricks, fs.steadyBricks, fs.settled);
                             }
                             if (t > 120.0) {
-                                const float g = 9.81f, head = std::max(0.0f, h0 - 1.0f); // over the hole's centre
+                                const float lip = benchLeakParts ? 1.0f : 0.5f; // the hole's bottom over the floor (blocks: block-aligned)
+                                const float g = 9.81f, head = std::max(0.0f, h0 - (lip + 0.5f)); // over the hole's centre
                                 const float qIdeal = sqrtf(2.0f * g * head) * 1.0f, q = (vol3 - vol1) / 2.0f, final = depthAt(-10.0f);
-                                // The expected depth after 120 s: the pool (80 m^2) through the hole as an orifice while it is under
+                                // The expected depth after 120 s: the pool (its area as dug: the water poured over its depth) through the hole as an orifice while it is under
                                 // water (0.6 sqrt(2 g h) x 1 m^2, h over its centre), then a weir over its lip (1.7 x 1 m x h^1.5) - it
                                 // slows as it drains: ~0.23 m over the lip is left after 120 s, not none.
+                                const float poolArea = h0 > 0.1f ? lkPoured / h0 : 80.0f; // ~80 m^2; the lattice rounds the dug box (#691)
                                 float d = h0;
                                 for (int k = 0; k < 12000; ++k) {
-                                    const float qd = d >= 1.5f ? 0.6f * sqrtf(2.0f * g * (d - 1.0f)) : d > 0.5f ? 1.7f * powf(d - 0.5f, 1.5f) : 0.0f;
-                                    d -= qd * 0.01f / 80.0f;
+                                    const float qd = d >= lip + 1.0f ? 0.6f * sqrtf(2.0f * g * (d - (lip + 0.5f))) : d > lip ? 1.7f * powf(d - lip, 1.5f) : 0.0f;
+                                    d -= qd * 0.01f / poolArea;
                                 }
-                                const bool ok = h0 > 1.5f && q > 0.4f * qIdeal && q < 1.6f * qIdeal && fabsf(final - d) < 0.12f;
-                                printf("bench: leak: outflow %.2f m^3/s early (orifice ideal %.2f: %.2f of it; a real one ~0.6); after 120 s the pool is %.2f m deep (an orifice then a weir over the lip: %.2f) -> %s\n",
-                                       q, qIdeal, q / std::max(qIdeal, 0.01f), final, d, ok ? "PASS" : "FAIL");
+                                const float grass = onGrass();
+                                const bool ok = h0 > 1.5f && q > 0.4f * qIdeal && q < 1.6f * qIdeal && fabsf(final - d) < 0.12f && grass < 0.05f && pastBefore < 0.2f;
+                                printf("bench: leak: outflow %.2f m^3/s early (orifice ideal %.2f: %.2f of it; a real one ~0.6); after 120 s the pool is %.2f m deep (an orifice then a weir over the lip: %.2f); %.2f m^3 on the grass -> %s\n",
+                                       q, qIdeal, q / std::max(qIdeal, 0.01f), final, d, grass, ok ? "PASS" : "FAIL");
                                 benchLeak = false;
                             }
                         }
@@ -5065,15 +5114,15 @@ int main(int argc, char** argv)
                     static Vector3 home{}, ax{}, ay{};
                     static float r0 = 0.0f, h0 = 0.0f, depthDam = -1.0f, qDam = 0.0f;
                     static double front[3] = { -1.0, -1.0, -1.0 };
-                    const double t = GetTime() - dbT0;
+                    const double t = SimTime() - dbT0;
                     auto pt = [&](float x, float y, float h) { // x along the channel, y across, h over the ground (m)
                         const Vector3 d = Vector3Normalize(Vector3Add(Vector3Scale(home, r0), Vector3Add(Vector3Scale(ax, x), Vector3Scale(ay, y))));
                         return Vector3Scale(d, r0 + h);
                     };
                     auto box = [&](float x0, float x1) { // the channel's cut from x0 to x1, 4 m wide, 2.5 m deep
                         TerrainEdit e{};
-                        e.center = pt(0.5f * (x0 + x1), 0.0f, -1.25f);
-                        e.carve = true; e.box = true; e.half = { 0.5f * (x1 - x0), 2.0f, 1.25f };
+                        e.center = pt(0.5f * (x0 + x1), 0.0f, 0.25f); // up through the air to 3 m (#693: slivers where the ground stood higher)
+                        e.carve = true; e.box = true; e.half = { 0.5f * (x1 - x0), 2.0f, 2.75f };
                         e.ax = ax; e.ay = ay; e.az = Vector3Normalize(e.center);
                         e.radius = Vector3Length(e.half);
                         return e;
@@ -5084,41 +5133,46 @@ int main(int argc, char** argv)
                             home = pf->findSpawnDir(p->seed);
                             ax = Vector3Normalize(Vector3CrossProduct(home, { 0, 1, 0 })); ay = Vector3CrossProduct(ax, home);
                             r0 = pf->radius + pf->elevation(home);
-                            std::vector<TerrainEdit> cut = { box(-20.0f, 0.0f), box(1.0f, 50.0f) }; // a 1 m wall: thinner leaked at 1 m cells
+                            std::vector<TerrainEdit> cut = { box(-20.0f, 0.0f), box(2.0f, 50.0f) }; // a 2 m wall (#691: 1 m - one cell at 1 m cells - leaked)
                             ApplyTerrainEdits(*p, cut.data(), cut.size());
                             printf("bench: dam-break: a 20 m reservoir behind a 1 m wall, a 50 m channel, 4 m wide, 2.5 m deep (cells %.2f m)\n", WaterField::CellSize());
-                            dbPhase = 1; dbT0 = GetTime();
+                            dbPhase = 1; dbT0 = SimTime();
                         }
                         // The camera over the wall, looking down at the reservoir and the channel's start (the subject, CLAUDE.md).
                         world.camera.position = p->toWorld(pt(-4.0f, -9.0f, 9.0f)); world.camera.target = p->toWorld(pt(-4.0f, 0.0f, -2.0f));
                         world.camera.up = p->dirToWorld(home);
                         player.flyMode = true; player.position = world.renderOrigin + world.camera.position;
                         if (dbPhase == 1 && t > 1.0 && WorldIdle()) {
-                            // Fill the reservoir to 2 m: 160 m^3 poured over it, 1 m^3 a frame.
+                            // Fill the reservoir to 2 m: 160 m^3 at 5 m^3/s, 1 m^3 at a time moving over the floor (#691: a pour every
+                            // frame - 60 m^3/s - piled mounds over the rim faster than water spreads, and they spilled onto the grass).
                             static int k = 0;
-                            const float x = -19.0f + 2.0f * (float)(k % 10), y = (k / 10) % 2 ? 1.0f : -1.0f;
-                            ++k;
-                            dbPoured += Fluid::Pour(*p, pt(x, y, -2.3f), 1.0f); // 1 m^3: a 4 m^3 pour stood over the rim at 0.25 m cells and spilled onto the grass
-                            if (dbPoured >= 160.0f) { dbPhase = 2; dbT0 = GetTime(); }
+                            static double nextPour = 0.0;
+                            if (t >= nextPour) {
+                                nextPour = t + 0.2;
+                                const float x = -19.0f + 2.0f * (float)(k % 10), y = (k / 10) % 2 ? 1.0f : -1.0f;
+                                ++k;
+                                dbPoured += Fluid::Pour(*p, pt(x, y, -2.3f), 1.0f);
+                            }
+                            if (dbPoured >= 160.0f || [&] { const float s = Fluid::SurfaceAbove(*p, pt(-10.0f, 0.0f, -2.5f + 0.55f), 4.0f); return s > 0.0f && s + 0.55f >= 2.0f; }()) { dbPhase = 2; dbT0 = SimTime(); }
                         } else if (dbPhase == 2 && ((t > 8.0 && Fluid::Asleep()) || t > 40.0)) {
                             // The floor as the ground has it (the box's -2.5 m is rounded by the lattice), the surface over it.
                             for (float h = -1.0f; h > -3.0f; h -= 0.02f) if (p->densityAt(pt(-10.0f, 0.0f, h)) >= ISO_LEVEL) { dbFloor = h; break; }
                             const float s = Fluid::SurfaceAbove(*p, pt(-10.0f, 0.0f, dbFloor + 0.55f), 4.0f); // over a cell that is water at either size
                             h0 = s > 0.0f ? s + 0.55f : 0.0f;
                             const float beyond = Fluid::WaterAt(*p, pt(10.0f, 0.0f, dbFloor + 0.5f), 4.0f);
-                            std::vector<TerrainEdit> cut = { box(-0.2f, 1.2f) }; // the wall goes
+                            std::vector<TerrainEdit> cut = { box(-0.2f, 2.2f) }; // the wall goes
                             ApplyTerrainEdits(*p, cut.data(), cut.size());
                             printf("bench: dam-break: reservoir %.2f m deep over its floor at %.2f m (%.0f m^3 poured, %.0f in the simulation, %.1f m^3 already past the wall); wall removed\n",
                                    h0, dbFloor, dbPoured, Fluid::GetStats().volume, beyond);
                             printf("bench: dam-break: depth along the reservoir (x = -18 -14 -10 -6 -2 m):");
                             for (float x : { -18.0f, -14.0f, -10.0f, -6.0f, -2.0f }) { const float d = Fluid::SurfaceAbove(*p, pt(x, 0.0f, dbFloor + 0.55f), 4.0f); printf(" %.2f", d > 0.0f ? d + 0.55f : 0.0f); }
                             printf("\n");
-                            dbPhase = 3; dbT0 = GetTime();
+                            dbPhase = 3; dbT0 = SimTime();
                         } else if (dbPhase == 3) {
                             const float dist[3] = { 5.0f, 10.0f, 20.0f };
                             for (int i = 0; i < 3; ++i)
-                                if (front[i] < 0.0 && Fluid::WaterAt(*p, pt(1.0f + dist[i], 0.0f, dbFloor + 0.5f), 0.5f) > 0.02f) front[i] = t; // over the floor cell at either size
-                            if (t > 1.4 && depthDam < 0.0f) { const float sd = Fluid::SurfaceAbove(*p, pt(0.5f, 0.0f, dbFloor + 0.55f), 4.0f); depthDam = sd > 0.0f ? sd + 0.55f : 0.0f; }
+                                if (front[i] < 0.0 && Fluid::WaterAt(*p, pt(2.0f + dist[i], 0.0f, dbFloor + 0.5f), 0.5f) > 0.02f) front[i] = t; // over the floor cell at either size
+                            if (t > 1.4 && depthDam < 0.0f) { const float sd = Fluid::SurfaceAbove(*p, pt(1.0f, 0.0f, dbFloor + 0.55f), 4.0f); depthDam = sd > 0.0f ? sd + 0.55f : 0.0f; }
                             // The discharge just below the dam (body-local, along the channel): asked every frame (the meter smooths
                             // over ~0.5 s), its peak between 1 and 2 s.
                             const float qNow = Vector3DotProduct(Fluid::FlowAt(*p, pt(2.5f, 0.0f, -1.8f), 2.0f), ax);
