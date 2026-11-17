@@ -429,6 +429,7 @@ int main(int argc, char** argv)
     bool benchCaveWater = false; int caveWaterPhase = 0; double caveWaterT0 = 0.0; Vector3 caveAt{}, caveOpenAt{}, caveRiverDir{}; float caveLevel = 0.0f, caveDist = 0.0f; // --test-cave-water (#559)
     bool benchPump = false; int pumpPhase = 0, pumpCable = -1; double pumpT0 = 0.0, pumpedAtCut = 0.0; uint32_t pumpPlot = 0; Vector3 pumpBasin{}; float pumpRise = 0.0f; // --test-pump
     bool benchBucket = false; int bucketPhase = 0, bucketTrips = 0; double bucketT0 = 0.0; Vector3 bucketWater{}, bucketBasin{}, bucketField{}; // --test-bucket
+    float benchFluidLoad = 0.0f; int flPhase = 0; double flT0 = 0.0; Vector3 flMid{}, flE{}, flN{}; // --test-fluid-load S (#638/#642 perf)
     bool benchWaterSpeed = false; int wsPhase = 0; double wsT0 = 0.0, wsFront[3] = { -1, -1, -1 }, wsSleep = -1.0; Vector3 wsSite{}, wsEye{}; float wsMaxFront = 0.0f, wsVol0 = 0.0f; // --test-water-speed (#638)
     bool benchPond = false; int pondPhase = 0; double pondT0 = 0.0; Vector3 pondDirB{}, pondOutB{}, pondPit{}, pondMid{}; float pondLevelB = 0.0f, pondRB = 0.0f; // --test-pond
     bool benchFlowSea = false; // --test-flow-sea (#190): the flow test from the sea instead of inland water
@@ -693,6 +694,8 @@ int main(int argc, char** argv)
         if (std::string(argv[i]) == "--test-pond") benchPond = true;
         if (std::string(argv[i]) == "--test-bucket") benchBucket = true;
         if (std::string(argv[i]) == "--test-water-speed") benchWaterSpeed = true;
+        if (std::string(argv[i]) == "--sandbox") gSandboxWorld = true; // #662: a flat test plane
+        if (std::string(argv[i]) == "--test-fluid-load" && i + 1 < argc) benchFluidLoad = (float)atof(argv[i + 1]); // basin side (m)
         if (std::string(argv[i]) == "--test-pump") benchPump = true;
         if (std::string(argv[i]) == "--test-pump-hand") { benchPump = true; benchPumpHand = true; }
         if (std::string(argv[i]) == "--test-pump-boiler") { benchPump = true; benchPumpBoiler = true; }
@@ -860,7 +863,7 @@ int main(int argc, char** argv)
     }
     const bool bench = benchSeconds > 0.0;
     benchMode = bench;
-    if (bench) SetWorldSavePath("saves/bench.sav"); // tests save and load; keep the player's F5 save out of it
+    if (bench) SetWorldSavePath(gSandboxWorld ? "saves/sandbox.sav" : "saves/bench.sav"); // tests save and load; keep the player's F5 save out of it (#662: the sandbox its own)
     if (bench && !benchThreats && !benchAnimalPath) Animals_SetThreats(false); // hostile animals and night spawns would upset other tests
 
     bool msaa = true;
@@ -4963,6 +4966,65 @@ int main(int argc, char** argv)
                             benchPump = false;
                         }
                     }
+                } else if (benchFluidLoad > 0.0f && (flPhase > 0 || WorldIdle())) {
+                    // --test-fluid-load S (Plan 10, #642 perf; best with --sandbox): an S x S m basin 3 m deep cut into the ground
+                    // by the start and filled from a source in every 16 m tile (8 m^3/s each, head 2.5 m), so every brick of it is
+                    // awake while it fills. Between 10 and 30 s: the awake bricks, the simulation job's time, the frame times.
+                    // The fluid's GPU and main-thread share prints with the bench's per-pass timings ("fluid").
+                    Planetoid* p = dynamic_cast<Planetoid*>(world.objects[0].get());
+                    const PlanetField* pf = p ? dynamic_cast<const PlanetField*>(p->field.get()) : nullptr;
+                    const double t = GetTime() - flT0;
+                    static std::vector<float> frameMs;
+                    static double jobMs = 0.0, meshMs = 0.0, jobMax = 0.0; static long long samples = 0; static int bricksMax = 0, activeMax = 0;
+                    auto tile = [&](float x, float y, float depthBelow) { return Vector3Add(flMid, Vector3Add(Vector3Add(Vector3Scale(flE, x), Vector3Scale(flN, y)), Vector3Scale(Vector3Normalize(flMid), -depthBelow))); };
+                    if (!pf) { printf("bench: fluid-load: needs the planet -> FAIL\n"); benchFluidLoad = 0.0f; }
+                    else if (flPhase == 0) {
+                        const Vector3 home = pf->findSpawnDir(p->seed);
+                        flE = Vector3Normalize(Vector3CrossProduct(home, { 0, 1, 0 })); flN = Vector3CrossProduct(flE, home);
+                        flMid = Vector3Scale(home, pf->radius + pf->elevation(home));
+                        const int tiles = std::max(1, (int)lroundf(benchFluidLoad / 16.0f));
+                        std::vector<TerrainEdit> cut;
+                        for (int i = 0; i < tiles; ++i)
+                            for (int j = 0; j < tiles; ++j) {
+                                TerrainEdit e{};
+                                e.center = tile(16.0f * (i - 0.5f * (tiles - 1)), 16.0f * (j - 0.5f * (tiles - 1)), 1.5f);
+                                e.carve = true; e.box = true; e.half = { 8.0f, 8.0f, 1.5f };
+                                e.ax = flE; e.ay = flN; e.az = Vector3Normalize(flMid);
+                                e.radius = Vector3Length(e.half);
+                                cut.push_back(e);
+                            }
+                        ApplyTerrainEdits(*p, cut.data(), cut.size());
+                        const Vector3 eye = Vector3Add(tile(0.0f, -0.3f * tiles * 16.0f, 0.0f), Vector3Scale(Vector3Normalize(flMid), 12.0f + 0.9f * tiles * 16.0f));
+                        world.camera.position = p->toWorld(eye); world.camera.target = p->toWorld(flMid); world.camera.up = p->dirToWorld(Vector3Normalize(flMid));
+                        player.flyMode = true; player.position = world.renderOrigin + world.camera.position;
+                        printf("bench: fluid-load: a %d x %d m basin 3 m deep (%d tiles of 16 m)\n", tiles * 16, tiles * 16, tiles * tiles);
+                        flPhase = 1; flT0 = GetTime();
+                    } else {
+                        world.camera.position = p->toWorld(Vector3Add(tile(0.0f, -0.3f * benchFluidLoad, 0.0f), Vector3Scale(Vector3Normalize(flMid), 12.0f + 0.9f * benchFluidLoad)));
+                        world.camera.target = p->toWorld(flMid); world.camera.up = p->dirToWorld(Vector3Normalize(flMid));
+                        player.position = world.renderOrigin + world.camera.position;
+                        if (flPhase == 1 && t > 1.0 && WorldIdle()) {
+                            const int tiles = std::max(1, (int)lroundf(benchFluidLoad / 16.0f));
+                            for (int i = 0; i < tiles; ++i)
+                                for (int j = 0; j < tiles; ++j)
+                                    Fluid::AddSource(*p, tile(16.0f * (i - 0.5f * (tiles - 1)), 16.0f * (j - 0.5f * (tiles - 1)), 2.7f), 0, 8.0f, 2.5f);
+                            flPhase = 2; flT0 = GetTime();
+                        } else if (flPhase == 2) {
+                            if (t > 10.0 && t <= 30.0) {
+                                const Fluid::Stats s = Fluid::GetStats();
+                                frameMs.push_back(GetFrameTime() * 1000.0f);
+                                jobMs += s.stepMs; meshMs += s.meshMs; jobMax = std::max(jobMax, s.maxStepMs); ++samples;
+                                bricksMax = std::max(bricksMax, s.bricks); activeMax = std::max(activeMax, s.activeBricks);
+                            } else if (t > 30.0) {
+                                std::sort(frameMs.begin(), frameMs.end());
+                                auto pct = [&](float q) { return frameMs.empty() ? 0.0f : frameMs[std::min(frameMs.size() - 1, (size_t)(q * frameMs.size()))]; };
+                                const Fluid::Stats s = Fluid::GetStats();
+                                printf("bench: fluid-load: %d bricks (%d awake at most), %.0f m^3; step job %.2f ms mean (max %.2f), publish %.2f ms mean; frame ms p50 %.2f p95 %.2f p99 %.2f over %zu frames -> PASS\n",
+                                       bricksMax, activeMax, s.volume, samples ? jobMs / samples : 0.0, jobMax, samples ? meshMs / samples : 0.0, pct(0.5f), pct(0.95f), pct(0.99f), frameMs.size());
+                                benchFluidLoad = 0.0f;
+                            }
+                        }
+                    }
                 } else if (benchWaterSpeed && (wsPhase > 0 || WorldIdle())) {
                     // --test-water-speed (Plan 10 W0, #638): a dam break. A 3 x 3 m column of water 6 m tall poured on flat dry
                     // ground near the start; how fast its front spreads (5, 10, 15 m from the middle), how far it gets, how long
@@ -7266,7 +7328,7 @@ int main(int argc, char** argv)
                         }
                         benchWalkSeconds = 0.0;
                     }
-                } else if ((WorldIdle() && benchDigStrokes == 0 && !benchPaint && !benchSaveLoad && benchWalkSeconds <= 0.0 && benchMineStrokes == 0 && minePhase != 2 && benchFlySeconds <= 0.0 && !benchSuffocate && benchOrbitSeconds <= 0.0 && !benchRide && !benchPark && !benchGravity && !benchPrecision && !benchMantle && !benchAirJump && !benchMoon && !benchHole && !benchWall && !benchDoorway && !benchLedge && !benchTor && !benchMachines && !benchFall && !benchHover && !benchNetIds && !benchNet && !benchTwoPlayers && !benchFingerprint && !benchInterest && !benchTeleClose && !benchMenus && !benchWater && !benchFlyFollow && !benchHotbar && !benchInventory && !benchMap && !benchViewmodel && !benchQuests && !benchHunger && !benchFarm && !benchAnimals && !benchThreats && !benchAnimalPath && !benchDam && !benchFlowMeter && !benchPartWall && !benchPressure && benchShotTabs == 0 && !benchForest && !benchFlow && !benchPond && !benchBucket && !benchWaterSpeed &&!benchPump && !benchTerrain && !benchShelter && !benchRoom && !benchFacing && !benchShadow && !benchParticles && !benchBiomes && !benchOil && !benchSpring && !benchShotAnimals && !benchShotMachines && benchShotBiomes < 0 && !benchFarForest && !benchRecipes && !benchWeather && !benchDecor && !benchMaterials && !benchDamage && !benchCrafting && !benchSuit && !benchTools && !benchRivers && !benchRing && !benchRocket && !benchStation && !benchBlueprint && !benchSmallBody && !benchTrees && !benchChop && benchPersist == 0 && benchBuild == 0 && benchFactory == 0 && !benchCombat && !benchHost && !benchShower && !benchProgression && (benchUnfocus <= 0.0f || unfocusPhase >= 6)) || GetTime() > 600.0) {
+                } else if ((WorldIdle() && benchDigStrokes == 0 && !benchPaint && !benchSaveLoad && benchWalkSeconds <= 0.0 && benchMineStrokes == 0 && minePhase != 2 && benchFlySeconds <= 0.0 && !benchSuffocate && benchOrbitSeconds <= 0.0 && !benchRide && !benchPark && !benchGravity && !benchPrecision && !benchMantle && !benchAirJump && !benchMoon && !benchHole && !benchWall && !benchDoorway && !benchLedge && !benchTor && !benchMachines && !benchFall && !benchHover && !benchNetIds && !benchNet && !benchTwoPlayers && !benchFingerprint && !benchInterest && !benchTeleClose && !benchMenus && !benchWater && !benchFlyFollow && !benchHotbar && !benchInventory && !benchMap && !benchViewmodel && !benchQuests && !benchHunger && !benchFarm && !benchAnimals && !benchThreats && !benchAnimalPath && !benchDam && !benchFlowMeter && !benchPartWall && !benchPressure && benchShotTabs == 0 && !benchForest && !benchFlow && !benchPond && !benchBucket && !benchWaterSpeed && benchFluidLoad <= 0.0f &&!benchPump && !benchTerrain && !benchShelter && !benchRoom && !benchFacing && !benchShadow && !benchParticles && !benchBiomes && !benchOil && !benchSpring && !benchShotAnimals && !benchShotMachines && benchShotBiomes < 0 && !benchFarForest && !benchRecipes && !benchWeather && !benchDecor && !benchMaterials && !benchDamage && !benchCrafting && !benchSuit && !benchTools && !benchRivers && !benchRing && !benchRocket && !benchStation && !benchBlueprint && !benchSmallBody && !benchTrees && !benchChop && benchPersist == 0 && benchBuild == 0 && benchFactory == 0 && !benchCombat && !benchHost && !benchShower && !benchProgression && (benchUnfocus <= 0.0f || unfocusPhase >= 6)) || GetTime() > 600.0) {
                     benchStart = GetTime();
                     printf("bench: world ready after %.2f s (%d chunks, avg build %.2f ms of which sampling %.2f ms, %d worker threads)\n",
                         GetWorldStats().lastGenerationSeconds, GetWorldStats().chunks, GetWorldStats().avgBuildMs, GetWorldStats().avgSampleMs, GetWorldStats().workerThreads);
@@ -7526,7 +7588,9 @@ int main(int argc, char** argv)
             if (!loading) Weather_Update(world, simDt * timeScale * gDebugTimeScale); // the sky, rain and snow, lightning
             Factory::Sync(world);                                // machine layouts in, items out
             Factory::Advance(simDt);                             // the factory thread runs its ticks on the sim clock (#315)
+            GpuTimer_Mark("w-sim-pre");                          // (benches: the fluid's own share below)
             Fluid::Update(world, simDt);                         // flowing water: commands in, a step job, meshes up
+            GpuTimer_Mark("fluid");                              // its GPU step dispatches and readback (#642 perf)
             Waterworks_Update(world, simDt);                     // pumps send water down pipes to outlets
             Objectives_Update(world);
         }

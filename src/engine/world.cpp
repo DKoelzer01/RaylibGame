@@ -1760,7 +1760,9 @@ void generateWorld(Scene& world) {
             // Planet terrain: radius is sea level, where gravity's reference surface sits too; the
             // LOD root must also cover the highest mountains.
             auto field = std::make_shared<PlanetField>(seed, radius, kind == BodyKind::Moon);
+            const bool sandbox = gSandboxWorld && kind == BodyKind::Planet; // #662: a flat test plane (no bake, no trees)
             if (kind == BodyKind::Planet) field->setGenParams(WorldGenParams_ForSave(WorldSavePath())); // #504: the New World screen's choice (defaults without one)
+            if (sandbox) field->setSandbox();
             if (gErosionPrototype && kind == BodyKind::Planet && field->gen.erosion) {
                 // Plan 7 (#355): the save's bake, or a new one (~60 s). On a thread (#362, the #355 review): the main
                 // thread keeps drawing the loading screen through gWorldGenWait instead of freezing the window. The field
@@ -1779,7 +1781,7 @@ void generateWorld(Scene& world) {
             p->rootLevel = 0;
             while (kVoxelSize * (float)(CHUNK_SIZE << p->rootLevel) < field->maxRadius() + 24.0f) p->rootLevel++;
             p->field = field;
-            if (kind == BodyKind::Planet) {
+            if (kind == BodyKind::Planet && !sandbox) {
                 field->foliage = true;
                 field->foliageSeed = seed ^ 0x7aee5u;
                 p->trees = std::make_unique<TreeSystem>(field, field->foliageSeed);
@@ -1903,6 +1905,7 @@ static std::string SAVE_PATH_STR = "saves/world.sav";
 #define SAVE_PATH SAVE_PATH_STR.c_str()
 void SetWorldSavePath(const char* path) { SAVE_PATH_STR = path; }
 const char* WorldSavePath() { return SAVE_PATH_STR.c_str(); }
+bool gSandboxWorld = false;
 
 // ---------------------------------------------------------------------------------------------
 // Region files: a body's edited delta chunks, 16^3 chunks per file, each chunk compressed.

@@ -266,6 +266,13 @@ void PlanetField::setGenParams(const WorldGenParams& p) {
     maxElevation = 200.0f + 1400.0f * std::max(p.mountains, 0.0f) + 90.0f * std::max(p.roughness, 1.0f) + 50.0f + 15.0f;
 }
 
+void PlanetField::setSandbox() {
+    if (moon) return;
+    sandbox = true;
+    gen.erosion = false;               // no bake
+    minElevation = kSandboxHeight - 2.0f; maxElevation = kSandboxHeight + 2.0f;
+}
+
 // River valleys: 70 m deep, with a flat floodplain floor (valley-noise units < kValleyFloor, room for
 // the widest river) and sides rising over the next 0.04 units. (A V-shaped floor rose ~27 m across a
 // river's width and tilted its water.)
@@ -609,6 +616,7 @@ PlanetField::Pond PlanetField::pondOfCell(int cx, int cy, int cz) const {
 }
 
 float PlanetField::riverBankHeight(Vector3 dir) const {
+    if (sandbox) return kSandboxHeight;
     constexpr float fp = 2.0f; // the banks at the detail a player sees
     const Land l = land(dir, fp);
     if (moon) return l.h;
@@ -617,6 +625,7 @@ float PlanetField::riverBankHeight(Vector3 dir) const {
 }
 
 float PlanetField::elevationBase(Vector3 dir, float fp) const {
+    if (sandbox) return kSandboxHeight;
     const Land l = land(dir, fp);
     if (moon) return l.h;
     const float h = l.h + l.detail;
@@ -633,6 +642,7 @@ void PlanetField::gpuNoiseParams(std::vector<float>& out) const {
 }
 
 float PlanetField::elevation(Vector3 dir, float fp) const {
+    if (sandbox) return kSandboxHeight; // #662: a flat plane
     const Land l = land(dir, fp);
     if (moon) return l.h;
     float h = l.h + l.detail;
@@ -746,7 +756,7 @@ float PlanetField::biomeShape(Vector3 dir, float h, float fp) const {
 }
 
 float PlanetField::waterElevation(Vector3 dir, float fp) const {
-    if (moon) return kNoWater;
+    if (moon || sandbox) return kNoWater;
     float w = kNoWater;
     if (const RiverNetwork* net = rivers()) {
         // A lake's water is its level over its whole region (the terrain decides the shore); rivers
@@ -783,7 +793,7 @@ float PlanetField::waterElevationMesh(Vector3 dir, float fp) const {
 }
 
 bool PlanetField::inlandWaterNear(Vector3 dir, float extent, float fp) const {
-    if (moon) return false;
+    if (moon || sandbox) return false;
     const float sx = dir.x * radius, sy = dir.y * radius, sz = dir.z * radius;
     // Each kind only where samples resolve it (as in elevation() and waterElevation()).
     if (const RiverNetwork* net = rivers()) {
@@ -802,7 +812,7 @@ bool PlanetField::inlandWaterNear(Vector3 dir, float extent, float fp) const {
 
 PlanetField::WaterSource PlanetField::waterSourceAt(Vector3 dir) const {
     WaterSource s;
-    if (moon) return s;
+    if (moon || sandbox) return s;
     if (const RiverNetwork* net = rivers()) {
         float lake;
         int lid = -1; float lo = 0.0f;
@@ -843,7 +853,7 @@ PlanetField::RiverState::~RiverState() = default;
 
 const RiverNetwork* PlanetField::rivers() const {
     static const bool noRivers = getenv("RAYLIBGAME_NO_RIVERS") != nullptr; // profiling (#365): no river or lake overlay
-    if (moon || !riverState || noRivers) return nullptr;
+    if (moon || sandbox || !riverState || noRivers) return nullptr;
     std::call_once(riverState->once, [this] {
         RiverNetwork::Params rp;
         if (erosion()) {
@@ -884,6 +894,7 @@ bool PlanetField::wetBed(Vector3 local) const {
 
 float PlanetField::baseDensityLod(Vector3 p, float fp) const {
     const float d = sqrtf(p.x * p.x + p.y * p.y + p.z * p.z);
+    if (sandbox) return ISO_LEVEL + DENSITY_GRADIENT * (radius + kSandboxHeight - d); // #662: a flat plane, nothing in it
     // Far above or far below the surface band only the sign matters (no surface to mesh), so skip
     // the height map: most samples of a chunk that does not touch the surface take these paths.
     const float outer = radius + maxElevation, inner = radius + minElevation;
@@ -1213,6 +1224,7 @@ bool PlanetField::blockIslands(Vector3 o, float stride, int S, std::vector<float
 }
 
 bool PlanetField::prepareBlock(Vector3 o, float stride, int S, float fp, BlockGrid& g) const {
+    if (sandbox) return false; // #662: per sample (the plane is cheap; the GPU path is off too)
     const float ext = stride * (float)(S - 1);
     const Vector3 c = { o.x + 0.5f * ext, o.y + 0.5f * ext, o.z + 0.5f * ext };
     const float dc = sqrtf(c.x * c.x + c.y * c.y + c.z * c.z), halfDiag = 0.8661f * ext;
