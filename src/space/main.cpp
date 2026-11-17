@@ -5041,14 +5041,20 @@ int main(int argc, char** argv)
                             // over ~0.5 s), its peak between 1 and 2 s.
                             const float qNow = Vector3DotProduct(Fluid::FlowAt(*p, pt(2.5f, 0.0f, -1.8f), 2.0f), ax);
                             if (t > 1.0 && t < 2.0) qDam = std::max(qDam, qNow);
+                            // The same discharge from the volume past x = 2.5 m (cubes +-2 m along the channel), between 1 and 2 s:
+                            // independent of the flow meter.
+                            static float vol1 = -1.0f, vol2 = -1.0f;
+                            auto downstream = [&]() { float v = 0.0f; for (float x = 4.5f; x < 50.0f; x += 4.0f) v += Fluid::WaterAt(*p, pt(x, 0.0f, dbFloor + 2.0f), 2.0f); return v; };
+                            if (t > 1.0 && vol1 < 0.0f) vol1 = downstream();
+                            if (t > 2.0 && vol2 < 0.0f) vol2 = downstream();
                             if (t > 3.0) {
                                 const float g = 9.81f, c = 2.0f * sqrtf(g * std::max(h0, 0.01f));
                                 const float dTheory = 4.0f / 9.0f * h0, qTheory = 8.0f / 27.0f * sqrtf(g) * powf(h0, 1.5f) * 4.0f;
                                 const float speed = front[1] > 0.0 ? 10.0f / (float)front[1] : 0.0f;
                                 printf("bench: dam-break: front at 5 m after %.2f s, 10 m after %.2f s, 20 m after %.2f s (theory %.2f / %.2f / %.2f s: %.1f m/s); mean speed to 10 m %.1f m/s = %.2f of theory\n",
                                        front[0], front[1], front[2], 5.0f / c, 10.0f / c, 20.0f / c, c, speed, speed / c);
-                                printf("bench: dam-break: depth at the dam %.2f m (theory %.2f: %.2f); discharge %.1f m^3/s (theory %.1f: %.2f)\n",
-                                       depthDam, dTheory, depthDam / std::max(dTheory, 0.01f), qDam, qTheory, qDam / std::max(qTheory, 0.01f));
+                                printf("bench: dam-break: depth at the dam %.2f m (theory %.2f: %.2f); discharge %.1f m^3/s (theory %.1f: %.2f); by volume past 2.5 m (1-2 s) %.1f m^3/s (%.2f)\n",
+                                       depthDam, dTheory, depthDam / std::max(dTheory, 0.01f), qDam, qTheory, qDam / std::max(qTheory, 0.01f), vol2 - vol1, (vol2 - vol1) / std::max(qTheory, 0.01f));
                                 const bool ok = h0 > 1.5f && front[1] > 0.0 && speed / c > 0.4f && speed / c < 1.3f;
                                 printf("bench: dam-break: -> %s\n", ok ? "PASS" : "FAIL");
                                 benchDamBreak = false;
