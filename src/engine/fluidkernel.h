@@ -27,6 +27,7 @@ struct Params {
     float cellSize = 1.0f, units = 255.0f, hu = 255.0f;
     int columnCells = 8;
     bool columns = getenv("FLUID_COLUMNS") != nullptr; // #680 prototype: lateral flow per pair of water columns
+    bool advect = getenv("FLUID_NOADVECT") == nullptr; // #680: column flows carry their momentum downstream
     void setCell(float cs, int column) { cellSize = cs; units = 255.0f / (cs * cs * cs); hu = 255.0f / cs; columnCells = column; }
 };
 

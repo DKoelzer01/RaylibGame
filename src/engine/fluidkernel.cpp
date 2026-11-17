@@ -10,6 +10,8 @@
 
 // A line-by-line port of resources/compute/fluid_step.comp (#654). Comments on the rules live there.
 namespace FluidKernel {
+std::atomic<long long> dbgWhy[12]; // #680 diagnosis: why column pairs of deep runs did not move (DBWHY)
+#define WHY(i) do { if (A.surf - A.bed > 128) ++dbgWhy[i]; } while (0)
 
 void Grid::resize(int slots) {
     a.assign((size_t)slots * 4096, 0u); b.assign((size_t)slots * 4096, 0u);
@@ -263,8 +265,8 @@ struct Pass {
         cellPos(gi, s, x, y, z);
         bool pn; int face;
         const int nb = neighbour(s, x, y, z, dx, dy, 0, pn, face);
-        if (nb < 0) { if (face >= 0 && F(c) >= (uint32_t)p.minSpread[kind]) g.flags[s] |= 1u << (1 + face); return 0.0f; }
-        if (!pn) return 0.0f;
+        if (nb < 0) { WHY(0); if (face >= 0 && F(c) >= (uint32_t)p.minSpread[kind]) g.flags[s] |= 1u << (1 + face); return 0.0f; }
+        if (!pn) { WHY(1); return 0.0f; }
         const int topRows = (A.surf + 254) / 255; // rows A's water reaches over its bottom row
         ColRun B;
         bool wet = false, spill = false;
@@ -279,7 +281,7 @@ struct Pass {
                 cur = up; ++k;
                 if (!(FL(inC[cur]) & SOLID)) break;
             }
-            if (FL(inC[cur]) & SOLID) return 0.0f;           // a wall over A's water
+            if (FL(inC[cur]) & SOLID) { WHY(2); return 0.0f; } // a wall over A's water
             if (waterOf(inC[cur], kind)) { B = runUp(cur, k); wet = true; }
             else if (F(inC[cur]) > 0u) return 0.0f;          // another fluid
             else {                                           // a dry floor higher than A's bed
@@ -304,11 +306,11 @@ struct Pass {
         } else {
             spill = true; takerSpill = nb;                   // air beside A's bottom: over the edge (it falls from there)
         }
-        if (wet && !owner) return 0.0f;
+        if (wet && !owner) { WHY(3); return 0.0f; }
         // A pair that just turned wet was the other run's while this side was dry (a spill toward -x / -y, kept in its z / w):
         // its momentum carries over (that side stores nothing now), or every front moving toward -x restarted from rest.
         if (wet && owner) qPrev -= dx == 1 ? g.faceP[B.bottom].z : g.faceP[B.bottom].w;
-        if (!spill && !B.ok) return 0.0f;
+        if (!spill && !B.ok) { WHY(4); return 0.0f; }
         // Surfaces and the flow (+: from A toward the neighbour).
         const int bedMax = spill ? A.bed : std::max(A.bed, B.bed);
         const int surfB = spill ? A.bed : B.surf;
@@ -320,10 +322,34 @@ struct Pass {
         if (h >= p.minSpread[kind] && dH >= 2) q += p.dt * G * hm * dHm * (aUp ? 1.0f : -1.0f);
         if (!wet && q < 0.0f) q = 0.0f;                      // a dry or lower neighbour never gives back
         if (h < p.minSpread[kind]) q = 0.0f;                 // films rest
+        // Momentum is carried with the water (upwind advection, -u dQ/dx): a pair's flow eases toward the flow of the pair
+        // upstream of it at u / cs a second. Without it water arriving in a column brought no momentum into the next pair,
+        // which had to be pushed from rest by a rising surface: the front piled into a mound and crawled (#680).
+        if (p.advect && h >= p.minSpread[kind]) { // also from rest: a front is pushed by the water behind it
+            const int k = dx != 0 ? 0 : 1, dir = dx + dy;  // axis; +1 toward +x / +y
+            float qUp = 0.0f; bool have = false;
+            const float way = q != 0.0f ? q : (aUp ? 1.0f : -1.0f); // the flow's direction (+: A gives)
+            if (way > 0.0f) {                                // A gives: the pair behind A (on its far side)
+                if (dir > 0) {
+                    bool pl; int fl2;
+                    int lb = neighbour(s, x, y, z, -dx, -dy, 0, pl, fl2);
+                    if (lb >= 0 && waterOf(inC[lb], kind)) {
+                        for (int i = 0; i < 64; ++i) { bool pd; const int dn = stepZ(lb, -1, pd); if (dn < 0 || !waterOf(inC[dn], kind) || F(inC[dn]) < CAP(inC[dn])) break; lb = dn; }
+                        qUp = k == 0 ? g.faceP[lb].x : g.faceP[lb].y; have = true;
+                    } else { qUp = -(k == 0 ? g.faceP[gi].z : g.faceP[gi].w); have = qUp != 0.0f; }
+                } else { qUp = -(k == 0 ? g.faceP[gi].x : g.faceP[gi].y); have = true; } // toward -x: A's own +x pair, reversed
+            } else if (wet && dir > 0) {                      // the neighbour gives: the pair beyond it
+                qUp = k == 0 ? g.faceP[B.bottom].x : g.faceP[B.bottom].y; have = true;
+            }
+            if (have && qUp * way > 0.0f) {
+                const float u = 0.5f * (std::fabs(q) + std::fabs(qUp)) / (p.cellSize * std::max(hm, 0.02f));
+                q += std::min(1.0f, p.dt * u / p.cellSize) * (qUp - q);
+            }
+        }
         const float speed = std::fabs(q) / (p.cellSize * std::max(hm, 0.02f));
         q /= 1.0f + p.dt * (p.frictionLin[kind] + p.frictionQuad[kind] * speed / std::max(hm, 0.02f));
         const float plan = std::fabs(q) * p.dt * p.units;
-        if (plan < 1.0f) return q;
+        if (plan < 1.0f) { WHY(5); return q; }
         const bool aGives = q > 0.0f;
         const int giverTop = aGives ? A.top : B.top;
         const int avail = aGives ? runAvail(A) : runAvail(B);
@@ -332,9 +358,10 @@ struct Pass {
             if (spill) { taker = takerSpill; room = (int)(CAP(inC[taker]) - F(inC[taker])); }
             else { taker = B.head; room = runRoom(B); }
         } else { taker = A.head; room = runRoom(A); }
-        if (taker < 0) return 0.0f;
+        if (taker < 0) { WHY(6); return 0.0f; }
         const int units = (int)std::floor(std::min({ plan, (float)avail / 4.0f, (float)room / 4.0f }));
-        if (units <= 0) return q * 0.5f;
+        if (units <= 0) { WHY(7); return q * 0.5f; }
+        WHY(spill ? 8 : wet ? 9 : 10);
         if ((float)units < std::floor(plan)) q = (aGives ? 1.0f : -1.0f) * (float)units / (p.dt * p.units);
         __atomic_fetch_sub(&g.delta[giverTop], units, __ATOMIC_RELAXED);
         __atomic_fetch_add(&g.delta[taker], units, __ATOMIC_RELAXED);
@@ -510,6 +537,14 @@ void Substep(Grid& g, const Params& p, const std::vector<int>& list) {
     RunPass(g, p, list, 0);
     RunPass(g, p, list, 1);
     RunPass(g, p, list, 2);
+    static const bool why = getenv("DBWHY") != nullptr;
+    static int nWhy = 0;
+    if (why && ++nWhy % (int)(60.0f / p.cellSize) == 0) {
+        printf("dbwhy:");
+        static const char* names[11] = { "noBrick", "unproc", "wall", "notOwner", "Bnotok", "plan<1", "noTaker", "units0", "SPILL", "WET", "DRY" };
+        for (int i = 0; i < 11; ++i) { printf(" %s %lld", names[i], dbgWhy[i].load()); dbgWhy[i] = 0; }
+        printf("\n");
+    }
 }
 
 } // namespace FluidKernel
