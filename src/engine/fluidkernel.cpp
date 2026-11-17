@@ -19,8 +19,7 @@ void Grid::resize(int slots) {
 namespace {
 
 constexpr uint32_t SOLID = 1u, SOURCE = 2u, DUG = 8u, SINK = 16u;
-constexpr float G = 9.81f, UNITS = 255.0f;
-constexpr int kColumnCells = 8;
+constexpr float G = 9.81f;
 inline uint32_t F(uint32_t c) { return c & 255u; }
 inline uint32_t FL(uint32_t c) { return (c >> 8) & 255u; }
 inline uint32_t TG(uint32_t c) { return (c >> 16) & 255u; }
@@ -95,7 +94,7 @@ struct Pass {
         const uint32_t kind = KIND(c);
         int s, x, y, z;
         cellPos(gi, s, x, y, z);
-        for (int k = 0; k < kColumnCells; ++k) {
+        for (int k = 0; k < p.columnCells; ++k) {
             bool pr; int face;
             const int ga = neighbour(s, x, y, z, 0, 0, 1, pr, face);
             if (ga < 0) break;
@@ -115,17 +114,17 @@ struct Pass {
         return ga >= 0 && sameWater(readCell(ga, pr), KIND(c));
     }
     float columnDepth(int gi, uint32_t c) const {
-        float d = (float)F(c) / UNITS;
+        float d = (float)F(c) / p.hu;
         const uint32_t kind = KIND(c);
         int s, x, y, z;
         cellPos(gi, s, x, y, z);
-        for (int k = 0; k < kColumnCells; ++k) {
+        for (int k = 0; k < p.columnCells; ++k) {
             bool pr; int face;
             const int gb = neighbour(s, x, y, z, 0, 0, -1, pr, face);
             if (gb < 0) break;
             const uint32_t b = readCell(gb, pr);
             if (!sameWater(b, kind) || F(b) < CAP(b)) break;
-            d += (float)F(b) / UNITS;
+            d += (float)F(b) / p.hu;
             cellPos(gb, s, x, y, z);
         }
         return d;
@@ -142,8 +141,8 @@ struct Pass {
         if ((FL(d) & SOURCE) && !(FL(r) & DUG)) return;
         const uint32_t kd = KIND(d);
         const bool under = submerged(gd, d);
-        const float colDepth = under ? (float)F(d) / UNITS : columnDepth(gd, d);
-        if (colDepth * UNITS < (float)p.minSpread[kd]) return;
+        const float colDepth = under ? (float)F(d) / p.hu : columnDepth(gd, d);
+        if (colDepth * p.hu < (float)p.minSpread[kd]) return;
         int ds, dx, dy, dz, rs, rx, ry, rz;
         cellPos(gd, ds, dx, dy, dz); cellPos(gr, rs, rx, ry, rz);
         if (F(r) > 0u) { if (KIND(r) != kd) return; }
@@ -156,26 +155,26 @@ struct Pass {
         if (F(r) == 0u && !rests(rs, rx, ry, rz, r)) share = (float)F(d);
         else if (localDiff >= p.visc[kd]) share = (float)(localDiff / p.visc[kd]);
         const float depth = colDepth;
-        const float dh = (float)std::abs(ha - hb) / UNITS;
+        const float dh = (float)std::abs(ha - hb) / p.hu;
         float q = std::max(qp * sgn, 0.0f);
-        const float speed = q / std::max(depth, 0.02f);
+        const float speed = q / (p.cellSize * std::max(depth, 0.02f)); // m/s through the face (a cell wide)
         const float accel = std::abs(ha - hb) >= p.visc[kd] ? p.dt * G * depth * dh : 0.0f;
         q = (q + accel) / (1.0f + p.dt * (p.frictionLin[kd] + p.frictionQuad[kd] * speed / std::max(depth, 0.02f)));
-        if (accel == 0.0f && q * p.dt * UNITS < 0.05f) q = 0.0f;
+        if (accel == 0.0f && q * p.dt * p.units < 0.05f) q = 0.0f;
         qMom = q * sgn;
-        qTot = std::max(q, share / (p.dt * UNITS)) * sgn;
+        qTot = std::max(q, share / (p.dt * p.units)) * sgn;
     }
     void outward(int gi, float amt[4]) const {
         int s, x, y, z;
         cellPos(gi, s, x, y, z);
         const Vec4& own = g.faceN[(size_t)2 * gi];
-        amt[1] = own.x * p.dt * UNITS + own.z;
-        amt[3] = own.y * p.dt * UNITS + own.w;
+        amt[1] = own.x * p.dt * p.units + own.z;
+        amt[3] = own.y * p.dt * p.units + own.w;
         bool pr; int face;
         const int gx = neighbour(s, x, y, z, -1, 0, 0, pr, face);
-        amt[0] = (gx >= 0 && pr) ? -(g.faceN[(size_t)2 * gx].x * p.dt * UNITS + g.faceN[(size_t)2 * gx].z) : 0.0f;
+        amt[0] = (gx >= 0 && pr) ? -(g.faceN[(size_t)2 * gx].x * p.dt * p.units + g.faceN[(size_t)2 * gx].z) : 0.0f;
         const int gy = neighbour(s, x, y, z, 0, -1, 0, pr, face);
-        amt[2] = (gy >= 0 && pr) ? -(g.faceN[(size_t)2 * gy].y * p.dt * UNITS + g.faceN[(size_t)2 * gy].w) : 0.0f;
+        amt[2] = (gy >= 0 && pr) ? -(g.faceN[(size_t)2 * gy].y * p.dt * p.units + g.faceN[(size_t)2 * gy].w) : 0.0f;
     }
     float giveScale(int gi, uint32_t c) const {
         float a[4]; outward(gi, a);
@@ -264,7 +263,7 @@ struct Pass {
                 const Vec4& M = g.faceN[(size_t)2 * gi + 1];
                 const float qMom = k == 1 ? M.x : M.y;
                 float flowAxis = qMom * sc;
-                if (clipped) flowAxis = Sign(flowAxis) * std::min(std::fabs(flowAxis), (float)units / (p.dt * UNITS));
+                if (clipped) flowAxis = Sign(flowAxis) * std::min(std::fabs(flowAxis), (float)units / (p.dt * p.units));
                 if (k == 1) { applied.x = flowAxis; applied.z = dirAxis * carry; }
                 else { applied.y = flowAxis; applied.w = dirAxis * carry; }
             }

@@ -21,6 +21,11 @@ struct Params {
     float frictionLin[8] = {}, frictionQuad[8] = {};
     float dt = 1.0f / 120.0f;
     bool evaporate = false;
+    // The cell edge (m, W4c #642): fill units per m^3 (units) and per metre of height (hu); the column depth looks this many
+    // cells down (columnCells, ~8 m). Set with setCell.
+    float cellSize = 1.0f, units = 255.0f, hu = 255.0f;
+    int columnCells = 8;
+    void setCell(float cs, int column) { cellSize = cs; units = 255.0f / (cs * cs * cs); hu = 255.0f / cs; columnCells = column; }
 };
 
 struct Grid {

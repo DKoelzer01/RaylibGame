@@ -42,19 +42,25 @@ struct Brick {
     bool moving = false; // its water is moving (the brick is awake): thin films are drawn, not only sheets (#649)
 };
 
-// A simulated region: a tangent frame (east, north, up) of 1 m cells anchored at `origin`.
+// The simulation's cell edge (m, Plan 10 W4c #642): every cell <-> metre conversion goes through it. RAYLIBGAME_FLUID_CELL
+// overrides it (A/B). A cell holds 255 fill units: CellSize()^3 m^3.
+float CellSize();
+inline float CellVolume() { const float c = CellSize(); return c * c * c; }
+
+// A simulated region: a tangent frame (east, north, up: unit axes) of CellSize() cells anchored at `origin`.
 struct Site {
     uint64_t body = 0;
     Vector3 origin{}, e{}, n{}, u{};
     Vector3 lo{ 1e30f, 1e30f, 1e30f }, hi{ -1e30f, -1e30f, -1e30f }; // body-local bounds of its bricks
     std::unordered_map<int64_t, std::shared_ptr<const Brick>> bricks;
 
-    // Site coordinates of a body-local point (and its height in cells, continuous).
+    // Site coordinates of a body-local point, in cells (continuous).
     void frame(Vector3 local, float& fx, float& fy, float& fz) const {
         const Vector3 d = { local.x - origin.x, local.y - origin.y, local.z - origin.z };
-        fx = d.x * e.x + d.y * e.y + d.z * e.z;
-        fy = d.x * n.x + d.y * n.y + d.z * n.z;
-        fz = d.x * u.x + d.y * u.y + d.z * u.z;
+        const float inv = 1.0f / CellSize();
+        fx = (d.x * e.x + d.y * e.y + d.z * e.z) * inv;
+        fy = (d.x * n.x + d.y * n.y + d.z * n.z) * inv;
+        fz = (d.x * u.x + d.y * u.y + d.z * u.z) * inv;
     }
     const Brick* brick(int bi, int bj, int bk) const {
         auto it = bricks.find(BrickKey(bi, bj, bk));

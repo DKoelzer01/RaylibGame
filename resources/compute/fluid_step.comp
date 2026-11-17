@@ -47,7 +47,9 @@ uniform int evaporate;     // 1: resting specks soak away (0: tests, water accou
 
 const uint SOLID = 1u, SOURCE = 2u, DUG = 8u, SINK = 16u; // a sink: a source that takes water in (reset to its level after: what is over it leaves, #361)
 const float G = 9.81;
-const float UNITS = 255.0;    // fill units per m^3 (a 1 m cell)
+uniform float cellSize;    // m (Plan 10 W4c #642)
+#define UNITS (255.0 / (cellSize * cellSize * cellSize)) // fill units per m^3
+#define HU (255.0 / cellSize)                            // fill units per metre of height (a column)
 uint F(uint c) { return c & 255u; }
 uint FL(uint c) { return (c >> 8) & 255u; }
 uint TG(uint c) { return (c >> 16) & 255u; }
@@ -123,7 +125,7 @@ uint kindFor(uint slot, int x, int y, int z) {
 // Columns (#642): a cell's water is pushed sideways by the whole column over it, and a surface cell carries the flow of the
 // column under it. With only the cell's own layer in view, a 2 m deep pool moved water like a 5 cm film: its full cells saw
 // no difference and its surface cell's own fill set the flow area (a dammed reach never rose to its crest).
-const int kColumnCells = 8;
+uniform int kColumnCells;  // how far down the column depth looks: ~8 m of cells, at most 32 (W4c)
 bool sameWater(uint c, uint kind) { return (FL(c) & SOLID) == 0u && F(c) > 0u && KIND(c) == kind; }
 // The water surface over a cell's floor (fill units, 255 a cell): its own height, plus the cells above while it is full.
 int headOf(int g, uint c) {
@@ -154,7 +156,7 @@ bool submerged(int g, uint c) {
 }
 // The depth of the water column a surface cell tops (m): its own water and the full cells under it.
 float columnDepth(int g, uint c) {
-    float d = float(F(c)) / UNITS;
+    float d = float(F(c)) / HU;
     uint kind = KIND(c);
     uint s; int x, y, z;
     cellPos(g, s, x, y, z);
@@ -164,7 +166,7 @@ float columnDepth(int g, uint c) {
         if (gb < 0) break;
         uint b = readCell(gb, p);
         if (!sameWater(b, kind) || F(b) < CAP(b)) break;
-        d += float(F(b)) / UNITS;
+        d += float(F(b)) / HU;
         cellPos(gb, s, x, y, z);
     }
     return d;
@@ -189,8 +191,8 @@ void faceFlow(int ga, uint a, int gb, uint b, float qp, out float qTot, out floa
     // A film on the ground holds at its edge; a thin top layer over deeper water does not (a pool whose surface lay just over a
     // cell boundary froze whole: its full cells saw no difference and its top cells were "films").
     bool under = submerged(gd, d);
-    float colDepth = under ? float(F(d)) / UNITS : columnDepth(gd, d);
-    if (colDepth * UNITS < float(minSpread[kd])) return;
+    float colDepth = under ? float(F(d)) / HU : columnDepth(gd, d);
+    if (colDepth * HU < float(minSpread[kd])) return;
     uint ds, rs; int dx, dy, dz, rx, ry, rz;
     cellPos(gd, ds, dx, dy, dz); cellPos(gr, rs, rx, ry, rz);
     if (F(r) > 0u) { if (KIND(r) != kd) return; }
@@ -206,9 +208,9 @@ void faceFlow(int ga, uint a, int gb, uint b, float qp, out float qTot, out floa
     // The momentum flow: the face's wetted height (1 m wide) is the giver's column for a surface cell, its own water for a cell
     // under water (a leak into an open cell beside it: a pool dug into from the side).
     float depth = colDepth;
-    float dh = float(abs(ha - hb)) / UNITS;                       // m, giver over taker
+    float dh = float(abs(ha - hb)) / HU;                          // m, giver over taker
     float q = max(qp * sgn, 0.0);                                 // momentum along the slope only (no overshoot)
-    float speed = q / max(depth, 0.02);
+    float speed = q / (cellSize * max(depth, 0.02));             // m/s through the face (cellSize wide)
     // It builds only on a difference the levelling share would act on (a viscosity's worth, 2 cm for water); under that it
     // only coasts out: a near-flat film crept on for minutes and never slept (#642 dam break).
     float accel = abs(ha - hb) >= visc[kd] ? dt * G * depth * dh : 0.0;
