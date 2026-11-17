@@ -420,7 +420,9 @@ void Planetoid::draw(const RenderContext& ctx) {
 }
 
 void Planetoid::drawTransparent(const RenderContext& ctx) {
-    if (!isActive || drawList.empty() || !ctx.waterMaterial || field->seaLevelRadius() <= 0.0f || useFarSphere(ctx)) return;
+    // Every body with water meshes, not only those with a sea (#670: simulated water on the sandbox plane, or poured on a moon,
+    // was simulated but never drawn). Chunks without water add nothing.
+    if (!isActive || drawList.empty() || !ctx.waterMaterial || useFarSphere(ctx)) return;
     const ChunkPlacer placer(*this, ctx.renderOrigin);
     ChunkBatch batch(*ctx.waterMaterial);
     const Vector3 c = (worldPos - ctx.renderOrigin).toFloat();
