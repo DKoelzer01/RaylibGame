@@ -120,6 +120,8 @@ struct Brick {
     std::vector<FluidKernel::Vec4> faces; // CPU mode: the face flows as applied (#654: momentum between ticks; empty: at rest)
     int cpuSlot = -1;               // CPU mode: its place in this tick's grid
     bool upload = false;            // GPU mode: the whole brick (cells, flags, targets) goes up next tick
+    long long slotNeeded = 0;       // GPU mode: the last tick it was awake or near awake water (#675: else its slot is given back)
+    bool hadSlot = false;           // GPU mode: it held a slot before (back from release: uploaded without waking)
 };
 inline int Cap(const Brick* b, int i) { return 255 - b->shut[i]; }          // what the cell holds (#454)
 inline int Height(const Brick* b, int i) { return b->shut[i] + b->fill[i]; } // where its water stands, in 255ths of the cell
@@ -400,6 +402,10 @@ void PinPondFace(Brick& b, int f) {
 
 long long wakeGpu = 0, wakeTouch = 0; // settled bricks woken (stats)
 long long filmFlips = 0;              // bricks whose films switched shown/hidden (stats, #660)
+long long slotReleases = 0;           // GPU slots given back by sleeping bricks (stats, #675)
+int slotsUsed = 0;                    // GPU slots held now (stats, #675)
+int G_Capacity();                     // the GPU brick pool (below)
+constexpr long long kSlotKeepTicks = 80; // 2 s of ticks: a brick away from awake water keeps its slot this long (#675)
 void Touch(Brick* b) { if (b->settled) ++wakeTouch; b->active = true; b->idle = 0; b->changed = true; b->settled = false; }
 void CpuTick(int n); // CPU mode: the GPU's step on the CPU (#654), below
 // Whether a neighbour (on face fc of a brick whose water moved) needs waking and running (#669): not a brick of solid rock
@@ -872,14 +878,26 @@ void RunJob() {
     const WaterField::SnapshotPtr prev = WaterField::Current();
     std::shared_ptr<WaterField::Snapshot> snap;
     std::vector<WaterField::Dirty> dirty;
+    // Per brick on the workers (#676: one thread took ~26 ms a tick over 3500 quarter-metre bricks): its counts, settling,
+    // easing, film hold and - when it changed - its published copy and the cells to redraw. Each touches only its own brick;
+    // the sums, the snapshot and the redraw boxes are merged in order below.
+    struct PubOut {
+        Site* s; int64_t key; Brick* b;
+        std::shared_ptr<WaterField::Brick> pb;
+        int box[8][7]; int boxes = 0; // per 8^3 octant: cell range (x0 y0 z0 x1 y1 z1, brick-local) and the largest change
+        bool settledNow = false, flip = false;
+    };
+    static std::vector<PubOut> outs;
+    outs.clear();
     for (auto& s : sites) {
         ++st.sites;
         for (auto& kv : s->bricks) {
-            Brick& b = *kv.second;
             ++st.bricks;
-            if (!b.ready) continue;
-            if (b.active) ++st.activeBricks;
-            if (b.basin) ++st.basinBricks;
+            if (kv.second->ready) outs.push_back({ s.get(), kv.first, kv.second.get() });
+        }
+    }
+    auto publishBrick = [&](PubOut& out) {
+            Brick& b = *out.b;
             if (b.changed || !b.statSet) { // kinds in the brick (bit k), wet cells, volumes: recounted when it changed
                 uint8_t kindsHere = 0;
                 int wet = 0, vol = 0, other = 0, solid = 0;
@@ -895,7 +913,6 @@ void RunJob() {
                 b.statSolid = solid; b.statKinds = kindsHere; b.statWet = (float)wet; b.statVolume = vol / 255.0f * WaterField::CellVolume(); b.statOther = other / 255.0f * WaterField::CellVolume(); b.statSet = true;
             }
             const uint8_t present = b.statKinds;
-            st.wetCells += b.statWet; st.volume += b.statVolume; st.otherVolume += b.statOther;
             // Resting water sleeps (#366): an awake brick whose cells all stayed within kSettleDiff of where they were
             // kSettleSteps ago is put to sleep, though films still trickle back and forth in it (a drained pond kept
             // 30-50 bricks awake for minutes, and their changes kept the chunks redrawing, #381). Water moving into it
@@ -905,7 +922,7 @@ void RunJob() {
                 else if (stepCount - b.checkStep >= kSettleSteps) {
                     int maxd = 0;
                     for (int i = 0; i < B3 && maxd <= kSettleDiff; ++i) maxd = std::max(maxd, abs((int)b.fill[i] - (int)b.check[i]));
-                    if (maxd <= kSettleDiff) { b.active = false; b.idle = kSleepSteps + 1; b.settled = true; ++settledTotal; }
+                    if (maxd <= kSettleDiff) { b.active = false; b.idle = kSleepSteps + 1; b.settled = true; out.settledNow = true; }
                     b.check = b.fill; b.checkStep = stepCount;
                 }
             } else b.checkStep = -1;
@@ -921,8 +938,11 @@ void RunJob() {
                         const int f = b.fill[i], d = b.disp[i];
                         if (f == d) continue;
                         const int diff = f - d;
-                        int step = diff * 2 / 5;
-                        if ((b.flags[i] & kSolid) || abs(diff) <= 3) step = diff;
+                        // Draining eases slower (1/8 a tick, a unit a tick at the end): a thin film's cell that empties
+                        // for a tick or two as the water moves on in packets showed a hole (W4c: quarter-metre streams
+                        // flickered near their spring); a film that really dries fades within ~0.25 s.
+                        int step = diff > 0 ? diff * 2 / 5 : diff / 8;
+                        if ((b.flags[i] & kSolid) || (diff > 0 && diff <= 3)) step = diff;
                         else if (step == 0) step = diff > 0 ? 1 : -1;
                         b.disp[i] = (uint8_t)(d + step);
                         still = still || b.disp[i] != f;
@@ -935,26 +955,12 @@ void RunJob() {
             if (b.active || b.easing) b.movingStep = stepCount;
             const bool movingNow = stepCount - b.movingStep < FilmHoldSteps();
             const bool movedFlip = b.drawnSet && b.drawnMoving != movingNow; // its thin films show or hide (#649)
-            if (movedFlip) ++filmFlips;
-            if (!b.changed && !movedFlip) continue;
+            out.flip = movedFlip;
+            if (!b.changed && !movedFlip) return;
             b.changed = false;
-            if (!snap) {
-                snap = std::make_shared<WaterField::Snapshot>();
-                snap->seq = prev->seq + 1;
-                snap->sites.resize(sites.size());
-                for (size_t k = 0; k < sites.size() && k < prev->sites.size(); ++k) snap->sites[k] = prev->sites[k]; // shares the bricks
-                for (auto& o : sites) {
-                    WaterField::Site& ps = snap->sites[o->index];
-                    ps.body = o->body; ps.origin = o->origin; ps.e = o->e; ps.n = o->n; ps.u = o->u;
-                }
-            }
-            WaterField::Site& ps = snap->sites[s->index];
-            auto pb = std::make_shared<WaterField::Brick>();
+            out.pb = std::make_shared<WaterField::Brick>();
+            WaterField::Brick* pb = out.pb.get();
             pb->fill = b.fill; pb->drawn = b.disp; pb->flags = b.flags; pb->shut = b.shut; pb->kinds = present; pb->moving = movingNow; // queries read the simulated water, the mesher the eased
-            ps.bricks[kv.first] = std::move(pb);
-            Vector3 lo, hi;
-            ps.brickBounds(b.bi, b.bj, b.bk, lo, hi);
-            ps.lo = Vector3Min(ps.lo, lo); ps.hi = Vector3Max(ps.hi, hi);
             // A cell's surface reaches its neighbours' samples (solid cells carry it, empty ones look below). Only a
             // visible change redraws the chunks, and only around the cells that changed: some cell 2.5 cm+ off what
             // they last drew, or its solidity or fluid kind (a body easing by a 255th at a time kept ~2000 chunk
@@ -977,10 +983,50 @@ void RunJob() {
             b.drawnMoving = movingNow;
             for (int o = 0; o < 8; ++o) {
                 if (c1[o][0] < 0) continue;
-                Vector3 dlo, dhi;
-                ps.cellBounds(b.bi * B + c0[o][0] - 1, b.bj * B + c0[o][1] - 1, b.bk * B + c0[o][2] - 1, b.bi * B + c1[o][0] + 2, b.bj * B + c1[o][1] + 2, b.bk * B + c1[o][2] + 2, dlo, dhi);
-                dirty.push_back({ s->body, dlo, dhi, mag[o] });
+                int* bx = out.box[out.boxes++];
+                bx[0] = c0[o][0]; bx[1] = c0[o][1]; bx[2] = c0[o][2]; bx[3] = c1[o][0]; bx[4] = c1[o][1]; bx[5] = c1[o][2]; bx[6] = mag[o];
             }
+    };
+    {
+        const int n = (int)outs.size();
+        const int parts = std::max(1, std::min(n / 64, (int)std::thread::hardware_concurrency()));
+        std::atomic<int> left{ parts - 1 };
+        auto run = [&](int part) { for (int k = part; k < n; k += parts) publishBrick(outs[k]); };
+        for (int part = 1; part < parts; ++part) {
+            JobSystem::tagNext(JobTag::Fluid);
+            WorldJobs().submit(-3.0f, [&run, &left, part] { run(part); left.fetch_sub(1); });
+        }
+        run(0);
+        while (left.load() > 0) std::this_thread::yield();
+    }
+    for (PubOut& out : outs) {
+        const Brick& b = *out.b;
+        if (b.active) ++st.activeBricks;
+        if (b.basin) ++st.basinBricks;
+        st.wetCells += b.statWet; st.volume += b.statVolume; st.otherVolume += b.statOther;
+        settledTotal += out.settledNow ? 1 : 0;
+        filmFlips += out.flip ? 1 : 0;
+        if (!out.pb) continue;
+        if (!snap) {
+            snap = std::make_shared<WaterField::Snapshot>();
+            snap->seq = prev->seq + 1;
+            snap->sites.resize(sites.size());
+            for (size_t k = 0; k < sites.size() && k < prev->sites.size(); ++k) snap->sites[k] = prev->sites[k]; // shares the bricks
+            for (auto& o : sites) {
+                WaterField::Site& ps = snap->sites[o->index];
+                ps.body = o->body; ps.origin = o->origin; ps.e = o->e; ps.n = o->n; ps.u = o->u;
+            }
+        }
+        WaterField::Site& ps = snap->sites[out.s->index];
+        ps.bricks[out.key] = std::move(out.pb);
+        Vector3 lo, hi;
+        ps.brickBounds(b.bi, b.bj, b.bk, lo, hi);
+        ps.lo = Vector3Min(ps.lo, lo); ps.hi = Vector3Max(ps.hi, hi);
+        for (int k = 0; k < out.boxes; ++k) {
+            const int* bx = out.box[k];
+            Vector3 dlo, dhi;
+            ps.cellBounds(b.bi * B + bx[0] - 1, b.bj * B + bx[1] - 1, b.bk * B + bx[2] - 1, b.bi * B + bx[3] + 2, b.bj * B + bx[4] + 2, b.bk * B + bx[5] + 2, dlo, dhi);
+            dirty.push_back({ out.s->body, dlo, dhi, bx[6] });
         }
     }
     if (snap) WaterField::Publish(std::move(snap), std::move(dirty));
@@ -997,6 +1043,7 @@ void RunJob() {
         st.wakes[0] = wakeGpu; st.wakes[1] = wakeTouch;
         st.pinnedFaces = pinnedFaces;
         st.filmFlips = filmFlips;
+        st.gpuSlots = slotsUsed; st.gpuCapacity = G_Capacity(); st.slotReleases = slotReleases;
         st.dbg[0] = dbgDown; st.dbg[1] = dbgSide; st.dbg[2] = dbgSrc; st.dbg[3] = dbgLevel; dbgDown = dbgSide = dbgSrc = dbgLevel = 0;
         st.settled = (int)settledTotal;
         pubStats = st;
@@ -1020,6 +1067,11 @@ struct GpuState {
     ComputeBuffer packed;
     unsigned rbBuf = 0; unsigned char* rbPtr = nullptr; size_t rbCap = 0; void* rbFence = nullptr; size_t rbFlagsBytes = 0;
     bool asyncRb = false;
+    // The dry-cell skip (#675, fluid_groups.comp): per slot 3 substeps x 64 group bits (wet), the listed groups + dispatch args.
+    ComputeProgram groups;
+    ComputeBuffer mask, glist;
+    bool groupsOn = false;
+    int maskCur = 0;
     int capacity = 0;                      // bricks
     std::vector<Brick*> owner;             // slot -> brick
     std::vector<Site*> ownerSite;
@@ -1033,6 +1085,7 @@ struct GpuState {
     struct WatchCell { int block, cell; Vector3 e, n, u; };
     std::vector<std::vector<WatchCell>> watchCells; // per flow watch: its cells as resolved for the last dispatch
 } G;
+int G_Capacity() { return G.capacity; }
 
 // Flow watches (#392): Fluid::FlowAt asks for the flow around a point; GpuTick resolves each to cells, reads their flux
 // every tick and publishes a smoothed value. A watch nobody asked about for 3 s is dropped.
@@ -1041,6 +1094,7 @@ std::vector<FlowWatch> flowWatches;
 std::mutex flowMx;
 
 constexpr unsigned kCellsPerBrick = (unsigned)B3;
+constexpr unsigned kFacePBytes = 8, kFaceNBytes = 16; // half-precision face flows a cell (#675; were 16 and 32)
 
 bool GpuInit() {
     if (G.init) return G.ok;
@@ -1050,7 +1104,7 @@ bool GpuInit() {
         G.list.create(64 * 4); G.deltas.create(64 * 16); G.inS.create(64 * 4); G.flags.create(64 * 4); G.nbrs.create(64 * 24);
         G.a.create(64 * kCellsPerBrick * 4); G.b.create(64 * kCellsPerBrick * 4);
         const std::vector<float> noFlow((size_t)64 * kCellsPerBrick * 8, 0.0f);
-        G.faceP.create(64 * kCellsPerBrick * 16, noFlow.data()); G.faceN.create(64 * kCellsPerBrick * 32, noFlow.data());
+        G.faceP.create(64 * kCellsPerBrick * kFacePBytes, noFlow.data()); G.faceN.create(64 * kCellsPerBrick * kFaceNBytes, noFlow.data());
         G.capacity = 64;
         G.owner.assign(64, nullptr); G.ownerSite.assign(64, nullptr);
         const std::vector<unsigned> zeros(64, 0u);
@@ -1058,6 +1112,11 @@ bool GpuInit() {
         // Async readback (#669): buffer storage for the persistent mapping, the pack pass; else the old downloads.
         G.asyncRb = !getenv("RAYLIBGAME_FLUID_SYNC_READBACK") && GL_Caps().bufferStorage && glad_glFenceSync && G.pack.load("resources/compute/fluid_pack.comp");
         if (G.asyncRb) G.packed.create(64 * kCellsPerBrick * 2);
+        G.groupsOn = !(getenv("RAYLIBGAME_FLUID_GROUPS") && atoi(getenv("RAYLIBGAME_FLUID_GROUPS")) == 0) && glad_glDispatchComputeIndirect && G.groups.load("resources/compute/fluid_groups.comp");
+        if (G.groupsOn) {
+            const std::vector<unsigned> zero((size_t)(8 + 64 * 64), 0u);
+            G.mask.create(64 * 6 * 4, zero.data()); G.glist.create((8 + 64 * 64) * 4, zero.data());
+        }
     }
     TraceLog(LOG_WARNING, "Fluid: %s%s", G.ok ? "GPU compute" : "CPU (no compute)", G.asyncRb ? ", async readback" : "");
     return G.ok;
@@ -1074,9 +1133,14 @@ void GpuGrow(int need) {
     };
     grow(G.a, G.capacity * kCellsPerBrick * 4, cap * kCellsPerBrick * 4);
     grow(G.b, G.capacity * kCellsPerBrick * 4, cap * kCellsPerBrick * 4);
-    grow(G.faceP, G.capacity * kCellsPerBrick * 16, cap * kCellsPerBrick * 16);
-    grow(G.faceN, G.capacity * kCellsPerBrick * 32, cap * kCellsPerBrick * 32);
+    grow(G.faceP, G.capacity * kCellsPerBrick * kFacePBytes, cap * kCellsPerBrick * kFacePBytes);
+    grow(G.faceN, G.capacity * kCellsPerBrick * kFaceNBytes, cap * kCellsPerBrick * kFaceNBytes);
     grow(G.flags, G.capacity * 4, cap * 4);
+    if (G.groupsOn) {
+        grow(G.mask, G.capacity * 6 * 4, cap * 6 * 4);
+        const std::vector<unsigned> zero((size_t)(8 + cap * 64), 0u);
+        G.glist.destroy(); G.glist.create((unsigned)zero.size() * 4, zero.data());
+    }
     G.inS.resize(cap * 4);
     G.nbrs.resize(cap * 24);
     const std::vector<unsigned> zeros(cap - G.capacity, 0u);
@@ -1092,7 +1156,8 @@ void GpuUploadBrick(const Brick& b) {
     G.a.upload(packed.data(), kCellsPerBrick * 4, b.slot * kCellsPerBrick * 4);
     G.b.upload(packed.data(), kCellsPerBrick * 4, b.slot * kCellsPerBrick * 4);
     static const std::vector<float> noFlow((size_t)kCellsPerBrick * 4, 0.0f); // a (re)classified brick starts at rest (#642)
-    G.faceP.upload(noFlow.data(), kCellsPerBrick * 16, b.slot * kCellsPerBrick * 16);
+    G.faceP.upload(noFlow.data(), kCellsPerBrick * kFacePBytes, b.slot * kCellsPerBrick * kFacePBytes);
+    if (G.groupsOn) { static const unsigned all[6] = { ~0u, ~0u, ~0u, ~0u, ~0u, ~0u }; G.mask.upload(all, 24, b.slot * 24); } // every group listed once: the next substeps narrow it
 }
 
 // Flow readout (#392). Read: the flux the last dispatch added in the watched cells, summed per watch into body-local
@@ -1110,7 +1175,7 @@ void GpuFlowRead() {
             const int* f = &fx[((size_t)c.block * kCellsPerBrick + c.cell) * 4];
             sum = Vector3Add(sum, Vector3Add(Vector3Add(Vector3Scale(c.e, (float)f[0]), Vector3Scale(c.n, (float)f[1])), Vector3Scale(c.u, (float)f[2])));
         }
-        const Vector3 q = Vector3Scale(sum, 0.5f * perSecond / std::max(1.0f, 2.0f * flowWatches[w].r));
+        const Vector3 q = Vector3Scale(sum, 0.5f * perSecond / std::max(1.0f, 2.0f * flowWatches[w].r / WaterField::CellSize())); // the diameter in cells
         flowWatches[w].value = Vector3Lerp(flowWatches[w].value, q, 0.1f);
     }
     std::fill(fx.begin(), fx.end(), 0);
@@ -1137,11 +1202,12 @@ void GpuFlowResolve() {
             if (!s) continue;
             int ci, cj, ck;
             s->cellOf(fw.local, ci, cj, ck);
-            const int R = (int)ceilf(fw.r);
+            const float rc = fw.r / WaterField::CellSize(); // the watch radius in cells
+            const int R = (int)ceilf(rc);
             for (int dk = -R; dk <= R; ++dk)
                 for (int dj = -R; dj <= R; ++dj)
                     for (int di = -R; di <= R; ++di) {
-                        if (di * di + dj * dj + dk * dk > fw.r * fw.r) continue;
+                        if (di * di + dj * dj + dk * dk > rc * rc) continue;
                         Brick* b; int i;
                         if (!s->cell(ci + di, cj + dj, ck + dk, b, i) || b->slot < 0) continue;
                         if (watchOf[b->slot] < 0) watchOf[b->slot] = blocks++;
@@ -1256,21 +1322,49 @@ void GpuTick(int n) {
     // 2. Slots for classified bricks; whole bricks up.
     int used = 0;
     for (Brick* o : G.owner) used += o ? 1 : 0;
+    // Only bricks near awake water hold a slot (#675): the awake ones, and two rings of neighbours (the step runs a ring and
+    // reads across its faces; the column depth looks down further). One not needed for kSlotKeepTicks gives its slot back:
+    // its CPU copy is current (results come back every tick it runs), and it goes up whole when it is needed again, without
+    // waking (a read-only ring would wake the next ring: a whole lake). A settled lake then holds no GPU memory.
+    static long long slotTick = 0;
+    ++slotTick;
+    static const bool keepAll = getenv("RAYLIBGAME_FLUID_KEEP_SLOTS") != nullptr; // A/B: every brick keeps its slot (before #675)
+    for (auto& s : sites)
+        for (auto& kv : s->bricks) {
+            Brick& br = *kv.second;
+            if (!br.ready || !(br.active || br.upload || keepAll)) continue;
+            br.slotNeeded = slotTick;
+            for (Brick* o : br.nbr) {
+                if (!o) continue;
+                o->slotNeeded = slotTick;
+                for (Brick* o2 : o->nbr) if (o2) o2->slotNeeded = slotTick;
+            }
+        }
     for (auto& s : sites)
         for (auto& kv : s->bricks) {
             Brick& br = *kv.second;
             if (!br.ready) continue;
+            const bool needed = slotTick - br.slotNeeded <= kSlotKeepTicks;
+            if (br.slot >= 0 && !needed && !br.active && !br.upload) { // released
+                G.owner[br.slot] = nullptr; G.ownerSite[br.slot] = nullptr;
+                br.slot = -1; --used; G.nbrDirty = true; ++slotReleases;
+                continue;
+            }
             if (br.slot < 0) {
+                if (!needed) continue;
                 GpuGrow(used + 1);
                 int slot = 0;
                 while (G.owner[slot]) ++slot;
                 br.slot = slot; G.owner[slot] = &br; G.ownerSite[slot] = s.get();
                 ++used;
                 G.nbrDirty = true;
+                if (br.hadSlot && !br.upload) { GpuUploadBrick(br); continue; } // back from release: up as it is, asleep
                 br.upload = true;
             }
             if (br.upload) { GpuUploadBrick(br); br.upload = false; br.active = true; br.idle = 0; G.nbrDirty = true; }
+            br.hadSlot = true;
         }
+    slotsUsed = used;
     if (G.nbrDirty) {
         std::vector<int> nb(G.capacity * 6, -1);
         for (int slot = 0; slot < G.capacity; ++slot)
@@ -1303,7 +1397,8 @@ void GpuTick(int n) {
             G.deltas.upload(list.data(), (unsigned)(list.size() * sizeof(D)));
             G.delta.use();
             G.delta.setUint("count", (unsigned)list.size());
-            G.a.bind(0); G.deltas.bind(1); G.flags.bind(2);
+            G.delta.setInt("useGroups", G.groupsOn ? 1 : 0);
+            G.a.bind(0); G.deltas.bind(1); G.flags.bind(2); if (G.groupsOn) G.mask.bind(10); // a change wets its group (#675)
             G.delta.dispatch(((unsigned)list.size() + 63) / 64);
             for (const D& dd : list) if (Brick* br = G.owner[dd.cell / kCellsPerBrick]) { if (!br->settled) { br->active = true; br->idle = 0; } } // a settled brick took a CPU nudge (levelling) asleep
         }
@@ -1350,13 +1445,34 @@ void GpuTick(int n) {
     GpuFlowResolve(); // which bricks the flow watches need this dispatch (#392)
     G.nbrs.bind(2); G.list.bind(3); G.inS.bind(4); G.flags.bind(5); G.watch.bind(6); G.flux.bind(7); G.faceP.bind(8); G.faceN.bind(9);
     const unsigned bricks = (unsigned)list.size(); // 2D dispatch: 64 groups of 64 cells per brick, one row per brick
+    // The dry-cell skip (#675, fluid_groups.comp): each substep runs only the 64-cell groups near water, by indirect dispatch.
+    G.step.setInt("useGroups", G.groupsOn ? 1 : 0);
+    if (G.groupsOn) {
+        G.groups.use();
+        G.groups.setUint("count", bricks);
+        G.mask.bind(10); G.glist.bind(11);
+    }
+    auto pass = [&](int p) {
+        G.step.setInt("pass", p);
+        if (G.groupsOn) G.step.dispatchIndirect(G.glist, 0);
+        else G.step.dispatch(kCellsPerBrick / 64u, bricks);
+    };
     for (int k = 0; k < n; ++k) {
-        G.step.setInt("pass", 0); G.a.bind(0); G.b.bind(1); G.step.dispatch(kCellsPerBrick / 64u, bricks);
-        G.step.setInt("pass", 1); G.b.bind(0); G.a.bind(1); G.step.dispatch(kCellsPerBrick / 64u, bricks);
+        if (G.groupsOn) {
+            G.maskCur = (G.maskCur + 1) % 3;
+            G.groups.use();
+            G.groups.setInt("cur", G.maskCur);
+            G.groups.setInt("mode", 0); G.groups.dispatch(bricks);
+            G.groups.setInt("mode", 1); G.groups.dispatch(1);
+            G.step.use();
+            G.step.setInt("maskCur", G.maskCur);
+        }
+        G.a.bind(0); G.b.bind(1); pass(0);
+        G.b.bind(0); G.a.bind(1); pass(1);
         // Specks soak away on one substep in kEvapEvery: one must rest across it. Every substep, a spreading film lost the
         // edge it had just laid down, again and again (#454: 7-12% of a draining pond).
         G.step.setInt("evaporate", !noEvap && ++evapTick % (kEvapEvery * (unsigned)SubstepScale()) == 0 ? 1 : 0);
-        G.step.setInt("pass", 2); G.step.dispatch(kCellsPerBrick / 64u, bricks);
+        pass(2);
     }
     G.lastList = list;
     G.lastN = n;

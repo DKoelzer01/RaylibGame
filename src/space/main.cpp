@@ -88,6 +88,7 @@ extern "C" __declspec(dllimport) int __stdcall MessageBoxA(void*, const char*, c
 #include "ring.h"
 #include "factory.h"
 #include "fluid.h"
+#include "waterfield.h"
 #include "waterworks.h"
 
 #if defined(PLATFORM_DESKTOP)
@@ -4320,7 +4321,8 @@ int main(int argc, char** argv)
                             Fluid::SetSpeed(1);
                             TakeScreenshot("bench_spring.png");
                             const float total = (float)Fluid::GetStats().volume, nearSrc = Fluid::FluidAt(*p, spring, 3.0f, 0);
-                            const bool ok = Fluid::SourceCount() >= 1 && total > 5.0f && nearSrc < 0.6f * total;
+                            const float want = std::max(3.0f, 5.0f * WaterField::CellSize()); // films hold less water with smaller cells (W4c)
+                            const bool ok = Fluid::SourceCount() >= 1 && total > want && nearSrc < 0.6f * total;
                             printf("bench: spring: %.1f m^3 of moving water, %.1f of it within 3 m of the spring (a stream: most runs off); films shown/hidden %lld times (#660) -> %s\n",
                                    total, nearSrc, Fluid::GetStats().filmFlips, ok ? "PASS" : "FAIL");
                             printf("bench: spring: bench_spring.png\n");
@@ -5020,8 +5022,8 @@ int main(int argc, char** argv)
                                 std::sort(frameMs.begin(), frameMs.end());
                                 auto pct = [&](float q) { return frameMs.empty() ? 0.0f : frameMs[std::min(frameMs.size() - 1, (size_t)(q * frameMs.size()))]; };
                                 const Fluid::Stats s = Fluid::GetStats();
-                                printf("bench: fluid-load: %d bricks (%d awake at most), %.0f m^3; step job %.2f ms mean (max %.2f), publish %.2f ms mean; frame ms p50 %.2f p95 %.2f p99 %.2f over %zu frames -> PASS\n",
-                                       bricksMax, activeMax, s.volume, samples ? jobMs / samples : 0.0, jobMax, samples ? meshMs / samples : 0.0, pct(0.5f), pct(0.95f), pct(0.99f), frameMs.size());
+                                printf("bench: fluid-load: %d bricks (%d awake at most), %.0f m^3; step job %.2f ms mean (max %.2f), publish %.2f ms mean; frame ms p50 %.2f p95 %.2f p99 %.2f over %zu frames; GPU slots %d of %d -> PASS\n",
+                                       bricksMax, activeMax, s.volume, samples ? jobMs / samples : 0.0, jobMax, samples ? meshMs / samples : 0.0, pct(0.5f), pct(0.95f), pct(0.99f), frameMs.size(), s.gpuSlots, s.gpuCapacity);
                                 benchFluidLoad = 0.0f;
                             }
                         }
@@ -5287,8 +5289,9 @@ int main(int argc, char** argv)
                         if (t - lastPrint >= 5.0) {
                             lastPrint = t;
                             const Fluid::Stats s = Fluid::GetStats();
-                            printf("bench: pond t=%3.0f s: %d bricks (%d awake), %.0f wet cells, %.1f m^3, %d bricks of pond water; middle %s, pit %s; %d settled, woken gpu %lld cpu %lld; changes (total) d%lld s%lld r%lld l%lld\n", t, s.bricks, s.activeBricks, s.wetCells, s.volume, s.basinBricks,
-                                   Fluid::Wet(*p, pondMid) ? "wet" : "dry", Fluid::Wet(*p, pondPit) ? "wet" : "dry", s.settled, s.wakes[0], s.wakes[1], s.dbgTotal[0], s.dbgTotal[1], s.dbgTotal[2], s.dbgTotal[3]);
+                            printf("bench: pond t=%3.0f s: %d bricks (%d awake), %.0f wet cells, %.1f m^3, %d bricks of pond water; middle %s, pit %s; %d settled, woken gpu %lld cpu %lld; changes (total) d%lld s%lld r%lld l%lld; GPU slots %d of %d (%lld released)\n", t, s.bricks, s.activeBricks, s.wetCells, s.volume, s.basinBricks,
+                                   Fluid::Wet(*p, pondMid) ? "wet" : "dry", Fluid::Wet(*p, pondPit) ? "wet" : "dry", s.settled, s.wakes[0], s.wakes[1], s.dbgTotal[0], s.dbgTotal[1], s.dbgTotal[2], s.dbgTotal[3],
+                                   s.gpuSlots, s.gpuCapacity, s.slotReleases);
                         }
                         if (t > 8.0 && t < 8.1) TakeScreenshot("bench_pond.png");
                         // The drain into the pit runs ~3 min on seed 42's 35 m pond (levels meet ~180 s); the water sleeps
@@ -5354,17 +5357,25 @@ int main(int argc, char** argv)
                             printf("bench: pond: after the load the pond is %s, its top %s, the pit %s, %.1f m^3 -> %s\n", stillClaimed ? "still taken over" : "back to static water",
                                    midDry ? "drained" : "full", pitWet ? "full" : "dry", Fluid::GetStats().volume, pass ? "PASS" : "FAIL");
                             printf("bench: pond: bench_pond.png, bench_pond_drained.png, bench_pond_loaded.png\n");
-                            // Swimming: into the flooded pit, 1.5 m under its surface.
-                            player.flyMode = false;
-                            {   // 1.5 m under the pit's water surface (the bake's bigger ponds fill a wider, shallower pit, #360),
-                                // at most 1 m over its floor point.
-                                const float surf = Fluid::SurfaceAbove(*p, pondPit, 12.0f);
-                                const float lift = surf > 0.0f ? std::clamp(surf - 1.5f, 0.3f, 1.0f) : 1.0f;
-                                printf("bench: pond: the pit's water stands %.1f m over its floor point; swimming from %.1f m up\n", surf, lift);
-                                player.placeAt(world, *p, p->toWorld(Vector3Add(pondPit, Vector3Scale(Vector3Normalize(pondPit), lift))));
-                            }
-                            pondPhase = 3; pondT0 = GetTime();
+                            pondPhase = 4; pondT0 = GetTime(); // swimming next (topped up first when shallow)
                         } else if (t > 120.0) { printf("bench: pond: did not settle after the load -> FAIL\n"); benchPond = false; }
+                    } else if (pondPhase == 4) {
+                        // Swimming: into the flooded pit, 1.5 m under its surface. Water shallower than a player (the drained
+                        // volume depends on the cell size: quarter-metre cells follow the ground and hold less, W4c) is topped up
+                        // by pouring into the pit first (under 1.2 m: up to 1.5 m), so the swim is judged in water deep enough to swim in.
+                        const float surf = Fluid::SurfaceAbove(*p, pondPit, 12.0f);
+                        static int topping = -1; // decided on the first frame here: under 1.2 m it is poured up to 1.5 m
+                        if (topping < 0) topping = surf < 1.2f ? 1 : 0;
+                        static double lastPour = -10.0; // poured water mounds where it lands: judged 2 s after a pour, once spread
+                        if (topping && t < 40.0 && (t - lastPour < 2.0 || surf < 1.6f)) {
+                            if (t - lastPour >= 2.0) { lastPour = t; Fluid::Pour(*p, Vector3Add(pondPit, Vector3Scale(Vector3Normalize(pondPit), 0.3f)), 8.0f); }
+                        } else {
+                            player.flyMode = false;
+                            const float lift = surf > 0.0f ? std::clamp(surf - 1.5f, 0.3f, 1.0f) : 1.0f;
+                            printf("bench: pond: the pit's water stands %.1f m over its floor point%s; swimming from %.1f m up\n", surf, topping ? " (topped up)" : "", lift);
+                            player.placeAt(world, *p, p->toWorld(Vector3Add(pondPit, Vector3Scale(Vector3Normalize(pondPit), lift))));
+                            pondPhase = 3; pondT0 = GetTime();
+                        }
                     } else if (pondPhase == 3) {
                         static float h0 = 0.0f; static int inWaterFrames = 0, frames = 0;
                         const float h = Vector3Length(p->toLocal((player.position - world.renderOrigin).toFloat()));

@@ -34,8 +34,15 @@ layout(std430, binding = 7) buffer Flux { int flux[]; };
 // applied last substep (m^3/s, signed along the axis), z, w = the fill units carried across them (signed). N (pass 1 writes
 // it, pass 2 reads it), two vec4 a cell: [2g] = this substep's flows (x, y; the larger of the levelling share and the
 // momentum flow) and carries (z, w); [2g + 1] = the momentum flows alone (x, y).
-layout(std430, binding = 8) buffer FacesP { vec4 faceP[]; };
-layout(std430, binding = 9) buffer FacesN { vec4 faceN[]; };
+// Face flows in half precision (#675: 56 -> 32 bytes a cell). Conservation does not depend on it: both cells of a face read
+// the same stored values and move the same whole units. P: the flows and carries as applied (+x, +y; x y = flows, z w = carries).
+// N: this substep's flows and carries (x: x y, y: z w) and the momentum flows alone (z: x y).
+layout(std430, binding = 8) buffer FacesP { uvec2 faceP[]; };
+layout(std430, binding = 9) buffer FacesN { uvec4 faceN[]; };
+vec4 loadP(int g) { uvec2 u = faceP[g]; return vec4(unpackHalf2x16(u.x), unpackHalf2x16(u.y)); }
+void storeP(int g, vec4 v) { faceP[g] = uvec2(packHalf2x16(v.xy), packHalf2x16(v.zw)); }
+vec4 loadN(int g) { uvec4 u = faceN[g]; return vec4(unpackHalf2x16(u.x), unpackHalf2x16(u.y)); }
+vec2 loadM(int g) { return unpackHalf2x16(faceN[g].z); }
 uniform uint count;        // processed slots
 uniform int pass;          // 0 vertical, 1 face flows, 2 apply
 uniform int minSpread[8];  // per kind: thinnest film that spreads
@@ -44,6 +51,11 @@ uniform float frictionLin[8];  // per kind: 1/s (water ~0.05: a pool's last ripp
 uniform float frictionQuad[8]; // per kind: drag on the speed (water ~0.01: a river's speed levels out with its slope)
 uniform float dt;          // s per substep
 uniform int evaporate;     // 1: resting specks soak away (0: tests, water accounting)
+// The dry-cell skip (#675): useGroups 1 = this dispatch runs the groups fluid_groups.comp listed (indirect), not whole bricks.
+uniform int useGroups;
+uniform int maskCur;       // this substep's wet mask (0-2)
+layout(std430, binding = 10) buffer Mask { uint gmask[]; };
+layout(std430, binding = 11) readonly buffer Groups { uint groups[]; };
 
 const uint SOLID = 1u, SOURCE = 2u, DUG = 8u, SINK = 16u; // a sink: a source that takes water in (reset to its level after: what is over it leaves, #361)
 const float G = 9.81;
@@ -180,6 +192,7 @@ float columnDepth(int g, uint c) {
 void faceFlow(int ga, uint a, int gb, uint b, float qp, out float qTot, out float qMom) {
     qTot = 0.0; qMom = 0.0;
     if ((FL(a) & SOLID) != 0u || (FL(b) & SOLID) != 0u) return;
+    if (F(a) >= CAP(a) && F(b) >= CAP(b)) return;                  // both full: the taker has no room either way (W4c: before the head walks, most of a deep pool)
     int ha = headOf(ga, a), hb = headOf(gb, b);
     if (ha == hb) return;
     bool aGives = ha > hb;
@@ -225,14 +238,16 @@ void faceFlow(int ga, uint a, int gb, uint b, float qp, out float qTot, out floa
 void outward(int g, out float amt[4]) {
     uint s; int x, y, z;
     cellPos(g, s, x, y, z);
-    vec4 own = faceN[2 * g];
+    vec4 own = loadN(g);
     amt[1] = own.x * dt * UNITS + own.z;
     amt[3] = own.y * dt * UNITS + own.w;
     bool p; int face;
     int gx = neighbour(s, x, y, z, -1, 0, 0, p, face);
-    amt[0] = (gx >= 0 && p) ? -(faceN[2 * gx].x * dt * UNITS + faceN[2 * gx].z) : 0.0;
+    vec4 nx = gx >= 0 && p ? loadN(gx) : vec4(0.0);
+    amt[0] = -(nx.x * dt * UNITS + nx.z);
     int gy = neighbour(s, x, y, z, 0, -1, 0, p, face);
-    amt[2] = (gy >= 0 && p) ? -(faceN[2 * gy].y * dt * UNITS + faceN[2 * gy].w) : 0.0;
+    vec4 ny = gy >= 0 && p ? loadN(gy) : vec4(0.0);
+    amt[2] = -(ny.y * dt * UNITS + ny.w);
 }
 // A giver's scale (it never gives more than it holds) and a taker's share of its room per inflowing face.
 float giveScale(int g, uint c) {
@@ -249,17 +264,26 @@ uint roomShare(int g, uint c) {
 
 void main() {
     // 2D dispatch (64 x bricks): any number of bricks in one dispatch (x stays far under GL's 65535 minimum).
-    uint li = gl_WorkGroupID.y;
-    if (li >= count) return;
-    uint slot = list[li];
-    uint local = gl_WorkGroupID.x * 64u + gl_LocalInvocationID.x;
+    uint slot, local;
+    if (useGroups != 0) { // a listed 64-cell group (fluid_groups.comp): rows of 32768 workgroups
+        uint gi = gl_WorkGroupID.x + gl_WorkGroupID.y * 32768u;
+        if (gi >= groups[3]) return;
+        uint e = groups[8u + gi];
+        slot = e / 64u;
+        local = (e % 64u) * 64u + gl_LocalInvocationID.x;
+    } else {
+        uint li = gl_WorkGroupID.y;
+        if (li >= count) return;
+        slot = list[li];
+        local = gl_WorkGroupID.x * 64u + gl_LocalInvocationID.x;
+    }
     int x = int(local % 16u), y = int((local / 16u) % 16u), z = int(local / 256u);
     int g = int(slot * 4096u + local);
     uint c = inC[g];
     uint fl = FL(c);
     if (pass == 1) {
         // Face flows: this cell's +x and +y faces.
-        vec4 P = faceP[g];
+        vec4 P = loadP(g);
         vec4 N = vec4(0.0), M = vec4(0.0);
         for (int k = 0; k < 2; ++k) {
             bool pN; int face;
@@ -272,11 +296,10 @@ void main() {
             if (k == 0) { N.x = q; N.z = sign(P.z) == sign(q) ? P.z : 0.0; M.x = qm; }
             else { N.y = q; N.w = sign(P.w) == sign(q) ? P.w : 0.0; M.y = qm; }
         }
-        faceN[2 * g] = N;
-        faceN[2 * g + 1] = M;
+        faceN[g] = uvec4(packHalf2x16(N.xy), packHalf2x16(N.zw), packHalf2x16(M.xy), 0u);
         return;
     }
-    if ((fl & SOLID) != 0u) { outC[g] = c; if (pass == 2) faceP[g] = vec4(0.0); return; }
+    if ((fl & SOLID) != 0u) { outC[g] = c; if (pass == 2) faceP[g] = uvec2(0u); return; }
     int f = int(F(c));
     uint kind = KIND(c);
     if (pass == 0) {
@@ -333,7 +356,7 @@ void main() {
         // room let through) and the fraction carried to the next substep.
         float dirAxis = (a > 0.0 ? 1.0 : -1.0) * ((k == 1 || k == 3) ? 1.0 : -1.0);
         if (k == 1 || k == 3) {
-            float qMom = k == 1 ? faceN[2 * g + 1].x : faceN[2 * g + 1].y;              // the momentum part carries on
+            float qMom = k == 1 ? loadM(g).x : loadM(g).y;            // the momentum part carries on
             float flowAxis = qMom * sc;
             if (clipped) flowAxis = sign(flowAxis) * min(abs(flowAxis), float(units) / (dt * UNITS));
             if (k == 1) { applied.x = flowAxis; applied.z = dirAxis * carry; }
@@ -342,7 +365,7 @@ void main() {
         int along = (k == 0 || k == 2) ? signedUnits : -signedUnits;      // + across the face along the axis
         if (k < 2) fx += along; else fy += along;
     }
-    faceP[g] = applied;
+    storeP(g, applied);
     int nf = clamp(f + net, 0, 255);
     if (f == 0 && nf > 0) kind = inKind;
     if ((fl & SOURCE) != 0u) nf = int(TG(c));                            // sources hold their level
@@ -354,6 +377,7 @@ void main() {
     uint res = pack(uint(nf), (fl & 31u) | (kind << 5), c);
     if (F(old) != uint(nf)) atomicOr(flagsOut[slot], 1u);
     outC[g] = res;
+    if (useGroups != 0 && nf > 0) atomicOr(gmask[slot * 6u + uint(maskCur) * 2u + (local >> 11u)], 1u << ((local >> 6u) & 31u)); // this group holds water (fluid_groups.comp)
     int w = watchOf[slot];
     if (w >= 0) { uint fb = (uint(w) * 4096u + local) * 4u; flux[fb] += fx; flux[fb + 1u] += fy; }
 }

@@ -5,6 +5,7 @@
 #include <atomic>
 #include <cmath>
 #include <cstdlib>
+#include <cstring>
 #include <thread>
 
 // A line-by-line port of resources/compute/fluid_step.comp (#654). Comments on the rules live there.
@@ -28,6 +29,16 @@ inline uint32_t SH(uint32_t c) { return c >> 24; }
 inline uint32_t CAP(uint32_t c) { return 255u - SH(c); }
 inline uint32_t Pack(uint32_t f, uint32_t fl, uint32_t c) { return (f & 255u) | ((fl & 255u) << 8) | (c & 0xFFFF0000u); }
 inline float Sign(float v) { return v > 0.0f ? 1.0f : v < 0.0f ? -1.0f : 0.0f; }
+// A float rounded through IEEE half precision (nearest even), as the shader stores its face flows (#675: packHalf2x16).
+inline float H(float f) {
+    if (std::fabs(f) < 6.103515625e-05f) return std::nearbyint(f * 16777216.0f) / 16777216.0f; // half subnormals: 2^-24 steps
+    if (std::fabs(f) > 65504.0f) return std::copysign(INFINITY, f);
+    uint32_t x; std::memcpy(&x, &f, 4);
+    x += 0x0FFFu + ((x >> 13) & 1u); x &= ~0x1FFFu; // 23 -> 10 mantissa bits
+    std::memcpy(&f, &x, 4);
+    return f;
+}
+inline Vec4 H(Vec4 v) { return { H(v.x), H(v.y), H(v.z), H(v.w) }; }
 
 struct Pass {
     Grid& g;
@@ -132,6 +143,7 @@ struct Pass {
     void faceFlow(int ga, uint32_t a, int gb, uint32_t b, float qp, float& qTot, float& qMom) const {
         qTot = 0.0f; qMom = 0.0f;
         if ((FL(a) & SOLID) || (FL(b) & SOLID)) return;
+        if (F(a) >= CAP(a) && F(b) >= CAP(b)) return; // both full: the taker has no room either way (before the head walks)
         const int ha = headOf(ga, a), hb = headOf(gb, b);
         if (ha == hb) return;
         const bool aGives = ha > hb;
@@ -207,8 +219,8 @@ struct Pass {
                 if (k == 0) { N.x = q; N.z = Sign(P.z) == Sign(q) ? P.z : 0.0f; M.x = qm; }
                 else { N.y = q; N.w = Sign(P.w) == Sign(q) ? P.w : 0.0f; M.y = qm; }
             }
-            g.faceN[(size_t)2 * gi] = N;
-            g.faceN[(size_t)2 * gi + 1] = M;
+            g.faceN[(size_t)2 * gi] = H(N);
+            g.faceN[(size_t)2 * gi + 1] = H(M);
             return;
         }
         if (fl & SOLID) { outC[gi] = c; if (pass == 2) g.faceP[gi] = Vec4{}; return; }
@@ -268,7 +280,7 @@ struct Pass {
                 else { applied.y = flowAxis; applied.w = dirAxis * carry; }
             }
         }
-        g.faceP[gi] = applied;
+        g.faceP[gi] = H(applied);
         int nf = std::clamp(f + net, 0, 255);
         if (f == 0 && nf > 0) kind = inKind;
         if (fl & SOURCE) nf = (int)TG(c);
