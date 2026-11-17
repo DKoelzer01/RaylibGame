@@ -1633,9 +1633,18 @@ void CpuTick(int n) {
     p.setCell(WaterField::CellSize(), ColumnCells());
     static const bool noEvap = getenv("RAYLIBGAME_FLUID_NOEVAP") != nullptr;
     static unsigned evapTick = 0;
+    // #680 diagnosis (DBVOL): water in the processed slots' plain cells before and after (sources, sinks and evaporation aside).
+    static const bool dbVol = getenv("DBVOL") != nullptr;
+    auto plainSum = [&]() { long long v = 0; for (int i = 0; i < processedCount; ++i) for (int c = 0; c < B3; ++c) { const uint32_t u = g.a[(size_t)i * B3 + c]; if (!((u >> 8) & (kSource | kSink | kSolid))) v += u & 255u; } return v; };
+    const long long volBefore = dbVol ? plainSum() : 0;
     for (int k = 0; k < n; ++k) {
         p.evaporate = !noEvap && ++evapTick % (kEvapEvery * (unsigned)SubstepScale()) == 0;
         FluidKernel::Substep(g, p, list);
+    }
+    if (dbVol) {
+        static long long drift = 0; static int ticks = 0;
+        drift += plainSum() - volBefore;
+        if (++ticks % 40 == 0) { printf("dbvol: plain-cell water changed by %+.2f m^3 over the last second (%d slots)\n", drift * WaterField::CellVolume() / 255.0, processedCount); drift = 0; }
     }
     // Unpack, as the GPU readback (GpuTick 1.).
     static const int d[6][3] = { { -1, 0, 0 }, { 1, 0, 0 }, { 0, -1, 0 }, { 0, 1, 0 }, { 0, 0, -1 }, { 0, 0, 1 } };

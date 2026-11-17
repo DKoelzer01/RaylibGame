@@ -236,6 +236,7 @@ struct Pass {
         r.surf = (rowOffset + dz) * 255 + (int)(SH(inC[cur]) + F(inC[cur]));
         bool pb = true, ph = true, pa = true;
         r.below = cur == bottom ? -1 : stepZ(cur, -1, pb);
+        if (r.below >= 0 && !pb) r.below = -1; // its apply must run to give the shortfall: only in a processed slot
         r.head = cur;
         if (F(inC[cur]) >= CAP(inC[cur])) {
             const int up = stepZ(cur, 1, ph);
@@ -359,6 +360,10 @@ struct Pass {
             else { taker = B.head; room = runRoom(B); }
         } else { taker = A.head; room = runRoom(A); }
         if (taker < 0) { WHY(6); return 0.0f; }
+        // Sources (generated water, held at their level each step) as in the per-face rules: one never takes, and gives
+        // only into dug cells (infinite water reaches a dig, not the open ground); a sink takes.
+        if ((FL(inC[taker]) & (SOURCE | SINK)) == SOURCE) return 0.0f;
+        if ((FL(inC[giverTop]) & SOURCE) && !(FL(inC[taker]) & DUG)) return 0.0f;
         const int units = (int)std::floor(std::min({ plan, (float)avail / 4.0f, (float)room / 4.0f }));
         if (units <= 0) { WHY(7); return q * 0.5f; }
         WHY(spill ? 8 : wet ? 9 : 10);
