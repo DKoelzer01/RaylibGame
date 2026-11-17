@@ -67,7 +67,10 @@ constexpr int kSettleSteps = 180;      // 3 s window: a brick whose cells all mo
 constexpr int kSettleDiff = 4;         // fill units (1.6 cm)
 constexpr long long kFilmHoldSteps = 300; // 5 s of steps: a brick's films stay drawn this long after it stops moving (#660)
 inline long long FilmHoldSteps() { static const long long h = getenv("RAYLIBGAME_FILM_HOLD") && atoi(getenv("RAYLIBGAME_FILM_HOLD")) == 0 ? 1 : kFilmHoldSteps; return h; } // A/B: =0 no hold
-constexpr int kLevelEvery = 60;        // levelling pass every second (#669: every 0.25 s nudged a big pool's cells constantly; the face flows carry the rest)
+// Levelling pass interval (steps), by how much water is awake: 4x a second for a few hundred bricks (a dug channel fills
+// at W4a's speed), down to once a second for thousands (a big pool's nudges cost ~10 ms a tick, #669).
+int awakeBricksLast = 0; // as of the last publish
+inline int LevelEvery() { return awakeBricksLast < 300 ? 15 : awakeBricksLast < 1500 ? 30 : 60; }
 constexpr int kInitPerStep = 24;       // bricks classified per step, in parallel on the worker pool (each a few ms)
 constexpr int kMaxBricks = 4096;       // per site
 
@@ -805,7 +808,7 @@ void RunJob() {
     for (int k = 0; k < n; ++k) {
         ++stepCount;
         for (auto& s : sites) for (Site::Spring& sp : s->springs) StepSpring(*s, sp); // the cells: the GPU (GpuTick) or CpuTick below
-        if (stepCount % kLevelEvery == 0) for (auto& s : sites) LevelSite(*s);
+        if (stepCount % LevelEvery() == 0) for (auto& s : sites) LevelSite(*s);
     }
     // CPU mode: the GPU's step on the CPU (#654), at its substep count (120 a second).
     if (!gpuMode) CpuTick((int)lround(2 * kSubsteps * (kTickSeconds / 0.05)) * std::max(1, speed.load()));
@@ -944,6 +947,7 @@ void RunJob() {
         st.dbg[0] = dbgDown; st.dbg[1] = dbgSide; st.dbg[2] = dbgSrc; st.dbg[3] = dbgLevel; dbgDown = dbgSide = dbgSrc = dbgLevel = 0;
         st.settled = (int)settledTotal;
         pubStats = st;
+        awakeBricksLast = st.activeBricks; // the levelling interval (LevelEvery)
     }
 }
 
