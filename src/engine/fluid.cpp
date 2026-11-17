@@ -132,6 +132,7 @@ struct Brick {
     // once a second, not every tick, and never falls asleep (a steady stream's bricks slept and woke every second, #660).
     bool steady = false;
     int winTicks = 0, winFlow = 0;  // this settle window: ticks published, ticks the GPU changed it
+    float checkVol = 0.0f;          // its water (m^3) at the window's start: a slow drain or fill changes it, jitter does not (#680)
 };
 inline int Cap(const Brick* b, int i) { return 255 - b->shut[i]; }          // what the cell holds (#454)
 inline int Height(const Brick* b, int i) { return b->shut[i] + b->fill[i]; } // where its water stands, in 255ths of the cell
@@ -969,17 +970,22 @@ void RunJob() {
             // wakes it again (Touch); a real flow changes some cell by more than that within the window.
             if (b.active) {
                 ++b.winTicks;
-                if (b.checkStep < 0) { b.check = b.fill; b.checkStep = stepCount; b.winTicks = b.winFlow = 0; }
+                if (b.checkStep < 0) { b.check = b.fill; b.checkStep = stepCount; b.winTicks = b.winFlow = 0; b.checkVol = b.statVolume + b.statOther; }
                 else if (stepCount - b.checkStep >= kSettleSteps) {
                     int maxd = 0;
                     for (int i = 0; i < B3 && maxd <= 2 * kSettleDiff; ++i) maxd = std::max(maxd, abs((int)b.fill[i] - (int)b.check[i]));
                     // Levels held: at rest it sleeps; with water still passing through (the GPU changed it in half its ticks
                     // or more) it is steady (#674: keeps running, read back once a second). Levels moved: neither.
                     const bool flowing = b.winTicks > 0 && b.winFlow * 2 >= b.winTicks;
-                    if (maxd <= 2 * kSettleDiff && flowing && gpuMode) b.steady = true; // a moving surface wobbles more than a still one
-                    else if (maxd <= kSettleDiff) { b.active = false; b.idle = kSleepSteps + 1; b.settled = true; b.steady = false; out.settledNow = true; }
+                    // Its volume held too (#680): a big pool draining slowly through a hole (a few mm a second) moved every cell
+                    // less than the tolerance and fell asleep over the water it still owed; jitter moves units, not volume.
+                    // At most 2 mm over the brick's area.
+                    const float side = (float)B * WaterField::CellSize();
+                    const bool volumeHeld = fabsf(b.statVolume + b.statOther - b.checkVol) <= 0.002f * side * side;
+                    if (maxd <= 2 * kSettleDiff && flowing && volumeHeld && gpuMode) b.steady = true; // a moving surface wobbles more than a still one
+                    else if (maxd <= kSettleDiff && volumeHeld) { b.active = false; b.idle = kSleepSteps + 1; b.settled = true; b.steady = false; out.settledNow = true; }
                     else b.steady = false;
-                    b.check = b.fill; b.checkStep = stepCount; b.winTicks = b.winFlow = 0;
+                    b.check = b.fill; b.checkStep = stepCount; b.winTicks = b.winFlow = 0; b.checkVol = b.statVolume + b.statOther;
                 }
             } else { b.checkStep = -1; b.steady = false; }
             // The drawn water eases toward the simulated: 40% of the way a tick (25 ms), so a cell the water reaches fills in
