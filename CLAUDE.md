@@ -34,6 +34,14 @@ C++ raylib 5.5 planetoid survival game. `src/engine` (static lib), `src/space` -
   - skip it for changes with nothing to see (data, saves, pure logic covered by a scripted test), and when a
     recording would cost more than the check is worth (say so in the report);
   - never while the user playtests, and report the capture path (and the GIF for the user) with the result.
+- **The camera shows what a test tests (user, 2026-11-16):** every test keeps its subject in view - the water, the
+  structure being built, the pre-placed resource being mined, the machine running - and follows it when it moves (a stream
+  running off, a dam break spreading, a player walking). Set the camera directly each frame (`world.camera.*`, as
+  `--test-dam` does); placing the player every frame keeps the loading screen up. Fix a test that doesn't when you touch it.
+- **Sim benches use the sandbox (user, 2026-11-16, #662):** `--sandbox` is a flat plane (no bake, rivers, sea, caves, rocks,
+  trees; world ready < 1 s) that a test shapes with edits and parts. Use it for simulation work (fluids, machines,
+  building); real world generation only for tests that need a real environment. Feature suites keep their real-world
+  tests; full regressions wait for major milestones. Fluid perf: `--sandbox --test-fluid-load S` (an S x S m basin).
 - Full regression (`tools/regression.sh planet`, `EXE=... SNAPSHOT=1`): ONE run only, after ALL fixes are in and
   the PRs are merge-ready (user, 2026-11-14), never between fix rounds; re-check failures with targeted runs
   first. Erosion is the default terrain (#362, user 2026-11-15; `RAYLIBGAME_EROSION=0` = the old noise terrain for A/B): the first bench on a seed bakes ~80 s, cached with its save after that.
