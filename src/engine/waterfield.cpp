@@ -327,4 +327,28 @@ float ChunkSampler::depthBelow(Vector3 p, int kind) {
     return 0.0f;
 }
 
+bool ChunkSampler::slope(Vector3 p, int kind, Vector3& downhill, float& grade) {
+    for (int si = 0; si < (int)sites.size(); ++si) {
+        const Site& s = *sites[si];
+        float fx, fy, fz;
+        s.frame(p, fx, fy, fz);
+        const int ci = (int)floorf(fx), cj = (int)floorf(fy), ck = (int)floorf(fz);
+        if (!brickAt(si, ci, cj, ck)) continue;
+        const float own = surface(si, ci, cj, ck, kind);
+        if (own <= kNone * 0.5f) return false;
+        // Surfaces in cells (heights and spacing alike, so the ratio is the grade); a dry or missing side: one-sided.
+        auto diff = [&](int di, int dj) {
+            const float a = surface(si, ci + di, cj + dj, ck, kind), b = surface(si, ci - di, cj - dj, ck, kind);
+            const bool ha = a > kNone * 0.5f, hb = b > kNone * 0.5f;
+            return ha && hb ? 0.5f * (a - b) : ha ? a - own : hb ? own - b : 0.0f;
+        };
+        const float gx = diff(1, 0), gy = diff(0, 1);
+        grade = sqrtf(gx * gx + gy * gy);
+        if (grade < 1e-5f) { downhill = { 0, 0, 0 }; return true; }
+        downhill = Vector3Scale(Vector3Add(Vector3Scale(s.e, -gx), Vector3Scale(s.n, -gy)), 1.0f / grade);
+        return true;
+    }
+    return false;
+}
+
 } // namespace WaterField

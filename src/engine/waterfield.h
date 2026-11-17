@@ -122,6 +122,9 @@ public:
     bool moving(Vector3 p) const;                 // a covered point's water is moving (its brick is awake, #649)
     // Metres of fluid in the column under a covered point (up to 8), for the shader's depth tint.
     float depthBelow(Vector3 p, int kind);
+    // The surface's downhill direction (body-local, along the surface, unit) and slope (rise over run) at a point, from the
+    // column surfaces either side (#677: simulated water gets a current to draw); false where no column covers it.
+    bool slope(Vector3 p, int kind, Vector3& downhill, float& grade);
 private:
     std::vector<const Site*> sites;
     uint8_t kindMask = 0;

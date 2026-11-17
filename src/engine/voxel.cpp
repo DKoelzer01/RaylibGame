@@ -2037,6 +2037,7 @@ static void MeshChunkWater(const DensityField& field, ChunkMeshData& out, const 
                     const Vector3 bp = Vector3Add(origin, lp);
                     const Vector3 radial = Vector3Normalize(bp);
                     Vector3 n = radial; // the sea is a sphere: radial normals
+                    Vector3 simFlow{}; float simSpeed = 0.0f; // simulated water's current (#677)
                     float depth = 50.0f;
                     if (simKind && sim.covered(bp)) {
                         // Moving fluid: the surface's own normal (falls, steps), the fluid under it for the tint.
@@ -2053,6 +2054,17 @@ static void MeshChunkWater(const DensityField& field, ChunkMeshData& out, const 
                         const float gl = Vector3Length(grad);
                         if (gl > 1e-6f) n = Vector3Scale(grad, -1.0f / gl);
                         depth = std::max(0.3f, sim.depthBelow(bp, kind));
+                        // Its current (#677): down the simulated surface's slope at Manning's speed, v = depth^(2/3) sqrt(slope) /
+                        // n (n 0.03, at most 4 m/s): a channel runs, a level pool stands still - awake, steady or asleep alike.
+                        Vector3 down; float grade;
+                        if (sim.slope(bp, kind, down, grade) && grade > 1e-4f) {
+                            simFlow = Vector3Subtract(down, Vector3Scale(radial, Vector3DotProduct(down, radial)));
+                            const float fl = Vector3Length(simFlow);
+                            if (fl > 1e-4f) {
+                                simFlow = Vector3Scale(simFlow, 1.0f / fl);
+                                simSpeed = std::min(4.0f, powf(std::max(0.05f, sim.depthBelow(bp, kind)), 2.0f / 3.0f) * sqrtf(grade) / 0.03f);
+                            }
+                        }
                         // Over simulated sea or lake cells: no shallower than the generated water around them (a lighter
                         // square at the edge of a site otherwise: the column count stops at 8 m, #382 review).
                         if (genKind && pf) depth = std::max(depth, Vector3Length(bp) - sea - groundAt(bp, radial));
@@ -2065,8 +2077,8 @@ static void MeshChunkWater(const DensityField& field, ChunkMeshData& out, const 
                     out.waterNormals.insert(out.waterNormals.end(), { n.x, n.y, n.z });
                     out.waterDepth.insert(out.waterDepth.end(), { depth, (float)kind });
                     // The current (#361): generated river water flows downstream, ~1 m/s mid-channel, slower to the banks.
-                    // Lakes, the sea and simulated cells stand still here.
-                    Vector3 flow{}; float speed = 0.0f;
+                    // Lakes and the sea stand still here; simulated water runs down its surface (#677, above).
+                    Vector3 flow = simFlow; float speed = simSpeed;
                     if (kind == 0 && gen.inland && rivers && !(simKind && sim.covered(bp))) {
                         const RiverNetwork::Hit hr = rivers->nearest(radial, 60.0f);
                         if (hr.found && hr.dist < hr.halfWidth + 3.0f) {
