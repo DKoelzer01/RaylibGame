@@ -32,6 +32,7 @@
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <set>
 #include <unordered_map>
 #include <unordered_set>
 #include <thread>
@@ -1139,7 +1140,7 @@ struct GpuState {
     // mapped buffer behind a fence and read the next tick; without buffer storage, the old per-brick downloads.
     ComputeProgram pack;
     ComputeBuffer packed;
-    unsigned rbBuf = 0; unsigned char* rbPtr = nullptr; size_t rbCap = 0; void* rbFence = nullptr; size_t rbFlagsBytes = 0;
+    unsigned rbBuf = 0; unsigned char* rbPtr = nullptr; size_t rbCap = 0; void* rbFence = nullptr; size_t rbFlagsBytes = 0, rbSinkAt = 0, rbSinkBytes = 0; bool sinkOn = false; // sinkOn: some release measures its outflow (#656); rbSinkAt: its counters in the mapped buffer
     bool asyncRb = false;
     // The dry-cell skip (#675, fluid_groups.comp): per slot 3 substeps x 64 group bits (wet), the listed groups + dispatch args.
     ComputeProgram groups;
@@ -1311,23 +1312,25 @@ void GpuFlowResolve() {
 }
 
 void GpuTick(int n) {
-    // 0. Released reaches' outflow (#656): what their sinks took in, read once a second (a small stalling download) and
-    // credited to each sink brick's release.
-    static int sinkTick = 0;
-    if (++sinkTick % 20 == 0 && G.capacity > 0) {
-        bool any = false;
-        for (auto& s : sites) for (const Site::Release& r : s->releases) any = any || r.piece >= 0;
-        if (any) {
-            static std::vector<unsigned> units, zeros;
-            units.resize(G.capacity); zeros.assign(G.capacity, 0u);
-            G.sinkOut.download(units.data(), G.capacity * 4);
-            G.sinkOut.upload(zeros.data(), G.capacity * 4);
-            for (int slot = 0; slot < G.capacity; ++slot) {
-                const Brick* br = G.owner[slot];
-                Site* st = G.ownerSite[slot];
-                if (units[slot] && br && st && br->sinkRelease >= 0 && br->sinkRelease < (int)st->releases.size()) st->releases[br->sinkRelease].sinkUnits += units[slot];
-            }
+    // 0. Released reaches' outflow (#656): what their sinks took in, credited to each sink brick's release. It rides the
+    // async readback (copied with the flags each dispatch, read a tick later); without it, a stalling download once a
+    // second (with 1800 bricks at 0.25 m cells that stall was a 35 ms frame every second).
+    auto creditSinks = [](const unsigned* units, int slots) {
+        for (int slot = 0; slot < slots && slot < (int)G.owner.size(); ++slot) {
+            const Brick* br = G.owner[slot];
+            Site* st = G.ownerSite[slot];
+            if (units[slot] && br && st && br->sinkRelease >= 0 && br->sinkRelease < (int)st->releases.size()) st->releases[br->sinkRelease].sinkUnits += units[slot];
         }
+    };
+    G.sinkOn = false;
+    for (auto& s : sites) for (const Site::Release& r : s->releases) G.sinkOn = G.sinkOn || r.piece >= 0;
+    static int sinkTick = 0;
+    if (!G.asyncRb && G.sinkOn && ++sinkTick % 20 == 0 && G.capacity > 0) {
+        static std::vector<unsigned> units, zeros;
+        units.resize(G.capacity); zeros.assign(G.capacity, 0u);
+        G.sinkOut.download(units.data(), G.capacity * 4);
+        G.sinkOut.upload(zeros.data(), G.capacity * 4);
+        creditSinks(units.data(), G.capacity);
     }
     // 1. Results of the last dispatch: which bricks changed (and want neighbours), then their cells.
     if (!G.lastList.empty()) {
@@ -1341,6 +1344,7 @@ void GpuTick(int n) {
             glDeleteSync((GLsync)G.rbFence); G.rbFence = nullptr;
             flags = (const unsigned*)G.rbPtr;
             packed = (const uint32_t*)(G.rbPtr + G.rbFlagsBytes);
+            if (G.rbSinkBytes) creditSinks((const unsigned*)(G.rbPtr + G.rbSinkAt), (int)(G.rbSinkBytes / 4)); // #656
         } else {
             flagsV.resize(G.capacity);
             G.flags.download(flagsV.data(), G.capacity * 4);
@@ -1591,7 +1595,8 @@ void GpuTick(int n) {
         G.pack.setUint("count", (unsigned)list.size());
         G.a.bind(0); G.list.bind(3); G.packed.bind(10);
         G.pack.dispatch(kCellsPerBrick / 2 / 64u, bricks);
-        const size_t total = flagsBytes + packedBytes;
+        const size_t sinkBytes = G.sinkOn ? (size_t)G.capacity * 4 : 0; // released reaches' sink counters (#656)
+        const size_t total = flagsBytes + packedBytes + sinkBytes;
         if (G.rbCap < total) {
             if (G.rbBuf) { glDeleteBuffers(1, (GLuint*)&G.rbBuf); G.rbBuf = 0; G.rbPtr = nullptr; }
             size_t cap = 1u << 20;
@@ -1612,9 +1617,15 @@ void GpuTick(int n) {
         glCopyBufferSubData(GL_COPY_READ_BUFFER, GL_COPY_WRITE_BUFFER, 0, 0, (GLsizeiptr)flagsBytes);
         glBindBuffer(GL_COPY_READ_BUFFER, G.packed.id);
         glCopyBufferSubData(GL_COPY_READ_BUFFER, GL_COPY_WRITE_BUFFER, 0, (GLintptr)flagsBytes, (GLsizeiptr)packedBytes);
+        if (sinkBytes) {
+            glBindBuffer(GL_COPY_READ_BUFFER, G.sinkOut.id);
+            glCopyBufferSubData(GL_COPY_READ_BUFFER, GL_COPY_WRITE_BUFFER, 0, (GLintptr)(flagsBytes + packedBytes), (GLsizeiptr)sinkBytes);
+        }
         glBindBuffer(GL_COPY_READ_BUFFER, 0);
         glBindBuffer(GL_COPY_WRITE_BUFFER, 0);
+        if (sinkBytes) { static std::vector<unsigned> zeros; zeros.assign(G.capacity, 0u); G.sinkOut.upload(zeros.data(), (unsigned)sinkBytes); } // counted from here on
         G.rbFlagsBytes = flagsBytes;
+        G.rbSinkAt = flagsBytes + packedBytes; G.rbSinkBytes = sinkBytes;
         G.rbFence = glFenceSync(GL_SYNC_GPU_COMMANDS_COMPLETE, 0);
         glFlush();
     }
@@ -1914,6 +1925,21 @@ const RiverNetwork* RiversOf(uint64_t bodyId) {
 }
 
 void UpdateRiverFlow() {
+    // The links whose water changed, refreshed one a tick (40 a second): a change running down a river remeshed every link
+    // it reached in the same frame, a 30-40 ms hitch once a second while it ran.
+    static std::deque<std::pair<uint64_t, int>> refreshQueue;
+    static std::set<std::pair<uint64_t, int>> refreshQueued;
+    if (!refreshQueue.empty()) {
+        const auto [bodyId, piece] = refreshQueue.front();
+        refreshQueue.pop_front(); refreshQueued.erase({ bodyId, piece });
+        Planetoid* body = Planetoid::find(bodyId);
+        const PlanetField* pf = body ? dynamic_cast<const PlanetField*>(body->field.get()) : nullptr;
+        if (const RiverNetwork* net = pf ? pf->rivers() : nullptr; net && net->pieceBounds(piece).radius > 0.0f) {
+            const RiverNetwork::PieceBounds b = net->pieceBounds(piece);
+            WaterSurface::Invalidate(*pf, Vector3Normalize(b.mid), b.radius);
+            RequestRemesh(*body, b.mid, b.radius);
+        }
+    }
     static double last = -1.0;
     const double now = GetTime();
     if (last < 0.0) { last = now; return; }
@@ -1943,11 +1969,8 @@ void UpdateRiverFlow() {
             }
         changed.clear();
         if (!net->stepFlow(dt, changed)) continue;
-        for (int piece : changed) {
-            const RiverNetwork::PieceBounds b = net->pieceBounds(piece);
-            WaterSurface::Invalidate(*pf, Vector3Normalize(b.mid), b.radius);
-            RequestRemesh(*body, b.mid, b.radius);
-        }
+        for (int piece : changed)
+            if (refreshQueued.insert({ s->body, piece }).second) refreshQueue.push_back({ s->body, piece });
     }
 }
 

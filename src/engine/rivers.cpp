@@ -926,7 +926,11 @@ bool RiverNetwork::stepFlow(float dt, std::vector<int>& changed) const {
     for (int k : nodeTopo) {
         const Piece& pc = pieces[k];
         const float q = std::max(nodeQ[k], 1.0f);
-        float target = flowSet[k] >= 0.0f ? flowSet[k] : std::clamp((inflow[k] + std::max(0.0f, q - nodeChildQ[k])) / q, 0.0f, 1.5f);
+        // Against the node's own natural total (its tributaries' plus its own drainage), so an untouched node is exactly 1: a
+        // node whose drainage is a little under its tributaries' sum read > 1 and drifted, and 250k links remeshed (#656).
+        const float own = std::max(0.0f, q - nodeChildQ[k]);
+        const float natural = nodeChildQ[k] + own;
+        float target = flowSet[k] >= 0.0f ? flowSet[k] : std::clamp((inflow[k] + own) / std::max(natural, 1.0f), 0.0f, 1.5f);
         if (pc.inLake) target = 1.0f;
         float f = flowCur[k].load(std::memory_order_relaxed);
         f += (target - f) * std::min(1.0f, 3.0f * dt * kSpeed / std::max(1.0f, 2.0f * pc.halfLen));
@@ -942,6 +946,7 @@ bool RiverNetwork::stepFlow(float dt, std::vector<int>& changed) const {
 }
 
 RiverNetwork::PieceBounds RiverNetwork::pieceBounds(int piece) const {
+    if (piece < 0 || piece >= (int)pieces.size()) return { Vector3{}, 0.0f }; // stale (a queued refresh from another world)
     const Piece& pc = pieces[piece];
     return { pc.mid, pc.halfLen + std::max(pc.wa, pc.wb) + 20.0f };
 }
