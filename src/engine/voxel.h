@@ -197,6 +197,11 @@ public:
     // Before any sampling or the erosion bake: the parameters, and the elevation bounds they need (taller ranges).
     void setGenParams(const WorldGenParams& p);
     bool foliage = false;         // grows trees (planets with life); the terrain paints distant canopy
+    // A sandbox (#662, --sandbox): a flat plane kSandboxHeight over the radius - no height map, rivers, ponds, caves, rocks
+    // or sea - for sim benches that shape their own ground with edits. Before any sampling.
+    static constexpr float kSandboxHeight = 50.0f;
+    bool sandbox = false;
+    void setSandbox();
     unsigned int foliageSeed = 0; // the tree system's seed (TreeCanopy matches its forests)
     unsigned int oreSeed = 0;     // ore deposits (oreKind)
     SimplexNoise continents, ridges, hills, valleys, detail, cavesA, cavesB, veins, climate, caverns, ravines, ravineMask, streams, rocks, rockMask, rugged, cliffs, warp3, tempNoise, moistNoise, biomeJitter, caveMouths;
@@ -305,7 +310,7 @@ public:
     float maxRadius() const override { return radius + maxElevation; }
     float minRadius() const override { return mantleRadius - 1.0f; } // digging stops at the mantle
     float occluderRadius() const override { return mantleRadius; }
-    float seaLevelRadius() const override { return moon ? 0.0f : radius; }
+    float seaLevelRadius() const override { return moon || sandbox ? 0.0f : radius; }
 
     // Rock outcrops and boulders near the surface: metres inside the nearest one (< 0 outside).
     float rockFeature(Vector3 p, float d, float surface, float footprint) const;
