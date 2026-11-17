@@ -2057,7 +2057,13 @@ static void MeshChunkWater(const DensityField& field, ChunkMeshData& out, const 
                         // Its current (#677): down the simulated surface's slope at Manning's speed, v = depth^(2/3) sqrt(slope) /
                         // n (n 0.03, at most 4 m/s): a channel runs, a level pool stands still - awake, steady or asleep alike.
                         Vector3 down; float grade;
-                        if (sim.slope(bp, kind, down, grade) && grade > 1e-4f) {
+                        Vector3 solverDir; float solverSpeed;
+                        if (sim.simFlow(bp, solverDir, solverSpeed)) { // the debug view (#695): the solver's own flow, published only then
+                            simFlow = Vector3Subtract(solverDir, Vector3Scale(radial, Vector3DotProduct(solverDir, radial)));
+                            const float fl = Vector3Length(simFlow);
+                            simFlow = fl > 1e-4f ? Vector3Scale(simFlow, 1.0f / fl) : Vector3{ 0, 0, 0 };
+                            simSpeed = solverSpeed;
+                        } else if (sim.slope(bp, kind, down, grade) && grade > 1e-4f) {
                             simFlow = Vector3Subtract(down, Vector3Scale(radial, Vector3DotProduct(down, radial)));
                             const float fl = Vector3Length(simFlow);
                             if (fl > 1e-4f) {

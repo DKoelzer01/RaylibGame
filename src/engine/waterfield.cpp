@@ -362,3 +362,29 @@ bool ChunkSampler::slope(Vector3 p, int kind, Vector3& downhill, float& grade) {
 }
 
 } // namespace WaterField
+
+namespace WaterField {
+bool ChunkSampler::simFlow(Vector3 p, Vector3& dir, float& speed) const {
+    for (int si = 0; si < (int)sites.size(); ++si) {
+        const Site& s = *sites[si];
+        float fx, fy, fz;
+        s.frame(p, fx, fy, fz);
+        const int ci = (int)floorf(fx), cj = (int)floorf(fy), ck = (int)floorf(fz);
+        float best = -1.0f, bx = 0.0f, by = 0.0f;
+        for (int dk = 0; dk >= -1; --dk) {
+            const Brick* b = brickPtr(si, ci >> 4, cj >> 4, (ck + dk) >> 4);
+            if (!b || b->flow.empty()) continue;
+            const int i = CellIdx(ci & 15, cj & 15, (ck + dk) & 15);
+            const float vx = b->flow[2 * i] * 0.01f, vy = b->flow[2 * i + 1] * 0.01f, v = sqrtf(vx * vx + vy * vy);
+            if (v > best) { best = v; bx = vx; by = vy; }
+        }
+        if (best < 0.0f) continue;
+        speed = best;
+        const Vector3 d = Vector3Add(Vector3Scale(s.e, bx), Vector3Scale(s.n, by));
+        const float dl = Vector3Length(d);
+        dir = dl > 1e-6f ? Vector3Scale(d, 1.0f / dl) : Vector3{ 0, 0, 0 };
+        return true;
+    }
+    return false;
+}
+} // namespace WaterField

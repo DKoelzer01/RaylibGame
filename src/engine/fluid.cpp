@@ -1017,6 +1017,28 @@ void RunJob() {
             out.pb = std::make_shared<WaterField::Brick>();
             WaterField::Brick* pb = out.pb.get();
             pb->fill = b.fill; pb->drawn = b.disp; pb->flags = b.flags; pb->shut = b.shut; pb->kinds = present; pb->moving = movingNow; // queries read the simulated water, the mesher the eased
+            // The debug view (#695): the solver's own flow per cell - its +x and +y face flows (m^3/s) over the water's
+            // cross-section there, cm/s along the site's east and north. CPU kernel only (the GPU keeps its faces).
+            if (Fluid::DebugView() && b.faces.size() == (size_t)B3) {
+                // A column's top cell carries the flow of its whole column (its momentum builds on the column's depth): over the
+                // column's wetted depth (within this brick), not its own thin fill - that read surface cells 10x too fast.
+                pb->flow.assign((size_t)2 * B3, 0);
+                const float cs = WaterField::CellSize();
+                for (int y = 0; y < B; ++y)
+                    for (int x = 0; x < B; ++x) {
+                        float depth = 0.0f; // the water from the column's bottom up to this cell (m), within the brick
+                        for (int z = 0; z < B; ++z) {
+                            const int i = x + B * y + B * B * z;
+                            if (!b.fill[i] || (b.flags[i] & kSolid)) { depth = 0.0f; continue; }
+                            depth += b.fill[i] / 255.0f * cs;
+                            const int above = z + 1 < B ? i + B * B : -1;
+                            const bool top = above < 0 || !b.fill[above] || (b.flags[above] & kSolid);
+                            const float area = cs * std::max(0.02f, top ? depth : b.fill[i] / 255.0f * cs);
+                            pb->flow[2 * i] = (int16_t)std::clamp(b.faces[i].x / area * 100.0f, -32000.0f, 32000.0f);
+                            pb->flow[2 * i + 1] = (int16_t)std::clamp(b.faces[i].y / area * 100.0f, -32000.0f, 32000.0f);
+                        }
+                    }
+            }
             // A cell's surface reaches its neighbours' samples (solid cells carry it, empty ones look below). Only a
             // visible change redraws the chunks, and only around the cells that changed: some cell 2.5 cm+ off what
             // they last drew, or its solidity or fluid kind (a body easing by a 255th at a time kept ~2000 chunk
