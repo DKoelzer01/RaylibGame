@@ -305,6 +305,7 @@ NewWorldChoice NewWorld_Draw() {
     if (Slider(next(), "Roughness", params.roughness, 0.3f, 2.0f, "%.2fx")) Changed();
     if (Slider(next(), "Biome size", params.biomeSize, 0.5f, 2.0f, "%.2fx")) Changed();
     if (Slider(next(), "Resources", params.resources, 0.5f, 2.0f, "%.2fx")) Changed();
+    if (Slider(next(), "Water cycle", params.waterCycle, 0.5f, 2.0f, "%.2fx")) Changed(); // #637: river size, streams, wetter climates
     {   // Erosion on/off and its strength (not in the preview: the bake runs when the world is made).
         const Rectangle r = next();
         const int fs = (int)(rowH * 0.5f);
@@ -327,10 +328,11 @@ NewWorldChoice NewWorld_Draw() {
     const int noteFs = (int)(17 * s);
     DrawText("The preview shows the base terrain; erosion shapes it when the world is created (about a minute).", (int)px, (int)y, noteFs, Fade(kText, 0.6f));
     y += noteFs + gap * 2;
-    if (Button({ px, y, pw * 0.3f, rowH }, "Defaults")) { params = WorldGenParams{}; Changed(); }
+    // The bottom row: Create World, Cancel, Defaults (#637: a Defaults row under the sliders ran into it once they were 11).
     const float by = H * 0.18f + H * 0.74f - rowH - 40 * s;
-    if (Button({ px, by, pw * 0.46f, rowH * 1.15f }, "Create World")) { r.kind = NewWorldChoice::Create; r.seed = seed; r.params = params; }
-    if (Button({ px + pw * 0.54f, by, pw * 0.46f, rowH * 1.15f }, "Cancel") || (IsKeyPressed(KEY_ESCAPE) && !seedFocus)) r.kind = NewWorldChoice::Cancel;
+    if (Button({ px, by, pw * 0.4f, rowH * 1.15f }, "Create World")) { r.kind = NewWorldChoice::Create; r.seed = seed; r.params = params; }
+    if (Button({ px + pw * 0.43f, by, pw * 0.3f, rowH * 1.15f }, "Cancel") || (IsKeyPressed(KEY_ESCAPE) && !seedFocus)) r.kind = NewWorldChoice::Cancel;
+    if (Button({ px + pw * 0.76f, by, pw * 0.24f, rowH * 1.15f }, "Defaults")) { params = WorldGenParams{}; Changed(); }
 
     // The preview, rebuilt 0.35 s after the last change.
     if (dirty && !building.load() && GetTime() - changedAt > 0.35) StartBuild();

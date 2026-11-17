@@ -2728,6 +2728,27 @@ int main(int argc, char** argv)
                             printf("bench: rivers: network built in %.2f s: %d cells of %.0f m, %d land, %d river (%.1f%%), %d lake cells, %d mouths; %d links: worst rise %.5f m, worst narrowing %.5f m\n",
                                    buildS, s.cells, s.cellSize, s.landCells, s.riverCells, 100.0f * s.riverCells / std::max(1, s.landCells), s.lakeCells, s.mouths, links, rise, shrink);
                             printf("bench: rivers: %d river cells above 700 m, highest source at %.0f m (#359)\n", s.riverCellsAbove700, s.highestSource);
+                            {   // Widths and depths (#637), by river length: full width (2 x half) in bins, and the widest / deepest.
+                                const float edges[] = { 2, 5, 10, 20, 30, 50, 1e9f };
+                                double km[7] = {}, total = 0.0; float widest = 0.0f, deepest = 0.0f;
+                                const Vector3 start = pf->findSpawnDir(p->seed);
+                                float bigNear = 1e30f; Vector3 bigDir{}, bigDown{}; float bigW = 0.0f; // the nearest river 30 m+ wide (a capture)
+                                net->forEachLink([&](const RiverNetwork::Link& l) {
+                                    if (l.inLake) return;
+                                    const float w = 0.5f * (l.wa + l.wb), len = Vector3Distance(l.a, l.b) / 1000.0f; // full width at the middle (Link widths are full)
+                                    int b = 0; while (w >= edges[b]) ++b;
+                                    km[b] += len; total += len; widest = std::max(widest, std::max(l.wa, l.wb)); deepest = std::max(deepest, std::max(l.da, l.db));
+                                    const Vector3 mid = Vector3Normalize(Vector3Add(l.a, l.b));
+                                    const float far = Vector3Distance(mid, start);
+                                    if (w >= 30.0f && far < bigNear) { bigNear = far; bigDir = mid; bigDown = Vector3Normalize(Vector3Subtract(l.b, l.a)); bigW = w; }
+                                });
+                                if (bigNear < 1e29f)
+                                    printf("bench: rivers: a %.0f m wide river %.1f km from the start; look down it: --view-fall %.6f %.6f %.6f %.5f %.5f %.5f --view-fall-dist 90\n",
+                                           bigW, bigNear * pf->radius / 1000.0f, bigDir.x, bigDir.y, bigDir.z, -bigDown.x, -bigDown.y, -bigDown.z);
+                                printf("bench: rivers: widths by length (#637): <2 m %.0f%%, 2-5 %.0f%%, 5-10 %.0f%%, 10-20 %.0f%%, 20-30 %.0f%%, 30-50 %.0f%%, 50+ %.0f%% of %.0f km; widest %.0f m, deepest %.1f m\n",
+                                       100 * km[0] / std::max(total, 1e-6), 100 * km[1] / std::max(total, 1e-6), 100 * km[2] / std::max(total, 1e-6), 100 * km[3] / std::max(total, 1e-6),
+                                       100 * km[4] / std::max(total, 1e-6), 100 * km[5] / std::max(total, 1e-6), 100 * km[6] / std::max(total, 1e-6), total, widest, deepest);
+                            }
                             if (net->bakeNative()) {
                                 // Heads (#625): a river starts as a seep and a trickle, never at a waterfall (unless the ground drops there).
                                 printf("bench: rivers: heads (#625): %d sources, %d with a waterfall in their first 3 links\n", s.heads, s.headFalls);
@@ -4881,7 +4902,7 @@ int main(int argc, char** argv)
                         if (best > 1e29f) { printf("bench: pump: no water with a shore -> FAIL\n"); benchPump = false; }
                         else {
                             auto along = [&](float s) { return Vector3Normalize(Vector3Add(wdir, Vector3Scale(out, s / pf->radius))); };
-                            const Vector3 intakeAt = Vector3Scale(along(shoreS - 2.5f), pf->radius + level + 0.15f); // the pump's floor, just over the water
+                            const Vector3 intakeAt = Vector3Scale(along(shoreS - 4.0f), pf->radius + level + 0.15f); // the pump's floor, just over the water (4 m in: #637's wider rivers have a shallow edge)
                             const Vector3 bd = along(shoreS + 28.0f);
                             const Vector3 b = Vector3Scale(bd, pf->radius + pf->elevation(bd));
                             const TerrainEdit bowl{ Vector3Subtract(b, Vector3Scale(bd, 0.8f)), 2.6f, -1.0f, true };
