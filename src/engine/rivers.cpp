@@ -401,6 +401,10 @@ RiverNetwork::RiverNetwork(float radius, unsigned int seed, const std::function<
     for (int c = 0; c < N; ++c) if (river[c]) st.longestKm = std::max(st.longestKm, (len[c] + cell) / 1000.0f);
 }
 
+static thread_local bool tNatural = false; // a NaturalScope is open on this thread (#656)
+RiverNetwork::NaturalScope::NaturalScope() : prev(tNatural) { tNatural = true; }
+RiverNetwork::NaturalScope::~NaturalScope() { tNatural = prev; }
+
 RiverNetwork::Hit RiverNetwork::nearest(Vector3 dir, float reach) const {
     Hit hit;
     const auto& list = index[cellOf(dir)];
@@ -411,13 +415,19 @@ RiverNetwork::Hit RiverNetwork::nearest(Vector3 dir, float reach) const {
     // lower one (on the strata's cliff bands the nearest one rose 8 m walking down the longest river).
     Hit inside;
     inside.level = 1e30f;
-    auto fill = [&](Hit& h, const Piece& pc, float d, float t) {
+    auto fill = [&](Hit& h, const Piece& pc, float d, float t, int i) {
         h.dist = d;
         h.level = pc.fallT < 0.0f ? pc.la + (pc.lb - pc.la) * t : t < pc.fallT ? pc.la : pc.lb; // a waterfall steps (#540)
         h.halfWidth = pc.wa + (pc.wb - pc.wa) * t;
         h.depth = pc.da + (pc.db - pc.da) * t;
         h.down = Vector3Normalize(pc.la >= pc.lb ? Vector3Subtract(pc.b, pc.a) : Vector3Subtract(pc.a, pc.b)); // levels fall downstream
         h.slope = pc.reachSlope;
+        h.piece = i;
+        // Less flow than its natural (#656): a lower, narrower river; none, the water at its bed (drawn as nothing: a dry bed).
+        if (flowAny.load(std::memory_order_relaxed) && flowCur && !tNatural) {
+            const float f = flowCur[i].load(std::memory_order_relaxed);
+            if (f < 0.999f) { h.level -= h.depth * (1.0f - powf(std::max(f, 0.0f), 0.4f)) + 0.3f * (1.0f - std::min(1.0f, f * 10.0f)); h.halfWidth *= sqrtf(std::max(f, 0.0f)); h.depth *= powf(std::max(f, 0.0f), 0.4f); }
+        }
     };
     for (int i : list) {
         const Piece& pc = pieces[i];
@@ -427,10 +437,10 @@ RiverNetwork::Hit RiverNetwork::nearest(Vector3 dir, float reach) const {
         if (dc >= std::max(hit.dist, 46.0f)) continue;
         float t;
         const float d = SegDist(p, pc.a, pc.b, t);
-        if (d < hit.dist) fill(hit, pc, d, t);
+        if (d < hit.dist) fill(hit, pc, d, t, i);
         if (d < pc.wa + (pc.wb - pc.wa) * t) {
             Hit h;
-            fill(h, pc, d, t);
+            fill(h, pc, d, t, i);
             if (h.level < inside.level) inside = h;
         }
     }
@@ -750,6 +760,16 @@ RiverNetwork::RiverNetwork(const PlanetErosion& ero, float radius, const Params&
         if (mainChildN[k] < 0) st.highestSource = std::max(st.highestSource, ero.flowHeight(nodeCell[k]));
         if (ero.flowHeight(nodeCell[k]) > 700.0f) ++st.riverCellsAbove700;
     }
+    // River flow state (#656): each node's discharge (its drainage) for mixing at confluences, the order sources first, and
+    // every piece at its natural flow (node k's piece is piece k).
+    nodeQ.assign(area.begin(), area.end());
+    nodeChildQ.assign(nodeQ.size(), 0.0f);
+    for (int k = 0; k < M; ++k) if (nodeParent[k] >= 0) nodeChildQ[nodeParent[k]] += std::max(nodeQ[k], 1.0f);
+    nodeTopo = topo;
+    flowCur.reset(new std::atomic<float>[pieces.size()]);
+    for (size_t i = 0; i < pieces.size(); ++i) flowCur[i].store(1.0f, std::memory_order_relaxed);
+    flowSet.assign(pieces.size(), -1.0f);
+    flowSent.assign(pieces.size(), 1.0f);
     // Heads (#625): every source, and whether a waterfall comes within its first 3 links.
     for (int k = 0; k < M; ++k) {
         if (mainChildN[k] >= 0) continue;
@@ -870,4 +890,83 @@ float RiverNetwork::carve(Vector3 dir, float h) const {
         h = std::min(h, bed);
     }
     return h;
+}
+
+// ---------------------------------------------------------------------------------------------
+// River flow (#656)
+// ---------------------------------------------------------------------------------------------
+
+float RiverNetwork::flowOf(int piece) const {
+    if (!flowCur || piece < 0 || piece >= (int)pieces.size()) return 1.0f;
+    return flowCur[piece].load(std::memory_order_relaxed);
+}
+
+void RiverNetwork::setReachFlow(int piece, float share) const {
+    std::lock_guard<std::mutex> lock(flowMx);
+    if (!flowCur || piece < 0 || piece >= (int)pieces.size()) return;
+    flowSet[piece] = std::clamp(share, 0.0f, 1.5f);
+    flowAny.store(true, std::memory_order_relaxed);
+}
+
+void RiverNetwork::clearReachFlow(int piece) const {
+    std::lock_guard<std::mutex> lock(flowMx);
+    if (!flowCur || piece < 0 || piece >= (int)pieces.size()) return;
+    flowSet[piece] = -1.0f;
+}
+
+bool RiverNetwork::stepFlow(float dt, std::vector<int>& changed) const {
+    std::lock_guard<std::mutex> lock(flowMx);
+    if (!flowCur || !flowAny.load(std::memory_order_relaxed)) return false;
+    // Sources first: each node's target is the share of its discharge arriving - its own drainage at its natural rate plus
+    // what its tributaries carry now - unless a released reach sets it; it eases there, ~95% of the way in the time a wave takes along its link at kSpeed (so a
+    // change runs down the river at that speed). Lakes keep their level (their whole basin feeds them).
+    constexpr float kSpeed = 5.0f; // m/s: a flow wave runs ahead of the water itself
+    std::vector<float> inflow(nodeQ.size(), 0.0f);
+    bool off = false;
+    for (int k : nodeTopo) {
+        const Piece& pc = pieces[k];
+        const float q = std::max(nodeQ[k], 1.0f);
+        float target = flowSet[k] >= 0.0f ? flowSet[k] : std::clamp((inflow[k] + std::max(0.0f, q - nodeChildQ[k])) / q, 0.0f, 1.5f);
+        if (pc.inLake) target = 1.0f;
+        float f = flowCur[k].load(std::memory_order_relaxed);
+        f += (target - f) * std::min(1.0f, 3.0f * dt * kSpeed / std::max(1.0f, 2.0f * pc.halfLen));
+        if (fabsf(f - 1.0f) < 0.002f && flowSet[k] < 0.0f) f = 1.0f;
+        flowCur[k].store(f, std::memory_order_relaxed);
+        off = off || f != 1.0f || flowSet[k] >= 0.0f;
+        if (fabsf(f - flowSent[k]) > 0.05f || (f == 1.0f && flowSent[k] != 1.0f)) { changed.push_back(k); flowSent[k] = f; }
+        const int p = nodeParent[k];
+        if (p >= 0) inflow[p] += q * f;
+    }
+    flowAny.store(off, std::memory_order_relaxed);
+    return !changed.empty();
+}
+
+RiverNetwork::PieceBounds RiverNetwork::pieceBounds(int piece) const {
+    const Piece& pc = pieces[piece];
+    return { pc.mid, pc.halfLen + std::max(pc.wa, pc.wb) + 20.0f };
+}
+
+void RiverNetwork::flowState(std::vector<std::pair<int, float>>& cur, std::vector<std::pair<int, float>>& set) const {
+    std::lock_guard<std::mutex> lock(flowMx);
+    if (!flowCur) return;
+    for (size_t i = 0; i < pieces.size(); ++i) {
+        const float f = flowCur[i].load(std::memory_order_relaxed);
+        if (f != 1.0f) cur.push_back({ (int)i, f });
+        if (flowSet[i] >= 0.0f) set.push_back({ (int)i, flowSet[i] });
+    }
+}
+
+void RiverNetwork::setFlowState(const std::vector<std::pair<int, float>>& cur, const std::vector<std::pair<int, float>>& set) const {
+    std::lock_guard<std::mutex> lock(flowMx);
+    if (!flowCur) return;
+    bool any = false;
+    for (const auto& [i, f] : cur) if (i >= 0 && i < (int)pieces.size()) { flowCur[i].store(f, std::memory_order_relaxed); flowSent[i] = f; any = true; }
+    for (const auto& [i, f] : set) if (i >= 0 && i < (int)pieces.size()) { flowSet[i] = f; any = true; }
+    flowAny.store(any || flowAny.load(), std::memory_order_relaxed);
+}
+
+int RiverNetwork::pieceBeyond(int piece, Vector3 centre, float dist) const {
+    for (int k = piece, j = 0; k >= 0 && k < (int)pieces.size() && j < 64; k = nodeParent[k], ++j)
+        if (Vector3Distance(pieces[k].a, centre) > dist) return k;
+    return -1;
 }

@@ -125,6 +125,7 @@ struct Brick {
     std::vector<FluidKernel::Vec4> faces; // CPU mode: the face flows as applied (#654: momentum between ticks; empty: at rest)
     int cpuSlot = -1;               // CPU mode: its place in this tick's grid
     bool upload = false;            // GPU mode: the whole brick (cells, flags, targets) goes up next tick
+    int sinkRelease = -1;           // its cells hold a released reach's downstream sink: that release's index (river flow, #656)
     long long slotNeeded = 0;       // GPU mode: the last tick it was awake or near awake water (#675: else its slot is given back)
     bool hadSlot = false;           // GPU mode: it held a slot before (back from release: uploaded without waking)
     // Steady flow (#674): levels stable over a settle window while water keeps moving through (the GPU reported changes in at
@@ -149,7 +150,7 @@ struct Site {
     // Released river reaches (#361): ground added into a river (a dam) turns its static source cells within `r` cells
     // (horizontally) of the edit into ordinary water. The upstream edge is fed by springs at the reach's discharge
     // (in `springs`), the downstream edge is a sink held at the generated level; beyond `r` the river stays generated.
-    struct Release { int ci, cj; float r; Vector3 centre, down; };
+    struct Release { int ci, cj; float r; Vector3 centre, down; float natQ = 0.0f; int piece = -1; double sinkUnits = 0.0; float share = 1.0f; }; // natQ: the springs' m^3/s; piece: the river link below it; sinkUnits: taken in since the last measure; share: outflow / natQ (#656)
     std::vector<Release> releases;
 
     Vector3 cellCentre(int ci, int cj, int ck) const { return cellPoint(ci + 0.5f, cj + 0.5f, ck + 0.5f); }
@@ -262,7 +263,7 @@ Fluid::Stats pubStats;
 void Classify(const Site& s, Brick& b, const BodyRef& ref, uint8_t& faces) {
     const PlanetField* pf = ref.pf;
     const float sea = pf ? pf->seaLevelRadius() : 0.0f;
-    b.basin = false; b.reach = false;
+    b.basin = false; b.reach = false; b.sinkRelease = -1;
     const float cs = WaterField::CellSize(), hc = 0.5f * cs; // a cell, half a cell (m: W4c #642)
     std::vector<float> corner((B + 1) * (B + 1) * (B + 1), NAN); // the density at the cell corners, sampled when first needed
     for (int y = 0; y < B; ++y)
@@ -288,10 +289,12 @@ void Classify(const Site& s, Brick& b, const BodyRef& ref, uint8_t& faces) {
             // A released river reach (#361): 1 inside (ordinary water), 2 its downstream edge (a sink at the level).
             int released = 0;
             if (kind == 1)
-                for (const Site::Release& rel : s.releases) {
+                for (size_t ri = 0; ri < s.releases.size(); ++ri) {
+                    const Site::Release& rel = s.releases[ri];
                     const float d = sqrtf((float)((ci - rel.ci) * (ci - rel.ci) + (cj - rel.cj) * (cj - rel.cj)));
                     if (d >= rel.r) continue;
                     released = (d >= rel.r - 2.0f && Vector3DotProduct(Vector3Subtract(mid, rel.centre), rel.down) > 0.0f) ? 2 : 1;
+                    if (released == 2) b.sinkRelease = (int)ri; // its outflow is measured here (river flow, #656)
                     b.reach = true;
                     break;
                 }
@@ -746,6 +749,8 @@ void MaybeRelease(Site& s, const BodyRef& ref, Vector3 c, float r) {
     const RiverNetwork::Hit h = pf->rivers()->nearest(dir, 1e4f);
     if (!h.found) return;
     Site::Release rel{ ci, cj, kReleaseMetres / WaterField::CellSize(), c, h.down }; // r in cells
+    // The river link just below the reach (#656): its flow follows what the reach lets out.
+    rel.piece = pf->rivers()->pieceBeyond(h.piece, c, kReleaseMetres + 5.0f);
     s.releases.push_back(rel);
     // The reach's bricks: per brick column, the river's depth under its own level down, 8 m over it up (#645: a reach
     // that climbs upstream - 16 m over its 40 m on seed 42's test river - had no bricks at its upstream edge).
@@ -788,6 +793,7 @@ void MaybeRelease(Site& s, const BodyRef& ref, Vector3 c, float r) {
         }
     if (up.empty()) return;
     const float q = std::max(1.0f, std::min({ 0.25f * 2.0f * h.halfWidth, 40.0f, 2.0f * h.halfWidth * h.depth })); // m^3/s (#432)
+    s.releases.back().natQ = q; // what flows in when nothing blocks the river (#656: its outflow is measured against it)
     for (const Up& u : up)
         s.springs.push_back({ u.ci, u.cj, u.ck, 0, q / (float)up.size() * 255.0f / WaterField::CellVolume() / (20.0f * kSubsteps), u.head });
 }
@@ -1128,6 +1134,7 @@ struct GpuState {
     // The dry-cell skip (#675, fluid_groups.comp): per slot 3 substeps x 64 group bits (wet), the listed groups + dispatch args.
     ComputeProgram groups;
     ComputeBuffer mask, glist;
+    ComputeBuffer sinkOut; // per slot: fill units its sinks took in (river flow, #656; binding 12)
     bool groupsOn = false;
     int maskCur = 0;
     int capacity = 0;                      // bricks
@@ -1167,6 +1174,7 @@ bool GpuInit() {
         G.owner.assign(64, nullptr); G.ownerSite.assign(64, nullptr);
         const std::vector<unsigned> zeros(64, 0u);
         G.flags.upload(zeros.data(), 64 * 4);
+        G.sinkOut.create(64 * 4, zeros.data());
         // Async readback (#669): buffer storage for the persistent mapping, the pack pass; else the old downloads.
         G.asyncRb = !getenv("RAYLIBGAME_FLUID_SYNC_READBACK") && GL_Caps().bufferStorage && glad_glFenceSync && G.pack.load("resources/compute/fluid_pack.comp");
         if (G.asyncRb) G.packed.create(64 * kCellsPerBrick * 2);
@@ -1194,6 +1202,7 @@ void GpuGrow(int need) {
     grow(G.faceP, G.capacity * kCellsPerBrick * kFacePBytes, cap * kCellsPerBrick * kFacePBytes);
     grow(G.faceN, G.capacity * kCellsPerBrick * kFaceNBytes, cap * kCellsPerBrick * kFaceNBytes);
     grow(G.flags, G.capacity * 4, cap * 4);
+    grow(G.sinkOut, G.capacity * 4, cap * 4);
     if (G.groupsOn) {
         grow(G.mask, G.capacity * 6 * 4, cap * 6 * 4);
         const std::vector<unsigned> zero((size_t)(8 + cap * 64), 0u);
@@ -1203,6 +1212,7 @@ void GpuGrow(int need) {
     G.nbrs.resize(cap * 24);
     const std::vector<unsigned> zeros(cap - G.capacity, 0u);
     G.flags.upload(zeros.data(), (unsigned)zeros.size() * 4, G.capacity * 4);
+    G.sinkOut.upload(zeros.data(), (unsigned)zeros.size() * 4, G.capacity * 4);
     G.owner.resize(cap, nullptr); G.ownerSite.resize(cap, nullptr);
     G.capacity = cap;
     G.nbrDirty = true;
@@ -1291,6 +1301,24 @@ void GpuFlowResolve() {
 }
 
 void GpuTick(int n) {
+    // 0. Released reaches' outflow (#656): what their sinks took in, read once a second (a small stalling download) and
+    // credited to each sink brick's release.
+    static int sinkTick = 0;
+    if (++sinkTick % 20 == 0 && G.capacity > 0) {
+        bool any = false;
+        for (auto& s : sites) for (const Site::Release& r : s->releases) any = any || r.piece >= 0;
+        if (any) {
+            static std::vector<unsigned> units, zeros;
+            units.resize(G.capacity); zeros.assign(G.capacity, 0u);
+            G.sinkOut.download(units.data(), G.capacity * 4);
+            G.sinkOut.upload(zeros.data(), G.capacity * 4);
+            for (int slot = 0; slot < G.capacity; ++slot) {
+                const Brick* br = G.owner[slot];
+                Site* st = G.ownerSite[slot];
+                if (units[slot] && br && st && br->sinkRelease >= 0 && br->sinkRelease < (int)st->releases.size()) st->releases[br->sinkRelease].sinkUnits += units[slot];
+            }
+        }
+    }
     // 1. Results of the last dispatch: which bricks changed (and want neighbours), then their cells.
     if (!G.lastList.empty()) {
         // The flags and packed cells: from the mapped buffer the last dispatch copied into (#669: no stall; the copy was
@@ -1512,7 +1540,7 @@ void GpuTick(int n) {
     static const bool noEvap = getenv("RAYLIBGAME_FLUID_NOEVAP") != nullptr; // tests: specks kept (water accounting, #454)
     static unsigned evapTick = 0;
     GpuFlowResolve(); // which bricks the flow watches need this dispatch (#392)
-    G.nbrs.bind(2); G.list.bind(3); G.inS.bind(4); G.flags.bind(5); G.watch.bind(6); G.flux.bind(7); G.faceP.bind(8); G.faceN.bind(9);
+    G.nbrs.bind(2); G.list.bind(3); G.inS.bind(4); G.flags.bind(5); G.watch.bind(6); G.flux.bind(7); G.faceP.bind(8); G.faceN.bind(9); G.sinkOut.bind(12);
     const unsigned bricks = (unsigned)list.size(); // 2D dispatch: 64 groups of 64 cells per brick, one row per brick
     // The dry-cell skip (#675, fluid_groups.comp): each substep runs only the 64-cell groups near water, by indirect dispatch.
     G.step.setInt("useGroups", G.groupsOn ? 1 : 0);
@@ -1610,6 +1638,7 @@ void CpuTick(int n) {
     const int S = (int)slots.size();
     if ((int)g.processed.size() < S) g.resize(std::max(S, (int)g.processed.size() * 2));
     std::fill(g.flags.begin(), g.flags.begin() + S, 0u);
+    std::fill(g.sinkOut.begin(), g.sinkOut.begin() + S, 0u);
     for (int i = 0; i < S; ++i) {
         Brick* b = slots[i];
         uint32_t* c = &g.a[(size_t)i * B3];
@@ -1637,6 +1666,7 @@ void CpuTick(int n) {
         Brick* br = slots[i];
         const uint32_t fl = g.flags[i];
         br->faces.assign(&g.faceP[(size_t)i * B3], &g.faceP[(size_t)i * B3] + B3);
+        if (g.sinkOut[i] && br->sinkRelease >= 0 && br->sinkRelease < (int)slotSite[i]->releases.size()) slotSite[i]->releases[br->sinkRelease].sinkUnits += g.sinkOut[i]; // #656
         if (fl & 1u) {
             const uint32_t* c = &g.a[(size_t)i * B3];
             int drift = 0;
@@ -1854,6 +1884,48 @@ static void UpdatePartSnaps(Scene& world) {
     }
 }
 
+// River flow (#656): once a second, each released reach's outflow (what its downstream sink took in) against the inflow its
+// springs give, as a share of the river's flow below it; then the network carries the changes down and the water along the
+// links whose flow changed is rebuilt (surface map tiles and chunk meshes). Under simMx with no job running.
+const RiverNetwork* RiversOf(uint64_t bodyId) {
+    Planetoid* body = Planetoid::find(bodyId);
+    const PlanetField* pf = body ? dynamic_cast<const PlanetField*>(body->field.get()) : nullptr;
+    const RiverNetwork* net = pf ? pf->rivers() : nullptr;
+    return net && net->bakeNative() ? net : nullptr;
+}
+
+void UpdateRiverFlow() {
+    static double last = -1.0;
+    const double now = GetTime();
+    if (last < 0.0) { last = now; return; }
+    const float dt = (float)(now - last);
+    if (dt < 1.0f) return;
+    last = now;
+    static std::vector<int> changed;
+    for (auto& s : sites) {
+        Planetoid* body = Planetoid::find(s->body);
+        const PlanetField* pf = body ? dynamic_cast<const PlanetField*>(body->field.get()) : nullptr;
+        const RiverNetwork* net = pf ? pf->rivers() : nullptr;
+        if (!net || !net->bakeNative()) continue;
+        for (Site::Release& r : s->releases) {
+            if (r.piece < 0 || r.natQ <= 0.0f) continue;
+            const float q = (float)(r.sinkUnits * WaterField::CellVolume() / 255.0 / dt); // m^3/s
+            r.sinkUnits = 0.0;
+            r.share += (std::clamp(q / r.natQ, 0.0f, 1.5f) - r.share) * 0.3f; // smoothed: a few seconds of trend
+            // Most of the inflow leaving: the river as generated (the springs' spread and the reach's side edges lose some).
+            if (r.share > 0.6f) net->clearReachFlow(r.piece);
+            else net->setReachFlow(r.piece, r.share / 0.6f);
+        }
+        changed.clear();
+        if (!net->stepFlow(dt, changed)) continue;
+        for (int piece : changed) {
+            const RiverNetwork::PieceBounds b = net->pieceBounds(piece);
+            WaterSurface::Invalidate(*pf, Vector3Normalize(b.mid), b.radius);
+            RequestRemesh(*body, b.mid, b.radius);
+        }
+    }
+}
+
 void Fluid::Update(Scene& world, float dt) {
     // A step every 50 ms when the last one has finished (the job owns the state while it runs).
     accum += dt;
@@ -1873,6 +1945,7 @@ void Fluid::Update(Scene& world, float dt) {
             for (const Site::Spring& sp : s->springs) if (!work && SpringWants(*s, sp)) work = true; // #645: inflow continues while everything sleeps
             if (work) break;
         }
+        UpdateRiverFlow(); // #656
         if (!work) return;
         // Snapshot the bodies the job may touch (fields are immutable; edits are copy-on-write).
         std::unordered_set<uint64_t> ids;
@@ -2126,7 +2199,7 @@ void Fluid::Save(FILE* f, uint64_t bodyId) {
         for (const Site::Spring& sp : s->springs) fprintf(f, "%d %d %d %d %.4f %.3f\n", sp.ci, sp.cj, sp.ck, sp.kind, sp.perStep, sp.head);
         fprintf(f, "releases %zu\n", s->releases.size()); // released river reaches (#361)
         for (const Site::Release& r : s->releases)
-            fprintf(f, "%d %d %.2f %.4f %.4f %.4f %.6f %.6f %.6f\n", r.ci, r.cj, r.r, r.centre.x, r.centre.y, r.centre.z, r.down.x, r.down.y, r.down.z);
+            fprintf(f, "%d %d %.2f %.4f %.4f %.4f %.6f %.6f %.6f q %.3f %d %.4f\n", r.ci, r.cj, r.r, r.centre.x, r.centre.y, r.centre.z, r.down.x, r.down.y, r.down.z, r.natQ, r.piece, r.share);
         for (Brick* b : wet) {
             // Run-length fill (sources and solid cells as 0: they are re-derived on load).
             fprintf(f, "%d %d %d", b->bi, b->bj, b->bk);
@@ -2143,6 +2216,12 @@ void Fluid::Save(FILE* f, uint64_t bodyId) {
             fprintf(f, "\n");
         }
     }
+    // River flow (#656): the links off their natural flow and the reaches setting one.
+    std::vector<std::pair<int, float>> cur, set;
+    if (const RiverNetwork* net = RiversOf(bodyId)) net->flowState(cur, set);
+    fprintf(f, "riverflow %zu %zu\n", cur.size(), set.size());
+    for (const auto& [i, v] : cur) fprintf(f, "%d %.4f\n", i, v);
+    for (const auto& [i, v] : set) fprintf(f, "%d %.4f\n", i, v);
 }
 
 void Fluid::Load(FILE* f, uint64_t bodyId) {
@@ -2174,7 +2253,10 @@ void Fluid::Load(FILE* f, uint64_t bodyId) {
         if (fscanf(f, " releases %d", &nr) == 1)
             for (int j = 0; j < nr; ++j) {
                 Site::Release r{};
-                if (fscanf(f, " %d %d %f %f %f %f %f %f %f", &r.ci, &r.cj, &r.r, &r.centre.x, &r.centre.y, &r.centre.z, &r.down.x, &r.down.y, &r.down.z) == 9) s->releases.push_back(r);
+                if (fscanf(f, " %d %d %f %f %f %f %f %f %f", &r.ci, &r.cj, &r.r, &r.centre.x, &r.centre.y, &r.centre.z, &r.down.x, &r.down.y, &r.down.z) == 9) {
+                    if (fscanf(f, " q %f %d %f", &r.natQ, &r.piece, &r.share) != 3) { r.natQ = 0.0f; r.piece = -1; r.share = 1.0f; } // #656 (older saves: none)
+                    s->releases.push_back(r);
+                }
             }
         for (size_t j = 0; j < nb; ++j) {
             int bi, bj, bk;
@@ -2193,6 +2275,17 @@ void Fluid::Load(FILE* f, uint64_t bodyId) {
         }
         if (keep) sites.push_back(std::move(s));
     }
+    // River flow (#656; older saves: none - back to where the line would start).
+    const long at = ftell(f);
+    int nc = 0, ns = 0;
+    if (fscanf(f, " riverflow %d %d", &nc, &ns) != 2) { fseek(f, at, SEEK_SET); return; }
+    std::vector<std::pair<int, float>> cur, set;
+    for (int i = 0; i < nc + ns; ++i) {
+        int k = 0; float v = 0.0f;
+        if (fscanf(f, " %d %f", &k, &v) != 2) break;
+        (i < nc ? cur : set).push_back({ k, v });
+    }
+    if (const RiverNetwork* net = RiversOf(bodyId)) net->setFlowState(cur, set);
 }
 
 Fluid::Stats Fluid::GetStats() { std::lock_guard<std::mutex> p(pubMx); return pubStats; }

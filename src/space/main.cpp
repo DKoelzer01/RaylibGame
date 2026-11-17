@@ -440,6 +440,7 @@ int main(int argc, char** argv)
     bool benchFlowMeter = false; int fmPhase = 0; double fmT0 = 0.0; Plot* fmPlot = nullptr; // --test-flow-meter (#392)
     bool benchPartWall = false; int pwPhase = 0; double pwT0 = 0.0; Plot* pwPlot = nullptr; std::vector<int> pwParts; bool pwHeld = false, pwWestWet = false; // --test-part-wall (#391)
     bool benchDam = false; int damPhase = 0; double damT0 = 0.0; Vector3 damDir{}, damDown{}, damSide{}, damUp{}, damDn{}; float damLevel = 0.0f, damHW = 0.0f, damDepth = 0.0f, damCrest = 0.0f, damLvU = 0.0f, damLvD = 0.0f, damMaxU = -1e9f, damMinD = 1e9f, damLateD = -1e9f; // --test-dam (#361)
+    bool benchDamDivert = false; int divPhase = 0; Vector3 divDir{}; float divLevel0 = 0.0f, divDepth = 0.0f; int divPiece = -1; double divDryT = -1.0, divOpenT = -1.0; std::vector<TerrainEdit> divWall; // --test-dam-divert (#656)
     bool benchForest = false; int forestPhase = 0; double forestStart = 0.0; Vector3 forestCam{}, forestTarget{}, forestUp{}; bool outcropHigh = false; // --shot-forest (--outcrop-high: the highest outcrop in range, not the nearest)
     bool benchRecipes = false; // --test-recipes
     bool benchWeather = false, weatherOk = true; int weatherPhase = 0, weatherCounts[6] = {}, weatherChanges = 0; double weatherStart = 0.0; float weatherChill = 0.0f; // --test-weather
@@ -688,6 +689,7 @@ int main(int argc, char** argv)
         if (std::string(argv[i]) == "--outcrop-high") outcropHigh = true;
         if (std::string(argv[i]) == "--test-flow") benchFlow = true;
         if (std::string(argv[i]) == "--test-dam") benchDam = true; // #361: a dam backs a river up and it spills over
+        if (std::string(argv[i]) == "--test-dam-divert") benchDam = benchDamDivert = true; // #656: a dam that holds the river dries it downstream; removed, the river comes back
         if (std::string(argv[i]) == "--test-part-wall") benchPartWall = true; // #391: a wall of build blocks holds water
         if (std::string(argv[i]) == "--test-flow-meter") benchFlowMeter = true; // #392: the flow readout reads a known stream
         if (std::string(argv[i]) == "--test-pressure") benchPressure = true; // #393: hydrostatic pressure in a shaft and a pond
@@ -5583,8 +5585,8 @@ int main(int argc, char** argv)
                                 const Vector3 dn = Vector3Normalize(Vector3Subtract(h.down, Vector3Scale(d, Vector3DotProduct(h.down, d))));
                                 const Vector3 sd = Vector3Normalize(Vector3CrossProduct(d, dn));
                                 const float bank = std::min(pf->elevation(off(d, sd, h.halfWidth + 15.0f)), pf->elevation(off(d, sd, -h.halfWidth - 15.0f)));
-                                if (bank < ws.level + 1.2f) continue;
-                                best = dist; damDir = d; damLevel = ws.level; damHW = h.halfWidth; damDepth = h.depth; damCrest = std::min(ws.level + 0.8f, bank - 0.3f); // a low dam: a released reach fills at what its channel carries (#432)
+                                if (bank < ws.level + (benchDamDivert ? 2.5f : 1.2f)) continue; // #656: a dam that holds the river a while
+                                best = dist; damDir = d; damLevel = ws.level; damHW = h.halfWidth; damDepth = h.depth; damCrest = benchDamDivert ? bank - 0.3f : std::min(ws.level + 0.8f, bank - 0.3f); // a low dam: a released reach fills at what its channel carries (#432)
                                 damDown = dn; // along the ground
                             }
                         if (best > 1e29f) {
@@ -5621,12 +5623,63 @@ int main(int argc, char** argv)
                                 for (float h = bed - 0.5f; h <= damCrest - 0.6f; h += 0.8f) wall.push_back({ at(dw, h), 1.3f, 5.0f, false });
                             }
                             ApplyTerrainEdits(*p, wall.data(), wall.size());
+                            divWall = wall;
                             damUp = off(damDir, damDown, -12.0f); damDn = off(damDir, damDown, 12.0f);
                             damLvU = pf->waterSourceAt(damUp).level; damLvD = pf->waterSourceAt(damDn).level;
                             printf("bench: dam: dam crest %.2f m (%zu edits); generated level 12 m upstream %.2f, downstream %.2f\n", damCrest, wall.size(), damLvU, damLvD);
                             player.flyMode = true; sunOverride = true;
                             sunArg = p->dirToWorld(Vector3Normalize(Vector3Add(damDir, Vector3Scale(damSide, 0.5f))));
                             damPhase = 1; damT0 = GetTime();
+                        }
+                    } else if (benchDamDivert) {
+                        // --test-dam-divert (#656): the dam holds the river (the pool fills behind it). The river 200 m downstream
+                        // (followed along the network) must dry to its bed; then the dam is dug out and the river must come back.
+                        const double t = GetTime() - damT0;
+                        if (divPhase == 0) {
+                            Vector3 d = damDir;
+                            for (int s = 0; s < 20; ++s) { const RiverNetwork::Hit h = net->nearest(d, 1e4f); d = off(d, h.down, 10.0f); }
+                            const RiverNetwork::Hit h = net->nearest(d, 1e4f);
+                            divDir = d; divPiece = h.piece; divLevel0 = h.level; divDepth = h.depth;
+                            printf("bench: dam-divert: watching the river 200 m downstream (piece %d, %.1f m off its centreline): level %.2f m, depth %.2f m, half-width %.1f m\n", h.piece, h.dist, h.level, h.depth, h.halfWidth);
+                            divPhase = 1;
+                        }
+                        // Watch the downstream river from above its bank.
+                        const Vector3 dn = Vector3Normalize(Vector3CrossProduct(divDir, damSide));
+                        world.camera.position = p->toWorld(at(off(off(divDir, damSide, damHW + 25.0f), dn, -15.0f), divLevel0 + 25.0f));
+                        world.camera.target = p->toWorld(at(divDir, divLevel0 - divDepth));
+                        world.camera.up = p->dirToWorld(divDir);
+                        player.position = world.renderOrigin + world.camera.position;
+                        const RiverNetwork::Hit h = net->nearest(divDir, 1e4f);
+                        const float flow = net->flowOf(divPiece);
+                        static double lastPrint = -10.0;
+                        if (t - lastPrint >= 5.0) {
+                            lastPrint = t;
+                            printf("bench: dam-divert t=%3.0f s: downstream flow %.2f, level %.2f m (was %.2f), half-width %.1f; upstream surface %s; %d reaches released\n",
+                                   t, flow, h.level, divLevel0, h.halfWidth, [&] { const float su = surfaceAt(damUp, damLvU); return su < -1e8f ? std::string("dry") : std::string(TextFormat("%.2f", su)); }().c_str(), Fluid::ReleasedReaches());
+                        }
+                        if (divPhase == 1 && flow < 0.05f) {
+                            divDryT = t;
+                            TakeScreenshot("bench_dam_dry.png");
+                            // Dig the dam out down to about the old ground (centres no lower than 1 m over it: a sphere 1.4 m across
+                            // left a 2 m pit under the bed that had to fill before any water went on).
+                            for (TerrainEdit& e : divWall) {
+                                const Vector3 d = Vector3Normalize(e.center);
+                                e.center = at(d, std::max(Vector3Length(e.center) - pf->radius, pf->elevation(d) + 1.0f));
+                                e.carve = true; e.radius = 1.4f;
+                            }
+                            ApplyTerrainEdits(*p, divWall.data(), divWall.size());
+                            printf("bench: dam-divert: dry 200 m downstream after %.0f s (bench_dam_dry.png); the dam dug out\n", t);
+                            divPhase = 2;
+                        } else if (divPhase == 2 && flow > 0.9f) {
+                            divOpenT = t;
+                            TakeScreenshot("bench_dam_back.png");
+                        }
+                        if (divOpenT >= 0.0 || t > 480.0) {
+                            printf("bench: dam-divert: dried after %s s, back after %s s of the dam's removal; level %.2f m (natural %.2f) -> %s\n",
+                                   divDryT < 0.0 ? "never" : TextFormat("%.0f", divDryT), divOpenT < 0.0 ? "never" : TextFormat("%.0f", divOpenT - divDryT), h.level, divLevel0,
+                                   divDryT >= 0.0 && divOpenT >= 0.0 && fabsf(h.level - divLevel0) < 0.3f ? "PASS" : "FAIL");
+                            printf("bench: dam-divert: bench_dam_dry.png, bench_dam_back.png\n");
+                            benchDam = false;
                         }
                     } else {
                         // Watch from the bank, a little downstream, looking across at the dam and the pool behind it.
