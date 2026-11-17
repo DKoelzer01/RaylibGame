@@ -5627,8 +5627,16 @@ int main(int argc, char** argv)
                         const double t = GetTime() - damT0;
                         const float su = surfaceAt(damUp, damLvU), sd = surfaceAt(damDn, damLvD);
                         if (t > 3.0) { damMaxU = std::max(damMaxU, su); damMinD = std::min(damMinD, sd < -1e8f ? damLvD - damDepth : sd); }
-                        static double lastPrint = 0.0, spillT = -1.0;
+                        static double lastPrint = 0.0, spillT = -1.0, stallT = -1.0, bypassT = -1.0;
+                        static float stallLevel = -1e9f;
                         if (spillT < 0.0 && damMaxU >= damCrest - 0.2f) spillT = t;
+                        // Around the dam (#666, user: 'until it overtops or goes around the dam'): the pool rose, then held under the
+                        // crest for 45 s while the springs kept feeding it - the water leaves another way. That passes too, and ends
+                        // the test (it ran its full 420 s).
+                        if (t > 20.0 && su > -1e8f) {
+                            if (stallT < 0.0 || su > stallLevel + 0.05f) { stallT = t; stallLevel = su; }
+                            else if (bypassT < 0.0 && spillT < 0.0 && t - stallT > 45.0 && damMaxU >= damLvU + 0.2f) bypassT = t;
+                        }
                         if (t - lastPrint >= 5.0) {
                             lastPrint = t;
                             const Fluid::Stats s = Fluid::GetStats();
@@ -5637,7 +5645,7 @@ int main(int argc, char** argv)
                                    Fluid::DebugCell(*p, at(damUp, damLvU - 0.3f)).c_str());
                         }
                         if (t > 10.0 && t < 10.1) TakeScreenshot("bench_dam.png");
-                        if ((spillT >= 0.0 && t > spillT + 25.0) || t > 420.0) {
+                        if ((spillT >= 0.0 && t > spillT + 25.0) || bypassT >= 0.0 || t > 420.0) {
                             damLateD = sd < -1e8f ? damLvD - damDepth : sd;
                             TakeScreenshot("bench_dam_end.png");
                             const int released = Fluid::ReleasedReaches();
@@ -5645,8 +5653,10 @@ int main(int argc, char** argv)
                             // on. The reach below keeps the downstream river's level (its sink holds it: a flat river backs up from
                             // below too), so it is reported, not judged.
                             const bool backs = damMaxU >= damLvU + 0.2f && damMaxU >= damCrest - 0.25f, spills = spillT >= 0.0 && su > -1e8f && su <= damCrest + 0.35f;
-                            printf("bench: dam: %d reaches released; upstream rose %.2f -> %.2f m (crest %.2f), spilled after %.0f s and holds at %.2f m; downstream %.2f -> lowest %.2f, now %.2f m -> %s\n",
-                                   released, damLvU, damMaxU, damCrest, spillT, su, damLvD, damMinD, damLateD, released >= 1 && backs && spills && damDrift > 0.0f ? "PASS" : "FAIL");
+                            const bool around = bypassT >= 0.0; // rose, then held under the crest while fed: it went around (#666)
+                            printf("bench: dam: %d reaches released; upstream rose %.2f -> %.2f m (crest %.2f), spilled after %.0f s and holds at %.2f m; %s; downstream %.2f -> lowest %.2f, now %.2f m -> %s\n",
+                                   released, damLvU, damMaxU, damCrest, spillT, su, around ? TextFormat("went around the dam (held at %.2f m from %.0f s)", stallLevel, stallT) : "did not go around",
+                                   damLvD, damMinD, damLateD, released >= 1 && ((backs && spills) || around) && damDrift > 0.0f ? "PASS" : "FAIL");
                             printf("bench: dam: bench_dam.png, bench_dam_end.png\n");
                             benchDam = false;
                         }
