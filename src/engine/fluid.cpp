@@ -1408,6 +1408,27 @@ void GpuTick(int n) {
         G.flags.upload(zeros.data(), G.capacity * 4);
         G.lastList.clear();
     }
+    // The debug view (#695): the solver's face flows of the bricks it just ran, read back once a second (a stalling download:
+    // debug only) into the CPU mirror, where publishing turns them into the drawn current.
+    static int dbgFaceTick = 0;
+    if (Fluid::DebugView() && ++dbgFaceTick % 40 == 0) {
+        auto half = [](uint16_t h) {
+            const uint32_t s = (h >> 15) & 1u, e = (h >> 10) & 31u, m = h & 1023u;
+            const float v = e == 0 ? m * 5.9604645e-8f : e == 31 ? 65504.0f : ldexpf(1.0f + m / 1024.0f, (int)e - 15);
+            return s ? -v : v;
+        };
+        static std::vector<uint32_t> raw;
+        raw.resize((size_t)kCellsPerBrick * 2);
+        for (int slot = 0; slot < G.capacity; ++slot) {
+            Brick* br = G.owner[slot];
+            if (!br || !(br->active || br->steady)) continue;
+            G.faceP.download(raw.data(), kCellsPerBrick * kFacePBytes, (unsigned)slot * kCellsPerBrick * kFacePBytes);
+            br->faces.resize(B3);
+            for (int i = 0; i < B3; ++i)
+                br->faces[i] = { half((uint16_t)(raw[2 * i] & 0xFFFFu)), half((uint16_t)(raw[2 * i] >> 16)), half((uint16_t)(raw[2 * i + 1] & 0xFFFFu)), half((uint16_t)(raw[2 * i + 1] >> 16)) };
+            br->changed = true; // republished with its flow
+        }
+    }
     GpuTimer_Mark("fluid-read"); // benches: the readback above (#669)
     GpuFlowRead(); // 1b. the watched cells' flux since the last read (#392)
     // 2. Slots for classified bricks; whole bricks up.
