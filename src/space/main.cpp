@@ -5464,7 +5464,7 @@ int main(int argc, char** argv)
                             player.position = world.renderOrigin + world.camera.position;
                             const Vector3 q = Fluid::FlowAt(*p, at(0.0f, -1.8f), 2.0f); // asked every frame: the readout smooths
                             static double lastPrint = 0.0;
-                            if (t - lastPrint >= 10.0) { lastPrint = t; printf("bench: flow-meter t=%3.0f s: %.2f m^3/s along the trench (%.2f across)\n", t, Vector3DotProduct(q, fmPlot->east), Vector3Length(Vector3Subtract(q, Vector3Scale(fmPlot->east, Vector3DotProduct(q, fmPlot->east))))); }
+                            if (t - lastPrint >= 10.0) { lastPrint = t; printf("bench: flow-meter t=%3.0f s: %.2f m^3/s along the trench (%.2f across); %.1f m^3 of water\n", t, Vector3DotProduct(q, fmPlot->east), Vector3Length(Vector3Subtract(q, Vector3Scale(fmPlot->east, Vector3DotProduct(q, fmPlot->east)))), Fluid::GetStats().volume); }
                             if (t > 60.0) {
                                 const float along = Vector3DotProduct(q, fmPlot->east);
                                 TakeScreenshot("bench_flow_meter.png");

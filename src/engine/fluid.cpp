@@ -509,6 +509,9 @@ bool SpringWants(const Site& s, const Site::Spring& sp) {
 // partial cells and the empty cells over full ones) ease toward one level: its sources' level if it
 // has any, else the level its volume fills to.
 void LevelSite(Site& s) {
+    // In metres (W4c: in cells, a quarter-metre channel's sloping surface - more than 7.5 cm end to end - was levelled, moving its
+    // water at once instead of the face flows carrying it: a flow meter read a third of the stream). Cells: / CellSize().
+    const float kLevelSpread = 0.3f / WaterField::CellSize(), kLevelNear = 0.25f / WaterField::CellSize();
     std::unordered_set<int64_t> seen;
     struct C { Brick* b; int i; int ck; bool leaf; };
     for (auto& kv : s.bricks) {
@@ -551,6 +554,42 @@ void LevelSite(Site& s) {
                 }
             }
             if (comp.size() >= 150000) continue;
+            // Only bodies whose open surfaces are apart - a U-bend's arms, a flooded chamber under its shaft - are levelled. One
+            // surface joined side to side (a step up or down for a slope) is the face flows' to carry: levelling it moved a
+            // channel's water at once (W4c: a quarter-metre trench's meter read a third of its stream, the rest teleported).
+            {
+                std::unordered_map<int64_t, int> leafAt;
+                std::vector<int> parent;
+                std::vector<std::array<int, 3>> leafPos;
+                for (const C& c : comp)
+                    if (c.leaf) {
+                        const int li = c.i, lx = c.b->bi * B + li % B, ly = c.b->bj * B + (li / B) % B;
+                        leafAt.emplace(Key(lx, ly, c.ck), (int)parent.size());
+                        leafPos.push_back({ lx, ly, c.ck });
+                        parent.push_back((int)parent.size());
+                    }
+                auto root = [&](int a) { while (parent[a] != a) a = parent[a] = parent[parent[a]]; return a; };
+                int groups = (int)parent.size();
+                for (size_t a = 0; a < leafPos.size(); ++a)
+                    for (int dz = -1; dz <= 1; ++dz)
+                        for (int dy = -1; dy <= 1; ++dy)
+                            for (int dx = -1; dx <= 1; ++dx) {
+                                if ((dx != 0) + (dy != 0) + (dz != 0) == 0 || (dx != 0 && dy != 0)) continue; // side, up/down, side +- a layer
+                                auto it = leafAt.find(Key(leafPos[a][0] + dx, leafPos[a][1] + dy, leafPos[a][2] + dz));
+                                if (it == leafAt.end()) continue;
+                                const int ra = root((int)a), rb = root(it->second);
+                                if (ra != rb) { parent[ra] = rb; --groups; }
+                            }
+                if (groups <= 1) continue;
+                // A surface counts from 1 m^2 (one cell at 1 m, 16 at 0.25 m): a stray wet cell under a lip or a drip is not an
+                // arm of a U-bend, and with it the whole trench was levelled.
+                const int minLeaves = std::max(1, (int)lroundf(1.0f / (WaterField::CellSize() * WaterField::CellSize())));
+                std::unordered_map<int, int> size;
+                for (size_t a = 0; a < leafPos.size(); ++a) ++size[root((int)a)];
+                int real = 0;
+                for (const auto& kv2 : size) real += kv2.second >= minLeaves ? 1 : 0;
+                if (real <= 1) continue;
+            }
             float lo = 1e9f, hi = -1e9f, vol = 0.0f;
             int kmin = INT32_MAX, kmax = INT32_MIN;
             for (const C& c : comp) {
@@ -562,9 +601,9 @@ void LevelSite(Site& s) {
             float level;
             if (hasSource) {
                 level = srcSurface < 1e8f ? srcSurface : srcLevel; // a sloping river: its lowest surface, never overfilling
-                if (lo > level - 0.25f && hi < level + 0.25f) continue;
+                if (lo > level - kLevelNear && hi < level + kLevelNear) continue;
             } else {
-                if (hi - lo < 0.3f) continue;
+                if (hi - lo < kLevelSpread) continue;
                 float a = (float)kmin, z = (float)kmax + 1.0f;
                 for (int it = 0; it < 24; ++it) {
                     const float m = 0.5f * (a + z);
@@ -867,7 +906,8 @@ void RunJob() {
     for (int k = 0; k < n; ++k) {
         ++stepCount;
         for (auto& s : sites) for (Site::Spring& sp : s->springs) StepSpring(*s, sp); // the cells: the GPU (GpuTick) or CpuTick below
-        if (stepCount % kLevelEvery == 0) for (auto& s : sites) LevelSite(*s);
+        static const bool levelOff = getenv("RAYLIBGAME_FLUID_LEVEL") && atoi(getenv("RAYLIBGAME_FLUID_LEVEL")) == 0; // A/B: no levelling pass
+        if (!levelOff && stepCount % kLevelEvery == 0) for (auto& s : sites) LevelSite(*s);
     }
     // CPU mode: the GPU's step on the CPU (#654), at its substep count (120 a second).
     if (!gpuMode) CpuTick((int)lround(2 * kSubsteps * (kTickSeconds / 0.05)) * std::max(1, speed.load()));
@@ -1082,7 +1122,7 @@ struct GpuState {
     ComputeBuffer watch, flux;
     std::vector<int> watchOf;              // slot -> flux block, -1 (uploaded to `watch`)
     int fluxBlocks = 0;
-    struct WatchCell { int block, cell; Vector3 e, n, u; };
+    struct WatchCell { int block, cell; Vector3 e, n, u; float wx, wy, wz; }; // w: 1 / the ball's cells on its line along each axis
     std::vector<std::vector<WatchCell>> watchCells; // per flow watch: its cells as resolved for the last dispatch
 } G;
 int G_Capacity() { return G.capacity; }
@@ -1161,8 +1201,9 @@ void GpuUploadBrick(const Brick& b) {
 }
 
 // Flow readout (#392). Read: the flux the last dispatch added in the watched cells, summed per watch into body-local
-// m^3/s (two faces per axis: halved), divided by the watch's diameter in cells (so a watch spanning a channel reads its
-// discharge), smoothed over ~0.5 s; the buffer is cleared for the next dispatch.
+// m^3/s (two faces per axis: halved), each cell weighted 1 / the cells of the ball on its line along that axis: the mean flux
+// through the ball's parallel slices, so a watch spanning a channel reads its discharge at any cell size (W4c: the old
+// division by the diameter under-read 3x with quarter-metre cells), smoothed over ~0.5 s; the buffer is cleared for the next dispatch.
 void GpuFlowRead() {
     if (G.fluxBlocks <= 0 || G.watchCells.empty()) return;
     std::vector<int> fx((size_t)G.fluxBlocks * kCellsPerBrick * 4);
@@ -1173,9 +1214,9 @@ void GpuFlowRead() {
         Vector3 sum{};
         for (const auto& c : G.watchCells[w]) {
             const int* f = &fx[((size_t)c.block * kCellsPerBrick + c.cell) * 4];
-            sum = Vector3Add(sum, Vector3Add(Vector3Add(Vector3Scale(c.e, (float)f[0]), Vector3Scale(c.n, (float)f[1])), Vector3Scale(c.u, (float)f[2])));
+            sum = Vector3Add(sum, Vector3Add(Vector3Add(Vector3Scale(c.e, (float)f[0] * c.wx), Vector3Scale(c.n, (float)f[1] * c.wy)), Vector3Scale(c.u, (float)f[2] * c.wz)));
         }
-        const Vector3 q = Vector3Scale(sum, 0.5f * perSecond / std::max(1.0f, 2.0f * flowWatches[w].r / WaterField::CellSize())); // the diameter in cells
+        const Vector3 q = Vector3Scale(sum, 0.5f * perSecond); // each line through the ball weighted 1 / its cells: the flux through its disc (W4c)
         flowWatches[w].value = Vector3Lerp(flowWatches[w].value, q, 0.1f);
     }
     std::fill(fx.begin(), fx.end(), 0);
@@ -1211,7 +1252,8 @@ void GpuFlowResolve() {
                         Brick* b; int i;
                         if (!s->cell(ci + di, cj + dj, ck + dk, b, i) || b->slot < 0) continue;
                         if (watchOf[b->slot] < 0) watchOf[b->slot] = blocks++;
-                        cells[w].push_back({ watchOf[b->slot], i, s->e, s->n, s->u });
+                        auto line = [&](int a, int b2) { return 1.0f / (2.0f * floorf(sqrtf(std::max(0.0f, rc * rc - (float)(a * a + b2 * b2)))) + 1.0f); };
+                        cells[w].push_back({ watchOf[b->slot], i, s->e, s->n, s->u, line(dj, dk), line(di, dk), line(di, dj) });
                     }
         }
     }
