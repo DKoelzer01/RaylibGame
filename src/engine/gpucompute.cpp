@@ -7,6 +7,10 @@
 extern "C" {
     typedef void (*PfnMemoryBarrier)(unsigned int);
     extern PfnMemoryBarrier glad_glMemoryBarrier;
+    typedef void (*PfnBindBuffer)(unsigned int, unsigned int);
+    extern PfnBindBuffer glad_glBindBuffer;
+    typedef void (*PfnDispatchComputeIndirect)(long long);
+    extern PfnDispatchComputeIndirect glad_glDispatchComputeIndirect;
 }
 
 bool Compute_Available() {
@@ -68,6 +72,14 @@ void ComputeProgram::setVec3(const char* name, float x, float y, float z) const 
 void ComputeProgram::setVec4(const char* name, float x, float y, float z, float w) const { const float v[4] = { x, y, z, w }; const int l = uniform(name); if (l >= 0) rlSetUniform(l, v, RL_SHADER_UNIFORM_VEC4, 1); }
 void ComputeProgram::dispatch(unsigned gx, unsigned gy, unsigned gz) const {
     rlComputeShaderDispatch(gx, gy, gz);
+    Compute_Barrier();
+}
+
+void ComputeProgram::dispatchIndirect(const ComputeBuffer& args, unsigned offset) const {
+    constexpr unsigned kDispatchIndirectBuffer = 0x90EE; // GL_DISPATCH_INDIRECT_BUFFER
+    glad_glBindBuffer(kDispatchIndirectBuffer, args.id);
+    glad_glDispatchComputeIndirect((long long)offset);
+    glad_glBindBuffer(kDispatchIndirectBuffer, 0);
     Compute_Barrier();
 }
 

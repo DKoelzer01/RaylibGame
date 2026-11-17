@@ -11,7 +11,7 @@
 // Sites: each disturbed area gets a site, a grid in a tangent frame (east, north, up) anchored at the
 // first disturbance; over a site's 512 m the planet curves by ~0.5 m, so "down" is the frame's -up.
 // A site holds bricks of 16^3 cells allocated where water goes. A cell is solid (terrain density at
-// its centre, edits included) or open, and open cells hold a fill of 0-255 (255 = 1 m^3).
+// its centre, edits included) or open, and open cells hold a fill of 0-255 (255 = a whole cell: WaterField::CellVolume() m^3).
 //
 // Generated water in a brick: the sea, rivers and large lakes are infinite - their open cells are sources topped up to
 // their level every step, feeding only cells an edit opened. Ponds are finite: a brick takes a pond's water as ordinary
@@ -124,6 +124,8 @@ namespace Fluid {
         long long wakes[2] = {};    // settled bricks woken: by the GPU step (drift), by a CPU change (Touch: levelling, commands)
         long long pinnedFaces = 0;  // pond faces held as sources: their neighbour brick could not join the site (#384)
         long long filmFlips = 0;    // bricks whose thin films switched shown/hidden since the start (#660: a blink each)
+        int gpuSlots = 0, gpuCapacity = 0; // GPU bricks holding a slot now / the pool (#675: ~230 KB a brick)
+        long long slotReleases = 0;       // slots given back by sleeping bricks since the start (#675)
     };
     Stats GetStats();
     void WaitIdle();            // tests: until no step job is running

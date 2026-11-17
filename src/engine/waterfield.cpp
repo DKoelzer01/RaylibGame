@@ -15,8 +15,13 @@ namespace {
     std::vector<Dirty> dirtyQueue;
     constexpr float kNone = -1e9f;
     constexpr int kShallow = 64; // fills under 25 cm on the ground: drawn only as part of a sheet (openSurface)
-    constexpr int kFilmLift = 13; // a moving film is drawn at least ~5 cm over its ground share (#649)
+    const int kFilmLift = std::min(128, (int)lroundf(13.0f / CellSize())); // a moving film is drawn at least ~5 cm over its ground share (#649)
 
+}
+
+float CellSize() {
+    static const float c = [] { const char* e = getenv("RAYLIBGAME_FLUID_CELL"); const float v = e ? (float)atof(e) : 1.0f; return v > 0.05f && v <= 4.0f ? v : 1.0f; }();
+    return c;
 }
 
 void Site::brickBounds(int bi, int bj, int bk, Vector3& blo, Vector3& bhi) const {
@@ -26,7 +31,8 @@ void Site::brickBounds(int bi, int bj, int bk, Vector3& blo, Vector3& bhi) const
 void Site::cellBounds(int i0, int j0, int k0, int i1, int j1, int k1, Vector3& blo, Vector3& bhi) const {
     blo = { 1e30f, 1e30f, 1e30f }; bhi = { -1e30f, -1e30f, -1e30f };
     for (int c = 0; c < 8; ++c) {
-        const float x = (float)((c & 1) ? i1 : i0), y = (float)((c & 2) ? j1 : j0), z = (float)((c & 4) ? k1 : k0);
+        const float cs = CellSize();
+        const float x = (float)((c & 1) ? i1 : i0) * cs, y = (float)((c & 2) ? j1 : j0) * cs, z = (float)((c & 4) ? k1 : k0) * cs;
         const Vector3 p = Vector3Add(origin, Vector3Add(Vector3Add(Vector3Scale(e, x), Vector3Scale(n, y)), Vector3Scale(u, z)));
         blo = Vector3Min(blo, p); bhi = Vector3Max(bhi, p);
     }
@@ -249,9 +255,10 @@ bool ChunkSampler::density(Vector3 p, int kind, float& wd) {
         const int ci = (int)floorf(fx), cj = (int)floorf(fy), ck = (int)floorf(fz);
         if (!brickAt(si, ci, cj, ck)) continue;
         // The density of one column's surface at this height (dry: as if the surface were half a cell under the sample).
+        const float cs = CellSize();
         auto columnDensity = [&](int i, int j) {
             const float sf = surface(si, i, j, ck, kind);
-            return sf <= kNone * 0.5f ? ISO_LEVEL - DENSITY_GRADIENT * 0.5f : ISO_LEVEL + DENSITY_GRADIENT * (sf - fz);
+            return sf <= kNone * 0.5f ? ISO_LEVEL - DENSITY_GRADIENT * 0.5f * cs : ISO_LEVEL + DENSITY_GRADIENT * (sf - fz) * cs; // cells -> m
         };
         const float own = columnDensity(ci, cj);
         // Far from its column's surface (2.5 m+ over or under it), the blend can't put the sample on the other side
@@ -310,10 +317,10 @@ float ChunkSampler::depthBelow(Vector3 p, int kind) {
         uint8_t fill, flags;
         if (!cellAt(si, ci, cj, ck, fill, flags)) continue;
         float d = 0.0f;
-        for (int k = 0; k < 8; ++k, --ck) {
+        for (int k = 0; k < (int)(8.0f / CellSize()); ++k, --ck) {
             if (!cellAt(si, ci, cj, ck, fill, flags) || (flags & kSolid)) break;
             if (CellKind(flags) != kind || fill == 0) { if (k > 0) break; else continue; }
-            d += fill / 255.0f;
+            d += fill / 255.0f * CellSize(); // m
         }
         return d;
     }

@@ -97,7 +97,7 @@ void Waterworks_Update(Scene& world, float dt) {
                 // From under the pump; only the units the world actually gave leave the pump (a dry or short
                 // intake keeps the rest).
                 const Vector3 intake = Vector3Subtract(pl->toBody({ (bottom.x + 0.5f) * kCellSize, bottom.y * kCellSize, (bottom.z + 0.5f) * kCellSize }), Vector3Scale(pl->up, 0.7f));
-                const float got = Fluid::Take(*body, intake, want, 1.6f);
+                const float got = Fluid::Take(*body, intake, want, 2.5f); // +-2.5 m: the reach 1 m cells gave a 1.6 m radius (cells to +-2, reaching 2.5 m; W4c)
                 if (got <= 0.0f) { ++stats.dry; continue; }
                 if (!byHand) Factory::Drain(body->id, pl->id, pump, "water", std::min(units, (int)ceilf(got / kWaterPerUnit - 1e-4f)));
                 stats.pumped += got;
