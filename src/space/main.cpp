@@ -5007,16 +5007,16 @@ int main(int argc, char** argv)
                             printf("bench: dam-break: a 20 m reservoir behind a 1 m wall, a 50 m channel, 4 m wide, 2.5 m deep (cells %.2f m)\n", WaterField::CellSize());
                             dbPhase = 1; dbT0 = GetTime();
                         }
-                        // The camera over the channel, looking down at the wall and the first 20 m (the subject, CLAUDE.md).
-                        world.camera.position = p->toWorld(pt(8.0f, -22.0f, 16.0f)); world.camera.target = p->toWorld(pt(6.0f, 0.0f, -2.0f));
+                        // The camera over the wall, looking down at the reservoir and the channel's start (the subject, CLAUDE.md).
+                        world.camera.position = p->toWorld(pt(-4.0f, -9.0f, 9.0f)); world.camera.target = p->toWorld(pt(-4.0f, 0.0f, -2.0f));
                         world.camera.up = p->dirToWorld(home);
                         player.flyMode = true; player.position = world.renderOrigin + world.camera.position;
                         if (dbPhase == 1 && t > 1.0 && WorldIdle()) {
-                            // Fill the reservoir to 2 m: 160 m^3 poured over it, a few m^3 a frame.
+                            // Fill the reservoir to 2 m: 160 m^3 poured over it, 1 m^3 a frame.
                             static int k = 0;
                             const float x = -19.0f + 2.0f * (float)(k % 10), y = (k / 10) % 2 ? 1.0f : -1.0f;
                             ++k;
-                            dbPoured += Fluid::Pour(*p, pt(x, y, -2.3f), 4.0f);
+                            dbPoured += Fluid::Pour(*p, pt(x, y, -2.3f), 1.0f); // 1 m^3: a 4 m^3 pour stood over the rim at 0.25 m cells and spilled onto the grass
                             if (dbPoured >= 160.0f) { dbPhase = 2; dbT0 = GetTime(); }
                         } else if (dbPhase == 2 && ((t > 8.0 && Fluid::Asleep()) || t > 40.0)) {
                             // The floor as the ground has it (the box's -2.5 m is rounded by the lattice), the surface over it.
@@ -5028,6 +5028,9 @@ int main(int argc, char** argv)
                             ApplyTerrainEdits(*p, cut.data(), cut.size());
                             printf("bench: dam-break: reservoir %.2f m deep over its floor at %.2f m (%.0f m^3 poured, %.0f in the simulation, %.1f m^3 already past the wall); wall removed\n",
                                    h0, dbFloor, dbPoured, Fluid::GetStats().volume, beyond);
+                            printf("bench: dam-break: depth along the reservoir (x = -18 -14 -10 -6 -2 m):");
+                            for (float x : { -18.0f, -14.0f, -10.0f, -6.0f, -2.0f }) { const float d = Fluid::SurfaceAbove(*p, pt(x, 0.0f, dbFloor + 0.55f), 4.0f); printf(" %.2f", d > 0.0f ? d + 0.55f : 0.0f); }
+                            printf("\n");
                             dbPhase = 3; dbT0 = GetTime();
                         } else if (dbPhase == 3) {
                             const float dist[3] = { 5.0f, 10.0f, 20.0f };
