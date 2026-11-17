@@ -4318,7 +4318,8 @@ int main(int argc, char** argv)
                             TakeScreenshot("bench_spring.png");
                             const float total = (float)Fluid::GetStats().volume, nearSrc = Fluid::FluidAt(*p, spring, 3.0f, 0);
                             const bool ok = Fluid::SourceCount() >= 1 && total > 5.0f && nearSrc < 0.6f * total;
-                            printf("bench: spring: %.1f m^3 of moving water, %.1f of it within 3 m of the spring (a stream: most runs off) -> %s\n", total, nearSrc, ok ? "PASS" : "FAIL");
+                            printf("bench: spring: %.1f m^3 of moving water, %.1f of it within 3 m of the spring (a stream: most runs off); films shown/hidden %lld times (#660) -> %s\n",
+                                   total, nearSrc, Fluid::GetStats().filmFlips, ok ? "PASS" : "FAIL");
                             printf("bench: spring: bench_spring.png\n");
                             benchSpring = false;
                         }

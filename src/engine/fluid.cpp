@@ -61,6 +61,8 @@ inline void KindFriction(int kind, float& lin, float& quad) {
 constexpr int kSleepSteps = 120;       // 2 s without change: a brick sleeps
 constexpr int kSettleSteps = 180;      // 3 s window: a brick whose cells all moved less than kSettleDiff in it sleeps (#366)
 constexpr int kSettleDiff = 4;         // fill units (1.6 cm)
+constexpr long long kFilmHoldSteps = 300; // 5 s of steps: a brick's films stay drawn this long after it stops moving (#660)
+inline long long FilmHoldSteps() { static const long long h = getenv("RAYLIBGAME_FILM_HOLD") && atoi(getenv("RAYLIBGAME_FILM_HOLD")) == 0 ? 1 : kFilmHoldSteps; return h; } // A/B: =0 no hold
 constexpr int kLevelEvery = 15;        // levelling pass every 0.25 s
 constexpr int kInitPerStep = 24;       // bricks classified per step, in parallel on the worker pool (each a few ms)
 constexpr int kMaxBricks = 4096;       // per site
@@ -93,6 +95,7 @@ struct Brick {
     bool drawnMoving = false;       // published as moving (#649: its thin films are drawn while it is awake)
     std::array<uint8_t, B3> disp{}; // the cells as published: easing toward fill (#366)
     bool dispSet = false, easing = false;
+    long long movingStep = -1000000; // the last step it was awake or easing (#660: its films stay drawn a while after)
     int slot = -1;                  // GPU mode: its place in the GPU brick pool (-1: none yet)
     bool upload = false;            // GPU mode: the whole brick (cells, flags, targets) goes up next tick
 };
@@ -380,6 +383,7 @@ inline bool Next(Brick* b, int x, int y, int z, int dx, int dy, int dz, Neighbou
 }
 
 long long wakeGpu = 0, wakeTouch = 0; // settled bricks woken (stats)
+long long filmFlips = 0;              // bricks whose films switched shown/hidden (stats, #660)
 void Touch(Brick* b) { if (b->settled) ++wakeTouch; b->active = true; b->idle = 0; b->changed = true; b->settled = false; }
 
 // GPU mode (fluid on compute shaders): CPU-side changes to the mirror (buckets, pumps, springs, levelling) go
@@ -958,7 +962,12 @@ void RunJob() {
                 if (b.easing || still) b.changed = true;
                 b.easing = still;
             }
-            const bool movedFlip = b.drawnSet && b.drawnMoving != (b.active || b.easing); // woke or fell asleep: its thin films show or hide (#649)
+            // Its thin films are drawn while it moves and for kFilmHoldSteps after (#660: bricks in a steady stream fall asleep
+            // and wake again every second or so, and their films blinked out and back each time).
+            if (b.active || b.easing) b.movingStep = stepCount;
+            const bool movingNow = stepCount - b.movingStep < FilmHoldSteps();
+            const bool movedFlip = b.drawnSet && b.drawnMoving != movingNow; // its thin films show or hide (#649)
+            if (movedFlip) ++filmFlips;
             if (!b.changed && !movedFlip) continue;
             b.changed = false;
             if (!snap) {
@@ -973,7 +982,7 @@ void RunJob() {
             }
             WaterField::Site& ps = snap->sites[s->index];
             auto pb = std::make_shared<WaterField::Brick>();
-            pb->fill = b.fill; pb->drawn = b.disp; pb->flags = b.flags; pb->shut = b.shut; pb->kinds = present; pb->moving = b.active || b.easing; // queries read the simulated water, the mesher the eased
+            pb->fill = b.fill; pb->drawn = b.disp; pb->flags = b.flags; pb->shut = b.shut; pb->kinds = present; pb->moving = movingNow; // queries read the simulated water, the mesher the eased
             ps.bricks[kv.first] = std::move(pb);
             Vector3 lo, hi;
             ps.brickBounds(b.bi, b.bj, b.bk, lo, hi);
@@ -997,7 +1006,7 @@ void RunJob() {
                 b.drawn[i] = b.disp[i]; b.drawnFlags[i] = b.flags[i];
             }
             b.drawnSet = true;
-            b.drawnMoving = b.active || b.easing;
+            b.drawnMoving = movingNow;
             for (int o = 0; o < 8; ++o) {
                 if (c1[o][0] < 0) continue;
                 Vector3 dlo, dhi;
@@ -1019,6 +1028,7 @@ void RunJob() {
         for (int k = 0; k < 4; ++k) st.dbgTotal[k] = tot[k];
         st.wakes[0] = wakeGpu; st.wakes[1] = wakeTouch;
         st.pinnedFaces = pinnedFaces;
+        st.filmFlips = filmFlips;
         st.dbg[0] = dbgDown; st.dbg[1] = dbgSide; st.dbg[2] = dbgSrc; st.dbg[3] = dbgLevel; dbgDown = dbgSide = dbgSrc = dbgLevel = 0;
         st.settled = (int)settledTotal;
         pubStats = st;
