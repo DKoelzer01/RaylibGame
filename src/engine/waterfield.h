@@ -40,7 +40,7 @@ struct Brick {
     std::array<uint8_t, kBrick3> shut{}; // the share of an open cell that is ground, at its bottom (#454): holds 255 - shut, water stands at shut + fill
     uint8_t kinds = 0; // bit k: some cell holds fluid of kind k
     bool moving = false; // its water is moving (the brick is awake): thin films are drawn, not only sheets (#649)
-    std::vector<int16_t> flow; // the debug view (#695): per cell its flow along the site's east, north (cm/s); empty unless on
+    std::vector<int16_t> flow; // the drawn current (#677, #695): per column (x + 16 y) the solver's flow at its surface along the site's east, north (cm/s); empty: none
 };
 
 // The simulation's cell edge (m, Plan 10 W4c #642): every cell <-> metre conversion goes through it. RAYLIBGAME_FLUID_CELL

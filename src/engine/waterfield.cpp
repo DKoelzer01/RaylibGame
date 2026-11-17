@@ -374,7 +374,7 @@ bool ChunkSampler::simFlow(Vector3 p, Vector3& dir, float& speed) const {
         for (int dk = 0; dk >= -1; --dk) {
             const Brick* b = brickPtr(si, ci >> 4, cj >> 4, (ck + dk) >> 4);
             if (!b || b->flow.empty()) continue;
-            const int i = CellIdx(ci & 15, cj & 15, (ck + dk) & 15);
+            const int i = (ci & 15) + 16 * (cj & 15); // per column (#677)
             const float vx = b->flow[2 * i] * 0.01f, vy = b->flow[2 * i + 1] * 0.01f, v = sqrtf(vx * vx + vy * vy);
             if (v > best) { best = v; bx = vx; by = vy; }
         }
