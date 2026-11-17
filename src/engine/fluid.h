@@ -125,9 +125,11 @@ namespace Fluid {
         long long pinnedFaces = 0;  // pond faces held as sources: their neighbour brick could not join the site (#384)
         long long filmFlips = 0;    // bricks whose thin films switched shown/hidden since the start (#660: a blink each)
         int gpuSlots = 0, gpuCapacity = 0; // GPU bricks holding a slot now / the pool (#675: ~230 KB a brick)
+        int steadyBricks = 0;             // awake in steady flow (#674: running, read back once a second)
         long long slotReleases = 0;       // slots given back by sleeping bricks since the start (#675)
     };
     Stats GetStats();
+    bool GpuMode(); // the step runs on compute shaders (else the CPU kernel, #654)
     void WaitIdle();            // tests: until no step job is running
     void SetSpeed(int steps);   // tests: steps per tick (1 = 20 Hz real time)
     bool Asleep();              // every brick asleep and nothing queued

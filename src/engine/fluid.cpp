@@ -73,7 +73,9 @@ inline void KindFriction(int kind, float& lin, float& quad) {
 }
 constexpr int kSleepSteps = 120;       // 2 s without change: a brick sleeps
 constexpr int kSettleSteps = 180;      // 3 s window: a brick whose cells all moved less than kSettleDiff in it sleeps (#366)
-constexpr int kSettleDiff = 4;         // fill units (1.6 cm)
+// Fill units for 1.6 cm (4 at 1 m, 16 at 0.25 m: in units a quarter-metre cell's resting water never settled, W4c #674).
+const int kSettleDiff = std::max(4, (int)lroundf(0.016f * 255.0f / WaterField::CellSize()));
+constexpr long long kSteadySampleTicks = 40; // a steady brick is read back once in this many ticks (1 s; staggered by slot, #674)
 constexpr long long kFilmHoldSteps = 300; // 5 s of steps: a brick's films stay drawn this long after it stops moving (#660)
 inline long long FilmHoldSteps() { static const long long h = getenv("RAYLIBGAME_FILM_HOLD") && atoi(getenv("RAYLIBGAME_FILM_HOLD")) == 0 ? 1 : kFilmHoldSteps; return h; } // A/B: =0 no hold
 // Levelling pass interval (steps), by how much water is awake: 4x a second for a few hundred bricks (a dug channel fills
@@ -125,6 +127,11 @@ struct Brick {
     bool upload = false;            // GPU mode: the whole brick (cells, flags, targets) goes up next tick
     long long slotNeeded = 0;       // GPU mode: the last tick it was awake or near awake water (#675: else its slot is given back)
     bool hadSlot = false;           // GPU mode: it held a slot before (back from release: uploaded without waking)
+    // Steady flow (#674): levels stable over a settle window while water keeps moving through (the GPU reported changes in at
+    // least half its ticks). It keeps running - the water still reaches what is downstream - but is read back and published
+    // once a second, not every tick, and never falls asleep (a steady stream's bricks slept and woke every second, #660).
+    bool steady = false;
+    int winTicks = 0, winFlow = 0;  // this settle window: ticks published, ticks the GPU changed it
 };
 inline int Cap(const Brick* b, int i) { return 255 - b->shut[i]; }          // what the cell holds (#454)
 inline int Height(const Brick* b, int i) { return b->shut[i] + b->fill[i]; } // where its water stands, in 255ths of the cell
@@ -409,7 +416,7 @@ long long slotReleases = 0;           // GPU slots given back by sleeping bricks
 int slotsUsed = 0;                    // GPU slots held now (stats, #675)
 int G_Capacity();                     // the GPU brick pool (below)
 constexpr long long kSlotKeepTicks = 80; // 2 s of ticks: a brick away from awake water keeps its slot this long (#675)
-void Touch(Brick* b) { if (b->settled) ++wakeTouch; b->active = true; b->idle = 0; b->changed = true; b->settled = false; }
+void Touch(Brick* b) { if (b->settled) ++wakeTouch; b->active = true; b->idle = 0; b->changed = true; b->settled = false; b->steady = false; }
 void CpuTick(int n); // CPU mode: the GPU's step on the CPU (#654), below
 // Whether a neighbour (on face fc of a brick whose water moved) needs waking and running (#669): not a brick of solid rock
 // (water never enters it) nor a dry brick above (water rises into it only through sources, pours or levelling, which wake
@@ -961,14 +968,20 @@ void RunJob() {
             // 30-50 bricks awake for minutes, and their changes kept the chunks redrawing, #381). Water moving into it
             // wakes it again (Touch); a real flow changes some cell by more than that within the window.
             if (b.active) {
-                if (b.checkStep < 0) { b.check = b.fill; b.checkStep = stepCount; }
+                ++b.winTicks;
+                if (b.checkStep < 0) { b.check = b.fill; b.checkStep = stepCount; b.winTicks = b.winFlow = 0; }
                 else if (stepCount - b.checkStep >= kSettleSteps) {
                     int maxd = 0;
-                    for (int i = 0; i < B3 && maxd <= kSettleDiff; ++i) maxd = std::max(maxd, abs((int)b.fill[i] - (int)b.check[i]));
-                    if (maxd <= kSettleDiff) { b.active = false; b.idle = kSleepSteps + 1; b.settled = true; out.settledNow = true; }
-                    b.check = b.fill; b.checkStep = stepCount;
+                    for (int i = 0; i < B3 && maxd <= 2 * kSettleDiff; ++i) maxd = std::max(maxd, abs((int)b.fill[i] - (int)b.check[i]));
+                    // Levels held: at rest it sleeps; with water still passing through (the GPU changed it in half its ticks
+                    // or more) it is steady (#674: keeps running, read back once a second). Levels moved: neither.
+                    const bool flowing = b.winTicks > 0 && b.winFlow * 2 >= b.winTicks;
+                    if (maxd <= 2 * kSettleDiff && flowing && gpuMode) b.steady = true; // a moving surface wobbles more than a still one
+                    else if (maxd <= kSettleDiff) { b.active = false; b.idle = kSleepSteps + 1; b.settled = true; b.steady = false; out.settledNow = true; }
+                    else b.steady = false;
+                    b.check = b.fill; b.checkStep = stepCount; b.winTicks = b.winFlow = 0;
                 }
-            } else b.checkStep = -1;
+            } else { b.checkStep = -1; b.steady = false; }
             // The drawn water eases toward the simulated: 40% of the way a tick (25 ms), so a cell the water reaches fills in
             // over ~0.15 s instead of appearing whole (#366: water read as packets jumping a metre at a time). Solid cells follow
             // at once. A brick keeps publishing while it eases. Only the mesher reads the eased copy (WaterField::Brick::drawn);
@@ -1045,6 +1058,7 @@ void RunJob() {
     for (PubOut& out : outs) {
         const Brick& b = *out.b;
         if (b.active) ++st.activeBricks;
+        if (b.steady) ++st.steadyBricks;
         if (b.basin) ++st.basinBricks;
         st.wetCells += b.statWet; st.volume += b.statVolume; st.otherVolume += b.statOther;
         settledTotal += out.settledNow ? 1 : 0;
@@ -1299,10 +1313,14 @@ void GpuTick(int n) {
         static const int d[6][3] = { { -1, 0, 0 }, { 1, 0, 0 }, { 0, -1, 0 }, { 0, 1, 0 }, { 0, 0, -1 }, { 0, 0, 1 } };
         // A brick the CPU reclassified since that dispatch (upload pending) or is reclassifying now (not ready: a worker reads
         // its fill) keeps the CPU state: the GPU's older fill would put water back into cells that became solid (PR #129 review).
+        // A steady brick (#674) is read back on one tick in kSteadySampleTicks (staggered by slot); it keeps running between.
+        static long long rbTick = 0;
+        ++rbTick;
+        auto sampled = [&](int slot, const Brick* br) { return !br->steady || (rbTick + slot) % kSteadySampleTicks == 0; };
         auto takes = [&](size_t li) {
             const int slot = G.lastList[li];
             const Brick* br = G.owner[slot];
-            return br && G.ownerSite[slot] && slot < flagSlots && (flags[slot] & 1u) && br->ready && !br->upload;
+            return br && G.ownerSite[slot] && slot < flagSlots && (flags[slot] & 1u) && br->ready && !br->upload && sampled(slot, br);
         };
         // The packed cells into the bricks, on the workers (#669: ~3000 bricks x 4096 cells on the main thread took ~10 ms a tick);
         // drift: how far a settled brick's cells moved from where it settled.
@@ -1339,7 +1357,12 @@ void GpuTick(int n) {
             Site* site = G.ownerSite[slot];
             if (!br || !site || slot >= flagSlots) continue;
             const unsigned fl = flags[slot];
-            if (takes(li)) {
+            if (fl & 1u) ++br->winFlow; // the GPU changed it this tick (steady flow, #674)
+            if (br->steady && !takes(li)) {
+                // Steady, not read this tick: it keeps running (no idle count: the water still passes through).
+            } else if (br->steady) {
+                br->changed = true; // read back: published (its levels are checked at the end of the settle window)
+            } else if (takes(li)) {
                 if (!packed) {
                     G.a.download(cells.data(), kCellsPerBrick * 4, slot * kCellsPerBrick * 4);
                     for (int i = 0; i < B3; ++i) {
@@ -2173,6 +2196,7 @@ void Fluid::Load(FILE* f, uint64_t bodyId) {
 }
 
 Fluid::Stats Fluid::GetStats() { std::lock_guard<std::mutex> p(pubMx); return pubStats; }
+bool Fluid::GpuMode() { return gpuMode; }
 
 void Fluid::WaitIdle() {
     while (running.load()) std::this_thread::yield();
