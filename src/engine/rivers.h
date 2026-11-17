@@ -107,7 +107,7 @@ public:
     float flowOf(int piece) const;
     void setReachFlow(int piece, float share) const; // share of the natural discharge leaving a released reach here
     void clearReachFlow(int piece) const;
-    // The first link at or below `piece` (downstream) that starts more than `dist` m from `centre` (body-local m): a released
+    // The first link below `piece` (downstream) that starts more than `dist` m from `centre` (body-local m): a released
     // reach drives the flow from there, so the links under the reach keep their natural water (its sink classifies on them).
     int pieceBeyond(int piece, Vector3 centre, float dist) const;
     // While one lives on this thread, nearest() reports the natural river (ground materials: a dried bed keeps its stones).

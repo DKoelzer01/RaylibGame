@@ -5657,27 +5657,62 @@ int main(int argc, char** argv)
                             printf("bench: dam-divert t=%3.0f s: downstream flow %.2f, level %.2f m (was %.2f), half-width %.1f; upstream surface %s; %d reaches released\n",
                                    t, flow, h.level, divLevel0, h.halfWidth, [&] { const float su = surfaceAt(damUp, damLvU); return su < -1e8f ? std::string("dry") : std::string(TextFormat("%.2f", su)); }().c_str(), Fluid::ReleasedReaches());
                         }
-                        if (divPhase == 1 && flow < 0.05f) {
-                            divDryT = t;
-                            TakeScreenshot("bench_dam_dry.png");
-                            // Dig the dam out down to about the old ground (centres no lower than 1 m over it: a sphere 1.4 m across
-                            // left a 2 m pit under the bed that had to fill before any water went on).
-                            for (TerrainEdit& e : divWall) {
+                        // Dig a dam out down to about the old ground (centres no lower than 1 m over it: a sphere 1.4 m across left
+                        // a 2 m pit under the bed that had to fill before any water went on).
+                        auto digOut = [&](std::vector<TerrainEdit>& wall) {
+                            for (TerrainEdit& e : wall) {
                                 const Vector3 d = Vector3Normalize(e.center);
                                 e.center = at(d, std::max(Vector3Length(e.center) - pf->radius, pf->elevation(d) + 1.0f));
                                 e.carve = true; e.radius = 1.4f;
                             }
-                            ApplyTerrainEdits(*p, divWall.data(), divWall.size());
-                            printf("bench: dam-divert: dry 200 m downstream after %.0f s (bench_dam_dry.png); the dam dug out\n", t);
-                            divPhase = 2;
+                            ApplyTerrainEdits(*p, wall.data(), wall.size());
+                        };
+                        static std::vector<TerrainEdit> divWall2;
+                        static double phaseT = 0.0, upCutT = -1.0;
+                        static bool loadKept = false;
+                        if (divPhase == 1 && flow < 0.05f) {
+                            divDryT = t;
+                            TakeScreenshot("bench_dam_dry.png");
+                            // A second dam 300 m upstream (followed along the network): the first reach's springs must follow
+                            // the cut (they bring what arrives from upstream).
+                            Vector3 d = damDir;
+                            for (int s = 0; s < 30; ++s) { const RiverNetwork::Hit hu = net->nearest(d, 1e4f); d = off(d, hu.down, -10.0f); }
+                            const RiverNetwork::Hit hu = net->nearest(d, 1e4f);
+                            const Vector3 dn = Vector3Normalize(Vector3Subtract(hu.down, Vector3Scale(d, Vector3DotProduct(hu.down, d))));
+                            const Vector3 sd = Vector3Normalize(Vector3CrossProduct(d, dn));
+                            for (float w = -(hu.halfWidth + 15.0f); w <= hu.halfWidth + 15.0f; w += 0.8f) {
+                                const Vector3 dw = off(d, sd, w);
+                                const float bed = std::min(pf->elevation(dw), hu.level - hu.depth);
+                                for (float hh = bed - 0.5f; hh <= hu.level + 2.0f; hh += 0.8f) divWall2.push_back({ at(dw, hh), 1.3f, 5.0f, false });
+                            }
+                            ApplyTerrainEdits(*p, divWall2.data(), divWall2.size());
+                            printf("bench: dam-divert: dry 200 m downstream after %.0f s (bench_dam_dry.png); a second dam 300 m upstream (level %.2f m, %.1f m off the centreline)\n", t, hu.level, hu.dist);
+                            divPhase = 3; phaseT = t;
+                        } else if (divPhase == 3) {
+                            const float sc = Fluid::ReleaseInflowScale();
+                            if (t - phaseT >= 5.0 && fmod(t - phaseT, 5.0) < 0.05) printf("bench: dam-divert t=%3.0f s: the first reach's inflow %.2f of natural (%d reaches released)\n", t, sc, Fluid::ReleasedReaches());
+                            if (sc >= 0.0f && sc < 0.1f) {
+                                upCutT = t - phaseT;
+                                // Save and load: the river's flow state must come back with the world.
+                                const bool ok = SaveWorld(world) && LoadWorldSave(world);
+                                printf("bench: dam-divert: the first reach's springs followed the cut upstream after %.0f s; save/load %s\n", upCutT, ok ? "ok" : "FAILED");
+                                divPhase = 4; phaseT = t;
+                            } else if (t - phaseT > 120.0) { printf("bench: dam-divert: the first reach's springs never followed the cut upstream (inflow %.2f)\n", sc); divPhase = 4; phaseT = t; }
+                        } else if (divPhase == 4 && t - phaseT > 2.0) {
+                            loadKept = flow < 0.1f;
+                            printf("bench: dam-divert: after the load the river 200 m below reads flow %.2f (%s)\n", flow, loadKept ? "kept" : "lost");
+                            digOut(divWall); digOut(divWall2);
+                            printf("bench: dam-divert: both dams dug out\n");
+                            divPhase = 2; phaseT = t;
                         } else if (divPhase == 2 && flow > 0.9f) {
                             divOpenT = t;
                             TakeScreenshot("bench_dam_back.png");
                         }
                         if (divOpenT >= 0.0 || t > 480.0) {
-                            printf("bench: dam-divert: dried after %s s, back after %s s of the dam's removal; level %.2f m (natural %.2f) -> %s\n",
-                                   divDryT < 0.0 ? "never" : TextFormat("%.0f", divDryT), divOpenT < 0.0 ? "never" : TextFormat("%.0f", divOpenT - divDryT), h.level, divLevel0,
-                                   divDryT >= 0.0 && divOpenT >= 0.0 && fabsf(h.level - divLevel0) < 0.3f ? "PASS" : "FAIL");
+                            printf("bench: dam-divert: dried after %s s, upstream cut reached the reach after %s s, state kept over save/load: %s, back %s s after the removal; level %.2f m (natural %.2f) -> %s\n",
+                                   divDryT < 0.0 ? "never" : TextFormat("%.0f", divDryT), upCutT < 0.0 ? "never" : TextFormat("%.0f", upCutT), loadKept ? "yes" : "no",
+                                   divOpenT < 0.0 ? "never" : TextFormat("%.0f", divOpenT - phaseT), h.level, divLevel0,
+                                   divDryT >= 0.0 && upCutT >= 0.0 && loadKept && divOpenT >= 0.0 && fabsf(h.level - divLevel0) < 0.3f ? "PASS" : "FAIL");
                             printf("bench: dam-divert: bench_dam_dry.png, bench_dam_back.png\n");
                             benchDam = false;
                         }

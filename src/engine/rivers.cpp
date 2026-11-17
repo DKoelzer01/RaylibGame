@@ -966,7 +966,8 @@ void RiverNetwork::setFlowState(const std::vector<std::pair<int, float>>& cur, c
 }
 
 int RiverNetwork::pieceBeyond(int piece, Vector3 centre, float dist) const {
-    for (int k = piece, j = 0; k >= 0 && k < (int)pieces.size() && j < 64; k = nodeParent[k], ++j)
+    if (piece < 0 || piece >= (int)pieces.size()) return -1;
+    for (int k = nodeParent[piece], j = 0; k >= 0 && k < (int)pieces.size() && j < 64; k = nodeParent[k], ++j) // from the next link: this one starts upstream
         if (Vector3Distance(pieces[k].a, centre) > dist) return k;
     return -1;
 }

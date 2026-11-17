@@ -31,6 +31,7 @@
 #include <map>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <unordered_map>
 #include <unordered_set>
 #include <thread>
@@ -145,12 +146,12 @@ struct Site {
     std::deque<Brick*> pending;     // waiting for classification
     // Sources with a rate and a head (springs, seeps): site cell, kind, fill units added per step at most,
     // and the level (site cells, fractional) the fluid surface over it is held to.
-    struct Spring { int ci, cj, ck, kind; float perStep, head; float acc = 0.0f; }; // acc: fill units owed (a slow source adds < 1 a step)
+    struct Spring { int ci, cj, ck, kind; float perStep, head; float acc = 0.0f; int rel = -1; float scale = 1.0f; }; // acc: fill units owed (a slow source adds < 1 a step); rel: the released reach it feeds, scale: the river's flow arriving there (#656)
     std::vector<Spring> springs;
     // Released river reaches (#361): ground added into a river (a dam) turns its static source cells within `r` cells
     // (horizontally) of the edit into ordinary water. The upstream edge is fed by springs at the reach's discharge
     // (in `springs`), the downstream edge is a sink held at the generated level; beyond `r` the river stays generated.
-    struct Release { int ci, cj; float r; Vector3 centre, down; float natQ = 0.0f; int piece = -1; double sinkUnits = 0.0; float share = 1.0f; }; // natQ: the springs' m^3/s; piece: the river link below it; sinkUnits: taken in since the last measure; share: outflow / natQ (#656)
+    struct Release { int ci, cj; float r; Vector3 centre, down; float natQ = 0.0f; int piece = -1; double sinkUnits = 0.0; float share = 1.0f; int upPiece = -1; }; // natQ: the springs' m^3/s; piece: the river link below it; sinkUnits: taken in since the last measure; share: outflow / natQ (#656)
     std::vector<Release> releases;
 
     Vector3 cellCentre(int ci, int cj, int ck) const { return cellPoint(ci + 0.5f, cj + 0.5f, ck + 0.5f); }
@@ -279,6 +280,13 @@ void Classify(const Site& s, Brick& b, const BodyRef& ref, uint8_t& faces) {
             if (pf) {
                 bed = pf->radius + pf->elevation(dir);
                 if (bed < sea) { level = sea; kind = 4; } // the sea
+                // Inside a released reach the natural river (#656): the reach is the simulated river there, and a cut
+                // further up must not classify it dry (no sink: its outflow could never be measured again).
+                bool inReach = false;
+                for (const Site::Release& rel : s.releases)
+                    if ((float)((ci - rel.ci) * (ci - rel.ci) + (cj - rel.cj) * (cj - rel.cj)) < rel.r * rel.r) { inReach = true; break; }
+                std::optional<RiverNetwork::NaturalScope> natural;
+                if (inReach) natural.emplace();
                 const PlanetField::WaterSource ws = pf->waterSourceAt(dir);
                 if (ws.kind == 3) {
                     if (bed < sea + ws.level && sea + ws.level > level) { level = sea + ws.level; kind = 5; } // a pond (never an infinite source, even its rim)
@@ -490,7 +498,7 @@ void WalkOutlet(const Site& s, const Site::Spring& sp, Open&& open, Missing&& mi
 }
 
 void StepSpring(Site& s, Site::Spring& sp) {
-    sp.acc = std::min(sp.acc + sp.perStep, std::max(16.0f, sp.perStep * 30.0f)); // owed at most ~half a second's worth
+    sp.acc = std::min(sp.acc + sp.perStep * sp.scale, std::max(16.0f, sp.perStep * 30.0f)); // owed at most ~half a second's worth
     if (sp.acc < 8.0f) return; // in drops of 3 cm+: thinner specks would soak away (kEvaporate) before they spread
     WalkOutlet(s, sp,
         [&](Brick* b, int i, int ck) {
@@ -511,6 +519,7 @@ void StepSpring(Site& s, Site::Spring& sp) {
 // Fluid::Update steps while one does, though every brick sleeps (#645: a dammed river's inflow stopped once the pool
 // behind the dam settled, so it never rose to the crest).
 bool SpringWants(const Site& s, const Site::Spring& sp) {
+    if (sp.scale <= 0.0f) return false; // its river is cut upstream (#656)
     bool wants = false;
     WalkOutlet(s, sp,
         [&](Brick* b, int i, int ck) { wants = sp.head - (ck + Height(b, i) / 255.0f) > 1.0f / 255.0f; return wants || SpringReach() == 0; },
@@ -751,6 +760,7 @@ void MaybeRelease(Site& s, const BodyRef& ref, Vector3 c, float r) {
     Site::Release rel{ ci, cj, kReleaseMetres / WaterField::CellSize(), c, h.down }; // r in cells
     // The river link just below the reach (#656): its flow follows what the reach lets out.
     rel.piece = pf->rivers()->pieceBeyond(h.piece, c, kReleaseMetres + 5.0f);
+    rel.upPiece = h.piece; // the link through the reach: the flow arriving from upstream (a cut further up feeds less, #656)
     s.releases.push_back(rel);
     // The reach's bricks: per brick column, the river's depth under its own level down, 8 m over it up (#645: a reach
     // that climbs upstream - 16 m over its 40 m on seed 42's test river - had no bricks at its upstream edge).
@@ -795,7 +805,7 @@ void MaybeRelease(Site& s, const BodyRef& ref, Vector3 c, float r) {
     const float q = std::max(1.0f, std::min({ 0.25f * 2.0f * h.halfWidth, 40.0f, 2.0f * h.halfWidth * h.depth })); // m^3/s (#432)
     s.releases.back().natQ = q; // what flows in when nothing blocks the river (#656: its outflow is measured against it)
     for (const Up& u : up)
-        s.springs.push_back({ u.ci, u.cj, u.ck, 0, q / (float)up.size() * 255.0f / WaterField::CellVolume() / (20.0f * kSubsteps), u.head });
+        { s.springs.push_back({ u.ci, u.cj, u.ck, 0, q / (float)up.size() * 255.0f / WaterField::CellVolume() / (20.0f * kSubsteps), u.head }); s.springs.back().rel = (int)s.releases.size() - 1; }
 }
 
 void ApplyCommand(const Command& c) {
@@ -1748,6 +1758,15 @@ int Fluid::ReleasedReaches() {
     return n;
 }
 
+float Fluid::ReleaseInflowScale() {
+    std::lock_guard<std::mutex> lock(simMx);
+    float lo = -1.0f;
+    for (auto& s : sites)
+        for (const Site::Spring& sp : s->springs)
+            if (sp.rel >= 0) lo = lo < 0.0f ? sp.scale : std::min(lo, sp.scale);
+    return lo;
+}
+
 float Fluid::Take(Planetoid& body, Vector3 local, float m3, float radius, int kind) {
     const float have = kind ? FluidAt(body, local, radius, kind) : WaterAt(body, local, radius);
     const float t = std::min(m3, have);
@@ -1916,6 +1935,12 @@ void UpdateRiverFlow() {
             if (r.share > 0.6f) net->clearReachFlow(r.piece);
             else net->setReachFlow(r.piece, r.share / 0.6f);
         }
+        // A reach's springs bring what arrives from upstream: a cut further up the river feeds it less (#656).
+        for (Site::Spring& sp : s->springs)
+            if (sp.rel >= 0 && sp.rel < (int)s->releases.size()) {
+                const int up = s->releases[sp.rel].upPiece;
+                sp.scale = up >= 0 ? std::clamp(net->flowOf(up), 0.0f, 1.5f) : 1.0f;
+            }
         changed.clear();
         if (!net->stepFlow(dt, changed)) continue;
         for (int piece : changed) {
@@ -2196,10 +2221,10 @@ void Fluid::Save(FILE* f, uint64_t bodyId) {
         fprintf(f, "site %.4f %.4f %.4f %.6f %.6f %.6f %.6f %.6f %.6f %zu %zu", s->origin.x, s->origin.y, s->origin.z, s->e.x, s->e.y, s->e.z, s->u.x, s->u.y, s->u.z, (size_t)0, wet.size()); // 0: claimed ponds are gone (#360)
         fprintf(f, "\n");
         fprintf(f, "springs %zu\n", s->springs.size());
-        for (const Site::Spring& sp : s->springs) fprintf(f, "%d %d %d %d %.4f %.3f\n", sp.ci, sp.cj, sp.ck, sp.kind, sp.perStep, sp.head);
+        for (const Site::Spring& sp : s->springs) fprintf(f, "%d %d %d %d %.4f %.3f r %d\n", sp.ci, sp.cj, sp.ck, sp.kind, sp.perStep, sp.head, sp.rel);
         fprintf(f, "releases %zu\n", s->releases.size()); // released river reaches (#361)
         for (const Site::Release& r : s->releases)
-            fprintf(f, "%d %d %.2f %.4f %.4f %.4f %.6f %.6f %.6f q %.3f %d %.4f\n", r.ci, r.cj, r.r, r.centre.x, r.centre.y, r.centre.z, r.down.x, r.down.y, r.down.z, r.natQ, r.piece, r.share);
+            fprintf(f, "%d %d %.2f %.4f %.4f %.4f %.6f %.6f %.6f q %.3f %d %.4f u %d\n", r.ci, r.cj, r.r, r.centre.x, r.centre.y, r.centre.z, r.down.x, r.down.y, r.down.z, r.natQ, r.piece, r.share, r.upPiece);
         for (Brick* b : wet) {
             // Run-length fill (sources and solid cells as 0: they are re-derived on load).
             fprintf(f, "%d %d %d", b->bi, b->bj, b->bk);
@@ -2247,7 +2272,11 @@ void Fluid::Load(FILE* f, uint64_t bodyId) {
         if (fscanf(f, " springs %d", &ns) == 1)
             for (int j = 0; j < ns; ++j) {
                 Site::Spring sp{};
-                if (fscanf(f, " %d %d %d %d %f %f", &sp.ci, &sp.cj, &sp.ck, &sp.kind, &sp.perStep, &sp.head) == 6) s->springs.push_back(sp);
+                if (fscanf(f, " %d %d %d %d %f %f", &sp.ci, &sp.cj, &sp.ck, &sp.kind, &sp.perStep, &sp.head) == 6) {
+                    const long at = ftell(f); // its released reach (#656; older saves: none - and "releases" must not lose its r)
+                    if (fscanf(f, " r %d", &sp.rel) != 1) { sp.rel = -1; fseek(f, at, SEEK_SET); }
+                    s->springs.push_back(sp);
+                }
             }
         int nr = 0; // released river reaches (#361; older saves have none)
         if (fscanf(f, " releases %d", &nr) == 1)
@@ -2255,6 +2284,7 @@ void Fluid::Load(FILE* f, uint64_t bodyId) {
                 Site::Release r{};
                 if (fscanf(f, " %d %d %f %f %f %f %f %f %f", &r.ci, &r.cj, &r.r, &r.centre.x, &r.centre.y, &r.centre.z, &r.down.x, &r.down.y, &r.down.z) == 9) {
                     if (fscanf(f, " q %f %d %f", &r.natQ, &r.piece, &r.share) != 3) { r.natQ = 0.0f; r.piece = -1; r.share = 1.0f; } // #656 (older saves: none)
+                    else { const long at = ftell(f); if (fscanf(f, " u %d", &r.upPiece) != 1) { r.upPiece = -1; fseek(f, at, SEEK_SET); } }
                     s->releases.push_back(r);
                 }
             }
