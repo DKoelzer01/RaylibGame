@@ -431,6 +431,7 @@ int main(int argc, char** argv)
     bool benchPump = false; int pumpPhase = 0, pumpCable = -1; double pumpT0 = 0.0, pumpedAtCut = 0.0; uint32_t pumpPlot = 0; Vector3 pumpBasin{}; float pumpRise = 0.0f; // --test-pump
     bool benchBucket = false; int bucketPhase = 0, bucketTrips = 0; double bucketT0 = 0.0; Vector3 bucketWater{}, bucketBasin{}, bucketField{}; // --test-bucket
     float benchFluidLoad = 0.0f; int flPhase = 0; double flT0 = 0.0; Vector3 flMid{}, flE{}, flN{}; // --test-fluid-load S (#638/#642 perf)
+    bool benchDamBreak = false; int dbPhase = 0; double dbT0 = 0.0; float dbPoured = 0.0f, dbFloor = -2.5f; // --test-dam-break (#680: Ritter dam break, physics reference)
     bool benchWaterSpeed = false; int wsPhase = 0; double wsT0 = 0.0, wsFront[3] = { -1, -1, -1 }, wsSleep = -1.0; Vector3 wsSite{}, wsEye{}; float wsMaxFront = 0.0f, wsVol0 = 0.0f; // --test-water-speed (#638)
     bool benchPond = false; int pondPhase = 0; double pondT0 = 0.0; Vector3 pondDirB{}, pondOutB{}, pondPit{}, pondMid{}; float pondLevelB = 0.0f, pondRB = 0.0f; // --test-pond
     bool benchFlowSea = false; // --test-flow-sea (#190): the flow test from the sea instead of inland water
@@ -697,6 +698,7 @@ int main(int argc, char** argv)
         if (std::string(argv[i]) == "--test-water-speed") benchWaterSpeed = true;
         if (std::string(argv[i]) == "--sandbox") gSandboxWorld = true; // #662: a flat test plane
         if (std::string(argv[i]) == "--test-fluid-load" && i + 1 < argc) benchFluidLoad = (float)atof(argv[i + 1]); // basin side (m)
+        if (std::string(argv[i]) == "--test-dam-break") benchDamBreak = true; // best with --sandbox
         if (std::string(argv[i]) == "--test-pump") benchPump = true;
         if (std::string(argv[i]) == "--test-pump-hand") { benchPump = true; benchPumpHand = true; }
         if (std::string(argv[i]) == "--test-pump-boiler") { benchPump = true; benchPumpBoiler = true; }
@@ -4967,6 +4969,87 @@ int main(int argc, char** argv)
                             printf("bench: pump: pumped %.1f m^3 in 60 s (%.1f m up), the bowl holds %.1f m^3; after cutting the cable %.1f m^3 more -> %s\n",
                                    pumpedAtCut, pumpRise, bowl, after, pass ? "PASS" : "FAIL");
                             benchPump = false;
+                        }
+                    }
+                } else if (benchDamBreak && (dbPhase > 0 || WorldIdle())) {
+                    // --test-dam-break (#680, best with --sandbox): a physics reference. A channel 4 m wide and 2.5 m deep; its first
+                    // 20 m hold water 2 m deep behind a 0.5 m wall of ground, which is cut away. Ritter's solution for a dam break
+                    // on a dry, frictionless bed: the front runs at 2 sqrt(g h0), the depth at the dam is 4/9 h0 and the
+                    // discharge (8/27) sqrt(g) h0^1.5 per metre of width. Measured in the first 3 s (the wave reflected off the
+                    // reservoir's back reaches the dam at ~4.5 s). Friction makes a real front slower; the ratios are what to
+                    // compare across cell sizes.
+                    Planetoid* p = dynamic_cast<Planetoid*>(world.objects[0].get());
+                    const PlanetField* pf = p ? dynamic_cast<const PlanetField*>(p->field.get()) : nullptr;
+                    static Vector3 home{}, ax{}, ay{};
+                    static float r0 = 0.0f, h0 = 0.0f, depthDam = -1.0f, qDam = 0.0f;
+                    static double front[3] = { -1.0, -1.0, -1.0 };
+                    const double t = GetTime() - dbT0;
+                    auto pt = [&](float x, float y, float h) { // x along the channel, y across, h over the ground (m)
+                        const Vector3 d = Vector3Normalize(Vector3Add(Vector3Scale(home, r0), Vector3Add(Vector3Scale(ax, x), Vector3Scale(ay, y))));
+                        return Vector3Scale(d, r0 + h);
+                    };
+                    auto box = [&](float x0, float x1) { // the channel's cut from x0 to x1, 4 m wide, 2.5 m deep
+                        TerrainEdit e{};
+                        e.center = pt(0.5f * (x0 + x1), 0.0f, -1.25f);
+                        e.carve = true; e.box = true; e.half = { 0.5f * (x1 - x0), 2.0f, 1.25f };
+                        e.ax = ax; e.ay = ay; e.az = Vector3Normalize(e.center);
+                        e.radius = Vector3Length(e.half);
+                        return e;
+                    };
+                    if (!pf) { printf("bench: dam-break: needs the planet -> FAIL\n"); benchDamBreak = false; }
+                    else {
+                        if (dbPhase == 0) {
+                            home = pf->findSpawnDir(p->seed);
+                            ax = Vector3Normalize(Vector3CrossProduct(home, { 0, 1, 0 })); ay = Vector3CrossProduct(ax, home);
+                            r0 = pf->radius + pf->elevation(home);
+                            std::vector<TerrainEdit> cut = { box(-20.0f, 0.0f), box(1.0f, 50.0f) }; // a 1 m wall: thinner leaked at 1 m cells
+                            ApplyTerrainEdits(*p, cut.data(), cut.size());
+                            printf("bench: dam-break: a 20 m reservoir behind a 1 m wall, a 50 m channel, 4 m wide, 2.5 m deep (cells %.2f m)\n", WaterField::CellSize());
+                            dbPhase = 1; dbT0 = GetTime();
+                        }
+                        // The camera over the channel, looking down at the wall and the first 20 m (the subject, CLAUDE.md).
+                        world.camera.position = p->toWorld(pt(8.0f, -22.0f, 16.0f)); world.camera.target = p->toWorld(pt(6.0f, 0.0f, -2.0f));
+                        world.camera.up = p->dirToWorld(home);
+                        player.flyMode = true; player.position = world.renderOrigin + world.camera.position;
+                        if (dbPhase == 1 && t > 1.0 && WorldIdle()) {
+                            // Fill the reservoir to 2 m: 160 m^3 poured over it, a few m^3 a frame.
+                            static int k = 0;
+                            const float x = -19.0f + 2.0f * (float)(k % 10), y = (k / 10) % 2 ? 1.0f : -1.0f;
+                            ++k;
+                            dbPoured += Fluid::Pour(*p, pt(x, y, -2.3f), 4.0f);
+                            if (dbPoured >= 160.0f) { dbPhase = 2; dbT0 = GetTime(); }
+                        } else if (dbPhase == 2 && ((t > 8.0 && Fluid::Asleep()) || t > 40.0)) {
+                            // The floor as the ground has it (the box's -2.5 m is rounded by the lattice), the surface over it.
+                            for (float h = -1.0f; h > -3.0f; h -= 0.02f) if (p->densityAt(pt(-10.0f, 0.0f, h)) >= ISO_LEVEL) { dbFloor = h; break; }
+                            const float s = Fluid::SurfaceAbove(*p, pt(-10.0f, 0.0f, dbFloor + 0.55f), 4.0f); // over a cell that is water at either size
+                            h0 = s > 0.0f ? s + 0.55f : 0.0f;
+                            const float beyond = Fluid::WaterAt(*p, pt(10.0f, 0.0f, dbFloor + 0.5f), 4.0f);
+                            std::vector<TerrainEdit> cut = { box(-0.2f, 1.2f) }; // the wall goes
+                            ApplyTerrainEdits(*p, cut.data(), cut.size());
+                            printf("bench: dam-break: reservoir %.2f m deep over its floor at %.2f m (%.0f m^3 poured, %.0f in the simulation, %.1f m^3 already past the wall); wall removed\n",
+                                   h0, dbFloor, dbPoured, Fluid::GetStats().volume, beyond);
+                            dbPhase = 3; dbT0 = GetTime();
+                        } else if (dbPhase == 3) {
+                            const float dist[3] = { 5.0f, 10.0f, 20.0f };
+                            for (int i = 0; i < 3; ++i)
+                                if (front[i] < 0.0 && Fluid::WaterAt(*p, pt(1.0f + dist[i], 0.0f, dbFloor + 0.5f), 0.5f) > 0.02f) front[i] = t; // over the floor cell at either size
+                            if (t > 1.4 && depthDam < 0.0f) { const float sd = Fluid::SurfaceAbove(*p, pt(0.5f, 0.0f, dbFloor + 0.55f), 4.0f); depthDam = sd > 0.0f ? sd + 0.55f : 0.0f; }
+                            // The discharge just below the dam (body-local, along the channel): asked every frame (the meter smooths
+                            // over ~0.5 s), its peak between 1 and 2 s.
+                            const float qNow = Vector3DotProduct(Fluid::FlowAt(*p, pt(2.5f, 0.0f, -1.8f), 2.0f), ax);
+                            if (t > 1.0 && t < 2.0) qDam = std::max(qDam, qNow);
+                            if (t > 3.0) {
+                                const float g = 9.81f, c = 2.0f * sqrtf(g * std::max(h0, 0.01f));
+                                const float dTheory = 4.0f / 9.0f * h0, qTheory = 8.0f / 27.0f * sqrtf(g) * powf(h0, 1.5f) * 4.0f;
+                                const float speed = front[1] > 0.0 ? 10.0f / (float)front[1] : 0.0f;
+                                printf("bench: dam-break: front at 5 m after %.2f s, 10 m after %.2f s, 20 m after %.2f s (theory %.2f / %.2f / %.2f s: %.1f m/s); mean speed to 10 m %.1f m/s = %.2f of theory\n",
+                                       front[0], front[1], front[2], 5.0f / c, 10.0f / c, 20.0f / c, c, speed, speed / c);
+                                printf("bench: dam-break: depth at the dam %.2f m (theory %.2f: %.2f); discharge %.1f m^3/s (theory %.1f: %.2f)\n",
+                                       depthDam, dTheory, depthDam / std::max(dTheory, 0.01f), qDam, qTheory, qDam / std::max(qTheory, 0.01f));
+                                const bool ok = h0 > 1.5f && front[1] > 0.0 && speed / c > 0.4f && speed / c < 1.3f;
+                                printf("bench: dam-break: -> %s\n", ok ? "PASS" : "FAIL");
+                                benchDamBreak = false;
+                            }
                         }
                     }
                 } else if (benchFluidLoad > 0.0f && (flPhase > 0 || WorldIdle())) {
