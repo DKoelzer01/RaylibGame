@@ -201,6 +201,7 @@ struct Pass {
                 bool pN; int face;
                 const int gn = neighbour(slot, x, y, z, k == 0 ? 1 : 0, k == 1 ? 1 : 0, 0, pN, face);
                 if (gn < 0 || !pN) continue;
+                if (F(c) == 0u && F(inC[gn]) == 0u) continue; // two dry cells: nothing flows (#669)
                 float q, qm;
                 faceFlow(gi, c, gn, inC[gn], k == 0 ? P.x : P.y, q, qm);
                 if (q == 0.0f) continue;
@@ -229,8 +230,8 @@ struct Pass {
         }
         float mine[4];
         outward(gi, mine);
-        const float myScale = giveScale(gi, c);
-        const uint32_t myRoom = roomShare(gi, c);
+        float myScale = -1.0f; // computed when a face first needs them (#669)
+        int myRoom = -1;
         int net = 0;
         uint32_t moving = 0u, inKind = kind;
         int best = 0;
@@ -246,8 +247,10 @@ struct Pass {
             const float a = mine[k];
             if (!pN || a == 0.0f) continue;
             const uint32_t n = readCell(gn, pN);
+            if (a > 0.0f && myScale < 0.0f) myScale = giveScale(gi, c);
+            if (a < 0.0f && myRoom < 0) myRoom = (int)roomShare(gi, c);
             const float sc = a > 0.0f ? myScale : giveScale(gn, n);
-            const uint32_t share = a > 0.0f ? roomShare(gn, n) : myRoom;
+            const uint32_t share = a > 0.0f ? roomShare(gn, n) : (uint32_t)myRoom;
             const float mag = std::fabs(a) * sc;
             const int units = (int)std::min(std::floor(mag), (float)share);
             const bool clipped = (float)units < std::floor(mag);
