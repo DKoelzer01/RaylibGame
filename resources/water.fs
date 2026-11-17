@@ -20,6 +20,7 @@ uniform float fogDensity;
 uniform float time;
 uniform vec4 fluidColors[8];   // per kind (Fluid::BindKindUniforms): sRGB colour, opacity (a > 0: not water)
 uniform float fluidGlows[8];   // per kind: emissive strength (lava)
+uniform int fluidDebug;         // #695: 1 = water coloured by its speed, stripes running along the current
 
 #include "shadow.glsl"
 
@@ -95,6 +96,23 @@ void main()
         alpha = max(fluidColor.a, fresnel);
     }
 
+    if (fluidDebug != 0) {
+        // The debug view (#695): opaque, coloured by speed on a log scale (still deep blue, 0.5 m/s green, 2 m/s yellow,
+        // >= 5 m/s red) so slow flow shows too; bands across the current, 2 a metre, drifting downstream at its speed.
+        float v = fragFlow.w;
+        float t = clamp(log2(1.0 + v / 0.05) / log2(101.0), 0.0, 1.0);
+        vec3 ramp = t < 0.5 ? mix(vec3(0.02, 0.05, 0.45), vec3(0.05, 0.75, 0.15), t * 2.0)
+                            : mix(vec3(0.95, 0.85, 0.05), vec3(0.95, 0.05, 0.02), t * 2.0 - 1.0);
+        if (t >= 0.5 && t < 0.75) ramp = mix(vec3(0.05, 0.75, 0.15), vec3(0.95, 0.85, 0.05), (t - 0.5) * 4.0);
+        if (v > 0.01) {
+            vec3 fd = normalize(fragFlow.xyz);
+            float band = fract(dot(fragChunkPos, fd) * 2.0 - time * v * 2.0);
+            ramp *= band < 0.5 ? 1.0 : 0.6;
+        }
+        float lit = 0.55 + 0.45 * max(dot(normalize(fragNormal), sunDir), 0.0);
+        finalColor = vec4(pow(ramp * lit, vec3(1.0 / 2.2)), 1.0);
+        return;
+    }
     float fog = 1.0 - exp(-fogDensity * dist);
     color = mix(color, fogColor, clamp(fog, 0.0, 1.0));
     finalColor = vec4(pow(max(color, vec3(0.0)), vec3(1.0 / 2.2)), alpha);

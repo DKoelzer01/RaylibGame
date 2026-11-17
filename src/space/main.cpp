@@ -7492,6 +7492,7 @@ int main(int argc, char** argv)
                 cursorLocked = wantLock;
             }
         }
+        if (!bench && IsKeyPressed(KEY_F7)) Fluid::SetDebugView(!Fluid::DebugView()); // #695: water coloured by its speed
         if (!bench && IsKeyPressed(KEY_F1)) {
             DebugUI_Toggle();
             // (relocking the cursor centres it)

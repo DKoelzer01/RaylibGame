@@ -1907,7 +1907,16 @@ void Fluid::BindKindUniforms(const Shader& shader) {
     if (shader.id != cachedId) { cachedId = shader.id; colLoc = GetShaderLocation(shader, "fluidColors"); glowLoc = GetShaderLocation(shader, "fluidGlows"); }
     if (colLoc >= 0) rlSetUniform(colLoc, col, RL_SHADER_UNIFORM_VEC4, 8);
     if (glowLoc >= 0) rlSetUniform(glowLoc, glow, RL_SHADER_UNIFORM_FLOAT, 8);
+    // The debug view (#695): RAYLIBGAME_FLUID_DEBUG=1, or toggled in game (Fluid::SetDebugView).
+    static int dbgLoc = -1; static unsigned dbgId = 0;
+    if (shader.id != dbgId) { dbgId = shader.id; dbgLoc = GetShaderLocation(shader, "fluidDebug"); }
+    const int dbg = DebugView() ? 1 : 0;
+    if (dbgLoc >= 0) rlSetUniform(dbgLoc, &dbg, RL_SHADER_UNIFORM_INT, 1);
 }
+
+static bool debugView = getenv("RAYLIBGAME_FLUID_DEBUG") && atoi(getenv("RAYLIBGAME_FLUID_DEBUG")) != 0;
+bool Fluid::DebugView() { return debugView; }
+void Fluid::SetDebugView(bool on) { debugView = on; }
 
 namespace {
     // A published cell at a body-local point: its fill (0-255) and flags (and its ground share, #454); false if none.
