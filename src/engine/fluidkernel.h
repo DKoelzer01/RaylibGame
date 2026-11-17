@@ -11,6 +11,7 @@
 
 #include <cstdint>
 #include <vector>
+#include <cstdlib>
 
 namespace FluidKernel {
 
@@ -25,6 +26,7 @@ struct Params {
     // cells down (columnCells, ~8 m). Set with setCell.
     float cellSize = 1.0f, units = 255.0f, hu = 255.0f;
     int columnCells = 8;
+    bool columns = getenv("FLUID_COLUMNS") != nullptr; // #680 prototype: lateral flow per pair of water columns
     void setCell(float cs, int column) { cellSize = cs; units = 255.0f / (cs * cs * cs); hu = 255.0f / cs; columnCells = column; }
 };
 
@@ -35,6 +37,7 @@ struct Grid {
     std::vector<int> nbr;         // slot * 6 + face (-x +x -y +y -z +z), -1 none
     std::vector<uint8_t> processed; // per slot
     std::vector<uint32_t> flags;  // per slot: bit 0 changed, bits 1-6 face requests
+    std::vector<int> delta;       // per cell: column-pair flow units this substep (#680; zeroed in the vertical pass)
     void resize(int slots);       // keeps nothing
 };
 

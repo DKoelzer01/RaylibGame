@@ -5091,6 +5091,7 @@ int main(int argc, char** argv)
                         }
                         // The camera over the wall, looking down at the reservoir and the channel's start (the subject, CLAUDE.md).
                         world.camera.position = p->toWorld(pt(-4.0f, -9.0f, 9.0f)); world.camera.target = p->toWorld(pt(-4.0f, 0.0f, -2.0f));
+                        if (getenv("DBCAM") && dbPhase == 3) { world.camera.position = p->toWorld(pt(7.0f, -7.0f, 6.0f)); world.camera.target = p->toWorld(pt(7.0f, 0.0f, -2.0f)); } // #680 diagnosis: the channel below the dam
                         world.camera.up = p->dirToWorld(home);
                         player.flyMode = true; player.position = world.renderOrigin + world.camera.position;
                         if (dbPhase == 1 && t > 1.0 && WorldIdle()) {
@@ -5116,6 +5117,13 @@ int main(int argc, char** argv)
                             dbPhase = 3; dbT0 = GetTime();
                         } else if (dbPhase == 3) {
                             const float dist[3] = { 5.0f, 10.0f, 20.0f };
+                            static double profT = 0.0; // #680 diagnosis: the depth along the channel every 0.5 s
+                            if (getenv("DBPROF") && t - profT >= 0.5 && t < 6.0) {
+                                profT = t;
+                                printf("dbprof t=%.1f vol %.1f:", t, Fluid::GetStats().volume);
+                                for (float xx : { -10.0f, -2.0f, 2.0f, 5.0f, 8.0f, 12.0f, 16.0f, 20.0f, 30.0f }) { const float d = Fluid::SurfaceAbove(*p, pt(xx, 0.0f, dbFloor + 0.13f), 4.0f); printf(" %.0f:%.2f", xx, d > 0.0f ? d + 0.13f : 0.0f); }
+                                printf("\n");
+                            }
                             for (int i = 0; i < 3; ++i)
                                 if (front[i] < 0.0 && Fluid::WaterAt(*p, pt(1.0f + dist[i], 0.0f, dbFloor + 0.5f), 0.5f) > 0.02f) front[i] = t; // over the floor cell at either size
                             if (t > 1.4 && depthDam < 0.0f) { const float sd = Fluid::SurfaceAbove(*p, pt(0.5f, 0.0f, dbFloor + 0.55f), 4.0f); depthDam = sd > 0.0f ? sd + 0.55f : 0.0f; }

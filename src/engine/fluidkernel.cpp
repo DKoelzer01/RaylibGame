@@ -14,7 +14,7 @@ namespace FluidKernel {
 void Grid::resize(int slots) {
     a.assign((size_t)slots * 4096, 0u); b.assign((size_t)slots * 4096, 0u);
     faceP.assign((size_t)slots * 4096, Vec4{}); faceN.assign((size_t)slots * 4096 * 2, Vec4{});
-    nbr.assign((size_t)slots * 6, -1); processed.assign(slots, 0); flags.assign(slots, 0u);
+    nbr.assign((size_t)slots * 6, -1); processed.assign(slots, 0); flags.assign(slots, 0u); delta.assign((size_t)slots * 4096, 0);
 }
 
 namespace {
@@ -201,11 +201,188 @@ struct Pass {
         return n > 0u ? room / n : room;
     }
 
+    // ---- Column-pair flow (#680, FLUID_COLUMNS) ----------------------------------------------------------------------
+    // Water moves sideways between columns, not cells: a run of water cells resting on support has a bed and a surface;
+    // each pair of neighbouring runs carries one discharge Q (m^3/s, kept on the owning run's bottom cell) driven by the
+    // difference of their surfaces over the whole wetted depth. Its units leave the giver's top cell and arrive at the
+    // taker's head (atomically, into g.delta); the apply pass spills a head's overflow into the cell above and covers a
+    // top's shortfall from the cell below. Per cell faces passed water only through the one layer at the downstream
+    // surface (#680): a quarter of the depth at 0.25 m cells.
+    bool waterOf(uint32_t c, uint32_t kind) const { return !(FL(c) & SOLID) && F(c) > 0u && KIND(c) == kind; }
+    int stepZ(int gi, int dz, bool& proc) const {
+        int s, x, y, z; cellPos(gi, s, x, y, z);
+        int face;
+        return neighbour(s, x, y, z, 0, 0, dz, proc, face);
+    }
+    // A run from its bottom cell up: its top cell, its surface (units over the reference row's floor), the cell under the
+    // top, the head (where arriving water goes: the top if it has room, else the open cell over it) and the cell over the
+    // head; ok when the cells it changes are in processed slots (the apply pass runs only there).
+    struct ColRun { int bottom = -1, top = -1, below = -1, head = -1, above = -1; int bed = 0, surf = 0; bool ok = false; };
+    ColRun runUp(int bottom, int rowOffset) const {
+        ColRun r;
+        const uint32_t kind = KIND(inC[bottom]);
+        r.bottom = bottom; r.bed = rowOffset * 255 + (int)SH(inC[bottom]);
+        int cur = bottom, dz = 0;
+        bool proc = true;
+        for (int k = 0; k < 64; ++k) {
+            bool pr;
+            const int up = stepZ(cur, 1, pr);
+            if (F(inC[cur]) >= CAP(inC[cur]) && up >= 0 && waterOf(inC[up], kind)) { cur = up; ++dz; proc = proc && pr; continue; }
+            break;
+        }
+        r.top = cur;
+        r.surf = (rowOffset + dz) * 255 + (int)(SH(inC[cur]) + F(inC[cur]));
+        bool pb = true, ph = true, pa = true;
+        r.below = cur == bottom ? -1 : stepZ(cur, -1, pb);
+        r.head = cur;
+        if (F(inC[cur]) >= CAP(inC[cur])) {
+            const int up = stepZ(cur, 1, ph);
+            r.head = (up >= 0 && ph && !(FL(inC[up]) & SOLID) && (F(inC[up]) == 0u || KIND(inC[up]) == kind)) ? up : -1;
+        }
+        r.above = r.head >= 0 ? stepZ(r.head, 1, pa) : -1;
+        if (r.above >= 0 && (!pa || (FL(inC[r.above]) & SOLID) || (F(inC[r.above]) > 0u && KIND(inC[r.above]) != kind))) r.above = -1;
+        int s, x, y, z;
+        cellPos(cur, s, x, y, z);
+        r.ok = proc && g.processed[s];
+        return r;
+    }
+    // What a run can give this substep (its top cell and the full cell under it) and take (its head and the cell above).
+    int runAvail(const ColRun& r) const { return (int)F(inC[r.top]) + (r.below >= 0 ? (int)F(inC[r.below]) : 0); }
+    int runRoom(const ColRun& r) const {
+        if (r.head < 0) return 0;
+        return (int)(CAP(inC[r.head]) - F(inC[r.head])) + (r.above >= 0 ? (int)(CAP(inC[r.above]) - F(inC[r.above])) : 0);
+    }
+    // Plans the pair between this run (bottom cell gi) and the neighbour column on side (dx, dy): moves its units into
+    // g.delta and returns the new Q (+: from this run toward the neighbour). A wet pair belongs to the -x / -y side's run.
+    float colPair(int gi, int dx, int dy, float qPrev, bool owner) const {
+        const uint32_t c = inC[gi];
+        const uint32_t kind = KIND(c);
+        const ColRun A = runUp(gi, 0);
+        if (!A.ok) return 0.0f;
+        int s, x, y, z;
+        cellPos(gi, s, x, y, z);
+        bool pn; int face;
+        const int nb = neighbour(s, x, y, z, dx, dy, 0, pn, face);
+        if (nb < 0) { if (face >= 0 && F(c) >= (uint32_t)p.minSpread[kind]) g.flags[s] |= 1u << (1 + face); return 0.0f; }
+        if (!pn) return 0.0f;
+        const int topRows = (A.surf + 254) / 255; // rows A's water reaches over its bottom row
+        ColRun B;
+        bool wet = false, spill = false;
+        int takerSpill = -1;
+        const uint32_t n0 = inC[nb];
+        if (FL(n0) & SOLID) {
+            int cur = nb, k = 0;
+            bool pr = true;
+            while (k < topRows) {
+                const int up = stepZ(cur, 1, pr);
+                if (up < 0 || !pr) return 0.0f;
+                cur = up; ++k;
+                if (!(FL(inC[cur]) & SOLID)) break;
+            }
+            if (FL(inC[cur]) & SOLID) return 0.0f;           // a wall over A's water
+            if (waterOf(inC[cur], kind)) { B = runUp(cur, k); wet = true; }
+            else if (F(inC[cur]) > 0u) return 0.0f;          // another fluid
+            else {                                           // a dry floor higher than A's bed
+                B.bottom = B.top = B.head = cur;
+                B.bed = B.surf = k * 255 + (int)SH(inC[cur]);
+                bool pa;
+                B.above = stepZ(cur, 1, pa);
+                if (B.above >= 0 && (!pa || (FL(inC[B.above]) & SOLID) || F(inC[B.above]) > 0u)) B.above = -1;
+                B.ok = true;
+            }
+        } else if (waterOf(n0, kind)) {
+            int cur = nb, k = 0;
+            bool pr = true;
+            while (k > -64) {                                // down to the run's bottom
+                const int dn = stepZ(cur, -1, pr);
+                if (dn < 0 || !pr || !waterOf(inC[dn], kind) || F(inC[dn]) < CAP(inC[dn])) break;
+                cur = dn; --k;
+            }
+            B = runUp(cur, k); wet = true;
+        } else if (F(n0) > 0u) {
+            return 0.0f;                                     // another fluid
+        } else {
+            spill = true; takerSpill = nb;                   // air beside A's bottom: over the edge (it falls from there)
+        }
+        if (wet && !owner) return 0.0f;
+        // A pair that just turned wet was the other run's while this side was dry (a spill toward -x / -y, kept in its z / w):
+        // its momentum carries over (that side stores nothing now), or every front moving toward -x restarted from rest.
+        if (wet && owner) qPrev -= dx == 1 ? g.faceP[B.bottom].z : g.faceP[B.bottom].w;
+        if (!spill && !B.ok) return 0.0f;
+        // Surfaces and the flow (+: from A toward the neighbour).
+        const int bedMax = spill ? A.bed : std::max(A.bed, B.bed);
+        const int surfB = spill ? A.bed : B.surf;
+        const bool aUp = A.surf >= surfB;
+        const int surfU = aUp ? A.surf : surfB, surfD = aUp ? surfB : A.surf;
+        const int h = surfU - bedMax, dH = surfU - std::max(surfD, bedMax);
+        const float hm = (float)h / p.hu, dHm = (float)dH / p.hu;
+        float q = qPrev;
+        if (h >= p.minSpread[kind] && dH >= 2) q += p.dt * G * hm * dHm * (aUp ? 1.0f : -1.0f);
+        if (!wet && q < 0.0f) q = 0.0f;                      // a dry or lower neighbour never gives back
+        if (h < p.minSpread[kind]) q = 0.0f;                 // films rest
+        const float speed = std::fabs(q) / (p.cellSize * std::max(hm, 0.02f));
+        q /= 1.0f + p.dt * (p.frictionLin[kind] + p.frictionQuad[kind] * speed / std::max(hm, 0.02f));
+        const float plan = std::fabs(q) * p.dt * p.units;
+        if (plan < 1.0f) return q;
+        const bool aGives = q > 0.0f;
+        const int giverTop = aGives ? A.top : B.top;
+        const int avail = aGives ? runAvail(A) : runAvail(B);
+        int taker = -1, room = 0;
+        if (aGives) {
+            if (spill) { taker = takerSpill; room = (int)(CAP(inC[taker]) - F(inC[taker])); }
+            else { taker = B.head; room = runRoom(B); }
+        } else { taker = A.head; room = runRoom(A); }
+        if (taker < 0) return 0.0f;
+        const int units = (int)std::floor(std::min({ plan, (float)avail / 4.0f, (float)room / 4.0f }));
+        if (units <= 0) return q * 0.5f;
+        if ((float)units < std::floor(plan)) q = (aGives ? 1.0f : -1.0f) * (float)units / (p.dt * p.units);
+        __atomic_fetch_sub(&g.delta[giverTop], units, __ATOMIC_RELAXED);
+        __atomic_fetch_add(&g.delta[taker], units, __ATOMIC_RELAXED);
+        return q;
+    }
+    // A cell's new fill from the column flows: its own delta (clamped), a head's overflow from the cell below, a top's
+    // shortfall taken from it when it lies under one.
+    int colApply(int gi, uint32_t c, uint32_t& kindOut) const {
+        const int f = (int)F(c), cap = (int)CAP(c);
+        int nf = std::clamp(f + g.delta[gi], 0, cap);
+        bool pb, pa;
+        const int bl = stepZ(gi, -1, pb), ab = stepZ(gi, 1, pa);
+        if (bl >= 0) {
+            const uint32_t b = inC[bl];
+            const int over = (int)F(b) + g.delta[bl] - (int)CAP(b);
+            if (over > 0 && !(FL(b) & SOLID)) { if (nf == 0) kindOut = KIND(b); nf += over; }
+        }
+        if (ab >= 0) {
+            const uint32_t a = inC[ab];
+            const int under = (int)F(a) + g.delta[ab];
+            if (under < 0 && !(FL(a) & SOLID)) nf += under;
+        }
+        return std::clamp(nf, 0, cap);
+    }
     void cell(int slot, int local) const {
         const int x = local % 16, y = (local / 16) % 16, z = local / 256;
         const int gi = slot * 4096 + local;
         const uint32_t c = inC[gi];
         const uint32_t fl = FL(c);
+        if (pass == 1 && p.columns) {
+            // Column-pair flow (#680): a run's bottom cell plans its pairs (+x, +y always; -x, -y only toward a dry or lower
+            // column: a wet pair belongs to the -side run); Q per side in the face record (x +x, y +y, z -x, w -y).
+            Vec4 Q{};
+            bool pb; int fb;
+            const int gb = neighbour(slot, x, y, z, 0, 0, -1, pb, fb);
+            const bool bottom = !(fl & SOLID) && F(c) > 0u && !(fl & SOURCE) && gb >= 0 &&
+                                ((FL(inC[gb]) & SOLID) || (F(inC[gb]) > 0u && KIND(inC[gb]) != KIND(c)));
+            if (bottom) {
+                const Vec4 P = g.faceP[gi];
+                Q.x = colPair(gi, 1, 0, P.x, true);
+                Q.y = colPair(gi, 0, 1, P.y, true);
+                Q.z = colPair(gi, -1, 0, P.z, false);
+                Q.w = colPair(gi, 0, -1, P.w, false);
+                if (Q.x != 0.0f || Q.y != 0.0f || Q.z != 0.0f || Q.w != 0.0f) g.flags[slot] |= 1u;
+            }
+            g.faceN[(size_t)2 * gi] = Q;
+            return;
+        }
         if (pass == 1) {
             const Vec4 P = g.faceP[gi];
             Vec4 N{}, M{};
@@ -228,6 +405,7 @@ struct Pass {
         const int f = (int)F(c);
         uint32_t kind = KIND(c);
         if (pass == 0) {
+            g.delta[gi] = 0; // the column flows planned next (#680)
             bool pB, pA; int fB, fA;
             const int gb = neighbour(slot, x, y, z, 0, 0, -1, pB, fB);
             const int ga = neighbour(slot, x, y, z, 0, 0, 1, pA, fA);
@@ -238,6 +416,18 @@ struct Pass {
             const int nf = f - (int)outF + (int)inF;
             if (f == 0 && inF > 0u) kind = KIND(above);
             outC[gi] = Pack((uint32_t)std::clamp(nf, 0, 255), (fl & 31u) | (kind << 5), c);
+            return;
+        }
+        if (p.columns) {
+            // Column-pair flow (#680): the planned units, a head's overflow and a top's shortfall.
+            g.faceP[gi] = H(g.faceN[(size_t)2 * gi]);
+            uint32_t inKind = kind;
+            int nf = colApply(gi, c, inKind);
+            if (f == 0 && nf > 0) kind = inKind;
+            if (fl & SOURCE) nf = (int)TG(c);
+            else if (p.evaporate && nf > 0 && nf <= 2 && g.delta[gi] == 0 && onGround(slot, x, y, z)) nf = 0;
+            if (f != nf) g.flags[slot] |= 1u;
+            outC[gi] = Pack((uint32_t)nf, (fl & 31u) | (kind << 5), c);
             return;
         }
         float mine[4];
