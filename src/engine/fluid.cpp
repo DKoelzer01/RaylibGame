@@ -59,6 +59,9 @@ constexpr unsigned kEvapEvery = 1200;   // specks soak away on one step in this 
 constexpr int kSubsteps = 3;           // CPU simulation steps per 50 ms (water moves a cell a step)
 constexpr double kTickSeconds = 0.025; // a tick (a job + meshes) every 25 ms: water moved in 1-3 cell jumps every 50-100 ms, hard to follow (#366)
 constexpr float kGpuSubstepSeconds = 0.05f / (2 * kSubsteps); // the GPU runs twice the CPU's substeps: 120 a second (GpuTick)
+// Smaller cells take shorter substeps (W4c #642): a cell gives at most what it holds a substep, so a quarter-metre surface
+// cell capped a deep channel at ~4 m/s with 120 a second. 1 at 1 m, 4 at 0.25 m.
+inline int SubstepScale() { return std::max(1, (int)lroundf(1.0f / WaterField::CellSize())); }
 // How far down a surface cell's column depth looks (the momentum flow's wetted height): ~8 m, at most 32 cells (W4c #642).
 inline int ColumnCells() { return std::clamp((int)lroundf(8.0f / WaterField::CellSize()), 1, 32); }
 // Face-flow friction per kind (#642), from its viscosity (water 5): linear (1/s: a pool's last ripples die out) and
@@ -421,44 +424,79 @@ inline void TakeKind(Brick* to, int it, uint8_t kindBits) { if (to->fill[it] == 
 // A source with a rate and a head: it adds to the surface cell of its column while that surface is
 // below the head. A basin over it fills to the head and the source rests; a lower rim lets the overflow
 // run off (the step carries it away), so the source keeps adding and a stream forms.
-void StepSpring(Site& s, Site::Spring& sp) {
-    sp.acc = std::min(sp.acc + sp.perStep, std::max(16.0f, sp.perStep * 30.0f)); // owed at most ~half a second's worth
-    if (sp.acc < 8.0f) return; // in drops of 3 cm+: thinner specks would soak away (kEvaporate) before they spread
-    for (int k = 0; k < 64; ++k) {
-        const int ck = sp.ck + k;
-        if ((float)ck >= sp.head) return;                       // the surface is at the head
+// The pressurised outlet (W4c #642, user: a small source pushes out more than its own cell holds): the spring's
+// accumulator is the pressure. It wells up its column (through up to ~3 m of ground over a buried source) to the first
+// open cell; once that is full, the head pushes the rest on through the full cells of its fluid into the open cells beside
+// and above them, out to SpringReach() cells sideways - 0 for 1 m cells (the column alone, as before), 1 for quarter-metre
+// cells (a 3 x 3 outlet: one cell takes 1/64 m^3 a step, so a source of a few m^3/s could not get its water out).
+// open(b, i, ck) takes from the walk an open (not full) cell under the head and returns true to stop; missing() is told of
+// a brick still to come (and stops the walk).
+inline int SpringReach() { return (int)(0.25f / WaterField::CellSize() + 1e-3f); }
+template <class Open, class Missing>
+void WalkOutlet(const Site& s, const Site::Spring& sp, Open&& open, Missing&& missing) {
+    const int R = SpringReach();
+    // The start: the column's first cell that is not ground (a buried source wells up), then up through its full cells.
+    int k0 = -1;
+    const int buried = std::max(3, (int)lroundf(3.0f / WaterField::CellSize())); // ~3 m of ground over a buried source
+    for (int k = 0; k < buried && k0 < 0; ++k) {
         Brick* b; int i;
-        if (!s.cell(sp.ci, sp.cj, ck, b, i)) { s.ensure(FloorDiv(sp.ci, B), FloorDiv(sp.cj, B), FloorDiv(ck, B)); return; }
-        if (b->flags[i] & kSolid) { if (k < 3) continue; return; }  // a buried source wells up through the ground just above it
-        if (b->fill[i] > 0 && CellKind(b->flags[i]) != sp.kind) return; // another fluid lies on it
-        if (b->fill[i] >= Cap(b, i)) continue;                    // full: the surface is higher up
-        const float surface = ck + Height(b, i) / 255.0f;
-        const int add = (int)std::min({ sp.acc, (sp.head - surface) * 255.0f, (float)(Cap(b, i) - b->fill[i]) });
-        if (add <= 0) return;
-        TakeKind(b, i, (uint8_t)(sp.kind << kKindShift));
-        b->fill[i] = (uint8_t)(b->fill[i] + add);
-        GpuDelta(b, i, add);
-        sp.acc -= (float)add;
-        Touch(b); ++dbgSrc;
-        return;
+        if (!s.cell(sp.ci, sp.cj, sp.ck + k, b, i)) { missing(sp.ci, sp.cj, sp.ck + k); return; }
+        if (!(b->flags[i] & kSolid)) k0 = sp.ck + k;
+    }
+    if (k0 < 0) return;
+    struct C { int dx, dy, ck; };
+    std::vector<C> q{ { 0, 0, k0 } };
+    std::vector<int64_t> seen{ Key(0, 0, 0) }; // relative to the start (cell keys hold +-1024)
+    for (size_t h = 0; h < q.size() && q.size() < 4096; ++h) {
+        const C c = q[h];
+        if ((float)c.ck >= sp.head || c.ck - k0 >= 64) continue;  // the surface is at the head
+        Brick* b; int i;
+        if (!s.cell(sp.ci + c.dx, sp.cj + c.dy, c.ck, b, i)) { missing(sp.ci + c.dx, sp.cj + c.dy, c.ck); return; }
+        if (b->flags[i] & kSolid) continue;
+        if (b->fill[i] > 0 && CellKind(b->flags[i]) != sp.kind) continue; // another fluid lies there
+        if (b->fill[i] < Cap(b, i)) {
+            if (open(b, i, c.ck)) return;
+            if (R == 0 || b->fill[i] < Cap(b, i)) { if (R == 0) return; continue; } // still open: its surface holds the pressure
+        }
+        // Full: the pressure passes on - up, and sideways within the outlet.
+        static const int d[5][3] = { { 0, 0, 1 }, { 1, 0, 0 }, { -1, 0, 0 }, { 0, 1, 0 }, { 0, -1, 0 } };
+        for (const auto& dd : d) {
+            const C n{ c.dx + dd[0], c.dy + dd[1], c.ck + dd[2] };
+            if (abs(n.dx) > R || abs(n.dy) > R) continue;
+            const int64_t key = Key(n.dx, n.dy, n.ck - k0);
+            if (std::find(seen.begin(), seen.end(), key) != seen.end()) continue;
+            seen.push_back(key); q.push_back(n);
+        }
     }
 }
 
-// Whether a spring would still add (its column's surface is under its head): read-only, as StepSpring walks the column.
+void StepSpring(Site& s, Site::Spring& sp) {
+    sp.acc = std::min(sp.acc + sp.perStep, std::max(16.0f, sp.perStep * 30.0f)); // owed at most ~half a second's worth
+    if (sp.acc < 8.0f) return; // in drops of 3 cm+: thinner specks would soak away (kEvaporate) before they spread
+    WalkOutlet(s, sp,
+        [&](Brick* b, int i, int ck) {
+            const float surface = ck + Height(b, i) / 255.0f;
+            const int add = (int)std::min({ sp.acc, (sp.head - surface) * 255.0f, (float)(Cap(b, i) - b->fill[i]) });
+            if (add <= 0) return SpringReach() == 0; // at the head here (another outlet cell may be lower)
+            TakeKind(b, i, (uint8_t)(sp.kind << kKindShift));
+            b->fill[i] = (uint8_t)(b->fill[i] + add);
+            GpuDelta(b, i, add);
+            sp.acc -= (float)add;
+            Touch(b); ++dbgSrc;
+            return sp.acc < 1.0f;
+        },
+        [&](int ci, int cj, int ck) { s.ensure(FloorDiv(ci, B), FloorDiv(cj, B), FloorDiv(ck, B)); });
+}
+
+// Whether a spring would still add (an outlet cell's surface is under its head): read-only, the same walk as StepSpring.
 // Fluid::Update steps while one does, though every brick sleeps (#645: a dammed river's inflow stopped once the pool
 // behind the dam settled, so it never rose to the crest).
 bool SpringWants(const Site& s, const Site::Spring& sp) {
-    for (int k = 0; k < 64; ++k) {
-        const int ck = sp.ck + k;
-        if ((float)ck >= sp.head) return false;
-        Brick* b; int i;
-        if (!s.cell(sp.ci, sp.cj, ck, b, i)) return true; // its brick is still to come
-        if (b->flags[i] & kSolid) { if (k < 3) continue; return false; }
-        if (b->fill[i] > 0 && CellKind(b->flags[i]) != sp.kind) return false;
-        if (b->fill[i] >= Cap(b, i)) continue;
-        return sp.head - (ck + Height(b, i) / 255.0f) > 1.0f / 255.0f;
-    }
-    return false;
+    bool wants = false;
+    WalkOutlet(s, sp,
+        [&](Brick* b, int i, int ck) { wants = sp.head - (ck + Height(b, i) / 255.0f) > 1.0f / 255.0f; return wants || SpringReach() == 0; },
+        [&](int, int, int) { wants = true; }); // its brick is still to come
+    return wants;
 }
 
 // Levelling: bodies of water joined through full cells communicate. Each body's open surfaces (the
@@ -1301,7 +1339,8 @@ void GpuTick(int n) {
     rlSetUniform(G.step.uniform("visc"), visc, RL_SHADER_UNIFORM_INT, 8);
     rlSetUniform(G.step.uniform("frictionLin"), fricLin, RL_SHADER_UNIFORM_FLOAT, 8);
     rlSetUniform(G.step.uniform("frictionQuad"), fricQuad, RL_SHADER_UNIFORM_FLOAT, 8);
-    const float substepDt = kGpuSubstepSeconds;
+    n *= SubstepScale();
+    const float substepDt = kGpuSubstepSeconds / SubstepScale();
     rlSetUniform(G.step.uniform("dt"), &substepDt, RL_SHADER_UNIFORM_FLOAT, 1);
     const float cellSize = WaterField::CellSize();
     rlSetUniform(G.step.uniform("cellSize"), &cellSize, RL_SHADER_UNIFORM_FLOAT, 1);
@@ -1316,7 +1355,7 @@ void GpuTick(int n) {
         G.step.setInt("pass", 1); G.b.bind(0); G.a.bind(1); G.step.dispatch(kCellsPerBrick / 64u, bricks);
         // Specks soak away on one substep in kEvapEvery: one must rest across it. Every substep, a spreading film lost the
         // edge it had just laid down, again and again (#454: 7-12% of a draining pond).
-        G.step.setInt("evaporate", !noEvap && ++evapTick % kEvapEvery == 0 ? 1 : 0);
+        G.step.setInt("evaporate", !noEvap && ++evapTick % (kEvapEvery * (unsigned)SubstepScale()) == 0 ? 1 : 0);
         G.step.setInt("pass", 2); G.step.dispatch(kCellsPerBrick / 64u, bricks);
     }
     G.lastList = list;
@@ -1398,12 +1437,13 @@ void CpuTick(int n) {
     }
     FluidKernel::Params p;
     for (int k = 0; k < 8; ++k) { p.minSpread[k] = kindMinSpread[k]; p.visc[k] = kindVisc[k]; KindFriction(k, p.frictionLin[k], p.frictionQuad[k]); }
-    p.dt = kGpuSubstepSeconds;
+    n *= SubstepScale();
+    p.dt = kGpuSubstepSeconds / SubstepScale();
     p.setCell(WaterField::CellSize(), ColumnCells());
     static const bool noEvap = getenv("RAYLIBGAME_FLUID_NOEVAP") != nullptr;
     static unsigned evapTick = 0;
     for (int k = 0; k < n; ++k) {
-        p.evaporate = !noEvap && ++evapTick % kEvapEvery == 0;
+        p.evaporate = !noEvap && ++evapTick % (kEvapEvery * (unsigned)SubstepScale()) == 0;
         FluidKernel::Substep(g, p, list);
     }
     // Unpack, as the GPU readback (GpuTick 1.).
