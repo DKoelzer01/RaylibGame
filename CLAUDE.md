@@ -70,6 +70,10 @@ C++ raylib 5.5 planetoid survival game. `src/engine` (static lib), `src/space` -
   TaskStop does not kill the child scripts.
 - Check on every test run 15-45 s after starting it (user, 2026-11-14): run it in the background and look at its
   output early, so an error or a stall is caught then, not after the whole timeout.
+- **Every batch of tests has a hard limit of 15 minutes** (user, 2026-11-17: a wait loop hung for 8 hours), except a
+  large-scale regression (`tools/regression.sh`). Wrap the whole batch, not only each test: `timeout 900 bash -c '...'`
+  (per-test `timeout` inside it as well), and give every wait or poll loop its own deadline (`until <check> || [ $SECONDS
+  -gt 900 ]`), never an open-ended `until grep ...`. Split longer work into several batches.
 - `--test-planet-walk M` (#363, user 2026-11-14): M metres as 100 m legs at places drawn from the seed (teleports
   between legs, hovering while each place loads; every other leg prefers ground above 300 m). PASS = most legs walked
   and never under the surface or inside solid; a leg lost to a death or a 45 s timeout on rough ground is not a failure.
