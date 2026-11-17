@@ -5464,11 +5464,22 @@ int main(int argc, char** argv)
                             player.position = world.renderOrigin + world.camera.position;
                             const Vector3 q = Fluid::FlowAt(*p, at(0.0f, -1.8f), 2.0f); // asked every frame: the readout smooths
                             static double lastPrint = 0.0;
-                            if (t - lastPrint >= 10.0) { lastPrint = t; printf("bench: flow-meter t=%3.0f s: %.2f m^3/s along the trench (%.2f across); %.1f m^3 of water\n", t, Vector3DotProduct(q, fmPlot->east), Vector3Length(Vector3Subtract(q, Vector3Scale(fmPlot->east, Vector3DotProduct(q, fmPlot->east)))), Fluid::GetStats().volume); }
+                            const Fluid::Stats fs = Fluid::GetStats();
+                            if (t - lastPrint >= 10.0) { lastPrint = t; printf("bench: flow-meter t=%3.0f s: %.2f m^3/s along the trench (%.2f across); %.1f m^3 of water; %d bricks awake, %d steady, publish %.2f ms\n", t, Vector3DotProduct(q, fmPlot->east), Vector3Length(Vector3Subtract(q, Vector3Scale(fmPlot->east, Vector3DotProduct(q, fmPlot->east)))), fs.volume, fs.activeBricks, fs.steadyBricks, fs.meshMs); }
+                            // Steady flow (#674): the trench's bricks turn steady (running, read back once a second); a pour into the
+                            // trench at 45 s wakes them (fewer steady), and the meter still reads the stream at 60 s.
+                            static int steadyBefore = 0, steadyAfter = 1 << 30;
+                            static bool poured = false;
+                            if (t > 30.0 && t < 45.0) steadyBefore = std::max(steadyBefore, fs.steadyBricks);
+                            if (t > 45.0 && !poured) { poured = true; Fluid::Pour(*p, at(0.0f, -1.5f), 3.0f); }
+                            if (t > 45.5 && t < 48.0) steadyAfter = std::min(steadyAfter, fs.steadyBricks);
                             if (t > 60.0) {
                                 const float along = Vector3DotProduct(q, fmPlot->east);
                                 TakeScreenshot("bench_flow_meter.png");
-                                printf("bench: flow-meter: %.2f m^3/s along the trench from a 1 m^3/s spring -> %s\n", along, along > 0.6f && along < 1.4f ? "PASS" : "FAIL");
+                                const bool gpu = Fluid::GpuMode();
+                                const bool steadyOk = !gpu || (steadyBefore > 0 && steadyAfter < steadyBefore);
+                                printf("bench: flow-meter: steady bricks %d before a pour, %d after (#674)%s\n", steadyBefore, steadyAfter, gpu ? "" : " (CPU mode: none)");
+                                printf("bench: flow-meter: %.2f m^3/s along the trench from a 1 m^3/s spring -> %s\n", along, along > 0.6f && along < 1.4f && steadyOk ? "PASS" : "FAIL");
                                 benchFlowMeter = false;
                             }
                         }
