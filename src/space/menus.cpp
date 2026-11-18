@@ -241,6 +241,7 @@ namespace {
             static const char* bob[] = { "Full", "Reduced", "Off" };
             changed |= Choice({ x, y, w, h }, "Hand bob", bob, 3, settings.handBob); next();
             changed |= Toggle({ x, y, w, h }, "Speed vignette", settings.speedVignette); next();
+            changed |= Toggle({ x, y, w, h }, "Firelight flicker", settings.fireFlicker); next(); // torches and campfires (#558)
             break;
         }
         case SettingsTab::Count: break;
@@ -275,6 +276,7 @@ void Settings_Load() {
             else if (!strcmp(key, "terraindetail")) settings.terrainDetail = std::clamp((int)v, 0, 3);
             else if (!strcmp(key, "camerasmoothing")) settings.cameraSmoothing = std::clamp((int)v, 0, 3);
             else if (!strcmp(key, "speedvignette")) settings.speedVignette = v != 0.0f;
+            else if (!strcmp(key, "fireflicker")) settings.fireFlicker = v != 0.0f;
         }
         fclose(f);
     }
@@ -290,6 +292,7 @@ void Settings_Save() {
     fprintf(f, "difficulty %d\n", settings.difficulty);
     fprintf(f, "showfps %d\n", settings.showFps ? 1 : 0);
     fprintf(f, "terraindetail %d\ncamerasmoothing %d\nspeedvignette %d\n", settings.terrainDetail, settings.cameraSmoothing, settings.speedVignette ? 1 : 0); // (terrain detail was never saved, #297)
+    fprintf(f, "fireflicker %d\n", settings.fireFlicker ? 1 : 0);
     if (!settings.logLevel.empty()) fprintf(f, "log_level %s\n", settings.logLevel.c_str()); // set by hand in the file (#514)
     fclose(f);
 }

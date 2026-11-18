@@ -1165,18 +1165,31 @@ float PlanetField::densityNear(Vector3 p, float d, float surface, float fp, cons
     // by walking; elsewhere they stay 5 m+ down. Only looked up for shallow samples.
     float caveTop = 5.0f;
     float mouth = 0.0f; // #549: in mouth regions tunnels open at full width where they meet the surface (no grille)
-    if (depth < 14.0f && depth > -3.0f && caveWeight > 0.0f && !moon) { mouth = Smoothstep(0.3f, 0.45f, caveMouths.fractal(1, p.x, p.y, p.z)); caveTop = 5.0f - 7.5f * mouth; }
-    if (caveWeight > 0.0f && depth > caveTop && d > mantleRadius + 20.0f) {
+    if (depth < 14.0f && depth > -14.0f && caveWeight > 0.0f && !moon) { mouth = Smoothstep(0.3f, 0.45f, caveMouths.fractal(1, p.x, p.y, p.z)); caveTop = 5.0f - 7.5f * mouth; }
+    // #549 (playtest 8): a tunnel running just under the ground left a roof thin enough for the surface noise to punch
+    // rows of small holes through it (the grille), and tor slabs bridged the mouth. In mouth regions a roof thinner than
+    // kRoof collapses: every sample over the tunnel whose roof (its depth + its distance to the tunnel) is that thin is
+    // carved. The roof depth is about the same all down a column, so whole columns open, with clean edges; up to the
+    // tops of tors (14 m) so slabs over a collapsed roof go too.
+    constexpr float kRoof = 4.0f;
+    const float gate = mouth > 0.0f ? -14.0f : caveTop;
+    if (caveWeight > 0.0f && depth > gate && d > mantleRadius + 20.0f) {
         const float near = 2.0f * std::max(fp, 1.0f) + 2.0f; // farther than this from a cave = plain rock for meshing
+        const float reach = mouth > 0.0f ? std::max(near, kRoof + 1.0f - depth) : near; // a thin roof's samples too
         float m = 1e9f;                                        // metres to the nearest cave wall (< 0 inside)
         // A tunnel needs both fields near zero: if the first alone rules one out, skip the second.
         const float a = fabsf(cavesA.fractal(2, p.x, p.y, p.z));
-        if ((a - kTunnelLevel) * 100.0f <= near) {
-            float top = std::min(1.0f, (depth - caveTop) / 8.0f);
+        if ((a - kTunnelLevel) * 100.0f <= reach) {
+            float top = std::clamp((depth - caveTop) / 8.0f, 0.0f, 1.0f);
             top = top + (1.0f - top) * mouth;
             const float fade = top * std::min(1.0f, (d - mantleRadius - 20.0f) / 10.0f);
             const float t = std::max(a, fabsf(cavesB.fractal(2, p.x, p.y, p.z)));
             m = (t - kTunnelLevel) * 100.0f + (1.0f - fade * caveWeight) * 20.0f;
+            if (mouth > 0.0f && m > 0.0f) {
+                const float roof = depth + m;
+                const float c = mouth * std::clamp((kRoof + 1.0f - roof) * 0.5f, 0.0f, 1.0f);
+                m = m + (-2.0f - m) * c;
+            }
         }
         if (depth > 30.0f && d > mantleRadius + 40.0f) {
             const float fade = std::min(1.0f, (depth - 30.0f) / 20.0f) * std::min(1.0f, (d - mantleRadius - 40.0f) / 20.0f);
@@ -1717,11 +1730,16 @@ void BuildChunkMesh(const DensityField& field, const TerrainDeltas& deltas, Chun
 // rays (up, and four tilted 45 degrees) through the block's own samples (edits included): the open share sets the light,
 // the up ray counting double, so a shelter's mouth is dim and a few metres in is black. The up ray continues past the
 // block through the full field to 12 m (so block borders don't show).
+// #541: the rays start half a sample off the surface along the vertex normal and read the block trilinearly. They used to
+// start on the vertex and take the nearest sample: on a steep wall a point a metre above a vertex rounded to the solid
+// sample behind it about half the time once samples were 1-2 m apart, so mid-range cliffs read as roofed (dark blotches),
+// up to the stride where the probe stops (a ring).
 static float OverheadOpenness(const DensityField& field, const TerrainDeltas& deltas, const float* ext, int E, Vector3 eo, float stride,
-                              Vector3 p, const PlanetField::Column3D* col, const float* elev) {
+                              Vector3 p, Vector3 n, const PlanetField::Column3D* col, const float* elev) {
     const float d = Vector3Length(p);
     if (d < 1e-3f) return 1.0f;
     const Vector3 up = Vector3Scale(p, 1.0f / d);
+    p = Vector3Add(p, Vector3Scale(n, 0.5f * stride)); // clear of the vertex's own surface cell
     const Vector3 t1 = Vector3Normalize(Vector3CrossProduct(up, fabsf(up.y) < 0.9f ? Vector3{ 0, 1, 0 } : Vector3{ 1, 0, 0 }));
     const Vector3 t2 = Vector3CrossProduct(up, t1);
     const Vector3 dirs[5] = { up,
@@ -1732,9 +1750,17 @@ static float OverheadOpenness(const DensityField& field, const TerrainDeltas& de
     const bool mayRoof = !col || col->mask > 0.0f;
     auto blockSolid = [&](Vector3 q, bool& inside) {
         const float fx = (q.x - eo.x) / stride, fy = (q.y - eo.y) / stride, fz = (q.z - eo.z) / stride;
-        const int x = (int)lroundf(fx), y = (int)lroundf(fy), z = (int)lroundf(fz);
-        inside = x >= 0 && y >= 0 && z >= 0 && x < E && y < E && z < E;
-        return inside && ext[((size_t)z * E + y) * E + x] >= ISO_LEVEL;
+        inside = fx >= 0.0f && fy >= 0.0f && fz >= 0.0f && fx <= E - 1.0f && fy <= E - 1.0f && fz <= E - 1.0f;
+        if (!inside) return false;
+        const int x0 = std::min((int)fx, E - 2), y0 = std::min((int)fy, E - 2), z0 = std::min((int)fz, E - 2);
+        const float tx = fx - x0, ty = fy - y0, tz = fz - z0;
+        auto A = [&](int x, int y, int z) { return ext[((size_t)z * E + y) * E + x]; };
+        const float c00 = A(x0, y0, z0) + (A(x0 + 1, y0, z0) - A(x0, y0, z0)) * tx;
+        const float c10 = A(x0, y0 + 1, z0) + (A(x0 + 1, y0 + 1, z0) - A(x0, y0 + 1, z0)) * tx;
+        const float c01 = A(x0, y0, z0 + 1) + (A(x0 + 1, y0, z0 + 1) - A(x0, y0, z0 + 1)) * tx;
+        const float c11 = A(x0, y0 + 1, z0 + 1) + (A(x0 + 1, y0 + 1, z0 + 1) - A(x0, y0 + 1, z0 + 1)) * tx;
+        const float c0 = c00 + (c10 - c00) * ty, c1 = c01 + (c11 - c01) * ty;
+        return c0 + (c1 - c0) * tz >= ISO_LEVEL;
     };
     float open = 0.0f;
     for (int r = 0; r < 5; ++r) {
@@ -2375,7 +2401,7 @@ void BuildChunkMeshFromBase(const DensityField& field, const TerrainDeltas& delt
                 const float matFp = dugHere ? std::min(stride, 1.0f) : stride;
                 VoxelMaterial m = hinted ? gridField->materialSkyHinted(p, b, matFp, n, sky, &gElev, &gCol) : field.materialSky(p, b, matFp, n, sky);
                 if (!near.empty()) { const int placed = deltas.materialAt(p); if (placed >= 0) m = (VoxelMaterial)placed; } // placed ground keeps its material
-                if (gSkyProbes && sky > 0.02f && stride <= 2.0f) sky *= OverheadOpenness(field, deltas, ext.data(), E, eo, stride, p, hinted ? &gCol : nullptr, hinted ? &gElev : nullptr);
+                if (gSkyProbes && sky > 0.02f && stride <= 2.0f) sky *= OverheadOpenness(field, deltas, ext.data(), E, eo, stride, p, n, hinted ? &gCol : nullptr, hinted ? &gElev : nullptr);
                 out.tangents[v * 4 + 3] = sky;
                 // Ambient occlusion (#132): how much of the hemisphere over the vertex is solid within ~1.5 m, from the
                 // block's own samples (edits included): 5 directions (the normal, and four 45 degrees off it) at 0.6 and
