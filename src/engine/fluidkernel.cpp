@@ -343,7 +343,9 @@ struct Pass {
                 qUp = k == 0 ? g.faceP[B.bottom].x : g.faceP[B.bottom].y; have = true;
             }
             if (have && qUp * way > 0.0f) {
-                const float u = 0.5f * (std::fabs(q) + std::fabs(qUp)) / (p.cellSize * std::max(hm, 0.02f));
+                // The carrying speed, at most the shallow-water wave speed sqrt(g h): at a thin front the upwind depth is
+                // small and Q / (w h) blew up, so the 0.25 m front outran Ritter (1.78x) while a mound stayed behind (#680).
+                const float u = std::min(0.5f * (std::fabs(q) + std::fabs(qUp)) / (p.cellSize * std::max(hm, 0.02f)), std::sqrt(G * std::max(hm, 0.02f)));
                 q += std::min(1.0f, p.dt * u / p.cellSize) * (qUp - q);
             }
         }
@@ -543,7 +545,7 @@ void Substep(Grid& g, const Params& p, const std::vector<int>& list) {
     RunPass(g, p, list, 0);
     RunPass(g, p, list, 1);
     RunPass(g, p, list, 2);
-    static const bool why = getenv("DBWHY") != nullptr;
+    static const bool why = EnvFlag("DBWHY");
     static int nWhy = 0;
     if (why && ++nWhy % (int)(60.0f / p.cellSize) == 0) {
         printf("dbwhy:");

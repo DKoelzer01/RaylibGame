@@ -5771,7 +5771,7 @@ int main(int argc, char** argv)
                         }
                         // The camera over the wall, looking down at the reservoir and the channel's start (the subject, CLAUDE.md).
                         world.camera.position = p->toWorld(pt(-4.0f, -9.0f, 9.0f)); world.camera.target = p->toWorld(pt(-4.0f, 0.0f, -2.0f));
-                        if (getenv("DBCAM") && dbPhase == 3) { world.camera.position = p->toWorld(pt(7.0f, -7.0f, 6.0f)); world.camera.target = p->toWorld(pt(7.0f, 0.0f, -2.0f)); } // #680 diagnosis: the channel below the dam
+                        if (EnvFlag("DBCAM") && dbPhase == 3) { world.camera.position = p->toWorld(pt(7.0f, -7.0f, 6.0f)); world.camera.target = p->toWorld(pt(7.0f, 0.0f, -2.0f)); } // #680 diagnosis: the channel below the dam
                         world.camera.up = p->dirToWorld(home);
                         player.flyMode = true; player.position = world.renderOrigin + world.camera.position;
                         if (dbPhase == 1 && t > 1.0 && WorldIdle()) {
@@ -5784,6 +5784,8 @@ int main(int argc, char** argv)
                                 const float x = -19.0f + 2.0f * (float)(k % 10), y = (k / 10) % 2 ? 1.0f : -1.0f;
                                 ++k;
                                 dbPoured += Fluid::Pour(*p, pt(x, y, -2.3f), 1.0f);
+                                static double dbFillPrint = 0.0; // TEMP #680 diagnosis: poured vs the simulation's volume during the fill
+                                if (EnvFlag("DBFILL") && t - dbFillPrint >= 2.0) { dbFillPrint = t; printf("dbfill t=%.1f poured %.1f sim %.1f\n", t, dbPoured, Fluid::GetStats().volume); }
                             }
                             if (dbPoured >= 160.0f || [&] { const float s = Fluid::SurfaceAbove(*p, pt(-10.0f, 0.0f, -2.5f + 0.55f), 4.0f); return s > 0.0f && s + 0.55f >= 2.0f; }()) { dbPhase = 2; dbT0 = SimTime(); }
                         } else if (dbPhase == 2 && ((t > 8.0 && Fluid::Asleep()) || t > 40.0)) {
@@ -5803,7 +5805,7 @@ int main(int argc, char** argv)
                         } else if (dbPhase == 3) {
                             const float dist[3] = { 5.0f, 10.0f, 20.0f };
                             static double profT = 0.0; // #680 diagnosis: the depth along the channel every 0.5 s
-                            if (getenv("DBPROF") && t - profT >= 0.5 && t < 6.0) {
+                            if (EnvFlag("DBPROF") && t - profT >= 0.5 && t < 6.0) {
                                 profT = t;
                                 printf("dbprof t=%.1f vol %.1f:", t, Fluid::GetStats().volume);
                                 for (float xx : { -10.0f, -2.0f, 2.0f, 5.0f, 8.0f, 12.0f, 16.0f, 20.0f, 30.0f }) { const float d = Fluid::SurfaceAbove(*p, pt(xx, 0.0f, dbFloor + 0.13f), 4.0f); printf(" %.0f:%.2f", xx, d > 0.0f ? d + 0.13f : 0.0f); }

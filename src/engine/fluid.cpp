@@ -1778,7 +1778,7 @@ void CpuTick(int n) {
     static const bool noEvap = EnvFlag("RAYLIBGAME_FLUID_NOEVAP");
     static unsigned evapTick = 0;
     // #680 diagnosis (DBVOL): water in the processed slots' plain cells before and after (sources, sinks and evaporation aside).
-    static const bool dbVol = getenv("DBVOL") != nullptr;
+    static const bool dbVol = EnvFlag("DBVOL");
     auto plainSum = [&]() { long long v = 0; for (int i = 0; i < processedCount; ++i) for (int c = 0; c < B3; ++c) { const uint32_t u = g.a[(size_t)i * B3 + c]; if (!((u >> 8) & (kSource | kSink | kSolid))) v += u & 255u; } return v; };
     const long long volBefore = dbVol ? plainSum() : 0;
     for (int k = 0; k < n; ++k) {

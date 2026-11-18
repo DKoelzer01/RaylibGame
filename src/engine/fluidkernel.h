@@ -1,5 +1,6 @@
 #ifndef FLUIDKERNEL_H
 #define FLUIDKERNEL_H
+#include "envflag.h"
 
 // The fluid step on the CPU (#654): the same three passes as resources/compute/fluid_step.comp, over the same packed
 // layout, so a machine without compute shaders (a headless dedicated server, FLUID_CPU=1) simulates water as the GPU does.
@@ -26,8 +27,8 @@ struct Params {
     // cells down (columnCells, ~8 m). Set with setCell.
     float cellSize = 1.0f, units = 255.0f, hu = 255.0f;
     int columnCells = 8;
-    bool columns = getenv("FLUID_COLUMNS") != nullptr; // #680 prototype: lateral flow per pair of water columns
-    bool advect = getenv("FLUID_NOADVECT") == nullptr; // #680: column flows carry their momentum downstream
+    bool columns = EnvFlag("FLUID_COLUMNS"); // #680 prototype: lateral flow per pair of water columns
+    bool advect = !EnvFlag("FLUID_NOADVECT"); // #680: column flows carry their momentum downstream
     void setCell(float cs, int column) { cellSize = cs; units = 255.0f / (cs * cs * cs); hu = 255.0f / cs; columnCells = column; }
 };
 
