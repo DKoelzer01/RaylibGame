@@ -7,6 +7,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <thread>
+#include <chrono>
 
 // A line-by-line port of resources/compute/fluid_step.comp (#654). Comments on the rules live there.
 namespace FluidKernel {
@@ -20,6 +21,7 @@ DbgPairRec dbgPairs[kDbgTrace]; std::atomic<int> dbgPairsN{0};
 // TEMP #680 (DBTRACE): column transfers into a partly solid cell or a cell under a solid one (a wall's base), for the host to
 // print with world cell coordinates: giver cell, taker cell, branch (0 spill, 1 wet, 2 dry/partial floor), units.
 DbgTransfer dbgTrace[kDbgTrace]; std::atomic<int> dbgTraceN{0};
+double dbgPhaseMs[5] = {}; long long dbgGroupsRun = 0, dbgGroupsAll = 0, dbgSubsteps = 0, dbgFullSubsteps = 0; // TEMP #747 (DBSTEPPROF)
 static const bool dbTrace = EnvFlag("DBTRACE");
 
 void Grid::resize(int slots) {
@@ -668,6 +670,40 @@ void RunPass(Grid& g, const Params& p, const std::vector<int>& list, int pass) {
 
 } // namespace
 
+void BeginTick(Grid& g, const std::vector<int>& list, int slots) {
+    // Every slot's deltas (a ring slot's could still hold last tick's: colApply reads the cells over and under a head
+    // without asking whether they are processed), then per processed slot its face records and its wet groups.
+    std::fill(g.delta.begin(), g.delta.begin() + (size_t)slots * 4096, 0);
+    const int n = (int)list.size();
+    if (n == 0) { g.groupsFull = false; return; }
+    const int parts = std::max(1, std::min(n, (int)std::thread::hardware_concurrency()));
+    auto run = [&g, &list, n, parts](int part) {
+        for (int i = part; i < n; i += parts) {
+            const int s = list[i];
+            std::fill(g.faceN.begin() + (size_t)s * 4096 * 2, g.faceN.begin() + (size_t)(s + 1) * 4096 * 2, Vec4{});
+            uint32_t w[2] = { 0u, 0u };
+            const uint32_t* c = &g.a[(size_t)s * 4096];
+            for (int grp = 0; grp < 64; ++grp) {
+                uint32_t any = 0u;
+                for (int k = grp * 64; k < grp * 64 + 64; ++k) any |= c[k] & 255u;
+                if (any) w[grp >> 5] |= 1u << (grp & 31);
+            }
+            uint32_t* m = &g.gmask[(size_t)s * 6];
+            for (int k = 0; k < 6; ++k) m[k] = 0u;
+            m[0] = w[0]; m[1] = w[1]; // as the last substep's (gcur = 0): the first substep lists them and their borders
+        }
+    };
+    std::atomic<int> left{ parts - 1 };
+    for (int part = 1; part < parts; ++part) {
+        JobSystem::tagNext(JobTag::Fluid);
+        WorldJobs().submit(-3.0f, [&run, &left, part] { run(part); left.fetch_sub(1); });
+    }
+    run(0);
+    while (left.load() > 0) std::this_thread::yield();
+    g.gcur = 0;
+    g.groupsFull = false;
+}
+
 void Substep(Grid& g, const Params& p, const std::vector<int>& list) {
     // The dry-cell skip (#747, the CPU twin of fluid_groups.comp, #675): run only the 64-cell groups that held water in
     // either of the last two substeps or border one (in the brick, or across a face to a processed brick). Water moves at
@@ -675,6 +711,11 @@ void Substep(Grid& g, const Params& p, const std::vector<int>& list) {
     // substep runs everything (slots are new each tick: their scratch - faces, deltas, demand - is another brick's).
     // RAYLIBGAME_FLUID_GROUPS=0: off (A/B), as on the GPU.
     static const bool groupsOn = !(getenv("RAYLIBGAME_FLUID_GROUPS") && atoi(getenv("RAYLIBGAME_FLUID_GROUPS")) == 0);
+    static const bool prof = EnvFlag("DBSTEPPROF");
+    using Clock = std::chrono::steady_clock;
+    auto t0 = Clock::now();
+    auto lap = [&](int i) { if (!prof) return; const auto t = Clock::now(); dbgPhaseMs[i] += std::chrono::duration<double, std::milli>(t - t0).count(); t0 = t; };
+    if (prof) { ++dbgSubsteps; if (!groupsOn || g.groupsFull) ++dbgFullSubsteps; }
     if (!groupsOn || g.groupsFull) {
         for (int s : list) { g.gon[s] = ~0ull; for (int w = 0; w < 6; ++w) g.gmask[(size_t)s * 6 + w] = 0u; }
         g.gcur = 0;
@@ -701,11 +742,14 @@ void Substep(Grid& g, const Params& p, const std::vector<int>& list) {
             g.gmask[(size_t)s * 6 + g.gcur * 2] = 0u; g.gmask[(size_t)s * 6 + g.gcur * 2 + 1] = 0u; // the apply pass marks it
         }
     }
+    if (prof) for (int s : list) { dbgGroupsRun += __builtin_popcountll(g.gon[s]); dbgGroupsAll += 64; }
+    lap(0);
     static const bool quarter = EnvFlag("FLUID_COL_QUARTER");
-    RunPass(g, p, list, 0);
-    RunPass(g, p, list, 1);
+    RunPass(g, p, list, 0); lap(1);
+    RunPass(g, p, list, 1); lap(2);
     if (p.columns && !quarter) RunPass(g, p, list, 3); // the column pairs' scaled move (#680)
-    RunPass(g, p, list, 2);
+    lap(3);
+    RunPass(g, p, list, 2); lap(4);
     static const bool why = EnvFlag("DBWHY");
     static int nWhy = 0;
     if (why && ++nWhy % (int)(60.0f / p.cellSize) == 0) {

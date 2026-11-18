@@ -1759,6 +1759,11 @@ void GpuTick(int n) {
 // for the columns and the cells beside), then unpacked with the GPU readback's rules for waking and sleeping.
 FluidKernel::Grid cpuGrid;
 void CpuTick(int n) {
+    // TEMP #747 (DBSTEPPROF): where a CPU tick's time goes - pack, the kernel's phases, unpack - every 40 ticks.
+    static const bool stepProf = EnvFlag("DBSTEPPROF");
+    static double profPack = 0.0, profKernel = 0.0, profUnpack = 0.0; static int profTicks = 0; static long long profSlots = 0;
+    using ProfClock = std::chrono::steady_clock;
+    const auto profT0 = ProfClock::now();
     std::vector<Brick*> slots;
     std::vector<Site*> slotSite;
     auto add = [&](Brick* b, Site* s) {
@@ -1804,7 +1809,12 @@ void CpuTick(int n) {
     static const bool dbVol = EnvFlag("DBVOL");
     auto plainSum = [&]() { long long v = 0; for (int i = 0; i < processedCount; ++i) for (int c = 0; c < B3; ++c) { const uint32_t u = g.a[(size_t)i * B3 + c]; if (!((u >> 8) & (kSource | kSink | kSolid))) v += u & 255u; } return v; };
     const long long volBefore = dbVol ? plainSum() : 0;
-    g.groupsFull = true; // the dry-cell skip (#747): slots are new this tick, its first substep runs every cell
+    // The dry-cell skip (#747): slots are new this tick. FLUID_CPU_FULLFIRST=1: its first substep runs every cell (the old
+    // way, A/B); else the kernel clears the slots' scratch and seeds the wet groups from the cells, and every substep skips.
+    static const bool fullFirst = EnvFlag("FLUID_CPU_FULLFIRST");
+    if (fullFirst) g.groupsFull = true;
+    else FluidKernel::BeginTick(g, list, S);
+    const auto profT1 = ProfClock::now();
     static const bool dbTrace = EnvFlag("DBTRACE");
     // TEMP #680 (DBTRACE): transfers into partial / solid-capped cells near the test's wall, in the channel frame (0.25 m
     // buckets): (taker along, taker height, giver along, branch * 2 + capped) -> units.
@@ -1875,6 +1885,7 @@ void CpuTick(int n) {
         drift += plainSum() - volBefore;
         if (++ticks % 40 == 0) { printf("dbvol: plain-cell water changed by %+.2f m^3 over the last second (%d slots)\n", drift * WaterField::CellVolume() / 255.0, processedCount); drift = 0; }
     }
+    const auto profT2 = ProfClock::now();
     // Unpack, as the GPU readback (GpuTick 1.).
     static const int d[6][3] = { { -1, 0, 0 }, { 1, 0, 0 }, { 0, -1, 0 }, { 0, 1, 0 }, { 0, 0, -1 }, { 0, 0, 1 } };
     for (int i = 0; i < processedCount; ++i) {
@@ -1907,6 +1918,23 @@ void CpuTick(int n) {
             }
     }
     for (Brick* b : slots) b->cpuSlot = -1;
+    if (stepProf) {
+        const auto profT3 = ProfClock::now();
+        auto ms = [](ProfClock::time_point a, ProfClock::time_point b) { return std::chrono::duration<double, std::milli>(b - a).count(); };
+        profPack += ms(profT0, profT1); profKernel += ms(profT1, profT2); profUnpack += ms(profT2, profT3);
+        profSlots += (long long)slots.size();
+        if (++profTicks == 40) {
+            const double k = 1.0 / profTicks;
+            namespace FK = FluidKernel;
+            printf("dbstep: per tick (40): pack %.1f ms, kernel %.1f ms [select %.1f, vertical %.1f, plan/faces %.1f, move %.1f, apply %.1f], unpack %.1f ms; "
+                   "%.0f slots, %.1f substeps (%.2f full), groups run %.1f%%\n",
+                   profPack * k, profKernel * k, FK::dbgPhaseMs[0] * k, FK::dbgPhaseMs[1] * k, FK::dbgPhaseMs[2] * k, FK::dbgPhaseMs[3] * k, FK::dbgPhaseMs[4] * k,
+                   profUnpack * k, profSlots * k, FK::dbgSubsteps * k, FK::dbgFullSubsteps * k, 100.0 * FK::dbgGroupsRun / std::max(1LL, FK::dbgGroupsAll));
+            profPack = profKernel = profUnpack = 0.0; profTicks = 0; profSlots = 0;
+            for (double& v : FK::dbgPhaseMs) v = 0.0;
+            FK::dbgGroupsRun = FK::dbgGroupsAll = FK::dbgSubsteps = FK::dbgFullSubsteps = 0;
+        }
+    }
 }
 
 void GpuReset() {

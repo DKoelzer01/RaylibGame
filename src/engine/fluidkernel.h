@@ -62,6 +62,15 @@ struct Grid {
 // One substep over the listed slots: vertical (A -> B), face flows (B -> N), apply (B, N -> A, P). Slots run in parallel
 // on the job system (each pass writes only its own slot's cells, faces and flags).
 void Substep(Grid& g, const Params& p, const std::vector<int>& list);
+// A tick's start (#747), after the host packed `slots` slots into A and B: clears the per-cell scratch the slots carry from
+// other bricks (face records of the processed slots, every slot's column deltas) and seeds the dry-cell skip's masks
+// from the cells, so the first substep skips dry groups like the rest. Runs the slots on the job system.
+void BeginTick(Grid& g, const std::vector<int>& list, int slots);
+
+// TEMP #747 (DBSTEPPROF): wall time per phase (ms: group selection, passes 0 / 1 / 3 / 2) and groups run / offered,
+// summed over substeps; the host prints and zeroes them.
+extern double dbgPhaseMs[5];
+extern long long dbgGroupsRun, dbgGroupsAll, dbgSubsteps, dbgFullSubsteps;
 
 // TEMP #680 (DBTRACE): column transfers into the slots marked in Grid::dbgMark (cell = slot * 4096 + local).
 struct DbgTransfer { int giver, taker, branch, units, takerShut, capped, runBottom; };
