@@ -41,6 +41,7 @@ struct GameSettings {
     bool speedVignette = false;     // darken the screen edges when moving or turning fast (#168)
     bool fireFlicker = true;        // torches and campfires flicker their light (#558: off = a steady glow)
     float uiScale = 0.0f;            // (#821) the interface size: 0 auto (by the screen's height), else 0.75-1.5
+    int keyHints = 0;                // (#827) the key hints line: 0 auto (fades after the first 2 hours played), 1 always, 2 off
     int tonemap = 1;                // #131: the HDR curve, as the Graphics tab lists them: 0 Clip, 1 Knee (the default: today's look), 2 ACES
     int difficulty = 1;             // new worlds: 0 peaceful (no threats, slower hunger, extra food), 1 normal, 2 hard (no Map, hungrier, fiercer nights)
     std::string logLevel;           // settings.txt "log_level trace|debug|info|warn|error|fatal|off" (#514; --log-level wins); empty: the build default

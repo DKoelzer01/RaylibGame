@@ -299,42 +299,46 @@ void Survival_StepFor(Scene& world, float dt, const PlayerInput& in, SurvivalSta
     }
 }
 
+static float hudS = 1.0f; // (#827) the interface size, for the vitals
 static void Bar(int x, int y, int w, const char* label, float value, Color c, bool warn) {
-    DrawRectangle(x, y, w, 16, Fade(BLACK, 0.55f));
+    const int bh = (int)(16 * hudS);
+    DrawRectangle(x, y, w, bh, Fade(BLACK, 0.55f));
     const bool flash = warn && fmodf((float)GetTime(), 0.8f) < 0.4f;
-    DrawRectangle(x, y, (int)(w * value / 100.0f), 16, flash ? RED : c);
-    DrawRectangleLines(x, y, w, 16, Fade(RAYWHITE, 0.4f));
-    DrawText(TextFormat("%s %3.0f", label, value), x + 6, y + 1, 14, RAYWHITE);
+    DrawRectangle(x, y, (int)(w * value / 100.0f), bh, flash ? RED : c);
+    DrawRectangleLines(x, y, w, bh, Fade(RAYWHITE, 0.4f));
+    DrawText(TextFormat("%s %3.0f", label, value), x + (int)(6 * hudS), y + (int)hudS, (int)(14 * hudS), RAYWHITE);
 }
 
 void Survival_DrawHUD() {
-    const int x = 20, y = GetScreenHeight() - 192;
+    hudS = GameUI_Scale();
+    const float s = hudS;
+    const int x = (int)(20 * s), y = GetScreenHeight() - (int)(192 * s);
     // The oxygen and power bars grow with the suit's capacity (basic suit: 260 px).
-    const int wO2 = (int)(180.0f + 80.0f * std::min(Suit_Stats().oxygen, 2.5f)), wPwr = (int)(180.0f + 80.0f * std::min(Suit_Stats().power, 2.5f));
+    const int wO2 = (int)((180.0f + 80.0f * std::min(Suit_Stats().oxygen, 2.5f)) * s), wPwr = (int)((180.0f + 80.0f * std::min(Suit_Stats().power, 2.5f)) * s), w260 = (int)(260 * s);
     // Full oxygen in breathable air (#277): no O2 bar and no "BREATHABLE AIR" label; the rows close up from the bottom.
     const bool showO2 = !(survival.oxygen >= 99.9f && survival.breathable && !survival.underwater);
     if (showO2) Bar(x, y, wO2, "O2", survival.oxygen, { 90, 200, 255, 255 }, survival.oxygen < 20.0f);
-    if (Suit_Stats().powered) Bar(x, y + 22, wPwr, "PWR", survival.power, { 250, 210, 70, 255 }, survival.power < 15.0f); // hidden with no battery pack (#217)
-    Bar(x, y + 44, 260, "HP", survival.health, { 230, 70, 70, 255 }, survival.health < 30.0f);
-    Bar(x, y + 66, 260, "FOOD", survival.food, { 120, 200, 90, 255 }, survival.food < 15.0f);
+    if (Suit_Stats().powered) Bar(x, y + (int)(22 * s), wPwr, "PWR", survival.power, { 250, 210, 70, 255 }, survival.power < 15.0f); // hidden with no battery pack (#217)
+    Bar(x, y + (int)(44 * s), w260, "HP", survival.health, { 230, 70, 70, 255 }, survival.health < 30.0f);
+    Bar(x, y + (int)(66 * s), w260, "FOOD", survival.food, { 120, 200, 90, 255 }, survival.food < 15.0f);
     // Stamina (#165): spent by blocks; only while it is below full, under the others.
-    if (survival.stamina < 99.9f) Bar(x, y + 88, 260, "STA", survival.stamina, { 235, 235, 235, 255 }, survival.stamina < 20.0f);
+    if (survival.stamina < 99.9f) Bar(x, y + (int)(88 * s), w260, "STA", survival.stamina, { 235, 235, 235, 255 }, survival.stamina < 20.0f);
     // The air temperature, coloured when it costs you (cold: hunger; heat: health).
     const float T = survival.temperature;
     if (!std::isnan(T)) {
         const Color tc = T < 5.0f ? Color{ 130, 190, 255, 255 } : T > 35.0f ? Color{ 255, 140, 70, 255 } : Fade(RAYWHITE, 0.8f);
         const SuitStats& st = Suit_Stats();
         const char* note = T < 5.0f ? (st.cold <= 0.0f ? "  cold: regulated" : st.cold < 1.0f ? "  cold: insulated" : "  cold: hungrier") : T > 35.0f ? (st.heatProof ? "  heat: regulated" : "  heat") : "";
-        DrawText(TextFormat("%.0f C%s", T, note), x + std::max(wO2, wPwr) + 20, y + 68, 16, tc);
+        DrawText(TextFormat("%.0f C%s", T, note), x + std::max(wO2, wPwr) + (int)(20 * s), y + (int)(68 * s), (int)(16 * s), tc);
     }
-    const int tx = x + std::max(wO2, wPwr) + 20;
-    if (SimTime() < survival.sickUntil) DrawText("SICK", tx, y + 46, 16, ORANGE);
-    if (survival.inLifeSupport) DrawText("LIFE SUPPORT", tx, y + 2, 16, SKYBLUE);
-    else if (survival.inGas) DrawText("TOXIC GAS", tx, y + 2, 16, Fade({ 170, 220, 80, 255 }, 0.9f));
-    else if (survival.breathable && showO2) DrawText("BREATHABLE AIR", tx, y + 2, 16, Fade(SKYBLUE, 0.7f));
+    const int tx = x + std::max(wO2, wPwr) + (int)(20 * s), fs = (int)(16 * s);
+    if (SimTime() < survival.sickUntil) DrawText("SICK", tx, y + (int)(46 * s), fs, ORANGE);
+    if (survival.inLifeSupport) DrawText("LIFE SUPPORT", tx, y + (int)(2 * s), fs, SKYBLUE);
+    else if (survival.inGas) DrawText("TOXIC GAS", tx, y + (int)(2 * s), fs, Fade({ 170, 220, 80, 255 }, 0.9f));
+    else if (survival.breathable && showO2) DrawText("BREATHABLE AIR", tx, y + (int)(2 * s), fs, Fade(SKYBLUE, 0.7f));
     else if (survival.inVacuum) {
-        if (Suit_Stats().vacuum) DrawText("VACUUM: suit rated", tx, y + 2, 16, Fade(SKYBLUE, 0.7f));
-        else { const bool flash = survival.vacuumTime > 50.0f && fmodf((float)GetTime(), 0.6f) < 0.3f; DrawText(survival.vacuumTime < 60.0f ? TextFormat("VACUUM: suit not rated, %.0f s", 60.0f - survival.vacuumTime) : "VACUUM: suit failing - get to air or a cockpit", tx, y + 2, 16, flash ? RED : ORANGE); }
+        if (Suit_Stats().vacuum) DrawText("VACUUM: suit rated", tx, y + (int)(2 * s), fs, Fade(SKYBLUE, 0.7f));
+        else { const bool flash = survival.vacuumTime > 50.0f && fmodf((float)GetTime(), 0.6f) < 0.3f; DrawText(survival.vacuumTime < 60.0f ? TextFormat("VACUUM: suit not rated, %.0f s", 60.0f - survival.vacuumTime) : "VACUUM: suit failing - get to air or a cockpit", tx, y + (int)(2 * s), fs, flash ? RED : ORANGE); }
     }
     if (survival.dead) {
         DrawRectangle(0, 0, GetScreenWidth(), GetScreenHeight(), Fade(BLACK, 0.6f));
@@ -541,18 +545,21 @@ bool QuestBook_LoadLine(const char* tok, FILE* f) {
 }
 
 // Wraps text at `chars` characters, drawing each line; returns the y after it.
-static int DrawWrapped(const std::string& text, int x, int y, int chars, int size, Color col) {
+// draw false: only measure (wrapMaxW: the widest line so far, for a backing)
+static int wrapMaxW = 0;
+static int DrawWrapped(const std::string& text, int x, int y, int chars, int size, Color col, bool draw = true) {
     std::string line;
+    auto put = [&](const std::string& l) { if (draw) DrawText(l.c_str(), x, y, size, col); wrapMaxW = std::max(wrapMaxW, MeasureText(l.c_str(), size)); };
     size_t pos = 0;
     while (pos < text.size()) {
         size_t sp = text.find(' ', pos);
         if (sp == std::string::npos) sp = text.size();
         const std::string w = text.substr(pos, sp - pos);
-        if (!line.empty() && line.size() + w.size() + 1 > (size_t)chars) { DrawText(line.c_str(), x, y, size, col); y += size + 3; line.clear(); }
+        if (!line.empty() && line.size() + w.size() + 1 > (size_t)chars) { put(line); y += size + 3; line.clear(); }
         line += (line.empty() ? "" : " ") + w;
         pos = sp + 1;
     }
-    if (!line.empty()) { DrawText(line.c_str(), x, y, size, col); y += size + 3; }
+    if (!line.empty()) { put(line); y += size + 3; }
     return y;
 }
 
@@ -580,42 +587,49 @@ bool QuestBook_LoadPinLine(const char* tok, FILE* f) {
 
 void Objectives_DrawHUD() {
     LoadTiers();
-    int y = 64;
-    if (Q().tier >= (int)tiers.size() && pins.empty()) {
-        DrawText("QUESTS   all done", 12, y, 16, Fade(GOLD, 0.9f));
-        return;
-    }
     // Finished pins drop out (the next ones are the player's to pick).
     pins.erase(std::remove_if(pins.begin(), pins.end(), [](const std::pair<int, int>& p) { return QuestBook_TaskDone(p.first, p.second); }), pins.end());
-    if (!pins.empty()) { // the pinned ones, each with its tier
-        DrawText("PINNED QUESTS", 12, y, 16, Fade(GOLD, 0.9f));
-        y += 22;
-        for (const auto& [ti, ki] : pins) {
-            if (ti < 0 || ti >= (int)tiers.size() || ki < 0 || ki >= (int)tiers[ti].tasks.size()) continue;
-            y = DrawWrapped(TextFormat("[ ] %s", TaskLine(tiers[ti].tasks[ki], false).c_str()), 12, y, 58, 15, RAYWHITE);
-            y = DrawWrapped(TextFormat("    tier %d: %s", ti, tiers[ti].name.c_str()), 12, y, 64, 13, Fade(RAYWHITE, 0.55f));
-            y += 2;
+    // (#827) Laid out twice: measured, then drawn over a dark backing (white text over bright sky was hard to read); the
+    // interface size scales it.
+    const float s = GameUI_Scale();
+    const int x = (int)(12 * s), top = (int)(64 * s), big = (int)(16 * s), mid = (int)(15 * s), small = (int)(13 * s);
+    auto layout = [&](bool draw) {
+        int y = top;
+        wrapMaxW = 0;
+        auto text = [&](const char* t, int size, Color c) { if (draw) DrawText(t, x, y, size, c); wrapMaxW = std::max(wrapMaxW, MeasureText(t, size)); y += size + (int)(6 * s); };
+        if (Q().tier >= (int)tiers.size() && pins.empty()) { text("QUESTS   all done", big, Fade(GOLD, 0.9f)); return y; }
+        if (!pins.empty()) { // the pinned ones, each with its tier
+            text("PINNED QUESTS", big, Fade(GOLD, 0.9f));
+            for (const auto& [ti, ki] : pins) {
+                if (ti < 0 || ti >= (int)tiers.size() || ki < 0 || ki >= (int)tiers[ti].tasks.size()) continue;
+                y = DrawWrapped(TextFormat("[ ] %s", TaskLine(tiers[ti].tasks[ki], false).c_str()), x, y, 58, mid, RAYWHITE, draw);
+                y = DrawWrapped(TextFormat("    tier %d: %s", ti, tiers[ti].name.c_str()), x, y, 64, small, Fade(RAYWHITE, 0.55f), draw);
+                y += (int)(2 * s);
+            }
+            return y;
         }
-        return;
-    }
-    // Nothing pinned: the current tier's first three open tasks (pin others on the Quests screen).
-    const Tier& t = tiers[Q().tier];
-    DrawText(TextFormat("QUESTS   tier %d: %s", Q().tier, t.name.c_str()), 12, y, 16, Fade(GOLD, 0.9f));
-    y += 22;
-    if (t.tasks.empty() && t.gate != "-") {
-        const ItemDef* d = itemDB.find(t.gate);
-        DrawText(TextFormat("[ ] Make a %s", d ? d->name.c_str() : t.gate.c_str()), 12, y, 16, RAYWHITE);
-        y += 20;
-    }
-    int shown = 0, more = 0;
-    for (int ki = 0; ki < (int)t.tasks.size(); ++ki) {
-        if (Done(Q().tier, ki)) continue;
-        if (shown >= kMaxPins) { ++more; continue; }
-        y = DrawWrapped(TextFormat("[ ] %s", TaskLine(t.tasks[ki], false).c_str()), 12, y, 58, 15, RAYWHITE);
-        y += 1;
-        ++shown;
-    }
-    if (more > 0) DrawText(TextFormat("+%d more (pin the ones you want: Quests)", more), 12, y + 2, 13, Fade(RAYWHITE, 0.55f));
+        // Nothing pinned: the current tier's first three open tasks (pin others on the Quests screen).
+        const Tier& t = tiers[Q().tier];
+        text(TextFormat("QUESTS   tier %d: %s", Q().tier, t.name.c_str()), big, Fade(GOLD, 0.9f));
+        if (t.tasks.empty() && t.gate != "-") {
+            const ItemDef* d = itemDB.find(t.gate);
+            text(TextFormat("[ ] Make a %s", d ? d->name.c_str() : t.gate.c_str()), big, RAYWHITE);
+        }
+        int shown = 0, more = 0;
+        for (int ki = 0; ki < (int)t.tasks.size(); ++ki) {
+            if (Done(Q().tier, ki)) continue;
+            if (shown >= kMaxPins) { ++more; continue; }
+            y = DrawWrapped(TextFormat("[ ] %s", TaskLine(t.tasks[ki], false).c_str()), x, y, 58, mid, RAYWHITE, draw);
+            y += (int)(1 * s);
+            ++shown;
+        }
+        if (more > 0) text(TextFormat("+%d more (pin the ones you want: Quests)", more), small, Fade(RAYWHITE, 0.55f));
+        return y;
+    };
+    const int bottom = layout(false);
+    const int pad = (int)(6 * s);
+    DrawRectangleRounded({ (float)(x - pad), (float)(top - pad), (float)(wrapMaxW + 2 * pad), (float)(bottom - top + pad) }, 0.12f, 6, Fade(BLACK, 0.42f));
+    layout(true);
 }
 
 bool Survival_IsUsable(const std::string& id) { return id == "oxygen_canister" || id == "power_cell" || id == "repair_kit" || Survival_IsFood(id); }

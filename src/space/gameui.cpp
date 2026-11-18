@@ -34,6 +34,7 @@
 #include "combat.h"
 #include "playersession.h"
 #include "avatar.h"
+#include "gamesave.h"
 #include <raymath.h>
 
 namespace {
@@ -1288,3 +1289,24 @@ void GameUI_SelectRecipe(int recipe) { selectedRecipe = recipe; }
 // (#826) the database pop-up from outside the window's clicks (tests; later a key or a link from quests)
 void GameUI_OpenDatabase(const std::string& id) { inventoryOpen = true; if (!id.empty()) HelpManual_OpenItem(id); databaseOpen = true; }
 bool GameUI_DatabaseOpen() { return inventoryOpen && databaseOpen; }
+
+// (#827) The key hints line along the bottom: from the key bindings (so a rebound key shows as it is), at the interface
+// size; Settings > Gameplay > Key hints: Auto (fades out after your first 2 hours played in this world), Always, Off.
+static void DrawKeyHints(int x, int y) {
+    float alpha = 0.7f;
+    if (settings.keyHints == 2) return;
+    if (settings.keyHints == 0) {
+        const double t = GameSave_PlayTime();
+        if (t > 2.0 * 3600.0) alpha *= (float)std::clamp(1.0 - (t - 2.0 * 3600.0) / 900.0, 0.0, 1.0); // over a quarter of an hour
+        if (alpha <= 0.01f) return;
+    }
+    auto K = [](Act a) { return std::string(PlayerInput_KeyName(PlayerInput_Binding(a))); }; // (a copy: the name comes back in one shared buffer)
+    std::string line = terrainTool.terraform ? "LMB dig  RMB fill  Ctrl+wheel brush" : "LMB mine/chop  RMB place";
+    line += TextFormat("  %s build  1-0 hotbar  %s inventory  %s telescope  %s lamp", K(Act::BuildMode).c_str(), K(Act::Inventory).c_str(), K(Act::Telescope).c_str(), K(Act::Headlamp).c_str());
+    if (terrainTool.creative) line += TextFormat("  %s fly", K(Act::Fly).c_str()); // fly is creative only (#531)
+    line += TextFormat("  %s save  %s commands", K(Act::Save).c_str(), K(Act::Chat).c_str());
+    const float s = GameUI_Scale();
+    const int fs = (int)(20 * s);
+    DrawText(line.c_str(), x, std::min(y, GetScreenHeight() - fs - (int)(8 * s)), fs, Fade(RAYWHITE, alpha)); // (larger text: kept on screen)
+}
+void GameUI_InstallKeyHints() { gKeyHintsHook = DrawKeyHints; }

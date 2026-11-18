@@ -219,10 +219,29 @@ bool Hotbar_TestEatHold(float seconds) { // tests: hold right-click this long (i
     return H().eatenCount > before;
 }
 
+// (#827) The off hand on the HUD: its item (a torch lights, a shield blocks, food and oxygen are used with its key), left of the
+// hotbar, with that key in the corner.
+static void DrawOffHand(int x, int y, int size, float sc) {
+    const InvSlot& s = inventory.offHand();
+    DrawRectangle(x, y, size, size, Fade(BLACK, 0.45f));
+    DrawRectangleLines(x, y, size, size, Fade(Color{ 224, 169, 64, 255 }, 0.6f));
+    DrawText(PlayerInput_KeyName(PlayerInput_Binding(Act::OffHandUse)), x + (int)(4 * sc), y + (int)(3 * sc), (int)(12 * sc), Fade(Color{ 224, 169, 64, 255 }, 0.85f));
+    if (s.empty()) { const char* t = "off hand"; const int fs = (int)(11 * sc); DrawText(t, x + (size - MeasureText(t, fs)) / 2, y + size - fs - (int)(6 * sc), fs, Fade(RAYWHITE, 0.45f)); return; }
+    const float is = (float)size - 28.0f * sc;
+    if (ItemIcons_Has(s.id)) ItemIcons_Draw(s.id, { x + (size - is) * 0.5f, (float)y + 8.0f * sc, is, is });
+    if (KindOf(s.id) != ItemKind::Tool) { const char* n = TextFormat("%d", (int)s.amount()); DrawText(n, x + size - (int)(4 * sc) - MeasureText(n, (int)(14 * sc)), y + (int)(3 * sc), (int)(14 * sc), RAYWHITE); }
+    std::string name = ShortName(s.id);
+    int fs = (int)(12 * sc);
+    while (name.size() > 1 && MeasureText(name.c_str(), fs) > size - 4) name.pop_back();
+    DrawText(name.c_str(), x + (size - MeasureText(name.c_str(), fs)) / 2, y + size - fs - (int)(6 * sc), fs, RAYWHITE);
+}
+
 void Hotbar_DrawHUD(bool piloting) {
-    const int n = kHotbarSlots, size = 64, gap = 6;
+    const float sc = GameUI_Scale(); // (#827) the interface size
+    const int n = kHotbarSlots, size = (int)(64 * sc), gap = (int)(6 * sc);
     const int w = n * size + (n - 1) * gap;
-    const int x0 = (GetScreenWidth() - w) / 2, y0 = GetScreenHeight() - size - 44;
+    const int x0 = (GetScreenWidth() - w) / 2, y0 = GetScreenHeight() - size - (int)(44 * sc);
+    DrawOffHand(x0 - size - (int)(18 * sc), y0, size, sc); // (#827) the off hand, left of the hotbar
     for (int i = 0; i < n; ++i) {
         const int x = x0 + i * (size + gap);
         const std::string& id = CellId(i);
@@ -230,7 +249,7 @@ void Hotbar_DrawHUD(bool piloting) {
         const bool sel = !piloting && i == H().selected;
         DrawRectangle(x, y0, size, size, Fade(BLACK, sel ? 0.65f : 0.45f));
         DrawRectangleLines(x, y0, size, size, sel ? SKYBLUE : Fade(RAYWHITE, 0.35f));
-        DrawText(TextFormat("%d", (i + 1) % 10), x + 4, y0 + 3, 14, Fade(RAYWHITE, 0.7f));
+        DrawText(TextFormat("%d", (i + 1) % 10), x + (int)(4 * sc), y0 + (int)(3 * sc), (int)(14 * sc), Fade(RAYWHITE, 0.7f));
         if (id.empty()) continue;
         {
             // A hot or radiant item glows (#580): the slot washed in its colour with a bright rim, as in the inventory.
@@ -240,10 +259,10 @@ void Hotbar_DrawHUD(bool piloting) {
                 DrawRectangleLinesEx({ (float)x, (float)y0, (float)size, (float)size }, 2.0f, Fade(g.color, 0.92f * g.strength));
             }
             const ItemDef* d = itemDB.find(id);
-            const float is = (float)size - 28.0f; // the painted icon (itemicons.h), between the slot number and the name
-            if (ItemIcons_Has(id)) ItemIcons_Draw(id, { x + (size - is) * 0.5f, (float)y0 + 8.0f, is, is });
+            const float is = (float)size - 28.0f * sc; // the painted icon (itemicons.h), between the slot number and the name
+            if (ItemIcons_Has(id)) ItemIcons_Draw(id, { x + (size - is) * 0.5f, (float)y0 + 8.0f * sc, is, is });
             else if (d) DrawRectangle(x + size / 2 - 9, y0 + 14, 18, 18, d->color);
-            if (KindOf(id) != ItemKind::Tool) DrawText(TextFormat("%d", held), x + size - 4 - MeasureText(TextFormat("%d", held), 14), y0 + 3, 14, RAYWHITE);
+            if (KindOf(id) != ItemKind::Tool) DrawText(TextFormat("%d", held), x + size - 4 - MeasureText(TextFormat("%d", held), (int)(14 * sc)), y0 + (int)(3 * sc), (int)(14 * sc), RAYWHITE);
             const float left = ToolWear_Left(id); // a worn tool: a bar along the bottom, green to red
             if (left < 1.0f && held > 0) {
                 DrawRectangle(x + 4, y0 + size - 4, size - 8, 3, Fade(BLACK, 0.6f));
@@ -251,8 +270,8 @@ void Hotbar_DrawHUD(bool piloting) {
             }
         }
         std::string name = ShortName(id);
-        int fs = 12;
-        while (fs > 9 && MeasureText(name.c_str(), fs) > size - 4) --fs;
+        int fs = (int)(12 * sc);
+        while (fs > (int)(9 * sc) && MeasureText(name.c_str(), fs) > size - 4) --fs;
         while (name.size() > 1 && MeasureText(name.c_str(), fs) > size - 4) name.pop_back(); // still too long: cut (#219: names ran into the next slot)
         DrawText(name.c_str(), x + (size - MeasureText(name.c_str(), fs)) / 2, y0 + size - fs - 6, fs, RAYWHITE);
     }

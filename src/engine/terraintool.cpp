@@ -745,10 +745,13 @@ void TerrainTool_DrawHUD() {
             }
         }
     }
-    DrawText(TextFormat("%s  G build  1-0 hotbar  Tab inventory  T telescope  L lamp%s  F5 save  F1 debug",
-                        terrainTool.terraform ? "LMB dig  RMB fill  Ctrl+wheel brush" : "LMB mine/chop  RMB place soil",
-                        terrainTool.creative ? "  F fly" : ""), // fly is creative only (#531)
-             10, y + 30, 20, Fade(RAYWHITE, 0.7f));
+    // The key hints (#827): the game draws them (its bindings, the interface size, faded after the first hours); a bare
+    // engine use falls back to the fixed line.
+    if (gKeyHintsHook) gKeyHintsHook(10, y + 30);
+    else DrawText(TextFormat("%s  G build  1-0 hotbar  Tab inventory  T telescope  L lamp%s  F5 save  F1 debug",
+                             terrainTool.terraform ? "LMB dig  RMB fill  Ctrl+wheel brush" : "LMB mine/chop  RMB place soil",
+                             terrainTool.creative ? "  F fly" : ""), // fly is creative only (#531)
+                  10, y + 30, 20, Fade(RAYWHITE, 0.7f));
     if (GetTime() < toastUntil) DrawText(toast.c_str(), 10, y, 20, YELLOW);
 }
 
