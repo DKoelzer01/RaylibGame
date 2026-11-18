@@ -7,6 +7,7 @@
 #include "audio.h"
 #include "gamerng.h"
 #include "gameui.h"
+#include "hotbar.h"
 #include "inventory.h"
 #include "player.h"
 #include "terraintool.h"
@@ -114,6 +115,7 @@ namespace {
 float BuildTool_BreakProgress() { return breakAiming && breakHeld > 0.0f ? std::min(1.0f, breakHeld / kBreakHold) : 0.0f; }
 bool BuildTool_AimingPart() { return breakAiming; }
 int BuildTool_AimOrient() { return aim.plot || aim.newOrigin.x != 0.0f || aim.newOrigin.y != 0.0f || aim.newOrigin.z != 0.0f ? (int)aim.part.orient : -1; }
+const Plot* BuildTool_AimPlacement(Vector3* newOrigin, Int3* origin) { if (newOrigin) *newOrigin = aim.newOrigin; if (origin) *origin = aim.part.origin; return aim.plot; }
 
 static void UpdateBreak(Scene& world, const PlayerInput& in) {
     breakAiming = false;
@@ -212,10 +214,22 @@ void BuildTool_Update(Scene& world, const PlayerInput& in, bool usable) {
             hi = { std::max(hi.x, c.first.x), std::max(hi.y, c.first.y), std::max(hi.z, c.first.z) };
         }
         const Vector3 h = Vector3Scale(pl.toPlot(hitBodyLocal), 1.0f / kCellSize);
-        auto shift = [](float hv, int a, int b) { return (int)lroundf(hv - 0.5f * (float)(a + b + 1)); };
-        if (normal.x == 0) aim.part.origin.x += shift(h.x, lo.x, hi.x);
-        if (normal.y == 0) aim.part.origin.y += shift(h.y, lo.y, hi.y);
-        if (normal.z == 0) aim.part.origin.z += shift(h.z, lo.z, hi.z);
+        // The shift that puts the footprint's middle nearest the hit, with hysteresis (#551): aimed near the halfway
+        // point between two placements, the camera's bob flipped the box back and forth a cell every few frames. The
+        // last shift is kept until the hit is 0.2 cells past the halfway point.
+        // Compared in absolute cells: the aimed cell (the origin before the shift) changes as the hit moves.
+        static struct { const Plot* plot = nullptr; PartType type = PartType::Count; uint8_t orient = 0; Int3 normal{}, origin{}; } last;
+        const bool same = last.plot == &pl && last.type == aim.part.type && last.orient == aim.part.orient && last.normal == normal;
+        constexpr float kKeep = 0.5f + 0.2f;
+        auto place = [&](int base, float hv, int a, int b, int prev) {
+            const float want = (float)base + hv - 0.5f * (float)(a + b + 1); // the origin that centres it exactly
+            return same && fabsf(want - (float)prev) <= kKeep ? prev : base + (int)lroundf(want - (float)base);
+        };
+        Int3& o = aim.part.origin;
+        if (normal.x == 0) o.x = place(o.x, h.x, lo.x, hi.x, last.origin.x);
+        if (normal.y == 0) o.y = place(o.y, h.y, lo.y, hi.y, last.origin.y);
+        if (normal.z == 0) o.z = place(o.z, h.z, lo.z, hi.z, last.origin.z);
+        last = { &pl, aim.part.type, aim.part.orient, normal, o };
     };
     // Automatic facing (#196, until R/V is pressed): the part's front (its local +z, where machines have their door)
     // turns toward the player - on a wall, out of the wall; on the ground or a floor, back along the view.
@@ -253,7 +267,17 @@ void BuildTool_Update(Scene& world, const PlayerInput& in, bool usable) {
         aim.removePart = hitPlot->partAt(hitCell);
     } else if (terrain) {
         const Vector3 ground = th.local;
-        Plot* near = body->plots ? body->plots->plotFor(ground, 6.0f, false) : nullptr;
+        // The part's extent (cells, from its origin): a plot whose cells come within 6 m of any of it takes it, so a big
+        // part never lands on a second, unaligned grid overlapping the first one's parts (#551).
+        std::vector<std::pair<Int3, CellShape>> fp;
+        Plot::Footprint(aim.part, fp);
+        Int3 flo{ 0, 0, 0 }, fhi{ 0, 0, 0 };
+        for (const auto& c : fp) {
+            flo = { std::min(flo.x, c.first.x), std::min(flo.y, c.first.y), std::min(flo.z, c.first.z) };
+            fhi = { std::max(fhi.x, c.first.x), std::max(fhi.y, c.first.y), std::max(fhi.z, c.first.z) };
+        }
+        const float extent = (float)std::max({ fhi.x - flo.x, fhi.y - flo.y, fhi.z - flo.z }) * kCellSize;
+        Plot* near = body->plots ? body->plots->plotFor(ground, 6.0f + extent, false) : nullptr;
         if (near) {
             aim.plot = near;
             faceToward(towardViewer(*near));
@@ -261,8 +285,27 @@ void BuildTool_Update(Scene& world, const PlayerInput& in, bool usable) {
             aim.part.origin = near->cellAt(near->toPlot(Vector3Add(ground, Vector3Scale(near->up, 0.1f))));
             centreOn(*near, Int3{ 0, 1, 0 }, ground); // on the ground: the bottom face's middle at the aim
         } else {
-            aim.newOrigin = ground;
+            // A new plot (#550): its grid starts at the aim, so the part grew from its corner there. Move the plot's
+            // origin back along its east and north axes (as PlotSet::plotFor will set them) by half the footprint, so
+            // the middle of the part's bottom face sits on the aim point.
+            static Plot frame;
+            frame.up = Vector3Normalize(ground);
+            frame.east = Vector3CrossProduct({ 0, 1, 0 }, frame.up);
+            if (Vector3Length(frame.east) < 0.1f) frame.east = { 1, 0, 0 };
+            frame.east = Vector3Normalize(frame.east);
+            frame.north = Vector3CrossProduct(frame.up, frame.east);
+            faceToward(towardViewer(frame));
             aim.part.origin = { 0, 0, 0 };
+            fp.clear();
+            Plot::Footprint(aim.part, fp); // in the facing just chosen
+            Vector3 lo{ 1e9f, 1e9f, 1e9f }, hi{ -1e9f, -1e9f, -1e9f };
+            for (const auto& c : fp) {
+                lo = Vector3Min(lo, Vector3{ (float)c.first.x, (float)c.first.y, (float)c.first.z });
+                hi = Vector3Max(hi, Vector3{ (float)c.first.x + 1.0f, (float)c.first.y + 1.0f, (float)c.first.z + 1.0f });
+            }
+            const float mx = 0.5f * (lo.x + hi.x) * kCellSize, mz = 0.5f * (lo.z + hi.z) * kCellSize;
+            aim.newOrigin = Vector3Subtract(ground, Vector3Add(Vector3Scale(frame.east, mx), Vector3Scale(frame.north, mz)));
+            aim.newOrigin = Vector3Subtract(aim.newOrigin, Vector3Scale(frame.up, lo.y * kCellSize)); // its bottom on the ground
         }
     } else {
         return;
@@ -393,7 +436,9 @@ void BuildTool_DrawHUD() {
 // ---------------------------------------------------------------------------------------------
 
 namespace {
-    struct MachineAim { uint64_t body = 0; uint32_t plot = 0; int part = -1; PartType type = PartType::Count; } machineAim;
+    struct MachineAim { uint64_t body = 0; uint32_t plot = 0; int part = -1; PartType type = PartType::Count; Int3 cell{ 0, 0, 0 }; } machineAim;
+    double handPumpAt = -10.0; // the last frame the hand pump was worked (GetTime), and the litres since this go began (#571)
+    float handPumpLitres = 0.0f;
 }
 
 void Machine_Update(Scene& world, const PlayerInput& in) {
@@ -407,9 +452,10 @@ void Machine_Update(Scene& world, const PlayerInput& in) {
         Int3 c, f; float d;
         if (pl->raycast(lo, ld, best, c, f, d)) {
             const int part = pl->partAt(c);
-            if (part >= 0 && (IsMachine(pl->parts[part].type) || pl->parts[part].type == PartType::Farmland || pl->parts[part].type == PartType::HandPump)) {
+            const PartType pt = part >= 0 ? pl->parts[part].type : PartType::Count;
+            if (part >= 0 && (IsMachine(pt) || pt == PartType::Farmland || pt == PartType::HandPump || pt == PartType::Cable)) { // cables: their network (#570)
                 best = d;
-                machineAim = { body->id, pl->id, part, pl->parts[part].type };
+                machineAim = { body->id, pl->id, part, pt, c };
             }
         }
         // Chimneys stick out of the cells (#285): aimable too, when nearer.
@@ -422,10 +468,13 @@ void Machine_Update(Scene& world, const PlayerInput& in) {
         }
     }
     if (machineAim.part < 0 || !in.enabled) return;
+    if (machineAim.type == PartType::Cable) return; // looked at only: its panel shows the network (#570)
     if (machineAim.type == PartType::HandPump) {
         // Hand pump (#280): hold RMB (outside build mode) to work it; the water goes down its pipes at the next pass.
         if (!buildTool.active && in.down(Act::Secondary)) {
             Waterworks_HandPump(machineAim.body, machineAim.plot, machineAim.part, GameFrameTime());
+            if (GetTime() - handPumpAt > 1.0) handPumpLitres = 0.0f; // a new go
+            handPumpAt = GetTime(); handPumpLitres += kHandPumpRate * 1000.0f * GameFrameTime(); // the HUD's feedback (#571)
             static double nextSound = 0.0;
             if (GetTime() > nextSound) { Audio_Play(Sfx::Pickup, 0.25f, 0.6f); nextSound = GetTime() + 0.6; }
         }
@@ -449,16 +498,52 @@ void Machine_Update(Scene& world, const PlayerInput& in) {
     if (in.hit(Act::Insert)) {
         // Everything in the inventory the machine might take: fuel for generators, recipe inputs,
         // anything for a chest (the simulation hands back what does not fit).
-        // A chest takes the hand's raw materials only (not tools and machines).
+        // A chest takes everything (#568) but tools and what is on the hotbar, as the chest screen's "Put in all".
         const auto all = inventory.all(); // copy: we remove while walking it
         for (const auto& kv : all) {
             if (kv.second <= 0 || !Factory::Accepts(machineAim.type, kv.first)) continue;
-            if (machineAim.type == PartType::Chest && (kv.first == "telescope" || IsMachineItem(kv.first))) continue;
+            if (machineAim.type == PartType::Chest) {
+                bool bound = false;
+                for (int s = 0; s < Inventory::kHotbar; ++s) bound = bound || Hotbar_Slot(s) == kv.first;
+                if (bound || KindOf(kv.first) == ItemKind::Tool) continue;
+            }
             if (inventory.remove(kv.first, kv.second)) Factory::Insert(machineAim.body, machineAim.plot, machineAim.part, kv.first, kv.second);
         }
         Audio_Play(Sfx::Pickup, 0.4f, 0.8f);
     }
     if (in.hit(Act::Extract)) { Factory::Extract(machineAim.body, machineAim.plot, machineAim.part); Audio_Play(Sfx::Pickup, 0.4f, 1.2f); }
+}
+
+// A ", "-separated item list as lines at most maxW px wide (font size `size`), the first starting with `prefix`; past
+// maxLines the last line ends with "+N more" (#567).
+std::vector<std::string> WrapItemList(const char* prefix, const std::string& list, int maxW, int size, int maxLines) {
+    const auto more = [&](std::string line, int rest) { // drops entries off the end until "+N more" fits
+        for (;;) {
+            const std::string s = line + TextFormat("  +%d more", rest);
+            const size_t cut = line.rfind(", ");
+            if (MeasureText(s.c_str(), size) <= maxW || cut == std::string::npos) return s;
+            line.resize(cut); ++rest;
+        }
+    };
+    std::vector<std::string> entries;
+    for (size_t a = 0; a <= list.size();) {
+        size_t b = list.find(", ", a);
+        if (b == std::string::npos) b = list.size();
+        entries.push_back(list.substr(a, b - a));
+        a = b + 2;
+    }
+    std::vector<std::string> lines;
+    std::string cur = prefix;
+    bool fresh = true; // nothing on `cur` but the prefix or indent
+    for (size_t i = 0; i < entries.size(); ++i) {
+        const std::string next = fresh ? cur + entries[i] : cur + ", " + entries[i];
+        if (fresh || MeasureText(next.c_str(), size) <= maxW) { cur = next; fresh = false; continue; }
+        if ((int)lines.size() + 1 == maxLines) { lines.push_back(more(cur, (int)(entries.size() - i))); return lines; } // full
+        lines.push_back(cur + ",");
+        cur = "    " + entries[i];
+    }
+    lines.push_back(cur);
+    return lines;
 }
 
 void Machine_DrawHUD() {
@@ -471,21 +556,50 @@ void Machine_DrawHUD() {
     }
     if (machineAim.type == PartType::HandPump) {
         const int x = GetScreenWidth() / 2 + 20, y = GetScreenHeight() / 2 + 40;
-        DrawRectangle(x - 8, y - 6, 380, 52, Fade(BLACK, 0.55f));
-        DrawText("hand pump", x, y, 20, SKYBLUE);
+        const bool pumping = GetTime() - handPumpAt < 0.15; // worked this frame or the last few (#571)
+        DrawRectangle(x - 8, y - 6, 380, pumping ? 76 : 52, Fade(BLACK, 0.55f));
+        DrawText(pumping ? "hand pump: PUMPING" : "hand pump", x, y, 20, pumping ? Color{ 120, 200, 255, 255 } : SKYBLUE);
         DrawText(TextFormat("hold RMB to pump %.0f L/s into its pipes", kHandPumpRate * 1000.0f), x, y + 24, 16, RAYWHITE);
+        if (pumping) { // a bar that runs with each stroke (a stroke a second) and the litres sent this go
+            const float stroke = (float)fmod(GetTime(), 1.0);
+            DrawRectangle(x, y + 48, 160, 10, Fade(RAYWHITE, 0.2f));
+            DrawRectangle(x, y + 48, (int)(160 * (stroke < 0.5f ? stroke * 2.0f : 2.0f - stroke * 2.0f)), 10, Color{ 90, 170, 255, 255 });
+            DrawText(TextFormat("%.0f L this go", handPumpLitres), x + 172, y + 45, 16, RAYWHITE); // (none flows with no water under it)
+        }
+        return;
+    }
+    if (machineAim.type == PartType::Cable) { // its power network (#570): what feeds it and what flowed in the last tick
+        const CableView cv = Factory::Cable(machineAim.body, machineAim.plot, machineAim.cell);
+        const int x = GetScreenWidth() / 2 + 20, y = GetScreenHeight() / 2 + 40;
+        DrawRectangle(x - 8, y - 6, 400, 76, Fade(BLACK, 0.55f));
+        DrawText("cable", x, y, 20, SKYBLUE);
+        if (!cv.valid) { DrawText("...", x, y + 24, 16, RAYWHITE); return; }
+        if (cv.voltage <= 0) { DrawText("no power: nothing feeds this cable", x, y + 24, 16, Fade(RAYWHITE, 0.75f)); return; }
+        DrawText(TextFormat("%d V network: %d generator%s, %d machine%s, %d batter%s", cv.voltage, cv.generators, cv.generators == 1 ? "" : "s",
+                            cv.consumers, cv.consumers == 1 ? "" : "s", cv.batteries, cv.batteries == 1 ? "y" : "ies"), x, y + 24, 16, RAYWHITE);
+        const float frac = cv.demand > 0.0f ? std::min(1.0f, cv.supply / cv.demand) : (cv.supply > 0.0f ? 1.0f : 0.0f);
+        DrawRectangle(x, y + 48, 160, 10, Fade(RAYWHITE, 0.2f));
+        DrawRectangle(x, y + 48, (int)(160 * frac), 10, cv.supply + 0.01f >= cv.demand ? Color{ 250, 210, 70, 255 } : ORANGE);
+        DrawText(TextFormat("%.0f EU/t supplied, %.0f wanted", cv.supply, cv.demand), x + 172, y + 45, 16, RAYWHITE);
         return;
     }
     const MachineView v = Factory::View(machineAim.body, machineAim.plot, machineAim.part);
-    const int x = GetScreenWidth() / 2 + 20, y = GetScreenHeight() / 2 + 40;
-    DrawRectangle(x - 8, y - 6, 420, 112, Fade(BLACK, 0.55f));
+    const bool chest = machineAim.type == PartType::Chest;
+    const int x = GetScreenWidth() / 2 + 20, y = GetScreenHeight() / 2 + 40, w = 420;
+    // The item lists ("coal x3200, stone x40, ...", totals per item) wrap inside the panel; past kMaxLines the rest is
+    // counted (#567: a full chest ran off the screen).
+    const std::vector<std::string> in = WrapItemList(chest ? "holds: " : "in: ", v.input, w - 16, 16, 4);
+    const std::vector<std::string> out = chest ? std::vector<std::string>{} : WrapItemList("out: ", v.output, w - 16, 16, 2);
+    const int lines = (int)(in.size() + out.size());
+    DrawRectangle(x - 8, y - 6, w, 72 + 20 * lines, Fade(BLACK, 0.55f));
     DrawText(TextFormat("%s: %s", PartName(machineAim.type), v.valid ? MachineStatusName(v.status) : "..."), x, y, 20, SKYBLUE);
     if (v.duration > 0) {
         DrawRectangle(x, y + 26, 300, 8, Fade(RAYWHITE, 0.2f));
         DrawRectangle(x, y + 26, 300 * v.progress / v.duration, 8, ORANGE);
     }
-    DrawText(TextFormat("in: %s", v.input.c_str()), x, y + 40, 16, RAYWHITE);
-    DrawText(TextFormat("out: %s", v.output.c_str()), x, y + 60, 16, RAYWHITE);
-    if (v.energyMax > 0) DrawText(TextFormat("charge %d / %d EU", v.energy, v.energyMax), x, y + 80, 16, YELLOW);
-    else DrawText("RMB open   I put items in   O take the output", x, y + 80, 16, Fade(RAYWHITE, 0.7f));
+    int ty = y + 40;
+    for (const std::string& l : in) { DrawText(l.c_str(), x, ty, 16, RAYWHITE); ty += 20; }
+    for (const std::string& l : out) { DrawText(l.c_str(), x, ty, 16, RAYWHITE); ty += 20; }
+    if (v.energyMax > 0) DrawText(TextFormat("charge %d / %d EU", v.energy, v.energyMax), x, ty, 16, YELLOW);
+    else DrawText(chest ? "RMB open   I put items in   O take all" : "RMB open   I put items in   O take the output", x, ty, 16, Fade(RAYWHITE, 0.7f));
 }

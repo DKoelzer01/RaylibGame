@@ -39,6 +39,7 @@ struct Grid {
     std::vector<uint8_t> processed; // per slot
     std::vector<uint32_t> flags;  // per slot: bit 0 changed, bits 1-6 face requests
     std::vector<int> delta;       // per cell: column-pair flow units this substep (#680; zeroed in the vertical pass)
+    std::vector<uint32_t> sinkOut; // per slot: fill units its sinks took in (river flow, #656; the caller zeroes it)
     void resize(int slots);       // keeps nothing
 };
 

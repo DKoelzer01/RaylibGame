@@ -52,7 +52,7 @@ static Vector3 FeltGravity(Scene& world, Vector3 feet, Planetoid* nearest) {
 }
 void Player::update(Scene& world, const PlayerInput& in, float dt) {
     PROFILE_FUNCTION();
-    if (in.hit(Act::Fly)) {
+    if ((in.hit(Act::Fly) && (flyAllowed || flyMode)) || (flyMode && !flyAllowed)) { // out of creative: F only lands (#531)
         flyMode = !flyMode;
         velocity = { 0, 0, 0 };
         if (!flyMode) {
@@ -188,6 +188,28 @@ void Player::update(Scene& world, const PlayerInput& in, float dt) {
         jetDown = in.down(Act::Down);
         if (in.hit(Act::Dampeners)) dampeners = !dampeners;
         if (in.hit(Act::Hover) && canHover) hovering = !hovering; // flight pack (#163)
+        if (in.hit(Act::Prone)) proneWanted = !proneWanted; // Z (#578)
+    }
+    // Posture (#578): prone while wanted, crouched while Ctrl is held on the ground (Ctrl still swims down and descends
+    // in the air), else upright; Space from prone gets up. Lying down or crouching always works; getting taller needs
+    // the room above, else the lower posture stays.
+    {
+        const bool onFoot = grounded || coyote > 0.0f; // (grounded flickers over bumps: the coyote time bridges it)
+        if (inWater || hovering || flyMode) proneWanted = false;
+        if (proneWanted && jump) { proneWanted = false; jump = false; }
+        const bool crouchWanted = in.enabled && in.down(Act::Down) && onFoot && !inWater && !hovering;
+        Posture want = proneWanted ? Posture::Prone : crouchWanted ? Posture::Crouch : Posture::Stand;
+        if (want < posture && !roomAbove(world, postureHeight(want))) { // taller: room?
+            want = want == Posture::Stand && posture == Posture::Prone && roomAbove(world, kCrouchHeight) ? Posture::Crouch : posture;
+            if (posture == Posture::Prone && want != Posture::Prone) proneWanted = false;
+        }
+        posture = want;
+        height = postureHeight(posture);
+        eyeHeight += (postureEye(posture) - eyeHeight) * std::min(1.0f, dt * 12.0f); // eased (~0.1 s)
+        if (posture != Posture::Stand) {
+            if (Vector3LengthSqr(wish) > 0.0f) wish = Vector3Scale(Vector3Normalize(wish), posture == Posture::Prone ? kProneSpeed : kCrouchSpeed); // no sprint
+            if (posture == Posture::Prone) { jump = false; jetUp = false; }
+        }
     }
     if (!canHover || !hoverPowered) hovering = false;
     // Fall safety (#163): a charged flight pack catches a fall faster than 12 m/s against the ground below.
@@ -513,6 +535,22 @@ void Player::stepPhysics(Scene& world, float dt, Vector3 wish, bool jetUp, bool 
     if (!grounded) coyote = std::max(0.0f, coyote - dt);
 }
 
+// Room to get taller (#578): the capsule's spheres from its top now up to toHeight, each a little smaller than the
+// capsule's (a shallow touch is fine: the collision pass pushes out of it), clear of solid ground and built parts.
+bool Player::roomAbove(Scene& world, float toHeight) const {
+    if (!nearest || toHeight <= height) return true;
+    const Planetoid& p = *nearest;
+    const Vector3 feet = (position - world.renderOrigin).toFloat();
+    const float r = radius * 0.85f;
+    for (float o = height - radius; ; o = std::min(o + 0.2f, toHeight - radius)) {
+        const Vector3 c = Vector3Add(feet, Vector3Scale(up, o));
+        if (p.densityAt(p.toLocal(Vector3Add(c, Vector3Scale(up, r)))) >= ISO_LEVEL) return false; // the sphere's top
+        if (p.plots)
+            for (auto& pl : p.plots->plots) { Vector3 lc = p.toLocal(c), nl; if (pl->collideSphere(lc, r / p.scale, nl)) return false; }
+        if (o >= toHeight - radius) return true;
+    }
+}
+
 // Push the feet/head spheres out of solid density, then probe just below the feet for ground.
 bool Player::resolveCollisions(Scene&, Vector3& feet) {
     if (!nearest) return false;
@@ -525,7 +563,7 @@ bool Player::resolveCollisions(Scene&, Vector3& feet) {
     // keep-out below lowers the camera where a ceiling comes closer. Each pass pushes out of the deepest contact only:
     // two spheres pushing along different normals on jagged rock fought each other.
     static const float heightOverride = getenv("RAYLIBGAME_PLAYER_HEIGHT") ? (float)atof(getenv("RAYLIBGAME_PLAYER_HEIGHT")) : 0.0f;
-    if (heightOverride > 2.0f * radius) height = heightOverride;
+    if (heightOverride > 2.0f * radius) { standHeight = heightOverride; if (posture == Posture::Stand) height = standHeight; } // (crouching and prone keep theirs, #578)
     constexpr int kMaxSamples = 8;
     const int kSamples = std::clamp((int)ceilf((height - 2.0f * radius) / 0.23f - 1e-3f) + 1, 2, kMaxSamples); // 5 at 1.7 m, 6 at 2.05 m
     float offsets[kMaxSamples];

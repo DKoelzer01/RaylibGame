@@ -75,6 +75,7 @@ struct WorldStats {
     int preloadNodes = 0, preloadReady = 0; // the preload ring(s) around the camera (#294)
     int cachedNodes = 0;                    // built nodes kept only by the cache (#295)
     long long evicted = 0;                  // cache evictions since start
+    long long lodFades = 0;                 // nodes cross-faded into their replacements since start (#243)
     long long waterBuilds = 0; double waterMs = 0.0; // water-only chunk redraws (#360) since start, their worker time
     long long waterFullBuilds = 0; long long waterCacheBytes = 0; // full builds asked for by water; chunk water caches now
 };
@@ -98,10 +99,11 @@ inline std::vector<InterestCentre> gInterestCentres;
 // so captures are reproducible. Gameplay code reads this; UI timing keeps the real clock.
 inline float gFixedFrameTime = 0.0f;
 inline float GameFrameTime() { return gFixedFrameTime > 0.0f ? gFixedFrameTime : GetFrameTime(); }
-// The clock visual animation reads (wind, sway, flicker, weather flashes): the real one, or the sum of the fixed steps while
-// recording (#375), so two captures of the same scene match frame for frame. main.cpp advances it.
+// The clock visual animation reads (wind, sway, flicker, weather flashes, water flow, clouds): the sum of the frame times
+// (fixed steps while recording, #375, so two captures of the same scene match frame for frame). main.cpp advances it, and
+// stops it while the single-player pause menu is open (#511: grass kept swaying behind the menu).
 inline double gGameClock = 0.0;
-inline double GameClock() { return gFixedFrameTime > 0.0f ? gGameClock : GetTime(); }
+inline double GameClock() { return gGameClock; }
 // The simulation clock (#315): SimTime() / SimDt() / SimAlpha(), see simclock.h.
 #include "simclock.h"
 // Time of day (#275): the debug UI's time-scale multiplier (bodies spin and orbit this much faster) and a pending jump

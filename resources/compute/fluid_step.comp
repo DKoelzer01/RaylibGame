@@ -56,6 +56,7 @@ uniform int useGroups;
 uniform int maskCur;       // this substep's wet mask (0-2)
 layout(std430, binding = 10) buffer Mask { uint gmask[]; };
 layout(std430, binding = 11) readonly buffer Groups { uint groups[]; };
+layout(std430, binding = 12) buffer SinkOut { uint sinkOut[]; };     // per slot: fill units its sinks took in (river flow, #656)
 
 const uint SOLID = 1u, SOURCE = 2u, DUG = 8u, SINK = 16u; // a sink: a source that takes water in (reset to its level after: what is over it leaves, #361)
 const float G = 9.81;
@@ -369,6 +370,7 @@ void main() {
     storeP(g, applied);
     int nf = clamp(f + net, 0, 255);
     if (f == 0 && nf > 0) kind = inKind;
+    if ((fl & (SOURCE | SINK)) == (SOURCE | SINK) && nf > int(TG(c))) atomicAdd(sinkOut[slot], uint(nf - int(TG(c)))); // what a released reach's sink takes in (#656)
     if ((fl & SOURCE) != 0u) nf = int(TG(c));                            // sources hold their level
     // A resting speck on the ground soaks away (one in a moving film does not: erasing a sliding film's thin edge every
     // substep lost ~12% of a draining pond, #454); on water it is that water's surface and stays (#454: a body over cells that hold

@@ -50,9 +50,12 @@ namespace Fluid {
     // so a dam backs the water up and it spills over.
     void OnTerrainEdit(Planetoid& body, Vector3 localCentre, float radius, bool adds = false);
     int ReleasedReaches(); // tests: river reaches released (#361)
+    float ReleaseInflowScale(); // tests: the lowest flow share feeding a released reach's springs (1 natural, #656); -1: none
     // water.fs: the fluid kinds' colours (uniform arrays fluidColors / fluidGlows), with the shader bound. The chunks
     // draw every fluid surface (waterfield.h); a vertex carries its kind.
     void BindKindUniforms(const Shader& shader);
+    bool DebugView();                 // #695: water coloured by speed, stripes along the current (RAYLIBGAME_FLUID_DEBUG=1)
+    void SetDebugView(bool on);
 
     // Queries (main thread, from the last published step).
     bool Wet(const Planetoid& body, Vector3 local);                       // under moving water

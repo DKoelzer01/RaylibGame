@@ -180,6 +180,12 @@ void Hotbar_Update(Scene&, const PlayerInput& in, bool piloting) {
     // Leaving build mode with a block selected: the hand goes empty (to an empty slot, if there is one).
     inventory.preferred = Inventory::kGrid + H().selected; // use comes out of the slot in hand first (#209)
     const std::string cur = CellId(H().selected);
+    // The last block or machine of the slot in hand placed (#554): build mode ends with it, as the hand is empty now. (Build
+    // mode entered with G on an empty hand is left alone: the slot was empty before too.)
+    static int lastSlot = -1;
+    static std::string lastId;
+    if (buildTool.active && cur.empty() && lastSlot == H().selected && !lastId.empty()) buildTool.active = false;
+    lastSlot = H().selected; lastId = cur;
     const bool inHand = cur.empty() || cur == terrainTool.heldTool || Survival_IsFood(cur) || Animals_IsFeed(cur) || Hotbar_IsLight(cur) || Hotbar_IsPlaceable(cur);
     if (!buildTool.active && !inHand) {
         for (int i = 0; i < kHotbarSlots; ++i) if (CellId(i).empty()) { H().selected = i; break; }

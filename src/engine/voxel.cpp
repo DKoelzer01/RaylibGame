@@ -1165,18 +1165,31 @@ float PlanetField::densityNear(Vector3 p, float d, float surface, float fp, cons
     // by walking; elsewhere they stay 5 m+ down. Only looked up for shallow samples.
     float caveTop = 5.0f;
     float mouth = 0.0f; // #549: in mouth regions tunnels open at full width where they meet the surface (no grille)
-    if (depth < 14.0f && depth > -3.0f && caveWeight > 0.0f && !moon) { mouth = Smoothstep(0.3f, 0.45f, caveMouths.fractal(1, p.x, p.y, p.z)); caveTop = 5.0f - 7.5f * mouth; }
-    if (caveWeight > 0.0f && depth > caveTop && d > mantleRadius + 20.0f) {
+    if (depth < 14.0f && depth > -14.0f && caveWeight > 0.0f && !moon) { mouth = Smoothstep(0.3f, 0.45f, caveMouths.fractal(1, p.x, p.y, p.z)); caveTop = 5.0f - 7.5f * mouth; }
+    // #549 (playtest 8): a tunnel running just under the ground left a roof thin enough for the surface noise to punch
+    // rows of small holes through it (the grille), and tor slabs bridged the mouth. In mouth regions a roof thinner than
+    // kRoof collapses: every sample over the tunnel whose roof (its depth + its distance to the tunnel) is that thin is
+    // carved. The roof depth is about the same all down a column, so whole columns open, with clean edges; up to the
+    // tops of tors (14 m) so slabs over a collapsed roof go too.
+    constexpr float kRoof = 4.0f;
+    const float gate = mouth > 0.0f ? -14.0f : caveTop;
+    if (caveWeight > 0.0f && depth > gate && d > mantleRadius + 20.0f) {
         const float near = 2.0f * std::max(fp, 1.0f) + 2.0f; // farther than this from a cave = plain rock for meshing
+        const float reach = mouth > 0.0f ? std::max(near, kRoof + 1.0f - depth) : near; // a thin roof's samples too
         float m = 1e9f;                                        // metres to the nearest cave wall (< 0 inside)
         // A tunnel needs both fields near zero: if the first alone rules one out, skip the second.
         const float a = fabsf(cavesA.fractal(2, p.x, p.y, p.z));
-        if ((a - kTunnelLevel) * 100.0f <= near) {
-            float top = std::min(1.0f, (depth - caveTop) / 8.0f);
+        if ((a - kTunnelLevel) * 100.0f <= reach) {
+            float top = std::clamp((depth - caveTop) / 8.0f, 0.0f, 1.0f);
             top = top + (1.0f - top) * mouth;
             const float fade = top * std::min(1.0f, (d - mantleRadius - 20.0f) / 10.0f);
             const float t = std::max(a, fabsf(cavesB.fractal(2, p.x, p.y, p.z)));
             m = (t - kTunnelLevel) * 100.0f + (1.0f - fade * caveWeight) * 20.0f;
+            if (mouth > 0.0f && m > 0.0f) {
+                const float roof = depth + m;
+                const float c = mouth * std::clamp((kRoof + 1.0f - roof) * 0.5f, 0.0f, 1.0f);
+                m = m + (-2.0f - m) * c;
+            }
         }
         if (depth > 30.0f && d > mantleRadius + 40.0f) {
             const float fade = std::min(1.0f, (depth - 30.0f) / 20.0f) * std::min(1.0f, (d - mantleRadius - 40.0f) / 20.0f);
@@ -1559,6 +1572,7 @@ VoxelMaterial PlanetField::materialSkyHinted(Vector3 p, float base, float fp, Ve
         // (#206: digging a river bed finds clay); lakes and ponds keep clay with gravel bars in the deeper middle.
         constexpr float kWetReach = 60.0f; // m: floodplains and wet shores at most this far out
         if (e > 0.0f && inlandWaterNear(up, kWetReach)) {
+            const RiverNetwork::NaturalScope natural; // a river dried by a dam keeps its bed and banks (#656)
             const RiverNetwork* net = rivers();
             const RiverNetwork::Hit rh = net && fp < 128.0f ? net->nearest(up, kWetReach + 50.0f) : RiverNetwork::Hit{};
             const float w = waterElevation(up, fp);
@@ -1716,11 +1730,16 @@ void BuildChunkMesh(const DensityField& field, const TerrainDeltas& deltas, Chun
 // rays (up, and four tilted 45 degrees) through the block's own samples (edits included): the open share sets the light,
 // the up ray counting double, so a shelter's mouth is dim and a few metres in is black. The up ray continues past the
 // block through the full field to 12 m (so block borders don't show).
+// #541: the rays start half a sample off the surface along the vertex normal and read the block trilinearly. They used to
+// start on the vertex and take the nearest sample: on a steep wall a point a metre above a vertex rounded to the solid
+// sample behind it about half the time once samples were 1-2 m apart, so mid-range cliffs read as roofed (dark blotches),
+// up to the stride where the probe stops (a ring).
 static float OverheadOpenness(const DensityField& field, const TerrainDeltas& deltas, const float* ext, int E, Vector3 eo, float stride,
-                              Vector3 p, const PlanetField::Column3D* col, const float* elev) {
+                              Vector3 p, Vector3 n, const PlanetField::Column3D* col, const float* elev) {
     const float d = Vector3Length(p);
     if (d < 1e-3f) return 1.0f;
     const Vector3 up = Vector3Scale(p, 1.0f / d);
+    p = Vector3Add(p, Vector3Scale(n, 0.5f * stride)); // clear of the vertex's own surface cell
     const Vector3 t1 = Vector3Normalize(Vector3CrossProduct(up, fabsf(up.y) < 0.9f ? Vector3{ 0, 1, 0 } : Vector3{ 1, 0, 0 }));
     const Vector3 t2 = Vector3CrossProduct(up, t1);
     const Vector3 dirs[5] = { up,
@@ -1731,9 +1750,17 @@ static float OverheadOpenness(const DensityField& field, const TerrainDeltas& de
     const bool mayRoof = !col || col->mask > 0.0f;
     auto blockSolid = [&](Vector3 q, bool& inside) {
         const float fx = (q.x - eo.x) / stride, fy = (q.y - eo.y) / stride, fz = (q.z - eo.z) / stride;
-        const int x = (int)lroundf(fx), y = (int)lroundf(fy), z = (int)lroundf(fz);
-        inside = x >= 0 && y >= 0 && z >= 0 && x < E && y < E && z < E;
-        return inside && ext[((size_t)z * E + y) * E + x] >= ISO_LEVEL;
+        inside = fx >= 0.0f && fy >= 0.0f && fz >= 0.0f && fx <= E - 1.0f && fy <= E - 1.0f && fz <= E - 1.0f;
+        if (!inside) return false;
+        const int x0 = std::min((int)fx, E - 2), y0 = std::min((int)fy, E - 2), z0 = std::min((int)fz, E - 2);
+        const float tx = fx - x0, ty = fy - y0, tz = fz - z0;
+        auto A = [&](int x, int y, int z) { return ext[((size_t)z * E + y) * E + x]; };
+        const float c00 = A(x0, y0, z0) + (A(x0 + 1, y0, z0) - A(x0, y0, z0)) * tx;
+        const float c10 = A(x0, y0 + 1, z0) + (A(x0 + 1, y0 + 1, z0) - A(x0, y0 + 1, z0)) * tx;
+        const float c01 = A(x0, y0, z0 + 1) + (A(x0 + 1, y0, z0 + 1) - A(x0, y0, z0 + 1)) * tx;
+        const float c11 = A(x0, y0 + 1, z0 + 1) + (A(x0 + 1, y0 + 1, z0 + 1) - A(x0, y0 + 1, z0 + 1)) * tx;
+        const float c0 = c00 + (c10 - c00) * ty, c1 = c01 + (c11 - c01) * ty;
+        return c0 + (c1 - c0) * tz >= ISO_LEVEL;
     };
     float open = 0.0f;
     for (int r = 0; r < 5; ++r) {
@@ -1797,6 +1824,12 @@ static constexpr float kSkinMoving = 0.02f; // m: the same for moving water (#64
 static std::atomic<long long> gWaterPhaseNs[4];
 static std::atomic<long long> gWaterSamples[2]; // exact water density samples, all samples (#381)
 void ChunkWaterPhases(long long out[6]) { for (int i = 0; i < 4; ++i) out[i] = gWaterPhaseNs[i].load(); out[4] = gWaterSamples[0].load(); out[5] = gWaterSamples[1].load(); }
+// Moving simulated water's vertices (#677, --test-flow-shade): all, steep ones (surface 40+ degrees off level), steep ones
+// drawn with a current of 1 m/s or more along their surface.
+static std::atomic<long long> gSimFlowVerts[3];
+// RAYLIBGAME_FLOW_SURFACE=0: the current stays level and simulated water keeps its gradient normal (before #677/#696), for A/B.
+static const bool kFlowSurface = [] { const char* e = getenv("RAYLIBGAME_FLOW_SURFACE"); return !(e && e[0] == '0'); }();
+void ChunkWaterFlowStats(long long out[3]) { for (int i = 0; i < 3; ++i) out[i] = gSimFlowVerts[i].load(); }
 // RAYLIBGAME_WATER_COARSE=0: sample every water density point (no coarse-first skipping), for A/B.
 static const bool kWaterCoarse = [] { const char* e = getenv("RAYLIBGAME_WATER_COARSE"); return !(e && e[0] == '0'); }();
 static long long NowNs() { return std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch()).count(); }
@@ -2026,6 +2059,12 @@ static void MeshChunkWater(const DensityField& field, ChunkMeshData& out, const 
                     // below sea level) the generated water surface is not open water. Rivers used to line the cave walls.
                     const float wl = Vector3Length(wc);
                     if (wl > 1.0f && groundAt(wc, Vector3Scale(wc, 1.0f / wl)) > wl - sea + (stride <= 2.0f ? 0.15f : 1.0f)) continue; // near: only over the original bed
+                    // Steep: generated water lies (nearly) flat - a river's rapids slope at most ~0.4. A steep surface is the
+                    // level lattice interpolated across a waterfall's drop: blobs in the rock behind the fall, and from far
+                    // LODs (their lattice is coarse) a giant slanted sheet (#613). The fall's own sheet draws the water there.
+                    const Vector3 tn = Vector3CrossProduct(Vector3Subtract(wv[wi[t + 1]], wv[wi[t]]), Vector3Subtract(wv[wi[t + 2]], wv[wi[t]]));
+                    const float tl = Vector3Length(tn);
+                    if (wl > 1.0f && tl > 1e-9f && fabsf(Vector3DotProduct(tn, wc)) < 0.7f * tl * wl) continue;
                 }
             }
             for (int e = 0; e < 3; ++e) {
@@ -2037,6 +2076,7 @@ static void MeshChunkWater(const DensityField& field, ChunkMeshData& out, const 
                     const Vector3 bp = Vector3Add(origin, lp);
                     const Vector3 radial = Vector3Normalize(bp);
                     Vector3 n = radial; // the sea is a sphere: radial normals
+                    Vector3 simFlow{}; float simSpeed = 0.0f; // simulated water's current (#677)
                     float depth = 50.0f;
                     if (simKind && sim.covered(bp)) {
                         // Moving fluid: the surface's own normal (falls, steps), the fluid under it for the tint.
@@ -2053,6 +2093,56 @@ static void MeshChunkWater(const DensityField& field, ChunkMeshData& out, const 
                         const float gl = Vector3Length(grad);
                         if (gl > 1e-6f) n = Vector3Scale(grad, -1.0f / gl);
                         depth = std::max(0.3f, sim.depthBelow(bp, kind));
+                        // Its current (#677): down the simulated surface's slope at Manning's speed, v = depth^(2/3) sqrt(slope) /
+                        // n (n 0.03, at most 4 m/s): a channel runs, a level pool stands still - awake, steady or asleep alike.
+                        Vector3 down; float grade;
+                        Vector3 solverDir; float solverSpeed;
+                        if (sim.simFlow(bp, solverDir, solverSpeed)) { // the solver's own flow, published per column (#695)
+                            simFlow = Vector3Subtract(solverDir, Vector3Scale(radial, Vector3DotProduct(solverDir, radial)));
+                            const float fl = Vector3Length(simFlow);
+                            simFlow = fl > 1e-4f ? Vector3Scale(simFlow, 1.0f / fl) : Vector3{ 0, 0, 0 };
+                            simSpeed = solverSpeed;
+                        } else if (sim.slope(bp, kind, down, grade) && grade > 1e-4f) {
+                            simFlow = Vector3Subtract(down, Vector3Scale(radial, Vector3DotProduct(down, radial)));
+                            const float fl = Vector3Length(simFlow);
+                            if (fl > 1e-4f) {
+                                simFlow = Vector3Scale(simFlow, 1.0f / fl);
+                                simSpeed = std::min(4.0f, powf(std::max(0.05f, sim.depthBelow(bp, kind)), 2.0f / 3.0f) * sqrtf(grade) / 0.03f);
+                            }
+                        }
+                        // Along the water's own surface (#677): the solver's flow is level (east, north), so on a step, a chute or
+                        // a falling sheet it pointed into the surface and water.fs had nothing left to draw. Moving water on a
+                        // slope runs down it: tilt the current into the surface plane, towards its downhill as it steepens, and a
+                        // sheet sliding down a step or a fall is fast (3 m/s at vertical) even where its column's flow is small.
+                        const float upN = Vector3DotProduct(n, radial); // 1: level, 0: a vertical sheet, < 0: an underside
+                        if (kFlowSurface && upN < 0.97f && upN > -0.3f && sim.moving(bp)) {
+                            const Vector3 along = Vector3Subtract(simFlow, Vector3Scale(n, Vector3DotProduct(simFlow, n)));
+                            Vector3 downhill = Vector3Subtract(Vector3Scale(n, upN), radial);
+                            const float dl = Vector3Length(downhill);
+                            if (dl > 1e-4f) {
+                                downhill = Vector3Scale(downhill, 1.0f / dl);
+                                const float steep = std::clamp((0.97f - upN) / 0.6f, 0.0f, 1.0f);
+                                const Vector3 f = Vector3Add(Vector3Scale(along, 1.0f - steep), Vector3Scale(downhill, steep));
+                                const float fl = Vector3Length(f);
+                                if (fl > 1e-4f) { simFlow = Vector3Scale(f, 1.0f / fl); simSpeed = std::min(4.0f, std::max(simSpeed, 3.0f * steep)); }
+                            }
+                        }
+                        if (sim.moving(bp)) {
+                            ++gSimFlowVerts[0];
+                            if (upN < 0.77f && upN > -0.3f) {
+                                ++gSimFlowVerts[1];
+                                const float alongN = fabsf(Vector3DotProduct(simFlow, n)); // drawn along the surface, not into it
+                                if (simSpeed >= 1.0f && alongN < 0.2f) ++gSimFlowVerts[2];
+                            }
+                        }
+                        // Shade near-level water with the radial normal, as the generated water is (#696): the fill grid's
+                        // gradient tilts from cell to cell over a resting or gently running surface (its levels step), and
+                        // at grazing angles that tilt cost most of the Fresnel sky reflection - disturbed water turned clear
+                        // and dull along a hard line where it met the generated water. Steps and falls keep their own normal.
+                        if (kFlowSurface && upN > 0.5f) {
+                            const float t = std::clamp((upN - 0.5f) / 0.4f, 0.0f, 1.0f), w = t * t * (3.0f - 2.0f * t);
+                            n = Vector3Normalize(Vector3Lerp(n, radial, w));
+                        }
                         // Over simulated sea or lake cells: no shallower than the generated water around them (a lighter
                         // square at the edge of a site otherwise: the column count stops at 8 m, #382 review).
                         if (genKind && pf) depth = std::max(depth, Vector3Length(bp) - sea - groundAt(bp, radial));
@@ -2065,8 +2155,8 @@ static void MeshChunkWater(const DensityField& field, ChunkMeshData& out, const 
                     out.waterNormals.insert(out.waterNormals.end(), { n.x, n.y, n.z });
                     out.waterDepth.insert(out.waterDepth.end(), { depth, (float)kind });
                     // The current (#361): generated river water flows downstream, ~1 m/s mid-channel, slower to the banks.
-                    // Lakes, the sea and simulated cells stand still here.
-                    Vector3 flow{}; float speed = 0.0f;
+                    // Lakes and the sea stand still here; simulated water runs down its surface (#677, above).
+                    Vector3 flow = simFlow; float speed = simSpeed;
                     if (kind == 0 && gen.inland && rivers && !(simKind && sim.covered(bp))) {
                         const RiverNetwork::Hit hr = rivers->nearest(radial, 60.0f);
                         if (hr.found && hr.dist < hr.halfWidth + 3.0f) {
@@ -2103,6 +2193,90 @@ ChunkWaterCache::ChunkWaterCache() = default;
 ChunkWaterCache::~ChunkWaterCache() { gWaterCacheBytes -= counted; }
 long long ChunkWaterCacheBytes() { return gWaterCacheBytes.load(); }
 
+// #679 A/B: RAYLIBGAME_DELTA_POINT=1 = coarse nodes point-sample the edit lattice (the old way).
+static const bool gDeltaPointSample = [] { const char* e = getenv("RAYLIBGAME_DELTA_POINT"); return e && e[0] == '1'; }();
+
+// Player edits on a coarse node (#679). A carve writes its exact shape only within 1 m of it (the lattice there holds
+// the carved density); farther out the field is the unedited ground again, a step of up to the dig's depth in density.
+// A coarse sample a stride under a dug floor read that step, and a sample over it the ground the dig took away, so
+// marching cubes put the floor anywhere between them: a flat dug floor came out lumpy by up to half a stride (a
+// honeycomb under shallow water, the floor plane cutting the sample lattice at a slant) and a dig shallower than a
+// stride could vanish between two samples.
+// Along a vertical column the unedited density is linear (gradient times the height under the height map), so the
+// edit at a point q above a sample p says what the field at p would be if q's edit reached down to it:
+// base(p) + delta(q) (the floor-plane value). Each coarse sample takes, within two strides along its column (the
+// lattice axis nearest the vertical): the most negative such dig delta - from above only while p is solid (a dig
+// below solid ground must not open it), from either side once p is air (it only gets more air) - and the most
+// positive fill delta, mirrored. Off-vertical columns pay the base's drift (1 - cos) per step. A sample keeps its own
+// delta when nothing in reach goes further. The result is exact for flat floors and walls a stride from a sample
+// (the samples bracketing them read the floor plane), and unedited ground is never touched.
+static void AddDeltasColumnFiltered(const DensityField& field, const std::vector<std::pair<TerrainDeltas::Key, const DeltaChunk*>>& near,
+                                    float* ext, int E, int st, Vector3 eo) {
+    std::unordered_map<TerrainDeltas::Key, const DeltaChunk*> chunks;
+    chunks.reserve(near.size() * 2);
+    for (const auto& c : near) chunks.emplace(c.first, c.second);
+    const float ext3 = (E - 1) * st * kVoxelSize;
+    Vector3 up = dynamic_cast<const TerrainField*>(&field) ? Vector3{ 0, 1, 0 }
+                                                           : Vector3Normalize(Vector3AddValue(eo, 0.5f * ext3));
+    const float ua[3] = { up.x, up.y, up.z };
+    const int a = fabsf(ua[0]) >= fabsf(ua[1]) && fabsf(ua[0]) >= fabsf(ua[2]) ? 0 : fabsf(ua[1]) >= fabsf(ua[2]) ? 1 : 2;
+    const int b = (a + 1) % 3, c = (a + 2) % 3;
+    const int upSign = ua[a] >= 0.0f ? 1 : -1;
+    const float penU = DENSITY_GRADIENT * kVoxelSize * (1.0f - fabsf(ua[a])) / kDeltaStep; // stored units per lattice step
+    const int o[3] = { (int)lroundf(eo.x / kVoxelSize), (int)lroundf(eo.y / kVoxelSize), (int)lroundf(eo.z / kVoxelSize) };
+    const int W = 2 * st;
+    auto fdiv = [](int v) { return v >= 0 ? v / kDeltaChunk : -((-v + kDeltaChunk - 1) / kDeltaChunk); };
+    struct Entry { int pos; int v; };
+    std::vector<Entry> col;
+    const int A0 = o[a] - W, A1 = o[a] + (E - 1) * st + W;
+    const int strides[3] = { 1, E, E * E }; // ext index = (z * E + y) * E + x
+    for (int ic = 0; ic < E; ++ic)
+        for (int ib = 0; ib < E; ++ib) {
+            int L[3];
+            L[b] = o[b] + ib * st; L[c] = o[c] + ic * st;
+            const int cb = fdiv(L[b]), cc = fdiv(L[c]);
+            const int lb = L[b] - cb * kDeltaChunk, lc = L[c] - cc * kDeltaChunk;
+            col.clear();
+            for (int pos = A0; pos <= A1;) {
+                const int ca = fdiv(pos);
+                int C[3]; C[a] = ca; C[b] = cb; C[c] = cc;
+                auto it = chunks.find(TerrainDeltas::KeyOf(C[0], C[1], C[2]));
+                const int chunkEnd = (ca + 1) * kDeltaChunk; // first lattice index past this chunk along the axis
+                if (it == chunks.end() || it->second->empty()) { pos = chunkEnd; continue; }
+                const DeltaChunk* dc = it->second;
+                for (; pos <= A1 && pos < chunkEnd;) {
+                    int l[3]; l[a] = pos - ca * kDeltaChunk; l[b] = lb; l[c] = lc;
+                    const int i = (l[2] * kDeltaChunk + l[1]) * kDeltaChunk + l[0];
+                    if (!dc->slot[DeltaChunk::BrickOf(i)]) { pos += DeltaChunk::kBrick - (l[a] & (DeltaChunk::kBrick - 1)); continue; }
+                    const int v = dc->get(i);
+                    if (v) col.push_back({ pos, v });
+                    ++pos;
+                }
+            }
+            if (col.empty()) continue;
+            size_t first = 0;
+            for (int k = 0; k < E; ++k) {
+                const int pk = o[a] + k * st;
+                while (first < col.size() && col[first].pos < pk - W) ++first;
+                int v0 = 0;
+                float dneg = 1e30f, dpos = -1e30f;
+                int idx3[3]; idx3[a] = k; idx3[b] = ib; idx3[c] = ic;
+                float& e = ext[(size_t)idx3[0] * strides[0] + (size_t)idx3[1] * strides[1] + (size_t)idx3[2] * strides[2]];
+                for (size_t q = first; q < col.size() && col[q].pos <= pk + W; ++q) if (col[q].pos == pk) { v0 = col[q].v; break; }
+                const bool solid = e + v0 * kDeltaStep >= ISO_LEVEL;
+                for (size_t q = first; q < col.size() && col[q].pos <= pk + W; ++q) {
+                    const int off = (col[q].pos - pk) * upSign, dist = off >= 0 ? off : -off;
+                    if (col[q].v < 0) { if (!solid || off >= 0) dneg = std::min(dneg, col[q].v + penU * dist); }
+                    else if (solid || off <= 0) dpos = std::max(dpos, col[q].v - penU * dist);
+                }
+                float d = (float)v0;
+                if (dneg < d) d = dneg;
+                else if (dpos > d) d = dpos;
+                e += d * kDeltaStep;
+            }
+        }
+}
+
 void BuildChunkMeshFromBase(const DensityField& field, const TerrainDeltas& deltas, ChunkMeshData& out, const float* base, float sampledMs, const PlanetField::BlockGrid* grid,
                             std::shared_ptr<const PlanetField::BlockGrid> gridShared) {
     const auto t0 = std::chrono::steady_clock::now() - std::chrono::duration_cast<std::chrono::steady_clock::duration>(std::chrono::duration<float, std::milli>(sampledMs));
@@ -2115,14 +2289,21 @@ void BuildChunkMeshFromBase(const DensityField& field, const TerrainDeltas& delt
     const int E = S + 2;
     const Vector3 eo = Vector3AddValue(origin, -stride);
     std::vector<float> ext(base, base + (size_t)E * E * E);
-    // Player edits: the delta lattice at the samples (lattice points at every stride; coarse nodes
-    // point-sample it, so big excavations show from afar). Cost depends on the edited chunks here,
-    // never on how many strokes the world has had.
+    // Player edits: the delta lattice at the samples (lattice points at every stride); coarse nodes filter it along
+    // their columns (AddDeltasColumnFiltered, #679), so big excavations show from afar with flat floors. Cost depends
+    // on the edited chunks here, never on how many strokes the world has had.
     std::vector<std::pair<TerrainDeltas::Key, const DeltaChunk*>> near;
     deltas.chunksIn(eo, Vector3AddValue(eo, (E - 1) * stride), near);
-    if (!near.empty()) {
+    const int stEdit = out.key.latticeStride();
+    if (!near.empty() && stEdit > 1 && !gDeltaPointSample) {
+        // Coarse nodes (#679): the column filter below, not a point sample. Needs the deltas a column filter reaches.
+        near.clear();
+        const float reach = 2.0f * stEdit * kVoxelSize;
+        deltas.chunksIn(Vector3AddValue(eo, -reach), Vector3AddValue(eo, (E - 1) * stride + reach), near);
+        AddDeltasColumnFiltered(field, near, ext.data(), E, stEdit, eo);
+    } else if (!near.empty()) {
         // Lattice indices (kVoxelSize apart): a node of level L samples every 2^L-th lattice point.
-        const int st = out.key.latticeStride(), ox = (int)lroundf(eo.x / kVoxelSize), oy = (int)lroundf(eo.y / kVoxelSize), oz = (int)lroundf(eo.z / kVoxelSize);
+        const int st = stEdit, ox = (int)lroundf(eo.x / kVoxelSize), oy = (int)lroundf(eo.y / kVoxelSize), oz = (int)lroundf(eo.z / kVoxelSize);
         auto chunkAt = [&](int cx, int cy, int cz) -> const DeltaChunk* {
             const TerrainDeltas::Key key = TerrainDeltas::KeyOf(cx, cy, cz);
             for (const auto& c : near) if (c.first == key) return c.second;
@@ -2211,9 +2392,16 @@ void BuildChunkMeshFromBase(const DensityField& field, const TerrainDeltas& delt
                 float gElev = 0.0f;
                 PlanetField::Column3D gCol;
                 const bool hinted = gridField && gridField->gridSurface(*grid, p, gElev, gCol);
-                VoxelMaterial m = hinted ? gridField->materialSkyHinted(p, b, stride, n, sky, &gElev, &gCol) : field.materialSky(p, b, stride, n, sky);
+                // Dug ground (#679): the materials allow a coarse mesh to stray metres from the height map (slack ~ 2 x
+                // the footprint), so a floor dug 3 m down still read as undug turf on coarse nodes: grass under the water
+                // of a dug basin from afar. Where the edge's samples were dug by more than half a metre, judge the vertex
+                // at a 1 m footprint (no slack): the edit, not the LOD, put the surface there.
+                const bool dugHere = !near.empty() && !gDeltaPointSample && std::min(at(ext.data(), x0 + 1, y0 + 1, z0 + 1) - at(base, x0 + 1, y0 + 1, z0 + 1),
+                                                              at(ext.data(), x1 + 1, y1 + 1, z1 + 1) - at(base, x1 + 1, y1 + 1, z1 + 1)) < -0.5f * DENSITY_GRADIENT;
+                const float matFp = dugHere ? std::min(stride, 1.0f) : stride;
+                VoxelMaterial m = hinted ? gridField->materialSkyHinted(p, b, matFp, n, sky, &gElev, &gCol) : field.materialSky(p, b, matFp, n, sky);
                 if (!near.empty()) { const int placed = deltas.materialAt(p); if (placed >= 0) m = (VoxelMaterial)placed; } // placed ground keeps its material
-                if (gSkyProbes && sky > 0.02f && stride <= 2.0f) sky *= OverheadOpenness(field, deltas, ext.data(), E, eo, stride, p, hinted ? &gCol : nullptr, hinted ? &gElev : nullptr);
+                if (gSkyProbes && sky > 0.02f && stride <= 2.0f) sky *= OverheadOpenness(field, deltas, ext.data(), E, eo, stride, p, n, hinted ? &gCol : nullptr, hinted ? &gElev : nullptr);
                 out.tangents[v * 4 + 3] = sky;
                 // Ambient occlusion (#132): how much of the hemisphere over the vertex is solid within ~1.5 m, from the
                 // block's own samples (edits included): 5 directions (the normal, and four 45 degrees off it) at 0.6 and

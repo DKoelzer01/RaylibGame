@@ -47,6 +47,9 @@ bool Combat_HitStop(const PlayerSession& s, bool reduceMotion);
 // stack; hard, everything goes into a grave at the death spot (a waypoint; walk up to it to take it all back).
 void Combat_OnDeath(PlayerSession& s);
 int Combat_GraveCount();
+// Drops a stack at the player's feet as a pile (#564), picked up by walking back to it after leaving; false: nowhere.
+bool Combat_Drop(PlayerSession& s, const struct InvSlot& stack);
+int Combat_DroppedPiles();
 void Combat_DrawGraves(Scene& world);
 void Combat_Reset();                          // a new world: no graves
 void Combat_Save(FILE* f);

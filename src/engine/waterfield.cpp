@@ -19,8 +19,10 @@ namespace {
 
 }
 
+// The fluid cell edge (m): 0.25 by default (#714, user 2026-11-17: at 1 m a one-block hole in a block dam stayed shut, #709,
+// and a dug trench's rounded edge spilled); RAYLIBGAME_FLUID_CELL=1 is the old 1 m grid, opt-in.
 float CellSize() {
-    static const float c = [] { const char* e = getenv("RAYLIBGAME_FLUID_CELL"); const float v = e ? (float)atof(e) : 1.0f; return v > 0.05f && v <= 4.0f ? v : 1.0f; }();
+    static const float c = [] { const char* e = getenv("RAYLIBGAME_FLUID_CELL"); const float v = e ? (float)atof(e) : 0.25f; return v > 0.05f && v <= 4.0f ? v : 0.25f; }();
     return c;
 }
 
@@ -327,4 +329,64 @@ float ChunkSampler::depthBelow(Vector3 p, int kind) {
     return 0.0f;
 }
 
+bool ChunkSampler::slope(Vector3 p, int kind, Vector3& downhill, float& grade) {
+    for (int si = 0; si < (int)sites.size(); ++si) {
+        const Site& s = *sites[si];
+        float fx, fy, fz;
+        s.frame(p, fx, fy, fz);
+        const int ci = (int)floorf(fx), cj = (int)floorf(fy), ck = (int)floorf(fz);
+        if (!brickAt(si, ci, cj, ck)) continue;
+        const float own = surface(si, ci, cj, ck, kind);
+        if (own <= kNone * 0.5f) return false;
+        // Surfaces in cells (heights and spacing alike, so the ratio is the grade), across ~1 m (k cells each side; a dry or
+        // missing side: one-sided, then the next cell in). One fill unit of quantisation over one cell read as a 0.4% grade -
+        // Manning on 2 m of pool made that 3 m/s, so pools swirled red in the debug view (#695); over 2k cells and less a
+        // dead zone of 1.5 units, a level pool stands still and a real channel grade (~0.3% and up) stays.
+        const int k = std::max(1, (int)lroundf(1.0f / CellSize()));
+        auto diff = [&](int di, int dj) {
+            for (int r = k; r >= 1; r = r > 1 ? std::max(1, r / 2) : 0) {
+                const float a = surface(si, ci + di * r, cj + dj * r, ck, kind), b = surface(si, ci - di * r, cj - dj * r, ck, kind);
+                const bool ha = a > kNone * 0.5f, hb = b > kNone * 0.5f;
+                if (ha && hb) return (a - b) / (2.0f * r);
+                if (ha) return (a - own) / r;
+                if (hb) return (own - b) / r;
+            }
+            return 0.0f;
+        };
+        const float gx = diff(1, 0), gy = diff(0, 1);
+        const float raw = sqrtf(gx * gx + gy * gy), noise = 1.5f / (255.0f * 2.0f * k);
+        grade = std::max(0.0f, raw - noise);
+        if (grade < 1e-5f) { downhill = { 0, 0, 0 }; grade = 0.0f; return true; }
+        downhill = Vector3Scale(Vector3Add(Vector3Scale(s.e, -gx), Vector3Scale(s.n, -gy)), 1.0f / raw);
+        return true;
+    }
+    return false;
+}
+
+} // namespace WaterField
+
+namespace WaterField {
+bool ChunkSampler::simFlow(Vector3 p, Vector3& dir, float& speed) const {
+    for (int si = 0; si < (int)sites.size(); ++si) {
+        const Site& s = *sites[si];
+        float fx, fy, fz;
+        s.frame(p, fx, fy, fz);
+        const int ci = (int)floorf(fx), cj = (int)floorf(fy), ck = (int)floorf(fz);
+        float best = -1.0f, bx = 0.0f, by = 0.0f;
+        for (int dk = 0; dk >= -1; --dk) {
+            const Brick* b = brickPtr(si, ci >> 4, cj >> 4, (ck + dk) >> 4);
+            if (!b || b->flow.empty()) continue;
+            const int i = (ci & 15) + 16 * (cj & 15); // per column (#677)
+            const float vx = b->flow[2 * i] * 0.01f, vy = b->flow[2 * i + 1] * 0.01f, v = sqrtf(vx * vx + vy * vy);
+            if (v > best) { best = v; bx = vx; by = vy; }
+        }
+        if (best < 0.0f) continue;
+        speed = best;
+        const Vector3 d = Vector3Add(Vector3Scale(s.e, bx), Vector3Scale(s.n, by));
+        const float dl = Vector3Length(d);
+        dir = dl > 1e-6f ? Vector3Scale(d, 1.0f / dl) : Vector3{ 0, 0, 0 };
+        return true;
+    }
+    return false;
+}
 } // namespace WaterField

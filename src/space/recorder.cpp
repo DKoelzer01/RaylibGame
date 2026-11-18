@@ -331,7 +331,31 @@ void Recorder_Start() {
     if (cli) Begin(Resolve(dir));
 }
 
+namespace {
+    // F2 (#579): one screenshot, HUD included, into <root>/<YYYY-MM-DD>/shot-<HHMMSS>/ beside the recordings
+    // (screenshot.png, and sheet.png for the media tools, which show a capture folder by its sheet), written on its own
+    // thread so the frame doesn't wait for the share.
+    std::atomic<bool> shotWanted{ false };
+    bool RecordingFrame(bool hud) { return active && !waiting && hud == hudFrames && rendered % every == 0; }
+    void TakeShot() {
+        Image img = LoadImageFromScreen();
+        ImageFormat(&img, PIXELFORMAT_UNCOMPRESSED_R8G8B8A8);
+        const std::string d = Resolve("shot-" + Today("%H%M%S"));
+        std::thread([img, d]() {
+            std::error_code ec;
+            std::filesystem::create_directories(d, ec);
+            const bool ok = ExportImage(img, (d + "/screenshot.png").c_str()) && ExportImage(img, (d + "/sheet.png").c_str());
+            UnloadImage(img);
+            printf("screenshot: %s %s\n", d.c_str(), ok ? "saved" : "FAILED");
+            Prune(d);
+        }).detach();
+    }
+}
+
+void Recorder_Screenshot() { shotWanted = true; }
+
 void Recorder_Update(bool worldReady) {
+    if (IsKeyPressed(KEY_F2)) shotWanted = true; // a screenshot into the captures store (#579)
     if (IsKeyPressed(KEY_F10) && !cli) { // normal play: start / stop a recording for a bug report
         if (active) End(true);
         else {
@@ -347,11 +371,12 @@ void Recorder_Update(bool worldReady) {
 }
 
 bool Recorder_WantsFrame(bool hud) {
-    if (!active || waiting || hud != hudFrames) return false;
-    return rendered % every == 0;
+    if (hud && shotWanted) return true; // F2
+    return RecordingFrame(hud);
 }
 
 void Recorder_Capture() {
+    if (shotWanted.exchange(false)) { TakeShot(); if (!RecordingFrame(true)) return; } // F2 (#579); a recording may want this frame too
     // Called where WantsFrame said yes; counts rendered frames on the HUD pass (every frame reaches it).
     // Only the readback here; the writer thread does the rest (#537). F10 skips the frame when the writer is behind.
     if (!cli) { std::lock_guard<std::mutex> lk(m); if (queue.size() >= 8) { ++dropped; return; } }

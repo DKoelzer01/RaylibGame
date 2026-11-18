@@ -12,6 +12,9 @@
 #include <functional>
 #include <unordered_map>
 #include <vector>
+#include <atomic>
+#include <memory>
+#include <mutex>
 #include <raylib.h>
 
 class PlanetErosion;
@@ -53,6 +56,7 @@ public:
         float halfWidth = 0.0f, depth = 0.0f;
         Vector3 down{};              // unit tangent (body-local) pointing downstream (#361)
         float slope = 0.0f;          // the reach's fall per metre (its link, ~200 m: flow speed for the bed, #595)
+        int piece = -1;              // the link it lies on (river flow state, #656)
     };
     Hit nearest(Vector3 dir, float reach) const;
     // Lakes: a whole filled basin of the flood (every cell of it, not only the deep ones) whose level
@@ -94,6 +98,28 @@ public:
     static constexpr float kMaxReach = 300.0f; // valley carving reaches at most this far from a centreline
     float reach() const { return reachM; }    // this network's reach (Params::maxReach)
 
+    // River flow (#656, user: 'if a player fully dams up a river and diverts it elsewhere ... I want this to be possible'):
+    // each link carries a share of its natural discharge (1: as generated). Less flow lowers and narrows its water (level
+    // - depth x (1 - f^0.4), width x sqrt(f)); none leaves a dry bed (the channel stays: the terrain carve is unchanged).
+    // A released reach's measured outflow sets the link at its downstream edge (setReachFlow); stepFlow carries changes
+    // down the network at ~5 m/s, mixing at confluences by discharge; lakes keep their level (their whole basin feeds them).
+    // Bake-native networks only. Lock-free for readers (nearest() reads a relaxed atomic per piece).
+    float flowOf(int piece) const;
+    void setReachFlow(int piece, float share) const; // share of the natural discharge leaving a released reach here
+    void clearReachFlow(int piece) const;
+    // The first link below `piece` (downstream) that starts more than `dist` m from `centre` (body-local m): a released
+    // reach drives the flow from there, so the links under the reach keep their natural water (its sink classifies on them).
+    int pieceBeyond(int piece, Vector3 centre, float dist) const;
+    // While one lives on this thread, nearest() reports the natural river (ground materials: a dried bed keeps its stones).
+    struct NaturalScope { NaturalScope(); ~NaturalScope(); bool prev; };
+    // Advances the flow by dt seconds; appends the pieces whose water changed visibly since they were last reported.
+    bool stepFlow(float dt, std::vector<int>& changed) const;
+    struct PieceBounds { Vector3 mid; float radius; };
+    PieceBounds pieceBounds(int piece) const;    // body-local centre and a radius covering its water (refreshes)
+    // Save / load: the pieces off their natural flow and the reach overrides.
+    void flowState(std::vector<std::pair<int, float>>& cur, std::vector<std::pair<int, float>>& set) const;
+    void setFlowState(const std::vector<std::pair<int, float>>& cur, const std::vector<std::pair<int, float>>& set) const;
+
 private:
     float R = 1.0f, cell = 420.0f, reachM = kMaxReach;
     int n = 1; // cells per face edge
@@ -118,6 +144,13 @@ private:
     const PlanetErosion* bake = nullptr;
     std::unordered_map<int, int> fineLake;  // bake cell -> lake id
     std::vector<int> nodeCell, nodeParent, nodePiece; // per node: its bake cell, the node it drains to (-1: the sea), its piece
+    // River flow (#656): per node its discharge (as an area at the default runoff), the order sources first, and the state.
+    std::vector<float> nodeQ, nodeChildQ; // discharge (as a drainage area), and its tributaries' together
+    std::vector<int> nodeTopo;
+    std::unique_ptr<std::atomic<float>[]> flowCur; // per piece (nodes and pieces share the index)
+    mutable std::vector<float> flowSet, flowSent;       // override (< 0: none), the value last reported as changed
+    mutable std::atomic<bool> flowAny{ false };         // some piece is off its natural flow (readers skip the lookup otherwise)
+    mutable std::mutex flowMx;                     // writers (stepFlow, setReachFlow, setFlowState)
     bool fineLakeAt(Vector3 dir, float& level, float& outside, int& id) const;
 };
 

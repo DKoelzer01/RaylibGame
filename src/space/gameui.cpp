@@ -4,6 +4,8 @@
 #include "player.h"
 #include "audio.h"
 #include "terraintool.h"
+#include "animals.h"
+#include "weather.h"
 #include "survival.h"
 #include "suit.h"
 #include "toolwear.h"
@@ -25,6 +27,8 @@
 #include "plots.h"
 #include "worldtypes.h"
 #include "helpmanual.h"
+#include "combat.h"
+#include "playersession.h"
 #include <raymath.h>
 
 namespace {
@@ -99,12 +103,9 @@ static void DrawItemIcon(ImDrawList* dl, ImVec2 p, float size, const std::string
     }
 }
 
-// Whether a container takes an item from the inventory (a chest: raw materials, not tools or machines).
-static bool ContainerTakes(const std::string& id) {
-    if (!Factory::Accepts(container.type, id)) return false;
-    if (container.type == PartType::Chest && (KindOf(id) == ItemKind::Tool || id == "telescope" || IsMachineItem(id))) return false;
-    return true;
-}
+// Whether a container takes an item from the inventory: a chest takes every item (#568: tools and machines too; tool
+// wear is kept per item kind, not per stack, so nothing is lost), a machine what it burns or processes.
+static bool ContainerTakes(const std::string& id) { return Factory::Accepts(container.type, id); }
 static std::string forceTab; // the tab to select when the window next draws
 static Scene* uiWorld = nullptr; // the world the window was last drawn for (nearby chests)
 void GameUI_ShowTab(const char* tab) { inventoryOpen = true; forceTab = tab; }
@@ -153,6 +154,26 @@ static void ReturnCursorStack() {
     inventory.addAmount(cursorStack.id, cursorStack.amount());
     --inventory.muted;
     cursorStack = InvSlot{};
+}
+// Getting rid of things when the grid is full (#564). The bin deletes the held stack; the last one binned can be taken
+// back out until another goes in or the window closes. A click outside the window drops the held stack (right-click:
+// one) on the ground at the feet as a pile, picked up again by walking back to it after leaving (Combat_Drop).
+static InvSlot binned;
+static void BinClick() {
+    if (!cursorStack.empty()) {
+        binned = cursorStack; cursorStack = InvSlot{};
+        const ItemDef* d = itemDB.find(binned.id);
+        GameUI_Toast(TextFormat("Deleted %s (click the bin to take it back)", d ? d->name.c_str() : binned.id.c_str()));
+    } else if (!binned.empty()) { cursorStack = binned; binned = InvSlot{}; }
+}
+static void DropCursor(int64_t centi) {
+    if (cursorStack.empty()) return;
+    InvSlot s = cursorStack;
+    s.centi = std::min(centi, cursorStack.centi);
+    if (!Combat_Drop(LocalSession(), s)) return;
+    cursorStack.centi -= s.centi;
+    if (cursorStack.centi <= 0) cursorStack = InvSlot{};
+    Audio_Play(Sfx::Pickup, 0.4f, 0.6f);
 }
 // Puts up to `centi` of the cursor stack into a cell (empty, or the same item up to its stack limit).
 static void DropInto(InvSlot& cell, int64_t centi) {
@@ -220,6 +241,33 @@ bool GameUI_TestContainerCursor(Scene& world, uint64_t body, uint32_t plot, int 
     SlotClick(0, 0, true, false, inSlot(v)); settle(); v = chest(); check(cursorStack.centi == 900 && inSlot(v) == 11, "right-click with a stack held puts one down");
     SlotClick(0, 0, false, true, inSlot(v)); settle(); v = chest(); check(inSlot(v) == 0 && inventory.count("stone") == 11, "Shift+click moves the slot to the inventory");
     CellClick(1, false, false);                    check(cursorStack.empty() && inventory.count("stone") == 20, "the held rest goes into the grid: nothing lost");
+    // #566: a chest slot holds what an inventory cell does (500 stone in one slot, not stacks of 64).
+    inventory.clear();
+    ++inventory.muted; inventory.add("stone", 500); --inventory.muted; // one cell of 500
+    { int c = -1; for (int k = 0; k < Inventory::kSlots; ++k) if (inventory.grid()[k].id == "stone") { c = k; break; }
+      if (c >= 0) CellClick(c, false, false); }
+    SlotClick(0, 0, false, false, 0); settle(); v = chest();
+    check(inSlot(v) == 500 && cursorStack.empty(), "a chest slot takes 500 stone (#566)");
+    // #568: tools and machines go in too.
+    ++inventory.muted; inventory.add("stone_pickaxe", 1); inventory.add("chest", 2); --inventory.muted;
+    for (const char* id : { "stone_pickaxe", "chest" }) {
+        int c = -1; for (int k = 0; k < Inventory::kSlots; ++k) if (inventory.grid()[k].id == id) { c = k; break; }
+        if (c >= 0) CellClick(c, false, false);
+        SlotClick(id[0] == 's' ? 1 : 2, 0, false, false, 0); settle();
+        check(cursorStack.empty() && inventory.count(id) == 0, TextFormat("the chest takes %s (#568)", id));
+    }
+    v = chest();
+    check(v.inSlots.size() > 2 && v.inSlots[1].first == "stone_pickaxe" && v.inSlots[2].first == "chest" && v.inSlots[2].second == 2, "...and holds them");
+    // #567: the look-at panel lists totals per item, wrapped and capped.
+    Factory::Insert(body, plot, part, "stone", 300); settle(); v = chest(); // 800 stone: still one slot
+    check(v.input.find("stone x800") != std::string::npos && v.input.find("stone x", v.input.find("stone x800") + 1) == std::string::npos, TextFormat("totals per item (#567): '%s'", v.input.c_str()));
+    std::string many;
+    for (int k = 0; k < 40; ++k) many += TextFormat("%sitem_number_%d x%d", k ? ", " : "", k, 64 * k);
+    const std::vector<std::string> lines = WrapItemList("holds: ", many, 404, 16, 4);
+    bool fits = lines.size() == 4 && lines.back().find("more") != std::string::npos;
+    for (const std::string& l : lines) fits = fits && MeasureText(l.c_str(), 16) <= 404;
+    check(fits, TextFormat("a 40-item list wraps into 4 lines inside the panel, the last saying what's left out (%d lines)", (int)lines.size()));
+    Factory::Extract(body, plot, part); settle();
     GameUI_CloseContainer();
     printf("bench: container cursor (#192): %s\n", ok ? "PASS" : "FAIL");
     return ok;
@@ -242,6 +290,26 @@ bool GameUI_TestCursorStack() {
     CellClick(1, false, false); check(amt(1, "stone") == 5 && cursorStack.empty(), "...and puts the swapped stack down");
     CellClick(6, false, true);  check(g[6].empty() && amt(Inventory::kGrid, "oak_log") == 3, "Shift-click moves to the hotbar");
     CellClick(5, false, false); ReturnCursorStack(); check(cursorStack.empty() && inventory.count("stone") == 10, "a held stack goes back in when the window closes");
+    // #564: the bin deletes the held stack and gives the last one back; a drop leaves a pile at the feet that is picked
+    // up only after walking away and coming back.
+    auto stoneCell = [&]() { for (int k = 0; k < Inventory::kGrid; ++k) if (g[k].id == "stone") return k; return -1; };
+    CellClick(stoneCell(), false, false); BinClick(); check(cursorStack.empty() && inventory.count("stone") == 0 && binned.id == "stone", "the bin deletes the held stack");
+    BinClick(); check(cursorStack.id == "stone" && cursorStack.centi == 1000 && binned.empty(), "...and gives it back on a second click");
+    PlayerSession& s = LocalSession();
+    const int piles0 = Combat_DroppedPiles();
+    DropCursor(100); DropCursor(cursorStack.centi);
+    check(cursorStack.empty() && inventory.count("stone") == 0 && Combat_DroppedPiles() == piles0 + 1, "a drop (one, then the rest) makes one pile");
+    if (s.player.nearest) {
+        const DVec3 here = s.player.position;
+        const PlayerInput none{};
+        Combat_Step(s, 1.0f / 60.0f, none); check(inventory.count("stone") == 0, "standing on it, it stays on the ground");
+        const DVec3 local = s.player.nearest->toLocalD(here);
+        const Vector3 side = Vector3Normalize(Vector3Perpendicular(Vector3Normalize(local.toFloat())));
+        s.player.position = s.player.nearest->toWorldD(local + Vector3Scale(side, 6.0f)); // 6 m along the ground
+        Combat_Step(s, 1.0f / 60.0f, none); check(inventory.count("stone") == 0, "walking away leaves it");
+        s.player.position = here;
+        Combat_Step(s, 1.0f / 60.0f, none); check(inventory.count("stone") == 10 && Combat_DroppedPiles() == piles0, "coming back picks it all up");
+    } else check(false, "the player is on a body");
     printf("bench: inventory cursor (#192): %s\n", ok ? "PASS" : "FAIL");
     return ok;
 }
@@ -254,7 +322,7 @@ static void DrawGrid() {
     const float cell = 54.0f, gap = 4.0f;
     ImDrawList* dl = ImGui::GetWindowDrawList();
     for (int i = 0; i < Inventory::kCells; ++i) {
-        // The 9 x 5 grid, then the hotbar's 10 cells in a row under it (#209: real slots; drop stacks into them), then
+        // The 10 x 5 grid, then the hotbar's 10 cells in a row under it (#209: real slots; drop stacks into them), then
         // the off-hand cell (#165).
         const bool hotbar = i >= Inventory::kGrid && i < Inventory::kSlots;
         if (i == Inventory::kGrid) { ImGui::Dummy(ImVec2(0.0f, 2.0f)); ImGui::TextDisabled("Hotbar (keys 1-0)"); }
@@ -279,6 +347,7 @@ static void DrawGrid() {
             } else CellClick(i, false, shift && !GameUI_ContainerOpen());
         }
         if (ImGui::IsItemClicked(ImGuiMouseButton_Right)) CellClick(i, true, false);
+        if (ImGui::IsItemClicked(ImGuiMouseButton_Middle)) { ReturnCursorStack(); inventory.sort(); } // as the Sort button (#577)
         const bool hover = ImGui::IsItemHovered();
         const InvSlot& s = grid[i];
         const ImVec2 q(p.x + cw, p.y + cell);
@@ -306,7 +375,20 @@ static void DrawGrid() {
         dl->AddRect(p, q, edge, 4.0f, 0, 1.0f);
         ImGui::PopID();
     }
-    if (ImGui::Button("Sort")) { ReturnCursorStack(); inventory.sort(); }
+    { // the bin, beside the off-hand cell (#564)
+        ImGui::SameLine(0.0f, cell);
+        const ImVec2 p = ImGui::GetCursorScreenPos(), q(p.x + cell, p.y + cell);
+        if (ImGui::InvisibleButton("bin", ImVec2(cell, cell))) BinClick();
+        const bool hover = ImGui::IsItemHovered();
+        dl->AddRectFilled(p, q, IM_COL32(48, 26, 26, 220), 4.0f);
+        if (!binned.empty()) DrawItemIcon(dl, ImVec2(p.x + cell * 0.18f, p.y + cell * 0.1f), cell * 0.64f, binned.id, true);
+        const ImVec2 sz = ImGui::CalcTextSize("Bin");
+        dl->AddText(ImVec2(p.x + (cell - sz.x) * 0.5f, q.y - sz.y - 2.0f), IM_COL32(220, 160, 150, 255), "Bin");
+        dl->AddRect(p, q, hover ? IM_COL32(230, 150, 140, 255) : IM_COL32(110, 60, 60, 255), 4.0f, 0, 1.0f);
+        if (hover) ImGui::SetTooltip(!cursorStack.empty() ? "Click: delete the held stack" : !binned.empty() ? "Click: take the deleted stack back" :
+                                     "The bin: put a stack here to delete it\n(or click outside the window to drop it on the ground)");
+    }
+    if (ImGui::Button("Sort (middle-click)")) { ReturnCursorStack(); inventory.sort(); }
     ImGui::SameLine();
     // Deposit (button or Q): items a nearby chest already holds go into it.
     const int nChests = uiWorld ? (int)Storage_NearbyChests(*uiWorld).size() : 0;
@@ -318,7 +400,7 @@ static void DrawGrid() {
     }
     ImGui::EndDisabled();
     ImGui::SameLine();
-    ImGui::TextDisabled(!cursorStack.empty() ? "Click: put it down  right-click: one"  : nChests > 0 ? TextFormat("%d chest%s within reach", nChests, nChests > 1 ? "s" : "") : "Tools 1, blocks 256, resources 8192");
+    ImGui::TextDisabled(!cursorStack.empty() ? "Click: put it down  right-click: one  outside the window: drop it" : nChests > 0 ? TextFormat("%d chest%s within reach", nChests, nChests > 1 ? "s" : "") : "Tools 1, blocks 256, resources 8192");
     if (!cursorStack.empty()) { // the held stack follows the mouse, over everything (#192)
         ImDrawList* fg = ImGui::GetForegroundDrawList();
         const ImVec2 m = ImGui::GetMousePos();
@@ -488,7 +570,7 @@ static void DrawContainer() {
     else if (v.energy > 0 && container.type != PartType::Chest) ImGui::Text("Fuel / charge: %d", v.energy);
     const bool chest = container.type == PartType::Chest;
     ImGui::TextUnformatted(chest ? "Storage" : "Input");
-    DrawSlots(v.inSlots, 0, chest ? 8 : 4);
+    DrawSlots(v.inSlots, 0, chest ? Inventory::kCols : 4); // a chest lines up with the player's grid (#495)
     if (v.hasFuelSlot) { // #194: fuel has its own slot (a recipe input that is also fuel is never burnt)
         ImGui::TextUnformatted("Fuel");
         DrawSlots({ v.fuelSlot }, 2, 1);
@@ -506,7 +588,7 @@ static void DrawContainer() {
         const auto all = inventory.all(); // copy: we remove while walking it
         int kinds = 0;
         for (const auto& kv : all) {
-            if (kv.second <= 0 || !ContainerTakes(kv.first)) continue;
+            if (kv.second <= 0 || !ContainerTakes(kv.first) || KindOf(kv.first) == ItemKind::Tool) continue; // tools stay with the player (one in the off hand too)
             bool bound = false;
             for (int s = 0; s < 10; ++s) bound = bound || Hotbar_Slot(s) == kv.first;
             if (chest && bound) continue; // keep what's on the hotbar
@@ -543,6 +625,33 @@ static void DrawCreative() {
     ImGui::InputTextWithHint("##filter", "search items", filter, sizeof(filter));
     ImGui::SameLine();
     if (ImGui::Button("Clear inventory")) inventory.clear();
+    {   // Creatures at the crosshair (#529): any species, on the ground the view's centre is on (within 200 m).
+        static int kind = 0, count = 1;
+        static const auto list = Animals_SpeciesList();
+        if (!list.empty()) {
+            kind = std::clamp(kind, 0, (int)list.size() - 1);
+            ImGui::SetNextItemWidth(180.0f);
+            if (ImGui::BeginCombo("##creature", list[kind].second.c_str())) {
+                for (int i = 0; i < (int)list.size(); ++i)
+                    if (ImGui::Selectable(list[i].second.c_str(), i == kind)) kind = i;
+                ImGui::EndCombo();
+            }
+            ImGui::SameLine();
+            ImGui::SetNextItemWidth(90.0f);
+            ImGui::InputInt("##count", &count);
+            count = std::clamp(count, 1, 20);
+            ImGui::SameLine();
+            if (ImGui::Button("Spawn at crosshair") && uiWorld) {
+                Scene& w = *uiWorld;
+                const Vector3 dir = Vector3Normalize(Vector3Subtract(w.camera.target, w.camera.position));
+                TerrainHit th;
+                if (RaycastTerrain(w, Ray{ w.camera.position, dir }, 200.0f, th) && th.planetoid) {
+                    const int n = Animals_Spawn(w, *th.planetoid, list[kind].first, th.local, count, false, count > 1 ? 3.0f : 0.0f);
+                    GameUI_Toast(TextFormat("Spawned %d %s", n, list[kind].second.c_str()));
+                } else GameUI_Toast("Nothing under the crosshair within 200 m");
+            }
+        }
+    }
     ImGui::Separator();
     std::string f = filter;
     for (char& c : f) c = (char)tolower(c);
@@ -578,7 +687,7 @@ static void DrawCreative() {
 void GameUI_Draw(Scene& world) {
     uiWorld = &world;
     RecipeBook_Update(); // new recipes: a toast
-    if (!inventoryOpen) { ReturnCursorStack(); container.open = false; return; } // a stack still held goes back in (#192)
+    if (!inventoryOpen) { ReturnCursorStack(); binned = InvSlot{}; container.open = false; return; } // a stack still held goes back in (#192)
     CheckContainer(world);
     const ImGuiIO& io = ImGui::GetIO();
     ImGui::SetNextWindowPos(ImVec2(io.DisplaySize.x * 0.5f, io.DisplaySize.y * 0.5f), ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
@@ -639,6 +748,11 @@ void GameUI_Draw(Scene& world) {
         ImGui::Columns(1);
     }
     ImGui::End();
+    // A click outside every window drops the held stack (right-click: one unit) at the feet (#564).
+    if (!cursorStack.empty() && !ImGui::IsWindowHovered(ImGuiHoveredFlags_AnyWindow)) {
+        if (ImGui::IsMouseClicked(ImGuiMouseButton_Left)) DropCursor(cursorStack.centi);
+        else if (ImGui::IsMouseClicked(ImGuiMouseButton_Right)) DropCursor(100);
+    }
 }
 
 // Pickup feed (#208): "+N item" lines in the bottom right, newest at the bottom, each fading out ~3 s after its last
@@ -736,8 +850,30 @@ void GameUI_DrawHUD(Scene& world) {
         DrawRectangle(w - 220, 70, (int)(200 * player.jetpackFuel), 12, SKYBLUE);
         DrawText("JET", w - 260, 68, 16, RAYWHITE);
     }
-    const char* mode = player.flyMode ? "FLY (F)" : player.grounded ? "WALK" : player.hovering ? "HOVER (H)" : player.gravity >= 0.5f ? "AIR" : "SPACE";
-    DrawText(TextFormat("%s   g %.1f   %.1f m/s", mode, player.gravity, relSpeed(player.velocity, player.grounded)), w - 220, 90, 16, RAYWHITE);
-    DrawText(TextFormat("dampeners %s (B)", player.dampeners ? "on" : "off"), w - 220, 110, 16, player.dampeners ? RAYWHITE : ORANGE);
+    // Under the minimap (#574): where you are (latitude, longitude and height over the body whose sphere of influence you
+    // are in; world kilometres out in space), then speed and gravity, then the biome and the weather.
+    {
+        int ly = 384; // the minimap and its scale line end at ~372
+        auto line = [&](const char* t, Color c) { DrawText(t, w - 20 - MeasureText(t, 16), ly, 16, c); ly += 20; }; // right-aligned with the minimap
+        bool rotate = false;
+        Planetoid* ref = player.nearest ? player.nearest : player.flyReference(world, rotate);
+        const DVec3 local = ref ? ref->toLocalD(player.position) : DVec3{};
+        const double r = sqrt(local.x * local.x + local.y * local.y + local.z * local.z);
+        if (ref && r < 2.0 * ref->radius) {
+            const double lat = asin(std::clamp(local.y / std::max(r, 1e-9), -1.0, 1.0)) * RAD2DEG, lon = atan2(local.z, local.x) * RAD2DEG;
+            line(TextFormat("%s  %.3f %c  %.3f %c  %.0f m", ref->name.c_str(), fabs(lat), lat >= 0.0 ? 'N' : 'S', fabs(lon), lon >= 0.0 ? 'E' : 'W',
+                                (r - ref->radius) * ref->scale), RAYWHITE);
+        } else {
+            const DVec3 p = player.position;
+            line(TextFormat("%.1f  %.1f  %.1f km", p.x / 1000.0, p.y / 1000.0, p.z / 1000.0), RAYWHITE);
+        }
+        const char* mode = player.flyMode ? "FLY (F)" : player.grounded ? "WALK" : player.hovering ? "HOVER (H)" : player.gravity >= 0.5f ? "AIR" : "SPACE";
+        line(TextFormat("%s   g %.1f   %.1f m/s", mode, player.gravity, relSpeed(player.velocity, player.grounded)), RAYWHITE);
+        const char* biome = Survival_BiomeName();
+        const bool weather = Weather_Here().kind != WeatherKind::Clear && biome[0];
+        if (biome[0]) { line(weather ? TextFormat("%s   %s", biome, Weather_Name(Weather_Here().kind)) : biome, Fade(RAYWHITE, 0.8f)); }
+        if (player.jetpackAccel > 0.0f) // only with a jetpack: nothing else uses them (#531)
+            line(TextFormat("dampeners %s (B)", player.dampeners ? "on" : "off"), player.dampeners ? RAYWHITE : ORANGE);
+    }
     if (GetTime() < toastUntil) DrawText(toast.c_str(), 10, GetScreenHeight() - 90, 20, YELLOW);
 }
