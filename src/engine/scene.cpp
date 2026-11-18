@@ -653,7 +653,18 @@ void Scene::drawScene(int gamestate) {
     // passes below collapse into one (no depth clears, no near/far plane juggling).
     const bool revZ = SceneTarget_Available() && SceneTarget_Begin(clearColor); // false (e.g. a failed resize): old passes
     BeginMode3D(camera);
-    if (revZ) SceneTarget_ApplyProjection();
+    if (revZ) {
+        SceneTarget_ApplyProjection();
+        // Contact shadows (#137): the sun in view space; strength by day (fading in as the sun clears the horizon), less
+        // under cloud (the sun is dimmer), none by moonlight.
+        const Matrix view = rlGetMatrixModelview();
+        const Vector3 sunN = Vector3Normalize(sunDirection);
+        const Vector3 sunView = Vector3Subtract(Vector3Transform(sunN, view), Vector3Transform({ 0, 0, 0 }, view));
+        const float elev = Vector3DotProduct(atmUp, sunN);
+        const float te = std::clamp((elev - 0.02f) / 0.14f, 0.0f, 1.0f);
+        const float strength = moonLight <= 0.0f ? 0.4f * te * te * (3.0f - 2.0f * te) * (1.0f - 0.8f * std::clamp(weatherCloud, 0.0f, 1.0f)) : 0.0f;
+        SceneTarget_SetContact(sunView, strength);
+    }
         rlDisableBackfaceCulling();
         rlDisableDepthMask();
         if (drawSkybox) DrawModel(skybox, (Vector3){0, 0, 0}, 1.0f, WHITE); // skybox.vs strips translation and scales the cube
