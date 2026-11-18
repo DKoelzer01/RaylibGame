@@ -76,6 +76,7 @@ extern "C" __declspec(dllimport) int __stdcall MessageBoxA(void*, const char*, c
 #include "recipebook.h"
 #include "station.h"
 #include "weather.h"
+#include "wind.h"
 #include "storage.h"
 #include "tools.h"
 #include "rivers.h"
@@ -426,6 +427,7 @@ int main(int argc, char** argv)
     bool benchShadow = false; int shadowPhase = 0; double shadowT0 = 0.0; Vector3 shadowEye{}, shadowAt{}; // --shot-shadow
     bool benchFarForest = false; int farForestPhase = 0; double farForestT0 = 0.0; Vector3 farForestEye{}, farForestAt{}; // --shot-far-forest
     bool benchTerrain = false; int terrainPhase = 0; double terrainT0 = 0.0; Vector3 terrainAt{}, terrainOut{}; // --shot-terrain
+    bool benchWind = false; // --test-wind (#650)
     bool benchCampfire = false; int campfirePhase = 0; double campfireT0 = 0.0; uint32_t campfirePlot = 0; int campfirePart = -1; Vector3 campfireAt{}, campfireOut{}; // --shot-campfire (#552)
     bool benchCaveMouth = false; int mouthPhase = 0; double mouthT0 = 0.0; Vector3 mouthAt{}, mouthOut{}; // --shot-cave-mouth (#549)
     bool benchMountain = false; int mountainPhase = 0; double mountainT0 = 0.0; Vector3 mountainAt{}, mountainOut{}; // --shot-mountain (#545)
@@ -724,6 +726,7 @@ int main(int argc, char** argv)
         if (std::string(argv[i]) == "--test-pump-hand") { benchPump = true; benchPumpHand = true; }
         if (std::string(argv[i]) == "--test-pump-boiler") { benchPump = true; benchPumpBoiler = true; }
         if (std::string(argv[i]) == "--shot-terrain") benchTerrain = true;
+        if (std::string(argv[i]) == "--test-wind") benchWind = true;
         if (std::string(argv[i]) == "--shot-campfire") benchCampfire = true;
         if (std::string(argv[i]) == "--shot-cave-mouth") benchCaveMouth = true;
         if (std::string(argv[i]) == "--shot-mountain") benchMountain = true;
@@ -4962,6 +4965,53 @@ int main(int argc, char** argv)
                             benchShelter = false;
                         }
                     }
+                } else if (benchWind && WorldIdle()) {
+                    // --test-wind (#650): the field is deterministic, its gusts travel with the mean wind, bursts come more
+                    // often in storms, the day cycle runs calm dawn < afternoon, and the wind grows with height.
+                    benchWind = false;
+                    Planetoid* p = dynamic_cast<Planetoid*>(world.objects[0].get());
+                    const PlanetField* pf = p ? dynamic_cast<const PlanetField*>(p->field.get()) : nullptr;
+                    if (!pf || !Wind_Enabled()) printf("bench: wind: %s -> SKIP\n", pf ? "RAYLIBGAME_WIND=0" : "needs the planet");
+                    else {
+                        const Vector3 home = pf->findSpawnDir(p->seed);
+                        const Vector3 at = Vector3Scale(home, pf->radius + pf->elevation(home));
+                        const Vector3 t1 = Vector3Normalize(Vector3CrossProduct(home, { 0, 1, 0 })), t2 = Vector3CrossProduct(t1, home);
+                        const Vector3 mean = Vector3Scale(t1, 8.0f); // 8 m/s along t1
+                        Wind_SetFrame(p, at, mean, 0.0f, 1.0f, 0.0f);
+                        const Vector3 q = Vector3Add(at, Vector3Scale(t2, 37.0f));
+                        const Vector3 w0 = Wind_At(*p, q, 10.0f, false), w0b = Wind_At(*p, q, 10.0f, false);
+                        const bool same = Vector3Distance(w0, w0b) < 1e-6f;
+                        // Advection: after 3 s the pattern seen at q is found 24 m downwind.
+                        Wind_SetFrame(p, at, mean, 0.0f, 1.0f, 3.0f);
+                        const Vector3 w1 = Wind_At(*p, Vector3Add(q, Vector3Scale(t1, 24.0f)), 10.0f, false);
+                        const float drift = fabsf(Vector3Length(w1) - Vector3Length(w0));
+                        // Bursts: the share of a 400 m square in a burst, calm vs storm; speed range.
+                        auto burstShare = [&](float storm, float& lo, float& hi) {
+                            Wind_SetFrame(p, at, mean, storm, 1.0f, 0.0f);
+                            int n = 0, b = 0; lo = 1e9f; hi = 0.0f;
+                            for (float x = -200.0f; x <= 200.0f; x += 4.0f)
+                                for (float y = -200.0f; y <= 200.0f; y += 4.0f) {
+                                    const Vector3 s = Vector3Add(at, Vector3Add(Vector3Scale(t1, x), Vector3Scale(t2, y)));
+                                    ++n; b += Wind_Gust01(*p, s) > 0.5f;
+                                    const float v = Vector3Length(Wind_At(*p, s, 10.0f, false)); lo = std::min(lo, v); hi = std::max(hi, v);
+                                }
+                            return (float)b / (float)n;
+                        };
+                        float cLo, cHi, sLo, sHi;
+                        const float calmShare = burstShare(0.0f, cLo, cHi), stormShare = burstShare(1.0f, sLo, sHi);
+                        // The day: the sun rising in the east, mid-afternoon, at night (the spin axis is +y).
+                        const Vector3 up = home, east = Vector3Normalize(Vector3CrossProduct({ 0, 1, 0 }, up));
+                        auto sunAt = [&](float th) { return Vector3Add(Vector3Scale(east, cosf(th)), Vector3Scale(up, sinf(th))); };
+                        const float dawn = Wind_DailyFactor(up, sunAt(0.02f), { 0, 1, 0 }), afternoon = Wind_DailyFactor(up, sunAt(0.7f * PI), { 0, 1, 0 }), night = Wind_DailyFactor(up, sunAt(1.5f * PI), { 0, 1, 0 });
+                        Wind_SetFrame(p, at, mean, 0.0f, 1.0f, 0.0f);
+                        const float low = Vector3Length(Wind_At(*p, q, 1.0f, false)), high = Vector3Length(Wind_At(*p, q, 20.0f, false));
+                        const float terrain = Vector3Length(Wind_At(*p, q, 10.0f, true));
+                        const bool ok = same && drift < 0.15f && stormShare > calmShare && calmShare > 0.0f && calmShare < 0.2f &&
+                                        dawn < night && night < afternoon && high > low && cLo > 0.5f && cHi > 12.0f && terrain > 0.0f;
+                        printf("bench: wind: deterministic %d; gust 24 m downwind 3 s later differs %.3f m/s; bursts calm %.1f%% storm %.1f%% of the ground; "
+                               "speed calm %.1f..%.1f storm %.1f..%.1f m/s; day dawn %.2f afternoon %.2f night %.2f; at 1 m %.1f, 20 m %.1f m/s; with terrain %.1f -> %s\n",
+                               (int)same, drift, 100.0f * calmShare, 100.0f * stormShare, cLo, cHi, sLo, sHi, dawn, afternoon, night, low, high, terrain, ok ? "PASS" : "FAIL");
+                    }
                 } else if (benchCampfire && (campfirePhase > 0 || WorldIdle())) {
                     // --shot-campfire (#552): a lit campfire 2.5 m from the camera, at dusk (bench_campfire.png).
                     Planetoid* p = dynamic_cast<Planetoid*>(world.objects[0].get());
@@ -8182,7 +8232,7 @@ int main(int argc, char** argv)
                         }
                         benchWalkSeconds = 0.0;
                     }
-                } else if ((WorldIdle() && benchDigStrokes == 0 && !benchPaint && !benchSaveLoad && benchWalkSeconds <= 0.0 && benchMineStrokes == 0 && minePhase != 2 && benchFlySeconds <= 0.0 && !benchSuffocate && benchOrbitSeconds <= 0.0 && !benchRide && !benchPark && !benchGravity && !benchPrecision && !benchMantle && !benchAirJump && !benchMoon && !benchHole && !benchWall && !benchDoorway && !benchLedge && !benchTor && !benchMachines && !benchFall && !benchHover && !benchNetIds && !benchNet && !benchTwoPlayers && !benchFingerprint && !benchInterest && !benchTeleClose && !benchMenus && !benchWater && !benchFlyFollow && !benchHotbar && !benchInventory && !benchMap && !benchViewmodel && !benchQuests && !benchHunger && !benchFarm && !benchAnimals && !benchThreats && !benchAnimalPath && !benchDam && !benchFlowMeter && !benchPartWall && !benchPressure && benchShotTabs == 0 && !benchForest && !benchFlow && !benchPond && !benchBucket && !benchWaterSpeed && benchFluidLoad <= 0.0f && !benchFlowShade && !benchPump && !benchTerrain && !benchCampfire && !benchCaveMouth && !benchMountain && !benchShelter && !benchRoom && !benchFacing && !benchBite && !benchPlacement && !benchShotDig && !benchShadow && !benchParticles && !benchBiomes && !benchOil && !benchSpring && !benchShotAnimals && !benchShotMachines && benchShotBiomes < 0 && !benchFarForest && !benchRecipes && !benchWeather && !benchDecor && !benchMaterials && !benchDamage && !benchCrafting && !benchSuit && !benchTools && !benchRivers && !benchRing && !benchRocket && !benchStation && !benchBlueprint && !benchSmallBody && !benchTrees && !benchChop && benchPersist == 0 && benchBuild == 0 && benchFactory == 0 && !benchCombat && !benchHost && !benchShower && !benchProgression && (benchUnfocus <= 0.0f || unfocusPhase >= 6)) || GetTime() > 600.0) {
+                } else if ((WorldIdle() && benchDigStrokes == 0 && !benchPaint && !benchSaveLoad && benchWalkSeconds <= 0.0 && benchMineStrokes == 0 && minePhase != 2 && benchFlySeconds <= 0.0 && !benchSuffocate && benchOrbitSeconds <= 0.0 && !benchRide && !benchPark && !benchGravity && !benchPrecision && !benchMantle && !benchAirJump && !benchMoon && !benchHole && !benchWall && !benchDoorway && !benchLedge && !benchTor && !benchMachines && !benchFall && !benchHover && !benchNetIds && !benchNet && !benchTwoPlayers && !benchFingerprint && !benchInterest && !benchTeleClose && !benchMenus && !benchWater && !benchFlyFollow && !benchHotbar && !benchInventory && !benchMap && !benchViewmodel && !benchQuests && !benchHunger && !benchFarm && !benchAnimals && !benchThreats && !benchAnimalPath && !benchDam && !benchFlowMeter && !benchPartWall && !benchPressure && benchShotTabs == 0 && !benchForest && !benchFlow && !benchPond && !benchBucket && !benchWaterSpeed && benchFluidLoad <= 0.0f && !benchFlowShade && !benchPump && !benchTerrain && !benchWind && !benchCampfire && !benchCaveMouth && !benchMountain && !benchShelter && !benchRoom && !benchFacing && !benchBite && !benchPlacement && !benchShotDig && !benchShadow && !benchParticles && !benchBiomes && !benchOil && !benchSpring && !benchShotAnimals && !benchShotMachines && benchShotBiomes < 0 && !benchFarForest && !benchRecipes && !benchWeather && !benchDecor && !benchMaterials && !benchDamage && !benchCrafting && !benchSuit && !benchTools && !benchRivers && !benchRing && !benchRocket && !benchStation && !benchBlueprint && !benchSmallBody && !benchTrees && !benchChop && benchPersist == 0 && benchBuild == 0 && benchFactory == 0 && !benchCombat && !benchHost && !benchShower && !benchProgression && (benchUnfocus <= 0.0f || unfocusPhase >= 6)) || GetTime() > 600.0) {
                     benchStart = GetTime();
                     printf("bench: world ready after %.2f s (%d chunks, avg build %.2f ms of which sampling %.2f ms, %d worker threads)\n",
                         GetWorldStats().lastGenerationSeconds, GetWorldStats().chunks, GetWorldStats().avgBuildMs, GetWorldStats().avgSampleMs, GetWorldStats().workerThreads);
