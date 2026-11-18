@@ -1,6 +1,6 @@
 #!/bin/bash
 # Regression: the scripted --test-* gates and benchmarks, run one after another.
-#   tools/regression.sh [planet|eroded|space|all] (default: all; erosion is the default terrain since #362: "eroded" keeps its own gates)
+#   tools/regression.sh [planet|eroded|space|multiplayer|all] (default: all; erosion is the default terrain since #362: "eroded" keeps its own gates)
 # Environment:
 #   EXE=path      the game to run (default build/check/bin/game.exe)
 #   SNAPSHOT=1    copy the exe and resources/ to a temp folder first, so you can keep editing and
@@ -144,12 +144,26 @@ space() {
     run $A --bench 5 --test-ride
 }
 
+# Multiplayer (#347): a host and in-process clients over loopback. The network tests need a GNS build (EXE_GNS, default
+# build/gns/bin/game.exe; configure with -DENABLE_GNS=ON after tools/build_gns.sh), else they SKIP on the plain exe.
+multiplayer() {
+    local gexe="${EXE_GNS:-$here/build/gns/bin/game.exe}"; [ -x "$gexe" ] || gexe="$exe"
+    local sv; sv="$(mktemp -d)/mp.sav"
+    local keep="$exe"; exe="$gexe"
+    run --host "$sv" --seed 42 --bench 3 --port 27941 --test-host
+    run --host "$sv" --bench 3 --port 27941 --test-net-move
+    RAYLIBGAME_NET_LAG_MS=50 RAYLIBGAME_NET_JITTER_MS=10 RAYLIBGAME_NET_LOSS=2 RAYLIBGAME_NET_SEED=1 run --host "$sv" --bench 3 --port 27941 --test-mp-bots 6
+    exe="$keep"
+    run --seed 42 --bench 3 --test-time-follow
+}
+
 case "$set_name" in
+    multiplayer) multiplayer ;;
     planet) planet; eroded ;;
     eroded) eroded ;;
     space) space ;;
-    all) planet; eroded; space ;;
-    *) echo "usage: $0 [planet|eroded|space|all]"; exit 2 ;;
+    all) planet; eroded; space; multiplayer ;;
+    *) echo "usage: $0 [planet|eroded|space|multiplayer|all]"; exit 2 ;;
 esac
 pass=$(grep -c "PASS" "$log"); fail=$(grep -c "FAIL" "$log")
 echo "=== regression ($set_name): $pass PASS, $fail FAIL"
