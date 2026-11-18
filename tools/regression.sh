@@ -155,6 +155,7 @@ multiplayer() {
     RAYLIBGAME_NET_LAG_MS=50 RAYLIBGAME_NET_JITTER_MS=10 RAYLIBGAME_NET_LOSS=2 RAYLIBGAME_NET_SEED=1 run --host "$sv" --bench 3 --port 27941 --test-mp-bots 6
     exe="$keep"
     run --seed 42 --bench 3 --test-time-follow
+    run --test-net-interest
     # --join end to end: a host and two clients as separate processes (#341 core); only with a GNS build.
     if [ "$gexe" != "$exe" ]; then
         echo "=== tools/test_join.sh" | tee -a "$log"
