@@ -302,6 +302,27 @@ void DrawMachine(PartType type, const Frame& f, const Painter& p, bool working) 
         p.glow({ x0 + 0.125f, top + 0.17f * fl, z0 + 0.125f }, { 0.06f, 0.08f, 0.06f }, Color{ 255, 230, 140, 255 });
         break;
     }
+    case PartType::Campfire: { // #552: a firepit - a ring of stones round the ash bed, logs leaning in a teepee (flames: ambience.cpp)
+        const Color stone = { 150, 145, 138, 255 }, stoneDark = { 122, 117, 110, 255 }, bark = { 92, 64, 40, 255 }, charred = { 40, 32, 28, 255 };
+        const float bed = 0.125f;
+        for (int k = 0; k < 10; ++k) {
+            const float a = 2.0f * PI * k / 10.0f + 0.13f * (k % 3);
+            const float s = 0.13f + 0.03f * ((k * 7) % 3);                                        // a little irregular
+            p.cube({ 0.4f * cosf(a), bed + s * 0.35f, 0.4f * sinf(a) }, { s, s * 0.75f, s * 0.9f }, (k & 1) ? stone : stoneDark);
+        }
+        for (int k = 0; k < 5; ++k) { // tilted 32 degrees in, feet on a 0.24 m circle, tops meeting over the middle
+            const float a = 360.0f * k / 5.0f + 15.0f;
+            rlPushMatrix();
+            rlRotatef(a, 0, 1, 0);
+            rlTranslatef(0.24f, bed, 0.0f);
+            rlRotatef(32.0f, 0, 0, 1); // leans toward -x: the centre
+            p.cyl({ 0, 0, 0 }, 0.035f, 0.045f, 0.5f, k == 0 ? charred : bark);
+            p.cube({ 0, 0.02f, 0 }, { 0.1f, 0.06f, 0.1f }, charred);                              // the burnt foot
+            rlPopMatrix();
+        }
+        if (working) p.glow({ 0, bed + 0.04f, 0 }, { 0.22f, 0.06f, 0.22f }, Color{ 255, 120, 30, 255 }); // embers
+        break;
+    }
     case PartType::Chest:
         p.cube({ 0, top - 0.06f, 0 }, { f.w * 1.02f, 0.06f, f.d * 1.02f }, kDarkSteel);  // a banded lid
         rlPushMatrix(); rlRotatef(f.yawDeg, 0, 1, 0);
