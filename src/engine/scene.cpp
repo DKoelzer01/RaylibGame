@@ -669,6 +669,7 @@ void Scene::drawScene(int gamestate) {
         const float te = std::clamp((elev - 0.02f) / 0.14f, 0.0f, 1.0f);
         const float strength = moonLight <= 0.0f ? 0.4f * te * te * (3.0f - 2.0f * te) * (1.0f - 0.8f * std::clamp(weatherCloud, 0.0f, 1.0f)) : 0.0f;
         SceneTarget_SetContact(sunView, strength);
+        SceneTarget_SetHiZView(MatrixMultiply(view, rlGetMatrixProjection())); // #134: the view this frame's depth is drawn with
     }
         rlDisableBackfaceCulling();
         rlDisableDepthMask();

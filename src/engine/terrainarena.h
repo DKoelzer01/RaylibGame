@@ -48,6 +48,12 @@ struct ArenaCull {
     const Frustum* frustum = nullptr;
     Vector3 colPoint{}, colDir{};
     float colRadius = -1.0f;
+    // Hi-Z occlusion (#134, main pass only): last frame's min-depth pyramid with the view-projection and the body placement
+    // that frame drew with (chunks are tested where they stood then, so the planet's spin doesn't skew it). hizTex 0: off.
+    unsigned hizTex = 0;
+    int hizW = 0, hizH = 0, hizLevels = 0;
+    Matrix hizViewProj{};
+    ArenaBody hizBody{};
 };
 
 bool TerrainArena_Available();
