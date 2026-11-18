@@ -874,7 +874,12 @@ static int UpdateLod(Planetoid& p, Vector3 cameraRender) {
     // Chunk::kLodFadeSeconds, dissolving into its replacement (the pair split the pixels by one screen noise, lighting.fs), so the
     // switch is no longer a pop. Nodes leaving for other reasons (out of range) just go. RAYLIBGAME_LOD_FADE=0: off.
     static const bool lodFadeOn = !(getenv("RAYLIBGAME_LOD_FADE") && getenv("RAYLIBGAME_LOD_FADE")[0] == '0');
-    if (lodFadeOn && !p.drawList.empty()) {
+    // Not while the camera moves fast (lodSettings.fast, > 15 m/s): flying swaps ~20 nodes a frame, and keeping each for the
+    // fade cost ~0.5 ms of CPU a frame (quiet-window A/B) for pops nobody sees at that speed. Nodes dropped then lose any
+    // fade-out mark, so one coming back later isn't drawn half faded.
+    if (lodFadeOn && lodSettings.fast) {
+        for (Chunk* c : p.drawList) if (c->fadeOut) { c->fadeOut = false; c->fadeT0 = -1.0; }
+    } else if (lodFadeOn && !p.drawList.empty()) {
         const double now = GetTime();
         static FlatKeySet newSet, newWithin, oldSet, goneSet, goneWithin; // new list (+ ancestors), old list, replaced (+ ancestors)
         newSet.reset(draw.size()); newWithin.reset(draw.size());
