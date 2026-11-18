@@ -5916,11 +5916,12 @@ int main(int argc, char** argv)
                         world.camera.position = p->toWorld(pt(-4.0f, -9.0f, 9.0f)); world.camera.target = p->toWorld(pt(-4.0f, 0.0f, -2.0f));
                         world.camera.up = p->dirToWorld(home);
                         player.flyMode = true; player.position = world.renderOrigin + world.camera.position;
-                        if (dbPhase == 1 && t > 1.0 && WorldIdle()) {
+                        if (dbPhase == 1 && t > 1.0 && (dbPoured > 0.0f || WorldIdle())) { // idle to start; then on (#747: a slow CPU step kept the world busy)
                             // Fill the reservoir to 2 m: 160 m^3 at 5 m^3/s, 1 m^3 at a time moving over the floor (#691: a pour every
                             // frame - 60 m^3/s - piled mounds over the rim faster than water spreads, and they spilled onto the grass).
                             static int k = 0;
-                            static double nextPour = 0.0;
+                            static double nextPour = 0.0, fillPrint = 0.0;
+                            if (t - fillPrint >= 1.0) { fillPrint = t; printf("bench: dam-break t=%.0f s: filling, %.0f m^3 poured\n", t, dbPoured); }
                             if (t >= nextPour) {
                                 nextPour = t + 0.2;
                                 const float x = -19.0f + 2.0f * (float)(k % 10), y = (k / 10) % 2 ? 1.0f : -1.0f;
