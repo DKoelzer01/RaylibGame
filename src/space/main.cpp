@@ -10168,6 +10168,8 @@ int main(int argc, char** argv)
                     printf("bench: net sync: stuck in phase %d (dave %s, syncing %d, %d of %d entries) -> FAIL\n", phase, NetClient_StateName(dave.state), (int)dave.syncing, dave.syncEntriesDone, dave.syncEntriesWanted);
                     benchNetSync = false;
                 }
+            }
+        }
         // Tests (#334): RAYLIBGAME_HOST_HERD="species count" - a host places a herd 10 m north of where players spawn, once the
         // world is up (threats off), for tools/test_animals_net.sh.
         if (!hostSave.empty() && getenv("RAYLIBGAME_HOST_HERD") && gameState == 1 && !loading && WorldIdle()) {

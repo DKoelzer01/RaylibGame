@@ -640,6 +640,8 @@ int NetSync_ScatterStrokes(Scene& world, int strokes, uint32_t seed) {
     }
     ApplyTerrainEdits(*p, edits.data(), edits.size());
     return (int)edits.size();
+}
+
 void NetClient_HitAnimal(NetClient& c, uint64_t netId) {
     if (c.state != NetClient::State::Joined || !netId) return;
     SendMsg(c, MsgAnimalHit{ netId });
