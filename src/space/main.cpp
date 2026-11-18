@@ -514,6 +514,7 @@ int main(int argc, char** argv)
     uint16_t hostPort = kDefaultHostPort; // --port N
     bool benchHost = false;        // --test-host (#311): with --host, a loopback client joins
     bool benchTimeFollow = false;  // --test-time-follow (#339): the world clock follows a server time (slew, snap)
+    int benchPlayerCost = 0;       // --test-player-cost N (#768): N players stepped as a server steps them; cost per update
     bool benchNetMove = false;     // --test-net-move (#327): two clients, prediction and interpolation over loopback
     bool benchNetDig = false;      // --test-net-dig (#329): a client's digs and places, validated and replicated
     bool benchNetBuild = false;    // --test-net-build (#330): a client's parts placed and broken, validated and replicated
@@ -764,6 +765,7 @@ int main(int argc, char** argv)
         if (std::string(argv[i]) == "--max-players" && i + 1 < argc) Host_SetMaxPlayers(atoi(argv[i + 1]));
         if (std::string(argv[i]) == "--test-host") benchHost = true;
         if (std::string(argv[i]) == "--test-time-follow") benchTimeFollow = true;
+        if (std::string(argv[i]) == "--test-player-cost" && i + 1 < argc) benchPlayerCost = std::max(1, atoi(argv[i + 1]));
         if (std::string(argv[i]) == "--test-net-move") benchNetMove = true;
         if (std::string(argv[i]) == "--test-net-dig") benchNetDig = true;
         if (std::string(argv[i]) == "--test-net-build") benchNetBuild = true;
@@ -8626,7 +8628,7 @@ int main(int argc, char** argv)
                         }
                         benchWalkSeconds = 0.0;
                     }
-                } else if ((WorldIdle() && benchDigStrokes == 0 && !benchPaint && !benchSaveLoad && benchWalkSeconds <= 0.0 && benchMineStrokes == 0 && minePhase != 2 && benchFlySeconds <= 0.0 && !benchSuffocate && benchOrbitSeconds <= 0.0 && !benchRide && !benchPark && !benchGravity && !benchPrecision && !benchMantle && !benchAirJump && !benchMoon && !benchHole && !benchWall && !benchDoorway && !benchLedge && !benchTor && !benchMachines && !benchFall && !benchHover && !benchNetIds && !benchNet && !benchTwoPlayers && !benchFingerprint && !benchInterest && !benchTeleClose && !benchMenus && !benchWater && !benchFlyFollow && !benchHotbar && !benchInventory && !benchMap && !benchViewmodel && !benchQuests && !benchHunger && !benchFarm && !benchAnimals && !benchThreats && !benchAnimalPath && !benchDam && !benchFlowMeter && !benchPartWall && !benchPressure && benchShotTabs == 0 && !benchForest && !benchFlow && !benchPond && !benchBucket && !benchWaterSpeed && benchFluidLoad <= 0.0f && !benchFlowShade && !benchPump && !benchTerrain && !benchWind && !benchCampfire && !benchCaveMouth && !benchMountain && !benchShelter && !benchRoom && !benchFacing && !benchDungeon && !benchPosture && !benchPause && !benchBite && !benchPlacement && !benchShotDig && !benchShadow && !benchParticles && !benchBiomes && !benchOil && !benchSpring && !benchShotAnimals && !benchShotAvatar && !benchShotMachines && benchShotBiomes < 0 && !benchFarForest && !benchRecipes && !benchWeather && !benchDecor && !benchMaterials && !benchDamage && !benchCrafting && !benchSuit && !benchTools && !benchRivers && !benchRing && !benchRocket && !benchStation && !benchBlueprint && !benchSmallBody && !benchTrees && !benchChop && benchPersist == 0 && benchBuild == 0 && benchFactory == 0 && !benchCombat && !benchHost && !benchJoin && !benchTimeFollow && !benchNetMove && !benchNetDig && !benchNetBuild && benchMpBots == 0 && !benchShower && !benchProgression && (benchUnfocus <= 0.0f || unfocusPhase >= 6)) || GetTime() > 600.0) {
+                } else if ((WorldIdle() && benchDigStrokes == 0 && !benchPaint && !benchSaveLoad && benchWalkSeconds <= 0.0 && benchMineStrokes == 0 && minePhase != 2 && benchFlySeconds <= 0.0 && !benchSuffocate && benchOrbitSeconds <= 0.0 && !benchRide && !benchPark && !benchGravity && !benchPrecision && !benchMantle && !benchAirJump && !benchMoon && !benchHole && !benchWall && !benchDoorway && !benchLedge && !benchTor && !benchMachines && !benchFall && !benchHover && !benchNetIds && !benchNet && !benchTwoPlayers && !benchFingerprint && !benchInterest && !benchTeleClose && !benchMenus && !benchWater && !benchFlyFollow && !benchHotbar && !benchInventory && !benchMap && !benchViewmodel && !benchQuests && !benchHunger && !benchFarm && !benchAnimals && !benchThreats && !benchAnimalPath && !benchDam && !benchFlowMeter && !benchPartWall && !benchPressure && benchShotTabs == 0 && !benchForest && !benchFlow && !benchPond && !benchBucket && !benchWaterSpeed && benchFluidLoad <= 0.0f && !benchFlowShade && !benchPump && !benchTerrain && !benchWind && !benchCampfire && !benchCaveMouth && !benchMountain && !benchShelter && !benchRoom && !benchFacing && !benchDungeon && !benchPosture && !benchPause && !benchBite && !benchPlacement && !benchShotDig && !benchShadow && !benchParticles && !benchBiomes && !benchOil && !benchSpring && !benchShotAnimals && !benchShotAvatar && !benchShotMachines && benchShotBiomes < 0 && !benchFarForest && !benchRecipes && !benchWeather && !benchDecor && !benchMaterials && !benchDamage && !benchCrafting && !benchSuit && !benchTools && !benchRivers && !benchRing && !benchRocket && !benchStation && !benchBlueprint && !benchSmallBody && !benchTrees && !benchChop && benchPersist == 0 && benchBuild == 0 && benchFactory == 0 && !benchCombat && !benchHost && !benchJoin && !benchTimeFollow && benchPlayerCost == 0 && !benchNetMove && !benchNetDig && !benchNetBuild && benchMpBots == 0 && !benchShower && !benchProgression && (benchUnfocus <= 0.0f || unfocusPhase >= 6)) || GetTime() > 600.0) {
                     benchStart = GetTime();
                     printf("bench: world ready after %.2f s (%d chunks, avg build %.2f ms of which sampling %.2f ms, %d worker threads)\n",
                         GetWorldStats().lastGenerationSeconds, GetWorldStats().chunks, GetWorldStats().avgBuildMs, GetWorldStats().avgSampleMs, GetWorldStats().workerThreads);
@@ -10095,6 +10097,45 @@ int main(int argc, char** argv)
                            gJoin.clockError * 1000.0, WorldTime_Pending() * 1000.0, gJoin.pongs, gJoin.rttMs, seen.size(), wantOthers, othersMoved, ok ? "PASS" : "FAIL");
                     NetClient_Disconnect(gJoin);
                     benchJoin = false;
+                }
+            }
+        }
+        // --test-player-cost N (#768): N players spread over 400 m of the start area, each walking a circle (one with a jump a
+        // second), stepped the way a server steps remote players (RenderOriginScope + Player::update per sim step) for 5 s.
+        // Prints the cost per update, density samples per update and the share spent in collision.
+        if (benchPlayerCost > 0 && gameState == 1 && !loading && WorldIdle()) {
+            static std::vector<std::unique_ptr<Player>> ps; static int pcPhase = 0; static long long pcTick = 0, updates = 0, dens0 = 0;
+            static double secs = 0.0, coll0 = 0.0, t0 = 0.0;
+            Planetoid* p = dynamic_cast<Planetoid*>(world.objects[0].get());
+            if (pcPhase == 0 && p) {
+                const Vector3 d0 = StartSpawnDir(*p);
+                for (int k = 0; k < benchPlayerCost; ++k) {
+                    auto pl = std::make_unique<Player>();
+                    pl->spawnOn(world, *p, LandDirAt(*p, d0, 20.0f + 400.0f * (float)k / std::max(1, benchPlayerCost)));
+                    ps.push_back(std::move(pl));
+                }
+                pcPhase = 1; pcTick = SimTick(); t0 = GetTime();
+            } else if (pcPhase == 1 && GetTime() - t0 > 2.0) { // settle (landing), then measure
+                pcPhase = 2; pcTick = SimTick(); t0 = GetTime(); updates = 0; secs = 0.0; dens0 = Planetoid::densityCalls; coll0 = gPlayerCollideSeconds;
+            }
+            if (pcPhase >= 1) {
+                for (; pcTick < SimTick(); ++pcTick)
+                    for (size_t k = 0; k < ps.size(); ++k) {
+                        Player& pl = *ps[k];
+                        PlayerInput in; in.enabled = true; in.hold(Act::Forward);
+                        if (k % 3 == 1 && pcTick % 60 == 0) in.press(Act::Jump);
+                        pl.forward = Vector3RotateByAxisAngle(pl.forward, pl.up, 30.0f * DEG2RAD / 60.0f);
+                        const auto a = std::chrono::steady_clock::now();
+                        { RenderOriginScope frame(world, pl.position); pl.update(world, in, SimDt()); }
+                        if (pcPhase == 2) { secs += std::chrono::duration<double>(std::chrono::steady_clock::now() - a).count(); ++updates; }
+                    }
+                if (pcPhase == 2 && GetTime() - t0 > 5.0) {
+                    const double perUs = 1e6 * secs / std::max(1LL, updates), collShare = (gPlayerCollideSeconds - coll0) / std::max(1e-9, secs);
+                    printf("bench: player cost (#768): %d players, %lld updates in %.1f s: %.0f us per update (%.2f ms a frame for %d players at 60 Hz), "
+                           "%.1f density samples per update, %.0f%% of the time in collision\n",
+                           benchPlayerCost, updates, GetTime() - t0, perUs, perUs * benchPlayerCost / 1000.0, benchPlayerCost,
+                           (double)(Planetoid::densityCalls - dens0) / std::max(1LL, updates), 100.0 * collShare);
+                    ps.clear(); benchPlayerCost = 0;
                 }
             }
         }

@@ -17,6 +17,8 @@ struct PlayerInput;
 //   dug tunnels and built terrain are walkable with no separate collision mesh;
 // - standing on a spinning body carries you with it;
 // - jump, and a jetpack while airborne (Space up, Ctrl down).
+inline double gPlayerCollideSeconds = 0.0; // (#768) time in resolveCollisions since the start (the player-cost bench)
+
 struct Player {
     DVec3 position{};                 // feet, world space (double: survives the floating origin)
     Vector3 velocity{};               // world units / s
@@ -156,6 +158,10 @@ private:
     float coyote = 0.0f;     // seconds a jump is still allowed after leaving the ground
     float jumpLock = 0.0f;   // seconds after a jump during which the player cannot re-ground
     bool resolveCollisions(Scene& world, Vector3& feet);
+    // #768: per capsule sphere, the last measured terrain surface distance (m) and where it was measured (body-local).
+    // A sphere whose distance, less how far it has moved since, is still beyond its radius + 5 cm can't touch: it is not
+    // measured again (each measurement is 7 density samples). Any edit (a new snapshot) or another body clears it.
+    struct CollideCache { Vector3 centre[8]{}; float dist[8]{}; bool valid[8]{}; const void* body = nullptr; const void* edits = nullptr; } collideCache;
     void collideTrunks(Vector3& feet); // tree trunks: vertical capsules on the nearest body
     // Velocity of the terrain being collided with, in the frame `velocity` is in: zero while grounded
     // (velocity is then relative to the surface), the surface velocity while airborne (world frame).
