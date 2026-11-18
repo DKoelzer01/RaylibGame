@@ -15,7 +15,8 @@ std::atomic<long long> dbgWhy[12]; // #680 diagnosis: why column pairs of deep r
 std::atomic<long long> dbgPair[3]; long long dbgPairPlan = 0, dbgPairUnits = 0; long long dbgPairFric = 0, dbgPairDH = 0, dbgPairH = 0, dbgPairN = 0; // TEMP #680 (DBWHY): deep pairs limited by plan / avail / room
 // TEMP #680 (DBTRACE): also every pair planned by a run in a marked slot, with its exit code (the WHY numbers).
 DbgPairRec dbgPairs[kDbgTrace]; std::atomic<int> dbgPairsN{0};
-#define WHY(i) do { if (A.surf - A.bed > 128) ++dbgWhy[i]; \
+static const bool dbWhy = EnvFlag("DBWHY"); // the counters below are shared atomics: off unless asked (#747: they ran for every deep pair)
+#define WHY(i) do { if (dbWhy && A.surf - A.bed > 128) ++dbgWhy[i]; \
     if (dbTrace && g.dbgMark.size() > (size_t)(gi / 4096) && g.dbgMark[gi / 4096]) { const int k_ = dbgPairsN.fetch_add(1, std::memory_order_relaxed); \
         if (k_ < kDbgTrace) dbgPairs[k_] = DbgPairRec{ gi, nb, dx, dy, (i), A.surf - A.bed }; } } while (0)
 // TEMP #680 (DBTRACE): column transfers into a partly solid cell or a cell under a solid one (a wall's base), for the host to
@@ -227,6 +228,9 @@ struct Pass {
     // surface (#680): a quarter of the depth at 0.25 m cells.
     bool waterOf(uint32_t c, uint32_t kind) const { return !(FL(c) & SOLID) && F(c) > 0u && KIND(c) == kind; }
     int stepZ(int gi, int dz, bool& proc) const {
+        // Inside the brick (#747: the column passes step up and down constantly): the cell 256 on, the slot's own flag.
+        const int zl = (gi & 4095) >> 8;
+        if ((dz == 1 && zl < 15) || (dz == -1 && zl > 0)) { proc = g.processed[gi >> 12] != 0; return gi + dz * 256; }
         int s, x, y, z; cellPos(gi, s, x, y, z);
         int face;
         return neighbour(s, x, y, z, 0, 0, dz, proc, face);
@@ -293,11 +297,11 @@ struct Pass {
         while (x < cur && !__atomic_compare_exchange_n(&v, &cur, x, true, __ATOMIC_RELAXED, __ATOMIC_RELAXED)) {}
     }
     // k: the pair's slot in the run's record (0 +x, 1 +y, 2 -x, 3 -y); planned: the units it plans to move (0: none).
-    float colPair(int gi, int dx, int dy, float qPrev, bool owner, int k, float& planned) const {
+    // A: this run (runUp(gi, 0)), walked once for its four pairs (#747: each pair walked it again).
+    float colPair(int gi, const ColRun& A, int dx, int dy, float qPrev, bool owner, int k, float& planned) const {
         planned = 0.0f;
         const uint32_t c = inC[gi];
         const uint32_t kind = KIND(c);
-        const ColRun A = runUp(gi, 0);
         if (!A.ok) return 0.0f;
         int s, x, y, z;
         cellPos(gi, s, x, y, z);
@@ -420,7 +424,7 @@ struct Pass {
         const float speed = std::fabs(q) / (p.cellSize * std::max(hm, 0.02f));
         const float fricDiv = 1.0f + p.dt * (p.frictionLin[kind] + p.frictionQuad[kind] * speed / std::max(hm, 0.02f));
         q /= fricDiv;
-        if (A.surf - A.bed > 128) { // TEMP #680 (DBWHY): per deep pair the friction divisor, the head drop and the depth (x1000)
+        if (dbWhy && A.surf - A.bed > 128) { // TEMP #680 (DBWHY): per deep pair the friction divisor, the head drop and the depth (x1000)
             __atomic_fetch_add(&dbgPairFric, (long long)(fricDiv * 1000.0f), __ATOMIC_RELAXED);
             __atomic_fetch_add(&dbgPairDH, (long long)(dHm * 1000.0f), __ATOMIC_RELAXED);
             __atomic_fetch_add(&dbgPairH, (long long)(hm * 1000.0f), __ATOMIC_RELAXED);
@@ -499,10 +503,11 @@ struct Pass {
                                 ((FL(inC[gb]) & SOLID) || (F(inC[gb]) > 0u && KIND(inC[gb]) != KIND(c)));
             if (bottom) {
                 const Vec4 P = g.faceP[gi];
-                Q.x = colPair(gi, 1, 0, P.x, true, 0, U.x);
-                Q.y = colPair(gi, 0, 1, P.y, true, 1, U.y);
-                Q.z = colPair(gi, -1, 0, P.z, false, 2, U.z);
-                Q.w = colPair(gi, 0, -1, P.w, false, 3, U.w);
+                const ColRun A = runUp(gi, 0);
+                Q.x = colPair(gi, A, 1, 0, P.x, true, 0, U.x);
+                Q.y = colPair(gi, A, 0, 1, P.y, true, 1, U.y);
+                Q.z = colPair(gi, A, -1, 0, P.z, false, 2, U.z);
+                Q.w = colPair(gi, A, 0, -1, P.w, false, 3, U.w);
                 if (Q.x != 0.0f || Q.y != 0.0f || Q.z != 0.0f || Q.w != 0.0f) g.flags[slot] |= 1u;
             }
             g.faceN[(size_t)2 * gi] = Q;
