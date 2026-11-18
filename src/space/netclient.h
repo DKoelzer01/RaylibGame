@@ -18,6 +18,8 @@
 
 class Scene;
 #include "player.h"
+#include "avatar.h"
+#include <vector>
 
 // Movement (#327): the client predicts its own player from its inputs (the same Player physics as the server) and
 // keeps them; each authoritative state of its own player says which input the server applied last. Where the
@@ -25,6 +27,7 @@ class Scene;
 // replayed. Other players are drawn kInterpDelay behind the newest state, interpolated between the two around it.
 constexpr double kReconcileError = 0.05;   // m
 constexpr double kInterpDelay = 0.1;       // s
+constexpr double kExtrapolate = 0.25;     // s: how far another player is carried on past their newest state
 struct NetPredicted { uint32_t tick = 0; PlayerInput in; DVec3 local{}; float fx = 0, fy = 0, fz = 1; }; // fx..: the view sent with it
 
 struct NetClient {
@@ -48,8 +51,14 @@ struct NetClient {
     bool haveOwn = false; MsgPlayerState own;    // the newest state of our player, not yet reconciled
     int states = 0, corrections = 0;             // own states received; how many moved the player back
     double worstError = 0.0, lastError = 0.0;    // m: the prediction against the server at the acknowledged input
-    std::map<uint32_t, std::deque<MsgPlayerState>> others; // other sessions' recent states (newest last)
-    double viewTick = 0.0;                       // the server tick the others are drawn at (NetClient_Update)
+    std::map<uint32_t, std::deque<MsgPlayerState>> others; // other sessions' recent states (newest last)
+    std::map<uint32_t, double> viewTicks;        // per other player: the step of theirs drawn now (NetClient_Update)
+    // Who is playing and what they hold (#750)
+    std::map<uint32_t, std::string> roster;      // everyone online by session (us too), from the server's roster
+    std::map<uint32_t, MsgLoadout> loadouts;     // the others' held item, headlamp, suit tier
+    int rosters = 0;                             // rosters received
+    MsgLoadout loadout; bool loadoutSent = false; // ours, as last sent (NetClient_SetLoadout sends a change)
+    int action = 0; float actionPhase = 0.0f;    // our hands now (the game sets them; sent with every input packet)
 };
 
 // One sim step of the joined client's own player: send the input, predict with it (in its own frame), and reconcile
@@ -57,6 +66,14 @@ struct NetClient {
 void NetClient_Step(NetClient& c, Scene& world, Player& self, const PlayerInput& in);
 // Another session's player as drawn: body-local feet kInterpDelay behind the newest state (false: none known yet).
 bool NetClient_OtherView(const NetClient& c, uint32_t session, uint64_t& body, DVec3& local);
+// The same, the whole state: position, velocity and view interpolated; flags, posture and hands from the later state.
+bool NetClient_OtherState(const NetClient& c, uint32_t session, MsgPlayerState& out);
+// Every other player as an avatar to draw (#328/#750): interpolated, named from the roster, with their loadout.
+void NetClient_FillAvatars(const NetClient& c, Scene& world, std::vector<AvatarState>& out);
+// Our held item, headlamp and suit tier; sent (reliable) only when they change.
+void NetClient_SetLoadout(NetClient& c, const std::string& held, bool headlamp, int suitTier);
+// The game's client (null: not connected to a server). main.cpp draws its other players.
+extern NetClient* gNetClient;
 // A player's state on the wire and back (#327; server and client use the same).
 MsgPlayerState NetClient_ToMsg(const Player::NetState& n);
 Player::NetState NetClient_FromMsg(const MsgPlayerState& s);

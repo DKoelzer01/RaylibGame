@@ -38,7 +38,10 @@ namespace {
     // run, so a reconnect under the same name gets its session (and later its PlayerSession) back.
     struct Peer { uint32_t session = 0; bool joined = false; double lastHeard = 0.0; };
     std::unordered_map<uint32_t, Peer> peers;          // by connection
-    struct Session { uint32_t id = 0; std::string name; uint32_t conn = 0; bool online = false; };
+    struct Session {
+        uint32_t id = 0; std::string name; uint32_t conn = 0; bool online = false;
+        MsgLoadout loadout;          // what the player holds and wears (#750), kept across a reconnect
+    };
     std::vector<Session> sessions;
     uint32_t nextSession = 1;
     constexpr double kTimeoutSeconds = 15.0;           // nothing heard (pings come every second): gone
@@ -48,20 +51,19 @@ namespace {
     struct Remote {
         Player player;
         std::deque<MsgInput> inputs;
-        uint64_t held = 0;          // the last input's keys (repeated by a synthetic step)
         uint32_t lastApplied = 0;   // the client tick of the last input stepped (the owner replays the ones after)
         uint32_t lastQueued = 0;    // the newest input tick received (redundant copies of older ones are skipped)
-        int owed = 0;               // synthetic steps not yet paid back by dropping an input
-        uint64_t carried = 0;       // presses of dropped inputs, for the next step
-        bool primed = false;        // kJitterInputs have arrived once: consuming
-        long long tick = 0;         // the server sim tick it has been stepped to
+        uint64_t carried = 0;       // presses of inputs dropped from a full queue, for the next step
+        double budget = 0.0;        // steps it may take (earned at real time, capped: a fast client can't run ahead)
+        long long tick = 0;         // the server sim tick the budget has been earned to
         Vector3 forwardLocal{ 0, 0, 1 };
+        uint8_t action = 0; float actionPhase = 0.0f; // the hands, from the newest input packet (relayed, #750)
     };
     std::unordered_map<uint32_t, Remote> remotes;      // by session
     long long lastSnapshot = 0;
     constexpr int kSnapshotEvery = 2;                  // sim steps (60 Hz) per snapshot: 30 Hz (ADR #309)
-    constexpr size_t kMaxQueuedInputs = 8;             // more waiting: the client runs ahead; the oldest go
-    constexpr size_t kJitterInputs = 2;                // inputs waiting before the first is stepped (absorbs arrival jitter)
+    constexpr size_t kMaxQueuedInputs = 120;           // 2 s of inputs waiting: more and the oldest go (keeping their presses)
+    constexpr double kMaxBudget = 30.0;                // steps a player may catch up at once (0.5 s of hitch or burst)
 
     Planetoid* StartBody(Scene& world) {
         for (auto& o : world.objects) if (auto* p = dynamic_cast<Planetoid*>(o.get())) return p;
@@ -79,32 +81,26 @@ namespace {
         r.player.spawnOn(world, *body, body->dirToWorld(dir));
         r.tick = SimTick();
     }
-    // Every player steps every server tick (Player::update also carries it with its body: a player left unstepped is left
-    // behind as the planet moves). Each step takes one input from a small jitter buffer: none waiting, it repeats the
-    // last keys (a synthetic step) and owes one; when inputs then pile up, one is dropped per step owed, so the server's
-    // steps and the client's line up again. A synthetic step that changed things is set right by the owner's
-    // reconciliation. Inputs are never stepped faster than real time.
+    // A player is stepped only by its own inputs, one step each, in order (as Source runs a player's usercmds): the server
+    // walks exactly the path the client predicted, whatever the arrival times. No input waiting: the player holds still in
+    // its body's frame (the ground or air anchor carries it with the planet) until the next arrives. A hitch or a burst is
+    // caught up at once, but only as fast as real time allows (a budget earned per server tick, at most kMaxBudget), so
+    // a client sending too many inputs can't run faster than anyone else. (Repeating the keys while an input was late,
+    // then dropping one to catch up, put the server off the client's path after every long frame: metres, with jumps.)
     void StepRemotes(Scene& world) {
         for (auto& [session, r] : remotes) {
-            for (; r.tick < SimTick(); ++r.tick) {
-                // Dropped inputs (catching up, or too many waiting) keep their one-off presses (a jump) for the next step.
-                auto drop = [&]() { r.carried |= r.inputs.front().pressed; r.inputs.pop_front(); };
-                while (r.owed > 0 && r.inputs.size() > 1) { drop(); --r.owed; }
-                while (r.inputs.size() > kMaxQueuedInputs) drop();
-                if (!r.primed && r.inputs.size() >= kJitterInputs) r.primed = true; // a little buffer before consuming: jitter
+            r.budget = std::min(kMaxBudget, r.budget + (double)(SimTick() - r.tick));
+            r.tick = SimTick();
+            while (r.inputs.size() > kMaxQueuedInputs) { r.carried |= r.inputs.front().pressed; r.inputs.pop_front(); }
+            while (r.budget >= 1.0 && !r.inputs.empty()) {
+                r.budget -= 1.0;
+                const MsgInput m = r.inputs.front();
+                r.inputs.pop_front();
                 PlayerInput in;
-                in.enabled = true;
-                if (r.primed && !r.inputs.empty()) {
-                    const MsgInput m = r.inputs.front();
-                    r.inputs.pop_front();
-                    in.held = m.held; in.pressed = m.pressed | r.carried;
-                    r.carried = 0;
-                    r.held = m.held; r.lastApplied = m.tick;
-                    r.forwardLocal = { m.fx, m.fy, m.fz };
-                } else {
-                    in.held = r.held;
-                    if (r.lastApplied) ++r.owed; // (none applied yet: just standing there)
-                }
+                in.enabled = true; in.held = m.held; in.pressed = m.pressed | r.carried;
+                r.carried = 0;
+                r.lastApplied = m.tick;
+                r.forwardLocal = { m.fx, m.fy, m.fz };
                 if (Planetoid* b = r.player.nearest ? r.player.nearest : StartBody(world)) r.player.forward = b->dirToWorld(r.forwardLocal);
                 RenderOriginScope frame(world, r.player.position);
                 r.player.update(world, in, SimDt());
@@ -117,7 +113,8 @@ namespace {
         if (r.player.netState(world, ns)) s = NetClient_ToMsg(ns);
         else if (Planetoid* b = StartBody(world)) { s.body = b->netId; s.local = b->toLocalD(r.player.position); }
         s.session = session; s.tick = (uint32_t)SimTick(); s.ackInput = r.lastApplied;
-        s.flags |= (r.player.flyMode ? 2 : 0) | (r.player.inWater ? 8 : 0);
+        s.flags |= (r.player.flyMode ? 2 : 0) | (r.player.inWater ? 8 : 0) | (r.player.jetpackFiring ? 128 : 0);
+        s.action = r.action; s.actionPhase = r.actionPhase;
         // The view, body-local, as spherical angles (yaw about the body's y axis from +z, pitch from its xz plane): the
         // others turn it back with the body (avatars, #328).
         s.yaw = atan2f(r.forwardLocal.x, r.forwardLocal.z);
@@ -144,14 +141,25 @@ namespace {
     template <class M> void SendMsg(uint32_t conn, const M& m) { NetWriter w; NetWrite(w, m); Send(conn, w); }
     std::string BuildCommit() { const std::string v = kGameVersion; const size_t sp = v.rfind(' '); return sp == std::string::npos ? v : v.substr(sp + 1); }
 
+    template <class M> void SendToJoined(const M& m) { NetWriter w; NetWrite(w, m); for (const auto& [c, p] : peers) if (p.joined) Send(c, w); }
+    // The roster (#750): everyone online, to everyone joined, on each join and leave (reliable; the whole list each time:
+    // a handful of names, and a client never has to merge).
+    void SendRoster() {
+        MsgRoster r;
+        for (const Session& s : sessions) if (s.online) r.players.push_back({ s.id, s.name });
+        SendToJoined(r);
+    }
+
     void Drop(uint32_t conn, NetBye why) {
         auto it = peers.find(conn);
         if (it == peers.end()) return;
         for (Session& s : sessions) if (s.id == it->second.session && s.conn == conn) { s.online = false; s.conn = 0; }
         if (why != NetBye::Quit) SendMsg(conn, MsgBye{ why });
         printf("host: connection %u (session %u) %s\n", conn, it->second.session, NetByeText(why));
+        const bool wasJoined = it->second.joined;
         peers.erase(it);
         Net_Close(conn);
+        if (wasJoined) SendRoster(); // the others see them go
     }
     void Refuse(uint32_t conn, NetReject why, const std::string& detail) {
         SendMsg(conn, MsgReject{ why, detail });
@@ -183,6 +191,9 @@ namespace {
         const EventsShower sh = Events_GetShower();
         SendMsg(conn, MsgShower{ sh.start, sh.end, sh.id });
         if (!remotes.count(s->id)) SpawnRemote(world, s->id); // (a reconnect keeps its player where it was)
+        // Who is here (everyone, the newcomer included), and what the others hold.
+        SendRoster();
+        for (const Session& x : sessions) if (x.online && x.id != s->id && x.loadout.session) SendMsg(conn, x.loadout);
         ++joins;
         printf("host: %s joined as session %u%s (connection %u, %d joins so far)\n", h.name.c_str(), s->id, reconnected ? " (reconnected)" : "", conn, joins);
     }
@@ -210,8 +221,17 @@ namespace {
                 MsgInputs in;
                 if (!it->second.joined || !NetRead(r, in)) return;
                 Remote& rm = remotes[it->second.session];
+                if (in.steps[0].tick > rm.lastQueued) { rm.action = in.action; rm.actionPhase = in.actionPhase; } // (not an old packet)
                 for (auto s = in.steps.rbegin(); s != in.steps.rend(); ++s) // oldest first; the ones already here are repeats
                     if (s->tick > rm.lastQueued) { rm.inputs.push_back(*s); rm.lastQueued = s->tick; }
+                return;
+            }
+            case NetMsg::Loadout: {
+                MsgLoadout l;
+                if (!it->second.joined || !NetRead(r, l)) return;
+                l.session = it->second.session; // (a client speaks only for itself)
+                for (Session& s : sessions) if (s.id == l.session) s.loadout = l;
+                SendToJoined(l);
                 return;
             }
             case NetMsg::Bye: { MsgBye b; if (NetRead(r, b)) Drop(m.conn, NetBye::Quit); return; }

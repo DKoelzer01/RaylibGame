@@ -309,6 +309,7 @@ void Player::update(Scene& world, const PlayerInput& in, float dt) {
         airBody = nullptr;
     }
     lastEndPosition = position;
+    CacheNetState(world);
     // Render interpolation (#315): the feet after this step and the one before, in the nearest body's frame. A new
     // body, a teleport (spawns) or a jump of over 5 m (placed from outside) starts again from here.
     if (nearest) {
@@ -801,14 +802,32 @@ void Player::anchorTo(Planetoid& body) {
     lastEndPosition = position;
 }
 
-bool Player::netState(const Scene& world, NetState& s) const {
+// The state as the last step left it, taken there (a server that steps a player only by its inputs reads it later, when
+// the body has moved on: the world position and velocity are then stale, the body-local ones are not).
+void Player::CacheNetState(const Scene& world) {
+    netCached = false;
     Planetoid* b = (grounded && groundBody) ? groundBody : nearest ? nearest : airBody;
-    if (!b) return false;
+    if (!b) return;
     const Quaternion toLocal = QuaternionInvert(b->rotationQuat()); // (dirToLocal normalizes: a speed needs the rotation)
     const Vector3 rel = grounded ? velocity : Vector3Subtract(velocity, b->surfaceVelocity((position - world.renderOrigin).toFloat()));
-    s.body = b->netId;
-    s.local = b->toLocalD(position);
-    s.vel = Vector3RotateByQuaternion(rel, toLocal);
+    netCache.body = b->netId;
+    netCache.local = b->toLocalD(position);
+    netCache.vel = Vector3RotateByQuaternion(rel, toLocal);
+    netCacheSpawns = spawns;
+    netCached = true;
+}
+
+bool Player::netState(const Scene& world, NetState& s) const {
+    if (!netCached || netCacheSpawns != spawns) { // never stepped since a spawn: as it stands now
+        Planetoid* b = (grounded && groundBody) ? groundBody : nearest ? nearest : airBody;
+        if (!b) return false;
+        const Vector3 rel = grounded ? velocity : Vector3Subtract(velocity, b->surfaceVelocity((position - world.renderOrigin).toFloat()));
+        s.body = b->netId;
+        s.local = b->toLocalD(position);
+        s.vel = Vector3RotateByQuaternion(rel, QuaternionInvert(b->rotationQuat()));
+    } else {
+        s.body = netCache.body; s.local = netCache.local; s.vel = netCache.vel;
+    }
     s.grounded = grounded; s.hovering = hovering;
     s.posture = (uint8_t)posture;
     s.jumpBuffer = jumpBuffer; s.coyote = coyote; s.jumpLock = jumpLock; s.jetpackFuel = jetpackFuel;
@@ -836,6 +855,7 @@ bool Player::applyNetState(Scene& world, const NetState& s) {
         groundBody = nullptr;
         anchorTo(*b); // (sets lastEndPosition)
     }
+    netCache = s; netCacheSpawns = spawns; netCached = true;
     return true;
 }
 
