@@ -118,7 +118,10 @@ bool Claims_LoadLine(const char* tok, FILE* f) {
     if (!strcmp(tok, "claim_ally")) { int a = 0, b = 0; if (fscanf(f, " %d %d", &a, &b) == 2) allies.insert({ a, b }); return true; }
     if (strcmp(tok, "claim") != 0) return false;
     Claim c; char body[128] = {}; long long created = 0, seen = 0;
-    if (fscanf(f, " %u %d %127s %f %f %f %f %lld %lld %u %d", &c.id, &c.team, body, &c.centre.x, &c.centre.y, &c.centre.z, &c.radius, &created, &seen, &c.bannerPlot, &c.bannerPart) == 11) {
+    char line[512] = {};
+    if (!fgets(line, sizeof line, f)) return true; // (the rest of the line: #864's lines lack the banner fields)
+    const int got = sscanf(line, " %u %d %127s %f %f %f %f %lld %lld %u %d", &c.id, &c.team, body, &c.centre.x, &c.centre.y, &c.centre.z, &c.radius, &created, &seen, &c.bannerPlot, &c.bannerPart);
+    if (got == 9 || got == 11) {
         c.body = body; c.created = created; c.lastSeen = seen;
         claims.push_back(c);
         nextId = std::max(nextId, c.id + 1);
@@ -170,6 +173,16 @@ bool Claims_SelfTest() {
     check(!Claims_Allows(1, 4), "an ally revoked");
     check(Claims_Update({ 1 }, 1000 + kClaimDecaySeconds + 10) == 1 && Claims_OfTeam(4).empty() && Claims_OfTeam(1).size() == 3, "14 days away: team 4's claim decays, team 1 (online) keeps theirs");
     check(Claims_Remove(a) && Claims_OfTeam(1).size() == 2, "a banner broken: unclaimed");
+    { // save and load, with an ally and a #864 line (no banner fields) before the next line
+        Claims_SetAlly(1, 5, true);
+        const std::string path = TextFormat("claims_test_%d.tmp", (int)(std::chrono::steady_clock::now().time_since_epoch().count() % 100000));
+        if (FILE* f = fopen(path.c_str(), "w")) { Claims_Save(f); fprintf(f, "claim 40 6 terra 1.0 60000.0 2.0 50.00 900 900\nclaim_ally 6 1\n"); fclose(f); }
+        Claims_Reset();
+        if (FILE* f = fopen(path.c_str(), "r")) { char tok[64]; while (fscanf(f, " %63s", tok) == 1) if (!Claims_LoadLine(tok, f)) break; fclose(f); }
+        remove(path.c_str());
+        check(Claims_OfTeam(1).size() == 2 && Claims_OfTeam(6).size() == 1 && Claims_Allows(1, 5) && Claims_Allows(6, 1), "saved and loaded: claims, allies, and a line without banner fields");
+    }
+
     // the lookup's cost: 1000 claims of 800 m across spread over a 60 km planet, a million points looked up
     Claims_Reset();
     uint32_t rng = 12345; auto rnd = [&rng] { rng = rng * 1664525u + 1013904223u; return (rng >> 8) / 16777216.0f; };
