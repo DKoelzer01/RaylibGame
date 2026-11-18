@@ -8,6 +8,7 @@
 #include "worldtypes.h"
 #include "world.h"
 #include "scenetarget.h"
+#include "skyphys.h"
 #include "terraingpu.h"
 #include "trees.h"
 #include <raylib.h>
@@ -666,6 +667,34 @@ void Scene::drawScene(int gamestate) {
     int drawCalls = 0;
     // Reverse-Z float depth (#135): one depth range from centimetres to infinity, so the far / mid / near
     // passes below collapse into one (no depth clears, no near/far plane juggling).
+    // #142: the physical sky's look-up tables (RAYLIBGAME_SKY_PHYS=1), rebuilt as the camera height and the sun move.
+    if (atmosphere.enabled && SkyPhys_On())
+        SkyPhys_Update(atmosphere.radius, atmosphere.radius + atmosphere.height, Vector3Distance(camera.position, atmosphere.centre), Vector3DotProduct(atmUp, sun));
+    {   // #142: the physical haze colour on lit surfaces (skyphys_haze.glsl): the sky-view LUT on unit 15, by the air and weather.
+        const unsigned lut = atmosphere.enabled ? SkyPhys_SkyViewTexture() : 0;
+        const bool underwaterFog = effFogDensity >= 0.06f;
+        const float haze = lut && !underwaterFog ? atmDensity * (1.0f - 0.6f * std::clamp(weatherCloud, 0.0f, 1.0f)) : 0.0f;
+        constexpr int kSkyUnit = 15; // past local lights (13, 14), terrain detail (12), layers (11), wind (10)
+        if (lut) { rlActiveTextureSlot(kSkyUnit); rlEnableTexture(lut); rlActiveTextureSlot(0); }
+        const float dist = Vector3Distance(camera.position, atmosphere.centre), Rt0 = atmosphere.radius + atmosphere.height;
+        const float vh = SkyPhys_LutHeight(atmosphere.radius, Rt0, dist), R = SkyPhys_LutR(), Rt = SkyPhys_LutRt();
+        const float horizon[2] = { atmosphere.radius, std::max(dist, atmosphere.radius + 0.5f) };
+        const float tint = SkyPhys_Tint(), expo = SkyPhys_Exposure();
+        for (HotShader* hs : { &lighting, &trees, &water, &parts }) {
+            Shader& sh = hs->shader;
+            SetShaderValue(sh, GetShaderLocation(sh, "skyHaze"), &haze, SHADER_UNIFORM_FLOAT);
+            if (!lut) continue;
+            SetShaderValue(sh, GetShaderLocation(sh, "skyViewLut"), &kSkyUnit, SHADER_UNIFORM_INT);
+            SetShaderValue(sh, GetShaderLocation(sh, "skyHazeUp"), &atmUp, SHADER_UNIFORM_VEC3);
+            SetShaderValue(sh, GetShaderLocation(sh, "skyHazeSun"), &sun, SHADER_UNIFORM_VEC3);
+            SetShaderValue(sh, GetShaderLocation(sh, "skyViewHeight"), &vh, SHADER_UNIFORM_FLOAT);
+            SetShaderValue(sh, GetShaderLocation(sh, "skyR"), &R, SHADER_UNIFORM_FLOAT);
+            SetShaderValue(sh, GetShaderLocation(sh, "skyRt"), &Rt, SHADER_UNIFORM_FLOAT);
+            SetShaderValue(sh, GetShaderLocation(sh, "skyRealHorizon"), horizon, SHADER_UNIFORM_VEC2);
+            SetShaderValue(sh, GetShaderLocation(sh, "skyPhysTint"), &tint, SHADER_UNIFORM_FLOAT);
+            SetShaderValue(sh, GetShaderLocation(sh, "skyPhysExposure"), &expo, SHADER_UNIFORM_FLOAT);
+        }
+    }
     const bool revZ = SceneTarget_Available() && SceneTarget_Begin(clearColor); // false (e.g. a failed resize): old passes
     BeginMode3D(camera);
     if (revZ) {
@@ -704,6 +733,25 @@ void Scene::drawScene(int gamestate) {
                 SetShaderValue(as, GetShaderLocation(as, "cloudShell"), &shell, SHADER_UNIFORM_FLOAT);
                 SetShaderValue(as, GetShaderLocation(as, "cloudDrift"), &cloudDrift, SHADER_UNIFORM_VEC3);
                 SetShaderValue(as, GetShaderLocation(as, "cloudCover"), &cover, SHADER_UNIFORM_FLOAT);
+            }
+            {   // #142: the physical sky (the LUT in the dome material's emission slot, as the wide shadow map rides in the terrain's)
+                const unsigned lut = atmosphere.enabled ? SkyPhys_SkyViewTexture() : 0;
+                const float on = lut ? 1.0f : 0.0f;
+                SetShaderValue(as, GetShaderLocation(as, "skyPhys"), &on, SHADER_UNIFORM_FLOAT);
+                as.locs[SHADER_LOC_MAP_EMISSION] = GetShaderLocation(as, "skyViewLut");
+                atmosphereDome.materials[0].maps[MATERIAL_MAP_EMISSION].texture = Texture2D{ lut, 192, 108, 1, PIXELFORMAT_UNCOMPRESSED_R16G16B16A16 };
+                if (lut) {
+                    const float dist = Vector3Distance(camera.position, atmosphere.centre), Rt0 = atmosphere.radius + atmosphere.height;
+                    const float vh = SkyPhys_LutHeight(atmosphere.radius, Rt0, dist), R = SkyPhys_LutR(), Rt = SkyPhys_LutRt();
+                    const float horizon[2] = { atmosphere.radius, std::max(dist, atmosphere.radius + 0.5f) }; // the real horizon (remapped to the shell's)
+                    SetShaderValue(as, GetShaderLocation(as, "skyRealHorizon"), horizon, SHADER_UNIFORM_VEC2);
+                    const float tint = SkyPhys_Tint(), expo = SkyPhys_Exposure();
+                    SetShaderValue(as, GetShaderLocation(as, "skyViewHeight"), &vh, SHADER_UNIFORM_FLOAT);
+                    SetShaderValue(as, GetShaderLocation(as, "skyR"), &R, SHADER_UNIFORM_FLOAT);
+                    SetShaderValue(as, GetShaderLocation(as, "skyRt"), &Rt, SHADER_UNIFORM_FLOAT);
+                    SetShaderValue(as, GetShaderLocation(as, "skyPhysTint"), &tint, SHADER_UNIFORM_FLOAT);
+                    SetShaderValue(as, GetShaderLocation(as, "skyPhysExposure"), &expo, SHADER_UNIFORM_FLOAT);
+                }
             }
             atmosphereDome.materials[0].shader = as;
             DrawModel(atmosphereDome, (Vector3){ 0, 0, 0 }, 1.0f, WHITE);

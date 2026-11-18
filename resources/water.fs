@@ -24,6 +24,7 @@ uniform float fluidGlows[8];   // per kind: emissive strength (lava)
 uniform int fluidDebug;         // #695: 1 = water coloured by its speed, stripes running along the current
 
 #include "shadow.glsl"
+#include "skyphys_haze.glsl" // #142: the physical haze colour (off by default)
 
 out vec4 finalColor;
 
@@ -164,6 +165,6 @@ void main()
         return;
     }
     float fog = 1.0 - exp(-fogDensity * dist);
-    color = mix(color, fogColor, clamp(fog, 0.0, 1.0));
+    color = mix(color, SkyPhysFog(fragPosition, viewPos, fogColor), clamp(fog, 0.0, 1.0));
     finalColor = vec4(pow(max(color, vec3(0.0)), vec3(1.0 / 2.2)), alpha);
 }

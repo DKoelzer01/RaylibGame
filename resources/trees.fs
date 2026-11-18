@@ -29,6 +29,7 @@ uniform vec3 leafTint;
 
 // Sun shadows (two cascades, hardware PCF) and the headlamp.
 #include "shadow.glsl"
+#include "skyphys_haze.glsl" // #142: the physical haze colour (off by default)
 #include "hemisphere.glsl"
 out vec4 finalColor;
 // Foliage colour by climate (Plan 5 B): temperate green, straw-olive where warm and dry, deep in the
@@ -95,6 +96,6 @@ void main()
         float t0 = disc > 0.0 ? -b - sqrt(disc) : 0.0, t1 = disc > 0.0 ? -b + sqrt(disc) : 0.0;
         fogDist = max(0.0, min(t1, fogDist) - max(t0, 0.0));
     }
-    color = mix(color, fogColor, clamp(1.0 - exp(-fogDensity * fogDist), 0.0, 1.0));
+    color = mix(color, SkyPhysFog(fragPosition, viewPos, fogColor), clamp(1.0 - exp(-fogDensity * fogDist), 0.0, 1.0));
     finalColor = vec4(pow(max(color, vec3(0.0)), vec3(1.0 / 2.2)), alphaToCoverage > 0.5 ? fade : 1.0);
 }
