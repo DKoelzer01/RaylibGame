@@ -13,6 +13,7 @@
 // (meat and hide when it falls).
 
 #include <cstdint>
+#include <functional>
 #include <cstdio>
 #include <string>
 #include <utility>
@@ -57,5 +58,23 @@ void Animals_SetNaturalSpawns(bool on); // herds placed around the player as it 
 void Animals_RefreshNow();                                     // tests: rescan campfires, allow a night spawn, recheck pens
 int Animals_NightCount();                              // hostile behaviour and night spawns (bench runs: off)
 int Animals_PennedCount();                                   // near the player, last checked (every 2 s)
+
+// #334 multiplayer. The server runs the animals (around every player: interest centres, #318) and sends each client the
+// ones near it; a client (gAnimalsReplicated) decides nothing - no AI, no spawns - and eases each copy toward the state it
+// last heard, dropping any not heard of for 3 s. A client's swing at an animal is a request (gAnimalHitRequest); the server
+// checks it, applies the damage, and credits the drops to that player.
+inline bool gAnimalsReplicated = false;
+inline std::function<void(uint64_t netId)> gAnimalHitRequest;
+struct AnimalNet {
+    uint64_t netId = 0; uint8_t species = 0; uint64_t body = 0; // the body's NetId
+    Vector3 pos{}; float heading = 0.0f;                         // body-local, radians
+    uint8_t state = 0; float health = 0.0f, age = 1.0f;
+    uint8_t flags = 0;                                           // 1 hostile, 2 angry, 4 winding up a bite
+};
+void Animals_CollectNet(Scene& world, std::vector<AnimalNet>& out);                       // the server: every animal now
+void Animals_ApplyNet(const std::vector<AnimalNet>& in, const std::vector<uint64_t>& removed); // a client: states heard, and removals
+int Animals_FindNet(uint64_t netId);                                                      // index, -1 none
+bool Animals_HitNet(uint64_t netId, float damage, std::vector<std::pair<std::string, int>>& drops); // the server; true if it fell (drops filled)
+float Animals_HealthOf(int index);
 
 #endif

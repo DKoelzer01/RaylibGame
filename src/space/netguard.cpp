@@ -17,6 +17,7 @@ Limit LimitOf(NetMsg k) {
         case NetMsg::Loadout: return { 10, 20 };
         case NetMsg::EditRequest: return { 30, 60 };  // (#329 has its own stroke budget behind this)
         case NetMsg::PartRequest: return { 30, 60 };  // (#330 likewise)
+        case NetMsg::AnimalHit: return { 10, 20 };    // (#334; a swing cooldown is checked behind this)
         case NetMsg::Bye: return { 1, 2 };
         default: return { 0, 0 };                    // a server-to-client kind, or unknown: never from a client
     }

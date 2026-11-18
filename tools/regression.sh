@@ -177,6 +177,8 @@ multiplayer() {
         EXE="$gexe" bash "$here/tools/test_join.sh" 2>&1 | grep "^bench: join (" | tee -a "$log"
         echo "=== tools/test_join.sh on a non-default world (#757)" | tee -a "$log"
         WORLDGEN="ocean 0.4 mountains 1.6 cliffs 0 karst 0 erosion 0" PORT=27952 EXE="$gexe" bash "$here/tools/test_join.sh" 2>&1 | grep "^bench: join (" | tee -a "$log"
+        echo "=== tools/test_animals_net.sh (#334)" | tee -a "$log"
+        EXE="$gexe" bash "$here/tools/test_animals_net.sh" 2>&1 | grep "=== test_animals_net" | sed 's/=== test_animals_net: \([A-Z]*\).*/bench: animals on the server (#334): same herd, a hit applied for both -> \1/' | tee -a "$log"
     fi
 }
 

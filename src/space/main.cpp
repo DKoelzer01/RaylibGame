@@ -513,6 +513,7 @@ int main(int argc, char** argv)
     bool benchJoin = false;        // --test-join (with --join): the client side of the two-process test (tools/test_join.sh)
     int benchJoinPhase = 0;
     int swarmBots = 0; double swarmSoak = 60.0; // --bots N [--soak S] with --join (#348): N walking bots from this process, S seconds
+    bool benchNetAnimals = false;  // --test-net-animals (with --join; #334): the client side of tools/test_animals_net.sh
     uint16_t hostPort = kDefaultHostPort; // --port N
     bool benchHost = false;        // --test-host (#311): with --host, a loopback client joins
     bool benchTimeFollow = false;  // --test-time-follow (#339): the world clock follows a server time (slew, snap)
@@ -763,6 +764,7 @@ int main(int argc, char** argv)
         if (std::string(argv[i]) == "--test-join") benchJoin = true;
         if (std::string(argv[i]) == "--bots" && i + 1 < argc) swarmBots = std::max(1, atoi(argv[i + 1]));
         if (std::string(argv[i]) == "--soak" && i + 1 < argc) swarmSoak = std::max(1.0, atof(argv[i + 1]));
+        if (std::string(argv[i]) == "--test-net-animals") benchNetAnimals = true;
         if (std::string(argv[i]) == "--port" && i + 1 < argc) hostPort = (uint16_t)atoi(argv[i + 1]);
         if (std::string(argv[i]) == "--host-password" && i + 1 < argc) Host_SetPassword(argv[i + 1]); // (#321)
         if (std::string(argv[i]) == "--max-players" && i + 1 < argc) Host_SetMaxPlayers(atoi(argv[i + 1]));
@@ -1321,6 +1323,9 @@ int main(int argc, char** argv)
         world.objects.clear();
         generateWorld(world);
         gNetClient = &gJoin;
+        // (#334) the server owns the animals: none decided here; a swing at one is a request to the server
+        gAnimalsReplicated = true; Animals_Reset();
+        gAnimalHitRequest = [](uint64_t netId) { NetClient_HitAnimal(gJoin, netId); };
         printf("join: joined %s as %s, session %u%s; seed %u, %zu bodies, %s world-gen settings%s; server world time %.1f s\n", joinAddr.c_str(), joinName.c_str(), gJoin.welcome.session,
                gJoin.welcome.reconnected ? " (reconnected)" : "", gJoin.welcome.seed, sys.bodies.size(), joinParams.isDefault() ? "default" : "custom",
                gJoin.welcome.sandbox ? ", sandbox" : "", gJoin.welcome.worldTime);
@@ -8633,7 +8638,7 @@ int main(int argc, char** argv)
                         }
                         benchWalkSeconds = 0.0;
                     }
-                } else if ((WorldIdle() && benchDigStrokes == 0 && !benchPaint && !benchSaveLoad && benchWalkSeconds <= 0.0 && benchMineStrokes == 0 && minePhase != 2 && benchFlySeconds <= 0.0 && !benchSuffocate && benchOrbitSeconds <= 0.0 && !benchRide && !benchPark && !benchGravity && !benchPrecision && !benchMantle && !benchAirJump && !benchMoon && !benchHole && !benchWall && !benchDoorway && !benchLedge && !benchTor && !benchMachines && !benchFall && !benchHover && !benchNetIds && !benchNet && !benchTwoPlayers && !benchFingerprint && !benchInterest && !benchTeleClose && !benchMenus && !benchWater && !benchFlyFollow && !benchHotbar && !benchInventory && !benchMap && !benchViewmodel && !benchQuests && !benchHunger && !benchFarm && !benchAnimals && !benchThreats && !benchAnimalPath && !benchDam && !benchFlowMeter && !benchPartWall && !benchPressure && benchShotTabs == 0 && !benchForest && !benchFlow && !benchPond && !benchBucket && !benchWaterSpeed && benchFluidLoad <= 0.0f && !benchFlowShade && !benchPump && !benchTerrain && !benchWind && !benchCampfire && !benchCaveMouth && !benchMountain && !benchShelter && !benchRoom && !benchFacing && !benchDungeon && !benchPosture && !benchPause && !benchBite && !benchPlacement && !benchShotDig && !benchShadow && !benchParticles && !benchBiomes && !benchOil && !benchSpring && !benchShotAnimals && !benchShotAvatar && !benchShotMachines && benchShotBiomes < 0 && !benchFarForest && !benchRecipes && !benchWeather && !benchDecor && !benchMaterials && !benchDamage && !benchCrafting && !benchSuit && !benchTools && !benchRivers && !benchRing && !benchRocket && !benchStation && !benchBlueprint && !benchSmallBody && !benchTrees && !benchChop && benchPersist == 0 && benchBuild == 0 && benchFactory == 0 && !benchCombat && !benchHost && !benchJoin && !benchTimeFollow && benchPlayerCost == 0 && !benchNetAbuse && !benchNetMove && !benchNetDig && !benchNetBuild && benchMpBots == 0 && !benchShower && !benchProgression && (benchUnfocus <= 0.0f || unfocusPhase >= 6)) || GetTime() > 600.0) {
+                } else if ((WorldIdle() && benchDigStrokes == 0 && !benchPaint && !benchSaveLoad && benchWalkSeconds <= 0.0 && benchMineStrokes == 0 && minePhase != 2 && benchFlySeconds <= 0.0 && !benchSuffocate && benchOrbitSeconds <= 0.0 && !benchRide && !benchPark && !benchGravity && !benchPrecision && !benchMantle && !benchAirJump && !benchMoon && !benchHole && !benchWall && !benchDoorway && !benchLedge && !benchTor && !benchMachines && !benchFall && !benchHover && !benchNetIds && !benchNet && !benchTwoPlayers && !benchFingerprint && !benchInterest && !benchTeleClose && !benchMenus && !benchWater && !benchFlyFollow && !benchHotbar && !benchInventory && !benchMap && !benchViewmodel && !benchQuests && !benchHunger && !benchFarm && !benchAnimals && !benchThreats && !benchAnimalPath && !benchDam && !benchFlowMeter && !benchPartWall && !benchPressure && benchShotTabs == 0 && !benchForest && !benchFlow && !benchPond && !benchBucket && !benchWaterSpeed && benchFluidLoad <= 0.0f && !benchFlowShade && !benchPump && !benchTerrain && !benchWind && !benchCampfire && !benchCaveMouth && !benchMountain && !benchShelter && !benchRoom && !benchFacing && !benchDungeon && !benchPosture && !benchPause && !benchBite && !benchPlacement && !benchShotDig && !benchShadow && !benchParticles && !benchBiomes && !benchOil && !benchSpring && !benchShotAnimals && !benchShotAvatar && !benchShotMachines && benchShotBiomes < 0 && !benchFarForest && !benchRecipes && !benchWeather && !benchDecor && !benchMaterials && !benchDamage && !benchCrafting && !benchSuit && !benchTools && !benchRivers && !benchRing && !benchRocket && !benchStation && !benchBlueprint && !benchSmallBody && !benchTrees && !benchChop && benchPersist == 0 && benchBuild == 0 && benchFactory == 0 && !benchCombat && !benchHost && !benchJoin && !benchTimeFollow && benchPlayerCost == 0 && !benchNetAnimals && !benchNetAbuse && !benchNetMove && !benchNetDig && !benchNetBuild && benchMpBots == 0 && !benchShower && !benchProgression && (benchUnfocus <= 0.0f || unfocusPhase >= 6)) || GetTime() > 600.0) {
                     benchStart = GetTime();
                     printf("bench: world ready after %.2f s (%d chunks, avg build %.2f ms of which sampling %.2f ms, %d worker threads)\n",
                         GetWorldStats().lastGenerationSeconds, GetWorldStats().chunks, GetWorldStats().avgBuildMs, GetWorldStats().avgSampleMs, GetWorldStats().workerThreads);
@@ -10046,6 +10051,77 @@ int main(int argc, char** argv)
                     }
                 }
                 if (phase < 2 && GetTime() - t0 > 20.0) { printf("bench: net build: bob %s, carol %s after 20 s -> FAIL\n", NetClient_StateName(bob.state), NetClient_StateName(carol.state)); benchNetBuild = false; }
+            }
+        }
+        // Tests (#334): RAYLIBGAME_HOST_HERD="species count" - a host places a herd 10 m north of where players spawn, once the
+        // world is up (threats off), for tools/test_animals_net.sh.
+        if (!hostSave.empty() && getenv("RAYLIBGAME_HOST_HERD") && gameState == 1 && !loading && WorldIdle()) {
+            static bool placed = false;
+            if (!placed) {
+                placed = true;
+                char sp[64] = "woolback"; int n = 4; sscanf(getenv("RAYLIBGAME_HOST_HERD"), "%63s %d", sp, &n);
+                if (Planetoid* p = dynamic_cast<Planetoid*>(world.objects[0].get()))
+                    if (const auto* pf = dynamic_cast<const PlanetField*>(p->field.get())) {
+                        const Vector3 d0 = pf->findSpawnDir(p->seed);
+                        const Vector3 north = Vector3Normalize(Vector3CrossProduct(d0, Vector3Normalize(Vector3CrossProduct({ 0, 1, 0 }, d0))));
+                        const Vector3 d = Vector3Normalize(Vector3Add(d0, Vector3Scale(north, 10.0f / pf->radius)));
+                        Animals_SetThreats(false); Animals_SetNaturalSpawns(false);
+                        const int got = Animals_Spawn(world, *p, sp, Vector3Scale(d, pf->radius + pf->elevation(d)), n, false, 3.0f);
+                        printf("host: test herd: %d %s placed 10 m from the spawn\n", got, sp);
+                    }
+            }
+        }
+        // --test-net-animals (#334, with --join; tools/test_animals_net.sh): the client side. RAYLIBGAME_NET_ANIMALS_ROLE=hunter
+        // walks to the nearest animal and swings at it (requests: the server decides) until it falls; watcher stands by. Both
+        // print the animals they saw (ids), and per animal the health range seen and whether it went; the script compares them.
+        if (benchNetAnimals && gameState == 1 && !loading && gJoinSynced && WorldIdle()) {
+            static int ph = 0; static double t0 = 0.0, lastSwing = 0.0;
+            static uint64_t target = 0; static float targetStart = 0.0f;
+            struct Seen { float first = -1.0f, minHealth = 1e9f; bool gone = false; };
+            static std::map<uint64_t, Seen> seen;
+            const char* role = getenv("RAYLIBGAME_NET_ANIMALS_ROLE"); const bool hunter = role && !strcmp(role, "hunter");
+            for (int i = 0; i < Animals_Count(); ++i) { Seen& s = seen[Animals_NetId(i)]; if (s.first < 0.0f) s.first = Animals_HealthOf(i); s.minHealth = std::min(s.minHealth, Animals_HealthOf(i)); }
+            for (auto& [id, s] : seen) s.gone = Animals_FindNet(id) < 0;
+            Planetoid* b = player.nearest;
+            const Vector3 me = b ? b->toLocalD(player.position).toFloat() : Vector3{};
+            if (ph == 0) { t0 = GetTime(); ph = 1; }
+            if (ph == 1 && Animals_Count() >= 2) { ph = 2; t0 = GetTime(); }
+            if (ph == 1 && GetTime() - t0 > 30.0) { printf("bench: net animals (%s): no animals arrived in 30 s -> FAIL\n", role ? role : "?"); benchNetAnimals = false; }
+            if (ph == 2 && hunter) {
+                if (!target) { const int i = Animals_Nearest(me, 60.0f); if (i >= 0) { target = Animals_NetId(i); targetStart = Animals_HealthOf(i); printf("bench: net animals: hunting %llx (health %.1f)\n", (unsigned long long)target, targetStart); } }
+                const int i = target ? Animals_FindNet(target) : -1;
+                if (target && i < 0) { ph = 3; t0 = GetTime(); player.autoWalk = false; } // it fell (or left: the summary tells)
+                else if (i >= 0 && b) {
+                    const Vector3 to = Vector3Subtract(b->toWorld(Animals_Position(i)), (player.position - world.renderOrigin).toFloat());
+                    const Vector3 flat = Vector3Subtract(to, Vector3Scale(player.up, Vector3DotProduct(to, player.up)));
+                    const float dist = Vector3Length(flat);
+                    if (dist > 0.1f) player.forward = Vector3Normalize(flat);
+                    player.autoWalk = dist > 2.0f;
+                    if (dist < 3.5f && GetTime() - lastSwing > 0.4) { lastSwing = GetTime(); NetClient_HitAnimal(gJoin, target); }
+                }
+                if (GetTime() - t0 > 40.0) { ph = 3; t0 = GetTime(); player.autoWalk = false; }
+            }
+            const double stay = getenv("RAYLIBGAME_JOIN_LINGER") ? atof(getenv("RAYLIBGAME_JOIN_LINGER")) : 0.0;
+            // RAYLIBGAME_ANIMALS_SHOT=<file> (the watcher): its last 3 s face the nearest animal, then a screenshot - the server's
+            // herd as this client draws it.
+            const char* shot = getenv("RAYLIBGAME_ANIMALS_SHOT");
+            if (shot && *shot && !hunter && ph == 2 && b && GetTime() - t0 > stay - 3.0) {
+                const int i = Animals_Nearest(me, 80.0f);
+                if (i >= 0) {
+                    const Vector3 to = Vector3Subtract(b->toWorld(Animals_Position(i)), (player.position - world.renderOrigin).toFloat());
+                    const Vector3 flat = Vector3Subtract(to, Vector3Scale(player.up, Vector3DotProduct(to, player.up)));
+                    if (Vector3Length(flat) > 0.1f) player.forward = Vector3Normalize(Vector3Add(Vector3Normalize(flat), Vector3Scale(player.up, -0.15f)));
+                }
+                static bool taken = false;
+                if (!taken && GetTime() - t0 > stay - 0.2) { taken = true; TakeScreenshot(shot); printf("bench: net animals (watcher): %s\n", shot); }
+            }
+            if ((ph == 3 && GetTime() - t0 > 2.0) || (ph == 2 && !hunter && GetTime() - t0 > stay)) {
+                std::string ids; for (const auto& [id, s] : seen) ids += TextFormat(" %llx", (unsigned long long)id);
+                printf("bench: net animals (%s): saw %zu animals:%s\n", role ? role : "?", seen.size(), ids.c_str());
+                for (const auto& [id, s] : seen) printf("bench: net animals (%s): %llx health %.1f -> %.1f, gone %d\n", role ? role : "?", (unsigned long long)id, s.first, s.minHealth, (int)s.gone);
+                if (hunter) printf("bench: net animals (hunter): target %llx %s\n", (unsigned long long)target, target && Animals_FindNet(target) < 0 ? "fell" : "still standing");
+                NetClient_Disconnect(gJoin);
+                benchNetAnimals = false;
             }
         }
         // --test-join (with --join; tools/test_join.sh runs the host and two clients as separate processes): the client side.
