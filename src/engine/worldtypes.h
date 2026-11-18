@@ -151,6 +151,8 @@ public:
 
     float densityAt(Vector3 local) const; // includes edits; main-thread helper (raycasts)
     VoxelMaterial materialAt(Vector3 local) const; // the material there: placed ground's own, else the field's
+    // #636: with the visible surface's normal (body-local), as the meshes pick it: steep faces show rock, not turf or gravel
+    VoxelMaterial materialAt(Vector3 local, Vector3 normal) const;
     // Velocity (world units/s) of the body-fixed point currently at renderPoint, from the spin.
     Vector3 surfaceVelocity(Vector3 renderPoint) const;
     // Body-local direction <-> world direction (rotation only).

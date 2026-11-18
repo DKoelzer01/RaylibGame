@@ -582,6 +582,7 @@ bool TerrainTool_Stroke(bool dig) {
     const float step = r / 4.0f;
     const Vector3 centre = DigCentre(r);
     const float cell = step * step * step * p.scale * p.scale * p.scale;
+    const Vector3 surfN = p.field->normal(hit.local, p.edits.get()); // the face being dug: materials as drawn (#636)
     std::map<std::string, float> got;
     bool grass = false;
     const char* stoneKindAt = nullptr;
@@ -597,7 +598,7 @@ bool TerrainTool_Stroke(bool dig) {
                 const Vector3 q = Vector3Add(centre, { x * step, y * step, z * step });
                 const float d = p.densityAt(q);
                 if (d < ISO_LEVEL || !p.field->editable(q)) continue;
-                const VoxelMaterial m = p.materialAt(q);
+                const VoxelMaterial m = p.materialAt(q, surfN);
                 if (softOnly && !IsSoft(m)) continue;
                 const char* item = ItemAt(p, q, m);
                 got[item] += cell * 2.0f;
