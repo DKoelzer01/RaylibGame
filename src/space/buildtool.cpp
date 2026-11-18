@@ -7,6 +7,7 @@
 #include "audio.h"
 #include "gamerng.h"
 #include "gameui.h"
+#include "hotbar.h"
 #include "inventory.h"
 #include "player.h"
 #include "terraintool.h"
@@ -449,11 +450,15 @@ void Machine_Update(Scene& world, const PlayerInput& in) {
     if (in.hit(Act::Insert)) {
         // Everything in the inventory the machine might take: fuel for generators, recipe inputs,
         // anything for a chest (the simulation hands back what does not fit).
-        // A chest takes the hand's raw materials only (not tools and machines).
+        // A chest takes everything (#568) but tools and what is on the hotbar, as the chest screen's "Put in all".
         const auto all = inventory.all(); // copy: we remove while walking it
         for (const auto& kv : all) {
             if (kv.second <= 0 || !Factory::Accepts(machineAim.type, kv.first)) continue;
-            if (machineAim.type == PartType::Chest && (kv.first == "telescope" || IsMachineItem(kv.first))) continue;
+            if (machineAim.type == PartType::Chest) {
+                bool bound = false;
+                for (int s = 0; s < Inventory::kHotbar; ++s) bound = bound || Hotbar_Slot(s) == kv.first;
+                if (bound || KindOf(kv.first) == ItemKind::Tool) continue;
+            }
             if (inventory.remove(kv.first, kv.second)) Factory::Insert(machineAim.body, machineAim.plot, machineAim.part, kv.first, kv.second);
         }
         Audio_Play(Sfx::Pickup, 0.4f, 0.8f);
