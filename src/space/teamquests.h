@@ -8,6 +8,7 @@
 
 #include <functional>
 #include <string>
+#include <raylib.h>
 
 struct QuestBookState;
 
@@ -16,6 +17,12 @@ void TeamQuests_Count(int team, const std::string& event, double n = 1.0);
 void TeamQuests_AtLeast(int team, const std::string& event, double value);
 void TeamQuests_NotePlaced(int team, const std::string& item);
 void TeamQuests_Obtained(int team, const std::string& item, double n);
+// (#338 slice 3) a player of `team` on `body` (body-local unit `up`, radius R) reveals map tiles as the local map does
+// (Nav_RevealTiles); a team's tiles are one set per body (teammates add up, a tile counts once), saved with its book and
+// never sent to clients; "explored" rises to their total.
+int TeamQuests_Explore(int team, const std::string& body, Vector3 up, float radius); // the team's total when it grew, else 0
+double TeamQuests_Explored(int team);
+void TeamQuests_Visit(int team, bool moon);           // a moon visited (else the ring)
 // Evaluates the book (tiers, side lines); reward(item, count) for each reward, news(text) for each tier-up / node done.
 void TeamQuests_Update(int team, const std::function<void(const std::string&, int)>& reward, const std::function<void(const std::string&)>& news);
 std::string TeamQuests_Text(int team);   // the book as its save lines (what a client gets)

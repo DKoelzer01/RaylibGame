@@ -2,16 +2,21 @@
 #include "survival.h"
 #include "questtree.h"
 #include "playerrecord.h"
+#include "navigation.h"
+#include <unordered_set>
 
 #include <cstdio>
 #include <cstring>
 #include <process.h>
 #include <string>
 #include <raylib.h>
+#include <raymath.h>
 #include <map>
 
 namespace {
     std::map<int, QuestBookState> books; // loaded team books (by team id)
+    // (#338 slice 3) the map tiles each team has explored, by body: saved with its book (team_tiles lines), never sent to clients
+    std::map<int, std::map<std::string, std::unordered_set<uint64_t>>> tiles;
 
     // The book selected while `fn` runs (every QuestBook_* call works on the selected one), then the local one again.
     template <class F> void With(QuestBookState& b, F fn) {
@@ -29,7 +34,7 @@ namespace {
         if (!DirectoryExists("saves")) MakeDirectory("saves");
         return fopen(kScratch.c_str(), mode);
     }
-    void Parse(const std::string& text) {
+    void Parse(const std::string& text, std::map<std::string, std::unordered_set<uint64_t>>* teamTiles = nullptr) {
         if (text.empty()) return;
         FILE* f = Scratch("wb");
         if (!f) return;
@@ -37,8 +42,17 @@ namespace {
         fclose(f);
         if (!(f = Scratch("rb"))) return;
         char tok[64], rest[512];
-        while (fscanf(f, " %63s", tok) == 1)
+        while (fscanf(f, " %63s", tok) == 1) {
+            if (!strcmp(tok, "team_tiles")) { // (#338 slice 3) team_tiles <body> <n> <hex>... (only a team's stored block has them)
+                char body[64] = {}; int n = 0;
+                if (fscanf(f, " %63s %d", body, &n) != 2) break;
+                std::unordered_set<uint64_t> dummy;
+                auto& set = teamTiles ? (*teamTiles)[body] : dummy;
+                for (int k = 0; k < n; ++k) { unsigned long long key = 0; if (fscanf(f, " %llx", &key) != 1) break; set.insert(key); }
+                continue;
+            }
             if (!QuestBook_LoadLine(tok, f) && !fgets(rest, sizeof rest, f)) break; // an unknown line: skipped
+        }
         fclose(f);
         std::remove(kScratch.c_str());
     }
@@ -65,7 +79,7 @@ QuestBookState& TeamQuests_Book(int team) {
     b.ownObtained = true;
     With(b, [&] {
         QuestBook_Reset();
-        for (const TeamRecord& t : Teams_All()) if (t.id == team) { Parse(t.quests); break; }
+        for (const TeamRecord& t : Teams_All()) if (t.id == team) { Parse(t.quests, &tiles[team]); break; }
     });
     return b;
 }
@@ -91,10 +105,19 @@ std::string TeamQuests_Text(int team) {
 }
 
 void TeamQuests_StoreAll() {
-    for (auto& [team, b] : books) { std::string s; With(b, [&] { s = Write(); }); Teams_SetQuests(team, s); }
+    for (auto& [team, b] : books) {
+        std::string s; With(b, [&] { s = Write(); });
+        for (const auto& [body, set] : tiles[team]) { // (#338 slice 3)
+            s += "team_tiles " + body + " " + std::to_string(set.size());
+            int k = 0;
+            for (uint64_t key : set) { char hex[24]; snprintf(hex, sizeof hex, " %llx", (unsigned long long)key); s += hex; if (++k % 16 == 0 && k < (int)set.size()) s += "\n"; }
+            s += "\n";
+        }
+        Teams_SetQuests(team, s);
+    }
 }
 
-void TeamQuests_Reset() { books.clear(); }
+void TeamQuests_Reset() { books.clear(); tiles.clear(); }
 
 void TeamQuests_ApplyText(const std::string& text) {
     QuestBook_Select(nullptr);
@@ -132,6 +155,39 @@ bool TeamQuests_SelfTest() {
     bool again = false; double logs = 0.0;
     With(TeamQuests_Book(a), [&] { again = QuestTree_IsDone("e0f"); logs = QuestBook_Selected().obtained["oak_log"]; });
     check(again && logs > 2.99, "stored and reloaded: the node and the team's obtained totals kept");
+    // (#338 slice 3) exploring and visits: two spots 600 m apart on a 60 km body add up for the team, the same spot twice
+    // adds nothing, the tiles survive a store and reload; a moon visit sets only that team's flag
+    const Vector3 p1 = { 0.0f, 1.0f, 0.0f }, p2 = Vector3Normalize(Vector3{ 0.01f, 1.0f, 0.0f });
+    const int e1 = TeamQuests_Explore(a, "terra", p1, 60000.0f), e2 = TeamQuests_Explore(a, "terra", p2, 60000.0f), e3 = TeamQuests_Explore(a, "terra", p1, 60000.0f);
+    check(e1 > 0 && e2 > e1 && e3 == 0 && TeamQuests_Explored(a) == (double)e2, "exploring adds up for the team; the same ground twice adds nothing");
+    TeamQuests_Visit(a, true);
+    bool moonA = false, moonB = false;
+    With(TeamQuests_Book(a), [&] { moonA = QuestBook_Met("visit", "moon", 1.0); });
+    With(TeamQuests_Book(b), [&] { moonB = QuestBook_Met("visit", "moon", 1.0); });
+    check(moonA && !moonB, "a moon visit counts for that team only");
+    TeamQuests_StoreAll();
+    TeamQuests_Reset();
+    check(TeamQuests_Explore(a, "terra", p1, 60000.0f) == 0 && TeamQuests_Explore(a, "terra", p2, 60000.0f) == 0, "stored and reloaded: the team's tiles kept");
     printf("bench: team quests: %s\n", ok ? "PASS" : "FAIL");
     return ok;
+}
+
+int TeamQuests_Explore(int team, const std::string& body, Vector3 up, float radius) {
+    TeamQuests_Book(team); // (its stored tiles load with it)
+    if (Nav_RevealTiles(up, radius, tiles[team][body]) == 0) return 0;
+    size_t all = 0;
+    for (const auto& [b, set] : tiles[team]) all += set.size();
+    TeamQuests_AtLeast(team, "explored", (double)all);
+    return (int)all;
+}
+
+void TeamQuests_Visit(int team, bool moon) {
+    QuestBookState& b = TeamQuests_Book(team);
+    if (moon) b.visitedMoon = true; else b.visitedRing = true;
+}
+
+double TeamQuests_Explored(int team) {
+    double n = 0.0;
+    With(TeamQuests_Book(team), [&] { n = QuestBook_CountOf("explored"); });
+    return n;
 }
