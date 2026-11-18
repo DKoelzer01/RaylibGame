@@ -10,6 +10,11 @@
 #include "worldgenparams.h"
 #include "player.h"
 #include "netclient.h"
+#include "terraintool.h"
+#include "tools.h"
+#include "inventory.h"
+#include <cmath>
+#include <map>
 #include "playerinput.h"
 #include "worldtypes.h"
 #include "voxel.h"
@@ -59,6 +64,10 @@ namespace {
         long long tick = 0;         // the server sim tick the budget has been earned to
         Vector3 forwardLocal{ 0, 0, 1 };
         uint8_t action = 0; float actionPhase = 0.0f; // the hands, from the newest input packet (relayed, #750)
+        // Terrain edits (#329): the player's inventory as the server keeps it (yields go in, placing is paid from it; the
+        // client mirrors it from InventoryDelta), and a stroke budget (a token per tool cooldown, a short burst allowed).
+        Inventory inventory;
+        double editTokens = 2.0, editTokensAt = -1.0;
     };
     std::unordered_map<uint32_t, Remote> remotes;      // by session
     long long lastSnapshot = 0;
@@ -200,6 +209,86 @@ namespace {
         printf("host: %s joined as session %u%s (connection %u, %d joins so far)\n", h.name.c_str(), s->id, reconnected ? " (reconnected)" : "", conn, joins);
     }
 
+    // ---- Terrain edits (#329) ----
+    constexpr double kReachSlack = 1.5;                // m past the tool's reach (the player moved on while the request flew)
+    constexpr double kEditBurst = 3.0;                 // strokes that may arrive together (a hitch, packet bunching)
+    int editsApplied = 0;
+
+    void SendInventoryDeltas(uint32_t conn, const Inventory& inv, const std::map<std::string, double>& before) {
+        for (const auto& [item, was] : before) {
+            const double d = inv.amount(item) - was;
+            if (std::fabs(d) >= 0.005) SendMsg(conn, MsgInventoryDelta{ item, std::round(d * 100.0) / 100.0 });
+        }
+    }
+    void RefuseEdit(uint32_t conn, uint32_t seq, NetEditRefusal why) {
+        SendMsg(conn, MsgEditRefused{ seq, why });
+        printf("host: edit %u refused: %s\n", seq, NetEditRefusalText(why));
+    }
+    // Validate a stroke as the tool would make it, from the server's own view of the player (where it stands, what it
+    // holds), then apply it, pay or credit that player, and send it to everyone in this order.
+    void OnEditRequest(Scene& world, uint32_t conn, uint32_t session, const MsgEditRequest& q) {
+        Remote& rm = remotes[session];
+        Planetoid* p = Planetoid::findNet(q.body);
+        if (!p) { RefuseEdit(conn, q.seq, NetEditRefusal::Body); return; }
+        const Vector3 hit = q.hit.toFloat(), centre = q.center.toFloat();
+        // Reach: from the eye of the server's player (body-local), as far as the tool's raycast goes.
+        Player::NetState ns;
+        if (!rm.player.netState(world, ns) || ns.body != q.body) { RefuseEdit(conn, q.seq, NetEditRefusal::Reach); return; }
+        const DVec3 up = ns.local * (1.0 / std::max(1e-9, ns.local.length()));
+        const DVec3 eye = ns.local + up * (double)rm.player.eyeHeight;
+        if ((q.hit - eye).length() * p->scale > TerrainToolSettings{}.reach + kReachSlack) { RefuseEdit(conn, q.seq, NetEditRefusal::Reach); return; }
+        if (!p->field->editable(hit)) { RefuseEdit(conn, q.seq, NetEditRefusal::Mantle); return; }
+        // The tool in the player's hands (its loadout; possession is #331's) and what it does to the aimed ground.
+        std::string held;
+        for (const Session& s : sessions) if (s.id == session) held = s.loadout.held;
+        const ToolSpec tool = ToolOf(held);
+        const Vector3 surfN = p->field->normal(hit, p->edits.get());
+        const VoxelMaterial mat = p->materialAt(hit, surfN);
+        const DigRule rule = DigRuleFor(tool, mat, TerrainTool_ItemAt(*p, hit, (int)mat));
+        const float baseRadius = (rule.radius > 0.0f ? rule.radius : DigRuleFor(tool, VoxelMaterial::Regolith, nullptr).radius) / p->scale;
+        const bool dig = q.kind == NetEditKind::Dig;
+        if (dig && !rule.can) { RefuseEdit(conn, q.seq, NetEditRefusal::Tool); return; }
+        // The stroke's shape: the tool's sphere (place: 1.3x, the soft blob), its centre where the tool puts it.
+        const float maxRadius = baseRadius * (dig ? 1.0f : 1.3f) * 1.01f + 1e-4f;
+        const float offset = Vector3Distance(hit, centre);
+        if (q.radius > maxRadius || offset > q.radius * (dig ? 0.5f : 0.3f) + 0.05f) { RefuseEdit(conn, q.seq, NetEditRefusal::Shape); return; }
+        // Rate: a token per cooldown (the tool's strokes a second, at least 2), up to a small burst.
+        const double rate = std::max(rule.strokesPerSecond, 2.0f);
+        if (rm.editTokensAt < 0.0) rm.editTokensAt = SimTime();
+        rm.editTokens = std::min(kEditBurst, rm.editTokens + (SimTime() - rm.editTokensAt) * rate);
+        rm.editTokensAt = SimTime();
+        if (rm.editTokens < 0.999) { RefuseEdit(conn, q.seq, NetEditRefusal::Rate); return; }
+        MsgTerrainEdit out;
+        out.body = q.body; out.center = q.center; out.radius = q.radius; out.session = session; out.seq = q.seq;
+        TerrainEdit e{};
+        e.center = centre; e.radius = q.radius;
+        std::map<std::string, double> before;
+        if (dig) {
+            const bool softOnly = tool.type != ToolType::Pickaxe;
+            const DigYield got = TerrainTool_DigYield(*p, centre, q.radius, hit, softOnly, 1);
+            for (const auto& [item, amt] : got.items) { before.emplace(item, rm.inventory.amount(item)); }
+            if (got.gem) before.emplace(got.gem, rm.inventory.amount(got.gem));
+            if (got.seed) before.emplace(got.seed, rm.inventory.amount(got.seed));
+            for (const auto& [item, amt] : got.items) rm.inventory.addFractional(item, amt);
+            if (got.gem) rm.inventory.add(got.gem, 1);
+            if (got.seed) rm.inventory.add(got.seed, 1);
+            e.carve = true; e.softOnly = softOnly;
+            out.flags = 1 | (softOnly ? 8 : 0);
+        } else {
+            const int paint = TerrainTool_FillerMaterial(q.item);
+            if (paint < 0) { RefuseEdit(conn, q.seq, NetEditRefusal::Shape); return; }
+            before.emplace(q.item, rm.inventory.amount(q.item));
+            if (!rm.inventory.removeAmount(q.item, 1.0)) { RefuseEdit(conn, q.seq, NetEditRefusal::Cost); return; }
+            e.strength = 0.6f; e.paint = paint;
+            out.strength = e.strength; out.paint = (int8_t)paint;
+        }
+        rm.editTokens -= 1.0;
+        ApplyTerrainEdit(*p, e);
+        SendToJoined(out); // everyone, the asker too, in the server's order
+        SendInventoryDeltas(conn, rm.inventory, before);
+        ++editsApplied;
+    }
+
     void OnMessage(Scene& world, const NetMessage& m) {
         auto it = peers.find(m.conn);
         if (it == peers.end()) it = peers.emplace(m.conn, Peer{}).first; // first word on a new connection
@@ -234,6 +323,12 @@ namespace {
                 l.session = it->second.session; // (a client speaks only for itself)
                 for (Session& s : sessions) if (s.id == l.session) s.loadout = l;
                 SendToJoined(l);
+                return;
+            }
+            case NetMsg::EditRequest: {
+                MsgEditRequest q;
+                if (!it->second.joined || !NetRead(r, q)) return;
+                OnEditRequest(world, m.conn, it->second.session, q);
                 return;
             }
             case NetMsg::Bye: { MsgBye b; if (NetRead(r, b)) Drop(m.conn, NetBye::Quit); return; }
@@ -328,4 +423,9 @@ bool Host_PlayerLocal(Scene& world, uint32_t session, uint64_t& body, DVec3& loc
     const MsgPlayerState s = StateOf(world, session, it->second);
     body = s.body; local = s.local;
     return true;
+}
+int Host_EditsApplied() { return editsApplied; }
+double Host_InventoryAmount(uint32_t session, const std::string& item) {
+    auto it = remotes.find(session);
+    return it == remotes.end() ? 0.0 : it->second.inventory.amount(item);
 }

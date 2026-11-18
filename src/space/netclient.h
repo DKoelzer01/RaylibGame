@@ -61,6 +61,14 @@ struct NetClient {
     int rosters = 0;                             // rosters received
     MsgLoadout loadout; bool loadoutSent = false; // ours, as last sent (NetClient_SetLoadout sends a change)
     int action = 0; float actionPhase = 0.0f;    // our hands now (the game sets them; sent with every input packet)
+    // Terrain edits (#329)
+    class Inventory* inventory = nullptr;        // follows the server's copy (InventoryDelta); the game's: the local one
+    uint32_t editSeq = 0;                        // our requests so far
+    int editsSeen = 0, editsOwn = 0, editsRefused = 0, inventoryDeltas = 0;
+    int placesSeen = 0;                          // edits that placed ground (the soft brush)
+    NetEditRefusal lastRefusal = NetEditRefusal::Count;
+    uint32_t refusedWhy = 0;                     // a bit per NetEditRefusal seen
+    uint64_t editOrder = 14695981039346656037ull; // a hash of every edit's (session, seq) in the order applied
 };
 
 // One sim step of the joined client's own player: send the input, predict with it (in its own frame), and reconcile
@@ -74,6 +82,9 @@ bool NetClient_OtherState(const NetClient& c, uint32_t session, MsgPlayerState& 
 void NetClient_FillAvatars(const NetClient& c, Scene& world, std::vector<AvatarState>& out);
 // Our held item, headlamp and suit tier; sent (reliable) only when they change.
 void NetClient_SetLoadout(NetClient& c, const std::string& held, bool headlamp, int suitTier);
+// Ask the server for a dig or place stroke (#329; the terrain tool's gTerrainToolNetEdit while joined). Returns its
+// seq (0: not joined). The edit comes back as a TerrainEdit with it, or an EditRefused.
+uint32_t NetClient_RequestEdit(NetClient& c, NetEditKind kind, const class Planetoid& body, Vector3 hit, Vector3 centre, float radius, const std::string& item);
 // The game's client (null: not connected to a server). main.cpp draws its other players.
 extern NetClient* gNetClient;
 // A player's state on the wire and back (#327; server and client use the same).
