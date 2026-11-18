@@ -147,7 +147,7 @@ void main()
         float tint = 0.35f, exposure = 10.0f;
     } S;
 
-    bool EnvOn() { const char* e = getenv("RAYLIBGAME_SKY_PHYS"); return e && e[0] == '1'; }
+    bool EnvOn() { const char* e = getenv("RAYLIBGAME_SKY_PHYS"); return !(e && e[0] == '0'); } // on by default (user, 2026-11-18); =0 off
 
     GLuint Program(const std::string& common, const char* body, const char* name)
     {

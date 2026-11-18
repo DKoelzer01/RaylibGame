@@ -15,7 +15,7 @@ uniform vec3 toLocalX, toLocalY, toLocalZ; // the planet-local images of the wor
 uniform float cloudShell;      // the cloud layer's radius (m); 0 = no clouds
 uniform vec3 cloudDrift;       // wind drift so far (m, planet-local)
 uniform float cloudCover;      // 0..1 (weather), with a floor applied here
-// #142: the physical sky (RAYLIBGAME_SKY_PHYS=1): the sky-view LUT (skyphys.cpp), pulled toward the palette below by skyPhysTint.
+// #142: the physical sky (on by default; RAYLIBGAME_SKY_PHYS=0: off): the sky-view LUT (skyphys.cpp), pulled toward the palette below by skyPhysTint.
 uniform float skyPhys;         // 1: on (the LUT is bound)
 #include "skyphys.glsl"
 
