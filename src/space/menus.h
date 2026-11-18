@@ -48,6 +48,7 @@ struct GameSettings {
     uint32_t mpSuit = 0;            // 0xRRGGBB; 0 the default suit
     std::vector<std::string> mpRecent; // servers joined, newest first (at most 5)
     int mpPort = 27015, mpMaxPlayers = 8;
+    std::string playerUuid;          // (#346) this install's player id on every server (made once; a name is only what others see)
 };
 extern GameSettings settings;
 void Settings_Load();            // settings.txt (missing: defaults)

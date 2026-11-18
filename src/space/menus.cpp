@@ -1,4 +1,5 @@
 #include "menus.h"
+#include "playerrecord.h"
 #include "scenetarget.h"
 #include "slideshow.h"
 #include "player.h"
@@ -269,6 +270,7 @@ void Settings_Load() {
             const float v = strtof(val, nullptr);
             if (!strcmp(key, "log_level")) { settings.logLevel = val; continue; }
             // Multiplayer (#341): words (a name, addresses), the suit colour in hex.
+            if (!strcmp(key, "player_uuid")) { settings.playerUuid = val; continue; } // (#346)
             if (!strcmp(key, "mp_name")) { settings.mpName = val; continue; }
             if (!strcmp(key, "mp_address")) { settings.mpAddress = val; continue; }
             if (!strcmp(key, "mp_recent")) { if (settings.mpRecent.size() < 5) settings.mpRecent.push_back(val); continue; }
@@ -294,6 +296,7 @@ void Settings_Load() {
         }
         fclose(f);
     }
+    if (!PlayerId_Valid(settings.playerUuid)) { settings.playerUuid = PlayerId_New(); Settings_Save(); } // (#346) made on the first start
     Settings_Apply();
 }
 
@@ -314,6 +317,7 @@ void Settings_Save() {
     if (!settings.mpAddress.empty()) fprintf(f, "mp_address %s\n", settings.mpAddress.c_str());
     for (const std::string& a : settings.mpRecent) fprintf(f, "mp_recent %s\n", a.c_str());
     fprintf(f, "mp_suit %06x\nmp_port %d\nmp_maxplayers %d\n", settings.mpSuit, settings.mpPort, settings.mpMaxPlayers);
+    if (!settings.playerUuid.empty()) fprintf(f, "player_uuid %s\n", settings.playerUuid.c_str()); // (#346)
     fclose(f);
 }
 
