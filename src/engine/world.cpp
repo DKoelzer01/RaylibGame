@@ -338,6 +338,7 @@ VoxelMaterial Planetoid::materialAt(Vector3 local, Vector3 normal) const {
 }
 
 float Planetoid::densityAt(Vector3 local) const {
+    ++densityCalls; // (#768)
     return field->density(local, edits.get());
 }
 

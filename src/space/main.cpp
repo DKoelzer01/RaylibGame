@@ -105,7 +105,15 @@ static std::vector<AvatarState> gAvatars, gBenchAvatars;
 static NetClient gJoin;
 static bool gJoinSynced = false;
 // #348: the server soak window (RAYLIBGAME_SOAK_PLAYERS=N): frame work times while N players are online.
-static double gFrameWorkStart = 0.0;
+static double gFrameWorkStart = 0.0, gFrameCpuStart = 0.0;
+// The main thread's CPU time in seconds (#768: a long frame with little CPU was the process starved, not slow code).
+#ifdef _WIN32
+extern "C" __declspec(dllimport) int __stdcall GetThreadTimes(void*, void*, void*, void*, void*);
+extern "C" __declspec(dllimport) void* __stdcall GetCurrentThread();
+static double ThreadCpuSeconds() { unsigned long long c, e, k, u; GetThreadTimes(GetCurrentThread(), &c, &e, &k, &u); return (double)(k + u) * 1e-7; }
+#else
+static double ThreadCpuSeconds() { return 0.0; }
+#endif
 static std::vector<float> gSoakWorkMs;
 static bool gSoakOn = false;
 #include "mpbots.h"
@@ -506,6 +514,7 @@ int main(int argc, char** argv)
     uint16_t hostPort = kDefaultHostPort; // --port N
     bool benchHost = false;        // --test-host (#311): with --host, a loopback client joins
     bool benchTimeFollow = false;  // --test-time-follow (#339): the world clock follows a server time (slew, snap)
+    int benchPlayerCost = 0;       // --test-player-cost N (#768): N players stepped as a server steps them; cost per update
     bool benchNetMove = false;     // --test-net-move (#327): two clients, prediction and interpolation over loopback
     bool benchNetDig = false;      // --test-net-dig (#329): a client's digs and places, validated and replicated
     bool benchNetBuild = false;    // --test-net-build (#330): a client's parts placed and broken, validated and replicated
@@ -756,6 +765,7 @@ int main(int argc, char** argv)
         if (std::string(argv[i]) == "--max-players" && i + 1 < argc) Host_SetMaxPlayers(atoi(argv[i + 1]));
         if (std::string(argv[i]) == "--test-host") benchHost = true;
         if (std::string(argv[i]) == "--test-time-follow") benchTimeFollow = true;
+        if (std::string(argv[i]) == "--test-player-cost" && i + 1 < argc) benchPlayerCost = std::max(1, atoi(argv[i + 1]));
         if (std::string(argv[i]) == "--test-net-move") benchNetMove = true;
         if (std::string(argv[i]) == "--test-net-dig") benchNetDig = true;
         if (std::string(argv[i]) == "--test-net-build") benchNetBuild = true;
@@ -1953,6 +1963,7 @@ int main(int argc, char** argv)
         Recorder_Update(WorldIdle() && !loading); // its start delay (after the loading screen), F10 in normal play
         GpuTimer_CpuFrameStart(!loading); GpuTimer_BeginFrame();
         gFrameWorkStart = GetTime(); // (#348) the frame's work, up to EndDrawing's wait
+        if (gSoakOn) gFrameCpuStart = ThreadCpuSeconds(); // (#768)
         FpsLog_Frame(gameState == 0 ? "menu" : gameState == 3 ? "newworld" : gameState == 2 ? "paused" : loading ? "loading" : "play");
         // --bench-unfocus S (#510): 1 unfocused during the preload for S s; then, playing: 2 measure 5 s, 3 unfocused S s,
         // 4 settle 2 s, 5 measure 5 s, then FPS before/after.
@@ -8617,7 +8628,7 @@ int main(int argc, char** argv)
                         }
                         benchWalkSeconds = 0.0;
                     }
-                } else if ((WorldIdle() && benchDigStrokes == 0 && !benchPaint && !benchSaveLoad && benchWalkSeconds <= 0.0 && benchMineStrokes == 0 && minePhase != 2 && benchFlySeconds <= 0.0 && !benchSuffocate && benchOrbitSeconds <= 0.0 && !benchRide && !benchPark && !benchGravity && !benchPrecision && !benchMantle && !benchAirJump && !benchMoon && !benchHole && !benchWall && !benchDoorway && !benchLedge && !benchTor && !benchMachines && !benchFall && !benchHover && !benchNetIds && !benchNet && !benchTwoPlayers && !benchFingerprint && !benchInterest && !benchTeleClose && !benchMenus && !benchWater && !benchFlyFollow && !benchHotbar && !benchInventory && !benchMap && !benchViewmodel && !benchQuests && !benchHunger && !benchFarm && !benchAnimals && !benchThreats && !benchAnimalPath && !benchDam && !benchFlowMeter && !benchPartWall && !benchPressure && benchShotTabs == 0 && !benchForest && !benchFlow && !benchPond && !benchBucket && !benchWaterSpeed && benchFluidLoad <= 0.0f && !benchFlowShade && !benchPump && !benchTerrain && !benchWind && !benchCampfire && !benchCaveMouth && !benchMountain && !benchShelter && !benchRoom && !benchFacing && !benchDungeon && !benchPosture && !benchPause && !benchBite && !benchPlacement && !benchShotDig && !benchShadow && !benchParticles && !benchBiomes && !benchOil && !benchSpring && !benchShotAnimals && !benchShotAvatar && !benchShotMachines && benchShotBiomes < 0 && !benchFarForest && !benchRecipes && !benchWeather && !benchDecor && !benchMaterials && !benchDamage && !benchCrafting && !benchSuit && !benchTools && !benchRivers && !benchRing && !benchRocket && !benchStation && !benchBlueprint && !benchSmallBody && !benchTrees && !benchChop && benchPersist == 0 && benchBuild == 0 && benchFactory == 0 && !benchCombat && !benchHost && !benchJoin && !benchTimeFollow && !benchNetMove && !benchNetDig && !benchNetBuild && benchMpBots == 0 && !benchShower && !benchProgression && (benchUnfocus <= 0.0f || unfocusPhase >= 6)) || GetTime() > 600.0) {
+                } else if ((WorldIdle() && benchDigStrokes == 0 && !benchPaint && !benchSaveLoad && benchWalkSeconds <= 0.0 && benchMineStrokes == 0 && minePhase != 2 && benchFlySeconds <= 0.0 && !benchSuffocate && benchOrbitSeconds <= 0.0 && !benchRide && !benchPark && !benchGravity && !benchPrecision && !benchMantle && !benchAirJump && !benchMoon && !benchHole && !benchWall && !benchDoorway && !benchLedge && !benchTor && !benchMachines && !benchFall && !benchHover && !benchNetIds && !benchNet && !benchTwoPlayers && !benchFingerprint && !benchInterest && !benchTeleClose && !benchMenus && !benchWater && !benchFlyFollow && !benchHotbar && !benchInventory && !benchMap && !benchViewmodel && !benchQuests && !benchHunger && !benchFarm && !benchAnimals && !benchThreats && !benchAnimalPath && !benchDam && !benchFlowMeter && !benchPartWall && !benchPressure && benchShotTabs == 0 && !benchForest && !benchFlow && !benchPond && !benchBucket && !benchWaterSpeed && benchFluidLoad <= 0.0f && !benchFlowShade && !benchPump && !benchTerrain && !benchWind && !benchCampfire && !benchCaveMouth && !benchMountain && !benchShelter && !benchRoom && !benchFacing && !benchDungeon && !benchPosture && !benchPause && !benchBite && !benchPlacement && !benchShotDig && !benchShadow && !benchParticles && !benchBiomes && !benchOil && !benchSpring && !benchShotAnimals && !benchShotAvatar && !benchShotMachines && benchShotBiomes < 0 && !benchFarForest && !benchRecipes && !benchWeather && !benchDecor && !benchMaterials && !benchDamage && !benchCrafting && !benchSuit && !benchTools && !benchRivers && !benchRing && !benchRocket && !benchStation && !benchBlueprint && !benchSmallBody && !benchTrees && !benchChop && benchPersist == 0 && benchBuild == 0 && benchFactory == 0 && !benchCombat && !benchHost && !benchJoin && !benchTimeFollow && benchPlayerCost == 0 && !benchNetMove && !benchNetDig && !benchNetBuild && benchMpBots == 0 && !benchShower && !benchProgression && (benchUnfocus <= 0.0f || unfocusPhase >= 6)) || GetTime() > 600.0) {
                     benchStart = GetTime();
                     printf("bench: world ready after %.2f s (%d chunks, avg build %.2f ms of which sampling %.2f ms, %d worker threads)\n",
                         GetWorldStats().lastGenerationSeconds, GetWorldStats().chunks, GetWorldStats().avgBuildMs, GetWorldStats().avgSampleMs, GetWorldStats().workerThreads);
@@ -9030,7 +9041,7 @@ int main(int argc, char** argv)
                 const double maxSecs = getenv("RAYLIBGAME_SOAK_SECONDS") ? atof(getenv("RAYLIBGAME_SOAK_SECONDS")) : 1e9;
                 const int online = Host_OnlinePlayers();
                 if (!gSoakOn && !soakDone && online >= want) {
-                    gSoakOn = true; soakT0 = GetTime(); gSoakWorkMs.clear(); Net_ResetTraffic(); GpuTimer_Enable(true);
+                    gSoakOn = true; soakT0 = GetTime(); gSoakWorkMs.clear(); Net_ResetTraffic(); GpuTimer_Enable(true); GpuTimer_SetSlowReport(30.0, 1000); // (#768: every frame over 30 ms, with its passes)
                     printf("host: soak: %d players online: measuring\n", online);
                 } else if (gSoakOn && (online < want || GetTime() - soakT0 > maxSecs)) {
                     gSoakOn = false; soakDone = true;
@@ -10089,6 +10100,70 @@ int main(int argc, char** argv)
                 }
             }
         }
+        // --test-player-cost N (#768): N players spread over 400 m of the start area, each walking a circle (one with a jump a
+        // second), stepped the way a server steps remote players (RenderOriginScope + Player::update per sim step) for 5 s.
+        // Prints the cost per update, density samples per update and the share spent in collision.
+        if (benchPlayerCost > 0 && gameState == 1 && !loading && WorldIdle()) {
+            static std::vector<std::unique_ptr<Player>> ps; static int pcPhase = 0; static long long pcTick = 0, updates = 0, dens0 = 0;
+            static double secs = 0.0, coll0 = 0.0, t0 = 0.0;
+            Planetoid* p = dynamic_cast<Planetoid*>(world.objects[0].get());
+            if (pcPhase == 0 && p) {
+                const Vector3 d0 = StartSpawnDir(*p);
+                for (int k = 0; k < benchPlayerCost; ++k) {
+                    auto pl = std::make_unique<Player>();
+                    pl->spawnOn(world, *p, LandDirAt(*p, d0, 20.0f + 400.0f * (float)k / std::max(1, benchPlayerCost)));
+                    ps.push_back(std::move(pl));
+                }
+                pcPhase = 1; pcTick = SimTick(); t0 = GetTime();
+            } else if (pcPhase == 1 && GetTime() - t0 > 2.0) { // settle (landing), then measure
+                pcPhase = 2; pcTick = SimTick(); t0 = GetTime(); updates = 0; secs = 0.0; dens0 = Planetoid::densityCalls; coll0 = gPlayerCollideSeconds;
+            }
+            if (pcPhase >= 1) {
+                for (; pcTick < SimTick(); ++pcTick)
+                    for (size_t k = 0; k < ps.size(); ++k) {
+                        Player& pl = *ps[k];
+                        PlayerInput in; in.enabled = true; in.hold(Act::Forward);
+                        if (k % 3 == 1 && pcTick % 60 == 0) in.press(Act::Jump);
+                        pl.forward = Vector3RotateByAxisAngle(pl.forward, pl.up, 30.0f * DEG2RAD / 60.0f);
+                        const auto a = std::chrono::steady_clock::now();
+                        { RenderOriginScope frame(world, pl.position); pl.update(world, in, SimDt()); }
+                        if (pcPhase == 2) { secs += std::chrono::duration<double>(std::chrono::steady_clock::now() - a).count(); ++updates; }
+                    }
+                if (pcPhase == 2 && GetTime() - t0 > 5.0) {
+                    const double perUs = 1e6 * secs / std::max(1LL, updates), collShare = (gPlayerCollideSeconds - coll0) / std::max(1e-9, secs);
+                    printf("bench: player cost (#768): %d players, %lld updates in %.1f s: %.0f us per update (%.2f ms a frame for %d players at 60 Hz), "
+                           "%.1f density samples per update, %.0f%% of the time in collision\n",
+                           benchPlayerCost, updates, GetTime() - t0, perUs, perUs * benchPlayerCost / 1000.0, benchPlayerCost,
+                           (double)(Planetoid::densityCalls - dens0) / std::max(1LL, updates), 100.0 * collShare);
+                    // Determinism (#768): physics must be a pure function of state and input (a client's replay and the server's
+                    // step must agree). Each of the first players is copied twice - one keeps its warm collision cache, the
+                    // other's is poisoned (every sphere "clear by a kilometre", as a stale cache would claim) - and both take the
+                    // same 120 steps (walk, turn, a jump, a crouch); positions and velocities must stay bit-identical.
+                    int checked = 0, diverged = 0; double worstGap = 0.0;
+                    for (size_t k = 0; k < std::min<size_t>(4, ps.size()); ++k) {
+                        Player warm = *ps[k], cold = *ps[k];
+                        cold.poisonCollideCache();
+                        bool same = true;
+                        for (int s = 0; s < 120; ++s) {
+                            PlayerInput in; in.enabled = true; in.hold(Act::Forward);
+                            if (s == 30) in.press(Act::Jump);
+                            if (s >= 70 && s < 100) in.hold(Act::Down);
+                            for (Player* q : { &warm, &cold }) {
+                                q->forward = Vector3RotateByAxisAngle(q->forward, q->up, 40.0f * DEG2RAD / 60.0f);
+                                RenderOriginScope frame(world, q->position); q->update(world, in, SimDt());
+                            }
+                            const DVec3 d = warm.position - cold.position;
+                            worstGap = std::max(worstGap, d.length());
+                            if (memcmp(&warm.position, &cold.position, sizeof(DVec3)) != 0 || memcmp(&warm.velocity, &cold.velocity, sizeof(Vector3)) != 0) same = false;
+                        }
+                        ++checked; diverged += same ? 0 : 1;
+                    }
+                    printf("bench: player determinism (#768): %d players stepped 120 times from a warm and a poisoned collision cache: %d diverged (largest gap %.6f m) -> %s\n",
+                           checked, diverged, worstGap, checked > 0 && diverged == 0 ? "PASS" : "FAIL");
+                    ps.clear(); benchPlayerCost = 0;
+                }
+            }
+        }
         // --test-time-follow (#339): the world clock follows a server's. 1 s behind: slewed in at 10% (the clock never runs
         // more than 1.1x nor jumps); 0.5 s ahead: slowed (0.9x, never backwards); 30 s behind: taken at once, and the planet's
         // spin keeps its phase (angle = phase + spin x time), so any machine with the same world time draws the same sky.
@@ -10811,7 +10886,12 @@ int main(int argc, char** argv)
             GpuTimer_Mark("2d-flush");
             if (Recorder_WantsFrame(true)) Recorder_Capture(); // the finished frame, HUD included (#375)
             Recorder_FrameDone();
-        if (gSoakOn) gSoakWorkMs.push_back((float)((GetTime() - gFrameWorkStart) * 1000.0)); // (#348) before the frame-rate wait
+        if (gSoakOn) { // (#348) before the frame-rate wait
+            const double workMs = (GetTime() - gFrameWorkStart) * 1000.0, cpuMs = (ThreadCpuSeconds() - gFrameCpuStart) * 1000.0;
+            gSoakWorkMs.push_back((float)workMs);
+            // (#768) a long frame: its main-thread CPU against its wall time (CPU well under wall = the thread waited: starved, or blocked)
+            if (workMs > 50.0) printf("bench: soak: long frame %.1f ms wall, %.1f ms main-thread CPU (%.0f%%) at %.1f s\n", workMs, cpuMs, 100.0 * cpuMs / workMs, GetTime());
+        }
         EndDrawing();
         gInFrame = false;
         {   // Unfocused (#510): at most ~30 frames a second (the streaming still gets every frame's budget), so a background

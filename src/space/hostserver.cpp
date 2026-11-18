@@ -86,6 +86,7 @@ namespace {
     constexpr int kSnapshotEvery = 2;                  // sim steps (60 Hz) per snapshot: 30 Hz (ADR #309)
     constexpr size_t kMaxQueuedInputs = 120;           // 2 s of inputs waiting: more and the oldest go (keeping their presses)
     constexpr double kMaxBudget = 30.0;                // steps a player may catch up at once (0.5 s of hitch or burst)
+    const int kMaxStepsPerFrame = getenv("RAYLIBGAME_REMOTE_STEPS_PER_FRAME") ? std::max(1, atoi(getenv("RAYLIBGAME_REMOTE_STEPS_PER_FRAME"))) : 2; // (#768) catch-up a frame
 
     Planetoid* StartBody(Scene& world) {
         for (auto& o : world.objects) if (auto* p = dynamic_cast<Planetoid*>(o.get())) return p;
@@ -114,7 +115,10 @@ namespace {
             r.budget = std::min(kMaxBudget, r.budget + (double)(SimTick() - r.tick));
             r.tick = SimTick();
             while (r.inputs.size() > kMaxQueuedInputs) { r.carried |= r.inputs.front().pressed; r.inputs.pop_front(); }
-            while (r.budget >= 1.0 && !r.inputs.empty()) {
+            // (#768) at most kMaxStepsPerFrame inputs a frame per player: after a slow frame the backlog is worked off over the
+            // next frames, not all at once (all at once made the next frame slower still: the 31-40 ms catch-up bursts at 32 players).
+            int stepsThisFrame = 0;
+            while (r.budget >= 1.0 && !r.inputs.empty() && stepsThisFrame++ < kMaxStepsPerFrame) {
                 r.budget -= 1.0;
                 const MsgInput m = r.inputs.front();
                 r.inputs.pop_front();

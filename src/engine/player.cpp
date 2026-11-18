@@ -1,5 +1,6 @@
 #include "camera.h" // gFlyGravityUp (#232)
 #include "player.h"
+#include <chrono>
 #include "world.h"
 #include "playerinput.h"
 
@@ -52,6 +53,9 @@ static Vector3 FeltGravity(Scene& world, Vector3 feet, Planetoid* nearest) {
 }
 void Player::update(Scene& world, const PlayerInput& in, float dt) {
     PROFILE_FUNCTION();
+    // #768: the collision cache lives for one update only. Carried across updates it made the physics depend on history:
+    // a client replaying from a corrected state skipped differently from the server, and predictions drifted.
+    for (bool& v : collideCache.valid) v = false;
     if ((in.hit(Act::Fly) && (flyAllowed || flyMode)) || (flyMode && !flyAllowed)) { // out of creative: F only lands (#531)
         flyMode = !flyMode;
         velocity = { 0, 0, 0 };
@@ -473,7 +477,7 @@ void Player::stepPhysics(Scene& world, float dt, Vector3 wish, bool jetUp, bool 
     feet = Vector3Add(feet, move);
     collideFrameVel = (wasGrounded || !nearest) ? Vector3{ 0, 0, 0 } : nearest->surfaceVelocity(feet);
     const Vector3 vPre = velocity; // before the push-out and the ground probe touch it
-    grounded = resolveCollisions(world, feet);
+    { const auto t0 = std::chrono::steady_clock::now(); grounded = resolveCollisions(world, feet); gPlayerCollideSeconds += std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count(); } // (#768)
     collideTrunks(feet);
     // Just jumped: the probe below the feet would still find the slope (they have risen only a few cm)
     // and re-ground the player, cancelling the jump. Collisions still push out; only grounding waits.
@@ -576,20 +580,29 @@ bool Player::resolveCollisions(Scene&, Vector3& feet) {
     // total push in a frame is capped.
     auto solid = [&](Vector3 c) { return p.densityAt(p.toLocal(c)) >= ISO_LEVEL; };
     float pushBudget = 0.6f;
+    // #768: skip spheres that were measured clear of the terrain and can't have reached it since (see CollideCache).
+    static const bool useCache = !(getenv("RAYLIBGAME_COLLIDE_CACHE") && atoi(getenv("RAYLIBGAME_COLLIDE_CACHE")) == 0);
+    CollideCache& cc = collideCache;
+    if (cc.body != &p || cc.edits != p.edits.get()) { for (bool& v : cc.valid) v = false; cc.body = &p; cc.edits = p.edits.get(); }
+    constexpr float kClearMargin = 0.05f; // m
     for (int iter = 0; iter < 6 && pushBudget > 0.0f; ++iter) {
         bool moved = false;
         // Contacts deepest first; one push per pass (the next pass re-measures).
-        struct Cand { float d, off; } cand[kMaxSamples]; int nc = 0;
+        struct Cand { float d, off; Vector3 n; } cand[kMaxSamples]; int nc = 0;
         for (int si = 0; si < kSamples; ++si) { const float o2 = offsets[si];
+            const Vector3 c2 = Vector3Add(feet, Vector3Scale(up, o2));
+            const Vector3 l2 = p.toLocal(c2);
+            if (useCache && cc.valid[si] && cc.dist[si] - Vector3Distance(l2, cc.centre[si]) * p.scale > radius + kClearMargin) continue; // clear: can't touch yet
             float d2; Vector3 n2;
-            if (TerrainSurfaceDistance(p, Vector3Add(feet, Vector3Scale(up, o2)), d2, n2) && d2 < radius) cand[nc++] = { d2, o2 };
+            const bool ok = TerrainSurfaceDistance(p, c2, d2, n2);
+            cc.valid[si] = ok; cc.dist[si] = d2; cc.centre[si] = l2;
+            if (ok && d2 < radius) cand[nc++] = { d2, o2, n2 };
         }
         std::sort(cand, cand + nc, [](const Cand& a, const Cand& b) { return a.d < b.d; });
         for (int ci = 0; ci < nc && !moved; ++ci) {
             const float off = cand[ci].off;
-            float dist; Vector3 n;
+            const float dist = cand[ci].d; const Vector3 n = cand[ci].n; // (measured just above, at this same centre)
             const Vector3 c = Vector3Add(feet, Vector3Scale(up, off));
-            if (!TerrainSurfaceDistance(p, c, dist, n) || dist >= radius) continue;
             float push = 0.0f;
             if (!solid(c)) {
                 // Centre in the open: is there solid ground within the radius along -n, and how far?
@@ -867,4 +880,11 @@ void Player::placeAt(Scene& world, Planetoid& body, Vector3 renderFeet) {
     groundBody = nullptr;
     flyMode = false;
     anchorTo(body);
+}
+
+void Player::poisonCollideCache() {
+    // At the player's own feet (body-local), so the "moved since" term is small and every sphere would be skipped.
+    const Vector3 here = nearest ? nearest->toLocalD(position).toFloat() : Vector3{};
+    for (int si = 0; si < 8; ++si) { collideCache.valid[si] = true; collideCache.dist[si] = 1000.0f; collideCache.centre[si] = here; }
+    collideCache.body = nearest; collideCache.edits = nearest ? nearest->edits.get() : nullptr;
 }
