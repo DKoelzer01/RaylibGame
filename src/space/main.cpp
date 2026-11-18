@@ -595,6 +595,7 @@ int main(int argc, char** argv)
     bool benchQuestPins = false;     // --test-quest-pins (#825): pin three quests (a fourth refused), saved with the player, on the HUD
     bool benchDatabase = false;      // --test-database (#826): the database pop-up at an item's page
     bool shotHud = false;            // --shot-hud (#827): the HUD at 100% and 150% (pinned quests, the off hand, key hints)
+    bool benchIdleDrift = false;     // --test-idle-drift (#856, with --host): a joiner that sends nothing yet stays put in the planet's frame
     bool benchDungeon = false; int dungeonFrame = 0; // --test-dungeon (#719)
     bool benchDungeonTraps = false; int dungeonTrapFrame = 0; // --test-dungeon-traps (#719)
     bool benchSaveSplit = false; // --test-save-split (#346)
@@ -935,6 +936,7 @@ int main(int argc, char** argv)
         if (std::string(argv[i]) == "--test-quest-pins") benchQuestPins = true;
         if (std::string(argv[i]) == "--test-database") benchDatabase = true;
         if (std::string(argv[i]) == "--shot-hud") shotHud = true;
+        if (std::string(argv[i]) == "--test-idle-drift") benchIdleDrift = true;
         if (std::string(argv[i]) == "--test-dungeon") benchDungeon = true;
         if (std::string(argv[i]) == "--test-dungeon-traps") benchDungeonTraps = true; // #719: best with --sandbox
         if (std::string(argv[i]) == "--test-save-split") benchSaveSplit = true; // #346: world + player records
@@ -8856,7 +8858,7 @@ int main(int argc, char** argv)
                         }
                         benchWalkSeconds = 0.0;
                     }
-                } else if ((WorldIdle() && benchDigStrokes == 0 && !benchPaint && !benchSaveLoad && benchWalkSeconds <= 0.0 && benchMineStrokes == 0 && minePhase != 2 && benchFlySeconds <= 0.0 && !benchSuffocate && benchOrbitSeconds <= 0.0 && !benchRide && !benchPark && !benchGravity && !benchPrecision && !benchMantle && !benchAirJump && !benchMoon && !benchHole && !benchWall && !benchDoorway && !benchLedge && !benchTor && !benchMachines && !benchFall && !benchHover && !benchNetIds && !benchNet && !benchTwoPlayers && !benchFingerprint && !benchInterest && !benchTeleClose && !benchMenus && !benchWater && !benchFlyFollow && !benchHotbar && !benchInventory && !benchMap && !benchViewmodel && !benchQuests && !benchHunger && !benchFarm && !benchAnimals && !benchThreats && !benchAnimalPath && !benchDam && !benchFlowMeter && !benchPartWall && !benchPressure && benchShotTabs == 0 && !benchForest && !benchFlow && !benchPond && !benchBucket && !benchWaterSpeed && benchFluidLoad <= 0.0f && !benchFlowShade && !benchPump && !benchTerrain && !benchWind && !benchCampfire && !benchCaveMouth && !benchMountain && !benchShelter && !benchRoom && !benchFacing && !benchDungeon && !benchDungeonTraps && !benchSaveSplit && !benchPosture && !benchPause && !benchBite && !benchPlacement && !benchShotDig && !benchShadow && !benchParticles && !benchBiomes && !benchOil && !benchSpring && !benchShotAnimals && !benchShotAvatar && !benchShotMachines && benchShotBiomes < 0 && !benchFarForest && !benchRecipes && !benchWeather && !benchDecor && !benchMaterials && !benchDamage && !benchCrafting && !benchSuit && !benchTools && !benchRivers && !benchRing && !benchRocket && !benchStation && !benchBlueprint && !benchSmallBody && !benchTrees && !benchChop && benchPersist == 0 && benchBuild == 0 && benchFactory == 0 && !benchCombat && !benchHost && !benchJoin && !benchTimeFollow && benchPlayerCost == 0 && !benchNetAnimals && !benchNetQuests && !benchNetMachines && !benchNetAbuse && !benchNetMove && !benchNetDig && !benchNetBuild && !benchNetSync && !benchShotMpMenu && !benchMpMenu && benchMpBots == 0 && !benchShower && !benchProgression && (benchUnfocus <= 0.0f || unfocusPhase >= 6)) || GetTime() > 600.0) {
+                } else if ((WorldIdle() && benchDigStrokes == 0 && !benchPaint && !benchSaveLoad && benchWalkSeconds <= 0.0 && benchMineStrokes == 0 && minePhase != 2 && benchFlySeconds <= 0.0 && !benchSuffocate && benchOrbitSeconds <= 0.0 && !benchRide && !benchPark && !benchGravity && !benchPrecision && !benchMantle && !benchAirJump && !benchMoon && !benchHole && !benchWall && !benchDoorway && !benchLedge && !benchTor && !benchMachines && !benchFall && !benchHover && !benchNetIds && !benchNet && !benchTwoPlayers && !benchFingerprint && !benchInterest && !benchTeleClose && !benchMenus && !benchWater && !benchFlyFollow && !benchHotbar && !benchInventory && !benchMap && !benchViewmodel && !benchQuests && !benchHunger && !benchFarm && !benchAnimals && !benchThreats && !benchAnimalPath && !benchDam && !benchFlowMeter && !benchPartWall && !benchPressure && benchShotTabs == 0 && !benchForest && !benchFlow && !benchPond && !benchBucket && !benchWaterSpeed && benchFluidLoad <= 0.0f && !benchFlowShade && !benchPump && !benchTerrain && !benchWind && !benchCampfire && !benchCaveMouth && !benchMountain && !benchShelter && !benchRoom && !benchFacing && !benchDungeon && !benchDungeonTraps && !benchSaveSplit && !benchPosture && !benchPause && !benchBite && !benchPlacement && !benchShotDig && !benchShadow && !benchParticles && !benchBiomes && !benchOil && !benchSpring && !benchShotAnimals && !benchShotAvatar && !benchShotMachines && benchShotBiomes < 0 && !benchFarForest && !benchRecipes && !benchWeather && !benchDecor && !benchMaterials && !benchDamage && !benchCrafting && !benchSuit && !benchTools && !benchRivers && !benchRing && !benchRocket && !benchStation && !benchBlueprint && !benchSmallBody && !benchTrees && !benchChop && benchPersist == 0 && benchBuild == 0 && benchFactory == 0 && !benchCombat &&  !benchHost && !benchIdleDrift && !benchJoin && !benchTimeFollow && benchPlayerCost == 0 && !benchNetAnimals && !benchNetQuests && !benchNetMachines && !benchNetAbuse && !benchNetMove && !benchNetDig && !benchNetBuild && !benchNetSync && !benchShotMpMenu && !benchMpMenu && benchMpBots == 0 && !benchShower && !benchProgression && (benchUnfocus <= 0.0f || unfocusPhase >= 6)) || GetTime() > 600.0) {
                     benchStart = GetTime();
                     printf("bench: world ready after %.2f s (%d chunks, avg build %.2f ms of which sampling %.2f ms, %d worker threads)\n",
                         GetWorldStats().lastGenerationSeconds, GetWorldStats().chunks, GetWorldStats().avgBuildMs, GetWorldStats().avgSampleMs, GetWorldStats().workerThreads);
@@ -11069,6 +11071,27 @@ int main(int argc, char** argv)
         //   - autosave: with a short --autosave-minutes (<= 1) the test waits for one autosave;
         //   - the connection lifecycle (#321) with clients opened in this process over loopback (below): the welcome's world
         //     description (seed, fingerprint) and shower must match the host's. That part SKIPs without ENABLE_GNS.
+        // --test-idle-drift (#856, with --host <save>): a client joins over loopback and sends no inputs (as one still loading
+        // its world): the server's states of its player must stay put in the planet's frame. Before the fix they slid at the
+        // surface's spin speed (~105 m/s): the client then started kilometres off and was snapped back on its first step.
+        if (benchIdleDrift && gameState == 1 && !loading && WorldIdle() && Host_Listening()) {
+            static NetClient idle;
+            static int step = 0;
+            static double t0 = -1.0, firstAt = 0.0;
+            static DVec3 first{};
+            if (t0 < 0.0) t0 = GetTime();
+            NetClient_Update(idle);
+            if (step == 0) { NetClient_Connect(idle, TextFormat("127.0.0.1:%d", hostPort), "idle"); step = 1; }
+            else if (step == 1 && idle.state == NetClient::State::Joined && idle.haveOwn) { first = idle.own.local; firstAt = GetTime(); step = 2; }
+            if ((step == 2 && GetTime() - firstAt > 12.0) || GetTime() - t0 > 60.0) {
+                const double drift = (idle.own.local - first).length();
+                const bool ok = step == 2 && drift < 0.5;
+                printf("bench: idle drift (#856): a joiner sending nothing for %.1f s: its server state moved %.3f m in the planet's frame (< 0.5) -> %s\n",
+                       GetTime() - firstAt, drift, ok ? "PASS" : "FAIL");
+                NetClient_Disconnect(idle);
+                benchIdleDrift = false;
+            }
+        }
         if (benchHost && gameState == 1 && !loading && WorldIdle()) {
             static double t0 = -1.0;
             if (t0 < 0.0) t0 = GetTime();
