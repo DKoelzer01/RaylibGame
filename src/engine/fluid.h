@@ -104,6 +104,7 @@ namespace Fluid {
     float Pour(Planetoid& body, Vector3 local, float m3, int kind = 0);                     // returns the m^3 queued (placed on the next step)
     float PourDropped();                                                                       // m^3 pours found no room for, in all (#766)
     void DbgTraceAxes(Vector3 origin, Vector3 ax, Vector3 ay, Vector3 up);                     // TEMP #680 (DBTRACE): the test's channel frame, body-local
+    int DbgCellShut(const Planetoid& body, Vector3 local);                                     // TEMP #680: -1 no cell, 255 solid, else the cell's ground share
     float FluidAt(const Planetoid& body, Vector3 local, float radius, int kind);          // m^3 of moving fluid of a kind within radius
     int KindAt(const Planetoid& body, Vector3 local, float radius);                      // the most plentiful non-water kind there, or -1
 

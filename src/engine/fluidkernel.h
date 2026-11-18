@@ -52,8 +52,11 @@ void Substep(Grid& g, const Params& p, const std::vector<int>& list);
 
 // TEMP #680 (DBTRACE): column transfers into the slots marked in Grid::dbgMark (cell = slot * 4096 + local).
 struct DbgTransfer { int giver, taker, branch, units, takerShut, capped, runBottom; };
-constexpr int kDbgTrace = 8192;
+constexpr int kDbgTrace = 65536;
 extern DbgTransfer dbgTrace[kDbgTrace];
+struct DbgPairRec { int a, nb, dx, dy, why, depth; }; // a pair a marked run planned: its exit code (fluidkernel.cpp WHY), depth in units
+extern DbgPairRec dbgPairs[kDbgTrace];
+extern std::atomic<int> dbgPairsN;
 extern std::atomic<int> dbgTraceN;
 
 } // namespace FluidKernel

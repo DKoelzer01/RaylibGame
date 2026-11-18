@@ -5983,6 +5983,7 @@ int main(int argc, char** argv)
                             const float beyond = Fluid::WaterAt(*p, pt(10.0f, 0.0f, dbFloor + 0.5f), 4.0f);
                             std::vector<TerrainEdit> cut = { box(-0.2f, 2.2f) }; // the wall goes
                             ApplyTerrainEdits(*p, cut.data(), cut.size());
+                            Recorder_Cue(); // --record-on-cue: a capture shows the break, not the fill
                             if (EnvFlag("DBLEAK")) { // TEMP #680: where the water already past the wall stands (x 1-6 m, by height over the floor)
                                 for (float h = 0.125f; h < 3.0f; h += 0.25f) {
                                     float v = 0.0f;
@@ -5998,11 +5999,27 @@ int main(int argc, char** argv)
                             dbPhase = 3; dbT0 = SimTime();
                         } else if (dbPhase == 3) {
                             const float dist[3] = { 5.0f, 10.0f, 20.0f };
+                            static bool slivered = false;
+                            if (EnvFlag("DBSLIVER") && !slivered && t > 1.0) { // TEMP #680: the cut where the wall stood (x -1 to 3 m), 1 s after it
+                                slivered = true;                                // went: ground by density, and the fluid's cells (solid / ground share)
+                                for (float x = -0.875f; x < 3.0f; x += 0.25f) {
+                                    int dens = 0, solid = 0, shutSum = 0, shutN = 0;
+                                    for (float y = -1.875f; y < 2.0f; y += 0.25f)
+                                        for (float h = 0.125f; h < 2.5f; h += 0.25f) {
+                                            const Vector3 q = pt(x, y, dbFloor + h);
+                                            if (p->densityAt(q) >= ISO_LEVEL) ++dens;
+                                            const int sh = Fluid::DbgCellShut(*p, q);
+                                            if (sh == 255) ++solid; else if (sh > 0) { shutSum += sh; ++shutN; }
+                                        }
+                                    printf("dbsliver: x %+.2f m: ground %d / 160 samples, fluid cells solid %d, partial %d (mean share %d/255)\n",
+                                           x, dens, solid, shutN, shutN ? shutSum / shutN : 0);
+                                }
+                            }
                             static double profT = 0.0; // #680 diagnosis: the depth along the channel every 0.5 s
-                            if (EnvFlag("DBPROF") && t - profT >= 0.5 && t < 6.0) {
+                            if (EnvFlag("DBPROF") && t - profT >= 0.25 && t < 3.0) {
                                 profT = t;
-                                printf("dbprof t=%.1f vol %.1f:", t, Fluid::GetStats().volume);
-                                for (float xx : { -10.0f, -2.0f, 2.0f, 5.0f, 8.0f, 12.0f, 16.0f, 20.0f, 30.0f }) { const float d = Fluid::SurfaceAbove(*p, pt(xx, 0.0f, dbFloor + 0.13f), 4.0f); printf(" %.0f:%.2f", xx, d > 0.0f ? d + 0.13f : 0.0f); }
+                                printf("dbprof t=%.2f (x -4..14 m by 1 m):", t);
+                                for (float xx = -4.0f; xx <= 14.0f; xx += 1.0f) { const float d = Fluid::SurfaceAbove(*p, pt(xx, 0.0f, dbFloor + 0.13f), 4.0f); printf(" %.2f", d > 0.0f ? d + 0.13f : 0.0f); }
                                 printf("\n");
                             }
                             for (int i = 0; i < 3; ++i)

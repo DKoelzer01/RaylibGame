@@ -12,7 +12,11 @@
 namespace FluidKernel {
 std::atomic<long long> dbgWhy[12]; // #680 diagnosis: why column pairs of deep runs did not move (DBWHY)
 std::atomic<long long> dbgPair[3]; long long dbgPairPlan = 0, dbgPairUnits = 0; long long dbgPairFric = 0, dbgPairDH = 0, dbgPairH = 0, dbgPairN = 0; // TEMP #680 (DBWHY): deep pairs limited by plan / avail / room
-#define WHY(i) do { if (A.surf - A.bed > 128) ++dbgWhy[i]; } while (0)
+// TEMP #680 (DBTRACE): also every pair planned by a run in a marked slot, with its exit code (the WHY numbers).
+DbgPairRec dbgPairs[kDbgTrace]; std::atomic<int> dbgPairsN{0};
+#define WHY(i) do { if (A.surf - A.bed > 128) ++dbgWhy[i]; \
+    if (dbTrace && g.dbgMark.size() > (size_t)(gi / 4096) && g.dbgMark[gi / 4096]) { const int k_ = dbgPairsN.fetch_add(1, std::memory_order_relaxed); \
+        if (k_ < kDbgTrace) dbgPairs[k_] = DbgPairRec{ gi, nb, dx, dy, (i), A.surf - A.bed }; } } while (0)
 // TEMP #680 (DBTRACE): column transfers into a partly solid cell or a cell under a solid one (a wall's base), for the host to
 // print with world cell coordinates: giver cell, taker cell, branch (0 spill, 1 wet, 2 dry/partial floor), units.
 DbgTransfer dbgTrace[kDbgTrace]; std::atomic<int> dbgTraceN{0};
@@ -245,6 +249,15 @@ struct Pass {
         r.head = cur;
         if (F(inC[cur]) >= CAP(inC[cur])) {
             const int up = stepZ(cur, 1, ph);
+            // A full top under a missing or sleeping brick asks for it (#680): nothing else does in the column model, so a run
+            // could not rise past its brick's top - the dam-break's channel held 0.3 m past x = 5 m while a 1.7 m bore stood
+            // behind it. Atomic: the run may lie in a slot another thread is planning.
+            if (up < 0 || !ph) {
+                int s2, x2, y2, z2; cellPos(cur, s2, x2, y2, z2);
+                bool pu; int fu;
+                neighbour(s2, x2, y2, z2, 0, 0, 1, pu, fu);
+                if (fu >= 0) __atomic_fetch_or(&g.flags[s2], 1u << (1 + fu), __ATOMIC_RELAXED);
+            }
             r.head = (up >= 0 && ph && !(FL(inC[up]) & SOLID) && (F(inC[up]) == 0u || KIND(inC[up]) == kind)) ? up : -1;
         }
         r.above = r.head >= 0 ? stepZ(r.head, 1, pa) : -1;
@@ -390,7 +403,8 @@ struct Pass {
         // only into dug cells (infinite water reaches a dig, not the open ground); a sink takes.
         if ((FL(inC[taker]) & (SOURCE | SINK)) == SOURCE) return 0.0f;
         if ((FL(inC[giverTop]) & SOURCE) && !(FL(inC[taker]) & DUG)) return 0.0f;
-        const int units = (int)std::floor(std::min({ plan, (float)avail / 4.0f, (float)room / 4.0f }));
+        static const float quarter = EnvFlag("DBNOQUARTER") ? 1.0f : 4.0f; // TEMP #680: lift the per-pair quarter limit (NOT conservation-safe)
+        const int units = (int)std::floor(std::min({ plan, (float)avail / quarter, (float)room / quarter }));
         if (A.surf - A.bed > 128) { // TEMP #680 (DBPAIR): which limit set a deep pair's units this substep
             const float lim = std::min({ plan, (float)avail / 4.0f, (float)room / 4.0f });
             ++dbgPair[lim == plan ? 0 : lim == (float)avail / 4.0f ? 1 : 2];
