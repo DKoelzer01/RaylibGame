@@ -43,6 +43,8 @@ struct NetClient {
     double rttMs = -1.0;                 // the last ping's round trip
     uint32_t serverTick = 0;             // from the last pong
     int pongs = 0;
+    double clockError = 0.0, worstClockError = 0.0; // #339: the server's world time (pong + half the round trip) minus ours, s
+    double rttFloor = -1.0;                      // #339: the best recent round trip (ms): pongs far above it (a resend, a stall) are skipped
     double started = 0.0, lastHeard = 0.0, lastPing = -1.0;
     uint32_t pingSeq = 0;
     // Movement (#327)

@@ -15,7 +15,7 @@
 #include <string>
 #include <vector>
 
-constexpr uint32_t kNetProtocol = 4; // 1 was the text "join" of #311
+constexpr uint32_t kNetProtocol = 5; // 1 was the text "join" of #311; 5: world time in Welcome and Pong (#339)
 
 enum class NetMsg : uint8_t {
     Hello = 1,     // client -> server: protocol, build, player name, password
@@ -97,6 +97,7 @@ struct MsgWelcome {
     std::vector<std::string> bodies;
     uint64_t fingerprint = 0;
     uint32_t serverTick = 0;         // the server's sim tick when it sent this (the client's clock starts here)
+    double worldTime = 0.0;          // the server's WorldTime() when it sent this (#339: spin, orbits, sun, weather)
     NetServerSettings settings;
 };
 enum class NetReject : uint8_t { Protocol = 1, Build, Password, Full, Banned, NameTaken, Malformed };
@@ -106,7 +107,7 @@ enum class NetBye : uint8_t { Quit = 1, ServerClosed, TimedOut, Kicked };
 const char* NetByeText(NetBye r);
 struct MsgBye { NetBye reason = NetBye::Quit; };
 struct MsgPing { uint32_t seq = 0; double clientTime = 0.0; };
-struct MsgPong { uint32_t seq = 0; double clientTime = 0.0; uint32_t serverTick = 0; };
+struct MsgPong { uint32_t seq = 0; double clientTime = 0.0; uint32_t serverTick = 0; double worldTime = 0.0; }; // worldTime: #339
 struct MsgInput {                    // one sim step of a client's PlayerInput (#327)
     uint32_t tick = 0;               // the client's sim tick it was sampled for
     uint64_t held = 0, pressed = 0;  // Act bits

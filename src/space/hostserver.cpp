@@ -185,7 +185,7 @@ namespace {
         const JoinInfo info = JoinInfo_FromWorld(world);
         MsgWelcome w;
         w.session = s->id; w.reconnected = reconnected; w.seed = info.seed; w.bodies = info.bodies; w.fingerprint = info.fingerprint;
-        w.serverTick = (uint32_t)SimTick();
+        w.serverTick = (uint32_t)SimTick(); w.worldTime = WorldTime(); // #339: the client takes our clock
         w.settings.difficulty = (uint8_t)std::clamp(worldDifficulty, 0, 2); w.settings.maxPlayers = (uint8_t)maxPlayers;
         SendMsg(conn, w);
         const EventsShower sh = Events_GetShower();
@@ -214,7 +214,7 @@ namespace {
             case NetMsg::Ping: {
                 MsgPing p;
                 if (!it->second.joined || !NetRead(r, p)) return;
-                SendMsg(m.conn, MsgPong{ p.seq, p.clientTime, (uint32_t)SimTick() });
+                SendMsg(m.conn, MsgPong{ p.seq, p.clientTime, (uint32_t)SimTick(), WorldTime() }); // #339: and follows it
                 return;
             }
             case NetMsg::Input: {
