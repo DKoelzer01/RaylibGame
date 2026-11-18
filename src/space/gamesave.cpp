@@ -60,6 +60,7 @@ void GameSave_Register() {
         Station_Save(f);
         fprintf(f, "survival %f %f %f %d\n", survival.oxygen, survival.power, survival.health, survival.deaths);
         fprintf(f, "food %f\n", survival.food);
+        if (survival.hasBed) fprintf(f, "bed %s %u %d %d %d\n", survival.bedBody.c_str(), survival.bedPlot, survival.bedCell[0], survival.bedCell[1], survival.bedCell[2]); // #800
         fprintf(f, "difficulty %d\n", worldDifficulty);
     };
     loadExtrasHook = [](FILE* f) {
@@ -77,6 +78,7 @@ void GameSave_Register() {
         ToolWear_Reset();
         RecipeBook_Reset();
         Combat_Reset(); // graves: the save holds them all (#165)
+        survival.hasBed = false; // #800: the save's bed line sets it
         savedCols = 9;  // a save without an inv_cols line: the 9-wide grid (#495)
         worldDifficulty = 1; // a save without the line: normal
         char tok[64] = {};
@@ -94,6 +96,11 @@ void GameSave_Register() {
             if (ToolWear_LoadLine(tok, f)) continue;
             if (strcmp(tok, "difficulty") == 0) { int d = 1; if (fscanf(f, " %d", &d) == 1) worldDifficulty = std::clamp(d, 0, 2); continue; }
             if (strcmp(tok, "food") == 0) { float v = 100.0f; if (fscanf(f, " %f", &v) == 1) survival.food = std::clamp(v, 0.0f, 100.0f); continue; }
+            if (strcmp(tok, "bed") == 0) { // #800: the spawn bed
+                char b[64] = {}; unsigned pl = 0; int x = 0, y = 0, z = 0;
+                if (fscanf(f, " %63s %u %d %d %d", b, &pl, &x, &y, &z) == 5) { survival.hasBed = true; survival.bedBody = b; survival.bedPlot = pl; survival.bedCell[0] = x; survival.bedCell[1] = y; survival.bedCell[2] = z; }
+                continue;
+            }
             if (strcmp(tok, "creative") == 0) { int c = 0; if (fscanf(f, " %d", &c) == 1) terrainTool.creative = c != 0; continue; }
             if (Hotbar_LoadLine(tok, f)) continue;
             if (HelpManual_LoadLine(tok, f)) continue;

@@ -520,9 +520,12 @@ namespace {
         printf("host: %s joined as session %u%s (connection %u, %d joins so far)\n", h.name.c_str(), s->id, reconnected ? " (reconnected)" : "", conn, joins);
         if (eventHook) eventHook("join", s->id, h.name + " from " + Net_RemoteAddress(conn)); // (#345 audit)
         if (const char* hunger = getenv("RAYLIBGAME_HOST_HUNGER")) remotes[s->id].survival.food = (float)atof(hunger); // tests (#337): a hungry joiner
-        if (const char* give = getenv("RAYLIBGAME_HOST_GIVE")) { // tests (#337): "item count" to each player as they join
-            char item[64] = ""; int n = 0;
-            if (sscanf(give, "%63s %d", item, &n) == 2 && n > 0) Host_Give(s->id, item, n);
+        if (const char* give = getenv("RAYLIBGAME_HOST_GIVE")) { // tests (#337): "item count[,item count...]" to each player as they join
+            for (const char* g = give; g && *g; ) {
+                char item[64] = ""; int n = 0;
+                if (sscanf(g, " %63[^ ,] %d", item, &n) == 2 && n > 0) printf("host: test give %s %d to session %u: %s\n", item, n, s->id, Host_Give(s->id, item, n) ? "given" : "unknown item");
+                g = strchr(g, ','); if (g) ++g;
+            }
         }
     }
 
@@ -917,6 +920,25 @@ namespace {
                 if (Survival_UseItemFor(u.item, rit->second.survival, rit->second.inventory, rit->second.suitStats, false)) SendInventoryDeltas(m.conn, rit->second.inventory, before);
                 else SendMsg(m.conn, MsgChat{ 0, "Can't use " + u.item + " now" });
                 ++itemsUsed;
+                return;
+            }
+            case NetMsg::BedUse: { // (#800) a right-click on a bed: within reach, a bed there: that player's spawn
+                MsgBedUse b;
+                if (!it->second.joined || !NetRead(r, b)) return;
+                auto rit = remotes.find(it->second.session);
+                if (rit == remotes.end() || rit->second.survival.dead) return;
+                Planetoid* body = nullptr;
+                for (Planetoid* p : Planetoid::All()) if (p->name == b.body) { body = p; break; }
+                Plot* plot = body && body->plots ? body->plots->byId(b.plot) : nullptr;
+                const int part = plot ? plot->partAt({ b.cell[0], b.cell[1], b.cell[2] }) : -1;
+                bool ok = false;
+                if (part >= 0) {
+                    const Vector3 bl = plot->toBody({ (b.cell[0] + 1.0f) * kCellSize, b.cell[1] * kCellSize, (b.cell[2] + 1.0f) * kCellSize });
+                    const DVec3 at = body->toWorldD(DVec3{ bl.x, bl.y, bl.z });
+                    ok = (at - rit->second.player.position).length() <= 8.0
+                      && Survival_SetBedFor(rit->second.survival, *body, *plot, part, false);
+                }
+                SendMsg(m.conn, MsgChat{ 0, ok ? "Spawn set: you will wake at this bed" : "That bed is out of reach" });
                 return;
             }
             case NetMsg::AnimalHit: { // (#334) a swing at an animal: checked and applied here

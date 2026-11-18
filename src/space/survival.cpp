@@ -17,6 +17,7 @@
 #include "scene.h"
 #include "combat.h"
 #include "playersession.h"
+#include "plots.h"
 
 #include <algorithm>
 #include <cmath>
@@ -116,8 +117,17 @@ void Survival_RespawnFor(Scene& world, SurvivalState& survival, Player& player, 
     survival.vacuumTime = 0.0f;
     survival.dead = false;
     player.flyMode = false; // otherwise the free-fly camera would put the player back where they died
-    // Wake up at the start, at rest with the ground there (spawnOn sets the velocity to the surface's:
-    // nothing of the fall or flight that killed you carries over).
+    // Wake on your bed if it still stands (#800), else at the start, at rest with the ground there (spawnOn / placeAt set
+    // the velocity to the surface's: nothing of the fall or flight that killed you carries over).
+    Planetoid* bedBody = nullptr; Vector3 bedFeet{};
+    if (survival.hasBed && Survival_BedSpawnFor(survival, bedBody, bedFeet)) {
+        player.placeAt(world, *bedBody, bedFeet);
+        player.impactSpeed = player.landingSpeed = 0.0f;
+        if (local) GameUI_Toast("Respawned at your bed");
+        return;
+    }
+    const bool lostBed = survival.hasBed;
+    survival.hasBed = false; // gone or blocked: forgotten (set it again on a new bed)
     Planetoid* start = world.objects.empty() ? nullptr : dynamic_cast<Planetoid*>(world.objects[0].get());
     if (start) {
         const auto* pf = dynamic_cast<const PlanetField*>(start->field.get());
@@ -126,7 +136,49 @@ void Survival_RespawnFor(Scene& world, SurvivalState& survival, Player& player, 
         player.velocity = { 0, 0, 0 };
     }
     player.impactSpeed = player.landingSpeed = 0.0f; // a landing from before the death must not hurt the respawn
-    if (local) GameUI_Toast("Respawned at the start");
+    if (local) GameUI_Toast(lostBed ? "Your bed is gone or blocked: respawned at the start" : "Respawned at the start");
+}
+
+// Beds (#800) ----------------------------------------------------------------------------------------------------------
+bool Survival_SetBedFor(SurvivalState& survival, const Planetoid& body, const Plot& plot, int part, bool local) {
+    if (part < 0 || part >= (int)plot.parts.size() || plot.parts[part].type != PartType::Bed) return false;
+    const Int3 o = plot.parts[part].origin;
+    const bool same = survival.hasBed && survival.bedBody == body.name && survival.bedPlot == plot.id
+                   && survival.bedCell[0] == o.x && survival.bedCell[1] == o.y && survival.bedCell[2] == o.z;
+    survival.hasBed = true;
+    survival.bedBody = body.name;
+    survival.bedPlot = plot.id;
+    survival.bedCell[0] = o.x; survival.bedCell[1] = o.y; survival.bedCell[2] = o.z;
+    if (local) {
+        GameUI_Toast(same ? "This is already your bed" : "Spawn set: you will wake at this bed");
+        if (!same) Audio_Play(Sfx::Pickup, 0.4f, 0.8f);
+    }
+    return true;
+}
+
+bool Survival_BedSpawnFor(const SurvivalState& survival, Planetoid*& body, Vector3& renderFeet) {
+    if (!survival.hasBed) return false;
+    body = nullptr;
+    for (Planetoid* p : Planetoid::All()) if (p->name == survival.bedBody) { body = p; break; }
+    if (!body || !body->plots) return false;
+    const Plot* plot = body->plots->byId(survival.bedPlot);
+    if (!plot) return false;
+    const int part = plot->partAt({ survival.bedCell[0], survival.bedCell[1], survival.bedCell[2] });
+    if (part < 0 || plot->parts[part].type != PartType::Bed || plot->parts[part].origin.x != survival.bedCell[0]
+        || plot->parts[part].origin.y != survival.bedCell[1] || plot->parts[part].origin.z != survival.bedCell[2]) return false;
+    // On top of it, at the middle of its cells, with room to stand (2 m of free cells over the middle).
+    std::vector<std::pair<Int3, CellShape>> fp;
+    Plot::Footprint(plot->parts[part], fp);
+    if (fp.empty()) return false;
+    float cx = 0.0f, cz = 0.0f; int top = fp[0].first.y;
+    for (const auto& c : fp) { cx += c.first.x + 0.5f; cz += c.first.z + 0.5f; top = std::max(top, c.first.y); }
+    cx /= (float)fp.size(); cz /= (float)fp.size();
+    const Int3 mid = { (int)floorf(cx), top + 1, (int)floorf(cz) };
+    for (int k = 0; k < (int)(2.0f / kCellSize); ++k)
+        if (plot->partAt({ mid.x, mid.y + k, mid.z }) >= 0) return false;
+    const Vector3 feetPlot = { cx * kCellSize, (top + 1) * kCellSize + 0.02f, cz * kCellSize };
+    renderFeet = body->toWorld(plot->toBody(feetPlot));
+    return true;
 }
 
 // #337: one player's survival step - the local player (Survival_Update), or a remote one a server simulates (local false: no
