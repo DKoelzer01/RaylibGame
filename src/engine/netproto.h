@@ -15,7 +15,7 @@
 #include <string>
 #include <vector>
 
-constexpr uint32_t kNetProtocol = 2; // 1 was the text "join" of #311
+constexpr uint32_t kNetProtocol = 3; // 1 was the text "join" of #311
 
 enum class NetMsg : uint8_t {
     Hello = 1,     // client -> server: protocol, build, player name, password
@@ -107,16 +107,23 @@ struct MsgPong { uint32_t seq = 0; double clientTime = 0.0; uint32_t serverTick 
 struct MsgInput {                    // one sim step of a client's PlayerInput (#327)
     uint32_t tick = 0;               // the client's sim tick it was sampled for
     uint64_t held = 0, pressed = 0;  // Act bits
-    float yaw = 0.0f, pitch = 0.0f;  // the view after this step's look (radians)
+    float fx = 0.0f, fy = 0.0f, fz = 1.0f; // the view direction after this step's look, body-local (unit; the frame turns with the body)
 };
+// The input packet (NetMsg::Input): the newest few steps (consecutive ticks, newest first), sent unreliable every step,
+// so a lost packet is covered by the next one instead of stalling the rest behind a resend; the server keeps the ticks
+// it hasn't seen.
+constexpr int kInputRedundancy = 4;
+struct MsgInputs { std::vector<MsgInput> steps; };
 struct MsgPlayerState {              // a player's authoritative state (#327)
     uint32_t session = 0, tick = 0;
     uint32_t ackInput = 0;           // the last input tick the server applied (the owner replays the ones after it)
     uint64_t body = 0;               // the body's NetId the position is relative to
     DVec3 local{};                   // feet, body-local
-    float vx = 0, vy = 0, vz = 0;    // velocity in the body's frame (surface-relative on the ground)
-    float yaw = 0.0f, pitch = 0.0f;
-    uint8_t flags = 0;               // bit 0 grounded, 1 fly mode, 2 dead, 3 in water
+    float vx = 0, vy = 0, vz = 0;    // velocity relative to the surface under the feet, on the body's axes
+    float jumpBuffer = 0, coyote = 0, jumpLock = 0; // s (sent in ms, at most 0.255)
+    float jetpackFuel = 1.0f;        // 0..1
+    float yaw = 0.0f, pitch = 0.0f;  // the view direction, body-local: yaw about the body's y from +z, pitch from its xz plane
+    uint8_t flags = 0;               // bit 0 grounded, 1 fly mode, 2 dead, 3 in water, 4 hovering, 5-6 posture
 };
 struct MsgShower { double start = 0.0, end = 0.0; uint32_t id = 0; }; // world seconds; id 0 none (events.h)
 struct MsgTerrainEdit {
@@ -135,7 +142,7 @@ void NetWrite(NetWriter& w, const MsgReject& m);
 void NetWrite(NetWriter& w, const MsgBye& m);
 void NetWrite(NetWriter& w, const MsgPing& m);
 void NetWrite(NetWriter& w, const MsgPong& m);
-void NetWrite(NetWriter& w, const MsgInput& m);
+void NetWrite(NetWriter& w, const MsgInputs& m);
 void NetWrite(NetWriter& w, const MsgPlayerState& m);
 void NetWrite(NetWriter& w, const MsgTerrainEdit& m);
 void NetWrite(NetWriter& w, const MsgShower& m);
@@ -145,7 +152,7 @@ bool NetRead(NetReader& r, MsgReject& m);
 bool NetRead(NetReader& r, MsgBye& m);
 bool NetRead(NetReader& r, MsgPing& m);
 bool NetRead(NetReader& r, MsgPong& m);
-bool NetRead(NetReader& r, MsgInput& m);
+bool NetRead(NetReader& r, MsgInputs& m);
 bool NetRead(NetReader& r, MsgPlayerState& m);
 bool NetRead(NetReader& r, MsgTerrainEdit& m);
 bool NetRead(NetReader& r, MsgShower& m);

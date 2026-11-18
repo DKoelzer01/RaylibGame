@@ -32,6 +32,8 @@ bool Net_IsConnected(uint32_t conn);
 int Net_ConnectionCount();                             // connected now
 bool Net_Send(uint32_t conn, const void* data, uint32_t size, bool reliable);
 int Net_Receive(std::vector<NetMessage>& out, int max = 64); // appends; returns how many
-void Net_Close(uint32_t conn);
+void Net_Close(uint32_t conn);
+// Tests (#327, #347): every message sent from now on is delayed by lagMs and dropped with lossPercent (0-100) odds.
+void Net_SetFakeConditions(int lagMs, float lossPercent);
 
 #endif

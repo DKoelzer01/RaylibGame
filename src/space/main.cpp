@@ -407,6 +407,7 @@ int main(int argc, char** argv)
     std::string hostSave;          // --host <save> (#311): a dedicated server: load (or create) the save, run headless, listen
     uint16_t hostPort = kDefaultHostPort; // --port N
     bool benchHost = false;        // --test-host (#311): with --host, a loopback client joins
+    bool benchNetMove = false;     // --test-net-move (#327): two clients, prediction and interpolation over loopback
     bool seedGiven = false;        // --seed N was passed (a --host new world: else a random seed)
     double autosaveMinutes = kDefaultAutosaveMinutes; // --autosave-minutes N (--host; 0 = off)
     unsigned hostSaveSeed = 0;     // the seed an existing --host save holds
@@ -641,6 +642,7 @@ int main(int argc, char** argv)
         if (std::string(argv[i]) == "--host-password" && i + 1 < argc) Host_SetPassword(argv[i + 1]); // (#321)
         if (std::string(argv[i]) == "--max-players" && i + 1 < argc) Host_SetMaxPlayers(atoi(argv[i + 1]));
         if (std::string(argv[i]) == "--test-host") benchHost = true;
+        if (std::string(argv[i]) == "--test-net-move") benchNetMove = true;
         if (std::string(argv[i]) == "--seed") seedGiven = true;
         if (std::string(argv[i]) == "--autosave-minutes" && i + 1 < argc) autosaveMinutes = atof(argv[i + 1]);
         if (std::string(argv[i]) == "--nocull") frustumCullingEnabled = false;
@@ -8333,7 +8335,7 @@ int main(int argc, char** argv)
                         }
                         benchWalkSeconds = 0.0;
                     }
-                } else if ((WorldIdle() && benchDigStrokes == 0 && !benchPaint && !benchSaveLoad && benchWalkSeconds <= 0.0 && benchMineStrokes == 0 && minePhase != 2 && benchFlySeconds <= 0.0 && !benchSuffocate && benchOrbitSeconds <= 0.0 && !benchRide && !benchPark && !benchGravity && !benchPrecision && !benchMantle && !benchAirJump && !benchMoon && !benchHole && !benchWall && !benchDoorway && !benchLedge && !benchTor && !benchMachines && !benchFall && !benchHover && !benchNetIds && !benchNet && !benchTwoPlayers && !benchFingerprint && !benchInterest && !benchTeleClose && !benchMenus && !benchWater && !benchFlyFollow && !benchHotbar && !benchInventory && !benchMap && !benchViewmodel && !benchQuests && !benchHunger && !benchFarm && !benchAnimals && !benchThreats && !benchAnimalPath && !benchDam && !benchFlowMeter && !benchPartWall && !benchPressure && benchShotTabs == 0 && !benchForest && !benchFlow && !benchPond && !benchBucket && !benchWaterSpeed && benchFluidLoad <= 0.0f && !benchFlowShade && !benchPump && !benchTerrain && !benchWind && !benchCampfire && !benchCaveMouth && !benchMountain && !benchShelter && !benchRoom && !benchFacing && !benchDungeon && !benchPosture && !benchPause && !benchBite && !benchPlacement && !benchShotDig && !benchShadow && !benchParticles && !benchBiomes && !benchOil && !benchSpring && !benchShotAnimals && !benchShotMachines && benchShotBiomes < 0 && !benchFarForest && !benchRecipes && !benchWeather && !benchDecor && !benchMaterials && !benchDamage && !benchCrafting && !benchSuit && !benchTools && !benchRivers && !benchRing && !benchRocket && !benchStation && !benchBlueprint && !benchSmallBody && !benchTrees && !benchChop && benchPersist == 0 && benchBuild == 0 && benchFactory == 0 && !benchCombat && !benchHost && !benchShower && !benchProgression && (benchUnfocus <= 0.0f || unfocusPhase >= 6)) || GetTime() > 600.0) {
+                } else if ((WorldIdle() && benchDigStrokes == 0 && !benchPaint && !benchSaveLoad && benchWalkSeconds <= 0.0 && benchMineStrokes == 0 && minePhase != 2 && benchFlySeconds <= 0.0 && !benchSuffocate && benchOrbitSeconds <= 0.0 && !benchRide && !benchPark && !benchGravity && !benchPrecision && !benchMantle && !benchAirJump && !benchMoon && !benchHole && !benchWall && !benchDoorway && !benchLedge && !benchTor && !benchMachines && !benchFall && !benchHover && !benchNetIds && !benchNet && !benchTwoPlayers && !benchFingerprint && !benchInterest && !benchTeleClose && !benchMenus && !benchWater && !benchFlyFollow && !benchHotbar && !benchInventory && !benchMap && !benchViewmodel && !benchQuests && !benchHunger && !benchFarm && !benchAnimals && !benchThreats && !benchAnimalPath && !benchDam && !benchFlowMeter && !benchPartWall && !benchPressure && benchShotTabs == 0 && !benchForest && !benchFlow && !benchPond && !benchBucket && !benchWaterSpeed && benchFluidLoad <= 0.0f && !benchFlowShade && !benchPump && !benchTerrain && !benchWind && !benchCampfire && !benchCaveMouth && !benchMountain && !benchShelter && !benchRoom && !benchFacing && !benchDungeon && !benchPosture && !benchPause && !benchBite && !benchPlacement && !benchShotDig && !benchShadow && !benchParticles && !benchBiomes && !benchOil && !benchSpring && !benchShotAnimals && !benchShotMachines && benchShotBiomes < 0 && !benchFarForest && !benchRecipes && !benchWeather && !benchDecor && !benchMaterials && !benchDamage && !benchCrafting && !benchSuit && !benchTools && !benchRivers && !benchRing && !benchRocket && !benchStation && !benchBlueprint && !benchSmallBody && !benchTrees && !benchChop && benchPersist == 0 && benchBuild == 0 && benchFactory == 0 && !benchCombat && !benchHost && !benchNetMove && !benchShower && !benchProgression && (benchUnfocus <= 0.0f || unfocusPhase >= 6)) || GetTime() > 600.0) {
                     benchStart = GetTime();
                     printf("bench: world ready after %.2f s (%d chunks, avg build %.2f ms of which sampling %.2f ms, %d worker threads)\n",
                         GetWorldStats().lastGenerationSeconds, GetWorldStats().chunks, GetWorldStats().avgBuildMs, GetWorldStats().avgSampleMs, GetWorldStats().workerThreads);
@@ -9209,6 +9211,66 @@ int main(int argc, char** argv)
                            (int)rolled, (int)clientQuiet, (int)clientApplied, (int)started, (int)landed, (int)kept, (int)rateOk, ok ? "PASS" : "FAIL");
                     benchShower = false;
                 }
+            }
+        }
+        // --test-net-move (#327, with --host <save>, ENABLE_GNS): bob joins over loopback with 50 ms of lag each way and 2%
+        // loss, and walks, turns and jumps for 8 s, predicting himself; carol joins and watches him (interpolated 100 ms
+        // behind). Checks: bob's prediction at each acknowledged input stays within 0.5 m of the server's player, and moves
+        // him back at most on 1 state in 10; carol sees bob move no faster than 12 m/s from frame to frame (he walks 6 and jumps at 5; a catch-up snap is a 0.5 m step in a 2 ms frame).
+        if (benchNetMove && gameState == 1 && !loading && WorldIdle()) {
+            static NetClient bob, carol;
+            static Player bobSelf;
+            static int phase = 0;
+            static double t0 = 0.0;
+            static long long stepped = 0;
+            static bool synced = false, carolSaw = false;
+            static float carolWorstJump = 0.0f;
+            static DVec3 carolLast{};
+            static double serverGap = 0.0;
+            if (!Host_Listening()) { printf("bench: net move: needs --host with ENABLE_GNS -> SKIP\n"); benchNetMove = false; }
+            else {
+                const char* addr = TextFormat("127.0.0.1:%d", hostPort);
+                NetClient_Update(bob); NetClient_Update(carol);
+                if (phase == 0) { Net_SetFakeConditions(getenv("RAYLIBGAME_NET_LAG") ? atoi(getenv("RAYLIBGAME_NET_LAG")) : 50, getenv("RAYLIBGAME_NET_LOSS") ? (float)atof(getenv("RAYLIBGAME_NET_LOSS")) : 2.0f); NetClient_Connect(bob, addr, "bob"); NetClient_Connect(carol, addr, "carol"); phase = 1; t0 = GetTime(); }
+                else if (phase == 1 && bob.state == NetClient::State::Joined && carol.state == NetClient::State::Joined && bob.haveOwn) {
+                    // Start where the server put bob.
+                    if (Planetoid* b = Planetoid::findNet(bob.own.body)) {
+                        bobSelf.spawnOn(world, *b, b->dirToWorld(Vector3Normalize(bob.own.local.toFloat())));
+                        bobSelf.applyNetState(world, NetClient_FromMsg(bob.own));
+                        synced = true;
+                    }
+                    stepped = SimTick(); phase = 2; t0 = GetTime();
+                } else if (phase == 2) {
+                    // bob: forward, turning 30 deg/s, a jump every second; one input per sim step.
+                    for (; stepped < SimTick(); ++stepped) {
+                        PlayerInput in; in.hold(Act::Forward);
+                        if (stepped % 60 == 0) in.press(Act::Jump);
+                        bobSelf.forward = Vector3RotateByAxisAngle(bobSelf.forward, bobSelf.up, 30.0f * DEG2RAD / 60.0f);
+                        NetClient_Step(bob, world, bobSelf, in);
+                    }
+                    // The first 1.5 s settle the start (bob's first inputs reach the server while it already stands there):
+                    // count from then on.
+                    static bool warm = false;
+                    if (!warm && GetTime() - t0 > 1.5) { warm = true; bob.worstError = 0.0; bob.corrections = 0; bob.states = 0; carolWorstJump = 0.0f; }
+                    // carol: bob as she draws him.
+                    uint64_t vb = 0; DVec3 v{};
+                    if (NetClient_OtherView(carol, bob.welcome.session, vb, v)) {
+                        if (carolSaw && GetFrameTime() > 0.0f) carolWorstJump = std::max(carolWorstJump, (float)(v - carolLast).length() / GetFrameTime());
+                        carolLast = v; carolSaw = true;
+                    }
+                    if (GetTime() - t0 > 8.0) {
+                        uint64_t sb = 0; DVec3 sl{};
+                        if (Host_PlayerLocal(world, bob.welcome.session, sb, sl) && bobSelf.nearest) serverGap = (bobSelf.nearest->toLocalD(bobSelf.position) - sl).length();
+                        const bool ok = synced && bob.states > 80 && bob.worstError < 0.5 && bob.corrections * 10 <= bob.states && carolSaw && carolWorstJump < 12.0f;
+                        printf("bench: net move (#327, 100 ms round trip, 2%% loss): bob %d own states, prediction off by %.3f m at worst (%.3f m last), %d corrections; "
+                               "%.2f m ahead of the server at the end; carol saw him %d, fastest she saw him move %.1f m/s (he walks 6); rtt %.0f ms -> %s\n",
+                               bob.states, bob.worstError, bob.lastError, bob.corrections, serverGap, (int)carolSaw, carolWorstJump, bob.rttMs, ok ? "PASS" : "FAIL");
+                        NetClient_Disconnect(bob); NetClient_Disconnect(carol);
+                        Net_SetFakeConditions(0, 0.0f);
+                        benchNetMove = false;
+                    }
+                }
+                if (phase < 2 && GetTime() - t0 > 20.0) { printf("bench: net move: bob %s, carol %s after 20 s -> FAIL\n", NetClient_StateName(bob.state), NetClient_StateName(carol.state)); benchNetMove = false; }
             }
         }
         // --test-host (#311, with --host <save>): the dedicated server loaded or created its save and runs headless.

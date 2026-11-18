@@ -10,8 +10,22 @@
 // client's to it (Host_TakeLocalClientMessages); otherwise the client polls the transport itself.
 
 #include "netproto.h"
+#include "playerinput.h"
 #include <cstdint>
+#include <deque>
+#include <map>
 #include <string>
+
+class Scene;
+#include "player.h"
+
+// Movement (#327): the client predicts its own player from its inputs (the same Player physics as the server) and
+// keeps them; each authoritative state of its own player says which input the server applied last. Where the
+// prediction then was more than kReconcileError off, the player is put back to the server's state and the inputs since
+// replayed. Other players are drawn kInterpDelay behind the newest state, interpolated between the two around it.
+constexpr double kReconcileError = 0.05;   // m
+constexpr double kInterpDelay = 0.1;       // s
+struct NetPredicted { uint32_t tick = 0; PlayerInput in; DVec3 local{}; float fx = 0, fy = 0, fz = 1; }; // fx..: the view sent with it
 
 struct NetClient {
     enum class State { Idle, Connecting, AwaitingWelcome, Joined, Rejected, Closed };
@@ -28,7 +42,24 @@ struct NetClient {
     int pongs = 0;
     double started = 0.0, lastHeard = 0.0, lastPing = -1.0;
     uint32_t pingSeq = 0;
+    // Movement (#327)
+    uint32_t tick = 0;                           // this client's sim steps since joining (the input ticks)
+    std::deque<NetPredicted> history;            // inputs not yet acknowledged, with where they left the player
+    bool haveOwn = false; MsgPlayerState own;    // the newest state of our player, not yet reconciled
+    int states = 0, corrections = 0;             // own states received; how many moved the player back
+    double worstError = 0.0, lastError = 0.0;    // m: the prediction against the server at the acknowledged input
+    std::map<uint32_t, std::deque<MsgPlayerState>> others; // other sessions' recent states (newest last)
+    double viewTick = 0.0;                       // the server tick the others are drawn at (NetClient_Update)
 };
+
+// One sim step of the joined client's own player: send the input, predict with it (in its own frame), and reconcile
+// with the newest authoritative state first. `self` is the predicted player (the local player in a game).
+void NetClient_Step(NetClient& c, Scene& world, Player& self, const PlayerInput& in);
+// Another session's player as drawn: body-local feet kInterpDelay behind the newest state (false: none known yet).
+bool NetClient_OtherView(const NetClient& c, uint32_t session, uint64_t& body, DVec3& local);
+// A player's state on the wire and back (#327; server and client use the same).
+MsgPlayerState NetClient_ToMsg(const Player::NetState& n);
+Player::NetState NetClient_FromMsg(const MsgPlayerState& s);
 
 constexpr double kClientConnectTimeout = 10.0, kClientSilentTimeout = 10.0;
 
