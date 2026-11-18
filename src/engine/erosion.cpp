@@ -233,8 +233,20 @@ namespace {
 
     // Stream power + talus for `steps` steps (see erosion.h). nbOf(c, k) = the k-th of 8 neighbours or -1.
     template <class NB>
-    void Simulate(Domain& d, NB&& nbOf, int steps, const ErosionParams& p, float R, unsigned int seed, float kScale, std::vector<float>* filledOut = nullptr, std::vector<float>* windOut = nullptr, SimProfile* prof = nullptr, int threads = 1) {
+    void Simulate(Domain& d, NB&& nbOf, int steps, const ErosionParams& p, float R, unsigned int seed, float kScale, std::vector<float>* filledOut = nullptr, std::vector<float>* windOut = nullptr, SimProfile* prof = nullptr, int threads = 1, bool fine = false) {
         const size_t cells = d.cells;
+        // #633: the talus limit varies (valley walls were planes at exactly one angle: perfect V gorges under every
+        // fall). Per cell a factor 0.6-1.4 from value noise at ~260 and ~95 m, and per 30 m height band 0.8-1.25 (the
+        // bands' heights wobble by cell): walls come out with steeper and gentler stretches, ledges and benches.
+        std::vector<float> talusVar, talusBandOff;
+        if (!gBakeOld) {
+            talusVar.resize(cells); talusBandOff.resize(cells);
+            for (size_t c = 0; c < cells; ++c) {
+                const float n = 0.65f * ValueNoise(Vector3Scale(d.dir[c], R / 260.0f), seed ^ 0x7A1u) + 0.35f * ValueNoise(Vector3Scale(d.dir[c], R / 95.0f), seed ^ 0x7A2u);
+                talusVar[c] = 0.6f + 0.8f * std::clamp((n - 0.25f) / 0.5f, 0.0f, 1.0f);
+                talusBandOff[c] = 30.0f * ValueNoise(Vector3Scale(d.dir[c], R / 700.0f), seed ^ 0x7A3u);
+            }
+        }
         using Clock = std::chrono::steady_clock;
         auto tick = Clock::now();
         auto lap = [&](int k) { if (!prof) return; const auto t = Clock::now(); prof->s[k] += std::chrono::duration<double>(t - tick).count(); tick = t; }; // #605
@@ -381,13 +393,29 @@ namespace {
                     if (r == c || d.outlet[c]) continue;
                     streamCell(c, d.h[r]);
                 }
+            // #633: lateral erosion on the fine grid. A river of some size wears its banks back as well as its bed, so
+            // its valley gets a floor instead of a V: each step the side neighbours of a channel cell standing over it
+            // lose a share of the difference, growing with the drainage (from 5 km^2; full at ~80 km^2). Only the
+            // direct neighbours, so the floor is at most 3 cells (~150 m) wide; small streams keep their V-notches.
+            if (fine && !gBakeOld && step % 2 == 0)
+                for (int c : order) {
+                    if (d.outlet[c] || hf[c] > d.h[c] + 1e-3f || area[c] < 5.0e6f) continue; // lakes: no banks to wear
+                    const float w = 0.03f * std::min(1.0f, 0.25f + 0.1875f * log2f(area[c] / 5.0e6f));
+                    for (int k = 0; k < 4; ++k) {
+                        const int o = nbOf((size_t)c, k);
+                        if (o < 0 || d.outlet[o] || o == receiver[c] || area[o] >= area[c]) continue;
+                        const float dh = d.h[o] - d.h[c];
+                        if (dh > 0.5f) d.h[o] -= w * dh;
+                    }
+                }
             lap(3);
             if (step % 2 == 1) // talus: slopes steeper than the rock holds slump (half the excess moves down)
                 for (size_t c = 0; c < cells; ++c) {
                     if (d.outlet[c]) continue;
                     const float hard = layered ? Strata_Hardness(Strata_RockAt(d.col[c], d.h[c], d.strataSeed))
                                                : std::max(d.hardness[c], d.strata[c] * (capRock(d.h[c]) ? 1.0f : 0.0f));
-                    const float maxSlope = p.talusSoft + (p.talusHard - p.talusSoft) * hard;
+                    float maxSlope = p.talusSoft + (p.talusHard - p.talusSoft) * hard;
+                    if (!talusVar.empty()) maxSlope *= talusVar[c] * (0.8f + 0.45f * Hash3((int)floorf((d.h[c] + talusBandOff[c]) / 30.0f), 0, 0, seed ^ 0x7A4u));
                     for (int k = 0; k < 8; ++k) {
                         const int o = nbOf(c, k);
                         if (o < 0) continue;
@@ -787,7 +815,7 @@ void PlanetErosion::build(const std::function<float(Vector3, float)>& height, fl
             Simulate(fd, [FE](size_t c, int k) {
                 const int i = (int)(c % FE) + di[k], j = (int)(c / FE) + dj[k];
                 return (i < 0 || j < 0 || i >= FE || j >= FE) ? -1 : j * FE + i;
-            }, p.refineSteps, p, R, seed, kScale, &filled, DumpOn() && f == dumpFace ? &windAcc : nullptr, &faceProf[f], sampleThreads); // #605: the face's share of the threads
+            }, p.refineSteps, p, R, seed, kScale, &filled, DumpOn() && f == dumpFace ? &windAcc : nullptr, &faceProf[f], sampleThreads, true); // #605: the face's share of the threads; fine (#633)
             flap(2);
             {   // Hold the fine grid to the coarse one at large scales (#360): the refinement's own uplift and erosion drift
                 // it by tens of metres (70 m in seed 42's ranges), so the coarse LOD, and the rivers and lakes built on it,

@@ -28,7 +28,7 @@ using StrataFn = std::function<StrataColumn(Vector3)>; // #587: the rock column 
 
 // Bump with any change to the bake's code (Simulate, SetRock, the refinement, the pond extraction): a cache from
 // another version or other parameters is baked again rather than loaded (#355 review).
-constexpr uint32_t kErosionBakeVersion = 25; // 25: final drainage, diagonal channel corners worn, channels in the bake (#547); 22: graded canyon floors (#544), divides past 400 m of cut; 19: formations kept inside the elevation bound; 18: // 18: glacial 2.0 (#548); 17: // 16: volcanoes (#593); 15: karst (#592); // 13: fold outcrops raised in the bake input; 12: folded strata (#591); 11: narrower fault steps; 10: fault scarps in the bake input (#590); 9: canyons in the bake input (#544); 8: rock strata (#587); 7: the noise seed offsets changed (#532); 6: wind (aeolian) erosion, #370
+constexpr uint32_t kErosionBakeVersion = 26; // 26: varied talus limits, lateral erosion on the fine grid (#633); 25: final drainage, diagonal channel corners worn, channels in the bake (#547); 22: graded canyon floors (#544), divides past 400 m of cut; 19: formations kept inside the elevation bound; 18: // 18: glacial 2.0 (#548); 17: // 16: volcanoes (#593); 15: karst (#592); // 13: fold outcrops raised in the bake input; 12: folded strata (#591); 11: narrower fault steps; 10: fault scarps in the bake input (#590); 9: canyons in the bake input (#544); 8: rock strata (#587); 7: the noise seed offsets changed (#532); 6: wind (aeolian) erosion, #370
 struct ErosionParams {
     float cell = 200.0f;      // m, coarse cell at a face centre (gnomonic cells shrink toward the face edges)
     int steps = 400;
