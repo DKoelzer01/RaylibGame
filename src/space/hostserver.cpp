@@ -49,7 +49,7 @@ namespace {
 
     // The connection lifecycle (#321). A peer is a connection; a session is a player, kept by name for the server's
     // run, so a reconnect under the same name gets its session (and later its PlayerSession) back.
-    struct Peer { uint32_t session = 0; bool joined = false; double lastHeard = 0.0; NetGuard guard; }; // guard: #349
+    struct Peer { uint32_t session = 0; bool joined = false; double lastHeard = 0.0, firstHeard = 0.0; NetGuard guard; }; // guard, firstHeard: #349
     std::unordered_map<uint32_t, Peer> peers;          // by connection
     struct Session {
         uint32_t id = 0; std::string name; uint32_t conn = 0; bool online = false;
@@ -279,6 +279,28 @@ namespace {
         Net_Close(conn); // (lingers: the reject goes out first)
     }
 
+    // (#349) names and chat text from clients
+    bool NameAcceptable(const std::string& n) {
+        if (n.empty() || n.size() > 24 || n.front() == ' ' || n.back() == ' ') return false;
+        for (unsigned char ch : n) if (ch < 0x20 || ch == 0x7F) return false; // (UTF-8 bytes >= 0x80 are fine: names in any script)
+        return true;
+    }
+    bool SameName(const std::string& a, const std::string& b) {
+        if (a.size() != b.size()) return false;
+        for (size_t i = 0; i < a.size(); ++i) if (tolower((unsigned char)a[i]) != tolower((unsigned char)b[i])) return false;
+        return true;
+    }
+    std::string CleanChat(std::string t) {
+        for (char& ch : t) if ((unsigned char)ch < 0x20 || (unsigned char)ch == 0x7F) ch = ' ';
+        return t;
+    }
+    // (#349) connections: at most kMaxPerAddress from one address at once (loopback exempt: the host's own machine and the
+    // tests), and a connection must say Hello within kHelloSeconds.
+    const int kMaxPerAddress = getenv("RAYLIBGAME_MAX_PER_ADDRESS") ? std::max(1, atoi(getenv("RAYLIBGAME_MAX_PER_ADDRESS"))) : 8;
+    constexpr double kHelloSeconds = 10.0;
+    std::string AddressHost(const std::string& a) { const size_t c = a.rfind(':'); return c == std::string::npos ? a : a.substr(0, c); }
+    // (loopback is counted too when RAYLIBGAME_MAX_PER_ADDRESS is set: the tests check the limit on one machine)
+    bool Loopback(const std::string& host) { if (getenv("RAYLIBGAME_MAX_PER_ADDRESS")) return false; return host.empty() || host == "127.0.0.1" || host == "::1" || host == "[::1]" || host.rfind("[::ffff:127.", 0) == 0; }
     void OnHello(Scene& world, uint32_t conn, const MsgHello& h) {
         if (h.protocol != kNetProtocol) { Refuse(conn, NetReject::Protocol, TextFormat("server %u, client %u", kNetProtocol, h.protocol)); return; }
         if (!h.build.empty() && h.build != BuildCommit()) { Refuse(conn, NetReject::Build, "server " + BuildCommit() + ", client " + h.build); return; }
@@ -292,7 +314,11 @@ namespace {
             }
         }
         Session* s = nullptr;
-        for (Session& x : sessions) if (x.name == h.name) s = &x;
+        // (#349) a name is 1-24 bytes, no control characters, no leading or trailing space (it goes into logs, the audit log,
+        // nameplates and chat: a newline in it would forge lines). Names are one identity whatever their case (the admin lists
+        // compare without case: "ALICE" got alice's op role in a session of its own).
+        if (!NameAcceptable(h.name)) { Refuse(conn, NetReject::Malformed, "names are 1-24 characters, no control characters or edge spaces"); return; }
+        for (Session& x : sessions) if (SameName(x.name, h.name)) s = &x;
         if (s && s->online) { Refuse(conn, NetReject::NameTaken, h.name); return; }
         const int online = (int)std::count_if(sessions.begin(), sessions.end(), [](const Session& x) { return x.online; });
         if (online >= maxPlayers) { Refuse(conn, NetReject::Full, TextFormat("%d players", maxPlayers)); return; }
@@ -506,7 +532,21 @@ namespace {
     void OnMessage(Scene& world, const NetMessage& m) {
         if (!peers.count(m.conn) && !Net_IsConnected(m.conn)) return; // (#349: the rest of a batch from a connection just kicked)
         auto it = peers.find(m.conn);
-        if (it == peers.end()) it = peers.emplace(m.conn, Peer{}).first; // first word on a new connection
+        if (it == peers.end()) { // first word on a new connection
+            const std::string host = AddressHost(Net_RemoteAddress(m.conn));
+            if (!Loopback(host)) { // (#349) too many from one address
+                int same = 0;
+                for (const auto& [c, p] : peers) if (AddressHost(Net_RemoteAddress(c)) == host) ++same;
+                if (same >= kMaxPerAddress) {
+                    printf("host: refused connection %u from %s: %d connections from that address already\n", m.conn, host.c_str(), same);
+                    if (eventHook) eventHook("refused", 0, "connection from " + host + " (too many from one address)");
+                    Refuse(m.conn, NetReject::Full, "too many connections from your address");
+                    return;
+                }
+            }
+            it = peers.emplace(m.conn, Peer{}).first;
+            it->second.firstHeard = GetTime();
+        }
         it->second.lastHeard = GetTime();
         { // (#349) size, kind, form and rate first: a bad message is dropped; a client that keeps sending them is kicked
             std::string why;
@@ -558,6 +598,7 @@ namespace {
                 MsgChat c;
                 if (!it->second.joined || !NetRead(r, c) || c.text.empty()) return;
                 c.from = it->second.session; // (a client speaks only for itself)
+                c.text = CleanChat(c.text); // (#349) no control characters into logs and chat
                 std::string name; for (const Session& s : sessions) if (s.id == c.from) name = s.name;
                 if (chatHandler) chatHandler(c.from, name, c.text);
                 else SendToJoined(c);
@@ -627,6 +668,7 @@ void Host_Update(Scene& world) {
     for (const auto& [conn, p] : peers) {
         if (!Net_IsConnected(conn)) gone.push_back(conn);
         else if (GetTime() - p.lastHeard > kTimeoutSeconds) silent.push_back(conn);
+        else if (!p.joined && GetTime() - p.firstHeard > kHelloSeconds) silent.push_back(conn); // (#349) never said Hello
     }
     for (uint32_t c : gone) Drop(c, NetBye::Quit);
     for (uint32_t c : silent) Drop(c, NetBye::TimedOut);
