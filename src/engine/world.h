@@ -12,6 +12,7 @@
 #include <iostream>
 #include <fstream>
 #include <sstream>
+#include <unordered_set>
 #include <memory>
 #include <cstdio>
 #include <functional>
@@ -59,6 +60,9 @@ struct LodSettings {
     int cacheNodes = 40000;
 };
 extern LodSettings lodSettings;
+// #134 experiment: chunks the main pass leaves out (RAYLIBGAME_OCC_SKIP in benches; empty otherwise).
+extern std::unordered_set<const Chunk*> gOcclusionSkip;
+extern std::unordered_set<uint32_t> gOcclusionSkipPlots;
 void SetLodZoom(Scene& world, float zoom, Vector3 dir, float halfAngle); // zoom 1: off
 
 struct WorldStats {
