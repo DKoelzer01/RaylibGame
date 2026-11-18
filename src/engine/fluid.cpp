@@ -2365,7 +2365,10 @@ bool Fluid::StandingWaterNear(const Planetoid& body, Vector3 local, float range)
     for (const WaterField::Site& s : snapNow->sites) {
         if (s.body != body.id) continue;
         const int R = (int)ceilf(range / WaterField::CellSize());
-        for (int dk = -3; dk <= 1; ++dk)
+        // From 3 m under the point to 1 m over it, in metres (#730: it was 3 cells down and 1 up - at the 0.25 m default
+        // (#714) a field more than 0.75 m over its water no longer counted as watered).
+        const int down = (int)ceilf(3.0f / WaterField::CellSize()), upC = (int)ceilf(1.0f / WaterField::CellSize());
+        for (int dk = -down; dk <= upC; ++dk)
             for (int dj = -R; dj <= R; dj += 1)
                 for (int di = -R; di <= R; di += 1) {
                     const Vector3 q = Vector3Add(local, Vector3Add(Vector3Add(Vector3Scale(s.e, di * WaterField::CellSize()), Vector3Scale(s.n, dj * WaterField::CellSize())), Vector3Scale(s.u, dk * WaterField::CellSize())));
