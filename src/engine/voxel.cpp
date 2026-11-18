@@ -1165,18 +1165,31 @@ float PlanetField::densityNear(Vector3 p, float d, float surface, float fp, cons
     // by walking; elsewhere they stay 5 m+ down. Only looked up for shallow samples.
     float caveTop = 5.0f;
     float mouth = 0.0f; // #549: in mouth regions tunnels open at full width where they meet the surface (no grille)
-    if (depth < 14.0f && depth > -3.0f && caveWeight > 0.0f && !moon) { mouth = Smoothstep(0.3f, 0.45f, caveMouths.fractal(1, p.x, p.y, p.z)); caveTop = 5.0f - 7.5f * mouth; }
-    if (caveWeight > 0.0f && depth > caveTop && d > mantleRadius + 20.0f) {
+    if (depth < 14.0f && depth > -14.0f && caveWeight > 0.0f && !moon) { mouth = Smoothstep(0.3f, 0.45f, caveMouths.fractal(1, p.x, p.y, p.z)); caveTop = 5.0f - 7.5f * mouth; }
+    // #549 (playtest 8): a tunnel running just under the ground left a roof thin enough for the surface noise to punch
+    // rows of small holes through it (the grille), and tor slabs bridged the mouth. In mouth regions a roof thinner than
+    // kRoof collapses: every sample over the tunnel whose roof (its depth + its distance to the tunnel) is that thin is
+    // carved. The roof depth is about the same all down a column, so whole columns open, with clean edges; up to the
+    // tops of tors (14 m) so slabs over a collapsed roof go too.
+    constexpr float kRoof = 4.0f;
+    const float gate = mouth > 0.0f ? -14.0f : caveTop;
+    if (caveWeight > 0.0f && depth > gate && d > mantleRadius + 20.0f) {
         const float near = 2.0f * std::max(fp, 1.0f) + 2.0f; // farther than this from a cave = plain rock for meshing
+        const float reach = mouth > 0.0f ? std::max(near, kRoof + 1.0f - depth) : near; // a thin roof's samples too
         float m = 1e9f;                                        // metres to the nearest cave wall (< 0 inside)
         // A tunnel needs both fields near zero: if the first alone rules one out, skip the second.
         const float a = fabsf(cavesA.fractal(2, p.x, p.y, p.z));
-        if ((a - kTunnelLevel) * 100.0f <= near) {
-            float top = std::min(1.0f, (depth - caveTop) / 8.0f);
+        if ((a - kTunnelLevel) * 100.0f <= reach) {
+            float top = std::clamp((depth - caveTop) / 8.0f, 0.0f, 1.0f);
             top = top + (1.0f - top) * mouth;
             const float fade = top * std::min(1.0f, (d - mantleRadius - 20.0f) / 10.0f);
             const float t = std::max(a, fabsf(cavesB.fractal(2, p.x, p.y, p.z)));
             m = (t - kTunnelLevel) * 100.0f + (1.0f - fade * caveWeight) * 20.0f;
+            if (mouth > 0.0f && m > 0.0f) {
+                const float roof = depth + m;
+                const float c = mouth * std::clamp((kRoof + 1.0f - roof) * 0.5f, 0.0f, 1.0f);
+                m = m + (-2.0f - m) * c;
+            }
         }
         if (depth > 30.0f && d > mantleRadius + 40.0f) {
             const float fade = std::min(1.0f, (depth - 30.0f) / 20.0f) * std::min(1.0f, (d - mantleRadius - 40.0f) / 20.0f);
