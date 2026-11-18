@@ -980,3 +980,81 @@ bool NetRead(NetReader& r, MsgTeamState& m) {
     }
     return Done(r);
 }
+
+#ifdef RAYLIBGAME_UNIT_TESTS
+// ---- Unit tests (#869): every message round-trips; truncated or random bytes never parse as valid or crash ----
+#include "unit_helpers.h"
+
+// The whole --test-netproto self-test (every message kind, all truncations, 20000 random buffers and bit flips). It stays
+// the one body of checks while the flag lives (step 4 of #868 moves the flag's users here and removes it).
+TEST(NetProto, SelfTestEveryMessageRoundTrips) {
+    testing::internal::CaptureStdout();
+    const bool ok = NetProto_Test();
+    const std::string out = testing::internal::GetCapturedStdout();
+    EXPECT_TRUE(ok) << out;
+}
+
+TEST(NetProto, UnknownIdsAreRejected) {
+    EXPECT_EQ(NetPeek({}), NetMsg::Count);
+    EXPECT_EQ(NetPeek({ (uint8_t)NetMsg::Count }), NetMsg::Count);
+    EXPECT_EQ(NetPeek({ 0xFF, 1, 2, 3 }), NetMsg::Count);
+    EXPECT_FALSE(ParseAny({ 0xFF, 1, 2, 3 }));
+}
+
+TEST(NetProto, EveryIdAloneParsesWithoutACrash) {
+    for (int id = 0; id < (int)NetMsg::Count; ++id) {
+        std::vector<uint8_t> b{ (uint8_t)id };
+        ParseAny(b); // an id with no body: must fail or pass cleanly, never read past the end
+        b.resize(64, 0xFF);
+        ParseAny(b);
+    }
+    SUCCEED();
+}
+
+// A player state holds its position to 1 mm anywhere within 100 km of a body's centre, whatever the sign (#769).
+TEST(NetProto, PlayerStatePositionPrecisionEverywhere) {
+    std::mt19937 rng(856);
+    std::uniform_real_distribution<double> d(-100000.0, 100000.0);
+    double worst = 0.0;
+    for (int i = 0; i < 2000; ++i) {
+        MsgPlayerState a; a.session = 1; a.tick = 100; a.body = 7; a.local = { d(rng), d(rng), d(rng) };
+        MsgPlayerState b;
+        ASSERT_TRUE(RoundTrip(a, b));
+        worst = std::fmax(worst, std::fmax(std::fabs(b.local.x - a.local.x), std::fmax(std::fabs(b.local.y - a.local.y), std::fabs(b.local.z - a.local.z))));
+    }
+    EXPECT_LE(worst, 0.0005 + 1e-9);
+}
+
+// Quantising a dequantised state changes nothing (the server and client compare quantised states, #769).
+TEST(NetProto, QuantizeIsIdempotent) {
+    std::mt19937 rng(769);
+    std::uniform_real_distribution<float> u(-1.0f, 1.0f);
+    for (int i = 0; i < 1000; ++i) {
+        MsgPlayerState s; s.session = 2; s.tick = 1000 + i; s.ackInput = 990 + i; s.body = 3;
+        s.local = { 60000.0 * u(rng), 60000.0 * u(rng), 60000.0 * u(rng) };
+        s.vx = 20.0f * u(rng); s.vy = 20.0f * u(rng); s.vz = 20.0f * u(rng);
+        s.yaw = 3.0f * u(rng) + 3.0f; s.pitch = 1.5f * u(rng); s.flags = (uint8_t)(i & 63);
+        s.jumpBuffer = 0.1f + 0.1f * u(rng); s.jetpackFuel = 0.5f + 0.5f * u(rng); s.action = (uint8_t)(i % 3); s.actionPhase = 0.5f + 0.5f * u(rng);
+        const PlayerStateQ q = NetQuantize(s);
+        ASSERT_TRUE(NetQuantize(NetDequantize(q, s.tick)) == q) << "state " << i;
+    }
+}
+
+// Mutated real messages (one to eight flipped bits) parse or fail cleanly; a different seed from the self-test's.
+TEST(NetProto, BitFlipsNeverCrash) {
+    std::vector<std::vector<uint8_t>> samples;
+    { MsgHello m{ kNetProtocol, "build", "name", "pw", "0f0f0f0f-1234-4abc-8def-0123456789ab" }; NetWriter w; NetWrite(w, m); samples.push_back(w.bytes); }
+    { MsgChat m{ 3, "hello" }; NetWriter w; NetWrite(w, m); samples.push_back(w.bytes); }
+    { MsgSyncData m; m.snapshot = 1; m.entry = 2; m.offset = 0; m.size = 300; m.bytes.assign(300, 7); NetWriter w; NetWrite(w, m); samples.push_back(w.bytes); }
+    { MsgGraves m; m.graves.push_back({ 1, "terra", DVec3{ 1, 2, 3 }, "a", "b", 1, 5 }); NetWriter w; NetWrite(w, m); samples.push_back(w.bytes); }
+    { MsgTeamState m; m.team = 1; m.name = "t"; m.members = { { "x", true, false, true, 50.0f } }; NetWriter w; NetWrite(w, m); samples.push_back(w.bytes); }
+    std::mt19937 rng(20261118);
+    for (int i = 0; i < 20000; ++i) {
+        std::vector<uint8_t> m = samples[i % samples.size()];
+        const int flips = 1 + (int)(rng() % 8);
+        for (int k = 0; k < flips; ++k) m[rng() % m.size()] ^= (uint8_t)(1u << (rng() % 8));
+        ParseAny(m);
+    }
+    SUCCEED();
+}
+#endif

@@ -154,9 +154,18 @@ endif()
 
 function(add_game target dir)
     file(GLOB GAME_SOURCES CONFIGURE_DEPENDS ${dir}/*.cpp)
-    add_executable(${target} ${GAME_SOURCES})
+    # Everything but main.cpp is an object library (#869), so the unit tests (game_tests) link the same objects
+    # without compiling them twice. The exe still gets every object (object libraries are never dropped by the linker).
+    list(FILTER GAME_SOURCES EXCLUDE REGEX "/main\\.cpp$")
+    add_library(${target}_objs OBJECT ${GAME_SOURCES})
+    target_include_directories(${target}_objs PUBLIC ${dir})
+    target_link_libraries(${target}_objs PUBLIC engine)
+    if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+        target_compile_options(${target}_objs PRIVATE -Wall -Wno-missing-braces)
+    endif()
+    add_executable(${target} ${dir}/main.cpp)
     target_include_directories(${target} PRIVATE ${dir})
-    target_link_libraries(${target} PRIVATE engine)
+    target_link_libraries(${target} PRIVATE ${target}_objs engine)
     # Version for the window title (#501): branch + commit, regenerated at every build (cmake/game_version.cmake).
     set(version_src "${CMAKE_BINARY_DIR}/generated/${target}_version.cpp")
     add_custom_target(${target}_version
@@ -184,3 +193,54 @@ function(add_game target dir)
 endfunction()
 
 add_game(game src/space)        # space survival
+
+# ---------------------------------------------------------------------------------------------
+# Tier 1 unit tests (#869): GoogleTest, tests next to the code
+# ---------------------------------------------------------------------------------------------
+# A tested .cpp ends with its tests inside `#ifdef RAYLIBGAME_UNIT_TESTS`. The game never defines it (game.exe is
+# unchanged and does not link GoogleTest). game_tests compiles only the files that contain such a block again, with the
+# define, and links every other object from the game's own libraries: the linker takes a library member only for a
+# symbol nobody defines yet, and the test build of a file defines everything its plain build does. Re-run cmake after
+# adding the first test block to a file (the scan runs at configure time). Run: ctest --test-dir build/check, or
+# build/check/bin/game_tests.exe (from the repo root: some tests read resources/).
+option(RAYLIBGAME_UNIT_TESTS "Build the game_tests unit test exe (GoogleTest, fetched at a pinned version)" ON)
+if(RAYLIBGAME_UNIT_TESTS)
+    set(INSTALL_GTEST OFF CACHE BOOL "" FORCE)
+    set(BUILD_GMOCK OFF CACHE BOOL "" FORCE)
+    set(gtest_force_shared_crt ON CACHE BOOL "" FORCE)
+    FetchContent_Declare(googletest
+        GIT_REPOSITORY https://github.com/google/googletest.git
+        GIT_TAG v1.15.2
+        GIT_SHALLOW TRUE)
+    FetchContent_MakeAvailable(googletest)
+
+    file(GLOB_RECURSE UNIT_SCAN CONFIGURE_DEPENDS src/engine/*.cpp src/space/*.cpp)
+    set(UNIT_TEST_SOURCES "")
+    foreach(f ${UNIT_SCAN})
+        file(STRINGS "${f}" hit REGEX "^#ifdef RAYLIBGAME_UNIT_TESTS" LIMIT_COUNT 1)
+        if(hit)
+            list(APPEND UNIT_TEST_SOURCES "${f}")
+        endif()
+    endforeach()
+    list(LENGTH UNIT_TEST_SOURCES n_unit)
+    message(STATUS "game_tests: ${n_unit} source files carry unit tests")
+
+    add_library(game_space STATIC $<TARGET_OBJECTS:game_objs>) # the game's objects as a library (no recompile)
+    add_executable(game_tests ${UNIT_TEST_SOURCES} tests/unit/unit_helpers.cpp "${CMAKE_BINARY_DIR}/generated/game_version.cpp")
+    add_dependencies(game_tests game_version) # kGameVersion (menus.cpp)
+    target_compile_definitions(game_tests PRIVATE RAYLIBGAME_UNIT_TESTS=1)
+    target_include_directories(game_tests PRIVATE src/engine src/space tests/unit)
+    # The game objects and the engine refer to each other: rescan both until every symbol resolves.
+    target_link_libraries(game_tests PRIVATE "$<LINK_GROUP:RESCAN,game_space,engine>" GTest::gtest_main)
+    if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+        target_compile_options(game_tests PRIVATE -Wall -Wno-missing-braces -ffp-contract=off)
+    endif()
+    if(MINGW)
+        target_link_options(game_tests PRIVATE -static)
+    endif()
+    set_target_properties(game_tests PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${GAME_OUTPUT_DIR}")
+    enable_testing()
+    include(GoogleTest)
+    # One CTest entry per test, found at build time; run from the repo root (resources/ and the data files).
+    gtest_discover_tests(game_tests WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}" DISCOVERY_TIMEOUT 60 PROPERTIES TIMEOUT 30)
+endif()

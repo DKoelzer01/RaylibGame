@@ -22,6 +22,10 @@ C++ raylib 5.5 planetoid survival game. `src/engine` (static lib), `src/space` -
 
 - Light tests per change: the scripted benches for the feature touched and its neighbours
   (`game.exe --seed 42 --bench 3 --test-<name>`), plus a screenshot (bench.png) when visuals change.
+- **Unit tests (Tier 1, #869):** GoogleTest, at the end of the .cpp they test inside `#ifdef RAYLIBGAME_UNIT_TESTS` (the game
+  never defines it). `cmake --build build/check --target game_tests` then `ctest --test-dir build/check -j 4` (or
+  `build/check/bin/game_tests.exe` from the repo root); the suite stays under 30 s. Re-run `cmake build/check` after adding
+  the first test block to a file. No window or GL in them (`UnitTest::FieldOnlyScene()` for code that reads only renderOrigin).
 - **Record what you verify (user, 2026-11-15, #478):** when verifying a graphical change (rendering, shaders,
   lighting, UI, animation, terrain or water look) or a behaviour change that shows on screen (movement, camera,
   physics, animals, machines, tools), record the test run with the `capture` skill (the in-game recorder, `--record`)
