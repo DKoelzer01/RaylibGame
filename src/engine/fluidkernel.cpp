@@ -11,6 +11,7 @@
 // A line-by-line port of resources/compute/fluid_step.comp (#654). Comments on the rules live there.
 namespace FluidKernel {
 std::atomic<long long> dbgWhy[12]; // #680 diagnosis: why column pairs of deep runs did not move (DBWHY)
+std::atomic<long long> dbgPair[3]; long long dbgPairPlan = 0, dbgPairUnits = 0; long long dbgPairFric = 0, dbgPairDH = 0, dbgPairH = 0, dbgPairN = 0; // TEMP #680 (DBWHY): deep pairs limited by plan / avail / room
 #define WHY(i) do { if (A.surf - A.bed > 128) ++dbgWhy[i]; } while (0)
 
 void Grid::resize(int slots) {
@@ -350,7 +351,14 @@ struct Pass {
             }
         }
         const float speed = std::fabs(q) / (p.cellSize * std::max(hm, 0.02f));
-        q /= 1.0f + p.dt * (p.frictionLin[kind] + p.frictionQuad[kind] * speed / std::max(hm, 0.02f));
+        const float fricDiv = 1.0f + p.dt * (p.frictionLin[kind] + p.frictionQuad[kind] * speed / std::max(hm, 0.02f));
+        q /= fricDiv;
+        if (A.surf - A.bed > 128) { // TEMP #680 (DBWHY): per deep pair the friction divisor, the head drop and the depth (x1000)
+            __atomic_fetch_add(&dbgPairFric, (long long)(fricDiv * 1000.0f), __ATOMIC_RELAXED);
+            __atomic_fetch_add(&dbgPairDH, (long long)(dHm * 1000.0f), __ATOMIC_RELAXED);
+            __atomic_fetch_add(&dbgPairH, (long long)(hm * 1000.0f), __ATOMIC_RELAXED);
+            __atomic_fetch_add(&dbgPairN, 1LL, __ATOMIC_RELAXED);
+        }
         const float plan = std::fabs(q) * p.dt * p.units;
         if (plan < 1.0f) { WHY(5); return q; }
         const bool aGives = q > 0.0f;
@@ -367,6 +375,11 @@ struct Pass {
         if ((FL(inC[taker]) & (SOURCE | SINK)) == SOURCE) return 0.0f;
         if ((FL(inC[giverTop]) & SOURCE) && !(FL(inC[taker]) & DUG)) return 0.0f;
         const int units = (int)std::floor(std::min({ plan, (float)avail / 4.0f, (float)room / 4.0f }));
+        if (A.surf - A.bed > 128) { // TEMP #680 (DBPAIR): which limit set a deep pair's units this substep
+            const float lim = std::min({ plan, (float)avail / 4.0f, (float)room / 4.0f });
+            ++dbgPair[lim == plan ? 0 : lim == (float)avail / 4.0f ? 1 : 2];
+            __atomic_fetch_add(&dbgPairPlan, (long long)plan, __ATOMIC_RELAXED); __atomic_fetch_add(&dbgPairUnits, (long long)units, __ATOMIC_RELAXED);
+        }
         if (units <= 0) { WHY(7); return q * 0.5f; }
         WHY(spill ? 8 : wet ? 9 : 10);
         if ((float)units < std::floor(plan)) q = (aGives ? 1.0f : -1.0f) * (float)units / (p.dt * p.units);
@@ -551,7 +564,11 @@ void Substep(Grid& g, const Params& p, const std::vector<int>& list) {
         printf("dbwhy:");
         static const char* names[11] = { "noBrick", "unproc", "wall", "notOwner", "Bnotok", "plan<1", "noTaker", "units0", "SPILL", "WET", "DRY" };
         for (int i = 0; i < 11; ++i) { printf(" %s %lld", names[i], dbgWhy[i].load()); dbgWhy[i] = 0; }
-        printf("\n");
+        printf("\ndbpair: limited by plan %lld, avail/4 %lld, room/4 %lld; planned %lld units, moved %lld\n", dbgPair[0].load(), dbgPair[1].load(), dbgPair[2].load(),
+               __atomic_load_n(&dbgPairPlan, __ATOMIC_RELAXED), __atomic_load_n(&dbgPairUnits, __ATOMIC_RELAXED));
+        for (auto& d : dbgPair) d = 0;
+        { const long long n = std::max(1LL, __atomic_load_n(&dbgPairN, __ATOMIC_RELAXED)); printf("dbpair: mean friction divisor %.4f, head drop %.4f m, depth %.3f m over %lld pair-substeps; dt %.5f s\n", __atomic_load_n(&dbgPairFric, __ATOMIC_RELAXED) / 1000.0 / n, __atomic_load_n(&dbgPairDH, __ATOMIC_RELAXED) / 1000.0 / n, __atomic_load_n(&dbgPairH, __ATOMIC_RELAXED) / 1000.0 / n, n, p.dt); __atomic_store_n(&dbgPairFric, 0, __ATOMIC_RELAXED); __atomic_store_n(&dbgPairDH, 0, __ATOMIC_RELAXED); __atomic_store_n(&dbgPairH, 0, __ATOMIC_RELAXED); __atomic_store_n(&dbgPairN, 0, __ATOMIC_RELAXED); }
+        __atomic_store_n(&dbgPairPlan, 0, __ATOMIC_RELAXED); __atomic_store_n(&dbgPairUnits, 0, __ATOMIC_RELAXED);
     }
 }
 
