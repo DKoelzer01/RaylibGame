@@ -287,6 +287,13 @@ namespace {
                 if (gNetRole == NetRole::Client) Combat_SetGraveMirror(list, c.name); // (a host in this process has the real list)
                 return;
             }
+            case NetMsg::TeamState: { // (#604) our team: the Team screen and the HUD's teammates show it
+                MsgTeamState t;
+                if (c.state != NetClient::State::Joined || !NetRead(r, t)) return;
+                if (!t.invite.empty() && t.invite != c.team.invite) c.chat.push_back(MsgChat{ 0, "You're invited to join " + t.invite + ": /team accept (or the Team screen)" });
+                c.team = t; ++c.teamMsgs;
+                return;
+            }
             case NetMsg::Vitals: { // (#337) our player's survival as the server simulates it: the bars follow it
                 MsgVitals v;
                 if (c.state != NetClient::State::Joined || !NetRead(r, v)) return;

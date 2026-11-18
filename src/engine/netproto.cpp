@@ -698,6 +698,14 @@ bool NetProto_Test() {
         MsgCraftRequest ca{ 12, "oak_planks", 5 }, cb; std::vector<uint8_t> s9;
         check(RoundTrip(ca, cb, &s9) && cb.recipe == 12 && cb.output == "oak_planks" && cb.count == 5, "craft request"); samples.push_back(s9);
     }
+    { // #604
+        MsgTeamState a, b; std::vector<uint8_t> s;
+        a.team = 3; a.name = "alice's_team"; a.invite = "bob's_team";
+        a.members = { { "alice", true, true, true, 87.5f }, { "carol", false, false, false, 0.0f } };
+        check(RoundTrip(a, b, &s) && b.team == 3 && b.name == a.name && b.invite == a.invite && b.members.size() == 2 && b.members[0].owner && b.members[0].you &&
+              b.members[0].online && fabsf(b.members[0].health - 87.5f) < 0.01f && b.members[1].name == "carol" && !b.members[1].online, "team state");
+        samples.push_back(s);
+    }
     { MsgRoster a, b; a.players = { { 1, "alice" }, { 7, "bob" } }; std::vector<uint8_t> s; check(RoundTrip(a, b, &s) && b.players.size() == 2 && b.players[1].session == 7 && b.players[1].name == "bob", "roster"); samples.push_back(s); }
     { MsgLoadout a{ 3, "stone_pickaxe", true, 2, 0xD04A2Fu }, b; std::vector<uint8_t> s; check(RoundTrip(a, b, &s) && b.session == 3 && b.held == "stone_pickaxe" && b.headlamp && b.suitTier == 2 && b.suitColor == 0xD04A2Fu, "loadout"); samples.push_back(s); }
     // Every message cut short anywhere must not read as valid; garbage must never crash a reader.
@@ -817,3 +825,24 @@ void NetWrite(NetWriter& w, const MsgQuestBook& m) { Id(w, NetMsg::QuestBook); w
 bool NetRead(NetReader& r, MsgQuestBook& m) { m.team = r.u32(); m.text = r.str(65536); return Done(r); }
 void NetWrite(NetWriter& w, const MsgCraftRequest& m) { Id(w, NetMsg::CraftRequest); w.u32(m.recipe); w.str(m.output.substr(0, 64)); w.u8(m.count); }
 bool NetRead(NetReader& r, MsgCraftRequest& m) { m.recipe = r.u32(); m.output = r.str(64); m.count = r.u8(); return Done(r) && !m.output.empty() && m.count >= 1 && m.count <= 64; }
+void NetWrite(NetWriter& w, const MsgTeamState& m) { // #604
+    Id(w, NetMsg::TeamState); w.u32((uint32_t)m.team); w.str(m.name.substr(0, 40)); w.str(m.invite.substr(0, 40));
+    const size_t n = std::min<size_t>(m.members.size(), 16);
+    w.u8((uint8_t)n);
+    for (size_t i = 0; i < n; ++i) {
+        const MsgTeamState::Member& x = m.members[i];
+        w.str(x.name.substr(0, 32)); w.u8((uint8_t)((x.online ? 1 : 0) | (x.owner ? 2 : 0) | (x.you ? 4 : 0))); w.f32(x.health);
+    }
+}
+bool NetRead(NetReader& r, MsgTeamState& m) {
+    m.team = (int32_t)r.u32(); m.name = r.str(40); m.invite = r.str(40);
+    const int n = r.u8();
+    if (n > 16) return false;
+    m.members.clear();
+    for (int i = 0; i < n && r.ok; ++i) {
+        MsgTeamState::Member x; x.name = r.str(32);
+        const uint8_t f = r.u8(); x.online = f & 1; x.owner = f & 2; x.you = f & 4; x.health = r.f32();
+        m.members.push_back(x);
+    }
+    return Done(r);
+}

@@ -16,7 +16,7 @@
 #include <functional>
 #include <vector>
 
-constexpr uint32_t kNetProtocol = 22; // 1 was the text "join" of #311; 5: world time in Welcome and Pong (#339); 6 (unused); 7: world-gen settings in Welcome (#757); 8: terrain edit requests, refusals, inventory deltas (#329); 9: chat (#326); 10: building (#330); 11 is #776's; 12: player snapshots, delta-coded against acked states (#769); 13: animals (#334); 14: animal actions, damage to a player (#334); 15 (unused); 16: server-side survival (#337); 17: the suit colour in the loadout (#341); 18: beds (#800); 19: graves (#804); 20: the player id (UUID) in the hello (#346); 21: team quest books (#338); 22: crafting on the server (#338)
+constexpr uint32_t kNetProtocol = 24; // 1 was the text "join" of #311; 5: world time in Welcome and Pong (#339); 6 (unused); 7: world-gen settings in Welcome (#757); 8: terrain edit requests, refusals, inventory deltas (#329); 9: chat (#326); 10: building (#330); 11 is #776's; 12: player snapshots, delta-coded against acked states (#769); 13: animals (#334); 14: animal actions, damage to a player (#334); 15 (unused); 16: server-side survival (#337); 17: the suit colour in the loadout (#341); 18: beds (#800); 19: graves (#804); 20: the player id (UUID) in the hello (#346); 21: team quest books (#338); 22: crafting on the server (#338); 23 is #332's; 24: team state (#604)
 
 enum class NetMsg : uint8_t {
     Hello = 1,     // client -> server: protocol, build, player name, password
@@ -53,6 +53,7 @@ enum class NetMsg : uint8_t {
     Graves = 31,   // server -> client (#804): the world's graves (who, where, which stone), resent when they change
     QuestBook = 32, // server -> client (#338): the player's team's quest book (its save lines), when it changes and on join
     CraftRequest = 33, // client -> server (#338): craft a recipe (count times) from its inventory as the server keeps it
+    TeamState = 37, // server -> client (#604): the player's team (name, members online with their health) and an invite waiting (34-36: #332)
     Count
 };
 const char* NetMsgName(NetMsg m);
@@ -201,6 +202,10 @@ struct MsgUseItem { std::string item; };
 struct MsgBedUse { std::string body; uint32_t plot = 0; int32_t cell[3] = { 0, 0, 0 }; }; // #800: the bed's origin cell
 struct MsgQuestBook { uint32_t team = 0; std::string text; }; // #338 (at most 64 KB)
 struct MsgCraftRequest { uint32_t recipe = 0; std::string output; uint8_t count = 1; }; // #338 (output: a check that both sides mean the same recipe)
+struct MsgTeamState { // #604: at most 16 members
+    struct Member { std::string name; bool online = false, owner = false, you = false; float health = 0.0f; };
+    int32_t team = 0; std::string name; std::vector<Member> members; std::string invite; // invite: the team inviting us ("" none)
+};
 struct MsgGraves { // #804 (at most 256: the nearest matter, and a world with more has bigger problems)
     struct Entry { uint32_t id = 0; std::string body; DVec3 local{}; std::string owner, name; uint8_t style = 0; int64_t diedAt = 0; };
     std::vector<Entry> graves;
@@ -347,6 +352,8 @@ void NetWrite(NetWriter& w, const MsgQuestBook& m);
 bool NetRead(NetReader& r, MsgQuestBook& m);
 void NetWrite(NetWriter& w, const MsgCraftRequest& m);
 bool NetRead(NetReader& r, MsgCraftRequest& m);
+void NetWrite(NetWriter& w, const MsgTeamState& m);
+bool NetRead(NetReader& r, MsgTeamState& m);
 bool NetRead(NetReader& r, MsgGraves& m);
 void NetWrite(NetWriter& w, const MsgPlayerSnapshot& m);
 // lookup(session, baseSeq, out): the state of that player received in snapshot baseSeq (false: unknown - the entry can't be
