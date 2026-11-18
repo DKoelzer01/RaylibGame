@@ -522,6 +522,8 @@ int main(int argc, char** argv)
     bool benchNetMove = false;     // --test-net-move (#327): two clients, prediction and interpolation over loopback
     bool benchNetDig = false;      // --test-net-dig (#329): a client's digs and places, validated and replicated
     bool benchNetBuild = false;    // --test-net-build (#330): a client's parts placed and broken, validated and replicated
+    bool benchNetSync = false;     // --test-net-sync (#776): joining a world with many edits (indexed, hashed, rate-bounded)
+    int hostEdits = 0;             // --host-edits N (#776 tests): N dig strokes around the start, for clients to sync
     int benchMpBots = 0;           // --test-mp-bots N (#347): with --host, N bot clients join, ping and churn
     bool seedGiven = false;        // --seed N was passed (a --host new world: else a random seed)
     double autosaveMinutes = kDefaultAutosaveMinutes; // --autosave-minutes N (--host; 0 = off)
@@ -767,6 +769,7 @@ int main(int argc, char** argv)
         if (std::string(argv[i]) == "--test-net-animals") benchNetAnimals = true;
         if (std::string(argv[i]) == "--port" && i + 1 < argc) hostPort = (uint16_t)atoi(argv[i + 1]);
         if (std::string(argv[i]) == "--host-password" && i + 1 < argc) Host_SetPassword(argv[i + 1]); // (#321)
+        if (std::string(argv[i]) == "--host-edits" && i + 1 < argc) hostEdits = atoi(argv[i + 1]); // (#776 tests) a world with many edits to join
         if (std::string(argv[i]) == "--max-players" && i + 1 < argc) Host_SetMaxPlayers(atoi(argv[i + 1]));
         if (std::string(argv[i]) == "--test-host") benchHost = true;
         if (std::string(argv[i]) == "--test-time-follow") benchTimeFollow = true;
@@ -775,6 +778,7 @@ int main(int argc, char** argv)
         if (std::string(argv[i]) == "--test-net-move") benchNetMove = true;
         if (std::string(argv[i]) == "--test-net-dig") benchNetDig = true;
         if (std::string(argv[i]) == "--test-net-build") benchNetBuild = true;
+        if (std::string(argv[i]) == "--test-net-sync") benchNetSync = true;
         if (std::string(argv[i]) == "--test-mp-bots" && i + 1 < argc) benchMpBots = std::max(1, atoi(argv[i + 1]));
         if (std::string(argv[i]) == "--seed") seedGiven = true;
         if (std::string(argv[i]) == "--server") { // (#326) the config first; flags after it override
@@ -1294,6 +1298,7 @@ int main(int argc, char** argv)
         std::string err;
         if (!Net_Init(err)) { printf("join: no network transport (%s)\n", err.c_str()); CloseWindow(); return 1; }
         gNetRole = NetRole::Client;
+        gJoin.syncHold = true; // (#776) the world's edits wait until we have generated the world they go into
         NetClient_Connect(gJoin, joinAddr.c_str(), joinName);
         const double t0 = GetTime();
         while ((gJoin.state == NetClient::State::Connecting || gJoin.state == NetClient::State::AwaitingWelcome) && GetTime() - t0 < kClientConnectTimeout + 1.0 && !WindowShouldClose()) {
@@ -1323,6 +1328,9 @@ int main(int argc, char** argv)
         world.objects.clear();
         generateWorld(world);
         gNetClient = &gJoin;
+        // (#776) what we held of this world last time: the sync then fetches only what changed since
+        printf("join: cache: %d regions of this world\n", NetClient_LoadCache(world, WorldSavePath(), gJoin.welcome.seed, gJoin.welcome.fingerprint));
+        gJoin.syncHold = false; // the bodies exist now: the sync's messages (held since the Welcome) are handled next update
         // (#334) the server owns the animals: none decided here; a swing at one is a request to the server
         gAnimalsReplicated = true; Animals_Reset();
         gAnimalHitRequest = [](uint64_t netId) { NetClient_HitAnimal(gJoin, netId); };
@@ -1737,6 +1745,7 @@ int main(int argc, char** argv)
         printf("host: autosave %s\n", autosaveMinutes > 0.0 ? TextFormat("every %g minutes, and on shutdown", autosaveMinutes) : "off (still on shutdown)");
         Host_Start(hostPort, status);
         printf("host: %s\n", status.c_str());
+        if (hostEdits > 0) printf("host: %d dig strokes scattered around the start (--host-edits, #776)\n", NetSync_ScatterStrokes(world, hostEdits, 42));
         if (serverMode) { // (#345) the admin lists live next to the save: <save dir>/admin.txt, audit.log
             const std::filesystem::path saveDir = std::filesystem::path(hostSave).parent_path();
             Admin_Load(saveDir.empty() ? std::string(".") : saveDir.string());
@@ -8639,7 +8648,7 @@ int main(int argc, char** argv)
                         }
                         benchWalkSeconds = 0.0;
                     }
-                } else if ((WorldIdle() && benchDigStrokes == 0 && !benchPaint && !benchSaveLoad && benchWalkSeconds <= 0.0 && benchMineStrokes == 0 && minePhase != 2 && benchFlySeconds <= 0.0 && !benchSuffocate && benchOrbitSeconds <= 0.0 && !benchRide && !benchPark && !benchGravity && !benchPrecision && !benchMantle && !benchAirJump && !benchMoon && !benchHole && !benchWall && !benchDoorway && !benchLedge && !benchTor && !benchMachines && !benchFall && !benchHover && !benchNetIds && !benchNet && !benchTwoPlayers && !benchFingerprint && !benchInterest && !benchTeleClose && !benchMenus && !benchWater && !benchFlyFollow && !benchHotbar && !benchInventory && !benchMap && !benchViewmodel && !benchQuests && !benchHunger && !benchFarm && !benchAnimals && !benchThreats && !benchAnimalPath && !benchDam && !benchFlowMeter && !benchPartWall && !benchPressure && benchShotTabs == 0 && !benchForest && !benchFlow && !benchPond && !benchBucket && !benchWaterSpeed && benchFluidLoad <= 0.0f && !benchFlowShade && !benchPump && !benchTerrain && !benchWind && !benchCampfire && !benchCaveMouth && !benchMountain && !benchShelter && !benchRoom && !benchFacing && !benchDungeon && !benchPosture && !benchPause && !benchBite && !benchPlacement && !benchShotDig && !benchShadow && !benchParticles && !benchBiomes && !benchOil && !benchSpring && !benchShotAnimals && !benchShotAvatar && !benchShotMachines && benchShotBiomes < 0 && !benchFarForest && !benchRecipes && !benchWeather && !benchDecor && !benchMaterials && !benchDamage && !benchCrafting && !benchSuit && !benchTools && !benchRivers && !benchRing && !benchRocket && !benchStation && !benchBlueprint && !benchSmallBody && !benchTrees && !benchChop && benchPersist == 0 && benchBuild == 0 && benchFactory == 0 && !benchCombat && !benchHost && !benchJoin && !benchTimeFollow && benchPlayerCost == 0 && !benchNetAnimals && !benchNetAbuse && !benchNetMove && !benchNetDig && !benchNetBuild && benchMpBots == 0 && !benchShower && !benchProgression && (benchUnfocus <= 0.0f || unfocusPhase >= 6)) || GetTime() > 600.0) {
+                } else if ((WorldIdle() && benchDigStrokes == 0 && !benchPaint && !benchSaveLoad && benchWalkSeconds <= 0.0 && benchMineStrokes == 0 && minePhase != 2 && benchFlySeconds <= 0.0 && !benchSuffocate && benchOrbitSeconds <= 0.0 && !benchRide && !benchPark && !benchGravity && !benchPrecision && !benchMantle && !benchAirJump && !benchMoon && !benchHole && !benchWall && !benchDoorway && !benchLedge && !benchTor && !benchMachines && !benchFall && !benchHover && !benchNetIds && !benchNet && !benchTwoPlayers && !benchFingerprint && !benchInterest && !benchTeleClose && !benchMenus && !benchWater && !benchFlyFollow && !benchHotbar && !benchInventory && !benchMap && !benchViewmodel && !benchQuests && !benchHunger && !benchFarm && !benchAnimals && !benchThreats && !benchAnimalPath && !benchDam && !benchFlowMeter && !benchPartWall && !benchPressure && benchShotTabs == 0 && !benchForest && !benchFlow && !benchPond && !benchBucket && !benchWaterSpeed && benchFluidLoad <= 0.0f && !benchFlowShade && !benchPump && !benchTerrain && !benchWind && !benchCampfire && !benchCaveMouth && !benchMountain && !benchShelter && !benchRoom && !benchFacing && !benchDungeon && !benchPosture && !benchPause && !benchBite && !benchPlacement && !benchShotDig && !benchShadow && !benchParticles && !benchBiomes && !benchOil && !benchSpring && !benchShotAnimals && !benchShotAvatar && !benchShotMachines && benchShotBiomes < 0 && !benchFarForest && !benchRecipes && !benchWeather && !benchDecor && !benchMaterials && !benchDamage && !benchCrafting && !benchSuit && !benchTools && !benchRivers && !benchRing && !benchRocket && !benchStation && !benchBlueprint && !benchSmallBody && !benchTrees && !benchChop && benchPersist == 0 && benchBuild == 0 && benchFactory == 0 && !benchCombat && !benchHost && !benchJoin && !benchTimeFollow && benchPlayerCost == 0 && !benchNetAnimals && !benchNetAbuse && !benchNetMove && !benchNetDig && !benchNetBuild && !benchNetSync && benchMpBots == 0 && !benchShower && !benchProgression && (benchUnfocus <= 0.0f || unfocusPhase >= 6)) || GetTime() > 600.0) {
                     benchStart = GetTime();
                     printf("bench: world ready after %.2f s (%d chunks, avg build %.2f ms of which sampling %.2f ms, %d worker threads)\n",
                         GetWorldStats().lastGenerationSeconds, GetWorldStats().chunks, GetWorldStats().avgBuildMs, GetWorldStats().avgSampleMs, GetWorldStats().workerThreads);
@@ -9102,6 +9111,14 @@ int main(int argc, char** argv)
             }
             if (!joinAddr.empty()) { // --join (#341 core): the server's messages; the player starts at its first own state
                 NetClient_Update(gJoin);
+                static bool cacheSaved = false; // (#776) the sync done: keep what we now hold for a rejoin, and report
+                if (!cacheSaved && gJoin.syncDoneAt > 0.0) {
+                    cacheSaved = true;
+                    const int written = NetClient_SaveCache(world, WorldSavePath(), gJoin.welcome.seed, gJoin.welcome.fingerprint);
+                    printf("join: synced: %d of %zu entries fetched (%d installed, %d cleared, %d bad), %.2f MB in %.2f s, %d live edits held; %d regions cached; terrain fingerprint %016llx\n",
+                           gJoin.syncEntriesDone, gJoin.syncIndex.size(), gJoin.syncInstalled, gJoin.syncCleared, gJoin.syncHashBad, gJoin.syncBytes / 1048576.0,
+                           gJoin.syncDoneAt - gJoin.syncStartedAt, gJoin.syncQueued, written, (unsigned long long)NetSync_TerrainFingerprint(world));
+                }
                 if (!gJoinSynced && gJoin.state == NetClient::State::Joined && gJoin.haveOwn && !loading)
                     if (Planetoid* b = Planetoid::findNet(gJoin.own.body)) {
                         player.flyMode = false;
@@ -10054,6 +10071,106 @@ int main(int argc, char** argv)
                 if (phase < 2 && GetTime() - t0 > 20.0) { printf("bench: net build: bob %s, carol %s after 20 s -> FAIL\n", NetClient_StateName(bob.state), NetClient_StateName(carol.state)); benchNetBuild = false; }
             }
         }
+        // --test-net-sync (#776, with --host <save>, ENABLE_GNS): the server's world gets 3000 dig strokes over 600 m around
+        // the start and a few parts; bob joins. Then dave joins as a client with nothing cached (fetching everything) while
+        // bob digs once more mid-sync, and erin joins after him holding the same world (fetching nothing). Checks: dave got
+        // every entry, each with its hash right; the transfer kept to the byte rate (RAYLIBGAME_SYNC_KBPS); bob's live dig
+        // reached dave only after his sync was done (held, then applied); erin wanted nothing.
+        if (benchNetSync && gameState == 1 && !loading && WorldIdle()) {
+            static NetClient bob, dave, erin;
+            static Player bobSelf;
+            static bool synced = false;
+            static long long stepped = 0;
+            static int phase = 0;
+            static double t0 = 0.0, syncedAt = 0.0;
+            static uint64_t bytes0 = 0, bytesDave = 0;
+            static double worstFrame = 0.0; // the server's longest frame while dave syncs (the index, compressing, installing)
+            static int strokes = 0;
+            if (!Host_Listening()) { printf("bench: net sync: needs --host with ENABLE_GNS -> SKIP\n"); benchNetSync = false; }
+            else {
+                const char* addr = TextFormat("127.0.0.1:%d", hostPort);
+                NetClient_Update(bob); NetClient_Update(dave); NetClient_Update(erin);
+                if (!synced && bob.state == NetClient::State::Joined && bob.haveOwn)
+                    if (Planetoid* b = Planetoid::findNet(bob.own.body)) {
+                        bobSelf.spawnOn(world, *b, b->dirToWorld(Vector3Normalize(bob.own.local.toFloat())));
+                        bobSelf.applyNetState(world, NetClient_FromMsg(bob.own));
+                        synced = true; stepped = SimTick(); syncedAt = GetTime();
+                    }
+                if (synced) for (; stepped < SimTick(); ++stepped) { PlayerInput idle; NetClient_Step(bob, world, bobSelf, idle); }
+                if (phase == 2 || phase == 3) worstFrame = std::max(worstFrame, (double)GetFrameTime());
+                if (phase == 0) {
+                    // The world's edits: strokes scattered over 600 m around the start (every few regions), and a plot.
+                    Planetoid* p = nullptr;
+                    for (auto& o : world.objects) if ((p = dynamic_cast<Planetoid*>(o.get()))) break;
+                    const auto* pf = p ? dynamic_cast<const PlanetField*>(p->field.get()) : nullptr;
+                    if (!pf) { printf("bench: net sync: needs a planet -> FAIL\n"); benchNetSync = false; }
+                    else {
+                        const Vector3 home = pf->findSpawnDir(p->seed);
+                        Vector3 e1 = Vector3CrossProduct({ 0, 1, 0 }, home); e1 = Vector3Normalize(Vector3Length(e1) < 1e-3f ? Vector3{ 1, 0, 0 } : e1);
+                        const Vector3 e2 = Vector3CrossProduct(home, e1);
+                        std::vector<TerrainEdit> edits;
+                        std::mt19937 rng(42);
+                        for (int i = 0; i < 3000; ++i) {
+                            const float a = ((float)(rng() % 60001) / 100.0f - 300.0f), b = ((float)(rng() % 60001) / 100.0f - 300.0f);
+                            const Vector3 d = Vector3Normalize(Vector3Add(home, Vector3Add(Vector3Scale(e1, a / pf->radius), Vector3Scale(e2, b / pf->radius))));
+                            TerrainEdit e{}; e.center = Vector3Scale(d, pf->radius + pf->elevation(d)); e.radius = 1.5f + (float)(rng() % 100) / 100.0f; e.carve = true;
+                            edits.push_back(e);
+                        }
+                        ApplyTerrainEdits(*p, edits.data(), edits.size());
+                        strokes = (int)edits.size();
+                        if (!p->plots) p->plots = std::make_unique<PlotSet>();
+                        if (Plot* pl = p->plots->plotFor(Vector3Scale(home, pf->radius + pf->elevation(home) + 0.2f), 0.0f, true))
+                            for (int k = 0; k < 4; ++k) { Part c{}; c.type = PartType::Cube; c.origin = { k, 0, 0 }; BuildTool_ApplyPart(*p, *pl, c); }
+                        Net_SetFakeConditions(50, 2.0f);
+                        NetClient_Connect(bob, addr, "bob");
+                        phase = 1; t0 = GetTime();
+                    }
+                } else if (phase == 1 && synced && !bob.syncing && GetTime() - syncedAt > 1.0) {
+                    bytes0 = Host_SyncBytesSent();
+                    dave.syncAssumeEmpty = true; // nothing cached: everything comes over
+                    NetClient_SetLoadout(bob, "stone_pickaxe", false, 0); // (his dig mid-sync must be one the server takes)
+                    NetClient_Connect(dave, addr, "dave");
+                    phase = 2; t0 = GetTime();
+                } else if (phase == 2 && dave.state == NetClient::State::Joined && dave.syncing && dave.syncEntriesDone > 0) {
+                    // bob digs mid-sync: dave must hold it until his sync is done.
+                    uint64_t bid = 0; DVec3 feet{};
+                    if (Host_PlayerLocal(world, bob.welcome.session, bid, feet))
+                        if (Planetoid* b = Planetoid::findNet(bid)) {
+                            const Vector3 up = Vector3Normalize(feet.toFloat());
+                            const Vector3 hit = Vector3Subtract(feet.toFloat(), Vector3Scale(up, 0.05f));
+                            NetClient_RequestEdit(bob, NetEditKind::Dig, *b, hit, Vector3Subtract(hit, Vector3Scale(up, 0.2f)), 0.4f, "");
+                        }
+                    phase = 3;
+                } else if (phase == 3 && dave.state == NetClient::State::Joined && !dave.syncing && GetTime() - dave.syncDoneAt > 1.0) {
+                    bytesDave = Host_SyncBytesSent() - bytes0;
+                    NetClient_Connect(erin, addr, "erin"); // holds the same world: nothing to fetch
+                    phase = 4; t0 = GetTime();
+                } else if (phase == 4 && erin.state == NetClient::State::Joined && !erin.syncing) {
+                    const double took = dave.syncDoneAt - dave.syncStartedAt;
+                    const double rate = getenv("RAYLIBGAME_SYNC_KBPS") ? atof(getenv("RAYLIBGAME_SYNC_KBPS")) * 1024.0 : 1024.0 * 1024.0;
+                    const double floor = (double)dave.syncBytes / rate; // the fastest the budget allows
+                    const bool all = dave.syncEntriesWanted == (int)dave.syncIndex.size() && dave.syncEntriesDone == dave.syncEntriesWanted && dave.syncIndex.size() > 10;
+                    const bool hashes = dave.syncHashBad == 0;
+                    const bool bounded = took >= floor * 0.8 && dave.syncBytes == bytesDave && worstFrame < 0.25; // (the server's sent bytes for dave's sync)
+                    const bool held = dave.syncQueued >= 1 && dave.editsSeen >= 1;
+                    const bool resumed = erin.syncEntriesWanted == 0 && erin.syncBytes == 0;
+                    const bool noRefusedSends = Net_ReliableSendFailures() == 0;
+                    const bool ok = all && hashes && bounded && held && resumed && noRefusedSends;
+                    printf("bench: net sync (#776, 100 ms round trip, 2%% loss): %d strokes and a plot on the server; dave (nothing cached) got %d of %zu entries, %.2f MB in %.2f s "
+                           "(%.0f kB/s; the budget allows %.0f: at least %.2f s), hashes right %d; bob's dig mid-sync held %d, applied after %d; "
+                           "erin (same world) wanted %d entries, %llu bytes; reliable sends refused %d; the server's longest frame during it %.0f ms -> %s\n",
+                           strokes, dave.syncEntriesDone, dave.syncIndex.size(), dave.syncBytes / 1048576.0, took, took > 0 ? dave.syncBytes / 1024.0 / took : 0.0, rate / 1024.0, floor,
+                           (int)hashes, dave.syncQueued, dave.editsSeen, erin.syncEntriesWanted, (unsigned long long)erin.syncBytes, Net_ReliableSendFailures(), worstFrame * 1000.0, ok ? "PASS" : "FAIL");
+                    NetClient_Disconnect(bob); NetClient_Disconnect(dave); NetClient_Disconnect(erin);
+                    Net_SetFakeConditions(0, 0.0f);
+                    benchNetSync = false;
+                }
+                if (phase >= 1 && phase < 4 && GetTime() - t0 > 90.0) {
+                    printf("bench: net sync: stuck in phase %d (dave %s, syncing %d, %d of %d entries) -> FAIL\n", phase, NetClient_StateName(dave.state), (int)dave.syncing, dave.syncEntriesDone, dave.syncEntriesWanted);
+                    benchNetSync = false;
+                }
+            }
+        }
         // Tests (#334): RAYLIBGAME_HOST_HERD="species count" - a host places a herd 10 m north of where players spawn, once the
         // world is up (threats off), for tools/test_animals_net.sh.
         if (!hostSave.empty() && getenv("RAYLIBGAME_HOST_HERD") && gameState == 1 && !loading && WorldIdle()) {
@@ -10147,7 +10264,7 @@ int main(int argc, char** argv)
         // state, walks 8 s predicting itself (error at each acknowledged input < 0.5 m, at most 1 correction in 10 states),
         // and its world clock follows the server's (|estimate - ours| < 0.1 s). RAYLIBGAME_JOIN_OTHERS=N: also sees N other
         // players, at least one of them moving (another client walking).
-        if (benchJoin && gameState == 1 && !loading && gJoinSynced && WorldIdle()) {
+        if (benchJoin && gameState == 1 && !loading && gJoinSynced && !gJoin.syncing && WorldIdle()) { // (after the world's edits are in, #776)
             static double jt0 = 0.0; static DVec3 start{}; static bool fpOk = false, warmed = false;
             static std::map<uint32_t, std::pair<DVec3, double>> seen; // session -> first view, farthest moved
             Planetoid* b = player.nearest;

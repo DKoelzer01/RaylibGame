@@ -13,6 +13,7 @@ const char* NetMsgName(NetMsg m) {
         case NetMsg::Input: return "input"; case NetMsg::PlayerState: return "player state"; case NetMsg::TerrainEdit: return "terrain edit"; case NetMsg::Shower: return "shower"; case NetMsg::Roster: return "roster"; case NetMsg::Loadout: return "loadout";
         case NetMsg::PartRequest: return "part request"; case NetMsg::PartRefused: return "part refused"; case NetMsg::PlotEdit: return "plot edit";
         case NetMsg::EditRequest: return "edit request"; case NetMsg::EditRefused: return "edit refused"; case NetMsg::InventoryDelta: return "inventory delta"; case NetMsg::Chat: return "chat"; case NetMsg::PlayerSnapshot: return "player snapshot"; case NetMsg::Animals: return "animals"; case NetMsg::AnimalHit: return "animal hit"; case NetMsg::Damage: return "damage";
+        case NetMsg::SyncIndex: return "sync index"; case NetMsg::SyncWant: return "sync want"; case NetMsg::SyncData: return "sync data"; case NetMsg::SyncDone: return "sync done";
         default: return "?";
     }
 }
@@ -319,6 +320,64 @@ bool NetRead(NetReader& r, MsgEditRefused& m) {
 void NetWrite(NetWriter& w, const MsgInventoryDelta& m) { Id(w, NetMsg::InventoryDelta); w.str(m.item.substr(0, 48)); w.f64(m.amount); }
 void NetWrite(NetWriter& w, const MsgChat& m) { Id(w, NetMsg::Chat); w.u32(m.from); w.str(m.text.substr(0, 256)); }
 bool NetRead(NetReader& r, MsgChat& m) { m.from = r.u32(); m.text = r.str(256); return Done(r); }
+
+// ---- Join sync (#776) ----
+void NetWrite(NetWriter& w, const MsgSyncIndex& m) {
+    Id(w, NetMsg::SyncIndex);
+    w.u32(m.snapshot); w.u16(m.page); w.u16(m.pages); w.varu(m.total);
+    const size_t n = std::min(m.entries.size(), kSyncIndexPage);
+    w.varu(n);
+    for (size_t i = 0; i < n; ++i) { const NetSyncEntry& e = m.entries[i]; w.u8((uint8_t)e.kind); w.varu(e.body); w.u64(e.key); w.u64(e.hash); w.varu(e.size); }
+}
+bool NetRead(NetReader& r, MsgSyncIndex& m) {
+    m.snapshot = r.u32(); m.page = r.u16(); m.pages = r.u16();
+    const uint64_t total = r.varu(), n = r.varu();
+    if (total > kSyncMaxEntries || n > kSyncIndexPage || m.pages == 0 || m.page >= m.pages) r.ok = false;
+    m.total = (uint32_t)total;
+    m.entries.clear();
+    for (uint64_t i = 0; i < n && r.ok; ++i) {
+        NetSyncEntry e;
+        const uint8_t kind = r.u8();
+        if (kind >= (uint8_t)NetSyncKind::Count) r.ok = false;
+        e.kind = (NetSyncKind)kind; e.body = r.varu(); e.key = r.u64(); e.hash = r.u64();
+        const uint64_t size = r.varu();
+        if (size > (64u << 20)) r.ok = false; // a region or a plot set: megabytes at most
+        e.size = (uint32_t)size;
+        m.entries.push_back(e);
+    }
+    return Done(r);
+}
+void NetWrite(NetWriter& w, const MsgSyncWant& m) { Id(w, NetMsg::SyncWant); w.u32(m.snapshot); w.varu(m.total); w.blob(m.bits.data(), m.bits.size()); }
+bool NetRead(NetReader& r, MsgSyncWant& m) {
+    m.snapshot = r.u32();
+    const uint64_t total = r.varu();
+    if (total > kSyncMaxEntries) r.ok = false;
+    m.total = (uint32_t)total;
+    m.bits = r.blob(kSyncMaxEntries / 8);
+    if (m.bits.size() != (size_t)((m.total + 7) / 8)) r.ok = false;
+    return Done(r);
+}
+void NetWrite(NetWriter& w, const MsgSyncData& m) {
+    Id(w, NetMsg::SyncData);
+    w.u32(m.snapshot); w.varu(m.entry); w.varu(m.offset); w.varu(m.size); w.blob(m.bytes.data(), m.bytes.size());
+}
+bool NetRead(NetReader& r, MsgSyncData& m) {
+    m.snapshot = r.u32();
+    const uint64_t entry = r.varu(), offset = r.varu(), size = r.varu();
+    if (entry >= kSyncMaxEntries || size > (64u << 20) || offset > size) r.ok = false;
+    m.entry = (uint32_t)entry; m.offset = (uint32_t)offset; m.size = (uint32_t)size;
+    m.bytes = r.blob(kSyncPiece);
+    if ((uint64_t)m.offset + m.bytes.size() > m.size) r.ok = false;
+    return Done(r);
+}
+void NetWrite(NetWriter& w, const MsgSyncDone& m) { Id(w, NetMsg::SyncDone); w.u32(m.snapshot); w.varu(m.entries); w.varu(m.bytes); }
+bool NetRead(NetReader& r, MsgSyncDone& m) {
+    m.snapshot = r.u32();
+    const uint64_t e = r.varu();
+    if (e > kSyncMaxEntries) r.ok = false;
+    m.entries = (uint32_t)e; m.bytes = r.varu();
+    return Done(r);
+}
 bool NetRead(NetReader& r, MsgInventoryDelta& m) {
     m.item = r.str(48); m.amount = r.f64();
     if (m.item.empty() || !(std::fabs(m.amount) < 1e6)) r.ok = false;
@@ -470,6 +529,10 @@ bool ParseAny(const std::vector<uint8_t>& b) {
         case NetMsg::PartRefused: { MsgPartRefused m; return NetRead(r, m); }
         case NetMsg::PlotEdit: { MsgPlotEdit m; return NetRead(r, m); }
         case NetMsg::Chat: { MsgChat m; return NetRead(r, m); }
+        case NetMsg::SyncIndex: { MsgSyncIndex m; return NetRead(r, m); }
+        case NetMsg::SyncWant: { MsgSyncWant m; return NetRead(r, m); }
+        case NetMsg::SyncData: { MsgSyncData m; return NetRead(r, m); }
+        case NetMsg::SyncDone: { MsgSyncDone m; return NetRead(r, m); }
         case NetMsg::PlayerSnapshot: { MsgPlayerSnapshot m; return NetRead(r, m); }
         case NetMsg::Animals: { MsgAnimals m; return NetRead(r, m); }
         case NetMsg::AnimalHit: { MsgAnimalHit m; return NetRead(r, m); }
@@ -563,6 +626,23 @@ bool NetProto_Test() {
         samples.push_back(s);
     }
     { MsgChat a{ 3, "hello, world" }, b; std::vector<uint8_t> s; check(RoundTrip(a, b, &s) && b.from == 3 && b.text == "hello, world", "chat"); samples.push_back(s); }
+    {
+        MsgSyncIndex a, b; a.snapshot = 7; a.page = 1; a.pages = 3; a.total = 600;
+        a.entries = { { NetSyncKind::Region, 2, 0x123456789ABCull, 0xDEADBEEFCAFEull, 40000 }, { NetSyncKind::Plots, 2, 0, 42, 900 } };
+        std::vector<uint8_t> s;
+        check(RoundTrip(a, b, &s) && b.snapshot == 7 && b.page == 1 && b.pages == 3 && b.total == 600 && b.entries.size() == 2 && b.entries[0].key == a.entries[0].key &&
+              b.entries[0].hash == a.entries[0].hash && b.entries[0].size == 40000 && b.entries[1].kind == NetSyncKind::Plots, "sync index");
+        samples.push_back(s);
+    }
+    {
+        MsgSyncWant a, b; a.snapshot = 7; a.total = 10; a.bits = { 0x05, 0x02 }; std::vector<uint8_t> s;
+        check(RoundTrip(a, b, &s) && b.total == 10 && b.bits == a.bits, "sync want"); samples.push_back(s);
+    }
+    {
+        MsgSyncData a, b; a.snapshot = 7; a.entry = 3; a.offset = 16384; a.size = 40000; a.bytes.assign(1000, 0xAB); std::vector<uint8_t> s;
+        check(RoundTrip(a, b, &s) && b.entry == 3 && b.offset == 16384 && b.size == 40000 && b.bytes == a.bytes, "sync data"); samples.push_back(s);
+    }
+    { MsgSyncDone a{ 7, 12, 123456789 }, b; std::vector<uint8_t> s; check(RoundTrip(a, b, &s) && b.entries == 12 && b.bytes == 123456789, "sync done"); samples.push_back(s); }
     { // #769: quantised states round-trip exactly; a snapshot with a full and a delta entry decodes to the same states
         MsgPlayerState ps; ps.session = 4; ps.tick = 900; ps.ackInput = 812; ps.body = 1; ps.local = { 12345.678, -60001.25, 7.5 };
         ps.vx = 3.21f; ps.vy = -0.5f; ps.vz = 6.0f; ps.yaw = 2.0f; ps.pitch = -0.3f; ps.flags = 1 | 32; ps.jetpackFuel = 0.5f; ps.action = 1; ps.actionPhase = 0.25f;

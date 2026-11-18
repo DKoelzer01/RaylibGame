@@ -10,6 +10,7 @@
 // client's to it (Host_TakeLocalClientMessages); otherwise the client polls the transport itself.
 
 #include "netproto.h"
+#include "net.h"
 #include "playerinput.h"
 #include <cstdint>
 #include <deque>
@@ -85,6 +86,24 @@ struct NetClient {
     uint32_t lastNewPlot = 0;                    // the id of the last plot the server made for us
     bool keepPlotLog = false; std::vector<MsgPlotEdit> plotLog; // tests: every plot edit received, to replay elsewhere
     uint64_t plotOrder = 14695981039346656037ull; // a hash of every plot edit in the order applied
+    // Join sync (#776): from the Welcome until SyncDone the world's edits stream in; live edits wait (applied after, in
+    // order). Entries whose hash matches what we hold (a cached client save) are not fetched.
+    bool syncing = false;
+    bool syncAssumeEmpty = false;                // tests: ask for everything, as a client with nothing cached
+    // A joining game holds the sync's messages until its world is generated (they arrive with the Welcome, before the
+    // bodies exist: installing then found no body); clear it when ready and they are handled, in order.
+    bool syncHold = false;
+    std::vector<NetMessage> syncHeld;
+    uint32_t syncSnapshot = 0;
+    int syncPages = 0, syncPagesGot = 0;
+    std::vector<NetSyncEntry> syncIndex;
+    std::vector<uint8_t> syncWanted;             // per entry: 1 asked for and not complete yet
+    std::map<uint32_t, std::vector<uint8_t>> syncBuf;
+    std::map<uint32_t, uint32_t> syncGot;        // bytes received per entry
+    std::vector<NetMessage> syncQueue;           // live edits held during the sync
+    int syncEntriesWanted = 0, syncEntriesDone = 0, syncHashBad = 0, syncInstalled = 0, syncCleared = 0, syncQueued = 0;
+    uint64_t syncBytes = 0, syncBytesWanted = 0;
+    double syncStartedAt = 0.0, syncDoneAt = -1.0;
 };
 
 // One sim step of the joined client's own player: send the input, predict with it (in its own frame), and reconcile
@@ -105,6 +124,19 @@ uint32_t NetClient_RequestEdit(NetClient& c, NetEditKind kind, const class Plane
 // anchored at `anchor`, body-local), or to break `plot`'s part partIndex. Returns its seq (0: not sent). The change comes
 // back as PlotEdits with it, or a PartRefused.
 uint32_t NetClient_RequestPart(NetClient& c, const class Planetoid& body, const class Plot* plot, Vector3 anchor, const struct Part& part, bool remove, int partIndex);
+// Join sync (#776): a body's plots as bytes (the save's text), and back onto a body (replacing its plots); the server
+// sends the first, a client installs with the second.
+std::vector<uint8_t> Plots_Blob(const class PlotSet& plots);
+bool Plots_Install(class Planetoid& body, const std::vector<uint8_t>& blob);
+// The terrain's fingerprint (every body's region hashes, combined): equal on a server and a synced client.
+uint64_t NetSync_TerrainFingerprint(class Scene& world);
+// The client's cache of the server's terrain edits, beside its client save (`save`: its path): loaded at a join when it
+// is of the same world (seed, bodies fingerprint), saved when a sync is done. Return the regions loaded / written.
+int NetClient_LoadCache(class Scene& world, const std::string& save, uint32_t seed, uint64_t fingerprint);
+int NetClient_SaveCache(class Scene& world, const std::string& save, uint32_t seed, uint64_t fingerprint);
+// Tests (#776): scatter `strokes` dig strokes (1.5-2.5 m) over 600 m around a planet's start, seeded: a world with many
+// edits to sync. Returns the strokes applied (0: no planet).
+int NetSync_ScatterStrokes(class Scene& world, int strokes, uint32_t seed);
 // The game's client (null: not connected to a server). main.cpp draws its other players.
 extern NetClient* gNetClient;
 // A player's state on the wire and back (#327; server and client use the same).

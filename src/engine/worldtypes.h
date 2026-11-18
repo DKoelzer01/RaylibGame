@@ -165,6 +165,7 @@ public:
 
     static Planetoid* find(uint64_t id); // nullptr once destroyed
     static Planetoid* findNet(uint64_t netId); // by NetId (#317); nullptr if no such body is loaded
+    static std::vector<Planetoid*> All();      // every body loaded (#776: the join sync walks them)
 };
 
 #endif
