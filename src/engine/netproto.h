@@ -27,6 +27,7 @@ enum class NetMsg : uint8_t {
     Input,         // client -> server: one sim step's PlayerInput (#327)
     PlayerState,   // server -> client: a player's authoritative state at a tick (#327)
     TerrainEdit,   // either way: a terrain edit (carve/fill, sphere/box) on a body (#320's first mapped command)
+    Shower,        // server -> client: the meteor shower now (#316; was #311's "S" text line)
     Count
 };
 const char* NetMsgName(NetMsg m);
@@ -117,6 +118,7 @@ struct MsgPlayerState {              // a player's authoritative state (#327)
     float yaw = 0.0f, pitch = 0.0f;
     uint8_t flags = 0;               // bit 0 grounded, 1 fly mode, 2 dead, 3 in water
 };
+struct MsgShower { double start = 0.0, end = 0.0; uint32_t id = 0; }; // world seconds; id 0 none (events.h)
 struct MsgTerrainEdit {
     uint64_t body = 0;               // NetId
     DVec3 center{};                  // body-local
@@ -136,6 +138,7 @@ void NetWrite(NetWriter& w, const MsgPong& m);
 void NetWrite(NetWriter& w, const MsgInput& m);
 void NetWrite(NetWriter& w, const MsgPlayerState& m);
 void NetWrite(NetWriter& w, const MsgTerrainEdit& m);
+void NetWrite(NetWriter& w, const MsgShower& m);
 bool NetRead(NetReader& r, MsgHello& m);
 bool NetRead(NetReader& r, MsgWelcome& m);
 bool NetRead(NetReader& r, MsgReject& m);
@@ -145,6 +148,7 @@ bool NetRead(NetReader& r, MsgPong& m);
 bool NetRead(NetReader& r, MsgInput& m);
 bool NetRead(NetReader& r, MsgPlayerState& m);
 bool NetRead(NetReader& r, MsgTerrainEdit& m);
+bool NetRead(NetReader& r, MsgShower& m);
 // A message's id (the first byte; NetMsg::Count if empty or unknown).
 NetMsg NetPeek(const std::vector<uint8_t>& bytes);
 

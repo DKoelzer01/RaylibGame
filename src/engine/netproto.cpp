@@ -9,7 +9,7 @@ const char* NetMsgName(NetMsg m) {
     switch (m) {
         case NetMsg::Hello: return "hello"; case NetMsg::Welcome: return "welcome"; case NetMsg::Reject: return "reject";
         case NetMsg::Bye: return "bye"; case NetMsg::Ping: return "ping"; case NetMsg::Pong: return "pong";
-        case NetMsg::Input: return "input"; case NetMsg::PlayerState: return "player state"; case NetMsg::TerrainEdit: return "terrain edit";
+        case NetMsg::Input: return "input"; case NetMsg::PlayerState: return "player state"; case NetMsg::TerrainEdit: return "terrain edit"; case NetMsg::Shower: return "shower";
         default: return "?";
     }
 }
@@ -159,6 +159,9 @@ bool NetRead(NetReader& r, MsgTerrainEdit& m) {
     return Done(r);
 }
 
+void NetWrite(NetWriter& w, const MsgShower& m) { Id(w, NetMsg::Shower); w.f64(m.start); w.f64(m.end); w.u32(m.id); }
+bool NetRead(NetReader& r, MsgShower& m) { m.start = r.f64(); m.end = r.f64(); m.id = r.u32(); return Done(r); }
+
 NetMsg NetPeek(const std::vector<uint8_t>& b) {
     if (b.empty() || b[0] == 0 || b[0] >= (uint8_t)NetMsg::Count) return NetMsg::Count;
     return (NetMsg)b[0];
@@ -188,6 +191,7 @@ bool ParseAny(const std::vector<uint8_t>& b) {
         case NetMsg::Input: { MsgInput m; return NetRead(r, m); }
         case NetMsg::PlayerState: { MsgPlayerState m; return NetRead(r, m); }
         case NetMsg::TerrainEdit: { MsgTerrainEdit m; return NetRead(r, m); }
+        case NetMsg::Shower: { MsgShower m; return NetRead(r, m); }
         default: return false;
     }
 }
@@ -241,6 +245,7 @@ bool NetProto_Test() {
               b.hy == a.hy && fabsf(b.ay[2] - 0.8f) < 1e-3f && b.paint == 3, "terrain edit (box)");
         samples.push_back(s);
     }
+    { MsgShower a{ 3600.5, 3900.25, 17 }, b; std::vector<uint8_t> s; check(RoundTrip(a, b, &s) && b.start == a.start && b.end == a.end && b.id == 17, "shower"); samples.push_back(s); }
     // Every message cut short anywhere must not read as valid; garbage must never crash a reader.
     int truncValid = 0, truncTotal = 0;
     for (const auto& s : samples)

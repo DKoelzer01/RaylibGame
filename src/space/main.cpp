@@ -16,6 +16,7 @@
 #include "netid.h"
 #include "net.h"
 #include "netproto.h"
+#include "netclient.h"
 #include "gamerng.h"
 #include "headless.h"
 #include "hostserver.h"
@@ -633,6 +634,8 @@ int main(int argc, char** argv)
         if (std::string(argv[i]) == "--seed" && i + 1 < argc) worldGen.seed = (unsigned int)strtoul(argv[i + 1], nullptr, 10);
         if (std::string(argv[i]) == "--host" && i + 1 < argc) hostSave = argv[i + 1];
         if (std::string(argv[i]) == "--port" && i + 1 < argc) hostPort = (uint16_t)atoi(argv[i + 1]);
+        if (std::string(argv[i]) == "--host-password" && i + 1 < argc) Host_SetPassword(argv[i + 1]); // (#321)
+        if (std::string(argv[i]) == "--max-players" && i + 1 < argc) Host_SetMaxPlayers(atoi(argv[i + 1]));
         if (std::string(argv[i]) == "--test-host") benchHost = true;
         if (std::string(argv[i]) == "--seed") seedGiven = true;
         if (std::string(argv[i]) == "--autosave-minutes" && i + 1 < argc) autosaveMinutes = atof(argv[i + 1]);
@@ -9167,12 +9170,10 @@ int main(int argc, char** argv)
         // --test-host (#311, with --host <save>): the dedicated server loaded or created its save and runs headless.
         //   - seed (user, 2026-11-15): a new world takes --seed N, else a random seed (printed); an existing save keeps its own;
         //   - autosave: with a short --autosave-minutes (<= 1) the test waits for one autosave;
-        //   - a client opened in this process over loopback sends "join" and gets the world description (fingerprint and
-        //     seed must match the host's world) and the current meteor shower. That part SKIPs without ENABLE_GNS.
+        //   - the connection lifecycle (#321) with clients opened in this process over loopback (below): the welcome's world
+        //     description (seed, fingerprint) and shower must match the host's. That part SKIPs without ENABLE_GNS.
         if (benchHost && gameState == 1 && !loading && WorldIdle()) {
-            static uint32_t client = 0;
             static double t0 = -1.0;
-            static bool sent = false, gotJoin = false, gotShower = false, sameWorld = false, sameShower = false;
             if (t0 < 0.0) t0 = GetTime();
             bool saveOnDisk = false;
             if (FILE* fsv = hostSave.empty() ? nullptr : fopen(hostSave.c_str(), "rb")) { fclose(fsv); saveOnDisk = true; }
@@ -9191,28 +9192,47 @@ int main(int argc, char** argv)
                     benchHost = false;
                 }
             } else {
-                static unsigned joinSeed = 0;
-                if (!client) { client = Net_Connect(TextFormat("127.0.0.1:%d", hostPort)); Host_SetLocalClient(client); }
-                if (client && !sent && Net_IsConnected(client)) sent = Net_Send(client, "join", 4, true);
-                for (const NetMessage& m : Host_TakeLocalClientMessages()) {
-                    const std::string text(m.data.begin(), m.data.end());
-                    if (!text.empty() && text[0] == 'J') {
-                        JoinInfo info; std::string why;
-                        gotJoin = JoinInfo_Read(text.substr(1), info, why);
-                        sameWorld = gotJoin && info.fingerprint == WorldFingerprint(world);
-                        joinSeed = gotJoin ? info.seed : 0;
-                        if (!gotJoin) printf("bench: host: join info unreadable: %s\n", why.c_str());
-                    } else if (!text.empty() && text[0] == 'S') {
-                        double s = 0.0, e = 0.0; unsigned id = 0;
-                        gotShower = sscanf(text.c_str() + 1, " %lf %lf %u", &s, &e, &id) == 3;
-                        sameShower = gotShower && id == Events_GetShower().id;
-                    }
+                // The lifecycle over loopback (#321), clients in this process: alice joins (the world description and
+                // the shower match the host's; a ping comes back); an old protocol is refused; a second "alice" is
+                // refused while she is online; alice leaves and comes back: the same session, marked reconnected.
+                static NetClient alice, oldProto, twin, back;
+                static int step = 0;
+                static uint32_t aliceSession = 0;
+                static bool joined = false, sameWorld = false, sameShower = false, pinged = false, protoRefused = false, nameRefused = false,
+                            left = false, sameSession = false;
+                const char* addr = TextFormat("127.0.0.1:%d", hostPort);
+                for (NetClient* c : { &alice, &oldProto, &twin, &back }) NetClient_Update(*c);
+                if (step == 0) { NetClient_Connect(alice, addr, "alice"); step = 1; }
+                else if (step == 1 && alice.state == NetClient::State::Joined && alice.pongs >= 1) {
+                    joined = true; pinged = alice.rttMs >= 0.0; aliceSession = alice.welcome.session;
+                    sameWorld = alice.welcome.fingerprint == WorldFingerprint(world) && alice.welcome.seed == worldGen.lastSeed;
+                    sameShower = alice.shower.id == Events_GetShower().id;
+                    oldProto.protocol = kNetProtocol - 1; NetClient_Connect(oldProto, addr, "old");
+                    NetClient_Connect(twin, addr, "alice");
+                    step = 2;
+                } else if (step == 2 && oldProto.state == NetClient::State::Rejected && twin.state == NetClient::State::Rejected) {
+                    protoRefused = oldProto.reject.reason == NetReject::Protocol;
+                    nameRefused = twin.reject.reason == NetReject::NameTaken;
+                    NetClient_Disconnect(alice);
+                    step = 3;
+                } else if (step == 3 && Host_OnlinePlayers() == 0) {
+                    left = true;
+                    NetClient_Connect(back, addr, "alice");
+                    step = 4;
+                } else if (step == 4 && back.state == NetClient::State::Joined) {
+                    sameSession = back.welcome.session == aliceSession && back.welcome.reconnected;
+                    step = 5;
                 }
-                if ((gotJoin && gotShower && autosaveDone) || GetTime() - t0 > 90.0) {
-                    const bool ok = saveOnDisk && gHeadless && sent && sameWorld && sameShower && Host_Joins() == 1 && seedOk && joinSeed == worldGen.lastSeed && autosaveDone;
-                    printf("bench: host: save %s on disk %d, headless %d, listening on %d; seed %u (%s) ok %d, sent to the client %d; autosaves %d; loopback client joined %d, world description %d (fingerprint matches %d), shower %d (same %d), joins answered %d after %.1f s -> %s\n",
-                           hostSave.c_str(), (int)saveOnDisk, (int)gHeadless, hostPort, worldGen.lastSeed, seedHow, (int)seedOk, (int)(joinSeed == worldGen.lastSeed),
-                           Host_Autosaves(), (int)sent, (int)gotJoin, (int)sameWorld, (int)gotShower, (int)sameShower, Host_Joins(), GetTime() - t0, ok ? "PASS" : "FAIL");
+                if ((step == 5 && autosaveDone) || GetTime() - t0 > 90.0) {
+                    const bool ok = saveOnDisk && gHeadless && seedOk && autosaveDone && joined && sameWorld && sameShower && pinged && protoRefused && nameRefused &&
+                                    left && sameSession && Host_Joins() == 2;
+                    printf("bench: host: save %s on disk %d, headless %d, listening on %d; seed %u (%s) ok %d; autosaves %d\n",
+                           hostSave.c_str(), (int)saveOnDisk, (int)gHeadless, hostPort, worldGen.lastSeed, seedHow, (int)seedOk, Host_Autosaves());
+                    printf("bench: host: lifecycle (#321): alice joined %d as session %u (world matches %d, shower matches %d, ping %d: %.1f ms); old protocol refused %d (%s); "
+                           "a second alice refused %d (%s); alice left %d and came back to session %u (same, reconnected %d); %d joins, step %d after %.1f s -> %s\n",
+                           (int)joined, aliceSession, (int)sameWorld, (int)sameShower, (int)pinged, alice.rttMs, (int)protoRefused, NetRejectText(oldProto.reject.reason),
+                           (int)nameRefused, NetRejectText(twin.reject.reason), (int)left, back.welcome.session, (int)sameSession, Host_Joins(), step, GetTime() - t0, ok ? "PASS" : "FAIL");
+                    NetClient_Disconnect(back);
                     benchHost = false;
                 }
             }
