@@ -6305,6 +6305,17 @@ int main(int argc, char** argv)
                                 const Vector3 sd = Vector3Normalize(Vector3CrossProduct(d, dn));
                                 const float bank = std::min(pf->elevation(off(d, sd, h.halfWidth + 15.0f)), pf->elevation(off(d, sd, -h.halfWidth - 15.0f)));
                                 if (bank < ws.level + (benchDamDivert ? 2.5f : 1.2f)) continue; // #656: a dam that holds the river a while
+                                // A gentle reach (#729): the generated level 12 m up and down the river within 0.6 m (a 0.8 m crest then
+                                // stands over the pool's start), and for --test-dam-divert under 6 m of drop to the reach it watches 200 m
+                                // downstream, clear of the sea (a reach the sea backs up never dries). After bake v26 seed 42's pick fell
+                                // 4 m over 24 m: the pool stood over the crest from the start.
+                                if (pf->waterSourceAt(off(d, dn, -12.0f)).level - pf->waterSourceAt(off(d, dn, 12.0f)).level > 0.6f) continue;
+                                if (benchDamDivert) {
+                                    Vector3 w = d;
+                                    for (int s = 0; s < 20; ++s) { const RiverNetwork::Hit hw = net->nearest(w, 1e4f); w = off(w, hw.down, 10.0f); }
+                                    const float lw = net->nearest(w, 1e4f).level;
+                                    if (ws.level - lw > 6.0f || lw < 3.0f) continue;
+                                }
                                 best = dist; damDir = d; damLevel = ws.level; damHW = h.halfWidth; damDepth = h.depth; damCrest = benchDamDivert ? bank - 0.3f : std::min(ws.level + 0.8f, bank - 0.3f); // a low dam: a released reach fills at what its channel carries (#432)
                                 damDown = dn; // along the ground
                             }
