@@ -19,6 +19,7 @@
 #include "gamerng.h"
 #include "tools.h"
 #include "animals.h"
+#include "suit.h"
 #include "combat.h"
 #include "inventory.h"
 #include <cmath>
@@ -84,6 +85,10 @@ namespace {
         // Terrain edits (#329): the player's inventory as the server keeps it (yields go in, placing is paid from it; the
         // client mirrors it from InventoryDelta), and a stroke budget (a token per tool cooldown, a short burst allowed).
         Inventory inventory;
+        // #337: its survival, simulated here with each input stepped (oxygen, power, food, temperature, falls, hits, death and
+        // respawn), and its suit's numbers (the starting suit until suits are replicated, #331).
+        SurvivalState survival;
+        SuitStats suitStats = Suit_StatsOf(SuitState{});
         double editTokens = 2.0, editTokensAt = -1.0;
         double partTokens = 4.0, partTokensAt = -1.0; // building (#330): placing and breaking, a few a second
     };
@@ -119,6 +124,8 @@ namespace {
     // then dropping one to catch up, put the server off the client's path after every long frame: metres, with jumps.)
     void StepRemotes(Scene& world) {
         for (auto& [session, r] : remotes) {
+            // (#337) a dead player's client sends no inputs: its death clock (respawn after 3 s) runs here on the sim clock
+            if (r.survival.dead) Survival_StepFor(world, SimDt(), PlayerInput::None(), r.survival, r.player, r.inventory, r.suitStats, false);
             r.budget = std::min(kMaxBudget, r.budget + (double)(SimTick() - r.tick));
             r.tick = SimTick();
             while (r.inputs.size() > kMaxQueuedInputs) { r.carried |= r.inputs.front().pressed; r.inputs.pop_front(); }
@@ -137,7 +144,8 @@ namespace {
                 r.forwardLocal = { m.fx, m.fy, m.fz };
                 if (Planetoid* b = r.player.nearest ? r.player.nearest : StartBody(world)) r.player.forward = b->dirToWorld(r.forwardLocal);
                 RenderOriginScope frame(world, r.player.position);
-                r.player.update(world, in, SimDt());
+                if (!r.survival.dead) { r.player.update(world, in, SimDt()); if (r.player.landingSpeed > 0.0f) Survival_OnLandingFor(r.survival, r.suitStats, r.player.landingSpeed, false); } // (dead: it lies still)
+                Survival_StepFor(world, SimDt(), in, r.survival, r.player, r.inventory, r.suitStats, false); // (#337)
             }
         }
     }
@@ -221,11 +229,32 @@ namespace {
     // tool's (as in single player); the drops go to that player's inventory.
     constexpr float kAnimalReach = 4.5f; // m: the 3 m aim, the animal's size, and its motion during the round trip
     constexpr double kAnimalHitCooldown = 0.25; // s
+    // (#337) each player's survival numbers to that player, 5 a second (its HUD; its own simulation fills in between)
+    constexpr int kVitalsEvery = 12; // sim steps
+    long long lastVitals = 0;
+    int itemsUsed = 0;
+    void SendVitals() {
+        if (SimTick() - lastVitals < kVitalsEvery) return;
+        lastVitals = SimTick();
+        for (const auto& [conn, p] : peers) {
+            if (!p.joined) continue;
+            auto rit = remotes.find(p.session);
+            if (rit == remotes.end()) continue;
+            const SurvivalState& sv = rit->second.survival;
+            MsgVitals v;
+            v.health = sv.health; v.food = sv.food; v.oxygen = sv.oxygen; v.power = sv.power; v.temperature = sv.temperature;
+            v.flags = (uint8_t)((sv.dead ? 1 : 0) | (sv.breathable ? 2 : 0) | (sv.inVacuum ? 4 : 0) | (sv.underwater ? 8 : 0) | (sv.inLifeSupport ? 16 : 0) |
+                                (SimTime() < sv.sickUntil ? 32 : 0) | (sv.headlamp ? 64 : 0));
+            v.deaths = (uint16_t)std::min(sv.deaths, 65535);
+            NetWriter w; NetWrite(w, v);
+            Net_Send(conn, w.bytes.data(), (uint32_t)w.bytes.size(), false);
+        }
+    }
     uint32_t ConnOf(uint32_t session); // (below)
     template <class M> void SendMsg(uint32_t conn, const M& m); // (below)
     int animalBites = 0;
-    // (#334 slice 2) the remote players for the animals to mind, each frame; a bite on one: its client applies the damage (shield,
-    // health are its own until #337), the server shoves its player here (Combat_ApplyKnockback; a held block facing it cuts it).
+    // (#334 slice 2) the remote players for the animals to mind, each frame; a bite on one:
+    // the server's copy takes it (Combat_DamageFor: health, the shove, a held block facing it cuts both - #337); its client gets the hit's feel.
     void SetAnimalTargets(Scene&) {
         gAnimalTargets.clear();
         for (const Session& s : sessions) {
@@ -233,13 +262,14 @@ namespace {
             auto rit = remotes.find(s.id);
             if (rit == remotes.end() || !rit->second.player.nearest) continue;
             const Planetoid* b = rit->second.player.nearest;
-            gAnimalTargets.push_back({ b->netId, b->toLocalD(rit->second.player.position).toFloat(), s.id, !rit->second.player.flyMode, s.loadout.held });
+            gAnimalTargets.push_back({ b->netId, b->toLocalD(rit->second.player.position).toFloat(), s.id, !rit->second.player.flyMode && !rit->second.survival.dead, s.loadout.held }); // (#337: the dead aren't prey)
         }
         if (!gAnimalDamageRemote) gAnimalDamageRemote = [](uint32_t session, const DamageEvent& e) {
             auto rit = remotes.find(session);
             if (rit == remotes.end()) return;
             Player& pl = rit->second.player;
-            Combat_ApplyKnockback(pl, e, (rit->second.lastHeld >> (int)Act::Secondary) & 1ull);
+            rit->second.survival.blocking = (rit->second.lastHeld >> (int)Act::Secondary) & 1ull; // (its held input; its stamina is simulated here too)
+            Combat_DamageFor(rit->second.survival, pl, e); // (#337: the server's copy takes the damage and the shove)
             const uint32_t conn = ConnOf(session);
             if (!conn || !pl.nearest) return;
             MsgDamage m; m.amount = e.amount; m.kind = (uint8_t)e.kind; m.hasSource = e.hasSource; m.knockback = e.knockback; m.sourceId = e.sourceId;
@@ -489,6 +519,11 @@ namespace {
         ++joins;
         printf("host: %s joined as session %u%s (connection %u, %d joins so far)\n", h.name.c_str(), s->id, reconnected ? " (reconnected)" : "", conn, joins);
         if (eventHook) eventHook("join", s->id, h.name + " from " + Net_RemoteAddress(conn)); // (#345 audit)
+        if (const char* hunger = getenv("RAYLIBGAME_HOST_HUNGER")) remotes[s->id].survival.food = (float)atof(hunger); // tests (#337): a hungry joiner
+        if (const char* give = getenv("RAYLIBGAME_HOST_GIVE")) { // tests (#337): "item count" to each player as they join
+            char item[64] = ""; int n = 0;
+            if (sscanf(give, "%63s %d", item, &n) == 2 && n > 0) Host_Give(s->id, item, n);
+        }
     }
 
     // ---- Terrain edits (#329) ----
@@ -873,6 +908,17 @@ namespace {
                     }
                 return;
             }
+            case NetMsg::UseItem: { // (#337) eat or use an item: from the player's inventory as the server keeps it, into its vitals
+                MsgUseItem u;
+                if (!it->second.joined || !NetRead(r, u)) return;
+                auto rit = remotes.find(it->second.session);
+                if (rit == remotes.end() || rit->second.survival.dead) return;
+                std::map<std::string, double> before{ { u.item, rit->second.inventory.amount(u.item) } };
+                if (Survival_UseItemFor(u.item, rit->second.survival, rit->second.inventory, rit->second.suitStats, false)) SendInventoryDeltas(m.conn, rit->second.inventory, before);
+                else SendMsg(m.conn, MsgChat{ 0, "Can't use " + u.item + " now" });
+                ++itemsUsed;
+                return;
+            }
             case NetMsg::AnimalHit: { // (#334) a swing at an animal: checked and applied here
                 MsgAnimalHit h;
                 if (!it->second.joined || !NetRead(r, h)) return;
@@ -969,6 +1015,7 @@ void Host_Update(Scene& world) {
     GpuTimer_CpuMark("host: remote players");
     SendSnapshots(world);
     SendAnimals(world);   // (#334) and the animals near each player
+    SendVitals();         // (#337) and each player's survival numbers, to that player
     SetInterestCentres(world); // (#334) and animals live around every player (#318's centres)
     SetAnimalTargets(world);   // (#334 slice 2) and mind them: flee, follow, hunt, bite
     GpuTimer_CpuMark("host: snapshots");

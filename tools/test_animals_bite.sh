@@ -12,11 +12,11 @@ tmp="$(mktemp -d)"
 cd "$here"
 SECONDS=0
 printf 'erosion 0\n' > "$tmp/host.sav.worldgen"
-RAYLIBGAME_HOST_HERD="thornback 1" RAYLIBGAME_HOST_HERD_THREATS=1 "$exe" --host "$tmp/host.sav" --seed 42 --day --bench 600 --port "$port" > "$tmp/host.log" 2>&1 &
+RAYLIBGAME_HOST_HUNGER=50 RAYLIBGAME_HOST_GIVE="berries 3" RAYLIBGAME_HOST_HERD="thornback 1" RAYLIBGAME_HOST_HERD_THREATS=1 "$exe" --host "$tmp/host.sav" --seed 42 --day --bench 600 --port "$port" > "$tmp/host.log" 2>&1 &
 hp=$!
 until grep -q "test herd" "$tmp/host.log" 2>/dev/null || ! kill -0 "$hp" 2>/dev/null || [ $SECONDS -gt 240 ]; do sleep 1; done
 grep -h "test herd" "$tmp/host.log" || { echo "test_animals_bite: no thornback on the host -> FAIL"; kill "$hp" 2>/dev/null; exit 1; }
-RAYLIBGAME_NET_ANIMALS_ROLE=victim timeout 200 "$exe" --join "127.0.0.1:$port" --name victim --bench 3 --test-net-animals > "$tmp/victim.log" 2>&1
+RAYLIBGAME_VICTIM_SECONDS=40 RAYLIBGAME_NET_ANIMALS_ROLE=victim timeout 200 "$exe" --join "127.0.0.1:$port" --name victim --bench 3 --test-net-animals > "$tmp/victim.log" 2>&1
 kill "$hp" 2>/dev/null; wait "$hp" 2>/dev/null
 line=$(grep "^bench: net animals (victim)" "$tmp/victim.log")
 echo "$line"
@@ -25,7 +25,16 @@ bites=$(echo "$line" | grep -o "bitten [0-9]*" | awk '{print $2}')
 h0=$(echo "$line" | grep -o "health [0-9]* -> [0-9]*" | awk '{print $2}'); h1=$(echo "$line" | grep -o "health [0-9]* -> [0-9]*" | awk '{print $4}')
 chk() { if [ "$1" = 1 ]; then echo "  ok: $2"; else echo "  MISSING: $2"; ok=0; fi; }
 chk "$([ -n "$bites" ] && [ "$bites" -gt 0 ] && echo 1)" "the thornback hunted the remote player and its bites reached that client ($bites)"
-chk "$([ -n "$h1" ] && [ "$h1" -lt "$h0" ] && echo 1)" "the victim's health went down ($h0 -> $h1)"
 chk "$(grep -q "chat: It won't eat" "$tmp/victim.log" && echo 1)" "the feed request was answered by the server (refused: it has nothing a thornback eats)"
+# #337: survival on the server
+sv=$(grep "^bench: net survival (victim" "$tmp/victim.log"); echo "$sv"
+num() { echo "$sv" | grep -o "$1 [-0-9.]* -> [-0-9.]*"; }
+f0=$(num food | awk '{print $2}'); f1=$(num food | awk '{print $4}'); b0=$(num berries | awk '{print $2}'); b1=$(num berries | awk '{print $4}')
+chk "$(echo "$sv" | grep -q "[1-9][0-9]* vitals heard" && echo 1)" "the server's Vitals reached the client"
+chk "$([ -n "$f1" ] && awk -v a="$f0" -v b="$f1" 'BEGIN{exit !(b > a)}' && echo 1)" "eating: the server's food went up ($f0 -> $f1)"
+chk "$([ -n "$b1" ] && [ "$b1" = "$((b0 - 1))" ] && echo 1)" "eating: one berry gone, by the server's delta ($b0 -> $b1)"
+chk "$(echo "$sv" | grep -q "died 1" && echo 1)" "the bites killed it on the server (death in Vitals)"
+chk "$(echo "$sv" | grep -q "respawned 1" && echo 1)" "and it respawned with full health"
+chk "$(echo "$sv" | grep -q "bitten while dead 0$" && echo 1)" "nothing bit it while it was dead"
 echo "=== test_animals_bite: $([ $ok = 1 ] && echo PASS || echo FAIL) after ${SECONDS} s ($tmp)"
 [ $ok = 1 ]

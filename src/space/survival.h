@@ -2,6 +2,7 @@
 #define SURVIVAL_H
 
 #include <cstdio>
+#include <functional>
 #include <string>
 
 class Scene;
@@ -63,6 +64,10 @@ void Survival_Update(Scene& world, float dt, const PlayerInput& in);
 // Consumables (the hotbar uses them): oxygen canister, power cell (charges the ship while piloting).
 bool Survival_IsUsable(const std::string& id);
 bool Survival_UseItem(const std::string& id);
+// #337: a client process's item use goes to the server (set by the join); a server applies one for a remote player.
+inline std::function<void(const std::string& id)> gSurvivalUseRequest;
+struct SuitStats; class Inventory;
+bool Survival_UseItemFor(const std::string& id, SurvivalState& survival, Inventory& inventory, const SuitStats& stats, bool local);
 bool Survival_IsFood(const std::string& id);  // resources/data/foods.txt
 float Survival_FoodValue(const std::string& id);
 void Survival_OnLanding(float impactSpeed);   // fall damage
