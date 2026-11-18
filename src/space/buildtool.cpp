@@ -113,7 +113,8 @@ namespace {
 
 float BuildTool_BreakProgress() { return breakAiming && breakHeld > 0.0f ? std::min(1.0f, breakHeld / kBreakHold) : 0.0f; }
 bool BuildTool_AimingPart() { return breakAiming; }
-int BuildTool_AimOrient() { return aim.plot || aim.newOrigin.x != 0.0f || aim.newOrigin.y != 0.0f || aim.newOrigin.z != 0.0f ? (int)aim.part.orient : -1; }
+int BuildTool_AimOrient() { return aim.plot || aim.newOrigin.x != 0.0f || aim.newOrigin.y != 0.0f || aim.newOrigin.z != 0.0f ? (int)aim.part.orient : -1; }
+const Plot* BuildTool_AimPlacement(Vector3* newOrigin, Int3* origin) { if (newOrigin) *newOrigin = aim.newOrigin; if (origin) *origin = aim.part.origin; return aim.plot; }
 
 static void UpdateBreak(Scene& world, const PlayerInput& in) {
     breakAiming = false;
@@ -212,10 +213,22 @@ void BuildTool_Update(Scene& world, const PlayerInput& in, bool usable) {
             hi = { std::max(hi.x, c.first.x), std::max(hi.y, c.first.y), std::max(hi.z, c.first.z) };
         }
         const Vector3 h = Vector3Scale(pl.toPlot(hitBodyLocal), 1.0f / kCellSize);
-        auto shift = [](float hv, int a, int b) { return (int)lroundf(hv - 0.5f * (float)(a + b + 1)); };
-        if (normal.x == 0) aim.part.origin.x += shift(h.x, lo.x, hi.x);
-        if (normal.y == 0) aim.part.origin.y += shift(h.y, lo.y, hi.y);
-        if (normal.z == 0) aim.part.origin.z += shift(h.z, lo.z, hi.z);
+        // The shift that puts the footprint's middle nearest the hit, with hysteresis (#551): aimed near the halfway
+        // point between two placements, the camera's bob flipped the box back and forth a cell every few frames. The
+        // last shift is kept until the hit is 0.2 cells past the halfway point.
+        // Compared in absolute cells: the aimed cell (the origin before the shift) changes as the hit moves.
+        static struct { const Plot* plot = nullptr; PartType type = PartType::Count; uint8_t orient = 0; Int3 normal{}, origin{}; } last;
+        const bool same = last.plot == &pl && last.type == aim.part.type && last.orient == aim.part.orient && last.normal == normal;
+        constexpr float kKeep = 0.5f + 0.2f;
+        auto place = [&](int base, float hv, int a, int b, int prev) {
+            const float want = (float)base + hv - 0.5f * (float)(a + b + 1); // the origin that centres it exactly
+            return same && fabsf(want - (float)prev) <= kKeep ? prev : base + (int)lroundf(want - (float)base);
+        };
+        Int3& o = aim.part.origin;
+        if (normal.x == 0) o.x = place(o.x, h.x, lo.x, hi.x, last.origin.x);
+        if (normal.y == 0) o.y = place(o.y, h.y, lo.y, hi.y, last.origin.y);
+        if (normal.z == 0) o.z = place(o.z, h.z, lo.z, hi.z, last.origin.z);
+        last = { &pl, aim.part.type, aim.part.orient, normal, o };
     };
     // Automatic facing (#196, until R/V is pressed): the part's front (its local +z, where machines have their door)
     // turns toward the player - on a wall, out of the wall; on the ground or a floor, back along the view.
@@ -253,7 +266,17 @@ void BuildTool_Update(Scene& world, const PlayerInput& in, bool usable) {
         aim.removePart = hitPlot->partAt(hitCell);
     } else if (terrain) {
         const Vector3 ground = th.local;
-        Plot* near = body->plots ? body->plots->plotFor(ground, 6.0f, false) : nullptr;
+        // The part's extent (cells, from its origin): a plot whose cells come within 6 m of any of it takes it, so a big
+        // part never lands on a second, unaligned grid overlapping the first one's parts (#551).
+        std::vector<std::pair<Int3, CellShape>> fp;
+        Plot::Footprint(aim.part, fp);
+        Int3 flo{ 0, 0, 0 }, fhi{ 0, 0, 0 };
+        for (const auto& c : fp) {
+            flo = { std::min(flo.x, c.first.x), std::min(flo.y, c.first.y), std::min(flo.z, c.first.z) };
+            fhi = { std::max(fhi.x, c.first.x), std::max(fhi.y, c.first.y), std::max(fhi.z, c.first.z) };
+        }
+        const float extent = (float)std::max({ fhi.x - flo.x, fhi.y - flo.y, fhi.z - flo.z }) * kCellSize;
+        Plot* near = body->plots ? body->plots->plotFor(ground, 6.0f + extent, false) : nullptr;
         if (near) {
             aim.plot = near;
             faceToward(towardViewer(*near));
@@ -261,8 +284,27 @@ void BuildTool_Update(Scene& world, const PlayerInput& in, bool usable) {
             aim.part.origin = near->cellAt(near->toPlot(Vector3Add(ground, Vector3Scale(near->up, 0.1f))));
             centreOn(*near, Int3{ 0, 1, 0 }, ground); // on the ground: the bottom face's middle at the aim
         } else {
-            aim.newOrigin = ground;
+            // A new plot (#550): its grid starts at the aim, so the part grew from its corner there. Move the plot's
+            // origin back along its east and north axes (as PlotSet::plotFor will set them) by half the footprint, so
+            // the middle of the part's bottom face sits on the aim point.
+            static Plot frame;
+            frame.up = Vector3Normalize(ground);
+            frame.east = Vector3CrossProduct({ 0, 1, 0 }, frame.up);
+            if (Vector3Length(frame.east) < 0.1f) frame.east = { 1, 0, 0 };
+            frame.east = Vector3Normalize(frame.east);
+            frame.north = Vector3CrossProduct(frame.up, frame.east);
+            faceToward(towardViewer(frame));
             aim.part.origin = { 0, 0, 0 };
+            fp.clear();
+            Plot::Footprint(aim.part, fp); // in the facing just chosen
+            Vector3 lo{ 1e9f, 1e9f, 1e9f }, hi{ -1e9f, -1e9f, -1e9f };
+            for (const auto& c : fp) {
+                lo = Vector3Min(lo, Vector3{ (float)c.first.x, (float)c.first.y, (float)c.first.z });
+                hi = Vector3Max(hi, Vector3{ (float)c.first.x + 1.0f, (float)c.first.y + 1.0f, (float)c.first.z + 1.0f });
+            }
+            const float mx = 0.5f * (lo.x + hi.x) * kCellSize, mz = 0.5f * (lo.z + hi.z) * kCellSize;
+            aim.newOrigin = Vector3Subtract(ground, Vector3Add(Vector3Scale(frame.east, mx), Vector3Scale(frame.north, mz)));
+            aim.newOrigin = Vector3Subtract(aim.newOrigin, Vector3Scale(frame.up, lo.y * kCellSize)); // its bottom on the ground
         }
     } else {
         return;
