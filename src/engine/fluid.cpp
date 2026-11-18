@@ -937,11 +937,16 @@ void ApplyCommand(const Command& c) {
             }
 }
 
+// The commands a tick's job applies, taken on the main thread as it launches the job (#814): the job took them itself
+// when a worker started it, so a pour issued the same frame landed in this tick or the next by thread timing, and two
+// identical runs drifted apart.
+std::vector<Command> jobCommands;
+
 void RunJob() {
     const auto t0 = std::chrono::steady_clock::now();
     std::lock_guard<std::mutex> lock(simMx);
     std::vector<Command> cmds;
-    { std::lock_guard<std::mutex> c(cmdMx); cmds.swap(commands); }
+    cmds.swap(jobCommands);
     for (const Command& c : cmds) ApplyCommand(c);
     // Classify queued bricks, in parallel on the worker pool (each costs ~4k density samples, a few ms):
     // this job waits for them, so nothing else touches the site meanwhile.
@@ -1857,9 +1862,25 @@ void CpuTick(int n) {
             g.dbgMark[i] = a > -3.0f && a < 12.0f && std::fabs(c) < 6.0f;
         }
     }
+    // TEMP #814 (DBHASH): a hash of the processed slots' cells (with each brick's place) going in and after every substep,
+    // to diff two runs and find the first that differs - in the kernel (same input, other output) or on the host.
+    static const bool dbHash = EnvFlag("DBHASH");
+    static long long hashTick = 0;
+    auto cellHash = [&](const std::vector<uint32_t>& cells) {
+        uint64_t h = 1469598103934665603ull;
+        for (int i = 0; i < processedCount; ++i) {
+            const Brick* b = slots[i];
+            h = (h ^ (uint64_t)(uint32_t)(b->bi * 73856093 ^ b->bj * 19349663 ^ b->bk * 83492791)) * 1099511628211ull;
+            const uint32_t* c = &cells[(size_t)i * B3];
+            for (int k = 0; k < B3; ++k) h = (h ^ c[k]) * 1099511628211ull;
+        }
+        return h;
+    };
+    if (dbHash) printf("dbhash %lld in  %d %016llx\n", hashTick, processedCount, (unsigned long long)cellHash(g.a));
     for (int k = 0; k < n; ++k) {
         p.evaporate = !noEvap && ++evapTick % (kEvapEvery * (unsigned)SubstepScale()) == 0;
         FluidKernel::Substep(g, p, list);
+        if (dbHash) printf("dbhash %lld s%d %d %016llx\n", hashTick, k, processedCount, (unsigned long long)cellHash(g.a));
         if (dbTrace && dbgAxSet) {
             const int m = std::min(FluidKernel::dbgTraceN.exchange(0), FluidKernel::kDbgTrace);
             for (int i = 0; i < m; ++i) {
@@ -1908,6 +1929,7 @@ void CpuTick(int n) {
         drift += plainSum() - volBefore;
         if (++ticks % 40 == 0) { printf("dbvol: plain-cell water changed by %+.2f m^3 over the last second (%d slots)\n", drift * WaterField::CellVolume() / 255.0, processedCount); drift = 0; }
     }
+    ++hashTick;
     const auto profT2 = ProfClock::now();
     // Unpack, as the GPU readback (GpuTick 1.).
     static const int d[6][3] = { { -1, 0, 0 }, { 1, 0, 0 }, { 0, -1, 0 }, { 0, 1, 0 }, { 0, 0, -1 }, { 0, 0, 1 } };
@@ -2339,8 +2361,12 @@ void Fluid::Update(Scene& world, float dt) {
     // CPU's in-place sweep carried it several cells along the sweep.
     if (gpuMode) { std::lock_guard<std::mutex> lock(simMx); GpuTick((int)lround(2 * kSubsteps * (kTickSeconds / 0.05)) * std::max(1, speed.load())); } // 120 a second, as before
     (void)world;
+    { std::lock_guard<std::mutex> c(cmdMx); jobCommands.swap(commands); } // this tick's commands: those issued before it (#814)
     running = true;
     JobSystem::tagNext(JobTag::Fluid); WorldJobs().submit(-0.5f, [] { RunJob(); running = false; });
+    // Lockstep (tests): the tick finishes before the frame goes on, so what the frame reads (the published water, Asleep)
+    // is a given tick's, not whichever the job reached by then (#814: identical simulations, different measurements).
+    if (lockstep) WaitIdle();
 }
 
 void Fluid::BindKindUniforms(const Shader& shader) {
@@ -2698,6 +2724,10 @@ void Fluid::WaitIdle() {
 void Fluid::SetSpeed(int steps) { speed = std::max(1, steps); }
 
 bool Fluid::Asleep() {
+    // Lockstep (tests): the answer must not depend on whether this frame's job has finished yet (#814: a dam-break's wall
+    // went at tick 4038 in one run and 4040 in an identical one), so wait for it, as Update does each tick.
+    static const bool lockstep = EnvFlag("RAYLIBGAME_FLUID_LOCKSTEP");
+    if (lockstep && running.load()) WaitIdle();
     if (running.load()) return false;
     { std::lock_guard<std::mutex> c(cmdMx); if (!commands.empty()) return false; }
     std::lock_guard<std::mutex> lock(simMx);
