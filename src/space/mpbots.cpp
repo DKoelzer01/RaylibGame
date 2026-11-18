@@ -118,6 +118,12 @@ void FinishSoak(double secs) {
            "prediction off by %.3f m at worst, at most %.1f%% of states corrected; each bot received %.1f kB/s (max %.1f), sent %.1f kB/s -> %s\n",
            bots.size(), secs, nc.lagMs, nc.jitterMs, nc.lossPct, connected, Pct(rtts, 0.5), Pct(rtts, 0.95), Pct(rtts, 1.0), worstErr, worstCorr / 10.0,
            recvSum / n / s / 1000.0, recvMax / s / 1000.0, sentSum / n / s / 1000.0, pass ? "PASS" : "FAIL");
+    // Per bot: its own state's rate (interest management must never thin it: 30 a second at 30 Hz snapshots, less what is
+    // lost), corrections and the worst error - which bot drifts, and whether its own updates were short.
+    const double counted = std::max(1.0, secs - kWarmSeconds); // the counters restart once the walk settles
+    for (const Bot& b : bots)
+        printf("bench: mp-soak:   %s: own states %.1f/s, %.1f%% corrected, worst %.3f m, rtt %.0f ms%s\n", b.name.c_str(), b.c.states / counted,
+               b.c.states > 0 ? 100.0 * b.c.corrections / b.c.states : 0.0, b.c.worstError, b.c.rttMs, b.c.state == NetClient::State::Joined ? "" : " (disconnected)");
     for (Bot& b : bots) NetClient_Disconnect(b.c);
     phase = -1;
 }
