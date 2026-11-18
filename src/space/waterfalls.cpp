@@ -147,7 +147,7 @@ void Waterfalls_Draw3D(Scene& world) {
         locView = GetShaderLocation(shader.shader, "viewPos");
     }
     if (!shaderReady) return;
-    const float t = (float)fmod(GetTime(), 3600.0);
+    const float t = (float)fmod(GameClock(), 3600.0); // paused with the game (#511)
     SetShaderValue(shader.shader, locTime, &t, SHADER_UNIFORM_FLOAT);
     SetShaderValue(shader.shader, locSun, &world.frameSun, SHADER_UNIFORM_VEC3);
     SetShaderValue(shader.shader, locAmbient, &world.frameAmbient, SHADER_UNIFORM_VEC3);

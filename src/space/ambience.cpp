@@ -274,7 +274,7 @@ void Ambience_GatherLights(Scene& world) {
     struct Cached { uint32_t version = 0xFFFFFFFFu; std::vector<Spot> spots; };
     static std::unordered_map<uint64_t, Cached> cache;
     static std::vector<std::pair<Int3, CellShape>> fp;
-    const float t = (float)GetTime();
+    const float t = (float)fmod(GameClock(), 3600.0); // flicker stops behind the pause menu (#511)
     for (auto& plot : body->plots->plots) {
         if (Vector3Distance(plot->toBody({ 0, 0, 0 }), cam) > 300.0f) continue;
         Cached& c = cache[(body->id * 1315423911ull) ^ plot->id];

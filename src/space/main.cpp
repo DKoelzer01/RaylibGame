@@ -390,6 +390,7 @@ int main(int argc, char** argv)
     bool benchLamps = false;       // --test-lamps: 100 lamp cubes light the ground (#139)
     bool benchGiant = false;       // --shot-giant: one tree of each size class (#274)
     bool benchTorch = false;       // --test-torch: a held torch lights the ground (#218)
+    bool benchPause = false;       // --test-pause (#511): behind the pause menu nothing moves (the game clock and the sim stop)
     bool benchBite = false, biteStarted = false; // --test-bite (#165)
     bool benchShotDig = false;     // --shot-dig (#533): the dig preview ring, looking down at the ground
     bool benchF2 = false;          // --test-f2 (#579): take an F2 screenshot
@@ -663,6 +664,7 @@ int main(int argc, char** argv)
         if (std::string(argv[i]) == "--test-menus") benchMenus = true;
         if (std::string(argv[i]) == "--test-time") benchTime = true;
         if (std::string(argv[i]) == "--test-torch") benchTorch = true;
+        if (std::string(argv[i]) == "--test-pause") benchPause = true;
         if (std::string(argv[i]) == "--test-bite") benchBite = true;
         if (std::string(argv[i]) == "--shot-dig") benchShotDig = true;
         if (std::string(argv[i]) == "--test-f2") benchF2 = true;
@@ -8232,7 +8234,7 @@ int main(int argc, char** argv)
                         }
                         benchWalkSeconds = 0.0;
                     }
-                } else if ((WorldIdle() && benchDigStrokes == 0 && !benchPaint && !benchSaveLoad && benchWalkSeconds <= 0.0 && benchMineStrokes == 0 && minePhase != 2 && benchFlySeconds <= 0.0 && !benchSuffocate && benchOrbitSeconds <= 0.0 && !benchRide && !benchPark && !benchGravity && !benchPrecision && !benchMantle && !benchAirJump && !benchMoon && !benchHole && !benchWall && !benchDoorway && !benchLedge && !benchTor && !benchMachines && !benchFall && !benchHover && !benchNetIds && !benchNet && !benchTwoPlayers && !benchFingerprint && !benchInterest && !benchTeleClose && !benchMenus && !benchWater && !benchFlyFollow && !benchHotbar && !benchInventory && !benchMap && !benchViewmodel && !benchQuests && !benchHunger && !benchFarm && !benchAnimals && !benchThreats && !benchAnimalPath && !benchDam && !benchFlowMeter && !benchPartWall && !benchPressure && benchShotTabs == 0 && !benchForest && !benchFlow && !benchPond && !benchBucket && !benchWaterSpeed && benchFluidLoad <= 0.0f && !benchFlowShade && !benchPump && !benchTerrain && !benchWind && !benchCampfire && !benchCaveMouth && !benchMountain && !benchShelter && !benchRoom && !benchFacing && !benchBite && !benchPlacement && !benchShotDig && !benchShadow && !benchParticles && !benchBiomes && !benchOil && !benchSpring && !benchShotAnimals && !benchShotMachines && benchShotBiomes < 0 && !benchFarForest && !benchRecipes && !benchWeather && !benchDecor && !benchMaterials && !benchDamage && !benchCrafting && !benchSuit && !benchTools && !benchRivers && !benchRing && !benchRocket && !benchStation && !benchBlueprint && !benchSmallBody && !benchTrees && !benchChop && benchPersist == 0 && benchBuild == 0 && benchFactory == 0 && !benchCombat && !benchHost && !benchShower && !benchProgression && (benchUnfocus <= 0.0f || unfocusPhase >= 6)) || GetTime() > 600.0) {
+                } else if ((WorldIdle() && benchDigStrokes == 0 && !benchPaint && !benchSaveLoad && benchWalkSeconds <= 0.0 && benchMineStrokes == 0 && minePhase != 2 && benchFlySeconds <= 0.0 && !benchSuffocate && benchOrbitSeconds <= 0.0 && !benchRide && !benchPark && !benchGravity && !benchPrecision && !benchMantle && !benchAirJump && !benchMoon && !benchHole && !benchWall && !benchDoorway && !benchLedge && !benchTor && !benchMachines && !benchFall && !benchHover && !benchNetIds && !benchNet && !benchTwoPlayers && !benchFingerprint && !benchInterest && !benchTeleClose && !benchMenus && !benchWater && !benchFlyFollow && !benchHotbar && !benchInventory && !benchMap && !benchViewmodel && !benchQuests && !benchHunger && !benchFarm && !benchAnimals && !benchThreats && !benchAnimalPath && !benchDam && !benchFlowMeter && !benchPartWall && !benchPressure && benchShotTabs == 0 && !benchForest && !benchFlow && !benchPond && !benchBucket && !benchWaterSpeed && benchFluidLoad <= 0.0f && !benchFlowShade && !benchPump && !benchTerrain && !benchWind && !benchCampfire && !benchCaveMouth && !benchMountain && !benchShelter && !benchRoom && !benchFacing && !benchPause && !benchBite && !benchPlacement && !benchShotDig && !benchShadow && !benchParticles && !benchBiomes && !benchOil && !benchSpring && !benchShotAnimals && !benchShotMachines && benchShotBiomes < 0 && !benchFarForest && !benchRecipes && !benchWeather && !benchDecor && !benchMaterials && !benchDamage && !benchCrafting && !benchSuit && !benchTools && !benchRivers && !benchRing && !benchRocket && !benchStation && !benchBlueprint && !benchSmallBody && !benchTrees && !benchChop && benchPersist == 0 && benchBuild == 0 && benchFactory == 0 && !benchCombat && !benchHost && !benchShower && !benchProgression && (benchUnfocus <= 0.0f || unfocusPhase >= 6)) || GetTime() > 600.0) {
                     benchStart = GetTime();
                     printf("bench: world ready after %.2f s (%d chunks, avg build %.2f ms of which sampling %.2f ms, %d worker threads)\n",
                         GetWorldStats().lastGenerationSeconds, GetWorldStats().chunks, GetWorldStats().avgBuildMs, GetWorldStats().avgSampleMs, GetWorldStats().workerThreads);
@@ -8401,7 +8403,10 @@ int main(int argc, char** argv)
         // One clamped frame time for everything that moves (bodies, ship, player): clamping only the
         // player let the ground spin away under it during a slow frame.
         const float frameDt = std::min(GameFrameTime(), 0.1f); // fixed while recording (#375)
-        gGameClock += frameDt; // the animation clock while recording (GameClock)
+        // The animation clock (GameClock) and the simulation steps stop behind the single-player pause menu (#511: the world,
+        // the factory, fluids and time of day all wait); a host keeps running for its clients, and so does an unfocused window (#525).
+        const bool paused = gameState == 2 && gNetRole == NetRole::Offline;
+        if (!paused) gGameClock += frameDt;
         // A spawn or teleport: the loading screen until the terrain there is built (play and tests pause).
         if (player.spawns != seenSpawns) { seenSpawns = player.spawns; if (gameState == 1) { loading = true; spawnLoad = true; loadStart = GetTime(); loadFrames = 0; } }
         GpuTimer_CpuMark("bench-logic");
@@ -8413,7 +8418,7 @@ int main(int argc, char** argv)
         // time owes (none on most frames above 60 FPS, two at 30 FPS). Key and button edges are latched for them in
         // PlayerInput_Step() (playerinput.h); the mouse look turns the view once per frame, the camera interpolates.
         PlayerInput_BeginFrame();
-        const int simSteps = SimClock_BeginFrame(frameDt); // unfocused too (#525): the world keeps running behind another window
+        const int simSteps = SimClock_BeginFrame(paused ? 0.0f : frameDt); // unfocused too (#525): the world keeps running behind another window
         if (gameState == 1 && gameInput && alive && !loading && !ship.piloted && !Rocket_Boarded() && !player.flyMode) player.look(PlayerInput_Frame().look);
         for (int simStep = 0; simStep < simSteps; ++simStep) {
         const float simDt = SimDt();
@@ -9321,6 +9326,32 @@ int main(int argc, char** argv)
                 printf("bench: torch: placed one %d (light in hand now %d), %d local light(s), ground luminance %.1f -> %.1f from the placed torch: %s\n",
                        (int)torchPlacedOk, (int)!handOff, LocalLights_Count(), lumOff, lumPlaced, ok ? "PASS" : "FAIL");
                 benchTorch = false;
+            }
+        }
+        // --test-pause (#511): Esc into the pause menu, then two screen grabs 3 s apart: no pixel should move (grass, trees,
+        // water, clouds, particles), and neither the animation clock nor the simulation may advance.
+        if (benchPause && !loading && WorldIdle() && (gameState == 1 || gameState == 2)) {
+            static int pf = 0;
+            static double t0 = -1.0, clock0 = 0.0, sim0 = 0.0;
+            static Image first{};
+            ++pf;
+            if (pf == 30) menuEsc = true; // as the key going down
+            if (pf == 60) { first = LoadImageFromScreen(); clock0 = GameClock(); sim0 = SimTime(); t0 = GetTime(); }
+            if (t0 >= 0.0 && GetTime() - t0 > 3.0) {
+                Image now = LoadImageFromScreen();
+                long moved = 0, total = 0;
+                if (now.width == first.width && now.height == first.height) {
+                    const Color* a = (const Color*)first.data; const Color* b = (const Color*)now.data;
+                    total = (long)now.width * now.height;
+                    for (long i = 0; i < total; ++i)
+                        if (abs(a[i].r - b[i].r) > 8 || abs(a[i].g - b[i].g) > 8 || abs(a[i].b - b[i].b) > 8) ++moved;
+                }
+                UnloadImage(first); UnloadImage(now);
+                const double pct = total ? 100.0 * moved / total : 100.0;
+                const bool ok = gameState == 2 && GameClock() == clock0 && SimTime() == sim0 && pct < 0.02; // (grass swaying in the bench view: ~0.07%)
+                printf("bench: pause: paused %d; over %.1f s the animation clock moved %.3f s, the simulation %.3f s, %.3f%% of pixels changed: %s\n",
+                       (int)(gameState == 2), GetTime() - t0, GameClock() - clock0, SimTime() - sim0, pct, ok ? "PASS" : "FAIL");
+                benchPause = false;
             }
         }
         // --test-time (#259, #275): a new game's dawn start (the sun ~4 deg under the spawn's horizon, rising), then a +6 h
