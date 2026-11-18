@@ -32,5 +32,8 @@ long long SceneTarget_HiZFrame(); // the frame the current pyramid was built in 
 // Restores the standard depth state and copies the colour to the window.
 void SceneTarget_End();
 void SceneTarget_Unload();
+// #131 the tonemap curve (0 knee - the default, today's look -, 1 ACES, 2 clip): Settings sets it; RAYLIBGAME_TONEMAP wins.
+void SceneTarget_SetTonemap(int curve);
+int SceneTarget_Tonemap();
 
 #endif

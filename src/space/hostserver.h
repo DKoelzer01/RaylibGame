@@ -49,6 +49,9 @@ double Host_InventoryAmount(uint32_t session, const std::string& item);
 // into the server's copy of their inventory, and the delta to them. False: no such player or item.
 int Host_PartsApplied();
 bool Host_Give(uint32_t session, const std::string& item, int count);
+// Join sync (#776, tests): syncs finished so far; bytes sent by them.
+int Host_SyncsDone();
+uint64_t Host_SyncBytesSent();
 // The dedicated server's console and admin (#326, #345): who is (or was) here; kick by name (Bye kicked, with the reason as a chat
 // line first); a chat line from the server (fromSession 0) or a player, to everyone (toSession 0) or one session; the message of
 // the day (in the Welcome); a join check (bans, whitelist: false refuses with NetReject::Banned and why); a handler for
@@ -61,6 +64,9 @@ void Host_SetMotd(const std::string& text);
 void Host_SetJoinCheck(std::function<bool(const std::string& name, const std::string& address, std::string& why)> check);
 void Host_SetChatHandler(std::function<void(uint32_t session, const std::string& name, const std::string& text)> handler);
 void Host_SetEventHook(std::function<void(const char* what, uint32_t session, const std::string& detail)> hook);
+// Tests (#349): messages the server's guard dropped (oversized, unexpected, malformed, over-rate, impossible), connections kicked.
+int Host_GuardDropped();
+int Host_GuardKicks();
 // Tests: client connections opened in the same process; their messages are handed to the client, not to the host.
 void Host_SetLocalClient(uint32_t conn);
 std::vector<NetMessage> Host_TakeLocalClientMessages(uint32_t conn);

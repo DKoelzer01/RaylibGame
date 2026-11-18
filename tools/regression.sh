@@ -155,10 +155,13 @@ multiplayer() {
     run --host "$sv" --bench 3 --port 27941 --test-net-move
     run --host "$sv" --bench 3 --port 27941 --test-net-dig
     run --host "$sv" --bench 3 --port 27941 --test-net-build
+    run --host "$sv" --bench 3 --port 27941 --test-net-sync # (#776) joining a world with many edits: indexed, hashed, rate-bounded
     RAYLIBGAME_NET_LAG_MS=50 RAYLIBGAME_NET_JITTER_MS=10 RAYLIBGAME_NET_LOSS=2 RAYLIBGAME_NET_SEED=1 run --host "$sv" --bench 3 --port 27941 --test-mp-bots 6
     exe="$keep"
     run --seed 42 --bench 3 --test-time-follow
     run --test-net-interest
+    run --test-net-guard # (#349) per-client message limits: a normal client never dropped; floods and garbage kicked
+    exe="$gexe"; RAYLIBGAME_MAX_PER_ADDRESS=6 run --host "$sv" --sandbox --bench 3 --port 27941 --test-net-abuse; exe="$keep" # (#349, #780, #781; names, chat, the per-address cap) needs GNS (else SKIP)
     run --test-server-admin
     run --seed 42 --bench 3 --test-player-cost 8 # (#768) player cost per update, and determinism: a warm vs a poisoned collision cache stay bit-identical
     # The dedicated server (#326): config file, console commands, log file, "stop" with a final save (sandbox world).
@@ -175,6 +178,13 @@ multiplayer() {
         EXE="$gexe" bash "$here/tools/test_join.sh" 2>&1 | grep "^bench: join (" | tee -a "$log"
         echo "=== tools/test_join.sh on a non-default world (#757)" | tee -a "$log"
         WORLDGEN="ocean 0.4 mountains 1.6 cliffs 0 karst 0 erosion 0" PORT=27952 EXE="$gexe" bash "$here/tools/test_join.sh" 2>&1 | grep "^bench: join (" | tee -a "$log"
+        # Join-in-progress sync (#776): a client joins a host world with 3000 edits (fingerprints must match), then rejoins from its cache (fetching nothing).
+        echo "=== tools/test_join_sync.sh" | tee -a "$log"
+        EXE="$gexe" bash "$here/tools/test_join_sync.sh" 2>&1 | grep "=== test_join_sync" | sed 's/=== test_join_sync: \([A-Z]*\).*/bench: join sync (#776): fresh join, then a rejoin from the cache -> \1/' | tee -a "$log"
+        echo "=== tools/test_animals_net.sh (#334)" | tee -a "$log"
+        EXE="$gexe" bash "$here/tools/test_animals_net.sh" 2>&1 | grep "=== test_animals_net" | sed 's/=== test_animals_net: \([A-Z]*\).*/bench: animals on the server (#334): same herd, a hit applied for both -> \1/' | tee -a "$log"
+        echo "=== tools/test_animals_bite.sh (#334)" | tee -a "$log"
+        EXE="$gexe" bash "$here/tools/test_animals_bite.sh" 2>&1 | grep "=== test_animals_bite" | sed 's/=== test_animals_bite: \([A-Z]*\).*/bench: an animal bites a remote player through the server (#334): -> \1/' | tee -a "$log"
     fi
 }
 

@@ -1,4 +1,5 @@
 #include "menus.h"
+#include "scenetarget.h"
 #include "slideshow.h"
 #include "player.h"
 #include "ship.h"
@@ -219,6 +220,9 @@ namespace {
             const int capBefore = settings.fpsCap;
             if (Choice({ x, y, w, h }, "Frame cap", capNames, 4, cap)) { settings.fpsCap = caps[cap]; changed |= capBefore != caps[cap]; }
             next();
+            // #131: how bright light rolls off - Clip (hard white), Knee (today's look; highlights roll off), ACES (filmic).
+            static const char* curves[] = { "Clip", "Knee", "ACES" };
+            changed |= Choice({ x, y, w, h }, "Tonemap", curves, 3, settings.tonemap); next();
             // #302: Low also turns anti-aliasing (MSAA) off to save video memory; that takes a restart.
             static const int startDetail = settings.terrainDetail;
             if ((startDetail == 0) != (settings.terrainDetail == 0))
@@ -277,6 +281,7 @@ void Settings_Load() {
             else if (!strcmp(key, "difficulty")) settings.difficulty = std::clamp((int)v, 0, 2);
             else if (!strcmp(key, "terraindetail")) settings.terrainDetail = std::clamp((int)v, 0, 3);
             else if (!strcmp(key, "camerasmoothing")) settings.cameraSmoothing = std::clamp((int)v, 0, 3);
+            else if (!strcmp(key, "tonemap")) settings.tonemap = std::clamp((int)v, 0, 2); // (#131)
             else if (!strcmp(key, "speedvignette")) settings.speedVignette = v != 0.0f;
             else if (!strcmp(key, "fireflicker")) settings.fireFlicker = v != 0.0f;
         }
@@ -294,6 +299,7 @@ void Settings_Save() {
     fprintf(f, "difficulty %d\n", settings.difficulty);
     fprintf(f, "showfps %d\n", settings.showFps ? 1 : 0);
     fprintf(f, "terraindetail %d\ncamerasmoothing %d\nspeedvignette %d\n", settings.terrainDetail, settings.cameraSmoothing, settings.speedVignette ? 1 : 0); // (terrain detail was never saved, #297)
+    fprintf(f, "tonemap %d\n", settings.tonemap); // (#131)
     fprintf(f, "fireflicker %d\n", settings.fireFlicker ? 1 : 0);
     if (!settings.logLevel.empty()) fprintf(f, "log_level %s\n", settings.logLevel.c_str()); // set by hand in the file (#514)
     fclose(f);
@@ -312,6 +318,7 @@ void Settings_Apply() {
     if (settings.vsync) SetWindowState(FLAG_VSYNC_HINT); else ClearWindowState(FLAG_VSYNC_HINT);
     SetTargetFPS(settings.fpsCap > 0 ? settings.fpsCap : (settings.vsync ? 0 : std::max(60, GetMonitorRefreshRate(GetCurrentMonitor()))));
     }
+    { static const int kCurve[] = { 2, 0, 1 }; SceneTarget_SetTonemap(kCurve[std::clamp(settings.tonemap, 0, 2)]); } // (#131) Clip, Knee, ACES
     player.smoothMotion = settings.reduceMotion;
     { const float kScale[] = { 1.0f, 0.5f, 1.0f, 2.4f }; const int k = std::clamp(settings.cameraSmoothing, 0, 3); player.eyeSmoothing = k > 0; player.eyeSmoothScale = kScale[k]; } // #168
     player.speedVignette = settings.speedVignette;

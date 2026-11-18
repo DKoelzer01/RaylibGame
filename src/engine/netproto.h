@@ -13,9 +13,10 @@
 #include "dvec3.h"
 #include <cstdint>
 #include <string>
+#include <functional>
 #include <vector>
 
-constexpr uint32_t kNetProtocol = 10; // 1 was the text "join" of #311; 5: world time in Welcome and Pong (#339); 6 (unused); 7: world-gen settings in Welcome (#757); 8: terrain edit requests, refusals, inventory deltas (#329); 9: chat (#326); 10: building (#330)
+constexpr uint32_t kNetProtocol = 14; // 1 was the text "join" of #311; 5: world time in Welcome and Pong (#339); 6 (unused); 7: world-gen settings in Welcome (#757); 8: terrain edit requests, refusals, inventory deltas (#329); 9: chat (#326); 10: building (#330); 11 is #776's; 12: player snapshots, delta-coded against acked states (#769); 13: animals (#334); 14: animal actions, damage to a player (#334)
 
 enum class NetMsg : uint8_t {
     Hello = 1,     // client -> server: protocol, build, player name, password
@@ -37,6 +38,15 @@ enum class NetMsg : uint8_t {
     PartRequest,   // client -> server: place a part (into a plot, or a new one) or break one (#330)
     PartRefused,   // server -> client: that request was refused (why)
     PlotEdit,      // server -> client: a plot made, a part placed or removed, in the server's order (#330)
+    SyncIndex,     // server -> client: the join snapshot's entries (regions, plots) with hashes, in pages (#776)
+    SyncWant,      // client -> server: which of them it needs
+    SyncData,      // server -> client: a piece of an entry
+    SyncDone,      // server -> client: all wanted entries sent; queued live edits apply now
+    PlayerSnapshot = 24, // server -> client (#769): the player states of one snapshot in one message, each delta-coded against one
+                   // the client acknowledged (20-23 are #776's)
+    Animals = 25,  // server -> client (#334): the animals near the client (state, health), and the ones gone from its view
+    AnimalHit = 26, // client -> server (#334): a swing at an animal, or feed / take its product (the server checks reach and cooldown)
+    Damage = 27,   // server -> client (#334): a hit on the client's player (an animal's bite): it applies the damage (shield, health)
     Count
 };
 const char* NetMsgName(NetMsg m);
@@ -54,6 +64,7 @@ public:
     void f64(double v);
     void str(const std::string& s) { varu(s.size()); bytes.insert(bytes.end(), s.begin(), s.end()); }
     void boolean(bool b) { u8(b ? 1 : 0); }
+    void blob(const uint8_t* data, size_t n) { varu(n); bytes.insert(bytes.end(), data, data + n); } // length, then the bytes
     void pos(const DVec3& p);           // body-local, metres, quantised to 1 mm (varint per axis)
     void unit(float x, float y, float z); // a unit vector, 3 x int16
     void angle(float radians);          // uint16 over a full turn
@@ -76,6 +87,12 @@ public:
     double f64();
     std::string str(size_t maxLen = 4096);
     bool boolean() { const uint8_t b = u8(); if (b > 1) ok = false; return b == 1; }
+    std::vector<uint8_t> blob(size_t maxLen) { // length, then the bytes (longer than maxLen: malformed)
+        const uint64_t n = varu();
+        if (n > maxLen || !need((size_t)n)) { ok = false; return {}; }
+        std::vector<uint8_t> out(p, p + n); p += n;
+        return out;
+    }
     DVec3 pos();
     void unit(float& x, float& y, float& z);
     float angle();
@@ -128,6 +145,7 @@ struct MsgInput {                    // one sim step of a client's PlayerInput (
 constexpr int kInputRedundancy = 4;
 struct MsgInputs {
     std::vector<MsgInput> steps;
+    uint32_t ackSnap = 0, ackMask = 0; // #769: the newest player snapshot received (its sequence) and the 32 before it (bit i: ackSnap-1-i)
     uint8_t action = 0;              // what the hands do now (avatars, #750): 0 none, 1 dig / mine, 2 chop, 3 place / use
     float actionPhase = 0.0f;        // 0..1 within the swing
 };
@@ -143,6 +161,35 @@ struct MsgPlayerState {              // a player's authoritative state (#327)
     uint8_t flags = 0;               // bit 0 grounded, 1 fly mode, 2 dead, 3 in water, 4 hovering, 5-6 posture, 7 jetpack firing
     uint8_t action = 0; float actionPhase = 0.0f; // the hands (relayed from the input, #750)
 };
+// #769 player snapshots. A player state as its quantised wire values (exactly what a PlayerState message carries:
+// mm, cm/s, 1/65536 turn, ...): deltas are taken between these, so a decoded state is bit-identical to a full message's.
+struct PlayerStateQ {
+    uint32_t session = 0, ackInput = 0; uint64_t body = 0;
+    int64_t p[3]{}; int64_t v[3]{};
+    uint16_t yaw = 0, pitch = 0;
+    uint8_t flags = 0, jumpBuffer = 0, coyote = 0, jumpLock = 0, fuel = 0, action = 0, phase = 0;
+    bool operator==(const PlayerStateQ& o) const;
+};
+PlayerStateQ NetQuantize(const MsgPlayerState& m);
+MsgPlayerState NetDequantize(const PlayerStateQ& q, uint32_t tick);
+// One snapshot to one client: a sequence number (per client, acked back in MsgInputs), the server tick, and the states the
+// client's interest picked. Each entry is full (baseSeq 0) or the fields that changed against the state of that player the
+// client acknowledged in snapshot baseSeq (the writer fills `base`; the reader looks it up in what it received).
+struct MsgPlayerSnapshot {
+    uint32_t seq = 0, tick = 0;
+    struct Entry { PlayerStateQ s; uint32_t baseSeq = 0; PlayerStateQ base; };
+    std::vector<Entry> entries;
+};
+// #334 animals: the server's states of the ones near a client (position body-local to 1 mm, heading, state, health), and
+// the ones that left its view or died. Sent 10 a second, unreliable (the client also drops one not heard of for 3 s).
+struct MsgAnimals {
+    uint32_t tick = 0;
+    struct Entry { uint64_t netId = 0; uint8_t species = 0; uint64_t body = 0; DVec3 pos{}; float heading = 0.0f; uint8_t state = 0; float health = 0.0f, age = 1.0f; uint8_t flags = 0; };
+    std::vector<Entry> entries;
+    std::vector<uint64_t> removed;
+};
+struct MsgAnimalHit { uint64_t netId = 0; uint8_t action = 0; }; // 0 hit, 1 feed, 2 take its product
+struct MsgDamage { float amount = 0.0f; uint8_t kind = 0; bool hasSource = false; uint64_t body = 0; DVec3 local{}; float knockback = 0.0f; uint64_t sourceId = 0; };
 struct MsgShower { double start = 0.0, end = 0.0; uint32_t id = 0; }; // world seconds; id 0 none (events.h)
 
 struct MsgRoster { struct Entry { uint32_t session = 0; std::string name; }; std::vector<Entry> players; }; // everyone online
@@ -204,6 +251,19 @@ struct MsgPlotEdit {
     uint32_t partIndex = 0;           // Remove
 };
 struct MsgChat { uint32_t from = 0; std::string text; }; // #326: from = the sender's session (0 the server; a client's own is ignored)
+// Join-in-progress sync (#776): at a join the server takes a snapshot of the world's edits (terrain regions, plots) and
+// sends its index in pages; the client answers with the entries it lacks (it compares each region's hash with its own:
+// a rejoin with a cached client save fetches only what changed); the server streams those, nearest first, in pieces
+// within a byte budget, then SyncDone. Live edits after the snapshot follow as usual (the client applies them after).
+enum class NetSyncKind : uint8_t { Region = 0, Plots = 1, Count };
+struct NetSyncEntry { NetSyncKind kind = NetSyncKind::Region; uint64_t body = 0, key = 0, hash = 0; uint32_t size = 0; }; // key: the region (Plots: 0)
+constexpr size_t kSyncIndexPage = 256;      // entries a page
+constexpr size_t kSyncPiece = 16 * 1024;    // bytes a data message
+constexpr uint32_t kSyncMaxEntries = 1u << 20;
+struct MsgSyncIndex { uint32_t snapshot = 0; uint16_t page = 0, pages = 1; uint32_t total = 0; std::vector<NetSyncEntry> entries; };
+struct MsgSyncWant { uint32_t snapshot = 0; uint32_t total = 0; std::vector<uint8_t> bits; }; // bit i: entry i is wanted
+struct MsgSyncData { uint32_t snapshot = 0, entry = 0, offset = 0, size = 0; std::vector<uint8_t> bytes; };
+struct MsgSyncDone { uint32_t snapshot = 0, entries = 0; uint64_t bytes = 0; };
 
 void NetWrite(NetWriter& w, const MsgHello& m);
 void NetWrite(NetWriter& w, const MsgWelcome& m);
@@ -224,6 +284,10 @@ void NetWrite(NetWriter& w, const MsgPartRequest& m);
 void NetWrite(NetWriter& w, const MsgPartRefused& m);
 void NetWrite(NetWriter& w, const MsgPlotEdit& m);
 void NetWrite(NetWriter& w, const MsgChat& m);
+void NetWrite(NetWriter& w, const MsgSyncIndex& m);
+void NetWrite(NetWriter& w, const MsgSyncWant& m);
+void NetWrite(NetWriter& w, const MsgSyncData& m);
+void NetWrite(NetWriter& w, const MsgSyncDone& m);
 bool NetRead(NetReader& r, MsgHello& m);
 bool NetRead(NetReader& r, MsgWelcome& m);
 bool NetRead(NetReader& r, MsgReject& m);
@@ -243,8 +307,23 @@ bool NetRead(NetReader& r, MsgPartRequest& m);
 bool NetRead(NetReader& r, MsgPartRefused& m);
 bool NetRead(NetReader& r, MsgPlotEdit& m);
 bool NetRead(NetReader& r, MsgChat& m);
+bool NetRead(NetReader& r, MsgSyncIndex& m);
+bool NetRead(NetReader& r, MsgSyncWant& m);
+bool NetRead(NetReader& r, MsgSyncData& m);
+bool NetRead(NetReader& r, MsgSyncDone& m);
+void NetWrite(NetWriter& w, const MsgAnimals& m);
+bool NetRead(NetReader& r, MsgAnimals& m);
+void NetWrite(NetWriter& w, const MsgAnimalHit& m);
+bool NetRead(NetReader& r, MsgAnimalHit& m);
+void NetWrite(NetWriter& w, const MsgDamage& m);
+bool NetRead(NetReader& r, MsgDamage& m);
+void NetWrite(NetWriter& w, const MsgPlayerSnapshot& m);
+// lookup(session, baseSeq, out): the state of that player received in snapshot baseSeq (false: unknown - the entry can't be
+// decoded and the read fails). Without one (validation), deltas decode against zeros.
+bool NetRead(NetReader& r, MsgPlayerSnapshot& m, const std::function<bool(uint32_t, uint32_t, PlayerStateQ&)>& lookup = nullptr);
 // A message's id (the first byte; NetMsg::Count if empty or unknown).
 NetMsg NetPeek(const std::vector<uint8_t>& bytes);
+bool NetWellFormed(const std::vector<uint8_t>& bytes); // (#349) its reader accepts it (snapshot deltas decode against zeros)
 
 // --test-netproto: every message round-trips field for field; 20000 random and truncated buffers never crash a
 // reader and never read as valid when cut short. Prints PASS/FAIL; no network needed.

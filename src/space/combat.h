@@ -13,6 +13,7 @@
 
 struct PlayerSession;
 struct PlayerInput;
+struct Player;
 class Scene;
 
 enum class DamageKind { Melee, Bite, Projectile, Other };
@@ -34,6 +35,7 @@ struct DamageResult {
 };
 
 DamageResult Combat_Damage(PlayerSession& target, const DamageEvent& e);
+void Combat_ApplyKnockback(Player& p, const DamageEvent& e, bool holdingBlock); // (#334) a server's shove for a remote player
 
 // One sim step of a player's combat state: the block (RMB with a shield in the off hand), stamina back at rest.
 void Combat_Step(PlayerSession& s, float dt, const PlayerInput& in);

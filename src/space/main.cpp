@@ -120,6 +120,7 @@ static bool gSoakOn = false;
 #include "netinterest.h"
 #include "serverconsole.h"
 #include "serveradmin.h"
+#include "netguard.h"
 
 // (#345) after an admin change: whoever may no longer join (banned by name or address, or off the whitelist) is kicked.
 static void Server_KickRefused() {
@@ -445,6 +446,7 @@ int main(int argc, char** argv)
     // --seed-survey COUNT FIRSTSEED OUTDIR [THREADS] [SUBSET] (#532): how alike different seeds' start planets are. No window.
     if (argc >= 5 && std::string(argv[1]) == "--seed-survey") return SeedSurvey_Run(argc, argv);
     if (argc >= 2 && std::string(argv[1]) == "--test-netproto") return NetProto_Test() ? 0 : 1; // the wire protocol (#320): no window, no world
+    if (argc >= 2 && std::string(argv[1]) == "--test-net-guard") return NetGuard_Test() ? 0 : 1; // the server's message limits (#349): no window, no world
     if (argc >= 2 && std::string(argv[1]) == "--test-server-admin") return Admin_Test() ? 0 : 1; // server admin lists (#345): no window, no world
     if (argc >= 2 && std::string(argv[1]) == "--test-net-interest") return Interest_Test() ? 0 : 1; // interest management (#340): no window, no world
     double benchSeconds = 0.0;
@@ -511,13 +513,17 @@ int main(int argc, char** argv)
     bool benchJoin = false;        // --test-join (with --join): the client side of the two-process test (tools/test_join.sh)
     int benchJoinPhase = 0;
     int swarmBots = 0; double swarmSoak = 60.0; // --bots N [--soak S] with --join (#348): N walking bots from this process, S seconds
+    bool benchNetAnimals = false;  // --test-net-animals (with --join; #334): the client side of tools/test_animals_net.sh
     uint16_t hostPort = kDefaultHostPort; // --port N
     bool benchHost = false;        // --test-host (#311): with --host, a loopback client joins
     bool benchTimeFollow = false;  // --test-time-follow (#339): the world clock follows a server time (slew, snap)
     int benchPlayerCost = 0;       // --test-player-cost N (#768): N players stepped as a server steps them; cost per update
+    bool benchNetAbuse = false;    // --test-net-abuse (#349, with --host): a flooder, a would-be flyer and a reconnect, beside a normal player
     bool benchNetMove = false;     // --test-net-move (#327): two clients, prediction and interpolation over loopback
     bool benchNetDig = false;      // --test-net-dig (#329): a client's digs and places, validated and replicated
     bool benchNetBuild = false;    // --test-net-build (#330): a client's parts placed and broken, validated and replicated
+    bool benchNetSync = false;     // --test-net-sync (#776): joining a world with many edits (indexed, hashed, rate-bounded)
+    int hostEdits = 0;             // --host-edits N (#776 tests): N dig strokes around the start, for clients to sync
     int benchMpBots = 0;           // --test-mp-bots N (#347): with --host, N bot clients join, ping and churn
     bool seedGiven = false;        // --seed N was passed (a --host new world: else a random seed)
     double autosaveMinutes = kDefaultAutosaveMinutes; // --autosave-minutes N (--host; 0 = off)
@@ -760,15 +766,19 @@ int main(int argc, char** argv)
         if (std::string(argv[i]) == "--test-join") benchJoin = true;
         if (std::string(argv[i]) == "--bots" && i + 1 < argc) swarmBots = std::max(1, atoi(argv[i + 1]));
         if (std::string(argv[i]) == "--soak" && i + 1 < argc) swarmSoak = std::max(1.0, atof(argv[i + 1]));
+        if (std::string(argv[i]) == "--test-net-animals") benchNetAnimals = true;
         if (std::string(argv[i]) == "--port" && i + 1 < argc) hostPort = (uint16_t)atoi(argv[i + 1]);
         if (std::string(argv[i]) == "--host-password" && i + 1 < argc) Host_SetPassword(argv[i + 1]); // (#321)
+        if (std::string(argv[i]) == "--host-edits" && i + 1 < argc) hostEdits = atoi(argv[i + 1]); // (#776 tests) a world with many edits to join
         if (std::string(argv[i]) == "--max-players" && i + 1 < argc) Host_SetMaxPlayers(atoi(argv[i + 1]));
         if (std::string(argv[i]) == "--test-host") benchHost = true;
         if (std::string(argv[i]) == "--test-time-follow") benchTimeFollow = true;
         if (std::string(argv[i]) == "--test-player-cost" && i + 1 < argc) benchPlayerCost = std::max(1, atoi(argv[i + 1]));
+        if (std::string(argv[i]) == "--test-net-abuse") benchNetAbuse = true;
         if (std::string(argv[i]) == "--test-net-move") benchNetMove = true;
         if (std::string(argv[i]) == "--test-net-dig") benchNetDig = true;
         if (std::string(argv[i]) == "--test-net-build") benchNetBuild = true;
+        if (std::string(argv[i]) == "--test-net-sync") benchNetSync = true;
         if (std::string(argv[i]) == "--test-mp-bots" && i + 1 < argc) benchMpBots = std::max(1, atoi(argv[i + 1]));
         if (std::string(argv[i]) == "--seed") seedGiven = true;
         if (std::string(argv[i]) == "--server") { // (#326) the config first; flags after it override
@@ -1288,6 +1298,7 @@ int main(int argc, char** argv)
         std::string err;
         if (!Net_Init(err)) { printf("join: no network transport (%s)\n", err.c_str()); CloseWindow(); return 1; }
         gNetRole = NetRole::Client;
+        gJoin.syncHold = true; // (#776) the world's edits wait until we have generated the world they go into
         NetClient_Connect(gJoin, joinAddr.c_str(), joinName);
         const double t0 = GetTime();
         while ((gJoin.state == NetClient::State::Connecting || gJoin.state == NetClient::State::AwaitingWelcome) && GetTime() - t0 < kClientConnectTimeout + 1.0 && !WindowShouldClose()) {
@@ -1317,6 +1328,13 @@ int main(int argc, char** argv)
         world.objects.clear();
         generateWorld(world);
         gNetClient = &gJoin;
+        // (#776) what we held of this world last time: the sync then fetches only what changed since
+        printf("join: cache: %d regions of this world\n", NetClient_LoadCache(world, WorldSavePath(), gJoin.welcome.seed, gJoin.welcome.fingerprint));
+        gJoin.syncHold = false; // the bodies exist now: the sync's messages (held since the Welcome) are handled next update
+        // (#334) the server owns the animals: none decided here; a swing at one is a request to the server
+        gAnimalsReplicated = true; Animals_Reset();
+        gAnimalHitRequest = [](uint64_t netId) { NetClient_HitAnimal(gJoin, netId); };
+        gAnimalUseRequest = [](uint64_t netId, int action) { NetClient_UseAnimal(gJoin, netId, action); };
         printf("join: joined %s as %s, session %u%s; seed %u, %zu bodies, %s world-gen settings%s; server world time %.1f s\n", joinAddr.c_str(), joinName.c_str(), gJoin.welcome.session,
                gJoin.welcome.reconnected ? " (reconnected)" : "", gJoin.welcome.seed, sys.bodies.size(), joinParams.isDefault() ? "default" : "custom",
                gJoin.welcome.sandbox ? ", sandbox" : "", gJoin.welcome.worldTime);
@@ -1727,6 +1745,7 @@ int main(int argc, char** argv)
         printf("host: autosave %s\n", autosaveMinutes > 0.0 ? TextFormat("every %g minutes, and on shutdown", autosaveMinutes) : "off (still on shutdown)");
         Host_Start(hostPort, status);
         printf("host: %s\n", status.c_str());
+        if (hostEdits > 0) printf("host: %d dig strokes scattered around the start (--host-edits, #776)\n", NetSync_ScatterStrokes(world, hostEdits, 42));
         if (serverMode) { // (#345) the admin lists live next to the save: <save dir>/admin.txt, audit.log
             const std::filesystem::path saveDir = std::filesystem::path(hostSave).parent_path();
             Admin_Load(saveDir.empty() ? std::string(".") : saveDir.string());
@@ -8659,7 +8678,7 @@ int main(int argc, char** argv)
                         }
                         benchWalkSeconds = 0.0;
                     }
-                } else if ((WorldIdle() && benchDigStrokes == 0 && !benchPaint && !benchSaveLoad && benchWalkSeconds <= 0.0 && benchMineStrokes == 0 && minePhase != 2 && benchFlySeconds <= 0.0 && !benchSuffocate && benchOrbitSeconds <= 0.0 && !benchRide && !benchPark && !benchGravity && !benchPrecision && !benchMantle && !benchAirJump && !benchMoon && !benchHole && !benchWall && !benchDoorway && !benchLedge && !benchTor && !benchMachines && !benchFall && !benchHover && !benchNetIds && !benchNet && !benchTwoPlayers && !benchFingerprint && !benchInterest && !benchTeleClose && !benchMenus && !benchWater && !benchFlyFollow && !benchHotbar && !benchInventory && !benchMap && !benchViewmodel && !benchQuests && !benchHunger && !benchFarm && !benchAnimals && !benchThreats && !benchAnimalPath && !benchDam && !benchFlowMeter && !benchPartWall && !benchPressure && benchShotTabs == 0 && !benchForest && !benchFlow && !benchPond && !benchBucket && !benchWaterSpeed && benchFluidLoad <= 0.0f && !benchFlowShade && !benchPump && !benchTerrain && !benchWind && !benchCampfire && !benchCaveMouth && !benchMountain && !benchShelter && !benchRoom && !benchFacing && !benchDungeon && !benchPosture && !benchPause && !benchBite && !benchPlacement && !benchShotDig && !benchShadow && !benchParticles && !benchBiomes && !benchOil && !benchSpring && !benchShotAnimals && !benchShotAvatar && !benchShotMachines && benchShotBiomes < 0 && !benchFarForest && !benchRecipes && !benchWeather && !benchDecor && !benchMaterials && !benchDamage && !benchCrafting && !benchSuit && !benchTools && !benchRivers && !benchRing && !benchRocket && !benchStation && !benchBlueprint && !benchSmallBody && !benchTrees && !benchChop && benchPersist == 0 && benchBuild == 0 && benchFactory == 0 && !benchCombat && !benchHost && !benchJoin && !benchTimeFollow && benchPlayerCost == 0 && !benchNetMove && !benchNetDig && !benchNetBuild && benchMpBots == 0 && !benchShower && !benchProgression && (benchUnfocus <= 0.0f || unfocusPhase >= 6)) || GetTime() > 600.0) {
+                } else if ((WorldIdle() && benchDigStrokes == 0 && !benchPaint && !benchSaveLoad && benchWalkSeconds <= 0.0 && benchMineStrokes == 0 && minePhase != 2 && benchFlySeconds <= 0.0 && !benchSuffocate && benchOrbitSeconds <= 0.0 && !benchRide && !benchPark && !benchGravity && !benchPrecision && !benchMantle && !benchAirJump && !benchMoon && !benchHole && !benchWall && !benchDoorway && !benchLedge && !benchTor && !benchMachines && !benchFall && !benchHover && !benchNetIds && !benchNet && !benchTwoPlayers && !benchFingerprint && !benchInterest && !benchTeleClose && !benchMenus && !benchWater && !benchFlyFollow && !benchHotbar && !benchInventory && !benchMap && !benchViewmodel && !benchQuests && !benchHunger && !benchFarm && !benchAnimals && !benchThreats && !benchAnimalPath && !benchDam && !benchFlowMeter && !benchPartWall && !benchPressure && benchShotTabs == 0 && !benchForest && !benchFlow && !benchPond && !benchBucket && !benchWaterSpeed && benchFluidLoad <= 0.0f && !benchFlowShade && !benchPump && !benchTerrain && !benchWind && !benchCampfire && !benchCaveMouth && !benchMountain && !benchShelter && !benchRoom && !benchFacing && !benchDungeon && !benchPosture && !benchPause && !benchBite && !benchPlacement && !benchShotDig && !benchShadow && !benchParticles && !benchBiomes && !benchOil && !benchSpring && !benchShotAnimals && !benchShotAvatar && !benchShotMachines && benchShotBiomes < 0 && !benchFarForest && !benchRecipes && !benchWeather && !benchDecor && !benchMaterials && !benchDamage && !benchCrafting && !benchSuit && !benchTools && !benchRivers && !benchRing && !benchRocket && !benchStation && !benchBlueprint && !benchSmallBody && !benchTrees && !benchChop && benchPersist == 0 && benchBuild == 0 && benchFactory == 0 && !benchCombat && !benchHost && !benchJoin && !benchTimeFollow && benchPlayerCost == 0 && !benchNetAnimals && !benchNetAbuse && !benchNetMove && !benchNetDig && !benchNetBuild && !benchNetSync && benchMpBots == 0 && !benchShower && !benchProgression && (benchUnfocus <= 0.0f || unfocusPhase >= 6)) || GetTime() > 600.0) {
                     benchStart = GetTime();
                     printf("bench: world ready after %.2f s (%d chunks, avg build %.2f ms of which sampling %.2f ms, %d worker threads)\n",
                         GetWorldStats().lastGenerationSeconds, GetWorldStats().chunks, GetWorldStats().avgBuildMs, GetWorldStats().avgSampleMs, GetWorldStats().workerThreads);
@@ -9122,6 +9141,14 @@ int main(int argc, char** argv)
             }
             if (!joinAddr.empty()) { // --join (#341 core): the server's messages; the player starts at its first own state
                 NetClient_Update(gJoin);
+                static bool cacheSaved = false; // (#776) the sync done: keep what we now hold for a rejoin, and report
+                if (!cacheSaved && gJoin.syncDoneAt > 0.0) {
+                    cacheSaved = true;
+                    const int written = NetClient_SaveCache(world, WorldSavePath(), gJoin.welcome.seed, gJoin.welcome.fingerprint);
+                    printf("join: synced: %d of %zu entries fetched (%d installed, %d cleared, %d bad), %.2f MB in %.2f s, %d live edits held; %d regions cached; terrain fingerprint %016llx\n",
+                           gJoin.syncEntriesDone, gJoin.syncIndex.size(), gJoin.syncInstalled, gJoin.syncCleared, gJoin.syncHashBad, gJoin.syncBytes / 1048576.0,
+                           gJoin.syncDoneAt - gJoin.syncStartedAt, gJoin.syncQueued, written, (unsigned long long)NetSync_TerrainFingerprint(world));
+                }
                 if (!gJoinSynced && gJoin.state == NetClient::State::Joined && gJoin.haveOwn && !loading)
                     if (Planetoid* b = Planetoid::findNet(gJoin.own.body)) {
                         player.flyMode = false;
@@ -10074,12 +10101,200 @@ int main(int argc, char** argv)
                 if (phase < 2 && GetTime() - t0 > 20.0) { printf("bench: net build: bob %s, carol %s after 20 s -> FAIL\n", NetClient_StateName(bob.state), NetClient_StateName(carol.state)); benchNetBuild = false; }
             }
         }
+        // --test-net-sync (#776, with --host <save>, ENABLE_GNS): the server's world gets 3000 dig strokes over 600 m around
+        // the start and a few parts; bob joins. Then dave joins as a client with nothing cached (fetching everything) while
+        // bob digs once more mid-sync, and erin joins after him holding the same world (fetching nothing). Checks: dave got
+        // every entry, each with its hash right; the transfer kept to the byte rate (RAYLIBGAME_SYNC_KBPS); bob's live dig
+        // reached dave only after his sync was done (held, then applied); erin wanted nothing.
+        if (benchNetSync && gameState == 1 && !loading && WorldIdle()) {
+            static NetClient bob, dave, erin;
+            static Player bobSelf;
+            static bool synced = false;
+            static long long stepped = 0;
+            static int phase = 0;
+            static double t0 = 0.0, syncedAt = 0.0;
+            static uint64_t bytes0 = 0, bytesDave = 0;
+            static double worstFrame = 0.0; // the server's longest frame while dave syncs (the index, compressing, installing)
+            static int strokes = 0;
+            if (!Host_Listening()) { printf("bench: net sync: needs --host with ENABLE_GNS -> SKIP\n"); benchNetSync = false; }
+            else {
+                const char* addr = TextFormat("127.0.0.1:%d", hostPort);
+                NetClient_Update(bob); NetClient_Update(dave); NetClient_Update(erin);
+                if (!synced && bob.state == NetClient::State::Joined && bob.haveOwn)
+                    if (Planetoid* b = Planetoid::findNet(bob.own.body)) {
+                        bobSelf.spawnOn(world, *b, b->dirToWorld(Vector3Normalize(bob.own.local.toFloat())));
+                        bobSelf.applyNetState(world, NetClient_FromMsg(bob.own));
+                        synced = true; stepped = SimTick(); syncedAt = GetTime();
+                    }
+                if (synced) for (; stepped < SimTick(); ++stepped) { PlayerInput idle; NetClient_Step(bob, world, bobSelf, idle); }
+                if (phase == 2 || phase == 3) worstFrame = std::max(worstFrame, (double)GetFrameTime());
+                if (phase == 0) {
+                    // The world's edits: strokes scattered over 600 m around the start (every few regions), and a plot.
+                    Planetoid* p = nullptr;
+                    for (auto& o : world.objects) if ((p = dynamic_cast<Planetoid*>(o.get()))) break;
+                    const auto* pf = p ? dynamic_cast<const PlanetField*>(p->field.get()) : nullptr;
+                    if (!pf) { printf("bench: net sync: needs a planet -> FAIL\n"); benchNetSync = false; }
+                    else {
+                        const Vector3 home = pf->findSpawnDir(p->seed);
+                        Vector3 e1 = Vector3CrossProduct({ 0, 1, 0 }, home); e1 = Vector3Normalize(Vector3Length(e1) < 1e-3f ? Vector3{ 1, 0, 0 } : e1);
+                        const Vector3 e2 = Vector3CrossProduct(home, e1);
+                        std::vector<TerrainEdit> edits;
+                        std::mt19937 rng(42);
+                        for (int i = 0; i < 3000; ++i) {
+                            const float a = ((float)(rng() % 60001) / 100.0f - 300.0f), b = ((float)(rng() % 60001) / 100.0f - 300.0f);
+                            const Vector3 d = Vector3Normalize(Vector3Add(home, Vector3Add(Vector3Scale(e1, a / pf->radius), Vector3Scale(e2, b / pf->radius))));
+                            TerrainEdit e{}; e.center = Vector3Scale(d, pf->radius + pf->elevation(d)); e.radius = 1.5f + (float)(rng() % 100) / 100.0f; e.carve = true;
+                            edits.push_back(e);
+                        }
+                        ApplyTerrainEdits(*p, edits.data(), edits.size());
+                        strokes = (int)edits.size();
+                        if (!p->plots) p->plots = std::make_unique<PlotSet>();
+                        if (Plot* pl = p->plots->plotFor(Vector3Scale(home, pf->radius + pf->elevation(home) + 0.2f), 0.0f, true))
+                            for (int k = 0; k < 4; ++k) { Part c{}; c.type = PartType::Cube; c.origin = { k, 0, 0 }; BuildTool_ApplyPart(*p, *pl, c); }
+                        Net_SetFakeConditions(50, 2.0f);
+                        NetClient_Connect(bob, addr, "bob");
+                        phase = 1; t0 = GetTime();
+                    }
+                } else if (phase == 1 && synced && !bob.syncing && GetTime() - syncedAt > 1.0) {
+                    bytes0 = Host_SyncBytesSent();
+                    dave.syncAssumeEmpty = true; // nothing cached: everything comes over
+                    NetClient_SetLoadout(bob, "stone_pickaxe", false, 0); // (his dig mid-sync must be one the server takes)
+                    NetClient_Connect(dave, addr, "dave");
+                    phase = 2; t0 = GetTime();
+                } else if (phase == 2 && dave.state == NetClient::State::Joined && dave.syncing && dave.syncEntriesDone > 0) {
+                    // bob digs mid-sync: dave must hold it until his sync is done.
+                    uint64_t bid = 0; DVec3 feet{};
+                    if (Host_PlayerLocal(world, bob.welcome.session, bid, feet))
+                        if (Planetoid* b = Planetoid::findNet(bid)) {
+                            const Vector3 up = Vector3Normalize(feet.toFloat());
+                            const Vector3 hit = Vector3Subtract(feet.toFloat(), Vector3Scale(up, 0.05f));
+                            NetClient_RequestEdit(bob, NetEditKind::Dig, *b, hit, Vector3Subtract(hit, Vector3Scale(up, 0.2f)), 0.4f, "");
+                        }
+                    phase = 3;
+                } else if (phase == 3 && dave.state == NetClient::State::Joined && !dave.syncing && GetTime() - dave.syncDoneAt > 1.0) {
+                    bytesDave = Host_SyncBytesSent() - bytes0;
+                    NetClient_Connect(erin, addr, "erin"); // holds the same world: nothing to fetch
+                    phase = 4; t0 = GetTime();
+                } else if (phase == 4 && erin.state == NetClient::State::Joined && !erin.syncing) {
+                    const double took = dave.syncDoneAt - dave.syncStartedAt;
+                    const double rate = getenv("RAYLIBGAME_SYNC_KBPS") ? atof(getenv("RAYLIBGAME_SYNC_KBPS")) * 1024.0 : 1024.0 * 1024.0;
+                    const double floor = (double)dave.syncBytes / rate; // the fastest the budget allows
+                    const bool all = dave.syncEntriesWanted == (int)dave.syncIndex.size() && dave.syncEntriesDone == dave.syncEntriesWanted && dave.syncIndex.size() > 10;
+                    const bool hashes = dave.syncHashBad == 0;
+                    const bool bounded = took >= floor * 0.8 && dave.syncBytes == bytesDave && worstFrame < 0.25; // (the server's sent bytes for dave's sync)
+                    const bool held = dave.syncQueued >= 1 && dave.editsSeen >= 1;
+                    const bool resumed = erin.syncEntriesWanted == 0 && erin.syncBytes == 0;
+                    const bool noRefusedSends = Net_ReliableSendFailures() == 0;
+                    const bool ok = all && hashes && bounded && held && resumed && noRefusedSends;
+                    printf("bench: net sync (#776, 100 ms round trip, 2%% loss): %d strokes and a plot on the server; dave (nothing cached) got %d of %zu entries, %.2f MB in %.2f s "
+                           "(%.0f kB/s; the budget allows %.0f: at least %.2f s), hashes right %d; bob's dig mid-sync held %d, applied after %d; "
+                           "erin (same world) wanted %d entries, %llu bytes; reliable sends refused %d; the server's longest frame during it %.0f ms -> %s\n",
+                           strokes, dave.syncEntriesDone, dave.syncIndex.size(), dave.syncBytes / 1048576.0, took, took > 0 ? dave.syncBytes / 1024.0 / took : 0.0, rate / 1024.0, floor,
+                           (int)hashes, dave.syncQueued, dave.editsSeen, erin.syncEntriesWanted, (unsigned long long)erin.syncBytes, Net_ReliableSendFailures(), worstFrame * 1000.0, ok ? "PASS" : "FAIL");
+                    NetClient_Disconnect(bob); NetClient_Disconnect(dave); NetClient_Disconnect(erin);
+                    Net_SetFakeConditions(0, 0.0f);
+                    benchNetSync = false;
+                }
+                if (phase >= 1 && phase < 4 && GetTime() - t0 > 90.0) {
+                    printf("bench: net sync: stuck in phase %d (dave %s, syncing %d, %d of %d entries) -> FAIL\n", phase, NetClient_StateName(dave.state), (int)dave.syncing, dave.syncEntriesDone, dave.syncEntriesWanted);
+                    benchNetSync = false;
+                }
+            }
+        }
+        // Tests (#334): RAYLIBGAME_HOST_HERD="species count" - a host places a herd 10 m north of where players spawn, once the
+        // world is up (threats off), for tools/test_animals_net.sh.
+        if (!hostSave.empty() && getenv("RAYLIBGAME_HOST_HERD") && gameState == 1 && !loading && WorldIdle()) {
+            static bool placed = false;
+            if (!placed) {
+                placed = true;
+                char sp[64] = "woolback"; int n = 4; sscanf(getenv("RAYLIBGAME_HOST_HERD"), "%63s %d", sp, &n);
+                if (Planetoid* p = dynamic_cast<Planetoid*>(world.objects[0].get()))
+                    if (const auto* pf = dynamic_cast<const PlanetField*>(p->field.get())) {
+                        const Vector3 d0 = pf->findSpawnDir(p->seed);
+                        const Vector3 north = Vector3Normalize(Vector3CrossProduct(d0, Vector3Normalize(Vector3CrossProduct({ 0, 1, 0 }, d0))));
+                        const Vector3 d = Vector3Normalize(Vector3Add(d0, Vector3Scale(north, 10.0f / pf->radius)));
+                        const bool threats = getenv("RAYLIBGAME_HOST_HERD_THREATS") != nullptr; // (#334 slice 2: a hostile one that charges the players)
+                        Animals_SetThreats(threats); Animals_SetNaturalSpawns(false);
+                        const Vector3 dd = threats ? Vector3Normalize(Vector3Add(d0, Vector3Scale(north, 8.0f / pf->radius))) : d;
+                        const int got = Animals_Spawn(world, *p, sp, Vector3Scale(dd, pf->radius + pf->elevation(dd)), n, false, threats ? 0.5f : 3.0f);
+                        printf("host: test herd: %d %s placed 10 m from the spawn\n", got, sp);
+                    }
+            }
+        }
+        // --test-net-animals (#334, with --join; tools/test_animals_net.sh): the client side. RAYLIBGAME_NET_ANIMALS_ROLE=hunter
+        // walks to the nearest animal and swings at it (requests: the server decides) until it falls; watcher stands by. Both
+        // print the animals they saw (ids), and per animal the health range seen and whether it went; the script compares them.
+        if (benchNetAnimals && gameState == 1 && !loading && gJoinSynced && WorldIdle()) {
+            static int ph = 0; static double t0 = 0.0, lastSwing = 0.0;
+            static uint64_t target = 0; static float targetStart = 0.0f;
+            struct Seen { float first = -1.0f, minHealth = 1e9f; bool gone = false; };
+            static std::map<uint64_t, Seen> seen;
+            const char* role = getenv("RAYLIBGAME_NET_ANIMALS_ROLE"); const bool hunter = role && !strcmp(role, "hunter");
+            for (int i = 0; i < Animals_Count(); ++i) { Seen& s = seen[Animals_NetId(i)]; if (s.first < 0.0f) s.first = Animals_HealthOf(i); s.minHealth = std::min(s.minHealth, Animals_HealthOf(i)); }
+            for (auto& [id, s] : seen) s.gone = Animals_FindNet(id) < 0;
+            Planetoid* b = player.nearest;
+            const Vector3 me = b ? b->toLocalD(player.position).toFloat() : Vector3{};
+            if (ph == 0) { t0 = GetTime(); ph = 1; }
+            if (ph == 1 && Animals_Count() >= 1) { ph = 2; t0 = GetTime(); }
+            if (ph == 1 && GetTime() - t0 > 30.0) { printf("bench: net animals (%s): no animals arrived in 30 s -> FAIL\n", role ? role : "?"); benchNetAnimals = false; }
+            if (ph == 2 && hunter) {
+                if (!target) { const int i = Animals_Nearest(me, 60.0f); if (i >= 0) { target = Animals_NetId(i); targetStart = Animals_HealthOf(i); printf("bench: net animals: hunting %llx (health %.1f)\n", (unsigned long long)target, targetStart); } }
+                const int i = target ? Animals_FindNet(target) : -1;
+                if (target && i < 0) { ph = 3; t0 = GetTime(); player.autoWalk = false; } // it fell (or left: the summary tells)
+                else if (i >= 0 && b) {
+                    const Vector3 to = Vector3Subtract(b->toWorld(Animals_Position(i)), (player.position - world.renderOrigin).toFloat());
+                    const Vector3 flat = Vector3Subtract(to, Vector3Scale(player.up, Vector3DotProduct(to, player.up)));
+                    const float dist = Vector3Length(flat);
+                    if (dist > 0.1f) player.forward = Vector3Normalize(flat);
+                    player.autoWalk = dist > 2.0f;
+                    if (dist < 3.5f && GetTime() - lastSwing > 0.4) { lastSwing = GetTime(); NetClient_HitAnimal(gJoin, target); }
+                }
+                if (GetTime() - t0 > 40.0) { ph = 3; t0 = GetTime(); player.autoWalk = false; }
+            }
+            // victim (#334 slice 2): stands where it spawned beside a hostile one; asks to feed it once (it has nothing it eats: the
+            // server refuses, saying why); is bitten through the server (its health here goes down). After 25 s it reports.
+            const bool victim = role && !strcmp(role, "victim");
+            static float health0 = -1.0f;
+            if (victim && ph == 2) {
+                static bool asked = false;
+                if (health0 < 0.0f) health0 = survival.health;
+                if (!asked) { const int i = Animals_Nearest(me, 3.0f); if (i >= 0) { asked = true; NetClient_UseAnimal(gJoin, Animals_NetId(i), 1); } } // (in reach: it charges us)
+                if (GetTime() - t0 > 25.0) {
+                    printf("bench: net animals (victim): bitten %d times (last %.1f, blocked %d), health %.0f -> %.0f (the feed request's answer is a chat line)\n",
+                           gJoin.damageTaken, gJoin.lastDamage, (int)gJoin.lastDamageBlocked, health0, survival.health);
+                    NetClient_Disconnect(gJoin);
+                    benchNetAnimals = false;
+                }
+            }
+            const double stay = getenv("RAYLIBGAME_JOIN_LINGER") ? atof(getenv("RAYLIBGAME_JOIN_LINGER")) : 0.0;
+            // RAYLIBGAME_ANIMALS_SHOT=<file> (the watcher): its last 3 s face the nearest animal, then a screenshot - the server's
+            // herd as this client draws it.
+            const char* shot = getenv("RAYLIBGAME_ANIMALS_SHOT");
+            if (shot && *shot && !hunter && ph == 2 && b && GetTime() - t0 > stay - 3.0) {
+                const int i = Animals_Nearest(me, 80.0f);
+                if (i >= 0) {
+                    const Vector3 to = Vector3Subtract(b->toWorld(Animals_Position(i)), (player.position - world.renderOrigin).toFloat());
+                    const Vector3 flat = Vector3Subtract(to, Vector3Scale(player.up, Vector3DotProduct(to, player.up)));
+                    if (Vector3Length(flat) > 0.1f) player.forward = Vector3Normalize(Vector3Add(Vector3Normalize(flat), Vector3Scale(player.up, -0.15f)));
+                }
+                static bool taken = false;
+                if (!taken && GetTime() - t0 > stay - 0.2) { taken = true; TakeScreenshot(shot); printf("bench: net animals (watcher): %s\n", shot); }
+            }
+            if (benchNetAnimals && ((ph == 3 && GetTime() - t0 > 2.0) || (ph == 2 && !hunter && !victim && GetTime() - t0 > stay))) {
+                std::string ids; for (const auto& [id, s] : seen) ids += TextFormat(" %llx", (unsigned long long)id);
+                printf("bench: net animals (%s): saw %zu animals:%s\n", role ? role : "?", seen.size(), ids.c_str());
+                for (const auto& [id, s] : seen) printf("bench: net animals (%s): %llx health %.1f -> %.1f, gone %d\n", role ? role : "?", (unsigned long long)id, s.first, s.minHealth, (int)s.gone);
+                if (hunter) printf("bench: net animals (hunter): target %llx %s\n", (unsigned long long)target, target && Animals_FindNet(target) < 0 ? "fell" : "still standing");
+                NetClient_Disconnect(gJoin);
+                benchNetAnimals = false;
+            }
+        }
         // --test-join (with --join; tools/test_join.sh runs the host and two clients as separate processes): the client side.
         // Once the server's world has streamed in: the fingerprint matches the Welcome's, the player started at the server's
         // state, walks 8 s predicting itself (error at each acknowledged input < 0.5 m, at most 1 correction in 10 states),
         // and its world clock follows the server's (|estimate - ours| < 0.1 s). RAYLIBGAME_JOIN_OTHERS=N: also sees N other
         // players, at least one of them moving (another client walking).
-        if (benchJoin && gameState == 1 && !loading && gJoinSynced && WorldIdle()) {
+        if (benchJoin && gameState == 1 && !loading && gJoinSynced && !gJoin.syncing && WorldIdle()) { // (after the world's edits are in, #776)
             static double jt0 = 0.0; static DVec3 start{}; static bool fpOk = false, warmed = false;
             static std::map<uint32_t, std::pair<DVec3, double>> seen; // session -> first view, farthest moved
             Planetoid* b = player.nearest;
@@ -10128,6 +10343,97 @@ int main(int argc, char** argv)
                            gJoin.clockError * 1000.0, WorldTime_Pending() * 1000.0, gJoin.pongs, gJoin.rttMs, seen.size(), wantOthers, othersMoved, ok ? "PASS" : "FAIL");
                     NetClient_Disconnect(gJoin);
                     benchJoin = false;
+                }
+            }
+        }
+        // --test-net-abuse (#349, with --host, GNS): three clients in this process. alice walks (a normal player: never dropped);
+        // mallory floods chat and sends garbage and oversized messages (dropped, then kicked as a flood, and alice unaffected);
+        // eve walks holding Fly (#781: her server-side player never enters fly mode); then alice leaves and comes back (#780:
+        // her reconnected player walks again - its input ticks start over).
+        if (benchNetAbuse && gameState == 1 && !loading && WorldIdle()) {
+            static NetClient alice, mallory, eve;
+            static std::unique_ptr<Player> pa, pe;
+            static int ph = 0; static double t0 = 0.0; static long long stepped = 0;
+            static bool malloryKicked = false, eveFlew = false, aliceOk = true, rejoinWalked = false;
+            static int eveStates = 0; static DVec3 aStart{}, rStart{};
+            const std::string addrS = TextFormat("127.0.0.1:%d", hostPort); const char* addr = addrS.c_str(); // (a copy: TextFormat's buffers are reused)
+            if (!Host_Listening()) { printf("bench: net abuse: needs --host with ENABLE_GNS -> SKIP\n"); benchNetAbuse = false; }
+            else {
+                for (NetClient* c : { &alice, &mallory, &eve }) NetClient_Update(*c);
+                auto sync = [&](NetClient& c, std::unique_ptr<Player>& p) {
+                    if (p || c.state != NetClient::State::Joined || !c.haveOwn) return;
+                    if (Planetoid* b = Planetoid::findNet(c.own.body)) { p = std::make_unique<Player>(); p->spawnOn(world, *b, b->dirToWorld(Vector3Normalize(c.own.local.toFloat()))); p->applyNetState(world, NetClient_FromMsg(c.own)); }
+                };
+                auto stepAll = [&](bool eveFly) {
+                    for (; stepped < SimTick(); ++stepped) {
+                        PlayerInput in; in.enabled = true; in.hold(Act::Forward);
+                        if (pa && alice.state == NetClient::State::Joined) NetClient_Step(alice, world, *pa, in);
+                        if (pe && eve.state == NetClient::State::Joined) { PlayerInput ie = in; if (eveFly && stepped % 30 == 0) ie.press(Act::Fly); NetClient_Step(eve, world, *pe, ie); }
+                    }
+                };
+                if (ph == 0) { NetClient_Connect(alice, addr, "alice"); NetClient_Connect(mallory, addr, "mallory"); NetClient_Connect(eve, addr, "eve"); ph = 1; t0 = GetTime(); }
+                else if (ph == 1) {
+                    sync(alice, pa); sync(eve, pe);
+                    if (pa && pe && mallory.state == NetClient::State::Joined) { ph = 2; t0 = GetTime(); stepped = SimTick(); if (Planetoid* b = pa->nearest) aStart = b->toLocalD(pa->position); }
+                    else if (GetTime() - t0 > 20.0) { printf("bench: net abuse: the clients didn't join -> FAIL\n"); benchNetAbuse = false; }
+                } else if (ph == 2) { // 6 s: mallory abuses, eve tries to fly, alice walks
+                    stepAll(true);
+                    if (mallory.state == NetClient::State::Joined) {
+                        for (int i = 0; i < 6; ++i) NetClient_SendChat(mallory, "spam spam spam");
+                        const uint8_t junk[] = { 0xEE, 1, 2, 3 }; Net_Send(mallory.conn, junk, sizeof junk, true);
+                        static std::vector<uint8_t> big(6000, 7); big[0] = (uint8_t)NetMsg::Chat; Net_Send(mallory.conn, big.data(), (uint32_t)big.size(), true);
+                    }
+                    if (mallory.state == NetClient::State::Closed && mallory.bye == NetBye::Kicked) malloryKicked = true;
+                    if (eve.states != eveStates) { eveStates = eve.states; eveFlew = eveFlew || (eve.own.flags & 2) != 0; }
+                    aliceOk = aliceOk && alice.state == NetClient::State::Joined;
+                    if (GetTime() - t0 > 6.0) { NetClient_Disconnect(alice); ph = 3; t0 = GetTime(); }
+                } else if (ph == 3) { // alice comes back as a new client (its ticks start at 1)
+                    if (Host_OnlinePlayers() <= 2 || GetTime() - t0 > 5.0) { alice = NetClient{}; pa.reset(); NetClient_Connect(alice, addr, "alice"); ph = 4; t0 = GetTime(); }
+                } else if (ph == 4) {
+                    sync(alice, pa);
+                    if (pa) { ph = 5; t0 = GetTime(); stepped = SimTick(); if (Planetoid* b = pa->nearest) rStart = b->toLocalD(pa->position); }
+                    else if (GetTime() - t0 > 15.0) { ph = 6; }
+                } else if (ph == 5) { // 4 s of walking after the rejoin: the server must move her
+                    stepAll(false);
+                    if (GetTime() - t0 > 4.0) {
+                        uint64_t sb = 0; DVec3 sl{};
+                        if (Host_PlayerLocal(world, alice.welcome.session, sb, sl) && pa->nearest) rejoinWalked = (sl - rStart).length() * pa->nearest->scale > 5.0;
+                        ph = 6;
+                    }
+                }
+                // Names and chat (#349): a name with a newline is refused; "ALICE" while alice plays is the same name (refused);
+                // alice's "hi<newline>there" reaches eve as "hi there". With RAYLIBGAME_MAX_PER_ADDRESS set (loopback counts then),
+                // connections past it from this address are refused.
+                static NetClient badName, upper; static std::vector<std::unique_ptr<NetClient>> extras;
+                static bool badRefused = false, upperRefused = false, chatClean = false; static int extrasRefused = 0;
+                const bool capTest = getenv("RAYLIBGAME_MAX_PER_ADDRESS") != nullptr;
+                if (ph == 6) {
+                    NetClient_Connect(badName, addr, "bad\nname"); NetClient_Connect(upper, addr, "ALICE");
+                    NetClient_SendChat(alice, "hi\nthere");
+                    if (capTest) for (int i = 0; i < 8; ++i) { extras.push_back(std::make_unique<NetClient>()); NetClient_Connect(*extras.back(), addr, "x" + std::to_string(i)); }
+                    ph = 7; t0 = GetTime();
+                } else if (ph == 7) {
+                    NetClient_Update(badName); NetClient_Update(upper); for (auto& x : extras) NetClient_Update(*x);
+                    stepAll(false);
+                    badRefused = badName.state == NetClient::State::Rejected && badName.reject.reason == NetReject::Malformed;
+                    upperRefused = upper.state == NetClient::State::Rejected && upper.reject.reason == NetReject::NameTaken;
+                    for (const MsgChat& c : eve.chat) chatClean = chatClean || c.text == "hi there";
+                    extrasRefused = 0; for (auto& x : extras) extrasRefused += x->state == NetClient::State::Rejected && x->reject.reason == NetReject::Full;
+                    if ((badRefused && upperRefused && chatClean && (!capTest || extrasRefused > 0)) || GetTime() - t0 > 8.0) ph = 8;
+                }
+                if (ph == 8) {
+                    const bool ok = malloryKicked && aliceOk && !eveFlew && eveStates > 30 && rejoinWalked && Host_GuardKicks() >= 1 &&
+                                    badRefused && upperRefused && chatClean && (!capTest || extrasRefused > 0);
+                    printf("bench: net abuse (#349): mallory (chat flood, garbage, oversized) kicked %d; %d messages dropped, %d kicks; alice stayed joined %d; "
+                           "eve's server player flew %d (%d states, #781); alice rejoined and walked %d (#780); a name with a newline refused %d, \"ALICE\" "
+                           "refused as alice %d, chat cleaned %d; %s -> %s\n",
+                           (int)malloryKicked, Host_GuardDropped(), Host_GuardKicks(), (int)aliceOk, (int)eveFlew, eveStates, (int)rejoinWalked,
+                           (int)badRefused, (int)upperRefused, (int)chatClean,
+                           capTest ? TextFormat("%d of 8 extra connections refused (per-address cap)", extrasRefused) : "per-address cap not tested (loopback exempt)", ok ? "PASS" : "FAIL");
+                    for (NetClient* c : { &alice, &mallory, &eve, &badName, &upper }) NetClient_Disconnect(*c);
+                    for (auto& x : extras) printf("bench: net abuse: extra %s: %s (%s)\n", x->name.c_str(), NetClient_StateName(x->state), x->state == NetClient::State::Rejected ? NetRejectText(x->reject.reason) : x->state == NetClient::State::Closed ? NetByeText(x->bye) : "-");
+                    for (auto& x : extras) NetClient_Disconnect(*x);
+                    benchNetAbuse = false;
                 }
             }
         }

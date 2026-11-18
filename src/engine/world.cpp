@@ -178,6 +178,12 @@ Planetoid* Planetoid::findNet(uint64_t netId) {
     return nullptr;
 }
 
+std::vector<Planetoid*> Planetoid::All() {
+    std::vector<Planetoid*> out;
+    for (const auto& kv : planetoidRegistry) out.push_back(kv.second);
+    return out;
+}
+
 Vector3 Planetoid::toLocal(Vector3 world) const { return Vector3Transform(world, MatrixInvert(localTransform())); }
 Vector3 Planetoid::toWorld(Vector3 local) const { return Vector3Transform(local, localTransform()); }
 
@@ -2187,6 +2193,88 @@ std::shared_ptr<const TerrainDeltas> LoadRegionsFor(int body, const std::string&
     }
     b.state().strokes = strokes;
     return b.finish();
+}
+
+// ---- Late-join sync (#776): regions in memory, as the save writes them ----
+
+std::vector<TerrainDeltas::Key> Regions_List(const TerrainDeltas& d) {
+    std::unordered_set<TerrainDeltas::Key> set;
+    for (const auto& kv : d.chunks) set.insert(TerrainDeltas::RegionOf(kv.first));
+    std::vector<TerrainDeltas::Key> out(set.begin(), set.end());
+    std::sort(out.begin(), out.end());
+    return out;
+}
+
+// RGN5 bytes of one region's chunks (the save's layout), chunks in key order: the same content always encodes the same,
+// so its hash compares across machines.
+std::vector<uint8_t> Region_Encode(const TerrainDeltas& d, TerrainDeltas::Key region) {
+    std::vector<std::pair<TerrainDeltas::Key, const DeltaChunk*>> chunks;
+    for (const auto& kv : d.chunks) if (TerrainDeltas::RegionOf(kv.first) == region) chunks.push_back({ kv.first, kv.second.get() });
+    std::sort(chunks.begin(), chunks.end(), [](const auto& a, const auto& b) { return a.first < b.first; });
+    std::vector<uint8_t> out;
+    auto put = [&](const void* p, size_t n) { const uint8_t* b = (const uint8_t*)p; out.insert(out.end(), b, b + n); };
+    put("RGN5", 4);
+    const int32_t n = (int32_t)chunks.size();
+    put(&n, 4);
+    std::vector<uint16_t> enc, encM;
+    for (const auto& c : chunks) {
+        int cx, cy, cz;
+        TerrainDeltas::Unpack(c.first, cx, cy, cz);
+        EncodeChunk(*c.second, enc);
+        EncodeMaterials(*c.second, encM);
+        const int32_t hdr[5] = { cx, cy, cz, (int32_t)(enc.size() * 2), (int32_t)(encM.size() * 2) };
+        put(hdr, sizeof hdr);
+        put(enc.data(), enc.size() * 2);
+        put(encM.data(), encM.size() * 2);
+    }
+    return out;
+}
+
+uint64_t Region_Hash(const std::vector<uint8_t>& bytes) {
+    uint64_t h = 14695981039346656037ull;
+    for (uint8_t b : bytes) { h ^= b; h *= 1099511628211ull; }
+    return h;
+}
+
+// Replace one region's chunks on a body with these RGN5 bytes (empty: clear it) and rebuild what shows it.
+bool Region_Install(Planetoid& p, TerrainDeltas::Key region, const uint8_t* data, size_t size) {
+    std::vector<std::pair<TerrainDeltas::Key, std::shared_ptr<DeltaChunk>>> got;
+    if (size > 0) {
+        size_t at = 0;
+        auto take = [&](void* dst, size_t n) { if (at + n > size) return false; memcpy(dst, data + at, n); at += n; return true; };
+        char magic[4]; int32_t n = 0;
+        if (!take(magic, 4) || memcmp(magic, "RGN5", 4) != 0 || !take(&n, 4) || n < 0 || n > kRegionChunks * kRegionChunks * kRegionChunks) return false;
+        for (int32_t i = 0; i < n; ++i) {
+            int32_t hdr[5];
+            if (!take(hdr, sizeof hdr) || hdr[3] <= 0 || hdr[4] < 0 || at + (size_t)hdr[3] + (size_t)hdr[4] > size || (hdr[3] & 1) || (hdr[4] & 1)) return false;
+            auto chunk = std::make_shared<DeltaChunk>();
+            std::vector<uint16_t> words((size_t)hdr[3] / 2), mats((size_t)hdr[4] / 2);
+            take(words.data(), (size_t)hdr[3]);
+            take(mats.data(), (size_t)hdr[4]);
+            if (!DecodeChunk(words.data(), words.size(), *chunk)) return false;
+            if (!mats.empty() && !DecodeMaterials(mats.data(), mats.size(), *chunk)) return false;
+            const TerrainDeltas::Key k = TerrainDeltas::KeyOf(hdr[0], hdr[1], hdr[2]);
+            if (TerrainDeltas::RegionOf(k) != region) return false; // (a chunk outside the region it claims)
+            got.push_back({ k, chunk });
+        }
+        if (at != size) return false;
+    }
+    TerrainDeltasBuilder b(*p.edits);
+    for (auto it = b.state().chunks.begin(); it != b.state().chunks.end();)
+        it = TerrainDeltas::RegionOf(it->first) == region ? b.state().chunks.erase(it) : std::next(it);
+    for (auto& [k, c] : got) b.setChunk(k, c);
+    p.edits = b.finish();
+    p.dirtyRegions.insert(region);
+    p.lodDirty = true;
+    // Rebuild the region's nodes (and its trees' cover) with the new deltas.
+    int rx, ry, rz;
+    TerrainDeltas::Unpack(region, rx, ry, rz);
+    const float side = kRegionChunks * kDeltaChunk * kVoxelSize; // metres
+    const Vector3 centre{ (rx + 0.5f) * side, (ry + 0.5f) * side, (rz + 0.5f) * side };
+    const float reach = side * 0.8661f + 2.0f;
+    RequestRemesh(p, centre, reach);
+    if (p.trees) p.trees->onEdit(centre, reach, p.edits);
+    return true;
 }
 
 bool SaveWorld(Scene& world) {
