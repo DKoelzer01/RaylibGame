@@ -14,6 +14,7 @@
 #include <vector>
 #include <cstdlib>
 #include <atomic>
+#include <algorithm>
 
 namespace FluidKernel {
 
@@ -28,9 +29,15 @@ struct Params {
     // cells down (columnCells, ~8 m). Set with setCell.
     float cellSize = 1.0f, units = 255.0f, hu = 255.0f;
     int columnCells = 8;
+    // A sleeping neighbour brick is woken by a column pair only for a head difference of this many units (1.6 cm, the
+    // settle tolerance, #855) or a spill into it: resting water beside it asked every substep, and no pond ever slept.
+    int wakeUnits = 4;
     bool columns = EnvFlag("FLUID_COLUMNS"); // #680 prototype: lateral flow per pair of water columns
     bool advect = !EnvFlag("FLUID_NOADVECT"); // #680: column flows carry their momentum downstream
-    void setCell(float cs, int column) { cellSize = cs; units = 255.0f / (cs * cs * cs); hu = 255.0f / cs; columnCells = column; }
+    void setCell(float cs, int column) {
+        cellSize = cs; units = 255.0f / (cs * cs * cs); hu = 255.0f / cs; columnCells = column;
+        wakeUnits = std::max(4, (int)(0.016f * hu + 0.5f));
+    }
 };
 
 struct Grid {

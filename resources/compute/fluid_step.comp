@@ -77,6 +77,8 @@ uniform float cellSize;    // m (Plan 10 W4c #642)
 // Fill units per m^3 and per metre of height: computed on the CPU as fluidkernel.cpp's Params does, so both sides use the
 // same floats (#680: a division here is not correctly rounded, and the CPU and GPU column models drifted by a unit).
 uniform float kUnits, kHu;
+uniform int wakeUnits; // #855: a column pair wakes a sleeping neighbour brick for this head difference (units)
+const float kMatchPlan = 3.0; // #855: column pairs planning fewer units a substep carry only the momentum they moved
 #define UNITS kUnits
 #define HU kHu
 // a / b correctly rounded, as the CPU's division (#680): GLSL's / is approximate on NVIDIA; a reciprocal refined with exact
@@ -325,13 +327,7 @@ ColRun runUp(int bottom, int rowOffset) {
     if (r.below >= 0 && !pb) r.below = -1;
     r.head = cur;
     if (F(ct) >= CAP(ct)) {
-        int up = stepZ(cur, 1, ph);
-        if (up < 0 || !ph) { // a full top under a missing or sleeping brick asks for it
-            uint s2; int x2, y2, z2; cellPos(cur, s2, x2, y2, z2);
-            bool pu; int fu;
-            neighbour(s2, x2, y2, z2, 0, 0, 1, pu, fu);
-            if (fu >= 0) atomicOr(flagsOut[s2], 1u << uint(1 + fu));
-        }
+        int up = stepZ(cur, 1, ph); // a missing or sleeping brick over it: no head (askAbove, when water comes)
         uint cu = up >= 0 ? rc(up) : 0u;
         r.head = (up >= 0 && ph && (FL(cu) & SOLID) == 0u && (F(cu) == 0u || KIND(cu) == kind)) ? up : -1;
         r.headRow = r.topRow + 1;
@@ -357,6 +353,24 @@ int cellAtRow(int cell, int row) {
     return cell;
 }
 vec4 loadQ(int g) { uvec4 u = faceN[g]; return vec4(unpackHalf2x16(u.x), unpackHalf2x16(u.y)); }
+// Whether water would move between run A and a sleeping neighbour's column B (#855; fluidkernel.cpp wakesNeighbour).
+bool wakesNeighbour(ColRun A, ColRun B, bool spill, uint kind) {
+    if (spill) return A.surf - A.bed >= minSpread[kind];
+    if (B.bottom < 0) return false;
+    int bedMax = max(A.bed, B.bed);
+    int surfU = max(A.surf, B.surf), surfD = min(A.surf, B.surf);
+    return surfU - bedMax >= minSpread[kind] && surfU - max(surfD, bedMax) >= wakeUnits;
+}
+// A full top with no head asks for the missing or sleeping brick over it, when a pair wants to put water in (#680, #855).
+void askAbove(ColRun r) {
+    if (r.top < 0) return;
+    uint ct = rc(r.top);
+    if (F(ct) < CAP(ct)) return;
+    uint s2; int x2, y2, z2; cellPos(r.top, s2, x2, y2, z2);
+    bool pu; int fu;
+    neighbour(s2, x2, y2, z2, 0, 0, 1, pu, fu);
+    if (fu >= 0 && !pu) atomicOr(flagsOut[s2], 1u << uint(1 + fu));
+}
 // Plans the pair between run A (bottom cell gi) and the neighbour column on side (dx, dy): returns its Q (+: A gives),
 // sets planned (units) and code (16 bits) and adds the units to the demand. A wet pair belongs to the -x / -y side's run.
 float colPair(int gi, ColRun A, int dx, int dy, float qPrev, bool owner, out int planned, out uint code) {
@@ -368,7 +382,8 @@ float colPair(int gi, ColRun A, int dx, int dy, float qPrev, bool owner, out int
     cellPos(gi, s, x, y, z);
     bool pn; int face;
     int nb = neighbour(s, x, y, z, dx, dy, 0, pn, face);
-    if (nb < 0 || !pn) { if (face >= 0 && F(c) >= uint(minSpread[kind])) atomicOr(flagsOut[s], 1u << uint(1 + face)); return 0.0; }
+    if (nb < 0) { if (face >= 0 && F(c) >= uint(minSpread[kind])) atomicOr(flagsOut[s], 1u << uint(1 + face)); return 0.0; }
+    bool sleepNb = !pn; // a sleeping neighbour (its cells packed, read only): woken only when water would move (#855)
     int topRows = (A.surf + 254) / 255;
     ColRun B; B.bottom = -1; B.top = -1; B.below = -1; B.head = -1; B.bed = 0; B.surf = 0; B.topRow = 0; B.headRow = 0; B.ok = false;
     bool wet = false, spill = false;
@@ -379,7 +394,7 @@ float colPair(int gi, ColRun A, int dx, int dy, float qPrev, bool owner, out int
         bool pr = true;
         while (k < topRows) {
             int up = stepZ(cur, 1, pr);
-            if (up < 0 || !pr) return 0.0;
+            if (up < 0 || (!pr && !sleepNb)) return 0.0;
             cur = up; ++k;
             if ((FL(rc(cur)) & SOLID) == 0u) break;
         }
@@ -393,7 +408,7 @@ float colPair(int gi, ColRun A, int dx, int dy, float qPrev, bool owner, out int
         bool pr = true;
         while (k > -64) {
             int dn = stepZ(cur, -1, pr);
-            if (dn < 0 || !pr) break;
+            if (dn < 0 || (!pr && !sleepNb)) break;
             uint cd = rc(dn);
             if (!waterOf(cd, kind) || F(cd) < CAP(cd)) break;
             cur = dn; --k;
@@ -405,6 +420,10 @@ float colPair(int gi, ColRun A, int dx, int dy, float qPrev, bool owner, out int
         B.bottom = nb; B.top = nb; B.head = nb; B.bed = int(SH(n0)); B.surf = B.bed; B.topRow = 0; B.headRow = 0; B.ok = true; // a dry floor at its ground's height
     } else {
         spill = true; takerSpill = nb;                      // air beside A's bottom: over the edge
+    }
+    if (sleepNb) {
+        if (face >= 0 && wakesNeighbour(A, B, spill, kind)) atomicOr(flagsOut[s], 1u << uint(1 + face));
+        return 0.0;
     }
     if (wet && !owner) return 0.0;
     if (wet && owner) { vec4 pb = loadP(B.bottom); qPrev -= dx == 1 ? pb.z : pb.w; }
@@ -455,13 +474,14 @@ float colPair(int gi, ColRun A, int dx, int dy, float qPrev, bool owner, out int
         if (spill) { taker = takerSpill; room = headRoom(taker, kind); takerRow = 0; }
         else { taker = B.head; room = runRoom(B, kind); takerRow = B.headRow; }
     } else { taker = A.head; room = runRoom(A, kind); takerRow = A.headRow; }
-    if (taker < 0) return 0.0;
+    if (taker < 0) { askAbove(aGives ? B : A); return 0.0; }
     uint ct = rc(taker), cg = rc(giverTop);
     if ((FL(ct) & (SOURCE | SINK)) == SOURCE) return 0.0;
     if ((FL(cg) & SOURCE) != 0u && (FL(ct) & DUG) == 0u) return 0.0;
     int units = int(floor(min(plan, min(float(avail), float(room)))));
     if (units <= 0) return q * 0.5;
-    if (float(units) < floor(plan)) q = divRN((aGives ? 1.0 : -1.0) * float(units), dt * UNITS);
+    // A slow pair (under kMatchPlan units a substep) carries only the momentum it moved (#855, fluidkernel.cpp).
+    if (float(units) < floor(plan) || (float(units) < plan && plan < kMatchPlan)) q = divRN((aGives ? 1.0 : -1.0) * float(units), dt * UNITS);
     int rowDiff = takerRow - giverRow;
     if (giverRow < -64 || giverRow > 191 || rowDiff < -110 || rowDiff > 17) return q; // out of the code's reach: no move
     planned = units;

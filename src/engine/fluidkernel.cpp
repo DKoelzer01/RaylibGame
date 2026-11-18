@@ -11,6 +11,8 @@
 // A line-by-line port of resources/compute/fluid_step.comp (#654). Comments on the rules live there.
 namespace FluidKernel {
 
+constexpr float kMatchPlan = 3.0f; // column pairs planning fewer units a substep carry only the momentum they moved (#855)
+
 void Grid::resize(int slots) {
     a.assign((size_t)slots * 4096, 0u); b.assign((size_t)slots * 4096, 0u);
     faceP.assign((size_t)slots * 4096, Vec4{}); faceN.assign((size_t)slots * 4096 * 2, Vec4{});
@@ -245,16 +247,7 @@ struct Pass {
         if (r.below >= 0 && !pb) r.below = -1; // its apply must run to give the shortfall: only in a processed slot
         r.head = cur;
         if (F(inC[cur]) >= CAP(inC[cur])) {
-            const int up = stepZ(cur, 1, ph);
-            // A full top under a missing or sleeping brick asks for it (#680): nothing else does in the column model, so a run
-            // could not rise past its brick's top - the dam-break's channel held 0.3 m past x = 5 m while a 1.7 m bore stood
-            // behind it. Atomic: the run may lie in a slot another thread is planning.
-            if (up < 0 || !ph) {
-                int s2, x2, y2, z2; cellPos(cur, s2, x2, y2, z2);
-                bool pu; int fu;
-                neighbour(s2, x2, y2, z2, 0, 0, 1, pu, fu);
-                if (fu >= 0) __atomic_fetch_or(&g.flags[s2], 1u << (1 + fu), __ATOMIC_RELAXED);
-            }
+            const int up = stepZ(cur, 1, ph); // a missing or sleeping brick over it: no head (askAbove, when water comes)
             r.head = (up >= 0 && ph && !(FL(inC[up]) & SOLID) && (F(inC[up]) == 0u || KIND(inC[up]) == kind)) ? up : -1;
             r.headRow = r.topRow + 1;
         }
@@ -284,6 +277,26 @@ struct Pass {
         for (; row < 0 && cell >= 0; ++row) cell = stepZ(cell, -1, pr);
         return cell;
     }
+    // Whether water would move between run A and a sleeping neighbour's column B (#855): a spill over A's edge (A as deep as
+    // a film that spreads), or surfaces apart by wakeUnits or more over the higher bed.
+    bool wakesNeighbour(const ColRun& A, const ColRun& B, bool spill, uint32_t kind) const {
+        if (spill) return A.surf - A.bed >= p.minSpread[kind];
+        if (B.bottom < 0) return false;
+        const int bedMax = std::max(A.bed, B.bed);
+        const int surfU = std::max(A.surf, B.surf), surfD = std::min(A.surf, B.surf);
+        return surfU - bedMax >= p.minSpread[kind] && surfU - std::max(surfD, bedMax) >= p.wakeUnits;
+    }
+    // A run whose top is full and has no head (the brick over it is missing or asleep) asks for that brick when a pair wants
+    // to put water in (#680: a run could not rise past its brick's top - the dam-break's channel held 0.3 m past x = 5 m while
+    // a 1.7 m bore stood behind it). Only then (#855: asking from every full top kept the brick over a still pond awake).
+    // Atomic: the run may lie in a slot another thread is planning.
+    void askAbove(const ColRun& r) const {
+        if (r.top < 0 || F(inC[r.top]) < CAP(inC[r.top])) return;
+        int s2, x2, y2, z2; cellPos(r.top, s2, x2, y2, z2);
+        bool pu; int fu;
+        neighbour(s2, x2, y2, z2, 0, 0, 1, pu, fu);
+        if (fu >= 0 && !pu) __atomic_fetch_or(&g.flags[s2], 1u << (1 + fu), __ATOMIC_RELAXED);
+    }
     // Plans the pair between this run (bottom cell gi) and the neighbour column on side (dx, dy): moves its units into
     // g.delta and returns the new Q (+: from this run toward the neighbour). A wet pair belongs to the -x / -y side's run.
     // k: the pair's slot in the run's record (0 +x, 1 +y, 2 -x, 3 -y); planned: the units it plans to move (0: none).
@@ -298,9 +311,10 @@ struct Pass {
         bool pn; int face;
         const int nb = neighbour(s, x, y, z, dx, dy, 0, pn, face);
         if (nb < 0) { if (face >= 0 && F(c) >= (uint32_t)p.minSpread[kind]) g.flags[s] |= 1u << (1 + face); return 0.0f; }
-        // A sleeping neighbour brick: ask for it to be woken (the face rules wake theirs; without this a hole cut into a wall
-        // or a channel beyond it stayed asleep and the outflow started late, #680).
-        if (!pn) { if (face >= 0 && F(c) >= (uint32_t)p.minSpread[kind]) g.flags[s] |= 1u << (1 + face); return 0.0f; }
+        // A sleeping neighbour brick (its cells are packed, read only): woken when water would move between the two (without
+        // that a hole cut into a wall or a channel beyond it stayed asleep and the outflow started late, #680), not by resting
+        // water beside it - asking every substep woke every neighbour of an awake brick and no pond ever slept (#855).
+        const bool sleepNb = !pn;
         const int topRows = (A.surf + 254) / 255; // rows A's water reaches over its bottom row
         ColRun B;
         bool wet = false, spill = false;
@@ -311,7 +325,7 @@ struct Pass {
             bool pr = true;
             while (k < topRows) {
                 const int up = stepZ(cur, 1, pr);
-                if (up < 0 || !pr) return 0.0f;
+                if (up < 0 || (!pr && !sleepNb)) return 0.0f;
                 cur = up; ++k;
                 if (!(FL(inC[cur]) & SOLID)) break;
             }
@@ -329,7 +343,7 @@ struct Pass {
             bool pr = true;
             while (k > -64) {                                // down to the run's bottom
                 const int dn = stepZ(cur, -1, pr);
-                if (dn < 0 || !pr || !waterOf(inC[dn], kind) || F(inC[dn]) < CAP(inC[dn])) break;
+                if (dn < 0 || (!pr && !sleepNb) || !waterOf(inC[dn], kind) || F(inC[dn]) < CAP(inC[dn])) break;
                 cur = dn; --k;
             }
             B = runUp(cur, k); wet = true;
@@ -345,6 +359,10 @@ struct Pass {
             B.ok = true;
         } else {
             spill = true; takerSpill = nb;                   // air beside A's bottom: over the edge (it falls from there)
+        }
+        if (sleepNb) {
+            if (face >= 0 && wakesNeighbour(A, B, spill, kind)) g.flags[s] |= 1u << (1 + face);
+            return 0.0f;
         }
         if (wet && !owner) { return 0.0f; }
         // A pair that just turned wet was the other run's while this side was dry (a spill toward -x / -y, kept in its z / w):
@@ -411,7 +429,7 @@ struct Pass {
             if (spill) { taker = takerSpill; room = headRoom(taker, kind); takerRow = 0; }
             else { taker = B.head; room = runRoom(B, kind); takerRow = B.headRow; }
         } else { taker = A.head; room = runRoom(A, kind); takerRow = A.headRow; }
-        if (taker < 0) { return 0.0f; }
+        if (taker < 0) { askAbove(aGives ? B : A); return 0.0f; }
         // Sources (generated water, held at their level each step) as in the per-face rules: one never takes, and gives
         // only into dug cells (infinite water reaches a dig, not the open ground); a sink takes.
         if ((FL(inC[taker]) & (SOURCE | SINK)) == SOURCE) return 0.0f;
@@ -425,7 +443,11 @@ struct Pass {
         static const bool quarter = EnvFlag("FLUID_COL_QUARTER");
         const int units = (int)std::floor(std::min({ plan, (float)avail / (quarter ? 4.0f : 1.0f), (float)room / (quarter ? 4.0f : 1.0f) }));
         if (units <= 0) { return q * 0.5f; }
-        if ((float)units < std::floor(plan)) q = (aGives ? 1.0f : -1.0f) * (float)units / (p.dt * p.units);
+        // A slow pair's momentum is what it moved (#855): below kMatchPlan units a substep, keeping the fraction floor() left
+        // behind carried momentum the water never had - it stuck, then slipped a unit too far - and a basin at rest rocked
+        // by a few cm for good (no pond slept). Faster pairs keep it: a thin front moves a few units a substep, and dropping
+        // up to one every substep stalled the dam-break's front at 5 m.
+        if ((float)units < std::floor(plan) || ((float)units < plan && plan < kMatchPlan)) q = (aGives ? 1.0f : -1.0f) * (float)units / (p.dt * p.units);
         if (quarter) {
             __atomic_fetch_sub(&g.delta[giverTop], units, __ATOMIC_RELAXED);
             __atomic_fetch_add(&g.delta[taker], units, __ATOMIC_RELAXED);
