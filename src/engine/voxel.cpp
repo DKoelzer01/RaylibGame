@@ -2,6 +2,7 @@
 #include <filesystem>
 #include <cstring>
 #include "voxel.h"
+#include "envflag.h"
 #include "utils/logger.h"
 #include "erosion.h"
 #include "canyons.h"
@@ -852,7 +853,7 @@ uint64_t PlanetField::drainableLake(int lakeId) const {
 PlanetField::RiverState::~RiverState() = default;
 
 const RiverNetwork* PlanetField::rivers() const {
-    static const bool noRivers = getenv("RAYLIBGAME_NO_RIVERS") != nullptr; // profiling (#365): no river or lake overlay
+    static const bool noRivers = EnvFlag("RAYLIBGAME_NO_RIVERS"); // profiling (#365): no river or lake overlay
     if (moon || sandbox || !riverState || noRivers) return nullptr;
     std::call_once(riverState->once, [this] {
         RiverNetwork::Params rp;
@@ -868,7 +869,7 @@ const RiverNetwork* PlanetField::rivers() const {
         if (ero && ero->hasFlow()) {
             // Bake-native rivers (#547): the bake's own final drainage on its 50 m grid; streams from 1 km^2.
             rp.riverArea = 1.0e6f; rp.lakeDepth = 1.5f;
-            if (!getenv("RAYLIBGAME_RIVER_BANKS_OLD")) rp.bankHeight = [this](Vector3 d) { return riverBankHeight(d); }; // #640 (A/B: =1 off)
+            if (!EnvFlag("RAYLIBGAME_RIVER_BANKS_OLD")) rp.bankHeight = [this](Vector3 d) { return riverBankHeight(d); }; // #640 (A/B: =1 off)
             riverState->net = std::make_unique<RiverNetwork>(*ero, radius, rp);
         } else
         // With the bake, the network sees the baked surface itself: land() adds the gullies (+-75 m at this footprint),
