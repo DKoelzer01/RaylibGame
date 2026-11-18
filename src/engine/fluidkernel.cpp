@@ -307,6 +307,16 @@ struct Pass {
             B = runUp(cur, k); wet = true;
         } else if (F(n0) > 0u) {
             return 0.0f;                                     // another fluid
+        } else if (SH(n0) > 0u) {
+            // An empty cell with ground in it (a wall's or a floor's partly solid cell): a dry floor at its ground's height, not a
+            // drop - spilling into it ignored the ground, and water chained through a wall's partial cells (#680: the dam-break's
+            // wall leaked 1.1 m^3 and the leak test's 2.3 m^3 during the fill).
+            B.bottom = B.top = B.head = nb;
+            B.bed = B.surf = (int)SH(n0);
+            bool pa;
+            B.above = stepZ(nb, 1, pa);
+            if (B.above >= 0 && (!pa || (FL(inC[B.above]) & SOLID) || F(inC[B.above]) > 0u)) B.above = -1;
+            B.ok = true;
         } else {
             spill = true; takerSpill = nb;                   // air beside A's bottom: over the edge (it falls from there)
         }

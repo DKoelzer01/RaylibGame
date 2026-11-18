@@ -5826,7 +5826,7 @@ int main(int argc, char** argv)
                             static double nextPour = 0.0;
                             if (t >= nextPour) {
                                 nextPour = t + 0.4;
-                                const float x = -19.0f + 2.0f * (float)(k % 10), y = (k / 10) % 2 ? 1.0f : -1.0f;
+                                const float x = -19.0f + 1.8f * (float)(k % 10), y = (k / 10) % 2 ? 1.0f : -1.0f; // to -2.8 m: clear of the wall (#680: a pour by it stacked over the top and spilled past)
                                 ++k;
                                 lkPoured += Fluid::Pour(*p, pt(x, y, -2.3f), 1.0f);
                             }
@@ -5938,7 +5938,7 @@ int main(int argc, char** argv)
                             if (t - fillPrint >= 1.0) { fillPrint = t; printf("bench: dam-break t=%.0f s: filling, %.0f m^3 poured\n", t, dbPoured); }
                             if (t >= nextPour) {
                                 nextPour = t + 0.4;
-                                const float x = -19.0f + 2.0f * (float)(k % 10), y = (k / 10) % 2 ? 1.0f : -1.0f;
+                                const float x = -19.0f + 1.8f * (float)(k % 10), y = (k / 10) % 2 ? 1.0f : -1.0f; // to -2.8 m: clear of the wall (#680: a pour by it stacked over the top and spilled past)
                                 ++k;
                                 dbPoured += Fluid::Pour(*p, pt(x, y, -2.3f), 1.0f);
                                 static double dbFillPrint = 0.0; // TEMP #680 diagnosis: poured vs the simulation's volume during the fill
@@ -5953,6 +5953,13 @@ int main(int argc, char** argv)
                             const float beyond = Fluid::WaterAt(*p, pt(10.0f, 0.0f, dbFloor + 0.5f), 4.0f);
                             std::vector<TerrainEdit> cut = { box(-0.2f, 2.2f) }; // the wall goes
                             ApplyTerrainEdits(*p, cut.data(), cut.size());
+                            if (EnvFlag("DBLEAK")) { // TEMP #680: where the water already past the wall stands (x 1-6 m, by height over the floor)
+                                for (float h = 0.125f; h < 3.0f; h += 0.25f) {
+                                    float v = 0.0f;
+                                    for (float x = 1.125f; x < 6.0f; x += 0.25f) for (float y = -1.875f; y < 2.0f; y += 0.25f) v += Fluid::WaterAt(*p, pt(x, y, dbFloor + h), 0.125f);
+                                    if (v > 0.001f) printf("dbleak: %.2f m over the floor: %.3f m^3\n", h, v);
+                                }
+                            }
                             printf("bench: dam-break: reservoir %.2f m deep over its floor at %.2f m (%.0f m^3 poured, %.1f found no room (#766), %.0f in the simulation, %.1f m^3 already past the wall); wall removed\n",
                                    h0, dbFloor, dbPoured, Fluid::PourDropped(), Fluid::GetStats().volume, beyond);
                             printf("bench: dam-break: depth along the reservoir (x = -18 -14 -10 -6 -2 m):");
