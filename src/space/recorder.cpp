@@ -24,6 +24,7 @@ namespace {
     int framesWanted = 120, every = 1;
     float startDelay = 0.0f, fixedDt = 0.0f;
     bool hudFrames = true, keepRunning = false, wantGif = false, wantSheet = false, cli = false;
+    bool onCue = false, cued = false; // --record-on-cue: hold the first frame until the scenario calls Recorder_Cue()
     std::string compareDir;      // --record-compare: an earlier capture to diff each frame against
     double diffSum = 0.0, diffMax = 0.0; int diffFrames = 0, diffWorst = -1;
 
@@ -317,6 +318,7 @@ bool Recorder_ParseArg(int argc, char** argv, int& i) {
     if (a == "--record-start" && next(v)) { startDelay = (float)atof(v); return true; }
     if (a == "--record-hud" && next(v)) { hudFrames = atoi(v) != 0; return true; }
     if (a == "--record-continue") { keepRunning = true; return true; }
+    if (a == "--record-on-cue") { onCue = true; return true; }
     if (a == "--gif") { wantGif = true; return true; }
     if (a == "--sheet") { wantSheet = true; return true; }
     if (a == "--record-compare" && next(v)) { compareDir = v; return true; }
@@ -353,6 +355,7 @@ namespace {
 }
 
 void Recorder_Screenshot() { shotWanted = true; }
+void Recorder_Cue() { cued = true; }
 
 void Recorder_Update(bool worldReady) {
     if (IsKeyPressed(KEY_F2)) shotWanted = true; // a screenshot into the captures store (#579)
@@ -367,7 +370,7 @@ void Recorder_Update(bool worldReady) {
             waiting = false;
         }
     }
-    if (active && waiting && GetTime() - waitStart >= startDelay && worldReady) { waiting = false; gGameClock = 0.0; clockStart = GetTime(); } // animation clocks start with the capture
+    if (active && waiting && GetTime() - waitStart >= startDelay && worldReady && (!onCue || cued)) { waiting = false; gGameClock = 0.0; clockStart = GetTime(); } // animation clocks start with the capture
 }
 
 bool Recorder_WantsFrame(bool hud) {

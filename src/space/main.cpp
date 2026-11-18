@@ -5919,7 +5919,8 @@ int main(int argc, char** argv)
                             benchPump = false;
                         }
                     }
-                } else if (benchLeak && (lkPhase > 0 || WorldIdle())) {
+                } else if (benchLeak && (lkPhase > 0 || [] { static bool seen = false; seen = seen || WorldIdle(); return seen; }())) {
+                    // Held from the first idle frame; the test starts at 2 s of play (#814, as --test-dam-break).
                     // --test-leak (#680, best with --sandbox; user: 'would the column change still allow a hole in a wall to leak?'):
                     // a 20 m reservoir 4 m wide, 2 m deep behind a 1 m wall of ground, and an empty channel 6 m deep beyond; a 1 x 1 m hole is
                     // cut through the wall 0.5 m over the floor. The early outflow (the volume past the wall, 1-3 s) against an
@@ -5945,7 +5946,7 @@ int main(int argc, char** argv)
                     auto depthAt = [&](float x) { const float s = Fluid::SurfaceAbove(*p, pt(x, 0.0f, -2.5f + 0.55f), 4.0f); return s > 0.0f ? s + 0.55f : 0.0f; };
                     auto past = [&]() { float v = 0.0f; for (float x = 4.0f; x < 40.0f; x += 4.0f) for (float h : { -5.0f, -1.0f }) v += Fluid::WaterAt(*p, pt(x, 0.0f, h), 2.0f); return v; };
                     if (!pf) { printf("bench: leak: needs the planet -> FAIL\n"); benchLeak = false; }
-                    else {
+                    else if (lkPhase > 0 || SimTime() >= 2.0) {
                         if (lkPhase == 0) {
                             home = pf->findSpawnDir(p->seed);
                             ax = Vector3Normalize(Vector3CrossProduct(home, { 0, 1, 0 })); ay = Vector3CrossProduct(ax, home);
@@ -5989,18 +5990,21 @@ int main(int argc, char** argv)
                         // Water on the grass beside the reservoir and the channel (#691): a bad fill, or a leak around the edges.
                         // (3.5 m out, 0.5 m round: clear of the dug edge, which the lattice rounds out to ~2.5 m at 1 m cells)
                         auto onGrass = [&]() { float v = 0.0f; for (float x = -19.0f; x < 40.0f; x += 3.0f) for (float y : { -3.5f, 3.5f }) v += Fluid::WaterAt(*p, pt(x, y, 0.25f), 0.5f); return v; };
-                        if (lkPhase == 1 && t > 1.0 && WorldIdle()) {
-                            // Fill at 5 m^3/s, 1 m^3 at a time moving over the whole floor (#691: a pour every frame - 60 m^3/s -
-                            // piled mounds over the rim faster than water spreads, and they spilled onto the grass).
+                        if (lkPhase == 1 && t > 1.0) { // (#814: not on idle frames only - which frames are idle is thread timing)
+                            // Fill at 2.5 m^3/s, 0.25 m^3 at a time moving over the floor (#691: a pour every frame - 60 m^3/s - piled
+                            // mounds over the rim faster than water spreads, and they spilled onto the grass; #680: 1 m^3 pours mounded
+                            // in the column model, one probe at -10 m read a mound as 2 m and the pool was 1.17 m deep; their waves
+                            // overtopped the dam-break's wall). As the dam-break: kept 6.4 m from the wall, done at a 2 m mean depth.
                             static int k = 0;
                             static double nextPour = 0.0;
                             if (t >= nextPour) {
-                                nextPour = t + 0.2;
-                                const float x = -19.0f + 2.0f * (float)(k % 10), y = (k / 10) % 2 ? 1.0f : -1.0f;
+                                nextPour = t + 0.1;
+                                const float x = -19.0f + 1.4f * (float)(k % 10), y = (k / 10) % 2 ? 1.0f : -1.0f; // -19 to -6.4 m
                                 ++k;
-                                lkPoured += Fluid::Pour(*p, pt(x, y, -2.3f), 1.0f);
+                                lkPoured += Fluid::Pour(*p, pt(x, y, -2.3f), 0.25f);
                             }
-                            if (lkPoured >= 160.0f || depthAt(-10.0f) >= 2.0f) { lkPhase = 2; lkT0 = SimTime(); }
+                            const float meanDepth = 0.2f * (depthAt(-18.0f) + depthAt(-14.0f) + depthAt(-10.0f) + depthAt(-6.0f) + depthAt(-2.0f));
+                            if (lkPoured >= 200.0f || meanDepth >= 2.0f) { lkPhase = 2; lkT0 = SimTime(); }
                         } else if (lkPhase == 2 && ((t > 8.0 && Fluid::Asleep()) || t > 40.0)) {
                             const float grass = onGrass();
                             printf("bench: leak: after the fill %.2f m^3 on the grass beside the trench%s\n", grass, grass > 0.05f ? " -> FAIL (a bad fill)" : "");
@@ -6047,7 +6051,10 @@ int main(int argc, char** argv)
                             }
                         }
                     }
-                } else if (benchDamBreak && (dbPhase > 0 || WorldIdle())) {
+                } else if (benchDamBreak && (dbPhase > 0 || [] { static bool seen = false; seen = seen || WorldIdle(); return seen; }())) {
+                    // Held from the first idle frame (the branch keeps the bench from starting); the test itself starts at 2 s of
+                    // play (#814: it started on the first idle frame, which is thread timing, so two identical runs poured into
+                    // the fluid's ticks at different phases).
                     // --test-dam-break (#680, best with --sandbox): a physics reference. A channel 4 m wide and 2.5 m deep; its first
                     // 20 m hold water 2 m deep behind a 0.5 m wall of ground, which is cut away. Ritter's solution for a dam break
                     // on a dry, frictionless bed: the front runs at 2 sqrt(g h0), the depth at the dam is 4/9 h0 and the
@@ -6073,7 +6080,7 @@ int main(int argc, char** argv)
                         return e;
                     };
                     if (!pf) { printf("bench: dam-break: needs the planet -> FAIL\n"); benchDamBreak = false; }
-                    else {
+                    else if (dbPhase > 0 || SimTime() >= 2.0) {
                         if (dbPhase == 0) {
                             home = pf->findSpawnDir(p->seed);
                             ax = Vector3Normalize(Vector3CrossProduct(home, { 0, 1, 0 })); ay = Vector3CrossProduct(ax, home);
@@ -6092,18 +6099,29 @@ int main(int argc, char** argv)
                         static bool dbIdleSeen = false;
                         dbIdleSeen = dbIdleSeen || WorldIdle();
                         if (dbPhase == 1 && t > 2.0 && (dbPoured > 0.0f || dbIdleSeen)) { // idle to start; then on (#747: a slow CPU step kept the world busy)
-                            // Fill the reservoir to 2 m: 160 m^3 at 5 m^3/s, 1 m^3 at a time moving over the floor (#691: a pour every
-                            // frame - 60 m^3/s - piled mounds over the rim faster than water spreads, and they spilled onto the grass).
+                            // Fill the reservoir to 2 m: 160 m^3 at 2.5 m^3/s, 0.25 m^3 at a time moving over the floor (#691: a pour every
+                            // frame - 60 m^3/s - piled mounds over the rim faster than water spreads, and they spilled onto the grass;
+                            // #680: at 5 m^3/s the column model's pour points mounded and ~30 m^3 found no room, #766). #680: 1 m^3 pours
+                            // down to 2.8 m from the wall sent waves over it (0.6 m^3 in the channel before the break); 0.25 m^3 pours
+                            // kept 6.4 m away send none.
                             static int k = 0;
                             static double nextPour = 0.0, fillPrint = 0.0;
                             if (t - fillPrint >= 1.0) { fillPrint = t; printf("bench: dam-break t=%.0f s: filling, %.0f m^3 poured\n", t, dbPoured); }
                             if (t >= nextPour) {
-                                nextPour = t + 0.2;
-                                const float x = -19.0f + 2.0f * (float)(k % 10), y = (k / 10) % 2 ? 1.0f : -1.0f;
+                                nextPour = t + 0.1;
+                                const float x = -19.0f + 1.4f * (float)(k % 10), y = (k / 10) % 2 ? 1.0f : -1.0f; // -19 to -6.4 m
                                 ++k;
-                                dbPoured += Fluid::Pour(*p, pt(x, y, -2.3f), 1.0f);
+                                dbPoured += Fluid::Pour(*p, pt(x, y, -2.3f), 0.25f);
                             }
-                            if (dbPoured >= 160.0f || [&] { const float s = Fluid::SurfaceAbove(*p, pt(-10.0f, 0.0f, -2.5f + 0.55f), 4.0f); return s > 0.0f && s + 0.55f >= 2.0f; }()) { dbPhase = 2; dbT0 = SimTime(); }
+                            // Done at 2 m deep on average over five points (#680: one probe at -10 m read a 1 m^3 pour's mound as 2 m
+                            // and stopped the fill at 95 m^3; 160 m^3 stood 2.17 m deep - the lattice rounds the walls in - and waves
+                            // crossed the 0.33 m left under the wall's top). 200 m^3 at most.
+                            const bool deep = [&] {
+                                float sum = 0.0f;
+                                for (float x : { -18.0f, -14.0f, -10.0f, -6.0f, -2.0f }) { const float s = Fluid::SurfaceAbove(*p, pt(x, 0.0f, -2.5f + 0.55f), 4.0f); sum += s > 0.0f ? s + 0.55f : 0.0f; }
+                                return sum / 5.0f >= 2.0f;
+                            }();
+                            if (deep || dbPoured >= 200.0f) { dbPhase = 2; dbT0 = SimTime(); }
                         } else if (dbPhase == 2 && ((t > 8.0 && Fluid::Asleep()) || t > 40.0)) {
                             // The floor as the ground has it (the box's -2.5 m is rounded by the lattice), the surface over it.
                             for (float h = -1.0f; h > -3.0f; h -= 0.02f) if (p->densityAt(pt(-10.0f, 0.0f, h)) >= ISO_LEVEL) { dbFloor = h; break; }
@@ -6112,6 +6130,7 @@ int main(int argc, char** argv)
                             const float beyond = Fluid::WaterAt(*p, pt(10.0f, 0.0f, dbFloor + 0.5f), 4.0f);
                             std::vector<TerrainEdit> cut = { box(-0.2f, 2.2f) }; // the wall goes
                             ApplyTerrainEdits(*p, cut.data(), cut.size());
+                            Recorder_Cue(); // --record-on-cue: a capture shows the break, not the fill
                             printf("bench: dam-break: reservoir %.2f m deep over its floor at %.2f m (%.0f m^3 poured, %.1f found no room (#766), %.0f in the simulation, %.1f m^3 already past the wall); wall removed\n",
                                    h0, dbFloor, dbPoured, Fluid::PourDropped(), Fluid::GetStats().volume, beyond);
                             printf("bench: dam-break: depth along the reservoir (x = -18 -14 -10 -6 -2 m):");
