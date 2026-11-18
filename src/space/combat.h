@@ -35,7 +35,8 @@ struct DamageResult {
 };
 
 DamageResult Combat_Damage(PlayerSession& target, const DamageEvent& e);
-void Combat_ApplyKnockback(Player& p, const DamageEvent& e, bool holdingBlock); // (#334) a server's shove for a remote player
+struct SurvivalState;
+DamageResult Combat_DamageFor(SurvivalState& survival, Player& player, const DamageEvent& e); // (#337) any player's state (a server's remote players)
 
 // One sim step of a player's combat state: the block (RMB with a shield in the off hand), stamina back at rest.
 void Combat_Step(PlayerSession& s, float dt, const PlayerInput& in);

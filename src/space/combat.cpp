@@ -54,10 +54,10 @@ void Combat_Step(PlayerSession& s, float dt, const PlayerInput& in) {
     PickUpGraves(s);
 }
 
-DamageResult Combat_Damage(PlayerSession& s, const DamageEvent& e) {
+DamageResult Combat_Damage(PlayerSession& s, const DamageEvent& e) { return Combat_DamageFor(s.survival, s.player, e); }
+// (#337) any player's state: the local session's, or a remote player's on a server (its block from its held input).
+DamageResult Combat_DamageFor(SurvivalState& sv, Player& p, const DamageEvent& e) {
     DamageResult r;
-    SurvivalState& sv = s.survival;
-    Player& p = s.player;
     if (sv.dead || e.amount <= 0.0f) return r;
     float amount = e.amount, push = e.knockback;
     // Away from the source, level with the ground where the player stands.
@@ -557,20 +557,3 @@ bool Combat_TestFrame(Scene& world) {
     }
 }
 
-// #334 a server's shove for a remote player's hit: away from the source along the ground (plus the lift), cut to a block's
-// share when the player holds block (Secondary) facing the source - its stamina is the client's, so a guard broken for want
-// of stamina is the one case this misjudges. The client applies the damage itself (Combat_Damage with no knockback).
-void Combat_ApplyKnockback(Player& p, const DamageEvent& e, bool holdingBlock) {
-    if (!e.hasSource || e.knockback <= 0.0f || p.flyMode) return;
-    const Vector3 d = (p.position - e.source).toFloat();
-    Vector3 away = Vector3Subtract(d, Vector3Scale(p.up, Vector3DotProduct(d, p.up)));
-    const float l = Vector3Length(away);
-    if (l < 1e-4f) return;
-    away = Vector3Scale(away, 1.0f / l);
-    float push = e.knockback;
-    if (holdingBlock) {
-        const Vector3 fwd = Vector3Normalize(Vector3Subtract(p.forward, Vector3Scale(p.up, Vector3DotProduct(p.forward, p.up))));
-        if (Vector3DotProduct(fwd, Vector3Negate(away)) >= kBlockArcCos) push *= kBlockedKnockback;
-    }
-    p.pendingPush = Vector3Add(p.pendingPush, Vector3Add(Vector3Scale(away, push), Vector3Scale(p.up, kKnockLift)));
-}

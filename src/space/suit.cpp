@@ -65,11 +65,13 @@ void Load() {
 const SuitDef* FindSuit(const std::string& id) { Load(); for (const auto& s : suits) if (s.id == id) return &s; return nullptr; }
 const ModuleDef* FindModule(const std::string& id) { Load(); for (const auto& m : modules) if (m.id == id) return &m; return nullptr; }
 
-void Recompute() {
+SuitStats StatsOf(const SuitState& st);
+void Recompute() { S().stats = StatsOf(S()); }
+SuitStats StatsOf(const SuitState& st) { // (#337: any player's suit, not only the local one)
     SuitStats s;
-    const SuitDef* suit = FindSuit(S().worn);
+    const SuitDef* suit = FindSuit(st.worn);
     if (suit) { s.slots = suit->slots; s.oxygen = suit->oxygen; s.power = suit->power; s.vacuum = suit->vacuum; }
-    for (const std::string& id : S().fitted) {
+    for (const std::string& id : st.fitted) {
         const ModuleDef* m = id.empty() ? nullptr : FindModule(id);
         if (!m) continue;
         const std::string& e = m->effect;
@@ -86,7 +88,7 @@ void Recompute() {
         else if (e == "scanner") s.scanner = true;
         else if (e == "hover") s.hover = true;
     }
-    S().stats = s;
+    return s;
 }
 
 // Fit the slot list to the suit: extra modules go back to the inventory.
@@ -302,3 +304,4 @@ bool Suit_LoadLine(const char* tok, FILE* f) {
     Recompute();
     return true;
 }
+SuitStats Suit_StatsOf(const SuitState& st) { return StatsOf(st); } // (#337)

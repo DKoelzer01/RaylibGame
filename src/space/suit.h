@@ -41,6 +41,7 @@ struct SuitState {
 };
 
 const SuitStats& Suit_Stats();
+SuitStats Suit_StatsOf(const SuitState& suit); // (#337) any player's (a server's remote players)
 const std::string& Suit_Worn();                       // the worn suit's item id
 const std::vector<std::string>& Suit_Modules();       // one per slot, "" empty
 bool Suit_IsSuit(const std::string& id);

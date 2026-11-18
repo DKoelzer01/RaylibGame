@@ -1,4 +1,5 @@
 #include "survival.h"
+#include "net.h"
 #include "gamerng.h"
 #include "playerinput.h"
 #include "suit.h"
@@ -231,7 +232,10 @@ void Survival_StepFor(Scene& world, float dt, const PlayerInput& in, SurvivalSta
         if (dark && !inNight) { inNight = true; deathsAtDusk = survival.deaths; }
         else if (!dark && inNight) { inNight = false; if (survival.deaths == deathsAtDusk) QuestBook_Count("nights"); }
     }
-    if (survival.health <= 0.0f) {
+    // (#337) a client process's player dies only when the server says (Vitals): its own drains here just keep the bars moving
+    // between the server's numbers, and never cost the inventory it mirrors.
+    if (local && gNetRole == NetRole::Client) survival.health = std::max(survival.health, 0.0f);
+    else if (survival.health <= 0.0f) {
         survival.health = 0.0f;
         survival.dead = true;
         survival.deathTime = SimTime();
@@ -507,9 +511,16 @@ void Objectives_DrawHUD() {
 
 bool Survival_IsUsable(const std::string& id) { return id == "oxygen_canister" || id == "power_cell" || id == "repair_kit" || Survival_IsFood(id); }
 
+// #337: using an item - the local player's (a client process asks the server instead: its inventory and vitals are the
+// server's; nothing changes here until the server's deltas come back), or a remote player's on a server (local false: no
+// UI, sounds or quests).
 bool Survival_UseItem(const std::string& id) {
+    if (gNetRole == NetRole::Client && gSurvivalUseRequest && id != "repair_kit") { gSurvivalUseRequest(id); return true; }
+    return Survival_UseItemFor(id, survival, inventory, Suit_Stats(), true);
+}
+bool Survival_UseItemFor(const std::string& id, SurvivalState& survival, Inventory& inventory, const SuitStats& stats, bool local) {
     if (id == "repair_kit") { // mends the most damaged part of the rocket in reach (rocket.h)
-        if (inventory.count(id) > 0 && Rocket_UseRepairKit()) { inventory.remove(id, 1); return true; }
+        if (local && inventory.count(id) > 0 && Rocket_UseRepairKit()) { inventory.remove(id, 1); return true; }
         return false;
     }
     if (Survival_IsFood(id)) {
@@ -517,27 +528,27 @@ bool Survival_UseItem(const std::string& id) {
         const Food& food = foods[id];
         if (survival.food < 98.0f && inventory.remove(id, 1)) {
             survival.food = std::min(100.0f, survival.food + food.value);
-            QuestBook_Count("eat");
-            if (food.raw && GameRng_Int(0, 99) < 30) { survival.sickUntil = (float)SimTime() + 60.0f; GameUI_Toast("You feel sick: cook your meat"); }
-            Audio_Play(Sfx::Pickup, 0.5f, 0.8f);
+            if (local) QuestBook_Count("eat");
+            if (food.raw && GameRng_Int(0, 99) < 30) { survival.sickUntil = (float)SimTime() + 60.0f; if (local) GameUI_Toast("You feel sick: cook your meat"); }
+            if (local) Audio_Play(Sfx::Pickup, 0.5f, 0.8f);
             return true;
         }
-        if (survival.food >= 98.0f) GameUI_Toast("You are full");
-        Audio_Play(Sfx::Error, 0.4f);
+        if (survival.food >= 98.0f) if (local) GameUI_Toast("You are full");
+        if (local) Audio_Play(Sfx::Error, 0.4f);
         return false;
     }
     if (id == "oxygen_canister") {
-        if (survival.oxygen < 99.0f && inventory.remove("oxygen_canister", 1)) { survival.oxygen = std::min(100.0f, survival.oxygen + 50.0f); Audio_Play(Sfx::Pickup); return true; }
+        if (survival.oxygen < 99.0f && inventory.remove("oxygen_canister", 1)) { survival.oxygen = std::min(100.0f, survival.oxygen + 50.0f); if (local) Audio_Play(Sfx::Pickup); return true; }
     } else if (id == "power_cell") {
-        if (!Suit_Stats().powered) { GameUI_Toast("A power cell needs a battery pack in the suit (#217)"); Audio_Play(Sfx::Error, 0.4f); return false; }
+        if (!stats.powered) { if (local) GameUI_Toast("A power cell needs a battery pack in the suit (#217)"); if (local) Audio_Play(Sfx::Error, 0.4f); return false; }
         // Don't waste a cell on a full store (ship while piloting, otherwise the suit).
         const bool full = survival.power >= 99.0f;
         if (!full && inventory.remove("power_cell", 1)) {
             survival.power = std::min(100.0f, survival.power + 50.0f);
-            Audio_Play(Sfx::Pickup);
+            if (local) Audio_Play(Sfx::Pickup);
             return true;
         }
     }
-    Audio_Play(Sfx::Error, 0.4f);
+    if (local) Audio_Play(Sfx::Error, 0.4f);
     return false;
 }
