@@ -26,6 +26,7 @@
 #include <string>
 #include <unordered_map>
 #include <vector>
+#include "dungeontraps.h"
 
 // (survival: the local PlayerSession's, src/space/playersession.cpp, #313)
 int worldDifficulty = 1;
@@ -160,7 +161,8 @@ void Survival_StepFor(Scene& world, float dt, const PlayerInput& in, SurvivalSta
         // A planet's air is breathable up to ~15 km: the suit tops up its oxygen from it instead.
         const auto& atm = world.atmosphere;
         const Vector3 head = Vector3Add(pr, Vector3Scale(player.up, player.eyeHeight));
-        survival.breathable = atm.enabled && Vector3Distance(pr, atm.centre) < atm.radius + survival.breathableAltitude && !IsUnderwater(world, head);
+        survival.inGas = DungeonTraps_InGas(world, head); // (#719) a dungeon's gas pocket
+        survival.breathable = atm.enabled && Vector3Distance(pr, atm.centre) < atm.radius + survival.breathableAltitude && !IsUnderwater(world, head) && !survival.inGas;
         // Vacuum (outside the air): a suit not rated for it holds 60 s, then it hurts (4 a second).
         survival.inVacuum = !(atm.enabled && Vector3Distance(pr, atm.centre) < atm.radius + survival.breathableAltitude);
         if (survival.inVacuum && !stats.vacuum) { survival.vacuumTime += dt; if (survival.vacuumTime > 60.0f) survival.health -= 4.0f * std::min(dt, survival.vacuumTime - 60.0f); }
@@ -171,7 +173,7 @@ void Survival_StepFor(Scene& world, float dt, const PlayerInput& in, SurvivalSta
             // Underwater drains it faster (a rebreather slows that); bigger tanks last longer.
             const bool underwater = atm.enabled && IsUnderwater(world, head);
             survival.underwater = underwater;
-            survival.oxygen = std::max(0.0f, survival.oxygen - survival.oxygenDrainPerSec * (underwater ? stats.underwater : 1.0f) / stats.oxygen * dt);
+            survival.oxygen = std::max(0.0f, survival.oxygen - survival.oxygenDrainPerSec * (underwater ? stats.underwater : 1.0f) * (survival.inGas ? 3.0f : 1.0f) / stats.oxygen * dt);
         }
         survival.power = std::max(0.0f, survival.power - (1.0f / stats.power) * (survival.powerDrainPerSec
                                                           + (survival.headlamp && !(local && ship.piloted) ? survival.headlampPowerPerSec : 0.0f)) * dt);
@@ -276,6 +278,7 @@ void Survival_DrawHUD() {
     const int tx = x + std::max(wO2, wPwr) + 20;
     if (SimTime() < survival.sickUntil) DrawText("SICK", tx, y + 46, 16, ORANGE);
     if (survival.inLifeSupport) DrawText("LIFE SUPPORT", tx, y + 2, 16, SKYBLUE);
+    else if (survival.inGas) DrawText("TOXIC GAS", tx, y + 2, 16, Fade({ 170, 220, 80, 255 }, 0.9f));
     else if (survival.breathable && showO2) DrawText("BREATHABLE AIR", tx, y + 2, 16, Fade(SKYBLUE, 0.7f));
     else if (survival.inVacuum) {
         if (Suit_Stats().vacuum) DrawText("VACUUM: suit rated", tx, y + 2, 16, Fade(SKYBLUE, 0.7f));

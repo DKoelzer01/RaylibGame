@@ -35,6 +35,7 @@ struct SurvivalState {
     float breathableAltitude = 15000.0f;                      // a planet's air is breathable below this (m above sea level)
     float airRefillPerSec = 4.0f;                             // suit oxygen top-up from breathable air
     bool breathable = false;
+    bool inGas = false;                                       // in a dungeon's poison gas (#719): not breathable, oxygen drains x3
     bool underwater = false;                                  // the head is in water (oxygen drains faster)
     bool inVacuum = false;                                    // outside any breathable air (space, the moon, ring rocks)
     float vacuumTime = 0.0f;                                  // seconds in vacuum in a suit not rated for it (60 s, then it hurts)

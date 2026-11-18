@@ -62,6 +62,7 @@
 #include "structures.h"
 #include "fishing.h"
 #include "trapping.h"
+#include "dungeontraps.h"
 #include "events.h"
 #include "machinemodels.h"
 #include "gpucompute.h"
@@ -271,6 +272,7 @@ static void StartNewWorld(Scene& world, bool reset, bool dawn) {
         Structures_Reset();
         Fishing_Reset();
         Trapping_Reset();
+        DungeonTraps_Reset();
         Combat_Reset();
         Events_Reset();
         Particles_Clear();
@@ -580,6 +582,7 @@ int main(int argc, char** argv)
     bool benchPickups = false;     // --test-pickups: the pickup feed (#208): repeats merge, a screenshot while it shows
     bool shotInventory = false;    // --shot-inventory: long item names in their cells (#219)
     bool benchDungeon = false; int dungeonFrame = 0; // --test-dungeon (#719)
+    bool benchDungeonTraps = false; int dungeonTrapFrame = 0; // --test-dungeon-traps (#719)
     bool shotGlow = false;         // --shot-glow: hot items glow in the inventory and on the hotbar (#580)
     bool shotChest = false;        // --shot-chest: a filled chest open beside the inventory (#495: 50 cells, 10 wide)
     bool benchFoundation = false;  // --test-foundation: a part half in the ground clears its cell and nothing else (#210)
@@ -907,6 +910,7 @@ int main(int argc, char** argv)
         if (std::string(argv[i]) == "--test-pickups") benchPickups = true;
         if (std::string(argv[i]) == "--shot-inventory") shotInventory = true;
         if (std::string(argv[i]) == "--test-dungeon") benchDungeon = true;
+        if (std::string(argv[i]) == "--test-dungeon-traps") benchDungeonTraps = true; // #719: best with --sandbox
         if (std::string(argv[i]) == "--shot-glow") shotGlow = true;
         if (std::string(argv[i]) == "--shot-chest") shotChest = true;
         if (std::string(argv[i]) == "--test-foundation") benchFoundation = true;
@@ -1419,7 +1423,7 @@ int main(int argc, char** argv)
     bool spawnLoad = false;        // raised by a spawn or teleport (not entering the game): no minimum time
     int loadFrames = 0;
     int seenSpawns = 0;
-    world.onDraw3D = [&world] { Farm_Draw3D(world); Animals_Draw3D(world); Machines_Draw3D(world); Avatar_Draw3D(world, gAvatars); InstanceBatch_Flush(world); Weather_Draw3D(world); Waterfalls_Draw3D(world); Particles_Draw(world); if (!ship.piloted && !buildTool.active && !Rocket_Boarded()) TerrainTool_Draw3D(); Fishing_Draw3D(world); Events_Draw3D(world); Combat_DrawGraves(world); BuildTool_Draw3D(world); };
+    world.onDraw3D = [&world] { Farm_Draw3D(world); Animals_Draw3D(world); Machines_Draw3D(world); Avatar_Draw3D(world, gAvatars); InstanceBatch_Flush(world); Weather_Draw3D(world); Waterfalls_Draw3D(world); Particles_Draw(world); DungeonTraps_Draw(world); if (!ship.piloted && !buildTool.active && !Rocket_Boarded()) TerrainTool_Draw3D(); Fishing_Draw3D(world); Events_Draw3D(world); Combat_DrawGraves(world); BuildTool_Draw3D(world); };
     terrainTool.till = [&world](Planetoid& body, Vector3 ground) { return Farm_Till(world, body, ground); }; // a shovel's RMB
     terrainTool.swapHeld = [](const std::string& from, const std::string& to, const char* ev) { // a bucket filled or emptied
         const int s = Hotbar_Selected();
@@ -8704,7 +8708,7 @@ int main(int argc, char** argv)
                         }
                         benchWalkSeconds = 0.0;
                     }
-                } else if ((WorldIdle() && benchDigStrokes == 0 && !benchPaint && !benchSaveLoad && benchWalkSeconds <= 0.0 && benchMineStrokes == 0 && minePhase != 2 && benchFlySeconds <= 0.0 && !benchSuffocate && benchOrbitSeconds <= 0.0 && !benchRide && !benchPark && !benchGravity && !benchPrecision && !benchMantle && !benchAirJump && !benchMoon && !benchHole && !benchWall && !benchDoorway && !benchLedge && !benchTor && !benchMachines && !benchFall && !benchHover && !benchNetIds && !benchNet && !benchTwoPlayers && !benchFingerprint && !benchInterest && !benchTeleClose && !benchMenus && !benchWater && !benchFlyFollow && !benchHotbar && !benchInventory && !benchMap && !benchViewmodel && !benchQuests && !benchHunger && !benchFarm && !benchAnimals && !benchThreats && !benchAnimalPath && !benchDam && !benchFlowMeter && !benchPartWall && !benchPressure && benchShotTabs == 0 && !benchForest && !benchFlow && !benchPond && !benchBucket && !benchWaterSpeed && benchFluidLoad <= 0.0f && !benchFlowShade && !benchPump && !benchTerrain && !benchWind && !benchCampfire && !benchCaveMouth && !benchMountain && !benchShelter && !benchRoom && !benchFacing && !benchDungeon && !benchPosture && !benchPause && !benchBite && !benchPlacement && !benchShotDig && !benchShadow && !benchParticles && !benchBiomes && !benchOil && !benchSpring && !benchShotAnimals && !benchShotAvatar && !benchShotMachines && benchShotBiomes < 0 && !benchFarForest && !benchRecipes && !benchWeather && !benchDecor && !benchMaterials && !benchDamage && !benchCrafting && !benchSuit && !benchTools && !benchRivers && !benchRing && !benchRocket && !benchStation && !benchBlueprint && !benchSmallBody && !benchTrees && !benchChop && benchPersist == 0 && benchBuild == 0 && benchFactory == 0 && !benchCombat && !benchHost && !benchJoin && !benchTimeFollow && benchPlayerCost == 0 && !benchNetAnimals && !benchNetAbuse && !benchNetMove && !benchNetDig && !benchNetBuild && !benchNetSync && !benchShotMpMenu && !benchMpMenu && benchMpBots == 0 && !benchShower && !benchProgression && (benchUnfocus <= 0.0f || unfocusPhase >= 6)) || GetTime() > 600.0) {
+                } else if ((WorldIdle() && benchDigStrokes == 0 && !benchPaint && !benchSaveLoad && benchWalkSeconds <= 0.0 && benchMineStrokes == 0 && minePhase != 2 && benchFlySeconds <= 0.0 && !benchSuffocate && benchOrbitSeconds <= 0.0 && !benchRide && !benchPark && !benchGravity && !benchPrecision && !benchMantle && !benchAirJump && !benchMoon && !benchHole && !benchWall && !benchDoorway && !benchLedge && !benchTor && !benchMachines && !benchFall && !benchHover && !benchNetIds && !benchNet && !benchTwoPlayers && !benchFingerprint && !benchInterest && !benchTeleClose && !benchMenus && !benchWater && !benchFlyFollow && !benchHotbar && !benchInventory && !benchMap && !benchViewmodel && !benchQuests && !benchHunger && !benchFarm && !benchAnimals && !benchThreats && !benchAnimalPath && !benchDam && !benchFlowMeter && !benchPartWall && !benchPressure && benchShotTabs == 0 && !benchForest && !benchFlow && !benchPond && !benchBucket && !benchWaterSpeed && benchFluidLoad <= 0.0f && !benchFlowShade && !benchPump && !benchTerrain && !benchWind && !benchCampfire && !benchCaveMouth && !benchMountain && !benchShelter && !benchRoom && !benchFacing && !benchDungeon && !benchDungeonTraps && !benchPosture && !benchPause && !benchBite && !benchPlacement && !benchShotDig && !benchShadow && !benchParticles && !benchBiomes && !benchOil && !benchSpring && !benchShotAnimals && !benchShotAvatar && !benchShotMachines && benchShotBiomes < 0 && !benchFarForest && !benchRecipes && !benchWeather && !benchDecor && !benchMaterials && !benchDamage && !benchCrafting && !benchSuit && !benchTools && !benchRivers && !benchRing && !benchRocket && !benchStation && !benchBlueprint && !benchSmallBody && !benchTrees && !benchChop && benchPersist == 0 && benchBuild == 0 && benchFactory == 0 && !benchCombat && !benchHost && !benchJoin && !benchTimeFollow && benchPlayerCost == 0 && !benchNetAnimals && !benchNetAbuse && !benchNetMove && !benchNetDig && !benchNetBuild && !benchNetSync && !benchShotMpMenu && !benchMpMenu && benchMpBots == 0 && !benchShower && !benchProgression && (benchUnfocus <= 0.0f || unfocusPhase >= 6)) || GetTime() > 600.0) {
                     benchStart = GetTime();
                     printf("bench: world ready after %.2f s (%d chunks, avg build %.2f ms of which sampling %.2f ms, %d worker threads)\n",
                         GetWorldStats().lastGenerationSeconds, GetWorldStats().chunks, GetWorldStats().avgBuildMs, GetWorldStats().avgSampleMs, GetWorldStats().workerThreads);
@@ -9107,6 +9111,7 @@ int main(int argc, char** argv)
             if (!loading) Structures_Update(world); // ruins, wrecks and wonders near the player (#164)
             if (!loading) Fishing_Update(world, frameDt, gameInput && alive && !ship.piloted); // (#176)
             if (!loading) Trapping_Update(world); // snares (#176)
+            if (!loading) DungeonTraps_Update(world); // dungeon traps (#719)
             if (!loading) Events_Update(world, frameDt); // meteor showers (#177)
             if (!hostSave.empty()) { GpuTimer_CpuMark("frame: view, events"); Host_Update(world); } // --host (#311): answer joins (its own marks: #348)
             // #348 soak window (a host with RAYLIBGAME_SOAK_PLAYERS=N): from when N players are online until one leaves (or
@@ -9532,6 +9537,13 @@ int main(int argc, char** argv)
                 player.position = world.renderOrigin + world.camera.position;
             }
             if (dungeonFrame == 200) { TakeScreenshot("bench_dungeon.png"); printf("bench: dungeon: bench_dungeon.png\n"); benchDungeon = false; }
+        }
+        // --test-dungeon-traps (#719): a falling block, darts and gas in a trench at the start (dungeontraps.cpp).
+        if (benchDungeonTraps && gameState == 1 && !loading && (dungeonTrapFrame > 0 || WorldIdle())) {
+            Planetoid* p = dynamic_cast<Planetoid*>(world.objects[0].get());
+            if (++dungeonTrapFrame == 1) player.flyMode = false;
+            const int r = p ? DungeonTraps_Test(world, *p, dungeonTrapFrame) : -1;
+            if (r != 0) benchDungeonTraps = false;
         }
         if (shotInventory && gameState == 1 && !loading && WorldIdle()) {
             static int f = 0;

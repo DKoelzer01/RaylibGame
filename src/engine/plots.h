@@ -49,6 +49,7 @@ enum class PartType : uint8_t {
     Torch,                                                           // a placed torch (#218): a thin post with a flame, lights its surroundings (#139)
     Snare,                                                           // a snare on the ground (#176): small game gets caught now and then (trapping.cpp)
     Meteorite,                                                       // a fallen meteorite (#177): 1 m of space rock; broken, it gives nickel-iron and rare ores
+    PressurePlate, GasVent,                                          // dungeon traps (#719, dungeontraps.cpp): a plate (material 0: a falling block, 1: darts) and a vent of poison gas
     Count
 };
 inline bool IsMachine(PartType t) { return (t >= PartType::Chest && t <= PartType::SteamMacerator) || (t >= PartType::OreWasher && t <= PartType::PrecisionAssembler) || t == PartType::FusionReactor || t == PartType::MassDriver; }

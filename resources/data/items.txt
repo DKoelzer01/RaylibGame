@@ -210,3 +210,4 @@ crude_oil        | Crude oil        | 200 | 34, 26, 20  | From oil seeps in warm
 cactus           | Cactus           | 999 | 92,140, 72  | From desert and badlands scrub. Chewy and watery (edible); splits into fibre.
 rubber           | Rubber           | 200 | 66, 58, 46  | Latex from jungle trees, set. A chemical reactor makes plastic of it.
 peat             | Peat             | 999 | 72, 52, 36  | Dug from swamp ground. Burns slowly in campfires, kilns, boilers and generators.
+ancient_relic    | Ancient relic    | 20  | 196,168, 92 | A carved idol from the deepest room of a dungeon. Found nowhere else.
