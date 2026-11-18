@@ -893,3 +893,94 @@ void Player::poisonCollideCache() {
     for (int si = 0; si < 8; ++si) { collideCache.valid[si] = true; collideCache.dist[si] = 1000.0f; collideCache.centre[si] = here; }
     collideCache.body = nearest; collideCache.edits = nearest ? nearest->edits.get() : nullptr;
 }
+
+#ifdef RAYLIBGAME_UNIT_TESTS
+// ---- Unit tests (#869): the multiplayer state (netState / applyNetState) in the body's frame ----
+#include "unit_helpers.h"
+
+namespace {
+struct PlayerNetTest : ::testing::Test {
+    Scene& world = UnitTest::FieldOnlyScene(); // reads renderOrigin only (zero)
+    std::unique_ptr<Planetoid> body;
+    void SetUp() override {
+        body = std::make_unique<Planetoid>("unit", DVec3{ 0.0, 0.0, 0.0 }, Vector3{ 0, 40, 0 }, 1.0f, 42u, 60000.0f);
+        body->rotation = { 0, 40, 0 };
+        body->spin = { 0, 0.1f, 0 }; // ~105 m/s at the surface, as terra
+        body->netId = 0x1000000000000001ull;
+    }
+    Player::NetState State(bool grounded) const {
+        Player::NetState s;
+        s.body = body->netId; s.local = { 1200.25, 59950.5, -640.125 }; s.vel = { 1.5f, grounded ? 0.0f : -3.0f, 0.25f };
+        s.grounded = grounded; s.posture = 1; s.jumpBuffer = 0.1f; s.coyote = 0.05f; s.jumpLock = 0.02f; s.jetpackFuel = 0.6f;
+        return s;
+    }
+    static void ExpectSame(const Player::NetState& a, const Player::NetState& b) {
+        EXPECT_EQ(a.body, b.body);
+        EXPECT_LT((a.local - b.local).length(), 1e-6) << "local position";
+        EXPECT_LT(Vector3Distance(a.vel, b.vel), 2e-3f) << "local velocity " << b.vel.x << " " << b.vel.y << " " << b.vel.z;
+        EXPECT_EQ(a.grounded, b.grounded);
+        EXPECT_EQ(a.posture, b.posture);
+        EXPECT_FLOAT_EQ(a.jumpBuffer, b.jumpBuffer); EXPECT_FLOAT_EQ(a.coyote, b.coyote);
+        EXPECT_FLOAT_EQ(a.jumpLock, b.jumpLock); EXPECT_FLOAT_EQ(a.jetpackFuel, b.jetpackFuel);
+    }
+};
+}
+
+TEST_F(PlayerNetTest, AppliedStateReadsBack) {
+    for (bool grounded : { true, false }) {
+        Player p;
+        const Player::NetState s = State(grounded);
+        ASSERT_TRUE(p.applyNetState(world, s));
+        Player::NetState back;
+        ASSERT_TRUE(p.netState(world, back));
+        ExpectSame(s, back);
+    }
+}
+
+// The same through the frame conversions: a player not stepped since a spawn reports what it stands on now.
+TEST_F(PlayerNetTest, UnsteppedStateGoesThroughTheBodyFrame) {
+    for (bool grounded : { true, false }) {
+        Player p;
+        const Player::NetState s = State(grounded);
+        ASSERT_TRUE(p.applyNetState(world, s));
+        ++p.spawns; // the cached state is a spawn old: netState converts from the anchors and the world velocity
+        Player::NetState back;
+        ASSERT_TRUE(p.netState(world, back));
+        ExpectSame(s, back);
+    }
+}
+
+// #856: a joiner the server never steps (still loading) keeps its spawn-time world position while the planet turns; its
+// reported state must stay where it was put on the planet, not slide by spin x time (12 km in #856's run).
+TEST_F(PlayerNetTest, UnsteppedPlayerStaysPutOnATurningPlanet) {
+    for (bool grounded : { true, false }) {
+        Player p;
+        const Player::NetState s = State(grounded);
+        ASSERT_TRUE(p.applyNetState(world, s));
+        ++p.spawns;
+        body->rotation.y += 60.0f * body->spin.y; // a minute of spin, the player not stepped
+        Player::NetState later;
+        ASSERT_TRUE(p.netState(world, later));
+        EXPECT_LT((later.local - s.local).length(), 1e-6) << (grounded ? "grounded" : "airborne") << " player slid on the body";
+    }
+}
+
+TEST_F(PlayerNetTest, PlacedPlayerStaysPutOnATurningPlanet) {
+    Player p;
+    const DVec3 local{ -800.0, 59990.0, 300.0 };
+    p.placeAt(world, *body, body->toWorldD(local).toFloat()); // render origin = world origin
+    body->rotation.y += 90.0f * body->spin.y;
+    Player::NetState s;
+    ASSERT_TRUE(p.netState(world, s));
+    EXPECT_LT((s.local - local).length(), 0.02) << "float render feet: within 2 cm at 60 km";
+}
+
+TEST_F(PlayerNetTest, UnknownBodyIsRefused) {
+    Player p;
+    Player::NetState s = State(true);
+    s.body = 0x1000000000000999ull;
+    EXPECT_FALSE(p.applyNetState(world, s));
+    Player::NetState out;
+    EXPECT_FALSE(Player{}.netState(world, out)) << "no body yet";
+}
+#endif

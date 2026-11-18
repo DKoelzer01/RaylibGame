@@ -2714,3 +2714,108 @@ bool IsUnderwater(Scene& world, Vector3 renderPoint) {
     if (d >= surface) return false;
     return d > pf->radius + pf->elevation(dir); // above the bed
 }
+
+#ifdef RAYLIBGAME_UNIT_TESTS
+// ---- Unit tests (#869): body-local <-> world frames under spin ----
+#include "unit_helpers.h"
+#include <random>
+
+namespace {
+// A body at `pos` (no GL: chunks are never built), turned by `rot` degrees about X, Y, Z.
+std::unique_ptr<Planetoid> MakeBody(DVec3 pos, Vector3 rot, float radius = 60000.0f) {
+    auto b = std::make_unique<Planetoid>("unit", pos, rot, 1.0f, 42u, radius);
+    b->rotation = rot;
+    return b;
+}
+double Dist(const DVec3& a, const DVec3& b) { return (a - b).length(); }
+}
+
+// local -> world -> local is exact to micrometres 60 km from the centre, the body 100 km from the origin, at any angle.
+TEST(Frames, LocalWorldRoundTripAt60km) {
+    std::mt19937 rng(1);
+    std::uniform_real_distribution<float> ang(0.0f, 360.0f);
+    std::uniform_real_distribution<double> dir(-1.0, 1.0);
+    for (int i = 0; i < 500; ++i) {
+        auto b = MakeBody({ 100000.0, -20000.0, 5000.0 }, { ang(rng), ang(rng), ang(rng) });
+        DVec3 l{ dir(rng), dir(rng), dir(rng) };
+        l = l * (60000.0 / std::max(1e-9, l.length()));
+        const DVec3 w = b->toWorldD(l);
+        EXPECT_NEAR(Dist(w, b->worldPos), 60000.0, 1e-6) << "a rotation keeps distances";
+        EXPECT_LT(Dist(b->toLocalD(w), l), 1e-6);
+    }
+}
+
+// The double transform is the float model matrix's (raymath MatrixRotateXYZ), so chunks and physics agree.
+TEST(Frames, DoubleTransformMatchesTheModelMatrix) {
+    std::mt19937 rng(2);
+    std::uniform_real_distribution<float> ang(0.0f, 360.0f), c(-200.0f, 200.0f);
+    for (int i = 0; i < 200; ++i) {
+        auto b = MakeBody({ 0.0, 0.0, 0.0 }, { ang(rng), ang(rng), ang(rng) }, 500.0f);
+        const Vector3 l = { c(rng), c(rng), c(rng) };
+        const Vector3 wf = b->toWorld(l);
+        const DVec3 wd = b->toWorldD(DVec3(l));
+        EXPECT_LT(Dist(DVec3(wf), wd), 2e-4) << "rotation " << b->rotation.x << " " << b->rotation.y << " " << b->rotation.z;
+        const Vector3 dw = b->dirToWorld(Vector3Normalize(l));
+        const Vector3 dq = Vector3RotateByQuaternion(Vector3Normalize(l), b->rotationQuat());
+        EXPECT_LT(Vector3Distance(dw, dq), 1e-5f);
+        EXPECT_LT(Vector3Distance(b->dirToLocal(dw), Vector3Normalize(l)), 1e-5f);
+    }
+}
+
+// A body-fixed point's velocity from the spin (surfaceVelocity) is the rate its world position changes: the player rides
+// on it, and a wrong one slides everything standing on a turning planet (#749, #856).
+namespace {
+// The reference: the body-fixed point's world velocity by a central difference of the rotation in double (BodyRotationD's
+// formula with double angles: the stored float angles step 1.5e-5 deg at 200 deg, too coarse to difference).
+DVec3 SpinVelocityD(Vector3 rotDeg, Vector3 spinDeg, const DVec3& l) {
+    auto world = [&](double t) {
+        const double ax = -((double)rotDeg.x + spinDeg.x * t) * (PI / 180.0), ay = -((double)rotDeg.y + spinDeg.y * t) * (PI / 180.0),
+                     az = -((double)rotDeg.z + spinDeg.z * t) * (PI / 180.0);
+        const double cx = cos(ax), sx = sin(ax), cy = cos(ay), sy = sin(ay), cz = cos(az), sz = sin(az);
+        const double r[3][3] = { { cz * cy, sz * cy, -sy }, { cz * sy * sx - sz * cx, sz * sy * sx + cz * cx, cy * sx }, { cz * sy * cx + sz * sx, sz * sy * cx - cz * sx, cy * cx } };
+        return DVec3(r[0][0] * l.x + r[0][1] * l.y + r[0][2] * l.z, r[1][0] * l.x + r[1][1] * l.y + r[1][2] * l.z, r[2][0] * l.x + r[2][1] * l.y + r[2][2] * l.z);
+    };
+    const double h = 1e-3;
+    return (world(h) - world(-h)) * (1.0 / (2.0 * h));
+}
+// Worst |surfaceVelocity - reference| / speed over `n` random orientations (0: the identity only).
+double WorstSurfaceVelocityError(int n, Vector3 spin) {
+    std::mt19937 rng(749);
+    std::uniform_real_distribution<float> ang(0.0f, 360.0f);
+    double worst = 0.0;
+    for (int i = 0; i <= n; ++i) {
+        const Vector3 rot = i == 0 ? Vector3{ 0, 0, 0 } : Vector3{ ang(rng), ang(rng), ang(rng) };
+        auto b = MakeBody({ 0.0, 0.0, 0.0 }, rot);
+        b->spin = spin;
+        const DVec3 l{ 31000.0, 42000.0, -28000.0 }; // ~59 km out
+        const DVec3 ref = SpinVelocityD(rot, spin, l);
+        const Vector3 v = b->surfaceVelocity(b->toWorldD(l).toFloat()); // render origin = the world origin; the body sits there
+        worst = std::max(worst, Dist(DVec3(v), ref) / std::max(1e-9, ref.length()));
+    }
+    return worst;
+}
+}
+
+// A planet's spin (about its Y axis, as bodies.txt gives it) at any orientation.
+TEST(Frames, SurfaceVelocityIsTheSpinOfABodyFixedPoint) {
+    EXPECT_LT(WorstSurfaceVelocityError(500, { 0, 0.1f, 0 }), 0.002) << "worst relative error over 500 orientations";
+}
+
+// Disabled until #872: a spin about several Euler axes at once (ring rocks, asteroids) is off by up to 1.5%: the angular
+// velocity comes from a float quaternion's acosf(w) near w = 1. Run with --gtest_also_run_disabled_tests.
+TEST(Frames, DISABLED_SurfaceVelocityOfAMultiAxisSpin) {
+    EXPECT_LT(WorstSurfaceVelocityError(500, { 0.02f, -0.1f, 0.05f }), 0.002) << "worst relative error over 500 orientations";
+}
+
+// A whole day of turning: the same local point comes back to the same place, and its local coordinates never drift.
+TEST(Frames, ADayOfSpinKeepsLocalPointsFixed) {
+    auto b = MakeBody({ 0.0, 0.0, 0.0 }, { 0, 0, 0 });
+    const DVec3 l{ 1234.5, 59900.25, -321.125 };
+    const DVec3 w0 = b->toWorldD(l);
+    for (int deg = 0; deg <= 360; deg += 15) {
+        b->rotation.y = (float)deg;
+        EXPECT_LT(Dist(b->toLocalD(b->toWorldD(l)), l), 1e-6) << deg << " deg";
+    }
+    EXPECT_LT(Dist(b->toWorldD(l), w0), 0.1) << "360 deg is a full turn (raylib's float DEG2RAD: within 10 cm at 60 km)";
+}
+#endif

@@ -178,3 +178,130 @@ void TerrainDeltasBuilder::apply(const TerrainEdit& e, const DensityField& field
                 }
             }
 }
+
+#ifdef RAYLIBGAME_UNIT_TESTS
+// ---- Unit tests (#869): carve and fill rounding (#693), keys, the sparse chunk store ----
+#include "unit_helpers.h"
+#include <random>
+
+namespace {
+// Flat ground: solid below y = 0, the lattice row at y = 0 exactly at iso (the worst case for #693's rounding).
+class FlatField : public DensityField {
+public:
+    float baseDensity(Vector3 p) const override { return ISO_LEVEL - DENSITY_GRADIENT * p.y; }
+    VoxelMaterial material(Vector3, float) const override { return VoxelMaterial::Rock; }
+    Vector3 fallbackUp(Vector3) const override { return { 0, 1, 0 }; }
+    float maxRadius() const override { return 1e6f; }
+};
+float LatticeDensity(const TerrainDeltas& d, const DensityField& f, int x, int y, int z) {
+    return f.baseDensity({ x * kVoxelSize, y * kVoxelSize, z * kVoxelSize }) + d.at(x, y, z);
+}
+}
+
+// #693: a box carved flush with the ground leaves no lattice point inside it (or on its faces) solid: no specks.
+TEST(TerrainDeltas, FlushBoxCarveLeavesNoSolidPointInside) {
+    const FlatField field;
+    const float offsets[] = { 0.0f, 0.001f, -0.001f, 0.0625f, 0.124f }; // the box top at, just over and just under the ground
+    for (float off : offsets) {
+        TerrainDeltas empty;
+        TerrainDeltasBuilder b(empty);
+        TerrainEdit e{};
+        e.carve = true; e.box = true;
+        e.half = { 1.0f, 0.5f, 1.0f };
+        e.center = { 0.1f, -0.5f + off, -0.2f };
+        e.radius = Vector3Length(e.half);
+        b.apply(e, field);
+        const auto d = b.finish();
+        int solidInside = 0, inside = 0;
+        for (int z = -8; z <= 8; ++z) for (int y = -8; y <= 4; ++y) for (int x = -8; x <= 8; ++x) {
+            const Vector3 p = { x * kVoxelSize, y * kVoxelSize, z * kVoxelSize };
+            const bool in = fabsf(p.x - e.center.x) <= e.half.x && fabsf(p.y - e.center.y) <= e.half.y && fabsf(p.z - e.center.z) <= e.half.z;
+            if (!in) continue;
+            ++inside;
+            if (LatticeDensity(*d, field, x, y, z) >= ISO_LEVEL) ++solidInside;
+        }
+        EXPECT_GT(inside, 100);
+        EXPECT_EQ(solidInside, 0) << "box top " << off << " m over the ground";
+    }
+}
+
+TEST(TerrainDeltas, SphereCarveAndFillAreExact) {
+    const FlatField field;
+    std::mt19937 rng(693);
+    std::uniform_real_distribution<float> c(-0.3f, 0.3f), r(0.4f, 1.6f);
+    for (int k = 0; k < 40; ++k) {
+        TerrainDeltas empty;
+        TerrainDeltasBuilder b(empty);
+        TerrainEdit carve{}; carve.carve = true; carve.center = { c(rng), c(rng), c(rng) }; carve.radius = r(rng);
+        b.apply(carve, field);
+        TerrainEdit fill{}; fill.fill = true; fill.center = { carve.center.x + 4.0f, 1.0f + c(rng), carve.center.z }; fill.radius = r(rng); fill.paint = (int)VoxelMaterial::Gravel;
+        b.apply(fill, field);
+        const auto d = b.finish();
+        EXPECT_EQ(d->strokes, 2u);
+        for (int z = -10; z <= 10; ++z) for (int y = -10; y <= 12; ++y) for (int x = -10; x <= 26; ++x) {
+            const Vector3 p = { x * kVoxelSize, y * kVoxelSize, z * kVoxelSize };
+            const float dens = LatticeDensity(*d, field, x, y, z);
+            if (Vector3Distance(p, carve.center) < carve.radius) ASSERT_LT(dens, ISO_LEVEL) << "carved point solid at " << x << " " << y << " " << z;
+            if (Vector3Distance(p, fill.center) < fill.radius) ASSERT_GE(dens, ISO_LEVEL) << "filled point empty at " << x << " " << y << " " << z;
+        }
+        EXPECT_EQ(d->materialAt(fill.center), (int)VoxelMaterial::Gravel) << "filled ground keeps its material";
+    }
+}
+
+TEST(TerrainDeltas, EditsMakeNewSnapshotsAndShareUntouchedChunks) {
+    const FlatField field;
+    TerrainDeltas empty;
+    TerrainDeltasBuilder b1(empty);
+    TerrainEdit a{}; a.carve = true; a.center = { 0, 0, 0 }; a.radius = 1.0f;
+    TerrainEdit far{}; far.carve = true; far.center = { 100, 0, 0 }; far.radius = 1.0f;
+    b1.apply(a, field); b1.apply(far, field);
+    const auto s1 = b1.finish();
+    TerrainDeltasBuilder b2(*s1);
+    std::unordered_set<TerrainDeltas::Key> touched;
+    TerrainEdit again = a; again.center = { 0.5f, 0, 0 };
+    b2.apply(again, field, &touched);
+    const auto s2 = b2.finish();
+    EXPECT_FALSE(touched.empty());
+    int shared = 0, copied = 0;
+    for (const auto& kv : s2->chunks) {
+        auto it = s1->chunks.find(kv.first);
+        if (it == s1->chunks.end()) continue;
+        (it->second == kv.second ? shared : copied)++;
+        if (it->second != kv.second) EXPECT_TRUE(touched.count(kv.first)) << "a changed chunk is reported";
+    }
+    EXPECT_GT(shared, 0) << "the far stroke's chunks are shared, not copied";
+    EXPECT_GT(copied, 0);
+    EXPECT_LT(LatticeDensity(*s1, field, 0, 0, 0), ISO_LEVEL);
+}
+
+TEST(TerrainDeltas, KeysPackAndRegionsFloor) {
+    std::mt19937 rng(5);
+    std::uniform_int_distribution<int> d(-1000000, 1000000);
+    for (int i = 0; i < 10000; ++i) {
+        const int x = d(rng), y = d(rng), z = d(rng);
+        int a, b, c;
+        TerrainDeltas::Unpack(TerrainDeltas::KeyOf(x, y, z), a, b, c);
+        ASSERT_EQ(a, x); ASSERT_EQ(b, y); ASSERT_EQ(c, z);
+    }
+    int rx, ry, rz;
+    TerrainDeltas::Unpack(TerrainDeltas::RegionOf(TerrainDeltas::KeyOf(-1, 0, 15)), rx, ry, rz);
+    EXPECT_EQ(rx, -1); EXPECT_EQ(ry, 0); EXPECT_EQ(rz, 0);
+    TerrainDeltas::Unpack(TerrainDeltas::RegionOf(TerrainDeltas::KeyOf(-16, -17, 16)), rx, ry, rz);
+    EXPECT_EQ(rx, -1); EXPECT_EQ(ry, -2); EXPECT_EQ(rz, 1);
+}
+
+TEST(TerrainDeltas, SparseChunkDenseRoundTrip) {
+    std::mt19937 rng(11);
+    std::vector<int16_t> dense(DeltaChunk::kN, 0);
+    for (int k = 0; k < 3000; ++k) dense[rng() % DeltaChunk::kN] = (int16_t)((int)(rng() % 2001) - 1000);
+    DeltaChunk c;
+    c.fromDense(dense.data());
+    for (int i = 0; i < DeltaChunk::kN; ++i) ASSERT_EQ(c.get(i), dense[i]) << i;
+    std::vector<int16_t> out(DeltaChunk::kN, 7);
+    c.toDense(out.data());
+    EXPECT_EQ(out, dense);
+    DeltaChunk e;
+    for (int i = 0; i < DeltaChunk::kN; i += 97) e.set(i, 0);
+    EXPECT_TRUE(e.empty()) << "zeros allocate no brick";
+}
+#endif
