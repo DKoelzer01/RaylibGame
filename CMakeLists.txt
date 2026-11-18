@@ -109,6 +109,9 @@ if(ENABLE_GNS)
     target_link_libraries(engine PUBLIC "${GNS_ROOT}/lib/libGameNetworkingSockets_s.a" "${GNS_ROOT}/lib/libprotobuf.a"
         ws2_32 winmm bcrypt iphlpapi crypt32)
 endif()
+if(WIN32)
+    target_link_libraries(engine PUBLIC ws2_32 iphlpapi) # (#341) the menu's Host checks its port is free (hostprocess.cpp), in every build
+endif()
 if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
     target_compile_options(engine PRIVATE -Wall -Wno-missing-braces -ffp-contract=off) # no FMA contraction: the GPU terrain port (terrain.glsl) matches the CPU bit for bit
 endif()
