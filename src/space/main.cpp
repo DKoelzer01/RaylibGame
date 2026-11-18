@@ -389,6 +389,7 @@ int main(int argc, char** argv)
     bool benchLamps = false;       // --test-lamps: 100 lamp cubes light the ground (#139)
     bool benchGiant = false;       // --shot-giant: one tree of each size class (#274)
     bool benchTorch = false;       // --test-torch: a held torch lights the ground (#218)
+    bool benchBite = false, biteStarted = false; // --test-bite (#165)
     bool benchShotDig = false;     // --shot-dig (#533): the dig preview ring, looking down at the ground
     bool benchF2 = false;          // --test-f2 (#579): take an F2 screenshot
     bool benchTime = false;        // --test-time: dawn start (#259), a +6 h jump carries the player (#275)
@@ -657,6 +658,7 @@ int main(int argc, char** argv)
         if (std::string(argv[i]) == "--test-menus") benchMenus = true;
         if (std::string(argv[i]) == "--test-time") benchTime = true;
         if (std::string(argv[i]) == "--test-torch") benchTorch = true;
+        if (std::string(argv[i]) == "--test-bite") benchBite = true;
         if (std::string(argv[i]) == "--shot-dig") benchShotDig = true;
         if (std::string(argv[i]) == "--test-f2") benchF2 = true;
         if (std::string(argv[i]) == "--shot-giant") benchGiant = true;
@@ -8034,7 +8036,7 @@ int main(int argc, char** argv)
                         }
                         benchWalkSeconds = 0.0;
                     }
-                } else if ((WorldIdle() && benchDigStrokes == 0 && !benchPaint && !benchSaveLoad && benchWalkSeconds <= 0.0 && benchMineStrokes == 0 && minePhase != 2 && benchFlySeconds <= 0.0 && !benchSuffocate && benchOrbitSeconds <= 0.0 && !benchRide && !benchPark && !benchGravity && !benchPrecision && !benchMantle && !benchAirJump && !benchMoon && !benchHole && !benchWall && !benchDoorway && !benchLedge && !benchTor && !benchMachines && !benchFall && !benchHover && !benchNetIds && !benchNet && !benchTwoPlayers && !benchFingerprint && !benchInterest && !benchTeleClose && !benchMenus && !benchWater && !benchFlyFollow && !benchHotbar && !benchInventory && !benchMap && !benchViewmodel && !benchQuests && !benchHunger && !benchFarm && !benchAnimals && !benchThreats && !benchAnimalPath && !benchDam && !benchFlowMeter && !benchPartWall && !benchPressure && benchShotTabs == 0 && !benchForest && !benchFlow && !benchPond && !benchBucket && !benchWaterSpeed && benchFluidLoad <= 0.0f && !benchFlowShade && !benchPump && !benchTerrain && !benchShelter && !benchRoom && !benchFacing && !benchPlacement && !benchShotDig && !benchShadow && !benchParticles && !benchBiomes && !benchOil && !benchSpring && !benchShotAnimals && !benchShotMachines && benchShotBiomes < 0 && !benchFarForest && !benchRecipes && !benchWeather && !benchDecor && !benchMaterials && !benchDamage && !benchCrafting && !benchSuit && !benchTools && !benchRivers && !benchRing && !benchRocket && !benchStation && !benchBlueprint && !benchSmallBody && !benchTrees && !benchChop && benchPersist == 0 && benchBuild == 0 && benchFactory == 0 && !benchCombat && !benchHost && !benchShower && !benchProgression && (benchUnfocus <= 0.0f || unfocusPhase >= 6)) || GetTime() > 600.0) {
+                } else if ((WorldIdle() && benchDigStrokes == 0 && !benchPaint && !benchSaveLoad && benchWalkSeconds <= 0.0 && benchMineStrokes == 0 && minePhase != 2 && benchFlySeconds <= 0.0 && !benchSuffocate && benchOrbitSeconds <= 0.0 && !benchRide && !benchPark && !benchGravity && !benchPrecision && !benchMantle && !benchAirJump && !benchMoon && !benchHole && !benchWall && !benchDoorway && !benchLedge && !benchTor && !benchMachines && !benchFall && !benchHover && !benchNetIds && !benchNet && !benchTwoPlayers && !benchFingerprint && !benchInterest && !benchTeleClose && !benchMenus && !benchWater && !benchFlyFollow && !benchHotbar && !benchInventory && !benchMap && !benchViewmodel && !benchQuests && !benchHunger && !benchFarm && !benchAnimals && !benchThreats && !benchAnimalPath && !benchDam && !benchFlowMeter && !benchPartWall && !benchPressure && benchShotTabs == 0 && !benchForest && !benchFlow && !benchPond && !benchBucket && !benchWaterSpeed && benchFluidLoad <= 0.0f && !benchFlowShade && !benchPump && !benchTerrain && !benchShelter && !benchRoom && !benchFacing && !benchBite && !benchPlacement && !benchShotDig && !benchShadow && !benchParticles && !benchBiomes && !benchOil && !benchSpring && !benchShotAnimals && !benchShotMachines && benchShotBiomes < 0 && !benchFarForest && !benchRecipes && !benchWeather && !benchDecor && !benchMaterials && !benchDamage && !benchCrafting && !benchSuit && !benchTools && !benchRivers && !benchRing && !benchRocket && !benchStation && !benchBlueprint && !benchSmallBody && !benchTrees && !benchChop && benchPersist == 0 && benchBuild == 0 && benchFactory == 0 && !benchCombat && !benchHost && !benchShower && !benchProgression && (benchUnfocus <= 0.0f || unfocusPhase >= 6)) || GetTime() > 600.0) {
                     benchStart = GetTime();
                     printf("bench: world ready after %.2f s (%d chunks, avg build %.2f ms of which sampling %.2f ms, %d worker threads)\n",
                         GetWorldStats().lastGenerationSeconds, GetWorldStats().chunks, GetWorldStats().avgBuildMs, GetWorldStats().avgSampleMs, GetWorldStats().workerThreads);
@@ -9053,6 +9055,35 @@ int main(int argc, char** argv)
                 player.forward = Vector3Normalize(Vector3Subtract(flat, Vector3Scale(player.up, 0.84f))); // tan 40 deg
             }
             if (df == 40) { TakeScreenshot("bench_dig.png"); printf("bench: shot-dig: bench_dig.png\n"); benchShotDig = false; }
+        }
+        // --test-bite (#165): a thornback set down 2 m ahead charges, warns, and strikes no sooner than its wind-up; the hit
+        // goes through Combat_Damage (8 health on normal) and shoves the player away from it.
+        if (benchBite && gameState == 1 && !loading && (biteStarted || WorldIdle())) {
+            biteStarted = true;
+            static int phase = 0; static double t0 = 0.0, tHit = -1.0; static DVec3 atHit{}; // body-local
+            static float hp0 = 100.0f; static double sim0 = 0.0; // the spawn, in sim time (the wind-up runs on it)
+            Planetoid* p = dynamic_cast<Planetoid*>(world.objects[0].get());
+            const double t = GetTime() - t0;
+            if (phase == 0) { player.flyMode = false; player.spawnOn(world, *p, StartSpawnDir(*p)); phase = 1; t0 = GetTime(); }
+            else if (phase == 1 && t > 1.5 && player.grounded) {
+                Animals_SetThreats(true);
+                survival.health = 100.0f; hp0 = survival.health;
+                const Vector3 feet = p->toLocal((player.position - world.renderOrigin).toFloat());
+                const Vector3 flat = Vector3Normalize(p->dirToLocal(Vector3Subtract(player.forward, Vector3Scale(player.up, Vector3DotProduct(player.forward, player.up)))));
+                const int n = Animals_Spawn(world, *p, "thornback", Vector3Add(feet, Vector3Scale(flat, 2.0f / p->scale)), 1, false, 0.0f);
+                printf("bench: bite: %d thornback set down 2 m ahead\n", n);
+                phase = 2; t0 = GetTime();
+            } else if (phase == 2) {
+                if (tHit < 0.0 && survival.health < hp0 - 0.01f) { tHit = SimTime() - sim0; atHit = p->toLocalD(player.position); }
+                if (tHit >= 0.0 && SimTime() - sim0 > tHit + 0.4) {
+                    const float lost = hp0 - survival.health;
+                    const float shoved = (float)(p->toLocalD(player.position) - atHit).length() * p->scale;
+                    const bool ok = tHit >= Animals_BiteWindUp() && fabsf(lost - 8.0f * Difficulty_ThreatScale()) < 0.5f && shoved > 0.3f;
+                    printf("bench: bite: first hit %.2f s after it was set down (wind-up %.1f s), %.1f health lost, shoved %.2f m -> %s\n",
+                           tHit, Animals_BiteWindUp(), lost, shoved, ok ? "PASS" : "FAIL");
+                    Animals_SetThreats(false); benchBite = false;
+                } else if (t > 10.0) { printf("bench: bite: no hit within 10 s -> FAIL\n"); Animals_SetThreats(false); benchBite = false; }
+            }
         }
         if (benchTorch && gameState == 1 && !loading && WorldIdle()) {
             static int tf = 0;
