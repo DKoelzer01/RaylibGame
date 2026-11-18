@@ -11136,7 +11136,7 @@ int main(int argc, char** argv)
             static NetClient alice, bob, carol;
             static int step = 0;
             static double t0 = -1.0, stepAt = 0.0;
-            static bool invited = false, together = false, healthSeen = false, chatToTeam = false, chatNotOthers = true, carolRefused = false, kicked = false;
+            static bool invited = false, bobsKept = false, together = false, healthSeen = false, chatToTeam = false, chatNotOthers = true, carolRefused = false, kicked = false;
             if (t0 < 0.0) t0 = GetTime();
             const char* addr = TextFormat("127.0.0.1:%d", hostPort);
             for (NetClient* c : { &alice, &bob, &carol }) NetClient_Update(*c);
@@ -11145,9 +11145,12 @@ int main(int argc, char** argv)
             else if (step == 1 && alice.state == NetClient::State::Joined && bob.state == NetClient::State::Joined && carol.state == NetClient::State::Joined && bob.teamMsgs > 0) {
                 NetClient_SendChat(alice, "/team invite bob"); step = 2;
             } else if (step == 2 && !bob.team.invite.empty()) {
-                invited = true; NetClient_SendChat(bob, "/team accept"); step = 3;
+                invited = true;
+                TeamQuests_Book(Teams_Of(PlayerId_FromName("bob"))).treeDone.insert("e0f"); // (#861) bob did a node alone: the team keeps it
+                NetClient_SendChat(bob, "/team accept"); step = 3;
             } else if (step == 3 && alice.team.members.size() == 2 && bob.team.members.size() == 2 && alice.team.team == bob.team.team) {
                 together = true;
+                bobsKept = TeamQuests_Book(Teams_Of(PlayerId_FromName("alice"))).treeDone.count("e0f") > 0;
                 for (const auto& m : alice.team.members) if (m.name == "bob") healthSeen = m.online && m.health > 0.0f;
                 NetClient_SendChat(bob, "/t hello team"); stepAt = GetTime(); step = 4;
             } else if (step == 4 && (said(alice, "[team] bob: hello team") || GetTime() - stepAt > 3.0)) {
@@ -11162,10 +11165,10 @@ int main(int argc, char** argv)
                 step = 7;
             }
             if (step == 7 || GetTime() - t0 > 60.0) {
-                const bool ok = invited && together && healthSeen && chatToTeam && chatNotOthers && carolRefused && kicked;
-                printf("bench: teams (#604): invite seen %d, accepted into one team %d (bob online with health %d); team chat to the team %d, not others %d; "
+                const bool ok = invited && together && bobsKept && healthSeen && chatToTeam && chatNotOthers && carolRefused && kicked;
+                printf("bench: teams (#604): invite seen %d, accepted into one team %d (bob's own progress kept %d; bob online with health %d); team chat to the team %d, not others %d; "
                        "a non-owner's kick refused %d; the owner's kick: a team of one again %d; step %d -> %s\n",
-                       invited, together, healthSeen, chatToTeam, chatNotOthers, carolRefused, kicked, step, ok ? "PASS" : "FAIL");
+                       invited, together, bobsKept, healthSeen, chatToTeam, chatNotOthers, carolRefused, kicked, step, ok ? "PASS" : "FAIL");
                 for (NetClient* c : { &alice, &bob, &carol }) NetClient_Disconnect(*c);
                 benchTeams = false;
             }

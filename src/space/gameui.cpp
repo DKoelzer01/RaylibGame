@@ -948,8 +948,9 @@ static void DrawTeam() {
     bool youOwn = false;
     for (const auto& m : t.members) youOwn = youOwn || (m.you && m.owner);
     if (!t.invite.empty()) { // an invite waiting
-        ImGui::TextColored(ImVec4(0.55f, 0.9f, 0.55f, 1.0f), "%s invites you. Joining takes that team's quest progress%s.", t.invite.c_str(),
-                           t.members.size() <= 1 ? " (your own goes)" : "");
+        ImGui::TextColored(ImVec4(0.55f, 0.9f, 0.55f, 1.0f), "%s invites you. %s", t.invite.c_str(), t.members.size() <= 1
+                           ? "Joining adds your quest progress to the team's."
+                           : "Joining shares that team's quest progress; your current team keeps its own.");
         if (ImGui::Button("Accept")) say("/team accept");
         ImGui::SameLine();
         if (ImGui::Button("Decline")) say("/team decline");

@@ -168,6 +168,24 @@ bool TeamQuests_SelfTest() {
     TeamQuests_StoreAll();
     TeamQuests_Reset();
     check(TeamQuests_Explore(a, "terra", p1, 60000.0f) == 0 && TeamQuests_Explore(a, "terra", p2, 60000.0f) == 0, "stored and reloaded: the team's tiles kept");
+    // (#861) a joiner's book merged into a team's: the higher tier, the union of done tasks / nodes / visits / tiles, the
+    // larger count (not the sum); what the team had stays
+    {
+        const int solo = 9001, team = 9002;
+        TeamQuests_Forget(solo); TeamQuests_Forget(team);
+        QuestBookState& s = TeamQuests_Book(solo);
+        s.tier = 2; s.tasksDone.insert({ 1, 0 }); s.treeDone.insert("e0f"); s.counts["eat"] = 3.0; s.obtained["oak_log"] = 5.0; s.visitedMoon = true;
+        QuestBookState& t = TeamQuests_Book(team);
+        t.tier = 1; t.tasksDone.insert({ 0, 2 }); t.treeDone.insert("e1a"); t.counts["eat"] = 5.0; t.obtained["oak_log"] = 2.0;
+        TeamQuests_Explore(solo, "terra", p1, 60000.0f);
+        const int teamTiles = TeamQuests_Explore(team, "terra", p2, 60000.0f);
+        TeamQuests_Merge(solo, team);
+        const QuestBookState& m = TeamQuests_Book(team);
+        check(m.tier == 2 && m.tasksDone.count({ 1, 0 }) && m.tasksDone.count({ 0, 2 }) && m.treeDone.count("e0f") && m.treeDone.count("e1a") &&
+              m.counts.at("eat") == 5.0 && m.obtained.at("oak_log") == 5.0 && m.visitedMoon, "merged: tier, tasks, nodes, visits; counts take the larger");
+        check(TeamQuests_Explored(team) > teamTiles && TeamQuests_Explore(team, "terra", p1, 60000.0f) == 0, "merged: the joiner's explored tiles are the team's");
+        TeamQuests_Forget(solo); TeamQuests_Forget(team);
+    }
     printf("bench: team quests: %s\n", ok ? "PASS" : "FAIL");
     return ok;
 }
@@ -197,6 +215,25 @@ void TeamQuests_Copy(int from, int to) {
     QuestBookState copy = TeamQuests_Book(from);
     TeamQuests_Book(to) = copy;
     tiles[to] = tiles[from];
+}
+
+void TeamQuests_Merge(int from, int into) {
+    if (from == into) return;
+    const QuestBookState src = TeamQuests_Book(from); // (a copy: Book(into) may add to the map)
+    QuestBookState& dst = TeamQuests_Book(into);
+    dst.tier = std::max(dst.tier, src.tier);
+    dst.placed.insert(src.placed.begin(), src.placed.end());
+    dst.visitedBodies.insert(src.visitedBodies.begin(), src.visitedBodies.end());
+    dst.reachedOrbit |= src.reachedOrbit; dst.visitedMoon |= src.visitedMoon; dst.visitedRing |= src.visitedRing;
+    dst.tasksDone.insert(src.tasksDone.begin(), src.tasksDone.end());
+    dst.treeDone.insert(src.treeDone.begin(), src.treeDone.end());
+    // Counts and totals take the larger side, not the sum: both sides' work toward one task would count twice.
+    for (const auto& [k, v] : src.counts) dst.counts[k] = std::max(dst.counts[k], v);
+    for (const auto& [k, v] : src.obtained) dst.obtained[k] = std::max(dst.obtained[k], v);
+    size_t all = 0;
+    for (const auto& [body, set] : tiles[from]) tiles[into][body].insert(set.begin(), set.end());
+    for (const auto& [body, set] : tiles[into]) all += set.size();
+    if (all) dst.counts["explored"] = std::max(dst.counts["explored"], (double)all);
 }
 
 void TeamQuests_Forget(int team) { books.erase(team); tiles.erase(team); }

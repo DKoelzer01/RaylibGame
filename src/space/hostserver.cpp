@@ -867,10 +867,13 @@ namespace {
         teamInvites.erase(std::remove_if(teamInvites.begin(), teamInvites.end(), [](const TeamInvite& i) { return GetTime() >= i.until || !Teams_Find(i.team); }), teamInvites.end());
         for (const Session& s : sessions) if (s.online) SendTeamState(s);
     }
-    // Into another team: the team's book goes to them (an emptied old team and its book go).
+    // Into another team. A joiner who was alone keeps their progress: their book is merged into the team's (#861, the user
+    // on #604), then it goes with the emptied team. One leaving a team that still has members takes nothing from it.
     void JoinTeam(const Session& s, int team) {
+        const int from = Teams_Of(s.uuid);
+        if (from) TeamQuests_Book(from); // (loaded from its record now: Teams_Move removes an emptied team's record)
         const int emptied = Teams_Move(s.uuid, team);
-        if (emptied) TeamQuests_Forget(emptied);
+        if (emptied) { if (emptied == from) TeamQuests_Merge(from, team); TeamQuests_Forget(emptied); }
         SendQuestBook(s.conn, team);
     }
     // Out of their team into a team of one with a copy of its progress (leave, kick). Online or not.
@@ -913,7 +916,7 @@ namespace {
             else {
                 teamInvites.erase(std::remove_if(teamInvites.begin(), teamInvites.end(), [&](const TeamInvite& i) { return i.to == to->uuid && i.team == mine; }), teamInvites.end());
                 teamInvites.push_back({ mine, to->uuid, GetTime() + kInviteSeconds });
-                Tell(*to, me->name + " invites you to " + team->name + ": /team accept (you take that team's quest progress), or /team decline");
+                Tell(*to, me->name + " invites you to " + team->name + ": /team accept (your quest progress is added to the team's), or /team decline");
                 Tell(*me, "Invited " + to->name);
             }
         } else if (cmd == "accept") {
