@@ -104,6 +104,7 @@ static std::vector<AvatarState> gAvatars, gBenchAvatars;
 static NetClient gJoin;
 static bool gJoinSynced = false;
 #include "mpbots.h"
+#include "worldgenparams.h"
 
 #if defined(PLATFORM_DESKTOP)
     #define GLSL_VERSION            330
@@ -1212,7 +1213,7 @@ int main(int argc, char** argv)
     Station_Init(&world);
     // The main menu has no world (#503: the erosion bake ran before the title screen). Benches skip the menu: they
     // generate here (or load, below).
-    if (bench && !loadSaveAtStart && !benchMenus && joinAddr.empty()) { // --test-menus starts at the title screen with no world, as a launch does (--join: the server's world, below)
+    if (bench && !loadSaveAtStart && !benchMenus && joinAddr.empty() && hostSave.empty()) { // --test-menus starts at the title screen with no world, as a launch does (--join: the server's world, below; --host: its save's world and sidecar, below - #757)
         generateWorld(world);
         if (!world.objects.empty()) world.camera.target = world.objects[0]->position;
     }
@@ -1259,11 +1260,16 @@ int main(int argc, char** argv)
         }
         if (!sys.bodies.empty()) { worldGen.system = sys; worldGen.systemLoaded = true; }
         SetWorldSavePath(TextFormat("saves/client_%s.sav", joinName.c_str()));
+        // #757: the server's world-gen settings become this save's sidecar (generateWorld reads it), and its sandbox flag.
+        const WorldGenParams joinParams = WorldGenParams_FromText(gJoin.welcome.worldgen);
+        WorldGenParams_Save(WorldSavePath(), joinParams);
+        gSandboxWorld = gJoin.welcome.sandbox;
         world.objects.clear();
         generateWorld(world);
         gNetClient = &gJoin;
-        printf("join: joined %s as %s, session %u%s; seed %u, %zu bodies; server world time %.1f s\n", joinAddr.c_str(), joinName.c_str(), gJoin.welcome.session,
-               gJoin.welcome.reconnected ? " (reconnected)" : "", gJoin.welcome.seed, sys.bodies.size(), gJoin.welcome.worldTime);
+        printf("join: joined %s as %s, session %u%s; seed %u, %zu bodies, %s world-gen settings%s; server world time %.1f s\n", joinAddr.c_str(), joinName.c_str(), gJoin.welcome.session,
+               gJoin.welcome.reconnected ? " (reconnected)" : "", gJoin.welcome.seed, sys.bodies.size(), joinParams.isDefault() ? "default" : "custom",
+               gJoin.welcome.sandbox ? ", sandbox" : "", gJoin.welcome.worldTime);
     }
     bool hostLoaded = false;
     if (!hostSave.empty()) { // --host (#311): the server's world, saved back to the same file

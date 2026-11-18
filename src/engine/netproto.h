@@ -15,7 +15,7 @@
 #include <string>
 #include <vector>
 
-constexpr uint32_t kNetProtocol = 5; // 1 was the text "join" of #311; 5: world time in Welcome and Pong (#339)
+constexpr uint32_t kNetProtocol = 7; // 1 was the text "join" of #311; 5: world time in Welcome and Pong (#339); 6 is #329's; 7: world-gen settings in Welcome (#757)
 
 enum class NetMsg : uint8_t {
     Hello = 1,     // client -> server: protocol, build, player name, password
@@ -98,6 +98,8 @@ struct MsgWelcome {
     uint64_t fingerprint = 0;
     uint32_t serverTick = 0;         // the server's sim tick when it sent this (the client's clock starts here)
     double worldTime = 0.0;          // the server's WorldTime() when it sent this (#339: spin, orbits, sun, weather)
+    std::string worldgen;            // #757: the world's generation settings (WorldGenParams_ToText: the sidecar's lines)
+    bool sandbox = false;            // #757: --sandbox (#662): the start planet is the flat test plane
     NetServerSettings settings;
 };
 enum class NetReject : uint8_t { Protocol = 1, Build, Password, Full, Banned, NameTaken, Malformed };

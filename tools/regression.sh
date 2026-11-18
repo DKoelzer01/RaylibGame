@@ -159,6 +159,8 @@ multiplayer() {
     if [ "$gexe" != "$exe" ]; then
         echo "=== tools/test_join.sh" | tee -a "$log"
         EXE="$gexe" bash "$here/tools/test_join.sh" 2>&1 | grep "^bench: join (" | tee -a "$log"
+        echo "=== tools/test_join.sh on a non-default world (#757)" | tee -a "$log"
+        WORLDGEN="ocean 0.4 mountains 1.6 cliffs 0 karst 0 erosion 0" PORT=27952 EXE="$gexe" bash "$here/tools/test_join.sh" 2>&1 | grep "^bench: join (" | tee -a "$log"
     fi
 }
 

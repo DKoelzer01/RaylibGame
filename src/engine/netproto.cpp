@@ -95,7 +95,7 @@ void NetWrite(NetWriter& w, const MsgWelcome& m) {
     Id(w, NetMsg::Welcome);
     w.u32(m.protocol); w.u32(m.session); w.boolean(m.reconnected); w.u32(m.seed);
     w.varu(m.bodies.size()); for (const std::string& b : m.bodies) w.str(b);
-    w.u64(m.fingerprint); w.u32(m.serverTick); w.f64(m.worldTime);
+    w.u64(m.fingerprint); w.u32(m.serverTick); w.f64(m.worldTime); w.str(m.worldgen); w.boolean(m.sandbox);
     w.u8(m.settings.difficulty); w.boolean(m.settings.pvp); w.boolean(m.settings.claims); w.u8(m.settings.maxPlayers);
 }
 bool NetRead(NetReader& r, MsgWelcome& m) {
@@ -104,7 +104,7 @@ bool NetRead(NetReader& r, MsgWelcome& m) {
     if (n > 256) r.ok = false;
     m.bodies.clear();
     for (uint64_t i = 0; i < n && r.ok; ++i) m.bodies.push_back(r.str(1024));
-    m.fingerprint = r.u64(); m.serverTick = r.u32(); m.worldTime = r.f64();
+    m.fingerprint = r.u64(); m.serverTick = r.u32(); m.worldTime = r.f64(); m.worldgen = r.str(4096); m.sandbox = r.boolean();
     m.settings.difficulty = r.u8(); m.settings.pvp = r.boolean(); m.settings.claims = r.boolean(); m.settings.maxPlayers = r.u8();
     if (m.settings.difficulty > 2) r.ok = false;
     return Done(r);
@@ -267,10 +267,10 @@ bool NetProto_Test() {
     }
     {
         MsgWelcome a; a.session = 7; a.reconnected = true; a.seed = 42; a.bodies = { "planet Terra 0 0 0 60000", "moon Luna 1 2 3 9000" };
-        a.fingerprint = 0x1234567890abcdefull; a.serverTick = 123456; a.worldTime = 4321.5; a.settings = { 2, true, false, 16 };
+        a.fingerprint = 0x1234567890abcdefull; a.serverTick = 123456; a.worldTime = 4321.5; a.worldgen = "ocean 0.5\nkarst 0\n"; a.sandbox = true; a.settings = { 2, true, false, 16 };
         MsgWelcome b; std::vector<uint8_t> s;
         check(RoundTrip(a, b, &s) && b.session == 7 && b.reconnected && b.seed == 42 && b.bodies == a.bodies && b.fingerprint == a.fingerprint &&
-              b.serverTick == 123456 && b.worldTime == 4321.5 && b.settings.difficulty == 2 && b.settings.pvp && !b.settings.claims && b.settings.maxPlayers == 16, "welcome");
+              b.serverTick == 123456 && b.worldTime == 4321.5 && b.worldgen == a.worldgen && b.sandbox && b.settings.difficulty == 2 && b.settings.pvp && !b.settings.claims && b.settings.maxPlayers == 16, "welcome");
         samples.push_back(s);
     }
     { MsgReject a{ NetReject::Password, "try again" }, b; std::vector<uint8_t> s; check(RoundTrip(a, b, &s) && b.reason == a.reason && b.detail == a.detail, "reject"); samples.push_back(s); }
