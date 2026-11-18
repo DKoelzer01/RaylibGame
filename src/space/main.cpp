@@ -100,6 +100,9 @@ extern "C" __declspec(dllimport) int __stdcall MessageBoxA(void*, const char*, c
 // Avatars drawn this frame (#328): remote players (the net client fills them, #327), bench avatars, and the
 // RAYLIBGAME_AVATAR_SELF=1 debug figure. Rebuilt each frame before drawScene.
 static std::vector<AvatarState> gAvatars, gBenchAvatars;
+// --join (#341 core): this process's connection to the server; its player follows the server's state once synced.
+static NetClient gJoin;
+static bool gJoinSynced = false;
 #include "mpbots.h"
 
 #if defined(PLATFORM_DESKTOP)
@@ -476,6 +479,9 @@ int main(int argc, char** argv)
     bool benchMeteor = false;      // --test-meteor (#177)
     bool benchShower = false;      // --test-shower (#316): one world-wide meteor shower, rolled by the authority
     std::string hostSave;          // --host <save> (#311): a dedicated server: load (or create) the save, run headless, listen
+    std::string joinAddr, joinName = "player"; // --join <ip[:port]> [--name N] (#341 core): a client of a running --host
+    bool benchJoin = false;        // --test-join (with --join): the client side of the two-process test (tools/test_join.sh)
+    int benchJoinPhase = 0;
     uint16_t hostPort = kDefaultHostPort; // --port N
     bool benchHost = false;        // --test-host (#311): with --host, a loopback client joins
     bool benchTimeFollow = false;  // --test-time-follow (#339): the world clock follows a server time (slew, snap)
@@ -716,6 +722,9 @@ int main(int argc, char** argv)
         if (std::string(argv[i]) == "--ui") DebugUI_Toggle(); // open the debug panel at start
         if (std::string(argv[i]) == "--seed" && i + 1 < argc) worldGen.seed = (unsigned int)strtoul(argv[i + 1], nullptr, 10);
         if (std::string(argv[i]) == "--host" && i + 1 < argc) hostSave = argv[i + 1];
+        if (std::string(argv[i]) == "--join" && i + 1 < argc) { joinAddr = argv[i + 1]; if (joinAddr.find(':') == std::string::npos) joinAddr += ":" + std::to_string(kDefaultHostPort); }
+        if (std::string(argv[i]) == "--name" && i + 1 < argc) joinName = argv[i + 1];
+        if (std::string(argv[i]) == "--test-join") benchJoin = true;
         if (std::string(argv[i]) == "--port" && i + 1 < argc) hostPort = (uint16_t)atoi(argv[i + 1]);
         if (std::string(argv[i]) == "--host-password" && i + 1 < argc) Host_SetPassword(argv[i + 1]); // (#321)
         if (std::string(argv[i]) == "--max-players" && i + 1 < argc) Host_SetMaxPlayers(atoi(argv[i + 1]));
@@ -1105,6 +1114,7 @@ int main(int argc, char** argv)
     // A long world-generation step (the erosion bake, #362) runs on a thread; meanwhile draw the loading screen with its
     // progress, so the window stays responsive. From inside a frame (the debug menu's Regenerate) just wait.
     gWorldGenWait = [bench](float progress, const char* what) {
+        if (gJoin.conn) NetClient_Update(gJoin); // --join: keep the connection alive through a long bake (pings; the server times out at 15 s)
         if (gInFrame || !IsWindowReady()) { std::this_thread::sleep_for(std::chrono::milliseconds(20)); return; }
         FpsLog_Frame("bake");
         static double lastPrint = -10.0;
@@ -1202,7 +1212,7 @@ int main(int argc, char** argv)
     Station_Init(&world);
     // The main menu has no world (#503: the erosion bake ran before the title screen). Benches skip the menu: they
     // generate here (or load, below).
-    if (bench && !loadSaveAtStart && !benchMenus) { // --test-menus starts at the title screen with no world, as a launch does
+    if (bench && !loadSaveAtStart && !benchMenus && joinAddr.empty()) { // --test-menus starts at the title screen with no world, as a launch does (--join: the server's world, below)
         generateWorld(world);
         if (!world.objects.empty()) world.camera.target = world.objects[0]->position;
     }
@@ -1216,6 +1226,44 @@ int main(int argc, char** argv)
             if (auto* p = dynamic_cast<Planetoid*>(obj.get()))
                 printf("body %s %s pos %.3f %.3f %.3f radius %.3f seed %u spin %.4f g %.4f\n", BodyKindName(p->kind), p->name.c_str(), p->worldPos.x, p->worldPos.y, p->worldPos.z,
                        p->radius, p->seed, p->spin.y, p->surfaceGravity);
+    }
+    if (!joinAddr.empty()) {
+        // --join <ip[:port]> (#341 core, command line only: the menu is #341's other half): a client of a running --host.
+        // Connect and wait for the Welcome (the window shows "Joining"), then regenerate the server's world from its seed
+        // and bodies (the fingerprint is compared once it has streamed in). The player starts where the server's state
+        // says (the main loop, once the first own state arrives); gameplay is the server's: this process predicts its
+        // player (NetClient_Step), follows the world clock (#339) and draws the others (gNetClient). It never writes the
+        // single-player save: anything saved goes to saves/client_<name>.sav.
+        std::string err;
+        if (!Net_Init(err)) { printf("join: no network transport (%s)\n", err.c_str()); CloseWindow(); return 1; }
+        gNetRole = NetRole::Client;
+        NetClient_Connect(gJoin, joinAddr.c_str(), joinName);
+        const double t0 = GetTime();
+        while ((gJoin.state == NetClient::State::Connecting || gJoin.state == NetClient::State::AwaitingWelcome) && GetTime() - t0 < kClientConnectTimeout + 1.0 && !WindowShouldClose()) {
+            NetClient_Update(gJoin);
+            BeginDrawing(); ClearBackground(BLACK);
+            DrawText(TextFormat("Joining %s as %s ...", joinAddr.c_str(), joinName.c_str()), 40, 40, 30, RAYWHITE);
+            EndDrawing();
+        }
+        if (gJoin.state != NetClient::State::Joined) {
+            printf("join: could not join %s: %s%s%s\n", joinAddr.c_str(), NetClient_StateName(gJoin.state),
+                   gJoin.state == NetClient::State::Rejected ? " - " : "", gJoin.state == NetClient::State::Rejected ? NetRejectText(gJoin.reject.reason) : "");
+            if (benchJoin) printf("bench: join: could not join %s -> FAIL\n", joinAddr.c_str());
+            Net_Shutdown(); CloseWindow(); return 1;
+        }
+        worldGen.seed = gJoin.welcome.seed;
+        SystemDef sys;
+        for (const std::string& line : gJoin.welcome.bodies) {
+            BodyDef b; std::string e;
+            if (ParseBodyDef(line, b, e)) sys.bodies.push_back(b); else printf("join: a body the server sent did not parse (%s): %s\n", e.c_str(), line.c_str());
+        }
+        if (!sys.bodies.empty()) { worldGen.system = sys; worldGen.systemLoaded = true; }
+        SetWorldSavePath(TextFormat("saves/client_%s.sav", joinName.c_str()));
+        world.objects.clear();
+        generateWorld(world);
+        gNetClient = &gJoin;
+        printf("join: joined %s as %s, session %u%s; seed %u, %zu bodies; server world time %.1f s\n", joinAddr.c_str(), joinName.c_str(), gJoin.welcome.session,
+               gJoin.welcome.reconnected ? " (reconnected)" : "", gJoin.welcome.seed, sys.bodies.size(), gJoin.welcome.worldTime);
     }
     bool hostLoaded = false;
     if (!hostSave.empty()) { // --host (#311): the server's world, saved back to the same file
@@ -1609,6 +1657,11 @@ int main(int argc, char** argv)
     double benchStart = 0.0, benchMaxFrame = 0.0;
     std::vector<float> benchFrameTimes; // every timed frame (s): percentiles at the end (#258)
     long benchFrames = 0;
+    if (!joinAddr.empty()) { // --join (#341 core): straight into the server's world (no menu)
+        gameState = 1;
+        mainMenu.isActive = false;
+        world.isActive = true;
+    }
     if (!hostSave.empty()) { // --host (#311): straight into the world (no menu), listening
         gameState = 1;
         mainMenu.isActive = false;
@@ -8489,7 +8542,7 @@ int main(int argc, char** argv)
                         }
                         benchWalkSeconds = 0.0;
                     }
-                } else if ((WorldIdle() && benchDigStrokes == 0 && !benchPaint && !benchSaveLoad && benchWalkSeconds <= 0.0 && benchMineStrokes == 0 && minePhase != 2 && benchFlySeconds <= 0.0 && !benchSuffocate && benchOrbitSeconds <= 0.0 && !benchRide && !benchPark && !benchGravity && !benchPrecision && !benchMantle && !benchAirJump && !benchMoon && !benchHole && !benchWall && !benchDoorway && !benchLedge && !benchTor && !benchMachines && !benchFall && !benchHover && !benchNetIds && !benchNet && !benchTwoPlayers && !benchFingerprint && !benchInterest && !benchTeleClose && !benchMenus && !benchWater && !benchFlyFollow && !benchHotbar && !benchInventory && !benchMap && !benchViewmodel && !benchQuests && !benchHunger && !benchFarm && !benchAnimals && !benchThreats && !benchAnimalPath && !benchDam && !benchFlowMeter && !benchPartWall && !benchPressure && benchShotTabs == 0 && !benchForest && !benchFlow && !benchPond && !benchBucket && !benchWaterSpeed && benchFluidLoad <= 0.0f && !benchFlowShade && !benchPump && !benchTerrain && !benchWind && !benchCampfire && !benchCaveMouth && !benchMountain && !benchShelter && !benchRoom && !benchFacing && !benchDungeon && !benchPosture && !benchPause && !benchBite && !benchPlacement && !benchShotDig && !benchShadow && !benchParticles && !benchBiomes && !benchOil && !benchSpring && !benchShotAnimals && !benchShotAvatar && !benchShotMachines && benchShotBiomes < 0 && !benchFarForest && !benchRecipes && !benchWeather && !benchDecor && !benchMaterials && !benchDamage && !benchCrafting && !benchSuit && !benchTools && !benchRivers && !benchRing && !benchRocket && !benchStation && !benchBlueprint && !benchSmallBody && !benchTrees && !benchChop && benchPersist == 0 && benchBuild == 0 && benchFactory == 0 && !benchCombat && !benchHost && !benchTimeFollow && !benchNetMove && benchMpBots == 0 && !benchShower && !benchProgression && (benchUnfocus <= 0.0f || unfocusPhase >= 6)) || GetTime() > 600.0) {
+                } else if ((WorldIdle() && benchDigStrokes == 0 && !benchPaint && !benchSaveLoad && benchWalkSeconds <= 0.0 && benchMineStrokes == 0 && minePhase != 2 && benchFlySeconds <= 0.0 && !benchSuffocate && benchOrbitSeconds <= 0.0 && !benchRide && !benchPark && !benchGravity && !benchPrecision && !benchMantle && !benchAirJump && !benchMoon && !benchHole && !benchWall && !benchDoorway && !benchLedge && !benchTor && !benchMachines && !benchFall && !benchHover && !benchNetIds && !benchNet && !benchTwoPlayers && !benchFingerprint && !benchInterest && !benchTeleClose && !benchMenus && !benchWater && !benchFlyFollow && !benchHotbar && !benchInventory && !benchMap && !benchViewmodel && !benchQuests && !benchHunger && !benchFarm && !benchAnimals && !benchThreats && !benchAnimalPath && !benchDam && !benchFlowMeter && !benchPartWall && !benchPressure && benchShotTabs == 0 && !benchForest && !benchFlow && !benchPond && !benchBucket && !benchWaterSpeed && benchFluidLoad <= 0.0f && !benchFlowShade && !benchPump && !benchTerrain && !benchWind && !benchCampfire && !benchCaveMouth && !benchMountain && !benchShelter && !benchRoom && !benchFacing && !benchDungeon && !benchPosture && !benchPause && !benchBite && !benchPlacement && !benchShotDig && !benchShadow && !benchParticles && !benchBiomes && !benchOil && !benchSpring && !benchShotAnimals && !benchShotAvatar && !benchShotMachines && benchShotBiomes < 0 && !benchFarForest && !benchRecipes && !benchWeather && !benchDecor && !benchMaterials && !benchDamage && !benchCrafting && !benchSuit && !benchTools && !benchRivers && !benchRing && !benchRocket && !benchStation && !benchBlueprint && !benchSmallBody && !benchTrees && !benchChop && benchPersist == 0 && benchBuild == 0 && benchFactory == 0 && !benchCombat && !benchHost && !benchJoin && !benchTimeFollow && !benchNetMove && benchMpBots == 0 && !benchShower && !benchProgression && (benchUnfocus <= 0.0f || unfocusPhase >= 6)) || GetTime() > 600.0) {
                     benchStart = GetTime();
                     printf("bench: world ready after %.2f s (%d chunks, avg build %.2f ms of which sampling %.2f ms, %d worker threads)\n",
                         GetWorldStats().lastGenerationSeconds, GetWorldStats().chunks, GetWorldStats().avgBuildMs, GetWorldStats().avgSampleMs, GetWorldStats().workerThreads);
@@ -8826,7 +8879,8 @@ int main(int argc, char** argv)
                     // camera and the floating origin do (a server runs every player this way).
                     player.flyAllowed = terrainTool.creative || bench; // F flies in creative mode only (#531; benches fly their cameras)
                     RenderOriginScope frame(world, player.position);
-                    player.update(world, moveIn, simDt);
+                    if (gJoinSynced && gJoin.state == NetClient::State::Joined) NetClient_Step(gJoin, world, player, moveIn); // --join: send, predict, reconcile (#327)
+                    else if (joinAddr.empty()) player.update(world, moveIn, simDt); // (a client waits for its first state)
                 }
                 {
                     // Dead (until the respawn): the view stays exactly where the player died, held in the frame of the
@@ -8888,12 +8942,27 @@ int main(int argc, char** argv)
             if (!loading) Trapping_Update(world); // snares (#176)
             if (!loading) Events_Update(world, frameDt); // meteor showers (#177)
             if (!hostSave.empty()) Host_Update(world); // --host (#311): answer joins
+            if (!joinAddr.empty()) { // --join (#341 core): the server's messages; the player starts at its first own state
+                NetClient_Update(gJoin);
+                if (!gJoinSynced && gJoin.state == NetClient::State::Joined && gJoin.haveOwn && !loading)
+                    if (Planetoid* b = Planetoid::findNet(gJoin.own.body)) {
+                        player.flyMode = false;
+                        player.spawnOn(world, *b, b->dirToWorld(Vector3Normalize(gJoin.own.local.toFloat())));
+                        player.applyNetState(world, NetClient_FromMsg(gJoin.own));
+                        gJoinSynced = true;
+                        printf("join: the player starts at the server's state (session %u)\n", gJoin.welcome.session);
+                    }
+                if (gJoin.state == NetClient::State::Closed || gJoin.state == NetClient::State::Rejected) {
+                    printf("join: disconnected (%s)\n", gJoin.state == NetClient::State::Closed ? NetByeText(gJoin.bye) : NetRejectText(gJoin.reject.reason));
+                    windowKeepAlive = false;
+                }
+            }
             if (!loading) Ambience_Update(world, frameDt); // rain splashes, fireflies, machine smoke
             if (!loading) Waterfalls_Update(world, frameDt); // falls near the camera: sheets, mist and spray (#540)
             Particles_Update(world, frameDt); // smoke, dust, exhaust, splashes (particles.h)
             // Autosave every 5 minutes of play (incremental: only regions changed since the last save).
             static double lastAutosave = GetTime();
-            if (!bench && alive && GetTime() - lastAutosave > 300.0) {
+            if (!bench && alive && gNetRole != NetRole::Client && GetTime() - lastAutosave > 300.0) { // (a client saves nothing: the server owns the world)
                 lastAutosave = GetTime();
                 if (SaveWorld(world)) GameUI_Toast("Autosaved");
             }
@@ -9582,6 +9651,63 @@ int main(int argc, char** argv)
             if (hostSave.empty()) { printf("bench: mp-bots: --test-mp-bots needs --host <save> -> FAIL\n"); benchMpBots = 0; }
             else if (!botsStarted) { MpBots_Start(benchMpBots, hostPort); botsStarted = true; }
             else if (MpBots_Update(world)) benchMpBots = 0;
+        }
+        // --test-join (with --join; tools/test_join.sh runs the host and two clients as separate processes): the client side.
+        // Once the server's world has streamed in: the fingerprint matches the Welcome's, the player started at the server's
+        // state, walks 8 s predicting itself (error at each acknowledged input < 0.5 m, at most 1 correction in 10 states),
+        // and its world clock follows the server's (|estimate - ours| < 0.1 s). RAYLIBGAME_JOIN_OTHERS=N: also sees N other
+        // players, at least one of them moving (another client walking).
+        if (benchJoin && gameState == 1 && !loading && gJoinSynced && WorldIdle()) {
+            static double jt0 = 0.0; static DVec3 start{}; static bool fpOk = false, warmed = false;
+            static std::map<uint32_t, std::pair<DVec3, double>> seen; // session -> first view, farthest moved
+            Planetoid* b = player.nearest;
+            if (benchJoinPhase == 0) {
+                fpOk = WorldFingerprint(world) == gJoin.welcome.fingerprint;
+                if (b) start = b->toLocalD(player.position);
+                player.autoWalk = true; jt0 = GetTime(); benchJoinPhase = 1;
+            } else {
+                if (!warmed && GetTime() - jt0 > 1.5) { warmed = true; gJoin.worstError = 0.0; gJoin.corrections = 0; gJoin.states = 0; }
+                for (const auto& kv : gJoin.others) {
+                    uint64_t vb = 0; DVec3 v{};
+                    if (!NetClient_OtherView(gJoin, kv.first, vb, v)) continue;
+                    auto it = seen.find(kv.first);
+                    if (it == seen.end()) seen[kv.first] = { v, 0.0 };
+                    else it->second.second = std::max(it->second.second, (v - it->second.first).length());
+                }
+                // RAYLIBGAME_JOIN_LINGER=S: stay connected S more seconds after the walk, watching (another client may walk later).
+                static double walked = -1.0;
+                if (walked < 0.0 && GetTime() - jt0 > 8.0) { player.autoWalk = false; walked = b ? (b->toLocalD(player.position) - start).length() * b->scale : 0.0; }
+                const double linger = getenv("RAYLIBGAME_JOIN_LINGER") ? atof(getenv("RAYLIBGAME_JOIN_LINGER")) : 0.0;
+                // RAYLIBGAME_JOIN_SHOT=<file>: before reporting, turn to the nearest other player and take a screenshot (its avatar
+                // and nameplate, drawn from the server's replication: the whole chain in one picture).
+                static int shotFrames = -1;
+                const char* shotPath = getenv("RAYLIBGAME_JOIN_SHOT"); if (shotPath && !*shotPath) shotPath = nullptr;
+                if (shotPath && walked >= 0.0 && GetTime() - jt0 > 8.0 + linger && shotFrames < 30 && b) {
+                    uint64_t vb = 0; DVec3 v{}; double best = 1e18; DVec3 at{};
+                    for (const auto& kv : gJoin.others)
+                        if (NetClient_OtherView(gJoin, kv.first, vb, v)) { const double d = (v - b->toLocalD(player.position)).length(); if (d < best) { best = d; at = v; } }
+                    if (best < 1e17) {
+                        const Vector3 to = Vector3Subtract(b->toWorld(at.toFloat()), (player.position - world.renderOrigin).toFloat());
+                        const Vector3 flat = Vector3Subtract(to, Vector3Scale(player.up, Vector3DotProduct(to, player.up)));
+                        if (Vector3Length(flat) > 0.1f) player.forward = Vector3Normalize(flat);
+                    }
+                    if (++shotFrames == 30) { TakeScreenshot(shotPath); printf("bench: join: %s (the other player %.1f m away)\n", shotPath, best < 1e17 ? best : -1.0); }
+                }
+                if (walked >= 0.0 && GetTime() - jt0 > 8.0 + linger && (!shotPath || shotFrames >= 30 || !b)) {
+                    const int wantOthers = getenv("RAYLIBGAME_JOIN_OTHERS") ? atoi(getenv("RAYLIBGAME_JOIN_OTHERS")) : 0;
+                    double othersMoved = 0.0; for (const auto& kv : seen) othersMoved = std::max(othersMoved, kv.second.second);
+                    const bool clockOk = gJoin.pongs >= 3 && fabs(gJoin.clockError) < 0.1 && fabs(WorldTime_Pending()) < 0.1;
+                    const bool moveOk = walked > 15.0 && gJoin.states > 80 && gJoin.worstError < 0.5 && gJoin.corrections * 10 <= gJoin.states;
+                    const bool othersOk = (int)seen.size() >= wantOthers && (wantOthers == 0 || othersMoved > 5.0);
+                    const bool ok = fpOk && clockOk && moveOk && othersOk;
+                    printf("bench: join (%s, session %u): world fingerprint matches %d; walked %.1f m, %d own states, prediction off by %.3f m at worst, %d corrections; "
+                           "world clock %.1f s, estimate off by %.0f ms, %.0f ms still to slew (%d pongs, rtt %.0f ms); saw %zu other player(s) (want %d), farthest one moved %.1f m -> %s\n",
+                           joinName.c_str(), gJoin.welcome.session, (int)fpOk, walked, gJoin.states, gJoin.worstError, gJoin.corrections, WorldTime(),
+                           gJoin.clockError * 1000.0, WorldTime_Pending() * 1000.0, gJoin.pongs, gJoin.rttMs, seen.size(), wantOthers, othersMoved, ok ? "PASS" : "FAIL");
+                    NetClient_Disconnect(gJoin);
+                    benchJoin = false;
+                }
+            }
         }
         // --test-time-follow (#339): the world clock follows a server's. 1 s behind: slewed in at 10% (the clock never runs
         // more than 1.1x nor jumps); 0.5 s ahead: slowed (0.9x, never backwards); 30 s behind: taken at once, and the planet's
