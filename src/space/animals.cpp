@@ -5,6 +5,8 @@
 #include "playerinput.h"
 #include "instancebatch.h"
 #include "audio.h"
+#include "combat.h"
+#include "playersession.h"
 #include "buildtool.h"
 #include "gameui.h"
 #include "hotbar.h"
@@ -132,6 +134,7 @@ struct Animal {
     Vector3 fleeFrom{};
     uint32_t rng = 1;
     double angryUntil = -1.0, lastBite = -1.0; // hostile: charging until (world time); the last bite
+    double windUpAt = -1.0;      // an attack winding up since (simClock; #165), -1 none
     float daylight = 0.0f;                     // night hunters: seconds of daylight seen (they leave)
     // Plan 5 A: needs (0..1) that drive the choice between grazing, wandering and resting; the herd; a
     // chase target (predators); the gait for the walk animation.
@@ -152,7 +155,7 @@ std::unordered_map<std::string, std::unordered_set<uint64_t>> spawnedTiles; // b
 int aimed = -1;
 static bool hitLatch = false; // LMB went to an animal: the terrain tool waits for its release (#222)
 double lastSpawnCheck = -1.0, lastHit = -1.0, lastPenCheck = -10.0, lastFireScan = -10.0, lastNightSpawn = -10.0;
-double simClock = 0.0; // simulated seconds (sum of worldDt): spawn, ecology, bite and pen timers run on it, not the wall clock, so fixed-step tests are deterministic (#373)
+double simClock = 0.0; // seconds of animal steps (the sum of Animals_Update's dt): the bite wind-up and cooldown (#165), so tests that step animals many times in a frame still see time pass
 std::vector<Vector3> fires; // campfires near the player (body-local)
 bool threatsOn = true;     // off in bench runs except --test-threats
 bool naturalSpawns = true;  // herds placed around the player (SpawnHerds); tests that measure their own animals turn it off
@@ -180,6 +183,7 @@ Planetoid* BodyNamed(Scene& world, const std::string& name) {
 // Solid enough to block an animal (a wall, an overhang): ~0.4 m into rock. Thin near-iso films hover just over the
 // ground in places (density within ~0.06 of iso); they must not stop a walk.
 constexpr float kRockMargin = 0.1f;
+constexpr double kBiteWindUp = 0.5; // s from the warning to the strike (#165): time to step back or raise a shield
 
 // The surface point under a body-local direction, and whether an animal may stand there. The ground is the
 // density field (#223: the height map ignored the 3D band, crags, tors, digs and builds, so animals walked
@@ -469,6 +473,15 @@ bool Animals_Hostile(int i) { return i >= 0 && i < (int)animals.size() && specie
 bool Animals_Aiming() { return aimed >= 0 || hitLatch; }
 int Animals_YoungCount() { int n = 0; for (const Animal& a : animals) n += a.age < 1.0f ? 1 : 0; return n; }
 
+double Animals_BiteWindUp() { return kBiteWindUp; }
+
+std::vector<std::pair<std::string, std::string>> Animals_SpeciesList() {
+    LoadSpecies();
+    std::vector<std::pair<std::string, std::string>> out;
+    for (const Species& s : species) out.push_back({ s.id, s.name });
+    return out;
+}
+
 int Animals_Spawn(Scene& world, Planetoid& body, const std::string& id, Vector3 local, int count, bool young, float spread) {
     (void)world;
     const int si = SpeciesIndex(id);
@@ -547,6 +560,7 @@ bool Animals_Feed(int i) {
 
 void Animals_Update(Scene& world, float dt, float worldDt, bool inputEnabled) {
     const auto t0 = std::chrono::steady_clock::now();
+    simClock += dt; // the attack wind-up and the bite cooldown run on it (#165): tests step animals many times a frame
     LoadSpecies();
     ++frameNo;
     simulatedNow = 0;
@@ -707,20 +721,39 @@ void Animals_Update(Scene& world, float dt, float worldDt, bool inputEnabled) {
             else if (s.night) hunting = dark && pdist < 70.0f && !playerSafe;
             else hunting = (pdist < 12.0f || now < a.angryUntil) && pdist < 30.0f && !playerSafe;
         }
+        if (!hunting) a.windUpAt = -1.0; // a wind-up broken off (the prey gone or safe) never lands later
         if (hunting) {
             a.state = State::Hunt;
             toward = Vector3Subtract(playerLocal, a.pos);
             steer = true;
             speed = s.run * (s.night ? 0.8f : 1.0f);
             const float reach = 0.5f * s.size.x + 1.0f;
+            // A telegraphed attack (#165): in reach it winds up (a growl, a warning) and strikes kBiteWindUp later; the
+            // hit goes through Combat_Damage (a shield block, knockback away from it). Out of reach by then: it missed.
             if (pdist < reach) {
                 speed = 0.0f;
-                if (SimTime() - a.lastBite > 1.2) {
-                    a.lastBite = SimTime();
-                    survival.health -= 8.0f * Difficulty_ThreatScale();
-                    Audio_Play(Sfx::Error, 0.7f, 0.5f);
-                    GameUI_Toast(TextFormat("The %s %s you!", s.name.c_str(), s.night ? "bites" : "rams"));
+                if (a.windUpAt < 0.0 && simClock - a.lastBite > 1.2) { // (on simClock: tests step animals many times in a frame)
+                    a.windUpAt = simClock;
+                    Audio_Play(Sfx::Error, 0.5f, 0.35f);
+                    GameUI_Toast(TextFormat("The %s %s!", s.name.c_str(), s.night ? "lunges" : "lowers its head"));
                 }
+            }
+            if (a.windUpAt >= 0.0 && simClock - a.windUpAt >= kBiteWindUp) {
+                a.windUpAt = -1.0;
+                a.lastBite = simClock;
+                if (pdist < reach + 0.4f) {
+                    DamageEvent e;
+                    e.amount = 8.0f * Difficulty_ThreatScale();
+                    e.kind = s.night ? DamageKind::Bite : DamageKind::Melee;
+                    e.hasSource = true;
+                    e.source = body->toWorldD(DVec3(a.pos));
+                    e.knockback = s.night ? 3.0f : 6.0f; // a ram shoves harder than a bite
+                    e.sourceId = a.netId;
+                    const DamageResult r = Combat_Damage(LocalSession(), e);
+                    Audio_Play(Sfx::Error, 0.7f, r.blocked ? 0.9f : 0.5f);
+                    GameUI_Toast(r.blocked ? TextFormat("You block the %s", s.name.c_str())
+                                           : TextFormat("The %s %s you!", s.name.c_str(), s.night ? "bites" : "rams"));
+                } else GameUI_Toast(TextFormat("The %s misses", s.name.c_str()));
             }
         } else if (a.fleeTimer > 0.0f) {
             a.fleeTimer -= step;
@@ -952,8 +985,15 @@ void Animals_Aim(Scene& world, const PlayerInput& in) {
             lastHit = SimTime();
             hitLatch = true;
             const ToolSpec t = ToolOf(terrainTool.heldTool);
-            ++terrainTool.swings;
-            Animals_Hit(aimed, t.type == ToolType::Hands ? 2.0f : 3.0f + 3.0f * t.tier);
+            // A swing at a creature costs stamina (#165: 4 with bare hands, 8 with a tool); with too little left, no swing.
+            const float cost = t.type == ToolType::Hands ? 4.0f : 8.0f;
+            if (survival.stamina < cost) GameUI_Toast("Too tired to swing");
+            else {
+                survival.stamina -= cost;
+                survival.staminaUsedAt = SimTime();
+                ++terrainTool.swings;
+                Animals_Hit(aimed, t.type == ToolType::Hands ? 2.0f : 3.0f + 3.0f * t.tier);
+            }
         } else if (in.hit(Act::Insert)) {
             Animals_Feed(aimed);
         } else if (in.hit(Act::Extract)) {

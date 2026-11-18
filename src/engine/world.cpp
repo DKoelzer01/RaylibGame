@@ -49,6 +49,7 @@ namespace {
     // Declared before the job system so it is destroyed after the workers are joined.
     std::mutex resultsMutex;
     std::atomic<long long> gRequests{ 0 }, gBuilt{ 0 }, gSkipped{ 0 }, gDropped{ 0 }; // streaming counters (#258)
+    long long gLodFades = 0; // nodes faded out into their replacements (#243)
     // RAYLIBGAME_STREAM_OLD=1: the streaming before #258/#261 (no request cap, no retention, no telescope keep, no free
     // cap, FIFO uploads), an A/B switch for --bench-fly.
     const bool gStreamOld = [] { const char* e = getenv("RAYLIBGAME_STREAM_OLD"); return e && e[0] == '1'; }();
@@ -417,8 +418,18 @@ void Planetoid::draw(const RenderContext& ctx) {
     RenderContext c2 = ctx;
     c2.batch = &batch;
     // Arena chunks are only listed: placement and culling run on the GPU (chunk_cull.comp), one multi-draw.
+    const double now = GetTime();
+    // #243: nodes done fading out leave the list here, each frame, cheaply (re-running the LOD selection every frame while
+    // a fade lasted cost walking ~2 ms of CPU); the next LOD pass frees them as undesired.
+    if (std::any_of(drawList.begin(), drawList.end(), [&](const Chunk* c) { return c->fadeOut && now - c->fadeT0 >= Chunk::kLodFadeSeconds; }))
+        drawList.erase(std::remove_if(drawList.begin(), drawList.end(), [&](Chunk* c) {
+            if (!c->fadeOut || now - c->fadeT0 < Chunk::kLodFadeSeconds) return false;
+            c->fadeOut = false; c->fadeT0 = -1.0;
+            return true;
+        }), drawList.end());
     for (Chunk* c : drawList) {
-        if (c->arena.valid()) { if (c->isActive) TerrainArena_Queue(c->arena, c->clipLocal()); continue; }
+        if (c->arena.valid()) { if (c->isActive) TerrainArena_Queue(c->arena, c->clipLocal(), c->lodFade(now)); continue; }
+        if (c->fadeOut) continue; // per-chunk draws (RAYLIBGAME_ARENA=0) have no cross-fade: the new node only (#243)
         c->drawChunk(c2, placer.model(c->key));
     }
     ArenaCull cull;
@@ -444,7 +455,7 @@ void Planetoid::drawTransparent(const RenderContext& ctx) {
     // surface claims the pixel and overlapping LOD copies of the sea behind it are skipped.
     std::vector<std::pair<float, Chunk*>> order;
     for (Chunk* ch : drawList) {
-        if (ch->waterMesh.vaoId == 0) continue;
+        if (ch->waterMesh.vaoId == 0 || ch->fadeOut) continue; // a node fading out (#243): its replacement draws the water
         const Matrix m = placer.model(ch->key);
         const float h = ch->key.size() * 0.5f;
         order.push_back({ Vector3DistanceSqr(Vector3Transform({ h, h, h }, m), ctx.cameraPos), ch });
@@ -459,7 +470,7 @@ void Planetoid::drawFoliage(const RenderContext& ctx) {
     const Vector3 c = (worldPos - ctx.renderOrigin).toFloat();
     const float occluder[4] = { c.x, c.y, c.z, std::max(0.0f, radius - 60.0f) * scale }; // night side, as for terrain
     rlSetUniform(ctx.grassOccluderLoc, occluder, RL_SHADER_UNIFORM_VEC4, 1);
-    for (Chunk* ch : drawList) if (ch->key.stride() <= 1.0f) ch->drawGrass(ctx, placer.model(ch->key)); // the levels that carry grass (foliage.cpp)
+    for (Chunk* ch : drawList) if (ch->key.stride() <= 1.0f && !ch->fadeOut) ch->drawGrass(ctx, placer.model(ch->key)); // the levels that carry grass (foliage.cpp); not a node fading out (#243)
 }
 
 void Planetoid::drawDepthOnly(const RenderContext& ctx) {
@@ -866,6 +877,46 @@ static int UpdateLod(Planetoid& p, Vector3 cameraRender) {
         if (!retainedSet.empty())
             for (NodeKey k = parentOf(d); !coveredByCoarser && k.level <= p.rootLevel; k = parentOf(k)) coveredByCoarser = retainedSet.count(k) > 0;
         if (!coveredByCoarser) draw.push_back(c);
+    }
+    // LOD cross-fade (#243): a node leaving the list because a finer or coarser one now covers its place stays drawn for
+    // Chunk::kLodFadeSeconds, dissolving into its replacement (the pair split the pixels by one screen noise, lighting.fs), so the
+    // switch is no longer a pop. Nodes leaving for other reasons (out of range) just go. RAYLIBGAME_LOD_FADE=0: off.
+    static const bool lodFadeOn = !(getenv("RAYLIBGAME_LOD_FADE") && getenv("RAYLIBGAME_LOD_FADE")[0] == '0');
+    // Not while the camera moves fast (lodSettings.fast, > 15 m/s): flying swaps ~20 nodes a frame, and keeping each for the
+    // fade cost ~0.5 ms of CPU a frame (quiet-window A/B) for pops nobody sees at that speed. Nodes dropped then lose any
+    // fade-out mark, so one coming back later isn't drawn half faded.
+    if (lodFadeOn && lodSettings.fast) {
+        for (Chunk* c : p.drawList) if (c->fadeOut) { c->fadeOut = false; c->fadeT0 = -1.0; }
+    } else if (lodFadeOn && !p.drawList.empty()) {
+        const double now = GetTime();
+        static FlatKeySet newSet, newWithin, oldSet, goneSet, goneWithin; // new list (+ ancestors), old list, replaced (+ ancestors)
+        newSet.reset(draw.size()); newWithin.reset(draw.size());
+        for (Chunk* c : draw) { newSet.insert(c->key); for (NodeKey k = parentOf(c->key); k.level <= p.rootLevel; k = parentOf(k)) if (!newWithin.insert(k)) break; }
+        oldSet.reset(p.drawList.size()); goneSet.reset(64); goneWithin.reset(64);
+        std::vector<Chunk*> keep;
+        for (Chunk* c : p.drawList) {
+            oldSet.insert(c->key);
+            if (newSet.count(c->key)) { if (c->fadeOut) { c->fadeOut = false; c->fadeT0 = -1.0; } continue; } // still (or again) in the list
+            if (c->fadeOut) { // fading out already
+                if (now - c->fadeT0 < Chunk::kLodFadeSeconds) keep.push_back(c); else { c->fadeOut = false; c->fadeT0 = -1.0; }
+                continue;
+            }
+            bool replaced = newWithin.count(c->key) > 0; // finer nodes now inside it
+            for (NodeKey k = parentOf(c->key); !replaced && k.level <= p.rootLevel; k = parentOf(k)) replaced = newSet.count(k) > 0; // a coarser one over it
+            if (!replaced) continue;
+            c->fadeOut = true; c->fadeT0 = now; keep.push_back(c); ++gLodFades;
+            goneSet.insert(c->key);
+            for (NodeKey k = parentOf(c->key); k.level <= p.rootLevel; k = parentOf(k)) if (!goneWithin.insert(k)) break;
+        }
+        if (!goneSet.empty())
+            for (Chunk* c : draw) { // the replacements: new in the list where a node went away
+                if (oldSet.count(c->key)) continue;
+                bool overlaps = goneWithin.count(c->key) > 0;
+                for (NodeKey k = parentOf(c->key); !overlaps && k.level <= p.rootLevel; k = parentOf(k)) overlaps = goneSet.count(k) > 0;
+                if (overlaps) { c->fadeT0 = now; c->fadeOut = false; }
+            }
+        for (Chunk* c : keep) draw.push_back(c);
+        // (Faded-out nodes leave the list in Planetoid::draw, not by re-running this every frame: #243 walk cost.)
     }
     // Nearest first (front to back): the depth test then rejects most of the terrain hidden behind
     // nearer hills before the (costly) terrain shader runs on it. Unsorted, much of the screen was
@@ -1441,7 +1492,7 @@ void worldUpdate(Scene& world, float uploadBudgetMs) {
     stats.pendingUploads = (int)pendingUploads.size();
     stats.uploadsLastFrame = uploads;
     stats.workerThreads = (int)Jobs().threadCount();
-    stats.requests = gRequests; stats.built = gBuilt; stats.skippedStale = gSkipped; stats.droppedResults = gDropped;
+    stats.requests = gRequests; stats.built = gBuilt; stats.skippedStale = gSkipped; stats.droppedResults = gDropped; stats.lodFades = gLodFades;
     stats.avgBuildMs = buildCount ? (float)(buildMsTotal / buildCount) : 0.0f;
     stats.avgSampleMs = buildCount ? (float)(sampleMsTotal / buildCount) : 0.0f;
     stats.chunks = stats.nodes = stats.edits = 0;

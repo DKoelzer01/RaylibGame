@@ -46,6 +46,7 @@ flat out float fragClimate; // planets: the packed climate (2 + temperature step
 out float fragOreKind;     // planets: which ore (1 + kind) / 8, 0 none
 out float fragMacro;       // slow (70-250 m) brightness variation for the planet palette (per vertex: #183)
 flat out vec3 fragClipMax;
+flat out float fragLodFade;  // #243: the LOD cross-fade (arena record clip.w; lighting.fs)
 // #480: the arena's materials: the triangle's three material ids (from the chunk's palette) and, in fragColor, their
 // barycentrics. Per-chunk draws (no arena) keep the 8 legacy weights in fragColor / fragTexCoord(2).
 flat out uint fragMatIds;  // arena: the triangle's three material ids (8 bits each); fragColor.xyz = their barycentrics
@@ -66,10 +67,12 @@ void main()
     mat4 model = matModel;
     vec3 texOrigin = chunkTexOrigin;
     fragClipMax = chunkClipMax;
+    fragLodFade = 0.0;
     if (arenaDraw == 1) {
         model = transpose(mat4(arenaRow0, arenaRow1, arenaRow2, vec4(0.0, 0.0, 0.0, 1.0)));
         texOrigin = arenaTexOrigin.xyz;
         fragClipMax = arenaClip.xyz;
+        fragLodFade = arenaClip.w;
     }
     vec4 world = model * vec4(vertexPosition, 1.0);
     fragPosition = world.xyz;

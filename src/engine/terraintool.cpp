@@ -211,7 +211,7 @@ void TerrainTool_Update(Scene& world, const PlayerInput& in, bool editEnabled) {
         const float reach = std::min(terrainTool.reach, 6.0f); // arm's length for an axe
         hasPlant = plantBody->trees->raycast(lo, ld, hasHit ? std::min(reach, hit.distance) : reach, plantHit);
     }
-    if (!hasPlant) chopHits = 0;
+    // (Looking away keeps the chopping progress: it resets only on a stroke at another tree, #576.)
     tool = HeldTool();
     if (hasHit) {
         aimLocal = hit.planetoid->dirToLocal(dir);
@@ -651,25 +651,34 @@ void TerrainTool_Draw3D() {
         DrawSphereWires(c, terrainTool.fillRadius, 8, 14, Fade(adding ? Color{ 120, 255, 160, 255 } : Color{ 120, 220, 255, 255 }, 0.8f));
         return;
     }
-    // The dig's mouth: a circle on the surface where the sphere cuts it (DigCentre), depth-tested like
-    // anything else, so it never shows through structures, foliage or hills.
-    const float radius = MiningRadius() * sqrtf(1.0f - kDigSink * kDigSink);
-    const Color c = !rule.can ? Color{ 255, 80, 60, 255 } : digging ? Color{ 255, 220, 120, 255 } : Color{ 120, 220, 255, 255 };
-    const Vector3 n = Vector3Normalize(hit.normal);
-    Vector3 u = Vector3CrossProduct(n, fabsf(n.y) < 0.9f ? Vector3{ 0, 1, 0 } : Vector3{ 1, 0, 0 });
+    // The dig's sphere as the camera sees it (#533): its outline, the ring where the view grazes the sphere that will be
+    // carved (DigCentre: half a radius into the ground). Where the ground hides the ring it is drawn faint, so the ring
+    // shows the whole 3D volume; where it is in the open it is drawn bright (depth-tested).
+    Planetoid& p = *hit.planetoid;
+    const float R = MiningRadius();
+    const bool aimed = Vector3LengthSqr(aimLocal) > 0.5f;
+    const Vector3 view = aimed ? p.dirToWorld(Vector3Normalize(aimLocal)) : Vector3Negate(Vector3Normalize(hit.normal));
+    const Vector3 centre = Vector3Add(hit.point, Vector3Scale(view, kDigSink * R)); // DigCentre in render space (no 60 km floats)
+    const Vector3 eye = Vector3Subtract(hit.point, Vector3Scale(view, hit.distance));
+    const Vector3 toC = Vector3Subtract(centre, eye);
+    const float d = Vector3Length(toC);
+    if (d <= R * 1.05f) return; // the camera is in it: no outline to draw
+    const Vector3 w = Vector3Scale(toC, 1.0f / d);
+    const Vector3 ringC = Vector3Subtract(centre, Vector3Scale(w, R * R / d)); // the silhouette circle's centre and radius
+    const float rho = R * sqrtf(1.0f - (R * R) / (d * d));
+    Vector3 u = Vector3CrossProduct(w, fabsf(w.y) < 0.9f ? Vector3{ 0, 1, 0 } : Vector3{ 1, 0, 0 });
     u = Vector3Normalize(u);
-    const Vector3 v = Vector3CrossProduct(n, u);
-    const Vector3 o = Vector3Add(hit.point, Vector3Scale(n, 0.05f)); // just off the ground (no z-fighting)
-    constexpr int kSeg = 40;
-    auto at = [&](int k) { const float a = 2.0f * PI * k / kSeg; return Vector3Add(o, Vector3Add(Vector3Scale(u, cosf(a) * radius), Vector3Scale(v, sinf(a) * radius))); };
+    const Vector3 v = Vector3CrossProduct(w, u);
+    const Color c = !rule.can ? Color{ 255, 80, 60, 255 } : digging ? Color{ 255, 220, 120, 255 } : Color{ 120, 220, 255, 255 };
+    constexpr int kSeg = 48;
+    auto at = [&](int k) { const float a = 2.0f * PI * k / kSeg; return Vector3Add(ringC, Vector3Add(Vector3Scale(u, cosf(a) * rho), Vector3Scale(v, sinf(a) * rho))); };
     rlDrawRenderBatchActive();
-    rlDisableDepthMask();
-    rlDisableBackfaceCulling();
-    for (int k = 0; k < kSeg; ++k) DrawTriangle3D(o, at(k), at(k + 1), Fade(c, 0.16f));
-    for (int k = 0; k < kSeg; ++k) DrawLine3D(at(k), at(k + 1), Fade(c, 0.9f));
+    rlDisableDepthTest(); // behind the ground: faint
+    for (int k = 0; k < kSeg; ++k) DrawLine3D(at(k), at(k + 1), Fade(c, 0.35f));
     rlDrawRenderBatchActive();
-    rlEnableDepthMask();
-    rlEnableBackfaceCulling();
+    rlEnableDepthTest(); // in the open: bright
+    for (int k = 0; k < kSeg; ++k) DrawLine3D(at(k), at(k + 1), Fade(c, 0.95f));
+    rlDrawRenderBatchActive();
 }
 
 void TerrainTool_DrawHUD() {
@@ -706,8 +715,9 @@ void TerrainTool_DrawHUD() {
             }
         }
     }
-    DrawText(terrainTool.terraform ? "LMB dig  RMB fill  Ctrl+wheel brush  G build  1-0 hotbar  Tab inventory  T telescope  L lamp  F fly  F5 save  F1 debug"
-                                   : "LMB mine/chop  RMB place soil  G build  1-0 hotbar  Tab inventory  T telescope  L lamp  F fly  F5 save  F1 debug",
+    DrawText(TextFormat("%s  G build  1-0 hotbar  Tab inventory  T telescope  L lamp%s  F5 save  F1 debug",
+                        terrainTool.terraform ? "LMB dig  RMB fill  Ctrl+wheel brush" : "LMB mine/chop  RMB place soil",
+                        terrainTool.creative ? "  F fly" : ""), // fly is creative only (#531)
              10, y + 30, 20, Fade(RAYWHITE, 0.7f));
     if (GetTime() < toastUntil) DrawText(toast.c_str(), 10, y, 20, YELLOW);
 }

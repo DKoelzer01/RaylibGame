@@ -336,7 +336,11 @@ static void PartCells(PartType t, std::vector<std::pair<Int3, CellShape>>& out) 
             out.push_back({ { 0, 0, 0 }, s });
             break;
         }
-        case PartType::Torch: // a quarter-cell post like Post (#218)
+        case PartType::Torch: { // a thin stick up one edge (#218; #558: 0.1 m, it was a quarter-cell post like Post)
+            CellShape s; s.full = false; s.planes = 2; s.n[0] = { 1, 0, 0 }; s.d[0] = 0.2f; s.n[1] = { 0, 0, 1 }; s.d[1] = 0.2f;
+            out.push_back({ { 0, 0, 0 }, s });
+            break;
+        }
         case PartType::Post: {  // a quarter of the cell, up one edge
             CellShape s; s.full = false; s.planes = 2; s.n[0] = { 1, 0, 0 }; s.d[0] = 0.5f; s.n[1] = { 0, 0, 1 }; s.d[1] = 0.5f;
             out.push_back({ { 0, 0, 0 }, s });

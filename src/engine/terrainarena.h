@@ -30,6 +30,7 @@ struct ArenaAlloc {
     int iFirst = -1, iCount = 0;   // indices (16-bit, relative to vFirst: the command's baseVertex)
     int slot = -1;                 // chunk table entry
     Vector3 clip = { -1.0f, -1.0f, -1.0f }; // the clip last written to the table (chunk-local)
+    float fade = 0.0f;                      // the LOD cross-fade last written with it (#243; clip.w)
     bool valid() const { return slot >= 0 && iCount > 0; }
 };
 
@@ -59,7 +60,9 @@ void TerrainArena_Free(ArenaAlloc& a);
 
 // Drawing: queue the LOD-selected chunks of one body (with their current chunk-local clip), then flush with
 // the pass's shader already bound (ChunkBatch did that: textures, palette, occluder).
-void TerrainArena_Queue(ArenaAlloc& a, Vector3 clip);
+// fade (#243): the LOD cross-fade, 0 none; (0, 1) fading in (the share of pixels shown); (-1, 0) fading out (the share
+// of pixels already given to its replacement). The terrain shader dithers with it (lighting.fs).
+void TerrainArena_Queue(ArenaAlloc& a, Vector3 clip, float fade = 0.0f);
 // Culls and draws what was queued (one compute dispatch + one MDI), then clears the queue. Returns the
 // number queued (drawn or culled).
 int TerrainArena_Flush(unsigned int shaderId, bool positionsOnly, const ArenaBody& body, const ArenaCull& cull);
