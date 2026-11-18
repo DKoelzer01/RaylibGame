@@ -1180,9 +1180,14 @@ void SetLodZoom(Scene& world, float zoom, Vector3 dir, float halfAngle) {
         if (auto* p = dynamic_cast<Planetoid*>(obj.get())) p->lodDirty = true;
 }
 
-namespace { double worldTime = 0.0; }
+namespace { double worldTime = 0.0, followOffset = 0.0, followLag = 0.0; }
 double WorldTime() { return worldTime; }
-void SetWorldTime(double t) { worldTime = t; }
+void SetWorldTime(double t) { worldTime = t; followOffset = 0.0; }
+// #339: a client follows the server's world clock. Offsets under 2 s are slewed in at 10% of the frame time (spin, orbits,
+// the sun and weather never jump); larger ones (a join, a long stall) are taken at once.
+void WorldTime_Follow(double serverNow) { followLag = serverNow - worldTime; followOffset = followLag; if (fabs(followOffset) > 2.0) { worldTime = serverNow; followOffset = 0.0; } }
+double WorldTime_Lag() { return followLag; }
+double WorldTime_Pending() { return followOffset; }
 
 // Place an orbiting body for the current world time (its parent must already be placed).
 void PlaceBodyOnOrbit(Planetoid& p) {
@@ -1200,6 +1205,10 @@ void advanceBodies(Scene& world, float dt) {
     // frame's transform (spinning here after they moved left them one frame behind the surface).
     // Orbits are evaluated from the world clock (not integrated), so they never drift.
     worldTime += dt;
+    if (followOffset != 0.0 && dt > 0.0f) { // #339: slewing toward the server's clock
+        const double step = std::clamp(followOffset, -0.1 * dt, 0.1 * dt);
+        worldTime += step; followOffset -= step;
+    }
     bool moved = false;
     for (auto& obj : world.objects) {
         auto* p = dynamic_cast<Planetoid*>(obj.get());
