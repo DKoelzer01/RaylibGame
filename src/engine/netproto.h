@@ -45,7 +45,8 @@ enum class NetMsg : uint8_t {
     PlayerSnapshot = 24, // server -> client (#769): the player states of one snapshot in one message, each delta-coded against one
                    // the client acknowledged (20-23 are #776's)
     Animals = 25,  // server -> client (#334): the animals near the client (state, health), and the ones gone from its view
-    AnimalHit = 26, // client -> server (#334): a swing at an animal (the server checks reach and cooldown, and works out the damage)
+    AnimalHit = 26, // client -> server (#334): a swing at an animal, or feed / take its product (the server checks reach and cooldown)
+    Damage = 27,   // server -> client (#334): a hit on the client's player (an animal's bite): it applies the damage (shield, health)
     Count
 };
 const char* NetMsgName(NetMsg m);
@@ -187,7 +188,8 @@ struct MsgAnimals {
     std::vector<Entry> entries;
     std::vector<uint64_t> removed;
 };
-struct MsgAnimalHit { uint64_t netId = 0; };
+struct MsgAnimalHit { uint64_t netId = 0; uint8_t action = 0; }; // 0 hit, 1 feed, 2 take its product
+struct MsgDamage { float amount = 0.0f; uint8_t kind = 0; bool hasSource = false; uint64_t body = 0; DVec3 local{}; float knockback = 0.0f; uint64_t sourceId = 0; };
 struct MsgShower { double start = 0.0, end = 0.0; uint32_t id = 0; }; // world seconds; id 0 none (events.h)
 
 struct MsgRoster { struct Entry { uint32_t session = 0; std::string name; }; std::vector<Entry> players; }; // everyone online
@@ -316,6 +318,8 @@ void NetWrite(NetWriter& w, const MsgAnimals& m);
 bool NetRead(NetReader& r, MsgAnimals& m);
 void NetWrite(NetWriter& w, const MsgAnimalHit& m);
 bool NetRead(NetReader& r, MsgAnimalHit& m);
+void NetWrite(NetWriter& w, const MsgDamage& m);
+bool NetRead(NetReader& r, MsgDamage& m);
 void NetWrite(NetWriter& w, const MsgPlayerSnapshot& m);
 // lookup(session, baseSeq, out): the state of that player received in snapshot baseSeq (false: unknown - the entry can't be
 // decoded and the read fails). Without one (validation), deltas decode against zeros.

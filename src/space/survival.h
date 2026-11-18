@@ -67,6 +67,12 @@ bool Survival_IsFood(const std::string& id);  // resources/data/foods.txt
 float Survival_FoodValue(const std::string& id);
 void Survival_OnLanding(float impactSpeed);   // fall damage
 void Survival_Respawn(Scene& world);
+// #337: the same for a given player (a server's remote players: local false - no UI, sounds, quests, rocket or ship; the weather
+// and temperature where that player is). Survival_Update / _Respawn / _OnLanding are these for the local player.
+struct Player; class Inventory; struct SuitStats;
+void Survival_StepFor(Scene& world, float dt, const PlayerInput& in, SurvivalState& survival, Player& player, Inventory& inventory, const SuitStats& stats, bool local);
+void Survival_RespawnFor(Scene& world, SurvivalState& survival, Player& player, bool local);
+void Survival_OnLandingFor(SurvivalState& survival, const SuitStats& stats, float impactSpeed, bool local);
 void Survival_DrawHUD();
 const char* Survival_BiomeName();   // the biome where the player stands ("" off-planet)
 

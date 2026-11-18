@@ -51,6 +51,7 @@ uniform vec3 fogColor;          // linear
 uniform float fogDensity;       // 0 = off
 uniform vec4 fogShell;          // atmosphere: render-space centre + outer radius (w = 0: fog the whole distance)
 uniform float treeDistance;     // real trees are drawn to here (m); the canopy tint takes over near it
+uniform float farForest;        // #745: 1 = deeper canopy tint, starting earlier and denser (RAYLIBGAME_FAR_FOREST)
 
 out vec4 finalColor;
 
@@ -368,7 +369,10 @@ void main()
         if (fragCanopy.x > 0.01) {
             // Distant forests: where the real trees (drawn to treeDistance) fade out, the ground takes the
             // colour of their crowns, by latitude as the trees do, broken up a little by the texture.
-            float c = fragCanopy.x * smoothstep(0.65 * treeDistance, 0.95 * treeDistance, length(viewPos - fragPosition));
+            float cdist = length(viewPos - fragPosition);
+            float c = fragCanopy.x * smoothstep(0.65 * treeDistance, 0.95 * treeDistance, cdist);
+            // #745: thin cover still reads as forest (cover^0.6), the tint starts earlier and its shade is deeper.
+            if (farForest > 0.5) c = pow(fragCanopy.x, 0.6) * smoothstep(0.5 * treeDistance, 0.85 * treeDistance, cdist);
             float ct, cm;
             bool cl = decodeClimate(ct, cm);
             vec3 dry = vec3(0.22, 0.27, 0.07), temperate = vec3(0.09, 0.27, 0.05), cold = vec3(0.05, 0.17, 0.08);
@@ -377,7 +381,7 @@ void main()
             vec3 crowns = cl ? mix(mix(temperate, dry, smoothstep(0.5, 0.25, cm) * smoothstep(12.0, 22.0, ct)), cold, smoothstep(8.0, 0.0, ct)) : temperate;
             vec2 crown = floor(fragTexPos.xz / 5.0); // ~5 m dapple, like the prism crowns
             crowns *= 0.75 + 0.5 * fract(sin(dot(crown, vec2(12.9898, 78.233))) * 43758.5453);
-            albedo = mix(albedo, crowns * 0.5, c); // crowns in their own shade read darker than open grass
+            albedo = mix(albedo, crowns * (farForest > 0.5 ? 0.38 : 0.5), c); // crowns in their own shade read darker than open grass
             r = mix(r, 0.95, c);
         }
         rough = r;

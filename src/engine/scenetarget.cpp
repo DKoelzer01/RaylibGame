@@ -655,3 +655,11 @@ void SceneTarget_Unload() {
     if (S.vao) glDeleteVertexArrays(1, &S.vao);
     S = State{};
 }
+
+// #131: the tonemap chosen in Settings (0 knee, 1 ACES, 2 clip: the shader's numbering). RAYLIBGAME_TONEMAP, when set,
+// wins (benches and A/B runs stay as they were); otherwise the choice applies at once.
+void SceneTarget_SetTonemap(int curve) {
+    if (getenv("RAYLIBGAME_TONEMAP")) return;
+    S.tonemap = std::clamp(curve, 0, 2);
+}
+int SceneTarget_Tonemap() { return S.tonemap; }

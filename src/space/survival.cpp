@@ -61,7 +61,8 @@ namespace {
     // 32 at the equator falling to about -25 at the poles, 6.5 colder per km of height, +-7 between
     // noon and midnight, and underground drifting toward a cave's steady 12.
     Biome hereBiome = Biome::Count; // where the player stands, as of the last update (Count: none)
-    float AirTemperature(Scene& world) {
+    // (#337: for a given player - the local one, or a remote one a server simulates; only the local one sets the HUD's biome)
+    float AirTemperature(Scene& world, const Player& player, const SurvivalState& survival, bool isLocal) {
         Planetoid* p = player.nearest;
         if (!p || !world.atmosphere.enabled) return NAN;
         const auto* pf = dynamic_cast<const PlanetField*>(p->field.get());
@@ -77,7 +78,7 @@ namespace {
         // more between day and night (deserts: +-14 C, jungles and swamps: +-5).
         const float ground = pf->elevation(up);
         const PlanetField::Climate c = pf->climateAt(up, ground);
-        hereBiome = pf->biomeAt(up, ground);
+        if (isLocal) hereBiome = pf->biomeAt(up, ground);
         float t = c.temp - 6.5f * std::max(height - std::max(ground, 0.0f), 0.0f) / 1000.0f + (5.0f + 9.0f * (1.0f - c.moist)) * sun;
         const float depth = ground - height;                  // below the surface here
         if (depth > 3.0f) t += (12.0f - t) * std::min(1.0f, (depth - 3.0f) / 12.0f);
@@ -92,17 +93,19 @@ float Survival_FoodValue(const std::string& id) { LoadFoods(); auto it = foods.f
 // Fall damage from the speed into the floor at touchdown (#263). On Terra (g 5.9): a 3 m drop is safe, 20 m takes
 // ~79, 30 m ~108 (fatal); servo legs make ~6 m safe. A landing that would take 15 or less takes nothing (#536: minor
 // falls are ignored), so on Terra about 5 m is safe.
-void Survival_OnLanding(float impactSpeed) {
-    const float safe = Suit_Stats().servo ? 8.5f : 6.0f; // servo legs soften landings
+void Survival_OnLandingFor(SurvivalState& survival, const SuitStats& stats, float impactSpeed, bool local) {
+    const float safe = stats.servo ? 8.5f : 6.0f; // servo legs soften landings
     constexpr float kGrace = 15.0f; // health points
     const float damage = (impactSpeed - safe) * 8.5f;
     if (damage <= kGrace || survival.dead) return;
     survival.health -= damage;
     survival.fallDamageTaken += damage;
-    Audio_Play(Sfx::Error, 0.6f, 0.6f);
+    if (local) Audio_Play(Sfx::Error, 0.6f, 0.6f);
 }
+void Survival_OnLanding(float impactSpeed) { Survival_OnLandingFor(survival, Suit_Stats(), impactSpeed, true); }
 
-void Survival_Respawn(Scene& world) {
+void Survival_Respawn(Scene& world) { Survival_RespawnFor(world, survival, player, true); }
+void Survival_RespawnFor(Scene& world, SurvivalState& survival, Player& player, bool local) {
     survival.oxygen = survival.health = 100.0f;
     // Power is kept as it was (#256): respawning used to refill it, and with it the jetpack (which recharges from it on
     // the ground). Whether the starting suit has power or a jetpack at all is #217.
@@ -121,12 +124,16 @@ void Survival_Respawn(Scene& world) {
         player.velocity = { 0, 0, 0 };
     }
     player.impactSpeed = player.landingSpeed = 0.0f; // a landing from before the death must not hurt the respawn
-    GameUI_Toast("Respawned at the start");
+    if (local) GameUI_Toast("Respawned at the start");
 }
 
-void Survival_Update(Scene& world, float dt, const PlayerInput& in) {
+// #337: one player's survival step - the local player (Survival_Update), or a remote one a server simulates (local false: no
+// UI, sounds, quests, rocket or ship; the weather and temperature at that player). Single player runs exactly as before.
+void Survival_Update(Scene& world, float dt, const PlayerInput& in) { Survival_StepFor(world, dt, in, survival, player, inventory, Suit_Stats(), true); }
+void Survival_StepFor(Scene& world, float dt, const PlayerInput& in, SurvivalState& survival, Player& player, Inventory& inventory, const SuitStats& stats, bool local) {
+    (void)inventory;
     if (survival.dead) {
-        if (SimTime() - survival.deathTime > 3.0) Survival_Respawn(world);
+        if (SimTime() - survival.deathTime > 3.0) Survival_RespawnFor(world, survival, player, local);
         return;
     }
     const Vector3 pr = (player.position - world.renderOrigin).toFloat();
@@ -139,7 +146,7 @@ void Survival_Update(Scene& world, float dt, const PlayerInput& in) {
     {
         const auto& atm0 = world.atmosphere;
         const bool airOutside = atm0.enabled && Vector3Distance(pr, atm0.centre) < atm0.radius + survival.breathableAltitude;
-        survival.inLifeSupport = Rocket_Boarded() && (airOutside || Rocket_BreatheAboard(dt));
+        survival.inLifeSupport = (local && Rocket_Boarded()) && (airOutside || Rocket_BreatheAboard(dt));
     }
     survival.inVacuum = false;
     if (survival.inLifeSupport) survival.vacuumTime = 0.0f;
@@ -155,69 +162,69 @@ void Survival_Update(Scene& world, float dt, const PlayerInput& in) {
         survival.breathable = atm.enabled && Vector3Distance(pr, atm.centre) < atm.radius + survival.breathableAltitude && !IsUnderwater(world, head);
         // Vacuum (outside the air): a suit not rated for it holds 60 s, then it hurts (4 a second).
         survival.inVacuum = !(atm.enabled && Vector3Distance(pr, atm.centre) < atm.radius + survival.breathableAltitude);
-        if (survival.inVacuum && !Suit_Stats().vacuum) { survival.vacuumTime += dt; if (survival.vacuumTime > 60.0f) survival.health -= 4.0f * std::min(dt, survival.vacuumTime - 60.0f); }
+        if (survival.inVacuum && !stats.vacuum) { survival.vacuumTime += dt; if (survival.vacuumTime > 60.0f) survival.health -= 4.0f * std::min(dt, survival.vacuumTime - 60.0f); }
         else survival.vacuumTime = 0.0f;
-        if (Rocket_Boarded()) { survival.vacuumTime = 0.0f; survival.inVacuum = false; } // inside a pressurised hull, out of air
+        if ((local && Rocket_Boarded())) { survival.vacuumTime = 0.0f; survival.inVacuum = false; } // inside a pressurised hull, out of air
         if (survival.breathable) survival.oxygen = std::min(100.0f, survival.oxygen + survival.airRefillPerSec * dt);
         else {
             // Underwater drains it faster (a rebreather slows that); bigger tanks last longer.
             const bool underwater = atm.enabled && IsUnderwater(world, head);
             survival.underwater = underwater;
-            survival.oxygen = std::max(0.0f, survival.oxygen - survival.oxygenDrainPerSec * (underwater ? Suit_Stats().underwater : 1.0f) / Suit_Stats().oxygen * dt);
+            survival.oxygen = std::max(0.0f, survival.oxygen - survival.oxygenDrainPerSec * (underwater ? stats.underwater : 1.0f) / stats.oxygen * dt);
         }
-        survival.power = std::max(0.0f, survival.power - (1.0f / Suit_Stats().power) * (survival.powerDrainPerSec
-                                                          + (survival.headlamp && !ship.piloted ? survival.headlampPowerPerSec : 0.0f)) * dt);
+        survival.power = std::max(0.0f, survival.power - (1.0f / stats.power) * (survival.powerDrainPerSec
+                                                          + (survival.headlamp && !(local && ship.piloted) ? survival.headlampPowerPerSec : 0.0f)) * dt);
         // Flight pack hover (#163): a slow, steady drain in the air (~7 min of the full bar), three times that
         // boosting (Shift); at zero it cuts out.
         if (player.hovering && !player.grounded)
-            survival.power = std::max(0.0f, survival.power - (in.down(Act::Sprint) ? 0.75f : 0.25f) / Suit_Stats().power * dt);
+            survival.power = std::max(0.0f, survival.power - (in.down(Act::Sprint) ? 0.75f : 0.25f) / stats.power * dt);
         player.hoverPowered = survival.power > 0.0f;
         // Firing the jetpack only burns fuel; recharging the tank (on the ground) is what costs suit
         // power, and only as far as the power left can pay for.
         const float refilled = player.jetpackFuel - survival.lastJetpackFuel;
         if (refilled > 0.0f) {
-            const float perTank = survival.jetpackPowerPerTank / Suit_Stats().power;
+            const float perTank = survival.jetpackPowerPerTank / stats.power;
             const float affordable = survival.power / perTank;
             const float paid = std::min(refilled, affordable);
             player.jetpackFuel = survival.lastJetpackFuel + paid;
             survival.power = std::max(0.0f, survival.power - paid * perTank);
         }
     }
-    if (!Suit_Stats().powered) { survival.power = 0.0f; player.hoverPowered = false; } // #217: no battery pack, no suit power at all
+    if (!stats.powered) { survival.power = 0.0f; player.hoverPowered = false; } // #217: no battery pack, no suit power at all
     survival.lastJetpackFuel = player.jetpackFuel;
-    if (survival.power <= 0.0f && survival.headlamp && !ship.piloted) { survival.headlamp = false; GameUI_Toast("Headlamp out: no suit power"); }
+    if (survival.power <= 0.0f && survival.headlamp && !(local && ship.piloted)) { survival.headlamp = false; if (local) GameUI_Toast("Headlamp out: no suit power"); }
     if (in.hit(Act::Headlamp)) {
-        if (survival.power > 0.0f || ship.piloted) {
+        if (survival.power > 0.0f || (local && ship.piloted)) {
             survival.headlamp = !survival.headlamp;
-            Audio_Play(Sfx::Build, 0.25f, survival.headlamp ? 1.8f : 1.5f);
-        } else GameUI_Toast(Suit_Stats().powered ? "No suit power for the headlamp" : "The headlamp needs suit power: fit a battery pack (LV)");
+            if (local) Audio_Play(Sfx::Build, 0.25f, survival.headlamp ? 1.8f : 1.5f);
+        } else if (local) GameUI_Toast(stats.powered ? "No suit power for the headlamp" : "The headlamp needs suit power: fit a battery pack (LV)");
     }
     if (survival.oxygen <= 0.0f) survival.health -= survival.suffocationDamagePerSec * dt;
     // Temperature and hunger. Food drains faster running or on the jetpack, in the cold, and
     // while sick; the cockpit's life support feeds you. Heat does slow damage.
-    survival.temperature = AirTemperature(world);
+    survival.temperature = AirTemperature(world, player, survival, local);
     if (!std::isnan(survival.temperature)) { // rain and snow chill the air
-        const WeatherState& w = Weather_Here();
+        const WeatherState w = local ? Weather_Here() : (player.nearest ? Weather_At(world, Vector3Normalize(player.nearest->toLocal((player.position - world.renderOrigin).toFloat())), WorldTime()) : WeatherState{});
         if (w.kind == WeatherKind::Rain || w.kind == WeatherKind::Storm) survival.temperature -= 4.0f * w.precipitation;
         else if (w.kind == WeatherKind::Snow) survival.temperature -= 3.0f * w.precipitation;
     }
     {
         const Vector3 flat = Vector3Subtract(player.velocity, Vector3Scale(player.up, Vector3DotProduct(player.velocity, player.up)));
         const bool active = player.jetpackFiring || (player.grounded && Vector3Length(flat) > player.walkSpeed * 1.1f);
-        float drain = survival.foodDrainPerSec * (active ? 1.6f : 1.0f) * Suit_Stats().food * Difficulty_HungerScale();
+        float drain = survival.foodDrainPerSec * (active ? 1.6f : 1.0f) * stats.food * Difficulty_HungerScale();
         const float T = survival.temperature;
-        if (!std::isnan(T) && T < 5.0f) drain *= 1.0f + Suit_Stats().cold * (5.0f - T) / 15.0f; // insulation, the regulator
+        if (!std::isnan(T) && T < 5.0f) drain *= 1.0f + stats.cold * (5.0f - T) / 15.0f; // insulation, the regulator
         if (SimTime() < survival.sickUntil) drain *= 2.0f;
         if (!survival.inLifeSupport) survival.food = std::max(0.0f, survival.food - drain * dt);
         if (survival.food <= 0.0f) survival.health -= survival.starvationDamagePerSec * dt;
         else if (survival.food > 80.0f && survival.oxygen > 0.0f) survival.health = std::min(100.0f, survival.health + survival.wellFedHealPerSec * dt);
-        if (!std::isnan(T) && T > 35.0f && !Suit_Stats().heatProof) survival.health -= 0.05f * (T - 35.0f) * dt; // 40 C: 0.25 a second
+        if (!std::isnan(T) && T > 35.0f && !stats.heatProof) survival.health -= 0.05f * (T - 35.0f) * dt; // 40 C: 0.25 a second
     }
 
     if (in.enabled) {
     }
 
-    {   // A night survived (the quest tree): dark fell and day came back without a death.
+    if (local) { // A night survived (the quest tree): dark fell and day came back without a death.
         static bool inNight = false;
         static int deathsAtDusk = 0;
         const bool dark = Vector3DotProduct(Vector3Normalize(world.sunDirection), player.up) < -0.1f && player.nearest != nullptr;
@@ -230,7 +237,7 @@ void Survival_Update(Scene& world, float dt, const PlayerInput& in) {
         survival.deathTime = SimTime();
         survival.deaths++;
         player.autoWalk = false;
-        Combat_OnDeath(LocalSession()); // what is lost, by difficulty (#165)
+        if (local) Combat_OnDeath(LocalSession()); // what is lost, by difficulty (#165; a server's remote player: #337 slice 2)
     }
 }
 

@@ -183,6 +183,8 @@ multiplayer() {
         EXE="$gexe" bash "$here/tools/test_join_sync.sh" 2>&1 | grep "=== test_join_sync" | sed 's/=== test_join_sync: \([A-Z]*\).*/bench: join sync (#776): fresh join, then a rejoin from the cache -> \1/' | tee -a "$log"
         echo "=== tools/test_animals_net.sh (#334)" | tee -a "$log"
         EXE="$gexe" bash "$here/tools/test_animals_net.sh" 2>&1 | grep "=== test_animals_net" | sed 's/=== test_animals_net: \([A-Z]*\).*/bench: animals on the server (#334): same herd, a hit applied for both -> \1/' | tee -a "$log"
+        echo "=== tools/test_animals_bite.sh (#334)" | tee -a "$log"
+        EXE="$gexe" bash "$here/tools/test_animals_bite.sh" 2>&1 | grep "=== test_animals_bite" | sed 's/=== test_animals_bite: \([A-Z]*\).*/bench: an animal bites a remote player through the server (#334): -> \1/' | tee -a "$log"
     fi
 }
 

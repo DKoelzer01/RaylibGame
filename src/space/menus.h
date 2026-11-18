@@ -40,6 +40,7 @@ struct GameSettings {
     int cameraSmoothing = 2;        // 0 Off, 1 Low, 2 Default, 3 High: eye smoothing strength (#168)
     bool speedVignette = false;     // darken the screen edges when moving or turning fast (#168)
     bool fireFlicker = true;        // torches and campfires flicker their light (#558: off = a steady glow)
+    int tonemap = 1;                // #131: the HDR curve, as the Graphics tab lists them: 0 Clip, 1 Knee (the default: today's look), 2 ACES
     int difficulty = 1;             // new worlds: 0 peaceful (no threats, slower hunger, extra food), 1 normal, 2 hard (no Map, hungrier, fiercer nights)
     std::string logLevel;           // settings.txt "log_level trace|debug|info|warn|error|fatal|off" (#514; --log-level wins); empty: the build default
     // Multiplayer (#341): what the Host and Join pages last used (passwords are never kept).

@@ -122,6 +122,12 @@ void KickGpu() { rlDrawRenderBatchActive(); if (glad_glFlush) glad_glFlush(); }
 
 // MSAA sample count of the 3D pass (the scene target is made with the window's), read once: a glGet each frame
 // can stall the driver (#204, #267).
+// #745: distant forests read better (far trees grow, crowns and the canopy tint deepen). RAYLIBGAME_FAR_FOREST=1; default off.
+static float FarForestOn() {
+    static const float on = [] { const char* e = getenv("RAYLIBGAME_FAR_FOREST"); return e && e[0] == '1' ? 1.0f : 0.0f; }();
+    return on;
+}
+
 static int SceneSamples() {
     static int samples = -1;
     if (samples < 0) { samples = 0; if (glad_glGetIntegerv) glad_glGetIntegerv(0x80A9, &samples); } // GL_SAMPLES
@@ -539,6 +545,7 @@ void Scene::drawScene(int gamestate) {
                     // Casters fade with the main view's distance fade (tree_depth.fs, #541): from the real camera.
                     tctx.treeFadeLoc = GetShaderLocation(ts, "fadeEnd");
                     rlSetUniform(GetShaderLocation(ts, "viewPos"), &camera.position, RL_SHADER_UNIFORM_VEC3, 1);
+                    { const float ff = FarForestOn(); rlSetUniform(GetShaderLocation(ts, "farForest"), &ff, RL_SHADER_UNIFORM_FLOAT, 1); }
                     for (const auto& obj : objects)
                         if (auto* p = dynamic_cast<Planetoid*>(obj.get()); p && p->isActive && p->trees) {
                             p->trees->setShadowSun(p->dirToLocal(shadowSun));
@@ -576,6 +583,8 @@ void Scene::drawScene(int gamestate) {
     {   // Distant forests: the canopy tint takes over where the real trees fade out.
         const float treeDist = kTreeDrawDistance;
         SetShaderValue(s, GetShaderLocation(s, "treeDistance"), &treeDist, SHADER_UNIFORM_FLOAT);
+        const float farForest = FarForestOn();
+        SetShaderValue(s, GetShaderLocation(s, "farForest"), &farForest, SHADER_UNIFORM_FLOAT);
     }
     // Cascades: the near one's matrix; each cascade's texel in metres and the depth range (the bias
     // is sized from them: a texel's worth along the normal, and a slope term in depth units).
@@ -865,6 +874,7 @@ void Scene::drawScene(int gamestate) {
             rlSetUniform(GetShaderLocation(ts, "sunDir"), &lightDirection, RL_SHADER_UNIFORM_VEC3, 1);
             rlSetUniform(GetShaderLocation(ts, "sunFade"), &sunFade, RL_SHADER_UNIFORM_VEC3, 1);
             rlSetUniform(GetShaderLocation(ts, "viewPos"), &camera.position, RL_SHADER_UNIFORM_VEC3, 1);
+            { const float ff = FarForestOn(); rlSetUniform(GetShaderLocation(ts, "farForest"), &ff, RL_SHADER_UNIFORM_FLOAT, 1); }
             rlSetUniform(GetShaderLocation(ts, "ambient"), &effAmbient, RL_SHADER_UNIFORM_VEC3, 1);
             rlSetUniform(GetShaderLocation(ts, "ambientUp"), &hemiUp, RL_SHADER_UNIFORM_VEC3, 1);
             rlSetUniform(GetShaderLocation(ts, "fogColor"), &effFog, RL_SHADER_UNIFORM_VEC3, 1);

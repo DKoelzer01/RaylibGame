@@ -12,8 +12,8 @@ const char* NetMsgName(NetMsg m) {
         case NetMsg::Bye: return "bye"; case NetMsg::Ping: return "ping"; case NetMsg::Pong: return "pong";
         case NetMsg::Input: return "input"; case NetMsg::PlayerState: return "player state"; case NetMsg::TerrainEdit: return "terrain edit"; case NetMsg::Shower: return "shower"; case NetMsg::Roster: return "roster"; case NetMsg::Loadout: return "loadout";
         case NetMsg::PartRequest: return "part request"; case NetMsg::PartRefused: return "part refused"; case NetMsg::PlotEdit: return "plot edit";
+        case NetMsg::EditRequest: return "edit request"; case NetMsg::EditRefused: return "edit refused"; case NetMsg::InventoryDelta: return "inventory delta"; case NetMsg::Chat: return "chat"; case NetMsg::PlayerSnapshot: return "player snapshot"; case NetMsg::Animals: return "animals"; case NetMsg::AnimalHit: return "animal hit"; case NetMsg::Damage: return "damage";
         case NetMsg::SyncIndex: return "sync index"; case NetMsg::SyncWant: return "sync want"; case NetMsg::SyncData: return "sync data"; case NetMsg::SyncDone: return "sync done";
-        case NetMsg::EditRequest: return "edit request"; case NetMsg::EditRefused: return "edit refused"; case NetMsg::InventoryDelta: return "inventory delta"; case NetMsg::Chat: return "chat"; case NetMsg::PlayerSnapshot: return "player snapshot"; case NetMsg::Animals: return "animals"; case NetMsg::AnimalHit: return "animal hit";
         default: return "?";
     }
 }
@@ -539,6 +539,7 @@ bool ParseAny(const std::vector<uint8_t>& b) {
         case NetMsg::PlayerSnapshot: { MsgPlayerSnapshot m; return NetRead(r, m); }
         case NetMsg::Animals: { MsgAnimals m; return NetRead(r, m); }
         case NetMsg::AnimalHit: { MsgAnimalHit m; return NetRead(r, m); }
+        case NetMsg::Damage: { MsgDamage m; return NetRead(r, m); }
         default: return false;
     }
 }
@@ -674,8 +675,10 @@ bool NetProto_Test() {
         check(RoundTrip(a, b, &s) && b.tick == 77 && b.entries.size() == 1 && b.entries[0].netId == a.entries[0].netId && b.entries[0].species == 3 &&
               fabs(b.entries[0].pos.y - a.entries[0].pos.y) < 0.001 && fabs(b.entries[0].health - 17.5f) < 0.06f && b.entries[0].flags == 3 && b.removed == a.removed, "animals");
         samples.push_back(s);
-        MsgAnimalHit h{ 0x2000000000000005ull }, hb; std::vector<uint8_t> s2;
-        check(RoundTrip(h, hb, &s2) && hb.netId == h.netId, "animal hit"); samples.push_back(s2);
+        MsgAnimalHit h{ 0x2000000000000005ull, 2 }, hb; std::vector<uint8_t> s2;
+        check(RoundTrip(h, hb, &s2) && hb.netId == h.netId && hb.action == 2, "animal hit"); samples.push_back(s2);
+        MsgDamage dm{ 8.0f, 2, true, 1, DVec3{ 10.0, 60000.0, -3.0 }, 3.0f, 0x2000000000000005ull }, db; std::vector<uint8_t> s3;
+        check(RoundTrip(dm, db, &s3) && db.amount == 8.0f && db.kind == 2 && db.hasSource && db.knockback == 3.0f && db.sourceId == dm.sourceId && fabs(db.local.y - 60000.0) < 0.001, "damage"); samples.push_back(s3);
     }
     { MsgRoster a, b; a.players = { { 1, "alice" }, { 7, "bob" } }; std::vector<uint8_t> s; check(RoundTrip(a, b, &s) && b.players.size() == 2 && b.players[1].session == 7 && b.players[1].name == "bob", "roster"); samples.push_back(s); }
     { MsgLoadout a{ 3, "stone_pickaxe", true, 2, 0xD04A2Fu }, b; std::vector<uint8_t> s; check(RoundTrip(a, b, &s) && b.session == 3 && b.held == "stone_pickaxe" && b.headlamp && b.suitTier == 2 && b.suitColor == 0xD04A2Fu, "loadout"); samples.push_back(s); }
@@ -738,5 +741,14 @@ bool NetRead(NetReader& r, MsgAnimals& m) {
     for (uint64_t i = 0; i < k && r.ok; ++i) m.removed.push_back(r.varu());
     return Done(r);
 }
-void NetWrite(NetWriter& w, const MsgAnimalHit& m) { Id(w, NetMsg::AnimalHit); w.varu(m.netId); }
-bool NetRead(NetReader& r, MsgAnimalHit& m) { m.netId = r.varu(); return Done(r); }
+void NetWrite(NetWriter& w, const MsgAnimalHit& m) { Id(w, NetMsg::AnimalHit); w.varu(m.netId); w.u8(m.action); }
+bool NetRead(NetReader& r, MsgAnimalHit& m) { m.netId = r.varu(); m.action = r.u8(); if (m.action > 2) r.ok = false; return Done(r); }
+void NetWrite(NetWriter& w, const MsgDamage& m) {
+    Id(w, NetMsg::Damage);
+    w.f32(m.amount); w.u8(m.kind); w.boolean(m.hasSource); w.varu(m.body); w.pos(m.local); w.f32(m.knockback); w.varu(m.sourceId);
+}
+bool NetRead(NetReader& r, MsgDamage& m) {
+    m.amount = r.f32(); m.kind = r.u8(); m.hasSource = r.boolean(); m.body = r.varu(); m.local = r.pos(); m.knockback = r.f32(); m.sourceId = r.varu();
+    if (!(m.amount >= 0.0f && m.amount < 1000.0f) || !(m.knockback >= 0.0f && m.knockback < 100.0f)) r.ok = false;
+    return Done(r);
+}

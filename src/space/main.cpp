@@ -1381,6 +1381,7 @@ int main(int argc, char** argv)
         // (#334) the server owns the animals: none decided here; a swing at one is a request to the server
         gAnimalsReplicated = true; Animals_Reset();
         gAnimalHitRequest = [](uint64_t netId) { NetClient_HitAnimal(gJoin, netId); };
+        gAnimalUseRequest = [](uint64_t netId, int action) { NetClient_UseAnimal(gJoin, netId, action); };
         printf("join: joined %s as %s, session %u%s; seed %u, %zu bodies, %s world-gen settings%s; server world time %.1f s\n", joinAddr.c_str(), joinName.c_str(), gJoin.welcome.session,
                gJoin.welcome.reconnected ? " (reconnected)" : "", gJoin.welcome.seed, sys.bodies.size(), joinParams.isDefault() ? "default" : "custom",
                gJoin.welcome.sandbox ? ", sandbox" : "", gJoin.welcome.worldTime);
@@ -10239,8 +10240,10 @@ int main(int argc, char** argv)
                         const Vector3 d0 = pf->findSpawnDir(p->seed);
                         const Vector3 north = Vector3Normalize(Vector3CrossProduct(d0, Vector3Normalize(Vector3CrossProduct({ 0, 1, 0 }, d0))));
                         const Vector3 d = Vector3Normalize(Vector3Add(d0, Vector3Scale(north, 10.0f / pf->radius)));
-                        Animals_SetThreats(false); Animals_SetNaturalSpawns(false);
-                        const int got = Animals_Spawn(world, *p, sp, Vector3Scale(d, pf->radius + pf->elevation(d)), n, false, 3.0f);
+                        const bool threats = getenv("RAYLIBGAME_HOST_HERD_THREATS") != nullptr; // (#334 slice 2: a hostile one that charges the players)
+                        Animals_SetThreats(threats); Animals_SetNaturalSpawns(false);
+                        const Vector3 dd = threats ? Vector3Normalize(Vector3Add(d0, Vector3Scale(north, 8.0f / pf->radius))) : d;
+                        const int got = Animals_Spawn(world, *p, sp, Vector3Scale(dd, pf->radius + pf->elevation(dd)), n, false, threats ? 0.5f : 3.0f);
                         printf("host: test herd: %d %s placed 10 m from the spawn\n", got, sp);
                     }
             }
@@ -10259,7 +10262,7 @@ int main(int argc, char** argv)
             Planetoid* b = player.nearest;
             const Vector3 me = b ? b->toLocalD(player.position).toFloat() : Vector3{};
             if (ph == 0) { t0 = GetTime(); ph = 1; }
-            if (ph == 1 && Animals_Count() >= 2) { ph = 2; t0 = GetTime(); }
+            if (ph == 1 && Animals_Count() >= 1) { ph = 2; t0 = GetTime(); }
             if (ph == 1 && GetTime() - t0 > 30.0) { printf("bench: net animals (%s): no animals arrived in 30 s -> FAIL\n", role ? role : "?"); benchNetAnimals = false; }
             if (ph == 2 && hunter) {
                 if (!target) { const int i = Animals_Nearest(me, 60.0f); if (i >= 0) { target = Animals_NetId(i); targetStart = Animals_HealthOf(i); printf("bench: net animals: hunting %llx (health %.1f)\n", (unsigned long long)target, targetStart); } }
@@ -10275,6 +10278,21 @@ int main(int argc, char** argv)
                 }
                 if (GetTime() - t0 > 40.0) { ph = 3; t0 = GetTime(); player.autoWalk = false; }
             }
+            // victim (#334 slice 2): stands where it spawned beside a hostile one; asks to feed it once (it has nothing it eats: the
+            // server refuses, saying why); is bitten through the server (its health here goes down). After 25 s it reports.
+            const bool victim = role && !strcmp(role, "victim");
+            static float health0 = -1.0f;
+            if (victim && ph == 2) {
+                static bool asked = false;
+                if (health0 < 0.0f) health0 = survival.health;
+                if (!asked) { const int i = Animals_Nearest(me, 3.0f); if (i >= 0) { asked = true; NetClient_UseAnimal(gJoin, Animals_NetId(i), 1); } } // (in reach: it charges us)
+                if (GetTime() - t0 > 25.0) {
+                    printf("bench: net animals (victim): bitten %d times (last %.1f, blocked %d), health %.0f -> %.0f (the feed request's answer is a chat line)\n",
+                           gJoin.damageTaken, gJoin.lastDamage, (int)gJoin.lastDamageBlocked, health0, survival.health);
+                    NetClient_Disconnect(gJoin);
+                    benchNetAnimals = false;
+                }
+            }
             const double stay = getenv("RAYLIBGAME_JOIN_LINGER") ? atof(getenv("RAYLIBGAME_JOIN_LINGER")) : 0.0;
             // RAYLIBGAME_ANIMALS_SHOT=<file> (the watcher): its last 3 s face the nearest animal, then a screenshot - the server's
             // herd as this client draws it.
@@ -10289,7 +10307,7 @@ int main(int argc, char** argv)
                 static bool taken = false;
                 if (!taken && GetTime() - t0 > stay - 0.2) { taken = true; TakeScreenshot(shot); printf("bench: net animals (watcher): %s\n", shot); }
             }
-            if ((ph == 3 && GetTime() - t0 > 2.0) || (ph == 2 && !hunter && GetTime() - t0 > stay)) {
+            if (benchNetAnimals && ((ph == 3 && GetTime() - t0 > 2.0) || (ph == 2 && !hunter && !victim && GetTime() - t0 > stay))) {
                 std::string ids; for (const auto& [id, s] : seen) ids += TextFormat(" %llx", (unsigned long long)id);
                 printf("bench: net animals (%s): saw %zu animals:%s\n", role ? role : "?", seen.size(), ids.c_str());
                 for (const auto& [id, s] : seen) printf("bench: net animals (%s): %llx health %.1f -> %.1f, gone %d\n", role ? role : "?", (unsigned long long)id, s.first, s.minHealth, (int)s.gone);
