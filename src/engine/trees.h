@@ -142,8 +142,11 @@ public:
     // The nearest plant a body-local ray hits within maxDistance.
     bool raycast(Vector3 localOrigin, Vector3 localDir, float maxDistance, PlantHit& hit) const;
     // Chop / harvest: gone now, regrows later.
-    void remove(uint64_t id);
+    void remove(uint64_t id, double when = -1.0); // when: the world time it was removed (< 0: now; a joined client: the server's, #335)
+    bool findPlant(uint64_t id, Plant& out) const; // a plant standing in a loaded tile (#335: the server checks a chop)
     const PlantRemovals& removals() const { return *removed; }
+    std::shared_ptr<const PlantRemovals> removalsShared() const { return removed; } // (#335: the server diffs it; copy-on-write)
+    void mergeRemovals(const std::vector<std::pair<uint64_t, double>>& list); // (#335) a joined client: the server's, many at once
     void setRemovals(const PlantRemovals& r);  // from a save: rebuilds every tile
     // Keep an area free of plants (the start: where the player stands and the ship parks).
     void addClearing(Vector3 localCentre, float radius);

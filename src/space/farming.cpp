@@ -12,6 +12,8 @@
 #include "voxel.h"
 #include "world.h"
 #include "worldtypes.h"
+#include "net.h"
+#include "netproto.h"
 
 #include <raymath.h>
 #include <rlgl.h>
@@ -74,6 +76,7 @@ void Farm_Reset() { fields.clear(); }
 
 void Farm_Update(Scene& world, float dt) {
     if (dt <= 0.0f || fields.empty()) return;
+    if (gNetRole == NetRole::Client) return; // (#335) the server grows them; its fields come as FarmFields
     LoadCrops();
     const Vector3 sun = Vector3Normalize(world.sunDirection);
     for (auto it = fields.begin(); it != fields.end();) {
@@ -112,39 +115,84 @@ void Farm_Update(Scene& world, float dt) {
     }
 }
 
-bool Farm_Plant(Planetoid& body, Plot& plot, int part, const std::string& seed) {
+bool Farm_SowFor(Inventory& inv, Planetoid& body, Plot& plot, int part, const std::string& seed, std::string* why) {
     LoadCrops();
-    if (!IsFarmland(plot, part)) return false;
+    if (!IsFarmland(plot, part)) { if (why) *why = "Not farmland"; return false; }
     const std::string key = Key(body, plot, part);
-    if (fields.count(key)) { GameUI_Toast("Something is growing here already"); return false; }
+    if (fields.count(key)) { if (why) *why = "Something is growing here already"; return false; }
     for (const CropDef& c : crops) {
         if (!seed.empty() && c.seed != seed) continue;
-        if (inventory.count(c.seed) <= 0 || !inventory.remove(c.seed, 1)) continue;
-        fields[key] = { c.id, 0.0f };
-        QuestBook_Count("plant");
+        if (inv.count(c.seed) <= 0 || !inv.remove(c.seed, 1)) continue;
+        static const bool instant = getenv("RAYLIBGAME_FARM_INSTANT") != nullptr; // (#335 tests) sown ripe
+        fields[key] = { c.id, instant ? 1.0f : 0.0f };
+        return true;
+    }
+    if (why) *why = "No seeds (harvest bushes for them)";
+    return false;
+}
+bool Farm_Plant(Planetoid& body, Plot& plot, int part, const std::string& seed) {
+    if (gFarmRequest) { // joined (#335): the server sows from the inventory it keeps; its fields come back
+        if (!IsFarmland(plot, part)) return false;
+        if (fields.count(Key(body, plot, part))) { GameUI_Toast("Something is growing here already"); return false; }
+        gFarmRequest(body, plot, part, false, seed);
         Audio_Play(Sfx::Pickup, 0.4f, 0.7f);
         return true;
     }
-    GameUI_Toast("No seeds (harvest bushes for them)");
-    Audio_Play(Sfx::Error, 0.3f);
-    return false;
+    std::string why;
+    if (!Farm_SowFor(inventory, body, plot, part, seed, &why)) {
+        if (!why.empty()) GameUI_Toast(why.c_str());
+        if (why.rfind("No seeds", 0) == 0) Audio_Play(Sfx::Error, 0.3f);
+        return false;
+    }
+    QuestBook_Count("plant");
+    Audio_Play(Sfx::Pickup, 0.4f, 0.7f);
+    return true;
 }
-
-int Farm_Harvest(Planetoid& body, Plot& plot, int part) {
+int Farm_HarvestFor(Inventory& inv, Planetoid& body, Plot& plot, int part, std::string* why) {
     auto it = fields.find(Key(body, plot, part));
     if (it == fields.end()) return 0;
     const CropDef* c = Crop(it->second.crop);
     if (!c) { fields.erase(it); return 0; }
-    if (it->second.growth < 1.0f) { GameUI_Toast(TextFormat("The %s is not ripe yet (%.0f%%)", c->id.c_str(), it->second.growth * 100.0f)); return 0; }
+    if (it->second.growth < 1.0f) { if (why) *why = TextFormat("The %s is not ripe yet (%.0f%%)", c->id.c_str(), it->second.growth * 100.0f); return 0; }
     const int seeds = 1 + (GameRng_Int(0, 1));
-    inventory.add(c->yield, c->yieldCount);
-    inventory.add(c->seed, seeds);
-    QuestBook_Count("harvest");
-    Audio_Play(Sfx::Pickup, 0.5f);
+    inv.add(c->yield, c->yieldCount);
+    inv.add(c->seed, seeds);
     fields.erase(it);
     return c->yieldCount + seeds;
 }
-
+int Farm_Harvest(Planetoid& body, Plot& plot, int part) {
+    if (gFarmRequest) { // joined (#335)
+        auto it = fields.find(Key(body, plot, part));
+        if (it == fields.end()) return 0;
+        if (it->second.growth < 1.0f) { GameUI_Toast(TextFormat("The %s is not ripe yet (%.0f%%)", it->second.crop.c_str(), it->second.growth * 100.0f)); return 0; }
+        gFarmRequest(body, plot, part, true, "");
+        Audio_Play(Sfx::Pickup, 0.5f);
+        return 1;
+    }
+    std::string why;
+    const int got = Farm_HarvestFor(inventory, body, plot, part, &why);
+    if (!why.empty()) GameUI_Toast(why.c_str());
+    if (got <= 0) return 0;
+    QuestBook_Count("harvest");
+    Audio_Play(Sfx::Pickup, 0.5f);
+    return got;
+}
+void Farm_FieldsNear(const Planetoid& body, Vector3 local, float range, std::vector<NetFarmField>& out) {
+    out.clear();
+    const std::string prefix = body.name + "|";
+    for (auto it = fields.lower_bound(prefix); it != fields.end() && it->first.compare(0, prefix.size(), prefix) == 0; ++it) {
+        std::string b; uint32_t plotId = 0; int part = -1;
+        if (!Parse(it->first, b, plotId, part)) continue;
+        const Plot* plot = body.plots ? body.plots->byId(plotId) : nullptr;
+        if (!plot || !IsFarmland(*plot, part) || Vector3Distance(TopCentre(*plot, plot->parts[part]), local) > range) continue;
+        out.push_back({ plotId, part, it->second.crop, it->second.growth });
+    }
+}
+void Farm_SetRemoteFields(const Planetoid& body, const std::vector<NetFarmField>& in) {
+    const std::string prefix = body.name + "|";
+    for (auto it = fields.lower_bound(prefix); it != fields.end() && it->first.compare(0, prefix.size(), prefix) == 0;) it = fields.erase(it);
+    for (const NetFarmField& f : in) fields[prefix + std::to_string(f.plot) + "|" + std::to_string(f.part)] = { f.crop, f.growth };
+}
 bool Farm_Crop(const Planetoid& body, const Plot& plot, int part, std::string& crop, float& growth) {
     auto it = fields.find(Key(body, plot, part));
     if (it == fields.end()) { crop.clear(); growth = 0.0f; return false; }
@@ -168,15 +216,23 @@ void Farm_DrawAimHUD(const Planetoid& body, const Plot& plot, int part) {
     }
 }
 
-bool Farm_Till(Scene& world, Planetoid& body, Vector3 ground) {
-    (void)world;
-    if (!body.plots) body.plots = std::make_unique<PlotSet>();
-    Plot* plot = body.plots->plotFor(ground, 6.0f, false);
-    Part part{ PartType::Farmland, { 0, 0, 0 }, 0, 0 };
+bool Farm_TillPart(Planetoid& body, Vector3 ground, Plot*& plot, Part& part) {
+    part = Part{ PartType::Farmland, { 0, 0, 0 }, 0, 0 };
+    plot = body.plots ? body.plots->plotFor(ground, 6.0f, false) : nullptr;
     if (plot) {
         part.origin = plot->cellAt(plot->toPlot(Vector3Add(ground, Vector3Scale(plot->up, 0.1f))));
         part.origin.x &= ~1; part.origin.z &= ~1; // on a 1 m grid, so tilled squares line up
-    } else {
+        return plot->canPlace(part);
+    }
+    return true; // a new plot there (anchored at the ground), the part at its origin
+}
+bool Farm_Till(Scene& world, Planetoid& body, Vector3 ground) {
+    (void)world;
+    if (gFarmTillRequest) return gFarmTillRequest(body, ground); // joined (#335): the server places the farmland
+    Plot* plot = nullptr; Part part;
+    if (!Farm_TillPart(body, ground, plot, part)) return false;
+    if (!plot) {
+        if (!body.plots) body.plots = std::make_unique<PlotSet>();
         plot = body.plots->plotFor(ground, 0.0f, true);
     }
     if (!plot->canPlace(part)) return false;
@@ -184,7 +240,6 @@ bool Farm_Till(Scene& world, Planetoid& body, Vector3 ground) {
     QuestBook_Count("till");
     return true;
 }
-
 void Farm_Draw3D(Scene& world) {
     if (fields.empty()) return;
     LoadCrops();

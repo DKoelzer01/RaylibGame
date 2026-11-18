@@ -68,6 +68,7 @@ struct NetClient {
     int gravesMsgs = 0, lastGraves = 0;          // (#804) Graves lists heard, and the size of the last
     int questBooks = 0, questTeam = 0;          // (#338) team quest books heard, and our team
     int machineViews = 0, machineStates = 0;    // (#332) machine views and working lists heard
+    int plantLists = 0, plantsRemoved = 0, farmLists = 0; // (#335) plant removals and farm field lists heard
     double worstError = 0.0, lastError = 0.0;    // m: the prediction against the server at the acknowledged input
     std::map<uint32_t, std::deque<MsgPlayerState>> others; // other sessions' recent states (newest last)
     std::map<uint32_t, double> viewTicks;        // per other player: the step of theirs drawn now (NetClient_Update)
@@ -163,6 +164,7 @@ void NetClient_UseItem(NetClient& c, const std::string& item);       // (#337) e
 void NetClient_UseBed(NetClient& c, const std::string& body, uint32_t plot, const int cell[3]); // (#800) make that bed my spawn
 void NetClient_Craft(NetClient& c, int index, const std::string& output, int count, bool useChests = false); // (#338) craft on the server
 void NetClient_MachineAction(NetClient& c, uint64_t bodyNetId, uint32_t plot, int part, int action, const std::string& item, int count, int slot, int which); // (#332)
+void NetClient_PlantAction(NetClient& c, int action, uint64_t bodyNetId, uint64_t plant, uint32_t plot, int part, const std::string& seed); // (#335) 1 fell, 2 sow, 3 harvest
 const char* NetClient_StateName(NetClient::State s);
 
 #endif

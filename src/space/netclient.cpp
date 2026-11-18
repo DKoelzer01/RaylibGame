@@ -6,6 +6,8 @@
 #include "combat.h"
 #include "teamquests.h"
 #include "factory.h"
+#include "farming.h"
+#include "trees.h"
 #include <process.h>
 #include "survival.h"
 #include "playersession.h"
@@ -57,7 +59,7 @@ namespace {
     void OnMessage(NetClient& c, const NetMessage& m) {
         c.lastHeard = GetTime();
         const NetMsg kind = NetPeek(m.data);
-        if (c.syncHold && (kind == NetMsg::SyncIndex || kind == NetMsg::SyncData || kind == NetMsg::SyncDone)) { c.syncHeld.push_back(m); return; } // (#776)
+        if (c.syncHold && (kind == NetMsg::SyncIndex || kind == NetMsg::SyncData || kind == NetMsg::SyncDone || kind == NetMsg::Plants || kind == NetMsg::FarmFields)) { c.syncHeld.push_back(m); return; } // (#776; #335: plants and fields need the bodies too)
         NetReader r(m.data.data() + (m.data.empty() ? 0 : 1), m.data.empty() ? 0 : m.data.size() - 1);
         switch (kind) {
             case NetMsg::Welcome: {
@@ -283,6 +285,26 @@ namespace {
                 if (c.state != NetClient::State::Joined || !NetRead(r, s)) return;
                 ++c.machineStates;
                 if (Planetoid* b = Planetoid::findNet(s.body)) Factory::SetRemoteWorking(b->id, s.plot, std::vector<int>(s.working.begin(), s.working.end()));
+                return;
+            }
+            case NetMsg::Plants: { // (#335) plants the server removed (felled, picked up): gone here too, regrowing on the shared clock
+                MsgPlants p;
+                if (c.state != NetClient::State::Joined || !NetRead(r, p)) return;
+                ++c.plantLists; c.plantsRemoved += (int)p.removed.size();
+                if (gNetRole != NetRole::Client) return; // (a host in this process has them already)
+                Planetoid* b = Planetoid::findNet(p.body);
+                if (!b || !b->trees) return;
+                const bool mine = p.session != 0 && p.session == c.welcome.session;
+                if (p.removed.size() == 1) TerrainTool_PlantRemoved(*b, p.removed[0].first, p.removed[0].second, mine);
+                else b->trees->mergeRemovals(p.removed);
+                return;
+            }
+            case NetMsg::FarmFields: { // (#335) the crops near us as the server grows them
+                MsgFarmFields f;
+                if (c.state != NetClient::State::Joined || !NetRead(r, f)) return;
+                ++c.farmLists;
+                if (gNetRole != NetRole::Client) return;
+                if (Planetoid* b = Planetoid::findNet(f.body)) Farm_SetRemoteFields(*b, f.fields);
                 return;
             }
             case NetMsg::QuestBook: { // (#338) our team's quest book as the server keeps it: the Quests tab and HUD show it
@@ -755,5 +777,10 @@ void NetClient_MachineAction(NetClient& c, uint64_t bodyNetId, uint32_t plot, in
     if (c.state != NetClient::State::Joined || part < 0) return;
     MsgMachineAction a; a.body = bodyNetId; a.plot = plot; a.part = part; a.action = (uint8_t)action; a.item = item;
     a.count = (uint16_t)std::clamp(count, 0, 65535); a.slot = (uint8_t)std::clamp(slot, 0, 255); a.which = (uint8_t)std::clamp(which, 0, 2);
+    SendMsg(c, a);
+}
+void NetClient_PlantAction(NetClient& c, int action, uint64_t bodyNetId, uint64_t plant, uint32_t plot, int part, const std::string& seed) { // (#335)
+    if (c.state != NetClient::State::Joined) return;
+    MsgPlantAction a; a.action = (uint8_t)action; a.body = bodyNetId; a.plant = plant; a.plot = plot; a.part = part; a.seed = seed;
     SendMsg(c, a);
 }
