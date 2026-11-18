@@ -94,6 +94,20 @@ struct Player {
     void placeAt(Scene& world, Planetoid& body, Vector3 renderFeet);
     // Ride along with body from the next update on (else one slow frame leaves you behind its spin).
     void anchorTo(Planetoid& body);
+    // Multiplayer (#327): everything a step depends on, in the nearest body's frame (time-independent: the server and a
+    // predicting client step the same input at different times). vel is relative to the surface under the feet, on body
+    // axes. applyNetState sets the player to it with the ground or air anchor update() expects, so the next step goes on
+    // from there as if it had got there itself (setting position alone dropped the ground contact for a step).
+    struct NetState {
+        uint64_t body = 0;              // NetId
+        DVec3 local{};                  // feet
+        Vector3 vel{};
+        bool grounded = false, hovering = false;
+        uint8_t posture = 0;            // Posture
+        float jumpBuffer = 0.0f, coyote = 0.0f, jumpLock = 0.0f, jetpackFuel = 1.0f;
+    };
+    bool netState(const Scene& world, NetState& s) const; // false: no body yet
+    bool applyNetState(Scene& world, const NetState& s);  // false: the body isn't loaded
     void update(Scene& world, const PlayerInput& in, float dt); // one simulation step (SimDt, #315) with that step's input (#312)
     // Mouse look, once per frame (not per simulation step, so the view turns smoothly at any frame rate; #315).
     void look(Vector2 mouseDelta);

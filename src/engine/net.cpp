@@ -108,6 +108,12 @@ int Net_Receive(std::vector<NetMessage>& out, int max) {
     return std::max(0, n);
 }
 
+void Net_SetFakeConditions(int lagMs, float lossPercent) {
+    ISteamNetworkingUtils* u = SteamNetworkingUtils();
+    u->SetGlobalConfigValueInt32(k_ESteamNetworkingConfig_FakePacketLag_Send, lagMs);
+    u->SetGlobalConfigValueFloat(k_ESteamNetworkingConfig_FakePacketLoss_Send, lossPercent);
+}
+
 void Net_Close(uint32_t conn) {
     if (!initialised) return;
     connected.erase(conn);
@@ -127,5 +133,6 @@ int Net_ConnectionCount() { return 0; }
 bool Net_Send(uint32_t, const void*, uint32_t, bool) { return false; }
 int Net_Receive(std::vector<NetMessage>&, int) { return 0; }
 void Net_Close(uint32_t) {}
+void Net_SetFakeConditions(int, float) {}
 
 #endif
