@@ -5,8 +5,8 @@
 //  mode 1 (one thread): each entry's excess, in list order (sorted by cell: deterministic), goes up its column into the
 //    open cells of its kind. The CPU places a change on its mirror of the cells, a dispatch older than the GPU's: a pour
 //    the mirror had room for could land on a cell the GPU had filled meanwhile, and clamping it at 255 deleted the excess
-//    (#680: 8.2 m^3 of a dam-break's 150 m^3 fill with the column model, ~1 m^3 with the face model). A pour puts water
-//    at or above its point, so up the column is where it belongs. What still finds no room is dropped (rare).
+//    (#840: ~1 m^3 of a dam-break's 149 m^3 fill). A pour puts water at or above its point, so up the column is where it
+//    belongs. What still finds no room is dropped (rare).
 layout(local_size_x = 64) in;
 layout(std430, binding = 0) buffer Cells { uint cells[]; };
 struct Delta { uint cell; int delta; uint kind; uint pad; };
@@ -17,8 +17,6 @@ layout(std430, binding = 10) buffer Mask { uint gmask[]; }; // the dry-cell skip
 uniform uint count;
 uniform int mode;
 uniform int useGroups; // 1: the dry-cell skip is on (binding 10 is its mask)
-uniform int dbgLostOn; // TEMP #680 (DBGPUVOL): units dropped (no room even up the column), in the step shader's counter
-layout(std430, binding = 14) buffer DbgLost { int lostOver; int lostUnder; int deltaSum; int pad0; };
 
 const uint SOLID = 1u;
 void wet(uint cell) {
@@ -55,7 +53,6 @@ void main() {
                 e -= add;
                 wet(cell);
             }
-            if (e > 0 && dbgLostOn != 0) atomicAdd(lostOver, e);
         }
         return;
     }
@@ -66,7 +63,6 @@ void main() {
     int f = int(c & 255u);
     int nf = clamp(f + d.delta, 0, 255);
     deltas[i].pad = uint(max(f + d.delta - 255, 0)); // the excess, for mode 1
-    if (dbgLostOn != 0 && f + d.delta < 0) atomicAdd(lostUnder, -(f + d.delta));
     uint fl = (c >> 8) & 255u;
     if (f == 0 && nf > 0) fl = (fl & 31u) | ((d.kind & 7u) << 5);
     cells[d.cell] = uint(nf) | (fl << 8) | (c & 0xFFFF0000u); // the target and the ground share (#454) stay

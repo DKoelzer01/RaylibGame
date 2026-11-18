@@ -161,7 +161,6 @@ struct Brick {
 inline int Cap(const Brick* b, int i) { return 255 - b->shut[i]; }          // what the cell holds (#454)
 inline int Height(const Brick* b, int i) { return b->shut[i] + b->fill[i]; } // where its water stands, in 255ths of the cell
 
-static Vector3 dbgAxO{}, dbgAxX{}, dbgAxY{}, dbgAxU{}; static bool dbgAxSet = false; // TEMP #680 (DBTRACE): the test's channel frame
 
 struct Site {
     uint64_t body = 0;
@@ -911,12 +910,6 @@ void ApplyCommand(const Command& c) {
                         GpuDelta(b, i, add);
                         left -= add;
                         Touch(b);
-                        if (dbgAxSet && EnvFlag("DBTRACE")) { // TEMP #680: pour water placed at or past the wall
-                            const Vector3 d = Vector3Subtract(s->cellCentre(ci + di, cj + dj, ck + k), dbgAxO);
-                            const float along = Vector3DotProduct(d, dbgAxX);
-                            if (along > 0.0f) printf("dbtrace: pour ring %d (hw %d) put %d units at along %.2f m, h %.2f m (pour at along %.2f)\n", ring, hw, add, along,
-                                                       Vector3DotProduct(d, dbgAxU), Vector3DotProduct(Vector3Subtract(c.c, dbgAxO), dbgAxX));
-                        }
                     }
         if (left > 0.0f) pourDroppedUnits += (long long)left;
         return;
@@ -1279,35 +1272,6 @@ struct GpuState {
     std::vector<std::vector<WatchCell>> watchCells; // per flow watch: its cells as resolved for the last dispatch
 } G;
 int G_Capacity() { return G.capacity; }
-ComputeBuffer gDbgLost; // TEMP #680 (DBGPUVOL): clamp losses in fluid_step.comp's column apply and fluid_delta.comp (binding 14)
-// TEMP #680 (DBTICKHASH): every brick's cells at the end of a fluid tick, order-independent (the sum of per-brick hashes,
-// each brick by its place), so a CPU run and a GPU lockstep run can be diffed tick by tick.
-void DbgTickHash(const char* mode) {
-    static const bool on = EnvFlag("DBTICKHASH");
-    if (!on) return;
-    static long long tick = 0;
-    uint64_t sum = 0; long long units = 0;
-    for (auto& s : sites)
-        for (auto& kv : s->bricks) {
-            const Brick& b = *kv.second;
-            uint64_t h = 1469598103934665603ull;
-            h = (h ^ (uint64_t)(uint32_t)(b.bi * 73856093 ^ b.bj * 19349663 ^ b.bk * 83492791)) * 1099511628211ull;
-            for (int k = 0; k < B3; ++k) { h = (h ^ b.fill[k]) * 1099511628211ull; units += b.fill[k]; }
-            sum += h;
-        }
-    printf("dbtick %s %lld %016llx %lld\n", mode, tick, (unsigned long long)sum, units);
-    static const long long dumpAt = getenv("DBTICKDUMP") ? atoll(getenv("DBTICKDUMP")) : -1;
-    if (tick == dumpAt || tick == dumpAt - 1) // each brick: place, units, active / settled / steady
-        for (auto& s : sites)
-            for (auto& kv : s->bricks) {
-                const Brick& b = *kv.second;
-                long long u = 0; uint64_t h = 1469598103934665603ull;
-                for (int k = 0; k < B3; ++k) { u += b.fill[k]; h = (h ^ b.fill[k]) * 1099511628211ull; }
-                printf("dbbrick %lld %d %d %d u=%lld h=%016llx a=%d s=%d st=%d ready=%d\n", tick, b.bi, b.bj, b.bk, u, (unsigned long long)h, b.active, b.settled, b.steady, b.ready);
-                if (tick == dumpAt) for (int k = 0; k < B3; ++k) if (b.fill[k]) printf("dbcell %d %d %d %d %d %d %d\n", b.bi, b.bj, b.bk, k % B, (k / B) % B, k / (B * B), b.fill[k]);
-            }
-    ++tick;
-}
 
 // Flow watches (#392): Fluid::FlowAt asks for the flow around a point; GpuTick resolves each to cells, reads their flux
 // every tick and publishes a smoothed value. A watch nobody asked about for 3 s is dropped.
@@ -1598,26 +1562,6 @@ void GpuTick(int n) {
         G.sinkOut.upload(zeros.data(), G.capacity * 4);
         creditSinks(units.data(), G.capacity);
     }
-    // TEMP #680 (DBGPUVOL): the water in every resident slot as the GPU holds it (cells A, downloaded) against the CPU mirror
-    // of the same bricks, once a second: a lagging mirror (steady bricks are read back sparsely, #674) or a real loss.
-    static const bool dbGpuVol = EnvFlag("DBGPUVOL");
-    static int gpuVolTick = 0;
-    if (dbGpuVol && ++gpuVolTick % 40 == 0 && G.capacity > 0) {
-        std::vector<uint32_t> all((size_t)G.capacity * kCellsPerBrick);
-        G.a.download(all.data(), (unsigned)(all.size() * 4));
-        long long gpu = 0, mirror = 0;
-        for (int s = 0; s < G.capacity; ++s) {
-            const Brick* br = G.owner[s];
-            if (!br) continue;
-            for (int k = 0; k < B3; ++k) {
-                const uint32_t c = all[(size_t)s * kCellsPerBrick + k];
-                if (!((c >> 8) & (kSource | kSink | kSolid))) gpu += c & 255u;
-                if (!(br->flags[k] & (kSource | kSink | kSolid))) mirror += br->fill[k];
-            }
-        }
-        const double cv = WaterField::CellVolume() / 255.0;
-        printf("dbgpuvol: GPU %.2f m^3, mirror %.2f m^3 (resident bricks)\n", gpu * cv, mirror * cv);
-    }
     GpuReadback();
     GpuTimer_Mark("fluid-read"); // benches: the readback above (#669)
     GpuFlowRead(); // 1b. the watched cells' flux since the last read (#392)
@@ -1701,7 +1645,6 @@ void GpuTick(int n) {
             G.delta.setUint("count", (unsigned)list.size());
             G.delta.setInt("useGroups", G.groupsOn ? 1 : 0);
             G.a.bind(0); G.deltas.bind(1); G.flags.bind(2); G.nbrs.bind(3); if (G.groupsOn) G.mask.bind(10); // a change wets its group (#675)
-            G.delta.setInt("dbgLostOn", gDbgLost.id ? 1 : 0); if (gDbgLost.id) gDbgLost.bind(14); // TEMP #680
             G.delta.setInt("mode", 0);
             G.delta.dispatch(((unsigned)list.size() + 63) / 64);
             // What did not fit (the CPU placed it on a mirror a dispatch old) goes up its column, in list order (#680).
@@ -1755,20 +1698,6 @@ void GpuTick(int n) {
     G.step.setInt("columns", G.colOn ? 1 : 0); // the column-pair flow (#680): its passes in fluid_step.comp
     G.step.setInt("advect", advectOn ? 1 : 0);
     if (G.colOn) G.col.bind(13);
-    static const bool dbLost = EnvFlag("DBGPUVOL"); // TEMP #680: the column apply's and the delta shader's clamp losses
-    ComputeBuffer& dbgLost = gDbgLost;
-    if (dbLost && G.colOn) {
-        if (!dbgLost.id) { const int z[4] = { 0, 0, 0, 0 }; dbgLost.create(16, z); }
-        static int dbgLostTick = 0;
-        if (++dbgLostTick % 40 == 0) {
-            int v[4] = {}; dbgLost.download(v, 16);
-            const double cv = WaterField::CellVolume() / 255.0;
-            printf("dbgpulost: clamp over %.3f m^3, under %.3f m^3, net delta %+d units, %d column applies (last 40 ticks)\n", v[0] * cv, v[1] * cv, v[2], v[3]);
-            const int z[4] = { 0, 0, 0, 0 }; dbgLost.upload(z, 16);
-        }
-        dbgLost.bind(14);
-    }
-    G.step.setInt("dbgLostOn", dbLost && G.colOn ? 1 : 0);
     static const bool noEvap = EnvFlag("RAYLIBGAME_FLUID_NOEVAP"); // tests: specks kept (water accounting, #454)
     static unsigned evapTick = 0;
     GpuFlowResolve(); // which bricks the flow watches need this dispatch (#392)
@@ -1867,7 +1796,7 @@ void GpuTick(int n) {
     // Lockstep (tests, #680): read this dispatch back now (synchronously), so the job that follows places its commands on
     // the state the GPU just reached - the CPU's order (commands, then the substeps) - instead of a dispatch behind.
     static const bool lockstep = EnvFlag("RAYLIBGAME_FLUID_LOCKSTEP");
-    if (lockstep) { GpuReadback(); DbgTickHash("gpu"); }
+    if (lockstep) GpuReadback();
 }
 
 // CPU mode (#654: no compute shaders - a headless server, FLUID_CPU=1): the same step as the GPU's (fluidkernel.h) on a grid
@@ -1890,11 +1819,6 @@ template <typename Fn> void ParallelSlots(int count, Fn&& fn) {
 }
 
 void CpuTick(int n) {
-    // TEMP #747 (DBSTEPPROF): where a CPU tick's time goes - pack, the kernel's phases, unpack - every 40 ticks.
-    static const bool stepProf = EnvFlag("DBSTEPPROF");
-    static double profPack = 0.0, profKernel = 0.0, profUnpack = 0.0; static int profTicks = 0; static long long profSlots = 0;
-    using ProfClock = std::chrono::steady_clock;
-    const auto profT0 = ProfClock::now();
     std::vector<Brick*> slots;
     std::vector<Site*> slotSite;
     auto add = [&](Brick* b, Site* s) {
@@ -1940,104 +1864,15 @@ void CpuTick(int n) {
     p.setCell(WaterField::CellSize(), ColumnCells());
     static const bool noEvap = EnvFlag("RAYLIBGAME_FLUID_NOEVAP");
     static unsigned evapTick = 0;
-    // #680 diagnosis (DBVOL): water in the processed slots' plain cells before and after (sources, sinks and evaporation aside).
-    static const bool dbVol = EnvFlag("DBVOL");
-    auto plainSum = [&]() { long long v = 0; for (int i = 0; i < processedCount; ++i) for (int c = 0; c < B3; ++c) { const uint32_t u = g.a[(size_t)i * B3 + c]; if (!((u >> 8) & (kSource | kSink | kSolid))) v += u & 255u; } return v; };
-    const long long volBefore = dbVol ? plainSum() : 0;
     // The dry-cell skip (#747): slots are new this tick. FLUID_CPU_FULLFIRST=1: its first substep runs every cell (the old
     // way, A/B); else the kernel clears the slots' scratch and seeds the wet groups from the cells, and every substep skips.
     static const bool fullFirst = EnvFlag("FLUID_CPU_FULLFIRST");
     if (fullFirst) g.groupsFull = true;
     else FluidKernel::BeginTick(g, list, S);
-    const auto profT1 = ProfClock::now();
-    static const bool dbTrace = EnvFlag("DBTRACE");
-    // TEMP #680 (DBTRACE): transfers into partial / solid-capped cells near the test's wall, in the channel frame (0.25 m
-    // buckets): (taker along, taker height, giver along, branch * 2 + capped) -> units.
-    static std::map<std::array<int, 5>, long long> traceSum;
-    static std::map<std::array<int, 3>, std::array<long long, 2>> pairSum;
-    auto chan = [&](int cell, float& along, float& across, float& h) {
-        const Brick* b = slots[cell / B3];
-        const int l = cell % B3;
-        const Vector3 d = Vector3Subtract(slotSite[cell / B3]->cellCentre(b->bi * B + l % B, b->bj * B + (l / B) % B, b->bk * B + l / (B * B)), dbgAxO);
-        along = Vector3DotProduct(d, dbgAxX); across = Vector3DotProduct(d, dbgAxY); h = Vector3DotProduct(d, dbgAxU);
-    };
-    if (dbTrace && dbgAxSet) { // the slots whose brick lies within ~a brick of the wall (x 0-2 m)
-        g.dbgMark.assign(S, 0);
-        for (int i = 0; i < S; ++i) {
-            const Vector3 d = Vector3Subtract(slotSite[i]->cellCentre(slots[i]->bi * B + B / 2, slots[i]->bj * B + B / 2, slots[i]->bk * B + B / 2), dbgAxO);
-            const float a = Vector3DotProduct(d, dbgAxX), c = Vector3DotProduct(d, dbgAxY);
-            g.dbgMark[i] = a > -3.0f && a < 12.0f && std::fabs(c) < 6.0f;
-        }
-    }
-    // TEMP #814 (DBHASH): a hash of the processed slots' cells (with each brick's place) going in and after every substep,
-    // to diff two runs and find the first that differs - in the kernel (same input, other output) or on the host.
-    static const bool dbHash = EnvFlag("DBHASH");
-    static long long hashTick = 0;
-    auto cellHash = [&](const std::vector<uint32_t>& cells) {
-        uint64_t h = 1469598103934665603ull;
-        for (int i = 0; i < processedCount; ++i) {
-            const Brick* b = slots[i];
-            h = (h ^ (uint64_t)(uint32_t)(b->bi * 73856093 ^ b->bj * 19349663 ^ b->bk * 83492791)) * 1099511628211ull;
-            const uint32_t* c = &cells[(size_t)i * B3];
-            for (int k = 0; k < B3; ++k) h = (h ^ c[k]) * 1099511628211ull;
-        }
-        return h;
-    };
-    if (dbHash) printf("dbhash %lld in  %d %016llx\n", hashTick, processedCount, (unsigned long long)cellHash(g.a));
     for (int k = 0; k < n; ++k) {
         p.evaporate = !noEvap && ++evapTick % (kEvapEvery * (unsigned)SubstepScale()) == 0;
         FluidKernel::Substep(g, p, list);
-        if (dbHash) printf("dbhash %lld s%d %d %016llx\n", hashTick, k, processedCount, (unsigned long long)cellHash(g.a));
-        if (dbTrace && dbgAxSet) {
-            const int m = std::min(FluidKernel::dbgTraceN.exchange(0), FluidKernel::kDbgTrace);
-            for (int i = 0; i < m; ++i) {
-                const FluidKernel::DbgTransfer& t = FluidKernel::dbgTrace[i];
-                float ta, tc, th, ga, gc, gh;
-                chan(t.taker, ta, tc, th); chan(t.giver, ga, gc, gh);
-                if (ta < -0.5f || ta > 0.25f || std::fabs(tc) > 2.5f || th < -1.0f) continue; // at the wall's face, over the pool's surface
-                traceSum[{ (int)std::floor(ta * 4.0f), (int)std::floor(th * 4.0f), (int)std::floor(ga * 4.0f), (int)std::floor(gh * 4.0f), t.branch * 2 + t.capped }] += t.units;
-            }
-            // The pairs runs at x 3-8 m planned: (along 0.5 m, direction 0 down / 1 up / 2 across, exit code) -> count, depth.
-            const int mp = std::min(FluidKernel::dbgPairsN.exchange(0), FluidKernel::kDbgTrace);
-            for (int i = 0; i < mp; ++i) {
-                const FluidKernel::DbgPairRec& r = FluidKernel::dbgPairs[i];
-                float aa, ac, ah;
-                chan(r.a, aa, ac, ah);
-                if (aa < 0.0f || aa > 4.0f || std::fabs(ac) > 2.5f) continue;
-                const Site* st = slotSite[r.a / B3];
-                const float da = Vector3DotProduct(Vector3Add(Vector3Scale(st->e, (float)r.dx), Vector3Scale(st->n, (float)r.dy)), dbgAxX);
-                const int dir = da > 0.3f ? 0 : da < -0.3f ? 1 : 2;
-                auto& e = pairSum[{ (int)std::floor(aa * 2.0f), dir, r.why }];
-                ++e[0]; e[1] += r.depth;
-            }
-        } else if (dbTrace) { FluidKernel::dbgTraceN = 0; FluidKernel::dbgPairsN = 0; }
     }
-    if (dbTrace) {
-        static int pticks = 0;
-        if (++pticks % 10 == 0 && !pairSum.empty()) {
-            printf("dbpairs: runs at x 3-8 m (along, d/u/x, exit: count, mean depth m):");
-            for (auto& kv : pairSum)
-                printf(" %.1f%c%d:%lld/%.2f", kv.first[0] / 2.0f, "dux"[kv.first[1]], kv.first[2], kv.second[0], kv.second[1] / (double)kv.second[0] / (255.0 / WaterField::CellSize()));
-            printf("\n");
-            pairSum.clear();
-        }
-    }
-    if (dbTrace) {
-        static int ticks = 0;
-        if (++ticks % 40 == 0 && !traceSum.empty()) {
-            printf("dbtrace: into partial/capped cells by the wall (taker along m, h m <- giver along m: branch s/w/f, c = under solid, units):\n");
-            for (auto& kv : traceSum)
-                printf("  %.2f h%.2f <- %.2f h%.2f %c%s %lld\n", kv.first[0] / 4.0f, kv.first[1] / 4.0f, kv.first[2] / 4.0f, kv.first[3] / 4.0f, "swf"[kv.first[4] / 2], kv.first[4] % 2 ? "c" : "", kv.second);
-            traceSum.clear();
-        }
-    }
-    if (dbVol) {
-        static long long drift = 0; static int ticks = 0;
-        drift += plainSum() - volBefore;
-        if (++ticks % 40 == 0) { printf("dbvol: plain-cell water changed by %+.2f m^3 over the last second (%d slots)\n", drift * WaterField::CellVolume() / 255.0, processedCount); drift = 0; }
-    }
-    ++hashTick;
-    const auto profT2 = ProfClock::now();
     // Unpack, as the GPU readback (GpuTick 1.).
     static const int d[6][3] = { { -1, 0, 0 }, { 1, 0, 0 }, { 0, -1, 0 }, { 0, 1, 0 }, { 0, 0, -1 }, { 0, 0, 1 } };
     // Each slot's own brick back (cells, faces, the skip's history) and how far a settled one drifted, in parallel (#747);
@@ -2086,24 +1921,6 @@ void CpuTick(int n) {
             }
     }
     for (Brick* b : slots) b->cpuSlot = -1;
-    DbgTickHash("cpu"); // TEMP #680
-    if (stepProf) {
-        const auto profT3 = ProfClock::now();
-        auto ms = [](ProfClock::time_point a, ProfClock::time_point b) { return std::chrono::duration<double, std::milli>(b - a).count(); };
-        profPack += ms(profT0, profT1); profKernel += ms(profT1, profT2); profUnpack += ms(profT2, profT3);
-        profSlots += (long long)slots.size();
-        if (++profTicks == 40) {
-            const double k = 1.0 / profTicks;
-            namespace FK = FluidKernel;
-            printf("dbstep: per tick (40): pack %.1f ms, kernel %.1f ms [select %.1f, vertical %.1f, plan/faces %.1f, move %.1f, apply %.1f], unpack %.1f ms; "
-                   "%.0f slots, %.1f substeps (%.2f full), groups run %.1f%%\n",
-                   profPack * k, profKernel * k, FK::dbgPhaseMs[0] * k, FK::dbgPhaseMs[1] * k, FK::dbgPhaseMs[2] * k, FK::dbgPhaseMs[3] * k, FK::dbgPhaseMs[4] * k,
-                   profUnpack * k, profSlots * k, FK::dbgSubsteps * k, FK::dbgFullSubsteps * k, 100.0 * FK::dbgGroupsRun / std::max(1LL, FK::dbgGroupsAll));
-            profPack = profKernel = profUnpack = 0.0; profTicks = 0; profSlots = 0;
-            for (double& v : FK::dbgPhaseMs) v = 0.0;
-            FK::dbgGroupsRun = FK::dbgGroupsAll = FK::dbgSubsteps = FK::dbgFullSubsteps = 0;
-        }
-    }
 }
 
 void GpuReset() {
@@ -2189,15 +2006,6 @@ float Fluid::Pour(Planetoid& body, Vector3 local, float m3, int kind) {
     return m3;
 }
 
-int Fluid::DbgCellShut(const Planetoid& body, Vector3 local) {
-    Site* s = SiteFor(body.id, local, false);
-    if (!s) return -1;
-    int ci, cj, ck; s->cellOf(local, ci, cj, ck);
-    Brick* b; int i;
-    if (!s->cell(ci, cj, ck, b, i) || !b->ready) return -1;
-    return (b->flags[i] & kSolid) ? 255 : (int)b->shut[i];
-}
-void Fluid::DbgTraceAxes(Vector3 o, Vector3 ax, Vector3 ay, Vector3 up) { dbgAxO = o; dbgAxX = ax; dbgAxY = ay; dbgAxU = up; dbgAxSet = true; }
 float Fluid::PourDropped() { return (float)(pourDroppedUnits.load() * (double)WaterField::CellVolume() / 255.0); }
 
 void Fluid::AddSource(Planetoid& body, Vector3 local, int kind, float rate, float head) {

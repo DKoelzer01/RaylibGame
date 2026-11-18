@@ -5869,17 +5869,6 @@ int main(int argc, char** argv)
                             lkPhase = 3; lkT0 = SimTime();
                         } else if (lkPhase == 3) {
                             if (t > 1.0 && vol1 < 0.0f) vol1 = past();
-                            static double histT = -1.0; // TEMP #680 (DBHIST): where the water is during the drain
-                            if (EnvFlag("DBHIST") && t - histT >= 5.0) {
-                                histT = t;
-                                float zone[3] = { 0, 0, 0 }; // reservoir (x < 0), wall (0-2 m), channel (x > 2)
-                                for (float x = -19.75f; x < 40.0f; x += 0.5f)
-                                    for (float y = -1.75f; y <= 1.75f; y += 0.5f)
-                                        for (float h = -5.75f; h <= 0.0f; h += 0.5f)
-                                            zone[x < 0.0f ? 0 : x < 2.0f ? 1 : 2] += Fluid::WaterAt(*p, pt(x, y, h), 0.25f);
-                                printf("dbhist t=%.0f: sim volume %.1f m^3; sampled reservoir %.1f, wall %.1f, channel %.1f; pool %.2f m by SurfaceAbove\n",
-                                       t, Fluid::GetStats().volume, zone[0], zone[1], zone[2], depthAt(-10.0f));
-                            }
                             if (t > 3.0 && vol3 < 0.0f) vol3 = past();
                             static double lastPrint = 0.0;
                             if (t - lastPrint >= 20.0) {
@@ -5946,13 +5935,11 @@ int main(int argc, char** argv)
                             r0 = pf->radius + pf->elevation(home);
                             std::vector<TerrainEdit> cut = { box(-20.0f, 0.0f), box(2.0f, 50.0f) }; // a 2 m wall (#691: 1 m - one cell at 1 m cells - leaked)
                             ApplyTerrainEdits(*p, cut.data(), cut.size());
-                            Fluid::DbgTraceAxes(Vector3Scale(home, r0), ax, ay, home); // TEMP #680 (DBTRACE)
                             printf("bench: dam-break: a 20 m reservoir behind a 1 m wall, a 50 m channel, 4 m wide, 2.5 m deep (cells %.2f m)\n", WaterField::CellSize());
                             dbPhase = 1; dbT0 = SimTime();
                         }
                         // The camera over the wall, looking down at the reservoir and the channel's start (the subject, CLAUDE.md).
                         world.camera.position = p->toWorld(pt(-4.0f, -9.0f, 9.0f)); world.camera.target = p->toWorld(pt(-4.0f, 0.0f, -2.0f));
-                        if (EnvFlag("DBCAM") && dbPhase == 3) { world.camera.position = p->toWorld(pt(7.0f, -7.0f, 6.0f)); world.camera.target = p->toWorld(pt(7.0f, 0.0f, -2.0f)); } // #680 diagnosis: the channel below the dam
                         world.camera.up = p->dirToWorld(home);
                         player.flyMode = true; player.position = world.renderOrigin + world.camera.position;
                         // The fill starts at 2 s once the world has been idle (#814: on the first idle frame, which streaming
@@ -5973,8 +5960,6 @@ int main(int argc, char** argv)
                                 const float x = -19.0f + 1.4f * (float)(k % 10), y = (k / 10) % 2 ? 1.0f : -1.0f; // -19 to -6.4 m
                                 ++k;
                                 dbPoured += Fluid::Pour(*p, pt(x, y, -2.3f), 0.25f);
-                                static double dbFillPrint = 0.0; // TEMP #680 diagnosis: poured vs the simulation's volume during the fill
-                                if (EnvFlag("DBFILL") && t - dbFillPrint >= 2.0) { dbFillPrint = t; printf("dbfill t=%.1f poured %.1f sim %.1f\n", t, dbPoured, Fluid::GetStats().volume); }
                             }
                             // Done at 2 m deep on average over five points (#680: one probe at -10 m read a 1 m^3 pour's mound as 2 m
                             // and stopped the fill at 95 m^3; 160 m^3 stood 2.17 m deep - the lattice rounds the walls in - and waves
@@ -5994,13 +5979,6 @@ int main(int argc, char** argv)
                             std::vector<TerrainEdit> cut = { box(-0.2f, 2.2f) }; // the wall goes
                             ApplyTerrainEdits(*p, cut.data(), cut.size());
                             Recorder_Cue(); // --record-on-cue: a capture shows the break, not the fill
-                            if (EnvFlag("DBLEAK")) { // TEMP #680: where the water already past the wall stands (x 1-6 m, by height over the floor)
-                                for (float h = 0.125f; h < 3.0f; h += 0.25f) {
-                                    float v = 0.0f;
-                                    for (float x = 1.125f; x < 6.0f; x += 0.25f) for (float y = -1.875f; y < 2.0f; y += 0.25f) v += Fluid::WaterAt(*p, pt(x, y, dbFloor + h), 0.125f);
-                                    if (v > 0.001f) printf("dbleak: %.2f m over the floor: %.3f m^3\n", h, v);
-                                }
-                            }
                             printf("bench: dam-break: reservoir %.2f m deep over its floor at %.2f m (%.0f m^3 poured, %.1f found no room (#766), %.0f in the simulation, %.1f m^3 already past the wall); wall removed\n",
                                    h0, dbFloor, dbPoured, Fluid::PourDropped(), Fluid::GetStats().volume, beyond);
                             printf("bench: dam-break: depth along the reservoir (x = -18 -14 -10 -6 -2 m):");
@@ -6009,29 +5987,6 @@ int main(int argc, char** argv)
                             dbPhase = 3; dbT0 = SimTime();
                         } else if (dbPhase == 3) {
                             const float dist[3] = { 5.0f, 10.0f, 20.0f };
-                            static bool slivered = false;
-                            if (EnvFlag("DBSLIVER") && !slivered && t > 1.0) { // TEMP #680: the cut where the wall stood (x -1 to 3 m), 1 s after it
-                                slivered = true;                                // went: ground by density, and the fluid's cells (solid / ground share)
-                                for (float x = -0.875f; x < 3.0f; x += 0.25f) {
-                                    int dens = 0, solid = 0, shutSum = 0, shutN = 0;
-                                    for (float y = -1.875f; y < 2.0f; y += 0.25f)
-                                        for (float h = 0.125f; h < 2.5f; h += 0.25f) {
-                                            const Vector3 q = pt(x, y, dbFloor + h);
-                                            if (p->densityAt(q) >= ISO_LEVEL) ++dens;
-                                            const int sh = Fluid::DbgCellShut(*p, q);
-                                            if (sh == 255) ++solid; else if (sh > 0) { shutSum += sh; ++shutN; }
-                                        }
-                                    printf("dbsliver: x %+.2f m: ground %d / 160 samples, fluid cells solid %d, partial %d (mean share %d/255)\n",
-                                           x, dens, solid, shutN, shutN ? shutSum / shutN : 0);
-                                }
-                            }
-                            static double profT = 0.0; // #680 diagnosis: the depth along the channel every 0.5 s
-                            if (EnvFlag("DBPROF") && t - profT >= (t < 0.5 ? 0.05 : 0.25) && t < 3.0) {
-                                profT = t;
-                                printf("dbprof t=%.2f (x -4..14 m by 1 m):", t);
-                                for (float xx = -4.0f; xx <= 14.0f; xx += 1.0f) { const float d = Fluid::SurfaceAbove(*p, pt(xx, 0.0f, dbFloor + 0.13f), 4.0f); printf(" %.2f", d > 0.0f ? d + 0.13f : 0.0f); }
-                                printf("\n");
-                            }
                             for (int i = 0; i < 3; ++i)
                                 if (front[i] < 0.0 && Fluid::WaterAt(*p, pt(2.0f + dist[i], 0.0f, dbFloor + 0.5f), 0.5f) > 0.02f) front[i] = t; // over the floor cell at either size
                             if (t > 1.4 && depthDam < 0.0f) { const float sd = Fluid::SurfaceAbove(*p, pt(1.0f, 0.0f, dbFloor + 0.55f), 4.0f); depthDam = sd > 0.0f ? sd + 0.55f : 0.0f; }

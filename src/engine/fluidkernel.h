@@ -54,10 +54,9 @@ struct Grid {
     std::vector<uint32_t> dem, cap;
     std::vector<uint16_t> pairCode;
     std::vector<uint32_t> sinkOut; // per slot: fill units its sinks took in (river flow, #656; the caller zeroes it)
-    std::vector<uint8_t> dbgMark; // TEMP #680 (DBTRACE): per slot, trace the transfers into it
     // The dry-cell skip (#747, as the GPU's #675 fluid_groups.comp): per slot, 3 rotating substeps x 64 group bits (the
-    // 64-cell groups that held water: group = z * 4 + y / 4), and the groups the next substep runs. The host sets
-    // groupsFull at each tick's start: slots are handed out afresh each tick, so its first substep runs every cell.
+    // 64-cell groups that held water: group = z * 4 + y / 4), and the groups the next substep runs. groupsFull: the next
+    // substep runs every cell (BeginTick seeds the masks instead; FLUID_CPU_FULLFIRST=1 keeps the full first substep).
     std::vector<uint32_t> gmask;  // slot * 6 + substep * 2 + word
     std::vector<uint64_t> gon;    // per slot
     int gcur = 0;
@@ -72,20 +71,6 @@ void Substep(Grid& g, const Params& p, const std::vector<int>& list);
 // other bricks (face records of the processed slots, every slot's column deltas) and seeds the dry-cell skip's masks
 // from the cells, so the first substep skips dry groups like the rest. Runs the slots on the job system.
 void BeginTick(Grid& g, const std::vector<int>& list, int slots);
-
-// TEMP #747 (DBSTEPPROF): wall time per phase (ms: group selection, passes 0 / 1 / 3 / 2) and groups run / offered,
-// summed over substeps; the host prints and zeroes them.
-extern double dbgPhaseMs[5];
-extern long long dbgGroupsRun, dbgGroupsAll, dbgSubsteps, dbgFullSubsteps;
-
-// TEMP #680 (DBTRACE): column transfers into the slots marked in Grid::dbgMark (cell = slot * 4096 + local).
-struct DbgTransfer { int giver, taker, branch, units, takerShut, capped, runBottom; };
-constexpr int kDbgTrace = 65536;
-extern DbgTransfer dbgTrace[kDbgTrace];
-struct DbgPairRec { int a, nb, dx, dy, why, depth; }; // a pair a marked run planned: its exit code (fluidkernel.cpp WHY), depth in units
-extern DbgPairRec dbgPairs[kDbgTrace];
-extern std::atomic<int> dbgPairsN;
-extern std::atomic<int> dbgTraceN;
 
 } // namespace FluidKernel
 

@@ -70,9 +70,6 @@ uniform int columns;       // 1: the column-pair flow
 uniform int advect;        // 1: momentum is carried with the water
 struct ColCell { int delta; uint dem; uint cap; uint code01; uint code23; };
 layout(std430, binding = 13) buffer ColScratch { ColCell col[]; };
-// TEMP #680 (DBGPUVOL): units the column apply's final clamp cut off (over the room, under 0), and the deltas it applied.
-uniform int dbgLostOn;
-layout(std430, binding = 14) buffer DbgLost { int lostOver; int lostUnder; int deltaSum; int pad0; };
 
 const uint SOLID = 1u, SOURCE = 2u, DUG = 8u, SINK = 16u; // a sink: a source that takes water in (reset to its level after: what is over it leaves, #361)
 const float G = 9.81;
@@ -495,14 +492,6 @@ int colApply(int g, uint c, inout uint kindOut) {
         uint a = rc(ab);
         int under = int(F(a)) + col[ab].delta;
         if (under < 0 && (FL(a) & SOLID) == 0u) nf += under;
-    }
-    if (dbgLostOn != 0) {
-        if (nf > cap) atomicAdd(lostOver, nf - cap);
-        if (nf < 0) atomicAdd(lostUnder, -nf);
-        int raw = f + col[g].delta;
-        if (raw > cap) atomicAdd(lostOver, 0); // (the first clamp's excess is the cell above's overflow, not a loss)
-        atomicAdd(deltaSum, col[g].delta);
-        atomicAdd(pad0, 1);
     }
     return clamp(nf, 0, cap);
 }
