@@ -5905,12 +5905,13 @@ int main(int argc, char** argv)
                         world.camera.up = p->dirToWorld(home);
                         player.flyMode = true; player.position = world.renderOrigin + world.camera.position;
                         if (dbPhase == 1 && t > 1.0 && WorldIdle()) {
-                            // Fill the reservoir to 2 m: 160 m^3 at 5 m^3/s, 1 m^3 at a time moving over the floor (#691: a pour every
-                            // frame - 60 m^3/s - piled mounds over the rim faster than water spreads, and they spilled onto the grass).
+                            // Fill the reservoir to 2 m: 160 m^3 at 2.5 m^3/s, 1 m^3 at a time moving over the floor (#691: a pour every
+                            // frame - 60 m^3/s - piled mounds over the rim faster than water spreads, and they spilled onto the grass;
+                            // #680: at 5 m^3/s the column model's pour points mounded and ~30 m^3 found no room, #766).
                             static int k = 0;
                             static double nextPour = 0.0;
                             if (t >= nextPour) {
-                                nextPour = t + 0.2;
+                                nextPour = t + 0.4;
                                 const float x = -19.0f + 2.0f * (float)(k % 10), y = (k / 10) % 2 ? 1.0f : -1.0f;
                                 ++k;
                                 dbPoured += Fluid::Pour(*p, pt(x, y, -2.3f), 1.0f);

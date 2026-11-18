@@ -344,9 +344,9 @@ struct Pass {
                 qUp = k == 0 ? g.faceP[B.bottom].x : g.faceP[B.bottom].y; have = true;
             }
             if (have && qUp * way > 0.0f) {
-                // The carrying speed, at most the shallow-water wave speed sqrt(g h): at a thin front the upwind depth is
-                // small and Q / (w h) blew up, so the 0.25 m front outran Ritter (1.78x) while a mound stayed behind (#680).
-                const float u = std::min(0.5f * (std::fabs(q) + std::fabs(qUp)) / (p.cellSize * std::max(hm, 0.02f)), std::sqrt(G * std::max(hm, 0.02f)));
+                // Uncapped: with a full reservoir the 0.25 m front runs at Ritter's speed (1.03x to 10 m); capping u by
+                // sqrt(g h) at the pair's or the giver's depth stalled it (#680; the earlier 1.78x came from a half-filled pool).
+                const float u = 0.5f * (std::fabs(q) + std::fabs(qUp)) / (p.cellSize * std::max(hm, 0.02f));
                 q += std::min(1.0f, p.dt * u / p.cellSize) * (qUp - q);
             }
         }
