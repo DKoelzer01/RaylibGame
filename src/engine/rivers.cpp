@@ -692,8 +692,28 @@ RiverNetwork::RiverNetwork(const PlanetErosion& ero, float radius, const Params&
     }
     // Widths and depths by drainage. A head's trickle is at least 2 m wide and 0.5 m deep (#631: a 1.6 m x 0.3 m one showed
     // as an empty trench - the water mesh draws nothing under 0.15 m, and coarser terrain never resolved the channel).
-    auto widthOf = [&](float a) { const float s = sqrtf(a / 7.06e6f); return std::max(1.0f, std::min(3.0f + 2.5f * s, 45.0f) * headRamp(a)); }; // half width
-    auto depthOf = [&](float a) { const float s = sqrtf(a / 7.06e6f); return std::max(0.5f, std::min(1.2f + 0.6f * s, 6.0f) * headRamp(a)); };
+    // Discharge (#637, user: most rivers 10-20 m wide, the big ones where several join 30-50 m and several metres deep): each
+    // node's own drainage times its runoff (params.runoff: wetter climates and a busier water cycle give more water per km^2),
+    // plus all its tributaries bring - so a river never narrows flowing into drier country. Hydraulic geometry on it: full
+    // width 6 + 8 s m (s = sqrt(discharge area / 7.06 km^2): ~14 m at s = 1, ~38 m at s = 4, at most 60 m), depth 1 + 0.7 s m
+    // (at most 6 m); a head still ramps up from its trickle.
+    std::vector<float> wetArea = area; // the discharge, as an area drained at the default runoff (m^2)
+    if (params.runoff) {
+        std::vector<float> runoff(M, 1.0f);
+        const int T = std::max(1u, std::min(16u, std::thread::hardware_concurrency()));
+        std::vector<std::thread> pool;
+        for (int t = 0; t < T; ++t) pool.emplace_back([&, t] { for (int k = t; k < M; k += T) runoff[k] = std::max(0.05f, params.runoff(pos[k])); });
+        for (auto& th : pool) th.join();
+        // Each node's own drainage (its area less its tributaries') at its runoff, accumulated downstream (sources first).
+        std::vector<float> childArea(M, 0.0f);
+        for (int k = 0; k < M; ++k) if (nodeParent[k] >= 0) childArea[nodeParent[k]] += area[k];
+        std::vector<float> acc(M, 0.0f);
+        for (int k = 0; k < M; ++k) acc[k] = std::max(0.0f, area[k] - childArea[k]) * runoff[k];
+        for (int k : topo) { wetArea[k] = acc[k]; if (nodeParent[k] >= 0) acc[nodeParent[k]] += acc[k]; }
+    }
+    auto sOf = [&](int k) { return sqrtf(wetArea[k] / 7.06e6f); };
+    auto widthOf = [&](int k) { return std::max(1.0f, std::min(3.0f + 4.0f * sOf(k), 30.0f) * headRamp(area[k])); }; // half width
+    auto depthOf = [&](int k) { return std::max(0.5f, std::min(1.0f + 0.7f * sOf(k), 6.0f) * headRamp(area[k])); };
     // Banks (#640): the bake's level stood over the real ground beside a third of the rivers (the runtime adds detail the
     // bake's 50 m cells average away), and the water ended there as a wall. Each node's level is held 0.3 m under the bank
     // ground sampled 2 m and 6 m beyond both edges, at the node and halfway along its link, lowered by at most kMaxLower
@@ -712,7 +732,7 @@ RiverNetwork::RiverNetwork(const PlanetErosion& ero, float radius, const Params&
                     const Vector3 along = Vector3Length(Vector3Subtract(Q, P)) > 1.0f ? Vector3Normalize(Vector3Subtract(Q, P))
                                          : Vector3Normalize(Vector3CrossProduct(pos[k], fabsf(pos[k].y) < 0.9f ? Vector3{ 0, 1, 0 } : Vector3{ 1, 0, 0 }));
                     const Vector3 side = Vector3Normalize(Vector3CrossProduct(along, pos[k]));
-                    const float half = widthOf(area[k]);
+                    const float half = widthOf(k);
                     float cap = 1e30f;
                     const Vector3 at[2] = { P, Vector3Scale(Vector3Add(P, Q), 0.5f) };
                     for (int a = 0; a < 2; ++a)
@@ -739,8 +759,8 @@ RiverNetwork::RiverNetwork(const PlanetErosion& ero, float radius, const Params&
         const Vector3 A = Vector3Scale(pos[k], R);
         const Vector3 B = p >= 0 ? Vector3Scale(pos[p], R) : Vector3Scale(seaCell[k] >= 0 ? ero.flowDir(seaCell[k]) : pos[k], R);
         const float la = L[k], lb = p >= 0 ? L[p] : std::min(la, kMinLevel);
-        const float wa = widthOf(area[k]), wb = p >= 0 ? widthOf(area[p]) : wa * 1.2f;
-        const float da = depthOf(area[k]), db = p >= 0 ? depthOf(area[p]) : da;
+        const float wa = widthOf(k), wb = p >= 0 ? widthOf(p) : wa * 1.2f;
+        const float da = depthOf(k), db = p >= 0 ? depthOf(p) : da;
         Piece pc{ A, B, la, lb, wa, wb, da, db };
         pc.mid = Vector3Scale(Vector3Add(A, B), 0.5f); pc.halfLen = 0.5f * Vector3Distance(A, B);
         pc.reachSlope = std::max(0.0f, la - lb) / std::max(1.0f, 2.0f * pc.halfLen);
