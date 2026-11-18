@@ -171,6 +171,13 @@ void ApplyTerrainEdits(Planetoid& planetoid, const TerrainEdit* edits, size_t co
 // Rebuild the chunks (every level) around a body-local point: water claimed by the simulation (fluid.h).
 // strideReach: extra reach in strides of each level's nodes (their own features reach that far, e.g. static water: #251).
 void RequestRemesh(Planetoid& planetoid, Vector3 localCentre, float radius, float strideReach = 1.0f);
+// Late-join sync (#776): a body's edited regions (128 m cubes of delta chunks, sorted), one region as the save's RGN5 bytes
+// (chunks in key order: equal content, equal bytes), their hash, and installing such bytes on a body (empty: clear the
+// region), rebuilding what shows it. False: the bytes are malformed (nothing changed).
+std::vector<TerrainDeltas::Key> Regions_List(const TerrainDeltas& deltas);
+std::vector<uint8_t> Region_Encode(const TerrainDeltas& deltas, TerrainDeltas::Key region);
+uint64_t Region_Hash(const std::vector<uint8_t>& bytes);
+bool Region_Install(Planetoid& planetoid, TerrainDeltas::Key region, const uint8_t* data, size_t size);
 
 // Physics helpers (render-space points). Distance is approximate: (ISO - density) / |gradient|.
 bool TerrainSurfaceDistance(Planetoid& p, Vector3 renderPoint, float& dist, Vector3& outwardNormal);

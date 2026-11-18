@@ -21,6 +21,8 @@
 #include "inventory.h"
 #include <cmath>
 #include <map>
+#include <future>
+#include <chrono>
 #include "playerinput.h"
 #include "worldtypes.h"
 #include "voxel.h"
@@ -255,6 +257,8 @@ namespace {
         SendToJoined(r);
     }
 
+    void ForgetSync(uint32_t conn); // (below, with the join sync)
+    void StartSync(Scene& world, uint32_t conn, uint32_t session);
     void Drop(uint32_t conn, NetBye why) {
         auto it = peers.find(conn);
         if (it == peers.end()) return;
@@ -267,6 +271,7 @@ namespace {
         }
         const bool wasJoined = it->second.joined;
         Interest_Forget(conn); // (#340) its accumulators
+        ForgetSync(conn);      // (#776) its join sync, if it was still running
         deltas.erase(conn);    // (#769) its snapshot bases
         peers.erase(it);
         Net_Close(conn);
@@ -319,6 +324,7 @@ namespace {
         // Who is here (everyone, the newcomer included), and what the others hold.
         SendRoster();
         for (const Session& x : sessions) if (x.online && x.id != s->id && x.loadout.session) SendMsg(conn, x.loadout);
+        StartSync(world, conn, s->id); // the world's edits so far (#776); later ones follow as live edits
         ++joins;
         printf("host: %s joined as session %u%s (connection %u, %d joins so far)\n", h.name.c_str(), s->id, reconnected ? " (reconnected)" : "", conn, joins);
         if (eventHook) eventHook("join", s->id, h.name + " from " + Net_RemoteAddress(conn)); // (#345 audit)
@@ -486,6 +492,144 @@ namespace {
         ++partsApplied;
     }
 
+    // ---- Join-in-progress sync (#776) ----
+    // At a join: every body's edited regions (encoded now from the immutable delta snapshot: later edits reach the
+    // client as live messages after this) and its plots, hashed, in an index the client answers with what it lacks.
+    // Those then stream nearest the player first, a byte budget a frame (RAYLIBGAME_SYNC_KBPS, default 1024 kB/s).
+    struct SyncItem { NetSyncEntry e; std::vector<uint8_t> bytes; bool packed = false; double dist = 0.0; }; // bytes: plain, then DEFLATEd when its turn comes
+    struct SyncJob {
+        uint32_t snapshot = 0, session = 0;
+        std::vector<SyncItem> items;
+        bool wantIn = false;
+        std::vector<uint32_t> order; size_t cur = 0; uint32_t offset = 0; // what to send, the one being sent, how far
+        uint64_t sent = 0; double started = 0.0, budget = 0.0, lastAt = 0.0;
+        int wanted = 0;
+        std::future<std::vector<SyncItem>> regions; // the worker encoding and hashing the regions
+        bool indexed = false;
+    };
+    std::unordered_map<uint32_t, SyncJob> syncs;   // by connection
+    constexpr uint32_t kSyncMaxPending = 1u << 20; // bytes in flight on a connection before the sync waits
+    void ForgetSync(uint32_t conn) { syncs.erase(conn); }
+    uint32_t nextSnapshot = 1;
+    int syncsDone = 0;
+    uint64_t syncBytesSent = 0;
+
+    double SyncRate() { // bytes a second
+        static double rate = [] { const char* s = getenv("RAYLIBGAME_SYNC_KBPS"); const double k = s ? atof(s) : 1024.0; return std::max(16.0, k) * 1024.0; }();
+        return rate;
+    }
+    // The hash and size are of an entry as stored (a client compares its own). The bytes go DEFLATE-compressed (RGN5's
+    // run-length chunks shrink ~4x more), each when its turn comes: compressing them all at the join held the server's
+    // frame ~0.9 s (3000 strokes). Encoding and hashing the regions for the index runs on a worker (it held the frame
+    // ~130 ms): the delta snapshots are immutable, so the thread reads them safely while play goes on.
+    SyncItem MakeItem(NetSyncKind kind, uint64_t body, uint64_t key, std::vector<uint8_t>&& plain) {
+        SyncItem it; it.e.kind = kind; it.e.body = body; it.e.key = key;
+        it.e.hash = Region_Hash(plain); it.e.size = (uint32_t)plain.size();
+        it.bytes = std::move(plain);
+        return it;
+    }
+    void StartSync(Scene& world, uint32_t conn, uint32_t session) {
+        SyncJob job;
+        job.snapshot = nextSnapshot++; job.session = session; job.started = job.lastAt = GetTime();
+        std::vector<std::pair<uint64_t, std::shared_ptr<const TerrainDeltas>>> snaps;
+        for (auto& o : world.objects) {
+            Planetoid* p = dynamic_cast<Planetoid*>(o.get());
+            if (!p || !p->netId) continue;
+            if (p->plots && p->plots->partCount() > 0) job.items.push_back(MakeItem(NetSyncKind::Plots, p->netId, 0, Plots_Blob(*p->plots))); // (small: here)
+            if (p->edits && !p->edits->empty()) snaps.push_back({ p->netId, p->edits }); // immutable: later edits make a new one
+        }
+        job.regions = std::async(std::launch::async, [snaps]() {
+            std::vector<SyncItem> out;
+            for (const auto& [body, snap] : snaps)
+                for (TerrainDeltas::Key k : Regions_List(*snap)) out.push_back(MakeItem(NetSyncKind::Region, body, k, Region_Encode(*snap, k)));
+            return out;
+        });
+        syncs[conn] = std::move(job);
+    }
+    // The worker's regions are in: the index goes out, in pages.
+    void SendIndex(uint32_t conn, SyncJob& job) {
+        std::vector<SyncItem> regions = job.regions.get();
+        for (SyncItem& r : regions) job.items.push_back(std::move(r));
+        job.indexed = true;
+        const size_t n = job.items.size();
+        size_t raw = 0;
+        for (const SyncItem& s : job.items) raw += s.bytes.size();
+        const uint16_t pages = (uint16_t)std::max<size_t>(1, (n + kSyncIndexPage - 1) / kSyncIndexPage);
+        for (uint16_t pg = 0; pg < pages; ++pg) {
+            MsgSyncIndex x; x.snapshot = job.snapshot; x.page = pg; x.pages = pages; x.total = (uint32_t)n;
+            for (size_t i = (size_t)pg * kSyncIndexPage; i < n && i < (size_t)(pg + 1) * kSyncIndexPage; ++i) x.entries.push_back(job.items[i].e);
+            SendMsg(conn, x);
+        }
+        printf("host: join sync %u for session %u: %zu entries, %.1f MB as stored, indexed in %.0f ms (on a worker)\n", job.snapshot, job.session, n, raw / 1048576.0, (GetTime() - job.started) * 1000.0);
+    }
+    void OnSyncWant(Scene& world, uint32_t conn, const MsgSyncWant& w) {
+        auto it = syncs.find(conn);
+        if (it == syncs.end() || it->second.wantIn || w.snapshot != it->second.snapshot || w.total != it->second.items.size()) return;
+        SyncJob& job = it->second;
+        job.wantIn = true;
+        // Nearest the player first (plots before regions: small, and what players care about most).
+        Remote& rm = remotes[job.session];
+        Player::NetState ns;
+        const bool have = rm.player.netState(world, ns);
+        const double side = kRegionChunks * kDeltaChunk * kVoxelSize;
+        for (uint32_t i = 0; i < job.items.size(); ++i) {
+            if (!(w.bits[i / 8] & (1u << (i % 8)))) continue;
+            SyncItem& s = job.items[i];
+            if (s.e.kind == NetSyncKind::Plots) s.dist = -1.0;
+            else {
+                int rx, ry, rz;
+                TerrainDeltas::Unpack(s.e.key, rx, ry, rz);
+                const DVec3 c{ (rx + 0.5) * side, (ry + 0.5) * side, (rz + 0.5) * side };
+                s.dist = have && ns.body == s.e.body ? (c - ns.local).length() : 1e12;
+            }
+            job.order.push_back(i);
+        }
+        std::stable_sort(job.order.begin(), job.order.end(), [&](uint32_t a, uint32_t b) { return job.items[a].dist < job.items[b].dist; });
+        job.wanted = (int)job.order.size();
+        job.lastAt = GetTime();
+        // Entries not wanted: free them now.
+        std::vector<bool> keep(job.items.size(), false);
+        for (uint32_t i : job.order) keep[i] = true;
+        for (size_t i = 0; i < job.items.size(); ++i) if (!keep[i]) { job.items[i].bytes.clear(); job.items[i].bytes.shrink_to_fit(); }
+    }
+    void StepSyncs(Scene& world) {
+        for (auto it = syncs.begin(); it != syncs.end();) {
+            SyncJob& job = it->second;
+            if (!job.indexed) { // the worker still encoding? (else: the index goes out now)
+                if (job.regions.wait_for(std::chrono::seconds(0)) == std::future_status::ready) SendIndex(it->first, job);
+                ++it; continue;
+            }
+            if (!job.wantIn) { ++it; continue; }
+            if (Net_PendingBytes(it->first) > kSyncMaxPending) { job.lastAt = GetTime(); ++it; continue; } // the link is behind: wait
+            const double now = GetTime();
+            job.budget = std::min(job.budget + (now - job.lastAt) * SyncRate(), SyncRate() * 0.25); // (a quarter second's worth at most)
+            job.lastAt = now;
+            while (job.cur < job.order.size() && job.budget > 0.0) {
+                SyncItem& s = job.items[job.order[job.cur]];
+                if (!s.packed) { // its turn: compress it now (a few ms for a busy region)
+                    int z = 0;
+                    unsigned char* c = s.bytes.empty() ? nullptr : CompressData(s.bytes.data(), (int)s.bytes.size(), &z);
+                    if (c) { s.bytes.assign(c, c + z); MemFree(c); }
+                    s.packed = true;
+                }
+                const uint32_t n = (uint32_t)std::min<size_t>(kSyncPiece, s.bytes.size() - job.offset);
+                MsgSyncData d; d.snapshot = job.snapshot; d.entry = job.order[job.cur]; d.offset = job.offset; d.size = (uint32_t)s.bytes.size();
+                d.bytes.assign(s.bytes.begin() + job.offset, s.bytes.begin() + job.offset + n);
+                SendMsg(it->first, d);
+                job.offset += n; job.sent += n; job.budget -= n; syncBytesSent += n;
+                if (job.offset >= s.bytes.size()) { s.bytes.clear(); s.bytes.shrink_to_fit(); ++job.cur; job.offset = 0; }
+            }
+            if (job.cur >= job.order.size()) {
+                SendMsg(it->first, MsgSyncDone{ job.snapshot, (uint32_t)job.wanted, job.sent });
+                printf("host: join sync %u done: %d of %zu entries wanted, %.2f MB in %.2f s\n", job.snapshot, job.wanted, job.items.size(), job.sent / 1048576.0, GetTime() - job.started);
+                if (getenv("RAYLIBGAME_SYNC_FINGERPRINT")) // (tests: a client's after its sync must equal this; costs an encode of every region)
+                    printf("host: terrain fingerprint %016llx\n", (unsigned long long)NetSync_TerrainFingerprint(world));
+                ++syncsDone;
+                it = syncs.erase(it);
+            } else ++it;
+        }
+    }
+
     // (#349) the guard's verdicts: a kick (with why, in the log and the audit hook), and violations found after reading.
     int guardDropped = 0, guardKicks = 0;
     void GuardKick(uint32_t conn, const std::string& why) {
@@ -577,6 +721,12 @@ namespace {
                 OnEditRequest(world, m.conn, it->second.session, q);
                 return;
             }
+            case NetMsg::SyncWant: {
+                MsgSyncWant w;
+                if (!it->second.joined || !NetRead(r, w)) return;
+                OnSyncWant(world, m.conn, w);
+                return;
+            }
             case NetMsg::PartRequest: {
                 MsgPartRequest q;
                 if (!it->second.joined || !NetRead(r, q)) return;
@@ -632,6 +782,7 @@ void Host_Update(Scene& world) {
     for (uint32_t c : silent) Drop(c, NetBye::TimedOut);
     GpuTimer_CpuMark("host: receive, handshakes"); // (#348)
     StepRemotes(world);
+    StepSyncs(world);
     GpuTimer_CpuMark("host: remote players");
     SendSnapshots(world);
     GpuTimer_CpuMark("host: snapshots");
@@ -718,6 +869,8 @@ void Host_SetMotd(const std::string& text) { motd = text; }
 void Host_SetJoinCheck(std::function<bool(const std::string&, const std::string&, std::string&)> check) { joinCheck = std::move(check); }
 void Host_SetChatHandler(std::function<void(uint32_t, const std::string&, const std::string&)> handler) { chatHandler = std::move(handler); }
 void Host_SetEventHook(std::function<void(const char*, uint32_t, const std::string&)> hook) { eventHook = std::move(hook); }
+int Host_SyncsDone() { return syncsDone; }
+uint64_t Host_SyncBytesSent() { return syncBytesSent; }
 // Tests (#349): messages the guard dropped, and connections it kicked.
 int Host_GuardDropped() { return guardDropped; }
 int Host_GuardKicks() { return guardKicks; }

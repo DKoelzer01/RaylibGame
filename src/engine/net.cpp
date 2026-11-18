@@ -129,6 +129,9 @@ bool Net_Init(std::string& error) {
     SteamDatagramErrMsg msg;
     if (!GameNetworkingSockets_Init(nullptr, msg)) { error = msg; return false; }
     ReadEnv(); // simulated conditions from the environment (#347)
+    // A bigger send buffer (#776): the default 512 KB refused reliable sends outright when it filled (a join sync streams
+    // megabytes), and they were lost. Senders that stream also hold back on Net_PendingBytes.
+    SteamNetworkingUtils()->SetGlobalConfigValueInt32(k_ESteamNetworkingConfig_SendBufferSize, 8 * 1024 * 1024);
     pollGroup = SteamNetworkingSockets()->CreatePollGroup();
     initialised = true;
     return true;
@@ -179,10 +182,23 @@ bool Net_IsConnected(uint32_t conn) { return connected.count(conn) > 0; }
 int Net_ConnectionCount() { return (int)connected.size(); }
 
 namespace {
+int reliableFailures = 0;
 bool SendNow(uint32_t conn, const void* data, uint32_t size, bool reliable) {
     if (!initialised) return false;
-    return SteamNetworkingSockets()->SendMessageToConnection(conn, data, size, reliable ? k_nSteamNetworkingSend_Reliable : k_nSteamNetworkingSend_Unreliable, nullptr) == k_EResultOK;
+    const bool ok = SteamNetworkingSockets()->SendMessageToConnection(conn, data, size, reliable ? k_nSteamNetworkingSend_Reliable : k_nSteamNetworkingSend_Unreliable, nullptr) == k_EResultOK;
+    if (!ok && reliable && ++reliableFailures <= 5) printf("net: a reliable send of %u bytes on connection %u was refused (the send buffer is full?)\n", size, conn);
+    return ok;
 }
+}
+
+int Net_ReliableSendFailures() { return reliableFailures; }
+uint32_t Net_PendingBytes(uint32_t conn) {
+    uint32_t pending = 0; // (the simulated-conditions queue counts too)
+    for (const Held& h : held) if (h.conn == conn) pending += (uint32_t)h.data.size();
+    if (!initialised) return pending;
+    SteamNetConnectionRealTimeStatus_t st;
+    if (SteamNetworkingSockets()->GetConnectionRealTimeStatus(conn, &st, 0, nullptr) != k_EResultOK) return pending;
+    return pending + (uint32_t)std::max(0, st.m_cbPendingReliable + st.m_cbPendingUnreliable + st.m_cbSentUnackedReliable);
 }
 
 bool Net_Send(uint32_t conn, const void* data, uint32_t size, bool reliable) {
@@ -227,6 +243,8 @@ void Net_Shutdown() {}
 bool Net_Host(uint16_t) { return false; }
 uint32_t Net_Connect(const char*) { return 0; }
 void Net_Poll() {}
+int Net_ReliableSendFailures() { return 0; }
+uint32_t Net_PendingBytes(uint32_t) { return 0; }
 bool Net_IsConnected(uint32_t) { return false; }
 int Net_ConnectionCount() { return 0; }
 bool Net_Send(uint32_t, const void*, uint32_t, bool) { return false; }

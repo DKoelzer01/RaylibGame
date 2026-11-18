@@ -49,6 +49,9 @@ double Host_InventoryAmount(uint32_t session, const std::string& item);
 // into the server's copy of their inventory, and the delta to them. False: no such player or item.
 int Host_PartsApplied();
 bool Host_Give(uint32_t session, const std::string& item, int count);
+// Join sync (#776, tests): syncs finished so far; bytes sent by them.
+int Host_SyncsDone();
+uint64_t Host_SyncBytesSent();
 // The dedicated server's console and admin (#326, #345): who is (or was) here; kick by name (Bye kicked, with the reason as a chat
 // line first); a chat line from the server (fromSession 0) or a player, to everyone (toSession 0) or one session; the message of
 // the day (in the Welcome); a join check (bans, whitelist: false refuses with NetReject::Banned and why); a handler for
