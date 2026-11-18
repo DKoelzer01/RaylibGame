@@ -849,9 +849,16 @@ void TreeSystem::plantsNear(Vector3 local, float range, std::vector<Plant>& out)
     }
 }
 
-void TreeSystem::remove(uint64_t id) {
+bool TreeSystem::findPlant(uint64_t id, Plant& out) const {
+    auto it = tiles.find(TileOfPlant(id));
+    if (it == tiles.end() || !it->second.ready) return false;
+    for (const Plant& p : it->second.plants) if (p.id == id) { out = p; return true; }
+    return false;
+}
+
+void TreeSystem::remove(uint64_t id, double when) {
     auto next = std::make_shared<PlantRemovals>(*removed);
-    (*next)[id] = WorldTime();
+    (*next)[id] = when >= 0.0 ? when : WorldTime();
     removed = next;
     // Gone at once from the loaded tile (the next rebuild agrees), and its tile starts watching
     // for regrowth.
@@ -873,6 +880,13 @@ void TreeSystem::remove(uint64_t id) {
     // A rebuild already queued was built with the old removals: it would bring the plant back (and,
     // not regrowing, keep it). Re-request so that result is dropped (stale version) for a fresh one.
     if (t.pending) request(it->first, t, 0.0f);
+}
+
+void TreeSystem::mergeRemovals(const std::vector<std::pair<uint64_t, double>>& list) {
+    if (list.size() <= 8) { for (const auto& [id, t] : list) remove(id, t); return; }
+    PlantRemovals next(*removed);
+    for (const auto& [id, t] : list) next[id] = t;
+    setRemovals(next);
 }
 
 void TreeSystem::setRemovals(const PlantRemovals& r) {

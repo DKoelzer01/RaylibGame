@@ -554,6 +554,7 @@ int main(int argc, char** argv)
     bool benchNetAnimals = false;  // --test-net-animals (with --join; #334): the client side of tools/test_animals_net.sh
     bool benchNetQuests = false;   // --test-net-quests (with --join; #338): the client side of tools/test_team_quests.sh
     bool benchNetMachines = false; // --test-net-machines (with --join; #332): the client side of tools/test_net_machines.sh
+    bool benchNetPlants = false;   // --test-net-plants (with --join; #335): the client side of tools/test_net_plants.sh
     uint16_t hostPort = kDefaultHostPort; // --port N
     bool benchHost = false;        // --test-host (#311): with --host, a loopback client joins
     bool benchTimeFollow = false;  // --test-time-follow (#339): the world clock follows a server time (slew, snap)
@@ -824,6 +825,7 @@ int main(int argc, char** argv)
         if (std::string(argv[i]) == "--test-net-animals") benchNetAnimals = true;
         if (std::string(argv[i]) == "--test-net-quests") benchNetQuests = true;
         if (std::string(argv[i]) == "--test-net-machines") benchNetMachines = true;
+        if (std::string(argv[i]) == "--test-net-plants") benchNetPlants = true;
         if (std::string(argv[i]) == "--port" && i + 1 < argc) hostPort = (uint16_t)atoi(argv[i + 1]);
         if (std::string(argv[i]) == "--host-password" && i + 1 < argc) Host_SetPassword(argv[i + 1]); // (#321)
         if (std::string(argv[i]) == "--host-edits" && i + 1 < argc) hostEdits = atoi(argv[i + 1]); // (#776 tests) a world with many edits to join
@@ -1438,6 +1440,14 @@ int main(int argc, char** argv)
         gAnimalUseRequest = [](uint64_t netId, int action) { NetClient_UseAnimal(gJoin, netId, action); };
         gSurvivalUseRequest = [](const std::string& item) { NetClient_UseItem(gJoin, item); }; // (#337) the server owns our survival and inventory
         gCraftRequest = [](int index, const std::string& output, int count, bool useChests) { NetClient_Craft(gJoin, index, output, count, useChests); }; // (#338) and our crafting
+        // (#335) plants and farms are the server's: a fell, sowing, harvesting and tilling are requests
+        gPlantRequest = [](Planetoid& b, uint64_t id) { NetClient_PlantAction(gJoin, 1, b.netId, id, 0, -1, ""); };
+        gFarmRequest = [](Planetoid& b, const Plot& plot, int part, bool harvest, const std::string& seed) { NetClient_PlantAction(gJoin, harvest ? 3 : 2, b.netId, 0, plot.id, part, seed); };
+        gFarmTillRequest = [](Planetoid& b, Vector3 ground) {
+            Plot* plot = nullptr; Part part;
+            if (!Farm_TillPart(b, ground, plot, part)) return false;
+            return NetClient_RequestPart(gJoin, b, plot, ground, part, false, -1) != 0;
+        };
         // (#332) the server runs the machines: ours show its views, and what we do to them is a request
         Factory::SetRemote(true);
         gMachineRequest = [](uint64_t bodyId, uint32_t plot, int part, int action, const std::string& item, int count, int slot, int which) {
@@ -8862,7 +8872,7 @@ int main(int argc, char** argv)
                         }
                         benchWalkSeconds = 0.0;
                     }
-                } else if ((WorldIdle() && benchDigStrokes == 0 && !benchPaint && !benchSaveLoad && benchWalkSeconds <= 0.0 && benchMineStrokes == 0 && minePhase != 2 && benchFlySeconds <= 0.0 && !benchSuffocate && benchOrbitSeconds <= 0.0 && !benchRide && !benchPark && !benchGravity && !benchPrecision && !benchMantle && !benchAirJump && !benchMoon && !benchHole && !benchWall && !benchDoorway && !benchLedge && !benchTor && !benchMachines && !benchFall && !benchHover && !benchNetIds && !benchNet && !benchTwoPlayers && !benchFingerprint && !benchInterest && !benchTeleClose && !benchMenus && !benchWater && !benchFlyFollow && !benchHotbar && !benchInventory && !benchMap && !benchViewmodel && !benchQuests && !benchHunger && !benchFarm && !benchAnimals && !benchThreats && !benchAnimalPath && !benchDam && !benchFlowMeter && !benchPartWall && !benchPressure && benchShotTabs == 0 && !benchForest && !benchFlow && !benchPond && !benchBucket && !benchWaterSpeed && benchFluidLoad <= 0.0f && !benchFlowShade && !benchPump && !benchTerrain && !benchWind && !benchCampfire && !benchCaveMouth && !benchMountain && !benchShelter && !benchRoom && !benchFacing && !benchDungeon && !benchDungeonTraps && !benchSaveSplit && !benchPosture && !benchPause && !benchBite && !benchPlacement && !benchShotDig && !benchShadow && !benchParticles && !benchBiomes && !benchOil && !benchSpring && !benchShotAnimals && !benchShotAvatar && !benchShotMachines && benchShotBiomes < 0 && !benchFarForest && !benchRecipes && !benchWeather && !benchDecor && !benchMaterials && !benchDamage && !benchCrafting && !benchSuit && !benchTools && !benchRivers && !benchRing && !benchRocket && !benchStation && !benchBlueprint && !benchSmallBody && !benchTrees && !benchChop && benchPersist == 0 && benchBuild == 0 && benchFactory == 0 && !benchCombat &&  !benchHost && !benchIdleDrift && !benchTeams && !benchJoin && !benchTimeFollow && benchPlayerCost == 0 && !benchNetAnimals && !benchNetQuests && !benchNetMachines && !benchNetAbuse && !benchNetMove && !benchNetDig && !benchNetBuild && !benchNetSync && !benchShotMpMenu && !benchMpMenu && benchMpBots == 0 && !benchShower && !benchProgression && (benchUnfocus <= 0.0f || unfocusPhase >= 6)) || GetTime() > 600.0) {
+                } else if ((WorldIdle() && benchDigStrokes == 0 && !benchPaint && !benchSaveLoad && benchWalkSeconds <= 0.0 && benchMineStrokes == 0 && minePhase != 2 && benchFlySeconds <= 0.0 && !benchSuffocate && benchOrbitSeconds <= 0.0 && !benchRide && !benchPark && !benchGravity && !benchPrecision && !benchMantle && !benchAirJump && !benchMoon && !benchHole && !benchWall && !benchDoorway && !benchLedge && !benchTor && !benchMachines && !benchFall && !benchHover && !benchNetIds && !benchNet && !benchTwoPlayers && !benchFingerprint && !benchInterest && !benchTeleClose && !benchMenus && !benchWater && !benchFlyFollow && !benchHotbar && !benchInventory && !benchMap && !benchViewmodel && !benchQuests && !benchHunger && !benchFarm && !benchAnimals && !benchThreats && !benchAnimalPath && !benchDam && !benchFlowMeter && !benchPartWall && !benchPressure && benchShotTabs == 0 && !benchForest && !benchFlow && !benchPond && !benchBucket && !benchWaterSpeed && benchFluidLoad <= 0.0f && !benchFlowShade && !benchPump && !benchTerrain && !benchWind && !benchCampfire && !benchCaveMouth && !benchMountain && !benchShelter && !benchRoom && !benchFacing && !benchDungeon && !benchDungeonTraps && !benchSaveSplit && !benchPosture && !benchPause && !benchBite && !benchPlacement && !benchShotDig && !benchShadow && !benchParticles && !benchBiomes && !benchOil && !benchSpring && !benchShotAnimals && !benchShotAvatar && !benchShotMachines && benchShotBiomes < 0 && !benchFarForest && !benchRecipes && !benchWeather && !benchDecor && !benchMaterials && !benchDamage && !benchCrafting && !benchSuit && !benchTools && !benchRivers && !benchRing && !benchRocket && !benchStation && !benchBlueprint && !benchSmallBody && !benchTrees && !benchChop && benchPersist == 0 && benchBuild == 0 && benchFactory == 0 && !benchCombat &&  !benchHost && !benchIdleDrift && !benchTeams && !benchJoin && !benchTimeFollow && benchPlayerCost == 0 && !benchNetAnimals && !benchNetQuests && !benchNetMachines && !benchNetPlants && !benchNetAbuse && !benchNetMove && !benchNetDig && !benchNetBuild && !benchNetSync && !benchShotMpMenu && !benchMpMenu && benchMpBots == 0 && !benchShower && !benchProgression && (benchUnfocus <= 0.0f || unfocusPhase >= 6)) || GetTime() > 600.0) {
                     benchStart = GetTime();
                     printf("bench: world ready after %.2f s (%d chunks, avg build %.2f ms of which sampling %.2f ms, %d worker threads)\n",
                         GetWorldStats().lastGenerationSeconds, GetWorldStats().chunks, GetWorldStats().avgBuildMs, GetWorldStats().avgSampleMs, GetWorldStats().workerThreads);
@@ -10634,6 +10644,69 @@ int main(int argc, char** argv)
         // in its fuel slot, by request. The server smelts (10 s a root); both clients hear it work (MachineStates); the
         // feeder watches it (MachineView). After RAYLIBGAME_MACHINES_TAKE_AT s the taker takes the outputs (O): the roasted
         // roots reach its inventory by deltas. Both report after RAYLIBGAME_MACHINES_SECONDS.
+        // --test-net-plants (#335; with --join; tools/test_net_plants.sh): RAYLIBGAME_NET_PLANTS_ROLE feller | watcher. The
+        // feller fells the nearest bush (a request): its drops arrive by deltas and the plant goes on both clients (the
+        // server's removal, with its time). It then tills ground ahead with a shovel (farmland placed by the server, free),
+        // sows grain seeds there (the host's RAYLIBGAME_FARM_INSTANT makes them ripe) and harvests them once the server's
+        // fields show the crop ripe. The watcher sees the removal and the crop come and go. Both report after
+        // RAYLIBGAME_PLANTS_SECONDS (40).
+        if (benchNetPlants && gameState == 1 && !loading && gJoinSynced && WorldIdle()) {
+            static double t0 = -1.0, tillAt = -1.0;
+            static bool felled = false, tillSent = false, sown = false, harvested = false, cropSeen = false, cropGone = false;
+            static uint64_t plantId = 0;
+            static std::string dropItem; static int drop0 = -1, dropN = 0, seeds0 = -1, grain0 = -1;
+            const char* role = getenv("RAYLIBGAME_NET_PLANTS_ROLE");
+            const bool feller = role && !strcmp(role, "feller");
+            if (t0 < 0.0) t0 = GetTime();
+            Planetoid* pb = player.nearest;
+            const Vector3 me = pb ? pb->toLocalD(player.position).toFloat() : Vector3{};
+            if (feller && pb && pb->trees && !felled && GetTime() - t0 > 3.0) {
+                Plant pl;
+                if (pb->trees->nearestPlant(me, 25.0f, false, pl) || pb->trees->nearestPlant(me, 25.0f, true, pl)) {
+                    const PlantDrops d = TerrainTool_PlantDrops(*pb, pl);
+                    if (!d.items.empty()) { dropItem = d.items.back().first; dropN = d.items.back().second; drop0 = inventory.count(dropItem); }
+                    plantId = pl.id;
+                    gPlantRequest(*pb, pl.id); // (as a felling chop does when joined)
+                    felled = true;
+                } else if (GetTime() - t0 > 15.0) felled = true; // (nothing near: reported)
+            }
+            // the farmland ahead (the server's plot edit), and its crop as the server's fields say
+            Plot* farm = nullptr; int farmPart = -1;
+            if (pb && pb->plots)
+                for (auto& pl : pb->plots->plots)
+                    for (int k = 0; k < (int)pl->parts.size() && !farm; ++k) if (pl->parts[k].type == PartType::Farmland) { farm = pl.get(); farmPart = k; }
+            std::string crop; float growth = 0.0f;
+            const bool hasCrop = farm && Farm_Crop(*pb, *farm, farmPart, crop, growth);
+            cropSeen = cropSeen || hasCrop;
+            cropGone = cropGone || (cropSeen && !hasCrop);
+            if (feller && felled && !tillSent && pb) {
+                if (tillAt < 0.0) { terrainTool.heldTool = "stone_shovel"; tillAt = GetTime() + 1.5; } // (the loadout tells the server what's in hand)
+                else if (GetTime() > tillAt) {
+                    const Vector3 feet = (player.position - world.renderOrigin).toFloat();
+                    const Vector3 ahead = Vector3Add(feet, Vector3Scale(Vector3Normalize(Vector3Subtract(player.forward, Vector3Scale(player.up, Vector3DotProduct(player.forward, player.up)))), 3.0f));
+                    TerrainHit hit;
+                    if (RaycastTerrain(world, Ray{ Vector3Add(ahead, Vector3Scale(player.up, 3.0f)), Vector3Negate(player.up) }, 10.0f, hit)) Farm_Till(world, *pb, hit.local);
+                    tillSent = true;
+                }
+            }
+            if (feller && farm && !sown) { seeds0 = inventory.count("grain_seeds"); sown = Farm_Plant(*pb, *farm, farmPart, "grain_seeds"); }
+            static double ripeAt = -1.0;
+            if (feller && hasCrop && growth >= 1.0f && ripeAt < 0.0) ripeAt = GetTime();
+            if (feller && hasCrop && ripeAt >= 0.0 && GetTime() - ripeAt > 3.0 && !harvested) { grain0 = inventory.count("grain"); harvested = Farm_Harvest(*pb, *farm, farmPart) > 0; }
+            if (GetTime() - t0 > (getenv("RAYLIBGAME_PLANTS_SECONDS") ? atof(getenv("RAYLIBGAME_PLANTS_SECONDS")) : 40.0)) {
+                Plant still;
+                const bool standing = pb && pb->trees && plantId && pb->trees->findPlant(plantId, still);
+                std::string ids;
+                if (pb && pb->trees) for (const auto& [id, t] : pb->trees->removals()) if (ids.size() < 200) ids += TextFormat(" %llx", (unsigned long long)id);
+                printf("bench: net plants (%s, #335): felled %d: plant %llx standing %d; %s %d -> %d (+%d expected); removals heard %d (%d lists):%s\n",
+                       role ? role : "?", (int)felled, (unsigned long long)plantId, (int)standing, dropItem.empty() ? "-" : dropItem.c_str(), drop0, dropItem.empty() ? -1 : inventory.count(dropItem), dropN,
+                       gJoin.plantsRemoved, gJoin.plantLists, ids.c_str());
+                printf("bench: net farm (%s, #335): farmland %d; sown %d: seeds %d -> %d; crop seen %d, gone %d; harvested %d: grain %d -> %d; field lists %d\n",
+                       role ? role : "?", (int)(farm != nullptr || cropGone), (int)sown, seeds0, inventory.count("grain_seeds"), (int)cropSeen, (int)cropGone, (int)harvested, grain0, inventory.count("grain"), gJoin.farmLists);
+                NetClient_Disconnect(gJoin);
+                benchNetPlants = false;
+            }
+        }
         if (benchNetMachines && gameState == 1 && !loading && gJoinSynced && WorldIdle()) {
             static double t0 = -1.0; static bool placed = false, fed = false, took = false, sawWorking = false, fireSeen = false;
             static int roots0 = -1;
@@ -11812,6 +11885,7 @@ int main(int argc, char** argv)
                 }
                 gNetClient = nullptr; gJoin = NetClient{}; gNetRole = NetRole::Offline; joinAddr.clear(); gJoinSynced = false; gCraftRequest = nullptr; gSurvivalUseRequest = nullptr; gBedUseRequest = nullptr; gMachineRequest = nullptr; gFactoryRemoteWatch = nullptr; Factory::SetRemote(false); // (#338, #332) back to single player: crafting, eating, beds and machines act here again
                 gAnimalsReplicated = false; gAnimalHitRequest = nullptr; gTerrainToolNetEdit = nullptr; gBuildToolNetEdit = nullptr;
+                gPlantRequest = nullptr; gFarmRequest = nullptr; gFarmTillRequest = nullptr; // (#335)
                 if (hostedHere) { printf("host: stopping the server we hosted: %s\n", HostProcess_Stop(30.0) ? "saved and ended" : "ended (it didn't stop in time)"); hostedHere = false; gHostedServer.clear(); }
             };
             const MenuResult m = pendingMenu;

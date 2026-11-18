@@ -44,10 +44,11 @@ namespace {
     double whyShownAt = -10.0;
 
     void Toast(const std::string& msg);
-    int HitsToFell(const Plant& p) {
-        if (!p.tree()) return 1;
-        return std::max(1, (int)lroundf((4.0f + 9.0f * p.trunkVolume()) * ChopFactor(tool))); // the trunk's volume (#274, user 2026-11-15): a giant oak ~190 stone-axe hits (~1 min), a medium tree 10-25, a sapling ~5; better axes proportionally faster
-    }
+    void GiveDrops(const PlantDrops& d);
+    void ShowDrops(const PlantDrops& d);
+    uint64_t pendingFell = 0;      // joined (#335): the plant asked to come down, until the server's answer
+    double pendingFellUntil = 0.0;
+    int HitsToFell(const Plant& p) { return TerrainTool_HitsToFell(p, tool); }
 
     ToolSpec HeldTool() {
         if (terrainTool.heldTool.empty() || inventory.count(terrainTool.heldTool) <= 0) return ToolSpec{};
@@ -65,6 +66,7 @@ namespace {
     bool Chop() {
         if (!hasPlant || !plantBody || !plantBody->trees) return false;
         const Plant& p = plantHit.plant;
+        if (p.id == pendingFell && GetTime() < pendingFellUntil) return false;
         if (p.id != chopId) { chopId = p.id; chopHits = 0; }
         Audio_Play(Sfx::Dig, 0.45f, p.tree() ? 0.6f : 1.4f);
         ++terrainTool.swings;
@@ -83,47 +85,27 @@ namespace {
             leaves.count = p.tree() ? 40 : 14; leaves.size = 0.09f; leaves.life = 2.5f; leaves.speed = 2.0f; leaves.spread = 1.0f;
             Particles_Emit(*plantBody, Vector3Add(p.base, Vector3Scale(p.up, p.height * (p.tree() ? 0.8f : 0.5f))), leaves);
         }
-        plantBody->trees->remove(p.id);
-        // The biome it grew in (Plan 5 B resources): desert scrub is cactus, jungle trees give rubber.
-        Biome biome = Biome::Forest;
-        if (const auto* pf = dynamic_cast<const PlanetField*>(plantBody->field.get())) {
-            const float r = Vector3Length(p.base);
-            if (r > 1.0f) biome = pf->biomeAt(Vector3Scale(p.base, 1.0f / r), r - pf->radius);
-        }
-        if (p.tree() && biome == Biome::Jungle && itemDB.find("rubber")) { inventory.add("rubber", 1); }
-        if (!p.tree() && !p.stone() && (biome == Biome::Desert || biome == Biome::Badlands) && itemDB.find("cactus")) {
-            inventory.add("cactus", 2);
-            Toast("+2 cactus");
-            Audio_Play(Sfx::Pickup, 0.5f);
+        if (gPlantRequest) { // joined (#335): the server fells it for everyone and credits the drops; its removal comes back
+            gPlantRequest(*plantBody, p.id);
+            pendingFell = p.id; pendingFellUntil = GetTime() + 1.5; // (no new swings at it while the answer is on its way)
             chopId = 0; chopHits = 0; hasPlant = false;
             return true;
         }
-        if (p.tree()) {
-            // Logs of its species (saw them into planks: recipes take any planks).
-            const WoodSpeciesDef& sp = WoodSpeciesInfo(SpeciesOfVariant(p.variant));
-            const int logs = std::clamp((int)lroundf(3.0f * p.chopSize()), 1, 48); // the trunk (#274): 3-5 from a medium tree, ~26 from a giant
-            inventory.add(sp.log, logs);
-            Toast(TextFormat("+%d %s log%s%s", logs, sp.name, logs > 1 ? "s" : "", biome == Biome::Jungle ? "  +1 rubber" : ""));
-            Audio_Play(Sfx::Build, 0.6f, 0.5f);
-        } else if (p.stone()) {
-            const int n = 1 + (int)((p.id >> 3) & 1); // a stone or two, picked up off the ground
-            inventory.add("stone", n);
-            Toast(TextFormat("+%d stone", n));
-            Audio_Play(Sfx::Pickup, 0.5f, 0.8f);
-        } else {
-            inventory.add("fibre", 2);
-            const bool berries = (p.id & 1) == 0;
-            if (berries) inventory.add("berries", 1);
-            // Seeds for farming: one of grain, roots or flax from half the bushes.
-            static const char* seeds[3] = { "grain_seeds", "root_seeds", "flax_seeds" };
-            const char* seed = ((p.id >> 1) & 1) == 0 ? seeds[(p.id >> 2) % 3] : nullptr;
-            if (seed && itemDB.find(seed)) inventory.add(seed, 1);
-            Toast(TextFormat("+2 fibre%s%s", berries ? "  +1 berries" : "", seed && itemDB.find(seed) ? "  +1 seeds" : ""));
-            Audio_Play(Sfx::Pickup, 0.5f);
-        }
+        plantBody->trees->remove(p.id);
+        GiveDrops(TerrainTool_PlantDrops(*plantBody, p));
         chopId = 0; chopHits = 0;
         hasPlant = false;
         return true;
+    }
+
+    void GiveDrops(const PlantDrops& d) {
+        for (const auto& [item, n] : d.items) inventory.add(item, n);
+        ShowDrops(d);
+    }
+    void ShowDrops(const PlantDrops& d) {
+        if (!d.toast.empty()) Toast(d.toast);
+        if (d.sound == 1) Audio_Play(Sfx::Build, 0.6f, 0.5f);
+        else Audio_Play(Sfx::Pickup, 0.5f, d.sound == 2 ? 0.8f : 1.0f);
     }
 
     void Toast(const std::string& msg) {
@@ -756,6 +738,65 @@ void TerrainTool_DrawHUD() {
 }
 
 bool TerrainTool_Chop() { tool = HeldTool(); return Chop(); }
+
+int TerrainTool_HitsToFell(const Plant& p, const ToolSpec& t) {
+    if (!p.tree()) return 1;
+    return std::max(1, (int)lroundf((4.0f + 9.0f * p.trunkVolume()) * ChopFactor(t))); // the trunk's volume (#274, user 2026-11-15): a giant oak ~190 stone-axe hits (~1 min), a medium tree 10-25, a sapling ~5; better axes proportionally faster
+}
+
+PlantDrops TerrainTool_PlantDrops(const Planetoid& body, const Plant& p) {
+    PlantDrops d;
+    auto add = [&](const char* item, int n) { d.items.push_back({ item, n }); };
+    // The biome it grew in (Plan 5 B resources): desert scrub is cactus, jungle trees give rubber.
+    Biome biome = Biome::Forest;
+    if (const auto* pf = dynamic_cast<const PlanetField*>(body.field.get())) {
+        const float r = Vector3Length(p.base);
+        if (r > 1.0f) biome = pf->biomeAt(Vector3Scale(p.base, 1.0f / r), r - pf->radius);
+    }
+    if (!p.tree() && !p.stone() && (biome == Biome::Desert || biome == Biome::Badlands) && itemDB.find("cactus")) {
+        add("cactus", 2); d.toast = "+2 cactus";
+        return d;
+    }
+    if (p.tree()) {
+        const bool rubber = biome == Biome::Jungle && itemDB.find("rubber");
+        if (rubber) add("rubber", 1);
+        // Logs of its species (saw them into planks: recipes take any planks).
+        const WoodSpeciesDef& sp = WoodSpeciesInfo(SpeciesOfVariant(p.variant));
+        const int logs = std::clamp((int)lroundf(3.0f * p.chopSize()), 1, 48); // the trunk (#274): 3-5 from a medium tree, ~26 from a giant
+        d.items.push_back({ sp.log, logs });
+        d.toast = TextFormat("+%d %s log%s%s", logs, sp.name, logs > 1 ? "s" : "", rubber ? "  +1 rubber" : "");
+        d.sound = 1;
+    } else if (p.stone()) {
+        const int n = 1 + (int)((p.id >> 3) & 1); // a stone or two, picked up off the ground
+        add("stone", n); d.toast = TextFormat("+%d stone", n); d.sound = 2;
+    } else {
+        add("fibre", 2);
+        const bool berries = (p.id & 1) == 0;
+        if (berries) add("berries", 1);
+        // Seeds for farming: one of grain, roots or flax from half the bushes.
+        static const char* seeds[3] = { "grain_seeds", "root_seeds", "flax_seeds" };
+        const char* seed = ((p.id >> 1) & 1) == 0 ? seeds[(p.id >> 2) % 3] : nullptr;
+        if (seed && !itemDB.find(seed)) seed = nullptr;
+        if (seed) add(seed, 1);
+        d.toast = TextFormat("+2 fibre%s%s", berries ? "  +1 berries" : "", seed ? "  +1 seeds" : "");
+    }
+    return d;
+}
+
+void TerrainTool_PlantRemoved(Planetoid& body, uint64_t id, double when, bool mine) {
+    if (!body.trees) return;
+    Plant p;
+    const bool standing = body.trees->findPlant(id, p);
+    if (standing && !mine && !p.stone()) { // another player's: it comes down here too (a burst of leaves)
+        ParticleBurst leaves;
+        leaves.kind = ParticleKind::Debris; leaves.color = { 60, 105, 40, 255 };
+        leaves.count = p.tree() ? 40 : 14; leaves.size = 0.09f; leaves.life = 2.5f; leaves.speed = 2.0f; leaves.spread = 1.0f;
+        Particles_Emit(body, Vector3Add(p.base, Vector3Scale(p.up, p.height * (p.tree() ? 0.8f : 0.5f))), leaves);
+    }
+    if (mine && standing) ShowDrops(TerrainTool_PlantDrops(body, p)); // (the items themselves came as inventory deltas)
+    if (id == pendingFell) pendingFell = 0;
+    body.trees->remove(id, when);
+}
 bool TerrainTool_AimingPlant(uint64_t* id) {
     if (hasPlant && id) *id = plantHit.plant.id;
     return hasPlant;

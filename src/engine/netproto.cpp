@@ -12,7 +12,7 @@ const char* NetMsgName(NetMsg m) {
         case NetMsg::Bye: return "bye"; case NetMsg::Ping: return "ping"; case NetMsg::Pong: return "pong";
         case NetMsg::Input: return "input"; case NetMsg::PlayerState: return "player state"; case NetMsg::TerrainEdit: return "terrain edit"; case NetMsg::Shower: return "shower"; case NetMsg::Roster: return "roster"; case NetMsg::Loadout: return "loadout";
         case NetMsg::PartRequest: return "part request"; case NetMsg::PartRefused: return "part refused"; case NetMsg::PlotEdit: return "plot edit";
-        case NetMsg::EditRequest: return "edit request"; case NetMsg::EditRefused: return "edit refused"; case NetMsg::InventoryDelta: return "inventory delta"; case NetMsg::Chat: return "chat"; case NetMsg::PlayerSnapshot: return "player snapshot"; case NetMsg::Animals: return "animals"; case NetMsg::AnimalHit: return "animal hit"; case NetMsg::Damage: return "damage"; case NetMsg::Vitals: return "vitals"; case NetMsg::UseItem: return "use item"; case NetMsg::BedUse: return "bed use"; case NetMsg::Graves: return "graves"; case NetMsg::QuestBook: return "quest book"; case NetMsg::CraftRequest: return "craft request"; case NetMsg::MachineAction: return "machine action"; case NetMsg::MachineView: return "machine view"; case NetMsg::MachineStates: return "machine states";
+        case NetMsg::EditRequest: return "edit request"; case NetMsg::EditRefused: return "edit refused"; case NetMsg::InventoryDelta: return "inventory delta"; case NetMsg::Chat: return "chat"; case NetMsg::PlayerSnapshot: return "player snapshot"; case NetMsg::Animals: return "animals"; case NetMsg::AnimalHit: return "animal hit"; case NetMsg::Damage: return "damage"; case NetMsg::Vitals: return "vitals"; case NetMsg::UseItem: return "use item"; case NetMsg::BedUse: return "bed use"; case NetMsg::Graves: return "graves"; case NetMsg::QuestBook: return "quest book"; case NetMsg::CraftRequest: return "craft request"; case NetMsg::MachineAction: return "machine action"; case NetMsg::MachineView: return "machine view"; case NetMsg::MachineStates: return "machine states"; case NetMsg::TeamState: return "team state"; case NetMsg::PlantAction: return "plant action"; case NetMsg::Plants: return "plants"; case NetMsg::FarmFields: return "farm fields";
         case NetMsg::SyncIndex: return "sync index"; case NetMsg::SyncWant: return "sync want"; case NetMsg::SyncData: return "sync data"; case NetMsg::SyncDone: return "sync done";
         default: return "?";
     }
@@ -549,6 +549,10 @@ bool ParseAny(const std::vector<uint8_t>& b) {
         case NetMsg::MachineAction: { MsgMachineAction m; return NetRead(r, m); }
         case NetMsg::MachineView: { MsgMachineView m; return NetRead(r, m); }
         case NetMsg::MachineStates: { MsgMachineStates m; return NetRead(r, m); }
+        case NetMsg::TeamState: { MsgTeamState m; return NetRead(r, m); }
+        case NetMsg::PlantAction: { MsgPlantAction m; return NetRead(r, m); }
+        case NetMsg::Plants: { MsgPlants m; return NetRead(r, m); }
+        case NetMsg::FarmFields: { MsgFarmFields m; return NetRead(r, m); }
         default: return false;
     }
 }
@@ -717,6 +721,12 @@ bool NetProto_Test() {
               && vb2.view.outSlots[0].second == 2 && vb2.view.fuelSlot.first == "coal" && vb2.view.hotOutputs && vb2.view.valid, "machine view"); samples.push_back(s11);
         MsgMachineStates sa{ 9, 2, { 3, 5, 8 } }, sb; std::vector<uint8_t> s12;
         check(RoundTrip(sa, sb, &s12) && sb.working.size() == 3 && sb.working[2] == 8, "machine states"); samples.push_back(s12);
+        MsgPlantAction pa{ 2, 0x2000000000000003ull, 0x0102030405060708ull, 9, 4, "grain_seeds" }, pb; std::vector<uint8_t> s13;
+        check(RoundTrip(pa, pb, &s13) && pb.action == 2 && pb.body == pa.body && pb.plant == pa.plant && pb.plot == 9 && pb.part == 4 && pb.seed == "grain_seeds", "plant action"); samples.push_back(s13);
+        MsgPlants la{ 5, 3, { { 0xFFEEDDCCBBAA9988ull, 12345.25 }, { 7, 0.5 } } }, lb; std::vector<uint8_t> s14;
+        check(RoundTrip(la, lb, &s14) && lb.body == 5 && lb.session == 3 && lb.removed.size() == 2 && lb.removed[0].first == 0xFFEEDDCCBBAA9988ull && lb.removed[0].second == 12345.25, "plants"); samples.push_back(s14);
+        MsgFarmFields fa, fb; fa.body = 5; fa.fields = { { 11, 3, "grain", 0.5f }, { 11, 4, "roots", 1.0f } }; std::vector<uint8_t> s15;
+        check(RoundTrip(fa, fb, &s15) && fb.fields.size() == 2 && fb.fields[1].crop == "roots" && fb.fields[1].growth == 1.0f && fabsf(fb.fields[0].growth - 0.5f) < 1e-4f && fb.fields[0].part == 3, "farm fields"); samples.push_back(s15);
     }
     { MsgRoster a, b; a.players = { { 1, "alice" }, { 7, "bob" } }; std::vector<uint8_t> s; check(RoundTrip(a, b, &s) && b.players.size() == 2 && b.players[1].session == 7 && b.players[1].name == "bob", "roster"); samples.push_back(s); }
     { MsgLoadout a{ 3, "stone_pickaxe", true, 2, 0xD04A2Fu }, b; std::vector<uint8_t> s; check(RoundTrip(a, b, &s) && b.session == 3 && b.held == "stone_pickaxe" && b.headlamp && b.suitTier == 2 && b.suitColor == 0xD04A2Fu, "loadout"); samples.push_back(s); }
@@ -899,6 +909,53 @@ bool NetRead(NetReader& r, MsgMachineStates& m) {
     return Done(r);
 }
 
+// ---- Plants and farming (#335) ----
+void NetWrite(NetWriter& w, const MsgPlantAction& m) {
+    Id(w, NetMsg::PlantAction); w.u8(m.action); w.varu(m.body); w.u64(m.plant); w.u32(m.plot); w.vari(m.part); w.str(m.seed.substr(0, 64));
+}
+bool NetRead(NetReader& r, MsgPlantAction& m) {
+    m.action = r.u8(); m.body = r.varu(); m.plant = r.u64(); m.plot = r.u32(); const int64_t part = r.vari(); m.seed = r.str(64);
+    if (m.action < 1 || m.action > 3 || part < -1 || part > 1000000) r.ok = false;
+    m.part = (int32_t)part;
+    return Done(r);
+}
+namespace { constexpr size_t kMaxPlantsPerMsg = 4096, kMaxFarmFields = 4096; }
+void NetWrite(NetWriter& w, const MsgPlants& m) {
+    Id(w, NetMsg::Plants); w.varu(m.body); w.u32(m.session);
+    const size_t n = std::min(m.removed.size(), kMaxPlantsPerMsg);
+    w.varu(n);
+    for (size_t i = 0; i < n; ++i) { w.u64(m.removed[i].first); w.f64(m.removed[i].second); }
+}
+bool NetRead(NetReader& r, MsgPlants& m) {
+    m.body = r.varu(); m.session = r.u32();
+    const uint64_t n = r.varu();
+    if (n > kMaxPlantsPerMsg) { r.ok = false; return false; }
+    m.removed.clear();
+    for (uint64_t i = 0; i < n && r.ok; ++i) { const uint64_t id = r.u64(); const double t = r.f64(); m.removed.push_back({ id, t }); }
+    return Done(r);
+}
+void NetWrite(NetWriter& w, const MsgFarmFields& m) {
+    Id(w, NetMsg::FarmFields); w.varu(m.body);
+    const size_t n = std::min(m.fields.size(), kMaxFarmFields);
+    w.varu(n);
+    for (size_t i = 0; i < n; ++i) {
+        const NetFarmField& f = m.fields[i];
+        w.u32(f.plot); w.vari(f.part); w.str(f.crop.substr(0, 64)); w.u16((uint16_t)lroundf(std::clamp(f.growth, 0.0f, 1.0f) * 65535.0f));
+    }
+}
+bool NetRead(NetReader& r, MsgFarmFields& m) {
+    m.body = r.varu();
+    const uint64_t n = r.varu();
+    if (n > kMaxFarmFields) { r.ok = false; return false; }
+    m.fields.clear();
+    for (uint64_t i = 0; i < n && r.ok; ++i) {
+        NetFarmField f; f.plot = r.u32(); const int64_t part = r.vari(); f.crop = r.str(64); f.growth = r.u16() / 65535.0f;
+        if (part < 0 || part > 1000000 || f.crop.empty()) r.ok = false;
+        f.part = (int32_t)part;
+        m.fields.push_back(std::move(f));
+    }
+    return Done(r);
+}
 // ---- Teams (#604) ----
 void NetWrite(NetWriter& w, const MsgTeamState& m) {
     Id(w, NetMsg::TeamState); w.u32((uint32_t)m.team); w.str(m.name.substr(0, 40)); w.str(m.invite.substr(0, 40));

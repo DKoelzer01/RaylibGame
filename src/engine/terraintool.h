@@ -72,4 +72,23 @@ const char* TerrainTool_ItemAt(Planetoid& p, Vector3 local, int material); // th
 using TerrainToolNetEdit = std::function<void(Planetoid& p, bool dig, Vector3 hitLocal, Vector3 centre, float radius, const std::string& item)>;
 extern TerrainToolNetEdit gTerrainToolNetEdit;
 
+// Multiplayer (#335): what a felled plant (tree, bush, loose stone) gives, from its id and the biome it grew in, with no
+// side effects (the local chop and the server's both use it).
+#include <vector>
+struct Plant;
+struct ToolSpec;
+struct PlantDrops {
+    std::vector<std::pair<std::string, int>> items;
+    std::string toast;  // "+4 oak logs", ...
+    int sound = 0;      // 0 pickup, 1 a tree's (build) thud, 2 a stone
+};
+PlantDrops TerrainTool_PlantDrops(const Planetoid& p, const Plant& plant);
+int TerrainTool_HitsToFell(const Plant& plant, const ToolSpec& tool);
+// Set while joined (#335): a plant that comes down is a request (body, plant id); the server removes it for everyone and
+// credits the drops (deltas), and its removal comes back (TerrainTool_PlantRemoved).
+inline std::function<void(Planetoid& p, uint64_t plantId)> gPlantRequest;
+// The server's removal of a plant (#335): gone here too, at its time (regrowth runs on the shared clock); `mine`: this
+// client felled it (the toast and the sound of its drops).
+void TerrainTool_PlantRemoved(Planetoid& p, uint64_t plantId, double when, bool mine);
+
 #endif
