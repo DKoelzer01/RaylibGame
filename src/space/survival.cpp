@@ -90,12 +90,15 @@ bool Survival_IsFood(const std::string& id) { LoadFoods(); return foods.count(id
 float Survival_FoodValue(const std::string& id) { LoadFoods(); auto it = foods.find(id); return it == foods.end() ? 0.0f : it->second.value; }
 
 // Fall damage from the speed into the floor at touchdown (#263). On Terra (g 5.9): a 3 m drop is safe, 20 m takes
-// ~79, 30 m ~108 (fatal); servo legs make ~6 m safe.
+// ~79, 30 m ~108 (fatal); servo legs make ~6 m safe. A landing that would take 15 or less takes nothing (#536: minor
+// falls are ignored), so on Terra about 5 m is safe.
 void Survival_OnLanding(float impactSpeed) {
     const float safe = Suit_Stats().servo ? 8.5f : 6.0f; // servo legs soften landings
-    if (impactSpeed <= safe || survival.dead) return;
-    survival.health -= (impactSpeed - safe) * 8.5f;
-    survival.fallDamageTaken += (impactSpeed - safe) * 8.5f;
+    constexpr float kGrace = 15.0f; // health points
+    const float damage = (impactSpeed - safe) * 8.5f;
+    if (damage <= kGrace || survival.dead) return;
+    survival.health -= damage;
+    survival.fallDamageTaken += damage;
     Audio_Play(Sfx::Error, 0.6f, 0.6f);
 }
 
@@ -258,18 +261,15 @@ void Survival_DrawHUD() {
         const SuitStats& st = Suit_Stats();
         const char* note = T < 5.0f ? (st.cold <= 0.0f ? "  cold: regulated" : st.cold < 1.0f ? "  cold: insulated" : "  cold: hungrier") : T > 35.0f ? (st.heatProof ? "  heat: regulated" : "  heat") : "";
         DrawText(TextFormat("%.0f C%s", T, note), x + std::max(wO2, wPwr) + 20, y + 68, 16, tc);
-        if (hereBiome != Biome::Count) DrawText(BiomeName(hereBiome), x + std::max(wO2, wPwr) + 20, y + 46 + (SimTime() < survival.sickUntil ? -66 : 0), 16, Fade(RAYWHITE, 0.75f));
     }
     const int tx = x + std::max(wO2, wPwr) + 20;
     if (SimTime() < survival.sickUntil) DrawText("SICK", tx, y + 46, 16, ORANGE);
-    if (!std::isnan(T) && Weather_Here().kind != WeatherKind::Clear) DrawText(TextFormat("weather: %s", Weather_Name(Weather_Here().kind)), tx, y + 24, 16, Fade(RAYWHITE, 0.75f));
     if (survival.inLifeSupport) DrawText("LIFE SUPPORT", tx, y + 2, 16, SKYBLUE);
     else if (survival.breathable && showO2) DrawText("BREATHABLE AIR", tx, y + 2, 16, Fade(SKYBLUE, 0.7f));
     else if (survival.inVacuum) {
         if (Suit_Stats().vacuum) DrawText("VACUUM: suit rated", tx, y + 2, 16, Fade(SKYBLUE, 0.7f));
         else { const bool flash = survival.vacuumTime > 50.0f && fmodf((float)GetTime(), 0.6f) < 0.3f; DrawText(survival.vacuumTime < 60.0f ? TextFormat("VACUUM: suit not rated, %.0f s", 60.0f - survival.vacuumTime) : "VACUUM: suit failing - get to air or a cockpit", tx, y + 2, 16, flash ? RED : ORANGE); }
     }
-    DrawText(Suit_Stats().powered ? TextFormat("O2 canister x%d   power cell x%d   (use from the hotbar)", inventory.count("oxygen_canister"), inventory.count("power_cell")) : TextFormat("O2 canister x%d   (use from the hotbar)", inventory.count("oxygen_canister")), x, y - 22 + (showO2 ? 0 : 22), 16, Fade(RAYWHITE, 0.8f));
     if (survival.dead) {
         DrawRectangle(0, 0, GetScreenWidth(), GetScreenHeight(), Fade(BLACK, 0.6f));
         const char* msg = survival.oxygen <= 0.0f ? "You suffocated" : "You died";
@@ -343,6 +343,15 @@ namespace {
         if (t.kind == "do") { auto it = questCounts.find(t.target); return it != questCounts.end() && it->second >= t.n - 1e-6; }
         return false;
     }
+    // A counted task's text with how far along it is (#563: "Hammer 4 bronze plates (2/4)"); tasks of one thing as written.
+    std::string TaskLine(const Task& t, bool done) {
+        if ((t.kind != "get" && t.kind != "do") || t.n < 2.0 - 1e-6) return t.text;
+        double have = 0.0;
+        if (t.kind == "get") have = inventory.obtainedTotal(t.target);
+        else if (auto it = questCounts.find(t.target); it != questCounts.end()) have = it->second;
+        if (done) have = t.n;
+        return TextFormat("%s (%d/%d)", t.text.c_str(), (int)std::min(floor(have + 1e-6), t.n), (int)t.n);
+    }
 }
 
 void Objectives_MarkVisitedBody(int i) { visitedBodies.insert(i); }
@@ -409,7 +418,12 @@ int QuestBook_TierCount() { LoadTiers(); return (int)tiers.size(); }
 const char* QuestBook_TierName(int i) { LoadTiers(); return i >= 0 && i < (int)tiers.size() ? tiers[i].name.c_str() : ""; }
 const char* QuestBook_TierText(int i) { LoadTiers(); return i >= 0 && i < (int)tiers.size() ? tiers[i].text.c_str() : ""; }
 int QuestBook_TaskCount(int i) { LoadTiers(); return i >= 0 && i < (int)tiers.size() ? (int)tiers[i].tasks.size() : 0; }
-const char* QuestBook_TaskText(int i, int k) { return k >= 0 && k < QuestBook_TaskCount(i) ? tiers[i].tasks[k].text.c_str() : ""; }
+const char* QuestBook_TaskText(int i, int k) { // with its count (#563)
+    static std::string s;
+    if (k < 0 || k >= QuestBook_TaskCount(i)) return "";
+    s = TaskLine(tiers[i].tasks[k], QuestBook_TaskDone(i, k));
+    return s.c_str();
+}
 bool QuestBook_TaskDone(int i, int k) { return k >= 0 && k < QuestBook_TaskCount(i) && (tiers[i].tasks[k].done || i < questTier); }
 
 void QuestBook_Save(FILE* f) {
@@ -477,7 +491,7 @@ void Objectives_DrawHUD() {
         y += 20;
     }
     for (const Task& k : t.tasks) {
-        y = DrawWrapped(TextFormat("%s %s", k.done ? "[x]" : "[ ]", k.text.c_str()), 12, y, 58, 15, k.done ? Fade(GREEN, 0.75f) : RAYWHITE);
+        y = DrawWrapped(TextFormat("%s %s", k.done ? "[x]" : "[ ]", TaskLine(k, k.done).c_str()), 12, y, 58, 15, k.done ? Fade(GREEN, 0.75f) : RAYWHITE);
         y += 1;
     }
     y += 4;

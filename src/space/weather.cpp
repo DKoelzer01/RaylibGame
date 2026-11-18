@@ -1,4 +1,5 @@
 #include "weather.h"
+#include "wind.h"
 #include "audio.h"
 #include "player.h"
 #include "voxel.h"
@@ -128,6 +129,17 @@ void Weather_Update(Scene& world, float dt) {
     world.weatherCloud = here.cloud;
     world.weatherFog = here.fog;
     world.cloudDrift = Vector3Add(world.cloudDrift, Vector3Scale(here.wind, -dt * 3.0f)); // clouds move with the wind (a little faster than at the ground)
+    // The wind field (#650): this mean wind, storminess (rain a little, storms fully) and the daily cycle at the player.
+    if (p && player.nearest == p) {
+        const Vector3 local = p->toLocal((player.position - world.renderOrigin).toFloat());
+        const float len = Vector3Length(local);
+        static float stormEased = 0.0f;
+        const float stormTarget = here.kind == WeatherKind::Storm ? 1.0f : here.kind == WeatherKind::Rain ? 0.3f : 0.0f;
+        stormEased += (stormTarget - stormEased) * k;
+        if (forced >= 0) stormEased = stormTarget;
+        const float daily = len > 1.0f ? Wind_DailyFactor(Vector3Scale(local, 1.0f / len), Vector3Normalize(p->dirToLocal(world.sunDirection)), { 0, 1, 0 }) : 1.0f;
+        Wind_SetFrame(p, local, here.wind, stormEased, daily, dt);
+    } else Wind_SetFrame(nullptr, {}, {}, 0.0f, 1.0f, dt);
     // Lightning in a storm: a flash every 6-20 s, thunder a moment later.
     if (here.kind == WeatherKind::Storm) {
         if (GameClock() > nextFlash) {
@@ -164,13 +176,25 @@ void Weather_Draw3D(Scene& world) {
     const float fall = snow ? 1.2f : 24.0f, span = 24.0f, height = 16.0f; // rain read slow at 9 m/s on screen (#33)
     const Vector3 windW = p->dirToWorld(here.wind);
     const double t = GameClock();
+    // The camera along e and n in the body's frame: drop columns are fixed to the ground (wrapped into the box around the
+    // camera), so walking doesn't carry the rain along.
+    const DVec3 camL = p->toLocalD(world.renderOrigin + cam);
+    const Vector3 eL = p->dirToLocal(e), nL = p->dirToLocal(n);
+    const double ce = camL.x * eL.x + camL.y * eL.y + camL.z * eL.z, cn = camL.x * nL.x + camL.y * nL.y + camL.z * nL.z;
+    auto mix = [](uint32_t x) { x ^= x >> 16; x *= 0x7feb352du; x ^= x >> 15; x *= 0x846ca68bu; x ^= x >> 16; return x; };
+    auto wrap = [&](double v) { const double w = 2.0 * span; return (float)(v - w * floor(v / w)) - span; }; // into [-span, span)
     rlBegin(RL_LINES);
     for (int i = 0; i < count; ++i) {
-        // Each drop: a fixed column around the camera, falling and wrapping (no state kept).
-        const uint32_t h = (uint32_t)i * 2654435761u;
-        const float ax = ((h & 1023) / 1023.0f - 0.5f) * 2.0f * span, az = (((h >> 10) & 1023) / 1023.0f - 0.5f) * 2.0f * span;
-        const float phase = ((h >> 20) & 1023) / 1023.0f;
-        float y = height - (float)fmod(phase * height + t * fall, (double)height) - 4.0f;
+        // Each drop (no state kept): its own fall speed (+-15%) and start phase, and a new column every time it wraps
+        // (#616: every drop kept one column and all wrapped every 16 m / 24 m/s, so the whole pattern repeated each 0.67 s).
+        const uint32_t h = mix((uint32_t)i * 2654435761u + 0x9e3779b9u);
+        const float phase = (h & 1023) / 1023.0f;
+        const double fallI = fall * (0.85 + 0.3 * (((h >> 10) & 1023) / 1023.0));
+        const double travel = phase * height + t * fallI;
+        const uint32_t cycle = (uint32_t)(int64_t)floor(travel / height);
+        const uint32_t c = mix(h ^ (cycle * 0x85ebca6bu));
+        const float ax = wrap((c & 0xFFFF) / 65535.0 * 2.0 * span - ce), az = wrap((c >> 16) / 65535.0 * 2.0 * span - cn);
+        float y = height - (float)(travel - floor(travel / height) * height) - 4.0f;
         Vector3 pos = Vector3Add(cam, Vector3Add(Vector3Scale(e, ax), Vector3Add(Vector3Scale(n, az), Vector3Scale(upW, y))));
         if (snow) {
             pos = Vector3Add(pos, Vector3Scale(e, 0.4f * sinf((float)t * 1.3f + phase * 20.0f)));

@@ -24,6 +24,7 @@ struct Player {
     Vector3 up = { 0, 1, 0 };
     bool grounded = false;
     bool flyMode = false;             // F: free-fly dev camera (no gravity/collision)
+    bool flyAllowed = true;           // F works (#531: creative mode only; the game sets it each frame); off: leaves fly mode
     int spawns = 0;                   // counts spawnOn/placeAt: the game raises the loading screen on a new one
     float jetpackFuel = 1.0f;         // 0..1, recharges on the ground
     // Flight pack (#163): H toggles hover - height held, no drift; Space/Ctrl climb/descend, Shift boosts. It runs

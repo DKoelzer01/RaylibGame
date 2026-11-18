@@ -1,4 +1,5 @@
 #include "scene.h"
+#include "wind.h"
 #include "gpumem.h"
 #include "headless.h"
 #include "gputimer.h"
@@ -530,10 +531,14 @@ void Scene::drawScene(int gamestate) {
                     rlSetUniformMatrix(GetShaderLocation(ts, "matViewProj"), outMatrix);
                     const float now = (float)fmod(GameClock(), 3600.0);
                     rlSetUniform(GetShaderLocation(ts, "time"), &now, RL_SHADER_UNIFORM_FLOAT, 1);
+            Wind_Bind(ts, renderOrigin, 10); // the wind field (#650)
                     RenderContext tctx = shadowCtx;
                     tctx.treeShader = &ts;
                     tctx.treeModelLoc = GetShaderLocation(ts, "matModel");
-                    tctx.treeOccluderLoc = tctx.treeFadeLoc = tctx.treeBarkLoc = tctx.treeLeafLoc = -1;
+                    tctx.treeOccluderLoc = tctx.treeBarkLoc = tctx.treeLeafLoc = -1;
+                    // Casters fade with the main view's distance fade (tree_depth.fs, #541): from the real camera.
+                    tctx.treeFadeLoc = GetShaderLocation(ts, "fadeEnd");
+                    rlSetUniform(GetShaderLocation(ts, "viewPos"), &camera.position, RL_SHADER_UNIFORM_VEC3, 1);
                     for (const auto& obj : objects)
                         if (auto* p = dynamic_cast<Planetoid*>(obj.get()); p && p->isActive && p->trees) {
                             p->trees->setShadowSun(p->dirToLocal(shadowSun));
@@ -865,6 +870,7 @@ void Scene::drawScene(int gamestate) {
             rlSetUniform(GetShaderLocation(ts, "fogDensity"), &effFogDensity, RL_SHADER_UNIFORM_FLOAT, 1);
             rlSetUniform(GetShaderLocation(ts, "fogShell"), shell, RL_SHADER_UNIFORM_VEC4, 1);
             rlSetUniform(GetShaderLocation(ts, "time"), &now, RL_SHADER_UNIFORM_FLOAT, 1);
+            Wind_Bind(ts, renderOrigin, 10); // the wind field (#650)
             setFoliageLighting(ts);
             RenderContext tctx = ctx;
             tctx.treeShader = &ts;
@@ -945,6 +951,7 @@ void Scene::drawScene(int gamestate) {
             rlSetUniform(GetShaderLocation(gs, "fogDensity"), &effFogDensity, RL_SHADER_UNIFORM_FLOAT, 1);
             rlSetUniform(GetShaderLocation(gs, "fogShell"), shell, RL_SHADER_UNIFORM_VEC4, 1);
             rlSetUniform(GetShaderLocation(gs, "time"), &now, RL_SHADER_UNIFORM_FLOAT, 1);
+            Wind_Bind(gs, renderOrigin, 10); // the wind field (#650)
             rlSetUniform(GetShaderLocation(gs, "fadeEnd"), &fadeEnd, RL_SHADER_UNIFORM_FLOAT, 1);
             setFoliageLighting(gs);
             RenderContext gctx = ctx;
@@ -1024,8 +1031,8 @@ void Scene::drawScene(int gamestate) {
 void Scene::drawUI(int gamestate) {
     if (!isActive) return;
     RenderContext none;
-    if (gamestate != 0) {
-        DrawFPS(10, 10);
+    // The camera readout only in the F3 debug view (#573); the FPS counter is the game's setting now (#572: main.cpp).
+    if (gamestate != 0 && debugDraw) {
         const DVec3 cw = cameraWorld();
         DrawText(TextFormat("Camera: %.1f %.1f %.1f   meshes: %d   [F3] debug",
                  cw.x, cw.y, cw.z, lastDrawCalls), 10, 30, 20, GREEN);
@@ -1057,6 +1064,7 @@ Scene::~Scene() {
     grass.unload();
     trees.unload();
     treeDepth.unload();
+    Wind_Unload();
     farSphere.unload();
     parts.unload();
     atmosphereShader.unload();

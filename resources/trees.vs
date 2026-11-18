@@ -12,6 +12,7 @@ layout(location = 11) in vec4 instUpHash;      // body-local up, hash in [0, 1)
 uniform mat4 matModel;     // anchor -> render space
 uniform mat4 matViewProj;
 uniform float time;
+#include "wind.glsl"
 
 out vec3 fragPosition;
 out vec3 fragNormal;
@@ -35,9 +36,23 @@ void main()
     vec3 b = cross(t, up);   // right-handed (t, up, b): keeps the mesh winding (front faces CCW)
     float s = instPosScale.w;
     vec3 v = vertexPosition;
-    // Wind on leaves: a slow sway growing with height.
+    // Wind on leaves: a sway growing with height. With the wind field (#650) it grows with the local wind, and strong
+    // wind (storms, bursts) leans the whole tree downwind, more toward the top, swaying with the gusts. No damage.
     float leaf = vertexColor.r;
-    vec3 sway = (t0 * sin(time * 0.9 + h * 30.0) + b0 * sin(time * 0.7 + h * 17.0)) * 0.04 * max(v.y, 0.0) * leaf;
+    vec3 sway;
+    if (windOn > 0.5) {
+        vec4 w = windAt(vec3(matModel * vec4(instPosScale.xyz, 1.0)));
+        vec3 wl = transpose(mat3(matModel)) * w.xyz; // render -> body-local directions
+        wl -= up * dot(wl, up);
+        float speed = length(wl);
+        vec3 wdir = speed > 1e-3 ? wl / speed : t0;
+        float amp = 0.02 + 0.006 * speed;
+        sway = (t0 * sin(time * (0.9 + 0.05 * speed) + h * 30.0) + b0 * sin(time * (0.7 + 0.04 * speed) + h * 17.0)) * amp * max(v.y, 0.0) * leaf;
+        float lean = 0.05 * clamp((speed - 8.0) / 12.0, 0.0, 1.5) * (1.0 + 0.35 * sin(time * (1.2 + 0.05 * speed) + h * 9.0));
+        sway += wdir * lean * max(v.y, 0.0) * max(v.y, 0.0);
+    } else {
+        sway = (t0 * sin(time * 0.9 + h * 30.0) + b0 * sin(time * 0.7 + h * 17.0)) * 0.04 * max(v.y, 0.0) * leaf;
+    }
     vec3 local = instPosScale.xyz + (t * v.x + up * v.y + b * v.z) * s + sway * s;
     vec3 n = t * vertexNormal.x + up * vertexNormal.y + b * vertexNormal.z;
     fragPosition = vec3(matModel * vec4(local, 1.0));

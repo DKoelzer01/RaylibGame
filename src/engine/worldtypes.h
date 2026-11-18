@@ -37,6 +37,12 @@ public:
     // hide cracks between LOD levels; where the neighbour on an axis is drawn at the same level the
     // overlap would just duplicate (and z-fight with) its surface, so it is clipped on that axis.
     Vector3 clipMax = { 1e30f, 1e30f, 1e30f };
+    static constexpr double kLodFadeSeconds = 0.35;
+    // LOD cross-fade (#243): when nodes replace others in the draw list, both are drawn for kLodFadeSeconds and dissolve
+    // into each other (lighting.fs). fadeT0 < 0: not fading; fadeOut: this is the one going away.
+    double fadeT0 = -1.0;
+    bool fadeOut = false;
+    float lodFade(double now) const;   // the arena record's clip.w (0 when not fading)
 
     Chunk() : Object("chunk", "chunk", {0, 0, 0}, {0, 0, 0}, WHITE, 1.0f) {}
     virtual ~Chunk();
@@ -145,6 +151,8 @@ public:
 
     float densityAt(Vector3 local) const; // includes edits; main-thread helper (raycasts)
     VoxelMaterial materialAt(Vector3 local) const; // the material there: placed ground's own, else the field's
+    // #636: with the visible surface's normal (body-local), as the meshes pick it: steep faces show rock, not turf or gravel
+    VoxelMaterial materialAt(Vector3 local, Vector3 normal) const;
     // Velocity (world units/s) of the body-fixed point currently at renderPoint, from the spin.
     Vector3 surfaceVelocity(Vector3 renderPoint) const;
     // Body-local direction <-> world direction (rotation only).

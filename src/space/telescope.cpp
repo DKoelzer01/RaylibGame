@@ -74,11 +74,14 @@ void Telescope_DrawHUD(Scene& world) {
         if (Vector3DotProduct(to, dir) / d < cosf(asinf(std::min(1.0f, rad / d)))) continue;
         if (!target || d < targetDist) { target = p; targetDist = d; }
     }
-    int y = (int)(c.y + r) - 64;
-    DrawText(TextFormat("x%.0f", telescope.zoom), (int)c.x - MeasureText(TextFormat("x%.0f", telescope.zoom), 24) / 2, y, 24, RAYWHITE);
-    if (target) {
-        const char* label = TextFormat("%s %s  %.0f km", BodyKindName(target->kind), target->name.c_str(), targetDist / 1000.0f);
-        DrawText(label, (int)c.x - MeasureText(label, 18) / 2, y + 30, 18, Fade(SKYBLUE, 0.9f));
-    }
+    // Under the reticle, near the middle of the view (#535: at the bottom of the circle it sat behind the hotbar), on a dark
+    // band so the faint reticle line under it doesn't cut through the letters.
+    const int y = (int)c.y + 56;
+    const char* zoom = TextFormat("x%.0f", telescope.zoom);
+    const char* label = target ? TextFormat("%s %s  %.0f km", BodyKindName(target->kind), target->name.c_str(), targetDist / 1000.0f) : nullptr;
+    const int bw = std::max(MeasureText(zoom, 24), label ? MeasureText(label, 18) : 0) + 16;
+    DrawRectangle((int)c.x - bw / 2, y - 4, bw, label ? 56 : 30, Fade(BLACK, 0.5f));
+    DrawText(zoom, (int)c.x - MeasureText(zoom, 24) / 2, y, 24, RAYWHITE);
+    if (label) DrawText(label, (int)c.x - MeasureText(label, 18) / 2, y + 30, 18, Fade(SKYBLUE, 0.9f));
     DrawText("wheel zoom   T lower", 10, h - 30, 20, Fade(RAYWHITE, 0.7f));
 }
