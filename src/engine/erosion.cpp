@@ -474,6 +474,43 @@ namespace {
         return ((r0[0] * (1 - a) + r0[1] * a) * (1 - b) + (r1[0] * (1 - a) + r1[1] * a) * b) * 0.1f;
     }
 
+    // Catmull-Rom weights of the 4 nodes around a cell at fraction t (they sum to 1).
+    inline void CatmullRomWeights(float t, float w[4]) {
+        const float t2 = t * t, t3 = t2 * t;
+        w[0] = 0.5f * (-t3 + 2.0f * t2 - t);
+        w[1] = 0.5f * (3.0f * t3 - 5.0f * t2 + 2.0f);
+        w[2] = 0.5f * (-3.0f * t3 + 4.0f * t2 + t);
+        w[3] = 0.5f * (t3 - t2);
+    }
+
+    // Catmull-Rom bicubic on one face (#678), the same layout as FaceBilinear: C1 across cell edges, so the slope no
+    // longer jumps every cell (bilinear drew the grid as squares and diagonal bands in every hillshade). It interpolates
+    // (each node keeps its baked value: river beds, lake shores and peaks stay where the bake put them; a cubic B-spline
+    // would lower one-cell channels by a third and every peak); the price is a small overshoot beside a sharp step (at
+    // most ~7% of the step). Nodes past the face's last row repeat it.
+    float FaceCatmullRom(const std::vector<int16_t>& g, int f, int side, float u, float v, float span) {
+        const float du = 2.0f * span / side;
+        const float fi = std::clamp((u + span) / du - 0.5f, 0.0f, (float)(side - 1) - 1e-3f);
+        const float fj = std::clamp((v + span) / du - 0.5f, 0.0f, (float)(side - 1) - 1e-3f);
+        const int i = (int)fi, j = (int)fj;
+        float wu[4], wv[4];
+        CatmullRomWeights(fi - i, wu);
+        CatmullRomWeights(fj - j, wv);
+        int ci[4], cj[4];
+        for (int k = 0; k < 4; ++k) { ci[k] = std::clamp(i - 1 + k, 0, side - 1); cj[k] = std::clamp(j - 1 + k, 0, side - 1); }
+        const int16_t* base = &g[(size_t)f * side * side];
+        float sum = 0.0f;
+        for (int r = 0; r < 4; ++r) {
+            const int16_t* row = base + (size_t)cj[r] * side;
+            sum += wv[r] * (wu[0] * row[ci[0]] + wu[1] * row[ci[1]] + wu[2] * row[ci[2]] + wu[3] * row[ci[3]]);
+        }
+        return sum * 0.1f;
+    }
+    bool gBakeBilinear = [] { const char* e = getenv("RAYLIBGAME_BAKE_BILINEAR"); return e && e[0] == '1'; }(); // #678 A/B
+    inline float FaceSample(const std::vector<int16_t>& g, int f, int side, float u, float v, float span) {
+        return gBakeBilinear ? FaceBilinear(g, f, side, u, v, span) : FaceCatmullRom(g, f, side, u, v, span);
+    }
+
     // Hillshaded map of one face of a side^2-per-face grid (#355 evidence).
     void DumpFace(const char* path, const float* h, int N, float cell) {
         Image img = GenImageColor(N, N, BLACK);
@@ -1061,7 +1098,7 @@ float PlanetErosion::coarseAt(Vector3 dv) const {
     const int f = FaceOf(dv);
     Vector3 nrm, t1, t2; FaceAxes(f, nrm, t1, t2);
     const float s = Vector3DotProduct(dv, nrm);
-    return FaceBilinear(coarse, f, n, Vector3DotProduct(dv, t1) / s, Vector3DotProduct(dv, t2) / s, 1.0f);
+    return FaceSample(coarse, f, n, Vector3DotProduct(dv, t1) / s, Vector3DotProduct(dv, t2) / s, 1.0f);
 }
 
 float PlanetErosion::fineAt(Vector3 dv) const {
@@ -1073,7 +1110,7 @@ float PlanetErosion::fineAt(Vector3 dv) const {
         Vector3 nrm, t1, t2; FaceAxes(f, nrm, t1, t2);
         const float s = Vector3DotProduct(dv, nrm);
         const float u = Vector3DotProduct(dv, t1) / s, v = Vector3DotProduct(dv, t2) / s;
-        if (std::max(fabsf(u), fabsf(v)) * inner < 0.999f) return FaceBilinear(fine, f, fe, u, v, span);
+        if (std::max(fabsf(u), fabsf(v)) * inner < 0.999f) return FaceSample(fine, f, fe, u, v, span);
     }
     float sum = 0.0f, wsum = 0.0f;
     for (int f = 0; f < 6; ++f) {
@@ -1086,7 +1123,7 @@ float PlanetErosion::fineAt(Vector3 dv) const {
         float w = std::clamp((inner - edge) / band, 0.0f, 1.0f);
         w = w * w * (3.0f - 2.0f * w);
         if (w <= 0.0f) continue;
-        sum += w * FaceBilinear(fine, f, fe, u, v, span);
+        sum += w * FaceSample(fine, f, fe, u, v, span);
         wsum += w;
     }
     return wsum > 0.0f ? sum / wsum : coarseAt(dv);

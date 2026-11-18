@@ -1310,6 +1310,49 @@ int main(int argc, char** argv)
             }
             return 0;
         }
+    for (int i = 1; i < argc; ++i)
+        if (std::string(argv[i]) == "--shot-hillshade") {
+            // #678 evidence: a hillshade of the height map (PlanetField::elevation, what the minimap and the terrain show)
+            // around the start, 1024 px at --hillshade-mpp m per pixel (default 1), lit from a low sun so the slope steps
+            // of the bake-grid interpolation show. Writes bench_hillshade.png; prints the mean |second difference| of the
+            // height (m per px^2), which grows with every slope jump.
+            Planetoid* p = dynamic_cast<Planetoid*>(world.objects[0].get());
+            const auto* pf = p ? dynamic_cast<const PlanetField*>(p->field.get()) : nullptr;
+            if (!pf) { printf("bench: hillshade: no planet -> FAIL\n"); return 1; }
+            float mpp = 1.0f;
+            for (int k = 1; k + 1 < argc; ++k) if (std::string(argv[k]) == "--hillshade-mpp") mpp = (float)atof(argv[k + 1]);
+            const int N = 1024;
+            const Vector3 home = pf->findSpawnDir(p->seed);
+            const Vector3 t1 = Vector3Normalize(Vector3CrossProduct(home, { 0, 1, 0 })), t2 = Vector3CrossProduct(t1, home);
+            std::vector<float> h((size_t)N * N);
+            std::vector<std::thread> team;
+            for (int t = 0; t < 8; ++t)
+                team.emplace_back([&, t] {
+                    for (int j = t; j < N; j += 8)
+                        for (int k = 0; k < N; ++k) {
+                            const float x = (k - 0.5f * N) * mpp, y = (j - 0.5f * N) * mpp;
+                            h[(size_t)j * N + k] = pf->elevation(Vector3Normalize(Vector3Add(home, Vector3Add(Vector3Scale(t1, x / pf->radius), Vector3Scale(t2, y / pf->radius)))), mpp);
+                        }
+                });
+            for (auto& th : team) th.join();
+            Image img = GenImageColor(N, N, BLACK);
+            const Vector3 sun = Vector3Normalize({ -0.8f, 0.45f, -0.4f });
+            double curv = 0.0; long long nc = 0;
+            for (int j = 1; j < N - 1; ++j)
+                for (int k = 1; k < N - 1; ++k) {
+                    auto H = [&](int a, int b) { return h[(size_t)b * N + a]; };
+                    const float gx = (H(k + 1, j) - H(k - 1, j)) / (2 * mpp), gy = (H(k, j + 1) - H(k, j - 1)) / (2 * mpp);
+                    const float s = std::clamp(0.15f + 0.85f * Vector3DotProduct(Vector3Normalize({ -gx, 1.0f, -gy }), sun), 0.0f, 1.0f);
+                    const float e = H(k, j);
+                    const Vector3 c = e <= 0.0f ? Vector3{ 0.2f, 0.35f, 0.7f } : Vector3{ 0.85f, 0.75f, 0.55f };
+                    ImageDrawPixel(&img, k, j, { (unsigned char)(255 * c.x * s), (unsigned char)(255 * c.y * s), (unsigned char)(255 * c.z * s), 255 });
+                    curv += fabs(H(k + 1, j) - 2 * H(k, j) + H(k - 1, j)) + fabs(H(k, j + 1) - 2 * H(k, j) + H(k, j - 1)); nc += 2;
+                }
+            ExportImage(img, "bench_hillshade.png");
+            UnloadImage(img);
+            printf("bench: hillshade: %d px at %.2f m/px, mean |d2h| %.5f m -> bench_hillshade.png\n", N, mpp, curv / std::max<long long>(1, nc));
+            return 0;
+        }
 
     const double benchWarmup = 2.0;
     double benchStart = 0.0, benchMaxFrame = 0.0;
