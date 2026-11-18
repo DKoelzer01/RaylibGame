@@ -40,5 +40,9 @@ void ServerShutdown_Install();                         // Ctrl+C / close / logof
 void ServerShutdown_Request(const char* why);
 bool ServerShutdown_Requested(const char** why = nullptr);
 void ServerShutdown_Done();                            // saved and closed: a waiting console-close handler may return
+// The last call of a --server process (after CloseWindow). Linux (#792): flushes the log tee and ends the process with
+// _exit, because glibc's exit() flushes every stdio stream and would wait forever for stdin's lock, held by the
+// console thread blocked reading a stdin that stays open (the panel's console). Windows: returns (a normal exit).
+void ServerExit(int code);
 
 #endif
