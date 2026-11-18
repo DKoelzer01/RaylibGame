@@ -5949,7 +5949,11 @@ int main(int argc, char** argv)
                         if (EnvFlag("DBCAM") && dbPhase == 3) { world.camera.position = p->toWorld(pt(7.0f, -7.0f, 6.0f)); world.camera.target = p->toWorld(pt(7.0f, 0.0f, -2.0f)); } // #680 diagnosis: the channel below the dam
                         world.camera.up = p->dirToWorld(home);
                         player.flyMode = true; player.position = world.renderOrigin + world.camera.position;
-                        if (dbPhase == 1 && t > 1.0 && (dbPoured > 0.0f || WorldIdle())) { // idle to start; then on (#747: a slow CPU step kept the world busy)
+                        // The fill starts at 2 s once the world has been idle (#814: on the first idle frame, which streaming
+                        // decides by thread timing, so two identical runs poured at different phases of the fluid's ticks).
+                        static bool dbIdleSeen = false;
+                        dbIdleSeen = dbIdleSeen || WorldIdle();
+                        if (dbPhase == 1 && t > 2.0 && (dbPoured > 0.0f || dbIdleSeen)) { // idle to start; then on (#747: a slow CPU step kept the world busy)
                             // Fill the reservoir to 2 m: 160 m^3 at 2.5 m^3/s, 0.25 m^3 at a time moving over the floor (#691: a pour every
                             // frame - 60 m^3/s - piled mounds over the rim faster than water spreads, and they spilled onto the grass;
                             // #680: at 5 m^3/s the column model's pour points mounded and ~30 m^3 found no room, #766). #680: 1 m^3 pours
