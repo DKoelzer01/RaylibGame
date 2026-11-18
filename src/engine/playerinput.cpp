@@ -17,6 +17,7 @@ constexpr int kDefault[(int)Act::Count] = {
     KEY_Z,
     KEY_TAB, KEY_C, KEY_K,
     KEY_T, KEY_J, KEY_Q, KEY_N, KEY_B, KEY_MINUS, KEY_EQUAL,
+    KEY_Q,
 };
 int binding[(int)Act::Count] = {}; // the live bindings (filled from kDefault on first use)
 bool bindingsReady = false;
@@ -36,6 +37,7 @@ constexpr ActInfo kActs[(int)Act::Count] = {
     { "inventory", "Open the inventory" }, { "crafting", "Open crafting" }, { "skills", "Open skills" },
     { "telescope", "Telescope" }, { "player_list", "Show the players (multiplayer)" }, { "deposit", "Deposit into nearby chests" },
     { "blueprint_cycle", "Next blueprint" }, { "blueprint_save", "Save a blueprint" }, { "zoom_out", "Minimap: zoom out" }, { "zoom_in", "Minimap: zoom in" },
+    { "offhand_use", "Use the off hand (food, oxygen)" },
 };
 constexpr int kSlotKeys[10] = { KEY_ONE, KEY_TWO, KEY_THREE, KEY_FOUR, KEY_FIVE, KEY_SIX, KEY_SEVEN, KEY_EIGHT, KEY_NINE, KEY_ZERO };
 static_assert((int)Act::Count <= 64, "Act bits fit a uint64_t");
