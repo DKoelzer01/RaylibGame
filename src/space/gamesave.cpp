@@ -80,6 +80,7 @@ void WritePlayerLines(FILE* f, RecordTarget t) {
         Nav_Save(f);
         Suit_Save(f);
         ToolWear_Save(f);
+        QuestBook_SavePins(f); // (#825) the player's pinned quests
     } else fputs(t.kept.c_str(), f);
     fprintf(f, "survival %f %f %f %d\n", t.sv.oxygen, t.sv.power, t.sv.health, t.sv.deaths);
     fprintf(f, "food %f\n", t.sv.food);
@@ -101,6 +102,7 @@ bool ReadPlayerLine(const char* tok, FILE* f, RecordTarget t) {
         if (Nav_LoadLine(tok, f)) return true;
         if (Suit_LoadLine(tok, f)) return true;
         if (ToolWear_LoadLine(tok, f)) return true;
+        if (QuestBook_LoadPinLine(tok, f)) return true; // (#825)
     }
     if (strcmp(tok, "player") == 0) {
         int fly = 0;
@@ -289,6 +291,7 @@ void GameSave_Register() {
         RecipeBook_Reset();
         Combat_Reset(); // graves: the save holds them all (#165)
         Teams_Reset();
+        QuestBook_ClearPins(); // (#825) the record's pins come back with it
         TeamQuests_Reset(); // (#338) the server's team books load from the teams as they are used
         survival.hasBed = false; // #800: the record's (or a format 12 save's) bed line sets it
         savedCols = 9;  // a save without an inv_cols line: the 9-wide grid (#495)

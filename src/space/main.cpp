@@ -590,6 +590,7 @@ int main(int argc, char** argv)
     bool shotGameWindow = false;   // --shot-game-window (#821): each screen of the game window, and the key bindings tables
     bool benchGameMode = false;     // --test-gamemode (#823): /gamemode, the Catalog screen in creative only, the command line
     bool benchCraftScreen = false;   // --test-crafting-screen (#824): the Crafting screen's queue and page
+    bool benchQuestPins = false;     // --test-quest-pins (#825): pin three quests (a fourth refused), saved with the player, on the HUD
     bool benchDungeon = false; int dungeonFrame = 0; // --test-dungeon (#719)
     bool benchDungeonTraps = false; int dungeonTrapFrame = 0; // --test-dungeon-traps (#719)
     bool benchSaveSplit = false; // --test-save-split (#346)
@@ -926,6 +927,7 @@ int main(int argc, char** argv)
         if (std::string(argv[i]) == "--shot-game-window") shotGameWindow = true;
         if (std::string(argv[i]) == "--test-gamemode") benchGameMode = true;
         if (std::string(argv[i]) == "--test-crafting-screen") benchCraftScreen = true;
+        if (std::string(argv[i]) == "--test-quest-pins") benchQuestPins = true;
         if (std::string(argv[i]) == "--test-dungeon") benchDungeon = true;
         if (std::string(argv[i]) == "--test-dungeon-traps") benchDungeonTraps = true; // #719: best with --sandbox
         if (std::string(argv[i]) == "--test-save-split") benchSaveSplit = true; // #346: world + player records
@@ -9660,6 +9662,37 @@ int main(int argc, char** argv)
         }
         // --test-save-split (#346): the world file and the player's record (gamesave.cpp), once the world is up.
         if (benchSaveSplit && gameState == 1 && !loading && WorldIdle()) { GameSave_TestSplit(world); benchSaveSplit = false; }
+        // --test-quest-pins (#825): three of the current tier's tasks pinned, a fourth refused; a save and load keeps them (the
+        // player's record); screenshots of the Quests screen and of the HUD with the pins.
+        if (benchQuestPins && gameState == 1 && !loading && WorldIdle()) {
+            static int f = 0;
+            static bool threeOk = false, fourthRefused = false, kept = false;
+            const int tier = QuestBook_Tier();
+            if (f == 0) {
+                QuestBook_ClearPins();
+                threeOk = QuestBook_TaskCount(tier) >= 4 && QuestBook_Pin(tier, 1, true) && QuestBook_Pin(tier, 2, true) && QuestBook_Pin(tier, 3, true);
+                fourthRefused = !QuestBook_Pin(tier, 0, true) && QuestBook_Pins().size() == 3;
+                GameUI_ShowScreen(GameScreen::Quests);
+            }
+            if (f == 15) { TakeScreenshot("bench_quests_screen.png"); GameUI_ToggleInventory(); }
+            if (f == 30) {
+                TakeScreenshot("bench_quests_hud.png");
+                const std::string old = WorldSavePath();
+                SetWorldSavePath("saves/pins_test.sav");
+                const bool saved = SaveWorld(world);
+                QuestBook_ClearPins();
+                const bool loaded = saved && LoadWorldSave(world);
+                kept = loaded && QuestBook_Pins().size() == 3 && QuestBook_Pinned(tier, 1) && QuestBook_Pinned(tier, 3);
+                std::error_code ec;
+                for (const char* ext : { "", ".players", ".regions", ".backups" }) std::filesystem::remove_all(std::string("saves/pins_test.sav") + ext, ec);
+                SetWorldSavePath(old.c_str());
+                const bool ok = threeOk && fourthRefused && kept;
+                printf("bench: quest pins (#825): three pinned %d, a fourth refused %d, kept through a save and load %d; screenshots bench_quests_screen.png, bench_quests_hud.png -> %s\n",
+                       threeOk, fourthRefused, kept, ok ? "PASS" : "FAIL");
+                benchQuestPins = false;
+            }
+            ++f;
+        }
         // --test-crafting-screen (#824): oak planks x3 queued on the Crafting screen come one by one (12 planks, 3 logs gone),
         // and planks show what they're used by; a screenshot of the screen with the recipe's page.
         if (benchCraftScreen && gameState == 1 && !loading && WorldIdle()) {
