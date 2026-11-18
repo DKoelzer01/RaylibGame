@@ -21,6 +21,8 @@
 #include "animals.h"
 #include "suit.h"
 #include "combat.h"
+#include "teamquests.h"
+#include "playerrecord.h"
 #include "inventory.h"
 #include <cmath>
 #include <map>
@@ -296,6 +298,49 @@ namespace {
         }
     }
 
+    // ---- Team quests (#338, #816; the user's rules on #303: quests and tiers per team, rewards to the completing player) ----
+    // The server counts what it decides into the player's team's book (items obtained, machines placed, eating, animals
+    // slain and fed), evaluates each team's book once a second while someone of it is online, pays a finished node's
+    // reward to the member whose event came last (Host_Give: deltas), tells the team, and sends the book to its members
+    // when it changes (and on join).
+    std::map<int, uint32_t> questContributor;   // team -> the session whose event was counted last
+    std::map<int, std::string> questBookSent;    // team -> the book text its members have
+    long long lastQuestTick = 0;
+    int questRewards = 0;
+    int TeamOfSession(uint32_t session) {
+        for (const Session& s : sessions) if (s.id == session) return Teams_Of(s.uuid);
+        return 0;
+    }
+    void TeamEvent(uint32_t session, const char* kind, const std::string& what, double n = 1.0) {
+        const int team = TeamOfSession(session);
+        if (!team) return;
+        if (!strcmp(kind, "count")) TeamQuests_Count(team, what, n);
+        else if (!strcmp(kind, "placed")) TeamQuests_NotePlaced(team, what);
+        else if (!strcmp(kind, "obtained")) TeamQuests_Obtained(team, what, n);
+        questContributor[team] = session;
+    }
+    void SendQuestBook(uint32_t conn, int team) {
+        MsgQuestBook m; m.team = (uint32_t)team; m.text = TeamQuests_Text(team);
+        SendMsg(conn, m);
+    }
+    void StepTeamQuests() {
+        if (SimTick() - lastQuestTick < 60) return; // once a second
+        lastQuestTick = SimTick();
+        std::map<int, std::vector<std::pair<uint32_t, uint32_t>>> online; // team -> (session, conn)
+        for (const auto& [conn, p] : peers) if (p.joined) if (const int t = TeamOfSession(p.session)) online[t].push_back({ p.session, conn });
+        for (auto& [team, members] : online) {
+            const uint32_t payee = questContributor.count(team) ? questContributor[team] : members.front().first;
+            TeamQuests_Update(team,
+                [&](const std::string& item, int n) { if (Host_Give(payee, item, n)) ++questRewards; }, // (#816) deltas to that player
+                [&](const std::string& text) { for (const auto& [s, c] : members) SendMsg(c, MsgChat{ 0, "Quest: " + text }); });
+            const std::string text = TeamQuests_Text(team);
+            if (text != questBookSent[team]) {
+                questBookSent[team] = text;
+                for (const auto& [s, c] : members) SendQuestBook(c, team);
+            }
+        }
+    }
+
     void SendVitals() {
         if (SimTick() - lastVitals < kVitalsEvery) return;
         lastVitals = SimTick();
@@ -357,6 +402,7 @@ namespace {
             const bool done = Animals_UseNet(netId, action, rit->second.inventory, why, before);
             if (const uint32_t conn = ConnOf(session)) {
                 if (done) SendInventoryDeltas(conn, rit->second.inventory, before);
+                if (done && action == 1) TeamEvent(session, "count", "feed"); // (#338)
                 else SendMsg(conn, MsgChat{ 0, (action == 1 ? "It won't eat: " : "Nothing to take: ") + why });
             }
             return;
@@ -367,6 +413,7 @@ namespace {
         std::vector<std::pair<std::string, int>> drops;
         ++animalHits;
         if (Animals_HitNet(netId, damage, drops)) {
+            TeamEvent(session, "count", "slain"); // (#338) a kill counts for the hunter's team
             // The drops into the hunter's inventory as the server keeps it, and the change to its client in one go (UI/UX's pattern).
             Remote& rm = rit->second;
             std::map<std::string, double> before;
@@ -649,6 +696,23 @@ namespace {
                 g = strchr(g, ','); if (g) ++g;
             }
         }
+        // (#338) tests: RAYLIBGAME_HOST_TEAM="alice,bob": those players share one team (the first one's; uuids from the names)
+        if (const char* team = getenv("RAYLIBGAME_HOST_TEAM")) {
+            std::vector<std::string> names; std::string cur;
+            for (const char* c = team; ; ++c) { if (*c == ',' || !*c) { if (!cur.empty()) names.push_back(cur); cur.clear(); if (!*c) break; } else cur += *c; }
+            if (!names.empty() && std::find(names.begin(), names.end(), s->name) != names.end()) {
+                const std::string lead = PlayerId_FromName(names[0]);
+                const int t = Teams_Join(lead, names[0], 0);
+                if (s->uuid != lead) Teams_Move(s->uuid, t);
+                printf("host: test team: %s in team %d\n", s->name.c_str(), Teams_Of(s->uuid));
+            }
+        }
+        // (#338) what this player obtains from now on counts for their team's book (the kit and a loaded record don't)
+        {
+            const uint32_t sid = s->id;
+            remotes[sid].inventory.onAdded = [sid](const std::string& id, double n) { TeamEvent(sid, "obtained", id, n); };
+        }
+        if (const int t = Teams_Of(s->uuid)) SendQuestBook(conn, t); // (#338) their team's book
     }
 
     // ---- Terrain edits (#329) ----
@@ -805,6 +869,7 @@ namespace {
             before.emplace(item, rm.inventory.amount(item));
             rm.inventory.remove(item, cost);
             BuildTool_ApplyPart(*p, *plot, part);
+            if (IsMachine(part.type) || IsRocketPart(part.type)) TeamEvent(session, "placed", PartCostItem(part.type)); // (#338) "place" tasks
             MsgPlotEdit out; out.session = session; out.seq = q.seq; out.op = NetPartOp::Place; out.body = q.body; out.plot = plot->id; out.part = q.part;
             SendToJoined(out);
         }
@@ -1039,7 +1104,10 @@ namespace {
                 auto rit = remotes.find(it->second.session);
                 if (rit == remotes.end() || rit->second.survival.dead) return;
                 std::map<std::string, double> before{ { u.item, rit->second.inventory.amount(u.item) } };
-                if (Survival_UseItemFor(u.item, rit->second.survival, rit->second.inventory, rit->second.suitStats, false)) SendInventoryDeltas(m.conn, rit->second.inventory, before);
+                if (Survival_UseItemFor(u.item, rit->second.survival, rit->second.inventory, rit->second.suitStats, false)) {
+                    SendInventoryDeltas(m.conn, rit->second.inventory, before);
+                    if (Survival_FoodValue(u.item) > 0.0f) TeamEvent(it->second.session, "count", "eat"); // (#338) "do eat" tasks
+                }
                 else SendMsg(m.conn, MsgChat{ 0, "Can't use " + u.item + " now" });
                 ++itemsUsed;
                 return;
@@ -1135,6 +1203,7 @@ void Host_Update(Scene& world) {
     if (autosaveSeconds > 0.0 && lastSave >= 0.0 && GetTime() - lastSave >= autosaveSeconds) {
         lastSave = GetTime();
         const int records = SaveAllRecords(); // (#346) everyone online, with the world
+        TeamQuests_StoreAll(); // (#338) the team books into their teams' records first
         const bool ok = SaveWorld(world);
         if (ok) ++autosaves;
         printf("host: autosave %d to %s %s (%d player records)\n", autosaves, WorldSavePath(), ok ? "done" : "FAILED", records);
@@ -1164,6 +1233,7 @@ void Host_Update(Scene& world) {
     SendAnimals(world);   // (#334) and the animals near each player
     SendVitals();         // (#337) and each player's survival numbers, to that player
     StepGraves();         // (#804) deaths' drops, pickups, decay and the graves list to everyone
+    StepTeamQuests();     // (#338) team books: evaluate, pay, tell, send
     SetInterestCentres(world); // (#334) and animals live around every player (#318's centres)
     SetAnimalTargets(world);   // (#334 slice 2) and mind them: flee, follow, hunt, bite
     GpuTimer_CpuMark("host: snapshots");
@@ -1171,6 +1241,7 @@ void Host_Update(Scene& world) {
 
 bool Host_SaveOnShutdown(Scene& world) {
     const int records = SaveAllRecords(); // (#346) everyone online, with the world
+    TeamQuests_StoreAll(); // (#338)
     const bool ok = SaveWorld(world);
     printf("host: saved on shutdown to %s %s (%d player records)\n", WorldSavePath(), ok ? "done" : "FAILED", records);
     return ok;

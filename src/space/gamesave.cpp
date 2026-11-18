@@ -11,6 +11,7 @@
 #include "inventory.h"
 #include "player.h"
 #include "playerrecord.h"
+#include "teamquests.h"
 #include "world.h"
 #include "ship.h"
 #include "survival.h"
@@ -288,6 +289,7 @@ void GameSave_Register() {
         RecipeBook_Reset();
         Combat_Reset(); // graves: the save holds them all (#165)
         Teams_Reset();
+        TeamQuests_Reset(); // (#338) the server's team books load from the teams as they are used
         survival.hasBed = false; // #800: the record's (or a format 12 save's) bed line sets it
         savedCols = 9;  // a save without an inv_cols line: the 9-wide grid (#495)
         worldDifficulty = 1; // a save without the line: normal
@@ -422,12 +424,34 @@ bool GameSave_TestSplit(Scene& world) {
     ok5 = ok5 && !Teams_Owner().empty() && Teams_Owner() != me && fs::exists(PlayerRecord_Path(Teams_Owner())) && lines(w5, "team ") == 1 && lines(w5, "slot ") == 0;
     scramble();
     ok5 = ok5 && LoadWorldSave(world) && GameSave_PlayerLoaded() && same("a server's resave, opened alone") && Teams_Owner() == me;
-    const bool all = ok1 && ok2 && ok3 && ok4 && ok5;
+    // 6 (step 3): bodies by NetId: the first body's place in the list made wrong in the file, its state still comes back.
+    Planetoid* body0 = world.objects.empty() ? nullptr : dynamic_cast<Planetoid*>(world.objects[0].get());
+    bool ok6 = body0 && SaveWorld(world);
+    std::string w6 = slurp(save);
+    const size_t p0 = w6.find("planetoid 0 netid ");
+    ok6 = ok6 && p0 != std::string::npos;
+    Vector3 rot0{};
+    if (ok6) { w6.replace(p0, strlen("planetoid 0"), "planetoid 7"); spit(save, w6); rot0 = body0->rotation; body0->rotation = { rot0.x + 33.0f, rot0.y, rot0.z }; }
+    ok6 = ok6 && LoadWorldSave(world);
+    body0 = world.objects.empty() ? nullptr : dynamic_cast<Planetoid*>(world.objects[0].get());
+    ok6 = ok6 && body0 && fabsf(body0->rotation.x - rot0.x) < 0.01f && same("bodies by NetId");
+    // 7 (step 3): backups: seven saves keep the newest five, each with the world file and the player records.
+    fs::remove_all(BackupDir(), ec);
+    bool ok7 = true;
+    for (int k = 0; k < 7 && ok7; ++k) ok7 = SaveWorld(world);
+    std::vector<fs::path> backups;
+    for (const auto& e : fs::directory_iterator(BackupDir(), ec)) if (e.is_directory()) backups.push_back(e.path());
+    std::sort(backups.begin(), backups.end());
+    const fs::path saveName = fs::path(save).filename();
+    ok7 = ok7 && (int)backups.size() == std::min(5, BackupsKept()) && BackupsKept() == 5 && fs::exists(backups.back() / saveName) &&
+          fs::exists(backups.back() / (saveName.string() + ".players") / (me + ".player"));
+    const bool all = ok1 && ok2 && ok3 && ok4 && ok5 && ok6 && ok7;
     printf("bench: save split (#346): saved as 13 with the record beside it and loaded back %d; a format 12 save loaded and resaved as 13 %d; "
            "another PC's world continued as its owner %d; no record: a new player with the kit, the quests kept %d; "
-           "a server's resave of a format 12 save kept its player as the owner %d -> %s\n",
-           ok1, ok2, ok3, ok4, ok5, all ? "PASS" : "FAIL");
-    fs::remove(save, ec); fs::remove_all(PlayerRecord_Dir(), ec); fs::remove_all(save + ".regions", ec);
+           "a server's resave of a format 12 save kept its player as the owner %d; a body found by its NetId %d; seven saves left %d backups (5), "
+           "the newest with the world and the record %d -> %s\n",
+           ok1, ok2, ok3, ok4, ok5, ok6, (int)backups.size(), ok7, all ? "PASS" : "FAIL");
+    fs::remove(save, ec); fs::remove_all(PlayerRecord_Dir(), ec); fs::remove_all(save + ".regions", ec); fs::remove_all(BackupDir(), ec);
     SetWorldSavePath(oldPath.c_str());
     return all;
 }

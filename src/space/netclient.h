@@ -65,6 +65,7 @@ struct NetClient {
     int damageTaken = 0; float lastDamage = 0.0f; bool lastDamageBlocked = false; // (#334) hits on our player from the server
     MsgVitals vitals; int vitalsMsgs = 0;        // (#337) our player's survival as the server last said
     int gravesMsgs = 0, lastGraves = 0;          // (#804) Graves lists heard, and the size of the last
+    int questBooks = 0, questTeam = 0;          // (#338) team quest books heard, and our team
     double worstError = 0.0, lastError = 0.0;    // m: the prediction against the server at the acknowledged input
     std::map<uint32_t, std::deque<MsgPlayerState>> others; // other sessions' recent states (newest last)
     std::map<uint32_t, double> viewTicks;        // per other player: the step of theirs drawn now (NetClient_Update)

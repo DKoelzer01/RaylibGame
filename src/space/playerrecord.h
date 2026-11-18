@@ -45,5 +45,7 @@ const std::string& Teams_Owner();
 void Teams_SetOwner(const std::string& uuid);
 void Teams_ReplaceMember(const std::string& from, const std::string& to);
 const std::vector<TeamRecord>& Teams_All();
+void Teams_SetQuests(int id, const std::string& text);  // (#338) a server's team book, as its save lines (kept text)
+void Teams_Move(const std::string& uuid, int id);       // (#338 tests) into that team, out of any other (an emptied team stays)
 
 #endif

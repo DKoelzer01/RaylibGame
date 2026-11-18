@@ -43,6 +43,7 @@
 #include "camera.h"
 #include "survival.h"
 #include "combat.h"
+#include "teamquests.h"
 #include "telescope.h"
 #include "glcaps.h"
 #include "buildtool.h"
@@ -130,6 +131,7 @@ static void DrawPlayerList(const NetClient& c) {
     }
 }
 static bool gJoinSynced = false;
+static int gQuestNewsHeard = 0; // (#338) "Quest: ..." lines from the server (--test-net-quests)
 // #348: the server soak window (RAYLIBGAME_SOAK_PLAYERS=N): frame work times while N players are online.
 static double gFrameWorkStart = 0.0, gFrameCpuStart = 0.0;
 // The main thread's CPU time in seconds (#768: a long frame with little CPU was the process starved, not slow code).
@@ -548,6 +550,7 @@ int main(int argc, char** argv)
     int benchJoinPhase = 0;
     int swarmBots = 0; double swarmSoak = 60.0; // --bots N [--soak S] with --join (#348): N walking bots from this process, S seconds
     bool benchNetAnimals = false;  // --test-net-animals (with --join; #334): the client side of tools/test_animals_net.sh
+    bool benchNetQuests = false;   // --test-net-quests (with --join; #338): the client side of tools/test_team_quests.sh
     uint16_t hostPort = kDefaultHostPort; // --port N
     bool benchHost = false;        // --test-host (#311): with --host, a loopback client joins
     bool benchTimeFollow = false;  // --test-time-follow (#339): the world clock follows a server time (slew, snap)
@@ -808,6 +811,7 @@ int main(int argc, char** argv)
         if (std::string(argv[i]) == "--bots" && i + 1 < argc) swarmBots = std::max(1, atoi(argv[i + 1]));
         if (std::string(argv[i]) == "--soak" && i + 1 < argc) swarmSoak = std::max(1.0, atof(argv[i + 1]));
         if (std::string(argv[i]) == "--test-net-animals") benchNetAnimals = true;
+        if (std::string(argv[i]) == "--test-net-quests") benchNetQuests = true;
         if (std::string(argv[i]) == "--port" && i + 1 < argc) hostPort = (uint16_t)atoi(argv[i + 1]);
         if (std::string(argv[i]) == "--host-password" && i + 1 < argc) Host_SetPassword(argv[i + 1]); // (#321)
         if (std::string(argv[i]) == "--host-edits" && i + 1 < argc) hostEdits = atoi(argv[i + 1]); // (#776 tests) a world with many edits to join
@@ -1260,6 +1264,7 @@ int main(int argc, char** argv)
     DebugUI_Init();
     if (!bench) Audio_Init();
     itemDB.load("resources/data/items.txt", "resources/data/recipes.txt");
+    for (int i = 1; i < argc; ++i) if (std::string(argv[i]) == "--test-team-quests") { CloseWindow(); return TeamQuests_SelfTest() ? 0 : 1; } // (#338) no world needed
     Fluid::LoadKinds("resources/data/fluids.txt"); // water, crude oil, ... (fluid.h)
     ItemIcons_Init(); // one painted icon per item (itemicons.h)
     GameUI_InitPickupFeed(); // "+N item" in the bottom right (#208)
@@ -8777,7 +8782,7 @@ int main(int argc, char** argv)
                         }
                         benchWalkSeconds = 0.0;
                     }
-                } else if ((WorldIdle() && benchDigStrokes == 0 && !benchPaint && !benchSaveLoad && benchWalkSeconds <= 0.0 && benchMineStrokes == 0 && minePhase != 2 && benchFlySeconds <= 0.0 && !benchSuffocate && benchOrbitSeconds <= 0.0 && !benchRide && !benchPark && !benchGravity && !benchPrecision && !benchMantle && !benchAirJump && !benchMoon && !benchHole && !benchWall && !benchDoorway && !benchLedge && !benchTor && !benchMachines && !benchFall && !benchHover && !benchNetIds && !benchNet && !benchTwoPlayers && !benchFingerprint && !benchInterest && !benchTeleClose && !benchMenus && !benchWater && !benchFlyFollow && !benchHotbar && !benchInventory && !benchMap && !benchViewmodel && !benchQuests && !benchHunger && !benchFarm && !benchAnimals && !benchThreats && !benchAnimalPath && !benchDam && !benchFlowMeter && !benchPartWall && !benchPressure && benchShotTabs == 0 && !benchForest && !benchFlow && !benchPond && !benchBucket && !benchWaterSpeed && benchFluidLoad <= 0.0f && !benchFlowShade && !benchPump && !benchTerrain && !benchWind && !benchCampfire && !benchCaveMouth && !benchMountain && !benchShelter && !benchRoom && !benchFacing && !benchDungeon && !benchDungeonTraps && !benchSaveSplit && !benchPosture && !benchPause && !benchBite && !benchPlacement && !benchShotDig && !benchShadow && !benchParticles && !benchBiomes && !benchOil && !benchSpring && !benchShotAnimals && !benchShotAvatar && !benchShotMachines && benchShotBiomes < 0 && !benchFarForest && !benchRecipes && !benchWeather && !benchDecor && !benchMaterials && !benchDamage && !benchCrafting && !benchSuit && !benchTools && !benchRivers && !benchRing && !benchRocket && !benchStation && !benchBlueprint && !benchSmallBody && !benchTrees && !benchChop && benchPersist == 0 && benchBuild == 0 && benchFactory == 0 && !benchCombat && !benchHost && !benchJoin && !benchTimeFollow && benchPlayerCost == 0 && !benchNetAnimals && !benchNetAbuse && !benchNetMove && !benchNetDig && !benchNetBuild && !benchNetSync && !benchShotMpMenu && !benchMpMenu && benchMpBots == 0 && !benchShower && !benchProgression && (benchUnfocus <= 0.0f || unfocusPhase >= 6)) || GetTime() > 600.0) {
+                } else if ((WorldIdle() && benchDigStrokes == 0 && !benchPaint && !benchSaveLoad && benchWalkSeconds <= 0.0 && benchMineStrokes == 0 && minePhase != 2 && benchFlySeconds <= 0.0 && !benchSuffocate && benchOrbitSeconds <= 0.0 && !benchRide && !benchPark && !benchGravity && !benchPrecision && !benchMantle && !benchAirJump && !benchMoon && !benchHole && !benchWall && !benchDoorway && !benchLedge && !benchTor && !benchMachines && !benchFall && !benchHover && !benchNetIds && !benchNet && !benchTwoPlayers && !benchFingerprint && !benchInterest && !benchTeleClose && !benchMenus && !benchWater && !benchFlyFollow && !benchHotbar && !benchInventory && !benchMap && !benchViewmodel && !benchQuests && !benchHunger && !benchFarm && !benchAnimals && !benchThreats && !benchAnimalPath && !benchDam && !benchFlowMeter && !benchPartWall && !benchPressure && benchShotTabs == 0 && !benchForest && !benchFlow && !benchPond && !benchBucket && !benchWaterSpeed && benchFluidLoad <= 0.0f && !benchFlowShade && !benchPump && !benchTerrain && !benchWind && !benchCampfire && !benchCaveMouth && !benchMountain && !benchShelter && !benchRoom && !benchFacing && !benchDungeon && !benchDungeonTraps && !benchSaveSplit && !benchPosture && !benchPause && !benchBite && !benchPlacement && !benchShotDig && !benchShadow && !benchParticles && !benchBiomes && !benchOil && !benchSpring && !benchShotAnimals && !benchShotAvatar && !benchShotMachines && benchShotBiomes < 0 && !benchFarForest && !benchRecipes && !benchWeather && !benchDecor && !benchMaterials && !benchDamage && !benchCrafting && !benchSuit && !benchTools && !benchRivers && !benchRing && !benchRocket && !benchStation && !benchBlueprint && !benchSmallBody && !benchTrees && !benchChop && benchPersist == 0 && benchBuild == 0 && benchFactory == 0 && !benchCombat && !benchHost && !benchJoin && !benchTimeFollow && benchPlayerCost == 0 && !benchNetAnimals && !benchNetQuests && !benchNetAbuse && !benchNetMove && !benchNetDig && !benchNetBuild && !benchNetSync && !benchShotMpMenu && !benchMpMenu && benchMpBots == 0 && !benchShower && !benchProgression && (benchUnfocus <= 0.0f || unfocusPhase >= 6)) || GetTime() > 600.0) {
                     benchStart = GetTime();
                     printf("bench: world ready after %.2f s (%d chunks, avg build %.2f ms of which sampling %.2f ms, %d worker threads)\n",
                         GetWorldStats().lastGenerationSeconds, GetWorldStats().chunks, GetWorldStats().avgBuildMs, GetWorldStats().avgSampleMs, GetWorldStats().workerThreads);
@@ -9279,6 +9284,7 @@ int main(int argc, char** argv)
                     const std::string line = m.from == 0 ? m.text : (who != gJoin.roster.end() ? who->second : std::string("?")) + ": " + m.text;
                     GameUI_Toast(line.c_str());
                     printf("chat: %s\n", line.c_str());
+                    if (m.from == 0 && m.text.rfind("Quest:", 0) == 0) ++gQuestNewsHeard; // (#338) the server's team news
                 }
                 if (gJoin.state == NetClient::State::Closed || gJoin.state == NetClient::State::Rejected) {
                     printf("join: disconnected (%s)\n", gJoin.state == NetClient::State::Closed ? NetByeText(gJoin.bye) : NetRejectText(gJoin.reject.reason));
@@ -10373,6 +10379,26 @@ int main(int argc, char** argv)
         // --test-net-animals (#334, with --join; tools/test_animals_net.sh): the client side. RAYLIBGAME_NET_ANIMALS_ROLE=hunter
         // walks to the nearest animal and swings at it (requests: the server decides) until it falls; watcher stands by. Both
         // print the animals they saw (ids), and per animal the health range seen and whether it went; the script compares them.
+        // --test-net-quests (#338, #816; with --join; tools/test_team_quests.sh): RAYLIBGAME_NET_QUESTS_ROLE eater | mate | other.
+        // The eater (alice) eats once through the server: its team's "eat something" node (e0f) is done on the server, which
+        // pays its 4 berries to the eater by deltas and tells the team; its teammate (bob) sees the node done in the book it
+        // gets; a player of another team (carol) doesn't. Each reports after RAYLIBGAME_QUESTS_SECONDS (25).
+        if (benchNetQuests && gameState == 1 && !loading && gJoinSynced && WorldIdle()) {
+            static double t0 = -1.0; static int berries0 = -1; static bool ate = false;
+            const char* role = getenv("RAYLIBGAME_NET_QUESTS_ROLE");
+            const bool eater = role && !strcmp(role, "eater");
+            if (t0 < 0.0) t0 = GetTime();
+            if (eater && !ate && gJoin.questBooks > 0 && inventory.count("berries") > 0 && GetTime() - t0 > 3.0) {
+                berries0 = inventory.count("berries"); Survival_UseItem("berries"); ate = true;
+            }
+            if (!eater && berries0 < 0 && gJoin.questBooks > 0) berries0 = inventory.count("berries");
+            if (GetTime() - t0 > (getenv("RAYLIBGAME_QUESTS_SECONDS") ? atof(getenv("RAYLIBGAME_QUESTS_SECONDS")) : 25.0)) {
+                printf("bench: net quests (%s, #338): %d books heard, team %d; e0f done %d; berries %d -> %d; quest news %d\n", role ? role : "?",
+                       gJoin.questBooks, gJoin.questTeam, (int)QuestTree_IsDone("e0f"), berries0, inventory.count("berries"), gQuestNewsHeard);
+                NetClient_Disconnect(gJoin);
+                benchNetQuests = false;
+            }
+        }
         if (benchNetAnimals && gameState == 1 && !loading && gJoinSynced && WorldIdle()) {
             static int ph = 0; static double t0 = 0.0, lastSwing = 0.0;
             static uint64_t target = 0; static float targetStart = 0.0f;
