@@ -389,6 +389,7 @@ int main(int argc, char** argv)
     bool benchLamps = false;       // --test-lamps: 100 lamp cubes light the ground (#139)
     bool benchGiant = false;       // --shot-giant: one tree of each size class (#274)
     bool benchTorch = false;       // --test-torch: a held torch lights the ground (#218)
+    bool benchPosture = false, postureStarted = false; // --test-posture (#578)
     bool benchTime = false;        // --test-time: dawn start (#259), a +6 h jump carries the player (#275)
     bool benchPickups = false;     // --test-pickups: the pickup feed (#208): repeats merge, a screenshot while it shows
     bool shotInventory = false;    // --shot-inventory: long item names in their cells (#219)
@@ -649,6 +650,7 @@ int main(int argc, char** argv)
         if (std::string(argv[i]) == "--test-menus") benchMenus = true;
         if (std::string(argv[i]) == "--test-time") benchTime = true;
         if (std::string(argv[i]) == "--test-torch") benchTorch = true;
+        if (std::string(argv[i]) == "--test-posture") benchPosture = true;
         if (std::string(argv[i]) == "--shot-giant") benchGiant = true;
         if (std::string(argv[i]) == "--test-lamps") benchLamps = true;
         if (std::string(argv[i]) == "--test-fill") benchFill = true;
@@ -7425,7 +7427,7 @@ int main(int argc, char** argv)
                         }
                         benchWalkSeconds = 0.0;
                     }
-                } else if ((WorldIdle() && benchDigStrokes == 0 && !benchPaint && !benchSaveLoad && benchWalkSeconds <= 0.0 && benchMineStrokes == 0 && minePhase != 2 && benchFlySeconds <= 0.0 && !benchSuffocate && benchOrbitSeconds <= 0.0 && !benchRide && !benchPark && !benchGravity && !benchPrecision && !benchMantle && !benchAirJump && !benchMoon && !benchHole && !benchWall && !benchDoorway && !benchLedge && !benchTor && !benchMachines && !benchFall && !benchHover && !benchNetIds && !benchNet && !benchTwoPlayers && !benchFingerprint && !benchInterest && !benchTeleClose && !benchMenus && !benchWater && !benchFlyFollow && !benchHotbar && !benchInventory && !benchMap && !benchViewmodel && !benchQuests && !benchHunger && !benchFarm && !benchAnimals && !benchThreats && !benchAnimalPath && !benchDam && !benchFlowMeter && !benchPartWall && !benchPressure && benchShotTabs == 0 && !benchForest && !benchFlow && !benchPond && !benchBucket && !benchWaterSpeed && benchFluidLoad <= 0.0f && !benchFlowShade && !benchPump && !benchTerrain && !benchShelter && !benchRoom && !benchFacing && !benchShadow && !benchParticles && !benchBiomes && !benchOil && !benchSpring && !benchShotAnimals && !benchShotMachines && benchShotBiomes < 0 && !benchFarForest && !benchRecipes && !benchWeather && !benchDecor && !benchMaterials && !benchDamage && !benchCrafting && !benchSuit && !benchTools && !benchRivers && !benchRing && !benchRocket && !benchStation && !benchBlueprint && !benchSmallBody && !benchTrees && !benchChop && benchPersist == 0 && benchBuild == 0 && benchFactory == 0 && !benchCombat && !benchHost && !benchShower && !benchProgression && (benchUnfocus <= 0.0f || unfocusPhase >= 6)) || GetTime() > 600.0) {
+                } else if ((WorldIdle() && benchDigStrokes == 0 && !benchPaint && !benchSaveLoad && benchWalkSeconds <= 0.0 && benchMineStrokes == 0 && minePhase != 2 && benchFlySeconds <= 0.0 && !benchSuffocate && benchOrbitSeconds <= 0.0 && !benchRide && !benchPark && !benchGravity && !benchPrecision && !benchMantle && !benchAirJump && !benchMoon && !benchHole && !benchWall && !benchDoorway && !benchLedge && !benchTor && !benchMachines && !benchFall && !benchHover && !benchNetIds && !benchNet && !benchTwoPlayers && !benchFingerprint && !benchInterest && !benchTeleClose && !benchMenus && !benchWater && !benchFlyFollow && !benchHotbar && !benchInventory && !benchMap && !benchViewmodel && !benchQuests && !benchHunger && !benchFarm && !benchAnimals && !benchThreats && !benchAnimalPath && !benchDam && !benchFlowMeter && !benchPartWall && !benchPressure && benchShotTabs == 0 && !benchForest && !benchFlow && !benchPond && !benchBucket && !benchWaterSpeed && benchFluidLoad <= 0.0f && !benchFlowShade && !benchPump && !benchTerrain && !benchShelter && !benchRoom && !benchFacing && !benchPosture && !benchShadow && !benchParticles && !benchBiomes && !benchOil && !benchSpring && !benchShotAnimals && !benchShotMachines && benchShotBiomes < 0 && !benchFarForest && !benchRecipes && !benchWeather && !benchDecor && !benchMaterials && !benchDamage && !benchCrafting && !benchSuit && !benchTools && !benchRivers && !benchRing && !benchRocket && !benchStation && !benchBlueprint && !benchSmallBody && !benchTrees && !benchChop && benchPersist == 0 && benchBuild == 0 && benchFactory == 0 && !benchCombat && !benchHost && !benchShower && !benchProgression && (benchUnfocus <= 0.0f || unfocusPhase >= 6)) || GetTime() > 600.0) {
                     benchStart = GetTime();
                     printf("bench: world ready after %.2f s (%d chunks, avg build %.2f ms of which sampling %.2f ms, %d worker threads)\n",
                         GetWorldStats().lastGenerationSeconds, GetWorldStats().chunks, GetWorldStats().avgBuildMs, GetWorldStats().avgSampleMs, GetWorldStats().workerThreads);
@@ -7639,6 +7641,7 @@ int main(int argc, char** argv)
                     PlayerInput scripted;
                     if (player.autoWalk) scripted.hold(Act::Forward);
                     if (player.autoJump) { scripted.press(Act::Jump); player.autoJump = false; }
+                    if (player.autoCrouch) scripted.hold(Act::Down);
                     const PlayerInput& moveIn = gameInput ? stepIn : scripted.enabled ? scripted : PlayerInput::None();
                     Combat_Step(session, simDt, moveIn); // stamina and the block before this step's movement (#165)
                     // Physics in the player's own frame (#314): render space centred on the feet for the step, whatever the
@@ -8396,6 +8399,50 @@ int main(int argc, char** argv)
             }
         }
         // --test-torch (#218): at the dawn start (still dark), the ground in front gets brighter with a torch in hand.
+        // --test-posture (#578): crouch and prone shorten the capsule and slow the walk; getting up needs room (a roof 1 m
+        // up keeps you prone until it is taken away). Distances walked in 1 s against standing: crouched ~1/2, prone ~1/4.
+        if (benchPosture && gameState == 1 && !loading && (postureStarted || WorldIdle())) {
+            postureStarted = true;
+            static int phase = 0; static double t0 = 0.0; static DVec3 from{}; /* body-local */ static float dStand = 0.0f, dCrouch = 0.0f, dProne = 0.0f;
+            static bool ok = true; static std::vector<int> roof; static uint32_t roofPlot = 0;
+            Planetoid* p = dynamic_cast<Planetoid*>(world.objects[0].get());
+            auto check = [&](bool c, const char* what) { printf("bench: posture: %s: %s\n", what, c ? "ok" : "NO"); ok = ok && c; };
+            auto walked = [&]() { return (float)(p->toLocalD(player.position) - from).length() * p->scale; };
+            const double t = GetTime() - t0;
+            if (phase == 0) { player.flyMode = false; player.spawnOn(world, *p, StartSpawnDir(*p)); phase = 1; t0 = GetTime(); }
+            else if (phase == 1 && t > 1.5 && player.grounded) { from = p->toLocalD(player.position); player.autoWalk = true; phase = 2; t0 = GetTime(); }
+            else if (phase == 2 && t > 1.0) { dStand = walked(); player.autoWalk = false; player.autoCrouch = true; phase = 3; t0 = GetTime(); }
+            else if (phase == 3 && t > 0.5) {
+                check(player.posture == Player::Posture::Crouch && fabsf(player.height - Player::kCrouchHeight) < 1e-3f && fabsf(player.eyeHeight - Player::kCrouchEye) < 0.05f, "Ctrl held: crouched, 1.25 m, eye 1.15 m");
+                from = p->toLocalD(player.position); player.autoWalk = true; phase = 4; t0 = GetTime();
+            } else if (phase == 4 && t > 1.0) {
+                dCrouch = walked(); player.autoWalk = false; player.autoCrouch = false; player.proneWanted = true; phase = 5; t0 = GetTime();
+            } else if (phase == 5 && t > 0.5) {
+                check(player.posture == Player::Posture::Prone && fabsf(player.height - Player::kProneHeight) < 1e-3f, "Z: prone, 0.9 m");
+                from = p->toLocalD(player.position); player.autoWalk = true; phase = 6; t0 = GetTime();
+            } else if (phase == 6 && t > 1.0) {
+                dProne = walked(); player.autoWalk = false;
+                printf("bench: posture: 1 s walked: standing %.2f m, crouched %.2f m, prone %.2f m\n", dStand, dCrouch, dProne);
+                check(dStand > 3.0f && fabsf(dCrouch / dStand - 0.5f) < 0.15f && fabsf(dProne / dStand - 0.25f) < 0.1f, "crouched ~1/2 and prone ~1/4 of the walk");
+                // A roof 1.0-1.5 m over the feet, 2.5 m square.
+                if (!p->plots) p->plots = std::make_unique<PlotSet>();
+                const Vector3 feet = p->toLocal((player.position - world.renderOrigin).toFloat());
+                Plot* pl = p->plots->plotFor(feet, 0.0f, true);
+                roofPlot = pl->id;
+                const Int3 c = pl->cellAt(pl->toPlot(Vector3Add(feet, Vector3Scale(Vector3Normalize(feet), 0.1f / p->scale))));
+                for (int z = -2; z <= 2; ++z) for (int x = -2; x <= 2; ++x) { const int i = pl->place({ PartType::Cube, { c.x + x, c.y + 2, c.z + z }, 0 }); if (i >= 0) roof.push_back(i); }
+                player.proneWanted = false; // Z again: get up
+                phase = 7; t0 = GetTime();
+            } else if (phase == 7 && t > 0.6) {
+                check(!roof.empty() && player.posture == Player::Posture::Prone, TextFormat("under a roof 1 m up (%d cubes): still prone", (int)roof.size()));
+                if (Plot* pl = p->plots->byId(roofPlot)) for (int i : roof) pl->remove(i);
+                phase = 8; t0 = GetTime();
+            } else if (phase == 8 && t > 0.6) {
+                check(player.posture == Player::Posture::Stand && fabsf(player.height - player.standHeight) < 1e-3f, "roof gone: standing again");
+                printf("bench: posture: %s\n", ok ? "PASS" : "FAIL");
+                benchPosture = false;
+            }
+        }
         if (benchTorch && gameState == 1 && !loading && WorldIdle()) {
             static int tf = 0;
             static double lumOff = 0.0;

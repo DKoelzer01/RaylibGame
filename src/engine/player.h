@@ -37,6 +37,7 @@ struct Player {
     float gravityScale = 1.0f;        // spells/effects (e.g. featherfall)
     bool dampeners = true;            // B: inertial dampeners (deep space only)
     bool autoJump = false;            // tests: jump once on the next update (a Space press in PlayerInput)
+    bool autoCrouch = false;          // tests: Ctrl held (crouch, #578)
     float lastContactDot = 0.0f;      // debug: dot(contact normal, up) of the last collision
     float impactSpeed = 0.0f;         // hardest collision speed this frame (any contact: tests, launches)
     float landingSpeed = 0.0f;        // speed into the floor at touchdown this frame (fall damage, #263)
@@ -60,6 +61,17 @@ struct Player {
     float eyeHeight = 1.6f;
     float height = 1.7f;     // collision capsule top (#255): 2 m doorways pass
     float radius = 0.45f;
+    // Posture (#578): crouching (hold Ctrl on the ground) and prone (Z) shorten the capsule and slow the walk; getting up
+    // needs the room above. `height` and the eye ease follow the posture; standHeight / standEye are the upright ones.
+    enum class Posture { Stand, Crouch, Prone };
+    Posture posture = Posture::Stand;
+    bool proneWanted = false;
+    float standHeight = 1.7f, standEye = 1.6f;
+    static constexpr float kCrouchHeight = 1.25f, kCrouchEye = 1.15f, kProneHeight = 0.9f, kProneEye = 0.6f;
+    static constexpr float kCrouchSpeed = 0.5f, kProneSpeed = 0.25f; // of the walk
+    float postureHeight(Posture p) const { return p == Posture::Prone ? kProneHeight : p == Posture::Crouch ? kCrouchHeight : standHeight; }
+    float postureEye(Posture p) const { return p == Posture::Prone ? kProneEye : p == Posture::Crouch ? kCrouchEye : standEye; }
+    bool roomAbove(Scene& world, float toHeight) const; // nothing solid between the capsule's top now and toHeight
     float walkSpeed = 6.0f;
     float runMultiplier = 2.0f;
     // Knockback (#165): a push relative to the ground, applied at the next physics step. On the ground it lifts

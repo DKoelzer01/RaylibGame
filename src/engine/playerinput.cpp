@@ -11,6 +11,7 @@ constexpr int kBinding[(int)Act::Count] = {
     KEY_X, KEY_M, KEY_P, KEY_PERIOD, KEY_COMMA,
     KEY_K, KEY_T, KEY_U, KEY_Z, KEY_C,
     KEY_LEFT_ALT, KEY_F5, KEY_F9,
+    KEY_Z,
 };
 constexpr int kSlotKeys[10] = { KEY_ONE, KEY_TWO, KEY_THREE, KEY_FOUR, KEY_FIVE, KEY_SIX, KEY_SEVEN, KEY_EIGHT, KEY_NINE, KEY_ZERO };
 static_assert((int)Act::Count <= 64, "Act bits fit a uint64_t");

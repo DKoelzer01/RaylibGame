@@ -17,6 +17,7 @@ enum class Act : int {
     Brake, Map, Autopilot, WarpUp, WarpDown,         // X, M, P, '.', ','
     Dock, Transfer, Undock, RollLeft, RollRight,     // K, T, U, Z, C
     FreeLook, Save, Load,                            // Alt (rocket camera), F5, F9
+    Prone,                                           // Z on foot: lie down / get up (#578; Z rolls the ship too)
     Count
 };
 
