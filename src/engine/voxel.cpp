@@ -2365,7 +2365,14 @@ void BuildChunkMeshFromBase(const DensityField& field, const TerrainDeltas& delt
                 float gElev = 0.0f;
                 PlanetField::Column3D gCol;
                 const bool hinted = gridField && gridField->gridSurface(*grid, p, gElev, gCol);
-                VoxelMaterial m = hinted ? gridField->materialSkyHinted(p, b, stride, n, sky, &gElev, &gCol) : field.materialSky(p, b, stride, n, sky);
+                // Dug ground (#679): the materials allow a coarse mesh to stray metres from the height map (slack ~ 2 x
+                // the footprint), so a floor dug 3 m down still read as undug turf on coarse nodes: grass under the water
+                // of a dug basin from afar. Where the edge's samples were dug by more than half a metre, judge the vertex
+                // at a 1 m footprint (no slack): the edit, not the LOD, put the surface there.
+                const bool dugHere = !near.empty() && !gDeltaPointSample && std::min(at(ext.data(), x0 + 1, y0 + 1, z0 + 1) - at(base, x0 + 1, y0 + 1, z0 + 1),
+                                                              at(ext.data(), x1 + 1, y1 + 1, z1 + 1) - at(base, x1 + 1, y1 + 1, z1 + 1)) < -0.5f * DENSITY_GRADIENT;
+                const float matFp = dugHere ? std::min(stride, 1.0f) : stride;
+                VoxelMaterial m = hinted ? gridField->materialSkyHinted(p, b, matFp, n, sky, &gElev, &gCol) : field.materialSky(p, b, matFp, n, sky);
                 if (!near.empty()) { const int placed = deltas.materialAt(p); if (placed >= 0) m = (VoxelMaterial)placed; } // placed ground keeps its material
                 if (gSkyProbes && sky > 0.02f && stride <= 2.0f) sky *= OverheadOpenness(field, deltas, ext.data(), E, eo, stride, p, hinted ? &gCol : nullptr, hinted ? &gElev : nullptr);
                 out.tangents[v * 4 + 3] = sky;
