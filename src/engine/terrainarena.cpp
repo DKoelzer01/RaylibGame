@@ -80,7 +80,7 @@ namespace {
         GLuint vao = 0, vaoDepth = 0, pos = 0, attr = 0, ibo = 0;
         GLuint table = 0, list = 0, records = 0, indirect = 0;
         // #286 indirect count (4.6 / ARB_indirect_parameters): the visible commands compacted in order, and their count.
-        typedef void (__stdcall* PfnDrawCount)(GLenum, GLenum, const void*, GLintptr, GLsizei, GLsizei);
+        typedef void (GLAD_API_PTR* PfnDrawCount)(GLenum, GLenum, const void*, GLintptr, GLsizei, GLsizei);
         PfnDrawCount drawCount = nullptr;
         GLuint compacted = 0, counts = 0;
         ComputeProgram compact;

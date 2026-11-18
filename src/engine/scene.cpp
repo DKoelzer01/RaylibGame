@@ -210,9 +210,10 @@ Scene::Scene(std::string name, bool isActive)
     skybox = LoadModelFromMesh(cube);
     skybox.materials[0].shader = LoadShader("resources/skybox.vs", "resources/skybox.fs");
     Shader& sky = skybox.materials[0].shader;
-    SetShaderValue(sky, GetShaderLocation(sky, "environmentMap"), (int[1]){ MATERIAL_MAP_CUBEMAP }, SHADER_UNIFORM_INT);
-    SetShaderValue(sky, GetShaderLocation(sky, "doGamma"), (int[1]){ 0 }, SHADER_UNIFORM_INT);
-    SetShaderValue(sky, GetShaderLocation(sky, "vflipped"), (int[1]){ 0 }, SHADER_UNIFORM_INT);
+    const int kCubemapMap = MATERIAL_MAP_CUBEMAP, kZero = 0; // (not (int[1]){..}: g++ 12 on Linux rejects the address of a temporary array, #792)
+    SetShaderValue(sky, GetShaderLocation(sky, "environmentMap"), &kCubemapMap, SHADER_UNIFORM_INT);
+    SetShaderValue(sky, GetShaderLocation(sky, "doGamma"), &kZero, SHADER_UNIFORM_INT);
+    SetShaderValue(sky, GetShaderLocation(sky, "vflipped"), &kZero, SHADER_UNIFORM_INT);
     Image img = LoadImage("resources/skybox.png");
     skybox.materials[0].maps[MATERIAL_MAP_CUBEMAP].texture = LoadTextureCubemap(img, CUBEMAP_LAYOUT_AUTO_DETECT);
     UnloadImage(img);

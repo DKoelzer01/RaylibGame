@@ -8,6 +8,9 @@
 // Not <windows.h> (its names clash with raylib's): the two calls the workers need (#387).
 extern "C" __declspec(dllimport) void* __stdcall GetCurrentThread();
 extern "C" __declspec(dllimport) int __stdcall SetThreadPriority(void* thread, int priority);
+#else
+#include <sys/resource.h>
+#include <unistd.h>
 #endif
 
 JobSystem::JobSystem(unsigned threadCount) {
@@ -68,6 +71,8 @@ size_t JobSystem::queued() const {
 void JobSystem::workerLoop() {
 #ifdef _WIN32
     if (lowPriority) SetThreadPriority(GetCurrentThread(), -1); // THREAD_PRIORITY_BELOW_NORMAL
+#elif defined(__linux__)
+    if (lowPriority) (void)setpriority(PRIO_PROCESS, (id_t)gettid(), 5); // Linux: a thread's nice value is its own
 #endif
     for (;;) {
         std::function<void()> fn;

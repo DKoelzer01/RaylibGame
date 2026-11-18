@@ -13,6 +13,9 @@
 #define NOMINMAX
 #endif
 #include <windows.h>
+#else
+#include <csignal>
+#include <execinfo.h>
 #endif
 
 namespace {
@@ -28,6 +31,17 @@ namespace {
     LONG WINAPI FlushOnCrash(EXCEPTION_POINTERS*) {
         if (gFile) fflush(gFile);
         return EXCEPTION_CONTINUE_SEARCH;
+    }
+#elif RAYLIBGAME_LOGGING
+    // Linux (#792): the same on a crash signal, then the default action (core dump / exit status) runs.
+    void FlushOnCrash(int sig) {
+        void* frames[48]; // the stack, as module(+offset): addr2line -e <the unstripped game> resolves it
+        const int n = backtrace(frames, 48);
+        fprintf(stderr, "crash: signal %d, stack:\n", sig);
+        backtrace_symbols_fd(frames, n, 2);
+        if (gFile) { fprintf(gFile, "crash: signal %d, stack:\n", sig); fflush(gFile); backtrace_symbols_fd(frames, n, fileno(gFile)); }
+        signal(sig, SIG_DFL);
+        raise(sig);
     }
 #endif
 }
@@ -55,6 +69,8 @@ void Log_Open(const char* path) {
     if (gFile) setvbuf(gFile, nullptr, _IOFBF, 1 << 16);
 #ifdef _WIN32
     SetUnhandledExceptionFilter(FlushOnCrash);
+#else
+    for (int sig : { SIGSEGV, SIGBUS, SIGFPE, SIGILL, SIGABRT }) signal(sig, FlushOnCrash);
 #endif
 #else
     (void)path;

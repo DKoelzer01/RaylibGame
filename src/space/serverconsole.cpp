@@ -1,4 +1,5 @@
 #include "serverconsole.h"
+#include "utils/logger.h"
 
 #include <atomic>
 #include <chrono>
@@ -33,6 +34,10 @@ std::mutex inputMutex;
 std::deque<std::string> input;
 std::atomic<bool> shutdownRequested{ false }, shutdownDone{ false };
 std::atomic<const char*> shutdownWhy{ "" };
+// The log tee (ServerLog_Start): the console's fd and the pipe's write end, so ServerExit can close the pipe and wait
+// until the tee thread has written everything (teeDone).
+int teeConsole = -1, teePipeWrite = -1;
+std::atomic<bool> teeDone{ false };
 
 std::string Trim(const std::string& s) {
     const size_t a = s.find_first_not_of(" \t\r\n"), b = s.find_last_not_of(" \t\r\n");
@@ -126,6 +131,7 @@ void ServerLog_Start(const std::string& path) {
     if (pipe(fds) != 0) { fclose(log); return; }
     const int console = dup(1);
     dup2(fds[1], 1); dup2(fds[1], 2);
+    teeConsole = console; teePipeWrite = fds[1];
     const int readFd = fds[0];
     auto readChunk = [readFd](char* b, int n) { return (int)read(readFd, b, (size_t)n); };
     auto writeConsole = [console](const char* b, int n) { (void)!write(console, b, (size_t)n); };
@@ -147,6 +153,8 @@ void ServerLog_Start(const std::string& path) {
                 if (buf[i] == '\n') { lineStart = true; fflush(log); }
             }
         }
+        fflush(log);
+        teeDone = true;
     }).detach();
     printf("server: logging to %s\n", path.c_str());
 }
@@ -181,3 +189,19 @@ void ServerShutdown_Install() {
 void ServerShutdown_Request(const char* why) { if (!shutdownRequested.exchange(true)) shutdownWhy = why; }
 bool ServerShutdown_Requested(const char** why) { if (why) *why = shutdownWhy; return shutdownRequested; }
 void ServerShutdown_Done() { shutdownDone = true; }
+
+void ServerExit(int code) {
+#ifdef _WIN32
+    (void)code;
+#else
+    Log_Flush();
+    fflush(stdout); fflush(stderr);
+    if (teeConsole >= 0) {
+        // The pipe's write ends are fds 1, 2 and teePipeWrite: point 1 and 2 back at the console and close the last one,
+        // so the tee thread reads the rest, then end of file (at most 2 s).
+        dup2(teeConsole, 1); dup2(teeConsole, 2); close(teePipeWrite);
+        for (int i = 0; i < 200 && !teeDone; ++i) std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    _exit(code);
+#endif
+}

@@ -25,6 +25,15 @@ set(GAME_OUTPUT_DIR "${CMAKE_SOURCE_DIR}" CACHE PATH "Where game.exe is written 
 option(RAYLIBGAME_LOGGING "Build with logging (log.txt); OFF for shipping builds" ON)
 set(RAYLIBGAME_LOG_MIN "TRACE" CACHE STRING "Lowest log level compiled in: TRACE, DEBUG, INFO, WARN, ERROR or FATAL")
 set_property(CACHE RAYLIBGAME_LOG_MIN PROPERTY STRINGS TRACE DEBUG INFO WARN ERROR FATAL)
+# Linux dedicated server (#792, #326): raylib built with src/platform/rcore_headless.c instead of GLFW: no X11 or
+# Wayland, an off-screen OpenGL 4.3 context from EGL (a GPU in the container) or a null GL (no GPU: CPU paths only).
+# The Linux build is the dedicated server; there is no Linux desktop client yet. tools/build_linux.sh builds it.
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    set(HEADLESS_DEFAULT ON)
+else()
+    set(HEADLESS_DEFAULT OFF)
+endif()
+option(RAYLIBGAME_HEADLESS "Build raylib with the headless EGL / null-GL backend (Linux dedicated servers)" ${HEADLESS_DEFAULT})
 
 include(FetchContent)
 
@@ -39,6 +48,23 @@ if(USE_SYSTEM_RAYLIB)
     if(WIN32)
         set_property(TARGET raylib PROPERTY INTERFACE_LINK_LIBRARIES opengl32 gdi32 winmm)
     endif()
+elseif(RAYLIBGAME_HEADLESS)
+    # raylib's sources only (SOURCE_SUBDIR names no CMakeLists, so raylib's own build with GLFW is not added); rcore.c
+    # is compiled inside src/platform/rcore_headless.c, which adds the platform backend.
+    FetchContent_Declare(raylib
+        GIT_REPOSITORY https://github.com/raysan5/raylib.git
+        GIT_TAG 5.5
+        GIT_SHALLOW TRUE
+        SOURCE_SUBDIR no-cmake-build)
+    FetchContent_MakeAvailable(raylib)
+    set(RL_SRC "${raylib_SOURCE_DIR}/src")
+    add_library(raylib STATIC src/platform/rcore_headless.c
+        ${RL_SRC}/rshapes.c ${RL_SRC}/rtextures.c ${RL_SRC}/rtext.c ${RL_SRC}/rmodels.c ${RL_SRC}/utils.c ${RL_SRC}/raudio.c)
+    set_target_properties(raylib PROPERTIES C_STANDARD 99 C_EXTENSIONS ON)
+    target_include_directories(raylib PUBLIC "${RL_SRC}")
+    target_compile_definitions(raylib PUBLIC GRAPHICS_API_OPENGL_43)
+    target_compile_options(raylib PRIVATE -w) # raylib's own warnings are not ours to fix
+    target_link_libraries(raylib PUBLIC m dl pthread)
 else()
     set(BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
     set(BUILD_GAMES OFF CACHE BOOL "" FORCE)
@@ -106,8 +132,18 @@ if(ENABLE_GNS)
     endif()
     target_include_directories(engine PUBLIC "${GNS_ROOT}/include")
     target_compile_definitions(engine PUBLIC RAYLIBGAME_GNS STEAMNETWORKINGSOCKETS_STATIC_LINK)
-    target_link_libraries(engine PUBLIC "${GNS_ROOT}/lib/libGameNetworkingSockets_s.a" "${GNS_ROOT}/lib/libprotobuf.a"
-        ws2_32 winmm bcrypt iphlpapi crypt32)
+    target_link_libraries(engine PUBLIC "${GNS_ROOT}/lib/libGameNetworkingSockets_s.a" "${GNS_ROOT}/lib/libprotobuf.a")
+    if(WIN32)
+        target_link_libraries(engine PUBLIC ws2_32 winmm bcrypt iphlpapi crypt32)
+    else()
+        # Linux: GNS uses OpenSSL's libcrypto (tools/build_gns.sh), linked statically so the server needs no libssl.
+        set(OPENSSL_USE_STATIC_LIBS TRUE)
+        find_package(OpenSSL REQUIRED COMPONENTS Crypto)
+        target_link_libraries(engine PUBLIC OpenSSL::Crypto dl pthread)
+    endif()
+endif()
+if(RAYLIBGAME_HEADLESS)
+    target_compile_definitions(engine PUBLIC RAYLIBGAME_HEADLESS_PLATFORM=1) # RaylibHeadless_GLMode() exists (gpucompute.cpp)
 endif()
 if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
     target_compile_options(engine PRIVATE -Wall -Wno-missing-braces -ffp-contract=off) # no FMA contraction: the GPU terrain port (terrain.glsl) matches the CPU bit for bit
@@ -132,6 +168,9 @@ function(add_game target dir)
     if(MINGW)
         # Self-contained exe: no libstdc++/libgcc DLLs needed next to it.
         target_link_options(${target} PRIVATE -static)
+    elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+        # glibc stays shared (dlopen of libEGL needs it); the C++ runtime goes in, so any glibc 2.36+ distro runs it.
+        target_link_options(${target} PRIVATE -static-libstdc++ -static-libgcc)
     endif()
     # Assets load relative to the working directory: put the exe at the repo root.
     set_target_properties(${target} PROPERTIES

@@ -14,7 +14,7 @@
 extern "C" void* glfwGetProcAddress(const char* name); // raylib links GLFW
 
 namespace {
-    typedef void (__stdcall* PfnClipControl)(GLenum origin, GLenum depth);
+    typedef void (GLAD_API_PTR* PfnClipControl)(GLenum origin, GLenum depth);
     constexpr GLenum kLowerLeft = 0x8CA1, kNegOneToOne = 0x935E, kZeroToOne = 0x935F;
 
     struct State {

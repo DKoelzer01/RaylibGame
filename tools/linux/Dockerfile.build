@@ -1,0 +1,6 @@
+# Build image for the Linux dedicated server (#792): tools/build_linux.sh builds in it.
+# Debian 12 (glibc 2.36): the binary then runs on Debian 12+ / Ubuntu 22.04+ and in the Pterodactyl yolks:debian image.
+FROM debian:bookworm
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        build-essential cmake git curl ca-certificates pkg-config libssl-dev libegl1 binutils \
+    && rm -rf /var/lib/apt/lists/*

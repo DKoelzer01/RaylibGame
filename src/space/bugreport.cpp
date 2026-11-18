@@ -56,7 +56,13 @@ namespace {
     // Everything the relay gets, as files in a fresh folder (text goes in files too: no quoting problems on the
     // command line), then curl -F name=@file / name=<file.
     void Send(fs::path dir, std::vector<std::pair<std::string, std::string>> fields) {
+#ifdef _WIN32
         std::string cmd = "curl.exe -s -S -m 60";
+#else
+        std::string cmd = "curl -s -S -m 60";
+#define _popen popen
+#define _pclose pclose
+#endif
         for (const auto& [name, spec] : fields) cmd += " -F \"" + name + "=" + spec + "\"";
         cmd += " \"" + RelayUrl() + "\" 2>&1";
         std::string out;

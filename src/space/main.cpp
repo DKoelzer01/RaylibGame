@@ -11234,6 +11234,7 @@ int main(int argc, char** argv)
     Host_Stop();
     if (serverMode) { printf("server: stopped\n"); ServerShutdown_Done(); }
     CloseWindow();
+    if (serverMode) ServerExit(0); // Linux: ends here (an open stdin would hang exit(), #792); Windows: returns
 }
 
 
