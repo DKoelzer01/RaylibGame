@@ -920,11 +920,16 @@ void ApplyCommand(const Command& c) {
             }
 }
 
+// The commands a tick's job applies, taken on the main thread as it launches the job (#814): the job took them itself
+// when a worker started it, so a pour issued the same frame landed in this tick or the next by thread timing, and two
+// identical runs drifted apart.
+std::vector<Command> jobCommands;
+
 void RunJob() {
     const auto t0 = std::chrono::steady_clock::now();
     std::lock_guard<std::mutex> lock(simMx);
     std::vector<Command> cmds;
-    { std::lock_guard<std::mutex> c(cmdMx); cmds.swap(commands); }
+    cmds.swap(jobCommands);
     for (const Command& c : cmds) ApplyCommand(c);
     // Classify queued bricks, in parallel on the worker pool (each costs ~4k density samples, a few ms):
     // this job waits for them, so nothing else touches the site meanwhile.
@@ -1745,6 +1750,21 @@ void GpuTick(int n) {
 // packed each tick from the awake bricks, their neighbours (processed too, as on the GPU) and the ring past them (read only,
 // for the columns and the cells beside), then unpacked with the GPU readback's rules for waking and sleeping.
 FluidKernel::Grid cpuGrid;
+// Runs fn(i) for i in [0, count) across the job system's workers, this thread taking a share (#747: CPU mode packed and
+// unpacked its slots on one thread, ~9 ms a tick on a 500-brick basin). fn must touch only slot i's data.
+template <typename Fn> void ParallelSlots(int count, Fn&& fn) {
+    if (count <= 0) return;
+    const int parts = std::max(1, std::min(count, (int)std::thread::hardware_concurrency()));
+    auto run = [&fn, count, parts](int part) { for (int i = part; i < count; i += parts) fn(i); };
+    std::atomic<int> left{ parts - 1 };
+    for (int part = 1; part < parts; ++part) {
+        JobSystem::tagNext(JobTag::Fluid);
+        WorldJobs().submit(-3.0f, [&run, &left, part] { run(part); left.fetch_sub(1); });
+    }
+    run(0);
+    while (left.load() > 0) std::this_thread::yield();
+}
+
 void CpuTick(int n) {
     std::vector<Brick*> slots;
     std::vector<Site*> slotSite;
@@ -1770,7 +1790,7 @@ void CpuTick(int n) {
     if ((int)g.processed.size() < S) g.resize(std::max(S, (int)g.processed.size() * 2));
     std::fill(g.flags.begin(), g.flags.begin() + S, 0u);
     std::fill(g.sinkOut.begin(), g.sinkOut.begin() + S, 0u);
-    for (int i = 0; i < S; ++i) {
+    ParallelSlots(S, [&](int i) { // the slots' cells, faces, neighbours and skip history (each slot its own: in parallel, #747)
         Brick* b = slots[i];
         uint32_t* c = &g.a[(size_t)i * B3];
         for (int k = 0; k < B3; ++k) c[k] = b->fill[k] | ((uint32_t)b->flags[k] << 8) | ((uint32_t)b->target[k] << 16) | ((uint32_t)b->shut[k] << 24);
@@ -1783,7 +1803,7 @@ void CpuTick(int n) {
         // groups wet now, the first substep (gcur 0 -> 1) reads 0 and 2.
         uint32_t* m = &g.gmask[(size_t)i * 6];
         m[0] = b->cpuMask[0]; m[1] = b->cpuMask[1]; m[2] = 0u; m[3] = 0u; m[4] = b->cpuMask[2]; m[5] = b->cpuMask[3];
-    }
+    });
     FluidKernel::Params p;
     for (int k = 0; k < 8; ++k) { p.minSpread[k] = kindMinSpread[k]; p.visc[k] = kindVisc[k]; KindFriction(k, p.frictionLin[k], p.frictionQuad[k]); }
     n *= SubstepScale();
@@ -1803,24 +1823,35 @@ void CpuTick(int n) {
     }
     // Unpack, as the GPU readback (GpuTick 1.).
     static const int d[6][3] = { { -1, 0, 0 }, { 1, 0, 0 }, { 0, -1, 0 }, { 0, 1, 0 }, { 0, 0, -1 }, { 0, 0, 1 } };
-    for (int i = 0; i < processedCount; ++i) {
+    // Each slot's own brick back (cells, faces, the skip's history) and how far a settled one drifted, in parallel (#747);
+    // then, in slot order as before, what that wakes or puts to sleep (it reaches other bricks).
+    static std::vector<int> slotDrift;
+    if ((int)slotDrift.size() < processedCount) slotDrift.resize(processedCount);
+    ParallelSlots(processedCount, [&](int i) {
         Brick* br = slots[i];
-        const uint32_t fl = g.flags[i];
         br->faces.assign(&g.faceP[(size_t)i * B3], &g.faceP[(size_t)i * B3] + B3);
         { // the skip's history for the next tick (#747): this tick's last two substeps' wet groups
             const uint32_t* m = &g.gmask[(size_t)i * 6];
             const int c0 = g.gcur, c1 = (g.gcur + 2) % 3;
             br->cpuMask[0] = m[c0 * 2]; br->cpuMask[1] = m[c0 * 2 + 1]; br->cpuMask[2] = m[c1 * 2]; br->cpuMask[3] = m[c1 * 2 + 1];
         }
-        if (g.sinkOut[i] && br->sinkRelease >= 0 && br->sinkRelease < (int)slotSite[i]->releases.size()) slotSite[i]->releases[br->sinkRelease].sinkUnits += g.sinkOut[i]; // #656
-        if (fl & 1u) {
+        int drift = 0;
+        if (g.flags[i] & 1u) {
             const uint32_t* c = &g.a[(size_t)i * B3];
-            int drift = 0;
             for (int k = 0; k < B3; ++k) {
                 br->fill[k] = (uint8_t)(c[k] & 255u);
                 br->flags[k] = (uint8_t)((br->flags[k] & ~kKindMask) | (((c[k] >> 8) & 255u) & kKindMask));
                 if (br->settled) drift = std::max(drift, abs((int)br->fill[k] - (int)br->check[k]));
             }
+        }
+        slotDrift[i] = drift;
+    });
+    for (int i = 0; i < processedCount; ++i) {
+        Brick* br = slots[i];
+        const uint32_t fl = g.flags[i];
+        if (g.sinkOut[i] && br->sinkRelease >= 0 && br->sinkRelease < (int)slotSite[i]->releases.size()) slotSite[i]->releases[br->sinkRelease].sinkUnits += g.sinkOut[i]; // #656
+        if (fl & 1u) {
+            const int drift = slotDrift[i];
             if (br->settled && drift <= kSettleDiff) br->changed = true; // a resting brick at the edge: stays asleep (#366)
             else {
                 if (br->settled) { ++wakeGpu; br->settled = false; }
@@ -2190,8 +2221,12 @@ void Fluid::Update(Scene& world, float dt) {
     // CPU's in-place sweep carried it several cells along the sweep.
     if (gpuMode) { std::lock_guard<std::mutex> lock(simMx); GpuTick((int)lround(2 * kSubsteps * (kTickSeconds / 0.05)) * std::max(1, speed.load())); } // 120 a second, as before
     (void)world;
+    { std::lock_guard<std::mutex> c(cmdMx); jobCommands.swap(commands); } // this tick's commands: those issued before it (#814)
     running = true;
     JobSystem::tagNext(JobTag::Fluid); WorldJobs().submit(-0.5f, [] { RunJob(); running = false; });
+    // Lockstep (tests): the tick finishes before the frame goes on, so what the frame reads (the published water, Asleep)
+    // is a given tick's, not whichever the job reached by then (#814: identical simulations, different measurements).
+    if (lockstep) WaitIdle();
 }
 
 void Fluid::BindKindUniforms(const Shader& shader) {
@@ -2549,6 +2584,10 @@ void Fluid::WaitIdle() {
 void Fluid::SetSpeed(int steps) { speed = std::max(1, steps); }
 
 bool Fluid::Asleep() {
+    // Lockstep (tests): the answer must not depend on whether this frame's job has finished yet (#814: a dam-break's wall
+    // went at tick 4038 in one run and 4040 in an identical one), so wait for it, as Update does each tick.
+    static const bool lockstep = EnvFlag("RAYLIBGAME_FLUID_LOCKSTEP");
+    if (lockstep && running.load()) WaitIdle();
     if (running.load()) return false;
     { std::lock_guard<std::mutex> c(cmdMx); if (!commands.empty()) return false; }
     std::lock_guard<std::mutex> lock(simMx);
