@@ -1716,11 +1716,16 @@ void BuildChunkMesh(const DensityField& field, const TerrainDeltas& deltas, Chun
 // rays (up, and four tilted 45 degrees) through the block's own samples (edits included): the open share sets the light,
 // the up ray counting double, so a shelter's mouth is dim and a few metres in is black. The up ray continues past the
 // block through the full field to 12 m (so block borders don't show).
+// #541: the rays start half a sample off the surface along the vertex normal and read the block trilinearly. They used to
+// start on the vertex and take the nearest sample: on a steep wall a point a metre above a vertex rounded to the solid
+// sample behind it about half the time once samples were 1-2 m apart, so mid-range cliffs read as roofed (dark blotches),
+// up to the stride where the probe stops (a ring).
 static float OverheadOpenness(const DensityField& field, const TerrainDeltas& deltas, const float* ext, int E, Vector3 eo, float stride,
-                              Vector3 p, const PlanetField::Column3D* col, const float* elev) {
+                              Vector3 p, Vector3 n, const PlanetField::Column3D* col, const float* elev) {
     const float d = Vector3Length(p);
     if (d < 1e-3f) return 1.0f;
     const Vector3 up = Vector3Scale(p, 1.0f / d);
+    p = Vector3Add(p, Vector3Scale(n, 0.5f * stride)); // clear of the vertex's own surface cell
     const Vector3 t1 = Vector3Normalize(Vector3CrossProduct(up, fabsf(up.y) < 0.9f ? Vector3{ 0, 1, 0 } : Vector3{ 1, 0, 0 }));
     const Vector3 t2 = Vector3CrossProduct(up, t1);
     const Vector3 dirs[5] = { up,
@@ -1731,9 +1736,17 @@ static float OverheadOpenness(const DensityField& field, const TerrainDeltas& de
     const bool mayRoof = !col || col->mask > 0.0f;
     auto blockSolid = [&](Vector3 q, bool& inside) {
         const float fx = (q.x - eo.x) / stride, fy = (q.y - eo.y) / stride, fz = (q.z - eo.z) / stride;
-        const int x = (int)lroundf(fx), y = (int)lroundf(fy), z = (int)lroundf(fz);
-        inside = x >= 0 && y >= 0 && z >= 0 && x < E && y < E && z < E;
-        return inside && ext[((size_t)z * E + y) * E + x] >= ISO_LEVEL;
+        inside = fx >= 0.0f && fy >= 0.0f && fz >= 0.0f && fx <= E - 1.0f && fy <= E - 1.0f && fz <= E - 1.0f;
+        if (!inside) return false;
+        const int x0 = std::min((int)fx, E - 2), y0 = std::min((int)fy, E - 2), z0 = std::min((int)fz, E - 2);
+        const float tx = fx - x0, ty = fy - y0, tz = fz - z0;
+        auto A = [&](int x, int y, int z) { return ext[((size_t)z * E + y) * E + x]; };
+        const float c00 = A(x0, y0, z0) + (A(x0 + 1, y0, z0) - A(x0, y0, z0)) * tx;
+        const float c10 = A(x0, y0 + 1, z0) + (A(x0 + 1, y0 + 1, z0) - A(x0, y0 + 1, z0)) * tx;
+        const float c01 = A(x0, y0, z0 + 1) + (A(x0 + 1, y0, z0 + 1) - A(x0, y0, z0 + 1)) * tx;
+        const float c11 = A(x0, y0 + 1, z0 + 1) + (A(x0 + 1, y0 + 1, z0 + 1) - A(x0, y0 + 1, z0 + 1)) * tx;
+        const float c0 = c00 + (c10 - c00) * ty, c1 = c01 + (c11 - c01) * ty;
+        return c0 + (c1 - c0) * tz >= ISO_LEVEL;
     };
     float open = 0.0f;
     for (int r = 0; r < 5; ++r) {
@@ -2276,7 +2289,7 @@ void BuildChunkMeshFromBase(const DensityField& field, const TerrainDeltas& delt
                 const bool hinted = gridField && gridField->gridSurface(*grid, p, gElev, gCol);
                 VoxelMaterial m = hinted ? gridField->materialSkyHinted(p, b, stride, n, sky, &gElev, &gCol) : field.materialSky(p, b, stride, n, sky);
                 if (!near.empty()) { const int placed = deltas.materialAt(p); if (placed >= 0) m = (VoxelMaterial)placed; } // placed ground keeps its material
-                if (gSkyProbes && sky > 0.02f && stride <= 2.0f) sky *= OverheadOpenness(field, deltas, ext.data(), E, eo, stride, p, hinted ? &gCol : nullptr, hinted ? &gElev : nullptr);
+                if (gSkyProbes && sky > 0.02f && stride <= 2.0f) sky *= OverheadOpenness(field, deltas, ext.data(), E, eo, stride, p, n, hinted ? &gCol : nullptr, hinted ? &gElev : nullptr);
                 out.tangents[v * 4 + 3] = sky;
                 // Ambient occlusion (#132): how much of the hemisphere over the vertex is solid within ~1.5 m, from the
                 // block's own samples (edits included): 5 directions (the normal, and four 45 degrees off it) at 0.6 and
