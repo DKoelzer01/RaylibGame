@@ -12,6 +12,7 @@
 #include "rivers.h"
 #include "terraingpu.h"
 #include "gputimer.h"
+#include "scenetarget.h"
 #include "waterfield.h"
 #include <chrono>
 
@@ -40,6 +41,8 @@ WorldGenSettings worldGen;
 std::function<void(FILE*)> saveExtrasHook;
 std::function<void(FILE*)> loadExtrasHook;
 LodSettings lodSettings;
+std::unordered_set<const Chunk*> gOcclusionSkip; // #134 experiment (main.cpp RAYLIBGAME_OCC_SKIP)
+std::unordered_set<uint32_t> gOcclusionSkipPlots; // #134 experiment: plot ids left out (parts and machines)
 
 namespace {
     std::random_device rd;
@@ -398,7 +401,8 @@ void Planetoid::draw(const RenderContext& ctx) {
             rlEnableShader(ctx.partShader->id);
             ctx.bindSunLighting(*ctx.partShader);
         }
-        for (auto& pl : plots->plots) pl->draw(*this, ctx, *ctx.partShader);
+        for (auto& pl : plots->plots) if (gOcclusionSkipPlots.empty() || !gOcclusionSkipPlots.count(pl->id)) pl->draw(*this, ctx, *ctx.partShader); // (#134 experiment skip)
+        GpuTimer_Mark("parts"); // #134: parts timed apart from the terrain after them
     }
     if (drawList.empty() || !ctx.terrainMaterial) return;
     const ChunkPlacer placer(*this, ctx.renderOrigin);
@@ -428,13 +432,24 @@ void Planetoid::draw(const RenderContext& ctx) {
             return true;
         }), drawList.end());
     for (Chunk* c : drawList) {
+        if (!gOcclusionSkip.empty() && gOcclusionSkip.count(c)) continue; // #134 experiment
         if (c->arena.valid()) { if (c->isActive) TerrainArena_Queue(c->arena, c->clipLocal(), c->lodFade(now)); continue; }
         if (c->fadeOut) continue; // per-chunk draws (RAYLIBGAME_ARENA=0) have no cross-fade: the new node only (#243)
         c->drawChunk(c2, placer.model(c->key));
     }
     ArenaCull cull;
     cull.frustum = ctx.frustum;
-    const int n = TerrainArena_Flush(ctx.terrainMaterial->shader.id, false, placer.arena(ctx.texScale), cull);
+    // Hi-Z occlusion (#134): last frame's depth pyramid, tested with the placement this body had in that same frame.
+    const ArenaBody bodyNow = placer.arena(ctx.texScale);
+    {
+        unsigned tex = 0; int w = 0, h = 0, levels = 0; Matrix vp{};
+        const long long pyramidFrame = SceneTarget_HiZFrame();
+        if (pyramidFrame >= 0 && hizBodyFrame == pyramidFrame && SceneTarget_HiZ(tex, w, h, levels, vp)) {
+            cull.hizTex = tex; cull.hizW = w; cull.hizH = h; cull.hizLevels = levels; cull.hizViewProj = vp; cull.hizBody = hizBody;
+        }
+    }
+    const int n = TerrainArena_Flush(ctx.terrainMaterial->shader.id, false, bodyNow, cull);
+    if (hizBodyFrame != SceneTarget_Frame()) { hizBody = bodyNow; hizBodyFrame = SceneTarget_Frame(); } // the first draw this frame
     if (ctx.drawCalls) *ctx.drawCalls += n; // listed (the GPU culls some of them)
 }
 

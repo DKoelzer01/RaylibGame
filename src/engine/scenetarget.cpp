@@ -28,6 +28,14 @@ namespace {
         float proj[3] = { 1.0f, 1.0f, 0.1f };     // the projection's m0, m5 and near plane (SceneTarget_ApplyProjection)
         float sunView[3] = { 0.0f, 1.0f, 0.0f };  // toward the sun, view space
         float contactStrength = 0.0f;             // 0: none this frame (night, overcast, no shadows)
+        // Hi-Z (#134): a min-depth pyramid (reverse-Z: min = farthest) of the resolved depth, built at the end of each frame
+        // for the next frame's terrain occlusion cull, with the view-projection that depth was drawn with.
+        bool hiz = true;                          // RAYLIBGAME_HIZ=0: off
+        GLuint hizTex = 0, hizProg = 0;
+        int hizLevels = 0;
+        Matrix hizPendingVP{}, hizVP{};           // this frame's (set as it starts) / the pyramid's frame's
+        bool hizPending = false, hizValid = false;
+        long long frame = 0, hizFrame = -1;    // frames ended; the frame the pyramid was built in
         GLuint prog = 0, vao = 0;
         int w = 0, h = 0, samples = 0;
         // HDR (#131): an RGBA16F scene, so values over 1 survive to the composite, which tonemaps them (and auto-exposure
@@ -56,6 +64,28 @@ namespace {
     // HDR composite (#131). The world shaders still write display-encoded colour (pow 1/2.2, and the atmosphere, sky,
     // particles and raylib's default shader write display colour as they always did), now unclamped in RGBA16F. So: decode,
     // expose, tonemap, encode. Blending and MSAA stay where they were (display space), so nothing else changes.
+    // Hi-Z pyramid (#134): level 0 from the resolved depth, each next level the min (= farthest, reverse-Z) of the 2x2 (3 wide
+    // at an odd edge) under it, so a texel never claims an occluder nearer than all the depth it covers.
+    const char* kCsHiZ = R"(#version 430
+layout(local_size_x = 8, local_size_y = 8) in;
+uniform int fromDepth;
+uniform sampler2D depthSrc;
+layout(r32f, binding = 0) uniform readonly image2D src;
+layout(r32f, binding = 1) uniform writeonly image2D dst;
+uniform ivec2 srcSize;
+uniform ivec2 dstSize;
+void main() {
+    ivec2 p = ivec2(gl_GlobalInvocationID.xy);
+    if (p.x >= dstSize.x || p.y >= dstSize.y) return;
+    if (fromDepth == 1) { imageStore(dst, p, vec4(texelFetch(depthSrc, p, 0).r)); return; }
+    int ex = ((srcSize.x & 1) == 1 && p.x == dstSize.x - 1) ? 3 : 2;
+    int ey = ((srcSize.y & 1) == 1 && p.y == dstSize.y - 1) ? 3 : 2;
+    float m = 1e30;
+    for (int y = 0; y < ey; ++y)
+        for (int x = 0; x < ex; ++x) m = min(m, imageLoad(src, min(p * 2 + ivec2(x, y), srcSize - 1)).r);
+    imageStore(dst, p, vec4(m));
+}
+)";
     const char* kFsHdr = R"(#version 430
 in vec2 uv;
 uniform sampler2D scene;
@@ -224,7 +254,8 @@ void main() {
         if (S.resolveTex) glDeleteTextures(1, &S.resolveTex);
         if (S.depthFbo) glDeleteFramebuffers(1, &S.depthFbo);
         if (S.depthTex) glDeleteTextures(1, &S.depthTex);
-        S.fbo = S.color = S.depth = S.resolveFbo = S.resolveTex = S.depthFbo = S.depthTex = 0;
+        if (S.hizTex) glDeleteTextures(1, &S.hizTex);
+        S.fbo = S.color = S.depth = S.resolveFbo = S.resolveTex = S.depthFbo = S.depthTex = S.hizTex = 0; S.hizValid = false;
         S.w = S.h = 0;
         for (int i = 0; i < State::kBloomLevels; ++i) {
             if (S.bloomFbo[i]) glDeleteFramebuffers(1, &S.bloomFbo[i]);
@@ -322,7 +353,7 @@ void main() {
         glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, S.resolveTex, 0);
         if (status == GL_FRAMEBUFFER_COMPLETE) status = glCheckFramebufferStatus(GL_FRAMEBUFFER);
         glBindFramebuffer(GL_FRAMEBUFFER, 0);
-        if (S.hdr && S.contact && status == GL_FRAMEBUFFER_COMPLETE) { // #137: the resolved depth (same format: a valid blit)
+        if ((S.hdr && S.contact || S.hiz) && status == GL_FRAMEBUFFER_COMPLETE) { // (#134: Hi-Z reads it too) // #137: the resolved depth (same format: a valid blit)
             glGenTextures(1, &S.depthTex);
             glBindTexture(GL_TEXTURE_2D, S.depthTex);
             GpuMemTag gmDepth_("scene target"); // VRAM accounting (#302)
@@ -349,6 +380,20 @@ void main() {
             return false;
         }
         S.w = w; S.h = h;
+        if (S.hiz && S.depthTex && S.hizProg) { // #134: the Hi-Z pyramid, R32F with a full mip chain (nearest)
+            S.hizLevels = 1;
+            for (int m = std::max(w, h); m > 1; m >>= 1) ++S.hizLevels;
+            glGenTextures(1, &S.hizTex);
+            glBindTexture(GL_TEXTURE_2D, S.hizTex);
+            GpuMemTag gmHiz_("scene target"); // VRAM accounting (#302)
+            glTexStorage2D(GL_TEXTURE_2D, S.hizLevels, GL_R32F, w, h);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST_MIPMAP_NEAREST);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+            glBindTexture(GL_TEXTURE_2D, 0);
+        }
+        S.hizValid = false;
         if (S.hdr && S.bloom && S.downProg && S.upProg) CreateBloom(w, h); // #140
         LOG_INFO("SceneTarget", "%dx%d, %d samples, float depth, reverse-Z, %s\n", w, h, S.samples,
                     !S.hdr ? "RGBA8 (RAYLIBGAME_HDR=0)" : S.tonemap == 1 ? "HDR, ACES" : S.tonemap == 2 ? "HDR, clip" : "HDR, knee tonemap");
@@ -372,6 +417,7 @@ void main() {
         // RAYLIBGAME_AUTO_EXPOSURE=0, RAYLIBGAME_EXPOSURE_KEY / _MIN / _MAX, RAYLIBGAME_TONEMAP_KNEE.
         auto envF = [](const char* n, float d) { const char* v = getenv(n); return v && v[0] ? (float)atof(v) : d; };
         if (const char* h = getenv("RAYLIBGAME_HDR"); h && h[0] == '0') S.hdr = false;
+        if (const char* z = getenv("RAYLIBGAME_HIZ"); z && z[0] == '0') S.hiz = false; // #134
         if (const char* c = getenv("RAYLIBGAME_CONTACT_SHADOWS"); c && c[0] == '0') S.contact = false; // #137
         if (const char* t = getenv("RAYLIBGAME_TONEMAP")) S.tonemap = !strcmp(t, "aces") ? 1 : !strcmp(t, "clip") ? 2 : 0;
         if (const char* a = getenv("RAYLIBGAME_AUTO_EXPOSURE"); a && a[0] == '0') S.autoExposure = false;
@@ -388,6 +434,7 @@ void main() {
                 LOG_WARN("SceneTarget", "HDR shaders failed: RGBA8 target\n");
                 if (S.prog) rlUnloadShaderProgram(S.prog);
                 if (S.expProg) rlUnloadShaderProgram(S.expProg);
+                if (S.hizProg) rlUnloadShaderProgram(S.hizProg);
                 S.prog = S.expProg = 0;
                 S.hdr = false;
             } else {
@@ -426,6 +473,11 @@ void main() {
         glBindFramebuffer(GL_FRAMEBUFFER, 0);
         glGetIntegerv(GL_SAMPLES, &samples);
         S.samples = samples;
+        if (S.hiz) { // #134
+            const unsigned hcs = rlCompileShader(kCsHiZ, RL_COMPUTE_SHADER);
+            S.hizProg = hcs ? rlLoadComputeShaderProgram(hcs) : 0;
+            if (!S.hizProg) { LOG_WARN("SceneTarget", "Hi-Z shader failed: no occlusion culling\n"); S.hiz = false; }
+        }
         S.ok = Create(GetRenderWidth(), GetRenderHeight());
         return S.ok;
     }
@@ -469,6 +521,17 @@ void SceneTarget_SetContact(Vector3 sunView, float strength) {
     S.contactStrength = std::clamp(strength, 0.0f, 1.0f);
 }
 
+void SceneTarget_SetHiZView(Matrix viewProj) { S.hizPendingVP = viewProj; S.hizPending = true; }
+
+long long SceneTarget_Frame() { return S.frame; }
+long long SceneTarget_HiZFrame() { return S.hizValid ? S.hizFrame : -1; }
+
+bool SceneTarget_HiZ(unsigned& tex, int& w, int& h, int& levels, Matrix& viewProj) {
+    if (!S.hiz || !S.hizValid || !S.hizTex) return false;
+    tex = S.hizTex; w = S.w; h = S.h; levels = S.hizLevels; viewProj = S.hizVP;
+    return true;
+}
+
 void SceneTarget_End() {
     if (!S.fbo) return;
     rlDrawRenderBatchActive();
@@ -477,11 +540,38 @@ void SceneTarget_End() {
     glBindFramebuffer(GL_DRAW_FRAMEBUFFER, S.resolveFbo);
     glBlitFramebuffer(0, 0, S.w, S.h, 0, 0, S.w, S.h, GL_COLOR_BUFFER_BIT, GL_NEAREST);
     const bool contactOn = S.depthFbo && S.contactStrength > 0.0f;
-    if (contactOn) { // #137: the depth too (a multisampled depth resolves to one of its samples)
+    const bool hizOn = S.depthFbo && S.hizTex && S.hizPending;
+    if (contactOn || hizOn) { // #137 / #134: the depth too (a multisampled depth resolves to one of its samples)
         glBindFramebuffer(GL_DRAW_FRAMEBUFFER, S.depthFbo);
         glBlitFramebuffer(0, 0, S.w, S.h, 0, 0, S.w, S.h, GL_DEPTH_BUFFER_BIT, GL_NEAREST);
     }
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    if (hizOn) { // #134: the pyramid for next frame's terrain cull, and the view-projection this depth was drawn with
+        glUseProgram(S.hizProg);
+        const GLint locFrom = glGetUniformLocation(S.hizProg, "fromDepth"), locSrc = glGetUniformLocation(S.hizProg, "srcSize"), locDst = glGetUniformLocation(S.hizProg, "dstSize");
+        glActiveTexture(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_2D, S.depthTex);
+        glUniform1i(glGetUniformLocation(S.hizProg, "depthSrc"), 0);
+        int w = S.w, h = S.h;
+        for (int l = 0; l < S.hizLevels; ++l) {
+            const int dw = l == 0 ? w : std::max(1, w >> 1), dh = l == 0 ? h : std::max(1, h >> 1);
+            glUniform1i(locFrom, l == 0 ? 1 : 0);
+            glUniform2i(locSrc, w, h);
+            glUniform2i(locDst, dw, dh);
+            if (l > 0) glBindImageTexture(0, S.hizTex, l - 1, GL_FALSE, 0, GL_READ_ONLY, GL_R32F);
+            glBindImageTexture(1, S.hizTex, l, GL_FALSE, 0, GL_WRITE_ONLY, GL_R32F);
+            glDispatchCompute((GLuint)((dw + 7) / 8), (GLuint)((dh + 7) / 8), 1);
+            glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT);
+            if (l > 0) { w = dw; h = dh; }
+        }
+        glMemoryBarrier(GL_TEXTURE_FETCH_BARRIER_BIT);
+        glBindTexture(GL_TEXTURE_2D, 0);
+        glUseProgram(0);
+        S.hizVP = S.hizPendingVP; S.hizFrame = S.frame;
+        S.hizValid = true;
+    }
+    S.hizPending = false;
+    ++S.frame;
     if (S.hdr) {
         glBindBufferBase(GL_SHADER_STORAGE_BUFFER, kExposureBinding, S.expBuf);
         if (S.autoExposure) {
@@ -560,6 +650,7 @@ void SceneTarget_Unload() {
     if (S.downProg) rlUnloadShaderProgram(S.downProg);
     if (S.upProg) rlUnloadShaderProgram(S.upProg);
     if (S.expProg) rlUnloadShaderProgram(S.expProg);
+    if (S.hizProg) rlUnloadShaderProgram(S.hizProg);
     if (S.expBuf) glDeleteBuffers(1, &S.expBuf);
     if (S.vao) glDeleteVertexArrays(1, &S.vao);
     S = State{};

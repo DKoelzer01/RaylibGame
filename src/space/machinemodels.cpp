@@ -411,6 +411,7 @@ void Machines_Draw3D(Scene& world) {
         const Vector3 camPlotBody = body->toLocal(world.camera.position);
         for (auto& plot : body->plots->plots) {
             if (Vector3Distance(plot->toBody({ 0, 0, 0 }), camPlotBody) > 500.0f) continue;
+            if (!gOcclusionSkipPlots.empty() && gOcclusionSkipPlots.count(plot->id)) continue; // #134 experiment
             PlotCache& pc = plotCache[(body->id * 1315423911ull) ^ plot->id];
             if (pc.version != plot->version) {
                 pc.version = plot->version;
