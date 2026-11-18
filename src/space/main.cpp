@@ -10466,6 +10466,7 @@ int main(int argc, char** argv)
                 printf("bench: net quests (%s, #338): %d books heard, team %d; e0f done %d; berries %d -> %d; quest news %d\n", role ? role : "?",
                        gJoin.questBooks, gJoin.questTeam, (int)QuestTree_IsDone("e0f"), berries0, inventory.count("berries"), gQuestNewsHeard);
                 printf("bench: net crafting (%s, #338): logs %d -> %d, planks %d -> %d\n", role ? role : "?", logs0, inventory.count("oak_log"), planks0, inventory.count("oak_planks"));
+                printf("bench: net nights (%s, #338): %.0f nights survived in the team's book; deaths %d\n", role ? role : "?", QuestBook_CountOf("nights"), (int)gJoin.vitals.deaths);
                 NetClient_Disconnect(gJoin);
                 benchNetQuests = false;
             }
