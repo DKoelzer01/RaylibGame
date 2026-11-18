@@ -15,6 +15,9 @@ uniform vec3 toLocalX, toLocalY, toLocalZ; // the planet-local images of the wor
 uniform float cloudShell;      // the cloud layer's radius (m); 0 = no clouds
 uniform vec3 cloudDrift;       // wind drift so far (m, planet-local)
 uniform float cloudCover;      // 0..1 (weather), with a floor applied here
+// #142: the physical sky (RAYLIBGAME_SKY_PHYS=1): the sky-view LUT (skyphys.cpp), pulled toward the palette below by skyPhysTint.
+uniform float skyPhys;         // 1: on (the LUT is bound)
+#include "skyphys.glsl"
 
 out vec4 finalColor;
 
@@ -61,6 +64,10 @@ void main()
     float band = smoothstep(0.0, 0.08, h) * (1.0 - smoothstep(0.10, 0.30, h));
     sky += vec3(0.55, 0.32, 0.45) * glow * pow(max(-mu, 0.0), 1.5) * band * 0.35;
     float sunset = glow;                                // (the clouds' dusk tint below)
+    if (skyPhys > 0.5) {
+        vec3 phys = pow(max(SkyPhysSky(v, upDir, sunDir, false), vec3(0.0)), vec3(1.0 / 2.2)); // display colours, as the palette
+        sky = mix(phys, sky, skyPhysTint);
+    }
     sky = mix(sky, vec3(0.52, 0.55, 0.60) * max(day, 0.15 * twilight), overcast * 0.85); // cloud cover greys the sky
     // Glare around the sun, warmer as it sinks.
     sky += mix(vec3(1.0, 0.9, 0.7), vec3(1.0, 0.55, 0.25), lowSun) * pow(max(mu, 0.0), 300.0) * max(day, glow) * density * (1.0 - overcast);

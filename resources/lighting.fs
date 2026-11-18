@@ -124,6 +124,7 @@ vec3 triplanarNormal(sampler2D tex, Triplanar t, vec3 n)
 // Sun shadows: two cascades, hardware PCF (shadow.glsl). The far map is MATERIAL_MAP_BRDF, the near one
 // MATERIAL_MAP_HEIGHT.
 #include "shadow.glsl"
+#include "skyphys_haze.glsl" // #142: the physical haze colour (off by default)
 #include "hemisphere.glsl"
 // #138: past the far cascade (+-200 m) the wide terrain-only cascade (+-2 km, ~2 m texels, MATERIAL_MAP_EMISSION), so
 // mountains shadow valleys at dawn and dusk. It fills in exactly where the far cascade fades to lit at its edge.
@@ -462,6 +463,6 @@ void main()
         fogDist = max(0.0, min(t1, fogDist) - max(t0, 0.0));
     }
     float fog = 1.0 - exp(-fogDensity * fogDist);
-    color = mix(color, fogColor, clamp(fog, 0.0, 1.0));
+    color = mix(color, SkyPhysFog(fragPosition, viewPos, fogColor), clamp(fog, 0.0, 1.0));
     finalColor = vec4(pow(max(color, vec3(0.0)), vec3(1.0 / 2.2)), 1.0); // linear -> sRGB
 }
