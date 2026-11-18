@@ -239,6 +239,7 @@ namespace {
         // fall). Per cell a factor 0.6-1.4 from value noise at ~260 and ~95 m, and per 30 m height band 0.8-1.25 (the
         // bands' heights wobble by cell): walls come out with steeper and gentler stretches, ledges and benches.
         std::vector<float> talusVar, talusBandOff;
+        std::vector<int> wide; // #633: channel cells for the lateral erosion (fine grid), refreshed with each flood
         if (!gBakeOld) {
             talusVar.resize(cells); talusBandOff.resize(cells);
             for (size_t c = 0; c < cells; ++c) {
@@ -352,6 +353,7 @@ namespace {
             if (step % std::max(1, p.floodEvery) == 0) {
                 flood();
                 if (pool) pool->plan(order, receiver, d.outlet, d.h.data());
+                if (fine && !gBakeOld) { wide.clear(); for (int c : order) if (area[c] >= 5.0e6f && !d.outlet[c]) wide.push_back(c); } // #633: the channel cells, in flood order
                 lap(1);
                 // Glacial troughs (#358): ice fills each valley to a thickness growing with its drainage area (~45 m
                 // at 1 km^2, at most 200 m); valley walls standing below that ice surface are ground back, so V
@@ -398,8 +400,8 @@ namespace {
             // lose a share of the difference, growing with the drainage (from 5 km^2; full at ~80 km^2). Only the
             // direct neighbours, so the floor is at most 3 cells (~150 m) wide; small streams keep their V-notches.
             if (fine && !gBakeOld && step % 2 == 0)
-                for (int c : order) {
-                    if (d.outlet[c] || hf[c] > d.h[c] + 1e-3f || area[c] < 5.0e6f) continue; // lakes: no banks to wear
+                for (int c : wide) {
+                    if (hf[c] > d.h[c] + 1e-3f) continue; // lakes: no banks to wear
                     const float w = 0.03f * std::min(1.0f, 0.25f + 0.1875f * log2f(area[c] / 5.0e6f));
                     for (int k = 0; k < 4; ++k) {
                         const int o = nbOf((size_t)c, k);
