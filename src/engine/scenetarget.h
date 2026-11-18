@@ -20,6 +20,8 @@ bool SceneTarget_Begin(Color clear);   // false: not available (or the target fa
 // Replaces the current projection (after BeginMode3D) with the infinite reversed one of the same field
 // of view, aspect and near plane.
 void SceneTarget_ApplyProjection();
+// Contact shadows (#137): the sun direction in view space and the strength (0: none) for this frame's composite.
+void SceneTarget_SetContact(Vector3 sunView, float strength);
 // Restores the standard depth state and copies the colour to the window.
 void SceneTarget_End();
 void SceneTarget_Unload();
