@@ -191,3 +191,12 @@ double TeamQuests_Explored(int team) {
     With(TeamQuests_Book(team), [&] { n = QuestBook_CountOf("explored"); });
     return n;
 }
+
+void TeamQuests_Copy(int from, int to) {
+    if (from == to) return;
+    QuestBookState copy = TeamQuests_Book(from);
+    TeamQuests_Book(to) = copy;
+    tiles[to] = tiles[from];
+}
+
+void TeamQuests_Forget(int team) { books.erase(team); tiles.erase(team); }

@@ -1,4 +1,5 @@
 #include "storage.h"
+#include "machineact.h"
 #include "factory.h"
 #include "hotbar.h"
 #include "inventory.h"
@@ -66,7 +67,7 @@ int Storage_Deposit(Scene& world) {
             for (const auto& s : Factory::ChestContents(c.body, c.plot, c.part)) holds = holds || s.first == id;
             if (!holds) continue;
             const int n = kv.second;
-            if (inventory.remove(id, n)) { Factory::Insert(c.body, c.plot, c.part, id, n); ++moved; } // what does not fit comes back
+            if (inventory.remove(id, n)) { MachineAct_Insert(c.body, c.plot, c.part, id, n); ++moved; } // what does not fit comes back
             break;
         }
     }
