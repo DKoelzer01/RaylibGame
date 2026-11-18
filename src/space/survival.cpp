@@ -261,11 +261,9 @@ void Survival_DrawHUD() {
         const SuitStats& st = Suit_Stats();
         const char* note = T < 5.0f ? (st.cold <= 0.0f ? "  cold: regulated" : st.cold < 1.0f ? "  cold: insulated" : "  cold: hungrier") : T > 35.0f ? (st.heatProof ? "  heat: regulated" : "  heat") : "";
         DrawText(TextFormat("%.0f C%s", T, note), x + std::max(wO2, wPwr) + 20, y + 68, 16, tc);
-        if (hereBiome != Biome::Count) DrawText(BiomeName(hereBiome), x + std::max(wO2, wPwr) + 20, y + 46 + (SimTime() < survival.sickUntil ? -66 : 0), 16, Fade(RAYWHITE, 0.75f));
     }
     const int tx = x + std::max(wO2, wPwr) + 20;
     if (SimTime() < survival.sickUntil) DrawText("SICK", tx, y + 46, 16, ORANGE);
-    if (!std::isnan(T) && Weather_Here().kind != WeatherKind::Clear) DrawText(TextFormat("weather: %s", Weather_Name(Weather_Here().kind)), tx, y + 24, 16, Fade(RAYWHITE, 0.75f));
     if (survival.inLifeSupport) DrawText("LIFE SUPPORT", tx, y + 2, 16, SKYBLUE);
     else if (survival.breathable && showO2) DrawText("BREATHABLE AIR", tx, y + 2, 16, Fade(SKYBLUE, 0.7f));
     else if (survival.inVacuum) {
