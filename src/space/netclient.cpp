@@ -22,6 +22,17 @@
 extern const char* kGameVersion; // "<branch> <commit>" (#501)
 
 namespace {
+    // A player's state from the server - its own message, or decoded from a snapshot (#769): the same handling either way.
+    void OnPlayerState(NetClient& c, const MsgPlayerState& s) {
+        if (s.session == c.welcome.session) {
+            if (!c.haveOwn || s.tick > c.own.tick) { c.own = s; c.haveOwn = true; } // (unreliable: may arrive out of order)
+            ++c.states;
+        } else {
+            auto& q = c.others[s.session];
+            if (q.empty() || (s.tick > q.back().tick && s.ackInput > q.back().ackInput)) q.push_back(s); // (newer, and moved on: a state per step taken)
+            while (q.size() > 32) q.pop_front();
+        }
+    }
     template <class M> void SendMsg(const NetClient& c, const M& m) {
         NetWriter w; NetWrite(w, m);
         Net_Send(c.conn, w.bytes.data(), (uint32_t)w.bytes.size(), true);
@@ -150,14 +161,32 @@ namespace {
             case NetMsg::PlayerState: {
                 MsgPlayerState s;
                 if (c.state != NetClient::State::Joined || !NetRead(r, s)) return;
-                if (s.session == c.welcome.session) {
-                    if (!c.haveOwn || s.tick > c.own.tick) { c.own = s; c.haveOwn = true; } // (unreliable: may arrive out of order)
-                    ++c.states;
-                } else {
-                    auto& q = c.others[s.session];
-                    if (q.empty() || (s.tick > q.back().tick && s.ackInput > q.back().ackInput)) q.push_back(s); // (newer, and moved on: a state per step taken)
-                    while (q.size() > 32) q.pop_front();
+                OnPlayerState(c, s);
+                return;
+            }
+            case NetMsg::PlayerSnapshot: { // (#769) the states of one snapshot, each against one we acknowledged (or full)
+                if (c.state != NetClient::State::Joined) return;
+                MsgPlayerSnapshot snap;
+                const bool ok = NetRead(r, snap, [&](uint32_t session, uint32_t seq, PlayerStateQ& out) {
+                    auto h = c.snapHistory.find(session);
+                    if (h == c.snapHistory.end()) return false;
+                    for (const auto& [s, q] : h->second) if (s == seq) { out = q; return true; }
+                    return false;
+                });
+                if (!ok) { ++c.snapUndecodable; return; } // (a base we no longer have: not acked, so the server keeps to older bases or resends full)
+                // Acknowledge it (the newest sequence and a mask of the 32 before), keep its states as future bases, apply them.
+                if (snap.seq > c.snapNewest) {
+                    const uint32_t d = snap.seq - c.snapNewest;
+                    c.snapMask = d >= 33 ? 0u : (d == 32 ? 0u : (c.snapMask << d)) | (c.snapNewest && d <= 32 ? 1u << (d - 1) : 0u);
+                    c.snapNewest = snap.seq;
+                } else if (snap.seq < c.snapNewest && c.snapNewest - snap.seq <= 32) c.snapMask |= 1u << (c.snapNewest - snap.seq - 1);
+                for (const MsgPlayerSnapshot::Entry& e : snap.entries) {
+                    auto& h = c.snapHistory[e.s.session];
+                    h.push_back({ snap.seq, e.s });
+                    while (h.size() > 32) h.pop_front();
+                    OnPlayerState(c, NetDequantize(e.s, snap.tick));
                 }
+                ++c.snapshots;
                 return;
             }
             default: return;
@@ -296,6 +325,7 @@ void NetClient_Step(NetClient& c, Scene& world, Player& self, const PlayerInput&
     // The newest kInputRedundancy steps, unreliable (a lost packet is covered by the next).
     MsgInputs m;
     m.action = (uint8_t)std::clamp(c.action, 0, 3); m.actionPhase = std::clamp(c.actionPhase, 0.0f, 1.0f);
+    m.ackSnap = c.snapNewest; m.ackMask = c.snapMask; // (#769)
     for (auto it = c.history.rbegin(); it != c.history.rend() && (int)m.steps.size() < kInputRedundancy; ++it) {
         if (!m.steps.empty() && it->tick != m.steps.back().tick - 1) break; // (consecutive only)
         m.steps.push_back({ it->tick, it->in.held, it->in.pressed, it->fx, it->fy, it->fz });

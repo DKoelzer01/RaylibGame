@@ -148,6 +148,17 @@ namespace {
         s.pitch = asinf(std::clamp(r.forwardLocal.y, -1.0f, 1.0f));
         return s;
     }
+    // #769 delta snapshots, per client: what each snapshot carried (to turn acks into bases), and per player the newest
+    // state the client acknowledged (seq, state).
+    constexpr uint32_t kDeltaRing = 64, kDeltaMaxAge = 48, kDeltaResync = 45; // snapshots (30 a second)
+    struct SnapSent { uint32_t seq = 0; std::vector<PlayerStateQ> states; };
+    struct DeltaState {
+        uint32_t nextSeq = 1, lastAck = 0;
+        SnapSent ring[kDeltaRing];
+        std::unordered_map<uint32_t, std::pair<uint32_t, PlayerStateQ>> base;
+    };
+    std::unordered_map<uint32_t, DeltaState> deltas; // by connection
+
     void SendSnapshots(Scene& world) {
         if (SimTick() - lastSnapshot < kSnapshotEvery) return;
         lastSnapshot = SimTick();
@@ -165,20 +176,67 @@ namespace {
             NetWrite(o.w, o.s);
             outs.push_back(std::move(o));
         }
+        // #769: the chosen states go to each client in ONE snapshot message, each delta-coded against the newest state of that
+        // player the client acknowledged (MsgInputs carries the acks) - else full. RAYLIBGAME_NET_DELTA=0: a message per state.
+        static const bool delta = !(getenv("RAYLIBGAME_NET_DELTA") && atoi(getenv("RAYLIBGAME_NET_DELTA")) == 0);
+        std::vector<PlayerStateQ> quant;
+        if (delta) for (const Out& o : outs) quant.push_back(NetQuantize(o.s));
         std::vector<InterestItem> items;
+        std::vector<uint32_t> chosen;
         for (const auto& [conn, p] : peers) {
             if (!p.joined) continue;
             const Out* self = nullptr;
             for (const Out& o : outs) if (o.session == p.session) self = &o;
-            if (!interest || !self) { // (no own state yet: everything, as before)
-                for (const Out& o : outs) Net_Send(conn, o.w.bytes.data(), (uint32_t)o.w.bytes.size(), false); // unreliable: the next one replaces it
+            DeltaState& ds = deltas[conn];
+            if (delta && ds.nextSeq - ds.lastAck > kDeltaResync) ds.base.clear(); // (no acks for a while: start over from full states)
+            chosen.clear();
+            if (!interest || !self) for (const Out& o : outs) chosen.push_back(o.session); // (no own state yet: everything)
+            else {
+                items.clear();
+                for (const Out& o : outs) {
+                    const uint32_t bytes = !delta ? (uint32_t)o.w.bytes.size() + 28 : ds.base.count(o.session) ? 12u : 34u; // (+ UDP/GNS overhead per message without deltas)
+                    items.push_back({ o.session, o.s.body, o.s.local, bytes, o.session == p.session });
+                }
+                const Planetoid* vb = Planetoid::findNet(self->s.body);
+                chosen = Interest_Select(conn, self->s.body, self->s.local, vb ? vb->scale : 1.0, items);
+            }
+            if (!delta) {
+                for (uint32_t id : chosen)
+                    for (const Out& o : outs) if (o.session == id) { Net_Send(conn, o.w.bytes.data(), (uint32_t)o.w.bytes.size(), false); break; } // unreliable: the next one replaces it
                 continue;
             }
-            items.clear();
-            for (const Out& o : outs) items.push_back({ o.session, o.s.body, o.s.local, (uint32_t)o.w.bytes.size() + 28, o.session == p.session }); // + UDP/GNS overhead
-            const Planetoid* vb = Planetoid::findNet(self->s.body);
-            for (uint32_t id : Interest_Select(conn, self->s.body, self->s.local, vb ? vb->scale : 1.0, items))
-                for (const Out& o : outs) if (o.session == id) { Net_Send(conn, o.w.bytes.data(), (uint32_t)o.w.bytes.size(), false); break; }
+            MsgPlayerSnapshot snap; snap.seq = ds.nextSeq++; snap.tick = (uint32_t)SimTick();
+            SnapSent& sent = ds.ring[snap.seq % kDeltaRing];
+            sent.seq = snap.seq; sent.states.clear();
+            for (uint32_t id : chosen)
+                for (size_t k = 0; k < outs.size(); ++k) if (outs[k].session == id) {
+                    MsgPlayerSnapshot::Entry e; e.s = quant[k];
+                    auto b = ds.base.find(id);
+                    if (b != ds.base.end() && snap.seq - b->second.first < kDeltaMaxAge) { e.baseSeq = b->second.first; e.base = b->second.second; }
+                    snap.entries.push_back(e);
+                    sent.states.push_back(quant[k]);
+                    break;
+                }
+            NetWriter w; NetWrite(w, snap);
+            Net_Send(conn, w.bytes.data(), (uint32_t)w.bytes.size(), false); // unreliable: acked back, and the next one replaces it
+        }
+    }
+    // #769: what a client acknowledged moves its bases on (the newest state of each player it has).
+    void OnSnapshotAck(uint32_t conn, uint32_t ackSnap, uint32_t ackMask) {
+        auto it = deltas.find(conn);
+        if (it == deltas.end() || ackSnap == 0) return;
+        DeltaState& ds = it->second;
+        ds.lastAck = std::max(ds.lastAck, ackSnap);
+        for (int i = -1; i < 32; ++i) {
+            if (i >= 0 && !((ackMask >> i) & 1u)) continue;
+            const uint32_t seq = i < 0 ? ackSnap : ackSnap - 1 - (uint32_t)i;
+            if (seq == 0 || seq > ackSnap) continue;
+            const SnapSent& s = ds.ring[seq % kDeltaRing];
+            if (s.seq != seq) continue;
+            for (const PlayerStateQ& q : s.states) {
+                auto& b = ds.base[q.session];
+                if (seq > b.first) b = { seq, q };
+            }
         }
     }
 
@@ -207,6 +265,7 @@ namespace {
         }
         const bool wasJoined = it->second.joined;
         Interest_Forget(conn); // (#340) its accumulators
+        deltas.erase(conn);    // (#769) its snapshot bases
         peers.erase(it);
         Net_Close(conn);
         if (wasJoined) SendRoster(); // the others see them go
@@ -443,6 +502,7 @@ namespace {
             case NetMsg::Input: {
                 MsgInputs in;
                 if (!it->second.joined || !NetRead(r, in)) return;
+                OnSnapshotAck(m.conn, in.ackSnap, in.ackMask); // (#769)
                 Remote& rm = remotes[it->second.session];
                 if (in.steps[0].tick > rm.lastQueued) { rm.action = in.action; rm.actionPhase = in.actionPhase; } // (not an old packet)
                 for (auto s = in.steps.rbegin(); s != in.steps.rend(); ++s) // oldest first; the ones already here are repeats

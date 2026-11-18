@@ -13,6 +13,7 @@
 #include "playerinput.h"
 #include <cstdint>
 #include <deque>
+#include <unordered_map>
 #include <map>
 #include <string>
 
@@ -53,6 +54,11 @@ struct NetClient {
     std::deque<NetPredicted> history;            // inputs not yet acknowledged, with where they left the player
     bool haveOwn = false; MsgPlayerState own;    // the newest state of our player, not yet reconciled
     int states = 0, corrections = 0;             // own states received; how many moved the player back
+    // #769 snapshots: the newest received and the 32 before it (acked back in each MsgInputs), each player's last 32 states
+    // received (bases for the deltas that follow), and counters.
+    uint32_t snapNewest = 0, snapMask = 0;
+    std::unordered_map<uint32_t, std::deque<std::pair<uint32_t, PlayerStateQ>>> snapHistory;
+    int snapshots = 0, snapUndecodable = 0;
     double worstError = 0.0, lastError = 0.0;    // m: the prediction against the server at the acknowledged input
     std::map<uint32_t, std::deque<MsgPlayerState>> others; // other sessions' recent states (newest last)
     std::map<uint32_t, double> viewTicks;        // per other player: the step of theirs drawn now (NetClient_Update)
