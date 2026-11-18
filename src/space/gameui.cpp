@@ -240,15 +240,16 @@ bool GameUI_TestContainerCursor(Scene& world, uint64_t body, uint32_t plot, int 
     SlotClick(0, 0, false, true, inSlot(v)); settle(); v = chest(); check(inSlot(v) == 0 && inventory.count("stone") == 11, "Shift+click moves the slot to the inventory");
     CellClick(1, false, false);                    check(cursorStack.empty() && inventory.count("stone") == 20, "the held rest goes into the grid: nothing lost");
     // #566: a chest slot holds what an inventory cell does (500 stone in one slot, not stacks of 64).
-    ++inventory.muted; inventory.add("stone", 480); --inventory.muted;
-    { int c = -1; for (int k = 0; k < Inventory::kGrid; ++k) if (inventory.grid()[k].id == "stone") { c = k; break; }
+    inventory.clear();
+    ++inventory.muted; inventory.add("stone", 500); --inventory.muted; // one cell of 500
+    { int c = -1; for (int k = 0; k < Inventory::kSlots; ++k) if (inventory.grid()[k].id == "stone") { c = k; break; }
       if (c >= 0) CellClick(c, false, false); }
     SlotClick(0, 0, false, false, 0); settle(); v = chest();
     check(inSlot(v) == 500 && cursorStack.empty(), "a chest slot takes 500 stone (#566)");
     // #568: tools and machines go in too.
     ++inventory.muted; inventory.add("stone_pickaxe", 1); inventory.add("chest", 2); --inventory.muted;
     for (const char* id : { "stone_pickaxe", "chest" }) {
-        int c = -1; for (int k = 0; k < Inventory::kGrid; ++k) if (inventory.grid()[k].id == id) { c = k; break; }
+        int c = -1; for (int k = 0; k < Inventory::kSlots; ++k) if (inventory.grid()[k].id == id) { c = k; break; }
         if (c >= 0) CellClick(c, false, false);
         SlotClick(id[0] == 's' ? 1 : 2, 0, false, false, 0); settle();
         check(cursorStack.empty() && inventory.count(id) == 0, TextFormat("the chest takes %s (#568)", id));
@@ -257,7 +258,7 @@ bool GameUI_TestContainerCursor(Scene& world, uint64_t body, uint32_t plot, int 
     check(v.inSlots.size() > 2 && v.inSlots[1].first == "stone_pickaxe" && v.inSlots[2].first == "chest" && v.inSlots[2].second == 2, "...and holds them");
     // #567: the look-at panel lists totals per item, wrapped and capped.
     Factory::Insert(body, plot, part, "stone", 300); settle(); v = chest(); // 800 stone: still one slot
-    check(v.input.find("stone x800") != std::string::npos && v.input.find("stone", v.input.find("stone x800") + 1) == std::string::npos, TextFormat("totals per item (#567): '%s'", v.input.c_str()));
+    check(v.input.find("stone x800") != std::string::npos && v.input.find("stone x", v.input.find("stone x800") + 1) == std::string::npos, TextFormat("totals per item (#567): '%s'", v.input.c_str()));
     std::string many;
     for (int k = 0; k < 40; ++k) many += TextFormat("%sitem_number_%d x%d", k ? ", " : "", k, 64 * k);
     const std::vector<std::string> lines = WrapItemList("holds: ", many, 404, 16, 4);

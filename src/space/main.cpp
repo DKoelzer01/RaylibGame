@@ -7903,7 +7903,11 @@ int main(int argc, char** argv)
                        placed ? "yes" : "NO", cleared ? "yes" : "NO", kept ? "yes" : "NO", worst, placed && cleared && kept ? "PASS" : "FAIL");
             }
         }
-        if (testInvCursor && gameState == 1 && !loading && WorldIdle()) { testInvCursor = false; GameUI_TestCursorStack(); }
+        if (testInvCursor && gameState == 1 && !loading && WorldIdle()) {
+            testInvCursor = false;
+            if (Planetoid* p0 = dynamic_cast<Planetoid*>(world.objects[0].get())) { player.flyMode = false; player.spawnOn(world, *p0, StartSpawnDir(*p0)); player.nearest = p0; } // on the ground: a drop lands at the feet (#564)
+            GameUI_TestCursorStack();
+        }
         // --shot-preview (#197): a slope previewed on the ground next to a block (green), then into the block (red).
         if (shotPreview && gameState == 1 && !loading && WorldIdle()) {
             static int f = 0;
