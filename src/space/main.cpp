@@ -104,6 +104,10 @@ static std::vector<AvatarState> gAvatars, gBenchAvatars;
 // --join (#341 core): this process's connection to the server; its player follows the server's state once synced.
 static NetClient gJoin;
 static bool gJoinSynced = false;
+// #348: the server soak window (RAYLIBGAME_SOAK_PLAYERS=N): frame work times while N players are online.
+static double gFrameWorkStart = 0.0;
+static std::vector<float> gSoakWorkMs;
+static bool gSoakOn = false;
 #include "mpbots.h"
 #include "netinterest.h"
 #include "serverconsole.h"
@@ -394,7 +398,8 @@ int main(int argc, char** argv)
     // still shows every result line it reached (#556: the last lines were lost and a finished test looked hung).
     // (Line buffering is full buffering in the Windows CRT.)
     for (int i = 1; i < argc; ++i)
-        if (!strncmp(argv[i], "--bench", 7) || !strncmp(argv[i], "--test-", 7) || !strncmp(argv[i], "--shot-", 7)) { setvbuf(stdout, nullptr, _IONBF, 0); break; }
+        if (!strncmp(argv[i], "--bench", 7) || !strncmp(argv[i], "--test-", 7) || !strncmp(argv[i], "--shot-", 7) || !strcmp(argv[i], "--host") || !strcmp(argv[i], "--server") || !strcmp(argv[i], "--join")) { // (servers and clients too: their logs are read live, #348)
+            setvbuf(stdout, nullptr, _IONBF, 0); break; }
     Log_Open("log.txt");
     Log_SetThreadName("main");
     // --log-level LEVEL (#514): before anything logs. It wins over settings.txt's log_level.
@@ -497,6 +502,7 @@ int main(int argc, char** argv)
     std::string joinAddr, joinName = "player"; // --join <ip[:port]> [--name N] (#341 core): a client of a running --host
     bool benchJoin = false;        // --test-join (with --join): the client side of the two-process test (tools/test_join.sh)
     int benchJoinPhase = 0;
+    int swarmBots = 0; double swarmSoak = 60.0; // --bots N [--soak S] with --join (#348): N walking bots from this process, S seconds
     uint16_t hostPort = kDefaultHostPort; // --port N
     bool benchHost = false;        // --test-host (#311): with --host, a loopback client joins
     bool benchTimeFollow = false;  // --test-time-follow (#339): the world clock follows a server time (slew, snap)
@@ -742,6 +748,8 @@ int main(int argc, char** argv)
         if (std::string(argv[i]) == "--join" && i + 1 < argc) { joinAddr = argv[i + 1]; if (joinAddr.find(':') == std::string::npos) joinAddr += ":" + std::to_string(kDefaultHostPort); }
         if (std::string(argv[i]) == "--name" && i + 1 < argc) joinName = argv[i + 1];
         if (std::string(argv[i]) == "--test-join") benchJoin = true;
+        if (std::string(argv[i]) == "--bots" && i + 1 < argc) swarmBots = std::max(1, atoi(argv[i + 1]));
+        if (std::string(argv[i]) == "--soak" && i + 1 < argc) swarmSoak = std::max(1.0, atof(argv[i + 1]));
         if (std::string(argv[i]) == "--port" && i + 1 < argc) hostPort = (uint16_t)atoi(argv[i + 1]);
         if (std::string(argv[i]) == "--host-password" && i + 1 < argc) Host_SetPassword(argv[i + 1]); // (#321)
         if (std::string(argv[i]) == "--max-players" && i + 1 < argc) Host_SetMaxPlayers(atoi(argv[i + 1]));
@@ -1942,6 +1950,7 @@ int main(int argc, char** argv)
         }
         Recorder_Update(WorldIdle() && !loading); // its start delay (after the loading screen), F10 in normal play
         GpuTimer_CpuFrameStart(!loading); GpuTimer_BeginFrame();
+        gFrameWorkStart = GetTime(); // (#348) the frame's work, up to EndDrawing's wait
         FpsLog_Frame(gameState == 0 ? "menu" : gameState == 3 ? "newworld" : gameState == 2 ? "paused" : loading ? "loading" : "play");
         // --bench-unfocus S (#510): 1 unfocused during the preload for S s; then, playing: 2 measure 5 s, 3 unfocused S s,
         // 4 settle 2 s, 5 measure 5 s, then FPS before/after.
@@ -8982,15 +8991,20 @@ int main(int argc, char** argv)
             if (ship.piloted && ship.lastImpact > 12.0f) survival.health -= (ship.lastImpact - 12.0f) * 3.0f; // crash damage
             if (!loading) Survival_Update(world, simDt, PlayerInput_If(gameInput, stepIn));
             if (!loading) inventory.cool(simDt); // hot items cool (#580)
+            GpuTimer_CpuMark("step: player, survival"); // (#348: the server tick's breakdown; benches and --perf-log)
             if (!loading) Farm_Update(world, simDt * timeScale * gDebugTimeScale * Rocket_Warp()); // crops grow on world time
+            GpuTimer_CpuMark("step: farm");
             if (!loading) Animals_Update(world, simDt, simDt * timeScale * gDebugTimeScale * Rocket_Warp(), gameInput && alive && !ship.piloted);
+            GpuTimer_CpuMark("step: animals");
             if (!loading) Weather_Update(world, simDt * timeScale * gDebugTimeScale); // the sky, rain and snow, lightning
             Factory::Sync(world);                                // machine layouts in, items out
             Factory::Advance(simDt);                             // the factory thread runs its ticks on the sim clock (#315)
+            GpuTimer_CpuMark("step: weather, factory");
             GpuTimer_Mark("w-sim-pre");                          // (benches: the fluid's own share below)
             Fluid::Update(world, simDt);                         // flowing water: commands in, a step job, meshes up
             GpuTimer_Mark("fluid");                              // its GPU step dispatches and readback (#642 perf)
             Waterworks_Update(world, simDt);                     // pumps send water down pipes to outlets
+            GpuTimer_CpuMark("step: fluids, waterworks");
             Objectives_Update(world);
         }
         PlayerInput_EndStep();
@@ -9005,7 +9019,32 @@ int main(int argc, char** argv)
             if (!loading) Fishing_Update(world, frameDt, gameInput && alive && !ship.piloted); // (#176)
             if (!loading) Trapping_Update(world); // snares (#176)
             if (!loading) Events_Update(world, frameDt); // meteor showers (#177)
-            if (!hostSave.empty()) Host_Update(world); // --host (#311): answer joins
+            if (!hostSave.empty()) { GpuTimer_CpuMark("frame: view, events"); Host_Update(world); } // --host (#311): answer joins (its own marks: #348)
+            // #348 soak window (a host with RAYLIBGAME_SOAK_PLAYERS=N): from when N players are online until one leaves (or
+            // RAYLIBGAME_SOAK_SECONDS), the frame work time (mean, p99, max), the per-system CPU breakdown and the traffic per client.
+            if (!hostSave.empty() && getenv("RAYLIBGAME_SOAK_PLAYERS")) {
+                static double soakT0 = 0.0; static bool soakDone = false;
+                const int want = atoi(getenv("RAYLIBGAME_SOAK_PLAYERS"));
+                const double maxSecs = getenv("RAYLIBGAME_SOAK_SECONDS") ? atof(getenv("RAYLIBGAME_SOAK_SECONDS")) : 1e9;
+                const int online = Host_OnlinePlayers();
+                if (!gSoakOn && !soakDone && online >= want) {
+                    gSoakOn = true; soakT0 = GetTime(); gSoakWorkMs.clear(); Net_ResetTraffic(); GpuTimer_Enable(true);
+                    printf("host: soak: %d players online: measuring\n", online);
+                } else if (gSoakOn && (online < want || GetTime() - soakT0 > maxSecs)) {
+                    gSoakOn = false; soakDone = true;
+                    const double secs = GetTime() - soakT0;
+                    std::vector<float> w = gSoakWorkMs; std::sort(w.begin(), w.end());
+                    double mean = 0.0; for (float x : w) mean += x; mean /= std::max<size_t>(1, w.size());
+                    const float p99 = w.empty() ? 0.0f : w[std::min(w.size() - 1, (size_t)(0.99 * (w.size() - 1)))], mx = w.empty() ? 0.0f : w.back();
+                    double sent = 0.0, recv = 0.0, sentMax = 0.0; int conns = 0;
+                    for (const auto& [c, t] : Net_Traffic()) if (t.sentMsgs > 10) { ++conns; sent += t.sentBytes; recv += t.recvBytes; sentMax = std::max(sentMax, (double)t.sentBytes); }
+                    printf("bench: server soak (#348): %d players for %.0f s, %zu frames: frame work mean %.2f ms, p99 %.2f ms, max %.2f ms (budget 16.7 ms at 60 Hz); "
+                           "per client: sent %.1f kB/s (max %.1f), received %.1f kB/s over %d connections\n",
+                           want, secs, w.size(), mean, p99, mx, sent / std::max(1, conns) / secs / 1000.0, sentMax / secs / 1000.0, recv / std::max(1, conns) / secs / 1000.0, conns);
+                    GpuTimer_PrintCpu();
+                    if (!bench) GpuTimer_Enable(false);
+                }
+            }
             if (serverMode) { // --server (#326): console commands, and a requested shutdown (stop, Ctrl+C, close, SIGTERM)
                 std::string line;
                 while (ServerConsole_Next(line)) {
@@ -9065,6 +9104,13 @@ int main(int argc, char** argv)
                 if (gJoin.state == NetClient::State::Closed || gJoin.state == NetClient::State::Rejected) {
                     printf("join: disconnected (%s)\n", gJoin.state == NetClient::State::Closed ? NetByeText(gJoin.bye) : NetRejectText(gJoin.reject.reason));
                     windowKeepAlive = false;
+                }
+                // --bots N --soak S (#348): this process's own player stands by (it brought the world in); N bots join the same
+                // server, walk for S seconds and report, then the process ends.
+                if (swarmBots > 0 && gJoinSynced && !loading && WorldIdle()) {
+                    static bool started = false;
+                    if (!started) { started = true; MpBots_Start(swarmBots, 0, joinAddr, swarmSoak); printf("join: %d bots joining %s for a %.0f s soak\n", swarmBots, joinAddr.c_str(), swarmSoak); }
+                    else if (MpBots_Update(world)) { NetClient_Disconnect(gJoin); windowKeepAlive = false; }
                 }
             }
             if (!loading) Ambience_Update(world, frameDt); // rain splashes, fireflies, machine smoke
@@ -10512,7 +10558,7 @@ int main(int argc, char** argv)
         BeginDrawing();
         gInFrame = true; // (#362: world generation started from inside a frame - the debug menu - must not draw its own)
             ClearBackground(crackCheck ? MAGENTA : BLACK); // --crack-check: holes in the terrain show magenta
-            GpuTimer_Enable(benchMeasuring || perfLog); GpuTimer_Mark("clear");
+            GpuTimer_Enable(benchMeasuring || perfLog || gSoakOn); GpuTimer_Mark("clear");
             GpuTimer_CpuMark("begin-draw");
             if (gameState == 0) {
                 pendingMenu = Menu_Main();
@@ -10645,6 +10691,7 @@ int main(int argc, char** argv)
             GpuTimer_Mark("2d-flush");
             if (Recorder_WantsFrame(true)) Recorder_Capture(); // the finished frame, HUD included (#375)
             Recorder_FrameDone();
+        if (gSoakOn) gSoakWorkMs.push_back((float)((GetTime() - gFrameWorkStart) * 1000.0)); // (#348) before the frame-rate wait
         EndDrawing();
         gInFrame = false;
         {   // Unfocused (#510): at most ~30 frames a second (the streaming still gets every frame's budget), so a background

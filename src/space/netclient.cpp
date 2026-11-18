@@ -11,6 +11,7 @@
 #include "world.h"
 #include <raymath.h>
 #include <algorithm>
+#include <unordered_map>
 
 #include <raylib.h>
 #include <cstdio>
@@ -170,7 +171,13 @@ void NetClient_Update(NetClient& c) {
     }
     std::vector<NetMessage> in;
     if (Host_Listening()) in = Host_TakeLocalClientMessages(c.conn);
-    else { Net_Poll(); Net_Receive(in, 256); }
+    else { // several clients in one process (#348: a bot swarm): one poll, each message kept for its own client
+        static std::unordered_map<uint32_t, std::vector<NetMessage>> inbox;
+        Net_Poll();
+        std::vector<NetMessage> got; Net_Receive(got, 1024);
+        for (NetMessage& m : got) inbox[m.conn].push_back(std::move(m));
+        auto it = inbox.find(c.conn); if (it != inbox.end()) { in.swap(it->second); inbox.erase(it); }
+    }
     for (const NetMessage& m : in) {
         if (m.conn != c.conn) continue;
         OnMessage(c, m);
