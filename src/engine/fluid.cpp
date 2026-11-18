@@ -1795,6 +1795,7 @@ void CpuTick(int n) {
     static const bool dbVol = EnvFlag("DBVOL");
     auto plainSum = [&]() { long long v = 0; for (int i = 0; i < processedCount; ++i) for (int c = 0; c < B3; ++c) { const uint32_t u = g.a[(size_t)i * B3 + c]; if (!((u >> 8) & (kSource | kSink | kSolid))) v += u & 255u; } return v; };
     const long long volBefore = dbVol ? plainSum() : 0;
+    g.groupsFull = true; // the dry-cell skip (#747): slots are new this tick, its first substep runs every cell
     static const bool dbTrace = EnvFlag("DBTRACE");
     // TEMP #680 (DBTRACE): transfers into partial / solid-capped cells near the test's wall, in the channel frame (0.25 m
     // buckets): (taker along, taker height, giver along, branch * 2 + capped) -> units.

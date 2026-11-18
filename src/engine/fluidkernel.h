@@ -49,6 +49,13 @@ struct Grid {
     std::vector<int> pairGive, pairTake;
     std::vector<uint32_t> sinkOut; // per slot: fill units its sinks took in (river flow, #656; the caller zeroes it)
     std::vector<uint8_t> dbgMark; // TEMP #680 (DBTRACE): per slot, trace the transfers into it
+    // The dry-cell skip (#747, as the GPU's #675 fluid_groups.comp): per slot, 3 rotating substeps x 64 group bits (the
+    // 64-cell groups that held water: group = z * 4 + y / 4), and the groups the next substep runs. The host sets
+    // groupsFull at each tick's start: slots are handed out afresh each tick, so its first substep runs every cell.
+    std::vector<uint32_t> gmask;  // slot * 6 + substep * 2 + word
+    std::vector<uint64_t> gon;    // per slot
+    int gcur = 0;
+    bool groupsFull = true;
     void resize(int slots);       // keeps nothing
 };
 

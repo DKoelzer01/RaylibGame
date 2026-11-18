@@ -29,6 +29,7 @@ void Grid::resize(int slots) {
     outDem.assign((size_t)slots * 4096, 0); inDem.assign((size_t)slots * 4096, 0);
     availOf.assign((size_t)slots * 4096, INT32_MAX); roomOf.assign((size_t)slots * 4096, INT32_MAX);
     pairGive.assign((size_t)slots * 4096 * 4, -1); pairTake.assign((size_t)slots * 4096 * 4, -1);
+    gmask.assign((size_t)slots * 6, 0u); gon.assign(slots, ~0ull); groupsFull = true;
 }
 
 namespace {
@@ -578,6 +579,7 @@ struct Pass {
             // test's sim volume fell 103 -> 55 m^3 in 60 s with nothing reaching the channel).
             if (F(outC[gi]) != (uint32_t)nf) g.flags[slot] |= 1u;
             outC[gi] = Pack((uint32_t)nf, (fl & 31u) | (kind << 5), c);
+            if (nf > 0) markWet(slot, local);
             return;
         }
         float mine[4];
@@ -631,7 +633,10 @@ struct Pass {
         const uint32_t res = Pack((uint32_t)nf, (fl & 31u) | (kind << 5), c);
         if (F(old) != (uint32_t)nf) g.flags[slot] |= 1u;
         outC[gi] = res;
+        if (nf > 0) markWet(slot, local);
     }
+    // The dry-cell skip (#747): this substep's groups that hold water. A slot's cells run on one thread: no atomics.
+    void markWet(int slot, int local) const { g.gmask[(size_t)slot * 6 + g.gcur * 2 + (local >> 11)] |= 1u << ((local >> 6) & 31); }
 };
 
 // One pass over every listed slot, the slots split across the job system's workers (this thread takes the first share).
@@ -642,9 +647,15 @@ void RunPass(Grid& g, const Params& p, const std::vector<int>& list, int pass) {
     const int n = (int)list.size();
     if (n == 0) return;
     const int parts = std::max(1, std::min(n, (int)std::thread::hardware_concurrency()));
-    auto run = [&ps, &list, n, parts](int part) {
-        for (int i = part; i < n; i += parts)
-            for (int local = 0; local < 4096; ++local) ps.cell(list[i], local);
+    auto run = [&ps, &list, &g, n, parts](int part) {
+        for (int i = part; i < n; i += parts) {
+            const int slot = list[i];
+            const uint64_t on = g.gon[slot];
+            if (on == ~0ull) { for (int local = 0; local < 4096; ++local) ps.cell(slot, local); continue; }
+            for (int grp = 0; grp < 64; ++grp) // the dry-cell skip (#747): only the groups near water
+                if ((on >> grp) & 1ull)
+                    for (int local = grp * 64; local < grp * 64 + 64; ++local) ps.cell(slot, local);
+        }
     };
     std::atomic<int> left{ parts - 1 };
     for (int part = 1; part < parts; ++part) {
@@ -658,6 +669,38 @@ void RunPass(Grid& g, const Params& p, const std::vector<int>& list, int pass) {
 } // namespace
 
 void Substep(Grid& g, const Params& p, const std::vector<int>& list) {
+    // The dry-cell skip (#747, the CPU twin of fluid_groups.comp, #675): run only the 64-cell groups that held water in
+    // either of the last two substeps or border one (in the brick, or across a face to a processed brick). Water moves at
+    // most a cell a pass, so a skipped group can't change: the result is the same as running every cell. A tick's first
+    // substep runs everything (slots are new each tick: their scratch - faces, deltas, demand - is another brick's).
+    // RAYLIBGAME_FLUID_GROUPS=0: off (A/B), as on the GPU.
+    static const bool groupsOn = !(getenv("RAYLIBGAME_FLUID_GROUPS") && atoi(getenv("RAYLIBGAME_FLUID_GROUPS")) == 0);
+    if (!groupsOn || g.groupsFull) {
+        for (int s : list) { g.gon[s] = ~0ull; for (int w = 0; w < 6; ++w) g.gmask[(size_t)s * 6 + w] = 0u; }
+        g.gcur = 0;
+        g.groupsFull = false;
+    } else {
+        const int p1 = g.gcur, p2 = (g.gcur + 2) % 3; // the last two substeps' masks
+        g.gcur = (g.gcur + 1) % 3;
+        auto wet = [&](int s) -> uint64_t {
+            const uint32_t* m = &g.gmask[(size_t)s * 6];
+            return ((uint64_t)(m[p1 * 2 + 1] | m[p2 * 2 + 1]) << 32) | (uint64_t)(m[p1 * 2] | m[p2 * 2]);
+        };
+        auto wetNb = [&](int s, int face) -> uint64_t { const int o = g.nbr[(size_t)s * 6 + face]; return (o >= 0 && g.processed[o]) ? wet(o) : 0ull; };
+        constexpr uint64_t q0 = 0x1111111111111111ull, q3 = q0 << 3;          // groups at y / 4 = 0 / 3 in every layer
+        constexpr uint64_t z0 = 0xFull, z15 = 0xFull << 60;                    // the bottom / top layer's groups
+        for (int s : list) {
+            const uint64_t w = wet(s);
+            uint64_t on = w | ((w << 1) & ~q0) | ((w >> 1) & ~q3) | (w << 4) | (w >> 4); // in the brick: y +-1 group, z +-1 layer
+            on |= wetNb(s, 0) | wetNb(s, 1);                                    // across x: the same groups
+            const uint64_t ym = wetNb(s, 2), yp = wetNb(s, 3);                  // across y: a layer's last / first group
+            on |= ((ym & q3) >> 3) | ((yp & q0) << 3);
+            const uint64_t zm = wetNb(s, 4), zp = wetNb(s, 5);                  // across z: the top / bottom layer
+            on |= ((zm & z15) >> 60) | ((zp & z0) << 60);
+            g.gon[s] = on;
+            g.gmask[(size_t)s * 6 + g.gcur * 2] = 0u; g.gmask[(size_t)s * 6 + g.gcur * 2 + 1] = 0u; // the apply pass marks it
+        }
+    }
     static const bool quarter = EnvFlag("FLUID_COL_QUARTER");
     RunPass(g, p, list, 0);
     RunPass(g, p, list, 1);
