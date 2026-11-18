@@ -11168,6 +11168,8 @@ int main(int argc, char** argv)
                        invited, together, healthSeen, chatToTeam, chatNotOthers, carolRefused, kicked, step, ok ? "PASS" : "FAIL");
                 for (NetClient* c : { &alice, &bob, &carol }) NetClient_Disconnect(*c);
                 benchTeams = false;
+            }
+        }
         // --test-idle-drift (#856, with --host <save>): a client joins over loopback and sends no inputs (as one still loading
         // its world): the server's states of its player must stay put in the planet's frame. Before the fix they slid at the
         // surface's spin speed (~105 m/s): the client then started kilometres off and was snapped back on its first step.
