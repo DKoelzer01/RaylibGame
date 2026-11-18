@@ -723,7 +723,7 @@ namespace {
     }
     // A joining player's record, if they have one: their place, inventory and survival come back (the client is sent the
     // inventory); a first-timer starts at the world's start (SpawnRemote) with nothing.
-    bool LoadRecord(uint32_t conn, const Session& s) { // true: their record was loaded
+    bool LoadRecord(Scene& world, uint32_t conn, const Session& s) { // true: their record was loaded
         Remote& rm = remotes[s.id];
         rm.record = PlayerRecordMeta{};
         const std::string path = PlayerRecord_Path(s.uuid);
@@ -731,6 +731,9 @@ namespace {
         if (FileExists(path.c_str()) && PlayerRecord_Read(path, rm.player, rm.inventory, rm.survival, rm.record)) {
             loaded = true;
             rm.player.flyAllowed = false; // (#781) never for a client's server-side player
+            // (#856) anchored where the record put them: until their first step (their client still loading) the server reports
+            // the anchor, and SpawnRemote's was the world's start
+            if (Planetoid* b = rm.player.nearest ? rm.player.nearest : StartBody(world)) rm.player.anchorTo(*b);
             std::map<std::string, double> before;
             for (const InvSlot& c : rm.inventory.grid()) if (!c.empty()) before[c.id] = 0.0; // the client starts from nothing
             SendInventoryDeltas(conn, rm.inventory, before);
@@ -808,7 +811,7 @@ namespace {
         bool hadRecord = true; // (a reconnect within the run keeps its player: not a new one)
         if (!remotes.count(s->id)) { // (#346) at the world's start, or where their record left them, with what they carried
             SpawnRemote(world, s->id);
-            hadRecord = LoadRecord(conn, *s);
+            hadRecord = LoadRecord(world, conn, *s);
         } else { // (#780) a reconnect keeps the player but its client counts ticks from 1 again: a fresh input stream
             Remote& rm = remotes[s->id];
             rm.inputs.clear(); rm.lastQueued = 0; rm.lastApplied = 0; rm.carried = 0; rm.budget = 0.0; rm.tick = SimTick();
