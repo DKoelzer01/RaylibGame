@@ -17,6 +17,9 @@ bool GameUI_TextInputActive();            // a text field in the window has the 
 float GameUI_Scale();                     // the interface size (Settings; auto by the screen's height)
 void GameUI_PrepareFrame(Scene& world);  // (#822) before ImGui, after the world: renders the inventory screen's player preview
 bool GameUI_PreviewDrawn();              // (#822) the preview was rendered this frame (tests)
+void GameUI_QueueCraft(int recipe, int count);   // (#824) into the crafting queue (one every 0.3 s, through Crafting_Request)
+int GameUI_CraftQueueLength();                    // crafts still queued
+void GameUI_SelectRecipe(int recipe);             // the Crafting screen's selected recipe
 void GameUI_Draw(Scene& world);  // inside rlImGuiBegin()/rlImGuiEnd()
 void GameUI_DrawHUD(Scene& world); // plain raylib 2D HUD (status, toasts)
 void GameUI_Toast(const char* text);

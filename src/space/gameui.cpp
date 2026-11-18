@@ -458,22 +458,64 @@ static void DrawGrid() {
     }
 }
 
-// Hand crafting: the recipes you know (every ingredient discovered, and any unlock met), searchable,
-// optionally only what you can make now. Nearby chests count as if their contents were in the
-// inventory: a craft short of something pulls it from them first (it arrives next tick).
-// In creative mode every recipe is known and costs nothing.
+// The Crafting screen (#824): search and category chips over the recipes you know; a click selects one, and its page
+// shows what it makes, what it takes (with what you have, nearby chests counted), Craft 1 / 5 / All, and what it's used
+// by. Crafts go in a queue, one every kCraftEvery, each through Crafting_Request (here, or the server when joined). A
+// single craft short of something pulls it from nearby chests first (it arrives next tick). In creative everything is
+// known and free.
+namespace {
+    enum class CraftCat { All, CanMake, Tools, Building, Materials, Food, Suit, Count };
+    const char* kCraftCatNames[] = { "All", "Can make", "Tools", "Building", "Materials", "Food", "Suit" };
+    CraftCat CategoryOf(const std::string& id) {
+        if (Suit_IsSuit(id) || Suit_IsModule(id)) return CraftCat::Suit;
+        if (Survival_IsFood(id)) return CraftCat::Food;
+        switch (KindOf(id)) {
+            case ItemKind::Tool: return CraftCat::Tools;
+            case ItemKind::Block: return CraftCat::Building;
+            default: return CraftCat::Materials;
+        }
+    }
+    struct QueuedCraft { int recipe; int left; };
+    std::vector<QueuedCraft> craftQueue;
+    double nextCraftAt = 0.0;
+    constexpr double kCraftEvery = 0.3; // s between queued crafts (you see them come)
+    int selectedRecipe = -1;
+}
+
+// The queue runs whether the window is open or not (GameUI_Draw calls it every frame).
+static void RunCraftQueue() {
+    if (craftQueue.empty() || GetTime() < nextCraftAt) return;
+    nextCraftAt = GetTime() + kCraftEvery;
+    QueuedCraft& q = craftQueue.front();
+    const auto& recipes = itemDB.recipes();
+    bool done = q.recipe < 0 || q.recipe >= (int)recipes.size();
+    if (!done) {
+        const Recipe& r = recipes[q.recipe];
+        if (terrainTool.creative) { inventory.addAmount(r.output, r.outputCount); Audio_Play(Sfx::Craft); --q.left; }
+        else if (gNetRole == NetRole::Client || inventory.canCraft(r)) { Crafting_Request(q.recipe, 1); --q.left; } // (#338: the server checks)
+        else { const ItemDef* d = itemDB.find(r.output); GameUI_Toast(TextFormat("Ran out of what %s takes", d ? d->name.c_str() : r.output.c_str())); done = true; }
+    }
+    if (done || q.left <= 0) craftQueue.erase(craftQueue.begin());
+}
+
 static void DrawCrafting() {
     const bool creative = terrainTool.creative;
     if (creative) ImGui::TextColored(ImVec4(1.0f, 0.8f, 0.3f, 1.0f), "Creative: crafting costs nothing");
     ToolWear_DrawRepairUI();
     static char query[64] = {};
-    static bool craftableOnly = false;
+    static CraftCat cat = CraftCat::All;
     static int pending = -1;           // a craft waiting for items pulled from chests
     static double pendingUntil = 0.0;
-    ImGui::SetNextItemWidth(220.0f);
+    const auto& recipes = itemDB.recipes();
+    ImGui::SetNextItemWidth(260.0f);
     ImGui::InputTextWithHint("##recipesearch", "search recipes", query, sizeof(query));
-    ImGui::SameLine();
-    ImGui::Checkbox("Only what I can make", &craftableOnly);
+    for (int c = 0; c < (int)CraftCat::Count; ++c) { // the category chips
+        ImGui::SameLine();
+        const bool on = (int)cat == c;
+        if (on) ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.88f, 0.66f, 0.25f, 1.0f)), ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.1f, 0.08f, 0.02f, 1.0f));
+        if (ImGui::SmallButton(kCraftCatNames[c])) cat = (CraftCat)c;
+        if (on) ImGui::PopStyleColor(2);
+    }
     std::string q = query;
     for (char& c : q) c = (char)tolower((unsigned char)c);
     // What nearby chests hold, once for this frame.
@@ -483,70 +525,136 @@ static void DrawCrafting() {
             for (const auto& s : Factory::ChestContents(c.body, c.plot, c.part)) stored[s.first] += s.second;
     auto have = [&](const std::string& id) { int n = inventory.count(id); for (const auto& s : stored) if (ItemMatches(id, s.first)) n += s.second; return n; };
     auto canMake = [&](const Recipe& r) { if (creative) return true; for (const auto& in : r.inputs) if (have(in.first) < in.second) return false; return true; };
+    auto maxFromInventory = [&](const Recipe& r) {
+        if (creative) return 99;
+        int n = 1 << 20;
+        for (const auto& in : r.inputs) n = std::min(n, inventory.count(in.first) / std::max(1, in.second));
+        return n;
+    };
     // A pending craft completes once the pulled items have arrived.
-    if (pending >= 0 && pending < (int)itemDB.recipes().size()) {
-        const Recipe& r = itemDB.recipes()[pending];
+    if (pending >= 0 && pending < (int)recipes.size()) {
+        const Recipe& r = recipes[pending];
         if (inventory.canCraft(r)) { Crafting_Request(pending, 1); pending = -1; } // (#338) here, or the server when joined
         else if (GetTime() > pendingUntil) { GameUI_Toast("The chests no longer hold enough"); pending = -1; }
     }
-    // A grid of the outputs' icons; hover for name, cost and description, click to craft. Recipes
-    // you can't make yet are greyed.
+    if (selectedRecipe >= (int)recipes.size() || (selectedRecipe >= 0 && !RecipeBook_Known(recipes[selectedRecipe]))) selectedRecipe = -1;
+
+    // Left: the recipes as icons (greyed: can't make now). Right: the selected recipe's page and the queue.
+    const float pageW = std::min(420.0f, ImGui::GetContentRegionAvail().x * 0.48f);
     int hidden = 0, shown = 0;
-    ImGui::BeginChild("recipes");
+    ImGui::BeginChild("recipes", ImVec2(ImGui::GetContentRegionAvail().x - pageW - 8.0f, 0.0f));
     const float cell = 60.0f, gap = 6.0f;
     const int cols = std::max(1, (int)((ImGui::GetContentRegionAvail().x + gap) / (cell + gap)));
     ImDrawList* dl = ImGui::GetWindowDrawList();
-    for (size_t i = 0; i < itemDB.recipes().size(); ++i) {
-        const Recipe& r = itemDB.recipes()[i];
+    for (size_t i = 0; i < recipes.size(); ++i) {
+        const Recipe& r = recipes[i];
         if (!RecipeBook_Known(r)) { ++hidden; continue; }
         if (!RecipeBook_Matches(r, q)) continue;
         const bool can = canMake(r);
-        if (craftableOnly && !can) continue;
+        if (cat == CraftCat::CanMake && !can) continue;
+        if (cat != CraftCat::All && cat != CraftCat::CanMake && CategoryOf(r.output) != cat) continue;
+        if (selectedRecipe < 0) selectedRecipe = (int)i;
         if (shown % cols != 0) ImGui::SameLine(0.0f, gap);
         ++shown;
         const ItemDef* out = itemDB.find(r.output);
         ImGui::PushID((int)i);
         const ImVec2 p = ImGui::GetCursorScreenPos(), qd(p.x + cell, p.y + cell);
-        const bool clicked = ImGui::InvisibleButton("recipe", ImVec2(cell, cell));
-        const bool hover = ImGui::IsItemHovered();
+        if (ImGui::InvisibleButton("recipe", ImVec2(cell, cell))) selectedRecipe = (int)i;
+        const bool hover = ImGui::IsItemHovered(), sel = selectedRecipe == (int)i;
+        if (hover && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left) && can) craftQueue.push_back({ (int)i, 1 }); // double-click: craft one
         dl->AddRectFilled(p, qd, can ? IM_COL32(34, 40, 36, 230) : IM_COL32(30, 31, 34, 200), 4.0f);
         DrawItemIcon(dl, ImVec2(p.x + 4, p.y + 2), cell - 8, r.output, !can);
         if (r.outputCount > 1) {
             const char* n = TextFormat("x%d", r.outputCount);
             dl->AddText(ImVec2(qd.x - ImGui::CalcTextSize(n).x - 4, qd.y - 17), IM_COL32(255, 255, 255, can ? 255 : 130), n);
         }
-        dl->AddRect(p, qd, hover ? IM_COL32(220, 220, 220, 255) : can ? IM_COL32(90, 150, 95, 255) : IM_COL32(64, 66, 72, 255), 4.0f, 0, hover ? 2.0f : 1.0f);
-        if (hover) {
-            ImGui::BeginTooltip();
-            ImGui::Text("%s%s", out ? out->name.c_str() : r.output.c_str(), r.outputCount > 1 ? TextFormat("  x%d", r.outputCount) : "");
-            ImGui::TextDisabled("%s", KindName(KindOf(r.output)));
-            if (out && !out->description.empty()) { ImGui::PushTextWrapPos(320.0f); ImGui::TextUnformatted(out->description.c_str()); ImGui::PopTextWrapPos(); }
-            ImGui::Separator();
-            ImGui::TextUnformatted("Cost:");
-            for (const auto& in : r.inputs) {
-                const ItemDef* id = itemDB.find(in.first);
-                const int inv = inventory.count(in.first), all = have(in.first);
-                const bool enough = creative || all >= in.second;
-                ImGui::TextColored(enough ? ImVec4(0.55f, 0.9f, 0.55f, 1.0f) : ImVec4(0.95f, 0.45f, 0.4f, 1.0f), "  %d %s   (have %d%s)", in.second,
-                                   id ? id->name.c_str() : in.first.c_str(), all, all > inv ? TextFormat(", %d in chests", all - inv) : "");
-            }
-            ImGui::TextDisabled(can ? (pending >= 0 ? "Waiting for items from the chests..." : "Click to craft") : "Missing items");
-            ImGui::EndTooltip();
-        }
-        if (clicked && can && pending < 0) {
-            if (creative) { if (inventory.addAmount(r.output, r.outputCount) < r.outputCount) Audio_Play(Sfx::Craft); }
-            else if (inventory.canCraft(r)) Crafting_Request((int)i, 1); // (#338) here, or the server when joined
-            else if (gNetRole == NetRole::Client) GameUI_Toast("Carry the items: crafting from chests waits for chests on the server"); // (#338)
-            else if (uiWorld) {
-                bool ok = true;
-                for (const auto& in : r.inputs) ok = Storage_Pull(*uiWorld, in.first, in.second - inventory.count(in.first)) && ok;
-                if (ok) { pending = (int)i; pendingUntil = GetTime() + 2.0; }
-            }
-        }
+        dl->AddRect(p, qd, sel ? IM_COL32(224, 169, 64, 255) : hover ? IM_COL32(220, 220, 220, 255) : can ? IM_COL32(90, 150, 95, 255) : IM_COL32(64, 66, 72, 255),
+                    4.0f, 0, sel || hover ? 2.0f : 1.0f);
+        if (hover) ImGui::SetTooltip("%s%s", out ? out->name.c_str() : r.output.c_str(), r.outputCount > 1 ? TextFormat("  x%d", r.outputCount) : "");
         ImGui::PopID();
     }
-    if (shown == 0) ImGui::TextDisabled(craftableOnly ? "Nothing you can make right now" : "No known recipe matches");
+    if (shown == 0) ImGui::TextDisabled(cat == CraftCat::CanMake ? "Nothing you can make right now" : "No known recipe matches");
     if (hidden > 0) ImGui::TextDisabled("%d recipes still to discover: find new materials (and some need more)", hidden);
+    ImGui::EndChild();
+    ImGui::SameLine();
+
+    ImGui::BeginChild("recipepage", ImVec2(pageW, 0.0f), true);
+    if (selectedRecipe >= 0) {
+        const Recipe& r = recipes[selectedRecipe];
+        const ItemDef* out = itemDB.find(r.output);
+        const ImVec2 p = ImGui::GetCursorScreenPos();
+        ImGui::GetWindowDrawList()->AddRectFilled(p, ImVec2(p.x + 56, p.y + 56), IM_COL32(34, 40, 36, 230), 4.0f);
+        DrawItemIcon(ImGui::GetWindowDrawList(), ImVec2(p.x + 4, p.y + 2), 48, r.output);
+        ImGui::Dummy(ImVec2(56, 56));
+        ImGui::SameLine();
+        ImGui::BeginGroup();
+        ImGui::TextColored(ImVec4(0.88f, 0.66f, 0.25f, 1.0f), "%s%s", out ? out->name.c_str() : r.output.c_str(), r.outputCount > 1 ? TextFormat("  x%d", r.outputCount) : "");
+        ImGui::TextDisabled("%s (%s)", KindName(KindOf(r.output)), kCraftCatNames[(int)CategoryOf(r.output)]);
+        ImGui::EndGroup();
+        if (out && !out->description.empty()) ImGui::TextWrapped("%s", out->description.c_str());
+        ImGui::Separator();
+        ImGui::TextUnformatted("Takes:");
+        for (const auto& in : r.inputs) {
+            const ItemDef* id = itemDB.find(in.first);
+            const int inv = inventory.count(in.first), all = have(in.first);
+            const bool enough = creative || all >= in.second;
+            ImGui::TextColored(enough ? ImVec4(0.55f, 0.9f, 0.55f, 1.0f) : ImVec4(0.95f, 0.45f, 0.4f, 1.0f), "  %d %s   (have %d%s)", in.second,
+                               id ? id->name.c_str() : in.first.c_str(), all, all > inv ? TextFormat(", %d in chests", all - inv) : "");
+        }
+        const bool can = canMake(r);
+        const int most = maxFromInventory(r);
+        ImGui::Spacing();
+        ImGui::BeginDisabled(!can || pending >= 0);
+        if (ImGui::Button("Craft 1")) {
+            if (creative || gNetRole == NetRole::Client || inventory.canCraft(r)) craftQueue.push_back({ selectedRecipe, 1 });
+            else if (uiWorld) { // short in the inventory: pulled from nearby chests first (#338: not when joined)
+                bool ok = true;
+                for (const auto& in : r.inputs) ok = Storage_Pull(*uiWorld, in.first, in.second - inventory.count(in.first)) && ok;
+                if (ok) { pending = selectedRecipe; pendingUntil = GetTime() + 2.0; }
+            }
+        }
+        ImGui::EndDisabled();
+        ImGui::SameLine();
+        ImGui::BeginDisabled(most < 5);
+        if (ImGui::Button("x5")) craftQueue.push_back({ selectedRecipe, 5 });
+        ImGui::EndDisabled();
+        ImGui::SameLine();
+        ImGui::BeginDisabled(most < 1);
+        if (ImGui::Button(creative ? "x20" : TextFormat("All (%d)", most))) craftQueue.push_back({ selectedRecipe, creative ? 20 : most });
+        ImGui::EndDisabled();
+        if (!can) ImGui::TextDisabled("Missing items");
+        else if (pending >= 0) ImGui::TextDisabled("Waiting for items from the chests...");
+        // What this is used by: the recipes that take it.
+        ImGui::Separator();
+        ImGui::TextUnformatted("Used by:");
+        int uses = 0;
+        for (size_t k = 0; k < recipes.size(); ++k) {
+            const Recipe& u = recipes[k];
+            if (!RecipeBook_Known(u)) continue;
+            bool takes = false;
+            for (const auto& in : u.inputs) takes = takes || ItemMatches(in.first, r.output);
+            if (!takes) continue;
+            const ItemDef* ud = itemDB.find(u.output);
+            ImGui::PushID(10000 + (int)k);
+            if (ImGui::SmallButton(ud ? ud->name.c_str() : u.output.c_str())) selectedRecipe = (int)k;
+            ImGui::PopID();
+            if (++uses % 3 != 0) ImGui::SameLine();
+        }
+        if (uses == 0) ImGui::TextDisabled("nothing you know yet");
+        else if (uses % 3 != 0) ImGui::NewLine();
+    } else ImGui::TextDisabled("Pick a recipe");
+    // The queue: what's being crafted, next first.
+    ImGui::Separator();
+    ImGui::TextUnformatted(craftQueue.empty() ? "Queue: empty" : "Queue:");
+    for (size_t k = 0; k < craftQueue.size(); ++k) {
+        const QueuedCraft& c = craftQueue[k];
+        const ItemDef* d = c.recipe >= 0 && c.recipe < (int)recipes.size() ? itemDB.find(recipes[c.recipe].output) : nullptr;
+        ImGui::PushID(20000 + (int)k);
+        if (ImGui::SmallButton("x")) { craftQueue.erase(craftQueue.begin() + (long)k); ImGui::PopID(); break; }
+        ImGui::SameLine();
+        ImGui::Text("%s  x%d%s", d ? d->name.c_str() : "?", c.left, k == 0 ? "  (crafting)" : "");
+        ImGui::PopID();
+    }
     ImGui::EndChild();
 }
 
@@ -911,6 +1019,7 @@ static void DrawYou() {
 void GameUI_Draw(Scene& world) {
     uiWorld = &world;
     RecipeBook_Update(); // new recipes: a toast
+    RunCraftQueue(); // (#824) queued crafts, window open or not
     if (!inventoryOpen) { ReturnCursorStack(); binned = InvSlot{}; container.open = false; return; } // a stack still held goes back in (#192)
     if (cursorStack.heat > 0.0f) cursorStack.heat = std::max(0.0f, cursorStack.heat - GameFrameTime() / Inventory::kCoolSeconds); // held, it cools as in a cell (#580)
     CheckContainer(world);
@@ -1119,3 +1228,8 @@ void GameUI_DrawHUD(Scene& world) {
     }
     if (GetTime() < toastUntil) DrawText(toast.c_str(), 10, GetScreenHeight() - 90, 20, YELLOW);
 }
+
+// (#824) the crafting queue from outside (tests; later, e.g. a recipe's "craft" from the database pop-up, #826)
+void GameUI_QueueCraft(int recipe, int count) { if (count > 0) craftQueue.push_back({ recipe, count }); }
+int GameUI_CraftQueueLength() { int n = 0; for (const QueuedCraft& c : craftQueue) n += c.left; return n; }
+void GameUI_SelectRecipe(int recipe) { selectedRecipe = recipe; }
