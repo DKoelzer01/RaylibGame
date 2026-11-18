@@ -991,8 +991,8 @@ void Scene::drawScene(int gamestate) {
 void Scene::drawUI(int gamestate) {
     if (!isActive) return;
     RenderContext none;
-    if (gamestate != 0) {
-        DrawFPS(10, 10);
+    // The camera readout only in the F3 debug view (#573); the FPS counter is the game's setting now (#572: main.cpp).
+    if (gamestate != 0 && debugDraw) {
         const DVec3 cw = cameraWorld();
         DrawText(TextFormat("Camera: %.1f %.1f %.1f   meshes: %d   [F3] debug",
                  cw.x, cw.y, cw.z, lastDrawCalls), 10, 30, 20, GREEN);

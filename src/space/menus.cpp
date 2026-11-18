@@ -209,6 +209,7 @@ namespace {
             changed |= Choice({ x, y, w, h }, "Terrain detail", detail, 4, settings.terrainDetail); next();
             changed |= Toggle({ x, y, w, h }, "Foliage", settings.foliage); next();
             changed |= Toggle({ x, y, w, h }, "VSync (no tearing)", settings.vsync); next();
+            changed |= Toggle({ x, y, w, h }, "Show FPS", settings.showFps); next(); // on every screen (#572)
             static const int caps[] = { 0, 60, 144, 240 };
             static const char* capNames[] = { "Monitor", "60", "144", "240" };
             int cap = 0;
@@ -233,9 +234,7 @@ namespace {
             changed |= Slider({ x, y, w, h }, "Volume", settings.volume, 0.0f, 1.0f, "%.2f"); next();
             break;
         case SettingsTab::Gameplay: {
-            // Difficulty for the next new world (each world keeps its own).
-            static const char* difficulty[] = { "Peaceful", "Normal", "Hard" };
-            changed |= Choice({ x, y, w, h }, "New worlds", difficulty, 3, settings.difficulty); next();
+            // (Difficulty is chosen on the New World screen and kept by the world, #526: no setting here.)
             // Comfort (#168): motion-sickness options.
             changed |= Toggle({ x, y, w, h }, "Reduce motion", settings.reduceMotion); next();
             changed |= Toggle({ x, y, w, h }, "Show hands", settings.showHands); next();
@@ -268,6 +267,7 @@ void Settings_Load() {
             else if (!strcmp(key, "foliage")) settings.foliage = v != 0.0f;
             else if (!strcmp(key, "fpscap")) settings.fpsCap = std::max(0, (int)v);
             else if (!strcmp(key, "vsync")) settings.vsync = v != 0.0f;
+            else if (!strcmp(key, "showfps")) settings.showFps = v != 0.0f;
             else if (!strcmp(key, "reducemotion")) settings.reduceMotion = v != 0.0f;
             else if (!strcmp(key, "showhands")) settings.showHands = v != 0.0f;
             else if (!strcmp(key, "handbob")) settings.handBob = std::clamp((int)v, 0, 2);
@@ -288,6 +288,7 @@ void Settings_Save() {
             settings.foliage ? 1 : 0, settings.fpsCap, settings.vsync ? 1 : 0, settings.reduceMotion ? 1 : 0);
     fprintf(f, "showhands %d\nhandbob %d\n", settings.showHands ? 1 : 0, settings.handBob);
     fprintf(f, "difficulty %d\n", settings.difficulty);
+    fprintf(f, "showfps %d\n", settings.showFps ? 1 : 0);
     fprintf(f, "terraindetail %d\ncamerasmoothing %d\nspeedvignette %d\n", settings.terrainDetail, settings.cameraSmoothing, settings.speedVignette ? 1 : 0); // (terrain detail was never saved, #297)
     if (!settings.logLevel.empty()) fprintf(f, "log_level %s\n", settings.logLevel.c_str()); // set by hand in the file (#514)
     fclose(f);

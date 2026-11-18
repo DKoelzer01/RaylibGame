@@ -389,6 +389,7 @@ int main(int argc, char** argv)
     bool benchLamps = false;       // --test-lamps: 100 lamp cubes light the ground (#139)
     bool benchGiant = false;       // --shot-giant: one tree of each size class (#274)
     bool benchTorch = false;       // --test-torch: a held torch lights the ground (#218)
+    bool benchShotDig = false;     // --shot-dig (#533): the dig preview ring, looking down at the ground
     bool benchTime = false;        // --test-time: dawn start (#259), a +6 h jump carries the player (#275)
     bool benchPickups = false;     // --test-pickups: the pickup feed (#208): repeats merge, a screenshot while it shows
     bool shotInventory = false;    // --shot-inventory: long item names in their cells (#219)
@@ -649,6 +650,7 @@ int main(int argc, char** argv)
         if (std::string(argv[i]) == "--test-menus") benchMenus = true;
         if (std::string(argv[i]) == "--test-time") benchTime = true;
         if (std::string(argv[i]) == "--test-torch") benchTorch = true;
+        if (std::string(argv[i]) == "--shot-dig") benchShotDig = true;
         if (std::string(argv[i]) == "--shot-giant") benchGiant = true;
         if (std::string(argv[i]) == "--test-lamps") benchLamps = true;
         if (std::string(argv[i]) == "--test-fill") benchFill = true;
@@ -960,6 +962,7 @@ int main(int argc, char** argv)
         DrawRectangle(bx, by, (int)(bw * std::clamp(progress, 0.02f, 1.0f)), 14, SKYBLUE);
         if (strncmp(what, "Shaping", 7) == 0) // a real bake (a cache read is quick and says "Loading", #505)
             DrawText("A new world's terrain is shaped once (about a minute); loading it later is quick.", bx, by + 26, 16, Fade(RAYWHITE, 0.6f));
+        if (settings.showFps) DrawFPS(10, 10); // every screen when the setting is on (#572)
         EndDrawing();
     };
     if (!IsWindowReady()) {
@@ -2461,10 +2464,10 @@ int main(int argc, char** argv)
                            before == after ? "yes" : "no", freshNew ? "yes" : "no", pass ? "PASS" : "FAIL");
                 } else if (benchFall && (fallPhase > 0 || WorldIdle())) {
                     // --test-fall (#263): drops onto flat ground near the start. Expected on Terra (g 5.9, safe 6 m/s, x8.5):
-                    // 3 m none, 10 m ~41, 20 m ~79, 30 m and 100 m fatal.
+                    // 3 m none, 5 m none (14 would be under the 15-point grace, #536), 10 m ~41, 20 m ~79, 30 m and 100 m fatal.
                     Planetoid* p = dynamic_cast<Planetoid*>(world.objects[0].get());
-                    const float heights[] = { 3.0f, 10.0f, 20.0f, 30.0f, 100.0f };
-                    const float lo[] = { 0.0f, 25.0f, 60.0f, 100.0f, 100.0f }, hi[] = { 0.0f, 55.0f, 95.0f, 1e9f, 1e9f };
+                    const float heights[] = { 3.0f, 5.0f, 10.0f, 20.0f, 30.0f, 100.0f };
+                    const float lo[] = { 0.0f, 0.0f, 25.0f, 60.0f, 100.0f, 100.0f }, hi[] = { 0.0f, 0.0f, 55.0f, 95.0f, 1e9f, 1e9f };
                     if (fallPhase == 0) {
                         player.spawnOn(world, *p, StartSpawnDir(*p));
                         fallPhase = 1; fallStart = GetTime();
@@ -2481,7 +2484,7 @@ int main(int argc, char** argv)
                                hi[fallIdx] > 1e8f ? "fatal" : TextFormat("%.0f", hi[fallIdx]), pass ? "ok" : "FAIL");
                         fallOk = fallOk && pass;
                         if (dead) Survival_Respawn(world);
-                        if (++fallIdx < 5) { fallPhase = 1; fallStart = GetTime() - 1.0; }
+                        if (++fallIdx < 6) { fallPhase = 1; fallStart = GetTime() - 1.0; }
                         else { printf("bench: fall: %s\n", fallOk ? "PASS" : "FAIL"); survival.health = 100.0f; benchFall = false; }
                     } else if (fallPhase == 2 && GetTime() - fallStart > 30.0) {
                         printf("bench: fall: %.0f m: never landed -> FAIL\n", heights[fallIdx]); benchFall = false;
@@ -6627,6 +6630,29 @@ int main(int argc, char** argv)
                         printf("bench: hotbar: an empty slot in build mode is bare hands %d; a new pickaxe lands in a free slot, moved to key 6 and taken in hand %d (#272, #209)\n", unownedKept, ownedTaken);
                         Hotbar_Press(0, false); // key 1: an empty slot, bare hands
                         const bool toolMode = !buildTool.active && unownedKept && ownedTaken;
+                        // #554: placing the last chest of the slot in hand ends build mode (the hand is empty).
+                        inventory.add("chest", 1);
+                        Hotbar_Bind(6, "chest");
+                        Hotbar_Press(6, false);
+                        Hotbar_Update(world, PlayerInput::None(), false);
+                        const bool chestMode = buildTool.active && buildTool.part == (int)PartType::Chest;
+                        const bool chestPlaced = BuildTool_Place(*p, *plot, { PartType::Chest, { 6, 0, 0 }, 0, 0 }, true);
+                        Hotbar_Update(world, PlayerInput::None(), false);
+                        const bool lastEnds = chestMode && chestPlaced && inventory.count("chest") == 0 && !buildTool.active;
+                        printf("bench: hotbar: the last chest in hand placed: build mode %d -> %d (#554)\n", (int)chestMode, (int)buildTool.active);
+                        // #531: F flies only in creative mode.
+                        const bool creative0 = terrainTool.creative, fly0 = player.flyMode;
+                        PlayerInput f; f.press(Act::Fly);
+                        player.flyMode = false;
+                        terrainTool.creative = false; player.flyAllowed = false; player.update(world, f, 1.0f / 60.0f);
+                        const bool flyLocked = !player.flyMode;
+                        terrainTool.creative = true; player.flyAllowed = true; player.update(world, f, 1.0f / 60.0f);
+                        const bool flyCreative = player.flyMode;
+                        player.flyAllowed = false; player.update(world, PlayerInput::None(), 1.0f / 60.0f); // creative off mid-flight: down
+                        const bool flyDropped = !player.flyMode;
+                        terrainTool.creative = creative0; player.flyMode = fly0; player.flyAllowed = true;
+                        printf("bench: hotbar: F out of creative flies %d, in creative %d, creative off mid-flight lands %d (#531)\n", (int)!flyLocked, (int)flyCreative, (int)flyDropped);
+                        Hotbar_Press(0, false);
                         const bool saved = SaveWorld(world), loaded = saved && LoadWorldSave(world);
                         Planetoid* q = dynamic_cast<Planetoid*>(world.objects[0].get());
                         int woodParts = 0, concreteParts = 0;
@@ -6637,7 +6663,7 @@ int main(int argc, char** argv)
                                     if (PartItem(part) == std::string("oak_planks")) ++woodParts;
                                     if (PartItem(part) == std::string("concrete")) ++concreteParts;
                                 }
-                        ok = concreteMode && slope && c0 - c1 == 1 && beam && w0 - w1 == 4 /* a beam is 4 single cubes now, one plank each (#200) */ && block && (before >= ISO_LEVEL ? after >= ISO_LEVEL : fabsf(after - before) < 0.02f) /* the ground beside the block stays ground: #210's exact box carve pulls its density toward the surface (CSG), it doesn't dig */ && used && toolMode && loaded && woodParts == 4 && concreteParts == 2;
+                        ok = lastEnds && flyLocked && flyCreative && flyDropped && concreteMode && slope && c0 - c1 == 1 && beam && w0 - w1 == 4 /* a beam is 4 single cubes now, one plank each (#200) */ && block && (before >= ISO_LEVEL ? after >= ISO_LEVEL : fabsf(after - before) < 0.02f) /* the ground beside the block stays ground: #210's exact box carve pulls its density toward the surface (CSG), it doesn't dig */ && used && toolMode && loaded && woodParts == 4 && concreteParts == 2;
                         printf("bench: hotbar: concrete mode %d, slope -%d concrete, wood beam4 -%d wood, block placed %d (ground outside %.3f -> %.3f), O2 used %d, tool mode %d, save/load %d/%d: %d wood + %d concrete parts -> %s\n",
                                concreteMode, c0 - c1, w0 - w1, block, before, after, used, toolMode, saved, loaded, woodParts, concreteParts, ok ? "PASS" : "FAIL");
                     }
@@ -7425,7 +7451,7 @@ int main(int argc, char** argv)
                         }
                         benchWalkSeconds = 0.0;
                     }
-                } else if ((WorldIdle() && benchDigStrokes == 0 && !benchPaint && !benchSaveLoad && benchWalkSeconds <= 0.0 && benchMineStrokes == 0 && minePhase != 2 && benchFlySeconds <= 0.0 && !benchSuffocate && benchOrbitSeconds <= 0.0 && !benchRide && !benchPark && !benchGravity && !benchPrecision && !benchMantle && !benchAirJump && !benchMoon && !benchHole && !benchWall && !benchDoorway && !benchLedge && !benchTor && !benchMachines && !benchFall && !benchHover && !benchNetIds && !benchNet && !benchTwoPlayers && !benchFingerprint && !benchInterest && !benchTeleClose && !benchMenus && !benchWater && !benchFlyFollow && !benchHotbar && !benchInventory && !benchMap && !benchViewmodel && !benchQuests && !benchHunger && !benchFarm && !benchAnimals && !benchThreats && !benchAnimalPath && !benchDam && !benchFlowMeter && !benchPartWall && !benchPressure && benchShotTabs == 0 && !benchForest && !benchFlow && !benchPond && !benchBucket && !benchWaterSpeed && benchFluidLoad <= 0.0f && !benchFlowShade && !benchPump && !benchTerrain && !benchShelter && !benchRoom && !benchFacing && !benchShadow && !benchParticles && !benchBiomes && !benchOil && !benchSpring && !benchShotAnimals && !benchShotMachines && benchShotBiomes < 0 && !benchFarForest && !benchRecipes && !benchWeather && !benchDecor && !benchMaterials && !benchDamage && !benchCrafting && !benchSuit && !benchTools && !benchRivers && !benchRing && !benchRocket && !benchStation && !benchBlueprint && !benchSmallBody && !benchTrees && !benchChop && benchPersist == 0 && benchBuild == 0 && benchFactory == 0 && !benchCombat && !benchHost && !benchShower && !benchProgression && (benchUnfocus <= 0.0f || unfocusPhase >= 6)) || GetTime() > 600.0) {
+                } else if ((WorldIdle() && benchDigStrokes == 0 && !benchPaint && !benchSaveLoad && benchWalkSeconds <= 0.0 && benchMineStrokes == 0 && minePhase != 2 && benchFlySeconds <= 0.0 && !benchSuffocate && benchOrbitSeconds <= 0.0 && !benchRide && !benchPark && !benchGravity && !benchPrecision && !benchMantle && !benchAirJump && !benchMoon && !benchHole && !benchWall && !benchDoorway && !benchLedge && !benchTor && !benchMachines && !benchFall && !benchHover && !benchNetIds && !benchNet && !benchTwoPlayers && !benchFingerprint && !benchInterest && !benchTeleClose && !benchMenus && !benchWater && !benchFlyFollow && !benchHotbar && !benchInventory && !benchMap && !benchViewmodel && !benchQuests && !benchHunger && !benchFarm && !benchAnimals && !benchThreats && !benchAnimalPath && !benchDam && !benchFlowMeter && !benchPartWall && !benchPressure && benchShotTabs == 0 && !benchForest && !benchFlow && !benchPond && !benchBucket && !benchWaterSpeed && benchFluidLoad <= 0.0f && !benchFlowShade && !benchPump && !benchTerrain && !benchShelter && !benchRoom && !benchFacing && !benchShotDig && !benchShadow && !benchParticles && !benchBiomes && !benchOil && !benchSpring && !benchShotAnimals && !benchShotMachines && benchShotBiomes < 0 && !benchFarForest && !benchRecipes && !benchWeather && !benchDecor && !benchMaterials && !benchDamage && !benchCrafting && !benchSuit && !benchTools && !benchRivers && !benchRing && !benchRocket && !benchStation && !benchBlueprint && !benchSmallBody && !benchTrees && !benchChop && benchPersist == 0 && benchBuild == 0 && benchFactory == 0 && !benchCombat && !benchHost && !benchShower && !benchProgression && (benchUnfocus <= 0.0f || unfocusPhase >= 6)) || GetTime() > 600.0) {
                     benchStart = GetTime();
                     printf("bench: world ready after %.2f s (%d chunks, avg build %.2f ms of which sampling %.2f ms, %d worker threads)\n",
                         GetWorldStats().lastGenerationSeconds, GetWorldStats().chunks, GetWorldStats().avgBuildMs, GetWorldStats().avgSampleMs, GetWorldStats().workerThreads);
@@ -7643,6 +7669,7 @@ int main(int argc, char** argv)
                     Combat_Step(session, simDt, moveIn); // stamina and the block before this step's movement (#165)
                     // Physics in the player's own frame (#314): render space centred on the feet for the step, whatever the
                     // camera and the floating origin do (a server runs every player this way).
+                    player.flyAllowed = terrainTool.creative || bench; // F flies in creative mode only (#531; benches fly their cameras)
                     RenderOriginScope frame(world, player.position);
                     player.update(world, moveIn, simDt);
                 }
@@ -8396,6 +8423,17 @@ int main(int argc, char** argv)
             }
         }
         // --test-torch (#218): at the dawn start (still dark), the ground in front gets brighter with a torch in hand.
+        // --shot-dig (#533): standing on the ground, looking 40 deg down: the dig preview's ring (bench_dig.png).
+        if (benchShotDig && gameState == 1 && !loading && WorldIdle()) {
+            static int df = 0;
+            ++df;
+            if (df == 5) if (Planetoid* p0 = dynamic_cast<Planetoid*>(world.objects[0].get())) { player.flyMode = false; player.spawnOn(world, *p0, StartSpawnDir(*p0)); }
+            if (df >= 8) {
+                const Vector3 flat = Vector3Normalize(Vector3Subtract(player.forward, Vector3Scale(player.up, Vector3DotProduct(player.forward, player.up))));
+                player.forward = Vector3Normalize(Vector3Subtract(flat, Vector3Scale(player.up, 0.84f))); // tan 40 deg
+            }
+            if (df == 40) { TakeScreenshot("bench_dig.png"); printf("bench: shot-dig: bench_dig.png\n"); benchShotDig = false; }
+        }
         if (benchTorch && gameState == 1 && !loading && WorldIdle()) {
             static int tf = 0;
             static double lumOff = 0.0;
@@ -8608,6 +8646,7 @@ int main(int argc, char** argv)
                 if (!worldFresh) {
                     if (bench) worldGen.seed = nw.seed; // benches write no parameters beside the save (default terrain)
                     else NewWorld_Apply(nw);           // the seed, and <save>.worldgen: generateWorld reads it
+                    if (!bench) { settings.difficulty = nw.difficulty; Settings_Save(); } // the world keeps it (#526); the next New World screen starts from it
                     regenerateWorld(world);            // the erosion bake (or its cache) behind its progress screen
                     StartNewWorld(world, true, !bench);
                 }
@@ -8742,6 +8781,7 @@ int main(int argc, char** argv)
                 rlImGuiEnd();
                 GpuTimer_Mark("imgui");
             }
+            if (settings.showFps) DrawFPS(10, 10); // every screen when the setting is on (#572: menus, loading, play), over everything
             rlDrawRenderBatchActive(); // the batched 2D (HUD text, bars, minimap) flushes here, not inside EndDrawing
             GpuTimer_Mark("2d-flush");
             if (Recorder_WantsFrame(true)) Recorder_Capture(); // the finished frame, HUD included (#375)
