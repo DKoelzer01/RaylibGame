@@ -1,6 +1,7 @@
 #include "worldgenparams.h"
 #include "bodies.h"
 #include "world.h"
+#include <sstream>
 
 #include <cstdio>
 #include <cstring>
@@ -25,33 +26,46 @@ uint64_t WorldGenParams::key() const {
     return h;
 }
 
-WorldGenParams WorldGenParams_ForSave(const std::string& savePath) {
+WorldGenParams WorldGenParams_FromText(const std::string& text) {
     WorldGenParams p;
-    FILE* f = fopen((savePath + ".worldgen").c_str(), "r");
-    if (!f) return p;
-    char key[64]; float v;
-    while (fscanf(f, " %63s %f", key, &v) == 2) {
-        if (!strcmp(key, "ocean")) p.ocean = v;
-        else if (!strcmp(key, "mountains")) p.mountains = v;
-        else if (!strcmp(key, "roughness")) p.roughness = v;
-        else if (!strcmp(key, "biomeSize")) p.biomeSize = v;
-        else if (!strcmp(key, "resources")) p.resources = v;
-        else if (!strcmp(key, "erosion")) p.erosion = v != 0.0f;
-        else if (!strcmp(key, "erosionStrength")) p.erosionStrength = v;
-        else if (!strcmp(key, "cliffs")) p.cliffs = v;
-        else if (!strcmp(key, "karst")) p.karst = v != 0.0f;
-        else if (!strcmp(key, "volcanoes")) p.volcanoes = v != 0.0f;
+    std::istringstream in(text);
+    std::string key; float v;
+    while (in >> key >> v) {
+        if (key == "ocean") p.ocean = v;
+        else if (key == "mountains") p.mountains = v;
+        else if (key == "roughness") p.roughness = v;
+        else if (key == "biomeSize") p.biomeSize = v;
+        else if (key == "resources") p.resources = v;
+        else if (key == "erosion") p.erosion = v != 0.0f;
+        else if (key == "erosionStrength") p.erosionStrength = v;
+        else if (key == "cliffs") p.cliffs = v;
+        else if (key == "karst") p.karst = v != 0.0f;
+        else if (key == "volcanoes") p.volcanoes = v != 0.0f;
     }
-    fclose(f);
     return p;
+}
+
+std::string WorldGenParams_ToText(const WorldGenParams& p) {
+    // %.9g: the floats come back bit for bit (the bake's cache key hashes them).
+    char buf[512];
+    snprintf(buf, sizeof buf, "ocean %.9g\nmountains %.9g\nroughness %.9g\nbiomeSize %.9g\nresources %.9g\nerosion %d\nerosionStrength %.9g\ncliffs %.9g\nkarst %d\nvolcanoes %d\n",
+             p.ocean, p.mountains, p.roughness, p.biomeSize, p.resources, p.erosion ? 1 : 0, p.erosionStrength, p.cliffs, p.karst ? 1 : 0, p.volcanoes ? 1 : 0);
+    return buf;
+}
+
+WorldGenParams WorldGenParams_ForSave(const std::string& savePath) {
+    FILE* f = fopen((savePath + ".worldgen").c_str(), "r");
+    if (!f) return WorldGenParams{};
+    std::string text; char buf[512]; size_t n;
+    while ((n = fread(buf, 1, sizeof buf, f)) > 0) text.append(buf, n);
+    fclose(f);
+    return WorldGenParams_FromText(text);
 }
 
 bool WorldGenParams_Save(const std::string& savePath, const WorldGenParams& p) {
     FILE* f = fopen((savePath + ".worldgen").c_str(), "w");
     if (!f) return false;
-    // %.9g: the floats come back bit for bit (the bake's cache key hashes them).
-    fprintf(f, "ocean %.9g\nmountains %.9g\nroughness %.9g\nbiomeSize %.9g\nresources %.9g\nerosion %d\nerosionStrength %.9g\ncliffs %.9g\nkarst %d\nvolcanoes %d\n",
-            p.ocean, p.mountains, p.roughness, p.biomeSize, p.resources, p.erosion ? 1 : 0, p.erosionStrength, p.cliffs, p.karst ? 1 : 0, p.volcanoes ? 1 : 0);
+    fputs(WorldGenParams_ToText(p).c_str(), f);
     fclose(f);
     return true;
 }

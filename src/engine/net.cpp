@@ -15,6 +15,7 @@ std::unordered_map<uint32_t, NetConditions> linkCond;
 std::unordered_map<uint32_t, double> lastReliableDue;   // keeps reliable messages in order per connection
 std::deque<Held> held;                                   // sorted by (due, order)
 NetLinkStats linkStats;
+std::unordered_map<uint32_t, NetTraffic> traffic; // (#348)
 uint64_t heldOrder = 0, rng = 0x9E3779B97F4A7C15ull;
 bool envRead = false;
 
@@ -54,6 +55,8 @@ void Net_SetConditions(const NetConditions& c, uint32_t conn) {
 NetConditions Net_GetConditions(uint32_t conn) { return conn ? CondFor(conn) : defaultCond; }
 NetLinkStats Net_GetLinkStats() { return linkStats; }
 int Net_HeldMessages() { return (int)held.size(); }
+std::vector<std::pair<uint32_t, NetTraffic>> Net_Traffic() { return { traffic.begin(), traffic.end() }; }
+void Net_ResetTraffic() { traffic.clear(); }
 // #327's test call: the default conditions, through the seeded layer (it was GNS's global fake lag and loss: not seedable).
 void Net_SetFakeConditions(int lagMs, float lossPercent) { NetConditions c = defaultCond; c.lagMs = (float)lagMs; c.lossPct = lossPercent; Net_SetConditions(c); }
 
@@ -166,6 +169,12 @@ uint32_t Net_Connect(const char* address) {
 }
 
 void Net_Poll() { if (initialised) { FlushHeld(); SteamNetworkingSockets()->RunCallbacks(); } }
+std::string Net_RemoteAddress(uint32_t conn) {
+    SteamNetConnectionInfo_t info;
+    if (!initialised || !SteamNetworkingSockets()->GetConnectionInfo(conn, &info)) return "";
+    char buf[SteamNetworkingIPAddr::k_cchMaxString]; info.m_addrRemote.ToString(buf, sizeof buf, true);
+    return buf;
+}
 bool Net_IsConnected(uint32_t conn) { return connected.count(conn) > 0; }
 int Net_ConnectionCount() { return (int)connected.size(); }
 
@@ -178,6 +187,7 @@ bool SendNow(uint32_t conn, const void* data, uint32_t size, bool reliable) {
 
 bool Net_Send(uint32_t conn, const void* data, uint32_t size, bool reliable) {
     if (!initialised) return false;
+    { NetTraffic& t = traffic[conn]; t.sentBytes += size; ++t.sentMsgs; } // (#348)
     if (Net_Condition(conn, data, size, reliable)) return true; // held or dropped (#347)
     return SendNow(conn, data, size, reliable);
 }
@@ -189,6 +199,7 @@ int Net_Receive(std::vector<NetMessage>& out, int max) {
     for (int i = 0; i < n; ++i) {
         NetMessage m;
         m.conn = msgs[i]->m_conn;
+        { NetTraffic& t = traffic[m.conn]; t.recvBytes += (uint64_t)msgs[i]->m_cbSize; ++t.recvMsgs; } // (#348)
         m.data.assign((const uint8_t*)msgs[i]->m_pData, (const uint8_t*)msgs[i]->m_pData + msgs[i]->m_cbSize);
         out.push_back(std::move(m));
         msgs[i]->Release();
@@ -221,5 +232,6 @@ int Net_ConnectionCount() { return 0; }
 bool Net_Send(uint32_t, const void*, uint32_t, bool) { return false; }
 int Net_Receive(std::vector<NetMessage>&, int) { return 0; }
 void Net_Close(uint32_t) {}
+std::string Net_RemoteAddress(uint32_t) { return ""; }
 
 #endif

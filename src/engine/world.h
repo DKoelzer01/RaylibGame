@@ -149,6 +149,12 @@ std::shared_ptr<const TerrainDeltas> LoadRegionsFor(int body, const std::string&
 class RingSystem;
 std::vector<std::unique_ptr<RingSystem>>& Rings();
 void SetWorldTime(double t);
+// #339: a client follows the server's world clock (spin, orbits, the sun and weather all derive from it): give it the
+// server's world time now (the time it sent plus half the round trip). Under 2 s off it is slewed in at 10% of the frame
+// time; more is taken at once. Lag = the last estimate of server minus ours; Pending = what is still to slew.
+void WorldTime_Follow(double serverNow);
+double WorldTime_Lag();
+double WorldTime_Pending();
 void worldUpdate(Scene& world, float uploadBudgetMs = 3.0f); // LOD, streaming, uploads
 bool WorldIdle();                      // no queued/running jobs and nothing left to upload
 void World_ClearStreamingQueues();     // #387: drop queued GPU blocks, results and pending uploads (unloadWorld calls it)

@@ -7,6 +7,7 @@
 #include <random>
 #include <chrono>
 #include <thread>
+#include <filesystem>
 #include <array>
 #include "terrainarena.h"
 #include "envflag.h"
@@ -100,7 +101,26 @@ extern "C" __declspec(dllimport) int __stdcall MessageBoxA(void*, const char*, c
 // Avatars drawn this frame (#328): remote players (the net client fills them, #327), bench avatars, and the
 // RAYLIBGAME_AVATAR_SELF=1 debug figure. Rebuilt each frame before drawScene.
 static std::vector<AvatarState> gAvatars, gBenchAvatars;
+// --join (#341 core): this process's connection to the server; its player follows the server's state once synced.
+static NetClient gJoin;
+static bool gJoinSynced = false;
+// #348: the server soak window (RAYLIBGAME_SOAK_PLAYERS=N): frame work times while N players are online.
+static double gFrameWorkStart = 0.0;
+static std::vector<float> gSoakWorkMs;
+static bool gSoakOn = false;
 #include "mpbots.h"
+#include "netinterest.h"
+#include "serverconsole.h"
+#include "serveradmin.h"
+
+// (#345) after an admin change: whoever may no longer join (banned by name or address, or off the whitelist) is kicked.
+static void Server_KickRefused() {
+    for (const HostPlayer& p : Host_ListPlayers()) {
+        std::string why;
+        if (p.online && !Admin_CheckJoin(p.name, p.address, why)) { Host_Kick(p.name, why); printf("server: kicked %s (%s)\n", p.name.c_str(), why.c_str()); }
+    }
+}
+#include "worldgenparams.h"
 
 #if defined(PLATFORM_DESKTOP)
     #define GLSL_VERSION            330
@@ -378,7 +398,8 @@ int main(int argc, char** argv)
     // still shows every result line it reached (#556: the last lines were lost and a finished test looked hung).
     // (Line buffering is full buffering in the Windows CRT.)
     for (int i = 1; i < argc; ++i)
-        if (!strncmp(argv[i], "--bench", 7) || !strncmp(argv[i], "--test-", 7) || !strncmp(argv[i], "--shot-", 7)) { setvbuf(stdout, nullptr, _IONBF, 0); break; }
+        if (!strncmp(argv[i], "--bench", 7) || !strncmp(argv[i], "--test-", 7) || !strncmp(argv[i], "--shot-", 7) || !strcmp(argv[i], "--host") || !strcmp(argv[i], "--server") || !strcmp(argv[i], "--join")) { // (servers and clients too: their logs are read live, #348)
+            setvbuf(stdout, nullptr, _IONBF, 0); break; }
     Log_Open("log.txt");
     Log_SetThreadName("main");
     // --log-level LEVEL (#514): before anything logs. It wins over settings.txt's log_level.
@@ -416,6 +437,8 @@ int main(int argc, char** argv)
     // --seed-survey COUNT FIRSTSEED OUTDIR [THREADS] [SUBSET] (#532): how alike different seeds' start planets are. No window.
     if (argc >= 5 && std::string(argv[1]) == "--seed-survey") return SeedSurvey_Run(argc, argv);
     if (argc >= 2 && std::string(argv[1]) == "--test-netproto") return NetProto_Test() ? 0 : 1; // the wire protocol (#320): no window, no world
+    if (argc >= 2 && std::string(argv[1]) == "--test-server-admin") return Admin_Test() ? 0 : 1; // server admin lists (#345): no window, no world
+    if (argc >= 2 && std::string(argv[1]) == "--test-net-interest") return Interest_Test() ? 0 : 1; // interest management (#340): no window, no world
     double benchSeconds = 0.0;
     bool startWithOverlay = false;
     int benchDigStrokes = 0;     // --test-dig N: dig N strokes at the crosshair once the world is loaded
@@ -476,12 +499,19 @@ int main(int argc, char** argv)
     bool benchMeteor = false;      // --test-meteor (#177)
     bool benchShower = false;      // --test-shower (#316): one world-wide meteor shower, rolled by the authority
     std::string hostSave;          // --host <save> (#311): a dedicated server: load (or create) the save, run headless, listen
+    std::string joinAddr, joinName = "player"; // --join <ip[:port]> [--name N] (#341 core): a client of a running --host
+    bool benchJoin = false;        // --test-join (with --join): the client side of the two-process test (tools/test_join.sh)
+    int benchJoinPhase = 0;
+    int swarmBots = 0; double swarmSoak = 60.0; // --bots N [--soak S] with --join (#348): N walking bots from this process, S seconds
     uint16_t hostPort = kDefaultHostPort; // --port N
     bool benchHost = false;        // --test-host (#311): with --host, a loopback client joins
+    bool benchTimeFollow = false;  // --test-time-follow (#339): the world clock follows a server time (slew, snap)
     bool benchNetMove = false;     // --test-net-move (#327): two clients, prediction and interpolation over loopback
+    bool benchNetDig = false;      // --test-net-dig (#329): a client's digs and places, validated and replicated
     int benchMpBots = 0;           // --test-mp-bots N (#347): with --host, N bot clients join, ping and churn
     bool seedGiven = false;        // --seed N was passed (a --host new world: else a random seed)
     double autosaveMinutes = kDefaultAutosaveMinutes; // --autosave-minutes N (--host; 0 = off)
+    bool serverMode = false; ServerConfig serverCfg; // --server [server.cfg] (#326): --host from a config file, with a console and a log
     unsigned hostSaveSeed = 0;     // the seed an existing --host save holds
     bool hostNewWorld = false;     // --host: the save did not exist yet
     bool benchHeadless = false;    // --test-headless (#311): the sim runs with --headless, nothing drawn
@@ -715,13 +745,33 @@ int main(int argc, char** argv)
         if (std::string(argv[i]) == "--ui") DebugUI_Toggle(); // open the debug panel at start
         if (std::string(argv[i]) == "--seed" && i + 1 < argc) worldGen.seed = (unsigned int)strtoul(argv[i + 1], nullptr, 10);
         if (std::string(argv[i]) == "--host" && i + 1 < argc) hostSave = argv[i + 1];
+        if (std::string(argv[i]) == "--join" && i + 1 < argc) { joinAddr = argv[i + 1]; if (joinAddr.find(':') == std::string::npos) joinAddr += ":" + std::to_string(kDefaultHostPort); }
+        if (std::string(argv[i]) == "--name" && i + 1 < argc) joinName = argv[i + 1];
+        if (std::string(argv[i]) == "--test-join") benchJoin = true;
+        if (std::string(argv[i]) == "--bots" && i + 1 < argc) swarmBots = std::max(1, atoi(argv[i + 1]));
+        if (std::string(argv[i]) == "--soak" && i + 1 < argc) swarmSoak = std::max(1.0, atof(argv[i + 1]));
         if (std::string(argv[i]) == "--port" && i + 1 < argc) hostPort = (uint16_t)atoi(argv[i + 1]);
         if (std::string(argv[i]) == "--host-password" && i + 1 < argc) Host_SetPassword(argv[i + 1]); // (#321)
         if (std::string(argv[i]) == "--max-players" && i + 1 < argc) Host_SetMaxPlayers(atoi(argv[i + 1]));
         if (std::string(argv[i]) == "--test-host") benchHost = true;
+        if (std::string(argv[i]) == "--test-time-follow") benchTimeFollow = true;
         if (std::string(argv[i]) == "--test-net-move") benchNetMove = true;
+        if (std::string(argv[i]) == "--test-net-dig") benchNetDig = true;
         if (std::string(argv[i]) == "--test-mp-bots" && i + 1 < argc) benchMpBots = std::max(1, atoi(argv[i + 1]));
         if (std::string(argv[i]) == "--seed") seedGiven = true;
+        if (std::string(argv[i]) == "--server") { // (#326) the config first; flags after it override
+            const std::string cfgPath = i + 1 < argc && strncmp(argv[i + 1], "--", 2) != 0 ? argv[i + 1] : "server.cfg";
+            std::string err;
+            if (!ServerConfig_Load(cfgPath, serverCfg, err)) { printf("server: %s\n", err.c_str()); return 1; }
+            serverMode = true;
+            hostSave = serverCfg.save; hostPort = (uint16_t)serverCfg.port; autosaveMinutes = serverCfg.autosaveMinutes;
+            Host_SetPassword(serverCfg.password); Host_SetMaxPlayers(serverCfg.maxPlayers);
+            if (serverCfg.seed != 0) { worldGen.seed = serverCfg.seed; seedGiven = true; }
+            std::error_code ec; if (std::filesystem::path(hostSave).has_parent_path()) std::filesystem::create_directories(std::filesystem::path(hostSave).parent_path(), ec);
+            ServerLog_Start(serverCfg.log);
+            printf("server: config %s: save %s, port %d, max players %d, password %s, autosave %g min%s%s\n", cfgPath.c_str(), hostSave.c_str(), serverCfg.port,
+                   serverCfg.maxPlayers, serverCfg.password.empty() ? "none" : "set", serverCfg.autosaveMinutes, serverCfg.motd.empty() ? "" : ", motd: ", serverCfg.motd.c_str());
+        }
         if (std::string(argv[i]) == "--autosave-minutes" && i + 1 < argc) autosaveMinutes = atof(argv[i + 1]);
         if (std::string(argv[i]) == "--nocull") frustumCullingEnabled = false;
         if (std::string(argv[i]) == "--overlay") startWithOverlay = true;
@@ -1031,7 +1081,9 @@ int main(int argc, char** argv)
         else LOG_WARN("Log", "settings.txt: unknown log_level '%s'", settings.logLevel.c_str());
     }
     for (int i = 1; i < argc; ++i) if (std::string(argv[i]) == "--headless") gHeadless = true; // #311: simulate, draw nothing
-    if (benchHeadless || !hostSave.empty()) gHeadless = true; // a dedicated server (--host) draws nothing either
+    bool hostDraw = false; // --host-draw (tests, #750): a --host run keeps its window and draws (to record the in-process clients' avatars)
+    for (int i = 1; i < argc; ++i) if (std::string(argv[i]) == "--host-draw") hostDraw = true;
+    if (benchHeadless || (!hostSave.empty() && !hostDraw)) gHeadless = true; // a dedicated server (--host) draws nothing either
     if (!hostSave.empty()) { // --host: the world's seed (user, 2026-11-15) - before the world is generated
         if (FILE* fs = fopen(hostSave.c_str(), "rb")) { // an existing save keeps its own seed (its "seed N" line)
             char line[512];
@@ -1101,6 +1153,7 @@ int main(int argc, char** argv)
     // A long world-generation step (the erosion bake, #362) runs on a thread; meanwhile draw the loading screen with its
     // progress, so the window stays responsive. From inside a frame (the debug menu's Regenerate) just wait.
     gWorldGenWait = [bench](float progress, const char* what) {
+        if (gJoin.conn) NetClient_Update(gJoin); // --join: keep the connection alive through a long bake (pings; the server times out at 15 s)
         if (gInFrame || !IsWindowReady()) { std::this_thread::sleep_for(std::chrono::milliseconds(20)); return; }
         FpsLog_Frame("bake");
         static double lastPrint = -10.0;
@@ -1198,7 +1251,7 @@ int main(int argc, char** argv)
     Station_Init(&world);
     // The main menu has no world (#503: the erosion bake ran before the title screen). Benches skip the menu: they
     // generate here (or load, below).
-    if (bench && !loadSaveAtStart && !benchMenus) { // --test-menus starts at the title screen with no world, as a launch does
+    if (bench && !loadSaveAtStart && !benchMenus && joinAddr.empty() && hostSave.empty()) { // --test-menus starts at the title screen with no world, as a launch does (--join: the server's world, below; --host: its save's world and sidecar, below - #757)
         generateWorld(world);
         if (!world.objects.empty()) world.camera.target = world.objects[0]->position;
     }
@@ -1212,6 +1265,49 @@ int main(int argc, char** argv)
             if (auto* p = dynamic_cast<Planetoid*>(obj.get()))
                 printf("body %s %s pos %.3f %.3f %.3f radius %.3f seed %u spin %.4f g %.4f\n", BodyKindName(p->kind), p->name.c_str(), p->worldPos.x, p->worldPos.y, p->worldPos.z,
                        p->radius, p->seed, p->spin.y, p->surfaceGravity);
+    }
+    if (!joinAddr.empty()) {
+        // --join <ip[:port]> (#341 core, command line only: the menu is #341's other half): a client of a running --host.
+        // Connect and wait for the Welcome (the window shows "Joining"), then regenerate the server's world from its seed
+        // and bodies (the fingerprint is compared once it has streamed in). The player starts where the server's state
+        // says (the main loop, once the first own state arrives); gameplay is the server's: this process predicts its
+        // player (NetClient_Step), follows the world clock (#339) and draws the others (gNetClient). It never writes the
+        // single-player save: anything saved goes to saves/client_<name>.sav.
+        std::string err;
+        if (!Net_Init(err)) { printf("join: no network transport (%s)\n", err.c_str()); CloseWindow(); return 1; }
+        gNetRole = NetRole::Client;
+        NetClient_Connect(gJoin, joinAddr.c_str(), joinName);
+        const double t0 = GetTime();
+        while ((gJoin.state == NetClient::State::Connecting || gJoin.state == NetClient::State::AwaitingWelcome) && GetTime() - t0 < kClientConnectTimeout + 1.0 && !WindowShouldClose()) {
+            NetClient_Update(gJoin);
+            BeginDrawing(); ClearBackground(BLACK);
+            DrawText(TextFormat("Joining %s as %s ...", joinAddr.c_str(), joinName.c_str()), 40, 40, 30, RAYWHITE);
+            EndDrawing();
+        }
+        if (gJoin.state != NetClient::State::Joined) {
+            printf("join: could not join %s: %s%s%s\n", joinAddr.c_str(), NetClient_StateName(gJoin.state),
+                   gJoin.state == NetClient::State::Rejected ? " - " : "", gJoin.state == NetClient::State::Rejected ? NetRejectText(gJoin.reject.reason) : "");
+            if (benchJoin) printf("bench: join: could not join %s -> FAIL\n", joinAddr.c_str());
+            Net_Shutdown(); CloseWindow(); return 1;
+        }
+        worldGen.seed = gJoin.welcome.seed;
+        SystemDef sys;
+        for (const std::string& line : gJoin.welcome.bodies) {
+            BodyDef b; std::string e;
+            if (ParseBodyDef(line, b, e)) sys.bodies.push_back(b); else printf("join: a body the server sent did not parse (%s): %s\n", e.c_str(), line.c_str());
+        }
+        if (!sys.bodies.empty()) { worldGen.system = sys; worldGen.systemLoaded = true; }
+        SetWorldSavePath(TextFormat("saves/client_%s.sav", joinName.c_str()));
+        // #757: the server's world-gen settings become this save's sidecar (generateWorld reads it), and its sandbox flag.
+        const WorldGenParams joinParams = WorldGenParams_FromText(gJoin.welcome.worldgen);
+        WorldGenParams_Save(WorldSavePath(), joinParams);
+        gSandboxWorld = gJoin.welcome.sandbox;
+        world.objects.clear();
+        generateWorld(world);
+        gNetClient = &gJoin;
+        printf("join: joined %s as %s, session %u%s; seed %u, %zu bodies, %s world-gen settings%s; server world time %.1f s\n", joinAddr.c_str(), joinName.c_str(), gJoin.welcome.session,
+               gJoin.welcome.reconnected ? " (reconnected)" : "", gJoin.welcome.seed, sys.bodies.size(), joinParams.isDefault() ? "default" : "custom",
+               gJoin.welcome.sandbox ? ", sandbox" : "", gJoin.welcome.worldTime);
     }
     bool hostLoaded = false;
     if (!hostSave.empty()) { // --host (#311): the server's world, saved back to the same file
@@ -1605,6 +1701,11 @@ int main(int argc, char** argv)
     double benchStart = 0.0, benchMaxFrame = 0.0;
     std::vector<float> benchFrameTimes; // every timed frame (s): percentiles at the end (#258)
     long benchFrames = 0;
+    if (!joinAddr.empty()) { // --join (#341 core): straight into the server's world (no menu)
+        gameState = 1;
+        mainMenu.isActive = false;
+        world.isActive = true;
+    }
     if (!hostSave.empty()) { // --host (#311): straight into the world (no menu), listening
         gameState = 1;
         mainMenu.isActive = false;
@@ -1614,6 +1715,34 @@ int main(int argc, char** argv)
         printf("host: autosave %s\n", autosaveMinutes > 0.0 ? TextFormat("every %g minutes, and on shutdown", autosaveMinutes) : "off (still on shutdown)");
         Host_Start(hostPort, status);
         printf("host: %s\n", status.c_str());
+        if (serverMode) { // (#345) the admin lists live next to the save: <save dir>/admin.txt, audit.log
+            const std::filesystem::path saveDir = std::filesystem::path(hostSave).parent_path();
+            Admin_Load(saveDir.empty() ? std::string(".") : saveDir.string());
+            // (#326, #345) the host's hooks: the motd, bans and the whitelist at join, the audit log, and players' chat - a line
+            // starting with '/' is a command (ops: the admin commands, kick, say), anything else goes to everyone.
+            Host_SetMotd(serverCfg.motd);
+            Host_SetJoinCheck([](const std::string& name, const std::string& address, std::string& why) { return Admin_CheckJoin(name, address, why); });
+            Host_SetEventHook([](const char* what, uint32_t session, const std::string& detail) {
+                Admin_Audit(std::string(what) + " " + detail + (session ? TextFormat(" (session %u)", session) : ""));
+                if (!strcmp(what, "refused")) printf("server: refused %s\n", detail.c_str());
+            });
+            Host_SetChatHandler([](uint32_t session, const std::string& name, const std::string& text) {
+                if (text[0] != '/') { printf("chat: %s: %s\n", name.c_str(), text.c_str()); Host_Say(text, session, 0); return; }
+                const std::string line = text.substr(1);
+                std::string reply;
+                if (Admin_Command(line, name, reply)) { printf("server: %s (by %s)\n", reply.c_str(), name.c_str()); Server_KickRefused(); }
+                else if (Admin_RoleOf(name) == AdminRole::Player) reply = "only ops can use commands";
+                else {
+                    std::istringstream in(line); std::string cmd, who, rest; in >> cmd >> who; std::getline(in, rest); if (!rest.empty() && rest[0] == ' ') rest.erase(0, 1);
+                    if (cmd == "kick" && !who.empty()) { reply = Host_Kick(who, rest) ? who + " was kicked" : who + " is not online"; Admin_Audit(name + ": " + line + " -> " + reply); }
+                    else if (cmd == "say" && !who.empty()) { Host_Say("[" + name + "] " + line.substr(4)); reply = ""; }
+                    else if (cmd == "list") { reply = "online:"; for (const HostPlayer& p : Host_ListPlayers()) if (p.online) reply += " " + p.name; }
+                    else reply = "unknown command (ops: op, deop, ops, ban, unban, banip, unbanip, bans, whitelist, kick, say, list)";
+                }
+                if (!reply.empty()) Host_Say(reply, 0, session);
+            });
+        }
+        if (serverMode) { ServerConsole_Start(); ServerShutdown_Install(); printf("server: ready. Console commands: help, status, list, save, say <text>, kick <name> [reason], stop\n"); }
     }
     if (bench) {
         gameState = benchMenus ? 0 : 1; // --test-menus: from the title screen
@@ -1821,6 +1950,7 @@ int main(int argc, char** argv)
         }
         Recorder_Update(WorldIdle() && !loading); // its start delay (after the loading screen), F10 in normal play
         GpuTimer_CpuFrameStart(!loading); GpuTimer_BeginFrame();
+        gFrameWorkStart = GetTime(); // (#348) the frame's work, up to EndDrawing's wait
         FpsLog_Frame(gameState == 0 ? "menu" : gameState == 3 ? "newworld" : gameState == 2 ? "paused" : loading ? "loading" : "play");
         // --bench-unfocus S (#510): 1 unfocused during the preload for S s; then, playing: 2 measure 5 s, 3 unfocused S s,
         // 4 settle 2 s, 5 measure 5 s, then FPS before/after.
@@ -5719,7 +5849,7 @@ int main(int argc, char** argv)
                                 // The expected depth after kDrain: the pool (its area as dug: the water poured over its depth) through the hole as an orifice while
                                 // it is under water (0.6 sqrt(2 g h) x 1 m^2, h over its centre), then a weir over its lip (1.7 x 1 m x h^1.5) - it slows as it
                                 // drains: some water over the lip is left at the end, not none.
-                                const float poolArea = h0 > 0.1f ? lkPoured / h0 : 80.0f; // ~80 m^2; the lattice rounds the dug box (#691)
+                                const float poolArea = h0 > 0.1f ? (lkPoured - Fluid::PourDropped()) / h0 : 80.0f; // ~80 m^2 (#691); what was placed (#766)
                                 float d = h0;
                                 for (int k = 0; k < (int)(kDrain / 0.01f); ++k) {
                                     const float qd = d >= lip + 1.0f ? 0.6f * sqrtf(2.0f * g * (d - (lip + 0.5f))) : d > lip ? 1.7f * powf(d - lip, 1.5f) : 0.0f;
@@ -5796,8 +5926,8 @@ int main(int argc, char** argv)
                             const float beyond = Fluid::WaterAt(*p, pt(10.0f, 0.0f, dbFloor + 0.5f), 4.0f);
                             std::vector<TerrainEdit> cut = { box(-0.2f, 2.2f) }; // the wall goes
                             ApplyTerrainEdits(*p, cut.data(), cut.size());
-                            printf("bench: dam-break: reservoir %.2f m deep over its floor at %.2f m (%.0f m^3 poured, %.0f in the simulation, %.1f m^3 already past the wall); wall removed\n",
-                                   h0, dbFloor, dbPoured, Fluid::GetStats().volume, beyond);
+                            printf("bench: dam-break: reservoir %.2f m deep over its floor at %.2f m (%.0f m^3 poured, %.1f found no room (#766), %.0f in the simulation, %.1f m^3 already past the wall); wall removed\n",
+                                   h0, dbFloor, dbPoured, Fluid::PourDropped(), Fluid::GetStats().volume, beyond);
                             printf("bench: dam-break: depth along the reservoir (x = -18 -14 -10 -6 -2 m):");
                             for (float x : { -18.0f, -14.0f, -10.0f, -6.0f, -2.0f }) { const float d = Fluid::SurfaceAbove(*p, pt(x, 0.0f, dbFloor + 0.55f), 4.0f); printf(" %.2f", d > 0.0f ? d + 0.55f : 0.0f); }
                             printf("\n");
@@ -8495,7 +8625,7 @@ int main(int argc, char** argv)
                         }
                         benchWalkSeconds = 0.0;
                     }
-                } else if ((WorldIdle() && benchDigStrokes == 0 && !benchPaint && !benchSaveLoad && benchWalkSeconds <= 0.0 && benchMineStrokes == 0 && minePhase != 2 && benchFlySeconds <= 0.0 && !benchSuffocate && benchOrbitSeconds <= 0.0 && !benchRide && !benchPark && !benchGravity && !benchPrecision && !benchMantle && !benchAirJump && !benchMoon && !benchHole && !benchWall && !benchDoorway && !benchLedge && !benchTor && !benchMachines && !benchFall && !benchHover && !benchNetIds && !benchNet && !benchTwoPlayers && !benchFingerprint && !benchInterest && !benchTeleClose && !benchMenus && !benchWater && !benchFlyFollow && !benchHotbar && !benchInventory && !benchMap && !benchViewmodel && !benchQuests && !benchHunger && !benchFarm && !benchAnimals && !benchThreats && !benchAnimalPath && !benchDam && !benchFlowMeter && !benchPartWall && !benchPressure && benchShotTabs == 0 && !benchForest && !benchFlow && !benchPond && !benchBucket && !benchWaterSpeed && benchFluidLoad <= 0.0f && !benchFlowShade && !benchPump && !benchTerrain && !benchWind && !benchCampfire && !benchCaveMouth && !benchMountain && !benchShelter && !benchRoom && !benchFacing && !benchDungeon && !benchPosture && !benchPause && !benchBite && !benchPlacement && !benchShotDig && !benchShadow && !benchParticles && !benchBiomes && !benchOil && !benchSpring && !benchShotAnimals && !benchShotAvatar && !benchShotMachines && benchShotBiomes < 0 && !benchFarForest && !benchRecipes && !benchWeather && !benchDecor && !benchMaterials && !benchDamage && !benchCrafting && !benchSuit && !benchTools && !benchRivers && !benchRing && !benchRocket && !benchStation && !benchBlueprint && !benchSmallBody && !benchTrees && !benchChop && benchPersist == 0 && benchBuild == 0 && benchFactory == 0 && !benchCombat && !benchHost && !benchNetMove && benchMpBots == 0 && !benchShower && !benchProgression && (benchUnfocus <= 0.0f || unfocusPhase >= 6)) || GetTime() > 600.0) {
+                } else if ((WorldIdle() && benchDigStrokes == 0 && !benchPaint && !benchSaveLoad && benchWalkSeconds <= 0.0 && benchMineStrokes == 0 && minePhase != 2 && benchFlySeconds <= 0.0 && !benchSuffocate && benchOrbitSeconds <= 0.0 && !benchRide && !benchPark && !benchGravity && !benchPrecision && !benchMantle && !benchAirJump && !benchMoon && !benchHole && !benchWall && !benchDoorway && !benchLedge && !benchTor && !benchMachines && !benchFall && !benchHover && !benchNetIds && !benchNet && !benchTwoPlayers && !benchFingerprint && !benchInterest && !benchTeleClose && !benchMenus && !benchWater && !benchFlyFollow && !benchHotbar && !benchInventory && !benchMap && !benchViewmodel && !benchQuests && !benchHunger && !benchFarm && !benchAnimals && !benchThreats && !benchAnimalPath && !benchDam && !benchFlowMeter && !benchPartWall && !benchPressure && benchShotTabs == 0 && !benchForest && !benchFlow && !benchPond && !benchBucket && !benchWaterSpeed && benchFluidLoad <= 0.0f && !benchFlowShade && !benchPump && !benchTerrain && !benchWind && !benchCampfire && !benchCaveMouth && !benchMountain && !benchShelter && !benchRoom && !benchFacing && !benchDungeon && !benchPosture && !benchPause && !benchBite && !benchPlacement && !benchShotDig && !benchShadow && !benchParticles && !benchBiomes && !benchOil && !benchSpring && !benchShotAnimals && !benchShotAvatar && !benchShotMachines && benchShotBiomes < 0 && !benchFarForest && !benchRecipes && !benchWeather && !benchDecor && !benchMaterials && !benchDamage && !benchCrafting && !benchSuit && !benchTools && !benchRivers && !benchRing && !benchRocket && !benchStation && !benchBlueprint && !benchSmallBody && !benchTrees && !benchChop && benchPersist == 0 && benchBuild == 0 && benchFactory == 0 && !benchCombat && !benchHost && !benchJoin && !benchTimeFollow && !benchNetMove && !benchNetDig && benchMpBots == 0 && !benchShower && !benchProgression && (benchUnfocus <= 0.0f || unfocusPhase >= 6)) || GetTime() > 600.0) {
                     benchStart = GetTime();
                     printf("bench: world ready after %.2f s (%d chunks, avg build %.2f ms of which sampling %.2f ms, %d worker threads)\n",
                         GetWorldStats().lastGenerationSeconds, GetWorldStats().chunks, GetWorldStats().avgBuildMs, GetWorldStats().avgSampleMs, GetWorldStats().workerThreads);
@@ -8832,7 +8962,8 @@ int main(int argc, char** argv)
                     // camera and the floating origin do (a server runs every player this way).
                     player.flyAllowed = terrainTool.creative || bench; // F flies in creative mode only (#531; benches fly their cameras)
                     RenderOriginScope frame(world, player.position);
-                    player.update(world, moveIn, simDt);
+                    if (gJoinSynced && gJoin.state == NetClient::State::Joined) NetClient_Step(gJoin, world, player, moveIn); // --join: send, predict, reconcile (#327)
+                    else if (joinAddr.empty()) player.update(world, moveIn, simDt); // (a client waits for its first state)
                 }
                 {
                     // Dead (until the respawn): the view stays exactly where the player died, held in the frame of the
@@ -8870,15 +9001,20 @@ int main(int argc, char** argv)
             if (ship.piloted && ship.lastImpact > 12.0f) survival.health -= (ship.lastImpact - 12.0f) * 3.0f; // crash damage
             if (!loading) Survival_Update(world, simDt, PlayerInput_If(gameInput, stepIn));
             if (!loading) inventory.cool(simDt); // hot items cool (#580)
+            GpuTimer_CpuMark("step: player, survival"); // (#348: the server tick's breakdown; benches and --perf-log)
             if (!loading) Farm_Update(world, simDt * timeScale * gDebugTimeScale * Rocket_Warp()); // crops grow on world time
+            GpuTimer_CpuMark("step: farm");
             if (!loading) Animals_Update(world, simDt, simDt * timeScale * gDebugTimeScale * Rocket_Warp(), gameInput && alive && !ship.piloted);
+            GpuTimer_CpuMark("step: animals");
             if (!loading) Weather_Update(world, simDt * timeScale * gDebugTimeScale); // the sky, rain and snow, lightning
             Factory::Sync(world);                                // machine layouts in, items out
             Factory::Advance(simDt);                             // the factory thread runs its ticks on the sim clock (#315)
+            GpuTimer_CpuMark("step: weather, factory");
             GpuTimer_Mark("w-sim-pre");                          // (benches: the fluid's own share below)
             Fluid::Update(world, simDt);                         // flowing water: commands in, a step job, meshes up
             GpuTimer_Mark("fluid");                              // its GPU step dispatches and readback (#642 perf)
             Waterworks_Update(world, simDt);                     // pumps send water down pipes to outlets
+            GpuTimer_CpuMark("step: fluids, waterworks");
             Objectives_Update(world);
         }
         PlayerInput_EndStep();
@@ -8893,13 +9029,106 @@ int main(int argc, char** argv)
             if (!loading) Fishing_Update(world, frameDt, gameInput && alive && !ship.piloted); // (#176)
             if (!loading) Trapping_Update(world); // snares (#176)
             if (!loading) Events_Update(world, frameDt); // meteor showers (#177)
-            if (!hostSave.empty()) Host_Update(world); // --host (#311): answer joins
+            if (!hostSave.empty()) { GpuTimer_CpuMark("frame: view, events"); Host_Update(world); } // --host (#311): answer joins (its own marks: #348)
+            // #348 soak window (a host with RAYLIBGAME_SOAK_PLAYERS=N): from when N players are online until one leaves (or
+            // RAYLIBGAME_SOAK_SECONDS), the frame work time (mean, p99, max), the per-system CPU breakdown and the traffic per client.
+            if (!hostSave.empty() && getenv("RAYLIBGAME_SOAK_PLAYERS")) {
+                static double soakT0 = 0.0; static bool soakDone = false;
+                const int want = atoi(getenv("RAYLIBGAME_SOAK_PLAYERS"));
+                const double maxSecs = getenv("RAYLIBGAME_SOAK_SECONDS") ? atof(getenv("RAYLIBGAME_SOAK_SECONDS")) : 1e9;
+                const int online = Host_OnlinePlayers();
+                if (!gSoakOn && !soakDone && online >= want) {
+                    gSoakOn = true; soakT0 = GetTime(); gSoakWorkMs.clear(); Net_ResetTraffic(); GpuTimer_Enable(true);
+                    printf("host: soak: %d players online: measuring\n", online);
+                } else if (gSoakOn && (online < want || GetTime() - soakT0 > maxSecs)) {
+                    gSoakOn = false; soakDone = true;
+                    const double secs = GetTime() - soakT0;
+                    std::vector<float> w = gSoakWorkMs; std::sort(w.begin(), w.end());
+                    double mean = 0.0; for (float x : w) mean += x; mean /= std::max<size_t>(1, w.size());
+                    const float p99 = w.empty() ? 0.0f : w[std::min(w.size() - 1, (size_t)(0.99 * (w.size() - 1)))], mx = w.empty() ? 0.0f : w.back();
+                    double sent = 0.0, recv = 0.0, sentMax = 0.0; int conns = 0;
+                    for (const auto& [c, t] : Net_Traffic()) if (t.sentMsgs > 10) { ++conns; sent += t.sentBytes; recv += t.recvBytes; sentMax = std::max(sentMax, (double)t.sentBytes); }
+                    printf("bench: server soak (#348): %d players for %.0f s, %zu frames: frame work mean %.2f ms, p99 %.2f ms, max %.2f ms (budget 16.7 ms at 60 Hz); "
+                           "per client: sent %.1f kB/s (max %.1f), received %.1f kB/s over %d connections\n",
+                           want, secs, w.size(), mean, p99, mx, sent / std::max(1, conns) / secs / 1000.0, sentMax / secs / 1000.0, recv / std::max(1, conns) / secs / 1000.0, conns);
+                    GpuTimer_PrintCpu();
+                    if (!bench) GpuTimer_Enable(false);
+                }
+            }
+            if (serverMode) { // --server (#326): console commands, and a requested shutdown (stop, Ctrl+C, close, SIGTERM)
+                std::string line;
+                while (ServerConsole_Next(line)) {
+                    std::istringstream in(line); std::string cmd; in >> cmd;
+                    std::string rest; std::getline(in, rest); if (!rest.empty() && rest[0] == ' ') rest.erase(0, 1);
+                    std::string adminReply;
+                    if (Admin_Command(line, "console", adminReply)) { printf("server: %s\n", adminReply.c_str()); Server_KickRefused(); } // (#345) op, ban, whitelist ... (a ban kicks)
+                    else if (cmd == "help") printf("server: commands: help, status, list, save, say <text>, kick <name> [reason], stop; "
+                                                   "admin (#345): owner NAME, op NAME, deop NAME, ops, ban NAME [reason], unban NAME, banip IP [reason], unbanip IP, bans, "
+                                                   "whitelist on|off|add NAME|remove NAME|list\n");
+                    else if (cmd == "status") printf("server: %d player(s) online of %d, %d joins; world time %.0f s; %d FPS; save %s; %d autosaves\n", Host_OnlinePlayers(),
+                                                     serverCfg.maxPlayers, Host_Joins(), WorldTime(), GetFPS(), hostSave.c_str(), Host_Autosaves());
+                    else if (cmd == "list") {
+                        int n = 0;
+                        for (const HostPlayer& p : Host_ListPlayers()) if (p.online) { ++n; printf("server:   %s (session %u, %s, %s)\n", p.name.c_str(), p.session, Admin_RoleName(Admin_RoleOf(p.name)), p.address.c_str()); }
+                        printf("server: %d player(s) online\n", n);
+                    }
+                    else if (cmd == "save") { const bool ok = SaveWorld(world); printf("server: saved to %s %s\n", WorldSavePath(), ok ? "done" : "FAILED"); }
+                    else if (cmd == "say") { printf("server: [server] %s\n", rest.c_str()); Host_Say("[server] " + rest); }
+                    else if (cmd == "kick") {
+                        std::istringstream kin(rest); std::string who, why; kin >> who; std::getline(kin, why); if (!why.empty() && why[0] == ' ') why.erase(0, 1);
+                        const bool ok = !who.empty() && Host_Kick(who, why);
+                        printf("server: %s\n", who.empty() ? "usage: kick NAME [reason]" : ok ? (who + " was kicked").c_str() : (who + " is not online").c_str());
+                        if (ok) Admin_Audit("console: kick " + rest);
+                    }
+                    else if (cmd == "stop") ServerShutdown_Request("the stop command");
+                    else printf("server: unknown command '%s' (help lists them)\n", cmd.c_str());
+                }
+                const char* why = "";
+                if (ServerShutdown_Requested(&why) && windowKeepAlive) { printf("server: stopping (%s): saving the world...\n", why); windowKeepAlive = false; }
+            }
+            if (!joinAddr.empty()) { // --join (#341 core): the server's messages; the player starts at its first own state
+                NetClient_Update(gJoin);
+                if (!gJoinSynced && gJoin.state == NetClient::State::Joined && gJoin.haveOwn && !loading)
+                    if (Planetoid* b = Planetoid::findNet(gJoin.own.body)) {
+                        player.flyMode = false;
+                        player.spawnOn(world, *b, b->dirToWorld(Vector3Normalize(gJoin.own.local.toFloat())));
+                        player.applyNetState(world, NetClient_FromMsg(gJoin.own));
+                        gJoinSynced = true;
+                        printf("join: the player starts at the server's state (session %u)\n", gJoin.welcome.session);
+                        if (!gJoin.welcome.motd.empty()) { GameUI_Toast(gJoin.welcome.motd.c_str()); printf("join: motd: %s\n", gJoin.welcome.motd.c_str()); } // (#326)
+                    }
+                // Tests (#326): RAYLIBGAME_JOIN_CHAT="line|/command|..." - sent one a second, starting 2 s after the player synced.
+                if (gJoinSynced && gJoin.state == NetClient::State::Joined && getenv("RAYLIBGAME_JOIN_CHAT")) {
+                    static double chatT0 = GetTime(); static size_t sentLines = 0;
+                    std::vector<std::string> lines; { std::string s = getenv("RAYLIBGAME_JOIN_CHAT"), cur; for (char ch : s) { if (ch == '|') { lines.push_back(cur); cur.clear(); } else cur += ch; } if (!cur.empty()) lines.push_back(cur); }
+                    if (sentLines < lines.size() && GetTime() - chatT0 > 2.0 + sentLines) { NetClient_SendChat(gJoin, lines[sentLines]); printf("join: said \"%s\"\n", lines[sentLines].c_str()); ++sentLines; }
+                }
+                // (#326) chat: each line as a toast (a chat box comes with #342)
+                while (!gJoin.chat.empty()) {
+                    const MsgChat m = gJoin.chat.front(); gJoin.chat.pop_front();
+                    const auto who = gJoin.roster.find(m.from);
+                    const std::string line = m.from == 0 ? m.text : (who != gJoin.roster.end() ? who->second : std::string("?")) + ": " + m.text;
+                    GameUI_Toast(line.c_str());
+                    printf("chat: %s\n", line.c_str());
+                }
+                if (gJoin.state == NetClient::State::Closed || gJoin.state == NetClient::State::Rejected) {
+                    printf("join: disconnected (%s)\n", gJoin.state == NetClient::State::Closed ? NetByeText(gJoin.bye) : NetRejectText(gJoin.reject.reason));
+                    windowKeepAlive = false;
+                }
+                // --bots N --soak S (#348): this process's own player stands by (it brought the world in); N bots join the same
+                // server, walk for S seconds and report, then the process ends.
+                if (swarmBots > 0 && gJoinSynced && !loading && WorldIdle()) {
+                    static bool started = false;
+                    if (!started) { started = true; MpBots_Start(swarmBots, 0, joinAddr, swarmSoak); printf("join: %d bots joining %s for a %.0f s soak\n", swarmBots, joinAddr.c_str(), swarmSoak); }
+                    else if (MpBots_Update(world)) { NetClient_Disconnect(gJoin); windowKeepAlive = false; }
+                }
+            }
             if (!loading) Ambience_Update(world, frameDt); // rain splashes, fireflies, machine smoke
             if (!loading) Waterfalls_Update(world, frameDt); // falls near the camera: sheets, mist and spray (#540)
             Particles_Update(world, frameDt); // smoke, dust, exhaust, splashes (particles.h)
             // Autosave every 5 minutes of play (incremental: only regions changed since the last save).
             static double lastAutosave = GetTime();
-            if (!bench && alive && GetTime() - lastAutosave > 300.0) {
+            if (!bench && alive && gNetRole != NetRole::Client && GetTime() - lastAutosave > 300.0) { // (a client saves nothing: the server owns the world)
                 lastAutosave = GetTime();
                 if (SaveWorld(world)) GameUI_Toast("Autosaved");
             }
@@ -9490,7 +9719,9 @@ int main(int argc, char** argv)
         // --test-net-move (#327, with --host <save>, ENABLE_GNS): bob joins over loopback with 50 ms of lag each way and 2%
         // loss, and walks, turns and jumps for 8 s, predicting himself; carol joins and watches him (interpolated 100 ms
         // behind). Checks: bob's prediction at each acknowledged input stays within 0.5 m of the server's player, and moves
-        // him back at most on 1 state in 10; carol sees bob move no faster than 12 m/s from frame to frame (he walks 6 and jumps at 5; a catch-up snap is a 0.5 m step in a 2 ms frame).
+        // him back at most on 1 state in 10; carol sees bob move no faster than 16 m/s from frame to frame (twice his 7.8 m/s top: walking 6 and jumping 5; the playback clock catches up at most ~1.5x, a snap shows as hundreds of m/s).
+        // Then (#750): carol's roster names both, bob's avatar comes with his name, pickaxe, headlamp, suit tier and swing (the camera
+        // follows it; the game draws carol's view), and when bob leaves he drops out of her roster and his avatar goes.
         if (benchNetMove && gameState == 1 && !loading && WorldIdle()) {
             static NetClient bob, carol;
             static Player bobSelf;
@@ -9501,6 +9732,8 @@ int main(int argc, char** argv)
             static float carolWorstJump = 0.0f;
             static DVec3 carolLast{};
             static double serverGap = 0.0;
+            static bool moveOk = false, rosterOk = false, avatarSeen = false, avatarOk = false;
+            static uint32_t bobSession = 0;
             if (!Host_Listening()) { printf("bench: net move: needs --host with ENABLE_GNS -> SKIP\n"); benchNetMove = false; }
             else {
                 const char* addr = TextFormat("127.0.0.1:%d", hostPort);
@@ -9514,13 +9747,29 @@ int main(int argc, char** argv)
                         synced = true;
                     }
                     stepped = SimTick(); phase = 2; t0 = GetTime();
+                    NetClient_SetLoadout(bob, "stone_pickaxe", true, 1); // (#750) what carol should see in his hands
+                    gNetClient = &carol;                                // the game draws carol's view of the others
                 } else if (phase == 2) {
-                    // bob: forward, turning 30 deg/s, a jump every second; one input per sim step.
+                    // bob: forward, turning 30 deg/s, a jump every second, swinging his pickaxe; one input per sim step.
                     for (; stepped < SimTick(); ++stepped) {
                         PlayerInput in; in.hold(Act::Forward);
                         if (stepped % 60 == 0) in.press(Act::Jump);
                         bobSelf.forward = Vector3RotateByAxisAngle(bobSelf.forward, bobSelf.up, 30.0f * DEG2RAD / 60.0f);
+                        bob.action = 1; bob.actionPhase = (float)fmod(stepped / 30.0, 1.0); // a swing every 0.5 s
                         NetClient_Step(bob, world, bobSelf, in);
+                    }
+                    // carol's avatars (#750): bob named, holding his pickaxe with the lamp on, swinging. The camera keeps him in view.
+                    std::vector<AvatarState> seen;
+                    NetClient_FillAvatars(carol, world, seen);
+                    for (const AvatarState& a : seen) {
+                        if (a.session != bob.welcome.session) continue;
+                        avatarSeen = true;
+                        avatarOk = avatarOk || (a.name == "bob" && a.held == "stone_pickaxe" && a.headlamp && a.suitTier == 1 && a.action == 1);
+                        const Vector3 feet = (a.position - world.renderOrigin).toFloat();
+                        const Vector3 side = Vector3Normalize(Vector3CrossProduct(a.facing, a.up));
+                        world.camera.position = Vector3Add(feet, Vector3Add(Vector3Scale(a.facing, 3.5f), Vector3Add(Vector3Scale(side, 1.5f), Vector3Scale(a.up, 1.6f))));
+                        world.camera.target = Vector3Add(feet, Vector3Scale(a.up, 1.0f));
+                        world.camera.up = a.up;
                     }
                     // The first 1.5 s settle the start (bob's first inputs reach the server while it already stands there):
                     // count from then on.
@@ -9535,11 +9784,26 @@ int main(int argc, char** argv)
                     if (GetTime() - t0 > 8.0) {
                         uint64_t sb = 0; DVec3 sl{};
                         if (Host_PlayerLocal(world, bob.welcome.session, sb, sl) && bobSelf.nearest) serverGap = (bobSelf.nearest->toLocalD(bobSelf.position) - sl).length();
-                        const bool ok = synced && bob.states > 80 && bob.worstError < 0.5 && bob.corrections * 10 <= bob.states && carolSaw && carolWorstJump < 12.0f;
+                        moveOk = synced && bob.states > 80 && bob.worstError < 0.5 && bob.corrections * 10 <= bob.states && carolSaw && carolWorstJump < 16.0f;
                         printf("bench: net move (#327, 100 ms round trip, 2%% loss): bob %d own states, prediction off by %.3f m at worst (%.3f m last), %d corrections; "
                                "%.2f m ahead of the server at the end; carol saw him %d, fastest she saw him move %.1f m/s (he walks 6); rtt %.0f ms -> %s\n",
-                               bob.states, bob.worstError, bob.lastError, bob.corrections, serverGap, (int)carolSaw, carolWorstJump, bob.rttMs, ok ? "PASS" : "FAIL");
-                        NetClient_Disconnect(bob); NetClient_Disconnect(carol);
+                               bob.states, bob.worstError, bob.lastError, bob.corrections, serverGap, (int)carolSaw, carolWorstJump, bob.rttMs, moveOk ? "PASS" : "FAIL");
+                        rosterOk = carol.roster.size() == 2 && carol.roster[bob.welcome.session] == "bob" && carol.roster[carol.welcome.session] == "carol";
+                        bobSession = bob.welcome.session;
+                        NetClient_Disconnect(bob); // bob leaves: carol's roster should drop him, and his avatar go
+                        phase = 3; t0 = GetTime();
+                    }
+                } else if (phase == 3) {
+                    std::vector<AvatarState> seen;
+                    NetClient_FillAvatars(carol, world, seen);
+                    const bool gone = !carol.roster.count(bobSession) && seen.empty();
+                    if (gone || GetTime() - t0 > 10.0) {
+                        const bool ok = moveOk && rosterOk && avatarOk && gone;
+                        printf("bench: net roster (#750): carol's roster had bob and carol %d; bob's avatar seen %d with name, pickaxe, headlamp, suit tier and swing %d; "
+                               "after he left: roster without him and no avatar %d (%.1f s, %d rosters) -> %s\n",
+                               (int)rosterOk, (int)avatarSeen, (int)avatarOk, (int)gone, GetTime() - t0, carol.rosters, ok ? "PASS" : "FAIL");
+                        gNetClient = nullptr;
+                        NetClient_Disconnect(carol);
                         Net_SetFakeConditions(0, 0.0f);
                         benchNetMove = false;
                     }
@@ -9553,6 +9817,206 @@ int main(int argc, char** argv)
             if (hostSave.empty()) { printf("bench: mp-bots: --test-mp-bots needs --host <save> -> FAIL\n"); benchMpBots = 0; }
             else if (!botsStarted) { MpBots_Start(benchMpBots, hostPort); botsStarted = true; }
             else if (MpBots_Update(world)) benchMpBots = 0;
+        }
+        // --test-net-dig (#329, with --host <save>, ENABLE_GNS): bob (bare hands) digs five strokes beside where the server
+        // has him and places one of the dirt he got back; carol watches. Then the refusals: a stroke 30 m off (reach), a
+        // burst of five at once (rate), placing stone he doesn't have (cost). Checks: every accepted edit reaches both
+        // clients in the same order, the ground at the first dig is air, bob's inventory (rebuilt only from the server's
+        // deltas) matches the server's copy, and each refusal came back. The camera watches the spot.
+        if (benchNetDig && gameState == 1 && !loading && WorldIdle()) {
+            static NetClient bob, carol;
+            static Inventory bobInv, carolInv;
+            static int phase = 0, step = 0;
+            static double t0 = 0.0;
+            static Planetoid* body = nullptr;
+            static Vector3 up{}, hitPt{}, firstCentre{};
+            static float digR = 0.0f;
+            static int requested = 0;
+            static Player bobSelf;          // bob's predicted player: he stands still, sending an input every step (the
+            static bool synced = false;     // server steps a player only by its inputs, so without them he'd hang at spawn)
+            static long long stepped = 0;
+            static double syncedAt = 0.0, lastStepAt = 0.0;
+            if (!Host_Listening()) { printf("bench: net dig: needs --host with ENABLE_GNS -> SKIP\n"); benchNetDig = false; }
+            else {
+                const char* addr = TextFormat("127.0.0.1:%d", hostPort);
+                NetClient_Update(bob); NetClient_Update(carol);
+                if (!synced && bob.state == NetClient::State::Joined && bob.haveOwn)
+                    if (Planetoid* b = Planetoid::findNet(bob.own.body)) {
+                        bobSelf.spawnOn(world, *b, b->dirToWorld(Vector3Normalize(bob.own.local.toFloat())));
+                        bobSelf.applyNetState(world, NetClient_FromMsg(bob.own));
+                        synced = true; stepped = SimTick(); syncedAt = GetTime();
+                    }
+                if (synced) for (; stepped < SimTick(); ++stepped) { PlayerInput idle; NetClient_Step(bob, world, bobSelf, idle); }
+                auto spot = [&]() { // the dig spot (2 m east of the server's bob), on the ground; false: not found
+                    uint64_t bid = 0; DVec3 feet{};
+                    if (!Host_PlayerLocal(world, bob.welcome.session, bid, feet) || !(body = Planetoid::findNet(bid))) return false;
+                    up = Vector3Normalize(feet.toFloat());
+                    Vector3 east = Vector3CrossProduct({ 0, 1, 0 }, up);
+                    east = Vector3Normalize(Vector3Length(east) < 1e-3f ? Vector3{ 1, 0, 0 } : east);
+                    const Vector3 d = Vector3Normalize(Vector3Add(feet.toFloat(), Vector3Scale(east, 2.0f)));
+                    const float r0 = (float)feet.length();
+                    for (float r = r0 + 1.5f; r >= r0 - 3.0f; r -= 0.02f)
+                        if (body->densityAt(Vector3Scale(d, r)) >= ISO_LEVEL) { hitPt = Vector3Scale(d, r); return true; }
+                    return false;
+                };
+                if (phase == 0) { Net_SetFakeConditions(50, 2.0f); NetClient_Connect(bob, addr, "bob"); NetClient_Connect(carol, addr, "carol"); phase = 1; t0 = GetTime(); }
+                else if (phase == 1 && carol.state == NetClient::State::Joined && synced && GetTime() - syncedAt > 2.0) { // (landed by then)
+                    bob.inventory = &bobInv; carol.inventory = &carolInv;
+                    NetClient_SetLoadout(bob, "", false, 0); // bare hands
+                    if (spot()) {
+                        const VoxelMaterial m = body->materialAt(hitPt, body->field->normal(hitPt, body->edits.get()));
+                        digR = DigRuleFor(ToolSpec{}, m, TerrainTool_ItemAt(*body, hitPt, (int)m)).radius / body->scale;
+                        if (digR <= 0.0f) digR = DigRuleFor(ToolSpec{}, VoxelMaterial::Regolith, nullptr).radius / body->scale;
+                        phase = 2; step = 0; t0 = GetTime();
+                    } else { printf("bench: net dig: no ground beside bob -> FAIL\n"); benchNetDig = false; }
+                } else if (phase == 2) {
+                    // A stroke every 0.6 s: five digs (bare hands get ~0.4 dirt a stroke; a place costs a whole one), each into
+                    // the hole the last one left; then the place and the refusals.
+                    constexpr int kDigs = 5;
+                    if (step <= kDigs + 1 && GetTime() - t0 > 0.6 * step) {
+                        if (step < kDigs) {
+                            spot();
+                            const Vector3 c = Vector3Subtract(hitPt, Vector3Scale(up, 0.5f * digR));
+                            if (step == 0) firstCentre = c;
+                            NetClient_RequestEdit(bob, NetEditKind::Dig, *body, hitPt, c, digR, ""); ++requested;
+                        } else if (step == kDigs) {
+                            spot();
+                            const float pr = digR * 1.3f;
+                            NetClient_RequestEdit(bob, NetEditKind::Place, *body, hitPt, Vector3Add(hitPt, Vector3Scale(up, 0.3f * pr)), pr, "dirt"); ++requested;
+                        } else if (step == kDigs + 1) {
+                            const Vector3 far = Vector3Add(hitPt, Vector3Scale(Vector3Normalize(Vector3CrossProduct(up, { 0, 0, 1 })), 30.0f));
+                            NetClient_RequestEdit(bob, NetEditKind::Dig, *body, far, far, digR, "");                   // reach
+                            NetClient_RequestEdit(bob, NetEditKind::Place, *body, hitPt, hitPt, digR, "stone");        // cost
+                            for (int k = 0; k < 5; ++k) NetClient_RequestEdit(bob, NetEditKind::Dig, *body, hitPt, Vector3Subtract(hitPt, Vector3Scale(up, 0.5f * digR)), digR, ""); // rate
+                        }
+                        ++step;
+                        lastStepAt = GetTime();
+                    }
+                    // Keep the spot in view: 3 m up and 4 m back from where the first stroke hit (the hole deepens under it).
+                    if (body) {
+                        const Vector3 anchor = step > 0 ? Vector3Add(firstCentre, Vector3Scale(up, 0.5f * digR)) : hitPt;
+                        const Vector3 at = (body->toWorldD(DVec3(anchor)) - world.renderOrigin).toFloat(); // render space (double: 60 km out)
+                        Vector3 side = Vector3CrossProduct(body->dirToWorld(up), { 0, 0, 1 });
+                        side = Vector3Normalize(Vector3Length(side) < 1e-3f ? Vector3{ 1, 0, 0 } : side);
+                        world.camera.position = Vector3Add(at, Vector3Add(Vector3Scale(body->dirToWorld(up), 3.0f), Vector3Scale(side, 4.0f)));
+                        world.camera.target = at; world.camera.up = body->dirToWorld(up);
+                    }
+                    if (step > kDigs + 1 && GetTime() - lastStepAt > 2.5) { // settled: everything answered (slow frames delay the steps)
+                        const int accepted = Host_EditsApplied();
+                        const bool sameOrder = bob.editsSeen == carol.editsSeen && bob.editOrder == carol.editOrder && bob.editsSeen == accepted;
+                        const bool dugOut = body && body->densityAt(firstCentre) < ISO_LEVEL;
+                        double worst = 0.0;
+                        for (const char* it : { "dirt", "gravel", "peat", "sand", "clay" })
+                            worst = std::max(worst, std::fabs(bobInv.amount(it) - Host_InventoryAmount(bob.welcome.session, it)));
+                        const bool got = bobInv.amount("dirt") + bobInv.amount("sand") + bobInv.amount("gravel") > 0.0;
+                        const bool reach = bob.refusedWhy & (1u << (unsigned)NetEditRefusal::Reach), rate = bob.refusedWhy & (1u << (unsigned)NetEditRefusal::Rate),
+                                   cost = bob.refusedWhy & (1u << (unsigned)NetEditRefusal::Cost);
+                        const bool placed = bob.placesSeen == 1 && carol.placesSeen == 1;
+                        const bool ok = accepted >= kDigs + 1 && bob.editsOwn == accepted && sameOrder && dugOut && placed && worst < 0.005 && got && reach && rate && cost && bob.editsRefused <= 6 && carol.inventoryDeltas == 0;
+                        printf("bench: net dig (#329, 100 ms round trip, 2%% loss): %d edits applied by the server (%d digs, a place, the burst's), bob saw %d (own %d), carol %d, same order %d; "
+                               "ground at the first dig is air %d; the place reached both %d; bob carries dirt %.2f gravel %.2f (server's copy off by %.3f at worst, %d deltas; carol got none %d); "
+                               "refused: reach %d, rate %d, cost %d (%d refusals) -> %s\n",
+                               accepted, kDigs, bob.editsSeen, bob.editsOwn, carol.editsSeen, (int)sameOrder, (int)dugOut, (int)placed, bobInv.amount("dirt"), bobInv.amount("gravel"), worst,
+                               bob.inventoryDeltas, (int)(carol.inventoryDeltas == 0), (int)reach, (int)rate, (int)cost, bob.editsRefused, ok ? "PASS" : "FAIL");
+                        NetClient_Disconnect(bob); NetClient_Disconnect(carol);
+                        Net_SetFakeConditions(0, 0.0f);
+                        benchNetDig = false;
+                    }
+                }
+                if (phase < 2 && GetTime() - t0 > 20.0) { printf("bench: net dig: bob %s, carol %s after 20 s -> FAIL\n", NetClient_StateName(bob.state), NetClient_StateName(carol.state)); benchNetDig = false; }
+            }
+        }
+        // --test-join (with --join; tools/test_join.sh runs the host and two clients as separate processes): the client side.
+        // Once the server's world has streamed in: the fingerprint matches the Welcome's, the player started at the server's
+        // state, walks 8 s predicting itself (error at each acknowledged input < 0.5 m, at most 1 correction in 10 states),
+        // and its world clock follows the server's (|estimate - ours| < 0.1 s). RAYLIBGAME_JOIN_OTHERS=N: also sees N other
+        // players, at least one of them moving (another client walking).
+        if (benchJoin && gameState == 1 && !loading && gJoinSynced && WorldIdle()) {
+            static double jt0 = 0.0; static DVec3 start{}; static bool fpOk = false, warmed = false;
+            static std::map<uint32_t, std::pair<DVec3, double>> seen; // session -> first view, farthest moved
+            Planetoid* b = player.nearest;
+            if (benchJoinPhase == 0) {
+                fpOk = WorldFingerprint(world) == gJoin.welcome.fingerprint;
+                if (b) start = b->toLocalD(player.position);
+                player.autoWalk = true; jt0 = GetTime(); benchJoinPhase = 1;
+            } else {
+                if (!warmed && GetTime() - jt0 > 1.5) { warmed = true; gJoin.worstError = 0.0; gJoin.corrections = 0; gJoin.states = 0; }
+                for (const auto& kv : gJoin.others) {
+                    uint64_t vb = 0; DVec3 v{};
+                    if (!NetClient_OtherView(gJoin, kv.first, vb, v)) continue;
+                    auto it = seen.find(kv.first);
+                    if (it == seen.end()) seen[kv.first] = { v, 0.0 };
+                    else it->second.second = std::max(it->second.second, (v - it->second.first).length());
+                }
+                // RAYLIBGAME_JOIN_LINGER=S: stay connected S more seconds after the walk, watching (another client may walk later).
+                static double walked = -1.0;
+                if (walked < 0.0 && GetTime() - jt0 > 8.0) { player.autoWalk = false; walked = b ? (b->toLocalD(player.position) - start).length() * b->scale : 0.0; }
+                const double linger = getenv("RAYLIBGAME_JOIN_LINGER") ? atof(getenv("RAYLIBGAME_JOIN_LINGER")) : 0.0;
+                // RAYLIBGAME_JOIN_SHOT=<file>: before reporting, turn to the nearest other player and take a screenshot (its avatar
+                // and nameplate, drawn from the server's replication: the whole chain in one picture).
+                static int shotFrames = -1;
+                const char* shotPath = getenv("RAYLIBGAME_JOIN_SHOT"); if (shotPath && !*shotPath) shotPath = nullptr;
+                if (shotPath && walked >= 0.0 && GetTime() - jt0 > 8.0 + linger && shotFrames < 30 && b) {
+                    uint64_t vb = 0; DVec3 v{}; double best = 1e18; DVec3 at{};
+                    for (const auto& kv : gJoin.others)
+                        if (NetClient_OtherView(gJoin, kv.first, vb, v)) { const double d = (v - b->toLocalD(player.position)).length(); if (d < best) { best = d; at = v; } }
+                    if (best < 1e17) {
+                        const Vector3 to = Vector3Subtract(b->toWorld(at.toFloat()), (player.position - world.renderOrigin).toFloat());
+                        const Vector3 flat = Vector3Subtract(to, Vector3Scale(player.up, Vector3DotProduct(to, player.up)));
+                        if (Vector3Length(flat) > 0.1f) player.forward = Vector3Normalize(flat);
+                    }
+                    if (++shotFrames == 30) { TakeScreenshot(shotPath); printf("bench: join: %s (the other player %.1f m away)\n", shotPath, best < 1e17 ? best : -1.0); }
+                }
+                if (walked >= 0.0 && GetTime() - jt0 > 8.0 + linger && (!shotPath || shotFrames >= 30 || !b)) {
+                    const int wantOthers = getenv("RAYLIBGAME_JOIN_OTHERS") ? atoi(getenv("RAYLIBGAME_JOIN_OTHERS")) : 0;
+                    double othersMoved = 0.0; for (const auto& kv : seen) othersMoved = std::max(othersMoved, kv.second.second);
+                    const bool clockOk = gJoin.pongs >= 3 && fabs(gJoin.clockError) < 0.1 && fabs(WorldTime_Pending()) < 0.1;
+                    const bool moveOk = walked > 15.0 && gJoin.states > 80 && gJoin.worstError < 0.5 && gJoin.corrections * 10 <= gJoin.states;
+                    const bool othersOk = (int)seen.size() >= wantOthers && (wantOthers == 0 || othersMoved > 5.0);
+                    const bool ok = fpOk && clockOk && moveOk && othersOk;
+                    printf("bench: join (%s, session %u): world fingerprint matches %d; walked %.1f m, %d own states, prediction off by %.3f m at worst, %d corrections; "
+                           "world clock %.1f s, estimate off by %.0f ms, %.0f ms still to slew (%d pongs, rtt %.0f ms); saw %zu other player(s) (want %d), farthest one moved %.1f m -> %s\n",
+                           joinName.c_str(), gJoin.welcome.session, (int)fpOk, walked, gJoin.states, gJoin.worstError, gJoin.corrections, WorldTime(),
+                           gJoin.clockError * 1000.0, WorldTime_Pending() * 1000.0, gJoin.pongs, gJoin.rttMs, seen.size(), wantOthers, othersMoved, ok ? "PASS" : "FAIL");
+                    NetClient_Disconnect(gJoin);
+                    benchJoin = false;
+                }
+            }
+        }
+        // --test-time-follow (#339): the world clock follows a server's. 1 s behind: slewed in at 10% (the clock never runs
+        // more than 1.1x nor jumps); 0.5 s ahead: slowed (0.9x, never backwards); 30 s behind: taken at once, and the planet's
+        // spin keeps its phase (angle = phase + spin x time), so any machine with the same world time draws the same sky.
+        if (benchTimeFollow && gameState == 1 && !loading && WorldIdle()) {
+            static int tf = 0; static double tStart = 0.0, wLast = 0.0; static long long tickLast = 0; static float fastest = 0.0f, slowest = 9.0f;
+            static bool slewOk = false, slowOk = false, snapOk = false, phaseOk = false;
+            static double phase0[3] = {};
+            Planetoid* p = world.objects.empty() ? nullptr : dynamic_cast<Planetoid*>(world.objects[0].get());
+            const double now = GetTime(), w = WorldTime();
+            const long long ticks = SimTick() - tickLast; tickLast = SimTick(); // the world clock moves in sim steps: its rate per step
+            if (tf > 0 && ticks > 0 && tf != 3) { const float r = (float)((w - wLast) / (ticks * SimDt())); fastest = std::max(fastest, r); slowest = std::min(slowest, r); }
+            wLast = w;
+            if (tf == 0) { WorldTime_Follow(w + 1.0); tf = 1; tStart = now; fastest = 0.0f; slowest = 9.0f; }
+            else if (tf == 1 && (WorldTime_Pending() == 0.0 || now - tStart > 15.0)) {
+                slewOk = WorldTime_Pending() == 0.0 && fastest <= 1.12f && slowest > 0.0f;
+                printf("bench: time follow: 1 s behind: caught up in %.1f s, the clock ran %.2f-%.2fx\n", now - tStart, slowest, fastest);
+                WorldTime_Follow(w - 0.5); tf = 2; tStart = now; fastest = 0.0f; slowest = 9.0f;
+            } else if (tf == 2 && (WorldTime_Pending() == 0.0 || now - tStart > 10.0)) {
+                slowOk = WorldTime_Pending() == 0.0 && slowest >= 0.88f && fastest <= 1.02f;
+                printf("bench: time follow: 0.5 s ahead: settled in %.1f s, the clock ran %.2f-%.2fx\n", now - tStart, slowest, fastest);
+                if (p) for (int k = 0; k < 3; ++k) phase0[k] = p->spinPhase[k];
+                WorldTime_Follow(w + 30.0); snapOk = fabs(WorldTime() - (w + 30.0)) < 1e-9 && WorldTime_Pending() == 0.0;
+                tf = 3; tStart = now;
+            } else if (tf == 3 && now - tStart > 0.5) {
+                phaseOk = p != nullptr;
+                if (p) for (int k = 0; k < 3; ++k) {
+                    double a = fmod(p->spinPhase[k] + (double)(&p->spin.x)[k] * WorldTime(), 360.0); if (a < 0.0) a += 360.0;
+                    phaseOk = phaseOk && p->spinPhase[k] == phase0[k] && fabs(a - p->spinAngle[k]) < 1e-6;
+                }
+                const bool ok = slewOk && slowOk && snapOk && phaseOk;
+                printf("bench: time follow (#339): slew %d, slow %d, 30 s snap %d, spin phase kept and angle = phase + spin x time %d (spin %.4f deg/s) -> %s\n",
+                       (int)slewOk, (int)slowOk, (int)snapOk, (int)phaseOk, p ? p->spin.y : 0.0f, ok ? "PASS" : "FAIL");
+                benchTimeFollow = false;
+            }
         }
         // --test-host (#311, with --host <save>): the dedicated server loaded or created its save and runs headless.
         //   - seed (user, 2026-11-15): a new world takes --seed N, else a random seed (printed); an existing save keeps its own;
@@ -10104,14 +10568,23 @@ int main(int argc, char** argv)
         BeginDrawing();
         gInFrame = true; // (#362: world generation started from inside a frame - the debug menu - must not draw its own)
             ClearBackground(crackCheck ? MAGENTA : BLACK); // --crack-check: holes in the terrain show magenta
-            GpuTimer_Enable(benchMeasuring || perfLog); GpuTimer_Mark("clear");
+            GpuTimer_Enable(benchMeasuring || perfLog || gSoakOn); GpuTimer_Mark("clear");
             GpuTimer_CpuMark("begin-draw");
             if (gameState == 0) {
                 pendingMenu = Menu_Main();
             } else if (gameState == 3) {
                 pendingNewWorld = NewWorld_Draw(); // the New World screen (#504)
             } else if (gameState == 1) {
-                gAvatars = gBenchAvatars; // (#328) the net client's remote players join here (#327)
+                gAvatars = gBenchAvatars; // (#328)
+                if (gNetClient) NetClient_FillAvatars(*gNetClient, world, gAvatars); // the other players on the server (#750)
+                // Joined to a server as a client (#329): the terrain tool asks it to dig and place; our inventory follows it.
+                if (gNetClient && gNetRole == NetRole::Client && gNetClient->state == NetClient::State::Joined) {
+                    gNetClient->inventory = &inventory;
+                    if (!gTerrainToolNetEdit)
+                        gTerrainToolNetEdit = [](Planetoid& p, bool dig, Vector3 hit, Vector3 centre, float radius, const std::string& item) {
+                            NetClient_RequestEdit(*gNetClient, dig ? NetEditKind::Dig : NetEditKind::Place, p, hit, centre, radius, item);
+                        };
+                } else gTerrainToolNetEdit = nullptr;
                 if (avatarSelf) { // RAYLIBGAME_AVATAR_SELF=1: yourself, 3 m ahead and facing you (a mirror)
                     AvatarState a = Avatar_FromPlayer(player, 0);
                     const Vector3 ahead = a.facing;
@@ -10228,6 +10701,7 @@ int main(int argc, char** argv)
             GpuTimer_Mark("2d-flush");
             if (Recorder_WantsFrame(true)) Recorder_Capture(); // the finished frame, HUD included (#375)
             Recorder_FrameDone();
+        if (gSoakOn) gSoakWorkMs.push_back((float)((GetTime() - gFrameWorkStart) * 1000.0)); // (#348) before the frame-rate wait
         EndDrawing();
         gInFrame = false;
         {   // Unfocused (#510): at most ~30 frames a second (the streaming still gets every frame's budget), so a background
@@ -10248,6 +10722,7 @@ int main(int argc, char** argv)
     Audio_Shutdown();
     Factory::Stop();
     Host_Stop();
+    if (serverMode) { printf("server: stopped\n"); ServerShutdown_Done(); }
     CloseWindow();
 }
 

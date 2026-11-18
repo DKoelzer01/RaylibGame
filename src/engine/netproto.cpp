@@ -10,7 +10,8 @@ const char* NetMsgName(NetMsg m) {
     switch (m) {
         case NetMsg::Hello: return "hello"; case NetMsg::Welcome: return "welcome"; case NetMsg::Reject: return "reject";
         case NetMsg::Bye: return "bye"; case NetMsg::Ping: return "ping"; case NetMsg::Pong: return "pong";
-        case NetMsg::Input: return "input"; case NetMsg::PlayerState: return "player state"; case NetMsg::TerrainEdit: return "terrain edit"; case NetMsg::Shower: return "shower";
+        case NetMsg::Input: return "input"; case NetMsg::PlayerState: return "player state"; case NetMsg::TerrainEdit: return "terrain edit"; case NetMsg::Shower: return "shower"; case NetMsg::Roster: return "roster"; case NetMsg::Loadout: return "loadout";
+        case NetMsg::EditRequest: return "edit request"; case NetMsg::EditRefused: return "edit refused"; case NetMsg::InventoryDelta: return "inventory delta"; case NetMsg::Chat: return "chat";
         default: return "?";
     }
 }
@@ -95,7 +96,7 @@ void NetWrite(NetWriter& w, const MsgWelcome& m) {
     Id(w, NetMsg::Welcome);
     w.u32(m.protocol); w.u32(m.session); w.boolean(m.reconnected); w.u32(m.seed);
     w.varu(m.bodies.size()); for (const std::string& b : m.bodies) w.str(b);
-    w.u64(m.fingerprint); w.u32(m.serverTick);
+    w.u64(m.fingerprint); w.u32(m.serverTick); w.f64(m.worldTime); w.str(m.worldgen); w.boolean(m.sandbox); w.str(m.motd.substr(0, 200));
     w.u8(m.settings.difficulty); w.boolean(m.settings.pvp); w.boolean(m.settings.claims); w.u8(m.settings.maxPlayers);
 }
 bool NetRead(NetReader& r, MsgWelcome& m) {
@@ -104,7 +105,7 @@ bool NetRead(NetReader& r, MsgWelcome& m) {
     if (n > 256) r.ok = false;
     m.bodies.clear();
     for (uint64_t i = 0; i < n && r.ok; ++i) m.bodies.push_back(r.str(1024));
-    m.fingerprint = r.u64(); m.serverTick = r.u32();
+    m.fingerprint = r.u64(); m.serverTick = r.u32(); m.worldTime = r.f64(); m.worldgen = r.str(4096); m.sandbox = r.boolean(); m.motd = r.str(200);
     m.settings.difficulty = r.u8(); m.settings.pvp = r.boolean(); m.settings.claims = r.boolean(); m.settings.maxPlayers = r.u8();
     if (m.settings.difficulty > 2) r.ok = false;
     return Done(r);
@@ -128,14 +129,15 @@ bool NetRead(NetReader& r, MsgBye& m) {
 
 void NetWrite(NetWriter& w, const MsgPing& m) { Id(w, NetMsg::Ping); w.u32(m.seq); w.f64(m.clientTime); }
 bool NetRead(NetReader& r, MsgPing& m) { m.seq = r.u32(); m.clientTime = r.f64(); return Done(r); }
-void NetWrite(NetWriter& w, const MsgPong& m) { Id(w, NetMsg::Pong); w.u32(m.seq); w.f64(m.clientTime); w.u32(m.serverTick); }
-bool NetRead(NetReader& r, MsgPong& m) { m.seq = r.u32(); m.clientTime = r.f64(); m.serverTick = r.u32(); return Done(r); }
+void NetWrite(NetWriter& w, const MsgPong& m) { Id(w, NetMsg::Pong); w.u32(m.seq); w.f64(m.clientTime); w.u32(m.serverTick); w.f64(m.worldTime); }
+bool NetRead(NetReader& r, MsgPong& m) { m.seq = r.u32(); m.clientTime = r.f64(); m.serverTick = r.u32(); m.worldTime = r.f64(); return Done(r); }
 
 void NetWrite(NetWriter& w, const MsgInputs& m) { // newest tick, then the steps newest first (ticks implicit)
     Id(w, NetMsg::Input);
     const size_t n = std::min<size_t>(m.steps.size(), 8);
     w.u32(n ? m.steps[0].tick : 0); w.u8((uint8_t)n);
     for (size_t i = 0; i < n; ++i) { const MsgInput& s = m.steps[i]; w.varu(s.held); w.varu(s.pressed); w.unit(s.fx, s.fy, s.fz); }
+    w.u8(m.action); w.u8((uint8_t)std::clamp((int)std::lround(m.actionPhase * 255.0f), 0, 255));
 }
 bool NetRead(NetReader& r, MsgInputs& m) {
     const uint32_t newest = r.u32();
@@ -147,6 +149,8 @@ bool NetRead(NetReader& r, MsgInputs& m) {
         s.held = r.varu(); s.pressed = r.varu(); r.unit(s.fx, s.fy, s.fz);
         m.steps.push_back(s);
     }
+    m.action = r.u8(); m.actionPhase = r.u8() / 255.0f;
+    if (m.action > 3) r.ok = false;
     return Done(r);
 }
 
@@ -157,11 +161,14 @@ void NetWrite(NetWriter& w, const MsgPlayerState& m) {
     auto ms = [&](float s) { w.u8((uint8_t)std::clamp((int)std::lround(s * 1000.0f), 0, 255)); };
     ms(m.jumpBuffer); ms(m.coyote); ms(m.jumpLock);
     w.u8((uint8_t)std::clamp((int)std::lround(m.jetpackFuel * 255.0f), 0, 255));
+    w.u8(m.action); w.u8((uint8_t)std::clamp((int)std::lround(m.actionPhase * 255.0f), 0, 255));
 }
 bool NetRead(NetReader& r, MsgPlayerState& m) {
     m.session = (uint32_t)r.varu(); m.tick = r.u32(); m.ackInput = r.u32(); m.body = r.varu(); m.local = r.pos();
     m.vx = r.speed(); m.vy = r.speed(); m.vz = r.speed(); m.yaw = r.angle(); m.pitch = (int16_t)r.u16() / 32767.0f * 1.6f; m.flags = r.u8();
     m.jumpBuffer = r.u8() / 1000.0f; m.coyote = r.u8() / 1000.0f; m.jumpLock = r.u8() / 1000.0f; m.jetpackFuel = r.u8() / 255.0f;
+    m.action = r.u8(); m.actionPhase = r.u8() / 255.0f;
+    if (m.action > 3) r.ok = false;
     return Done(r);
 }
 
@@ -169,16 +176,89 @@ void NetWrite(NetWriter& w, const MsgTerrainEdit& m) {
     Id(w, NetMsg::TerrainEdit);
     w.varu(m.body); w.pos(m.center); w.f32(m.radius); w.u8(m.flags); w.u8((uint8_t)m.paint);
     if (m.flags & 4) { w.f32(m.hx); w.f32(m.hy); w.f32(m.hz); w.unit(m.ax[0], m.ax[1], m.ax[2]); w.unit(m.ay[0], m.ay[1], m.ay[2]); }
+    w.f32(m.strength); w.varu(m.session); w.u32(m.seq);
 }
 bool NetRead(NetReader& r, MsgTerrainEdit& m) {
     m.body = r.varu(); m.center = r.pos(); m.radius = r.f32(); m.flags = r.u8(); m.paint = (int8_t)r.u8();
     if (m.flags & 4) { m.hx = r.f32(); m.hy = r.f32(); m.hz = r.f32(); r.unit(m.ax[0], m.ax[1], m.ax[2]); r.unit(m.ay[0], m.ay[1], m.ay[2]); }
-    if (m.radius < 0.0f || m.radius > 64.0f || (m.flags & ~0x0F)) r.ok = false; // a dig is metres, not a planet
+    m.strength = r.f32();
+    const uint64_t s = r.varu();
+    m.session = (uint32_t)s; m.seq = r.u32();
+    if (m.radius < 0.0f || m.radius > 64.0f || (m.flags & ~0x0F) || !(std::fabs(m.strength) <= 4.0f) || s > 0xFFFFFFFFull) r.ok = false; // a dig is metres, not a planet
+    return Done(r);
+}
+
+const char* NetEditRefusalText(NetEditRefusal r) {
+    switch (r) {
+        case NetEditRefusal::Reach: return "out of reach"; case NetEditRefusal::Rate: return "too fast";
+        case NetEditRefusal::Tool: return "the tool in hand can't dig that"; case NetEditRefusal::Cost: return "not enough to place";
+        case NetEditRefusal::Body: return "no such body"; case NetEditRefusal::Mantle: return "the mantle can't be dug";
+        case NetEditRefusal::Shape: return "not a stroke the tool makes";
+        default: return "?";
+    }
+}
+void NetWrite(NetWriter& w, const MsgEditRequest& m) {
+    Id(w, NetMsg::EditRequest);
+    w.u32(m.seq); w.u8((uint8_t)m.kind); w.varu(m.body); w.pos(m.hit); w.pos(m.center); w.f32(m.radius); w.str(m.item.substr(0, 48));
+}
+bool NetRead(NetReader& r, MsgEditRequest& m) {
+    m.seq = r.u32();
+    const uint8_t k = r.u8();
+    if (k >= (uint8_t)NetEditKind::Count) r.ok = false;
+    m.kind = (NetEditKind)k; m.body = r.varu(); m.hit = r.pos(); m.center = r.pos(); m.radius = r.f32(); m.item = r.str(48);
+    if (!(m.radius > 0.0f && m.radius <= 16.0f)) r.ok = false;
+    return Done(r);
+}
+void NetWrite(NetWriter& w, const MsgEditRefused& m) { Id(w, NetMsg::EditRefused); w.u32(m.seq); w.u8((uint8_t)m.why); }
+bool NetRead(NetReader& r, MsgEditRefused& m) {
+    m.seq = r.u32();
+    const uint8_t why = r.u8();
+    if (why >= (uint8_t)NetEditRefusal::Count) r.ok = false;
+    m.why = (NetEditRefusal)why;
+    return Done(r);
+}
+void NetWrite(NetWriter& w, const MsgInventoryDelta& m) { Id(w, NetMsg::InventoryDelta); w.str(m.item.substr(0, 48)); w.f64(m.amount); }
+void NetWrite(NetWriter& w, const MsgChat& m) { Id(w, NetMsg::Chat); w.u32(m.from); w.str(m.text.substr(0, 256)); }
+bool NetRead(NetReader& r, MsgChat& m) { m.from = r.u32(); m.text = r.str(256); return Done(r); }
+bool NetRead(NetReader& r, MsgInventoryDelta& m) {
+    m.item = r.str(48); m.amount = r.f64();
+    if (m.item.empty() || !(std::fabs(m.amount) < 1e6)) r.ok = false;
     return Done(r);
 }
 
 void NetWrite(NetWriter& w, const MsgShower& m) { Id(w, NetMsg::Shower); w.f64(m.start); w.f64(m.end); w.u32(m.id); }
 bool NetRead(NetReader& r, MsgShower& m) { m.start = r.f64(); m.end = r.f64(); m.id = r.u32(); return Done(r); }
+
+constexpr size_t kMaxRoster = 64, kMaxNameLen = 32, kMaxItemLen = 48;
+void NetWrite(NetWriter& w, const MsgRoster& m) {
+    Id(w, NetMsg::Roster);
+    const size_t n = std::min(m.players.size(), kMaxRoster);
+    w.varu(n);
+    for (size_t i = 0; i < n; ++i) { w.varu(m.players[i].session); w.str(m.players[i].name.substr(0, kMaxNameLen)); }
+}
+bool NetRead(NetReader& r, MsgRoster& m) {
+    const uint64_t n = r.varu();
+    if (n > kMaxRoster) r.ok = false;
+    m.players.clear();
+    for (uint64_t i = 0; i < n && r.ok; ++i) {
+        MsgRoster::Entry e;
+        const uint64_t s = r.varu();
+        if (s == 0 || s > 0xFFFFFFFFull) r.ok = false;
+        e.session = (uint32_t)s; e.name = r.str(kMaxNameLen);
+        m.players.push_back(e);
+    }
+    return Done(r);
+}
+void NetWrite(NetWriter& w, const MsgLoadout& m) {
+    Id(w, NetMsg::Loadout);
+    w.varu(m.session); w.str(m.held.substr(0, kMaxItemLen)); w.boolean(m.headlamp); w.u8(m.suitTier);
+}
+bool NetRead(NetReader& r, MsgLoadout& m) {
+    const uint64_t s = r.varu();
+    if (s > 0xFFFFFFFFull) r.ok = false;
+    m.session = (uint32_t)s; m.held = r.str(kMaxItemLen); m.headlamp = r.boolean(); m.suitTier = r.u8();
+    return Done(r);
+}
 
 NetMsg NetPeek(const std::vector<uint8_t>& b) {
     if (b.empty() || b[0] == 0 || b[0] >= (uint8_t)NetMsg::Count) return NetMsg::Count;
@@ -210,6 +290,12 @@ bool ParseAny(const std::vector<uint8_t>& b) {
         case NetMsg::PlayerState: { MsgPlayerState m; return NetRead(r, m); }
         case NetMsg::TerrainEdit: { MsgTerrainEdit m; return NetRead(r, m); }
         case NetMsg::Shower: { MsgShower m; return NetRead(r, m); }
+        case NetMsg::Roster: { MsgRoster m; return NetRead(r, m); }
+        case NetMsg::Loadout: { MsgLoadout m; return NetRead(r, m); }
+        case NetMsg::EditRequest: { MsgEditRequest m; return NetRead(r, m); }
+        case NetMsg::EditRefused: { MsgEditRefused m; return NetRead(r, m); }
+        case NetMsg::InventoryDelta: { MsgInventoryDelta m; return NetRead(r, m); }
+        case NetMsg::Chat: { MsgChat m; return NetRead(r, m); }
         default: return false;
     }
 }
@@ -228,45 +314,58 @@ bool NetProto_Test() {
     }
     {
         MsgWelcome a; a.session = 7; a.reconnected = true; a.seed = 42; a.bodies = { "planet Terra 0 0 0 60000", "moon Luna 1 2 3 9000" };
-        a.fingerprint = 0x1234567890abcdefull; a.serverTick = 123456; a.settings = { 2, true, false, 16 };
+        a.fingerprint = 0x1234567890abcdefull; a.serverTick = 123456; a.worldTime = 4321.5; a.worldgen = "ocean 0.5\nkarst 0\n"; a.sandbox = true; a.motd = "be nice"; a.settings = { 2, true, false, 16 };
         MsgWelcome b; std::vector<uint8_t> s;
         check(RoundTrip(a, b, &s) && b.session == 7 && b.reconnected && b.seed == 42 && b.bodies == a.bodies && b.fingerprint == a.fingerprint &&
-              b.serverTick == 123456 && b.settings.difficulty == 2 && b.settings.pvp && !b.settings.claims && b.settings.maxPlayers == 16, "welcome");
+              b.serverTick == 123456 && b.worldTime == 4321.5 && b.worldgen == a.worldgen && b.sandbox && b.motd == "be nice" && b.settings.difficulty == 2 && b.settings.pvp && !b.settings.claims && b.settings.maxPlayers == 16, "welcome");
         samples.push_back(s);
     }
     { MsgReject a{ NetReject::Password, "try again" }, b; std::vector<uint8_t> s; check(RoundTrip(a, b, &s) && b.reason == a.reason && b.detail == a.detail, "reject"); samples.push_back(s); }
     { MsgBye a{ NetBye::ServerClosed }, b; std::vector<uint8_t> s; check(RoundTrip(a, b, &s) && b.reason == a.reason, "bye"); samples.push_back(s); }
     { MsgPing a{ 99, 12.5 }, b; std::vector<uint8_t> s; check(RoundTrip(a, b, &s) && b.seq == 99 && b.clientTime == 12.5, "ping"); samples.push_back(s); }
-    { MsgPong a{ 99, 12.5, 777 }, b; std::vector<uint8_t> s; check(RoundTrip(a, b, &s) && b.seq == 99 && b.clientTime == 12.5 && b.serverTick == 777, "pong"); samples.push_back(s); }
+    { MsgPong a{ 99, 12.5, 777, 86400.25 }, b; std::vector<uint8_t> s; check(RoundTrip(a, b, &s) && b.seq == 99 && b.clientTime == 12.5 && b.serverTick == 777 && b.worldTime == 86400.25, "pong"); samples.push_back(s); }
     {
         MsgInputs a, b; std::vector<uint8_t> s;
         a.steps = { { 5000, 0x1234ull, 0x10ull, 0.6f, 0.0f, -0.8f }, { 4999, 0x1234ull, 0ull, 0.0f, 1.0f, 0.0f }, { 4998, 0x1ull, 0ull, 1.0f, 0.0f, 0.0f } };
+
+        a.action = 2; a.actionPhase = 0.5f;
         const bool rt = RoundTrip(a, b, &s);
-        check(rt && b.steps.size() == 3 && b.steps[0].tick == 5000 && b.steps[2].tick == 4998 && b.steps[0].held == 0x1234ull && b.steps[0].pressed == 0x10ull &&
+        check(rt && b.steps.size() == 3 && b.steps[0].tick == 5000 && b.steps[2].tick == 4998 && b.steps[0].held == 0x1234ull && b.action == 2 && fabsf(b.actionPhase - 0.5f) < 3e-3f && b.steps[0].pressed == 0x10ull &&
               b.steps[2].held == 1ull && fabsf(b.steps[0].fx - 0.6f) < 1e-3f && fabsf(b.steps[0].fz + 0.8f) < 1e-3f && fabsf(b.steps[1].fy - 1.0f) < 1e-3f, "inputs (3 steps)");
         samples.push_back(s);
     }
     {
         MsgPlayerState a; a.session = 3; a.tick = 9001; a.ackInput = 8999; a.body = 0xABCDull; a.local = { 60012.3456, -123.4567, 0.0005 };
-        a.vx = 4.21f; a.vy = -9.81f; a.vz = 0.0f; a.yaw = 6.0f; a.pitch = 1.2f; a.flags = 0b1011; a.jumpBuffer = 0.15f; a.jumpLock = 0.08f; a.jetpackFuel = 0.5f;
+        a.vx = 4.21f; a.vy = -9.81f; a.vz = 0.0f; a.yaw = 6.0f; a.pitch = 1.2f; a.flags = 0b1011; a.jumpBuffer = 0.15f; a.jumpLock = 0.08f; a.jetpackFuel = 0.5f; a.action = 1; a.actionPhase = 0.25f;
         MsgPlayerState b; std::vector<uint8_t> s;
         const bool rt = RoundTrip(a, b, &s);
         const double dp = std::fmax(std::fabs(b.local.x - a.local.x), std::fmax(std::fabs(b.local.y - a.local.y), std::fabs(b.local.z - a.local.z)));
         check(rt && b.session == 3 && b.tick == 9001 && b.ackInput == 8999 && b.body == a.body && dp <= 0.0005 + 1e-9 &&
-              fabsf(b.vx - a.vx) < 0.006f && fabsf(b.vy - a.vy) < 0.006f && fabsf(b.yaw - a.yaw) < 1e-3f && fabsf(b.pitch - a.pitch) < 1e-3f && b.flags == a.flags && fabsf(b.jumpBuffer - 0.15f) < 1e-3f && fabsf(b.jumpLock - 0.08f) < 1e-3f && b.coyote == 0.0f && fabsf(b.jetpackFuel - 0.5f) < 3e-3f,
+              fabsf(b.vx - a.vx) < 0.006f && fabsf(b.vy - a.vy) < 0.006f && fabsf(b.yaw - a.yaw) < 1e-3f && fabsf(b.pitch - a.pitch) < 1e-3f && b.flags == a.flags && fabsf(b.jumpBuffer - 0.15f) < 1e-3f && fabsf(b.jumpLock - 0.08f) < 1e-3f && b.coyote == 0.0f && fabsf(b.jetpackFuel - 0.5f) < 3e-3f && b.action == 1 && fabsf(b.actionPhase - 0.25f) < 3e-3f,
               "player state (1 mm, 1 cm/s, 1e-3 rad at 60 km)");
         printf("bench: netproto: a player state is %zu bytes (position error %.4f mm at 60 km)\n", s.size(), dp * 1000.0);
         samples.push_back(s);
     }
     {
         MsgTerrainEdit a; a.body = 1; a.center = { 100.25, 59950.5, -3.75 }; a.radius = 1.5f; a.flags = 1 | 4; a.hx = 0.25f; a.hy = 0.5f; a.hz = 0.25f;
-        a.ay[0] = 0.0f; a.ay[1] = 0.6f; a.ay[2] = 0.8f; a.paint = 3;
+        a.ay[0] = 0.0f; a.ay[1] = 0.6f; a.ay[2] = 0.8f; a.paint = 3; a.strength = 0.6f; a.session = 4; a.seq = 77;
         MsgTerrainEdit b; std::vector<uint8_t> s;
         check(RoundTrip(a, b, &s) && b.body == 1 && std::fabs(b.center.y - a.center.y) < 0.001 && b.radius == a.radius && b.flags == a.flags &&
-              b.hy == a.hy && fabsf(b.ay[2] - 0.8f) < 1e-3f && b.paint == 3, "terrain edit (box)");
+              b.hy == a.hy && fabsf(b.ay[2] - 0.8f) < 1e-3f && b.paint == 3 && b.strength == 0.6f && b.session == 4 && b.seq == 77, "terrain edit (box)");
         samples.push_back(s);
     }
     { MsgShower a{ 3600.5, 3900.25, 17 }, b; std::vector<uint8_t> s; check(RoundTrip(a, b, &s) && b.start == a.start && b.end == a.end && b.id == 17, "shower"); samples.push_back(s); }
+    {
+        MsgEditRequest a, b; a.seq = 9; a.kind = NetEditKind::Place; a.body = 2; a.hit = { 10.5, 60000.25, -2.0 }; a.center = { 10.5, 60000.5, -2.0 }; a.radius = 0.65f; a.item = "dirt";
+        std::vector<uint8_t> s;
+        check(RoundTrip(a, b, &s) && b.seq == 9 && b.kind == NetEditKind::Place && b.body == 2 && std::fabs(b.center.y - a.center.y) < 0.001 && b.radius == a.radius && b.item == "dirt", "edit request");
+        samples.push_back(s);
+    }
+    { MsgEditRefused a{ 9, NetEditRefusal::Cost }, b; std::vector<uint8_t> s; check(RoundTrip(a, b, &s) && b.seq == 9 && b.why == NetEditRefusal::Cost, "edit refused"); samples.push_back(s); }
+    { MsgInventoryDelta a{ "gravel", -0.375 }, b; std::vector<uint8_t> s; check(RoundTrip(a, b, &s) && b.item == "gravel" && b.amount == -0.375, "inventory delta"); samples.push_back(s); }
+    { MsgChat a{ 3, "hello, world" }, b; std::vector<uint8_t> s; check(RoundTrip(a, b, &s) && b.from == 3 && b.text == "hello, world", "chat"); samples.push_back(s); }
+    { MsgRoster a, b; a.players = { { 1, "alice" }, { 7, "bob" } }; std::vector<uint8_t> s; check(RoundTrip(a, b, &s) && b.players.size() == 2 && b.players[1].session == 7 && b.players[1].name == "bob", "roster"); samples.push_back(s); }
+    { MsgLoadout a{ 3, "stone_pickaxe", true, 2 }, b; std::vector<uint8_t> s; check(RoundTrip(a, b, &s) && b.session == 3 && b.held == "stone_pickaxe" && b.headlamp && b.suitTier == 2, "loadout"); samples.push_back(s); }
     // Every message cut short anywhere must not read as valid; garbage must never crash a reader.
     int truncValid = 0, truncTotal = 0;
     for (const auto& s : samples)

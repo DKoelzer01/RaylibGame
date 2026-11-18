@@ -15,6 +15,7 @@
 #include <memory>
 #include <string>
 #include <vector>
+#include <unordered_map>
 
 // See mpbots.h (#347).
 namespace {
@@ -43,7 +44,9 @@ FILE* csv = nullptr; int csvBot = 0; // RAYLIBGAME_MP_CSV_BOT=N: trace bot N (1-
 const int kRounds = 3;
 const double kWalkSeconds = 8.0, kWarmSeconds = 1.5;
 
-const char* Addr() { return TextFormat("127.0.0.1:%d", port); }
+std::string extAddr;      // #348: a server in another process (--bots N with --join); "" = the --host in this one
+double soakSeconds = 0.0; // #348: walk this long, then report (no churn)
+const char* Addr() { return extAddr.empty() ? TextFormat("127.0.0.1:%d", port) : extAddr.c_str(); }
 double Pct(std::vector<double> v, double p) {
     if (v.empty()) return -1.0;
     std::sort(v.begin(), v.end());
@@ -64,6 +67,9 @@ PlayerInput Script(int k, long long step, Player& p) {
 }
 
 double GapLimit(size_t k);
+// #339: each bot's estimate of the server's world time (pong + half the round trip) against the clock (one clock here).
+const double kClockTolerance = 0.1; // s: jitter and the round trip's asymmetry
+double ClockWorst() { double w = 0.0; for (const Bot& b : bots) w = std::max(w, b.c.worstClockError); return w; }
 void Finish(const char* why, bool movedOk, bool pass) {
     const NetConditions nc = Net_GetConditions();
     const NetLinkStats ls = Net_GetLinkStats();
@@ -75,9 +81,9 @@ void Finish(const char* why, bool movedOk, bool pass) {
     for (const Bot& b : bots)
         printf("bench: mp-bots: %s (session %u): %d own states, prediction off by %.3f m at worst (%.3f last), %d corrections; %.2f m from the server at the end\n",
                b.name.c_str(), b.session, b.c.states, b.c.worstError, b.c.lastError, b.c.corrections, b.serverGap, GapLimit(&b - bots.data()));
-    printf("bench: mp-bots: %zu bots joined %zu; moved ok %d (bot1 saw the others move at most %.2f x their scripted speed); churn %d of %d rounds: %d rejoins kept their session %d, "
+    printf("bench: mp-bots: %zu bots joined %zu; moved ok %d (bot1 saw the others move at most %.2f x their scripted speed); world clock estimate off by %.0f ms at worst (#339); churn %d of %d rounds: %d rejoins kept their session %d, "
            "online count right %d of %d; %s after %.1f s -> %s\n",
-           bots.size(), joinMs.size(), (int)movedOk, watchWorst, churnRound, kRounds, rejoins, sessionsKept, onlineOk, onlineChecks, why, GetTime() - t0, pass ? "PASS" : "FAIL");
+           bots.size(), joinMs.size(), (int)movedOk, watchWorst, ClockWorst() * 1000.0, churnRound, kRounds, rejoins, sessionsKept, onlineOk, onlineChecks, why, GetTime() - t0, pass ? "PASS" : "FAIL");
     for (Bot& b : bots) if (!b.gone) NetClient_Disconnect(b.c);
     if (csv) { fclose(csv); csv = nullptr; }
     phase = -1;
@@ -87,15 +93,45 @@ double GapLimit(size_t k) { const double rtt = std::max(0.0, Pct(rtts, 0.95)) / 
 bool MovedOk() {
     for (size_t k = 0; k < bots.size(); ++k) {
         const Bot& b = bots[k];
-        if (!b.synced || b.c.states < 80 || b.c.worstError >= 0.5 || b.c.corrections * 10 > b.c.states || b.serverGap < 0.0 || b.serverGap > GapLimit(k)) return false;
+        if (!b.synced || b.c.states < 80 || b.c.worstError >= 0.5 || b.c.corrections * 10 > b.c.states || (extAddr.empty() && (b.serverGap < 0.0 || b.serverGap > GapLimit(k)))) return false;
     }
-    return watchWorst < 2.0f;
+    return watchWorst < 2.0f && ClockWorst() < kClockTolerance;
 }
+}
+
+// The soak (#348): N bots walked `secs` against a server in another process. Each must still be connected; the client
+// side of the numbers (round trips, prediction, what each received per second). The server prints its own side.
+void FinishSoak(double secs) {
+    int connected = 0, worstCorr = 0; double worstErr = 0.0, recvMax = 0.0, recvSum = 0.0, sentSum = 0.0;
+    std::unordered_map<uint32_t, NetTraffic> tr; for (auto& [c, t] : Net_Traffic()) tr[c] = t;
+    for (const Bot& b : bots) {
+        connected += b.c.state == NetClient::State::Joined ? 1 : 0;
+        worstErr = std::max(worstErr, b.c.worstError);
+        worstCorr = std::max(worstCorr, b.c.states > 0 ? b.c.corrections * 1000 / b.c.states : 0);
+        const NetTraffic t = tr.count(b.c.conn) ? tr[b.c.conn] : NetTraffic{};
+        recvSum += t.recvBytes; sentSum += t.sentBytes; recvMax = std::max(recvMax, (double)t.recvBytes);
+    }
+    const double n = (double)std::max<size_t>(1, bots.size()), s = std::max(1.0, secs);
+    const NetConditions nc = Net_GetConditions();
+    const bool pass = connected == (int)bots.size() && worstErr < 0.5;
+    printf("bench: mp-soak: %zu bots for %.0f s (lag %.0f ms, jitter %.0f, loss %.1f%%): %d still connected; rtt p50 %.0f / p95 %.0f / max %.0f ms; "
+           "prediction off by %.3f m at worst, at most %.1f%% of states corrected; each bot received %.1f kB/s (max %.1f), sent %.1f kB/s -> %s\n",
+           bots.size(), secs, nc.lagMs, nc.jitterMs, nc.lossPct, connected, Pct(rtts, 0.5), Pct(rtts, 0.95), Pct(rtts, 1.0), worstErr, worstCorr / 10.0,
+           recvSum / n / s / 1000.0, recvMax / s / 1000.0, sentSum / n / s / 1000.0, pass ? "PASS" : "FAIL");
+    // Per bot: its own state's rate (interest management must never thin it: 30 a second at 30 Hz snapshots, less what is
+    // lost), corrections and the worst error - which bot drifts, and whether its own updates were short.
+    const double counted = std::max(1.0, secs - kWarmSeconds); // the counters restart once the walk settles
+    for (const Bot& b : bots)
+        printf("bench: mp-soak:   %s: own states %.1f/s, %.1f%% corrected, worst %.3f m, rtt %.0f ms%s\n", b.name.c_str(), b.c.states / counted,
+               b.c.states > 0 ? 100.0 * b.c.corrections / b.c.states : 0.0, b.c.worstError, b.c.rttMs, b.c.state == NetClient::State::Joined ? "" : " (disconnected)");
+    for (Bot& b : bots) NetClient_Disconnect(b.c);
+    phase = -1;
 }
 
 bool MpBots_Active() { return phase >= 0; }
 
-void MpBots_Start(int count, uint16_t p) {
+void MpBots_Start(int count, uint16_t p, const std::string& address, double soak) {
+    extAddr = address; soakSeconds = soak;
     port = p;
     bots.clear();
     bots.resize((size_t)std::max(1, count));
@@ -119,11 +155,11 @@ bool MpBots_Update(Scene& world) {
         NetClient_Update(b.c);
         if (b.c.pongs != b.lastPongs) { if (b.c.rttMs >= 0.0) rtts.push_back(b.c.rttMs); b.lastPongs = b.c.pongs; }
     }
-    if (!Host_Listening()) {
+    if (extAddr.empty() && !Host_Listening()) {
         if (!Net_Available()) { printf("bench: mp-bots: built without ENABLE_GNS -> SKIP\n"); phase = -1; return true; }
         Finish("the host is not listening", false, false); return true;
     }
-    if (now - t0 > 150.0) { Finish("timed out", false, false); return true; }
+    if (now - t0 > 150.0 + soakSeconds) { Finish("timed out", false, false); return true; }
     switch (phase) {
     case 0: // everyone connects at once
         for (Bot& b : bots) NetClient_Connect(b.c, Addr(), b.name);
@@ -171,10 +207,11 @@ bool MpBots_Update(Scene& world) {
                 watchLast[k] = v; watchSeen[k] = true;
             }
         }
-        if (now - phaseT > kWalkSeconds) {
+        if (now - phaseT > (soakSeconds > 0.0 ? soakSeconds : kWalkSeconds)) {
+            if (soakSeconds > 0.0) { FinishSoak(now - phaseT); return true; }
             for (Bot& b : bots) {
                 uint64_t sb = 0; DVec3 sl{};
-                if (Host_PlayerLocal(world, b.c.welcome.session, sb, sl) && b.self->nearest) b.serverGap = (b.self->nearest->toLocalD(b.self->position) - sl).length();
+                if (extAddr.empty() && Host_PlayerLocal(world, b.c.welcome.session, sb, sl) && b.self->nearest) b.serverGap = (b.self->nearest->toLocalD(b.self->position) - sl).length();
             }
             phase = 3; phaseT = now;
         }
@@ -189,8 +226,8 @@ bool MpBots_Update(Scene& world) {
         if (Host_OnlinePlayers() == (int)bots.size() - gone || now - phaseT > 20.0) {
             ++onlineChecks; onlineOk += Host_OnlinePlayers() == (int)bots.size() - gone ? 1 : 0;
             for (Bot& b : bots) if (b.gone) {
-                const int st = b.c.states, co = b.c.corrections; const double we = b.c.worstError, le = b.c.lastError; // keep the walk's numbers for the report
-                b.c = NetClient{}; b.c.states = st; b.c.corrections = co; b.c.worstError = we; b.c.lastError = le;
+                const int st = b.c.states, co = b.c.corrections; const double we = b.c.worstError, le = b.c.lastError, wc = b.c.worstClockError, rf = b.c.rttFloor; // keep the walk's numbers for the report
+                b.c = NetClient{}; b.c.states = st; b.c.corrections = co; b.c.worstError = we; b.c.lastError = le; b.c.worstClockError = wc; b.c.rttFloor = rf;
                 b.lastPongs = 0; NetClient_Connect(b.c, Addr(), b.name); b.gone = false; b.joinMs = -2.0;
             }
             phase = 5; phaseT = now;

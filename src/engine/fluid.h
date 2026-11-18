@@ -101,7 +101,8 @@ namespace Fluid {
     // Moving fluid by hand or machine (applied at the next step). Generated water counts too: taking from
     // the sea or a river is free (they are infinite); taking from a pond brings it into the simulation (finite).
     float Take(Planetoid& body, Vector3 local, float m3, float radius = 1.5f, int kind = 0); // returns what will be taken
-    float Pour(Planetoid& body, Vector3 local, float m3, int kind = 0);                     // returns what will be poured
+    float Pour(Planetoid& body, Vector3 local, float m3, int kind = 0);                     // returns the m^3 queued (placed on the next step)
+    float PourDropped();                                                                       // m^3 pours found no room for, in all (#766)
     float FluidAt(const Planetoid& body, Vector3 local, float radius, int kind);          // m^3 of moving fluid of a kind within radius
     int KindAt(const Planetoid& body, Vector3 local, float radius);                      // the most plentiful non-water kind there, or -1
 

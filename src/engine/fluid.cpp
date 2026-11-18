@@ -445,6 +445,7 @@ void PinPondFace(Brick& b, int f) {
 // ---------------------------------------------------------------------------------------------
 
 long long wakeGpu = 0, wakeTouch = 0; // settled bricks woken (stats)
+std::atomic<long long> pourDroppedUnits{ 0 }; // fill units pours found no room for, even widened (#766)
 long long filmFlips = 0;              // bricks whose films switched shown/hidden (stats, #660)
 long long slotReleases = 0;           // GPU slots given back by sleeping bricks (stats, #675)
 int slotsUsed = 0;                    // GPU slots held now (stats, #675)
@@ -877,20 +878,25 @@ void ApplyCommand(const Command& c) {
         float left = c.m3 * 255.0f / WaterField::CellVolume();
         Brick* b; int i;
         if (!s->cell(ci, cj, ck, b, i)) { EnsureAround(*s, c.c, 1.0f); std::lock_guard<std::mutex> lock(cmdMx); commands.push_back(c); return; } // after classification
-        const int hw = (int)(0.5f / WaterField::CellSize()), layers = (int)ceilf(6.0f / WaterField::CellSize()); // half-width (cells), layers
-        for (int k = 0; k < layers && left > 0.0f; ++k)
-            for (int dj = -hw; dj <= hw && left > 0.0f; ++dj)
-                for (int di = -hw; di <= hw && left > 0.0f; ++di) {
-                    if (!s->cell(ci + di, cj + dj, ck + k, b, i)) continue;
-                    if (b->flags[i] & kSolid) continue;
-                    if (b->fill[i] > 0 && CellKind(b->flags[i]) != c.fluid) continue; // another fluid: spill past it
-                    TakeKind(b, i, (uint8_t)(c.fluid << kKindShift));
-                    const int add = (int)std::min(left, (float)std::max(0, Cap(b, i) - b->fill[i]));
-                    b->fill[i] = (uint8_t)(b->fill[i] + add);
-                    GpuDelta(b, i, add);
-                    left -= add;
-                    Touch(b);
-                }
+        // A full footprint widens (to 4x) before any water is given up (#766: the rest was dropped silently, and Pour had
+        // already reported it poured); whatever still finds no room is counted (PourDropped).
+        const int hw0 = (int)(0.5f / WaterField::CellSize()), layers = (int)ceilf(6.0f / WaterField::CellSize()); // half-width (cells), layers
+        for (int hw = hw0, ring = 0; ring < 4 && left > 0.0f; ++ring, hw = std::max(hw + 1, hw * 2))
+            for (int k = 0; k < layers && left > 0.0f; ++k)
+                for (int dj = -hw; dj <= hw && left > 0.0f; ++dj)
+                    for (int di = -hw; di <= hw && left > 0.0f; ++di) {
+                        if (!s->cell(ci + di, cj + dj, ck + k, b, i)) continue;
+                        if (b->flags[i] & kSolid) continue;
+                        if (b->fill[i] > 0 && CellKind(b->flags[i]) != c.fluid) continue; // another fluid: spill past it
+                        TakeKind(b, i, (uint8_t)(c.fluid << kKindShift));
+                        const int add = (int)std::min(left, (float)std::max(0, Cap(b, i) - b->fill[i]));
+                        if (add <= 0) continue;
+                        b->fill[i] = (uint8_t)(b->fill[i] + add);
+                        GpuDelta(b, i, add);
+                        left -= add;
+                        Touch(b);
+                    }
+        if (left > 0.0f) pourDroppedUnits += (long long)left;
         return;
     }
     // Take: from the wettest cells within the radius (sources are free: they refill).
@@ -1902,6 +1908,8 @@ float Fluid::Pour(Planetoid& body, Vector3 local, float m3, int kind) {
     commands.push_back({ 2, body.id, local, 1.0f, m3, kind });
     return m3;
 }
+
+float Fluid::PourDropped() { return (float)(pourDroppedUnits.load() * (double)WaterField::CellVolume() / 255.0); }
 
 void Fluid::AddSource(Planetoid& body, Vector3 local, int kind, float rate, float head) {
     if (!dynamic_cast<const PlanetField*>(body.field.get()) || rate <= 0.0f) return;

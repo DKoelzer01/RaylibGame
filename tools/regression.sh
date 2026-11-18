@@ -1,6 +1,6 @@
 #!/bin/bash
 # Regression: the scripted --test-* gates and benchmarks, run one after another.
-#   tools/regression.sh [planet|eroded|space|all] (default: all; erosion is the default terrain since #362: "eroded" keeps its own gates)
+#   tools/regression.sh [planet|eroded|space|multiplayer|all] (default: all; erosion is the default terrain since #362: "eroded" keeps its own gates)
 # Environment:
 #   EXE=path      the game to run (default build/check/bin/game.exe)
 #   SNAPSHOT=1    copy the exe and resources/ to a temp folder first, so you can keep editing and
@@ -144,12 +144,43 @@ space() {
     run $A --bench 5 --test-ride
 }
 
+# Multiplayer (#347): a host and in-process clients over loopback. The network tests need a GNS build (EXE_GNS, default
+# build/gns/bin/game.exe; configure with -DENABLE_GNS=ON after tools/build_gns.sh), else they SKIP on the plain exe.
+multiplayer() {
+    local gexe="${EXE_GNS:-$here/build/gns/bin/game.exe}"; [ -x "$gexe" ] || gexe="$exe"
+    local sv; sv="$(mktemp -d)/mp.sav"
+    local keep="$exe"; exe="$gexe"
+    run --host "$sv" --seed 42 --bench 3 --port 27941 --test-host
+    run --host "$sv" --bench 3 --port 27941 --test-net-move
+    RAYLIBGAME_NET_LAG_MS=50 RAYLIBGAME_NET_JITTER_MS=10 RAYLIBGAME_NET_LOSS=2 RAYLIBGAME_NET_SEED=1 run --host "$sv" --bench 3 --port 27941 --test-mp-bots 6
+    exe="$keep"
+    run --seed 42 --bench 3 --test-time-follow
+    run --test-net-interest
+    run --test-server-admin
+    # The dedicated server (#326): config file, console commands, log file, "stop" with a final save (sandbox world).
+    echo "=== tools/test_server.sh" | tee -a "$log"
+    EXE="$gexe" bash "$here/tools/test_server.sh" 2>&1 | grep "=== test_server" | sed 's/=== test_server: \([A-Z]*\).*/bench: server (#326): config, console, log, stop -> \1/' | tee -a "$log"
+    # Admin end to end (#326 part 2, #345): chat, motd, an op's ban from chat kicks, refusals, the whitelist, the console's kick.
+    if [ "$gexe" != "$exe" ]; then
+        echo "=== tools/test_server_admin.sh" | tee -a "$log"
+        EXE="$gexe" bash "$here/tools/test_server_admin.sh" 2>&1 | grep "=== test_server_admin" | sed 's/=== test_server_admin: \([A-Z]*\).*/bench: server admin end to end (#345): -> \1/' | tee -a "$log"
+    fi
+    # --join end to end: a host and two clients as separate processes (#341 core); only with a GNS build.
+    if [ "$gexe" != "$exe" ]; then
+        echo "=== tools/test_join.sh" | tee -a "$log"
+        EXE="$gexe" bash "$here/tools/test_join.sh" 2>&1 | grep "^bench: join (" | tee -a "$log"
+        echo "=== tools/test_join.sh on a non-default world (#757)" | tee -a "$log"
+        WORLDGEN="ocean 0.4 mountains 1.6 cliffs 0 karst 0 erosion 0" PORT=27952 EXE="$gexe" bash "$here/tools/test_join.sh" 2>&1 | grep "^bench: join (" | tee -a "$log"
+    fi
+}
+
 case "$set_name" in
+    multiplayer) multiplayer ;;
     planet) planet; eroded ;;
     eroded) eroded ;;
     space) space ;;
-    all) planet; eroded; space ;;
-    *) echo "usage: $0 [planet|eroded|space|all]"; exit 2 ;;
+    all) planet; eroded; space; multiplayer ;;
+    *) echo "usage: $0 [planet|eroded|space|multiplayer|all]"; exit 2 ;;
 esac
 pass=$(grep -c "PASS" "$log"); fail=$(grep -c "FAIL" "$log")
 echo "=== regression ($set_name): $pass PASS, $fail FAIL"

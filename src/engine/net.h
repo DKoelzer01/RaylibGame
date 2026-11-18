@@ -9,6 +9,7 @@
 
 #include <cstdint>
 #include <string>
+#include <utility>
 #include <vector>
 
 // This process's part in a game (#316): Offline (single-player) and Host decide world events and roll the gameplay RNG;
@@ -33,6 +34,7 @@ int Net_ConnectionCount();                             // connected now
 bool Net_Send(uint32_t conn, const void* data, uint32_t size, bool reliable);
 int Net_Receive(std::vector<NetMessage>& out, int max = 64); // appends; returns how many
 void Net_Close(uint32_t conn);
+std::string Net_RemoteAddress(uint32_t conn);           // "ip:port" of the other end ("" unknown; #345 IP bans)
 // Tests (#327, #347): every message sent from now on is delayed by lagMs and lost with lossPercent (0-100) odds: the
 // default NetConditions below (seed kept), so a run replays.
 void Net_SetFakeConditions(int lagMs, float lossPercent);
@@ -54,5 +56,9 @@ void Net_SetConditions(const NetConditions& c, uint32_t conn = 0); // conn 0: th
 NetConditions Net_GetConditions(uint32_t conn = 0);
 NetLinkStats Net_GetLinkStats();                                      // totals over every connection
 int Net_HeldMessages();                                               // waiting for their delivery time
+// Traffic per connection (#348: bytes per client per second), counted at Net_Send / Net_Receive (payload bytes).
+struct NetTraffic { uint64_t sentBytes = 0, sentMsgs = 0, recvBytes = 0, recvMsgs = 0; };
+std::vector<std::pair<uint32_t, NetTraffic>> Net_Traffic(); // every connection seen since the start (closed ones too)
+void Net_ResetTraffic();
 
 #endif
