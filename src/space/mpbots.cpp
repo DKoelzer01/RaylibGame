@@ -39,7 +39,7 @@ std::vector<double> joinMs, rtts, rejoinMs;
 int sessionsKept = 0, rejoins = 0, onlineChecks = 0, onlineOk = 0;
 float watchWorst = 0.0f; std::vector<DVec3> watchLast; std::vector<bool> watchSeen; // bot1 watching the others: speed / scripted speed
 float ScriptSpeed(size_t k) { return k % 3 == 1 ? 12.0f : 6.0f; } // m/s: walkSpeed 6, sprint x2 (crouching is slower)
-FILE* csv = nullptr;
+FILE* csv = nullptr; int csvBot = 0; // RAYLIBGAME_MP_CSV_BOT=N: trace bot N (1-based) instead of bot1
 const int kRounds = 3;
 const double kWalkSeconds = 8.0, kWarmSeconds = 1.5;
 
@@ -104,6 +104,7 @@ void MpBots_Start(int count, uint16_t p) {
     watchWorst = 0.0f; watchLast.assign(bots.size(), DVec3{}); watchSeen.assign(bots.size(), false);
     phase = 0; churnRound = 0; warm = false; sessionsKept = rejoins = onlineChecks = onlineOk = 0;
     t0 = GetTime();
+    csvBot = getenv("RAYLIBGAME_MP_CSV_BOT") ? std::max(0, atoi(getenv("RAYLIBGAME_MP_CSV_BOT")) - 1) : 0;
     if (const char* path = getenv("RAYLIBGAME_MP_CSV")) { // per-state trace of bot1 (#347: for #327's prediction work)
         csv = fopen(path, "w");
         if (csv) fprintf(csv, "client_tick,server_tick,ack_input,server_x,server_y,server_z,client_x,client_y,client_z,error_m,corrected\n");
@@ -118,7 +119,10 @@ bool MpBots_Update(Scene& world) {
         NetClient_Update(b.c);
         if (b.c.pongs != b.lastPongs) { if (b.c.rttMs >= 0.0) rtts.push_back(b.c.rttMs); b.lastPongs = b.c.pongs; }
     }
-    if (!Host_Listening()) { Finish(Net_Available() ? "the host is not listening" : "built without ENABLE_GNS: SKIP", false, false); return true; }
+    if (!Host_Listening()) {
+        if (!Net_Available()) { printf("bench: mp-bots: built without ENABLE_GNS -> SKIP\n"); phase = -1; return true; }
+        Finish("the host is not listening", false, false); return true;
+    }
     if (now - t0 > 150.0) { Finish("timed out", false, false); return true; }
     switch (phase) {
     case 0: // everyone connects at once
@@ -148,7 +152,7 @@ bool MpBots_Update(Scene& world) {
             for (size_t k = 0; k < bots.size(); ++k) {
                 Bot& b = bots[k];
                 NetClient_Step(b.c, world, *b.self, Script((int)k, stepped, *b.self));
-                if (k == 0 && csv && b.c.states != b.lastStates) {
+                if ((int)k == csvBot && csv && b.c.states != b.lastStates) {
                     const DVec3 cl = b.self->nearest ? b.self->nearest->toLocalD(b.self->position) : DVec3{};
                     fprintf(csv, "%u,%u,%u,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%d\n", b.c.tick, b.c.own.tick, b.c.own.ackInput, b.c.own.local.x, b.c.own.local.y, b.c.own.local.z,
                             cl.x, cl.y, cl.z, b.c.lastError, b.c.corrections != b.lastCorrections ? 1 : 0);
