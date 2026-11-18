@@ -482,7 +482,7 @@ int Plot::place(const Part& p) {
     Footprint(p, fp);
     const int idx = (int)parts.size();
     parts.push_back(p);
-    for (const auto& c : fp) { cells[c.first] = { idx, c.second }; markDirty(c.first); }
+    for (const auto& c : fp) { cells[c.first] = { idx, c.second }; markDirty(c.first); changedCells.push_back(c.first); }
     ++livePartCount;
     ++version;
     return idx;
@@ -492,7 +492,7 @@ bool Plot::remove(int idx) {
     if (idx < 0 || idx >= (int)parts.size() || parts[idx].type == PartType::Count) return false;
     std::vector<std::pair<Int3, CellShape>> fp;
     Footprint(parts[idx], fp);
-    for (const auto& c : fp) { cells.erase(c.first); markDirty(c.first); }
+    for (const auto& c : fp) { cells.erase(c.first); markDirty(c.first); changedCells.push_back(c.first); }
     parts[idx].type = PartType::Count;
     damage.erase(idx);
     --livePartCount;

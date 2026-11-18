@@ -5008,7 +5008,7 @@ int main(int argc, char** argv)
                     // ground ahead, in daylight (bench_graves.png).
                     Planetoid* p = dynamic_cast<Planetoid*>(world.objects[0].get());
                     const PlanetField* pf = p ? dynamic_cast<const PlanetField*>(p->field.get()) : nullptr;
-                    static double t0 = 0.0; static Vector3 me{}, t1{}, t2{};
+                    static double t0 = 0.0; static Vector3 me{}, t1{}, t2{}; static Plot* bedShotPlot = nullptr; static int bedShotPart = -1;
                     auto ground = [&](Vector3 q) { const Vector3 d = Vector3Normalize(q); return Vector3Scale(d, pf->radius + pf->elevation(d)); };
                     if (!pf) benchShotGraves = false;
                     else {
@@ -5024,7 +5024,7 @@ int main(int argc, char** argv)
                             }
                             const Vector3 bedAt = Vector3Add(ground(Vector3Add(me, Vector3Add(Vector3Scale(t2, 5.0f), Vector3Scale(t1, 2.6f)))), Vector3Scale(up, 0.05f));
                             if (!p->plots) p->plots = std::make_unique<PlotSet>();
-                            if (Plot* pl = p->plots->plotFor(bedAt, 0.0f, true)) pl->place(Part{ PartType::Bed, pl->cellAt(pl->toPlot(bedAt)), 0, 0 });
+                            if (Plot* pl = p->plots->plotFor(bedAt, 0.0f, true)) { bedShotPlot = pl; bedShotPart = pl->place(Part{ PartType::Bed, pl->cellAt(pl->toPlot(bedAt)), 0, 0 }); }
                             graveShotPhase = 1; t0 = GetTime();
                         }
                         const double t = GetTime() - t0;
@@ -5032,7 +5032,12 @@ int main(int argc, char** argv)
                         const Vector3 eye = Vector3Add(ground(Vector3Subtract(me, Vector3Scale(t2, 0.5f))), Vector3Scale(up, 1.9f));
                         world.camera.position = p->toWorld(eye); world.camera.target = p->toWorld(Vector3Add(centre, Vector3Scale(up, 0.5f))); world.camera.up = p->dirToWorld(up);
                         player.position = world.renderOrigin + world.camera.position;
-                        if (t > 3.0) { TakeScreenshot("bench_graves.png"); printf("bench: graves: bench_graves.png (%d graves)\n", Combat_GraveCount()); benchShotGraves = false; }
+                        if (t > 3.0 && graveShotPhase == 1) {
+                            TakeScreenshot("bench_graves.png"); printf("bench: graves: bench_graves.png (%d graves)\n", Combat_GraveCount());
+                            if (bedShotPlot && bedShotPart >= 0) bedShotPlot->remove(bedShotPart); // (#830) then without the bed: its grass back
+                            graveShotPhase = 2;
+                        }
+                        if (t > 6.5 && graveShotPhase == 2) { TakeScreenshot("bench_graves_nobed.png"); printf("bench: graves: bench_graves_nobed.png (the bed removed)\n"); benchShotGraves = false; }
                     }
                 } else if (benchShotMachines && (machineShotPhase > 0 || WorldIdle())) {
                     // --shot-machines (Plan 5): every machine type in two rows on a plot ahead (bench_machines.png).
