@@ -40,6 +40,7 @@ struct Brick {
     std::array<uint8_t, kBrick3> shut{}; // the share of an open cell that is ground, at its bottom (#454): holds 255 - shut, water stands at shut + fill
     uint8_t kinds = 0; // bit k: some cell holds fluid of kind k
     bool moving = false; // its water is moving (the brick is awake): thin films are drawn, not only sheets (#649)
+    std::vector<int16_t> flow; // the drawn current (#677, #695): per column (x + 16 y) the solver's flow at its surface along the site's east, north (cm/s); empty: none
 };
 
 // The simulation's cell edge (m, Plan 10 W4c #642): every cell <-> metre conversion goes through it. RAYLIBGAME_FLUID_CELL
@@ -122,6 +123,12 @@ public:
     bool moving(Vector3 p) const;                 // a covered point's water is moving (its brick is awake, #649)
     // Metres of fluid in the column under a covered point (up to 8), for the shader's depth tint.
     float depthBelow(Vector3 p, int kind);
+    // The surface's downhill direction (body-local, along the surface, unit) and slope (rise over run) at a point, from the
+    // column surfaces either side (#677: simulated water gets a current to draw); false where no column covers it.
+    bool slope(Vector3 p, int kind, Vector3& downhill, float& grade);
+    // The debug view (#695): the solver's own flow at a point (the cell there or the one under it, the faster), direction
+    // (body-local, unit) and speed (m/s); false where no published flow covers it.
+    bool simFlow(Vector3 p, Vector3& dir, float& speed) const;
 private:
     std::vector<const Site*> sites;
     uint8_t kindMask = 0;
