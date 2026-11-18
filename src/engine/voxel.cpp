@@ -1559,6 +1559,7 @@ VoxelMaterial PlanetField::materialSkyHinted(Vector3 p, float base, float fp, Ve
         // (#206: digging a river bed finds clay); lakes and ponds keep clay with gravel bars in the deeper middle.
         constexpr float kWetReach = 60.0f; // m: floodplains and wet shores at most this far out
         if (e > 0.0f && inlandWaterNear(up, kWetReach)) {
+            const RiverNetwork::NaturalScope natural; // a river dried by a dam keeps its bed and banks (#656)
             const RiverNetwork* net = rivers();
             const RiverNetwork::Hit rh = net && fp < 128.0f ? net->nearest(up, kWetReach + 50.0f) : RiverNetwork::Hit{};
             const float w = waterElevation(up, fp);
@@ -2166,6 +2167,90 @@ ChunkWaterCache::ChunkWaterCache() = default;
 ChunkWaterCache::~ChunkWaterCache() { gWaterCacheBytes -= counted; }
 long long ChunkWaterCacheBytes() { return gWaterCacheBytes.load(); }
 
+// #679 A/B: RAYLIBGAME_DELTA_POINT=1 = coarse nodes point-sample the edit lattice (the old way).
+static const bool gDeltaPointSample = [] { const char* e = getenv("RAYLIBGAME_DELTA_POINT"); return e && e[0] == '1'; }();
+
+// Player edits on a coarse node (#679). A carve writes its exact shape only within 1 m of it (the lattice there holds
+// the carved density); farther out the field is the unedited ground again, a step of up to the dig's depth in density.
+// A coarse sample a stride under a dug floor read that step, and a sample over it the ground the dig took away, so
+// marching cubes put the floor anywhere between them: a flat dug floor came out lumpy by up to half a stride (a
+// honeycomb under shallow water, the floor plane cutting the sample lattice at a slant) and a dig shallower than a
+// stride could vanish between two samples.
+// Along a vertical column the unedited density is linear (gradient times the height under the height map), so the
+// edit at a point q above a sample p says what the field at p would be if q's edit reached down to it:
+// base(p) + delta(q) (the floor-plane value). Each coarse sample takes, within two strides along its column (the
+// lattice axis nearest the vertical): the most negative such dig delta - from above only while p is solid (a dig
+// below solid ground must not open it), from either side once p is air (it only gets more air) - and the most
+// positive fill delta, mirrored. Off-vertical columns pay the base's drift (1 - cos) per step. A sample keeps its own
+// delta when nothing in reach goes further. The result is exact for flat floors and walls a stride from a sample
+// (the samples bracketing them read the floor plane), and unedited ground is never touched.
+static void AddDeltasColumnFiltered(const DensityField& field, const std::vector<std::pair<TerrainDeltas::Key, const DeltaChunk*>>& near,
+                                    float* ext, int E, int st, Vector3 eo) {
+    std::unordered_map<TerrainDeltas::Key, const DeltaChunk*> chunks;
+    chunks.reserve(near.size() * 2);
+    for (const auto& c : near) chunks.emplace(c.first, c.second);
+    const float ext3 = (E - 1) * st * kVoxelSize;
+    Vector3 up = dynamic_cast<const TerrainField*>(&field) ? Vector3{ 0, 1, 0 }
+                                                           : Vector3Normalize(Vector3AddValue(eo, 0.5f * ext3));
+    const float ua[3] = { up.x, up.y, up.z };
+    const int a = fabsf(ua[0]) >= fabsf(ua[1]) && fabsf(ua[0]) >= fabsf(ua[2]) ? 0 : fabsf(ua[1]) >= fabsf(ua[2]) ? 1 : 2;
+    const int b = (a + 1) % 3, c = (a + 2) % 3;
+    const int upSign = ua[a] >= 0.0f ? 1 : -1;
+    const float penU = DENSITY_GRADIENT * kVoxelSize * (1.0f - fabsf(ua[a])) / kDeltaStep; // stored units per lattice step
+    const int o[3] = { (int)lroundf(eo.x / kVoxelSize), (int)lroundf(eo.y / kVoxelSize), (int)lroundf(eo.z / kVoxelSize) };
+    const int W = 2 * st;
+    auto fdiv = [](int v) { return v >= 0 ? v / kDeltaChunk : -((-v + kDeltaChunk - 1) / kDeltaChunk); };
+    struct Entry { int pos; int v; };
+    std::vector<Entry> col;
+    const int A0 = o[a] - W, A1 = o[a] + (E - 1) * st + W;
+    const int strides[3] = { 1, E, E * E }; // ext index = (z * E + y) * E + x
+    for (int ic = 0; ic < E; ++ic)
+        for (int ib = 0; ib < E; ++ib) {
+            int L[3];
+            L[b] = o[b] + ib * st; L[c] = o[c] + ic * st;
+            const int cb = fdiv(L[b]), cc = fdiv(L[c]);
+            const int lb = L[b] - cb * kDeltaChunk, lc = L[c] - cc * kDeltaChunk;
+            col.clear();
+            for (int pos = A0; pos <= A1;) {
+                const int ca = fdiv(pos);
+                int C[3]; C[a] = ca; C[b] = cb; C[c] = cc;
+                auto it = chunks.find(TerrainDeltas::KeyOf(C[0], C[1], C[2]));
+                const int chunkEnd = (ca + 1) * kDeltaChunk; // first lattice index past this chunk along the axis
+                if (it == chunks.end() || it->second->empty()) { pos = chunkEnd; continue; }
+                const DeltaChunk* dc = it->second;
+                for (; pos <= A1 && pos < chunkEnd;) {
+                    int l[3]; l[a] = pos - ca * kDeltaChunk; l[b] = lb; l[c] = lc;
+                    const int i = (l[2] * kDeltaChunk + l[1]) * kDeltaChunk + l[0];
+                    if (!dc->slot[DeltaChunk::BrickOf(i)]) { pos += DeltaChunk::kBrick - (l[a] & (DeltaChunk::kBrick - 1)); continue; }
+                    const int v = dc->get(i);
+                    if (v) col.push_back({ pos, v });
+                    ++pos;
+                }
+            }
+            if (col.empty()) continue;
+            size_t first = 0;
+            for (int k = 0; k < E; ++k) {
+                const int pk = o[a] + k * st;
+                while (first < col.size() && col[first].pos < pk - W) ++first;
+                int v0 = 0;
+                float dneg = 1e30f, dpos = -1e30f;
+                int idx3[3]; idx3[a] = k; idx3[b] = ib; idx3[c] = ic;
+                float& e = ext[(size_t)idx3[0] * strides[0] + (size_t)idx3[1] * strides[1] + (size_t)idx3[2] * strides[2]];
+                for (size_t q = first; q < col.size() && col[q].pos <= pk + W; ++q) if (col[q].pos == pk) { v0 = col[q].v; break; }
+                const bool solid = e + v0 * kDeltaStep >= ISO_LEVEL;
+                for (size_t q = first; q < col.size() && col[q].pos <= pk + W; ++q) {
+                    const int off = (col[q].pos - pk) * upSign, dist = off >= 0 ? off : -off;
+                    if (col[q].v < 0) { if (!solid || off >= 0) dneg = std::min(dneg, col[q].v + penU * dist); }
+                    else if (solid || off <= 0) dpos = std::max(dpos, col[q].v - penU * dist);
+                }
+                float d = (float)v0;
+                if (dneg < d) d = dneg;
+                else if (dpos > d) d = dpos;
+                e += d * kDeltaStep;
+            }
+        }
+}
+
 void BuildChunkMeshFromBase(const DensityField& field, const TerrainDeltas& deltas, ChunkMeshData& out, const float* base, float sampledMs, const PlanetField::BlockGrid* grid,
                             std::shared_ptr<const PlanetField::BlockGrid> gridShared) {
     const auto t0 = std::chrono::steady_clock::now() - std::chrono::duration_cast<std::chrono::steady_clock::duration>(std::chrono::duration<float, std::milli>(sampledMs));
@@ -2178,14 +2263,21 @@ void BuildChunkMeshFromBase(const DensityField& field, const TerrainDeltas& delt
     const int E = S + 2;
     const Vector3 eo = Vector3AddValue(origin, -stride);
     std::vector<float> ext(base, base + (size_t)E * E * E);
-    // Player edits: the delta lattice at the samples (lattice points at every stride; coarse nodes
-    // point-sample it, so big excavations show from afar). Cost depends on the edited chunks here,
-    // never on how many strokes the world has had.
+    // Player edits: the delta lattice at the samples (lattice points at every stride); coarse nodes filter it along
+    // their columns (AddDeltasColumnFiltered, #679), so big excavations show from afar with flat floors. Cost depends
+    // on the edited chunks here, never on how many strokes the world has had.
     std::vector<std::pair<TerrainDeltas::Key, const DeltaChunk*>> near;
     deltas.chunksIn(eo, Vector3AddValue(eo, (E - 1) * stride), near);
-    if (!near.empty()) {
+    const int stEdit = out.key.latticeStride();
+    if (!near.empty() && stEdit > 1 && !gDeltaPointSample) {
+        // Coarse nodes (#679): the column filter below, not a point sample. Needs the deltas a column filter reaches.
+        near.clear();
+        const float reach = 2.0f * stEdit * kVoxelSize;
+        deltas.chunksIn(Vector3AddValue(eo, -reach), Vector3AddValue(eo, (E - 1) * stride + reach), near);
+        AddDeltasColumnFiltered(field, near, ext.data(), E, stEdit, eo);
+    } else if (!near.empty()) {
         // Lattice indices (kVoxelSize apart): a node of level L samples every 2^L-th lattice point.
-        const int st = out.key.latticeStride(), ox = (int)lroundf(eo.x / kVoxelSize), oy = (int)lroundf(eo.y / kVoxelSize), oz = (int)lroundf(eo.z / kVoxelSize);
+        const int st = stEdit, ox = (int)lroundf(eo.x / kVoxelSize), oy = (int)lroundf(eo.y / kVoxelSize), oz = (int)lroundf(eo.z / kVoxelSize);
         auto chunkAt = [&](int cx, int cy, int cz) -> const DeltaChunk* {
             const TerrainDeltas::Key key = TerrainDeltas::KeyOf(cx, cy, cz);
             for (const auto& c : near) if (c.first == key) return c.second;
@@ -2274,7 +2366,14 @@ void BuildChunkMeshFromBase(const DensityField& field, const TerrainDeltas& delt
                 float gElev = 0.0f;
                 PlanetField::Column3D gCol;
                 const bool hinted = gridField && gridField->gridSurface(*grid, p, gElev, gCol);
-                VoxelMaterial m = hinted ? gridField->materialSkyHinted(p, b, stride, n, sky, &gElev, &gCol) : field.materialSky(p, b, stride, n, sky);
+                // Dug ground (#679): the materials allow a coarse mesh to stray metres from the height map (slack ~ 2 x
+                // the footprint), so a floor dug 3 m down still read as undug turf on coarse nodes: grass under the water
+                // of a dug basin from afar. Where the edge's samples were dug by more than half a metre, judge the vertex
+                // at a 1 m footprint (no slack): the edit, not the LOD, put the surface there.
+                const bool dugHere = !near.empty() && !gDeltaPointSample && std::min(at(ext.data(), x0 + 1, y0 + 1, z0 + 1) - at(base, x0 + 1, y0 + 1, z0 + 1),
+                                                              at(ext.data(), x1 + 1, y1 + 1, z1 + 1) - at(base, x1 + 1, y1 + 1, z1 + 1)) < -0.5f * DENSITY_GRADIENT;
+                const float matFp = dugHere ? std::min(stride, 1.0f) : stride;
+                VoxelMaterial m = hinted ? gridField->materialSkyHinted(p, b, matFp, n, sky, &gElev, &gCol) : field.materialSky(p, b, matFp, n, sky);
                 if (!near.empty()) { const int placed = deltas.materialAt(p); if (placed >= 0) m = (VoxelMaterial)placed; } // placed ground keeps its material
                 if (gSkyProbes && sky > 0.02f && stride <= 2.0f) sky *= OverheadOpenness(field, deltas, ext.data(), E, eo, stride, p, hinted ? &gCol : nullptr, hinted ? &gElev : nullptr);
                 out.tangents[v * 4 + 3] = sky;
