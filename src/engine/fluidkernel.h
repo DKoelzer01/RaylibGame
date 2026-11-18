@@ -43,10 +43,14 @@ struct Grid {
     std::vector<int> delta;       // per cell: column-pair flow units this substep (#680; zeroed in the vertical pass)
     // The column pairs' limiter (#680): pass 1 plans each pair's units and adds them to its giver's and taker's demand;
     // the move pass scales every pair by min(1, avail / out, room / in), so no cell gives or takes more than it has.
-    // Per cell: demand out / in, the smallest avail / room any pair saw (all reset in the vertical pass); per run bottom
-    // cell and pair (x, y, z, w): the giver's top cell and the taker cell.
-    std::vector<int> outDem, inDem, availOf, roomOf;
-    std::vector<int> pairGive, pairTake;
+    // The layout is the GPU's (fluid_step.comp), integer atomics only, so CPU and GPU agree whatever the order:
+    //   dem: per cell, demand out << 16 | in (sums stay under 2040: no carry); cap: avail << 16 | room (one value a cell,
+    //   OR-ed); both reset in the vertical pass.
+    //   pairCode: per run bottom cell and pair (x, y, z, w): 1 | aGives << 1 | (giver row + 512) << 2 | (taker row + 512)
+    //   << 12, rows counted from the run's bottom row; the move pass walks back to the cells (giver in A's column when A
+    //   gives, the neighbour's otherwise; the taker in the other).
+    std::vector<uint32_t> dem, cap;
+    std::vector<uint32_t> pairCode;
     std::vector<uint32_t> sinkOut; // per slot: fill units its sinks took in (river flow, #656; the caller zeroes it)
     std::vector<uint8_t> dbgMark; // TEMP #680 (DBTRACE): per slot, trace the transfers into it
     // The dry-cell skip (#747, as the GPU's #675 fluid_groups.comp): per slot, 3 rotating substeps x 64 group bits (the

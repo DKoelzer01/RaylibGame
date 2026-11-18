@@ -12,6 +12,7 @@
 #include "waterfield.h"
 #include "watersurface.h"
 #include "fluidkernel.h"
+#include "simclock.h"
 #include "glcaps.h"
 #include "gputimer.h"
 #include "external/glad.h"
@@ -2319,6 +2320,15 @@ void Fluid::Update(Scene& world, float dt) {
     // RAYLIBGAME_FLUID_LOCKSTEP=1 (tests): wait for a running step instead of skipping the tick, so the water keeps the game's
     // clock however slow the step is (#747: the CPU kernel at 0.25 m ran at ~25% of real time and fronts looked stalled).
     static const bool lockstep = EnvFlag("RAYLIBGAME_FLUID_LOCKSTEP");
+    if (lockstep) {
+        // Ticks on the simulation's clock (#814): accumulating frame times put them at a phase the frames before play (the
+        // loading screen) decided, so two identical runs poured into different ticks.
+        static long long lastTick = -1;
+        const long long tick = (long long)std::floor(SimTime() / kTickSeconds + 1e-9);
+        if (tick == lastTick) return;
+        lastTick = tick;
+        accum = kTickSeconds;
+    }
     if (accum < kTickSeconds) return;
     if (running.load()) {
         if (!lockstep) return;

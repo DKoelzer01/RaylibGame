@@ -29,9 +29,8 @@ void Grid::resize(int slots) {
     a.assign((size_t)slots * 4096, 0u); b.assign((size_t)slots * 4096, 0u);
     faceP.assign((size_t)slots * 4096, Vec4{}); faceN.assign((size_t)slots * 4096 * 2, Vec4{});
     nbr.assign((size_t)slots * 6, -1); processed.assign(slots, 0); flags.assign(slots, 0u); delta.assign((size_t)slots * 4096, 0); sinkOut.assign(slots, 0u);
-    outDem.assign((size_t)slots * 4096, 0); inDem.assign((size_t)slots * 4096, 0);
-    availOf.assign((size_t)slots * 4096, INT32_MAX); roomOf.assign((size_t)slots * 4096, INT32_MAX);
-    pairGive.assign((size_t)slots * 4096 * 4, -1); pairTake.assign((size_t)slots * 4096 * 4, -1);
+    dem.assign((size_t)slots * 4096, 0u); cap.assign((size_t)slots * 4096, 0u);
+    pairCode.assign((size_t)slots * 4096 * 4, 0u);
     gmask.assign((size_t)slots * 6, 0u); gon.assign(slots, ~0ull); groupsFull = true;
 }
 
@@ -236,9 +235,10 @@ struct Pass {
         return neighbour(s, x, y, z, 0, 0, dz, proc, face);
     }
     // A run from its bottom cell up: its top cell, its surface (units over the reference row's floor), the cell under the
-    // top, the head (where arriving water goes: the top if it has room, else the open cell over it) and the cell over the
-    // head; ok when the cells it changes are in processed slots (the apply pass runs only there).
-    struct ColRun { int bottom = -1, top = -1, below = -1, head = -1, above = -1; int bed = 0, surf = 0; bool ok = false; };
+    // top and the head (where arriving water goes: the top if it has room, else the open cell over it; headRoom counts the
+    // room over it too), with their rows; ok when the cells it changes are in processed slots (the apply pass runs only there).
+    // topRow / headRow: their rows over the reference row (the move pass walks back to them, #680 GPU layout).
+    struct ColRun { int bottom = -1, top = -1, below = -1, head = -1; int bed = 0, surf = 0; int topRow = 0, headRow = 0; bool ok = false; };
     ColRun runUp(int bottom, int rowOffset) const {
         ColRun r;
         const uint32_t kind = KIND(inC[bottom]);
@@ -252,8 +252,9 @@ struct Pass {
             break;
         }
         r.top = cur;
+        r.topRow = r.headRow = rowOffset + dz;
         r.surf = (rowOffset + dz) * 255 + (int)(SH(inC[cur]) + F(inC[cur]));
-        bool pb = true, ph = true, pa = true;
+        bool pb = true, ph = true;
         r.below = cur == bottom ? -1 : stepZ(cur, -1, pb);
         if (r.below >= 0 && !pb) r.below = -1; // its apply must run to give the shortfall: only in a processed slot
         r.head = cur;
@@ -269,9 +270,8 @@ struct Pass {
                 if (fu >= 0) __atomic_fetch_or(&g.flags[s2], 1u << (1 + fu), __ATOMIC_RELAXED);
             }
             r.head = (up >= 0 && ph && !(FL(inC[up]) & SOLID) && (F(inC[up]) == 0u || KIND(inC[up]) == kind)) ? up : -1;
+            r.headRow = r.topRow + 1;
         }
-        r.above = r.head >= 0 ? stepZ(r.head, 1, pa) : -1;
-        if (r.above >= 0 && (!pa || (FL(inC[r.above]) & SOLID) || (F(inC[r.above]) > 0u && KIND(inC[r.above]) != kind))) r.above = -1;
         int s, x, y, z;
         cellPos(cur, s, x, y, z);
         r.ok = proc && g.processed[s];
@@ -286,16 +286,27 @@ struct Pass {
     }
     // What a run can give this substep (its top cell and the full cell under it) and take (its head and the cell above).
     int runAvail(const ColRun& r) const { return (int)F(inC[r.top]) + (r.below >= 0 ? (int)F(inC[r.below]) : 0); }
-    int runRoom(const ColRun& r) const {
-        if (r.head < 0) return 0;
-        return (int)(CAP(inC[r.head]) - F(inC[r.head])) + (r.above >= 0 ? (int)(CAP(inC[r.above]) - F(inC[r.above])) : 0);
+    // What a taker cell can take this substep: its room and the room of the open cell over it (the apply lifts its
+    // overflow there). One value a cell, whoever asks - a run's head, a dry floor, a spill (#680 GPU layout: the room is
+    // OR-ed into one word a cell; a spill once counted only its own cell's room).
+    int headRoom(int cell, uint32_t kind) const {
+        if (cell < 0) return 0;
+        int room = (int)(CAP(inC[cell]) - F(inC[cell]));
+        bool pa;
+        const int up = stepZ(cell, 1, pa);
+        if (up >= 0 && pa && !(FL(inC[up]) & SOLID) && (F(inC[up]) == 0u || KIND(inC[up]) == kind)) room += (int)(CAP(inC[up]) - F(inC[up]));
+        return room;
+    }
+    int runRoom(const ColRun& r, uint32_t kind) const { return r.head < 0 ? 0 : headRoom(r.head, kind); }
+    // A cell `row` rows over (under, if negative) a column cell, or -1 (the move pass, from a pair's code).
+    int cellAtRow(int cell, int row) const {
+        bool pr;
+        for (; row > 0 && cell >= 0; --row) cell = stepZ(cell, 1, pr);
+        for (; row < 0 && cell >= 0; ++row) cell = stepZ(cell, -1, pr);
+        return cell;
     }
     // Plans the pair between this run (bottom cell gi) and the neighbour column on side (dx, dy): moves its units into
     // g.delta and returns the new Q (+: from this run toward the neighbour). A wet pair belongs to the -x / -y side's run.
-    static void AtomicMin(int& v, int x) {
-        int cur = __atomic_load_n(&v, __ATOMIC_RELAXED);
-        while (x < cur && !__atomic_compare_exchange_n(&v, &cur, x, true, __ATOMIC_RELAXED, __ATOMIC_RELAXED)) {}
-    }
     // k: the pair's slot in the run's record (0 +x, 1 +y, 2 -x, 3 -y); planned: the units it plans to move (0: none).
     // A: this run (runUp(gi, 0)), walked once for its four pairs (#747: each pair walked it again).
     float colPair(int gi, const ColRun& A, int dx, int dy, float qPrev, bool owner, int k, float& planned) const {
@@ -331,9 +342,7 @@ struct Pass {
             else {                                           // a dry floor higher than A's bed
                 B.bottom = B.top = B.head = cur;
                 B.bed = B.surf = k * 255 + (int)SH(inC[cur]);
-                bool pa;
-                B.above = stepZ(cur, 1, pa);
-                if (B.above >= 0 && (!pa || (FL(inC[B.above]) & SOLID) || F(inC[B.above]) > 0u)) B.above = -1;
+                B.topRow = B.headRow = k;
                 B.ok = true;
             }
         } else if (waterOf(n0, kind)) {
@@ -353,9 +362,7 @@ struct Pass {
             // wall leaked 1.1 m^3 and the leak test's 2.3 m^3 during the fill).
             B.bottom = B.top = B.head = nb;
             B.bed = B.surf = (int)SH(n0);
-            bool pa;
-            B.above = stepZ(nb, 1, pa);
-            if (B.above >= 0 && (!pa || (FL(inC[B.above]) & SOLID) || F(inC[B.above]) > 0u)) B.above = -1;
+            B.topRow = B.headRow = 0;
             B.ok = true;
         } else {
             spill = true; takerSpill = nb;                   // air beside A's bottom: over the edge (it falls from there)
@@ -435,11 +442,11 @@ struct Pass {
         const bool aGives = q > 0.0f;
         const int giverTop = aGives ? A.top : B.top;
         const int avail = aGives ? runAvail(A) : runAvail(B);
-        int taker = -1, room = 0;
+        int taker = -1, room = 0, giverRow = aGives ? A.topRow : B.topRow, takerRow = 0;
         if (aGives) {
-            if (spill) { taker = takerSpill; room = (int)(CAP(inC[taker]) - F(inC[taker])); }
-            else { taker = B.head; room = runRoom(B); }
-        } else { taker = A.head; room = runRoom(A); }
+            if (spill) { taker = takerSpill; room = headRoom(taker, kind); takerRow = 0; }
+            else { taker = B.head; room = runRoom(B, kind); takerRow = B.headRow; }
+        } else { taker = A.head; room = runRoom(A, kind); takerRow = A.headRow; }
         if (taker < 0) { WHY(6); return 0.0f; }
         // Sources (generated water, held at their level each step) as in the per-face rules: one never takes, and gives
         // only into dug cells (infinite water reaches a dig, not the open ground); a sink takes.
@@ -462,11 +469,11 @@ struct Pass {
             return q;
         }
         planned = (float)units;
-        g.pairGive[(size_t)4 * gi + k] = giverTop; g.pairTake[(size_t)4 * gi + k] = taker;
-        __atomic_fetch_add(&g.outDem[giverTop], units, __ATOMIC_RELAXED);
-        __atomic_fetch_add(&g.inDem[taker], units, __ATOMIC_RELAXED);
-        AtomicMin(g.availOf[giverTop], avail); // a spill and a run's head can see one taker's room differently: the least holds
-        AtomicMin(g.roomOf[taker], room);
+        g.pairCode[(size_t)4 * gi + k] = 1u | (aGives ? 2u : 0u) | ((uint32_t)(giverRow + 512) << 2) | ((uint32_t)(takerRow + 512) << 12);
+        __atomic_fetch_add(&g.dem[giverTop], (uint32_t)units << 16, __ATOMIC_RELAXED); // out
+        __atomic_fetch_add(&g.dem[taker], (uint32_t)units, __ATOMIC_RELAXED);         // in
+        __atomic_fetch_or(&g.cap[giverTop], (uint32_t)avail << 16, __ATOMIC_RELAXED);  // one avail a cell (its run's)
+        __atomic_fetch_or(&g.cap[taker], (uint32_t)room, __ATOMIC_RELAXED);            // one room a cell (headRoom)
         return q;
     }
     // A cell's new fill from the column flows: its own delta (clamped), a head's overflow from the cell below, a top's
@@ -510,7 +517,7 @@ struct Pass {
                 Q.w = colPair(gi, A, 0, -1, P.w, false, 3, U.w);
                 if (Q.x != 0.0f || Q.y != 0.0f || Q.z != 0.0f || Q.w != 0.0f) g.flags[slot] |= 1u;
             }
-            g.faceN[(size_t)2 * gi] = Q;
+            g.faceN[(size_t)2 * gi] = H(Q); // in half precision, as the GPU stores it (#680 GPU layout)
             g.faceN[(size_t)2 * gi + 1] = U;
             return;
         }
@@ -525,15 +532,23 @@ struct Pass {
             for (int k = 0; k < 4; ++k) {
                 const int planned = (int)u4[k];
                 if (planned <= 0) continue;
-                const int giver = g.pairGive[(size_t)4 * gi + k], taker = g.pairTake[(size_t)4 * gi + k];
-                long long units = planned;
-                const int out = g.outDem[giver], in = g.inDem[taker], av = g.availOf[giver], rm = g.roomOf[taker];
-                if (out > av) units = std::min(units, (long long)planned * av / out);
-                if (in > rm) units = std::min(units, (long long)planned * rm / in);
-                if (units < planned) *q4[k] *= (float)units / (float)planned;
+                // Back to the cells from the pair's code: rows from this run's bottom, in A's column or the neighbour's.
+                const uint32_t code = g.pairCode[(size_t)4 * gi + k];
+                const bool aGives = (code & 2u) != 0u;
+                const int giverRow = (int)((code >> 2) & 1023u) - 512, takerRow = (int)((code >> 12) & 1023u) - 512;
+                bool pn; int face;
+                const int nb = neighbour(slot, x, y, z, k == 0 ? 1 : k == 2 ? -1 : 0, k == 1 ? 1 : k == 3 ? -1 : 0, 0, pn, face);
+                const int giver = cellAtRow(aGives ? gi : nb, giverRow), taker = cellAtRow(aGives ? nb : gi, takerRow);
+                if (giver < 0 || taker < 0) continue; // can't happen: the plan walked these cells
+                const uint32_t demG = g.dem[giver], demT = g.dem[taker], capG = g.cap[giver], capT = g.cap[taker];
+                const int out = (int)(demG >> 16), in = (int)(demT & 0xFFFFu), av = (int)(capG >> 16), rm = (int)(capT & 0xFFFFu);
+                int units = planned;
+                if (out > av) units = std::min(units, planned * av / out);
+                if (in > rm) units = std::min(units, planned * rm / in);
+                if (units < planned) *q4[k] = H(*q4[k] * ((float)units / (float)planned));
                 if (units <= 0) continue;
-                __atomic_fetch_sub(&g.delta[giver], (int)units, __ATOMIC_RELAXED);
-                __atomic_fetch_add(&g.delta[taker], (int)units, __ATOMIC_RELAXED);
+                __atomic_fetch_sub(&g.delta[giver], units, __ATOMIC_RELAXED);
+                __atomic_fetch_add(&g.delta[taker], units, __ATOMIC_RELAXED);
             }
             return;
         }
@@ -560,7 +575,7 @@ struct Pass {
         uint32_t kind = KIND(c);
         if (pass == 0) {
             g.delta[gi] = 0; // the column flows planned next (#680), and their limiter's demand
-            g.outDem[gi] = 0; g.inDem[gi] = 0; g.availOf[gi] = INT32_MAX; g.roomOf[gi] = INT32_MAX;
+            g.dem[gi] = 0u; g.cap[gi] = 0u;
             bool pB, pA; int fB, fA;
             const int gb = neighbour(slot, x, y, z, 0, 0, -1, pB, fB);
             const int ga = neighbour(slot, x, y, z, 0, 0, 1, pA, fA);
