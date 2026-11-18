@@ -272,6 +272,7 @@ void NetWrite(NetWriter& w, const MsgPlayerSnapshot& m);
 bool NetRead(NetReader& r, MsgPlayerSnapshot& m, const std::function<bool(uint32_t, uint32_t, PlayerStateQ&)>& lookup = nullptr);
 // A message's id (the first byte; NetMsg::Count if empty or unknown).
 NetMsg NetPeek(const std::vector<uint8_t>& bytes);
+bool NetWellFormed(const std::vector<uint8_t>& bytes); // (#349) its reader accepts it (snapshot deltas decode against zeros)
 
 // --test-netproto: every message round-trips field for field; 20000 random and truncated buffers never crash a
 // reader and never read as valid when cut short. Prints PASS/FAIL; no network needed.
