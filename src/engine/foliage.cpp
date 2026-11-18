@@ -90,7 +90,19 @@ void ScatterGrass(const DensityField& field, ChunkMeshData& out) {
     if (sea <= 0.0f) return; // no seas, no grass (moons, asteroids)
     const Vector3 origin = out.key.origin();
     const float edge = out.key.size(); // keep the overlap cell to the neighbour (it draws its own)
-    const uint32_t nodeSeed = Hash((uint32_t)out.key.x * 73856093U ^ (uint32_t)out.key.y * 19349663U ^ (uint32_t)out.key.z * 83492791U);
+    // #243: the blades stand on sites that don't depend on the LOD. They were scattered per triangle with the node's own
+    // seed, so a chunk switching level reshuffled every blade (the grass "jumped"). Now: a jittered lattice in the body's
+    // frame, in the plane across the chunk's dominant axis (its up, roughly); each triangle lifts the sites over it onto
+    // its surface, and a site's size, variant and keep chance come from its own hash. A finer or coarser mesh puts the
+    // same blades in the same places, only at slightly different heights.
+    const Vector3 centre = Vector3AddValue(origin, 0.5f * edge);
+    const int ax = fabsf(centre.x) >= fabsf(centre.y) && fabsf(centre.x) >= fabsf(centre.z) ? 0 : fabsf(centre.y) >= fabsf(centre.z) ? 1 : 2;
+    const int au = ax == 0 ? 1 : 0, av = ax == 2 ? 1 : 2;
+    Vector3 axisDir{}; (&axisDir.x)[ax] = 1.0f;
+    // The site density over the projected plane: twice the target, so ground tilted up to 60 degrees from the axis (the
+    // most a planet's up gets from its dominant axis is ~55) can keep the target per square metre of real ground.
+    const float siteDensity = kGrassPerSquareMetre * 2.0f, cell = 1.0f / sqrtf(siteDensity);
+    auto comp = [](const Vector3& q, int i) { return (&q.x)[i]; };
     const size_t tris = out.indices.size() / 3;
     std::vector<float> byVariant[kGrassVariants];
     for (size_t t = 0; t < tris; ++t) {
@@ -103,15 +115,25 @@ void ScatterGrass(const DensityField& field, ChunkMeshData& out) {
         const Vector3 cr = Vector3CrossProduct(Vector3Subtract(b, a), Vector3Subtract(c, a));
         const float area = 0.5f * Vector3Length(cr);
         if (area < 1e-4f) continue;
-        uint32_t state = Hash(nodeSeed ^ (uint32_t)t * 2654435761U);
-        // Expected count = area * density; the fractional part is a coin flip.
-        const float want = area * kGrassPerSquareMetre;
-        int n = (int)want;
-        if (Unit(state) < want - n) ++n;
-        for (int k = 0; k < n; ++k) {
-            float u = Unit(state), v = Unit(state);
-            if (u + v > 1.0f) { u = 1.0f - u; v = 1.0f - v; }
+        // The triangle across the axis (body-local): its 2D corners, and the lattice cells under its bounding box.
+        const Vector3 A = Vector3Add(origin, a), B = Vector3Add(origin, b), C = Vector3Add(origin, c);
+        const float ax2 = comp(A, au), ay2 = comp(A, av), bx2 = comp(B, au), by2 = comp(B, av), cx2 = comp(C, au), cy2 = comp(C, av);
+        const float det = (bx2 - ax2) * (cy2 - ay2) - (cx2 - ax2) * (by2 - ay2);
+        if (fabsf(det) < 1e-6f) continue; // edge-on to the axis: steep, bare anyway
+        const float faceAxis = fabsf(cr.x * axisDir.x + cr.y * axisDir.y + cr.z * axisDir.z) / (2.0f * area); // |n . axis|
+        const int x0 = (int)floorf(std::min({ ax2, bx2, cx2 }) / cell), x1 = (int)floorf(std::max({ ax2, bx2, cx2 }) / cell);
+        const int y0 = (int)floorf(std::min({ ay2, by2, cy2 }) / cell), y1 = (int)floorf(std::max({ ay2, by2, cy2 }) / cell);
+        for (int gy = y0; gy <= y1; ++gy)
+            for (int gx = x0; gx <= x1; ++gx) {
+            uint32_t state = Hash((uint32_t)gx * 73856093U ^ (uint32_t)gy * 19349663U ^ (uint32_t)ax * 83492791U ^ (centre.x + centre.y + centre.z < 0.0f ? 0x5bd1e995U : 0U));
+            const float sx = (gx + Unit(state)) * cell, sy = (gy + Unit(state)) * cell; // the site
+            // Barycentric weights of the site in the projected triangle (the same weights on the triangle itself).
+            const float u = ((sx - ax2) * (cy2 - ay2) - (cx2 - ax2) * (sy - ay2)) / det;
+            const float v = ((bx2 - ax2) * (sy - ay2) - (sx - ax2) * (by2 - ay2)) / det;
             const float w = 1.0f - u - v;
+            if (u < 0.0f || v < 0.0f || w < 0.0f) continue;
+            // Keep a share so real ground gets kGrassPerSquareMetre: sites per m^2 of ground = siteDensity * |n . axis|.
+            if (Unit(state) * siteDensity * std::max(faceAxis, 0.05f) >= kGrassPerSquareMetre) continue;
             const Vector3 p = Vector3Add(Vector3Add(Vector3Scale(a, w), Vector3Scale(b, u)), Vector3Scale(c, v));
             if (p.x >= edge || p.y >= edge || p.z >= edge) continue;
             const Vector3 local = Vector3Add(origin, p);
