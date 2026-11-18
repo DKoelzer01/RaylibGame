@@ -750,6 +750,7 @@ int main(int argc, char** argv)
     uint64_t chopId = 0;
     bool chopFelled = false, chopSaved = false;
     Trunk chopTarget{};
+    Vector3 chopAway{};      // (#465) from the trunk to where the player stands to chop it (body-local)
     int treePhase = 0;
     double treeStart = 0.0;
     float treeMin = 1e9f;
@@ -2277,8 +2278,10 @@ int main(int argc, char** argv)
                     auto present = [&](uint64_t id) {
                         std::vector<Trunk> dummy;
                         PlantHit h;
-                        // Re-aim at the trunk: present if the raycast still finds this id.
-                        const Vector3 eye = p->toLocal(Vector3Add(feet, Vector3Scale(player.up, player.eyeHeight)));
+                        // Re-aim at the trunk: present if the raycast still finds this id. From where the player stood to chop it,
+                        // body-local (#465): the regrowth step jumps the clock 30 min, and the planet's spin then carries the
+                        // trunk ~190 km from the player's world position, so an eye from `feet` missed it.
+                        const Vector3 eye = Vector3Add(Vector3Add(chopTarget.base, Vector3Scale(chopAway, 2.0f)), Vector3Scale(chopTarget.up, player.eyeHeight));
                         const Vector3 aim = Vector3Normalize(Vector3Subtract(Vector3Add(chopTarget.base, Vector3Scale(chopTarget.up, 1.2f)), eye));
                         return p->trees->raycast(eye, aim, 8.0f, h) && h.plant.id == id;
                     };
@@ -2321,6 +2324,7 @@ int main(int argc, char** argv)
                             const Vector3 up = Vector3Normalize(chopTarget.base);
                             Vector3 away = Vector3Subtract(lf, chopTarget.base);
                             away = Vector3Normalize(Vector3Subtract(away, Vector3Scale(up, Vector3DotProduct(away, up))));
+                            chopAway = away;
                             player.spawnOn(world, *p, p->dirToWorld(Vector3Normalize(Vector3Add(chopTarget.base, Vector3Scale(away, 2.0f)))));
                             chopPhase = 2; chopStart = GetTime();
                         }
