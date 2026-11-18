@@ -11234,13 +11234,14 @@ int main(int argc, char** argv)
                 NetClient_SendChat(alice, "/team kick bob"); stepAt = GetTime(); step = 6;
             } else if (step == 6 && ((bob.team.members.size() == 1 && alice.team.members.size() == 1) || GetTime() - stepAt > 4.0)) {
                 kicked = bob.team.members.size() == 1 && alice.team.members.size() == 1 && bob.team.team != alice.team.team &&
-                         Teams_Of(PlayerId_FromName("bob")) != Teams_Of(PlayerId_FromName("alice"));
+                         Teams_Of(PlayerId_FromName("bob")) != Teams_Of(PlayerId_FromName("alice")) &&
+                         TeamQuests_Book(Teams_Of(PlayerId_FromName("bob"))).treeDone.count("e0f") > 0; // (a team of one with a copy of the progress)
                 step = 7;
             }
             if (step == 7 || GetTime() - t0 > 60.0) {
                 const bool ok = invited && together && bobsKept && healthSeen && chatToTeam && chatNotOthers && carolRefused && kicked;
                 printf("bench: teams (#604): invite seen %d, accepted into one team %d (bob's own progress kept %d; bob online with health %d); team chat to the team %d, not others %d; "
-                       "a non-owner's kick refused %d; the owner's kick: a team of one again %d; step %d -> %s\n",
+                       "a non-owner's kick refused %d; the owner's kick: a team of one again, with a copy of the progress %d; step %d -> %s\n",
                        invited, together, bobsKept, healthSeen, chatToTeam, chatNotOthers, carolRefused, kicked, step, ok ? "PASS" : "FAIL");
                 for (NetClient* c : { &alice, &bob, &carol }) NetClient_Disconnect(*c);
                 benchTeams = false;
