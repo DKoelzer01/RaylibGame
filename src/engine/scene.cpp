@@ -1,4 +1,5 @@
 #include "scene.h"
+#include "wind.h"
 #include "gpumem.h"
 #include "headless.h"
 #include "gputimer.h"
@@ -527,6 +528,7 @@ void Scene::drawScene(int gamestate) {
                     rlSetUniformMatrix(GetShaderLocation(ts, "matViewProj"), outMatrix);
                     const float now = (float)fmod(GameClock(), 3600.0);
                     rlSetUniform(GetShaderLocation(ts, "time"), &now, RL_SHADER_UNIFORM_FLOAT, 1);
+            Wind_Bind(ts, renderOrigin, 10); // the wind field (#650)
                     RenderContext tctx = shadowCtx;
                     tctx.treeShader = &ts;
                     tctx.treeModelLoc = GetShaderLocation(ts, "matModel");
@@ -832,6 +834,7 @@ void Scene::drawScene(int gamestate) {
             rlSetUniform(GetShaderLocation(ts, "fogDensity"), &effFogDensity, RL_SHADER_UNIFORM_FLOAT, 1);
             rlSetUniform(GetShaderLocation(ts, "fogShell"), shell, RL_SHADER_UNIFORM_VEC4, 1);
             rlSetUniform(GetShaderLocation(ts, "time"), &now, RL_SHADER_UNIFORM_FLOAT, 1);
+            Wind_Bind(ts, renderOrigin, 10); // the wind field (#650)
             setFoliageLighting(ts);
             RenderContext tctx = ctx;
             tctx.treeShader = &ts;
@@ -912,6 +915,7 @@ void Scene::drawScene(int gamestate) {
             rlSetUniform(GetShaderLocation(gs, "fogDensity"), &effFogDensity, RL_SHADER_UNIFORM_FLOAT, 1);
             rlSetUniform(GetShaderLocation(gs, "fogShell"), shell, RL_SHADER_UNIFORM_VEC4, 1);
             rlSetUniform(GetShaderLocation(gs, "time"), &now, RL_SHADER_UNIFORM_FLOAT, 1);
+            Wind_Bind(gs, renderOrigin, 10); // the wind field (#650)
             rlSetUniform(GetShaderLocation(gs, "fadeEnd"), &fadeEnd, RL_SHADER_UNIFORM_FLOAT, 1);
             setFoliageLighting(gs);
             RenderContext gctx = ctx;
@@ -1024,6 +1028,7 @@ Scene::~Scene() {
     grass.unload();
     trees.unload();
     treeDepth.unload();
+    Wind_Unload();
     farSphere.unload();
     parts.unload();
     atmosphereShader.unload();

@@ -1,4 +1,5 @@
 #include "weather.h"
+#include "wind.h"
 #include "audio.h"
 #include "player.h"
 #include "voxel.h"
@@ -128,6 +129,17 @@ void Weather_Update(Scene& world, float dt) {
     world.weatherCloud = here.cloud;
     world.weatherFog = here.fog;
     world.cloudDrift = Vector3Add(world.cloudDrift, Vector3Scale(here.wind, -dt * 3.0f)); // clouds move with the wind (a little faster than at the ground)
+    // The wind field (#650): this mean wind, storminess (rain a little, storms fully) and the daily cycle at the player.
+    if (p && player.nearest == p) {
+        const Vector3 local = p->toLocal((player.position - world.renderOrigin).toFloat());
+        const float len = Vector3Length(local);
+        static float stormEased = 0.0f;
+        const float stormTarget = here.kind == WeatherKind::Storm ? 1.0f : here.kind == WeatherKind::Rain ? 0.3f : 0.0f;
+        stormEased += (stormTarget - stormEased) * k;
+        if (forced >= 0) stormEased = stormTarget;
+        const float daily = len > 1.0f ? Wind_DailyFactor(Vector3Scale(local, 1.0f / len), Vector3Normalize(p->dirToLocal(world.sunDirection)), { 0, 1, 0 }) : 1.0f;
+        Wind_SetFrame(p, local, here.wind, stormEased, daily, dt);
+    } else Wind_SetFrame(nullptr, {}, {}, 0.0f, 1.0f, dt);
     // Lightning in a storm: a flash every 6-20 s, thunder a moment later.
     if (here.kind == WeatherKind::Storm) {
         if (GameClock() > nextFlash) {
