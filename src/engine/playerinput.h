@@ -20,6 +20,7 @@ enum class Act : int {
     Prone,                                           // Z on foot: lie down / get up (#578; Z rolls the ship too)
     Inventory, Crafting, Skills,                      // Tab, C, K: the game window and its tabs (#821; C and K fly the rocket too)
     Telescope, PlayerList, Deposit, BlueprintCycle, BlueprintSave, ZoomOut, ZoomIn, // T, J, Q, N, B, -, = (#821: rebindable too)
+    OffHandUse,                                       // Q: use the off hand's food or oxygen canister (#822)
     Count
 };
 

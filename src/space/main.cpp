@@ -9196,6 +9196,13 @@ int main(int argc, char** argv)
             if (!loading) Structures_Update(world); // ruins, wrecks and wonders near the player (#164)
             if (!loading) Fishing_Update(world, frameDt, gameInput && alive && !ship.piloted); // (#176)
             if (!loading) Trapping_Update(world); // snares (#176)
+            // (#822) Q: the off hand's food (eaten, when not full) or consumable (an oxygen canister, a power cell), one at a time
+            if (!loading && gameInput && alive && !GameUI_InventoryOpen() && PlayerInput_BindingPressed(Act::OffHandUse)) {
+                const std::string id = inventory.offHand().id;
+                if (id.empty()) GameUI_Toast("Your off hand is empty: put food or an oxygen canister there (the inventory, beside you)");
+                else if (Survival_IsFood(id) || Survival_IsUsable(id)) { if (!Survival_UseItem(id) && Survival_IsFood(id)) GameUI_Toast("You're not hungry"); }
+                else GameUI_Toast(TextFormat("%s uses food or a consumable from the off hand", PlayerInput_KeyName(PlayerInput_Binding(Act::OffHandUse))));
+            }
             if (!loading) DungeonTraps_Update(world); // dungeon traps (#719)
             if (!loading) Events_Update(world, frameDt); // meteor showers (#177)
             if (!hostSave.empty()) { GpuTimer_CpuMark("frame: view, events"); Host_Update(world); } // --host (#311): answer joins (its own marks: #348)
@@ -9364,15 +9371,20 @@ int main(int argc, char** argv)
             static float burnt = 0.0f;
             Light& torch = world.lights[3];
             torch.type = LIGHT_POINT;
-            const std::string& held = Hotbar_Selected() >= 0 ? Hotbar_Slot(Hotbar_Selected()) : std::string();
-            const bool fibre = held == "fibre_torch", lit = (fibre || held == "torch") && inventory.count(held) > 0;
+            // (#822) or in the off hand, when the main hand holds none: the light at the left hand, and it burns down the same way
+            const std::string& inHand = Hotbar_Selected() >= 0 ? Hotbar_Slot(Hotbar_Selected()) : std::string();
+            const std::string& offId = inventory.offHand().id;
+            const bool handTorch = inHand == "torch" || inHand == "fibre_torch";
+            const bool offTorch = !handTorch && (offId == "torch" || offId == "fibre_torch");
+            const std::string& held = offTorch ? offId : inHand;
+            const bool fibre = held == "fibre_torch", lit = (handTorch || offTorch) && inventory.count(held) > 0;
             torch.enabled = gameState == 1 && lit && !ship.piloted && !survival.dead;
             if (torch.enabled) {
                 const float t = (float)GetTime();
                 const float flicker = settings.fireFlicker ? 0.85f + 0.1f * sinf(t * 13.0f) + 0.05f * sinf(t * 31.7f + 1.3f) : 0.85f; // #558: steady when off
                 const Vector3 fwd = Vector3Normalize(Vector3Subtract(world.camera.target, world.camera.position));
                 const Vector3 right = Vector3Normalize(Vector3CrossProduct(fwd, world.camera.up));
-                torch.position = Vector3Add(Vector3Add(world.camera.position, Vector3Scale(right, 0.3f)), Vector3Add(Vector3Scale(world.camera.up, -0.15f), Vector3Scale(fwd, 0.35f)));
+                torch.position = Vector3Add(Vector3Add(world.camera.position, Vector3Scale(right, offTorch ? -0.3f : 0.3f)), Vector3Add(Vector3Scale(world.camera.up, -0.15f), Vector3Scale(fwd, 0.35f)));
                 torch.target = { fibre ? 7.0f : 12.0f, 0.0f, 0.0f };   // range (m)
                 torch.color = fibre ? Color{ 255, 165, 85, (unsigned char)(110 * flicker) } : Color{ 255, 180, 105, (unsigned char)(150 * flicker) };
                 burnt += GetFrameTime();
@@ -9593,6 +9605,7 @@ int main(int argc, char** argv)
         // inventory open (bench_glow.png).
         if (shotGlow && gameState == 1 && !loading && WorldIdle()) {
             static int f = 0;
+            static bool previewOk = false, moduleOk = false; // (#822) the inventory screen: the preview drawn, a module fitted, the off-hand torch
             if (++f == 5) {
                 inventory.addAmount("iron_ingot", 20, 1.0f); inventory.addAmount("copper_ingot", 12, 0.5f); inventory.addAmount("bronze_ingot", 6, 0.12f);
                 Hotbar_Bind(2, "iron_ingot");
@@ -9637,14 +9650,17 @@ int main(int argc, char** argv)
         // key bindings tables (every action named, its settings word unique and back to it, a key name for its key).
         if (shotGameWindow && gameState == 1 && !loading && WorldIdle()) {
             static int f = 0;
+            static bool previewOk = false, moduleOk = false; // (#822) the inventory screen: the preview drawn, a module fitted, the off-hand torch
             static const struct { const char* name; GameScreen s; const char* tab; } shots[] = {
                 { "inventory", GameScreen::Inventory, nullptr }, { "crafting", GameScreen::Crafting, nullptr }, { "quests", GameScreen::Quests, "Quests" },
                 { "questtree", GameScreen::Quests, "Quest tree" }, { "skills", GameScreen::Skills, nullptr }, { "team", GameScreen::Team, nullptr }, { "help", GameScreen::Inventory, "Help" } };
             constexpr int kShots = (int)(sizeof(shots) / sizeof(shots[0]));
-            if (f == 0) { inventory.add("stone_pickaxe", 1); inventory.add("oak_log", 12); inventory.add("copper_ingot", 6); }
+            if (f == 0) { inventory.add("stone_pickaxe", 1); inventory.add("oak_log", 12); inventory.add("copper_ingot", 6);
+                inventory.add("oxygen_tank_module", 2); Suit_Fit("oxygen_tank_module"); inventory.add("field_suit", 1); settings.mpSuit = 0x3E86D8; inventory.grid()[Inventory::kOffHand] = InvSlot{ "torch", 400 }; } // (#822) a module fitted, one carried; a torch in the off hand
             const int k = f / 20, phase = f % 20;
             if (k < kShots) {
                 if (phase == 0) { if (shots[k].tab) GameUI_ShowTab(shots[k].tab); else GameUI_ShowScreen(shots[k].s); }
+                if (phase == 15 && k == 0) { previewOk = GameUI_PreviewDrawn(); int n = 0; for (const std::string& m : Suit_Modules()) n += !m.empty(); moduleOk = n == 1 && inventory.offHand().id == "torch"; }
                 if (phase == 15) { TakeScreenshot(TextFormat("bench_window_%s.png", shots[k].name)); printf("bench: game window: bench_window_%s.png (screen %d)\n", shots[k].name, (int)GameUI_Screen()); }
             } else {
                 bool tables = true;
@@ -9659,14 +9675,15 @@ int main(int argc, char** argv)
                 PlayerInput_ResetBindings();
                 const bool reset = PlayerInput_Binding(Act::Inventory) == KEY_TAB;
                 GameUI_ToggleInventory();
-                printf("bench: game window (#821): %d screens shot; %d actions with unique settings words and key names %d; a rebind %d, reset %d -> %s\n",
-                       kShots, (int)Act::Count, tables, rebinds, reset, tables && rebinds && reset ? "PASS" : "FAIL");
+                printf("bench: game window (#821, #822): %d screens shot; the player preview %d, a module fitted and a torch in the off hand %d; %d actions with unique settings words and key names %d; a rebind %d, reset %d -> %s\n",
+                       kShots, previewOk, moduleOk, (int)Act::Count, tables, rebinds, reset, tables && rebinds && reset && previewOk && moduleOk ? "PASS" : "FAIL");
                 shotGameWindow = false;
             }
             ++f;
         }
         if (shotInventory && gameState == 1 && !loading && WorldIdle()) {
             static int f = 0;
+            static bool previewOk = false, moduleOk = false; // (#822) the inventory screen: the preview drawn, a module fitted, the off-hand torch
             if (++f == 5) { inventory.add("oxygen_tank_module", 1); inventory.add("stone_pickaxe", 1); inventory.add("steam_macerator", 1); inventory.add("oak_log", 12); inventory.grid()[Inventory::kOffHand] = InvSlot{ "wooden_shield", 100 }; GameUI_ToggleInventory(); }
             if (f == 30) { TakeScreenshot("bench_inventory.png"); printf("bench: shot: bench_inventory.png\n"); shotInventory = false; }
         }
@@ -11632,6 +11649,7 @@ int main(int argc, char** argv)
             justPaused = false;
             if (gameState != 0 && !gHeadless) {
                 GpuTimer_Mark("hud");
+                if (gameState == 1) GameUI_PrepareFrame(world); // (#822) the inventory screen's player preview, rendered before ImGui
                 rlImGuiBegin();
                 DebugUI_Draw(world);
                 GameUI_Draw(world);

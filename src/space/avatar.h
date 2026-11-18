@@ -41,5 +41,7 @@ void Avatar_DrawNameplates(Scene& world, const std::vector<AvatarState>& avatars
 // A Player's own state as an avatar (the local player for RAYLIBGAME_AVATAR_SELF, bench players); the extras (held item,
 // action, headlamp, name) are filled by the caller.
 AvatarState Avatar_FromPlayer(const Player& p, uint32_t session);
+// (#822) the inventory screen's preview: one avatar alone in `target`, lit like the world where it stands, seen from `eye`.
+void Avatar_DrawPreview(Scene& world, const AvatarState& a, RenderTexture2D& target, Vector3 eye, Vector3 at, Vector3 up);
 
 #endif

@@ -258,3 +258,21 @@ void Avatar_DrawNameplates(Scene& world, const std::vector<AvatarState>& avatars
             DrawRectangle((int)sp.x - w / 2 - 6, (int)sp.y + fs / 2 + 3, w + 12, 3, Fade(Color{ a.suitColor.r, a.suitColor.g, a.suitColor.b, 255 }, fade));
     }
 }
+
+// (#822) The inventory screen's player preview: one avatar alone in `target`, lit like the world where it stands (sun,
+// shadows, ambient), seen from `eye` towards `at` (render space). Call outside the world's 3D pass and outside ImGui.
+void Avatar_DrawPreview(Scene& world, const AvatarState& a, RenderTexture2D& target, Vector3 eye, Vector3 at, Vector3 up) {
+    BeginTextureMode(target);
+    ClearBackground(Color{ 18, 25, 36, 255 });
+    Camera3D cam{};
+    cam.position = eye; cam.target = at; cam.up = up; cam.fovy = 32.0f; cam.projection = CAMERA_PERSPECTIVE;
+    const Camera3D saved = world.camera;
+    world.camera = cam; // (the batch lights from the camera's place: the preview's)
+    BeginMode3D(cam);
+    const std::vector<AvatarState> one{ a };
+    Avatar_Draw3D(world, one);
+    InstanceBatch_Flush(world);
+    EndMode3D();
+    world.camera = saved;
+    EndTextureMode();
+}
