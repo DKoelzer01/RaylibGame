@@ -15,6 +15,7 @@
 #include "playersession.h"
 #include "netid.h"
 #include "net.h"
+#include "netproto.h"
 #include "gamerng.h"
 #include "headless.h"
 #include "hostserver.h"
@@ -338,6 +339,7 @@ int main(int argc, char** argv)
     }
     // --seed-survey COUNT FIRSTSEED OUTDIR [THREADS] [SUBSET] (#532): how alike different seeds' start planets are. No window.
     if (argc >= 5 && std::string(argv[1]) == "--seed-survey") return SeedSurvey_Run(argc, argv);
+    if (argc >= 2 && std::string(argv[1]) == "--test-netproto") return NetProto_Test() ? 0 : 1; // the wire protocol (#320): no window, no world
     double benchSeconds = 0.0;
     bool startWithOverlay = false;
     int benchDigStrokes = 0;     // --test-dig N: dig N strokes at the crosshair once the world is loaded
