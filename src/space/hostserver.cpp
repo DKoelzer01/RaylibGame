@@ -7,6 +7,7 @@
 #include "simclock.h"
 #include "survival.h"
 #include "world.h"
+#include "worldgenparams.h"
 #include "player.h"
 #include "netclient.h"
 #include "playerinput.h"
@@ -186,6 +187,7 @@ namespace {
         MsgWelcome w;
         w.session = s->id; w.reconnected = reconnected; w.seed = info.seed; w.bodies = info.bodies; w.fingerprint = info.fingerprint;
         w.serverTick = (uint32_t)SimTick(); w.worldTime = WorldTime(); // #339: the client takes our clock
+        w.worldgen = WorldGenParams_ToText(WorldGenParams_ForSave(WorldSavePath())); w.sandbox = gSandboxWorld; // #757: generate it as we did
         w.settings.difficulty = (uint8_t)std::clamp(worldDifficulty, 0, 2); w.settings.maxPlayers = (uint8_t)maxPlayers;
         SendMsg(conn, w);
         const EventsShower sh = Events_GetShower();

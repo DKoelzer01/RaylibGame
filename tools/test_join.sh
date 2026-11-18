@@ -12,7 +12,14 @@ lag="${LAG_MS:-30}"
 tmp="$(mktemp -d)"
 cd "$here"
 SECONDS=0
-"$exe" --host "$tmp/host.sav" --seed 42 --bench 600 --port "$port" > "$tmp/host.log" 2>&1 &
+# A non-default world (#757): WORLDGEN="ocean 0.4 mountains 1.6 erosion 0" (key value pairs) becomes the host save's sidecar
+# before it generates; SANDBOX=1 hosts the flat test plane. The clients get both in the Welcome (the fingerprint must match).
+if [ -n "${WORLDGEN:-}" ]; then
+    printf '%s %s\n' ${WORLDGEN} > "$tmp/host.sav.worldgen"
+    echo "test_join: host world-gen settings: $(tr '\n' ' ' < "$tmp/host.sav.worldgen")"
+fi
+sandbox=""; [ "${SANDBOX:-0}" = "1" ] && sandbox="--sandbox"
+"$exe" --host "$tmp/host.sav" --seed 42 $sandbox --bench 600 --port "$port" > "$tmp/host.log" 2>&1 &
 hp=$!
 until grep -q "listening on port" "$tmp/host.log" 2>/dev/null || ! kill -0 "$hp" 2>/dev/null || [ $SECONDS -gt 300 ]; do sleep 1; done
 if ! grep -q "listening on port" "$tmp/host.log"; then
