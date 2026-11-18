@@ -326,6 +326,36 @@ void RunPass(Grid& g, const Params& p, const std::vector<int>& list, int pass) {
 
 } // namespace
 
+void BeginTick(Grid& g, const std::vector<int>& list) {
+    const int n = (int)list.size();
+    if (n == 0) { g.groupsFull = false; return; }
+    const int parts = std::max(1, std::min(n, (int)std::thread::hardware_concurrency()));
+    auto run = [&g, &list, n, parts](int part) {
+        for (int i = part; i < n; i += parts) {
+            const int s = list[i];
+            std::fill(g.faceN.begin() + (size_t)s * 4096 * 2, g.faceN.begin() + (size_t)(s + 1) * 4096 * 2, Vec4{});
+            uint32_t w[2] = { 0u, 0u };
+            const uint32_t* c = &g.a[(size_t)s * 4096];
+            for (int grp = 0; grp < 64; ++grp) {
+                uint32_t any = 0u;
+                for (int k = grp * 64; k < grp * 64 + 64; ++k) any |= c[k] & 255u;
+                if (any) w[grp >> 5] |= 1u << (grp & 31);
+            }
+            uint32_t* m = &g.gmask[(size_t)s * 6]; // the host put the brick's history in 0 (last substep) and 2 (the one before)
+            m[0] |= w[0]; m[1] |= w[1];            // and the groups wet now: the first substep lists them and their borders
+        }
+    };
+    std::atomic<int> left{ parts - 1 };
+    for (int part = 1; part < parts; ++part) {
+        JobSystem::tagNext(JobTag::Fluid);
+        WorldJobs().submit(-3.0f, [&run, &left, part] { run(part); left.fetch_sub(1); });
+    }
+    run(0);
+    while (left.load() > 0) std::this_thread::yield();
+    g.gcur = 0;
+    g.groupsFull = false;
+}
+
 void Substep(Grid& g, const Params& p, const std::vector<int>& list) {
     // The dry-cell skip (#747, the CPU twin of fluid_groups.comp, #675): run only the 64-cell groups that held water in
     // either of the last two substeps or border one (in the brick, or across a face to a processed brick). Water moves at

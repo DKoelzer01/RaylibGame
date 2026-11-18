@@ -49,6 +49,10 @@ struct Grid {
 // One substep over the listed slots: vertical (A -> B), face flows (B -> N), apply (B, N -> A, P). Slots run in parallel
 // on the job system (each pass writes only its own slot's cells, faces and flags).
 void Substep(Grid& g, const Params& p, const std::vector<int>& list);
+// A tick's start (#747), after the host packed the slots into A and B: clears the face records the processed slots carry
+// from other bricks and seeds the dry-cell skip's masks from the cells, so the first substep skips dry groups like the
+// rest. Runs the slots on the job system.
+void BeginTick(Grid& g, const std::vector<int>& list);
 
 } // namespace FluidKernel
 
