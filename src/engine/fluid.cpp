@@ -125,6 +125,8 @@ struct Brick {
     int statSolid = 0; // solid cells (all solid: nothing to run, #669)
     int slot = -1;                  // GPU mode: its place in the GPU brick pool (-1: none yet)
     std::vector<FluidKernel::Vec4> faces; // CPU mode: the face flows as applied (#654: momentum between ticks; empty: at rest)
+    std::vector<int16_t> colFlow;         // the drawn current (#677): per column (x + 16 y) its flow along east, north (cm/s); empty: none yet
+    std::vector<int16_t> drawnFlow; int flowStep = -100000; // the current the chunks last drew, and when (#677: a steady stream's levels never change, so it redraws on its flow)
     int cpuSlot = -1;               // CPU mode: its place in this tick's grid
     bool upload = false;            // GPU mode: the whole brick (cells, flags, targets) goes up next tick
     int sinkRelease = -1;           // its cells hold a released reach's downstream sink: that release's index (river flow, #656)
@@ -1029,11 +1031,41 @@ void RunJob() {
             const bool movingNow = stepCount - b.movingStep < FilmHoldSteps();
             const bool movedFlip = b.drawnSet && b.drawnMoving != movingNow; // its thin films show or hide (#649)
             out.flip = movedFlip;
-            if (!b.changed && !movedFlip) return;
+            // The current changed (#677): a steady stream's levels hold, so it redraws on its flow - some column 20 cm/s off
+            // what was drawn, at most every 2 s (80 ticks).
+            bool flowRedraw = false;
+            if (!b.colFlow.empty() && stepCount - b.flowStep >= 80) {
+                if (b.drawnFlow.size() != b.colFlow.size()) flowRedraw = true;
+                else for (size_t k = 0; k < b.colFlow.size() && !flowRedraw; ++k) flowRedraw = abs((int)b.colFlow[k] - (int)b.drawnFlow[k]) > 20;
+            }
+            if (!b.changed && !movedFlip && !flowRedraw) return;
             b.changed = false;
+            if (flowRedraw) { b.drawnFlow = b.colFlow; b.flowStep = stepCount; }
             out.pb = std::make_shared<WaterField::Brick>();
             WaterField::Brick* pb = out.pb.get();
             pb->fill = b.fill; pb->drawn = b.disp; pb->flags = b.flags; pb->shut = b.shut; pb->kinds = present; pb->moving = movingNow; // queries read the simulated water, the mesher the eased
+            // The drawn current (#677, #695): per column the solver's flow at its surface, cm/s along the site's east and
+            // north - the top water cell's face flows over the column's wetted depth (a column's top cell carries the
+            // column's flow). GPU: fluid_flowpack.comp, read back with the cells; CPU kernel: from its faces here.
+            if (!b.colFlow.empty()) pb->flow = b.colFlow;
+            else if (b.faces.size() == (size_t)B3 && !(getenv("RAYLIBGAME_FLUID_REALFLOW") && atoi(getenv("RAYLIBGAME_FLUID_REALFLOW")) == 0)) {
+                pb->flow.assign(512, 0);
+                const float cs = WaterField::CellSize();
+                for (int y = 0; y < B; ++y)
+                    for (int x = 0; x < B; ++x) {
+                        float depth = 0.0f; // the water from the column's bottom up to this cell (m), within the brick
+                        for (int z = 0; z < B; ++z) {
+                            const int i = x + B * y + B * B * z;
+                            if (!b.fill[i] || (b.flags[i] & kSolid)) { depth = 0.0f; continue; }
+                            depth += b.fill[i] / 255.0f * cs;
+                            const int above = z + 1 < B ? i + B * B : -1;
+                            if (above >= 0 && b.fill[above] && !(b.flags[above] & kSolid)) continue; // not the surface
+                            const float area = cs * std::max(0.02f, depth);
+                            pb->flow[2 * (x + B * y)] = (int16_t)std::clamp(b.faces[i].x / area * 100.0f, -32000.0f, 32000.0f);
+                            pb->flow[2 * (x + B * y) + 1] = (int16_t)std::clamp(b.faces[i].y / area * 100.0f, -32000.0f, 32000.0f);
+                        }
+                    }
+            }
             // A cell's surface reaches its neighbours' samples (solid cells carry it, empty ones look below). Only a
             // visible change redraws the chunks, and only around the cells that changed: some cell 2.5 cm+ off what
             // they last drew, or its solidity or fluid kind (a body easing by a 255th at a time kept ~2000 chunk
@@ -1043,11 +1075,12 @@ void RunJob() {
             for (int o = 0; o < 8; ++o) { c0[o][0] = c0[o][1] = c0[o][2] = B; c1[o][0] = c1[o][1] = c1[o][2] = -1; }
             for (int i = 0; i < B3; ++i) {
                 const bool v = !b.drawnSet || abs((int)b.disp[i] - (int)b.drawn[i]) >= 6 || ((b.flags[i] ^ b.drawnFlags[i]) & kSolid) ||
-                               (b.disp[i] && ((b.flags[i] ^ b.drawnFlags[i]) & kKindMask)) || (movedFlip && b.disp[i] > 0 && b.disp[i] < 64);
+                               (b.disp[i] && ((b.flags[i] ^ b.drawnFlags[i]) & kKindMask)) || (movedFlip && b.disp[i] > 0 && b.disp[i] < 64) ||
+                               (flowRedraw && b.disp[i] > 0 && b.disp[i] < 255); // the surface cells, for their current
                 if (!v) continue;
                 const int x = i % B, y = (i / B) % B, z = i / (B * B);
                 const int o = (x >> 3) | ((y >> 3) << 1) | ((z >> 3) << 2);
-                mag[o] = std::max(mag[o], (!b.drawnSet || ((b.flags[i] ^ b.drawnFlags[i]) & (kSolid | kKindMask))) ? 255 : abs((int)b.disp[i] - (int)b.drawn[i]));
+                mag[o] = std::max(mag[o], (!b.drawnSet || ((b.flags[i] ^ b.drawnFlags[i]) & (kSolid | kKindMask)) || flowRedraw) ? 255 : abs((int)b.disp[i] - (int)b.drawn[i]));
                 c0[o][0] = std::min(c0[o][0], x); c0[o][1] = std::min(c0[o][1], y); c0[o][2] = std::min(c0[o][2], z);
                 c1[o][0] = std::max(c1[o][0], x); c1[o][1] = std::max(c1[o][1], y); c1[o][2] = std::max(c1[o][2], z);
                 b.drawn[i] = b.disp[i]; b.drawnFlags[i] = b.flags[i];
@@ -1138,9 +1171,12 @@ struct GpuState {
     ComputeBuffer faceP, faceN;            // face flows (#642, fluid_step.comp): applied (a vec4 a cell) / new (two vec4 a cell)
     // Async readback (#669): the dispatch's flags and its bricks' cells packed (fluid_pack.comp) are copied into a persistent
     // mapped buffer behind a fence and read the next tick; without buffer storage, the old per-brick downloads.
-    ComputeProgram pack;
+    ComputeProgram pack, flowPack; // flowPack: per column the solver's current, for drawing (#677)
+    ComputeBuffer flowPacked;
+    bool realFlow = false;      // the drawn current from the solver (RAYLIBGAME_FLUID_REALFLOW=0: the surface-slope estimate)
     ComputeBuffer packed;
     unsigned rbBuf = 0; unsigned char* rbPtr = nullptr; size_t rbCap = 0; void* rbFence = nullptr; size_t rbFlagsBytes = 0, rbSinkAt = 0, rbSinkBytes = 0; bool sinkOn = false; // sinkOn: some release measures its outflow (#656); rbSinkAt: its counters in the mapped buffer
+    size_t rbFlowAt = 0, rbFlowBytes = 0; // the drawn current's columns in the mapped buffer (#677), after the sink counters
     bool asyncRb = false;
     // The dry-cell skip (#675, fluid_groups.comp): per slot 3 substeps x 64 group bits (wet), the listed groups + dispatch args.
     ComputeProgram groups;
@@ -1189,6 +1225,8 @@ bool GpuInit() {
         // Async readback (#669): buffer storage for the persistent mapping, the pack pass; else the old downloads.
         G.asyncRb = !getenv("RAYLIBGAME_FLUID_SYNC_READBACK") && GL_Caps().bufferStorage && glad_glFenceSync && G.pack.load("resources/compute/fluid_pack.comp");
         if (G.asyncRb) G.packed.create(64 * kCellsPerBrick * 2);
+        G.realFlow = G.asyncRb && !(getenv("RAYLIBGAME_FLUID_REALFLOW") && atoi(getenv("RAYLIBGAME_FLUID_REALFLOW")) == 0) && G.flowPack.load("resources/compute/fluid_flowpack.comp");
+        if (G.realFlow) G.flowPacked.create(64 * 256 * 4);
         G.groupsOn = !(getenv("RAYLIBGAME_FLUID_GROUPS") && atoi(getenv("RAYLIBGAME_FLUID_GROUPS")) == 0) && glad_glDispatchComputeIndirect && G.groups.load("resources/compute/fluid_groups.comp");
         if (G.groupsOn) {
             const std::vector<unsigned> zero((size_t)(8 + 64 * 64), 0u);
@@ -1345,6 +1383,17 @@ void GpuTick(int n) {
             flags = (const unsigned*)G.rbPtr;
             packed = (const uint32_t*)(G.rbPtr + G.rbFlagsBytes);
             if (G.rbSinkBytes) creditSinks((const unsigned*)(G.rbPtr + G.rbSinkAt), (int)(G.rbSinkBytes / 4)); // #656
+            // The drawn current (#677): per column the solver's flow, kept on the brick until it next publishes.
+            if (G.rbFlowBytes) {
+                const uint32_t* fp = (const uint32_t*)(G.rbPtr + G.rbFlowAt);
+                const size_t n = std::min(G.lastList.size(), G.rbFlowBytes / (256 * 4));
+                for (size_t li = 0; li < n; ++li) {
+                    Brick* br = G.owner[G.lastList[li]];
+                    if (!br) continue;
+                    br->colFlow.resize(512);
+                    for (int c = 0; c < 256; ++c) { const uint32_t v = fp[li * 256 + c]; br->colFlow[2 * c] = (int16_t)(v & 0xFFFFu); br->colFlow[2 * c + 1] = (int16_t)(v >> 16); }
+                }
+            }
         } else {
             flagsV.resize(G.capacity);
             G.flags.download(flagsV.data(), G.capacity * 4);
@@ -1596,7 +1645,18 @@ void GpuTick(int n) {
         G.a.bind(0); G.list.bind(3); G.packed.bind(10);
         G.pack.dispatch(kCellsPerBrick / 2 / 64u, bricks);
         const size_t sinkBytes = G.sinkOn ? (size_t)G.capacity * 4 : 0; // released reaches' sink counters (#656)
-        const size_t total = flagsBytes + packedBytes + sinkBytes;
+        // The drawn current (#677): per column the solver's flow at its surface, 1 KB a brick (fluid_flowpack.comp).
+        const size_t flowBytes = G.realFlow ? (size_t)list.size() * 256 * 4 : 0;
+        if (flowBytes) {
+            if (G.flowPacked.bytes < flowBytes) G.flowPacked.resize((unsigned)(flowBytes * 2));
+            G.flowPack.use();
+            G.flowPack.setUint("count", (unsigned)list.size());
+            const float cs = WaterField::CellSize();
+            rlSetUniform(G.flowPack.uniform("cellSize"), &cs, RL_SHADER_UNIFORM_FLOAT, 1);
+            G.a.bind(0); G.list.bind(3); G.faceN.bind(9); G.flowPacked.bind(13);
+            G.flowPack.dispatch(1, bricks);
+        }
+        const size_t total = flagsBytes + packedBytes + sinkBytes + flowBytes; // mapped: flags, cells, sink counters, current
         if (G.rbCap < total) {
             if (G.rbBuf) { glDeleteBuffers(1, (GLuint*)&G.rbBuf); G.rbBuf = 0; G.rbPtr = nullptr; }
             size_t cap = 1u << 20;
@@ -1621,11 +1681,16 @@ void GpuTick(int n) {
             glBindBuffer(GL_COPY_READ_BUFFER, G.sinkOut.id);
             glCopyBufferSubData(GL_COPY_READ_BUFFER, GL_COPY_WRITE_BUFFER, 0, (GLintptr)(flagsBytes + packedBytes), (GLsizeiptr)sinkBytes);
         }
+        if (flowBytes) {
+            glBindBuffer(GL_COPY_READ_BUFFER, G.flowPacked.id);
+            glCopyBufferSubData(GL_COPY_READ_BUFFER, GL_COPY_WRITE_BUFFER, 0, (GLintptr)(flagsBytes + packedBytes + sinkBytes), (GLsizeiptr)flowBytes);
+        }
         glBindBuffer(GL_COPY_READ_BUFFER, 0);
         glBindBuffer(GL_COPY_WRITE_BUFFER, 0);
         if (sinkBytes) { static std::vector<unsigned> zeros; zeros.assign(G.capacity, 0u); G.sinkOut.upload(zeros.data(), (unsigned)sinkBytes); } // counted from here on
         G.rbFlagsBytes = flagsBytes;
         G.rbSinkAt = flagsBytes + packedBytes; G.rbSinkBytes = sinkBytes;
+        G.rbFlowAt = flagsBytes + packedBytes + sinkBytes; G.rbFlowBytes = flowBytes;
         G.rbFence = glFenceSync(GL_SYNC_GPU_COMMANDS_COMPLETE, 0);
         glFlush();
     }
@@ -2028,7 +2093,16 @@ void Fluid::BindKindUniforms(const Shader& shader) {
     if (shader.id != cachedId) { cachedId = shader.id; colLoc = GetShaderLocation(shader, "fluidColors"); glowLoc = GetShaderLocation(shader, "fluidGlows"); }
     if (colLoc >= 0) rlSetUniform(colLoc, col, RL_SHADER_UNIFORM_VEC4, 8);
     if (glowLoc >= 0) rlSetUniform(glowLoc, glow, RL_SHADER_UNIFORM_FLOAT, 8);
+    // The debug view (#695): RAYLIBGAME_FLUID_DEBUG=1, or toggled in game (Fluid::SetDebugView).
+    static int dbgLoc = -1; static unsigned dbgId = 0;
+    if (shader.id != dbgId) { dbgId = shader.id; dbgLoc = GetShaderLocation(shader, "fluidDebug"); }
+    const int dbg = DebugView() ? 1 : 0;
+    if (dbgLoc >= 0) rlSetUniform(dbgLoc, &dbg, RL_SHADER_UNIFORM_INT, 1);
 }
+
+static bool debugView = getenv("RAYLIBGAME_FLUID_DEBUG") && atoi(getenv("RAYLIBGAME_FLUID_DEBUG")) != 0;
+bool Fluid::DebugView() { return debugView; }
+void Fluid::SetDebugView(bool on) { debugView = on; }
 
 namespace {
     // A published cell at a body-local point: its fill (0-255) and flags (and its ground share, #454); false if none.

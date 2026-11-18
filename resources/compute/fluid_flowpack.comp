@@ -1,0 +1,37 @@
+#version 430
+// The drawn current of simulated water (#677, #695): per processed brick, per column (16 x 16), the solver's flow at the
+// column's surface - the top water cell's +x / +y planned face flows (m^3/s, momentum and share) over the column's wetted depth below it (within the
+// brick; a column's top cell carries the flow of the column), as cm/s in two int16. Copied into the mapped readback with
+// the cells (fluid.cpp GpuTick): 1 KB a brick, against 32 KB for the faces themselves.
+layout(local_size_x = 256) in;
+layout(std430, binding = 0) readonly buffer Cells { uint cells[]; };  // A: slot * 4096 + cell
+layout(std430, binding = 3) readonly buffer List { uint list[]; };    // the processed slots
+layout(std430, binding = 9) readonly buffer FacesN { uvec4 faceN[]; };  // per cell, the last substep's plan: x = packHalf2x16(+x, +y) total flow
+layout(std430, binding = 13) writeonly buffer FlowOut { uint flowOut[]; }; // list index * 256 + column
+uniform uint count;
+uniform float cellSize; // m
+
+const uint SOLID = 1u;
+
+void main() {
+    uint li = gl_WorkGroupID.y;
+    if (li >= count) return;
+    uint slot = list[li];
+    uint col = gl_LocalInvocationID.x; // x + 16 y
+    float depth = 0.0;
+    vec2 v = vec2(0.0);
+    for (uint z = 0u; z < 16u; ++z) {
+        uint i = slot * 4096u + col + 256u * z;
+        uint c = cells[i];
+        uint f = c & 255u, fl = (c >> 8) & 255u;
+        if (f == 0u || (fl & SOLID) != 0u) { depth = 0.0; continue; }
+        depth += float(f) / 255.0 * cellSize;
+        bool top = true;
+        if (z + 1u < 16u) { uint a = cells[i + 256u]; top = (a & 255u) == 0u || (((a >> 8) & 255u) & SOLID) != 0u; }
+        // The total planned flow (momentum and the levelling share): a thin stream moves mostly by the share, which the
+        // momentum record (faceP) leaves out - a running spring read as still water.
+        if (top) v = unpackHalf2x16(faceN[i].x) / (cellSize * max(depth, 0.02)); // the highest surface in the column wins
+    }
+    ivec2 cm = clamp(ivec2(round(v * 100.0)), ivec2(-32000), ivec2(32000));
+    flowOut[li * 256u + col] = (uint(cm.x) & 0xFFFFu) | (uint(cm.y) << 16);
+}

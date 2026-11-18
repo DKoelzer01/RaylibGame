@@ -431,6 +431,7 @@ int main(int argc, char** argv)
     bool benchPump = false; int pumpPhase = 0, pumpCable = -1; double pumpT0 = 0.0, pumpedAtCut = 0.0; uint32_t pumpPlot = 0; Vector3 pumpBasin{}; float pumpRise = 0.0f; // --test-pump
     bool benchBucket = false; int bucketPhase = 0, bucketTrips = 0; double bucketT0 = 0.0; Vector3 bucketWater{}, bucketBasin{}, bucketField{}; // --test-bucket
     float benchFluidLoad = 0.0f; int flPhase = 0; double flT0 = 0.0; Vector3 flMid{}, flE{}, flN{}; // --test-fluid-load S (#638/#642 perf)
+    bool benchFlowShade = false; int fsPhase = 0; double fsT0 = 0.0; Vector3 fsMid{}, fsE{}, fsN{}; // --test-flow-shade (#677, #696)
     bool benchWaterSpeed = false; int wsPhase = 0; double wsT0 = 0.0, wsFront[3] = { -1, -1, -1 }, wsSleep = -1.0; Vector3 wsSite{}, wsEye{}; float wsMaxFront = 0.0f, wsVol0 = 0.0f; // --test-water-speed (#638)
     bool benchPond = false; int pondPhase = 0; double pondT0 = 0.0; Vector3 pondDirB{}, pondOutB{}, pondPit{}, pondMid{}; float pondLevelB = 0.0f, pondRB = 0.0f; // --test-pond
     bool benchFlowSea = false; // --test-flow-sea (#190): the flow test from the sea instead of inland water
@@ -699,6 +700,7 @@ int main(int argc, char** argv)
         if (std::string(argv[i]) == "--test-water-speed") benchWaterSpeed = true;
         if (std::string(argv[i]) == "--sandbox") gSandboxWorld = true; // #662: a flat test plane
         if (std::string(argv[i]) == "--test-fluid-load" && i + 1 < argc) benchFluidLoad = (float)atof(argv[i + 1]); // basin side (m)
+        if (std::string(argv[i]) == "--test-flow-shade") benchFlowShade = true; // #677: a pool, a chute and a fall, for the water's look
         if (std::string(argv[i]) == "--test-pump") benchPump = true;
         if (std::string(argv[i]) == "--test-pump-hand") { benchPump = true; benchPumpHand = true; }
         if (std::string(argv[i]) == "--test-pump-boiler") { benchPump = true; benchPumpBoiler = true; }
@@ -3027,6 +3029,15 @@ int main(int argc, char** argv)
                                     printf("bench: rivers: waterfall %.1f km from the start: drops %.1f m from %.1f m, %.0f m wide; look: --view-fall %.6f %.6f %.6f %.5f %.5f %.5f\n",
                                            near[k].first / 1000.0f, f.drop, f.top, 2.0f * f.halfWidth, f.lip.x, f.lip.y, f.lip.z, f.down.x, f.down.y, f.down.z);
                                 }
+                                // And a small one near the start (#614: its effects should be small too): the least drop x width within 6 km.
+                                int small = -1; float smallD = 1e30f;
+                                for (int i = 0; i < (int)falls.size(); ++i)
+                                    if (falls[i].top > 2.0f && Vector3Distance(home, falls[i].lip) * pf->radius < 6000.0f) { const float sz = falls[i].drop * falls[i].halfWidth; if (sz < smallD) { smallD = sz; small = i; } }
+                                if (small >= 0) {
+                                    const auto& f = falls[small];
+                                    printf("bench: rivers: small waterfall %.1f km from the start: drops %.1f m from %.1f m, %.0f m wide; look: --view-fall %.6f %.6f %.6f %.5f %.5f %.5f --view-fall-dist 25\n",
+                                           Vector3Distance(home, f.lip) * pf->radius / 1000.0f, f.drop, f.top, 2.0f * f.halfWidth, f.lip.x, f.lip.y, f.lip.z, f.down.x, f.down.y, f.down.z);
+                                }
                             }
                             // A look at a river: the nearest to the start (every 150 m within 8 km).
                             {
@@ -4971,6 +4982,57 @@ int main(int argc, char** argv)
                             benchPump = false;
                         }
                     }
+                } else if (benchFlowShade && (fsPhase > 0 || WorldIdle())) {
+                    // --test-flow-shade (#677, #696; best with --sandbox): a pool fed by a source spills down an 18 m chute (2 m drop)
+                    // and falls 4 m into a pit - still, running and falling water side by side, watched from the pit's far side against
+                    // the sun so the reflection, the streaks and the foam all show. PASS: the fall's steep water is drawn with
+                    // its current running down its surface at 1 m/s or more (it pointed into the surface: nothing was drawn).
+                    Planetoid* p = dynamic_cast<Planetoid*>(world.objects[0].get());
+                    const PlanetField* pf = p ? dynamic_cast<const PlanetField*>(p->field.get()) : nullptr;
+                    const double t = GetTime() - fsT0;
+                    auto at = [&](float x, float y, float h) { return Vector3Add(fsMid, Vector3Add(Vector3Add(Vector3Scale(fsE, x), Vector3Scale(fsN, y)), Vector3Scale(Vector3Normalize(fsMid), h))); };
+                    if (!pf) { printf("bench: flow-shade: needs the planet -> FAIL\n"); benchFlowShade = false; }
+                    else {
+                        if (fsPhase == 0) {
+                            const Vector3 home = pf->findSpawnDir(p->seed);
+                            fsE = Vector3Normalize(Vector3CrossProduct(home, { 0, 1, 0 })); fsN = Vector3CrossProduct(fsE, home);
+                            fsMid = Vector3Scale(home, pf->radius + pf->elevation(home));
+                            const Vector3 up = Vector3Normalize(fsMid);
+                            auto box = [&](Vector3 c, Vector3 half, Vector3 ax, Vector3 ay, Vector3 az) {
+                                TerrainEdit e{}; e.center = c; e.carve = true; e.box = true; e.half = half; e.ax = ax; e.ay = ay; e.az = az; e.radius = Vector3Length(half);
+                                return e;
+                            };
+                            std::vector<TerrainEdit> cut;
+                            cut.push_back(box(at(-22.0f, 0.0f, -1.0f), { 4.5f, 4.0f, 1.0f }, fsE, fsN, up)); // the pool: 9 x 8 m, 2 m deep
+                            // The chute: its bed from -1 m at the pool down to -3 m at the pit, 3 m wide (a tilted box, 2 m tall over the bed).
+                            const Vector3 ax = Vector3Normalize(Vector3Subtract(Vector3Scale(fsE, 18.0f), Vector3Scale(up, 2.0f)));
+                            const Vector3 az = Vector3Normalize(Vector3Add(Vector3Scale(up, 18.0f), Vector3Scale(fsE, 2.0f)));
+                            cut.push_back(box(Vector3Add(at(-9.0f, 0.0f, -2.0f), az), { 9.6f, 1.5f, 1.0f }, ax, fsN, az));
+                            cut.push_back(box(at(8.0f, 0.0f, -3.5f), { 8.0f, 8.0f, 3.5f }, fsE, fsN, up)); // the pit: 16 x 16 m, 7 m deep
+                            ApplyTerrainEdits(*p, cut.data(), cut.size());
+                            sunOverride = true; // low, behind the water seen from the camera: a glint and the sky in it
+                            sunArg = p->dirToWorld(Vector3Normalize(Vector3Add(Vector3Scale(up, 0.45f), Vector3Add(Vector3Scale(fsE, -1.0f), Vector3Scale(fsN, 0.25f)))));
+                            player.flyMode = true;
+                            printf("bench: flow-shade: a 9 m pool, an 18 m chute (2 m drop) and a 4 m fall into a 16 m pit\n");
+                            fsPhase = 1; fsT0 = GetTime();
+                        }
+                        // Over the pit's far corner, looking back up the chute to the pool: the fall below, the running chute in the middle.
+                        world.camera.position = p->toWorld(at(10.0f, -9.0f, 11.0f)); world.camera.target = p->toWorld(at(-9.0f, 0.0f, -2.5f));
+                        world.camera.up = p->dirToWorld(Vector3Normalize(fsMid));
+                        player.position = world.renderOrigin + world.camera.position;
+                        if (fsPhase == 1 && t > 1.0 && WorldIdle()) {
+                            Fluid::AddSource(*p, at(-22.0f, 0.0f, -1.9f), 0, 10.0f, 1.4f); // the pool fills to 0.5 m under the rim and spills down the chute
+                            fsPhase = 2; fsT0 = GetTime();
+                        } else if (fsPhase == 2 && t > 60.0) {
+                            long long fv[3]; ChunkWaterFlowStats(fv);
+                            const double ok = fv[1] > 0 ? (double)fv[2] / (double)fv[1] : 0.0;
+                            const Fluid::Stats s = Fluid::GetStats();
+                            printf("bench: flow-shade: %.0f m^3 of water; moving water vertices meshed %lld, steep %lld, steep drawn running down their surface at >= 1 m/s %lld (%.0f%%) -> %s\n",
+                                   s.volume, fv[0], fv[1], fv[2], ok * 100.0, fv[1] >= 30 && ok >= 0.6 ? "PASS" : "FAIL");
+                            TakeScreenshot("bench_flow_shade.png");
+                            benchFlowShade = false;
+                        }
+                    }
                 } else if (benchFluidLoad > 0.0f && (flPhase > 0 || WorldIdle())) {
                     // --test-fluid-load S (Plan 10, #642 perf; best with --sandbox): an S x S m basin 3 m deep cut into the ground
                     // by the start and filled from a source in every 16 m tile (8 m^3/s each, head 2.5 m), so every brick of it is
@@ -5717,10 +5779,12 @@ int main(int argc, char** argv)
                             benchDam = false;
                         }
                     } else {
-                        // Watch from the bank, a little downstream, looking across at the dam and the pool behind it.
+                        // Watch from low over the channel downstream, looking up the river over the dam into the pool behind it: the
+                        // generated river in front, the simulated pool beyond at a grazing angle (#696: their reflections must match).
+                        // The bank trees stand beside the channel, not in it (from 24 m over the bank they hid most of the water).
                         const Vector3 up = damDir;
-                        const Vector3 eyeDir = off(off(damDir, damSide, damHW + 12.0f), damDown, 22.0f); // high: over the bank trees
-                        world.camera.position = p->toWorld(at(eyeDir, damCrest + 24.0f)); world.camera.target = p->toWorld(at(off(damDir, damDown, -6.0f), damLevel));
+                        const Vector3 eyeDir = off(damDir, damDown, 14.0f);
+                        world.camera.position = p->toWorld(at(eyeDir, damCrest + 3.5f)); world.camera.target = p->toWorld(at(off(damDir, damDown, -20.0f), damLevel));
                         world.camera.up = p->dirToWorld(up);
                         player.position = world.renderOrigin + world.camera.position;
                         const double t = GetTime() - damT0;
@@ -7449,7 +7513,7 @@ int main(int argc, char** argv)
                         }
                         benchWalkSeconds = 0.0;
                     }
-                } else if ((WorldIdle() && benchDigStrokes == 0 && !benchPaint && !benchSaveLoad && benchWalkSeconds <= 0.0 && benchMineStrokes == 0 && minePhase != 2 && benchFlySeconds <= 0.0 && !benchSuffocate && benchOrbitSeconds <= 0.0 && !benchRide && !benchPark && !benchGravity && !benchPrecision && !benchMantle && !benchAirJump && !benchMoon && !benchHole && !benchWall && !benchDoorway && !benchLedge && !benchTor && !benchMachines && !benchFall && !benchHover && !benchNetIds && !benchNet && !benchTwoPlayers && !benchFingerprint && !benchInterest && !benchTeleClose && !benchMenus && !benchWater && !benchFlyFollow && !benchHotbar && !benchInventory && !benchMap && !benchViewmodel && !benchQuests && !benchHunger && !benchFarm && !benchAnimals && !benchThreats && !benchAnimalPath && !benchDam && !benchFlowMeter && !benchPartWall && !benchPressure && benchShotTabs == 0 && !benchForest && !benchFlow && !benchPond && !benchBucket && !benchWaterSpeed && benchFluidLoad <= 0.0f &&!benchPump && !benchTerrain && !benchShelter && !benchRoom && !benchFacing && !benchShadow && !benchParticles && !benchBiomes && !benchOil && !benchSpring && !benchShotAnimals && !benchShotMachines && benchShotBiomes < 0 && !benchFarForest && !benchRecipes && !benchWeather && !benchDecor && !benchMaterials && !benchDamage && !benchCrafting && !benchSuit && !benchTools && !benchRivers && !benchRing && !benchRocket && !benchStation && !benchBlueprint && !benchSmallBody && !benchTrees && !benchChop && benchPersist == 0 && benchBuild == 0 && benchFactory == 0 && !benchCombat && !benchHost && !benchShower && !benchProgression && (benchUnfocus <= 0.0f || unfocusPhase >= 6)) || GetTime() > 600.0) {
+                } else if ((WorldIdle() && benchDigStrokes == 0 && !benchPaint && !benchSaveLoad && benchWalkSeconds <= 0.0 && benchMineStrokes == 0 && minePhase != 2 && benchFlySeconds <= 0.0 && !benchSuffocate && benchOrbitSeconds <= 0.0 && !benchRide && !benchPark && !benchGravity && !benchPrecision && !benchMantle && !benchAirJump && !benchMoon && !benchHole && !benchWall && !benchDoorway && !benchLedge && !benchTor && !benchMachines && !benchFall && !benchHover && !benchNetIds && !benchNet && !benchTwoPlayers && !benchFingerprint && !benchInterest && !benchTeleClose && !benchMenus && !benchWater && !benchFlyFollow && !benchHotbar && !benchInventory && !benchMap && !benchViewmodel && !benchQuests && !benchHunger && !benchFarm && !benchAnimals && !benchThreats && !benchAnimalPath && !benchDam && !benchFlowMeter && !benchPartWall && !benchPressure && benchShotTabs == 0 && !benchForest && !benchFlow && !benchPond && !benchBucket && !benchWaterSpeed && benchFluidLoad <= 0.0f && !benchFlowShade && !benchPump && !benchTerrain && !benchShelter && !benchRoom && !benchFacing && !benchShadow && !benchParticles && !benchBiomes && !benchOil && !benchSpring && !benchShotAnimals && !benchShotMachines && benchShotBiomes < 0 && !benchFarForest && !benchRecipes && !benchWeather && !benchDecor && !benchMaterials && !benchDamage && !benchCrafting && !benchSuit && !benchTools && !benchRivers && !benchRing && !benchRocket && !benchStation && !benchBlueprint && !benchSmallBody && !benchTrees && !benchChop && benchPersist == 0 && benchBuild == 0 && benchFactory == 0 && !benchCombat && !benchHost && !benchShower && !benchProgression && (benchUnfocus <= 0.0f || unfocusPhase >= 6)) || GetTime() > 600.0) {
                     benchStart = GetTime();
                     printf("bench: world ready after %.2f s (%d chunks, avg build %.2f ms of which sampling %.2f ms, %d worker threads)\n",
                         GetWorldStats().lastGenerationSeconds, GetWorldStats().chunks, GetWorldStats().avgBuildMs, GetWorldStats().avgSampleMs, GetWorldStats().workerThreads);
@@ -7580,6 +7644,7 @@ int main(int argc, char** argv)
                 cursorLocked = wantLock;
             }
         }
+        if (!bench && IsKeyPressed(KEY_F7)) Fluid::SetDebugView(!Fluid::DebugView()); // #695: water coloured by its speed
         if (!bench && IsKeyPressed(KEY_F1)) {
             DebugUI_Toggle();
             // (relocking the cursor centres it)

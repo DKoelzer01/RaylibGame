@@ -54,6 +54,8 @@ namespace Fluid {
     // water.fs: the fluid kinds' colours (uniform arrays fluidColors / fluidGlows), with the shader bound. The chunks
     // draw every fluid surface (waterfield.h); a vertex carries its kind.
     void BindKindUniforms(const Shader& shader);
+    bool DebugView();                 // #695: water coloured by speed, stripes along the current (RAYLIBGAME_FLUID_DEBUG=1)
+    void SetDebugView(bool on);
 
     // Queries (main thread, from the last published step).
     bool Wet(const Planetoid& body, Vector3 local);                       // under moving water
