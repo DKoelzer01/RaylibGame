@@ -84,6 +84,15 @@ C++ raylib 5.5 planetoid survival game. `src/engine` (static lib), `src/space` -
   large-scale regression (`tools/regression.sh`). Wrap the whole batch, not only each test: `timeout 900 bash -c '...'`
   (per-test `timeout` inside it as well), and give every wait or poll loop its own deadline (`until <check> || [ $SECONDS
   -gt 900 ]`), never an open-ended `until grep ...`. Split longer work into several batches.
+- **Single tests aim for 2-3 minutes; check each one's output within 15 s** (user, 2026-11-17) and kill a run that isn't
+  printing valid output instead of letting it run on blind. Shrink a scene rather than run a test for 5+ minutes.
+- **Quiet windows** (user, 2026-11-17): several sessions share this machine. Perf or timing numbers (A/B, soaks, benches)
+  need a quiet machine: ask the coordinator session, which holds every other session, confirms no other game.exe or
+  compiler runs, gives GO and ends the window. Never time perf while others run, and hold builds and runs when told.
+- **Night rule** (user, 2026-11-17): between midnight and 6 am the user doesn't answer. Agents go with the coordinator's
+  recommendation (or their own best judgement), keeping every such decision revertible (an env switch or its own
+  commit, noted on the issue as "night decision: revert with X"). Decisions too large or impactful (save formats, big
+  architecture, priority changes, merges into develop) are held for the morning; move to another task meanwhile.
 - `--test-planet-walk M` (#363, user 2026-11-14): M metres as 100 m legs at places drawn from the seed (teleports
   between legs, hovering while each place loads; every other leg prefers ground above 300 m). PASS = most legs walked
   and never under the surface or inside solid; a leg lost to a death or a 45 s timeout on rough ground is not a failure.
