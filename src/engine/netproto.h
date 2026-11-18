@@ -16,7 +16,7 @@
 #include <functional>
 #include <vector>
 
-constexpr uint32_t kNetProtocol = 12; // 1 was the text "join" of #311; 5: world time in Welcome and Pong (#339); 6 (unused); 7: world-gen settings in Welcome (#757); 8: terrain edit requests, refusals, inventory deltas (#329); 9: chat (#326); 10: building (#330); 11 is #776's; 12: player snapshots, delta-coded against acked states (#769)
+constexpr uint32_t kNetProtocol = 13; // 1 was the text "join" of #311; 5: world time in Welcome and Pong (#339); 6 (unused); 7: world-gen settings in Welcome (#757); 8: terrain edit requests, refusals, inventory deltas (#329); 9: chat (#326); 10: building (#330); 11 is #776's; 12: player snapshots, delta-coded against acked states (#769); 13: animals (#334)
 
 enum class NetMsg : uint8_t {
     Hello = 1,     // client -> server: protocol, build, player name, password
@@ -44,6 +44,8 @@ enum class NetMsg : uint8_t {
     SyncDone,      // server -> client: all wanted entries sent; queued live edits apply now
     PlayerSnapshot = 24, // server -> client (#769): the player states of one snapshot in one message, each delta-coded against one
                    // the client acknowledged (20-23 are #776's)
+    Animals = 25,  // server -> client (#334): the animals near the client (state, health), and the ones gone from its view
+    AnimalHit = 26, // client -> server (#334): a swing at an animal (the server checks reach and cooldown, and works out the damage)
     Count
 };
 const char* NetMsgName(NetMsg m);
@@ -177,6 +179,15 @@ struct MsgPlayerSnapshot {
     struct Entry { PlayerStateQ s; uint32_t baseSeq = 0; PlayerStateQ base; };
     std::vector<Entry> entries;
 };
+// #334 animals: the server's states of the ones near a client (position body-local to 1 mm, heading, state, health), and
+// the ones that left its view or died. Sent 10 a second, unreliable (the client also drops one not heard of for 3 s).
+struct MsgAnimals {
+    uint32_t tick = 0;
+    struct Entry { uint64_t netId = 0; uint8_t species = 0; uint64_t body = 0; DVec3 pos{}; float heading = 0.0f; uint8_t state = 0; float health = 0.0f, age = 1.0f; uint8_t flags = 0; };
+    std::vector<Entry> entries;
+    std::vector<uint64_t> removed;
+};
+struct MsgAnimalHit { uint64_t netId = 0; };
 struct MsgShower { double start = 0.0, end = 0.0; uint32_t id = 0; }; // world seconds; id 0 none (events.h)
 
 struct MsgRoster { struct Entry { uint32_t session = 0; std::string name; }; std::vector<Entry> players; }; // everyone online
@@ -298,6 +309,10 @@ bool NetRead(NetReader& r, MsgSyncIndex& m);
 bool NetRead(NetReader& r, MsgSyncWant& m);
 bool NetRead(NetReader& r, MsgSyncData& m);
 bool NetRead(NetReader& r, MsgSyncDone& m);
+void NetWrite(NetWriter& w, const MsgAnimals& m);
+bool NetRead(NetReader& r, MsgAnimals& m);
+void NetWrite(NetWriter& w, const MsgAnimalHit& m);
+bool NetRead(NetReader& r, MsgAnimalHit& m);
 void NetWrite(NetWriter& w, const MsgPlayerSnapshot& m);
 // lookup(session, baseSeq, out): the state of that player received in snapshot baseSeq (false: unknown - the entry can't be
 // decoded and the read fails). Without one (validation), deltas decode against zeros.

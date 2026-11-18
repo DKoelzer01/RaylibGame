@@ -18,6 +18,7 @@
 #include "plots.h"
 #include "gamerng.h"
 #include "tools.h"
+#include "animals.h"
 #include "inventory.h"
 #include <cmath>
 #include <map>
@@ -51,7 +52,7 @@ namespace {
 
     // The connection lifecycle (#321). A peer is a connection; a session is a player, kept by name for the server's
     // run, so a reconnect under the same name gets its session (and later its PlayerSession) back.
-    struct Peer { uint32_t session = 0; bool joined = false; double lastHeard = 0.0; NetGuard guard; }; // guard: #349
+    struct Peer { uint32_t session = 0; bool joined = false; double lastHeard = 0.0, firstHeard = 0.0; NetGuard guard; }; // guard, firstHeard: #349
     std::unordered_map<uint32_t, Peer> peers;          // by connection
     struct Session {
         uint32_t id = 0; std::string name; uint32_t conn = 0; bool online = false;
@@ -152,6 +153,99 @@ namespace {
         s.pitch = asinf(std::clamp(r.forwardLocal.y, -1.0f, 1.0f));
         return s;
     }
+    void SendInventoryDeltas(uint32_t conn, const Inventory& inv, const std::map<std::string, double>& before); // (below)
+    // ---- #334 animals ----
+    // The animals near each client, 10 a second: on its player's body, within kAnimalRange, nearest first, at most
+    // kAnimalsPerClient; and the ones it was sent last time that are gone (died, or out of its range).
+    constexpr int kAnimalEvery = 6;          // sim steps (60 Hz): 10 a second
+    constexpr float kAnimalRange = 200.0f;   // m (they draw to 160)
+    constexpr size_t kAnimalsPerClient = 64;
+    long long lastAnimals = 0;
+    std::unordered_map<uint32_t, std::unordered_set<uint64_t>> animalsSent; // by connection
+    std::unordered_map<uint32_t, double> lastAnimalHit;                     // by session (the cooldown)
+    int animalHits = 0, animalHitsRefused = 0;
+    bool RemoteLocal(const Remote& r, uint64_t& body, Vector3& local, double& scale) {
+        Planetoid* b = r.player.nearest;
+        if (!b) return false;
+        body = b->netId; local = b->toLocalD(r.player.position).toFloat(); scale = b->scale;
+        return true;
+    }
+    void SendAnimals(Scene& world) {
+        if (SimTick() - lastAnimals < kAnimalEvery) return;
+        lastAnimals = SimTick();
+        static std::vector<AnimalNet> all; Animals_CollectNet(world, all);
+        for (const auto& [conn, p] : peers) {
+            if (!p.joined) continue;
+            auto rit = remotes.find(p.session);
+            uint64_t body = 0; Vector3 at{}; double scale = 1.0;
+            if (rit == remotes.end() || !RemoteLocal(rit->second, body, at, scale)) continue;
+            std::vector<std::pair<float, size_t>> near;
+            for (size_t i = 0; i < all.size(); ++i) {
+                if (all[i].body != body) continue;
+                const float d = Vector3Distance(all[i].pos, at) * (float)scale;
+                if (d <= kAnimalRange) near.push_back({ d, i });
+            }
+            std::sort(near.begin(), near.end());
+            if (near.size() > kAnimalsPerClient) near.resize(kAnimalsPerClient);
+            MsgAnimals m; m.tick = (uint32_t)SimTick();
+            std::unordered_set<uint64_t> now;
+            for (const auto& [d, i] : near) {
+                const AnimalNet& a = all[i];
+                m.entries.push_back({ a.netId, a.species, a.body, DVec3(a.pos), a.heading, a.state, a.health, a.age, a.flags });
+                now.insert(a.netId);
+            }
+            std::unordered_set<uint64_t>& was = animalsSent[conn];
+            for (uint64_t id : was) if (!now.count(id)) m.removed.push_back(id);
+            was.swap(now);
+            if (m.entries.empty() && m.removed.empty()) continue;
+            NetWriter w; NetWrite(w, m);
+            Net_Send(conn, w.bytes.data(), (uint32_t)w.bytes.size(), false);
+        }
+    }
+    // Animals live where players are (#318's interest centres: herds spawn and are simulated around each).
+    void SetInterestCentres(Scene&) {
+        gInterestCentres.clear();
+        for (const Session& s : sessions) {
+            if (!s.online) continue;
+            auto rit = remotes.find(s.id);
+            if (rit == remotes.end() || !rit->second.player.nearest) continue;
+            const Planetoid* b = rit->second.player.nearest;
+            gInterestCentres.push_back({ (uint64_t)b->id, b->toLocalD(rit->second.player.position).toFloat() });
+        }
+    }
+    // A client's swing at an animal: the animal must be on its player's body and within reach of the server's player (+ the
+    // distance it may have moved since the client saw it), and the player's swing cooldown spent. The damage is the held
+    // tool's (as in single player); the drops go to that player's inventory.
+    constexpr float kAnimalReach = 4.5f; // m: the 3 m aim, the animal's size, and its motion during the round trip
+    constexpr double kAnimalHitCooldown = 0.25; // s
+    void OnAnimalHit(Scene& world, uint32_t session, uint64_t netId) {
+        auto rit = remotes.find(session);
+        uint64_t body = 0; Vector3 at{}; double scale = 1.0;
+        const int i = Animals_FindNet(netId);
+        if (rit == remotes.end() || i < 0 || !RemoteLocal(rit->second, body, at, scale)) { ++animalHitsRefused; return; }
+        const Planetoid* b = rit->second.player.nearest;
+        if (!b || Animals_Body(i) != b->name || Vector3Distance(Animals_Position(i), at) * (float)scale > kAnimalReach) { ++animalHitsRefused; return; }
+        double& last = lastAnimalHit[session];
+        if (GetTime() - last < kAnimalHitCooldown) { ++animalHitsRefused; return; }
+        last = GetTime();
+        std::string held; for (const Session& s : sessions) if (s.id == session) held = s.loadout.held;
+        const ToolSpec t = ToolOf(held);
+        const float damage = t.type == ToolType::Hands ? 2.0f : 3.0f + 3.0f * t.tier;
+        std::vector<std::pair<std::string, int>> drops;
+        ++animalHits;
+        if (Animals_HitNet(netId, damage, drops)) {
+            // The drops into the hunter's inventory as the server keeps it, and the change to its client in one go (UI/UX's pattern).
+            Remote& rm = rit->second;
+            std::map<std::string, double> before;
+            for (const auto& [item, n] : drops) before[item] = rm.inventory.amount(item);
+            std::string got;
+            for (const auto& [item, n] : drops) { rm.inventory.add(item, n); got += TextFormat(" +%d %s", n, item.c_str()); }
+            for (const Session& s : sessions) if (s.id == session && s.online && s.conn) SendInventoryDeltas(s.conn, rm.inventory, before);
+            printf("host: session %u felled animal %llx:%s\n", session, (unsigned long long)netId, got.c_str());
+        }
+        (void)world;
+    }
+
     // #769 delta snapshots, per client: what each snapshot carried (to turn acks into bases), and per player the newest
     // state the client acknowledged (seq, state).
     constexpr uint32_t kDeltaRing = 64, kDeltaMaxAge = 48, kDeltaResync = 45; // snapshots (30 a second)
@@ -273,6 +367,7 @@ namespace {
         Interest_Forget(conn); // (#340) its accumulators
         ForgetSync(conn);      // (#776) its join sync, if it was still running
         deltas.erase(conn);    // (#769) its snapshot bases
+        animalsSent.erase(conn); // (#334) the animals it was sent
         peers.erase(it);
         Net_Close(conn);
         if (wasJoined) SendRoster(); // the others see them go
@@ -284,6 +379,28 @@ namespace {
         Net_Close(conn); // (lingers: the reject goes out first)
     }
 
+    // (#349) names and chat text from clients
+    bool NameAcceptable(const std::string& n) {
+        if (n.empty() || n.size() > 24 || n.front() == ' ' || n.back() == ' ') return false;
+        for (unsigned char ch : n) if (ch < 0x20 || ch == 0x7F) return false; // (UTF-8 bytes >= 0x80 are fine: names in any script)
+        return true;
+    }
+    bool SameName(const std::string& a, const std::string& b) {
+        if (a.size() != b.size()) return false;
+        for (size_t i = 0; i < a.size(); ++i) if (tolower((unsigned char)a[i]) != tolower((unsigned char)b[i])) return false;
+        return true;
+    }
+    std::string CleanChat(std::string t) {
+        for (char& ch : t) if ((unsigned char)ch < 0x20 || (unsigned char)ch == 0x7F) ch = ' ';
+        return t;
+    }
+    // (#349) connections: at most kMaxPerAddress from one address at once (loopback exempt: the host's own machine and the
+    // tests), and a connection must say Hello within kHelloSeconds.
+    const int kMaxPerAddress = getenv("RAYLIBGAME_MAX_PER_ADDRESS") ? std::max(1, atoi(getenv("RAYLIBGAME_MAX_PER_ADDRESS"))) : 8;
+    constexpr double kHelloSeconds = 10.0;
+    std::string AddressHost(const std::string& a) { const size_t c = a.rfind(':'); return c == std::string::npos ? a : a.substr(0, c); }
+    // (loopback is counted too when RAYLIBGAME_MAX_PER_ADDRESS is set: the tests check the limit on one machine)
+    bool Loopback(const std::string& host) { if (getenv("RAYLIBGAME_MAX_PER_ADDRESS")) return false; return host.empty() || host == "127.0.0.1" || host == "::1" || host == "[::1]" || host.rfind("[::ffff:127.", 0) == 0; }
     void OnHello(Scene& world, uint32_t conn, const MsgHello& h) {
         if (h.protocol != kNetProtocol) { Refuse(conn, NetReject::Protocol, TextFormat("server %u, client %u", kNetProtocol, h.protocol)); return; }
         if (!h.build.empty() && h.build != BuildCommit()) { Refuse(conn, NetReject::Build, "server " + BuildCommit() + ", client " + h.build); return; }
@@ -297,7 +414,11 @@ namespace {
             }
         }
         Session* s = nullptr;
-        for (Session& x : sessions) if (x.name == h.name) s = &x;
+        // (#349) a name is 1-24 bytes, no control characters, no leading or trailing space (it goes into logs, the audit log,
+        // nameplates and chat: a newline in it would forge lines). Names are one identity whatever their case (the admin lists
+        // compare without case: "ALICE" got alice's op role in a session of its own).
+        if (!NameAcceptable(h.name)) { Refuse(conn, NetReject::Malformed, "names are 1-24 characters, no control characters or edge spaces"); return; }
+        for (Session& x : sessions) if (SameName(x.name, h.name)) s = &x;
         if (s && s->online) { Refuse(conn, NetReject::NameTaken, h.name); return; }
         const int online = (int)std::count_if(sessions.begin(), sessions.end(), [](const Session& x) { return x.online; });
         if (online >= maxPlayers) { Refuse(conn, NetReject::Full, TextFormat("%d players", maxPlayers)); return; }
@@ -650,7 +771,21 @@ namespace {
     void OnMessage(Scene& world, const NetMessage& m) {
         if (!peers.count(m.conn) && !Net_IsConnected(m.conn)) return; // (#349: the rest of a batch from a connection just kicked)
         auto it = peers.find(m.conn);
-        if (it == peers.end()) it = peers.emplace(m.conn, Peer{}).first; // first word on a new connection
+        if (it == peers.end()) { // first word on a new connection
+            const std::string host = AddressHost(Net_RemoteAddress(m.conn));
+            if (!Loopback(host)) { // (#349) too many from one address
+                int same = 0;
+                for (const auto& [c, p] : peers) if (AddressHost(Net_RemoteAddress(c)) == host) ++same;
+                if (same >= kMaxPerAddress) {
+                    printf("host: refused connection %u from %s: %d connections from that address already\n", m.conn, host.c_str(), same);
+                    if (eventHook) eventHook("refused", 0, "connection from " + host + " (too many from one address)");
+                    Refuse(m.conn, NetReject::Full, "too many connections from your address");
+                    return;
+                }
+            }
+            it = peers.emplace(m.conn, Peer{}).first;
+            it->second.firstHeard = GetTime();
+        }
         it->second.lastHeard = GetTime();
         { // (#349) size, kind, form and rate first: a bad message is dropped; a client that keeps sending them is kicked
             std::string why;
@@ -698,10 +833,17 @@ namespace {
                     }
                 return;
             }
+            case NetMsg::AnimalHit: { // (#334) a swing at an animal: checked and applied here
+                MsgAnimalHit h;
+                if (!it->second.joined || !NetRead(r, h)) return;
+                OnAnimalHit(world, it->second.session, h.netId);
+                return;
+            }
             case NetMsg::Chat: { // (#326) a player's line: the server's handler (commands, logging), else to everyone
                 MsgChat c;
                 if (!it->second.joined || !NetRead(r, c) || c.text.empty()) return;
                 c.from = it->second.session; // (a client speaks only for itself)
+                c.text = CleanChat(c.text); // (#349) no control characters into logs and chat
                 std::string name; for (const Session& s : sessions) if (s.id == c.from) name = s.name;
                 if (chatHandler) chatHandler(c.from, name, c.text);
                 else SendToJoined(c);
@@ -777,6 +919,7 @@ void Host_Update(Scene& world) {
     for (const auto& [conn, p] : peers) {
         if (!Net_IsConnected(conn)) gone.push_back(conn);
         else if (GetTime() - p.lastHeard > kTimeoutSeconds) silent.push_back(conn);
+        else if (!p.joined && GetTime() - p.firstHeard > kHelloSeconds) silent.push_back(conn); // (#349) never said Hello
     }
     for (uint32_t c : gone) Drop(c, NetBye::Quit);
     for (uint32_t c : silent) Drop(c, NetBye::TimedOut);
@@ -785,6 +928,8 @@ void Host_Update(Scene& world) {
     StepSyncs(world);
     GpuTimer_CpuMark("host: remote players");
     SendSnapshots(world);
+    SendAnimals(world);   // (#334) and the animals near each player
+    SetInterestCentres(world); // (#334) and animals live around every player (#318's centres)
     GpuTimer_CpuMark("host: snapshots");
 }
 

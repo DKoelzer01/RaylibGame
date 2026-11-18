@@ -161,7 +161,7 @@ multiplayer() {
     run --seed 42 --bench 3 --test-time-follow
     run --test-net-interest
     run --test-net-guard # (#349) per-client message limits: a normal client never dropped; floods and garbage kicked
-    exe="$gexe"; run --host "$sv" --sandbox --bench 3 --port 27941 --test-net-abuse; exe="$keep" # (#349, #780, #781) needs GNS (else SKIP)
+    exe="$gexe"; RAYLIBGAME_MAX_PER_ADDRESS=6 run --host "$sv" --sandbox --bench 3 --port 27941 --test-net-abuse; exe="$keep" # (#349, #780, #781; names, chat, the per-address cap) needs GNS (else SKIP)
     run --test-server-admin
     run --seed 42 --bench 3 --test-player-cost 8 # (#768) player cost per update, and determinism: a warm vs a poisoned collision cache stay bit-identical
     # The dedicated server (#326): config file, console commands, log file, "stop" with a final save (sandbox world).
@@ -181,6 +181,8 @@ multiplayer() {
         # Join-in-progress sync (#776): a client joins a host world with 3000 edits (fingerprints must match), then rejoins from its cache (fetching nothing).
         echo "=== tools/test_join_sync.sh" | tee -a "$log"
         EXE="$gexe" bash "$here/tools/test_join_sync.sh" 2>&1 | grep "=== test_join_sync" | sed 's/=== test_join_sync: \([A-Z]*\).*/bench: join sync (#776): fresh join, then a rejoin from the cache -> \1/' | tee -a "$log"
+        echo "=== tools/test_animals_net.sh (#334)" | tee -a "$log"
+        EXE="$gexe" bash "$here/tools/test_animals_net.sh" 2>&1 | grep "=== test_animals_net" | sed 's/=== test_animals_net: \([A-Z]*\).*/bench: animals on the server (#334): same herd, a hit applied for both -> \1/' | tee -a "$log"
     fi
 }
 

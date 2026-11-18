@@ -1,4 +1,5 @@
 #include "netclient.h"
+#include "animals.h"
 #include "hostserver.h"
 #include "net.h"
 #include "world.h"
@@ -236,6 +237,16 @@ namespace {
                 MsgPlayerState s;
                 if (c.state != NetClient::State::Joined || !NetRead(r, s)) return;
                 OnPlayerState(c, s);
+                return;
+            }
+            case NetMsg::Animals: { // (#334) the server's animals near us; only a client process keeps copies (a host here owns the real ones)
+                MsgAnimals am;
+                if (c.state != NetClient::State::Joined || !NetRead(r, am)) return;
+                ++c.animalMsgs;
+                if (!gAnimalsReplicated) return;
+                static std::vector<AnimalNet> in; in.clear();
+                for (const MsgAnimals::Entry& e : am.entries) in.push_back({ e.netId, e.species, e.body, e.pos.toFloat(), e.heading, e.state, e.health, e.age, e.flags });
+                Animals_ApplyNet(in, am.removed);
                 return;
             }
             case NetMsg::PlayerSnapshot: { // (#769) the states of one snapshot, each against one we acknowledged (or full)
@@ -629,4 +640,7 @@ int NetSync_ScatterStrokes(Scene& world, int strokes, uint32_t seed) {
     }
     ApplyTerrainEdits(*p, edits.data(), edits.size());
     return (int)edits.size();
+void NetClient_HitAnimal(NetClient& c, uint64_t netId) {
+    if (c.state != NetClient::State::Joined || !netId) return;
+    SendMsg(c, MsgAnimalHit{ netId });
 }

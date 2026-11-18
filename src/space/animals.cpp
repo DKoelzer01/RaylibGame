@@ -149,6 +149,8 @@ struct Animal {
     std::vector<Vector3> path;                  // a planned route (#253): body-local ground points, next first
     Vector3 pathGoal{};                         // where the route was planned to (replanned when the goal moves on)
     float pathAge = 0.0f, planWait = 0.0f;      // seconds on this route; no new plan before this runs out (s)
+    // #334 a client's copy (replicated mode): the server's latest state of it, eased toward; when it was last heard of.
+    Vector3 netPos{}; float netHeading = 0.0f; double netSeen = -1.0;
 };
 std::vector<Animal> animals;
 std::unordered_map<std::string, std::unordered_set<uint64_t>> spawnedTiles; // body -> herd tiles decided
@@ -438,17 +440,19 @@ void SpawnHerds(Scene& world, Planetoid& body, const PlanetField& pf, Vector3 up
         }
 }
 
-void Kill(int i) {
+void Kill(int i, std::vector<std::pair<std::string, int>>* dropsTo = nullptr) { // dropsTo (#334): a server's, for the hitting player
     const Animal& a = animals[i];
     const Species& s = species[a.species];
-    QuestBook_Count("slain");
-    if (s.night) QuestBook_Count("stalker");
+    if (!dropsTo) QuestBook_Count("slain"); // (a server's kill isn't its own player's quest)
+    if (!dropsTo && s.night) QuestBook_Count("stalker");
     std::string got;
     for (const auto& d : s.drops) {
         const int n = std::max(1, (int)lroundf(d.second * (0.4f + 0.6f * a.age)));
-        if (itemDB.find(d.first)) { inventory.add(d.first, n); got += TextFormat("  +%d %s", n, d.first.c_str()); }
+        if (!itemDB.find(d.first)) continue;
+        if (dropsTo) { dropsTo->push_back({ d.first, n }); continue; }
+        inventory.add(d.first, n); got += TextFormat("  +%d %s", n, d.first.c_str());
     }
-    GameUI_Toast(TextFormat("The %s fell.%s", s.name.c_str(), got.c_str()));
+    if (!dropsTo) GameUI_Toast(TextFormat("The %s fell.%s", s.name.c_str(), got.c_str()));
     animals.erase(animals.begin() + i);
     if (aimed == i) aimed = -1;
 }
@@ -565,6 +569,24 @@ void Animals_Update(Scene& world, float dt, float worldDt, bool inputEnabled) {
     ++frameNo;
     simulatedNow = 0;
     for (Animal& a : animals) { a.prevPos = a.pos; a.prevHeading = a.heading; a.prevValid = true; } // the pose drawing blends from (#315)
+    if (gAnimalsReplicated) { // #334: a client - the server runs the animals; each eases toward its latest state, nothing decides here
+        const double now = GetTime();
+        const float k = 1.0f - expf(-dt / 0.08f); // ~80 ms to close a gap (states come 10 a second)
+        for (size_t i = 0; i < animals.size();) {
+            Animal& a = animals[i];
+            if (now - a.netSeen > 3.0) { animals.erase(animals.begin() + i); if (aimed == (int)i) aimed = -1; continue; } // out of view (or the removal was lost)
+            const Vector3 before = a.pos;
+            a.pos = Vector3Lerp(a.pos, a.netPos, k);
+            float dh = a.netHeading - a.heading; while (dh > PI) dh -= 2 * PI; while (dh < -PI) dh += 2 * PI;
+            a.heading += dh * k;
+            const float step = Vector3Distance(before, a.pos);
+            a.moveSpeed = dt > 0.0f ? step / dt : 0.0f;
+            if (step > 1e-4f) a.gait += step / std::max(0.25f, species[a.species].size.x * 0.45f) * PI; // the walk cycle, as the AI drives it
+            ++i;
+        }
+        lastUpdateMs = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+        return;
+    }
     Planetoid* here = player.nearest;
     const PlanetField* pf = here ? dynamic_cast<const PlanetField*>(here->field.get()) : nullptr;
     Vector3 playerLocal{};
@@ -992,7 +1014,8 @@ void Animals_Aim(Scene& world, const PlayerInput& in) {
                 survival.stamina -= cost;
                 survival.staminaUsedAt = SimTime();
                 ++terrainTool.swings;
-                Animals_Hit(aimed, t.type == ToolType::Hands ? 2.0f : 3.0f + 3.0f * t.tier);
+                if (gAnimalsReplicated) { if (gAnimalHitRequest) gAnimalHitRequest(animals[aimed].netId); } // (#334) a client: the server decides
+                else Animals_Hit(aimed, t.type == ToolType::Hands ? 2.0f : 3.0f + 3.0f * t.tier);
             }
         } else if (in.hit(Act::Insert)) {
             Animals_Feed(aimed);
@@ -1211,3 +1234,68 @@ bool Animals_LoadLine(const char* tok, FILE* f) {
 void Animals_PathStats(int& plans, int& found, double& avgMs, double& worstMs) {
     plans = gPathPlans; found = gPathFound; avgMs = gPathPlans ? gPathMs / gPathPlans : 0.0; worstMs = gPathWorstMs;
 }
+
+// ---- #334 multiplayer: the server's animals, sent to clients; a client's copies ----
+void Animals_CollectNet(Scene& world, std::vector<AnimalNet>& out) {
+    LoadSpecies();
+    out.clear();
+    std::unordered_map<std::string, uint64_t> bodyIds; // name -> NetId, looked up once a call
+    for (const Animal& a : animals) {
+        auto it = bodyIds.find(a.body);
+        if (it == bodyIds.end()) {
+            uint64_t id = 0;
+            if (Planetoid* p = BodyNamed(world, a.body)) id = p->netId;
+            it = bodyIds.emplace(a.body, id).first;
+        }
+        if (!it->second) continue;
+        const Species& s = species[a.species];
+        AnimalNet n;
+        n.netId = a.netId; n.species = (uint8_t)a.species; n.body = it->second; n.pos = a.pos; n.heading = a.heading;
+        n.state = (uint8_t)a.state; n.health = a.health; n.age = a.age;
+        n.flags = (uint8_t)((s.hostile ? 1 : 0) | (a.angryUntil > WorldTime() ? 2 : 0) | (a.windUpAt >= 0.0 ? 4 : 0));
+        out.push_back(n);
+    }
+}
+
+int Animals_FindNet(uint64_t netId) {
+    for (size_t i = 0; i < animals.size(); ++i) if (animals[i].netId == netId) return (int)i;
+    return -1;
+}
+
+void Animals_ApplyNet(const std::vector<AnimalNet>& in, const std::vector<uint64_t>& removed) {
+    LoadSpecies();
+    const double now = GetTime();
+    for (uint64_t id : removed) { const int i = Animals_FindNet(id); if (i >= 0) { animals.erase(animals.begin() + i); if (aimed == i) aimed = -1; else if (aimed > i) --aimed; } }
+    for (const AnimalNet& n : in) {
+        if (n.species >= species.size()) continue;
+        int i = Animals_FindNet(n.netId);
+        if (i < 0) { // first sight: appear where it is
+            Planetoid* b = Planetoid::findNet(n.body);
+            if (!b) continue;
+            Animal a;
+            a.netId = n.netId; a.species = n.species; a.body = b->name; a.pos = a.netPos = a.prevPos = n.pos; a.heading = a.netHeading = a.prevHeading = n.heading;
+            a.prevValid = true;
+            animals.push_back(a);
+            i = (int)animals.size() - 1;
+        }
+        Animal& a = animals[i];
+        a.netPos = n.pos; a.netHeading = n.heading; a.netSeen = now;
+        a.state = (State)std::min<uint8_t>(n.state, (uint8_t)State::Hunt); a.health = n.health; a.age = n.age;
+        a.angryUntil = (n.flags & 2) ? WorldTime() + 1.0 : -1.0;
+        a.windUpAt = (n.flags & 4) ? simClock : -1.0;
+    }
+}
+
+bool Animals_HitNet(uint64_t netId, float damage, std::vector<std::pair<std::string, int>>& drops) {
+    const int i = Animals_FindNet(netId);
+    if (i < 0) return false;
+    Animal& a = animals[i];
+    a.health -= damage;
+    a.fleeTimer = !species[a.species].hostile || a.health < 0.35f * species[a.species].health ? 5.0f : 0.0f;
+    if (species[a.species].hostile && a.fleeTimer <= 0.0f) a.angryUntil = WorldTime() + 20.0;
+    a.fleeFrom = a.pos;
+    a.state = State::Flee;
+    if (a.health <= 0.0f) { Kill(i, &drops); return true; }
+    return false;
+}
+float Animals_HealthOf(int index) { return index >= 0 && index < (int)animals.size() ? animals[index].health : 0.0f; }

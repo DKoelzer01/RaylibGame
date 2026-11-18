@@ -60,6 +60,7 @@ struct NetClient {
     uint32_t snapNewest = 0, snapMask = 0;
     std::unordered_map<uint32_t, std::deque<std::pair<uint32_t, PlayerStateQ>>> snapHistory;
     int snapshots = 0, snapUndecodable = 0;
+    int animalMsgs = 0;                          // (#334) animal snapshots heard
     double worstError = 0.0, lastError = 0.0;    // m: the prediction against the server at the acknowledged input
     std::map<uint32_t, std::deque<MsgPlayerState>> others; // other sessions' recent states (newest last)
     std::map<uint32_t, double> viewTicks;        // per other player: the step of theirs drawn now (NetClient_Update)
@@ -147,6 +148,7 @@ bool NetClient_Connect(NetClient& c, const char* address, const std::string& nam
 void NetClient_Update(NetClient& c);     // per frame: poll (unless a host here does), handle messages, ping, time out
 void NetClient_Disconnect(NetClient& c); // a clean Bye(quit)
 void NetClient_SendChat(NetClient& c, const std::string& text); // (#326) a chat line; "/command" lines go to ops' commands on the server
+void NetClient_HitAnimal(NetClient& c, uint64_t netId);         // (#334) a swing at an animal: the server checks and applies it
 const char* NetClient_StateName(NetClient::State s);
 
 #endif
