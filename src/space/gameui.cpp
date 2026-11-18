@@ -12,6 +12,7 @@
 #include "toolwear.h"
 #include "questtree.h"
 #include "recipebook.h"
+#include "net.h"
 #include "storage.h"
 #include "factory.h"
 #include <map>
@@ -478,7 +479,7 @@ static void DrawCrafting() {
     // A pending craft completes once the pulled items have arrived.
     if (pending >= 0 && pending < (int)itemDB.recipes().size()) {
         const Recipe& r = itemDB.recipes()[pending];
-        if (inventory.canCraft(r)) { if (inventory.craft(r)) Audio_Play(Sfx::Craft); pending = -1; }
+        if (inventory.canCraft(r)) { Crafting_Request(pending, 1); pending = -1; } // (#338) here, or the server when joined
         else if (GetTime() > pendingUntil) { GameUI_Toast("The chests no longer hold enough"); pending = -1; }
     }
     // A grid of the outputs' icons; hover for name, cost and description, click to craft. Recipes
@@ -527,7 +528,8 @@ static void DrawCrafting() {
         }
         if (clicked && can && pending < 0) {
             if (creative) { if (inventory.addAmount(r.output, r.outputCount) < r.outputCount) Audio_Play(Sfx::Craft); }
-            else if (inventory.canCraft(r)) { if (inventory.craft(r)) Audio_Play(Sfx::Craft); }
+            else if (inventory.canCraft(r)) Crafting_Request((int)i, 1); // (#338) here, or the server when joined
+            else if (gNetRole == NetRole::Client) GameUI_Toast("Carry the items: crafting from chests waits for chests on the server"); // (#338)
             else if (uiWorld) {
                 bool ok = true;
                 for (const auto& in : r.inputs) ok = Storage_Pull(*uiWorld, in.first, in.second - inventory.count(in.first)) && ok;

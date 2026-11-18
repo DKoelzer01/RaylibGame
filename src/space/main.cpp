@@ -1416,6 +1416,7 @@ int main(int argc, char** argv)
         gAnimalHitRequest = [](uint64_t netId) { NetClient_HitAnimal(gJoin, netId); };
         gAnimalUseRequest = [](uint64_t netId, int action) { NetClient_UseAnimal(gJoin, netId, action); };
         gSurvivalUseRequest = [](const std::string& item) { NetClient_UseItem(gJoin, item); }; // (#337) the server owns our survival and inventory
+        gCraftRequest = [](int index, const std::string& output, int count) { NetClient_Craft(gJoin, index, output, count); }; // (#338) and our crafting
         gBedUseRequest = [](const Planetoid& body, const Plot& plot, int part) { // (#800) and our spawn bed
             if (part < 0 || part >= (int)plot.parts.size()) return;
             const Int3 o = plot.parts[part].origin; const int cell[3] = { o.x, o.y, o.z };
@@ -10397,9 +10398,20 @@ int main(int argc, char** argv)
                 berries0 = inventory.count("berries"); Survival_UseItem("berries"); ate = true;
             }
             if (!eater && berries0 < 0 && gJoin.questBooks > 0) berries0 = inventory.count("berries");
+            // (#338 slice 2) crafting on the server: planks twice from the logs the host gave (2 logs -> 8 planks), then a recipe
+            // the team hasn't unlocked (the ore scanner: explore 40 tiles first) is refused
+            static int logs0 = -1, planks0 = -1; static bool crafted = false;
+            auto recipeOf = [](const char* out) { for (size_t k = 0; k < itemDB.recipes().size(); ++k) if (itemDB.recipes()[k].output == out) return (int)k; return -1; };
+            if (eater && ate && !crafted && GetTime() - t0 > 6.0 && inventory.count("oak_log") > 0) {
+                logs0 = inventory.count("oak_log"); planks0 = inventory.count("oak_planks");
+                Crafting_Request(recipeOf("oak_planks"), 2);
+                Crafting_Request(recipeOf("ore_scanner"), 1);
+                crafted = true;
+            }
             if (GetTime() - t0 > (getenv("RAYLIBGAME_QUESTS_SECONDS") ? atof(getenv("RAYLIBGAME_QUESTS_SECONDS")) : 25.0)) {
                 printf("bench: net quests (%s, #338): %d books heard, team %d; e0f done %d; berries %d -> %d; quest news %d\n", role ? role : "?",
                        gJoin.questBooks, gJoin.questTeam, (int)QuestTree_IsDone("e0f"), berries0, inventory.count("berries"), gQuestNewsHeard);
+                printf("bench: net crafting (%s, #338): logs %d -> %d, planks %d -> %d\n", role ? role : "?", logs0, inventory.count("oak_log"), planks0, inventory.count("oak_planks"));
                 NetClient_Disconnect(gJoin);
                 benchNetQuests = false;
             }
@@ -11393,7 +11405,7 @@ int main(int argc, char** argv)
                     NetClient_SaveCache(world, WorldSavePath(), gJoin.welcome.seed, gJoin.welcome.fingerprint);
                     NetClient_Disconnect(gJoin);
                 }
-                gNetClient = nullptr; gJoin = NetClient{}; gNetRole = NetRole::Offline; joinAddr.clear(); gJoinSynced = false;
+                gNetClient = nullptr; gJoin = NetClient{}; gNetRole = NetRole::Offline; joinAddr.clear(); gJoinSynced = false; gCraftRequest = nullptr; gSurvivalUseRequest = nullptr; gBedUseRequest = nullptr; // (#338) back to single player: crafting, eating and beds act here again
                 gAnimalsReplicated = false; gAnimalHitRequest = nullptr; gTerrainToolNetEdit = nullptr; gBuildToolNetEdit = nullptr;
                 if (hostedHere) { printf("host: stopping the server we hosted: %s\n", HostProcess_Stop(30.0) ? "saved and ended" : "ended (it didn't stop in time)"); hostedHere = false; gHostedServer.clear(); }
             };

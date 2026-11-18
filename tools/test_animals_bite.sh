@@ -44,7 +44,8 @@ num() { echo "$sv" | grep -o "$1 [-0-9.]* -> [-0-9.]*"; }
 f0=$(num food | awk '{print $2}'); f1=$(num food | awk '{print $4}'); b0=$(num berries | awk '{print $2}'); b1=$(num berries | awk '{print $4}')
 chk "$(echo "$sv" | grep -q "[1-9][0-9]* vitals heard" && echo 1)" "the server's Vitals reached the client"
 chk "$([ -n "$f1" ] && awk -v a="$f0" -v b="$f1" 'BEGIN{exit !(b > a)}' && echo 1)" "eating: the server's food went up ($f0 -> $f1)"
-chk "$([ -n "$b1" ] && [ "$b1" = "$((b0 - 1))" ] && echo 1)" "eating: one berry gone, by the server's delta ($b0 -> $b1)"
+# (#338: the first meal also finishes the team's "eat something" node, whose 4 berries the server pays within the second)
+chk "$([ -n "$b1" ] && { [ "$b1" = "$((b0 - 1))" ] || [ "$b1" = "$((b0 + 3))" ]; } && echo 1)" "eating: one berry gone, by the server's delta, and maybe the quest's 4 paid ($b0 -> $b1)"
 chk "$(echo "$sv" | grep -q "died 1" && echo 1)" "the bites killed it on the server (death in Vitals)"
 chk "$(echo "$sv" | grep -q "respawned 1" && echo 1)" "and it respawned with full health"
 chk "$(echo "$sv" | grep -q "bitten while dead 0$" && echo 1)" "nothing bit it while it was dead"

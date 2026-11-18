@@ -13,7 +13,7 @@ tmp="$(mktemp -d)"
 cd "$here"
 SECONDS=0
 printf 'erosion 0\n' > "$tmp/host.sav.worldgen"
-RAYLIBGAME_HOST_TEAM="alice,bob" RAYLIBGAME_HOST_HUNGER=50 RAYLIBGAME_HOST_GIVE="berries 3" "$exe" --host "$tmp/host.sav" --seed 42 --day --bench 600 --port "$port" > "$tmp/host.log" 2>&1 &
+RAYLIBGAME_HOST_TEAM="alice,bob" RAYLIBGAME_HOST_HUNGER=50 RAYLIBGAME_HOST_GIVE="berries 3,oak_log 2" "$exe" --host "$tmp/host.sav" --seed 42 --day --bench 600 --port "$port" > "$tmp/host.log" 2>&1 &
 hp=$!
 stop_host() { # #795: by the Windows PID too, only while it is still our game.exe
     local w; w=$(cat "/proc/$hp/winpid" 2>/dev/null)
@@ -48,5 +48,9 @@ chk "$(echo "$b" | grep -q "e0f done 1" && echo 1)" "bob (the same team) sees th
 chk "$(ber "$b" | awk '{exit !($4 == $2)}' && echo 1)" "the reward went to the completing player only (bob's $(ber "$b"))"
 chk "$(echo "$c" | grep -q "e0f done 0" && echo 1)" "carol (another team) doesn't have it"
 chk "$(echo "$b" | grep -q "quest news [1-9]" && echo 1)" "the team heard the news"
+# slice 2: crafting on the server
+cr=$(grep -h "^bench: net crafting (eater" "$tmp/alice.log"); echo "$cr"
+chk "$(echo "$cr" | grep -q "logs 2 -> 0, planks 0 -> 8" && echo 1)" "alice crafted planks twice on the server: 2 logs -> 8 planks, by deltas"
+chk "$(grep -q "chat: Your team hasn.t unlocked ore_scanner" "$tmp/alice.log" && echo 1)" "a recipe her team hasn't unlocked (ore scanner) was refused"
 echo "=== test_team_quests: $([ $ok = 1 ] && echo PASS || echo FAIL) after ${SECONDS} s ($tmp)"
 [ $ok = 1 ]
