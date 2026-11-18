@@ -1820,8 +1820,12 @@ void CpuTick(int n) {
         } else if (br->active && (br->idle += n) > kSleepSteps) {
             br->active = false;
         }
+        // A face request: the neighbour brick is made if missing, woken if asleep (#680: the column pairs ask for sleeping ones).
         for (int face = 0; face < 6; ++face)
-            if (fl & (2u << face)) slotSite[i]->ensure(br->bi + d[face][0], br->bj + d[face][1], br->bk + d[face][2]);
+            if (fl & (2u << face)) {
+                if (Brick* o = br->nbr[face]) { o->active = true; o->idle = 0; }
+                else slotSite[i]->ensure(br->bi + d[face][0], br->bj + d[face][1], br->bk + d[face][2]);
+            }
     }
     for (Brick* b : slots) b->cpuSlot = -1;
 }

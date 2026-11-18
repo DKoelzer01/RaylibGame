@@ -268,7 +268,9 @@ struct Pass {
         bool pn; int face;
         const int nb = neighbour(s, x, y, z, dx, dy, 0, pn, face);
         if (nb < 0) { WHY(0); if (face >= 0 && F(c) >= (uint32_t)p.minSpread[kind]) g.flags[s] |= 1u << (1 + face); return 0.0f; }
-        if (!pn) { WHY(1); return 0.0f; }
+        // A sleeping neighbour brick: ask for it to be woken (the face rules wake theirs; without this a hole cut into a wall
+        // or a channel beyond it stayed asleep and the outflow started late, #680).
+        if (!pn) { WHY(1); if (face >= 0 && F(c) >= (uint32_t)p.minSpread[kind]) g.flags[s] |= 1u << (1 + face); return 0.0f; }
         const int topRows = (A.surf + 254) / 255; // rows A's water reaches over its bottom row
         ColRun B;
         bool wet = false, spill = false;
