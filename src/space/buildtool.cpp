@@ -82,6 +82,19 @@ void BuildTool_LayFoundation(Planetoid& body, Plot& plot, const Part& part) {
     if (!edits.empty()) ApplyTerrainEdits(body, edits.data(), edits.size());
 }
 
+BuildToolNetEdit gBuildToolNetEdit;
+
+bool BuildTool_ApplyPart(Planetoid& body, Plot& plot, const Part& part) {
+    if (!plot.canPlace(part)) return false;
+    if (IsBeam(part.type)) { // a line of single cubes (#200): quicker to build, each removed on its own
+        static std::vector<Part> cubes;
+        Plot::SplitBeam(part, cubes);
+        for (const Part& c : cubes) plot.place(c);
+    } else plot.place(part);
+    BuildTool_LayFoundation(body, plot, part);
+    return true;
+}
+
 bool BuildTool_Place(Planetoid& body, Plot& plot, const Part& part, bool charge) {
     if (!plot.canPlace(part)) return false;
     const PartType t = part.type;
@@ -91,13 +104,8 @@ bool BuildTool_Place(Planetoid& body, Plot& plot, const Part& part, bool charge)
         Audio_Play(Sfx::Error, 0.5f);
         return false;
     }
-    if (IsBeam(t)) { // a line of single cubes (#200): quicker to build, each removed on its own
-        static std::vector<Part> cubes;
-        Plot::SplitBeam(part, cubes);
-        for (const Part& c : cubes) plot.place(c);
-    } else plot.place(part);
+    BuildTool_ApplyPart(body, plot, part);
     if (IsMachine(part.type) || IsRocketPart(part.type)) QuestBook_NotePlaced(PartCostItem(part.type));
-    BuildTool_LayFoundation(body, plot, part);
     return true;
 }
 
@@ -141,6 +149,13 @@ static void UpdateBreak(Scene& world, const PlayerInput& in) {
     breakHeld += GameFrameTime();
     if (breakHeld < kBreakHold) return;
     const Part removed = hitPlot->parts[part];
+    if (gBuildToolNetEdit) { // joined (#330): the server removes it, refunds, and tells everyone
+        gBuildToolNetEdit(*body, hitPlot, Vector3{}, removed, true, part);
+        Audio_Play(Sfx::Dig, 0.5f, 1.3f);
+        breakPart = -1;
+        breakHeld = -0.15f;
+        return;
+    }
     if (hitPlot->remove(part)) {
         if (removed.type == PartType::Meteorite && !terrainTool.creative) { // (#177) space rock: nickel-iron, now and then platinum or iridium ore
             const int n = GameRng_Int(6, 10), pt = GameRng_Int(0, 99) < 35 ? 2 : 0, ir = GameRng_Int(0, 99) < 12 ? 1 : 0; // the authority rolls (#316)
@@ -315,6 +330,12 @@ void BuildTool_Update(Scene& world, const PlayerInput& in, bool usable) {
 
     if (!in.enabled) return;
     if (Blueprint_Keys(body, aim.removePlot)) return; // B saves the plot looked at, N cycles blueprints
+    if (gBuildToolNetEdit && in.hit(Act::Secondary) && aim.canPlace) { // joined (#330): the server places and charges
+        if (Blueprint_Active()) { GameUI_Toast("Blueprints can't be placed on a server yet"); return; }
+        gBuildToolNetEdit(*body, aim.plot, aim.newOrigin, aim.part, false, -1);
+        Audio_Play(Sfx::Build, 0.5f, 1.2f);
+        return;
+    }
     if (const Blueprint* bp = Blueprint_Active(); bp && in.hit(Act::Secondary)) {
         Plot* target = aim.plot;
         if (!target) {

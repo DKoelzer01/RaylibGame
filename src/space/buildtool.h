@@ -42,6 +42,14 @@ const Plot* BuildTool_AimPlacement(Vector3* newOrigin, Int3* origin);
 bool BuildTool_Place(Planetoid& body, Plot& plot, const Part& part, bool charge);
 // Clear terrain inside a part's cells and fill small gaps under it (placing; a rocket landing).
 void BuildTool_LayFoundation(Planetoid& body, Plot& plot, const Part& part);
+// The placement itself, no cost or quest (multiplayer, #330: the server and every client apply a player's part with it,
+// in the server's order, so the plots and their part indices stay the same everywhere): beams as cubes, the foundation.
+bool BuildTool_ApplyPart(Planetoid& body, Plot& plot, const Part& part);
+// Set while joined to a server (#330): a place or break is sent as a request instead of applied and paid here. place:
+// `plot` (null: a new plot at newOrigin, body-local) and the part; break: `plot` and partIndex.
+#include <functional>
+using BuildToolNetEdit = std::function<void(Planetoid& body, Plot* plot, Vector3 newOrigin, const Part& part, bool remove, int partIndex)>;
+extern BuildToolNetEdit gBuildToolNetEdit;
 // Machines: looking at one shows its state (factory snapshot); I inserts items, O takes outputs.
 void Machine_Update(Scene& world, const PlayerInput& in);
 void Machine_DrawHUD();
