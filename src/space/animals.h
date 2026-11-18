@@ -41,6 +41,7 @@ int Animals_SimulatedNear(const Planetoid& body, Vector3 local, float range); //
 int Animals_Spawn(Scene& world, Planetoid& body, const std::string& species, Vector3 bodyLocal, int count, bool young = false, float spread = 18.0f);
 // Every species as (id, display name), in animals.txt order: the Creative tab's spawner (#529).
 std::vector<std::pair<std::string, std::string>> Animals_SpeciesList();
+double Animals_BiteWindUp();            // s from a hostile's warning to its strike (#165)
 int Animals_Nearest(Vector3 bodyLocal, float range);          // index or -1
 Vector3 Animals_Position(int index);                           // body-local
 bool Animals_Hit(int index, float damage);                     // true if it fell
