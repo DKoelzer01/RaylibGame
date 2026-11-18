@@ -52,7 +52,7 @@ static Vector3 FeltGravity(Scene& world, Vector3 feet, Planetoid* nearest) {
 }
 void Player::update(Scene& world, const PlayerInput& in, float dt) {
     PROFILE_FUNCTION();
-    if (in.hit(Act::Fly)) {
+    if ((in.hit(Act::Fly) && (flyAllowed || flyMode)) || (flyMode && !flyAllowed)) { // out of creative: F only lands (#531)
         flyMode = !flyMode;
         velocity = { 0, 0, 0 };
         if (!flyMode) {

@@ -469,6 +469,13 @@ bool Animals_Hostile(int i) { return i >= 0 && i < (int)animals.size() && specie
 bool Animals_Aiming() { return aimed >= 0 || hitLatch; }
 int Animals_YoungCount() { int n = 0; for (const Animal& a : animals) n += a.age < 1.0f ? 1 : 0; return n; }
 
+std::vector<std::pair<std::string, std::string>> Animals_SpeciesList() {
+    LoadSpecies();
+    std::vector<std::pair<std::string, std::string>> out;
+    for (const Species& s : species) out.push_back({ s.id, s.name });
+    return out;
+}
+
 int Animals_Spawn(Scene& world, Planetoid& body, const std::string& id, Vector3 local, int count, bool young, float spread) {
     (void)world;
     const int si = SpeciesIndex(id);

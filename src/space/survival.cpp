@@ -90,12 +90,15 @@ bool Survival_IsFood(const std::string& id) { LoadFoods(); return foods.count(id
 float Survival_FoodValue(const std::string& id) { LoadFoods(); auto it = foods.find(id); return it == foods.end() ? 0.0f : it->second.value; }
 
 // Fall damage from the speed into the floor at touchdown (#263). On Terra (g 5.9): a 3 m drop is safe, 20 m takes
-// ~79, 30 m ~108 (fatal); servo legs make ~6 m safe.
+// ~79, 30 m ~108 (fatal); servo legs make ~6 m safe. A landing that would take 15 or less takes nothing (#536: minor
+// falls are ignored), so on Terra about 5 m is safe.
 void Survival_OnLanding(float impactSpeed) {
     const float safe = Suit_Stats().servo ? 8.5f : 6.0f; // servo legs soften landings
-    if (impactSpeed <= safe || survival.dead) return;
-    survival.health -= (impactSpeed - safe) * 8.5f;
-    survival.fallDamageTaken += (impactSpeed - safe) * 8.5f;
+    constexpr float kGrace = 15.0f; // health points
+    const float damage = (impactSpeed - safe) * 8.5f;
+    if (damage <= kGrace || survival.dead) return;
+    survival.health -= damage;
+    survival.fallDamageTaken += damage;
     Audio_Play(Sfx::Error, 0.6f, 0.6f);
 }
 
@@ -269,7 +272,6 @@ void Survival_DrawHUD() {
         if (Suit_Stats().vacuum) DrawText("VACUUM: suit rated", tx, y + 2, 16, Fade(SKYBLUE, 0.7f));
         else { const bool flash = survival.vacuumTime > 50.0f && fmodf((float)GetTime(), 0.6f) < 0.3f; DrawText(survival.vacuumTime < 60.0f ? TextFormat("VACUUM: suit not rated, %.0f s", 60.0f - survival.vacuumTime) : "VACUUM: suit failing - get to air or a cockpit", tx, y + 2, 16, flash ? RED : ORANGE); }
     }
-    DrawText(Suit_Stats().powered ? TextFormat("O2 canister x%d   power cell x%d   (use from the hotbar)", inventory.count("oxygen_canister"), inventory.count("power_cell")) : TextFormat("O2 canister x%d   (use from the hotbar)", inventory.count("oxygen_canister")), x, y - 22 + (showO2 ? 0 : 22), 16, Fade(RAYWHITE, 0.8f));
     if (survival.dead) {
         DrawRectangle(0, 0, GetScreenWidth(), GetScreenHeight(), Fade(BLACK, 0.6f));
         const char* msg = survival.oxygen <= 0.0f ? "You suffocated" : "You died";
