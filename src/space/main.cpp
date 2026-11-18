@@ -5834,6 +5834,17 @@ int main(int argc, char** argv)
                             lkPhase = 3; lkT0 = SimTime();
                         } else if (lkPhase == 3) {
                             if (t > 1.0 && vol1 < 0.0f) vol1 = past();
+                            static double histT = -1.0; // TEMP #680 (DBHIST): where the water is during the drain
+                            if (EnvFlag("DBHIST") && t - histT >= 5.0) {
+                                histT = t;
+                                float zone[3] = { 0, 0, 0 }; // reservoir (x < 0), wall (0-2 m), channel (x > 2)
+                                for (float x = -19.75f; x < 40.0f; x += 0.5f)
+                                    for (float y = -1.75f; y <= 1.75f; y += 0.5f)
+                                        for (float h = -5.75f; h <= 0.0f; h += 0.5f)
+                                            zone[x < 0.0f ? 0 : x < 2.0f ? 1 : 2] += Fluid::WaterAt(*p, pt(x, y, h), 0.25f);
+                                printf("dbhist t=%.0f: sim volume %.1f m^3; sampled reservoir %.1f, wall %.1f, channel %.1f; pool %.2f m by SurfaceAbove\n",
+                                       t, Fluid::GetStats().volume, zone[0], zone[1], zone[2], depthAt(-10.0f));
+                            }
                             if (t > 3.0 && vol3 < 0.0f) vol3 = past();
                             static double lastPrint = 0.0;
                             if (t - lastPrint >= 20.0) {
