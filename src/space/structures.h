@@ -34,6 +34,9 @@ const char* Structures_LastSkip();   // tests: why the last site was left out
 // Tests: the world's placement within `range` m of the start (dry, level, none too close, the ring camp and ruin);
 // `hash` fingerprints the layout (two runs must agree).
 bool Structures_TestPlacement(const Planetoid& body, float range, uint64_t& hash);
+// Tests (#719): a watchtower with its dungeon forced 40 m away; rooms, corridors and ramp open, the rare chest waiting.
+// eye/target (body-local): a view into the first room.
+bool Structures_TestDungeon(Scene& world, Planetoid& body, Vector3 nearLocal, Vector3& eye, Vector3& target);
 int Structures_SitesBuilt();          // tests: sites built by the world placement
 void Structures_TestFill(Planetoid& body);          // tests: fill every waiting chest now
 int Structures_TestCheck(Planetoid& body, int& items); // tests: how many of those chests hold items (and how many)

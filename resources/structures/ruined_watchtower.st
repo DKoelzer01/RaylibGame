@@ -8,6 +8,7 @@ biomes Forest Meadow Savanna Taiga Tundra Alpine Badlands Desert Jungle
 weight 1.0
 bury 0.5
 decay 0.35
+dungeon 0.4
 walls block 0 0 0 7 13 7 stone
 fill slab 2 6 2 5 6 5 oak_planks
 clear 2 0 0 5 3 1

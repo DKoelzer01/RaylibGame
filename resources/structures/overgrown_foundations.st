@@ -5,6 +5,7 @@ biomes Forest Meadow Savanna Taiga Swamp Jungle Tundra
 weight 1.2
 bury 0.25
 decay 0.25
+dungeon 0.4
 walls block 0 0 0 19 1 13 stone
 fill block 12 0 2 13 1 11 stone
 clear 4 0 0 7 1 1
