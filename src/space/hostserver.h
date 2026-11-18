@@ -19,6 +19,7 @@
 
 #include "dvec3.h"
 #include <cstdint>
+#include <functional>
 #include <string>
 #include <vector>
 
@@ -44,6 +45,18 @@ bool Host_PlayerLocal(Scene& world, uint32_t session, uint64_t& body, DVec3& loc
 // Tests (#329): terrain edits applied for players so far; a player's inventory as the server keeps it.
 int Host_EditsApplied();
 double Host_InventoryAmount(uint32_t session, const std::string& item);
+// The dedicated server's console and admin (#326, #345): who is (or was) here; kick by name (Bye kicked, with the reason as a chat
+// line first); a chat line from the server (fromSession 0) or a player, to everyone (toSession 0) or one session; the message of
+// the day (in the Welcome); a join check (bans, whitelist: false refuses with NetReject::Banned and why); a handler for
+// players' chat (else it goes to everyone); joins, leaves and refusals for the audit log.
+struct HostPlayer { uint32_t session = 0; std::string name; bool online = false; std::string address; };
+std::vector<HostPlayer> Host_ListPlayers();
+bool Host_Kick(const std::string& name, const std::string& reason);
+void Host_Say(const std::string& text, uint32_t fromSession = 0, uint32_t toSession = 0);
+void Host_SetMotd(const std::string& text);
+void Host_SetJoinCheck(std::function<bool(const std::string& name, const std::string& address, std::string& why)> check);
+void Host_SetChatHandler(std::function<void(uint32_t session, const std::string& name, const std::string& text)> handler);
+void Host_SetEventHook(std::function<void(const char* what, uint32_t session, const std::string& detail)> hook);
 // Tests: client connections opened in the same process; their messages are handed to the client, not to the host.
 void Host_SetLocalClient(uint32_t conn);
 std::vector<NetMessage> Host_TakeLocalClientMessages(uint32_t conn);

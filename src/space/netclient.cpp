@@ -63,6 +63,7 @@ namespace {
                 return;
             }
             case NetMsg::Shower: { MsgShower s; if (NetRead(r, s)) c.shower = s; return; }
+            case NetMsg::Chat: { MsgChat m; if (c.state == NetClient::State::Joined && NetRead(r, m)) { c.chat.push_back(m); if (c.chat.size() > 64) c.chat.pop_front(); } return; } // (#326)
             case NetMsg::Roster: {
                 MsgRoster ro;
                 if (c.state != NetClient::State::Joined || !NetRead(r, ro)) return;
@@ -352,4 +353,9 @@ uint32_t NetClient_RequestEdit(NetClient& c, NetEditKind kind, const Planetoid& 
     q.hit = DVec3(hit); q.center = DVec3(centre); q.radius = radius; q.item = item;
     SendMsg(c, q);
     return q.seq;
+}
+
+void NetClient_SendChat(NetClient& c, const std::string& text) {
+    if (c.state != NetClient::State::Joined || text.empty()) return;
+    SendMsg(c, MsgChat{ 0, text.substr(0, 256) });
 }

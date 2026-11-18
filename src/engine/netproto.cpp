@@ -11,7 +11,7 @@ const char* NetMsgName(NetMsg m) {
         case NetMsg::Hello: return "hello"; case NetMsg::Welcome: return "welcome"; case NetMsg::Reject: return "reject";
         case NetMsg::Bye: return "bye"; case NetMsg::Ping: return "ping"; case NetMsg::Pong: return "pong";
         case NetMsg::Input: return "input"; case NetMsg::PlayerState: return "player state"; case NetMsg::TerrainEdit: return "terrain edit"; case NetMsg::Shower: return "shower"; case NetMsg::Roster: return "roster"; case NetMsg::Loadout: return "loadout";
-        case NetMsg::EditRequest: return "edit request"; case NetMsg::EditRefused: return "edit refused"; case NetMsg::InventoryDelta: return "inventory delta";
+        case NetMsg::EditRequest: return "edit request"; case NetMsg::EditRefused: return "edit refused"; case NetMsg::InventoryDelta: return "inventory delta"; case NetMsg::Chat: return "chat";
         default: return "?";
     }
 }
@@ -96,7 +96,7 @@ void NetWrite(NetWriter& w, const MsgWelcome& m) {
     Id(w, NetMsg::Welcome);
     w.u32(m.protocol); w.u32(m.session); w.boolean(m.reconnected); w.u32(m.seed);
     w.varu(m.bodies.size()); for (const std::string& b : m.bodies) w.str(b);
-    w.u64(m.fingerprint); w.u32(m.serverTick); w.f64(m.worldTime); w.str(m.worldgen); w.boolean(m.sandbox);
+    w.u64(m.fingerprint); w.u32(m.serverTick); w.f64(m.worldTime); w.str(m.worldgen); w.boolean(m.sandbox); w.str(m.motd.substr(0, 200));
     w.u8(m.settings.difficulty); w.boolean(m.settings.pvp); w.boolean(m.settings.claims); w.u8(m.settings.maxPlayers);
 }
 bool NetRead(NetReader& r, MsgWelcome& m) {
@@ -105,7 +105,7 @@ bool NetRead(NetReader& r, MsgWelcome& m) {
     if (n > 256) r.ok = false;
     m.bodies.clear();
     for (uint64_t i = 0; i < n && r.ok; ++i) m.bodies.push_back(r.str(1024));
-    m.fingerprint = r.u64(); m.serverTick = r.u32(); m.worldTime = r.f64(); m.worldgen = r.str(4096); m.sandbox = r.boolean();
+    m.fingerprint = r.u64(); m.serverTick = r.u32(); m.worldTime = r.f64(); m.worldgen = r.str(4096); m.sandbox = r.boolean(); m.motd = r.str(200);
     m.settings.difficulty = r.u8(); m.settings.pvp = r.boolean(); m.settings.claims = r.boolean(); m.settings.maxPlayers = r.u8();
     if (m.settings.difficulty > 2) r.ok = false;
     return Done(r);
@@ -218,6 +218,8 @@ bool NetRead(NetReader& r, MsgEditRefused& m) {
     return Done(r);
 }
 void NetWrite(NetWriter& w, const MsgInventoryDelta& m) { Id(w, NetMsg::InventoryDelta); w.str(m.item.substr(0, 48)); w.f64(m.amount); }
+void NetWrite(NetWriter& w, const MsgChat& m) { Id(w, NetMsg::Chat); w.u32(m.from); w.str(m.text.substr(0, 256)); }
+bool NetRead(NetReader& r, MsgChat& m) { m.from = r.u32(); m.text = r.str(256); return Done(r); }
 bool NetRead(NetReader& r, MsgInventoryDelta& m) {
     m.item = r.str(48); m.amount = r.f64();
     if (m.item.empty() || !(std::fabs(m.amount) < 1e6)) r.ok = false;
@@ -293,6 +295,7 @@ bool ParseAny(const std::vector<uint8_t>& b) {
         case NetMsg::EditRequest: { MsgEditRequest m; return NetRead(r, m); }
         case NetMsg::EditRefused: { MsgEditRefused m; return NetRead(r, m); }
         case NetMsg::InventoryDelta: { MsgInventoryDelta m; return NetRead(r, m); }
+        case NetMsg::Chat: { MsgChat m; return NetRead(r, m); }
         default: return false;
     }
 }
@@ -311,10 +314,10 @@ bool NetProto_Test() {
     }
     {
         MsgWelcome a; a.session = 7; a.reconnected = true; a.seed = 42; a.bodies = { "planet Terra 0 0 0 60000", "moon Luna 1 2 3 9000" };
-        a.fingerprint = 0x1234567890abcdefull; a.serverTick = 123456; a.worldTime = 4321.5; a.worldgen = "ocean 0.5\nkarst 0\n"; a.sandbox = true; a.settings = { 2, true, false, 16 };
+        a.fingerprint = 0x1234567890abcdefull; a.serverTick = 123456; a.worldTime = 4321.5; a.worldgen = "ocean 0.5\nkarst 0\n"; a.sandbox = true; a.motd = "be nice"; a.settings = { 2, true, false, 16 };
         MsgWelcome b; std::vector<uint8_t> s;
         check(RoundTrip(a, b, &s) && b.session == 7 && b.reconnected && b.seed == 42 && b.bodies == a.bodies && b.fingerprint == a.fingerprint &&
-              b.serverTick == 123456 && b.worldTime == 4321.5 && b.worldgen == a.worldgen && b.sandbox && b.settings.difficulty == 2 && b.settings.pvp && !b.settings.claims && b.settings.maxPlayers == 16, "welcome");
+              b.serverTick == 123456 && b.worldTime == 4321.5 && b.worldgen == a.worldgen && b.sandbox && b.motd == "be nice" && b.settings.difficulty == 2 && b.settings.pvp && !b.settings.claims && b.settings.maxPlayers == 16, "welcome");
         samples.push_back(s);
     }
     { MsgReject a{ NetReject::Password, "try again" }, b; std::vector<uint8_t> s; check(RoundTrip(a, b, &s) && b.reason == a.reason && b.detail == a.detail, "reject"); samples.push_back(s); }
@@ -360,6 +363,7 @@ bool NetProto_Test() {
     }
     { MsgEditRefused a{ 9, NetEditRefusal::Cost }, b; std::vector<uint8_t> s; check(RoundTrip(a, b, &s) && b.seq == 9 && b.why == NetEditRefusal::Cost, "edit refused"); samples.push_back(s); }
     { MsgInventoryDelta a{ "gravel", -0.375 }, b; std::vector<uint8_t> s; check(RoundTrip(a, b, &s) && b.item == "gravel" && b.amount == -0.375, "inventory delta"); samples.push_back(s); }
+    { MsgChat a{ 3, "hello, world" }, b; std::vector<uint8_t> s; check(RoundTrip(a, b, &s) && b.from == 3 && b.text == "hello, world", "chat"); samples.push_back(s); }
     { MsgRoster a, b; a.players = { { 1, "alice" }, { 7, "bob" } }; std::vector<uint8_t> s; check(RoundTrip(a, b, &s) && b.players.size() == 2 && b.players[1].session == 7 && b.players[1].name == "bob", "roster"); samples.push_back(s); }
     { MsgLoadout a{ 3, "stone_pickaxe", true, 2 }, b; std::vector<uint8_t> s; check(RoundTrip(a, b, &s) && b.session == 3 && b.held == "stone_pickaxe" && b.headlamp && b.suitTier == 2, "loadout"); samples.push_back(s); }
     // Every message cut short anywhere must not read as valid; garbage must never crash a reader.

@@ -33,6 +33,7 @@ int Net_ConnectionCount();                             // connected now
 bool Net_Send(uint32_t conn, const void* data, uint32_t size, bool reliable);
 int Net_Receive(std::vector<NetMessage>& out, int max = 64); // appends; returns how many
 void Net_Close(uint32_t conn);
+std::string Net_RemoteAddress(uint32_t conn);           // "ip:port" of the other end ("" unknown; #345 IP bans)
 // Tests (#327, #347): every message sent from now on is delayed by lagMs and lost with lossPercent (0-100) odds: the
 // default NetConditions below (seed kept), so a run replays.
 void Net_SetFakeConditions(int lagMs, float lossPercent);

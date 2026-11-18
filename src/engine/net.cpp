@@ -166,6 +166,12 @@ uint32_t Net_Connect(const char* address) {
 }
 
 void Net_Poll() { if (initialised) { FlushHeld(); SteamNetworkingSockets()->RunCallbacks(); } }
+std::string Net_RemoteAddress(uint32_t conn) {
+    SteamNetConnectionInfo_t info;
+    if (!initialised || !SteamNetworkingSockets()->GetConnectionInfo(conn, &info)) return "";
+    char buf[SteamNetworkingIPAddr::k_cchMaxString]; info.m_addrRemote.ToString(buf, sizeof buf, true);
+    return buf;
+}
 bool Net_IsConnected(uint32_t conn) { return connected.count(conn) > 0; }
 int Net_ConnectionCount() { return (int)connected.size(); }
 
@@ -221,5 +227,6 @@ int Net_ConnectionCount() { return 0; }
 bool Net_Send(uint32_t, const void*, uint32_t, bool) { return false; }
 int Net_Receive(std::vector<NetMessage>&, int) { return 0; }
 void Net_Close(uint32_t) {}
+std::string Net_RemoteAddress(uint32_t) { return ""; }
 
 #endif

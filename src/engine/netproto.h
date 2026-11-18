@@ -15,7 +15,7 @@
 #include <string>
 #include <vector>
 
-constexpr uint32_t kNetProtocol = 8; // 1 was the text "join" of #311; 5: world time in Welcome and Pong (#339); 6 (unused); 7: world-gen settings in Welcome (#757); 8: terrain edit requests, refusals, inventory deltas (#329)
+constexpr uint32_t kNetProtocol = 9; // 1 was the text "join" of #311; 5: world time in Welcome and Pong (#339); 6 (unused); 7: world-gen settings in Welcome (#757); 8: terrain edit requests, refusals, inventory deltas (#329); 9: chat and the motd (#326)
 
 enum class NetMsg : uint8_t {
     Hello = 1,     // client -> server: protocol, build, player name, password
@@ -33,6 +33,7 @@ enum class NetMsg : uint8_t {
     EditRequest,   // client -> server: dig or place at an aimed point (#329); the server validates, applies, pays
     EditRefused,   // server -> client: that request was refused (why)
     InventoryDelta, // server -> client: an item added to or taken from that player's inventory (the server's is the truth)
+    Chat,          // either way (#326): a chat line; from the server (session 0: "say", replies to ops' commands) or a player
     Count
 };
 const char* NetMsgName(NetMsg m);
@@ -102,6 +103,7 @@ struct MsgWelcome {
     double worldTime = 0.0;          // the server's WorldTime() when it sent this (#339: spin, orbits, sun, weather)
     std::string worldgen;            // #757: the world's generation settings (WorldGenParams_ToText: the sidecar's lines)
     bool sandbox = false;            // #757: --sandbox (#662): the start planet is the flat test plane
+    std::string motd;                // #326: the server's message of the day ("" none), shown on join
     NetServerSettings settings;
 };
 enum class NetReject : uint8_t { Protocol = 1, Build, Password, Full, Banned, NameTaken, Malformed };
@@ -171,6 +173,7 @@ enum class NetEditRefusal : uint8_t { Reach, Rate, Tool, Cost, Body, Mantle, Sha
 const char* NetEditRefusalText(NetEditRefusal r);
 struct MsgEditRefused { uint32_t seq = 0; NetEditRefusal why = NetEditRefusal::Reach; };
 struct MsgInventoryDelta { std::string item; double amount = 0.0; }; // > 0 added, < 0 taken (fractional, as the inventory)
+struct MsgChat { uint32_t from = 0; std::string text; }; // #326: from = the sender's session (0 the server; a client's own is ignored)
 
 void NetWrite(NetWriter& w, const MsgHello& m);
 void NetWrite(NetWriter& w, const MsgWelcome& m);
@@ -187,6 +190,7 @@ void NetWrite(NetWriter& w, const MsgLoadout& m);
 void NetWrite(NetWriter& w, const MsgEditRequest& m);
 void NetWrite(NetWriter& w, const MsgEditRefused& m);
 void NetWrite(NetWriter& w, const MsgInventoryDelta& m);
+void NetWrite(NetWriter& w, const MsgChat& m);
 bool NetRead(NetReader& r, MsgHello& m);
 bool NetRead(NetReader& r, MsgWelcome& m);
 bool NetRead(NetReader& r, MsgReject& m);
@@ -202,6 +206,7 @@ bool NetRead(NetReader& r, MsgLoadout& m);
 bool NetRead(NetReader& r, MsgEditRequest& m);
 bool NetRead(NetReader& r, MsgEditRefused& m);
 bool NetRead(NetReader& r, MsgInventoryDelta& m);
+bool NetRead(NetReader& r, MsgChat& m);
 // A message's id (the first byte; NetMsg::Count if empty or unknown).
 NetMsg NetPeek(const std::vector<uint8_t>& bytes);
 
