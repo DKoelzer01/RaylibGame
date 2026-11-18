@@ -1,4 +1,4 @@
-// #142: aerial perspective with the physical sky (RAYLIBGAME_SKY_PHYS=1). The haze keeps today's amount (fogDensity over the
+// #142: aerial perspective with the physical sky (on by default; RAYLIBGAME_SKY_PHYS=0: off). The haze keeps today's amount (fogDensity over the
 // path inside fogShell: ~35 km visibility); only its colour changes, to the physical sky toward the fragment, just above
 // the horizon (warm toward a low sun, blue away from it), pulled toward today's fogColor by skyPhysTint.
 uniform float skyHaze;     // 0: off (switch off, under water, no air) .. 1; scene.cpp scales it by the air and the weather

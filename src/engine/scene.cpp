@@ -667,7 +667,7 @@ void Scene::drawScene(int gamestate) {
     int drawCalls = 0;
     // Reverse-Z float depth (#135): one depth range from centimetres to infinity, so the far / mid / near
     // passes below collapse into one (no depth clears, no near/far plane juggling).
-    // #142: the physical sky's look-up tables (RAYLIBGAME_SKY_PHYS=1), rebuilt as the camera height and the sun move.
+    // #142: the physical sky's look-up tables (on by default; RAYLIBGAME_SKY_PHYS=0: off), rebuilt as the camera height and the sun move.
     if (atmosphere.enabled && SkyPhys_On())
         SkyPhys_Update(atmosphere.radius, atmosphere.radius + atmosphere.height, Vector3Distance(camera.position, atmosphere.centre), Vector3DotProduct(atmUp, sun));
     {   // #142: the physical haze colour on lit surfaces (skyphys_haze.glsl): the sky-view LUT on unit 15, by the air and weather.
