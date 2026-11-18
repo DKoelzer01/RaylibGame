@@ -271,6 +271,30 @@ static int PartCensusDiff(const PartCensusMap& was, const PartCensusMap& now, co
 }
 static PartCensusMap gBuildCensus;
 
+// --crack-check (#725): magenta (the clear colour, nothing drawn) pixels that are holes in the terrain, not open sky. With
+// the skybox off the sky is magenta too: magenta connected to the screen's top edge (4-way, through the gaps in the HUD's
+// text) is sky; magenta enclosed by drawn pixels is a hole. Colour test loose enough for the tonemapped composite.
+// step: sample every step-th pixel both ways. skyOut: the magenta samples taken as sky.
+static long CrackHoles(const Color* px, int w, int h, int step, long* skyOut) {
+    auto magenta = [](Color c) { return c.r > 200 && c.g < 60 && c.b > 200; };
+    const int gw = (w + step - 1) / step, gh = (h + step - 1) / step;
+    std::vector<uint8_t> m((size_t)gw * gh), seen((size_t)gw * gh, 0);
+    long total = 0;
+    for (int y = 0; y < gh; ++y)
+        for (int x = 0; x < gw; ++x) { m[(size_t)y * gw + x] = magenta(px[(size_t)(y * step) * w + x * step]); total += m[(size_t)y * gw + x]; }
+    std::vector<int> stack;
+    for (int x = 0; x < gw; ++x) if (m[x]) { seen[x] = 1; stack.push_back(x); }
+    long sky = 0;
+    while (!stack.empty()) {
+        const int i = stack.back(); stack.pop_back(); ++sky;
+        const int x = i % gw, y = i / gw;
+        const int nb[4] = { x > 0 ? i - 1 : -1, x + 1 < gw ? i + 1 : -1, y > 0 ? i - gw : -1, y + 1 < gh ? i + gw : -1 };
+        for (int j : nb) if (j >= 0 && m[j] && !seen[j]) { seen[j] = 1; stack.push_back(j); }
+    }
+    if (skyOut) *skyOut = sky;
+    return total - sky;
+}
+
 int main(int argc, char** argv)
 {
     // Scripted runs (--bench, --test-*, --shot-*): stdout unbuffered, before any output, so a run killed by a timeout
@@ -8316,9 +8340,7 @@ int main(int argc, char** argv)
                     if (crackCheck && (++flyFrame % 10) == 0) {
                         Image shot = LoadImageFromScreen();
                         Color* px = LoadImageColors(shot);
-                        int holes = 0;
-                        for (int y = shot.height / 3; y < shot.height; y += 2)
-                            for (int x = 0; x < shot.width; x += 2) { const Color c = px[y * shot.width + x]; holes += (c.r > 200 && c.g < 60 && c.b > 200) ? 1 : 0; }
+                        const int holes = (int)CrackHoles(px, shot.width, shot.height, 2, nullptr); // every 2nd pixel
                         UnloadImageColors(px);
                         if (holes > 50) {
                             printf("bench: fly holes: t=%.2f s, %d magenta samples\n", t, holes);
@@ -8366,8 +8388,9 @@ int main(int argc, char** argv)
                     Color* px = LoadImageColors(shot);
                     long holes = 0;
                     const long total = (long)shot.width * shot.height;
-                    for (long k = 0; k < total; ++k) if (px[k].r > 240 && px[k].g < 16 && px[k].b > 240) ++holes;
-                    printf("bench: crack check: %ld of %ld pixels show through the terrain (%.4f%%)\n", holes, total, 100.0 * holes / total);
+                    long sky = 0;
+                    holes = CrackHoles(px, shot.width, shot.height, 1, &sky);
+                    printf("bench: crack check: %ld of %ld pixels show through the terrain (%.4f%%; %ld of open sky over the terrain not counted)\n", holes, total, 100.0 * holes / total, sky);
                     UnloadImageColors(px);
                     UnloadImage(shot);
                 }
