@@ -138,11 +138,29 @@ void main()
     // The LUTs are built for an Earth-sized shell (km): see resources/skyphys.glsl.
     constexpr float kLutR = 6360.0f, kLutRt = 6460.0f;
 
+    // The haze colour (#819): SkyPhysSky (exposed, adapted, held just over the real horizon) for every (azimuth from the sun,
+    // view height) from this camera, so lit fragments take it with one fetch (skyphys_haze.glsl) instead of the remap.
+    // u: the cosine of the azimuth from the sun, linear; v: the view's height (dot with up), packed toward the horizon.
+    const char* kFsHaze = R"(
+in vec2 uv;
+out vec4 color;
+uniform float sunCosZenith;
+void main()
+{
+    float lvc = uv.x * 2.0 - 1.0;
+    float c = uv.y * 2.0 - 1.0, h = c < 0.0 ? -c * c : c * c;
+    float sh = sqrt(max(1.0 - h * h, 0.0)), sl = sqrt(max(1.0 - lvc * lvc, 0.0));
+    vec3 v = vec3(sh * lvc, h, sh * sl);
+    vec3 sun = vec3(sqrt(max(1.0 - sunCosZenith * sunCosZenith, 0.0)), sunCosZenith, 0.0);
+    color = vec4(SkyPhysSky(v, vec3(0.0, 1.0, 0.0), sun, true), 1.0);
+}
+)";
+
     struct Lut { GLuint tex = 0, fbo = 0; int w = 0, h = 0; };
     struct State {
         bool tried = false, ok = false;
-        GLuint vao = 0, progT = 0, progM = 0, progS = 0;
-        Lut trans, multi, sky;
+        GLuint vao = 0, progT = 0, progM = 0, progS = 0, progH = 0;
+        Lut trans, multi, sky, haze;
         float builtR = -1.0f, builtRt = -1.0f, skyH = -1.0f, skyMu = -2.0f;
         float tint = 0.35f, exposure = 10.0f;
     } S;
@@ -187,12 +205,14 @@ void main()
         S.progT = Program(common, kFsTransmittance, "transmittance");
         S.progM = Program(common, kFsMultiScatter, "multi-scattering");
         S.progS = Program(common, kFsSkyView, "sky-view");
-        if (!S.progT || !S.progM || !S.progS) return false;
+        S.progH = Program(common, kFsHaze, "haze");
+        if (!S.progT || !S.progM || !S.progS || !S.progH) return false;
         GLint prevFbo = 0;
         glGetIntegerv(GL_FRAMEBUFFER_BINDING, &prevFbo);
         MakeLut(S.trans, 256, 64);
         MakeLut(S.multi, 32, 32);
         MakeLut(S.sky, 192, 108);
+        MakeLut(S.haze, 64, 128); // (#819)
         glBindTexture(GL_TEXTURE_2D, 0);
         glBindFramebuffer(GL_FRAMEBUFFER, (GLuint)prevFbo);
         glGenVertexArrays(1, &S.vao);
@@ -223,6 +243,7 @@ bool SkyPhys_On()
 float SkyPhys_Tint() { return S.tint; }
 float SkyPhys_Exposure() { return S.exposure; }
 unsigned SkyPhys_SkyViewTexture() { return S.ok && S.skyH > 0.0f ? S.sky.tex : 0; }
+unsigned SkyPhys_HazeTexture() { return S.ok && S.skyH > 0.0f ? S.haze.tex : 0; }
 unsigned SkyPhys_TransmittanceTexture() { return S.ok && S.builtR > 0.0f ? S.trans.tex : 0; }
 
 float SkyPhys_LutR() { return kLutR; }
@@ -261,6 +282,20 @@ void SkyPhys_Update(float planetRadius, float airTop, float camDist, float sunCo
     glUniform1f(glGetUniformLocation(S.progS, "viewHeight"), viewHeight);
     glUniform1f(glGetUniformLocation(S.progS, "sunCosZenith"), sunCosZenith);
     Pass(S.progS, S.sky, R, Rt);
+    {   // (#819) the haze colour from it, for this camera (the real horizon's dip, the exposure)
+        glUseProgram(S.progH);
+        glUniform1f(glGetUniformLocation(S.progH, "sunCosZenith"), sunCosZenith);
+        glUniform1f(glGetUniformLocation(S.progH, "skyViewHeight"), viewHeight);
+        glUniform2f(glGetUniformLocation(S.progH, "skyRealHorizon"), planetRadius, std::max(camDist, planetRadius + 0.5f));
+        glUniform1f(glGetUniformLocation(S.progH, "skyPhysExposure"), S.exposure);
+        glBindFramebuffer(GL_FRAMEBUFFER, S.haze.fbo);
+        glViewport(0, 0, S.haze.w, S.haze.h);
+        glUniform1f(glGetUniformLocation(S.progH, "skyR"), R);
+        glUniform1f(glGetUniformLocation(S.progH, "skyRt"), Rt);
+        glActiveTexture(GL_TEXTURE0); glBindTexture(GL_TEXTURE_2D, S.sky.tex);
+        glUniform1i(glGetUniformLocation(S.progH, "skyViewLut"), 0);
+        glDrawArrays(GL_TRIANGLES, 0, 3);
+    }
     S.skyH = viewHeight; S.skyMu = sunCosZenith;
     glActiveTexture(GL_TEXTURE1); glBindTexture(GL_TEXTURE_2D, 0);
     glActiveTexture(GL_TEXTURE0); glBindTexture(GL_TEXTURE_2D, 0);
