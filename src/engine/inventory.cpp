@@ -107,9 +107,11 @@ bool ItemDB::load(const char* itemsPath, const char* recipesPath) {
         if (valid) recipeList.push_back(r);
         else LOG_WARN("Items", "recipes: unknown item in '%s'\n", line.c_str());
     }
-    // Placeable parts (machines, conveyors, cables, rocket parts) are blocks: stacks of 256.
+    // Placeable parts (machines, conveyors, cables, rocket parts) are blocks: stacks of 256. Not the parts only the world
+    // places (#812): a meteorite and dungeon traps name the material they break into (nickel-iron ore, stone), which must
+    // stay a resource (stone as a block stacked to 256 and lost nothing on death).
     for (int t = 0; t < (int)PartType::Count; ++t)
-        if (IsShape((PartType)t)) continue; else
+        if (IsShape((PartType)t) || (PartType)t == PartType::Meteorite || (PartType)t == PartType::PressurePlate || (PartType)t == PartType::GasVent) continue; else
         if (const char* item = PartCostItem((PartType)t)) {
             auto it = byId.find(item);
             if (it != byId.end() && itemList[it->second].kind == ItemKind::Resource) itemList[it->second].kind = ItemKind::Block;
