@@ -5,6 +5,8 @@
 
 #include <cstdio>
 #include <cstring>
+#include <process.h>
+#include <string>
 #include <raylib.h>
 #include <map>
 
@@ -21,10 +23,11 @@ namespace {
 
     // Save lines <-> a book, through a scratch file (the quest book reads and writes FILE*, as the world file does).
     // (tmpfile() makes its file in the drive's root on Windows, which often fails: a scratch file under saves/ instead)
-    const char* kScratch = "saves/.teamquests.tmp";
+    // (#837) per process: a host and its clients on one machine share the working directory, and one name raced
+    const std::string kScratch = "saves/.teamquests." + std::to_string(_getpid()) + ".tmp";
     FILE* Scratch(const char* mode) {
         if (!DirectoryExists("saves")) MakeDirectory("saves");
-        return fopen(kScratch, mode);
+        return fopen(kScratch.c_str(), mode);
     }
     void Parse(const std::string& text) {
         if (text.empty()) return;
@@ -37,6 +40,7 @@ namespace {
         while (fscanf(f, " %63s", tok) == 1)
             if (!QuestBook_LoadLine(tok, f) && !fgets(rest, sizeof rest, f)) break; // an unknown line: skipped
         fclose(f);
+        std::remove(kScratch.c_str());
     }
     std::string Write() {
         FILE* f = Scratch("wb");
@@ -49,6 +53,7 @@ namespace {
         size_t n;
         while ((n = fread(buf, 1, sizeof buf, f)) > 0) out.append(buf, n);
         fclose(f);
+        std::remove(kScratch.c_str());
         return out;
     }
 }
