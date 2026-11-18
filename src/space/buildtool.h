@@ -32,7 +32,7 @@ void BuildTool_Draw3D(Scene& world);
 void BuildTool_DrawHUD();
 float BuildTool_BreakProgress();   // 0..1 while LMB is held on a part (the HUD bar under the crosshair)
 bool BuildTool_AimingPart();       // the crosshair is on a built part in reach (LMB breaks it)
-int BuildTool_AimOrient();        // the aimed placement's orientation (0..23), -1 without an aim (#196 test)
+int BuildTool_AimOrient();        // the aimed placement's orientation (0..23), -1 without an aim (#196 test)
 // The aimed placement for tests (#550/#551): the plot it goes into (null: a new plot at newOrigin, body-local) and its
 // origin cell.
 const Plot* BuildTool_AimPlacement(Vector3* newOrigin, Int3* origin);
