@@ -334,7 +334,15 @@ namespace {
         const Vector3 sunDir = Vector3Normalize(world.sunDirection);
         for (auto& [sid, r] : remotes) {
             if (!r.player.nearest) continue;
-            const bool dark = Vector3DotProduct(sunDir, r.player.up) < -0.1f;
+            bool dark = Vector3DotProduct(sunDir, r.player.up) < -0.1f;
+            // tests: RAYLIBGAME_HOST_NIGHT="a,b": night for everyone from a to b seconds after the first join (a real night
+            // here is half an hour of game time; a sped-up world makes streaming chase the spin)
+            if (const char* nt = getenv("RAYLIBGAME_HOST_NIGHT")) {
+                static double firstJoin = -1.0;
+                if (firstJoin < 0.0) firstJoin = GetTime();
+                double a = 0.0, b = 0.0;
+                if (sscanf(nt, "%lf,%lf", &a, &b) == 2) { const double t = GetTime() - firstJoin; dark = t >= a && t < b; }
+            }
             if (dark && !r.inNight) { r.inNight = true; r.deathsAtDusk = r.survival.deaths; }
             else if (!dark && r.inNight) { r.inNight = false; if (r.survival.deaths == r.deathsAtDusk) TeamEvent(sid, "count", "nights"); }
         }
@@ -700,6 +708,7 @@ namespace {
             if (worldDifficulty < 2) Host_Give(s->id, "map", 1); // hard: find your own way
             if (worldDifficulty == 0) Host_Give(s->id, "berries", 6);
         }
+        if (const char* d = getenv("RAYLIBGAME_HOST_DIFFICULTY")) worldDifficulty = std::clamp(atoi(d), 0, 2); // tests (#338): e.g. peaceful, no night threats
         if (const char* hunger = getenv("RAYLIBGAME_HOST_HUNGER")) remotes[s->id].survival.food = (float)atof(hunger); // tests (#337): a hungry joiner
         if (const char* give = getenv("RAYLIBGAME_HOST_GIVE")) { // tests (#337): "item count[,item count...]" to each player as they join
             for (const char* g = give; g && *g; ) {
