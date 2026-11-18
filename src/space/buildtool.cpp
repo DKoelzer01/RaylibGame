@@ -394,6 +394,8 @@ void BuildTool_DrawHUD() {
 
 namespace {
     struct MachineAim { uint64_t body = 0; uint32_t plot = 0; int part = -1; PartType type = PartType::Count; } machineAim;
+    double handPumpAt = -10.0; // the last frame the hand pump was worked (GetTime), and the litres since this go began (#571)
+    float handPumpLitres = 0.0f;
 }
 
 void Machine_Update(Scene& world, const PlayerInput& in) {
@@ -426,6 +428,8 @@ void Machine_Update(Scene& world, const PlayerInput& in) {
         // Hand pump (#280): hold RMB (outside build mode) to work it; the water goes down its pipes at the next pass.
         if (!buildTool.active && in.down(Act::Secondary)) {
             Waterworks_HandPump(machineAim.body, machineAim.plot, machineAim.part, GameFrameTime());
+            if (GetTime() - handPumpAt > 1.0) handPumpLitres = 0.0f; // a new go
+            handPumpAt = GetTime(); handPumpLitres += kHandPumpRate * 1000.0f * GameFrameTime(); // the HUD's feedback (#571)
             static double nextSound = 0.0;
             if (GetTime() > nextSound) { Audio_Play(Sfx::Pickup, 0.25f, 0.6f); nextSound = GetTime() + 0.6; }
         }
@@ -471,9 +475,16 @@ void Machine_DrawHUD() {
     }
     if (machineAim.type == PartType::HandPump) {
         const int x = GetScreenWidth() / 2 + 20, y = GetScreenHeight() / 2 + 40;
-        DrawRectangle(x - 8, y - 6, 380, 52, Fade(BLACK, 0.55f));
-        DrawText("hand pump", x, y, 20, SKYBLUE);
+        const bool pumping = GetTime() - handPumpAt < 0.15; // worked this frame or the last few (#571)
+        DrawRectangle(x - 8, y - 6, 380, pumping ? 76 : 52, Fade(BLACK, 0.55f));
+        DrawText(pumping ? "hand pump: PUMPING" : "hand pump", x, y, 20, pumping ? Color{ 120, 200, 255, 255 } : SKYBLUE);
         DrawText(TextFormat("hold RMB to pump %.0f L/s into its pipes", kHandPumpRate * 1000.0f), x, y + 24, 16, RAYWHITE);
+        if (pumping) { // a bar that runs with each stroke (a stroke a second) and the litres sent this go
+            const float stroke = (float)fmod(GetTime(), 1.0);
+            DrawRectangle(x, y + 48, 160, 10, Fade(RAYWHITE, 0.2f));
+            DrawRectangle(x, y + 48, (int)(160 * (stroke < 0.5f ? stroke * 2.0f : 2.0f - stroke * 2.0f)), 10, Color{ 90, 170, 255, 255 });
+            DrawText(TextFormat("%.0f L this go", handPumpLitres), x + 172, y + 45, 16, RAYWHITE); // (none flows with no water under it)
+        }
         return;
     }
     const MachineView v = Factory::View(machineAim.body, machineAim.plot, machineAim.part);
