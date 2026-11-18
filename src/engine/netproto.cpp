@@ -12,7 +12,7 @@ const char* NetMsgName(NetMsg m) {
         case NetMsg::Bye: return "bye"; case NetMsg::Ping: return "ping"; case NetMsg::Pong: return "pong";
         case NetMsg::Input: return "input"; case NetMsg::PlayerState: return "player state"; case NetMsg::TerrainEdit: return "terrain edit"; case NetMsg::Shower: return "shower"; case NetMsg::Roster: return "roster"; case NetMsg::Loadout: return "loadout";
         case NetMsg::PartRequest: return "part request"; case NetMsg::PartRefused: return "part refused"; case NetMsg::PlotEdit: return "plot edit";
-        case NetMsg::EditRequest: return "edit request"; case NetMsg::EditRefused: return "edit refused"; case NetMsg::InventoryDelta: return "inventory delta"; case NetMsg::Chat: return "chat"; case NetMsg::PlayerSnapshot: return "player snapshot"; case NetMsg::Animals: return "animals"; case NetMsg::AnimalHit: return "animal hit"; case NetMsg::Damage: return "damage"; case NetMsg::Vitals: return "vitals"; case NetMsg::UseItem: return "use item"; case NetMsg::BedUse: return "bed use"; case NetMsg::Graves: return "graves";
+        case NetMsg::EditRequest: return "edit request"; case NetMsg::EditRefused: return "edit refused"; case NetMsg::InventoryDelta: return "inventory delta"; case NetMsg::Chat: return "chat"; case NetMsg::PlayerSnapshot: return "player snapshot"; case NetMsg::Animals: return "animals"; case NetMsg::AnimalHit: return "animal hit"; case NetMsg::Damage: return "damage"; case NetMsg::Vitals: return "vitals"; case NetMsg::UseItem: return "use item"; case NetMsg::BedUse: return "bed use"; case NetMsg::Graves: return "graves"; case NetMsg::QuestBook: return "quest book";
         case NetMsg::SyncIndex: return "sync index"; case NetMsg::SyncWant: return "sync want"; case NetMsg::SyncData: return "sync data"; case NetMsg::SyncDone: return "sync done";
         default: return "?";
     }
@@ -544,6 +544,7 @@ bool ParseAny(const std::vector<uint8_t>& b) {
         case NetMsg::UseItem: { MsgUseItem m; return NetRead(r, m); }
         case NetMsg::BedUse: { MsgBedUse m; return NetRead(r, m); }
         case NetMsg::Graves: { MsgGraves m; return NetRead(r, m); }
+        case NetMsg::QuestBook: { MsgQuestBook m; return NetRead(r, m); }
         default: return false;
     }
 }
@@ -691,6 +692,8 @@ bool NetProto_Test() {
         check(RoundTrip(ba, bb, &s6) && bb.body == "terra" && bb.plot == 7 && bb.cell[0] == -3 && bb.cell[1] == 12 && bb.cell[2] == 40, "bed use"); samples.push_back(s6);
         MsgGraves ga, gb; ga.graves.push_back({ 7, "terra", DVec3{ 1.5, 60000.25, -3.0 }, "victim", "victim's grave 7", 2, 1795000000 }); std::vector<uint8_t> s7;
         check(RoundTrip(ga, gb, &s7) && gb.graves.size() == 1 && gb.graves[0].id == 7 && gb.graves[0].owner == "victim" && gb.graves[0].style == 2 && gb.graves[0].diedAt == 1795000000 && fabs(gb.graves[0].local.y - 60000.25) < 1e-6, "graves"); samples.push_back(s7);
+        MsgQuestBook qa{ 3, "quest 2\nside_done e0f\nquest_count eat 1.00\n" }, qb; std::vector<uint8_t> s8;
+        check(RoundTrip(qa, qb, &s8) && qb.team == 3 && qb.text == qa.text, "quest book"); samples.push_back(s8);
     }
     { MsgRoster a, b; a.players = { { 1, "alice" }, { 7, "bob" } }; std::vector<uint8_t> s; check(RoundTrip(a, b, &s) && b.players.size() == 2 && b.players[1].session == 7 && b.players[1].name == "bob", "roster"); samples.push_back(s); }
     { MsgLoadout a{ 3, "stone_pickaxe", true, 2, 0xD04A2Fu }, b; std::vector<uint8_t> s; check(RoundTrip(a, b, &s) && b.session == 3 && b.held == "stone_pickaxe" && b.headlamp && b.suitTier == 2 && b.suitColor == 0xD04A2Fu, "loadout"); samples.push_back(s); }
@@ -807,3 +810,5 @@ bool NetRead(NetReader& r, MsgGraves& m) {
     }
     return Done(r);
 }
+void NetWrite(NetWriter& w, const MsgQuestBook& m) { Id(w, NetMsg::QuestBook); w.u32(m.team); w.str(m.text.substr(0, 65536)); }
+bool NetRead(NetReader& r, MsgQuestBook& m) { m.team = r.u32(); m.text = r.str(65536); return Done(r); }

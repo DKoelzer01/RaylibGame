@@ -5,6 +5,10 @@
 #include <cstdio>
 #include <functional>
 #include <string>
+#include <map>
+#include <set>
+#include <unordered_map>
+#include <utility>
 #include <raylib.h>
 
 class Scene;
@@ -101,6 +105,28 @@ const char* Survival_BiomeName();   // the biome where the player stands ("" off
 void Objectives_Update(Scene& world);
 void Objectives_DrawHUD();
 // Quest book (tiers.txt): current tier, advanced when its gate item is made or placed.
+// One quest book's progress (#338): single player has one (the local game's); a server keeps one per team (quests and tiers
+// belong to teams, user 2026-11-16 on #303). Every QuestBook_* / QuestTree_* call works on the selected book.
+struct QuestBookState {
+    int tier = 0;
+    std::set<std::string> placed;                    // items placed ("place" tasks, tier gates)
+    std::set<int> visitedBodies;
+    bool reachedOrbit = false, visitedMoon = false, visitedRing = false;
+    std::map<std::string, double> counts;            // events for "do" tasks: eat, feed, penned, till, plant, harvest, ...
+    std::set<std::pair<int, int>> tasksDone;         // main line: (tier, task)
+    std::set<std::string> treeDone;                  // side lines: node ids (questtree.cpp)
+    // "get" tasks count what was obtained. The local book reads the local inventory's totals (saved with them, as before);
+    // a team book keeps its own, the sum of what its members obtained on the server.
+    bool ownObtained = false;
+    std::unordered_map<std::string, double> obtained;
+};
+QuestBookState& QuestBook_LocalState();
+void QuestBook_Select(QuestBookState* book);         // nullptr: the local one again
+QuestBookState& QuestBook_Selected();
+// Rewards and announcements (#816): unset, a finished side-line node pays the local inventory and toasts; a server sets
+// these while it evaluates a team's book (the completing player is paid through Host_Give; the team hears the news).
+inline std::function<void(const std::string& item, int count)> gQuestReward;
+inline std::function<void(const std::string& text)> gQuestNews;
 void QuestBook_Update();
 void QuestBook_NotePlaced(const std::string& item);
 // Events counted for "do <event> <n>" tasks (eat, feed, penned, till, plant, harvest, waypoint, modules, explored).
