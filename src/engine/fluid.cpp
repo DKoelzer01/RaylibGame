@@ -64,7 +64,16 @@ constexpr double kTickSeconds = 0.025; // a tick (a job + meshes) every 25 ms: w
 constexpr float kGpuSubstepSeconds = 0.05f / (2 * kSubsteps); // the GPU runs twice the CPU's substeps: 120 a second (GpuTick)
 // Smaller cells take shorter substeps (W4c #642): a cell gives at most what it holds a substep, so a quarter-metre surface
 // cell capped a deep channel at ~4 m/s with 120 a second. 1 at 1 m, 4 at 0.25 m.
-inline int SubstepScale() { return std::max(1, (int)lroundf(1.0f / WaterField::CellSize())); }
+inline int SubstepScale() {
+    // The column model (#680) moves a run's top two cells a pair a substep, at any speed the limiter allows: it needs no
+    // extra substeps at small cells (the gravity-wave limit, cs / sqrt(g h), is ~56 ms for 2 m of water at 0.25 m). At
+    // 0.25 m one scale ran a quarter of the work and a dam break's front came closer to Ritter: 0.86x to 10 m (4x the
+    // substeps: 1.50x), conservation exact (#747). RAYLIBGAME_FLUID_SUBSTEP_SCALE=N forces N (A/B).
+    static const int forced = getenv("RAYLIBGAME_FLUID_SUBSTEP_SCALE") ? atoi(getenv("RAYLIBGAME_FLUID_SUBSTEP_SCALE")) : 0;
+    static const bool columns = EnvFlag("FLUID_COLUMNS");
+    if (forced > 0) return forced;
+    return columns ? 1 : std::max(1, (int)lroundf(1.0f / WaterField::CellSize()));
+}
 // How far down a surface cell's column depth looks (the momentum flow's wetted height): ~8 m, at most 32 cells (W4c #642).
 inline int ColumnCells() { return std::clamp((int)lroundf(8.0f / WaterField::CellSize()), 1, 32); }
 // Face-flow friction per kind (#642), from its viscosity (water 5): linear (1/s: a pool's last ripples die out) and
