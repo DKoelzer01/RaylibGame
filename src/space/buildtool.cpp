@@ -7,6 +7,7 @@
 #include "audio.h"
 #include "gamerng.h"
 #include "gameui.h"
+#include "hotbar.h"
 #include "inventory.h"
 #include "player.h"
 #include "terraintool.h"
@@ -449,16 +450,52 @@ void Machine_Update(Scene& world, const PlayerInput& in) {
     if (in.hit(Act::Insert)) {
         // Everything in the inventory the machine might take: fuel for generators, recipe inputs,
         // anything for a chest (the simulation hands back what does not fit).
-        // A chest takes the hand's raw materials only (not tools and machines).
+        // A chest takes everything (#568) but tools and what is on the hotbar, as the chest screen's "Put in all".
         const auto all = inventory.all(); // copy: we remove while walking it
         for (const auto& kv : all) {
             if (kv.second <= 0 || !Factory::Accepts(machineAim.type, kv.first)) continue;
-            if (machineAim.type == PartType::Chest && (kv.first == "telescope" || IsMachineItem(kv.first))) continue;
+            if (machineAim.type == PartType::Chest) {
+                bool bound = false;
+                for (int s = 0; s < Inventory::kHotbar; ++s) bound = bound || Hotbar_Slot(s) == kv.first;
+                if (bound || KindOf(kv.first) == ItemKind::Tool) continue;
+            }
             if (inventory.remove(kv.first, kv.second)) Factory::Insert(machineAim.body, machineAim.plot, machineAim.part, kv.first, kv.second);
         }
         Audio_Play(Sfx::Pickup, 0.4f, 0.8f);
     }
     if (in.hit(Act::Extract)) { Factory::Extract(machineAim.body, machineAim.plot, machineAim.part); Audio_Play(Sfx::Pickup, 0.4f, 1.2f); }
+}
+
+// A ", "-separated item list as lines at most maxW px wide (font size `size`), the first starting with `prefix`; past
+// maxLines the last line ends with "+N more" (#567).
+std::vector<std::string> WrapItemList(const char* prefix, const std::string& list, int maxW, int size, int maxLines) {
+    const auto more = [&](std::string line, int rest) { // drops entries off the end until "+N more" fits
+        for (;;) {
+            const std::string s = line + TextFormat("  +%d more", rest);
+            const size_t cut = line.rfind(", ");
+            if (MeasureText(s.c_str(), size) <= maxW || cut == std::string::npos) return s;
+            line.resize(cut); ++rest;
+        }
+    };
+    std::vector<std::string> entries;
+    for (size_t a = 0; a <= list.size();) {
+        size_t b = list.find(", ", a);
+        if (b == std::string::npos) b = list.size();
+        entries.push_back(list.substr(a, b - a));
+        a = b + 2;
+    }
+    std::vector<std::string> lines;
+    std::string cur = prefix;
+    bool fresh = true; // nothing on `cur` but the prefix or indent
+    for (size_t i = 0; i < entries.size(); ++i) {
+        const std::string next = fresh ? cur + entries[i] : cur + ", " + entries[i];
+        if (fresh || MeasureText(next.c_str(), size) <= maxW) { cur = next; fresh = false; continue; }
+        if ((int)lines.size() + 1 == maxLines) { lines.push_back(more(cur, (int)(entries.size() - i))); return lines; } // full
+        lines.push_back(cur + ",");
+        cur = "    " + entries[i];
+    }
+    lines.push_back(cur);
+    return lines;
 }
 
 void Machine_DrawHUD() {
@@ -477,15 +514,22 @@ void Machine_DrawHUD() {
         return;
     }
     const MachineView v = Factory::View(machineAim.body, machineAim.plot, machineAim.part);
-    const int x = GetScreenWidth() / 2 + 20, y = GetScreenHeight() / 2 + 40;
-    DrawRectangle(x - 8, y - 6, 420, 112, Fade(BLACK, 0.55f));
+    const bool chest = machineAim.type == PartType::Chest;
+    const int x = GetScreenWidth() / 2 + 20, y = GetScreenHeight() / 2 + 40, w = 420;
+    // The item lists ("coal x3200, stone x40, ...", totals per item) wrap inside the panel; past kMaxLines the rest is
+    // counted (#567: a full chest ran off the screen).
+    const std::vector<std::string> in = WrapItemList(chest ? "holds: " : "in: ", v.input, w - 16, 16, 4);
+    const std::vector<std::string> out = chest ? std::vector<std::string>{} : WrapItemList("out: ", v.output, w - 16, 16, 2);
+    const int lines = (int)(in.size() + out.size());
+    DrawRectangle(x - 8, y - 6, w, 72 + 20 * lines, Fade(BLACK, 0.55f));
     DrawText(TextFormat("%s: %s", PartName(machineAim.type), v.valid ? MachineStatusName(v.status) : "..."), x, y, 20, SKYBLUE);
     if (v.duration > 0) {
         DrawRectangle(x, y + 26, 300, 8, Fade(RAYWHITE, 0.2f));
         DrawRectangle(x, y + 26, 300 * v.progress / v.duration, 8, ORANGE);
     }
-    DrawText(TextFormat("in: %s", v.input.c_str()), x, y + 40, 16, RAYWHITE);
-    DrawText(TextFormat("out: %s", v.output.c_str()), x, y + 60, 16, RAYWHITE);
-    if (v.energyMax > 0) DrawText(TextFormat("charge %d / %d EU", v.energy, v.energyMax), x, y + 80, 16, YELLOW);
-    else DrawText("RMB open   I put items in   O take the output", x, y + 80, 16, Fade(RAYWHITE, 0.7f));
+    int ty = y + 40;
+    for (const std::string& l : in) { DrawText(l.c_str(), x, ty, 16, RAYWHITE); ty += 20; }
+    for (const std::string& l : out) { DrawText(l.c_str(), x, ty, 16, RAYWHITE); ty += 20; }
+    if (v.energyMax > 0) DrawText(TextFormat("charge %d / %d EU", v.energy, v.energyMax), x, ty, 16, YELLOW);
+    else DrawText(chest ? "RMB open   I put items in   O take all" : "RMB open   I put items in   O take the output", x, ty, 16, Fade(RAYWHITE, 0.7f));
 }

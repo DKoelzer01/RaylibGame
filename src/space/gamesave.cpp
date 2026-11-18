@@ -27,6 +27,8 @@
 #include <algorithm>
 #include <cstring>
 
+static int savedCols = 9; // the loading save's inventory width (inv_cols; older saves: 9) (#495)
+
 void GameSave_Register() {
     saveExtrasHook = [](FILE* f) {
         NetId_Save(f); // first: loads allocate ids for lines from older saves after it (#317)
@@ -35,6 +37,7 @@ void GameSave_Register() {
                 player.forward.x, player.forward.y, player.forward.z, player.flyMode ? 1 : 0, player.jetpackFuel);
         fprintf(f, "player_up %f %f %f\n", player.up.x, player.up.y, player.up.z);
         fprintf(f, "player_vel %f %f %f\n", player.velocity.x, player.velocity.y, player.velocity.z);
+        fprintf(f, "inv_cols %d\n", Inventory::kCols); // before the slots: older saves (no line) had 9 columns (#495)
         for (int i = 0; i < Inventory::kCells; ++i) { // with the off hand (#165)
             const InvSlot& s = inventory.grid()[i];
             if (!s.empty()) fprintf(f, "slot %d %s %lld\n", i, s.id.c_str(), (long long)s.centi);
@@ -73,6 +76,7 @@ void GameSave_Register() {
         ToolWear_Reset();
         RecipeBook_Reset();
         Combat_Reset(); // graves: the save holds them all (#165)
+        savedCols = 9;  // a save without an inv_cols line: the 9-wide grid (#495)
         worldDifficulty = 1; // a save without the line: normal
         char tok[64] = {};
         while (fscanf(f, " %63s", tok) == 1 && strcmp(tok, "end_extras") != 0) {
@@ -120,11 +124,15 @@ void GameSave_Register() {
             } else if (strcmp(tok, "survival") == 0) {
                 fscanf(f, " %f %f %f %d", &survival.oxygen, &survival.power, &survival.health, &survival.deaths);
                 survival.dead = false;
+            } else if (strcmp(tok, "inv_cols") == 0) {
+                if (fscanf(f, " %d", &savedCols) != 1) savedCols = 9;
             } else if (strcmp(tok, "slot") == 0) {
                 char id[64] = {};
                 int i = 0;
                 long long c = 0;
-                if (fscanf(f, " %d %63s %lld", &i, id, &c) == 3 && i >= 0 && i < Inventory::kCells && c > 0 && itemDB.find(id)) {
+                const bool read = fscanf(f, " %d %63s %lld", &i, id, &c) == 3;
+                i = Inventory::SavedCell(i, savedCols); // a 9-wide save: its hotbar and off hand move up (#495)
+                if (read && i >= 0 && i < Inventory::kCells && c > 0 && itemDB.find(id)) {
                     InvSlot& s = inventory.grid()[i];
                     if (s.empty()) { s.id = id; s.centi = c; } else { ++inventory.muted; inventory.addAmount(id, c / 100.0); --inventory.muted; } // no pickup feed for a load (#208)
                 }
