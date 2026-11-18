@@ -7,6 +7,7 @@
 #include <random>
 #include <chrono>
 #include <thread>
+#include <filesystem>
 #include <array>
 #include "terrainarena.h"
 #include "envflag.h"
@@ -105,6 +106,7 @@ static NetClient gJoin;
 static bool gJoinSynced = false;
 #include "mpbots.h"
 #include "netinterest.h"
+#include "serverconsole.h"
 #include "worldgenparams.h"
 
 #if defined(PLATFORM_DESKTOP)
@@ -492,6 +494,7 @@ int main(int argc, char** argv)
     int benchMpBots = 0;           // --test-mp-bots N (#347): with --host, N bot clients join, ping and churn
     bool seedGiven = false;        // --seed N was passed (a --host new world: else a random seed)
     double autosaveMinutes = kDefaultAutosaveMinutes; // --autosave-minutes N (--host; 0 = off)
+    bool serverMode = false; ServerConfig serverCfg; // --server [server.cfg] (#326): --host from a config file, with a console and a log
     unsigned hostSaveSeed = 0;     // the seed an existing --host save holds
     bool hostNewWorld = false;     // --host: the save did not exist yet
     bool benchHeadless = false;    // --test-headless (#311): the sim runs with --headless, nothing drawn
@@ -736,6 +739,19 @@ int main(int argc, char** argv)
         if (std::string(argv[i]) == "--test-net-move") benchNetMove = true;
         if (std::string(argv[i]) == "--test-mp-bots" && i + 1 < argc) benchMpBots = std::max(1, atoi(argv[i + 1]));
         if (std::string(argv[i]) == "--seed") seedGiven = true;
+        if (std::string(argv[i]) == "--server") { // (#326) the config first; flags after it override
+            const std::string cfgPath = i + 1 < argc && strncmp(argv[i + 1], "--", 2) != 0 ? argv[i + 1] : "server.cfg";
+            std::string err;
+            if (!ServerConfig_Load(cfgPath, serverCfg, err)) { printf("server: %s\n", err.c_str()); return 1; }
+            serverMode = true;
+            hostSave = serverCfg.save; hostPort = (uint16_t)serverCfg.port; autosaveMinutes = serverCfg.autosaveMinutes;
+            Host_SetPassword(serverCfg.password); Host_SetMaxPlayers(serverCfg.maxPlayers);
+            if (serverCfg.seed != 0) { worldGen.seed = serverCfg.seed; seedGiven = true; }
+            std::error_code ec; if (std::filesystem::path(hostSave).has_parent_path()) std::filesystem::create_directories(std::filesystem::path(hostSave).parent_path(), ec);
+            ServerLog_Start(serverCfg.log);
+            printf("server: config %s: save %s, port %d, max players %d, password %s, autosave %g min%s%s\n", cfgPath.c_str(), hostSave.c_str(), serverCfg.port,
+                   serverCfg.maxPlayers, serverCfg.password.empty() ? "none" : "set", serverCfg.autosaveMinutes, serverCfg.motd.empty() ? "" : ", motd: ", serverCfg.motd.c_str());
+        }
         if (std::string(argv[i]) == "--autosave-minutes" && i + 1 < argc) autosaveMinutes = atof(argv[i + 1]);
         if (std::string(argv[i]) == "--nocull") frustumCullingEnabled = false;
         if (std::string(argv[i]) == "--overlay") startWithOverlay = true;
@@ -1679,6 +1695,7 @@ int main(int argc, char** argv)
         printf("host: autosave %s\n", autosaveMinutes > 0.0 ? TextFormat("every %g minutes, and on shutdown", autosaveMinutes) : "off (still on shutdown)");
         Host_Start(hostPort, status);
         printf("host: %s\n", status.c_str());
+        if (serverMode) { ServerConsole_Start(); ServerShutdown_Install(); printf("server: ready. Console commands: help, status, list, save, say <text>, kick <name> [reason], stop\n"); }
     }
     if (bench) {
         gameState = benchMenus ? 0 : 1; // --test-menus: from the title screen
@@ -8950,6 +8967,24 @@ int main(int argc, char** argv)
             if (!loading) Trapping_Update(world); // snares (#176)
             if (!loading) Events_Update(world, frameDt); // meteor showers (#177)
             if (!hostSave.empty()) Host_Update(world); // --host (#311): answer joins
+            if (serverMode) { // --server (#326): console commands, and a requested shutdown (stop, Ctrl+C, close, SIGTERM)
+                std::string line;
+                while (ServerConsole_Next(line)) {
+                    std::istringstream in(line); std::string cmd; in >> cmd;
+                    std::string rest; std::getline(in, rest); if (!rest.empty() && rest[0] == ' ') rest.erase(0, 1);
+                    if (cmd == "help") printf("server: commands: help, status, list, save, say <text>, kick <name> [reason], stop\n");
+                    else if (cmd == "status") printf("server: %d player(s) online of %d, %d joins; world time %.0f s; %d FPS; save %s; %d autosaves\n", Host_OnlinePlayers(),
+                                                     serverCfg.maxPlayers, Host_Joins(), WorldTime(), GetFPS(), hostSave.c_str(), Host_Autosaves());
+                    else if (cmd == "list") printf("server: %d player(s) online\n", Host_OnlinePlayers());
+                    else if (cmd == "save") { const bool ok = SaveWorld(world); printf("server: saved to %s %s\n", WorldSavePath(), ok ? "done" : "FAILED"); }
+                    else if (cmd == "say") printf("server: [server] %s\n", rest.c_str());
+                    else if (cmd == "kick") printf("server: kick is not wired yet (#326 follow-up)\n");
+                    else if (cmd == "stop") ServerShutdown_Request("the stop command");
+                    else printf("server: unknown command '%s' (help lists them)\n", cmd.c_str());
+                }
+                const char* why = "";
+                if (ServerShutdown_Requested(&why) && windowKeepAlive) { printf("server: stopping (%s): saving the world...\n", why); windowKeepAlive = false; }
+            }
             if (!joinAddr.empty()) { // --join (#341 core): the server's messages; the player starts at its first own state
                 NetClient_Update(gJoin);
                 if (!gJoinSynced && gJoin.state == NetClient::State::Joined && gJoin.haveOwn && !loading)
@@ -10447,6 +10482,7 @@ int main(int argc, char** argv)
     Audio_Shutdown();
     Factory::Stop();
     Host_Stop();
+    if (serverMode) { printf("server: stopped\n"); ServerShutdown_Done(); }
     CloseWindow();
 }
 
