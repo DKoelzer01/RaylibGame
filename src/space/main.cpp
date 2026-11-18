@@ -10115,7 +10115,7 @@ int main(int argc, char** argv)
             static int ph = 0; static double t0 = 0.0; static long long stepped = 0;
             static bool malloryKicked = false, eveFlew = false, aliceOk = true, rejoinWalked = false;
             static int eveStates = 0; static DVec3 aStart{}, rStart{};
-            const char* addr = TextFormat("127.0.0.1:%d", hostPort);
+            const std::string addrS = TextFormat("127.0.0.1:%d", hostPort); const char* addr = addrS.c_str(); // (a copy: TextFormat's buffers are reused)
             if (!Host_Listening()) { printf("bench: net abuse: needs --host with ENABLE_GNS -> SKIP\n"); benchNetAbuse = false; }
             else {
                 for (NetClient* c : { &alice, &mallory, &eve }) NetClient_Update(*c);
@@ -10160,12 +10160,38 @@ int main(int argc, char** argv)
                         ph = 6;
                     }
                 }
+                // Names and chat (#349): a name with a newline is refused; "ALICE" while alice plays is the same name (refused);
+                // alice's "hi<newline>there" reaches eve as "hi there". With RAYLIBGAME_MAX_PER_ADDRESS set (loopback counts then),
+                // connections past it from this address are refused.
+                static NetClient badName, upper; static std::vector<std::unique_ptr<NetClient>> extras;
+                static bool badRefused = false, upperRefused = false, chatClean = false; static int extrasRefused = 0;
+                const bool capTest = getenv("RAYLIBGAME_MAX_PER_ADDRESS") != nullptr;
                 if (ph == 6) {
-                    const bool ok = malloryKicked && aliceOk && !eveFlew && eveStates > 30 && rejoinWalked && Host_GuardKicks() >= 1;
+                    NetClient_Connect(badName, addr, "bad\nname"); NetClient_Connect(upper, addr, "ALICE");
+                    NetClient_SendChat(alice, "hi\nthere");
+                    if (capTest) for (int i = 0; i < 8; ++i) { extras.push_back(std::make_unique<NetClient>()); NetClient_Connect(*extras.back(), addr, "x" + std::to_string(i)); }
+                    ph = 7; t0 = GetTime();
+                } else if (ph == 7) {
+                    NetClient_Update(badName); NetClient_Update(upper); for (auto& x : extras) NetClient_Update(*x);
+                    stepAll(false);
+                    badRefused = badName.state == NetClient::State::Rejected && badName.reject.reason == NetReject::Malformed;
+                    upperRefused = upper.state == NetClient::State::Rejected && upper.reject.reason == NetReject::NameTaken;
+                    for (const MsgChat& c : eve.chat) chatClean = chatClean || c.text == "hi there";
+                    extrasRefused = 0; for (auto& x : extras) extrasRefused += x->state == NetClient::State::Rejected && x->reject.reason == NetReject::Full;
+                    if ((badRefused && upperRefused && chatClean && (!capTest || extrasRefused > 0)) || GetTime() - t0 > 8.0) ph = 8;
+                }
+                if (ph == 8) {
+                    const bool ok = malloryKicked && aliceOk && !eveFlew && eveStates > 30 && rejoinWalked && Host_GuardKicks() >= 1 &&
+                                    badRefused && upperRefused && chatClean && (!capTest || extrasRefused > 0);
                     printf("bench: net abuse (#349): mallory (chat flood, garbage, oversized) kicked %d; %d messages dropped, %d kicks; alice stayed joined %d; "
-                           "eve's server player flew %d (%d states, #781); alice rejoined and walked %d (#780) -> %s\n",
-                           (int)malloryKicked, Host_GuardDropped(), Host_GuardKicks(), (int)aliceOk, (int)eveFlew, eveStates, (int)rejoinWalked, ok ? "PASS" : "FAIL");
-                    for (NetClient* c : { &alice, &mallory, &eve }) NetClient_Disconnect(*c);
+                           "eve's server player flew %d (%d states, #781); alice rejoined and walked %d (#780); a name with a newline refused %d, \"ALICE\" "
+                           "refused as alice %d, chat cleaned %d; %s -> %s\n",
+                           (int)malloryKicked, Host_GuardDropped(), Host_GuardKicks(), (int)aliceOk, (int)eveFlew, eveStates, (int)rejoinWalked,
+                           (int)badRefused, (int)upperRefused, (int)chatClean,
+                           capTest ? TextFormat("%d of 8 extra connections refused (per-address cap)", extrasRefused) : "per-address cap not tested (loopback exempt)", ok ? "PASS" : "FAIL");
+                    for (NetClient* c : { &alice, &mallory, &eve, &badName, &upper }) NetClient_Disconnect(*c);
+                    for (auto& x : extras) printf("bench: net abuse: extra %s: %s (%s)\n", x->name.c_str(), NetClient_StateName(x->state), x->state == NetClient::State::Rejected ? NetRejectText(x->reject.reason) : x->state == NetClient::State::Closed ? NetByeText(x->bye) : "-");
+                    for (auto& x : extras) NetClient_Disconnect(*x);
                     benchNetAbuse = false;
                 }
             }
