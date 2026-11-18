@@ -18,6 +18,7 @@
 #include "plots.h"
 #include "gamerng.h"
 #include "tools.h"
+#include "animals.h"
 #include "inventory.h"
 #include <cmath>
 #include <map>
@@ -150,6 +151,99 @@ namespace {
         s.pitch = asinf(std::clamp(r.forwardLocal.y, -1.0f, 1.0f));
         return s;
     }
+    void SendInventoryDeltas(uint32_t conn, const Inventory& inv, const std::map<std::string, double>& before); // (below)
+    // ---- #334 animals ----
+    // The animals near each client, 10 a second: on its player's body, within kAnimalRange, nearest first, at most
+    // kAnimalsPerClient; and the ones it was sent last time that are gone (died, or out of its range).
+    constexpr int kAnimalEvery = 6;          // sim steps (60 Hz): 10 a second
+    constexpr float kAnimalRange = 200.0f;   // m (they draw to 160)
+    constexpr size_t kAnimalsPerClient = 64;
+    long long lastAnimals = 0;
+    std::unordered_map<uint32_t, std::unordered_set<uint64_t>> animalsSent; // by connection
+    std::unordered_map<uint32_t, double> lastAnimalHit;                     // by session (the cooldown)
+    int animalHits = 0, animalHitsRefused = 0;
+    bool RemoteLocal(const Remote& r, uint64_t& body, Vector3& local, double& scale) {
+        Planetoid* b = r.player.nearest;
+        if (!b) return false;
+        body = b->netId; local = b->toLocalD(r.player.position).toFloat(); scale = b->scale;
+        return true;
+    }
+    void SendAnimals(Scene& world) {
+        if (SimTick() - lastAnimals < kAnimalEvery) return;
+        lastAnimals = SimTick();
+        static std::vector<AnimalNet> all; Animals_CollectNet(world, all);
+        for (const auto& [conn, p] : peers) {
+            if (!p.joined) continue;
+            auto rit = remotes.find(p.session);
+            uint64_t body = 0; Vector3 at{}; double scale = 1.0;
+            if (rit == remotes.end() || !RemoteLocal(rit->second, body, at, scale)) continue;
+            std::vector<std::pair<float, size_t>> near;
+            for (size_t i = 0; i < all.size(); ++i) {
+                if (all[i].body != body) continue;
+                const float d = Vector3Distance(all[i].pos, at) * (float)scale;
+                if (d <= kAnimalRange) near.push_back({ d, i });
+            }
+            std::sort(near.begin(), near.end());
+            if (near.size() > kAnimalsPerClient) near.resize(kAnimalsPerClient);
+            MsgAnimals m; m.tick = (uint32_t)SimTick();
+            std::unordered_set<uint64_t> now;
+            for (const auto& [d, i] : near) {
+                const AnimalNet& a = all[i];
+                m.entries.push_back({ a.netId, a.species, a.body, DVec3(a.pos), a.heading, a.state, a.health, a.age, a.flags });
+                now.insert(a.netId);
+            }
+            std::unordered_set<uint64_t>& was = animalsSent[conn];
+            for (uint64_t id : was) if (!now.count(id)) m.removed.push_back(id);
+            was.swap(now);
+            if (m.entries.empty() && m.removed.empty()) continue;
+            NetWriter w; NetWrite(w, m);
+            Net_Send(conn, w.bytes.data(), (uint32_t)w.bytes.size(), false);
+        }
+    }
+    // Animals live where players are (#318's interest centres: herds spawn and are simulated around each).
+    void SetInterestCentres(Scene&) {
+        gInterestCentres.clear();
+        for (const Session& s : sessions) {
+            if (!s.online) continue;
+            auto rit = remotes.find(s.id);
+            if (rit == remotes.end() || !rit->second.player.nearest) continue;
+            const Planetoid* b = rit->second.player.nearest;
+            gInterestCentres.push_back({ (uint64_t)b->id, b->toLocalD(rit->second.player.position).toFloat() });
+        }
+    }
+    // A client's swing at an animal: the animal must be on its player's body and within reach of the server's player (+ the
+    // distance it may have moved since the client saw it), and the player's swing cooldown spent. The damage is the held
+    // tool's (as in single player); the drops go to that player's inventory.
+    constexpr float kAnimalReach = 4.5f; // m: the 3 m aim, the animal's size, and its motion during the round trip
+    constexpr double kAnimalHitCooldown = 0.25; // s
+    void OnAnimalHit(Scene& world, uint32_t session, uint64_t netId) {
+        auto rit = remotes.find(session);
+        uint64_t body = 0; Vector3 at{}; double scale = 1.0;
+        const int i = Animals_FindNet(netId);
+        if (rit == remotes.end() || i < 0 || !RemoteLocal(rit->second, body, at, scale)) { ++animalHitsRefused; return; }
+        const Planetoid* b = rit->second.player.nearest;
+        if (!b || Animals_Body(i) != b->name || Vector3Distance(Animals_Position(i), at) * (float)scale > kAnimalReach) { ++animalHitsRefused; return; }
+        double& last = lastAnimalHit[session];
+        if (GetTime() - last < kAnimalHitCooldown) { ++animalHitsRefused; return; }
+        last = GetTime();
+        std::string held; for (const Session& s : sessions) if (s.id == session) held = s.loadout.held;
+        const ToolSpec t = ToolOf(held);
+        const float damage = t.type == ToolType::Hands ? 2.0f : 3.0f + 3.0f * t.tier;
+        std::vector<std::pair<std::string, int>> drops;
+        ++animalHits;
+        if (Animals_HitNet(netId, damage, drops)) {
+            // The drops into the hunter's inventory as the server keeps it, and the change to its client in one go (UI/UX's pattern).
+            Remote& rm = rit->second;
+            std::map<std::string, double> before;
+            for (const auto& [item, n] : drops) before[item] = rm.inventory.amount(item);
+            std::string got;
+            for (const auto& [item, n] : drops) { rm.inventory.add(item, n); got += TextFormat(" +%d %s", n, item.c_str()); }
+            for (const Session& s : sessions) if (s.id == session && s.online && s.conn) SendInventoryDeltas(s.conn, rm.inventory, before);
+            printf("host: session %u felled animal %llx:%s\n", session, (unsigned long long)netId, got.c_str());
+        }
+        (void)world;
+    }
+
     // #769 delta snapshots, per client: what each snapshot carried (to turn acks into bases), and per player the newest
     // state the client acknowledged (seq, state).
     constexpr uint32_t kDeltaRing = 64, kDeltaMaxAge = 48, kDeltaResync = 45; // snapshots (30 a second)
@@ -268,6 +362,7 @@ namespace {
         const bool wasJoined = it->second.joined;
         Interest_Forget(conn); // (#340) its accumulators
         deltas.erase(conn);    // (#769) its snapshot bases
+        animalsSent.erase(conn); // (#334) the animals it was sent
         peers.erase(it);
         Net_Close(conn);
         if (wasJoined) SendRoster(); // the others see them go
@@ -594,6 +689,12 @@ namespace {
                     }
                 return;
             }
+            case NetMsg::AnimalHit: { // (#334) a swing at an animal: checked and applied here
+                MsgAnimalHit h;
+                if (!it->second.joined || !NetRead(r, h)) return;
+                OnAnimalHit(world, it->second.session, h.netId);
+                return;
+            }
             case NetMsg::Chat: { // (#326) a player's line: the server's handler (commands, logging), else to everyone
                 MsgChat c;
                 if (!it->second.joined || !NetRead(r, c) || c.text.empty()) return;
@@ -676,6 +777,8 @@ void Host_Update(Scene& world) {
     StepRemotes(world);
     GpuTimer_CpuMark("host: remote players");
     SendSnapshots(world);
+    SendAnimals(world);   // (#334) and the animals near each player
+    SetInterestCentres(world); // (#334) and animals live around every player (#318's centres)
     GpuTimer_CpuMark("host: snapshots");
 }
 
