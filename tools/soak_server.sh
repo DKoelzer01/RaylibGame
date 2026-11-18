@@ -3,7 +3,8 @@
 # lag and loss, so each round trip is ~2 x LAG_MS. The host measures while all N bots (+ the swarm's standing player) are
 # online: frame work time (mean/p99/max), the per-system CPU breakdown, traffic per client; this script adds the host's
 # peak memory and counts timeouts.
-#   tools/soak_server.sh N [SECONDS]      (default 120 s)   env: EXE (GNS build), PORT, LAG_MS (50), LOSS (2), SAVE_DIR
+#   tools/soak_server.sh N [SECONDS]      (default 120 s)   env: EXE (GNS build), PORT, LAG_MS (50), LOSS (2), SAVE_DIR,
+#   INTEREST (1; 0 = every state to every client, #340 A/B)
 # The host save is kept in SAVE_DIR (default /tmp/raylibgame_soak) so later runs skip the erosion bake.
 # Timing numbers are only meaningful in a quiet window (no other benches or builds).
 set -u
@@ -15,12 +16,12 @@ dir="${SAVE_DIR:-/tmp/raylibgame_soak}"; mkdir -p "$dir"
 win="$(cygpath -m "$dir" 2>/dev/null || echo "$dir")"
 cd "$here"
 SECONDS=0
-RAYLIBGAME_SOAK_PLAYERS=$((n + 1)) RAYLIBGAME_SOAK_SECONDS="$secs" RAYLIBGAME_NET_LAG_MS="$lag" RAYLIBGAME_NET_LOSS="$loss" RAYLIBGAME_NET_SEED=1 \
+RAYLIBGAME_NET_INTEREST="${INTEREST:-1}" RAYLIBGAME_SOAK_PLAYERS=$((n + 1)) RAYLIBGAME_SOAK_SECONDS="$secs" RAYLIBGAME_NET_LAG_MS="$lag" RAYLIBGAME_NET_LOSS="$loss" RAYLIBGAME_NET_SEED=1 \
     "$exe" --host "$win/host.sav" --seed 42 --port "$port" --max-players $((n + 1)) > "$dir/host_$n.log" 2>&1 &
 hp=$!
 # Up: listening and the world streamed in ("World ready in ...").
 until grep -qi "world ready" "$dir/host_$n.log" 2>/dev/null || ! kill -0 "$hp" 2>/dev/null || [ $SECONDS -gt 300 ]; do sleep 2; done
-echo "soak: host up after ${SECONDS} s; $n bots for ${secs} s, ${lag} ms lag each way, ${loss}% loss"
+echo "soak: host up after ${SECONDS} s; $n bots for ${secs} s, ${lag} ms lag each way, ${loss}% loss, interest ${INTEREST:-1}"
 RAYLIBGAME_NET_LAG_MS="$lag" RAYLIBGAME_NET_LOSS="$loss" RAYLIBGAME_NET_SEED=2 \
     timeout $((secs + 400)) "$exe" --join "127.0.0.1:$port" --name observer --bots "$n" --soak "$secs" > "$dir/swarm_$n.log" 2>&1 &
 sp=$!
