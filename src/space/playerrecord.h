@@ -15,6 +15,7 @@
 
 std::string PlayerId_New();                         // a random UUID (version 4)
 std::string PlayerId_Local();                       // this install's player UUID (made and kept in settings on first use)
+std::string PlayerId_FromName(const std::string& name); // a UUID made from a name (tests' clients: the same every run)
 bool PlayerId_Valid(const std::string& id);         // the 8-4-4-4-12 hex form
 std::string PlayerRecord_Dir();                     // <save>.players (beside <save>.regions)
 std::string PlayerRecord_Path(const std::string& uuid);

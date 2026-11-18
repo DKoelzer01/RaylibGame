@@ -16,7 +16,7 @@
 #include <functional>
 #include <vector>
 
-constexpr uint32_t kNetProtocol = 18; // 1 was the text "join" of #311; 5: world time in Welcome and Pong (#339); 6 (unused); 7: world-gen settings in Welcome (#757); 8: terrain edit requests, refusals, inventory deltas (#329); 9: chat (#326); 10: building (#330); 11 is #776's; 12: player snapshots, delta-coded against acked states (#769); 13: animals (#334); 14: animal actions, damage to a player (#334); 15 (unused); 16: server-side survival (#337); 17: the suit colour in the loadout (#341); 18: beds (#800)
+constexpr uint32_t kNetProtocol = 19; // 1 was the text "join" of #311; 5: world time in Welcome and Pong (#339); 6 (unused); 7: world-gen settings in Welcome (#757); 8: terrain edit requests, refusals, inventory deltas (#329); 9: chat (#326); 10: building (#330); 11 is #776's; 12: player snapshots, delta-coded against acked states (#769); 13: animals (#334); 14: animal actions, damage to a player (#334); 15 (unused); 16: server-side survival (#337); 17: the suit colour in the loadout (#341); 18: beds (#800); 19: the player id (UUID) in the hello (#346)
 
 enum class NetMsg : uint8_t {
     Hello = 1,     // client -> server: protocol, build, player name, password
@@ -113,6 +113,7 @@ struct MsgHello {
     std::string build;    // the client's build (kGameVersion's commit): a different build may simulate differently
     std::string name;     // the player's name (IP joins); a reconnect under the same name gets its session back
     std::string password; // "" none
+    std::string uuid;     // (#346) the player's id (a UUID): their record on this server; the name is only what others see
 };
 struct NetServerSettings { uint8_t difficulty = 1; bool pvp = false, claims = false; uint8_t maxPlayers = 8; };
 struct MsgWelcome {

@@ -142,3 +142,16 @@ void Teams_Save(FILE* f, const std::string& localId, const std::function<void(FI
         else if (!t.quests.empty()) { fprintf(f, "team_quests %d\n%s", t.id, t.quests.c_str()); fprintf(f, "team_quests_end\n"); }
     }
 }
+
+std::string PlayerId_FromName(const std::string& name) {
+    // Two FNV-1a 64-bit hashes of the name (different seeds), shaped as a version 4 UUID.
+    auto fnv = [&](uint64_t h) { for (unsigned char c : name) { h ^= c; h *= 1099511628211ull; } return h; };
+    const uint64_t a = fnv(14695981039346656037ull), b = fnv(0x84222325cbf29ce4ull);
+    uint8_t x[16];
+    for (int i = 0; i < 8; ++i) { x[i] = (uint8_t)(a >> (8 * i)); x[8 + i] = (uint8_t)(b >> (8 * i)); }
+    x[6] = (uint8_t)((x[6] & 0x0F) | 0x40); x[8] = (uint8_t)((x[8] & 0x3F) | 0x80);
+    char s[37];
+    snprintf(s, sizeof(s), "%02x%02x%02x%02x-%02x%02x-%02x%02x-%02x%02x-%02x%02x%02x%02x%02x%02x",
+             x[0], x[1], x[2], x[3], x[4], x[5], x[6], x[7], x[8], x[9], x[10], x[11], x[12], x[13], x[14], x[15]);
+    return s;
+}

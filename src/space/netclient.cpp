@@ -1,4 +1,5 @@
 #include "netclient.h"
+#include "playerrecord.h"
 #include "animals.h"
 #include "combat.h"
 #include "survival.h"
@@ -370,7 +371,7 @@ void NetClient_Update(NetClient& c) {
     const double now = GetTime();
     if (c.state == NetClient::State::Connecting) {
         if (Net_IsConnected(c.conn)) {
-            SendMsg(c, MsgHello{ c.protocol, c.build.empty() ? Commit() : c.build, c.name, c.password });
+            SendMsg(c, MsgHello{ c.protocol, c.build.empty() ? Commit() : c.build, c.name, c.password, c.uuid.empty() ? PlayerId_FromName(c.name) : c.uuid });
             c.state = NetClient::State::AwaitingWelcome;
             c.lastHeard = now;
         } else if (now - c.started > kClientConnectTimeout) { c.bye = NetBye::TimedOut; End(c, NetClient::State::Closed); }
