@@ -126,6 +126,9 @@ struct Player {
     void recordFly(Scene& world);
     Planetoid* flyReference(Scene& world, bool& rotate) const;
 
+    // Tests (#768): make every collision-cache entry claim "clear by a kilometre" - a stale cache's worst case. A player
+    // whose physics depends on history would then sink through the ground; the determinism check steps it beside a copy.
+    void poisonCollideCache();
 private:
     // Render interpolation (#315): the feet after the last two steps, local to interpBody; interpSpawns detects teleports.
     uint64_t interpBody = 0;
@@ -159,7 +162,8 @@ private:
     float jumpLock = 0.0f;   // seconds after a jump during which the player cannot re-ground
     bool resolveCollisions(Scene& world, Vector3& feet);
     // #768: per capsule sphere, the last measured terrain surface distance (m) and where it was measured (body-local).
-    // A sphere whose distance, less how far it has moved since, is still beyond its radius + 5 cm can't touch: it is not
+    // Within one update (cleared at its start: physics must not depend on history - client replays and the server must
+    // agree), a sphere whose distance, less how far it has moved since, is still beyond its radius + 5 cm can't touch: it is not
     // measured again (each measurement is 7 density samples). Any edit (a new snapshot) or another body clears it.
     struct CollideCache { Vector3 centre[8]{}; float dist[8]{}; bool valid[8]{}; const void* body = nullptr; const void* edits = nullptr; } collideCache;
     void collideTrunks(Vector3& feet); // tree trunks: vertical capsules on the nearest body

@@ -10135,6 +10135,31 @@ int main(int argc, char** argv)
                            "%.1f density samples per update, %.0f%% of the time in collision\n",
                            benchPlayerCost, updates, GetTime() - t0, perUs, perUs * benchPlayerCost / 1000.0, benchPlayerCost,
                            (double)(Planetoid::densityCalls - dens0) / std::max(1LL, updates), 100.0 * collShare);
+                    // Determinism (#768): physics must be a pure function of state and input (a client's replay and the server's
+                    // step must agree). Each of the first players is copied twice - one keeps its warm collision cache, the
+                    // other's is poisoned (every sphere "clear by a kilometre", as a stale cache would claim) - and both take the
+                    // same 120 steps (walk, turn, a jump, a crouch); positions and velocities must stay bit-identical.
+                    int checked = 0, diverged = 0; double worstGap = 0.0;
+                    for (size_t k = 0; k < std::min<size_t>(4, ps.size()); ++k) {
+                        Player warm = *ps[k], cold = *ps[k];
+                        cold.poisonCollideCache();
+                        bool same = true;
+                        for (int s = 0; s < 120; ++s) {
+                            PlayerInput in; in.enabled = true; in.hold(Act::Forward);
+                            if (s == 30) in.press(Act::Jump);
+                            if (s >= 70 && s < 100) in.hold(Act::Down);
+                            for (Player* q : { &warm, &cold }) {
+                                q->forward = Vector3RotateByAxisAngle(q->forward, q->up, 40.0f * DEG2RAD / 60.0f);
+                                RenderOriginScope frame(world, q->position); q->update(world, in, SimDt());
+                            }
+                            const DVec3 d = warm.position - cold.position;
+                            worstGap = std::max(worstGap, d.length());
+                            if (memcmp(&warm.position, &cold.position, sizeof(DVec3)) != 0 || memcmp(&warm.velocity, &cold.velocity, sizeof(Vector3)) != 0) same = false;
+                        }
+                        ++checked; diverged += same ? 0 : 1;
+                    }
+                    printf("bench: player determinism (#768): %d players stepped 120 times from a warm and a poisoned collision cache: %d diverged (largest gap %.6f m) -> %s\n",
+                           checked, diverged, worstGap, checked > 0 && diverged == 0 ? "PASS" : "FAIL");
                     ps.clear(); benchPlayerCost = 0;
                 }
             }

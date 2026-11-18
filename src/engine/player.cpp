@@ -53,6 +53,9 @@ static Vector3 FeltGravity(Scene& world, Vector3 feet, Planetoid* nearest) {
 }
 void Player::update(Scene& world, const PlayerInput& in, float dt) {
     PROFILE_FUNCTION();
+    // #768: the collision cache lives for one update only. Carried across updates it made the physics depend on history:
+    // a client replaying from a corrected state skipped differently from the server, and predictions drifted.
+    for (bool& v : collideCache.valid) v = false;
     if ((in.hit(Act::Fly) && (flyAllowed || flyMode)) || (flyMode && !flyAllowed)) { // out of creative: F only lands (#531)
         flyMode = !flyMode;
         velocity = { 0, 0, 0 };
@@ -877,4 +880,11 @@ void Player::placeAt(Scene& world, Planetoid& body, Vector3 renderFeet) {
     groundBody = nullptr;
     flyMode = false;
     anchorTo(body);
+}
+
+void Player::poisonCollideCache() {
+    // At the player's own feet (body-local), so the "moved since" term is small and every sphere would be skipped.
+    const Vector3 here = nearest ? nearest->toLocalD(position).toFloat() : Vector3{};
+    for (int si = 0; si < 8; ++si) { collideCache.valid[si] = true; collideCache.dist[si] = 1000.0f; collideCache.centre[si] = here; }
+    collideCache.body = nearest; collideCache.edits = nearest ? nearest->edits.get() : nullptr;
 }
