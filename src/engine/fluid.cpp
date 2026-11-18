@@ -77,6 +77,9 @@ constexpr int kSleepSteps = 120;       // 2 s without change: a brick sleeps
 constexpr int kSettleSteps = 180;      // 3 s window: a brick whose cells all moved less than kSettleDiff in it sleeps (#366)
 // Fill units for 1.6 cm (4 at 1 m, 16 at 0.25 m: in units a quarter-metre cell's resting water never settled, W4c #674).
 const int kSettleDiff = std::max(4, (int)lroundf(0.016f * 255.0f / WaterField::CellSize()));
+// A brick with its levels held is steady flow (kept running) only with a net current of at least this (cm/s, #680); below it,
+// at rest. RAYLIBGAME_STEADY_NET=0: any GPU change counts as flow (the old rule), for A/B.
+const float kSteadyNet = [] { const char* e = getenv("RAYLIBGAME_STEADY_NET"); return e ? (float)atof(e) : 5.0f; }();
 constexpr long long kSteadySampleTicks = 40; // a steady brick is read back once in this many ticks (1 s; staggered by slot, #674)
 constexpr long long kFilmHoldSteps = 300; // 5 s of steps: a brick's films stay drawn this long after it stops moving (#660)
 inline long long FilmHoldSteps() { static const long long h = getenv("RAYLIBGAME_FILM_HOLD") && atoi(getenv("RAYLIBGAME_FILM_HOLD")) == 0 ? 1 : kFilmHoldSteps; return h; } // A/B: =0 no hold
@@ -1010,7 +1013,17 @@ void RunJob() {
                     for (int i = 0; i < B3 && maxd <= 2 * kSettleDiff; ++i) maxd = std::max(maxd, abs((int)b.fill[i] - (int)b.check[i]));
                     // Levels held: at rest it sleeps; with water still passing through (the GPU changed it in half its ticks
                     // or more) it is steady (#674: keeps running, read back once a second). Levels moved: neither.
-                    const bool flowing = b.winTicks > 0 && b.winFlow * 2 >= b.winTicks;
+                    // Passing through means a net current too (#680): at 0.25 m cells resting water jitters a fill unit nearly
+                    // every tick, so "the GPU changed it" held ~140 bricks of a still pond awake as steady flow. The net current
+                    // (the mean of its columns' signed flows, #677's colFlow, cm/s) averages jitter out; a real stream moves
+                    // its columns the same way. No current published yet: the old rule.
+                    bool flowing = b.winTicks > 0 && b.winFlow * 2 >= b.winTicks;
+                    if (flowing && kSteadyNet > 0.0f && !b.colFlow.empty()) {
+                        double sx = 0.0, sy = 0.0; int nCol = 0;
+                        for (size_t k = 0; k + 1 < b.colFlow.size(); k += 2)
+                            if (b.colFlow[k] || b.colFlow[k + 1]) { sx += b.colFlow[k]; sy += b.colFlow[k + 1]; ++nCol; }
+                        flowing = nCol > 0 && sqrt(sx * sx + sy * sy) / nCol >= kSteadyNet;
+                    }
                     // Its volume held too (#680): a big pool draining slowly through a hole (a few mm a second) moved every cell
                     // less than the tolerance and fell asleep over the water it still owed; jitter moves units, not volume.
                     // At most 2 mm over the brick's area.
