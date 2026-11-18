@@ -1270,6 +1270,7 @@ struct GpuState {
     std::vector<std::vector<WatchCell>> watchCells; // per flow watch: its cells as resolved for the last dispatch
 } G;
 int G_Capacity() { return G.capacity; }
+ComputeBuffer gDbgLost; // TEMP #680 (DBGPUVOL): clamp losses in fluid_step.comp's column apply and fluid_delta.comp (binding 14)
 
 // Flow watches (#392): Fluid::FlowAt asks for the flow around a point; GpuTick resolves each to cells, reads their flux
 // every tick and publishes a smoothed value. A watch nobody asked about for 3 s is dropped.
@@ -1445,6 +1446,26 @@ void GpuTick(int n) {
         G.sinkOut.download(units.data(), G.capacity * 4);
         G.sinkOut.upload(zeros.data(), G.capacity * 4);
         creditSinks(units.data(), G.capacity);
+    }
+    // TEMP #680 (DBGPUVOL): the water in every resident slot as the GPU holds it (cells A, downloaded) against the CPU mirror
+    // of the same bricks, once a second: a lagging mirror (steady bricks are read back sparsely, #674) or a real loss.
+    static const bool dbGpuVol = EnvFlag("DBGPUVOL");
+    static int gpuVolTick = 0;
+    if (dbGpuVol && ++gpuVolTick % 40 == 0 && G.capacity > 0) {
+        std::vector<uint32_t> all((size_t)G.capacity * kCellsPerBrick);
+        G.a.download(all.data(), (unsigned)(all.size() * 4));
+        long long gpu = 0, mirror = 0;
+        for (int s = 0; s < G.capacity; ++s) {
+            const Brick* br = G.owner[s];
+            if (!br) continue;
+            for (int k = 0; k < B3; ++k) {
+                const uint32_t c = all[(size_t)s * kCellsPerBrick + k];
+                if (!((c >> 8) & (kSource | kSink | kSolid))) gpu += c & 255u;
+                if (!(br->flags[k] & (kSource | kSink | kSolid))) mirror += br->fill[k];
+            }
+        }
+        const double cv = WaterField::CellVolume() / 255.0;
+        printf("dbgpuvol: GPU %.2f m^3, mirror %.2f m^3 (resident bricks)\n", gpu * cv, mirror * cv);
     }
     // 1. Results of the last dispatch: which bricks changed (and want neighbours), then their cells.
     if (!G.lastList.empty()) {
@@ -1634,8 +1655,13 @@ void GpuTick(int n) {
             G.delta.use();
             G.delta.setUint("count", (unsigned)list.size());
             G.delta.setInt("useGroups", G.groupsOn ? 1 : 0);
-            G.a.bind(0); G.deltas.bind(1); G.flags.bind(2); if (G.groupsOn) G.mask.bind(10); // a change wets its group (#675)
+            G.a.bind(0); G.deltas.bind(1); G.flags.bind(2); G.nbrs.bind(3); if (G.groupsOn) G.mask.bind(10); // a change wets its group (#675)
+            G.delta.setInt("dbgLostOn", gDbgLost.id ? 1 : 0); if (gDbgLost.id) gDbgLost.bind(14); // TEMP #680
+            G.delta.setInt("mode", 0);
             G.delta.dispatch(((unsigned)list.size() + 63) / 64);
+            // What did not fit (the CPU placed it on a mirror a dispatch old) goes up its column, in list order (#680).
+            G.delta.setInt("mode", 1);
+            G.delta.dispatch(1);
             for (const D& dd : list) if (Brick* br = G.owner[dd.cell / kCellsPerBrick]) { if (!br->settled) { br->active = true; br->idle = 0; } } // a settled brick took a CPU nudge (levelling) asleep
         }
     }
@@ -1680,6 +1706,20 @@ void GpuTick(int n) {
     G.step.setInt("columns", G.colOn ? 1 : 0); // the column-pair flow (#680): its passes in fluid_step.comp
     G.step.setInt("advect", advectOn ? 1 : 0);
     if (G.colOn) G.col.bind(13);
+    static const bool dbLost = EnvFlag("DBGPUVOL"); // TEMP #680: the column apply's and the delta shader's clamp losses
+    ComputeBuffer& dbgLost = gDbgLost;
+    if (dbLost && G.colOn) {
+        if (!dbgLost.id) { const int z[4] = { 0, 0, 0, 0 }; dbgLost.create(16, z); }
+        static int dbgLostTick = 0;
+        if (++dbgLostTick % 40 == 0) {
+            int v[4] = {}; dbgLost.download(v, 16);
+            const double cv = WaterField::CellVolume() / 255.0;
+            printf("dbgpulost: clamp over %.3f m^3, under %.3f m^3, net delta %+d units, %d column applies (last 40 ticks)\n", v[0] * cv, v[1] * cv, v[2], v[3]);
+            const int z[4] = { 0, 0, 0, 0 }; dbgLost.upload(z, 16);
+        }
+        dbgLost.bind(14);
+    }
+    G.step.setInt("dbgLostOn", dbLost && G.colOn ? 1 : 0);
     static const bool noEvap = EnvFlag("RAYLIBGAME_FLUID_NOEVAP"); // tests: specks kept (water accounting, #454)
     static unsigned evapTick = 0;
     GpuFlowResolve(); // which bricks the flow watches need this dispatch (#392)

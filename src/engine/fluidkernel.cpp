@@ -481,14 +481,17 @@ struct Pass {
     // A cell's new fill from the column flows: its own delta (clamped), a head's overflow from the cell below, a top's
     // shortfall taken from it when it lies under one.
     int colApply(int gi, uint32_t c, uint32_t& kindOut) const {
-        const int f = (int)F(c), cap = (int)CAP(c);
+        // A cell holding more than its room before this substep keeps it (the GPU twin can find one: a CPU change placed by
+        // a mirror a tick old; clamping it deleted the excess). The overflow passed up counts only what this substep's flows
+        // push past that bound. On the CPU no cell is over its room, so this changes nothing here.
+        const int f = (int)F(c), cap = std::max((int)CAP(c), (int)F(c));
         int nf = std::clamp(f + g.delta[gi], 0, cap);
         bool pb, pa;
         const int bl = stepZ(gi, -1, pb), ab = stepZ(gi, 1, pa);
         // Only processed cells move water (an unprocessed brick's scratch holds whatever it last had: on the GPU slots persist).
         if (bl >= 0 && pb) {
             const uint32_t b = inC[bl];
-            const int over = (int)F(b) + g.delta[bl] - (int)CAP(b);
+            const int over = (int)F(b) + g.delta[bl] - std::max((int)CAP(b), (int)F(b));
             if (over > 0 && !(FL(b) & SOLID)) { if (nf == 0) kindOut = KIND(b); nf += over; }
         }
         if (ab >= 0 && pa) {
