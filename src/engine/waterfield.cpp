@@ -19,8 +19,10 @@ namespace {
 
 }
 
+// The fluid cell edge (m): 0.25 by default (#714, user 2026-11-17: at 1 m a one-block hole in a block dam stayed shut, #709,
+// and a dug trench's rounded edge spilled); RAYLIBGAME_FLUID_CELL=1 is the old 1 m grid, opt-in.
 float CellSize() {
-    static const float c = [] { const char* e = getenv("RAYLIBGAME_FLUID_CELL"); const float v = e ? (float)atof(e) : 1.0f; return v > 0.05f && v <= 4.0f ? v : 1.0f; }();
+    static const float c = [] { const char* e = getenv("RAYLIBGAME_FLUID_CELL"); const float v = e ? (float)atof(e) : 0.25f; return v > 0.05f && v <= 4.0f ? v : 0.25f; }();
     return c;
 }
 

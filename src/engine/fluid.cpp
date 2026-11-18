@@ -134,6 +134,7 @@ struct Brick {
     // once a second, not every tick, and never falls asleep (a steady stream's bricks slept and woke every second, #660).
     bool steady = false;
     int winTicks = 0, winFlow = 0;  // this settle window: ticks published, ticks the GPU changed it
+    float checkVol = 0.0f;          // its water (m^3) at the window's start: a slow drain or fill changes it, jitter does not (#680)
 };
 inline int Cap(const Brick* b, int i) { return 255 - b->shut[i]; }          // what the cell holds (#454)
 inline int Height(const Brick* b, int i) { return b->shut[i] + b->fill[i]; } // where its water stands, in 255ths of the cell
@@ -212,9 +213,17 @@ struct PartSolid {
         for (const PlotSnap& p : plots) {
             if (p.solid.empty() || Vector3DistanceSqr(c, p.centre) > (p.radius + 1.0f) * (p.radius + 1.0f)) continue;
             if (p.cellSolid(c)) return true;
+            // Probes inside the fluid cell, 0.35 of its edge from the centre along the plot's axes (#694: a fixed 0.35 m reached past
+            // 0.25 m cells - water stood off every block face and a 1 m hole in a block dam passed ~9% of its flow).
+            // Cells smaller than a plot cell (0.5 m): solid when a part covers the centre or most of the cell (4 of 6 probes) -
+            // exact enough at that size, and a one-block hole opens. Larger cells: any probe, so a half-block panel or pane stays
+            // watertight; the cost is that a one-block hole half a block off the fluid grid stays shut at 1 m cells.
+            const float cs = WaterField::CellSize(), off = 0.35f * cs;
             const Vector3 ax[3] = { p.east, p.up, p.north };
+            int hits = 0;
             for (const Vector3& a : ax)
-                if (p.cellSolid(Vector3Add(c, Vector3Scale(a, 0.35f))) || p.cellSolid(Vector3Subtract(c, Vector3Scale(a, 0.35f)))) return true;
+                hits += (int)p.cellSolid(Vector3Add(c, Vector3Scale(a, off))) + (int)p.cellSolid(Vector3Subtract(c, Vector3Scale(a, off)));
+            if (hits >= (cs < 0.5f ? 4 : 1)) return true;
         }
         return false;
     }
@@ -971,17 +980,22 @@ void RunJob() {
             // wakes it again (Touch); a real flow changes some cell by more than that within the window.
             if (b.active) {
                 ++b.winTicks;
-                if (b.checkStep < 0) { b.check = b.fill; b.checkStep = stepCount; b.winTicks = b.winFlow = 0; }
+                if (b.checkStep < 0) { b.check = b.fill; b.checkStep = stepCount; b.winTicks = b.winFlow = 0; b.checkVol = b.statVolume + b.statOther; }
                 else if (stepCount - b.checkStep >= kSettleSteps) {
                     int maxd = 0;
                     for (int i = 0; i < B3 && maxd <= 2 * kSettleDiff; ++i) maxd = std::max(maxd, abs((int)b.fill[i] - (int)b.check[i]));
                     // Levels held: at rest it sleeps; with water still passing through (the GPU changed it in half its ticks
                     // or more) it is steady (#674: keeps running, read back once a second). Levels moved: neither.
                     const bool flowing = b.winTicks > 0 && b.winFlow * 2 >= b.winTicks;
-                    if (maxd <= 2 * kSettleDiff && flowing && gpuMode) b.steady = true; // a moving surface wobbles more than a still one
-                    else if (maxd <= kSettleDiff) { b.active = false; b.idle = kSleepSteps + 1; b.settled = true; b.steady = false; out.settledNow = true; }
+                    // Its volume held too (#680): a big pool draining slowly through a hole (a few mm a second) moved every cell
+                    // less than the tolerance and fell asleep over the water it still owed; jitter moves units, not volume.
+                    // At most 2 mm over the brick's area.
+                    const float side = (float)B * WaterField::CellSize();
+                    const bool volumeHeld = fabsf(b.statVolume + b.statOther - b.checkVol) <= 0.002f * side * side;
+                    if (maxd <= 2 * kSettleDiff && flowing && volumeHeld && gpuMode) b.steady = true; // a moving surface wobbles more than a still one
+                    else if (maxd <= kSettleDiff && volumeHeld) { b.active = false; b.idle = kSleepSteps + 1; b.settled = true; b.steady = false; out.settledNow = true; }
                     else b.steady = false;
-                    b.check = b.fill; b.checkStep = stepCount; b.winTicks = b.winFlow = 0;
+                    b.check = b.fill; b.checkStep = stepCount; b.winTicks = b.winFlow = 0; b.checkVol = b.statVolume + b.statOther;
                 }
             } else { b.checkStep = -1; b.steady = false; }
             // The drawn water eases toward the simulated: 40% of the way a tick (25 ms), so a cell the water reaches fills in

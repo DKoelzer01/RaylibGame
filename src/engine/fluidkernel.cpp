@@ -170,7 +170,8 @@ struct Pass {
         const float dh = (float)std::abs(ha - hb) / p.hu;
         float q = std::max(qp * sgn, 0.0f);
         const float speed = q / (p.cellSize * std::max(depth, 0.02f)); // m/s through the face (a cell wide)
-        const float accel = std::abs(ha - hb) >= p.visc[kd] ? p.dt * G * depth * dh : 0.0f;
+        const int gate = colDepth < 0.05f ? p.visc[kd] : 2; // films hold a slight slope; deeper water levels on 2 units (#680)
+        const float accel = std::abs(ha - hb) >= gate ? p.dt * G * depth * dh : 0.0f;
         q = (q + accel) / (1.0f + p.dt * (p.frictionLin[kd] + p.frictionQuad[kd] * speed / std::max(depth, 0.02f)));
         if (accel == 0.0f && q * p.dt * p.units < 0.05f) q = 0.0f;
         qMom = q * sgn;
