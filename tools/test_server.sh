@@ -20,7 +20,8 @@ log = $win/logs/server.log
 EOF
 cd "$here"
 ( until grep -q "server: ready" "$tmp/out.txt" 2>/dev/null || [ $SECONDS -gt 150 ]; do sleep 1; done
-  sleep 2; echo help; echo status; echo list; echo "say hello there"; echo nonsense; echo save; sleep 2; echo stop ) \
+  sleep 2; echo help; echo status; echo list; echo "say hello there"; echo nonsense
+  echo "op Alice"; echo "ban mallory griefing"; echo "whitelist on"; echo ops; echo save; sleep 2; echo stop ) \
     | timeout 180 "$exe" --server "$win/server.cfg" --sandbox > "$tmp/out.txt" 2>&1
 rc=$?
 ok=1
@@ -35,6 +36,10 @@ need "server: saved to .* done" "$tmp/out.txt" "save command"
 need "host: saved on shutdown to .* done" "$tmp/out.txt" "final save on stop"
 need "server: stopped" "$tmp/out.txt" "clean stop"
 need "^\[20[0-9-]* [0-9:]*\] server: ready" "$tmp/logs/server.log" "log file, time-stamped"
+need "server: alice is now an op" "$tmp/out.txt" "op (#345)"
+need "server: mallory is banned (griefing)" "$tmp/out.txt" "ban (#345)"
+need "^ban mallory griefing" "$tmp/world/admin.txt" "admin.txt next to the save (#345)"
+need "console: whitelist on" "$tmp/world/audit.log" "audit log (#345)"
 [ -f "$tmp/world/world.sav" ] && echo "  ok: save on disk" || { echo "  MISSING: save on disk"; ok=0; }
 [ $rc -eq 0 ] && echo "  ok: exit code 0" || { echo "  MISSING: exit code 0 (got $rc)"; ok=0; }
 echo "=== test_server: $([ $ok -eq 1 ] && echo PASS || echo FAIL) ($tmp)"
