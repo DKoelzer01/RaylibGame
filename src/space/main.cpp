@@ -107,6 +107,7 @@ static bool gJoinSynced = false;
 #include "mpbots.h"
 #include "netinterest.h"
 #include "serverconsole.h"
+#include "serveradmin.h"
 #include "worldgenparams.h"
 
 #if defined(PLATFORM_DESKTOP)
@@ -423,6 +424,7 @@ int main(int argc, char** argv)
     // --seed-survey COUNT FIRSTSEED OUTDIR [THREADS] [SUBSET] (#532): how alike different seeds' start planets are. No window.
     if (argc >= 5 && std::string(argv[1]) == "--seed-survey") return SeedSurvey_Run(argc, argv);
     if (argc >= 2 && std::string(argv[1]) == "--test-netproto") return NetProto_Test() ? 0 : 1; // the wire protocol (#320): no window, no world
+    if (argc >= 2 && std::string(argv[1]) == "--test-server-admin") return Admin_Test() ? 0 : 1; // server admin lists (#345): no window, no world
     if (argc >= 2 && std::string(argv[1]) == "--test-net-interest") return Interest_Test() ? 0 : 1; // interest management (#340): no window, no world
     double benchSeconds = 0.0;
     bool startWithOverlay = false;
@@ -1695,6 +1697,10 @@ int main(int argc, char** argv)
         printf("host: autosave %s\n", autosaveMinutes > 0.0 ? TextFormat("every %g minutes, and on shutdown", autosaveMinutes) : "off (still on shutdown)");
         Host_Start(hostPort, status);
         printf("host: %s\n", status.c_str());
+        if (serverMode) { // (#345) the admin lists live next to the save: <save dir>/admin.txt, audit.log
+            const std::filesystem::path saveDir = std::filesystem::path(hostSave).parent_path();
+            Admin_Load(saveDir.empty() ? std::string(".") : saveDir.string());
+        }
         if (serverMode) { ServerConsole_Start(); ServerShutdown_Install(); printf("server: ready. Console commands: help, status, list, save, say <text>, kick <name> [reason], stop\n"); }
     }
     if (bench) {
@@ -8972,7 +8978,11 @@ int main(int argc, char** argv)
                 while (ServerConsole_Next(line)) {
                     std::istringstream in(line); std::string cmd; in >> cmd;
                     std::string rest; std::getline(in, rest); if (!rest.empty() && rest[0] == ' ') rest.erase(0, 1);
-                    if (cmd == "help") printf("server: commands: help, status, list, save, say <text>, kick <name> [reason], stop\n");
+                    std::string adminReply;
+                    if (Admin_Command(line, "console", adminReply)) printf("server: %s\n", adminReply.c_str()); // (#345) op, ban, whitelist ...
+                    else if (cmd == "help") printf("server: commands: help, status, list, save, say <text>, kick <name> [reason], stop; "
+                                                   "admin (#345): owner NAME, op NAME, deop NAME, ops, ban NAME [reason], unban NAME, banip IP [reason], unbanip IP, bans, "
+                                                   "whitelist on|off|add NAME|remove NAME|list\n");
                     else if (cmd == "status") printf("server: %d player(s) online of %d, %d joins; world time %.0f s; %d FPS; save %s; %d autosaves\n", Host_OnlinePlayers(),
                                                      serverCfg.maxPlayers, Host_Joins(), WorldTime(), GetFPS(), hostSave.c_str(), Host_Autosaves());
                     else if (cmd == "list") printf("server: %d player(s) online\n", Host_OnlinePlayers());
