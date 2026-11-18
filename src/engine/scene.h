@@ -81,6 +81,17 @@ class Scene {
         Material depthMaterial{};     // depth shader only
         RenderTexture2D shadowMap{};  // depth-only FBO; shadowMap.depth is the sampled texture
         RenderTexture2D shadowNear{}; // the near cascade (sharp shadows close by)
+        // #138: a wide terrain-only cascade (+-2 km, ~2 m texels) past the far one, so mountains shadow valleys at dawn and
+        // dusk. Read by the terrain shader only (lighting.fs, material slot EMISSION). RAYLIBGAME_WIDE_SHADOWS=0: off.
+        RenderTexture2D shadowWide{};
+        Matrix lightSpaceWide{};
+        float shadowWideHalfExtent = 2000.0f;
+        float shadowWideDistance = 4000.0f; // the light camera back along the sun (depth range twice this)
+        bool wideShadows = true;
+        int wideEvery = 4;          // render it every Nth frame (world-anchored: 2 m texels hardly notice a few frames of spin)
+        int wideFrame = 0;
+        DVec3 wideOrigin{};         // the render origin it was drawn with (the matrix is moved along if the origin shifts)
+        Matrix lightSpaceWideDrawn{};
         Matrix lightSpaceNear = MatrixIdentity();
         float shadowNearHalfExtent = 32.0f; // half-width of the near cascade's box (2048 texels: ~3 cm)
         Matrix lightSpaceMatrix = MatrixIdentity();

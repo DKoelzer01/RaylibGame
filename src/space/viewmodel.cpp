@@ -214,7 +214,22 @@ void Viewmodel_Draw(Scene& world) {
         } else {
             // An item: a small cube of its colour in the hand.
             const ItemDef* def = itemDB.find(held);
-            Box(local({ 0, 0.07f, -0.08f }, { 10, 20, 0 }), { 0.11f, 0.11f, 0.11f }, def ? def->color : GRAY, light);
+            Color col = def ? def->color : GRAY;
+            float lit = light;
+            // A hot (or radioactive) stack glows (#580): its colour pulled toward the glow, lit by itself.
+            const int sel = Hotbar_Selected();
+            if (sel >= 0) {
+                const InvSlot& cell = inventory.grid()[Inventory::kGrid + sel];
+                if (cell.id == held) {
+                    const ItemGlow g = Item_Glow(cell);
+                    if (g.strength > 0.0f) {
+                        const float k = g.strength;
+                        col = { (unsigned char)(col.r + (g.color.r - col.r) * k), (unsigned char)(col.g + (g.color.g - col.g) * k), (unsigned char)(col.b + (g.color.b - col.b) * k), 255 };
+                        lit = std::max(light, 0.35f + 0.65f * k);
+                    }
+                }
+            }
+            Box(local({ 0, 0.07f, -0.08f }, { 10, 20, 0 }), { 0.11f, 0.11f, 0.11f }, col, lit);
         }
     } else {
         // A tool: a wooden handle rising nearly upright out of the fist (leaning a little forward and

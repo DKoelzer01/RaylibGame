@@ -42,7 +42,7 @@ boiler          | Steam boiler    |  20 | 160,110, 60 | Burns fuel for steam pow
 forge_hammer    | Forge hammer    |  20 | 150,120, 70 | Steam: hammers ingots into plates.
 alloy_smelter   | Alloy smelter   |  20 | 170,110, 70 | Steam: alloys copper and tin into bronze.
 steam_macerator | Steam macerator |  20 | 140,120, 90 | Steam: crushes ore into dust and stone into sand.
-chest           | Chest           |  20 | 150,105, 60 | Storage for 16 stacks (build part).
+chest           | Chest           |  20 | 150,105, 60 | Storage for 50 stacks of anything (build part).
 generator       | LV generator    |  20 | 180, 60, 45 | Burns fuel for LV power (32 V).
 electric_furnace| Electric furnace|  20 |  95, 92, 88 | LV: smelts quickly on power.
 macerator       | Macerator       |  20 |  70,110,150 | LV: crushes ore into twice the dust.

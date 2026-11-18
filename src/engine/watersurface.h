@@ -49,6 +49,8 @@ private:
 };
 
 void Clear();               // a new world or a load
+// Drops the cached tiles (every level of detail) within radius m of dir (a unit direction): the river flow changed there (#656).
+void Invalidate(const PlanetField& pf, Vector3 dir, float radius);
 long long CacheBytes();     // benches
 long long TilesBuilt();     // benches: tiles computed since the start (empty ones too)
 

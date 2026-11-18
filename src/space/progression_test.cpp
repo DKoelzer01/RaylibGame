@@ -60,7 +60,7 @@ namespace {
     }
 
     // Like a player putting building stone, logs and gems in a chest: digging and chopping now give
-    // those too (M21, M22), and a full 45-slot grid refuses a craft's output.
+    // those too (M21, M22), and a full grid refuses a craft's output.
     void Stash() {
         static const char* kStash[] = { "granite", "basalt", "sandstone", "limestone", "marble",
                                         "quartz", "amethyst", "ruby", "sapphire", "emerald", "grain_seeds", "root_seeds", "flax_seeds", "berries" };
