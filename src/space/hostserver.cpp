@@ -101,6 +101,7 @@ namespace {
         double editTokens = 2.0, editTokensAt = -1.0;
         double partTokens = 4.0, partTokensAt = -1.0; // building (#330): placing and breaking, a few a second
         PlayerRecordMeta record;    // (#346) their record's id, name, times, and the lines the server keeps as text
+        bool creative = false;        // (#823) /gamemode creative (ops): building, digging and placing cost nothing; it may fly
         double joinedAt = 0.0;      // (play time, added at the next write)
     };
     std::unordered_map<uint32_t, Remote> remotes;      // by session
@@ -363,7 +364,7 @@ namespace {
             MsgVitals v;
             v.health = sv.health; v.food = sv.food; v.oxygen = sv.oxygen; v.power = sv.power; v.temperature = sv.temperature;
             v.flags = (uint8_t)((sv.dead ? 1 : 0) | (sv.breathable ? 2 : 0) | (sv.inVacuum ? 4 : 0) | (sv.underwater ? 8 : 0) | (sv.inLifeSupport ? 16 : 0) |
-                                (SimTime() < sv.sickUntil ? 32 : 0) | (sv.headlamp ? 64 : 0));
+                                (SimTime() < sv.sickUntil ? 32 : 0) | (sv.headlamp ? 64 : 0) | (rit->second.creative ? 128 : 0)); // 128: creative (#823)
             v.deaths = (uint16_t)std::min(sv.deaths, 65535);
             NetWriter w; NetWrite(w, v);
             Net_Send(conn, w.bytes.data(), (uint32_t)w.bytes.size(), false);
@@ -795,7 +796,7 @@ namespace {
             const int paint = TerrainTool_FillerMaterial(q.item);
             if (paint < 0) { RefuseEdit(conn, q.seq, NetEditRefusal::Shape); return; }
             before.emplace(q.item, rm.inventory.amount(q.item));
-            if (!rm.inventory.removeAmount(q.item, 1.0)) { RefuseEdit(conn, q.seq, NetEditRefusal::Cost); return; }
+            if (!rm.creative && !rm.inventory.removeAmount(q.item, 1.0)) { RefuseEdit(conn, q.seq, NetEditRefusal::Cost); return; } // (#823) free in creative
             e.strength = 0.6f; e.paint = paint;
             out.strength = e.strength; out.paint = (int8_t)paint;
         }
@@ -869,7 +870,7 @@ namespace {
             if (!InBuildReach(world, rm, q.body, at, p->scale)) { RefusePart(conn, q.seq, NetPartRefusal::Reach); return; }
             const char* item = PartItem(part);
             const int cost = PartCostCount(part.type);
-            if (rm.inventory.count(item) < cost) { RefusePart(conn, q.seq, NetPartRefusal::Cost); return; }
+            if (!rm.creative && rm.inventory.count(item) < cost) { RefusePart(conn, q.seq, NetPartRefusal::Cost); return; } // (#823) free in creative
             if (!plot) { // a new plot, made here first (the clients make the same one from the same id and anchor)
                 if (!p->plots) p->plots = std::make_unique<PlotSet>();
                 plot = p->plots->plotFor(anchor, 0.0f, true);
@@ -878,7 +879,7 @@ namespace {
                 SendToJoined(made);
             }
             before.emplace(item, rm.inventory.amount(item));
-            rm.inventory.remove(item, cost);
+            if (!rm.creative) rm.inventory.remove(item, cost);
             BuildTool_ApplyPart(*p, *plot, part);
             if (IsMachine(part.type) || IsRocketPart(part.type)) TeamEvent(session, "placed", PartCostItem(part.type)); // (#338) "place" tasks
             MsgPlotEdit out; out.session = session; out.seq = q.seq; out.op = NetPartOp::Place; out.body = q.body; out.plot = plot->id; out.part = q.part;
@@ -1136,11 +1137,13 @@ namespace {
                     QuestBookState& book = TeamQuests_Book(team);
                     QuestBook_Select(&book); unlocked = RecipeBook_Unlocked(rc); QuestBook_Select(nullptr);
                 }
+                if (rit->second.creative) unlocked = true; // (#823) creative: every recipe, free
                 if (!unlocked) { SendMsg(m.conn, MsgChat{ 0, "Your team hasn't unlocked " + rc.output + " yet" }); return; }
                 Inventory& inv = rit->second.inventory;
                 const auto before = AllAmounts(inv);
                 int made = 0;
-                while (made < q.count && inv.canCraft(rc) && inv.craft(rc)) ++made; // the output counts for the team (inventory.onAdded)
+                if (rit->second.creative) { for (; made < q.count; ++made) inv.addAmount(rc.output, rc.outputCount); } // (#823) creative: free
+                else while (made < q.count && inv.canCraft(rc) && inv.craft(rc)) ++made; // the output counts for the team (inventory.onAdded)
                 if (made > 0) SendChangedItems(m.conn, inv, before);
                 if (made < q.count) SendMsg(m.conn, MsgChat{ 0, made ? TextFormat("Crafted %d of %d: not enough for more", made, (int)q.count) : std::string("Missing items for ") + rc.output });
                 crafts += made;
@@ -1371,4 +1374,19 @@ bool Host_ForgetPlayers() {
     for (const Session& s : sessions) if (s.online) return false;
     sessions.clear(); remotes.clear();
     return true;
+}
+
+// ---- Game mode (#823): /gamemode by an op ----
+bool Host_SetCreative(const std::string& name, bool on) {
+    for (const Session& s : sessions) {
+        if (!s.online || !SameName(s.name, name)) continue;
+        auto it = remotes.find(s.id);
+        if (it == remotes.end()) return false;
+        it->second.creative = on;
+        it->second.player.flyAllowed = on; // (#781: flying only for creative players, whom ops set)
+        if (!on) it->second.player.flyMode = false;
+        lastVitals = 0; // (its client hears at once, with the next vitals)
+        return true;
+    }
+    return false;
 }

@@ -1,5 +1,7 @@
 #include "netclient.h"
 #include "playerrecord.h"
+#include "commandline.h"
+#include "terraintool.h"
 #include "animals.h"
 #include "combat.h"
 #include "teamquests.h"
@@ -296,6 +298,7 @@ namespace {
                 if (dead && !sv.dead) { sv.dead = true; sv.deathTime = SimTime(); }
                 else if (!dead && sv.dead) sv.dead = false; // (respawned: the server put the player at the start; its state carries it)
                 sv.deaths = v.deaths;
+                if (((v.flags & 128) != 0) != terrainTool.creative) GameMode_SetCreative((v.flags & 128) != 0); // (#823) the server's /gamemode for us
                 return;
             }
             case NetMsg::PlayerSnapshot: { // (#769) the states of one snapshot, each against one we acknowledged (or full)
