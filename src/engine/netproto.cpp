@@ -24,7 +24,7 @@ const char* NetRejectText(NetReject r) {
         case NetReject::Password: return "wrong password";
         case NetReject::Full: return "the server is full";
         case NetReject::Banned: return "banned from this server";
-        case NetReject::NameTaken: return "that name is already playing";
+        case NetReject::NameTaken: return "that name is taken"; // (#346: playing now, or another player's on this server; the detail says which)
         case NetReject::Malformed: return "a garbled join request";
     }
     return "?";
@@ -85,12 +85,12 @@ static void Id(NetWriter& w, NetMsg m) { w.u8((uint8_t)m); }
 // After the fields: the message must end exactly there (trailing bytes mean a layout mismatch).
 static bool Done(NetReader& r) { if (!r.atEnd()) r.ok = false; return r.ok; }
 
-void NetWrite(NetWriter& w, const MsgHello& m) { Id(w, NetMsg::Hello); w.u32(m.protocol); w.str(m.build); w.str(m.name); w.str(m.password); }
+void NetWrite(NetWriter& w, const MsgHello& m) { Id(w, NetMsg::Hello); w.u32(m.protocol); w.str(m.build); w.str(m.name); w.str(m.password); w.str(m.uuid); }
 bool NetRead(NetReader& r, MsgHello& m) {
     m.protocol = r.u32();
     // An older or newer protocol: read nothing more (its layout may differ), the server answers Reject::Protocol.
     if (r.ok && m.protocol != kNetProtocol) return true;
-    m.build = r.str(64); m.name = r.str(32); m.password = r.str(64);
+    m.build = r.str(64); m.name = r.str(32); m.password = r.str(64); m.uuid = r.str(40);
     return Done(r) && !m.name.empty();
 }
 
@@ -554,8 +554,8 @@ bool NetProto_Test() {
     auto check = [&](bool c, const char* what) { if (!c) { printf("bench: netproto: %s: NO\n", what); ok = false; } };
     std::vector<std::vector<uint8_t>> samples; // each message's bytes, for the truncation and fuzz passes
     {
-        MsgHello a{ kNetProtocol, "m84-integration abc1234", "Dewey", "hunter2" }, b; std::vector<uint8_t> s;
-        check(RoundTrip(a, b, &s) && b.protocol == a.protocol && b.build == a.build && b.name == a.name && b.password == a.password, "hello");
+        MsgHello a{ kNetProtocol, "m84-integration abc1234", "Dewey", "hunter2", "0f0f0f0f-1234-4abc-8def-0123456789ab" }, b; std::vector<uint8_t> s;
+        check(RoundTrip(a, b, &s) && b.protocol == a.protocol && b.build == a.build && b.name == a.name && b.password == a.password && b.uuid == a.uuid, "hello");
         samples.push_back(s);
         MsgHello old{ 1, "x", "y", "" }, ob;
         check(RoundTrip(old, ob) && ob.protocol == 1, "an old protocol's hello still reads its version (to reject it clearly)");

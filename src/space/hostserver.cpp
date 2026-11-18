@@ -36,6 +36,8 @@
 #include <raylib.h>
 #include <algorithm>
 #include <functional>
+#include "gamesave.h"
+#include "playerrecord.h"
 #include <cstdio>
 #include <set>
 #include <string>
@@ -59,6 +61,7 @@ namespace {
     std::unordered_map<uint32_t, Peer> peers;          // by connection
     struct Session {
         uint32_t id = 0; std::string name; uint32_t conn = 0; bool online = false;
+        std::string uuid;            // (#346) the player's id: their record; a reconnect is by it, not the name
         MsgLoadout loadout;          // what the player holds and wears (#750), kept across a reconnect
     };
     std::vector<Session> sessions;
@@ -93,6 +96,8 @@ namespace {
         bool deathHandled = false;   // (#804) this death's drops are done (a grave, losses, or none)
         double editTokens = 2.0, editTokensAt = -1.0;
         double partTokens = 4.0, partTokensAt = -1.0; // building (#330): placing and breaking, a few a second
+        PlayerRecordMeta record;    // (#346) their record's id, name, times, and the lines the server keeps as text
+        double joinedAt = 0.0;      // (play time, added at the next write)
     };
     std::unordered_map<uint32_t, Remote> remotes;      // by session
     long long lastSnapshot = 0;
@@ -480,6 +485,7 @@ namespace {
     }
 
     void ForgetSync(uint32_t conn); // (below, with the join sync)
+    bool SaveRecord(uint32_t session); // (#346, below)
     void StartSync(Scene& world, uint32_t conn, uint32_t session);
     void Drop(uint32_t conn, NetBye why) {
         auto it = peers.find(conn);
@@ -492,12 +498,18 @@ namespace {
             eventHook("leave", it->second.session, name + " (" + NetByeText(why) + ")");
         }
         const bool wasJoined = it->second.joined;
+        const uint32_t session = it->second.session;
         Interest_Forget(conn); // (#340) its accumulators
         ForgetSync(conn);      // (#776) its join sync, if it was still running
         deltas.erase(conn);    // (#769) its snapshot bases
         animalsSent.erase(conn); // (#334) the animals it was sent
         peers.erase(it);
         Net_Close(conn);
+        // (#346) their record written, and the player gone from the world until they come back (unless the session is
+        // already back on another connection)
+        bool offline = true;
+        for (const Session& s : sessions) if (s.id == session && s.online) offline = false;
+        if (wasJoined && offline) { SaveRecord(session); remotes.erase(session); }
         if (wasJoined) SendRoster(); // the others see them go
     }
     void Refuse(uint32_t conn, NetReject why, const std::string& detail) {
@@ -518,6 +530,44 @@ namespace {
         for (size_t i = 0; i < a.size(); ++i) if (tolower((unsigned char)a[i]) != tolower((unsigned char)b[i])) return false;
         return true;
     }
+    // Player records (#346): a name is claimed by whoever has played under it here (their record, or a session this run).
+    bool NameClaimedByOther(const std::string& name, const std::string& uuid) {
+        for (const Session& x : sessions) if (x.uuid != uuid && SameName(x.name, name)) return true;
+        for (const PlayerRecordMeta& m : PlayerRecord_List()) if (m.uuid != uuid && SameName(m.name, name)) return true;
+        return false;
+    }
+    // A joining player's record, if they have one: their place, inventory and survival come back (the client is sent the
+    // inventory); a first-timer starts at the world's start (SpawnRemote) with nothing.
+    bool LoadRecord(uint32_t conn, const Session& s) { // true: their record was loaded
+        Remote& rm = remotes[s.id];
+        rm.record = PlayerRecordMeta{};
+        const std::string path = PlayerRecord_Path(s.uuid);
+        bool loaded = false;
+        if (FileExists(path.c_str()) && PlayerRecord_Read(path, rm.player, rm.inventory, rm.survival, rm.record)) {
+            loaded = true;
+            rm.player.flyAllowed = false; // (#781) never for a client's server-side player
+            std::map<std::string, double> before;
+            for (const InvSlot& c : rm.inventory.grid()) if (!c.empty()) before[c.id] = 0.0; // the client starts from nothing
+            SendInventoryDeltas(conn, rm.inventory, before);
+        }
+        rm.record.uuid = s.uuid; rm.record.name = s.name;
+        if (rm.record.firstSeen <= 0.0) rm.record.firstSeen = (double)time(nullptr);
+        rm.joinedAt = GetTime();
+        Teams_Join(s.uuid, s.name, 0); // a team of one to start with (#604 forms bigger ones)
+        printf("host: %s (%s): %s\n", s.name.c_str(), s.uuid.c_str(), loaded ? "their record loaded" : "a new player");
+        return loaded;
+    }
+    bool SaveRecord(uint32_t session) {
+        auto it = remotes.find(session);
+        if (it == remotes.end() || !PlayerId_Valid(it->second.record.uuid)) return false;
+        Remote& rm = it->second;
+        const double now = GetTime();
+        const bool ok = PlayerRecord_Write(PlayerRecord_Path(rm.record.uuid), rm.player, rm.inventory, rm.survival, rm.record, now - rm.joinedAt);
+        if (ok) { rm.record.playTime += now - rm.joinedAt; rm.joinedAt = now; }
+        else printf("host: could not write the record of %s\n", rm.record.name.c_str());
+        return ok;
+    }
+    int SaveAllRecords() { int n = 0; for (const auto& [id, rm] : remotes) n += SaveRecord(id); return n; }
     std::string CleanChat(std::string t) {
         for (char& ch : t) if ((unsigned char)ch < 0x20 || (unsigned char)ch == 0x7F) ch = ' ';
         return t;
@@ -546,12 +596,17 @@ namespace {
         // nameplates and chat: a newline in it would forge lines). Names are one identity whatever their case (the admin lists
         // compare without case: "ALICE" got alice's op role in a session of its own).
         if (!NameAcceptable(h.name)) { Refuse(conn, NetReject::Malformed, "names are 1-24 characters, no control characters or edge spaces"); return; }
-        for (Session& x : sessions) if (SameName(x.name, h.name)) s = &x;
-        if (s && s->online) { Refuse(conn, NetReject::NameTaken, h.name); return; }
+        // (#346) a player is their id; a name is theirs on this server once they've played under it: another id asking for
+        // it is refused (not renamed), while the same id may come back under a new name.
+        if (!PlayerId_Valid(h.uuid)) { Refuse(conn, NetReject::Malformed, "no player id"); return; }
+        if (NameClaimedByOther(h.name, h.uuid)) { Refuse(conn, NetReject::NameTaken, h.name + " belongs to another player on this server"); return; }
+        for (Session& x : sessions) if (x.uuid == h.uuid) s = &x;
+        if (s && s->online) { Refuse(conn, NetReject::NameTaken, h.name + " is already playing"); return; }
         const int online = (int)std::count_if(sessions.begin(), sessions.end(), [](const Session& x) { return x.online; });
         if (online >= maxPlayers) { Refuse(conn, NetReject::Full, TextFormat("%d players", maxPlayers)); return; }
         const bool reconnected = s != nullptr;
-        if (!s) { sessions.push_back({ nextSession++, h.name, 0, false }); s = &sessions.back(); }
+        if (!s) { sessions.push_back({ nextSession++, h.name, 0, false }); s = &sessions.back(); s->uuid = h.uuid; }
+        s->name = h.name; // (a new name of theirs)
         s->conn = conn; s->online = true;
         Peer& p = peers[conn];
         p.session = s->id; p.joined = true; p.lastHeard = GetTime();
@@ -565,8 +620,11 @@ namespace {
         SendMsg(conn, w);
         const EventsShower sh = Events_GetShower();
         SendMsg(conn, MsgShower{ sh.start, sh.end, sh.id });
-        if (!remotes.count(s->id)) SpawnRemote(world, s->id); // (a reconnect keeps its player where it was)
-        else { // (#780) a reconnect keeps the player but its client counts ticks from 1 again: a fresh input stream
+        bool hadRecord = true; // (a reconnect within the run keeps its player: not a new one)
+        if (!remotes.count(s->id)) { // (#346) at the world's start, or where their record left them, with what they carried
+            SpawnRemote(world, s->id);
+            hadRecord = LoadRecord(conn, *s);
+        } else { // (#780) a reconnect keeps the player but its client counts ticks from 1 again: a fresh input stream
             Remote& rm = remotes[s->id];
             rm.inputs.clear(); rm.lastQueued = 0; rm.lastApplied = 0; rm.carried = 0; rm.budget = 0.0; rm.tick = SimTick();
         }
@@ -578,7 +636,7 @@ namespace {
         ++joins;
         printf("host: %s joined as session %u%s (connection %u, %d joins so far)\n", h.name.c_str(), s->id, reconnected ? " (reconnected)" : "", conn, joins);
         if (eventHook) eventHook("join", s->id, h.name + " from " + Net_RemoteAddress(conn)); // (#345 audit)
-        if (!reconnected) { // (#804) a new player's starting kit, as single player's (the client's own inventory follows this one)
+        if (!hadRecord) { // (#804) a new player's starting kit, as single player's (the client's own inventory follows this one); (#346) never again for one with a record
             Host_Give(s->id, "telescope", 1);
             if (worldDifficulty < 2) Host_Give(s->id, "map", 1); // hard: find your own way
             if (worldDifficulty == 0) Host_Give(s->id, "berries", 6);
@@ -1076,9 +1134,10 @@ void Host_Update(Scene& world) {
     // server's saves protect against crashes, whatever the game clock does.
     if (autosaveSeconds > 0.0 && lastSave >= 0.0 && GetTime() - lastSave >= autosaveSeconds) {
         lastSave = GetTime();
+        const int records = SaveAllRecords(); // (#346) everyone online, with the world
         const bool ok = SaveWorld(world);
         if (ok) ++autosaves;
-        printf("host: autosave %d to %s %s\n", autosaves, WorldSavePath(), ok ? "done" : "FAILED");
+        printf("host: autosave %d to %s %s (%d player records)\n", autosaves, WorldSavePath(), ok ? "done" : "FAILED", records);
     }
     if (!listening) return;
     Net_Poll();
@@ -1111,8 +1170,9 @@ void Host_Update(Scene& world) {
 }
 
 bool Host_SaveOnShutdown(Scene& world) {
+    const int records = SaveAllRecords(); // (#346) everyone online, with the world
     const bool ok = SaveWorld(world);
-    printf("host: saved on shutdown to %s %s\n", WorldSavePath(), ok ? "done" : "FAILED");
+    printf("host: saved on shutdown to %s %s (%d player records)\n", WorldSavePath(), ok ? "done" : "FAILED", records);
     return ok;
 }
 
@@ -1196,3 +1256,14 @@ uint64_t Host_SyncBytesSent() { return syncBytesSent; }
 // Tests (#349): messages the guard dropped, and connections it kicked.
 int Host_GuardDropped() { return guardDropped; }
 int Host_GuardKicks() { return guardKicks; }
+
+// ---- Tests (#346): records across a restart ----
+int Host_ItemCount(uint32_t session, const std::string& item) {
+    auto it = remotes.find(session);
+    return it == remotes.end() ? -1 : it->second.inventory.count(item);
+}
+bool Host_ForgetPlayers() {
+    for (const Session& s : sessions) if (s.online) return false;
+    sessions.clear(); remotes.clear();
+    return true;
+}

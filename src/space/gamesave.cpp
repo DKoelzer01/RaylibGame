@@ -43,65 +43,87 @@ static bool playerLoaded = false;  // the load found the player's lines (a recor
 static double recordFirstSeen = 0.0, recordPlayTime = 0.0, recordLoadedAt = 0.0;
 static std::function<void()> newPlayerHook;
 static std::string legacyOwner;   // a server that loaded a format 12 save: the id its player is saved under as the owner
+static bool bodyFramed = false;  // the record being read gave a player_body line (its up and velocity are rebuilt)
 
 namespace {
 // This game has a player of its own to save (not a dedicated server, which has none; not a joined client, whose world
 // and player are the server's).
 bool LocalPlayer() { return !Headless() && gNetRole != NetRole::Client; }
 
-void WritePlayerLines(FILE* f) {
-    fprintf(f, "player %.6f %.6f %.6f %f %f %f %d %f\n", player.position.x, player.position.y, player.position.z,
-            player.forward.x, player.forward.y, player.forward.z, player.flyMode ? 1 : 0, player.jetpackFuel);
-    fprintf(f, "player_up %f %f %f\n", player.up.x, player.up.y, player.up.z);
-    fprintf(f, "player_vel %f %f %f\n", player.velocity.x, player.velocity.y, player.velocity.z);
+// Whose lines: a player, their inventory and survival; `local` also the game's own (hotbar, help, map pins, suit, tool
+// wear, creative), which a server does not hold for a remote player: those lines are kept as text and written back as
+// they were (a record made in single player keeps its hotbar when the world is hosted).
+struct RecordTarget { Player& p; Inventory& inv; SurvivalState& sv; bool local; std::string& kept; };
+
+void WritePlayerLines(FILE* f, RecordTarget t) {
+    fprintf(f, "player %.6f %.6f %.6f %f %f %f %d %f\n", t.p.position.x, t.p.position.y, t.p.position.z,
+            t.p.forward.x, t.p.forward.y, t.p.forward.z, t.p.flyMode ? 1 : 0, t.p.jetpackFuel);
+    // (#346) also in the body's own frame: a server's world time runs on while the player is away (the planet turns), so
+    // the absolute position would be wrong when they come back.
+    if (const Planetoid* b = t.p.nearest; b && NetId_Kind(b->netId) == NetKind::Body) {
+        const DVec3 l = b->toLocalD(t.p.position);
+        fprintf(f, "player_body %llu %.6f %.6f %.6f\n", (unsigned long long)b->netId, l.x, l.y, l.z);
+    }
+    fprintf(f, "player_up %f %f %f\n", t.p.up.x, t.p.up.y, t.p.up.z);
+    fprintf(f, "player_vel %f %f %f\n", t.p.velocity.x, t.p.velocity.y, t.p.velocity.z);
     fprintf(f, "inv_cols %d\n", Inventory::kCols); // before the slots: older saves (no line) had 9 columns (#495)
     for (int i = 0; i < Inventory::kCells; ++i) { // with the off hand (#165)
-        const InvSlot& s = inventory.grid()[i];
+        const InvSlot& s = t.inv.grid()[i];
         if (!s.empty()) fprintf(f, "slot %d %s %lld\n", i, s.id.c_str(), (long long)s.centi);
         if (!s.empty() && s.heat > 0.0f) fprintf(f, "slot_heat %d %.3f\n", i, s.heat); // still hot (#580)
     }
-    fprintf(f, "creative %d\n", terrainTool.creative ? 1 : 0);
-    Hotbar_Save(f);
-    HelpManual_Save(f);
-    Nav_Save(f);
-    Suit_Save(f);
-    ToolWear_Save(f);
-    fprintf(f, "survival %f %f %f %d\n", survival.oxygen, survival.power, survival.health, survival.deaths);
-    fprintf(f, "food %f\n", survival.food);
-    if (survival.hasBed) fprintf(f, "bed %s %u %d %d %d\n", survival.bedBody.c_str(), survival.bedPlot, survival.bedCell[0], survival.bedCell[1], survival.bedCell[2]); // #800: the player's spawn bed
+    if (t.local) {
+        fprintf(f, "creative %d\n", terrainTool.creative ? 1 : 0);
+        Hotbar_Save(f);
+        HelpManual_Save(f);
+        Nav_Save(f);
+        Suit_Save(f);
+        ToolWear_Save(f);
+    } else fputs(t.kept.c_str(), f);
+    fprintf(f, "survival %f %f %f %d\n", t.sv.oxygen, t.sv.power, t.sv.health, t.sv.deaths);
+    fprintf(f, "food %f\n", t.sv.food);
+    if (t.sv.hasBed) fprintf(f, "bed %s %u %d %d %d\n", t.sv.bedBody.c_str(), t.sv.bedPlot, t.sv.bedCell[0], t.sv.bedCell[1], t.sv.bedCell[2]); // #800: the player's spawn bed
 }
 
 // One of the player's lines (a record's, or a format 12 save's extras): true if it was one.
-bool ReadPlayerLine(const char* tok, FILE* f) {
-    if (strcmp(tok, "food") == 0) { float v = 100.0f; if (fscanf(f, " %f", &v) == 1) survival.food = std::clamp(v, 0.0f, 100.0f); return true; }
+bool ReadPlayerLine(const char* tok, FILE* f, RecordTarget t) {
+    if (strcmp(tok, "food") == 0) { float v = 100.0f; if (fscanf(f, " %f", &v) == 1) t.sv.food = std::clamp(v, 0.0f, 100.0f); return true; }
     if (strcmp(tok, "bed") == 0) { // #800: the spawn bed
         char b[64] = {}; unsigned pl = 0; int x = 0, y = 0, z = 0;
-        if (fscanf(f, " %63s %u %d %d %d", b, &pl, &x, &y, &z) == 5) { survival.hasBed = true; survival.bedBody = b; survival.bedPlot = pl; survival.bedCell[0] = x; survival.bedCell[1] = y; survival.bedCell[2] = z; }
+        if (fscanf(f, " %63s %u %d %d %d", b, &pl, &x, &y, &z) == 5) { t.sv.hasBed = true; t.sv.bedBody = b; t.sv.bedPlot = pl; t.sv.bedCell[0] = x; t.sv.bedCell[1] = y; t.sv.bedCell[2] = z; }
         return true;
     }
-    if (strcmp(tok, "creative") == 0) { int c = 0; if (fscanf(f, " %d", &c) == 1) terrainTool.creative = c != 0; return true; }
-    if (Hotbar_LoadLine(tok, f)) return true;
-    if (HelpManual_LoadLine(tok, f)) return true;
-    if (Nav_LoadLine(tok, f)) return true;
-    if (Suit_LoadLine(tok, f)) return true;
-    if (ToolWear_LoadLine(tok, f)) return true;
+    if (t.local) {
+        if (strcmp(tok, "creative") == 0) { int c = 0; if (fscanf(f, " %d", &c) == 1) terrainTool.creative = c != 0; return true; }
+        if (Hotbar_LoadLine(tok, f)) return true;
+        if (HelpManual_LoadLine(tok, f)) return true;
+        if (Nav_LoadLine(tok, f)) return true;
+        if (Suit_LoadLine(tok, f)) return true;
+        if (ToolWear_LoadLine(tok, f)) return true;
+    }
     if (strcmp(tok, "player") == 0) {
         int fly = 0;
-        fscanf(f, " %lf %lf %lf %f %f %f %d %f", &player.position.x, &player.position.y, &player.position.z,
-               &player.forward.x, &player.forward.y, &player.forward.z, &fly, &player.jetpackFuel);
-        player.flyMode = fly != 0;
-        survival.lastJetpackFuel = player.jetpackFuel; // a load is not a recharge
-        player.velocity = { 0, 0, 0 };
-        player.grounded = false;
-        player.up = { 0, 0, 0 }; // set by "player_up"; older saves: rebuilt from the body at the next update
-        playerLoaded = true;
+        fscanf(f, " %lf %lf %lf %f %f %f %d %f", &t.p.position.x, &t.p.position.y, &t.p.position.z,
+               &t.p.forward.x, &t.p.forward.y, &t.p.forward.z, &fly, &t.p.jetpackFuel);
+        t.p.flyMode = fly != 0;
+        t.sv.lastJetpackFuel = t.p.jetpackFuel; // a load is not a recharge
+        t.p.velocity = { 0, 0, 0 };
+        t.p.grounded = false;
+        t.p.up = { 0, 0, 0 }; // set by "player_up"; older saves: rebuilt from the body at the next update
+        if (t.local) playerLoaded = true;
         return true;
     }
-    if (strcmp(tok, "player_up") == 0) { fscanf(f, " %f %f %f", &player.up.x, &player.up.y, &player.up.z); return true; }
-    if (strcmp(tok, "player_vel") == 0) { fscanf(f, " %f %f %f", &player.velocity.x, &player.velocity.y, &player.velocity.z); return true; } // older saves: stays zero
+    if (strcmp(tok, "player_body") == 0) { // (#346) the body's frame wins over the absolute position
+        unsigned long long id = 0; DVec3 l{};
+        if (fscanf(f, " %llu %lf %lf %lf", &id, &l.x, &l.y, &l.z) == 4)
+            if (const Planetoid* b = Planetoid::findNet((NetId)id)) { t.p.position = b->toWorldD(l); t.p.up = { 0, 0, 0 }; bodyFramed = true; }
+        return true;
+    }
+    if (strcmp(tok, "player_up") == 0) { Vector3 u{}; fscanf(f, " %f %f %f", &u.x, &u.y, &u.z); if (!bodyFramed) t.p.up = u; return true; } // (with player_body: rebuilt from the body)
+    if (strcmp(tok, "player_vel") == 0) { fscanf(f, " %f %f %f", &t.p.velocity.x, &t.p.velocity.y, &t.p.velocity.z); if (bodyFramed) t.p.velocity = { 0, 0, 0 }; return true; } // older saves: stays zero
     if (strcmp(tok, "survival") == 0) {
-        fscanf(f, " %f %f %f %d", &survival.oxygen, &survival.power, &survival.health, &survival.deaths);
-        survival.dead = false;
+        fscanf(f, " %f %f %f %d", &t.sv.oxygen, &t.sv.power, &t.sv.health, &t.sv.deaths);
+        t.sv.dead = false;
         return true;
     }
     if (strcmp(tok, "inv_cols") == 0) { if (fscanf(f, " %d", &savedCols) != 1) savedCols = 9; return true; }
@@ -112,62 +134,114 @@ bool ReadPlayerLine(const char* tok, FILE* f) {
         const bool read = fscanf(f, " %d %63s %lld", &i, id, &c) == 3;
         i = Inventory::SavedCell(i, savedCols); // a 9-wide save: its hotbar and off hand move up (#495)
         if (read && i >= 0 && i < Inventory::kCells && c > 0 && itemDB.find(id)) {
-            InvSlot& s = inventory.grid()[i];
-            if (s.empty()) { s.id = id; s.centi = c; } else { ++inventory.muted; inventory.addAmount(id, c / 100.0); --inventory.muted; } // no pickup feed for a load
+            InvSlot& s = t.inv.grid()[i];
+            if (s.empty()) { s.id = id; s.centi = c; } else { ++t.inv.muted; t.inv.addAmount(id, c / 100.0); --t.inv.muted; } // no pickup feed for a load
         }
         return true;
     }
     if (strcmp(tok, "slot_heat") == 0) { // #580: after its slot line
         int i = 0; float h = 0.0f;
-        if (fscanf(f, " %d %f", &i, &h) == 2 && i >= 0 && i < Inventory::kCells && !inventory.grid()[i].empty()) inventory.grid()[i].heat = std::clamp(h, 0.0f, 1.0f);
+        if (fscanf(f, " %d %f", &i, &h) == 2 && i >= 0 && i < Inventory::kCells && !t.inv.grid()[i].empty()) t.inv.grid()[i].heat = std::clamp(h, 0.0f, 1.0f);
         return true;
     }
     if (strcmp(tok, "item") == 0) {
         char id[64] = {};
         int n = 0;
-        if (fscanf(f, " %63s %d", id, &n) == 2) { ++inventory.muted; inventory.add(id, n); --inventory.muted; }
+        if (fscanf(f, " %63s %d", id, &n) == 2) { ++t.inv.muted; t.inv.add(id, n); --t.inv.muted; }
         return true;
     }
     return false;
 }
 
-bool ReadRecord(const std::string& path) {
+bool ReadRecordInto(const std::string& path, RecordTarget t, PlayerRecordMeta& m) {
     FILE* f = fopen(path.c_str(), "r");
     if (!f) return false;
     int version = 0;
     if (fscanf(f, " RAYLIBGAME_PLAYER %d", &version) != 1 || version < 1) { fclose(f); return false; }
     savedCols = 9;
+    bodyFramed = false;
     char tok[64] = {};
     while (fscanf(f, " %63s", tok) == 1 && strcmp(tok, "end_record") != 0) {
         char word[128] = {};
-        if (strcmp(tok, "uuid") == 0 || strcmp(tok, "name") == 0) { fscanf(f, " %127s", word); continue; }
-        if (strcmp(tok, "team") == 0) { int t = 0; fscanf(f, " %d", &t); continue; } // (the world's team lines are the truth)
-        if (strcmp(tok, "first_seen") == 0) { fscanf(f, " %lf", &recordFirstSeen); continue; }
-        if (strcmp(tok, "last_seen") == 0) { double t = 0; fscanf(f, " %lf", &t); continue; }
-        if (strcmp(tok, "play_time") == 0) { fscanf(f, " %lf", &recordPlayTime); continue; }
-        if (!ReadPlayerLine(tok, f)) { char rest[512]; if (!fgets(rest, sizeof(rest), f)) break; } // an unknown line: skipped
+        if (strcmp(tok, "uuid") == 0) { if (fscanf(f, " %127s", word) == 1) m.uuid = word; continue; }
+        if (strcmp(tok, "name") == 0) { if (fscanf(f, " %127s", word) == 1) m.name = word; continue; }
+        if (strcmp(tok, "team") == 0) { int tm = 0; fscanf(f, " %d", &tm); continue; } // (the world's team lines are the truth)
+        if (strcmp(tok, "first_seen") == 0) { fscanf(f, " %lf", &m.firstSeen); continue; }
+        if (strcmp(tok, "last_seen") == 0) { double x = 0; fscanf(f, " %lf", &x); continue; }
+        if (strcmp(tok, "play_time") == 0) { fscanf(f, " %lf", &m.playTime); continue; }
+        if (ReadPlayerLine(tok, f, t)) continue;
+        char rest[512];
+        if (!fgets(rest, sizeof(rest), f)) break;
+        if (!t.local) t.kept += std::string(tok) + rest; // another game's line (hotbar, pins, ...): kept as it was
     }
     fclose(f);
     return true;
 }
 
-bool WriteRecord(const std::string& uuid) {
+bool WriteRecordFrom(const std::string& path, RecordTarget t, const PlayerRecordMeta& m, double sessionSeconds) {
     std::error_code ec;
-    std::filesystem::create_directories(PlayerRecord_Dir(), ec);
+    std::filesystem::create_directories(std::filesystem::path(path).parent_path(), ec);
     const double now = (double)time(nullptr);
-    return Save_WriteAtomic(PlayerRecord_Path(uuid), [&](FILE* f) {
+    return Save_WriteAtomic(path, [&](FILE* f) {
         fprintf(f, "RAYLIBGAME_PLAYER 1\n");
-        fprintf(f, "uuid %s\n", uuid.c_str());
-        fprintf(f, "name %s\n", settings.mpName.empty() ? "player" : settings.mpName.c_str()); // (shown only; Steam's later)
-        fprintf(f, "team %d\n", Teams_Of(uuid));
-        fprintf(f, "first_seen %.0f\nlast_seen %.0f\n", recordFirstSeen > 0.0 ? recordFirstSeen : now, now);
-        fprintf(f, "play_time %.0f\n", recordPlayTime + std::max(0.0, GetTime() - recordLoadedAt));
-        WritePlayerLines(f);
+        fprintf(f, "uuid %s\n", m.uuid.c_str());
+        fprintf(f, "name %s\n", m.name.empty() ? "player" : m.name.c_str()); // (shown only; Steam's later)
+        fprintf(f, "team %d\n", Teams_Of(m.uuid));
+        fprintf(f, "first_seen %.0f\nlast_seen %.0f\n", m.firstSeen > 0.0 ? m.firstSeen : now, now);
+        fprintf(f, "play_time %.0f\n", m.playTime + std::max(0.0, sessionSeconds));
+        WritePlayerLines(f, t);
         fprintf(f, "end_record\n");
         return true;
     });
 }
+
+std::string noKept; // the local player keeps nothing as text
+RecordTarget LocalTarget() { return RecordTarget{ player, inventory, survival, true, noKept }; }
+
+bool ReadRecord(const std::string& path) {
+    PlayerRecordMeta m;
+    if (!ReadRecordInto(path, LocalTarget(), m)) return false;
+    recordFirstSeen = m.firstSeen; recordPlayTime = m.playTime;
+    return true;
+}
+
+bool WriteRecord(const std::string& uuid) {
+    PlayerRecordMeta m;
+    m.uuid = uuid; m.name = settings.mpName.empty() ? "player" : settings.mpName;
+    m.firstSeen = recordFirstSeen; m.playTime = recordPlayTime;
+    return WriteRecordFrom(PlayerRecord_Path(uuid), LocalTarget(), m, GetTime() - recordLoadedAt);
+}
 } // namespace
+
+// A remote player's record on a server (#346 step 2): their player, inventory and survival; the rest kept as text.
+bool PlayerRecord_Read(const std::string& path, Player& p, Inventory& inv, SurvivalState& sv, PlayerRecordMeta& meta) {
+    meta.kept.clear();
+    return ReadRecordInto(path, RecordTarget{ p, inv, sv, false, meta.kept }, meta);
+}
+bool PlayerRecord_Write(const std::string& path, Player& p, Inventory& inv, SurvivalState& sv, PlayerRecordMeta& meta, double sessionSeconds) {
+    return WriteRecordFrom(path, RecordTarget{ p, inv, sv, false, meta.kept }, meta, sessionSeconds);
+}
+std::vector<PlayerRecordMeta> PlayerRecord_List() {
+    std::vector<PlayerRecordMeta> out;
+    std::error_code ec;
+    for (const auto& e : std::filesystem::directory_iterator(PlayerRecord_Dir(), ec)) {
+        if (e.path().extension() != ".player") continue;
+        FILE* f = fopen(e.path().string().c_str(), "r");
+        if (!f) continue;
+        PlayerRecordMeta m;
+        char tok[64] = {}, word[128] = {};
+        int version = 0;
+        if (fscanf(f, " RAYLIBGAME_PLAYER %d", &version) == 1)
+            while ((m.uuid.empty() || m.name.empty()) && fscanf(f, " %63s", tok) == 1 && strcmp(tok, "end_record") != 0) {
+                if (strcmp(tok, "uuid") == 0 && fscanf(f, " %127s", word) == 1) m.uuid = word;
+                else if (strcmp(tok, "name") == 0 && fscanf(f, " %127s", word) == 1) m.name = word;
+                else { char rest[512]; if (!fgets(rest, sizeof(rest), f)) break; }
+            }
+        fclose(f);
+        if (PlayerId_Valid(m.uuid)) out.push_back(m);
+    }
+    return out;
+}
 
 bool GameSave_PlayerLoaded() { return playerLoaded; }
 void GameSave_SetNewPlayerHook(std::function<void()> hook) { newPlayerHook = std::move(hook); }
@@ -218,6 +292,7 @@ void GameSave_Register() {
         savedCols = 9;  // a save without an inv_cols line: the 9-wide grid (#495)
         worldDifficulty = 1; // a save without the line: normal
         playerLoaded = false;
+        bodyFramed = false;
         recordFirstSeen = recordPlayTime = 0.0;
         recordLoadedAt = GetTime();
         const bool local = LocalPlayer();
@@ -237,7 +312,7 @@ void GameSave_Register() {
             if (Rocket_LoadLine(tok, f)) continue;
             if (Station_LoadLine(tok, f)) continue;
             if (strcmp(tok, "difficulty") == 0) { int d = 1; if (fscanf(f, " %d", &d) == 1) worldDifficulty = std::clamp(d, 0, 2); continue; }
-            if (ReadPlayerLine(tok, f)) continue; // format 12: the player's lines were the save's own
+            if (ReadPlayerLine(tok, f, LocalTarget())) continue; // format 12: the player's lines were the save's own
             if (strcmp(tok, "ship") == 0) { // old saves: the placeholder ship is gone (its line is read and dropped)
                 char rest[512]; if (!fgets(rest, sizeof(rest), f)) break;
                 ship.piloted = false; ship.spawned = false; ship.velocity = { 0, 0, 0 };

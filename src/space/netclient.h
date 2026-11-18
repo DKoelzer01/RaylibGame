@@ -37,6 +37,7 @@ struct NetClient {
     State state = State::Idle;
     uint32_t conn = 0;
     std::string name, password, build;   // build: "" = the game's own (kGameVersion's commit)
+    std::string uuid;                    // (#346) the player's id ("" a test client: one made from the name, the same every run)
     uint32_t protocol = kNetProtocol;    // tests: a different one to be refused
     MsgWelcome welcome;                  // when Joined
     MsgShower shower;                    // the latest from the server

@@ -52,6 +52,10 @@ double Host_InventoryAmount(uint32_t session, const std::string& item);
 // into the server's copy of their inventory, and the delta to them. False: no such player or item.
 int Host_PartsApplied();
 bool Host_Give(uint32_t session, const std::string& item, int count);
+// Tests (#346): how many of an item the server holds for a session (-1: no such player in the world); forget every
+// player as a restart would (only with nobody online; their records stay on disk).
+int Host_ItemCount(uint32_t session, const std::string& item);
+bool Host_ForgetPlayers();
 // Join sync (#776, tests): syncs finished so far; bytes sent by them.
 int Host_SyncsDone();
 uint64_t Host_SyncBytesSent();

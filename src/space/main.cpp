@@ -63,6 +63,7 @@
 #include "fishing.h"
 #include "trapping.h"
 #include "dungeontraps.h"
+#include "playerrecord.h"
 #include "events.h"
 #include "machinemodels.h"
 #include "gpucompute.h"
@@ -1364,6 +1365,7 @@ int main(int argc, char** argv)
             gJoin = NetClient{};
             gJoin.syncHold = true; // (#776) the world's edits wait until we have generated the world they go into
             gJoin.suitColor = suit;
+            gJoin.uuid = bench ? std::string() : PlayerId_Local(); // (#346) this install's id; a bench's is made from the name (the same every run)
             NetClient_Connect(gJoin, addr.c_str(), name, password);
             const double a0 = GetTime();
             while ((gJoin.state == NetClient::State::Connecting || gJoin.state == NetClient::State::AwaitingWelcome) && GetTime() - a0 < kClientConnectTimeout + 1.0 && !WindowShouldClose()) {
@@ -10727,13 +10729,14 @@ int main(int argc, char** argv)
                 // The lifecycle over loopback (#321), clients in this process: alice joins (the world description and
                 // the shower match the host's; a ping comes back); an old protocol is refused; a second "alice" is
                 // refused while she is online; alice leaves and comes back: the same session, marked reconnected.
-                static NetClient alice, oldProto, twin, back;
+                static NetClient alice, oldProto, twin, back, bob, mallory, alicia, bob2;
                 static int step = 0;
                 static uint32_t aliceSession = 0;
+                static int joinsBefore = 0, aliceIron = -1, bobCoal = -1, aliceScopes = -1;
                 static bool joined = false, sameWorld = false, sameShower = false, pinged = false, protoRefused = false, nameRefused = false,
-                            left = false, sameSession = false;
+                            left = false, sameSession = false, recordsWritten = false, forgot = false, malloryRefused = false;
                 const char* addr = TextFormat("127.0.0.1:%d", hostPort);
-                for (NetClient* c : { &alice, &oldProto, &twin, &back }) NetClient_Update(*c);
+                for (NetClient* c : { &alice, &oldProto, &twin, &back, &bob, &mallory, &alicia, &bob2 }) NetClient_Update(*c);
                 if (step == 0) { NetClient_Connect(alice, addr, "alice"); step = 1; }
                 else if (step == 1 && alice.state == NetClient::State::Joined && alice.pongs >= 1) {
                     joined = true; pinged = alice.rttMs >= 0.0; aliceSession = alice.welcome.session;
@@ -10753,18 +10756,46 @@ int main(int argc, char** argv)
                     step = 4;
                 } else if (step == 4 && back.state == NetClient::State::Joined) {
                     sameSession = back.welcome.session == aliceSession && back.welcome.reconnected;
+                    joinsBefore = Host_Joins();
+                    // Records (#346): alice and bob carry something, leave (their records are written), the server forgets
+                    // everyone (a restart); mallory can't take the name "alice"; alice comes back under a new name with her
+                    // iron, bob with his coal.
+                    Host_Give(back.welcome.session, "iron_ingot", 5);
+                    NetClient_Connect(bob, addr, "bob");
                     step = 5;
+                } else if (step == 5 && bob.state == NetClient::State::Joined) {
+                    Host_Give(bob.welcome.session, "coal", 3);
+                    NetClient_Disconnect(back); NetClient_Disconnect(bob);
+                    step = 6;
+                } else if (step == 6 && Host_OnlinePlayers() == 0) {
+                    recordsWritten = FileExists(PlayerRecord_Path(PlayerId_FromName("alice")).c_str()) && FileExists(PlayerRecord_Path(PlayerId_FromName("bob")).c_str());
+                    forgot = Host_ForgetPlayers();
+                    mallory.uuid = PlayerId_FromName("mallory"); NetClient_Connect(mallory, addr, "alice");
+                    alicia.uuid = PlayerId_FromName("alice"); NetClient_Connect(alicia, addr, "alicia");
+                    NetClient_Connect(bob2, addr, "bob");
+                    step = 7;
+                } else if (step == 7 && mallory.state == NetClient::State::Rejected && alicia.state == NetClient::State::Joined && bob2.state == NetClient::State::Joined) {
+                    malloryRefused = mallory.reject.reason == NetReject::NameTaken;
+                    aliceIron = Host_ItemCount(alicia.welcome.session, "iron_ingot");
+                    aliceScopes = Host_ItemCount(alicia.welcome.session, "telescope"); // the kit once, not again on her return
+                    bobCoal = Host_ItemCount(bob2.welcome.session, "coal");
+                    step = 8;
                 }
-                if ((step == 5 && autosaveDone) || GetTime() - t0 > 90.0) {
+                if ((step == 8 && autosaveDone) || GetTime() - t0 > 90.0) {
                     const bool ok = saveOnDisk && gHeadless && seedOk && autosaveDone && joined && sameWorld && sameShower && pinged && protoRefused && nameRefused &&
-                                    left && sameSession && Host_Joins() == 2;
+                                    left && sameSession && joinsBefore == 2;
+                    const bool records = recordsWritten && forgot && malloryRefused && aliceIron == 5 && bobCoal == 3 && aliceScopes == 1;
                     printf("bench: host: save %s on disk %d, headless %d, listening on %d; seed %u (%s) ok %d; autosaves %d\n",
                            hostSave.c_str(), (int)saveOnDisk, (int)gHeadless, hostPort, worldGen.lastSeed, seedHow, (int)seedOk, Host_Autosaves());
+                    printf("bench: host: records (#346): written on leaving %d; after a restart, \"alice\" under another id refused %d (%s); alice back as alicia with %d iron "
+                           "(5) and %d telescope (1: the kit once), bob with %d coal (3) -> %s\n", (int)recordsWritten, (int)malloryRefused, NetRejectText(mallory.reject.reason), aliceIron, aliceScopes, bobCoal,
+                           records ? "PASS" : "FAIL");
                     printf("bench: host: lifecycle (#321): alice joined %d as session %u (world matches %d, shower matches %d, ping %d: %.1f ms); old protocol refused %d (%s); "
                            "a second alice refused %d (%s); alice left %d and came back to session %u (same, reconnected %d); %d joins, step %d after %.1f s -> %s\n",
                            (int)joined, aliceSession, (int)sameWorld, (int)sameShower, (int)pinged, alice.rttMs, (int)protoRefused, NetRejectText(oldProto.reject.reason),
-                           (int)nameRefused, NetRejectText(twin.reject.reason), (int)left, back.welcome.session, (int)sameSession, Host_Joins(), step, GetTime() - t0, ok ? "PASS" : "FAIL");
-                    NetClient_Disconnect(back);
+                           (int)nameRefused, NetRejectText(twin.reject.reason), (int)left, back.welcome.session, (int)sameSession, joinsBefore, step, GetTime() - t0,
+                           ok && records ? "PASS" : "FAIL");
+                    NetClient_Disconnect(alicia); NetClient_Disconnect(bob2);
                     benchHost = false;
                 }
             }
