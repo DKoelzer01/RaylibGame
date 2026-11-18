@@ -2016,7 +2016,7 @@ int main(int argc, char** argv)
             NewWorld_Shutdown();
             // The .worldgen sidecar round-trips every field (the bake key hashes them: a lost field rebakes the wrong world).
             WorldGenParams wp; wp.ocean = 0.3f; wp.mountains = 1.7f; wp.roughness = 0.6f; wp.biomeSize = 1.3f; wp.resources = 0.8f;
-            wp.erosion = true; wp.erosionStrength = 1.4f; wp.cliffs = 0.35f; wp.karst = false; wp.volcanoes = false;
+            wp.erosion = true; wp.erosionStrength = 1.4f; wp.cliffs = 0.35f; wp.karst = false; wp.volcanoes = false; wp.waterCycle = 1.6f; // #637
             const std::string sidecar = std::string(GetApplicationDirectory()) + "newworld_test";
             const bool saved = WorldGenParams_Save(sidecar, wp);
             const WorldGenParams back = WorldGenParams_ForSave(sidecar);

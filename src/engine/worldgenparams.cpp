@@ -50,7 +50,7 @@ WorldGenParams WorldGenParams_FromText(const std::string& text) {
 std::string WorldGenParams_ToText(const WorldGenParams& p) {
     // %.9g: the floats come back bit for bit (the bake's cache key hashes them).
     char buf[512];
-    snprintf(buf, sizeof buf, "ocean %.9g\nmountains %.9g\nroughness %.9g\nbiomeSize %.9g\nresources %.9g\nerosion %d\nerosionStrength %.9g\ncliffs %.9g\nkarst %d\nvolcanoes %d\n",
+    snprintf(buf, sizeof buf, "ocean %.9g\nmountains %.9g\nroughness %.9g\nbiomeSize %.9g\nresources %.9g\nerosion %d\nerosionStrength %.9g\ncliffs %.9g\nkarst %d\nvolcanoes %d\nwaterCycle %.9g\n",
              p.ocean, p.mountains, p.roughness, p.biomeSize, p.resources, p.erosion ? 1 : 0, p.erosionStrength, p.cliffs, p.karst ? 1 : 0, p.volcanoes ? 1 : 0, p.waterCycle);
     return buf;
 }
