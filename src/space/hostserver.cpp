@@ -47,6 +47,7 @@
 #include "playerrecord.h"
 #include <cstdio>
 #include <set>
+#include <sstream>
 #include <string>
 #include <unordered_map>
 
@@ -927,6 +928,132 @@ namespace {
         return ok;
     }
     int SaveAllRecords() { int n = 0; for (const auto& [id, rm] : remotes) n += SaveRecord(id); return n; }
+
+    // ---- Teams (#604): /team commands and team chat, from any player; the server decides, members hear TeamState ----
+    // Defaults posted on #604: at most 8 a team; invites to players online, for 2 minutes; joining takes the team's quest
+    // progress (a team of one left behind goes); leaving or being kicked starts a team of one with a copy of it; the owner
+    // leaving passes ownership to the earliest member.
+    struct TeamInvite { int team = 0; std::string to; double until = 0.0; };
+    std::vector<TeamInvite> teamInvites;
+    double nextTeamStates = 0.0;
+    constexpr int kMaxTeam = 8;
+    constexpr double kInviteSeconds = 120.0;
+    const Session* SessionOfUuid(const std::string& uuid) { for (const Session& s : sessions) if (s.uuid == uuid && s.online) return &s; return nullptr; }
+    const Session* OnlineNamed(const std::string& name) { for (const Session& s : sessions) if (s.online && SameName(s.name, name)) return &s; return nullptr; }
+    std::string NameOfUuid(const std::string& uuid) {
+        for (const Session& s : sessions) if (s.uuid == uuid) return s.name;
+        for (const PlayerRecordMeta& m : PlayerRecord_List()) if (m.uuid == uuid) return m.name;
+        return "a player";
+    }
+    void Tell(const Session& s, const std::string& text) { SendMsg(s.conn, MsgChat{ 0, text }); }
+    void TellTeam(int team, const std::string& text) {
+        if (const TeamRecord* t = Teams_Find(team)) for (const std::string& u : t->members) if (const Session* s = SessionOfUuid(u)) Tell(*s, text);
+    }
+    void SendTeamState(const Session& s) {
+        MsgTeamState m;
+        m.team = Teams_Of(s.uuid);
+        if (const TeamRecord* t = Teams_Find(m.team)) {
+            m.name = t->name;
+            const std::string owner = Teams_OwnerOf(m.team);
+            for (const std::string& u : t->members) {
+                MsgTeamState::Member x;
+                x.name = NameOfUuid(u); x.owner = u == owner; x.you = u == s.uuid;
+                if (const Session* o = SessionOfUuid(u)) { x.online = true; auto it = remotes.find(o->id); x.health = it != remotes.end() ? it->second.survival.health : 0.0f; }
+                m.members.push_back(x);
+            }
+        }
+        for (const TeamInvite& i : teamInvites) if (i.to == s.uuid && GetTime() < i.until) if (const TeamRecord* t = Teams_Find(i.team)) m.invite = t->name;
+        SendMsg(s.conn, m);
+    }
+    void SendTeamStates() {
+        if (GetTime() < nextTeamStates) return;
+        nextTeamStates = GetTime() + 1.0; // (health changes: once a second)
+        teamInvites.erase(std::remove_if(teamInvites.begin(), teamInvites.end(), [](const TeamInvite& i) { return GetTime() >= i.until || !Teams_Find(i.team); }), teamInvites.end());
+        for (const Session& s : sessions) if (s.online) SendTeamState(s);
+    }
+    // Into another team: the team's book goes to them (an emptied old team and its book go).
+    void JoinTeam(const Session& s, int team) {
+        const int emptied = Teams_Move(s.uuid, team);
+        if (emptied) TeamQuests_Forget(emptied);
+        SendQuestBook(s.conn, team);
+    }
+    // Out of their team into a team of one with a copy of its progress (leave, kick). Online or not.
+    void SplitOff(const std::string& uuid, const std::string& name) {
+        const int from = Teams_Of(uuid);
+        const int solo = Teams_CreateSolo(uuid, name);
+        if (from) TeamQuests_Copy(from, solo);
+        if (const Session* s = SessionOfUuid(uuid)) SendQuestBook(s->conn, solo);
+    }
+    // A chat line that is a team command or team chat: handled (true), with a reply to the sender.
+    bool TeamCommand(uint32_t session, const std::string& text) {
+        const Session* me = nullptr;
+        for (const Session& s : sessions) if (s.id == session && s.online) me = &s;
+        if (!me) return false;
+        const bool teamChat = text.rfind("/t ", 0) == 0;
+        if (!teamChat && text != "/team" && text.rfind("/team ", 0) != 0) return false;
+        const int mine = Teams_Of(me->uuid);
+        TeamRecord* team = Teams_Find(mine);
+        const bool owner = team && Teams_OwnerOf(mine) == me->uuid;
+        if (teamChat) {
+            const std::string said = text.substr(3);
+            if (!said.empty()) TellTeam(mine, "[team] " + me->name + ": " + said);
+            return true;
+        }
+        std::istringstream in(text.substr(5));
+        std::string cmd, arg;
+        in >> cmd; std::getline(in, arg);
+        while (!arg.empty() && arg[0] == ' ') arg.erase(0, 1);
+        nextTeamStates = 0.0; // (whatever changes, members hear it at once)
+        if (cmd.empty()) {
+            std::string list;
+            if (team) for (const std::string& u : team->members) list += (list.empty() ? "" : ", ") + NameOfUuid(u) + (u == Teams_OwnerOf(mine) ? " (owner)" : "");
+            Tell(*me, TextFormat("Your team: %s: %s. /team invite NAME, accept, decline, leave, kick NAME, name TEXT; /t TEXT says to your team", team ? team->name.c_str() : "none", list.c_str()));
+        } else if (cmd == "invite") {
+            const Session* to = OnlineNamed(arg);
+            if (!to) Tell(*me, arg + " isn't online");
+            else if (!team) Tell(*me, "You have no team");
+            else if (Teams_Of(to->uuid) == mine) Tell(*me, to->name + " is in your team already");
+            else if ((int)team->members.size() >= kMaxTeam) Tell(*me, TextFormat("A team holds %d at most", kMaxTeam));
+            else {
+                teamInvites.erase(std::remove_if(teamInvites.begin(), teamInvites.end(), [&](const TeamInvite& i) { return i.to == to->uuid && i.team == mine; }), teamInvites.end());
+                teamInvites.push_back({ mine, to->uuid, GetTime() + kInviteSeconds });
+                Tell(*to, me->name + " invites you to " + team->name + ": /team accept (you take that team's quest progress), or /team decline");
+                Tell(*me, "Invited " + to->name);
+            }
+        } else if (cmd == "accept") {
+            const TeamInvite* inv = nullptr;
+            for (const TeamInvite& i : teamInvites) if (i.to == me->uuid && GetTime() < i.until && Teams_Find(i.team)) inv = &i;
+            if (!inv) Tell(*me, "No invite waiting");
+            else if ((int)Teams_Find(inv->team)->members.size() >= kMaxTeam) Tell(*me, "That team is full");
+            else {
+                const int to = inv->team;
+                teamInvites.erase(std::remove_if(teamInvites.begin(), teamInvites.end(), [&](const TeamInvite& i) { return i.to == me->uuid; }), teamInvites.end());
+                JoinTeam(*me, to);
+                TellTeam(to, me->name + " joined the team");
+            }
+        } else if (cmd == "decline") {
+            teamInvites.erase(std::remove_if(teamInvites.begin(), teamInvites.end(), [&](const TeamInvite& i) { return i.to == me->uuid; }), teamInvites.end());
+            Tell(*me, "Invite declined");
+        } else if (cmd == "leave") {
+            if (!team || team->members.size() <= 1) Tell(*me, "You're a team of one already");
+            else { const std::string name = team->name; SplitOff(me->uuid, me->name); TellTeam(mine, me->name + " left the team"); Tell(*me, "You left " + name + ": a team of one now, with its progress so far"); }
+        } else if (cmd == "kick") {
+            std::string target;
+            if (team) for (const std::string& u : team->members) if (SameName(NameOfUuid(u), arg)) target = u;
+            if (!owner) Tell(*me, "Only the team's owner can kick");
+            else if (target.empty() || target == me->uuid) Tell(*me, arg + " isn't in your team");
+            else {
+                SplitOff(target, NameOfUuid(target));
+                TellTeam(mine, NameOfUuid(target) + " was removed from the team");
+                if (const Session* s = SessionOfUuid(target)) Tell(*s, "You were removed from the team: a team of one now, with its progress so far");
+            }
+        } else if (cmd == "name") {
+            if (!owner) Tell(*me, "Only the team's owner can rename it");
+            else if (arg.empty() || !NameAcceptable(arg)) Tell(*me, "/team name TEXT (1-24 characters)");
+            else { Teams_SetName(mine, arg); TellTeam(mine, "The team is now " + arg); }
+        } else Tell(*me, "Unknown: /team " + cmd + " (/team lists the commands)");
+        return true;
+    }
     std::string CleanChat(std::string t) {
         for (char& ch : t) if ((unsigned char)ch < 0x20 || (unsigned char)ch == 0x7F) ch = ' ';
         return t;
@@ -1519,6 +1646,7 @@ namespace {
                 c.from = it->second.session; // (a client speaks only for itself)
                 c.text = CleanChat(c.text); // (#349) no control characters into logs and chat
                 std::string name; for (const Session& s : sessions) if (s.id == c.from) name = s.name;
+                if (TeamCommand(c.from, c.text)) return; // (#604) /team and /t, from anyone
                 if (chatHandler) chatHandler(c.from, name, c.text);
                 else SendToJoined(c);
                 return;
@@ -1616,6 +1744,7 @@ void Host_Update(Scene& world) {
     SendSnapshots(world);
     SendAnimals(world);   // (#334) and the animals near each player
     SendVitals();         // (#337) and each player's survival numbers, to that player
+    SendTeamStates(); // (#604) each player's team, once a second and when it changes
     StepGraves();         // (#804) deaths' drops, pickups, decay and the graves list to everyone
     StepTeamQuests(world); // (#338) team books: evaluate, pay, tell, send
     StepMachines(world);  // (#332) machines: near points, watched views, working states

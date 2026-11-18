@@ -30,7 +30,8 @@ struct TeamRecord {
     int id = 0;
     uint32_t colour = 0;               // 0xRRGGBB
     std::string name;
-    std::vector<std::string> members;  // UUIDs
+    std::vector<std::string> members;  // UUIDs, in the order they joined
+    std::string owner;                // (#604) who may invite away, kick and rename ("" the first member)
     std::string quests;                // a quest block not loaded into this game's quest book, as its lines
 };
 void Teams_Reset();
@@ -45,7 +46,13 @@ const std::string& Teams_Owner();
 void Teams_SetOwner(const std::string& uuid);
 void Teams_ReplaceMember(const std::string& from, const std::string& to);
 const std::vector<TeamRecord>& Teams_All();
+// (#604) Teams on a server: membership changes. A player is in one team; moving them takes them out of the old one (an
+// empty team is removed: Teams_Move returns its id, else 0). The owner leaving passes ownership to the earliest member.
+int Teams_CreateSolo(const std::string& uuid, const std::string& name); // a new team of one for them (out of their old one); its id
+int Teams_Move(const std::string& uuid, int team);                    // into `team`; the id of an old team left empty, else 0
+TeamRecord* Teams_Find(int id);
+std::string Teams_OwnerOf(int id);                                   // its owner (the first member if none was set)
+void Teams_SetName(int id, const std::string& name);
 void Teams_SetQuests(int id, const std::string& text);  // (#338) a server's team book, as its save lines (kept text)
-void Teams_Move(const std::string& uuid, int id);       // (#338 tests) into that team, out of any other (an emptied team stays)
 
 #endif

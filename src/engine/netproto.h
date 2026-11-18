@@ -57,7 +57,7 @@ enum class NetMsg : uint8_t {
     MachineAction = 34, // client -> server (#332): insert, extract, take a slot, fuel; watch / unwatch a machine's screen
     MachineView = 35,   // server -> client (#332): the full view of a machine it watches, a few times a second
     MachineStates = 36, // server -> client (#332): which machines of a plot work now (animations, smoke), when it changes
-    // 37 is #604's (TeamState)
+    TeamState = 37,     // server -> client (#604): the player's team (name, members online with their health) and an invite waiting
     PlantAction = 38,   // client -> server (#335): fell a plant (tree, bush, loose stone), plant or harvest a farmland part
     Plants = 39,        // server -> client (#335): plants removed (id, world time: regrowth runs on the shared clock), at the join and as they go
     FarmFields = 40,    // server -> client (#335): the crops on farmland near the client (crop, growth), when they change
@@ -214,6 +214,10 @@ struct MsgCraftRequest { uint32_t recipe = 0; std::string output; uint8_t count 
 struct MsgMachineAction { uint64_t body = 0; uint32_t plot = 0; int32_t part = -1; uint8_t action = 0; std::string item; uint16_t count = 0; uint8_t slot = 0, which = 0; };
 struct MsgMachineView { uint64_t body = 0; uint32_t plot = 0; int32_t part = -1; MachineView view; };
 struct MsgMachineStates { uint64_t body = 0; uint32_t plot = 0; std::vector<int32_t> working; };
+struct MsgTeamState { // #604: at most 16 members
+    struct Member { std::string name; bool online = false, owner = false, you = false; float health = 0.0f; };
+    int32_t team = 0; std::string name; std::vector<Member> members; std::string invite; // invite: the team inviting us ("" none)
+};
 // (#335) plants and farming
 struct MsgPlantAction { uint8_t action = 0; uint64_t body = 0; uint64_t plant = 0; uint32_t plot = 0; int32_t part = -1; std::string seed; }; // 1 fell (plant), 2 sow (plot, part, seed), 3 harvest (plot, part)
 struct MsgPlants { uint64_t body = 0; uint32_t session = 0; std::vector<std::pair<uint64_t, double>> removed; }; // session: who felled them (0: the join's list)
@@ -371,6 +375,8 @@ void NetWrite(NetWriter& w, const MsgMachineView& m);
 bool NetRead(NetReader& r, MsgMachineView& m);
 void NetWrite(NetWriter& w, const MsgMachineStates& m);
 bool NetRead(NetReader& r, MsgMachineStates& m);
+void NetWrite(NetWriter& w, const MsgTeamState& m);
+bool NetRead(NetReader& r, MsgTeamState& m);
 void NetWrite(NetWriter& w, const MsgPlantAction& m);
 bool NetRead(NetReader& r, MsgPlantAction& m);
 void NetWrite(NetWriter& w, const MsgPlants& m);

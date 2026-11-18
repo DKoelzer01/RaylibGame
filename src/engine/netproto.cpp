@@ -12,7 +12,7 @@ const char* NetMsgName(NetMsg m) {
         case NetMsg::Bye: return "bye"; case NetMsg::Ping: return "ping"; case NetMsg::Pong: return "pong";
         case NetMsg::Input: return "input"; case NetMsg::PlayerState: return "player state"; case NetMsg::TerrainEdit: return "terrain edit"; case NetMsg::Shower: return "shower"; case NetMsg::Roster: return "roster"; case NetMsg::Loadout: return "loadout";
         case NetMsg::PartRequest: return "part request"; case NetMsg::PartRefused: return "part refused"; case NetMsg::PlotEdit: return "plot edit";
-        case NetMsg::EditRequest: return "edit request"; case NetMsg::EditRefused: return "edit refused"; case NetMsg::InventoryDelta: return "inventory delta"; case NetMsg::Chat: return "chat"; case NetMsg::PlayerSnapshot: return "player snapshot"; case NetMsg::Animals: return "animals"; case NetMsg::AnimalHit: return "animal hit"; case NetMsg::Damage: return "damage"; case NetMsg::Vitals: return "vitals"; case NetMsg::UseItem: return "use item"; case NetMsg::BedUse: return "bed use"; case NetMsg::Graves: return "graves"; case NetMsg::QuestBook: return "quest book"; case NetMsg::CraftRequest: return "craft request"; case NetMsg::MachineAction: return "machine action"; case NetMsg::MachineView: return "machine view"; case NetMsg::MachineStates: return "machine states"; case NetMsg::PlantAction: return "plant action"; case NetMsg::Plants: return "plants"; case NetMsg::FarmFields: return "farm fields";
+        case NetMsg::EditRequest: return "edit request"; case NetMsg::EditRefused: return "edit refused"; case NetMsg::InventoryDelta: return "inventory delta"; case NetMsg::Chat: return "chat"; case NetMsg::PlayerSnapshot: return "player snapshot"; case NetMsg::Animals: return "animals"; case NetMsg::AnimalHit: return "animal hit"; case NetMsg::Damage: return "damage"; case NetMsg::Vitals: return "vitals"; case NetMsg::UseItem: return "use item"; case NetMsg::BedUse: return "bed use"; case NetMsg::Graves: return "graves"; case NetMsg::QuestBook: return "quest book"; case NetMsg::CraftRequest: return "craft request"; case NetMsg::MachineAction: return "machine action"; case NetMsg::MachineView: return "machine view"; case NetMsg::MachineStates: return "machine states"; case NetMsg::TeamState: return "team state"; case NetMsg::PlantAction: return "plant action"; case NetMsg::Plants: return "plants"; case NetMsg::FarmFields: return "farm fields";
         case NetMsg::SyncIndex: return "sync index"; case NetMsg::SyncWant: return "sync want"; case NetMsg::SyncData: return "sync data"; case NetMsg::SyncDone: return "sync done";
         default: return "?";
     }
@@ -549,6 +549,7 @@ bool ParseAny(const std::vector<uint8_t>& b) {
         case NetMsg::MachineAction: { MsgMachineAction m; return NetRead(r, m); }
         case NetMsg::MachineView: { MsgMachineView m; return NetRead(r, m); }
         case NetMsg::MachineStates: { MsgMachineStates m; return NetRead(r, m); }
+        case NetMsg::TeamState: { MsgTeamState m; return NetRead(r, m); }
         case NetMsg::PlantAction: { MsgPlantAction m; return NetRead(r, m); }
         case NetMsg::Plants: { MsgPlants m; return NetRead(r, m); }
         case NetMsg::FarmFields: { MsgFarmFields m; return NetRead(r, m); }
@@ -701,6 +702,14 @@ bool NetProto_Test() {
         check(RoundTrip(ga, gb, &s7) && gb.graves.size() == 1 && gb.graves[0].id == 7 && gb.graves[0].owner == "victim" && gb.graves[0].style == 2 && gb.graves[0].diedAt == 1795000000 && fabs(gb.graves[0].local.y - 60000.25) < 1e-6, "graves"); samples.push_back(s7);
         MsgQuestBook qa{ 3, "quest 2\nside_done e0f\nquest_count eat 1.00\n" }, qb; std::vector<uint8_t> s8;
         check(RoundTrip(qa, qb, &s8) && qb.team == 3 && qb.text == qa.text, "quest book"); samples.push_back(s8);
+        { // #604
+            MsgTeamState a, b; std::vector<uint8_t> s;
+            a.team = 3; a.name = "alice's_team"; a.invite = "bob's_team";
+            a.members = { { "alice", true, true, true, 87.5f }, { "carol", false, false, false, 0.0f } };
+            check(RoundTrip(a, b, &s) && b.team == 3 && b.name == a.name && b.invite == a.invite && b.members.size() == 2 && b.members[0].owner && b.members[0].you &&
+                  b.members[0].online && fabsf(b.members[0].health - 87.5f) < 0.01f && b.members[1].name == "carol" && !b.members[1].online, "team state");
+            samples.push_back(s);
+        }
         MsgCraftRequest ca{ 12, "oak_planks", 5, true }, cb; std::vector<uint8_t> s9;
         check(RoundTrip(ca, cb, &s9) && cb.recipe == 12 && cb.output == "oak_planks" && cb.count == 5 && cb.useChests, "craft request"); samples.push_back(s9);
         MsgMachineAction ma{ 0x2000000000000003ull, 4, 17, 5, "", 0, 2, 1 }, mb; std::vector<uint8_t> s10;
@@ -944,6 +953,28 @@ bool NetRead(NetReader& r, MsgFarmFields& m) {
         if (part < 0 || part > 1000000 || f.crop.empty()) r.ok = false;
         f.part = (int32_t)part;
         m.fields.push_back(std::move(f));
+    }
+    return Done(r);
+}
+// ---- Teams (#604) ----
+void NetWrite(NetWriter& w, const MsgTeamState& m) {
+    Id(w, NetMsg::TeamState); w.u32((uint32_t)m.team); w.str(m.name.substr(0, 40)); w.str(m.invite.substr(0, 40));
+    const size_t n = std::min<size_t>(m.members.size(), 16);
+    w.u8((uint8_t)n);
+    for (size_t i = 0; i < n; ++i) {
+        const MsgTeamState::Member& x = m.members[i];
+        w.str(x.name.substr(0, 32)); w.u8((uint8_t)((x.online ? 1 : 0) | (x.owner ? 2 : 0) | (x.you ? 4 : 0))); w.f32(x.health);
+    }
+}
+bool NetRead(NetReader& r, MsgTeamState& m) {
+    m.team = (int32_t)r.u32(); m.name = r.str(40); m.invite = r.str(40);
+    const int n = r.u8();
+    if (n > 16) return false;
+    m.members.clear();
+    for (int i = 0; i < n && r.ok; ++i) {
+        MsgTeamState::Member x; x.name = r.str(32);
+        const uint8_t f = r.u8(); x.online = f & 1; x.owner = f & 2; x.you = f & 4; x.health = r.f32();
+        m.members.push_back(x);
     }
     return Done(r);
 }

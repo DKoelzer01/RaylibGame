@@ -35,6 +35,7 @@
 #include "combat.h"
 #include "playersession.h"
 #include "avatar.h"
+#include "netclient.h"
 #include "gamesave.h"
 #include <raymath.h>
 
@@ -927,22 +928,69 @@ static void DrawComing(const char* title, const char* text) {
     ImGui::PopTextWrapPos();
 }
 
+// The Team screen (#604). Joined to a server: the team as the server says (members, who's online, their health, the owner),
+// with Invite / Leave / Kick / Rename / team chat as /team commands (the server decides), and an invite waiting to accept.
+// Single player: a team of one.
 static void DrawTeam() {
-    // Today a team of one in single player; multiplayer teams (invites, shared claims) come with #604.
-    const std::string me = PlayerId_Local();
-    const int id = Teams_Of(me);
-    const TeamRecord* team = nullptr;
-    for (const TeamRecord& t : Teams_All()) if (t.id == id) team = &t;
-    ImGui::Dummy(ImVec2(0, 12 * GameUI_Scale()));
-    if (team) {
-        ImGui::TextColored(ImVec4(0.88f, 0.66f, 0.25f, 1.0f), "%s", team->name.c_str());
-        ImGui::Text("%d member%s. Quests and tiers belong to the team.", (int)team->members.size(), team->members.size() == 1 ? "" : "s");
-    } else {
-        ImGui::TextColored(ImVec4(0.88f, 0.66f, 0.25f, 1.0f), "Your team");
-        ImGui::TextWrapped("You are a team of one: the world saves your team the first time it saves.");
+    const float s = GameUI_Scale();
+    ImGui::Dummy(ImVec2(0, 12 * s));
+    NetClient* c = gNetClient && gNetClient->state == NetClient::State::Joined ? gNetClient : nullptr;
+    if (!c) {
+        const int id = Teams_Of(PlayerId_Local());
+        const TeamRecord* team = nullptr;
+        for (const TeamRecord& t : Teams_All()) if (t.id == id) team = &t;
+        ImGui::TextColored(ImVec4(0.88f, 0.66f, 0.25f, 1.0f), "%s", team ? team->name.c_str() : "Your team");
+        ImGui::TextWrapped("You are a team of one. Quests and tiers belong to the team. In multiplayer, invite others to share them: Multiplayer on the main menu.");
+        return;
     }
-    ImGui::Dummy(ImVec2(0, 8 * GameUI_Scale()));
-    DrawComing("Coming with multiplayer teams (#604)", "Invite other players, see teammates' health and where they are, share quest progress, recipes and land claims, and set who may build or open chests in your claims.");
+    const MsgTeamState& t = c->team;
+    auto say = [&](const std::string& line) { NetClient_SendChat(*c, line); };
+    bool youOwn = false;
+    for (const auto& m : t.members) youOwn = youOwn || (m.you && m.owner);
+    if (!t.invite.empty()) { // an invite waiting
+        ImGui::TextColored(ImVec4(0.55f, 0.9f, 0.55f, 1.0f), "%s invites you. Joining takes that team's quest progress%s.", t.invite.c_str(),
+                           t.members.size() <= 1 ? " (your own goes)" : "");
+        if (ImGui::Button("Accept")) say("/team accept");
+        ImGui::SameLine();
+        if (ImGui::Button("Decline")) say("/team decline");
+        ImGui::Separator();
+    }
+    ImGui::TextColored(ImVec4(0.88f, 0.66f, 0.25f, 1.0f), "%s", t.name.empty() ? "Your team" : t.name.c_str());
+    ImGui::SameLine();
+    ImGui::TextDisabled("%d member%s; quests, tiers and recipes are shared", (int)t.members.size(), t.members.size() == 1 ? "" : "s");
+    if (ImGui::BeginTable("members", 4, ImGuiTableFlags_RowBg | ImGuiTableFlags_SizingStretchProp)) {
+        for (const auto& m : t.members) {
+            ImGui::TableNextRow();
+            ImGui::TableNextColumn();
+            ImGui::Text("%s%s%s", m.name.c_str(), m.you ? " (you)" : "", m.owner ? "  - owner" : "");
+            ImGui::TableNextColumn();
+            if (m.online) ImGui::ProgressBar(std::clamp(m.health / 100.0f, 0.0f, 1.0f), ImVec2(160 * s, 0), TextFormat("HP %.0f", m.health));
+            else ImGui::TextDisabled("offline");
+            ImGui::TableNextColumn();
+            ImGui::TableNextColumn();
+            if (youOwn && !m.you) { ImGui::PushID(m.name.c_str()); if (ImGui::SmallButton("Kick")) say("/team kick " + m.name); ImGui::PopID(); }
+        }
+        ImGui::EndTable();
+    }
+    ImGui::Spacing();
+    static char invite[32] = {}, rename[32] = {}, teamSay[160] = {};
+    ImGui::SetNextItemWidth(220 * s);
+    ImGui::InputTextWithHint("##invite", "player name", invite, sizeof(invite));
+    ImGui::SameLine();
+    if (ImGui::Button("Invite") && invite[0]) { say(std::string("/team invite ") + invite); invite[0] = 0; }
+    if (youOwn) {
+        ImGui::SetNextItemWidth(220 * s);
+        ImGui::InputTextWithHint("##rename", "a new team name", rename, sizeof(rename));
+        ImGui::SameLine();
+        if (ImGui::Button("Rename") && rename[0]) { say(std::string("/team name ") + rename); rename[0] = 0; }
+    }
+    if (t.members.size() > 1 && ImGui::Button("Leave the team")) say("/team leave");
+    ImGui::Separator();
+    ImGui::SetNextItemWidth(420 * s);
+    if (ImGui::InputTextWithHint("##teamsay", "say to your team (Enter)", teamSay, sizeof(teamSay), ImGuiInputTextFlags_EnterReturnsTrue) && teamSay[0]) {
+        say(std::string("/t ") + teamSay); teamSay[0] = 0;
+    }
+    ImGui::TextDisabled("Also from the command line: /team, /team invite NAME, /team accept, /team leave, /t TEXT");
 }
 
 // ---- The inventory screen's player (#822): a turning preview, the suit, its module slots and the off hand ----
@@ -1211,7 +1259,29 @@ static void CursorSink(const std::string& id, int count, float heat) { // heat: 
 }
 void GameUI_InitPickupFeed() { inventory.onAdded = OnPickup; Factory::SetCursorSink(CursorSink); }
 
+// (#604) Your teammates on the HUD: each one's name and health (offline ones greyed), on the left under the quests; only
+// when joined to a server and in a team of two or more (non-teammates show no health).
+static void DrawTeamStrip() {
+    const NetClient* c = gNetClient && gNetClient->state == NetClient::State::Joined ? gNetClient : nullptr;
+    if (!c || c->team.members.size() < 2) return;
+    const float s = GameUI_Scale();
+    const int x = (int)(12 * s), w = (int)(150 * s), h = (int)(10 * s), fs = (int)(14 * s), row = fs + h + (int)(8 * s);
+    int y = (int)(GetScreenHeight() * 0.36f);
+    int n = 0; for (const auto& m : c->team.members) n += !m.you;
+    DrawRectangleRounded({ (float)(x - 6 * s), (float)(y - 6 * s), (float)(w + 12 * s), (float)(n * row + 8 * s) }, 0.12f, 6, Fade(BLACK, 0.42f));
+    for (const auto& m : c->team.members) {
+        if (m.you) continue;
+        DrawText(m.name.c_str(), x, y, fs, m.online ? RAYWHITE : Fade(RAYWHITE, 0.45f));
+        if (m.online) {
+            DrawRectangle(x, y + fs + (int)(2 * s), w, h, Fade(BLACK, 0.55f));
+            DrawRectangle(x, y + fs + (int)(2 * s), (int)(w * std::clamp(m.health / 100.0f, 0.0f, 1.0f)), h, Color{ 230, 70, 70, 255 });
+        } else DrawText("offline", x + MeasureText(m.name.c_str(), fs) + (int)(8 * s), y, fs, Fade(RAYWHITE, 0.4f));
+        y += row;
+    }
+}
+
 void GameUI_DrawHUD(Scene& world) {
+    DrawTeamStrip();
     // Speeds against the body you are near (its co-rotating surface frame, as the rocket HUD's "surface" speed): the
     // world velocity includes the planet's spin and orbit, which read as 60-90 m/s while hovering (#239).
     // On the ground the player's velocity is already relative to the surface (Player::stepPhysics): only

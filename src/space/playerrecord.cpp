@@ -76,7 +76,7 @@ int Teams_Join(const std::string& uuid, const std::string& name, uint32_t colour
     int id = 1;
     for (const TeamRecord& t : teams) id = std::max(id, t.id + 1);
     TeamRecord t;
-    t.id = id; t.colour = colour & 0xFFFFFF; t.name = name.empty() ? "team" : name; t.members.push_back(uuid);
+    t.id = id; t.colour = colour & 0xFFFFFF; t.name = name.empty() ? "team" : name; t.members.push_back(uuid); t.owner = uuid;
     teams.push_back(t);
     return id;
 }
@@ -95,6 +95,11 @@ bool Teams_LoadLine(const char* tok, FILE* f, const std::string& localId) {
             TeamRecord t; t.id = id; t.colour = colour & 0xFFFFFF; t.name = word;
             teams.push_back(t);
         }
+        return true;
+    }
+    if (strcmp(tok, "team_owner") == 0) { // (#604)
+        int id = 0;
+        if (fscanf(f, " %d %127s", &id, word) == 2 && PlayerId_Valid(word)) if (TeamRecord* t = Find(id)) t->owner = word;
         return true;
     }
     if (strcmp(tok, "team_member") == 0) {
@@ -138,6 +143,7 @@ void Teams_Save(FILE* f, const std::string& localId, const std::function<void(FI
         for (char& c : name) if (isspace((unsigned char)c)) c = '_';
         fprintf(f, "team %d %06x %s\n", t.id, t.colour, name.empty() ? "team" : name.c_str());
         for (const std::string& m : t.members) fprintf(f, "team_member %d %s\n", t.id, m.c_str());
+        if (!t.owner.empty()) fprintf(f, "team_owner %d %s\n", t.id, t.owner.c_str()); // (#604)
         if (t.id == mine && writeLocalQuests) { fprintf(f, "team_quests %d\n", t.id); writeLocalQuests(f); fprintf(f, "team_quests_end\n"); }
         else if (!t.quests.empty()) { fprintf(f, "team_quests %d\n%s", t.id, t.quests.c_str()); fprintf(f, "team_quests_end\n"); }
     }
@@ -158,9 +164,41 @@ std::string PlayerId_FromName(const std::string& name) {
 
 void Teams_SetQuests(int id, const std::string& text) { if (TeamRecord* t = Find(id)) t->quests = text; }
 
-void Teams_Move(const std::string& uuid, int id) {
+
+// ---- Team membership on a server (#604) ----
+TeamRecord* Teams_Find(int id) { return Find(id); }
+std::string Teams_OwnerOf(int id) {
+    const TeamRecord* t = Find(id);
+    if (!t) return {};
+    if (!t->owner.empty() && std::find(t->members.begin(), t->members.end(), t->owner) != t->members.end()) return t->owner;
+    return t->members.empty() ? std::string() : t->members.front();
+}
+void Teams_SetName(int id, const std::string& name) { if (TeamRecord* t = Find(id)) t->name = name.empty() ? t->name : name.substr(0, 32); }
+
+int Teams_Move(const std::string& uuid, int id) {
     TeamRecord* to = Find(id);
-    if (!to) return;
-    for (TeamRecord& t : teams) t.members.erase(std::remove(t.members.begin(), t.members.end(), uuid), t.members.end());
+    if (!to || std::find(to->members.begin(), to->members.end(), uuid) != to->members.end()) return 0;
+    int emptied = 0;
+    for (TeamRecord& t : teams) {
+        auto it = std::find(t.members.begin(), t.members.end(), uuid);
+        if (it == t.members.end()) continue;
+        t.members.erase(it);
+        if (t.owner == uuid) t.owner = t.members.empty() ? std::string() : t.members.front(); // the earliest member left
+        if (t.members.empty()) emptied = t.id;
+    }
+    to = Find(id); // (the vector is unchanged so far, but find it again before the erase below)
     to->members.push_back(uuid);
+    if (to->owner.empty()) to->owner = to->members.front();
+    if (emptied) teams.erase(std::remove_if(teams.begin(), teams.end(), [&](const TeamRecord& t) { return t.id == emptied; }), teams.end());
+    return emptied;
+}
+
+int Teams_CreateSolo(const std::string& uuid, const std::string& name) {
+    int id = 1;
+    for (const TeamRecord& t : teams) id = std::max(id, t.id + 1);
+    TeamRecord t;
+    t.id = id; t.name = (name.empty() ? std::string("player") : name) + "'s_team"; t.owner = uuid;
+    teams.push_back(t);
+    Teams_Move(uuid, id); // (out of the old one; the new one is theirs)
+    return id;
 }
