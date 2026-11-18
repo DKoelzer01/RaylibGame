@@ -189,6 +189,11 @@ bool IsUnderwater(Scene& world, Vector3 renderPoint);
 Vector3 RiverCurrent(Planetoid* body, Vector3 renderPoint);
 void SetWorldSavePath(const char* path); // bench runs save to their own file, never the player's
 const char* WorldSavePath();
+// (#346) after each save, the world file and player records are copied to <save>.backups/<date-time>/; the newest
+// BackupsKept() stay (RAYLIBGAME_BACKUPS=N, default 5, 0 none).
+void BackupSave();
+int BackupsKept();
+std::string BackupDir();
 extern bool gSandboxWorld; // --sandbox (#662): the start planet is a flat test plane (set before world generation)
 class JobSystem;
 JobSystem& WorldJobs(); // the shared worker pool (chunk builds, foliage tiles)
