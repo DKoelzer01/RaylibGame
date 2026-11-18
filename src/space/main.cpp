@@ -9140,6 +9140,7 @@ int main(int argc, char** argv)
                     if (player.autoWalk) scripted.hold(Act::Forward);
                     if (player.autoJump) { scripted.press(Act::Jump); player.autoJump = false; }
                     if (player.autoCrouch) scripted.hold(Act::Down);
+                    if (player.autoWalk && player.autoSprint) scripted.hold(Act::Sprint);
                     const PlayerInput& moveIn = gameInput ? stepIn : scripted.enabled ? scripted : PlayerInput::None();
                     Combat_Step(session, simDt, moveIn); // stamina and the block before this step's movement (#165)
                     // Physics in the player's own frame (#314): render space centred on the feet for the step, whatever the
@@ -10528,7 +10529,26 @@ int main(int argc, char** argv)
                 Crafting_Request(recipeOf("ore_scanner"), 1);
                 crafted = true;
             }
+            // (#338 slice 3) exploring: the walker goes ~600 m east, the stroller ~100 m west (sprinting); the server reveals the
+            // tiles around each for their team. Each reports its own map's tiles (what it revealed alone) and the team's total.
+            const bool walker = role && !strcmp(role, "walker"), stroller = role && !strcmp(role, "stroller");
+            static Vector3 walkStart{}; static bool walkStarted = false; static float walked = 0.0f;
+            if ((walker || stroller) && gJoin.questBooks > 0 && player.nearest) {
+                Planetoid* wb = player.nearest;
+                const Vector3 me = wb->toLocalD(player.position).toFloat();
+                if (!walkStarted) { walkStart = me; walkStarted = true; }
+                const Vector3 up = Vector3Normalize(me);
+                Vector3 east = Vector3Normalize(Vector3CrossProduct(Vector3{ 0, 1, 0 }, up));
+                if (stroller) east = Vector3Negate(east);
+                player.forward = wb->dirToWorld(east);
+                walked = Vector3Distance(me, walkStart);
+                player.autoWalk = walked < (walker ? 600.0f : 100.0f);
+                player.autoSprint = true;
+            }
             if (GetTime() - t0 > (getenv("RAYLIBGAME_QUESTS_SECONDS") ? atof(getenv("RAYLIBGAME_QUESTS_SECONDS")) : 25.0)) {
+                if (walker || stroller)
+                    printf("bench: net explore (%s, #338): walked %.0f m; own tiles %d; team explored %.0f\n", role, walked,
+                           player.nearest ? Nav_ExploredTiles(player.nearest->name) : 0, QuestBook_CountOf("explored"));
                 printf("bench: net quests (%s, #338): %d books heard, team %d; e0f done %d; berries %d -> %d; quest news %d\n", role ? role : "?",
                        gJoin.questBooks, gJoin.questTeam, (int)QuestTree_IsDone("e0f"), berries0, inventory.count("berries"), gQuestNewsHeard);
                 printf("bench: net crafting (%s, #338): logs %d -> %d, planks %d -> %d\n", role ? role : "?", logs0, inventory.count("oak_log"), planks0, inventory.count("oak_planks"));

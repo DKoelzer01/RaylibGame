@@ -308,15 +308,7 @@ void Nav_Update(Scene& world, bool inputEnabled, bool gameInput) {
         lastReveal = SimTime();
         TileSet& set = explored[h.body->name];
         const size_t before = set.size();
-        Vector3 east, north;
-        if (!Frame(h.up, east, north)) { east = { 1, 0, 0 }; north = Vector3Normalize(Vector3CrossProduct(h.up, east)); }
-        const float R = h.field->radius;
-        for (float a = -kRevealRadius; a <= kRevealRadius; a += 100.0f)
-            for (float b = -kRevealRadius; b <= kRevealRadius; b += 100.0f) {
-                if (a * a + b * b > kRevealRadius * kRevealRadius) continue;
-                const Vector3 d = Vector3Normalize(Vector3Add(Vector3Scale(h.up, R), Vector3Add(Vector3Scale(east, a), Vector3Scale(north, b))));
-                set.insert(TileKey(d, R));
-            }
+        Nav_RevealTiles(h.up, h.field->radius, set);
         if (set.size() != before) ++exploredVersion[h.body->name];
         if (set.size() != before) { size_t all = 0; for (const auto& kv : explored) all += kv.second.size(); QuestBook_AtLeast("explored", (double)all); }
     }
@@ -594,4 +586,17 @@ bool Nav_LoadLine(const char* tok, FILE* f) {
         return true;
     }
     return false;
+}
+
+int Nav_RevealTiles(Vector3 up, float R, std::unordered_set<uint64_t>& set) {
+    const size_t before = set.size();
+    Vector3 east, north;
+    if (!Frame(up, east, north)) { east = { 1, 0, 0 }; north = Vector3Normalize(Vector3CrossProduct(up, east)); }
+    for (float a = -kRevealRadius; a <= kRevealRadius; a += 100.0f)
+        for (float b = -kRevealRadius; b <= kRevealRadius; b += 100.0f) {
+            if (a * a + b * b > kRevealRadius * kRevealRadius) continue;
+            const Vector3 d = Vector3Normalize(Vector3Add(Vector3Scale(up, R), Vector3Add(Vector3Scale(east, a), Vector3Scale(north, b))));
+            set.insert(TileKey(d, R));
+        }
+    return (int)(set.size() - before);
 }

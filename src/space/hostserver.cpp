@@ -22,6 +22,7 @@
 #include "suit.h"
 #include "combat.h"
 #include "teamquests.h"
+#include "navigation.h"
 #include "recipebook.h"
 #include "playerrecord.h"
 #include "inventory.h"
@@ -98,6 +99,7 @@ namespace {
         SuitStats suitStats = Suit_StatsOf(SuitState{});
         bool deathHandled = false;   // (#804) this death's drops are done (a grave, losses, or none)
         bool inNight = false; int deathsAtDusk = 0; // (#338) a night survived (dark fell and day came back without a death)
+        std::unordered_set<uint64_t> tilesAlone; // (#338 tests) the map tiles this player revealed itself, this session (logged on leaving)
         double editTokens = 2.0, editTokensAt = -1.0;
         double partTokens = 4.0, partTokensAt = -1.0; // building (#330): placing and breaking, a few a second
         PlayerRecordMeta record;    // (#346) their record's id, name, times, and the lines the server keeps as text
@@ -345,6 +347,20 @@ namespace {
             }
             if (dark && !r.inNight) { r.inNight = true; r.deathsAtDusk = r.survival.deaths; }
             else if (!dark && r.inNight) { r.inNight = false; if (r.survival.deaths == r.deathsAtDusk) TeamEvent(sid, "count", "nights"); }
+            // (#338 slice 3) exploring and visiting, from the server's own view of the player: the map tiles around it (the
+            // local map's tiles and radius) for its team, and a moon or the ring within two radii
+            if (const int team = TeamOfSession(sid)) {
+                Planetoid* b = r.player.nearest;
+                if (auto pf = std::dynamic_pointer_cast<const PlanetField>(b->field); pf && !b->flat) {
+                    const DVec3 l = b->toLocalD(r.player.position);
+                    if (l.length() > 1.0) {
+                        TeamQuests_Explore(team, b->name, Vector3Normalize(l.toFloat()), pf->radius);
+                        Nav_RevealTiles(Vector3Normalize(l.toFloat()), pf->radius, r.tilesAlone); // (tests: what it revealed alone)
+                    }
+                }
+                if ((b->kind == BodyKind::Moon || b->kind == BodyKind::Asteroid) && b->toLocalD(r.player.position).length() < 2.0 * b->radius * b->scale)
+                    TeamQuests_Visit(team, b->kind == BodyKind::Moon);
+            }
         }
         std::map<int, std::vector<std::pair<uint32_t, uint32_t>>> online; // team -> (session, conn)
         for (const auto& [conn, p] : peers) if (p.joined) if (const int t = TeamOfSession(p.session)) online[t].push_back({ p.session, conn });
@@ -576,7 +592,11 @@ namespace {
         // already back on another connection)
         bool offline = true;
         for (const Session& s : sessions) if (s.id == session && s.online) offline = false;
-        if (wasJoined && offline) { SaveRecord(session); remotes.erase(session); }
+        if (wasJoined && offline) {
+            if (auto rit = remotes.find(session); rit != remotes.end() && !rit->second.tilesAlone.empty())
+                printf("host: session %u revealed %zu map tiles itself; its team explored %.0f\n", session, rit->second.tilesAlone.size(), TeamQuests_Explored(TeamOfSession(session)));
+            SaveRecord(session); remotes.erase(session);
+        }
         if (wasJoined) SendRoster(); // the others see them go
     }
     void Refuse(uint32_t conn, NetReject why, const std::string& detail) {
