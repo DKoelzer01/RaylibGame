@@ -565,6 +565,7 @@ int main(int argc, char** argv)
     bool hostNewWorld = false;     // --host: the save did not exist yet
     bool benchHeadless = false;    // --test-headless (#311): the sim runs with --headless, nothing drawn
     bool benchTrapping = false;    // --test-trapping (#176)
+    bool benchBed = false;        // --test-bed (#800)
     bool benchCombat = false;      // --test-combat: knockback, shield blocks and stamina, deaths by difficulty, the grave (#165)
     bool benchFishing = false;     // --test-fishing (#176)
     bool benchStructures = false;  // --test-structures: ruins, wrecks and wonders (#164)
@@ -903,6 +904,7 @@ int main(int argc, char** argv)
         if (std::string(argv[i]) == "--test-structures") benchStructures = true;
         if (std::string(argv[i]) == "--test-fishing") benchFishing = true;
         if (std::string(argv[i]) == "--test-trapping") benchTrapping = true;
+        if (std::string(argv[i]) == "--test-bed") benchBed = true;
         if (std::string(argv[i]) == "--test-combat") benchCombat = true;
         if (std::string(argv[i]) == "--test-meteor") benchMeteor = true;
         if (std::string(argv[i]) == "--test-shower") benchShower = true;
@@ -1387,6 +1389,11 @@ int main(int argc, char** argv)
         gAnimalHitRequest = [](uint64_t netId) { NetClient_HitAnimal(gJoin, netId); };
         gAnimalUseRequest = [](uint64_t netId, int action) { NetClient_UseAnimal(gJoin, netId, action); };
         gSurvivalUseRequest = [](const std::string& item) { NetClient_UseItem(gJoin, item); }; // (#337) the server owns our survival and inventory
+        gBedUseRequest = [](const Planetoid& body, const Plot& plot, int part) { // (#800) and our spawn bed
+            if (part < 0 || part >= (int)plot.parts.size()) return;
+            const Int3 o = plot.parts[part].origin; const int cell[3] = { o.x, o.y, o.z };
+            NetClient_UseBed(gJoin, body.name, plot.id, cell);
+        };
         printf("join: joined %s as %s, session %u%s; seed %u, %zu bodies, %s world-gen settings%s; server world time %.1f s\n", joinAddr.c_str(), joinName.c_str(), gJoin.welcome.session,
                gJoin.welcome.reconnected ? " (reconnected)" : "", gJoin.welcome.seed, sys.bodies.size(), joinParams.isDefault() ? "default" : "custom",
                gJoin.welcome.sandbox ? ", sandbox" : "", gJoin.welcome.worldTime);
@@ -4948,6 +4955,11 @@ int main(int argc, char** argv)
                             if (n == "mine") { a.held = "iron_pickaxe"; a.action = 1; a.actionPhase = (float)fmod(t * 1.5, 1.0); }
                             if (n == "chop") { a.held = "steel_axe"; a.action = 2; a.actionPhase = (float)fmod(t * 1.5 + 0.5, 1.0); }
                             if (n == "item") { a.held = "stone"; a.lookPitch = 0.4f; a.suitTier = 3; }
+                            // (#341) picked suit colours on some of them (alpha 0 = the default grey on the rest)
+                            if (n == "walk") a.suitColor = { 210, 74, 47, 255 };
+                            if (n == "run") a.suitColor = { 60, 140, 220, 255 };
+                            if (n == "stand") a.suitColor = { 230, 200, 60, 255 };
+                            if (n == "chop") a.suitColor = { 70, 170, 90, 255 };
                             gBenchAvatars.push_back(a);
                         }
                         // Camera: front three-quarter for 4 s, then from the side (along the rows) for 3 s.
@@ -10299,12 +10311,34 @@ int main(int argc, char** argv)
             // death and respawn come from the server's Vitals; while dead nothing bites it.
             static float food0 = -1.0f, foodAfter = -1.0f; static int berries0 = -1, berriesAfter = -1; static double ateAt = -1.0;
             static bool deadSeen = false, respawned = false; static int bitesAtDeath = 0, bitesWhileDead = 0;
+            static bool bedRequested = false, bedSet = false; static double respawnedAt = 0.0; static float bedWake = -1.0f; static Vector3 bedTop{}; // (#800)
             if (victim && ph == 2) {
                 if (ateAt < 0.0 && gJoin.vitalsMsgs > 0 && inventory.count("berries") > 0) { food0 = gJoin.vitals.food; berries0 = inventory.count("berries"); Survival_UseItem("berries"); ateAt = GetTime(); }
                 if (ateAt > 0.0 && foodAfter < 0.0f && GetTime() - ateAt > 1.5) { foodAfter = gJoin.vitals.food; berriesAfter = inventory.count("berries"); }
                 const bool deadNow = gJoin.vitals.flags & 1;
                 if (deadNow && !deadSeen) { deadSeen = true; bitesAtDeath = gJoin.damageTaken; }
-                if (deadSeen && !deadNow && !respawned && gJoin.vitals.health > 99.0f) { respawned = true; bitesWhileDead = gJoin.damageTaken - bitesAtDeath; }
+                if (deadSeen && !deadNow && !respawned && gJoin.vitals.health > 99.0f) { respawned = true; bitesWhileDead = gJoin.damageTaken - bitesAtDeath; respawnedAt = GetTime(); }
+                // (#800) a bed the host gave it: placed 3 m away through the server, set as the spawn (a BedUse request); the
+                // death's respawn should wake it on top of the bed.
+                static bool shown = false;
+                if (!shown) { shown = true; printf("bench: victim carries berries %d, bed %d (deltas %d)\n", inventory.count("berries"), inventory.count("bed"), gJoin.inventoryDeltas); }
+                if (b && inventory.count("bed") > 0 && !bedRequested) {
+                    const Vector3 up = Vector3Normalize(me);
+                    const Vector3 t1 = Vector3Normalize(Vector3CrossProduct(up, fabsf(up.y) < 0.9f ? Vector3{ 0, 1, 0 } : Vector3{ 1, 0, 0 }));
+                    bedRequested = NetClient_RequestPart(gJoin, *b, nullptr, Vector3Add(me, Vector3Scale(t1, 3.0f)), Part{ PartType::Bed, { 0, 0, 0 }, 0, 0 }, false, -1) != 0;
+                }
+                if (b && bedRequested && !bedSet && b->plots)
+                    for (auto& pl : b->plots->plots) {
+                        for (int k = 0; k < (int)pl->parts.size() && !bedSet; ++k)
+                            if (pl->parts[k].type == PartType::Bed) {
+                                SurvivalState probe; Planetoid* bb = nullptr; Vector3 top{};
+                                Survival_SetBedFor(probe, *b, *pl, k, false);
+                                if (Survival_BedSpawnFor(probe, bb, top)) bedTop = b->toLocal(top);
+                                gBedUseRequest(*b, *pl, k); bedSet = true;
+                            }
+                        if (bedSet) break;
+                    }
+                if (respawned && bedWake < 0.0f && GetTime() - respawnedAt > 0.5 && bedSet) bedWake = Vector3Distance(me, bedTop);
                 static bool asked = false;
                 if (health0 < 0.0f) health0 = survival.health;
                 if (!asked) { const int i = Animals_Nearest(me, 3.0f); if (i >= 0) { asked = true; NetClient_UseAnimal(gJoin, Animals_NetId(i), 1); } } // (in reach: it charges us)
@@ -10314,6 +10348,7 @@ int main(int argc, char** argv)
                     printf("bench: net survival (victim, #337): %d vitals heard; ate berries: food %.2f -> %.2f, berries %d -> %d; died %d (deaths %d), "
                            "respawned %d, bitten while dead %d\n", gJoin.vitalsMsgs, food0, foodAfter, berries0, berriesAfter, (int)deadSeen, (int)gJoin.vitals.deaths,
                            (int)respawned, bitesWhileDead);
+                    printf("bench: net bed (victim, #800): placed %d, set %d; woke %.2f m from the bed's top (beds carried %d)\n", (int)bedRequested, (int)bedSet, bedWake, inventory.count("bed"));
                     NetClient_Disconnect(gJoin);
                     benchNetAnimals = false;
                 }
@@ -10699,6 +10734,50 @@ int main(int argc, char** argv)
                 const bool ok = placed && got >= 1;
                 printf("bench: trapping: snare placed %d; aged 2 h, it caught and the player collected %d raw meat (hide %d) -> %s\n", placed, got, inventory.count("hide"), ok ? "PASS" : "FAIL");
                 benchTrapping = false;
+            }
+        }
+        // --test-bed (#800): a bed 8 m from the start, set as the spawn; a death wakes the player on it; with the bed gone the
+        // next death wakes them at the start (and the bed is forgotten); a save keeps the bed line.
+        if (benchBed && gameState == 1 && !loading && WorldIdle()) {
+            static int bf = 0, phase = 0;
+            static double t0 = 0.0;
+            static bool setOk = false, wokeOnBed = false, wokeAtStart = false, forgot = false, saved = false;
+            static float bedDist = -1.0f, startDist = -1.0f;
+            static Plot* bedPlot = nullptr; static int bedPart = -1; static Vector3 bedFeet{}, startFeet{};
+            Planetoid* p = dynamic_cast<Planetoid*>(world.objects[0].get());
+            ++bf;
+            auto feet = [&]() { return p->toLocal((player.position - world.renderOrigin).toFloat()); }; // body-local: the planet turns
+            if (bf == 5) { player.flyMode = false; player.spawnOn(world, *p, StartSpawnDir(*p)); }
+            if (bf == 30 && phase == 0) {
+                startFeet = feet();
+                const Vector3 me = startFeet, up = Vector3Normalize(me);
+                const Vector3 t1 = Vector3Normalize(Vector3CrossProduct(up, fabsf(up.y) < 0.9f ? Vector3{ 0, 1, 0 } : Vector3{ 1, 0, 0 }));
+                const Vector3 at = Vector3Add(me, Vector3Scale(t1, 8.0f));
+                if (!p->plots) p->plots = std::make_unique<PlotSet>();
+                bedPlot = p->plots->plotFor(at, 0.0f, true);
+                if (bedPlot) bedPart = bedPlot->place(Part{ PartType::Bed, bedPlot->cellAt(bedPlot->toPlot(at)), 0, 0 });
+                setOk = bedPlot && bedPart >= 0 && Survival_SetBedFor(survival, *p, *bedPlot, bedPart, true);
+                Planetoid* bb = nullptr;
+                if (setOk) { setOk = Survival_BedSpawnFor(survival, bb, bedFeet) && bb == p; bedFeet = p->toLocal(bedFeet); }
+                survival.health = -1.0f; t0 = SimTime(); phase = 1; // dies on the next step; respawns 3 s later
+            }
+            if (phase == 1 && SimTime() - t0 > 4.5 && !survival.dead) {
+                bedDist = Vector3Distance(feet(), bedFeet); wokeOnBed = bedDist < 1.5f;
+                saved = SaveWorld(world);
+                FILE* f = saved ? fopen(WorldSavePath(), "r") : nullptr;
+                bool line = false; char buf[512];
+                while (f && fgets(buf, sizeof buf, f)) if (!strncmp(buf, "bed ", 4)) line = true;
+                if (f) fclose(f);
+                saved = saved && line;
+                if (bedPlot && bedPart >= 0) bedPlot->remove(bedPart);
+                survival.health = -1.0f; t0 = SimTime(); phase = 2;
+            }
+            if (phase == 2 && SimTime() - t0 > 4.5 && !survival.dead) {
+                startDist = Vector3Distance(feet(), startFeet); wokeAtStart = startDist < 3.0f; forgot = !survival.hasBed;
+                const bool ok = setOk && wokeOnBed && saved && wokeAtStart && forgot;
+                printf("bench: bed: placed and set %d; woke %.2f m from the bed's top; save has the bed %d; bed removed: woke %.2f m from the start, bed forgotten %d; deaths %d, fly %d -> %s\n",
+                       setOk, bedDist, saved, startDist, forgot, survival.deaths, (int)player.flyMode, ok ? "PASS" : "FAIL");
+                benchBed = false;
             }
         }
         // --test-fishing (#176): a cast into the sea near the start lands a cod; reeling in early lands nothing.

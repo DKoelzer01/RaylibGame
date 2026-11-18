@@ -1,9 +1,11 @@
 #ifndef SURVIVAL_H
 #define SURVIVAL_H
 
+#include <cstdint>
 #include <cstdio>
 #include <functional>
 #include <string>
+#include <raylib.h>
 
 class Scene;
 
@@ -49,6 +51,12 @@ struct SurvivalState {
     bool dead = false;
     double deathTime = 0.0;
     int deaths = 0;
+    // The bed this player set as their spawn (#800): body name, plot id and the bed's first cell. Respawn goes there while a
+    // bed still stands in that cell with room to stand on it; otherwise at the start (and the bed is forgotten).
+    bool hasBed = false;
+    std::string bedBody;
+    uint32_t bedPlot = 0;
+    int bedCell[3] = { 0, 0, 0 };
 };
 extern SurvivalState& survival; // the local PlayerSession's (#313)
 
@@ -78,6 +86,13 @@ void Survival_Respawn(Scene& world);
 struct Player; class Inventory; struct SuitStats;
 void Survival_StepFor(Scene& world, float dt, const PlayerInput& in, SurvivalState& survival, Player& player, Inventory& inventory, const SuitStats& stats, bool local);
 void Survival_RespawnFor(Scene& world, SurvivalState& survival, Player& player, bool local);
+// Beds (#800). SetBedFor: the part at (body, plot, part) is a bed: make it this player's spawn (false: not a bed). BedSpawnFor: where
+// the player would wake on their bed (render-space feet on top of it), false when it is gone or something stands on it.
+class Planetoid; class Plot;
+bool Survival_SetBedFor(SurvivalState& survival, const Planetoid& body, const Plot& plot, int part, bool local);
+bool Survival_BedSpawnFor(const SurvivalState& survival, Planetoid*& body, Vector3& renderFeet);
+// A joined game (#800): right-clicking a bed asks the server (main.cpp sets it); unset, the bed is set locally.
+inline std::function<void(const Planetoid& body, const Plot& plot, int part)> gBedUseRequest;
 void Survival_OnLandingFor(SurvivalState& survival, const SuitStats& stats, float impactSpeed, bool local);
 void Survival_DrawHUD();
 const char* Survival_BiomeName();   // the biome where the player stands ("" off-planet)

@@ -75,6 +75,7 @@ struct NetClient {
     int action = 0; float actionPhase = 0.0f;    // our hands now (the game sets them; sent with every input packet)
     // Terrain edits (#329)
     class Inventory* inventory = nullptr;        // follows the server's copy (InventoryDelta); the game's: the local one
+    std::vector<std::pair<std::string, double>> pendingInventory; // (#803) deltas heard before `inventory` was attached, applied then
     uint32_t editSeq = 0;                        // our requests so far
     int editsSeen = 0, editsOwn = 0, editsRefused = 0, inventoryDeltas = 0;
     int placesSeen = 0;                          // edits that placed ground (the soft brush)
@@ -154,6 +155,7 @@ void NetClient_SendChat(NetClient& c, const std::string& text); // (#326) a chat
 void NetClient_HitAnimal(NetClient& c, uint64_t netId);         // (#334) a swing at an animal: the server checks and applies it
 void NetClient_UseAnimal(NetClient& c, uint64_t netId, int action); // (#334) 1 feed, 2 take its product (the server checks and applies)
 void NetClient_UseItem(NetClient& c, const std::string& item);       // (#337) eat or use an item: the server applies it to its copy
+void NetClient_UseBed(NetClient& c, const std::string& body, uint32_t plot, const int cell[3]); // (#800) make that bed my spawn
 const char* NetClient_StateName(NetClient::State s);
 
 #endif

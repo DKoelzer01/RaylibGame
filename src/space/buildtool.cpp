@@ -482,7 +482,7 @@ void Machine_Update(Scene& world, const PlayerInput& in) {
         if (pl->raycast(lo, ld, best, c, f, d)) {
             const int part = pl->partAt(c);
             const PartType pt = part >= 0 ? pl->parts[part].type : PartType::Count;
-            if (part >= 0 && (IsMachine(pt) || pt == PartType::Farmland || pt == PartType::HandPump || pt == PartType::Cable)) { // cables: their network (#570)
+            if (part >= 0 && (IsMachine(pt) || pt == PartType::Farmland || pt == PartType::HandPump || pt == PartType::Cable || pt == PartType::Bed)) { // cables: their network (#570); beds (#800)
                 best = d;
                 machineAim = { body->id, pl->id, part, pt, c };
             }
@@ -506,6 +506,18 @@ void Machine_Update(Scene& world, const PlayerInput& in) {
             handPumpAt = GetTime(); handPumpLitres += kHandPumpRate * 1000.0f * GameFrameTime(); // the HUD's feedback (#571)
             static double nextSound = 0.0;
             if (GetTime() > nextSound) { Audio_Play(Sfx::Pickup, 0.25f, 0.6f); nextSound = GetTime() + 0.6; }
+        }
+        return;
+    }
+    if (machineAim.type == PartType::Bed) {
+        // A bed (#800): RMB (outside build mode) makes it your spawn; in a joined game the server sets it.
+        if (!buildTool.active && in.hit(Act::Secondary)) {
+            Planetoid* bb = Planetoid::find(machineAim.body);
+            Plot* bp = bb && bb->plots ? bb->plots->byId(machineAim.plot) : nullptr;
+            if (bb && bp) {
+                if (gBedUseRequest) gBedUseRequest(*bb, *bp, machineAim.part);
+                else Survival_SetBedFor(survival, *bb, *bp, machineAim.part, true);
+            }
         }
         return;
     }
