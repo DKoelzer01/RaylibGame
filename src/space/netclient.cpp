@@ -1,6 +1,7 @@
 #include "netclient.h"
 #include "animals.h"
 #include "combat.h"
+#include "survival.h"
 #include "playersession.h"
 #include "hostserver.h"
 #include "net.h"
@@ -257,10 +258,24 @@ namespace {
                 ++c.damageTaken;
                 c.lastDamage = dm.amount;
                 if (gNetRole != NetRole::Client) return; // (a host's in-process test client: the host's own player isn't the one hit)
-                DamageEvent e; e.amount = dm.amount; e.kind = (DamageKind)dm.kind; e.hasSource = dm.hasSource; e.knockback = 0.0f; e.sourceId = dm.sourceId;
-                if (Planetoid* b = Planetoid::findNet(dm.body)) e.source = b->toWorldD(dm.local); else e.hasSource = false;
-                const DamageResult res = Combat_Damage(LocalSession(), e);
-                c.lastDamageBlocked = res.blocked;
+                // (#337) the server's copy took the damage (its health arrives in Vitals) and the shove: here only the hit's feel
+                // (the camera shake and the hit-stop read these).
+                SurvivalState& sv = LocalSession().survival;
+                sv.lastHitAt = SimTime(); sv.lastHitStrength = std::min(1.0f, dm.amount / 20.0f);
+                return;
+            }
+            case NetMsg::Vitals: { // (#337) our player's survival as the server simulates it: the bars follow it
+                MsgVitals v;
+                if (c.state != NetClient::State::Joined || !NetRead(r, v)) return;
+                c.vitals = v; ++c.vitalsMsgs;
+                if (gNetRole != NetRole::Client) return; // (a host's in-process test client: not the host's own player)
+                SurvivalState& sv = LocalSession().survival;
+                sv.health = v.health; sv.food = v.food; sv.oxygen = v.oxygen; sv.power = v.power; sv.temperature = v.temperature;
+                sv.breathable = v.flags & 2; sv.inVacuum = v.flags & 4; sv.underwater = v.flags & 8; sv.inLifeSupport = v.flags & 16;
+                const bool dead = v.flags & 1;
+                if (dead && !sv.dead) { sv.dead = true; sv.deathTime = SimTime(); }
+                else if (!dead && sv.dead) sv.dead = false; // (respawned: the server put the player at the start; its state carries it)
+                sv.deaths = v.deaths;
                 return;
             }
             case NetMsg::PlayerSnapshot: { // (#769) the states of one snapshot, each against one we acknowledged (or full)
@@ -668,4 +683,8 @@ void NetClient_HitAnimal(NetClient& c, uint64_t netId) {
 void NetClient_UseAnimal(NetClient& c, uint64_t netId, int action) {
     if (c.state != NetClient::State::Joined || !netId || action < 1 || action > 2) return;
     SendMsg(c, MsgAnimalHit{ netId, (uint8_t)action });
+}
+void NetClient_UseItem(NetClient& c, const std::string& item) {
+    if (c.state != NetClient::State::Joined || item.empty()) return;
+    SendMsg(c, MsgUseItem{ item });
 }

@@ -1382,6 +1382,7 @@ int main(int argc, char** argv)
         gAnimalsReplicated = true; Animals_Reset();
         gAnimalHitRequest = [](uint64_t netId) { NetClient_HitAnimal(gJoin, netId); };
         gAnimalUseRequest = [](uint64_t netId, int action) { NetClient_UseAnimal(gJoin, netId, action); };
+        gSurvivalUseRequest = [](const std::string& item) { NetClient_UseItem(gJoin, item); }; // (#337) the server owns our survival and inventory
         printf("join: joined %s as %s, session %u%s; seed %u, %zu bodies, %s world-gen settings%s; server world time %.1f s\n", joinAddr.c_str(), joinName.c_str(), gJoin.welcome.session,
                gJoin.welcome.reconnected ? " (reconnected)" : "", gJoin.welcome.seed, sys.bodies.size(), joinParams.isDefault() ? "default" : "custom",
                gJoin.welcome.sandbox ? ", sandbox" : "", gJoin.welcome.worldTime);
@@ -10282,13 +10283,25 @@ int main(int argc, char** argv)
             // server refuses, saying why); is bitten through the server (its health here goes down). After 25 s it reports.
             const bool victim = role && !strcmp(role, "victim");
             static float health0 = -1.0f;
+            // (#337) and: eats berries the host gave it (the server's food goes up, its berries down by one through the delta); its
+            // death and respawn come from the server's Vitals; while dead nothing bites it.
+            static float food0 = -1.0f, foodAfter = -1.0f; static int berries0 = -1, berriesAfter = -1; static double ateAt = -1.0;
+            static bool deadSeen = false, respawned = false; static int bitesAtDeath = 0, bitesWhileDead = 0;
             if (victim && ph == 2) {
+                if (ateAt < 0.0 && gJoin.vitalsMsgs > 0 && inventory.count("berries") > 0) { food0 = gJoin.vitals.food; berries0 = inventory.count("berries"); Survival_UseItem("berries"); ateAt = GetTime(); }
+                if (ateAt > 0.0 && foodAfter < 0.0f && GetTime() - ateAt > 1.5) { foodAfter = gJoin.vitals.food; berriesAfter = inventory.count("berries"); }
+                const bool deadNow = gJoin.vitals.flags & 1;
+                if (deadNow && !deadSeen) { deadSeen = true; bitesAtDeath = gJoin.damageTaken; }
+                if (deadSeen && !deadNow && !respawned && gJoin.vitals.health > 99.0f) { respawned = true; bitesWhileDead = gJoin.damageTaken - bitesAtDeath; }
                 static bool asked = false;
                 if (health0 < 0.0f) health0 = survival.health;
                 if (!asked) { const int i = Animals_Nearest(me, 3.0f); if (i >= 0) { asked = true; NetClient_UseAnimal(gJoin, Animals_NetId(i), 1); } } // (in reach: it charges us)
-                if (GetTime() - t0 > 25.0) {
+                if (GetTime() - t0 > (getenv("RAYLIBGAME_VICTIM_SECONDS") ? atof(getenv("RAYLIBGAME_VICTIM_SECONDS")) : 25.0)) {
                     printf("bench: net animals (victim): bitten %d times (last %.1f, blocked %d), health %.0f -> %.0f (the feed request's answer is a chat line)\n",
                            gJoin.damageTaken, gJoin.lastDamage, (int)gJoin.lastDamageBlocked, health0, survival.health);
+                    printf("bench: net survival (victim, #337): %d vitals heard; ate berries: food %.2f -> %.2f, berries %d -> %d; died %d (deaths %d), "
+                           "respawned %d, bitten while dead %d\n", gJoin.vitalsMsgs, food0, foodAfter, berries0, berriesAfter, (int)deadSeen, (int)gJoin.vitals.deaths,
+                           (int)respawned, bitesWhileDead);
                     NetClient_Disconnect(gJoin);
                     benchNetAnimals = false;
                 }
