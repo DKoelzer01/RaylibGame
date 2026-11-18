@@ -16,6 +16,7 @@
 #include "terraintool.h"
 #include "buildtool.h"
 #include "plots.h"
+#include "factory.h"
 #include "gamerng.h"
 #include "tools.h"
 #include "animals.h"
@@ -329,6 +330,103 @@ namespace {
         MsgQuestBook m; m.team = (uint32_t)team; m.text = TeamQuests_Text(team);
         SendMsg(conn, m);
     }
+    // ---- Machines (#332): the factory runs here only; players act on machines by request and see views ----
+    // Each player's open machine (watch) gets its full view 5 times a second; the machines working on the plots within
+    // kMachineRange of each player go out (as part lists) twice a second when they change. Results of a player's action
+    // (extract, take a slot, leftovers) reach its inventory through gFactoryDeliver, then its client by deltas.
+    constexpr float kMachineRange = 150.0f;      // m: plots whose working machines a player hears of
+    constexpr float kMachineReach = 8.0f;        // m: how far a player reaches to act on a machine
+    long long lastMachineViews = 0, lastMachineStates = 0;
+    int machineActions = 0, machineActionsRefused = 0;
+    struct MachineWatch { Factory::MachineKey key{ 0, 0, -1 }; bool on = false; };
+    std::map<uint32_t, MachineWatch> machineWatch;                                    // session -> its open machine
+    std::map<std::pair<uint32_t, std::pair<uint64_t, uint32_t>>, std::vector<int>> machineStatesSent; // (session, (body, plot)) -> parts
+    void StepMachines(Scene& world) {
+        // The factory ticks the plots near every player at full rate and publishes what they see.
+        std::vector<Vector3> near;
+        for (auto& [sid, r] : remotes) near.push_back((r.player.position - world.renderOrigin).toFloat());
+        Factory::SetNearPoints(near);
+        std::vector<Factory::MachineKey> keys;
+        for (const auto& [sid, w] : machineWatch) if (w.on) keys.push_back(w.key);
+        Factory::WatchMany(keys);
+        if (SimTick() - lastMachineViews >= 12) { // 5 Hz
+            lastMachineViews = SimTick();
+            for (const auto& [conn, p] : peers) {
+                if (!p.joined) continue;
+                auto it = machineWatch.find(p.session);
+                if (it == machineWatch.end() || !it->second.on) continue;
+                const auto& [bid, plot, part] = it->second.key;
+                Planetoid* b = Planetoid::find(bid);
+                if (!b) continue;
+                MsgMachineView v; v.body = b->netId; v.plot = plot; v.part = part; v.view = Factory::Watched(it->second.key);
+                if (v.view.valid) SendMsg(conn, v);
+            }
+        }
+        if (SimTick() - lastMachineStates >= 30) { // 2 Hz
+            lastMachineStates = SimTick();
+            for (const auto& [conn, p] : peers) {
+                if (!p.joined) continue;
+                auto rit = remotes.find(p.session);
+                if (rit == remotes.end() || !rit->second.player.nearest || !rit->second.player.nearest->plots) continue;
+                Planetoid* b = rit->second.player.nearest;
+                const Vector3 me = b->toLocalD(rit->second.player.position).toFloat();
+                for (const auto& pl : b->plots->plots) {
+                    const Vector3 o = { (float)pl->origin.x, (float)pl->origin.y, (float)pl->origin.z };
+                    if (Vector3Distance(o, me) > kMachineRange) continue;
+                    std::vector<int> parts = Factory::WorkingParts(b->id, pl->id);
+                    std::sort(parts.begin(), parts.end());
+                    auto& sent = machineStatesSent[{ p.session, { b->id, pl->id } }];
+                    if (parts == sent) continue;
+                    sent = parts;
+                    MsgMachineStates s; s.body = b->netId; s.plot = pl->id; s.working.assign(parts.begin(), parts.end());
+                    SendMsg(conn, s);
+                }
+            }
+        }
+    }
+    void OnMachineAction(uint32_t conn, uint32_t session, const MsgMachineAction& a) {
+        auto rit = remotes.find(session);
+        Planetoid* b = Planetoid::findNet(a.body);
+        Plot* plot = b && b->plots ? b->plots->byId(a.plot) : nullptr;
+        auto refuse = [&](const char* why) { ++machineActionsRefused; SendMsg(conn, MsgChat{ 0, why }); };
+        if (rit == remotes.end() || rit->second.survival.dead) return;
+        if (!plot || a.part < 0 || a.part >= (int)plot->parts.size() || !IsMachine(plot->parts[a.part].type)) { refuse("That machine isn't there any more"); return; }
+        const Factory::MachineKey key{ b->id, plot->id, a.part };
+        if (a.action == 7) { machineWatch[session].on = false; return; }
+        // Reach: the machine's origin cell from the player (body-local)
+        const Int3 c = plot->parts[a.part].origin;
+        const Vector3 at = plot->toBody({ (c.x + 1.0f) * kCellSize, (c.y + 1.0f) * kCellSize, (c.z + 1.0f) * kCellSize });
+        if (rit->second.player.nearest != b || Vector3Distance(at, b->toLocalD(rit->second.player.position).toFloat()) > kMachineReach) { if (a.action != 6) refuse("That machine is out of reach"); return; }
+        if (a.action == 6) { machineWatch[session] = { key, true }; return; }
+        Inventory& inv = rit->second.inventory;
+        const PartType type = plot->parts[a.part].type;
+        const auto before = AllAmounts(inv);
+        ++machineActions;
+        switch (a.action) {
+            case 1: case 3: { // one item into the machine (or its fuel slot)
+                const int n = std::min<int>(a.count, inv.count(a.item));
+                const std::vector<std::string> fuels = a.action == 3 ? Factory::FuelsOf(type) : std::vector<std::string>{};
+                const bool takes = a.action == 3 ? std::find(fuels.begin(), fuels.end(), a.item) != fuels.end() : Factory::Accepts(type, a.item);
+                if (n <= 0 || !takes) { refuse("It doesn't take that"); return; }
+                inv.remove(a.item, n);
+                if (a.action == 3) Factory::InsertFuel(b->id, plot->id, a.part, a.item, n, session); else Factory::Insert(b->id, plot->id, a.part, a.item, n, session);
+                break;
+            }
+            case 2: { // everything it takes (I): not tools; a chest not what is on the hotbar (as the local I)
+                const auto all = inv.all();
+                for (const auto& [item, n] : all) {
+                    if (n <= 0 || !Factory::Accepts(type, item) || KindOf(item) == ItemKind::Tool) continue;
+                    if (inv.remove(item, n)) Factory::Insert(b->id, plot->id, a.part, item, n, session);
+                }
+                break;
+            }
+            case 4: Factory::Extract(b->id, plot->id, a.part, session); break;                       // O: the outputs (delivered next tick)
+            case 5: Factory::TakeSlot(b->id, plot->id, a.part, a.slot, a.which, session); break;    // one slot of its screen
+            default: return;
+        }
+        SendChangedItems(conn, inv, before);
+    }
+
     void StepTeamQuests(Scene& world) {
         if (SimTick() - lastQuestTick < 60) return; // once a second
         lastQuestTick = SimTick();
@@ -1153,6 +1251,12 @@ namespace {
                 ++itemsUsed;
                 return;
             }
+            case NetMsg::MachineAction: { // (#332) insert, extract, take a slot, fuel; watch / unwatch its screen
+                MsgMachineAction a;
+                if (!it->second.joined || !NetRead(r, a)) return;
+                OnMachineAction(m.conn, it->second.session, a);
+                return;
+            }
             case NetMsg::CraftRequest: { // (#338) crafting on the server: the recipe unlocked for the player's team, the inputs in its inventory
                 MsgCraftRequest q;
                 if (!it->second.joined || !NetRead(r, q)) return;
@@ -1248,6 +1352,14 @@ namespace {
 bool Host_Start(uint16_t port, std::string& status) {
     gNetRole = NetRole::Host; // the authority either way: the world runs and rolls here
     lastSave = GetTime();
+    // (#332) what a player takes from a machine reaches its inventory as the server keeps it, then its client by deltas
+    gFactoryDeliver = [](uint32_t to, const std::string& item, int count, float heat) {
+        auto rit = remotes.find(to);
+        if (rit == remotes.end() || count <= 0) return;
+        const std::map<std::string, double> before{ { item, rit->second.inventory.amount(item) } };
+        rit->second.inventory.addAmount(item, count, heat);
+        if (const uint32_t conn = ConnOf(to)) SendInventoryDeltas(conn, rit->second.inventory, before);
+    };
     if (!Net_Available()) { status = "built without ENABLE_GNS: the world runs, nobody can connect"; return false; }
     std::string err;
     if (!Net_Init(err)) { status = "network init failed: " + err; return false; }
@@ -1300,6 +1412,7 @@ void Host_Update(Scene& world) {
     SendVitals();         // (#337) and each player's survival numbers, to that player
     StepGraves();         // (#804) deaths' drops, pickups, decay and the graves list to everyone
     StepTeamQuests(world); // (#338) team books: evaluate, pay, tell, send
+    StepMachines(world);  // (#332) machines: near points, watched views, working states
     SetInterestCentres(world); // (#334) and animals live around every player (#318's centres)
     SetAnimalTargets(world);   // (#334 slice 2) and mind them: flee, follow, hunt, bite
     GpuTimer_CpuMark("host: snapshots");

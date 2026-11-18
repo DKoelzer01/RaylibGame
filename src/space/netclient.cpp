@@ -5,6 +5,7 @@
 #include "animals.h"
 #include "combat.h"
 #include "teamquests.h"
+#include "factory.h"
 #include <process.h>
 #include "survival.h"
 #include "playersession.h"
@@ -268,6 +269,20 @@ namespace {
                 // (the camera shake and the hit-stop read these).
                 SurvivalState& sv = LocalSession().survival;
                 sv.lastHitAt = SimTime(); sv.lastHitStrength = std::min(1.0f, dm.amount / 20.0f);
+                return;
+            }
+            case NetMsg::MachineView: { // (#332) the machine we watch, as the server simulates it (its screen, the look-at panel)
+                MsgMachineView v;
+                if (c.state != NetClient::State::Joined || !NetRead(r, v)) return;
+                ++c.machineViews;
+                if (Planetoid* b = Planetoid::findNet(v.body)) Factory::SetRemoteView({ b->id, v.plot, v.part }, v.view);
+                return;
+            }
+            case NetMsg::MachineStates: { // (#332) which machines of a plot work now (models, smoke)
+                MsgMachineStates s;
+                if (c.state != NetClient::State::Joined || !NetRead(r, s)) return;
+                ++c.machineStates;
+                if (Planetoid* b = Planetoid::findNet(s.body)) Factory::SetRemoteWorking(b->id, s.plot, std::vector<int>(s.working.begin(), s.working.end()));
                 return;
             }
             case NetMsg::QuestBook: { // (#338) our team's quest book as the server keeps it: the Quests tab and HUD show it
@@ -735,4 +750,10 @@ void NetClient_Craft(NetClient& c, int index, const std::string& output, int cou
     if (c.state != NetClient::State::Joined || index < 0 || output.empty()) return;
     MsgCraftRequest q; q.recipe = (uint32_t)index; q.output = output; q.count = (uint8_t)std::clamp(count, 1, 64);
     SendMsg(c, q);
+}
+void NetClient_MachineAction(NetClient& c, uint64_t bodyNetId, uint32_t plot, int part, int action, const std::string& item, int count, int slot, int which) { // (#332)
+    if (c.state != NetClient::State::Joined || part < 0) return;
+    MsgMachineAction a; a.body = bodyNetId; a.plot = plot; a.part = part; a.action = (uint8_t)action; a.item = item;
+    a.count = (uint16_t)std::clamp(count, 0, 65535); a.slot = (uint8_t)std::clamp(slot, 0, 255); a.which = (uint8_t)std::clamp(which, 0, 2);
+    SendMsg(c, a);
 }
