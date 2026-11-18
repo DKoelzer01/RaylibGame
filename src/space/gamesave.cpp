@@ -11,6 +11,7 @@
 #include "inventory.h"
 #include "player.h"
 #include "playerrecord.h"
+#include "teamquests.h"
 #include "world.h"
 #include "ship.h"
 #include "survival.h"
@@ -288,6 +289,7 @@ void GameSave_Register() {
         RecipeBook_Reset();
         Combat_Reset(); // graves: the save holds them all (#165)
         Teams_Reset();
+        TeamQuests_Reset(); // (#338) the server's team books load from the teams as they are used
         survival.hasBed = false; // #800: the record's (or a format 12 save's) bed line sets it
         savedCols = 9;  // a save without an inv_cols line: the 9-wide grid (#495)
         worldDifficulty = 1; // a save without the line: normal

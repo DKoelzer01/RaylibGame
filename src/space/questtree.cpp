@@ -24,7 +24,8 @@ namespace {
     };
     std::vector<Line> lines;
     std::vector<Node> nodes;
-    std::set<std::string> done;
+    // (#338) the selected quest book's side-line progress
+    std::set<std::string>& Done() { return QuestBook_Selected().treeDone; }
     bool loaded = false;
 
     std::vector<std::string> Split(const std::string& s, char sep) {
@@ -97,7 +98,7 @@ namespace {
 
     bool ReqsDone(const Node& n) {
         if (n.reqTier >= 0 && QuestBook_Tier() < n.reqTier) return false;
-        for (const std::string& r : n.reqNodes) if (!done.count(r)) return false;
+        for (const std::string& r : n.reqNodes) if (!Done().count(r)) return false;
         return true;
     }
     std::string TaskText(const Node& n) {
@@ -116,25 +117,28 @@ namespace {
 void QuestTree_Update() {
     Load();
     for (const Node& n : nodes) {
-        if (done.count(n.id) || !ReqsDone(n) || !QuestBook_Met(n.kind, n.target, n.n)) continue;
-        done.insert(n.id);
-        for (const auto& r : n.reward) if (itemDB.find(r.first)) inventory.add(r.first, r.second);
+        if (Done().count(n.id) || !ReqsDone(n) || !QuestBook_Met(n.kind, n.target, n.n)) continue;
+        Done().insert(n.id);
+        // (#816) the reward goes to the completing player: here the local one, or on a server (gQuestReward) the team member
+        // whose event finished it, through the server's inventory and its deltas
+        for (const auto& r : n.reward) if (itemDB.find(r.first)) { if (gQuestReward) gQuestReward(r.first, r.second); else inventory.add(r.first, r.second); }
         const Line* l = LineOf(n.line);
-        GameUI_Toast(TextFormat("%s: %s done  (+%s)", l ? l->name.c_str() : "Quest", n.title.c_str(), RewardText(n).c_str()));
-        Audio_Play(Sfx::Craft, 0.6f, 1.2f);
+        const char* news = TextFormat("%s: %s done  (+%s)", l ? l->name.c_str() : "Quest", n.title.c_str(), RewardText(n).c_str());
+        if (gQuestNews) gQuestNews(news);
+        else { GameUI_Toast(news); Audio_Play(Sfx::Craft, 0.6f, 1.2f); }
     }
 }
 
-void QuestTree_Reset() { Load(); done.clear(); }
+void QuestTree_Reset() { Load(); Done().clear(); }
 int QuestTree_NodeCount() { Load(); return (int)nodes.size(); }
-bool QuestTree_IsDone(const std::string& id) { return done.count(id) > 0; }
-bool QuestTree_IsOpen(const std::string& id) { const Node* n = Find(id); return n && !done.count(id) && ReqsDone(*n); }
+bool QuestTree_IsDone(const std::string& id) { return Done().count(id) > 0; }
+bool QuestTree_IsOpen(const std::string& id) { const Node* n = Find(id); return n && !Done().count(id) && ReqsDone(*n); }
 
-void QuestTree_Save(FILE* f) { for (const std::string& id : done) fprintf(f, "side_done %s\n", id.c_str()); }
+void QuestTree_Save(FILE* f) { for (const std::string& id : Done()) fprintf(f, "side_done %s\n", id.c_str()); }
 bool QuestTree_LoadLine(const char* tok, FILE* f) {
     if (strcmp(tok, "side_done") != 0) return false;
     char id[64] = {};
-    if (fscanf(f, " %63s", id) == 1) done.insert(id);
+    if (fscanf(f, " %63s", id) == 1) Done().insert(id);
     return true;
 }
 
@@ -166,7 +170,7 @@ void QuestTree_DrawTab() {
         for (const std::string& r : n.reqNodes)
             if (const Node* p = Find(r)) {
                 const ImVec2 pb = boxAt(p->x, p->y);
-                dl->AddLine(ImVec2(pb.x + bw * 0.5f, pb.y + bh), to, done.count(r) ? IM_COL32(120, 210, 120, 200) : IM_COL32(150, 150, 150, 120), 2.0f);
+                dl->AddLine(ImVec2(pb.x + bw * 0.5f, pb.y + bh), to, Done().count(r) ? IM_COL32(120, 210, 120, 200) : IM_COL32(150, 150, 150, 120), 2.0f);
             }
     }
     // The main line: one box per tier.
@@ -181,7 +185,7 @@ void QuestTree_DrawTab() {
     // Side nodes.
     for (const Node& n : nodes) {
         const ImVec2 b = boxAt(n.x, n.y);
-        const bool isDone = done.count(n.id) > 0, open = !isDone && ReqsDone(n);
+        const bool isDone = Done().count(n.id) > 0, open = !isDone && ReqsDone(n);
         const Line* l = LineOf(n.line);
         const ImU32 lc = l ? IM_COL32(l->color.r, l->color.g, l->color.b, 255) : IM_COL32_WHITE;
         const ImU32 fill = isDone ? IM_COL32(40, 90, 40, 255) : open ? IM_COL32(45, 45, 55, 255) : IM_COL32(28, 28, 32, 255);

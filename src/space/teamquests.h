@@ -1,0 +1,26 @@
+#pragma once
+
+// Team quest books on a server (#338; the user's rules on #303: quests and tiers belong to teams, rewards go to the
+// completing player). Each team's book is a QuestBookState, loaded on first use from the team's kept block in the world
+// file (#346: TeamRecord::quests, its save lines) and written back before a save. Events the server decides are counted
+// into the player's team's book; evaluation runs here, its rewards and news through the given callbacks (the server pays
+// the completing player with Host_Give, so the client gets inventory deltas: #816). A client mirrors its team's book.
+
+#include <functional>
+#include <string>
+
+struct QuestBookState;
+
+QuestBookState& TeamQuests_Book(int team);
+void TeamQuests_Count(int team, const std::string& event, double n = 1.0);
+void TeamQuests_AtLeast(int team, const std::string& event, double value);
+void TeamQuests_NotePlaced(int team, const std::string& item);
+void TeamQuests_Obtained(int team, const std::string& item, double n);
+// Evaluates the book (tiers, side lines); reward(item, count) for each reward, news(text) for each tier-up / node done.
+void TeamQuests_Update(int team, const std::function<void(const std::string&, int)>& reward, const std::function<void(const std::string&)>& news);
+std::string TeamQuests_Text(int team);   // the book as its save lines (what a client gets)
+void TeamQuests_StoreAll();              // every loaded book back into its team's record (before the world is saved)
+void TeamQuests_Reset();                 // a new or reloaded world: none loaded
+// A client: the server's book for its team replaces the local one (the Quests tab and the HUD show it).
+void TeamQuests_ApplyText(const std::string& text);
+bool TeamQuests_SelfTest();             // --test-team-quests

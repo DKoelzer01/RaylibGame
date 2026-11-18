@@ -2,6 +2,7 @@
 #include "playerrecord.h"
 #include "animals.h"
 #include "combat.h"
+#include "teamquests.h"
 #include "survival.h"
 #include "playersession.h"
 #include "hostserver.h"
@@ -264,6 +265,13 @@ namespace {
                 // (the camera shake and the hit-stop read these).
                 SurvivalState& sv = LocalSession().survival;
                 sv.lastHitAt = SimTime(); sv.lastHitStrength = std::min(1.0f, dm.amount / 20.0f);
+                return;
+            }
+            case NetMsg::QuestBook: { // (#338) our team's quest book as the server keeps it: the Quests tab and HUD show it
+                MsgQuestBook q;
+                if (c.state != NetClient::State::Joined || !NetRead(r, q)) return;
+                ++c.questBooks; c.questTeam = (int)q.team;
+                if (gNetRole == NetRole::Client) TeamQuests_ApplyText(q.text); // (a host in this process keeps the real ones)
                 return;
             }
             case NetMsg::Graves: { // (#804) the server's graves: drawn here; ours (and our team's) marked on the compass
