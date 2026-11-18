@@ -14,6 +14,7 @@
 
 #include <cstdint>
 #include <functional>
+#include <map>
 #include <cstdio>
 #include <string>
 #include <utility>
@@ -65,6 +66,17 @@ int Animals_PennedCount();                                   // near the player,
 // checks it, applies the damage, and credits the drops to that player.
 inline bool gAnimalsReplicated = false;
 inline std::function<void(uint64_t netId)> gAnimalHitRequest;
+// A client's feed (action 1) and take-the-product (2: shear, milk, eggs) go to the server too (slice 2).
+inline std::function<void(uint64_t netId, int action)> gAnimalUseRequest;
+// The server's other players, for the animals to mind (slice 2): flee, follow their food, hunt, bite. The host lists them each
+// frame; a bite on one goes to gAnimalDamageRemote (its client applies it: shield and health are its own until #337).
+struct AnimalTarget { uint64_t body = 0; Vector3 local{}; uint32_t session = 0; bool vulnerable = true; std::string held; };
+inline std::vector<AnimalTarget> gAnimalTargets;
+struct DamageEvent;
+class Inventory;
+inline std::function<void(uint32_t session, const DamageEvent& e)> gAnimalDamageRemote;
+// Feed (its food from `inv`) or take its product (into `inv`; the tool must be in `inv`) for a remote player; false with why.
+bool Animals_UseNet(uint64_t netId, int action, Inventory& inv, std::string& why, std::map<std::string, double>& before); // before: the items it may change, as they were
 struct AnimalNet {
     uint64_t netId = 0; uint8_t species = 0; uint64_t body = 0; // the body's NetId
     Vector3 pos{}; float heading = 0.0f;                         // body-local, radians

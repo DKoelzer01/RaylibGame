@@ -19,6 +19,7 @@
 #include "gamerng.h"
 #include "tools.h"
 #include "animals.h"
+#include "combat.h"
 #include "inventory.h"
 #include <cmath>
 #include <map>
@@ -72,6 +73,7 @@ namespace {
         std::deque<MsgInput> inputs;
         uint32_t lastApplied = 0;   // the client tick of the last input stepped (the owner replays the ones after)
         uint32_t lastQueued = 0;    // the newest input tick received (redundant copies of older ones are skipped)
+        uint64_t lastHeld = 0;      // (#334) the held actions of the last input stepped
         uint64_t carried = 0;       // presses of inputs dropped from a full queue, for the next step
         double budget = 0.0;        // steps it may take (earned at real time, capped: a fast client can't run ahead)
         long long tick = 0;         // the server sim tick the budget has been earned to
@@ -127,6 +129,7 @@ namespace {
                 r.inputs.pop_front();
                 PlayerInput in;
                 in.enabled = true; in.held = m.held; in.pressed = m.pressed | r.carried;
+                r.lastHeld = m.held; // (#334: a block held when an animal bites)
                 r.carried = 0;
                 r.lastApplied = m.tick;
                 r.forwardLocal = { m.fx, m.fy, m.fz };
@@ -216,7 +219,35 @@ namespace {
     // tool's (as in single player); the drops go to that player's inventory.
     constexpr float kAnimalReach = 4.5f; // m: the 3 m aim, the animal's size, and its motion during the round trip
     constexpr double kAnimalHitCooldown = 0.25; // s
-    void OnAnimalHit(Scene& world, uint32_t session, uint64_t netId) {
+    uint32_t ConnOf(uint32_t session); // (below)
+    template <class M> void SendMsg(uint32_t conn, const M& m); // (below)
+    int animalBites = 0;
+    // (#334 slice 2) the remote players for the animals to mind, each frame; a bite on one: its client applies the damage (shield,
+    // health are its own until #337), the server shoves its player here (Combat_ApplyKnockback; a held block facing it cuts it).
+    void SetAnimalTargets(Scene&) {
+        gAnimalTargets.clear();
+        for (const Session& s : sessions) {
+            if (!s.online) continue;
+            auto rit = remotes.find(s.id);
+            if (rit == remotes.end() || !rit->second.player.nearest) continue;
+            const Planetoid* b = rit->second.player.nearest;
+            gAnimalTargets.push_back({ b->netId, b->toLocalD(rit->second.player.position).toFloat(), s.id, !rit->second.player.flyMode, s.loadout.held });
+        }
+        if (!gAnimalDamageRemote) gAnimalDamageRemote = [](uint32_t session, const DamageEvent& e) {
+            auto rit = remotes.find(session);
+            if (rit == remotes.end()) return;
+            Player& pl = rit->second.player;
+            Combat_ApplyKnockback(pl, e, (rit->second.lastHeld >> (int)Act::Secondary) & 1ull);
+            const uint32_t conn = ConnOf(session);
+            if (!conn || !pl.nearest) return;
+            MsgDamage m; m.amount = e.amount; m.kind = (uint8_t)e.kind; m.hasSource = e.hasSource; m.knockback = e.knockback; m.sourceId = e.sourceId;
+            m.body = pl.nearest->netId; m.local = pl.nearest->toLocalD(e.source);
+            SendMsg(conn, m);
+            ++animalBites;
+        };
+    }
+    uint32_t ConnOf(uint32_t session) { for (const Session& s : sessions) if (s.id == session && s.online) return s.conn; return 0; }
+    void OnAnimalHit(Scene& world, uint32_t session, uint64_t netId, int action = 0) {
         auto rit = remotes.find(session);
         uint64_t body = 0; Vector3 at{}; double scale = 1.0;
         const int i = Animals_FindNet(netId);
@@ -226,6 +257,15 @@ namespace {
         double& last = lastAnimalHit[session];
         if (GetTime() - last < kAnimalHitCooldown) { ++animalHitsRefused; return; }
         last = GetTime();
+        if (action != 0) { // (#334 slice 2) feed it, or take its product: from and into that player's inventory as the server keeps it
+            std::string why; std::map<std::string, double> before;
+            const bool done = Animals_UseNet(netId, action, rit->second.inventory, why, before);
+            if (const uint32_t conn = ConnOf(session)) {
+                if (done) SendInventoryDeltas(conn, rit->second.inventory, before);
+                else SendMsg(conn, MsgChat{ 0, (action == 1 ? "It won't eat: " : "Nothing to take: ") + why });
+            }
+            return;
+        }
         std::string held; for (const Session& s : sessions) if (s.id == session) held = s.loadout.held;
         const ToolSpec t = ToolOf(held);
         const float damage = t.type == ToolType::Hands ? 2.0f : 3.0f + 3.0f * t.tier;
@@ -692,7 +732,7 @@ namespace {
             case NetMsg::AnimalHit: { // (#334) a swing at an animal: checked and applied here
                 MsgAnimalHit h;
                 if (!it->second.joined || !NetRead(r, h)) return;
-                OnAnimalHit(world, it->second.session, h.netId);
+                OnAnimalHit(world, it->second.session, h.netId, h.action);
                 return;
             }
             case NetMsg::Chat: { // (#326) a player's line: the server's handler (commands, logging), else to everyone
@@ -779,6 +819,7 @@ void Host_Update(Scene& world) {
     SendSnapshots(world);
     SendAnimals(world);   // (#334) and the animals near each player
     SetInterestCentres(world); // (#334) and animals live around every player (#318's centres)
+    SetAnimalTargets(world);   // (#334 slice 2) and mind them: flee, follow, hunt, bite
     GpuTimer_CpuMark("host: snapshots");
 }
 

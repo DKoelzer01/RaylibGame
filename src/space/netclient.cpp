@@ -1,5 +1,7 @@
 #include "netclient.h"
 #include "animals.h"
+#include "combat.h"
+#include "playersession.h"
 #include "hostserver.h"
 #include "net.h"
 #include "world.h"
@@ -173,6 +175,18 @@ namespace {
                 static std::vector<AnimalNet> in; in.clear();
                 for (const MsgAnimals::Entry& e : am.entries) in.push_back({ e.netId, e.species, e.body, e.pos.toFloat(), e.heading, e.state, e.health, e.age, e.flags });
                 Animals_ApplyNet(in, am.removed);
+                return;
+            }
+            case NetMsg::Damage: { // (#334 slice 2) a hit on our player (an animal's bite): the damage here (shield, health), the shove the server's
+                MsgDamage dm;
+                if (c.state != NetClient::State::Joined || !NetRead(r, dm)) return;
+                ++c.damageTaken;
+                c.lastDamage = dm.amount;
+                if (gNetRole != NetRole::Client) return; // (a host's in-process test client: the host's own player isn't the one hit)
+                DamageEvent e; e.amount = dm.amount; e.kind = (DamageKind)dm.kind; e.hasSource = dm.hasSource; e.knockback = 0.0f; e.sourceId = dm.sourceId;
+                if (Planetoid* b = Planetoid::findNet(dm.body)) e.source = b->toWorldD(dm.local); else e.hasSource = false;
+                const DamageResult res = Combat_Damage(LocalSession(), e);
+                c.lastDamageBlocked = res.blocked;
                 return;
             }
             case NetMsg::PlayerSnapshot: { // (#769) the states of one snapshot, each against one we acknowledged (or full)
@@ -455,4 +469,8 @@ void NetClient_SendChat(NetClient& c, const std::string& text) {
 void NetClient_HitAnimal(NetClient& c, uint64_t netId) {
     if (c.state != NetClient::State::Joined || !netId) return;
     SendMsg(c, MsgAnimalHit{ netId });
+}
+void NetClient_UseAnimal(NetClient& c, uint64_t netId, int action) {
+    if (c.state != NetClient::State::Joined || !netId || action < 1 || action > 2) return;
+    SendMsg(c, MsgAnimalHit{ netId, (uint8_t)action });
 }
