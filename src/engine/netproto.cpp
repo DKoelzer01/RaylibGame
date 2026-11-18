@@ -10,7 +10,7 @@ const char* NetMsgName(NetMsg m) {
     switch (m) {
         case NetMsg::Hello: return "hello"; case NetMsg::Welcome: return "welcome"; case NetMsg::Reject: return "reject";
         case NetMsg::Bye: return "bye"; case NetMsg::Ping: return "ping"; case NetMsg::Pong: return "pong";
-        case NetMsg::Input: return "input"; case NetMsg::PlayerState: return "player state"; case NetMsg::TerrainEdit: return "terrain edit"; case NetMsg::Shower: return "shower";
+        case NetMsg::Input: return "input"; case NetMsg::PlayerState: return "player state"; case NetMsg::TerrainEdit: return "terrain edit"; case NetMsg::Shower: return "shower"; case NetMsg::Roster: return "roster"; case NetMsg::Loadout: return "loadout";
         default: return "?";
     }
 }
@@ -136,6 +136,7 @@ void NetWrite(NetWriter& w, const MsgInputs& m) { // newest tick, then the steps
     const size_t n = std::min<size_t>(m.steps.size(), 8);
     w.u32(n ? m.steps[0].tick : 0); w.u8((uint8_t)n);
     for (size_t i = 0; i < n; ++i) { const MsgInput& s = m.steps[i]; w.varu(s.held); w.varu(s.pressed); w.unit(s.fx, s.fy, s.fz); }
+    w.u8(m.action); w.u8((uint8_t)std::clamp((int)std::lround(m.actionPhase * 255.0f), 0, 255));
 }
 bool NetRead(NetReader& r, MsgInputs& m) {
     const uint32_t newest = r.u32();
@@ -147,6 +148,8 @@ bool NetRead(NetReader& r, MsgInputs& m) {
         s.held = r.varu(); s.pressed = r.varu(); r.unit(s.fx, s.fy, s.fz);
         m.steps.push_back(s);
     }
+    m.action = r.u8(); m.actionPhase = r.u8() / 255.0f;
+    if (m.action > 3) r.ok = false;
     return Done(r);
 }
 
@@ -157,11 +160,14 @@ void NetWrite(NetWriter& w, const MsgPlayerState& m) {
     auto ms = [&](float s) { w.u8((uint8_t)std::clamp((int)std::lround(s * 1000.0f), 0, 255)); };
     ms(m.jumpBuffer); ms(m.coyote); ms(m.jumpLock);
     w.u8((uint8_t)std::clamp((int)std::lround(m.jetpackFuel * 255.0f), 0, 255));
+    w.u8(m.action); w.u8((uint8_t)std::clamp((int)std::lround(m.actionPhase * 255.0f), 0, 255));
 }
 bool NetRead(NetReader& r, MsgPlayerState& m) {
     m.session = (uint32_t)r.varu(); m.tick = r.u32(); m.ackInput = r.u32(); m.body = r.varu(); m.local = r.pos();
     m.vx = r.speed(); m.vy = r.speed(); m.vz = r.speed(); m.yaw = r.angle(); m.pitch = (int16_t)r.u16() / 32767.0f * 1.6f; m.flags = r.u8();
     m.jumpBuffer = r.u8() / 1000.0f; m.coyote = r.u8() / 1000.0f; m.jumpLock = r.u8() / 1000.0f; m.jetpackFuel = r.u8() / 255.0f;
+    m.action = r.u8(); m.actionPhase = r.u8() / 255.0f;
+    if (m.action > 3) r.ok = false;
     return Done(r);
 }
 
@@ -179,6 +185,37 @@ bool NetRead(NetReader& r, MsgTerrainEdit& m) {
 
 void NetWrite(NetWriter& w, const MsgShower& m) { Id(w, NetMsg::Shower); w.f64(m.start); w.f64(m.end); w.u32(m.id); }
 bool NetRead(NetReader& r, MsgShower& m) { m.start = r.f64(); m.end = r.f64(); m.id = r.u32(); return Done(r); }
+
+constexpr size_t kMaxRoster = 64, kMaxNameLen = 32, kMaxItemLen = 48;
+void NetWrite(NetWriter& w, const MsgRoster& m) {
+    Id(w, NetMsg::Roster);
+    const size_t n = std::min(m.players.size(), kMaxRoster);
+    w.varu(n);
+    for (size_t i = 0; i < n; ++i) { w.varu(m.players[i].session); w.str(m.players[i].name.substr(0, kMaxNameLen)); }
+}
+bool NetRead(NetReader& r, MsgRoster& m) {
+    const uint64_t n = r.varu();
+    if (n > kMaxRoster) r.ok = false;
+    m.players.clear();
+    for (uint64_t i = 0; i < n && r.ok; ++i) {
+        MsgRoster::Entry e;
+        const uint64_t s = r.varu();
+        if (s == 0 || s > 0xFFFFFFFFull) r.ok = false;
+        e.session = (uint32_t)s; e.name = r.str(kMaxNameLen);
+        m.players.push_back(e);
+    }
+    return Done(r);
+}
+void NetWrite(NetWriter& w, const MsgLoadout& m) {
+    Id(w, NetMsg::Loadout);
+    w.varu(m.session); w.str(m.held.substr(0, kMaxItemLen)); w.boolean(m.headlamp); w.u8(m.suitTier);
+}
+bool NetRead(NetReader& r, MsgLoadout& m) {
+    const uint64_t s = r.varu();
+    if (s > 0xFFFFFFFFull) r.ok = false;
+    m.session = (uint32_t)s; m.held = r.str(kMaxItemLen); m.headlamp = r.boolean(); m.suitTier = r.u8();
+    return Done(r);
+}
 
 NetMsg NetPeek(const std::vector<uint8_t>& b) {
     if (b.empty() || b[0] == 0 || b[0] >= (uint8_t)NetMsg::Count) return NetMsg::Count;
@@ -210,6 +247,8 @@ bool ParseAny(const std::vector<uint8_t>& b) {
         case NetMsg::PlayerState: { MsgPlayerState m; return NetRead(r, m); }
         case NetMsg::TerrainEdit: { MsgTerrainEdit m; return NetRead(r, m); }
         case NetMsg::Shower: { MsgShower m; return NetRead(r, m); }
+        case NetMsg::Roster: { MsgRoster m; return NetRead(r, m); }
+        case NetMsg::Loadout: { MsgLoadout m; return NetRead(r, m); }
         default: return false;
     }
 }
@@ -241,19 +280,21 @@ bool NetProto_Test() {
     {
         MsgInputs a, b; std::vector<uint8_t> s;
         a.steps = { { 5000, 0x1234ull, 0x10ull, 0.6f, 0.0f, -0.8f }, { 4999, 0x1234ull, 0ull, 0.0f, 1.0f, 0.0f }, { 4998, 0x1ull, 0ull, 1.0f, 0.0f, 0.0f } };
+
+        a.action = 2; a.actionPhase = 0.5f;
         const bool rt = RoundTrip(a, b, &s);
-        check(rt && b.steps.size() == 3 && b.steps[0].tick == 5000 && b.steps[2].tick == 4998 && b.steps[0].held == 0x1234ull && b.steps[0].pressed == 0x10ull &&
+        check(rt && b.steps.size() == 3 && b.steps[0].tick == 5000 && b.steps[2].tick == 4998 && b.steps[0].held == 0x1234ull && b.action == 2 && fabsf(b.actionPhase - 0.5f) < 3e-3f && b.steps[0].pressed == 0x10ull &&
               b.steps[2].held == 1ull && fabsf(b.steps[0].fx - 0.6f) < 1e-3f && fabsf(b.steps[0].fz + 0.8f) < 1e-3f && fabsf(b.steps[1].fy - 1.0f) < 1e-3f, "inputs (3 steps)");
         samples.push_back(s);
     }
     {
         MsgPlayerState a; a.session = 3; a.tick = 9001; a.ackInput = 8999; a.body = 0xABCDull; a.local = { 60012.3456, -123.4567, 0.0005 };
-        a.vx = 4.21f; a.vy = -9.81f; a.vz = 0.0f; a.yaw = 6.0f; a.pitch = 1.2f; a.flags = 0b1011; a.jumpBuffer = 0.15f; a.jumpLock = 0.08f; a.jetpackFuel = 0.5f;
+        a.vx = 4.21f; a.vy = -9.81f; a.vz = 0.0f; a.yaw = 6.0f; a.pitch = 1.2f; a.flags = 0b1011; a.jumpBuffer = 0.15f; a.jumpLock = 0.08f; a.jetpackFuel = 0.5f; a.action = 1; a.actionPhase = 0.25f;
         MsgPlayerState b; std::vector<uint8_t> s;
         const bool rt = RoundTrip(a, b, &s);
         const double dp = std::fmax(std::fabs(b.local.x - a.local.x), std::fmax(std::fabs(b.local.y - a.local.y), std::fabs(b.local.z - a.local.z)));
         check(rt && b.session == 3 && b.tick == 9001 && b.ackInput == 8999 && b.body == a.body && dp <= 0.0005 + 1e-9 &&
-              fabsf(b.vx - a.vx) < 0.006f && fabsf(b.vy - a.vy) < 0.006f && fabsf(b.yaw - a.yaw) < 1e-3f && fabsf(b.pitch - a.pitch) < 1e-3f && b.flags == a.flags && fabsf(b.jumpBuffer - 0.15f) < 1e-3f && fabsf(b.jumpLock - 0.08f) < 1e-3f && b.coyote == 0.0f && fabsf(b.jetpackFuel - 0.5f) < 3e-3f,
+              fabsf(b.vx - a.vx) < 0.006f && fabsf(b.vy - a.vy) < 0.006f && fabsf(b.yaw - a.yaw) < 1e-3f && fabsf(b.pitch - a.pitch) < 1e-3f && b.flags == a.flags && fabsf(b.jumpBuffer - 0.15f) < 1e-3f && fabsf(b.jumpLock - 0.08f) < 1e-3f && b.coyote == 0.0f && fabsf(b.jetpackFuel - 0.5f) < 3e-3f && b.action == 1 && fabsf(b.actionPhase - 0.25f) < 3e-3f,
               "player state (1 mm, 1 cm/s, 1e-3 rad at 60 km)");
         printf("bench: netproto: a player state is %zu bytes (position error %.4f mm at 60 km)\n", s.size(), dp * 1000.0);
         samples.push_back(s);
@@ -267,6 +308,9 @@ bool NetProto_Test() {
         samples.push_back(s);
     }
     { MsgShower a{ 3600.5, 3900.25, 17 }, b; std::vector<uint8_t> s; check(RoundTrip(a, b, &s) && b.start == a.start && b.end == a.end && b.id == 17, "shower"); samples.push_back(s); }
+
+    { MsgRoster a, b; a.players = { { 1, "alice" }, { 7, "bob" } }; std::vector<uint8_t> s; check(RoundTrip(a, b, &s) && b.players.size() == 2 && b.players[1].session == 7 && b.players[1].name == "bob", "roster"); samples.push_back(s); }
+    { MsgLoadout a{ 3, "stone_pickaxe", true, 2 }, b; std::vector<uint8_t> s; check(RoundTrip(a, b, &s) && b.session == 3 && b.held == "stone_pickaxe" && b.headlamp && b.suitTier == 2, "loadout"); samples.push_back(s); }
     // Every message cut short anywhere must not read as valid; garbage must never crash a reader.
     int truncValid = 0, truncTotal = 0;
     for (const auto& s : samples)

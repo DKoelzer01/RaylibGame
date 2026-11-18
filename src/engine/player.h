@@ -160,6 +160,11 @@ private:
     // Velocity of the terrain being collided with, in the frame `velocity` is in: zero while grounded
     // (velocity is then relative to the surface), the surface velocity while airborne (world frame).
     Vector3 collideFrameVel = { 0, 0, 0 };
+    // Multiplayer (#327, #750): the body-local state at the end of the last step (netState reads it later).
+    NetState netCache;
+    bool netCached = false;
+    int netCacheSpawns = -1;
+    void CacheNetState(const Scene& world);
 };
 
 extern Player& player;         // the local PlayerSession's (src/space/playersession.h, #313)

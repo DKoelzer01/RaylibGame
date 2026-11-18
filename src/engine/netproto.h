@@ -15,7 +15,7 @@
 #include <string>
 #include <vector>
 
-constexpr uint32_t kNetProtocol = 3; // 1 was the text "join" of #311
+constexpr uint32_t kNetProtocol = 4; // 1 was the text "join" of #311
 
 enum class NetMsg : uint8_t {
     Hello = 1,     // client -> server: protocol, build, player name, password
@@ -28,6 +28,9 @@ enum class NetMsg : uint8_t {
     PlayerState,   // server -> client: a player's authoritative state at a tick (#327)
     TerrainEdit,   // either way: a terrain edit (carve/fill, sphere/box) on a body (#320's first mapped command)
     Shower,        // server -> client: the meteor shower now (#316; was #311's "S" text line)
+
+    Roster,        // server -> client: who is playing (session, name), sent on every join and leave (#750)
+    Loadout,       // either way: a player's held item, headlamp, suit tier, sent when it changes (#750; to clients with the session)
     Count
 };
 const char* NetMsgName(NetMsg m);
@@ -113,7 +116,11 @@ struct MsgInput {                    // one sim step of a client's PlayerInput (
 // so a lost packet is covered by the next one instead of stalling the rest behind a resend; the server keeps the ticks
 // it hasn't seen.
 constexpr int kInputRedundancy = 4;
-struct MsgInputs { std::vector<MsgInput> steps; };
+struct MsgInputs {
+    std::vector<MsgInput> steps;
+    uint8_t action = 0;              // what the hands do now (avatars, #750): 0 none, 1 dig / mine, 2 chop, 3 place / use
+    float actionPhase = 0.0f;        // 0..1 within the swing
+};
 struct MsgPlayerState {              // a player's authoritative state (#327)
     uint32_t session = 0, tick = 0;
     uint32_t ackInput = 0;           // the last input tick the server applied (the owner replays the ones after it)
@@ -123,9 +130,13 @@ struct MsgPlayerState {              // a player's authoritative state (#327)
     float jumpBuffer = 0, coyote = 0, jumpLock = 0; // s (sent in ms, at most 0.255)
     float jetpackFuel = 1.0f;        // 0..1
     float yaw = 0.0f, pitch = 0.0f;  // the view direction, body-local: yaw about the body's y from +z, pitch from its xz plane
-    uint8_t flags = 0;               // bit 0 grounded, 1 fly mode, 2 dead, 3 in water, 4 hovering, 5-6 posture
+    uint8_t flags = 0;               // bit 0 grounded, 1 fly mode, 2 dead, 3 in water, 4 hovering, 5-6 posture, 7 jetpack firing
+    uint8_t action = 0; float actionPhase = 0.0f; // the hands (relayed from the input, #750)
 };
 struct MsgShower { double start = 0.0, end = 0.0; uint32_t id = 0; }; // world seconds; id 0 none (events.h)
+
+struct MsgRoster { struct Entry { uint32_t session = 0; std::string name; }; std::vector<Entry> players; }; // everyone online
+struct MsgLoadout { uint32_t session = 0; std::string held; bool headlamp = false; uint8_t suitTier = 0; }; // session: 0 from a client
 struct MsgTerrainEdit {
     uint64_t body = 0;               // NetId
     DVec3 center{};                  // body-local
@@ -146,6 +157,8 @@ void NetWrite(NetWriter& w, const MsgInputs& m);
 void NetWrite(NetWriter& w, const MsgPlayerState& m);
 void NetWrite(NetWriter& w, const MsgTerrainEdit& m);
 void NetWrite(NetWriter& w, const MsgShower& m);
+void NetWrite(NetWriter& w, const MsgRoster& m);
+void NetWrite(NetWriter& w, const MsgLoadout& m);
 bool NetRead(NetReader& r, MsgHello& m);
 bool NetRead(NetReader& r, MsgWelcome& m);
 bool NetRead(NetReader& r, MsgReject& m);
@@ -156,6 +169,8 @@ bool NetRead(NetReader& r, MsgInputs& m);
 bool NetRead(NetReader& r, MsgPlayerState& m);
 bool NetRead(NetReader& r, MsgTerrainEdit& m);
 bool NetRead(NetReader& r, MsgShower& m);
+bool NetRead(NetReader& r, MsgRoster& m);
+bool NetRead(NetReader& r, MsgLoadout& m);
 // A message's id (the first byte; NetMsg::Count if empty or unknown).
 NetMsg NetPeek(const std::vector<uint8_t>& bytes);
 

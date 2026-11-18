@@ -1031,7 +1031,9 @@ int main(int argc, char** argv)
         else LOG_WARN("Log", "settings.txt: unknown log_level '%s'", settings.logLevel.c_str());
     }
     for (int i = 1; i < argc; ++i) if (std::string(argv[i]) == "--headless") gHeadless = true; // #311: simulate, draw nothing
-    if (benchHeadless || !hostSave.empty()) gHeadless = true; // a dedicated server (--host) draws nothing either
+    bool hostDraw = false; // --host-draw (tests, #750): a --host run keeps its window and draws (to record the in-process clients' avatars)
+    for (int i = 1; i < argc; ++i) if (std::string(argv[i]) == "--host-draw") hostDraw = true;
+    if (benchHeadless || (!hostSave.empty() && !hostDraw)) gHeadless = true; // a dedicated server (--host) draws nothing either
     if (!hostSave.empty()) { // --host: the world's seed (user, 2026-11-15) - before the world is generated
         if (FILE* fs = fopen(hostSave.c_str(), "rb")) { // an existing save keeps its own seed (its "seed N" line)
             char line[512];
@@ -9480,7 +9482,9 @@ int main(int argc, char** argv)
         // --test-net-move (#327, with --host <save>, ENABLE_GNS): bob joins over loopback with 50 ms of lag each way and 2%
         // loss, and walks, turns and jumps for 8 s, predicting himself; carol joins and watches him (interpolated 100 ms
         // behind). Checks: bob's prediction at each acknowledged input stays within 0.5 m of the server's player, and moves
-        // him back at most on 1 state in 10; carol sees bob move no faster than 12 m/s from frame to frame (he walks 6 and jumps at 5; a catch-up snap is a 0.5 m step in a 2 ms frame).
+        // him back at most on 1 state in 10; carol sees bob move no faster than 16 m/s from frame to frame (twice his 7.8 m/s top: walking 6 and jumping 5; the playback clock catches up at most ~1.5x, a snap shows as hundreds of m/s).
+        // Then (#750): carol's roster names both, bob's avatar comes with his name, pickaxe, headlamp, suit tier and swing (the camera
+        // follows it; the game draws carol's view), and when bob leaves he drops out of her roster and his avatar goes.
         if (benchNetMove && gameState == 1 && !loading && WorldIdle()) {
             static NetClient bob, carol;
             static Player bobSelf;
@@ -9491,6 +9495,8 @@ int main(int argc, char** argv)
             static float carolWorstJump = 0.0f;
             static DVec3 carolLast{};
             static double serverGap = 0.0;
+            static bool moveOk = false, rosterOk = false, avatarSeen = false, avatarOk = false;
+            static uint32_t bobSession = 0;
             if (!Host_Listening()) { printf("bench: net move: needs --host with ENABLE_GNS -> SKIP\n"); benchNetMove = false; }
             else {
                 const char* addr = TextFormat("127.0.0.1:%d", hostPort);
@@ -9504,13 +9510,29 @@ int main(int argc, char** argv)
                         synced = true;
                     }
                     stepped = SimTick(); phase = 2; t0 = GetTime();
+                    NetClient_SetLoadout(bob, "stone_pickaxe", true, 1); // (#750) what carol should see in his hands
+                    gNetClient = &carol;                                // the game draws carol's view of the others
                 } else if (phase == 2) {
-                    // bob: forward, turning 30 deg/s, a jump every second; one input per sim step.
+                    // bob: forward, turning 30 deg/s, a jump every second, swinging his pickaxe; one input per sim step.
                     for (; stepped < SimTick(); ++stepped) {
                         PlayerInput in; in.hold(Act::Forward);
                         if (stepped % 60 == 0) in.press(Act::Jump);
                         bobSelf.forward = Vector3RotateByAxisAngle(bobSelf.forward, bobSelf.up, 30.0f * DEG2RAD / 60.0f);
+                        bob.action = 1; bob.actionPhase = (float)fmod(stepped / 30.0, 1.0); // a swing every 0.5 s
                         NetClient_Step(bob, world, bobSelf, in);
+                    }
+                    // carol's avatars (#750): bob named, holding his pickaxe with the lamp on, swinging. The camera keeps him in view.
+                    std::vector<AvatarState> seen;
+                    NetClient_FillAvatars(carol, world, seen);
+                    for (const AvatarState& a : seen) {
+                        if (a.session != bob.welcome.session) continue;
+                        avatarSeen = true;
+                        avatarOk = avatarOk || (a.name == "bob" && a.held == "stone_pickaxe" && a.headlamp && a.suitTier == 1 && a.action == 1);
+                        const Vector3 feet = (a.position - world.renderOrigin).toFloat();
+                        const Vector3 side = Vector3Normalize(Vector3CrossProduct(a.facing, a.up));
+                        world.camera.position = Vector3Add(feet, Vector3Add(Vector3Scale(a.facing, 3.5f), Vector3Add(Vector3Scale(side, 1.5f), Vector3Scale(a.up, 1.6f))));
+                        world.camera.target = Vector3Add(feet, Vector3Scale(a.up, 1.0f));
+                        world.camera.up = a.up;
                     }
                     // The first 1.5 s settle the start (bob's first inputs reach the server while it already stands there):
                     // count from then on.
@@ -9525,11 +9547,26 @@ int main(int argc, char** argv)
                     if (GetTime() - t0 > 8.0) {
                         uint64_t sb = 0; DVec3 sl{};
                         if (Host_PlayerLocal(world, bob.welcome.session, sb, sl) && bobSelf.nearest) serverGap = (bobSelf.nearest->toLocalD(bobSelf.position) - sl).length();
-                        const bool ok = synced && bob.states > 80 && bob.worstError < 0.5 && bob.corrections * 10 <= bob.states && carolSaw && carolWorstJump < 12.0f;
+                        moveOk = synced && bob.states > 80 && bob.worstError < 0.5 && bob.corrections * 10 <= bob.states && carolSaw && carolWorstJump < 16.0f;
                         printf("bench: net move (#327, 100 ms round trip, 2%% loss): bob %d own states, prediction off by %.3f m at worst (%.3f m last), %d corrections; "
                                "%.2f m ahead of the server at the end; carol saw him %d, fastest she saw him move %.1f m/s (he walks 6); rtt %.0f ms -> %s\n",
-                               bob.states, bob.worstError, bob.lastError, bob.corrections, serverGap, (int)carolSaw, carolWorstJump, bob.rttMs, ok ? "PASS" : "FAIL");
-                        NetClient_Disconnect(bob); NetClient_Disconnect(carol);
+                               bob.states, bob.worstError, bob.lastError, bob.corrections, serverGap, (int)carolSaw, carolWorstJump, bob.rttMs, moveOk ? "PASS" : "FAIL");
+                        rosterOk = carol.roster.size() == 2 && carol.roster[bob.welcome.session] == "bob" && carol.roster[carol.welcome.session] == "carol";
+                        bobSession = bob.welcome.session;
+                        NetClient_Disconnect(bob); // bob leaves: carol's roster should drop him, and his avatar go
+                        phase = 3; t0 = GetTime();
+                    }
+                } else if (phase == 3) {
+                    std::vector<AvatarState> seen;
+                    NetClient_FillAvatars(carol, world, seen);
+                    const bool gone = !carol.roster.count(bobSession) && seen.empty();
+                    if (gone || GetTime() - t0 > 10.0) {
+                        const bool ok = moveOk && rosterOk && avatarOk && gone;
+                        printf("bench: net roster (#750): carol's roster had bob and carol %d; bob's avatar seen %d with name, pickaxe, headlamp, suit tier and swing %d; "
+                               "after he left: roster without him and no avatar %d (%.1f s, %d rosters) -> %s\n",
+                               (int)rosterOk, (int)avatarSeen, (int)avatarOk, (int)gone, GetTime() - t0, carol.rosters, ok ? "PASS" : "FAIL");
+                        gNetClient = nullptr;
+                        NetClient_Disconnect(carol);
                         Net_SetFakeConditions(0, 0.0f);
                         benchNetMove = false;
                     }
@@ -10101,7 +10138,8 @@ int main(int argc, char** argv)
             } else if (gameState == 3) {
                 pendingNewWorld = NewWorld_Draw(); // the New World screen (#504)
             } else if (gameState == 1) {
-                gAvatars = gBenchAvatars; // (#328) the net client's remote players join here (#327)
+                gAvatars = gBenchAvatars; // (#328)
+                if (gNetClient) NetClient_FillAvatars(*gNetClient, world, gAvatars); // the other players on the server (#750)
                 if (avatarSelf) { // RAYLIBGAME_AVATAR_SELF=1: yourself, 3 m ahead and facing you (a mirror)
                     AvatarState a = Avatar_FromPlayer(player, 0);
                     const Vector3 ahead = a.facing;
