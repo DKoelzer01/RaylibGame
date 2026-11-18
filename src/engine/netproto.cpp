@@ -95,7 +95,7 @@ void NetWrite(NetWriter& w, const MsgWelcome& m) {
     Id(w, NetMsg::Welcome);
     w.u32(m.protocol); w.u32(m.session); w.boolean(m.reconnected); w.u32(m.seed);
     w.varu(m.bodies.size()); for (const std::string& b : m.bodies) w.str(b);
-    w.u64(m.fingerprint); w.u32(m.serverTick);
+    w.u64(m.fingerprint); w.u32(m.serverTick); w.f64(m.worldTime);
     w.u8(m.settings.difficulty); w.boolean(m.settings.pvp); w.boolean(m.settings.claims); w.u8(m.settings.maxPlayers);
 }
 bool NetRead(NetReader& r, MsgWelcome& m) {
@@ -104,7 +104,7 @@ bool NetRead(NetReader& r, MsgWelcome& m) {
     if (n > 256) r.ok = false;
     m.bodies.clear();
     for (uint64_t i = 0; i < n && r.ok; ++i) m.bodies.push_back(r.str(1024));
-    m.fingerprint = r.u64(); m.serverTick = r.u32();
+    m.fingerprint = r.u64(); m.serverTick = r.u32(); m.worldTime = r.f64();
     m.settings.difficulty = r.u8(); m.settings.pvp = r.boolean(); m.settings.claims = r.boolean(); m.settings.maxPlayers = r.u8();
     if (m.settings.difficulty > 2) r.ok = false;
     return Done(r);
@@ -128,8 +128,8 @@ bool NetRead(NetReader& r, MsgBye& m) {
 
 void NetWrite(NetWriter& w, const MsgPing& m) { Id(w, NetMsg::Ping); w.u32(m.seq); w.f64(m.clientTime); }
 bool NetRead(NetReader& r, MsgPing& m) { m.seq = r.u32(); m.clientTime = r.f64(); return Done(r); }
-void NetWrite(NetWriter& w, const MsgPong& m) { Id(w, NetMsg::Pong); w.u32(m.seq); w.f64(m.clientTime); w.u32(m.serverTick); }
-bool NetRead(NetReader& r, MsgPong& m) { m.seq = r.u32(); m.clientTime = r.f64(); m.serverTick = r.u32(); return Done(r); }
+void NetWrite(NetWriter& w, const MsgPong& m) { Id(w, NetMsg::Pong); w.u32(m.seq); w.f64(m.clientTime); w.u32(m.serverTick); w.f64(m.worldTime); }
+bool NetRead(NetReader& r, MsgPong& m) { m.seq = r.u32(); m.clientTime = r.f64(); m.serverTick = r.u32(); m.worldTime = r.f64(); return Done(r); }
 
 void NetWrite(NetWriter& w, const MsgInputs& m) { // newest tick, then the steps newest first (ticks implicit)
     Id(w, NetMsg::Input);
@@ -267,16 +267,16 @@ bool NetProto_Test() {
     }
     {
         MsgWelcome a; a.session = 7; a.reconnected = true; a.seed = 42; a.bodies = { "planet Terra 0 0 0 60000", "moon Luna 1 2 3 9000" };
-        a.fingerprint = 0x1234567890abcdefull; a.serverTick = 123456; a.settings = { 2, true, false, 16 };
+        a.fingerprint = 0x1234567890abcdefull; a.serverTick = 123456; a.worldTime = 4321.5; a.settings = { 2, true, false, 16 };
         MsgWelcome b; std::vector<uint8_t> s;
         check(RoundTrip(a, b, &s) && b.session == 7 && b.reconnected && b.seed == 42 && b.bodies == a.bodies && b.fingerprint == a.fingerprint &&
-              b.serverTick == 123456 && b.settings.difficulty == 2 && b.settings.pvp && !b.settings.claims && b.settings.maxPlayers == 16, "welcome");
+              b.serverTick == 123456 && b.worldTime == 4321.5 && b.settings.difficulty == 2 && b.settings.pvp && !b.settings.claims && b.settings.maxPlayers == 16, "welcome");
         samples.push_back(s);
     }
     { MsgReject a{ NetReject::Password, "try again" }, b; std::vector<uint8_t> s; check(RoundTrip(a, b, &s) && b.reason == a.reason && b.detail == a.detail, "reject"); samples.push_back(s); }
     { MsgBye a{ NetBye::ServerClosed }, b; std::vector<uint8_t> s; check(RoundTrip(a, b, &s) && b.reason == a.reason, "bye"); samples.push_back(s); }
     { MsgPing a{ 99, 12.5 }, b; std::vector<uint8_t> s; check(RoundTrip(a, b, &s) && b.seq == 99 && b.clientTime == 12.5, "ping"); samples.push_back(s); }
-    { MsgPong a{ 99, 12.5, 777 }, b; std::vector<uint8_t> s; check(RoundTrip(a, b, &s) && b.seq == 99 && b.clientTime == 12.5 && b.serverTick == 777, "pong"); samples.push_back(s); }
+    { MsgPong a{ 99, 12.5, 777, 86400.25 }, b; std::vector<uint8_t> s; check(RoundTrip(a, b, &s) && b.seq == 99 && b.clientTime == 12.5 && b.serverTick == 777 && b.worldTime == 86400.25, "pong"); samples.push_back(s); }
     {
         MsgInputs a, b; std::vector<uint8_t> s;
         a.steps = { { 5000, 0x1234ull, 0x10ull, 0.6f, 0.0f, -0.8f }, { 4999, 0x1234ull, 0ull, 0.0f, 1.0f, 0.0f }, { 4998, 0x1ull, 0ull, 1.0f, 0.0f, 0.0f } };

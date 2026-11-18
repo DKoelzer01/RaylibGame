@@ -5,6 +5,7 @@
 #include "scene.h"
 #include "simclock.h"
 #include "worldtypes.h"
+#include "world.h"
 #include <raymath.h>
 #include <algorithm>
 
@@ -33,6 +34,7 @@ namespace {
                 MsgWelcome w;
                 if (c.state != NetClient::State::AwaitingWelcome || !NetRead(r, w)) return;
                 c.welcome = w; c.serverTick = w.serverTick; c.state = NetClient::State::Joined;
+                if (gNetRole == NetRole::Client) SetWorldTime(w.worldTime); // #339: the server's clock (spin, orbits, sun, weather derive from it)
                 return;
             }
             case NetMsg::Reject: {
@@ -47,6 +49,14 @@ namespace {
                 MsgPong p;
                 if (!NetRead(r, p)) return;
                 c.rttMs = (GetTime() - p.clientTime) * 1000.0; c.serverTick = p.serverTick; ++c.pongs;
+                { // #339: keep following the server's world clock (slewed: the sky never jumps); a host's own clients only measure it
+                    // Only pongs near the best recent round trip: a resent or stalled one makes the trip lopsided (NTP-style).
+                    c.rttFloor = c.rttFloor < 0.0 ? c.rttMs : std::min(c.rttMs, c.rttFloor + 2.0);
+                    if (c.rttMs > c.rttFloor * 1.25 + 5.0) return;
+                    const double est = p.worldTime + 0.0005 * c.rttMs;
+                    c.clockError = est - WorldTime(); if (c.pongs > 1) c.worstClockError = std::max(c.worstClockError, std::abs(c.clockError));
+                    if (gNetRole == NetRole::Client) WorldTime_Follow(est);
+                }
                 return;
             }
             case NetMsg::Shower: { MsgShower s; if (NetRead(r, s)) c.shower = s; return; }

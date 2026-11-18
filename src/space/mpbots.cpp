@@ -64,6 +64,9 @@ PlayerInput Script(int k, long long step, Player& p) {
 }
 
 double GapLimit(size_t k);
+// #339: each bot's estimate of the server's world time (pong + half the round trip) against the clock (one clock here).
+const double kClockTolerance = 0.1; // s: jitter and the round trip's asymmetry
+double ClockWorst() { double w = 0.0; for (const Bot& b : bots) w = std::max(w, b.c.worstClockError); return w; }
 void Finish(const char* why, bool movedOk, bool pass) {
     const NetConditions nc = Net_GetConditions();
     const NetLinkStats ls = Net_GetLinkStats();
@@ -75,9 +78,9 @@ void Finish(const char* why, bool movedOk, bool pass) {
     for (const Bot& b : bots)
         printf("bench: mp-bots: %s (session %u): %d own states, prediction off by %.3f m at worst (%.3f last), %d corrections; %.2f m from the server at the end\n",
                b.name.c_str(), b.session, b.c.states, b.c.worstError, b.c.lastError, b.c.corrections, b.serverGap, GapLimit(&b - bots.data()));
-    printf("bench: mp-bots: %zu bots joined %zu; moved ok %d (bot1 saw the others move at most %.2f x their scripted speed); churn %d of %d rounds: %d rejoins kept their session %d, "
+    printf("bench: mp-bots: %zu bots joined %zu; moved ok %d (bot1 saw the others move at most %.2f x their scripted speed); world clock estimate off by %.0f ms at worst (#339); churn %d of %d rounds: %d rejoins kept their session %d, "
            "online count right %d of %d; %s after %.1f s -> %s\n",
-           bots.size(), joinMs.size(), (int)movedOk, watchWorst, churnRound, kRounds, rejoins, sessionsKept, onlineOk, onlineChecks, why, GetTime() - t0, pass ? "PASS" : "FAIL");
+           bots.size(), joinMs.size(), (int)movedOk, watchWorst, ClockWorst() * 1000.0, churnRound, kRounds, rejoins, sessionsKept, onlineOk, onlineChecks, why, GetTime() - t0, pass ? "PASS" : "FAIL");
     for (Bot& b : bots) if (!b.gone) NetClient_Disconnect(b.c);
     if (csv) { fclose(csv); csv = nullptr; }
     phase = -1;
@@ -89,7 +92,7 @@ bool MovedOk() {
         const Bot& b = bots[k];
         if (!b.synced || b.c.states < 80 || b.c.worstError >= 0.5 || b.c.corrections * 10 > b.c.states || b.serverGap < 0.0 || b.serverGap > GapLimit(k)) return false;
     }
-    return watchWorst < 2.0f;
+    return watchWorst < 2.0f && ClockWorst() < kClockTolerance;
 }
 }
 
@@ -189,8 +192,8 @@ bool MpBots_Update(Scene& world) {
         if (Host_OnlinePlayers() == (int)bots.size() - gone || now - phaseT > 20.0) {
             ++onlineChecks; onlineOk += Host_OnlinePlayers() == (int)bots.size() - gone ? 1 : 0;
             for (Bot& b : bots) if (b.gone) {
-                const int st = b.c.states, co = b.c.corrections; const double we = b.c.worstError, le = b.c.lastError; // keep the walk's numbers for the report
-                b.c = NetClient{}; b.c.states = st; b.c.corrections = co; b.c.worstError = we; b.c.lastError = le;
+                const int st = b.c.states, co = b.c.corrections; const double we = b.c.worstError, le = b.c.lastError, wc = b.c.worstClockError, rf = b.c.rttFloor; // keep the walk's numbers for the report
+                b.c = NetClient{}; b.c.states = st; b.c.corrections = co; b.c.worstError = we; b.c.lastError = le; b.c.worstClockError = wc; b.c.rttFloor = rf;
                 b.lastPongs = 0; NetClient_Connect(b.c, Addr(), b.name); b.gone = false; b.joinMs = -2.0;
             }
             phase = 5; phaseT = now;
