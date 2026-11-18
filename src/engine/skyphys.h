@@ -17,4 +17,5 @@ float SkyPhys_LutR();
 float SkyPhys_LutRt();
 float SkyPhys_LutHeight(float planetRadius, float atmosphereTop, float camDist);
 unsigned SkyPhys_SkyViewTexture();       // 0 until built
+unsigned SkyPhys_HazeTexture();          // (#819) the haze colour LUT for lit surfaces (64 x 128); 0 until built
 unsigned SkyPhys_TransmittanceTexture(); // 0 until built
