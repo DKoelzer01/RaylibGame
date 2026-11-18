@@ -35,6 +35,7 @@ struct Grid {
     std::vector<int> nbr;         // slot * 6 + face (-x +x -y +y -z +z), -1 none
     std::vector<uint8_t> processed; // per slot
     std::vector<uint32_t> flags;  // per slot: bit 0 changed, bits 1-6 face requests
+    std::vector<uint32_t> sinkOut; // per slot: fill units its sinks took in (river flow, #656; the caller zeroes it)
     void resize(int slots);       // keeps nothing
 };
 

@@ -101,6 +101,7 @@ planet() {
     RAYLIBGAME_FLUID_CELL=1 run --seed 42 --bench 3 --test-flow # the 1 m fluid grid (opt-in since #714) still runs
     RAYLIBGAME_EROSION=1 run --seed 42 --bench 5 --test-flow-sea # the erosion bake's rivers (#190; the noise terrain's river mouths stand over the sea)
     RAYLIBGAME_EROSION=1 run --seed 42 --bench 3 --test-dam # #361/#432: a low dam backs a released river reach up and it spills over (eroded valleys; up to 7 min)
+    run --seed 42 --day --bench 3 --test-dam-divert # #656: a dam that holds a river dries it 200 m downstream, a second dam upstream cuts the first reach's inflow, the state survives save/load, dug out the river comes back: flow past 0.5 within 60 s and still rising at 90 s (~3 min; --dam-divert-full waits for the full return)
     run --seed 42 --bench 3 --test-pond
     run --seed 42 --bench 3 --test-part-wall # #391: a wall of build blocks holds water; taken down, the water runs on
     run --sandbox --seed 42 --day --bench 3 --test-leak # #680/#691: a 1 m hole in a dug wall drains like an orifice, then a weir; no water on the grass

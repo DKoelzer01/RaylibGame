@@ -14,7 +14,7 @@ namespace FluidKernel {
 void Grid::resize(int slots) {
     a.assign((size_t)slots * 4096, 0u); b.assign((size_t)slots * 4096, 0u);
     faceP.assign((size_t)slots * 4096, Vec4{}); faceN.assign((size_t)slots * 4096 * 2, Vec4{});
-    nbr.assign((size_t)slots * 6, -1); processed.assign(slots, 0); flags.assign(slots, 0u);
+    nbr.assign((size_t)slots * 6, -1); processed.assign(slots, 0); flags.assign(slots, 0u); sinkOut.assign(slots, 0u);
 }
 
 namespace {
@@ -284,6 +284,7 @@ struct Pass {
         g.faceP[gi] = H(applied);
         int nf = std::clamp(f + net, 0, 255);
         if (f == 0 && nf > 0) kind = inKind;
+        if ((fl & (SOURCE | SINK)) == (SOURCE | SINK) && nf > (int)TG(c)) g.sinkOut[slot] += (uint32_t)(nf - (int)TG(c)); // a released reach's sink takes in (#656)
         if (fl & SOURCE) nf = (int)TG(c);
         else if (p.evaporate && nf > 0 && nf <= 2 && moving == 0u && onGround(slot, x, y, z)) nf = 0;
         const uint32_t old = outC[gi];
