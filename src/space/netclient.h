@@ -64,6 +64,7 @@ struct NetClient {
     int animalMsgs = 0;                          // (#334) animal snapshots heard
     int damageTaken = 0; float lastDamage = 0.0f; bool lastDamageBlocked = false; // (#334) hits on our player from the server
     MsgVitals vitals; int vitalsMsgs = 0;        // (#337) our player's survival as the server last said
+    MsgTeamState team; int teamMsgs = 0;      // (#604) our team as the server last said (members, health, an invite waiting)
     int gravesMsgs = 0, lastGraves = 0;          // (#804) Graves lists heard, and the size of the last
     int questBooks = 0, questTeam = 0;          // (#338) team quest books heard, and our team
     int machineViews = 0, machineStates = 0;    // (#332) machine views and working lists heard

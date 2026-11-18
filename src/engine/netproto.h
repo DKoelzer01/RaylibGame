@@ -17,7 +17,7 @@
 #include <functional>
 #include <vector>
 
-constexpr uint32_t kNetProtocol = 25; // 1 was the text "join" of #311; 5: world time in Welcome and Pong (#339); 6 (unused); 7: world-gen settings in Welcome (#757); 8: terrain edit requests, refusals, inventory deltas (#329); 9: chat (#326); 10: building (#330); 11 is #776's; 12: player snapshots, delta-coded against acked states (#769); 13: animals (#334); 14: animal actions, damage to a player (#334); 15 (unused); 16: server-side survival (#337); 17: the suit colour in the loadout (#341); 18: beds (#800); 19: graves (#804); 20: the player id (UUID) in the hello (#346); 21: team quest books (#338); 22: crafting on the server (#338); 23: machines on the server (#332); 24 is #604's; 25: crafting from nearby chests, cursor takes (#854)
+constexpr uint32_t kNetProtocol = 26; // 1 was the text "join" of #311; 5: world time in Welcome and Pong (#339); 6 (unused); 7: world-gen settings in Welcome (#757); 8: terrain edit requests, refusals, inventory deltas (#329); 9: chat (#326); 10: building (#330); 11 is #776's; 12: player snapshots, delta-coded against acked states (#769); 13: animals (#334); 14: animal actions, damage to a player (#334); 15 (unused); 16: server-side survival (#337); 17: the suit colour in the loadout (#341); 18: beds (#800); 19: graves (#804); 20: the player id (UUID) in the hello (#346); 21: team quest books (#338); 22: crafting on the server (#338); 23: machines on the server (#332); 24 is #604's; 25: crafting from nearby chests, cursor takes (#854); 26: team state (#604; it was to be 24)
 
 enum class NetMsg : uint8_t {
     Hello = 1,     // client -> server: protocol, build, player name, password
@@ -57,6 +57,7 @@ enum class NetMsg : uint8_t {
     MachineAction = 34, // client -> server (#332): insert, extract, take a slot, fuel; watch / unwatch a machine's screen
     MachineView = 35,   // server -> client (#332): the full view of a machine it watches, a few times a second
     MachineStates = 36, // server -> client (#332): which machines of a plot work now (animations, smoke), when it changes
+    TeamState = 37,     // server -> client (#604): the player's team (name, members online with their health) and an invite waiting
     Count
 };
 const char* NetMsgName(NetMsg m);
@@ -210,6 +211,10 @@ struct MsgCraftRequest { uint32_t recipe = 0; std::string output; uint8_t count 
 struct MsgMachineAction { uint64_t body = 0; uint32_t plot = 0; int32_t part = -1; uint8_t action = 0; std::string item; uint16_t count = 0; uint8_t slot = 0, which = 0; };
 struct MsgMachineView { uint64_t body = 0; uint32_t plot = 0; int32_t part = -1; MachineView view; };
 struct MsgMachineStates { uint64_t body = 0; uint32_t plot = 0; std::vector<int32_t> working; };
+struct MsgTeamState { // #604: at most 16 members
+    struct Member { std::string name; bool online = false, owner = false, you = false; float health = 0.0f; };
+    int32_t team = 0; std::string name; std::vector<Member> members; std::string invite; // invite: the team inviting us ("" none)
+};
 struct MsgGraves { // #804 (at most 256: the nearest matter, and a world with more has bigger problems)
     struct Entry { uint32_t id = 0; std::string body; DVec3 local{}; std::string owner, name; uint8_t style = 0; int64_t diedAt = 0; };
     std::vector<Entry> graves;
@@ -362,6 +367,8 @@ void NetWrite(NetWriter& w, const MsgMachineView& m);
 bool NetRead(NetReader& r, MsgMachineView& m);
 void NetWrite(NetWriter& w, const MsgMachineStates& m);
 bool NetRead(NetReader& r, MsgMachineStates& m);
+void NetWrite(NetWriter& w, const MsgTeamState& m);
+bool NetRead(NetReader& r, MsgTeamState& m);
 bool NetRead(NetReader& r, MsgGraves& m);
 void NetWrite(NetWriter& w, const MsgPlayerSnapshot& m);
 // lookup(session, baseSeq, out): the state of that player received in snapshot baseSeq (false: unknown - the entry can't be

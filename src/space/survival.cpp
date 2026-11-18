@@ -602,7 +602,7 @@ void Objectives_DrawHUD() {
             text("PINNED QUESTS", big, Fade(GOLD, 0.9f));
             for (const auto& [ti, ki] : pins) {
                 if (ti < 0 || ti >= (int)tiers.size() || ki < 0 || ki >= (int)tiers[ti].tasks.size()) continue;
-                y = DrawWrapped(TextFormat("[ ] %s", TaskLine(tiers[ti].tasks[ki], false).c_str()), x, y, 58, mid, RAYWHITE, draw);
+                y = DrawWrapped(TextFormat("%s", TaskLine(tiers[ti].tasks[ki], false).c_str()), x, y, 58, mid, RAYWHITE, draw);
                 y = DrawWrapped(TextFormat("    tier %d: %s", ti, tiers[ti].name.c_str()), x, y, 64, small, Fade(RAYWHITE, 0.55f), draw);
                 y += (int)(2 * s);
             }
@@ -613,13 +613,13 @@ void Objectives_DrawHUD() {
         text(TextFormat("QUESTS   tier %d: %s", Q().tier, t.name.c_str()), big, Fade(GOLD, 0.9f));
         if (t.tasks.empty() && t.gate != "-") {
             const ItemDef* d = itemDB.find(t.gate);
-            text(TextFormat("[ ] Make a %s", d ? d->name.c_str() : t.gate.c_str()), big, RAYWHITE);
+            text(TextFormat("Make a %s", d ? d->name.c_str() : t.gate.c_str()), big, RAYWHITE);
         }
         int shown = 0, more = 0;
         for (int ki = 0; ki < (int)t.tasks.size(); ++ki) {
             if (Done(Q().tier, ki)) continue;
             if (shown >= kMaxPins) { ++more; continue; }
-            y = DrawWrapped(TextFormat("[ ] %s", TaskLine(t.tasks[ki], false).c_str()), x, y, 58, mid, RAYWHITE, draw);
+            y = DrawWrapped(TextFormat("%s", TaskLine(t.tasks[ki], false).c_str()), x, y, 58, mid, RAYWHITE, draw);
             y += (int)(1 * s);
             ++shown;
         }
