@@ -260,6 +260,14 @@ void Chunk::drawChunk(const RenderContext& ctx, const Matrix& m) {
     if (ctx.drawCalls) (*ctx.drawCalls)++;
 }
 
+float Chunk::lodFade(double now) const {
+    if (fadeT0 < 0.0) return 0.0f;
+    const float t = (float)((now - fadeT0) / kLodFadeSeconds);
+    if (t >= 1.0f) return fadeOut ? -0.9999f : 0.0f; // done: an outgoing node is gone (until the list drops it), a new one whole
+    const float s = std::clamp(t, 0.001f, 0.999f);
+    return fadeOut ? -s : s;
+}
+
 void Chunk::drawWater(const RenderContext& ctx, const Matrix& m) {
     if (!isActive || waterMesh.vaoId == 0 || !ctx.batch) return;
     if (!visible(ctx, m)) return;

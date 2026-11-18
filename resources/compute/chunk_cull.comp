@@ -57,6 +57,6 @@ void main() {
     dvec3 od = dvec3(o);
     vec3 tex = vec3(od - floor(od / texPeriod) * texPeriod);
     recs[e * 6u + 3u] = floatBitsToUint(vec4(tex, 0.0));
-    recs[e * 6u + 4u] = floatBitsToUint(vec4(c.clip.xyz, 0.0));
+    recs[e * 6u + 4u] = floatBitsToUint(c.clip); // w: the LOD cross-fade (#243)
     recs[e * 6u + 5u] = c.palette;
 }
