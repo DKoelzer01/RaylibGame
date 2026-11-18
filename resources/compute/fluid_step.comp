@@ -56,6 +56,7 @@ uniform int useGroups;
 uniform int maskCur;       // this substep's wet mask (0-2)
 layout(std430, binding = 10) buffer Mask { uint gmask[]; };
 layout(std430, binding = 11) readonly buffer Groups { uint groups[]; };
+layout(std430, binding = 12) buffer SinkOut { uint sinkOut[]; };     // per slot: fill units its sinks took in (river flow, #656)
 
 const uint SOLID = 1u, SOURCE = 2u, DUG = 8u, SINK = 16u; // a sink: a source that takes water in (reset to its level after: what is over it leaves, #361)
 const float G = 9.81;
@@ -224,9 +225,10 @@ void faceFlow(int ga, uint a, int gb, uint b, float qp, out float qTot, out floa
     float dh = float(abs(ha - hb)) / HU;                          // m, giver over taker
     float q = max(qp * sgn, 0.0);                                 // momentum along the slope only (no overshoot)
     float speed = q / (cellSize * max(depth, 0.02));             // m/s through the face (cellSize wide)
-    // It builds only on a difference the levelling share would act on (a viscosity's worth, 2 cm for water); under that it
-    // only coasts out: a near-flat film crept on for minutes and never slept (#642 dam break).
-    float accel = abs(ha - hb) >= visc[kd] ? dt * G * depth * dh : 0.0;
+    // Water deeper than a film builds on 2 units of head (#680: the viscosity's 5-unit gate held a 1.6% slope for ever - a pool
+    // stopped 0.3 m over an open hole; on 1 unit deep water never slept); a film (< 5 cm) keeps the 5-unit gate and rests.
+    int gate = colDepth < 0.05 ? visc[kd] : 2;
+    float accel = abs(ha - hb) >= gate ? dt * G * depth * dh : 0.0;
     q = (q + accel) / (1.0 + dt * (frictionLin[kd] + frictionQuad[kd] * speed / max(depth, 0.02)));
     if (accel == 0.0 && q * dt * UNITS < 0.05) q = 0.0;          // coasted out: at rest
     qMom = q * sgn;
@@ -368,6 +370,7 @@ void main() {
     storeP(g, applied);
     int nf = clamp(f + net, 0, 255);
     if (f == 0 && nf > 0) kind = inKind;
+    if ((fl & (SOURCE | SINK)) == (SOURCE | SINK) && nf > int(TG(c))) atomicAdd(sinkOut[slot], uint(nf - int(TG(c)))); // what a released reach's sink takes in (#656)
     if ((fl & SOURCE) != 0u) nf = int(TG(c));                            // sources hold their level
     // A resting speck on the ground soaks away (one in a moving film does not: erasing a sliding film's thin edge every
     // substep lost ~12% of a draining pond, #454); on water it is that water's surface and stays (#454: a body over cells that hold

@@ -199,9 +199,51 @@ void Inventory::addFractional(const std::string& id, float amount) {
     if (hundredths >= 1.0) { p -= (float)(hundredths / 100.0); addAmount(id, hundredths / 100.0); }
 }
 
-double Inventory::addAmount(const std::string& id, double amount) {
+ItemGlow Item_GlowOf(const std::string& id, float heat) {
+    // Constant glows (radioactive materials, #580): resources/data/item_glow.txt "id | r,g,b | strength", read once.
+    static std::unordered_map<std::string, ItemGlow> table;
+    static bool loaded = false;
+    if (!loaded) {
+        loaded = true;
+        std::ifstream f("resources/data/item_glow.txt");
+        std::string line;
+        while (std::getline(f, line)) {
+            line = Trim(line);
+            if (line.empty() || line[0] == '#') continue;
+            const auto parts = Split(line, '|');
+            if (parts.size() < 3) continue;
+            const auto rgb = Split(parts[1], ',');
+            if (rgb.size() != 3) continue;
+            table[parts[0]] = { Color{ (unsigned char)atoi(rgb[0].c_str()), (unsigned char)atoi(rgb[1].c_str()), (unsigned char)atoi(rgb[2].c_str()), 255 },
+                                std::clamp((float)atof(parts[2].c_str()), 0.0f, 1.0f) };
+        }
+    }
+    ItemGlow g;
+    if (auto it = table.find(id); it != table.end()) g = it->second;
+    if (heat > 0.0f) { // incandescence: dull red when nearly cool, orange, then yellow-white fresh out of the furnace
+        const float h = std::clamp(heat, 0.0f, 1.0f);
+        auto lerp = [](Color a, Color b, float t) { return Color{ (unsigned char)(a.r + (b.r - a.r) * t), (unsigned char)(a.g + (b.g - a.g) * t), (unsigned char)(a.b + (b.b - a.b) * t), 255 }; };
+        const Color c = h < 0.5f ? lerp({ 150, 20, 5, 255 }, { 255, 110, 25, 255 }, h * 2.0f) : lerp({ 255, 110, 25, 255 }, { 255, 225, 150, 255 }, (h - 0.5f) * 2.0f);
+        const float s = std::sqrt(h); // stays visible well into the cooling
+        if (s > g.strength) g = { c, s };
+    }
+    return g;
+}
+
+// The heat of `a` hundredths at heat ha joined by `b` at hb (#580).
+static float MixHeat(int64_t a, float ha, int64_t b, float hb) {
+    return a + b > 0 ? (float)(((double)a * ha + (double)b * hb) / (double)(a + b)) : 0.0f;
+}
+
+void Inventory::cool(float dt) {
+    if (dt <= 0.0f) return;
+    for (InvSlot& s : slots) if (s.heat > 0.0f) s.heat = std::max(0.0f, s.heat - dt / kCoolSeconds);
+}
+
+double Inventory::addAmount(const std::string& id, double amount, float heat) {
     if (amount <= 0.0 || id.empty()) return 0.0;
     if (IsWildcardItem(id)) return amount; // a recipe tag (any_planks), never an item you hold (#269)
+    heat = std::clamp(heat, 0.0f, 1.0f);
     // Tools and blocks come in whole units.
     int64_t left = KindOf(id) == ItemKind::Resource ? ToCenti(amount) : (int64_t)floor(amount + 1e-6) * 100;
     const int64_t cap = (int64_t)StackLimit(id) * 100;
@@ -210,7 +252,7 @@ double Inventory::addAmount(const std::string& id, double amount) {
         if (left <= 0) break;
         if (s.empty() || s.id != id) continue;
         const int64_t put = std::min(left, cap - s.centi);
-        if (put > 0) { s.centi += put; left -= put; }
+        if (put > 0) { s.heat = MixHeat(s.centi, s.heat, put, heat); s.centi += put; left -= put; }
     }
     // Then empty cells: tools first take an empty hotbar cell (they go to hand, as the old hotbar bound new tools), the
     // rest fill the main grid and only then the hotbar (#209).
@@ -219,7 +261,7 @@ double Inventory::addAmount(const std::string& id, double amount) {
             InvSlot& s = slots[i];
             if (!s.empty()) continue;
             const int64_t put = std::min(left, cap);
-            s.id = id; s.centi = put; left -= put;
+            s.id = id; s.centi = put; s.heat = heat; left -= put;
         }
     };
     const bool tool = KindOf(id) == ItemKind::Tool;
@@ -298,6 +340,7 @@ void Inventory::swapSlots(int a, int b) {
     if (!from.empty() && !to.empty() && from.id == to.id) {
         const int64_t cap = (int64_t)StackLimit(from.id) * 100;
         const int64_t put = std::min(from.centi, cap - to.centi);
+        to.heat = MixHeat(to.centi, to.heat, put, from.heat); // #580
         to.centi += put; from.centi -= put;
         if (from.centi <= 0) from = InvSlot{};
         return;
@@ -307,7 +350,8 @@ void Inventory::swapSlots(int a, int b) {
 
 void Inventory::sort() {
     std::unordered_map<std::string, int64_t> total;
-    for (int k = 0; k < kGrid; ++k) if (!slots[k].empty()) total[slots[k].id] += slots[k].centi; // the hotbar stays as it is
+    std::unordered_map<std::string, double> heatSum; // #580: each item keeps its average heat
+    for (int k = 0; k < kGrid; ++k) if (!slots[k].empty()) { total[slots[k].id] += slots[k].centi; heatSum[slots[k].id] += (double)slots[k].centi * slots[k].heat; } // the hotbar stays as it is
     std::vector<std::pair<std::string, int64_t>> items(total.begin(), total.end());
     std::sort(items.begin(), items.end(), [](const auto& x, const auto& y) {
         const ItemKind kx = KindOf(x.first), ky = KindOf(y.first);
@@ -322,7 +366,7 @@ void Inventory::sort() {
         const int64_t cap = (int64_t)StackLimit(it.first) * 100;
         for (int64_t left = it.second; left > 0 && i < (size_t)kGrid; ++i) {
             const int64_t put = std::min(left, cap);
-            slots[i].id = it.first; slots[i].centi = put; left -= put;
+            slots[i].id = it.first; slots[i].centi = put; slots[i].heat = it.second > 0 ? (float)(heatSum[it.first] / (double)it.second) : 0.0f; left -= put;
         }
     }
 }

@@ -1559,6 +1559,7 @@ VoxelMaterial PlanetField::materialSkyHinted(Vector3 p, float base, float fp, Ve
         // (#206: digging a river bed finds clay); lakes and ponds keep clay with gravel bars in the deeper middle.
         constexpr float kWetReach = 60.0f; // m: floodplains and wet shores at most this far out
         if (e > 0.0f && inlandWaterNear(up, kWetReach)) {
+            const RiverNetwork::NaturalScope natural; // a river dried by a dam keeps its bed and banks (#656)
             const RiverNetwork* net = rivers();
             const RiverNetwork::Hit rh = net && fp < 128.0f ? net->nearest(up, kWetReach + 50.0f) : RiverNetwork::Hit{};
             const float w = waterElevation(up, fp);

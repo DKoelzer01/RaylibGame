@@ -124,7 +124,35 @@ vec3 triplanarNormal(sampler2D tex, Triplanar t, vec3 n)
 // MATERIAL_MAP_HEIGHT.
 #include "shadow.glsl"
 #include "hemisphere.glsl"
-float shadowFactor(vec3 worldPos, vec3 n, vec3 l) { return sunShadowNormal(worldPos, n, l, 4); }
+// #138: past the far cascade (+-200 m) the wide terrain-only cascade (+-2 km, ~2 m texels, MATERIAL_MAP_EMISSION), so
+// mountains shadow valleys at dawn and dusk. It fills in exactly where the far cascade fades to lit at its edge.
+uniform sampler2DShadow shadowMapWide;
+uniform mat4 lightSpaceWide;
+uniform vec2 shadowWide;     // texel (m), depth range (m)
+uniform int wideShadowOn;
+float shadowFactor(vec3 worldPos, vec3 n, vec3 l)
+{
+    float s = sunShadowNormal(worldPos, n, l, 4);
+    if (wideShadowOn == 0 || shadowMapResolution <= 0) return s;
+    // The far cascade's edge weight here (as shadowCascade works it out): 1 inside, 0 beyond.
+    vec4 ls = lightSpaceMatrix * vec4(worldPos + n * shadowTexel.y, 1.0);
+    vec3 q = ls.xyz / ls.w * 0.5 + 0.5;
+    vec2 d = min(q.xy, 1.0 - q.xy);
+    float eFar = (q.z > 1.0) ? 0.0 : clamp((min(d.x, d.y) - 0.01) / 0.07, 0.0, 1.0);
+    if (eFar >= 1.0) return s;
+    float ndl = clamp(dot(n, l), 0.0, 1.0);
+    float slope = min(sqrt(max(1.0 - ndl * ndl, 0.0)) / max(ndl, 0.2), 4.0);
+    vec3 pw = worldPos + n * shadowWide.x * (1.5 - 0.5 * ndl);
+    vec4 lw = lightSpaceWide * vec4(pw, 1.0);
+    vec3 qw = lw.xyz / lw.w * 0.5 + 0.5;
+    vec2 dw = min(qw.xy, 1.0 - qw.xy);
+    float eW = (qw.z > 1.0) ? 0.0 : clamp((min(dw.x, dw.y) - 0.01) / 0.07, 0.0, 1.0);
+    if (eW <= 0.0) return s;
+    qw.z -= shadowWide.x * (0.5 + slope) / shadowWide.y;
+    float sw = mix(1.0, shadowPcf(shadowMapWide, qw, 4), eW);
+    // Where the far cascade fades out (s there = mix(1, sFar, eFar)), the wide one takes over: mix(sw, sFar, eFar).
+    return s - (1.0 - eFar) * (1.0 - sw);
+}
 
 // Biome tints (Plan 5 B) from the climate packed by the mesher: 2 + temperature step (0-62 over
 // -30..40 C) + moisture as the fraction; below 1.5 = no climate (asteroids, caves, old meshes). Read flat:
