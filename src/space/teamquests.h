@@ -26,6 +26,9 @@ void TeamQuests_Visit(int team, bool moon);           // a moon visited (else th
 // Teams forming and splitting (#604): a team's book and explored tiles copied to another (a join, a split), or dropped (an emptied
 // team; its record goes too). Use these rather than copying TeamQuests_Book: the tiles live beside the book.
 void TeamQuests_Copy(int from, int to);
+// (#861) a joiner's own progress added to the team's (the user, on #604): tier the higher, tasks / nodes / placed items /
+// visits the union, counts and obtained totals the larger of the two (not the sum), explored tiles the union.
+void TeamQuests_Merge(int from, int into);
 void TeamQuests_Forget(int team);
 // Evaluates the book (tiers, side lines); reward(item, count) for each reward, news(text) for each tier-up / node done.
 void TeamQuests_Update(int team, const std::function<void(const std::string&, int)>& reward, const std::function<void(const std::string&)>& news);
