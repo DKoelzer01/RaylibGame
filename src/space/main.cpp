@@ -1433,7 +1433,7 @@ int main(int argc, char** argv)
         gAnimalHitRequest = [](uint64_t netId) { NetClient_HitAnimal(gJoin, netId); };
         gAnimalUseRequest = [](uint64_t netId, int action) { NetClient_UseAnimal(gJoin, netId, action); };
         gSurvivalUseRequest = [](const std::string& item) { NetClient_UseItem(gJoin, item); }; // (#337) the server owns our survival and inventory
-        gCraftRequest = [](int index, const std::string& output, int count) { NetClient_Craft(gJoin, index, output, count); }; // (#338) and our crafting
+        gCraftRequest = [](int index, const std::string& output, int count, bool useChests) { NetClient_Craft(gJoin, index, output, count, useChests); }; // (#338) and our crafting
         // (#332) the server runs the machines: ours show its views, and what we do to them is a request
         Factory::SetRemote(true);
         gMachineRequest = [](uint64_t bodyId, uint32_t plot, int part, int action, const std::string& item, int count, int slot, int which) {
@@ -9265,6 +9265,7 @@ int main(int argc, char** argv)
             // Per frame: the view, the HUD's helpers and client-only effects (not simulation, #315).
             if (ship.piloted) ship.applyChaseCamera(world);
             if (!loading) Nav_Update(world, !bench && Nav_MapOpen(), !bench && gameInput && !Nav_MapOpen()); // exploration, the map, the minimap zoom (#278)
+            if (!loading) MachineAct_Update(); // (#854) a joined client's cursor takes from machines
             if (!loading) Viewmodel_Update(world, Combat_HitStop(LocalSession(), settings.reduceMotion) ? 0.0f : frameDt); // hit-stop (#165)
             if (!loading) Structures_Update(world); // ruins, wrecks and wonders near the player (#164)
             if (!loading) Fishing_Update(world, frameDt, gameInput && alive && !ship.piloted); // (#176)
@@ -10609,7 +10610,7 @@ int main(int argc, char** argv)
         // feeder watches it (MachineView). After RAYLIBGAME_MACHINES_TAKE_AT s the taker takes the outputs (O): the roasted
         // roots reach its inventory by deltas. Both report after RAYLIBGAME_MACHINES_SECONDS.
         if (benchNetMachines && gameState == 1 && !loading && gJoinSynced && WorldIdle()) {
-            static double t0 = -1.0; static bool placed = false, fed = false, took = false, sawWorking = false;
+            static double t0 = -1.0; static bool placed = false, fed = false, took = false, sawWorking = false, fireSeen = false;
             static int roots0 = -1;
             const char* role = getenv("RAYLIBGAME_NET_MACHINES_ROLE");
             const bool feeder = role && !strcmp(role, "feeder");
@@ -10626,19 +10627,51 @@ int main(int argc, char** argv)
                 const Vector3 t1 = Vector3Normalize(Vector3CrossProduct(up, fabsf(up.y) < 0.9f ? Vector3{ 0, 1, 0 } : Vector3{ 1, 0, 0 }));
                 placed = NetClient_RequestPart(gJoin, *mb, nullptr, Vector3Add(me, Vector3Scale(t1, 3.0f)), Part{ PartType::Campfire, { 0, 0, 0 }, 0, 0 }, false, -1) != 0;
             }
+            // (#854) a chest beside it (the feeder's): 2 logs stored in it for crafting from chests
+            Plot* chestPl = nullptr; int chestPart = -1;
+            if (mb && mb->plots)
+                for (auto& pl : mb->plots->plots)
+                    for (int k = 0; k < (int)pl->parts.size() && !chestPl; ++k) if (pl->parts[k].type == PartType::Chest) { chestPl = pl.get(); chestPart = k; }
+            static bool chestPlaced = false, stored = false, craftedFromChest = false, refed = false, cursorTook = false, removed = false;
+            static int planks0 = -1;
+            if (feeder && placed && !chestPlaced && mb && inventory.count("chest") > 0 && GetTime() - t0 > 4.0) {
+                const Vector3 up = Vector3Normalize(me);
+                const Vector3 t1 = Vector3Normalize(Vector3CrossProduct(up, fabsf(up.y) < 0.9f ? Vector3{ 0, 1, 0 } : Vector3{ 1, 0, 0 }));
+                chestPlaced = NetClient_RequestPart(gJoin, *mb, nullptr, Vector3Add(me, Vector3Scale(t1, -3.0f)), Part{ PartType::Chest, { 0, 0, 0 }, 0, 0 }, false, -1) != 0;
+            }
             if (feeder && fire && !fed && inventory.count("roots") >= 2 && inventory.count("oak_log") >= 2) {
                 inventory.remove("roots", 2); MachineAct_Insert(mb->id, fire->id, firePart, "roots", 2);           // as the UI does: out of the
                 inventory.remove("oak_log", 2); MachineAct_Insert(mb->id, fire->id, firePart, "oak_log", 2, true); // inventory, then the request
                 fed = true;
             }
+            if (feeder && chestPl && fed && !stored && GetTime() - t0 > 10.0 && inventory.count("oak_log") >= 2) {
+                inventory.remove("oak_log", 2); MachineAct_Insert(mb->id, chestPl->id, chestPart, "oak_log", 2); stored = true;
+            }
+            auto recipeIdx = [](const char* out) { for (size_t k = 0; k < itemDB.recipes().size(); ++k) if (itemDB.recipes()[k].output == out) return (int)k; return -1; };
+            if (feeder && stored && !craftedFromChest && GetTime() - t0 > 20.0) { planks0 = inventory.count("oak_planks"); Crafting_Request(recipeIdx("oak_planks"), 2); craftedFromChest = true; }
+            auto fireCount = [&](bool outputs, const char* item) { int n = 0; if (fire) for (const auto& s : (outputs ? Factory::View(mb->id, fire->id, firePart).outSlots : Factory::View(mb->id, fire->id, firePart).inSlots)) if (s.first == item) n += s.second; return n; };
+            // the feeder puts one more root in once the outputs have been taken (the view shows them empty)
+            if (feeder && fire && !refed && craftedFromChest && GetTime() - t0 > 30.0 && fireCount(true, "roasted_roots") == 0 && inventory.count("roots") >= 1) { inventory.remove("roots", 1); MachineAct_Insert(mb->id, fire->id, firePart, "roots", 1); refed = true; }
+            fireSeen = fireSeen || fire != nullptr;
             if (fire) { Factory::View(mb->id, fire->id, firePart); sawWorking = sawWorking || Factory::Working(mb->id, fire->id, firePart); } // (the look-at panel's watch)
             const double takeAt = getenv("RAYLIBGAME_MACHINES_TAKE_AT") ? atof(getenv("RAYLIBGAME_MACHINES_TAKE_AT")) : 40.0;
-            if (!feeder && fire && !took && GetTime() - t0 > takeAt) { roots0 = inventory.count("roasted_roots"); MachineAct_Extract(mb->id, fire->id, firePart); took = true; }
+            // the taker: 1 roasted root onto its cursor (#854), then the rest (O); later it removes the campfire, which then
+            // holds the root the feeder put back in: that root and the campfire come back to the taker (#854), not the host
+            if (!feeder && fire && !cursorTook && GetTime() - t0 > takeAt && fireCount(true, "roasted_roots") >= 2) { roots0 = inventory.count("roasted_roots"); MachineAct_TakeSlot(mb->id, fire->id, firePart, 0, 1, 1); cursorTook = true; }
+            if (!feeder && fire && cursorTook && !took && MachineAct_CursorMoves() >= 1) { MachineAct_Extract(mb->id, fire->id, firePart); took = true; }
+            static int roots1 = -1, campfires1 = -1;
+            if (!feeder && fire && took && !removed && fireCount(false, "roots") > 0) { // once the feeder's root is inside (the server's view)
+                roots1 = inventory.count("roots"); campfires1 = inventory.count("campfire");
+                removed = NetClient_RequestPart(gJoin, *mb, fire, Vector3{}, Part{}, true, firePart) != 0;
+            }
             if (GetTime() - t0 > (getenv("RAYLIBGAME_MACHINES_SECONDS") ? atof(getenv("RAYLIBGAME_MACHINES_SECONDS")) : 50.0)) {
                 const MachineView v = fire ? Factory::View(mb->id, fire->id, firePart) : MachineView{};
                 printf("bench: net machines (%s, #332): campfire seen %d, placed %d, fed %d; saw it working %d; views %d, state lists %d; took %d: roasted roots %d -> %d; roots %d, logs %d; view valid %d\n",
-                       role ? role : "?", fire != nullptr, (int)placed, (int)fed, (int)sawWorking, gJoin.machineViews, gJoin.machineStates, (int)took, roots0,
+                       role ? role : "?", (int)fireSeen, (int)placed, (int)fed, (int)sawWorking, gJoin.machineViews, gJoin.machineStates, (int)took, roots0,
                        inventory.count("roasted_roots"), inventory.count("roots"), inventory.count("oak_log"), (int)v.valid);
+                printf("bench: net machines 2 (%s, #854): cursor moves %d; crafted from the chest %d: planks %d -> %d; removed the campfire %d: roots %d -> %d, campfires %d -> %d\n",
+                       role ? role : "?", MachineAct_CursorMoves(), (int)craftedFromChest, planks0, inventory.count("oak_planks"),
+                       (int)removed, roots1, inventory.count("roots"), campfires1, inventory.count("campfire"));
                 NetClient_Disconnect(gJoin);
                 benchNetMachines = false;
             }

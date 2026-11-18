@@ -24,7 +24,7 @@ bool RecipeBook_Unlocked(const Recipe& r);  // (#338) its recipe_unlocks conditi
 // (#338) Craft recipe `index` (into itemDB.recipes()) `count` times: in single player here, from the inventory; in a joined game a request
 // to the server (gCraftRequest; the result comes back as inventory deltas). The one entry point for the crafting screens.
 bool Crafting_Request(int index, int count = 1);
-inline std::function<void(int index, const std::string& output, int count)> gCraftRequest;
+inline std::function<void(int index, const std::string& output, int count, bool useChests)> gCraftRequest; // useChests (#854): what the inventory lacks, from the chests near the player
 bool RecipeBook_Discovered(const std::string& item);
 // Search: a recipe matches when its output's name or id, or any ingredient's, contains the words.
 bool RecipeBook_Matches(const Recipe& r, const std::string& lowerQuery);

@@ -15,7 +15,7 @@ SECONDS=0
 printf 'erosion 0\n' > "$tmp/host.sav.worldgen"
 . "$here/tools/lib_netmem.sh"
 net_wait_for_memory 12 test_net_machines || exit 0
-RAYLIBGAME_HOST_DIFFICULTY=0 RAYLIBGAME_HOST_GIVE="campfire 1,roots 2,oak_log 2" "$exe" --host "$tmp/host.sav" --seed 42 --bench 600 --port "$port" > "$tmp/host.log" 2>&1 &
+RAYLIBGAME_HOST_DIFFICULTY=0 RAYLIBGAME_HOST_GIVE="campfire 1,chest 1,roots 3,oak_log 4" "$exe" --host "$tmp/host.sav" --seed 42 --bench 600 --port "$port" > "$tmp/host.log" 2>&1 &
 hp=$!
 stop_host() { # #795: by the Windows PID too, only while it is still our game.exe
     local w; w=$(cat "/proc/$hp/winpid" 2>/dev/null)
@@ -28,7 +28,7 @@ stop_host() { # #795: by the Windows PID too, only while it is still our game.ex
 trap stop_host EXIT
 until grep -q "listening on port" "$tmp/host.log" 2>/dev/null || ! kill -0 "$hp" 2>/dev/null || [ $SECONDS -gt 240 ]; do sleep 1; done
 until grep -q "world ready" "$tmp/host.log" 2>/dev/null || [ $SECONDS -gt 280 ]; do sleep 1; done
-join() { RAYLIBGAME_MACHINES_SECONDS=55 RAYLIBGAME_MACHINES_TAKE_AT=42 RAYLIBGAME_NET_MACHINES_ROLE=$1 timeout 300 "$exe" --join "127.0.0.1:$port" --name "$1" --bench 3 $NET_LIGHT_CLIENT --test-net-machines > "$tmp/$1.log" 2>&1; }
+join() { RAYLIBGAME_MACHINES_SECONDS=62 RAYLIBGAME_MACHINES_TAKE_AT=40 RAYLIBGAME_NET_MACHINES_ROLE=$1 timeout 300 "$exe" --join "127.0.0.1:$port" --name "$1" --bench 3 $NET_LIGHT_CLIENT --test-net-machines > "$tmp/$1.log" 2>&1; }
 join taker & tp=$!
 sleep 2
 join feeder
@@ -41,7 +41,13 @@ chk "$(echo "$f" | grep -q "campfire seen 1, placed 1, fed 1" && echo 1)" "the f
 chk "$(echo "$f" | grep -q "roots 0, logs 0" && echo 1)" "the roots and logs left its inventory (the server's deltas)"
 chk "$(echo "$f" | grep -q "saw it working 1" && echo "$t" | grep -q "saw it working 1" && echo 1)" "both clients heard it working (MachineStates)"
 chk "$(echo "$f" | grep -q "views [1-9]" && echo 1)" "the feeder got the campfire's view (MachineView, its watch)"
-chk "$(echo "$t" | grep -q "took 1: roasted roots 0 -> 2" && echo 1)" "the taker took the 2 roasted roots out (O): they arrived by deltas"
+chk "$(echo "$t" | grep -q "took 1: roasted roots 0 -> 2" && echo 1)" "the taker took both roasted roots (one onto its cursor, the rest by O): they arrived by deltas"
 chk "$(echo "$f" | grep -q "roasted roots -1 -> 0" && echo 1)" "and the feeder got none of them"
+# #854: cursor takes, crafting from a nearby chest, a removed machine's contents to its remover
+f2=$(grep -h "^bench: net machines 2 (feeder" "$tmp/feeder.log"); t2=$(grep -h "^bench: net machines 2 (taker" "$tmp/taker.log"); echo "$f2"; echo "$t2"
+chk "$(echo "$t2" | grep -q "cursor moves 1" && echo 1)" "one went onto its cursor (the server put it in its inventory; the client moved it)"
+chk "$(echo "$f2" | grep -q "crafted from the chest 1: planks 0 -> 8" && echo 1)" "the feeder crafted planks twice from the logs in its chest (the server pulled them)"
+rm=$(echo "$t2" | grep -o "roots [0-9-]* -> [0-9-]*, campfires [0-9-]* -> [0-9-]*")
+chk "$(echo "$rm" | awk '{exit !($4 + 0 == $2 + 1 && $8 + 0 == $6 + 1)}' && echo 1)" "the taker removed the campfire: the root inside and the campfire came back to it, not the host ($rm)"
 echo "=== test_net_machines: $([ $ok = 1 ] && echo PASS || echo FAIL) after ${SECONDS} s ($tmp)"
 [ $ok = 1 ]

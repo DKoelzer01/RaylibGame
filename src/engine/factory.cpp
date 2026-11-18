@@ -237,6 +237,7 @@ struct LayoutMsg {
     std::vector<std::vector<Int3>> machineCells;
     std::vector<std::string> machineVariant;              // per machine: its one output item ("" any)
     std::vector<Int3> conveyors, cables;
+    uint32_t refundTo = 0;                                // (#854) who removed machines in this change (their contents go to that player)
 };
 struct ItemMsg { int kind; uint64_t body; uint32_t plot; int part; int item; int count; int amount = 0; uint32_t to = 0; }; // amount: kind 8, how many (0 = all) // 0 insert, 1 extract, 2 seed, 3 take (one item from a chest), 4 take slot (item = slot, count: 0 input, 1 output, 2 fuel), 5 drain outputs, 6 insert into the fuel slot, 7 water (count = litres)
 
@@ -525,9 +526,9 @@ void ApplyLayout(const LayoutMsg& L) {
     for (const Machine& old : ps->machines) {
         auto kept = byPart.find(old.part);
         if (kept != byPart.end() && next[kept->second].type == old.type) continue;
-        for (int i = 0; i < InSlots(old); ++i) if (old.in[i].count > 0) refunds.push_back({ old.in[i].item, old.in[i].count });
-        for (int i = 0; i < kSlots; ++i) if (old.out[i].count > 0) refunds.push_back({ old.out[i].item, old.out[i].count });
-        if (old.fuel.count > 0) refunds.push_back({ old.fuel.item, old.fuel.count });
+        for (int i = 0; i < InSlots(old); ++i) if (old.in[i].count > 0) refunds.push_back({ old.in[i].item, old.in[i].count, L.refundTo });
+        for (int i = 0; i < kSlots; ++i) if (old.out[i].count > 0) refunds.push_back({ old.out[i].item, old.out[i].count, L.refundTo });
+        if (old.fuel.count > 0) refunds.push_back({ old.fuel.item, old.fuel.count, L.refundTo });
     }
     ps->machines = std::move(next);
     ps->byPart = std::move(byPart);
@@ -903,6 +904,7 @@ void Factory::Sync(Scene& world) {
             auto sv = sentVersions.find(key);
             if (sv == sentVersions.end() || sv->second != pl->version) {
                 LayoutMsg L{ body->id, pl->id, pl->version, {}, {}, {}, {}, {} };
+                L.refundTo = pl->refundTo; pl->refundTo = 0; // (#854)
                 std::vector<std::pair<Int3, CellShape>> fp;
                 for (size_t i = 0; i < pl->parts.size(); ++i) {
                     const Part& part = pl->parts[i];
@@ -955,10 +957,10 @@ void Factory::Sync(Scene& world) {
     for (auto& r : cur) { const std::string id = tables.name(r.item & ~kHotItem); const float h = (r.item & kHotItem) ? 1.0f : 0.0f; if (r.to && gFactoryDeliver) gFactoryDeliver(r.to, id, r.count, h); else if (cursorSink) cursorSink(id, r.count, h); else inventory.addAmount(id, r.count, h); }
 }
 
-void Factory::TakeSlotToCursor(uint64_t body, uint32_t plot, int part, int slot, int which, int count) {
+void Factory::TakeSlotToCursor(uint64_t body, uint32_t plot, int part, int slot, int which, int count, uint32_t to) {
     std::lock_guard<std::mutex> q(queueMutex);
     ItemMsg m{ 8, body, plot, part, which == 2 ? 0 : slot, which };
-    m.amount = count;
+    m.amount = count; m.to = to; // (#854) a server: that player's inventory (its client puts it on its cursor)
     itemQueue.push_back(m);
 }
 void Factory::SetCursorSink(void (*sink)(const std::string&, int, float)) { cursorSink = sink; }
@@ -1135,6 +1137,15 @@ void Factory::Take(uint64_t body, uint32_t plot, int part, const std::string& it
 std::vector<std::pair<std::string, int>> Factory::ChestContents(uint64_t body, uint32_t plot, int part) {
     std::vector<std::pair<std::string, int>> out;
     std::lock_guard<std::mutex> v(viewMutex);
+    if (remoteMode) { // (#854) a client: the chest's view the server sends for the chests near us
+        auto rv = remoteViews.find(std::make_tuple(body, plot, part));
+        if (rv != remoteViews.end()) for (const auto& s : rv->second.inSlots) if (s.second > 0) {
+            bool merged = false;
+            for (auto& o : out) if (o.first == s.first) { o.second += s.second; merged = true; }
+            if (!merged) out.push_back(s);
+        }
+        return out;
+    }
     auto it = chestView.find(std::make_tuple(body, plot, part));
     if (it == chestView.end()) return out;
     for (const auto& s : it->second) {
@@ -1201,3 +1212,4 @@ void Factory::SetRemoteWorking(uint64_t body, uint32_t plot, const std::vector<i
     was = parts;
     for (int p : parts) remoteWorking.insert(WorkingKey(body, plot, p));
 }
+void (*Factory::CursorSink())(const std::string&, int, float) { return cursorSink; }
