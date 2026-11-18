@@ -24,7 +24,7 @@ GameSettings settings;
 
 namespace {
     constexpr float kDefaultMouse = 0.003f, kDefaultShipMouse = 0.0025f;
-    enum class Page { Main, Load, Settings };
+    enum class Page { Main, Load, Settings, Multiplayer, Join, Host };
     Page mainPage = Page::Main, pausePage = Page::Main;
 
     struct SaveEntry { std::string path, name, when; fs::file_time_type time; };
@@ -268,6 +268,13 @@ void Settings_Load() {
         while (fscanf(f, " %63s %63s", key, val) == 2) { // values are numbers, except log_level's word (#514)
             const float v = strtof(val, nullptr);
             if (!strcmp(key, "log_level")) { settings.logLevel = val; continue; }
+            // Multiplayer (#341): words (a name, addresses), the suit colour in hex.
+            if (!strcmp(key, "mp_name")) { settings.mpName = val; continue; }
+            if (!strcmp(key, "mp_address")) { settings.mpAddress = val; continue; }
+            if (!strcmp(key, "mp_recent")) { if (settings.mpRecent.size() < 5) settings.mpRecent.push_back(val); continue; }
+            if (!strcmp(key, "mp_suit")) { settings.mpSuit = (uint32_t)strtoul(val, nullptr, 16) & 0xFFFFFFu; continue; }
+            if (!strcmp(key, "mp_port")) { settings.mpPort = std::clamp((int)v, 1024, 65535); continue; }
+            if (!strcmp(key, "mp_maxplayers")) { settings.mpMaxPlayers = std::clamp((int)v, 1, 64); continue; }
             if (!strcmp(key, "mouse")) settings.mouseSensitivity = std::clamp(v, 0.2f, 3.0f);
             else if (!strcmp(key, "fov")) settings.fov = std::clamp(v, 30.0f, 100.0f);
             else if (!strcmp(key, "volume")) settings.volume = std::clamp(v, 0.0f, 1.0f);
@@ -302,6 +309,11 @@ void Settings_Save() {
     fprintf(f, "tonemap %d\n", settings.tonemap); // (#131)
     fprintf(f, "fireflicker %d\n", settings.fireFlicker ? 1 : 0);
     if (!settings.logLevel.empty()) fprintf(f, "log_level %s\n", settings.logLevel.c_str()); // set by hand in the file (#514)
+    // Multiplayer (#341; never the password).
+    if (!settings.mpName.empty()) fprintf(f, "mp_name %s\n", settings.mpName.c_str());
+    if (!settings.mpAddress.empty()) fprintf(f, "mp_address %s\n", settings.mpAddress.c_str());
+    for (const std::string& a : settings.mpRecent) fprintf(f, "mp_recent %s\n", a.c_str());
+    fprintf(f, "mp_suit %06x\nmp_port %d\nmp_maxplayers %d\n", settings.mpSuit, settings.mpPort, settings.mpMaxPlayers);
     fclose(f);
 }
 
@@ -336,6 +348,151 @@ std::string Menu_NewSavePath() {
 
 extern const char* kGameVersion; // "<branch> <commit>", generated at build time (#501)
 
+// ---- Multiplayer (#341): host a world, join by IP ----
+namespace {
+    // Suit colours (0xRRGGBB): the default first, then ten that read apart from each other on a grey suit and at a distance.
+    constexpr uint32_t kSuits[] = { 0x000000, 0xD8452F, 0xE8902A, 0xE3C93B, 0x58B548, 0x2FA39A, 0x3E86D8, 0x6B5BD6, 0xB04FC2, 0xE06FA4, 0xEDEDED };
+    constexpr int kSuitCount = (int)(sizeof(kSuits) / sizeof(kSuits[0]));
+    int focus = -1;                       // the text field being typed in
+    std::string mpPassword, mpMessage;    // (the password is never saved)
+    bool mpMessageBad = false;
+    int hostWorld = -1;                   // the save to host: an index into `saves`, -1 a new world
+    std::string portText, maxText;
+
+    // One line of text: click to type; `allowed` the characters it takes.
+    void TextField(Rectangle r, const char* label, std::string& value, int id, size_t maxLen, const char* allowed, bool hidden = false) {
+        const float s = Scale();
+        const int fs = (int)(r.height * 0.45f);
+        DrawText(label, (int)r.x, (int)(r.y + (r.height - fs) * 0.5f), fs, kText);
+        const Rectangle box = { r.x + r.width * 0.34f, r.y, r.width * 0.66f, r.height };
+        const bool hover = CheckCollisionPointRec(GetMousePosition(), box);
+        if (IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) { if (hover) focus = id; else if (focus == id) focus = -1; }
+        DrawRectangleRounded(box, 0.18f, 6, focus == id ? kHover : kButton);
+        if (focus == id) {
+            DrawRectangleRoundedLinesEx(box, 0.18f, 6, 2.0f, Fade(SKYBLUE, 0.8f));
+            for (int c = GetCharPressed(); c > 0; c = GetCharPressed())
+                if (c < 128 && strchr(allowed, c) && value.size() < maxLen) value += (char)c;
+            if ((IsKeyPressed(KEY_BACKSPACE) || IsKeyPressedRepeat(KEY_BACKSPACE)) && !value.empty()) value.pop_back();
+        }
+        const std::string shown = hidden ? std::string(value.size(), '*') : value;
+        DrawText(TextFormat("%s%s", shown.c_str(), focus == id && fmodf((float)GetTime(), 1.0f) < 0.5f ? "_" : ""), (int)(box.x + 12 * s), (int)(box.y + (box.height - fs) * 0.5f), fs, kText);
+    }
+    // The suit colour swatches; returns true when one was picked.
+    bool SuitPicker(Rectangle r, uint32_t& suit) {
+        const int fs = (int)(r.height * 0.45f);
+        DrawText("Suit colour", (int)r.x, (int)(r.y + (r.height - fs) * 0.5f), fs, kText);
+        const float x0 = r.x + r.width * 0.34f, w = r.width * 0.66f, gap = 6.0f * Scale();
+        const float side = std::min(r.height, (w - gap * (kSuitCount - 1)) / kSuitCount);
+        bool picked = false;
+        for (int i = 0; i < kSuitCount; ++i) {
+            const Rectangle b = { x0 + i * (side + gap), r.y + (r.height - side) * 0.5f, side, side };
+            const uint32_t c = kSuits[i];
+            const Color col = c ? Color{ (unsigned char)(c >> 16), (unsigned char)(c >> 8), (unsigned char)c, 255 } : Color{ 150, 154, 160, 255 }; // (the default suit's grey)
+            DrawRectangleRounded(b, 0.25f, 6, col);
+            if (c == 0) DrawText("-", (int)(b.x + side * 0.38f), (int)(b.y + side * 0.18f), (int)(side * 0.6f), Fade(BLACK, 0.6f));
+            const bool hover = CheckCollisionPointRec(GetMousePosition(), b);
+            if (suit == c) DrawRectangleRoundedLinesEx(b, 0.25f, 6, 3.0f, WHITE);
+            else if (hover) DrawRectangleRoundedLinesEx(b, 0.25f, 6, 2.0f, Fade(SKYBLUE, 0.8f));
+            if (hover && IsMouseButtonReleased(MOUSE_BUTTON_LEFT)) { suit = c; picked = true; }
+        }
+        return picked;
+    }
+    void Message(float y) {
+        if (mpMessage.empty()) return;
+        const int fs = (int)(24 * Scale());
+        DrawText(mpMessage.c_str(), (GetScreenWidth() - MeasureText(mpMessage.c_str(), fs)) / 2, (int)y, fs, mpMessageBad ? Color{ 255, 140, 110, 255 } : Fade(kText, 0.85f));
+    }
+    const char* kNameChars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_-";
+    const char* kAddrChars = "0123456789.:abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ-";
+    const char* kDigits = "0123456789";
+    const char* kPassChars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_-.!@#$%^&*+=?";
+
+    void MultiplayerPage(MenuResult& r) {
+        const float s = Scale();
+        const float w = 760.0f;
+        auto row = [&](int i) { return Row(i, w, 0.30f); };
+        if (mainPage == Page::Multiplayer) {
+            if (Button(Row(0), "Host a world")) { RefreshSaves(); hostWorld = saves.empty() ? -1 : 0; portText = std::to_string(settings.mpPort); maxText = std::to_string(settings.mpMaxPlayers); mpMessage.clear(); mainPage = Page::Host; }
+            if (Button(Row(1), "Join a server")) { mpMessage.clear(); mainPage = Page::Join; }
+            const int fs = (int)(20 * s);
+            const char* note = "Players join by IP address; the host's port must be reachable (forwarded) for players outside its network.";
+            DrawText(note, (GetScreenWidth() - MeasureText(note, fs)) / 2, (int)(Row(2).y + 10 * s), fs, Fade(kText, 0.7f));
+            if (Button(Row(3), "Back") || IsKeyPressed(KEY_ESCAPE)) mainPage = Page::Main;
+            return;
+        }
+        const bool join = mainPage == Page::Join;
+        int i = 0;
+        TextField(row(i++), "Your name", settings.mpName, 1, 24, kNameChars);
+        if (join) {
+            TextField(row(i++), "Server address", settings.mpAddress, 2, 64, kAddrChars);
+            TextField(row(i++), "Password", mpPassword, 3, 32, kPassChars, true);
+        } else {
+            { // the world to host: the saves, or a new one
+                const Rectangle rw = row(i++);
+                const int fs = (int)(rw.height * 0.45f);
+                DrawText("World", (int)rw.x, (int)(rw.y + (rw.height - fs) * 0.5f), fs, kText);
+                const float bx = rw.x + rw.width * 0.34f, bw = rw.width * 0.66f, side = rw.height;
+                if (Button({ bx, rw.y, side, side }, "<")) hostWorld = hostWorld < 0 ? (int)saves.size() - 1 : hostWorld - 1;
+                if (Button({ bx + bw - side, rw.y, side, side }, ">")) hostWorld = hostWorld + 1 >= (int)saves.size() ? -1 : hostWorld + 1;
+                const char* name = hostWorld >= 0 && hostWorld < (int)saves.size() ? saves[hostWorld].name.c_str() : "A new world";
+                DrawText(name, (int)(bx + side + 12 * s), (int)(rw.y + (rw.height - fs) * 0.5f), fs, kText);
+            }
+            TextField(row(i++), "Port", portText, 4, 5, kDigits);
+            TextField(row(i++), "Max players", maxText, 5, 2, kDigits);
+            TextField(row(i++), "Password (optional)", mpPassword, 3, 32, kPassChars, true);
+        }
+        SuitPicker(row(i++), settings.mpSuit);
+        if (join && !settings.mpRecent.empty()) { // recent servers: click to fill the address
+            const Rectangle rr = row(i++);
+            const int fs = (int)(rr.height * 0.4f);
+            DrawText("Recent", (int)rr.x, (int)(rr.y + (rr.height - fs) * 0.5f), fs, Fade(kText, 0.8f));
+            float x = rr.x + rr.width * 0.34f;
+            for (size_t k = 0; k < settings.mpRecent.size() && k < 3; ++k) {
+                const std::string& a = settings.mpRecent[k];
+                const float bw = std::min(rr.width * 0.66f / 3.0f - 8 * s, (float)MeasureText(a.c_str(), fs) + 24 * s);
+                if (Button({ x, rr.y + rr.height * 0.1f, bw, rr.height * 0.8f }, a.c_str())) settings.mpAddress = a;
+                x += bw + 8 * s;
+            }
+        }
+        const Rectangle go = row(i + 1);
+        Message(row(i).y + 8 * s);
+        const bool nameOk = !settings.mpName.empty();
+        const Rectangle bGo = { go.x, go.y, go.width * 0.49f, go.height }, bBack = { go.x + go.width * 0.51f, go.y, go.width * 0.49f, go.height };
+        if (join) {
+            const bool ok = nameOk && !settings.mpAddress.empty();
+            if (Button(bGo, "Join", ok) || (ok && focus >= 0 && IsKeyPressed(KEY_ENTER))) {
+                r.action = MenuAction::JoinGame; r.address = settings.mpAddress; r.name = settings.mpName; r.password = mpPassword; r.suitColor = settings.mpSuit;
+                mpMessage = TextFormat("Joining %s ...", settings.mpAddress.c_str()); mpMessageBad = false; focus = -1;
+                Settings_Save();
+            }
+        } else {
+            const int port = atoi(portText.c_str()), maxp = atoi(maxText.c_str());
+            const bool ok = nameOk && port >= 1024 && port <= 65535 && maxp >= 1 && maxp <= 64;
+            if (!ok && !portText.empty() && !maxText.empty()) { mpMessage = "Port 1024-65535, 1-64 players, and a name"; mpMessageBad = true; }
+            if (Button(bGo, "Host", ok)) {
+                settings.mpPort = port; settings.mpMaxPlayers = maxp;
+                r.action = MenuAction::HostGame; r.path = hostWorld >= 0 && hostWorld < (int)saves.size() ? saves[hostWorld].path : std::string();
+                r.port = port; r.maxPlayers = maxp; r.password = mpPassword; r.name = settings.mpName; r.suitColor = settings.mpSuit;
+                mpMessage = "Starting the server ..."; mpMessageBad = false; focus = -1;
+                Settings_Save();
+            }
+        }
+        if (Button(bBack, "Back") || (focus < 0 && IsKeyPressed(KEY_ESCAPE))) { mainPage = Page::Multiplayer; mpMessage.clear(); focus = -1; }
+    }
+}
+
+void Menu_MultiplayerFailed(bool host, const std::string& why) { mainPage = host ? Page::Host : Page::Join; mpMessage = why; mpMessageBad = true; }
+void Menu_RememberServer(const std::string& address) {
+    auto& v = settings.mpRecent;
+    v.erase(std::remove(v.begin(), v.end(), address), v.end());
+    v.insert(v.begin(), address);
+    if (v.size() > 5) v.resize(5);
+    Settings_Save();
+}
+void Menu_TestMultiplayer(int page) { mainPage = page == 1 ? Page::Join : page == 2 ? Page::Host : Page::Multiplayer; if (page == 2) { RefreshSaves(); hostWorld = -1; portText = std::to_string(settings.mpPort); maxText = std::to_string(settings.mpMaxPlayers); } }
+int Menu_SuitColorCount() { return kSuitCount; }
+uint32_t Menu_SuitColor(int i) { return i >= 0 && i < kSuitCount ? kSuits[i] : 0; }
+
 MenuResult Menu_Main() {
     MenuResult r;
     Backdrop("PLANETOID");
@@ -349,8 +506,9 @@ MenuResult Menu_Main() {
     if (mainPage == Page::Main) {
         if (Button(Row(0), "New Game")) r.action = MenuAction::NewGame;
         if (Button(Row(1), "Load Game")) { RefreshSaves(); mainPage = Page::Load; }
-        if (Button(Row(2), "Settings")) mainPage = Page::Settings;
-        if (Button(Row(3), "Exit")) r.action = MenuAction::Exit;
+        if (Button(Row(2), "Multiplayer")) mainPage = Page::Multiplayer; // (#341)
+        if (Button(Row(3), "Settings")) mainPage = Page::Settings;
+        if (Button(Row(4), "Exit")) r.action = MenuAction::Exit;
     } else if (mainPage == Page::Load) {
         const int fs = (int)(26 * s);
         if (saves.empty()) DrawText("No saves yet", (GetScreenWidth() - MeasureText("No saves yet", fs)) / 2, (int)(GetScreenHeight() * 0.38f), fs, Fade(kText, 0.7f));
@@ -395,6 +553,8 @@ MenuResult Menu_Main() {
         if (!saveMessage.empty()) DrawText(saveMessage.c_str(), (GetScreenWidth() - MeasureText(saveMessage.c_str(), fs)) / 2, (int)(Row(7, 300.0f, 0.32f).y - 34 * s), fs, Fade(kText, 0.8f));
         if (changed) { const float keep = saveScroll; RefreshSaves(); saveScroll = std::min(keep, std::max(0.0f, (float)saves.size() - 7.0f)); }
         if (renaming < 0 && (Button(Row(7, 300.0f, 0.32f), "Back") || IsKeyPressed(KEY_ESCAPE))) { mainPage = Page::Main; deleting = -1; saveMessage.clear(); }
+    } else if (mainPage == Page::Multiplayer || mainPage == Page::Join || mainPage == Page::Host) {
+        MultiplayerPage(r);
     } else if (SettingsPage()) {
         mainPage = Page::Main;
     }

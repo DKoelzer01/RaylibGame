@@ -518,7 +518,11 @@ void NetClient_FillAvatars(const NetClient& c, Scene& world, std::vector<AvatarS
         a.jetpack = (s.flags & 128) != 0;
         a.posture = (Player::Posture)std::min((s.flags >> 5) & 3, (int)Player::Posture::Prone);
         a.action = s.action; a.actionPhase = s.actionPhase;
-        if (auto l = c.loadouts.find(session); l != c.loadouts.end()) { a.held = l->second.held; a.headlamp = l->second.headlamp; a.suitTier = l->second.suitTier; }
+        if (auto l = c.loadouts.find(session); l != c.loadouts.end()) {
+            a.held = l->second.held; a.headlamp = l->second.headlamp; a.suitTier = l->second.suitTier;
+            const uint32_t sc = l->second.suitColor;
+            if (sc) a.suitColor = Color{ (unsigned char)(sc >> 16), (unsigned char)(sc >> 8), (unsigned char)sc, 255 };
+        }
         out.push_back(a);
     }
 }
@@ -526,7 +530,8 @@ void NetClient_FillAvatars(const NetClient& c, Scene& world, std::vector<AvatarS
 void NetClient_SetLoadout(NetClient& c, const std::string& held, bool headlamp, int suitTier) {
     if (c.state != NetClient::State::Joined) return;
     MsgLoadout l; l.held = held; l.headlamp = headlamp; l.suitTier = (uint8_t)std::clamp(suitTier, 0, 255);
-    if (c.loadoutSent && l.held == c.loadout.held && l.headlamp == c.loadout.headlamp && l.suitTier == c.loadout.suitTier) return;
+    l.suitColor = c.suitColor & 0xFFFFFFu;
+    if (c.loadoutSent && l.held == c.loadout.held && l.headlamp == c.loadout.headlamp && l.suitTier == c.loadout.suitTier && l.suitColor == c.loadout.suitColor) return;
     c.loadout = l; c.loadoutSent = true;
     SendMsg(c, l);
 }

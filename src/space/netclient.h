@@ -71,6 +71,7 @@ struct NetClient {
     std::map<uint32_t, MsgLoadout> loadouts;     // the others' held item, headlamp, suit tier
     int rosters = 0;                             // rosters received
     MsgLoadout loadout; bool loadoutSent = false; // ours, as last sent (NetClient_SetLoadout sends a change)
+    uint32_t suitColor = 0;                      // 0xRRGGBB picked when joining (#341; 0: the default suit), sent with the loadout
     int action = 0; float actionPhase = 0.0f;    // our hands now (the game sets them; sent with every input packet)
     // Terrain edits (#329)
     class Inventory* inventory = nullptr;        // follows the server's copy (InventoryDelta); the game's: the local one

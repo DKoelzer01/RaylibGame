@@ -145,6 +145,9 @@ endif()
 if(RAYLIBGAME_HEADLESS)
     target_compile_definitions(engine PUBLIC RAYLIBGAME_HEADLESS_PLATFORM=1) # RaylibHeadless_GLMode() exists (gpucompute.cpp)
 endif()
+if(WIN32)
+    target_link_libraries(engine PUBLIC ws2_32 iphlpapi) # (#341) the menu's Host checks its port is free (hostprocess.cpp), in every build
+endif()
 if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
     target_compile_options(engine PRIVATE -Wall -Wno-missing-braces -ffp-contract=off) # no FMA contraction: the GPU terrain port (terrain.glsl) matches the CPU bit for bit
 endif()

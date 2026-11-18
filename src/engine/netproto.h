@@ -16,7 +16,7 @@
 #include <functional>
 #include <vector>
 
-constexpr uint32_t kNetProtocol = 16; // 1 was the text "join" of #311; 5: world time in Welcome and Pong (#339); 6 (unused); 7: world-gen settings in Welcome (#757); 8: terrain edit requests, refusals, inventory deltas (#329); 9: chat (#326); 10: building (#330); 11 is #776's; 12: player snapshots, delta-coded against acked states (#769); 13: animals (#334); 14: animal actions, damage to a player (#334); 15 is #341's; 16: server-side survival (#337)
+constexpr uint32_t kNetProtocol = 17; // 1 was the text "join" of #311; 5: world time in Welcome and Pong (#339); 6 (unused); 7: world-gen settings in Welcome (#757); 8: terrain edit requests, refusals, inventory deltas (#329); 9: chat (#326); 10: building (#330); 11 is #776's; 12: player snapshots, delta-coded against acked states (#769); 13: animals (#334); 14: animal actions, damage to a player (#334); 15 (unused); 16: server-side survival (#337); 17: the suit colour in the loadout (#341)
 
 enum class NetMsg : uint8_t {
     Hello = 1,     // client -> server: protocol, build, player name, password
@@ -197,7 +197,10 @@ struct MsgDamage { float amount = 0.0f; uint8_t kind = 0; bool hasSource = false
 struct MsgShower { double start = 0.0, end = 0.0; uint32_t id = 0; }; // world seconds; id 0 none (events.h)
 
 struct MsgRoster { struct Entry { uint32_t session = 0; std::string name; }; std::vector<Entry> players; }; // everyone online
-struct MsgLoadout { uint32_t session = 0; std::string held; bool headlamp = false; uint8_t suitTier = 0; }; // session: 0 from a client
+struct MsgLoadout { // session: 0 from a client
+    uint32_t session = 0; std::string held; bool headlamp = false; uint8_t suitTier = 0;
+    uint32_t suitColor = 0;          // 0xRRGGBB, picked when joining (#341); 0: the default suit
+};
 struct MsgTerrainEdit {
     uint64_t body = 0;               // NetId
     DVec3 center{};                  // body-local

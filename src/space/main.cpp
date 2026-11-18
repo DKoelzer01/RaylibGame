@@ -103,6 +103,30 @@ extern "C" __declspec(dllimport) int __stdcall MessageBoxA(void*, const char*, c
 static std::vector<AvatarState> gAvatars, gBenchAvatars;
 // --join (#341 core): this process's connection to the server; its player follows the server's state once synced.
 static NetClient gJoin;
+static std::string gHostedServer; // (#341) the server the menu's Host started ("" none): shown in the player list
+// The player list (#341: hold J in game; on the pause screen too): everyone on the server from its roster, with their
+// suit colours; us marked, with our round trip.
+static void DrawPlayerList(const NetClient& c) {
+    const float s = std::max(1.0f, GetScreenHeight() / 1080.0f);
+    const int fs = (int)(22 * s), rowH = (int)(32 * s), pad = (int)(14 * s), w = (int)(380 * s);
+    const int n = (int)c.roster.size();
+    const int h = pad * 2 + rowH * (n + 1);
+    const int x = GetScreenWidth() - w - (int)(24 * s), y = (int)(90 * s);
+    DrawRectangleRounded({ (float)x, (float)y, (float)w, (float)h }, 0.06f, 6, Color{ 14, 20, 30, 215 });
+    const std::string title = gHostedServer.empty() ? TextFormat("Players (%d)", n) : TextFormat("Players (%d) - you host %s", n, gHostedServer.c_str());
+    DrawText(title.c_str(), x + pad, y + pad, fs, Color{ 150, 205, 255, 255 });
+    int i = 1;
+    for (const auto& [session, name] : c.roster) {
+        const int ry = y + pad + rowH * i++;
+        uint32_t suit = session == c.welcome.session ? c.suitColor : 0;
+        if (auto l = c.loadouts.find(session); l != c.loadouts.end()) suit = l->second.suitColor;
+        const Color col = suit ? Color{ (unsigned char)(suit >> 16), (unsigned char)(suit >> 8), (unsigned char)suit, 255 } : Color{ 150, 154, 160, 255 };
+        DrawRectangleRounded({ (float)(x + pad), (float)(ry + rowH * 0.2f), rowH * 0.6f, rowH * 0.6f }, 0.25f, 4, col);
+        DrawText(name.c_str(), x + pad + (int)(rowH * 0.9f), ry + (rowH - fs) / 2, fs, RAYWHITE);
+        const char* right = session == c.welcome.session ? (c.rttMs >= 0.0 ? TextFormat("you, %.0f ms", c.rttMs) : "you") : TextFormat("session %u", session);
+        DrawText(right, x + w - pad - MeasureText(right, fs), ry + (rowH - fs) / 2, fs, Fade(RAYWHITE, 0.65f));
+    }
+}
 static bool gJoinSynced = false;
 // #348: the server soak window (RAYLIBGAME_SOAK_PLAYERS=N): frame work times while N players are online.
 static double gFrameWorkStart = 0.0, gFrameCpuStart = 0.0;
@@ -119,6 +143,7 @@ static bool gSoakOn = false;
 #include "mpbots.h"
 #include "netinterest.h"
 #include "serverconsole.h"
+#include "hostprocess.h"
 #include "serveradmin.h"
 #include "netguard.h"
 
@@ -446,6 +471,7 @@ int main(int argc, char** argv)
     // --seed-survey COUNT FIRSTSEED OUTDIR [THREADS] [SUBSET] (#532): how alike different seeds' start planets are. No window.
     if (argc >= 5 && std::string(argv[1]) == "--seed-survey") return SeedSurvey_Run(argc, argv);
     if (argc >= 2 && std::string(argv[1]) == "--test-netproto") return NetProto_Test() ? 0 : 1; // the wire protocol (#320): no window, no world
+    if (argc >= 3 && std::string(argv[1]) == "--port-free") { const bool f = HostProcess_PortFree(atoi(argv[2])); printf("port %s: %s\n", argv[2], f ? "free" : "in use"); return f ? 0 : 1; } // (#341)
     if (argc >= 2 && std::string(argv[1]) == "--test-net-guard") return NetGuard_Test() ? 0 : 1; // the server's message limits (#349): no window, no world
     if (argc >= 2 && std::string(argv[1]) == "--test-server-admin") return Admin_Test() ? 0 : 1; // server admin lists (#345): no window, no world
     if (argc >= 2 && std::string(argv[1]) == "--test-net-interest") return Interest_Test() ? 0 : 1; // interest management (#340): no window, no world
@@ -506,10 +532,15 @@ int main(int argc, char** argv)
     bool benchWall = false;        // --test-wall: walk into shaft and tunnel walls (no launches)
     bool benchDoorway = false; int doorPhase = 0, doorLane = 0; double doorStart = 0.0; uint32_t doorPlot = 0; bool doorPass[2] = { false, false }; // --test-doorway (#255): 2 m openings pass, 1.5 m ones block
     bool benchMenus = false;       // --test-menus: main menu, new game, pause, save & quit, load
+    bool benchShotMpMenu = false;  // --shot-mp-menu (#341): the multiplayer pages, a screenshot each
+    bool benchMpMenu = false;      // --test-mp-menu (#341): the menu's Join (a failure) and Host (a server process, joined, left)
     bool benchMeteor = false;      // --test-meteor (#177)
     bool benchShower = false;      // --test-shower (#316): one world-wide meteor shower, rolled by the authority
     std::string hostSave;          // --host <save> (#311): a dedicated server: load (or create) the save, run headless, listen
     std::string joinAddr, joinName = "player"; // --join <ip[:port]> [--name N] (#341 core): a client of a running --host
+    std::string joinPassword;      // --join-password P (#341)
+    uint32_t joinSuit = 0;         // --suit RRGGBB (#341): the suit colour others see
+    bool hostedHere = false;       // (#341) the menu's Host started a server process this game joined: stopped when we leave
     bool benchJoin = false;        // --test-join (with --join): the client side of the two-process test (tools/test_join.sh)
     int benchJoinPhase = 0;
     int swarmBots = 0; double swarmSoak = 60.0; // --bots N [--soak S] with --join (#348): N walking bots from this process, S seconds
@@ -763,6 +794,8 @@ int main(int argc, char** argv)
         if (std::string(argv[i]) == "--host" && i + 1 < argc) hostSave = argv[i + 1];
         if (std::string(argv[i]) == "--join" && i + 1 < argc) { joinAddr = argv[i + 1]; if (joinAddr.find(':') == std::string::npos) joinAddr += ":" + std::to_string(kDefaultHostPort); }
         if (std::string(argv[i]) == "--name" && i + 1 < argc) joinName = argv[i + 1];
+        if (std::string(argv[i]) == "--join-password" && i + 1 < argc) joinPassword = argv[i + 1]; // (#341)
+        if (std::string(argv[i]) == "--suit" && i + 1 < argc) joinSuit = (uint32_t)strtoul(argv[i + 1], nullptr, 16) & 0xFFFFFFu;
         if (std::string(argv[i]) == "--test-join") benchJoin = true;
         if (std::string(argv[i]) == "--bots" && i + 1 < argc) swarmBots = std::max(1, atoi(argv[i + 1]));
         if (std::string(argv[i]) == "--soak" && i + 1 < argc) swarmSoak = std::max(1.0, atof(argv[i + 1]));
@@ -851,6 +884,8 @@ int main(int argc, char** argv)
         if (std::string(argv[i]) == "--test-fall") benchFall = true; // drops from 3-100 m: fall damage by height
         if (std::string(argv[i]) == "--test-telescope-close") benchTeleClose = true; // zoom 16x at the horizon, close: worst frame after (#261)
         if (std::string(argv[i]) == "--test-menus") benchMenus = true;
+        if (std::string(argv[i]) == "--shot-mp-menu") benchShotMpMenu = true;
+        if (std::string(argv[i]) == "--test-mp-menu") benchMpMenu = true;
         if (std::string(argv[i]) == "--test-time") benchTime = true;
         if (std::string(argv[i]) == "--test-torch") benchTorch = true;
         if (std::string(argv[i]) == "--test-posture") benchPosture = true;
@@ -1273,7 +1308,7 @@ int main(int argc, char** argv)
     Station_Init(&world);
     // The main menu has no world (#503: the erosion bake ran before the title screen). Benches skip the menu: they
     // generate here (or load, below).
-    if (bench && !loadSaveAtStart && !benchMenus && joinAddr.empty() && hostSave.empty()) { // --test-menus starts at the title screen with no world, as a launch does (--join: the server's world, below; --host: its save's world and sidecar, below - #757)
+    if (bench && !loadSaveAtStart && !benchMenus && !benchShotMpMenu && !benchMpMenu && joinAddr.empty() && hostSave.empty()) { // --test-menus starts at the title screen with no world, as a launch does (--join: the server's world, below; --host: its save's world and sidecar, below - #757)
         generateWorld(world);
         if (!world.objects.empty()) world.camera.target = world.objects[0]->position;
     }
@@ -1288,30 +1323,42 @@ int main(int argc, char** argv)
                 printf("body %s %s pos %.3f %.3f %.3f radius %.3f seed %u spin %.4f g %.4f\n", BodyKindName(p->kind), p->name.c_str(), p->worldPos.x, p->worldPos.y, p->worldPos.z,
                        p->radius, p->seed, p->spin.y, p->surfaceGravity);
     }
-    if (!joinAddr.empty()) {
-        // --join <ip[:port]> (#341 core, command line only: the menu is #341's other half): a client of a running --host.
-        // Connect and wait for the Welcome (the window shows "Joining"), then regenerate the server's world from its seed
-        // and bodies (the fingerprint is compared once it has streamed in). The player starts where the server's state
-        // says (the main loop, once the first own state arrives); gameplay is the server's: this process predicts its
-        // player (NetClient_Step), follows the world clock (#339) and draws the others (gNetClient). It never writes the
-        // single-player save: anything saved goes to saves/client_<name>.sav.
+    // Joining a server (#341): --join on the command line, or the menu's Join (and Host, which joins its own server).
+    // Connect and wait for the Welcome (the window shows `waiting`; with `retrySeconds` it keeps trying that long: a
+    // hosted server still starting), then regenerate the server's world from its seed and bodies (the fingerprint is
+    // compared once it has streamed in). The player starts where the server's state says (the main loop, once the first
+    // own state arrives); gameplay is the server's: this process predicts its player (NetClient_Step), follows the world
+    // clock (#339) and draws the others (gNetClient). It never writes the single-player save: anything saved goes to
+    // saves/client_<name>.sav. Returns "" when joined, else why not (the client is back offline).
+    auto joinServer = [&](const std::string& addr, const std::string& name, const std::string& password, uint32_t suit, double retrySeconds, const std::string& waiting) -> std::string {
         std::string err;
-        if (!Net_Init(err)) { printf("join: no network transport (%s)\n", err.c_str()); CloseWindow(); return 1; }
+        if (!Net_Init(err)) return "no network transport (" + err + ")";
         gNetRole = NetRole::Client;
-        gJoin.syncHold = true; // (#776) the world's edits wait until we have generated the world they go into
-        NetClient_Connect(gJoin, joinAddr.c_str(), joinName);
+        joinAddr = addr; joinName = name;
         const double t0 = GetTime();
-        while ((gJoin.state == NetClient::State::Connecting || gJoin.state == NetClient::State::AwaitingWelcome) && GetTime() - t0 < kClientConnectTimeout + 1.0 && !WindowShouldClose()) {
-            NetClient_Update(gJoin);
-            BeginDrawing(); ClearBackground(BLACK);
-            DrawText(TextFormat("Joining %s as %s ...", joinAddr.c_str(), joinName.c_str()), 40, 40, 30, RAYWHITE);
-            EndDrawing();
+        for (;;) {
+            gJoin = NetClient{};
+            gJoin.syncHold = true; // (#776) the world's edits wait until we have generated the world they go into
+            gJoin.suitColor = suit;
+            NetClient_Connect(gJoin, addr.c_str(), name, password);
+            const double a0 = GetTime();
+            while ((gJoin.state == NetClient::State::Connecting || gJoin.state == NetClient::State::AwaitingWelcome) && GetTime() - a0 < kClientConnectTimeout + 1.0 && !WindowShouldClose()) {
+                NetClient_Update(gJoin);
+                BeginDrawing(); ClearBackground(BLACK);
+                DrawText(waiting.c_str(), 40, 40, 30, RAYWHITE);
+                if (retrySeconds > 0.0) DrawText(TextFormat("%.0f s", GetTime() - t0), 40, 84, 24, Fade(RAYWHITE, 0.6f));
+                EndDrawing();
+            }
+            if (gJoin.state == NetClient::State::Joined || gJoin.state == NetClient::State::Rejected || GetTime() - t0 > retrySeconds || WindowShouldClose()) break;
+            WaitTime(0.5); // (the server isn't up yet)
         }
         if (gJoin.state != NetClient::State::Joined) {
-            printf("join: could not join %s: %s%s%s\n", joinAddr.c_str(), NetClient_StateName(gJoin.state),
-                   gJoin.state == NetClient::State::Rejected ? " - " : "", gJoin.state == NetClient::State::Rejected ? NetRejectText(gJoin.reject.reason) : "");
-            if (benchJoin) printf("bench: join: could not join %s -> FAIL\n", joinAddr.c_str());
-            Net_Shutdown(); CloseWindow(); return 1;
+            const std::string why = gJoin.state == NetClient::State::Rejected ? std::string(NetRejectText(gJoin.reject.reason)) + (gJoin.reject.detail.empty() ? "" : " (" + gJoin.reject.detail + ")")
+                                  : std::string("no answer from ") + addr;
+            printf("join: could not join %s: %s\n", addr.c_str(), why.c_str());
+            if (gJoin.conn) NetClient_Disconnect(gJoin);
+            gJoin = NetClient{}; gNetRole = NetRole::Offline; joinAddr.clear();
+            return why;
         }
         worldGen.seed = gJoin.welcome.seed;
         SystemDef sys;
@@ -1339,6 +1386,14 @@ int main(int argc, char** argv)
         printf("join: joined %s as %s, session %u%s; seed %u, %zu bodies, %s world-gen settings%s; server world time %.1f s\n", joinAddr.c_str(), joinName.c_str(), gJoin.welcome.session,
                gJoin.welcome.reconnected ? " (reconnected)" : "", gJoin.welcome.seed, sys.bodies.size(), joinParams.isDefault() ? "default" : "custom",
                gJoin.welcome.sandbox ? ", sandbox" : "", gJoin.welcome.worldTime);
+        return std::string();
+    };
+    if (!joinAddr.empty()) { // --join <ip[:port]> [--name N] (#341 core)
+        const std::string why = joinServer(joinAddr, joinName, joinPassword, joinSuit, 0.0, TextFormat("Joining %s as %s ...", joinAddr.c_str(), joinName.c_str()));
+        if (!why.empty()) {
+            if (benchJoin) printf("bench: join: could not join -> FAIL\n");
+            Net_Shutdown(); CloseWindow(); return 1;
+        }
     }
     bool hostLoaded = false;
     if (!hostSave.empty()) { // --host (#311): the server's world, saved back to the same file
@@ -1777,8 +1832,8 @@ int main(int argc, char** argv)
         if (serverMode) { ServerConsole_Start(); ServerShutdown_Install(); printf("server: ready. Console commands: help, status, list, save, say <text>, kick <name> [reason], stop\n"); }
     }
     if (bench) {
-        gameState = benchMenus ? 0 : 1; // --test-menus: from the title screen
-        mainMenu.isActive = benchMenus;
+        gameState = benchMenus || benchShotMpMenu || benchMpMenu ? 0 : 1; // --test-menus: from the title screen
+        mainMenu.isActive = benchMenus || benchShotMpMenu || benchMpMenu;
         world.isActive = !benchMenus;
         Planetoid* benchPlanet = world.objects.empty() ? nullptr : dynamic_cast<Planetoid*>(world.objects[0].get());
         if (!benchAtSave && !benchCamGiven && benchPlanet && dynamic_cast<const PlanetField*>(benchPlanet->field.get())) {
@@ -8649,7 +8704,7 @@ int main(int argc, char** argv)
                         }
                         benchWalkSeconds = 0.0;
                     }
-                } else if ((WorldIdle() && benchDigStrokes == 0 && !benchPaint && !benchSaveLoad && benchWalkSeconds <= 0.0 && benchMineStrokes == 0 && minePhase != 2 && benchFlySeconds <= 0.0 && !benchSuffocate && benchOrbitSeconds <= 0.0 && !benchRide && !benchPark && !benchGravity && !benchPrecision && !benchMantle && !benchAirJump && !benchMoon && !benchHole && !benchWall && !benchDoorway && !benchLedge && !benchTor && !benchMachines && !benchFall && !benchHover && !benchNetIds && !benchNet && !benchTwoPlayers && !benchFingerprint && !benchInterest && !benchTeleClose && !benchMenus && !benchWater && !benchFlyFollow && !benchHotbar && !benchInventory && !benchMap && !benchViewmodel && !benchQuests && !benchHunger && !benchFarm && !benchAnimals && !benchThreats && !benchAnimalPath && !benchDam && !benchFlowMeter && !benchPartWall && !benchPressure && benchShotTabs == 0 && !benchForest && !benchFlow && !benchPond && !benchBucket && !benchWaterSpeed && benchFluidLoad <= 0.0f && !benchFlowShade && !benchPump && !benchTerrain && !benchWind && !benchCampfire && !benchCaveMouth && !benchMountain && !benchShelter && !benchRoom && !benchFacing && !benchDungeon && !benchPosture && !benchPause && !benchBite && !benchPlacement && !benchShotDig && !benchShadow && !benchParticles && !benchBiomes && !benchOil && !benchSpring && !benchShotAnimals && !benchShotAvatar && !benchShotMachines && benchShotBiomes < 0 && !benchFarForest && !benchRecipes && !benchWeather && !benchDecor && !benchMaterials && !benchDamage && !benchCrafting && !benchSuit && !benchTools && !benchRivers && !benchRing && !benchRocket && !benchStation && !benchBlueprint && !benchSmallBody && !benchTrees && !benchChop && benchPersist == 0 && benchBuild == 0 && benchFactory == 0 && !benchCombat && !benchHost && !benchJoin && !benchTimeFollow && benchPlayerCost == 0 && !benchNetAnimals && !benchNetAbuse && !benchNetMove && !benchNetDig && !benchNetBuild && !benchNetSync && benchMpBots == 0 && !benchShower && !benchProgression && (benchUnfocus <= 0.0f || unfocusPhase >= 6)) || GetTime() > 600.0) {
+                } else if ((WorldIdle() && benchDigStrokes == 0 && !benchPaint && !benchSaveLoad && benchWalkSeconds <= 0.0 && benchMineStrokes == 0 && minePhase != 2 && benchFlySeconds <= 0.0 && !benchSuffocate && benchOrbitSeconds <= 0.0 && !benchRide && !benchPark && !benchGravity && !benchPrecision && !benchMantle && !benchAirJump && !benchMoon && !benchHole && !benchWall && !benchDoorway && !benchLedge && !benchTor && !benchMachines && !benchFall && !benchHover && !benchNetIds && !benchNet && !benchTwoPlayers && !benchFingerprint && !benchInterest && !benchTeleClose && !benchMenus && !benchWater && !benchFlyFollow && !benchHotbar && !benchInventory && !benchMap && !benchViewmodel && !benchQuests && !benchHunger && !benchFarm && !benchAnimals && !benchThreats && !benchAnimalPath && !benchDam && !benchFlowMeter && !benchPartWall && !benchPressure && benchShotTabs == 0 && !benchForest && !benchFlow && !benchPond && !benchBucket && !benchWaterSpeed && benchFluidLoad <= 0.0f && !benchFlowShade && !benchPump && !benchTerrain && !benchWind && !benchCampfire && !benchCaveMouth && !benchMountain && !benchShelter && !benchRoom && !benchFacing && !benchDungeon && !benchPosture && !benchPause && !benchBite && !benchPlacement && !benchShotDig && !benchShadow && !benchParticles && !benchBiomes && !benchOil && !benchSpring && !benchShotAnimals && !benchShotAvatar && !benchShotMachines && benchShotBiomes < 0 && !benchFarForest && !benchRecipes && !benchWeather && !benchDecor && !benchMaterials && !benchDamage && !benchCrafting && !benchSuit && !benchTools && !benchRivers && !benchRing && !benchRocket && !benchStation && !benchBlueprint && !benchSmallBody && !benchTrees && !benchChop && benchPersist == 0 && benchBuild == 0 && benchFactory == 0 && !benchCombat && !benchHost && !benchJoin && !benchTimeFollow && benchPlayerCost == 0 && !benchNetAnimals && !benchNetAbuse && !benchNetMove && !benchNetDig && !benchNetBuild && !benchNetSync && !benchShotMpMenu && !benchMpMenu && benchMpBots == 0 && !benchShower && !benchProgression && (benchUnfocus <= 0.0f || unfocusPhase >= 6)) || GetTime() > 600.0) {
                     benchStart = GetTime();
                     printf("bench: world ready after %.2f s (%d chunks, avg build %.2f ms of which sampling %.2f ms, %d worker threads)\n",
                         GetWorldStats().lastGenerationSeconds, GetWorldStats().chunks, GetWorldStats().avgBuildMs, GetWorldStats().avgSampleMs, GetWorldStats().workerThreads);
@@ -9112,6 +9167,8 @@ int main(int argc, char** argv)
             }
             if (!joinAddr.empty()) { // --join (#341 core): the server's messages; the player starts at its first own state
                 NetClient_Update(gJoin);
+                // (#750, #341) what the others see in our hands, the lamp, the suit colour (sent only when it changes)
+                NetClient_SetLoadout(gJoin, inventory.count(terrainTool.heldTool) > 0 ? terrainTool.heldTool : std::string(), survival.headlamp, 0);
                 static bool cacheSaved = false; // (#776) the sync done: keep what we now hold for a rejoin, and report
                 if (!cacheSaved && gJoin.syncDoneAt > 0.0) {
                     cacheSaved = true;
@@ -10898,6 +10955,68 @@ int main(int argc, char** argv)
                 benchTime = false;
             }
         }
+        // --shot-mp-menu (#341): the title screen and the multiplayer pages (Multiplayer, Join, Host), a screenshot each.
+        if (benchShotMpMenu) {
+            static int step = 0, frames = 0;
+            ++frames;
+            if (step == 0) { gameState = 0; mainMenu.isActive = true; world.isActive = false; step = 1; frames = 0; }
+            else if (frames == 30) {
+                static const char* shots[] = { "bench_mp_title.png", "bench_mp_menu.png", "bench_mp_join.png", "bench_mp_host.png" };
+                TakeScreenshot(shots[step - 1]);
+                printf("bench: mp menu: %s\n", shots[step - 1]);
+                if (step == 4) { printf("bench: mp menu (#341): 4 screenshots -> PASS\n"); benchShotMpMenu = false; windowKeepAlive = false; }
+                else { Menu_TestMultiplayer(step - 1); ++step; frames = 0; }
+            }
+        }
+        // --test-mp-menu (#341, ENABLE_GNS): the menu's multiplayer actions as a player uses them, from the title screen:
+        // 1. Join an address nothing answers on: back on the Join page with why, offline, no world.
+        // 2. Host (a copy of saves/bench.sav: its bake is cached) on a free port: the server process starts, we join it over
+        //    loopback and play; the port is taken while it runs; our name is on its roster.
+        // 3. Save & Quit: we leave and the server saves and ends; the port is free again.
+        if (benchMpMenu && !Net_Available()) { printf("bench: mp menu: needs ENABLE_GNS -> SKIP\n"); benchMpMenu = false; windowKeepAlive = false; }
+        if (benchMpMenu) {
+            static int step = 0;
+            static double t0 = 0.0;
+            static bool joinFailedOk = false, hostedOk = false, portTaken = false, rosterOk = false, stoppedOk = false;
+            constexpr int kPort = 27991;
+            const char* hostCopy = "saves/mpmenu_test.sav";
+            if (step == 0) { gameState = 0; mainMenu.isActive = true; world.isActive = false; step = 1; t0 = GetTime(); }
+            else if (step == 1 && GetTime() - t0 > 1.0) {
+                pendingMenu = MenuResult{}; pendingMenu.action = MenuAction::JoinGame; pendingMenu.address = "127.0.0.1:1"; pendingMenu.name = "tester";
+                step = 2;
+            } else if (step == 2 && pendingMenu.action == MenuAction::None) { // (the join was tried: it blocks up to ~11 s, then returns)
+                joinFailedOk = gameState == 0 && gNetRole == NetRole::Offline && gNetClient == nullptr && world.objects.empty();
+                printf("bench: mp menu: a join nobody answers comes back to the menu, offline: %d\n", (int)joinFailedOk);
+                // The world to host: a copy of the bench save (and its bake, regions) so the host never writes the bench's.
+                std::error_code ec;
+                for (const char* ext : { "", ".erosion", ".worldgen" }) {
+                    const std::string from = std::string("saves/bench.sav") + ext, to = std::string(hostCopy) + ext;
+                    if (std::filesystem::exists(from)) std::filesystem::copy_file(from, to, std::filesystem::copy_options::overwrite_existing, ec);
+                }
+                std::filesystem::remove_all(std::string(hostCopy) + ".regions", ec);
+                if (std::filesystem::exists("saves/bench.sav.regions")) std::filesystem::copy("saves/bench.sav.regions", std::string(hostCopy) + ".regions", std::filesystem::copy_options::recursive, ec);
+                if (!std::filesystem::exists(hostCopy)) { printf("bench: mp menu: needs saves/bench.sav (run any --bench once) -> FAIL\n"); benchMpMenu = false; windowKeepAlive = false; }
+                else {
+                    pendingMenu = MenuResult{}; pendingMenu.action = MenuAction::HostGame; pendingMenu.path = hostCopy; pendingMenu.port = kPort; pendingMenu.maxPlayers = 4;
+                    pendingMenu.name = "tester"; pendingMenu.suitColor = 0x3E86D8;
+                    step = 3; t0 = GetTime();
+                }
+            } else if (step == 3 && gameState == 1 && !loading && gJoinSynced && gNetClient && !gNetClient->syncing && GetTime() - t0 > 2.0) {
+                hostedOk = HostProcess_Running();
+                portTaken = !HostProcess_PortFree(kPort);
+                for (const auto& [session, name] : gJoin.roster) rosterOk = rosterOk || name == "tester";
+                printf("bench: mp menu: hosted and joined after %.0f s: server running %d, port taken %d, on the roster %d\n", GetTime() - t0, (int)hostedOk, (int)portTaken, (int)rosterOk);
+                pendingMenu = MenuResult{}; pendingMenu.action = MenuAction::SaveAndQuit;
+                step = 4; t0 = GetTime();
+            } else if (step == 4 && gameState == 0) {
+                stoppedOk = !HostProcess_Running() && HostProcess_PortFree(kPort) && gNetRole == NetRole::Offline;
+                const bool ok = joinFailedOk && hostedOk && portTaken && rosterOk && stoppedOk;
+                printf("bench: mp menu (#341): failed join back to the menu %d; host a world and join it %d (port taken %d, on the roster %d); leaving stops the server, port free %d -> %s\n",
+                       (int)joinFailedOk, (int)hostedOk, (int)portTaken, (int)rosterOk, (int)stoppedOk, ok ? "PASS" : "FAIL");
+                benchMpMenu = false; windowKeepAlive = false;
+            }
+            if (step == 3 && GetTime() - t0 > 420.0) { printf("bench: mp menu: never got into the hosted world (state %s) -> FAIL\n", NetClient_StateName(gJoin.state)); benchMpMenu = false; windowKeepAlive = false; }
+        }
         // --test-menus: the menu flow without clicks: main menu (screenshot), New Game, pause
         // (screenshot), Save & Quit to Menu, Load Game; each step's state is checked.
         if (benchMenus) {
@@ -10993,6 +11112,18 @@ int main(int argc, char** argv)
                 mainMenu.isActive = true;
                 world.isActive = false;
             };
+            // (#341) leaving a server: keep what we hold of its world (a rejoin fetches less), say goodbye, back offline;
+            // a server the menu's Host started saves and ends.
+            auto leaveServer = [&] {
+                if (joinAddr.empty()) return;
+                if (gJoin.state == NetClient::State::Joined) {
+                    NetClient_SaveCache(world, WorldSavePath(), gJoin.welcome.seed, gJoin.welcome.fingerprint);
+                    NetClient_Disconnect(gJoin);
+                }
+                gNetClient = nullptr; gJoin = NetClient{}; gNetRole = NetRole::Offline; joinAddr.clear(); gJoinSynced = false;
+                gAnimalsReplicated = false; gAnimalHitRequest = nullptr; gTerrainToolNetEdit = nullptr; gBuildToolNetEdit = nullptr;
+                if (hostedHere) { printf("host: stopping the server we hosted: %s\n", HostProcess_Stop(30.0) ? "saved and ended" : "ended (it didn't stop in time)"); hostedHere = false; gHostedServer.clear(); }
+            };
             const MenuResult m = pendingMenu;
             pendingMenu = MenuResult{};
             switch (m.action) {
@@ -11010,6 +11141,7 @@ int main(int argc, char** argv)
                 case MenuAction::Save: GameUI_Toast(SaveWorld(world) ? "Saved" : "Save failed"); break;
                 case MenuAction::SaveAndQuit:
                     if (!SaveWorld(world)) GameUI_Toast("Save failed");
+                    leaveServer(); // (#341) joined: disconnect (and stop a server we hosted)
                     // Nothing of the old world keeps running behind the menu (#270): jobs, the factory, water,
                     // streaming, bodies and their GPU meshes, animals, particles. New Game and Load build a world again.
                     if (telescope.active) Telescope_SetActive(world, false);
@@ -11024,7 +11156,38 @@ int main(int argc, char** argv)
                     worldFresh = false;
                     toMenu();
                     break;
-                case MenuAction::Exit: windowKeepAlive = false; break;
+                case MenuAction::Exit: leaveServer(); windowKeepAlive = false; break;
+                case MenuAction::JoinGame: { // (#341) the menu's Join: by IP, our name, the server's password, our suit colour
+                    const std::string why = joinServer(m.address, m.name, m.password, m.suitColor, 0.0, TextFormat("Joining %s as %s ...", m.address.c_str(), m.name.c_str()));
+                    if (!why.empty()) { Menu_MultiplayerFailed(false, "Could not join: " + why); break; }
+                    Menu_RememberServer(m.address);
+                    enterGame(true);
+                    break;
+                }
+                case MenuAction::HostGame: { // (#341) the menu's Host: our own dedicated server in the background, joined over loopback
+                    if (!HostProcess_PortFree(m.port)) { Menu_MultiplayerFailed(true, TextFormat("Port %d is already in use (another server, or another program)", m.port)); break; }
+                    const std::string save = m.path.empty() ? Menu_NewSavePath() : m.path; // (the saves folder: it lists and loads like any save)
+                    ServerConfig cfg;
+                    cfg.save = save; cfg.port = m.port; cfg.maxPlayers = m.maxPlayers; cfg.password = m.password; cfg.log = save + ".server.log";
+                    const std::string cfgPath = save + ".server.cfg";
+                    bool wrote = false;
+                    if (FILE* cf = fopen(cfgPath.c_str(), "w")) { fputs(ServerConfig_Text(cfg).c_str(), cf); fclose(cf); wrote = true; }
+                    std::string err;
+                    if (!wrote) { Menu_MultiplayerFailed(true, "Could not write " + cfgPath); break; }
+                    if (!HostProcess_Start(cfgPath, save + ".console.log", err)) { Menu_MultiplayerFailed(true, "Could not start the server: " + err); break; }
+                    hostedHere = true;
+                    gHostedServer = TextFormat("on port %d", m.port);
+                    printf("host: started a server for %s on port %d (%d players%s); joining it\n", save.c_str(), m.port, m.maxPlayers, m.password.empty() ? "" : ", a password");
+                    const std::string why = joinServer(TextFormat("127.0.0.1:%d", m.port), m.name, m.password, m.suitColor, 300.0,
+                                                       m.path.empty() ? "Starting your server: a new world is built first (a few minutes) ..." : "Starting your server ...");
+                    if (!why.empty()) {
+                        HostProcess_Stop(10.0); hostedHere = false; gHostedServer.clear();
+                        Menu_MultiplayerFailed(true, "The server didn't come up: " + why + " (see " + cfg.log + ")");
+                        break;
+                    }
+                    enterGame(true);
+                    break;
+                }
                 case MenuAction::ReportBug: BugReport_Open(world); break; // stays paused (#169)
                 case MenuAction::None: break;
             }
@@ -11121,6 +11284,7 @@ int main(int argc, char** argv)
                 if (!Rocket_Boarded()) Nav_DrawHUD(world);
                 Rocket_DrawHUD(world); // the orbit map covers the rest
                 Nav_DrawMap(world);    // last: the full map covers everything
+                if (gNetClient && gNetClient->state == NetClient::State::Joined && (IsKeyDown(KEY_J))) DrawPlayerList(*gNetClient); // (#341) hold J (the pause screen shows it too)
                 }
                 if (loading) {
                     // Loading screen: black, with the streaming progress, until the world around you is built
@@ -11188,6 +11352,7 @@ int main(int argc, char** argv)
                 if (justPaused) BugReport_CaptureScene(); // the world as it paused, for a bug report's screenshot (#169)
                 world.drawUI(gameState);
                 const MenuResult m = BugReport_IsOpen() ? MenuResult{} : Menu_Pause(); // the bug report window takes the input (#169)
+                if (gNetClient && gNetClient->state == NetClient::State::Joined) DrawPlayerList(*gNetClient); // (#341) who is on the server
                 if (!justPaused) pendingMenu = m; // the Esc that opened it is not also a "resume"
             }
             justPaused = false;

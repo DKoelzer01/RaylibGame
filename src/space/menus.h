@@ -3,18 +3,26 @@
 
 // Main and pause menus: clickable buttons (raylib immediate mode), a save list, and settings.
 //
-// Main menu: New Game, Load Game (the saves in saves/, newest first), Settings, Exit.
+// Main menu: New Game, Load Game (the saves in saves/, newest first), Multiplayer (#341: host a world, join by IP),
+// Settings, Exit.
 // Pause menu (Esc in game): Resume, Save, Settings, Save & Quit to Menu; Esc resumes (or backs
 // out of Settings). Settings (mouse sensitivity, field of view, volume, foliage, frame cap) are
 // kept in settings.txt.
 
 #include "raylib.h"
+#include <cstdint>
 #include <string>
+#include <vector>
 
-enum class MenuAction { None, NewGame, LoadGame, Resume, Save, SaveAndQuit, Exit, ReportBug }; // ReportBug: the bug report window (#169)
+enum class MenuAction { None, NewGame, LoadGame, Resume, Save, SaveAndQuit, Exit, ReportBug, HostGame, JoinGame }; // ReportBug: the bug report window (#169)
 struct MenuResult {
     MenuAction action = MenuAction::None;
-    std::string path;            // LoadGame: the save file
+    std::string path;            // LoadGame: the save file; HostGame: the world to host ("": a new one)
+    // Multiplayer (#341). JoinGame: the server ("ip[:port]"), our name, its password, our suit colour (0xRRGGBB, 0 the
+    // default). HostGame: the port, the password, max players; then it joins its own server under name/suitColor.
+    std::string address, name, password;
+    int port = 27015, maxPlayers = 8;
+    uint32_t suitColor = 0;
 };
 
 struct GameSettings {
@@ -35,6 +43,11 @@ struct GameSettings {
     int tonemap = 1;                // #131: the HDR curve, as the Graphics tab lists them: 0 Clip, 1 Knee (the default: today's look), 2 ACES
     int difficulty = 1;             // new worlds: 0 peaceful (no threats, slower hunger, extra food), 1 normal, 2 hard (no Map, hungrier, fiercer nights)
     std::string logLevel;           // settings.txt "log_level trace|debug|info|warn|error|fatal|off" (#514; --log-level wins); empty: the build default
+    // Multiplayer (#341): what the Host and Join pages last used (passwords are never kept).
+    std::string mpName = "player", mpAddress = "127.0.0.1:27015";
+    uint32_t mpSuit = 0;            // 0xRRGGBB; 0 the default suit
+    std::vector<std::string> mpRecent; // servers joined, newest first (at most 5)
+    int mpPort = 27015, mpMaxPlayers = 8;
 };
 extern GameSettings settings;
 void Settings_Load();            // settings.txt (missing: defaults)
@@ -50,5 +63,13 @@ void Menu_TestSettings(int tab, bool pause); // --shot-settings (#512): open the
 void Menu_SettingsLayout(float& contentBottom, Rectangle& back); // the last drawn page: its rows' bottom and the Back button
 // A new save's file: saves/world.sav, else the first free saves/world_N.sav.
 std::string Menu_NewSavePath();
+// Multiplayer (#341): back on the Join (or Host) page with why it failed (refused, timed out, the server didn't start).
+void Menu_MultiplayerFailed(bool host, const std::string& why);
+void Menu_RememberServer(const std::string& address); // a server joined: first in the recent list
+// Tests (--test-mp-menu): open a multiplayer page (0 the Multiplayer page, 1 Join, 2 Host).
+void Menu_TestMultiplayer(int page);
+// The suit colours the Join page offers (0xRRGGBB; the first, 0, is the default suit).
+int Menu_SuitColorCount();
+uint32_t Menu_SuitColor(int i);
 
 #endif

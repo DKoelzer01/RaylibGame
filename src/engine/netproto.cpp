@@ -482,11 +482,14 @@ bool NetRead(NetReader& r, MsgRoster& m) {
 void NetWrite(NetWriter& w, const MsgLoadout& m) {
     Id(w, NetMsg::Loadout);
     w.varu(m.session); w.str(m.held.substr(0, kMaxItemLen)); w.boolean(m.headlamp); w.u8(m.suitTier);
+    w.u8((uint8_t)(m.suitColor >> 16)); w.u8((uint8_t)(m.suitColor >> 8)); w.u8((uint8_t)m.suitColor); // (#341, last)
 }
 bool NetRead(NetReader& r, MsgLoadout& m) {
     const uint64_t s = r.varu();
     if (s > 0xFFFFFFFFull) r.ok = false;
     m.session = (uint32_t)s; m.held = r.str(kMaxItemLen); m.headlamp = r.boolean(); m.suitTier = r.u8();
+    const uint32_t cr = r.u8(), cg = r.u8(), cb = r.u8();
+    m.suitColor = (cr << 16) | (cg << 8) | cb;
     return Done(r);
 }
 
@@ -684,7 +687,7 @@ bool NetProto_Test() {
         check(RoundTrip(ua, ub, &s5) && ub.item == "berries", "use item"); samples.push_back(s5);
     }
     { MsgRoster a, b; a.players = { { 1, "alice" }, { 7, "bob" } }; std::vector<uint8_t> s; check(RoundTrip(a, b, &s) && b.players.size() == 2 && b.players[1].session == 7 && b.players[1].name == "bob", "roster"); samples.push_back(s); }
-    { MsgLoadout a{ 3, "stone_pickaxe", true, 2 }, b; std::vector<uint8_t> s; check(RoundTrip(a, b, &s) && b.session == 3 && b.held == "stone_pickaxe" && b.headlamp && b.suitTier == 2, "loadout"); samples.push_back(s); }
+    { MsgLoadout a{ 3, "stone_pickaxe", true, 2, 0xD04A2Fu }, b; std::vector<uint8_t> s; check(RoundTrip(a, b, &s) && b.session == 3 && b.held == "stone_pickaxe" && b.headlamp && b.suitTier == 2 && b.suitColor == 0xD04A2Fu, "loadout"); samples.push_back(s); }
     // Every message cut short anywhere must not read as valid; garbage must never crash a reader.
     int truncValid = 0, truncTotal = 0;
     for (const auto& s : samples)

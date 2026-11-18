@@ -31,6 +31,7 @@ struct AvatarState {
     int action = 0;                       // 0 none, 1 dig / mine swing, 2 chop, 3 place / use
     float actionPhase = 0.0f;             // 0..1 within the current swing
     int suitTier = 0;                     // suit upgrades show as accent colours
+    Color suitColor{ 0, 0, 0, 0 };        // the colour the player picked when joining (#341); alpha 0: the default suit
 };
 
 // Draw inside the 3D pass, before InstanceBatch_Flush (the boxes go through the instance batch).
