@@ -5,7 +5,8 @@
 # peak memory and counts timeouts.
 #   tools/soak_server.sh N [SECONDS]      (default 120 s)   env: EXE (GNS build), PORT, LAG_MS (50), LOSS (2), SAVE_DIR,
 #   INTEREST (1; 0 = every state to every client, #340 A/B)
-# The host save is kept in SAVE_DIR (default /tmp/raylibgame_soak) so later runs skip the erosion bake.
+# SAVE_DIR (default /tmp/raylibgame_soak) keeps a pristine host save (made once: later runs skip the erosion bake); each run
+# starts from a fresh copy of it, so no bot resumes where an earlier run left it.
 # Timing numbers are only meaningful in a quiet window (no other benches or builds).
 set -u
 here="$(cd "$(dirname "$0")/.." && pwd)"
@@ -16,6 +17,20 @@ dir="${SAVE_DIR:-/tmp/raylibgame_soak}"; mkdir -p "$dir"
 win="$(cygpath -m "$dir" 2>/dev/null || echo "$dir")"
 cd "$here"
 SECONDS=0
+# Fresh sessions every run (#768: a reused save kept each bot's position, so later runs walked into unbuilt terrain and their
+# streaming cost wasn't comparable). The pristine copy is the host save as created, before anyone joined (with its erosion
+# bake cache), made once; each run starts from a copy of it.
+if [ ! -f "$dir/pristine/host.sav" ]; then
+    rm -rf "$dir/pristine" "$dir/run"; mkdir -p "$dir/pristine"
+    pw="$(cygpath -m "$dir/pristine" 2>/dev/null || echo "$dir/pristine")"
+    "$exe" --host "$pw/host.sav" --seed 42 --port "$port" > "$dir/pristine/make.log" 2>&1 &
+    mp=$!
+    until grep -qi "world ready" "$dir/pristine/make.log" 2>/dev/null || ! kill -0 "$mp" 2>/dev/null || [ $SECONDS -gt 300 ]; do sleep 2; done
+    kill "$mp" 2>/dev/null; wait "$mp" 2>/dev/null
+    echo "soak: made the pristine host save in ${SECONDS} s"
+fi
+rm -rf "$dir/run"; cp -r "$dir/pristine" "$dir/run"
+win="$(cygpath -m "$dir/run" 2>/dev/null || echo "$dir/run")"
 RAYLIBGAME_NET_INTEREST="${INTEREST:-1}" RAYLIBGAME_SOAK_PLAYERS=$((n + 1)) RAYLIBGAME_SOAK_SECONDS="$secs" RAYLIBGAME_NET_LAG_MS="$lag" RAYLIBGAME_NET_LOSS="$loss" RAYLIBGAME_NET_SEED=1 \
     "$exe" --host "$win/host.sav" --seed 42 --port "$port" --max-players $((n + 1)) > "$dir/host_${n}_i${INTEREST:-1}.log" 2>&1 &
 hp=$!
