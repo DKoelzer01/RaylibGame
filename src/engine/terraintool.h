@@ -4,6 +4,9 @@
 #include <cstdint>
 #include <raylib.h>
 #include <functional>
+
+// (#827) Draws the key hints line at (x, y) (the game: its bindings, size and fade); unset, the tool draws a fixed line.
+inline std::function<void(int x, int y)> gKeyHintsHook;
 #include <string>
 
 class Scene;

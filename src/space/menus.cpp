@@ -302,6 +302,8 @@ namespace {
             changed |= Choice({ x, y, w, h }, "Hand bob", bob, 3, settings.handBob); next();
             changed |= Toggle({ x, y, w, h }, "Speed vignette", settings.speedVignette); next();
             changed |= Toggle({ x, y, w, h }, "Firelight flicker", settings.fireFlicker); next(); // torches and campfires (#558)
+            static const char* hints[] = { "Auto", "Always", "Off" }; // (#827) Auto: fades after your first 2 hours of play
+            changed |= Choice({ x, y, w, h }, "Key hints", hints, 3, settings.keyHints); next();
             break;
         }
         case SettingsTab::Count: break;
@@ -348,6 +350,7 @@ void Settings_Load() {
             else if (!strcmp(key, "tonemap")) settings.tonemap = std::clamp((int)v, 0, 2); // (#131)
             else if (!strcmp(key, "speedvignette")) settings.speedVignette = v != 0.0f;
             else if (!strcmp(key, "fireflicker")) settings.fireFlicker = v != 0.0f;
+            else if (!strcmp(key, "keyhints")) settings.keyHints = std::clamp((int)v, 0, 2); // (#827)
         }
         fclose(f);
     }
@@ -367,6 +370,7 @@ void Settings_Save() {
     fprintf(f, "tonemap %d\n", settings.tonemap); // (#131)
     fprintf(f, "fireflicker %d\n", settings.fireFlicker ? 1 : 0);
     fprintf(f, "uiscale %.2f\n", settings.uiScale); // (#821)
+    fprintf(f, "keyhints %d\n", settings.keyHints); // (#827)
     for (int a = 0; a < (int)Act::Count; ++a) // (#821) only the key bindings changed from their defaults
         if (PlayerInput_Binding((Act)a) != PlayerInput_DefaultBinding((Act)a)) fprintf(f, "bind_%s %d\n", PlayerInput_ActId((Act)a), PlayerInput_Binding((Act)a));
     if (!settings.logLevel.empty()) fprintf(f, "log_level %s\n", settings.logLevel.c_str()); // set by hand in the file (#514)

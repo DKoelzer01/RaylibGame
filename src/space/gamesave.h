@@ -8,6 +8,7 @@
 void GameSave_Register();
 // Whether the last load found this game's player (their record, or a format 12 save's player lines).
 bool GameSave_PlayerLoaded();
+double GameSave_PlayTime();   // (#827) seconds this player has played in this world (their record's, plus this session)
 // Called by a load that found no player of ours (a world from a dedicated server, say): put a new player at the world's
 // start with the starting kit. The world's own state (quests, difficulty) is the save's.
 void GameSave_SetNewPlayerHook(std::function<void()> hook);

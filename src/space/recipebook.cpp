@@ -1,4 +1,5 @@
 #include "recipebook.h"
+#include "playerinput.h"
 #include "playersession.h"
 #include "simclock.h"
 #include "gameui.h"
@@ -77,7 +78,7 @@ void RecipeBook_Update() {
                 if (fresh < 3) { const ItemDef* d = itemDB.find(o); list += (list.empty() ? "" : ", ") + (d ? d->name : o); }
                 ++fresh;
             }
-        if (fresh > 0) GameUI_Toast(TextFormat("New recipe%s: %s%s (Tab)", fresh > 1 ? "s" : "", list.c_str(), fresh > 3 ? TextFormat(" and %d more", fresh - 3) : ""));
+        if (fresh > 0) { const std::string key = PlayerInput_KeyName(PlayerInput_Binding(Act::Crafting)); GameUI_Toast(TextFormat("New recipe%s: %s%s (%s: crafting)", fresh > 1 ? "s" : "", list.c_str(), fresh > 3 ? TextFormat(" and %d more", fresh - 3) : "", key.c_str())); } // (#827: the key as bound)
     }
     R().known.swap(now);
     R().primed = true;

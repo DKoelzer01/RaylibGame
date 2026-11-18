@@ -592,6 +592,7 @@ int main(int argc, char** argv)
     bool benchCraftScreen = false;   // --test-crafting-screen (#824): the Crafting screen's queue and page
     bool benchQuestPins = false;     // --test-quest-pins (#825): pin three quests (a fourth refused), saved with the player, on the HUD
     bool benchDatabase = false;      // --test-database (#826): the database pop-up at an item's page
+    bool shotHud = false;            // --shot-hud (#827): the HUD at 100% and 150% (pinned quests, the off hand, key hints)
     bool benchDungeon = false; int dungeonFrame = 0; // --test-dungeon (#719)
     bool benchDungeonTraps = false; int dungeonTrapFrame = 0; // --test-dungeon-traps (#719)
     bool benchSaveSplit = false; // --test-save-split (#346)
@@ -930,6 +931,7 @@ int main(int argc, char** argv)
         if (std::string(argv[i]) == "--test-crafting-screen") benchCraftScreen = true;
         if (std::string(argv[i]) == "--test-quest-pins") benchQuestPins = true;
         if (std::string(argv[i]) == "--test-database") benchDatabase = true;
+        if (std::string(argv[i]) == "--shot-hud") shotHud = true;
         if (std::string(argv[i]) == "--test-dungeon") benchDungeon = true;
         if (std::string(argv[i]) == "--test-dungeon-traps") benchDungeonTraps = true; // #719: best with --sandbox
         if (std::string(argv[i]) == "--test-save-split") benchSaveSplit = true; // #346: world + player records
@@ -1277,6 +1279,7 @@ int main(int argc, char** argv)
     Fluid::LoadKinds("resources/data/fluids.txt"); // water, crude oil, ... (fluid.h)
     ItemIcons_Init(); // one painted icon per item (itemicons.h)
     GameUI_InitPickupFeed(); // "+N item" in the bottom right (#208)
+    GameUI_InstallKeyHints(); // (#827)
     for (int i = 1; i < argc; ++i)
         if (std::string(argv[i]) == "--test-compute") {
             // GPU compute self-test: 1M values through a compute shader, read back and checked.
@@ -9665,6 +9668,26 @@ int main(int argc, char** argv)
         }
         // --test-save-split (#346): the world file and the player's record (gamesave.cpp), once the world is up.
         if (benchSaveSplit && gameState == 1 && !loading && WorldIdle()) { GameSave_TestSplit(world); benchSaveSplit = false; }
+        // --shot-hud (#827): the HUD with two quests pinned and a torch in the off hand, at the interface size 100% and 150%;
+        // the key hints follow the bindings (a rebound Tab shows as I).
+        if (shotHud && gameState == 1 && !loading && WorldIdle()) {
+            static int f = 0;
+            if (f == 0) {
+                QuestBook_ClearPins(); QuestBook_Pin(QuestBook_Tier(), 0, true); QuestBook_Pin(QuestBook_Tier(), 2, true);
+                inventory.grid()[Inventory::kOffHand] = InvSlot{ "torch", 300 };
+                inventory.add("oak_log", 8); inventory.add("stone_pickaxe", 1);
+                settings.uiScale = 1.0f; settings.keyHints = 1;
+            }
+            if (f == 15) { TakeScreenshot("bench_hud_100.png"); settings.uiScale = 1.5f; PlayerInput_SetBinding(Act::Inventory, KEY_I); }
+            if (f == 30) {
+                TakeScreenshot("bench_hud_150.png");
+                PlayerInput_ResetBindings(); settings.uiScale = 0.0f; settings.keyHints = 0;
+                printf("bench: hud (#827): bench_hud_100.png, bench_hud_150.png (pinned quests on a backing, the off hand left of the hotbar, key hints from the bindings) -> %s\n",
+                       gKeyHintsHook ? "PASS" : "FAIL (the key hints hook is not installed)");
+                shotHud = false;
+            }
+            ++f;
+        }
         // --test-database (#826): the database pop-up opened at copper ingot's page (as an alt-click on it does) over the
         // inventory, then from the Database button (where it was); a screenshot.
         if (benchDatabase && gameState == 1 && !loading && WorldIdle()) {

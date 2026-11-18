@@ -247,6 +247,7 @@ std::vector<PlayerRecordMeta> PlayerRecord_List() {
 }
 
 bool GameSave_PlayerLoaded() { return playerLoaded; }
+double GameSave_PlayTime() { return recordPlayTime + std::max(0.0, GetTime() - recordLoadedAt); }
 void GameSave_SetNewPlayerHook(std::function<void()> hook) { newPlayerHook = std::move(hook); }
 
 void GameSave_Register() {
