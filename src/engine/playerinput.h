@@ -18,6 +18,10 @@ enum class Act : int {
     Dock, Transfer, Undock, RollLeft, RollRight,     // K, T, U, Z, C
     FreeLook, Save, Load,                            // Alt (rocket camera), F5, F9
     Prone,                                           // Z on foot: lie down / get up (#578; Z rolls the ship too)
+    Inventory, Crafting, Skills,                      // Tab, C, K: the game window and its tabs (#821; C and K fly the rocket too)
+    Telescope, PlayerList, Deposit, BlueprintCycle, BlueprintSave, ZoomOut, ZoomIn, // T, J, Q, N, B, -, = (#821: rebindable too)
+    OffHandUse,                                       // Q: use the off hand's food or oxygen canister (#822)
+    Chat,                                             // Enter: the command line (and chat when joined) (#823)
     Count
 };
 
@@ -51,5 +55,19 @@ inline uint64_t gFakeHeld = 0; // actions held as if their keys were down (bit =
 const PlayerInput& PlayerInput_Step();
 // `in` when enabled, else PlayerInput::None() (the old inputEnabled flags).
 inline const PlayerInput& PlayerInput_If(bool enabled, const PlayerInput& in) { return enabled ? in : PlayerInput::None(); }
+
+// Key bindings (#821): every action's key or mouse button (kMouseBinding + button), changed in Settings and kept in settings.txt
+// ("bind <action> <code>"). The default is each action's key above.
+constexpr int kMouseBinding = 1000;
+int PlayerInput_Binding(Act a);
+void PlayerInput_SetBinding(Act a, int code);
+void PlayerInput_ResetBindings();
+int PlayerInput_DefaultBinding(Act a);
+const char* PlayerInput_ActId(Act a);     // the settings file's word ("forward", "inventory", ...)
+const char* PlayerInput_ActLabel(Act a);  // what Settings shows ("Move forward", "Open the inventory", ...)
+bool PlayerInput_ActFromId(const char* id, Act& out);
+const char* PlayerInput_KeyName(int code); // "W", "Left Shift", "Mouse 1", ...
+int PlayerInput_PressedCode();            // a key or mouse button pressed this frame (rebinding), -1 none
+bool PlayerInput_BindingPressed(Act a);   // its key went down this frame, whatever the gameplay input (menus, the game window)
 
 #endif

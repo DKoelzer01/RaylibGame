@@ -120,6 +120,7 @@ raw_catfish      | Raw catfish      |   999 | 120,110, 90 | Caught in warm water
 cooked_fish      | Cooked fish      |   999 | 210,160,100 | Fish roasted over a fire. Filling.
 fence            | Fence            | block | 130,95,60   | A 1 m wooden panel. Animals can't cross it: build a pen.
 gate             | Gate             | block | 165,120,70  | A fence panel you can walk through; animals can't.
+bed              | Bed              |    5 | 150,62,52   | Build it (hotbar, then place) and right-click it: you respawn at your bed while it stands.
 # Environmental suit (plan 2, milestone 13): suits and modules, fitted in the inventory's Suit tab.
 cloth              | Cloth              |   999 | 220,215,190 | Woven from fibre or wool. Suits and modules.
 basic_suit         | Basic suit         |  tool | 200,200,190 | 2 module slots. You start in one.
@@ -210,3 +211,4 @@ crude_oil        | Crude oil        | 200 | 34, 26, 20  | From oil seeps in warm
 cactus           | Cactus           | 999 | 92,140, 72  | From desert and badlands scrub. Chewy and watery (edible); splits into fibre.
 rubber           | Rubber           | 200 | 66, 58, 46  | Latex from jungle trees, set. A chemical reactor makes plastic of it.
 peat             | Peat             | 999 | 72, 52, 36  | Dug from swamp ground. Burns slowly in campfires, kilns, boilers and generators.
+ancient_relic    | Ancient relic    | 20  | 196,168, 92 | A carved idol from the deepest room of a dungeon. Found nowhere else.

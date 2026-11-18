@@ -1,4 +1,5 @@
 #include "telescope.h"
+#include "playerinput.h"
 #include "inventory.h"
 #include "player.h"
 #include "world.h"
@@ -24,7 +25,7 @@ void Telescope_SetActive(Scene& world, bool on) {
 void Telescope_Update(Scene& world, bool inputEnabled, bool usable) {
     const bool has = inventory.count("telescope") > 0;
     if (!usable || !has) { Telescope_SetActive(world, false); return; }
-    if (inputEnabled && IsKeyPressed(KEY_T)) {
+    if (inputEnabled && PlayerInput_BindingPressed(Act::Telescope)) {
         Telescope_SetActive(world, !telescope.active);
         Audio_Play(Sfx::Build, 0.25f, telescope.active ? 1.6f : 1.3f);
     }

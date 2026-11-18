@@ -33,6 +33,9 @@ bool Host_Start(uint16_t port, std::string& status); // gNetRole = Host; false (
 void Host_SetAutosaveMinutes(double minutes);         // 0 = off
 void Host_SetPassword(const std::string& password);   // "" none (--host-password)
 void Host_SetMaxPlayers(int n);                       // default 8 (--max-players)
+enum class DeathDrops : uint8_t;
+void Host_SetDeathDrops(DeathDrops d);                // (#804) --death-drops difficulty|keep|grave (default difficulty)
+int Host_GravesMade();
 void Host_Update(Scene& world);                       // per frame: autosave, poll, the handshake, pings, timeouts
 bool Host_SaveOnShutdown(Scene& world);               // before the scene goes away
 void Host_Stop();                                     // tells every client the server closed
@@ -49,6 +52,11 @@ double Host_InventoryAmount(uint32_t session, const std::string& item);
 // into the server's copy of their inventory, and the delta to them. False: no such player or item.
 int Host_PartsApplied();
 bool Host_Give(uint32_t session, const std::string& item, int count);
+bool Host_SetCreative(const std::string& name, bool on); // (#823) /gamemode: an online player's game mode (false: not online)
+// Tests (#346): how many of an item the server holds for a session (-1: no such player in the world); forget every
+// player as a restart would (only with nobody online; their records stay on disk).
+int Host_ItemCount(uint32_t session, const std::string& item);
+bool Host_ForgetPlayers();
 // Join sync (#776, tests): syncs finished so far; bytes sent by them.
 int Host_SyncsDone();
 uint64_t Host_SyncBytesSent();

@@ -1,4 +1,5 @@
 #include "gameui.h"
+#include "playerinput.h"
 #include "hotbar.h"
 #include "inventory.h"
 #include "player.h"
@@ -11,6 +12,7 @@
 #include "toolwear.h"
 #include "questtree.h"
 #include "recipebook.h"
+#include "net.h"
 #include "storage.h"
 #include "factory.h"
 #include <map>
@@ -27,8 +29,11 @@
 #include "plots.h"
 #include "worldtypes.h"
 #include "helpmanual.h"
+#include "menus.h"
+#include "playerrecord.h"
 #include "combat.h"
 #include "playersession.h"
+#include "avatar.h"
 #include <raymath.h>
 
 namespace {
@@ -36,10 +41,22 @@ namespace {
     std::string toast;
     double toastUntil = 0.0;
     struct Container { bool open = false; uint64_t body = 0; uint32_t plot = 0; int part = -1; PartType type = PartType::Count; } container;
+    // The game window (#821): the screen shown; Quests' view; the temporary Help page (until #826).
+    GameScreen screen = GameScreen::Inventory;
+    bool questTree = false;
+    enum class Extra { None, Help } extra = Extra::None;
 }
 
 bool GameUI_InventoryOpen() { return inventoryOpen; }
-void GameUI_ToggleInventory() { inventoryOpen = !inventoryOpen; if (!inventoryOpen) container.open = false; }
+void GameUI_ToggleInventory() { inventoryOpen = !inventoryOpen; if (!inventoryOpen) { container.open = false; extra = Extra::None; } }
+void GameUI_ShowScreen(GameScreen s) { inventoryOpen = true; screen = s; extra = Extra::None; }
+GameScreen GameUI_Screen() { return screen; }
+bool GameUI_TextInputActive() { return ImGui::GetCurrentContext() && ImGui::GetIO().WantTextInput; }
+float GameUI_Scale() {
+    // Settings' interface size (0: auto, by the screen's height: 1080 p is 100%).
+    if (settings.uiScale > 0.0f) return settings.uiScale;
+    return std::clamp(GetScreenHeight() / 1080.0f, 0.75f, 2.0f);
+}
 void GameUI_OpenContainer(uint64_t body, uint32_t plot, int part, int partType) {
     container = { true, body, plot, part, (PartType)partType };
     inventoryOpen = true;
@@ -114,9 +131,15 @@ static void DrawItemIcon(ImDrawList* dl, ImVec2 p, float size, const std::string
 // Whether a container takes an item from the inventory: a chest takes every item (#568: tools and machines too; tool
 // wear is kept per item kind, not per stack, so nothing is lost), a machine what it burns or processes.
 static bool ContainerTakes(const std::string& id) { return Factory::Accepts(container.type, id); }
-static std::string forceTab; // the tab to select when the window next draws
 static Scene* uiWorld = nullptr; // the world the window was last drawn for (nearby chests)
-void GameUI_ShowTab(const char* tab) { inventoryOpen = true; forceTab = tab; }
+void GameUI_ShowTab(const char* tab) { // (the older tab names, from the tests and tutorials)
+    const std::string t = tab;
+    if (t == "Crafting") GameUI_ShowScreen(GameScreen::Crafting);
+    else if (t == "Quest tree" || t == "Quests") { GameUI_ShowScreen(GameScreen::Quests); questTree = t == "Quest tree"; }
+    else if (t == "Help") { GameUI_ShowScreen(GameScreen::Inventory); extra = Extra::Help; }
+    else if (t == "Creative" || t == "Catalog") GameUI_ShowScreen(terrainTool.creative ? GameScreen::Catalog : GameScreen::Inventory);
+    else GameUI_ShowScreen(GameScreen::Inventory); // "Suit": beside the inventory
+}
 void GameUI_Toast(const char* text) { toast = text; toastUntil = GetTime() + 2.5; }
 
 static ImVec4 ToImColor(Color c) { return ImVec4(c.r / 255.0f, c.g / 255.0f, c.b / 255.0f, 1.0f); }
@@ -335,67 +358,73 @@ bool GameUI_TestCursorStack() {
 // The grid (#192): click a cell to pick its stack up onto the cursor, click a cell to put it down (merging the same item,
 // swapping another); right-click takes half, or with a stack held puts one down; Shift+click moves a stack between the grid
 // and the hotbar. Hover and press 1-0 to put the item on the hotbar. With a container open a click sends the stack into it.
-static void DrawGrid() {
+// One inventory cell (grid, hotbar or the off hand): click to pick up or put down (#192), right-click for one or half,
+// shift for the quick move, middle-click to sort; its icon, name, amount and tooltip. cw: its width.
+static void DrawCell(int i, float cw, float cell) {
     auto& grid = inventory.grid();
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    const bool hotbar = i >= Inventory::kGrid && i < Inventory::kSlots;
+    ImGui::PushID(i);
+    const ImVec2 p = ImGui::GetCursorScreenPos();
+    if (ImGui::InvisibleButton("cell", ImVec2(cw, cell))) {
+        const bool shift = IsKeyDown(KEY_LEFT_SHIFT) || IsKeyDown(KEY_RIGHT_SHIFT);
+        if (GameUI_ContainerOpen() && shift && cursorStack.empty() && !grid[i].empty()) {
+            // Shift+click with a container open (#192: the quick-move, as everywhere): the stack goes into it (machines
+            // route it: recipe inputs, else fuel; what doesn't fit comes back next tick). To force a fuel slot, drop
+            // the held stack on it.
+            const std::string id = grid[i].id;
+            const int n = (int)grid[i].amount();
+            if (!ContainerTakes(id)) GameUI_Toast(TextFormat("The %s doesn't take %s", PartName(container.type), itemDB.find(id) ? itemDB.find(id)->name.c_str() : id.c_str()));
+            else if (n > 0 && inventory.remove(id, n)) {
+                Factory::Insert(container.body, container.plot, container.part, id, n);
+                Audio_Play(Sfx::Pickup, 0.4f, 0.8f);
+            }
+        } else CellClick(i, false, shift && !GameUI_ContainerOpen());
+    }
+    if (ImGui::IsItemClicked(ImGuiMouseButton_Right)) CellClick(i, true, false);
+    if (ImGui::IsItemClicked(ImGuiMouseButton_Middle)) { ReturnCursorStack(); inventory.sort(); } // as the Sort button (#577)
+    const bool hover = ImGui::IsItemHovered();
+    const InvSlot& s = grid[i];
+    const ImVec2 q(p.x + cw, p.y + cell);
+    dl->AddRectFilled(p, q, IM_COL32(30, 32, 36, 220), 4.0f);
+    DrawGlow(dl, p, q, Item_Glow(grid[i])); // hot or radiant (#580)
+    if (!s.empty()) {
+        const ItemDef* d = itemDB.find(s.id);
+        DrawItemIcon(dl, ImVec2(p.x + (cw - cell * 0.64f) * 0.5f, p.y), cell * 0.64f, s.id);
+        CellName(dl, p, q, d ? d->name : s.id, hover);
+        if (KindOf(s.id) != ItemKind::Tool) {
+            const std::string amt = AmountText(s);
+            const ImVec2 sz = ImGui::CalcTextSize(amt.c_str());
+            dl->AddRectFilled(ImVec2(q.x - sz.x - 6, p.y + 2), ImVec2(q.x - 2, p.y + sz.y + 2), IM_COL32(0, 0, 0, 160), 2.0f);
+            dl->AddText(ImVec2(q.x - sz.x - 4, p.y + 2), IM_COL32(255, 255, 255, 255), amt.c_str());
+        }
+        if (hover) {
+            ImGui::SetTooltip("%s  (%s)\n%.2f of %d per slot\n%s\n(%s; 1-0: hotbar slot)", d ? d->name.c_str() : s.id.c_str(),
+                              KindName(KindOf(s.id)), s.amount(), StackLimit(s.id), d ? d->description.c_str() : "",
+                              GameUI_ContainerOpen() ? TextFormat("click to put it in the %s", PartName(container.type)) : "click to move");
+            const int k = Hotbar_KeySlot();
+            if (k >= 0) inventory.swapSlots(i, Inventory::kGrid + k); // into that hotbar slot (its stack comes here)
+        }
+    }
+    if (hotbar) dl->AddText(ImVec2(p.x + 3, p.y + 1), IM_COL32(150, 150, 150, 255), TextFormat("%d", (i - Inventory::kGrid + 1) % 10));
+    const ImU32 edge = hover ? IM_COL32(200, 200, 200, 255) : IM_COL32(70, 72, 78, 255);
+    dl->AddRect(p, q, edge, 4.0f, 0, 1.0f);
+    ImGui::PopID();
+}
+
+static void DrawGrid() {
     const float cell = 54.0f, gap = 4.0f;
     ImDrawList* dl = ImGui::GetWindowDrawList();
-    for (int i = 0; i < Inventory::kCells; ++i) {
-        // The 10 x 5 grid, then the hotbar's 10 cells in a row under it (#209: real slots; drop stacks into them), then
-        // the off-hand cell (#165).
-        const bool hotbar = i >= Inventory::kGrid && i < Inventory::kSlots;
+    for (int i = 0; i < Inventory::kSlots; ++i) {
+        // The 10 x 5 grid, then the hotbar's 10 cells in a row under it (#209: real slots; drop stacks into them). The
+        // off-hand cell is beside the player now (#822).
+        const bool hotbar = i >= Inventory::kGrid;
         if (i == Inventory::kGrid) { ImGui::Dummy(ImVec2(0.0f, 2.0f)); ImGui::TextDisabled("Hotbar (keys 1-0)"); }
-        else if (i == Inventory::kOffHand) { ImGui::Dummy(ImVec2(0.0f, 2.0f)); ImGui::TextDisabled("Off hand (a shield: hold RMB to block)"); }
         else if (i < Inventory::kGrid ? i % Inventory::kCols != 0 : true) ImGui::SameLine(0.0f, gap);
-        ImGui::PushID(i);
-        const ImVec2 p = ImGui::GetCursorScreenPos();
-        const float cw = hotbar ? (Inventory::kCols * cell - gap) / (float)Inventory::kHotbar : cell; // the hotbar row as wide as the grid
-        if (ImGui::InvisibleButton("cell", ImVec2(cw, cell))) {
-            const bool shift = IsKeyDown(KEY_LEFT_SHIFT) || IsKeyDown(KEY_RIGHT_SHIFT);
-            if (GameUI_ContainerOpen() && shift && cursorStack.empty() && !grid[i].empty()) {
-                // Shift+click with a container open (#192: the quick-move, as everywhere): the stack goes into it (machines
-                // route it: recipe inputs, else fuel; what doesn't fit comes back next tick). To force a fuel slot, drop
-                // the held stack on it.
-                const std::string id = grid[i].id;
-                const int n = (int)grid[i].amount();
-                if (!ContainerTakes(id)) GameUI_Toast(TextFormat("The %s doesn't take %s", PartName(container.type), itemDB.find(id) ? itemDB.find(id)->name.c_str() : id.c_str()));
-                else if (n > 0 && inventory.remove(id, n)) {
-                    Factory::Insert(container.body, container.plot, container.part, id, n);
-                    Audio_Play(Sfx::Pickup, 0.4f, 0.8f);
-                }
-            } else CellClick(i, false, shift && !GameUI_ContainerOpen());
-        }
-        if (ImGui::IsItemClicked(ImGuiMouseButton_Right)) CellClick(i, true, false);
-        if (ImGui::IsItemClicked(ImGuiMouseButton_Middle)) { ReturnCursorStack(); inventory.sort(); } // as the Sort button (#577)
-        const bool hover = ImGui::IsItemHovered();
-        const InvSlot& s = grid[i];
-        const ImVec2 q(p.x + cw, p.y + cell);
-        dl->AddRectFilled(p, q, IM_COL32(30, 32, 36, 220), 4.0f);
-        DrawGlow(dl, p, q, Item_Glow(grid[i])); // hot or radiant (#580)
-        if (!s.empty()) {
-            const ItemDef* d = itemDB.find(s.id);
-            DrawItemIcon(dl, ImVec2(p.x + (cw - cell * 0.64f) * 0.5f, p.y), cell * 0.64f, s.id);
-            CellName(dl, p, q, d ? d->name : s.id, hover);
-            if (KindOf(s.id) != ItemKind::Tool) {
-                const std::string amt = AmountText(s);
-                const ImVec2 sz = ImGui::CalcTextSize(amt.c_str());
-                dl->AddRectFilled(ImVec2(q.x - sz.x - 6, p.y + 2), ImVec2(q.x - 2, p.y + sz.y + 2), IM_COL32(0, 0, 0, 160), 2.0f);
-                dl->AddText(ImVec2(q.x - sz.x - 4, p.y + 2), IM_COL32(255, 255, 255, 255), amt.c_str());
-            }
-            if (hover) {
-                ImGui::SetTooltip("%s  (%s)\n%.2f of %d per slot\n%s\n(%s; 1-0: hotbar slot)", d ? d->name.c_str() : s.id.c_str(),
-                                  KindName(KindOf(s.id)), s.amount(), StackLimit(s.id), d ? d->description.c_str() : "",
-                                  GameUI_ContainerOpen() ? TextFormat("click to put it in the %s", PartName(container.type)) : "click to move");
-                const int k = Hotbar_KeySlot();
-                if (k >= 0) inventory.swapSlots(i, Inventory::kGrid + k); // into that hotbar slot (its stack comes here)
-            }
-        }
-        if (hotbar) dl->AddText(ImVec2(p.x + 3, p.y + 1), IM_COL32(150, 150, 150, 255), TextFormat("%d", (i - Inventory::kGrid + 1) % 10));
-        const ImU32 edge = hover ? IM_COL32(200, 200, 200, 255) : IM_COL32(70, 72, 78, 255);
-        dl->AddRect(p, q, edge, 4.0f, 0, 1.0f);
-        ImGui::PopID();
+        DrawCell(i, hotbar ? (Inventory::kCols * cell - gap) / (float)Inventory::kHotbar : cell, cell); // the hotbar row as wide as the grid
     }
-    { // the bin, beside the off-hand cell (#564)
-        ImGui::SameLine(0.0f, cell);
+    ImGui::Dummy(ImVec2(0.0f, 2.0f));
+    { // the bin, under the hotbar (#564)
         const ImVec2 p = ImGui::GetCursorScreenPos(), q(p.x + cell, p.y + cell);
         if (ImGui::InvisibleButton("bin", ImVec2(cell, cell))) BinClick();
         const bool hover = ImGui::IsItemHovered();
@@ -412,7 +441,7 @@ static void DrawGrid() {
     // Deposit (button or Q): items a nearby chest already holds go into it.
     const int nChests = uiWorld ? (int)Storage_NearbyChests(*uiWorld).size() : 0;
     ImGui::BeginDisabled(nChests == 0);
-    if ((ImGui::Button("Deposit (Q)") || (nChests > 0 && IsKeyPressed(KEY_Q))) && uiWorld) {
+    if ((ImGui::Button("Deposit (Q)") || (nChests > 0 && PlayerInput_BindingPressed(Act::Deposit))) && uiWorld) {
         const int kinds = Storage_Deposit(*uiWorld);
         GameUI_Toast(kinds > 0 ? TextFormat("Deposited %d kind%s of item into nearby chests", kinds, kinds > 1 ? "s" : "") : "Nothing here matches what the nearby chests hold");
         if (kinds > 0) Audio_Play(Sfx::Pickup, 0.5f, 0.8f);
@@ -457,7 +486,7 @@ static void DrawCrafting() {
     // A pending craft completes once the pulled items have arrived.
     if (pending >= 0 && pending < (int)itemDB.recipes().size()) {
         const Recipe& r = itemDB.recipes()[pending];
-        if (inventory.canCraft(r)) { if (inventory.craft(r)) Audio_Play(Sfx::Craft); pending = -1; }
+        if (inventory.canCraft(r)) { Crafting_Request(pending, 1); pending = -1; } // (#338) here, or the server when joined
         else if (GetTime() > pendingUntil) { GameUI_Toast("The chests no longer hold enough"); pending = -1; }
     }
     // A grid of the outputs' icons; hover for name, cost and description, click to craft. Recipes
@@ -506,7 +535,8 @@ static void DrawCrafting() {
         }
         if (clicked && can && pending < 0) {
             if (creative) { if (inventory.addAmount(r.output, r.outputCount) < r.outputCount) Audio_Play(Sfx::Craft); }
-            else if (inventory.canCraft(r)) { if (inventory.craft(r)) Audio_Play(Sfx::Craft); }
+            else if (inventory.canCraft(r)) Crafting_Request((int)i, 1); // (#338) here, or the server when joined
+            else if (gNetRole == NetRole::Client) GameUI_Toast("Carry the items: crafting from chests waits for chests on the server"); // (#338)
             else if (uiWorld) {
                 bool ok = true;
                 for (const auto& in : r.inputs) ok = Storage_Pull(*uiWorld, in.first, in.second - inventory.count(in.first)) && ok;
@@ -605,7 +635,7 @@ static void DrawContainer() {
         DrawSlots(v.outSlots, 1, 4, v.hotOutputs);
     }
     ImGui::Spacing();
-    if (ImGui::Button("Put in all (I)") || IsKeyPressed(KEY_I)) {
+    if (ImGui::Button("Put in all (I)") || PlayerInput_BindingPressed(Act::Insert)) {
         const auto all = inventory.all(); // copy: we remove while walking it
         int kinds = 0;
         for (const auto& kv : all) {
@@ -618,7 +648,7 @@ static void DrawContainer() {
         if (kinds > 0) Audio_Play(Sfx::Pickup, 0.4f, 0.8f);
     }
     ImGui::SameLine();
-    if (ImGui::Button("Take all (O)") || IsKeyPressed(KEY_O)) {
+    if (ImGui::Button("Take all (O)") || PlayerInput_BindingPressed(Act::Extract)) {
         if (chest) for (int i = 0; i < (int)v.inSlots.size(); ++i) { if (v.inSlots[i].second > 0) Factory::TakeSlot(container.body, container.plot, container.part, i, false); }
         else Factory::Extract(container.body, container.plot, container.part);
         Audio_Play(Sfx::Pickup, 0.4f, 1.2f);
@@ -640,7 +670,7 @@ static void CheckContainer(Scene& world) {
 
 // Creative mode: free building, crafting and blueprints, and any item into the inventory.
 static void DrawCreative() {
-    ImGui::Checkbox("Creative mode (build, craft and place blueprints for free)", &terrainTool.creative);
+    ImGui::TextColored(ImVec4(1.0f, 0.8f, 0.3f, 1.0f), "Creative: build, craft and place blueprints for free (/gamemode survival to leave)"); // (#823)
     static char filter[64] = {};
     ImGui::SetNextItemWidth(220.0f);
     ImGui::InputTextWithHint("##filter", "search items", filter, sizeof(filter));
@@ -705,71 +735,256 @@ static void DrawCreative() {
     ImGui::EndChild();
 }
 
+// The main quest line: done tiers collapsed, the current one open, the next shown.
+static void DrawQuestList() {
+    const int cur = QuestBook_Tier();
+    for (int i = 0; i < QuestBook_TierCount() && i <= cur + 1; ++i) {
+        ImGui::PushID(i);
+        const bool done = i < cur;
+        const char* name = QuestBook_TierName(i);
+        ImGui::SetNextItemOpen(i == cur, ImGuiCond_Appearing);
+        if (ImGui::CollapsingHeader(TextFormat("%s Tier %d: %s", done ? "[done]" : i == cur ? "[now]" : "[next]", i, name))) {
+            ImGui::TextWrapped("%s", QuestBook_TierText(i));
+            for (int k = 0; k < QuestBook_TaskCount(i); ++k) {
+                const bool kd = QuestBook_TaskDone(i, k);
+                ImGui::TextColored(kd ? ImVec4(0.45f, 0.85f, 0.45f, 1.0f) : ImVec4(0.95f, 0.95f, 0.95f, 1.0f), "%s %s", kd ? "[x]" : "[ ]", QuestBook_TaskText(i, k));
+            }
+        }
+        ImGui::PopID();
+    }
+}
+
+// The game window's large tab across the top: true when clicked. The selected one is lit, with an accent underline.
+static bool ScreenTab(const char* label, const char* key, bool on, float w, float h) {
+    const ImVec4 bg = on ? ImVec4(0.20f, 0.27f, 0.37f, 1.0f) : ImVec4(0.13f, 0.17f, 0.24f, 1.0f);
+    ImGui::PushStyleColor(ImGuiCol_Button, bg);
+    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.24f, 0.32f, 0.44f, 1.0f));
+    ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.28f, 0.37f, 0.50f, 1.0f));
+    ImGui::PushStyleColor(ImGuiCol_Text, on ? ImVec4(0.95f, 0.96f, 0.98f, 1.0f) : ImVec4(0.62f, 0.68f, 0.76f, 1.0f));
+    const ImVec2 p = ImGui::GetCursorScreenPos();
+    const bool clicked = ImGui::Button(key && *key ? TextFormat("%s  [%s]", label, key) : label, ImVec2(w, h));
+    if (on) ImGui::GetWindowDrawList()->AddRectFilled(ImVec2(p.x + 6, p.y + h - 4), ImVec2(p.x + w - 6, p.y + h), IM_COL32(224, 169, 64, 255));
+    ImGui::PopStyleColor(4);
+    return clicked;
+}
+
+// Placeholder screens for what comes later (their features are separate issues).
+static void DrawComing(const char* title, const char* text) {
+    ImGui::Dummy(ImVec2(0, 20 * GameUI_Scale()));
+    ImGui::TextColored(ImVec4(0.88f, 0.66f, 0.25f, 1.0f), "%s", title);
+    ImGui::PushTextWrapPos(ImGui::GetContentRegionAvail().x * 0.7f);
+    ImGui::TextWrapped("%s", text);
+    ImGui::PopTextWrapPos();
+}
+
+static void DrawTeam() {
+    // Today a team of one in single player; multiplayer teams (invites, shared claims) come with #604.
+    const std::string me = PlayerId_Local();
+    const int id = Teams_Of(me);
+    const TeamRecord* team = nullptr;
+    for (const TeamRecord& t : Teams_All()) if (t.id == id) team = &t;
+    ImGui::Dummy(ImVec2(0, 12 * GameUI_Scale()));
+    if (team) {
+        ImGui::TextColored(ImVec4(0.88f, 0.66f, 0.25f, 1.0f), "%s", team->name.c_str());
+        ImGui::Text("%d member%s. Quests and tiers belong to the team.", (int)team->members.size(), team->members.size() == 1 ? "" : "s");
+    } else {
+        ImGui::TextColored(ImVec4(0.88f, 0.66f, 0.25f, 1.0f), "Your team");
+        ImGui::TextWrapped("You are a team of one: the world saves your team the first time it saves.");
+    }
+    ImGui::Dummy(ImVec2(0, 8 * GameUI_Scale()));
+    DrawComing("Coming with multiplayer teams (#604)", "Invite other players, see teammates' health and where they are, share quest progress, recipes and land claims, and set who may build or open chests in your claims.");
+}
+
+// ---- The inventory screen's player (#822): a turning preview, the suit, its module slots and the off hand ----
+namespace {
+    RenderTexture2D preview{};
+    float previewTurn = 0.0f;   // radians: the preview turns slowly; dragging over it turns it by hand
+    bool previewDrawn = false;  // rendered this frame (GameUI_PrepareFrame)
+    Color SuitColour() { const uint32_t c = settings.mpSuit; return c ? Color{ (unsigned char)(c >> 16), (unsigned char)(c >> 8), (unsigned char)c, 255 } : Color{ 0, 0, 0, 0 }; }
+}
+
+bool GameUI_PreviewDrawn() { return previewDrawn; }
+void GameUI_PrepareFrame(Scene& world) {
+    previewDrawn = false;
+    if (!inventoryOpen || screen != GameScreen::Inventory || extra != Extra::None || container.open) return;
+    const Vector3 up = Vector3Normalize(player.up);
+    if (Vector3Length(player.up) < 0.5f) return; // (not placed yet)
+    const float s = GameUI_Scale();
+    const int w = (int)(250 * s), h = (int)(360 * s);
+    if (preview.id == 0 || preview.texture.width != w || preview.texture.height != h) {
+        if (preview.id) UnloadRenderTexture(preview);
+        preview = LoadRenderTexture(w, h);
+    }
+    previewTurn += GameFrameTime() * 0.5f;
+    AvatarState a = Avatar_FromPlayer(player, 0xFFFFFF00u);
+    a.velocity = { 0, 0, 0 }; a.name.clear();
+    a.held = Hotbar_Selected() >= 0 ? Hotbar_Slot(Hotbar_Selected()) : std::string();
+    a.headlamp = survival.headlamp;
+    a.suitColor = SuitColour();
+    // The camera stays in front of where the player faces; the avatar turns in front of it.
+    Vector3 f = Vector3Subtract(player.forward, Vector3Scale(up, Vector3DotProduct(player.forward, up)));
+    f = Vector3Length(f) > 0.01f ? Vector3Normalize(f) : Vector3Normalize(Vector3CrossProduct(up, { 1, 0, 0 }));
+    const Vector3 r = Vector3CrossProduct(up, f);
+    a.facing = Vector3Normalize(Vector3Add(Vector3Scale(f, cosf(previewTurn) * -1.0f), Vector3Scale(r, sinf(previewTurn))));
+    const Vector3 feet = (player.position - world.renderOrigin).toFloat();
+    const Vector3 at = Vector3Add(feet, Vector3Scale(up, 0.92f));
+    const Vector3 eye = Vector3Add(Vector3Add(feet, Vector3Scale(up, 1.15f)), Vector3Scale(f, 3.6f));
+    a.position = player.position;
+    Avatar_DrawPreview(world, a, preview, eye, at, up);
+    previewDrawn = true;
+}
+
+// The suit slot: the worn suit; holding a suit (picked up from the inventory), a click wears it.
+static void SuitSlot(float cell) {
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    const ImVec2 p = ImGui::GetCursorScreenPos(), q(p.x + cell, p.y + cell);
+    if (ImGui::InvisibleButton("suit", ImVec2(cell, cell)) && !cursorStack.empty() && Suit_IsSuit(cursorStack.id)) {
+        const std::string id = cursorStack.id;
+        ReturnCursorStack();
+        if (Suit_Wear(id)) Audio_Play(Sfx::Build, 0.4f, 1.2f);
+    }
+    const bool hover = ImGui::IsItemHovered();
+    dl->AddRectFilled(p, q, IM_COL32(30, 36, 48, 230), 4.0f);
+    DrawItemIcon(dl, ImVec2(p.x + cell * 0.18f, p.y + cell * 0.12f), cell * 0.64f, Suit_Worn());
+    dl->AddRect(p, q, hover ? IM_COL32(220, 200, 150, 255) : IM_COL32(110, 100, 70, 255), 4.0f, 0, 1.0f);
+    if (hover) {
+        const ItemDef* d = itemDB.find(Suit_Worn());
+        ImGui::SetTooltip("Worn: %s\n%s", d ? d->name.c_str() : Suit_Worn().c_str(), !cursorStack.empty() && Suit_IsSuit(cursorStack.id) ? "Click: wear the held suit" : "Pick up another suit and click here to wear it");
+    }
+}
+
+// A module slot: its module; holding a module, a click fits it here (the one there comes out); empty-handed, a click takes it out.
+static void ModuleSlot(int i, float cell) {
+    ImGui::PushID(1000 + i);
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    const std::string fitted = i < (int)Suit_Modules().size() ? Suit_Modules()[i] : std::string();
+    const ImVec2 p = ImGui::GetCursorScreenPos(), q(p.x + cell, p.y + cell);
+    if (ImGui::InvisibleButton("module", ImVec2(cell, cell))) {
+        if (!cursorStack.empty() && Suit_IsModule(cursorStack.id)) { const std::string id = cursorStack.id; ReturnCursorStack(); Suit_FitInto(i, id); }
+        else if (cursorStack.empty() && !fitted.empty()) Suit_Unfit(i);
+    }
+    const bool hover = ImGui::IsItemHovered();
+    dl->AddRectFilled(p, q, IM_COL32(26, 32, 44, 230), 4.0f);
+    if (!fitted.empty()) DrawItemIcon(dl, ImVec2(p.x + cell * 0.18f, p.y + cell * 0.12f), cell * 0.64f, fitted);
+    else { const ImVec2 sz = ImGui::CalcTextSize("+"); dl->AddText(ImVec2(p.x + (cell - sz.x) * 0.5f, p.y + (cell - sz.y) * 0.5f), IM_COL32(110, 120, 140, 255), "+"); }
+    dl->AddRect(p, q, hover ? IM_COL32(200, 200, 200, 255) : IM_COL32(70, 76, 90, 255), 4.0f, 0, 1.0f);
+    if (hover) {
+        const ItemDef* d = fitted.empty() ? nullptr : itemDB.find(fitted);
+        if (!fitted.empty()) ImGui::SetTooltip("%s\n%s\nClick: take it out", d ? d->name.c_str() : fitted.c_str(), Suit_ModuleText(fitted));
+        else ImGui::SetTooltip("An empty module slot: pick up a suit module and click here");
+    }
+    ImGui::PopID();
+}
+
+static void DrawYou() {
+    const float cell = 54.0f, big = 64.0f;
+    ImGui::TextUnformatted("You");
+    ImGui::Separator();
+    ImGui::BeginGroup();
+    ImGui::TextDisabled("Suit");
+    SuitSlot(big);
+    ImGui::Dummy(ImVec2(0.0f, 6.0f));
+    ImGui::TextDisabled("Off hand");
+    DrawCell(Inventory::kOffHand, big, big);
+    ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + 150.0f);
+    ImGui::TextDisabled("A shield blocks (hold RMB); a torch lights; food or an oxygen canister: %s uses one", PlayerInput_KeyName(PlayerInput_Binding(Act::OffHandUse)));
+    ImGui::PopTextWrapPos();
+    ImGui::EndGroup();
+    ImGui::SameLine(0.0f, 16.0f);
+    // The player, turning; drag over it to turn it.
+    if (previewDrawn) {
+        const ImVec2 size((float)preview.texture.width, (float)preview.texture.height);
+        ImGui::Image((ImTextureID)(intptr_t)preview.texture.id, size, ImVec2(0, 1), ImVec2(1, 0));
+        if (ImGui::IsItemActive()) previewTurn += ImGui::GetIO().MouseDelta.x * 0.012f;
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Drag to turn");
+    }
+    const int slots = (int)Suit_Modules().size();
+    int fitted = 0; for (const std::string& m : Suit_Modules()) fitted += m.empty() ? 0 : 1;
+    ImGui::TextDisabled("Suit modules (%d of %d fitted)", fitted, slots);
+    for (int i = 0; i < slots; ++i) { if (i) ImGui::SameLine(0.0f, 4.0f); ModuleSlot(i, cell); }
+    ImGui::Separator();
+    Suit_DrawCarried();
+    ImGui::Separator();
+    Suit_DrawStats();
+}
+
 void GameUI_Draw(Scene& world) {
     uiWorld = &world;
     RecipeBook_Update(); // new recipes: a toast
     if (!inventoryOpen) { ReturnCursorStack(); binned = InvSlot{}; container.open = false; return; } // a stack still held goes back in (#192)
     if (cursorStack.heat > 0.0f) cursorStack.heat = std::max(0.0f, cursorStack.heat - GameFrameTime() / Inventory::kCoolSeconds); // held, it cools as in a cell (#580)
     CheckContainer(world);
+    if (container.open && screen != GameScreen::Inventory) screen = GameScreen::Inventory; // a chest or machine opens beside your items
     const ImGuiIO& io = ImGui::GetIO();
-    ImGui::SetNextWindowPos(ImVec2(io.DisplaySize.x * 0.5f, io.DisplaySize.y * 0.5f), ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
-    ImGui::SetNextWindowSize(ImVec2(1320, 640), ImGuiCond_Appearing);
-    if (ImGui::Begin("Inventory (Tab)", &inventoryOpen, ImGuiWindowFlags_NoCollapse)) {
-        ImGui::Columns(2, "inv", true);
-        static bool widthSet = false;
-        if (!widthSet) { ImGui::SetColumnWidth(0, Inventory::kCols * 58.0f + 24.0f); widthSet = true; }
-        ImGui::TextUnformatted("Items");
-        ImGui::Separator();
-        DrawGrid();
-
-        ImGui::NextColumn();
-        if (container.open) DrawContainer();
-        else if (ImGui::BeginTabBar("invtabs")) {
-            if (ImGui::BeginTabItem("Crafting", nullptr, forceTab == "Crafting" ? ImGuiTabItemFlags_SetSelected : 0)) {
-                DrawCrafting();
-                ImGui::EndTabItem();
-            }
-            if (ImGui::BeginTabItem("Quests")) {
-                // The main quest line: done tiers collapsed, the current one open, the next shown.
-                const int cur = QuestBook_Tier();
-                for (int i = 0; i < QuestBook_TierCount() && i <= cur + 1; ++i) {
-                    ImGui::PushID(i);
-                    const bool done = i < cur;
-                    const char* name = QuestBook_TierName(i);
-                    ImGui::SetNextItemOpen(i == cur, ImGuiCond_Appearing);
-                    if (ImGui::CollapsingHeader(TextFormat("%s Tier %d: %s", done ? "[done]" : i == cur ? "[now]" : "[next]", i, name))) {
-                        ImGui::TextWrapped("%s", QuestBook_TierText(i));
-                        for (int k = 0; k < QuestBook_TaskCount(i); ++k) {
-                            const bool kd = QuestBook_TaskDone(i, k);
-                            ImGui::TextColored(kd ? ImVec4(0.45f, 0.85f, 0.45f, 1.0f) : ImVec4(0.95f, 0.95f, 0.95f, 1.0f), "%s %s", kd ? "[x]" : "[ ]", QuestBook_TaskText(i, k));
-                        }
-                    }
-                    ImGui::PopID();
-                }
-                ImGui::EndTabItem();
-            }
-            if (ImGui::BeginTabItem("Quest tree", nullptr, forceTab == "Quest tree" ? ImGuiTabItemFlags_SetSelected : 0)) {
-                QuestTree_DrawTab();
-                ImGui::EndTabItem();
-            }
-            if (ImGui::BeginTabItem("Suit", nullptr, forceTab == "Suit" ? ImGuiTabItemFlags_SetSelected : 0)) {
-                Suit_DrawTab();
-                ImGui::EndTabItem();
-            }
-            if (ImGui::BeginTabItem("Help", nullptr, forceTab == "Help" ? ImGuiTabItemFlags_SetSelected : 0)) { // the manual (#354)
-                HelpManual_DrawTab();
-                ImGui::EndTabItem();
-            }
-            if (ImGui::BeginTabItem("Creative")) {
-                DrawCreative();
-                ImGui::EndTabItem();
-            }
-            ImGui::EndTabBar();
-            forceTab.clear();
+    const float s = GameUI_Scale();
+    // The whole screen but a margin, no title bar: the tabs are the window's header.
+    const float margin = 24.0f * s;
+    ImGui::SetNextWindowPos(ImVec2(margin, margin));
+    ImGui::SetNextWindowSize(ImVec2(io.DisplaySize.x - 2 * margin, io.DisplaySize.y - 2 * margin));
+    ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0.07f, 0.10f, 0.14f, 0.97f));
+    const ImGuiWindowFlags flags = ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoCollapse |
+                                   ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoScrollbar;
+    if (ImGui::Begin("Game window", nullptr, flags)) {
+        ImGui::SetWindowFontScale(s);
+        // The tabs (#810's order; Catalog beside Inventory in creative only, #823), their keys from the bindings; at the right
+        // end the temporary Help page (until #826) and Close.
+        struct Tab { GameScreen s; const char* name; Act key; };
+        static const Tab tabs[] = { { GameScreen::Inventory, "Inventory", Act::Inventory }, { GameScreen::Catalog, "Catalog", Act::Count }, { GameScreen::Crafting, "Crafting", Act::Crafting },
+                                    { GameScreen::Quests, "Quests", Act::Count }, { GameScreen::Skills, "Skills", Act::Skills }, { GameScreen::Team, "Team", Act::Count } };
+        const float tabH = 46.0f * s, tabW = 190.0f * s;
+        if (screen == GameScreen::Catalog && !terrainTool.creative) screen = GameScreen::Inventory; // (left creative)
+        for (const Tab& t : tabs) {
+            if (t.s == GameScreen::Catalog && !terrainTool.creative) continue;
+            const char* key = t.key == Act::Count ? "" : PlayerInput_KeyName(PlayerInput_Binding(t.key));
+            if (ScreenTab(t.name, key, screen == t.s && extra == Extra::None, tabW, tabH)) { screen = t.s; extra = Extra::None; if (t.s != GameScreen::Inventory) container.open = false; }
+            ImGui::SameLine(0.0f, 6.0f * s);
         }
-        ImGui::Columns(1);
+        const float right = ImGui::GetWindowContentRegionMax().x;
+        const float smallW = 120.0f * s;
+        ImGui::SetCursorPosX(right - 2 * smallW - 6.0f * s);
+        if (ScreenTab("Help", "", extra == Extra::Help, smallW, tabH)) extra = extra == Extra::Help ? Extra::None : Extra::Help; // until #826's pop-up
+        ImGui::SameLine(0.0f, 6.0f * s);
+        if (ScreenTab("Close", "Esc", false, smallW, tabH)) inventoryOpen = false;
+        ImGui::Separator();
+        ImGui::BeginChild("screen", ImVec2(0, 0), false);
+        // Inventory and Crafting show your items on the left; the others use the whole width.
+        const bool items = extra != Extra::None || screen == GameScreen::Inventory || screen == GameScreen::Crafting || screen == GameScreen::Catalog;
+        if (items) {
+            ImGui::Columns(2, "inv", true);
+            static float colW = -1.0f;
+            if (colW != s) { ImGui::SetColumnWidth(0, (Inventory::kCols * 58.0f + 24.0f) * s); colW = s; }
+            ImGui::TextUnformatted("Items");
+            ImGui::Separator();
+            DrawGrid();
+            ImGui::NextColumn();
+        }
+        if (extra == Extra::Help) HelpManual_DrawTab();
+        else switch (screen) {
+            case GameScreen::Catalog: DrawCreative(); break; // (#823) every item, free: creative only
+            case GameScreen::Inventory:
+                if (container.open) DrawContainer();
+                else DrawYou(); // (#822) the player, the suit and its modules, the off hand
+                break;
+            case GameScreen::Crafting: DrawCrafting(); break;
+            case GameScreen::Quests:
+                if (ImGui::RadioButton("List", !questTree)) questTree = false;
+                ImGui::SameLine();
+                if (ImGui::RadioButton("Tree", questTree)) questTree = true;
+                ImGui::Separator();
+                if (questTree) QuestTree_DrawTab(); else DrawQuestList();
+                break;
+            case GameScreen::Skills:
+                DrawComing("Skills are coming (#167)", "Skills level as you use them: mining, building, farming, husbandry, combat, engineering, piloting and more. "
+                                                     "Each level gives a point to spend in that skill's perk tree: faster digging, better yields, longer air, new abilities.");
+                break;
+            case GameScreen::Team: DrawTeam(); break;
+            case GameScreen::Count: break;
+        }
+        if (items) ImGui::Columns(1);
+        ImGui::EndChild();
     }
     ImGui::End();
+    ImGui::PopStyleColor();
     // A click outside every window drops the held stack (right-click: one unit) at the feet (#564).
     if (!cursorStack.empty() && !ImGui::IsWindowHovered(ImGuiHoveredFlags_AnyWindow)) {
         if (ImGui::IsMouseClicked(ImGuiMouseButton_Left)) DropCursor(cursorStack.centi);

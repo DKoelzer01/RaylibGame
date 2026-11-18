@@ -19,6 +19,9 @@ Limit LimitOf(NetMsg k) {
         case NetMsg::PartRequest: return { 30, 60 };  // (#330 likewise)
         case NetMsg::SyncWant: return { 0.2, 3 };     // (#776) once a join (its bitmask: 4096 bytes is 32k entries)
         case NetMsg::AnimalHit: return { 10, 20 };    // (#334; a swing cooldown is checked behind this)
+        case NetMsg::UseItem: return { 4, 8 };        // (#337: eating, a canister, a cell)
+        case NetMsg::BedUse: return { 2, 4 };         // (#800: a right-click on a bed)
+        case NetMsg::CraftRequest: return { 4, 10 };  // (#338: a click, or a few)
         case NetMsg::Bye: return { 1, 2 };
         default: return { 0, 0 };                    // a server-to-client kind, or unknown: never from a client
     }

@@ -37,6 +37,7 @@ struct NetClient {
     State state = State::Idle;
     uint32_t conn = 0;
     std::string name, password, build;   // build: "" = the game's own (kGameVersion's commit)
+    std::string uuid;                    // (#346) the player's id ("" a test client: one made from the name, the same every run)
     uint32_t protocol = kNetProtocol;    // tests: a different one to be refused
     MsgWelcome welcome;                  // when Joined
     MsgShower shower;                    // the latest from the server
@@ -62,6 +63,9 @@ struct NetClient {
     int snapshots = 0, snapUndecodable = 0;
     int animalMsgs = 0;                          // (#334) animal snapshots heard
     int damageTaken = 0; float lastDamage = 0.0f; bool lastDamageBlocked = false; // (#334) hits on our player from the server
+    MsgVitals vitals; int vitalsMsgs = 0;        // (#337) our player's survival as the server last said
+    int gravesMsgs = 0, lastGraves = 0;          // (#804) Graves lists heard, and the size of the last
+    int questBooks = 0, questTeam = 0;          // (#338) team quest books heard, and our team
     double worstError = 0.0, lastError = 0.0;    // m: the prediction against the server at the acknowledged input
     std::map<uint32_t, std::deque<MsgPlayerState>> others; // other sessions' recent states (newest last)
     std::map<uint32_t, double> viewTicks;        // per other player: the step of theirs drawn now (NetClient_Update)
@@ -70,9 +74,11 @@ struct NetClient {
     std::map<uint32_t, MsgLoadout> loadouts;     // the others' held item, headlamp, suit tier
     int rosters = 0;                             // rosters received
     MsgLoadout loadout; bool loadoutSent = false; // ours, as last sent (NetClient_SetLoadout sends a change)
+    uint32_t suitColor = 0;                      // 0xRRGGBB picked when joining (#341; 0: the default suit), sent with the loadout
     int action = 0; float actionPhase = 0.0f;    // our hands now (the game sets them; sent with every input packet)
     // Terrain edits (#329)
     class Inventory* inventory = nullptr;        // follows the server's copy (InventoryDelta); the game's: the local one
+    std::vector<std::pair<std::string, double>> pendingInventory; // (#803) deltas heard before `inventory` was attached, applied then
     uint32_t editSeq = 0;                        // our requests so far
     int editsSeen = 0, editsOwn = 0, editsRefused = 0, inventoryDeltas = 0;
     int placesSeen = 0;                          // edits that placed ground (the soft brush)
@@ -151,6 +157,9 @@ void NetClient_Disconnect(NetClient& c); // a clean Bye(quit)
 void NetClient_SendChat(NetClient& c, const std::string& text); // (#326) a chat line; "/command" lines go to ops' commands on the server
 void NetClient_HitAnimal(NetClient& c, uint64_t netId);         // (#334) a swing at an animal: the server checks and applies it
 void NetClient_UseAnimal(NetClient& c, uint64_t netId, int action); // (#334) 1 feed, 2 take its product (the server checks and applies)
+void NetClient_UseItem(NetClient& c, const std::string& item);       // (#337) eat or use an item: the server applies it to its copy
+void NetClient_UseBed(NetClient& c, const std::string& body, uint32_t plot, const int cell[3]); // (#800) make that bed my spawn
+void NetClient_Craft(NetClient& c, int index, const std::string& output, int count); // (#338) craft on the server
 const char* NetClient_StateName(NetClient::State s);
 
 #endif

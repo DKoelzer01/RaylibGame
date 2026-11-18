@@ -49,6 +49,8 @@ enum class PartType : uint8_t {
     Torch,                                                           // a placed torch (#218): a thin post with a flame, lights its surroundings (#139)
     Snare,                                                           // a snare on the ground (#176): small game gets caught now and then (trapping.cpp)
     Meteorite,                                                       // a fallen meteorite (#177): 1 m of space rock; broken, it gives nickel-iron and rare ores
+    PressurePlate, GasVent,                                          // dungeon traps (#719, dungeontraps.cpp): a plate (material 0: a falling block, 1: darts) and a vent of poison gas
+    Bed,                                                             // a bed (#800): right-click it to respawn there while it stands
     Count
 };
 inline bool IsMachine(PartType t) { return (t >= PartType::Chest && t <= PartType::SteamMacerator) || (t >= PartType::OreWasher && t <= PartType::PrecisionAssembler) || t == PartType::FusionReactor || t == PartType::MassDriver; }
@@ -108,6 +110,7 @@ public:
     float air = 0.0f;                   // rocket life support: minutes of breathable air loaded (saved)
     struct CellRef { int part; CellShape shape; };
     std::unordered_map<Int3, CellRef> cells; // occupied cell -> part index and its shape there
+    std::vector<Int3> changedCells;     // (#830) cells parts were placed in or removed from, since the grass last looked
 
     // Plot space <-> body-local.
     Vector3 toPlot(Vector3 bodyLocal) const;

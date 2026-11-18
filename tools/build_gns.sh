@@ -10,6 +10,8 @@
 #
 # Versions are pinned here (and the downloads checked by SHA-256). No binaries are checked in.
 # Needs: cmake, w64devkit (gcc/g++/mingw32-make) on PATH, curl, tar.
+# On Linux (#792, the dedicated server; tools/build_linux.sh runs it in its build container): gcc, make and OpenSSL's
+# static libcrypto (libssl-dev): GNS uses OpenSSL there instead of BCrypt.
 set -euo pipefail
 
 PROTOBUF_VERSION=3.21.12   # the last protobuf without the abseil dependency
@@ -42,7 +44,12 @@ if [ "$FORCE" = 0 ] && [ -f "$INSTALL/stamp.txt" ] && [ "$(cat "$INSTALL/stamp.t
     exit 0
 fi
 
-for t in cmake gcc g++ mingw32-make curl tar; do
+if [ "$(uname -s)" = Linux ]; then
+    GENERATOR="Unix Makefiles"; MAKE_TOOL=make; CRYPTO=OpenSSL
+else
+    GENERATOR="MinGW Makefiles"; MAKE_TOOL=mingw32-make; CRYPTO=BCrypt # BCrypt = Windows' own crypto: no OpenSSL or libsodium
+fi
+for t in cmake gcc g++ "$MAKE_TOOL" curl tar; do
     command -v "$t" >/dev/null || { echo "build_gns: '$t' not on PATH (export PATH=\"/c/Program Files/CMake/bin:/c/raylib/w64devkit/bin:\$PATH\")"; exit 1; }
 done
 
@@ -76,17 +83,16 @@ GNS_SRC="$SRC/GameNetworkingSockets-${GNS_VERSION}"
 PB_INSTALL="$BLD/pb-install"
 
 echo "build_gns: protobuf $PROTOBUF_VERSION ($JOBS jobs)"
-configure -S "$PB_SRC" -B "$BLD/pb" -G "MinGW Makefiles" -DCMAKE_BUILD_TYPE=Release \
+configure -S "$PB_SRC" -B "$BLD/pb" -G "$GENERATOR" -DCMAKE_BUILD_TYPE=Release -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
     -DCMAKE_C_COMPILER=gcc -DCMAKE_CXX_COMPILER=g++ -DCMAKE_INSTALL_PREFIX="$PB_INSTALL" \
     -Dprotobuf_BUILD_TESTS=OFF -Dprotobuf_BUILD_SHARED_LIBS=OFF -Dprotobuf_WITH_ZLIB=OFF
 cmake --build "$BLD/pb" -j "$JOBS"
 cmake --install "$BLD/pb"
 
 echo "build_gns: GameNetworkingSockets $GNS_VERSION"
-# BCrypt = Windows' own crypto: no OpenSSL or libsodium.
-configure -S "$GNS_SRC" -B "$BLD/gns" -G "MinGW Makefiles" -DCMAKE_BUILD_TYPE=Release \
+configure -S "$GNS_SRC" -B "$BLD/gns" -G "$GENERATOR" -DCMAKE_BUILD_TYPE=Release -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
     -DCMAKE_C_COMPILER=gcc -DCMAKE_CXX_COMPILER=g++ -DCMAKE_PREFIX_PATH="$PB_INSTALL" \
-    -DUSE_CRYPTO=BCrypt -DBUILD_STATIC_LIB=ON -DBUILD_SHARED_LIB=OFF -DProtobuf_USE_STATIC_LIBS=ON \
+    -DUSE_CRYPTO="$CRYPTO" -DOPENSSL_USE_STATIC_LIBS=ON -DBUILD_STATIC_LIB=ON -DBUILD_SHARED_LIB=OFF -DProtobuf_USE_STATIC_LIBS=ON \
     -DBUILD_EXAMPLES=OFF -DBUILD_TESTS=OFF -DBUILD_TOOLS=OFF
 cmake --build "$BLD/gns" -j "$JOBS" --target GameNetworkingSockets_s
 

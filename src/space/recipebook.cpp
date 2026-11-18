@@ -5,6 +5,8 @@
 #include "inventory.h"
 #include "survival.h"
 #include "terraintool.h"
+#include "audio.h"
+#include <algorithm>
 
 #include <raylib.h>
 #include <cctype>
@@ -79,4 +81,21 @@ void RecipeBook_Update() {
     }
     R().known.swap(now);
     R().primed = true;
+}
+
+bool RecipeBook_Unlocked(const Recipe& r) {
+    Load();
+    auto it = unlocks.find(r.output);
+    return it == unlocks.end() || QuestBook_Met(it->second.kind, it->second.target, it->second.n);
+}
+
+bool Crafting_Request(int index, int count) {
+    const auto& recipes = itemDB.recipes();
+    if (index < 0 || index >= (int)recipes.size() || count < 1) return false;
+    const Recipe& r = recipes[index];
+    if (gCraftRequest) { gCraftRequest(index, r.output, std::min(count, 64)); return true; } // the server crafts and says so
+    int made = 0;
+    while (made < count && inventory.canCraft(r) && inventory.craft(r)) ++made;
+    if (made > 0) Audio_Play(Sfx::Craft);
+    return made > 0;
 }

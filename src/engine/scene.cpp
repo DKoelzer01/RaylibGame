@@ -8,6 +8,7 @@
 #include "worldtypes.h"
 #include "world.h"
 #include "scenetarget.h"
+#include "skyphys.h"
 #include "terraingpu.h"
 #include "trees.h"
 #include <raylib.h>
@@ -122,6 +123,12 @@ void KickGpu() { rlDrawRenderBatchActive(); if (glad_glFlush) glad_glFlush(); }
 
 // MSAA sample count of the 3D pass (the scene target is made with the window's), read once: a glGet each frame
 // can stall the driver (#204, #267).
+// #745: distant forests read better (far trees grow, crowns and the canopy tint deepen). RAYLIBGAME_FAR_FOREST=1; default off.
+static float FarForestOn() {
+    static const float on = [] { const char* e = getenv("RAYLIBGAME_FAR_FOREST"); return e && e[0] == '1' ? 1.0f : 0.0f; }();
+    return on;
+}
+
 static int SceneSamples() {
     static int samples = -1;
     if (samples < 0) { samples = 0; if (glad_glGetIntegerv) glad_glGetIntegerv(0x80A9, &samples); } // GL_SAMPLES
@@ -204,9 +211,10 @@ Scene::Scene(std::string name, bool isActive)
     skybox = LoadModelFromMesh(cube);
     skybox.materials[0].shader = LoadShader("resources/skybox.vs", "resources/skybox.fs");
     Shader& sky = skybox.materials[0].shader;
-    SetShaderValue(sky, GetShaderLocation(sky, "environmentMap"), (int[1]){ MATERIAL_MAP_CUBEMAP }, SHADER_UNIFORM_INT);
-    SetShaderValue(sky, GetShaderLocation(sky, "doGamma"), (int[1]){ 0 }, SHADER_UNIFORM_INT);
-    SetShaderValue(sky, GetShaderLocation(sky, "vflipped"), (int[1]){ 0 }, SHADER_UNIFORM_INT);
+    const int kCubemapMap = MATERIAL_MAP_CUBEMAP, kZero = 0; // (not (int[1]){..}: g++ 12 on Linux rejects the address of a temporary array, #792)
+    SetShaderValue(sky, GetShaderLocation(sky, "environmentMap"), &kCubemapMap, SHADER_UNIFORM_INT);
+    SetShaderValue(sky, GetShaderLocation(sky, "doGamma"), &kZero, SHADER_UNIFORM_INT);
+    SetShaderValue(sky, GetShaderLocation(sky, "vflipped"), &kZero, SHADER_UNIFORM_INT);
     Image img = LoadImage("resources/skybox.png");
     skybox.materials[0].maps[MATERIAL_MAP_CUBEMAP].texture = LoadTextureCubemap(img, CUBEMAP_LAYOUT_AUTO_DETECT);
     UnloadImage(img);
@@ -539,6 +547,7 @@ void Scene::drawScene(int gamestate) {
                     // Casters fade with the main view's distance fade (tree_depth.fs, #541): from the real camera.
                     tctx.treeFadeLoc = GetShaderLocation(ts, "fadeEnd");
                     rlSetUniform(GetShaderLocation(ts, "viewPos"), &camera.position, RL_SHADER_UNIFORM_VEC3, 1);
+                    { const float ff = FarForestOn(); rlSetUniform(GetShaderLocation(ts, "farForest"), &ff, RL_SHADER_UNIFORM_FLOAT, 1); }
                     for (const auto& obj : objects)
                         if (auto* p = dynamic_cast<Planetoid*>(obj.get()); p && p->isActive && p->trees) {
                             p->trees->setShadowSun(p->dirToLocal(shadowSun));
@@ -576,6 +585,8 @@ void Scene::drawScene(int gamestate) {
     {   // Distant forests: the canopy tint takes over where the real trees fade out.
         const float treeDist = kTreeDrawDistance;
         SetShaderValue(s, GetShaderLocation(s, "treeDistance"), &treeDist, SHADER_UNIFORM_FLOAT);
+        const float farForest = FarForestOn();
+        SetShaderValue(s, GetShaderLocation(s, "farForest"), &farForest, SHADER_UNIFORM_FLOAT);
     }
     // Cascades: the near one's matrix; each cascade's texel in metres and the depth range (the bias
     // is sized from them: a texel's worth along the normal, and a slope term in depth units).
@@ -656,6 +667,26 @@ void Scene::drawScene(int gamestate) {
     int drawCalls = 0;
     // Reverse-Z float depth (#135): one depth range from centimetres to infinity, so the far / mid / near
     // passes below collapse into one (no depth clears, no near/far plane juggling).
+    // #142: the physical sky's look-up tables (on by default; RAYLIBGAME_SKY_PHYS=0: off), rebuilt as the camera height and the sun move.
+    if (atmosphere.enabled && SkyPhys_On())
+        SkyPhys_Update(atmosphere.radius, atmosphere.radius + atmosphere.height, Vector3Distance(camera.position, atmosphere.centre), Vector3DotProduct(atmUp, sun));
+    {   // #142: the physical haze colour on lit surfaces (skyphys_haze.glsl): its LUT (#819) on unit 15, by the air and weather.
+        const unsigned lut = atmosphere.enabled ? SkyPhys_HazeTexture() : 0;
+        const bool underwaterFog = effFogDensity >= 0.06f;
+        const float haze = lut && !underwaterFog ? atmDensity * (1.0f - 0.6f * std::clamp(weatherCloud, 0.0f, 1.0f)) : 0.0f;
+        constexpr int kSkyUnit = 15; // past local lights (13, 14), terrain detail (12), layers (11), wind (10)
+        if (lut) { rlActiveTextureSlot(kSkyUnit); rlEnableTexture(lut); rlActiveTextureSlot(0); }
+        for (HotShader* hs : { &lighting, &trees, &water, &parts }) {
+            Shader& sh = hs->shader;
+            SetShaderValue(sh, GetShaderLocation(sh, "skyHaze"), &haze, SHADER_UNIFORM_FLOAT);
+            if (!lut) continue;
+            SetShaderValue(sh, GetShaderLocation(sh, "skyHazeLut"), &kSkyUnit, SHADER_UNIFORM_INT);
+            SetShaderValue(sh, GetShaderLocation(sh, "skyHazeUp"), &atmUp, SHADER_UNIFORM_VEC3);
+            SetShaderValue(sh, GetShaderLocation(sh, "skyHazeSun"), &sun, SHADER_UNIFORM_VEC3);
+            const float tint = SkyPhys_Tint();
+            SetShaderValue(sh, GetShaderLocation(sh, "skyPhysTint"), &tint, SHADER_UNIFORM_FLOAT);
+        }
+    }
     const bool revZ = SceneTarget_Available() && SceneTarget_Begin(clearColor); // false (e.g. a failed resize): old passes
     BeginMode3D(camera);
     if (revZ) {
@@ -694,6 +725,25 @@ void Scene::drawScene(int gamestate) {
                 SetShaderValue(as, GetShaderLocation(as, "cloudShell"), &shell, SHADER_UNIFORM_FLOAT);
                 SetShaderValue(as, GetShaderLocation(as, "cloudDrift"), &cloudDrift, SHADER_UNIFORM_VEC3);
                 SetShaderValue(as, GetShaderLocation(as, "cloudCover"), &cover, SHADER_UNIFORM_FLOAT);
+            }
+            {   // #142: the physical sky (the LUT in the dome material's emission slot, as the wide shadow map rides in the terrain's)
+                const unsigned lut = atmosphere.enabled ? SkyPhys_SkyViewTexture() : 0;
+                const float on = lut ? 1.0f : 0.0f;
+                SetShaderValue(as, GetShaderLocation(as, "skyPhys"), &on, SHADER_UNIFORM_FLOAT);
+                as.locs[SHADER_LOC_MAP_EMISSION] = GetShaderLocation(as, "skyViewLut");
+                atmosphereDome.materials[0].maps[MATERIAL_MAP_EMISSION].texture = Texture2D{ lut, 192, 108, 1, PIXELFORMAT_UNCOMPRESSED_R16G16B16A16 };
+                if (lut) {
+                    const float dist = Vector3Distance(camera.position, atmosphere.centre), Rt0 = atmosphere.radius + atmosphere.height;
+                    const float vh = SkyPhys_LutHeight(atmosphere.radius, Rt0, dist), R = SkyPhys_LutR(), Rt = SkyPhys_LutRt();
+                    const float horizon[2] = { atmosphere.radius, std::max(dist, atmosphere.radius + 0.5f) }; // the real horizon (remapped to the shell's)
+                    SetShaderValue(as, GetShaderLocation(as, "skyRealHorizon"), horizon, SHADER_UNIFORM_VEC2);
+                    const float tint = SkyPhys_Tint(), expo = SkyPhys_Exposure();
+                    SetShaderValue(as, GetShaderLocation(as, "skyViewHeight"), &vh, SHADER_UNIFORM_FLOAT);
+                    SetShaderValue(as, GetShaderLocation(as, "skyR"), &R, SHADER_UNIFORM_FLOAT);
+                    SetShaderValue(as, GetShaderLocation(as, "skyRt"), &Rt, SHADER_UNIFORM_FLOAT);
+                    SetShaderValue(as, GetShaderLocation(as, "skyPhysTint"), &tint, SHADER_UNIFORM_FLOAT);
+                    SetShaderValue(as, GetShaderLocation(as, "skyPhysExposure"), &expo, SHADER_UNIFORM_FLOAT);
+                }
             }
             atmosphereDome.materials[0].shader = as;
             DrawModel(atmosphereDome, (Vector3){ 0, 0, 0 }, 1.0f, WHITE);
@@ -865,6 +915,7 @@ void Scene::drawScene(int gamestate) {
             rlSetUniform(GetShaderLocation(ts, "sunDir"), &lightDirection, RL_SHADER_UNIFORM_VEC3, 1);
             rlSetUniform(GetShaderLocation(ts, "sunFade"), &sunFade, RL_SHADER_UNIFORM_VEC3, 1);
             rlSetUniform(GetShaderLocation(ts, "viewPos"), &camera.position, RL_SHADER_UNIFORM_VEC3, 1);
+            { const float ff = FarForestOn(); rlSetUniform(GetShaderLocation(ts, "farForest"), &ff, RL_SHADER_UNIFORM_FLOAT, 1); }
             rlSetUniform(GetShaderLocation(ts, "ambient"), &effAmbient, RL_SHADER_UNIFORM_VEC3, 1);
             rlSetUniform(GetShaderLocation(ts, "ambientUp"), &hemiUp, RL_SHADER_UNIFORM_VEC3, 1);
             rlSetUniform(GetShaderLocation(ts, "fogColor"), &effFog, RL_SHADER_UNIFORM_VEC3, 1);

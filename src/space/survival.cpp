@@ -1,4 +1,5 @@
 #include "survival.h"
+#include "net.h"
 #include "gamerng.h"
 #include "playerinput.h"
 #include "suit.h"
@@ -16,6 +17,7 @@
 #include "scene.h"
 #include "combat.h"
 #include "playersession.h"
+#include "plots.h"
 
 #include <algorithm>
 #include <cmath>
@@ -25,6 +27,7 @@
 #include <string>
 #include <unordered_map>
 #include <vector>
+#include "dungeontraps.h"
 
 // (survival: the local PlayerSession's, src/space/playersession.cpp, #313)
 int worldDifficulty = 1;
@@ -114,8 +117,17 @@ void Survival_RespawnFor(Scene& world, SurvivalState& survival, Player& player, 
     survival.vacuumTime = 0.0f;
     survival.dead = false;
     player.flyMode = false; // otherwise the free-fly camera would put the player back where they died
-    // Wake up at the start, at rest with the ground there (spawnOn sets the velocity to the surface's:
-    // nothing of the fall or flight that killed you carries over).
+    // Wake on your bed if it still stands (#800), else at the start, at rest with the ground there (spawnOn / placeAt set
+    // the velocity to the surface's: nothing of the fall or flight that killed you carries over).
+    Planetoid* bedBody = nullptr; Vector3 bedFeet{};
+    if (survival.hasBed && Survival_BedSpawnFor(survival, bedBody, bedFeet)) {
+        player.placeAt(world, *bedBody, bedFeet);
+        player.impactSpeed = player.landingSpeed = 0.0f;
+        if (local) GameUI_Toast("Respawned at your bed");
+        return;
+    }
+    const bool lostBed = survival.hasBed;
+    survival.hasBed = false; // gone or blocked: forgotten (set it again on a new bed)
     Planetoid* start = world.objects.empty() ? nullptr : dynamic_cast<Planetoid*>(world.objects[0].get());
     if (start) {
         const auto* pf = dynamic_cast<const PlanetField*>(start->field.get());
@@ -124,7 +136,49 @@ void Survival_RespawnFor(Scene& world, SurvivalState& survival, Player& player, 
         player.velocity = { 0, 0, 0 };
     }
     player.impactSpeed = player.landingSpeed = 0.0f; // a landing from before the death must not hurt the respawn
-    if (local) GameUI_Toast("Respawned at the start");
+    if (local) GameUI_Toast(lostBed ? "Your bed is gone or blocked: respawned at the start" : "Respawned at the start");
+}
+
+// Beds (#800) ----------------------------------------------------------------------------------------------------------
+bool Survival_SetBedFor(SurvivalState& survival, const Planetoid& body, const Plot& plot, int part, bool local) {
+    if (part < 0 || part >= (int)plot.parts.size() || plot.parts[part].type != PartType::Bed) return false;
+    const Int3 o = plot.parts[part].origin;
+    const bool same = survival.hasBed && survival.bedBody == body.name && survival.bedPlot == plot.id
+                   && survival.bedCell[0] == o.x && survival.bedCell[1] == o.y && survival.bedCell[2] == o.z;
+    survival.hasBed = true;
+    survival.bedBody = body.name;
+    survival.bedPlot = plot.id;
+    survival.bedCell[0] = o.x; survival.bedCell[1] = o.y; survival.bedCell[2] = o.z;
+    if (local) {
+        GameUI_Toast(same ? "This is already your bed" : "Spawn set: you will wake at this bed");
+        if (!same) Audio_Play(Sfx::Pickup, 0.4f, 0.8f);
+    }
+    return true;
+}
+
+bool Survival_BedSpawnFor(const SurvivalState& survival, Planetoid*& body, Vector3& renderFeet) {
+    if (!survival.hasBed) return false;
+    body = nullptr;
+    for (Planetoid* p : Planetoid::All()) if (p->name == survival.bedBody) { body = p; break; }
+    if (!body || !body->plots) return false;
+    const Plot* plot = body->plots->byId(survival.bedPlot);
+    if (!plot) return false;
+    const int part = plot->partAt({ survival.bedCell[0], survival.bedCell[1], survival.bedCell[2] });
+    if (part < 0 || plot->parts[part].type != PartType::Bed || plot->parts[part].origin.x != survival.bedCell[0]
+        || plot->parts[part].origin.y != survival.bedCell[1] || plot->parts[part].origin.z != survival.bedCell[2]) return false;
+    // On top of it, at the middle of its cells, with room to stand (2 m of free cells over the middle).
+    std::vector<std::pair<Int3, CellShape>> fp;
+    Plot::Footprint(plot->parts[part], fp);
+    if (fp.empty()) return false;
+    float cx = 0.0f, cz = 0.0f; int top = fp[0].first.y;
+    for (const auto& c : fp) { cx += c.first.x + 0.5f; cz += c.first.z + 0.5f; top = std::max(top, c.first.y); }
+    cx /= (float)fp.size(); cz /= (float)fp.size();
+    const Int3 mid = { (int)floorf(cx), top + 1, (int)floorf(cz) };
+    for (int k = 0; k < (int)(2.0f / kCellSize); ++k)
+        if (plot->partAt({ mid.x, mid.y + k, mid.z }) >= 0) return false;
+    const Vector3 feetPlot = { cx * kCellSize, (top + 1) * kCellSize + 0.02f, cz * kCellSize };
+    renderFeet = body->toWorld(plot->toBody(feetPlot));
+    return true;
 }
 
 // #337: one player's survival step - the local player (Survival_Update), or a remote one a server simulates (local false: no
@@ -159,7 +213,8 @@ void Survival_StepFor(Scene& world, float dt, const PlayerInput& in, SurvivalSta
         // A planet's air is breathable up to ~15 km: the suit tops up its oxygen from it instead.
         const auto& atm = world.atmosphere;
         const Vector3 head = Vector3Add(pr, Vector3Scale(player.up, player.eyeHeight));
-        survival.breathable = atm.enabled && Vector3Distance(pr, atm.centre) < atm.radius + survival.breathableAltitude && !IsUnderwater(world, head);
+        survival.inGas = DungeonTraps_InGas(world, head); // (#719) a dungeon's gas pocket
+        survival.breathable = atm.enabled && Vector3Distance(pr, atm.centre) < atm.radius + survival.breathableAltitude && !IsUnderwater(world, head) && !survival.inGas;
         // Vacuum (outside the air): a suit not rated for it holds 60 s, then it hurts (4 a second).
         survival.inVacuum = !(atm.enabled && Vector3Distance(pr, atm.centre) < atm.radius + survival.breathableAltitude);
         if (survival.inVacuum && !stats.vacuum) { survival.vacuumTime += dt; if (survival.vacuumTime > 60.0f) survival.health -= 4.0f * std::min(dt, survival.vacuumTime - 60.0f); }
@@ -170,7 +225,7 @@ void Survival_StepFor(Scene& world, float dt, const PlayerInput& in, SurvivalSta
             // Underwater drains it faster (a rebreather slows that); bigger tanks last longer.
             const bool underwater = atm.enabled && IsUnderwater(world, head);
             survival.underwater = underwater;
-            survival.oxygen = std::max(0.0f, survival.oxygen - survival.oxygenDrainPerSec * (underwater ? stats.underwater : 1.0f) / stats.oxygen * dt);
+            survival.oxygen = std::max(0.0f, survival.oxygen - survival.oxygenDrainPerSec * (underwater ? stats.underwater : 1.0f) * (survival.inGas ? 3.0f : 1.0f) / stats.oxygen * dt);
         }
         survival.power = std::max(0.0f, survival.power - (1.0f / stats.power) * (survival.powerDrainPerSec
                                                           + (survival.headlamp && !(local && ship.piloted) ? survival.headlampPowerPerSec : 0.0f)) * dt);
@@ -231,7 +286,10 @@ void Survival_StepFor(Scene& world, float dt, const PlayerInput& in, SurvivalSta
         if (dark && !inNight) { inNight = true; deathsAtDusk = survival.deaths; }
         else if (!dark && inNight) { inNight = false; if (survival.deaths == deathsAtDusk) QuestBook_Count("nights"); }
     }
-    if (survival.health <= 0.0f) {
+    // (#337) a client process's player dies only when the server says (Vitals): its own drains here just keep the bars moving
+    // between the server's numbers, and never cost the inventory it mirrors.
+    if (local && gNetRole == NetRole::Client) survival.health = std::max(survival.health, 0.0f);
+    else if (survival.health <= 0.0f) {
         survival.health = 0.0f;
         survival.dead = true;
         survival.deathTime = SimTime();
@@ -272,6 +330,7 @@ void Survival_DrawHUD() {
     const int tx = x + std::max(wO2, wPwr) + 20;
     if (SimTime() < survival.sickUntil) DrawText("SICK", tx, y + 46, 16, ORANGE);
     if (survival.inLifeSupport) DrawText("LIFE SUPPORT", tx, y + 2, 16, SKYBLUE);
+    else if (survival.inGas) DrawText("TOXIC GAS", tx, y + 2, 16, Fade({ 170, 220, 80, 255 }, 0.9f));
     else if (survival.breathable && showO2) DrawText("BREATHABLE AIR", tx, y + 2, 16, Fade(SKYBLUE, 0.7f));
     else if (survival.inVacuum) {
         if (Suit_Stats().vacuum) DrawText("VACUUM: suit rated", tx, y + 2, 16, Fade(SKYBLUE, 0.7f));
@@ -295,14 +354,20 @@ void Survival_DrawHUD() {
 // ---------------------------------------------------------------------------------------------
 
 namespace {
-    struct Task { std::string kind, target; double n = 1.0; std::string text; bool done = false; };
+    struct Task { std::string kind, target; double n = 1.0; std::string text; };
     struct Tier { std::string name, gate, text; std::vector<Task> tasks; };
     std::vector<Tier> tiers;
-    int questTier = 0;
-    std::set<std::string> placedItems;
-    std::set<int> visitedBodies;
-    bool reachedOrbit = false, visitedMoon = false, visitedRing = false;
-    std::map<std::string, double> questCounts; // events for "do" tasks: eat, feed, penned, till, plant, harvest, waypoint, modules, explored
+    // (#338) the selected book: the local game's, or (on a server) the team being counted or evaluated
+    QuestBookState localBook;
+    QuestBookState* book = &localBook;
+    QuestBookState& Q() { return *book; }
+    double ObtainedTotal(const std::string& id) {
+        if (!Q().ownObtained) return inventory.obtainedTotal(id);
+        const auto& m = Q().obtained;
+        if (id.rfind("any_", 0) == 0) { double t = 0.0; for (const auto& kv : m) if (ItemMatches(id, kv.first)) t += kv.second; return t; }
+        auto it = m.find(id); return it == m.end() ? 0.0 : it->second;
+    }
+    bool Done(int tier, int task) { return Q().tasksDone.count({ tier, task }) > 0; }
 
     std::vector<std::string> Columns(const std::string& line) {
         std::vector<std::string> cols;
@@ -343,37 +408,37 @@ namespace {
     }
 
     bool TaskMet(const Task& t) {
-        if (t.kind == "get") return inventory.obtainedTotal(t.target) >= t.n - 1e-6;
-        if (t.kind == "place") return placedItems.count(t.target) > 0;
-        if (t.kind == "orbit") return reachedOrbit;
-        if (t.kind == "visit") return t.target == "moon" ? visitedMoon : visitedRing;
-        if (t.kind == "do") { auto it = questCounts.find(t.target); return it != questCounts.end() && it->second >= t.n - 1e-6; }
+        if (t.kind == "get") return ObtainedTotal(t.target) >= t.n - 1e-6;
+        if (t.kind == "place") return Q().placed.count(t.target) > 0;
+        if (t.kind == "orbit") return Q().reachedOrbit;
+        if (t.kind == "visit") return t.target == "moon" ? Q().visitedMoon : Q().visitedRing;
+        if (t.kind == "do") { auto it = Q().counts.find(t.target); return it != Q().counts.end() && it->second >= t.n - 1e-6; }
         return false;
     }
     // A counted task's text with how far along it is (#563: "Hammer 4 bronze plates (2/4)"); tasks of one thing as written.
     std::string TaskLine(const Task& t, bool done) {
         if ((t.kind != "get" && t.kind != "do") || t.n < 2.0 - 1e-6) return t.text;
         double have = 0.0;
-        if (t.kind == "get") have = inventory.obtainedTotal(t.target);
-        else if (auto it = questCounts.find(t.target); it != questCounts.end()) have = it->second;
+        if (t.kind == "get") have = ObtainedTotal(t.target);
+        else if (auto it = Q().counts.find(t.target); it != Q().counts.end()) have = it->second;
         if (done) have = t.n;
         return TextFormat("%s (%d/%d)", t.text.c_str(), (int)std::min(floor(have + 1e-6), t.n), (int)t.n);
     }
 }
 
-void Objectives_MarkVisitedBody(int i) { visitedBodies.insert(i); }
+void Objectives_MarkVisitedBody(int i) { Q().visitedBodies.insert(i); }
 
 void Objectives_Update(Scene& world) {
-    if (Rocket_Telemetry(world).periapsis > 35000.0 && Rocket_Boarded()) reachedOrbit = true;
+    if (Rocket_Telemetry(world).periapsis > 35000.0 && Rocket_Boarded()) Q().reachedOrbit = true;
     // Visiting: within 2 radii of any body other than the start one.
     const Vector3 pr = (player.position - world.renderOrigin).toFloat();
     int index = 0;
     for (auto& obj : world.objects) {
         if (auto* p = dynamic_cast<Planetoid*>(obj.get())) {
             if (index > 0 && Vector3Distance(pr, p->position) < p->radius * p->scale * 2.0f) {
-                visitedBodies.insert(index);
-                if (p->kind == BodyKind::Moon) visitedMoon = true;
-                else if (p->kind == BodyKind::Asteroid) visitedRing = true;
+                Q().visitedBodies.insert(index);
+                if (p->kind == BodyKind::Moon) Q().visitedMoon = true;
+                else if (p->kind == BodyKind::Asteroid) Q().visitedRing = true;
             }
             index++;
         }
@@ -381,42 +446,51 @@ void Objectives_Update(Scene& world) {
     QuestBook_Update();
 }
 
-void QuestBook_NotePlaced(const std::string& item) { placedItems.insert(item); }
+QuestBookState& QuestBook_LocalState() { return localBook; }
+void QuestBook_Select(QuestBookState* b) { book = b ? b : &localBook; }
+QuestBookState& QuestBook_Selected() { return Q(); }
+void QuestBook_NotePlaced(const std::string& item) { Q().placed.insert(item); }
 bool QuestBook_Met(const std::string& kind, const std::string& target, double n) { Task t; t.kind = kind; t.target = target; t.n = n; return TaskMet(t); }
-void QuestBook_Count(const std::string& event, double n) { questCounts[event] += n; }
-void QuestBook_AtLeast(const std::string& event, double v) { double& c = questCounts[event]; c = std::max(c, v); }
-double QuestBook_CountOf(const std::string& event) { auto it = questCounts.find(event); return it == questCounts.end() ? 0.0 : it->second; }
-int QuestBook_Tier() { return questTier; }
-void QuestBook_SetTier(int t) { questTier = std::max(0, t); }
+void QuestBook_Count(const std::string& event, double n) { Q().counts[event] += n; }
+void QuestBook_AtLeast(const std::string& event, double v) { double& c = Q().counts[event]; c = std::max(c, v); }
+double QuestBook_CountOf(const std::string& event) { auto it = Q().counts.find(event); return it == Q().counts.end() ? 0.0 : it->second; }
+int QuestBook_Tier() { return Q().tier; }
+void QuestBook_SetTier(int t) { Q().tier = std::max(0, t); }
 
 void QuestBook_Reset() {
     LoadTiers();
-    questTier = 0;
-    placedItems.clear();
-    visitedBodies.clear();
-    reachedOrbit = visitedMoon = visitedRing = false;
-    questCounts.clear();
+    Q().tier = 0;
+    Q().placed.clear();
+    Q().visitedBodies.clear();
+    Q().reachedOrbit = Q().visitedMoon = Q().visitedRing = false;
+    Q().counts.clear();
     QuestTree_Reset();
-    for (Tier& t : tiers) for (Task& k : t.tasks) k.done = false;
+    Q().tasksDone.clear();
+    if (Q().ownObtained) Q().obtained.clear(); // (#338) a team book's own totals (the local book's live in the inventory)
 }
 
 void QuestBook_Update() {
     LoadTiers();
-    while (questTier < (int)tiers.size()) {
-        Tier& t = tiers[questTier];
+    // (#338, #816) a joined client's book is its team's, decided and paid on the server (NetMsg QuestBook): nothing here
+    if (gNetRole == NetRole::Client && book == &localBook) return;
+    while (Q().tier < (int)tiers.size()) {
+        Tier& t = tiers[Q().tier];
         bool open;
         if (t.tasks.empty()) {
-            open = t.gate != "-" && (inventory.obtainedTotal(t.gate) > 0.0 || inventory.count(t.gate) > 0 || placedItems.count(t.gate));
+            open = t.gate != "-" && (ObtainedTotal(t.gate) > 0.0 || (!Q().ownObtained && inventory.count(t.gate) > 0) || Q().placed.count(t.gate));
         } else {
             open = true;
-            for (Task& k : t.tasks) {
-                if (!k.done && TaskMet(k)) k.done = true;
-                open = open && k.done;
+            for (int k = 0; k < (int)t.tasks.size(); ++k) {
+                if (!Done(Q().tier, k) && TaskMet(t.tasks[k])) Q().tasksDone.insert({ Q().tier, k });
+                open = open && Done(Q().tier, k);
             }
         }
         if (!open) break;
-        ++questTier;
-        if (questTier < (int)tiers.size()) GameUI_Toast(TextFormat("Tier %d: %s", questTier, tiers[questTier].name.c_str()));
+        ++Q().tier;
+        if (Q().tier < (int)tiers.size()) {
+            const char* news = TextFormat("Tier %d: %s", Q().tier, tiers[Q().tier].name.c_str());
+            if (gQuestNews) gQuestNews(news); else GameUI_Toast(news);
+        }
     }
     QuestTree_Update(); // the side lines
 }
@@ -431,36 +505,36 @@ const char* QuestBook_TaskText(int i, int k) { // with its count (#563)
     s = TaskLine(tiers[i].tasks[k], QuestBook_TaskDone(i, k));
     return s.c_str();
 }
-bool QuestBook_TaskDone(int i, int k) { return k >= 0 && k < QuestBook_TaskCount(i) && (tiers[i].tasks[k].done || i < questTier); }
+bool QuestBook_TaskDone(int i, int k) { return k >= 0 && k < QuestBook_TaskCount(i) && (Done(i, k) || i < Q().tier); }
 
 void QuestBook_Save(FILE* f) {
-    fprintf(f, "quest %d\n", questTier);
+    fprintf(f, "quest %d\n", Q().tier);
     for (size_t i = 0; i < tiers.size(); ++i)
         for (size_t k = 0; k < tiers[i].tasks.size(); ++k)
-            if (tiers[i].tasks[k].done) fprintf(f, "quest_done %zu %zu\n", i, k);
-    for (const std::string& p : placedItems) fprintf(f, "placed %s\n", p.c_str());
-    for (const auto& kv : inventory.obtained) if (kv.second > 0.0) fprintf(f, "obtained %s %.2f\n", kv.first.c_str(), kv.second);
-    fprintf(f, "quest_flags %d %d %d\n", reachedOrbit ? 1 : 0, visitedMoon ? 1 : 0, visitedRing ? 1 : 0);
-    for (const auto& kv : questCounts) fprintf(f, "quest_count %s %.2f\n", kv.first.c_str(), kv.second);
+            if (Done((int)i, (int)k)) fprintf(f, "quest_done %zu %zu\n", i, k);
+    for (const std::string& p : Q().placed) fprintf(f, "placed %s\n", p.c_str());
+    for (const auto& kv : (Q().ownObtained ? Q().obtained : inventory.obtained)) if (kv.second > 0.0) fprintf(f, "obtained %s %.2f\n", kv.first.c_str(), kv.second);
+    fprintf(f, "quest_flags %d %d %d\n", Q().reachedOrbit ? 1 : 0, Q().visitedMoon ? 1 : 0, Q().visitedRing ? 1 : 0);
+    for (const auto& kv : Q().counts) fprintf(f, "quest_count %s %.2f\n", kv.first.c_str(), kv.second);
     QuestTree_Save(f);
 }
 
 bool QuestBook_LoadLine(const char* tok, FILE* f) {
     LoadTiers();
     char id[64] = {};
-    if (strcmp(tok, "quest") == 0) { int t = 0; if (fscanf(f, " %d", &t) == 1) questTier = std::max(0, t); return true; }
+    if (strcmp(tok, "quest") == 0) { int t = 0; if (fscanf(f, " %d", &t) == 1) Q().tier = std::max(0, t); return true; }
     if (strcmp(tok, "quest_done") == 0) {
         int i = 0, k = 0;
-        if (fscanf(f, " %d %d", &i, &k) == 2 && i >= 0 && i < (int)tiers.size() && k >= 0 && k < (int)tiers[i].tasks.size()) tiers[i].tasks[k].done = true;
+        if (fscanf(f, " %d %d", &i, &k) == 2 && i >= 0 && i < (int)tiers.size() && k >= 0 && k < (int)tiers[i].tasks.size()) Q().tasksDone.insert({ i, k });
         return true;
     }
-    if (strcmp(tok, "placed") == 0) { if (fscanf(f, " %63s", id) == 1) placedItems.insert(id); return true; }
+    if (strcmp(tok, "placed") == 0) { if (fscanf(f, " %63s", id) == 1) Q().placed.insert(id); return true; }
     if (QuestTree_LoadLine(tok, f)) return true;
-    if (strcmp(tok, "quest_count") == 0) { double n = 0; if (fscanf(f, " %63s %lf", id, &n) == 2) questCounts[id] = n; return true; }
-    if (strcmp(tok, "obtained") == 0) { double n = 0; if (fscanf(f, " %63s %lf", id, &n) == 2) inventory.obtained[id] = n; return true; }
+    if (strcmp(tok, "quest_count") == 0) { double n = 0; if (fscanf(f, " %63s %lf", id, &n) == 2) Q().counts[id] = n; return true; }
+    if (strcmp(tok, "obtained") == 0) { double n = 0; if (fscanf(f, " %63s %lf", id, &n) == 2) (Q().ownObtained ? Q().obtained : inventory.obtained)[id] = n; return true; }
     if (strcmp(tok, "quest_flags") == 0) {
         int a = 0, b = 0, c = 0;
-        if (fscanf(f, " %d %d %d", &a, &b, &c) == 3) { reachedOrbit = a; visitedMoon = b; visitedRing = c; }
+        if (fscanf(f, " %d %d %d", &a, &b, &c) == 3) { Q().reachedOrbit = a; Q().visitedMoon = b; Q().visitedRing = c; }
         return true;
     }
     return false;
@@ -485,20 +559,22 @@ static int DrawWrapped(const std::string& text, int x, int y, int chars, int siz
 void Objectives_DrawHUD() {
     LoadTiers();
     int y = 64;
-    if (questTier >= (int)tiers.size()) {
+    if (Q().tier >= (int)tiers.size()) {
         DrawText("CURRENT OBJECTIVES   all done", 12, y, 16, Fade(GOLD, 0.9f));
         return;
     }
-    const Tier& t = tiers[questTier];
-    DrawText(TextFormat("CURRENT OBJECTIVES   tier %d: %s", questTier, t.name.c_str()), 12, y, 16, Fade(GOLD, 0.9f));
+    const Tier& t = tiers[Q().tier];
+    DrawText(TextFormat("CURRENT OBJECTIVES   tier %d: %s", Q().tier, t.name.c_str()), 12, y, 16, Fade(GOLD, 0.9f));
     y += 22;
     if (t.tasks.empty() && t.gate != "-") {
         const ItemDef* d = itemDB.find(t.gate);
         DrawText(TextFormat("[ ] Make a %s", d ? d->name.c_str() : t.gate.c_str()), 12, y, 16, RAYWHITE);
         y += 20;
     }
-    for (const Task& k : t.tasks) {
-        y = DrawWrapped(TextFormat("%s %s", k.done ? "[x]" : "[ ]", TaskLine(k, k.done).c_str()), 12, y, 58, 15, k.done ? Fade(GREEN, 0.75f) : RAYWHITE);
+    for (int ki = 0; ki < (int)t.tasks.size(); ++ki) {
+        const Task& k = t.tasks[ki];
+        const bool done = Done(Q().tier, ki);
+        y = DrawWrapped(TextFormat("%s %s", done ? "[x]" : "[ ]", TaskLine(k, done).c_str()), 12, y, 58, 15, done ? Fade(GREEN, 0.75f) : RAYWHITE);
         y += 1;
     }
     y += 4;
@@ -507,9 +583,16 @@ void Objectives_DrawHUD() {
 
 bool Survival_IsUsable(const std::string& id) { return id == "oxygen_canister" || id == "power_cell" || id == "repair_kit" || Survival_IsFood(id); }
 
+// #337: using an item - the local player's (a client process asks the server instead: its inventory and vitals are the
+// server's; nothing changes here until the server's deltas come back), or a remote player's on a server (local false: no
+// UI, sounds or quests).
 bool Survival_UseItem(const std::string& id) {
+    if (gNetRole == NetRole::Client && gSurvivalUseRequest && id != "repair_kit") { gSurvivalUseRequest(id); return true; }
+    return Survival_UseItemFor(id, survival, inventory, Suit_Stats(), true);
+}
+bool Survival_UseItemFor(const std::string& id, SurvivalState& survival, Inventory& inventory, const SuitStats& stats, bool local) {
     if (id == "repair_kit") { // mends the most damaged part of the rocket in reach (rocket.h)
-        if (inventory.count(id) > 0 && Rocket_UseRepairKit()) { inventory.remove(id, 1); return true; }
+        if (local && inventory.count(id) > 0 && Rocket_UseRepairKit()) { inventory.remove(id, 1); return true; }
         return false;
     }
     if (Survival_IsFood(id)) {
@@ -517,27 +600,27 @@ bool Survival_UseItem(const std::string& id) {
         const Food& food = foods[id];
         if (survival.food < 98.0f && inventory.remove(id, 1)) {
             survival.food = std::min(100.0f, survival.food + food.value);
-            QuestBook_Count("eat");
-            if (food.raw && GameRng_Int(0, 99) < 30) { survival.sickUntil = (float)SimTime() + 60.0f; GameUI_Toast("You feel sick: cook your meat"); }
-            Audio_Play(Sfx::Pickup, 0.5f, 0.8f);
+            if (local) QuestBook_Count("eat");
+            if (food.raw && GameRng_Int(0, 99) < 30) { survival.sickUntil = (float)SimTime() + 60.0f; if (local) GameUI_Toast("You feel sick: cook your meat"); }
+            if (local) Audio_Play(Sfx::Pickup, 0.5f, 0.8f);
             return true;
         }
-        if (survival.food >= 98.0f) GameUI_Toast("You are full");
-        Audio_Play(Sfx::Error, 0.4f);
+        if (survival.food >= 98.0f) if (local) GameUI_Toast("You are full");
+        if (local) Audio_Play(Sfx::Error, 0.4f);
         return false;
     }
     if (id == "oxygen_canister") {
-        if (survival.oxygen < 99.0f && inventory.remove("oxygen_canister", 1)) { survival.oxygen = std::min(100.0f, survival.oxygen + 50.0f); Audio_Play(Sfx::Pickup); return true; }
+        if (survival.oxygen < 99.0f && inventory.remove("oxygen_canister", 1)) { survival.oxygen = std::min(100.0f, survival.oxygen + 50.0f); if (local) Audio_Play(Sfx::Pickup); return true; }
     } else if (id == "power_cell") {
-        if (!Suit_Stats().powered) { GameUI_Toast("A power cell needs a battery pack in the suit (#217)"); Audio_Play(Sfx::Error, 0.4f); return false; }
+        if (!stats.powered) { if (local) GameUI_Toast("A power cell needs a battery pack in the suit (#217)"); if (local) Audio_Play(Sfx::Error, 0.4f); return false; }
         // Don't waste a cell on a full store (ship while piloting, otherwise the suit).
         const bool full = survival.power >= 99.0f;
         if (!full && inventory.remove("power_cell", 1)) {
             survival.power = std::min(100.0f, survival.power + 50.0f);
-            Audio_Play(Sfx::Pickup);
+            if (local) Audio_Play(Sfx::Pickup);
             return true;
         }
     }
-    Audio_Play(Sfx::Error, 0.4f);
+    if (local) Audio_Play(Sfx::Error, 0.4f);
     return false;
 }

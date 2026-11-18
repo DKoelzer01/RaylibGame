@@ -15,6 +15,7 @@
 #include "scenetarget.h"
 #include "waterfield.h"
 #include <chrono>
+#include <filesystem>
 
 #include <raymath.h>
 #include <rlgl.h>
@@ -393,8 +394,40 @@ bool Planetoid::useFarSphere(const RenderContext& ctx) const {
     return Vector3Distance(position, ctx.cameraPos) / std::max(1.0f, lodSettings.zoom) > kFarSphereRadii * radius * scale;
 }
 
+// #830: when parts were placed or removed, the grass scatter gets the body's new part cells and the chunks under the
+// changes are rebuilt (their grass redone). One remesh per changed plot, over the changed cells' extent.
+static void SyncGrassBlockers(Planetoid& p) {
+    bool changed = false;
+    for (const auto& pl : p.plots->plots) changed = changed || !pl->changedCells.empty();
+    if (!changed) return;
+    auto snap = std::make_shared<GrassBlockers>();
+    for (const auto& pl : p.plots->plots) {
+        if (pl->cells.empty()) continue;
+        GrassBlockPlot g;
+        g.origin = pl->origin; g.east = pl->east; g.up = pl->up; g.north = pl->north;
+        for (const auto& kv : pl->cells) {
+            g.cells.insert(kv.first);
+            const Int3 c = kv.first;
+            g.radius = std::max(g.radius, sqrtf((float)(c.x * c.x + c.y * c.y + c.z * c.z)) * kCellSize + kCellSize);
+        }
+        snap->push_back(std::move(g));
+    }
+    Grass_SetBlockers(static_cast<const DensityField*>(p.field.get()), snap);
+    for (const auto& pl : p.plots->plots) {
+        if (pl->changedCells.empty()) continue;
+        Vector3 lo{ 1e30f, 1e30f, 1e30f }, hi{ -1e30f, -1e30f, -1e30f };
+        for (const Int3& c : pl->changedCells) {
+            const Vector3 at = pl->toBody({ (c.x + 0.5f) * kCellSize, (c.y + 0.5f) * kCellSize, (c.z + 0.5f) * kCellSize });
+            lo = Vector3Min(lo, at); hi = Vector3Max(hi, at);
+        }
+        pl->changedCells.clear();
+        RequestRemesh(p, Vector3Scale(Vector3Add(lo, hi), 0.5f), 0.5f * Vector3Distance(lo, hi) + kCellSize, 1.0f);
+    }
+}
+
 void Planetoid::draw(const RenderContext& ctx) {
     if (!isActive) return;
+    if (plots && field && kind == BodyKind::Planet) SyncGrassBlockers(*this); // (#830) grass only grows on planets
     for (const auto& objPtr : children) objPtr->draw(ctx);
     if (farSphere && ctx.farShader) farSphere->ready(); // uploads the bake once it is done
     if (useFarSphere(ctx)) { farSphere->draw(*this, ctx, *ctx.farShader); return; }
@@ -2279,13 +2312,15 @@ bool Region_Install(Planetoid& p, TerrainDeltas::Key region, const uint8_t* data
 
 bool SaveWorld(Scene& world) {
     if (!DirectoryExists("saves")) MakeDirectory("saves");
-    FILE* f = fopen(SAVE_PATH, "w");
+    // Written to <save>.tmp and renamed over the save when complete (#346): a crash mid-save leaves the last save whole.
+    const std::string tmpPath = SAVE_PATH_STR + ".tmp";
+    FILE* f = fopen(tmpPath.c_str(), "w");
     if (!f) return false;
     const DVec3 camWorld = world.renderOrigin + world.camera.position;
     const DVec3 tgtWorld = world.renderOrigin + world.camera.target;
     // v4: the system definition is stored in the save, so a save reloads the system it was made in
     // even if bodies.txt has changed since.
-    fprintf(f, "RAYLIBGAME_SAVE 12\n"); // 12 (#360): ponds' water bricks saved even drained; no claimed ponds
+    fprintf(f, "RAYLIBGAME_SAVE 13\n"); // 13 (#346): the player's state in their record (<save>.players/), teams; 12 (#360): ponds' water bricks saved even drained
     fprintf(f, "seed %u\nbodies %zu\n", worldGen.lastSeed, worldGen.system.bodies.size());
     for (const BodyDef& b : worldGen.system.bodies) fprintf(f, "%s\n", FormatBodyDef(b).c_str());
     fprintf(f, "time %.6f\n", worldTime); // v5: the world clock (orbits)
@@ -2304,7 +2339,8 @@ bool SaveWorld(Scene& world) {
         Planetoid* p = dynamic_cast<Planetoid*>(obj.get());
         if (!p || p->ringRock >= 0 || p->vehicle) continue; // promoted ring rocks: saved with their ring (below); rockets: by the game
         const int bodyIndex = index++;
-        fprintf(f, "planetoid %d rot %f %f %f strokes %zu\n", bodyIndex, p->rotation.x, p->rotation.y, p->rotation.z, p->edits->strokes);
+        // (#346) the body's NetId too: a load finds the body by it, not by its place in the list
+        fprintf(f, "planetoid %d netid %llu rot %f %f %f strokes %zu\n", bodyIndex, (unsigned long long)p->netId, p->rotation.x, p->rotation.y, p->rotation.z, p->edits->strokes);
         totalStrokes += p->edits->strokes;
         // v6: chopped / harvested plants (id, world time removed); they regrow from that time.
         const PlantRemovals none;
@@ -2319,16 +2355,57 @@ bool SaveWorld(Scene& world) {
     }
     // v10: ring rocks a visit changed (edits, plots), whether they are voxel bodies now or not.
     for (auto& ring : gRings) ring->save(f, dir);
-    fclose(f);
+    const bool written = fflush(f) == 0 && !ferror(f);
+    if (fclose(f) != 0 || !written) { std::error_code ec; std::filesystem::remove(tmpPath, ec); LOG_ERROR("World", "%s: could not write the save\n", SAVE_PATH); return false; }
+    std::error_code ec;
+    std::filesystem::rename(tmpPath, SAVE_PATH_STR, ec); // replaces the old save in one step
+    if (ec) { LOG_ERROR("World", "%s: could not replace the save: %s\n", SAVE_PATH, ec.message().c_str()); return false; }
     LOG_INFO("World", "saved %zu strokes to %s (%d region files written)\n", totalStrokes, SAVE_PATH, regionsWritten);
+    BackupSave();
     return true;
+}
+
+// Backups (#346, user: the newest 5): after each save, the world file and the player records (<save>.players/) are copied
+// into <save>.backups/<date-time>/, and only the newest kBackups are kept. The regions are not copied (large, and written
+// in place chunk by chunk). RAYLIBGAME_BACKUPS=N keeps N (0: none).
+int BackupsKept() { static const int n = getenv("RAYLIBGAME_BACKUPS") ? std::max(0, atoi(getenv("RAYLIBGAME_BACKUPS"))) : 5; return n; }
+std::string BackupDir() { return SAVE_PATH_STR + ".backups"; }
+void BackupSave() {
+    namespace fs = std::filesystem;
+    const int keep = BackupsKept();
+    if (keep <= 0) return;
+    std::error_code ec;
+    const fs::path root = BackupDir();
+    // The name sorts by time: date, time, milliseconds (two saves in one second still get their own).
+    const auto now = std::chrono::system_clock::now();
+    const std::time_t t = std::chrono::system_clock::to_time_t(now);
+    const int ms = (int)(std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch()).count() % 1000);
+    std::tm tm{};
+#ifdef _WIN32
+    localtime_s(&tm, &t);
+#else
+    localtime_r(&t, &tm);
+#endif
+    char stamp[40];
+    snprintf(stamp, sizeof(stamp), "%04d%02d%02d-%02d%02d%02d-%03d", tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday, tm.tm_hour, tm.tm_min, tm.tm_sec, ms);
+    const fs::path to = root / stamp;
+    fs::create_directories(to, ec);
+    const fs::path save = SAVE_PATH_STR;
+    fs::copy_file(save, to / save.filename(), fs::copy_options::overwrite_existing, ec);
+    if (ec) { LOG_WARN("World", "backup of %s: %s\n", SAVE_PATH, ec.message().c_str()); return; }
+    const fs::path players = SAVE_PATH_STR + ".players";
+    if (fs::exists(players, ec)) fs::copy(players, to / players.filename(), fs::copy_options::recursive | fs::copy_options::overwrite_existing, ec);
+    std::vector<fs::path> all;
+    for (const auto& e : fs::directory_iterator(root, ec)) if (e.is_directory()) all.push_back(e.path());
+    std::sort(all.begin(), all.end());
+    for (size_t i = 0; i + keep < all.size(); ++i) fs::remove_all(all[i], ec); // the oldest beyond the newest `keep`
 }
 
 bool LoadWorldSave(Scene& world) {
     FILE* f = fopen(SAVE_PATH, "r");
     if (!f) return false;
     int version = 0;
-    if (fscanf(f, "RAYLIBGAME_SAVE %d", &version) != 1 || version < 2 || version > 12) {
+    if (fscanf(f, "RAYLIBGAME_SAVE %d", &version) != 1 || version < 2 || version > 13) {
         fclose(f);
         LOG_ERROR("World", "%s: unsupported save version %d\n", SAVE_PATH, version);
         return false;
@@ -2401,8 +2478,14 @@ bool LoadWorldSave(Scene& world) {
     Vector3 rot{};
     char kind[16] = {};
     const std::string dir = RegionDir();
-    while (fscanf(f, " planetoid %d rot %f %f %f %15s %zu", &index, &rot.x, &rot.y, &rot.z, kind, &editCount) == 6) {
-        Planetoid* body = index >= 0 && index < (int)planetoids.size() ? planetoids[index] : nullptr;
+    while (fscanf(f, " planetoid %d", &index) == 1) {
+        // (#346) "netid <id>" since format 13's step 3: the body is found by it; older saves by their place in the list
+        unsigned long long netid = 0;
+        const long at = ftell(f);
+        if (fscanf(f, " netid %llu", &netid) != 1) { fseek(f, at, SEEK_SET); netid = 0; }
+        if (fscanf(f, " rot %f %f %f %15s %zu", &rot.x, &rot.y, &rot.z, kind, &editCount) != 5) break;
+        Planetoid* body = netid ? Planetoid::findNet((NetId)netid) : nullptr;
+        if (!body) body = index >= 0 && index < (int)planetoids.size() ? planetoids[index] : nullptr;
         std::shared_ptr<const TerrainDeltas> deltas;
         if (std::string(kind) == "strokes") {
             // v7: the deltas are in the region files.

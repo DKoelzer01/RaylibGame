@@ -31,6 +31,7 @@ struct AvatarState {
     int action = 0;                       // 0 none, 1 dig / mine swing, 2 chop, 3 place / use
     float actionPhase = 0.0f;             // 0..1 within the current swing
     int suitTier = 0;                     // suit upgrades show as accent colours
+    Color suitColor{ 0, 0, 0, 0 };        // the colour the player picked when joining (#341); alpha 0: the default suit
 };
 
 // Draw inside the 3D pass, before InstanceBatch_Flush (the boxes go through the instance batch).
@@ -40,5 +41,7 @@ void Avatar_DrawNameplates(Scene& world, const std::vector<AvatarState>& avatars
 // A Player's own state as an avatar (the local player for RAYLIBGAME_AVATAR_SELF, bench players); the extras (held item,
 // action, headlamp, name) are filled by the caller.
 AvatarState Avatar_FromPlayer(const Player& p, uint32_t session);
+// (#822) the inventory screen's preview: one avatar alone in `target`, lit like the world where it stands, seen from `eye`.
+void Avatar_DrawPreview(Scene& world, const AvatarState& a, RenderTexture2D& target, Vector3 eye, Vector3 at, Vector3 up);
 
 #endif
