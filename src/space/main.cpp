@@ -390,6 +390,7 @@ int main(int argc, char** argv)
     bool benchGiant = false;       // --shot-giant: one tree of each size class (#274)
     bool benchTorch = false;       // --test-torch: a held torch lights the ground (#218)
     bool benchShotDig = false;     // --shot-dig (#533): the dig preview ring, looking down at the ground
+    bool benchF2 = false;          // --test-f2 (#579): take an F2 screenshot
     bool benchTime = false;        // --test-time: dawn start (#259), a +6 h jump carries the player (#275)
     bool benchPickups = false;     // --test-pickups: the pickup feed (#208): repeats merge, a screenshot while it shows
     bool shotInventory = false;    // --shot-inventory: long item names in their cells (#219)
@@ -651,6 +652,7 @@ int main(int argc, char** argv)
         if (std::string(argv[i]) == "--test-time") benchTime = true;
         if (std::string(argv[i]) == "--test-torch") benchTorch = true;
         if (std::string(argv[i]) == "--shot-dig") benchShotDig = true;
+        if (std::string(argv[i]) == "--test-f2") benchF2 = true;
         if (std::string(argv[i]) == "--shot-giant") benchGiant = true;
         if (std::string(argv[i]) == "--test-lamps") benchLamps = true;
         if (std::string(argv[i]) == "--test-fill") benchFill = true;
@@ -8423,6 +8425,8 @@ int main(int argc, char** argv)
             }
         }
         // --test-torch (#218): at the dawn start (still dark), the ground in front gets brighter with a torch in hand.
+        // --test-f2 (#579): the F2 screenshot path once the world is up (the recorder prints "screenshot: <dir> saved").
+        if (benchF2 && gameState == 1 && !loading && WorldIdle()) { benchF2 = false; Recorder_Screenshot(); }
         // --shot-dig (#533): standing on the ground, looking 40 deg down: the dig preview's ring (bench_dig.png).
         if (benchShotDig && gameState == 1 && !loading && WorldIdle()) {
             static int df = 0;

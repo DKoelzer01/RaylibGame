@@ -32,6 +32,7 @@ void Recorder_Capture();                  // grab the back buffer now (call wher
 bool Recorder_Finished();                 // a command-line recording is done and the game should exit
 void Recorder_Shutdown();                 // finish writing (frames still queued, GIF, sheet)
 bool Recorder_Active();
+void Recorder_Screenshot();             // F2 (#579): the next finished frame (HUD included) to <root>/<date>/shot-<HHMMSS>/screenshot.png
 std::string Recorder_LastDir();           // the last finished recording's folder ("" if none): bug reports attach it (#169)
 void Recorder_FrameDone();               // end of every frame: counts rendered frames for --record-every
 
