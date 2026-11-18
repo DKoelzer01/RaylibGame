@@ -17,7 +17,7 @@
 #include <functional>
 #include <vector>
 
-constexpr uint32_t kNetProtocol = 28; // 1 was the text "join" of #311; 5: world time in Welcome and Pong (#339); 6 (unused); 7: world-gen settings in Welcome (#757); 8: terrain edit requests, refusals, inventory deltas (#329); 9: chat (#326); 10: building (#330); 11 is #776's; 12: player snapshots, delta-coded against acked states (#769); 13: animals (#334); 14: animal actions, damage to a player (#334); 15 (unused); 16: server-side survival (#337); 17: the suit colour in the loadout (#341); 18: beds (#800); 19: graves (#804); 20: the player id (UUID) in the hello (#346); 21: team quest books (#338); 22: crafting on the server (#338); 23: machines on the server (#332); 24 is #604's; 25: crafting from nearby chests, cursor takes (#854); 26 is #604's; 27: plants and farming (#335); 28: claim refusals (#343)
+constexpr uint32_t kNetProtocol = 30; // 1 was the text "join" of #311; 5: world time in Welcome and Pong (#339); 6 (unused); 7: world-gen settings in Welcome (#757); 8: terrain edit requests, refusals, inventory deltas (#329); 9: chat (#326); 10: building (#330); 11 is #776's; 12: player snapshots, delta-coded against acked states (#769); 13: animals (#334); 14: animal actions, damage to a player (#334); 15 (unused); 16: server-side survival (#337); 17: the suit colour in the loadout (#341); 18: beds (#800); 19: graves (#804); 20: the player id (UUID) in the hello (#346); 21: team quest books (#338); 22: crafting on the server (#338); 23: machines on the server (#332); 24 is #604's; 25: crafting from nearby chests, cursor takes (#854); 26 is #604's; 27: plants and farming (#335); 28: claim refusals (#343); 29 is #862's; 30: claim banners, the claims list (#343)
 
 enum class NetMsg : uint8_t {
     Hello = 1,     // client -> server: protocol, build, player name, password
@@ -61,6 +61,7 @@ enum class NetMsg : uint8_t {
     PlantAction = 38,   // client -> server (#335): fell a plant (tree, bush, loose stone), plant or harvest a farmland part
     Plants = 39,        // server -> client (#335): plants removed (id, world time: regrowth runs on the shared clock), at the join and as they go
     FarmFields = 40,    // server -> client (#335): the crops on farmland near the client (crop, growth), when they change
+    Claims = 41,        // server -> client (#343): the land claims (team, colour, where, how far; ours / allowed), when they change
     Count
 };
 const char* NetMsgName(NetMsg m);
@@ -223,6 +224,8 @@ struct MsgPlantAction { uint8_t action = 0; uint64_t body = 0; uint64_t plant = 
 struct MsgPlants { uint64_t body = 0; uint32_t session = 0; std::vector<std::pair<uint64_t, double>> removed; }; // session: who felled them (0: the join's list)
 struct NetFarmField { uint32_t plot = 0; int32_t part = -1; std::string crop; float growth = 0.0f; };
 struct MsgFarmFields { uint64_t body = 0; std::vector<NetFarmField> fields; }; // every field on the body near the client (the full list: replaces)
+struct NetClaim { uint32_t id = 0; int32_t team = 0; std::string teamName; uint32_t colour = 0; uint64_t body = 0; float centre[3] = {}; float radius = 0.0f; uint8_t flags = 0; }; // flags: 1 ours, 2 we may build there (ours or an ally's)
+struct MsgClaims { std::vector<NetClaim> claims; }; // (#343) every claim (the full list: replaces)
 struct MsgGraves { // #804 (at most 256: the nearest matter, and a world with more has bigger problems)
     struct Entry { uint32_t id = 0; std::string body; DVec3 local{}; std::string owner, name; uint8_t style = 0; int64_t diedAt = 0; };
     std::vector<Entry> graves;
@@ -383,6 +386,8 @@ void NetWrite(NetWriter& w, const MsgPlants& m);
 bool NetRead(NetReader& r, MsgPlants& m);
 void NetWrite(NetWriter& w, const MsgFarmFields& m);
 bool NetRead(NetReader& r, MsgFarmFields& m);
+void NetWrite(NetWriter& w, const MsgClaims& m);
+bool NetRead(NetReader& r, MsgClaims& m);
 bool NetRead(NetReader& r, MsgGraves& m);
 void NetWrite(NetWriter& w, const MsgPlayerSnapshot& m);
 // lookup(session, baseSeq, out): the state of that player received in snapshot baseSeq (false: unknown - the entry can't be

@@ -65,6 +65,8 @@ const char* PartName(PartType t) {
         case PartType::Torch: return "torch";
         case PartType::Snare: return "snare";
         case PartType::Bed: return "bed";
+        case PartType::ClaimBanner: return "claim banner"; case PartType::ClaimBanner2: return "bronze claim banner";
+        case PartType::ClaimBanner3: return "steel claim banner"; case PartType::ClaimBanner4: return "titanium claim banner";
         case PartType::Meteorite: return "meteorite";
         case PartType::PressurePlate: return "pressure plate";
         case PartType::GasVent: return "gas vent";
@@ -138,6 +140,8 @@ const char* PartCostItem(PartType t) {
         case PartType::Torch: return "torch"; // placed from the hand (#218)
         case PartType::Snare: return "snare"; // placed from the hand (#176)
         case PartType::Bed: return "bed"; // (#800)
+        case PartType::ClaimBanner: return "claim_banner"; case PartType::ClaimBanner2: return "bronze_claim_banner"; // (#343)
+        case PartType::ClaimBanner3: return "steel_claim_banner"; case PartType::ClaimBanner4: return "titanium_claim_banner";
         case PartType::Meteorite: return "nickel_iron_ore"; // what it is made of (breaking it gives more: buildtool.cpp, #177)
         case PartType::PressurePlate: case PartType::GasVent: return "stone"; // dungeon traps (#719): broken, a stone back
         default: { const char* m = PartMachineName(t); return m ? m : "concrete"; }
@@ -244,6 +248,8 @@ static Color PartColor(PartType t) {
         case PartType::Torch: return { 120, 85, 55, 255 };
         case PartType::Snare: return { 150, 120, 80, 255 };
         case PartType::Bed: return { 150, 62, 52, 255 }; // a red blanket (#800)
+        case PartType::ClaimBanner: return { 190, 70, 60, 255 }; case PartType::ClaimBanner2: return { 205, 140, 70, 255 }; // (#343) by tier
+        case PartType::ClaimBanner3: return { 150, 160, 175, 255 }; case PartType::ClaimBanner4: return { 205, 180, 215, 255 };
         case PartType::Meteorite: return { 70, 62, 58, 255 };
         case PartType::PressurePlate: return { 122, 116, 106, 255 }; // a shade off the floor's stone: a careful eye sees it
         case PartType::GasVent: return { 96, 110, 70, 255 };         // a mossy grate
@@ -295,6 +301,7 @@ static unsigned char PartPatternOf(const Part& p) {
         case PartType::Torch: return PatLog; // the shaft; machinemodels draws the flame
         case PartType::Snare: return PatPlanks; // a low wooden frame; machinemodels draws the noose and a catch
         case PartType::Bed: return PatPlanks; // a wooden frame (#800)
+        case PartType::ClaimBanner: return PatPlanks; case PartType::ClaimBanner2: case PartType::ClaimBanner3: case PartType::ClaimBanner4: return PatMetal; // (#343)
         case PartType::Meteorite: return PatCoal; // dark, pitted
         case PartType::PressurePlate: return PatStone;
         case PartType::GasVent: return PatMetal;
@@ -353,6 +360,14 @@ static void PartCells(PartType t, std::vector<std::pair<Int3, CellShape>>& out) 
         case PartType::Pane: {  // a thin board through the middle (glass panes, screens)
             CellShape s; s.full = false; s.planes = 2; s.n[0] = { 1, 0, 0 }; s.d[0] = 0.56f; s.n[1] = { -1, 0, 0 }; s.d[1] = -0.44f;
             out.push_back({ { 0, 0, 0 }, s });
+            break;
+        }
+        case PartType::ClaimBanner: case PartType::ClaimBanner2: case PartType::ClaimBanner3: case PartType::ClaimBanner4: { // (#343) a 2 m pole, a flag off its top half
+            CellShape pole; pole.full = false; pole.planes = 2; pole.n[0] = { -1, 0, 0 }; pole.d[0] = -0.75f; pole.n[1] = { 0, 0, 1 }; pole.d[1] = 0.25f; // against the flag's cell
+            for (int y = 0; y < 4; ++y) out.push_back({ { 0, y, 0 }, pole });
+            CellShape flag; flag.full = false; flag.planes = 2; flag.n[0] = { 0, 0, 1 }; flag.d[0] = 0.15f; flag.n[1] = { 0, -1, 0 }; flag.d[1] = -0.1f;
+            CellShape flagTop = flag; flagTop.planes = 1; // (no gap between its two cells)
+            out.push_back({ { 1, 2, 0 }, flag }); out.push_back({ { 1, 3, 0 }, flagTop }); // 0.5 m wide, 0.95 m high
             break;
         }
         case PartType::Torch: { // a thin stick up one edge (#218; #558: 0.1 m, it was a quarter-cell post like Post)

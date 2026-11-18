@@ -1,6 +1,7 @@
 #include "fluid.h"
 #include "playerinput.h"
 #include "navigation.h"
+#include "claims.h"
 #include "survival.h"
 #include "animals.h"
 #include "farsphere.h"
@@ -524,6 +525,16 @@ void Nav_DrawMap(Scene& world) {
         const Vector2 off = Vector3LengthSqr(mapCentre) > 0.5f ? OnImage(m, mapCentre) : Vector2{ 0, 0 };
         auto toScreen = [&](Vector3 dir) { const Vector2 p = OnImage(m, dir); return Vector2{ r.x + r.width * 0.5f + (p.x - off.x) * k / scale, r.y + r.height * 0.5f + (p.y - off.y) * k / scale }; };
         BeginScissorMode((int)r.x, (int)r.y, (int)r.width, (int)r.height);
+        // (#343) land claims (a joined game's): circles in the team's colour, its name in the middle
+        for (const ClaimView& c : Claims_Mirror()) {
+            if (c.body != h.body->name || Vector3Length(c.centre) < 1.0f) continue;
+            const Vector2 cp = toScreen(Vector3Normalize(c.centre));
+            const float rp = c.radius / m.mpp * k / scale;
+            const Color col = { (unsigned char)(c.colour >> 16), (unsigned char)(c.colour >> 8), (unsigned char)c.colour, 255 };
+            DrawCircleV(cp, rp, Fade(col, 0.18f));
+            DrawCircleLinesV(cp, rp, Fade(col, 0.9f));
+            if (rp > 14.0f) { const char* t = TextFormat("%s%s", c.teamName.c_str(), c.ours ? " (yours)" : c.allowed ? " (ally)" : ""); DrawText(t, (int)(cp.x - MeasureText(t, 14) * 0.5f), (int)cp.y - 7, 14, Fade(RAYWHITE, 0.85f)); }
+        }
         if (hasStart && startBody == h.body->name) DrawMarker(toScreen(startDir), GREEN, "Start", 7.0f);
         for (const Waypoint& w : waypoints) if (w.body == h.body->name) DrawMarker(toScreen(w.dir), GOLD, w.name.c_str(), 7.0f);
         // The player and where they look.

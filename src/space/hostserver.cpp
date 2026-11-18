@@ -707,6 +707,7 @@ namespace {
         if (rit == remotes.end() || i < 0 || !RemoteLocal(rit->second, body, at, scale)) { ++animalHitsRefused; return; }
         const Planetoid* b = rit->second.player.nearest;
         if (!b || Animals_Body(i) != b->name || Vector3Distance(Animals_Position(i), at) * (float)scale > kAnimalReach) { ++animalHitsRefused; return; }
+        if (ClaimBlocks(session, b, Animals_Position(i))) { ++animalHitsRefused; if (const uint32_t conn = ConnOf(session)) SendMsg(conn, MsgChat{ 0, ClaimRefusal(b, Animals_Position(i)) + ": its animals are theirs" }); return; } // (#343)
         double& last = lastAnimalHit[session];
         if (GetTime() - last < kAnimalHitCooldown) { ++animalHitsRefused; return; }
         last = GetTime();
@@ -1081,7 +1082,7 @@ namespace {
     bool ClaimBlocks(uint32_t session, const Planetoid* b, Vector3 local, bool count) {
         if (!b) return false;
         const Claim* c = Claims_At(b->name, local);
-        if (!c || c->team == TeamOfSession(session) || IsOpSession(session)) return false;
+        if (!c || Claims_Allows(c->team, TeamOfSession(session)) || IsOpSession(session)) return false; // its team and allies may
         if (count) ++claimsRefused;
         return true;
     }
@@ -1089,6 +1090,9 @@ namespace {
         const Claim* c = b ? Claims_At(b->name, local) : nullptr;
         return c ? TeamName(c->team) + " has claimed this land" : "This land is claimed";
     }
+    int TeamNamed(const std::string& name) { for (const TeamRecord& t : Teams_All()) if (SameName(t.name, name)) return t.id; return 0; }
+    // Players claim with banners (#343, the user 2026-11-18); /claim and /unclaim stay for ops. Everyone: /claims (the team's
+    // claims, budget and allies), /claim info, and the owner: /claim ally TEAM, /claim unally TEAM.
     bool ClaimCommand(uint32_t session, const std::string& text) {
         if (text != "/claim" && text != "/unclaim" && text != "/claims" && text.rfind("/claim ", 0) != 0) return false;
         const Session* me = nullptr;
@@ -1096,40 +1100,80 @@ namespace {
         auto rit = remotes.find(session);
         if (!me || rit == remotes.end()) return true;
         const int team = Teams_Of(me->uuid);
-        const TeamRecord* t = Teams_Find(team);
+        const bool op = IsOpSession(session);
         Planetoid* b = rit->second.player.nearest;
         const Vector3 here = b ? b->toLocalD(rit->second.player.position).toFloat() : Vector3{};
+        const int budget = Claims_Budget(TeamQuests_BodiesReached(team));
         if (text == "/claims" || text == "/claim list") {
             const std::vector<Claim> mine = Claims_OfTeam(team);
-            std::string list;
+            std::string list, al;
             for (const Claim& c : mine) {
-                list += TextFormat("%s#%u on %s", list.empty() ? "" : ", ", c.id, c.body.c_str());
-                if (b && c.body == b->name) list += TextFormat(" (%.0f m away)", Vector3Distance(c.centre, here));
+                list += TextFormat("%s#%u (%.0f m) on %s", list.empty() ? "" : ", ", c.id, c.radius * 2.0f, c.body.c_str());
+                if (b && c.body == b->name) list += TextFormat(" %.0f m away", Vector3Distance(c.centre, here));
             }
-            Tell(*me, TextFormat("Your team's claims: %d of %d%s%s. /claim here, /unclaim the one you stand in", (int)mine.size(), Claims_Budget(t ? (int)t->members.size() : 1), list.empty() ? "" : ": ", list.c_str()));
+            for (int a : Claims_AlliesOf(team)) al += (al.empty() ? "" : ", ") + TeamName(a);
+            Tell(*me, TextFormat("Your team's claims: %d of %d%s%s; allies: %s. Place a claim banner to claim land; break it to unclaim", (int)mine.size(), budget,
+                                 list.empty() ? "" : ": ", list.c_str(), al.empty() ? "none (/claim ally TEAM)" : al.c_str()));
             return true;
         }
-        if (!b) { Tell(*me, "Stand on a body to claim land"); return true; }
-        if (text == "/unclaim") {
-            const Claim* c = Claims_At(b->name, here);
-            if (!c) Tell(*me, "No claim here");
-            else if (c->team != team && !IsOpSession(session)) Tell(*me, TeamName(c->team) + "'s claim isn't yours to remove");
-            else { const int owner = c->team; const uint32_t id = c->id; Claims_Remove(id); TellTeam(owner, me->name + " removed claim #" + std::to_string(id)); if (owner != team) Tell(*me, TextFormat("Removed claim #%u", id)); }
+        if (text.rfind("/claim ally ", 0) == 0 || text.rfind("/claim unally ", 0) == 0) {
+            const bool on = text.rfind("/claim ally ", 0) == 0;
+            const std::string name = text.substr(on ? 12 : 14);
+            const int other = TeamNamed(name);
+            if (Teams_OwnerOf(team) != me->uuid && !op) Tell(*me, "Only your team's owner can change its allies");
+            else if (!other || other == team) Tell(*me, "No other team named " + name + " (/team lists yours; team names are what /team name set)");
+            else {
+                Claims_SetAlly(team, other, on);
+                TellTeam(team, (on ? TeamName(other) + " may now build and open things on our claims" : TeamName(other) + " is no longer allowed on our claims"));
+                TellTeam(other, (on ? TeamName(team) + " lets your team build and open things on their claims" : TeamName(team) + " no longer lets your team onto their claims"));
+            }
             return true;
         }
+        if (!b) { Tell(*me, "Stand on a body"); return true; }
         if (text == "/claim info") {
             const Claim* c = Claims_At(b->name, here);
-            Tell(*me, c ? TextFormat("Claim #%u of %s (%.0f m across)", c->id, TeamName(c->team).c_str(), c->radius * 2.0f) : std::string("Unclaimed land"));
+            Tell(*me, c ? TextFormat("Claim #%u of %s (%.0f m across)%s", c->id, TeamName(c->team).c_str(), c->radius * 2.0f, Claims_Allows(c->team, team) ? ": you may build here" : "") : std::string("Unclaimed land"));
             return true;
         }
-        if (text != "/claim") { Tell(*me, "/claim (here), /claim info, /claims, /unclaim"); return true; }
+        if (!op) { Tell(*me, "Claim land with a claim banner (craft it, place it; break it to unclaim). /claims, /claim info, /claim ally TEAM, /claim unally TEAM"); return true; }
+        if (text == "/unclaim") { // (ops) the claim they stand in, any team's
+            const Claim* c = Claims_At(b->name, here);
+            if (!c) Tell(*me, "No claim here");
+            else { const int owner = c->team; const uint32_t id = c->id; Claims_Remove(id); TellTeam(owner, "An op removed claim #" + std::to_string(id)); Tell(*me, TextFormat("Removed claim #%u", id)); }
+            return true;
+        }
+        if (text != "/claim") { Tell(*me, "/claim (ops: here, 100 m), /unclaim (ops), /claims, /claim info, /claim ally TEAM, /claim unally TEAM"); return true; }
         std::string why;
-        const uint32_t id = Claims_Make(team, t ? (int)t->members.size() : 1, b->name, here, (int64_t)time(nullptr), why);
+        const uint32_t id = Claims_Make(team, std::max(budget, 99), b->name, here, kClaimRadius, (int64_t)time(nullptr), why); // (an op's: over the budget)
         if (!id) { Tell(*me, why); return true; }
         ++claimsMade;
-        TellTeam(team, TextFormat("%s claimed the land around them for %s: claim #%u, %.0f m across", me->name.c_str(), t ? t->name.c_str() : "the team", id, kClaimRadius * 2.0f));
+        TellTeam(team, TextFormat("%s claimed the land around them: claim #%u, %.0f m across", me->name.c_str(), id, kClaimRadius * 2.0f));
         claimInside.erase(session);
         return true;
+    }
+    // The claims list (NetMsg 41) to a client: every claim, with whether it is the client's team's and whether it may build
+    // there; sent again when the claims change or the client's team does.
+    std::unordered_map<uint32_t, std::pair<uint32_t, int>> claimsSent; // by connection: the version and team last sent
+    int claimListsSent = 0;
+    void SendClaims(const Session& s) {
+        const int team = Teams_Of(s.uuid);
+        auto& sent = claimsSent[s.conn];
+        if (sent.first == Claims_Version() && sent.second == team) return;
+        sent = { Claims_Version(), team };
+        MsgClaims m;
+        for (const Claim& c : Claims_All()) {
+            Planetoid* b = nullptr;
+            for (Planetoid* p : Planetoid::All()) if (p->name == c.body) { b = p; break; }
+            if (!b) continue;
+            NetClaim n; n.id = c.id; n.team = c.team; n.teamName = TeamName(c.team);
+            const TeamRecord* t = Teams_Find(c.team);
+            n.colour = Claims_TeamColour(c.team, t ? t->colour : 0);
+            n.body = b->netId; n.centre[0] = c.centre.x; n.centre[1] = c.centre.y; n.centre[2] = c.centre.z; n.radius = c.radius;
+            n.flags = (uint8_t)((c.team == team ? 1 : 0) | (Claims_Allows(c.team, team) ? 2 : 0));
+            m.claims.push_back(std::move(n));
+        }
+        SendMsg(s.conn, m);
+        ++claimListsSent;
     }
     // Once a second: decay (teams with a member online stay fresh), and a line to a player entering or leaving a claim.
     void StepClaims() {
@@ -1140,13 +1184,14 @@ namespace {
         if (const int gone = Claims_Update(online, (int64_t)time(nullptr))) printf("host: %d claim(s) decayed (their teams away %d days)\n", gone, (int)(kClaimDecaySeconds / 86400));
         for (const Session& s : sessions) {
             if (!s.online) continue;
+            SendClaims(s); // (when they or its team changed)
             auto rit = remotes.find(s.id);
             Planetoid* b = rit != remotes.end() ? rit->second.player.nearest : nullptr;
             const Claim* c = b ? Claims_At(b->name, b->toLocalD(rit->second.player.position).toFloat()) : nullptr;
             const uint32_t now = c ? c->id : 0;
             auto& was = claimInside[s.id];
             if (now == was) continue;
-            if (now) Tell(s, c->team == Teams_Of(s.uuid) ? "Entering your team's claim" : "Entering " + TeamName(c->team) + "'s claim: you can't build, dig or open anything here");
+            if (now) Tell(s, c->team == Teams_Of(s.uuid) ? std::string("Entering your team's claim") : Claims_Allows(c->team, Teams_Of(s.uuid)) ? "Entering " + TeamName(c->team) + "'s claim (allies: you may build here)" : "Entering " + TeamName(c->team) + "'s claim: you can't build, dig or open anything here");
             else if (was) Tell(s, "Leaving the claim");
             was = now;
         }
@@ -1218,6 +1263,7 @@ namespace {
         StartSync(world, conn, s->id); // the world's edits so far (#776); later ones follow as live edits
         SendGraves(conn); // (#804) the graves so far
         SendAllPlants(world, conn); // (#335) the plants felled so far
+        claimsSent.erase(conn); // (#343) the claims list goes with the next claims step
         ++joins;
         printf("host: %s joined as session %u%s (connection %u, %d joins so far)\n", h.name.c_str(), s->id, reconnected ? " (reconnected)" : "", conn, joins);
         if (eventHook) eventHook("join", s->id, h.name + " from " + Net_RemoteAddress(conn)); // (#345 audit)
@@ -1370,6 +1416,11 @@ namespace {
             const Vector3 at = plot->toBody({ (removed.origin.x + 0.5f) * kCellSize, (removed.origin.y + 0.5f) * kCellSize, (removed.origin.z + 0.5f) * kCellSize });
             if (!InBuildReach(world, rm, q.body, at, p->scale)) { RefusePart(conn, q.seq, NetPartRefusal::Reach); return; }
             if (ClaimBlocks(session, p, at)) { RefusePart(conn, q.seq, NetPartRefusal::Claim); return; } // (#343)
+            // (#343) a claim banner: only its team (or an op) may break it, and breaking it unclaims
+            const uint32_t bannerClaim = ClaimBannerTier(removed.type) >= 0 ? Claims_OfBanner(p->name, plot->id, (int)q.partIndex) : 0;
+            int bannerTeam = 0;
+            for (const Claim& c : Claims_All()) if (c.id == bannerClaim) bannerTeam = c.team;
+            if (bannerClaim && bannerTeam != TeamOfSession(session) && !IsOpSession(session)) { RefusePart(conn, q.seq, NetPartRefusal::Claim); return; }
             if (IsMachine(plot->parts[q.partIndex].type)) plot->refundTo = session; // (#854) its contents go to this player (the factory's next layout)
             if (!plot->remove((int)q.partIndex)) { RefusePart(conn, q.seq, NetPartRefusal::NoPart); return; }
             // The refund (a meteorite breaks into ore, rolled here: the authority rolls, #316).
@@ -1382,6 +1433,7 @@ namespace {
             for (const auto& [item, n] : give) { before.emplace(item, rm.inventory.amount(item)); rm.inventory.add(item, n); }
             MsgPlotEdit out; out.session = session; out.seq = q.seq; out.op = NetPartOp::Remove; out.body = q.body; out.plot = q.plot; out.partIndex = q.partIndex;
             SendToJoined(out);
+            if (bannerClaim) { Claims_Remove(bannerClaim); TellTeam(bannerTeam, TextFormat("Claim #%u is gone: its banner was broken", bannerClaim)); }
         } else {
             const Part part = ToPart(q.part);
             if (q.part.type >= (uint8_t)PartType::Count || part.type == PartType::Meteorite || part.type == PartType::PressurePlate || part.type == PartType::GasVent || (IsShape(part.type) && part.material >= BuildMaterialCount())) {
@@ -1406,6 +1458,13 @@ namespace {
                 for (const Session& s : sessions) if (s.id == session && rm.inventory.count(s.loadout.held) > 0) { const ToolType t = ToolOf(s.loadout.held).type; till = t == ToolType::Shovel || t == ToolType::Hoe; }
             const int cost = till ? 0 : PartCostCount(part.type);
             if (!rm.creative && rm.inventory.count(item) < cost) { RefusePart(conn, q.seq, NetPartRefusal::Cost); return; } // (#823) free in creative
+            uint32_t bannerClaim = 0; // (#343) a claim banner claims the land around it for the placer's team (or is refused: budget, overlap)
+            if (const int tier = ClaimBannerTier(part.type); tier >= 0) {
+                const int team = TeamOfSession(session);
+                std::string why;
+                bannerClaim = Claims_Make(team, Claims_Budget(TeamQuests_BodiesReached(team)), p->name, at, kClaimBannerAcross[tier] * 0.5f, (int64_t)time(nullptr), why);
+                if (!bannerClaim) { if (const uint32_t c = ConnOf(session)) SendMsg(c, MsgChat{ 0, why }); RefusePart(conn, q.seq, NetPartRefusal::Claim); return; }
+            }
             if (!plot) { // a new plot, made here first (the clients make the same one from the same id and anchor)
                 if (!p->plots) p->plots = std::make_unique<PlotSet>();
                 plot = p->plots->plotFor(anchor, 0.0f, true);
@@ -1416,6 +1475,11 @@ namespace {
             before.emplace(item, rm.inventory.amount(item));
             if (!rm.creative) rm.inventory.remove(item, cost);
             BuildTool_ApplyPart(*p, *plot, part);
+            if (bannerClaim) {
+                Claims_SetBanner(bannerClaim, plot->id, plot->partAt(part.origin));
+                const int team = TeamOfSession(session);
+                for (const Session& s : sessions) if (s.id == session) TellTeam(team, TextFormat("%s raised a claim banner: claim #%u, %.0f m across", s.name.c_str(), bannerClaim, kClaimBannerAcross[ClaimBannerTier(part.type)]));
+            }
             if (till) TeamEvent(session, "count", "till"); // (#335)
             if (IsMachine(part.type) || IsRocketPart(part.type)) TeamEvent(session, "placed", PartCostItem(part.type)); // (#338) "place" tasks
             MsgPlotEdit out; out.session = session; out.seq = q.seq; out.op = NetPartOp::Place; out.body = q.body; out.plot = plot->id; out.part = q.part;
@@ -1728,6 +1792,7 @@ namespace {
                 if (part >= 0) {
                     const Vector3 bl = plot->toBody({ (b.cell[0] + 1.0f) * kCellSize, b.cell[1] * kCellSize, (b.cell[2] + 1.0f) * kCellSize });
                     const DVec3 at = body->toWorldD(DVec3{ bl.x, bl.y, bl.z });
+                    if (ClaimBlocks(it->second.session, body, bl)) { SendMsg(m.conn, MsgChat{ 0, ClaimRefusal(body, bl) + ": not your bed" }); return; } // (#343)
                     ok = (at - rit->second.player.position).length() <= 8.0
                       && Survival_SetBedFor(rit->second.survival, *body, *plot, part, false);
                 }
