@@ -1,4 +1,5 @@
 #include "rivers.h"
+#include "envflag.h"
 #include "erosion.h"
 #include <unordered_map>
 
@@ -80,7 +81,7 @@ RiverNetwork::RiverNetwork(float radius, unsigned int seed, const std::function<
     cell = 0.5f * PI * R / n;
     const float riverCells = params.riverArea / (cell * cell); // cells draining here before a river starts
     auto tStage = std::chrono::steady_clock::now();
-    const bool timeStages = getenv("RAYLIBGAME_RIVER_TIMING") != nullptr;
+    const bool timeStages = EnvFlag("RAYLIBGAME_RIVER_TIMING");
     auto stage = [&](const char* what) { if (!timeStages) return; const auto t = std::chrono::steady_clock::now(); printf("rivers: before %s: %.2f s\n", what, std::chrono::duration<float>(t - tStage).count()); tStage = t; };
     const int N = 6 * n * n;
     st.cells = N; st.cellSize = cell;

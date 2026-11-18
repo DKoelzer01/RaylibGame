@@ -801,6 +801,44 @@ void Player::anchorTo(Planetoid& body) {
     lastEndPosition = position;
 }
 
+bool Player::netState(const Scene& world, NetState& s) const {
+    Planetoid* b = (grounded && groundBody) ? groundBody : nearest ? nearest : airBody;
+    if (!b) return false;
+    const Quaternion toLocal = QuaternionInvert(b->rotationQuat()); // (dirToLocal normalizes: a speed needs the rotation)
+    const Vector3 rel = grounded ? velocity : Vector3Subtract(velocity, b->surfaceVelocity((position - world.renderOrigin).toFloat()));
+    s.body = b->netId;
+    s.local = b->toLocalD(position);
+    s.vel = Vector3RotateByQuaternion(rel, toLocal);
+    s.grounded = grounded; s.hovering = hovering;
+    s.posture = (uint8_t)posture;
+    s.jumpBuffer = jumpBuffer; s.coyote = coyote; s.jumpLock = jumpLock; s.jetpackFuel = jetpackFuel;
+    return true;
+}
+
+bool Player::applyNetState(Scene& world, const NetState& s) {
+    Planetoid* b = Planetoid::findNet(s.body);
+    if (!b) return false;
+    position = b->toWorldD(s.local);
+    const Vector3 rel = Vector3RotateByQuaternion(s.vel, b->rotationQuat());
+    velocity = s.grounded ? rel : Vector3Add(rel, b->surfaceVelocity((position - world.renderOrigin).toFloat()));
+    grounded = s.grounded; hovering = s.hovering;
+    posture = (Posture)std::min<uint8_t>(s.posture, (uint8_t)Posture::Prone);
+    height = postureHeight(posture);
+    jumpBuffer = s.jumpBuffer; coyote = s.coyote; jumpLock = s.jumpLock; jetpackFuel = s.jetpackFuel;
+    nearest = b;
+    if (grounded) {
+        groundBody = b; groundId = b->id;
+        groundLocal = s.local;
+        groundRotPrev = b->rotationQuat();
+        airBody = nullptr;
+        lastEndPosition = position;
+    } else {
+        groundBody = nullptr;
+        anchorTo(*b); // (sets lastEndPosition)
+    }
+    return true;
+}
+
 void Player::placeAt(Scene& world, Planetoid& body, Vector3 renderFeet) {
     ++spawns;
     position = world.renderOrigin + renderFeet;

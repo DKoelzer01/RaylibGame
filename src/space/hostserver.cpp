@@ -7,6 +7,13 @@
 #include "simclock.h"
 #include "survival.h"
 #include "world.h"
+#include "player.h"
+#include "netclient.h"
+#include "playerinput.h"
+#include "worldtypes.h"
+#include "voxel.h"
+#include <raymath.h>
+#include <deque>
 
 #include <raylib.h>
 #include <algorithm>
@@ -35,6 +42,103 @@ namespace {
     std::vector<Session> sessions;
     uint32_t nextSession = 1;
     constexpr double kTimeoutSeconds = 15.0;           // nothing heard (pings come every second): gone
+
+    // Players (#327): the server's own simulation of every session's player, from the inputs its client sends (one a sim
+    // step; none waiting: the last keys stay held). Kept across a reconnect: the player is where they left.
+    struct Remote {
+        Player player;
+        std::deque<MsgInput> inputs;
+        uint64_t held = 0;          // the last input's keys (repeated by a synthetic step)
+        uint32_t lastApplied = 0;   // the client tick of the last input stepped (the owner replays the ones after)
+        uint32_t lastQueued = 0;    // the newest input tick received (redundant copies of older ones are skipped)
+        int owed = 0;               // synthetic steps not yet paid back by dropping an input
+        uint64_t carried = 0;       // presses of dropped inputs, for the next step
+        bool primed = false;        // kJitterInputs have arrived once: consuming
+        long long tick = 0;         // the server sim tick it has been stepped to
+        Vector3 forwardLocal{ 0, 0, 1 };
+    };
+    std::unordered_map<uint32_t, Remote> remotes;      // by session
+    long long lastSnapshot = 0;
+    constexpr int kSnapshotEvery = 2;                  // sim steps (60 Hz) per snapshot: 30 Hz (ADR #309)
+    constexpr size_t kMaxQueuedInputs = 8;             // more waiting: the client runs ahead; the oldest go
+    constexpr size_t kJitterInputs = 2;                // inputs waiting before the first is stepped (absorbs arrival jitter)
+
+    Planetoid* StartBody(Scene& world) {
+        for (auto& o : world.objects) if (auto* p = dynamic_cast<Planetoid*>(o.get())) return p;
+        return nullptr;
+    }
+    void SpawnRemote(Scene& world, uint32_t session) {
+        Planetoid* body = StartBody(world);
+        const auto* pf = body ? dynamic_cast<const PlanetField*>(body->field.get()) : nullptr;
+        if (!body || !pf) return;
+        // Beside the start, 3 m apart by session (never inside each other).
+        const Vector3 start = pf->findSpawnDir(body->seed);
+        const Vector3 east = Vector3Normalize(Vector3CrossProduct({ 0, 1, 0 }, start));
+        const Vector3 dir = Vector3Normalize(Vector3Add(start, Vector3Scale(east, 3.0f * (float)session / pf->radius)));
+        Remote& r = remotes[session];
+        r.player.spawnOn(world, *body, body->dirToWorld(dir));
+        r.tick = SimTick();
+    }
+    // Every player steps every server tick (Player::update also carries it with its body: a player left unstepped is left
+    // behind as the planet moves). Each step takes one input from a small jitter buffer: none waiting, it repeats the
+    // last keys (a synthetic step) and owes one; when inputs then pile up, one is dropped per step owed, so the server's
+    // steps and the client's line up again. A synthetic step that changed things is set right by the owner's
+    // reconciliation. Inputs are never stepped faster than real time.
+    void StepRemotes(Scene& world) {
+        for (auto& [session, r] : remotes) {
+            for (; r.tick < SimTick(); ++r.tick) {
+                // Dropped inputs (catching up, or too many waiting) keep their one-off presses (a jump) for the next step.
+                auto drop = [&]() { r.carried |= r.inputs.front().pressed; r.inputs.pop_front(); };
+                while (r.owed > 0 && r.inputs.size() > 1) { drop(); --r.owed; }
+                while (r.inputs.size() > kMaxQueuedInputs) drop();
+                if (!r.primed && r.inputs.size() >= kJitterInputs) r.primed = true; // a little buffer before consuming: jitter
+                PlayerInput in;
+                in.enabled = true;
+                if (r.primed && !r.inputs.empty()) {
+                    const MsgInput m = r.inputs.front();
+                    r.inputs.pop_front();
+                    in.held = m.held; in.pressed = m.pressed | r.carried;
+                    r.carried = 0;
+                    r.held = m.held; r.lastApplied = m.tick;
+                    r.forwardLocal = { m.fx, m.fy, m.fz };
+                } else {
+                    in.held = r.held;
+                    if (r.lastApplied) ++r.owed; // (none applied yet: just standing there)
+                }
+                if (Planetoid* b = r.player.nearest ? r.player.nearest : StartBody(world)) r.player.forward = b->dirToWorld(r.forwardLocal);
+                RenderOriginScope frame(world, r.player.position);
+                r.player.update(world, in, SimDt());
+            }
+        }
+    }
+    MsgPlayerState StateOf(Scene& world, uint32_t session, const Remote& r) {
+        MsgPlayerState s;
+        Player::NetState ns;
+        if (r.player.netState(world, ns)) s = NetClient_ToMsg(ns);
+        else if (Planetoid* b = StartBody(world)) { s.body = b->netId; s.local = b->toLocalD(r.player.position); }
+        s.session = session; s.tick = (uint32_t)SimTick(); s.ackInput = r.lastApplied;
+        s.flags |= (r.player.flyMode ? 2 : 0) | (r.player.inWater ? 8 : 0);
+        // The view, body-local, as spherical angles (yaw about the body's y axis from +z, pitch from its xz plane): the
+        // others turn it back with the body (avatars, #328).
+        s.yaw = atan2f(r.forwardLocal.x, r.forwardLocal.z);
+        if (s.yaw < 0.0f) s.yaw += 2.0f * PI;
+        s.pitch = asinf(std::clamp(r.forwardLocal.y, -1.0f, 1.0f));
+        return s;
+    }
+    void SendSnapshots(Scene& world) {
+        if (SimTick() - lastSnapshot < kSnapshotEvery) return;
+        lastSnapshot = SimTick();
+        for (const auto& [conn, p] : peers) {
+            if (!p.joined) continue;
+            for (const auto& [session, r] : remotes) {
+                bool online = false;
+                for (const Session& s : sessions) online = online || (s.id == session && s.online);
+                if (!online) continue;
+                NetWriter w; NetWrite(w, StateOf(world, session, r));
+                Net_Send(conn, w.bytes.data(), (uint32_t)w.bytes.size(), false); // unreliable: the next one replaces it
+            }
+        }
+    }
 
     void Send(uint32_t conn, const NetWriter& w) { Net_Send(conn, w.bytes.data(), (uint32_t)w.bytes.size(), true); }
     template <class M> void SendMsg(uint32_t conn, const M& m) { NetWriter w; NetWrite(w, m); Send(conn, w); }
@@ -78,6 +182,7 @@ namespace {
         SendMsg(conn, w);
         const EventsShower sh = Events_GetShower();
         SendMsg(conn, MsgShower{ sh.start, sh.end, sh.id });
+        if (!remotes.count(s->id)) SpawnRemote(world, s->id); // (a reconnect keeps its player where it was)
         ++joins;
         printf("host: %s joined as session %u%s (connection %u, %d joins so far)\n", h.name.c_str(), s->id, reconnected ? " (reconnected)" : "", conn, joins);
     }
@@ -99,6 +204,14 @@ namespace {
                 MsgPing p;
                 if (!it->second.joined || !NetRead(r, p)) return;
                 SendMsg(m.conn, MsgPong{ p.seq, p.clientTime, (uint32_t)SimTick() });
+                return;
+            }
+            case NetMsg::Input: {
+                MsgInputs in;
+                if (!it->second.joined || !NetRead(r, in)) return;
+                Remote& rm = remotes[it->second.session];
+                for (auto s = in.steps.rbegin(); s != in.steps.rend(); ++s) // oldest first; the ones already here are repeats
+                    if (s->tick > rm.lastQueued) { rm.inputs.push_back(*s); rm.lastQueued = s->tick; }
                 return;
             }
             case NetMsg::Bye: { MsgBye b; if (NetRead(r, b)) Drop(m.conn, NetBye::Quit); return; }
@@ -148,6 +261,8 @@ void Host_Update(Scene& world) {
     }
     for (uint32_t c : gone) Drop(c, NetBye::Quit);
     for (uint32_t c : silent) Drop(c, NetBye::TimedOut);
+    StepRemotes(world);
+    SendSnapshots(world);
 }
 
 bool Host_SaveOnShutdown(Scene& world) {
@@ -170,6 +285,7 @@ void Host_Stop() {
     peers.clear();
     sessions.clear();
     nextSession = 1;
+    remotes.clear();
     gNetRole = NetRole::Offline;
 }
 
@@ -183,4 +299,11 @@ std::vector<NetMessage> Host_TakeLocalClientMessages(uint32_t conn) {
     auto it = localInbox.find(conn);
     if (it != localInbox.end()) out.swap(it->second);
     return out;
+}
+bool Host_PlayerLocal(Scene& world, uint32_t session, uint64_t& body, DVec3& local) {
+    auto it = remotes.find(session);
+    if (it == remotes.end()) return false;
+    const MsgPlayerState s = StateOf(world, session, it->second);
+    body = s.body; local = s.local;
+    return true;
 }

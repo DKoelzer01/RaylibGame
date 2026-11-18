@@ -1,5 +1,6 @@
 #include "netproto.h"
 
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
@@ -130,9 +131,22 @@ bool NetRead(NetReader& r, MsgPing& m) { m.seq = r.u32(); m.clientTime = r.f64()
 void NetWrite(NetWriter& w, const MsgPong& m) { Id(w, NetMsg::Pong); w.u32(m.seq); w.f64(m.clientTime); w.u32(m.serverTick); }
 bool NetRead(NetReader& r, MsgPong& m) { m.seq = r.u32(); m.clientTime = r.f64(); m.serverTick = r.u32(); return Done(r); }
 
-void NetWrite(NetWriter& w, const MsgInput& m) { Id(w, NetMsg::Input); w.u32(m.tick); w.varu(m.held); w.varu(m.pressed); w.angle(m.yaw); w.u16((uint16_t)Q16(m.pitch / 1.6f)); }
-bool NetRead(NetReader& r, MsgInput& m) {
-    m.tick = r.u32(); m.held = r.varu(); m.pressed = r.varu(); m.yaw = r.angle(); m.pitch = (int16_t)r.u16() / 32767.0f * 1.6f;
+void NetWrite(NetWriter& w, const MsgInputs& m) { // newest tick, then the steps newest first (ticks implicit)
+    Id(w, NetMsg::Input);
+    const size_t n = std::min<size_t>(m.steps.size(), 8);
+    w.u32(n ? m.steps[0].tick : 0); w.u8((uint8_t)n);
+    for (size_t i = 0; i < n; ++i) { const MsgInput& s = m.steps[i]; w.varu(s.held); w.varu(s.pressed); w.unit(s.fx, s.fy, s.fz); }
+}
+bool NetRead(NetReader& r, MsgInputs& m) {
+    const uint32_t newest = r.u32();
+    const uint8_t n = r.u8();
+    if (n == 0 || n > 8 || n > newest) r.ok = false;
+    m.steps.clear();
+    for (uint32_t i = 0; i < n && r.ok; ++i) {
+        MsgInput s; s.tick = newest - i;
+        s.held = r.varu(); s.pressed = r.varu(); r.unit(s.fx, s.fy, s.fz);
+        m.steps.push_back(s);
+    }
     return Done(r);
 }
 
@@ -140,10 +154,14 @@ void NetWrite(NetWriter& w, const MsgPlayerState& m) {
     Id(w, NetMsg::PlayerState);
     w.varu(m.session); w.u32(m.tick); w.u32(m.ackInput); w.varu(m.body); w.pos(m.local);
     w.speed(m.vx); w.speed(m.vy); w.speed(m.vz); w.angle(m.yaw); w.u16((uint16_t)Q16(m.pitch / 1.6f)); w.u8(m.flags);
+    auto ms = [&](float s) { w.u8((uint8_t)std::clamp((int)std::lround(s * 1000.0f), 0, 255)); };
+    ms(m.jumpBuffer); ms(m.coyote); ms(m.jumpLock);
+    w.u8((uint8_t)std::clamp((int)std::lround(m.jetpackFuel * 255.0f), 0, 255));
 }
 bool NetRead(NetReader& r, MsgPlayerState& m) {
     m.session = (uint32_t)r.varu(); m.tick = r.u32(); m.ackInput = r.u32(); m.body = r.varu(); m.local = r.pos();
     m.vx = r.speed(); m.vy = r.speed(); m.vz = r.speed(); m.yaw = r.angle(); m.pitch = (int16_t)r.u16() / 32767.0f * 1.6f; m.flags = r.u8();
+    m.jumpBuffer = r.u8() / 1000.0f; m.coyote = r.u8() / 1000.0f; m.jumpLock = r.u8() / 1000.0f; m.jetpackFuel = r.u8() / 255.0f;
     return Done(r);
 }
 
@@ -188,7 +206,7 @@ bool ParseAny(const std::vector<uint8_t>& b) {
         case NetMsg::Bye: { MsgBye m; return NetRead(r, m); }
         case NetMsg::Ping: { MsgPing m; return NetRead(r, m); }
         case NetMsg::Pong: { MsgPong m; return NetRead(r, m); }
-        case NetMsg::Input: { MsgInput m; return NetRead(r, m); }
+        case NetMsg::Input: { MsgInputs m; return NetRead(r, m); }
         case NetMsg::PlayerState: { MsgPlayerState m; return NetRead(r, m); }
         case NetMsg::TerrainEdit: { MsgTerrainEdit m; return NetRead(r, m); }
         case NetMsg::Shower: { MsgShower m; return NetRead(r, m); }
@@ -221,18 +239,21 @@ bool NetProto_Test() {
     { MsgPing a{ 99, 12.5 }, b; std::vector<uint8_t> s; check(RoundTrip(a, b, &s) && b.seq == 99 && b.clientTime == 12.5, "ping"); samples.push_back(s); }
     { MsgPong a{ 99, 12.5, 777 }, b; std::vector<uint8_t> s; check(RoundTrip(a, b, &s) && b.seq == 99 && b.clientTime == 12.5 && b.serverTick == 777, "pong"); samples.push_back(s); }
     {
-        MsgInput a{ 5000, 0x1234ull, 0x10ull, 1.25f, -0.4f }, b; std::vector<uint8_t> s;
-        check(RoundTrip(a, b, &s) && b.tick == 5000 && b.held == a.held && b.pressed == a.pressed && fabsf(b.yaw - a.yaw) < 1e-3f && fabsf(b.pitch - a.pitch) < 1e-3f, "input");
+        MsgInputs a, b; std::vector<uint8_t> s;
+        a.steps = { { 5000, 0x1234ull, 0x10ull, 0.6f, 0.0f, -0.8f }, { 4999, 0x1234ull, 0ull, 0.0f, 1.0f, 0.0f }, { 4998, 0x1ull, 0ull, 1.0f, 0.0f, 0.0f } };
+        const bool rt = RoundTrip(a, b, &s);
+        check(rt && b.steps.size() == 3 && b.steps[0].tick == 5000 && b.steps[2].tick == 4998 && b.steps[0].held == 0x1234ull && b.steps[0].pressed == 0x10ull &&
+              b.steps[2].held == 1ull && fabsf(b.steps[0].fx - 0.6f) < 1e-3f && fabsf(b.steps[0].fz + 0.8f) < 1e-3f && fabsf(b.steps[1].fy - 1.0f) < 1e-3f, "inputs (3 steps)");
         samples.push_back(s);
     }
     {
         MsgPlayerState a; a.session = 3; a.tick = 9001; a.ackInput = 8999; a.body = 0xABCDull; a.local = { 60012.3456, -123.4567, 0.0005 };
-        a.vx = 4.21f; a.vy = -9.81f; a.vz = 0.0f; a.yaw = 6.0f; a.pitch = 1.2f; a.flags = 0b1011;
+        a.vx = 4.21f; a.vy = -9.81f; a.vz = 0.0f; a.yaw = 6.0f; a.pitch = 1.2f; a.flags = 0b1011; a.jumpBuffer = 0.15f; a.jumpLock = 0.08f; a.jetpackFuel = 0.5f;
         MsgPlayerState b; std::vector<uint8_t> s;
         const bool rt = RoundTrip(a, b, &s);
         const double dp = std::fmax(std::fabs(b.local.x - a.local.x), std::fmax(std::fabs(b.local.y - a.local.y), std::fabs(b.local.z - a.local.z)));
         check(rt && b.session == 3 && b.tick == 9001 && b.ackInput == 8999 && b.body == a.body && dp <= 0.0005 + 1e-9 &&
-              fabsf(b.vx - a.vx) < 0.006f && fabsf(b.vy - a.vy) < 0.006f && fabsf(b.yaw - a.yaw) < 1e-3f && fabsf(b.pitch - a.pitch) < 1e-3f && b.flags == a.flags,
+              fabsf(b.vx - a.vx) < 0.006f && fabsf(b.vy - a.vy) < 0.006f && fabsf(b.yaw - a.yaw) < 1e-3f && fabsf(b.pitch - a.pitch) < 1e-3f && b.flags == a.flags && fabsf(b.jumpBuffer - 0.15f) < 1e-3f && fabsf(b.jumpLock - 0.08f) < 1e-3f && b.coyote == 0.0f && fabsf(b.jetpackFuel - 0.5f) < 3e-3f,
               "player state (1 mm, 1 cm/s, 1e-3 rad at 60 km)");
         printf("bench: netproto: a player state is %zu bytes (position error %.4f mm at 60 km)\n", s.size(), dp * 1000.0);
         samples.push_back(s);

@@ -1,4 +1,5 @@
 #include "fluid.h"
+#include "envflag.h"
 #include "gpumem.h"
 #include "cubemarch.h"
 #include "gpucompute.h"
@@ -1257,7 +1258,7 @@ bool GpuInit() {
         G.flags.upload(zeros.data(), 64 * 4);
         G.sinkOut.create(64 * 4, zeros.data());
         // Async readback (#669): buffer storage for the persistent mapping, the pack pass; else the old downloads.
-        G.asyncRb = !getenv("RAYLIBGAME_FLUID_SYNC_READBACK") && GL_Caps().bufferStorage && glad_glFenceSync && G.pack.load("resources/compute/fluid_pack.comp");
+        G.asyncRb = !EnvFlag("RAYLIBGAME_FLUID_SYNC_READBACK") && GL_Caps().bufferStorage && glad_glFenceSync && G.pack.load("resources/compute/fluid_pack.comp");
         if (G.asyncRb) G.packed.create(64 * kCellsPerBrick * 2);
         G.realFlow = G.asyncRb && !(getenv("RAYLIBGAME_FLUID_REALFLOW") && atoi(getenv("RAYLIBGAME_FLUID_REALFLOW")) == 0) && G.flowPack.load("resources/compute/fluid_flowpack.comp");
         if (G.realFlow) G.flowPacked.create(64 * 256 * 4);
@@ -1522,7 +1523,7 @@ void GpuTick(int n) {
     // waking (a read-only ring would wake the next ring: a whole lake). A settled lake then holds no GPU memory.
     static long long slotTick = 0;
     ++slotTick;
-    static const bool keepAll = getenv("RAYLIBGAME_FLUID_KEEP_SLOTS") != nullptr; // A/B: every brick keeps its slot (before #675)
+    static const bool keepAll = EnvFlag("RAYLIBGAME_FLUID_KEEP_SLOTS"); // A/B: every brick keeps its slot (before #675)
     for (auto& s : sites)
         for (auto& kv : s->bricks) {
             Brick& br = *kv.second;
@@ -1634,7 +1635,7 @@ void GpuTick(int n) {
     const float cellSize = WaterField::CellSize();
     rlSetUniform(G.step.uniform("cellSize"), &cellSize, RL_SHADER_UNIFORM_FLOAT, 1);
     G.step.setInt("kColumnCells", ColumnCells());
-    static const bool noEvap = getenv("RAYLIBGAME_FLUID_NOEVAP") != nullptr; // tests: specks kept (water accounting, #454)
+    static const bool noEvap = EnvFlag("RAYLIBGAME_FLUID_NOEVAP"); // tests: specks kept (water accounting, #454)
     static unsigned evapTick = 0;
     GpuFlowResolve(); // which bricks the flow watches need this dispatch (#392)
     G.nbrs.bind(2); G.list.bind(3); G.inS.bind(4); G.flags.bind(5); G.watch.bind(6); G.flux.bind(7); G.faceP.bind(8); G.faceN.bind(9); G.sinkOut.bind(12);
@@ -1774,7 +1775,7 @@ void CpuTick(int n) {
     n *= SubstepScale();
     p.dt = kGpuSubstepSeconds / SubstepScale();
     p.setCell(WaterField::CellSize(), ColumnCells());
-    static const bool noEvap = getenv("RAYLIBGAME_FLUID_NOEVAP") != nullptr;
+    static const bool noEvap = EnvFlag("RAYLIBGAME_FLUID_NOEVAP");
     static unsigned evapTick = 0;
     // #680 diagnosis (DBVOL): water in the processed slots' plain cells before and after (sources, sinks and evaporation aside).
     static const bool dbVol = getenv("DBVOL") != nullptr;
@@ -2059,9 +2060,9 @@ void UpdateRiverFlow() {
     // 50 ms), but a busy sim drops ticks (a refilling river kept ~1800 bricks awake), so per wall second the same flow read low.
     const long long steps = stepCount - lastStep;
     lastStep = stepCount;
-    static const bool wallTime = getenv("RAYLIBGAME_RIVERFLOW_WALL") != nullptr; // A/B: the old per-wall-second measure
+    static const bool wallTime = EnvFlag("RAYLIBGAME_RIVERFLOW_WALL"); // A/B: the old per-wall-second measure
     const float simDt = wallTime ? dt : (float)steps * 0.05f / (float)kSubsteps;
-    static const bool flowLog = getenv("RAYLIBGAME_RIVERFLOW_LOG") != nullptr; // diagnostics: each reach's measure once a second
+    static const bool flowLog = EnvFlag("RAYLIBGAME_RIVERFLOW_LOG"); // diagnostics: each reach's measure once a second
     static std::vector<int> changed;
     for (auto& s : sites) {
         Planetoid* body = Planetoid::find(s->body);
@@ -2134,7 +2135,7 @@ void Fluid::Update(Scene& world, float dt) {
     {
         std::lock_guard<std::mutex> lock(simMx); // free: no job is running
         static bool decided = false;
-        if (!decided) { decided = true; gpuMode = !getenv("FLUID_CPU") && GpuInit(); }
+        if (!decided) { decided = true; gpuMode = !EnvFlag("FLUID_CPU") && GpuInit(); }
         if (gpuMode && !G.lastList.empty()) work = true; // the last dispatch's results still to read back
         for (auto& s : sites) {
             if (!s->pending.empty()) work = true;
@@ -2298,7 +2299,7 @@ float Fluid::VolumeAbove(const Planetoid& body, Vector3 local, float radius, flo
                     if (ex * ex + ey * ey + ez * ez > rC * rC) continue;
                     uint8_t f, fl;
                     uint8_t sh = 0;
-                    if (s.cell(ci, cj, ck, f, fl, sh) && !(fl & (kSolid | kSource)) && CellKind(fl) == 0) { vol += f / 255.0 * WaterField::CellVolume(); if (f && getenv("VOLDBG")) { uint8_t fb = 0, flb = 0, shb = 0; const bool hb = s.cell(ci, cj, ck - 1, fb, flb, shb); printf("voldbg: cell %d %d %d (+%.1f over) fill %d shut %d; below %s fill %d shut %d\n", di, dj, dk, ck - fz, f, sh, !hb ? "none" : (flb & kSolid) ? "SOLID" : "open", fb, shb); } }
+                    if (s.cell(ci, cj, ck, f, fl, sh) && !(fl & (kSolid | kSource)) && CellKind(fl) == 0) { vol += f / 255.0 * WaterField::CellVolume(); if (f && EnvFlag("VOLDBG")) { uint8_t fb = 0, flb = 0, shb = 0; const bool hb = s.cell(ci, cj, ck - 1, fb, flb, shb); printf("voldbg: cell %d %d %d (+%.1f over) fill %d shut %d; below %s fill %d shut %d\n", di, dj, dk, ck - fz, f, sh, !hb ? "none" : (flb & kSolid) ? "SOLID" : "open", fb, shb); } }
                 }
     }
     return (float)vol;

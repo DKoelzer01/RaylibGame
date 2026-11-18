@@ -14,8 +14,10 @@
 //             or Reject (protocol, build, password, full, name already playing, garbled) and closes
 //   client -> Ping every second; host -> Pong (round trip, the server tick). Nothing heard for 15 s: Bye(timed out).
 //   either -> Bye (quit; the server closed). A player who comes back under the same name gets the same session.
-// Replication of edits, players and entities comes next (#327).
+// Players (#327): each session has a server-side Player stepped from its client's inputs (one a sim step) and sent to
+// everyone as PlayerState at 30 Hz (unreliable); the owner reconciles its prediction, the others interpolate.
 
+#include "dvec3.h"
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -37,6 +39,8 @@ bool Host_Listening();
 int Host_Joins();                                     // joins accepted so far
 int Host_Autosaves();                                 // autosaves written so far
 int Host_OnlinePlayers();                             // sessions connected now
+// Tests (#327): a session's player as the server simulates it (body NetId, body-local feet); false: no such player.
+bool Host_PlayerLocal(Scene& world, uint32_t session, uint64_t& body, DVec3& local);
 // Tests: client connections opened in the same process; their messages are handed to the client, not to the host.
 void Host_SetLocalClient(uint32_t conn);
 std::vector<NetMessage> Host_TakeLocalClientMessages(uint32_t conn);
