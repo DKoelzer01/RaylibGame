@@ -595,6 +595,8 @@ int main(int argc, char** argv)
     bool benchQuestPins = false;     // --test-quest-pins (#825): pin three quests (a fourth refused), saved with the player, on the HUD
     bool benchDatabase = false;      // --test-database (#826): the database pop-up at an item's page
     bool shotHud = false;            // --shot-hud (#827): the HUD at 100% and 150% (pinned quests, the off hand, key hints)
+    bool benchTeams = false;         // --test-teams (#604, with --host): invite, accept, team state, team chat, kick
+    bool shotTeam = false;           // --shot-team (#604): the Team screen and the HUD strip, from a sample team (no server)
     bool benchDungeon = false; int dungeonFrame = 0; // --test-dungeon (#719)
     bool benchDungeonTraps = false; int dungeonTrapFrame = 0; // --test-dungeon-traps (#719)
     bool benchSaveSplit = false; // --test-save-split (#346)
@@ -935,6 +937,8 @@ int main(int argc, char** argv)
         if (std::string(argv[i]) == "--test-quest-pins") benchQuestPins = true;
         if (std::string(argv[i]) == "--test-database") benchDatabase = true;
         if (std::string(argv[i]) == "--shot-hud") shotHud = true;
+        if (std::string(argv[i]) == "--test-teams") benchTeams = true;
+        if (std::string(argv[i]) == "--shot-team") shotTeam = true;
         if (std::string(argv[i]) == "--test-dungeon") benchDungeon = true;
         if (std::string(argv[i]) == "--test-dungeon-traps") benchDungeonTraps = true; // #719: best with --sandbox
         if (std::string(argv[i]) == "--test-save-split") benchSaveSplit = true; // #346: world + player records
@@ -8835,7 +8839,7 @@ int main(int argc, char** argv)
                         }
                         benchWalkSeconds = 0.0;
                     }
-                } else if ((WorldIdle() && benchDigStrokes == 0 && !benchPaint && !benchSaveLoad && benchWalkSeconds <= 0.0 && benchMineStrokes == 0 && minePhase != 2 && benchFlySeconds <= 0.0 && !benchSuffocate && benchOrbitSeconds <= 0.0 && !benchRide && !benchPark && !benchGravity && !benchPrecision && !benchMantle && !benchAirJump && !benchMoon && !benchHole && !benchWall && !benchDoorway && !benchLedge && !benchTor && !benchMachines && !benchFall && !benchHover && !benchNetIds && !benchNet && !benchTwoPlayers && !benchFingerprint && !benchInterest && !benchTeleClose && !benchMenus && !benchWater && !benchFlyFollow && !benchHotbar && !benchInventory && !benchMap && !benchViewmodel && !benchQuests && !benchHunger && !benchFarm && !benchAnimals && !benchThreats && !benchAnimalPath && !benchDam && !benchFlowMeter && !benchPartWall && !benchPressure && benchShotTabs == 0 && !benchForest && !benchFlow && !benchPond && !benchBucket && !benchWaterSpeed && benchFluidLoad <= 0.0f && !benchFlowShade && !benchPump && !benchTerrain && !benchWind && !benchCampfire && !benchCaveMouth && !benchMountain && !benchShelter && !benchRoom && !benchFacing && !benchDungeon && !benchDungeonTraps && !benchSaveSplit && !benchPosture && !benchPause && !benchBite && !benchPlacement && !benchShotDig && !benchShadow && !benchParticles && !benchBiomes && !benchOil && !benchSpring && !benchShotAnimals && !benchShotAvatar && !benchShotMachines && benchShotBiomes < 0 && !benchFarForest && !benchRecipes && !benchWeather && !benchDecor && !benchMaterials && !benchDamage && !benchCrafting && !benchSuit && !benchTools && !benchRivers && !benchRing && !benchRocket && !benchStation && !benchBlueprint && !benchSmallBody && !benchTrees && !benchChop && benchPersist == 0 && benchBuild == 0 && benchFactory == 0 && !benchCombat && !benchHost && !benchJoin && !benchTimeFollow && benchPlayerCost == 0 && !benchNetAnimals && !benchNetQuests && !benchNetMachines && !benchNetAbuse && !benchNetMove && !benchNetDig && !benchNetBuild && !benchNetSync && !benchShotMpMenu && !benchMpMenu && benchMpBots == 0 && !benchShower && !benchProgression && (benchUnfocus <= 0.0f || unfocusPhase >= 6)) || GetTime() > 600.0) {
+                } else if ((WorldIdle() && benchDigStrokes == 0 && !benchPaint && !benchSaveLoad && benchWalkSeconds <= 0.0 && benchMineStrokes == 0 && minePhase != 2 && benchFlySeconds <= 0.0 && !benchSuffocate && benchOrbitSeconds <= 0.0 && !benchRide && !benchPark && !benchGravity && !benchPrecision && !benchMantle && !benchAirJump && !benchMoon && !benchHole && !benchWall && !benchDoorway && !benchLedge && !benchTor && !benchMachines && !benchFall && !benchHover && !benchNetIds && !benchNet && !benchTwoPlayers && !benchFingerprint && !benchInterest && !benchTeleClose && !benchMenus && !benchWater && !benchFlyFollow && !benchHotbar && !benchInventory && !benchMap && !benchViewmodel && !benchQuests && !benchHunger && !benchFarm && !benchAnimals && !benchThreats && !benchAnimalPath && !benchDam && !benchFlowMeter && !benchPartWall && !benchPressure && benchShotTabs == 0 && !benchForest && !benchFlow && !benchPond && !benchBucket && !benchWaterSpeed && benchFluidLoad <= 0.0f && !benchFlowShade && !benchPump && !benchTerrain && !benchWind && !benchCampfire && !benchCaveMouth && !benchMountain && !benchShelter && !benchRoom && !benchFacing && !benchDungeon && !benchDungeonTraps && !benchSaveSplit && !benchPosture && !benchPause && !benchBite && !benchPlacement && !benchShotDig && !benchShadow && !benchParticles && !benchBiomes && !benchOil && !benchSpring && !benchShotAnimals && !benchShotAvatar && !benchShotMachines && benchShotBiomes < 0 && !benchFarForest && !benchRecipes && !benchWeather && !benchDecor && !benchMaterials && !benchDamage && !benchCrafting && !benchSuit && !benchTools && !benchRivers && !benchRing && !benchRocket && !benchStation && !benchBlueprint && !benchSmallBody && !benchTrees && !benchChop && benchPersist == 0 && benchBuild == 0 && benchFactory == 0 && !benchCombat &&  !benchHost && !benchTeams && !benchJoin && !benchTimeFollow && benchPlayerCost == 0 && !benchNetAnimals && !benchNetQuests && !benchNetMachines && !benchNetAbuse && !benchNetMove && !benchNetDig && !benchNetBuild && !benchNetSync && !benchShotMpMenu && !benchMpMenu && benchMpBots == 0 && !benchShower && !benchProgression && (benchUnfocus <= 0.0f || unfocusPhase >= 6)) || GetTime() > 600.0) {
                     benchStart = GetTime();
                     printf("bench: world ready after %.2f s (%d chunks, avg build %.2f ms of which sampling %.2f ms, %d worker threads)\n",
                         GetWorldStats().lastGenerationSeconds, GetWorldStats().chunks, GetWorldStats().avgBuildMs, GetWorldStats().avgSampleMs, GetWorldStats().workerThreads);
@@ -9696,6 +9700,27 @@ int main(int argc, char** argv)
         }
         // --test-save-split (#346): the world file and the player's record (gamesave.cpp), once the world is up.
         if (benchSaveSplit && gameState == 1 && !loading && WorldIdle()) { GameSave_TestSplit(world); benchSaveSplit = false; }
+        // --shot-team (#604): the Team screen and the HUD's teammates from a sample team (as a server would send it: you the
+        // owner, bob online at 72, carol offline, an invite waiting), without a server; screenshots of both.
+        if (shotTeam && gameState == 1 && !loading && WorldIdle()) {
+            static NetClient sample;
+            static int f = 0;
+            if (f == 0) {
+                sample.state = NetClient::State::Joined;
+                sample.team.team = 2; sample.team.name = "Pioneers"; sample.team.invite = "Rook's_team";
+                sample.team.members = { { "you", true, true, true, 100.0f }, { "bob", true, false, false, 72.0f }, { "carol", false, false, false, 0.0f } };
+                gNetClient = &sample;
+                GameUI_ShowScreen(GameScreen::Team);
+            }
+            if (f == 15) { TakeScreenshot("bench_team_screen.png"); GameUI_ToggleInventory(); }
+            if (f == 30) {
+                TakeScreenshot("bench_team_hud.png");
+                gNetClient = nullptr;
+                printf("bench: team (#604): bench_team_screen.png, bench_team_hud.png -> PASS\n");
+                shotTeam = false;
+            }
+            ++f;
+        }
         // --shot-hud (#827): the HUD with two quests pinned and a torch in the off hand, at the interface size 100% and 150%;
         // the key hints follow the bindings (a rebound Tab shows as I).
         if (shotHud && gameState == 1 && !loading && WorldIdle()) {
@@ -11048,6 +11073,47 @@ int main(int argc, char** argv)
         //   - autosave: with a short --autosave-minutes (<= 1) the test waits for one autosave;
         //   - the connection lifecycle (#321) with clients opened in this process over loopback (below): the welcome's world
         //     description (seed, fingerprint) and shower must match the host's. That part SKIPs without ENABLE_GNS.
+        // --test-teams (#604, with --host <save>): alice, bob and carol join over loopback (clients in this process); alice
+        // invites bob, bob sees it and accepts; both hear a team of two (bob online, with his health); bob's team chat reaches
+        // alice, not carol; carol (not the owner, another team) can't kick; alice kicks bob: a team of one again.
+        if (benchTeams && gameState == 1 && !loading && WorldIdle() && Host_Listening()) {
+            static NetClient alice, bob, carol;
+            static int step = 0;
+            static double t0 = -1.0, stepAt = 0.0;
+            static bool invited = false, together = false, healthSeen = false, chatToTeam = false, chatNotOthers = true, carolRefused = false, kicked = false;
+            if (t0 < 0.0) t0 = GetTime();
+            const char* addr = TextFormat("127.0.0.1:%d", hostPort);
+            for (NetClient* c : { &alice, &bob, &carol }) NetClient_Update(*c);
+            auto said = [](const NetClient& c, const char* text) { for (const MsgChat& m : c.chat) if (m.text.find(text) != std::string::npos) return true; return false; };
+            if (step == 0) { NetClient_Connect(alice, addr, "alice"); NetClient_Connect(bob, addr, "bob"); NetClient_Connect(carol, addr, "carol"); step = 1; }
+            else if (step == 1 && alice.state == NetClient::State::Joined && bob.state == NetClient::State::Joined && carol.state == NetClient::State::Joined && bob.teamMsgs > 0) {
+                NetClient_SendChat(alice, "/team invite bob"); step = 2;
+            } else if (step == 2 && !bob.team.invite.empty()) {
+                invited = true; NetClient_SendChat(bob, "/team accept"); step = 3;
+            } else if (step == 3 && alice.team.members.size() == 2 && bob.team.members.size() == 2 && alice.team.team == bob.team.team) {
+                together = true;
+                for (const auto& m : alice.team.members) if (m.name == "bob") healthSeen = m.online && m.health > 0.0f;
+                NetClient_SendChat(bob, "/t hello team"); stepAt = GetTime(); step = 4;
+            } else if (step == 4 && (said(alice, "[team] bob: hello team") || GetTime() - stepAt > 3.0)) {
+                chatToTeam = said(alice, "[team] bob: hello team"); chatNotOthers = !said(carol, "hello team");
+                NetClient_SendChat(carol, "/team kick bob"); stepAt = GetTime(); step = 5;
+            } else if (step == 5 && (said(carol, "isn't in your team") || GetTime() - stepAt > 3.0)) {
+                carolRefused = said(carol, "isn't in your team") && bob.team.members.size() == 2; // (carol owns her own team of one: bob isn't in it)
+                NetClient_SendChat(alice, "/team kick bob"); stepAt = GetTime(); step = 6;
+            } else if (step == 6 && ((bob.team.members.size() == 1 && alice.team.members.size() == 1) || GetTime() - stepAt > 4.0)) {
+                kicked = bob.team.members.size() == 1 && alice.team.members.size() == 1 && bob.team.team != alice.team.team &&
+                         Teams_Of(PlayerId_FromName("bob")) != Teams_Of(PlayerId_FromName("alice"));
+                step = 7;
+            }
+            if (step == 7 || GetTime() - t0 > 60.0) {
+                const bool ok = invited && together && healthSeen && chatToTeam && chatNotOthers && carolRefused && kicked;
+                printf("bench: teams (#604): invite seen %d, accepted into one team %d (bob online with health %d); team chat to the team %d, not others %d; "
+                       "a non-owner's kick refused %d; the owner's kick: a team of one again %d; step %d -> %s\n",
+                       invited, together, healthSeen, chatToTeam, chatNotOthers, carolRefused, kicked, step, ok ? "PASS" : "FAIL");
+                for (NetClient* c : { &alice, &bob, &carol }) NetClient_Disconnect(*c);
+                benchTeams = false;
+            }
+        }
         if (benchHost && gameState == 1 && !loading && WorldIdle()) {
             static double t0 = -1.0;
             if (t0 < 0.0) t0 = GetTime();
