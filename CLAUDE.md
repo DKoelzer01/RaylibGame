@@ -11,7 +11,17 @@ C++ raylib 5.5 planetoid survival game. `src/engine` (static lib), `src/space` -
 - Never overwrite the user's root `./game.exe` (their playtest build). Any new build dir must be
   configured with `-DGAME_OUTPUT_DIR=<dir>/bin`.
 - While the user is playtesting, never close their game.exe. Other game processes (old bench or
-  regression copies) may be stopped.
+  regression copies) may be stopped. During a playtest no agent runs games, tests or builds at all (not even -j 4:
+  compiles starved the game's workers, #387).
+- Agent game runs never use the borderless monitor-size window (`--native-window`, `--fullscreen`, or a menu-driven
+  run that opens the game's own window) and never take focus while the user is at the machine: a run grabbed the
+  user's input (2026-11-15). Use the bench-sized window.
+- The user's saves may be copied to bench or reproduce issues (user, 2026-11-15): copy `saves/<name>.sav` and its
+  side files (`.erosion`, `.worldgen`) into your own worktree or a temp dir; never modify the originals.
+- The user's VS Code launches run game.exe under gdb (cppdbg). Until 2026-11-15 18:14 that meant the NT debug heap:
+  chunk builds ~26x slower (#387), so older playtest logs overstate load times and backlogs. The launch configs now
+  set `_NO_DEBUG_HEAP=1`, and the "Play (no debugger)" tasks run it plain. When a user log looks far slower than a
+  local run, check for a debugger first.
 - New worktree: copy the gitignored `CMakeUserPresets.json` in; configure with
   `-DGAME_OUTPUT_DIR=<worktree>/build/check/bin`; if the first configure fails reading `a.exe` (antivirus scan), rerun it.
 - No python on this machine. Source files are CRLF: use the Edit tool for multi-line edits; `perl -0`/sed
