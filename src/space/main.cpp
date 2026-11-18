@@ -426,6 +426,7 @@ int main(int argc, char** argv)
     bool benchShelter = false; int shelterPhase = 0; double shelterT0 = 0.0; Vector3 shelterEye{}, shelterLook{}; // --shot-shelter (#369)
     bool benchRoom = false; int roomPhase = 0; double roomT0 = 0.0; uint32_t roomPlot = 0; Vector3 roomEye{}, roomLook{}; // --shot-room (#369)
     bool benchFacing = false; // --test-facing (#196)
+    bool benchPlacement = false; // --test-placement (#550, #551): parts centred on the aim, no flicker between two cells
     bool benchPumpHand = false; // --test-pump-hand (#280): the pump test with a hand pump worked for 60 s
     bool benchPumpBoiler = false; int pumpBoilerPart = -1; // --test-pump-boiler (#229 review): the pipes end at a full boiler; the world loses no water
     bool benchCaveWater = false; int caveWaterPhase = 0; double caveWaterT0 = 0.0; Vector3 caveAt{}, caveOpenAt{}, caveRiverDir{}; float caveLevel = 0.0f, caveDist = 0.0f; // --test-cave-water (#559)
@@ -717,6 +718,7 @@ int main(int argc, char** argv)
         if (std::string(argv[i]) == "--shot-shelter") benchShelter = true;
         if (std::string(argv[i]) == "--shot-room") benchRoom = true;
         if (std::string(argv[i]) == "--test-facing") benchFacing = true;
+        if (std::string(argv[i]) == "--test-placement") benchPlacement = true;
         if (std::string(argv[i]) == "--shot-shadow") benchShadow = true;
         if (std::string(argv[i]) == "--shot-particles") benchParticles = true;
         if (std::string(argv[i]) == "--test-biomes") benchBiomes = true;
@@ -1022,6 +1024,26 @@ int main(int argc, char** argv)
         }
     for (int i = 1; i < argc; ++i)
         if (std::string(argv[i]) == "--shot-icons") printf("bench: icons: %d items -> bench_icons.png (%s)\n", (int)itemDB.items().size(), ItemIcons_SaveSheet("bench_icons.png") ? "saved" : "FAILED");
+    for (int i = 1; i < argc; ++i) {
+        if (std::string(argv[i]) != "--test-heat") continue;
+        // --test-heat (#580): hot stacks merge by amount, glow by heat, cool to nothing; cold adds stay cold.
+        Inventory inv;
+        inv.addAmount("iron_ingot", 2, 1.0f);
+        const float fresh = inv.grid()[0].heat;
+        const ItemGlow g0 = Item_Glow(inv.grid()[0]);
+        inv.addAmount("iron_ingot", 2, 0.0f);
+        const float mixed = inv.grid()[0].heat;
+        inv.addAmount("stone", 5);
+        const float stone = inv.grid()[1].heat;
+        inv.cool(Inventory::kCoolSeconds * 0.25f);
+        const float cooled = inv.grid()[0].heat;
+        inv.cool(Inventory::kCoolSeconds);
+        const ItemGlow g1 = Item_Glow(inv.grid()[0]);
+        const bool ok = fresh == 1.0f && fabsf(mixed - 0.5f) < 1e-4f && stone == 0.0f && fabsf(cooled - 0.25f) < 1e-3f && inv.grid()[0].heat == 0.0f &&
+                        g0.strength > 0.9f && g0.color.r == 255 && g1.strength == 0.0f;
+        printf("bench: heat: fresh %.2f (glow %.2f, rgb %d,%d,%d), merged with as many cold %.2f, stone %.2f, after a quarter of the cooling %.2f, cooled %.2f (glow %.2f) -> %s\n",
+               fresh, g0.strength, g0.color.r, g0.color.g, g0.color.b, mixed, stone, cooled, inv.grid()[0].heat, g1.strength, ok ? "PASS" : "FAIL");
+    }
     GameSave_Register();
     {   // Scenes own GPU resources: keep them in a scope that ends before CloseWindow().
     Scene mainMenu("mainMenu", true); // Main menu scene;
@@ -4793,6 +4815,70 @@ int main(int argc, char** argv)
                     world.camera = keep; player.flyMode = flyKeep; buildTool.active = false;
                     printf("bench: facing: %s\n", good == 4 && wallOk && stuck && reset ? "PASS" : "FAIL");
                     benchFacing = false;
+                } else if (benchPlacement && WorldIdle()) {
+                    // --test-placement (#550, #551): a furnace (1 m cube) aimed at bare ground 20 m out goes down centred on
+                    // the aim point (it grew from its corner there); aimed at the ground beside it, the box's cell does not
+                    // flip back and forth while the aim wobbles 3 cm either side of the point where it moves on.
+                    Planetoid* p = dynamic_cast<Planetoid*>(world.objects[0].get());
+                    player.spawnOn(world, *p, StartSpawnDir(*p));
+                    const Vector3 feet = (player.position - world.renderOrigin).toFloat();
+                    const Vector3 flat = Vector3Normalize(Vector3Subtract(player.forward, Vector3Scale(player.up, Vector3DotProduct(player.forward, player.up))));
+                    const Vector3 fl = p->dirToLocal(flat);
+                    TerrainHit th;
+                    RaycastTerrain(world, Ray{ Vector3Add(Vector3Add(feet, Vector3Scale(flat, 20.0f)), Vector3Scale(player.up, 20.0f)), Vector3Negate(player.up) }, 60.0f, th);
+                    const Vector3 g = th.local, up = Vector3Normalize(g);
+                    const Camera3D keep = world.camera;
+                    buildTool.active = true; buildTool.orientManual = false;
+                    buildTool.part = (int)PartType::Furnace;
+                    player.nearest = p;
+                    auto aimAt = [&](Vector3 at) { // from 3 m back along the view and 2 m up
+                        const Vector3 eye = Vector3Add(Vector3Subtract(at, Vector3Scale(fl, 3.0f)), Vector3Scale(up, 2.0f));
+                        world.camera.position = p->toWorld(eye);
+                        world.camera.target = p->toWorld(at);
+                        world.camera.up = p->dirToWorld(up);
+                        BuildTool_Update(world, PlayerInput::None(), true);
+                    };
+                    bool ok = true;
+                    aimAt(g);
+                    Vector3 newOrigin{}; Int3 o{};
+                    const bool fresh = BuildTool_AimPlacement(&newOrigin, &o) == nullptr;
+                    float off = 1e9f;
+                    if (fresh) {
+                        if (!p->plots) p->plots = std::make_unique<PlotSet>();
+                        Plot* plot = p->plots->plotFor(newOrigin, 0.0f, true);
+                        const Part part{ PartType::Furnace, o, (uint8_t)BuildTool_AimOrient(), 0 };
+                        std::vector<std::pair<Int3, CellShape>> fp;
+                        Plot::Footprint(part, fp);
+                        Vector3 mid{}; int lowY = INT32_MAX;
+                        for (const auto& c : fp) { mid = Vector3Add(mid, Vector3{ c.first.x + 0.5f, 0.0f, c.first.z + 0.5f }); lowY = std::min(lowY, c.first.y); }
+                        mid = Vector3Scale(mid, (float)kCellSize / (float)fp.size());
+                        mid.y = (float)lowY * kCellSize;
+                        off = Vector3Distance(plot->toBody(mid), g); // the bottom face's middle from the aim
+                        BuildTool_Place(*p, *plot, part, false);
+                    }
+                    printf("bench: placement: on bare ground, a new plot: %s; the furnace's bottom middle is %.3f m from the aim (#550)\n", fresh ? "yes" : "NO", off);
+                    ok = ok && fresh && off < 0.05f;
+                    // Beside it (3 m on), step the aim along the view in 1 cm steps until the box moves a cell, then wobble.
+                    const Vector3 side = Vector3Normalize(Vector3CrossProduct(fl, up));
+                    const Vector3 base = Vector3Add(g, Vector3Scale(side, 3.0f));
+                    auto originAt = [&](float s) { aimAt(Vector3Add(base, Vector3Scale(fl, s))); Int3 r{}; BuildTool_AimPlacement(nullptr, &r); return r; };
+                    const Int3 o0 = originAt(0.0f);
+                    float flip = -1.0f;
+                    for (float s = 0.01f; s < 1.0f; s += 0.01f) { const Int3 r = originAt(s); if (!(r == o0)) { flip = s; break; } }
+                    int changes = 0;
+                    if (flip > 0.0f) {
+                        Int3 prev = originAt(flip);
+                        for (int k = 0; k < 20; ++k) {
+                            const Int3 r = originAt(flip + (k % 2 ? 0.03f : -0.03f));
+                            if (!(r == prev)) ++changes;
+                            prev = r;
+                        }
+                    }
+                    printf("bench: placement: beside it the box moves a cell %.2f m on; wobbling 3 cm either side of that: %d of 20 aims moved it (#551)\n", flip, changes);
+                    ok = ok && flip > 0.0f && changes <= 1; // the first step back may move it once, never back and forth
+                    world.camera = keep; buildTool.active = false;
+                    printf("bench: placement: %s\n", ok ? "PASS" : "FAIL");
+                    benchPlacement = false;
                 } else if (benchRoom && (roomPhase > 0 || WorldIdle())) {
                     // --shot-room (#369): a stone room 5 x 5 m, 3 m high, roofed, a doorway 1.5 m wide in one wall; at night, from
                     // inside by the far wall, looking back at the doorway. Unlit, the room should be near black.
@@ -7916,7 +8002,7 @@ int main(int argc, char** argv)
                         }
                         benchWalkSeconds = 0.0;
                     }
-                } else if ((WorldIdle() && benchDigStrokes == 0 && !benchPaint && !benchSaveLoad && benchWalkSeconds <= 0.0 && benchMineStrokes == 0 && minePhase != 2 && benchFlySeconds <= 0.0 && !benchSuffocate && benchOrbitSeconds <= 0.0 && !benchRide && !benchPark && !benchGravity && !benchPrecision && !benchMantle && !benchAirJump && !benchMoon && !benchHole && !benchWall && !benchDoorway && !benchLedge && !benchTor && !benchMachines && !benchFall && !benchHover && !benchNetIds && !benchNet && !benchTwoPlayers && !benchFingerprint && !benchInterest && !benchTeleClose && !benchMenus && !benchWater && !benchFlyFollow && !benchHotbar && !benchInventory && !benchMap && !benchViewmodel && !benchQuests && !benchHunger && !benchFarm && !benchAnimals && !benchThreats && !benchAnimalPath && !benchDam && !benchFlowMeter && !benchPartWall && !benchPressure && benchShotTabs == 0 && !benchForest && !benchFlow && !benchPond && !benchBucket && !benchWaterSpeed && benchFluidLoad <= 0.0f && !benchFlowShade && !benchPump && !benchTerrain && !benchShelter && !benchRoom && !benchFacing && !benchShadow && !benchParticles && !benchBiomes && !benchOil && !benchSpring && !benchShotAnimals && !benchShotMachines && benchShotBiomes < 0 && !benchFarForest && !benchRecipes && !benchWeather && !benchDecor && !benchMaterials && !benchDamage && !benchCrafting && !benchSuit && !benchTools && !benchRivers && !benchRing && !benchRocket && !benchStation && !benchBlueprint && !benchSmallBody && !benchTrees && !benchChop && benchPersist == 0 && benchBuild == 0 && benchFactory == 0 && !benchCombat && !benchHost && !benchShower && !benchProgression && (benchUnfocus <= 0.0f || unfocusPhase >= 6)) || GetTime() > 600.0) {
+                } else if ((WorldIdle() && benchDigStrokes == 0 && !benchPaint && !benchSaveLoad && benchWalkSeconds <= 0.0 && benchMineStrokes == 0 && minePhase != 2 && benchFlySeconds <= 0.0 && !benchSuffocate && benchOrbitSeconds <= 0.0 && !benchRide && !benchPark && !benchGravity && !benchPrecision && !benchMantle && !benchAirJump && !benchMoon && !benchHole && !benchWall && !benchDoorway && !benchLedge && !benchTor && !benchMachines && !benchFall && !benchHover && !benchNetIds && !benchNet && !benchTwoPlayers && !benchFingerprint && !benchInterest && !benchTeleClose && !benchMenus && !benchWater && !benchFlyFollow && !benchHotbar && !benchInventory && !benchMap && !benchViewmodel && !benchQuests && !benchHunger && !benchFarm && !benchAnimals && !benchThreats && !benchAnimalPath && !benchDam && !benchFlowMeter && !benchPartWall && !benchPressure && benchShotTabs == 0 && !benchForest && !benchFlow && !benchPond && !benchBucket && !benchWaterSpeed && benchFluidLoad <= 0.0f && !benchFlowShade && !benchPump && !benchTerrain && !benchShelter && !benchRoom && !benchFacing && !benchPlacement && !benchShadow && !benchParticles && !benchBiomes && !benchOil && !benchSpring && !benchShotAnimals && !benchShotMachines && benchShotBiomes < 0 && !benchFarForest && !benchRecipes && !benchWeather && !benchDecor && !benchMaterials && !benchDamage && !benchCrafting && !benchSuit && !benchTools && !benchRivers && !benchRing && !benchRocket && !benchStation && !benchBlueprint && !benchSmallBody && !benchTrees && !benchChop && benchPersist == 0 && benchBuild == 0 && benchFactory == 0 && !benchCombat && !benchHost && !benchShower && !benchProgression && (benchUnfocus <= 0.0f || unfocusPhase >= 6)) || GetTime() > 600.0) {
                     benchStart = GetTime();
                     printf("bench: world ready after %.2f s (%d chunks, avg build %.2f ms of which sampling %.2f ms, %d worker threads)\n",
                         GetWorldStats().lastGenerationSeconds, GetWorldStats().chunks, GetWorldStats().avgBuildMs, GetWorldStats().avgSampleMs, GetWorldStats().workerThreads);
@@ -8172,6 +8258,7 @@ int main(int argc, char** argv)
             }
             if (ship.piloted && ship.lastImpact > 12.0f) survival.health -= (ship.lastImpact - 12.0f) * 3.0f; // crash damage
             if (!loading) Survival_Update(world, simDt, PlayerInput_If(gameInput, stepIn));
+            if (!loading) inventory.cool(simDt); // hot items cool (#580)
             if (!loading) Farm_Update(world, simDt * timeScale * gDebugTimeScale * Rocket_Warp()); // crops grow on world time
             if (!loading) Animals_Update(world, simDt, simDt * timeScale * gDebugTimeScale * Rocket_Warp(), gameInput && alive && !ship.piloted);
             if (!loading) Weather_Update(world, simDt * timeScale * gDebugTimeScale); // the sky, rain and snow, lightning
