@@ -50,4 +50,23 @@ void TerrainTool_Draw3D();                                // inside BeginMode3D 
 bool TerrainTool_TestVein(Planetoid& body, Vector3 homeDir); // --test-vein (#207): a deposit mined 93% by hand comes loose
 void TerrainTool_DrawHUD();                               // 2D, after the scene
 
+// Multiplayer (#329): what a dig stroke yields, with no side effects (the local stroke and the server's validated one
+// both use it, so a client's inventory gets exactly what the server credits). `centre`/`r` the carve sphere, `hitLocal`
+// the aimed surface point (materials as drawn there), all body-local. Gems and seeds roll on GameRng (the server's).
+#include <map>
+struct DigYield {
+    std::map<std::string, float> items;
+    const char* gem = nullptr;   // a rare gem or quartz (+1)
+    const char* seed = nullptr;  // grass turned up a seed (+1)
+    bool ore = false;            // some ore came out (a vein may be nearly done)
+};
+DigYield TerrainTool_DigYield(Planetoid& p, Vector3 centre, float r, Vector3 hitLocal, bool softOnly, int gemBoost);
+int TerrainTool_FillerMaterial(const std::string& item); // the VoxelMaterial a filler places (-1: not a filler)
+const char* TerrainTool_ItemAt(Planetoid& p, Vector3 local, int material); // the item a material there digs out (ore: its kind)
+// Set while joined to a server (#329): a dig or place stroke is sent as a request instead of applied and paid here;
+// the server validates it, applies it in its order and credits or charges the inventory (deltas come back).
+// dig: the carve sphere; place: the soft blob, `item` the filler that pays for it.
+using TerrainToolNetEdit = std::function<void(Planetoid& p, bool dig, Vector3 hitLocal, Vector3 centre, float radius, const std::string& item)>;
+extern TerrainToolNetEdit gTerrainToolNetEdit;
+
 #endif

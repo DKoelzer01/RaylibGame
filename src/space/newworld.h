@@ -12,6 +12,7 @@ struct NewWorldChoice {
     enum Kind { None, Create, Cancel } kind = None;
     unsigned int seed = 0;
     WorldGenParams params;
+    int difficulty = 1; // 0 peaceful, 1 normal, 2 hard: chosen here and kept by the world for good (#526)
 };
 
 void NewWorld_Open();               // a random seed, default parameters, the preview starts building

@@ -22,7 +22,8 @@ uniform sampler2D roughAoTexture;  // MATERIAL_MAP_ROUGHNESS: R = roughness, G =
 uniform sampler2DArray terrainLayers; // planet palette: dirt, sand, gravel, grass, snow, ice, stone, clay, granite, basalt, sandstone, limestone, marble (terrainlayers.h)
 uniform sampler2DArray terrainDetail; // its detail maps: normal XY, roughness, AO (unit 12)
 
-flat in vec3 fragClipMax;     // chunk-local overlap clip (lighting.vs: a uniform or the arena record)
+flat in vec3 fragClipMax;
+flat in float fragLodFade;   // #243: 0 none; (0, 1) fading in; (-1, 0) fading out (the share already given to its replacement)     // chunk-local overlap clip (lighting.vs: a uniform or the arena record)
 flat in uint fragMatIds;       // #480 (arena): the triangle's three material ids, 8 bits each (fragColor.xyz: their barycentrics)
 uniform mat4 matModel;          // body-local -> world (DrawMesh, or the arena flush: all chunks of a body share the rotation)
 uniform float texScale;            // world units -> texture repeats
@@ -50,6 +51,7 @@ uniform vec3 fogColor;          // linear
 uniform float fogDensity;       // 0 = off
 uniform vec4 fogShell;          // atmosphere: render-space centre + outer radius (w = 0: fog the whole distance)
 uniform float treeDistance;     // real trees are drawn to here (m); the canopy tint takes over near it
+uniform float farForest;        // #745: 1 = deeper canopy tint, starting earlier and denser (RAYLIBGAME_FAR_FOREST)
 
 out vec4 finalColor;
 
@@ -122,8 +124,37 @@ vec3 triplanarNormal(sampler2D tex, Triplanar t, vec3 n)
 // Sun shadows: two cascades, hardware PCF (shadow.glsl). The far map is MATERIAL_MAP_BRDF, the near one
 // MATERIAL_MAP_HEIGHT.
 #include "shadow.glsl"
+#include "skyphys_haze.glsl" // #142: the physical haze colour (off by default)
 #include "hemisphere.glsl"
-float shadowFactor(vec3 worldPos, vec3 n, vec3 l) { return sunShadowNormal(worldPos, n, l, 4); }
+// #138: past the far cascade (+-200 m) the wide terrain-only cascade (+-2 km, ~2 m texels, MATERIAL_MAP_EMISSION), so
+// mountains shadow valleys at dawn and dusk. It fills in exactly where the far cascade fades to lit at its edge.
+uniform sampler2DShadow shadowMapWide;
+uniform mat4 lightSpaceWide;
+uniform vec2 shadowWide;     // texel (m), depth range (m)
+uniform int wideShadowOn;
+float shadowFactor(vec3 worldPos, vec3 n, vec3 l)
+{
+    float s = sunShadowNormal(worldPos, n, l, 4);
+    if (wideShadowOn == 0 || shadowMapResolution <= 0) return s;
+    // The far cascade's edge weight here (as shadowCascade works it out): 1 inside, 0 beyond.
+    vec4 ls = lightSpaceMatrix * vec4(worldPos + n * shadowTexel.y, 1.0);
+    vec3 q = ls.xyz / ls.w * 0.5 + 0.5;
+    vec2 d = min(q.xy, 1.0 - q.xy);
+    float eFar = (q.z > 1.0) ? 0.0 : clamp((min(d.x, d.y) - 0.01) / 0.07, 0.0, 1.0);
+    if (eFar >= 1.0) return s;
+    float ndl = clamp(dot(n, l), 0.0, 1.0);
+    float slope = min(sqrt(max(1.0 - ndl * ndl, 0.0)) / max(ndl, 0.2), 4.0);
+    vec3 pw = worldPos + n * shadowWide.x * (1.5 - 0.5 * ndl);
+    vec4 lw = lightSpaceWide * vec4(pw, 1.0);
+    vec3 qw = lw.xyz / lw.w * 0.5 + 0.5;
+    vec2 dw = min(qw.xy, 1.0 - qw.xy);
+    float eW = (qw.z > 1.0) ? 0.0 : clamp((min(dw.x, dw.y) - 0.01) / 0.07, 0.0, 1.0);
+    if (eW <= 0.0) return s;
+    qw.z -= shadowWide.x * (0.5 + slope) / shadowWide.y;
+    float sw = mix(1.0, shadowPcf(shadowMapWide, qw, 4), eW);
+    // Where the far cascade fades out (s there = mix(1, sFar, eFar)), the wide one takes over: mix(sw, sFar, eFar).
+    return s - (1.0 - eFar) * (1.0 - sw);
+}
 
 // Biome tints (Plan 5 B) from the climate packed by the mesher: 2 + temperature step (0-62 over
 // -30..40 C) + moisture as the fraction; below 1.5 = no climate (asteroids, caves, old meshes). Read flat:
@@ -189,6 +220,13 @@ float periodicNoise(vec3 p, float scale)
 void main()
 {
     if (any(greaterThan(fragChunkPos, fragClipMax))) discard;
+    // LOD cross-fade (#243): a node and the one replacing it are both drawn for a moment and split the pixels by the same
+    // screen noise (interleaved gradient noise), so each pixel shows exactly one of them and the swap dissolves.
+    if (fragLodFade != 0.0) {
+        float n = fract(52.9829189 * fract(dot(gl_FragCoord.xy, vec2(0.06711056, 0.00583715))));
+        float t = abs(fragLodFade);
+        if (fragLodFade > 0.0 ? n >= t : n < t) discard;
+    }
     vec3 geomNormal = normalize(fragNormal);
     // Texture in body-local space so the pattern is fixed to the rock, then bring the bumped
     // normal into world space for lighting.
@@ -332,7 +370,10 @@ void main()
         if (fragCanopy.x > 0.01) {
             // Distant forests: where the real trees (drawn to treeDistance) fade out, the ground takes the
             // colour of their crowns, by latitude as the trees do, broken up a little by the texture.
-            float c = fragCanopy.x * smoothstep(0.65 * treeDistance, 0.95 * treeDistance, length(viewPos - fragPosition));
+            float cdist = length(viewPos - fragPosition);
+            float c = fragCanopy.x * smoothstep(0.65 * treeDistance, 0.95 * treeDistance, cdist);
+            // #745: thin cover still reads as forest (cover^0.6), the tint starts earlier and its shade is deeper.
+            if (farForest > 0.5) c = pow(fragCanopy.x, 0.6) * smoothstep(0.5 * treeDistance, 0.85 * treeDistance, cdist);
             float ct, cm;
             bool cl = decodeClimate(ct, cm);
             vec3 dry = vec3(0.22, 0.27, 0.07), temperate = vec3(0.09, 0.27, 0.05), cold = vec3(0.05, 0.17, 0.08);
@@ -341,7 +382,7 @@ void main()
             vec3 crowns = cl ? mix(mix(temperate, dry, smoothstep(0.5, 0.25, cm) * smoothstep(12.0, 22.0, ct)), cold, smoothstep(8.0, 0.0, ct)) : temperate;
             vec2 crown = floor(fragTexPos.xz / 5.0); // ~5 m dapple, like the prism crowns
             crowns *= 0.75 + 0.5 * fract(sin(dot(crown, vec2(12.9898, 78.233))) * 43758.5453);
-            albedo = mix(albedo, crowns * 0.5, c); // crowns in their own shade read darker than open grass
+            albedo = mix(albedo, crowns * (farForest > 0.5 ? 0.38 : 0.5), c); // crowns in their own shade read darker than open grass
             r = mix(r, 0.95, c);
         }
         rough = r;
@@ -422,6 +463,6 @@ void main()
         fogDist = max(0.0, min(t1, fogDist) - max(t0, 0.0));
     }
     float fog = 1.0 - exp(-fogDensity * fogDist);
-    color = mix(color, fogColor, clamp(fog, 0.0, 1.0));
+    color = mix(color, SkyPhysFog(fragPosition, viewPos, fogColor), clamp(fog, 0.0, 1.0));
     finalColor = vec4(pow(max(color, vec3(0.0)), vec3(1.0 / 2.2)), 1.0); // linear -> sRGB
 }

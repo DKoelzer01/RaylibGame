@@ -9,6 +9,7 @@
 #include "survival.h"
 #include "navigation.h"
 #include "gameui.h"
+#include "net.h"
 
 #include "raymath.h"
 #include "rlgl.h"
@@ -16,6 +17,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <ctime>
 #include <vector>
 
 // Tunables (#165 first slice; the numbers agreed on the issue).
@@ -54,10 +56,10 @@ void Combat_Step(PlayerSession& s, float dt, const PlayerInput& in) {
     PickUpGraves(s);
 }
 
-DamageResult Combat_Damage(PlayerSession& s, const DamageEvent& e) {
+DamageResult Combat_Damage(PlayerSession& s, const DamageEvent& e) { return Combat_DamageFor(s.survival, s.player, e); }
+// (#337) any player's state: the local session's, or a remote player's on a server (its block from its held input).
+DamageResult Combat_DamageFor(SurvivalState& sv, Player& p, const DamageEvent& e) {
     DamageResult r;
-    SurvivalState& sv = s.survival;
-    Player& p = s.player;
     if (sv.dead || e.amount <= 0.0f) return r;
     float amount = e.amount, push = e.knockback;
     // Away from the source, level with the ground where the player stands.
@@ -106,16 +108,50 @@ struct Grave {
     std::string name;                // its waypoint ("Grave 1", ...)
     std::vector<InvSlot> items;      // what it holds; off-hand items go back to the off hand
     int offHand = -1;                // index in items of the off hand's, -1 none
+    // A pile of items the player dropped (#564: a stack let go outside the inventory window) rather than a grave: no
+    // waypoint, drawn as a small bundle, and picked up only once the player has walked away from it and comes back
+    // (`armed`), so dropping something to make room doesn't take it straight back.
+    bool dropped = false, armed = true;
+    // Multiplayer (#804): whose it is ("" single player: anyone's), when they died and when anyone of their team was last
+    // online (wall clock, s), a stable id (the replication's) and its stone (0 cross, 1 headstone, 2 monolith).
+    std::string owner;
+    int64_t diedAt = 0, ownerSeen = 0;
+    uint32_t id = 0;
+    uint8_t style = 0;
 };
 static std::vector<Grave> graves;
 static int graveCounter = 0;
+static uint32_t graveVersion = 1;          // bumps on every change of the grave set (the server resends its list)
 static constexpr double kGraveReach = 2.5; // m: walking up to it takes everything back
+static constexpr double kDropMerge = 1.0;  // m: a drop this close to an unarmed pile joins it
+static int64_t WallNow() { return (int64_t)time(nullptr); }
 
-void Combat_OnDeath(PlayerSession& s) {
-    Inventory& inv = s.inventory;
+uint8_t Combat_GraveStyle(const std::string& body, const DVec3& local, uint32_t id) {
+    // Seeded by where and which it is: every machine (and every reload) picks the same stone.
+    uint64_t h = 1469598103934665603ull;
+    auto mix = [&](uint64_t v) { h ^= v; h *= 1099511628211ull; };
+    for (char c : body) mix((uint8_t)c);
+    mix((uint64_t)llround(local.x * 10.0)); mix((uint64_t)llround(local.y * 10.0)); mix((uint64_t)llround(local.z * 10.0)); mix(id);
+    h ^= h >> 29;
+    return (uint8_t)(h % 3);
+}
+
+bool Combat_SameTeam(const std::string& a, const std::string& b) {
+    if (a == b) return true;
+    return gSameTeam ? gSameTeam(a, b) : false; // teams: #343
+}
+
+bool Combat_CanLoot(const std::string& owner, int64_t diedAt, const std::string& who, int64_t now, bool inOwnerClaim) {
+    if (owner.empty() || Combat_SameTeam(owner, who)) return true;
+    return !inOwnerClaim && now - diedAt >= kGraveOpenToAllSeconds;
+}
+
+void Combat_OnDeath(PlayerSession& s) { Combat_OnDeathFor(s.inventory, &s.toolWear, s.player, std::string(), DeathDrops::Difficulty, true); }
+
+bool Combat_OnDeathFor(Inventory& inv, ToolWearState* wear, const Player& p, const std::string& owner, DeathDrops mode, bool local) {
     auto& cells = inv.grid();
-    Player& p = s.player;
-    if (worldDifficulty >= 2 && p.nearest) {
+    if (mode == DeathDrops::Keep) { if (local) GameUI_Toast("You kept everything you carried"); return false; }
+    if ((mode == DeathDrops::Grave || worldDifficulty >= 2) && p.nearest) {
         Grave g;
         g.body = p.nearest->name;
         g.local = p.nearest->toLocalD(p.position);
@@ -125,13 +161,20 @@ void Combat_OnDeath(PlayerSession& s) {
             g.items.push_back(cells[i]);
             cells[i] = InvSlot{};
         }
-        if (g.items.empty()) return;
-        g.name = TextFormat("Grave %d", ++graveCounter);
-        const DVec3 l = g.local;
-        Nav_AddWaypoint(g.body, Vector3{ (float)l.x, (float)l.y, (float)l.z }, g.name, false); // normalised there
-        GameUI_Toast(TextFormat("Everything you carried lies in your grave (%s, marked on the compass)", g.name.c_str()));
+        if (g.items.empty()) return false;
+        g.id = (uint32_t)++graveCounter;
+        g.name = owner.empty() ? std::string(TextFormat("Grave %d", graveCounter)) : owner + "'s grave " + std::to_string(graveCounter);
+        g.owner = owner;
+        g.diedAt = g.ownerSeen = WallNow();
+        g.style = Combat_GraveStyle(g.body, g.local, g.id);
+        if (local) {
+            const DVec3 l = g.local;
+            Nav_AddWaypoint(g.body, Vector3{ (float)l.x, (float)l.y, (float)l.z }, g.name, false); // normalised there
+            GameUI_Toast(TextFormat("Everything you carried lies in your grave (%s, marked on the compass)", g.name.c_str()));
+        }
         graves.push_back(std::move(g));
-        return;
+        ++graveVersion;
+        return true;
     }
     // Peaceful and normal: each tool wears by a tenth of its life (never past breaking); on normal each resource stack
     // also loses a tenth, rounded down to whole units.
@@ -142,46 +185,144 @@ void Combat_OnDeath(PlayerSession& s) {
         const ItemKind k = KindOf(c.id);
         if (k == ItemKind::Tool) {
             const int max = ToolDurability(ToolOf(c.id));
-            if (max > 0) { int& u = s.toolWear.used[c.id]; u = std::min(u + max / 10, max - 1); }
+            if (max > 0 && wear) { int& u = wear->used[c.id]; u = std::min(u + max / 10, max - 1); }
         } else if (k == ItemKind::Resource && worldDifficulty >= 1) {
             const int64_t units = (int64_t)(c.amount() * 0.1);
             if (units > 0) { c.centi -= units * 100; lost += (int)units; }
         }
     }
-    GameUI_Toast(lost > 0 ? TextFormat("You lost %d items and your tools took wear", lost) : "Your tools took wear");
+    if (local) GameUI_Toast(lost > 0 ? TextFormat("You lost %d items and your tools took wear", lost) : "Your tools took wear");
+    return false;
 }
 
 static void PickUpGraves(PlayerSession& s) {
-    Player& p = s.player;
-    if (!p.nearest || s.survival.dead) return;
+    if (gNetRole == NetRole::Client) return; // (#804) the server picks up for us; our list is only its mirror
+    Combat_PickUpGravesFor(s.player, s.inventory, std::string(), s.survival.dead, true);
+}
+
+bool Combat_PickUpGravesFor(const Player& p, Inventory& inv, const std::string& who, bool dead, bool local) {
+    if (!p.nearest || dead) return false;
     const DVec3 me = p.nearest->toLocalD(p.position);
+    const int64_t now = WallNow();
+    bool moved = false;
     for (size_t gi = 0; gi < graves.size();) {
         Grave& g = graves[gi];
-        if (g.body != p.nearest->name || (g.local - me).length() > kGraveReach) { ++gi; continue; }
-        auto& cells = s.inventory.grid();
+        const bool near = g.body == p.nearest->name && (g.local - me).length() <= kGraveReach;
+        if (g.dropped && !g.armed) { if (!near) g.armed = true; ++gi; continue; } // walked away: it can be picked up now
+        if (!near) { ++gi; continue; }
+        // (#804) whose: the owner and their team at once, others after 15 minutes and never inside the owner's team claim
+        if (!g.dropped && !Combat_CanLoot(g.owner, g.diedAt, who, now, gInOwnerTeamClaim && gInOwnerTeamClaim(g.owner, g.body, g.local))) { ++gi; continue; }
+        auto& cells = inv.grid();
         std::vector<InvSlot> left;
         for (size_t i = 0; i < g.items.size(); ++i) {
             const InvSlot& it = g.items[i];
-            if ((int)i == g.offHand && cells[Inventory::kOffHand].empty()) { cells[Inventory::kOffHand] = it; continue; }
-            ++s.inventory.muted; // no pickup feed line per stack
-            const double rest = s.inventory.addAmount(it.id, it.amount());
-            --s.inventory.muted;
-            s.inventory.overflowed = false;
+            if ((int)i == g.offHand && cells[Inventory::kOffHand].empty()) { cells[Inventory::kOffHand] = it; moved = true; continue; }
+            if (!g.dropped) ++inv.muted; // a grave: no pickup feed line per stack (a dropped pile shows them)
+            const double rest = inv.addAmount(it.id, it.amount());
+            if (!g.dropped) --inv.muted;
+            inv.overflowed = false;
+            if (rest < it.amount()) moved = true;
             if (rest > 0.0) left.push_back(InvSlot{ it.id, (int64_t)llround(rest * 100.0) });
         }
         if (left.empty()) {
-            Nav_RemoveWaypoint(g.body, g.name);
-            GameUI_Toast(TextFormat("You took everything back from %s", g.name.c_str()));
+            if (!g.dropped && local) {
+                Nav_RemoveWaypoint(g.body, g.name);
+                GameUI_Toast(TextFormat("You took everything back from %s", g.name.c_str()));
+            }
+            if (!g.dropped) ++graveVersion;
             graves.erase(graves.begin() + gi);
             continue;
         }
         g.items = std::move(left); g.offHand = -1;
-        GameUI_Toast(TextFormat("No room for the rest: %d stacks stay in %s", (int)g.items.size(), g.name.c_str()));
+        if (local) {
+            if (g.dropped) GameUI_Toast("No room: the rest stays on the ground");
+            else GameUI_Toast(TextFormat("No room for the rest: %d stacks stay in %s", (int)g.items.size(), g.name.c_str()));
+        }
+        if (g.dropped) g.armed = false; // again after walking away
         ++gi;
     }
+    return moved;
 }
 
-int Combat_GraveCount() { return (int)graves.size(); }
+int Combat_UpdateGraveOwners(const std::vector<std::string>& online, int64_t now) {
+    int removed = 0;
+    for (size_t gi = 0; gi < graves.size();) {
+        Grave& g = graves[gi];
+        if (g.dropped || g.owner.empty()) { ++gi; continue; }
+        for (const std::string& n : online) if (Combat_SameTeam(g.owner, n)) { g.ownerSeen = now; break; }
+        if (now - g.ownerSeen > kGraveDecaySeconds) { graves.erase(graves.begin() + gi); ++removed; ++graveVersion; continue; }
+        ++gi;
+    }
+    return removed;
+}
+
+std::vector<GraveInfo> Combat_GraveList() {
+    std::vector<GraveInfo> out;
+    for (const Grave& g : graves)
+        if (!g.dropped) out.push_back({ g.id, g.body, g.local, g.owner, g.name, g.style, g.diedAt });
+    return out;
+}
+
+uint32_t Combat_GraveVersion() { return graveVersion; }
+
+void Combat_TestAddGrave(const std::string& body, const DVec3& local, uint8_t style, const std::string& owner) {
+    Grave g;
+    g.body = body; g.local = local; g.owner = owner; g.style = style % 3;
+    g.id = (uint32_t)++graveCounter; g.name = TextFormat("Grave %d", graveCounter);
+    g.diedAt = g.ownerSeen = WallNow();
+    g.items.push_back(InvSlot{ "stone", 100 });
+    graves.push_back(std::move(g));
+    ++graveVersion;
+}
+
+void Combat_SetGraveMirror(const std::vector<GraveInfo>& list, const std::string& me) {
+    // A client: the server's graves replace ours (dropped piles of our own stay: they are local). New ones of our own or our
+    // team's get a waypoint (and our own a toast); ones gone lose theirs.
+    std::vector<Grave> keep;
+    for (Grave& g : graves) if (g.dropped) keep.push_back(std::move(g));
+    std::vector<Grave> before;
+    for (Grave& g : graves) if (!g.dropped) before.push_back(std::move(g));
+    graves = std::move(keep);
+    auto mine = [&](const std::string& owner) { return !owner.empty() && Combat_SameTeam(owner, me); };
+    for (const GraveInfo& gi : list) {
+        Grave g;
+        g.id = gi.id; g.body = gi.body; g.local = gi.local; g.owner = gi.owner; g.name = gi.name; g.style = gi.style % 3; g.diedAt = gi.diedAt;
+        const bool known = std::any_of(before.begin(), before.end(), [&](const Grave& b) { return b.id == gi.id; });
+        if (!known && mine(g.owner)) {
+            Nav_AddWaypoint(g.body, Vector3{ (float)g.local.x, (float)g.local.y, (float)g.local.z }, g.name, false);
+            if (g.owner == me) GameUI_Toast(TextFormat("Everything you carried lies in your grave (%s, marked on the compass)", g.name.c_str()));
+        }
+        graves.push_back(std::move(g));
+    }
+    for (const Grave& b : before) {
+        const bool still = std::any_of(list.begin(), list.end(), [&](const GraveInfo& gi) { return gi.id == b.id; });
+        if (!still && mine(b.owner)) Nav_RemoveWaypoint(b.body, b.name);
+    }
+    ++graveVersion;
+}
+
+int Combat_GraveCount() { return (int)std::count_if(graves.begin(), graves.end(), [](const Grave& g) { return !g.dropped; }); }
+
+bool Combat_Drop(PlayerSession& s, const InvSlot& stack) {
+    Player& p = s.player;
+    if (stack.empty() || !p.nearest) return false;
+    const DVec3 at = p.nearest->toLocalD(p.position); // at the feet
+    for (Grave& g : graves) // onto a pile just dropped here
+        if (g.dropped && !g.armed && g.body == p.nearest->name && (g.local - at).length() < kDropMerge) {
+            auto it = std::find_if(g.items.begin(), g.items.end(), [&](const InvSlot& c) { return c.id == stack.id; });
+            if (it != g.items.end()) it->centi += stack.centi; else g.items.push_back(stack);
+            return true;
+        }
+    Grave g;
+    g.body = p.nearest->name;
+    g.local = at;
+    g.items.push_back(stack);
+    g.dropped = true; g.armed = false;
+    graves.push_back(std::move(g));
+    return true;
+}
+
+int Combat_DroppedPiles() { return (int)graves.size() - Combat_GraveCount(); }
 
 // Hit feel (#165), the local view only: the camera shakes for 0.3 s after a hit, up to 6 cm at 20 damage, and the
 // held tool freezes for 70 ms (a hit-stop the simulation never sees). Reduce motion turns both off.
@@ -219,10 +360,45 @@ void Combat_DrawGraves(Scene& world) {
         rlDrawRenderBatchActive();
         rlPushMatrix();
         rlMultMatrixf(MatrixToFloat(m));
-        DrawSphere(Vector3Scale(up, 0.15f), 0.4f, Color{ 110, 105, 100, 255 });
-        DrawSphere(Vector3Scale(up, 0.55f), 0.28f, Color{ 125, 120, 115, 255 });
-        DrawSphere(Vector3Scale(up, 0.85f), 0.18f, Color{ 140, 135, 128, 255 });
-        DrawSphere(Vector3Scale(up, 1.1f), 0.09f, Color{ 220, 50, 40, 255 });
+        if (g.dropped) { // a small bundle in the colours of what it holds (up to three stacks shown)
+            for (size_t i = 0; i < g.items.size() && i < 3; ++i) {
+                const ItemDef* d = itemDB.find(g.items[i].id);
+                const float a = (float)i * 2.1f;
+                const Vector3 side = Vector3Normalize(Vector3Perpendicular(up));
+                const Vector3 off = Vector3Add(Vector3Scale(up, 0.12f + 0.1f * (float)i),
+                                               Vector3Scale(Vector3RotateByAxisAngle(side, up, a), i ? 0.12f : 0.0f));
+                DrawCube(off, 0.22f, 0.22f, 0.22f, d ? d->color : Color{ 150, 120, 80, 255 });
+                DrawCubeWires(off, 0.22f, 0.22f, 0.22f, Color{ 40, 30, 20, 255 });
+            }
+            rlDrawRenderBatchActive();
+            rlPopMatrix();
+            continue;
+        }
+        // (#804, user 2026-11-18: "a simple stone cross / headstone / monolith, randomly picked") - plain stone, its kind and
+        // its turn seeded by the grave (every machine draws the same one). A frame with y = up, turned about it.
+        const Vector3 side0 = Vector3Normalize(Vector3Perpendicular(up));
+        const float turn = (float)((g.id * 2654435761u) % 360u) * DEG2RAD;
+        const Vector3 side = Vector3RotateByAxisAngle(side0, up, turn), fwd = Vector3CrossProduct(side, up);
+        const Matrix basis = { side.x, up.x, fwd.x, 0.0f, side.y, up.y, fwd.y, 0.0f, side.z, up.z, fwd.z, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f };
+        rlMultMatrixf(MatrixToFloat(basis));
+        const Color stone = { 128, 126, 122, 255 }, stoneLight = { 150, 148, 143, 255 }, edge = { 70, 68, 66, 255 };
+        auto block = [&](Vector3 at, Vector3 size, Color c) { DrawCubeV(at, size, c); DrawCubeWiresV(at, size, edge); };
+        switch (g.style % 3) {
+            case 0: // a stone cross on a low plinth
+                block({ 0.0f, 0.02f, 0.0f }, { 0.42f, 0.16f, 0.3f }, stone);
+                block({ 0.0f, 0.55f, 0.0f }, { 0.14f, 1.0f, 0.12f }, stoneLight);
+                block({ 0.0f, 0.78f, 0.0f }, { 0.56f, 0.13f, 0.12f }, stoneLight);
+                break;
+            case 1: // a headstone: a slab, stepped narrower at the top, on a base
+                block({ 0.0f, 0.02f, 0.0f }, { 0.78f, 0.14f, 0.34f }, stone);
+                block({ 0.0f, 0.42f, 0.0f }, { 0.62f, 0.68f, 0.14f }, stoneLight);
+                block({ 0.0f, 0.81f, 0.0f }, { 0.44f, 0.12f, 0.14f }, stoneLight);
+                break;
+            default: // a monolith: a tall rough block with a smaller cap
+                block({ 0.0f, 0.62f, 0.0f }, { 0.36f, 1.36f, 0.32f }, stone);
+                block({ 0.0f, 1.35f, 0.0f }, { 0.26f, 0.12f, 0.24f }, stoneLight);
+                break;
+        }
         rlDrawRenderBatchActive();
         rlPopMatrix();
     }
@@ -233,19 +409,40 @@ void Combat_Reset() { graves.clear(); graveCounter = 0; }
 void Combat_Save(FILE* f) {
     fprintf(f, "grave_counter %d\n", graveCounter);
     for (const Grave& g : graves) {
+        if (g.dropped) { // #564
+            fprintf(f, "dropped %s %.6f %.6f %.6f %d %zu", g.body.c_str(), g.local.x, g.local.y, g.local.z, g.armed ? 1 : 0, g.items.size());
+            for (const InvSlot& it : g.items) fprintf(f, " %s %lld", it.id.c_str(), (long long)it.centi);
+            fprintf(f, "\n");
+            continue;
+        }
         fprintf(f, "grave %s %.6f %.6f %.6f %d %zu", g.body.c_str(), g.local.x, g.local.y, g.local.z, g.offHand, g.items.size());
         for (const InvSlot& it : g.items) fprintf(f, " %s %lld", it.id.c_str(), (long long)it.centi);
         fprintf(f, " %s\n", g.name.c_str()); // last: the name has a space in it
+        // (#804) whose, when, the stone: a line of its own after the grave's (older saves lack it: anyone's, now)
+        fprintf(f, "grave_mp %u %lld %lld %d %s\n", g.id, (long long)g.diedAt, (long long)g.ownerSeen, (int)g.style, g.owner.empty() ? "-" : g.owner.c_str());
     }
 }
 
 bool Combat_LoadLine(const char* tok, FILE* f) {
     if (strcmp(tok, "grave_counter") == 0) { if (fscanf(f, " %d", &graveCounter) != 1) graveCounter = 0; return true; }
-    if (strcmp(tok, "grave") != 0) return false;
+    if (strcmp(tok, "grave_mp") == 0) { // (#804) for the grave just read
+        unsigned id = 0; long long died = 0, seen = 0; int style = 0; char owner[64] = {};
+        if (fscanf(f, " %u %lld %lld %d %63s", &id, &died, &seen, &style, owner) == 5 && !graves.empty() && !graves.back().dropped) {
+            Grave& g = graves.back();
+            g.id = id; g.diedAt = died; g.ownerSeen = seen; g.style = (uint8_t)(style % 3);
+            g.owner = strcmp(owner, "-") == 0 ? std::string() : std::string(owner);
+        }
+        ++graveVersion;
+        return true;
+    }
+    const bool dropped = strcmp(tok, "dropped") == 0;
+    if (strcmp(tok, "grave") != 0 && !dropped) return false;
     Grave g;
     char body[64] = {};
     size_t n = 0;
-    if (fscanf(f, " %63s %lf %lf %lf %d %zu", body, &g.local.x, &g.local.y, &g.local.z, &g.offHand, &n) != 6) return true;
+    int flag = -1; // a grave's off-hand index, a dropped pile's armed
+    if (fscanf(f, " %63s %lf %lf %lf %d %zu", body, &g.local.x, &g.local.y, &g.local.z, &flag, &n) != 6) return true;
+    if (dropped) { g.dropped = true; g.armed = flag != 0; } else g.offHand = flag;
     g.body = body;
     for (size_t i = 0; i < n; ++i) {
         char id[64] = {};
@@ -254,11 +451,18 @@ bool Combat_LoadLine(const char* tok, FILE* f) {
         if (itemDB.find(id) && c > 0) g.items.push_back(InvSlot{ id, (int64_t)c });
         else if ((int)i == g.offHand) g.offHand = -1;
     }
-    char name[64] = {};
-    if (fscanf(f, " %63[^\n]", name) != 1) return true;
-    g.name = name;
+    if (!dropped) { // a pile has no name
+        char name[64] = {};
+        if (fscanf(f, " %63[^\n]", name) != 1) return true;
+        g.name = name;
+    }
     if (g.offHand >= (int)g.items.size()) g.offHand = -1;
-    if (!g.items.empty()) graves.push_back(std::move(g));
+    if (!dropped) { // (#804) an older save's grave: an id of its own and a stone (a grave_mp line, when there is one, sets both)
+        g.id = 0x80000000u + (uint32_t)graves.size();
+        g.style = Combat_GraveStyle(g.body, g.local, g.id);
+        g.diedAt = g.ownerSeen = WallNow();
+    }
+    if (!g.items.empty()) { graves.push_back(std::move(g)); ++graveVersion; }
     return true;
 }
 
@@ -457,6 +661,20 @@ bool Combat_TestFrame(Scene& world) {
             const bool same = graves.size() == 1 && graves[0].name == before.name && graves[0].items.size() == before.items.size() &&
                               graves[0].offHand == before.offHand && (graves[0].local - before.local).length() < 1e-3;
             check(same, "the grave saves and loads");
+            // (#804) the loot rule: the owner (and team) at once; others after 15 minutes, never inside the owner's team claim
+            const int64_t t = 1795000000;
+            check(Combat_CanLoot("ann", t, "ann", t, false), "the owner loots at once");
+            check(!Combat_CanLoot("ann", t, "bob", t + 60, false), "another player can't within 15 minutes");
+            check(Combat_CanLoot("ann", t, "bob", t + kGraveOpenToAllSeconds, false), "and can after 15 minutes");
+            check(!Combat_CanLoot("ann", t, "bob", t + 3600, true), "but never inside the owner's team claim");
+            check(Combat_CanLoot("", t, "bob", t, false), "single player's graves: anyone");
+            gSameTeam = [](const std::string& a, const std::string& b) { return (a == "ann" && b == "cat") || (a == "cat" && b == "ann"); };
+            check(Combat_CanLoot("ann", t, "cat", t, false), "a teammate loots at once");
+            gSameTeam = nullptr;
+            int styles[3] = { 0, 0, 0 };
+            for (uint32_t i = 1; i <= 30; ++i) ++styles[Combat_GraveStyle("terra", DVec3{ i * 3.0, 60000.0, -i * 2.0 }, i) % 3];
+            check(styles[0] > 0 && styles[1] > 0 && styles[2] > 0 && Combat_GraveStyle("terra", DVec3{ 3.0, 60000.0, -2.0 }, 1) == Combat_GraveStyle("terra", DVec3{ 3.0, 60000.0, -2.0 }, 1),
+                  "graves pick all three stones, the same one for the same grave");
         }
         step = 12;
         return false;
@@ -500,3 +718,4 @@ bool Combat_TestFrame(Scene& world) {
         return true;
     }
 }
+

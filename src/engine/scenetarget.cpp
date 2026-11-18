@@ -14,7 +14,7 @@
 extern "C" void* glfwGetProcAddress(const char* name); // raylib links GLFW
 
 namespace {
-    typedef void (__stdcall* PfnClipControl)(GLenum origin, GLenum depth);
+    typedef void (GLAD_API_PTR* PfnClipControl)(GLenum origin, GLenum depth);
     constexpr GLenum kLowerLeft = 0x8CA1, kNegOneToOne = 0x935E, kZeroToOne = 0x935F;
 
     struct State {
@@ -22,6 +22,20 @@ namespace {
         PfnClipControl clipControl = nullptr;
         GLuint fbo = 0, color = 0, depth = 0;     // the scene (multisampled when the window is)
         GLuint resolveFbo = 0, resolveTex = 0;    // single-sample copy, drawn to the window by a fullscreen pass
+        // Contact shadows (#137): the scene's depth resolved to a texture; the composite marches it toward the sun.
+        GLuint depthFbo = 0, depthTex = 0;
+        bool contact = true;                      // RAYLIBGAME_CONTACT_SHADOWS=0: off
+        float proj[3] = { 1.0f, 1.0f, 0.1f };     // the projection's m0, m5 and near plane (SceneTarget_ApplyProjection)
+        float sunView[3] = { 0.0f, 1.0f, 0.0f };  // toward the sun, view space
+        float contactStrength = 0.0f;             // 0: none this frame (night, overcast, no shadows)
+        // Hi-Z (#134): a min-depth pyramid (reverse-Z: min = farthest) of the resolved depth, built at the end of each frame
+        // for the next frame's terrain occlusion cull, with the view-projection that depth was drawn with.
+        bool hiz = true;                          // RAYLIBGAME_HIZ=0: off
+        GLuint hizTex = 0, hizProg = 0;
+        int hizLevels = 0;
+        Matrix hizPendingVP{}, hizVP{};           // this frame's (set as it starts) / the pyramid's frame's
+        bool hizPending = false, hizValid = false;
+        long long frame = 0, hizFrame = -1;    // frames ended; the frame the pyramid was built in
         GLuint prog = 0, vao = 0;
         int w = 0, h = 0, samples = 0;
         // HDR (#131): an RGBA16F scene, so values over 1 survive to the composite, which tonemaps them (and auto-exposure
@@ -50,6 +64,28 @@ namespace {
     // HDR composite (#131). The world shaders still write display-encoded colour (pow 1/2.2, and the atmosphere, sky,
     // particles and raylib's default shader write display colour as they always did), now unclamped in RGBA16F. So: decode,
     // expose, tonemap, encode. Blending and MSAA stay where they were (display space), so nothing else changes.
+    // Hi-Z pyramid (#134): level 0 from the resolved depth, each next level the min (= farthest, reverse-Z) of the 2x2 (3 wide
+    // at an odd edge) under it, so a texel never claims an occluder nearer than all the depth it covers.
+    const char* kCsHiZ = R"(#version 430
+layout(local_size_x = 8, local_size_y = 8) in;
+uniform int fromDepth;
+uniform sampler2D depthSrc;
+layout(r32f, binding = 0) uniform readonly image2D src;
+layout(r32f, binding = 1) uniform writeonly image2D dst;
+uniform ivec2 srcSize;
+uniform ivec2 dstSize;
+void main() {
+    ivec2 p = ivec2(gl_GlobalInvocationID.xy);
+    if (p.x >= dstSize.x || p.y >= dstSize.y) return;
+    if (fromDepth == 1) { imageStore(dst, p, vec4(texelFetch(depthSrc, p, 0).r)); return; }
+    int ex = ((srcSize.x & 1) == 1 && p.x == dstSize.x - 1) ? 3 : 2;
+    int ey = ((srcSize.y & 1) == 1 && p.y == dstSize.y - 1) ? 3 : 2;
+    float m = 1e30;
+    for (int y = 0; y < ey; ++y)
+        for (int x = 0; x < ex; ++x) m = min(m, imageLoad(src, min(p * 2 + ivec2(x, y), srcSize - 1)).r);
+    imageStore(dst, p, vec4(m));
+}
+)";
     const char* kFsHdr = R"(#version 430
 in vec2 uv;
 uniform sampler2D scene;
@@ -69,10 +105,48 @@ vec3 aces(vec3 x) { // Narkowicz's fit, with its usual 0.6 pre-scale
     x *= 0.6;
     return clamp((x * (2.51 * x + 0.03)) / (x * (2.43 * x + 0.59) + 0.14), 0.0, 1.0);
 }
+// Contact shadows (#137): a short march toward the sun through the resolved depth catches what the shadow maps' texels
+// miss up close (stones on the ground, grass bases, part edges, feet). View-space positions from reverse-Z depth
+// (d = near / -z); sun-facing pixels within 30 m only; darkens the lit colour by contactStrength (0: off).
+uniform sampler2D depthTex;
+uniform float contactStrength;
+uniform vec3 sunView;   // toward the sun, view space
+uniform vec3 projP;     // m0, m5, near
+vec3 viewAt(vec2 uv, float d) { float z = -projP.z / max(d, 1e-9); vec2 ndc = uv * 2.0 - 1.0; return vec3(ndc.x * -z / projP.x, ndc.y * -z / projP.y, z); }
+float contactShadow() {
+    vec2 size = vec2(textureSize(depthTex, 0));
+    vec2 uv = gl_FragCoord.xy / size;
+    float d0 = texelFetch(depthTex, ivec2(gl_FragCoord.xy), 0).r;
+    vec3 p = viewAt(uv, max(d0, 1e-6));
+    vec3 dn = cross(dFdx(p), dFdy(p));                          // before any branch: derivatives need uniform flow
+    if (d0 <= 0.0) return 1.0;                                  // sky
+    float dist = -p.z;
+    if (dist > 30.0 || dot(dn, dn) < 1e-20) return 1.0;
+    vec3 n = normalize(dn);
+    if (dot(n, -p) < 0.0) n = -n;                               // toward the camera
+    float facing = dot(n, sunView);
+    if (facing <= 0.03) return 1.0;                             // turned away: the sun term is dark already
+    float len = mix(0.3, 0.9, clamp(dist / 20.0, 0.0, 1.0));
+    float jitter = fract(52.9829189 * fract(dot(gl_FragCoord.xy, vec2(0.06711056, 0.00583715))));
+    vec3 start = p + n * (0.01 + 0.002 * dist);
+    float occ = 0.0;
+    for (int i = 1; i <= 12; ++i) {
+        vec3 q = start + sunView * ((float(i) - jitter) / 12.0 * len);
+        if (q.z >= -projP.z) break;                             // behind the near plane
+        vec2 s = vec2(q.x * projP.x, q.y * projP.y) / -q.z * 0.5 + 0.5;
+        if (any(lessThan(s, vec2(0.0))) || any(greaterThan(s, vec2(1.0)))) break;
+        float zs = -projP.z / max(texture(depthTex, s).r, 1e-9);
+        float diff = zs - q.z;                                  // > 0: the scene there is in front of the ray point
+        if (diff > 0.003 + 0.0015 * dist && diff < 0.12 + 0.01 * dist) { occ = 1.0; break; }
+    }
+    occ *= 1.0 - smoothstep(20.0, 30.0, dist);
+    return 1.0 - occ * contactStrength * smoothstep(0.03, 0.25, facing);
+}
 void main() {
     vec3 c = texelFetch(scene, ivec2(gl_FragCoord.xy), 0).rgb;
     if (any(isnan(c)) || any(isinf(c))) { if (nanDebug == 1) { color = vec4(1.0, 0.0, 1.0, 1.0); return; } c = vec3(0.0); } // ~0.1% of pixels are NaN / Inf (#402); RGBA8 stored them as 0
     vec3 lin = pow(max(c, vec3(0.0)), vec3(2.2));
+    if (contactStrength > 0.0) lin *= contactShadow();
     if (bloomStrength > 0.0) lin = mix(lin, texture(bloomTex, gl_FragCoord.xy / vec2(textureSize(scene, 0))).rgb / bloomLevels, bloomStrength); // #140
     lin = lin * (exposure > 0.0 ? exposure : 1.0);
     vec3 t = tonemap == 1 ? aces(lin) : tonemap == 2 ? min(lin, vec3(1.0)) : kneeCurve(lin);
@@ -178,7 +252,10 @@ void main() {
         GLuint rb[] = { S.color, S.depth };
         if (S.color || S.depth) glDeleteRenderbuffers(2, rb);
         if (S.resolveTex) glDeleteTextures(1, &S.resolveTex);
-        S.fbo = S.color = S.depth = S.resolveFbo = S.resolveTex = 0;
+        if (S.depthFbo) glDeleteFramebuffers(1, &S.depthFbo);
+        if (S.depthTex) glDeleteTextures(1, &S.depthTex);
+        if (S.hizTex) glDeleteTextures(1, &S.hizTex);
+        S.fbo = S.color = S.depth = S.resolveFbo = S.resolveTex = S.depthFbo = S.depthTex = S.hizTex = 0; S.hizValid = false;
         S.w = S.h = 0;
         for (int i = 0; i < State::kBloomLevels; ++i) {
             if (S.bloomFbo[i]) glDeleteFramebuffers(1, &S.bloomFbo[i]);
@@ -276,12 +353,47 @@ void main() {
         glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, S.resolveTex, 0);
         if (status == GL_FRAMEBUFFER_COMPLETE) status = glCheckFramebufferStatus(GL_FRAMEBUFFER);
         glBindFramebuffer(GL_FRAMEBUFFER, 0);
+        if ((S.hdr && S.contact || S.hiz) && status == GL_FRAMEBUFFER_COMPLETE) { // (#134: Hi-Z reads it too) // #137: the resolved depth (same format: a valid blit)
+            glGenTextures(1, &S.depthTex);
+            glBindTexture(GL_TEXTURE_2D, S.depthTex);
+            GpuMemTag gmDepth_("scene target"); // VRAM accounting (#302)
+            glTexImage2D(GL_TEXTURE_2D, 0, GL_DEPTH32F_STENCIL8, w, h, 0, GL_DEPTH_STENCIL, GL_FLOAT_32_UNSIGNED_INT_24_8_REV, nullptr);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_COMPARE_MODE, GL_NONE);
+            glBindTexture(GL_TEXTURE_2D, 0);
+            glGenFramebuffers(1, &S.depthFbo);
+            glBindFramebuffer(GL_FRAMEBUFFER, S.depthFbo);
+            glFramebufferTexture2D(GL_FRAMEBUFFER, GL_DEPTH_STENCIL_ATTACHMENT, GL_TEXTURE_2D, S.depthTex, 0);
+            glDrawBuffer(GL_NONE); glReadBuffer(GL_NONE);
+            if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE) {
+                LOG_WARN("SceneTarget", "depth resolve target incomplete: no contact shadows\n");
+                glDeleteFramebuffers(1, &S.depthFbo); glDeleteTextures(1, &S.depthTex); S.depthFbo = S.depthTex = 0;
+            }
+            glBindFramebuffer(GL_FRAMEBUFFER, 0);
+        }
         if (status != GL_FRAMEBUFFER_COMPLETE) {
             LOG_WARN("SceneTarget", "framebuffer incomplete (0x%x): reverse-Z off\n", status);
             Release();
             return false;
         }
         S.w = w; S.h = h;
+        if (S.hiz && S.depthTex && S.hizProg) { // #134: the Hi-Z pyramid, R32F with a full mip chain (nearest)
+            S.hizLevels = 1;
+            for (int m = std::max(w, h); m > 1; m >>= 1) ++S.hizLevels;
+            glGenTextures(1, &S.hizTex);
+            glBindTexture(GL_TEXTURE_2D, S.hizTex);
+            GpuMemTag gmHiz_("scene target"); // VRAM accounting (#302)
+            glTexStorage2D(GL_TEXTURE_2D, S.hizLevels, GL_R32F, w, h);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST_MIPMAP_NEAREST);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+            glBindTexture(GL_TEXTURE_2D, 0);
+        }
+        S.hizValid = false;
         if (S.hdr && S.bloom && S.downProg && S.upProg) CreateBloom(w, h); // #140
         LOG_INFO("SceneTarget", "%dx%d, %d samples, float depth, reverse-Z, %s\n", w, h, S.samples,
                     !S.hdr ? "RGBA8 (RAYLIBGAME_HDR=0)" : S.tonemap == 1 ? "HDR, ACES" : S.tonemap == 2 ? "HDR, clip" : "HDR, knee tonemap");
@@ -305,6 +417,8 @@ void main() {
         // RAYLIBGAME_AUTO_EXPOSURE=0, RAYLIBGAME_EXPOSURE_KEY / _MIN / _MAX, RAYLIBGAME_TONEMAP_KNEE.
         auto envF = [](const char* n, float d) { const char* v = getenv(n); return v && v[0] ? (float)atof(v) : d; };
         if (const char* h = getenv("RAYLIBGAME_HDR"); h && h[0] == '0') S.hdr = false;
+        if (const char* z = getenv("RAYLIBGAME_HIZ"); z && z[0] == '0') S.hiz = false; // #134
+        if (const char* c = getenv("RAYLIBGAME_CONTACT_SHADOWS"); c && c[0] == '0') S.contact = false; // #137
         if (const char* t = getenv("RAYLIBGAME_TONEMAP")) S.tonemap = !strcmp(t, "aces") ? 1 : !strcmp(t, "clip") ? 2 : 0;
         if (const char* a = getenv("RAYLIBGAME_AUTO_EXPOSURE"); a && a[0] == '0') S.autoExposure = false;
         S.key = envF("RAYLIBGAME_EXPOSURE_KEY", S.key);
@@ -320,6 +434,7 @@ void main() {
                 LOG_WARN("SceneTarget", "HDR shaders failed: RGBA8 target\n");
                 if (S.prog) rlUnloadShaderProgram(S.prog);
                 if (S.expProg) rlUnloadShaderProgram(S.expProg);
+                if (S.hizProg) rlUnloadShaderProgram(S.hizProg);
                 S.prog = S.expProg = 0;
                 S.hdr = false;
             } else {
@@ -358,6 +473,11 @@ void main() {
         glBindFramebuffer(GL_FRAMEBUFFER, 0);
         glGetIntegerv(GL_SAMPLES, &samples);
         S.samples = samples;
+        if (S.hiz) { // #134
+            const unsigned hcs = rlCompileShader(kCsHiZ, RL_COMPUTE_SHADER);
+            S.hizProg = hcs ? rlLoadComputeShaderProgram(hcs) : 0;
+            if (!S.hizProg) { LOG_WARN("SceneTarget", "Hi-Z shader failed: no occlusion culling\n"); S.hiz = false; }
+        }
         S.ok = Create(GetRenderWidth(), GetRenderHeight());
         return S.ok;
     }
@@ -385,6 +505,7 @@ void SceneTarget_ApplyProjection() {
     // From the standard projection BeginMode3D set: m0 = f / aspect, m5 = f, near = m14 / (m10 - 1).
     const Matrix p = rlGetMatrixProjection();
     const float n = p.m14 / (p.m10 - 1.0f);
+    S.proj[0] = p.m0; S.proj[1] = p.m5; S.proj[2] = n; // for the contact shadows' depth reconstruction (#137)
     Matrix r = { 0 };
     r.m0 = p.m0;
     r.m5 = p.m5;
@@ -394,6 +515,23 @@ void SceneTarget_ApplyProjection() {
     rlSetMatrixProjection(r);
 }
 
+void SceneTarget_SetContact(Vector3 sunView, float strength) {
+    const float l = sqrtf(sunView.x * sunView.x + sunView.y * sunView.y + sunView.z * sunView.z);
+    if (l > 1e-6f) { S.sunView[0] = sunView.x / l; S.sunView[1] = sunView.y / l; S.sunView[2] = sunView.z / l; }
+    S.contactStrength = std::clamp(strength, 0.0f, 1.0f);
+}
+
+void SceneTarget_SetHiZView(Matrix viewProj) { S.hizPendingVP = viewProj; S.hizPending = true; }
+
+long long SceneTarget_Frame() { return S.frame; }
+long long SceneTarget_HiZFrame() { return S.hizValid ? S.hizFrame : -1; }
+
+bool SceneTarget_HiZ(unsigned& tex, int& w, int& h, int& levels, Matrix& viewProj) {
+    if (!S.hiz || !S.hizValid || !S.hizTex) return false;
+    tex = S.hizTex; w = S.w; h = S.h; levels = S.hizLevels; viewProj = S.hizVP;
+    return true;
+}
+
 void SceneTarget_End() {
     if (!S.fbo) return;
     rlDrawRenderBatchActive();
@@ -401,7 +539,39 @@ void SceneTarget_End() {
     glBindFramebuffer(GL_READ_FRAMEBUFFER, S.fbo);
     glBindFramebuffer(GL_DRAW_FRAMEBUFFER, S.resolveFbo);
     glBlitFramebuffer(0, 0, S.w, S.h, 0, 0, S.w, S.h, GL_COLOR_BUFFER_BIT, GL_NEAREST);
+    const bool contactOn = S.depthFbo && S.contactStrength > 0.0f;
+    const bool hizOn = S.depthFbo && S.hizTex && S.hizPending;
+    if (contactOn || hizOn) { // #137 / #134: the depth too (a multisampled depth resolves to one of its samples)
+        glBindFramebuffer(GL_DRAW_FRAMEBUFFER, S.depthFbo);
+        glBlitFramebuffer(0, 0, S.w, S.h, 0, 0, S.w, S.h, GL_DEPTH_BUFFER_BIT, GL_NEAREST);
+    }
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    if (hizOn) { // #134: the pyramid for next frame's terrain cull, and the view-projection this depth was drawn with
+        glUseProgram(S.hizProg);
+        const GLint locFrom = glGetUniformLocation(S.hizProg, "fromDepth"), locSrc = glGetUniformLocation(S.hizProg, "srcSize"), locDst = glGetUniformLocation(S.hizProg, "dstSize");
+        glActiveTexture(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_2D, S.depthTex);
+        glUniform1i(glGetUniformLocation(S.hizProg, "depthSrc"), 0);
+        int w = S.w, h = S.h;
+        for (int l = 0; l < S.hizLevels; ++l) {
+            const int dw = l == 0 ? w : std::max(1, w >> 1), dh = l == 0 ? h : std::max(1, h >> 1);
+            glUniform1i(locFrom, l == 0 ? 1 : 0);
+            glUniform2i(locSrc, w, h);
+            glUniform2i(locDst, dw, dh);
+            if (l > 0) glBindImageTexture(0, S.hizTex, l - 1, GL_FALSE, 0, GL_READ_ONLY, GL_R32F);
+            glBindImageTexture(1, S.hizTex, l, GL_FALSE, 0, GL_WRITE_ONLY, GL_R32F);
+            glDispatchCompute((GLuint)((dw + 7) / 8), (GLuint)((dh + 7) / 8), 1);
+            glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT);
+            if (l > 0) { w = dw; h = dh; }
+        }
+        glMemoryBarrier(GL_TEXTURE_FETCH_BARRIER_BIT);
+        glBindTexture(GL_TEXTURE_2D, 0);
+        glUseProgram(0);
+        S.hizVP = S.hizPendingVP; S.hizFrame = S.frame;
+        S.hizValid = true;
+    }
+    S.hizPending = false;
+    ++S.frame;
     if (S.hdr) {
         glBindBufferBase(GL_SHADER_STORAGE_BUFFER, kExposureBinding, S.expBuf);
         if (S.autoExposure) {
@@ -455,6 +625,14 @@ void SceneTarget_End() {
         glUniform1i(glGetUniformLocation(S.prog, "bloomTex"), 1);
         glUniform1f(glGetUniformLocation(S.prog, "bloomStrength"), bloomOn ? S.bloomStrength : 0.0f);
         glUniform1f(glGetUniformLocation(S.prog, "bloomLevels"), (float)State::kBloomLevels);
+        // Contact shadows (#137).
+        glActiveTexture(GL_TEXTURE2);
+        glBindTexture(GL_TEXTURE_2D, contactOn ? S.depthTex : 0);
+        glActiveTexture(GL_TEXTURE0);
+        glUniform1i(glGetUniformLocation(S.prog, "depthTex"), 2);
+        glUniform1f(glGetUniformLocation(S.prog, "contactStrength"), contactOn ? S.contactStrength : 0.0f);
+        glUniform3fv(glGetUniformLocation(S.prog, "sunView"), 1, S.sunView);
+        glUniform3fv(glGetUniformLocation(S.prog, "projP"), 1, S.proj);
     }
     glBindVertexArray(S.vao);
     glDrawArrays(GL_TRIANGLES, 0, 3);
@@ -472,7 +650,16 @@ void SceneTarget_Unload() {
     if (S.downProg) rlUnloadShaderProgram(S.downProg);
     if (S.upProg) rlUnloadShaderProgram(S.upProg);
     if (S.expProg) rlUnloadShaderProgram(S.expProg);
+    if (S.hizProg) rlUnloadShaderProgram(S.hizProg);
     if (S.expBuf) glDeleteBuffers(1, &S.expBuf);
     if (S.vao) glDeleteVertexArrays(1, &S.vao);
     S = State{};
 }
+
+// #131: the tonemap chosen in Settings (0 knee, 1 ACES, 2 clip: the shader's numbering). RAYLIBGAME_TONEMAP, when set,
+// wins (benches and A/B runs stay as they were); otherwise the choice applies at once.
+void SceneTarget_SetTonemap(int curve) {
+    if (getenv("RAYLIBGAME_TONEMAP")) return;
+    S.tonemap = std::clamp(curve, 0, 2);
+}
+int SceneTarget_Tonemap() { return S.tonemap; }

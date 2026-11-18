@@ -1,6 +1,7 @@
 #include "newworld.h"
 #include "voxel.h"
 #include "world.h"
+#include "menus.h" // settings.difficulty: the last choice is the next default (#526)
 
 #include <raylib.h>
 #include <raymath.h>
@@ -28,6 +29,7 @@ namespace {
     std::string seedText;
     bool seedFocus = false;
     WorldGenParams params;
+    int difficulty = 1;           // #526: set at creation, kept by the world
     double changedAt = 0.0;       // the last input change (the preview rebuilds 0.35 s after it)
     bool dirty = true;
     float spin = 0.0f;
@@ -253,6 +255,7 @@ namespace {
 void NewWorld_Open() {
     InitGpu();
     params = WorldGenParams{};
+    difficulty = std::clamp(settings.difficulty, 0, 2);
     seedFocus = false;
     haveMap = false;
     RollSeed();
@@ -275,7 +278,8 @@ NewWorldChoice NewWorld_Draw() {
     // The panel: seed, parameters, buttons.
     const float px = W * 0.06f, pw = std::min(W * 0.42f, 720.0f * s), rowH = 46.0f * s, gap = 12.0f * s;
     float y = H * 0.18f;
-    DrawRectangleRounded({ px - 20 * s, y - 20 * s, pw + 40 * s, H * 0.74f }, 0.04f, 6, kPanel);
+    constexpr float kPanelH = 0.78f; // of the screen height: 11 rows of settings, Difficulty and the buttons (#637, #526)
+    DrawRectangleRounded({ px - 20 * s, y - 20 * s, pw + 40 * s, H * kPanelH }, 0.04f, 6, kPanel);
     {   // Seed: digits, editable; Random rolls a new one.
         const int fs = (int)(rowH * 0.5f);
         DrawText("Seed", (int)px, (int)(y + (rowH - fs) * 0.5f), fs, kText);
@@ -328,9 +332,21 @@ NewWorldChoice NewWorld_Draw() {
     const int noteFs = (int)(17 * s);
     DrawText("The preview shows the base terrain; erosion shapes it when the world is created (about a minute).", (int)px, (int)y, noteFs, Fade(kText, 0.6f));
     y += noteFs + gap * 2;
+    {   // Difficulty (#526): chosen here once; the world keeps it (no setting changes it later). Its label in the row: above
+        // it, it ran into the note.
+        static const char* names[] = { "Peaceful", "Normal", "Hard" };
+        const int fs = (int)(rowH * 0.5f);
+        const float bx = px + pw * 0.34f, bw = pw * 0.2f;
+        DrawText("Difficulty", (int)px, (int)(y + (rowH - fs) * 0.5f), fs, kText);
+        for (int k = 0; k < 3; ++k) {
+            const Rectangle b = { bx + k * (bw + gap * 0.5f), y, bw, rowH };
+            if (Button(b, names[k])) difficulty = k;
+            if (k == difficulty) DrawRectangleLinesEx(b, 2.0f, SKYBLUE);
+        }
+    }
     // The bottom row: Create World, Cancel, Defaults (#637: a Defaults row under the sliders ran into it once they were 11).
-    const float by = H * 0.18f + H * 0.74f - rowH - 40 * s;
-    if (Button({ px, by, pw * 0.4f, rowH * 1.15f }, "Create World")) { r.kind = NewWorldChoice::Create; r.seed = seed; r.params = params; }
+    const float by = H * 0.18f + kPanelH * H - rowH - 40 * s;
+    if (Button({ px, by, pw * 0.4f, rowH * 1.15f }, "Create World")) { r.kind = NewWorldChoice::Create; r.seed = seed; r.params = params; r.difficulty = difficulty; }
     if (Button({ px + pw * 0.43f, by, pw * 0.3f, rowH * 1.15f }, "Cancel") || (IsKeyPressed(KEY_ESCAPE) && !seedFocus)) r.kind = NewWorldChoice::Cancel;
     if (Button({ px + pw * 0.76f, by, pw * 0.24f, rowH * 1.15f }, "Defaults")) { params = WorldGenParams{}; Changed(); }
 

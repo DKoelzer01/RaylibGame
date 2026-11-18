@@ -70,6 +70,10 @@ C++ raylib 5.5 planetoid survival game. `src/engine` (static lib), `src/space` -
   TaskStop does not kill the child scripts.
 - Check on every test run 15-45 s after starting it (user, 2026-11-14): run it in the background and look at its
   output early, so an error or a stall is caught then, not after the whole timeout.
+- **Every batch of tests has a hard limit of 15 minutes** (user, 2026-11-17: a wait loop hung for 8 hours), except a
+  large-scale regression (`tools/regression.sh`). Wrap the whole batch, not only each test: `timeout 900 bash -c '...'`
+  (per-test `timeout` inside it as well), and give every wait or poll loop its own deadline (`until <check> || [ $SECONDS
+  -gt 900 ]`), never an open-ended `until grep ...`. Split longer work into several batches.
 - `--test-planet-walk M` (#363, user 2026-11-14): M metres as 100 m legs at places drawn from the seed (teleports
   between legs, hovering while each place loads; every other leg prefers ground above 300 m). PASS = most legs walked
   and never under the surface or inside solid; a leg lost to a death or a 45 s timeout on rough ground is not a failure.
@@ -182,6 +186,9 @@ board's auto-add workflow adds new issues itself, but sets no fields, so:
   now unclamped. The composite decodes, applies auto-exposure (log-average of a 64x36 sample grid, never brightens:
   nights stay as tuned), tonemaps (default "knee": today's look up to 0.8, highlights roll off; RAYLIBGAME_TONEMAP=aces|clip)
   and re-encodes. RAYLIBGAME_HDR=0 = the old RGBA8 target; RAYLIBGAME_EXPOSURE_LOG=1 prints exposure/luminance.
+- Physical sky (#142, skyphys.*): Hillaire LUTs over an Earth-sized air shell (terra's 25 km of air is too short a path for red
+  sunsets); the sky and the haze colour (not its amount: ~35 km visibility) come from it, 35% toward the old palette. On by
+  default (user, 2026-11-18); RAYLIBGAME_SKY_PHYS=0 = the old analytic sky and haze. Tint/exposure: RAYLIBGAME_SKY_PHYS_TINT / _EXPOSURE.
 - Multiplayer phase 1 (#304, PRs #435, #438, #440, #442): gameplay runs in fixed 60 Hz steps (`simclock.h`:
   `SimTime()`/`SimDt()`, never `GetTime()` in sim code; the camera interpolates the player by `SimAlpha()`; mouse look is
   per frame). Gameplay reads `PlayerInput` (`playerinput.h`; `PlayerInput_Step()` in steps, `PlayerInput_Frame()` for the
@@ -294,6 +301,8 @@ Water (Plan 4, user answers)
 - Decided (2026-11-11): F2 is a sparse 3D cell simulation, Terraria-style, 1 m voxels (fill amount
   per cell; down, then sideways; a slow levelling pass for U-bends / cave pressure), surface meshed
   with marching cubes on the fill amounts. Replaces the per-column span design.
+- Fluid cells are 0.25 m by default (user, 2026-11-17, #714); `RAYLIBGAME_FLUID_CELL=1` is the old 1 m grid (opt-in).
+  A save records its cell size; sites saved at another size are dropped on load (their simulated water starts over).
 
 Deferred by the user: moon mining launch (#116), motion sickness (#117; comfort options are #168). The history of
 the earlier playtest batches is in git history and the closed issues.

@@ -65,11 +65,13 @@ void Load() {
 const SuitDef* FindSuit(const std::string& id) { Load(); for (const auto& s : suits) if (s.id == id) return &s; return nullptr; }
 const ModuleDef* FindModule(const std::string& id) { Load(); for (const auto& m : modules) if (m.id == id) return &m; return nullptr; }
 
-void Recompute() {
+SuitStats StatsOf(const SuitState& st);
+void Recompute() { S().stats = StatsOf(S()); }
+SuitStats StatsOf(const SuitState& st) { // (#337: any player's suit, not only the local one)
     SuitStats s;
-    const SuitDef* suit = FindSuit(S().worn);
+    const SuitDef* suit = FindSuit(st.worn);
     if (suit) { s.slots = suit->slots; s.oxygen = suit->oxygen; s.power = suit->power; s.vacuum = suit->vacuum; }
-    for (const std::string& id : S().fitted) {
+    for (const std::string& id : st.fitted) {
         const ModuleDef* m = id.empty() ? nullptr : FindModule(id);
         if (!m) continue;
         const std::string& e = m->effect;
@@ -86,7 +88,7 @@ void Recompute() {
         else if (e == "scanner") s.scanner = true;
         else if (e == "hover") s.hover = true;
     }
-    S().stats = s;
+    return s;
 }
 
 // Fit the slot list to the suit: extra modules go back to the inventory.
@@ -199,51 +201,23 @@ void Suit_DrawHUD() {
     DrawText(TextFormat("ORE SCANNER: %s %.0f m", S().scanKind.c_str(), S().scanDist), x, y, 16, Color{ 255, 200, 120, 255 });
 }
 
-void Suit_DrawTab() {
+// (#822) A carried module into a given slot (a fitted one there goes back to the inventory first): true if fitted.
+bool Suit_FitInto(int slot, const std::string& id) {
     Load();
-    const SuitDef* s = FindSuit(S().worn);
-    ImGui::Text("Worn: %s  (%d module slots)", s ? s->name.c_str() : S().worn.c_str(), (int)S().fitted.size());
-    ImGui::Separator();
-    for (int i = 0; i < (int)S().fitted.size(); ++i) {
-        ImGui::PushID(i);
-        // Each slot is a drop target: drag a carried module here (a fitted one swaps back out).
-        const ItemDef* d = S().fitted[i].empty() ? nullptr : itemDB.find(S().fitted[i]);
-        const std::string label = S().fitted[i].empty() ? TextFormat("Slot %d: empty (drag a module here)", i + 1)
-                                                    : TextFormat("Slot %d: %s", i + 1, d ? d->name.c_str() : S().fitted[i].c_str());
-        ImGui::Selectable(label.c_str(), false, 0, ImVec2(ImGui::GetContentRegionAvail().x - 70.0f, 0.0f));
-        if (!S().fitted[i].empty() && ImGui::BeginDragDropSource()) {
-            ImGui::SetDragDropPayload("SUIT_SLOT", &i, sizeof(int));
-            ImGui::Text("Remove %s", d ? d->name.c_str() : S().fitted[i].c_str());
-            ImGui::EndDragDropSource();
-        }
-        if (ImGui::BeginDragDropTarget()) {
-            if (const ImGuiPayload* pl = ImGui::AcceptDragDropPayload("SUIT_MODULE")) {
-                const std::string id((const char*)pl->Data);
-                if (inventory.count(id) > 0) {
-                    if (!S().fitted[i].empty()) Suit_Unfit(i);
-                    inventory.remove(id, 1);
-                    S().fitted[i] = id;
-                    Recompute();
-                    int nfit = 0; for (const std::string& m : S().fitted) nfit += m.empty() ? 0 : 1;
-                    QuestBook_AtLeast("modules", nfit);
-                    Audio_Play(Sfx::Build, 0.4f, 1.4f);
-                }
-            }
-            ImGui::EndDragDropTarget();
-        }
-        if (!S().fitted[i].empty()) {
-            ImGui::SameLine();
-            if (ImGui::SmallButton("Remove")) Suit_Unfit(i);
-            ImGui::TextDisabled("    %s", Suit_ModuleText(S().fitted[i]));
-        }
-        ImGui::PopID();
-    }
-    ImGui::Separator();
-    ImGui::TextUnformatted("Carried (drag onto a slot, or Fit):");
-    if (ImGui::BeginDragDropTarget()) { // a S().fitted module dropped back here comes out
-        if (const ImGuiPayload* pl = ImGui::AcceptDragDropPayload("SUIT_SLOT")) Suit_Unfit(*(const int*)pl->Data);
-        ImGui::EndDragDropTarget();
-    }
+    if (slot < 0 || slot >= (int)S().fitted.size() || !Suit_IsModule(id) || inventory.count(id) <= 0) return false;
+    if (!S().fitted[slot].empty()) Suit_Unfit(slot);
+    inventory.remove(id, 1);
+    S().fitted[slot] = id;
+    Recompute();
+    int nfit = 0; for (const std::string& m : S().fitted) nfit += m.empty() ? 0 : 1;
+    QuestBook_AtLeast("modules", nfit);
+    Audio_Play(Sfx::Build, 0.4f, 1.4f);
+    return true;
+}
+
+// (#822) The suits and modules you carry, each with Wear / Fit (the inventory screen, under the player).
+void Suit_DrawCarried() {
+    Load();
     bool any = false;
     for (const auto& m : modules) {
         const int n = inventory.count(m.id);
@@ -253,12 +227,7 @@ void Suit_DrawTab() {
         const ItemDef* d = itemDB.find(m.id);
         if (ImGui::SmallButton("Fit")) Suit_Fit(m.id);
         ImGui::SameLine();
-        ImGui::Selectable(TextFormat("%s x%d - %s", d ? d->name.c_str() : m.id.c_str(), n, m.text.c_str()));
-        if (ImGui::BeginDragDropSource()) {
-            ImGui::SetDragDropPayload("SUIT_MODULE", m.id.c_str(), m.id.size() + 1);
-            ImGui::Text("%s", d ? d->name.c_str() : m.id.c_str());
-            ImGui::EndDragDropSource();
-        }
+        ImGui::TextWrapped("%s x%d - %s", d ? d->name.c_str() : m.id.c_str(), n, m.text.c_str());
         ImGui::PopID();
     }
     for (const auto& su : suits) {
@@ -267,16 +236,20 @@ void Suit_DrawTab() {
         ImGui::PushID(su.id.c_str());
         if (ImGui::SmallButton("Wear")) Suit_Wear(su.id);
         ImGui::SameLine();
-        ImGui::Text("%s - %d slots, oxygen and power x%.1f", su.name.c_str(), su.slots, su.oxygen);
+        ImGui::TextWrapped("%s - %d slots, oxygen and power x%.1f", su.name.c_str(), su.slots, su.oxygen);
         ImGui::PopID();
     }
-    if (!any) ImGui::TextDisabled("No modules or suits carried (craft them: Crafting tab)");
-    ImGui::Separator();
+    if (!any) ImGui::TextDisabled("No other suits or modules carried (craft them on the Crafting screen)");
+}
+
+// (#822) What the suit does now.
+void Suit_DrawStats() {
+    Load();
     const SuitStats& st = S().stats;
-    ImGui::Text("Oxygen x%.2f   power x%.2f   jetpack fuel x%.2f, thrust x%.2f", st.oxygen, st.power, st.jetFuel, st.jetThrust);
-    ImGui::Text("Walk x%.2f   lamp x%.2f   hunger x%.2f   underwater oxygen x%.1f", st.walk, st.lamp, st.food, st.underwater);
-    ImGui::Text("Cold felt %.0f%%   heat %s   grip %s   ore scanner %s", st.cold * 100.0f, st.heatProof ? "regulated" : "hurts above 35 C",
-                st.grip ? "on" : "off", st.scanner ? "on" : "off");
+    ImGui::TextWrapped("Oxygen x%.2f   power x%.2f   jetpack fuel x%.2f, thrust x%.2f", st.oxygen, st.power, st.jetFuel, st.jetThrust);
+    ImGui::TextWrapped("Walk x%.2f   lamp x%.2f   hunger x%.2f   underwater oxygen x%.1f", st.walk, st.lamp, st.food, st.underwater);
+    ImGui::TextWrapped("Cold felt %.0f%%   heat %s   grip %s   ore scanner %s", st.cold * 100.0f, st.heatProof ? "regulated" : "hurts above 35 C",
+                       st.grip ? "on" : "off", st.scanner ? "on" : "off");
 }
 
 void Suit_Save(FILE* f) {
@@ -302,3 +275,4 @@ bool Suit_LoadLine(const char* tok, FILE* f) {
     Recompute();
     return true;
 }
+SuitStats Suit_StatsOf(const SuitState& st) { return StatsOf(st); } // (#337)

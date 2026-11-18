@@ -12,8 +12,16 @@ extern "C" {
     typedef void (*PfnDispatchComputeIndirect)(long long);
     extern PfnDispatchComputeIndirect glad_glDispatchComputeIndirect;
 }
+#if RAYLIBGAME_HEADLESS_PLATFORM
+extern "C" int RaylibHeadless_GLMode(void); // src/platform/rcore_headless.c: 2 = the null GL (no GPU)
+#endif
 
 bool Compute_Available() {
+#if RAYLIBGAME_HEADLESS_PLATFORM
+    // A Linux server without a GPU (#792) runs on stub GL functions: every GPU path (fluid, terrain density, arena,
+    // tree culling) takes its CPU fallback.
+    if (RaylibHeadless_GLMode() == 2) return false;
+#endif
     return rlGetVersion() == RL_OPENGL_43 && glad_glMemoryBarrier != nullptr;
 }
 

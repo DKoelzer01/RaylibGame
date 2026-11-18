@@ -17,6 +17,8 @@ struct PlayerInput;
 //   dug tunnels and built terrain are walkable with no separate collision mesh;
 // - standing on a spinning body carries you with it;
 // - jump, and a jetpack while airborne (Space up, Ctrl down).
+inline double gPlayerCollideSeconds = 0.0; // (#768) time in resolveCollisions since the start (the player-cost bench)
+
 struct Player {
     DVec3 position{};                 // feet, world space (double: survives the floating origin)
     Vector3 velocity{};               // world units / s
@@ -24,6 +26,7 @@ struct Player {
     Vector3 up = { 0, 1, 0 };
     bool grounded = false;
     bool flyMode = false;             // F: free-fly dev camera (no gravity/collision)
+    bool flyAllowed = true;           // F works (#531: creative mode only; the game sets it each frame); off: leaves fly mode
     int spawns = 0;                   // counts spawnOn/placeAt: the game raises the loading screen on a new one
     float jetpackFuel = 1.0f;         // 0..1, recharges on the ground
     // Flight pack (#163): H toggles hover - height held, no drift; Space/Ctrl climb/descend, Shift boosts. It runs
@@ -37,6 +40,8 @@ struct Player {
     float gravityScale = 1.0f;        // spells/effects (e.g. featherfall)
     bool dampeners = true;            // B: inertial dampeners (deep space only)
     bool autoJump = false;            // tests: jump once on the next update (a Space press in PlayerInput)
+    bool autoCrouch = false;          // tests: Ctrl held (crouch, #578)
+    bool autoSprint = false;          // tests: Shift held with autoWalk (#338: the explore test walks 600 m)
     float lastContactDot = 0.0f;      // debug: dot(contact normal, up) of the last collision
     float impactSpeed = 0.0f;         // hardest collision speed this frame (any contact: tests, launches)
     float landingSpeed = 0.0f;        // speed into the floor at touchdown this frame (fall damage, #263)
@@ -60,6 +65,17 @@ struct Player {
     float eyeHeight = 1.6f;
     float height = 1.7f;     // collision capsule top (#255): 2 m doorways pass
     float radius = 0.45f;
+    // Posture (#578): crouching (hold Ctrl on the ground) and prone (Z) shorten the capsule and slow the walk; getting up
+    // needs the room above. `height` and the eye ease follow the posture; standHeight / standEye are the upright ones.
+    enum class Posture { Stand, Crouch, Prone };
+    Posture posture = Posture::Stand;
+    bool proneWanted = false;
+    float standHeight = 1.7f, standEye = 1.6f;
+    static constexpr float kCrouchHeight = 1.25f, kCrouchEye = 1.15f, kProneHeight = 0.9f, kProneEye = 0.6f;
+    static constexpr float kCrouchSpeed = 0.5f, kProneSpeed = 0.25f; // of the walk
+    float postureHeight(Posture p) const { return p == Posture::Prone ? kProneHeight : p == Posture::Crouch ? kCrouchHeight : standHeight; }
+    float postureEye(Posture p) const { return p == Posture::Prone ? kProneEye : p == Posture::Crouch ? kCrouchEye : standEye; }
+    bool roomAbove(Scene& world, float toHeight) const; // nothing solid between the capsule's top now and toHeight
     float walkSpeed = 6.0f;
     float runMultiplier = 2.0f;
     // Knockback (#165): a push relative to the ground, applied at the next physics step. On the ground it lifts
@@ -81,6 +97,20 @@ struct Player {
     void placeAt(Scene& world, Planetoid& body, Vector3 renderFeet);
     // Ride along with body from the next update on (else one slow frame leaves you behind its spin).
     void anchorTo(Planetoid& body);
+    // Multiplayer (#327): everything a step depends on, in the nearest body's frame (time-independent: the server and a
+    // predicting client step the same input at different times). vel is relative to the surface under the feet, on body
+    // axes. applyNetState sets the player to it with the ground or air anchor update() expects, so the next step goes on
+    // from there as if it had got there itself (setting position alone dropped the ground contact for a step).
+    struct NetState {
+        uint64_t body = 0;              // NetId
+        DVec3 local{};                  // feet
+        Vector3 vel{};
+        bool grounded = false, hovering = false;
+        uint8_t posture = 0;            // Posture
+        float jumpBuffer = 0.0f, coyote = 0.0f, jumpLock = 0.0f, jetpackFuel = 1.0f;
+    };
+    bool netState(const Scene& world, NetState& s) const; // false: no body yet
+    bool applyNetState(Scene& world, const NetState& s);  // false: the body isn't loaded
     void update(Scene& world, const PlayerInput& in, float dt); // one simulation step (SimDt, #315) with that step's input (#312)
     // Mouse look, once per frame (not per simulation step, so the view turns smoothly at any frame rate; #315).
     void look(Vector2 mouseDelta);
@@ -97,6 +127,9 @@ struct Player {
     void recordFly(Scene& world);
     Planetoid* flyReference(Scene& world, bool& rotate) const;
 
+    // Tests (#768): make every collision-cache entry claim "clear by a kilometre" - a stale cache's worst case. A player
+    // whose physics depends on history would then sink through the ground; the determinism check steps it beside a copy.
+    void poisonCollideCache();
 private:
     // Render interpolation (#315): the feet after the last two steps, local to interpBody; interpSpawns detects teleports.
     uint64_t interpBody = 0;
@@ -129,10 +162,20 @@ private:
     float coyote = 0.0f;     // seconds a jump is still allowed after leaving the ground
     float jumpLock = 0.0f;   // seconds after a jump during which the player cannot re-ground
     bool resolveCollisions(Scene& world, Vector3& feet);
+    // #768: per capsule sphere, the last measured terrain surface distance (m) and where it was measured (body-local).
+    // Within one update (cleared at its start: physics must not depend on history - client replays and the server must
+    // agree), a sphere whose distance, less how far it has moved since, is still beyond its radius + 5 cm can't touch: it is not
+    // measured again (each measurement is 7 density samples). Any edit (a new snapshot) or another body clears it.
+    struct CollideCache { Vector3 centre[8]{}; float dist[8]{}; bool valid[8]{}; const void* body = nullptr; const void* edits = nullptr; } collideCache;
     void collideTrunks(Vector3& feet); // tree trunks: vertical capsules on the nearest body
     // Velocity of the terrain being collided with, in the frame `velocity` is in: zero while grounded
     // (velocity is then relative to the surface), the surface velocity while airborne (world frame).
     Vector3 collideFrameVel = { 0, 0, 0 };
+    // Multiplayer (#327, #750): the body-local state at the end of the last step (netState reads it later).
+    NetState netCache;
+    bool netCached = false;
+    int netCacheSpawns = -1;
+    void CacheNetState(const Scene& world);
 };
 
 extern Player& player;         // the local PlayerSession's (src/space/playersession.h, #313)

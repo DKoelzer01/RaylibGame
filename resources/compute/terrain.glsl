@@ -404,17 +404,25 @@ float densityNear(vec3 p, float d, float surface, float fp, float cmask, float c
     precise float caveWeight = clamp(2.0 - xdiv(fp, 8.0), 0.0, 1.0);
     precise float caveTop = 5.0;
     precise float mouth = 0.0; // #549: in mouth regions tunnels open at full width where they meet the surface
-    if (depth < 14.0 && depth > -3.0 && caveWeight > 0.0 && planetMoon == 0) { mouth = tSmooth(0.3, 0.45, fractal(N_CAVE_MOUTHS, 1, p.x, p.y, p.z)); caveTop = 5.0 - 7.5 * mouth; }
-    if (caveWeight > 0.0 && depth > caveTop && d > mantleRadius + 20.0) {
+    if (depth < 14.0 && depth > -14.0 && caveWeight > 0.0 && planetMoon == 0) { mouth = tSmooth(0.3, 0.45, fractal(N_CAVE_MOUTHS, 1, p.x, p.y, p.z)); caveTop = 5.0 - 7.5 * mouth; }
+    // #549: in mouth regions a roof thinner than 4 m collapses (voxel.cpp densityNear, bit-exact with it).
+    precise float gate = mouth > 0.0 ? -14.0 : caveTop;
+    if (caveWeight > 0.0 && depth > gate && d > mantleRadius + 20.0) {
         precise float near_ = 2.0 * max(fp, 1.0) + 2.0;
+        precise float reach = mouth > 0.0 ? max(near_, 4.0 + 1.0 - depth) : near_;
         precise float m = 1e9;
         precise float a = abs(fractal(N_CAVES_A, 2, p.x, p.y, p.z));
-        if ((a - K_TUNNEL_LEVEL) * 100.0 <= near_) {
-            precise float top = min(1.0, xdiv(depth - caveTop, 8.0));
+        if ((a - K_TUNNEL_LEVEL) * 100.0 <= reach) {
+            precise float top = clamp(xdiv(depth - caveTop, 8.0), 0.0, 1.0);
             top = top + (1.0 - top) * mouth;
             precise float fade = top * min(1.0, xdiv(d - mantleRadius - 20.0, 10.0));
             precise float t = max(a, abs(fractal(N_CAVES_B, 2, p.x, p.y, p.z)));
             m = (t - K_TUNNEL_LEVEL) * 100.0 + (1.0 - fade * caveWeight) * 20.0;
+            if (mouth > 0.0 && m > 0.0) {
+                precise float roof = depth + m;
+                precise float c = mouth * clamp((4.0 + 1.0 - roof) * 0.5, 0.0, 1.0);
+                m = m + (-2.0 - m) * c;
+            }
         }
         if (depth > 30.0 && d > mantleRadius + 40.0) {
             precise float fade = min(1.0, xdiv(depth - 30.0, 20.0)) * min(1.0, xdiv(d - mantleRadius - 40.0, 20.0));

@@ -64,7 +64,10 @@ const char* PartName(PartType t) {
         case PartType::HandPump: return "hand pump";
         case PartType::Torch: return "torch";
         case PartType::Snare: return "snare";
+        case PartType::Bed: return "bed";
         case PartType::Meteorite: return "meteorite";
+        case PartType::PressurePlate: return "pressure plate";
+        case PartType::GasVent: return "gas vent";
         case PartType::Farmland: return "farmland";
         case PartType::Fence: return "fence";
         case PartType::Gate: return "gate";
@@ -134,7 +137,9 @@ const char* PartCostItem(PartType t) {
         case PartType::HandPump: return "hand_pump"; // not a machine: no factory entry (#280)
         case PartType::Torch: return "torch"; // placed from the hand (#218)
         case PartType::Snare: return "snare"; // placed from the hand (#176)
+        case PartType::Bed: return "bed"; // (#800)
         case PartType::Meteorite: return "nickel_iron_ore"; // what it is made of (breaking it gives more: buildtool.cpp, #177)
+        case PartType::PressurePlate: case PartType::GasVent: return "stone"; // dungeon traps (#719): broken, a stone back
         default: { const char* m = PartMachineName(t); return m ? m : "concrete"; }
     }
 }
@@ -209,7 +214,7 @@ static Color PartColor(PartType t) {
         case PartType::Furnace: return { 95, 92, 88, 255 };
         case PartType::Macerator: return { 70, 110, 150, 255 };
         case PartType::Battery: return { 210, 180, 60, 255 };
-        case PartType::Campfire: return { 200, 90, 40, 255 };
+        case PartType::Campfire: return { 62, 58, 54, 255 }; // ash (#552: it was a brick block)
         case PartType::Kiln: return { 150, 95, 70, 255 };
         case PartType::CokeOven: return { 120, 80, 60, 255 };
         case PartType::BlastFurnace: return { 90, 70, 70, 255 };
@@ -238,7 +243,10 @@ static Color PartColor(PartType t) {
         case PartType::HandPump: return { 120, 90, 60, 255 };
         case PartType::Torch: return { 120, 85, 55, 255 };
         case PartType::Snare: return { 150, 120, 80, 255 };
+        case PartType::Bed: return { 150, 62, 52, 255 }; // a red blanket (#800)
         case PartType::Meteorite: return { 70, 62, 58, 255 };
+        case PartType::PressurePlate: return { 122, 116, 106, 255 }; // a shade off the floor's stone: a careful eye sees it
+        case PartType::GasVent: return { 96, 110, 70, 255 };         // a mossy grate
         case PartType::Farmland: return { 86, 60, 38, 255 };
         case PartType::Fence: return { 130, 95, 60, 255 };
         case PartType::Gate: return { 165, 120, 70, 255 };
@@ -278,14 +286,18 @@ static unsigned char PartPatternOf(const Part& p) {
     }
     switch (p.type) {
         case PartType::Chest: case PartType::Fence: case PartType::Gate: return PatPlanks;
-        case PartType::Kiln: case PartType::CokeOven: case PartType::BlastFurnace: case PartType::Campfire: return PatBrick;
+        case PartType::Kiln: case PartType::CokeOven: case PartType::BlastFurnace: return PatBrick;
+        case PartType::Campfire: return PatCoal; // the ash bed under the logs (#552)
         case PartType::Conveyor: return PatConveyor;
         case PartType::Cable: return PatCable;
         case PartType::Pipe: case PartType::Outlet: return PatMetal;
         case PartType::Farmland: return PatFarmland;
         case PartType::Torch: return PatLog; // the shaft; machinemodels draws the flame
         case PartType::Snare: return PatPlanks; // a low wooden frame; machinemodels draws the noose and a catch
+        case PartType::Bed: return PatPlanks; // a wooden frame (#800)
         case PartType::Meteorite: return PatCoal; // dark, pitted
+        case PartType::PressurePlate: return PatStone;
+        case PartType::GasVent: return PatMetal;
         default: return IsRocketPart(p.type) ? PatHull : PatMachine;
     }
 }
@@ -298,7 +310,7 @@ static void PartCells(PartType t, std::vector<std::pair<Int3, CellShape>>& out) 
         case PartType::Cube: case PartType::Conveyor: case PartType::Cable: case PartType::Guidance: case PartType::LandingLeg: case PartType::Pipe: case PartType::Outlet:
             out.push_back({ { 0, 0, 0 }, full }); break;
         case PartType::Block: case PartType::Chest: case PartType::Generator: case PartType::Furnace: case PartType::Macerator: case PartType::Battery:
-        case PartType::Campfire: case PartType::Kiln: case PartType::CokeOven: case PartType::BlastFurnace: case PartType::Boiler:
+        case PartType::Kiln: case PartType::CokeOven: case PartType::BlastFurnace: case PartType::Boiler:
         case PartType::ForgeHammer: case PartType::AlloySmelter: case PartType::SteamMacerator:
         case PartType::RocketEngine: case PartType::FuelTank: case PartType::Cockpit: case PartType::Cabin: case PartType::StationCore:
         case PartType::OreWasher: case PartType::Centrifuge: case PartType::WaterPump: case PartType::MvGenerator: case PartType::Electrolyzer:
@@ -306,6 +318,11 @@ static void PartCells(PartType t, std::vector<std::pair<Int3, CellShape>>& out) 
         case PartType::PrecisionAssembler: case PartType::FusionReactor: case PartType::MassDriver: case PartType::HandPump: case PartType::Meteorite:
             for (int z = 0; z < 2; ++z) for (int y = 0; y < 2; ++y) for (int x = 0; x < 2; ++x) out.push_back({ { x, y, z }, full });
             break;
+        case PartType::Campfire: { // #552: a 1 m square ash bed 12 cm deep (it was a 1 m brick cube); machinemodels draws the stones and logs
+            CellShape bed; bed.full = false; bed.planes = 1; bed.n[0] = { 0, 1, 0 }; bed.d[0] = 0.25f;
+            for (int z = 0; z < 2; ++z) for (int x = 0; x < 2; ++x) out.push_back({ { x, 0, z }, bed });
+            break;
+        }
         case PartType::Farmland: // 1 m square, half a metre deep
             for (int z = 0; z < 2; ++z) for (int x = 0; x < 2; ++x) out.push_back({ { x, 0, z }, full });
             break;
@@ -314,6 +331,14 @@ static void PartCells(PartType t, std::vector<std::pair<Int3, CellShape>>& out) 
             for (int z = 0; z < 2; ++z) for (int y = 0; y < 2; ++y) out.push_back({ { 0, y, z }, s });
             break;
         }
+        case PartType::PressurePlate: case PartType::GasVent: { // (#719) 5 cm on the floor: walked over, not stepped up onto
+            CellShape s; s.full = false; s.planes = 1; s.n[0] = { 0, 1, 0 }; s.d[0] = 0.1f;
+            out.push_back({ { 0, 0, 0 }, s });
+            break;
+        }
+        case PartType::Bed: // #800: 1 m wide, 2 m long, half a metre high (2 x 1 x 4 cells)
+            for (int z = 0; z < 4; ++z) for (int x = 0; x < 2; ++x) out.push_back({ { x, 0, z }, full });
+            break;
         case PartType::Snare: // a low trap frame: the Slab shape (#176)
         case PartType::Slab: {  // the lower half of the cell
             CellShape s; s.full = false; s.planes = 1; s.n[0] = { 0, 1, 0 }; s.d[0] = 0.5f;
@@ -330,7 +355,11 @@ static void PartCells(PartType t, std::vector<std::pair<Int3, CellShape>>& out) 
             out.push_back({ { 0, 0, 0 }, s });
             break;
         }
-        case PartType::Torch: // a quarter-cell post like Post (#218)
+        case PartType::Torch: { // a thin stick up one edge (#218; #558: 0.1 m, it was a quarter-cell post like Post)
+            CellShape s; s.full = false; s.planes = 2; s.n[0] = { 1, 0, 0 }; s.d[0] = 0.2f; s.n[1] = { 0, 0, 1 }; s.d[1] = 0.2f;
+            out.push_back({ { 0, 0, 0 }, s });
+            break;
+        }
         case PartType::Post: {  // a quarter of the cell, up one edge
             CellShape s; s.full = false; s.planes = 2; s.n[0] = { 1, 0, 0 }; s.d[0] = 0.5f; s.n[1] = { 0, 0, 1 }; s.d[1] = 0.5f;
             out.push_back({ { 0, 0, 0 }, s });
@@ -453,7 +482,7 @@ int Plot::place(const Part& p) {
     Footprint(p, fp);
     const int idx = (int)parts.size();
     parts.push_back(p);
-    for (const auto& c : fp) { cells[c.first] = { idx, c.second }; markDirty(c.first); }
+    for (const auto& c : fp) { cells[c.first] = { idx, c.second }; markDirty(c.first); changedCells.push_back(c.first); }
     ++livePartCount;
     ++version;
     return idx;
@@ -463,7 +492,7 @@ bool Plot::remove(int idx) {
     if (idx < 0 || idx >= (int)parts.size() || parts[idx].type == PartType::Count) return false;
     std::vector<std::pair<Int3, CellShape>> fp;
     Footprint(parts[idx], fp);
-    for (const auto& c : fp) { cells.erase(c.first); markDirty(c.first); }
+    for (const auto& c : fp) { cells.erase(c.first); markDirty(c.first); changedCells.push_back(c.first); }
     parts[idx].type = PartType::Count;
     damage.erase(idx);
     --livePartCount;
@@ -833,8 +862,14 @@ Plot* PlotSet::plotFor(Vector3 b, float reach, bool create) {
         if (d < bestD) { bestD = d; best = pl.get(); }
     }
     if (best || !create) return best;
+    return createAt(nextId, b);
+}
+
+Plot* PlotSet::createAt(uint32_t id, Vector3 b) {
+    if (byId(id)) return nullptr;
     auto pl = std::make_unique<Plot>();
-    pl->id = nextId++;
+    pl->id = id;
+    nextId = std::max(nextId, id + 1);
     pl->origin = DVec3(b);
     pl->up = Vector3Normalize(b);
     pl->east = Vector3CrossProduct({ 0, 1, 0 }, pl->up);

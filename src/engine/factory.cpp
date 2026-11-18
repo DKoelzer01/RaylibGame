@@ -41,9 +41,20 @@ namespace {
 // ---------------------------------------------------------------------------------------------
 
 struct Stack { int item = -1, count = 0; };
+// #580: results taken from a heating machine's output carry this bit on their item index: they reach the inventory hot.
+constexpr int kHotItem = 1 << 30;
+static bool HeatsItems(PartType t) {
+    switch (t) {
+        case PartType::Furnace: case PartType::Kiln: case PartType::CokeOven: case PartType::BlastFurnace:
+        case PartType::AlloySmelter: case PartType::ArcFurnace: case PartType::Campfire: return true;
+        default: return false;
+    }
+}
 constexpr int kSlots = 4;
-constexpr int kStackMax = 64;
-constexpr int kChestSlots = 16;
+// A slot holds as much as a player inventory cell (#566: StackLimit: 8192 resources, 256 blocks, 1 tool), but conveyors and
+// inserters keep only kFeedMax of an item in a machine's inputs (a buffer, not a store).
+constexpr int kFeedMax = 64;
+constexpr int kChestSlots = Inventory::kGrid; // as many cells as the player's main inventory (#495: 50, drawn 10 wide)
 
 struct Recipe {
     PartType machine;
@@ -60,10 +71,15 @@ struct Tables {
         std::lock_guard<std::mutex> lock(mutex);
         auto it = itemIds.find(n);
         if (it != itemIds.end()) return it->second;
-        itemIds[n] = (int)itemNames.size();
+        const int id = (int)itemNames.size();
+        if (id < kMaxCapItems) caps[id] = StackLimit(n); // written before the id is handed out (under the lock)
+        itemIds[n] = id;
         itemNames.push_back(n);
-        return (int)itemNames.size() - 1;
+        return id;
     }
+    // Whole units of the item a slot holds (#566: the player inventory's StackLimit). Lock-free: the sim thread asks
+    // per stack move, and an id's cap never changes once it is interned.
+    int cap(int id) const { return id >= 0 && id < kMaxCapItems ? caps[id] : 64; }
     int find(const std::string& n) { // -1 if never seen
         std::lock_guard<std::mutex> lock(mutex);
         auto it = itemIds.find(n);
@@ -74,6 +90,8 @@ struct Tables {
         return id >= 0 && id < (int)itemNames.size() ? itemNames[id] : std::string();
     }
 private:
+    static constexpr int kMaxCapItems = 4096;
+    int caps[kMaxCapItems] = {};
     std::mutex mutex;
     std::vector<std::string> itemNames;
     std::unordered_map<std::string, int> itemIds;
@@ -184,7 +202,8 @@ struct Machine {
     int part = -1;
     PartType type = PartType::Count;
     std::vector<Int3> cells;
-    Stack in[kChestSlots], out[kSlots];     // chests use in[] as storage
+    std::vector<Stack> in;                  // InSlots(): kSlots inputs, or a chest's kChestSlots of storage (#495: only chests pay for 50)
+    Stack out[kSlots];
     Stack fuel;                             // fuel-burning machines and generators: their own fuel slot (#194)
     int water = 0, heat = 0;                // boilers (#229): litres in the tank; heat 0..kHeatMax
     int recipe = -1, progress = 0;          // generators use progress as the banked-fire tick counter
@@ -197,7 +216,10 @@ struct Machine {
     int received = 0;                       // EU this tick (consumers)
 };
 
-struct Net { std::vector<int> machines; int credit = 0, rr = 0, voltage = kTierLV; };
+struct Net {
+    std::vector<int> machines; int credit = 0, rr = 0, voltage = kTierLV;
+    long long supply = 0, demand = 0; int ticks = 1; // the last step's EU made and wanted, over its ticks (cable tooltips, #570)
+};
 
 struct PlotSim {
     uint64_t body = 0;
@@ -206,6 +228,7 @@ struct PlotSim {
     std::vector<Machine> machines;
     std::unordered_map<int, int> byPart;
     std::vector<Net> itemNets, powerNets;
+    std::unordered_map<Int3, int> cableNet; // cable cell -> its power network (#570)
 };
 
 struct LayoutMsg {
@@ -230,12 +253,14 @@ std::vector<MoveMsg> moveQueue;               // plots that changed body / id (r
 bool resetRequested = false;
 std::vector<std::pair<int, int>> results;     // sim -> main: (item, count) back to the inventory
 std::vector<std::pair<int, int>> cursorResults; // sim -> main: (item, count) onto the cursor (#192)
-void (*cursorSink)(const std::string&, int) = nullptr;
+void (*cursorSink)(const std::string&, int, float) = nullptr;
 std::vector<std::pair<int, int>> refunds;     // sim thread: contents of removed machines (to results)
 
 std::mutex viewMutex;                         // snapshot for the HUD
 std::tuple<uint64_t, uint32_t, int> watchKey{ 0, 0, -1 };
 MachineView watchView;
+std::tuple<uint64_t, uint32_t, int, int, int> cableKey{ 0, 0, 0, 0, 0 }; // body, plot, cell (#570)
+CableView cableView;
 std::map<std::tuple<uint64_t, uint32_t, int>, std::vector<std::pair<int, int>>> chestView; // chests of plots near the player: (item, count)
 std::map<std::tuple<uint64_t, uint32_t, int>, int> pumpView;     // water pumps (every plot): water units in their outputs
 std::map<std::tuple<uint64_t, uint32_t, int>, int> pumpPending;  // pump water drained (queued) but not yet out of pumpView (viewMutex)
@@ -280,13 +305,14 @@ PlotSim* FindPlot(uint64_t body, uint32_t plot) {
 
 // Adds items to a stack array; returns the count that did not fit.
 int AddItems(Stack* s, int n, int item, int count) {
+    const int cap = tables.cap(item);
     for (int i = 0; i < n && count > 0; ++i)
-        if (s[i].item == item && s[i].count < kStackMax) { const int k = std::min(count, kStackMax - s[i].count); s[i].count += k; count -= k; }
+        if (s[i].item == item && s[i].count < cap) { const int k = std::min(count, cap - s[i].count); s[i].count += k; count -= k; }
     for (int i = 0; i < n && count > 0; ++i)
-        if (s[i].count == 0) { s[i].item = item; const int k = std::min(count, kStackMax); s[i].count = k; count -= k; }
+        if (s[i].count == 0) { s[i].item = item; const int k = std::min(count, cap); s[i].count = k; count -= k; }
     return count;
 }
-bool RoomFor(const Stack* s, int n, int item) { for (int i = 0; i < n; ++i) if (s[i].count == 0 || (s[i].item == item && s[i].count < kStackMax)) return true; return false; }
+bool RoomFor(const Stack* s, int n, int item) { for (int i = 0; i < n; ++i) if (s[i].count == 0 || (s[i].item == item && s[i].count < tables.cap(item))) return true; return false; }
 int CountItems(const Stack* s, int n, int item) { int c = 0; for (int i = 0; i < n; ++i) if (s[i].item == item) c += s[i].count; return c; }
 void TakeItems(Stack* s, int n, int item, int count) {
     for (int i = 0; i < n && count > 0; ++i)
@@ -326,14 +352,14 @@ int InsertInto(Machine& m, int item, int count, bool toFuel, int& buckets) {
     if (HasFuelSlot(m.type) && IsFuel(def, item) && (toFuel || !dual || m.fuel.count == 0)) {
         int k = 0;
         if (m.fuel.count == 0 || m.fuel.item == item) { // one kind of fuel at a time
-            k = std::min(count, kStackMax - m.fuel.count);
+            k = std::min(count, tables.cap(item) - m.fuel.count);
             if (k > 0) { m.fuel.item = item; m.fuel.count += k; }
         }
         count -= k;
         if (count <= 0 || toFuel || !dual) return count;
     }
     if (toFuel || !Accepts(m.type, item)) return count;
-    return AddItems(m.in, InSlots(m), item, count);
+    return AddItems(m.in.data(), InSlots(m), item, count);
 }
 
 // Burns up to maxTicks of fuel (taking new fuel items from the fuel slot as needed); returns the
@@ -388,6 +414,7 @@ long long GeneratorStep(Machine& m, const MachineDef& def, int dt, long long nee
 void BuildNets(PlotSim& ps, const LayoutMsg& L) {
     ps.itemNets.clear();
     ps.powerNets.clear();
+    ps.cableNet.clear();
     std::unordered_map<Int3, int> machineAt;
     for (size_t i = 0; i < ps.machines.size(); ++i) {
         ps.machines[i].itemNet = ps.machines[i].powerNet = -1;
@@ -404,6 +431,7 @@ void BuildNets(PlotSim& ps, const LayoutMsg& L) {
             seen.insert(start);
             while (!stack.empty()) {
                 const Int3 c = stack.back(); stack.pop_back();
+                if (power) ps.cableNet[c] = (int)nets.size(); // this network's id (pushed below)
                 for (const Int3& d : dirs) {
                     const Int3 n = { c.x + d.x, c.y + d.y, c.z + d.z };
                     if (cells.count(n) && !seen.count(n)) { seen.insert(n); stack.push_back(n); }
@@ -447,6 +475,7 @@ void ApplyLayout(const LayoutMsg& L) {
         auto it = ps->byPart.find(part);
         if (it != ps->byPart.end() && ps->machines[it->second].type == type) m = ps->machines[it->second];
         m.part = part; m.type = type; m.cells = L.machineCells[i];
+        m.in.resize(InSlots(m)); // sized by type (a new machine starts empty)
         m.variant = i < L.machineVariant.size() && !L.machineVariant[i].empty() ? tables.item(L.machineVariant[i]) : -1;
         // A loaded save's contents arrive before the layout: apply them once.
         auto pend = pendingStates.find({ L.body, L.plot, part });
@@ -456,7 +485,7 @@ void ApplyLayout(const LayoutMsg& L) {
             auto num = [&]() { return k < s.size() ? atoi(s[k++].c_str()) : 0; };
             m.recipe = num(); m.progress = num(); m.energy = num(); m.fuelEU = num();
             const int nin = num();
-            for (int j = 0; j < nin && k + 1 < s.size(); ++j) { const int item = tables.item(s[k]); const int c = atoi(s[k + 1].c_str()); k += 2; AddItems(m.in, InSlots(m), item, c); }
+            for (int j = 0; j < nin && k + 1 < s.size(); ++j) { const int item = tables.item(s[k]); const int c = atoi(s[k + 1].c_str()); k += 2; AddItems(m.in.data(), InSlots(m), item, c); }
             const int nout = num();
             for (int j = 0; j < nout && k + 1 < s.size(); ++j) { const int item = tables.item(s[k]); const int c = atoi(s[k + 1].c_str()); k += 2; AddItems(m.out, kSlots, item, c); }
             // Then tagged extras: "f item count" (the fuel slot), "w litres", "h heat".
@@ -473,7 +502,7 @@ void ApplyLayout(const LayoutMsg& L) {
                     Stack& st = m.in[j];
                     if (st.count <= 0 || !IsFuel(Def(m.type), st.item) || RecipeWants(m.type, st.item)) continue;
                     if (m.fuel.count > 0 && m.fuel.item != st.item) continue;
-                    const int k = std::min(st.count, kStackMax - m.fuel.count);
+                    const int k = std::min(st.count, tables.cap(st.item) - m.fuel.count);
                     m.fuel.item = st.item; m.fuel.count += k; st.count -= k;
                     if (!st.count) st.item = -1;
                 }
@@ -531,6 +560,7 @@ void TickPlot(PlotSim& ps, int dt, long long& made, int& active) {
                 m.received = (int)(demand <= avail ? need : need * avail / std::max(1LL, demand));
             }
         }
+        net.supply = supply + fromBatteries; net.demand = demand; net.ticks = std::max(1, dt); // for the cable tooltip (#570)
         long long surplus = supply - std::min(supply, demand);
         long long drain = fromBatteries;
         for (int mi : net.machines) {
@@ -554,7 +584,7 @@ void TickPlot(PlotSim& ps, int dt, long long& made, int& active) {
         // Inputs are only checked when a craft starts and taken when it finishes (#193): take an input out
         // meanwhile and the craft is cancelled, its progress lost. Fuel has its own slot (#194).
         auto inputsHere = [&](const Recipe& r) {
-            for (const Stack& s : r.in) if (CountItems(m.in, kSlots, s.item) < s.count) return false;
+            for (const Stack& s : r.in) if (CountItems(m.in.data(), kSlots, s.item) < s.count) return false;
             return true;
         };
         if (m.recipe >= 0 && !inputsHere(tables.recipes[m.recipe])) { m.recipe = -1; m.progress = 0; }
@@ -600,7 +630,7 @@ void TickPlot(PlotSim& ps, int dt, long long& made, int& active) {
             bool fits = true;
             for (const Stack& s : r.out) if (AddItems(trial, kSlots, s.item, s.count) > 0) { fits = false; break; }
             if (!fits) { m.status = MachineStatus::OutputFull; continue; }
-            for (const Stack& s : r.in) TakeItems(m.in, kSlots, s.item, s.count); // consumed now, at the end (#193)
+            for (const Stack& s : r.in) TakeItems(m.in.data(), kSlots, s.item, s.count); // consumed now, at the end (#193)
             std::copy(trial, trial + kSlots, m.out);
             for (const Stack& s : r.out) made += s.count;
             m.recipe = -1; m.progress = 0;
@@ -615,7 +645,7 @@ void TickPlot(PlotSim& ps, int dt, long long& made, int& active) {
             for (int s = 0; s < n && !moved; ++s) {
                 Machine& src = ps.machines[net.machines[(net.rr + s) % n]];
                 const bool chest = src.type == PartType::Chest;
-                Stack* from = chest ? src.in : src.out;
+                Stack* from = chest ? src.in.data() : src.out;
                 const int fromN = chest ? kChestSlots : kSlots;
                 for (int i = 0; i < fromN && !moved; ++i) {
                     if (from[i].count <= 0) continue;
@@ -623,8 +653,8 @@ void TickPlot(PlotSim& ps, int dt, long long& made, int& active) {
                     for (int d = 1; d < n && !moved; ++d) {
                         Machine& dst = ps.machines[net.machines[(net.rr + s + d) % n]];
                         if (&dst == &src || (chest && dst.type == PartType::Chest) || !Accepts(dst.type, item)) continue;
-                        if (dst.type == PartType::Chest && !chest) { if (AddItems(dst.in, kChestSlots, item, 1) == 0) moved = true; }
-                        else if (dst.type != PartType::Chest && CountItems(dst.in, kSlots, item) < kStackMax &&
+                        if (dst.type == PartType::Chest && !chest) { if (AddItems(dst.in.data(), kChestSlots, item, 1) == 0) moved = true; }
+                        else if (dst.type != PartType::Chest && CountItems(dst.in.data(), kSlots, item) + (dst.fuel.item == item ? dst.fuel.count : 0) < kFeedMax && // a buffer, fuel too (#566)
                                  !(item == WaterBucketItem() && Def(dst.type).waterPerTick > 0 && !RoomFor(dst.out, kSlots, BucketItem()))) { // the empty bucket needs an output slot (#229 review)
                             int buckets = 0; // fuel to the fuel slot, water buckets into a boiler's tank (its empty bucket to its outputs)
                             if (InsertInto(dst, item, 1, false, buckets) == 0) { moved = true; if (buckets > 0) AddItems(dst.out, kSlots, BucketItem(), buckets); }
@@ -640,6 +670,25 @@ void TickPlot(PlotSim& ps, int dt, long long& made, int& active) {
     }
 }
 
+// The watched cable's network (#570), under viewMutex.
+void FillCableView() {
+    const auto& [b, pl, x, y, z] = cableKey;
+    cableView = CableView{};
+    const PlotSim* p = FindPlot(b, pl);
+    if (!p) return;
+    cableView.valid = true;
+    auto it = p->cableNet.find(Int3{ x, y, z });
+    if (it == p->cableNet.end() || it->second < 0 || it->second >= (int)p->powerNets.size()) return;
+    const Net& net = p->powerNets[it->second];
+    cableView.voltage = net.voltage;
+    for (int mi : net.machines) {
+        const Power pw = Def(p->machines[mi].type).power;
+        cableView.generators += pw == Power::Generator; cableView.batteries += pw == Power::Battery; cableView.consumers += pw == Power::Eu;
+    }
+    cableView.supply = (float)net.supply / (float)net.ticks;
+    cableView.demand = (float)net.demand / (float)net.ticks;
+}
+
 void FillView(const PlotSim& ps, int part, MachineView& v) {
     v = MachineView{};
     auto it = ps.byPart.find(part);
@@ -651,14 +700,21 @@ void FillView(const PlotSim& ps, int part, MachineView& v) {
     v.energy = m.energy;
     v.energyMax = m.type == PartType::Battery ? kBatteryCapacity : 0;
     v.hasFuelSlot = HasFuelSlot(m.type);
+    v.hotOutputs = HeatsItems(m.type);
     if (m.fuel.count > 0) v.fuelSlot = { tables.name(m.fuel.item), m.fuel.count };
     if (Def(m.type).waterPerTick > 0) { v.water = m.water; v.waterMax = kWaterTank; v.heat = m.heat; v.heatMax = kHeatMax; }
-    auto list = [](const Stack* s, int n) {
+    auto list = [](const Stack* s, int n) { // totals per item in slot order (#567: a chest of coal is "coal x3200", not 50 entries)
+        std::vector<std::pair<int, int>> total;
+        for (int i = 0; i < n; ++i) {
+            if (s[i].count <= 0) continue;
+            auto it = std::find_if(total.begin(), total.end(), [&](const auto& t) { return t.first == s[i].item; });
+            if (it == total.end()) total.push_back({ s[i].item, s[i].count }); else it->second += s[i].count;
+        }
         std::string out;
-        for (int i = 0; i < n; ++i) if (s[i].count > 0) { if (!out.empty()) out += ", "; out += tables.name(s[i].item) + " x" + std::to_string(s[i].count); }
+        for (const auto& t : total) { if (!out.empty()) out += ", "; out += tables.name(t.first) + " x" + std::to_string(t.second); }
         return out.empty() ? std::string("-") : out;
     };
-    v.input = list(m.in, InSlots(m));
+    v.input = list(m.in.data(), InSlots(m));
     v.output = list(m.out, kSlots);
     for (int i = 0; i < InSlots(m); ++i) v.inSlots.push_back({ m.in[i].count > 0 ? tables.name(m.in[i].item) : std::string(), m.in[i].count });
     if (m.type != PartType::Chest) for (int i = 0; i < kSlots; ++i) v.outSlots.push_back({ m.out[i].count > 0 ? tables.name(m.out[i].item) : std::string(), m.out[i].count });
@@ -720,27 +776,30 @@ void SimLoop() {
                     if (Def(m.type).waterPerTick > 0) m.water = std::min(kWaterTank, m.water + im.count); // Waterworks sends only the room (TankRoom)
                     filled.push_back({ std::make_tuple(im.body, im.plot, im.part), im.count });
                 } else if (im.kind == 3) {
-                    if (m.type == PartType::Chest) { const int k = std::min(im.count, CountItems(m.in, kChestSlots, im.item)); TakeItems(m.in, kChestSlots, im.item, k); if (k > 0) back.push_back({ im.item, k }); }
+                    if (m.type == PartType::Chest) { const int k = std::min(im.count, CountItems(m.in.data(), kChestSlots, im.item)); TakeItems(m.in.data(), kChestSlots, im.item, k); if (k > 0) back.push_back({ im.item, k }); }
                 } else if (im.kind == 5) {
                     TakeItems(m.out, kSlots, im.item, im.count); // a pump's water leaves through its pipes (nothing to the inventory)
                     drained.push_back({ std::make_tuple(im.body, im.plot, im.part), im.count });
                 } else if (im.kind == 4) {
-                    Stack* s = im.count == 2 ? &m.fuel : im.count ? m.out : m.in;
+                    Stack* s = im.count == 2 ? &m.fuel : im.count ? m.out : m.in.data();
                     const int n = im.count == 2 ? 1 : im.count ? kSlots : InSlots(m);
-                    if (im.item >= 0 && im.item < n && s[im.item].count > 0) { back.push_back({ s[im.item].item, s[im.item].count }); s[im.item] = Stack{}; }
+                    const int hot = s == m.out && HeatsItems(m.type) ? kHotItem : 0; // fresh out of a furnace (#580)
+                    if (im.item >= 0 && im.item < n && s[im.item].count > 0) { back.push_back({ s[im.item].item | hot, s[im.item].count }); s[im.item] = Stack{}; }
                 } else if (im.kind == 8) { // part of a slot onto the cursor (#192)
-                    Stack* s = im.count == 2 ? &m.fuel : im.count ? m.out : m.in;
+                    Stack* s = im.count == 2 ? &m.fuel : im.count ? m.out : m.in.data();
                     const int n = im.count == 2 ? 1 : im.count ? kSlots : InSlots(m);
+                    const int hot = s == m.out && HeatsItems(m.type) ? kHotItem : 0;
                     if (im.item >= 0 && im.item < n && s[im.item].count > 0) {
                         const int k = im.amount > 0 ? std::min(im.amount, s[im.item].count) : s[im.item].count;
-                        toCursor.push_back({ s[im.item].item, k });
+                        toCursor.push_back({ s[im.item].item | hot, k });
                         s[im.item].count -= k;
                         if (s[im.item].count <= 0) s[im.item] = Stack{};
                     }
                 } else {
-                    Stack* s = m.type == PartType::Chest ? m.in : m.out;
+                    Stack* s = m.type == PartType::Chest ? m.in.data() : m.out;
                     const int n = m.type == PartType::Chest ? kChestSlots : kSlots;
-                    for (int i = 0; i < n; ++i) if (s[i].count > 0) { back.push_back({ s[i].item, s[i].count }); s[i] = Stack{}; }
+                    const int hot = s == m.out && HeatsItems(m.type) ? kHotItem : 0; // #580
+                    for (int i = 0; i < n; ++i) if (s[i].count > 0) { back.push_back({ s[i].item | hot, s[i].count }); s[i] = Stack{}; }
                 }
             }
             // Tick: near plots every tick; far plots once a second with a 20x step.
@@ -762,6 +821,7 @@ void SimLoop() {
                 stats.avgTickMs = emaMs; stats.maxTickMs = maxMs; stats.ticks = t + 1; stats.itemsMade += made;
                 const auto& [b, pl, part] = watchKey;
                 if (PlotSim* p = FindPlot(b, pl)) FillView(*p, part, watchView); else watchView = MachineView{};
+                FillCableView();
                 for (auto& r : back) results.push_back(r);
                 for (auto& r : toCursor) cursorResults.push_back(r);
                 chestView.clear();
@@ -879,8 +939,9 @@ void Factory::Sync(Scene& world) {
         std::lock_guard<std::mutex> v(viewMutex);
         cur.swap(cursorResults);
     }
-    for (auto& r : back) inventory.add(tables.name(r.first), r.second);
-    for (auto& r : cur) { if (cursorSink) cursorSink(tables.name(r.first), r.second); else inventory.add(tables.name(r.first), r.second); }
+    // kHotItem marks what came out of a heating machine's output (#580): it arrives hot, in the inventory or on the cursor.
+    for (auto& r : back) inventory.addAmount(tables.name(r.first & ~kHotItem), r.second, (r.first & kHotItem) ? 1.0f : 0.0f);
+    for (auto& r : cur) { const std::string id = tables.name(r.first & ~kHotItem); if (cursorSink) cursorSink(id, r.second, (r.first & kHotItem) ? 1.0f : 0.0f); else inventory.addAmount(id, r.second, (r.first & kHotItem) ? 1.0f : 0.0f); }
 }
 
 void Factory::TakeSlotToCursor(uint64_t body, uint32_t plot, int part, int slot, int which, int count) {
@@ -889,13 +950,20 @@ void Factory::TakeSlotToCursor(uint64_t body, uint32_t plot, int part, int slot,
     m.amount = count;
     itemQueue.push_back(m);
 }
-void Factory::SetCursorSink(void (*sink)(const std::string&, int)) { cursorSink = sink; }
+void Factory::SetCursorSink(void (*sink)(const std::string&, int, float)) { cursorSink = sink; }
 
 MachineView Factory::View(uint64_t body, uint32_t plot, int part) {
     std::lock_guard<std::mutex> v(viewMutex);
     const auto key = std::make_tuple(body, plot, part);
     if (watchKey != key) { watchKey = key; return MachineView{}; } // filled from the next tick on
     return watchView;
+}
+
+CableView Factory::Cable(uint64_t body, uint32_t plot, Int3 cell) {
+    std::lock_guard<std::mutex> v(viewMutex);
+    const auto key = std::make_tuple(body, plot, cell.x, cell.y, cell.z);
+    if (cableKey != key) { cableKey = key; return CableView{}; } // filled from the next tick on
+    return cableView;
 }
 
 FactoryStats Factory::Stats() {

@@ -13,6 +13,7 @@ in float fragHash;
 in float fragLatitude;
 in vec3 fragClimate;   // temperature (C), moisture, 1 if known (Plan 5 B biomes)
 in float fragHeight;
+in float fragFar;      // #745: 0 near .. 1 far (always 0 with RAYLIBGAME_FAR_FOREST off)
 
 uniform vec3 viewPos;
 uniform vec3 sunDir;
@@ -28,6 +29,7 @@ uniform vec3 leafTint;
 
 // Sun shadows (two cascades, hardware PCF) and the headlamp.
 #include "shadow.glsl"
+#include "skyphys_haze.glsl" // #142: the physical haze colour (off by default)
 #include "hemisphere.glsl"
 out vec4 finalColor;
 // Foliage colour by climate (Plan 5 B): temperate green, straw-olive where warm and dry, deep in the
@@ -65,6 +67,7 @@ void main()
     vec3 leafC = climateFoliage(temperate, dry, cold, vec3(0.05, 0.24, 0.04), vec3(0.12, 0.18, 0.05), lat);
     leafC *= 0.75 + 0.5 * fragShade * (0.8 + 0.4 * fragHash);
     leafC = min(leafC * leafTint, vec3(0.9));
+    leafC *= mix(vec3(1.0), vec3(0.78, 0.84, 0.92), fragFar); // #745: far crowns deeper and a touch cooler, as the canopy tint
     vec3 bark = min(vec3(0.20, 0.13, 0.08) * barkTint, vec3(0.85)) * (0.8 + 0.4 * fragShade);
     vec3 albedo = mix(bark, leafC, fragLeaf);
     albedo = mix(albedo, vec3(0.36, 0.35, 0.33) * (0.7 + 0.6 * fragShade), fragStone); // loose stones
@@ -93,6 +96,6 @@ void main()
         float t0 = disc > 0.0 ? -b - sqrt(disc) : 0.0, t1 = disc > 0.0 ? -b + sqrt(disc) : 0.0;
         fogDist = max(0.0, min(t1, fogDist) - max(t0, 0.0));
     }
-    color = mix(color, fogColor, clamp(1.0 - exp(-fogDensity * fogDist), 0.0, 1.0));
+    color = mix(color, SkyPhysFog(fragPosition, viewPos, fogColor), clamp(1.0 - exp(-fogDensity * fogDist), 0.0, 1.0));
     finalColor = vec4(pow(max(color, vec3(0.0)), vec3(1.0 / 2.2)), alphaToCoverage > 0.5 ? fade : 1.0);
 }

@@ -50,9 +50,12 @@ namespace Fluid {
     // so a dam backs the water up and it spills over.
     void OnTerrainEdit(Planetoid& body, Vector3 localCentre, float radius, bool adds = false);
     int ReleasedReaches(); // tests: river reaches released (#361)
+    float ReleaseInflowScale(); // tests: the lowest flow share feeding a released reach's springs (1 natural, #656); -1: none
     // water.fs: the fluid kinds' colours (uniform arrays fluidColors / fluidGlows), with the shader bound. The chunks
     // draw every fluid surface (waterfield.h); a vertex carries its kind.
     void BindKindUniforms(const Shader& shader);
+    bool DebugView();                 // #695: water coloured by speed, stripes along the current (RAYLIBGAME_FLUID_DEBUG=1)
+    void SetDebugView(bool on);
 
     // Queries (main thread, from the last published step).
     bool Wet(const Planetoid& body, Vector3 local);                       // under moving water
@@ -98,7 +101,8 @@ namespace Fluid {
     // Moving fluid by hand or machine (applied at the next step). Generated water counts too: taking from
     // the sea or a river is free (they are infinite); taking from a pond brings it into the simulation (finite).
     float Take(Planetoid& body, Vector3 local, float m3, float radius = 1.5f, int kind = 0); // returns what will be taken
-    float Pour(Planetoid& body, Vector3 local, float m3, int kind = 0);                     // returns what will be poured
+    float Pour(Planetoid& body, Vector3 local, float m3, int kind = 0);                     // returns the m^3 queued (placed on the next step)
+    float PourDropped();                                                                       // m^3 pours found no room for, in all (#766)
     float FluidAt(const Planetoid& body, Vector3 local, float radius, int kind);          // m^3 of moving fluid of a kind within radius
     int KindAt(const Planetoid& body, Vector3 local, float radius);                      // the most plentiful non-water kind there, or -1
 

@@ -80,7 +80,7 @@ namespace {
         GLuint vao = 0, vaoDepth = 0, pos = 0, attr = 0, ibo = 0;
         GLuint table = 0, list = 0, records = 0, indirect = 0;
         // #286 indirect count (4.6 / ARB_indirect_parameters): the visible commands compacted in order, and their count.
-        typedef void (__stdcall* PfnDrawCount)(GLenum, GLenum, const void*, GLintptr, GLsizei, GLsizei);
+        typedef void (GLAD_API_PTR* PfnDrawCount)(GLenum, GLenum, const void*, GLintptr, GLsizei, GLsizei);
         PfnDrawCount drawCount = nullptr;
         GLuint compacted = 0, counts = 0;
         ComputeProgram compact;
@@ -94,7 +94,7 @@ namespace {
         int ringCap = 0, ringPos = 0;
         std::vector<GLuint> queued;
         ComputeProgram cull;
-        struct CullLocs { GLint count, base, rot, scale, offset, texPeriod, useFrustum, planes, useColumn, colPoint, colDir, colRadius, overlap; } cl{}; // looked up once
+        struct CullLocs { GLint count, base, rot, scale, offset, texPeriod, useFrustum, planes, useColumn, colPoint, colDir, colRadius, overlap, hizOn, hizTex, hizSize, hizLevels, prevViewProj, prevRot, prevScale, prevOffset; } cl{}; // looked up once
         struct DrawLocs { GLuint shader; GLint arena, viewProj, model; };
         std::vector<DrawLocs> drawLocs; // per draw shader (hot reload makes new ids)
         int draws = 0, flushes = 0;
@@ -189,7 +189,8 @@ namespace {
             const GLuint p = S.cull.id;
             auto L = [p](const char* n) { return glGetUniformLocation(p, n); };
             S.cl = { L("count"), L("base"), L("rot"), L("scale"), L("offset"), L("texPeriod"), L("useFrustum"), L("planes"),
-                     L("useColumn"), L("colPoint"), L("colDir"), L("colRadius"), L("overlap") };
+                     L("useColumn"), L("colPoint"), L("colDir"), L("colRadius"), L("overlap"),
+                     L("hizOn"), L("hizTex"), L("hizSize"), L("hizLevels"), L("prevViewProj"), L("prevRot"), L("prevScale"), L("prevOffset") }; // (#134)
         }
         {   // #286: RAYLIBGAME_INDIRECT_COUNT=1 draws only the visible commands (compacted in order, indirect count draws).
             const char* ic = getenv("RAYLIBGAME_INDIRECT_COUNT");
@@ -471,7 +472,7 @@ ArenaAlloc TerrainArena_Upload(const ChunkMeshData& d) {
     e.iCount = (GLuint)ni; e.iFirst = (GLuint)a.iFirst; e.vFirst = (GLuint)a.vFirst;
     memcpy(e.palette, pk->palette, kPaletteSlots); // #480: the chunk's materials (chunk_cull.comp copies them into its records)
     WriteTable(a.slot, &e, sizeof(e));
-    a.clip = { 1e30f, 1e30f, 1e30f };
+    a.clip = { 1e30f, 1e30f, 1e30f }; a.fade = 0.0f;
     return a;
 }
 
@@ -484,12 +485,12 @@ void TerrainArena_Free(ArenaAlloc& a) {
     a = ArenaAlloc{};
 }
 
-void TerrainArena_Queue(ArenaAlloc& a, Vector3 clip) {
+void TerrainArena_Queue(ArenaAlloc& a, Vector3 clip, float fade) {
     if (!a.valid()) return;
-    if (clip.x != a.clip.x || clip.y != a.clip.y || clip.z != a.clip.z) {
-        const float c[4] = { clip.x, clip.y, clip.z, 0.0f };
+    if (clip.x != a.clip.x || clip.y != a.clip.y || clip.z != a.clip.z || fade != a.fade) {
+        const float c[4] = { clip.x, clip.y, clip.z, fade };
         WriteTable(a.slot, c, sizeof(c), offsetof(TableEntry, clip));
-        a.clip = clip;
+        a.clip = clip; a.fade = fade;
     }
     S.queued.push_back((GLuint)a.slot);
 }
@@ -526,7 +527,23 @@ int TerrainArena_Flush(unsigned int shaderId, bool positionsOnly, const ArenaBod
     glUniform3f(S.cl.colDir, cull.colDir.x, cull.colDir.y, cull.colDir.z);
     glUniform1f(S.cl.colRadius, cull.colRadius);
     glUniform1f(S.cl.overlap, (CHUNK_SIZE + 1.0f) / CHUNK_SIZE);
+    const bool hiz = cull.hizTex != 0 && useFrustum; // #134
+    glUniform1i(S.cl.hizOn, hiz ? 1 : 0);
+    if (hiz) {
+        constexpr int kHizUnit = 7;
+        glActiveTexture(GL_TEXTURE0 + kHizUnit);
+        glBindTexture(GL_TEXTURE_2D, cull.hizTex);
+        glActiveTexture(GL_TEXTURE0);
+        glUniform1i(S.cl.hizTex, kHizUnit);
+        glUniform2f(S.cl.hizSize, (float)cull.hizW, (float)cull.hizH);
+        glUniform1i(S.cl.hizLevels, cull.hizLevels);
+        glUniformMatrix4fv(S.cl.prevViewProj, 1, GL_FALSE, MatrixToFloat(cull.hizViewProj));
+        glUniformMatrix3dv(S.cl.prevRot, 1, GL_TRUE, cull.hizBody.rot);
+        glUniform1d(S.cl.prevScale, cull.hizBody.scale);
+        glUniform3d(S.cl.prevOffset, cull.hizBody.offset[0], cull.hizBody.offset[1], cull.hizBody.offset[2]);
+    }
     glDispatchCompute((GLuint)((n + 63) / 64), 1, 1);
+    if (hiz) { glActiveTexture(GL_TEXTURE0 + 7); glBindTexture(GL_TEXTURE_2D, 0); glActiveTexture(GL_TEXTURE0); }
     if (S.drawCount) {
         // #286: the visible commands compacted in order, and their count (chunk_compact.comp).
         glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);

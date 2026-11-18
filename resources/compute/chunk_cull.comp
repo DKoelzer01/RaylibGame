@@ -26,6 +26,48 @@ uniform vec3 colPoint;
 uniform vec3 colDir;
 uniform float colRadius;
 uniform float overlap;     // (CHUNK_SIZE + 1) / CHUNK_SIZE: the bounds include the overlap cell
+// Hi-Z occlusion (#134, main pass): last frame's min-depth pyramid (reverse-Z: smaller = farther), the view-projection and
+// the body placement it was drawn with. A chunk is skipped when its box, placed where it stood last frame, lies wholly
+// on last frame's screen and its nearest point is farther than the farthest depth over its rectangle.
+uniform int hizOn;
+uniform sampler2D hizTex;
+uniform vec2 hizSize;
+uniform int hizLevels;
+uniform mat4 prevViewProj;
+uniform dmat3 prevRot;
+uniform double prevScale;
+uniform dvec3 prevOffset;
+
+bool hizOccluded(vec3 o, float side) {
+    mat3 pm = mat3(prevRot * prevScale);
+    vec3 pt = vec3(prevOffset + prevRot * dvec3(o) * prevScale);
+    vec2 lo = vec2(1e9), hi = vec2(-1e9);
+    float nearest = 0.0;
+    for (int k = 0; k < 8; ++k) {
+        vec3 corner = vec3(float(k & 1), float((k >> 1) & 1), float((k >> 2) & 1)) * side;
+        vec4 c = prevViewProj * vec4(pm * corner + pt, 1.0);
+        if (c.w <= 1e-3) return false;                 // reaches behind last frame's camera
+        vec3 ndc = c.xyz / c.w;
+        lo = min(lo, ndc.xy); hi = max(hi, ndc.xy);
+        nearest = max(nearest, ndc.z);                 // reverse-Z: larger = nearer
+    }
+    // The part on last frame's screen (the rest is outside the view: the frustum test speaks for it; a sliver turned into
+    // view since then is the one-frame latency, checked by the turning capture compare).
+    lo = max(lo, vec2(-1.0)); hi = min(hi, vec2(1.0));
+    if (lo.x >= hi.x || lo.y >= hi.y) return false;
+    vec2 uv0 = lo * 0.5 + 0.5, uv1 = hi * 0.5 + 0.5;
+    vec2 px = (uv1 - uv0) * hizSize;
+    // A level where the rectangle spans at most 2 texels (so at most 3 x 3 cover it): coarser levels' texels reach far past
+    // the box (often into the sky over a ridge, depth 0), and nothing was ever culled.
+    int level = int(clamp(ceil(log2(max(max(px.x, px.y) * 0.5, 1.0))), 0.0, float(hizLevels - 1)));
+    ivec2 size = textureSize(hizTex, level);
+    ivec2 t0 = clamp(ivec2(uv0 * vec2(size)), ivec2(0), size - 1), t1 = clamp(ivec2(uv1 * vec2(size)), ivec2(0), size - 1);
+    t1 = min(t1, t0 + 3);
+    float far0 = 1e30;
+    for (int y = t0.y; y <= t1.y; ++y)
+        for (int x = t0.x; x <= t1.x; ++x) far0 = min(far0, texelFetch(hizTex, ivec2(x, y), level).r);
+    return nearest < far0 * 0.9999;                    // all of it behind what was drawn there (a hair of margin)
+}
 
 void main() {
     uint i = gl_GlobalInvocationID.x;
@@ -49,6 +91,7 @@ void main() {
         for (int k = 0; k < 6; ++k)
             if (dot(planes[k].xyz, centre) + planes[k].w < -r) { vis = false; break; }
     }
+    if (vis && hizOn == 1 && hizOccluded(o, 2.0 * h * overlap)) vis = false; // #134
     uint e = base + i;
     cmds[e] = Cmd(c.draw.x, vis ? 1u : 0u, c.draw.y, int(c.draw.z), e);
     recs[e * 6u + 0u] = floatBitsToUint(vec4(m[0].x, m[1].x, m[2].x, t.x));
@@ -57,6 +100,6 @@ void main() {
     dvec3 od = dvec3(o);
     vec3 tex = vec3(od - floor(od / texPeriod) * texPeriod);
     recs[e * 6u + 3u] = floatBitsToUint(vec4(tex, 0.0));
-    recs[e * 6u + 4u] = floatBitsToUint(vec4(c.clip.xyz, 0.0));
+    recs[e * 6u + 4u] = floatBitsToUint(c.clip); // w: the LOD cross-fade (#243)
     recs[e * 6u + 5u] = c.palette;
 }

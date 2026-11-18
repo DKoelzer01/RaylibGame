@@ -26,6 +26,10 @@ struct WorldGenParams {
 
 // The parameters for the world at `savePath`: its sidecar, or the defaults when there is none (old saves, benches).
 WorldGenParams WorldGenParams_ForSave(const std::string& savePath);
+// The sidecar's text ("key value" lines; unknown keys are skipped, missing ones keep their defaults). The multiplayer
+// Welcome carries the same text (#757), so a new key here travels to clients with no protocol change.
+std::string WorldGenParams_ToText(const WorldGenParams& p);
+WorldGenParams WorldGenParams_FromText(const std::string& text);
 // Writes the sidecar (only the New World screen does: benches reuse their save and never write one).
 bool WorldGenParams_Save(const std::string& savePath, const WorldGenParams& p);
 

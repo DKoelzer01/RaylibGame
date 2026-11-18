@@ -13,8 +13,12 @@
 // (meat and hide when it falls).
 
 #include <cstdint>
+#include <functional>
+#include <map>
 #include <cstdio>
 #include <string>
+#include <utility>
+#include <vector>
 #include <raylib.h>
 
 class Scene;
@@ -37,6 +41,9 @@ uint64_t Animals_NetId(int index);                              // its stable id
 int Animals_SimulatedCount();                                   // simulated in the last update: near an interest centre (#318)
 int Animals_SimulatedNear(const Planetoid& body, Vector3 local, float range); // of those, within range of a body-local point
 int Animals_Spawn(Scene& world, Planetoid& body, const std::string& species, Vector3 bodyLocal, int count, bool young = false, float spread = 18.0f);
+// Every species as (id, display name), in animals.txt order: the Creative tab's spawner (#529).
+std::vector<std::pair<std::string, std::string>> Animals_SpeciesList();
+double Animals_BiteWindUp();            // s from a hostile's warning to its strike (#165)
 int Animals_Nearest(Vector3 bodyLocal, float range);          // index or -1
 Vector3 Animals_Position(int index);                           // body-local
 bool Animals_Hit(int index, float damage);                     // true if it fell
@@ -52,5 +59,34 @@ void Animals_SetNaturalSpawns(bool on); // herds placed around the player as it 
 void Animals_RefreshNow();                                     // tests: rescan campfires, allow a night spawn, recheck pens
 int Animals_NightCount();                              // hostile behaviour and night spawns (bench runs: off)
 int Animals_PennedCount();                                   // near the player, last checked (every 2 s)
+
+// #334 multiplayer. The server runs the animals (around every player: interest centres, #318) and sends each client the
+// ones near it; a client (gAnimalsReplicated) decides nothing - no AI, no spawns - and eases each copy toward the state it
+// last heard, dropping any not heard of for 3 s. A client's swing at an animal is a request (gAnimalHitRequest); the server
+// checks it, applies the damage, and credits the drops to that player.
+inline bool gAnimalsReplicated = false;
+inline std::function<void(uint64_t netId)> gAnimalHitRequest;
+// A client's feed (action 1) and take-the-product (2: shear, milk, eggs) go to the server too (slice 2).
+inline std::function<void(uint64_t netId, int action)> gAnimalUseRequest;
+// The server's other players, for the animals to mind (slice 2): flee, follow their food, hunt, bite. The host lists them each
+// frame; a bite on one goes to gAnimalDamageRemote (its client applies it: shield and health are its own until #337).
+struct AnimalTarget { uint64_t body = 0; Vector3 local{}; uint32_t session = 0; bool vulnerable = true; std::string held; };
+inline std::vector<AnimalTarget> gAnimalTargets;
+struct DamageEvent;
+class Inventory;
+inline std::function<void(uint32_t session, const DamageEvent& e)> gAnimalDamageRemote;
+// Feed (its food from `inv`) or take its product (into `inv`; the tool must be in `inv`) for a remote player; false with why.
+bool Animals_UseNet(uint64_t netId, int action, Inventory& inv, std::string& why, std::map<std::string, double>& before); // before: the items it may change, as they were
+struct AnimalNet {
+    uint64_t netId = 0; uint8_t species = 0; uint64_t body = 0; // the body's NetId
+    Vector3 pos{}; float heading = 0.0f;                         // body-local, radians
+    uint8_t state = 0; float health = 0.0f, age = 1.0f;
+    uint8_t flags = 0;                                           // 1 hostile, 2 angry, 4 winding up a bite
+};
+void Animals_CollectNet(Scene& world, std::vector<AnimalNet>& out);                       // the server: every animal now
+void Animals_ApplyNet(const std::vector<AnimalNet>& in, const std::vector<uint64_t>& removed); // a client: states heard, and removals
+int Animals_FindNet(uint64_t netId);                                                      // index, -1 none
+bool Animals_HitNet(uint64_t netId, float damage, std::vector<std::pair<std::string, int>>& drops); // the server; true if it fell (drops filled)
+float Animals_HealthOf(int index);
 
 #endif

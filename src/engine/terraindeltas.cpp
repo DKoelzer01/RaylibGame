@@ -91,6 +91,9 @@ void TerrainDeltas::chunksIn(Vector3 loPos, Vector3 hiPos, std::vector<std::pair
     }
 }
 
+// #693 A/B: RAYLIBGAME_CARVE_ROUND_OLD=1 = carved points round to the nearest step even when that lands on iso.
+static const bool gCarveRoundOld = [] { const char* s = getenv("RAYLIBGAME_CARVE_ROUND_OLD"); return s && s[0] == '1'; }();
+
 void TerrainDeltasBuilder::apply(const TerrainEdit& e, const DensityField& field, std::unordered_set<TerrainDeltas::Key>* touched) {
     next->strokes++;
     // A carve also lowers solid points just outside the sphere, so the meshed surface sits on it.
@@ -124,7 +127,10 @@ void TerrainDeltasBuilder::apply(const TerrainEdit& e, const DensityField& field
                 float add = e.strength * t * t * (3.0f - 2.0f * t);
                 float carveTo = 0.0f; // carve: the density this point may have at most
                 const float sd = csg ? shapeDist(dx, dy, dz, dist) : 0.0f;
-                if (e.carve) carveTo = ISO_LEVEL + DENSITY_GRADIENT * sd;
+                // #693: an eighth of a storage step (8 mm) under the shape's own surface. Ground exactly at iso (a point within float
+                // precision of the ground, a few mm at a planet's radius, reads exactly 0.5 = solid) just outside a face
+                // flush with the ground stayed solid over the cut: specks of ground in a lattice pattern.
+                if (e.carve) carveTo = ISO_LEVEL + DENSITY_GRADIENT * sd - (gCarveRoundOld ? 0.0f : 0.125f * kDeltaStep); // 8 mm: float precision at a 60 km radius is ~4 mm
                 const int cx = (int)floorf((float)x / kDeltaChunk), cy = (int)floorf((float)y / kDeltaChunk), cz = (int)floorf((float)z / kDeltaChunk);
                 const TerrainDeltas::Key k = TerrainDeltas::KeyOf(cx, cy, cz);
                 if (k != chunkKey) {
@@ -151,7 +157,12 @@ void TerrainDeltasBuilder::apply(const TerrainEdit& e, const DensityField& field
                     const VoxelMaterial was = placed >= 0 ? (VoxelMaterial)placed : base >= ISO_LEVEL ? field.material(p, base) : VoxelMaterial::Regolith;
                     if (e.softOnly && (base + v * kDeltaStep) >= ISO_LEVEL && !IsSoft(was)) continue;
                     if (base + v * kDeltaStep > carveTo) {
-                        chunk->set(i, (int16_t)std::clamp((int)lroundf((carveTo - base) / kDeltaStep), -32767, 32767));
+                        int q = (int)lroundf((carveTo - base) / kDeltaStep);
+                        // #693: inside the shape the point must end below iso. A face passing within half a step (~3 cm) of
+                        // the point (a box top flush with the ground, two boxes sharing a face) rounded it back up to iso:
+                        // solid, so films and specks of ground stayed in a lattice pattern over the cut.
+                        if (carveTo < ISO_LEVEL && base + q * kDeltaStep >= ISO_LEVEL && !gCarveRoundOld) --q;
+                        chunk->set(i, (int16_t)std::clamp(q, -32767, 32767));
                         if (sd < 0.0f) chunk->setMat(i, 0); // dug out: what is exposed below shows its own material
                     }
                 } else if (e.fill) {

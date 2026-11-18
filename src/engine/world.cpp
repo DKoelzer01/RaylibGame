@@ -12,8 +12,10 @@
 #include "rivers.h"
 #include "terraingpu.h"
 #include "gputimer.h"
+#include "scenetarget.h"
 #include "waterfield.h"
 #include <chrono>
+#include <filesystem>
 
 #include <raymath.h>
 #include <rlgl.h>
@@ -40,6 +42,8 @@ WorldGenSettings worldGen;
 std::function<void(FILE*)> saveExtrasHook;
 std::function<void(FILE*)> loadExtrasHook;
 LodSettings lodSettings;
+std::unordered_set<const Chunk*> gOcclusionSkip; // #134 experiment (main.cpp RAYLIBGAME_OCC_SKIP)
+std::unordered_set<uint32_t> gOcclusionSkipPlots; // #134 experiment: plot ids left out (parts and machines)
 
 namespace {
     std::random_device rd;
@@ -49,6 +53,7 @@ namespace {
     // Declared before the job system so it is destroyed after the workers are joined.
     std::mutex resultsMutex;
     std::atomic<long long> gRequests{ 0 }, gBuilt{ 0 }, gSkipped{ 0 }, gDropped{ 0 }; // streaming counters (#258)
+    long long gLodFades = 0; // nodes faded out into their replacements (#243)
     // RAYLIBGAME_STREAM_OLD=1: the streaming before #258/#261 (no request cap, no retention, no telescope keep, no free
     // cap, FIFO uploads), an A/B switch for --bench-fly.
     const bool gStreamOld = [] { const char* e = getenv("RAYLIBGAME_STREAM_OLD"); return e && e[0] == '1'; }();
@@ -172,6 +177,12 @@ Planetoid* Planetoid::findNet(uint64_t netId) {
     if (netId == 0) return nullptr;
     for (const auto& kv : planetoidRegistry) if (kv.second->netId == netId) return kv.second;
     return nullptr;
+}
+
+std::vector<Planetoid*> Planetoid::All() {
+    std::vector<Planetoid*> out;
+    for (const auto& kv : planetoidRegistry) out.push_back(kv.second);
+    return out;
 }
 
 Vector3 Planetoid::toLocal(Vector3 world) const { return Vector3Transform(world, MatrixInvert(localTransform())); }
@@ -325,7 +336,16 @@ VoxelMaterial Planetoid::materialAt(Vector3 local) const {
     return field->material(local, field->baseDensity(local));
 }
 
+VoxelMaterial Planetoid::materialAt(Vector3 local, Vector3 normal) const {
+    if (edits) { const int m = edits->materialAt(local); if (m >= 0) return (VoxelMaterial)m; }
+    if (Vector3LengthSqr(normal) < 1e-6f) return field->material(local, field->baseDensity(local));
+    // #636: material() assumes level ground (fallbackUp), so on a cliff the crosshair (and the dig yield) said grass or
+    // gravel where the mesh, picked with its real normal, draws rock.
+    return field->materialLod(local, field->baseDensity(local), 0.0f, Vector3Normalize(normal));
+}
+
 float Planetoid::densityAt(Vector3 local) const {
+    ++densityCalls; // (#768)
     return field->density(local, edits.get());
 }
 
@@ -374,8 +394,40 @@ bool Planetoid::useFarSphere(const RenderContext& ctx) const {
     return Vector3Distance(position, ctx.cameraPos) / std::max(1.0f, lodSettings.zoom) > kFarSphereRadii * radius * scale;
 }
 
+// #830: when parts were placed or removed, the grass scatter gets the body's new part cells and the chunks under the
+// changes are rebuilt (their grass redone). One remesh per changed plot, over the changed cells' extent.
+static void SyncGrassBlockers(Planetoid& p) {
+    bool changed = false;
+    for (const auto& pl : p.plots->plots) changed = changed || !pl->changedCells.empty();
+    if (!changed) return;
+    auto snap = std::make_shared<GrassBlockers>();
+    for (const auto& pl : p.plots->plots) {
+        if (pl->cells.empty()) continue;
+        GrassBlockPlot g;
+        g.origin = pl->origin; g.east = pl->east; g.up = pl->up; g.north = pl->north;
+        for (const auto& kv : pl->cells) {
+            g.cells.insert(kv.first);
+            const Int3 c = kv.first;
+            g.radius = std::max(g.radius, sqrtf((float)(c.x * c.x + c.y * c.y + c.z * c.z)) * kCellSize + kCellSize);
+        }
+        snap->push_back(std::move(g));
+    }
+    Grass_SetBlockers(static_cast<const DensityField*>(p.field.get()), snap);
+    for (const auto& pl : p.plots->plots) {
+        if (pl->changedCells.empty()) continue;
+        Vector3 lo{ 1e30f, 1e30f, 1e30f }, hi{ -1e30f, -1e30f, -1e30f };
+        for (const Int3& c : pl->changedCells) {
+            const Vector3 at = pl->toBody({ (c.x + 0.5f) * kCellSize, (c.y + 0.5f) * kCellSize, (c.z + 0.5f) * kCellSize });
+            lo = Vector3Min(lo, at); hi = Vector3Max(hi, at);
+        }
+        pl->changedCells.clear();
+        RequestRemesh(p, Vector3Scale(Vector3Add(lo, hi), 0.5f), 0.5f * Vector3Distance(lo, hi) + kCellSize, 1.0f);
+    }
+}
+
 void Planetoid::draw(const RenderContext& ctx) {
     if (!isActive) return;
+    if (plots && field && kind == BodyKind::Planet) SyncGrassBlockers(*this); // (#830) grass only grows on planets
     for (const auto& objPtr : children) objPtr->draw(ctx);
     if (farSphere && ctx.farShader) farSphere->ready(); // uploads the bake once it is done
     if (useFarSphere(ctx)) { farSphere->draw(*this, ctx, *ctx.farShader); return; }
@@ -389,7 +441,8 @@ void Planetoid::draw(const RenderContext& ctx) {
             rlEnableShader(ctx.partShader->id);
             ctx.bindSunLighting(*ctx.partShader);
         }
-        for (auto& pl : plots->plots) pl->draw(*this, ctx, *ctx.partShader);
+        for (auto& pl : plots->plots) if (gOcclusionSkipPlots.empty() || !gOcclusionSkipPlots.count(pl->id)) pl->draw(*this, ctx, *ctx.partShader); // (#134 experiment skip)
+        GpuTimer_Mark("parts"); // #134: parts timed apart from the terrain after them
     }
     if (drawList.empty() || !ctx.terrainMaterial) return;
     const ChunkPlacer placer(*this, ctx.renderOrigin);
@@ -409,13 +462,34 @@ void Planetoid::draw(const RenderContext& ctx) {
     RenderContext c2 = ctx;
     c2.batch = &batch;
     // Arena chunks are only listed: placement and culling run on the GPU (chunk_cull.comp), one multi-draw.
+    const double now = GetTime();
+    // #243: nodes done fading out leave the list here, each frame, cheaply (re-running the LOD selection every frame while
+    // a fade lasted cost walking ~2 ms of CPU); the next LOD pass frees them as undesired.
+    if (std::any_of(drawList.begin(), drawList.end(), [&](const Chunk* c) { return c->fadeOut && now - c->fadeT0 >= Chunk::kLodFadeSeconds; }))
+        drawList.erase(std::remove_if(drawList.begin(), drawList.end(), [&](Chunk* c) {
+            if (!c->fadeOut || now - c->fadeT0 < Chunk::kLodFadeSeconds) return false;
+            c->fadeOut = false; c->fadeT0 = -1.0;
+            return true;
+        }), drawList.end());
     for (Chunk* c : drawList) {
-        if (c->arena.valid()) { if (c->isActive) TerrainArena_Queue(c->arena, c->clipLocal()); continue; }
+        if (!gOcclusionSkip.empty() && gOcclusionSkip.count(c)) continue; // #134 experiment
+        if (c->arena.valid()) { if (c->isActive) TerrainArena_Queue(c->arena, c->clipLocal(), c->lodFade(now)); continue; }
+        if (c->fadeOut) continue; // per-chunk draws (RAYLIBGAME_ARENA=0) have no cross-fade: the new node only (#243)
         c->drawChunk(c2, placer.model(c->key));
     }
     ArenaCull cull;
     cull.frustum = ctx.frustum;
-    const int n = TerrainArena_Flush(ctx.terrainMaterial->shader.id, false, placer.arena(ctx.texScale), cull);
+    // Hi-Z occlusion (#134): last frame's depth pyramid, tested with the placement this body had in that same frame.
+    const ArenaBody bodyNow = placer.arena(ctx.texScale);
+    {
+        unsigned tex = 0; int w = 0, h = 0, levels = 0; Matrix vp{};
+        const long long pyramidFrame = SceneTarget_HiZFrame();
+        if (pyramidFrame >= 0 && hizBodyFrame == pyramidFrame && SceneTarget_HiZ(tex, w, h, levels, vp)) {
+            cull.hizTex = tex; cull.hizW = w; cull.hizH = h; cull.hizLevels = levels; cull.hizViewProj = vp; cull.hizBody = hizBody;
+        }
+    }
+    const int n = TerrainArena_Flush(ctx.terrainMaterial->shader.id, false, bodyNow, cull);
+    if (hizBodyFrame != SceneTarget_Frame()) { hizBody = bodyNow; hizBodyFrame = SceneTarget_Frame(); } // the first draw this frame
     if (ctx.drawCalls) *ctx.drawCalls += n; // listed (the GPU culls some of them)
 }
 
@@ -436,7 +510,7 @@ void Planetoid::drawTransparent(const RenderContext& ctx) {
     // surface claims the pixel and overlapping LOD copies of the sea behind it are skipped.
     std::vector<std::pair<float, Chunk*>> order;
     for (Chunk* ch : drawList) {
-        if (ch->waterMesh.vaoId == 0) continue;
+        if (ch->waterMesh.vaoId == 0 || ch->fadeOut) continue; // a node fading out (#243): its replacement draws the water
         const Matrix m = placer.model(ch->key);
         const float h = ch->key.size() * 0.5f;
         order.push_back({ Vector3DistanceSqr(Vector3Transform({ h, h, h }, m), ctx.cameraPos), ch });
@@ -451,7 +525,7 @@ void Planetoid::drawFoliage(const RenderContext& ctx) {
     const Vector3 c = (worldPos - ctx.renderOrigin).toFloat();
     const float occluder[4] = { c.x, c.y, c.z, std::max(0.0f, radius - 60.0f) * scale }; // night side, as for terrain
     rlSetUniform(ctx.grassOccluderLoc, occluder, RL_SHADER_UNIFORM_VEC4, 1);
-    for (Chunk* ch : drawList) if (ch->key.stride() <= 1.0f) ch->drawGrass(ctx, placer.model(ch->key)); // the levels that carry grass (foliage.cpp)
+    for (Chunk* ch : drawList) if (ch->key.stride() <= 1.0f && !ch->fadeOut) ch->drawGrass(ctx, placer.model(ch->key)); // the levels that carry grass (foliage.cpp); not a node fading out (#243)
 }
 
 void Planetoid::drawDepthOnly(const RenderContext& ctx) {
@@ -859,6 +933,46 @@ static int UpdateLod(Planetoid& p, Vector3 cameraRender) {
             for (NodeKey k = parentOf(d); !coveredByCoarser && k.level <= p.rootLevel; k = parentOf(k)) coveredByCoarser = retainedSet.count(k) > 0;
         if (!coveredByCoarser) draw.push_back(c);
     }
+    // LOD cross-fade (#243): a node leaving the list because a finer or coarser one now covers its place stays drawn for
+    // Chunk::kLodFadeSeconds, dissolving into its replacement (the pair split the pixels by one screen noise, lighting.fs), so the
+    // switch is no longer a pop. Nodes leaving for other reasons (out of range) just go. RAYLIBGAME_LOD_FADE=0: off.
+    static const bool lodFadeOn = !(getenv("RAYLIBGAME_LOD_FADE") && getenv("RAYLIBGAME_LOD_FADE")[0] == '0');
+    // Not while the camera moves fast (lodSettings.fast, > 15 m/s): flying swaps ~20 nodes a frame, and keeping each for the
+    // fade cost ~0.5 ms of CPU a frame (quiet-window A/B) for pops nobody sees at that speed. Nodes dropped then lose any
+    // fade-out mark, so one coming back later isn't drawn half faded.
+    if (lodFadeOn && lodSettings.fast) {
+        for (Chunk* c : p.drawList) if (c->fadeOut) { c->fadeOut = false; c->fadeT0 = -1.0; }
+    } else if (lodFadeOn && !p.drawList.empty()) {
+        const double now = GetTime();
+        static FlatKeySet newSet, newWithin, oldSet, goneSet, goneWithin; // new list (+ ancestors), old list, replaced (+ ancestors)
+        newSet.reset(draw.size()); newWithin.reset(draw.size());
+        for (Chunk* c : draw) { newSet.insert(c->key); for (NodeKey k = parentOf(c->key); k.level <= p.rootLevel; k = parentOf(k)) if (!newWithin.insert(k)) break; }
+        oldSet.reset(p.drawList.size()); goneSet.reset(64); goneWithin.reset(64);
+        std::vector<Chunk*> keep;
+        for (Chunk* c : p.drawList) {
+            oldSet.insert(c->key);
+            if (newSet.count(c->key)) { if (c->fadeOut) { c->fadeOut = false; c->fadeT0 = -1.0; } continue; } // still (or again) in the list
+            if (c->fadeOut) { // fading out already
+                if (now - c->fadeT0 < Chunk::kLodFadeSeconds) keep.push_back(c); else { c->fadeOut = false; c->fadeT0 = -1.0; }
+                continue;
+            }
+            bool replaced = newWithin.count(c->key) > 0; // finer nodes now inside it
+            for (NodeKey k = parentOf(c->key); !replaced && k.level <= p.rootLevel; k = parentOf(k)) replaced = newSet.count(k) > 0; // a coarser one over it
+            if (!replaced) continue;
+            c->fadeOut = true; c->fadeT0 = now; keep.push_back(c); ++gLodFades;
+            goneSet.insert(c->key);
+            for (NodeKey k = parentOf(c->key); k.level <= p.rootLevel; k = parentOf(k)) if (!goneWithin.insert(k)) break;
+        }
+        if (!goneSet.empty())
+            for (Chunk* c : draw) { // the replacements: new in the list where a node went away
+                if (oldSet.count(c->key)) continue;
+                bool overlaps = goneWithin.count(c->key) > 0;
+                for (NodeKey k = parentOf(c->key); !overlaps && k.level <= p.rootLevel; k = parentOf(k)) overlaps = goneSet.count(k) > 0;
+                if (overlaps) { c->fadeT0 = now; c->fadeOut = false; }
+            }
+        for (Chunk* c : keep) draw.push_back(c);
+        // (Faded-out nodes leave the list in Planetoid::draw, not by re-running this every frame: #243 walk cost.)
+    }
     // Nearest first (front to back): the depth test then rejects most of the terrain hidden behind
     // nearer hills before the (costly) terrain shader runs on it. Unsorted, much of the screen was
     // shaded two or three times over: about a quarter of the frame.
@@ -1106,9 +1220,14 @@ void SetLodZoom(Scene& world, float zoom, Vector3 dir, float halfAngle) {
         if (auto* p = dynamic_cast<Planetoid*>(obj.get())) p->lodDirty = true;
 }
 
-namespace { double worldTime = 0.0; }
+namespace { double worldTime = 0.0, followOffset = 0.0, followLag = 0.0; }
 double WorldTime() { return worldTime; }
-void SetWorldTime(double t) { worldTime = t; }
+void SetWorldTime(double t) { worldTime = t; followOffset = 0.0; }
+// #339: a client follows the server's world clock. Offsets under 2 s are slewed in at 10% of the frame time (spin, orbits,
+// the sun and weather never jump); larger ones (a join, a long stall) are taken at once.
+void WorldTime_Follow(double serverNow) { followLag = serverNow - worldTime; followOffset = followLag; if (fabs(followOffset) > 2.0) { worldTime = serverNow; followOffset = 0.0; } }
+double WorldTime_Lag() { return followLag; }
+double WorldTime_Pending() { return followOffset; }
 
 // Place an orbiting body for the current world time (its parent must already be placed).
 void PlaceBodyOnOrbit(Planetoid& p) {
@@ -1126,6 +1245,10 @@ void advanceBodies(Scene& world, float dt) {
     // frame's transform (spinning here after they moved left them one frame behind the surface).
     // Orbits are evaluated from the world clock (not integrated), so they never drift.
     worldTime += dt;
+    if (followOffset != 0.0 && dt > 0.0f) { // #339: slewing toward the server's clock
+        const double step = std::clamp(followOffset, -0.1 * dt, 0.1 * dt);
+        worldTime += step; followOffset -= step;
+    }
     bool moved = false;
     for (auto& obj : world.objects) {
         auto* p = dynamic_cast<Planetoid*>(obj.get());
@@ -1433,7 +1556,7 @@ void worldUpdate(Scene& world, float uploadBudgetMs) {
     stats.pendingUploads = (int)pendingUploads.size();
     stats.uploadsLastFrame = uploads;
     stats.workerThreads = (int)Jobs().threadCount();
-    stats.requests = gRequests; stats.built = gBuilt; stats.skippedStale = gSkipped; stats.droppedResults = gDropped;
+    stats.requests = gRequests; stats.built = gBuilt; stats.skippedStale = gSkipped; stats.droppedResults = gDropped; stats.lodFades = gLodFades;
     stats.avgBuildMs = buildCount ? (float)(buildMsTotal / buildCount) : 0.0f;
     stats.avgSampleMs = buildCount ? (float)(sampleMsTotal / buildCount) : 0.0f;
     stats.chunks = stats.nodes = stats.edits = 0;
@@ -1552,8 +1675,9 @@ bool RaycastTerrain(Scene& world, Ray ray, float maxDistance, TerrainHit& hit) {
                     hit.local = local;
                     hit.point = worldPoint;
                     hit.distance = dist;
-                    hit.normal = Vector3Normalize(Vector3Subtract(p->toWorld(Vector3Add(local, p->field->normal(local, p->edits.get()))), worldPoint));
-                    hit.material = p->materialAt(local);
+                    const Vector3 nLocal = p->field->normal(local, p->edits.get());
+                    hit.normal = Vector3Normalize(Vector3Subtract(p->toWorld(Vector3Add(local, nLocal)), worldPoint));
+                    hit.material = p->materialAt(local, nLocal); // as drawn (#636)
                 }
                 break;
             }
@@ -1585,7 +1709,7 @@ void ApplyTerrainEdits(Planetoid& p, const TerrainEdit* edits, size_t count) {
         const NodeKey& k = entry.first;
         const Vector3 nlo = k.origin();
         const Vector3 nhi = Vector3AddValue(nlo, k.size() * (CHUNK_SIZE + 1.0f) / CHUNK_SIZE);
-        const float margin = rmax + k.stride() + 1.0f;
+        const float margin = rmax + (k.level > 0 ? 3.0f : 1.0f) * k.stride() + 1.0f; // coarse nodes read edits 2 strides along their columns (#679)
         if (hi.x + margin < nlo.x || lo.x - margin > nhi.x || hi.y + margin < nlo.y || lo.y - margin > nhi.y || hi.z + margin < nlo.z || lo.z - margin > nhi.z) continue;
         if (count == 1 && DistanceToBox(edits[0].center, nlo, nhi) > margin) continue;
         touched.push_back(k);
@@ -2104,15 +2228,99 @@ std::shared_ptr<const TerrainDeltas> LoadRegionsFor(int body, const std::string&
     return b.finish();
 }
 
+// ---- Late-join sync (#776): regions in memory, as the save writes them ----
+
+std::vector<TerrainDeltas::Key> Regions_List(const TerrainDeltas& d) {
+    std::unordered_set<TerrainDeltas::Key> set;
+    for (const auto& kv : d.chunks) set.insert(TerrainDeltas::RegionOf(kv.first));
+    std::vector<TerrainDeltas::Key> out(set.begin(), set.end());
+    std::sort(out.begin(), out.end());
+    return out;
+}
+
+// RGN5 bytes of one region's chunks (the save's layout), chunks in key order: the same content always encodes the same,
+// so its hash compares across machines.
+std::vector<uint8_t> Region_Encode(const TerrainDeltas& d, TerrainDeltas::Key region) {
+    std::vector<std::pair<TerrainDeltas::Key, const DeltaChunk*>> chunks;
+    for (const auto& kv : d.chunks) if (TerrainDeltas::RegionOf(kv.first) == region) chunks.push_back({ kv.first, kv.second.get() });
+    std::sort(chunks.begin(), chunks.end(), [](const auto& a, const auto& b) { return a.first < b.first; });
+    std::vector<uint8_t> out;
+    auto put = [&](const void* p, size_t n) { const uint8_t* b = (const uint8_t*)p; out.insert(out.end(), b, b + n); };
+    put("RGN5", 4);
+    const int32_t n = (int32_t)chunks.size();
+    put(&n, 4);
+    std::vector<uint16_t> enc, encM;
+    for (const auto& c : chunks) {
+        int cx, cy, cz;
+        TerrainDeltas::Unpack(c.first, cx, cy, cz);
+        EncodeChunk(*c.second, enc);
+        EncodeMaterials(*c.second, encM);
+        const int32_t hdr[5] = { cx, cy, cz, (int32_t)(enc.size() * 2), (int32_t)(encM.size() * 2) };
+        put(hdr, sizeof hdr);
+        put(enc.data(), enc.size() * 2);
+        put(encM.data(), encM.size() * 2);
+    }
+    return out;
+}
+
+uint64_t Region_Hash(const std::vector<uint8_t>& bytes) {
+    uint64_t h = 14695981039346656037ull;
+    for (uint8_t b : bytes) { h ^= b; h *= 1099511628211ull; }
+    return h;
+}
+
+// Replace one region's chunks on a body with these RGN5 bytes (empty: clear it) and rebuild what shows it.
+bool Region_Install(Planetoid& p, TerrainDeltas::Key region, const uint8_t* data, size_t size) {
+    std::vector<std::pair<TerrainDeltas::Key, std::shared_ptr<DeltaChunk>>> got;
+    if (size > 0) {
+        size_t at = 0;
+        auto take = [&](void* dst, size_t n) { if (at + n > size) return false; memcpy(dst, data + at, n); at += n; return true; };
+        char magic[4]; int32_t n = 0;
+        if (!take(magic, 4) || memcmp(magic, "RGN5", 4) != 0 || !take(&n, 4) || n < 0 || n > kRegionChunks * kRegionChunks * kRegionChunks) return false;
+        for (int32_t i = 0; i < n; ++i) {
+            int32_t hdr[5];
+            if (!take(hdr, sizeof hdr) || hdr[3] <= 0 || hdr[4] < 0 || at + (size_t)hdr[3] + (size_t)hdr[4] > size || (hdr[3] & 1) || (hdr[4] & 1)) return false;
+            auto chunk = std::make_shared<DeltaChunk>();
+            std::vector<uint16_t> words((size_t)hdr[3] / 2), mats((size_t)hdr[4] / 2);
+            take(words.data(), (size_t)hdr[3]);
+            take(mats.data(), (size_t)hdr[4]);
+            if (!DecodeChunk(words.data(), words.size(), *chunk)) return false;
+            if (!mats.empty() && !DecodeMaterials(mats.data(), mats.size(), *chunk)) return false;
+            const TerrainDeltas::Key k = TerrainDeltas::KeyOf(hdr[0], hdr[1], hdr[2]);
+            if (TerrainDeltas::RegionOf(k) != region) return false; // (a chunk outside the region it claims)
+            got.push_back({ k, chunk });
+        }
+        if (at != size) return false;
+    }
+    TerrainDeltasBuilder b(*p.edits);
+    for (auto it = b.state().chunks.begin(); it != b.state().chunks.end();)
+        it = TerrainDeltas::RegionOf(it->first) == region ? b.state().chunks.erase(it) : std::next(it);
+    for (auto& [k, c] : got) b.setChunk(k, c);
+    p.edits = b.finish();
+    p.dirtyRegions.insert(region);
+    p.lodDirty = true;
+    // Rebuild the region's nodes (and its trees' cover) with the new deltas.
+    int rx, ry, rz;
+    TerrainDeltas::Unpack(region, rx, ry, rz);
+    const float side = kRegionChunks * kDeltaChunk * kVoxelSize; // metres
+    const Vector3 centre{ (rx + 0.5f) * side, (ry + 0.5f) * side, (rz + 0.5f) * side };
+    const float reach = side * 0.8661f + 2.0f;
+    RequestRemesh(p, centre, reach);
+    if (p.trees) p.trees->onEdit(centre, reach, p.edits);
+    return true;
+}
+
 bool SaveWorld(Scene& world) {
     if (!DirectoryExists("saves")) MakeDirectory("saves");
-    FILE* f = fopen(SAVE_PATH, "w");
+    // Written to <save>.tmp and renamed over the save when complete (#346): a crash mid-save leaves the last save whole.
+    const std::string tmpPath = SAVE_PATH_STR + ".tmp";
+    FILE* f = fopen(tmpPath.c_str(), "w");
     if (!f) return false;
     const DVec3 camWorld = world.renderOrigin + world.camera.position;
     const DVec3 tgtWorld = world.renderOrigin + world.camera.target;
     // v4: the system definition is stored in the save, so a save reloads the system it was made in
     // even if bodies.txt has changed since.
-    fprintf(f, "RAYLIBGAME_SAVE 12\n"); // 12 (#360): ponds' water bricks saved even drained; no claimed ponds
+    fprintf(f, "RAYLIBGAME_SAVE 13\n"); // 13 (#346): the player's state in their record (<save>.players/), teams; 12 (#360): ponds' water bricks saved even drained
     fprintf(f, "seed %u\nbodies %zu\n", worldGen.lastSeed, worldGen.system.bodies.size());
     for (const BodyDef& b : worldGen.system.bodies) fprintf(f, "%s\n", FormatBodyDef(b).c_str());
     fprintf(f, "time %.6f\n", worldTime); // v5: the world clock (orbits)
@@ -2131,7 +2339,8 @@ bool SaveWorld(Scene& world) {
         Planetoid* p = dynamic_cast<Planetoid*>(obj.get());
         if (!p || p->ringRock >= 0 || p->vehicle) continue; // promoted ring rocks: saved with their ring (below); rockets: by the game
         const int bodyIndex = index++;
-        fprintf(f, "planetoid %d rot %f %f %f strokes %zu\n", bodyIndex, p->rotation.x, p->rotation.y, p->rotation.z, p->edits->strokes);
+        // (#346) the body's NetId too: a load finds the body by it, not by its place in the list
+        fprintf(f, "planetoid %d netid %llu rot %f %f %f strokes %zu\n", bodyIndex, (unsigned long long)p->netId, p->rotation.x, p->rotation.y, p->rotation.z, p->edits->strokes);
         totalStrokes += p->edits->strokes;
         // v6: chopped / harvested plants (id, world time removed); they regrow from that time.
         const PlantRemovals none;
@@ -2146,16 +2355,57 @@ bool SaveWorld(Scene& world) {
     }
     // v10: ring rocks a visit changed (edits, plots), whether they are voxel bodies now or not.
     for (auto& ring : gRings) ring->save(f, dir);
-    fclose(f);
+    const bool written = fflush(f) == 0 && !ferror(f);
+    if (fclose(f) != 0 || !written) { std::error_code ec; std::filesystem::remove(tmpPath, ec); LOG_ERROR("World", "%s: could not write the save\n", SAVE_PATH); return false; }
+    std::error_code ec;
+    std::filesystem::rename(tmpPath, SAVE_PATH_STR, ec); // replaces the old save in one step
+    if (ec) { LOG_ERROR("World", "%s: could not replace the save: %s\n", SAVE_PATH, ec.message().c_str()); return false; }
     LOG_INFO("World", "saved %zu strokes to %s (%d region files written)\n", totalStrokes, SAVE_PATH, regionsWritten);
+    BackupSave();
     return true;
+}
+
+// Backups (#346, user: the newest 5): after each save, the world file and the player records (<save>.players/) are copied
+// into <save>.backups/<date-time>/, and only the newest kBackups are kept. The regions are not copied (large, and written
+// in place chunk by chunk). RAYLIBGAME_BACKUPS=N keeps N (0: none).
+int BackupsKept() { static const int n = getenv("RAYLIBGAME_BACKUPS") ? std::max(0, atoi(getenv("RAYLIBGAME_BACKUPS"))) : 5; return n; }
+std::string BackupDir() { return SAVE_PATH_STR + ".backups"; }
+void BackupSave() {
+    namespace fs = std::filesystem;
+    const int keep = BackupsKept();
+    if (keep <= 0) return;
+    std::error_code ec;
+    const fs::path root = BackupDir();
+    // The name sorts by time: date, time, milliseconds (two saves in one second still get their own).
+    const auto now = std::chrono::system_clock::now();
+    const std::time_t t = std::chrono::system_clock::to_time_t(now);
+    const int ms = (int)(std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch()).count() % 1000);
+    std::tm tm{};
+#ifdef _WIN32
+    localtime_s(&tm, &t);
+#else
+    localtime_r(&t, &tm);
+#endif
+    char stamp[40];
+    snprintf(stamp, sizeof(stamp), "%04d%02d%02d-%02d%02d%02d-%03d", tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday, tm.tm_hour, tm.tm_min, tm.tm_sec, ms);
+    const fs::path to = root / stamp;
+    fs::create_directories(to, ec);
+    const fs::path save = SAVE_PATH_STR;
+    fs::copy_file(save, to / save.filename(), fs::copy_options::overwrite_existing, ec);
+    if (ec) { LOG_WARN("World", "backup of %s: %s\n", SAVE_PATH, ec.message().c_str()); return; }
+    const fs::path players = SAVE_PATH_STR + ".players";
+    if (fs::exists(players, ec)) fs::copy(players, to / players.filename(), fs::copy_options::recursive | fs::copy_options::overwrite_existing, ec);
+    std::vector<fs::path> all;
+    for (const auto& e : fs::directory_iterator(root, ec)) if (e.is_directory()) all.push_back(e.path());
+    std::sort(all.begin(), all.end());
+    for (size_t i = 0; i + keep < all.size(); ++i) fs::remove_all(all[i], ec); // the oldest beyond the newest `keep`
 }
 
 bool LoadWorldSave(Scene& world) {
     FILE* f = fopen(SAVE_PATH, "r");
     if (!f) return false;
     int version = 0;
-    if (fscanf(f, "RAYLIBGAME_SAVE %d", &version) != 1 || version < 2 || version > 12) {
+    if (fscanf(f, "RAYLIBGAME_SAVE %d", &version) != 1 || version < 2 || version > 13) {
         fclose(f);
         LOG_ERROR("World", "%s: unsupported save version %d\n", SAVE_PATH, version);
         return false;
@@ -2201,7 +2451,14 @@ bool LoadWorldSave(Scene& world) {
     worldGen.seed = seed;
     worldGen.system = sys;
     worldGen.systemLoaded = true;
+    // RAYLIBGAME_LOAD_PROFILE=1: where the load's time goes (--test-persist's load gate).
+    using lclk = std::chrono::steady_clock;
+    static const bool loadProfile = getenv("RAYLIBGAME_LOAD_PROFILE") && getenv("RAYLIBGAME_LOAD_PROFILE")[0] == '1';
+    auto lms = [](lclk::time_point a) { return std::chrono::duration<double, std::milli>(lclk::now() - a).count(); };
+    const auto lt0 = lclk::now();
+    double regionsMs = 0.0, fluidMs = 0.0, plotsMs = 0.0;
     regenerateWorld(world);
+    const double regenMs = lms(lt0);
     world.setCameraWorld(DVec3(c[0], c[1], c[2]), DVec3(c[3], c[4], c[5]));
 
     if (version >= 3) {
@@ -2221,12 +2478,20 @@ bool LoadWorldSave(Scene& world) {
     Vector3 rot{};
     char kind[16] = {};
     const std::string dir = RegionDir();
-    while (fscanf(f, " planetoid %d rot %f %f %f %15s %zu", &index, &rot.x, &rot.y, &rot.z, kind, &editCount) == 6) {
-        Planetoid* body = index >= 0 && index < (int)planetoids.size() ? planetoids[index] : nullptr;
+    while (fscanf(f, " planetoid %d", &index) == 1) {
+        // (#346) "netid <id>" since format 13's step 3: the body is found by it; older saves by their place in the list
+        unsigned long long netid = 0;
+        const long at = ftell(f);
+        if (fscanf(f, " netid %llu", &netid) != 1) { fseek(f, at, SEEK_SET); netid = 0; }
+        if (fscanf(f, " rot %f %f %f %15s %zu", &rot.x, &rot.y, &rot.z, kind, &editCount) != 5) break;
+        Planetoid* body = netid ? Planetoid::findNet((NetId)netid) : nullptr;
+        if (!body) body = index >= 0 && index < (int)planetoids.size() ? planetoids[index] : nullptr;
         std::shared_ptr<const TerrainDeltas> deltas;
         if (std::string(kind) == "strokes") {
             // v7: the deltas are in the region files.
+            const auto rt = lclk::now();
             deltas = LoadRegionsFor(index, dir, editCount);
+            regionsMs += lms(rt);
         } else {
             // v2-v6: a brush list; fold it into deltas (written out as regions on the next save).
             TerrainDeltasBuilder b(TerrainDeltas{});
@@ -2248,11 +2513,15 @@ bool LoadWorldSave(Scene& world) {
             }
         }
         // v8: build plots.
+        const auto pt = lclk::now();
         auto plots = std::make_unique<PlotSet>();
         if (version >= 8 && !plots->load(f)) LOG_ERROR("World", "%s: damaged plot data\n", SAVE_PATH);
         if (body) body->plots = plots->plots.empty() ? nullptr : std::move(plots);
         if (version >= 9) Factory::Load(f, body ? body->id : 0); // machine contents, applied when the layouts reach the simulation
+        plotsMs += lms(pt);
+        const auto ft = lclk::now();
         if (version >= 11) Fluid::Load(f, body ? body->id : 0); // flowing water (classified again as it loads)
+        fluidMs += lms(ft);
         if (body) {
             body->edits = deltas;
             body->rotation = rot;
@@ -2270,6 +2539,8 @@ bool LoadWorldSave(Scene& world) {
         else { PlotSet skip; skip.load(f); Factory::ReadSaved(f); }
     }
     fclose(f);
+    if (loadProfile) printf("load: %.0f ms: regenerate the world %.0f, region deltas %.0f, plots + machines %.0f, fluid %.0f, rest %.0f\n",
+                            lms(lt0), regenMs, regionsMs, plotsMs, fluidMs, lms(lt0) - regenMs - regionsMs - plotsMs - fluidMs);
     LOG_INFO("World", "loaded %s (seed %u)\n", SAVE_PATH, seed);
     return true;
 }

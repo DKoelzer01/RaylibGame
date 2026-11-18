@@ -12,6 +12,7 @@
 #include <iostream>
 #include <fstream>
 #include <sstream>
+#include <unordered_set>
 #include <memory>
 #include <cstdio>
 #include <functional>
@@ -59,6 +60,9 @@ struct LodSettings {
     int cacheNodes = 40000;
 };
 extern LodSettings lodSettings;
+// #134 experiment: chunks the main pass leaves out (RAYLIBGAME_OCC_SKIP in benches; empty otherwise).
+extern std::unordered_set<const Chunk*> gOcclusionSkip;
+extern std::unordered_set<uint32_t> gOcclusionSkipPlots;
 void SetLodZoom(Scene& world, float zoom, Vector3 dir, float halfAngle); // zoom 1: off
 
 struct WorldStats {
@@ -75,6 +79,7 @@ struct WorldStats {
     int preloadNodes = 0, preloadReady = 0; // the preload ring(s) around the camera (#294)
     int cachedNodes = 0;                    // built nodes kept only by the cache (#295)
     long long evicted = 0;                  // cache evictions since start
+    long long lodFades = 0;                 // nodes cross-faded into their replacements since start (#243)
     long long waterBuilds = 0; double waterMs = 0.0; // water-only chunk redraws (#360) since start, their worker time
     long long waterFullBuilds = 0; long long waterCacheBytes = 0; // full builds asked for by water; chunk water caches now
 };
@@ -98,10 +103,11 @@ inline std::vector<InterestCentre> gInterestCentres;
 // so captures are reproducible. Gameplay code reads this; UI timing keeps the real clock.
 inline float gFixedFrameTime = 0.0f;
 inline float GameFrameTime() { return gFixedFrameTime > 0.0f ? gFixedFrameTime : GetFrameTime(); }
-// The clock visual animation reads (wind, sway, flicker, weather flashes): the real one, or the sum of the fixed steps while
-// recording (#375), so two captures of the same scene match frame for frame. main.cpp advances it.
+// The clock visual animation reads (wind, sway, flicker, weather flashes, water flow, clouds): the sum of the frame times
+// (fixed steps while recording, #375, so two captures of the same scene match frame for frame). main.cpp advances it, and
+// stops it while the single-player pause menu is open (#511: grass kept swaying behind the menu).
 inline double gGameClock = 0.0;
-inline double GameClock() { return gFixedFrameTime > 0.0f ? gGameClock : GetTime(); }
+inline double GameClock() { return gGameClock; }
 // The simulation clock (#315): SimTime() / SimDt() / SimAlpha(), see simclock.h.
 #include "simclock.h"
 // Time of day (#275): the debug UI's time-scale multiplier (bodies spin and orbit this much faster) and a pending jump
@@ -143,6 +149,12 @@ std::shared_ptr<const TerrainDeltas> LoadRegionsFor(int body, const std::string&
 class RingSystem;
 std::vector<std::unique_ptr<RingSystem>>& Rings();
 void SetWorldTime(double t);
+// #339: a client follows the server's world clock (spin, orbits, the sun and weather all derive from it): give it the
+// server's world time now (the time it sent plus half the round trip). Under 2 s off it is slewed in at 10% of the frame
+// time; more is taken at once. Lag = the last estimate of server minus ours; Pending = what is still to slew.
+void WorldTime_Follow(double serverNow);
+double WorldTime_Lag();
+double WorldTime_Pending();
 void worldUpdate(Scene& world, float uploadBudgetMs = 3.0f); // LOD, streaming, uploads
 bool WorldIdle();                      // no queued/running jobs and nothing left to upload
 void World_ClearStreamingQueues();     // #387: drop queued GPU blocks, results and pending uploads (unloadWorld calls it)
@@ -159,6 +171,13 @@ void ApplyTerrainEdits(Planetoid& planetoid, const TerrainEdit* edits, size_t co
 // Rebuild the chunks (every level) around a body-local point: water claimed by the simulation (fluid.h).
 // strideReach: extra reach in strides of each level's nodes (their own features reach that far, e.g. static water: #251).
 void RequestRemesh(Planetoid& planetoid, Vector3 localCentre, float radius, float strideReach = 1.0f);
+// Late-join sync (#776): a body's edited regions (128 m cubes of delta chunks, sorted), one region as the save's RGN5 bytes
+// (chunks in key order: equal content, equal bytes), their hash, and installing such bytes on a body (empty: clear the
+// region), rebuilding what shows it. False: the bytes are malformed (nothing changed).
+std::vector<TerrainDeltas::Key> Regions_List(const TerrainDeltas& deltas);
+std::vector<uint8_t> Region_Encode(const TerrainDeltas& deltas, TerrainDeltas::Key region);
+uint64_t Region_Hash(const std::vector<uint8_t>& bytes);
+bool Region_Install(Planetoid& planetoid, TerrainDeltas::Key region, const uint8_t* data, size_t size);
 
 // Physics helpers (render-space points). Distance is approximate: (ISO - density) / |gradient|.
 bool TerrainSurfaceDistance(Planetoid& p, Vector3 renderPoint, float& dist, Vector3& outwardNormal);
@@ -170,6 +189,11 @@ bool IsUnderwater(Scene& world, Vector3 renderPoint);
 Vector3 RiverCurrent(Planetoid* body, Vector3 renderPoint);
 void SetWorldSavePath(const char* path); // bench runs save to their own file, never the player's
 const char* WorldSavePath();
+// (#346) after each save, the world file and player records are copied to <save>.backups/<date-time>/; the newest
+// BackupsKept() stay (RAYLIBGAME_BACKUPS=N, default 5, 0 none).
+void BackupSave();
+int BackupsKept();
+std::string BackupDir();
 extern bool gSandboxWorld; // --sandbox (#662): the start planet is a flat test plane (set before world generation)
 class JobSystem;
 JobSystem& WorldJobs(); // the shared worker pool (chunk builds, foliage tiles)

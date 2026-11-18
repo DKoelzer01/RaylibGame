@@ -56,3 +56,6 @@ Hovering drains suit power, faster when boosting. A charged flight pack catches 
 
 # Rockets and space
 Rockets are built from parts: engines, fuel tanks, a cockpit, a guidance computer and landing legs. The moon and the asteroid ring hold materials Terra doesn't; the quest tree shows the way there.
+
+# Places
+Ruins, camps, crash sites and natural wonders lie scattered over the world, about one to every square kilometre, and there is always a camp and a ruin within a walk of where you start. You find a place by coming within 60 m of it or by centring it in the telescope: it is then marked on the map and the compass. Their chests hold loot; their parts can be broken for materials.

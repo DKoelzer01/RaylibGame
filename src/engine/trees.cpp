@@ -768,7 +768,9 @@ void TreeSystem::draw(const Planetoid& body, const RenderContext& ctx, int onlyL
             glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 1, culledVbo[slot]);
             glUniform1ui(gTcN, (GLuint)count[0][slot]);
             glUniform1ui(gTcCmd, (GLuint)slot);
-            glUniform1f(gTcRadius, Variant(v, lod).boundRadius);
+            // #745: RAYLIBGAME_FAR_FOREST grows far trees up to 1.35x in trees.vs; pad the bound to match.
+            static const float farPad = [] { const char* e = getenv("RAYLIBGAME_FAR_FOREST"); return e && e[0] == '1' ? 1.35f : 1.0f; }();
+            glUniform1f(gTcRadius, Variant(v, lod).boundRadius * farPad);
             glDispatchCompute((GLuint)((count[0][slot] + 63) / 64), 1, 1);
         }
         glMemoryBarrier(GL_COMMAND_BARRIER_BIT | GL_VERTEX_ATTRIB_ARRAY_BARRIER_BIT);

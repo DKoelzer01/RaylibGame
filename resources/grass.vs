@@ -12,6 +12,7 @@ uniform mat4 matViewProj;
 uniform float time;
 uniform vec3 viewPos;      // render space (shared with the fragment shader)
 uniform float fadeEnd;     // grass draw distance (m), shared with the fragment shader
+#include "wind.glsl"
 
 out vec3 fragPosition;     // render space
 out vec3 fragUp;           // render space
@@ -38,11 +39,26 @@ void main()
     // ending in a line of full-height blades.
     s *= mix(1.0, 0.3, smoothstep(0.6 * fadeEnd, fadeEnd, length(root - viewPos)));
     float y = vertexPosition.y;
-    // Wind: a slow gust field over position plus a quick flutter, bending tips more than roots.
-    float gust = sin(time * 1.3 + dot(root, vec3(0.11, 0.07, 0.13))) * 0.5 + 0.5;
-    float flutter = sin(time * 4.0 + h * 40.0);
-    vec3 windDir = normalize(t0 + b0 * 0.4);
-    vec3 sway = windDir * (0.12 + 0.18 * gust + 0.04 * flutter) * y * y;
+    vec3 sway;
+    if (windOn > 0.5) {
+        // The wind field (#650): bend by speed^2 toward the wind (bursts flatten the grass for a moment), a flutter whose
+        // rate grows with the speed, and a per-blade phase so no two clumps move in step.
+        vec4 w = windAt(root);
+        vec3 wf = w.xyz - up * dot(w.xyz, up);
+        float speed = length(wf);
+        vec3 wdir = speed > 1e-3 ? wf / speed : t0;
+        float bend = min(speed * speed / 144.0, 1.7);                  // 12 m/s = 1
+        float flutter = sin(time * (2.5 + 0.35 * speed) + h * 40.0) * (0.02 + 0.012 * speed);
+        vec3 side = cross(up, wdir);
+        sway = (wdir * (0.06 + 0.32 * bend + flutter) + side * flutter * 0.5) * y * y;
+        sway -= up * (0.22 * bend * bend) * y * y;                    // a bent blade is shorter, not just leaning
+    } else {
+        // No wind field (RAYLIBGAME_WIND=0): the old regular sway.
+        float gust = sin(time * 1.3 + dot(root, vec3(0.11, 0.07, 0.13))) * 0.5 + 0.5;
+        float flutter = sin(time * 4.0 + h * 40.0);
+        vec3 windDir = normalize(t0 + b0 * 0.4);
+        sway = windDir * (0.12 + 0.18 * gust + 0.04 * flutter) * y * y;
+    }
     vec3 p = root + (t * vertexPosition.x + up * y + b * vertexPosition.z + sway) * s;
     fragPosition = p;
     fragUp = up;

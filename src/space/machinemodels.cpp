@@ -36,6 +36,7 @@ struct Painter {
     void cyl(Vector3 base, float rTop, float rBottom, float h, Color col, float m = 1.0f, int = 10) const { IB_Cylinder(base, rTop, rBottom, h, Shade(col, 1.0f, m)); }
 };
 
+constexpr float kTorchStick = 0.05f; // a placed torch's stick centre from its cell's low x/z corner (plots.cpp: 0.1 m thick, #558)
 const Color kSteel = { 140, 144, 150, 255 }, kDarkSteel = { 70, 72, 78, 255 }, kBrick = { 150, 80, 60, 255 }, kCopper = { 190, 110, 60, 255 };
 const Color kGlowOrange = { 255, 150, 50, 255 }, kGlass = { 120, 200, 230, 255 }, kPaint = { 200, 170, 50, 255 };
 
@@ -295,11 +296,32 @@ void DrawMachine(PartType type, const Frame& f, const Painter& p, bool working) 
         }
         break;
     }
-    case PartType::Torch: { // (#218) a flame on the quarter-cell post (its low x/z corner: placed torches aren't turned)
-        const float fl = 0.85f + 0.15f * sinf(t * 13.0f) + 0.08f * sinf(t * 29.0f);
-        p.cube({ x0 + 0.125f, top - 0.02f, z0 + 0.125f }, { 0.2f, 0.05f, 0.2f }, kDarkSteel);   // the wrapped head
-        p.glow({ x0 + 0.125f, top + 0.08f * fl, z0 + 0.125f }, { 0.12f, 0.16f * fl, 0.12f }, Color{ 255, (unsigned char)(150 + 40 * fl), 60, 255 });
-        p.glow({ x0 + 0.125f, top + 0.17f * fl, z0 + 0.125f }, { 0.06f, 0.08f, 0.06f }, Color{ 255, 230, 140, 255 });
+    case PartType::Torch: { // (#218) the wrapped head on the thin stick (its low x/z corner: placed torches aren't turned)
+        // #558: the flame is particles (ambience.cpp, from Machine_SmokePoints); only a small glowing core stays here, so
+        // the head reads lit where no particles are drawn.
+        p.cube({ x0 + kTorchStick, top - 0.03f, z0 + kTorchStick }, { 0.13f, 0.08f, 0.13f }, kDarkSteel);
+        p.glow({ x0 + kTorchStick, top + 0.03f, z0 + kTorchStick }, { 0.07f, 0.05f, 0.07f }, Color{ 255, 190, 80, 255 });
+        break;
+    }
+    case PartType::Campfire: { // #552: a firepit - a ring of stones round the ash bed, logs leaning in a teepee (flames: ambience.cpp)
+        const Color stone = { 150, 145, 138, 255 }, stoneDark = { 122, 117, 110, 255 }, bark = { 92, 64, 40, 255 }, charred = { 40, 32, 28, 255 };
+        const float bed = 0.125f;
+        for (int k = 0; k < 10; ++k) {
+            const float a = 2.0f * PI * k / 10.0f + 0.13f * (k % 3);
+            const float s = 0.13f + 0.03f * ((k * 7) % 3);                                        // a little irregular
+            p.cube({ 0.4f * cosf(a), bed + s * 0.35f, 0.4f * sinf(a) }, { s, s * 0.75f, s * 0.9f }, (k & 1) ? stone : stoneDark);
+        }
+        for (int k = 0; k < 5; ++k) { // tilted 32 degrees in, feet on a 0.24 m circle, tops meeting over the middle
+            const float a = 360.0f * k / 5.0f + 15.0f;
+            rlPushMatrix();
+            rlRotatef(a, 0, 1, 0);
+            rlTranslatef(0.24f, bed, 0.0f);
+            rlRotatef(32.0f, 0, 0, 1); // leans toward -x: the centre
+            p.cyl({ 0, 0, 0 }, 0.035f, 0.045f, 0.5f, k == 0 ? charred : bark);
+            p.cube({ 0, 0.02f, 0 }, { 0.1f, 0.06f, 0.1f }, charred);                              // the burnt foot
+            rlPopMatrix();
+        }
+        if (working) p.glow({ 0, bed + 0.04f, 0 }, { 0.22f, 0.06f, 0.22f }, Color{ 255, 120, 30, 255 }); // embers
         break;
     }
     case PartType::Chest:
@@ -360,6 +382,10 @@ int Machine_SmokePoints(const Plot& plot, size_t part, Vector3* outBody, int max
     for (int i = 0; i < n && k < max; ++i) // the chimney tops (#220: the smoke came off the wrong corner, in the air)
         outBody[k++] = plot.toBody({ s.floorPlot.x + st[i].x, s.floorPlot.y + s.f.h + st[i].h + 0.06f, s.floorPlot.z + st[i].z });
     if (k == 0 && n == 0 && StacksAll(s.type, s.f, st) > 0) return 0; // chimneys capped by a block above: no smoke (#221)
+    if (s.type == PartType::Torch) { // the flame's foot, just over the head on the stick (#558)
+        outBody[0] = plot.toBody({ s.floorPlot.x - s.f.w * 0.5f + kTorchStick, s.floorPlot.y + s.f.h + 0.05f, s.floorPlot.z - s.f.d * 0.5f + kTorchStick });
+        return 1;
+    }
     if (k == 0) { // no chimney: off the middle of the top (the campfire: just over its flames)
         const float up = s.type == PartType::Campfire ? 0.5f : s.f.h + 0.05f;
         outBody[k++] = plot.toBody({ s.floorPlot.x, s.floorPlot.y + up, s.floorPlot.z });
@@ -385,6 +411,7 @@ void Machines_Draw3D(Scene& world) {
         const Vector3 camPlotBody = body->toLocal(world.camera.position);
         for (auto& plot : body->plots->plots) {
             if (Vector3Distance(plot->toBody({ 0, 0, 0 }), camPlotBody) > 500.0f) continue;
+            if (!gOcclusionSkipPlots.empty() && gOcclusionSkipPlots.count(plot->id)) continue; // #134 experiment
             PlotCache& pc = plotCache[(body->id * 1315423911ull) ^ plot->id];
             if (pc.version != plot->version) {
                 pc.version = plot->version;

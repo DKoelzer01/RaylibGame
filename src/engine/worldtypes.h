@@ -37,6 +37,12 @@ public:
     // hide cracks between LOD levels; where the neighbour on an axis is drawn at the same level the
     // overlap would just duplicate (and z-fight with) its surface, so it is clipped on that axis.
     Vector3 clipMax = { 1e30f, 1e30f, 1e30f };
+    static constexpr double kLodFadeSeconds = 0.35;
+    // LOD cross-fade (#243): when nodes replace others in the draw list, both are drawn for kLodFadeSeconds and dissolve
+    // into each other (lighting.fs). fadeT0 < 0: not fading; fadeOut: this is the one going away.
+    double fadeT0 = -1.0;
+    bool fadeOut = false;
+    float lodFade(double now) const;   // the arena record's clip.w (0 when not fading)
 
     Chunk() : Object("chunk", "chunk", {0, 0, 0}, {0, 0, 0}, WHITE, 1.0f) {}
     virtual ~Chunk();
@@ -107,6 +113,8 @@ public:
     std::unordered_map<NodeKey, std::unique_ptr<Chunk>> nodes;   // built or being built
     std::unordered_map<NodeKey, uint32_t> requestedVersion;      // latest request per node
     std::vector<Chunk*> drawList;                                // what is rendered this frame
+    ArenaBody hizBody{};       // #134: the chunk placement the main pass drew with, and in which scene-target frame
+    long long hizBodyFrame = -1;
     int rootLevel = 0;                                           // level whose 2x2x2 nodes cover the body
     // UpdateLod skips work while nothing changed: the camera (in body space) stayed within 1 m of
     // where the node selection was last made and no chunk results or edits arrived.
@@ -144,7 +152,10 @@ public:
     bool useFarSphere(const RenderContext& ctx) const;  // far enough (zoom included) and baked
 
     float densityAt(Vector3 local) const; // includes edits; main-thread helper (raycasts)
+    static inline long long densityCalls = 0;     // (#768) densityAt calls since the start: the player-cost bench reads it
     VoxelMaterial materialAt(Vector3 local) const; // the material there: placed ground's own, else the field's
+    // #636: with the visible surface's normal (body-local), as the meshes pick it: steep faces show rock, not turf or gravel
+    VoxelMaterial materialAt(Vector3 local, Vector3 normal) const;
     // Velocity (world units/s) of the body-fixed point currently at renderPoint, from the spin.
     Vector3 surfaceVelocity(Vector3 renderPoint) const;
     // Body-local direction <-> world direction (rotation only).
@@ -154,6 +165,7 @@ public:
 
     static Planetoid* find(uint64_t id); // nullptr once destroyed
     static Planetoid* findNet(uint64_t netId); // by NetId (#317); nullptr if no such body is loaded
+    static std::vector<Planetoid*> All();      // every body loaded (#776: the join sync walks them)
 };
 
 #endif

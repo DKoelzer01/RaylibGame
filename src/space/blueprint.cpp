@@ -1,4 +1,5 @@
 #include "blueprint.h"
+#include "playerinput.h"
 #include "buildtool.h"
 #include "gameui.h"
 #include "inventory.h"
@@ -122,8 +123,8 @@ int Blueprint_Place(Planetoid& body, Plot& plot, const Blueprint& bp, Int3 o, bo
 
 bool Blueprint_Keys(Planetoid* body, Plot* lookingAt) {
     (void)body;
-    if (IsKeyPressed(KEY_N)) { Blueprint_Cycle(); return true; }
-    if (IsKeyPressed(KEY_B) && lookingAt) {
+    if (PlayerInput_BindingPressed(Act::BlueprintCycle)) { Blueprint_Cycle(); return true; }
+    if (PlayerInput_BindingPressed(Act::BlueprintSave) && lookingAt) {
         const std::time_t now = std::time(nullptr);
         char stamp[32];
         std::strftime(stamp, sizeof stamp, "%Y%m%d_%H%M%S", std::localtime(&now));

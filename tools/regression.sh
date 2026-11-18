@@ -1,6 +1,6 @@
 #!/bin/bash
 # Regression: the scripted --test-* gates and benchmarks, run one after another.
-#   tools/regression.sh [planet|eroded|space|all] (default: all; erosion is the default terrain since #362: "eroded" keeps its own gates)
+#   tools/regression.sh [planet|eroded|space|multiplayer|all] (default: all; erosion is the default terrain since #362: "eroded" keeps its own gates)
 # Environment:
 #   EXE=path      the game to run (default build/check/bin/game.exe)
 #   SNAPSHOT=1    copy the exe and resources/ to a temp folder first, so you can keep editing and
@@ -98,13 +98,18 @@ planet() {
     run --seed 42 --bench 3 --test-decor
     run --seed 42 --bench 3 --test-weather
     run --seed 42 --bench 3 --test-flow
+    RAYLIBGAME_FLUID_CELL=1 run --seed 42 --bench 3 --test-flow # the 1 m fluid grid (opt-in since #714) still runs
     RAYLIBGAME_EROSION=1 run --seed 42 --bench 5 --test-flow-sea # the erosion bake's rivers (#190; the noise terrain's river mouths stand over the sea)
     RAYLIBGAME_EROSION=1 run --seed 42 --bench 3 --test-dam # #361/#432: a low dam backs a released river reach up and it spills over (eroded valleys; up to 7 min)
+    run --seed 42 --day --bench 3 --test-dam-divert # #656: a dam that holds a river dries it 200 m downstream, a second dam upstream cuts the first reach's inflow, the state survives save/load, dug out the river comes back: flow past 0.5 within 60 s and still rising at 90 s (~3 min; --dam-divert-full waits for the full return)
     run --seed 42 --bench 3 --test-pond
     run --seed 42 --bench 3 --test-part-wall # #391: a wall of build blocks holds water; taken down, the water runs on
+    run --sandbox --seed 42 --day --bench 3 --test-leak # #680/#691: a 1 m hole in a dug wall drains like an orifice, then a weir; no water on the grass
+    run --sandbox --seed 42 --day --bench 3 --test-leak-parts # #692/#694: the same through a dam of placed blocks (at 1 m cells, opt-in, a one-block hole off the fluid grid stays shut)
+    run --sandbox --seed 42 --day --bench 3 --test-dam-break # #680: Ritter front, depth and discharge (reported; the pass is the model work on #680)
     run --seed 42 --bench 3 --test-flow-meter # #392: the flow readout reads a 1 m^3/s stream
     run --seed 42 --bench 3 --test-pressure # #393: hydrostatic pressure in a filled shaft and a pond
-    run --seed 42 --bench 3 --test-bucket
+    run --seed 42 --day --bench 3 --test-bucket
     run --seed 42 --bench 3 --test-pump
     run --seed 42 --bench 5 --test-pump-hand
     run --seed 42 --bench 3 --test-pump-boiler # a full boiler takes no world water (#229)
@@ -123,6 +128,7 @@ eroded() {
     run --seed 42 --bench 3 --test-rivers
     run --seed 42 --bench 5 --test-flow-sea
     run --seed 42 --bench 3 --test-build 2000
+    run --seed 42 --bench 3 --test-placement
     run --seed 42 --bench 20 --bench-walk
     run --seed 42 --bench 20 --bench-fly 60
     unset RAYLIBGAME_EROSION
@@ -139,12 +145,56 @@ space() {
     run $A --bench 5 --test-ride
 }
 
+# Multiplayer (#347): a host and in-process clients over loopback. The network tests need a GNS build (EXE_GNS, default
+# build/gns/bin/game.exe; configure with -DENABLE_GNS=ON after tools/build_gns.sh), else they SKIP on the plain exe.
+multiplayer() {
+    local gexe="${EXE_GNS:-$here/build/gns/bin/game.exe}"; [ -x "$gexe" ] || gexe="$exe"
+    local sv; sv="$(mktemp -d)/mp.sav"
+    local keep="$exe"; exe="$gexe"
+    run --host "$sv" --seed 42 --bench 3 --port 27941 --test-host
+    run --host "$sv" --bench 3 --port 27941 --test-net-move
+    run --host "$sv" --bench 3 --port 27941 --test-net-dig
+    run --host "$sv" --bench 3 --port 27941 --test-net-build
+    run --host "$sv" --bench 3 --port 27941 --test-net-sync # (#776) joining a world with many edits: indexed, hashed, rate-bounded
+    RAYLIBGAME_NET_LAG_MS=50 RAYLIBGAME_NET_JITTER_MS=10 RAYLIBGAME_NET_LOSS=2 RAYLIBGAME_NET_SEED=1 run --host "$sv" --bench 3 --port 27941 --test-mp-bots 6
+    exe="$keep"
+    run --seed 42 --bench 3 --test-time-follow
+    run --test-net-interest
+    run --test-net-guard # (#349) per-client message limits: a normal client never dropped; floods and garbage kicked
+    exe="$gexe"; RAYLIBGAME_MAX_PER_ADDRESS=6 run --host "$sv" --sandbox --bench 3 --port 27941 --test-net-abuse; exe="$keep" # (#349, #780, #781; names, chat, the per-address cap) needs GNS (else SKIP)
+    run --test-server-admin
+    run --seed 42 --bench 3 --test-player-cost 8 # (#768) player cost per update, and determinism: a warm vs a poisoned collision cache stay bit-identical
+    # The dedicated server (#326): config file, console commands, log file, "stop" with a final save (sandbox world).
+    echo "=== tools/test_server.sh" | tee -a "$log"
+    EXE="$gexe" bash "$here/tools/test_server.sh" 2>&1 | grep "=== test_server" | sed 's/=== test_server: \([A-Z]*\).*/bench: server (#326): config, console, log, stop -> \1/' | tee -a "$log"
+    # Admin end to end (#326 part 2, #345): chat, motd, an op's ban from chat kicks, refusals, the whitelist, the console's kick.
+    if [ "$gexe" != "$exe" ]; then
+        echo "=== tools/test_server_admin.sh" | tee -a "$log"
+        EXE="$gexe" bash "$here/tools/test_server_admin.sh" 2>&1 | grep "=== test_server_admin" | sed 's/=== test_server_admin: \([A-Z]*\).*/bench: server admin end to end (#345): -> \1/' | tee -a "$log"
+    fi
+    # --join end to end: a host and two clients as separate processes (#341 core); only with a GNS build.
+    if [ "$gexe" != "$exe" ]; then
+        echo "=== tools/test_join.sh" | tee -a "$log"
+        EXE="$gexe" bash "$here/tools/test_join.sh" 2>&1 | grep "^bench: join (" | tee -a "$log"
+        echo "=== tools/test_join.sh on a non-default world (#757)" | tee -a "$log"
+        WORLDGEN="ocean 0.4 mountains 1.6 cliffs 0 karst 0 erosion 0" PORT=27952 EXE="$gexe" bash "$here/tools/test_join.sh" 2>&1 | grep "^bench: join (" | tee -a "$log"
+        # Join-in-progress sync (#776): a client joins a host world with 3000 edits (fingerprints must match), then rejoins from its cache (fetching nothing).
+        echo "=== tools/test_join_sync.sh" | tee -a "$log"
+        EXE="$gexe" bash "$here/tools/test_join_sync.sh" 2>&1 | grep "=== test_join_sync" | sed 's/=== test_join_sync: \([A-Z]*\).*/bench: join sync (#776): fresh join, then a rejoin from the cache -> \1/' | tee -a "$log"
+        echo "=== tools/test_animals_net.sh (#334)" | tee -a "$log"
+        EXE="$gexe" bash "$here/tools/test_animals_net.sh" 2>&1 | grep "=== test_animals_net" | sed 's/=== test_animals_net: \([A-Z]*\).*/bench: animals on the server (#334): same herd, a hit applied for both -> \1/' | tee -a "$log"
+        echo "=== tools/test_animals_bite.sh (#334)" | tee -a "$log"
+        EXE="$gexe" bash "$here/tools/test_animals_bite.sh" 2>&1 | grep "=== test_animals_bite" | sed 's/=== test_animals_bite: \([A-Z]*\).*/bench: an animal bites a remote player through the server (#334): -> \1/' | tee -a "$log"
+    fi
+}
+
 case "$set_name" in
+    multiplayer) multiplayer ;;
     planet) planet; eroded ;;
     eroded) eroded ;;
     space) space ;;
-    all) planet; eroded; space ;;
-    *) echo "usage: $0 [planet|eroded|space|all]"; exit 2 ;;
+    all) planet; eroded; space; multiplayer ;;
+    *) echo "usage: $0 [planet|eroded|space|multiplayer|all]"; exit 2 ;;
 esac
 pass=$(grep -c "PASS" "$log"); fail=$(grep -c "FAIL" "$log")
 echo "=== regression ($set_name): $pass PASS, $fail FAIL"
