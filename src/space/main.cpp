@@ -5840,7 +5840,7 @@ int main(int argc, char** argv)
                                 // The expected depth after kDrain: the pool (its area as dug: the water poured over its depth) through the hole as an orifice while
                                 // it is under water (0.6 sqrt(2 g h) x 1 m^2, h over its centre), then a weir over its lip (1.7 x 1 m x h^1.5) - it slows as it
                                 // drains: some water over the lip is left at the end, not none.
-                                const float poolArea = h0 > 0.1f ? lkPoured / h0 : 80.0f; // ~80 m^2; the lattice rounds the dug box (#691)
+                                const float poolArea = h0 > 0.1f ? (lkPoured - Fluid::PourDropped()) / h0 : 80.0f; // ~80 m^2 (#691); what was placed (#766)
                                 float d = h0;
                                 for (int k = 0; k < (int)(kDrain / 0.01f); ++k) {
                                     const float qd = d >= lip + 1.0f ? 0.6f * sqrtf(2.0f * g * (d - (lip + 0.5f))) : d > lip ? 1.7f * powf(d - lip, 1.5f) : 0.0f;
@@ -5914,8 +5914,8 @@ int main(int argc, char** argv)
                             const float beyond = Fluid::WaterAt(*p, pt(10.0f, 0.0f, dbFloor + 0.5f), 4.0f);
                             std::vector<TerrainEdit> cut = { box(-0.2f, 2.2f) }; // the wall goes
                             ApplyTerrainEdits(*p, cut.data(), cut.size());
-                            printf("bench: dam-break: reservoir %.2f m deep over its floor at %.2f m (%.0f m^3 poured, %.0f in the simulation, %.1f m^3 already past the wall); wall removed\n",
-                                   h0, dbFloor, dbPoured, Fluid::GetStats().volume, beyond);
+                            printf("bench: dam-break: reservoir %.2f m deep over its floor at %.2f m (%.0f m^3 poured, %.1f found no room (#766), %.0f in the simulation, %.1f m^3 already past the wall); wall removed\n",
+                                   h0, dbFloor, dbPoured, Fluid::PourDropped(), Fluid::GetStats().volume, beyond);
                             printf("bench: dam-break: depth along the reservoir (x = -18 -14 -10 -6 -2 m):");
                             for (float x : { -18.0f, -14.0f, -10.0f, -6.0f, -2.0f }) { const float d = Fluid::SurfaceAbove(*p, pt(x, 0.0f, dbFloor + 0.55f), 4.0f); printf(" %.2f", d > 0.0f ? d + 0.55f : 0.0f); }
                             printf("\n");
