@@ -153,6 +153,36 @@ void Clear() {
     lru.clear();
     bytes = 0;
 }
+void Invalidate(const PlanetField& pf, Vector3 dir, float radius) {
+    // The circle's centre and 8 points on its rim each give a face and a (u, v) box; every tile of every level touching a
+    // box goes (a face's uv is stretched up to ~2x at its corners, hence the margin).
+    const float ang = 1.5f * radius / pf.radius;
+    const Vector3 t1 = Vector3Normalize(Vector3CrossProduct(dir, fabsf(dir.y) < 0.9f ? Vector3{ 0, 1, 0 } : Vector3{ 1, 0, 0 }));
+    const Vector3 t2 = Vector3CrossProduct(dir, t1);
+    std::lock_guard<std::mutex> lock(mx);
+    auto cit = cache.find(&pf);
+    if (cit == cache.end()) return;
+    auto& m = cit->second;
+    for (int s = 0; s < 9; ++s) {
+        const float a = s * (2.0f * PI / 8.0f);
+        const Vector3 d = s == 0 ? dir : Vector3Normalize(Vector3Add(dir, Vector3Add(Vector3Scale(t1, ang * cosf(a)), Vector3Scale(t2, ang * sinf(a)))));
+        int face; float u, v;
+        FaceOf(d, face, u, v);
+        const float du = 2.0f * ang; // in uv (a face is +-1 over +-45 degrees, stretched at its corners)
+        for (int level = 0; level <= kMaxLevel; ++level) {
+            const int n = std::max(kTile, (int)ceilf(2.0f * pf.radius / (0.5f * (float)(1 << level))));
+            auto toTile = [&](float x) { return std::clamp((int)floorf((x + 1.0f) * 0.5f * n), 0, n - 1) / kTile; };
+            for (int ti = toTile(u - du); ti <= toTile(u + du); ++ti)
+                for (int tj = toTile(v - du); tj <= toTile(v + du); ++tj) {
+                    auto e = m.find(KeyOf(level, face, ti, tj));
+                    if (e == m.end()) continue;
+                    bytes -= BytesOf(*e->second.tile);
+                    lru.erase(e->second.lru);
+                    m.erase(e);
+                }
+        }
+    }
+}
 long long CacheBytes() { return bytes.load(); }
 long long TilesBuilt() { return built.load(); }
 
