@@ -2,11 +2,14 @@
 #define BUILDTOOL_H
 
 #include <string>
+#include <vector>
 
 class Scene;
 class Planetoid;
 class Plot;
 struct Part;
+struct Int3;
+struct Vector3;
 
 // Placing parts on build plots (milestone 3). G toggles build mode; the wheel picks the part,
 // R turns it about the plot's up axis and V about its east axis; RMB places (on a part face, or on
@@ -31,6 +34,9 @@ void BuildTool_DrawHUD();
 float BuildTool_BreakProgress();   // 0..1 while LMB is held on a part (the HUD bar under the crosshair)
 bool BuildTool_AimingPart();       // the crosshair is on a built part in reach (LMB breaks it)
 int BuildTool_AimOrient();        // the aimed placement's orientation (0..23), -1 without an aim (#196 test)
+// The aimed placement for tests (#550/#551): the plot it goes into (null: a new plot at newOrigin, body-local) and its
+// origin cell.
+const Plot* BuildTool_AimPlacement(Vector3* newOrigin, Int3* origin);
 // Place a part on a plot (charging its cost unless creative or charge is false) and lay its
 // foundation against the ground. Used by the tool and by scripted tests.
 bool BuildTool_Place(Planetoid& body, Plot& plot, const Part& part, bool charge);
@@ -39,6 +45,8 @@ void BuildTool_LayFoundation(Planetoid& body, Plot& plot, const Part& part);
 // Machines: looking at one shows its state (factory snapshot); I inserts items, O takes outputs.
 void Machine_Update(Scene& world, const PlayerInput& in);
 void Machine_DrawHUD();
+// A ", "-separated item list wrapped into lines of at most maxW px, capped at maxLines ("+N more", #567).
+std::vector<std::string> WrapItemList(const char* prefix, const std::string& list, int maxW, int size, int maxLines);
 bool IsMachineItem(const std::string& id); // an item that builds a machine part (chests don't take these)
 
 #endif
