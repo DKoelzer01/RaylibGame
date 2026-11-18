@@ -5929,16 +5929,10 @@ int main(int argc, char** argv)
                         if (EnvFlag("DBCAM") && dbPhase == 3) { world.camera.position = p->toWorld(pt(7.0f, -7.0f, 6.0f)); world.camera.target = p->toWorld(pt(7.0f, 0.0f, -2.0f)); } // #680 diagnosis: the channel below the dam
                         world.camera.up = p->dirToWorld(home);
                         player.flyMode = true; player.position = world.renderOrigin + world.camera.position;
-<<<<<<< HEAD
-                        if (dbPhase == 1 && t > 1.0 && WorldIdle()) {
+                        if (dbPhase == 1 && t > 1.0 && (dbPoured > 0.0f || WorldIdle())) { // idle to start; then on (#747: a slow CPU step kept the world busy)
                             // Fill the reservoir to 2 m: 160 m^3 at 2.5 m^3/s, 1 m^3 at a time moving over the floor (#691: a pour every
                             // frame - 60 m^3/s - piled mounds over the rim faster than water spreads, and they spilled onto the grass;
                             // #680: at 5 m^3/s the column model's pour points mounded and ~30 m^3 found no room, #766).
-=======
-                        if (dbPhase == 1 && t > 1.0 && (dbPoured > 0.0f || WorldIdle())) { // idle to start; then on (#747: a slow CPU step kept the world busy)
-                            // Fill the reservoir to 2 m: 160 m^3 at 5 m^3/s, 1 m^3 at a time moving over the floor (#691: a pour every
-                            // frame - 60 m^3/s - piled mounds over the rim faster than water spreads, and they spilled onto the grass).
->>>>>>> m172-cpu-front
                             static int k = 0;
                             static double nextPour = 0.0, fillPrint = 0.0;
                             if (t - fillPrint >= 1.0) { fillPrint = t; printf("bench: dam-break t=%.0f s: filling, %.0f m^3 poured\n", t, dbPoured); }
