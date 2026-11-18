@@ -23,6 +23,7 @@
 
 #include <raylib.h>
 #include <algorithm>
+#include <functional>
 #include <cstdio>
 #include <set>
 #include <string>
@@ -49,6 +50,11 @@ namespace {
         MsgLoadout loadout;          // what the player holds and wears (#750), kept across a reconnect
     };
     std::vector<Session> sessions;
+    // #326 / #345: the dedicated server's hooks (main.cpp sets them in --server mode).
+    std::string motd;
+    std::function<bool(const std::string& name, const std::string& address, std::string& why)> joinCheck;
+    std::function<void(uint32_t session, const std::string& name, const std::string& text)> chatHandler;
+    std::function<void(const char* what, uint32_t session, const std::string& detail)> eventHook;
     uint32_t nextSession = 1;
     constexpr double kTimeoutSeconds = 15.0;           // nothing heard (pings come every second): gone
 
@@ -166,6 +172,10 @@ namespace {
         for (Session& s : sessions) if (s.id == it->second.session && s.conn == conn) { s.online = false; s.conn = 0; }
         if (why != NetBye::Quit) SendMsg(conn, MsgBye{ why });
         printf("host: connection %u (session %u) %s\n", conn, it->second.session, NetByeText(why));
+        if (eventHook && it->second.joined) { // (#345 audit)
+            std::string name; for (const Session& s : sessions) if (s.id == it->second.session) name = s.name;
+            eventHook("leave", it->second.session, name + " (" + NetByeText(why) + ")");
+        }
         const bool wasJoined = it->second.joined;
         peers.erase(it);
         Net_Close(conn);
@@ -182,6 +192,14 @@ namespace {
         if (h.protocol != kNetProtocol) { Refuse(conn, NetReject::Protocol, TextFormat("server %u, client %u", kNetProtocol, h.protocol)); return; }
         if (!h.build.empty() && h.build != BuildCommit()) { Refuse(conn, NetReject::Build, "server " + BuildCommit() + ", client " + h.build); return; }
         if (!password.empty() && h.password != password) { Refuse(conn, NetReject::Password, ""); return; }
+        if (joinCheck) { // (#345) bans and the whitelist
+            std::string why;
+            if (!joinCheck(h.name, Net_RemoteAddress(conn), why)) {
+                Refuse(conn, NetReject::Banned, why);
+                if (eventHook) eventHook("refused", 0, h.name + " (" + why + ")");
+                return;
+            }
+        }
         Session* s = nullptr;
         for (Session& x : sessions) if (x.name == h.name) s = &x;
         if (s && s->online) { Refuse(conn, NetReject::NameTaken, h.name); return; }
@@ -198,6 +216,7 @@ namespace {
         w.serverTick = (uint32_t)SimTick(); w.worldTime = WorldTime(); // #339: the client takes our clock
         w.worldgen = WorldGenParams_ToText(WorldGenParams_ForSave(WorldSavePath())); w.sandbox = gSandboxWorld; // #757: generate it as we did
         w.settings.difficulty = (uint8_t)std::clamp(worldDifficulty, 0, 2); w.settings.maxPlayers = (uint8_t)maxPlayers;
+        w.motd = motd; // (#326)
         SendMsg(conn, w);
         const EventsShower sh = Events_GetShower();
         SendMsg(conn, MsgShower{ sh.start, sh.end, sh.id });
@@ -207,6 +226,7 @@ namespace {
         for (const Session& x : sessions) if (x.online && x.id != s->id && x.loadout.session) SendMsg(conn, x.loadout);
         ++joins;
         printf("host: %s joined as session %u%s (connection %u, %d joins so far)\n", h.name.c_str(), s->id, reconnected ? " (reconnected)" : "", conn, joins);
+        if (eventHook) eventHook("join", s->id, h.name + " from " + Net_RemoteAddress(conn)); // (#345 audit)
     }
 
     // ---- Terrain edits (#329) ----
@@ -315,6 +335,15 @@ namespace {
                 if (in.steps[0].tick > rm.lastQueued) { rm.action = in.action; rm.actionPhase = in.actionPhase; } // (not an old packet)
                 for (auto s = in.steps.rbegin(); s != in.steps.rend(); ++s) // oldest first; the ones already here are repeats
                     if (s->tick > rm.lastQueued) { rm.inputs.push_back(*s); rm.lastQueued = s->tick; }
+                return;
+            }
+            case NetMsg::Chat: { // (#326) a player's line: the server's handler (commands, logging), else to everyone
+                MsgChat c;
+                if (!it->second.joined || !NetRead(r, c) || c.text.empty()) return;
+                c.from = it->second.session; // (a client speaks only for itself)
+                std::string name; for (const Session& s : sessions) if (s.id == c.from) name = s.name;
+                if (chatHandler) chatHandler(c.from, name, c.text);
+                else SendToJoined(c);
                 return;
             }
             case NetMsg::Loadout: {
@@ -429,3 +458,28 @@ double Host_InventoryAmount(uint32_t session, const std::string& item) {
     auto it = remotes.find(session);
     return it == remotes.end() ? 0.0 : it->second.inventory.amount(item);
 }
+
+// ---- The dedicated server's console and admin (#326, #345) ----
+std::vector<HostPlayer> Host_ListPlayers() {
+    std::vector<HostPlayer> out;
+    for (const Session& s : sessions) out.push_back({ s.id, s.name, s.online, s.online ? Net_RemoteAddress(s.conn) : std::string() });
+    return out;
+}
+bool Host_Kick(const std::string& name, const std::string& reason) {
+    for (const Session& s : sessions)
+        if (s.online && s.conn && s.name == name) {
+            if (!reason.empty()) SendMsg(s.conn, MsgChat{ 0, "You were kicked: " + reason });
+            Drop(s.conn, NetBye::Kicked);
+            return true;
+        }
+    return false;
+}
+void Host_Say(const std::string& text, uint32_t fromSession, uint32_t toSession) {
+    const MsgChat c{ fromSession, text };
+    if (toSession == 0) { SendToJoined(c); return; }
+    for (const Session& s : sessions) if (s.id == toSession && s.online && s.conn) SendMsg(s.conn, c);
+}
+void Host_SetMotd(const std::string& text) { motd = text; }
+void Host_SetJoinCheck(std::function<bool(const std::string&, const std::string&, std::string&)> check) { joinCheck = std::move(check); }
+void Host_SetChatHandler(std::function<void(uint32_t, const std::string&, const std::string&)> handler) { chatHandler = std::move(handler); }
+void Host_SetEventHook(std::function<void(const char*, uint32_t, const std::string&)> hook) { eventHook = std::move(hook); }

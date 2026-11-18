@@ -43,6 +43,7 @@ struct NetClient {
     double rttMs = -1.0;                 // the last ping's round trip
     uint32_t serverTick = 0;             // from the last pong
     int pongs = 0;
+    std::deque<MsgChat> chat;            // (#326) chat lines heard, oldest first (the game shows and pops them; at most 64 kept)
     double clockError = 0.0, worstClockError = 0.0; // #339: the server's world time (pong + half the round trip) minus ours, s
     double rttFloor = -1.0;                      // #339: the best recent round trip (ms): pongs far above it (a resend, a stall) are skipped
     double started = 0.0, lastHeard = 0.0, lastPing = -1.0;
@@ -96,6 +97,7 @@ constexpr double kClientConnectTimeout = 10.0, kClientSilentTimeout = 10.0;
 bool NetClient_Connect(NetClient& c, const char* address, const std::string& name, const std::string& password = "");
 void NetClient_Update(NetClient& c);     // per frame: poll (unless a host here does), handle messages, ping, time out
 void NetClient_Disconnect(NetClient& c); // a clean Bye(quit)
+void NetClient_SendChat(NetClient& c, const std::string& text); // (#326) a chat line; "/command" lines go to ops' commands on the server
 const char* NetClient_StateName(NetClient::State s);
 
 #endif

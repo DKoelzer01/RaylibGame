@@ -160,6 +160,11 @@ multiplayer() {
     # The dedicated server (#326): config file, console commands, log file, "stop" with a final save (sandbox world).
     echo "=== tools/test_server.sh" | tee -a "$log"
     EXE="$gexe" bash "$here/tools/test_server.sh" 2>&1 | grep "=== test_server" | sed 's/=== test_server: \([A-Z]*\).*/bench: server (#326): config, console, log, stop -> \1/' | tee -a "$log"
+    # Admin end to end (#326 part 2, #345): chat, motd, an op's ban from chat kicks, refusals, the whitelist, the console's kick.
+    if [ "$gexe" != "$exe" ]; then
+        echo "=== tools/test_server_admin.sh" | tee -a "$log"
+        EXE="$gexe" bash "$here/tools/test_server_admin.sh" 2>&1 | grep "=== test_server_admin" | sed 's/=== test_server_admin: \([A-Z]*\).*/bench: server admin end to end (#345): -> \1/' | tee -a "$log"
+    fi
     # --join end to end: a host and two clients as separate processes (#341 core); only with a GNS build.
     if [ "$gexe" != "$exe" ]; then
         echo "=== tools/test_join.sh" | tee -a "$log"

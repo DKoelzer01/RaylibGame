@@ -108,6 +108,14 @@ static bool gJoinSynced = false;
 #include "netinterest.h"
 #include "serverconsole.h"
 #include "serveradmin.h"
+
+// (#345) after an admin change: whoever may no longer join (banned by name or address, or off the whitelist) is kicked.
+static void Server_KickRefused() {
+    for (const HostPlayer& p : Host_ListPlayers()) {
+        std::string why;
+        if (p.online && !Admin_CheckJoin(p.name, p.address, why)) { Host_Kick(p.name, why); printf("server: kicked %s (%s)\n", p.name.c_str(), why.c_str()); }
+    }
+}
 #include "worldgenparams.h"
 
 #if defined(PLATFORM_DESKTOP)
@@ -1702,6 +1710,29 @@ int main(int argc, char** argv)
         if (serverMode) { // (#345) the admin lists live next to the save: <save dir>/admin.txt, audit.log
             const std::filesystem::path saveDir = std::filesystem::path(hostSave).parent_path();
             Admin_Load(saveDir.empty() ? std::string(".") : saveDir.string());
+            // (#326, #345) the host's hooks: the motd, bans and the whitelist at join, the audit log, and players' chat - a line
+            // starting with '/' is a command (ops: the admin commands, kick, say), anything else goes to everyone.
+            Host_SetMotd(serverCfg.motd);
+            Host_SetJoinCheck([](const std::string& name, const std::string& address, std::string& why) { return Admin_CheckJoin(name, address, why); });
+            Host_SetEventHook([](const char* what, uint32_t session, const std::string& detail) {
+                Admin_Audit(std::string(what) + " " + detail + (session ? TextFormat(" (session %u)", session) : ""));
+                if (!strcmp(what, "refused")) printf("server: refused %s\n", detail.c_str());
+            });
+            Host_SetChatHandler([](uint32_t session, const std::string& name, const std::string& text) {
+                if (text[0] != '/') { printf("chat: %s: %s\n", name.c_str(), text.c_str()); Host_Say(text, session, 0); return; }
+                const std::string line = text.substr(1);
+                std::string reply;
+                if (Admin_Command(line, name, reply)) { printf("server: %s (by %s)\n", reply.c_str(), name.c_str()); Server_KickRefused(); }
+                else if (Admin_RoleOf(name) == AdminRole::Player) reply = "only ops can use commands";
+                else {
+                    std::istringstream in(line); std::string cmd, who, rest; in >> cmd >> who; std::getline(in, rest); if (!rest.empty() && rest[0] == ' ') rest.erase(0, 1);
+                    if (cmd == "kick" && !who.empty()) { reply = Host_Kick(who, rest) ? who + " was kicked" : who + " is not online"; Admin_Audit(name + ": " + line + " -> " + reply); }
+                    else if (cmd == "say" && !who.empty()) { Host_Say("[" + name + "] " + line.substr(4)); reply = ""; }
+                    else if (cmd == "list") { reply = "online:"; for (const HostPlayer& p : Host_ListPlayers()) if (p.online) reply += " " + p.name; }
+                    else reply = "unknown command (ops: op, deop, ops, ban, unban, banip, unbanip, bans, whitelist, kick, say, list)";
+                }
+                if (!reply.empty()) Host_Say(reply, 0, session);
+            });
         }
         if (serverMode) { ServerConsole_Start(); ServerShutdown_Install(); printf("server: ready. Console commands: help, status, list, save, say <text>, kick <name> [reason], stop\n"); }
     }
@@ -8981,16 +9012,25 @@ int main(int argc, char** argv)
                     std::istringstream in(line); std::string cmd; in >> cmd;
                     std::string rest; std::getline(in, rest); if (!rest.empty() && rest[0] == ' ') rest.erase(0, 1);
                     std::string adminReply;
-                    if (Admin_Command(line, "console", adminReply)) printf("server: %s\n", adminReply.c_str()); // (#345) op, ban, whitelist ...
+                    if (Admin_Command(line, "console", adminReply)) { printf("server: %s\n", adminReply.c_str()); Server_KickRefused(); } // (#345) op, ban, whitelist ... (a ban kicks)
                     else if (cmd == "help") printf("server: commands: help, status, list, save, say <text>, kick <name> [reason], stop; "
                                                    "admin (#345): owner NAME, op NAME, deop NAME, ops, ban NAME [reason], unban NAME, banip IP [reason], unbanip IP, bans, "
                                                    "whitelist on|off|add NAME|remove NAME|list\n");
                     else if (cmd == "status") printf("server: %d player(s) online of %d, %d joins; world time %.0f s; %d FPS; save %s; %d autosaves\n", Host_OnlinePlayers(),
                                                      serverCfg.maxPlayers, Host_Joins(), WorldTime(), GetFPS(), hostSave.c_str(), Host_Autosaves());
-                    else if (cmd == "list") printf("server: %d player(s) online\n", Host_OnlinePlayers());
+                    else if (cmd == "list") {
+                        int n = 0;
+                        for (const HostPlayer& p : Host_ListPlayers()) if (p.online) { ++n; printf("server:   %s (session %u, %s, %s)\n", p.name.c_str(), p.session, Admin_RoleName(Admin_RoleOf(p.name)), p.address.c_str()); }
+                        printf("server: %d player(s) online\n", n);
+                    }
                     else if (cmd == "save") { const bool ok = SaveWorld(world); printf("server: saved to %s %s\n", WorldSavePath(), ok ? "done" : "FAILED"); }
-                    else if (cmd == "say") printf("server: [server] %s\n", rest.c_str());
-                    else if (cmd == "kick") printf("server: kick is not wired yet (#326 follow-up)\n");
+                    else if (cmd == "say") { printf("server: [server] %s\n", rest.c_str()); Host_Say("[server] " + rest); }
+                    else if (cmd == "kick") {
+                        std::istringstream kin(rest); std::string who, why; kin >> who; std::getline(kin, why); if (!why.empty() && why[0] == ' ') why.erase(0, 1);
+                        const bool ok = !who.empty() && Host_Kick(who, why);
+                        printf("server: %s\n", who.empty() ? "usage: kick NAME [reason]" : ok ? (who + " was kicked").c_str() : (who + " is not online").c_str());
+                        if (ok) Admin_Audit("console: kick " + rest);
+                    }
                     else if (cmd == "stop") ServerShutdown_Request("the stop command");
                     else printf("server: unknown command '%s' (help lists them)\n", cmd.c_str());
                 }
@@ -9006,7 +9046,22 @@ int main(int argc, char** argv)
                         player.applyNetState(world, NetClient_FromMsg(gJoin.own));
                         gJoinSynced = true;
                         printf("join: the player starts at the server's state (session %u)\n", gJoin.welcome.session);
+                        if (!gJoin.welcome.motd.empty()) { GameUI_Toast(gJoin.welcome.motd.c_str()); printf("join: motd: %s\n", gJoin.welcome.motd.c_str()); } // (#326)
                     }
+                // Tests (#326): RAYLIBGAME_JOIN_CHAT="line|/command|..." - sent one a second, starting 2 s after the player synced.
+                if (gJoinSynced && gJoin.state == NetClient::State::Joined && getenv("RAYLIBGAME_JOIN_CHAT")) {
+                    static double chatT0 = GetTime(); static size_t sentLines = 0;
+                    std::vector<std::string> lines; { std::string s = getenv("RAYLIBGAME_JOIN_CHAT"), cur; for (char ch : s) { if (ch == '|') { lines.push_back(cur); cur.clear(); } else cur += ch; } if (!cur.empty()) lines.push_back(cur); }
+                    if (sentLines < lines.size() && GetTime() - chatT0 > 2.0 + sentLines) { NetClient_SendChat(gJoin, lines[sentLines]); printf("join: said \"%s\"\n", lines[sentLines].c_str()); ++sentLines; }
+                }
+                // (#326) chat: each line as a toast (a chat box comes with #342)
+                while (!gJoin.chat.empty()) {
+                    const MsgChat m = gJoin.chat.front(); gJoin.chat.pop_front();
+                    const auto who = gJoin.roster.find(m.from);
+                    const std::string line = m.from == 0 ? m.text : (who != gJoin.roster.end() ? who->second : std::string("?")) + ": " + m.text;
+                    GameUI_Toast(line.c_str());
+                    printf("chat: %s\n", line.c_str());
+                }
                 if (gJoin.state == NetClient::State::Closed || gJoin.state == NetClient::State::Rejected) {
                     printf("join: disconnected (%s)\n", gJoin.state == NetClient::State::Closed ? NetByeText(gJoin.bye) : NetRejectText(gJoin.reject.reason));
                     windowKeepAlive = false;
