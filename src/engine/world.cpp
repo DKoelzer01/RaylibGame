@@ -15,6 +15,7 @@
 #include "scenetarget.h"
 #include "waterfield.h"
 #include <chrono>
+#include <filesystem>
 
 #include <raymath.h>
 #include <rlgl.h>
@@ -2279,13 +2280,15 @@ bool Region_Install(Planetoid& p, TerrainDeltas::Key region, const uint8_t* data
 
 bool SaveWorld(Scene& world) {
     if (!DirectoryExists("saves")) MakeDirectory("saves");
-    FILE* f = fopen(SAVE_PATH, "w");
+    // Written to <save>.tmp and renamed over the save when complete (#346): a crash mid-save leaves the last save whole.
+    const std::string tmpPath = SAVE_PATH_STR + ".tmp";
+    FILE* f = fopen(tmpPath.c_str(), "w");
     if (!f) return false;
     const DVec3 camWorld = world.renderOrigin + world.camera.position;
     const DVec3 tgtWorld = world.renderOrigin + world.camera.target;
     // v4: the system definition is stored in the save, so a save reloads the system it was made in
     // even if bodies.txt has changed since.
-    fprintf(f, "RAYLIBGAME_SAVE 12\n"); // 12 (#360): ponds' water bricks saved even drained; no claimed ponds
+    fprintf(f, "RAYLIBGAME_SAVE 13\n"); // 13 (#346): the player's state in their record (<save>.players/), teams; 12 (#360): ponds' water bricks saved even drained
     fprintf(f, "seed %u\nbodies %zu\n", worldGen.lastSeed, worldGen.system.bodies.size());
     for (const BodyDef& b : worldGen.system.bodies) fprintf(f, "%s\n", FormatBodyDef(b).c_str());
     fprintf(f, "time %.6f\n", worldTime); // v5: the world clock (orbits)
@@ -2319,7 +2322,11 @@ bool SaveWorld(Scene& world) {
     }
     // v10: ring rocks a visit changed (edits, plots), whether they are voxel bodies now or not.
     for (auto& ring : gRings) ring->save(f, dir);
-    fclose(f);
+    const bool written = fflush(f) == 0 && !ferror(f);
+    if (fclose(f) != 0 || !written) { std::error_code ec; std::filesystem::remove(tmpPath, ec); LOG_ERROR("World", "%s: could not write the save\n", SAVE_PATH); return false; }
+    std::error_code ec;
+    std::filesystem::rename(tmpPath, SAVE_PATH_STR, ec); // replaces the old save in one step
+    if (ec) { LOG_ERROR("World", "%s: could not replace the save: %s\n", SAVE_PATH, ec.message().c_str()); return false; }
     LOG_INFO("World", "saved %zu strokes to %s (%d region files written)\n", totalStrokes, SAVE_PATH, regionsWritten);
     return true;
 }
@@ -2328,7 +2335,7 @@ bool LoadWorldSave(Scene& world) {
     FILE* f = fopen(SAVE_PATH, "r");
     if (!f) return false;
     int version = 0;
-    if (fscanf(f, "RAYLIBGAME_SAVE %d", &version) != 1 || version < 2 || version > 12) {
+    if (fscanf(f, "RAYLIBGAME_SAVE %d", &version) != 1 || version < 2 || version > 13) {
         fclose(f);
         LOG_ERROR("World", "%s: unsupported save version %d\n", SAVE_PATH, version);
         return false;
