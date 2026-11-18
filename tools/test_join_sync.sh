@@ -2,7 +2,8 @@
 # Join-in-progress sync end to end (#776): a --host server whose world has many edits (--host-edits, 3000 dig strokes
 # over 600 m around the start) and a --join client in a separate process, twice:
 #   1. with nothing cached: it fetches every region, installs them, and its terrain fingerprint must equal the host's;
-#   2. again under the same name: its cache (the client save's regions) matches, so it fetches nothing, and the
+#   2. again under the same name: its cache (the client save's regions) matches, so it fetches only what changed since (at
+#      most a tenth of the entries: the host's world moves on between the joins), and the
 #      fingerprint still matches.
 # Needs a GNS build: EXE (default build/gns/bin/game.exe). PORT (default 27961). EDITS (default 3000). LAG_MS (30).
 # Prints the "join: synced" lines, the host's fingerprints and "=== test_join_sync: PASS|FAIL". Capped at 15 minutes.
@@ -33,7 +34,10 @@ for run in 1 2; do
     echo "run $run: $line"
     echo "run $run: host fingerprint $host"
     [ -n "$mine" ] && [ "$mine" = "$host" ] || { echo "run $run: fingerprints differ (or missing)"; ok=0; }
-    if [ "$run" -ge 2 ] && [ "${fetched:-1}" != "0" ]; then echo "run $run: fetched $fetched entries with a cache of the same world (want 0)"; ok=0; fi
+    # A rejoin fetches only what changed since: the host's world moves on between the joins (structures build near
+    # players, animals), so a few entries may differ; with the cache it must be a small part, never everything.
+    total="$(echo "$line" | grep -o 'synced: [0-9]* of [0-9]*' | cut -d' ' -f4)"
+    if [ "$run" -ge 2 ] && [ $(( ${fetched:-999} * 10 )) -gt "${total:-0}" ]; then echo "run $run: fetched $fetched of $total entries with a cache of the same world (want at most a tenth)"; ok=0; fi
 done
 kill "$hp" 2>/dev/null; wait "$hp" 2>/dev/null
 grep -h "join sync" "$tmp/host.log" | sed 's/^/host: /'
