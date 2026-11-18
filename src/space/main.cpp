@@ -120,6 +120,7 @@ static bool gSoakOn = false;
 #include "netinterest.h"
 #include "serverconsole.h"
 #include "serveradmin.h"
+#include "netguard.h"
 
 // (#345) after an admin change: whoever may no longer join (banned by name or address, or off the whitelist) is kicked.
 static void Server_KickRefused() {
@@ -445,6 +446,7 @@ int main(int argc, char** argv)
     // --seed-survey COUNT FIRSTSEED OUTDIR [THREADS] [SUBSET] (#532): how alike different seeds' start planets are. No window.
     if (argc >= 5 && std::string(argv[1]) == "--seed-survey") return SeedSurvey_Run(argc, argv);
     if (argc >= 2 && std::string(argv[1]) == "--test-netproto") return NetProto_Test() ? 0 : 1; // the wire protocol (#320): no window, no world
+    if (argc >= 2 && std::string(argv[1]) == "--test-net-guard") return NetGuard_Test() ? 0 : 1; // the server's message limits (#349): no window, no world
     if (argc >= 2 && std::string(argv[1]) == "--test-server-admin") return Admin_Test() ? 0 : 1; // server admin lists (#345): no window, no world
     if (argc >= 2 && std::string(argv[1]) == "--test-net-interest") return Interest_Test() ? 0 : 1; // interest management (#340): no window, no world
     double benchSeconds = 0.0;
@@ -515,6 +517,7 @@ int main(int argc, char** argv)
     bool benchHost = false;        // --test-host (#311): with --host, a loopback client joins
     bool benchTimeFollow = false;  // --test-time-follow (#339): the world clock follows a server time (slew, snap)
     int benchPlayerCost = 0;       // --test-player-cost N (#768): N players stepped as a server steps them; cost per update
+    bool benchNetAbuse = false;    // --test-net-abuse (#349, with --host): a flooder, a would-be flyer and a reconnect, beside a normal player
     bool benchNetMove = false;     // --test-net-move (#327): two clients, prediction and interpolation over loopback
     bool benchNetDig = false;      // --test-net-dig (#329): a client's digs and places, validated and replicated
     bool benchNetBuild = false;    // --test-net-build (#330): a client's parts placed and broken, validated and replicated
@@ -766,6 +769,7 @@ int main(int argc, char** argv)
         if (std::string(argv[i]) == "--test-host") benchHost = true;
         if (std::string(argv[i]) == "--test-time-follow") benchTimeFollow = true;
         if (std::string(argv[i]) == "--test-player-cost" && i + 1 < argc) benchPlayerCost = std::max(1, atoi(argv[i + 1]));
+        if (std::string(argv[i]) == "--test-net-abuse") benchNetAbuse = true;
         if (std::string(argv[i]) == "--test-net-move") benchNetMove = true;
         if (std::string(argv[i]) == "--test-net-dig") benchNetDig = true;
         if (std::string(argv[i]) == "--test-net-build") benchNetBuild = true;
@@ -8629,7 +8633,7 @@ int main(int argc, char** argv)
                         }
                         benchWalkSeconds = 0.0;
                     }
-                } else if ((WorldIdle() && benchDigStrokes == 0 && !benchPaint && !benchSaveLoad && benchWalkSeconds <= 0.0 && benchMineStrokes == 0 && minePhase != 2 && benchFlySeconds <= 0.0 && !benchSuffocate && benchOrbitSeconds <= 0.0 && !benchRide && !benchPark && !benchGravity && !benchPrecision && !benchMantle && !benchAirJump && !benchMoon && !benchHole && !benchWall && !benchDoorway && !benchLedge && !benchTor && !benchMachines && !benchFall && !benchHover && !benchNetIds && !benchNet && !benchTwoPlayers && !benchFingerprint && !benchInterest && !benchTeleClose && !benchMenus && !benchWater && !benchFlyFollow && !benchHotbar && !benchInventory && !benchMap && !benchViewmodel && !benchQuests && !benchHunger && !benchFarm && !benchAnimals && !benchThreats && !benchAnimalPath && !benchDam && !benchFlowMeter && !benchPartWall && !benchPressure && benchShotTabs == 0 && !benchForest && !benchFlow && !benchPond && !benchBucket && !benchWaterSpeed && benchFluidLoad <= 0.0f && !benchFlowShade && !benchPump && !benchTerrain && !benchWind && !benchCampfire && !benchCaveMouth && !benchMountain && !benchShelter && !benchRoom && !benchFacing && !benchDungeon && !benchPosture && !benchPause && !benchBite && !benchPlacement && !benchShotDig && !benchShadow && !benchParticles && !benchBiomes && !benchOil && !benchSpring && !benchShotAnimals && !benchShotAvatar && !benchShotMachines && benchShotBiomes < 0 && !benchFarForest && !benchRecipes && !benchWeather && !benchDecor && !benchMaterials && !benchDamage && !benchCrafting && !benchSuit && !benchTools && !benchRivers && !benchRing && !benchRocket && !benchStation && !benchBlueprint && !benchSmallBody && !benchTrees && !benchChop && benchPersist == 0 && benchBuild == 0 && benchFactory == 0 && !benchCombat && !benchHost && !benchJoin && !benchTimeFollow && benchPlayerCost == 0 && !benchNetMove && !benchNetDig && !benchNetBuild && benchMpBots == 0 && !benchShower && !benchProgression && (benchUnfocus <= 0.0f || unfocusPhase >= 6)) || GetTime() > 600.0) {
+                } else if ((WorldIdle() && benchDigStrokes == 0 && !benchPaint && !benchSaveLoad && benchWalkSeconds <= 0.0 && benchMineStrokes == 0 && minePhase != 2 && benchFlySeconds <= 0.0 && !benchSuffocate && benchOrbitSeconds <= 0.0 && !benchRide && !benchPark && !benchGravity && !benchPrecision && !benchMantle && !benchAirJump && !benchMoon && !benchHole && !benchWall && !benchDoorway && !benchLedge && !benchTor && !benchMachines && !benchFall && !benchHover && !benchNetIds && !benchNet && !benchTwoPlayers && !benchFingerprint && !benchInterest && !benchTeleClose && !benchMenus && !benchWater && !benchFlyFollow && !benchHotbar && !benchInventory && !benchMap && !benchViewmodel && !benchQuests && !benchHunger && !benchFarm && !benchAnimals && !benchThreats && !benchAnimalPath && !benchDam && !benchFlowMeter && !benchPartWall && !benchPressure && benchShotTabs == 0 && !benchForest && !benchFlow && !benchPond && !benchBucket && !benchWaterSpeed && benchFluidLoad <= 0.0f && !benchFlowShade && !benchPump && !benchTerrain && !benchWind && !benchCampfire && !benchCaveMouth && !benchMountain && !benchShelter && !benchRoom && !benchFacing && !benchDungeon && !benchPosture && !benchPause && !benchBite && !benchPlacement && !benchShotDig && !benchShadow && !benchParticles && !benchBiomes && !benchOil && !benchSpring && !benchShotAnimals && !benchShotAvatar && !benchShotMachines && benchShotBiomes < 0 && !benchFarForest && !benchRecipes && !benchWeather && !benchDecor && !benchMaterials && !benchDamage && !benchCrafting && !benchSuit && !benchTools && !benchRivers && !benchRing && !benchRocket && !benchStation && !benchBlueprint && !benchSmallBody && !benchTrees && !benchChop && benchPersist == 0 && benchBuild == 0 && benchFactory == 0 && !benchCombat && !benchHost && !benchJoin && !benchTimeFollow && benchPlayerCost == 0 && !benchNetAbuse && !benchNetMove && !benchNetDig && !benchNetBuild && benchMpBots == 0 && !benchShower && !benchProgression && (benchUnfocus <= 0.0f || unfocusPhase >= 6)) || GetTime() > 600.0) {
                     benchStart = GetTime();
                     printf("bench: world ready after %.2f s (%d chunks, avg build %.2f ms of which sampling %.2f ms, %d worker threads)\n",
                         GetWorldStats().lastGenerationSeconds, GetWorldStats().chunks, GetWorldStats().avgBuildMs, GetWorldStats().avgSampleMs, GetWorldStats().workerThreads);
@@ -10098,6 +10102,71 @@ int main(int argc, char** argv)
                            gJoin.clockError * 1000.0, WorldTime_Pending() * 1000.0, gJoin.pongs, gJoin.rttMs, seen.size(), wantOthers, othersMoved, ok ? "PASS" : "FAIL");
                     NetClient_Disconnect(gJoin);
                     benchJoin = false;
+                }
+            }
+        }
+        // --test-net-abuse (#349, with --host, GNS): three clients in this process. alice walks (a normal player: never dropped);
+        // mallory floods chat and sends garbage and oversized messages (dropped, then kicked as a flood, and alice unaffected);
+        // eve walks holding Fly (#781: her server-side player never enters fly mode); then alice leaves and comes back (#780:
+        // her reconnected player walks again - its input ticks start over).
+        if (benchNetAbuse && gameState == 1 && !loading && WorldIdle()) {
+            static NetClient alice, mallory, eve;
+            static std::unique_ptr<Player> pa, pe;
+            static int ph = 0; static double t0 = 0.0; static long long stepped = 0;
+            static bool malloryKicked = false, eveFlew = false, aliceOk = true, rejoinWalked = false;
+            static int eveStates = 0; static DVec3 aStart{}, rStart{};
+            const char* addr = TextFormat("127.0.0.1:%d", hostPort);
+            if (!Host_Listening()) { printf("bench: net abuse: needs --host with ENABLE_GNS -> SKIP\n"); benchNetAbuse = false; }
+            else {
+                for (NetClient* c : { &alice, &mallory, &eve }) NetClient_Update(*c);
+                auto sync = [&](NetClient& c, std::unique_ptr<Player>& p) {
+                    if (p || c.state != NetClient::State::Joined || !c.haveOwn) return;
+                    if (Planetoid* b = Planetoid::findNet(c.own.body)) { p = std::make_unique<Player>(); p->spawnOn(world, *b, b->dirToWorld(Vector3Normalize(c.own.local.toFloat()))); p->applyNetState(world, NetClient_FromMsg(c.own)); }
+                };
+                auto stepAll = [&](bool eveFly) {
+                    for (; stepped < SimTick(); ++stepped) {
+                        PlayerInput in; in.enabled = true; in.hold(Act::Forward);
+                        if (pa && alice.state == NetClient::State::Joined) NetClient_Step(alice, world, *pa, in);
+                        if (pe && eve.state == NetClient::State::Joined) { PlayerInput ie = in; if (eveFly && stepped % 30 == 0) ie.press(Act::Fly); NetClient_Step(eve, world, *pe, ie); }
+                    }
+                };
+                if (ph == 0) { NetClient_Connect(alice, addr, "alice"); NetClient_Connect(mallory, addr, "mallory"); NetClient_Connect(eve, addr, "eve"); ph = 1; t0 = GetTime(); }
+                else if (ph == 1) {
+                    sync(alice, pa); sync(eve, pe);
+                    if (pa && pe && mallory.state == NetClient::State::Joined) { ph = 2; t0 = GetTime(); stepped = SimTick(); if (Planetoid* b = pa->nearest) aStart = b->toLocalD(pa->position); }
+                    else if (GetTime() - t0 > 20.0) { printf("bench: net abuse: the clients didn't join -> FAIL\n"); benchNetAbuse = false; }
+                } else if (ph == 2) { // 6 s: mallory abuses, eve tries to fly, alice walks
+                    stepAll(true);
+                    if (mallory.state == NetClient::State::Joined) {
+                        for (int i = 0; i < 6; ++i) NetClient_SendChat(mallory, "spam spam spam");
+                        const uint8_t junk[] = { 0xEE, 1, 2, 3 }; Net_Send(mallory.conn, junk, sizeof junk, true);
+                        static std::vector<uint8_t> big(6000, 7); big[0] = (uint8_t)NetMsg::Chat; Net_Send(mallory.conn, big.data(), (uint32_t)big.size(), true);
+                    }
+                    if (mallory.state == NetClient::State::Closed && mallory.bye == NetBye::Kicked) malloryKicked = true;
+                    if (eve.states != eveStates) { eveStates = eve.states; eveFlew = eveFlew || (eve.own.flags & 2) != 0; }
+                    aliceOk = aliceOk && alice.state == NetClient::State::Joined;
+                    if (GetTime() - t0 > 6.0) { NetClient_Disconnect(alice); ph = 3; t0 = GetTime(); }
+                } else if (ph == 3) { // alice comes back as a new client (its ticks start at 1)
+                    if (Host_OnlinePlayers() <= 2 || GetTime() - t0 > 5.0) { alice = NetClient{}; pa.reset(); NetClient_Connect(alice, addr, "alice"); ph = 4; t0 = GetTime(); }
+                } else if (ph == 4) {
+                    sync(alice, pa);
+                    if (pa) { ph = 5; t0 = GetTime(); stepped = SimTick(); if (Planetoid* b = pa->nearest) rStart = b->toLocalD(pa->position); }
+                    else if (GetTime() - t0 > 15.0) { ph = 6; }
+                } else if (ph == 5) { // 4 s of walking after the rejoin: the server must move her
+                    stepAll(false);
+                    if (GetTime() - t0 > 4.0) {
+                        uint64_t sb = 0; DVec3 sl{};
+                        if (Host_PlayerLocal(world, alice.welcome.session, sb, sl) && pa->nearest) rejoinWalked = (sl - rStart).length() * pa->nearest->scale > 5.0;
+                        ph = 6;
+                    }
+                }
+                if (ph == 6) {
+                    const bool ok = malloryKicked && aliceOk && !eveFlew && eveStates > 30 && rejoinWalked && Host_GuardKicks() >= 1;
+                    printf("bench: net abuse (#349): mallory (chat flood, garbage, oversized) kicked %d; %d messages dropped, %d kicks; alice stayed joined %d; "
+                           "eve's server player flew %d (%d states, #781); alice rejoined and walked %d (#780) -> %s\n",
+                           (int)malloryKicked, Host_GuardDropped(), Host_GuardKicks(), (int)aliceOk, (int)eveFlew, eveStates, (int)rejoinWalked, ok ? "PASS" : "FAIL");
+                    for (NetClient* c : { &alice, &mallory, &eve }) NetClient_Disconnect(*c);
+                    benchNetAbuse = false;
                 }
             }
         }

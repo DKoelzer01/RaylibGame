@@ -1,5 +1,6 @@
 #include "hostserver.h"
 #include "netinterest.h"
+#include "netguard.h"
 #include "gputimer.h"
 #include "events.h"
 #include "joininfo.h"
@@ -48,7 +49,7 @@ namespace {
 
     // The connection lifecycle (#321). A peer is a connection; a session is a player, kept by name for the server's
     // run, so a reconnect under the same name gets its session (and later its PlayerSession) back.
-    struct Peer { uint32_t session = 0; bool joined = false; double lastHeard = 0.0; };
+    struct Peer { uint32_t session = 0; bool joined = false; double lastHeard = 0.0; NetGuard guard; }; // guard: #349
     std::unordered_map<uint32_t, Peer> peers;          // by connection
     struct Session {
         uint32_t id = 0; std::string name; uint32_t conn = 0; bool online = false;
@@ -102,6 +103,7 @@ namespace {
         const Vector3 dir = Vector3Normalize(Vector3Add(start, Vector3Scale(east, 3.0f * (float)session / pf->radius)));
         Remote& r = remotes[session];
         r.player.spawnOn(world, *body, body->dirToWorld(dir));
+        r.player.flyAllowed = false; // (#781) fly mode is noclip: never for a client's server-side player (admins later, #345)
         r.tick = SimTick();
     }
     // A player is stepped only by its own inputs, one step each, in order (as Source runs a player's usercmds): the server
@@ -310,6 +312,10 @@ namespace {
         const EventsShower sh = Events_GetShower();
         SendMsg(conn, MsgShower{ sh.start, sh.end, sh.id });
         if (!remotes.count(s->id)) SpawnRemote(world, s->id); // (a reconnect keeps its player where it was)
+        else { // (#780) a reconnect keeps the player but its client counts ticks from 1 again: a fresh input stream
+            Remote& rm = remotes[s->id];
+            rm.inputs.clear(); rm.lastQueued = 0; rm.lastApplied = 0; rm.carried = 0; rm.budget = 0.0; rm.tick = SimTick();
+        }
         // Who is here (everyone, the newcomer included), and what the others hold.
         SendRoster();
         for (const Session& x : sessions) if (x.online && x.id != s->id && x.loadout.session) SendMsg(conn, x.loadout);
@@ -480,10 +486,37 @@ namespace {
         ++partsApplied;
     }
 
+    // (#349) the guard's verdicts: a kick (with why, in the log and the audit hook), and violations found after reading.
+    int guardDropped = 0, guardKicks = 0;
+    void GuardKick(uint32_t conn, const std::string& why) {
+        auto it = peers.find(conn);
+        std::string name; if (it != peers.end()) for (const Session& s : sessions) if (s.id == it->second.session) name = s.name;
+        printf("host: kicked connection %u (%s) for flooding: %s\n", conn, name.empty() ? "not joined" : name.c_str(), why.c_str());
+        if (eventHook) eventHook("kicked", it != peers.end() ? it->second.session : 0, (name.empty() ? std::string("connection") : name) + " (flooding: " + why + ")");
+        if (it != peers.end() && it->second.joined) SendMsg(conn, MsgChat{ 0, "You were kicked: too many invalid messages" });
+        ++guardKicks;
+        Drop(conn, NetBye::Kicked);
+    }
+    void GuardViolation(uint32_t conn, const char* why) {
+        auto it = peers.find(conn);
+        if (it == peers.end()) return;
+        ++guardDropped;
+        if (NetGuard_Violation(it->second.guard, GetTime()) == GuardVerdict::Kick) GuardKick(conn, why);
+    }
     void OnMessage(Scene& world, const NetMessage& m) {
+        if (!peers.count(m.conn) && !Net_IsConnected(m.conn)) return; // (#349: the rest of a batch from a connection just kicked)
         auto it = peers.find(m.conn);
         if (it == peers.end()) it = peers.emplace(m.conn, Peer{}).first; // first word on a new connection
         it->second.lastHeard = GetTime();
+        { // (#349) size, kind, form and rate first: a bad message is dropped; a client that keeps sending them is kicked
+            std::string why;
+            const GuardVerdict v = NetGuard_Admit(it->second.guard, NetPeek(m.data), m.data.size(), NetWellFormed(m.data), GetTime(), why);
+            if (v != GuardVerdict::Accept) {
+                ++guardDropped;
+                if (v == GuardVerdict::Kick) GuardKick(m.conn, why);
+                return;
+            }
+        }
         NetReader r(m.data.data() + (m.data.empty() ? 0 : 1), m.data.empty() ? 0 : m.data.size() - 1);
         switch (NetPeek(m.data)) {
             case NetMsg::Hello: {
@@ -505,8 +538,20 @@ namespace {
                 OnSnapshotAck(m.conn, in.ackSnap, in.ackMask); // (#769)
                 Remote& rm = remotes[it->second.session];
                 if (in.steps[0].tick > rm.lastQueued) { rm.action = in.action; rm.actionPhase = in.actionPhase; } // (not an old packet)
+                // (#349) only real actions, a unit view direction (else the last one): nothing a client sends turns into NaNs
+                // or a key the game doesn't have; a jump of the tick counter far ahead (to freeze its own later inputs, or a
+                // bug) is refused.
+                constexpr uint64_t kActMask = ((int)Act::Count < 64 ? (1ull << (int)Act::Count) - 1 : ~0ull);
+                if (in.steps[0].tick > rm.lastQueued + 3600) { GuardViolation(m.conn, "input tick jumped ahead"); return; }
                 for (auto s = in.steps.rbegin(); s != in.steps.rend(); ++s) // oldest first; the ones already here are repeats
-                    if (s->tick > rm.lastQueued) { rm.inputs.push_back(*s); rm.lastQueued = s->tick; }
+                    if (s->tick > rm.lastQueued) {
+                        MsgInput q = *s;
+                        q.held &= kActMask; q.pressed &= kActMask;
+                        const float len = sqrtf(q.fx * q.fx + q.fy * q.fy + q.fz * q.fz);
+                        if (!(len > 0.5f && len < 1.5f)) { q.fx = rm.forwardLocal.x; q.fy = rm.forwardLocal.y; q.fz = rm.forwardLocal.z; }
+                        else { q.fx /= len; q.fy /= len; q.fz /= len; }
+                        rm.inputs.push_back(q); rm.lastQueued = q.tick;
+                    }
                 return;
             }
             case NetMsg::Chat: { // (#326) a player's line: the server's handler (commands, logging), else to everyone
@@ -673,3 +718,6 @@ void Host_SetMotd(const std::string& text) { motd = text; }
 void Host_SetJoinCheck(std::function<bool(const std::string&, const std::string&, std::string&)> check) { joinCheck = std::move(check); }
 void Host_SetChatHandler(std::function<void(uint32_t, const std::string&, const std::string&)> handler) { chatHandler = std::move(handler); }
 void Host_SetEventHook(std::function<void(const char*, uint32_t, const std::string&)> hook) { eventHook = std::move(hook); }
+// Tests (#349): messages the guard dropped, and connections it kicked.
+int Host_GuardDropped() { return guardDropped; }
+int Host_GuardKicks() { return guardKicks; }

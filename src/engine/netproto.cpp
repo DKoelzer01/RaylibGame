@@ -606,3 +606,6 @@ bool NetProto_Test() {
            samples.size(), truncTotal, truncValid, fuzzValid, ok ? "PASS" : "FAIL");
     return ok;
 }
+
+// (#349) whether a message parses with its reader - the server's guard counts the ones that don't
+bool NetWellFormed(const std::vector<uint8_t>& bytes) { return ParseAny(bytes); }

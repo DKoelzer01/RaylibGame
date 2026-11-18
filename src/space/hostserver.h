@@ -61,6 +61,9 @@ void Host_SetMotd(const std::string& text);
 void Host_SetJoinCheck(std::function<bool(const std::string& name, const std::string& address, std::string& why)> check);
 void Host_SetChatHandler(std::function<void(uint32_t session, const std::string& name, const std::string& text)> handler);
 void Host_SetEventHook(std::function<void(const char* what, uint32_t session, const std::string& detail)> hook);
+// Tests (#349): messages the server's guard dropped (oversized, unexpected, malformed, over-rate, impossible), connections kicked.
+int Host_GuardDropped();
+int Host_GuardKicks();
 // Tests: client connections opened in the same process; their messages are handed to the client, not to the host.
 void Host_SetLocalClient(uint32_t conn);
 std::vector<NetMessage> Host_TakeLocalClientMessages(uint32_t conn);
