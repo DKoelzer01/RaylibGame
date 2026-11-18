@@ -22,7 +22,8 @@ uniform sampler2D roughAoTexture;  // MATERIAL_MAP_ROUGHNESS: R = roughness, G =
 uniform sampler2DArray terrainLayers; // planet palette: dirt, sand, gravel, grass, snow, ice, stone, clay, granite, basalt, sandstone, limestone, marble (terrainlayers.h)
 uniform sampler2DArray terrainDetail; // its detail maps: normal XY, roughness, AO (unit 12)
 
-flat in vec3 fragClipMax;     // chunk-local overlap clip (lighting.vs: a uniform or the arena record)
+flat in vec3 fragClipMax;
+flat in float fragLodFade;   // #243: 0 none; (0, 1) fading in; (-1, 0) fading out (the share already given to its replacement)     // chunk-local overlap clip (lighting.vs: a uniform or the arena record)
 flat in uint fragMatIds;       // #480 (arena): the triangle's three material ids, 8 bits each (fragColor.xyz: their barycentrics)
 uniform mat4 matModel;          // body-local -> world (DrawMesh, or the arena flush: all chunks of a body share the rotation)
 uniform float texScale;            // world units -> texture repeats
@@ -189,6 +190,13 @@ float periodicNoise(vec3 p, float scale)
 void main()
 {
     if (any(greaterThan(fragChunkPos, fragClipMax))) discard;
+    // LOD cross-fade (#243): a node and the one replacing it are both drawn for a moment and split the pixels by the same
+    // screen noise (interleaved gradient noise), so each pixel shows exactly one of them and the swap dissolves.
+    if (fragLodFade != 0.0) {
+        float n = fract(52.9829189 * fract(dot(gl_FragCoord.xy, vec2(0.06711056, 0.00583715))));
+        float t = abs(fragLodFade);
+        if (fragLodFade > 0.0 ? n >= t : n < t) discard;
+    }
     vec3 geomNormal = normalize(fragNormal);
     // Texture in body-local space so the pattern is fixed to the rock, then bring the bumped
     // normal into world space for lighting.
