@@ -411,6 +411,14 @@ void Planetoid::draw(const RenderContext& ctx) {
     c2.batch = &batch;
     // Arena chunks are only listed: placement and culling run on the GPU (chunk_cull.comp), one multi-draw.
     const double now = GetTime();
+    // #243: nodes done fading out leave the list here, each frame, cheaply (re-running the LOD selection every frame while
+    // a fade lasted cost walking ~2 ms of CPU); the next LOD pass frees them as undesired.
+    if (std::any_of(drawList.begin(), drawList.end(), [&](const Chunk* c) { return c->fadeOut && now - c->fadeT0 >= Chunk::kLodFadeSeconds; }))
+        drawList.erase(std::remove_if(drawList.begin(), drawList.end(), [&](Chunk* c) {
+            if (!c->fadeOut || now - c->fadeT0 < Chunk::kLodFadeSeconds) return false;
+            c->fadeOut = false; c->fadeT0 = -1.0;
+            return true;
+        }), drawList.end());
     for (Chunk* c : drawList) {
         if (c->arena.valid()) { if (c->isActive) TerrainArena_Queue(c->arena, c->clipLocal(), c->lodFade(now)); continue; }
         if (c->fadeOut) continue; // per-chunk draws (RAYLIBGAME_ARENA=0) have no cross-fade: the new node only (#243)
@@ -895,7 +903,7 @@ static int UpdateLod(Planetoid& p, Vector3 cameraRender) {
                 if (overlaps) { c->fadeT0 = now; c->fadeOut = false; }
             }
         for (Chunk* c : keep) draw.push_back(c);
-        if (!keep.empty()) p.lodDirty = true; // again next frame: the faded ones leave the list when done
+        // (Faded-out nodes leave the list in Planetoid::draw, not by re-running this every frame: #243 walk cost.)
     }
     // Nearest first (front to back): the depth test then rejects most of the terrain hidden behind
     // nearer hills before the (costly) terrain shader runs on it. Unsorted, much of the screen was
