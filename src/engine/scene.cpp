@@ -225,6 +225,8 @@ Scene::Scene(std::string name, bool isActive)
 
     shadowMap = LoadShadowmapRenderTexture(SHADOW_MAP_SIZE, SHADOW_MAP_SIZE);
     shadowNear = LoadShadowmapRenderTexture(SHADOW_MAP_SIZE, SHADOW_MAP_SIZE);
+    if (const char* e = getenv("RAYLIBGAME_WIDE_SHADOWS")) wideShadows = e[0] != '0';
+    if (wideShadows) { shadowWide = LoadShadowmapRenderTexture(SHADOW_MAP_SIZE, SHADOW_MAP_SIZE); terrainMaterial.maps[MATERIAL_MAP_EMISSION].texture = shadowWide.depth; } // #138
     terrainMaterial.maps[MATERIAL_MAP_HEIGHT].texture = shadowNear.depth; // a spare slot: the near cascade
     terrainMaterial.maps[MATERIAL_MAP_BRDF].texture = shadowMap.depth;
 
@@ -256,6 +258,7 @@ void Scene::applyLightingShader() {
     s.locs[SHADER_LOC_MAP_ROUGHNESS] = GetShaderLocation(s, "roughAoTexture");
     s.locs[SHADER_LOC_MAP_BRDF]      = GetShaderLocation(s, "shadowMap");
     s.locs[SHADER_LOC_MAP_HEIGHT]    = GetShaderLocation(s, "shadowMapNear");
+    s.locs[SHADER_LOC_MAP_EMISSION]  = GetShaderLocation(s, "shadowMapWide"); // #138
     locViewPos    = GetShaderLocation(s, "viewPos");
     locLightSpace = GetShaderLocation(s, "lightSpaceMatrix");
     locAmbient    = GetShaderLocation(s, "ambient");
@@ -484,9 +487,9 @@ void Scene::drawScene(int gamestate) {
     // Read the light's matrices back from rlgl inside BeginMode3D so the shader's light matrix is
     // exactly what the depth pass rendered with. (DrawMesh overwrites any hand-set "mvp" uniform.)
     const double defaultNear = rlGetCullDistanceNear(), defaultFar = rlGetCullDistanceFar();
-    auto renderCascade = [&](RenderTexture2D& target, float halfExtent, Vector3 boxCentre, Matrix& outMatrix, bool probe) {
+    auto renderCascade = [&](RenderTexture2D& target, float halfExtent, Vector3 boxCentre, Matrix& outMatrix, bool probe, bool wide = false) {
         Camera3D lightCam = { 0 };
-        lightCam.position = Vector3Add(boxCentre, Vector3Scale(shadowSun, sunDistance));
+        lightCam.position = Vector3Add(boxCentre, Vector3Scale(shadowSun, wide ? shadowWideDistance : sunDistance));
         lightCam.target = boxCentre;
         lightCam.up = upHint;
         lightCam.projection = CAMERA_ORTHOGRAPHIC;
@@ -520,7 +523,7 @@ void Scene::drawScene(int gamestate) {
                 for (const auto& obj : rootObject.children) obj->drawDepthOnly(shadowCtx);
                 // Trees and bushes: the instanced tree vertex shader (same sway) with the depth-only
                 // fragment shader.
-                if (treeDepth.shader.id > 0 && foliageEnabled) {
+                if (treeDepth.shader.id > 0 && foliageEnabled && !wide) { // (the wide cascade: terrain and parts only, #138)
                     rlDrawRenderBatchActive();
                     Shader& ts = treeDepth.shader;
                     rlEnableShader(ts.id);
@@ -546,6 +549,16 @@ void Scene::drawScene(int gamestate) {
     rlSetClipPlanes(1.0, sunDistance * 2.0);
     renderCascade(shadowMap, shadowHalfExtent, centre, lightSpaceMatrix, true);
     renderCascade(shadowNear, shadowNearHalfExtent, snapCentre(shadowNearHalfExtent), lightSpaceNear, false);
+    if (wideShadows && shadowWide.id > 0) { // #138: the wide terrain cascade, with its own depth range, every wideEvery frames
+        if (wideFrame++ % std::max(1, wideEvery) == 0) {
+            rlSetClipPlanes(1.0, shadowWideDistance * 2.0);
+            renderCascade(shadowWide, shadowWideHalfExtent, snapCentre(shadowWideHalfExtent), lightSpaceWideDrawn, false, true);
+            wideOrigin = renderOrigin;
+        }
+        // Render space moved with the floating origin since it was drawn: shift the lookup back to that frame's space.
+        const Vector3 shift = (renderOrigin - wideOrigin).toFloat();
+        lightSpaceWide = MatrixMultiply(MatrixTranslate(shift.x, shift.y, shift.z), lightSpaceWideDrawn);
+    }
     GpuTimer_Mark("shadow");
     KickGpu();
     rlSetClipPlanes(defaultNear, defaultFar);
@@ -566,6 +579,15 @@ void Scene::drawScene(int gamestate) {
     SetShaderValue(s, GetShaderLocation(s, "shadowTexel"), shadowTexels, SHADER_UNIFORM_VEC2);
     const float shadowDepthRange = (float)(sunDistance * 2.0 - 1.0);
     SetShaderValue(s, GetShaderLocation(s, "shadowDepthRange"), &shadowDepthRange, SHADER_UNIFORM_FLOAT);
+    {   // #138: the wide terrain cascade (its matrix, texel and depth range; off: wideShadowOn 0)
+        const int on = (wideShadows && shadowWide.id > 0) ? 1 : 0;
+        SetShaderValue(s, GetShaderLocation(s, "wideShadowOn"), &on, SHADER_UNIFORM_INT);
+        if (on) {
+            SetShaderValueMatrix(s, GetShaderLocation(s, "lightSpaceWide"), lightSpaceWide);
+            const float wide[2] = { 2.0f * shadowWideHalfExtent / SHADOW_MAP_SIZE, shadowWideDistance * 2.0f - 1.0f };
+            SetShaderValue(s, GetShaderLocation(s, "shadowWide"), wide, SHADER_UNIFORM_VEC2);
+        }
+    }
     SetShaderValue(s, locTexScale, &texScale, SHADER_UNIFORM_FLOAT);
     SetShaderValue(s, locPalette, &materialPalette, SHADER_UNIFORM_INT);
     // Atmosphere: by day near a planet the air hazes distant terrain toward the horizon sky colour and
@@ -631,7 +653,18 @@ void Scene::drawScene(int gamestate) {
     // passes below collapse into one (no depth clears, no near/far plane juggling).
     const bool revZ = SceneTarget_Available() && SceneTarget_Begin(clearColor); // false (e.g. a failed resize): old passes
     BeginMode3D(camera);
-    if (revZ) SceneTarget_ApplyProjection();
+    if (revZ) {
+        SceneTarget_ApplyProjection();
+        // Contact shadows (#137): the sun in view space; strength by day (fading in as the sun clears the horizon), less
+        // under cloud (the sun is dimmer), none by moonlight.
+        const Matrix view = rlGetMatrixModelview();
+        const Vector3 sunN = Vector3Normalize(sunDirection);
+        const Vector3 sunView = Vector3Subtract(Vector3Transform(sunN, view), Vector3Transform({ 0, 0, 0 }, view));
+        const float elev = Vector3DotProduct(atmUp, sunN);
+        const float te = std::clamp((elev - 0.02f) / 0.14f, 0.0f, 1.0f);
+        const float strength = moonLight <= 0.0f ? 0.4f * te * te * (3.0f - 2.0f * te) * (1.0f - 0.8f * std::clamp(weatherCloud, 0.0f, 1.0f)) : 0.0f;
+        SceneTarget_SetContact(sunView, strength);
+    }
         rlDisableBackfaceCulling();
         rlDisableDepthMask();
         if (drawSkybox) DrawModel(skybox, (Vector3){0, 0, 0}, 1.0f, WHITE); // skybox.vs strips translation and scales the cube
@@ -1029,6 +1062,7 @@ Scene::~Scene() {
     atmosphereShader.unload();
     UnloadShadowmapRenderTexture(shadowMap);
     UnloadShadowmapRenderTexture(shadowNear);
+    if (shadowWide.id > 0) UnloadShadowmapRenderTexture(shadowWide);
 }
 
 // ---------------------------------------------------------------------------------------------
