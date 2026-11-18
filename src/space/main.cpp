@@ -773,7 +773,7 @@ int main(int argc, char** argv)
         if (std::string(argv[i]) == "--test-trees") benchTrees = true;
         if (std::string(argv[i]) == "--test-chop") benchChop = true;
         if (std::string(argv[i]) == "--test-persist" && i + 1 < argc) benchPersist = atoi(argv[i + 1]);
-        if (std::string(argv[i]) == "--test-build" && i + 1 < argc) benchBuild = atoi(argv[i + 1]);
+        if (std::string(argv[i]) == "--test-build" && i + 1 < argc) { benchBuild = atoi(argv[i + 1]); Structures_SetEnabled(false); } // no world structures: it counts every part on the planet
         if (std::string(argv[i]) == "--test-factory" && i + 1 < argc) benchFactory = atoi(argv[i + 1]);
         if (std::string(argv[i]) == "--test-progression") { benchProgression = true; progressionFull = i + 1 < argc && std::string(argv[i + 1]) == "full"; progressionEv = i + 1 < argc && std::string(argv[i + 1]) == "ev"; }
         if (std::string(argv[i]) == "--time-scale" && i + 1 < argc) timeScale = (float)atof(argv[i + 1]);

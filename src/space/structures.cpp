@@ -348,6 +348,44 @@ Site SiteOf(const PlanetField& pf, uint64_t tile, Vector3 centreDir, float radiu
     return s;
 }
 
+// A site's parts still to place (#164: a few a frame, so building a site is no hitch): the plot is made and the ground
+// shaped when the site is decided; RunJob places parts and their foundations until done or out of time, and queues
+// each chest's loot as it goes down.
+struct BuildJob {
+    uint64_t body = 0; uint32_t plot = 0; uint32_t seed = 0;
+    std::vector<std::pair<Part, std::string>> parts; // the part, and its loot table for a chest ("" none)
+    size_t next = 0;
+};
+std::vector<BuildJob> jobs;
+int lastPlaced = 0; // parts the last RunJob placed (all of them, for a forced build)
+bool RunJob(Planetoid& body, BuildJob& job, double budgetMs) { // true when the job is done
+    Plot* plot = body.plots ? body.plots->byId(job.plot) : nullptr;
+    if (!plot) return true; // the plot is gone (a reload, a world change): nothing to finish
+    const auto t0 = std::chrono::steady_clock::now();
+    lastPlaced = 0;
+    while (job.next < job.parts.size()) {
+        const auto& [p, table] = job.parts[job.next++];
+        const int idx = plot->place(p);
+        if (idx >= 0) {
+            BuildTool_LayFoundation(body, *plot, p);
+            ++lastPlaced;
+            if (!table.empty()) pending.push_back({ body.name, plot->id, idx, table, Hash(job.seed + idx) });
+        }
+        if (std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count() > budgetMs) break;
+    }
+    return job.next >= job.parts.size();
+}
+// Each frame: the oldest job gets a little time (kJobBudgetMs).
+constexpr double kJobBudgetMs = 1.5;
+void PlaceJobs() {
+    while (!jobs.empty()) {
+        Planetoid* b = Planetoid::find(jobs.front().body);
+        if (b && !RunJob(*b, jobs.front(), kJobBudgetMs)) return; // out of time: more next frame
+        jobs.erase(jobs.begin());
+        return;
+    }
+}
+
 // Build one site (its tile id for the discovery record; world for its guards, null: none): -1 if the spot doesn't
 // suit (water, too steep, someone's plot nearby), else the parts placed.
 int BuildSite(Scene* world, Planetoid& body, const PlanetField& pf, uint64_t tile, const Site& site, bool force) {
@@ -411,8 +449,11 @@ int BuildSite(Scene* world, Planetoid& body, const PlanetField& pf, uint64_t til
         pad.radius = Vector3Length(pad.half);
         ApplyTerrainEdit(body, pad);
     }
+    // The parts to place (decayed, moved, in the biome's stone), each chest with its loot table. They go down in a build
+    // job, a few a frame (PlaceJobs): placing a site's 60-180 parts with their foundations at once was a 0.4 s frame.
+    BuildJob job;
+    job.body = body.id; job.plot = plot->id; job.seed = site.seed;
     uint32_t h = site.seed ^ 0xdecaf;
-    int placed = 0;
     const float topY = (float)std::max(1, S.size.y);
     for (Part p : parts) {
         const bool chest = p.type == PartType::Chest;
@@ -420,24 +461,24 @@ int BuildSite(Scene* world, Planetoid& body, const PlanetField& pf, uint64_t til
         if (!chest && Unit(h) < S.decay * (0.35f + 1.3f * rise)) continue;   // decay: more near the top
         p.origin = { p.origin.x + shift.x, p.origin.y + shift.y, p.origin.z + shift.z };
         if (IsShape(p.type)) p.material = (uint8_t)BiomeStone(p.material, biome);
-        const int idx = plot->place(p);
-        if (idx < 0) continue;
-        BuildTool_LayFoundation(body, *plot, p);
-        ++placed;
-        if (chest) {
+        std::string table;
+        if (chest)
             for (const Loot& L : S.loots) {
                 const Int3 c = TurnedCell(L.cell, site.quarters);
                 const Int3 at = { c.x + shift.x, c.y + shift.y, c.z + shift.z };
                 // The chest's origin is its cell after turning (Turned moved the origin the same way).
-                if (at.x == p.origin.x && at.y == p.origin.y && at.z == p.origin.z) { pending.push_back({ body.name, plot->id, idx, L.table, Hash(site.seed + idx) }); break; }
+                if (at.x == p.origin.x && at.y == p.origin.y && at.z == p.origin.z) { table = L.table; break; }
             }
-        }
+        job.parts.push_back({ p, table });
     }
+    const int planned = (int)job.parts.size();
+    jobs.push_back(std::move(job));
+    if (force) { RunJob(body, jobs.back(), 1e9); jobs.pop_back(); } // tests (forced sites): all at once
     if (body.trees) body.trees->addClearing(ground, half * 1.42f + 2.0f);
     // Guards (#164: "guard <species> <n> [radius]"): ordinary animals set down round the site, saved like any other.
     if (world) for (const Set::Guard& g : S.guards) Animals_Spawn(*world, body, g.species, ground, g.count, false, g.radius);
     builtSites.push_back({ body.name, tile, site.dir, S.name, S.kind, false });
-    return placed;
+    return force ? lastPlaced : planned;
 }
 
 void FillLoot(Planetoid& body, const PendingLoot& L) {
@@ -455,7 +496,7 @@ void FillLoot(Planetoid& body, const PendingLoot& L) {
 
 int Structures_SetCount() { Ensure(); return (int)sets.size(); }
 
-void Structures_Reset() { builtTiles.clear(); pending.clear(); builtSites.clear(); foundTiles.clear(); foundKinds.clear(); lastCheck = -10.0; }
+void Structures_Reset() { builtTiles.clear(); pending.clear(); builtSites.clear(); foundTiles.clear(); foundKinds.clear(); jobs.clear(); lastCheck = -10.0; }
 
 namespace {
 // Sites round one interest centre (a body-local point near the ground): every tile within build range, and the two
@@ -519,7 +560,12 @@ void DiscoverNear(Scene& world, Planetoid& body, Vector3 me) {
 }
 }
 
+bool structuresOn = true; // tests that count every part on the planet turn world structures off (Structures_SetEnabled)
+void Structures_SetEnabled(bool on) { structuresOn = on; }
+
 void Structures_Update(Scene& world) {
+    if (!structuresOn) return;
+    PlaceJobs(); // every frame: a site's parts go down a few at a time
     if (GetTime() - lastCheck < 1.0) return;
     lastCheck = GetTime();
     Ensure();
@@ -553,6 +599,9 @@ void Structures_Update(Scene& world) {
 }
 
 void Structures_Save(FILE* f) {
+    // Sites still going down are finished first: a half-built site would never be resumed after a load.
+    for (BuildJob& j : jobs) if (Planetoid* b = Planetoid::find(j.body)) RunJob(*b, j, 1e9);
+    jobs.clear();
     for (const auto& kv : builtTiles) {
         fprintf(f, "structure_tiles %s %zu", kv.first.c_str(), kv.second.size());
         for (uint64_t k : kv.second) fprintf(f, " %llu", (unsigned long long)k);
