@@ -293,6 +293,7 @@ const char* NetEditRefusalText(NetEditRefusal r) {
         case NetEditRefusal::Reach: return "out of reach"; case NetEditRefusal::Rate: return "too fast";
         case NetEditRefusal::Tool: return "the tool in hand can't dig that"; case NetEditRefusal::Cost: return "not enough to place";
         case NetEditRefusal::Body: return "no such body"; case NetEditRefusal::Mantle: return "the mantle can't be dug";
+        case NetEditRefusal::Claim: return "another team has claimed this land";
         case NetEditRefusal::Shape: return "not a stroke the tool makes";
         default: return "?";
     }
@@ -390,6 +391,7 @@ const char* NetPartRefusalText(NetPartRefusal r) {
         case NetPartRefusal::Reach: return "out of reach"; case NetPartRefusal::Cost: return "not enough to build it";
         case NetPartRefusal::Blocked: return "something is in the way"; case NetPartRefusal::NoPlot: return "no such plot";
         case NetPartRefusal::NoPart: return "no such part"; case NetPartRefusal::Body: return "no such body";
+        case NetPartRefusal::Claim: return "another team has claimed this land";
         case NetPartRefusal::Kind: return "not a part players build"; case NetPartRefusal::Rate: return "too fast";
         default: return "?";
     }
