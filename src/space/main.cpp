@@ -4990,7 +4990,7 @@ int main(int argc, char** argv)
                     // --test-leak (#680, best with --sandbox; user: 'would the column change still allow a hole in a wall to leak?'):
                     // a 20 m reservoir 4 m wide, 2 m deep behind a 1 m wall of ground, and an empty channel 6 m deep beyond; a 1 x 1 m hole is
                     // cut through the wall 0.5 m over the floor. The early outflow (the volume past the wall, 1-3 s) against an
-                    // orifice's sqrt(2 g h) x area (a real one passes ~0.6 of it), and after 120 s the pool resting at the hole's
+                    // orifice's sqrt(2 g h) x area (a real one passes ~0.6 of it), and after 60 s the pool against an orifice-then-weir model of the drain to the hole's
                     // bottom (0.5 m deep).
                     Planetoid* p = dynamic_cast<Planetoid*>(world.objects[0].get());
                     const PlanetField* pf = p ? dynamic_cast<const PlanetField*>(p->field.get()) : nullptr;
@@ -5092,23 +5092,24 @@ int main(int argc, char** argv)
                                 printf("bench: leak t=%3.0f s: pool %.2f m deep, %.1f m^3 past the wall; %d of %d bricks awake, %d steady, %d settled\n",
                                        t, depthAt(-10.0f), past(), fs.activeBricks, fs.bricks, fs.steadyBricks, fs.settled);
                             }
-                            if (t > 120.0) {
+                            constexpr float kDrain = 60.0f; // s judged after the hole opens (was 120: the test ran over 3 min at 0.25 m cells)
+                            if (t > kDrain) {
                                 const float lip = benchLeakParts ? 1.0f : 0.5f; // the hole's bottom over the floor (blocks: block-aligned)
                                 const float g = 9.81f, head = std::max(0.0f, h0 - (lip + 0.5f)); // over the hole's centre
                                 const float qIdeal = sqrtf(2.0f * g * head) * 1.0f, q = (vol3 - vol1) / 2.0f, final = depthAt(-10.0f);
-                                // The expected depth after 120 s: the pool (its area as dug: the water poured over its depth) through the hole as an orifice while it is under
-                                // water (0.6 sqrt(2 g h) x 1 m^2, h over its centre), then a weir over its lip (1.7 x 1 m x h^1.5) - it
-                                // slows as it drains: ~0.23 m over the lip is left after 120 s, not none.
+                                // The expected depth after kDrain: the pool (its area as dug: the water poured over its depth) through the hole as an orifice while
+                                // it is under water (0.6 sqrt(2 g h) x 1 m^2, h over its centre), then a weir over its lip (1.7 x 1 m x h^1.5) - it slows as it
+                                // drains: some water over the lip is left at the end, not none.
                                 const float poolArea = h0 > 0.1f ? lkPoured / h0 : 80.0f; // ~80 m^2; the lattice rounds the dug box (#691)
                                 float d = h0;
-                                for (int k = 0; k < 12000; ++k) {
+                                for (int k = 0; k < (int)(kDrain / 0.01f); ++k) {
                                     const float qd = d >= lip + 1.0f ? 0.6f * sqrtf(2.0f * g * (d - (lip + 0.5f))) : d > lip ? 1.7f * powf(d - lip, 1.5f) : 0.0f;
                                     d -= qd * 0.01f / poolArea;
                                 }
                                 const float grass = onGrass();
                                 const bool ok = h0 > 1.5f && q > 0.4f * qIdeal && q < 1.6f * qIdeal && fabsf(final - d) < 0.12f && grass < 0.05f && pastBefore < 0.2f;
-                                printf("bench: leak: outflow %.2f m^3/s early (orifice ideal %.2f: %.2f of it; a real one ~0.6); after 120 s the pool is %.2f m deep (an orifice then a weir over the lip: %.2f); %.2f m^3 on the grass -> %s\n",
-                                       q, qIdeal, q / std::max(qIdeal, 0.01f), final, d, grass, ok ? "PASS" : "FAIL");
+                                printf("bench: leak: outflow %.2f m^3/s early (orifice ideal %.2f: %.2f of it; a real one ~0.6); after %.0f s the pool is %.2f m deep (an orifice then a weir over the lip: %.2f); %.2f m^3 on the grass -> %s\n",
+                                       q, qIdeal, q / std::max(qIdeal, 0.01f), kDrain, final, d, grass, ok ? "PASS" : "FAIL");
                                 benchLeak = false;
                             }
                         }

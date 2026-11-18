@@ -98,13 +98,14 @@ planet() {
     run --seed 42 --bench 3 --test-decor
     run --seed 42 --bench 3 --test-weather
     run --seed 42 --bench 3 --test-flow
+    RAYLIBGAME_FLUID_CELL=1 run --seed 42 --bench 3 --test-flow # the 1 m fluid grid (opt-in since #714) still runs
     RAYLIBGAME_EROSION=1 run --seed 42 --bench 5 --test-flow-sea # the erosion bake's rivers (#190; the noise terrain's river mouths stand over the sea)
     RAYLIBGAME_EROSION=1 run --seed 42 --bench 3 --test-dam # #361/#432: a low dam backs a released river reach up and it spills over (eroded valleys; up to 7 min)
     run --seed 42 --bench 3 --test-pond
     run --seed 42 --bench 3 --test-part-wall # #391: a wall of build blocks holds water; taken down, the water runs on
-    RAYLIBGAME_FLUID_CELL=0.25 run --sandbox --seed 42 --day --bench 3 --test-leak # #680/#691: a 1 m hole in a dug wall drains like an orifice, then a weir; no water on the grass
-    RAYLIBGAME_FLUID_CELL=0.25 run --sandbox --seed 42 --day --bench 3 --test-leak-parts # #692/#694: the same through a dam of placed blocks (0.25 m cells: at 1 m a one-block hole off the fluid grid stays shut)
-    RAYLIBGAME_FLUID_CELL=0.25 run --sandbox --seed 42 --day --bench 3 --test-dam-break # #680: Ritter front, depth and discharge (reported; the pass is the model work on #680)
+    run --sandbox --seed 42 --day --bench 3 --test-leak # #680/#691: a 1 m hole in a dug wall drains like an orifice, then a weir; no water on the grass
+    run --sandbox --seed 42 --day --bench 3 --test-leak-parts # #692/#694: the same through a dam of placed blocks (at 1 m cells, opt-in, a one-block hole off the fluid grid stays shut)
+    run --sandbox --seed 42 --day --bench 3 --test-dam-break # #680: Ritter front, depth and discharge (reported; the pass is the model work on #680)
     run --seed 42 --bench 3 --test-flow-meter # #392: the flow readout reads a 1 m^3/s stream
     run --seed 42 --bench 3 --test-pressure # #393: hydrostatic pressure in a filled shaft and a pond
     run --seed 42 --bench 3 --test-bucket
