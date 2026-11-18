@@ -2148,6 +2148,7 @@ int main(int argc, char** argv)
                     } else if (factPhase == 3 && GetTime() - factStart > 2.0) {
                         factMade0 = Factory::Stats().itemsMade;
                         Factory::View(p->id, factPlot, factSeeds[0][2] + 1); // watch the first chest from now on
+                        Factory::Cable(p->id, factPlot, Int3{ 0, 0, -1 }); // and the first group's cable (#570)
                         factPhase = 4; factStart = GetTime(); factSamples = 0; factSum = 0.0; factMax = 0.0;
                     } else if (factPhase == 4) {
                         const FactoryStats s = Factory::Stats();
@@ -2155,7 +2156,10 @@ int main(int argc, char** argv)
                         if (GetTime() - factStart > 12.0) {
                             const double avg = factSum / std::max(1, factSamples);
                             const MachineView chest = Factory::View(p->id, factPlot, factSeeds[0][2] + 1);
-                            const bool pass = avg < 5.0 && s.activeMachines >= benchFactory / 2 && s.itemsMade > 0;
+                            const CableView cable = Factory::Cable(p->id, factPlot, Int3{ 0, 0, -1 });
+                            const bool cableOk = cable.valid && cable.voltage > 0 && cable.generators == 1 && cable.consumers == 2 && cable.supply > 0.0f;
+                            printf("bench: factory: the first cable's network (#570): %d V, %d generator, %d machines, %.1f of %.1f EU/t -> %s\n", cable.voltage, cable.generators, cable.consumers, cable.supply, cable.demand, cableOk ? "ok" : "WRONG");
+                            const bool pass = avg < 5.0 && s.activeMachines >= benchFactory / 2 && s.itemsMade > 0 && cableOk;
                             printf("bench: factory: %d machines (%d active), %d item / %d power networks; tick %.2f ms avg, %.2f ms worst; %lld items made in the last 12 s (%lld total); first chest: %s -> %s\n",
                                    s.machines, s.activeMachines, s.itemNetworks, s.powerNetworks, avg, s.maxTickMs, s.itemsMade - factMade0, s.itemsMade, chest.input.c_str(), pass ? "PASS" : "FAIL");
                             factChestBefore = chest.input;

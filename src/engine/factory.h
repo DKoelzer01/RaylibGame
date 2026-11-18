@@ -18,6 +18,7 @@
 // Plots far from the player tick once a second with a 20x step: the same rates and budgets, a
 // twentieth of the cost, never more output than the full simulation.
 
+#include "voxel.h" // Int3
 #include <cstdint>
 #include <cstdio>
 #include <string>
@@ -45,6 +46,14 @@ struct MachineView {             // published per machine each tick
     bool valid = false;
 };
 
+// A cable's power network, for its look-at panel (#570): what is on it and what flowed in the last step.
+struct CableView {
+    bool valid = false;             // the cable is known to the simulation (false for a tick after asking)
+    int voltage = 0;                // the network's (its highest generator or battery); 0: nothing feeds it
+    int generators = 0, consumers = 0, batteries = 0;
+    float supply = 0.0f, demand = 0.0f; // EU per tick made (with batteries' share) and wanted
+};
+
 struct FactoryStats {
     int machines = 0, activeMachines = 0, itemNetworks = 0, powerNetworks = 0;
     double avgTickMs = 0.0, maxTickMs = 0.0;
@@ -60,6 +69,7 @@ namespace Factory {
     // take the results of item commands (into the inventory).
     void Sync(Scene& world);
     MachineView View(uint64_t bodyId, uint32_t plotId, int part);
+    CableView Cable(uint64_t bodyId, uint32_t plotId, Int3 cell); // the network through that cable cell (#570); watched like View
     // Whether a machine on a plot near the player is working (any number of calls a frame: models, smoke).
     // View() follows one machine at a time (the open machine screen) - never call it for many machines.
     bool Working(uint64_t bodyId, uint32_t plotId, int part);

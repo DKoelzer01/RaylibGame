@@ -28,7 +28,6 @@
     task | get glass 2            | Melt sand into glass in the kiln
     task | get copper_wire 4      | Draw copper wire (Tab)
     task | get vacuum_tube 1      | Craft a vacuum tube
-    task | do modules 2           | Fit a second suit module (Tab > Suit)
 4 | LV electric      | electric_furnace | Basic circuits on a steel hull make your first LV machine. Power it from an LV generator (32 V; steam machines refuse it).
     task | get basic_circuit 1    | Craft a basic circuit
     task | get lv_hull 1          | Craft an LV machine hull
@@ -36,7 +35,6 @@
     task | get electric_furnace 1 | Craft an electric furnace
     task | place generator        | Place the LV generator
     task | place electric_furnace | Place the electric furnace and cable it to the generator
-    task | get field_suit 1       | Craft a field suit (steel plate, cloth, hide) and wear it (Tab > Suit)
 5 | MV electric      | aluminium_ingot  | Process ore for more: a macerator crushes it (x2), an ore washer and a water pump purify it, a centrifuge splits off byproducts (iron: nickel, copper: gold). MV (128 V): an MV generator powers an electrolyzer (water: hydrogen and oxygen) and a chemical reactor (polyethylene for good circuits). Electrolyse bauxite dust into aluminium. A miner works the deposit under it.
     task | place macerator        | Place a macerator: crushed ore smelts to twice the ingots
     task | place ore_washer       | Place an ore washer (and a water pump) to purify crushed ore
