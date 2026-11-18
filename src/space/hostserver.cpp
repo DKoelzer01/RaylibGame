@@ -1,5 +1,6 @@
 #include "hostserver.h"
 #include "netinterest.h"
+#include "gputimer.h"
 #include "events.h"
 #include "joininfo.h"
 #include "net.h"
@@ -428,8 +429,11 @@ void Host_Update(Scene& world) {
     }
     for (uint32_t c : gone) Drop(c, NetBye::Quit);
     for (uint32_t c : silent) Drop(c, NetBye::TimedOut);
+    GpuTimer_CpuMark("host: receive, handshakes"); // (#348)
     StepRemotes(world);
+    GpuTimer_CpuMark("host: remote players");
     SendSnapshots(world);
+    GpuTimer_CpuMark("host: snapshots");
 }
 
 bool Host_SaveOnShutdown(Scene& world) {

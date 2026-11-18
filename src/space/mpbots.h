@@ -12,10 +12,13 @@
 // Test-only: single player never creates one.
 
 #include <cstdint>
+#include <string>
 
 class Scene;
 
-void MpBots_Start(int count, uint16_t port);
+// address: a server in another process ("ip:port"; "" = the --host in this one). soak > 0 (#348): walk that many seconds
+// and report the load numbers instead of the churn test (needs no host here: --join ADDR --bots N --soak S).
+void MpBots_Start(int count, uint16_t port, const std::string& address = "", double soak = 0.0);
 // Per frame after Host_Update. Returns true once finished (the result line has printed).
 bool MpBots_Update(Scene& world);
 bool MpBots_Active();
