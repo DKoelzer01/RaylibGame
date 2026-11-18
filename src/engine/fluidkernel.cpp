@@ -30,7 +30,7 @@ void Grid::resize(int slots) {
     faceP.assign((size_t)slots * 4096, Vec4{}); faceN.assign((size_t)slots * 4096 * 2, Vec4{});
     nbr.assign((size_t)slots * 6, -1); processed.assign(slots, 0); flags.assign(slots, 0u); delta.assign((size_t)slots * 4096, 0); sinkOut.assign(slots, 0u);
     dem.assign((size_t)slots * 4096, 0u); cap.assign((size_t)slots * 4096, 0u);
-    pairCode.assign((size_t)slots * 4096 * 4, 0u);
+    pairCode.assign((size_t)slots * 4096 * 4, (uint16_t)0);
     gmask.assign((size_t)slots * 6, 0u); gon.assign(slots, ~0ull); groupsFull = true;
 }
 
@@ -468,8 +468,10 @@ struct Pass {
             __atomic_fetch_add(&g.delta[taker], units, __ATOMIC_RELAXED);
             return q;
         }
+        const int rowDiff = takerRow - giverRow;
+        if (giverRow < -64 || giverRow > 191 || rowDiff < -110 || rowDiff > 17) return q; // out of the 16-bit code's reach: no move
         planned = (float)units;
-        g.pairCode[(size_t)4 * gi + k] = 1u | (aGives ? 2u : 0u) | ((uint32_t)(giverRow + 512) << 2) | ((uint32_t)(takerRow + 512) << 12);
+        g.pairCode[(size_t)4 * gi + k] = (uint16_t)((aGives ? 1u : 0u) | ((uint32_t)(giverRow + 64) << 1) | ((uint32_t)(rowDiff + 110) << 9));
         __atomic_fetch_add(&g.dem[giverTop], (uint32_t)units << 16, __ATOMIC_RELAXED); // out
         __atomic_fetch_add(&g.dem[taker], (uint32_t)units, __ATOMIC_RELAXED);         // in
         __atomic_fetch_or(&g.cap[giverTop], (uint32_t)avail << 16, __ATOMIC_RELAXED);  // one avail a cell (its run's)
@@ -534,8 +536,8 @@ struct Pass {
                 if (planned <= 0) continue;
                 // Back to the cells from the pair's code: rows from this run's bottom, in A's column or the neighbour's.
                 const uint32_t code = g.pairCode[(size_t)4 * gi + k];
-                const bool aGives = (code & 2u) != 0u;
-                const int giverRow = (int)((code >> 2) & 1023u) - 512, takerRow = (int)((code >> 12) & 1023u) - 512;
+                const bool aGives = (code & 1u) != 0u;
+                const int giverRow = (int)((code >> 1) & 255u) - 64, takerRow = giverRow + (int)((code >> 9) & 127u) - 110;
                 bool pn; int face;
                 const int nb = neighbour(slot, x, y, z, k == 0 ? 1 : k == 2 ? -1 : 0, k == 1 ? 1 : k == 3 ? -1 : 0, 0, pn, face);
                 const int giver = cellAtRow(aGives ? gi : nb, giverRow), taker = cellAtRow(aGives ? nb : gi, takerRow);
