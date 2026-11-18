@@ -84,7 +84,7 @@ PartType TypeNamed(const std::string& n) {
         { "chest", PartType::Chest }, { "fence", PartType::Fence }, { "gate", PartType::Gate }, { "campfire", PartType::Campfire },
         { "fuel_tank", PartType::FuelTank }, { "rocket_engine", PartType::RocketEngine }, { "cabin", PartType::Cabin },
         { "landing_leg", PartType::LandingLeg }, { "torch", PartType::Torch },
-        { "farmland", PartType::Farmland },
+        { "farmland", PartType::Farmland }, { "generator", PartType::Generator }, { "battery", PartType::Battery }, // (#720: salvage)
     };
     for (auto& k : kNames) if (n == k.first) return k.second;
     return PartType::Count;
