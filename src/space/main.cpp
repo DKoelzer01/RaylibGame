@@ -1301,6 +1301,88 @@ int main(int argc, char** argv)
             }
             return 0;
         }
+    for (int i = 1; i < argc; ++i)
+        if (std::string(argv[i]) == "--test-dig-lod") {
+            // #679: a 64 x 64 m box dug 3 m deep at the start (best with --sandbox: a flat plane), then the node over the
+            // floor's middle built at every level 0-6 with the edit, and the height of its floor vertices (the ones well
+            // inside the walls) against the dug floor: mean, rms and worst. Coarse nodes point-sampled the edit lattice,
+            // so their floors came out lumpy by up to half a stride, or not dug at all. Also (#693): no lattice point inside
+            // the cut may stay solid (specks over a trench); --dig-lod-flush cuts the box the way --test-fluid-load does.
+            Planetoid* p = dynamic_cast<Planetoid*>(world.objects[0].get());
+            const auto* pf = p ? dynamic_cast<const PlanetField*>(p->field.get()) : nullptr;
+            if (!pf || !p->edits) { printf("bench: dig-lod: no planet -> FAIL\n"); return 1; }
+            const Vector3 home = pf->findSpawnDir(p->seed);
+            const Vector3 eE = Vector3Normalize(Vector3CrossProduct(home, { 0, 1, 0 })), eN = Vector3CrossProduct(eE, home);
+            const Vector3 mid = Vector3Scale(home, pf->radius + pf->elevation(home));
+            const float half = 32.0f, depth = 3.0f;
+            bool flush = false;
+            for (int k = 1; k < argc; ++k) if (std::string(argv[k]) == "--dig-lod-flush") flush = true;
+            TerrainDeltasBuilder bld(*p->edits);
+            for (int a = 0; a < 4; ++a)
+                for (int c = 0; c < 4; ++c) {
+                    TerrainEdit e{};
+                    // 16 m tiles overlapping by 1 m, their tops 1 m over the ground; --dig-lod-flush: as --test-fluid-load cuts
+                    // its basin, tiles sharing their faces and the top flush with the ground. Such faces left films of ground
+                    // where they passed within a rounding step of lattice points (#693): they count as floor errors of ~3 m.
+                    if (flush) {
+                        e.center = Vector3Add(mid, Vector3Add(Vector3Add(Vector3Scale(eE, 16.0f * (a - 1.5f)), Vector3Scale(eN, 16.0f * (c - 1.5f))), Vector3Scale(home, -0.5f * depth)));
+                        e.half = { 8.0f, 8.0f, 0.5f * depth };
+                    } else {
+                        e.center = Vector3Add(mid, Vector3Add(Vector3Add(Vector3Scale(eE, 16.0f * (a - 1.5f)), Vector3Scale(eN, 16.0f * (c - 1.5f))), Vector3Scale(home, 1.0f - (0.5f * depth + 0.5f))));
+                        e.half = { 8.5f, 8.5f, 0.5f * depth + 0.5f };
+                    }
+                    e.carve = true; e.box = true;
+                    e.ax = eE; e.ay = eN; e.az = home;
+                    e.radius = Vector3Length(e.half);
+                    bld.apply(e, *p->field);
+                }
+            const std::shared_ptr<const TerrainDeltas> dug = bld.finish();
+            bool ok = true;
+            {   // #693: lattice points left solid inside the cut, from 0.5 m over the floor to 0.5 m over the old ground,
+                // over a 20 m square in the middle (specks of ground floating over the trench)
+                int specks = 0, checked = 0;
+                const int c0x = (int)lroundf(mid.x / kVoxelSize), c0y = (int)lroundf(mid.y / kVoxelSize), c0z = (int)lroundf(mid.z / kVoxelSize);
+                for (int dz = -40; dz <= 40; ++dz) for (int dy = -40; dy <= 40; ++dy) for (int dx = -40; dx <= 40; ++dx) {
+                    const Vector3 q = { (c0x + dx) * kVoxelSize, (c0y + dy) * kVoxelSize, (c0z + dz) * kVoxelSize };
+                    const float h = Vector3DotProduct(Vector3Subtract(q, mid), home);
+                    if (h < 0.5f - depth || h > 0.5f) continue;
+                    ++checked;
+                    if (p->field->baseDensity(q) + dug->at(c0x + dx, c0y + dy, c0z + dz) >= ISO_LEVEL) ++specks;
+                }
+                ok = specks == 0;
+                printf("bench: dig-lod: %d of %d lattice points in the cut still solid -> %s\n", specks, checked, ok ? "PASS" : "FAIL");
+            }
+            for (int level = 0; level <= 6; ++level) {
+                const NodeKey probe{ level, 0, 0, 0 };
+                const float size = probe.size();
+                const Vector3 floorMid = Vector3Add(mid, Vector3Scale(home, -depth));
+                ChunkMeshData out;
+                out.key = { level, (int)floorf(floorMid.x / size), (int)floorf(floorMid.y / size), (int)floorf(floorMid.z / size) };
+                BuildChunkMesh(*p->field, *dug, out);
+                const Vector3 org = out.key.origin();
+                const float stride = out.key.stride(), inner = half - 2.0f * stride - 1.0f;
+                double sum = 0.0, sum2 = 0.0, worst = 0.0; int n = 0, raw = 0;
+                for (size_t v = 0; v + 2 < out.positions.size(); v += 3) {
+                    const Vector3 q = Vector3Subtract(Vector3Add(org, { out.positions[v], out.positions[v + 1], out.positions[v + 2] }), mid);
+                    const float x = Vector3DotProduct(q, eE), y = Vector3DotProduct(q, eN), h = Vector3DotProduct(q, home);
+                    if (fabsf(x) > inner || fabsf(y) > inner) continue;
+                    ++raw;
+                    const double dev = h + depth;
+                    if (fabs(dev) > depth + 2.0 * stride) continue; // another surface (none expected)
+                    sum += dev; sum2 += dev * dev; worst = std::max(worst, fabs(dev)); ++n;
+                }
+                // The node's own share of the basin's interior: none when the interior is narrower than 2 strides of margin.
+                const bool covers = inner > stride;
+                const double mean = n ? sum / n : 0.0, rms = n ? sqrt(sum2 / n) : 0.0;
+                const double bar = 0.15 + 0.05 * stride; // point sampling: 0.30 m at 2 m, 0.91 at 4 m, 2.47 at 8 m; filtered 0.04-0.08, 0.11-0.15, 0.20-0.24
+                const bool pass = !covers || (n > 0 && worst <= bar);
+                ok = ok && pass;
+                printf("bench: dig-lod: level %d (stride %.2f m): %d floor vertices (%d inside), mean %+.3f m, rms %.3f m, worst %.3f m (bar %.2f)%s -> %s\n",
+                       level, stride, n, raw, mean, rms, worst, bar, covers ? "" : " (interior narrower than the margin: not judged)", pass ? "PASS" : "FAIL");
+            }
+            printf("bench: dig-lod: %s\n", ok ? "PASS" : "FAIL");
+            return ok ? 0 : 1;
+        }
 
     const double benchWarmup = 2.0;
     double benchStart = 0.0, benchMaxFrame = 0.0;
