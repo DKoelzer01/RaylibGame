@@ -5,6 +5,7 @@
 #include "animals.h"
 #include "combat.h"
 #include "teamquests.h"
+#include <process.h>
 #include "survival.h"
 #include "playersession.h"
 #include "hostserver.h"
@@ -596,7 +597,8 @@ void NetClient_SendChat(NetClient& c, const std::string& text) {
 
 // A body's plots as the save writes them (text; the same file mode both ways, so equal plots give equal bytes).
 std::vector<uint8_t> Plots_Blob(const PlotSet& plots) {
-    static const char* kTemp = "saves/.netsync_plots.tmp";
+    static const std::string kTempS = "saves/.netsync_plots." + std::to_string(_getpid()) + ".tmp"; // (#837) per process: a host and clients share the folder
+    const char* kTemp = kTempS.c_str();
     if (!DirectoryExists("saves")) MakeDirectory("saves");
     std::vector<uint8_t> out;
     FILE* f = fopen(kTemp, "w");
@@ -614,7 +616,8 @@ std::vector<uint8_t> Plots_Blob(const PlotSet& plots) {
 }
 
 bool Plots_Install(Planetoid& body, const std::vector<uint8_t>& blob) {
-    static const char* kTemp = "saves/.netsync_plots_in.tmp";
+    static const std::string kTempS = "saves/.netsync_plots_in." + std::to_string(_getpid()) + ".tmp"; // (#837) per process
+    const char* kTemp = kTempS.c_str();
     if (!DirectoryExists("saves")) MakeDirectory("saves");
     FILE* f = fopen(kTemp, "wb");
     if (!f) return false;

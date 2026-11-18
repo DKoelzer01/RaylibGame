@@ -12,6 +12,8 @@ tmp="$(mktemp -d)"
 cd "$here"
 SECONDS=0
 printf 'erosion 0\n' > "$tmp/host.sav.worldgen"
+. "$here/tools/lib_netmem.sh" # (#837) light clients, and enough memory for every instance first
+net_wait_for_memory 9 test_graves || exit 0
 RAYLIBGAME_HOST_GIVE="berries 3" RAYLIBGAME_HOST_HERD="thornback 1" RAYLIBGAME_HOST_HERD_THREATS=1 "$exe" --host "$tmp/host.sav" --seed 42 --day --bench 600 --port "$port" --death-drops grave > "$tmp/host.log" 2>&1 &
 hp=$!
 # #795: on Windows a signal to the msys PID can miss the native game.exe; stop it by its Windows PID as well.
@@ -27,7 +29,7 @@ trap stop_host EXIT
 [ -d /proc ] || echo "test_graves: warning: not Git Bash (no /proc): the host may be left running; run it with Git Bash" >&2
 until grep -q "test herd" "$tmp/host.log" 2>/dev/null || ! kill -0 "$hp" 2>/dev/null || [ $SECONDS -gt 240 ]; do sleep 1; done
 grep -h "test herd" "$tmp/host.log" || { echo "test_graves: no thornback on the host -> FAIL"; stop_host; exit 1; }
-RAYLIBGAME_VICTIM_SECONDS=45 RAYLIBGAME_NET_ANIMALS_ROLE=victim timeout 200 "$exe" --join "127.0.0.1:$port" --name victim --bench 3 --test-net-animals > "$tmp/victim.log" 2>&1
+RAYLIBGAME_VICTIM_SECONDS=45 RAYLIBGAME_NET_ANIMALS_ROLE=victim timeout 200 "$exe" --join "127.0.0.1:$port" --name victim --bench 3 $NET_LIGHT_CLIENT --test-net-animals > "$tmp/victim.log" 2>&1
 stop_host
 ok=1
 chk() { if [ "$1" = 1 ]; then echo "  ok: $2"; else echo "  MISSING: $2"; ok=0; fi; }
