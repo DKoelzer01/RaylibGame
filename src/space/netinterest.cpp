@@ -72,7 +72,7 @@ std::vector<uint32_t> Interest_Select(uint32_t client, uint64_t viewerBody, cons
 void Interest_Forget(uint32_t client) { clients.erase(client); }
 InterestStats Interest_Stats(uint32_t client) { auto it = clients.find(client); return it == clients.end() ? InterestStats{} : it->second.stats; }
 
-// --test-interest: 32 players around one viewer (itself, 5 near, 8 at 1 km, 8 at 10 km, 10 on another body), 10 s of
+// --test-net-interest: 32 players around one viewer (itself, 5 near, 8 at 1 km, 8 at 10 km, 10 on another body), 10 s of
 // 30 Hz snapshots. With room in the budget each group is sent at its rate; on a tight budget the bytes stay within it,
 // the own player is never skipped, nearer groups still get more, and no player waits longer than its bound.
 bool Interest_Test() {

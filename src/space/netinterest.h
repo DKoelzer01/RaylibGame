@@ -8,7 +8,7 @@
 // 30 Hz). Entities whose accumulator reached 1 are sent, highest first, until the snapshot's byte budget (the client's
 // kbit/s over the snapshot rate, unused bytes carried one snapshot) runs out; the rest wait with their priority still
 // rising, so nothing starves. Terrain edits use Interest_EditRelevant (same body, within the edit range).
-// Standalone: the server's snapshot loop (hostserver.cpp SendSnapshots) asks Interest_Select; `--test-interest` checks
+// Standalone: the server's snapshot loop (hostserver.cpp SendSnapshots) asks Interest_Select; `--test-net-interest` checks
 // the rates, the budget and starvation without a world or a network.
 
 #include <cstdint>
@@ -42,6 +42,6 @@ float Interest_Rate(uint64_t viewerBody, const DVec3& viewerLocal, double bodySc
 bool Interest_EditRelevant(uint64_t viewerBody, const DVec3& viewerLocal, double bodyScale, uint64_t editBody, const DVec3& editCentre);
 void Interest_Forget(uint32_t client);              // a client left
 InterestStats Interest_Stats(uint32_t client);
-bool Interest_Test();                               // --test-interest
+bool Interest_Test();                               // --test-net-interest
 
 #endif
