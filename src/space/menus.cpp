@@ -348,7 +348,7 @@ std::string Menu_NewSavePath() {
 
 extern const char* kGameVersion; // "<branch> <commit>", generated at build time (#501)
 
-// ---- Multiplayer (#341): host a world, join by IP ----
+// ---- Multiplayer (#341): host a game (others join while you play), join by IP ----
 namespace {
     // Suit colours (0xRRGGBB): the default first, then ten that read apart from each other on a grey suit and at a distance.
     constexpr uint32_t kSuits[] = { 0x000000, 0xD8452F, 0xE8902A, 0xE3C93B, 0x58B548, 0x2FA39A, 0x3E86D8, 0x6B5BD6, 0xB04FC2, 0xE06FA4, 0xEDEDED };
@@ -412,11 +412,14 @@ namespace {
         const float w = 760.0f;
         auto row = [&](int i) { return Row(i, w, 0.30f); };
         if (mainPage == Page::Multiplayer) {
-            if (Button(Row(0), "Host a world")) { RefreshSaves(); hostWorld = saves.empty() ? -1 : 0; portText = std::to_string(settings.mpPort); maxText = std::to_string(settings.mpMaxPlayers); mpMessage.clear(); mainPage = Page::Host; }
-            if (Button(Row(1), "Join a server")) { mpMessage.clear(); mainPage = Page::Join; }
+            if (Button(Row(0), "Host game")) { RefreshSaves(); hostWorld = saves.empty() ? -1 : 0; portText = std::to_string(settings.mpPort); maxText = std::to_string(settings.mpMaxPlayers); mpMessage.clear(); mainPage = Page::Host; }
+            if (Button(Row(1), "Join game")) { mpMessage.clear(); mainPage = Page::Join; }
             const int fs = (int)(20 * s);
-            const char* note = "Players join by IP address; the host's port must be reachable (forwarded) for players outside its network.";
-            DrawText(note, (GetScreenWidth() - MeasureText(note, fs)) / 2, (int)(Row(2).y + 10 * s), fs, Fade(kText, 0.7f));
+            // Hosting here is not a dedicated server (#806): the world lives in this game and closes with it.
+            const char* note = "Host game: others can join while you play; the world closes when you leave.";
+            const char* note2 = "Players join by IP address; outside your network they need your port forwarded.";
+            DrawText(note, (GetScreenWidth() - MeasureText(note, fs)) / 2, (int)(Row(2).y + 2 * s), fs, Fade(kText, 0.8f));
+            DrawText(note2, (GetScreenWidth() - MeasureText(note2, fs)) / 2, (int)(Row(2).y + 2 * s + fs * 1.4f), fs, Fade(kText, 0.6f));
             if (Button(Row(3), "Back") || IsKeyPressed(KEY_ESCAPE)) mainPage = Page::Main;
             return;
         }
@@ -424,7 +427,7 @@ namespace {
         int i = 0;
         TextField(row(i++), "Your name", settings.mpName, 1, 24, kNameChars);
         if (join) {
-            TextField(row(i++), "Server address", settings.mpAddress, 2, 64, kAddrChars);
+            TextField(row(i++), "Address", settings.mpAddress, 2, 64, kAddrChars);
             TextField(row(i++), "Password", mpPassword, 3, 32, kPassChars, true);
         } else {
             { // the world to host: the saves, or a new one
@@ -442,7 +445,7 @@ namespace {
             TextField(row(i++), "Password (optional)", mpPassword, 3, 32, kPassChars, true);
         }
         SuitPicker(row(i++), settings.mpSuit);
-        if (join && !settings.mpRecent.empty()) { // recent servers: click to fill the address
+        if (join && !settings.mpRecent.empty()) { // recent addresses: click to fill it in
             const Rectangle rr = row(i++);
             const int fs = (int)(rr.height * 0.4f);
             DrawText("Recent", (int)rr.x, (int)(rr.y + (rr.height - fs) * 0.5f), fs, Fade(kText, 0.8f));
@@ -473,7 +476,7 @@ namespace {
                 settings.mpPort = port; settings.mpMaxPlayers = maxp;
                 r.action = MenuAction::HostGame; r.path = hostWorld >= 0 && hostWorld < (int)saves.size() ? saves[hostWorld].path : std::string();
                 r.port = port; r.maxPlayers = maxp; r.password = mpPassword; r.name = settings.mpName; r.suitColor = settings.mpSuit;
-                mpMessage = "Starting the server ..."; mpMessageBad = false; focus = -1;
+                mpMessage = "Opening your world to others ..."; mpMessageBad = false; focus = -1;
                 Settings_Save();
             }
         }

@@ -103,7 +103,7 @@ extern "C" __declspec(dllimport) int __stdcall MessageBoxA(void*, const char*, c
 static std::vector<AvatarState> gAvatars, gBenchAvatars;
 // --join (#341 core): this process's connection to the server; its player follows the server's state once synced.
 static NetClient gJoin;
-static std::string gHostedServer; // (#341) the server the menu's Host started ("" none): shown in the player list
+static std::string gHostedServer; // (#341) the game we host from the menu ("on port N"; "" none): shown in the player list
 // The player list (#341: hold J in game; on the pause screen too): everyone on the server from its roster, with their
 // suit colours; us marked, with our round trip.
 static void DrawPlayerList(const NetClient& c) {
@@ -11164,8 +11164,9 @@ int main(int argc, char** argv)
                     enterGame(true);
                     break;
                 }
-                case MenuAction::HostGame: { // (#341) the menu's Host: our own dedicated server in the background, joined over loopback
-                    if (!HostProcess_PortFree(m.port)) { Menu_MultiplayerFailed(true, TextFormat("Port %d is already in use (another server, or another program)", m.port)); break; }
+                case MenuAction::HostGame: { // (#341) Host game: the world runs in a child process (the --server code) we join over
+                    // loopback; it is tied to this game and closes when we leave - not a dedicated server, which runs on its own (#806)
+                    if (!HostProcess_PortFree(m.port)) { Menu_MultiplayerFailed(true, TextFormat("Port %d is already in use (another game, or another program)", m.port)); break; }
                     const std::string save = m.path.empty() ? Menu_NewSavePath() : m.path; // (the saves folder: it lists and loads like any save)
                     ServerConfig cfg;
                     cfg.save = save; cfg.port = m.port; cfg.maxPlayers = m.maxPlayers; cfg.password = m.password; cfg.log = save + ".server.log";
@@ -11174,15 +11175,15 @@ int main(int argc, char** argv)
                     if (FILE* cf = fopen(cfgPath.c_str(), "w")) { fputs(ServerConfig_Text(cfg).c_str(), cf); fclose(cf); wrote = true; }
                     std::string err;
                     if (!wrote) { Menu_MultiplayerFailed(true, "Could not write " + cfgPath); break; }
-                    if (!HostProcess_Start(cfgPath, save + ".console.log", err)) { Menu_MultiplayerFailed(true, "Could not start the server: " + err); break; }
+                    if (!HostProcess_Start(cfgPath, save + ".console.log", err)) { Menu_MultiplayerFailed(true, "Could not open the world to others: " + err); break; }
                     hostedHere = true;
                     gHostedServer = TextFormat("on port %d", m.port);
                     printf("host: started a server for %s on port %d (%d players%s); joining it\n", save.c_str(), m.port, m.maxPlayers, m.password.empty() ? "" : ", a password");
                     const std::string why = joinServer(TextFormat("127.0.0.1:%d", m.port), m.name, m.password, m.suitColor, 300.0,
-                                                       m.path.empty() ? "Starting your server: a new world is built first (a few minutes) ..." : "Starting your server ...");
+                                                       m.path.empty() ? "Hosting: a new world is built first (a few minutes) ..." : "Hosting: opening your world ...");
                     if (!why.empty()) {
                         HostProcess_Stop(10.0); hostedHere = false; gHostedServer.clear();
-                        Menu_MultiplayerFailed(true, "The server didn't come up: " + why + " (see " + cfg.log + ")");
+                        Menu_MultiplayerFailed(true, "The hosted world didn't open: " + why + " (see " + cfg.log + ")");
                         break;
                     }
                     enterGame(true);
