@@ -614,6 +614,7 @@ int main(int argc, char** argv)
     bool benchSpring = false; int springPhase = 0; double springT0 = 0.0; // --test-spring
     bool benchShotAnimals = false; int animalShotPhase = 0; // --shot-animals
     bool benchShotAvatar = false; int avatarShotPhase = 0;  // --shot-avatar (#328)
+    bool benchShotGraves = false; int graveShotPhase = 0;  // --shot-graves (#804)
     const bool avatarSelf = getenv("RAYLIBGAME_AVATAR_SELF") && atoi(getenv("RAYLIBGAME_AVATAR_SELF")) != 0;
     bool benchShotMachines = false; int machineShotPhase = 0; // --shot-machines
     bool benchParticles = false; int particlePhase = 0; double particleT0 = 0.0; Vector3 particleEye{}, particleAt{}; // --shot-particles
@@ -810,6 +811,7 @@ int main(int argc, char** argv)
         if (std::string(argv[i]) == "--host-password" && i + 1 < argc) Host_SetPassword(argv[i + 1]); // (#321)
         if (std::string(argv[i]) == "--host-edits" && i + 1 < argc) hostEdits = atoi(argv[i + 1]); // (#776 tests) a world with many edits to join
         if (std::string(argv[i]) == "--max-players" && i + 1 < argc) Host_SetMaxPlayers(atoi(argv[i + 1]));
+        if (std::string(argv[i]) == "--death-drops" && i + 1 < argc) { const std::string d = argv[i + 1]; Host_SetDeathDrops(d == "keep" ? DeathDrops::Keep : d == "grave" ? DeathDrops::Grave : DeathDrops::Difficulty); } // (#804)
         if (std::string(argv[i]) == "--test-host") benchHost = true;
         if (std::string(argv[i]) == "--test-time-follow") benchTimeFollow = true;
         if (std::string(argv[i]) == "--test-player-cost" && i + 1 < argc) benchPlayerCost = std::max(1, atoi(argv[i + 1]));
@@ -979,6 +981,7 @@ int main(int argc, char** argv)
         if (std::string(argv[i]) == "--test-spring") benchSpring = true;
         if (std::string(argv[i]) == "--shot-animals") benchShotAnimals = true;
         if (std::string(argv[i]) == "--shot-avatar") benchShotAvatar = true;
+        if (std::string(argv[i]) == "--shot-graves") benchShotGraves = true;
         if (std::string(argv[i]) == "--shot-machines") benchShotMachines = true;
         if (std::string(argv[i]) == "--shot-biomes") benchShotBiomes = 0;
         if (std::string(argv[i]) == "--shot-far-forest") benchFarForest = true;
@@ -4994,6 +4997,37 @@ int main(int argc, char** argv)
                             gBenchAvatars.clear();
                             benchShotAvatar = false;
                         }
+                    }
+                } else if (benchShotGraves && (graveShotPhase > 0 || WorldIdle())) {
+                    // --shot-graves (#804, #800): the three grave stones (cross, headstone, monolith) and a bed in a row on the
+                    // ground ahead, in daylight (bench_graves.png).
+                    Planetoid* p = dynamic_cast<Planetoid*>(world.objects[0].get());
+                    const PlanetField* pf = p ? dynamic_cast<const PlanetField*>(p->field.get()) : nullptr;
+                    static double t0 = 0.0; static Vector3 me{}, t1{}, t2{};
+                    auto ground = [&](Vector3 q) { const Vector3 d = Vector3Normalize(q); return Vector3Scale(d, pf->radius + pf->elevation(d)); };
+                    if (!pf) benchShotGraves = false;
+                    else {
+                        if (graveShotPhase == 0) {
+                            player.flyMode = true;
+                            me = p->toLocal((player.position - world.renderOrigin).toFloat());
+                            const Vector3 up = Vector3Normalize(me);
+                            t1 = Vector3Normalize(Vector3CrossProduct(up, { 0, 1, 0 })); t2 = Vector3CrossProduct(t1, up);
+                            sunOverride = true; sunArg = p->dirToWorld(Vector3Normalize(Vector3Add(up, Vector3Scale(Vector3Subtract(t1, t2), 0.5f))));
+                            for (int k = 0; k < 3; ++k) {
+                                const Vector3 at = ground(Vector3Add(me, Vector3Add(Vector3Scale(t2, 5.0f), Vector3Scale(t1, (k - 1.5f) * 1.6f))));
+                                Combat_TestAddGrave(p->name, DVec3{ at.x, at.y, at.z }, (uint8_t)k, "");
+                            }
+                            const Vector3 bedAt = Vector3Add(ground(Vector3Add(me, Vector3Add(Vector3Scale(t2, 5.0f), Vector3Scale(t1, 2.6f)))), Vector3Scale(up, 0.05f));
+                            if (!p->plots) p->plots = std::make_unique<PlotSet>();
+                            if (Plot* pl = p->plots->plotFor(bedAt, 0.0f, true)) pl->place(Part{ PartType::Bed, pl->cellAt(pl->toPlot(bedAt)), 0, 0 });
+                            graveShotPhase = 1; t0 = GetTime();
+                        }
+                        const double t = GetTime() - t0;
+                        const Vector3 centre = ground(Vector3Add(me, Vector3Scale(t2, 5.0f))), up = Vector3Normalize(centre);
+                        const Vector3 eye = Vector3Add(ground(Vector3Subtract(me, Vector3Scale(t2, 0.5f))), Vector3Scale(up, 1.9f));
+                        world.camera.position = p->toWorld(eye); world.camera.target = p->toWorld(Vector3Add(centre, Vector3Scale(up, 0.5f))); world.camera.up = p->dirToWorld(up);
+                        player.position = world.renderOrigin + world.camera.position;
+                        if (t > 3.0) { TakeScreenshot("bench_graves.png"); printf("bench: graves: bench_graves.png (%d graves)\n", Combat_GraveCount()); benchShotGraves = false; }
                     }
                 } else if (benchShotMachines && (machineShotPhase > 0 || WorldIdle())) {
                     // --shot-machines (Plan 5): every machine type in two rows on a plot ahead (bench_machines.png).
@@ -10330,6 +10364,9 @@ int main(int argc, char** argv)
             // death and respawn come from the server's Vitals; while dead nothing bites it.
             static float food0 = -1.0f, foodAfter = -1.0f; static int berries0 = -1, berriesAfter = -1; static double ateAt = -1.0;
             static bool deadSeen = false, respawned = false; static int bitesAtDeath = 0, bitesWhileDead = 0;
+            // (#804) on a --death-drops grave server: everything goes into a grave the client hears of (owned by us); after the
+            // respawn we walk back to it and the server hands it all back.
+            static int carriedAlive = 0, carriedAtDeath = -1, emptiedAfterDeath = -1, carriedBack = -1; static bool ownGraveSeen = false, graveGone = false;
             static bool bedRequested = false, bedSet = false; static double respawnedAt = 0.0; static float bedWake = -1.0f; static Vector3 bedTop{}; // (#800)
             if (victim && ph == 2) {
                 if (ateAt < 0.0 && gJoin.vitalsMsgs > 0 && inventory.count("berries") > 0) { food0 = gJoin.vitals.food; berries0 = inventory.count("berries"); Survival_UseItem("berries"); ateAt = GetTime(); }
@@ -10358,6 +10395,26 @@ int main(int argc, char** argv)
                         if (bedSet) break;
                     }
                 if (respawned && bedWake < 0.0f && GetTime() - respawnedAt > 0.5 && bedSet) bedWake = Vector3Distance(me, bedTop);
+                {   // (#804) graves
+                    int carried = 0;
+                    // the server's starting kit only (telescope, map): a client's quest rewards are its own for now (#816)
+                    for (const InvSlot& s : inventory.grid()) if (s.id == "telescope" || s.id == "map") ++carried;
+                    if (!deadNow && !deadSeen) carriedAlive = std::max(carriedAlive, carried); // (the drop deltas can beat the Vitals that say we died)
+                    if (deadSeen && carriedAtDeath < 0) carriedAtDeath = carriedAlive;
+                    if (deadSeen && !respawned) emptiedAfterDeath = carried;
+                    const auto list = Combat_GraveList();
+                    const GraveInfo* own = nullptr;
+                    for (const GraveInfo& g : list) if (g.owner == joinName) own = &g;
+                    if (own) ownGraveSeen = true;
+                    if (respawned && own && b) { // walk back to it
+                        const Vector3 to = Vector3Subtract(b->toWorld(Vector3{ (float)own->local.x, (float)own->local.y, (float)own->local.z }), (player.position - world.renderOrigin).toFloat());
+                        const Vector3 flat = Vector3Subtract(to, Vector3Scale(player.up, Vector3DotProduct(to, player.up)));
+                        if (Vector3Length(flat) > 0.1f) player.forward = Vector3Normalize(flat);
+                        player.autoWalk = Vector3Length(flat) > 0.8f;
+                    }
+                    if (respawned && ownGraveSeen && !own && !graveGone) { graveGone = true; player.autoWalk = false; }
+                    if (graveGone && carriedBack < 0 && GetTime() - respawnedAt > 1.0) carriedBack = carried;
+                }
                 static bool asked = false;
                 if (health0 < 0.0f) health0 = survival.health;
                 if (!asked) { const int i = Animals_Nearest(me, 3.0f); if (i >= 0) { asked = true; NetClient_UseAnimal(gJoin, Animals_NetId(i), 1); } } // (in reach: it charges us)
@@ -10368,6 +10425,8 @@ int main(int argc, char** argv)
                            "respawned %d, bitten while dead %d\n", gJoin.vitalsMsgs, food0, foodAfter, berries0, berriesAfter, (int)deadSeen, (int)gJoin.vitals.deaths,
                            (int)respawned, bitesWhileDead);
                     printf("bench: net bed (victim, #800): placed %d, set %d; woke %.2f m from the bed's top (beds carried %d)\n", (int)bedRequested, (int)bedSet, bedWake, inventory.count("bed"));
+                    printf("bench: net graves (victim, #804): %d lists heard; carried %d at death, %d after it; own grave seen %d; walked back: carried %d, grave gone %d\n",
+                           gJoin.gravesMsgs, carriedAtDeath, emptiedAfterDeath, (int)ownGraveSeen, carriedBack, (int)graveGone);
                     NetClient_Disconnect(gJoin);
                     benchNetAnimals = false;
                 }
@@ -10673,7 +10732,7 @@ int main(int argc, char** argv)
                 static NetClient alice, oldProto, twin, back, bob, mallory, alicia, bob2;
                 static int step = 0;
                 static uint32_t aliceSession = 0;
-                static int joinsBefore = 0, aliceIron = -1, bobCoal = -1;
+                static int joinsBefore = 0, aliceIron = -1, bobCoal = -1, aliceScopes = -1;
                 static bool joined = false, sameWorld = false, sameShower = false, pinged = false, protoRefused = false, nameRefused = false,
                             left = false, sameSession = false, recordsWritten = false, forgot = false, malloryRefused = false;
                 const char* addr = TextFormat("127.0.0.1:%d", hostPort);
@@ -10718,13 +10777,14 @@ int main(int argc, char** argv)
                 } else if (step == 7 && mallory.state == NetClient::State::Rejected && alicia.state == NetClient::State::Joined && bob2.state == NetClient::State::Joined) {
                     malloryRefused = mallory.reject.reason == NetReject::NameTaken;
                     aliceIron = Host_ItemCount(alicia.welcome.session, "iron_ingot");
+                    aliceScopes = Host_ItemCount(alicia.welcome.session, "telescope"); // the kit once, not again on her return
                     bobCoal = Host_ItemCount(bob2.welcome.session, "coal");
                     step = 8;
                 }
                 if ((step == 8 && autosaveDone) || GetTime() - t0 > 90.0) {
                     const bool ok = saveOnDisk && gHeadless && seedOk && autosaveDone && joined && sameWorld && sameShower && pinged && protoRefused && nameRefused &&
                                     left && sameSession && joinsBefore == 2;
-                    const bool records = recordsWritten && forgot && malloryRefused && aliceIron == 5 && bobCoal == 3;
+                    const bool records = recordsWritten && forgot && malloryRefused && aliceIron == 5 && bobCoal == 3 && aliceScopes == 1;
                     printf("bench: host: save %s on disk %d, headless %d, listening on %d; seed %u (%s) ok %d; autosaves %d\n",
                            hostSave.c_str(), (int)saveOnDisk, (int)gHeadless, hostPort, worldGen.lastSeed, seedHow, (int)seedOk, Host_Autosaves());
                     printf("bench: host: records (#346): written on leaving %d; after a restart, \"alice\" under another id refused %d (%s); alice back as alicia with %d iron "
@@ -11382,7 +11442,7 @@ int main(int argc, char** argv)
                 if (gNetClient) NetClient_FillAvatars(*gNetClient, world, gAvatars); // the other players on the server (#750)
                 // Joined to a server as a client (#329): the terrain tool asks it to dig and place; our inventory follows it.
                 if (gNetClient && gNetRole == NetRole::Client && gNetClient->state == NetClient::State::Joined) {
-                    gNetClient->inventory = &inventory;
+                    if (gNetClient->inventory != &inventory) { inventory.clear(); gNetClient->inventory = &inventory; } // (#804) ours follows the server's alone: no local starting kit; its deltas so far apply next update
                     if (!gTerrainToolNetEdit)
                         gTerrainToolNetEdit = [](Planetoid& p, bool dig, Vector3 hit, Vector3 centre, float radius, const std::string& item) {
                             NetClient_RequestEdit(*gNetClient, dig ? NetEditKind::Dig : NetEditKind::Place, p, hit, centre, radius, item);

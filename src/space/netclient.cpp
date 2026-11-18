@@ -266,6 +266,16 @@ namespace {
                 sv.lastHitAt = SimTime(); sv.lastHitStrength = std::min(1.0f, dm.amount / 20.0f);
                 return;
             }
+            case NetMsg::Graves: { // (#804) the server's graves: drawn here; ours (and our team's) marked on the compass
+                MsgGraves g;
+                if (c.state != NetClient::State::Joined || !NetRead(r, g)) return;
+                ++c.gravesMsgs;
+                std::vector<GraveInfo> list;
+                for (const auto& e : g.graves) list.push_back({ e.id, e.body, e.local, e.owner, e.name, e.style, e.diedAt });
+                c.lastGraves = (int)list.size();
+                if (gNetRole == NetRole::Client) Combat_SetGraveMirror(list, c.name); // (a host in this process has the real list)
+                return;
+            }
             case NetMsg::Vitals: { // (#337) our player's survival as the server simulates it: the bars follow it
                 MsgVitals v;
                 if (c.state != NetClient::State::Joined || !NetRead(r, v)) return;

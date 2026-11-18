@@ -33,6 +33,9 @@ bool Host_Start(uint16_t port, std::string& status); // gNetRole = Host; false (
 void Host_SetAutosaveMinutes(double minutes);         // 0 = off
 void Host_SetPassword(const std::string& password);   // "" none (--host-password)
 void Host_SetMaxPlayers(int n);                       // default 8 (--max-players)
+enum class DeathDrops : uint8_t;
+void Host_SetDeathDrops(DeathDrops d);                // (#804) --death-drops difficulty|keep|grave (default difficulty)
+int Host_GravesMade();
 void Host_Update(Scene& world);                       // per frame: autosave, poll, the handshake, pings, timeouts
 bool Host_SaveOnShutdown(Scene& world);               // before the scene goes away
 void Host_Stop();                                     // tells every client the server closed

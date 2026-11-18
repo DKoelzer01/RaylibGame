@@ -24,6 +24,7 @@
 #include "inventory.h"
 #include <cmath>
 #include <map>
+#include <ctime>
 #include <future>
 #include <chrono>
 #include "playerinput.h"
@@ -92,6 +93,7 @@ namespace {
         // respawn), and its suit's numbers (the starting suit until suits are replicated, #331).
         SurvivalState survival;
         SuitStats suitStats = Suit_StatsOf(SuitState{});
+        bool deathHandled = false;   // (#804) this death's drops are done (a grave, losses, or none)
         double editTokens = 2.0, editTokensAt = -1.0;
         double partTokens = 4.0, partTokensAt = -1.0; // building (#330): placing and breaking, a few a second
         PlayerRecordMeta record;    // (#346) their record's id, name, times, and the lines the server keeps as text
@@ -170,6 +172,7 @@ namespace {
         return s;
     }
     void SendInventoryDeltas(uint32_t conn, const Inventory& inv, const std::map<std::string, double>& before); // (below)
+    template <class M> void SendMsg(uint32_t conn, const M& m); // (below)
     // ---- #334 animals ----
     // The animals near each client, 10 a second: on its player's body, within kAnimalRange, nearest first, at most
     // kAnimalsPerClient; and the ones it was sent last time that are gone (died, or out of its range).
@@ -238,6 +241,61 @@ namespace {
     constexpr int kVitalsEvery = 12; // sim steps
     long long lastVitals = 0;
     int itemsUsed = 0;
+    int gravesMade = 0; // (#804)
+    // ---- Graves (#804; the user's rules on #337, 2026-11-18) ----
+    // A remote player's death leaves what death_drops says (by difficulty, keep, or a grave owned by that player); walking up
+    // to a grave takes what that player may (Combat_CanLoot); every client gets the list when it changes; the owners' teams
+    // online keep their graves from decaying (14 days away and a grave goes, with what it holds).
+    DeathDrops deathDrops = DeathDrops::Difficulty;
+    uint32_t gravesSent = 0;
+    long long lastGravePickup = 0;
+    double lastGraveDecay = -1e9;
+    std::map<std::string, double> AllAmounts(Inventory& inv) {
+        std::map<std::string, double> m;
+        for (const InvSlot& s : inv.grid()) if (!s.empty()) m[s.id] = inv.amount(s.id);
+        return m;
+    }
+    void SendChangedItems(uint32_t conn, Inventory& inv, std::map<std::string, double> before) {
+        for (const InvSlot& s : inv.grid()) if (!s.empty() && !before.count(s.id)) before[s.id] = 0.0; // new ones (picked up)
+        SendInventoryDeltas(conn, inv, before);
+    }
+    void SendGraves(uint32_t conn) {
+        MsgGraves m;
+        for (const GraveInfo& g : Combat_GraveList()) m.graves.push_back({ g.id, g.body, g.local, g.owner, g.name, g.style, g.diedAt });
+        SendMsg(conn, m);
+    }
+    void StepGraves() {
+        const bool pickupTick = SimTick() - lastGravePickup >= 6; // ten times a second
+        if (pickupTick) lastGravePickup = SimTick();
+        std::vector<std::string> online;
+        for (const auto& [conn, p] : peers) {
+            if (!p.joined) continue;
+            auto rit = remotes.find(p.session);
+            if (rit == remotes.end()) continue;
+            Remote& r = rit->second;
+            std::string name;
+            for (const Session& s : sessions) if (s.id == p.session) name = s.name;
+            online.push_back(name);
+            if (r.survival.dead && !r.deathHandled) {
+                r.deathHandled = true;
+                const auto before = AllAmounts(r.inventory);
+                if (Combat_OnDeathFor(r.inventory, nullptr, r.player, name, deathDrops, false)) ++gravesMade;
+                SendChangedItems(conn, r.inventory, before);
+            } else if (!r.survival.dead) {
+                r.deathHandled = false;
+                if (pickupTick) {
+                    const auto before = AllAmounts(r.inventory);
+                    if (Combat_PickUpGravesFor(r.player, r.inventory, name, false, false)) SendChangedItems(conn, r.inventory, before);
+                }
+            }
+        }
+        if (GetTime() - lastGraveDecay > 10.0) { lastGraveDecay = GetTime(); Combat_UpdateGraveOwners(online, (int64_t)time(nullptr)); }
+        if (Combat_GraveVersion() != gravesSent) {
+            gravesSent = Combat_GraveVersion();
+            for (const auto& [conn, p] : peers) if (p.joined) SendGraves(conn);
+        }
+    }
+
     void SendVitals() {
         if (SimTick() - lastVitals < kVitalsEvery) return;
         lastVitals = SimTick();
@@ -480,7 +538,7 @@ namespace {
     }
     // A joining player's record, if they have one: their place, inventory and survival come back (the client is sent the
     // inventory); a first-timer starts at the world's start (SpawnRemote) with nothing.
-    void LoadRecord(uint32_t conn, const Session& s) {
+    bool LoadRecord(uint32_t conn, const Session& s) { // true: their record was loaded
         Remote& rm = remotes[s.id];
         rm.record = PlayerRecordMeta{};
         const std::string path = PlayerRecord_Path(s.uuid);
@@ -497,6 +555,7 @@ namespace {
         rm.joinedAt = GetTime();
         Teams_Join(s.uuid, s.name, 0); // a team of one to start with (#604 forms bigger ones)
         printf("host: %s (%s): %s\n", s.name.c_str(), s.uuid.c_str(), loaded ? "their record loaded" : "a new player");
+        return loaded;
     }
     bool SaveRecord(uint32_t session) {
         auto it = remotes.find(session);
@@ -561,9 +620,10 @@ namespace {
         SendMsg(conn, w);
         const EventsShower sh = Events_GetShower();
         SendMsg(conn, MsgShower{ sh.start, sh.end, sh.id });
+        bool hadRecord = true; // (a reconnect within the run keeps its player: not a new one)
         if (!remotes.count(s->id)) { // (#346) at the world's start, or where their record left them, with what they carried
             SpawnRemote(world, s->id);
-            LoadRecord(conn, *s);
+            hadRecord = LoadRecord(conn, *s);
         } else { // (#780) a reconnect keeps the player but its client counts ticks from 1 again: a fresh input stream
             Remote& rm = remotes[s->id];
             rm.inputs.clear(); rm.lastQueued = 0; rm.lastApplied = 0; rm.carried = 0; rm.budget = 0.0; rm.tick = SimTick();
@@ -572,9 +632,15 @@ namespace {
         SendRoster();
         for (const Session& x : sessions) if (x.online && x.id != s->id && x.loadout.session) SendMsg(conn, x.loadout);
         StartSync(world, conn, s->id); // the world's edits so far (#776); later ones follow as live edits
+        SendGraves(conn); // (#804) the graves so far
         ++joins;
         printf("host: %s joined as session %u%s (connection %u, %d joins so far)\n", h.name.c_str(), s->id, reconnected ? " (reconnected)" : "", conn, joins);
         if (eventHook) eventHook("join", s->id, h.name + " from " + Net_RemoteAddress(conn)); // (#345 audit)
+        if (!hadRecord) { // (#804) a new player's starting kit, as single player's (the client's own inventory follows this one); (#346) never again for one with a record
+            Host_Give(s->id, "telescope", 1);
+            if (worldDifficulty < 2) Host_Give(s->id, "map", 1); // hard: find your own way
+            if (worldDifficulty == 0) Host_Give(s->id, "berries", 6);
+        }
         if (const char* hunger = getenv("RAYLIBGAME_HOST_HUNGER")) remotes[s->id].survival.food = (float)atof(hunger); // tests (#337): a hungry joiner
         if (const char* give = getenv("RAYLIBGAME_HOST_GIVE")) { // tests (#337): "item count[,item count...]" to each player as they join
             for (const char* g = give; g && *g; ) {
@@ -1060,6 +1126,8 @@ bool Host_Start(uint16_t port, std::string& status) {
 void Host_SetAutosaveMinutes(double minutes) { autosaveSeconds = minutes > 0.0 ? minutes * 60.0 : 0.0; }
 void Host_SetPassword(const std::string& p) { password = p; }
 void Host_SetMaxPlayers(int n) { maxPlayers = std::clamp(n, 1, 64); }
+void Host_SetDeathDrops(DeathDrops d) { deathDrops = d; } // (#804)
+int Host_GravesMade() { return gravesMade; }
 
 void Host_Update(Scene& world) {
     // Autosave (user, 2026-11-15: every 30 minutes by default; --autosave-minutes N, 0 = off). Wall-clock time: a
@@ -1095,6 +1163,7 @@ void Host_Update(Scene& world) {
     SendSnapshots(world);
     SendAnimals(world);   // (#334) and the animals near each player
     SendVitals();         // (#337) and each player's survival numbers, to that player
+    StepGraves();         // (#804) deaths' drops, pickups, decay and the graves list to everyone
     SetInterestCentres(world); // (#334) and animals live around every player (#318's centres)
     SetAnimalTargets(world);   // (#334 slice 2) and mind them: flee, follow, hunt, bite
     GpuTimer_CpuMark("host: snapshots");
