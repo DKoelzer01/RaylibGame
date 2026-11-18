@@ -10231,7 +10231,7 @@ int main(int argc, char** argv)
             static float food0 = -1.0f, foodAfter = -1.0f; static int berries0 = -1, berriesAfter = -1; static double ateAt = -1.0;
             static bool deadSeen = false, respawned = false; static int bitesAtDeath = 0, bitesWhileDead = 0;
             if (victim && ph == 2) {
-                if (ateAt < 0.0 && gJoin.vitalsMsgs > 0) { food0 = gJoin.vitals.food; berries0 = inventory.count("berries"); Survival_UseItem("berries"); ateAt = GetTime(); }
+                if (ateAt < 0.0 && gJoin.vitalsMsgs > 0 && inventory.count("berries") > 0) { food0 = gJoin.vitals.food; berries0 = inventory.count("berries"); Survival_UseItem("berries"); ateAt = GetTime(); }
                 if (ateAt > 0.0 && foodAfter < 0.0f && GetTime() - ateAt > 1.5) { foodAfter = gJoin.vitals.food; berriesAfter = inventory.count("berries"); }
                 const bool deadNow = gJoin.vitals.flags & 1;
                 if (deadNow && !deadSeen) { deadSeen = true; bitesAtDeath = gJoin.damageTaken; }
