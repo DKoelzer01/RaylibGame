@@ -2126,7 +2126,19 @@ void UpdateRiverFlow() {
 void Fluid::Update(Scene& world, float dt) {
     // A step every 50 ms when the last one has finished (the job owns the state while it runs).
     accum += dt;
-    if (accum < kTickSeconds || running.load()) return;
+    // RAYLIBGAME_FLUID_LOCKSTEP=1 (tests): wait for a running step instead of skipping the tick, so the water keeps the game's
+    // clock however slow the step is (#747: the CPU kernel at 0.25 m ran at ~25% of real time and fronts looked stalled).
+    static const bool lockstep = EnvFlag("RAYLIBGAME_FLUID_LOCKSTEP");
+    if (accum < kTickSeconds) return;
+    if (running.load()) {
+        if (!lockstep) return;
+        const double w0 = GetTime();
+        WaitIdle();
+        // A progress line every 40 waits (~1 s of water at the CPU's pace): how much of the run went to waiting for it.
+        static double waited = 0.0; static long long lsTicks = 0;
+        waited += GetTime() - w0;
+        if (++lsTicks % 40 == 0) { printf("fluid lockstep: %lld waits, %.1f s waited in all\n", lsTicks, waited); fflush(stdout); }
+    }
     accum = std::min(accum - kTickSeconds, 0.1);
     UpdatePartSnaps(world); // build parts placed or removed: refresh the water there (#391)
     bool work;
