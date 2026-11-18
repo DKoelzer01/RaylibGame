@@ -43,6 +43,7 @@ struct MachineView {             // published per machine each tick
     std::pair<std::string, int> fuelSlot;
     int water = 0, waterMax = 0;    // litres in its tank (boilers, #229)
     int heat = 0, heatMax = 0;      // boilers warm up before they make full steam
+    bool hotOutputs = false;        // its outputs come out hot (a furnace, kiln...: their icons glow, #580)
     bool valid = false;
 };
 
@@ -94,7 +95,7 @@ namespace Factory {
     // The same onto the cursor (#192: all inventories behave alike): `count` of the slot's stack (0 = all), delivered by
     // Sync to the cursor sink (the inventory screen's held stack) instead of the inventory.
     void TakeSlotToCursor(uint64_t bodyId, uint32_t plotId, int part, int slot, int which, int count);
-    void SetCursorSink(void (*sink)(const std::string& item, int count));
+    void SetCursorSink(void (*sink)(const std::string& item, int count, float heat)); // heat: 1 fresh out of a heating machine (#580)
     // Water pumps (waterworks): water units in a pump's outputs (as of the last tick), and removing
     // them as they go down its pipes.
     int PumpWater(uint64_t bodyId, uint32_t plotId, int part);

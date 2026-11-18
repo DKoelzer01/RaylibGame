@@ -233,6 +233,12 @@ void Hotbar_DrawHUD(bool piloting) {
         DrawText(TextFormat("%d", (i + 1) % 10), x + 4, y0 + 3, 14, Fade(RAYWHITE, 0.7f));
         if (id.empty()) continue;
         {
+            // A hot or radiant item glows (#580): the slot washed in its colour with a bright rim, as in the inventory.
+            const ItemGlow g = Item_Glow(inventory.grid()[Inventory::kGrid + i]);
+            if (g.strength > 0.02f) {
+                DrawRectangle(x, y0, size, size, Fade(g.color, 0.55f * g.strength));
+                DrawRectangleLinesEx({ (float)x, (float)y0, (float)size, (float)size }, 2.0f, Fade(g.color, 0.92f * g.strength));
+            }
             const ItemDef* d = itemDB.find(id);
             const float is = (float)size - 28.0f; // the painted icon (itemicons.h), between the slot number and the name
             if (ItemIcons_Has(id)) ItemIcons_Draw(id, { x + (size - is) * 0.5f, (float)y0 + 8.0f, is, is });
