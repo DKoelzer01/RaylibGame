@@ -197,7 +197,10 @@ struct Machine {
     int received = 0;                       // EU this tick (consumers)
 };
 
-struct Net { std::vector<int> machines; int credit = 0, rr = 0, voltage = kTierLV; };
+struct Net {
+    std::vector<int> machines; int credit = 0, rr = 0, voltage = kTierLV;
+    long long supply = 0, demand = 0; int ticks = 1; // the last step's EU made and wanted, over its ticks (cable tooltips, #570)
+};
 
 struct PlotSim {
     uint64_t body = 0;
@@ -206,6 +209,7 @@ struct PlotSim {
     std::vector<Machine> machines;
     std::unordered_map<int, int> byPart;
     std::vector<Net> itemNets, powerNets;
+    std::unordered_map<Int3, int> cableNet; // cable cell -> its power network (#570)
 };
 
 struct LayoutMsg {
@@ -236,6 +240,8 @@ std::vector<std::pair<int, int>> refunds;     // sim thread: contents of removed
 std::mutex viewMutex;                         // snapshot for the HUD
 std::tuple<uint64_t, uint32_t, int> watchKey{ 0, 0, -1 };
 MachineView watchView;
+std::tuple<uint64_t, uint32_t, int, int, int> cableKey{ 0, 0, 0, 0, 0 }; // body, plot, cell (#570)
+CableView cableView;
 std::map<std::tuple<uint64_t, uint32_t, int>, std::vector<std::pair<int, int>>> chestView; // chests of plots near the player: (item, count)
 std::map<std::tuple<uint64_t, uint32_t, int>, int> pumpView;     // water pumps (every plot): water units in their outputs
 std::map<std::tuple<uint64_t, uint32_t, int>, int> pumpPending;  // pump water drained (queued) but not yet out of pumpView (viewMutex)
@@ -388,6 +394,7 @@ long long GeneratorStep(Machine& m, const MachineDef& def, int dt, long long nee
 void BuildNets(PlotSim& ps, const LayoutMsg& L) {
     ps.itemNets.clear();
     ps.powerNets.clear();
+    ps.cableNet.clear();
     std::unordered_map<Int3, int> machineAt;
     for (size_t i = 0; i < ps.machines.size(); ++i) {
         ps.machines[i].itemNet = ps.machines[i].powerNet = -1;
@@ -404,6 +411,7 @@ void BuildNets(PlotSim& ps, const LayoutMsg& L) {
             seen.insert(start);
             while (!stack.empty()) {
                 const Int3 c = stack.back(); stack.pop_back();
+                if (power) ps.cableNet[c] = (int)nets.size(); // this network's id (pushed below)
                 for (const Int3& d : dirs) {
                     const Int3 n = { c.x + d.x, c.y + d.y, c.z + d.z };
                     if (cells.count(n) && !seen.count(n)) { seen.insert(n); stack.push_back(n); }
@@ -531,6 +539,7 @@ void TickPlot(PlotSim& ps, int dt, long long& made, int& active) {
                 m.received = (int)(demand <= avail ? need : need * avail / std::max(1LL, demand));
             }
         }
+        net.supply = supply + fromBatteries; net.demand = demand; net.ticks = std::max(1, dt); // for the cable tooltip (#570)
         long long surplus = supply - std::min(supply, demand);
         long long drain = fromBatteries;
         for (int mi : net.machines) {
@@ -638,6 +647,25 @@ void TickPlot(PlotSim& ps, int dt, long long& made, int& active) {
             net.credit -= kTicksPerSecond;
         }
     }
+}
+
+// The watched cable's network (#570), under viewMutex.
+void FillCableView() {
+    const auto& [b, pl, x, y, z] = cableKey;
+    cableView = CableView{};
+    const PlotSim* p = FindPlot(b, pl);
+    if (!p) return;
+    cableView.valid = true;
+    auto it = p->cableNet.find(Int3{ x, y, z });
+    if (it == p->cableNet.end() || it->second < 0 || it->second >= (int)p->powerNets.size()) return;
+    const Net& net = p->powerNets[it->second];
+    cableView.voltage = net.voltage;
+    for (int mi : net.machines) {
+        const Power pw = Def(p->machines[mi].type).power;
+        cableView.generators += pw == Power::Generator; cableView.batteries += pw == Power::Battery; cableView.consumers += pw == Power::Eu;
+    }
+    cableView.supply = (float)net.supply / (float)net.ticks;
+    cableView.demand = (float)net.demand / (float)net.ticks;
 }
 
 void FillView(const PlotSim& ps, int part, MachineView& v) {
@@ -762,6 +790,7 @@ void SimLoop() {
                 stats.avgTickMs = emaMs; stats.maxTickMs = maxMs; stats.ticks = t + 1; stats.itemsMade += made;
                 const auto& [b, pl, part] = watchKey;
                 if (PlotSim* p = FindPlot(b, pl)) FillView(*p, part, watchView); else watchView = MachineView{};
+                FillCableView();
                 for (auto& r : back) results.push_back(r);
                 for (auto& r : toCursor) cursorResults.push_back(r);
                 chestView.clear();
@@ -896,6 +925,13 @@ MachineView Factory::View(uint64_t body, uint32_t plot, int part) {
     const auto key = std::make_tuple(body, plot, part);
     if (watchKey != key) { watchKey = key; return MachineView{}; } // filled from the next tick on
     return watchView;
+}
+
+CableView Factory::Cable(uint64_t body, uint32_t plot, Int3 cell) {
+    std::lock_guard<std::mutex> v(viewMutex);
+    const auto key = std::make_tuple(body, plot, cell.x, cell.y, cell.z);
+    if (cableKey != key) { cableKey = key; return CableView{}; } // filled from the next tick on
+    return cableView;
 }
 
 FactoryStats Factory::Stats() {

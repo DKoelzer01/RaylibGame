@@ -393,7 +393,7 @@ void BuildTool_DrawHUD() {
 // ---------------------------------------------------------------------------------------------
 
 namespace {
-    struct MachineAim { uint64_t body = 0; uint32_t plot = 0; int part = -1; PartType type = PartType::Count; } machineAim;
+    struct MachineAim { uint64_t body = 0; uint32_t plot = 0; int part = -1; PartType type = PartType::Count; Int3 cell{ 0, 0, 0 }; } machineAim;
     double handPumpAt = -10.0; // the last frame the hand pump was worked (GetTime), and the litres since this go began (#571)
     float handPumpLitres = 0.0f;
 }
@@ -409,9 +409,10 @@ void Machine_Update(Scene& world, const PlayerInput& in) {
         Int3 c, f; float d;
         if (pl->raycast(lo, ld, best, c, f, d)) {
             const int part = pl->partAt(c);
-            if (part >= 0 && (IsMachine(pl->parts[part].type) || pl->parts[part].type == PartType::Farmland || pl->parts[part].type == PartType::HandPump)) {
+            const PartType pt = part >= 0 ? pl->parts[part].type : PartType::Count;
+            if (part >= 0 && (IsMachine(pt) || pt == PartType::Farmland || pt == PartType::HandPump || pt == PartType::Cable)) { // cables: their network (#570)
                 best = d;
-                machineAim = { body->id, pl->id, part, pl->parts[part].type };
+                machineAim = { body->id, pl->id, part, pt, c };
             }
         }
         // Chimneys stick out of the cells (#285): aimable too, when nearer.
@@ -424,6 +425,7 @@ void Machine_Update(Scene& world, const PlayerInput& in) {
         }
     }
     if (machineAim.part < 0 || !in.enabled) return;
+    if (machineAim.type == PartType::Cable) return; // looked at only: its panel shows the network (#570)
     if (machineAim.type == PartType::HandPump) {
         // Hand pump (#280): hold RMB (outside build mode) to work it; the water goes down its pipes at the next pass.
         if (!buildTool.active && in.down(Act::Secondary)) {
@@ -485,6 +487,21 @@ void Machine_DrawHUD() {
             DrawRectangle(x, y + 48, (int)(160 * (stroke < 0.5f ? stroke * 2.0f : 2.0f - stroke * 2.0f)), 10, Color{ 90, 170, 255, 255 });
             DrawText(TextFormat("%.0f L this go", handPumpLitres), x + 172, y + 45, 16, RAYWHITE); // (none flows with no water under it)
         }
+        return;
+    }
+    if (machineAim.type == PartType::Cable) { // its power network (#570): what feeds it and what flowed in the last tick
+        const CableView cv = Factory::Cable(machineAim.body, machineAim.plot, machineAim.cell);
+        const int x = GetScreenWidth() / 2 + 20, y = GetScreenHeight() / 2 + 40;
+        DrawRectangle(x - 8, y - 6, 400, 76, Fade(BLACK, 0.55f));
+        DrawText("cable", x, y, 20, SKYBLUE);
+        if (!cv.valid) { DrawText("...", x, y + 24, 16, RAYWHITE); return; }
+        if (cv.voltage <= 0) { DrawText("no power: nothing feeds this cable", x, y + 24, 16, Fade(RAYWHITE, 0.75f)); return; }
+        DrawText(TextFormat("%d V network: %d generator%s, %d machine%s, %d batter%s", cv.voltage, cv.generators, cv.generators == 1 ? "" : "s",
+                            cv.consumers, cv.consumers == 1 ? "" : "s", cv.batteries, cv.batteries == 1 ? "y" : "ies"), x, y + 24, 16, RAYWHITE);
+        const float frac = cv.demand > 0.0f ? std::min(1.0f, cv.supply / cv.demand) : (cv.supply > 0.0f ? 1.0f : 0.0f);
+        DrawRectangle(x, y + 48, 160, 10, Fade(RAYWHITE, 0.2f));
+        DrawRectangle(x, y + 48, (int)(160 * frac), 10, cv.supply + 0.01f >= cv.demand ? Color{ 250, 210, 70, 255 } : ORANGE);
+        DrawText(TextFormat("%.0f EU/t supplied, %.0f wanted", cv.supply, cv.demand), x + 172, y + 45, 16, RAYWHITE);
         return;
     }
     const MachineView v = Factory::View(machineAim.body, machineAim.plot, machineAim.part);
