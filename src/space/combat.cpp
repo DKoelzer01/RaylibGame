@@ -106,10 +106,15 @@ struct Grave {
     std::string name;                // its waypoint ("Grave 1", ...)
     std::vector<InvSlot> items;      // what it holds; off-hand items go back to the off hand
     int offHand = -1;                // index in items of the off hand's, -1 none
+    // A pile of items the player dropped (#564: a stack let go outside the inventory window) rather than a grave: no
+    // waypoint, drawn as a small bundle, and picked up only once the player has walked away from it and comes back
+    // (`armed`), so dropping something to make room doesn't take it straight back.
+    bool dropped = false, armed = true;
 };
 static std::vector<Grave> graves;
 static int graveCounter = 0;
 static constexpr double kGraveReach = 2.5; // m: walking up to it takes everything back
+static constexpr double kDropMerge = 1.0;  // m: a drop this close to an unarmed pile joins it
 
 void Combat_OnDeath(PlayerSession& s) {
     Inventory& inv = s.inventory;
@@ -157,31 +162,57 @@ static void PickUpGraves(PlayerSession& s) {
     const DVec3 me = p.nearest->toLocalD(p.position);
     for (size_t gi = 0; gi < graves.size();) {
         Grave& g = graves[gi];
-        if (g.body != p.nearest->name || (g.local - me).length() > kGraveReach) { ++gi; continue; }
+        const bool near = g.body == p.nearest->name && (g.local - me).length() <= kGraveReach;
+        if (g.dropped && !g.armed) { if (!near) g.armed = true; ++gi; continue; } // walked away: it can be picked up now
+        if (!near) { ++gi; continue; }
         auto& cells = s.inventory.grid();
         std::vector<InvSlot> left;
         for (size_t i = 0; i < g.items.size(); ++i) {
             const InvSlot& it = g.items[i];
             if ((int)i == g.offHand && cells[Inventory::kOffHand].empty()) { cells[Inventory::kOffHand] = it; continue; }
-            ++s.inventory.muted; // no pickup feed line per stack
+            if (!g.dropped) ++s.inventory.muted; // a grave: no pickup feed line per stack (a dropped pile shows them)
             const double rest = s.inventory.addAmount(it.id, it.amount());
-            --s.inventory.muted;
+            if (!g.dropped) --s.inventory.muted;
             s.inventory.overflowed = false;
             if (rest > 0.0) left.push_back(InvSlot{ it.id, (int64_t)llround(rest * 100.0) });
         }
         if (left.empty()) {
-            Nav_RemoveWaypoint(g.body, g.name);
-            GameUI_Toast(TextFormat("You took everything back from %s", g.name.c_str()));
+            if (!g.dropped) {
+                Nav_RemoveWaypoint(g.body, g.name);
+                GameUI_Toast(TextFormat("You took everything back from %s", g.name.c_str()));
+            }
             graves.erase(graves.begin() + gi);
             continue;
         }
         g.items = std::move(left); g.offHand = -1;
-        GameUI_Toast(TextFormat("No room for the rest: %d stacks stay in %s", (int)g.items.size(), g.name.c_str()));
+        if (g.dropped) { g.armed = false; GameUI_Toast("No room: the rest stays on the ground"); } // again after walking away
+        else GameUI_Toast(TextFormat("No room for the rest: %d stacks stay in %s", (int)g.items.size(), g.name.c_str()));
         ++gi;
     }
 }
 
-int Combat_GraveCount() { return (int)graves.size(); }
+int Combat_GraveCount() { return (int)std::count_if(graves.begin(), graves.end(), [](const Grave& g) { return !g.dropped; }); }
+
+bool Combat_Drop(PlayerSession& s, const InvSlot& stack) {
+    Player& p = s.player;
+    if (stack.empty() || !p.nearest) return false;
+    const DVec3 at = p.nearest->toLocalD(p.position); // at the feet
+    for (Grave& g : graves) // onto a pile just dropped here
+        if (g.dropped && !g.armed && g.body == p.nearest->name && (g.local - at).length() < kDropMerge) {
+            auto it = std::find_if(g.items.begin(), g.items.end(), [&](const InvSlot& c) { return c.id == stack.id; });
+            if (it != g.items.end()) it->centi += stack.centi; else g.items.push_back(stack);
+            return true;
+        }
+    Grave g;
+    g.body = p.nearest->name;
+    g.local = at;
+    g.items.push_back(stack);
+    g.dropped = true; g.armed = false;
+    graves.push_back(std::move(g));
+    return true;
+}
+
+int Combat_DroppedPiles() { return (int)graves.size() - Combat_GraveCount(); }
 
 // Hit feel (#165), the local view only: the camera shakes for 0.3 s after a hit, up to 6 cm at 20 damage, and the
 // held tool freezes for 70 ms (a hit-stop the simulation never sees). Reduce motion turns both off.
@@ -219,6 +250,20 @@ void Combat_DrawGraves(Scene& world) {
         rlDrawRenderBatchActive();
         rlPushMatrix();
         rlMultMatrixf(MatrixToFloat(m));
+        if (g.dropped) { // a small bundle in the colours of what it holds (up to three stacks shown)
+            for (size_t i = 0; i < g.items.size() && i < 3; ++i) {
+                const ItemDef* d = itemDB.find(g.items[i].id);
+                const float a = (float)i * 2.1f;
+                const Vector3 side = Vector3Normalize(Vector3Perpendicular(up));
+                const Vector3 off = Vector3Add(Vector3Scale(up, 0.12f + 0.1f * (float)i),
+                                               Vector3Scale(Vector3RotateByAxisAngle(side, up, a), i ? 0.12f : 0.0f));
+                DrawCube(off, 0.22f, 0.22f, 0.22f, d ? d->color : Color{ 150, 120, 80, 255 });
+                DrawCubeWires(off, 0.22f, 0.22f, 0.22f, Color{ 40, 30, 20, 255 });
+            }
+            rlDrawRenderBatchActive();
+            rlPopMatrix();
+            continue;
+        }
         DrawSphere(Vector3Scale(up, 0.15f), 0.4f, Color{ 110, 105, 100, 255 });
         DrawSphere(Vector3Scale(up, 0.55f), 0.28f, Color{ 125, 120, 115, 255 });
         DrawSphere(Vector3Scale(up, 0.85f), 0.18f, Color{ 140, 135, 128, 255 });
@@ -233,6 +278,12 @@ void Combat_Reset() { graves.clear(); graveCounter = 0; }
 void Combat_Save(FILE* f) {
     fprintf(f, "grave_counter %d\n", graveCounter);
     for (const Grave& g : graves) {
+        if (g.dropped) { // #564
+            fprintf(f, "dropped %s %.6f %.6f %.6f %d %zu", g.body.c_str(), g.local.x, g.local.y, g.local.z, g.armed ? 1 : 0, g.items.size());
+            for (const InvSlot& it : g.items) fprintf(f, " %s %lld", it.id.c_str(), (long long)it.centi);
+            fprintf(f, "\n");
+            continue;
+        }
         fprintf(f, "grave %s %.6f %.6f %.6f %d %zu", g.body.c_str(), g.local.x, g.local.y, g.local.z, g.offHand, g.items.size());
         for (const InvSlot& it : g.items) fprintf(f, " %s %lld", it.id.c_str(), (long long)it.centi);
         fprintf(f, " %s\n", g.name.c_str()); // last: the name has a space in it
@@ -241,11 +292,14 @@ void Combat_Save(FILE* f) {
 
 bool Combat_LoadLine(const char* tok, FILE* f) {
     if (strcmp(tok, "grave_counter") == 0) { if (fscanf(f, " %d", &graveCounter) != 1) graveCounter = 0; return true; }
-    if (strcmp(tok, "grave") != 0) return false;
+    const bool dropped = strcmp(tok, "dropped") == 0;
+    if (strcmp(tok, "grave") != 0 && !dropped) return false;
     Grave g;
     char body[64] = {};
     size_t n = 0;
-    if (fscanf(f, " %63s %lf %lf %lf %d %zu", body, &g.local.x, &g.local.y, &g.local.z, &g.offHand, &n) != 6) return true;
+    int flag = -1; // a grave's off-hand index, a dropped pile's armed
+    if (fscanf(f, " %63s %lf %lf %lf %d %zu", body, &g.local.x, &g.local.y, &g.local.z, &flag, &n) != 6) return true;
+    if (dropped) { g.dropped = true; g.armed = flag != 0; } else g.offHand = flag;
     g.body = body;
     for (size_t i = 0; i < n; ++i) {
         char id[64] = {};
@@ -254,9 +308,11 @@ bool Combat_LoadLine(const char* tok, FILE* f) {
         if (itemDB.find(id) && c > 0) g.items.push_back(InvSlot{ id, (int64_t)c });
         else if ((int)i == g.offHand) g.offHand = -1;
     }
-    char name[64] = {};
-    if (fscanf(f, " %63[^\n]", name) != 1) return true;
-    g.name = name;
+    if (!dropped) { // a pile has no name
+        char name[64] = {};
+        if (fscanf(f, " %63[^\n]", name) != 1) return true;
+        g.name = name;
+    }
     if (g.offHand >= (int)g.items.size()) g.offHand = -1;
     if (!g.items.empty()) graves.push_back(std::move(g));
     return true;
