@@ -43,6 +43,7 @@
 #include "camera.h"
 #include "survival.h"
 #include "combat.h"
+#include "claims.h"
 #include "teamquests.h"
 #include "telescope.h"
 #include "glcaps.h"
@@ -279,6 +280,7 @@ static void StartNewWorld(Scene& world, bool reset, bool dawn) {
         Trapping_Reset();
         DungeonTraps_Reset();
         Combat_Reset();
+        Claims_Reset(); // (#343)
         Events_Reset();
         Particles_Clear();
         Ambience_Reset();
@@ -478,6 +480,7 @@ int main(int argc, char** argv)
     // --seed-survey COUNT FIRSTSEED OUTDIR [THREADS] [SUBSET] (#532): how alike different seeds' start planets are. No window.
     if (argc >= 5 && std::string(argv[1]) == "--seed-survey") return SeedSurvey_Run(argc, argv);
     if (argc >= 2 && std::string(argv[1]) == "--test-netproto") return NetProto_Test() ? 0 : 1; // the wire protocol (#320): no window, no world
+    if (argc >= 2 && std::string(argv[1]) == "--test-claims") return Claims_SelfTest() ? 0 : 1; // (#343) the claim rules: no window, no world
     if (argc >= 3 && std::string(argv[1]) == "--port-free") { const bool f = HostProcess_PortFree(atoi(argv[2])); printf("port %s: %s\n", argv[2], f ? "free" : "in use"); return f ? 0 : 1; } // (#341)
     if (argc >= 2 && std::string(argv[1]) == "--test-net-guard") return NetGuard_Test() ? 0 : 1; // the server's message limits (#349): no window, no world
     if (argc >= 2 && std::string(argv[1]) == "--test-server-admin") return Admin_Test() ? 0 : 1; // server admin lists (#345): no window, no world
@@ -555,6 +558,8 @@ int main(int argc, char** argv)
     bool benchNetQuests = false;   // --test-net-quests (with --join; #338): the client side of tools/test_team_quests.sh
     bool benchNetMachines = false; // --test-net-machines (with --join; #332): the client side of tools/test_net_machines.sh
     bool benchNetPlants = false;   // --test-net-plants (with --join; #335): the client side of tools/test_net_plants.sh
+    bool benchNetClaims = false;   // --test-net-claims (with --join; #343): the client side of tools/test_net_claims.sh
+    std::vector<std::string> benchChatHeard; // (#343 tests) the server lines heard (the toasts consume gJoin.chat)
     uint16_t hostPort = kDefaultHostPort; // --port N
     bool benchHost = false;        // --test-host (#311): with --host, a loopback client joins
     bool benchTimeFollow = false;  // --test-time-follow (#339): the world clock follows a server time (slew, snap)
@@ -826,6 +831,7 @@ int main(int argc, char** argv)
         if (std::string(argv[i]) == "--test-net-quests") benchNetQuests = true;
         if (std::string(argv[i]) == "--test-net-machines") benchNetMachines = true;
         if (std::string(argv[i]) == "--test-net-plants") benchNetPlants = true;
+        if (std::string(argv[i]) == "--test-net-claims") benchNetClaims = true;
         if (std::string(argv[i]) == "--port" && i + 1 < argc) hostPort = (uint16_t)atoi(argv[i + 1]);
         if (std::string(argv[i]) == "--host-password" && i + 1 < argc) Host_SetPassword(argv[i + 1]); // (#321)
         if (std::string(argv[i]) == "--host-edits" && i + 1 < argc) hostEdits = atoi(argv[i + 1]); // (#776 tests) a world with many edits to join
@@ -8872,7 +8878,7 @@ int main(int argc, char** argv)
                         }
                         benchWalkSeconds = 0.0;
                     }
-                } else if ((WorldIdle() && benchDigStrokes == 0 && !benchPaint && !benchSaveLoad && benchWalkSeconds <= 0.0 && benchMineStrokes == 0 && minePhase != 2 && benchFlySeconds <= 0.0 && !benchSuffocate && benchOrbitSeconds <= 0.0 && !benchRide && !benchPark && !benchGravity && !benchPrecision && !benchMantle && !benchAirJump && !benchMoon && !benchHole && !benchWall && !benchDoorway && !benchLedge && !benchTor && !benchMachines && !benchFall && !benchHover && !benchNetIds && !benchNet && !benchTwoPlayers && !benchFingerprint && !benchInterest && !benchTeleClose && !benchMenus && !benchWater && !benchFlyFollow && !benchHotbar && !benchInventory && !benchMap && !benchViewmodel && !benchQuests && !benchHunger && !benchFarm && !benchAnimals && !benchThreats && !benchAnimalPath && !benchDam && !benchFlowMeter && !benchPartWall && !benchPressure && benchShotTabs == 0 && !benchForest && !benchFlow && !benchPond && !benchBucket && !benchWaterSpeed && benchFluidLoad <= 0.0f && !benchFlowShade && !benchPump && !benchTerrain && !benchWind && !benchCampfire && !benchCaveMouth && !benchMountain && !benchShelter && !benchRoom && !benchFacing && !benchDungeon && !benchDungeonTraps && !benchSaveSplit && !benchPosture && !benchPause && !benchBite && !benchPlacement && !benchShotDig && !benchShadow && !benchParticles && !benchBiomes && !benchOil && !benchSpring && !benchShotAnimals && !benchShotAvatar && !benchShotMachines && benchShotBiomes < 0 && !benchFarForest && !benchRecipes && !benchWeather && !benchDecor && !benchMaterials && !benchDamage && !benchCrafting && !benchSuit && !benchTools && !benchRivers && !benchRing && !benchRocket && !benchStation && !benchBlueprint && !benchSmallBody && !benchTrees && !benchChop && benchPersist == 0 && benchBuild == 0 && benchFactory == 0 && !benchCombat &&  !benchHost && !benchIdleDrift && !benchTeams && !benchJoin && !benchTimeFollow && benchPlayerCost == 0 && !benchNetAnimals && !benchNetQuests && !benchNetMachines && !benchNetPlants && !benchNetAbuse && !benchNetMove && !benchNetDig && !benchNetBuild && !benchNetSync && !benchShotMpMenu && !benchMpMenu && benchMpBots == 0 && !benchShower && !benchProgression && (benchUnfocus <= 0.0f || unfocusPhase >= 6)) || GetTime() > 600.0) {
+                } else if ((WorldIdle() && benchDigStrokes == 0 && !benchPaint && !benchSaveLoad && benchWalkSeconds <= 0.0 && benchMineStrokes == 0 && minePhase != 2 && benchFlySeconds <= 0.0 && !benchSuffocate && benchOrbitSeconds <= 0.0 && !benchRide && !benchPark && !benchGravity && !benchPrecision && !benchMantle && !benchAirJump && !benchMoon && !benchHole && !benchWall && !benchDoorway && !benchLedge && !benchTor && !benchMachines && !benchFall && !benchHover && !benchNetIds && !benchNet && !benchTwoPlayers && !benchFingerprint && !benchInterest && !benchTeleClose && !benchMenus && !benchWater && !benchFlyFollow && !benchHotbar && !benchInventory && !benchMap && !benchViewmodel && !benchQuests && !benchHunger && !benchFarm && !benchAnimals && !benchThreats && !benchAnimalPath && !benchDam && !benchFlowMeter && !benchPartWall && !benchPressure && benchShotTabs == 0 && !benchForest && !benchFlow && !benchPond && !benchBucket && !benchWaterSpeed && benchFluidLoad <= 0.0f && !benchFlowShade && !benchPump && !benchTerrain && !benchWind && !benchCampfire && !benchCaveMouth && !benchMountain && !benchShelter && !benchRoom && !benchFacing && !benchDungeon && !benchDungeonTraps && !benchSaveSplit && !benchPosture && !benchPause && !benchBite && !benchPlacement && !benchShotDig && !benchShadow && !benchParticles && !benchBiomes && !benchOil && !benchSpring && !benchShotAnimals && !benchShotAvatar && !benchShotMachines && benchShotBiomes < 0 && !benchFarForest && !benchRecipes && !benchWeather && !benchDecor && !benchMaterials && !benchDamage && !benchCrafting && !benchSuit && !benchTools && !benchRivers && !benchRing && !benchRocket && !benchStation && !benchBlueprint && !benchSmallBody && !benchTrees && !benchChop && benchPersist == 0 && benchBuild == 0 && benchFactory == 0 && !benchCombat &&  !benchHost && !benchIdleDrift && !benchTeams && !benchJoin && !benchTimeFollow && benchPlayerCost == 0 && !benchNetAnimals && !benchNetQuests && !benchNetMachines && !benchNetPlants && !benchNetClaims && !benchNetAbuse && !benchNetMove && !benchNetDig && !benchNetBuild && !benchNetSync && !benchShotMpMenu && !benchMpMenu && benchMpBots == 0 && !benchShower && !benchProgression && (benchUnfocus <= 0.0f || unfocusPhase >= 6)) || GetTime() > 600.0) {
                     benchStart = GetTime();
                     printf("bench: world ready after %.2f s (%d chunks, avg build %.2f ms of which sampling %.2f ms, %d worker threads)\n",
                         GetWorldStats().lastGenerationSeconds, GetWorldStats().chunks, GetWorldStats().avgBuildMs, GetWorldStats().avgSampleMs, GetWorldStats().workerThreads);
@@ -9384,6 +9390,7 @@ int main(int argc, char** argv)
                     const std::string line = m.from == 0 ? m.text : (who != gJoin.roster.end() ? who->second : std::string("?")) + ": " + m.text;
                     GameUI_Toast(line.c_str());
                     printf("chat: %s\n", line.c_str());
+                    if (benchNetClaims && m.from == 0) benchChatHeard.push_back(m.text);
                     if (m.from == 0 && m.text.rfind("Quest:", 0) == 0) ++gQuestNewsHeard; // (#338) the server's team news
                 }
                 if (gJoin.state == NetClient::State::Closed || gJoin.state == NetClient::State::Rejected) {
@@ -10705,6 +10712,59 @@ int main(int argc, char** argv)
                        role ? role : "?", (int)(farm != nullptr || cropGone), (int)sown, seeds0, inventory.count("grain_seeds"), (int)cropSeen, (int)cropGone, (int)harvested, grain0, inventory.count("grain"), gJoin.farmLists);
                 NetClient_Disconnect(gJoin);
                 benchNetPlants = false;
+            }
+        }
+        // --test-net-claims (#343; with --join; tools/test_net_claims.sh): RAYLIBGAME_NET_CLAIMS_ROLE owner | other (two teams of
+        // one). The owner claims where it stands (/claim) and places a chest 2 m away. The other (3 m off, inside the claim)
+        // then tries to dig by the chest, build there, open the chest and remove it: each is refused (Claim). The owner
+        // unclaims after RAYLIBGAME_CLAIMS_UNCLAIM_AT s (25); the other hears it leave the claim and removes the chest. Both
+        // report after RAYLIBGAME_CLAIMS_SECONDS (40).
+        if (benchNetClaims && gameState == 1 && !loading && gJoinSynced && WorldIdle()) {
+            static double t0 = -1.0;
+            static bool claimSent = false, claimed = false, chestSent = false, tried = false, unclaimSent = false, entered = false, left = false, openRefused = false, removeSent = false;
+            static int chests0 = -1;
+            const char* role = getenv("RAYLIBGAME_NET_CLAIMS_ROLE");
+            const bool owner = role && !strcmp(role, "owner");
+            if (t0 < 0.0) t0 = GetTime();
+            Planetoid* cb = player.nearest;
+            const Vector3 me = cb ? cb->toLocalD(player.position).toFloat() : Vector3{};
+            for (const std::string& text : benchChatHeard) { const MsgChat m{ 0, text };
+                if (m.text.find("claimed the land") != std::string::npos) claimed = true;
+                if (m.text.rfind("Entering ", 0) == 0 && m.text.find("can't build") != std::string::npos) entered = true;
+                if (m.text == "Leaving the claim") left = true;
+                if (m.text.find("has claimed this land") != std::string::npos) openRefused = true;
+            }
+            Plot* chestPl = nullptr; int chestPart = -1;
+            if (cb && cb->plots)
+                for (auto& pl : cb->plots->plots)
+                    for (int k = 0; k < (int)pl->parts.size() && !chestPl; ++k) if (pl->parts[k].type == PartType::Chest) { chestPl = pl.get(); chestPart = k; }
+            const Vector3 up = Vector3Normalize(me);
+            const Vector3 t1 = Vector3Normalize(Vector3CrossProduct(up, fabsf(up.y) < 0.9f ? Vector3{ 0, 1, 0 } : Vector3{ 1, 0, 0 }));
+            const double unclaimAt = getenv("RAYLIBGAME_CLAIMS_UNCLAIM_AT") ? atof(getenv("RAYLIBGAME_CLAIMS_UNCLAIM_AT")) : 25.0;
+            if (owner && cb && !claimSent && GetTime() - t0 > 3.0) { NetClient_SendChat(gJoin, "/claim"); claimSent = true; }
+            if (owner && cb && claimed && !chestSent) chestSent = NetClient_RequestPart(gJoin, *cb, nullptr, Vector3Add(me, Vector3Scale(t1, 2.0f)), Part{ PartType::Chest, { 0, 0, 0 }, 0, 0 }, false, -1) != 0;
+            if (owner && claimed && !unclaimSent && GetTime() - t0 > unclaimAt) { NetClient_SendChat(gJoin, "/unclaim"); unclaimSent = true; }
+            if (!owner && cb && chestPl && !tried && entered) { // everything near the chest, at once: each is refused
+                const Int3 c = chestPl->parts[chestPart].origin;
+                const Vector3 at = chestPl->toBody({ (c.x + 0.5f) * kCellSize, (c.y + 0.5f) * kCellSize, (c.z + 0.5f) * kCellSize });
+                const Vector3 beside = Vector3Add(at, Vector3Scale(Vector3Normalize(Vector3Subtract(me, at)), 1.0f));
+                TerrainHit hit;
+                const Vector3 wb = cb->toWorld(beside), wu = cb->dirToWorld(Vector3Normalize(beside));
+                if (RaycastTerrain(world, Ray{ Vector3Add(wb, Vector3Scale(wu, 3.0f)), Vector3Negate(wu) }, 10.0f, hit))
+                    NetClient_RequestEdit(gJoin, NetEditKind::Dig, *cb, hit.local, Vector3Subtract(hit.local, Vector3Scale(Vector3Normalize(hit.local), 0.15f)), 0.3f, "");
+                NetClient_RequestPart(gJoin, *cb, nullptr, beside, Part{ PartType::Campfire, { 0, 0, 0 }, 0, 0 }, false, -1);
+                NetClient_MachineAction(gJoin, cb->netId, chestPl->id, chestPart, 6, "", 0, 0, 0); // open it (watch)
+                NetClient_RequestPart(gJoin, *cb, chestPl, Vector3{}, Part{}, true, chestPart); // break it
+                tried = true;
+            }
+            if (!owner && cb && chestPl && tried && left && !removeSent) { chests0 = inventory.count("chest"); removeSent = NetClient_RequestPart(gJoin, *cb, chestPl, Vector3{}, Part{}, true, chestPart) != 0; }
+            if (GetTime() - t0 > (getenv("RAYLIBGAME_CLAIMS_SECONDS") ? atof(getenv("RAYLIBGAME_CLAIMS_SECONDS")) : 40.0)) {
+                const unsigned editClaim = 1u << (unsigned)NetEditRefusal::Claim, partClaim = 1u << (unsigned)NetPartRefusal::Claim;
+                printf("bench: net claims (%s, #343): claimed %d, chest placed %d; entered %d, tried %d: dig refused (claim) %d, build/break refused (claim) %d (%d parts refused), open refused %d; left %d, removed after the unclaim %d: chests %d -> %d, chest standing %d\n",
+                       role ? role : "?", (int)claimed, (int)chestSent, (int)entered, (int)tried, (gJoin.refusedWhy & editClaim) ? 1 : 0, (gJoin.partRefusedWhy & partClaim) ? 1 : 0, gJoin.partsRefused,
+                       (int)openRefused, (int)left, (int)removeSent, chests0, inventory.count("chest"), (int)(chestPl != nullptr));
+                NetClient_Disconnect(gJoin);
+                benchNetClaims = false;
             }
         }
         if (benchNetMachines && gameState == 1 && !loading && gJoinSynced && WorldIdle()) {

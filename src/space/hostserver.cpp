@@ -28,6 +28,8 @@
 #include "playerrecord.h"
 #include "inventory.h"
 #include "farming.h"
+#include "claims.h"
+#include "serveradmin.h"
 #include "trees.h"
 #include <cmath>
 #include <map>
@@ -351,7 +353,9 @@ namespace {
     constexpr float kChestRange = 10.0f;
     long long lastChestViews = 0;
     std::map<std::pair<uint32_t, Factory::MachineKey>, uint64_t> chestViewSent; // (session, chest) -> hash of what it was sent
-    std::vector<std::pair<Planetoid*, std::pair<Plot*, int>>> ChestsNear(const Remote& r) {
+    bool ClaimBlocks(uint32_t session, const Planetoid* b, Vector3 local, bool count = true); // (#343, below)
+    std::string ClaimRefusal(const Planetoid* b, Vector3 local);
+    std::vector<std::pair<Planetoid*, std::pair<Plot*, int>>> ChestsNear(uint32_t session, const Remote& r) { // (#343: not another team's claimed chests)
         std::vector<std::pair<Planetoid*, std::pair<Plot*, int>>> out;
         Planetoid* b = r.player.nearest;
         if (!b || !b->plots) return out;
@@ -360,7 +364,7 @@ namespace {
             for (int k = 0; k < (int)pl->parts.size(); ++k) {
                 if (pl->parts[k].type != PartType::Chest) continue;
                 const Int3 c = pl->parts[k].origin;
-                if (Vector3Distance(pl->toBody({ (c.x + 1.0f) * kCellSize, (c.y + 1.0f) * kCellSize, (c.z + 1.0f) * kCellSize }), me) <= kChestRange) out.push_back({ b, { pl.get(), k } });
+                if (Vector3Distance(pl->toBody({ (c.x + 1.0f) * kCellSize, (c.y + 1.0f) * kCellSize, (c.z + 1.0f) * kCellSize }), me) <= kChestRange && !ClaimBlocks(session, b, pl->toBody({ (c.x + 1.0f) * kCellSize, (c.y + 1.0f) * kCellSize, (c.z + 1.0f) * kCellSize }), false)) out.push_back({ b, { pl.get(), k } });
             }
         return out;
     }
@@ -375,7 +379,7 @@ namespace {
         Factory::SetNearPoints(near);
         std::vector<Factory::MachineKey> keys;
         for (const auto& [sid, w] : machineWatch) if (w.on) keys.push_back(w.key);
-        for (const auto& [sid, r] : remotes) for (const auto& [b, pc] : ChestsNear(r)) keys.push_back({ b->id, pc.first->id, pc.second }); // (#854)
+        for (const auto& [sid, r] : remotes) for (const auto& [b, pc] : ChestsNear(sid, r)) keys.push_back({ b->id, pc.first->id, pc.second }); // (#854)
         Factory::WatchMany(keys);
         if (SimTick() - lastChestViews >= 60) { // (#854) 1 Hz
             lastChestViews = SimTick();
@@ -383,7 +387,7 @@ namespace {
                 if (!p.joined) continue;
                 auto rit = remotes.find(p.session);
                 if (rit == remotes.end()) continue;
-                for (const auto& [b, pc] : ChestsNear(rit->second)) {
+                for (const auto& [b, pc] : ChestsNear(p.session, rit->second)) {
                     const Factory::MachineKey key{ b->id, pc.first->id, pc.second };
                     MsgMachineView v; v.body = b->netId; v.plot = pc.first->id; v.part = pc.second; v.view = Factory::Watched(key);
                     if (!v.view.valid) continue;
@@ -466,6 +470,7 @@ namespace {
         // Reach: the machine's origin cell from the player (body-local)
         const Int3 c = plot->parts[a.part].origin;
         const Vector3 at = plot->toBody({ (c.x + 1.0f) * kCellSize, (c.y + 1.0f) * kCellSize, (c.z + 1.0f) * kCellSize });
+        if (ClaimBlocks(session, b, at)) { const std::string why = ClaimRefusal(b, at); refuse(why.c_str()); return; } // (#343) no opening another team's chests and machines
         if (rit->second.player.nearest != b || Vector3Distance(at, b->toLocalD(rit->second.player.position).toFloat()) > kMachineReach) { if (a.action != 6) refuse("That machine is out of reach"); return; }
         if (a.action == 6) { machineWatch[session] = { key, true }; return; }
         Inventory& inv = rit->second.inventory;
@@ -568,6 +573,7 @@ namespace {
             Plant pl;
             if (!b->trees || !b->trees->findPlant(a.plant, pl)) { refuse(nullptr); return; } // gone already (another player's): its removal is on its way
             if (Vector3Distance(pl.base, me) > kPlantReach * b->scale) { refuse("That's out of reach"); return; }
+            if (ClaimBlocks(session, b, pl.base)) { const std::string why = ClaimRefusal(b, pl.base); refuse(why.c_str()); return; } // (#343)
             std::string held;
             for (const Session& s : sessions) if (s.id == session) held = s.loadout.held;
             const int hits = TerrainTool_HitsToFell(pl, ToolOf(held));
@@ -584,6 +590,7 @@ namespace {
             if (!plot || a.part < 0 || a.part >= (int)plot->parts.size() || plot->parts[a.part].type != PartType::Farmland) { refuse("That farmland isn't there any more"); return; }
             const Int3 c = plot->parts[a.part].origin;
             if (Vector3Distance(plot->toBody({ (c.x + 1.0f) * kCellSize, (c.y + 1.0f) * kCellSize, (c.z + 1.0f) * kCellSize }), me) > kMachineReach) { refuse("That farmland is out of reach"); return; }
+            { const Vector3 fa = plot->toBody({ (c.x + 1.0f) * kCellSize, (c.y + 1.0f) * kCellSize, (c.z + 1.0f) * kCellSize }); if (ClaimBlocks(session, b, fa)) { const std::string why = ClaimRefusal(b, fa); refuse(why.c_str()); return; } } // (#343)
             std::string why;
             if (a.action == 2) {
                 if (!Farm_SowFor(rm.inventory, *b, *plot, a.part, a.seed, &why)) { refuse(why.empty() ? nullptr : why.c_str()); return; }
@@ -978,7 +985,7 @@ namespace {
         const int from = Teams_Of(s.uuid);
         if (from) TeamQuests_Book(from); // (loaded from its record now: Teams_Move removes an emptied team's record)
         const int emptied = Teams_Move(s.uuid, team);
-        if (emptied) { if (emptied == from) TeamQuests_Merge(from, team); TeamQuests_Forget(emptied); }
+        if (emptied) { if (emptied == from) TeamQuests_Merge(from, team); TeamQuests_Forget(emptied); Claims_MoveTeam(emptied, team); } // (#343) its claims go with them
         SendQuestBook(s.conn, team);
     }
     // Out of their team into a team of one with a copy of its progress (leave, kick). Online or not.
@@ -1058,6 +1065,91 @@ namespace {
             else { Teams_SetName(mine, arg); TellTeam(mine, "The team is now " + arg); }
         } else Tell(*me, "Unknown: /team " + cmd + " (/team lists the commands)");
         return true;
+    }
+
+    // ---- Land claims (#343): a team's claims protect what's inside from other teams (ops may); /claim, /unclaim ----
+    int claimsRefused = 0, claimsMade = 0;
+    double nextClaimStep = 0.0;
+    std::unordered_map<uint32_t, uint32_t> claimInside; // by session: the claim it stood in at the last step (enter/leave lines)
+    int TeamOfName(const std::string& name) { // (#343) a player online or on record
+        for (const Session& s : sessions) if (SameName(s.name, name)) return Teams_Of(s.uuid);
+        for (const PlayerRecordMeta& m : PlayerRecord_List()) if (SameName(m.name, name)) return Teams_Of(m.uuid);
+        return 0;
+    }
+    std::string TeamName(int team) { const TeamRecord* t = Teams_Find(team); return t ? t->name : "another team"; }
+    bool IsOpSession(uint32_t session) { for (const Session& s : sessions) if (s.id == session) return Admin_RoleOf(s.name) != AdminRole::Player; return false; }
+    bool ClaimBlocks(uint32_t session, const Planetoid* b, Vector3 local, bool count) {
+        if (!b) return false;
+        const Claim* c = Claims_At(b->name, local);
+        if (!c || c->team == TeamOfSession(session) || IsOpSession(session)) return false;
+        if (count) ++claimsRefused;
+        return true;
+    }
+    std::string ClaimRefusal(const Planetoid* b, Vector3 local) {
+        const Claim* c = b ? Claims_At(b->name, local) : nullptr;
+        return c ? TeamName(c->team) + " has claimed this land" : "This land is claimed";
+    }
+    bool ClaimCommand(uint32_t session, const std::string& text) {
+        if (text != "/claim" && text != "/unclaim" && text != "/claims" && text.rfind("/claim ", 0) != 0) return false;
+        const Session* me = nullptr;
+        for (const Session& s : sessions) if (s.id == session && s.online) me = &s;
+        auto rit = remotes.find(session);
+        if (!me || rit == remotes.end()) return true;
+        const int team = Teams_Of(me->uuid);
+        const TeamRecord* t = Teams_Find(team);
+        Planetoid* b = rit->second.player.nearest;
+        const Vector3 here = b ? b->toLocalD(rit->second.player.position).toFloat() : Vector3{};
+        if (text == "/claims" || text == "/claim list") {
+            const std::vector<Claim> mine = Claims_OfTeam(team);
+            std::string list;
+            for (const Claim& c : mine) {
+                list += TextFormat("%s#%u on %s", list.empty() ? "" : ", ", c.id, c.body.c_str());
+                if (b && c.body == b->name) list += TextFormat(" (%.0f m away)", Vector3Distance(c.centre, here));
+            }
+            Tell(*me, TextFormat("Your team's claims: %d of %d%s%s. /claim here, /unclaim the one you stand in", (int)mine.size(), Claims_Budget(t ? (int)t->members.size() : 1), list.empty() ? "" : ": ", list.c_str()));
+            return true;
+        }
+        if (!b) { Tell(*me, "Stand on a body to claim land"); return true; }
+        if (text == "/unclaim") {
+            const Claim* c = Claims_At(b->name, here);
+            if (!c) Tell(*me, "No claim here");
+            else if (c->team != team && !IsOpSession(session)) Tell(*me, TeamName(c->team) + "'s claim isn't yours to remove");
+            else { const int owner = c->team; const uint32_t id = c->id; Claims_Remove(id); TellTeam(owner, me->name + " removed claim #" + std::to_string(id)); if (owner != team) Tell(*me, TextFormat("Removed claim #%u", id)); }
+            return true;
+        }
+        if (text == "/claim info") {
+            const Claim* c = Claims_At(b->name, here);
+            Tell(*me, c ? TextFormat("Claim #%u of %s (%.0f m across)", c->id, TeamName(c->team).c_str(), c->radius * 2.0f) : std::string("Unclaimed land"));
+            return true;
+        }
+        if (text != "/claim") { Tell(*me, "/claim (here), /claim info, /claims, /unclaim"); return true; }
+        std::string why;
+        const uint32_t id = Claims_Make(team, t ? (int)t->members.size() : 1, b->name, here, (int64_t)time(nullptr), why);
+        if (!id) { Tell(*me, why); return true; }
+        ++claimsMade;
+        TellTeam(team, TextFormat("%s claimed the land around them for %s: claim #%u, %.0f m across", me->name.c_str(), t ? t->name.c_str() : "the team", id, kClaimRadius * 2.0f));
+        claimInside.erase(session);
+        return true;
+    }
+    // Once a second: decay (teams with a member online stay fresh), and a line to a player entering or leaving a claim.
+    void StepClaims() {
+        if (GetTime() < nextClaimStep) return;
+        nextClaimStep = GetTime() + 1.0;
+        std::vector<int> online;
+        for (const Session& s : sessions) if (s.online) online.push_back(Teams_Of(s.uuid));
+        if (const int gone = Claims_Update(online, (int64_t)time(nullptr))) printf("host: %d claim(s) decayed (their teams away %d days)\n", gone, (int)(kClaimDecaySeconds / 86400));
+        for (const Session& s : sessions) {
+            if (!s.online) continue;
+            auto rit = remotes.find(s.id);
+            Planetoid* b = rit != remotes.end() ? rit->second.player.nearest : nullptr;
+            const Claim* c = b ? Claims_At(b->name, b->toLocalD(rit->second.player.position).toFloat()) : nullptr;
+            const uint32_t now = c ? c->id : 0;
+            auto& was = claimInside[s.id];
+            if (now == was) continue;
+            if (now) Tell(s, c->team == Teams_Of(s.uuid) ? "Entering your team's claim" : "Entering " + TeamName(c->team) + "'s claim: you can't build, dig or open anything here");
+            else if (was) Tell(s, "Leaving the claim");
+            was = now;
+        }
     }
     std::string CleanChat(std::string t) {
         for (char& ch : t) if ((unsigned char)ch < 0x20 || (unsigned char)ch == 0x7F) ch = ' ';
@@ -1191,6 +1283,7 @@ namespace {
         const DVec3 eye = ns.local + up * (double)rm.player.eyeHeight;
         if ((q.hit - eye).length() * p->scale > TerrainToolSettings{}.reach + kReachSlack) { RefuseEdit(conn, q.seq, NetEditRefusal::Reach); return; }
         if (!p->field->editable(hit)) { RefuseEdit(conn, q.seq, NetEditRefusal::Mantle); return; }
+        if (ClaimBlocks(session, p, hit)) { RefuseEdit(conn, q.seq, NetEditRefusal::Claim); return; } // (#343)
         // The tool in the player's hands (its loadout; possession is #331's) and what it does to the aimed ground.
         std::string held;
         for (const Session& s : sessions) if (s.id == session) held = s.loadout.held;
@@ -1276,6 +1369,7 @@ namespace {
             const Part removed = plot->parts[q.partIndex];
             const Vector3 at = plot->toBody({ (removed.origin.x + 0.5f) * kCellSize, (removed.origin.y + 0.5f) * kCellSize, (removed.origin.z + 0.5f) * kCellSize });
             if (!InBuildReach(world, rm, q.body, at, p->scale)) { RefusePart(conn, q.seq, NetPartRefusal::Reach); return; }
+            if (ClaimBlocks(session, p, at)) { RefusePart(conn, q.seq, NetPartRefusal::Claim); return; } // (#343)
             if (IsMachine(plot->parts[q.partIndex].type)) plot->refundTo = session; // (#854) its contents go to this player (the factory's next layout)
             if (!plot->remove((int)q.partIndex)) { RefusePart(conn, q.seq, NetPartRefusal::NoPart); return; }
             // The refund (a meteorite breaks into ore, rolled here: the authority rolls, #316).
@@ -1304,6 +1398,7 @@ namespace {
             const Vector3 cellCentre{ (part.origin.x + 0.5f) * kCellSize, (part.origin.y + 0.5f) * kCellSize, (part.origin.z + 0.5f) * kCellSize };
             const Vector3 at = plot ? plot->toBody(cellCentre) : anchor; // (a new plot: the part sits on its anchor)
             if (!InBuildReach(world, rm, q.body, at, p->scale)) { RefusePart(conn, q.seq, NetPartRefusal::Reach); return; }
+            if (ClaimBlocks(session, p, at)) { RefusePart(conn, q.seq, NetPartRefusal::Claim); return; } // (#343)
             const char* item = PartItem(part);
             // (#335) a shovel or hoe in hand tills soft ground into farmland for nothing (Farm_Till's rule; a carried farmland item pays first)
             bool till = false;
@@ -1603,7 +1698,7 @@ namespace {
                     std::vector<std::pair<std::string, int>> missing;
                     for (const auto& [want, n] : rc.inputs) { const int lack = n * rest - inv.count(want); if (lack > 0) missing.push_back({ want, lack }); }
                     std::vector<std::tuple<Planetoid*, Plot*, int, std::string, int>> takes;
-                    for (const auto& [b, pc] : ChestsNear(rit->second))
+                    for (const auto& [b, pc] : ChestsNear(it->second.session, rit->second))
                         for (const auto& [id, have] : Factory::ChestContents(b->id, pc.first->id, pc.second))
                             for (auto& [want, lack] : missing)
                                 if (lack > 0 && ItemMatches(want, id)) { const int k = std::min(lack, have); takes.push_back({ b, pc.first, pc.second, id, k }); lack -= k; break; }
@@ -1652,6 +1747,7 @@ namespace {
                 c.text = CleanChat(c.text); // (#349) no control characters into logs and chat
                 std::string name; for (const Session& s : sessions) if (s.id == c.from) name = s.name;
                 if (TeamCommand(c.from, c.text)) return; // (#604) /team and /t, from anyone
+                if (ClaimCommand(c.from, c.text)) return; // (#343) /claim, /unclaim, /claims
                 if (chatHandler) chatHandler(c.from, name, c.text);
                 else SendToJoined(c);
                 return;
@@ -1698,6 +1794,13 @@ bool Host_Start(uint16_t port, std::string& status) {
         const std::map<std::string, double> before{ { item, rit->second.inventory.amount(item) } };
         rit->second.inventory.addAmount(item, count, heat);
         if (const uint32_t conn = ConnOf(to)) SendInventoryDeltas(conn, rit->second.inventory, before);
+    };
+    // (#343) graves: the owner's team by name (#604's teams), and their team's claims keep a grave closed to others
+    gSameTeam = [](const std::string& a, const std::string& b) { const int ta = TeamOfName(a); return ta != 0 && ta == TeamOfName(b); };
+    gInOwnerTeamClaim = [](const std::string& owner, const std::string& body, const DVec3& local) {
+        const int team = TeamOfName(owner);
+        const Claim* c = team ? Claims_At(body, local.toFloat()) : nullptr;
+        return c && c->team == team;
     };
     if (!Net_Available()) { status = "built without ENABLE_GNS: the world runs, nobody can connect"; return false; }
     std::string err;
@@ -1754,6 +1857,7 @@ void Host_Update(Scene& world) {
     StepTeamQuests(world); // (#338) team books: evaluate, pay, tell, send
     StepMachines(world);  // (#332) machines: near points, watched views, working states
     StepPlants(world);    // (#335) plant removals to everyone, farm fields near each player
+    StepClaims();         // (#343) claim decay, enter/leave lines
     SetInterestCentres(world); // (#334) and animals live around every player (#318's centres)
     SetAnimalTargets(world);   // (#334 slice 2) and mind them: flee, follow, hunt, bite
     GpuTimer_CpuMark("host: snapshots");
