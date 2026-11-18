@@ -26,6 +26,9 @@ void Grid::resize(int slots) {
     a.assign((size_t)slots * 4096, 0u); b.assign((size_t)slots * 4096, 0u);
     faceP.assign((size_t)slots * 4096, Vec4{}); faceN.assign((size_t)slots * 4096 * 2, Vec4{});
     nbr.assign((size_t)slots * 6, -1); processed.assign(slots, 0); flags.assign(slots, 0u); delta.assign((size_t)slots * 4096, 0); sinkOut.assign(slots, 0u);
+    outDem.assign((size_t)slots * 4096, 0); inDem.assign((size_t)slots * 4096, 0);
+    availOf.assign((size_t)slots * 4096, INT32_MAX); roomOf.assign((size_t)slots * 4096, INT32_MAX);
+    pairGive.assign((size_t)slots * 4096 * 4, -1); pairTake.assign((size_t)slots * 4096 * 4, -1);
 }
 
 namespace {
@@ -267,6 +270,13 @@ struct Pass {
         r.ok = proc && g.processed[s];
         return r;
     }
+    // The depth (units) of the run holding a column cell at the same row (0: none or another fluid): down to its bottom, up.
+    int runDepth(int cell, uint32_t kind) const {
+        if (cell < 0 || !waterOf(inC[cell], kind)) return 0;
+        for (int i = 0; i < 64; ++i) { bool pd; const int dn = stepZ(cell, -1, pd); if (dn < 0 || !waterOf(inC[dn], kind) || F(inC[dn]) < CAP(inC[dn])) break; cell = dn; }
+        const ColRun r = runUp(cell, 0);
+        return r.surf - r.bed;
+    }
     // What a run can give this substep (its top cell and the full cell under it) and take (its head and the cell above).
     int runAvail(const ColRun& r) const { return (int)F(inC[r.top]) + (r.below >= 0 ? (int)F(inC[r.below]) : 0); }
     int runRoom(const ColRun& r) const {
@@ -275,7 +285,13 @@ struct Pass {
     }
     // Plans the pair between this run (bottom cell gi) and the neighbour column on side (dx, dy): moves its units into
     // g.delta and returns the new Q (+: from this run toward the neighbour). A wet pair belongs to the -x / -y side's run.
-    float colPair(int gi, int dx, int dy, float qPrev, bool owner) const {
+    static void AtomicMin(int& v, int x) {
+        int cur = __atomic_load_n(&v, __ATOMIC_RELAXED);
+        while (x < cur && !__atomic_compare_exchange_n(&v, &cur, x, true, __ATOMIC_RELAXED, __ATOMIC_RELAXED)) {}
+    }
+    // k: the pair's slot in the run's record (0 +x, 1 +y, 2 -x, 3 -y); planned: the units it plans to move (0: none).
+    float colPair(int gi, int dx, int dy, float qPrev, bool owner, int k, float& planned) const {
+        planned = 0.0f;
         const uint32_t c = inC[gi];
         const uint32_t kind = KIND(c);
         const ColRun A = runUp(gi, 0);
@@ -359,11 +375,13 @@ struct Pass {
         if (p.advect && h >= p.minSpread[kind]) { // also from rest: a front is pushed by the water behind it
             const int k = dx != 0 ? 0 : 1, dir = dx + dy;  // axis; +1 toward +x / +y
             float qUp = 0.0f; bool have = false;
+            int far = -1; // the upstream pair's other column (beyond the giver), for that pair's depth
             const float way = q != 0.0f ? q : (aUp ? 1.0f : -1.0f); // the flow's direction (+: A gives)
             if (way > 0.0f) {                                // A gives: the pair behind A (on its far side)
+                bool pl; int fl2;
+                int lb = neighbour(s, x, y, z, -dx, -dy, 0, pl, fl2);
+                far = lb;
                 if (dir > 0) {
-                    bool pl; int fl2;
-                    int lb = neighbour(s, x, y, z, -dx, -dy, 0, pl, fl2);
                     if (lb >= 0 && waterOf(inC[lb], kind)) {
                         for (int i = 0; i < 64; ++i) { bool pd; const int dn = stepZ(lb, -1, pd); if (dn < 0 || !waterOf(inC[dn], kind) || F(inC[dn]) < CAP(inC[dn])) break; lb = dn; }
                         qUp = k == 0 ? g.faceP[lb].x : g.faceP[lb].y; have = true;
@@ -371,12 +389,29 @@ struct Pass {
                 } else { qUp = -(k == 0 ? g.faceP[gi].x : g.faceP[gi].y); have = true; } // toward -x: A's own +x pair, reversed
             } else if (wet && dir > 0) {                      // the neighbour gives: the pair beyond it
                 qUp = k == 0 ? g.faceP[B.bottom].x : g.faceP[B.bottom].y; have = true;
+                int bs, bx, by, bz; cellPos(B.bottom, bs, bx, by, bz);
+                bool pf; int ff;
+                far = neighbour(bs, bx, by, bz, dx, dy, 0, pf, ff);
             }
             if (have && qUp * way > 0.0f) {
-                // Uncapped: with a full reservoir the 0.25 m front runs at Ritter's speed (1.03x to 10 m); capping u by
-                // sqrt(g h) at the pair's or the giver's depth stalled it (#680; the earlier 1.78x came from a half-filled pool).
-                const float u = 0.5f * (std::fabs(q) + std::fabs(qUp)) / (p.cellSize * std::max(hm, 0.02f));
-                q += std::min(1.0f, p.dt * u / p.cellSize) * (qUp - q);
+                // The water carries its velocity, not its discharge (#680): blending a thin pair toward the deep upstream
+                // pair's discharge gave the front u = Q / (cs h) -> huge as h -> 0 (a dam break's sheet ran 16-20 m/s, ~2x
+                // Ritter's 2 sqrt(g h0), the frictionless maximum). The target is the upstream pair's velocity at this pair's
+                // depth, never more than its discharge; the upstream pair's depth is the deeper of its two runs (the giver
+                // and the one beyond it: below a dam the giver is the thin sheet, the reservoir beyond it).
+                // FLUID_ADVECT_Q=1: the discharge blend (A/B). (The old "capping u stalled it" was measured while the column
+                // pairs' quarter limit choked thin runs.)
+                // WIP: with the upstream pair's true depth (FLUID_ADVECT_UPDEPTH=1) the thin tip gets ~no target and the front
+                // crawls (5 m in 2.2 s); with the giver's depth alone (default for now) it runs 1.50x Ritter. Unresolved.
+                static const bool advectQ = EnvFlag("FLUID_ADVECT_Q"), upDepthOn = EnvFlag("FLUID_ADVECT_UPDEPTH");
+                float qT = qUp;
+                if (!advectQ) {
+                    const int gDepth = way > 0.0f ? A.surf - A.bed : B.surf - B.bed; // the giver run's depth (units)
+                    const int upDepth = upDepthOn ? std::max(gDepth, runDepth(far, kind)) : gDepth;
+                    qT *= std::min(1.0f, hm / std::max((float)upDepth / p.hu, 0.02f));
+                }
+                const float u = 0.5f * (std::fabs(q) + std::fabs(qT)) / (p.cellSize * std::max(hm, 0.02f));
+                q += std::min(1.0f, p.dt * u / p.cellSize) * (qT - q);
             }
         }
         const float speed = std::fabs(q) / (p.cellSize * std::max(hm, 0.02f));
@@ -403,26 +438,28 @@ struct Pass {
         // only into dug cells (infinite water reaches a dig, not the open ground); a sink takes.
         if ((FL(inC[taker]) & (SOURCE | SINK)) == SOURCE) return 0.0f;
         if ((FL(inC[giverTop]) & SOURCE) && !(FL(inC[taker]) & DUG)) return 0.0f;
-        static const float quarter = EnvFlag("DBNOQUARTER") ? 1.0f : 4.0f; // TEMP #680: lift the per-pair quarter limit (NOT conservation-safe)
-        const int units = (int)std::floor(std::min({ plan, (float)avail / quarter, (float)room / quarter }));
-        if (A.surf - A.bed > 128) { // TEMP #680 (DBPAIR): which limit set a deep pair's units this substep
-            const float lim = std::min({ plan, (float)avail / 4.0f, (float)room / 4.0f });
-            ++dbgPair[lim == plan ? 0 : lim == (float)avail / 4.0f ? 1 : 2];
-            __atomic_fetch_add(&dbgPairPlan, (long long)plan, __ATOMIC_RELAXED); __atomic_fetch_add(&dbgPairUnits, (long long)units, __ATOMIC_RELAXED);
-        }
+        // How much this pair may move. Each of a run's up to four pairs once took at most a quarter of what the run could
+        // give or take, so none could overdraw it - but a thin run's quarter (one partial cell: ~33 units a substep) was a
+        // third of a dam break's discharge, and a bore stood behind the choke and backed upstream (#680). Now a pair plans
+        // up to the whole avail / room, adds it to its giver's and taker's demand, and the move pass scales every pair by
+        // min(1, avail / out, room / in): exact conservation, any order (integer atomics), no choke.
+        // FLUID_COL_QUARTER=1: the old quarter limit, moved here (A/B).
+        static const bool quarter = EnvFlag("FLUID_COL_QUARTER");
+        const int units = (int)std::floor(std::min({ plan, (float)avail / (quarter ? 4.0f : 1.0f), (float)room / (quarter ? 4.0f : 1.0f) }));
         if (units <= 0) { WHY(7); return q * 0.5f; }
         WHY(spill ? 8 : wet ? 9 : 10);
         if ((float)units < std::floor(plan)) q = (aGives ? 1.0f : -1.0f) * (float)units / (p.dt * p.units);
-        __atomic_fetch_sub(&g.delta[giverTop], units, __ATOMIC_RELAXED);
-        __atomic_fetch_add(&g.delta[taker], units, __ATOMIC_RELAXED);
-        if (dbTrace) {
-            bool pt; const int over = stepZ(taker, 1, pt);
-            const bool capped = over >= 0 && (FL(inC[over]) & SOLID);
-            if (g.dbgMark.size() > (size_t)(taker / 4096) && g.dbgMark[taker / 4096]) {
-                const int i = dbgTraceN.fetch_add(1, std::memory_order_relaxed);
-                if (i < kDbgTrace) dbgTrace[i] = DbgTransfer{ giverTop, taker, spill ? 0 : wet ? 1 : 2, units, (int)SH(inC[taker]), capped ? 1 : 0, gi };
-            }
+        if (quarter) {
+            __atomic_fetch_sub(&g.delta[giverTop], units, __ATOMIC_RELAXED);
+            __atomic_fetch_add(&g.delta[taker], units, __ATOMIC_RELAXED);
+            return q;
         }
+        planned = (float)units;
+        g.pairGive[(size_t)4 * gi + k] = giverTop; g.pairTake[(size_t)4 * gi + k] = taker;
+        __atomic_fetch_add(&g.outDem[giverTop], units, __ATOMIC_RELAXED);
+        __atomic_fetch_add(&g.inDem[taker], units, __ATOMIC_RELAXED);
+        AtomicMin(g.availOf[giverTop], avail); // a spill and a run's head can see one taker's room differently: the least holds
+        AtomicMin(g.roomOf[taker], room);
         return q;
     }
     // A cell's new fill from the column flows: its own delta (clamped), a head's overflow from the cell below, a top's
@@ -452,20 +489,44 @@ struct Pass {
         if (pass == 1 && p.columns) {
             // Column-pair flow (#680): a run's bottom cell plans its pairs (+x, +y always; -x, -y only toward a dry or lower
             // column: a wet pair belongs to the -side run); Q per side in the face record (x +x, y +y, z -x, w -y).
-            Vec4 Q{};
+            Vec4 Q{}, U{}; // U: the units each pair plans (the move pass scales and moves them)
             bool pb; int fb;
             const int gb = neighbour(slot, x, y, z, 0, 0, -1, pb, fb);
             const bool bottom = !(fl & SOLID) && F(c) > 0u && !(fl & SOURCE) && gb >= 0 &&
                                 ((FL(inC[gb]) & SOLID) || (F(inC[gb]) > 0u && KIND(inC[gb]) != KIND(c)));
             if (bottom) {
                 const Vec4 P = g.faceP[gi];
-                Q.x = colPair(gi, 1, 0, P.x, true);
-                Q.y = colPair(gi, 0, 1, P.y, true);
-                Q.z = colPair(gi, -1, 0, P.z, false);
-                Q.w = colPair(gi, 0, -1, P.w, false);
+                Q.x = colPair(gi, 1, 0, P.x, true, 0, U.x);
+                Q.y = colPair(gi, 0, 1, P.y, true, 1, U.y);
+                Q.z = colPair(gi, -1, 0, P.z, false, 2, U.z);
+                Q.w = colPair(gi, 0, -1, P.w, false, 3, U.w);
                 if (Q.x != 0.0f || Q.y != 0.0f || Q.z != 0.0f || Q.w != 0.0f) g.flags[slot] |= 1u;
             }
             g.faceN[(size_t)2 * gi] = Q;
+            g.faceN[(size_t)2 * gi + 1] = U;
+            return;
+        }
+        if (pass == 3) {
+            // The column pairs' move (#680): each planned pair moves its units scaled by its giver's and taker's demand, and
+            // its flow follows what moved. Floors keep every cell's sum within its avail / room.
+            const Vec4 U = g.faceN[(size_t)2 * gi + 1];
+            if (U.x == 0.0f && U.y == 0.0f && U.z == 0.0f && U.w == 0.0f) return;
+            Vec4& Q = g.faceN[(size_t)2 * gi];
+            const float u4[4] = { U.x, U.y, U.z, U.w };
+            float* q4[4] = { &Q.x, &Q.y, &Q.z, &Q.w };
+            for (int k = 0; k < 4; ++k) {
+                const int planned = (int)u4[k];
+                if (planned <= 0) continue;
+                const int giver = g.pairGive[(size_t)4 * gi + k], taker = g.pairTake[(size_t)4 * gi + k];
+                long long units = planned;
+                const int out = g.outDem[giver], in = g.inDem[taker], av = g.availOf[giver], rm = g.roomOf[taker];
+                if (out > av) units = std::min(units, (long long)planned * av / out);
+                if (in > rm) units = std::min(units, (long long)planned * rm / in);
+                if (units < planned) *q4[k] *= (float)units / (float)planned;
+                if (units <= 0) continue;
+                __atomic_fetch_sub(&g.delta[giver], (int)units, __ATOMIC_RELAXED);
+                __atomic_fetch_add(&g.delta[taker], (int)units, __ATOMIC_RELAXED);
+            }
             return;
         }
         if (pass == 1) {
@@ -490,7 +551,8 @@ struct Pass {
         const int f = (int)F(c);
         uint32_t kind = KIND(c);
         if (pass == 0) {
-            g.delta[gi] = 0; // the column flows planned next (#680)
+            g.delta[gi] = 0; // the column flows planned next (#680), and their limiter's demand
+            g.outDem[gi] = 0; g.inDem[gi] = 0; g.availOf[gi] = INT32_MAX; g.roomOf[gi] = INT32_MAX;
             bool pB, pA; int fB, fA;
             const int gb = neighbour(slot, x, y, z, 0, 0, -1, pB, fB);
             const int ga = neighbour(slot, x, y, z, 0, 0, 1, pA, fA);
@@ -596,8 +658,10 @@ void RunPass(Grid& g, const Params& p, const std::vector<int>& list, int pass) {
 } // namespace
 
 void Substep(Grid& g, const Params& p, const std::vector<int>& list) {
+    static const bool quarter = EnvFlag("FLUID_COL_QUARTER");
     RunPass(g, p, list, 0);
     RunPass(g, p, list, 1);
+    if (p.columns && !quarter) RunPass(g, p, list, 3); // the column pairs' scaled move (#680)
     RunPass(g, p, list, 2);
     static const bool why = EnvFlag("DBWHY");
     static int nWhy = 0;

@@ -1832,7 +1832,7 @@ void CpuTick(int n) {
                 const FluidKernel::DbgPairRec& r = FluidKernel::dbgPairs[i];
                 float aa, ac, ah;
                 chan(r.a, aa, ac, ah);
-                if (aa < 3.0f || aa > 8.0f || std::fabs(ac) > 2.5f) continue;
+                if (aa < 0.0f || aa > 4.0f || std::fabs(ac) > 2.5f) continue;
                 const Site* st = slotSite[r.a / B3];
                 const float da = Vector3DotProduct(Vector3Add(Vector3Scale(st->e, (float)r.dx), Vector3Scale(st->n, (float)r.dy)), dbgAxX);
                 const int dir = da > 0.3f ? 0 : da < -0.3f ? 1 : 2;

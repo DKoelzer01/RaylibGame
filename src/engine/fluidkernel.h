@@ -41,6 +41,12 @@ struct Grid {
     std::vector<uint8_t> processed; // per slot
     std::vector<uint32_t> flags;  // per slot: bit 0 changed, bits 1-6 face requests
     std::vector<int> delta;       // per cell: column-pair flow units this substep (#680; zeroed in the vertical pass)
+    // The column pairs' limiter (#680): pass 1 plans each pair's units and adds them to its giver's and taker's demand;
+    // the move pass scales every pair by min(1, avail / out, room / in), so no cell gives or takes more than it has.
+    // Per cell: demand out / in, the smallest avail / room any pair saw (all reset in the vertical pass); per run bottom
+    // cell and pair (x, y, z, w): the giver's top cell and the taker cell.
+    std::vector<int> outDem, inDem, availOf, roomOf;
+    std::vector<int> pairGive, pairTake;
     std::vector<uint32_t> sinkOut; // per slot: fill units its sinks took in (river flow, #656; the caller zeroes it)
     std::vector<uint8_t> dbgMark; // TEMP #680 (DBTRACE): per slot, trace the transfers into it
     void resize(int slots);       // keeps nothing

@@ -6016,7 +6016,7 @@ int main(int argc, char** argv)
                                 }
                             }
                             static double profT = 0.0; // #680 diagnosis: the depth along the channel every 0.5 s
-                            if (EnvFlag("DBPROF") && t - profT >= 0.25 && t < 3.0) {
+                            if (EnvFlag("DBPROF") && t - profT >= (t < 0.5 ? 0.05 : 0.25) && t < 3.0) {
                                 profT = t;
                                 printf("dbprof t=%.2f (x -4..14 m by 1 m):", t);
                                 for (float xx = -4.0f; xx <= 14.0f; xx += 1.0f) { const float d = Fluid::SurfaceAbove(*p, pt(xx, 0.0f, dbFloor + 0.13f), 4.0f); printf(" %.2f", d > 0.0f ? d + 0.13f : 0.0f); }
