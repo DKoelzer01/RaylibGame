@@ -77,8 +77,21 @@ layout(std430, binding = 14) buffer DbgLost { int lostOver; int lostUnder; int d
 const uint SOLID = 1u, SOURCE = 2u, DUG = 8u, SINK = 16u; // a sink: a source that takes water in (reset to its level after: what is over it leaves, #361)
 const float G = 9.81;
 uniform float cellSize;    // m (Plan 10 W4c #642)
-#define UNITS (255.0 / (cellSize * cellSize * cellSize)) // fill units per m^3
-#define HU (255.0 / cellSize)                            // fill units per metre of height (a column)
+// Fill units per m^3 and per metre of height: computed on the CPU as fluidkernel.cpp's Params does, so both sides use the
+// same floats (#680: a division here is not correctly rounded, and the CPU and GPU column models drifted by a unit).
+uniform float kUnits, kHu;
+#define UNITS kUnits
+#define HU kHu
+// a / b correctly rounded, as the CPU's division (#680): GLSL's / is approximate on NVIDIA; a reciprocal refined with exact
+// fused multiply-adds (Markstein) gives the IEEE quotient, so the column model's CPU and GPU runs agree bit for bit.
+float divRN(float a, float b) {
+    precise float r = 1.0 / b;
+    precise float e = fma(-b, r, 1.0);
+    r = fma(e, r, r);
+    precise float q = a * r;
+    precise float rem = fma(-b, q, a);
+    return fma(rem, r, q);
+}
 uint F(uint c) { return c & 255u; }
 uint FL(uint c) { return (c >> 8) & 255u; }
 uint TG(uint c) { return (c >> 16) & 255u; }
@@ -404,7 +417,7 @@ float colPair(int gi, ColRun A, int dx, int dy, float qPrev, bool owner, out int
     bool aUp = A.surf >= surfB;
     int surfU = aUp ? A.surf : surfB, surfD = aUp ? surfB : A.surf;
     int h = surfU - bedMax, dH = surfU - max(surfD, bedMax);
-    precise float hm = float(h) / HU, dHm = float(dH) / HU;
+    precise float hm = divRN(float(h), HU), dHm = divRN(float(dH), HU);
     precise float q = qPrev;
     if (h >= minSpread[kind] && dH >= 2) q += dt * G * hm * dHm * (aUp ? 1.0 : -1.0);
     if (!wet && q < 0.0) q = 0.0;
@@ -427,14 +440,14 @@ float colPair(int gi, ColRun A, int dx, int dy, float qPrev, bool owner, out int
         }
         if (have && qUp * way > 0.0) {
             int gDepth = way > 0.0 ? A.surf - A.bed : B.surf - B.bed; // the giver run's depth: the upstream velocity at this depth
-            precise float qT = qUp * min(1.0, hm / max(float(gDepth) / HU, 0.02));
-            precise float u = 0.5 * (abs(q) + abs(qT)) / (cellSize * max(hm, 0.02));
-            q += min(1.0, dt * u / cellSize) * (qT - q);
+            precise float qT = qUp * min(1.0, divRN(hm, max(divRN(float(gDepth), HU), 0.02)));
+            precise float u = divRN(0.5 * (abs(q) + abs(qT)), cellSize * max(hm, 0.02));
+            q += min(1.0, divRN(dt * u, cellSize)) * (qT - q);
         }
     }
-    precise float speed = abs(q) / (cellSize * max(hm, 0.02));
-    precise float fricDiv = 1.0 + dt * (frictionLin[kind] + frictionQuad[kind] * speed / max(hm, 0.02));
-    q /= fricDiv;
+    precise float speed = divRN(abs(q), cellSize * max(hm, 0.02));
+    precise float fricDiv = 1.0 + dt * (frictionLin[kind] + divRN(frictionQuad[kind] * speed, max(hm, 0.02)));
+    q = divRN(q, fricDiv);
     precise float plan = abs(q) * dt * UNITS;
     if (plan < 1.0) return q;
     bool aGives = q > 0.0;
@@ -451,7 +464,7 @@ float colPair(int gi, ColRun A, int dx, int dy, float qPrev, bool owner, out int
     if ((FL(cg) & SOURCE) != 0u && (FL(ct) & DUG) == 0u) return 0.0;
     int units = int(floor(min(plan, min(float(avail), float(room)))));
     if (units <= 0) return q * 0.5;
-    if (float(units) < floor(plan)) q = (aGives ? 1.0 : -1.0) * float(units) / (dt * UNITS);
+    if (float(units) < floor(plan)) q = divRN((aGives ? 1.0 : -1.0) * float(units), dt * UNITS);
     int rowDiff = takerRow - giverRow;
     if (giverRow < -64 || giverRow > 191 || rowDiff < -110 || rowDiff > 17) return q; // out of the code's reach: no move
     planned = units;
@@ -559,7 +572,7 @@ void main() {
             if (outD > av) units = min(units, planned * av / outD);
             if (inD > rm) units = min(units, planned * rm / inD);
             if (units < planned) {
-                precise float sc = float(units) / float(planned);
+                precise float sc = divRN(float(units), float(planned));
                 if (k == 0) Q.x = unpackHalf2x16(packHalf2x16(vec2(Q.x * sc, 0.0))).x;
                 else if (k == 1) Q.y = unpackHalf2x16(packHalf2x16(vec2(Q.y * sc, 0.0))).x;
                 else if (k == 2) Q.z = unpackHalf2x16(packHalf2x16(vec2(Q.z * sc, 0.0))).x;
