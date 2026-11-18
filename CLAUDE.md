@@ -298,6 +298,8 @@ Water (Plan 4, user answers)
 - Decided (2026-11-11): F2 is a sparse 3D cell simulation, Terraria-style, 1 m voxels (fill amount
   per cell; down, then sideways; a slow levelling pass for U-bends / cave pressure), surface meshed
   with marching cubes on the fill amounts. Replaces the per-column span design.
+- Fluid cells are 0.25 m by default (user, 2026-11-17, #714); `RAYLIBGAME_FLUID_CELL=1` is the old 1 m grid (opt-in).
+  A save records its cell size; sites saved at another size are dropped on load (their simulated water starts over).
 
 Deferred by the user: moon mining launch (#116), motion sickness (#117; comfort options are #168). The history of
 the earlier playtest batches is in git history and the closed issues.

@@ -1,0 +1,6 @@
+# Items that glow on their own (#580): radioactive materials give off a faint glow matching their radiation.
+# (Hot items glow from their heat instead: Inventory heat, fresh out of a furnace, kiln or crucible.)
+# id | colour r,g,b | strength (0..1: 0.15 faint, 0.5 strong)
+# No radioactive items exist yet; add them here when they do, e.g.:
+# uranium_ore   | 120,255,90  | 0.15
+# uranium_ingot | 120,255,90  | 0.3

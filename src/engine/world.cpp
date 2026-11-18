@@ -1594,7 +1594,7 @@ void ApplyTerrainEdits(Planetoid& p, const TerrainEdit* edits, size_t count) {
         const NodeKey& k = entry.first;
         const Vector3 nlo = k.origin();
         const Vector3 nhi = Vector3AddValue(nlo, k.size() * (CHUNK_SIZE + 1.0f) / CHUNK_SIZE);
-        const float margin = rmax + k.stride() + 1.0f;
+        const float margin = rmax + (k.level > 0 ? 3.0f : 1.0f) * k.stride() + 1.0f; // coarse nodes read edits 2 strides along their columns (#679)
         if (hi.x + margin < nlo.x || lo.x - margin > nhi.x || hi.y + margin < nlo.y || lo.y - margin > nhi.y || hi.z + margin < nlo.z || lo.z - margin > nhi.z) continue;
         if (count == 1 && DistanceToBox(edits[0].center, nlo, nhi) > margin) continue;
         touched.push_back(k);
