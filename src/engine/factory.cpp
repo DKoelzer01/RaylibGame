@@ -253,7 +253,7 @@ std::vector<MoveMsg> moveQueue;               // plots that changed body / id (r
 bool resetRequested = false;
 std::vector<std::pair<int, int>> results;     // sim -> main: (item, count) back to the inventory
 std::vector<std::pair<int, int>> cursorResults; // sim -> main: (item, count) onto the cursor (#192)
-void (*cursorSink)(const std::string&, int) = nullptr;
+void (*cursorSink)(const std::string&, int, float) = nullptr;
 std::vector<std::pair<int, int>> refunds;     // sim thread: contents of removed machines (to results)
 
 std::mutex viewMutex;                         // snapshot for the HUD
@@ -700,6 +700,7 @@ void FillView(const PlotSim& ps, int part, MachineView& v) {
     v.energy = m.energy;
     v.energyMax = m.type == PartType::Battery ? kBatteryCapacity : 0;
     v.hasFuelSlot = HasFuelSlot(m.type);
+    v.hotOutputs = HeatsItems(m.type);
     if (m.fuel.count > 0) v.fuelSlot = { tables.name(m.fuel.item), m.fuel.count };
     if (Def(m.type).waterPerTick > 0) { v.water = m.water; v.waterMax = kWaterTank; v.heat = m.heat; v.heatMax = kHeatMax; }
     auto list = [](const Stack* s, int n) { // totals per item in slot order (#567: a chest of coal is "coal x3200", not 50 entries)
@@ -938,10 +939,9 @@ void Factory::Sync(Scene& world) {
         std::lock_guard<std::mutex> v(viewMutex);
         cur.swap(cursorResults);
     }
-    // kHotItem marks what came out of a heating machine's output (#580): it arrives hot. (The cursor keeps no heat yet:
-    // the inventory UI's cursor stack is a plain id and count.)
+    // kHotItem marks what came out of a heating machine's output (#580): it arrives hot, in the inventory or on the cursor.
     for (auto& r : back) inventory.addAmount(tables.name(r.first & ~kHotItem), r.second, (r.first & kHotItem) ? 1.0f : 0.0f);
-    for (auto& r : cur) { const std::string id = tables.name(r.first & ~kHotItem); if (cursorSink) cursorSink(id, r.second); else inventory.addAmount(id, r.second, (r.first & kHotItem) ? 1.0f : 0.0f); }
+    for (auto& r : cur) { const std::string id = tables.name(r.first & ~kHotItem); if (cursorSink) cursorSink(id, r.second, (r.first & kHotItem) ? 1.0f : 0.0f); else inventory.addAmount(id, r.second, (r.first & kHotItem) ? 1.0f : 0.0f); }
 }
 
 void Factory::TakeSlotToCursor(uint64_t body, uint32_t plot, int part, int slot, int which, int count) {
@@ -950,7 +950,7 @@ void Factory::TakeSlotToCursor(uint64_t body, uint32_t plot, int part, int slot,
     m.amount = count;
     itemQueue.push_back(m);
 }
-void Factory::SetCursorSink(void (*sink)(const std::string&, int)) { cursorSink = sink; }
+void Factory::SetCursorSink(void (*sink)(const std::string&, int, float)) { cursorSink = sink; }
 
 MachineView Factory::View(uint64_t body, uint32_t plot, int part) {
     std::lock_guard<std::mutex> v(viewMutex);

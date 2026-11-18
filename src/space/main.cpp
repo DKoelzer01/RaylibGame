@@ -398,6 +398,7 @@ int main(int argc, char** argv)
     bool benchTime = false;        // --test-time: dawn start (#259), a +6 h jump carries the player (#275)
     bool benchPickups = false;     // --test-pickups: the pickup feed (#208): repeats merge, a screenshot while it shows
     bool shotInventory = false;    // --shot-inventory: long item names in their cells (#219)
+    bool shotGlow = false;         // --shot-glow: hot items glow in the inventory and on the hotbar (#580)
     bool shotChest = false;        // --shot-chest: a filled chest open beside the inventory (#495: 50 cells, 10 wide)
     bool benchFoundation = false;  // --test-foundation: a part half in the ground clears its cell and nothing else (#210)
     bool shotPreview = false;      // --shot-preview: the build preview in the part's real shape (#197)
@@ -683,6 +684,7 @@ int main(int argc, char** argv)
         if (std::string(argv[i]) == "--test-headless") benchHeadless = true;
         if (std::string(argv[i]) == "--test-pickups") benchPickups = true;
         if (std::string(argv[i]) == "--shot-inventory") shotInventory = true;
+        if (std::string(argv[i]) == "--shot-glow") shotGlow = true;
         if (std::string(argv[i]) == "--shot-chest") shotChest = true;
         if (std::string(argv[i]) == "--test-foundation") benchFoundation = true;
         if (std::string(argv[i]) == "--shot-preview") shotPreview = true;
@@ -8816,6 +8818,26 @@ int main(int argc, char** argv)
             if (f == 90) { TakeScreenshot("bench_chest.png"); printf("bench: shot: bench_chest.png\n"); shotChest = false; }
         }
         // --shot-inventory (#219): the inventory with long item names (cut to fit; they scroll on hover).
+        // --shot-glow (#580): hot items glow in the inventory and on the hotbar: a fresh iron ingot stack (yellow-white),
+        // a half-cooled copper one (orange) and a nearly cool one (dull red), the fresh one also on the hotbar; the
+        // inventory open (bench_glow.png).
+        if (shotGlow && gameState == 1 && !loading && WorldIdle()) {
+            static int f = 0;
+            if (++f == 5) {
+                inventory.addAmount("iron_ingot", 20, 1.0f); inventory.addAmount("copper_ingot", 12, 0.5f); inventory.addAmount("bronze_ingot", 6, 0.12f);
+                Hotbar_Bind(2, "iron_ingot");
+                inventory.addAmount("iron_ingot", 5, 1.0f); // a second stack in the grid (the first went to the hotbar)
+                GameUI_ToggleInventory();
+            }
+            if (f == 30) {
+                TakeScreenshot("bench_glow.png");
+                const ItemGlow hot = Item_Glow(inventory.grid()[Inventory::kGrid + 2]);
+                printf("bench: glow: hotbar iron ingot heat %.2f, glow %.2f (r %d g %d b %d); screenshot bench_glow.png\n",
+                       inventory.grid()[Inventory::kGrid + 2].heat, hot.strength, hot.color.r, hot.color.g, hot.color.b);
+                GameUI_ToggleInventory();
+                shotGlow = false;
+            }
+        }
         if (shotInventory && gameState == 1 && !loading && WorldIdle()) {
             static int f = 0;
             if (++f == 5) { inventory.add("oxygen_tank_module", 1); inventory.add("stone_pickaxe", 1); inventory.add("steam_macerator", 1); inventory.add("oak_log", 12); inventory.grid()[Inventory::kOffHand] = InvSlot{ "wooden_shield", 100 }; GameUI_ToggleInventory(); }
