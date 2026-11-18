@@ -345,6 +345,15 @@ namespace {
         if (t.kind == "do") { auto it = questCounts.find(t.target); return it != questCounts.end() && it->second >= t.n - 1e-6; }
         return false;
     }
+    // A counted task's text with how far along it is (#563: "Hammer 4 bronze plates (2/4)"); tasks of one thing as written.
+    std::string TaskLine(const Task& t, bool done) {
+        if ((t.kind != "get" && t.kind != "do") || t.n < 2.0 - 1e-6) return t.text;
+        double have = 0.0;
+        if (t.kind == "get") have = inventory.obtainedTotal(t.target);
+        else if (auto it = questCounts.find(t.target); it != questCounts.end()) have = it->second;
+        if (done) have = t.n;
+        return TextFormat("%s (%d/%d)", t.text.c_str(), (int)std::min(floor(have + 1e-6), t.n), (int)t.n);
+    }
 }
 
 void Objectives_MarkVisitedBody(int i) { visitedBodies.insert(i); }
@@ -411,7 +420,12 @@ int QuestBook_TierCount() { LoadTiers(); return (int)tiers.size(); }
 const char* QuestBook_TierName(int i) { LoadTiers(); return i >= 0 && i < (int)tiers.size() ? tiers[i].name.c_str() : ""; }
 const char* QuestBook_TierText(int i) { LoadTiers(); return i >= 0 && i < (int)tiers.size() ? tiers[i].text.c_str() : ""; }
 int QuestBook_TaskCount(int i) { LoadTiers(); return i >= 0 && i < (int)tiers.size() ? (int)tiers[i].tasks.size() : 0; }
-const char* QuestBook_TaskText(int i, int k) { return k >= 0 && k < QuestBook_TaskCount(i) ? tiers[i].tasks[k].text.c_str() : ""; }
+const char* QuestBook_TaskText(int i, int k) { // with its count (#563)
+    static std::string s;
+    if (k < 0 || k >= QuestBook_TaskCount(i)) return "";
+    s = TaskLine(tiers[i].tasks[k], QuestBook_TaskDone(i, k));
+    return s.c_str();
+}
 bool QuestBook_TaskDone(int i, int k) { return k >= 0 && k < QuestBook_TaskCount(i) && (tiers[i].tasks[k].done || i < questTier); }
 
 void QuestBook_Save(FILE* f) {
@@ -479,7 +493,7 @@ void Objectives_DrawHUD() {
         y += 20;
     }
     for (const Task& k : t.tasks) {
-        y = DrawWrapped(TextFormat("%s %s", k.done ? "[x]" : "[ ]", k.text.c_str()), 12, y, 58, 15, k.done ? Fade(GREEN, 0.75f) : RAYWHITE);
+        y = DrawWrapped(TextFormat("%s %s", k.done ? "[x]" : "[ ]", TaskLine(k, k.done).c_str()), 12, y, 58, 15, k.done ? Fade(GREEN, 0.75f) : RAYWHITE);
         y += 1;
     }
     y += 4;
