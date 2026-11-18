@@ -94,6 +94,11 @@ extern "C" __declspec(dllimport) int __stdcall MessageBoxA(void*, const char*, c
 #include "watersurface.h"
 #include "waterfield.h"
 #include "waterworks.h"
+#include "avatar.h"
+
+// Avatars drawn this frame (#328): remote players (the net client fills them, #327), bench avatars, and the
+// RAYLIBGAME_AVATAR_SELF=1 debug figure. Rebuilt each frame before drawScene.
+static std::vector<AvatarState> gAvatars, gBenchAvatars;
 
 #if defined(PLATFORM_DESKTOP)
     #define GLSL_VERSION            330
@@ -521,6 +526,8 @@ int main(int argc, char** argv)
     bool benchOil = false, oilRateOk = false; int oilPhase = 0; double oilT0 = 0.0; // --test-oil
     bool benchSpring = false; int springPhase = 0; double springT0 = 0.0; // --test-spring
     bool benchShotAnimals = false; int animalShotPhase = 0; // --shot-animals
+    bool benchShotAvatar = false; int avatarShotPhase = 0;  // --shot-avatar (#328)
+    const bool avatarSelf = getenv("RAYLIBGAME_AVATAR_SELF") && atoi(getenv("RAYLIBGAME_AVATAR_SELF")) != 0;
     bool benchShotMachines = false; int machineShotPhase = 0; // --shot-machines
     bool benchParticles = false; int particlePhase = 0; double particleT0 = 0.0; Vector3 particleEye{}, particleAt{}; // --shot-particles
     bool benchShadow = false; int shadowPhase = 0; double shadowT0 = 0.0; Vector3 shadowEye{}, shadowAt{}; // --shot-shadow
@@ -849,6 +856,7 @@ int main(int argc, char** argv)
         if (std::string(argv[i]) == "--test-oil") benchOil = true;
         if (std::string(argv[i]) == "--test-spring") benchSpring = true;
         if (std::string(argv[i]) == "--shot-animals") benchShotAnimals = true;
+        if (std::string(argv[i]) == "--shot-avatar") benchShotAvatar = true;
         if (std::string(argv[i]) == "--shot-machines") benchShotMachines = true;
         if (std::string(argv[i]) == "--shot-biomes") benchShotBiomes = 0;
         if (std::string(argv[i]) == "--shot-far-forest") benchFarForest = true;
@@ -1223,7 +1231,7 @@ int main(int argc, char** argv)
     bool spawnLoad = false;        // raised by a spawn or teleport (not entering the game): no minimum time
     int loadFrames = 0;
     int seenSpawns = 0;
-    world.onDraw3D = [&world] { Farm_Draw3D(world); Animals_Draw3D(world); Machines_Draw3D(world); InstanceBatch_Flush(world); Weather_Draw3D(world); Waterfalls_Draw3D(world); Particles_Draw(world); if (!ship.piloted && !buildTool.active && !Rocket_Boarded()) TerrainTool_Draw3D(); Fishing_Draw3D(world); Events_Draw3D(world); Combat_DrawGraves(world); BuildTool_Draw3D(world); };
+    world.onDraw3D = [&world] { Farm_Draw3D(world); Animals_Draw3D(world); Machines_Draw3D(world); Avatar_Draw3D(world, gAvatars); InstanceBatch_Flush(world); Weather_Draw3D(world); Waterfalls_Draw3D(world); Particles_Draw(world); if (!ship.piloted && !buildTool.active && !Rocket_Boarded()) TerrainTool_Draw3D(); Fishing_Draw3D(world); Events_Draw3D(world); Combat_DrawGraves(world); BuildTool_Draw3D(world); };
     terrainTool.till = [&world](Planetoid& body, Vector3 ground) { return Farm_Till(world, body, ground); }; // a shovel's RMB
     terrainTool.swapHeld = [](const std::string& from, const std::string& to, const char* ev) { // a bucket filled or emptied
         const int s = Hotbar_Selected();
@@ -2596,6 +2604,7 @@ int main(int argc, char** argv)
                             RenderOriginScope frame(world, other.position);
                             other.update(world, walk, SimDt());
                         }
+                        { AvatarState a = Avatar_FromPlayer(other, 1); a.name = "player 2"; a.held = "stone_pickaxe"; gBenchAvatars = { a }; } // (#328) drawn as a remote player
                         if (twoPhase == 1) {
                             if (twoStart < 0.0) twoStart = GetTime();
                             if (GetTime() - twoStart > 2.0 && player.grounded && other.grounded) {
@@ -2615,7 +2624,7 @@ int main(int argc, char** argv)
                                 const bool pass = w0 > 15.0 && w1 > 15.0 && g0 > 50.0f && g1 > 50.0f && worst0 < ISO_LEVEL && worst1 < ISO_LEVEL && apart > 0.75 * fabs(twoDistUsed);
                                 printf("bench: two players %.0f m apart: local walked %.1f m (grounded %.0f%%, densest %.2f), second walked %.1f m (grounded %.0f%%, densest %.2f) in 5 s -> %s\n",
                                        apart, w0, g0, worst0, w1, g1, worst1, pass ? "PASS" : "FAIL");
-                                benchTwoPlayers = false;
+                                benchTwoPlayers = false; gBenchAvatars.clear();
                             }
                         }
                     }
@@ -4660,6 +4669,73 @@ int main(int argc, char** argv)
                             printf("bench: animals: bench_animals_models.png (%d animals)\n", Animals_Count());
                             Animals_SetThreats(true);
                             benchShotAnimals = false;
+                        }
+                    }
+                } else if (benchShotAvatar && (avatarShotPhase > 0 || WorldIdle())) {
+                    // --shot-avatar (#328): the remote player avatar in each pose, two rows on the ground ahead, names over them:
+                    // bench_avatar.png (front three-quarter), then bench_avatar_side.png (from the side, the walk cycles).
+                    Planetoid* p = dynamic_cast<Planetoid*>(world.objects[0].get());
+                    const PlanetField* pf = p ? dynamic_cast<const PlanetField*>(p->field.get()) : nullptr;
+                    static double t0 = 0.0; static Vector3 me{}, t1{}, t2{};
+                    auto ground = [&](Vector3 q) { const Vector3 d = Vector3Normalize(q); return Vector3Scale(d, pf->radius + pf->elevation(d)); };
+                    if (!pf) benchShotAvatar = false;
+                    else {
+                        if (avatarShotPhase == 0) {
+                            player.flyMode = true;
+                            me = p->toLocal((player.position - world.renderOrigin).toFloat());
+                            const Vector3 up = Vector3Normalize(me);
+                            t1 = Vector3Normalize(Vector3CrossProduct(up, { 0, 1, 0 })); t2 = Vector3CrossProduct(t1, up);
+                            sunOverride = true; sunArg = p->dirToWorld(Vector3Normalize(Vector3Add(up, Vector3Scale(Vector3Subtract(t1, t2), 0.5f))));
+                            avatarShotPhase = 1; t0 = GetTime();
+                        }
+                        const double t = GetTime() - t0;
+                        struct Pose { const char* name; int row; float speed; bool side; };
+                        const Pose poses[] = { { "stand", 0, 0, false }, { "walk", 0, 1.6f, true }, { "run", 0, 6.0f, true }, { "crouch", 0, 0.9f, true },
+                                               { "prone", 0, 0, true }, { "swim", 0, 1.0f, true }, { "mine", 1, 0, false }, { "chop", 1, 0, false },
+                                               { "fall", 1, 0, false }, { "fly", 1, 5.0f, true }, { "item", 1, 0, false } };
+                        gBenchAvatars.clear();
+                        int inRow[2] = { 0, 0 };
+                        for (const Pose& ps : poses) {
+                            const int k = inRow[ps.row]++;
+                            const float across = ps.row == 0 ? -5.0f + 2.0f * k : -4.0f + 2.0f * k;
+                            Vector3 at = ground(Vector3Add(me, Vector3Add(Vector3Scale(t1, across), Vector3Scale(t2, ps.row == 0 ? 7.0f : 11.0f))));
+                            const Vector3 up = Vector3Normalize(at);
+                            Vector3 face = ps.side ? Vector3Negate(t1) : Vector3Normalize(Vector3Add(Vector3Negate(t2), Vector3Scale(t1, -0.6f)));
+                            AvatarState a;
+                            a.session = 1000 + (uint32_t)(&ps - poses);
+                            a.name = ps.name;
+                            if (!strcmp(ps.name, "fall") || !strcmp(ps.name, "fly")) at = Vector3Add(at, Vector3Scale(up, 0.8f));
+                            a.position = world.renderOrigin + DVec3(p->toWorld(at));
+                            a.up = p->dirToWorld(up); a.facing = p->dirToWorld(face);
+                            a.velocity = Vector3Scale(a.facing, ps.speed);
+                            const std::string n = ps.name;
+                            if (n == "crouch") a.posture = Player::Posture::Crouch;
+                            if (n == "prone") a.posture = Player::Posture::Prone;
+                            if (n == "swim") a.swimming = true;
+                            if (n == "fall") { a.grounded = false; a.jetpack = true; }
+                            if (n == "fly") { a.grounded = false; a.flying = true; }
+                            if (n == "stand") { a.held = "torch"; a.headlamp = true; }
+                            if (n == "walk") a.held = "stone_pickaxe";
+                            if (n == "run") a.suitTier = 2;
+                            if (n == "mine") { a.held = "iron_pickaxe"; a.action = 1; a.actionPhase = (float)fmod(t * 1.5, 1.0); }
+                            if (n == "chop") { a.held = "steel_axe"; a.action = 2; a.actionPhase = (float)fmod(t * 1.5 + 0.5, 1.0); }
+                            if (n == "item") { a.held = "stone"; a.lookPitch = 0.4f; a.suitTier = 3; }
+                            gBenchAvatars.push_back(a);
+                        }
+                        // Camera: front three-quarter for 4 s, then from the side (along the rows) for 3 s.
+                        const Vector3 centre = ground(Vector3Add(me, Vector3Scale(t2, 9.0f))), up = Vector3Normalize(centre);
+                        const bool side = t > 4.0;
+                        const Vector3 eye = side ? Vector3Add(ground(Vector3Add(me, Vector3Add(Vector3Scale(t1, -12.0f), Vector3Scale(t2, 4.0f)))), Vector3Scale(up, 2.0f))
+                                                 : Vector3Add(ground(me), Vector3Scale(up, 2.4f));
+                        world.camera.position = p->toWorld(eye); world.camera.target = p->toWorld(Vector3Add(centre, Vector3Scale(up, 0.9f))); world.camera.up = p->dirToWorld(up);
+                        player.position = world.renderOrigin + world.camera.position;
+                        static bool shot1 = false;
+                        if (!shot1 && t > 3.5) { TakeScreenshot("bench_avatar.png"); printf("bench: avatar: bench_avatar.png (%zu avatars)\n", gBenchAvatars.size()); shot1 = true; }
+                        if (t > 7.0) {
+                            TakeScreenshot("bench_avatar_side.png");
+                            printf("bench: avatar: bench_avatar_side.png\n");
+                            gBenchAvatars.clear();
+                            benchShotAvatar = false;
                         }
                     }
                 } else if (benchShotMachines && (machineShotPhase > 0 || WorldIdle())) {
@@ -8403,7 +8479,7 @@ int main(int argc, char** argv)
                         }
                         benchWalkSeconds = 0.0;
                     }
-                } else if ((WorldIdle() && benchDigStrokes == 0 && !benchPaint && !benchSaveLoad && benchWalkSeconds <= 0.0 && benchMineStrokes == 0 && minePhase != 2 && benchFlySeconds <= 0.0 && !benchSuffocate && benchOrbitSeconds <= 0.0 && !benchRide && !benchPark && !benchGravity && !benchPrecision && !benchMantle && !benchAirJump && !benchMoon && !benchHole && !benchWall && !benchDoorway && !benchLedge && !benchTor && !benchMachines && !benchFall && !benchHover && !benchNetIds && !benchNet && !benchTwoPlayers && !benchFingerprint && !benchInterest && !benchTeleClose && !benchMenus && !benchWater && !benchFlyFollow && !benchHotbar && !benchInventory && !benchMap && !benchViewmodel && !benchQuests && !benchHunger && !benchFarm && !benchAnimals && !benchThreats && !benchAnimalPath && !benchDam && !benchFlowMeter && !benchPartWall && !benchPressure && benchShotTabs == 0 && !benchForest && !benchFlow && !benchPond && !benchBucket && !benchWaterSpeed && benchFluidLoad <= 0.0f && !benchFlowShade && !benchPump && !benchTerrain && !benchWind && !benchCampfire && !benchCaveMouth && !benchMountain && !benchShelter && !benchRoom && !benchFacing && !benchDungeon && !benchPosture && !benchPause && !benchBite && !benchPlacement && !benchShotDig && !benchShadow && !benchParticles && !benchBiomes && !benchOil && !benchSpring && !benchShotAnimals && !benchShotMachines && benchShotBiomes < 0 && !benchFarForest && !benchRecipes && !benchWeather && !benchDecor && !benchMaterials && !benchDamage && !benchCrafting && !benchSuit && !benchTools && !benchRivers && !benchRing && !benchRocket && !benchStation && !benchBlueprint && !benchSmallBody && !benchTrees && !benchChop && benchPersist == 0 && benchBuild == 0 && benchFactory == 0 && !benchCombat && !benchHost && !benchShower && !benchProgression && (benchUnfocus <= 0.0f || unfocusPhase >= 6)) || GetTime() > 600.0) {
+                } else if ((WorldIdle() && benchDigStrokes == 0 && !benchPaint && !benchSaveLoad && benchWalkSeconds <= 0.0 && benchMineStrokes == 0 && minePhase != 2 && benchFlySeconds <= 0.0 && !benchSuffocate && benchOrbitSeconds <= 0.0 && !benchRide && !benchPark && !benchGravity && !benchPrecision && !benchMantle && !benchAirJump && !benchMoon && !benchHole && !benchWall && !benchDoorway && !benchLedge && !benchTor && !benchMachines && !benchFall && !benchHover && !benchNetIds && !benchNet && !benchTwoPlayers && !benchFingerprint && !benchInterest && !benchTeleClose && !benchMenus && !benchWater && !benchFlyFollow && !benchHotbar && !benchInventory && !benchMap && !benchViewmodel && !benchQuests && !benchHunger && !benchFarm && !benchAnimals && !benchThreats && !benchAnimalPath && !benchDam && !benchFlowMeter && !benchPartWall && !benchPressure && benchShotTabs == 0 && !benchForest && !benchFlow && !benchPond && !benchBucket && !benchWaterSpeed && benchFluidLoad <= 0.0f && !benchFlowShade && !benchPump && !benchTerrain && !benchWind && !benchCampfire && !benchCaveMouth && !benchMountain && !benchShelter && !benchRoom && !benchFacing && !benchDungeon && !benchPosture && !benchPause && !benchBite && !benchPlacement && !benchShotDig && !benchShadow && !benchParticles && !benchBiomes && !benchOil && !benchSpring && !benchShotAnimals && !benchShotAvatar && !benchShotMachines && benchShotBiomes < 0 && !benchFarForest && !benchRecipes && !benchWeather && !benchDecor && !benchMaterials && !benchDamage && !benchCrafting && !benchSuit && !benchTools && !benchRivers && !benchRing && !benchRocket && !benchStation && !benchBlueprint && !benchSmallBody && !benchTrees && !benchChop && benchPersist == 0 && benchBuild == 0 && benchFactory == 0 && !benchCombat && !benchHost && !benchShower && !benchProgression && (benchUnfocus <= 0.0f || unfocusPhase >= 6)) || GetTime() > 600.0) {
                     benchStart = GetTime();
                     printf("bench: world ready after %.2f s (%d chunks, avg build %.2f ms of which sampling %.2f ms, %d worker threads)\n",
                         GetWorldStats().lastGenerationSeconds, GetWorldStats().chunks, GetWorldStats().avgBuildMs, GetWorldStats().avgSampleMs, GetWorldStats().workerThreads);
@@ -9952,11 +10028,23 @@ int main(int argc, char** argv)
             } else if (gameState == 3) {
                 pendingNewWorld = NewWorld_Draw(); // the New World screen (#504)
             } else if (gameState == 1) {
+                gAvatars = gBenchAvatars; // (#328) the net client's remote players join here (#327)
+                if (avatarSelf) { // RAYLIBGAME_AVATAR_SELF=1: yourself, 3 m ahead and facing you (a mirror)
+                    AvatarState a = Avatar_FromPlayer(player, 0);
+                    const Vector3 ahead = a.facing;
+                    a.position = a.position + DVec3(Vector3Scale(ahead, 3.0f));
+                    a.facing = Vector3Negate(ahead);
+                    a.held = inventory.count(terrainTool.heldTool) > 0 ? terrainTool.heldTool : std::string();
+                    a.headlamp = survival.headlamp;
+                    a.name = "you";
+                    gAvatars.push_back(a);
+                }
                 { const double d0 = GetTime(); world.drawScene(gameState); if (benchMeasuring) benchDrawMs += (GetTime() - d0) * 1000.0; }
                 player.recordFly(world); // after the fly camera's input (in drawScene): the pose to carry next frame
                 if (!noHud && !gHeadless) Viewmodel_Draw(world);   // the hands, over the world
                 if (Recorder_WantsFrame(false)) { rlDrawRenderBatchActive(); Recorder_Capture(); } // --record-hud 0: before the UI
                 if (!noHud && !gHeadless) { // --no-hud: clean shots (the menu slides, #386); --headless: nothing (#311)
+                Avatar_DrawNameplates(world, gAvatars);
                 world.drawUI(gameState);
                 Telescope_DrawHUD(world);
                 BuildTool_DrawHUD();
