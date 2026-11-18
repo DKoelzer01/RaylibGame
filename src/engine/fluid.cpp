@@ -2374,7 +2374,10 @@ bool Fluid::StandingWaterNear(const Planetoid& body, Vector3 local, float range)
     for (const WaterField::Site& s : snapNow->sites) {
         if (s.body != body.id) continue;
         const int R = (int)ceilf(range / WaterField::CellSize());
-        for (int dk = -3; dk <= 1; ++dk)
+        // From 3 m under the point to 1 m over it, in metres (#730: it was 3 cells down and 1 up - at the 0.25 m default
+        // (#714) a field more than 0.75 m over its water no longer counted as watered).
+        const int down = (int)ceilf(3.0f / WaterField::CellSize()), upC = (int)ceilf(1.0f / WaterField::CellSize());
+        for (int dk = -down; dk <= upC; ++dk)
             for (int dj = -R; dj <= R; dj += 1)
                 for (int di = -R; di <= R; di += 1) {
                     const Vector3 q = Vector3Add(local, Vector3Add(Vector3Add(Vector3Scale(s.e, di * WaterField::CellSize()), Vector3Scale(s.n, dj * WaterField::CellSize())), Vector3Scale(s.u, dk * WaterField::CellSize())));
@@ -2436,7 +2439,10 @@ void Fluid::Load(FILE* f, uint64_t bodyId) {
     float cell = 1.0f; // saves before W4c: 1 m cells
     if (fscanf(f, " cell %f", &cell) != 1) cell = 1.0f;
     const bool keep = fabsf(cell - WaterField::CellSize()) < 1e-3f; // else read and dropped: the sites start over from the world
+    const auto waitT0 = std::chrono::steady_clock::now();
     WaitIdle();
+    if (getenv("RAYLIBGAME_LOAD_PROFILE") && getenv("RAYLIBGAME_LOAD_PROFILE")[0] == '1')
+        printf("load: fluid waited %.0f ms for the running step (%d sites in the save)\n", std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - waitT0).count(), n);
     std::lock_guard<std::mutex> lock(simMx);
     for (int k = 0; k < n; ++k) {
         auto s = std::make_unique<Site>();
@@ -2496,7 +2502,10 @@ void Fluid::Load(FILE* f, uint64_t bodyId) {
         if (fscanf(f, " %d %f", &k, &v) != 2) break;
         (i < nc ? cur : set).push_back({ k, v });
     }
-    if (const RiverNetwork* net = RiversOf(bodyId)) net->setFlowState(cur, set);
+    // Only with flow state to restore: RiversOf builds the whole river network on first use (~470 ms), which an empty
+    // "riverflow 0 0" line made every load pay up front (#737; it is built later anyway, when water first needs it).
+    if (!cur.empty() || !set.empty())
+        if (const RiverNetwork* net = RiversOf(bodyId)) net->setFlowState(cur, set);
 }
 
 Fluid::Stats Fluid::GetStats() { std::lock_guard<std::mutex> p(pubMx); return pubStats; }

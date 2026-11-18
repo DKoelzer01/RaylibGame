@@ -109,7 +109,7 @@ planet() {
     run --sandbox --seed 42 --day --bench 3 --test-dam-break # #680: Ritter front, depth and discharge (reported; the pass is the model work on #680)
     run --seed 42 --bench 3 --test-flow-meter # #392: the flow readout reads a 1 m^3/s stream
     run --seed 42 --bench 3 --test-pressure # #393: hydrostatic pressure in a filled shaft and a pond
-    run --seed 42 --bench 3 --test-bucket
+    run --seed 42 --day --bench 3 --test-bucket
     run --seed 42 --bench 3 --test-pump
     run --seed 42 --bench 5 --test-pump-hand
     run --seed 42 --bench 3 --test-pump-boiler # a full boiler takes no world water (#229)

@@ -113,6 +113,8 @@ public:
     std::unordered_map<NodeKey, std::unique_ptr<Chunk>> nodes;   // built or being built
     std::unordered_map<NodeKey, uint32_t> requestedVersion;      // latest request per node
     std::vector<Chunk*> drawList;                                // what is rendered this frame
+    ArenaBody hizBody{};       // #134: the chunk placement the main pass drew with, and in which scene-target frame
+    long long hizBodyFrame = -1;
     int rootLevel = 0;                                           // level whose 2x2x2 nodes cover the body
     // UpdateLod skips work while nothing changed: the camera (in body space) stayed within 1 m of
     // where the node selection was last made and no chunk results or edits arrived.

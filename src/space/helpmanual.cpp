@@ -1,4 +1,5 @@
 #include "helpmanual.h"
+#include "structures.h"
 #include "inventory.h"
 #include "factory.h"
 #include "plots.h"
@@ -216,6 +217,7 @@ void HelpManual_DrawTab() {
         ImGui::Separator();
         ImGui::PushTextWrapPos(0.0f);
         ImGui::TextUnformatted(t.text.c_str());
+        if (t.title == "Places") { ImGui::Spacing(); ImGui::TextUnformatted(Structures_PlacesText(discoveredOnly).c_str()); } // each kind of site (#164)
         ImGui::PopTextWrapPos();
     }
     ImGui::EndChild();

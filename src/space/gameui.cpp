@@ -49,6 +49,14 @@ void GameUI_CloseContainer() { container.open = false; }
 
 // An item's icon: its colour in a shape by kind - tools a handle and head, blocks a shaded cube,
 // machines a framed box, resources a rounded lump. `dim` greys it (a recipe you can't make yet).
+// A hot or radiant item's glow (#580: Item_Glow), drawn under its icon: the cell washed in the glow's colour and a
+// bright rim, both as strong as the glow (a fresh ingot yellow-white, a cooling one dull red).
+static void DrawGlow(ImDrawList* dl, ImVec2 p, ImVec2 q, const ItemGlow& g) {
+    if (g.strength <= 0.02f) return;
+    dl->AddRectFilled(p, q, IM_COL32(g.color.r, g.color.g, g.color.b, (int)(140.0f * g.strength)), 4.0f);
+    dl->AddRect(p, q, IM_COL32(g.color.r, g.color.g, g.color.b, (int)(235.0f * g.strength)), 4.0f, 0, 2.0f);
+}
+
 static void DrawItemIcon(ImDrawList* dl, ImVec2 p, float size, const std::string& id, bool dim = false) {
     if (ItemIcons_Has(id)) {
         // The painted icon (itemicons.h); dimmed for recipes you can't make yet.
@@ -151,7 +159,7 @@ static InvSlot cursorStack;
 static void ReturnCursorStack() {
     if (cursorStack.empty()) return;
     ++inventory.muted; // not a pickup (#208)
-    inventory.addAmount(cursorStack.id, cursorStack.amount());
+    inventory.addAmount(cursorStack.id, cursorStack.amount(), cursorStack.heat); // still as hot (#580)
     --inventory.muted;
     cursorStack = InvSlot{};
 }
@@ -182,7 +190,8 @@ static void DropInto(InvSlot& cell, int64_t centi) {
     const int64_t room = (int64_t)StackLimit(cursorStack.id) * 100 - (cell.empty() ? 0 : cell.centi);
     const int64_t put = std::min({ centi, cursorStack.centi, room });
     if (put <= 0) return;
-    if (cell.empty()) { cell.id = cursorStack.id; cell.centi = 0; }
+    if (cell.empty()) { cell.id = cursorStack.id; cell.centi = 0; cell.heat = 0.0f; }
+    cell.heat = (float)((cell.heat * cell.centi + cursorStack.heat * put) / (double)(cell.centi + put)); // by amount, as merges do (#580)
     cell.centi += put;
     cursorStack.centi -= put;
     if (cursorStack.centi <= 0) cursorStack = InvSlot{};
@@ -273,6 +282,7 @@ bool GameUI_TestContainerCursor(Scene& world, uint64_t body, uint32_t plot, int 
     return ok;
 }
 
+static void CursorSink(const std::string& id, int count, float heat);
 bool GameUI_TestCursorStack() {
     auto& g = inventory.grid();
     auto amt = [&](int i, const char* id) { return !g[i].empty() && g[i].id == id ? g[i].centi / 100 : (int64_t)0; };
@@ -310,6 +320,14 @@ bool GameUI_TestCursorStack() {
         s.player.position = here;
         Combat_Step(s, 1.0f / 60.0f, none); check(inventory.count("stone") == 10 && Combat_DroppedPiles() == piles0, "coming back picks it all up");
     } else check(false, "the player is on a body");
+    // #580: a stack taken hot out of a furnace stays hot on the cursor, and when put down; a cold one joining it averages.
+    CursorSink("iron_ingot", 4, 1.0f);
+    check(cursorStack.id == "iron_ingot" && cursorStack.heat > 0.99f, "a hot stack onto the cursor stays hot (#580)");
+    CursorSink("iron_ingot", 4, 0.0f);
+    check(fabsf(cursorStack.heat - 0.5f) < 0.01f, "a cold one joining it halves the heat");
+    int empty = -1; for (int k = 0; k < Inventory::kGrid && empty < 0; ++k) if (g[k].empty()) empty = k;
+    if (empty >= 0) CellClick(empty, false, false);
+    check(empty >= 0 && g[empty].id == "iron_ingot" && fabsf(g[empty].heat - 0.5f) < 0.01f && cursorStack.empty(), "put down, the cell keeps the heat");
     printf("bench: inventory cursor (#192): %s\n", ok ? "PASS" : "FAIL");
     return ok;
 }
@@ -352,6 +370,7 @@ static void DrawGrid() {
         const InvSlot& s = grid[i];
         const ImVec2 q(p.x + cw, p.y + cell);
         dl->AddRectFilled(p, q, IM_COL32(30, 32, 36, 220), 4.0f);
+        DrawGlow(dl, p, q, Item_Glow(grid[i])); // hot or radiant (#580)
         if (!s.empty()) {
             const ItemDef* d = itemDB.find(s.id);
             DrawItemIcon(dl, ImVec2(p.x + (cw - cell * 0.64f) * 0.5f, p.y), cell * 0.64f, s.id);
@@ -404,6 +423,7 @@ static void DrawGrid() {
     if (!cursorStack.empty()) { // the held stack follows the mouse, over everything (#192)
         ImDrawList* fg = ImGui::GetForegroundDrawList();
         const ImVec2 m = ImGui::GetMousePos();
+        DrawGlow(fg, ImVec2(m.x - 20.0f, m.y - 20.0f), ImVec2(m.x + 20.0f, m.y + 20.0f), Item_Glow(cursorStack)); // (#580)
         DrawItemIcon(fg, ImVec2(m.x - 18.0f, m.y - 18.0f), 36.0f, cursorStack.id);
         if (KindOf(cursorStack.id) != ItemKind::Tool) fg->AddText(ImVec2(m.x + 12.0f, m.y + 8.0f), IM_COL32(255, 255, 255, 255), AmountText(cursorStack).c_str());
     }
@@ -527,7 +547,7 @@ static void SlotClick(int i, int which, bool right, bool shift, int have) {
     }
 }
 
-static void DrawSlots(const std::vector<std::pair<std::string, int>>& slots, int which, int cols) { // which: 0 inputs, 1 outputs, 2 fuel
+static void DrawSlots(const std::vector<std::pair<std::string, int>>& slots, int which, int cols, bool hot = false) { // which: 0 inputs, 1 outputs, 2 fuel; hot: its items glow (#580)
     const bool output = which == 1;
     ImDrawList* dl = ImGui::GetWindowDrawList();
     const float cell = 54.0f, gap = 4.0f;
@@ -538,6 +558,7 @@ static void DrawSlots(const std::vector<std::pair<std::string, int>>& slots, int
         const bool clicked = ImGui::InvisibleButton("slot", ImVec2(cell, cell));
         const bool hover = ImGui::IsItemHovered();
         dl->AddRectFilled(p, q, which == 2 ? IM_COL32(52, 30, 20, 220) : output ? IM_COL32(40, 36, 28, 220) : IM_COL32(30, 32, 36, 220), 4.0f);
+        if (slots[i].second > 0) DrawGlow(dl, p, q, Item_GlowOf(slots[i].first, hot ? 1.0f : 0.0f)); // fresh out of a furnace, or radiant (#580)
         const auto& s = slots[i];
         if (s.second > 0) {
             DrawItemIcon(dl, ImVec2(p.x + cell * 0.18f, p.y), cell * 0.64f, s.first);
@@ -581,7 +602,7 @@ static void DrawContainer() {
     }
     if (!chest) {
         ImGui::TextUnformatted("Output");
-        DrawSlots(v.outSlots, 1, 4);
+        DrawSlots(v.outSlots, 1, 4, v.hotOutputs);
     }
     ImGui::Spacing();
     if (ImGui::Button("Put in all (I)") || IsKeyPressed(KEY_I)) {
@@ -688,6 +709,7 @@ void GameUI_Draw(Scene& world) {
     uiWorld = &world;
     RecipeBook_Update(); // new recipes: a toast
     if (!inventoryOpen) { ReturnCursorStack(); binned = InvSlot{}; container.open = false; return; } // a stack still held goes back in (#192)
+    if (cursorStack.heat > 0.0f) cursorStack.heat = std::max(0.0f, cursorStack.heat - GameFrameTime() / Inventory::kCoolSeconds); // held, it cools as in a cell (#580)
     CheckContainer(world);
     const ImGuiIO& io = ImGui::GetIO();
     ImGui::SetNextWindowPos(ImVec2(io.DisplaySize.x * 0.5f, io.DisplaySize.y * 0.5f), ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
@@ -797,11 +819,16 @@ namespace {
 }
 // Items taken from a machine or chest slot onto the cursor (#192), a tick after the click: onto the held stack when it is
 // empty or the same item, else into the inventory.
-static void CursorSink(const std::string& id, int count) {
+static void CursorSink(const std::string& id, int count, float heat) { // heat: fresh out of a furnace stays hot on the cursor (#580)
     if (count <= 0) return;
-    if (cursorStack.empty()) { cursorStack.id = id; cursorStack.centi = (int64_t)count * 100; return; }
-    if (cursorStack.id == id) { cursorStack.centi += (int64_t)count * 100; return; }
-    ++inventory.muted; inventory.addAmount(id, count); --inventory.muted;
+    if (cursorStack.empty()) { cursorStack.id = id; cursorStack.centi = (int64_t)count * 100; cursorStack.heat = heat; return; }
+    if (cursorStack.id == id) {
+        const int64_t add = (int64_t)count * 100;
+        cursorStack.heat = (float)((cursorStack.heat * cursorStack.centi + heat * add) / (double)(cursorStack.centi + add));
+        cursorStack.centi += add;
+        return;
+    }
+    ++inventory.muted; inventory.addAmount(id, count, heat); --inventory.muted;
 }
 void GameUI_InitPickupFeed() { inventory.onAdded = OnPickup; Factory::SetCursorSink(CursorSink); }
 

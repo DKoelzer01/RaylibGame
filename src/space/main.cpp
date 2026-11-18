@@ -15,6 +15,8 @@
 #include "playersession.h"
 #include "netid.h"
 #include "net.h"
+#include "netproto.h"
+#include "netclient.h"
 #include "gamerng.h"
 #include "headless.h"
 #include "hostserver.h"
@@ -89,6 +91,7 @@ extern "C" __declspec(dllimport) int __stdcall MessageBoxA(void*, const char*, c
 #include "ring.h"
 #include "factory.h"
 #include "fluid.h"
+#include "watersurface.h"
 #include "waterfield.h"
 #include "waterworks.h"
 
@@ -271,6 +274,97 @@ static int PartCensusDiff(const PartCensusMap& was, const PartCensusMap& now, co
 }
 static PartCensusMap gBuildCensus;
 
+// --crack-check (#725): magenta (the clear colour, nothing drawn) pixels that are holes in the terrain, not open sky. With
+// the skybox off the sky is magenta too: magenta connected to the screen's top edge (4-way, through the gaps in the HUD's
+// text) is sky; magenta enclosed by drawn pixels is a hole. Colour test loose enough for the tonemapped composite. The sky
+// spreads through magenta-tinted pixels too (anti-aliased edges, where far terrain blends into it), or a horizon pixel pair
+// sealing a bit of sky off reads as a hole (the 4-5 left after the HUD went, #725).
+// step: sample every step-th pixel both ways. skyOut: the magenta samples taken as sky.
+static long CrackHoles(const Color* px, int w, int h, int step, long* skyOut) {
+    auto magenta = [](Color c) { return c.r > 200 && c.g < 60 && c.b > 200; };
+    const int gw = (w + step - 1) / step, gh = (h + step - 1) / step;
+    auto tinted = [](Color c) { return (int)c.r - (int)c.g > 25 && (int)c.b - (int)c.g > 25; }; // magenta, or a blend with it
+    std::vector<uint8_t> m((size_t)gw * gh), t((size_t)gw * gh), seen((size_t)gw * gh, 0);
+    long total = 0;
+    for (int y = 0; y < gh; ++y)
+        for (int x = 0; x < gw; ++x) { const Color c = px[(size_t)(y * step) * w + x * step]; m[(size_t)y * gw + x] = magenta(c); t[(size_t)y * gw + x] = magenta(c) || tinted(c); total += m[(size_t)y * gw + x]; }
+    std::vector<int> stack;
+    for (int x = 0; x < gw; ++x) if (t[x]) { seen[x] = 1; stack.push_back(x); }
+    long sky = 0;
+    while (!stack.empty()) {
+        const int i = stack.back(); stack.pop_back(); sky += m[i];
+        const int x = i % gw, y = i / gw;
+        const int nb[4] = { x > 0 ? i - 1 : -1, x + 1 < gw ? i + 1 : -1, y > 0 ? i - gw : -1, y + 1 < gh ? i + gw : -1 };
+        for (int j : nb) if (j >= 0 && t[j] && !seen[j]) { seen[j] = 1; stack.push_back(j); }
+    }
+    if (skyOut) *skyOut = sky;
+    return total - sky;
+}
+
+// #134: the planet's drawn terrain chunks in the view whose 8 box corners are all hidden from the camera behind the height
+// map (each ray sampled every 1/24 of its length; hidden = the ground there is 1 m+ above the ray): an estimate of what Hi-Z
+// occlusion culling could skip. Prints the share (print) and/or collects the hidden chunks (hiddenOut).
+static void OcclusionScan(Scene& world, bool print, std::unordered_set<const Chunk*>* hiddenOut) {
+    if (world.objects.empty()) return;
+    auto* p = dynamic_cast<Planetoid*>(world.objects[0].get());
+    const PlanetField* pf = p ? dynamic_cast<const PlanetField*>(p->field.get()) : nullptr;
+    if (!pf || p->drawList.empty()) return;
+    const Vector3 cam = p->toLocal(world.camera.position);
+    const Vector3 fwd = p->dirToLocal(Vector3Normalize(Vector3Subtract(world.camera.target, world.camera.position)));
+    const float halfV = 0.5f * world.camera.fovy * DEG2RAD, aspect = (float)GetScreenWidth() / std::max(1, GetScreenHeight());
+    const float halfDiag = atanf(tanf(halfV) * sqrtf(1.0f + aspect * aspect));
+    long long vAll = 0, vHidden = 0; int nView = 0, nHidden = 0;
+    // Blocked = a sample 1 m+ inside solid ground (the density field with edits: right in caves, under overhangs, in dug tunnels).
+    auto solid = [&](Vector3 q) { return p->densityAt(q) >= ISO_LEVEL + DENSITY_GRADIENT; };
+    for (Chunk* c : p->drawList) {
+        const Vector3 o = c->key.origin(); const float s = c->key.size();
+        const Vector3 to = Vector3Subtract(Vector3AddValue(o, 0.5f * s), cam);
+        const float dist = Vector3Length(to), rad = 0.87f * s;
+        if (dist > rad) { // in the view frustum: a cone round the view axis wide enough for the screen's corners, plus the box
+            const float ang = acosf(std::clamp(Vector3DotProduct(to, fwd) / dist, -1.0f, 1.0f));
+            if (ang - asinf(std::min(1.0f, rad / dist)) > halfDiag) continue;
+        }
+        const int verts = c->arena.valid() ? c->arena.vCount : 0;
+        ++nView; vAll += verts;
+        bool hidden = true;
+        for (int k = 0; k < 8 && hidden; ++k) {
+            const Vector3 corner = { o.x + ((k & 1) ? s : 0.0f), o.y + ((k & 2) ? s : 0.0f), o.z + ((k & 4) ? s : 0.0f) };
+            bool blocked = false;
+            for (int i = 1; i < 24 && !blocked; ++i) blocked = solid(Vector3Lerp(cam, corner, i / 24.0f));
+            hidden = blocked;
+        }
+        if (hidden) { ++nHidden; vHidden += verts; if (hiddenOut) hiddenOut->insert(c); }
+    }
+    if (print)
+        printf("bench: occlusion estimate: %d of %d drawn chunks in view hidden behind terrain (%.1f%%), %.1f of %.1f M vertices (%.1f%%)\n",
+               nHidden, nView, 100.0 * nHidden / std::max(1, nView), vHidden / 1e6, vAll / 1e6, 100.0 * vHidden / std::max(1LL, vAll));
+    // Plots (parts and machines) within 500 m: hidden when all 8 corners of their parts' box are.
+    if (!p->plots) return;
+    int plotsSeen = 0, plotsHidden = 0, partsSeen = 0, partsHidden = 0;
+    std::vector<std::pair<Int3, CellShape>> fp;
+    for (auto& plot : p->plots->plots) {
+        if (plot->parts.empty() || Vector3Distance(plot->toBody({ 0, 0, 0 }), cam) > 500.0f) continue;
+        Int3 lo{ INT32_MAX, INT32_MAX, INT32_MAX }, hi{ INT32_MIN, INT32_MIN, INT32_MIN };
+        for (const Part& part : plot->parts) {
+            Plot::Footprint(part, fp);
+            for (auto& cell : fp) { lo = { std::min(lo.x, cell.first.x), std::min(lo.y, cell.first.y), std::min(lo.z, cell.first.z) }; hi = { std::max(hi.x, cell.first.x), std::max(hi.y, cell.first.y), std::max(hi.z, cell.first.z) }; }
+        }
+        if (lo.x > hi.x) continue;
+        ++plotsSeen; partsSeen += (int)plot->parts.size();
+        bool hidden = true;
+        for (int k = 0; k < 8 && hidden; ++k) {
+            const Vector3 cp = { ((k & 1) ? hi.x + 1 : lo.x) * kCellSize, ((k & 2) ? hi.y + 1 : lo.y) * kCellSize, ((k & 4) ? hi.z + 1 : lo.z) * kCellSize };
+            const Vector3 corner = plot->toBody(cp);
+            bool blocked = false;
+            for (int i = 1; i < 24 && !blocked; ++i) blocked = solid(Vector3Lerp(cam, corner, i / 24.0f));
+            hidden = blocked;
+        }
+        if (hidden) { ++plotsHidden; partsHidden += (int)plot->parts.size(); if (hiddenOut) gOcclusionSkipPlots.insert(plot->id); }
+    }
+    if (print && plotsSeen)
+        printf("bench: occlusion estimate: %d of %d plots within 500 m hidden (%d of %d parts)\n", plotsHidden, plotsSeen, partsHidden, partsSeen);
+}
+
 int main(int argc, char** argv)
 {
     // Scripted runs (--bench, --test-*, --shot-*): stdout unbuffered, before any output, so a run killed by a timeout
@@ -314,6 +408,7 @@ int main(int argc, char** argv)
     }
     // --seed-survey COUNT FIRSTSEED OUTDIR [THREADS] [SUBSET] (#532): how alike different seeds' start planets are. No window.
     if (argc >= 5 && std::string(argv[1]) == "--seed-survey") return SeedSurvey_Run(argc, argv);
+    if (argc >= 2 && std::string(argv[1]) == "--test-netproto") return NetProto_Test() ? 0 : 1; // the wire protocol (#320): no window, no world
     double benchSeconds = 0.0;
     bool startWithOverlay = false;
     int benchDigStrokes = 0;     // --test-dig N: dig N strokes at the crosshair once the world is loaded
@@ -398,6 +493,8 @@ int main(int argc, char** argv)
     bool benchTime = false;        // --test-time: dawn start (#259), a +6 h jump carries the player (#275)
     bool benchPickups = false;     // --test-pickups: the pickup feed (#208): repeats merge, a screenshot while it shows
     bool shotInventory = false;    // --shot-inventory: long item names in their cells (#219)
+    bool benchDungeon = false; int dungeonFrame = 0; // --test-dungeon (#719)
+    bool shotGlow = false;         // --shot-glow: hot items glow in the inventory and on the hotbar (#580)
     bool shotChest = false;        // --shot-chest: a filled chest open beside the inventory (#495: 50 cells, 10 wide)
     bool benchFoundation = false;  // --test-foundation: a part half in the ground clears its cell and nothing else (#210)
     bool shotPreview = false;      // --shot-preview: the build preview in the part's real shape (#197)
@@ -549,6 +646,8 @@ int main(int argc, char** argv)
     double airStart = -1.0; int airPhase = 0; float airDist = 0.0f, airTime = 0.0f, airFuel0 = 0.0f, airPower0 = 0.0f, airPowerAir = 0.0f;
     Vector3 airPrevLocal{};
     bool crackCheck = false;       // --crack-check: no skybox, magenta clear; reports the share of magenta pixels
+    bool occlusionEstimate = false; // --occlusion-estimate (#134): how much drawn terrain is hidden behind terrain
+    int occView = 0; // --occ-view cave|structure (#134): a still camera in a natural tunnel, or looking at a factory behind a ridge
     double benchUpdateMs = 0.0, benchDrawMs = 0.0; long benchTimedFrames = 0; // CPU time in worldUpdate / drawScene
     bool benchMeasuring = false;   // this frame is inside the measured bench window
     int precisionPhase = 0;
@@ -590,6 +689,7 @@ int main(int argc, char** argv)
     Vector3 benchCamOffset = { -70.0f, 35.0f, 70.0f }; // --cam dx dy dz: bench camera offset from the planetoid
     float benchViewHeight = 40.0f; // --bench-height H: a planet bench's view height over the start (m)
     float benchPitch = -999.0f; bool benchUphill = false; // --bench-pitch DEG (up > 0), --bench-uphill: face up the eroded slope (#357 cliff shots)
+    float benchTurn = 0.0f; // --bench-turn DEG_PER_S (#134): the camera yaws on the spot through the timed run (Hi-Z pop checks)
     bool benchCamGiven = false;   // --cam given: use the offset (otherwise a planet bench looks along the surface from 40 m up, #291)
     if (const char* e = getenv("RAYLIBGAME_EROSION"); e && e[0]) gErosionPrototype = e[0] != '0'; // on by default (#362, user 2026-11-15); 0: the noise terrain (A/B)
     if (const char* e3 = getenv("RAYLIBGAME_3D")) gTerrain3D = e3[0] == '1'; else if (gErosionPrototype) gTerrain3D = false; // no 3D band in erosion tests (RAYLIBGAME_3D=0 for baselines)
@@ -605,6 +705,8 @@ int main(int argc, char** argv)
         if (std::string(argv[i]) == "--seed" && i + 1 < argc) worldGen.seed = (unsigned int)strtoul(argv[i + 1], nullptr, 10);
         if (std::string(argv[i]) == "--host" && i + 1 < argc) hostSave = argv[i + 1];
         if (std::string(argv[i]) == "--port" && i + 1 < argc) hostPort = (uint16_t)atoi(argv[i + 1]);
+        if (std::string(argv[i]) == "--host-password" && i + 1 < argc) Host_SetPassword(argv[i + 1]); // (#321)
+        if (std::string(argv[i]) == "--max-players" && i + 1 < argc) Host_SetMaxPlayers(atoi(argv[i + 1]));
         if (std::string(argv[i]) == "--test-host") benchHost = true;
         if (std::string(argv[i]) == "--seed") seedGiven = true;
         if (std::string(argv[i]) == "--autosave-minutes" && i + 1 < argc) autosaveMinutes = atof(argv[i + 1]);
@@ -627,6 +729,7 @@ int main(int argc, char** argv)
         if (std::string(argv[i]) == "--water-stats") benchWaterStats = true;
         if (std::string(argv[i]) == "--bench-height" && i + 1 < argc) benchViewHeight = (float)atof(argv[i + 1]);
         if (std::string(argv[i]) == "--bench-pitch" && i + 1 < argc) benchPitch = (float)atof(argv[i + 1]);
+        if (std::string(argv[i]) == "--bench-turn" && i + 1 < argc) benchTurn = (float)atof(argv[i + 1]);
         if (std::string(argv[i]) == "--bench-uphill") benchUphill = true;
         if (std::string(argv[i]) == "--bench-pond") gSpawnPond = true; // start at the nearest pond's rim (#251 crack checks)
         if (std::string(argv[i]) == "--bench-biome" && i + 1 < argc) { // start the bench (and the player) in the nearest deep patch of a biome (#133 checks)
@@ -683,6 +786,8 @@ int main(int argc, char** argv)
         if (std::string(argv[i]) == "--test-headless") benchHeadless = true;
         if (std::string(argv[i]) == "--test-pickups") benchPickups = true;
         if (std::string(argv[i]) == "--shot-inventory") shotInventory = true;
+        if (std::string(argv[i]) == "--test-dungeon") benchDungeon = true;
+        if (std::string(argv[i]) == "--shot-glow") shotGlow = true;
         if (std::string(argv[i]) == "--shot-chest") shotChest = true;
         if (std::string(argv[i]) == "--test-foundation") benchFoundation = true;
         if (std::string(argv[i]) == "--shot-preview") shotPreview = true;
@@ -771,11 +876,13 @@ int main(int argc, char** argv)
         if (std::string(argv[i]) == "--test-trees") benchTrees = true;
         if (std::string(argv[i]) == "--test-chop") benchChop = true;
         if (std::string(argv[i]) == "--test-persist" && i + 1 < argc) benchPersist = atoi(argv[i + 1]);
-        if (std::string(argv[i]) == "--test-build" && i + 1 < argc) benchBuild = atoi(argv[i + 1]);
+        if (std::string(argv[i]) == "--test-build" && i + 1 < argc) { benchBuild = atoi(argv[i + 1]); Structures_SetEnabled(false); } // no world structures: it counts every part on the planet
         if (std::string(argv[i]) == "--test-factory" && i + 1 < argc) benchFactory = atoi(argv[i + 1]);
         if (std::string(argv[i]) == "--test-progression") { benchProgression = true; progressionFull = i + 1 < argc && std::string(argv[i + 1]) == "full"; progressionEv = i + 1 < argc && std::string(argv[i + 1]) == "ev"; }
         if (std::string(argv[i]) == "--time-scale" && i + 1 < argc) timeScale = (float)atof(argv[i + 1]);
         if (std::string(argv[i]) == "--crack-check") crackCheck = true;
+        if (std::string(argv[i]) == "--occlusion-estimate") occlusionEstimate = true;
+        if (std::string(argv[i]) == "--occ-view" && i + 1 < argc) occView = std::string(argv[i + 1]) == "cave" ? 1 : 2;
         if (std::string(argv[i]) == "--no-foliage") foliageEnabled = false;
         if (std::string(argv[i]) == "--grass-dist" && i + 1 < argc) kGrassDrawDistance = (float)atof(argv[i + 1]);
         if (std::string(argv[i]) == "--tree-dist" && i + 1 < argc) kTreeDrawDistance = (float)atof(argv[i + 1]);
@@ -1480,7 +1587,7 @@ int main(int argc, char** argv)
             return 0;
         }
 
-    const double benchWarmup = 2.0;
+    const double benchWarmup = getenv("RAYLIBGAME_BENCH_WARMUP") ? atof(getenv("RAYLIBGAME_BENCH_WARMUP")) : 2.0; // #134: longer for --occ-view (the camera is placed first)
     double benchStart = 0.0, benchMaxFrame = 0.0;
     std::vector<float> benchFrameTimes; // every timed frame (s): percentiles at the end (#258)
     long benchFrames = 0;
@@ -5864,20 +5971,42 @@ int main(int argc, char** argv)
                         const Vector3 home = pf->findSpawnDir(p->seed);
                         const Vector3 t1 = Vector3Normalize(Vector3CrossProduct(home, { 0, 1, 0 })), t2 = Vector3CrossProduct(t1, home);
                         float best = 1e30f, level = 0.0f, shoreS = 0.0f; Vector3 wdir{}, out{};
-                        for (float e = -3000.0f; e <= 3000.0f; e += 16.0f)
-                            for (float n = -3000.0f; n <= 3000.0f; n += 16.0f) {
+                        // Out to 3 km, then 6 and 12 km (coarser) if nothing qualifies (#730: as --test-flow; the flat-water and
+                        // level-ground needs rule out more of a seed's nearby water).
+                        WaterSurface::Reader drawn(*pf, 0.25f); // the drawn water surface (#730)
+                        for (float span = 3000.0f; span <= 12000.0f && best > 1e29f; span *= 2.0f)
+                        for (float e = -span; e <= span; e += 16.0f * span / 3000.0f)
+                            for (float n = -span; n <= span; n += 16.0f * span / 3000.0f) {
                                 const float dist = sqrtf(e * e + n * n);
                                 if (dist >= best) continue;
                                 const Vector3 d = Vector3Normalize(Vector3Add(home, Vector3Add(Vector3Scale(t1, e / pf->radius), Vector3Scale(t2, n / pf->radius))));
                                 const PlanetField::WaterSource ws = pf->waterSourceAt(d);
-                                if (!ws.kind || ws.kind == 3 || ws.level <= 2.0f || pf->elevation(d) > ws.level - 1.0f) continue;
+                                // River water (#730): a 1003 m lake seed 42 picked after bake v26 held nothing to scoop where
+                                // waterSourceAt reported it.
+                                if (ws.kind != 1 || ws.level <= 5.0f || pf->elevation(d) > ws.level - 1.0f) continue; // and clear of the sea: a released reach at its mouth drains back from the shore
                                 const Vector3 outs[4] = { t1, Vector3Negate(t1), t2, Vector3Negate(t2) };
+                                // Gentle water (as --test-flow, #723): 6 m out, what is water stands within 0.5 m of this level.
+                                int wide = 0; bool flatW = true;
+                                for (const Vector3& o : outs) {
+                                    const PlanetField::WaterSource wn = pf->waterSourceAt(Vector3Normalize(Vector3Add(d, Vector3Scale(o, 6.0f / pf->radius))));
+                                    if (wn.kind) { ++wide; flatW = flatW && fabsf(wn.level - ws.level) < 0.5f; }
+                                }
+                                if (wide < 1 || !flatW) continue; // a river: one wet direction (along it) is enough
+                                // Drawn there (#730): the generated surface the world shows stands within 0.3 m of this level. On steep
+                                // high rivers seed 42's waterSourceAt reported water where none was drawn: nothing to scoop.
+                                if (fabsf(drawn.drawLevel(d) - ws.level) > 0.3f) continue;
                                 for (const Vector3& o : outs)
                                     for (float s = 2.0f; s <= 20.0f; s += 1.0f) {
                                         const Vector3 q = Vector3Normalize(Vector3Add(d, Vector3Scale(o, s / pf->radius)));
                                         if (pf->waterSourceAt(q).kind) continue;
                                         const float eq = pf->elevation(q);
-                                        if (eq > ws.level + 0.2f && eq < ws.level + 2.5f) { best = dist; wdir = d; out = o; level = ws.level; shoreS = s; }
+                                        if (eq > ws.level + 0.2f && eq < ws.level + 2.5f) {
+                                            // Level ground where the water is poured (#730): from 45 to 57 m inland within 1.5 m, or the
+                                            // pour runs off downhill (bake v26 put seed 42's pick on a mountainside) and the field stays dry.
+                                            float lo = 1e9f, hi = -1e9f;
+                                            for (float k = 45.0f; k <= 57.0f; k += 3.0f) { const float ek = pf->elevation(Vector3Normalize(Vector3Add(d, Vector3Scale(o, (s + k) / pf->radius)))); lo = std::min(lo, ek); hi = std::max(hi, ek); }
+                                            if (hi - lo < 1.5f) { best = dist; wdir = d; out = o; level = ws.level; shoreS = s; }
+                                        }
                                         break;
                                     }
                             }
@@ -5885,7 +6014,13 @@ int main(int argc, char** argv)
                         else {
                             auto along = [&](float s) { return Vector3Normalize(Vector3Add(wdir, Vector3Scale(out, s / pf->radius))); };
                             auto ground = [&](float s) { const Vector3 d = along(s); return Vector3Scale(d, pf->radius + pf->elevation(d)); };
+                            // Scoop where the water is 0.6 m deep or more, 0.3 m under its own level (#730: 3 m in from the shore at the
+                            // pick's level - 0.4 m lay inside the bank on seed 42's sloping river, under 0.19 m of water: nothing to scoop).
                             bucketWater = Vector3Scale(along(shoreS - 3.0f), pf->radius + level - 0.4f);
+                            for (float s = shoreS - 2.0f; s >= shoreS - 12.0f; s -= 0.5f) {
+                                const PlanetField::WaterSource wa = pf->waterSourceAt(along(s));
+                                if (wa.kind && wa.level - pf->elevation(along(s)) >= 0.6f) { bucketWater = Vector3Scale(along(s), pf->radius + wa.level - 0.3f); break; }
+                            }
                             // The basin: a bowl 50 m inland; the field 3 m beyond it.
                             const Vector3 b = ground(shoreS + 50.0f);
                             const TerrainEdit bowl{ Vector3Subtract(b, Vector3Scale(Vector3Normalize(b), 0.8f)), 2.2f, -1.0f, true };
@@ -5902,6 +6037,17 @@ int main(int argc, char** argv)
                         // At the shore, looking at the water: scoop.
                         auto along = [&](Vector3 from, float s) { (void)from; return s; };
                         (void)along;
+                        // Re-aim each trip where the water is now (#730): the first scoop releases the river's reach into the
+                        // simulation, and on a sloping river its water by the bank can drop under the generated level. Out from
+                        // the aim point toward the river: the first point under water 0.3 m over the ground, as a player would aim.
+                        {
+                            const Vector3 toBasin = Vector3Normalize(Vector3Subtract(bucketBasin, bucketWater));
+                            for (float s = 0.0f; s <= 8.0f; s += 0.5f) {
+                                const Vector3 q = Vector3Normalize(Vector3Subtract(bucketWater, Vector3Scale(toBasin, s)));
+                                const Vector3 at = Vector3Scale(q, pf->radius + pf->elevation(q) + 0.3f);
+                                if (IsUnderwater(world, p->toWorld(at))) { bucketWater = at; break; }
+                            }
+                        }
                         const Vector3 up = Vector3Normalize(bucketWater);
                         const Vector3 outDir = Vector3Normalize(Vector3Subtract(bucketBasin, bucketWater));
                         const Vector3 flat = Vector3Normalize(Vector3Subtract(outDir, Vector3Scale(up, Vector3DotProduct(outDir, up))));
@@ -6313,6 +6459,17 @@ int main(int argc, char** argv)
                                 const Vector3 sd = Vector3Normalize(Vector3CrossProduct(d, dn));
                                 const float bank = std::min(pf->elevation(off(d, sd, h.halfWidth + 15.0f)), pf->elevation(off(d, sd, -h.halfWidth - 15.0f)));
                                 if (bank < ws.level + (benchDamDivert ? 2.5f : 1.2f)) continue; // #656: a dam that holds the river a while
+                                // A gentle reach (#729): the generated level 12 m up and down the river within 0.6 m (a 0.8 m crest then
+                                // stands over the pool's start), and for --test-dam-divert under 6 m of drop to the reach it watches 200 m
+                                // downstream, clear of the sea (a reach the sea backs up never dries). After bake v26 seed 42's pick fell
+                                // 4 m over 24 m: the pool stood over the crest from the start.
+                                if (pf->waterSourceAt(off(d, dn, -12.0f)).level - pf->waterSourceAt(off(d, dn, 12.0f)).level > 0.6f) continue;
+                                if (benchDamDivert) {
+                                    Vector3 w = d;
+                                    for (int s = 0; s < 20; ++s) { const RiverNetwork::Hit hw = net->nearest(w, 1e4f); w = off(w, hw.down, 10.0f); }
+                                    const float lw = net->nearest(w, 1e4f).level;
+                                    if (ws.level - lw > 6.0f || lw < 3.0f) continue;
+                                }
                                 best = dist; damDir = d; damLevel = ws.level; damHW = h.halfWidth; damDepth = h.depth; damCrest = benchDamDivert ? bank - 0.3f : std::min(ws.level + 0.8f, bank - 0.3f); // a low dam: a released reach fills at what its channel carries (#432)
                                 damDown = dn; // along the ground
                             }
@@ -6555,6 +6712,16 @@ int main(int argc, char** argv)
                                 else {
                                     ws = pf->waterSourceAt(d);
                                     if (!ws.kind || ws.kind == 3 || ws.level <= 2.0f || pf->elevation(d) > ws.level - 1.5f) continue;
+                                    // Flat, wide water (#723): 6 m out, at least two of the four directions are water and none of it
+                                    // stands more than 0.3 m off this level. After the 2026-11-17 terrain merges seed 42's nearest pick
+                                    // was a 2 m mountain stream climbing 0.4 m a metre, which a level channel cut off its side never drains.
+                                    int wide = 0; bool flat = true;
+                                    for (const Vector3& o : { t1, Vector3Negate(t1), t2, Vector3Negate(t2) }) {
+                                        const PlanetField::WaterSource wn = pf->waterSourceAt(Vector3Normalize(Vector3Add(d, Vector3Scale(o, 6.0f / pf->radius))));
+                                        if (!wn.kind) continue;
+                                        ++wide; flat = flat && fabsf(wn.level - ws.level) < 0.3f;
+                                    }
+                                    if (wide < 2 || !flat) continue;
                                 }
                                 // A shore within 25 m in one of four directions, low enough to cut through.
                                 const Vector3 outs[4] = { t1, Vector3Negate(t1), t2, Vector3Negate(t2) };
@@ -8244,7 +8411,7 @@ int main(int argc, char** argv)
                         }
                         benchWalkSeconds = 0.0;
                     }
-                } else if ((WorldIdle() && benchDigStrokes == 0 && !benchPaint && !benchSaveLoad && benchWalkSeconds <= 0.0 && benchMineStrokes == 0 && minePhase != 2 && benchFlySeconds <= 0.0 && !benchSuffocate && benchOrbitSeconds <= 0.0 && !benchRide && !benchPark && !benchGravity && !benchPrecision && !benchMantle && !benchAirJump && !benchMoon && !benchHole && !benchWall && !benchDoorway && !benchLedge && !benchTor && !benchMachines && !benchFall && !benchHover && !benchNetIds && !benchNet && !benchTwoPlayers && !benchFingerprint && !benchInterest && !benchTeleClose && !benchMenus && !benchWater && !benchFlyFollow && !benchHotbar && !benchInventory && !benchMap && !benchViewmodel && !benchQuests && !benchHunger && !benchFarm && !benchAnimals && !benchThreats && !benchAnimalPath && !benchDam && !benchFlowMeter && !benchPartWall && !benchPressure && benchShotTabs == 0 && !benchForest && !benchFlow && !benchPond && !benchBucket && !benchWaterSpeed && benchFluidLoad <= 0.0f && !benchFlowShade && !benchPump && !benchTerrain && !benchWind && !benchCampfire && !benchCaveMouth && !benchMountain && !benchShelter && !benchRoom && !benchFacing && !benchPosture && !benchPause && !benchBite && !benchPlacement && !benchShotDig && !benchShadow && !benchParticles && !benchBiomes && !benchOil && !benchSpring && !benchShotAnimals && !benchShotMachines && benchShotBiomes < 0 && !benchFarForest && !benchRecipes && !benchWeather && !benchDecor && !benchMaterials && !benchDamage && !benchCrafting && !benchSuit && !benchTools && !benchRivers && !benchRing && !benchRocket && !benchStation && !benchBlueprint && !benchSmallBody && !benchTrees && !benchChop && benchPersist == 0 && benchBuild == 0 && benchFactory == 0 && !benchCombat && !benchHost && !benchShower && !benchProgression && (benchUnfocus <= 0.0f || unfocusPhase >= 6)) || GetTime() > 600.0) {
+                } else if ((WorldIdle() && benchDigStrokes == 0 && !benchPaint && !benchSaveLoad && benchWalkSeconds <= 0.0 && benchMineStrokes == 0 && minePhase != 2 && benchFlySeconds <= 0.0 && !benchSuffocate && benchOrbitSeconds <= 0.0 && !benchRide && !benchPark && !benchGravity && !benchPrecision && !benchMantle && !benchAirJump && !benchMoon && !benchHole && !benchWall && !benchDoorway && !benchLedge && !benchTor && !benchMachines && !benchFall && !benchHover && !benchNetIds && !benchNet && !benchTwoPlayers && !benchFingerprint && !benchInterest && !benchTeleClose && !benchMenus && !benchWater && !benchFlyFollow && !benchHotbar && !benchInventory && !benchMap && !benchViewmodel && !benchQuests && !benchHunger && !benchFarm && !benchAnimals && !benchThreats && !benchAnimalPath && !benchDam && !benchFlowMeter && !benchPartWall && !benchPressure && benchShotTabs == 0 && !benchForest && !benchFlow && !benchPond && !benchBucket && !benchWaterSpeed && benchFluidLoad <= 0.0f && !benchFlowShade && !benchPump && !benchTerrain && !benchWind && !benchCampfire && !benchCaveMouth && !benchMountain && !benchShelter && !benchRoom && !benchFacing && !benchDungeon && !benchPosture && !benchPause && !benchBite && !benchPlacement && !benchShotDig && !benchShadow && !benchParticles && !benchBiomes && !benchOil && !benchSpring && !benchShotAnimals && !benchShotMachines && benchShotBiomes < 0 && !benchFarForest && !benchRecipes && !benchWeather && !benchDecor && !benchMaterials && !benchDamage && !benchCrafting && !benchSuit && !benchTools && !benchRivers && !benchRing && !benchRocket && !benchStation && !benchBlueprint && !benchSmallBody && !benchTrees && !benchChop && benchPersist == 0 && benchBuild == 0 && benchFactory == 0 && !benchCombat && !benchHost && !benchShower && !benchProgression && (benchUnfocus <= 0.0f || unfocusPhase >= 6)) || GetTime() > 600.0) {
                     benchStart = GetTime();
                     printf("bench: world ready after %.2f s (%d chunks, avg build %.2f ms of which sampling %.2f ms, %d worker threads)\n",
                         GetWorldStats().lastGenerationSeconds, GetWorldStats().chunks, GetWorldStats().avgBuildMs, GetWorldStats().avgSampleMs, GetWorldStats().workerThreads);
@@ -8255,6 +8422,106 @@ int main(int argc, char** argv)
             static DVec3 benchCamLocal0{};
             static bool benchCamLocalSet = false;
             Planetoid* benchBody0 = world.objects.empty() ? nullptr : dynamic_cast<Planetoid*>(world.objects[0].get());
+            if (benchTurn != 0.0f && benchStart >= 0.0 && benchBody0) {
+                // --bench-turn (#134): from the bench start, the camera turns about its up at benchTurn deg/s on the spot.
+                static bool turnSet = false; static Vector3 turnEye{}, turnFwd{}, turnUp{}; static long turnFrames = 0;
+                if (!turnSet) {
+                    turnSet = true;
+                    turnEye = benchBody0->toLocal(world.camera.position);
+                    turnUp = Vector3Normalize(turnEye);
+                    const Vector3 f = benchBody0->dirToLocal(Vector3Normalize(Vector3Subtract(world.camera.target, world.camera.position)));
+                    turnFwd = Vector3Normalize(Vector3Subtract(f, Vector3Scale(turnUp, Vector3DotProduct(f, turnUp) * 0.8f))); // a little below level
+                }
+                const float a = benchTurn * DEG2RAD * (float)(turnFrames++) / 60.0f; // per frame (1/60 s each under the recorder's fixed step): runs line up
+                const Vector3 side = Vector3CrossProduct(turnUp, turnFwd);
+                const Vector3 dir = Vector3Add(Vector3Scale(turnFwd, cosf(a)), Vector3Scale(side, sinf(a)));
+                player.flyMode = true;
+                world.camera.position = benchBody0->toWorld(turnEye);
+                world.camera.target = benchBody0->toWorld(Vector3Add(turnEye, Vector3Scale(dir, 10.0f)));
+                world.camera.up = benchBody0->dirToWorld(turnUp);
+                player.position = world.renderOrigin + world.camera.position;
+            }
+            if (occView > 0 && benchStart >= 0.0 && benchBody0) {
+                // --occ-view (#134): a still camera for the occlusion experiment, placed once (use RAYLIBGAME_BENCH_WARMUP so the
+                // place streams in before timing). cave: inside a natural tunnel 15-30 m down near the start, looking along it.
+                // structure: on the ground facing a ridge 40-80 m away, with a factory plot (every machine type) behind it.
+                const PlanetField* pf = dynamic_cast<const PlanetField*>(benchBody0->field.get());
+                static bool occSet = false; static Vector3 occEye{}, occAt{}, occPlotAt{}; static float occRidge = 0.0f, occBelow = 0.0f;
+                if (pf && !occSet) {
+                    occSet = true;
+                    Planetoid* p = benchBody0;
+                    const Vector3 home = pf->findSpawnDir(p->seed);
+                    const Vector3 t1 = Vector3Normalize(Vector3CrossProduct(home, { 0, 1, 0 })), t2 = Vector3CrossProduct(t1, home);
+                    auto dirAt = [&](float a, float b) { return Vector3Normalize(Vector3Add(home, Vector3Add(Vector3Scale(t1, a / pf->radius), Vector3Scale(t2, b / pf->radius)))); };
+                    auto tangents = [](Vector3 up, Vector3& e1, Vector3& e2) { e1 = Vector3Normalize(Vector3CrossProduct(up, fabsf(up.y) < 0.9f ? Vector3{ 0, 1, 0 } : Vector3{ 1, 0, 0 })); e2 = Vector3CrossProduct(up, e1); };
+                    bool found = false; float bestDist = 1e30f;
+                    for (float a = -2500.0f; a <= 2500.0f; a += 25.0f)
+                        for (float b = -2500.0f; b <= 2500.0f; b += 25.0f) {
+                            const float dist = sqrtf(a * a + b * b);
+                            if (dist >= bestDist) continue;
+                            const Vector3 d = dirAt(a, b);
+                            const float e = pf->elevation(d);
+                            if (e < 3.0f) continue;
+                            Vector3 e1, e2; tangents(d, e1, e2);
+                            if (occView == 1) {
+                                for (float depth : { 15.0f, 20.0f, 25.0f, 30.0f }) {
+                                    const Vector3 q = Vector3Scale(d, pf->radius + e - depth);
+                                    if (p->densityAt(q) > ISO_LEVEL - 2.0f * DENSITY_GRADIENT) continue; // 2 m+ into open air
+                                    float bestOpen = -1.0f; Vector3 dir = e1;
+                                    for (int k = 0; k < 16; ++k) {
+                                        const float ang = 2.0f * PI * k / 16.0f;
+                                        const Vector3 h = Vector3Add(Vector3Scale(e1, cosf(ang)), Vector3Scale(e2, sinf(ang)));
+                                        float open = 0.0f;
+                                        for (float r = 2.0f; r <= 40.0f; r += 2.0f) { if (p->densityAt(Vector3Add(q, Vector3Scale(h, r))) >= ISO_LEVEL) break; open = r; }
+                                        if (open > bestOpen) { bestOpen = open; dir = h; }
+                                    }
+                                    if (bestOpen < 10.0f) continue; // a real tunnel, not a pocket
+                                    occEye = q; occAt = Vector3Add(q, Vector3Scale(dir, 20.0f)); bestDist = dist; found = true;
+                                    break;
+                                }
+                            } else {
+                                for (int k = 0; k < 8; ++k) {
+                                    const float ang = 2.0f * PI * k / 8.0f;
+                                    const Vector3 h = Vector3Add(Vector3Scale(e1, cosf(ang)), Vector3Scale(e2, sinf(ang)));
+                                    auto elevAlong = [&](float m) { return pf->elevation(Vector3Normalize(Vector3Add(Vector3Scale(d, pf->radius), Vector3Scale(h, m)))); };
+                                    const float hill = std::max({ elevAlong(40.0f), elevAlong(60.0f), elevAlong(80.0f) });
+                                    const float behind = elevAlong(150.0f);
+                                    if (hill - e < 12.0f || hill - behind < 8.0f || behind < 3.0f) continue;
+                                    // The factory 150 m on, on a plot on the ground; the camera 1.7 m over the ground, facing it.
+                                    const Vector3 bDir = Vector3Normalize(Vector3Add(Vector3Scale(d, pf->radius), Vector3Scale(h, 150.0f)));
+                                    const Vector3 bGround = Vector3Scale(bDir, pf->radius + behind);
+                                    occEye = Vector3Scale(d, pf->radius + e + 1.7f);
+                                    occAt = Vector3Add(bGround, Vector3Scale(bDir, 3.0f));
+                                    occPlotAt = Vector3Add(bGround, Vector3Scale(bDir, 1.0f));
+                                    occRidge = hill - e; occBelow = hill - behind;
+                                    bestDist = dist; found = true;
+                                    break;
+                                }
+                            }
+                        }
+                    if (found && occView == 2) { // the nearest candidate only: the factory (every machine type, three times)
+                        if (!p->plots) p->plots = std::make_unique<PlotSet>();
+                        Plot* plot = p->plots->plotFor(occPlotAt, 0.0f, true);
+                        const PartType types[] = { PartType::Chest, PartType::Generator, PartType::Furnace, PartType::Macerator, PartType::Battery, PartType::Campfire, PartType::Kiln,
+                                                   PartType::CokeOven, PartType::BlastFurnace, PartType::Boiler, PartType::ForgeHammer, PartType::AlloySmelter, PartType::SteamMacerator,
+                                                   PartType::OreWasher, PartType::Centrifuge, PartType::WaterPump, PartType::MvGenerator, PartType::Electrolyzer, PartType::ChemicalReactor,
+                                                   PartType::Miner, PartType::HvGenerator, PartType::ArcFurnace, PartType::Refinery, PartType::PrecisionAssembler, PartType::FusionReactor, PartType::MassDriver };
+                        int placed = 0, n = 0;
+                        for (int rep = 0; rep < 3; ++rep)
+                            for (PartType t : types) { placed += plot->place({ t, { (n % 13) * 4 - 24, 2, (n / 13) * 6 - 24 }, 0 }) >= 0 ? 1 : 0; ++n; }
+                        printf("bench: occ-view structure: ridge %.0f m over the camera ground, factory %.0f m below the ridge top, %d of %d machines placed\n", occRidge, occBelow, placed, n);
+                    }
+                    printf("bench: occ-view %s: %s\n", occView == 1 ? "cave" : "structure", found ? "placed" : "nothing found -> the start view");
+                    if (!found) occView = 0;
+                    else { sunOverride = true; sunArg = p->dirToWorld(Vector3Normalize(Vector3Add(Vector3Normalize(occEye), Vector3Scale(t1, 0.6f)))); }
+                }
+                if (occView > 0) {
+                    player.flyMode = true;
+                    world.camera.position = benchBody0->toWorld(occEye); world.camera.target = benchBody0->toWorld(occAt);
+                    world.camera.up = benchBody0->dirToWorld(Vector3Normalize(occEye));
+                    player.position = world.renderOrigin + world.camera.position;
+                }
+            }
             if (benchStart >= 0.0 && t > benchWarmup) {
                 benchFrames++;
                 if (!benchCamLocalSet && benchBody0) { benchCamLocal0 = benchBody0->toLocalD(world.renderOrigin + world.camera.position); benchCamLocalSet = true; }
@@ -8262,6 +8529,14 @@ int main(int argc, char** argv)
                 benchMeasuring = true;
                 if (GetFrameTime() > benchMaxFrame) benchMaxFrame = GetFrameTime();
                 benchFrameTimes.push_back(GetFrameTime());
+                // #134 experiment (RAYLIBGAME_OCC_SKIP=1, a still camera): from the first timed frame the main pass skips the
+                // chunks the occlusion estimate finds hidden, so the near pass is timed as if Hi-Z had culled them.
+                static const bool occSkip = getenv("RAYLIBGAME_OCC_SKIP") && getenv("RAYLIBGAME_OCC_SKIP")[0] == '1';
+                if (occSkip && benchFrameTimes.size() == 1) {
+                    gOcclusionSkip.clear(); gOcclusionSkipPlots.clear();
+                    OcclusionScan(world, true, &gOcclusionSkip);
+                    printf("bench: occlusion skip: %zu chunks and %zu plots left out of the main pass from now on\n", gOcclusionSkip.size(), gOcclusionSkipPlots.size());
+                }
             }
             if ((benchFlySpeed > 0.0f || benchFlyAlt < 1e8f) && benchStart >= 0.0) {
                 // --bench-fly V: the camera flies a great circle over body 0 at V m/s, 150 m above the
@@ -8299,9 +8574,7 @@ int main(int argc, char** argv)
                     if (crackCheck && (++flyFrame % 10) == 0) {
                         Image shot = LoadImageFromScreen();
                         Color* px = LoadImageColors(shot);
-                        int holes = 0;
-                        for (int y = shot.height / 3; y < shot.height; y += 2)
-                            for (int x = 0; x < shot.width; x += 2) { const Color c = px[y * shot.width + x]; holes += (c.r > 200 && c.g < 60 && c.b > 200) ? 1 : 0; }
+                        const int holes = (int)CrackHoles(px, shot.width, shot.height, 2, nullptr); // every 2nd pixel
                         UnloadImageColors(px);
                         if (holes > 50) {
                             printf("bench: fly holes: t=%.2f s, %d magenta samples\n", t, holes);
@@ -8343,14 +8616,21 @@ int main(int argc, char** argv)
                                ph[0] / 1e6, ph[1] / 1e6, ph[2] / 1e6, ph[3] / 1e6, ph[5] ? 100.0 * ph[4] / ph[5] : 0.0, ph[5]);
                     }
                 }
+                if (occlusionEstimate) {
+                    // --occlusion-estimate (#134): drawn terrain chunks in the view whose 8 box corners are all hidden from the
+                    // camera behind the height map (each ray sampled every 1/24 of its length; hidden = the ground there is
+                    // 1 m+ above the ray). An estimate of what Hi-Z occlusion culling could skip.
+                    OcclusionScan(world, true, nullptr);
+                }
                 if (crackCheck) {
                     // Holes between chunks show the magenta clear colour (look down at terrain that fills the view).
                     Image shot = LoadImageFromScreen();
                     Color* px = LoadImageColors(shot);
                     long holes = 0;
                     const long total = (long)shot.width * shot.height;
-                    for (long k = 0; k < total; ++k) if (px[k].r > 240 && px[k].g < 16 && px[k].b > 240) ++holes;
-                    printf("bench: crack check: %ld of %ld pixels show through the terrain (%.4f%%)\n", holes, total, 100.0 * holes / total);
+                    long sky = 0;
+                    holes = CrackHoles(px, shot.width, shot.height, 1, &sky);
+                    printf("bench: crack check: %ld of %ld pixels show through the terrain (%.4f%%; %ld of open sky over the terrain not counted)\n", holes, total, 100.0 * holes / total, sky);
                     UnloadImageColors(px);
                     UnloadImage(shot);
                 }
@@ -8583,6 +8863,7 @@ int main(int argc, char** argv)
                     }
         }
         if (crackCheck) world.drawSkybox = false;
+        if (crackCheck) noHud = true; // #725: no HUD or hands: their text and shapes boxed in bits of the magenta sky, which then read as holes
         if (crackCheck) world.clearColor = MAGENTA;
         while (world.lights.size() < 4) world.lights.push_back(Light{});
         if (gameState == 1) { Ambience_GatherLights(world); Events_AddLights(world); } else world.localLights.clear(); // lamps, campfires, fire machines (#139); meteor impacts (#177)
@@ -8814,6 +9095,42 @@ int main(int argc, char** argv)
             if (f == 90) { TakeScreenshot("bench_chest.png"); printf("bench: shot: bench_chest.png\n"); shotChest = false; }
         }
         // --shot-inventory (#219): the inventory with long item names (cut to fit; they scroll on hover).
+        // --shot-glow (#580): hot items glow in the inventory and on the hotbar: a fresh iron ingot stack (yellow-white),
+        // a half-cooled copper one (orange) and a nearly cool one (dull red), the fresh one also on the hotbar; the
+        // inventory open (bench_glow.png).
+        if (shotGlow && gameState == 1 && !loading && WorldIdle()) {
+            static int f = 0;
+            if (++f == 5) {
+                inventory.addAmount("iron_ingot", 20, 1.0f); inventory.addAmount("copper_ingot", 12, 0.5f); inventory.addAmount("bronze_ingot", 6, 0.12f);
+                Hotbar_Bind(2, "iron_ingot");
+                inventory.addAmount("iron_ingot", 5, 1.0f); // a second stack in the grid (the first went to the hotbar)
+                GameUI_ToggleInventory();
+            }
+            if (f == 30) {
+                TakeScreenshot("bench_glow.png");
+                const ItemGlow hot = Item_Glow(inventory.grid()[Inventory::kGrid + 2]);
+                printf("bench: glow: hotbar iron ingot heat %.2f, glow %.2f (r %d g %d b %d); screenshot bench_glow.png\n",
+                       inventory.grid()[Inventory::kGrid + 2].heat, hot.strength, hot.color.r, hot.color.g, hot.color.b);
+                GameUI_ToggleInventory();
+                shotGlow = false;
+            }
+        }
+        // --test-dungeon (#719): a watchtower with its dungeon forced 40 m from the start; the rooms, corridors and ramp
+        // open, the rare chest waiting; then a look across the first room by its torch (bench_dungeon.png).
+        if (benchDungeon && gameState == 1 && !loading && (dungeonFrame > 0 || WorldIdle())) {
+            static Vector3 eye{}, target{};
+            Planetoid* p = dynamic_cast<Planetoid*>(world.objects[0].get());
+            ++dungeonFrame;
+            if (dungeonFrame == 5) { player.flyMode = false; player.spawnOn(world, *p, StartSpawnDir(*p)); }
+            if (dungeonFrame == 60) Structures_TestDungeon(world, *p, p->toLocal((player.position - world.renderOrigin).toFloat()), eye, target);
+            if (dungeonFrame >= 61 && dungeonFrame < 200) {
+                player.flyMode = true;
+                world.camera.position = p->toWorld(eye); world.camera.target = p->toWorld(target);
+                world.camera.up = p->dirToWorld(Vector3Normalize(eye));
+                player.position = world.renderOrigin + world.camera.position;
+            }
+            if (dungeonFrame == 200) { TakeScreenshot("bench_dungeon.png"); printf("bench: dungeon: bench_dungeon.png\n"); benchDungeon = false; }
+        }
         if (shotInventory && gameState == 1 && !loading && WorldIdle()) {
             static int f = 0;
             if (++f == 5) { inventory.add("oxygen_tank_module", 1); inventory.add("stone_pickaxe", 1); inventory.add("steam_macerator", 1); inventory.add("oak_log", 12); inventory.grid()[Inventory::kOffHand] = InvSlot{ "wooden_shield", 100 }; GameUI_ToggleInventory(); }
@@ -8877,25 +9194,36 @@ int main(int argc, char** argv)
             if (sf == 20) {
                 const Vector3 me = p->toLocal((player.position - world.renderOrigin).toFloat());
                 built = Structures_Test(world, *p, me);
+                uint64_t layout = 0;
+                built = Structures_TestPlacement(*p, 2000.0f, layout) && built; // the world's placement round the start (#164)
                 Vector3 at; std::string set;
                 if (Structures_NearestSite(*p, me, 2000.0f, at, set)) printf("bench: structures: the nearest natural site is a %s, %.0f m from the start\n", set.c_str(), Vector3Distance(at, me));
                 else printf("bench: structures: no natural site within 2 km\n");
             }
             if (sf == 80) Structures_TestFill(*p);
             static Vector3 shotEye{}, shotAt{}, shotUp{};
-            if (sf == 81) { // look down into the second set (the geode, on -t1, 30 m out) from 9 m back and 12 m up
-                const Vector3 me = p->toLocal((player.position - world.renderOrigin).toFloat());
-                shotUp = Vector3Normalize(me);
-                const Vector3 t1 = Vector3Normalize(Vector3CrossProduct(shotUp, fabsf(shotUp.y) < 0.9f ? Vector3{ 0, 1, 0 } : Vector3{ 1, 0, 0 }));
-                shotAt = Vector3Subtract(Vector3Add(me, Vector3Scale(t1, -30.0f)), Vector3Scale(shotUp, 4.0f));
-                shotEye = Vector3Add(shotAt, Vector3Add(Vector3Scale(t1, 9.0f), Vector3Scale(shotUp, 16.0f)));
-                player.flyMode = true;
-            }
-            if (sf >= 81 && sf < 160) { // the camera itself, each frame
+            // A tour of the sets built round the start (#164: each new set looked at): set i stands on side i % 4 (t1, -t1, t2,
+            // -t2), 30 + 22 * (i / 4) m out (Structures_Test); 30 frames on each from 12 m back toward the start and 10 m up,
+            // bench_structure_<i>.png on the last.
+            static Vector3 home{};
+            if (sf == 20) home = p->toLocal((player.position - world.renderOrigin).toFloat());
+            const int nSets = Structures_SetCount(), tourEnd = 81 + 30 * nSets;
+            if (sf >= 81 && sf < tourEnd) {
+                const int i = (sf - 81) / 30;
+                if ((sf - 81) % 30 == 0) {
+                    shotUp = Vector3Normalize(home);
+                    const Vector3 t1 = Vector3Normalize(Vector3CrossProduct(shotUp, fabsf(shotUp.y) < 0.9f ? Vector3{ 0, 1, 0 } : Vector3{ 1, 0, 0 }));
+                    const Vector3 t2 = Vector3CrossProduct(t1, shotUp);
+                    const Vector3 side = i % 4 == 0 ? t1 : i % 4 == 1 ? Vector3Negate(t1) : i % 4 == 2 ? t2 : Vector3Negate(t2);
+                    shotAt = Vector3Add(home, Vector3Scale(side, 30.0f + 22.0f * (i / 4)));
+                    shotEye = Vector3Add(shotAt, Vector3Add(Vector3Scale(side, -12.0f), Vector3Scale(shotUp, 10.0f)));
+                    player.flyMode = true;
+                }
                 world.camera.position = p->toWorld(shotEye); world.camera.target = p->toWorld(shotAt); world.camera.up = p->dirToWorld(shotUp);
                 player.position = world.renderOrigin + world.camera.position;
+                if ((sf - 81) % 30 == 29) TakeScreenshot(TextFormat("bench_structure_%d.png", i));
             }
-            if (sf == 160) {
+            if (sf == tourEnd) {
                 TakeScreenshot("bench_structures.png");
                 int items = 0;
                 const int full = Structures_TestCheck(*p, items);
@@ -9078,12 +9406,10 @@ int main(int argc, char** argv)
         // --test-host (#311, with --host <save>): the dedicated server loaded or created its save and runs headless.
         //   - seed (user, 2026-11-15): a new world takes --seed N, else a random seed (printed); an existing save keeps its own;
         //   - autosave: with a short --autosave-minutes (<= 1) the test waits for one autosave;
-        //   - a client opened in this process over loopback sends "join" and gets the world description (fingerprint and
-        //     seed must match the host's world) and the current meteor shower. That part SKIPs without ENABLE_GNS.
+        //   - the connection lifecycle (#321) with clients opened in this process over loopback (below): the welcome's world
+        //     description (seed, fingerprint) and shower must match the host's. That part SKIPs without ENABLE_GNS.
         if (benchHost && gameState == 1 && !loading && WorldIdle()) {
-            static uint32_t client = 0;
             static double t0 = -1.0;
-            static bool sent = false, gotJoin = false, gotShower = false, sameWorld = false, sameShower = false;
             if (t0 < 0.0) t0 = GetTime();
             bool saveOnDisk = false;
             if (FILE* fsv = hostSave.empty() ? nullptr : fopen(hostSave.c_str(), "rb")) { fclose(fsv); saveOnDisk = true; }
@@ -9102,28 +9428,47 @@ int main(int argc, char** argv)
                     benchHost = false;
                 }
             } else {
-                static unsigned joinSeed = 0;
-                if (!client) { client = Net_Connect(TextFormat("127.0.0.1:%d", hostPort)); Host_SetLocalClient(client); }
-                if (client && !sent && Net_IsConnected(client)) sent = Net_Send(client, "join", 4, true);
-                for (const NetMessage& m : Host_TakeLocalClientMessages()) {
-                    const std::string text(m.data.begin(), m.data.end());
-                    if (!text.empty() && text[0] == 'J') {
-                        JoinInfo info; std::string why;
-                        gotJoin = JoinInfo_Read(text.substr(1), info, why);
-                        sameWorld = gotJoin && info.fingerprint == WorldFingerprint(world);
-                        joinSeed = gotJoin ? info.seed : 0;
-                        if (!gotJoin) printf("bench: host: join info unreadable: %s\n", why.c_str());
-                    } else if (!text.empty() && text[0] == 'S') {
-                        double s = 0.0, e = 0.0; unsigned id = 0;
-                        gotShower = sscanf(text.c_str() + 1, " %lf %lf %u", &s, &e, &id) == 3;
-                        sameShower = gotShower && id == Events_GetShower().id;
-                    }
+                // The lifecycle over loopback (#321), clients in this process: alice joins (the world description and
+                // the shower match the host's; a ping comes back); an old protocol is refused; a second "alice" is
+                // refused while she is online; alice leaves and comes back: the same session, marked reconnected.
+                static NetClient alice, oldProto, twin, back;
+                static int step = 0;
+                static uint32_t aliceSession = 0;
+                static bool joined = false, sameWorld = false, sameShower = false, pinged = false, protoRefused = false, nameRefused = false,
+                            left = false, sameSession = false;
+                const char* addr = TextFormat("127.0.0.1:%d", hostPort);
+                for (NetClient* c : { &alice, &oldProto, &twin, &back }) NetClient_Update(*c);
+                if (step == 0) { NetClient_Connect(alice, addr, "alice"); step = 1; }
+                else if (step == 1 && alice.state == NetClient::State::Joined && alice.pongs >= 1) {
+                    joined = true; pinged = alice.rttMs >= 0.0; aliceSession = alice.welcome.session;
+                    sameWorld = alice.welcome.fingerprint == WorldFingerprint(world) && alice.welcome.seed == worldGen.lastSeed;
+                    sameShower = alice.shower.id == Events_GetShower().id;
+                    oldProto.protocol = kNetProtocol - 1; NetClient_Connect(oldProto, addr, "old");
+                    NetClient_Connect(twin, addr, "alice");
+                    step = 2;
+                } else if (step == 2 && oldProto.state == NetClient::State::Rejected && twin.state == NetClient::State::Rejected) {
+                    protoRefused = oldProto.reject.reason == NetReject::Protocol;
+                    nameRefused = twin.reject.reason == NetReject::NameTaken;
+                    NetClient_Disconnect(alice);
+                    step = 3;
+                } else if (step == 3 && Host_OnlinePlayers() == 0) {
+                    left = true;
+                    NetClient_Connect(back, addr, "alice");
+                    step = 4;
+                } else if (step == 4 && back.state == NetClient::State::Joined) {
+                    sameSession = back.welcome.session == aliceSession && back.welcome.reconnected;
+                    step = 5;
                 }
-                if ((gotJoin && gotShower && autosaveDone) || GetTime() - t0 > 90.0) {
-                    const bool ok = saveOnDisk && gHeadless && sent && sameWorld && sameShower && Host_Joins() == 1 && seedOk && joinSeed == worldGen.lastSeed && autosaveDone;
-                    printf("bench: host: save %s on disk %d, headless %d, listening on %d; seed %u (%s) ok %d, sent to the client %d; autosaves %d; loopback client joined %d, world description %d (fingerprint matches %d), shower %d (same %d), joins answered %d after %.1f s -> %s\n",
-                           hostSave.c_str(), (int)saveOnDisk, (int)gHeadless, hostPort, worldGen.lastSeed, seedHow, (int)seedOk, (int)(joinSeed == worldGen.lastSeed),
-                           Host_Autosaves(), (int)sent, (int)gotJoin, (int)sameWorld, (int)gotShower, (int)sameShower, Host_Joins(), GetTime() - t0, ok ? "PASS" : "FAIL");
+                if ((step == 5 && autosaveDone) || GetTime() - t0 > 90.0) {
+                    const bool ok = saveOnDisk && gHeadless && seedOk && autosaveDone && joined && sameWorld && sameShower && pinged && protoRefused && nameRefused &&
+                                    left && sameSession && Host_Joins() == 2;
+                    printf("bench: host: save %s on disk %d, headless %d, listening on %d; seed %u (%s) ok %d; autosaves %d\n",
+                           hostSave.c_str(), (int)saveOnDisk, (int)gHeadless, hostPort, worldGen.lastSeed, seedHow, (int)seedOk, Host_Autosaves());
+                    printf("bench: host: lifecycle (#321): alice joined %d as session %u (world matches %d, shower matches %d, ping %d: %.1f ms); old protocol refused %d (%s); "
+                           "a second alice refused %d (%s); alice left %d and came back to session %u (same, reconnected %d); %d joins, step %d after %.1f s -> %s\n",
+                           (int)joined, aliceSession, (int)sameWorld, (int)sameShower, (int)pinged, alice.rttMs, (int)protoRefused, NetRejectText(oldProto.reject.reason),
+                           (int)nameRefused, NetRejectText(twin.reject.reason), (int)left, back.welcome.session, (int)sameSession, Host_Joins(), step, GetTime() - t0, ok ? "PASS" : "FAIL");
+                    NetClient_Disconnect(back);
                     benchHost = false;
                 }
             }
