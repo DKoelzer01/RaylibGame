@@ -394,8 +394,40 @@ bool Planetoid::useFarSphere(const RenderContext& ctx) const {
     return Vector3Distance(position, ctx.cameraPos) / std::max(1.0f, lodSettings.zoom) > kFarSphereRadii * radius * scale;
 }
 
+// #830: when parts were placed or removed, the grass scatter gets the body's new part cells and the chunks under the
+// changes are rebuilt (their grass redone). One remesh per changed plot, over the changed cells' extent.
+static void SyncGrassBlockers(Planetoid& p) {
+    bool changed = false;
+    for (const auto& pl : p.plots->plots) changed = changed || !pl->changedCells.empty();
+    if (!changed) return;
+    auto snap = std::make_shared<GrassBlockers>();
+    for (const auto& pl : p.plots->plots) {
+        if (pl->cells.empty()) continue;
+        GrassBlockPlot g;
+        g.origin = pl->origin; g.east = pl->east; g.up = pl->up; g.north = pl->north;
+        for (const auto& kv : pl->cells) {
+            g.cells.insert(kv.first);
+            const Int3 c = kv.first;
+            g.radius = std::max(g.radius, sqrtf((float)(c.x * c.x + c.y * c.y + c.z * c.z)) * kCellSize + kCellSize);
+        }
+        snap->push_back(std::move(g));
+    }
+    Grass_SetBlockers(static_cast<const DensityField*>(p.field.get()), snap);
+    for (const auto& pl : p.plots->plots) {
+        if (pl->changedCells.empty()) continue;
+        Vector3 lo{ 1e30f, 1e30f, 1e30f }, hi{ -1e30f, -1e30f, -1e30f };
+        for (const Int3& c : pl->changedCells) {
+            const Vector3 at = pl->toBody({ (c.x + 0.5f) * kCellSize, (c.y + 0.5f) * kCellSize, (c.z + 0.5f) * kCellSize });
+            lo = Vector3Min(lo, at); hi = Vector3Max(hi, at);
+        }
+        pl->changedCells.clear();
+        RequestRemesh(p, Vector3Scale(Vector3Add(lo, hi), 0.5f), 0.5f * Vector3Distance(lo, hi) + kCellSize, 1.0f);
+    }
+}
+
 void Planetoid::draw(const RenderContext& ctx) {
     if (!isActive) return;
+    if (plots && field && kind == BodyKind::Planet) SyncGrassBlockers(*this); // (#830) grass only grows on planets
     for (const auto& objPtr : children) objPtr->draw(ctx);
     if (farSphere && ctx.farShader) farSphere->ready(); // uploads the bake once it is done
     if (useFarSphere(ctx)) { farSphere->draw(*this, ctx, *ctx.farShader); return; }

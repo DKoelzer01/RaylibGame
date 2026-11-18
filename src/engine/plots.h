@@ -110,6 +110,7 @@ public:
     float air = 0.0f;                   // rocket life support: minutes of breathable air loaded (saved)
     struct CellRef { int part; CellShape shape; };
     std::unordered_map<Int3, CellRef> cells; // occupied cell -> part index and its shape there
+    std::vector<Int3> changedCells;     // (#830) cells parts were placed in or removed from, since the grass last looked
 
     // Plot space <-> body-local.
     Vector3 toPlot(Vector3 bodyLocal) const;
