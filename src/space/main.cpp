@@ -7842,7 +7842,7 @@ int main(int argc, char** argv)
             torch.enabled = gameState == 1 && lit && !ship.piloted && !survival.dead;
             if (torch.enabled) {
                 const float t = (float)GetTime();
-                const float flicker = 0.85f + 0.1f * sinf(t * 13.0f) + 0.05f * sinf(t * 31.7f + 1.3f);
+                const float flicker = settings.fireFlicker ? 0.85f + 0.1f * sinf(t * 13.0f) + 0.05f * sinf(t * 31.7f + 1.3f) : 0.85f; // #558: steady when off
                 const Vector3 fwd = Vector3Normalize(Vector3Subtract(world.camera.target, world.camera.position));
                 const Vector3 right = Vector3Normalize(Vector3CrossProduct(fwd, world.camera.up));
                 torch.position = Vector3Add(Vector3Add(world.camera.position, Vector3Scale(right, 0.3f)), Vector3Add(Vector3Scale(world.camera.up, -0.15f), Vector3Scale(fwd, 0.35f)));
@@ -8500,6 +8500,7 @@ int main(int argc, char** argv)
                 Hotbar_Press(8, false);
             }
             if (tf == 70) {
+                printf("bench: torch: %d particles alive (the placed torch's flame, #558)\n", Particles_Count());
                 TakeScreenshot("bench_torch_placed.png");
                 const double lumPlaced = groundLum("bench_torch_placed.png");
                 const bool handOff = !(world.lights.size() > 3 && world.lights[3].enabled);
