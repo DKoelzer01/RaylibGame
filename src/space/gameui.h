@@ -5,10 +5,16 @@
 
 class Scene;
 
-// In-game panels (Dear ImGui for now): Tab = inventory + crafting.
-bool GameUI_InventoryOpen();
+// The game window (#821, Dear ImGui for now): one window filling the screen, its screens switched by large tabs across
+// the top (Inventory, Crafting, Quests, Skills, Team). Tab or E opens it at the screen last used.
+enum class GameScreen { Inventory, Crafting, Quests, Skills, Team, Count };
+bool GameUI_InventoryOpen();              // the game window is open (any screen)
 void GameUI_ToggleInventory();
-void GameUI_ShowTab(const char* tab);     // open the inventory window on a tab ("Quest tree", "Suit")
+void GameUI_ShowScreen(GameScreen s);     // open the window on a screen
+GameScreen GameUI_Screen();               // the screen shown (or shown last)
+void GameUI_ShowTab(const char* tab);     // older names: "Crafting", "Quest tree" (Quests, tree view), "Suit" (Inventory), "Help"
+bool GameUI_TextInputActive();            // a text field in the window has the keyboard (the window's keys don't apply)
+float GameUI_Scale();                     // the interface size (Settings; auto by the screen's height)
 void GameUI_Draw(Scene& world);  // inside rlImGuiBegin()/rlImGuiEnd()
 void GameUI_DrawHUD(Scene& world); // plain raylib 2D HUD (status, toasts)
 void GameUI_Toast(const char* text);

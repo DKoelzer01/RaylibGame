@@ -1,4 +1,5 @@
 #include "fluid.h"
+#include "playerinput.h"
 #include "navigation.h"
 #include "survival.h"
 #include "animals.h"
@@ -297,8 +298,8 @@ float Nav_Bearing(Scene& world, Vector3 dir) {
 void Nav_Update(Scene& world, bool inputEnabled, bool gameInput) {
     if (gameInput) { // minimap zoom (#278): - out, = (+) in
         const int was = miniZoom;
-        if (IsKeyPressed(KEY_MINUS) || IsKeyPressed(KEY_KP_SUBTRACT)) miniZoom = std::min(miniZoom + 1, (int)(sizeof(kMiniZooms) / sizeof(kMiniZooms[0])) - 1);
-        if (IsKeyPressed(KEY_EQUAL) || IsKeyPressed(KEY_KP_ADD)) miniZoom = std::max(miniZoom - 1, 0);
+        if (PlayerInput_BindingPressed(Act::ZoomOut) || IsKeyPressed(KEY_KP_SUBTRACT)) miniZoom = std::min(miniZoom + 1, (int)(sizeof(kMiniZooms) / sizeof(kMiniZooms[0])) - 1);
+        if (PlayerInput_BindingPressed(Act::ZoomIn) || IsKeyPressed(KEY_KP_ADD)) miniZoom = std::max(miniZoom - 1, 0);
         if (miniZoom != was) minimapForce = true;
     }
     const Here h = Locate(world);

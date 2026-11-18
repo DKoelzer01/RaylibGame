@@ -583,6 +583,7 @@ int main(int argc, char** argv)
     bool benchTime = false;        // --test-time: dawn start (#259), a +6 h jump carries the player (#275)
     bool benchPickups = false;     // --test-pickups: the pickup feed (#208): repeats merge, a screenshot while it shows
     bool shotInventory = false;    // --shot-inventory: long item names in their cells (#219)
+    bool shotGameWindow = false;   // --shot-game-window (#821): each screen of the game window, and the key bindings tables
     bool benchDungeon = false; int dungeonFrame = 0; // --test-dungeon (#719)
     bool benchDungeonTraps = false; int dungeonTrapFrame = 0; // --test-dungeon-traps (#719)
     bool benchSaveSplit = false; // --test-save-split (#346)
@@ -915,6 +916,7 @@ int main(int argc, char** argv)
         if (std::string(argv[i]) == "--test-headless") benchHeadless = true;
         if (std::string(argv[i]) == "--test-pickups") benchPickups = true;
         if (std::string(argv[i]) == "--shot-inventory") shotInventory = true;
+        if (std::string(argv[i]) == "--shot-game-window") shotGameWindow = true;
         if (std::string(argv[i]) == "--test-dungeon") benchDungeon = true;
         if (std::string(argv[i]) == "--test-dungeon-traps") benchDungeonTraps = true; // #719: best with --sandbox
         if (std::string(argv[i]) == "--test-save-split") benchSaveSplit = true; // #346: world + player records
@@ -2009,10 +2011,10 @@ int main(int argc, char** argv)
         if (std::string(argv[i]) == "--shot-settings") {
             // The settings page (#512) in both menus, every tab: a screenshot each, and every row and the Back button on
             // screen (rows above Back). Run it at more than one size: --window 1280 720.
-            const char* tabs[] = { "graphics", "controls", "audio", "gameplay" };
+            const char* tabs[] = { "graphics", "controls", "keys", "audio", "gameplay" }; // (#821: keys)
             bool pass = true;
             for (int menu = 0; menu < 2; ++menu)
-                for (int tab = 0; tab < 4; ++tab) {
+                for (int tab = 0; tab < 5; ++tab) {
                     Menu_TestSettings(tab, menu == 1);
                     for (int f = 0; f < 3 && !WindowShouldClose(); ++f) { // a few frames: the layout settles, the shot is of a drawn one
                         BeginDrawing();
@@ -9024,12 +9026,18 @@ int main(int argc, char** argv)
             DebugUI_Toggle();
             // (relocking the cursor centres it)
         }
-        if (!bench && gameState == 1 && IsKeyPressed(KEY_TAB)) {
-            GameUI_ToggleInventory();
+        // The game window (#821): Tab (or E on foot, when not looking at a cockpit to board) opens and closes it at its last
+        // screen; C and K open Crafting and Skills on foot (in a rocket they roll and dock). All rebindable in Settings.
+        if (!bench && gameState == 1 && !DebugUI_IsOpen() && !Nav_MapOpen() && !GameUI_TextInputActive()) {
+            const bool onFoot = !Rocket_Boarded() && !ship.piloted;
+            if (PlayerInput_BindingPressed(Act::Inventory)) GameUI_ToggleInventory();
+            else if (onFoot && PlayerInput_BindingPressed(Act::Use) && (GameUI_InventoryOpen() || !Rocket_AimingCockpit())) GameUI_ToggleInventory();
+            else if (onFoot && PlayerInput_BindingPressed(Act::Crafting)) GameUI_ShowScreen(GameScreen::Crafting);
+            else if (onFoot && PlayerInput_BindingPressed(Act::Skills)) GameUI_ShowScreen(GameScreen::Skills);
             // (relocking the cursor centres it)
         }
         // M: the map (aboard a rocket M is its orbit map).
-        if (!bench && gameState == 1 && IsKeyPressed(KEY_M) && !Rocket_Boarded() && !GameUI_InventoryOpen() && !DebugUI_IsOpen()) {
+        if (!bench && gameState == 1 && PlayerInput_BindingPressed(Act::Map) && !Rocket_Boarded() && !GameUI_InventoryOpen() && !DebugUI_IsOpen()) {
             Nav_ToggleMap();
             // (relocking the cursor centres it)
         }
@@ -9614,6 +9622,38 @@ int main(int argc, char** argv)
         }
         // --test-save-split (#346): the world file and the player's record (gamesave.cpp), once the world is up.
         if (benchSaveSplit && gameState == 1 && !loading && WorldIdle()) { GameSave_TestSplit(world); benchSaveSplit = false; }
+        // --shot-game-window (#821): the game window on each screen (and the temporary Help page), a screenshot each; the
+        // key bindings tables (every action named, its settings word unique and back to it, a key name for its key).
+        if (shotGameWindow && gameState == 1 && !loading && WorldIdle()) {
+            static int f = 0;
+            static const struct { const char* name; GameScreen s; const char* tab; } shots[] = {
+                { "inventory", GameScreen::Inventory, nullptr }, { "crafting", GameScreen::Crafting, nullptr }, { "quests", GameScreen::Quests, "Quests" },
+                { "questtree", GameScreen::Quests, "Quest tree" }, { "skills", GameScreen::Skills, nullptr }, { "team", GameScreen::Team, nullptr }, { "help", GameScreen::Inventory, "Help" } };
+            constexpr int kShots = (int)(sizeof(shots) / sizeof(shots[0]));
+            if (f == 0) { inventory.add("stone_pickaxe", 1); inventory.add("oak_log", 12); inventory.add("copper_ingot", 6); }
+            const int k = f / 20, phase = f % 20;
+            if (k < kShots) {
+                if (phase == 0) { if (shots[k].tab) GameUI_ShowTab(shots[k].tab); else GameUI_ShowScreen(shots[k].s); }
+                if (phase == 15) { TakeScreenshot(TextFormat("bench_window_%s.png", shots[k].name)); printf("bench: game window: bench_window_%s.png (screen %d)\n", shots[k].name, (int)GameUI_Screen()); }
+            } else {
+                bool tables = true;
+                std::set<std::string> ids;
+                for (int a = 0; a < (int)Act::Count; ++a) {
+                    Act back = Act::Count;
+                    tables &= *PlayerInput_ActLabel((Act)a) && PlayerInput_ActFromId(PlayerInput_ActId((Act)a), back) && back == (Act)a && ids.insert(PlayerInput_ActId((Act)a)).second &&
+                              *PlayerInput_KeyName(PlayerInput_Binding((Act)a));
+                }
+                PlayerInput_SetBinding(Act::Inventory, KEY_I);
+                const bool rebinds = PlayerInput_Binding(Act::Inventory) == KEY_I;
+                PlayerInput_ResetBindings();
+                const bool reset = PlayerInput_Binding(Act::Inventory) == KEY_TAB;
+                GameUI_ToggleInventory();
+                printf("bench: game window (#821): %d screens shot; %d actions with unique settings words and key names %d; a rebind %d, reset %d -> %s\n",
+                       kShots, (int)Act::Count, tables, rebinds, reset, tables && rebinds && reset ? "PASS" : "FAIL");
+                shotGameWindow = false;
+            }
+            ++f;
+        }
         if (shotInventory && gameState == 1 && !loading && WorldIdle()) {
             static int f = 0;
             if (++f == 5) { inventory.add("oxygen_tank_module", 1); inventory.add("stone_pickaxe", 1); inventory.add("steam_macerator", 1); inventory.add("oak_log", 12); inventory.grid()[Inventory::kOffHand] = InvSlot{ "wooden_shield", 100 }; GameUI_ToggleInventory(); }
@@ -11487,7 +11527,7 @@ int main(int argc, char** argv)
                 if (!Rocket_Boarded()) Nav_DrawHUD(world);
                 Rocket_DrawHUD(world); // the orbit map covers the rest
                 Nav_DrawMap(world);    // last: the full map covers everything
-                if (gNetClient && gNetClient->state == NetClient::State::Joined && (IsKeyDown(KEY_J))) DrawPlayerList(*gNetClient); // (#341) hold J (the pause screen shows it too)
+                if (gNetClient && gNetClient->state == NetClient::State::Joined && (IsKeyDown(PlayerInput_Binding(Act::PlayerList)))) DrawPlayerList(*gNetClient); // (#341) hold J (the pause screen shows it too)
                 }
                 if (loading) {
                     // Loading screen: black, with the streaming progress, until the world around you is built
