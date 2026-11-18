@@ -13,6 +13,7 @@
 #include <cstdint>
 #include <vector>
 #include <cstdlib>
+#include <atomic>
 
 namespace FluidKernel {
 
@@ -41,12 +42,19 @@ struct Grid {
     std::vector<uint32_t> flags;  // per slot: bit 0 changed, bits 1-6 face requests
     std::vector<int> delta;       // per cell: column-pair flow units this substep (#680; zeroed in the vertical pass)
     std::vector<uint32_t> sinkOut; // per slot: fill units its sinks took in (river flow, #656; the caller zeroes it)
+    std::vector<uint8_t> dbgMark; // TEMP #680 (DBTRACE): per slot, trace the transfers into it
     void resize(int slots);       // keeps nothing
 };
 
 // One substep over the listed slots: vertical (A -> B), face flows (B -> N), apply (B, N -> A, P). Slots run in parallel
 // on the job system (each pass writes only its own slot's cells, faces and flags).
 void Substep(Grid& g, const Params& p, const std::vector<int>& list);
+
+// TEMP #680 (DBTRACE): column transfers into the slots marked in Grid::dbgMark (cell = slot * 4096 + local).
+struct DbgTransfer { int giver, taker, branch, units, takerShut, capped, runBottom; };
+constexpr int kDbgTrace = 8192;
+extern DbgTransfer dbgTrace[kDbgTrace];
+extern std::atomic<int> dbgTraceN;
 
 } // namespace FluidKernel
 

@@ -5940,6 +5940,7 @@ int main(int argc, char** argv)
                             r0 = pf->radius + pf->elevation(home);
                             std::vector<TerrainEdit> cut = { box(-20.0f, 0.0f), box(2.0f, 50.0f) }; // a 2 m wall (#691: 1 m - one cell at 1 m cells - leaked)
                             ApplyTerrainEdits(*p, cut.data(), cut.size());
+                            Fluid::DbgTraceAxes(Vector3Scale(home, r0), ax, ay, home); // TEMP #680 (DBTRACE)
                             printf("bench: dam-break: a 20 m reservoir behind a 1 m wall, a 50 m channel, 4 m wide, 2.5 m deep (cells %.2f m)\n", WaterField::CellSize());
                             dbPhase = 1; dbT0 = SimTime();
                         }
@@ -5949,21 +5950,31 @@ int main(int argc, char** argv)
                         world.camera.up = p->dirToWorld(home);
                         player.flyMode = true; player.position = world.renderOrigin + world.camera.position;
                         if (dbPhase == 1 && t > 1.0 && (dbPoured > 0.0f || WorldIdle())) { // idle to start; then on (#747: a slow CPU step kept the world busy)
-                            // Fill the reservoir to 2 m: 160 m^3 at 2.5 m^3/s, 1 m^3 at a time moving over the floor (#691: a pour every
+                            // Fill the reservoir to 2 m: 160 m^3 at 2.5 m^3/s, 0.25 m^3 at a time moving over the floor (#691: a pour every
                             // frame - 60 m^3/s - piled mounds over the rim faster than water spreads, and they spilled onto the grass;
-                            // #680: at 5 m^3/s the column model's pour points mounded and ~30 m^3 found no room, #766).
+                            // #680: at 5 m^3/s the column model's pour points mounded and ~30 m^3 found no room, #766). #680: 1 m^3 pours
+                            // down to 2.8 m from the wall sent waves over it (0.6 m^3 in the channel before the break); 0.25 m^3 pours
+                            // kept 6.4 m away send none.
                             static int k = 0;
                             static double nextPour = 0.0, fillPrint = 0.0;
                             if (t - fillPrint >= 1.0) { fillPrint = t; printf("bench: dam-break t=%.0f s: filling, %.0f m^3 poured\n", t, dbPoured); }
                             if (t >= nextPour) {
-                                nextPour = t + 0.4;
-                                const float x = -19.0f + 1.8f * (float)(k % 10), y = (k / 10) % 2 ? 1.0f : -1.0f; // to -2.8 m: clear of the wall (#680: a pour by it stacked over the top and spilled past)
+                                nextPour = t + 0.1;
+                                const float x = -19.0f + 1.4f * (float)(k % 10), y = (k / 10) % 2 ? 1.0f : -1.0f; // -19 to -6.4 m
                                 ++k;
-                                dbPoured += Fluid::Pour(*p, pt(x, y, -2.3f), 1.0f);
+                                dbPoured += Fluid::Pour(*p, pt(x, y, -2.3f), 0.25f);
                                 static double dbFillPrint = 0.0; // TEMP #680 diagnosis: poured vs the simulation's volume during the fill
                                 if (EnvFlag("DBFILL") && t - dbFillPrint >= 2.0) { dbFillPrint = t; printf("dbfill t=%.1f poured %.1f sim %.1f\n", t, dbPoured, Fluid::GetStats().volume); }
                             }
-                            if (dbPoured >= 160.0f || [&] { const float s = Fluid::SurfaceAbove(*p, pt(-10.0f, 0.0f, -2.5f + 0.55f), 4.0f); return s > 0.0f && s + 0.55f >= 2.0f; }()) { dbPhase = 2; dbT0 = SimTime(); }
+                            // Done at 2 m deep on average over five points (#680: one probe at -10 m read a 1 m^3 pour's mound as 2 m
+                            // and stopped the fill at 95 m^3; 160 m^3 stood 2.17 m deep - the lattice rounds the walls in - and waves
+                            // crossed the 0.33 m left under the wall's top). 200 m^3 at most.
+                            const bool deep = [&] {
+                                float sum = 0.0f;
+                                for (float x : { -18.0f, -14.0f, -10.0f, -6.0f, -2.0f }) { const float s = Fluid::SurfaceAbove(*p, pt(x, 0.0f, -2.5f + 0.55f), 4.0f); sum += s > 0.0f ? s + 0.55f : 0.0f; }
+                                return sum / 5.0f >= 2.0f;
+                            }();
+                            if (deep || dbPoured >= 200.0f) { dbPhase = 2; dbT0 = SimTime(); }
                         } else if (dbPhase == 2 && ((t > 8.0 && Fluid::Asleep()) || t > 40.0)) {
                             // The floor as the ground has it (the box's -2.5 m is rounded by the lattice), the surface over it.
                             for (float h = -1.0f; h > -3.0f; h -= 0.02f) if (p->densityAt(pt(-10.0f, 0.0f, h)) >= ISO_LEVEL) { dbFloor = h; break; }

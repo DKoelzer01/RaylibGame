@@ -147,6 +147,8 @@ struct Brick {
 inline int Cap(const Brick* b, int i) { return 255 - b->shut[i]; }          // what the cell holds (#454)
 inline int Height(const Brick* b, int i) { return b->shut[i] + b->fill[i]; } // where its water stands, in 255ths of the cell
 
+static Vector3 dbgAxO{}, dbgAxX{}, dbgAxY{}, dbgAxU{}; static bool dbgAxSet = false; // TEMP #680 (DBTRACE): the test's channel frame
+
 struct Site {
     uint64_t body = 0;
     int index = 0;
@@ -895,6 +897,12 @@ void ApplyCommand(const Command& c) {
                         GpuDelta(b, i, add);
                         left -= add;
                         Touch(b);
+                        if (dbgAxSet && EnvFlag("DBTRACE")) { // TEMP #680: pour water placed at or past the wall
+                            const Vector3 d = Vector3Subtract(s->cellCentre(ci + di, cj + dj, ck + k), dbgAxO);
+                            const float along = Vector3DotProduct(d, dbgAxX);
+                            if (along > 0.0f) printf("dbtrace: pour ring %d (hw %d) put %d units at along %.2f m, h %.2f m (pour at along %.2f)\n", ring, hw, add, along,
+                                                       Vector3DotProduct(d, dbgAxU), Vector3DotProduct(Vector3Subtract(c.c, dbgAxO), dbgAxX));
+                        }
                     }
         if (left > 0.0f) pourDroppedUnits += (long long)left;
         return;
@@ -1787,9 +1795,46 @@ void CpuTick(int n) {
     static const bool dbVol = EnvFlag("DBVOL");
     auto plainSum = [&]() { long long v = 0; for (int i = 0; i < processedCount; ++i) for (int c = 0; c < B3; ++c) { const uint32_t u = g.a[(size_t)i * B3 + c]; if (!((u >> 8) & (kSource | kSink | kSolid))) v += u & 255u; } return v; };
     const long long volBefore = dbVol ? plainSum() : 0;
+    static const bool dbTrace = EnvFlag("DBTRACE");
+    // TEMP #680 (DBTRACE): transfers into partial / solid-capped cells near the test's wall, in the channel frame (0.25 m
+    // buckets): (taker along, taker height, giver along, branch * 2 + capped) -> units.
+    static std::map<std::array<int, 5>, long long> traceSum;
+    auto chan = [&](int cell, float& along, float& across, float& h) {
+        const Brick* b = slots[cell / B3];
+        const int l = cell % B3;
+        const Vector3 d = Vector3Subtract(slotSite[cell / B3]->cellCentre(b->bi * B + l % B, b->bj * B + (l / B) % B, b->bk * B + l / (B * B)), dbgAxO);
+        along = Vector3DotProduct(d, dbgAxX); across = Vector3DotProduct(d, dbgAxY); h = Vector3DotProduct(d, dbgAxU);
+    };
+    if (dbTrace && dbgAxSet) { // the slots whose brick lies within ~a brick of the wall (x 0-2 m)
+        g.dbgMark.assign(S, 0);
+        for (int i = 0; i < S; ++i) {
+            const Vector3 d = Vector3Subtract(slotSite[i]->cellCentre(slots[i]->bi * B + B / 2, slots[i]->bj * B + B / 2, slots[i]->bk * B + B / 2), dbgAxO);
+            const float a = Vector3DotProduct(d, dbgAxX), c = Vector3DotProduct(d, dbgAxY);
+            g.dbgMark[i] = a > -3.0f && a < 6.0f && std::fabs(c) < 6.0f;
+        }
+    }
     for (int k = 0; k < n; ++k) {
         p.evaporate = !noEvap && ++evapTick % (kEvapEvery * (unsigned)SubstepScale()) == 0;
         FluidKernel::Substep(g, p, list);
+        if (dbTrace && dbgAxSet) {
+            const int m = std::min(FluidKernel::dbgTraceN.exchange(0), FluidKernel::kDbgTrace);
+            for (int i = 0; i < m; ++i) {
+                const FluidKernel::DbgTransfer& t = FluidKernel::dbgTrace[i];
+                float ta, tc, th, ga, gc, gh;
+                chan(t.taker, ta, tc, th); chan(t.giver, ga, gc, gh);
+                if (ta < -0.5f || ta > 0.25f || std::fabs(tc) > 2.5f || th < -1.0f) continue; // at the wall's face, over the pool's surface
+                traceSum[{ (int)std::floor(ta * 4.0f), (int)std::floor(th * 4.0f), (int)std::floor(ga * 4.0f), (int)std::floor(gh * 4.0f), t.branch * 2 + t.capped }] += t.units;
+            }
+        } else if (dbTrace) FluidKernel::dbgTraceN = 0;
+    }
+    if (dbTrace) {
+        static int ticks = 0;
+        if (++ticks % 40 == 0 && !traceSum.empty()) {
+            printf("dbtrace: into partial/capped cells by the wall (taker along m, h m <- giver along m: branch s/w/f, c = under solid, units):\n");
+            for (auto& kv : traceSum)
+                printf("  %.2f h%.2f <- %.2f h%.2f %c%s %lld\n", kv.first[0] / 4.0f, kv.first[1] / 4.0f, kv.first[2] / 4.0f, kv.first[3] / 4.0f, "swf"[kv.first[4] / 2], kv.first[4] % 2 ? "c" : "", kv.second);
+            traceSum.clear();
+        }
     }
     if (dbVol) {
         static long long drift = 0; static int ticks = 0;
@@ -1913,6 +1958,7 @@ float Fluid::Pour(Planetoid& body, Vector3 local, float m3, int kind) {
     return m3;
 }
 
+void Fluid::DbgTraceAxes(Vector3 o, Vector3 ax, Vector3 ay, Vector3 up) { dbgAxO = o; dbgAxX = ax; dbgAxY = ay; dbgAxU = up; dbgAxSet = true; }
 float Fluid::PourDropped() { return (float)(pourDroppedUnits.load() * (double)WaterField::CellVolume() / 255.0); }
 
 void Fluid::AddSource(Planetoid& body, Vector3 local, int kind, float rate, float head) {

@@ -13,6 +13,10 @@ namespace FluidKernel {
 std::atomic<long long> dbgWhy[12]; // #680 diagnosis: why column pairs of deep runs did not move (DBWHY)
 std::atomic<long long> dbgPair[3]; long long dbgPairPlan = 0, dbgPairUnits = 0; long long dbgPairFric = 0, dbgPairDH = 0, dbgPairH = 0, dbgPairN = 0; // TEMP #680 (DBWHY): deep pairs limited by plan / avail / room
 #define WHY(i) do { if (A.surf - A.bed > 128) ++dbgWhy[i]; } while (0)
+// TEMP #680 (DBTRACE): column transfers into a partly solid cell or a cell under a solid one (a wall's base), for the host to
+// print with world cell coordinates: giver cell, taker cell, branch (0 spill, 1 wet, 2 dry/partial floor), units.
+DbgTransfer dbgTrace[kDbgTrace]; std::atomic<int> dbgTraceN{0};
+static const bool dbTrace = EnvFlag("DBTRACE");
 
 void Grid::resize(int slots) {
     a.assign((size_t)slots * 4096, 0u); b.assign((size_t)slots * 4096, 0u);
@@ -397,6 +401,14 @@ struct Pass {
         if ((float)units < std::floor(plan)) q = (aGives ? 1.0f : -1.0f) * (float)units / (p.dt * p.units);
         __atomic_fetch_sub(&g.delta[giverTop], units, __ATOMIC_RELAXED);
         __atomic_fetch_add(&g.delta[taker], units, __ATOMIC_RELAXED);
+        if (dbTrace) {
+            bool pt; const int over = stepZ(taker, 1, pt);
+            const bool capped = over >= 0 && (FL(inC[over]) & SOLID);
+            if (g.dbgMark.size() > (size_t)(taker / 4096) && g.dbgMark[taker / 4096]) {
+                const int i = dbgTraceN.fetch_add(1, std::memory_order_relaxed);
+                if (i < kDbgTrace) dbgTrace[i] = DbgTransfer{ giverTop, taker, spill ? 0 : wet ? 1 : 2, units, (int)SH(inC[taker]), capped ? 1 : 0, gi };
+            }
+        }
         return q;
     }
     // A cell's new fill from the column flows: its own delta (clamped), a head's overflow from the cell below, a top's
