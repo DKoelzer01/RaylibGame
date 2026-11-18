@@ -13,6 +13,8 @@ tmp="$(mktemp -d)"
 cd "$here"
 SECONDS=0
 printf 'erosion 0\n' > "$tmp/host.sav.worldgen"
+. "$here/tools/lib_netmem.sh" # (#837) light clients, and enough memory for every instance first
+net_wait_for_memory 15 test_team_quests || exit 0
 RAYLIBGAME_HOST_TEAM="alice,bob" RAYLIBGAME_HOST_HUNGER=50 RAYLIBGAME_HOST_GIVE="berries 3,oak_log 2" "$exe" --host "$tmp/host.sav" --seed 42 --day --bench 600 --port "$port" > "$tmp/host.log" 2>&1 &
 hp=$!
 stop_host() { # #795: by the Windows PID too, only while it is still our game.exe
@@ -28,7 +30,7 @@ trap stop_host EXIT
 until grep -q "listening on port" "$tmp/host.log" 2>/dev/null || ! kill -0 "$hp" 2>/dev/null || [ $SECONDS -gt 240 ]; do sleep 1; done
 until grep -q "world ready" "$tmp/host.log" 2>/dev/null || [ $SECONDS -gt 280 ]; do sleep 1; done
 sleep 2
-join() { RAYLIBGAME_QUESTS_SECONDS=30 RAYLIBGAME_NET_QUESTS_ROLE=$2 timeout 200 "$exe" --join "127.0.0.1:$port" --name "$1" --bench 3 --test-net-quests > "$tmp/$1.log" 2>&1; }
+join() { RAYLIBGAME_QUESTS_SECONDS=30 RAYLIBGAME_NET_QUESTS_ROLE=$2 timeout 200 "$exe" --join "127.0.0.1:$port" --name "$1" --bench 3 $NET_LIGHT_CLIENT --test-net-quests > "$tmp/$1.log" 2>&1; }
 join bob mate & bp=$!
 join carol other & cp=$!
 sleep 4
