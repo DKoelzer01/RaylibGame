@@ -589,6 +589,7 @@ int main(int argc, char** argv)
     bool shotInventory = false;    // --shot-inventory: long item names in their cells (#219)
     bool shotGameWindow = false;   // --shot-game-window (#821): each screen of the game window, and the key bindings tables
     bool benchGameMode = false;     // --test-gamemode (#823): /gamemode, the Catalog screen in creative only, the command line
+    bool benchCraftScreen = false;   // --test-crafting-screen (#824): the Crafting screen's queue and page
     bool benchDungeon = false; int dungeonFrame = 0; // --test-dungeon (#719)
     bool benchDungeonTraps = false; int dungeonTrapFrame = 0; // --test-dungeon-traps (#719)
     bool benchSaveSplit = false; // --test-save-split (#346)
@@ -924,6 +925,7 @@ int main(int argc, char** argv)
         if (std::string(argv[i]) == "--shot-inventory") shotInventory = true;
         if (std::string(argv[i]) == "--shot-game-window") shotGameWindow = true;
         if (std::string(argv[i]) == "--test-gamemode") benchGameMode = true;
+        if (std::string(argv[i]) == "--test-crafting-screen") benchCraftScreen = true;
         if (std::string(argv[i]) == "--test-dungeon") benchDungeon = true;
         if (std::string(argv[i]) == "--test-dungeon-traps") benchDungeonTraps = true; // #719: best with --sandbox
         if (std::string(argv[i]) == "--test-save-split") benchSaveSplit = true; // #346: world + player records
@@ -9658,6 +9660,37 @@ int main(int argc, char** argv)
         }
         // --test-save-split (#346): the world file and the player's record (gamesave.cpp), once the world is up.
         if (benchSaveSplit && gameState == 1 && !loading && WorldIdle()) { GameSave_TestSplit(world); benchSaveSplit = false; }
+        // --test-crafting-screen (#824): oak planks x3 queued on the Crafting screen come one by one (12 planks, 3 logs gone),
+        // and planks show what they're used by; a screenshot of the screen with the recipe's page.
+        if (benchCraftScreen && gameState == 1 && !loading && WorldIdle()) {
+            static int f = 0, recipe = -1, planks0 = 0, logs0 = 0;
+            static double t0 = 0.0;
+            static bool queuedSome = false;
+            const auto& recipes = itemDB.recipes();
+            if (f == 0) {
+                for (size_t i = 0; i < recipes.size(); ++i) if (recipes[i].output == "oak_planks") recipe = (int)i;
+                inventory.add("oak_log", 12); inventory.add("coal", 3);
+                planks0 = inventory.count("oak_planks"); logs0 = inventory.count("oak_log");
+                GameUI_ShowScreen(GameScreen::Crafting);
+                GameUI_SelectRecipe(recipe);
+                GameUI_QueueCraft(recipe, 3);
+                queuedSome = GameUI_CraftQueueLength() == 3;
+                t0 = GetTime();
+            }
+            if (f == 12) { TakeScreenshot("bench_crafting_screen.png"); printf("bench: crafting screen: bench_crafting_screen.png\n"); }
+            if (f > 12 && (GameUI_CraftQueueLength() == 0 || GetTime() - t0 > 6.0)) {
+                bool usedBy = false;
+                for (const Recipe& r : recipes) for (const auto& in : r.inputs) usedBy = usedBy || ItemMatches(in.first, "oak_planks");
+                const int planks = inventory.count("oak_planks") - planks0, logs = logs0 - inventory.count("oak_log");
+                const double took = GetTime() - t0;
+                const bool ok = recipe >= 0 && queuedSome && GameUI_CraftQueueLength() == 0 && planks == 12 && logs == 3 && took > 0.5 && usedBy;
+                printf("bench: crafting screen (#824): oak planks x3 queued %d, made %d planks from %d logs over %.1f s (one each 0.3 s); planks used by recipes %d -> %s\n",
+                       queuedSome, planks, logs, took, usedBy, ok ? "PASS" : "FAIL");
+                GameUI_ToggleInventory();
+                benchCraftScreen = false;
+            }
+            ++f;
+        }
         // --test-gamemode (#823): /gamemode creative and survival from the command line; the Catalog screen only in creative;
         // /help and an unknown command answer; screenshots of the command line and the Catalog screen.
         if (benchGameMode && gameState == 1 && !loading && WorldIdle()) {
