@@ -441,7 +441,7 @@ int main(int argc, char** argv)
     bool benchFlowMeter = false; int fmPhase = 0; double fmT0 = 0.0; Plot* fmPlot = nullptr; // --test-flow-meter (#392)
     bool benchPartWall = false; int pwPhase = 0; double pwT0 = 0.0; Plot* pwPlot = nullptr; std::vector<int> pwParts; bool pwHeld = false, pwWestWet = false; // --test-part-wall (#391)
     bool benchDam = false; int damPhase = 0; double damT0 = 0.0; Vector3 damDir{}, damDown{}, damSide{}, damUp{}, damDn{}; float damLevel = 0.0f, damHW = 0.0f, damDepth = 0.0f, damCrest = 0.0f, damLvU = 0.0f, damLvD = 0.0f, damMaxU = -1e9f, damMinD = 1e9f, damLateD = -1e9f; // --test-dam (#361)
-    bool benchDamDivert = false; int divPhase = 0; Vector3 divDir{}; float divLevel0 = 0.0f, divDepth = 0.0f; int divPiece = -1; double divDryT = -1.0, divOpenT = -1.0; std::vector<TerrainEdit> divWall; // --test-dam-divert (#656)
+    bool benchDamDivert = false, benchDamDivertFull = false; int divPhase = 0; Vector3 divDir{}; float divLevel0 = 0.0f, divDepth = 0.0f; int divPiece = -1; double divDryT = -1.0, divOpenT = -1.0; std::vector<TerrainEdit> divWall; // --test-dam-divert (#656)
     bool benchForest = false; int forestPhase = 0; double forestStart = 0.0; Vector3 forestCam{}, forestTarget{}, forestUp{}; bool outcropHigh = false; // --shot-forest (--outcrop-high: the highest outcrop in range, not the nearest)
     bool benchRecipes = false; // --test-recipes
     bool benchWeather = false, weatherOk = true; int weatherPhase = 0, weatherCounts[6] = {}, weatherChanges = 0; double weatherStart = 0.0; float weatherChill = 0.0f; // --test-weather
@@ -691,6 +691,7 @@ int main(int argc, char** argv)
         if (std::string(argv[i]) == "--test-flow") benchFlow = true;
         if (std::string(argv[i]) == "--test-dam") benchDam = true; // #361: a dam backs a river up and it spills over
         if (std::string(argv[i]) == "--test-dam-divert") benchDam = benchDamDivert = true; // #656: a dam that holds the river dries it downstream; removed, the river comes back
+        if (std::string(argv[i]) == "--dam-divert-full") benchDamDivertFull = true; // #656: wait for the full return (flow 0.9, up to 480 s) instead of the 90 s rate check
         if (std::string(argv[i]) == "--test-part-wall") benchPartWall = true; // #391: a wall of build blocks holds water
         if (std::string(argv[i]) == "--test-flow-meter") benchFlowMeter = true; // #392: the flow readout reads a known stream
         if (std::string(argv[i]) == "--test-pressure") benchPressure = true; // #393: hydrostatic pressure in a shaft and a pond
@@ -5710,17 +5711,37 @@ int main(int argc, char** argv)
                         world.camera.position = p->toWorld(at(off(off(divDir, damSide, damHW + 25.0f), dn, -15.0f), divLevel0 + 25.0f));
                         world.camera.target = p->toWorld(at(divDir, divLevel0 - divDepth));
                         world.camera.up = p->dirToWorld(divDir);
+                        if (getenv("RAYLIBGAME_DIVERT_CAM")) { // diagnostics/captures: over the first dam, looking down the reach
+                            world.camera.position = p->toWorld(at(off(off(damDir, damSide, damHW + 20.0f), damDown, -25.0f), damLevel + 22.0f));
+                            world.camera.target = p->toWorld(at(off(damDir, damDown, 20.0f), damLevel - damDepth));
+                            world.camera.up = p->dirToWorld(damDir);
+                        }
                         player.position = world.renderOrigin + world.camera.position;
                         const RiverNetwork::Hit h = net->nearest(divDir, 1e4f);
                         const float flow = net->flowOf(divPiece);
                         static double lastPrint = -10.0;
                         if (t - lastPrint >= 5.0) {
                             lastPrint = t;
+                            if (getenv("RAYLIBGAME_RIVERFLOW_LOG")) {
+                                // Diagnostics: the water surface along the river through the first reach, 50 m up to 60 m down
+                                // (a straight line along the dam site's downstream; "-": no simulated water), the natural level and the ground.
+                                const RiverNetwork::NaturalScope natural;
+                                std::string prof;
+                                for (int s = -5; s <= 6; ++s) {
+                                    const Vector3 d = off(damDir, damDown, s * 10.0f);
+                                    const RiverNetwork::Hit hh = net->nearest(d, 1e4f);
+                                    const float su = surfaceAt(d, hh.level);
+                                    const std::string sv = su < -1e8f ? std::string("-") : std::string(TextFormat("%.2f", su));
+                                    prof += TextFormat(" %+d:%s/%.2f/%.2f", s * 10, sv.c_str(), hh.level, pf->elevation(d));
+                                }
+                                printf("bench: dam-divert profile t=%3.0f:%s\n", t, prof.c_str());
+                            }
                             printf("bench: dam-divert t=%3.0f s: downstream flow %.2f, level %.2f m (was %.2f), half-width %.1f; upstream surface %s; %d reaches released\n",
                                    t, flow, h.level, divLevel0, h.halfWidth, [&] { const float su = surfaceAt(damUp, damLvU); return su < -1e8f ? std::string("dry") : std::string(TextFormat("%.2f", su)); }().c_str(), Fluid::ReleasedReaches());
                         }
                         // Dig a dam out down to about the old ground (centres no lower than 1 m over it: a sphere 1.4 m across left
-                        // a 2 m pit under the bed that had to fill before any water went on).
+                        // a 2 m pit under the bed that had to fill before any water went on). elevation() is the carved channel's
+                        // bed (7.59 m at seed 42's dam, level 8.56 m): the cut leaves no weir (#656 follow-up checked it).
                         auto digOut = [&](std::vector<TerrainEdit>& wall) {
                             for (TerrainEdit& e : wall) {
                                 const Vector3 d = Vector3Normalize(e.center);
@@ -5766,15 +5787,35 @@ int main(int argc, char** argv)
                             digOut(divWall); digOut(divWall2);
                             printf("bench: dam-divert: both dams dug out\n");
                             divPhase = 2; phaseT = t;
-                        } else if (divPhase == 2 && flow > 0.9f) {
+                        } else if (divPhase == 2 && flow > 0.9f && divOpenT < 0.0) {
                             divOpenT = t;
                             TakeScreenshot("bench_dam_back.png");
                         }
-                        if (divOpenT >= 0.0 || t > 480.0) {
-                            printf("bench: dam-divert: dried after %s s, upstream cut reached the reach after %s s, state kept over save/load: %s, back %s s after the removal; level %.2f m (natural %.2f) -> %s\n",
+                        // The return (#656 follow-up): by default a rate check, so the test fits ~3 min - the flow 200 m below
+                        // passes 0.5 within 60 s of the dig-out and is still rising (or at 0.9) at 90 s, the level with it.
+                        // --dam-divert-full waits for the flow to reach 0.9 and the level its natural height (up to 480 s).
+                        static float flow60 = -1.0f, level0Dig = 0.0f, maxFlow60 = 0.0f;
+                        static bool rateDone = false, rateOk = false;
+                        if (divPhase == 2) {
+                            const double since = t - phaseT;
+                            if (since < 0.1) level0Dig = h.level;
+                            if (since <= 60.0) maxFlow60 = std::max(maxFlow60, flow);
+                            if (since >= 60.0 && flow60 < 0.0) { flow60 = flow; printf("bench: dam-divert: 60 s after the dig-out: flow %.2f (best %.2f), level %.2f m\n", flow, maxFlow60, h.level); }
+                            if (!benchDamDivertFull && !rateDone && (since >= 90.0 || divOpenT >= 0.0)) {
+                                rateDone = true;
+                                const bool rising = divOpenT >= 0.0 || (flow60 >= 0.0f && flow >= flow60 - 0.02f);
+                                rateOk = (divOpenT >= 0.0 || (maxFlow60 >= 0.5f && flow >= 0.5f)) && rising && h.level > level0Dig;
+                                printf("bench: dam-divert: %.0f s after the dig-out: flow %.2f (best by 60 s %.2f, at 60 s %.2f), level %.2f m (at the dig-out %.2f) -> returning %s\n",
+                                       since, flow, maxFlow60, flow60, h.level, level0Dig, rateOk ? "yes" : "no");
+                            }
+                        }
+                        const bool full = benchDamDivertFull;
+                        if ((full && (divOpenT >= 0.0 || t > 480.0)) || (!full && (rateDone || t > 300.0))) {
+                            const bool back = full ? divOpenT >= 0.0 && fabsf(h.level - divLevel0) < 0.3f : rateOk;
+                            printf("bench: dam-divert: dried after %s s, upstream cut reached the reach after %s s, state kept over save/load: %s, back %s s after the removal; level %.2f m (natural %.2f)%s -> %s\n",
                                    divDryT < 0.0 ? "never" : TextFormat("%.0f", divDryT), upCutT < 0.0 ? "never" : TextFormat("%.0f", upCutT), loadKept ? "yes" : "no",
-                                   divOpenT < 0.0 ? "never" : TextFormat("%.0f", divOpenT - phaseT), h.level, divLevel0,
-                                   divDryT >= 0.0 && upCutT >= 0.0 && loadKept && divOpenT >= 0.0 && fabsf(h.level - divLevel0) < 0.3f ? "PASS" : "FAIL");
+                                   divOpenT < 0.0 ? (full ? "never" : "(not yet)") : TextFormat("%.0f", divOpenT - phaseT), h.level, divLevel0, full ? "" : TextFormat(", returning: %s", rateOk ? "yes" : "no"),
+                                   divDryT >= 0.0 && upCutT >= 0.0 && loadKept && back ? "PASS" : "FAIL");
                             printf("bench: dam-divert: bench_dam_dry.png, bench_dam_back.png\n");
                             benchDam = false;
                         }

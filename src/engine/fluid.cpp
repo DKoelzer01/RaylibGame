@@ -130,6 +130,7 @@ struct Brick {
     int cpuSlot = -1;               // CPU mode: its place in this tick's grid
     bool upload = false;            // GPU mode: the whole brick (cells, flags, targets) goes up next tick
     int sinkRelease = -1;           // its cells hold a released reach's downstream sink: that release's index (river flow, #656)
+    int blockRelease = -1, blocked = 0; // cells of ground added into that released reach's river (the dam: #656 follow-up)
     long long slotNeeded = 0;       // GPU mode: the last tick it was awake or near awake water (#675: else its slot is given back)
     bool hadSlot = false;           // GPU mode: it held a slot before (back from release: uploaded without waking)
     // Steady flow (#674): levels stable over a settle window while water keeps moving through (the GPU reported changes in at
@@ -154,7 +155,7 @@ struct Site {
     // Released river reaches (#361): ground added into a river (a dam) turns its static source cells within `r` cells
     // (horizontally) of the edit into ordinary water. The upstream edge is fed by springs at the reach's discharge
     // (in `springs`), the downstream edge is a sink held at the generated level; beyond `r` the river stays generated.
-    struct Release { int ci, cj; float r; Vector3 centre, down; float natQ = 0.0f; int piece = -1; double sinkUnits = 0.0; float share = 1.0f; int upPiece = -1; }; // natQ: the springs' m^3/s; piece: the river link below it; sinkUnits: taken in since the last measure; share: outflow / natQ (#656)
+    struct Release { int ci, cj; float r; Vector3 centre, down; float natQ = 0.0f; int piece = -1; double sinkUnits = 0.0; float share = 1.0f; int upPiece = -1; int peakBlocked = 0; }; // natQ: the springs' m^3/s; piece: the river link below it; sinkUnits: taken in since the last measure; share: outflow / natQ (#656)
     std::vector<Release> releases;
 
     Vector3 cellCentre(int ci, int cj, int ck) const { return cellPoint(ci + 0.5f, cj + 0.5f, ck + 0.5f); }
@@ -267,7 +268,7 @@ Fluid::Stats pubStats;
 void Classify(const Site& s, Brick& b, const BodyRef& ref, uint8_t& faces) {
     const PlanetField* pf = ref.pf;
     const float sea = pf ? pf->seaLevelRadius() : 0.0f;
-    b.basin = false; b.reach = false; b.sinkRelease = -1;
+    b.basin = false; b.reach = false; b.sinkRelease = -1; b.blockRelease = -1; b.blocked = 0;
     const float cs = WaterField::CellSize(), hc = 0.5f * cs; // a cell, half a cell (m: W4c #642)
     std::vector<float> corner((B + 1) * (B + 1) * (B + 1), NAN); // the density at the cell corners, sampled when first needed
     for (int y = 0; y < B; ++y)
@@ -298,7 +299,7 @@ void Classify(const Site& s, Brick& b, const BodyRef& ref, uint8_t& faces) {
             }
             const float top = pf ? bed + 14.0f : 1e9f;  // tors, boulders and detail stay below this
             // A released river reach (#361): 1 inside (ordinary water), 2 its downstream edge (a sink at the level).
-            int released = 0;
+            int released = 0, relIdx = -1;
             if (kind == 1)
                 for (size_t ri = 0; ri < s.releases.size(); ++ri) {
                     const Site::Release& rel = s.releases[ri];
@@ -306,6 +307,7 @@ void Classify(const Site& s, Brick& b, const BodyRef& ref, uint8_t& faces) {
                     if (d >= rel.r) continue;
                     released = (d >= rel.r - 2.0f && Vector3DotProduct(Vector3Subtract(mid, rel.centre), rel.down) > 0.0f) ? 2 : 1;
                     if (released == 2) b.sinkRelease = (int)ri; // its outflow is measured here (river flow, #656)
+                    relIdx = (int)ri;
                     b.reach = true;
                     break;
                 }
@@ -341,6 +343,11 @@ void Classify(const Site& s, Brick& b, const BodyRef& ref, uint8_t& faces) {
                 const float dc = dcCol[z];
                 const bool solid = solidCol[z];
                 uint8_t fl = solid ? kSolid : 0;
+                // Ground added into the reach's river (#656 follow-up): a solid cell under the natural level that the
+                // natural ground leaves open - the dam. None left: the river runs as generated again (UpdateRiverFlow).
+                if (solid && relIdx >= 0 && r - hc < level && r > bed - hc && ref.field->density(c, nullptr) < ISO_LEVEL) {
+                    b.blockRelease = relIdx; ++b.blocked;
+                }
                 // How much of an open cell is ground (#454), in cells near the surface: 16 points (2 x 2 across, 4 heights)
                 // interpolated from the density at the cell's 8 corners - as marching cubes draws the ground. The corners
                 // are sampled once and shared with the neighbouring cells (16 field samples a cell cost ~40 ms of a step).
@@ -2006,25 +2013,66 @@ void UpdateRiverFlow() {
         }
     }
     static double last = -1.0;
+    static long long lastStep = 0;
     const double now = GetTime();
-    if (last < 0.0) { last = now; return; }
+    if (last < 0.0) { last = now; lastStep = stepCount; return; }
     const float dt = (float)(now - last);
     if (dt < 1.0f) return;
     last = now;
+    // The outflow per second of SIMULATED time (#656 follow-up): the springs give natQ per simulated second (kSubsteps steps a
+    // 50 ms), but a busy sim drops ticks (a refilling river kept ~1800 bricks awake), so per wall second the same flow read low.
+    const long long steps = stepCount - lastStep;
+    lastStep = stepCount;
+    static const bool wallTime = getenv("RAYLIBGAME_RIVERFLOW_WALL") != nullptr; // A/B: the old per-wall-second measure
+    const float simDt = wallTime ? dt : (float)steps * 0.05f / (float)kSubsteps;
+    static const bool flowLog = getenv("RAYLIBGAME_RIVERFLOW_LOG") != nullptr; // diagnostics: each reach's measure once a second
     static std::vector<int> changed;
     for (auto& s : sites) {
         Planetoid* body = Planetoid::find(s->body);
         const PlanetField* pf = body ? dynamic_cast<const PlanetField*>(body->field.get()) : nullptr;
         const RiverNetwork* net = pf ? pf->rivers() : nullptr;
         if (!net || !net->bakeNative()) continue;
-        for (Site::Release& r : s->releases) {
+        bool anyPending = !s->pending.empty();
+        for (auto& kv : s->bricks) anyPending = anyPending || !kv.second->ready;
+        for (size_t ri = 0; ri < s->releases.size(); ++ri) {
+            Site::Release& r = s->releases[ri];
             if (r.piece < 0 || r.natQ <= 0.0f) continue;
-            const float q = (float)(r.sinkUnits * WaterField::CellVolume() / 255.0 / dt); // m^3/s
+            const float q = simDt > 0.05f ? (float)(r.sinkUnits * WaterField::CellVolume() / 255.0 / simDt) : 0.0f; // m^3/s (no steps: nothing moved)
+            const double units = r.sinkUnits;
             r.sinkUnits = 0.0;
-            r.share += (std::clamp(q / r.natQ, 0.0f, 1.5f) - r.share) * 0.3f; // smoothed: a few seconds of trend
+            // Bricks waiting for (re)classification (a load, a dig) hold no ground counts and their sinks measure nothing yet:
+            // keep the last state until the site is classified (a load then read every reach open for a second). The same
+            // after a load reset the step count (no simulated time to measure against).
+            if (anyPending || steps < 0) continue;
+            // The dam gone (#656 follow-up): (almost) no ground added into the reach's river any more - the river runs as
+            // generated again at once. The measured outflow lags the opening by minutes: the pool must refill the reach's
+            // drained channel first, and the cellular step carries little on a gentle slope (#680), so the river below stayed
+            // low long after both dams were dug out. Open: at most 15% of the most ground the dam put in the river (seed 42's
+            // dug-out dam left 3 of 31 cells) or a couple of cells; a partial dig-out leaves more: measured, as before.
+            int blocked = 0;
+            for (auto& kv : s->bricks) if (kv.second->blockRelease == (int)ri) blocked += kv.second->blocked;
+            r.peakBlocked = std::max(r.peakBlocked, blocked);
+            const bool open = (float)blocked * WaterField::CellVolume() <= std::max(2.0f * WaterField::CellVolume(), 0.5f) || blocked <= r.peakBlocked * 15 / 100;
+            if (open) r.share = 1.0f;
+            else r.share += (std::clamp(q / r.natQ, 0.0f, 1.5f) - r.share) * 0.3f; // smoothed: a few seconds of trend
             // Most of the inflow leaving: the river as generated (the springs' spread and the reach's side edges lose some).
             if (r.share > 0.6f) net->clearReachFlow(r.piece);
             else net->setReachFlow(r.piece, r.share / 0.6f);
+            if (flowLog) {
+                int nb = 0, act = 0, std_ = 0, slept = 0, siteAct = 0, siteSlot = 0, notReady = 0;
+                float vol = 0.0f;
+                for (auto& kv : s->bricks) {
+                    const Brick& b = *kv.second;
+                    siteAct += b.active ? 1 : 0; siteSlot += b.slot >= 0 ? 1 : 0; notReady += b.ready ? 0 : 1; vol += b.statVolume;
+                    if (b.sinkRelease != (int)ri) continue;
+                    ++nb; act += b.active ? 1 : 0; std_ += b.steady ? 1 : 0; slept += b.settled ? 1 : 0;
+                }
+                int sp = 0, want = 0; float sc = 1.0f;
+                for (const Site::Spring& g : s->springs)
+                    if (g.rel == (int)ri) { ++sp; want += SpringWants(*s, g) ? 1 : 0; sc = g.scale; }
+                printf("riverflow: t=%.0f rel %zu: q %.2f (wall %.2f, sim/wall %.2f) natQ %.2f share %.2f blocked %d flow(piece %d) %.2f flow(up %d) %.2f; sink bricks %d (active %d steady %d asleep %d); springs %d want %d scale %.2f; site %d: bricks %zu active %d slots %d unready %d water %.0f m3\n",
+                       now, ri, q, (float)(units * WaterField::CellVolume() / 255.0 / dt), simDt / dt, r.natQ, r.share, blocked, r.piece, net->flowOf(r.piece), r.upPiece, net->flowOf(r.upPiece), nb, act, std_, slept, sp, want, sc, s->index, s->bricks.size(), siteAct, siteSlot, notReady, vol);
+            }
         }
         // A reach's springs bring what arrives from upstream: a cut further up the river feeds it less (#656).
         for (Site::Spring& sp : s->springs)
@@ -2033,7 +2081,7 @@ void UpdateRiverFlow() {
                 sp.scale = up >= 0 ? std::clamp(net->flowOf(up), 0.0f, 1.5f) : 1.0f;
             }
         changed.clear();
-        if (!net->stepFlow(dt, changed)) continue;
+        if (!net->stepFlow(std::min(dt, 2.0f), changed)) continue; // a long gap (a load, a stall) must not jump the river: it eases at its speed
         for (int piece : changed)
             if (refreshQueued.insert({ s->body, piece }).second) refreshQueue.push_back({ s->body, piece });
     }
@@ -2321,7 +2369,7 @@ void Fluid::Save(FILE* f, uint64_t bodyId) {
         for (const Site::Spring& sp : s->springs) fprintf(f, "%d %d %d %d %.4f %.3f r %d\n", sp.ci, sp.cj, sp.ck, sp.kind, sp.perStep, sp.head, sp.rel);
         fprintf(f, "releases %zu\n", s->releases.size()); // released river reaches (#361)
         for (const Site::Release& r : s->releases)
-            fprintf(f, "%d %d %.2f %.4f %.4f %.4f %.6f %.6f %.6f q %.3f %d %.4f u %d\n", r.ci, r.cj, r.r, r.centre.x, r.centre.y, r.centre.z, r.down.x, r.down.y, r.down.z, r.natQ, r.piece, r.share, r.upPiece);
+            fprintf(f, "%d %d %.2f %.4f %.4f %.4f %.6f %.6f %.6f q %.3f %d %.4f u %d b %d\n", r.ci, r.cj, r.r, r.centre.x, r.centre.y, r.centre.z, r.down.x, r.down.y, r.down.z, r.natQ, r.piece, r.share, r.upPiece, r.peakBlocked);
         for (Brick* b : wet) {
             // Run-length fill (sources and solid cells as 0: they are re-derived on load).
             fprintf(f, "%d %d %d", b->bi, b->bj, b->bk);
@@ -2381,7 +2429,7 @@ void Fluid::Load(FILE* f, uint64_t bodyId) {
                 Site::Release r{};
                 if (fscanf(f, " %d %d %f %f %f %f %f %f %f", &r.ci, &r.cj, &r.r, &r.centre.x, &r.centre.y, &r.centre.z, &r.down.x, &r.down.y, &r.down.z) == 9) {
                     if (fscanf(f, " q %f %d %f", &r.natQ, &r.piece, &r.share) != 3) { r.natQ = 0.0f; r.piece = -1; r.share = 1.0f; } // #656 (older saves: none)
-                    else { const long at = ftell(f); if (fscanf(f, " u %d", &r.upPiece) != 1) { r.upPiece = -1; fseek(f, at, SEEK_SET); } }
+                    else { const long at = ftell(f); if (fscanf(f, " u %d", &r.upPiece) != 1) { r.upPiece = -1; fseek(f, at, SEEK_SET); } else { const long at2 = ftell(f); if (fscanf(f, " b %d", &r.peakBlocked) != 1) { r.peakBlocked = 0; fseek(f, at2, SEEK_SET); } } } // b: the most ground the dam put in the river (#656 follow-up)
                     s->releases.push_back(r);
                 }
             }
@@ -2440,8 +2488,8 @@ std::string Fluid::DebugCell(const Planetoid& body, Vector3 local) {
     for (const WaterField::Site& s : snapNow->sites) {
         if (s.body != body.id) continue;
         uint8_t f, fl;
-        if (!PubCell(s, local, 0, f, fl)) return "no brick";
-        return TextFormat("fill %d flags %s%s%s%s", f, (fl & kSolid) ? "S" : "", (fl & kSource) ? "R" : "", (fl & kStatic) ? "T" : "", (fl & kDug) ? "D" : "");
+        if (!PubCell(s, local, 0, f, fl)) continue;
+        return TextFormat("fill %d flags %s%s%s%s%s", f, (fl & kSolid) ? "S" : "", (fl & kSource) ? "R" : "", (fl & kStatic) ? "T" : "", (fl & kDug) ? "D" : "", (fl & WaterField::kSink) ? "K" : "");
     }
     return "no site";
 }
