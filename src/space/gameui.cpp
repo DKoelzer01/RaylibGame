@@ -1,4 +1,5 @@
 #include "gameui.h"
+#include "machineact.h"
 #include "playerinput.h"
 #include "hotbar.h"
 #include "inventory.h"
@@ -386,7 +387,7 @@ static void DrawCell(int i, float cw, float cell) {
             const int n = (int)grid[i].amount();
             if (!ContainerTakes(id)) GameUI_Toast(TextFormat("The %s doesn't take %s", PartName(container.type), itemDB.find(id) ? itemDB.find(id)->name.c_str() : id.c_str()));
             else if (n > 0 && inventory.remove(id, n)) {
-                Factory::Insert(container.body, container.plot, container.part, id, n);
+                MachineAct_Insert(container.body, container.plot, container.part, id, n);
                 Audio_Play(Sfx::Pickup, 0.4f, 0.8f);
             }
         } else CellClick(i, false, shift && !GameUI_ContainerOpen());
@@ -680,19 +681,19 @@ static void SlotClick(int i, int which, bool right, bool shift, int have) {
         if (!ContainerTakes(cursorStack.id)) { GameUI_Toast(TextFormat("The %s doesn't take %s", PartName(container.type), itemDB.find(cursorStack.id) ? itemDB.find(cursorStack.id)->name.c_str() : cursorStack.id.c_str())); return; }
         const int n = std::min<int>(units, (int)(cursorStack.centi / 100)); // machines hold whole units
         if (n <= 0) return;
-        if (which == 2) Factory::InsertFuel(container.body, container.plot, container.part, cursorStack.id, n);
-        else Factory::Insert(container.body, container.plot, container.part, cursorStack.id, n);
+        if (which == 2) MachineAct_Insert(container.body, container.plot, container.part, cursorStack.id, n, true);
+        else MachineAct_Insert(container.body, container.plot, container.part, cursorStack.id, n);
         cursorStack.centi -= (int64_t)n * 100;
         if (cursorStack.centi <= 0) cursorStack = InvSlot{};
         Audio_Play(Sfx::Pickup, 0.4f, 0.8f);
     };
     if (!right) {
-        if (shift && have > 0) { Factory::TakeSlot(container.body, container.plot, container.part, i, which); Audio_Play(Sfx::Pickup, 0.4f, 1.2f); } // to the inventory
+        if (shift && have > 0) { MachineAct_TakeSlot(container.body, container.plot, container.part, i, which); Audio_Play(Sfx::Pickup, 0.4f, 1.2f); } // to the inventory
         else if (!cursorStack.empty()) putDown(1 << 30);
-        else if (have > 0) { Factory::TakeSlotToCursor(container.body, container.plot, container.part, i, which, 0); Audio_Play(Sfx::Pickup, 0.4f, 1.2f); }
+        else if (have > 0) { MachineAct_TakeSlot(container.body, container.plot, container.part, i, which, 0); Audio_Play(Sfx::Pickup, 0.4f, 1.2f); }
     } else {
         if (!cursorStack.empty()) putDown(1);
-        else if (have > 0) Factory::TakeSlotToCursor(container.body, container.plot, container.part, i, which, std::max(1, have / 2));
+        else if (have > 0) MachineAct_TakeSlot(container.body, container.plot, container.part, i, which, std::max(1, have / 2));
     }
 }
 
@@ -755,21 +756,23 @@ static void DrawContainer() {
     }
     ImGui::Spacing();
     if (ImGui::Button("Put in all (I)") || PlayerInput_BindingPressed(Act::Insert)) {
-        const auto all = inventory.all(); // copy: we remove while walking it
+        // (#332) joined: one request, the server puts in all it takes (one per item would run into the rate limit)
+        if (MachineAct_Remote()) { gMachineRequest(container.body, container.plot, container.part, 2, std::string(), 0, 0, 0); Audio_Play(Sfx::Pickup, 0.4f, 0.8f); }
+        const auto all = MachineAct_Remote() ? decltype(inventory.all()){} : inventory.all(); // copy: we remove while walking it
         int kinds = 0;
         for (const auto& kv : all) {
             if (kv.second <= 0 || !ContainerTakes(kv.first) || KindOf(kv.first) == ItemKind::Tool) continue; // tools stay with the player (one in the off hand too)
             bool bound = false;
             for (int s = 0; s < 10; ++s) bound = bound || Hotbar_Slot(s) == kv.first;
             if (chest && bound) continue; // keep what's on the hotbar
-            if (inventory.remove(kv.first, kv.second)) { Factory::Insert(container.body, container.plot, container.part, kv.first, kv.second); ++kinds; }
+            if (inventory.remove(kv.first, kv.second)) { MachineAct_Insert(container.body, container.plot, container.part, kv.first, kv.second); ++kinds; }
         }
         if (kinds > 0) Audio_Play(Sfx::Pickup, 0.4f, 0.8f);
     }
     ImGui::SameLine();
     if (ImGui::Button("Take all (O)") || PlayerInput_BindingPressed(Act::Extract)) {
-        if (chest) for (int i = 0; i < (int)v.inSlots.size(); ++i) { if (v.inSlots[i].second > 0) Factory::TakeSlot(container.body, container.plot, container.part, i, false); }
-        else Factory::Extract(container.body, container.plot, container.part);
+        if (chest) for (int i = 0; i < (int)v.inSlots.size(); ++i) { if (v.inSlots[i].second > 0) MachineAct_TakeSlot(container.body, container.plot, container.part, i, 0); }
+        else MachineAct_Extract(container.body, container.plot, container.part);
         Audio_Play(Sfx::Pickup, 0.4f, 1.2f);
     }
     ImGui::TextDisabled(chest ? "Click an inventory stack to store it; click a slot to take it" : "Click an inventory stack to load it (Shift+click: into the fuel slot); click a slot to take it");

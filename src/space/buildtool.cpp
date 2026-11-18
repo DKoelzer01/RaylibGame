@@ -1,4 +1,5 @@
 #include "machinemodels.h"
+#include "machineact.h"
 #include "buildtool.h"
 #include "playerinput.h"
 #include "waterworks.h"
@@ -540,7 +541,8 @@ void Machine_Update(Scene& world, const PlayerInput& in) {
         // Everything in the inventory the machine might take: fuel for generators, recipe inputs,
         // anything for a chest (the simulation hands back what does not fit).
         // A chest takes everything (#568) but tools and what is on the hotbar, as the chest screen's "Put in all".
-        const auto all = inventory.all(); // copy: we remove while walking it
+        if (MachineAct_Remote()) gMachineRequest(machineAim.body, machineAim.plot, machineAim.part, 2, std::string(), 0, 0, 0); // (#332) the server puts in all it takes
+        const auto all = MachineAct_Remote() ? decltype(inventory.all()){} : inventory.all(); // copy: we remove while walking it
         for (const auto& kv : all) {
             if (kv.second <= 0 || !Factory::Accepts(machineAim.type, kv.first)) continue;
             if (machineAim.type == PartType::Chest) {
@@ -548,11 +550,11 @@ void Machine_Update(Scene& world, const PlayerInput& in) {
                 for (int s = 0; s < Inventory::kHotbar; ++s) bound = bound || Hotbar_Slot(s) == kv.first;
                 if (bound || KindOf(kv.first) == ItemKind::Tool) continue;
             }
-            if (inventory.remove(kv.first, kv.second)) Factory::Insert(machineAim.body, machineAim.plot, machineAim.part, kv.first, kv.second);
+            if (inventory.remove(kv.first, kv.second)) MachineAct_Insert(machineAim.body, machineAim.plot, machineAim.part, kv.first, kv.second);
         }
         Audio_Play(Sfx::Pickup, 0.4f, 0.8f);
     }
-    if (in.hit(Act::Extract)) { Factory::Extract(machineAim.body, machineAim.plot, machineAim.part); Audio_Play(Sfx::Pickup, 0.4f, 1.2f); }
+    if (in.hit(Act::Extract)) { MachineAct_Extract(machineAim.body, machineAim.plot, machineAim.part); Audio_Play(Sfx::Pickup, 0.4f, 1.2f); }
 }
 
 // A ", "-separated item list as lines at most maxW px wide (font size `size`), the first starting with `prefix`; past

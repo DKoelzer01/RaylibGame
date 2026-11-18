@@ -66,6 +66,7 @@ struct NetClient {
     MsgVitals vitals; int vitalsMsgs = 0;        // (#337) our player's survival as the server last said
     int gravesMsgs = 0, lastGraves = 0;          // (#804) Graves lists heard, and the size of the last
     int questBooks = 0, questTeam = 0;          // (#338) team quest books heard, and our team
+    int machineViews = 0, machineStates = 0;    // (#332) machine views and working lists heard
     double worstError = 0.0, lastError = 0.0;    // m: the prediction against the server at the acknowledged input
     std::map<uint32_t, std::deque<MsgPlayerState>> others; // other sessions' recent states (newest last)
     std::map<uint32_t, double> viewTicks;        // per other player: the step of theirs drawn now (NetClient_Update)
@@ -160,6 +161,7 @@ void NetClient_UseAnimal(NetClient& c, uint64_t netId, int action); // (#334) 1 
 void NetClient_UseItem(NetClient& c, const std::string& item);       // (#337) eat or use an item: the server applies it to its copy
 void NetClient_UseBed(NetClient& c, const std::string& body, uint32_t plot, const int cell[3]); // (#800) make that bed my spawn
 void NetClient_Craft(NetClient& c, int index, const std::string& output, int count); // (#338) craft on the server
+void NetClient_MachineAction(NetClient& c, uint64_t bodyNetId, uint32_t plot, int part, int action, const std::string& item, int count, int slot, int which); // (#332)
 const char* NetClient_StateName(NetClient::State s);
 
 #endif

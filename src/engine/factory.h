@@ -21,6 +21,9 @@
 #include "voxel.h" // Int3
 #include <cstdint>
 #include <cstdio>
+#include <functional>
+#include <tuple>
+#include <raylib.h>
 #include <string>
 #include <vector>
 
@@ -76,9 +79,9 @@ namespace Factory {
     bool Working(uint64_t bodyId, uint32_t plotId, int part);
     FactoryStats Stats();
     // Player item transfers (queued for the next tick).
-    void Insert(uint64_t bodyId, uint32_t plotId, int part, const std::string& item, int count);
+    void Insert(uint64_t bodyId, uint32_t plotId, int part, const std::string& item, int count, uint32_t to = 0); // to (#332): leftovers to that player
     // The same, into the fuel slot (Shift+click: an item that is both fuel and a recipe input goes to the inputs by default).
-    void InsertFuel(uint64_t bodyId, uint32_t plotId, int part, const std::string& item, int count);
+    void InsertFuel(uint64_t bodyId, uint32_t plotId, int part, const std::string& item, int count, uint32_t to = 0);
     // Water piped into a machine's tank (boilers), in litres; what doesn't fit is lost.
     void AddWater(uint64_t bodyId, uint32_t plotId, int part, int litres);
     int TankRoom(uint64_t bodyId, uint32_t plotId, int part); // litres a boiler can still take (less water already sent); 0 if unknown
@@ -88,10 +91,10 @@ namespace Factory {
     struct RecipeInfo { PartType machine; std::vector<std::pair<std::string, int>> in, out; int ticks = 0, eu = 0; };
     std::vector<RecipeInfo> RecipeList();
     std::vector<std::string> FuelsOf(PartType type); // item ids a machine burns (machines.txt)
-    void Extract(uint64_t bodyId, uint32_t plotId, int part);
+    void Extract(uint64_t bodyId, uint32_t plotId, int part, uint32_t to = 0); // to (#332): the outputs to that player (0: this game)
     // Container screen: one slot's whole stack back to the inventory (next tick).
     // which: 0 inputs, 1 outputs, 2 the fuel slot.
-    void TakeSlot(uint64_t bodyId, uint32_t plotId, int part, int slot, int which);
+    void TakeSlot(uint64_t bodyId, uint32_t plotId, int part, int slot, int which, uint32_t to = 0);
     // The same onto the cursor (#192: all inventories behave alike): `count` of the slot's stack (0 = all), delivered by
     // Sync to the cursor sink (the inventory screen's held stack) instead of the inventory.
     void TakeSlotToCursor(uint64_t bodyId, uint32_t plotId, int part, int slot, int which, int count);
@@ -102,7 +105,7 @@ namespace Factory {
     void Drain(uint64_t bodyId, uint32_t plotId, int part, const std::string& item, int count);
     // Crafting and storing from nearby chests: take `count` of one item out of a chest (into the
     // inventory next tick), and what the chests of plots near the player hold (as of the last tick).
-    void Take(uint64_t bodyId, uint32_t plotId, int part, const std::string& item, int count);
+    void Take(uint64_t bodyId, uint32_t plotId, int part, const std::string& item, int count, uint32_t to = 0);
     std::vector<std::pair<std::string, int>> ChestContents(uint64_t bodyId, uint32_t plotId, int part);
     // Tests: put items straight into a machine (fuel, ore) before it runs.
     void Seed(uint64_t bodyId, uint32_t plotId, int part, const std::string& item, int count);
@@ -120,6 +123,25 @@ namespace Factory {
     void LoadSaved(uint64_t bodyId, const std::vector<std::string>& lines);
     // A plot moved to another body / id (a rocket launching or landing): its machines go with it.
     void MovePlot(uint64_t fromBody, uint32_t fromPlot, uint64_t toBody, uint32_t toPlot);
+
+    // ---- Multiplayer (#332): the server simulates, clients see views ----
+    // Server: more machines to publish a full view of each tick (the ones its players have open), as View does for one.
+    using MachineKey = std::tuple<uint64_t, uint32_t, int>; // body id, plot id, part
+    void WatchMany(const std::vector<MachineKey>& keys);
+    MachineView Watched(const MachineKey& key);       // the last tick's view of a WatchMany machine (invalid until then)
+    // Server: more places whose plots count as near (ticked every tick, their working machines published): its players.
+    void SetNearPoints(const std::vector<Vector3>& renderPoints);
+    // The machines working on one plot now (near plots only): what clients get for animations (MachineStates).
+    std::vector<int> WorkingParts(uint64_t bodyId, uint32_t plotId);
+    // Client: the server's views stand in for the simulation (which then runs no ticks): View / Working read these.
+    void SetRemote(bool remote);
+    bool Remote();
+    void SetRemoteView(const MachineKey& key, const MachineView& view);
+    void SetRemoteWorking(uint64_t bodyId, uint32_t plotId, const std::vector<int>& parts); // that plot's working machines
 }
+// Server: results for a player (Extract / TakeSlot / Take / leftovers with `to`) go here instead of this game's inventory.
+inline std::function<void(uint32_t to, const std::string& item, int count, float heat)> gFactoryDeliver;
+// Client (#332): the machine the screen or look-at panel views changed (Factory::View with SetRemote): ask the server for it.
+inline std::function<void(uint64_t bodyId, uint32_t plotId, int part)> gFactoryRemoteWatch;
 
 #endif

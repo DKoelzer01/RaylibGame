@@ -96,6 +96,7 @@ extern "C" __declspec(dllimport) int __stdcall MessageBoxA(void*, const char*, c
 #include "blueprint.h"
 #include "ring.h"
 #include "factory.h"
+#include "machineact.h"
 #include "fluid.h"
 #include "watersurface.h"
 #include "waterfield.h"
@@ -552,6 +553,7 @@ int main(int argc, char** argv)
     int swarmBots = 0; double swarmSoak = 60.0; // --bots N [--soak S] with --join (#348): N walking bots from this process, S seconds
     bool benchNetAnimals = false;  // --test-net-animals (with --join; #334): the client side of tools/test_animals_net.sh
     bool benchNetQuests = false;   // --test-net-quests (with --join; #338): the client side of tools/test_team_quests.sh
+    bool benchNetMachines = false; // --test-net-machines (with --join; #332): the client side of tools/test_net_machines.sh
     uint16_t hostPort = kDefaultHostPort; // --port N
     bool benchHost = false;        // --test-host (#311): with --host, a loopback client joins
     bool benchTimeFollow = false;  // --test-time-follow (#339): the world clock follows a server time (slew, snap)
@@ -818,6 +820,7 @@ int main(int argc, char** argv)
         if (std::string(argv[i]) == "--soak" && i + 1 < argc) swarmSoak = std::max(1.0, atof(argv[i + 1]));
         if (std::string(argv[i]) == "--test-net-animals") benchNetAnimals = true;
         if (std::string(argv[i]) == "--test-net-quests") benchNetQuests = true;
+        if (std::string(argv[i]) == "--test-net-machines") benchNetMachines = true;
         if (std::string(argv[i]) == "--port" && i + 1 < argc) hostPort = (uint16_t)atoi(argv[i + 1]);
         if (std::string(argv[i]) == "--host-password" && i + 1 < argc) Host_SetPassword(argv[i + 1]); // (#321)
         if (std::string(argv[i]) == "--host-edits" && i + 1 < argc) hostEdits = atoi(argv[i + 1]); // (#776 tests) a world with many edits to join
@@ -1429,6 +1432,12 @@ int main(int argc, char** argv)
         gAnimalUseRequest = [](uint64_t netId, int action) { NetClient_UseAnimal(gJoin, netId, action); };
         gSurvivalUseRequest = [](const std::string& item) { NetClient_UseItem(gJoin, item); }; // (#337) the server owns our survival and inventory
         gCraftRequest = [](int index, const std::string& output, int count) { NetClient_Craft(gJoin, index, output, count); }; // (#338) and our crafting
+        // (#332) the server runs the machines: ours show its views, and what we do to them is a request
+        Factory::SetRemote(true);
+        gMachineRequest = [](uint64_t bodyId, uint32_t plot, int part, int action, const std::string& item, int count, int slot, int which) {
+            if (Planetoid* b = Planetoid::find(bodyId)) NetClient_MachineAction(gJoin, b->netId, plot, part, action, item, count, slot, which);
+        };
+        gFactoryRemoteWatch = [](uint64_t bodyId, uint32_t plot, int part) { if (gMachineRequest) gMachineRequest(bodyId, plot, part, 6, std::string(), 0, 0, 0); };
         gBedUseRequest = [](const Planetoid& body, const Plot& plot, int part) { // (#800) and our spawn bed
             if (part < 0 || part >= (int)plot.parts.size()) return;
             const Int3 o = plot.parts[part].origin; const int cell[3] = { o.x, o.y, o.z };
@@ -8826,7 +8835,7 @@ int main(int argc, char** argv)
                         }
                         benchWalkSeconds = 0.0;
                     }
-                } else if ((WorldIdle() && benchDigStrokes == 0 && !benchPaint && !benchSaveLoad && benchWalkSeconds <= 0.0 && benchMineStrokes == 0 && minePhase != 2 && benchFlySeconds <= 0.0 && !benchSuffocate && benchOrbitSeconds <= 0.0 && !benchRide && !benchPark && !benchGravity && !benchPrecision && !benchMantle && !benchAirJump && !benchMoon && !benchHole && !benchWall && !benchDoorway && !benchLedge && !benchTor && !benchMachines && !benchFall && !benchHover && !benchNetIds && !benchNet && !benchTwoPlayers && !benchFingerprint && !benchInterest && !benchTeleClose && !benchMenus && !benchWater && !benchFlyFollow && !benchHotbar && !benchInventory && !benchMap && !benchViewmodel && !benchQuests && !benchHunger && !benchFarm && !benchAnimals && !benchThreats && !benchAnimalPath && !benchDam && !benchFlowMeter && !benchPartWall && !benchPressure && benchShotTabs == 0 && !benchForest && !benchFlow && !benchPond && !benchBucket && !benchWaterSpeed && benchFluidLoad <= 0.0f && !benchFlowShade && !benchPump && !benchTerrain && !benchWind && !benchCampfire && !benchCaveMouth && !benchMountain && !benchShelter && !benchRoom && !benchFacing && !benchDungeon && !benchDungeonTraps && !benchSaveSplit && !benchPosture && !benchPause && !benchBite && !benchPlacement && !benchShotDig && !benchShadow && !benchParticles && !benchBiomes && !benchOil && !benchSpring && !benchShotAnimals && !benchShotAvatar && !benchShotMachines && benchShotBiomes < 0 && !benchFarForest && !benchRecipes && !benchWeather && !benchDecor && !benchMaterials && !benchDamage && !benchCrafting && !benchSuit && !benchTools && !benchRivers && !benchRing && !benchRocket && !benchStation && !benchBlueprint && !benchSmallBody && !benchTrees && !benchChop && benchPersist == 0 && benchBuild == 0 && benchFactory == 0 && !benchCombat && !benchHost && !benchJoin && !benchTimeFollow && benchPlayerCost == 0 && !benchNetAnimals && !benchNetQuests && !benchNetAbuse && !benchNetMove && !benchNetDig && !benchNetBuild && !benchNetSync && !benchShotMpMenu && !benchMpMenu && benchMpBots == 0 && !benchShower && !benchProgression && (benchUnfocus <= 0.0f || unfocusPhase >= 6)) || GetTime() > 600.0) {
+                } else if ((WorldIdle() && benchDigStrokes == 0 && !benchPaint && !benchSaveLoad && benchWalkSeconds <= 0.0 && benchMineStrokes == 0 && minePhase != 2 && benchFlySeconds <= 0.0 && !benchSuffocate && benchOrbitSeconds <= 0.0 && !benchRide && !benchPark && !benchGravity && !benchPrecision && !benchMantle && !benchAirJump && !benchMoon && !benchHole && !benchWall && !benchDoorway && !benchLedge && !benchTor && !benchMachines && !benchFall && !benchHover && !benchNetIds && !benchNet && !benchTwoPlayers && !benchFingerprint && !benchInterest && !benchTeleClose && !benchMenus && !benchWater && !benchFlyFollow && !benchHotbar && !benchInventory && !benchMap && !benchViewmodel && !benchQuests && !benchHunger && !benchFarm && !benchAnimals && !benchThreats && !benchAnimalPath && !benchDam && !benchFlowMeter && !benchPartWall && !benchPressure && benchShotTabs == 0 && !benchForest && !benchFlow && !benchPond && !benchBucket && !benchWaterSpeed && benchFluidLoad <= 0.0f && !benchFlowShade && !benchPump && !benchTerrain && !benchWind && !benchCampfire && !benchCaveMouth && !benchMountain && !benchShelter && !benchRoom && !benchFacing && !benchDungeon && !benchDungeonTraps && !benchSaveSplit && !benchPosture && !benchPause && !benchBite && !benchPlacement && !benchShotDig && !benchShadow && !benchParticles && !benchBiomes && !benchOil && !benchSpring && !benchShotAnimals && !benchShotAvatar && !benchShotMachines && benchShotBiomes < 0 && !benchFarForest && !benchRecipes && !benchWeather && !benchDecor && !benchMaterials && !benchDamage && !benchCrafting && !benchSuit && !benchTools && !benchRivers && !benchRing && !benchRocket && !benchStation && !benchBlueprint && !benchSmallBody && !benchTrees && !benchChop && benchPersist == 0 && benchBuild == 0 && benchFactory == 0 && !benchCombat && !benchHost && !benchJoin && !benchTimeFollow && benchPlayerCost == 0 && !benchNetAnimals && !benchNetQuests && !benchNetMachines && !benchNetAbuse && !benchNetMove && !benchNetDig && !benchNetBuild && !benchNetSync && !benchShotMpMenu && !benchMpMenu && benchMpBots == 0 && !benchShower && !benchProgression && (benchUnfocus <= 0.0f || unfocusPhase >= 6)) || GetTime() > 600.0) {
                     benchStart = GetTime();
                     printf("bench: world ready after %.2f s (%d chunks, avg build %.2f ms of which sampling %.2f ms, %d worker threads)\n",
                         GetWorldStats().lastGenerationSeconds, GetWorldStats().chunks, GetWorldStats().avgBuildMs, GetWorldStats().avgSampleMs, GetWorldStats().workerThreads);
@@ -10571,6 +10580,46 @@ int main(int argc, char** argv)
         // --test-net-animals (#334, with --join; tools/test_animals_net.sh): the client side. RAYLIBGAME_NET_ANIMALS_ROLE=hunter
         // walks to the nearest animal and swings at it (requests: the server decides) until it falls; watcher stands by. Both
         // print the animals they saw (ids), and per animal the health range seen and whether it went; the script compares them.
+        // --test-net-machines (#332; with --join; tools/test_net_machines.sh): RAYLIBGAME_NET_MACHINES_ROLE feeder | taker.
+        // The feeder places a campfire (given by the host) 3 m ahead through the server, then puts 2 roots in and 2 oak logs
+        // in its fuel slot, by request. The server smelts (10 s a root); both clients hear it work (MachineStates); the
+        // feeder watches it (MachineView). After RAYLIBGAME_MACHINES_TAKE_AT s the taker takes the outputs (O): the roasted
+        // roots reach its inventory by deltas. Both report after RAYLIBGAME_MACHINES_SECONDS.
+        if (benchNetMachines && gameState == 1 && !loading && gJoinSynced && WorldIdle()) {
+            static double t0 = -1.0; static bool placed = false, fed = false, took = false, sawWorking = false;
+            static int roots0 = -1;
+            const char* role = getenv("RAYLIBGAME_NET_MACHINES_ROLE");
+            const bool feeder = role && !strcmp(role, "feeder");
+            if (t0 < 0.0) t0 = GetTime();
+            Planetoid* mb = player.nearest;
+            const Vector3 me = mb ? mb->toLocalD(player.position).toFloat() : Vector3{};
+            // the campfire, once the server's plot edit has made it here
+            Plot* fire = nullptr; int firePart = -1;
+            if (mb && mb->plots)
+                for (auto& pl : mb->plots->plots)
+                    for (int k = 0; k < (int)pl->parts.size() && !fire; ++k) if (pl->parts[k].type == PartType::Campfire) { fire = pl.get(); firePart = k; }
+            if (feeder && !placed && mb && inventory.count("campfire") > 0 && GetTime() - t0 > 2.0) {
+                const Vector3 up = Vector3Normalize(me);
+                const Vector3 t1 = Vector3Normalize(Vector3CrossProduct(up, fabsf(up.y) < 0.9f ? Vector3{ 0, 1, 0 } : Vector3{ 1, 0, 0 }));
+                placed = NetClient_RequestPart(gJoin, *mb, nullptr, Vector3Add(me, Vector3Scale(t1, 3.0f)), Part{ PartType::Campfire, { 0, 0, 0 }, 0, 0 }, false, -1) != 0;
+            }
+            if (feeder && fire && !fed && inventory.count("roots") >= 2 && inventory.count("oak_log") >= 2) {
+                inventory.remove("roots", 2); MachineAct_Insert(mb->id, fire->id, firePart, "roots", 2);           // as the UI does: out of the
+                inventory.remove("oak_log", 2); MachineAct_Insert(mb->id, fire->id, firePart, "oak_log", 2, true); // inventory, then the request
+                fed = true;
+            }
+            if (fire) { Factory::View(mb->id, fire->id, firePart); sawWorking = sawWorking || Factory::Working(mb->id, fire->id, firePart); } // (the look-at panel's watch)
+            const double takeAt = getenv("RAYLIBGAME_MACHINES_TAKE_AT") ? atof(getenv("RAYLIBGAME_MACHINES_TAKE_AT")) : 40.0;
+            if (!feeder && fire && !took && GetTime() - t0 > takeAt) { roots0 = inventory.count("roasted_roots"); MachineAct_Extract(mb->id, fire->id, firePart); took = true; }
+            if (GetTime() - t0 > (getenv("RAYLIBGAME_MACHINES_SECONDS") ? atof(getenv("RAYLIBGAME_MACHINES_SECONDS")) : 50.0)) {
+                const MachineView v = fire ? Factory::View(mb->id, fire->id, firePart) : MachineView{};
+                printf("bench: net machines (%s, #332): campfire seen %d, placed %d, fed %d; saw it working %d; views %d, state lists %d; took %d: roasted roots %d -> %d; roots %d, logs %d; view valid %d\n",
+                       role ? role : "?", fire != nullptr, (int)placed, (int)fed, (int)sawWorking, gJoin.machineViews, gJoin.machineStates, (int)took, roots0,
+                       inventory.count("roasted_roots"), inventory.count("roots"), inventory.count("oak_log"), (int)v.valid);
+                NetClient_Disconnect(gJoin);
+                benchNetMachines = false;
+            }
+        }
         // --test-net-quests (#338, #816; with --join; tools/test_team_quests.sh): RAYLIBGAME_NET_QUESTS_ROLE eater | mate | other.
         // The eater (alice) eats once through the server: its team's "eat something" node (e0f) is done on the server, which
         // pays its 4 berries to the eater by deltas and tells the team; its teammate (bob) sees the node done in the book it
@@ -11615,7 +11664,7 @@ int main(int argc, char** argv)
                     NetClient_SaveCache(world, WorldSavePath(), gJoin.welcome.seed, gJoin.welcome.fingerprint);
                     NetClient_Disconnect(gJoin);
                 }
-                gNetClient = nullptr; gJoin = NetClient{}; gNetRole = NetRole::Offline; joinAddr.clear(); gJoinSynced = false; gCraftRequest = nullptr; gSurvivalUseRequest = nullptr; gBedUseRequest = nullptr; // (#338) back to single player: crafting, eating and beds act here again
+                gNetClient = nullptr; gJoin = NetClient{}; gNetRole = NetRole::Offline; joinAddr.clear(); gJoinSynced = false; gCraftRequest = nullptr; gSurvivalUseRequest = nullptr; gBedUseRequest = nullptr; gMachineRequest = nullptr; gFactoryRemoteWatch = nullptr; Factory::SetRemote(false); // (#338, #332) back to single player: crafting, eating, beds and machines act here again
                 gAnimalsReplicated = false; gAnimalHitRequest = nullptr; gTerrainToolNetEdit = nullptr; gBuildToolNetEdit = nullptr;
                 if (hostedHere) { printf("host: stopping the server we hosted: %s\n", HostProcess_Stop(30.0) ? "saved and ended" : "ended (it didn't stop in time)"); hostedHere = false; gHostedServer.clear(); }
             };
