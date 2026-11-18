@@ -70,6 +70,13 @@ struct NetClient {
     NetEditRefusal lastRefusal = NetEditRefusal::Count;
     uint32_t refusedWhy = 0;                     // a bit per NetEditRefusal seen
     uint64_t editOrder = 14695981039346656037ull; // a hash of every edit's (session, seq) in the order applied
+    // Building (#330)
+    uint32_t partSeq = 0;                        // our part requests so far
+    int plotEdits = 0, plotEditsOwn = 0, partsRefused = 0;
+    uint32_t partRefusedWhy = 0;                 // a bit per NetPartRefusal seen
+    uint32_t lastNewPlot = 0;                    // the id of the last plot the server made for us
+    bool keepPlotLog = false; std::vector<MsgPlotEdit> plotLog; // tests: every plot edit received, to replay elsewhere
+    uint64_t plotOrder = 14695981039346656037ull; // a hash of every plot edit in the order applied
 };
 
 // One sim step of the joined client's own player: send the input, predict with it (in its own frame), and reconcile
@@ -86,6 +93,10 @@ void NetClient_SetLoadout(NetClient& c, const std::string& held, bool headlamp, 
 // Ask the server for a dig or place stroke (#329; the terrain tool's gTerrainToolNetEdit while joined). Returns its
 // seq (0: not joined). The edit comes back as a TerrainEdit with it, or an EditRefused.
 uint32_t NetClient_RequestEdit(NetClient& c, NetEditKind kind, const class Planetoid& body, Vector3 hit, Vector3 centre, float radius, const std::string& item);
+// Ask the server to place a part (#330; the build tool's gBuildToolNetEdit while joined) into `plot` (null: a new plot
+// anchored at `anchor`, body-local), or to break `plot`'s part partIndex. Returns its seq (0: not sent). The change comes
+// back as PlotEdits with it, or a PartRefused.
+uint32_t NetClient_RequestPart(NetClient& c, const class Planetoid& body, const class Plot* plot, Vector3 anchor, const struct Part& part, bool remove, int partIndex);
 // The game's client (null: not connected to a server). main.cpp draws its other players.
 extern NetClient* gNetClient;
 // A player's state on the wire and back (#327; server and client use the same).

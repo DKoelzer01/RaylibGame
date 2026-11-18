@@ -843,8 +843,14 @@ Plot* PlotSet::plotFor(Vector3 b, float reach, bool create) {
         if (d < bestD) { bestD = d; best = pl.get(); }
     }
     if (best || !create) return best;
+    return createAt(nextId, b);
+}
+
+Plot* PlotSet::createAt(uint32_t id, Vector3 b) {
+    if (byId(id)) return nullptr;
     auto pl = std::make_unique<Plot>();
-    pl->id = nextId++;
+    pl->id = id;
+    nextId = std::max(nextId, id + 1);
     pl->origin = DVec3(b);
     pl->up = Vector3Normalize(b);
     pl->east = Vector3CrossProduct({ 0, 1, 0 }, pl->up);

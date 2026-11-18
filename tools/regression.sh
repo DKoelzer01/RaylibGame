@@ -128,6 +128,7 @@ eroded() {
     run --seed 42 --bench 3 --test-rivers
     run --seed 42 --bench 5 --test-flow-sea
     run --seed 42 --bench 3 --test-build 2000
+    run --seed 42 --bench 3 --test-placement
     run --seed 42 --bench 20 --bench-walk
     run --seed 42 --bench 20 --bench-fly 60
     unset RAYLIBGAME_EROSION
@@ -152,6 +153,8 @@ multiplayer() {
     local keep="$exe"; exe="$gexe"
     run --host "$sv" --seed 42 --bench 3 --port 27941 --test-host
     run --host "$sv" --bench 3 --port 27941 --test-net-move
+    run --host "$sv" --bench 3 --port 27941 --test-net-dig
+    run --host "$sv" --bench 3 --port 27941 --test-net-build
     RAYLIBGAME_NET_LAG_MS=50 RAYLIBGAME_NET_JITTER_MS=10 RAYLIBGAME_NET_LOSS=2 RAYLIBGAME_NET_SEED=1 run --host "$sv" --bench 3 --port 27941 --test-mp-bots 6
     exe="$keep"
     run --seed 42 --bench 3 --test-time-follow

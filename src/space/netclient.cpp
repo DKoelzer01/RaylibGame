@@ -4,6 +4,8 @@
 #include "world.h"
 #include "inventory.h"
 #include "voxel.h"
+#include "plots.h"
+#include "buildtool.h"
 #include "player.h"
 #include "scene.h"
 #include "simclock.h"
@@ -114,6 +116,35 @@ namespace {
                 if (c.state != NetClient::State::Joined || !NetRead(r, d)) return;
                 ++c.inventoryDeltas;
                 if (c.inventory) { if (d.amount > 0.0) c.inventory->addAmount(d.item, d.amount); else c.inventory->removeAmount(d.item, -d.amount); }
+                return;
+            }
+            case NetMsg::PlotEdit: { // (#330) in the server's order; a host in this process already changed the world
+                MsgPlotEdit e;
+                if (c.state != NetClient::State::Joined || !NetRead(r, e)) return;
+                ++c.plotEdits;
+                c.plotOrder = c.plotOrder * 1099511628211ull ^ (((uint64_t)e.session << 40) ^ ((uint64_t)e.seq << 8) ^ (uint64_t)e.op);
+                if (e.session == c.welcome.session) { ++c.plotEditsOwn; if (e.op == NetPartOp::NewPlot) c.lastNewPlot = e.plot; }
+                if (c.keepPlotLog) c.plotLog.push_back(e);
+                if (Host_Listening()) return;
+                Planetoid* p = Planetoid::findNet(e.body);
+                if (!p) return;
+                if (e.op == NetPartOp::NewPlot) {
+                    if (!p->plots) p->plots = std::make_unique<PlotSet>();
+                    p->plots->createAt(e.plot, Vector3{ e.anchor[0], e.anchor[1], e.anchor[2] });
+                    return;
+                }
+                Plot* plot = p->plots ? p->plots->byId(e.plot) : nullptr;
+                if (!plot) return;
+                if (e.op == NetPartOp::Place) {
+                    Part part{}; part.type = (PartType)e.part.type; part.origin = { e.part.x, e.part.y, e.part.z }; part.orient = e.part.orient; part.material = e.part.material;
+                    BuildTool_ApplyPart(*p, *plot, part);
+                } else plot->remove((int)e.partIndex);
+                return;
+            }
+            case NetMsg::PartRefused: {
+                MsgPartRefused f;
+                if (c.state != NetClient::State::Joined || !NetRead(r, f)) return;
+                ++c.partsRefused; c.partRefusedWhy |= 1u << (unsigned)f.why;
                 return;
             }
             case NetMsg::PlayerState: {
@@ -358,6 +389,19 @@ uint32_t NetClient_RequestEdit(NetClient& c, NetEditKind kind, const Planetoid& 
     MsgEditRequest q;
     q.seq = ++c.editSeq; q.kind = kind; q.body = body.netId;
     q.hit = DVec3(hit); q.center = DVec3(centre); q.radius = radius; q.item = item;
+    SendMsg(c, q);
+    return q.seq;
+}
+
+uint32_t NetClient_RequestPart(NetClient& c, const Planetoid& body, const Plot* plot, Vector3 anchor, const Part& part, bool remove, int partIndex) {
+    if (c.state != NetClient::State::Joined) return 0;
+    MsgPartRequest q;
+    q.seq = ++c.partSeq; q.op = remove ? NetPartOp::Remove : NetPartOp::Place; q.body = body.netId;
+    q.plot = plot ? plot->id : 0;
+    q.anchor[0] = anchor.x; q.anchor[1] = anchor.y; q.anchor[2] = anchor.z;
+    q.part = NetPart{ (uint8_t)part.type, part.origin.x, part.origin.y, part.origin.z, part.orient, part.material };
+    q.partIndex = partIndex < 0 ? 0u : (uint32_t)partIndex;
+    if (remove && !plot) return 0;
     SendMsg(c, q);
     return q.seq;
 }
