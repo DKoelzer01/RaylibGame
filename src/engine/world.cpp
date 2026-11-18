@@ -325,6 +325,14 @@ VoxelMaterial Planetoid::materialAt(Vector3 local) const {
     return field->material(local, field->baseDensity(local));
 }
 
+VoxelMaterial Planetoid::materialAt(Vector3 local, Vector3 normal) const {
+    if (edits) { const int m = edits->materialAt(local); if (m >= 0) return (VoxelMaterial)m; }
+    if (Vector3LengthSqr(normal) < 1e-6f) return field->material(local, field->baseDensity(local));
+    // #636: material() assumes level ground (fallbackUp), so on a cliff the crosshair (and the dig yield) said grass or
+    // gravel where the mesh, picked with its real normal, draws rock.
+    return field->materialLod(local, field->baseDensity(local), 0.0f, Vector3Normalize(normal));
+}
+
 float Planetoid::densityAt(Vector3 local) const {
     return field->density(local, edits.get());
 }
@@ -1552,8 +1560,9 @@ bool RaycastTerrain(Scene& world, Ray ray, float maxDistance, TerrainHit& hit) {
                     hit.local = local;
                     hit.point = worldPoint;
                     hit.distance = dist;
-                    hit.normal = Vector3Normalize(Vector3Subtract(p->toWorld(Vector3Add(local, p->field->normal(local, p->edits.get()))), worldPoint));
-                    hit.material = p->materialAt(local);
+                    const Vector3 nLocal = p->field->normal(local, p->edits.get());
+                    hit.normal = Vector3Normalize(Vector3Subtract(p->toWorld(Vector3Add(local, nLocal)), worldPoint));
+                    hit.material = p->materialAt(local, nLocal); // as drawn (#636)
                 }
                 break;
             }
