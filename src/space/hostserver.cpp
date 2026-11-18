@@ -27,6 +27,8 @@
 #include "recipebook.h"
 #include "playerrecord.h"
 #include "inventory.h"
+#include "farming.h"
+#include "trees.h"
 #include <cmath>
 #include <map>
 #include <ctime>
@@ -106,6 +108,8 @@ namespace {
         PlayerRecordMeta record;    // (#346) their record's id, name, times, and the lines the server keeps as text
         bool creative = false;        // (#823) /gamemode creative (ops): building, digging and placing cost nothing; it may fly
         double joinedAt = 0.0;      // (play time, added at the next write)
+        double lastFellAt = -1e9;   // (#335) its last plant felled (the fell rate)
+        uint64_t farmHash = 0;      // (#335) the farm fields last sent to it
     };
     std::unordered_map<uint32_t, Remote> remotes;      // by session
     long long lastSnapshot = 0;
@@ -181,6 +185,7 @@ namespace {
     }
     void SendInventoryDeltas(uint32_t conn, const Inventory& inv, const std::map<std::string, double>& before); // (below)
     template <class M> void SendMsg(uint32_t conn, const M& m); // (below)
+    template <class M> void SendToJoined(const M& m); // (below)
     // ---- #334 animals ----
     // The animals near each client, 10 a second: on its player's body, within kAnimalRange, nearest first, at most
     // kAnimalsPerClient; and the ones it was sent last time that are gone (died, or out of its range).
@@ -492,6 +497,105 @@ namespace {
             default: return;
         }
         SendChangedItems(conn, inv, before);
+    }
+
+    // ---- Plants and farming (#335) ----
+    // Plants are generated from the seed (stable ids); the server's removals (id -> world time) are the world's: a fell is a
+    // request checked here (standing in a loaded tile, within reach, not faster than the tool can fell it), the drops go to
+    // the feller's inventory, and every removal goes to every client (MsgPlants), which regrows it on the shared clock.
+    // Removals made any other way here (a host's own player) are found by diffing each body's copy-on-write removals.
+    // Farm fields live here too: sowing and harvesting are requests; each client gets the fields near it when they change.
+    constexpr float kPlantReach = 14.0f;  // m (the tool's 12 m reach, plus movement while the request travels)
+    constexpr float kFarmRange = 300.0f;  // m: fields sent to a client around its player (crops draw to 120 m)
+    std::unordered_map<uint64_t, std::shared_ptr<const PlantRemovals>> plantsSeen; // by body id: the removals last sent
+    long long lastFarmTick = 0;
+    int plantsFelled = 0, plantsRefused = 0, farmActions = 0, farmListsSent = 0;
+    void SendPlants(uint32_t conn, uint64_t bodyNet, uint32_t session, const std::vector<std::pair<uint64_t, double>>& list) {
+        for (size_t i = 0; i < list.size(); i += 4096) {
+            MsgPlants m; m.body = bodyNet; m.session = session;
+            m.removed.assign(list.begin() + i, list.begin() + std::min(list.size(), i + 4096));
+            if (conn) SendMsg(conn, m); else SendToJoined(m);
+        }
+    }
+    void SendAllPlants(Scene& world, uint32_t conn) { // at a join: every body's removals so far
+        for (auto& o : world.objects)
+            if (auto* p = dynamic_cast<Planetoid*>(o.get()); p && p->trees) {
+                std::vector<std::pair<uint64_t, double>> list(p->trees->removals().begin(), p->trees->removals().end());
+                if (!list.empty()) SendPlants(conn, p->netId, 0, list);
+            }
+    }
+    void StepPlants(Scene& world) {
+        for (auto& o : world.objects) {
+            auto* p = dynamic_cast<Planetoid*>(o.get());
+            if (!p || !p->trees) continue;
+            const auto now = p->trees->removalsShared();
+            auto& seen = plantsSeen[p->id];
+            if (seen == now) continue;
+            std::vector<std::pair<uint64_t, double>> fresh;
+            for (const auto& [id, t] : *now) { if (!seen) { fresh.push_back({ id, t }); continue; } auto it = seen->find(id); if (it == seen->end() || it->second != t) fresh.push_back({ id, t }); }
+            seen = now;
+            if (!fresh.empty()) SendPlants(0, p->netId, 0, fresh);
+        }
+        // Farm fields near each player, 4 times a second when they changed (growth to 1/200: a crop of an hour every ~18 s)
+        if (SimTick() - lastFarmTick < 15) return;
+        lastFarmTick = SimTick();
+        for (const auto& [conn, peer] : peers) {
+            if (!peer.joined) continue;
+            auto rit = remotes.find(peer.session);
+            if (rit == remotes.end() || !rit->second.player.nearest) continue;
+            Planetoid& b = *rit->second.player.nearest;
+            MsgFarmFields m; m.body = b.netId;
+            Farm_FieldsNear(b, b.toLocalD(rit->second.player.position).toFloat(), kFarmRange, m.fields);
+            uint64_t h = 1469598103934665603ull ^ b.id;
+            auto mix = [&h](uint64_t v) { h = (h ^ v) * 1099511628211ull; };
+            for (const NetFarmField& f : m.fields) { mix(f.plot); mix((uint64_t)f.part); mix(std::hash<std::string>{}(f.crop)); mix((uint64_t)lroundf(f.growth * 200.0f)); }
+            if (h == rit->second.farmHash) continue;
+            rit->second.farmHash = h;
+            SendMsg(conn, m);
+            ++farmListsSent;
+        }
+    }
+    void OnPlantAction(uint32_t conn, uint32_t session, const MsgPlantAction& a) {
+        auto rit = remotes.find(session);
+        Planetoid* b = Planetoid::findNet(a.body);
+        if (rit == remotes.end() || rit->second.survival.dead || !b) return;
+        Remote& rm = rit->second;
+        auto refuse = [&](const char* why) { ++plantsRefused; if (why) SendMsg(conn, MsgChat{ 0, why }); };
+        const Vector3 me = rm.player.nearest == b ? b->toLocalD(rm.player.position).toFloat() : Vector3{ 1e30f, 0, 0 };
+        const auto before = AllAmounts(rm.inventory);
+        if (a.action == 1) { // fell a plant
+            Plant pl;
+            if (!b->trees || !b->trees->findPlant(a.plant, pl)) { refuse(nullptr); return; } // gone already (another player's): its removal is on its way
+            if (Vector3Distance(pl.base, me) > kPlantReach * b->scale) { refuse("That's out of reach"); return; }
+            std::string held;
+            for (const Session& s : sessions) if (s.id == session) held = s.loadout.held;
+            const int hits = TerrainTool_HitsToFell(pl, ToolOf(held));
+            const double minGap = 0.5 * 0.3 * (hits - 1); // half the swings it takes (latency, a held-on beat)
+            if (SimTime() - rm.lastFellAt < minGap) { refuse(nullptr); return; }
+            rm.lastFellAt = SimTime();
+            for (const auto& [item, n] : TerrainTool_PlantDrops(*b, pl).items) rm.inventory.add(item, n);
+            b->trees->remove(a.plant);
+            plantsSeen[b->id] = b->trees->removalsShared(); // (sent here, with who felled it)
+            SendPlants(0, b->netId, session, { { a.plant, b->trees->removals().at(a.plant) } });
+            ++plantsFelled;
+        } else { // sow / harvest a farmland part
+            Plot* plot = b->plots ? b->plots->byId(a.plot) : nullptr;
+            if (!plot || a.part < 0 || a.part >= (int)plot->parts.size() || plot->parts[a.part].type != PartType::Farmland) { refuse("That farmland isn't there any more"); return; }
+            const Int3 c = plot->parts[a.part].origin;
+            if (Vector3Distance(plot->toBody({ (c.x + 1.0f) * kCellSize, (c.y + 1.0f) * kCellSize, (c.z + 1.0f) * kCellSize }), me) > kMachineReach) { refuse("That farmland is out of reach"); return; }
+            std::string why;
+            if (a.action == 2) {
+                if (!Farm_SowFor(rm.inventory, *b, *plot, a.part, a.seed, &why)) { refuse(why.empty() ? nullptr : why.c_str()); return; }
+                TeamEvent(session, "count", "plant");
+            } else {
+                if (Farm_HarvestFor(rm.inventory, *b, *plot, a.part, &why) <= 0) { refuse(why.empty() ? nullptr : why.c_str()); return; }
+                TeamEvent(session, "count", "harvest");
+            }
+            for (auto& [s, r] : remotes) r.farmHash = 0; // (everyone near sees it at once)
+            lastFarmTick = 0;
+            ++farmActions;
+        }
+        SendChangedItems(conn, rm.inventory, before);
     }
 
     void StepTeamQuests(Scene& world) {
@@ -882,12 +986,14 @@ namespace {
         } else { // (#780) a reconnect keeps the player but its client counts ticks from 1 again: a fresh input stream
             Remote& rm = remotes[s->id];
             rm.inputs.clear(); rm.lastQueued = 0; rm.lastApplied = 0; rm.carried = 0; rm.budget = 0.0; rm.tick = SimTick();
+            rm.farmHash = 0; // (#335) its fields again
         }
         // Who is here (everyone, the newcomer included), and what the others hold.
         SendRoster();
         for (const Session& x : sessions) if (x.online && x.id != s->id && x.loadout.session) SendMsg(conn, x.loadout);
         StartSync(world, conn, s->id); // the world's edits so far (#776); later ones follow as live edits
         SendGraves(conn); // (#804) the graves so far
+        SendAllPlants(world, conn); // (#335) the plants felled so far
         ++joins;
         printf("host: %s joined as session %u%s (connection %u, %d joins so far)\n", h.name.c_str(), s->id, reconnected ? " (reconnected)" : "", conn, joins);
         if (eventHook) eventHook("join", s->id, h.name + " from " + Net_RemoteAddress(conn)); // (#345 audit)
@@ -1067,7 +1173,11 @@ namespace {
             const Vector3 at = plot ? plot->toBody(cellCentre) : anchor; // (a new plot: the part sits on its anchor)
             if (!InBuildReach(world, rm, q.body, at, p->scale)) { RefusePart(conn, q.seq, NetPartRefusal::Reach); return; }
             const char* item = PartItem(part);
-            const int cost = PartCostCount(part.type);
+            // (#335) a shovel or hoe in hand tills soft ground into farmland for nothing (Farm_Till's rule; a carried farmland item pays first)
+            bool till = false;
+            if (part.type == PartType::Farmland && rm.inventory.count(item) < PartCostCount(part.type))
+                for (const Session& s : sessions) if (s.id == session && rm.inventory.count(s.loadout.held) > 0) { const ToolType t = ToolOf(s.loadout.held).type; till = t == ToolType::Shovel || t == ToolType::Hoe; }
+            const int cost = till ? 0 : PartCostCount(part.type);
             if (!rm.creative && rm.inventory.count(item) < cost) { RefusePart(conn, q.seq, NetPartRefusal::Cost); return; } // (#823) free in creative
             if (!plot) { // a new plot, made here first (the clients make the same one from the same id and anchor)
                 if (!p->plots) p->plots = std::make_unique<PlotSet>();
@@ -1079,6 +1189,7 @@ namespace {
             before.emplace(item, rm.inventory.amount(item));
             if (!rm.creative) rm.inventory.remove(item, cost);
             BuildTool_ApplyPart(*p, *plot, part);
+            if (till) TeamEvent(session, "count", "till"); // (#335)
             if (IsMachine(part.type) || IsRocketPart(part.type)) TeamEvent(session, "placed", PartCostItem(part.type)); // (#338) "place" tasks
             MsgPlotEdit out; out.session = session; out.seq = q.seq; out.op = NetPartOp::Place; out.body = q.body; out.plot = plot->id; out.part = q.part;
             SendToJoined(out);
@@ -1328,6 +1439,12 @@ namespace {
                 OnMachineAction(m.conn, it->second.session, a);
                 return;
             }
+            case NetMsg::PlantAction: { // (#335) fell a plant, sow or harvest farmland
+                MsgPlantAction a;
+                if (!it->second.joined || !NetRead(r, a)) return;
+                OnPlantAction(m.conn, it->second.session, a);
+                return;
+            }
             case NetMsg::CraftRequest: { // (#338) crafting on the server: the recipe unlocked for the player's team, the inputs in its inventory
                 MsgCraftRequest q;
                 if (!it->second.joined || !NetRead(r, q)) return;
@@ -1502,6 +1619,7 @@ void Host_Update(Scene& world) {
     StepGraves();         // (#804) deaths' drops, pickups, decay and the graves list to everyone
     StepTeamQuests(world); // (#338) team books: evaluate, pay, tell, send
     StepMachines(world);  // (#332) machines: near points, watched views, working states
+    StepPlants(world);    // (#335) plant removals to everyone, farm fields near each player
     SetInterestCentres(world); // (#334) and animals live around every player (#318's centres)
     SetAnimalTargets(world);   // (#334 slice 2) and mind them: flee, follow, hunt, bite
     GpuTimer_CpuMark("host: snapshots");

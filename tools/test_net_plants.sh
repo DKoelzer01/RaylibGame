@@ -1,0 +1,50 @@
+#!/bin/bash
+# Plants and farming on the server (#335). A peaceful --host (crops sown ripe: RAYLIBGAME_FARM_INSTANT) gives every joiner a
+# stone shovel and 2 grain seeds. "feller" fells the nearest bush or tree by request, then tills ground ahead with the
+# shovel (farmland placed by the server, free), sows grain there and harvests it once the server's fields show it ripe;
+# "watcher" only looks. Checks: the drops reached the feller by deltas; the plant is gone on both clients (one removal,
+# the same id); the watcher saw the crop come and go (FarmFields); the seeds left and the grain arrived by deltas.
+# EXE: a GNS build (default build/gns/bin/game.exe). PORT (27968). Prints "=== test_net_plants: PASS|FAIL". Git Bash.
+set -u
+here="$(cd "$(dirname "$0")/.." && pwd)"
+exe="${EXE:-$here/build/gns/bin/game.exe}"
+port="${PORT:-27968}"
+tmp="$(mktemp -d)"
+cd "$here"
+SECONDS=0
+printf 'erosion 0\n' > "$tmp/host.sav.worldgen"
+. "$here/tools/lib_netmem.sh"
+net_wait_for_memory 12 test_net_plants || exit 0
+RAYLIBGAME_FARM_INSTANT=1 RAYLIBGAME_HOST_DIFFICULTY=0 RAYLIBGAME_HOST_GIVE="stone_shovel 1,grain_seeds 2" "$exe" --host "$tmp/host.sav" --seed 42 --bench 600 --port "$port" > "$tmp/host.log" 2>&1 &
+hp=$!
+stop_host() { # #795: by the Windows PID too, only while it is still our game.exe
+    local w; w=$(cat "/proc/$hp/winpid" 2>/dev/null)
+    kill "$hp" 2>/dev/null
+    for _ in 1 2 3 4 5; do kill -0 "$hp" 2>/dev/null || break; sleep 1; done
+    wait "$hp" 2>/dev/null
+    if [ -n "$w" ] && tasklist //FI "PID eq $w" //FI "IMAGENAME eq game.exe" 2>/dev/null | grep -q game.exe; then taskkill //F //PID "$w" >/dev/null 2>&1; fi
+    true
+}
+trap stop_host EXIT
+until grep -q "listening on port" "$tmp/host.log" 2>/dev/null || ! kill -0 "$hp" 2>/dev/null || [ $SECONDS -gt 240 ]; do sleep 1; done
+until grep -q "world ready" "$tmp/host.log" 2>/dev/null || [ $SECONDS -gt 280 ]; do sleep 1; done
+join() { RAYLIBGAME_PLANTS_SECONDS=40 RAYLIBGAME_NET_PLANTS_ROLE=$1 timeout 300 "$exe" --join "127.0.0.1:$port" --name "$1" --bench 3 $NET_LIGHT_CLIENT --test-net-plants > "$tmp/$1.log" 2>&1; }
+join watcher & wp=$!
+sleep 2
+join feller
+wait $wp
+stop_host
+ok=1
+chk() { if [ "$1" = 1 ]; then echo "  ok: $2"; else echo "  MISSING: $2"; ok=0; fi; }
+f=$(grep -h "^bench: net plants (feller" "$tmp/feller.log"); w=$(grep -h "^bench: net plants (watcher" "$tmp/watcher.log"); echo "$f"; echo "$w"
+id=$(echo "$f" | sed -n 's/.*: plant \([0-9a-f]*\) standing.*/\1/p')
+chk "$(echo "$f" | grep -q "felled 1: plant [0-9a-f]* standing 0" && [ "$id" != 0 ] && echo 1)" "the feller's plant came down (the server's removal reached it)"
+drop=$(echo "$f" | grep -o "; [a-z_]* [0-9-]* -> [0-9-]* (+[0-9]* expected)")
+chk "$(echo "$drop" | awk '{gsub(/[(+]/, "", $6); exit !($5 + 0 == $3 + $6 && $6 + 0 > 0)}' && echo 1)" "its drops arrived by deltas ($drop)"
+chk "$(echo "$w" | grep -q "removals heard [1-9].*: $id\b" && echo "$w" | grep -q " $id" && echo 1)" "the watcher heard the same removal ($id)"
+f2=$(grep -h "^bench: net farm (feller" "$tmp/feller.log"); w2=$(grep -h "^bench: net farm (watcher" "$tmp/watcher.log"); echo "$f2"; echo "$w2"
+chk "$(echo "$f2" | grep -q "farmland 1; sown 1: seeds 2 -> [23];" && echo 1)" "the feller tilled (server farmland) and sowed (a seed out, 1-2 back with the harvest)"
+chk "$(echo "$f2" | grep -q "harvested 1: grain 0 -> [1-9]" && echo 1)" "it harvested the ripe crop: grain arrived by deltas"
+chk "$(echo "$w2" | grep -q "crop seen 1, gone 1" && echo 1)" "the watcher saw the crop grow and go (FarmFields)"
+echo "=== test_net_plants: $([ $ok = 1 ] && echo PASS || echo FAIL) after ${SECONDS} s ($tmp)"
+[ $ok = 1 ]

@@ -17,7 +17,7 @@
 #include <functional>
 #include <vector>
 
-constexpr uint32_t kNetProtocol = 25; // 1 was the text "join" of #311; 5: world time in Welcome and Pong (#339); 6 (unused); 7: world-gen settings in Welcome (#757); 8: terrain edit requests, refusals, inventory deltas (#329); 9: chat (#326); 10: building (#330); 11 is #776's; 12: player snapshots, delta-coded against acked states (#769); 13: animals (#334); 14: animal actions, damage to a player (#334); 15 (unused); 16: server-side survival (#337); 17: the suit colour in the loadout (#341); 18: beds (#800); 19: graves (#804); 20: the player id (UUID) in the hello (#346); 21: team quest books (#338); 22: crafting on the server (#338); 23: machines on the server (#332); 24 is #604's; 25: crafting from nearby chests, cursor takes (#854)
+constexpr uint32_t kNetProtocol = 27; // 1 was the text "join" of #311; 5: world time in Welcome and Pong (#339); 6 (unused); 7: world-gen settings in Welcome (#757); 8: terrain edit requests, refusals, inventory deltas (#329); 9: chat (#326); 10: building (#330); 11 is #776's; 12: player snapshots, delta-coded against acked states (#769); 13: animals (#334); 14: animal actions, damage to a player (#334); 15 (unused); 16: server-side survival (#337); 17: the suit colour in the loadout (#341); 18: beds (#800); 19: graves (#804); 20: the player id (UUID) in the hello (#346); 21: team quest books (#338); 22: crafting on the server (#338); 23: machines on the server (#332); 24 is #604's; 25: crafting from nearby chests, cursor takes (#854); 26 is #604's; 27: plants and farming (#335)
 
 enum class NetMsg : uint8_t {
     Hello = 1,     // client -> server: protocol, build, player name, password
@@ -57,6 +57,10 @@ enum class NetMsg : uint8_t {
     MachineAction = 34, // client -> server (#332): insert, extract, take a slot, fuel; watch / unwatch a machine's screen
     MachineView = 35,   // server -> client (#332): the full view of a machine it watches, a few times a second
     MachineStates = 36, // server -> client (#332): which machines of a plot work now (animations, smoke), when it changes
+    // 37 is #604's (TeamState)
+    PlantAction = 38,   // client -> server (#335): fell a plant (tree, bush, loose stone), plant or harvest a farmland part
+    Plants = 39,        // server -> client (#335): plants removed (id, world time: regrowth runs on the shared clock), at the join and as they go
+    FarmFields = 40,    // server -> client (#335): the crops on farmland near the client (crop, growth), when they change
     Count
 };
 const char* NetMsgName(NetMsg m);
@@ -210,6 +214,11 @@ struct MsgCraftRequest { uint32_t recipe = 0; std::string output; uint8_t count 
 struct MsgMachineAction { uint64_t body = 0; uint32_t plot = 0; int32_t part = -1; uint8_t action = 0; std::string item; uint16_t count = 0; uint8_t slot = 0, which = 0; };
 struct MsgMachineView { uint64_t body = 0; uint32_t plot = 0; int32_t part = -1; MachineView view; };
 struct MsgMachineStates { uint64_t body = 0; uint32_t plot = 0; std::vector<int32_t> working; };
+// (#335) plants and farming
+struct MsgPlantAction { uint8_t action = 0; uint64_t body = 0; uint64_t plant = 0; uint32_t plot = 0; int32_t part = -1; std::string seed; }; // 1 fell (plant), 2 sow (plot, part, seed), 3 harvest (plot, part)
+struct MsgPlants { uint64_t body = 0; uint32_t session = 0; std::vector<std::pair<uint64_t, double>> removed; }; // session: who felled them (0: the join's list)
+struct NetFarmField { uint32_t plot = 0; int32_t part = -1; std::string crop; float growth = 0.0f; };
+struct MsgFarmFields { uint64_t body = 0; std::vector<NetFarmField> fields; }; // every field on the body near the client (the full list: replaces)
 struct MsgGraves { // #804 (at most 256: the nearest matter, and a world with more has bigger problems)
     struct Entry { uint32_t id = 0; std::string body; DVec3 local{}; std::string owner, name; uint8_t style = 0; int64_t diedAt = 0; };
     std::vector<Entry> graves;
@@ -362,6 +371,12 @@ void NetWrite(NetWriter& w, const MsgMachineView& m);
 bool NetRead(NetReader& r, MsgMachineView& m);
 void NetWrite(NetWriter& w, const MsgMachineStates& m);
 bool NetRead(NetReader& r, MsgMachineStates& m);
+void NetWrite(NetWriter& w, const MsgPlantAction& m);
+bool NetRead(NetReader& r, MsgPlantAction& m);
+void NetWrite(NetWriter& w, const MsgPlants& m);
+bool NetRead(NetReader& r, MsgPlants& m);
+void NetWrite(NetWriter& w, const MsgFarmFields& m);
+bool NetRead(NetReader& r, MsgFarmFields& m);
 bool NetRead(NetReader& r, MsgGraves& m);
 void NetWrite(NetWriter& w, const MsgPlayerSnapshot& m);
 // lookup(session, baseSeq, out): the state of that player received in snapshot baseSeq (false: unknown - the entry can't be

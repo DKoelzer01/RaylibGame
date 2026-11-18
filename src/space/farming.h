@@ -27,6 +27,23 @@ void Farm_DrawAimHUD(const Planetoid& body, const Plot& plot, int part);
 // A shovel's RMB on soft ground: farmland there (no cost). Returns true if it tilled.
 bool Farm_Till(Scene& world, Planetoid& body, Vector3 localGround);
 void Farm_Reset();
+
+// Multiplayer (#335): the server owns the fields. A joined client's I / O / till are requests (set while joined); the
+// server sows and harvests from the player's inventory as it keeps it (no toasts, sounds or quest counts there: the
+// caller does those) and sends each client the fields near it (Farm_FieldsNear -> MsgFarmFields -> Farm_SetRemoteFields).
+#include <functional>
+#include <vector>
+class Inventory;
+struct NetFarmField;
+inline std::function<void(Planetoid& body, const Plot& plot, int part, bool harvest, const std::string& seed)> gFarmRequest;
+inline std::function<bool(Planetoid& body, Vector3 localGround)> gFarmTillRequest; // a till: a farmland part placed by the server
+bool Farm_SowFor(Inventory& inv, Planetoid& body, Plot& plot, int part, const std::string& seed, std::string* why = nullptr);
+int Farm_HarvestFor(Inventory& inv, Planetoid& body, Plot& plot, int part, std::string* why = nullptr);
+void Farm_FieldsNear(const Planetoid& body, Vector3 local, float range, std::vector<NetFarmField>& out);
+void Farm_SetRemoteFields(const Planetoid& body, const std::vector<NetFarmField>& fields); // replaces that body's fields
+// The farmland part a till at localGround makes (a new plot: plot = nullptr, the part at the origin; anchor = localGround).
+bool Farm_TillPart(Planetoid& body, Vector3 localGround, Plot*& plot, struct Part& part);
+
 void Farm_Save(FILE* f);
 bool Farm_LoadLine(const char* tok, FILE* f);
 
