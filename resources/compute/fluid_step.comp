@@ -570,6 +570,14 @@ void main() {
             if (units <= 0) continue;
             atomicAdd(col[giver].delta, -units);
             atomicAdd(col[taker].delta, units);
+            // The flow readout (#392): the move crosses the giver's and the taker's facing sides, as a face flow does
+            // (the face loop's fx / fy stay 0 under columns: a meter read nothing).
+            int along = (aGives ? units : -units) * (k < 2 ? 1 : -1);
+            for (int e = 0; e < 2; ++e) {
+                int cell = e == 0 ? giver : taker;
+                int w = watchOf[uint(cell) / 4096u];
+                if (w >= 0) atomicAdd(flux[(uint(w) * 4096u + uint(cell) % 4096u) * 4u + uint(k & 1)], along);
+            }
         }
         faceN[g] = uvec4(packHalf2x16(Q.xy), packHalf2x16(Q.zw), n4.z, n4.w);
         return;
