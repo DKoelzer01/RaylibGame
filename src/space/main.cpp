@@ -6547,6 +6547,16 @@ int main(int argc, char** argv)
                                 else {
                                     ws = pf->waterSourceAt(d);
                                     if (!ws.kind || ws.kind == 3 || ws.level <= 2.0f || pf->elevation(d) > ws.level - 1.5f) continue;
+                                    // Flat, wide water (#723): 6 m out, at least two of the four directions are water and none of it
+                                    // stands more than 0.3 m off this level. After the 2026-11-17 terrain merges seed 42's nearest pick
+                                    // was a 2 m mountain stream climbing 0.4 m a metre, which a level channel cut off its side never drains.
+                                    int wide = 0; bool flat = true;
+                                    for (const Vector3& o : { t1, Vector3Negate(t1), t2, Vector3Negate(t2) }) {
+                                        const PlanetField::WaterSource wn = pf->waterSourceAt(Vector3Normalize(Vector3Add(d, Vector3Scale(o, 6.0f / pf->radius))));
+                                        if (!wn.kind) continue;
+                                        ++wide; flat = flat && fabsf(wn.level - ws.level) < 0.3f;
+                                    }
+                                    if (wide < 2 || !flat) continue;
                                 }
                                 // A shore within 25 m in one of four directions, low enough to cut through.
                                 const Vector3 outs[4] = { t1, Vector3Negate(t1), t2, Vector3Negate(t2) };
