@@ -15,7 +15,7 @@
 #include <string>
 #include <vector>
 
-constexpr uint32_t kNetProtocol = 9; // 1 was the text "join" of #311; 5: world time in Welcome and Pong (#339); 6 (unused); 7: world-gen settings in Welcome (#757); 8: terrain edit requests, refusals, inventory deltas (#329); 9: chat and the motd (#326)
+constexpr uint32_t kNetProtocol = 10; // 1 was the text "join" of #311; 5: world time in Welcome and Pong (#339); 6 (unused); 7: world-gen settings in Welcome (#757); 8: terrain edit requests, refusals, inventory deltas (#329); 9: chat (#326); 10: building (#330)
 
 enum class NetMsg : uint8_t {
     Hello = 1,     // client -> server: protocol, build, player name, password
@@ -34,6 +34,9 @@ enum class NetMsg : uint8_t {
     EditRefused,   // server -> client: that request was refused (why)
     InventoryDelta, // server -> client: an item added to or taken from that player's inventory (the server's is the truth)
     Chat,          // either way (#326): a chat line; from the server (session 0: "say", replies to ops' commands) or a player
+    PartRequest,   // client -> server: place a part (into a plot, or a new one) or break one (#330)
+    PartRefused,   // server -> client: that request was refused (why)
+    PlotEdit,      // server -> client: a plot made, a part placed or removed, in the server's order (#330)
     Count
 };
 const char* NetMsgName(NetMsg m);
@@ -173,6 +176,33 @@ enum class NetEditRefusal : uint8_t { Reach, Rate, Tool, Cost, Body, Mantle, Sha
 const char* NetEditRefusalText(NetEditRefusal r);
 struct MsgEditRefused { uint32_t seq = 0; NetEditRefusal why = NetEditRefusal::Reach; };
 struct MsgInventoryDelta { std::string item; double amount = 0.0; }; // > 0 added, < 0 taken (fractional, as the inventory)
+// Building (#330): as terrain edits. The client asks to place a part (into a plot, or a new plot anchored at a body-local
+// point) or to break one; the server checks reach, the part, its room and its cost on that player's inventory, applies
+// it, refunds or charges (InventoryDelta), and sends PlotEdits to everyone in its order. A new plot comes first as its
+// own PlotEdit with the server's id and the exact float anchor, so every client makes the same plot.
+struct NetPart { uint8_t type = 0; int32_t x = 0, y = 0, z = 0; uint8_t orient = 0, material = 0; }; // a Part (plots.h)
+enum class NetPartOp : uint8_t { Place = 0, Remove = 1, NewPlot = 2, Count };
+struct MsgPartRequest {
+    uint32_t seq = 0;
+    NetPartOp op = NetPartOp::Place;  // Place or Remove
+    uint64_t body = 0;                // NetId
+    uint32_t plot = 0;                // 0: place into a new plot at `anchor`
+    float anchor[3] = { 0, 0, 0 };    // the new plot's body-local anchor (exact floats: the plot frame is built from them)
+    NetPart part;                     // Place
+    uint32_t partIndex = 0;           // Remove
+};
+enum class NetPartRefusal : uint8_t { Reach, Cost, Blocked, NoPlot, NoPart, Body, Kind, Rate, Count };
+const char* NetPartRefusalText(NetPartRefusal r);
+struct MsgPartRefused { uint32_t seq = 0; NetPartRefusal why = NetPartRefusal::Reach; };
+struct MsgPlotEdit {
+    uint32_t session = 0, seq = 0;    // whose request (0: the server's own)
+    NetPartOp op = NetPartOp::Place;
+    uint64_t body = 0;
+    uint32_t plot = 0;
+    float anchor[3] = { 0, 0, 0 };    // NewPlot
+    NetPart part;                     // Place
+    uint32_t partIndex = 0;           // Remove
+};
 struct MsgChat { uint32_t from = 0; std::string text; }; // #326: from = the sender's session (0 the server; a client's own is ignored)
 
 void NetWrite(NetWriter& w, const MsgHello& m);
@@ -190,6 +220,9 @@ void NetWrite(NetWriter& w, const MsgLoadout& m);
 void NetWrite(NetWriter& w, const MsgEditRequest& m);
 void NetWrite(NetWriter& w, const MsgEditRefused& m);
 void NetWrite(NetWriter& w, const MsgInventoryDelta& m);
+void NetWrite(NetWriter& w, const MsgPartRequest& m);
+void NetWrite(NetWriter& w, const MsgPartRefused& m);
+void NetWrite(NetWriter& w, const MsgPlotEdit& m);
 void NetWrite(NetWriter& w, const MsgChat& m);
 bool NetRead(NetReader& r, MsgHello& m);
 bool NetRead(NetReader& r, MsgWelcome& m);
@@ -206,6 +239,9 @@ bool NetRead(NetReader& r, MsgLoadout& m);
 bool NetRead(NetReader& r, MsgEditRequest& m);
 bool NetRead(NetReader& r, MsgEditRefused& m);
 bool NetRead(NetReader& r, MsgInventoryDelta& m);
+bool NetRead(NetReader& r, MsgPartRequest& m);
+bool NetRead(NetReader& r, MsgPartRefused& m);
+bool NetRead(NetReader& r, MsgPlotEdit& m);
 bool NetRead(NetReader& r, MsgChat& m);
 // A message's id (the first byte; NetMsg::Count if empty or unknown).
 NetMsg NetPeek(const std::vector<uint8_t>& bytes);

@@ -16,5 +16,7 @@ void GpuTimer_CpuMark(const char* name);
 void GpuTimer_PrintCpu();
 // In-game perf log (#204, --perf-log): the averages so far to log.txt (tagged), then reset.
 void GpuTimer_LogAndReset(const char* tag);
+// Slow-frame reports (#768): frames over `ms` of CPU are printed with their passes, at most `limit` (default 20 ms, 60).
+void GpuTimer_SetSlowReport(double ms, int limit);
 
 #endif

@@ -11,6 +11,7 @@ const char* NetMsgName(NetMsg m) {
         case NetMsg::Hello: return "hello"; case NetMsg::Welcome: return "welcome"; case NetMsg::Reject: return "reject";
         case NetMsg::Bye: return "bye"; case NetMsg::Ping: return "ping"; case NetMsg::Pong: return "pong";
         case NetMsg::Input: return "input"; case NetMsg::PlayerState: return "player state"; case NetMsg::TerrainEdit: return "terrain edit"; case NetMsg::Shower: return "shower"; case NetMsg::Roster: return "roster"; case NetMsg::Loadout: return "loadout";
+        case NetMsg::PartRequest: return "part request"; case NetMsg::PartRefused: return "part refused"; case NetMsg::PlotEdit: return "plot edit";
         case NetMsg::EditRequest: return "edit request"; case NetMsg::EditRefused: return "edit refused"; case NetMsg::InventoryDelta: return "inventory delta"; case NetMsg::Chat: return "chat";
         default: return "?";
     }
@@ -226,6 +227,78 @@ bool NetRead(NetReader& r, MsgInventoryDelta& m) {
     return Done(r);
 }
 
+// ---- Building (#330) ----
+const char* NetPartRefusalText(NetPartRefusal r) {
+    switch (r) {
+        case NetPartRefusal::Reach: return "out of reach"; case NetPartRefusal::Cost: return "not enough to build it";
+        case NetPartRefusal::Blocked: return "something is in the way"; case NetPartRefusal::NoPlot: return "no such plot";
+        case NetPartRefusal::NoPart: return "no such part"; case NetPartRefusal::Body: return "no such body";
+        case NetPartRefusal::Kind: return "not a part players build"; case NetPartRefusal::Rate: return "too fast";
+        default: return "?";
+    }
+}
+static void WritePart(NetWriter& w, const NetPart& p) { w.u8(p.type); w.vari(p.x); w.vari(p.y); w.vari(p.z); w.u8(p.orient); w.u8(p.material); }
+static void ReadPart(NetReader& r, NetPart& p) {
+    p.type = r.u8();
+    const int64_t x = r.vari(), y = r.vari(), z = r.vari();
+    if (std::llabs(x) > 1000000 || std::llabs(y) > 1000000 || std::llabs(z) > 1000000) r.ok = false; // cells: half a metre each
+    p.x = (int32_t)x; p.y = (int32_t)y; p.z = (int32_t)z;
+    p.orient = r.u8(); p.material = r.u8();
+    if (p.orient >= 24) r.ok = false;
+}
+static void ReadAnchor(NetReader& r, float a[3]) { a[0] = r.f32(); a[1] = r.f32(); a[2] = r.f32(); for (int i = 0; i < 3; ++i) if (!(std::fabs(a[i]) < 1e8f)) r.ok = false; }
+void NetWrite(NetWriter& w, const MsgPartRequest& m) {
+    Id(w, NetMsg::PartRequest);
+    w.u32(m.seq); w.u8((uint8_t)m.op); w.varu(m.body); w.varu(m.plot);
+    if (m.op == NetPartOp::Place) { if (m.plot == 0) { w.f32(m.anchor[0]); w.f32(m.anchor[1]); w.f32(m.anchor[2]); } WritePart(w, m.part); }
+    else w.varu(m.partIndex);
+}
+bool NetRead(NetReader& r, MsgPartRequest& m) {
+    m.seq = r.u32();
+    const uint8_t op = r.u8();
+    if (op > (uint8_t)NetPartOp::Remove) r.ok = false;
+    m.op = (NetPartOp)op; m.body = r.varu();
+    const uint64_t plot = r.varu();
+    if (plot > 0xFFFFFFFFull) r.ok = false;
+    m.plot = (uint32_t)plot;
+    if (m.op == NetPartOp::Place) { if (m.plot == 0) ReadAnchor(r, m.anchor); ReadPart(r, m.part); }
+    else {
+        const uint64_t i = r.varu();
+        if (i > 0xFFFFFFFFull || m.plot == 0) r.ok = false;
+        m.partIndex = (uint32_t)i;
+    }
+    return Done(r);
+}
+void NetWrite(NetWriter& w, const MsgPartRefused& m) { Id(w, NetMsg::PartRefused); w.u32(m.seq); w.u8((uint8_t)m.why); }
+bool NetRead(NetReader& r, MsgPartRefused& m) {
+    m.seq = r.u32();
+    const uint8_t why = r.u8();
+    if (why >= (uint8_t)NetPartRefusal::Count) r.ok = false;
+    m.why = (NetPartRefusal)why;
+    return Done(r);
+}
+void NetWrite(NetWriter& w, const MsgPlotEdit& m) {
+    Id(w, NetMsg::PlotEdit);
+    w.varu(m.session); w.u32(m.seq); w.u8((uint8_t)m.op); w.varu(m.body); w.varu(m.plot);
+    if (m.op == NetPartOp::NewPlot) { w.f32(m.anchor[0]); w.f32(m.anchor[1]); w.f32(m.anchor[2]); }
+    else if (m.op == NetPartOp::Place) WritePart(w, m.part);
+    else w.varu(m.partIndex);
+}
+bool NetRead(NetReader& r, MsgPlotEdit& m) {
+    const uint64_t s = r.varu();
+    m.session = (uint32_t)s; m.seq = r.u32();
+    const uint8_t op = r.u8();
+    if (op >= (uint8_t)NetPartOp::Count || s > 0xFFFFFFFFull) r.ok = false;
+    m.op = (NetPartOp)op; m.body = r.varu();
+    const uint64_t plot = r.varu();
+    if (plot == 0 || plot > 0xFFFFFFFFull) r.ok = false;
+    m.plot = (uint32_t)plot;
+    if (m.op == NetPartOp::NewPlot) ReadAnchor(r, m.anchor);
+    else if (m.op == NetPartOp::Place) ReadPart(r, m.part);
+    else { const uint64_t i = r.varu(); if (i > 0xFFFFFFFFull) r.ok = false; m.partIndex = (uint32_t)i; }
+    return Done(r);
+}
+
 void NetWrite(NetWriter& w, const MsgShower& m) { Id(w, NetMsg::Shower); w.f64(m.start); w.f64(m.end); w.u32(m.id); }
 bool NetRead(NetReader& r, MsgShower& m) { m.start = r.f64(); m.end = r.f64(); m.id = r.u32(); return Done(r); }
 
@@ -295,6 +368,9 @@ bool ParseAny(const std::vector<uint8_t>& b) {
         case NetMsg::EditRequest: { MsgEditRequest m; return NetRead(r, m); }
         case NetMsg::EditRefused: { MsgEditRefused m; return NetRead(r, m); }
         case NetMsg::InventoryDelta: { MsgInventoryDelta m; return NetRead(r, m); }
+        case NetMsg::PartRequest: { MsgPartRequest m; return NetRead(r, m); }
+        case NetMsg::PartRefused: { MsgPartRefused m; return NetRead(r, m); }
+        case NetMsg::PlotEdit: { MsgPlotEdit m; return NetRead(r, m); }
         case NetMsg::Chat: { MsgChat m; return NetRead(r, m); }
         default: return false;
     }
@@ -363,6 +439,27 @@ bool NetProto_Test() {
     }
     { MsgEditRefused a{ 9, NetEditRefusal::Cost }, b; std::vector<uint8_t> s; check(RoundTrip(a, b, &s) && b.seq == 9 && b.why == NetEditRefusal::Cost, "edit refused"); samples.push_back(s); }
     { MsgInventoryDelta a{ "gravel", -0.375 }, b; std::vector<uint8_t> s; check(RoundTrip(a, b, &s) && b.item == "gravel" && b.amount == -0.375, "inventory delta"); samples.push_back(s); }
+    {
+        MsgPartRequest a, b; a.seq = 4; a.op = NetPartOp::Place; a.body = 2; a.plot = 0; a.anchor[0] = 12.5f; a.anchor[1] = 59991.123f; a.anchor[2] = -3.0f;
+        a.part = { 1, -3, 7, 120, 5, 2 };
+        std::vector<uint8_t> s;
+        check(RoundTrip(a, b, &s) && b.seq == 4 && b.op == NetPartOp::Place && b.plot == 0 && b.anchor[1] == a.anchor[1] && b.part.type == 1 && b.part.x == -3 && b.part.z == 120 &&
+              b.part.orient == 5 && b.part.material == 2, "part request (a new plot)");
+        samples.push_back(s);
+        MsgPartRequest c, d; c.seq = 5; c.op = NetPartOp::Remove; c.body = 2; c.plot = 3; c.partIndex = 17;
+        check(RoundTrip(c, d, &s) && d.op == NetPartOp::Remove && d.plot == 3 && d.partIndex == 17, "part request (remove)");
+        samples.push_back(s);
+    }
+    { MsgPartRefused a{ 6, NetPartRefusal::Blocked }, b; std::vector<uint8_t> s; check(RoundTrip(a, b, &s) && b.seq == 6 && b.why == NetPartRefusal::Blocked, "part refused"); samples.push_back(s); }
+    {
+        MsgPlotEdit a, b; a.session = 2; a.seq = 4; a.op = NetPartOp::NewPlot; a.body = 2; a.plot = 9; a.anchor[0] = 1.25f; a.anchor[1] = 60000.0625f; a.anchor[2] = 0.5f;
+        std::vector<uint8_t> s;
+        check(RoundTrip(a, b, &s) && b.session == 2 && b.op == NetPartOp::NewPlot && b.plot == 9 && b.anchor[1] == a.anchor[1], "plot edit (new plot)");
+        samples.push_back(s);
+        MsgPlotEdit c, d; c.session = 2; c.seq = 4; c.op = NetPartOp::Place; c.body = 2; c.plot = 9; c.part = { 9, 0, 1, 0, 3, 0 };
+        check(RoundTrip(c, d, &s) && d.op == NetPartOp::Place && d.part.type == 9 && d.part.y == 1 && d.part.orient == 3, "plot edit (place)");
+        samples.push_back(s);
+    }
     { MsgChat a{ 3, "hello, world" }, b; std::vector<uint8_t> s; check(RoundTrip(a, b, &s) && b.from == 3 && b.text == "hello, world", "chat"); samples.push_back(s); }
     { MsgRoster a, b; a.players = { { 1, "alice" }, { 7, "bob" } }; std::vector<uint8_t> s; check(RoundTrip(a, b, &s) && b.players.size() == 2 && b.players[1].session == 7 && b.players[1].name == "bob", "roster"); samples.push_back(s); }
     { MsgLoadout a{ 3, "stone_pickaxe", true, 2 }, b; std::vector<uint8_t> s; check(RoundTrip(a, b, &s) && b.session == 3 && b.held == "stone_pickaxe" && b.headlamp && b.suitTier == 2, "loadout"); samples.push_back(s); }

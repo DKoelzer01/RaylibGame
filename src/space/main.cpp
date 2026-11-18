@@ -105,7 +105,15 @@ static std::vector<AvatarState> gAvatars, gBenchAvatars;
 static NetClient gJoin;
 static bool gJoinSynced = false;
 // #348: the server soak window (RAYLIBGAME_SOAK_PLAYERS=N): frame work times while N players are online.
-static double gFrameWorkStart = 0.0;
+static double gFrameWorkStart = 0.0, gFrameCpuStart = 0.0;
+// The main thread's CPU time in seconds (#768: a long frame with little CPU was the process starved, not slow code).
+#ifdef _WIN32
+extern "C" __declspec(dllimport) int __stdcall GetThreadTimes(void*, void*, void*, void*, void*);
+extern "C" __declspec(dllimport) void* __stdcall GetCurrentThread();
+static double ThreadCpuSeconds() { unsigned long long c, e, k, u; GetThreadTimes(GetCurrentThread(), &c, &e, &k, &u); return (double)(k + u) * 1e-7; }
+#else
+static double ThreadCpuSeconds() { return 0.0; }
+#endif
 static std::vector<float> gSoakWorkMs;
 static bool gSoakOn = false;
 #include "mpbots.h"
@@ -506,8 +514,10 @@ int main(int argc, char** argv)
     uint16_t hostPort = kDefaultHostPort; // --port N
     bool benchHost = false;        // --test-host (#311): with --host, a loopback client joins
     bool benchTimeFollow = false;  // --test-time-follow (#339): the world clock follows a server time (slew, snap)
+    int benchPlayerCost = 0;       // --test-player-cost N (#768): N players stepped as a server steps them; cost per update
     bool benchNetMove = false;     // --test-net-move (#327): two clients, prediction and interpolation over loopback
     bool benchNetDig = false;      // --test-net-dig (#329): a client's digs and places, validated and replicated
+    bool benchNetBuild = false;    // --test-net-build (#330): a client's parts placed and broken, validated and replicated
     int benchMpBots = 0;           // --test-mp-bots N (#347): with --host, N bot clients join, ping and churn
     bool seedGiven = false;        // --seed N was passed (a --host new world: else a random seed)
     double autosaveMinutes = kDefaultAutosaveMinutes; // --autosave-minutes N (--host; 0 = off)
@@ -755,8 +765,10 @@ int main(int argc, char** argv)
         if (std::string(argv[i]) == "--max-players" && i + 1 < argc) Host_SetMaxPlayers(atoi(argv[i + 1]));
         if (std::string(argv[i]) == "--test-host") benchHost = true;
         if (std::string(argv[i]) == "--test-time-follow") benchTimeFollow = true;
+        if (std::string(argv[i]) == "--test-player-cost" && i + 1 < argc) benchPlayerCost = std::max(1, atoi(argv[i + 1]));
         if (std::string(argv[i]) == "--test-net-move") benchNetMove = true;
         if (std::string(argv[i]) == "--test-net-dig") benchNetDig = true;
+        if (std::string(argv[i]) == "--test-net-build") benchNetBuild = true;
         if (std::string(argv[i]) == "--test-mp-bots" && i + 1 < argc) benchMpBots = std::max(1, atoi(argv[i + 1]));
         if (std::string(argv[i]) == "--seed") seedGiven = true;
         if (std::string(argv[i]) == "--server") { // (#326) the config first; flags after it override
@@ -1951,6 +1963,7 @@ int main(int argc, char** argv)
         Recorder_Update(WorldIdle() && !loading); // its start delay (after the loading screen), F10 in normal play
         GpuTimer_CpuFrameStart(!loading); GpuTimer_BeginFrame();
         gFrameWorkStart = GetTime(); // (#348) the frame's work, up to EndDrawing's wait
+        if (gSoakOn) gFrameCpuStart = ThreadCpuSeconds(); // (#768)
         FpsLog_Frame(gameState == 0 ? "menu" : gameState == 3 ? "newworld" : gameState == 2 ? "paused" : loading ? "loading" : "play");
         // --bench-unfocus S (#510): 1 unfocused during the preload for S s; then, playing: 2 measure 5 s, 3 unfocused S s,
         // 4 settle 2 s, 5 measure 5 s, then FPS before/after.
@@ -5916,12 +5929,19 @@ int main(int argc, char** argv)
                         if (EnvFlag("DBCAM") && dbPhase == 3) { world.camera.position = p->toWorld(pt(7.0f, -7.0f, 6.0f)); world.camera.target = p->toWorld(pt(7.0f, 0.0f, -2.0f)); } // #680 diagnosis: the channel below the dam
                         world.camera.up = p->dirToWorld(home);
                         player.flyMode = true; player.position = world.renderOrigin + world.camera.position;
+<<<<<<< HEAD
                         if (dbPhase == 1 && t > 1.0 && WorldIdle()) {
                             // Fill the reservoir to 2 m: 160 m^3 at 2.5 m^3/s, 1 m^3 at a time moving over the floor (#691: a pour every
                             // frame - 60 m^3/s - piled mounds over the rim faster than water spreads, and they spilled onto the grass;
                             // #680: at 5 m^3/s the column model's pour points mounded and ~30 m^3 found no room, #766).
+=======
+                        if (dbPhase == 1 && t > 1.0 && (dbPoured > 0.0f || WorldIdle())) { // idle to start; then on (#747: a slow CPU step kept the world busy)
+                            // Fill the reservoir to 2 m: 160 m^3 at 5 m^3/s, 1 m^3 at a time moving over the floor (#691: a pour every
+                            // frame - 60 m^3/s - piled mounds over the rim faster than water spreads, and they spilled onto the grass).
+>>>>>>> m172-cpu-front
                             static int k = 0;
-                            static double nextPour = 0.0;
+                            static double nextPour = 0.0, fillPrint = 0.0;
+                            if (t - fillPrint >= 1.0) { fillPrint = t; printf("bench: dam-break t=%.0f s: filling, %.0f m^3 poured\n", t, dbPoured); }
                             if (t >= nextPour) {
                                 nextPour = t + 0.4;
                                 const float x = -19.0f + 2.0f * (float)(k % 10), y = (k / 10) % 2 ? 1.0f : -1.0f;
@@ -8638,7 +8658,7 @@ int main(int argc, char** argv)
                         }
                         benchWalkSeconds = 0.0;
                     }
-                } else if ((WorldIdle() && benchDigStrokes == 0 && !benchPaint && !benchSaveLoad && benchWalkSeconds <= 0.0 && benchMineStrokes == 0 && minePhase != 2 && benchFlySeconds <= 0.0 && !benchSuffocate && benchOrbitSeconds <= 0.0 && !benchRide && !benchPark && !benchGravity && !benchPrecision && !benchMantle && !benchAirJump && !benchMoon && !benchHole && !benchWall && !benchDoorway && !benchLedge && !benchTor && !benchMachines && !benchFall && !benchHover && !benchNetIds && !benchNet && !benchTwoPlayers && !benchFingerprint && !benchInterest && !benchTeleClose && !benchMenus && !benchWater && !benchFlyFollow && !benchHotbar && !benchInventory && !benchMap && !benchViewmodel && !benchQuests && !benchHunger && !benchFarm && !benchAnimals && !benchThreats && !benchAnimalPath && !benchDam && !benchFlowMeter && !benchPartWall && !benchPressure && benchShotTabs == 0 && !benchForest && !benchFlow && !benchPond && !benchBucket && !benchWaterSpeed && benchFluidLoad <= 0.0f && !benchFlowShade && !benchPump && !benchTerrain && !benchWind && !benchCampfire && !benchCaveMouth && !benchMountain && !benchShelter && !benchRoom && !benchFacing && !benchDungeon && !benchPosture && !benchPause && !benchBite && !benchPlacement && !benchShotDig && !benchShadow && !benchParticles && !benchBiomes && !benchOil && !benchSpring && !benchShotAnimals && !benchShotAvatar && !benchShotMachines && benchShotBiomes < 0 && !benchFarForest && !benchRecipes && !benchWeather && !benchDecor && !benchMaterials && !benchDamage && !benchCrafting && !benchSuit && !benchTools && !benchRivers && !benchRing && !benchRocket && !benchStation && !benchBlueprint && !benchSmallBody && !benchTrees && !benchChop && benchPersist == 0 && benchBuild == 0 && benchFactory == 0 && !benchCombat && !benchHost && !benchJoin && !benchTimeFollow && !benchNetMove && !benchNetDig && benchMpBots == 0 && !benchShower && !benchProgression && (benchUnfocus <= 0.0f || unfocusPhase >= 6)) || GetTime() > 600.0) {
+                } else if ((WorldIdle() && benchDigStrokes == 0 && !benchPaint && !benchSaveLoad && benchWalkSeconds <= 0.0 && benchMineStrokes == 0 && minePhase != 2 && benchFlySeconds <= 0.0 && !benchSuffocate && benchOrbitSeconds <= 0.0 && !benchRide && !benchPark && !benchGravity && !benchPrecision && !benchMantle && !benchAirJump && !benchMoon && !benchHole && !benchWall && !benchDoorway && !benchLedge && !benchTor && !benchMachines && !benchFall && !benchHover && !benchNetIds && !benchNet && !benchTwoPlayers && !benchFingerprint && !benchInterest && !benchTeleClose && !benchMenus && !benchWater && !benchFlyFollow && !benchHotbar && !benchInventory && !benchMap && !benchViewmodel && !benchQuests && !benchHunger && !benchFarm && !benchAnimals && !benchThreats && !benchAnimalPath && !benchDam && !benchFlowMeter && !benchPartWall && !benchPressure && benchShotTabs == 0 && !benchForest && !benchFlow && !benchPond && !benchBucket && !benchWaterSpeed && benchFluidLoad <= 0.0f && !benchFlowShade && !benchPump && !benchTerrain && !benchWind && !benchCampfire && !benchCaveMouth && !benchMountain && !benchShelter && !benchRoom && !benchFacing && !benchDungeon && !benchPosture && !benchPause && !benchBite && !benchPlacement && !benchShotDig && !benchShadow && !benchParticles && !benchBiomes && !benchOil && !benchSpring && !benchShotAnimals && !benchShotAvatar && !benchShotMachines && benchShotBiomes < 0 && !benchFarForest && !benchRecipes && !benchWeather && !benchDecor && !benchMaterials && !benchDamage && !benchCrafting && !benchSuit && !benchTools && !benchRivers && !benchRing && !benchRocket && !benchStation && !benchBlueprint && !benchSmallBody && !benchTrees && !benchChop && benchPersist == 0 && benchBuild == 0 && benchFactory == 0 && !benchCombat && !benchHost && !benchJoin && !benchTimeFollow && benchPlayerCost == 0 && !benchNetMove && !benchNetDig && !benchNetBuild && benchMpBots == 0 && !benchShower && !benchProgression && (benchUnfocus <= 0.0f || unfocusPhase >= 6)) || GetTime() > 600.0) {
                     benchStart = GetTime();
                     printf("bench: world ready after %.2f s (%d chunks, avg build %.2f ms of which sampling %.2f ms, %d worker threads)\n",
                         GetWorldStats().lastGenerationSeconds, GetWorldStats().chunks, GetWorldStats().avgBuildMs, GetWorldStats().avgSampleMs, GetWorldStats().workerThreads);
@@ -9051,7 +9071,7 @@ int main(int argc, char** argv)
                 const double maxSecs = getenv("RAYLIBGAME_SOAK_SECONDS") ? atof(getenv("RAYLIBGAME_SOAK_SECONDS")) : 1e9;
                 const int online = Host_OnlinePlayers();
                 if (!gSoakOn && !soakDone && online >= want) {
-                    gSoakOn = true; soakT0 = GetTime(); gSoakWorkMs.clear(); Net_ResetTraffic(); GpuTimer_Enable(true);
+                    gSoakOn = true; soakT0 = GetTime(); gSoakWorkMs.clear(); Net_ResetTraffic(); GpuTimer_Enable(true); GpuTimer_SetSlowReport(30.0, 1000); // (#768: every frame over 30 ms, with its passes)
                     printf("host: soak: %d players online: measuring\n", online);
                 } else if (gSoakOn && (online < want || GetTime() - soakT0 > maxSecs)) {
                     gSoakOn = false; soakDone = true;
@@ -9939,6 +9959,120 @@ int main(int argc, char** argv)
                 if (phase < 2 && GetTime() - t0 > 20.0) { printf("bench: net dig: bob %s, carol %s after 20 s -> FAIL\n", NetClient_StateName(bob.state), NetClient_StateName(carol.state)); benchNetDig = false; }
             }
         }
+        // --test-net-build (#330, with --host <save>, ENABLE_GNS): bob gets 3 concrete (the admin give) and builds beside where
+        // the server has him: a cube into a new plot, a cube on it; then a cube where one is (blocked), one 30 m off (reach),
+        // breaks the first (refunded), and a block that needs 4 (cost). carol watches. Checks: both clients got every plot
+        // edit in the same order (the new plot first), the server's plot holds the one cube left at the right cell, bob's
+        // inventory (rebuilt only from deltas) matches the server's, and each refusal came back. The camera watches.
+        if (benchNetBuild && gameState == 1 && !loading && WorldIdle()) {
+            static NetClient bob, carol;
+            static Inventory bobInv, carolInv;
+            static Player bobSelf;
+            static bool synced = false;
+            static long long stepped = 0;
+            static int phase = 0, step = 0;
+            static double t0 = 0.0, syncedAt = 0.0, lastStepAt = 0.0;
+            static Planetoid* body = nullptr;
+            static Vector3 up{}, anchor{};
+            if (!Host_Listening()) { printf("bench: net build: needs --host with ENABLE_GNS -> SKIP\n"); benchNetBuild = false; }
+            else {
+                const char* addr = TextFormat("127.0.0.1:%d", hostPort);
+                NetClient_Update(bob); NetClient_Update(carol);
+                if (!synced && bob.state == NetClient::State::Joined && bob.haveOwn)
+                    if (Planetoid* b = Planetoid::findNet(bob.own.body)) {
+                        bobSelf.spawnOn(world, *b, b->dirToWorld(Vector3Normalize(bob.own.local.toFloat())));
+                        bobSelf.applyNetState(world, NetClient_FromMsg(bob.own));
+                        synced = true; stepped = SimTick(); syncedAt = GetTime();
+                    }
+                if (synced) for (; stepped < SimTick(); ++stepped) { PlayerInput idle; NetClient_Step(bob, world, bobSelf, idle); } // (he stands still)
+                if (phase == 0) { Net_SetFakeConditions(50, 2.0f); NetClient_Connect(bob, addr, "bob"); NetClient_Connect(carol, addr, "carol"); phase = 1; t0 = GetTime(); }
+                else if (phase == 1 && carol.state == NetClient::State::Joined && synced && GetTime() - syncedAt > 2.0) {
+                    bob.inventory = &bobInv; carol.inventory = &carolInv;
+                    carol.keepPlotLog = true; // replayed into a plot set of her own at the end (the world here is the server's)
+                    Host_Give(bob.welcome.session, "concrete", 3);
+                    // The anchor: the ground 2 m east of the server's bob.
+                    uint64_t bid = 0; DVec3 feet{};
+                    bool found = false;
+                    if (Host_PlayerLocal(world, bob.welcome.session, bid, feet) && (body = Planetoid::findNet(bid))) {
+                        up = Vector3Normalize(feet.toFloat());
+                        Vector3 east = Vector3CrossProduct({ 0, 1, 0 }, up);
+                        east = Vector3Normalize(Vector3Length(east) < 1e-3f ? Vector3{ 1, 0, 0 } : east);
+                        const Vector3 d = Vector3Normalize(Vector3Add(feet.toFloat(), Vector3Scale(east, 2.0f)));
+                        for (float r = (float)feet.length() + 1.5f; r >= (float)feet.length() - 3.0f && !found; r -= 0.02f)
+                            if (body->densityAt(Vector3Scale(d, r)) >= ISO_LEVEL) { anchor = Vector3Scale(d, r); found = true; }
+                    }
+                    if (found) { phase = 2; step = 0; t0 = GetTime(); }
+                    else { printf("bench: net build: no ground beside bob -> FAIL\n"); benchNetBuild = false; }
+                } else if (phase == 2) {
+                    constexpr int kSteps = 6;
+                    if (step < kSteps && GetTime() - t0 > 0.5 * step) {
+                        Part cube{}; cube.type = PartType::Cube; cube.orient = 0; cube.material = 0; // concrete
+                        Plot* plot = body->plots ? body->plots->byId(bob.lastNewPlot) : nullptr;
+                        if (step == 0) NetClient_RequestPart(bob, *body, nullptr, anchor, cube, false, -1);                                  // a new plot
+                        else if (step == 1 && plot) { cube.origin = { 0, 1, 0 }; NetClient_RequestPart(bob, *body, plot, anchor, cube, false, -1); } // on top
+                        else if (step == 2 && plot) { cube.origin = { 0, 1, 0 }; NetClient_RequestPart(bob, *body, plot, anchor, cube, false, -1); } // blocked
+                        else if (step == 3) {
+                            const Vector3 far = Vector3Add(anchor, Vector3Scale(Vector3Normalize(Vector3CrossProduct(up, { 0, 0, 1 })), 30.0f));
+                            NetClient_RequestPart(bob, *body, nullptr, far, cube, false, -1);                                                 // reach
+                        } else if (step == 4 && plot) NetClient_RequestPart(bob, *body, plot, anchor, plot->parts[0], true, 0);                  // break
+                        else if (step == 5 && plot) { Part block = cube; block.type = PartType::Block; block.origin = { 2, 0, 0 }; NetClient_RequestPart(bob, *body, plot, anchor, block, false, -1); } // cost
+                        ++step;
+                        lastStepAt = GetTime();
+                    }
+                    if (body) { // keep the spot in view
+                        const Vector3 at = (body->toWorldD(DVec3(anchor)) - world.renderOrigin).toFloat();
+                        const Vector3 wu = body->dirToWorld(up);
+                        Vector3 side = Vector3CrossProduct(wu, { 0, 0, 1 });
+                        side = Vector3Normalize(Vector3Length(side) < 1e-3f ? Vector3{ 1, 0, 0 } : side);
+                        world.camera.position = Vector3Add(at, Vector3Add(Vector3Scale(wu, 2.5f), Vector3Scale(side, 3.5f)));
+                        world.camera.target = Vector3Add(at, Vector3Scale(wu, 0.5f)); world.camera.up = wu;
+                    }
+                    if (step >= kSteps && GetTime() - lastStepAt > 2.5) { // settled
+                        const Plot* plot = body->plots ? body->plots->byId(bob.lastNewPlot) : nullptr;
+                        const bool left = plot && plot->partCount() == 1 && plot->partAt({ 0, 1, 0 }) >= 0 && plot->partAt({ 0, 0, 0 }) < 0;
+                        const bool sameOrder = bob.plotEdits == carol.plotEdits && bob.plotOrder == carol.plotOrder && bob.plotEdits == 4; // new plot, 2 places, a break
+                        const double mine = bobInv.amount("concrete"), server = Host_InventoryAmount(bob.welcome.session, "concrete");
+                        const bool inv = std::fabs(mine - server) < 0.005 && std::fabs(mine - 2.0) < 0.005; // 3 - 2 + 1
+                        const auto why = [&](NetPartRefusal r) { return (bob.partRefusedWhy & (1u << (unsigned)r)) != 0; };
+                        const bool refusals = why(NetPartRefusal::Blocked) && why(NetPartRefusal::Reach) && why(NetPartRefusal::Cost) && bob.partsRefused == 3;
+                        // carol's plot edits replayed as a client applies them, into a plot set of her own: the same plot (bit for bit
+                        // the frame, the same parts at the same indices, the same cells) as the server's.
+                        bool replay = false;
+                        {
+                            PlotSet own;
+                            for (const MsgPlotEdit& e : carol.plotLog) {
+                                if (e.op == NetPartOp::NewPlot) { own.createAt(e.plot, Vector3{ e.anchor[0], e.anchor[1], e.anchor[2] }); continue; }
+                                Plot* pl = own.byId(e.plot);
+                                if (!pl) continue;
+                                if (e.op == NetPartOp::Place) {
+                                    Part pt{}; pt.type = (PartType)e.part.type; pt.origin = { e.part.x, e.part.y, e.part.z }; pt.orient = e.part.orient; pt.material = e.part.material;
+                                    BuildTool_ApplyPart(*body, *pl, pt);
+                                } else pl->remove((int)e.partIndex);
+                            }
+                            const Plot* a = own.byId(bob.lastNewPlot);
+                            if (a && plot) {
+                                replay = a->origin.x == plot->origin.x && a->origin.y == plot->origin.y && a->origin.z == plot->origin.z &&
+                                         memcmp(&a->east, &plot->east, sizeof(Vector3)) == 0 && memcmp(&a->up, &plot->up, sizeof(Vector3)) == 0 &&
+                                         memcmp(&a->north, &plot->north, sizeof(Vector3)) == 0 && a->parts.size() == plot->parts.size() && a->cells.size() == plot->cells.size();
+                                for (size_t i = 0; replay && i < a->parts.size(); ++i)
+                                    replay = a->parts[i].type == plot->parts[i].type && a->parts[i].origin.x == plot->parts[i].origin.x && a->parts[i].origin.y == plot->parts[i].origin.y &&
+                                             a->parts[i].origin.z == plot->parts[i].origin.z && a->parts[i].orient == plot->parts[i].orient && a->parts[i].material == plot->parts[i].material;
+                            }
+                        }
+                        const bool ok = Host_PartsApplied() == 3 && left && sameOrder && inv && refusals && replay;
+                        printf("bench: net build (#330, 100 ms round trip, 2%% loss): %d parts placed or broken by the server; plot edits bob %d, carol %d, same order %d; "
+                               "the plot holds the top cube only %d; carol's edits replayed make the same plot %d; concrete bob %.2f, server %.2f (want 2) %d; "
+                               "refused: blocked %d, reach %d, cost %d (%d) -> %s\n",
+                               Host_PartsApplied(), bob.plotEdits, carol.plotEdits, (int)sameOrder, (int)left, (int)replay, mine, server, (int)inv,
+                               (int)why(NetPartRefusal::Blocked), (int)why(NetPartRefusal::Reach), (int)why(NetPartRefusal::Cost), bob.partsRefused, ok ? "PASS" : "FAIL");
+                        NetClient_Disconnect(bob); NetClient_Disconnect(carol);
+                        Net_SetFakeConditions(0, 0.0f);
+                        benchNetBuild = false;
+                    }
+                }
+                if (phase < 2 && GetTime() - t0 > 20.0) { printf("bench: net build: bob %s, carol %s after 20 s -> FAIL\n", NetClient_StateName(bob.state), NetClient_StateName(carol.state)); benchNetBuild = false; }
+            }
+        }
         // --test-join (with --join; tools/test_join.sh runs the host and two clients as separate processes): the client side.
         // Once the server's world has streamed in: the fingerprint matches the Welcome's, the player started at the server's
         // state, walks 8 s predicting itself (error at each acknowledged input < 0.5 m, at most 1 correction in 10 states),
@@ -9993,6 +10127,70 @@ int main(int argc, char** argv)
                            gJoin.clockError * 1000.0, WorldTime_Pending() * 1000.0, gJoin.pongs, gJoin.rttMs, seen.size(), wantOthers, othersMoved, ok ? "PASS" : "FAIL");
                     NetClient_Disconnect(gJoin);
                     benchJoin = false;
+                }
+            }
+        }
+        // --test-player-cost N (#768): N players spread over 400 m of the start area, each walking a circle (one with a jump a
+        // second), stepped the way a server steps remote players (RenderOriginScope + Player::update per sim step) for 5 s.
+        // Prints the cost per update, density samples per update and the share spent in collision.
+        if (benchPlayerCost > 0 && gameState == 1 && !loading && WorldIdle()) {
+            static std::vector<std::unique_ptr<Player>> ps; static int pcPhase = 0; static long long pcTick = 0, updates = 0, dens0 = 0;
+            static double secs = 0.0, coll0 = 0.0, t0 = 0.0;
+            Planetoid* p = dynamic_cast<Planetoid*>(world.objects[0].get());
+            if (pcPhase == 0 && p) {
+                const Vector3 d0 = StartSpawnDir(*p);
+                for (int k = 0; k < benchPlayerCost; ++k) {
+                    auto pl = std::make_unique<Player>();
+                    pl->spawnOn(world, *p, LandDirAt(*p, d0, 20.0f + 400.0f * (float)k / std::max(1, benchPlayerCost)));
+                    ps.push_back(std::move(pl));
+                }
+                pcPhase = 1; pcTick = SimTick(); t0 = GetTime();
+            } else if (pcPhase == 1 && GetTime() - t0 > 2.0) { // settle (landing), then measure
+                pcPhase = 2; pcTick = SimTick(); t0 = GetTime(); updates = 0; secs = 0.0; dens0 = Planetoid::densityCalls; coll0 = gPlayerCollideSeconds;
+            }
+            if (pcPhase >= 1) {
+                for (; pcTick < SimTick(); ++pcTick)
+                    for (size_t k = 0; k < ps.size(); ++k) {
+                        Player& pl = *ps[k];
+                        PlayerInput in; in.enabled = true; in.hold(Act::Forward);
+                        if (k % 3 == 1 && pcTick % 60 == 0) in.press(Act::Jump);
+                        pl.forward = Vector3RotateByAxisAngle(pl.forward, pl.up, 30.0f * DEG2RAD / 60.0f);
+                        const auto a = std::chrono::steady_clock::now();
+                        { RenderOriginScope frame(world, pl.position); pl.update(world, in, SimDt()); }
+                        if (pcPhase == 2) { secs += std::chrono::duration<double>(std::chrono::steady_clock::now() - a).count(); ++updates; }
+                    }
+                if (pcPhase == 2 && GetTime() - t0 > 5.0) {
+                    const double perUs = 1e6 * secs / std::max(1LL, updates), collShare = (gPlayerCollideSeconds - coll0) / std::max(1e-9, secs);
+                    printf("bench: player cost (#768): %d players, %lld updates in %.1f s: %.0f us per update (%.2f ms a frame for %d players at 60 Hz), "
+                           "%.1f density samples per update, %.0f%% of the time in collision\n",
+                           benchPlayerCost, updates, GetTime() - t0, perUs, perUs * benchPlayerCost / 1000.0, benchPlayerCost,
+                           (double)(Planetoid::densityCalls - dens0) / std::max(1LL, updates), 100.0 * collShare);
+                    // Determinism (#768): physics must be a pure function of state and input (a client's replay and the server's
+                    // step must agree). Each of the first players is copied twice - one keeps its warm collision cache, the
+                    // other's is poisoned (every sphere "clear by a kilometre", as a stale cache would claim) - and both take the
+                    // same 120 steps (walk, turn, a jump, a crouch); positions and velocities must stay bit-identical.
+                    int checked = 0, diverged = 0; double worstGap = 0.0;
+                    for (size_t k = 0; k < std::min<size_t>(4, ps.size()); ++k) {
+                        Player warm = *ps[k], cold = *ps[k];
+                        cold.poisonCollideCache();
+                        bool same = true;
+                        for (int s = 0; s < 120; ++s) {
+                            PlayerInput in; in.enabled = true; in.hold(Act::Forward);
+                            if (s == 30) in.press(Act::Jump);
+                            if (s >= 70 && s < 100) in.hold(Act::Down);
+                            for (Player* q : { &warm, &cold }) {
+                                q->forward = Vector3RotateByAxisAngle(q->forward, q->up, 40.0f * DEG2RAD / 60.0f);
+                                RenderOriginScope frame(world, q->position); q->update(world, in, SimDt());
+                            }
+                            const DVec3 d = warm.position - cold.position;
+                            worstGap = std::max(worstGap, d.length());
+                            if (memcmp(&warm.position, &cold.position, sizeof(DVec3)) != 0 || memcmp(&warm.velocity, &cold.velocity, sizeof(Vector3)) != 0) same = false;
+                        }
+                        ++checked; diverged += same ? 0 : 1;
+                    }
+                    printf("bench: player determinism (#768): %d players stepped 120 times from a warm and a poisoned collision cache: %d diverged (largest gap %.6f m) -> %s\n",
+                           checked, diverged, worstGap, checked > 0 && diverged == 0 ? "PASS" : "FAIL");
+                    ps.clear(); benchPlayerCost = 0;
                 }
             }
         }
@@ -10597,7 +10795,11 @@ int main(int argc, char** argv)
                         gTerrainToolNetEdit = [](Planetoid& p, bool dig, Vector3 hit, Vector3 centre, float radius, const std::string& item) {
                             NetClient_RequestEdit(*gNetClient, dig ? NetEditKind::Dig : NetEditKind::Place, p, hit, centre, radius, item);
                         };
-                } else gTerrainToolNetEdit = nullptr;
+                    if (!gBuildToolNetEdit) // (#330) the build tool asks it to place and break parts
+                        gBuildToolNetEdit = [](Planetoid& body, Plot* plot, Vector3 anchor, const Part& part, bool remove, int partIndex) {
+                            NetClient_RequestPart(*gNetClient, body, plot, anchor, part, remove, partIndex);
+                        };
+                } else { gTerrainToolNetEdit = nullptr; gBuildToolNetEdit = nullptr; }
                 if (avatarSelf) { // RAYLIBGAME_AVATAR_SELF=1: yourself, 3 m ahead and facing you (a mirror)
                     AvatarState a = Avatar_FromPlayer(player, 0);
                     const Vector3 ahead = a.facing;
@@ -10714,7 +10916,12 @@ int main(int argc, char** argv)
             GpuTimer_Mark("2d-flush");
             if (Recorder_WantsFrame(true)) Recorder_Capture(); // the finished frame, HUD included (#375)
             Recorder_FrameDone();
-        if (gSoakOn) gSoakWorkMs.push_back((float)((GetTime() - gFrameWorkStart) * 1000.0)); // (#348) before the frame-rate wait
+        if (gSoakOn) { // (#348) before the frame-rate wait
+            const double workMs = (GetTime() - gFrameWorkStart) * 1000.0, cpuMs = (ThreadCpuSeconds() - gFrameCpuStart) * 1000.0;
+            gSoakWorkMs.push_back((float)workMs);
+            // (#768) a long frame: its main-thread CPU against its wall time (CPU well under wall = the thread waited: starved, or blocked)
+            if (workMs > 50.0) printf("bench: soak: long frame %.1f ms wall, %.1f ms main-thread CPU (%.0f%%) at %.1f s\n", workMs, cpuMs, 100.0 * cpuMs / workMs, GetTime());
+        }
         EndDrawing();
         gInFrame = false;
         {   // Unfocused (#510): at most ~30 frames a second (the streaming still gets every frame's budget), so a background

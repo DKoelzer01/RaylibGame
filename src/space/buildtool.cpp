@@ -82,6 +82,19 @@ void BuildTool_LayFoundation(Planetoid& body, Plot& plot, const Part& part) {
     if (!edits.empty()) ApplyTerrainEdits(body, edits.data(), edits.size());
 }
 
+BuildToolNetEdit gBuildToolNetEdit;
+
+bool BuildTool_ApplyPart(Planetoid& body, Plot& plot, const Part& part) {
+    if (!plot.canPlace(part)) return false;
+    if (IsBeam(part.type)) { // a line of single cubes (#200): quicker to build, each removed on its own
+        static std::vector<Part> cubes;
+        Plot::SplitBeam(part, cubes);
+        for (const Part& c : cubes) plot.place(c);
+    } else plot.place(part);
+    BuildTool_LayFoundation(body, plot, part);
+    return true;
+}
+
 bool BuildTool_Place(Planetoid& body, Plot& plot, const Part& part, bool charge) {
     if (!plot.canPlace(part)) return false;
     const PartType t = part.type;
@@ -91,13 +104,8 @@ bool BuildTool_Place(Planetoid& body, Plot& plot, const Part& part, bool charge)
         Audio_Play(Sfx::Error, 0.5f);
         return false;
     }
-    if (IsBeam(t)) { // a line of single cubes (#200): quicker to build, each removed on its own
-        static std::vector<Part> cubes;
-        Plot::SplitBeam(part, cubes);
-        for (const Part& c : cubes) plot.place(c);
-    } else plot.place(part);
+    BuildTool_ApplyPart(body, plot, part);
     if (IsMachine(part.type) || IsRocketPart(part.type)) QuestBook_NotePlaced(PartCostItem(part.type));
-    BuildTool_LayFoundation(body, plot, part);
     return true;
 }
 
@@ -141,6 +149,13 @@ static void UpdateBreak(Scene& world, const PlayerInput& in) {
     breakHeld += GameFrameTime();
     if (breakHeld < kBreakHold) return;
     const Part removed = hitPlot->parts[part];
+    if (gBuildToolNetEdit) { // joined (#330): the server removes it, refunds, and tells everyone
+        gBuildToolNetEdit(*body, hitPlot, Vector3{}, removed, true, part);
+        Audio_Play(Sfx::Dig, 0.5f, 1.3f);
+        breakPart = -1;
+        breakHeld = -0.15f;
+        return;
+    }
     if (hitPlot->remove(part)) {
         if (removed.type == PartType::Meteorite && !terrainTool.creative) { // (#177) space rock: nickel-iron, now and then platinum or iridium ore
             const int n = GameRng_Int(6, 10), pt = GameRng_Int(0, 99) < 35 ? 2 : 0, ir = GameRng_Int(0, 99) < 12 ? 1 : 0; // the authority rolls (#316)
@@ -204,7 +219,7 @@ void BuildTool_Update(Scene& world, const PlayerInput& in, bool usable) {
     // A part bigger than a cell is centred on the aimed point across the face it is placed on (#196: a 2x2 machine hung
     // off one corner of the aimed cell). `normal` is the face's axis (a plot axis); the other two axes move the
     // footprint so its middle is nearest the hit point (in cells).
-    auto centreOn = [&](Plot& pl, Int3 normal, Vector3 hitBodyLocal) {
+    auto centreOn = [&](Plot& pl, Int3 normal, Vector3 hitBodyLocal, bool onGround = false) {
         std::vector<std::pair<Int3, CellShape>> fp;
         Plot::Footprint(aim.part, fp);
         if (fp.size() <= 1) return;
@@ -229,6 +244,14 @@ void BuildTool_Update(Scene& world, const PlayerInput& in, bool usable) {
         if (normal.x == 0) o.x = place(o.x, h.x, lo.x, hi.x, last.origin.x);
         if (normal.y == 0) o.y = place(o.y, h.y, lo.y, hi.y, last.origin.y);
         if (normal.z == 0) o.z = place(o.z, h.z, lo.z, hi.z, last.origin.z);
+        // On the ground (#771): the height is the cell just above the ground at the aim (the caller's o.y, from the hit
+        // 0.2 cells up). On a slope that crossed a cell boundary as the aim moved, and the camera's bob flipped the box
+        // up and down a cell every frame there. Keep the last height until the ground is 0.2 cells past the boundary.
+        if (onGround && same && o.y != last.origin.y && abs(o.y - last.origin.y) == 1) {
+            const float g = h.y + 0.2f;                                       // what o.y was taken from (cells)
+            const float past = o.y > last.origin.y ? g - (float)o.y : (float)last.origin.y - g;
+            if (past < 0.2f) o.y = last.origin.y;
+        }
         last = { &pl, aim.part.type, aim.part.orient, normal, o };
     };
     // Automatic facing (#196, until R/V is pressed): the part's front (its local +z, where machines have their door)
@@ -283,7 +306,7 @@ void BuildTool_Update(Scene& world, const PlayerInput& in, bool usable) {
             faceToward(towardViewer(*near));
             // The cell just above the ground at the aim.
             aim.part.origin = near->cellAt(near->toPlot(Vector3Add(ground, Vector3Scale(near->up, 0.1f))));
-            centreOn(*near, Int3{ 0, 1, 0 }, ground); // on the ground: the bottom face's middle at the aim
+            centreOn(*near, Int3{ 0, 1, 0 }, ground, true); // on the ground: the bottom face's middle at the aim
         } else {
             // A new plot (#550): its grid starts at the aim, so the part grew from its corner there. Move the plot's
             // origin back along its east and north axes (as PlotSet::plotFor will set them) by half the footprint, so
@@ -315,6 +338,12 @@ void BuildTool_Update(Scene& world, const PlayerInput& in, bool usable) {
 
     if (!in.enabled) return;
     if (Blueprint_Keys(body, aim.removePlot)) return; // B saves the plot looked at, N cycles blueprints
+    if (gBuildToolNetEdit && in.hit(Act::Secondary) && aim.canPlace) { // joined (#330): the server places and charges
+        if (Blueprint_Active()) { GameUI_Toast("Blueprints can't be placed on a server yet"); return; }
+        gBuildToolNetEdit(*body, aim.plot, aim.newOrigin, aim.part, false, -1);
+        Audio_Play(Sfx::Build, 0.5f, 1.2f);
+        return;
+    }
     if (const Blueprint* bp = Blueprint_Active(); bp && in.hit(Act::Secondary)) {
         Plot* target = aim.plot;
         if (!target) {

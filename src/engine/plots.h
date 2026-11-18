@@ -157,6 +157,9 @@ public:
     // `reach` of it, or a new one anchored there (up = radial).
     Plot* plotFor(Vector3 bodyLocal, float reach, bool create);
     Plot* byId(uint32_t id);
+    // A new plot anchored at a body-local point (up = radial), with this id (multiplayer, #330: a client makes the plot
+    // the server made, the same frame from the same float origin). nullptr if the id is taken.
+    Plot* createAt(uint32_t id, Vector3 bodyLocal);
     Plot* adopt(std::unique_ptr<Plot> plot);          // move a plot in (from another body), with a fresh id
     std::unique_ptr<Plot> release(Plot* plot);        // take one out
     int partCount() const;

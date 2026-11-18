@@ -13,6 +13,9 @@
 #include "player.h"
 #include "netclient.h"
 #include "terraintool.h"
+#include "buildtool.h"
+#include "plots.h"
+#include "gamerng.h"
 #include "tools.h"
 #include "inventory.h"
 #include <cmath>
@@ -76,12 +79,14 @@ namespace {
         // client mirrors it from InventoryDelta), and a stroke budget (a token per tool cooldown, a short burst allowed).
         Inventory inventory;
         double editTokens = 2.0, editTokensAt = -1.0;
+        double partTokens = 4.0, partTokensAt = -1.0; // building (#330): placing and breaking, a few a second
     };
     std::unordered_map<uint32_t, Remote> remotes;      // by session
     long long lastSnapshot = 0;
     constexpr int kSnapshotEvery = 2;                  // sim steps (60 Hz) per snapshot: 30 Hz (ADR #309)
     constexpr size_t kMaxQueuedInputs = 120;           // 2 s of inputs waiting: more and the oldest go (keeping their presses)
     constexpr double kMaxBudget = 30.0;                // steps a player may catch up at once (0.5 s of hitch or burst)
+    const int kMaxStepsPerFrame = getenv("RAYLIBGAME_REMOTE_STEPS_PER_FRAME") ? std::max(1, atoi(getenv("RAYLIBGAME_REMOTE_STEPS_PER_FRAME"))) : 2; // (#768) catch-up a frame
 
     Planetoid* StartBody(Scene& world) {
         for (auto& o : world.objects) if (auto* p = dynamic_cast<Planetoid*>(o.get())) return p;
@@ -110,7 +115,10 @@ namespace {
             r.budget = std::min(kMaxBudget, r.budget + (double)(SimTick() - r.tick));
             r.tick = SimTick();
             while (r.inputs.size() > kMaxQueuedInputs) { r.carried |= r.inputs.front().pressed; r.inputs.pop_front(); }
-            while (r.budget >= 1.0 && !r.inputs.empty()) {
+            // (#768) at most kMaxStepsPerFrame inputs a frame per player: after a slow frame the backlog is worked off over the
+            // next frames, not all at once (all at once made the next frame slower still: the 31-40 ms catch-up bursts at 32 players).
+            int stepsThisFrame = 0;
+            while (r.budget >= 1.0 && !r.inputs.empty() && stepsThisFrame++ < kMaxStepsPerFrame) {
                 r.budget -= 1.0;
                 const MsgInput m = r.inputs.front();
                 r.inputs.pop_front();
@@ -331,6 +339,88 @@ namespace {
         ++editsApplied;
     }
 
+    // ---- Building (#330) ----
+    constexpr double kPartRate = 4.0, kPartBurst = 4.0; // parts a second (a break takes a 0.45 s hold; placing is a click)
+    int partsApplied = 0;
+
+    void RefusePart(uint32_t conn, uint32_t seq, NetPartRefusal why) {
+        SendMsg(conn, MsgPartRefused{ seq, why });
+        printf("host: part request %u refused: %s\n", seq, NetPartRefusalText(why));
+    }
+    Part ToPart(const NetPart& n) { Part p{}; p.type = (PartType)n.type; p.origin = { n.x, n.y, n.z }; p.orient = n.orient; p.material = n.material; return p; }
+    NetPart ToNet(const Part& p) { return NetPart{ (uint8_t)p.type, p.origin.x, p.origin.y, p.origin.z, p.orient, p.material }; }
+    // Is a body-local point within the player's build reach (from the eye of the server's player)?
+    bool InBuildReach(Scene& world, Remote& rm, uint64_t body, Vector3 local, double scale) {
+        Player::NetState ns;
+        if (!rm.player.netState(world, ns) || ns.body != body) return false;
+        const DVec3 up = ns.local * (1.0 / std::max(1e-9, ns.local.length()));
+        const DVec3 eye = ns.local + up * (double)rm.player.eyeHeight;
+        return (DVec3(local) - eye).length() * scale <= BuildToolState{}.reach + kReachSlack + 1.0; // (+1 m: a part's far cells)
+    }
+    void OnPartRequest(Scene& world, uint32_t conn, uint32_t session, const MsgPartRequest& q) {
+        Remote& rm = remotes[session];
+        Planetoid* p = Planetoid::findNet(q.body);
+        if (!p) { RefusePart(conn, q.seq, NetPartRefusal::Body); return; }
+        if (rm.partTokensAt < 0.0) rm.partTokensAt = SimTime();
+        rm.partTokens = std::min(kPartBurst, rm.partTokens + (SimTime() - rm.partTokensAt) * kPartRate);
+        rm.partTokensAt = SimTime();
+        if (rm.partTokens < 0.999) { RefusePart(conn, q.seq, NetPartRefusal::Rate); return; }
+        std::map<std::string, double> before;
+        if (q.op == NetPartOp::Remove) {
+            Plot* plot = p->plots ? p->plots->byId(q.plot) : nullptr;
+            if (!plot) { RefusePart(conn, q.seq, NetPartRefusal::NoPlot); return; }
+            if (q.partIndex >= plot->parts.size() || plot->parts[q.partIndex].type == PartType::Count) { RefusePart(conn, q.seq, NetPartRefusal::NoPart); return; }
+            const Part removed = plot->parts[q.partIndex];
+            const Vector3 at = plot->toBody({ (removed.origin.x + 0.5f) * kCellSize, (removed.origin.y + 0.5f) * kCellSize, (removed.origin.z + 0.5f) * kCellSize });
+            if (!InBuildReach(world, rm, q.body, at, p->scale)) { RefusePart(conn, q.seq, NetPartRefusal::Reach); return; }
+            if (!plot->remove((int)q.partIndex)) { RefusePart(conn, q.seq, NetPartRefusal::NoPart); return; }
+            // The refund (a meteorite breaks into ore, rolled here: the authority rolls, #316).
+            std::vector<std::pair<std::string, int>> give;
+            if (removed.type == PartType::Meteorite) {
+                give.push_back({ "nickel_iron_ore", GameRng_Int(6, 10) });
+                if (GameRng_Int(0, 99) < 35) give.push_back({ "platinum_ore", 2 });
+                if (GameRng_Int(0, 99) < 12) give.push_back({ "iridium_ore", 1 });
+            } else give.push_back({ PartItem(removed), PartCostCount(removed.type) });
+            for (const auto& [item, n] : give) { before.emplace(item, rm.inventory.amount(item)); rm.inventory.add(item, n); }
+            MsgPlotEdit out; out.session = session; out.seq = q.seq; out.op = NetPartOp::Remove; out.body = q.body; out.plot = q.plot; out.partIndex = q.partIndex;
+            SendToJoined(out);
+        } else {
+            const Part part = ToPart(q.part);
+            if (q.part.type >= (uint8_t)PartType::Count || part.type == PartType::Meteorite || (IsShape(part.type) && part.material >= BuildMaterialCount())) {
+                RefusePart(conn, q.seq, NetPartRefusal::Kind); return;
+            }
+            Plot* plot = nullptr;
+            Vector3 anchor{ q.anchor[0], q.anchor[1], q.anchor[2] };
+            if (q.plot) {
+                plot = p->plots ? p->plots->byId(q.plot) : nullptr;
+                if (!plot) { RefusePart(conn, q.seq, NetPartRefusal::NoPlot); return; }
+                if (!plot->canPlace(part)) { RefusePart(conn, q.seq, NetPartRefusal::Blocked); return; }
+            }
+            // Reach: the part's origin cell (in the plot, or from the new plot's anchor).
+            const Vector3 cellCentre{ (part.origin.x + 0.5f) * kCellSize, (part.origin.y + 0.5f) * kCellSize, (part.origin.z + 0.5f) * kCellSize };
+            const Vector3 at = plot ? plot->toBody(cellCentre) : anchor; // (a new plot: the part sits on its anchor)
+            if (!InBuildReach(world, rm, q.body, at, p->scale)) { RefusePart(conn, q.seq, NetPartRefusal::Reach); return; }
+            const char* item = PartItem(part);
+            const int cost = PartCostCount(part.type);
+            if (rm.inventory.count(item) < cost) { RefusePart(conn, q.seq, NetPartRefusal::Cost); return; }
+            if (!plot) { // a new plot, made here first (the clients make the same one from the same id and anchor)
+                if (!p->plots) p->plots = std::make_unique<PlotSet>();
+                plot = p->plots->plotFor(anchor, 0.0f, true);
+                MsgPlotEdit made; made.session = session; made.seq = q.seq; made.op = NetPartOp::NewPlot; made.body = q.body; made.plot = plot->id;
+                made.anchor[0] = anchor.x; made.anchor[1] = anchor.y; made.anchor[2] = anchor.z;
+                SendToJoined(made);
+            }
+            before.emplace(item, rm.inventory.amount(item));
+            rm.inventory.remove(item, cost);
+            BuildTool_ApplyPart(*p, *plot, part);
+            MsgPlotEdit out; out.session = session; out.seq = q.seq; out.op = NetPartOp::Place; out.body = q.body; out.plot = plot->id; out.part = q.part;
+            SendToJoined(out);
+        }
+        rm.partTokens -= 1.0;
+        SendInventoryDeltas(conn, rm.inventory, before);
+        ++partsApplied;
+    }
+
     void OnMessage(Scene& world, const NetMessage& m) {
         auto it = peers.find(m.conn);
         if (it == peers.end()) it = peers.emplace(m.conn, Peer{}).first; // first word on a new connection
@@ -380,6 +470,12 @@ namespace {
                 MsgEditRequest q;
                 if (!it->second.joined || !NetRead(r, q)) return;
                 OnEditRequest(world, m.conn, it->second.session, q);
+                return;
+            }
+            case NetMsg::PartRequest: {
+                MsgPartRequest q;
+                if (!it->second.joined || !NetRead(r, q)) return;
+                OnPartRequest(world, m.conn, it->second.session, q);
                 return;
             }
             case NetMsg::Bye: { MsgBye b; if (NetRead(r, b)) Drop(m.conn, NetBye::Quit); return; }
@@ -482,6 +578,15 @@ int Host_EditsApplied() { return editsApplied; }
 double Host_InventoryAmount(uint32_t session, const std::string& item) {
     auto it = remotes.find(session);
     return it == remotes.end() ? 0.0 : it->second.inventory.amount(item);
+}
+int Host_PartsApplied() { return partsApplied; }
+bool Host_Give(uint32_t session, const std::string& item, int count) {
+    auto it = remotes.find(session);
+    if (it == remotes.end() || count <= 0 || !itemDB.find(item)) return false;
+    std::map<std::string, double> before{ { item, it->second.inventory.amount(item) } };
+    it->second.inventory.add(item, count);
+    for (const Session& s : sessions) if (s.id == session && s.online) SendInventoryDeltas(s.conn, it->second.inventory, before);
+    return true;
 }
 
 // ---- The dedicated server's console and admin (#326, #345) ----
