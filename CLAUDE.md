@@ -44,9 +44,17 @@ C++ raylib 5.5 planetoid survival game. `src/engine` (static lib), `src/space` -
   - skip it for changes with nothing to see (data, saves, pure logic covered by a scripted test), and when a
     recording would cost more than the check is worth (say so in the report);
   - never while the user playtests, and report the capture path (and the GIF for the user) with the result.
+- **The camera shows what a test tests (user, 2026-11-16):** every test keeps its subject in view - the water, the
+  structure being built, the pre-placed resource being mined, the machine running - and follows it when it moves (a stream
+  running off, a dam break spreading, a player walking). Set the camera directly each frame (`world.camera.*`, as
+  `--test-dam` does); placing the player every frame keeps the loading screen up. Fix a test that doesn't when you touch it.
+- **Sim benches use the sandbox (user, 2026-11-16, #662):** `--sandbox` is a flat plane (no bake, rivers, sea, caves, rocks,
+  trees; world ready < 1 s) that a test shapes with edits and parts. Use it for simulation work (fluids, machines,
+  building); real world generation only for tests that need a real environment. Feature suites keep their real-world
+  tests; full regressions wait for major milestones. Fluid perf: `--sandbox --test-fluid-load S` (an S x S m basin).
 - Full regression (`tools/regression.sh planet`, `EXE=... SNAPSHOT=1`): ONE run only, after ALL fixes are in and
   the PRs are merge-ready (user, 2026-11-14), never between fix rounds; re-check failures with targeted runs
-  first. `regression.sh planet` includes the "eroded" set (`RAYLIBGAME_EROSION=1`; the first run bakes ~80 s).
+  first. Erosion is the default terrain (#362, user 2026-11-15; `RAYLIBGAME_EROSION=0` = the old noise terrain for A/B): the first bench on a seed bakes ~80 s, cached with its save after that.
   Minor targeted tests are fine any time.
 - Known flaky: `--test-progression` (power chain, #372), `--test-animals` flee distance (#373). Re-run before
   treating a failure as a regression.
@@ -72,6 +80,10 @@ C++ raylib 5.5 planetoid survival game. `src/engine` (static lib), `src/space` -
   TaskStop does not kill the child scripts.
 - Check on every test run 15-45 s after starting it (user, 2026-11-14): run it in the background and look at its
   output early, so an error or a stall is caught then, not after the whole timeout.
+- **Every batch of tests has a hard limit of 15 minutes** (user, 2026-11-17: a wait loop hung for 8 hours), except a
+  large-scale regression (`tools/regression.sh`). Wrap the whole batch, not only each test: `timeout 900 bash -c '...'`
+  (per-test `timeout` inside it as well), and give every wait or poll loop its own deadline (`until <check> || [ $SECONDS
+  -gt 900 ]`), never an open-ended `until grep ...`. Split longer work into several batches.
 - `--test-planet-walk M` (#363, user 2026-11-14): M metres as 100 m legs at places drawn from the seed (teleports
   between legs, hovering while each place loads; every other leg prefers ground above 300 m). PASS = most legs walked
   and never under the surface or inside solid; a leg lost to a death or a 45 s timeout on rough ground is not a failure.
@@ -175,10 +187,10 @@ board's auto-add workflow adds new issues itself, but sets no fields, so:
 - Plan 3 (Terra tiers, space): https://claude.ai/artifact/XVw45AC6vwYitbdhaeP2xL - M21-M24 done (M24 on PR #28).
 - Plan 4 (flowing water): https://claude.ai/artifact/27xL5j1zkirSe8pDZgPz59
 - **Current plans:** Plan 7 (erosion-shaped terrain + all-voxel water, #351):
-  https://claude.ai/artifact/EXix8zmVSS2WRUSLAsovJg - merged into develop (#371) behind RAYLIBGAME_EROSION=1; the gate is #362.
+  https://claude.ai/artifact/EXix8zmVSS2WRUSLAsovJg - merged into develop (#371) on by default since the #362 gate (RAYLIBGAME_EROSION=0: off).
   Plan 8: https://claude.ai/artifact/LFnRaLaCPdgEPsuX7L6dJb (PR #374, branch m51-plan8, waits on the user's playtest).
   Roadmap trackers: #158 features, #128 graphics, #303 multiplayer; playtest findings #187, #250.
-- Plan 7 details: with RAYLIBGAME_EROSION=1 the 3D band is off (RAYLIBGAME_3D=0/1 overrides). Gullies (ErosionGullies,
+- Plan 7 details: with erosion (the default) the 3D band is off (RAYLIBGAME_3D=0/1 overrides). Gullies (ErosionGullies,
   RAYLIBGAME_GULLIES=0 A/B); glacial (RAYLIBGAME_GLACIAL); rivers on the bake grid, carve-only water (--water-stats raises
   nothing). Tests: --test-flow-sea, --test-pond, --test-pump-hand, --test-hover. Open questions for the user are on #351.
 - Plan 6 (GPU terrain generation + GPU-driven drawing, approved 2026-11-12): https://claude.ai/artifact/VJdKtUZEpBg5uefnqewRyZ -
@@ -191,11 +203,29 @@ board's auto-add workflow adds new issues itself, but sets no fields, so:
 
 - Erosion (Plan 7): the bake runs on a thread behind a progress screen (the `gWorldGenWait` hook). Cache
   `<save>.erosion` (ERO6) keyed on `ErosionParams` + `kErosionBakeVersion`: bump the version on ANY bake code change,
-  or stale bakes load. Cliff lips (#357) live in `Column3D` and must match `terrain.glsl` /
-  `terrain_density.comp` bit-exactly (the grid is 2 vec4 per node); `--test-terrain-gpu` checks it.
+  or stale bakes load. The 3D band's `Column3D` (mask, f) must match `terrain.glsl` / `terrain_density.comp`
+  bit-exactly (the grid is 2 vec4 per node; the second is unused since the cliff terraces and lips went, #543);
+  `--test-terrain-gpu` checks it. Plan 9 (#586): steep terrain comes from formations in the bake input, not post-bake steps.
 - Sky light: `fragSky` from depth below the surface, times a short-ray openness probe (#369: terrain via chunk
   samples, parts via plot cells); `RAYLIBGAME_SKY_PROBES=0` for A/B. Moonlight scale defaults to 0.25
   (`RAYLIBGAME_MOONLIGHT`).
+- HDR (#131, scenetarget.cpp): the scene target is RGBA16F; world shaders still write display-encoded colour (pow 1/2.2),
+  now unclamped. The composite decodes, applies auto-exposure (log-average of a 64x36 sample grid, never brightens:
+  nights stay as tuned), tonemaps (default "knee": today's look up to 0.8, highlights roll off; RAYLIBGAME_TONEMAP=aces|clip)
+  and re-encodes. RAYLIBGAME_HDR=0 = the old RGBA8 target; RAYLIBGAME_EXPOSURE_LOG=1 prints exposure/luminance.
+- Multiplayer phase 1 (#304, PRs #435, #438, #440, #442): gameplay runs in fixed 60 Hz steps (`simclock.h`:
+  `SimTime()`/`SimDt()`, never `GetTime()` in sim code; the camera interpolates the player by `SimAlpha()`; mouse look is
+  per frame). Gameplay reads `PlayerInput` (`playerinput.h`; `PlayerInput_Step()` in steps, `PlayerInput_Frame()` for the
+  per-frame tools), never `IsKey*`/`IsMouse*`. Per-player state lives in `PlayerSession` (`player`, `inventory`, ... are
+  references to `LocalSession()`'s members). Replication refers to `NetId`s (`netid.h`): bodies by creation order, ring
+  rocks by name hash + index, animals/vehicles/stations allocated and saved. Benches can find a frame with no sim step:
+  wait a little after a teleport before reading `grounded`. Transport (#310): `src/engine/net.*` over GameNetworkingSockets,
+  only with `-DENABLE_GNS=ON` after `tools/build_gns.sh` (~2-7 min) builds protobuf 3.21 + GNS 1.4.1 (pinned, w64devkit, BCrypt) into the gitignored `deps/gns/install` (the default GNS_ROOT;
+  +4 MB exe), else stubs; `--test-net` (loopback echo) SKIPs without it. `gNetRole` (net.h): Offline/Host roll gameplay
+  and world events (meteor showers are one world-wide event, #316), a Client applies what the host sends. Dedicated server
+  (#311): `--host <save> [--port N] [--seed N] [--autosave-minutes N]` loads the save (keeping its seed) or creates it (the
+  --seed, else a printed random seed), autosaves every 30 min (0 = off) and on shutdown, runs `--headless` and answers "join" with
+  the JoinInfo + shower (src/space/hostserver.*); `--test-host` (loopback client; SKIP without GNS), `--test-shower`.
 - Inventory: 45 grid cells + 10 hotbar cells (indices 45-54). `Hotbar_Bind` moves a stack (items must be carried);
   `Inventory::preferred` = the selected hotbar cell is used first.
 - Terrain internals still worth knowing: `PlanetField::rockFeature` (tors, boulders) and `terrain3D` (the 3D band);
@@ -248,7 +278,7 @@ World and rendering
   (main.cpp shows an error box). There is no 3.3 renderer; RAYLIBGAME_ARENA=0 / RAYLIBGAME_REVZ=0 / RAYLIBGAME_GPU_TERRAIN=0
   are A/B and debugging switches on a 4.3 context, not fallbacks for older hardware.
 - Terrain lattice 0.25 m (kVoxelSize; RAYLIBGAME_VOXEL_1M builds the old 1 m one): digs carve exactly the
-  previewed sphere (--test-dig-shape IoU 0.85). Delta chunks hold sparse 4^3 bricks; regions are RGN5.
+  previewed sphere (--test-dig-shape IoU ~0.85, pass bar 0.83: #425). Delta chunks hold sparse 4^3 bricks; regions are RGN5.
 - Shadows (2026-11-12): two cascades (near +-32 m, far +-200 m, 2048 each), bilinear PCF, normal-offset
   lookup + slope bias; trees and bushes draw into both (tree vertex shader + depth.fs). Grass casts none
   by choice (blades thinner than a near texel).
@@ -295,6 +325,8 @@ Water (Plan 4, user answers)
 - Decided (2026-11-11): F2 is a sparse 3D cell simulation, Terraria-style, 1 m voxels (fill amount
   per cell; down, then sideways; a slow levelling pass for U-bends / cave pressure), surface meshed
   with marching cubes on the fill amounts. Replaces the per-column span design.
+- Fluid cells are 0.25 m by default (user, 2026-11-17, #714); `RAYLIBGAME_FLUID_CELL=1` is the old 1 m grid (opt-in).
+  A save records its cell size; sites saved at another size are dropped on load (their simulated water starts over).
 
 Deferred by the user: moon mining launch (#116), motion sickness (#117; comfort options are #168). The history of
 the earlier playtest batches is in git history and the closed issues.

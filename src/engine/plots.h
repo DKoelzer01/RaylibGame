@@ -46,10 +46,14 @@ enum class PartType : uint8_t {
     Pipe, Outlet,                                                    // water pipes from pumps, and outlets that pour it out (Plan 4, F6)
     FusionReactor, MassDriver,                                       // EV machines of tiers 9-10 (M24)
     HandPump,                                                        // a hand-worked water pump (#280): hold RMB on it to pump into its pipes
+    Torch,                                                           // a placed torch (#218): a thin post with a flame, lights its surroundings (#139)
+    Snare,                                                           // a snare on the ground (#176): small game gets caught now and then (trapping.cpp)
+    Meteorite,                                                       // a fallen meteorite (#177): 1 m of space rock; broken, it gives nickel-iron and rare ores
     Count
 };
 inline bool IsMachine(PartType t) { return (t >= PartType::Chest && t <= PartType::SteamMacerator) || (t >= PartType::OreWasher && t <= PartType::PrecisionAssembler) || t == PartType::FusionReactor || t == PartType::MassDriver; }
 inline bool IsRocketPart(PartType t) { return (t >= PartType::RocketEngine && t <= PartType::LandingLeg) || t == PartType::Cabin || t == PartType::StationCore; }
+inline bool IsBeam(PartType t) { return t == PartType::Beam2 || t == PartType::Beam4 || t == PartType::Beam8; } // a placement mode now: a line of cubes (#200)
 inline bool IsShape(PartType t) { return t <= PartType::Beam8 || (t >= PartType::Slab && t <= PartType::Post); } // structure: built from a material
 // The shapes in the build wheel's order (the detail shapes of M21 after the beams).
 constexpr PartType kShapes[] = { PartType::Cube, PartType::Block, PartType::Slope, PartType::Corner, PartType::Beam2, PartType::Beam4, PartType::Beam8,
@@ -80,6 +84,10 @@ const char* PartItem(const Part& p);         // the item it costs and refunds
 
 // A cell's solid shape in cell space [0,1]^3: the cube cut by up to two half-spaces
 // (dot(n, p) <= d keeps the solid side).
+// The face polygons of a cell shape (#197: the build preview), in cell units [0, 1]: the cube's faces clipped by the
+// shape's planes, then the caps on those planes.
+struct CellShape;
+void CellShapeFaces(const CellShape& shape, std::vector<std::vector<Vector3>>& out);
 struct CellShape {
     bool full = true;
     int planes = 0;
@@ -111,6 +119,8 @@ public:
 
     // The cells a part would occupy, with each cell's shape (in plot cell space).
     static void Footprint(const Part& p, std::vector<std::pair<Int3, CellShape>>& out);
+    // A beam as the single cubes it is placed as (#200): one per cell of its footprint, same material.
+    static void SplitBeam(const Part& beam, std::vector<Part>& out);
     bool canPlace(const Part& p) const;
     int place(const Part& p);           // part index, or -1 if blocked
     bool remove(int partIndex);
@@ -147,6 +157,9 @@ public:
     // `reach` of it, or a new one anchored there (up = radial).
     Plot* plotFor(Vector3 bodyLocal, float reach, bool create);
     Plot* byId(uint32_t id);
+    // A new plot anchored at a body-local point (up = radial), with this id (multiplayer, #330: a client makes the plot
+    // the server made, the same frame from the same float origin). nullptr if the id is taken.
+    Plot* createAt(uint32_t id, Vector3 bodyLocal);
     Plot* adopt(std::unique_ptr<Plot> plot);          // move a plot in (from another body), with a fresh id
     std::unique_ptr<Plot> release(Plot* plot);        // take one out
     int partCount() const;

@@ -24,5 +24,5 @@ void main()
     }
     float direct = sunVis * max(dot(n, sunDir), 0.0);
     vec3 color = albedo * (ambient * 1.5 + vec3(0.015) + vec3(1.0, 0.97, 0.9) * direct);
-    finalColor = vec4(pow(color, vec3(1.0 / 2.2)), 1.0);
+    finalColor = vec4(pow(max(color, vec3(0.0)), vec3(1.0 / 2.2)), 1.0);
 }

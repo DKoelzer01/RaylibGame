@@ -8,6 +8,7 @@
 
 class Scene;
 class Planetoid;
+struct PlayerInput;
 
 // A small pilotable ship. Newtonian 6-DOF flight with assisted damping, chase camera, terrain
 // collision against the density field, an energy store recharged with power cells, and a
@@ -46,7 +47,8 @@ struct Ship {
     Vector3 renderPos(const Scene& world) const;
 
     void parkNear(Scene& world, Vector3 renderPoint, Vector3 surfaceUp); // place on the ground
-    void update(Scene& world, bool inputEnabled, float dt);
+    bool thrusting = false;               // W held in the last update (the engine glow)
+    void update(Scene& world, const PlayerInput& in, float dt);
     void applyChaseCamera(Scene& world) const;
     void draw(const Scene& world) const;   // inside BeginMode3D
     bool playerInRange(const Scene& world, Vector3 playerRender, float range) const;

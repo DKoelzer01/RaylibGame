@@ -54,5 +54,5 @@ void main()
         fogDist = max(0.0, min(t1, fogDist) - max(t0, 0.0));
     }
     color = mix(color, fogColor, clamp(1.0 - exp(-fogDensity * fogDist), 0.0, 1.0));
-    finalColor = vec4(pow(color, vec3(1.0 / 2.2)), 1.0);
+    finalColor = vec4(pow(max(color, vec3(0.0)), vec3(1.0 / 2.2)), 1.0);
 }

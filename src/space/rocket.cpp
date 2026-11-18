@@ -1,4 +1,8 @@
 #include "rocket.h"
+#include "netid.h"
+#include "playerinput.h"
+// The input of the current Rocket_Update (#312): its flight step and camera read it.
+static const PlayerInput* gRocketIn = &PlayerInput::None();
 #include "survival.h"
 #include "station.h"
 #include "buildtool.h"
@@ -39,6 +43,12 @@ namespace {
     uint64_t padBody = 0;        // OnPad: the body and plot
     uint32_t padPlot = 0;
     uint64_t vehicleId = 0;      // Flying: the vehicle body (it carries the plot)
+    // Render interpolation (#315): the centre of mass relative to the dominant body and the attitude after the last two
+    // simulation steps; Rocket_View draws the vehicle and places the camera between them by SimAlpha.
+    DVec3 prevRel{}, curRel{};
+    Quaternion prevRot = { 0, 0, 0, 1 }, curRot = { 0, 0, 0, 1 };
+    uint64_t interpBody = 0;
+    bool interpValid = false;
     DVec3 com{};                 // world, centre of mass
     Vector3 vel{};               // world, m/s
     Quaternion rot = { 0, 0, 0, 1 }; // plot-local -> world
@@ -254,6 +264,7 @@ namespace {
         float extent = 2.0f;
         for (const auto& kv : plotPtr->cells) extent = std::max(extent, Vector3Length(CellCentre(kv.first)) + 1.0f);
         auto veh = std::make_unique<Planetoid>("rocket", originW, std::make_shared<EmptyField>(extent), extent);
+        veh->netId = NetId_Allocate(NetKind::Vehicle); // stable, saved (#317)
         veh->parent = &world.rootObject;
         veh->plots = std::make_unique<PlotSet>();
         std::unique_ptr<Plot> plot = body->plots->release(plotPtr);
@@ -460,12 +471,12 @@ namespace {
         if (input && autopilot == RocketAutopilot::Off && st.guidance > 0) {
             const Vector3 ax = Vector3RotateByQuaternion({ 1, 0, 0 }, rot), az = Vector3RotateByQuaternion({ 0, 0, 1 }, rot), ay = Up();
             Vector3 cmd = { 0, 0, 0 };
-            if (IsKeyDown(KEY_W)) cmd = Vector3Add(cmd, ax);
-            if (IsKeyDown(KEY_S)) cmd = Vector3Subtract(cmd, ax);
-            if (IsKeyDown(KEY_A)) cmd = Vector3Add(cmd, az);
-            if (IsKeyDown(KEY_D)) cmd = Vector3Subtract(cmd, az);
-            if (IsKeyDown(KEY_Z)) cmd = Vector3Add(cmd, ay);
-            if (IsKeyDown(KEY_C)) cmd = Vector3Subtract(cmd, ay);
+            if (gRocketIn->down(Act::Forward)) cmd = Vector3Add(cmd, ax);
+            if (gRocketIn->down(Act::Back)) cmd = Vector3Subtract(cmd, ax);
+            if (gRocketIn->down(Act::Left)) cmd = Vector3Add(cmd, az);
+            if (gRocketIn->down(Act::Right)) cmd = Vector3Subtract(cmd, az);
+            if (gRocketIn->down(Act::RollLeft)) cmd = Vector3Add(cmd, ay);
+            if (gRocketIn->down(Act::RollRight)) cmd = Vector3Subtract(cmd, ay);
             if (Vector3Length(cmd) > 0.0f) { angVel = Vector3Add(angVel, Vector3Scale(Vector3Normalize(cmd), kTurnAccel * h)); turning = true; }
         }
         if (ap.steer) SteerToward(ap.dir, st.guidance, h);
@@ -542,7 +553,8 @@ namespace {
         }
     }
 
-    void ApplyCamera(Scene& world) {
+    // The chase camera (per frame, Rocket_View): around `at` (flying: the drawn centre of mass), or the pad rocket.
+    void ApplyCamera(Scene& world, const DVec3& at) {
         Plot* plot = CurrentPlot();
         if (!plot) return;
         DVec3 centre;
@@ -550,9 +562,9 @@ namespace {
         float size = 4.0f;
         for (const auto& kv : plot->cells) size = std::max(size, Vector3Length(CellCentre(kv.first)));
         if (state == RocketState::Flying) {
-            centre = com;
-            Planetoid* b = Dominant(world, com);
-            U = b ? Vector3Normalize((com - b->worldPos).toFloat()) : Up();
+            centre = at;
+            Planetoid* b = Dominant(world, at);
+            U = b ? Vector3Normalize((at - b->worldPos).toFloat()) : Up();
         } else {
             Planetoid* body = PadBody();
             if (!body) return;
@@ -562,11 +574,6 @@ namespace {
             c = Vector3Scale(c, 1.0f / std::max(1, n));
             centre = body->toWorldD(DVec3(plot->toBody(c)));
             U = body->dirToWorld(plot->up);
-        }
-        if (!IsKeyDown(KEY_LEFT_ALT)) {
-            const Vector2 md = GetMouseDelta();
-            camYaw -= md.x * 0.004f;
-            camPitch = std::clamp(camPitch + md.y * 0.004f, -1.2f, 1.4f);
         }
         Vector3 F = Vector3CrossProduct(U, { 0, 0, 1 });
         if (Vector3Length(F) < 0.1f) F = Vector3CrossProduct(U, { 1, 0, 0 });
@@ -685,7 +692,9 @@ bool Rocket_Exit(Scene& world) {
 void Rocket_SetThrottle(float t) { throttle = std::clamp(t, 0.0f, 1.0f); }
 void Rocket_SetAutopilot(RocketAutopilot mode, double target) { autopilot = mode; autoTarget = target; }
 
-void Rocket_Update(Scene& world, bool input, float dt) {
+void Rocket_Update(Scene& world, const PlayerInput& in, float dt) {
+    gRocketIn = &in; // (the flight step and the camera read it)
+    const bool input = in.enabled;
     Load();
     aimCockpit = false;
     aimPlot = 0;
@@ -710,24 +719,24 @@ void Rocket_Update(Scene& world, bool input, float dt) {
         aimPlot = hit->id;
         aimCockpit = hit->parts[hitPart].type == PartType::Cockpit || hit->parts[hitPart].type == PartType::Cabin;
         if (!input) return;
-        if (IsKeyPressed(KEY_I)) {
+        if (in.hit(Act::Insert)) {
             const int n = Rocket_LoadFuel(*hit, 1 << 20);
             const int air = Rocket_LoadAir(*hit, 1 << 20);
             if (n > 0 || air > 0) GameUI_Toast(TextFormat("Loaded %d rocket fuel (%.0f kg), %d oxygen canister(s) (%d min of air)", n, n * fuelPerItem, air, air * 10));
             else GameUI_Toast("Nothing to load (rocket fuel, oxygen canisters), or it is full");
         }
-        if (aimCockpit && IsKeyPressed(KEY_E)) { Rocket_Board(world, *body, *hit); GameUI_Toast("Aboard: P autopilot (to orbit / down to land), Shift throttle up, Ctrl down, X cut, W/S/A/D/Z/C steer, M map, E leave"); }
+        if (aimCockpit && in.hit(Act::Use)) { Rocket_Board(world, *body, *hit); GameUI_Toast("Aboard: P autopilot (to orbit / down to land), Shift throttle up, Ctrl down, X cut, W/S/A/D/Z/C steer, M map, E leave"); }
         return;
     }
     // Aboard.
     Plot* plot = CurrentPlot();
     if (!plot) { state = RocketState::None; return; }
     if (input) {
-        if (IsKeyDown(KEY_LEFT_SHIFT)) throttle = std::min(1.0f, throttle + dt * 0.6f);
-        if (IsKeyDown(KEY_LEFT_CONTROL)) throttle = std::max(0.0f, throttle - dt * 0.6f);
-        if (IsKeyPressed(KEY_X)) throttle = 0.0f;
-        if (IsKeyPressed(KEY_M)) mapView = !mapView;
-        if (IsKeyPressed(KEY_P)) { // the autopilot: to orbit, or (in orbit) down to a landing; again: manual
+        if (in.down(Act::Sprint)) throttle = std::min(1.0f, throttle + dt * 0.6f);
+        if (in.down(Act::Down)) throttle = std::max(0.0f, throttle - dt * 0.6f);
+        if (in.hit(Act::Brake)) throttle = 0.0f;
+        if (in.hit(Act::Map)) mapView = !mapView;
+        if (in.hit(Act::Autopilot)) { // the autopilot: to orbit, or (in orbit) down to a landing; again: manual
             if (autopilot != RocketAutopilot::Off) { autopilot = RocketAutopilot::Off; GameUI_Toast("Autopilot off: manual control"); }
             else {
                 const RocketTelemetry t = Rocket_Telemetry(world);
@@ -736,16 +745,16 @@ void Rocket_Update(Scene& world, bool input, float dt) {
                 else { autopilot = RocketAutopilot::Ascent; autoTarget = 45000.0; GameUI_Toast("Autopilot: gravity turn to a 45 km orbit"); }
             }
         }
-        if (IsKeyPressed(KEY_PERIOD)) Rocket_SetWarp(warpLevel + 1);
-        if (IsKeyPressed(KEY_COMMA)) Rocket_SetWarp(warpLevel - 1);
+        if (in.hit(Act::WarpUp)) Rocket_SetWarp(warpLevel + 1);
+        if (in.hit(Act::WarpDown)) Rocket_SetWarp(warpLevel - 1);
         // Stations: K deploys the core (in orbit) or docks (near one); docked, T / Shift+T move fuel, U undocks.
-        if (IsKeyPressed(KEY_K) && state == RocketState::Flying) { if (Station_Nearest(world, com, 400.0f)) Rocket_Dock(); else Rocket_DeployStation(); }
-        if (IsKeyPressed(KEY_T) && Rocket_DockedAtStation()) {
-            const float kg = Rocket_TransferFuel(IsKeyDown(KEY_LEFT_SHIFT) ? -500.0f : 500.0f);
+        if (in.hit(Act::Dock) && state == RocketState::Flying) { if (Station_Nearest(world, com, 400.0f)) Rocket_Dock(); else Rocket_DeployStation(); }
+        if (in.hit(Act::Transfer) && Rocket_DockedAtStation()) {
+            const float kg = Rocket_TransferFuel(in.down(Act::Sprint) ? -500.0f : 500.0f);
             GameUI_Toast(kg > 0.0f ? TextFormat("Took %.0f kg of fuel from the station", kg) : kg < 0.0f ? TextFormat("Gave the station %.0f kg of fuel", -kg) : "No fuel to move (or no room)");
         }
-        if (IsKeyPressed(KEY_U) && Rocket_DockedAtStation()) Rocket_Undock();
-        if (state == RocketState::OnPad && IsKeyPressed(KEY_E)) { Rocket_Exit(world); return; }
+        if (in.hit(Act::Undock) && Rocket_DockedAtStation()) Rocket_Undock();
+        if (state == RocketState::OnPad && in.hit(Act::Use)) { Rocket_Exit(world); return; }
     }
     if (state == RocketState::OnPad) {
         Planetoid* body = PadBody();
@@ -754,15 +763,23 @@ void Rocket_Update(Scene& world, bool input, float dt) {
         if (CockpitCentre(*body, *plot, seat)) player.position = seat;
         const RocketStats st = Rocket_Stats(*plot, body);
         if (throttle > 0.0f && st.ready && throttle * st.thrust > (st.dryMass + st.fuel) * body->surfaceGravity) Launch(world);
-        else if (throttle > 0.0f && !st.ready && input && IsKeyDown(KEY_LEFT_SHIFT)) GameUI_Toast(TextFormat("Not ready: needs %s", st.missing.front().c_str()));
+        else if (throttle > 0.0f && !st.ready && input && in.down(Act::Sprint)) GameUI_Toast(TextFormat("Not ready: needs %s", st.missing.front().c_str()));
         if (autopilot == RocketAutopilot::Ascent && st.ready) { throttle = 1.0f; Launch(world); }
     }
     if (state == RocketState::Flying) {
+        SyncVehicle(world); // the simulated pose again (Rocket_View drew it between steps)
         int steps = std::max(1, (int)ceil(dt / kMaxStep));
         const float h = dt / steps;
         for (int i = 0; i < steps && state == RocketState::Flying; ++i) FlightStep(world, h, input);
         if (state == RocketState::Flying) {
             SyncVehicle(world);
+            if (Planetoid* b = Dominant(world, com)) { // render interpolation (#315)
+                const DVec3 rel = com - b->worldPos;
+                const bool cont = interpValid && interpBody == b->id && (rel - curRel).length() < 5000.0;
+                prevRel = cont ? curRel : rel; prevRot = cont ? curRot : rot;
+                curRel = rel; curRot = rot;
+                interpBody = b->id; interpValid = true;
+            } else interpValid = false;
             Plot* vp = VehiclePlot();
             DVec3 seat = com;
             if (vp) for (const Part& p : vp->parts) if (p.type == PartType::Cockpit) { seat = ToWorld({ (p.origin.x + 1.0f) * kCellSize, (p.origin.y + 1.0f) * kCellSize, -(p.origin.z + 1.0f) * kCellSize }); break; }
@@ -783,7 +800,31 @@ void Rocket_Update(Scene& world, bool input, float dt) {
         }
         if (!ok) { warpLevel = 0; GameUI_Toast("Time warp off"); }
     }
-    ApplyCamera(world);
+    if (state != RocketState::Flying) interpValid = false;
+}
+
+void Rocket_View(Scene& world, const PlayerInput& frameIn, float alpha) {
+    if (state == RocketState::None) return;
+    if (!frameIn.down(Act::FreeLook)) { // the chase camera turns once per frame (smooth at any frame rate, #315)
+        camYaw -= frameIn.look.x * 0.004f;
+        camPitch = std::clamp(camPitch + frameIn.look.y * 0.004f, -1.2f, 1.4f);
+    }
+    DVec3 at = com;
+    if (state == RocketState::Flying && interpValid) {
+        if (Planetoid* b = Planetoid::find(interpBody)) {
+            // Between the last two steps in the dominant body's (non-rotating) frame; the vehicle is drawn there too.
+            const double a = std::clamp((double)alpha, 0.0, 1.0);
+            at = b->worldPos + prevRel + (curRel - prevRel) * a;
+            const Quaternion q = QuaternionSlerp(prevRot, curRot, (float)a);
+            if (Planetoid* v = Vehicle()) {
+                v->worldPos = at - DVec3(Vector3RotateByQuaternion(comLocal, q));
+                const Vector3 ex = Vector3RotateByQuaternion({ 1, 0, 0 }, q), ey = Vector3RotateByQuaternion({ 0, 1, 0 }, q), ez = Vector3RotateByQuaternion({ 0, 0, 1 }, q);
+                v->rotation = EulerFromBasis(ex, ey, ez);
+                world.syncRenderPositions();
+            }
+        }
+    }
+    ApplyCamera(world, at);
 }
 
 RocketTelemetry Rocket_Telemetry(Scene& world) {
@@ -972,11 +1013,17 @@ void Rocket_Save(FILE* f) {
     Planetoid* v = Vehicle();
     v->plots->save(f);
     Factory::Save(f, v->id); // its machines' contents
+    fprintf(f, "rocket_id %llu\n", (unsigned long long)v->netId); // its own line: older builds skip it (#317)
 }
 
 bool Rocket_LoadLine(const char* tok, FILE* f) {
     if (!gWorld) return false;
     Scene& world = *gWorld;
+    if (strcmp(tok, "rocket_id") == 0) { // #317
+        unsigned long long id = 0;
+        if (fscanf(f, " %llu", &id) == 1 && id != 0) { if (Planetoid* v = Vehicle()) v->netId = id; NetId_Note(id); }
+        return true;
+    }
     if (strcmp(tok, "rocket") != 0) return false;
     char kind[16] = {};
     if (fscanf(f, " %15s", kind) != 1) return true;
@@ -998,6 +1045,7 @@ bool Rocket_LoadLine(const char* tok, FILE* f) {
     float extent = 2.0f;
     for (const auto& kv : p->cells) extent = std::max(extent, Vector3Length(CellCentre(kv.first)) + 1.0f);
     auto veh = std::make_unique<Planetoid>("rocket", com, std::make_shared<EmptyField>(extent), extent);
+    veh->netId = NetId_Allocate(NetKind::Vehicle); // a save from before #317; its "rocket_id" line replaces it
     veh->parent = &world.rootObject;
     veh->plots = std::move(plots);
     vehicleId = veh->id;

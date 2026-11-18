@@ -136,7 +136,7 @@ std::string FormatBodyDef(const BodyDef& d) {
 
 bool LoadSystemDef(const std::string& path, SystemDef& out) {
     std::ifstream f(path);
-    if (!f.is_open()) { logger.logf("[Bodies] cannot open %s\n", path.c_str()); return false; }
+    if (!f.is_open()) { LOG_WARN("Bodies", "cannot open %s\n", path.c_str()); return false; }
     SystemDef sys;
     std::string line;
     int lineNo = 0;
@@ -149,20 +149,20 @@ bool LoadSystemDef(const std::string& path, SystemDef& out) {
         BodyDef d;
         std::string error;
         if (!ParseBodyDef(line, d, error)) {
-            logger.logf("[Bodies] %s:%d: %s\n", path.c_str(), lineNo, error.c_str());
+            LOG_ERROR("Bodies", "%s:%d: %s\n", path.c_str(), lineNo, error.c_str());
             ok = false;
             continue;
         }
         for (const BodyDef& prev : sys.bodies)
-            if (prev.name == d.name) { logger.logf("[Bodies] %s:%d: duplicate name '%s'\n", path.c_str(), lineNo, d.name.c_str()); ok = false; }
+            if (prev.name == d.name) { LOG_ERROR("Bodies", "%s:%d: duplicate name '%s'\n", path.c_str(), lineNo, d.name.c_str()); ok = false; }
         if (!d.orbitParent.empty()) {
             const bool found = std::any_of(sys.bodies.begin(), sys.bodies.end(),
                                            [&](const BodyDef& b) { return b.name == d.orbitParent && b.kind != BodyKind::Ring; });
-            if (!found) { logger.logf("[Bodies] %s:%d: orbit parent '%s' must be a body defined above\n", path.c_str(), lineNo, d.orbitParent.c_str()); ok = false; }
+            if (!found) { LOG_ERROR("Bodies", "%s:%d: orbit parent '%s' must be a body defined above\n", path.c_str(), lineNo, d.orbitParent.c_str()); ok = false; }
         }
         sys.bodies.push_back(d);
     }
-    if (sys.bodies.empty()) { logger.logf("[Bodies] %s defines no bodies\n", path.c_str()); ok = false; }
+    if (sys.bodies.empty()) { LOG_ERROR("Bodies", "%s defines no bodies\n", path.c_str()); ok = false; }
     if (ok) out = sys;
     return ok;
 }

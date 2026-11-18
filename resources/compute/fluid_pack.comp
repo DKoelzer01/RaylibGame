@@ -1,0 +1,21 @@
+#version 430
+// The fluid step's results for the CPU (#669, fluid.cpp GpuTick): each processed brick's cells packed two to a uint,
+// fill (bits 0-7) and fluid kind (bits 8-10) per 16-bit half, in the dispatch's list order. Copied into a persistent
+// mapped buffer with the per-brick flags and read the next tick without a stall (one download per brick stalled the
+// main thread 11-18 ms a tick at ~3000 awake bricks).
+layout(local_size_x = 64) in;
+layout(std430, binding = 0) readonly buffer Cells { uint cells[]; };  // A: slot * 4096 + cell
+layout(std430, binding = 3) readonly buffer List { uint list[]; };    // the processed slots
+layout(std430, binding = 10) writeonly buffer Packed { uint packedOut[]; }; // list index * 2048 + pair
+uniform uint count;
+
+uint half16(uint c) { return (c & 255u) | (((c >> 13) & 7u) << 8); }
+
+void main() {
+    uint li = gl_WorkGroupID.y;
+    if (li >= count) return;
+    uint slot = list[li];
+    uint j = gl_WorkGroupID.x * 64u + gl_LocalInvocationID.x; // 0..2047: cells 2j, 2j + 1
+    uint base = slot * 4096u + 2u * j;
+    packedOut[li * 2048u + j] = half16(cells[base]) | (half16(cells[base + 1u]) << 16);
+}

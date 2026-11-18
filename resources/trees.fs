@@ -83,7 +83,7 @@ void main()
     vec3 ns = (fragLeaf > 0.5 && ndl < 0.0) ? -n : n;
     float direct = sunVis * sunShadowNormal(fragPosition, ns, sunDir, 4) * clamp((ndl + wrap) / (1.0 + wrap), 0.0, 1.0);
     float sky = hemiOn() ? 1.0 : 0.7 + 0.3 * n.y; // a little more sky from above (world y: wrong on a sphere; #130 hemisphere instead)
-    vec3 color = albedo * (hemiAmbient(ambient, n) * 1.6 * sky + vec3(1.0, 0.96, 0.88) * direct + lampLight(fragPosition, n));
+    vec3 color = albedo * (hemiAmbient(ambient, n) * 1.6 * sky + vec3(1.0, 0.96, 0.88) * sunTint() * direct + lampLight(fragPosition, n));
 
     float fogDist = dist;
     if (fogShell.w > 0.0) {
@@ -94,5 +94,5 @@ void main()
         fogDist = max(0.0, min(t1, fogDist) - max(t0, 0.0));
     }
     color = mix(color, fogColor, clamp(1.0 - exp(-fogDensity * fogDist), 0.0, 1.0));
-    finalColor = vec4(pow(color, vec3(1.0 / 2.2)), alphaToCoverage > 0.5 ? fade : 1.0);
+    finalColor = vec4(pow(max(color, vec3(0.0)), vec3(1.0 / 2.2)), alphaToCoverage > 0.5 ? fade : 1.0);
 }

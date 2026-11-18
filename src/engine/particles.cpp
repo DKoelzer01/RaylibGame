@@ -1,4 +1,5 @@
 #include "particles.h"
+#include "gpumem.h"
 #include "scene.h"
 #include "worldtypes.h"
 #include <raymath.h>
@@ -131,6 +132,7 @@ void Particles_Draw(Scene& world) {
     if (pool.empty()) return;
     if (sprite.id == 0) {
         Image img = GenImageGradientRadial(32, 32, 0.0f, WHITE, BLANK);
+        GpuMemTag gm134_("particles"); // VRAM accounting (#302)
         sprite = LoadTextureFromImage(img);
         UnloadImage(img);
         SetTextureFilter(sprite, TEXTURE_FILTER_BILINEAR);

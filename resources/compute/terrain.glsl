@@ -33,6 +33,7 @@
 uniform vec4 noiseParams[N_COUNT];
 uniform float planetRadius;
 uniform int planetMoon;
+uniform vec4 genParams;     // #504 WorldGenParams: x ocean, y mountains, z roughness, w 1 / biome size (as PlanetField::land, climateAt)
 
 const int kPerm[256] = int[256](
     151, 160, 137, 91, 90, 15,
@@ -165,17 +166,17 @@ Land landAt(vec3 dir, float fp) {
         l.h = hm;
         return l;
     }
-    precise float c = fractalLimited(N_CONTINENTS, 4, fp, sx, sy, sz);
+    precise float c = fractalLimited(N_CONTINENTS, 4, fp, sx, sy, sz) - 0.15 * genParams.x;
     precise float base = c < 0.0 ? c * 650.0 : c * 200.0;
     precise float landMask = tSmooth(-0.02, 0.06, c);
     precise float mountainMask = tSmooth(0.08, 0.35, c);
     precise float h = base;
     if (mountainMask > 0.0) {
         precise float r = 1.0 - abs(fractalLimited(N_RIDGES, 5, fp, sx, sy, sz));
-        l.ridge = r * r * r * 1400.0 * mountainMask;
+        l.ridge = r * r * r * 1400.0 * mountainMask * genParams.y;
         h += l.ridge;
     }
-    h += fractalLimited(N_HILLS, 3, fp, sx, sy, sz) * (25.0 + 60.0 * mountainMask);
+    h += fractalLimited(N_HILLS, 3, fp, sx, sy, sz) * (25.0 + 60.0 * mountainMask) * genParams.z;
     precise float valleyWeight = landMask * clamp(2.0 - xdiv(fp, 64.0), 0.0, 1.0);
     l.valley = 1.0;
     precise float ravineWeight = landMask * clamp(2.0 - xdiv(fp, 24.0), 0.0, 1.0);
@@ -186,7 +187,7 @@ Land landAt(vec3 dir, float fp) {
             if (r < 0.006) h -= xsqrt(1.0 - xdiv(r, 0.006)) * 90.0 * region * ravineWeight;
         }
     }
-    l.detail = fractalLimited(N_DETAIL, 2, fp, sx, sy, sz) * 2.5;
+    l.detail = fractalLimited(N_DETAIL, 2, fp, sx, sy, sz) * 2.5 * genParams.z;
     precise float iceCap = tSmooth(0.86, 0.92, abs(dir.y) + 0.03 * fractalLimited(N_CLIMATE, 2, fp, sx, sy, sz));
     precise float hd = h + l.detail;
     if (iceCap > 0.0 && hd < 2.0) { hd += (2.0 - hd) * iceCap; h = hd - l.detail; }
@@ -201,7 +202,7 @@ Land landAt(vec3 dir, float fp) {
 vec2 climateAt(vec3 dir, float elev) {
     if (planetMoon != 0) return vec2(-20.0, 0.0);
     precise float lat = abs(dir.y);
-    precise float x = dir.x * planetRadius, y = dir.y * planetRadius, z = dir.z * planetRadius;
+    precise float x = dir.x * planetRadius * genParams.w, y = dir.y * planetRadius * genParams.w, z = dir.z * planetRadius * genParams.w;
     precise float temp = 30.0 - 44.0 * (lat * xsqrt(lat)) - xdiv(6.5 * max(elev, 0.0), 1000.0) + 7.0 * fractal(N_TEMP, 2, x, y, z);
     precise float moist = 0.5 + 0.85 * fractal(N_MOIST, 3, x, y, z) + 0.08 * (1.0 - tSmooth(10.0, 150.0, elev));
     return vec2(temp, clamp(moist, 0.0, 1.0));
@@ -225,12 +226,6 @@ float biomeShape(vec3 dir, float h, float fp) {
         precise float crest = sm * sm;
         precise float swell = 0.55 + 0.45 * fractal(N_MOIST, 1, x * 6.0, y * 6.0, z * 6.0);
         dh += desert * crest * 9.0 * swell * tSmooth(4.0, 20.0, h) * clamp(2.0 - xdiv(fp, 24.0), 0.0, 1.0);
-    }
-    if (badlands > 0.0) {
-        const float step_ = 14.0;
-        precise float t = xdiv(h, step_), f = t - floor(t);
-        precise float terraced = (floor(t) + tSmooth(0.72, 0.92, f)) * step_;
-        dh += (terraced - h) * badlands;
     }
     if (swamp > 0.0) {
         precise float floorH = 3.5 + 1.5 * fractal(N_BIOME_JITTER, 1, x, y, z);
@@ -408,15 +403,26 @@ float densityNear(vec3 p, float d, float surface, float fp, float cmask, float c
     }
     precise float caveWeight = clamp(2.0 - xdiv(fp, 8.0), 0.0, 1.0);
     precise float caveTop = 5.0;
-    if (depth < 14.0 && depth > -3.0 && caveWeight > 0.0 && planetMoon == 0) caveTop = 5.0 - 7.5 * tSmooth(0.3, 0.45, fractal(N_CAVE_MOUTHS, 1, p.x, p.y, p.z));
-    if (caveWeight > 0.0 && depth > caveTop && d > mantleRadius + 20.0) {
+    precise float mouth = 0.0; // #549: in mouth regions tunnels open at full width where they meet the surface
+    if (depth < 14.0 && depth > -14.0 && caveWeight > 0.0 && planetMoon == 0) { mouth = tSmooth(0.3, 0.45, fractal(N_CAVE_MOUTHS, 1, p.x, p.y, p.z)); caveTop = 5.0 - 7.5 * mouth; }
+    // #549: in mouth regions a roof thinner than 4 m collapses (voxel.cpp densityNear, bit-exact with it).
+    precise float gate = mouth > 0.0 ? -14.0 : caveTop;
+    if (caveWeight > 0.0 && depth > gate && d > mantleRadius + 20.0) {
         precise float near_ = 2.0 * max(fp, 1.0) + 2.0;
+        precise float reach = mouth > 0.0 ? max(near_, 4.0 + 1.0 - depth) : near_;
         precise float m = 1e9;
         precise float a = abs(fractal(N_CAVES_A, 2, p.x, p.y, p.z));
-        if ((a - K_TUNNEL_LEVEL) * 100.0 <= near_) {
-            precise float fade = min(1.0, xdiv(depth - caveTop, 8.0)) * min(1.0, xdiv(d - mantleRadius - 20.0, 10.0));
+        if ((a - K_TUNNEL_LEVEL) * 100.0 <= reach) {
+            precise float top = clamp(xdiv(depth - caveTop, 8.0), 0.0, 1.0);
+            top = top + (1.0 - top) * mouth;
+            precise float fade = top * min(1.0, xdiv(d - mantleRadius - 20.0, 10.0));
             precise float t = max(a, abs(fractal(N_CAVES_B, 2, p.x, p.y, p.z)));
             m = (t - K_TUNNEL_LEVEL) * 100.0 + (1.0 - fade * caveWeight) * 20.0;
+            if (mouth > 0.0 && m > 0.0) {
+                precise float roof = depth + m;
+                precise float c = mouth * clamp((4.0 + 1.0 - roof) * 0.5, 0.0, 1.0);
+                m = m + (-2.0 - m) * c;
+            }
         }
         if (depth > 30.0 && d > mantleRadius + 40.0) {
             precise float fade = min(1.0, xdiv(depth - 30.0, 20.0)) * min(1.0, xdiv(d - mantleRadius - 40.0, 20.0));

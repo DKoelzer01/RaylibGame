@@ -6,6 +6,10 @@ roasted_roots  | 15
 bread          | 25
 raw_meat       | 8  | raw
 cooked_meat    | 30
+raw_cod        | 6  | raw
+raw_trout      | 6  | raw
+raw_catfish    | 7  | raw
+cooked_fish    | 24
 egg            | 10
 milk           | 12
 cactus         | 3

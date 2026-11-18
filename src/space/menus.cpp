@@ -1,10 +1,13 @@
 #include "menus.h"
+#include "slideshow.h"
 #include "player.h"
 #include "ship.h"
 #include "telescope.h"
 #include "audio.h"
 #include "foliage.h"
 #include "world.h"
+#include "headless.h"
+#include "simclock.h"
 
 #include <raylib.h>
 #include <algorithm>
@@ -68,6 +71,7 @@ namespace {
     void Backdrop(const char* title) {
         const float s = Scale();
         DrawRectangleGradientV(0, 0, GetScreenWidth(), GetScreenHeight(), { 8, 12, 24, 255 }, { 20, 34, 56, 255 });
+        Slideshow_Draw(0.4f); // screenshots behind the menu (#386; none: the gradient shows)
         const int fs = (int)(64 * s);
         DrawText(title, (GetScreenWidth() - MeasureText(title, fs)) / 2, (int)(GetScreenHeight() * 0.18f), fs, kText);
     }
@@ -75,6 +79,69 @@ namespace {
         const float s = Scale(), w = width * s, h = 58.0f * s;
         return { (GetScreenWidth() - w) * 0.5f, GetScreenHeight() * top + i * (h + 14.0f * s), w, h };
     }
+
+    // Save management (#279), from the main menu only (no world loaded). A save is every entry of saves/ named
+    // "<name>.sav" or "<name>.sav.<something>": the file, its .regions folder and its .erosion bake cache.
+    std::vector<fs::path> SaveParts(const std::string& name) {
+        std::vector<fs::path> out;
+        std::error_code ec;
+        const std::string base = name + ".sav";
+        for (const auto& e : fs::directory_iterator("saves", ec)) {
+            const std::string f = e.path().filename().string();
+            if (f == base || f.rfind(base + ".", 0) == 0) out.push_back(e.path());
+        }
+        return out;
+    }
+    bool SaveNameOk(const std::string& n) {
+        if (n.empty() || n.size() > 40 || n == "bench") return false;
+        for (char c : n) if (!(isalnum((unsigned char)c) || c == ' ' || c == '_' || c == '-')) return false;
+        return SaveParts(n).empty(); // not taken
+    }
+    bool SaveRename(const std::string& from, const std::string& to) {
+        std::error_code ec;
+        for (const fs::path& p : SaveParts(from)) {
+            const std::string f = p.filename().string();
+            fs::rename(p, fs::path("saves") / (to + f.substr(from.size())), ec);
+            if (ec) return false;
+        }
+        return true;
+    }
+    bool SaveCopy(const std::string& from, const std::string& to) {
+        std::error_code ec;
+        for (const fs::path& p : SaveParts(from)) {
+            const std::string f = p.filename().string();
+            fs::copy(p, fs::path("saves") / (to + f.substr(from.size())), fs::copy_options::recursive, ec);
+            if (ec) return false;
+        }
+        return true;
+    }
+    bool SaveDelete(const std::string& name) {
+        std::error_code ec;
+        for (const fs::path& p : SaveParts(name)) fs::remove_all(p, ec);
+        return SaveParts(name).empty();
+    }
+    bool TestSaveOps() {
+        std::error_code ec;
+        fs::create_directories("saves/zz_test.sav.regions", ec);
+        { FILE* f = fopen("saves/zz_test.sav", "w"); if (f) { fputs("test", f); fclose(f); } }
+        { FILE* f = fopen("saves/zz_test.sav.regions/b1_0_0_0.rgn", "w"); if (f) { fputs("region", f); fclose(f); } }
+        { FILE* f = fopen("saves/zz_test.sav.erosion", "w"); if (f) { fputs("bake", f); fclose(f); } }
+        bool ok = true;
+        auto check = [&](bool c, const char* what) { if (!c) { printf("bench: saves: %s: NO\n", what); ok = false; } };
+        check(SaveParts("zz_test").size() == 3, "a save is its file, regions and bake");
+        check(!SaveNameOk("zz_test") && !SaveNameOk("bad/name") && !SaveNameOk("bench") && SaveNameOk("zz_test2"), "names: taken, bad characters and bench refused");
+        check(SaveCopy("zz_test", "zz_test2") && fs::exists("saves/zz_test2.sav.regions/b1_0_0_0.rgn", ec) && fs::exists("saves/zz_test2.sav.erosion", ec), "copy takes all three");
+        check(SaveRename("zz_test2", "zz_test3") && SaveParts("zz_test2").empty() && SaveParts("zz_test3").size() == 3, "rename moves all three");
+        check(SaveDelete("zz_test3") && SaveDelete("zz_test") && SaveParts("zz_test").empty(), "delete removes all of it");
+        printf("bench: saves (#279): copy, rename, delete of a save with regions and bake -> %s\n", ok ? "PASS" : "FAIL");
+        return ok;
+    }
+
+    // The Load page's row state: which save is being renamed (its text) or waits for a second click to delete.
+    int renaming = -1, deleting = -1;
+    std::string renameText;
+    double deleteAsked = 0.0;
+    std::string saveMessage;
 
     void RefreshSaves() {
         saves.clear();
@@ -98,74 +165,93 @@ namespace {
         saveScroll = 0.0f;
     }
 
-    // The settings page (shared by both menus). Returns true when Back is pressed.
+    // A row of choice buttons: label, then one button per option (the chosen one in brackets). True when one is picked.
+    bool Choice(Rectangle r, const char* label, const char* const* names, int n, int& v) {
+        const int fs = (int)(r.height * 0.5f);
+        DrawText(label, (int)r.x, (int)(r.y + (r.height - fs) * 0.5f), fs, kText);
+        bool picked = false;
+        for (int k = 0; k < n; ++k) {
+            const Rectangle b = { r.x + r.width * 0.38f + k * (r.height * 2.4f), r.y + r.height * 0.1f, r.height * 2.2f, r.height * 0.8f };
+            if (Button(b, v == k ? TextFormat("[%s]", names[k]) : names[k])) { v = k; picked = true; }
+        }
+        return picked;
+    }
+
+    // The settings page (shared by both menus), in tabs (#512: one long list ran its Back button off a 720p screen).
+    // Back is pinned to the bottom edge; if a tab's rows still would not fit above it, they shrink. Returns true on Back.
+    enum class SettingsTab { Graphics, Controls, Audio, Gameplay, Count };
+    SettingsTab settingsTab = SettingsTab::Graphics;
+    float settingsContentBottom = 0.0f; Rectangle settingsBackRect{}; // the last frame's layout (--shot-settings checks it)
     bool SettingsPage() {
         const float s = Scale();
-        const float w = 760.0f * s, h = 52.0f * s;
-        const float x = (GetScreenWidth() - w) * 0.5f;
-        float y = GetScreenHeight() * 0.26f;
+        const float sh = (float)GetScreenHeight(), sw = (float)GetScreenWidth();
+        const float backH = 58 * s, backY = sh - backH - 28 * s;
+        // Tabs under the menu's title (the main menu's at 18%, the pause menu's at 20% of the height).
+        const char* tabNames[] = { "Graphics", "Controls", "Audio", "Gameplay" };
+        const float tabW = 200 * s, tabH = 46 * s, tabGap = 10 * s, tabY = sh * 0.30f;
+        const float tabsX = (sw - (4 * tabW + 3 * tabGap)) * 0.5f;
+        for (int t = 0; t < (int)SettingsTab::Count; ++t) {
+            const Rectangle r = { tabsX + t * (tabW + tabGap), tabY, tabW, tabH };
+            const bool on = (int)settingsTab == t;
+            if (on) DrawRectangleRounded({ r.x - 3, r.y - 3, r.width + 6, r.height + 6 }, 0.2f, 6, Fade(SKYBLUE, 0.7f));
+            if (Button(r, tabNames[t])) settingsTab = (SettingsTab)t;
+        }
+        // The tallest tab holds 5 rows and a note: shrink the rows if that would reach the Back button.
+        const float top = tabY + tabH + 24 * s;
+        const float h = std::min(52.0f * s, (backY - 16 * s - top) / (5 * 1.12f + 0.5f)), gap = h * 0.12f;
+        const float w = 760.0f * s, x = (sw - w) * 0.5f;
+        float y = top;
         bool changed = false;
-        changed |= Slider({ x, y, w, h }, "Mouse sensitivity", settings.mouseSensitivity, 0.2f, 3.0f, "%.2fx"); y += h + 6 * s;
-        changed |= Slider({ x, y, w, h }, "Field of view", settings.fov, 30.0f, 100.0f, "%.0f deg"); y += h + 6 * s;
-        changed |= Slider({ x, y, w, h }, "Volume", settings.volume, 0.0f, 1.0f, "%.2f"); y += h + 6 * s;
-        changed |= Toggle({ x, y, w, h }, "Foliage", settings.foliage); y += h + 6 * s;
-        changed |= Toggle({ x, y, w, h }, "VSync (no tearing)", settings.vsync); y += h + 6 * s;
-        changed |= Toggle({ x, y, w, h }, "Reduce motion", settings.reduceMotion); y += h + 6 * s;
-        changed |= Toggle({ x, y, w, h }, "Show hands", settings.showHands); y += h + 6 * s;
-        {
-            const int fs = (int)(h * 0.5f);
-            DrawText("Hand bob", (int)x, (int)(y + (h - fs) * 0.5f), fs, kText);
-            const char* names[] = { "Full", "Reduced", "Off" };
-            for (int k = 0; k < 3; ++k) {
-                const Rectangle b = { x + w * 0.38f + k * (h * 2.4f), y + h * 0.1f, h * 2.2f, h * 0.8f };
-                if (Button(b, settings.handBob == k ? TextFormat("[%s]", names[k]) : names[k])) { settings.handBob = k; changed = true; }
-            }
-            y += h + 6 * s;
+        auto next = [&] { y += h + gap; };
+        switch (settingsTab) {
+        case SettingsTab::Graphics: {
+            changed |= Slider({ x, y, w, h }, "Field of view", settings.fov, 30.0f, 100.0f, "%.0f deg"); next();
+            // Terrain detail (#297): how far out the terrain keeps its finer levels (the LOD factor). Flying drops to Low.
+            static const char* detail[] = { "Low", "Medium", "High", "Ultra" };
+            changed |= Choice({ x, y, w, h }, "Terrain detail", detail, 4, settings.terrainDetail); next();
+            changed |= Toggle({ x, y, w, h }, "Foliage", settings.foliage); next();
+            changed |= Toggle({ x, y, w, h }, "VSync (no tearing)", settings.vsync); next();
+            changed |= Toggle({ x, y, w, h }, "Show FPS", settings.showFps); next(); // on every screen (#572)
+            static const int caps[] = { 0, 60, 144, 240 };
+            static const char* capNames[] = { "Monitor", "60", "144", "240" };
+            int cap = 0;
+            for (int k = 0; k < 4; ++k) if (settings.fpsCap == caps[k]) cap = k;
+            const int capBefore = settings.fpsCap;
+            if (Choice({ x, y, w, h }, "Frame cap", capNames, 4, cap)) { settings.fpsCap = caps[cap]; changed |= capBefore != caps[cap]; }
+            next();
+            // #302: Low also turns anti-aliasing (MSAA) off to save video memory; that takes a restart.
+            static const int startDetail = settings.terrainDetail;
+            if ((startDetail == 0) != (settings.terrainDetail == 0))
+                DrawText("Anti-aliasing changes after a restart (Low: off)", (int)x, (int)y, (int)(h * 0.4f), Fade(kText, 0.7f));
+            break;
         }
-        {   // Camera smoothing (#168): how much the eye's small bumps (collision push-out on rough ground) are filtered.
-            const int fs = (int)(h * 0.5f);
-            DrawText("Camera smoothing", (int)x, (int)(y + (h - fs) * 0.5f), fs, kText);
-            const char* names[] = { "Off", "Low", "Default", "High" };
-            for (int k = 0; k < 4; ++k) {
-                const Rectangle b = { x + w * 0.38f + k * (h * 2.4f), y + h * 0.1f, h * 2.2f, h * 0.8f };
-                if (Button(b, settings.cameraSmoothing == k ? TextFormat("[%s]", names[k]) : names[k])) { settings.cameraSmoothing = k; changed = true; }
-            }
-            y += h + 6 * s;
+        case SettingsTab::Controls: {
+            changed |= Slider({ x, y, w, h }, "Mouse sensitivity", settings.mouseSensitivity, 0.2f, 3.0f, "%.2fx"); next();
+            // Camera smoothing (#168): how much the eye's small bumps (collision push-out on rough ground) are filtered.
+            static const char* smoothing[] = { "Off", "Low", "Default", "High" };
+            changed |= Choice({ x, y, w, h }, "Camera smoothing", smoothing, 4, settings.cameraSmoothing); next();
+            break;
         }
-        changed |= Toggle({ x, y, w, h }, "Speed vignette", settings.speedVignette); y += h + 6 * s;
-        {   // Terrain detail (#297): how far out the terrain keeps its finer levels (the LOD factor). Flying drops to Low.
-            const int fs = (int)(h * 0.5f);
-            DrawText("Terrain detail", (int)x, (int)(y + (h - fs) * 0.5f), fs, kText);
-            const char* names[] = { "Low", "Medium", "High", "Ultra" };
-            for (int k = 0; k < 4; ++k) {
-                const Rectangle b = { x + w * 0.38f + k * (h * 2.4f), y + h * 0.1f, h * 2.2f, h * 0.8f };
-                if (Button(b, settings.terrainDetail == k ? TextFormat("[%s]", names[k]) : names[k])) { settings.terrainDetail = k; changed = true; }
-            }
-            y += h + 6 * s;
+        case SettingsTab::Audio:
+            changed |= Slider({ x, y, w, h }, "Volume", settings.volume, 0.0f, 1.0f, "%.2f"); next();
+            break;
+        case SettingsTab::Gameplay: {
+            // (Difficulty is chosen on the New World screen and kept by the world, #526: no setting here.)
+            // Comfort (#168): motion-sickness options.
+            changed |= Toggle({ x, y, w, h }, "Reduce motion", settings.reduceMotion); next();
+            changed |= Toggle({ x, y, w, h }, "Show hands", settings.showHands); next();
+            static const char* bob[] = { "Full", "Reduced", "Off" };
+            changed |= Choice({ x, y, w, h }, "Hand bob", bob, 3, settings.handBob); next();
+            changed |= Toggle({ x, y, w, h }, "Speed vignette", settings.speedVignette); next();
+            changed |= Toggle({ x, y, w, h }, "Firelight flicker", settings.fireFlicker); next(); // torches and campfires (#558)
+            break;
         }
-        {   // Difficulty for the next new world (each world keeps its own).
-            const int fs = (int)(h * 0.5f);
-            DrawText("New worlds", (int)x, (int)(y + (h - fs) * 0.5f), fs, kText);
-            const char* names[] = { "Peaceful", "Normal", "Hard" };
-            for (int k = 0; k < 3; ++k) {
-                const Rectangle b = { x + w * 0.38f + k * (h * 2.4f), y + h * 0.1f, h * 2.2f, h * 0.8f };
-                if (Button(b, settings.difficulty == k ? TextFormat("[%s]", names[k]) : names[k])) { settings.difficulty = k; changed = true; }
-            }
-            y += h + 6 * s;
+        case SettingsTab::Count: break;
         }
-        {
-            const int fs = (int)(h * 0.5f);
-            DrawText("Frame cap", (int)x, (int)(y + (h - fs) * 0.5f), fs, kText);
-            const int caps[] = { 0, 60, 144, 240 };
-            const char* names[] = { "Monitor", "60", "144", "240" };
-            for (int k = 0; k < 4; ++k) {
-                const Rectangle b = { x + w * 0.38f + k * (h * 2.4f), y + h * 0.1f, h * 2.2f, h * 0.8f };
-                if (Button(b, settings.fpsCap == caps[k] ? TextFormat("[%s]", names[k]) : names[k])) { settings.fpsCap = caps[k]; changed = true; }
-            }
-            y += h + 6 * s;
-        }
+        settingsContentBottom = y;
+        settingsBackRect = { (sw - 300 * s) * 0.5f, backY, 300 * s, backH };
         if (changed) Settings_Apply();
-        const bool back = Button({ (GetScreenWidth() - 300 * s) * 0.5f, y + 30 * s, 300 * s, 58 * s }, "Back") || IsKeyPressed(KEY_ESCAPE);
+        const bool back = Button(settingsBackRect, "Back") || IsKeyPressed(KEY_ESCAPE);
         if (back) Settings_Save();
         return back;
     }
@@ -174,15 +260,17 @@ namespace {
 void Settings_Load() {
     FILE* f = fopen("settings.txt", "r");
     if (f) {
-        char key[64];
-        float v;
-        while (fscanf(f, " %63s %f", key, &v) == 2) {
+        char key[64], val[64];
+        while (fscanf(f, " %63s %63s", key, val) == 2) { // values are numbers, except log_level's word (#514)
+            const float v = strtof(val, nullptr);
+            if (!strcmp(key, "log_level")) { settings.logLevel = val; continue; }
             if (!strcmp(key, "mouse")) settings.mouseSensitivity = std::clamp(v, 0.2f, 3.0f);
             else if (!strcmp(key, "fov")) settings.fov = std::clamp(v, 30.0f, 100.0f);
             else if (!strcmp(key, "volume")) settings.volume = std::clamp(v, 0.0f, 1.0f);
             else if (!strcmp(key, "foliage")) settings.foliage = v != 0.0f;
             else if (!strcmp(key, "fpscap")) settings.fpsCap = std::max(0, (int)v);
             else if (!strcmp(key, "vsync")) settings.vsync = v != 0.0f;
+            else if (!strcmp(key, "showfps")) settings.showFps = v != 0.0f;
             else if (!strcmp(key, "reducemotion")) settings.reduceMotion = v != 0.0f;
             else if (!strcmp(key, "showhands")) settings.showHands = v != 0.0f;
             else if (!strcmp(key, "handbob")) settings.handBob = std::clamp((int)v, 0, 2);
@@ -190,6 +278,7 @@ void Settings_Load() {
             else if (!strcmp(key, "terraindetail")) settings.terrainDetail = std::clamp((int)v, 0, 3);
             else if (!strcmp(key, "camerasmoothing")) settings.cameraSmoothing = std::clamp((int)v, 0, 3);
             else if (!strcmp(key, "speedvignette")) settings.speedVignette = v != 0.0f;
+            else if (!strcmp(key, "fireflicker")) settings.fireFlicker = v != 0.0f;
         }
         fclose(f);
     }
@@ -203,7 +292,10 @@ void Settings_Save() {
             settings.foliage ? 1 : 0, settings.fpsCap, settings.vsync ? 1 : 0, settings.reduceMotion ? 1 : 0);
     fprintf(f, "showhands %d\nhandbob %d\n", settings.showHands ? 1 : 0, settings.handBob);
     fprintf(f, "difficulty %d\n", settings.difficulty);
+    fprintf(f, "showfps %d\n", settings.showFps ? 1 : 0);
     fprintf(f, "terraindetail %d\ncamerasmoothing %d\nspeedvignette %d\n", settings.terrainDetail, settings.cameraSmoothing, settings.speedVignette ? 1 : 0); // (terrain detail was never saved, #297)
+    fprintf(f, "fireflicker %d\n", settings.fireFlicker ? 1 : 0);
+    if (!settings.logLevel.empty()) fprintf(f, "log_level %s\n", settings.logLevel.c_str()); // set by hand in the file (#514)
     fclose(f);
 }
 
@@ -214,8 +306,12 @@ void Settings_Apply() {
     Audio_SetMasterVolume(settings.volume);
     foliageEnabled = settings.foliage;
     { const float kDetail[] = { 2.0f, 2.5f, 3.0f, 4.0f }; lodSettings.detailFactor = kDetail[std::clamp(settings.terrainDetail, 0, 3)]; } // #297
+    lodSettings.preloadRadius = settings.terrainDetail == 0 ? 150.0f : 300.0f; // #302 (user 2026-11-15): Low keeps a smaller spawn ring (VRAM)
+    if (Headless()) SetTargetFPS(kSimHz); // #326: a server (hidden window) ticks at the sim rate: vsync never throttles a hidden window, so "uncapped" spun a core
+    else {
     if (settings.vsync) SetWindowState(FLAG_VSYNC_HINT); else ClearWindowState(FLAG_VSYNC_HINT);
     SetTargetFPS(settings.fpsCap > 0 ? settings.fpsCap : (settings.vsync ? 0 : std::max(60, GetMonitorRefreshRate(GetCurrentMonitor()))));
+    }
     player.smoothMotion = settings.reduceMotion;
     { const float kScale[] = { 1.0f, 0.5f, 1.0f, 2.4f }; const int k = std::clamp(settings.cameraSmoothing, 0, 3); player.eyeSmoothing = k > 0; player.eyeSmoothScale = kScale[k]; } // #168
     player.speedVignette = settings.speedVignette;
@@ -231,10 +327,18 @@ std::string Menu_NewSavePath() {
     }
 }
 
+extern const char* kGameVersion; // "<branch> <commit>", generated at build time (#501)
+
 MenuResult Menu_Main() {
     MenuResult r;
     Backdrop("PLANETOID");
     const float s = Scale();
+    { // #501: which build this is (branch + commit), bottom right, on every main-menu page
+        const int vfs = (int)(18 * s), pad = (int)(12 * s);
+        const int vx = GetScreenWidth() - MeasureText(kGameVersion, vfs) - pad, vy = GetScreenHeight() - vfs - pad;
+        DrawText(kGameVersion, vx + 1, vy + 1, vfs, Fade(BLACK, 0.6f)); // shadow: readable over bright slideshow shots
+        DrawText(kGameVersion, vx, vy, vfs, Fade(kText, 0.75f));
+    }
     if (mainPage == Page::Main) {
         if (Button(Row(0), "New Game")) r.action = MenuAction::NewGame;
         if (Button(Row(1), "Load Game")) { RefreshSaves(); mainPage = Page::Load; }
@@ -245,11 +349,45 @@ MenuResult Menu_Main() {
         if (saves.empty()) DrawText("No saves yet", (GetScreenWidth() - MeasureText("No saves yet", fs)) / 2, (int)(GetScreenHeight() * 0.38f), fs, Fade(kText, 0.7f));
         saveScroll = std::clamp(saveScroll - GetMouseWheelMove(), 0.0f, std::max(0.0f, (float)saves.size() - 7.0f));
         const int first = (int)saveScroll;
+        bool changed = false;
         for (int i = first; i < (int)saves.size() && i < first + 7; ++i) {
             const SaveEntry& e = saves[i];
-            if (Button(Row(i - first, 620.0f, 0.32f), TextFormat("%s   %s", e.name.c_str(), e.when.c_str()))) { r.action = MenuAction::LoadGame; r.path = e.path; mainPage = Page::Main; }
+            // The row: the save (click to load), then Rename, Copy and Delete (#279).
+            const Rectangle row = Row(i - first, 820.0f, 0.32f);
+            const float sw = 92.0f * s, gap = 8.0f * s;
+            const Rectangle main = { row.x, row.y, row.width - 3 * (sw + gap), row.height };
+            const Rectangle bRen = { main.x + main.width + gap, row.y, sw, row.height }, bCopy = { bRen.x + sw + gap, row.y, sw, row.height }, bDel = { bCopy.x + sw + gap, row.y, sw, row.height };
+            if (renaming == i) { // the name being typed
+                DrawRectangleRounded(main, 0.18f, 6, kHover);
+                const bool ok = SaveNameOk(renameText);
+                const int tfs = (int)(main.height * 0.45f);
+                DrawText(TextFormat("%s%s", renameText.c_str(), fmodf((float)GetTime(), 1.0f) < 0.5f ? "_" : ""), (int)(main.x + 14 * s), (int)(main.y + (main.height - tfs) * 0.5f), tfs, ok || renameText == e.name ? kText : ORANGE);
+                for (int c = GetCharPressed(); c > 0; c = GetCharPressed()) if (c < 128 && renameText.size() < 40) renameText += (char)c;
+                if (IsKeyPressed(KEY_BACKSPACE) && !renameText.empty()) renameText.pop_back();
+                if ((IsKeyPressed(KEY_ENTER) || Button(bRen, "OK")) && ok) {
+                    saveMessage = SaveRename(e.name, renameText) ? TextFormat("Renamed to %s", renameText.c_str()) : "Rename failed";
+                    renaming = -1; changed = true;
+                }
+                if (Button(bCopy, "Cancel") || IsKeyPressed(KEY_ESCAPE)) renaming = -1;
+                continue;
+            }
+            if (Button(main, TextFormat("%s   %s", e.name.c_str(), e.when.c_str()))) { r.action = MenuAction::LoadGame; r.path = e.path; mainPage = Page::Main; }
+            if (Button(bRen, "Rename")) { renaming = i; renameText = e.name; deleting = -1; }
+            if (Button(bCopy, "Copy")) {
+                std::string to = e.name + " copy";
+                for (int k = 2; !SaveNameOk(to) && k < 100; ++k) to = TextFormat("%s copy %d", e.name.c_str(), k);
+                saveMessage = SaveCopy(e.name, to) ? TextFormat("Copied to %s", to.c_str()) : "Copy failed";
+                changed = true;
+            }
+            const bool sure = deleting == i && GetTime() - deleteAsked < 4.0;
+            if (Button(bDel, sure ? "Sure?" : "Delete")) {
+                if (sure) { saveMessage = SaveDelete(e.name) ? TextFormat("Deleted %s", e.name.c_str()) : "Delete failed"; deleting = -1; changed = true; }
+                else { deleting = i; deleteAsked = GetTime(); }
+            }
         }
-        if (Button(Row(7, 300.0f, 0.32f), "Back") || IsKeyPressed(KEY_ESCAPE)) mainPage = Page::Main;
+        if (!saveMessage.empty()) DrawText(saveMessage.c_str(), (GetScreenWidth() - MeasureText(saveMessage.c_str(), fs)) / 2, (int)(Row(7, 300.0f, 0.32f).y - 34 * s), fs, Fade(kText, 0.8f));
+        if (changed) { const float keep = saveScroll; RefreshSaves(); saveScroll = std::min(keep, std::max(0.0f, (float)saves.size() - 7.0f)); }
+        if (renaming < 0 && (Button(Row(7, 300.0f, 0.32f), "Back") || IsKeyPressed(KEY_ESCAPE))) { mainPage = Page::Main; deleting = -1; saveMessage.clear(); }
     } else if (SettingsPage()) {
         mainPage = Page::Main;
     }
@@ -257,6 +395,12 @@ MenuResult Menu_Main() {
 }
 
 void Menu_ResetPause() { pausePage = Page::Main; }
+void Menu_TestSettings(int tab, bool pause) {
+    settingsTab = (SettingsTab)std::clamp(tab, 0, (int)SettingsTab::Count - 1);
+    if (pause) pausePage = Page::Settings; else mainPage = Page::Settings;
+}
+void Menu_SettingsLayout(float& contentBottom, Rectangle& back) { contentBottom = settingsContentBottom; back = settingsBackRect; }
+bool Menu_TestSaves() { return TestSaveOps(); }
 
 MenuResult Menu_Pause() {
     MenuResult r;
@@ -268,11 +412,12 @@ MenuResult Menu_Pause() {
         if (SettingsPage()) pausePage = Page::Main;
         return r;
     }
-    const Rectangle panel = { Row(0).x - 30 * s, Row(0).y - 30 * s, Row(0).width + 60 * s, Row(3).y + Row(3).height - Row(0).y + 60 * s };
+    const Rectangle panel = { Row(0).x - 30 * s, Row(0).y - 30 * s, Row(0).width + 60 * s, Row(4).y + Row(4).height - Row(0).y + 60 * s };
     DrawRectangleRounded(panel, 0.06f, 6, kPanel);
     if (Button(Row(0), "Resume") || IsKeyPressed(KEY_ESCAPE)) r.action = MenuAction::Resume;
     if (Button(Row(1), "Save")) r.action = MenuAction::Save;
     if (Button(Row(2), "Settings")) pausePage = Page::Settings;
-    if (Button(Row(3), "Save & Quit to Menu")) r.action = MenuAction::SaveAndQuit;
+    if (Button(Row(3), "Report a bug")) r.action = MenuAction::ReportBug; // #169
+    if (Button(Row(4), "Save & Quit to Menu")) r.action = MenuAction::SaveAndQuit;
     return r;
 }

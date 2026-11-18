@@ -20,6 +20,15 @@ bool SceneTarget_Begin(Color clear);   // false: not available (or the target fa
 // Replaces the current projection (after BeginMode3D) with the infinite reversed one of the same field
 // of view, aspect and near plane.
 void SceneTarget_ApplyProjection();
+// Contact shadows (#137): the sun direction in view space and the strength (0: none) for this frame's composite.
+void SceneTarget_SetContact(Vector3 sunView, float strength);
+// Hi-Z occlusion culling (#134): this frame's view-projection (render space, after SceneTarget_ApplyProjection); at
+// SceneTarget_End the resolved depth becomes a min-depth pyramid. SceneTarget_HiZ gives the latest pyramid and the
+// view-projection it was drawn with (false: none yet, or RAYLIBGAME_HIZ=0).
+void SceneTarget_SetHiZView(Matrix viewProj);
+bool SceneTarget_HiZ(unsigned& tex, int& w, int& h, int& levels, Matrix& viewProj);
+long long SceneTarget_Frame();    // frames ended so far (the one being drawn has this number)
+long long SceneTarget_HiZFrame(); // the frame the current pyramid was built in (-1: none)
 // Restores the standard depth state and copies the colour to the window.
 void SceneTarget_End();
 void SceneTarget_Unload();

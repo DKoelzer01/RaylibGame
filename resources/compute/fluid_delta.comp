@@ -6,7 +6,9 @@ layout(std430, binding = 0) buffer Cells { uint cells[]; };
 struct Delta { uint cell; int delta; uint kind; uint pad; };
 layout(std430, binding = 1) readonly buffer Deltas { Delta deltas[]; };
 layout(std430, binding = 2) buffer Flags { uint flagsOut[]; };
+layout(std430, binding = 10) buffer Mask { uint gmask[]; }; // the dry-cell skip's wet groups (#675): a CPU change wets its group in all three
 uniform uint count;
+uniform int useGroups; // 1: the dry-cell skip is on (binding 10 is its mask)
 void main() {
     uint i = gl_GlobalInvocationID.x;
     if (i >= count) return;
@@ -16,6 +18,7 @@ void main() {
     int nf = clamp(f + d.delta, 0, 255);
     uint fl = (c >> 8) & 255u;
     if (f == 0 && nf > 0) fl = (fl & 31u) | ((d.kind & 7u) << 5);
-    cells[d.cell] = uint(nf) | (fl << 8) | (c & 0xFF0000u);
+    cells[d.cell] = uint(nf) | (fl << 8) | (c & 0xFFFF0000u); // the target and the ground share (#454) stay
     atomicOr(flagsOut[d.cell / 4096u], 1u);
+    if (useGroups != 0 && nf > 0) { uint slot = d.cell / 4096u, grp = (d.cell % 4096u) / 64u; for (uint k = 0u; k < 3u; ++k) atomicOr(gmask[slot * 6u + k * 2u + (grp >> 5u)], 1u << (grp & 31u)); }
 }

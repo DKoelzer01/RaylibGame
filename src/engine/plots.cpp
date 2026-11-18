@@ -1,4 +1,5 @@
 #include "plots.h"
+#include "gpumem.h"
 #include "worldtypes.h"
 
 #include <raymath.h>
@@ -61,6 +62,9 @@ const char* PartName(PartType t) {
         case PartType::FusionReactor: return "fusion reactor";
         case PartType::MassDriver: return "mass driver";
         case PartType::HandPump: return "hand pump";
+        case PartType::Torch: return "torch";
+        case PartType::Snare: return "snare";
+        case PartType::Meteorite: return "meteorite";
         case PartType::Farmland: return "farmland";
         case PartType::Fence: return "fence";
         case PartType::Gate: return "gate";
@@ -72,9 +76,9 @@ const char* PartName(PartType t) {
 int PartCostCount(PartType t) {
     switch (t) {
         case PartType::Block: return 4;
-        case PartType::Beam2: return 1;
-        case PartType::Beam4: return 2;
-        case PartType::Beam8: return 4;
+        case PartType::Beam2: return 2; // beams are placed as single cubes (#200): one item a cell, as a cube
+        case PartType::Beam4: return 4;
+        case PartType::Beam8: return 8;
         default: return 1; // cube, slope, corner; connectors and machines: one of their own item
     }
 }
@@ -128,6 +132,9 @@ const char* PartCostItem(PartType t) {
         case PartType::Guidance: return "guidance_computer";
         case PartType::LandingLeg: return "landing_leg";
         case PartType::HandPump: return "hand_pump"; // not a machine: no factory entry (#280)
+        case PartType::Torch: return "torch"; // placed from the hand (#218)
+        case PartType::Snare: return "snare"; // placed from the hand (#176)
+        case PartType::Meteorite: return "nickel_iron_ore"; // what it is made of (breaking it gives more: buildtool.cpp, #177)
         default: { const char* m = PartMachineName(t); return m ? m : "concrete"; }
     }
 }
@@ -202,7 +209,7 @@ static Color PartColor(PartType t) {
         case PartType::Furnace: return { 95, 92, 88, 255 };
         case PartType::Macerator: return { 70, 110, 150, 255 };
         case PartType::Battery: return { 210, 180, 60, 255 };
-        case PartType::Campfire: return { 200, 90, 40, 255 };
+        case PartType::Campfire: return { 62, 58, 54, 255 }; // ash (#552: it was a brick block)
         case PartType::Kiln: return { 150, 95, 70, 255 };
         case PartType::CokeOven: return { 120, 80, 60, 255 };
         case PartType::BlastFurnace: return { 90, 70, 70, 255 };
@@ -229,6 +236,9 @@ static Color PartColor(PartType t) {
         case PartType::FusionReactor: return { 200, 110, 240, 255 };
         case PartType::MassDriver: return { 150, 160, 185, 255 };
         case PartType::HandPump: return { 120, 90, 60, 255 };
+        case PartType::Torch: return { 120, 85, 55, 255 };
+        case PartType::Snare: return { 150, 120, 80, 255 };
+        case PartType::Meteorite: return { 70, 62, 58, 255 };
         case PartType::Farmland: return { 86, 60, 38, 255 };
         case PartType::Fence: return { 130, 95, 60, 255 };
         case PartType::Gate: return { 165, 120, 70, 255 };
@@ -268,11 +278,15 @@ static unsigned char PartPatternOf(const Part& p) {
     }
     switch (p.type) {
         case PartType::Chest: case PartType::Fence: case PartType::Gate: return PatPlanks;
-        case PartType::Kiln: case PartType::CokeOven: case PartType::BlastFurnace: case PartType::Campfire: return PatBrick;
+        case PartType::Kiln: case PartType::CokeOven: case PartType::BlastFurnace: return PatBrick;
+        case PartType::Campfire: return PatCoal; // the ash bed under the logs (#552)
         case PartType::Conveyor: return PatConveyor;
         case PartType::Cable: return PatCable;
         case PartType::Pipe: case PartType::Outlet: return PatMetal;
         case PartType::Farmland: return PatFarmland;
+        case PartType::Torch: return PatLog; // the shaft; machinemodels draws the flame
+        case PartType::Snare: return PatPlanks; // a low wooden frame; machinemodels draws the noose and a catch
+        case PartType::Meteorite: return PatCoal; // dark, pitted
         default: return IsRocketPart(p.type) ? PatHull : PatMachine;
     }
 }
@@ -285,14 +299,19 @@ static void PartCells(PartType t, std::vector<std::pair<Int3, CellShape>>& out) 
         case PartType::Cube: case PartType::Conveyor: case PartType::Cable: case PartType::Guidance: case PartType::LandingLeg: case PartType::Pipe: case PartType::Outlet:
             out.push_back({ { 0, 0, 0 }, full }); break;
         case PartType::Block: case PartType::Chest: case PartType::Generator: case PartType::Furnace: case PartType::Macerator: case PartType::Battery:
-        case PartType::Campfire: case PartType::Kiln: case PartType::CokeOven: case PartType::BlastFurnace: case PartType::Boiler:
+        case PartType::Kiln: case PartType::CokeOven: case PartType::BlastFurnace: case PartType::Boiler:
         case PartType::ForgeHammer: case PartType::AlloySmelter: case PartType::SteamMacerator:
         case PartType::RocketEngine: case PartType::FuelTank: case PartType::Cockpit: case PartType::Cabin: case PartType::StationCore:
         case PartType::OreWasher: case PartType::Centrifuge: case PartType::WaterPump: case PartType::MvGenerator: case PartType::Electrolyzer:
         case PartType::ChemicalReactor: case PartType::Miner: case PartType::HvGenerator: case PartType::ArcFurnace: case PartType::Refinery:
-        case PartType::PrecisionAssembler: case PartType::FusionReactor: case PartType::MassDriver: case PartType::HandPump:
+        case PartType::PrecisionAssembler: case PartType::FusionReactor: case PartType::MassDriver: case PartType::HandPump: case PartType::Meteorite:
             for (int z = 0; z < 2; ++z) for (int y = 0; y < 2; ++y) for (int x = 0; x < 2; ++x) out.push_back({ { x, y, z }, full });
             break;
+        case PartType::Campfire: { // #552: a 1 m square ash bed 12 cm deep (it was a 1 m brick cube); machinemodels draws the stones and logs
+            CellShape bed; bed.full = false; bed.planes = 1; bed.n[0] = { 0, 1, 0 }; bed.d[0] = 0.25f;
+            for (int z = 0; z < 2; ++z) for (int x = 0; x < 2; ++x) out.push_back({ { x, 0, z }, bed });
+            break;
+        }
         case PartType::Farmland: // 1 m square, half a metre deep
             for (int z = 0; z < 2; ++z) for (int x = 0; x < 2; ++x) out.push_back({ { x, 0, z }, full });
             break;
@@ -301,6 +320,7 @@ static void PartCells(PartType t, std::vector<std::pair<Int3, CellShape>>& out) 
             for (int z = 0; z < 2; ++z) for (int y = 0; y < 2; ++y) out.push_back({ { 0, y, z }, s });
             break;
         }
+        case PartType::Snare: // a low trap frame: the Slab shape (#176)
         case PartType::Slab: {  // the lower half of the cell
             CellShape s; s.full = false; s.planes = 1; s.n[0] = { 0, 1, 0 }; s.d[0] = 0.5f;
             out.push_back({ { 0, 0, 0 }, s });
@@ -313,6 +333,11 @@ static void PartCells(PartType t, std::vector<std::pair<Int3, CellShape>>& out) 
         }
         case PartType::Pane: {  // a thin board through the middle (glass panes, screens)
             CellShape s; s.full = false; s.planes = 2; s.n[0] = { 1, 0, 0 }; s.d[0] = 0.56f; s.n[1] = { -1, 0, 0 }; s.d[1] = -0.44f;
+            out.push_back({ { 0, 0, 0 }, s });
+            break;
+        }
+        case PartType::Torch: { // a thin stick up one edge (#218; #558: 0.1 m, it was a quarter-cell post like Post)
+            CellShape s; s.full = false; s.planes = 2; s.n[0] = { 1, 0, 0 }; s.d[0] = 0.2f; s.n[1] = { 0, 0, 1 }; s.d[1] = 0.2f;
             out.push_back({ { 0, 0, 0 }, s });
             break;
         }
@@ -416,6 +441,13 @@ void Plot::Footprint(const Part& p, std::vector<std::pair<Int3, CellShape>>& out
             s.n[i] = n2;
         }
     }
+}
+
+void Plot::SplitBeam(const Part& beam, std::vector<Part>& out) {
+    std::vector<std::pair<Int3, CellShape>> fp;
+    Footprint(beam, fp);
+    out.clear();
+    for (const auto& c : fp) out.push_back({ PartType::Cube, c.first, 0, beam.material });
 }
 
 bool Plot::canPlace(const Part& p) const {
@@ -526,6 +558,28 @@ namespace {
     }
 }
 
+void CellShapeFaces(const CellShape& shape, std::vector<std::vector<Vector3>>& out) {
+    out.clear();
+    // The cube's faces clipped by the shape's planes, then the caps on those planes (as Plot::buildSection meshes them).
+    for (int f = 0; f < 6; ++f) {
+        std::vector<Vector3> poly = CubeFace(f);
+        for (int i = 0; i < shape.planes; ++i) Clip(poly, shape.n[i], shape.d[i]);
+        if (poly.size() >= 3) out.push_back(poly);
+    }
+    for (int i = 0; i < shape.planes; ++i) {
+        const Vector3 n = Vector3Normalize(shape.n[i]);
+        const float d = shape.d[i] / Vector3Length(shape.n[i]);
+        const Vector3 t = Vector3Normalize(Vector3CrossProduct(n, fabsf(n.y) < 0.9f ? Vector3{ 0, 1, 0 } : Vector3{ 1, 0, 0 }));
+        const Vector3 b = Vector3CrossProduct(n, t);
+        const Vector3 o = Vector3Scale(n, d);
+        std::vector<Vector3> poly = { Vector3Add(o, Vector3Add(Vector3Scale(t, -3), Vector3Scale(b, -3))), Vector3Add(o, Vector3Add(Vector3Scale(t, 3), Vector3Scale(b, -3))),
+                                      Vector3Add(o, Vector3Add(Vector3Scale(t, 3), Vector3Scale(b, 3))), Vector3Add(o, Vector3Add(Vector3Scale(t, -3), Vector3Scale(b, 3))) };
+        for (int f = 0; f < 6; ++f) Clip(poly, kFaceN[f], f & 1 ? 1.0f : 0.0f);
+        for (int j = 0; j < shape.planes; ++j) if (j != i) Clip(poly, shape.n[j], shape.d[j]);
+        if (poly.size() >= 3) out.push_back(poly);
+    }
+}
+
 void Plot::rebuildDirty(const PlanetField* field) {
     std::unordered_map<Int3, std::vector<Int3>> byDirty;
     bool any = false;
@@ -554,6 +608,33 @@ void Plot::buildSection(Int3 key, Section& s, const std::vector<Int3>& sectionCe
             const float len = Vector3Length(centre);
             if (len > 1.0f) field->materialSky(centre, 1.0f, 1.0f, Vector3Scale(centre, 1.0f / len), cellSky);
         }
+        // Under a roof (#369): five rays from each face through the plot's own cells (up, and four tilted 45 degrees,
+        // 0.5-12 m); building blocks stop them, glass and small parts let light by. The open share (the up ray counts
+        // double) dims a room's walls and floor, black a few metres from a window or a door.
+        auto faceSky = [&](Vector3 centre, Vector3 n) {
+            if (!gSkyProbes) return cellSky;
+            static const Vector3 dirs[5] = { { 0, 1, 0 }, { 0.7071f, 0.7071f, 0 }, { -0.7071f, 0.7071f, 0 }, { 0, 0.7071f, 0.7071f }, { 0, 0.7071f, -0.7071f } };
+            static const float dist[8] = { 1.0f, 1.5f, 2.0f, 3.0f, 4.0f, 6.0f, 10.0f, 16.0f }; // cells (0.5 m)
+            const Vector3 o = Vector3Add(centre, Vector3Scale(n, 0.6f));
+            float open = 0.0f;
+            for (int r = 0; r < 5; ++r) {
+                bool blocked = false;
+                for (float s : dist) {
+                    const Vector3 q = Vector3Add(o, Vector3Scale(dirs[r], s));
+                    const Int3 qc = { (int)floorf(q.x), (int)floorf(q.y), (int)floorf(q.z) };
+                    auto it = cells.find(qc);
+                    if (it == cells.end()) continue;
+                    const Part& bp = parts[it->second.part];
+                    if (IsShape(bp.type) && PartPatternOf(bp) != PatGlass) { blocked = true; break; }
+                }
+                if (!blocked) open += r == 0 ? 2.0f : 1.0f;
+            }
+            return std::min(cellSky, std::clamp(open / 6.0f * 1.5f, 0.0f, 1.0f));
+        };
+        size_t emitted = pos.size() / 3;
+        auto pushSky = [&](float fs) { for (size_t v = emitted; v < pos.size() / 3; ++v) { sky.push_back(1.0f - fs); sky.push_back(0.0f); } emitted = pos.size() / 3; };
+        auto polyCentre = [](const std::vector<Vector3>& poly) { Vector3 m{}; for (const Vector3& v : poly) m = Vector3Add(m, v); return Vector3Scale(m, 1.0f / (float)poly.size()); };
+        const Vector3 cellLo = { (float)c.x, (float)c.y, (float)c.z };
         const size_t firstVertex = pos.size() / 3;
         const CellRef& ref = cells.at(c);
         const CellShape& shape = ref.shape;
@@ -575,6 +656,7 @@ void Plot::buildSection(Int3 key, Section& s, const std::vector<Int3>& sectionCe
             const float shade = f == 3 ? 1.0f : f == 2 ? 0.7f : 0.85f + 0.05f * (f & 1);
             Color fc = { (unsigned char)(color.r * shade), (unsigned char)(color.g * shade), (unsigned char)(color.b * shade), color.a };
             EmitPoly(poly, kFaceN[f], base, fc, pos, nrm, col);
+            pushSky(faceSky(Vector3Add(cellLo, polyCentre(poly)), kFaceN[f]));
         }
         // Caps on the cutting planes.
         for (int i = 0; i < shape.planes; ++i) {
@@ -591,8 +673,10 @@ void Plot::buildSection(Int3 key, Section& s, const std::vector<Int3>& sectionCe
             }
             for (int j = 0; j < shape.planes; ++j) if (j != i) Clip(poly, shape.n[j], shape.d[j]);
             EmitPoly(poly, n, base, color, pos, nrm, col);
+            if (!poly.empty()) pushSky(faceSky(Vector3Add(cellLo, polyCentre(poly)), n)); else pushSky(cellSky);
         }
-        for (size_t v = firstVertex; v < pos.size() / 3; ++v) { sky.push_back(1.0f - cellSky); sky.push_back(0.0f); } // as "buried": meshes without it read 0 = open sky
+        pushSky(cellSky); // anything emitted without a face of its own; "buried" = 1 - sky (meshes without it read 0 = open)
+        (void)firstVertex;
     }
     if (pos.empty()) return;
     s.mesh.vertexCount = (int)(pos.size() / 3);
@@ -605,6 +689,7 @@ void Plot::buildSection(Int3 key, Section& s, const std::vector<Int3>& sectionCe
     memcpy(s.mesh.colors, col.data(), col.size());
     s.mesh.texcoords = (float*)MemAlloc((unsigned int)(sky.size() * sizeof(float)));
     memcpy(s.mesh.texcoords, sky.data(), sky.size() * sizeof(float));
+    GpuMemTag gm672_("parts"); // VRAM accounting (#302)
     UploadMesh(&s.mesh, false);
 }
 
@@ -758,8 +843,14 @@ Plot* PlotSet::plotFor(Vector3 b, float reach, bool create) {
         if (d < bestD) { bestD = d; best = pl.get(); }
     }
     if (best || !create) return best;
+    return createAt(nextId, b);
+}
+
+Plot* PlotSet::createAt(uint32_t id, Vector3 b) {
+    if (byId(id)) return nullptr;
     auto pl = std::make_unique<Plot>();
-    pl->id = nextId++;
+    pl->id = id;
+    nextId = std::max(nextId, id + 1);
     pl->origin = DVec3(b);
     pl->up = Vector3Normalize(b);
     pl->east = Vector3CrossProduct({ 0, 1, 0 }, pl->up);
@@ -830,6 +921,7 @@ bool PlotSet::load(FILE* f) {
         if (Vector3Length(p->east) < 0.1f) p->east = { 1, 0, 0 };
         p->east = Vector3Normalize(p->east);
         p->north = Vector3CrossProduct(p->up, p->east);
+        std::vector<Part> extraCubes;
         for (int k = 0; k < count; ++k) {
             int t, x, y, z, o, m = 0;
             if (fscanf(f, " %d", &t) != 1) return false;
@@ -839,8 +931,16 @@ bool PlotSet::load(FILE* f) {
             // Old saves: beams were iron.
             if (!materials && (t == (int)PartType::Beam2 || t == (int)PartType::Beam4 || t == (int)PartType::Beam8)) m = BuildMaterialForItem("iron_plate");
             // A part that no longer fits still keeps its slot, so the indices after it don't shift.
-            if (p->place({ (PartType)t, { x, y, z }, (uint8_t)o, (uint8_t)std::clamp(m, 0, BuildMaterialCount() - 1) }) < 0) p->parts.push_back(dead);
+            Part part{ (PartType)t, { x, y, z }, (uint8_t)o, (uint8_t)std::clamp(m, 0, BuildMaterialCount() - 1) };
+            if (IsBeam(part.type)) { // beams are single cubes now (#200): the first takes the slot, the rest go on the end
+                std::vector<Part> cubes;
+                Plot::SplitBeam(part, cubes);
+                part = cubes[0];
+                extraCubes.insert(extraCubes.end(), cubes.begin() + 1, cubes.end());
+            }
+            if (p->place(part) < 0) p->parts.push_back(dead);
         }
+        for (const Part& c : extraCubes) p->place(c);
         if (wear) {
             int worn = 0;
             if (fscanf(f, " wear %d %f", &worn, &p->air) != 2) return false;

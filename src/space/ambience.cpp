@@ -11,6 +11,8 @@
 #include "worldtypes.h"
 #include "fluid.h"
 #include "trees.h"
+#include "menus.h"
+#include <unordered_map>
 #include <unordered_set>
 #include <vector>
 #include <raymath.h>
@@ -210,6 +212,23 @@ void Ambience_Update(Scene& world, float dt) {
         if (Vector3Distance(plot->toBody({ 0, 0, 0 }), local) > 160.0f) continue;
         for (size_t i = 0; i < plot->parts.size(); ++i) {
             const Part& part = plot->parts[i];
+            if (part.type == PartType::Torch) { // a placed torch's flame (#558: particles, it was two glowing boxes)
+                Vector3 at;
+                if (Machine_SmokePoints(*plot, i, &at, 1) == 0 || Vector3Distance(at, local) > 60.0f) continue;
+                ParticleBurst fire;
+                fire.kind = ParticleKind::Fire; fire.color = { 255, 140, 40, 255 };
+                fire.count = std::max(1, (int)(tick * 16.0f)); fire.size = 0.11f; fire.life = 0.45f; fire.speed = 0.45f; fire.spread = 0.12f;
+                fire.dir = plot->up;
+                Particles_Emit(*body, at, fire);
+                if (GetRandomValue(0, 5) == 0) {
+                    ParticleBurst wisp;
+                    wisp.kind = ParticleKind::Smoke; wisp.color = { 120, 118, 115, 255 };
+                    wisp.count = 1; wisp.size = 0.08f; wisp.life = 1.6f; wisp.speed = 0.5f; wisp.spread = 0.15f;
+                    wisp.dir = plot->up;
+                    Particles_Emit(*body, Vector3Add(at, Vector3Scale(plot->up, 0.2f)), wisp);
+                }
+                continue;
+            }
             if (!SmokyMachine(part.type)) continue;
             // From the chimney tops of the model (#220: the base assumed the footprint ran +x/+z from the origin cell,
             // so rotated machines smoked from the opposite corner, in the air).
@@ -238,6 +257,66 @@ void Ambience_Update(Scene& world, float dt) {
                     Particles_Emit(*body, Vector3Add(base, Vector3Scale(plot->up, 0.3f)), ember);
                 }
             }
+        }
+    }
+}
+
+// Local lights (#139) near the camera: lamp blocks (steady warm white), lit campfires (flickering orange) and working
+// fire machines (a dim glow at the door; the arc furnace blue-white). Each plot's light spots are cached per version.
+void Ambience_GatherLights(Scene& world) {
+    world.localLights.clear();
+    Planetoid* body = player.nearest;
+    if (!body || !body->plots) return;
+    const Vector3 cam = body->toLocal(world.camera.position);
+    static int lampMat = -2;
+    if (lampMat == -2) lampMat = BuildMaterialForItem("lamp");
+    struct Spot { int part; Vector3 centre; uint8_t kind; }; // kind: 0 lamp, 1 campfire, 2 fire machine, 3 arc furnace, 4 placed torch
+    struct Cached { uint32_t version = 0xFFFFFFFFu; std::vector<Spot> spots; };
+    static std::unordered_map<uint64_t, Cached> cache;
+    static std::vector<std::pair<Int3, CellShape>> fp;
+    const float t = (float)fmod(GameClock(), 3600.0); // flicker stops behind the pause menu (#511)
+    for (auto& plot : body->plots->plots) {
+        if (Vector3Distance(plot->toBody({ 0, 0, 0 }), cam) > 300.0f) continue;
+        Cached& c = cache[(body->id * 1315423911ull) ^ plot->id];
+        if (c.version != plot->version) {
+            c.version = plot->version;
+            c.spots.clear();
+            for (size_t i = 0; i < plot->parts.size(); ++i) {
+                const Part& p = plot->parts[i];
+                int kind = -1;
+                if (p.type == PartType::Campfire) kind = 1;
+                else if (p.type == PartType::Torch) kind = 4;
+                else if (p.type == PartType::ArcFurnace) kind = 3;
+                else if (p.type == PartType::Kiln || p.type == PartType::CokeOven || p.type == PartType::BlastFurnace || p.type == PartType::Furnace ||
+                         p.type == PartType::AlloySmelter) kind = 2;
+                else if (lampMat >= 0 && IsShape(p.type) && p.material == lampMat) kind = 0;
+                if (kind < 0) continue;
+                Plot::Footprint(p, fp);
+                if (fp.empty()) continue;
+                Vector3 sum{};
+                for (auto& cell : fp) sum = Vector3Add(sum, { (cell.first.x + 0.5f) * kCellSize, (cell.first.y + 0.5f) * kCellSize, (cell.first.z + 0.5f) * kCellSize });
+                c.spots.push_back({ (int)i, Vector3Scale(sum, 1.0f / fp.size()), (uint8_t)kind });
+            }
+        }
+        for (const Spot& s : c.spots) {
+            const Vector3 at = plot->toBody(s.centre);
+            if (Vector3Distance(at, cam) > 110.0f) continue;
+            LocalLight L;
+            L.position = body->toWorld(Vector3Add(at, Vector3Scale(plot->up, s.kind == 1 ? 0.3f : 0.0f)));
+            if (s.kind == 0) { L.range = 8.0f; L.color = { 1.0f, 0.92f, 0.76f }; L.intensity = 1.1f; }
+            else if (s.kind == 4) { // a placed torch (#218): always lit, flickering, from its flame (top of the post)
+                const float flicker = settings.fireFlicker ? 0.85f + 0.1f * sinf(t * 13.0f + s.part) + 0.05f * sinf(t * 31.0f + s.part) : 0.85f; // #558: steady when off
+                L.position = body->toWorld(Vector3Add(at, Vector3Scale(plot->up, 0.4f)));
+                L.range = 10.0f; L.color = { 1.0f, 0.62f, 0.3f }; L.intensity = 1.3f * flicker;
+            }
+            else {
+                if (!Factory::Working(body->id, plot->id, s.part)) continue;
+                const float flicker = settings.fireFlicker ? 0.82f + 0.12f * sinf(t * 11.0f + s.part) + 0.06f * sinf(t * 27.3f + 2.0f * s.part) : 0.82f;
+                if (s.kind == 1) { L.range = 11.0f; L.color = { 1.0f, 0.55f, 0.22f }; L.intensity = 1.7f * flicker; }
+                else if (s.kind == 2) { L.range = 5.0f; L.color = { 1.0f, 0.5f, 0.2f }; L.intensity = 0.9f * flicker; }
+                else { L.range = 6.0f; L.color = { 0.75f, 0.85f, 1.0f }; L.intensity = 1.2f * flicker; }
+            }
+            world.localLights.push_back(L);
         }
     }
 }

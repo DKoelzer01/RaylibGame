@@ -19,7 +19,7 @@
 
 class Scene;
 
-void Nav_Update(Scene& world, bool inputEnabled); // once a frame: exploration, the map's input, images
+void Nav_Update(Scene& world, bool inputEnabled, bool gameInput); // once a frame: exploration, the map's input (inputEnabled), images; gameInput: the minimap zoom keys (#278)
 void Nav_DrawHUD(Scene& world);                   // compass (always), minimap (with a Map)
 void Nav_DrawMap(Scene& world);                   // the full-screen map, when open (draw last)
 bool Nav_MapOpen();
@@ -34,7 +34,8 @@ bool Nav_LoadLine(const char* tok, FILE* f);      // true if it consumed a nav l
 int Nav_ExploredTiles(const std::string& body);
 float Nav_Heading(Scene& world);                  // degrees clockwise from north; -1 near a pole
 float Nav_Bearing(Scene& world, Vector3 localDir);// to a body-local direction, degrees (-1 none)
-void Nav_AddWaypoint(const std::string& body, Vector3 localDir, const std::string& name);
+void Nav_AddWaypoint(const std::string& body, Vector3 localDir, const std::string& name, bool byPlayer = true); // byPlayer: counts for the quest
+void Nav_RemoveWaypoint(const std::string& body, const std::string& name);
 int Nav_WaypointCount();
 bool Nav_MinimapReady();
 bool Nav_MapImageReady();

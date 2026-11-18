@@ -13,6 +13,9 @@ uniform mat4 lightSpaceNear;
 uniform int shadowMapResolution;        // 0: shadows off
 uniform vec2 shadowTexel;               // metres per texel: near, far
 uniform float shadowDepthRange;         // metres the light's depth spans
+// Low-sun tint (#276): 1 - the sun light's colour (warm and dim near the horizon); unset = 0 = white sun.
+uniform vec3 sunFade;
+vec3 sunTint() { return vec3(1.0) - clamp(sunFade, 0.0, 1.0); }
 
 float shadowPcf(sampler2DShadow map, vec3 q, int taps)
 {
@@ -63,16 +66,57 @@ float sunShadowNormal(vec3 p, vec3 n, vec3 l, int taps)
                              shadowTexel.x * (0.5 + slope), shadowTexel.y * (0.5 + slope), taps);
 }
 
+// Local point lights (#139, locallights.h): lamps, campfires, glowing machines. Per 16 px screen tile a count and up to
+// 15 light indices; per light two texels (render-space position + range, linear colour + intensity). The light falls to
+// zero at its range (a smooth square falloff), with a little wrap so faces turned slightly away still catch some.
+uniform sampler2D localLightTex;
+uniform isampler2D localTileTex;
+uniform ivec4 localTileInfo;   // tiles across, tile size (px), lights this frame (0: none), ints per tile
+vec3 localLights(vec3 p, vec3 n)
+{
+    if (localTileInfo.z <= 0) return vec3(0.0);
+    ivec2 t = ivec2(gl_FragCoord.xy) / localTileInfo.y;
+    int base = t.x * localTileInfo.w;
+    int count = texelFetch(localTileTex, ivec2(base, t.y), 0).r;
+    vec3 sum = vec3(0.0);
+    for (int k = 0; k < count; ++k) {
+        int i = texelFetch(localTileTex, ivec2(base + 1 + k, t.y), 0).r;
+        vec4 a = texelFetch(localLightTex, ivec2(2 * i, 0), 0);
+        vec3 d = a.xyz - p;
+        float dist = length(d);
+        if (dist >= a.w) continue;
+        vec4 c = texelFetch(localLightTex, ivec2(2 * i + 1, 0), 0);
+        float f = 1.0 - dist / a.w;
+        float wrap = clamp((dot(n, d / max(dist, 1e-3)) + 0.25) / 1.25, 0.0, 1.0);
+        sum += c.rgb * c.a * f * f * wrap;
+    }
+    return sum;
+}
+
+// A held torch (#218), a point light: render-space position and range (w, 0 off); colour and intensity (a).
+// Terrain gets it through lights[3] (lighting.fs), with the same falloff.
+uniform vec4 torchPos;
+uniform vec4 torchColor;
+vec3 torchLight(vec3 p, vec3 n)
+{
+    if (torchPos.w <= 0.0) return vec3(0.0);
+    vec3 l = normalize(torchPos.xyz - p);
+    float dl = length(torchPos.xyz - p) / torchPos.w;
+    return torchColor.rgb * torchColor.a * 3.0 / (1.0 + dl * dl * 4.0) * max(dot(n, l), 0.35);
+}
+
 // The headlamp (a spot light): render-space position (w = intensity, 0 off) and the beam's end.
 uniform vec4 lampPos;
 uniform vec4 lampTarget;
+// lampLight() also adds the held torch and the local lights: every shader that calls it gets them all.
 vec3 lampLight(vec3 p, vec3 n)
 {
-    if (lampPos.w <= 0.0) return vec3(0.0);
+    vec3 other = torchLight(p, n) + localLights(p, n); // with the headlamp off too (it returned early before: no torch on grass, #218)
+    if (lampPos.w <= 0.0) return other;
     vec3 beam = lampTarget.xyz - lampPos.xyz;
     float range = max(length(beam), 1.0);
     vec3 l = normalize(lampPos.xyz - p);
     float cone = smoothstep(0.82, 0.95, dot(-l, beam / range));
     float dl = length(lampPos.xyz - p) / range;
-    return vec3(1.0, 0.95, 0.85) * lampPos.w * 3.0 * cone / (1.0 + dl * dl * 4.0) * max(dot(n, l), 0.35);
+    return vec3(1.0, 0.95, 0.85) * lampPos.w * 3.0 * cone / (1.0 + dl * dl * 4.0) * max(dot(n, l), 0.35) + other;
 }

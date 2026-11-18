@@ -1,4 +1,5 @@
 #include "trees.h"
+#include "gpumem.h"
 #include "jobsystem.h"
 #include "worldtypes.h"
 #include "world.h"
@@ -81,9 +82,22 @@ void Prism(VariantMesh& m, Vector3 a, Vector3 b, float w0, float w1, float twist
 float U(std::mt19937& r) { return std::uniform_real_distribution<float>(0.0f, 1.0f)(r); }
 unsigned char Shade(std::mt19937& r) { return (unsigned char)(90 + (int)(U(r) * 140.0f)); }
 
-// Shape knobs per species: height, crown size, trunk thickness, branch count.
-struct BroadleafShape { float h = 1.0f, crown = 1.0f, trunk = 1.0f; int branches = 0; };
-struct ConiferShape { float h = 1.0f, width = 1.0f; int layers = 0; };
+// Shape knobs per species and size class (#274): height, crown size, trunk thickness, branch count and reach; old
+// giants add buttress roots and a second, lower ring of branches.
+struct BroadleafShape { float h = 1.0f, crown = 1.0f, trunk = 1.0f; int branches = 0; float reach = 1.0f; bool giant = false; };
+struct ConiferShape { float h = 1.0f, width = 1.0f; int layers = 0; float trunk = 1.0f; bool giant = false; float k = 1.0f; }; // k: the class scale (slabs, tip)
+
+// Buttress roots: flared fins from the trunk's foot out along the ground (old-growth giants).
+void Buttress(VariantMesh& m, std::mt19937& r, float trunkW, float h) {
+    const int n = 4 + (int)(U(r) * 2.0f);
+    const float yaw0 = U(r) * 2.0f * PI;
+    for (int k = 0; k < n; ++k) {
+        const float yaw = yaw0 + k * 2.0f * PI / n + (U(r) - 0.5f) * 0.5f;
+        const float out = trunkW * (1.3f + 0.6f * U(r));
+        const Vector3 foot = { cosf(yaw) * out, -0.3f, sinf(yaw) * out };
+        Prism(m, foot, { cosf(yaw) * trunkW * 0.2f, h * (0.6f + 0.3f * U(r)), sinf(yaw) * trunkW * 0.2f }, trunkW * 0.45f, trunkW * 0.2f, yaw, false, Shade(r));
+    }
+}
 
 void Broadleaf(VariantMesh& m, unsigned int seed, BroadleafShape sh = {}) {
     std::mt19937 r(seed);
@@ -94,20 +108,23 @@ void Broadleaf(VariantMesh& m, unsigned int seed, BroadleafShape sh = {}) {
     const float ys[4] = { -0.4f, H * 0.35f, H * 0.7f, H };
     const float ws[4] = { 0.62f * sh.trunk, 0.45f * sh.trunk, 0.34f * sh.trunk, 0.24f * sh.trunk };
     for (int s = 0; s < 3; ++s) Prism(m, trunkAt(ys[s]), trunkAt(ys[s + 1]), ws[s], ws[s + 1], 0.2f * s, false, Shade(r));
-    // Branches up and out, each ending in a leaf block.
-    const int nb = 3 + (int)(U(r) * 3.0f) + sh.branches;
-    const float yaw0 = U(r) * 2.0f * PI;
-    for (int k = 0; k < nb; ++k) {
-        const float y = H * (0.5f + 0.4f * U(r));
-        const float yaw = yaw0 + k * 2.0f * PI / nb + (U(r) - 0.5f) * 0.6f;
-        const float el = (35.0f + 25.0f * U(r)) * DEG2RAD;
-        const float len = 1.5f + 1.3f * U(r);
-        const Vector3 s = trunkAt(y);
-        const Vector3 dir = { cosf(el) * cosf(yaw), sinf(el), cosf(el) * sinf(yaw) };
-        const Vector3 e = Vector3Add(s, Vector3Scale(dir, len));
-        Prism(m, s, e, 0.2f, 0.12f, U(r), false, Shade(r));
-        const float c = (1.7f + 1.1f * U(r)) * sh.crown;
-        Prism(m, Vector3Subtract(e, { 0, c * 0.4f, 0 }), Vector3Add(e, { 0, c * 0.6f, 0 }), c, c * 0.85f, U(r) * 1.5f, true, Shade(r));
+    if (sh.giant) Buttress(m, r, ws[0], H * 0.12f);
+    // Branches up and out, each ending in a leaf block; giants add a lower ring, spreading wider.
+    for (int tier = 0; tier < (sh.giant ? 2 : 1); ++tier) {
+        const int nb = std::max(2, 3 + (int)(U(r) * 3.0f) + sh.branches - tier * 2);
+        const float yaw0 = U(r) * 2.0f * PI;
+        for (int k = 0; k < nb; ++k) {
+            const float y = tier == 0 ? H * (0.5f + 0.4f * U(r)) : H * (0.3f + 0.15f * U(r));
+            const float yaw = yaw0 + k * 2.0f * PI / nb + (U(r) - 0.5f) * 0.6f;
+            const float el = (tier == 0 ? 35.0f + 25.0f * U(r) : 15.0f + 15.0f * U(r)) * DEG2RAD;
+            const float len = (1.5f + 1.3f * U(r)) * sh.reach * (tier ? 1.2f : 1.0f);
+            const Vector3 s = trunkAt(y);
+            const Vector3 dir = { cosf(el) * cosf(yaw), sinf(el), cosf(el) * sinf(yaw) };
+            const Vector3 e = Vector3Add(s, Vector3Scale(dir, len));
+            Prism(m, s, e, 0.2f * std::sqrt(sh.trunk), 0.12f * std::sqrt(sh.trunk), U(r), false, Shade(r));
+            const float c = (1.7f + 1.1f * U(r)) * sh.crown * (tier ? 0.8f : 1.0f);
+            Prism(m, Vector3Subtract(e, { 0, c * 0.4f, 0 }), Vector3Add(e, { 0, c * 0.6f, 0 }), c, c * 0.85f, U(r) * 1.5f, true, Shade(r));
+        }
     }
     // Crown.
     const float c = (2.5f + 0.9f * U(r)) * sh.crown;
@@ -120,17 +137,20 @@ void Broadleaf(VariantMesh& m, unsigned int seed, BroadleafShape sh = {}) {
 void Conifer(VariantMesh& m, unsigned int seed, ConiferShape sh = {}) {
     std::mt19937 r(seed);
     const float H = (8.5f + 2.0f * U(r)) * sh.h;
-    Prism(m, { 0, -0.4f, 0 }, { 0, H, 0 }, 0.5f, 0.12f, 0.0f, false, Shade(r));
-    // Stacked leaf slabs, wide at the bottom, turned alternately.
-    const int n = 6 + (int)(U(r) * 2.0f) + sh.layers;
+    Prism(m, { 0, -0.4f, 0 }, { 0, H, 0 }, 0.5f * sh.trunk, 0.12f * sh.trunk, 0.0f, false, Shade(r));
+    if (sh.giant) Buttress(m, r, 0.5f * sh.trunk, H * 0.08f);
+    // Stacked leaf slabs, wide at the bottom, turned alternately; old giants keep a bare lower trunk.
+    const int n = std::max(3, 6 + (int)(U(r) * 2.0f) + sh.layers);
+    const float y0 = sh.giant ? H * 0.28f : std::min(1.6f, H * 0.2f);
+    const float slab = 1.5f * sh.k;
     for (int k = 0; k < n; ++k) {
         const float f = (float)k / (n - 1);
-        const float y = 1.6f + f * (H - 2.2f);
+        const float y = y0 + f * (H - y0 - 0.6f);
         const float w = (3.8f * (1.0f - f) + 0.8f) * sh.width;
-        Prism(m, { 0, y, 0 }, { 0, y + 1.5f, 0 }, w, w * 0.5f, k * 0.785f + U(r) * 0.3f, true, Shade(r));
+        Prism(m, { 0, y, 0 }, { 0, y + slab, 0 }, w, w * 0.5f, k * 0.785f + U(r) * 0.3f, true, Shade(r));
     }
-    Prism(m, { 0, H - 0.2f, 0 }, { 0, H + 0.9f, 0 }, 0.7f, 0.15f, 0.4f, true, Shade(r));
-    m.trunkRadius = 0.25f;
+    Prism(m, { 0, H - 0.2f, 0 }, { 0, H + 0.9f * sh.k, 0 }, 0.7f * sh.k, 0.15f, 0.4f, true, Shade(r));
+    m.trunkRadius = 0.25f * sh.trunk;
     m.trunkHeight = H;
 }
 
@@ -187,13 +207,27 @@ void BuildVariants() {
     for (int v = 0; v < kTreeVariants; ++v) {
         VariantMesh& m = gVariants[0][v];
         if (v < kFirstBush) {
-            // Two shapes per species (oak broad and heavy, birch tall and slender, maple round and full;
-            // pine tall and sparse, spruce dense and broad).
+            // The species' shape (oak broad and heavy, birch tall and slender, maple round and full; pine tall and
+            // sparse, spruce dense and broad), then the size class's rules (#274): small = young and thin with few
+            // branches; medium = the species as it was; large = taller, thicker, more and longer branches; extra
+            // large = old-growth giants with buttress roots, a wide lower ring of branches (broadleaf) or a bare
+            // lower trunk (conifers).
             static const BroadleafShape kBroad[3] = { { 1.0f, 1.25f, 1.3f, 2 }, { 1.35f, 0.65f, 0.7f, 0 }, { 1.05f, 1.1f, 1.0f, 1 } };
             static const ConiferShape kCone[2] = { { 1.2f, 0.75f, -1 }, { 0.9f, 1.1f, 2 } };
-            const int sp = (int)SpeciesOfVariant(v);
-            if (WoodSpeciesInfo((WoodSpecies)sp).conifer) Conifer(m, 2000u + v * 7919u, kCone[sp - (int)WoodSpecies::Pine]);
-            else Broadleaf(m, 1000u + v * 7919u, kBroad[sp]);
+            const int sp = (int)SpeciesOfVariant(v), cls = SizeClassOfVariant(v);
+            if (WoodSpeciesInfo((WoodSpecies)sp).conifer) {
+                ConiferShape c = kCone[sp - (int)WoodSpecies::Pine];
+                static const float kH[4] = { 0.5f, 1.0f, 1.35f, 1.8f }, kW[4] = { 0.55f, 1.0f, 1.2f, 1.35f }, kT[4] = { 0.6f, 1.0f, 1.4f, 2.1f }, kK[4] = { 0.6f, 1.0f, 1.2f, 1.4f };
+                static const int kL[4] = { -3, 0, 2, 5 };
+                c.h *= kH[cls]; c.width *= kW[cls]; c.trunk = kT[cls]; c.layers += kL[cls]; c.k = kK[cls]; c.giant = cls == 3;
+                Conifer(m, 2000u + v * 7919u, c);
+            } else {
+                BroadleafShape b = kBroad[sp];
+                static const float kH[4] = { 0.55f, 1.0f, 1.3f, 1.75f }, kC[4] = { 0.55f, 1.0f, 1.25f, 1.5f }, kT[4] = { 0.5f, 1.0f, 1.45f, 2.2f }, kR[4] = { 0.6f, 1.0f, 1.25f, 1.6f };
+                static const int kB[4] = { -2, 0, 2, 5 };
+                b.h *= kH[cls]; b.crown *= kC[cls]; b.trunk *= kT[cls]; b.reach = kR[cls]; b.branches += kB[cls]; b.giant = cls == 3;
+                Broadleaf(m, 1000u + v * 7919u, b);
+            }
         }
         else if (v == kStoneVariant) Stones(m, 4000u + v * 7919u);
         else Bush(m, 3000u + v * 7919u);
@@ -229,6 +263,7 @@ void EnsureVariantGpu() {
         for (int v = 0; v < kTreeVariants; ++v) {
             VariantMesh& m = const_cast<VariantMesh&>(Variant(v, lod));
             if (m.vboPos) continue;
+            GpuMemTag gm265_("trees"); // VRAM accounting (#302)
             m.vboPos = rlLoadVertexBuffer(m.pos.data(), (int)(m.pos.size() * sizeof(float)), false);
             m.vboNrm = rlLoadVertexBuffer(m.nrm.data(), (int)(m.nrm.size() * sizeof(float)), false);
             m.vboCol = rlLoadVertexBuffer(m.col.data(), (int)m.col.size(), false);
@@ -381,6 +416,12 @@ void BuildTile(const PlanetField& f, const TerrainDeltas& edits, const PlantRemo
                 }
                 if (!found) continue;
             }
+            // Never under inland water (#189): a pond the fluid simulation took over, a lake or river bed - asked of the
+            // generated water itself, not through the bed's material (the strata, #587, put trees in a taken-over pond).
+            if (f.inlandWaterNear(dir, 0.0f)) {
+                const float w = f.waterElevation(dir, 0.0f);
+                if (w != PlanetField::kNoWater && Vector3Length(ground) - R < w + 0.2f) continue;
+            }
             const VoxelMaterial m = f.materialLod(Vector3Subtract(ground, Vector3Scale(dir, 0.3f)), 1.0f, 0.0f, normal);
             if (m != VoxelMaterial::Grass && m != VoxelMaterial::Regolith && !(stone && m == VoxelMaterial::Gravel)) continue;
             // Solid ground underfoot and open air above (caves, ravines, edits).
@@ -400,8 +441,15 @@ void BuildTile(const PlanetField& f, const TerrainDeltas& edits, const PlantRemo
                 const float pick = Unit(s);
                 const int k = pick < 0.6f ? dom : pick < 0.8f ? (dom + 1) % 3 : (dom + 2) % 3;
                 const WoodSpecies sp = (cold ? kCold : kWarm)[k];
-                v = (int)sp * 2 + (int)(h * 2.0f) % 2;
-                scale = (0.6f + 0.7f * sz + 0.35f * forest) * flora.size;
+                // Size class (#274): from the stand's age (a ~250 m noise patch) and the forest's density. Young
+                // stands and open ground grow small trees; old dense forest holds the large ones and, rarely, giants.
+                const float age = ValueNoise(Vector3Scale(Vector3Scale(dir, R), 1.0f / 250.0f), seed ^ 0x51ed27u);
+                const float old = Smooth(0.45f, 0.85f, age) * Smooth(0.35f, 0.8f, forest);
+                const float pc = Unit(s);
+                const float pXL = 0.12f * old, pL = 0.08f + 0.3f * old, pS = 0.12f + 0.3f * (1.0f - Smooth(0.2f, 0.7f, age));
+                const int cls = pc < pXL ? 3 : pc < pXL + pL ? 2 : pc < pXL + pL + pS ? 0 : 1;
+                v = (int)sp * kTreeClasses + cls;
+                scale = (0.8f + 0.35f * sz + 0.15f * forest) * flora.size; // the class carries the size; a little spread within it
                 if (sp == WoodSpecies::Birch) scale *= 0.85f; // slender
             } else if (stone) {
                 v = kStoneVariant;
@@ -494,6 +542,7 @@ void TreeSystem::request(const TreeTileKey& key, TreeTile& tile, float priority)
     auto cl = clearings;
     const double now = WorldTime();
     const uint32_t sd = seed;
+    JobSystem::tagNext(JobTag::Trees);
     WorldJobs().submit(priority, [sh, fld, ed, rm, cl, now, sd, key, version] {
         if (!sh->alive) return;
         TreeTile t;
@@ -537,25 +586,27 @@ void TreeSystem::update(Planetoid& body, Vector3 camLocal) {
     const Vector3 camDir = Vector3Scale(camLocal, 1.0f / std::max(camR, 1.0f));
     const float altitude = camR - radius;
     const float range = kTreeDrawDistance + kTreeTileSize;
-    std::vector<TreeTileKey> wanted;
-    const bool recompute = Vector3Distance(camLocal, lastWantCam) > 16.0f;
-    if (recompute) lastWantCam = camLocal;
-    if (recompute && altitude < kTreeDrawDistance + 2000.0f) {
+    // Other interest centres (#318: other players on a server): tiles within kTreeInterestRange of them stay loaded too, for
+    // trunk collision and plant picking. Recomputed when the camera or any centre moves 16 m, or the set changes.
+    bool interestMoved = interest.size() != lastInterest.size();
+    for (size_t k = 0; !interestMoved && k < interest.size(); ++k) interestMoved = Vector3Distance(interest[k], lastInterest[k]) > 16.0f;
+    const bool recompute = Vector3Distance(camLocal, lastWantCam) > 16.0f || interestMoved;
+    if (recompute) { lastWantCam = camLocal; lastInterest = interest; }
+    auto want = [&](Vector3 dir, float within) {
         const int N = TilesPerFace(radius);
         const float da = 0.5f * PI / N;
-        const int K = (int)ceilf(range / kTreeTileSize) + 1;
+        const int K = (int)ceilf(within / kTreeTileSize) + 1;
         for (int f = 0; f < 6; ++f) {
-            const float dn = Vector3DotProduct(camDir, kN[f]);
+            const float dn = Vector3DotProduct(dir, kN[f]);
             if (dn < 0.2f) continue;
-            const float a = std::clamp(atanf(Vector3DotProduct(camDir, kU[f]) / dn), -0.25f * PI, 0.25f * PI);
-            const float b = std::clamp(atanf(Vector3DotProduct(camDir, kV[f]) / dn), -0.25f * PI, 0.25f * PI);
+            const float a = std::clamp(atanf(Vector3DotProduct(dir, kU[f]) / dn), -0.25f * PI, 0.25f * PI);
+            const float b = std::clamp(atanf(Vector3DotProduct(dir, kV[f]) / dn), -0.25f * PI, 0.25f * PI);
             const int ic = (int)floorf((a + 0.25f * PI) / da), jc = (int)floorf((b + 0.25f * PI) / da);
             for (int i = std::max(0, ic - K); i <= std::min(N - 1, ic + K); ++i)
                 for (int j = std::max(0, jc - K); j <= std::min(N - 1, jc + K); ++j) {
                     const TreeTileKey key{ f, i, j };
-                    const float arc = acosf(std::clamp(Vector3DotProduct(TreeTileCentreDir(key, radius), camDir), -1.0f, 1.0f)) * radius;
-                    if (arc > range) continue;
-                    wanted.push_back(key);
+                    const float arc = acosf(std::clamp(Vector3DotProduct(TreeTileCentreDir(key, radius), dir), -1.0f, 1.0f)) * radius;
+                    if (arc > within) continue;
                     auto it = tiles.find(key);
                     if (it == tiles.end()) {
                         TreeTile& t = tiles[key];
@@ -563,16 +614,30 @@ void TreeSystem::update(Planetoid& body, Vector3 camLocal) {
                     }
                 }
         }
-    }
-    // Drop tiles well outside the range (hysteresis so the edge doesn't churn).
+    };
+    if (recompute && altitude < kTreeDrawDistance + 2000.0f) want(camDir, range);
+    if (recompute) for (const Vector3& c : interest) want(Vector3Normalize(c), kTreeInterestRange);
+    // Drop tiles well outside every range (hysteresis so the edge doesn't churn).
     for (auto it = tiles.begin(); recompute && it != tiles.end();) {
-        const float arc = acosf(std::clamp(Vector3DotProduct(TreeTileCentreDir(it->first, radius), camDir), -1.0f, 1.0f)) * radius;
-        if (arc > range * 1.25f || altitude > kTreeDrawDistance + 2500.0f) { it = tiles.erase(it); batchDirty = true; }
+        const Vector3 tileDir = TreeTileCentreDir(it->first, radius);
+        const float arc = acosf(std::clamp(Vector3DotProduct(tileDir, camDir), -1.0f, 1.0f)) * radius;
+        bool keep = !(arc > range * 1.25f || altitude > kTreeDrawDistance + 2500.0f);
+        for (const Vector3& c : interest)
+            keep = keep || acosf(std::clamp(Vector3DotProduct(tileDir, Vector3Normalize(c)), -1.0f, 1.0f)) * radius < kTreeInterestRange * 1.5f;
+        if (!keep) { it = tiles.erase(it); batchDirty = true; }
         else ++it;
     }
     const double now = GetTime();
     const bool moved = Vector3Distance(camLocal, Vector3{ (float)anchor.x, (float)anchor.y, (float)anchor.z }) > 40.0f; // keep the near/far split current
     if ((batchDirty || moved) && now - lastBatch > 0.2) rebuildBatches(camLocal);
+}
+
+int TreeSystem::readyTilesNear(Vector3 local, float range) const {
+    const Vector3 dir = Vector3Normalize(local);
+    int n = 0;
+    for (const auto& kv : tiles)
+        if (kv.second.ready && acosf(std::clamp(Vector3DotProduct(TreeTileCentreDir(kv.first, radius), dir), -1.0f, 1.0f)) * radius < range) ++n;
+    return n;
 }
 
 void TreeSystem::rebuildBatches(Vector3 camLocal) {
@@ -624,6 +689,7 @@ void TreeSystem::rebuildBatches(Vector3 camLocal) {
                 rlEnableVertexBuffer(m.vboPos); rlSetVertexAttribute(0, 3, RL_FLOAT, false, 0, 0); rlEnableVertexAttribute(0);
                 rlEnableVertexBuffer(m.vboNrm); rlSetVertexAttribute(1, 3, RL_FLOAT, false, 0, 0); rlEnableVertexAttribute(1);
                 rlEnableVertexBuffer(m.vboCol); rlSetVertexAttribute(2, 4, RL_UNSIGNED_BYTE, true, 0, 0); rlEnableVertexAttribute(2);
+                GpuMemTag gm667_("trees"); // VRAM accounting (#302)
                 vb = rlLoadVertexBuffer(buf[s][lod].data(), (int)(buf[s][lod].size() * sizeof(float)), false);
                 const int stride = 8 * (int)sizeof(float);
                 rlSetVertexAttribute(10, 4, RL_FLOAT, false, stride, 0); rlEnableVertexAttribute(10); rlSetVertexAttributeDivisor(10, 1);
@@ -639,6 +705,7 @@ void TreeSystem::rebuildBatches(Vector3 camLocal) {
                     rlEnableVertexBuffer(m.vboPos); rlSetVertexAttribute(0, 3, RL_FLOAT, false, 0, 0); rlEnableVertexAttribute(0);
                     rlEnableVertexBuffer(m.vboNrm); rlSetVertexAttribute(1, 3, RL_FLOAT, false, 0, 0); rlEnableVertexAttribute(1);
                     rlEnableVertexBuffer(m.vboCol); rlSetVertexAttribute(2, 4, RL_UNSIGNED_BYTE, true, 0, 0); rlEnableVertexAttribute(2);
+                    GpuMemTag gm682_("trees"); // VRAM accounting (#302)
                     culledVbo[slot] = rlLoadVertexBuffer(nullptr, (int)(buf[s][lod].size() * sizeof(float)), true);
                     rlSetVertexAttribute(10, 4, RL_FLOAT, false, stride, 0); rlEnableVertexAttribute(10); rlSetVertexAttributeDivisor(10, 1);
                     rlSetVertexAttribute(11, 4, RL_FLOAT, false, stride, 4 * sizeof(float)); rlEnableVertexAttribute(11); rlSetVertexAttributeDivisor(11, 1);
@@ -685,6 +752,7 @@ void TreeSystem::draw(const Planetoid& body, const RenderContext& ctx, int onlyL
             const int v = slot % kTreeVariants, lod = slot / kTreeVariants;
             cmds[slot][0] = (GLuint)Variant(v, lod).vertexCount; cmds[slot][1] = 0; cmds[slot][2] = 0; cmds[slot][3] = 0;
         }
+        GpuMemTag gm728_("trees"); // VRAM accounting (#302)
         if (!cmdBuf) { glGenBuffers(1, &cmdBuf); glBindBuffer(GL_DRAW_INDIRECT_BUFFER, cmdBuf); glBufferData(GL_DRAW_INDIRECT_BUFFER, sizeof(cmds), nullptr, GL_DYNAMIC_DRAW); }
         glBindBuffer(GL_DRAW_INDIRECT_BUFFER, cmdBuf);
         glBufferSubData(GL_DRAW_INDIRECT_BUFFER, 0, sizeof(cmds), cmds);
@@ -887,13 +955,13 @@ void TreeSystem::addClearing(Vector3 c, float r) {
         if (kv.second.ready && Vector3Distance(kv.second.centre, c) < r + kTreeTileSize) request(kv.first, kv.second, 0.0f);
 }
 
-bool TreeSystem::nearestPlant(Vector3 local, float range, bool tree, Plant& out, bool stone) const {
+bool TreeSystem::nearestPlant(Vector3 local, float range, bool tree, Plant& out, bool stone, int sizeClass) const {
     float best = range;
     bool found = false;
     for (const auto& kv : tiles) {
         if (!kv.second.ready || Vector3Distance(kv.second.centre, local) > range + kTreeTileSize) continue;
         for (const Plant& p : kv.second.plants) {
-            if (p.tree() != tree || p.stone() != stone) continue;
+            if (p.tree() != tree || p.stone() != stone || (sizeClass >= 0 && (!p.tree() || SizeClassOfVariant(p.variant) != sizeClass))) continue;
             const float d = Vector3Distance(p.base, local);
             if (d < best) { best = d; out = p; found = true; }
         }
@@ -901,13 +969,14 @@ bool TreeSystem::nearestPlant(Vector3 local, float range, bool tree, Plant& out,
     return found;
 }
 
-void TreeSystem::speciesCounts(Vector3 local, float range, int out[(int)WoodSpecies::Count]) const {
+void TreeSystem::speciesCounts(Vector3 local, float range, int out[(int)WoodSpecies::Count], int* classes) const {
     for (int s = 0; s < (int)WoodSpecies::Count; ++s) out[s] = 0;
+    if (classes) for (int c = 0; c < kTreeClasses; ++c) classes[c] = 0;
     for (const auto& kv : tiles) {
         const TreeTile& t = kv.second;
         if (!t.ready) continue;
         for (int v = 0; v < kFirstBush; ++v)
             for (size_t k = 0; k + 7 < t.inst[v].size(); k += 8)
-                if (Vector3Distance({ t.inst[v][k], t.inst[v][k + 1], t.inst[v][k + 2] }, local) < range) ++out[(int)SpeciesOfVariant(v)];
+                if (Vector3Distance({ t.inst[v][k], t.inst[v][k + 1], t.inst[v][k + 2] }, local) < range) { ++out[(int)SpeciesOfVariant(v)]; if (classes) ++classes[SizeClassOfVariant(v)]; }
     }
 }

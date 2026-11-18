@@ -15,7 +15,7 @@ struct Block {
     ivec4 a;   // S, nu, nv, grid offset (nodes)
     ivec4 b;   // island offset (islands), island count, output offset (samples), -
 };
-layout(std430, binding = 0) readonly buffer Grid { vec4 grid[]; };       // per node: elevation, 3D mask, f, -
+layout(std430, binding = 0) readonly buffer Grid { vec4 grid[]; };       // two per node: elevation, 3D mask, f, - | unused (the cliff lip went with the terraces, #543)
 layout(std430, binding = 1) readonly buffer Islands { vec4 islands[]; }; // 3 per island
 layout(std430, binding = 2) writeonly buffer Out { float density[]; };
 layout(std430, binding = 3) readonly buffer Blocks { Block blocks[]; };
@@ -47,7 +47,7 @@ void main() {
         int iu = int(fu), iv = int(fv);
         precise float au = fu - float(iu), av = fv - float(iv);
         int k0 = g0 + iv * nu + iu, k1 = k0 + nu;
-        vec4 a0 = grid[k0], b0 = grid[k0 + 1], a1 = grid[k1], b1 = grid[k1 + 1];
+        vec4 a0 = grid[2 * k0], b0 = grid[2 * (k0 + 1)], a1 = grid[2 * k1], b1 = grid[2 * (k1 + 1)];
         surface = planetRadius + (a0.x * (1.0 - au) + b0.x * au) * (1.0 - av) + (a1.x * (1.0 - au) + b1.x * au) * av;
         cmask = (a0.y * (1.0 - au) + b0.y * au) * (1.0 - av) + (a1.y * (1.0 - au) + b1.y * au) * av;
         cf = (a0.z * (1.0 - au) + b0.z * au) * (1.0 - av) + (a1.z * (1.0 - au) + b1.z * au) * av;

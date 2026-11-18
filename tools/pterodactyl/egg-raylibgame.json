@@ -1,0 +1,33 @@
+{
+    "_comment": "RaylibGame dedicated server (#326). NOT deployed: importing it on deweyserver's panel needs the user's OK. The game is a Windows build, so the egg runs it under Wine with a virtual X display (xvfb) for the hidden GL 4.3 context the world loaders still need (Mesa llvmpipe in software). Untested under Wine: see tools/pterodactyl/README.md.",
+    "meta": { "version": "PTDL_v2", "update_url": null },
+    "exported_at": "2026-11-18T00:00:00+00:00",
+    "name": "RaylibGame",
+    "author": "noreply@anthropic.com",
+    "description": "RaylibGame dedicated server: --server server.cfg (port, max players, password, save, autosave, MOTD, log). Console: help, status, list, save, say, kick, stop.",
+    "features": null,
+    "docker_images": { "Wine (yolks)": "ghcr.io/parkervcp/yolks:wine_latest" },
+    "file_denylist": [],
+    "startup": "xvfb-run -a -s \"-screen 0 640x480x24\" wine ./game.exe --server server.cfg",
+    "config": {
+        "files": "{\"server.cfg\": {\"parser\": \"file\", \"find\": {\"port\": \"port = {{server.build.default.port}}\", \"max_players\": \"max_players = {{server.build.env.MAX_PLAYERS}}\", \"password\": \"password = {{server.build.env.SERVER_PASSWORD}}\", \"motd\": \"motd = {{server.build.env.MOTD}}\", \"autosave_minutes\": \"autosave_minutes = {{server.build.env.AUTOSAVE_MINUTES}}\", \"seed\": \"seed = {{server.build.env.WORLD_SEED}}\"}}}",
+        "startup": "{\"done\": \"server: ready\"}",
+        "logs": "{}",
+        "stop": "stop"
+    },
+    "scripts": {
+        "installation": {
+            "script": "#!/bin/bash\n# RaylibGame install (#326): the game files come from DOWNLOAD_URL (a zip of game.exe + resources/), or are\n# uploaded through the panel's file manager afterwards. Writes server.cfg with the panel's values.\nset -e\ncd /mnt/server\napt-get update -qq && apt-get install -y -qq curl unzip > /dev/null\nif [ -n \"${DOWNLOAD_URL}\" ]; then\n  curl -fsSL \"${DOWNLOAD_URL}\" -o game.zip && unzip -oq game.zip && rm -f game.zip\nfi\nmkdir -p server\nif [ ! -f server.cfg ]; then\ncat > server.cfg <<EOF\n# RaylibGame dedicated server (#326). key = value; '#' starts a comment. Restart the server to apply changes.\nsave = server/world.sav\nport = ${SERVER_PORT}\nmax_players = ${MAX_PLAYERS}\npassword = ${SERVER_PASSWORD}\nautosave_minutes = ${AUTOSAVE_MINUTES}\nmotd = ${MOTD}\nseed = ${WORLD_SEED}\nlog = server/server.log\nEOF\nfi\n[ -f game.exe ] || echo \"game.exe is not here yet: upload the build (game.exe + resources/) through the file manager\"\necho \"install done\"\n",
+            "container": "debian:bookworm-slim",
+            "entrypoint": "bash"
+        }
+    },
+    "variables": [
+        { "name": "Max players", "description": "Players allowed at once (1-64).", "env_variable": "MAX_PLAYERS", "default_value": "8", "user_viewable": true, "user_editable": true, "rules": "required|integer|between:1,64", "field_type": "text" },
+        { "name": "Server password", "description": "Empty: anyone can join.", "env_variable": "SERVER_PASSWORD", "default_value": "", "user_viewable": true, "user_editable": true, "rules": "nullable|string|max:64", "field_type": "text" },
+        { "name": "Message of the day", "description": "Shown to players when they join.", "env_variable": "MOTD", "default_value": "", "user_viewable": true, "user_editable": true, "rules": "nullable|string|max:200", "field_type": "text" },
+        { "name": "Autosave minutes", "description": "Minutes between autosaves (0 = only on stop).", "env_variable": "AUTOSAVE_MINUTES", "default_value": "30", "user_viewable": true, "user_editable": true, "rules": "required|numeric|min:0", "field_type": "text" },
+        { "name": "World seed", "description": "Seed for a new world (0 = random). An existing save keeps its own.", "env_variable": "WORLD_SEED", "default_value": "0", "user_viewable": true, "user_editable": true, "rules": "required|integer|min:0", "field_type": "text" },
+        { "name": "Download URL", "description": "Optional: a zip of the build (game.exe + resources/) fetched at install.", "env_variable": "DOWNLOAD_URL", "default_value": "", "user_viewable": true, "user_editable": true, "rules": "nullable|url", "field_type": "text" }
+    ]
+}

@@ -16,6 +16,7 @@ bool Compute_Available();
 // Expands `#include "file"` lines (relative to the including file); the included paths are appended.
 std::string LoadShaderSource(const std::string& path, std::vector<std::string>& includes);
 
+struct ComputeBuffer;
 struct ComputeProgram {
     unsigned int id = 0;
     std::string path;
@@ -29,6 +30,7 @@ struct ComputeProgram {
     void setVec3(const char* name, float x, float y, float z) const;
     void setVec4(const char* name, float x, float y, float z, float w) const;
     void dispatch(unsigned gx, unsigned gy = 1, unsigned gz = 1) const; // then a storage barrier
+    void dispatchIndirect(const ComputeBuffer& args, unsigned offset = 0) const; // group counts (3 uints) from a buffer; then a barrier
 };
 
 struct ComputeBuffer {

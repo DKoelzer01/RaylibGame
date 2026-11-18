@@ -1,4 +1,5 @@
 #include "terrainlayers.h"
+#include "gpumem.h"
 #include "glcaps.h"
 #include "utils/logger.h"
 
@@ -85,7 +86,7 @@ namespace {
 }
 
 const char* TerrainLayerName(int layer) {
-    static const char* names[LayerCount] = { "dirt", "sand", "gravel", "grass", "snow", "ice", "stone" };
+    static const char* names[LayerCount] = { "dirt", "sand", "gravel", "grass", "snow", "ice", "stone", "clay", "granite", "basalt", "sandstone", "limestone", "marble", "pebbles", "silt", "mud" };
     return layer >= 0 && layer < LayerCount ? names[layer] : "?";
 }
 
@@ -163,6 +164,88 @@ Image GenerateTerrainLayerImage(int layer, int size) {
                     if (lichen > 0.68f) c = Mix(c, { 118, 128, 86, 255 }, std::min(1.0f, (lichen - 0.68f) * 6.0f) * 0.45f);
                     break;
                 }
+                case LayerClay: { // clay (#206): smooth warm terracotta, faint smears, a fine network of drying cracks
+                    const float tone = Fbm(u, v, 4, 4, 81u);
+                    const float smear = ValueNoise(u * 0.5f, v, 24, 82u);
+                    c = Mix({ 150, 92, 64, 255 }, { 196, 134, 98, 255 }, 0.65f * tone + 0.25f * smear);
+                    float f1, f2; uint32_t id;
+                    Worley(u, v, 34, 83u, f1, f2, id); // ~0.6 m plates, faint (#609: 1.4 m plates with dark cracks read as paving)
+                    c = Scale(c, 0.97f + 0.06f * ((id & 0xFF) / 255.0f)); // each crack plate a touch lighter or darker
+                    const float crack = 1.0f - std::clamp((f2 - f1) * 40.0f, 0.0f, 1.0f);
+                    c = Mix(c, { 112, 68, 48, 255 }, crack * 0.4f);
+                    c = Scale(c, 0.97f + 0.06f * Rand01(x, y, 84u));
+                    break;
+                }
+                case LayerPebbles: { // river stones (#595): big, smooth, rounded, mixed warm and grey, packed in sand
+                    float f1, f2; uint32_t id;
+                    Worley(u, v, 44, 91u, f1, f2, id); // ~0.45 m stones (18 per tile read as 1 m paving slabs, #609)
+                    const float edge = std::clamp((f2 - f1) * 5.0f, 0.0f, 1.0f);
+                    const float hue = (id >> 8 & 0xFF) / 255.0f;
+                    Color stone = hue < 0.4f ? Mix({ 112, 108, 102, 255 }, { 168, 164, 156, 255 }, hue * 2.5f)      // grey
+                                             : hue < 0.75f ? Mix({ 136, 116, 92, 255 }, { 182, 160, 128, 255 }, (hue - 0.4f) * 2.9f) // warm
+                                                           : Mix({ 84, 86, 90, 255 }, { 120, 122, 126, 255 }, (hue - 0.75f) * 4.0f); // dark
+                    stone = Scale(stone, 1.2f - 0.6f * f1 * f1 * 2.0f); // smooth domes: a soft highlight in the middle
+                    c = Mix({ 150, 132, 100, 255 }, stone, edge);         // coarse sand between them
+                    c = Scale(c, 0.95f + 0.1f * Rand01(x, y, 92u));
+                    break;
+                }
+                case LayerSilt: { // floodplain silt (#595): fine pale grey-brown, faint flow streaks, a scatter of dark flecks
+                    const float tone = Fbm(u, v, 6, 4, 101u);
+                    const float streak = ValueNoise(u * 0.25f, v, 40, 102u);
+                    c = Mix({ 138, 122, 96, 255 }, { 176, 160, 130, 255 }, 0.6f * tone + 0.3f * streak);
+                    if (Rand01(x, y, 103u) > 0.988f) c = Scale(c, 0.62f);
+                    // Damp darker patches and a fine grain; no crack plates (#609: 2 m polygons read as a paved road).
+                    const float damp = Fbm(u, v, 5, 3, 104u);
+                    if (damp > 0.55f) c = Mix(c, { 104, 92, 72, 255 }, std::min(1.0f, (damp - 0.55f) * 4.0f) * 0.55f);
+                    c = Scale(c, 0.95f + 0.1f * ValueNoise(u, v, 96, 105u));
+                    break;
+                }
+                case LayerMud: { // wet mud (#595): dark brown, glossy puddled patches, footprint-like pits
+                    const float tone = Fbm(u, v, 5, 4, 111u);
+                    c = Mix({ 54, 40, 28, 255 }, { 98, 74, 50, 255 }, tone * 1.2f - 0.1f);
+                    const float wet = Fbm(u, v, 3, 3, 112u);
+                    if (wet > 0.55f) c = Mix(c, { 42, 36, 30, 255 }, std::min(1.0f, (wet - 0.55f) * 5.0f) * 0.7f); // standing wet patches
+                    if (ValueNoise(u, v, 64, 113u) > 0.8f) c = Scale(c, 0.78f);
+                    c = Scale(c, 0.96f + 0.08f * Rand01(x, y, 114u));
+                    break;
+                }
+                // Rock strata (#587): the colours and grain of the building blocks (parts.fs polished stone and marble),
+                // as natural rock: no slab seams, joints and bedding instead.
+                case LayerGranite: { // pink-grey, coarse mineral speckle (dark mica, pale feldspar), a few joints
+                    c = Mix({ 150, 128, 122, 255 }, { 186, 164, 156, 255 }, Fbm(u, v, 6, 3, 91u));
+                    const float g = Rand01(x / 2, y / 2, 92u);
+                    if (g > 0.86f) c = Scale(c, 0.55f); else if (g < 0.10f) c = Mix(c, { 226, 206, 198, 255 }, 0.7f);
+                    float f1, f2; uint32_t id;
+                    Worley(u, v, 4, 93u, f1, f2, id);
+                    c = Mix(c, Scale(c, 0.5f), (1.0f - std::clamp((f2 - f1) * 60.0f, 0.0f, 1.0f)) * 0.7f);
+                    break;
+                }
+                case LayerBasalt: { // dark grey, fine grain, columnar cracks
+                    c = Mix({ 46, 46, 52, 255 }, { 78, 78, 86, 255 }, 0.6f * Fbm(u, v, 12, 3, 101u) + 0.2f * Rand01(x, y, 102u));
+                    float f1, f2; uint32_t id;
+                    Worley(u, v, 9, 103u, f1, f2, id);
+                    c = Scale(c, 0.92f + 0.16f * ((id & 0xFF) / 255.0f));
+                    c = Mix(c, { 22, 22, 26, 255 }, (1.0f - std::clamp((f2 - f1) * 45.0f, 0.0f, 1.0f)) * 0.8f);
+                    break;
+                }
+                case LayerSandstone: { // warm tan, wavy bedding, sandy grain
+                    const float bed = 0.5f + 0.5f * sinf((v * 11.0f + 0.6f * Fbm(u, v, 3, 3, 111u)) * 6.2831853f);
+                    c = Mix({ 186, 152, 102, 255 }, { 228, 198, 148, 255 }, 0.45f * bed + 0.35f * Fbm(u, v, 8, 3, 112u));
+                    c = Scale(c, 0.93f + 0.14f * Rand01(x, y, 113u));
+                    break;
+                }
+                case LayerLimestone: { // pale cream-grey, soft mottling, small pits and fossil specks
+                    c = Mix({ 186, 182, 166, 255 }, { 222, 218, 204, 255 }, Fbm(u, v, 6, 4, 121u));
+                    if (ValueNoise(u, v, 64, 122u) > 0.8f) c = Scale(c, 0.78f);
+                    if (Rand01(x, y, 123u) > 0.993f) c = Scale(c, 0.6f);
+                    break;
+                }
+                case LayerMarble: { // near-white, soft grey veins
+                    const float vein = fabsf(sinf((u * 0.8f + v) * 6.2831853f * 2.0f + Fbm(u, v, 4, 4, 131u) * 7.0f));
+                    c = Mix({ 226, 224, 220, 255 }, { 246, 245, 242, 255 }, Fbm(u, v, 6, 3, 132u));
+                    c = Mix(Scale(c, 0.68f), c, std::clamp(vein / 0.12f, 0.0f, 1.0f));
+                    break;
+                }
                 default: c = MAGENTA;
             }
             px[y * size + x] = c;
@@ -187,6 +270,15 @@ namespace {
         /*snow*/ { 2.0f, 0.62f, 0.10f, 1.0f, 0.0f },
         /*ice */ { 2.5f, 0.10f, 0.12f, 0.8f, 1.0f },
         /*ston*/ { 6.0f, 0.68f, 0.20f, 3.0f, 0.0f },
+        /*clay*/ { 4.0f, 0.55f, 0.12f, 2.0f, 0.0f }, // smooth and a little sheeny; the dark cracks are grooves
+        /*gran*/ { 5.0f, 0.62f, 0.15f, 2.5f, 0.0f }, // rock strata (#587)
+        /*basa*/ { 6.0f, 0.70f, 0.12f, 3.0f, 0.0f },
+        /*sand*/ { 5.0f, 0.80f, 0.10f, 2.5f, 0.0f },
+        /*lime*/ { 4.5f, 0.72f, 0.12f, 2.5f, 0.0f },
+        /*marb*/ { 3.0f, 0.40f, 0.10f, 1.5f, 0.0f },
+        /*pebb*/ { 8.0f, 0.60f, 0.15f, 3.5f, 0.0f }, // river stones: big smooth domes (#595)
+        /*silt*/ { 2.5f, 0.88f, 0.06f, 1.5f, 0.0f },
+        /*mud */ { 3.0f, 0.40f, 0.25f, 1.5f, 0.0f }, // wet: smooth, sheeny in its puddled patches
     };
 
     // Periodic box blur (separable), radius r.
@@ -246,11 +338,12 @@ Image GenerateTerrainLayerDetail(int layer, const Image& albedo) {
 
 TextureArray LoadTerrainLayers(int size) {
     TextureArray t;
-    if (!glad_glTexImage3D || !glad_glGenTextures) { logger.logf("[Terrain] texture arrays unavailable\n"); return t; }
+    if (!glad_glTexImage3D || !glad_glGenTextures) { LOG_WARN("Terrain", "texture arrays unavailable\n"); return t; }
     t.size = size;
     t.layers = LayerCount;
     glad_glGenTextures(1, &t.id);
     glad_glBindTexture(GL_TEXTURE_2D_ARRAY_, t.id);
+    GpuMemTag gm254_("terrain textures"); // VRAM accounting (#302)
     glad_glTexImage3D(GL_TEXTURE_2D_ARRAY_, 0, (int)GL_RGBA8_, size, size, LayerCount, 0, GL_RGBA_, GL_UNSIGNED_BYTE_, nullptr);
     std::vector<Image> albedos;
     for (int layer = 0; layer < LayerCount; ++layer) {
@@ -271,6 +364,7 @@ TextureArray LoadTerrainLayers(int size) {
     const double t0 = GetTime();
     glad_glGenTextures(1, &t.detailId);
     glad_glBindTexture(GL_TEXTURE_2D_ARRAY_, t.detailId);
+    GpuMemTag gm274_("terrain textures"); // VRAM accounting (#302)
     glad_glTexImage3D(GL_TEXTURE_2D_ARRAY_, 0, (int)GL_RGBA8_, size, size, LayerCount, 0, GL_RGBA_, GL_UNSIGNED_BYTE_, nullptr);
     for (int layer = 0; layer < LayerCount; ++layer) {
         const char* path = TextFormat("assets/textures/terrain/%s_detail.png", TerrainLayerName(layer));
@@ -288,7 +382,7 @@ TextureArray LoadTerrainLayers(int size) {
     glad_glTexParameteri(GL_TEXTURE_2D_ARRAY_, GL_TEXTURE_WRAP_T_, (int)GL_REPEAT_);
     if (glad_glTexParameterf && GL_Caps().anisotropic) glad_glTexParameterf(GL_TEXTURE_2D_ARRAY_, GL_TEXTURE_MAX_ANISOTROPY_, std::min(8.0f, GL_Caps().maxAnisotropy)); // only where supported (#286)
     glad_glBindTexture(GL_TEXTURE_2D_ARRAY_, 0);
-    logger.logf("[Terrain] %d terrain layers (%dx%d) in texture array %u, detail maps %u (%.0f ms)\n", LayerCount, size, size, t.id, t.detailId,
+    LOG_INFO("Terrain", "%d terrain layers (%dx%d) in texture array %u, detail maps %u (%.0f ms)\n", LayerCount, size, size, t.id, t.detailId,
                 (GetTime() - t0) * 1000.0);
     return t;
 }

@@ -8,9 +8,10 @@
 // out of Settings). Settings (mouse sensitivity, field of view, volume, foliage, frame cap) are
 // kept in settings.txt.
 
+#include "raylib.h"
 #include <string>
 
-enum class MenuAction { None, NewGame, LoadGame, Resume, Save, SaveAndQuit, Exit };
+enum class MenuAction { None, NewGame, LoadGame, Resume, Save, SaveAndQuit, Exit, ReportBug }; // ReportBug: the bug report window (#169)
 struct MenuResult {
     MenuAction action = MenuAction::None;
     std::string path;            // LoadGame: the save file
@@ -23,13 +24,16 @@ struct GameSettings {
     bool foliage = true;
     int fpsCap = 0;                 // 0: the monitor's refresh rate
     bool vsync = true;              // no tearing (caps at the monitor's refresh rate)
+    bool showFps = false;           // the FPS counter, on every screen (#572)
     bool reduceMotion = false;      // eased walking starts/stops and a smoothed camera up (motion sickness)
     bool showHands = true;          // the hands and held tool (a fixed reference in view: motion sickness)
     int handBob = 0;                // 0 full, 1 reduced, 2 off
     int terrainDetail = 1;          // 0 Low, 1 Medium, 2 High, 3 Ultra: LOD factor 2 / 2.5 / 3 / 4 (#297)
     int cameraSmoothing = 2;        // 0 Off, 1 Low, 2 Default, 3 High: eye smoothing strength (#168)
     bool speedVignette = false;     // darken the screen edges when moving or turning fast (#168)
+    bool fireFlicker = true;        // torches and campfires flicker their light (#558: off = a steady glow)
     int difficulty = 1;             // new worlds: 0 peaceful (no threats, slower hunger, extra food), 1 normal, 2 hard (no Map, hungrier, fiercer nights)
+    std::string logLevel;           // settings.txt "log_level trace|debug|info|warn|error|fatal|off" (#514; --log-level wins); empty: the build default
 };
 extern GameSettings settings;
 void Settings_Load();            // settings.txt (missing: defaults)
@@ -40,6 +44,9 @@ void Settings_Apply();           // to the player, ship, camera, audio, foliage 
 MenuResult Menu_Main();
 MenuResult Menu_Pause();
 void Menu_ResetPause();          // back to the pause menu's first page when it opens
+bool Menu_TestSaves();           // --test-saves (#279): copy, rename and delete a scratch save with regions and bake
+void Menu_TestSettings(int tab, bool pause); // --shot-settings (#512): open the settings page on a tab (0 Graphics .. 3 Gameplay)
+void Menu_SettingsLayout(float& contentBottom, Rectangle& back); // the last drawn page: its rows' bottom and the Back button
 // A new save's file: saves/world.sav, else the first free saves/world_N.sav.
 std::string Menu_NewSavePath();
 

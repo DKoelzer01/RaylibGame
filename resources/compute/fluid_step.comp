@@ -1,10 +1,20 @@
 #version 430
-// Flowing fluids on the GPU (fluid.cpp, GPU mode): one substep is two dispatches of this shader.
+// Flowing fluids on the GPU (fluid.cpp, GPU mode): one substep is three dispatches of this shader.
 //  pass 0 (vertical): A -> B. Each cell exchanges with the cell below and above: the pair (upper, lower)
 //    moves min(fill upper, room lower) down, computed identically by both cells, so it conserves exactly.
-//  pass 1 (sideways): B -> A. Each resting cell (on something solid, full or of another kind) exchanges
-//    with its four side neighbours: (f_a - f_b) / viscosity, both sides computing the same pair flux.
-//    Then sources reset to their level, specks evaporate, and changes are flagged per brick.
+//  pass 1 (face flows, #642): B, P -> N. Each cell owns the flows across its +x and +y faces (a staggered grid: "virtual
+//    pipes" in 3D). A momentum flow keeps its speed from the last substep, accelerates by the difference in the columns'
+//    water surfaces across the face (g * depth * dh, the depth being the giver's whole column) and loses some to friction
+//    (linear + quadratic in the speed, per fluid kind). What moves is the larger of that and the levelling share (the old
+//    step's rule: a fifth of the cells' own height difference). It runs only downhill (from the higher surface, so water
+//    never overshoots and sloshes back) and only where the old rules allow (the giver rests and holds more than a film on
+//    the ground, kinds don't mix, static water feeds only dug cells).
+//  pass 2 (apply): B, N -> A, P. Each cell moves fluid across its four side faces: every giver's outflows are scaled
+//    so it never gives more than it holds, every taker's inflows share its room, and the fraction of a fill unit left
+//    over is carried to the next substep. Both cells of a face compute the same whole units from the same inputs, so
+//    volume is kept exactly. Then sources reset to their level, specks evaporate, and changes are flagged per brick.
+// The old step moved a fifth of the height difference a substep with no momentum: a surface flatter than the viscosity
+// threshold never flowed (a river's slope barely moved its water, #432) and spreading stopped as a 20 cm sheet (#638).
 // Cells: uint = fill (bits 0-7) | flags (8-15: 1 solid, 2 source, 4 static, 8 dug, kind in 13-15) | target (16-23).
 // Bricks: 16^3 cells, slot * 4096 + x + 16 y + 256 z (z up). Only processed bricks (in this dispatch's list)
 // exchange; a flux toward an unprocessed or missing brick is zero (and a missing one is requested).
@@ -15,17 +25,51 @@ layout(std430, binding = 2) readonly buffer Nbr { int nbr[]; };      // slot * 6
 layout(std430, binding = 3) readonly buffer List { uint list[]; };   // processed slots
 layout(std430, binding = 4) readonly buffer InS { uint inS[]; };     // per slot: 1 = processed this dispatch
 layout(std430, binding = 5) buffer Flags { uint flagsOut[]; };      // per slot: bit 0 changed, bits 1-6 face requests
+// Flow readout (#392): bricks someone watches (water wheels, meters) get a block of 4096 cells x 4 ints; each cell adds the
+// fill units crossing its two faces on each axis, signed along the axis (+x, +y, +z = up), every substep. The CPU reads the
+// sums each tick (halving: two faces) and clears them.
+layout(std430, binding = 6) readonly buffer Watch { int watchOf[]; }; // per slot: its block, or -1
+layout(std430, binding = 7) buffer Flux { int flux[]; };
+// Face flows (#642), per cell. P (pass 1 reads it, pass 2 writes it): x, y = the momentum flow across its +x / +y face as
+// applied last substep (m^3/s, signed along the axis), z, w = the fill units carried across them (signed). N (pass 1 writes
+// it, pass 2 reads it), two vec4 a cell: [2g] = this substep's flows (x, y; the larger of the levelling share and the
+// momentum flow) and carries (z, w); [2g + 1] = the momentum flows alone (x, y).
+// Face flows in half precision (#675: 56 -> 32 bytes a cell). Conservation does not depend on it: both cells of a face read
+// the same stored values and move the same whole units. P: the flows and carries as applied (+x, +y; x y = flows, z w = carries).
+// N: this substep's flows and carries (x: x y, y: z w) and the momentum flows alone (z: x y).
+layout(std430, binding = 8) buffer FacesP { uvec2 faceP[]; };
+layout(std430, binding = 9) buffer FacesN { uvec4 faceN[]; };
+vec4 loadP(int g) { uvec2 u = faceP[g]; return vec4(unpackHalf2x16(u.x), unpackHalf2x16(u.y)); }
+void storeP(int g, vec4 v) { faceP[g] = uvec2(packHalf2x16(v.xy), packHalf2x16(v.zw)); }
+vec4 loadN(int g) { uvec4 u = faceN[g]; return vec4(unpackHalf2x16(u.x), unpackHalf2x16(u.y)); }
+vec2 loadM(int g) { return unpackHalf2x16(faceN[g].z); }
 uniform uint count;        // processed slots
-uniform int pass;          // 0 vertical, 1 sideways
-uniform int visc[8];       // per kind: sideways flow divisor
+uniform int pass;          // 0 vertical, 1 face flows, 2 apply
 uniform int minSpread[8];  // per kind: thinnest film that spreads
+uniform int visc[8];       // per kind: the levelling share's divisor (a fifth of the height difference a substep for water)
+uniform float frictionLin[8];  // per kind: 1/s (water ~0.05: a pool's last ripples die out)
+uniform float frictionQuad[8]; // per kind: drag on the speed (water ~0.01: a river's speed levels out with its slope)
+uniform float dt;          // s per substep
+uniform int evaporate;     // 1: resting specks soak away (0: tests, water accounting)
+// The dry-cell skip (#675): useGroups 1 = this dispatch runs the groups fluid_groups.comp listed (indirect), not whole bricks.
+uniform int useGroups;
+uniform int maskCur;       // this substep's wet mask (0-2)
+layout(std430, binding = 10) buffer Mask { uint gmask[]; };
+layout(std430, binding = 11) readonly buffer Groups { uint groups[]; };
+layout(std430, binding = 12) buffer SinkOut { uint sinkOut[]; };     // per slot: fill units its sinks took in (river flow, #656)
 
-const uint SOLID = 1u, SOURCE = 2u, DUG = 8u;
+const uint SOLID = 1u, SOURCE = 2u, DUG = 8u, SINK = 16u; // a sink: a source that takes water in (reset to its level after: what is over it leaves, #361)
+const float G = 9.81;
+uniform float cellSize;    // m (Plan 10 W4c #642)
+#define UNITS (255.0 / (cellSize * cellSize * cellSize)) // fill units per m^3
+#define HU (255.0 / cellSize)                            // fill units per metre of height (a column)
 uint F(uint c) { return c & 255u; }
 uint FL(uint c) { return (c >> 8) & 255u; }
 uint TG(uint c) { return (c >> 16) & 255u; }
 uint KIND(uint c) { return (FL(c) >> 5) & 7u; }
-uint pack(uint f, uint fl, uint tg) { return (f & 255u) | ((fl & 255u) << 8) | ((tg & 255u) << 16); }
+uint SH(uint c) { return c >> 24; }               // the cell's ground share (#454): it holds 255 - SH, its water stands at SH + F
+uint CAP(uint c) { return 255u - SH(c); }
+uint pack(uint f, uint fl, uint c) { return (f & 255u) | ((fl & 255u) << 8) | (c & 0xFFFF0000u); } // keeps c's target and ground share
 
 // The neighbour cell (dx,dy,dz one of +-1 on one axis): global index, or -1 when its brick is missing.
 // processed: whether that brick is in this dispatch.
@@ -40,19 +84,23 @@ int neighbour(uint slot, int x, int y, int z, int dx, int dy, int dz, out bool p
     processed = inS[uint(s)] != 0u;
     return s * 4096 + x + 16 * y + 256 * z;
 }
+void cellPos(int g, out uint slot, out int x, out int y, out int z) {
+    slot = uint(g) / 4096u; uint l = uint(g) % 4096u;
+    x = int(l % 16u); y = int((l / 16u) % 16u); z = int(l / 256u);
+}
 
 // Reading a cell: the pass's input for processed bricks; an unprocessed brick's cells never change, and in
-// the sideways pass its current value lives in the output buffer (A) - B holds a stale copy.
-uint readCell(int g, bool processed) { return (pass == 1 && !processed) ? outC[g] : inC[g]; }
+// the side passes its current value lives in the output buffer (A) - B holds a stale copy.
+uint readCell(int g, bool processed) { return (pass >= 1 && !processed) ? outC[g] : inC[g]; }
 
 // Vertical pair flux from the upper cell u to the lower cell l (both values), l's processed state.
 uint downFlux(uint u, uint l, bool lProc, bool lExists) {
     if (!lExists || !lProc) return 0u;
     if ((FL(u) & SOLID) != 0u || (FL(l) & SOLID) != 0u) return 0u;
-    if ((FL(l) & SOURCE) != 0u) return 0u;                       // static water takes nothing in
+    if ((FL(l) & (SOURCE | SINK)) == SOURCE) return 0u;          // static water takes nothing in (a sink does)
     if ((FL(u) & SOURCE) != 0u && (FL(l) & DUG) == 0u) return 0u; // sources feed dug cells only
     if (F(l) > 0u && F(u) > 0u && KIND(l) != KIND(u)) return 0u;  // kinds don't mix
-    return min(F(u), 255u - F(l));
+    return min(F(u), CAP(l) > F(l) ? CAP(l) - F(l) : 0u); // up to its room (#454)
 }
 
 // Whether a cell rests (can spread sideways): on solid, a full cell, or another fluid kind.
@@ -62,7 +110,14 @@ bool rests(uint slot, int x, int y, int z, uint c) {
     if (g < 0) return false;                                      // below not there yet: wait
     uint b = readCell(g, proc);
     if ((FL(b) & SOLID) != 0u) return true;
-    return F(b) == 255u || (F(b) > 0u && KIND(b) != KIND(c));
+    return F(b) >= CAP(b) || (F(b) > 0u && KIND(b) != KIND(c)); // full: at its capacity (#454)
+}
+
+// Whether a cell lies on solid ground (not on fluid): only there does a speck soak away.
+bool onGround(uint slot, int x, int y, int z) {
+    bool proc; int face;
+    int g = neighbour(slot, x, y, z, 0, 0, -1, proc, face);
+    return g >= 0 && (FL(readCell(g, proc)) & SOLID) != 0u;
 }
 
 // The kind an empty cell takes when fluids could flow in: the fullest resting side neighbour's (ties: lowest face).
@@ -80,39 +135,173 @@ uint kindFor(uint slot, int x, int y, int z) {
     return kind;
 }
 
-// Sideways pair flux from cell a (at slot/x/y/z) to its neighbour b (value, position). Both cells call this
-// with the same arguments for the pair, so the result agrees.
-uint sideFlux(uint aSlot, int ax, int ay, int az, uint a, uint bSlot, int bx, int by, int bz, uint b, bool aProc, bool bProc) {
-    if (!aProc || !bProc) return 0u;
-    if ((FL(a) & SOLID) != 0u || (FL(b) & SOLID) != 0u) return 0u;
-    if ((FL(b) & SOURCE) != 0u) return 0u;
-    if ((FL(a) & SOURCE) != 0u && (FL(b) & DUG) == 0u) return 0u;
-    uint fa = F(a), fb = F(b);
-    uint ka = KIND(a);
-    if (fa < uint(minSpread[ka])) return 0u;
-    if (fb > 0u) { if (KIND(b) != ka) return 0u; }
-    else if (kindFor(bSlot, bx, by, bz) != ka) return 0u;
-    if (fa <= fb) return 0u;
-    uint v = uint(visc[ka]);
-    uint diff = fa - fb;
-    if (diff < v) return 0u;
-    uint m = diff / v;
-    if (fb == 0u && m < uint(minSpread[ka])) return 0u;         // no trickles into dry cells
-    if (!rests(aSlot, ax, ay, az, a)) return 0u;
-    return m;
+// Columns (#642): a cell's water is pushed sideways by the whole column over it, and a surface cell carries the flow of the
+// column under it. With only the cell's own layer in view, a 2 m deep pool moved water like a 5 cm film: its full cells saw
+// no difference and its surface cell's own fill set the flow area (a dammed reach never rose to its crest).
+uniform int kColumnCells;  // how far down the column depth looks: ~8 m of cells, at most 32 (W4c)
+bool sameWater(uint c, uint kind) { return (FL(c) & SOLID) == 0u && F(c) > 0u && KIND(c) == kind; }
+// The water surface over a cell's floor (fill units, 255 a cell): its own height, plus the cells above while it is full.
+int headOf(int g, uint c) {
+    int h = int(SH(c) + F(c));
+    if (F(c) < CAP(c) || F(c) == 0u) return h;
+    uint kind = KIND(c);
+    uint s; int x, y, z;
+    cellPos(g, s, x, y, z);
+    for (int k = 0; k < kColumnCells; ++k) {
+        bool p; int face;
+        int ga = neighbour(s, x, y, z, 0, 0, 1, p, face);
+        if (ga < 0) break;
+        uint a = readCell(ga, p);
+        if (!sameWater(a, kind)) break;
+        h += int(SH(a) + F(a));
+        if (F(a) < CAP(a)) break;
+        cellPos(ga, s, x, y, z);
+    }
+    return h;
+}
+// Whether water lies over this cell (it is under the surface, not at it).
+bool submerged(int g, uint c) {
+    uint s; int x, y, z;
+    cellPos(g, s, x, y, z);
+    bool p; int face;
+    int ga = neighbour(s, x, y, z, 0, 0, 1, p, face);
+    return ga >= 0 && sameWater(readCell(ga, p), KIND(c));
+}
+// The depth of the water column a surface cell tops (m): its own water and the full cells under it.
+float columnDepth(int g, uint c) {
+    float d = float(F(c)) / HU;
+    uint kind = KIND(c);
+    uint s; int x, y, z;
+    cellPos(g, s, x, y, z);
+    for (int k = 0; k < kColumnCells; ++k) {
+        bool p; int face;
+        int gb = neighbour(s, x, y, z, 0, 0, -1, p, face);
+        if (gb < 0) break;
+        uint b = readCell(gb, p);
+        if (!sameWater(b, kind) || F(b) < CAP(b)) break;
+        d += float(F(b)) / HU;
+        cellPos(gb, s, x, y, z);
+    }
+    return d;
+}
+
+// Pass 1: the flow across the face from cell a (index ga) to its neighbour b (gb) along +x or +y, from the momentum flow qp
+// applied last substep. Positive: a -> b. qTot: what moves this substep - the larger of the levelling share (the old step's
+// rule: a fifth of the difference in the cells' own water heights a substep, a film over a drop all at once) and the momentum
+// flow; qMom: the momentum flow alone (kept for the next substep). The levelling share is the floor: a gentle surface still
+// evens out as before, and momentum carries water faster down slopes and through deep channels.
+void faceFlow(int ga, uint a, int gb, uint b, float qp, out float qTot, out float qMom) {
+    qTot = 0.0; qMom = 0.0;
+    if ((FL(a) & SOLID) != 0u || (FL(b) & SOLID) != 0u) return;
+    if (F(a) >= CAP(a) && F(b) >= CAP(b)) return;                  // both full: the taker has no room either way (W4c: before the head walks, most of a deep pool)
+    int ha = headOf(ga, a), hb = headOf(gb, b);
+    if (ha == hb) return;
+    bool aGives = ha > hb;
+    uint d = aGives ? a : b, r = aGives ? b : a;
+    int gd = aGives ? ga : gb, gr = aGives ? gb : ga;
+    if ((FL(r) & (SOURCE | SINK)) == SOURCE) return;              // static water takes nothing in
+    if ((FL(d) & SOURCE) != 0u && (FL(r) & DUG) == 0u) return;    // sources feed dug cells only
+    uint kd = KIND(d);
+    // A film on the ground holds at its edge; a thin top layer over deeper water does not (a pool whose surface lay just over a
+    // cell boundary froze whole: its full cells saw no difference and its top cells were "films").
+    bool under = submerged(gd, d);
+    float colDepth = under ? float(F(d)) / HU : columnDepth(gd, d);
+    if (colDepth * HU < float(minSpread[kd])) return;
+    uint ds, rs; int dx, dy, dz, rx, ry, rz;
+    cellPos(gd, ds, dx, dy, dz); cellPos(gr, rs, rx, ry, rz);
+    if (F(r) > 0u) { if (KIND(r) != kd) return; }
+    else if (kindFor(rs, rx, ry, rz) != kd) return;
+    if (!rests(ds, dx, dy, dz, d)) return;                        // a falling cell falls first
+    if (F(r) >= CAP(r)) return;                                   // a full taker has no room (its column's surface cell takes it)
+    float sgn = aGives ? 1.0 : -1.0;
+    // The levelling share, in the cells' own water heights (#454: a film on a half-buried cell stands higher and runs off).
+    int localDiff = int(SH(d) + F(d)) - int(SH(r) + F(r));
+    float share = 0.0;
+    if (F(r) == 0u && !rests(rs, rx, ry, rz, r)) share = float(F(d));            // a film over a drop runs off whole (#454)
+    else if (localDiff >= visc[kd]) share = float(localDiff / visc[kd]);
+    // The momentum flow: the face's wetted height (1 m wide) is the giver's column for a surface cell, its own water for a cell
+    // under water (a leak into an open cell beside it: a pool dug into from the side).
+    float depth = colDepth;
+    float dh = float(abs(ha - hb)) / HU;                          // m, giver over taker
+    float q = max(qp * sgn, 0.0);                                 // momentum along the slope only (no overshoot)
+    float speed = q / (cellSize * max(depth, 0.02));             // m/s through the face (cellSize wide)
+    // Water deeper than a film builds on 2 units of head (#680: the viscosity's 5-unit gate held a 1.6% slope for ever - a pool
+    // stopped 0.3 m over an open hole; on 1 unit deep water never slept); a film (< 5 cm) keeps the 5-unit gate and rests.
+    int gate = colDepth < 0.05 ? visc[kd] : 2;
+    float accel = abs(ha - hb) >= gate ? dt * G * depth * dh : 0.0;
+    q = (q + accel) / (1.0 + dt * (frictionLin[kd] + frictionQuad[kd] * speed / max(depth, 0.02)));
+    if (accel == 0.0 && q * dt * UNITS < 0.05) q = 0.0;          // coasted out: at rest
+    qMom = q * sgn;
+    qTot = max(q, share / (dt * UNITS)) * sgn;
+}
+
+// Pass 2: a cell's four side faces as outward amounts this substep (fill units, + leaving the cell), from N.
+// Order: -x, +x, -y, +y. Missing or unprocessed neighbours: 0.
+void outward(int g, out float amt[4]) {
+    uint s; int x, y, z;
+    cellPos(g, s, x, y, z);
+    vec4 own = loadN(g);
+    amt[1] = own.x * dt * UNITS + own.z;
+    amt[3] = own.y * dt * UNITS + own.w;
+    bool p; int face;
+    int gx = neighbour(s, x, y, z, -1, 0, 0, p, face);
+    vec4 nx = gx >= 0 && p ? loadN(gx) : vec4(0.0);
+    amt[0] = -(nx.x * dt * UNITS + nx.z);
+    int gy = neighbour(s, x, y, z, 0, -1, 0, p, face);
+    vec4 ny = gy >= 0 && p ? loadN(gy) : vec4(0.0);
+    amt[2] = -(ny.y * dt * UNITS + ny.w);
+}
+// A giver's scale (it never gives more than it holds) and a taker's share of its room per inflowing face.
+float giveScale(int g, uint c) {
+    float a[4]; outward(g, a);
+    float total = max(a[0], 0.0) + max(a[1], 0.0) + max(a[2], 0.0) + max(a[3], 0.0);
+    return total > float(F(c)) ? float(F(c)) / total : 1.0;
+}
+uint roomShare(int g, uint c) {
+    float a[4]; outward(g, a);
+    uint n = uint(a[0] < 0.0) + uint(a[1] < 0.0) + uint(a[2] < 0.0) + uint(a[3] < 0.0);
+    uint room = CAP(c) > F(c) ? CAP(c) - F(c) : 0u;
+    return n > 0u ? room / n : room;
 }
 
 void main() {
     // 2D dispatch (64 x bricks): any number of bricks in one dispatch (x stays far under GL's 65535 minimum).
-    uint li = gl_WorkGroupID.y;
-    if (li >= count) return;
-    uint slot = list[li];
-    uint local = gl_WorkGroupID.x * 64u + gl_LocalInvocationID.x;
+    uint slot, local;
+    if (useGroups != 0) { // a listed 64-cell group (fluid_groups.comp): rows of 32768 workgroups
+        uint gi = gl_WorkGroupID.x + gl_WorkGroupID.y * 32768u;
+        if (gi >= groups[3]) return;
+        uint e = groups[8u + gi];
+        slot = e / 64u;
+        local = (e % 64u) * 64u + gl_LocalInvocationID.x;
+    } else {
+        uint li = gl_WorkGroupID.y;
+        if (li >= count) return;
+        slot = list[li];
+        local = gl_WorkGroupID.x * 64u + gl_LocalInvocationID.x;
+    }
     int x = int(local % 16u), y = int((local / 16u) % 16u), z = int(local / 256u);
     int g = int(slot * 4096u + local);
     uint c = inC[g];
     uint fl = FL(c);
-    if ((fl & SOLID) != 0u) { outC[g] = c; return; }
+    if (pass == 1) {
+        // Face flows: this cell's +x and +y faces.
+        vec4 P = loadP(g);
+        vec4 N = vec4(0.0), M = vec4(0.0);
+        for (int k = 0; k < 2; ++k) {
+            bool pN; int face;
+            int gn = neighbour(slot, x, y, z, k == 0 ? 1 : 0, k == 1 ? 1 : 0, 0, pN, face);
+            if (gn < 0 || !pN) continue;
+            if (F(c) == 0u && F(inC[gn]) == 0u) continue; // two dry cells: nothing flows (#669: most cells are air or rock)
+            float q, qm;
+            faceFlow(g, c, gn, inC[gn], k == 0 ? P.x : P.y, q, qm);
+            if (q == 0.0) continue;
+            if (k == 0) { N.x = q; N.z = sign(P.z) == sign(q) ? P.z : 0.0; M.x = qm; }
+            else { N.y = q; N.w = sign(P.w) == sign(q) ? P.w : 0.0; M.y = qm; }
+        }
+        faceN[g] = uvec4(packHalf2x16(N.xy), packHalf2x16(N.zw), packHalf2x16(M.xy), 0u);
+        return;
+    }
+    if ((fl & SOLID) != 0u) { outC[g] = c; if (pass == 2) faceP[g] = uvec2(0u); return; }
     int f = int(F(c));
     uint kind = KIND(c);
     if (pass == 0) {
@@ -125,13 +314,22 @@ void main() {
         if (gb < 0 && f > 0 && (fl & SOURCE) == 0u) atomicOr(flagsOut[slot], 1u << uint(1 + fB));
         int nf = f - int(outF) + int(inF);
         if (f == 0 && inF > 0u) kind = KIND(above);
-        outC[g] = pack(uint(clamp(nf, 0, 255)), (fl & 31u) | (kind << 5), TG(c));
+        outC[g] = pack(uint(clamp(nf, 0, 255)), (fl & 31u) | (kind << 5), c);
+        int w = watchOf[slot];
+        if (w >= 0) flux[(uint(w) * 4096u + local) * 4u + 2u] -= int(inF) + int(outF); // down through the top and the bottom face
         return;
     }
-    // Sideways.
+    // Pass 2: apply the face flows.
+    float mine[4];
+    outward(g, mine);
+    float myScale = -1.0;  // computed when a face first needs them (#669: a dry cell with no flow needs neither)
+    int myRoom = -1;
     int net = 0;
+    uint moving = 0u; // in + out across the side faces this substep: a speck in a moving film is not resting (#454)
     uint inKind = kind;
-    uint best = 0u;
+    int best = 0;
+    int fx = 0, fy = 0; // flow across the faces along +x / +y (#392)
+    vec4 applied = vec4(0.0); // the flows and carries this cell owns (+x, +y), as applied
     for (int k = 0; k < 4; ++k) {
         int dx = k == 0 ? -1 : k == 1 ? 1 : 0, dy = k == 2 ? -1 : k == 3 ? 1 : 0;
         bool pN; int face;
@@ -140,20 +338,49 @@ void main() {
             if (f >= minSpread[kind] && (fl & SOURCE) == 0u && rests(slot, x, y, z, c)) atomicOr(flagsOut[slot], 1u << uint(1 + face));
             continue;
         }
+        float a = mine[k];
+        if (!pN || a == 0.0) continue;
         uint n = readCell(gn, pN);
-        uint nSlot = uint(gn) / 4096u, nl = uint(gn) % 4096u;
-        int nx = int(nl % 16u), ny = int((nl / 16u) % 16u), nz = int(nl / 256u);
-        uint out1 = f > 0 ? sideFlux(slot, x, y, z, c, nSlot, nx, ny, nz, n, true, pN) : 0u;
-        uint in1 = F(n) > 0u ? sideFlux(nSlot, nx, ny, nz, n, slot, x, y, z, c, pN, true) : 0u;
-        net += int(in1) - int(out1);
-        if (in1 > best) { best = in1; inKind = KIND(n); }
+        // Whole units moved: the giver's scaled amount, at most the taker's share of its room; the fraction carries.
+        if (a > 0.0 && myScale < 0.0) myScale = giveScale(g, c);
+        if (a < 0.0 && myRoom < 0) myRoom = int(roomShare(g, c));
+        float sc = a > 0.0 ? myScale : giveScale(gn, n);
+        uint share = a > 0.0 ? roomShare(gn, n) : uint(myRoom);
+        float mag = abs(a) * sc;
+        int units = int(min(floor(mag), float(share)));
+        bool clipped = float(units) < floor(mag);                         // by the taker's room
+        float carry = clipped ? 0.0 : mag - floor(mag);
+        int signedUnits = a > 0.0 ? -units : units;                       // into this cell
+        net += signedUnits;
+        moving += uint(units);
+        if (signedUnits > best) { best = signedUnits; inKind = KIND(n); }
+        // Owned faces (+x, +y): the flow as applied (m^3/s along the axis: the face's flow scaled like its giver, or what the
+        // room let through) and the fraction carried to the next substep.
+        float dirAxis = (a > 0.0 ? 1.0 : -1.0) * ((k == 1 || k == 3) ? 1.0 : -1.0);
+        if (k == 1 || k == 3) {
+            float qMom = k == 1 ? loadM(g).x : loadM(g).y;            // the momentum part carries on
+            float flowAxis = qMom * sc;
+            if (clipped) flowAxis = sign(flowAxis) * min(abs(flowAxis), float(units) / (dt * UNITS));
+            if (k == 1) { applied.x = flowAxis; applied.z = dirAxis * carry; }
+            else { applied.y = flowAxis; applied.w = dirAxis * carry; }
+        }
+        int along = (k == 0 || k == 2) ? signedUnits : -signedUnits;      // + across the face along the axis
+        if (k < 2) fx += along; else fy += along;
     }
+    storeP(g, applied);
     int nf = clamp(f + net, 0, 255);
     if (f == 0 && nf > 0) kind = inKind;
+    if ((fl & (SOURCE | SINK)) == (SOURCE | SINK) && nf > int(TG(c))) atomicAdd(sinkOut[slot], uint(nf - int(TG(c)))); // what a released reach's sink takes in (#656)
     if ((fl & SOURCE) != 0u) nf = int(TG(c));                            // sources hold their level
-    else if (nf > 0 && nf <= 3 && rests(slot, x, y, z, c)) nf = 0;          // a resting speck soaks away
+    // A resting speck on the ground soaks away (one in a moving film does not: erasing a sliding film's thin edge every
+    // substep lost ~12% of a draining pond, #454); on water it is that water's surface and stays (#454: a body over cells that hold
+    // little lost the remainder of every fall into them, ~15% of a draining pond).
+    else if (evaporate != 0 && nf > 0 && nf <= 2 && moving == 0u && onGround(slot, x, y, z)) nf = 0; // only the thinnest specks (user: puddles last)
     uint old = outC[g];                                                   // this substep's start (A)
-    uint res = pack(uint(nf), (fl & 31u) | (kind << 5), TG(c));
+    uint res = pack(uint(nf), (fl & 31u) | (kind << 5), c);
     if (F(old) != uint(nf)) atomicOr(flagsOut[slot], 1u);
     outC[g] = res;
+    if (useGroups != 0 && nf > 0) atomicOr(gmask[slot * 6u + uint(maskCur) * 2u + (local >> 11u)], 1u << ((local >> 6u) & 31u)); // this group holds water (fluid_groups.comp)
+    int w = watchOf[slot];
+    if (w >= 0) { uint fb = (uint(w) * 4096u + local) * 4u; flux[fb] += fx; flux[fb + 1u] += fy; }
 }

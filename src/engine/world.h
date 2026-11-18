@@ -12,6 +12,7 @@
 #include <iostream>
 #include <fstream>
 #include <sstream>
+#include <unordered_set>
 #include <memory>
 #include <cstdio>
 #include <functional>
@@ -59,6 +60,9 @@ struct LodSettings {
     int cacheNodes = 40000;
 };
 extern LodSettings lodSettings;
+// #134 experiment: chunks the main pass leaves out (RAYLIBGAME_OCC_SKIP in benches; empty otherwise).
+extern std::unordered_set<const Chunk*> gOcclusionSkip;
+extern std::unordered_set<uint32_t> gOcclusionSkipPlots;
 void SetLodZoom(Scene& world, float zoom, Vector3 dir, float halfAngle); // zoom 1: off
 
 struct WorldStats {
@@ -75,6 +79,9 @@ struct WorldStats {
     int preloadNodes = 0, preloadReady = 0; // the preload ring(s) around the camera (#294)
     int cachedNodes = 0;                    // built nodes kept only by the cache (#295)
     long long evicted = 0;                  // cache evictions since start
+    long long lodFades = 0;                 // nodes cross-faded into their replacements since start (#243)
+    long long waterBuilds = 0; double waterMs = 0.0; // water-only chunk redraws (#360) since start, their worker time
+    long long waterFullBuilds = 0; long long waterCacheBytes = 0; // full builds asked for by water; chunk water caches now
 };
 
 struct TerrainHit {
@@ -87,8 +94,45 @@ struct TerrainHit {
 };
 
 void worldHandler(Scene& world);
+// Interest centres (#318): body-local points, besides the camera and the local player, around which world services keep
+// running - tree tiles (trunk collision, plant picking) and animals (spawning and simulation). A server sets one per
+// connected player; tests set them by hand. body = Planetoid::id.
+struct InterestCentre { uint64_t body = 0; Vector3 local{}; };
+inline std::vector<InterestCentre> gInterestCentres;
+// The simulation's frame time: GetFrameTime(), or a fixed step while recording (#375: --fixed-dt, implied by --record)
+// so captures are reproducible. Gameplay code reads this; UI timing keeps the real clock.
+inline float gFixedFrameTime = 0.0f;
+inline float GameFrameTime() { return gFixedFrameTime > 0.0f ? gFixedFrameTime : GetFrameTime(); }
+// The clock visual animation reads (wind, sway, flicker, weather flashes, water flow, clouds): the sum of the frame times
+// (fixed steps while recording, #375, so two captures of the same scene match frame for frame). main.cpp advances it, and
+// stops it while the single-player pause menu is open (#511: grass kept swaying behind the menu).
+inline double gGameClock = 0.0;
+inline double GameClock() { return gGameClock; }
+// The simulation clock (#315): SimTime() / SimDt() / SimAlpha(), see simclock.h.
+#include "simclock.h"
+// Time of day (#275): the debug UI's time-scale multiplier (bodies spin and orbit this much faster) and a pending jump
+// in seconds of world time, applied by the next advanceBodies (main.cpp), which carries riders along.
+inline float gDebugTimeScale = 1.0f;
+inline double gTimeSkipSeconds = 0.0;
+// World seconds until the sun (scene.sunDirection) stands at elevDeg over a body-local point's horizon, rising (true) or
+// setting, from the body's spin alone (within one rotation; -1 when the body doesn't spin or the sun never gets there).
+// The sign of the spin and BodyRotationD's conventions are handled numerically: sampled over a day, then bisected.
+double SecondsToSunElevation(const Planetoid& body, Vector3 localPoint, Vector3 sunDir, float elevDeg, bool rising);
+// The same for the camera's spot on the body it is nearest (debug UI: dawn / noon / dusk); -1 when there is none.
+double SecondsToSunElevationAtCamera(const Scene& world, float elevDeg, bool rising);
+// One hour of the nearest body's day (its rotation period / 24), in world seconds; 0 when it doesn't spin.
+double BodyHourSeconds(const Scene& world);
+double BodyDaySeconds(const Scene& world);                 // the nearest body's rotation period (0: no spin)
+float SunElevationAtCamera(const Scene& world);            // degrees over the horizon at the camera's spot on that body
 void generateWorld(Scene& world);      // creates planetoids; chunks stream in via worldUpdate()
+// Long steps of world generation (the erosion bake, #362) run on a thread; meanwhile this is called on the main thread
+// (~60 times a second) with the progress 0..1 and what is happening, so the game can draw a loading screen and keep
+// the window responsive. Unset (tests): generation just waits.
+extern std::function<void(float progress, const char* what)> gWorldGenWait;
 void regenerateWorld(Scene& world);
+// A hash of what every machine regenerates from the seed (#316): the seed, each generated body's id, kind and size, and its
+// CPU density field sampled at fixed points (no edits). Client and server compare it at join to catch mismatched builds.
+uint64_t WorldFingerprint(const Scene& world);
 // Drops the whole world (jobs, machines, water, rings, bodies and their GPU meshes): quitting to the main menu (#270).
 void unloadWorld(Scene& world);
 void BeginWorldStreaming();            // for games that add bodies themselves: WorldIdle() waits for them
@@ -105,8 +149,16 @@ std::shared_ptr<const TerrainDeltas> LoadRegionsFor(int body, const std::string&
 class RingSystem;
 std::vector<std::unique_ptr<RingSystem>>& Rings();
 void SetWorldTime(double t);
+// #339: a client follows the server's world clock (spin, orbits, the sun and weather all derive from it): give it the
+// server's world time now (the time it sent plus half the round trip). Under 2 s off it is slewed in at 10% of the frame
+// time; more is taken at once. Lag = the last estimate of server minus ours; Pending = what is still to slew.
+void WorldTime_Follow(double serverNow);
+double WorldTime_Lag();
+double WorldTime_Pending();
 void worldUpdate(Scene& world, float uploadBudgetMs = 3.0f); // LOD, streaming, uploads
 bool WorldIdle();                      // no queued/running jobs and nothing left to upload
+void World_ClearStreamingQueues();     // #387: drop queued GPU blocks, results and pending uploads (unloadWorld calls it)
+inline bool gJobLog = false;           // --perf-log: the job queue and mix every second (#387)
 // Spawn preload (#294): from now until the ring around the camera is built, ring builds run at full rate (no
 // spare-time gate). SpawnPreloadPending is true until then; progress 0..1.
 void BeginSpawnPreload();
@@ -125,8 +177,12 @@ bool TerrainSurfaceDistance(Planetoid& p, Vector3 renderPoint, float& dist, Vect
 Planetoid* NearestPlanetoid(Scene& world, Vector3 renderPoint); // by distance to the surface radius
 // In the sea: below sea level over open ocean and above its floor (a dry cave below sea level is not).
 bool IsUnderwater(Scene& world, Vector3 renderPoint);
+// A river's current at a point (world-space velocity, m/s; zero outside generated river water, #361): ~1 m/s
+// downstream mid-channel, slower to the banks; a simulated (released, dammed) reach has none here.
+Vector3 RiverCurrent(Planetoid* body, Vector3 renderPoint);
 void SetWorldSavePath(const char* path); // bench runs save to their own file, never the player's
 const char* WorldSavePath();
+extern bool gSandboxWorld; // --sandbox (#662): the start planet is a flat test plane (set before world generation)
 class JobSystem;
 JobSystem& WorldJobs(); // the shared worker pool (chunk builds, foliage tiles)
 // Gravity (m/s^2, render space) summed over every body, and one body's share of it: inverse-square

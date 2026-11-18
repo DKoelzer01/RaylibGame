@@ -1,4 +1,7 @@
 #include "scene.h"
+#include "wind.h"
+#include "gpumem.h"
+#include "headless.h"
 #include "gputimer.h"
 #include "utils/logger.h"
 #include "profiler.h"
@@ -70,7 +73,7 @@ bool HotShader::reloadIfChanged(bool force) {
     Shader s = LoadShaderFromMemory(vsSrc.empty() ? nullptr : vsSrc.c_str(), fsSrc.empty() ? nullptr : fsSrc.c_str());
     // On a compile/link error raylib hands back its default shader instead.
     if (!IsShaderValid(s) || s.id == rlGetShaderIdDefault()) {
-        logger.logf("[ERROR] Shader %s / %s failed to compile; keeping previous version\n", vsPath.c_str(), fsPath.c_str());
+        LOG_ERROR("Shader", "Shader %s / %s failed to compile; keeping previous version\n", vsPath.c_str(), fsPath.c_str());
         TraceLog(LOG_WARNING, "Shader %s failed to compile; keeping previous version", fsPath.c_str());
         return false;
     }
@@ -146,6 +149,7 @@ static RenderTexture2D LoadShadowmapRenderTexture(int width, int height) {
     target.texture.height = height;
     if (target.id > 0) {
         rlEnableFramebuffer(target.id);
+        GpuMemTag gm149_("shadow maps"); // VRAM accounting (#302)
         target.depth.id = rlLoadTextureDepth(width, height, false);
         target.depth.width = width;
         target.depth.height = height;
@@ -222,6 +226,8 @@ Scene::Scene(std::string name, bool isActive)
 
     shadowMap = LoadShadowmapRenderTexture(SHADOW_MAP_SIZE, SHADOW_MAP_SIZE);
     shadowNear = LoadShadowmapRenderTexture(SHADOW_MAP_SIZE, SHADOW_MAP_SIZE);
+    if (const char* e = getenv("RAYLIBGAME_WIDE_SHADOWS")) wideShadows = e[0] != '0';
+    if (wideShadows) { shadowWide = LoadShadowmapRenderTexture(SHADOW_MAP_SIZE, SHADOW_MAP_SIZE); terrainMaterial.maps[MATERIAL_MAP_EMISSION].texture = shadowWide.depth; } // #138
     terrainMaterial.maps[MATERIAL_MAP_HEIGHT].texture = shadowNear.depth; // a spare slot: the near cascade
     terrainMaterial.maps[MATERIAL_MAP_BRDF].texture = shadowMap.depth;
 
@@ -253,6 +259,7 @@ void Scene::applyLightingShader() {
     s.locs[SHADER_LOC_MAP_ROUGHNESS] = GetShaderLocation(s, "roughAoTexture");
     s.locs[SHADER_LOC_MAP_BRDF]      = GetShaderLocation(s, "shadowMap");
     s.locs[SHADER_LOC_MAP_HEIGHT]    = GetShaderLocation(s, "shadowMapNear");
+    s.locs[SHADER_LOC_MAP_EMISSION]  = GetShaderLocation(s, "shadowMapWide"); // #138
     locViewPos    = GetShaderLocation(s, "viewPos");
     locLightSpace = GetShaderLocation(s, "lightSpaceMatrix");
     locAmbient    = GetShaderLocation(s, "ambient");
@@ -287,6 +294,7 @@ void Scene::reloadShaders() {
 // Mipmapped, trilinear + anisotropic. Without mipmaps a 2K texture minified onto distant terrain
 // samples scattered texels: it shimmers and thrashes the texture cache.
 static Texture2D UploadFiltered(Image& img) {
+    GpuMemTag gm290_("terrain textures"); // VRAM accounting (#302)
     Texture2D t = LoadTextureFromImage(img);
     GenTextureMipmaps(&t);
     SetTextureFilter(t, TEXTURE_FILTER_TRILINEAR);
@@ -333,6 +341,7 @@ void Scene::loadTerrainTextures() {
 
 void Scene::drawScene(int gamestate) {
     if (!isActive) return;
+    if (Headless()) { ++gHeadlessSkippedDraws; return; } // #311: no GPU work at all (the bench camera is set by the tests)
     PROFILE_FUNCTION();
 
     // --- Hot reload: only touches the GPU when a shader file actually changed ---
@@ -364,7 +373,50 @@ void Scene::drawScene(int gamestate) {
     // The shadow light direction is held fixed in the ground's frame and moved in steps (0.12 deg, every ~1.2 s on
     // Terra): following the sun every frame slid the whole texel grid across the ground (~1.5 near texels/s),
     // which showed as shadows rippling and shimmering. Shading still uses the true sun.
-    Vector3 shadowSun = Vector3Normalize(sunDirection);
+    // Moonlight (#224): with the sun well under the horizon and the moon over it, the directional light (and its shadow
+    // cascades) follows the moon: cool, a few percent of the sun times its phase. The sky keeps the real sun. The switch
+    // happens deep in twilight, where both lights are ~0, so it never pops; the moon's strength rises from there.
+    lightDirection = Vector3Normalize(sunDirection);
+    moonLight = 0.0f;
+    if (atmosphere.enabled) {
+        const Vector3 rel = Vector3Subtract(camera.position, atmosphere.centre);
+        const float d = Vector3Length(rel);
+        if (d > 1e-3f) {
+            const Vector3 up = Vector3Scale(rel, 1.0f / d);
+            const float sSun = Vector3DotProduct(up, lightDirection);
+            const float night = std::clamp((-0.04f - sSun) / 0.08f, 0.0f, 1.0f); // ~-2.3 deg .. -6.9 deg
+            if (night > 0.0f)
+                for (auto& obj : objects) {
+                    const auto* m = dynamic_cast<const Planetoid*>(obj.get());
+                    if (!m || m->kind != BodyKind::Moon) continue;
+                    const Vector3 toMoon = Vector3Normalize(Vector3Subtract(m->position, camera.position));
+                    const float sMoon = Vector3DotProduct(up, toMoon);
+                    if (sMoon <= 0.02f) continue; // under the horizon
+                    // The lit fraction seen from here: (1 - cos(elongation)) / 2 (full opposite the sun).
+                    moonPhase = 0.5f * (1.0f - Vector3DotProduct(toMoon, Vector3Normalize(sunDirection)));
+                    if (night >= 0.5f) {
+                        lightDirection = toMoon;
+                        moonLight = std::clamp((night - 0.5f) / 0.5f, 0.0f, 1.0f) * std::clamp((sMoon - 0.02f) / 0.1f, 0.0f, 1.0f);
+                    }
+                    break;
+                }
+            // RAYLIBGAME_MOON_FORCE=1 (tests, #224): a full moon 45 deg up whenever it is night, wherever the moon really is.
+            static const bool forceMoon = getenv("RAYLIBGAME_MOON_FORCE") && getenv("RAYLIBGAME_MOON_FORCE")[0] == '1';
+            if (forceMoon && night >= 0.5f) {
+                Vector3 east = Vector3CrossProduct({ 0, 1, 0 }, up);
+                east = Vector3LengthSqr(east) > 1e-6f ? Vector3Normalize(east) : Vector3{ 1, 0, 0 };
+                lightDirection = Vector3Normalize(Vector3Add(up, east));
+                moonPhase = 1.0f;
+                moonLight = std::clamp((night - 0.5f) / 0.5f, 0.0f, 1.0f);
+            }
+        }
+    }
+    {   // RAYLIBGAME_MOON_LOG=1: the moon light's state every ~2 s (#224 tuning)
+        static const bool moonLog = getenv("RAYLIBGAME_MOON_LOG") && getenv("RAYLIBGAME_MOON_LOG")[0] == '1';
+        static int frame = 0;
+        if (moonLog && ++frame % 120 == 0) printf("moon: light %.2f, phase %.2f, %s\n", moonLight, moonPhase, moonLight > 0.0f ? "the moon lights" : "the sun lights (or nothing)");
+    }
+    Vector3 shadowSun = lightDirection;
     if (ground) {
         const Vector3 trueLocal = ground->dirToLocal(shadowSun);
         if (shadowSunBody != ground->id || Vector3DotProduct(trueLocal, shadowSunLocal) < cosf(0.12f * DEG2RAD)) { shadowSunLocal = trueLocal; shadowSunBody = ground->id; }
@@ -405,17 +457,40 @@ void Scene::drawScene(int gamestate) {
     if (!lights.empty()) {
         lights[0].position = lightPos;
         lights[0].target = centre;
-        const unsigned char k = (unsigned char)(255.0f * (1.0f - 0.7f * std::clamp(weatherCloud, 0.0f, 1.0f))); // cloud cover dims the sun
-        lights[0].color = { k, k, (unsigned char)std::min(255, k + 6), 255 };
+        const float k = 255.0f * (1.0f - 0.7f * std::clamp(weatherCloud, 0.0f, 1.0f)); // cloud cover dims the sun
+        // Low sun (#276): through more air it is dimmer and warmer, Rayleigh-like: transmittance exp(-beta * air mass), the
+        // air mass ~ 1 / sin(elevation) (capped near the horizon), scaled by the air at the camera (none in space).
+        Vector3 tint = { 1.0f, 1.0f, 1.0f };
+        if (atmosphere.enabled) {
+            const Vector3 rel = Vector3Subtract(camera.position, atmosphere.centre);
+            const float d = Vector3Length(rel);
+            const float air = powf(std::clamp(1.0f - (d - atmosphere.radius) / atmosphere.height, 0.0f, 1.0f), 1.5f);
+            if (d > 1e-3f && air > 0.0f) {
+                const float s = Vector3DotProduct(Vector3Scale(rel, 1.0f / d), Vector3Normalize(sunDirection));
+                const float mass = 1.0f / std::max(s, 0.035f) - 1.0f; // 0 overhead, ~28 at the horizon
+                tint = { expf(-0.012f * mass * air), expf(-0.032f * mass * air), expf(-0.075f * mass * air) };
+            }
+        }
+        if (moonLight > 0.0f || Vector3DotProduct(lightDirection, Vector3Normalize(sunDirection)) < 0.999f) {
+            // The moon (#224): cool and dim (RAYLIBGAME_MOONLIGHT_DIRECT scales it; 0.025 of the sun at full moon).
+            static const float direct = getenv("RAYLIBGAME_MOONLIGHT_DIRECT") ? (float)atof(getenv("RAYLIBGAME_MOONLIGHT_DIRECT")) : 0.025f;
+            const float m = direct * moonLight * std::clamp(0.15f + 0.85f * moonPhase, 0.0f, 1.0f) * (1.0f - 0.7f * std::clamp(weatherCloud, 0.0f, 1.0f));
+            tint = { 0.62f * m, 0.72f * m, 0.95f * m };
+            lights[0].color = { (unsigned char)std::lround(255.0f * tint.x), (unsigned char)std::lround(255.0f * tint.y), (unsigned char)std::lround(255.0f * tint.z), 255 };
+            sunFade = { 1.0f - tint.x, 1.0f - tint.y, 1.0f - tint.z };
+        } else {
+            lights[0].color = { (unsigned char)(k * tint.x), (unsigned char)(k * tint.y), (unsigned char)std::min(255.0f, (k + 6.0f) * tint.z), 255 };
+            sunFade = { 1.0f - tint.x, 1.0f - tint.y, 1.0f - tint.z }; // the same tint for grass, trees, parts and instances
+        }
     }
 
     // --- Shadow pass ---
     // Read the light's matrices back from rlgl inside BeginMode3D so the shader's light matrix is
     // exactly what the depth pass rendered with. (DrawMesh overwrites any hand-set "mvp" uniform.)
     const double defaultNear = rlGetCullDistanceNear(), defaultFar = rlGetCullDistanceFar();
-    auto renderCascade = [&](RenderTexture2D& target, float halfExtent, Vector3 boxCentre, Matrix& outMatrix, bool probe) {
+    auto renderCascade = [&](RenderTexture2D& target, float halfExtent, Vector3 boxCentre, Matrix& outMatrix, bool probe, bool wide = false) {
         Camera3D lightCam = { 0 };
-        lightCam.position = Vector3Add(boxCentre, Vector3Scale(shadowSun, sunDistance));
+        lightCam.position = Vector3Add(boxCentre, Vector3Scale(shadowSun, wide ? shadowWideDistance : sunDistance));
         lightCam.target = boxCentre;
         lightCam.up = upHint;
         lightCam.projection = CAMERA_ORTHOGRAPHIC;
@@ -449,17 +524,21 @@ void Scene::drawScene(int gamestate) {
                 for (const auto& obj : rootObject.children) obj->drawDepthOnly(shadowCtx);
                 // Trees and bushes: the instanced tree vertex shader (same sway) with the depth-only
                 // fragment shader.
-                if (treeDepth.shader.id > 0 && foliageEnabled) {
+                if (treeDepth.shader.id > 0 && foliageEnabled && !wide) { // (the wide cascade: terrain and parts only, #138)
                     rlDrawRenderBatchActive();
                     Shader& ts = treeDepth.shader;
                     rlEnableShader(ts.id);
                     rlSetUniformMatrix(GetShaderLocation(ts, "matViewProj"), outMatrix);
-                    const float now = (float)fmod(GetTime(), 3600.0);
+                    const float now = (float)fmod(GameClock(), 3600.0);
                     rlSetUniform(GetShaderLocation(ts, "time"), &now, RL_SHADER_UNIFORM_FLOAT, 1);
+            Wind_Bind(ts, renderOrigin, 10); // the wind field (#650)
                     RenderContext tctx = shadowCtx;
                     tctx.treeShader = &ts;
                     tctx.treeModelLoc = GetShaderLocation(ts, "matModel");
-                    tctx.treeOccluderLoc = tctx.treeFadeLoc = tctx.treeBarkLoc = tctx.treeLeafLoc = -1;
+                    tctx.treeOccluderLoc = tctx.treeBarkLoc = tctx.treeLeafLoc = -1;
+                    // Casters fade with the main view's distance fade (tree_depth.fs, #541): from the real camera.
+                    tctx.treeFadeLoc = GetShaderLocation(ts, "fadeEnd");
+                    rlSetUniform(GetShaderLocation(ts, "viewPos"), &camera.position, RL_SHADER_UNIFORM_VEC3, 1);
                     for (const auto& obj : objects)
                         if (auto* p = dynamic_cast<Planetoid*>(obj.get()); p && p->isActive && p->trees) {
                             p->trees->setShadowSun(p->dirToLocal(shadowSun));
@@ -475,6 +554,16 @@ void Scene::drawScene(int gamestate) {
     rlSetClipPlanes(1.0, sunDistance * 2.0);
     renderCascade(shadowMap, shadowHalfExtent, centre, lightSpaceMatrix, true);
     renderCascade(shadowNear, shadowNearHalfExtent, snapCentre(shadowNearHalfExtent), lightSpaceNear, false);
+    if (wideShadows && shadowWide.id > 0) { // #138: the wide terrain cascade, with its own depth range, every wideEvery frames
+        if (wideFrame++ % std::max(1, wideEvery) == 0) {
+            rlSetClipPlanes(1.0, shadowWideDistance * 2.0);
+            renderCascade(shadowWide, shadowWideHalfExtent, snapCentre(shadowWideHalfExtent), lightSpaceWideDrawn, false, true);
+            wideOrigin = renderOrigin;
+        }
+        // Render space moved with the floating origin since it was drawn: shift the lookup back to that frame's space.
+        const Vector3 shift = (renderOrigin - wideOrigin).toFloat();
+        lightSpaceWide = MatrixMultiply(MatrixTranslate(shift.x, shift.y, shift.z), lightSpaceWideDrawn);
+    }
     GpuTimer_Mark("shadow");
     KickGpu();
     rlSetClipPlanes(defaultNear, defaultFar);
@@ -495,6 +584,15 @@ void Scene::drawScene(int gamestate) {
     SetShaderValue(s, GetShaderLocation(s, "shadowTexel"), shadowTexels, SHADER_UNIFORM_VEC2);
     const float shadowDepthRange = (float)(sunDistance * 2.0 - 1.0);
     SetShaderValue(s, GetShaderLocation(s, "shadowDepthRange"), &shadowDepthRange, SHADER_UNIFORM_FLOAT);
+    {   // #138: the wide terrain cascade (its matrix, texel and depth range; off: wideShadowOn 0)
+        const int on = (wideShadows && shadowWide.id > 0) ? 1 : 0;
+        SetShaderValue(s, GetShaderLocation(s, "wideShadowOn"), &on, SHADER_UNIFORM_INT);
+        if (on) {
+            SetShaderValueMatrix(s, GetShaderLocation(s, "lightSpaceWide"), lightSpaceWide);
+            const float wide[2] = { 2.0f * shadowWideHalfExtent / SHADOW_MAP_SIZE, shadowWideDistance * 2.0f - 1.0f };
+            SetShaderValue(s, GetShaderLocation(s, "shadowWide"), wide, SHADER_UNIFORM_VEC2);
+        }
+    }
     SetShaderValue(s, locTexScale, &texScale, SHADER_UNIFORM_FLOAT);
     SetShaderValue(s, locPalette, &materialPalette, SHADER_UNIFORM_INT);
     // Atmosphere: by day near a planet the air hazes distant terrain toward the horizon sky colour and
@@ -511,9 +609,11 @@ void Scene::drawScene(int gamestate) {
         const float alt = d - atmosphere.radius;
         atmDensity = powf(std::clamp(1.0f - alt / atmosphere.height, 0.0f, 1.0f), 1.5f);
         const float s = Vector3DotProduct(atmUp, sun);
-        const float t = std::clamp((s + 0.18f) / 0.30f, 0.0f, 1.0f);
+        // The day sky as atmosphere.fs (#276): full from just before sunrise to just after sunset.
+        const float t = std::clamp((s + 0.10f) / 0.12f, 0.0f, 1.0f);
         const float day = t * t * (3.0f - 2.0f * t);
-        skyHorizon = Vector3Scale({ 0.35f, 0.53f, 0.83f }, day); // linear horizon sky
+        const float glow = expf(-(s * s) / (2.0f * 0.07f * 0.07f)); // the twilight glow: the haze takes some of its warmth
+        skyHorizon = Vector3Lerp(Vector3Scale({ 0.35f, 0.53f, 0.83f }, day), Vector3Scale({ 0.62f, 0.36f, 0.22f }, std::max(day, 0.35f)), 0.35f * glow); // linear horizon sky
         effFog = Vector3Add(effFog, Vector3Scale(skyHorizon, atmDensity));
         effFogDensity += atmDensity / 35000.0f;                    // ~35 km to fade a third of the way
         effAmbient = Vector3Add(effAmbient, Vector3Scale(skyHorizon, 0.06f * atmDensity));
@@ -522,7 +622,7 @@ void Scene::drawScene(int gamestate) {
         // daylight; the old nights (0) were a little too dark: open ground dim, unlit interiors near black. RAYLIBGAME_MOONLIGHT
         // scales it (1 = the first strength, 0 = the old nights).
         static const float moonScale = getenv("RAYLIBGAME_MOONLIGHT") ? (float)atof(getenv("RAYLIBGAME_MOONLIGHT")) : 0.25f;
-        effAmbient = Vector3Add(effAmbient, Vector3Scale({ 0.055f, 0.07f, 0.105f }, (1.0f - day) * atmDensity * moonScale));
+        effAmbient = Vector3Add(effAmbient, Vector3Scale({ 0.055f, 0.07f, 0.105f }, (1.0f - day) * atmDensity * moonScale * (1.0f - 0.5f * moonLight))); // half of it while the moon lights directly (#224)
         // Weather: cloud cover greys the haze and lifts the (diffuse) ambient a little; ground fog
         // thickens the haze near the ground.
         const Vector3 grey = Vector3Scale({ 0.30f, 0.32f, 0.35f }, day);
@@ -558,7 +658,19 @@ void Scene::drawScene(int gamestate) {
     // passes below collapse into one (no depth clears, no near/far plane juggling).
     const bool revZ = SceneTarget_Available() && SceneTarget_Begin(clearColor); // false (e.g. a failed resize): old passes
     BeginMode3D(camera);
-    if (revZ) SceneTarget_ApplyProjection();
+    if (revZ) {
+        SceneTarget_ApplyProjection();
+        // Contact shadows (#137): the sun in view space; strength by day (fading in as the sun clears the horizon), less
+        // under cloud (the sun is dimmer), none by moonlight.
+        const Matrix view = rlGetMatrixModelview();
+        const Vector3 sunN = Vector3Normalize(sunDirection);
+        const Vector3 sunView = Vector3Subtract(Vector3Transform(sunN, view), Vector3Transform({ 0, 0, 0 }, view));
+        const float elev = Vector3DotProduct(atmUp, sunN);
+        const float te = std::clamp((elev - 0.02f) / 0.14f, 0.0f, 1.0f);
+        const float strength = moonLight <= 0.0f ? 0.4f * te * te * (3.0f - 2.0f * te) * (1.0f - 0.8f * std::clamp(weatherCloud, 0.0f, 1.0f)) : 0.0f;
+        SceneTarget_SetContact(sunView, strength);
+        SceneTarget_SetHiZView(MatrixMultiply(view, rlGetMatrixProjection())); // #134: the view this frame's depth is drawn with
+    }
         rlDisableBackfaceCulling();
         rlDisableDepthMask();
         if (drawSkybox) DrawModel(skybox, (Vector3){0, 0, 0}, 1.0f, WHITE); // skybox.vs strips translation and scales the cube
@@ -589,6 +701,9 @@ void Scene::drawScene(int gamestate) {
         rlEnableBackfaceCulling();
         rlEnableDepthMask();
         GpuTimer_Mark("sky");
+        // Local lights (#139): kept, binned into screen tiles and uploaded now that the view and projection are set.
+        LocalLights_Upload(localLights, camera.position);
+        LocalLights_Bind(lighting.shader);
 
         // Far pass: bodies whose nearest possible surface is beyond kFarSplit (the moon, the ring,
         // the planet seen from orbit) are drawn first with clip planes fitted to them, then the depth
@@ -626,11 +741,11 @@ void Scene::drawScene(int gamestate) {
         ctx.sunOccluderLoc = locSunOccluder;
         ctx.scenePalette = materialPalette;
         ctx.cameraPos = camera.position;
-        ctx.sunDir = sun;
+        ctx.sunDir = sun; // far bodies and rings: lit by the real sun (the moon light is for the ground around the player, #224)
         ctx.ambient = effAmbient;
         if (farSphere.shader.id > 0) {
             Shader& fs = farSphere.shader;
-            SetShaderValue(fs, GetShaderLocation(fs, "sunDir"), &sun, SHADER_UNIFORM_VEC3);
+            SetShaderValue(fs, GetShaderLocation(fs, "sunDir"), &lightDirection, SHADER_UNIFORM_VEC3);
             SetShaderValue(fs, GetShaderLocation(fs, "viewPos"), &camera.position, SHADER_UNIFORM_VEC3);
             SetShaderValue(fs, GetShaderLocation(fs, "ambient"), &effAmbient, SHADER_UNIFORM_VEC3);
             const float fshell[4] = { atmosphere.centre.x, atmosphere.centre.y, atmosphere.centre.z,
@@ -665,13 +780,22 @@ void Scene::drawScene(int gamestate) {
             }
             rlSetUniform(GetShaderLocation(sh, "lampPos"), lamp, RL_SHADER_UNIFORM_VEC4, 1);
             rlSetUniform(GetShaderLocation(sh, "lampTarget"), target, RL_SHADER_UNIFORM_VEC4, 1);
+            float torch[4] = { 0, 0, 0, 0 }, torchCol[4] = { 0, 0, 0, 0 }; // a held torch (#218): lights[3], a point light
+            if (lights.size() > 3 && lights[3].enabled && lights[3].type == LIGHT_POINT) {
+                torch[0] = lights[3].position.x; torch[1] = lights[3].position.y; torch[2] = lights[3].position.z; torch[3] = std::max(lights[3].target.x, 1.0f);
+                torchCol[0] = lights[3].color.r / 255.0f; torchCol[1] = lights[3].color.g / 255.0f; torchCol[2] = lights[3].color.b / 255.0f; torchCol[3] = lights[3].color.a / 255.0f;
+            }
+            rlSetUniform(GetShaderLocation(sh, "torchPos"), torch, RL_SHADER_UNIFORM_VEC4, 1);
+            rlSetUniform(GetShaderLocation(sh, "torchColor"), torchCol, RL_SHADER_UNIFORM_VEC4, 1);
+            LocalLights_Bind(sh); // lamps, campfires, glowing machines (#139)
             rlActiveTextureSlot(0);
         };
         if (parts.shader.id > 0) {
             Shader& ps = parts.shader;
             const float pshell[4] = { atmosphere.centre.x, atmosphere.centre.y, atmosphere.centre.z,
                                       atmosphere.enabled && effFogDensity < 0.06f ? atmosphere.radius + atmosphere.hazeHeight : 0.0f };
-            SetShaderValue(ps, GetShaderLocation(ps, "sunDir"), &sun, SHADER_UNIFORM_VEC3);
+            SetShaderValue(ps, GetShaderLocation(ps, "sunDir"), &lightDirection, SHADER_UNIFORM_VEC3);
+            SetShaderValue(ps, GetShaderLocation(ps, "sunFade"), &sunFade, SHADER_UNIFORM_VEC3);
             SetShaderValue(ps, GetShaderLocation(ps, "viewPos"), &camera.position, SHADER_UNIFORM_VEC3);
             SetShaderValue(ps, GetShaderLocation(ps, "ambient"), &effAmbient, SHADER_UNIFORM_VEC3);
             SetShaderValue(ps, GetShaderLocation(ps, "ambientUp"), &hemiUp, SHADER_UNIFORM_VEC3);
@@ -687,9 +811,9 @@ void Scene::drawScene(int gamestate) {
         // Sea surface material, set up once for the far, mid and near passes.
         auto prepareWater = [&] {
             Shader& ws = water.shader;
-            const float now = (float)fmod(GetTime(), 3600.0);
+            const float now = (float)fmod(GameClock(), 3600.0);
             SetShaderValue(ws, GetShaderLocation(ws, "viewPos"), &camera.position, SHADER_UNIFORM_VEC3);
-            SetShaderValue(ws, GetShaderLocation(ws, "sunDir"), &sun, SHADER_UNIFORM_VEC3);
+            SetShaderValue(ws, GetShaderLocation(ws, "sunDir"), &lightDirection, SHADER_UNIFORM_VEC3);
             SetShaderValue(ws, GetShaderLocation(ws, "skyColor"), &skyHorizon, SHADER_UNIFORM_VEC3);
             SetShaderValue(ws, GetShaderLocation(ws, "fogColor"), &effFog, SHADER_UNIFORM_VEC3);
             SetShaderValue(ws, GetShaderLocation(ws, "fogDensity"), &effFogDensity, SHADER_UNIFORM_FLOAT);
@@ -735,10 +859,11 @@ void Scene::drawScene(int gamestate) {
             rlEnableShader(ts.id);
             const Matrix vp = MatrixMultiply(rlGetMatrixModelview(), rlGetMatrixProjection());
             rlSetUniformMatrix(GetShaderLocation(ts, "matViewProj"), vp);
-            const float now = (float)fmod(GetTime(), 3600.0);
+            const float now = (float)fmod(GameClock(), 3600.0);
             const float shell[4] = { atmosphere.centre.x, atmosphere.centre.y, atmosphere.centre.z,
                                      atmosphere.enabled && effFogDensity < 0.06f ? atmosphere.radius + atmosphere.hazeHeight : 0.0f };
-            rlSetUniform(GetShaderLocation(ts, "sunDir"), &sun, RL_SHADER_UNIFORM_VEC3, 1);
+            rlSetUniform(GetShaderLocation(ts, "sunDir"), &lightDirection, RL_SHADER_UNIFORM_VEC3, 1);
+            rlSetUniform(GetShaderLocation(ts, "sunFade"), &sunFade, RL_SHADER_UNIFORM_VEC3, 1);
             rlSetUniform(GetShaderLocation(ts, "viewPos"), &camera.position, RL_SHADER_UNIFORM_VEC3, 1);
             rlSetUniform(GetShaderLocation(ts, "ambient"), &effAmbient, RL_SHADER_UNIFORM_VEC3, 1);
             rlSetUniform(GetShaderLocation(ts, "ambientUp"), &hemiUp, RL_SHADER_UNIFORM_VEC3, 1);
@@ -746,6 +871,7 @@ void Scene::drawScene(int gamestate) {
             rlSetUniform(GetShaderLocation(ts, "fogDensity"), &effFogDensity, RL_SHADER_UNIFORM_FLOAT, 1);
             rlSetUniform(GetShaderLocation(ts, "fogShell"), shell, RL_SHADER_UNIFORM_VEC4, 1);
             rlSetUniform(GetShaderLocation(ts, "time"), &now, RL_SHADER_UNIFORM_FLOAT, 1);
+            Wind_Bind(ts, renderOrigin, 10); // the wind field (#650)
             setFoliageLighting(ts);
             RenderContext tctx = ctx;
             tctx.treeShader = &ts;
@@ -813,11 +939,12 @@ void Scene::drawScene(int gamestate) {
             rlEnableShader(gs.id);
             const Matrix vp = MatrixMultiply(rlGetMatrixModelview(), rlGetMatrixProjection());
             rlSetUniformMatrix(GetShaderLocation(gs, "matViewProj"), vp);
-            const float now = (float)fmod(GetTime(), 3600.0);
+            const float now = (float)fmod(GameClock(), 3600.0);
             const float fadeEnd = kGrassDrawDistance;
             const float shell[4] = { atmosphere.centre.x, atmosphere.centre.y, atmosphere.centre.z,
                                      atmosphere.enabled && effFogDensity < 0.06f ? atmosphere.radius + atmosphere.hazeHeight : 0.0f };
-            rlSetUniform(GetShaderLocation(gs, "sunDir"), &sun, RL_SHADER_UNIFORM_VEC3, 1);
+            rlSetUniform(GetShaderLocation(gs, "sunDir"), &lightDirection, RL_SHADER_UNIFORM_VEC3, 1);
+            rlSetUniform(GetShaderLocation(gs, "sunFade"), &sunFade, RL_SHADER_UNIFORM_VEC3, 1);
             rlSetUniform(GetShaderLocation(gs, "viewPos"), &camera.position, RL_SHADER_UNIFORM_VEC3, 1);
             rlSetUniform(GetShaderLocation(gs, "ambient"), &effAmbient, RL_SHADER_UNIFORM_VEC3, 1);
             rlSetUniform(GetShaderLocation(gs, "ambientUp"), &hemiUp, RL_SHADER_UNIFORM_VEC3, 1);
@@ -825,6 +952,7 @@ void Scene::drawScene(int gamestate) {
             rlSetUniform(GetShaderLocation(gs, "fogDensity"), &effFogDensity, RL_SHADER_UNIFORM_FLOAT, 1);
             rlSetUniform(GetShaderLocation(gs, "fogShell"), shell, RL_SHADER_UNIFORM_VEC4, 1);
             rlSetUniform(GetShaderLocation(gs, "time"), &now, RL_SHADER_UNIFORM_FLOAT, 1);
+            Wind_Bind(gs, renderOrigin, 10); // the wind field (#650)
             rlSetUniform(GetShaderLocation(gs, "fadeEnd"), &fadeEnd, RL_SHADER_UNIFORM_FLOAT, 1);
             setFoliageLighting(gs);
             RenderContext gctx = ctx;
@@ -880,15 +1008,16 @@ void Scene::drawScene(int gamestate) {
         // Extra drawing (animals, machine details, particles) gets the frame's lighting: sun shadows and the headlamp
         // binder, sun, ambient and fog (InstanceBatch uses them).
         frameLighting = setFoliageLighting;
-        frameSun = sun; frameAmbient = effAmbient; frameFog = effFog; frameFogDensity = effFogDensity; frameAmbientUp = hemiUp;
+        frameSun = lightDirection; frameAmbient = effAmbient; frameFog = effFog; frameFogDensity = effFogDensity; frameAmbientUp = hemiUp;
         frameFogShell = { atmosphere.centre.x, atmosphere.centre.y, atmosphere.centre.z, atmosphere.enabled && effFogDensity < 0.06f ? atmosphere.radius + atmosphere.hazeHeight : 0.0f };
         if (onDraw3D) onDraw3D();
         frameLighting = nullptr;
     EndMode3D();
-    if (revZ) SceneTarget_End();
+    GpuTimer_Mark("draw3d");
+    if (revZ) SceneTarget_End(); // resolve, auto-exposure, tonemap to the window (#131)
     rlSetClipPlanes(nearDefault, farDefault); // the passes above narrowed them
     lastDrawCalls = drawCalls;
-    GpuTimer_Mark("draw3d");
+    GpuTimer_Mark("tonemap");
 
     if (debugDraw) {
         // Depth texture preview (red channel = depth), with the hardware compare off while it draws.
@@ -903,8 +1032,8 @@ void Scene::drawScene(int gamestate) {
 void Scene::drawUI(int gamestate) {
     if (!isActive) return;
     RenderContext none;
-    if (gamestate != 0) {
-        DrawFPS(10, 10);
+    // The camera readout only in the F3 debug view (#573); the FPS counter is the game's setting now (#572: main.cpp).
+    if (gamestate != 0 && debugDraw) {
         const DVec3 cw = cameraWorld();
         DrawText(TextFormat("Camera: %.1f %.1f %.1f   meshes: %d   [F3] debug",
                  cw.x, cw.y, cw.z, lastDrawCalls), 10, 30, 20, GREEN);
@@ -936,11 +1065,13 @@ Scene::~Scene() {
     grass.unload();
     trees.unload();
     treeDepth.unload();
+    Wind_Unload();
     farSphere.unload();
     parts.unload();
     atmosphereShader.unload();
     UnloadShadowmapRenderTexture(shadowMap);
     UnloadShadowmapRenderTexture(shadowNear);
+    if (shadowWide.id > 0) UnloadShadowmapRenderTexture(shadowWide);
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -964,6 +1095,22 @@ void Scene::updateFloatingOrigin() {
     camera.position = Vector3Subtract(camera.position, c);
     camera.target = Vector3Subtract(camera.target, c);
     syncRenderPositions();
+}
+
+RenderOriginScope::RenderOriginScope(Scene& s, const DVec3& centre) : scene(s), saved(s.renderOrigin) {
+    const Vector3 d = (centre - saved).toFloat();
+    scene.renderOrigin = centre;
+    scene.camera.position = Vector3Subtract(scene.camera.position, d);
+    scene.camera.target = Vector3Subtract(scene.camera.target, d);
+    scene.syncRenderPositions();
+}
+
+RenderOriginScope::~RenderOriginScope() {
+    const Vector3 d = (scene.renderOrigin - saved).toFloat();
+    scene.renderOrigin = saved;
+    scene.camera.position = Vector3Add(scene.camera.position, d);
+    scene.camera.target = Vector3Add(scene.camera.target, d);
+    scene.syncRenderPositions();
 }
 
 void Scene::setCameraWorld(DVec3 position, DVec3 target) {

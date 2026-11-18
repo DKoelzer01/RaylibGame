@@ -7,7 +7,13 @@
 // item id: tools never stack, and a second copy only starts wearing once the first has broken.
 
 #include <cstdio>
+#include <map>
 #include <string>
+
+// One player's tool wear (#313, in their PlayerSession): strokes on the tool in use, per item id.
+struct ToolWearState {
+    std::map<std::string, int> used;
+};
 
 void ToolWear_OnStroke(const std::string& toolId, int strokes = 1); // true use only (not creative)
 float ToolWear_Left(const std::string& toolId);   // 1 new .. 0 about to break (1 for non-tools)

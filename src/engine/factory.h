@@ -18,6 +18,7 @@
 // Plots far from the player tick once a second with a 20x step: the same rates and budgets, a
 // twentieth of the cost, never more output than the full simulation.
 
+#include "voxel.h" // Int3
 #include <cstdint>
 #include <cstdio>
 #include <string>
@@ -42,7 +43,16 @@ struct MachineView {             // published per machine each tick
     std::pair<std::string, int> fuelSlot;
     int water = 0, waterMax = 0;    // litres in its tank (boilers, #229)
     int heat = 0, heatMax = 0;      // boilers warm up before they make full steam
+    bool hotOutputs = false;        // its outputs come out hot (a furnace, kiln...: their icons glow, #580)
     bool valid = false;
+};
+
+// A cable's power network, for its look-at panel (#570): what is on it and what flowed in the last step.
+struct CableView {
+    bool valid = false;             // the cable is known to the simulation (false for a tick after asking)
+    int voltage = 0;                // the network's (its highest generator or battery); 0: nothing feeds it
+    int generators = 0, consumers = 0, batteries = 0;
+    float supply = 0.0f, demand = 0.0f; // EU per tick made (with batteries' share) and wanted
 };
 
 struct FactoryStats {
@@ -60,6 +70,7 @@ namespace Factory {
     // take the results of item commands (into the inventory).
     void Sync(Scene& world);
     MachineView View(uint64_t bodyId, uint32_t plotId, int part);
+    CableView Cable(uint64_t bodyId, uint32_t plotId, Int3 cell); // the network through that cable cell (#570); watched like View
     // Whether a machine on a plot near the player is working (any number of calls a frame: models, smoke).
     // View() follows one machine at a time (the open machine screen) - never call it for many machines.
     bool Working(uint64_t bodyId, uint32_t plotId, int part);
@@ -72,10 +83,19 @@ namespace Factory {
     void AddWater(uint64_t bodyId, uint32_t plotId, int part, int litres);
     int TankRoom(uint64_t bodyId, uint32_t plotId, int part); // litres a boiler can still take (less water already sent); 0 if unknown
     bool TakesWater(PartType type);
+    // Every machine recipe (machine_recipes.txt) by item id, for the in-game database (#354). ticks/eu: 20 ticks a
+    // second; generators list their fuels as one-input recipes with eu = EU per tick produced.
+    struct RecipeInfo { PartType machine; std::vector<std::pair<std::string, int>> in, out; int ticks = 0, eu = 0; };
+    std::vector<RecipeInfo> RecipeList();
+    std::vector<std::string> FuelsOf(PartType type); // item ids a machine burns (machines.txt)
     void Extract(uint64_t bodyId, uint32_t plotId, int part);
     // Container screen: one slot's whole stack back to the inventory (next tick).
     // which: 0 inputs, 1 outputs, 2 the fuel slot.
     void TakeSlot(uint64_t bodyId, uint32_t plotId, int part, int slot, int which);
+    // The same onto the cursor (#192: all inventories behave alike): `count` of the slot's stack (0 = all), delivered by
+    // Sync to the cursor sink (the inventory screen's held stack) instead of the inventory.
+    void TakeSlotToCursor(uint64_t bodyId, uint32_t plotId, int part, int slot, int which, int count);
+    void SetCursorSink(void (*sink)(const std::string& item, int count, float heat)); // heat: 1 fresh out of a heating machine (#580)
     // Water pumps (waterworks): water units in a pump's outputs (as of the last tick), and removing
     // them as they go down its pipes.
     int PumpWater(uint64_t bodyId, uint32_t plotId, int part);
@@ -88,7 +108,8 @@ namespace Factory {
     void Seed(uint64_t bodyId, uint32_t plotId, int part, const std::string& item, int count);
     // Whether a machine type takes an item (recipe input, fuel, or a chest).
     bool Accepts(PartType type, const std::string& item);
-    void WaitTicks(int n);                           // block until n more ticks have run
+    void Advance(float simDt);                       // one simulation step (#315): grants the ticks it owes (20 Hz x speed)
+    void WaitTicks(int n);                           // run n more ticks now and block until they have
     void SetSpeed(int multiplier);                   // tests: run the 20 Hz clock this many times faster
     // Saves: machine contents per body index (the plots themselves are saved with the body).
     void Save(FILE* f, uint64_t bodyId);

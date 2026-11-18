@@ -19,6 +19,7 @@
 #include <algorithm>
 #include <cmath>
 #include <string>
+#include <vector>
 
 extern "C" { typedef void (*PfnClearVm)(unsigned int); extern PfnClearVm glad_glClear; }
 
@@ -40,8 +41,18 @@ namespace {
             const std::string& s = Hotbar_Slot(Hotbar_Selected());
             return s == kHotbarTerrainTool || inventory.count(s) <= 0 ? std::string() : s; // only what is carried (#272)
         }
+        if (Hotbar_Selected() >= 0) { // a torch in hand (#558: it showed an empty glove, selecting it clears heldTool)
+            const std::string& s = Hotbar_Slot(Hotbar_Selected());
+            if (Hotbar_IsLight(s) && inventory.count(s) > 0) return s;
+        }
         return inventory.count(terrainTool.heldTool) > 0 ? terrainTool.heldTool : std::string();
     }
+
+    // The held torch's flame (#558): a few additive sprites in the hands' own view space, rising from the head.
+    struct Flame { Vector3 p, v; float age, life, size; };
+    std::vector<Flame> flames;
+    float flameSpawn = 0.0f;
+    bool IsTorch(const std::string& id) { return id == "torch" || id == "fibre_torch"; }
 
     Color Scale(Color c, float k) {
         return { (unsigned char)std::clamp((int)(c.r * k), 0, 255), (unsigned char)std::clamp((int)(c.g * k), 0, 255), (unsigned char)std::clamp((int)(c.b * k), 0, 255), 255 };
@@ -100,7 +111,7 @@ void Viewmodel_Update(Scene& world, float dt) {
     if (terrainTool.swings != seenSwings) { seenSwings = terrainTool.swings; swing = 0.0f; }
     swing = std::min(1.0f, swing + dt / std::max(terrainTool.swingTime, 0.1f)); // one swing per cooldown
     const std::string now = Held();
-    if (now != held) { held = now; dip = 0.0f; }
+    if (now != held) { held = now; dip = 0.0f; flames.clear(); }
     dip = std::min(1.0f, dip + dt / 0.25f);
     const float lowerTarget = (GameUI_InventoryOpen() || Nav_MapOpen()) ? 1.0f : 0.0f;
     lowered += (lowerTarget - lowered) * std::min(1.0f, 8.0f * dt);
@@ -126,8 +137,9 @@ void Viewmodel_Draw(Scene& world) {
     float target = (0.08f + 0.27f * day) * sky + 0.65f * day * sunVis * sky;
     if (survival.headlamp) target = std::max(target, 0.8f);
     static float light = -1.0f;
-    const float dtl = GetFrameTime();
+    const float dtl = GameFrameTime();
     light = light < 0.0f || dtl <= 0.0f ? target : light + (target - light) * (1.0f - expf(-dtl / 0.15f));
+    const float handLight = IsTorch(held) ? std::max(light, 0.55f) : light; // a held torch lights its own hand (#558)
 
     rlDrawRenderBatchActive();
     if (glad_glClear) glad_glClear(0x00000100); // depth only: the hands draw over the world, never into it
@@ -149,17 +161,75 @@ void Viewmodel_Draw(Scene& world) {
     auto local = [&](Vector3 p, Vector3 rotDeg = { 0, 0, 0 }) { return MatrixMultiply(At(p, rotDeg), hand); };
 
     const Color glove = { 176, 186, 198, 255 }, cuff = { 120, 130, 145, 255 };
-    Box(local({ 0, 0, 0.11f }), { 0.10f, 0.09f, 0.07f }, cuff, light);          // suit cuff
-    Box(local({ 0, 0, 0 }), { 0.085f, 0.07f, 0.15f }, glove, light);             // glove
+    Box(local({ 0, 0, 0.11f }), { 0.10f, 0.09f, 0.07f }, cuff, handLight);          // suit cuff
+    Box(local({ 0, 0, 0 }), { 0.085f, 0.07f, 0.15f }, glove, handLight);             // glove
     const ToolSpec tool = ToolOf(held);
-    if (held.empty() || tool.type == ToolType::Hands) {
+    if (IsTorch(held)) {
+        // A thin stick held upright (it was an item cube, #558), a wrapped head, and the particle flame over it.
+        const bool fibre = held == "fibre_torch";
+        const float lit = std::max(light, 0.55f); // its own flame lights the stick and the glove (they read black at night)
+        const Matrix stick = local({ 0, 0.1f, -0.05f }, { -10, 0, 8 });
+        Box(stick, { 0.016f, 0.3f, 0.016f }, fibre ? Color{ 150, 135, 80, 255 } : Color{ 120, 84, 50, 255 }, lit);
+        const Matrix head = MatrixMultiply(At({ 0, 0.15f, 0 }), stick);
+        Box(head, { 0.03f, 0.05f, 0.03f }, fibre ? Color{ 170, 150, 90, 255 } : Color{ 92, 70, 52, 255 }, lit);
+        const Vector3 foot = Vector3Transform({ 0, 0.18f, 0 }, stick); // the flame's foot in view space
+        const float dt = GameFrameTime();
+        flameSpawn += dt * (fibre ? 45.0f : 60.0f);
+        while (flameSpawn >= 1.0f && flames.size() < 64) {
+            flameSpawn -= 1.0f;
+            const float a = GetRandomValue(0, 1000) * 0.001f * 2.0f * PI, r = GetRandomValue(0, 1000) * 0.001f * 0.008f;
+            flames.push_back({ { foot.x + cosf(a) * r, foot.y, foot.z + sinf(a) * r },
+                               { cosf(a) * 0.01f, 0.1f + GetRandomValue(0, 100) * 0.0006f, sinf(a) * 0.01f },
+                               0.0f, 0.22f + GetRandomValue(0, 100) * 0.0015f, (fibre ? 0.026f : 0.032f) * (0.8f + GetRandomValue(0, 100) * 0.004f) });
+        }
+        if (flameSpawn > 1.0f) flameSpawn = 1.0f;
+        for (Flame& f : flames) { f.age += dt; f.p = Vector3Add(f.p, Vector3Scale(f.v, dt)); f.v.y += 0.15f * dt; }
+        flames.erase(std::remove_if(flames.begin(), flames.end(), [](const Flame& f) { return f.age >= f.life; }), flames.end());
+        rlDrawRenderBatchActive();
+        rlSetBlendMode(BLEND_ADDITIVE);
+        rlDisableDepthMask();
+        rlBegin(RL_TRIANGLES); // each sprite a soft disc: its colour at the centre, black (nothing, additive) at the rim
+        for (const Flame& f : flames) {
+            const float k = f.age / f.life;                                    // 0 new .. 1 gone
+            const float sz = f.size * (1.0f - 0.7f * k);                       // shrinks as it rises
+            const float fade = (1.0f - k) * std::min(1.0f, f.age * 25.0f);
+            const unsigned char r = (unsigned char)(255 * fade), g = (unsigned char)((220 - 150 * k) * fade), b = (unsigned char)((120 - 110 * k) * fade); // yellow -> deep orange
+            constexpr int kSeg = 8;
+            for (int j = 0; j < kSeg; ++j) {
+                const float a0 = 2.0f * PI * j / kSeg, a1 = 2.0f * PI * (j + 1) / kSeg;
+                rlColor4ub(r, g, b, 255); rlVertex3f(f.p.x, f.p.y, f.p.z);
+                rlColor4ub(0, 0, 0, 255);
+                rlVertex3f(f.p.x + cosf(a0) * sz, f.p.y + sinf(a0) * sz * 1.4f, f.p.z); // a little taller than wide
+                rlVertex3f(f.p.x + cosf(a1) * sz, f.p.y + sinf(a1) * sz * 1.4f, f.p.z);
+            }
+        }
+        rlEnd();
+        rlDrawRenderBatchActive();
+        rlEnableDepthMask();
+        rlSetBlendMode(BLEND_ALPHA);
+    } else if (held.empty() || tool.type == ToolType::Hands) {
         if (held.empty()) {
             Box(local({ 0, 0.005f, -0.1f }, { -12, 0, 0 }), { 0.08f, 0.03f, 0.07f }, glove, light); // open fingers
             Box(local({ -0.05f, 0.01f, -0.03f }, { 0, 0, 30 }), { 0.025f, 0.025f, 0.06f }, glove, light); // thumb
         } else {
             // An item: a small cube of its colour in the hand.
             const ItemDef* def = itemDB.find(held);
-            Box(local({ 0, 0.07f, -0.08f }, { 10, 20, 0 }), { 0.11f, 0.11f, 0.11f }, def ? def->color : GRAY, light);
+            Color col = def ? def->color : GRAY;
+            float lit = light;
+            // A hot (or radioactive) stack glows (#580): its colour pulled toward the glow, lit by itself.
+            const int sel = Hotbar_Selected();
+            if (sel >= 0) {
+                const InvSlot& cell = inventory.grid()[Inventory::kGrid + sel];
+                if (cell.id == held) {
+                    const ItemGlow g = Item_Glow(cell);
+                    if (g.strength > 0.0f) {
+                        const float k = g.strength;
+                        col = { (unsigned char)(col.r + (g.color.r - col.r) * k), (unsigned char)(col.g + (g.color.g - col.g) * k), (unsigned char)(col.b + (g.color.b - col.b) * k), 255 };
+                        lit = std::max(light, 0.35f + 0.65f * k);
+                    }
+                }
+            }
+            Box(local({ 0, 0.07f, -0.08f }, { 10, 20, 0 }), { 0.11f, 0.11f, 0.11f }, col, lit);
         }
     } else {
         // A tool: a wooden handle rising nearly upright out of the fist (leaning a little forward and

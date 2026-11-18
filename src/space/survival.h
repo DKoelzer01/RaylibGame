@@ -11,6 +11,7 @@ class Scene;
 // respawns you at the ship.
 struct SurvivalState {
     float oxygen = 100.0f, power = 100.0f, health = 100.0f;   // 0..100
+    float fallDamageTaken = 0.0f;   // health lost to hard landings so far (not saved; tests tell it from other damage, #439)
     float oxygenDrainPerSec = 0.35f;                          // ~5 minutes per tank
     float powerDrainPerSec = 0.05f;                           // life support baseline
     float jetpackPowerPerTank = 25.0f;                        // suit power to recharge an empty jetpack tank
@@ -36,11 +37,18 @@ struct SurvivalState {
     bool underwater = false;                                  // the head is in water (oxygen drains faster)
     bool inVacuum = false;                                    // outside any breathable air (space, the moon, ring rocks)
     float vacuumTime = 0.0f;                                  // seconds in vacuum in a suit not rated for it (60 s, then it hurts)
+    // Stamina (#165, combat.cpp): sprinting, swings and blocked hits spend it; it comes back after a short rest.
+    float stamina = 100.0f;                                   // 0..100
+    double staminaUsedAt = -1e9;                              // sim time of the last spend (regen waits a moment)
+    bool blocking = false;                                    // holding a block this step
+    float hitDamageTaken = 0.0f;                              // health lost to hits so far (not saved; tests)
+    double lastHitAt = -1e9;                                  // sim time of the last hit taken (the camera shake, hit-stop)
+    float lastHitStrength = 0.0f;                             // 0..1 (20 damage = 1)
     bool dead = false;
     double deathTime = 0.0;
     int deaths = 0;
 };
-extern SurvivalState survival;
+extern SurvivalState& survival; // the local PlayerSession's (#313)
 
 // The world's difficulty (saved with it; new worlds take settings.difficulty): 0 peaceful (no night
 // threats or hostile animals, hunger x0.6, extra food to start), 1 normal, 2 hard (no Map in the
@@ -50,7 +58,8 @@ float Difficulty_HungerScale();
 float Difficulty_ThreatScale(); // 0 peaceful, 1 normal, 1.5 hard
 const char* Difficulty_Name(int d);
 
-void Survival_Update(Scene& world, float dt, bool inputEnabled);
+struct PlayerInput;
+void Survival_Update(Scene& world, float dt, const PlayerInput& in);
 // Consumables (the hotbar uses them): oxygen canister, power cell (charges the ship while piloting).
 bool Survival_IsUsable(const std::string& id);
 bool Survival_UseItem(const std::string& id);
