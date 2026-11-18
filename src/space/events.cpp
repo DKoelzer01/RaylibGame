@@ -84,7 +84,7 @@ namespace {
         sparks.kind = ParticleKind::Debris; sparks.color = { 255, 170, 80, 255 }; sparks.count = 40;
         sparks.size = 0.12f; sparks.life = 2.0f; sparks.speed = 12.0f; sparks.spread = 0.7f;
         Particles_Emit(body, ground, sparks);
-        glows.push_back({ body.name, Vector3Add(bottom, Vector3Scale(d, 0.8f)), GetTime() });
+        glows.push_back({ body.name, Vector3Add(bottom, Vector3Scale(d, 0.8f)), GameClock() });
         // Heard and announced by the local player when it fell near them (it may have come down by another player).
         const float near = player.nearest == &body ? Vector3Distance(ground, body.toLocal((player.position - world.renderOrigin).toFloat())) : 1e9f;
         if (near < 2000.0f) {
@@ -180,7 +180,7 @@ void Events_Update(Scene& world, float dt) {
     }
     for (Streak& s : streaks) { s.from = Vector3Add(s.from, Vector3Scale(s.dir, 900.0f * dt)); s.life -= dt; }
     streaks.erase(std::remove_if(streaks.begin(), streaks.end(), [](const Streak& s) { return s.life <= 0.0f; }), streaks.end());
-    glows.erase(std::remove_if(glows.begin(), glows.end(), [](const Glow& g) { return GetTime() - g.at > 90.0; }), glows.end());
+    glows.erase(std::remove_if(glows.begin(), glows.end(), [](const Glow& g) { return GameClock() - g.at > 90.0; }), glows.end());
 }
 
 void Events_Draw3D(Scene& world) {
@@ -202,7 +202,7 @@ void Events_AddLights(Scene& world) {
     if (!body) return;
     for (const Glow& g : glows) {
         if (g.body != body->name) continue;
-        const float t = (float)(GetTime() - g.at);
+        const float t = (float)(GameClock() - g.at);
         LocalLight L;
         L.position = body->toWorld(g.local);
         if (t < 1.5f) { L.range = 40.0f; L.color = { 1.0f, 0.85f, 0.6f }; L.intensity = 4.0f * (1.0f - t / 1.5f) + 1.0f; } // the flash
