@@ -9,6 +9,7 @@
 #include <set>
 #include <unordered_map>
 #include <utility>
+#include <vector>
 #include <raylib.h>
 
 class Scene;
@@ -147,6 +148,14 @@ const char* QuestBook_TierText(int tier);
 int QuestBook_TaskCount(int tier);
 const char* QuestBook_TaskText(int tier, int task);
 bool QuestBook_TaskDone(int tier, int task);
+// Pinned quests (#825): up to kMaxPins tasks shown on the HUD; the player's own (their record), not the team's.
+constexpr int kMaxPins = 3;
+bool QuestBook_Pin(int tier, int task, bool on);   // false: already kMaxPins pinned (or no such task)
+bool QuestBook_Pinned(int tier, int task);
+const std::vector<std::pair<int, int>>& QuestBook_Pins();
+void QuestBook_ClearPins();
+void QuestBook_SavePins(FILE* f);
+bool QuestBook_LoadPinLine(const char* tok, FILE* f);
 void Objectives_MarkVisitedBody(int bodyIndex);
 
 #endif

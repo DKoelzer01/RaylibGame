@@ -843,7 +843,23 @@ static void DrawCreative() {
     ImGui::EndChild();
 }
 
-// The main quest line: done tiers collapsed, the current one open, the next shown.
+// The team's progress (#825): quests and tiers are a team's (#346); a solo player is a team of one.
+static void DrawTeamProgress() {
+    const int cur = QuestBook_Tier(), tiersN = QuestBook_TierCount();
+    std::string team = "Your team";
+    const int id = Teams_Of(PlayerId_Local());
+    for (const TeamRecord& t : Teams_All()) if (t.id == id && !t.name.empty()) team = t.name;
+    int done = 0, all = cur < tiersN ? QuestBook_TaskCount(cur) : 0;
+    for (int k = 0; k < all; ++k) done += QuestBook_TaskDone(cur, k);
+    ImGui::TextColored(ImVec4(0.88f, 0.66f, 0.25f, 1.0f), "%s", team.c_str());
+    ImGui::SameLine();
+    if (cur < tiersN) ImGui::TextDisabled("tier %d of %d (%s): %d of %d tasks done   pinned to the HUD: %d of %d", cur, tiersN - 1, QuestBook_TierName(cur), done, all,
+                                          (int)QuestBook_Pins().size(), kMaxPins);
+    else ImGui::TextDisabled("every tier done");
+}
+
+// The main quest line: done tiers collapsed, the current one open, the next shown. Each open task has a pin: up to
+// kMaxPins show on the HUD (#825).
 static void DrawQuestList() {
     const int cur = QuestBook_Tier();
     for (int i = 0; i < QuestBook_TierCount() && i <= cur + 1; ++i) {
@@ -855,7 +871,18 @@ static void DrawQuestList() {
             ImGui::TextWrapped("%s", QuestBook_TierText(i));
             for (int k = 0; k < QuestBook_TaskCount(i); ++k) {
                 const bool kd = QuestBook_TaskDone(i, k);
+                ImGui::PushID(k);
+                if (!kd) {
+                    bool pinned = QuestBook_Pinned(i, k);
+                    const bool full = !pinned && (int)QuestBook_Pins().size() >= kMaxPins;
+                    ImGui::BeginDisabled(full);
+                    if (ImGui::Checkbox("##pin", &pinned)) QuestBook_Pin(i, k, pinned);
+                    ImGui::EndDisabled();
+                    if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) ImGui::SetTooltip(full ? "Three are pinned: unpin one first" : pinned ? "Pinned to the HUD" : "Pin to the HUD");
+                    ImGui::SameLine();
+                } else ImGui::Dummy(ImVec2(ImGui::GetFrameHeight(), 0.0f)), ImGui::SameLine();
                 ImGui::TextColored(kd ? ImVec4(0.45f, 0.85f, 0.45f, 1.0f) : ImVec4(0.95f, 0.95f, 0.95f, 1.0f), "%s %s", kd ? "[x]" : "[ ]", QuestBook_TaskText(i, k));
+                ImGui::PopID();
             }
         }
         ImGui::PopID();
@@ -1076,6 +1103,7 @@ void GameUI_Draw(Scene& world) {
                 break;
             case GameScreen::Crafting: DrawCrafting(); break;
             case GameScreen::Quests:
+                DrawTeamProgress(); // (#825)
                 if (ImGui::RadioButton("List", !questTree)) questTree = false;
                 ImGui::SameLine();
                 if (ImGui::RadioButton("Tree", questTree)) questTree = true;

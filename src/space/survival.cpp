@@ -556,29 +556,66 @@ static int DrawWrapped(const std::string& text, int x, int y, int chars, int siz
     return y;
 }
 
+// Pinned quests (#825): up to 3 tasks (tier, task) the player picked on the Quests screen; the HUD shows them. A player's
+// own (saved in their record), the quest book itself the team's. A finished task drops out of the pins.
+namespace { std::vector<std::pair<int, int>> pins; }
+const std::vector<std::pair<int, int>>& QuestBook_Pins() { return pins; }
+bool QuestBook_Pinned(int tier, int task) { return std::find(pins.begin(), pins.end(), std::make_pair(tier, task)) != pins.end(); }
+bool QuestBook_Pin(int tier, int task, bool on) {
+    const auto it = std::find(pins.begin(), pins.end(), std::make_pair(tier, task));
+    if (!on) { if (it != pins.end()) pins.erase(it); return true; }
+    if (it != pins.end()) return true;
+    if ((int)pins.size() >= kMaxPins || task < 0 || task >= QuestBook_TaskCount(tier)) return false;
+    pins.push_back({ tier, task });
+    return true;
+}
+void QuestBook_ClearPins() { pins.clear(); }
+void QuestBook_SavePins(FILE* f) { for (const auto& [t, k] : pins) fprintf(f, "quest_pin %d %d\n", t, k); }
+bool QuestBook_LoadPinLine(const char* tok, FILE* f) {
+    if (strcmp(tok, "quest_pin") != 0) return false;
+    int t = 0, k = 0;
+    if (fscanf(f, " %d %d", &t, &k) == 2) QuestBook_Pin(t, k, true);
+    return true;
+}
+
 void Objectives_DrawHUD() {
     LoadTiers();
     int y = 64;
-    if (Q().tier >= (int)tiers.size()) {
-        DrawText("CURRENT OBJECTIVES   all done", 12, y, 16, Fade(GOLD, 0.9f));
+    if (Q().tier >= (int)tiers.size() && pins.empty()) {
+        DrawText("QUESTS   all done", 12, y, 16, Fade(GOLD, 0.9f));
         return;
     }
+    // Finished pins drop out (the next ones are the player's to pick).
+    pins.erase(std::remove_if(pins.begin(), pins.end(), [](const std::pair<int, int>& p) { return QuestBook_TaskDone(p.first, p.second); }), pins.end());
+    if (!pins.empty()) { // the pinned ones, each with its tier
+        DrawText("PINNED QUESTS", 12, y, 16, Fade(GOLD, 0.9f));
+        y += 22;
+        for (const auto& [ti, ki] : pins) {
+            if (ti < 0 || ti >= (int)tiers.size() || ki < 0 || ki >= (int)tiers[ti].tasks.size()) continue;
+            y = DrawWrapped(TextFormat("[ ] %s", TaskLine(tiers[ti].tasks[ki], false).c_str()), 12, y, 58, 15, RAYWHITE);
+            y = DrawWrapped(TextFormat("    tier %d: %s", ti, tiers[ti].name.c_str()), 12, y, 64, 13, Fade(RAYWHITE, 0.55f));
+            y += 2;
+        }
+        return;
+    }
+    // Nothing pinned: the current tier's first three open tasks (pin others on the Quests screen).
     const Tier& t = tiers[Q().tier];
-    DrawText(TextFormat("CURRENT OBJECTIVES   tier %d: %s", Q().tier, t.name.c_str()), 12, y, 16, Fade(GOLD, 0.9f));
+    DrawText(TextFormat("QUESTS   tier %d: %s", Q().tier, t.name.c_str()), 12, y, 16, Fade(GOLD, 0.9f));
     y += 22;
     if (t.tasks.empty() && t.gate != "-") {
         const ItemDef* d = itemDB.find(t.gate);
         DrawText(TextFormat("[ ] Make a %s", d ? d->name.c_str() : t.gate.c_str()), 12, y, 16, RAYWHITE);
         y += 20;
     }
+    int shown = 0, more = 0;
     for (int ki = 0; ki < (int)t.tasks.size(); ++ki) {
-        const Task& k = t.tasks[ki];
-        const bool done = Done(Q().tier, ki);
-        y = DrawWrapped(TextFormat("%s %s", done ? "[x]" : "[ ]", TaskLine(k, done).c_str()), 12, y, 58, 15, done ? Fade(GREEN, 0.75f) : RAYWHITE);
+        if (Done(Q().tier, ki)) continue;
+        if (shown >= kMaxPins) { ++more; continue; }
+        y = DrawWrapped(TextFormat("[ ] %s", TaskLine(t.tasks[ki], false).c_str()), 12, y, 58, 15, RAYWHITE);
         y += 1;
+        ++shown;
     }
-    y += 4;
-    DrawWrapped(t.text, 12, y, 64, 13, Fade(RAYWHITE, 0.6f)); // the tier's hint
+    if (more > 0) DrawText(TextFormat("+%d more (pin the ones you want: Quests)", more), 12, y + 2, 13, Fade(RAYWHITE, 0.55f));
 }
 
 bool Survival_IsUsable(const std::string& id) { return id == "oxygen_canister" || id == "power_cell" || id == "repair_kit" || Survival_IsFood(id); }
