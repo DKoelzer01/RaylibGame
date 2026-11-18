@@ -714,6 +714,10 @@ bool NetProto_Test() {
         check(RoundTrip(ca, cb, &s9) && cb.recipe == 12 && cb.output == "oak_planks" && cb.count == 5 && cb.useChests, "craft request"); samples.push_back(s9);
         MsgMachineAction ma{ 0x2000000000000003ull, 4, 17, 5, "", 0, 2, 1 }, mb; std::vector<uint8_t> s10;
         check(RoundTrip(ma, mb, &s10) && mb.body == ma.body && mb.plot == 4 && mb.part == 17 && mb.action == 5 && mb.slot == 2 && mb.which == 1, "machine action"); samples.push_back(s10);
+        { // #862: into one chest slot
+            MsgMachineAction a{ 7, 4, 17, 8, "stone", 12, 31, 0 }, b; std::vector<uint8_t> s;
+            check(RoundTrip(a, b, &s) && b.action == 8 && b.item == "stone" && b.count == 12 && b.slot == 31, "machine action: into a slot"); samples.push_back(s);
+        }
         MsgMachineView va2, vb2; va2.body = 9; va2.plot = 2; va2.part = 3; va2.view.status = MachineStatus::Working; va2.view.progress = 40; va2.view.duration = 120;
         va2.view.inSlots = { { "iron_ore", 3 }, { "", 0 } }; va2.view.outSlots = { { "iron_ingot", 2 } }; va2.view.hasFuelSlot = true; va2.view.fuelSlot = { "coal", 5 }; va2.view.hotOutputs = true; va2.view.valid = true;
         std::vector<uint8_t> s11;
@@ -854,7 +858,7 @@ void NetWrite(NetWriter& w, const MsgMachineAction& m) {
 }
 bool NetRead(NetReader& r, MsgMachineAction& m) {
     m.body = r.varu(); m.plot = r.u32(); const int64_t part = r.vari(); m.action = r.u8(); m.item = r.str(64); m.count = r.u16(); m.slot = r.u8(); m.which = r.u8();
-    if (part < 0 || part > 1000000 || m.action < 1 || m.action > 7 || m.which > 2) r.ok = false;
+    if (part < 0 || part > 1000000 || m.action < 1 || m.action > 9 || m.which > 2) r.ok = false; // (8, 9: #862)
     m.part = (int32_t)part;
     return Done(r);
 }

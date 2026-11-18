@@ -20,6 +20,22 @@ void MachineAct_Insert(uint64_t body, uint32_t plot, int part, const std::string
     else Factory::Insert(body, plot, part, item, count);
 }
 
+void MachineAct_InsertSlot(uint64_t body, uint32_t plot, int part, const std::string& item, int count, int slot) {
+    if (count <= 0) return;
+    if (gMachineRequest) {
+        inventory.addAmount(item, count); // back, as Insert: the server takes it from the inventory it keeps
+        gMachineRequest(body, plot, part, 8, item, count, slot, 0);
+        return;
+    }
+    Factory::InsertSlot(body, plot, part, item, count, slot);
+}
+
+void MachineAct_Take(uint64_t body, uint32_t plot, int part, const std::string& item, int count) {
+    if (count <= 0) return;
+    if (gMachineRequest) { gMachineRequest(body, plot, part, 9, item, count, 0, 0); return; }
+    Factory::Take(body, plot, part, item, count);
+}
+
 void MachineAct_Extract(uint64_t body, uint32_t plot, int part) {
     if (gMachineRequest) { gMachineRequest(body, plot, part, 4, std::string(), 0, 0, 0); return; }
     Factory::Extract(body, plot, part);

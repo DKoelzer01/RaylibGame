@@ -98,6 +98,9 @@ namespace Factory {
     // The same onto the cursor (#192: all inventories behave alike): `count` of the slot's stack (0 = all), delivered by
     // Sync to the cursor sink (the inventory screen's held stack) instead of the inventory.
     void TakeSlotToCursor(uint64_t bodyId, uint32_t plotId, int part, int slot, int which, int count, uint32_t to = 0);
+    // (#862) `count` of item into one storage slot of a chest (empty, or the same item up to its cap), as a held stack is put
+    // down in Minecraft; what doesn't fit goes back as Insert's leftovers do. Not a chest: as Insert (machines route inputs).
+    void InsertSlot(uint64_t bodyId, uint32_t plotId, int part, const std::string& item, int count, int slot, uint32_t to = 0);
     void SetCursorSink(void (*sink)(const std::string& item, int count, float heat)); // heat: 1 fresh out of a heating machine (#580)
     void (*CursorSink())(const std::string& item, int count, float heat); // (#854) the one set (a joined client puts a server take on the cursor)
     // Water pumps (waterworks): water units in a pump's outputs (as of the last tick), and removing

@@ -473,13 +473,15 @@ namespace {
         const auto before = AllAmounts(inv);
         ++machineActions;
         switch (a.action) {
-            case 1: case 3: { // one item into the machine (or its fuel slot)
+            case 1: case 3: case 8: { // one item into the machine (or its fuel slot; 8: one storage slot of a chest, #862)
                 const int n = std::min<int>(a.count, inv.count(a.item));
                 const std::vector<std::string> fuels = a.action == 3 ? Factory::FuelsOf(type) : std::vector<std::string>{};
                 const bool takes = a.action == 3 ? std::find(fuels.begin(), fuels.end(), a.item) != fuels.end() : Factory::Accepts(type, a.item);
                 if (n <= 0 || !takes) { refuse("It doesn't take that"); return; }
                 inv.remove(a.item, n);
-                if (a.action == 3) Factory::InsertFuel(b->id, plot->id, a.part, a.item, n, session); else Factory::Insert(b->id, plot->id, a.part, a.item, n, session);
+                if (a.action == 3) Factory::InsertFuel(b->id, plot->id, a.part, a.item, n, session);
+                else if (a.action == 8) Factory::InsertSlot(b->id, plot->id, a.part, a.item, n, a.slot, session);
+                else Factory::Insert(b->id, plot->id, a.part, a.item, n, session);
                 break;
             }
             case 2: { // everything it takes (I): not tools; a chest not what is on the hotbar (as the local I)
@@ -491,6 +493,10 @@ namespace {
                 break;
             }
             case 4: Factory::Extract(b->id, plot->id, a.part, session); break;                       // O: the outputs (delivered next tick)
+            case 9: // (#862) some of an item out of a chest into the inventory (the scroll wheel)
+                if (type != PartType::Chest || a.count <= 0 || a.item.empty()) { refuse("Only a chest gives that way"); return; }
+                Factory::Take(b->id, plot->id, a.part, a.item, a.count, session);
+                break;
             case 5: // one slot of its screen; with a count (#854), that much of it (its client puts it on its cursor)
                 if (a.count > 0) Factory::TakeSlotToCursor(b->id, plot->id, a.part, a.slot, a.which, a.count, session);
                 else Factory::TakeSlot(b->id, plot->id, a.part, a.slot, a.which, session);
