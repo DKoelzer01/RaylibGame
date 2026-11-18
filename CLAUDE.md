@@ -97,17 +97,19 @@ C++ raylib 5.5 planetoid survival game. `src/engine` (static lib), `src/space` -
 ## GitHub issues (required before starting work)
 
 - Every task needs a GitHub issue BEFORE any work starts (code, shaders, data, tests, or a plan doc
-  section). First search for a matching issue: `gh issue list --state all --search "<keywords>"`.
+  section). First search for a matching issue (REST, see the GraphQL budget below):
+  `gh api -X GET search/issues -f q='repo:DKoelzer01/RaylibGame <keywords>' --jq '.items[] | "#\(.number) \(.state) \(.title)"'`.
   If one matches, use it, and reopen it if it was closed but the problem is back. If none matches, file one
-  with `gh issue create`: a title naming the problem or feature, a body with the problem/request, the cause
+  with `tools/board.sh new` (sets the board too): a title naming the problem or feature, a body with the problem/request, the cause
   if known, and the planned fix, plus labels (bug/enhancement plus area labels: rendering, shadows,
   terrain, water, physics, camera, ui, performance, tests, ...).
 - A batch of several tasks gets one issue per task. Group related ones as sub-issues
-  (`gh issue create --parent <n>`) under a tracking issue (e.g. #128 Graphics Pipeline Overhaul,
+  (`tools/board.sh new ... --parent <n>`) under a tracking issue (e.g. #128 Graphics Pipeline Overhaul,
   #143 Plan 6).
 - Reference the issue in commit messages (`(#N)`) and in PR bodies (a "Fixes" list with the numbers).
   PRs target develop, not the default branch (main), so "Fixes #N" does NOT auto-close: close the
-  issues by hand (`gh issue close N --comment "Fixed in #PR"`) once the PR merges. Until then, label them
+  issues by hand once the PR merges (REST: comment "Fixed in #PR", then
+  `gh api -X PATCH repos/DKoelzer01/RaylibGame/issues/N -f state=closed`; board Done via `tools/board.sh set -s Done N...`). Until then, label them
   `fixed in open PR`.
 - Close an issue only when its fix is merged into develop (then board Done), never on playtest alone
   (user, 2026-11-14). A playtest confirmation before the merge removes `needs playtest`, adds
@@ -124,12 +126,26 @@ C++ raylib 5.5 planetoid survival game. `src/engine` (static lib), `src/space` -
 Board: "RaylibGame Roadmap", https://github.com/users/DKoelzer01/projects/5 (project number 5,
 owner DKoelzer01, id `PVT_kwHOAe7Hf84BrZzd`). Every open issue belongs on it, with all four fields set. The
 board's auto-add workflow adds new issues itself, but sets no fields, so:
-- **New issue:** right after `gh issue create`, set Status, Priority, Size and Kind. `item-add` either adds it or fails
-  with "Content already exists" (auto-add was first); then look the item id up instead:
-  `gh project item-add 5 --owner DKoelzer01 --url <issue url> --format json --jq .id` gives the item id, then
-  `gh project item-edit --project-id PVT_kwHOAe7Hf84BrZzd --id <item id> --field-id <field> --single-select-option-id <option>`
-  once per field. Find an existing item's id with
-  `gh project item-list 5 --owner DKoelzer01 --limit 500 --format json --jq '.items[] | select(.content.number==N) | .id'`.
+- **Use `tools/board.sh` for every board read and write** (#582): it batches all fields of all issues into one
+  GraphQL request and does the rest through REST.
+  - New issue with its fields: `tools/board.sh new -t "Title" -F body.md -l bug,terrain [--parent N] -s Ready -p P1 -z S -k Bug`.
+  - Set fields on any number of issues at once: `tools/board.sh set -s "In review" 510 270 521`.
+  - Read fields: `tools/board.sh get N...`. Fill only empty fields: `tools/board.sh fill -s Ready -p P2 -z S -k Bug N...`.
+  - It adds issues to the board itself (idempotent), so "Content already exists" can't happen.
+- **GitHub GraphQL budget** (user, 2026-11-15, #582): the user's 5000 points an hour are shared by every session, and
+  ran out twice in one evening. Keep GraphQL for what needs it (board writes via board.sh, `gh pr create/merge`,
+  attachments); do everything else through REST, which has its own budget:
+  - read an issue or PR: `gh api repos/DKoelzer01/RaylibGame/issues/N --jq ...`, `.../pulls/N`;
+  - search: `gh api -X GET search/issues -f q='repo:DKoelzer01/RaylibGame <words>'`;
+  - comment: `gh api repos/DKoelzer01/RaylibGame/issues/N/comments -f body=...`;
+  - labels: `gh api repos/DKoelzer01/RaylibGame/issues/N/labels -f 'labels[]=x'`, and `-X DELETE .../labels/x`;
+  - close: `gh api -X PATCH repos/DKoelzer01/RaylibGame/issues/N -f state=closed`;
+  - create without a board: `gh api repos/DKoelzer01/RaylibGame/issues -f title=... -f body=...`;
+  - sub-issue link: `gh api repos/DKoelzer01/RaylibGame/issues/PARENT/sub_issues -F sub_issue_id=<issue .id>`.
+  Never run `gh project item-list` (it reads the whole board) or `gh project item-edit --url` (one request per
+  field plus lookups). Never poll gh in a loop. Batch board updates at the end of a step instead of one call per
+  change. If GraphQL is exhausted (`gh api rate_limit --jq .resources.graphql`), keep working and queue the board
+  updates for after the reset: don't retry in a loop.
 - **Status as work moves:** Backlog (not started) -> Ready (requirements clear, unblocked) -> In progress
   (starting work) -> In review (fixed/built in an open PR; also label `fixed in open PR`) -> Done (merged
   into develop, issue closed).
@@ -147,7 +163,8 @@ board's auto-add workflow adds new issues itself, but sets no fields, so:
   | Size | `PVTSSF_lAHOAe7Hf84BrZzdzhpssSw` | XS `39a448a0`, S `032ae8bd`, M `6bd53109`, L `d7a23c47`, XL `ee6d351f` |
   | Kind | `PVTSSF_lAHOAe7Hf84BrZzdzhpssZg` | Feature `dcf904b0`, Bug `fae89327`, Performance `8172895f`, Tracking `d260109d` |
 
-  If an id stops working, re-read them with `gh project field-list 5 --owner DKoelzer01 --format json`.
+  tools/board.sh carries these ids. If one stops working, re-read them with
+  `gh project field-list 5 --owner DKoelzer01 --format json` and update both places.
   ("Type" is reserved by GitHub, hence "Kind".)
 - The gh token needs the `project` scope (added 2026-11-12). If a project command fails on scopes, ask the
   user to run `gh auth refresh -h github.com -s project`.
