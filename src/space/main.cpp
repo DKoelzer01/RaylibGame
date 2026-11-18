@@ -105,7 +105,15 @@ static std::vector<AvatarState> gAvatars, gBenchAvatars;
 static NetClient gJoin;
 static bool gJoinSynced = false;
 // #348: the server soak window (RAYLIBGAME_SOAK_PLAYERS=N): frame work times while N players are online.
-static double gFrameWorkStart = 0.0;
+static double gFrameWorkStart = 0.0, gFrameCpuStart = 0.0;
+// The main thread's CPU time in seconds (#768: a long frame with little CPU was the process starved, not slow code).
+#ifdef _WIN32
+extern "C" __declspec(dllimport) int __stdcall GetThreadTimes(void*, void*, void*, void*, void*);
+extern "C" __declspec(dllimport) void* __stdcall GetCurrentThread();
+static double ThreadCpuSeconds() { unsigned long long c, e, k, u; GetThreadTimes(GetCurrentThread(), &c, &e, &k, &u); return (double)(k + u) * 1e-7; }
+#else
+static double ThreadCpuSeconds() { return 0.0; }
+#endif
 static std::vector<float> gSoakWorkMs;
 static bool gSoakOn = false;
 #include "mpbots.h"
@@ -1953,6 +1961,7 @@ int main(int argc, char** argv)
         Recorder_Update(WorldIdle() && !loading); // its start delay (after the loading screen), F10 in normal play
         GpuTimer_CpuFrameStart(!loading); GpuTimer_BeginFrame();
         gFrameWorkStart = GetTime(); // (#348) the frame's work, up to EndDrawing's wait
+        if (gSoakOn) gFrameCpuStart = ThreadCpuSeconds(); // (#768)
         FpsLog_Frame(gameState == 0 ? "menu" : gameState == 3 ? "newworld" : gameState == 2 ? "paused" : loading ? "loading" : "play");
         // --bench-unfocus S (#510): 1 unfocused during the preload for S s; then, playing: 2 measure 5 s, 3 unfocused S s,
         // 4 settle 2 s, 5 measure 5 s, then FPS before/after.
@@ -9030,7 +9039,7 @@ int main(int argc, char** argv)
                 const double maxSecs = getenv("RAYLIBGAME_SOAK_SECONDS") ? atof(getenv("RAYLIBGAME_SOAK_SECONDS")) : 1e9;
                 const int online = Host_OnlinePlayers();
                 if (!gSoakOn && !soakDone && online >= want) {
-                    gSoakOn = true; soakT0 = GetTime(); gSoakWorkMs.clear(); Net_ResetTraffic(); GpuTimer_Enable(true);
+                    gSoakOn = true; soakT0 = GetTime(); gSoakWorkMs.clear(); Net_ResetTraffic(); GpuTimer_Enable(true); GpuTimer_SetSlowReport(30.0, 1000); // (#768: every frame over 30 ms, with its passes)
                     printf("host: soak: %d players online: measuring\n", online);
                 } else if (gSoakOn && (online < want || GetTime() - soakT0 > maxSecs)) {
                     gSoakOn = false; soakDone = true;
@@ -10811,7 +10820,12 @@ int main(int argc, char** argv)
             GpuTimer_Mark("2d-flush");
             if (Recorder_WantsFrame(true)) Recorder_Capture(); // the finished frame, HUD included (#375)
             Recorder_FrameDone();
-        if (gSoakOn) gSoakWorkMs.push_back((float)((GetTime() - gFrameWorkStart) * 1000.0)); // (#348) before the frame-rate wait
+        if (gSoakOn) { // (#348) before the frame-rate wait
+            const double workMs = (GetTime() - gFrameWorkStart) * 1000.0, cpuMs = (ThreadCpuSeconds() - gFrameCpuStart) * 1000.0;
+            gSoakWorkMs.push_back((float)workMs);
+            // (#768) a long frame: its main-thread CPU against its wall time (CPU well under wall = the thread waited: starved, or blocked)
+            if (workMs > 50.0) printf("bench: soak: long frame %.1f ms wall, %.1f ms main-thread CPU (%.0f%%) at %.1f s\n", workMs, cpuMs, 100.0 * cpuMs / workMs, GetTime());
+        }
         EndDrawing();
         gInFrame = false;
         {   // Unfocused (#510): at most ~30 frames a second (the streaming still gets every frame's budget), so a background
