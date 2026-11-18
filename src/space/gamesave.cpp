@@ -2,6 +2,7 @@
 #include "structures.h"
 #include "trapping.h"
 #include "combat.h"
+#include "claims.h"
 #include "events.h"
 #include "gamerng.h"
 #include "headless.h"
@@ -259,6 +260,7 @@ void GameSave_Register() {
         Structures_Save(f); // #164
         Trapping_Save(f);   // #176
         Combat_Save(f);     // graves (#165)
+        Claims_Save(f);     // land claims (#343)
         Events_Save(f);     // #177
         Rocket_Save(f);
         Station_Save(f);
@@ -291,6 +293,7 @@ void GameSave_Register() {
         ToolWear_Reset();
         RecipeBook_Reset();
         Combat_Reset(); // graves: the save holds them all (#165)
+        Claims_Reset();
         Teams_Reset();
         QuestBook_ClearPins(); // (#825) the record's pins come back with it
         TeamQuests_Reset(); // (#338) the server's team books load from the teams as they are used
@@ -314,6 +317,7 @@ void GameSave_Register() {
             if (Structures_LoadLine(tok, f)) continue;
             if (Trapping_LoadLine(tok, f)) continue;
             if (Combat_LoadLine(tok, f)) continue;
+            if (Claims_LoadLine(tok, f)) continue;
             if (Events_LoadLine(tok, f)) continue;
             if (Rocket_LoadLine(tok, f)) continue;
             if (Station_LoadLine(tok, f)) continue;
@@ -459,3 +463,162 @@ bool GameSave_TestSplit(Scene& world) {
     SetWorldSavePath(oldPath.c_str());
     return all;
 }
+
+#ifdef RAYLIBGAME_UNIT_TESTS
+// ---- Unit tests (#869): the player record and the world file's extras (format 13, and format 12 migrating to it) ----
+// The world file's own header and bodies need a Scene (GL); --test-save-split covers those. These cover what the hooks
+// read and write, which is where the player and the teams live.
+#include "unit_helpers.h"
+
+namespace {
+std::string Slurp(const std::string& p) {
+    std::string s;
+    if (FILE* f = fopen(p.c_str(), "rb")) { char b[4096]; size_t n; while ((n = fread(b, 1, sizeof b, f)) > 0) s.append(b, n); fclose(f); }
+    return s;
+}
+void Spit(const std::string& p, const std::string& s) { if (FILE* f = fopen(p.c_str(), "wb")) { fwrite(s.data(), 1, s.size(), f); fclose(f); } }
+int Lines(const std::string& s, const char* prefix) {
+    int n = 0; size_t at = 0; const size_t len = strlen(prefix);
+    while (at < s.size()) { const size_t e = s.find('\n', at); if (s.compare(at, len, prefix) == 0) ++n; at = e == std::string::npos ? s.size() : e + 1; }
+    return n;
+}
+
+struct SaveTest : ::testing::Test {
+    std::string dir, oldSave;
+    void SetUp() override {
+        UnitTest::EnsureItemDB();
+        dir = UnitTest::ScratchDir();
+        oldSave = WorldSavePath();
+        SetWorldSavePath((dir + "/world.sav").c_str());
+        GameSave_Register();
+        Teams_Reset();
+    }
+    void TearDown() override { SetWorldSavePath(oldSave.c_str()); Teams_Reset(); inventory.clear(); }
+    // The extras as the save writes them, read back by the load hook (an "end_extras" line closes them, as in the file).
+    std::string WriteExtras() {
+        const std::string p = dir + "/extras.txt";
+        FILE* f = fopen(p.c_str(), "w");
+        saveExtrasHook(f);
+        fprintf(f, "end_extras\n");
+        fclose(f);
+        return Slurp(p);
+    }
+    void ReadExtras(const std::string& text) {
+        const std::string p = dir + "/extras_in.txt";
+        Spit(p, text);
+        FILE* f = fopen(p.c_str(), "r");
+        ASSERT_NE(f, nullptr);
+        loadExtrasHook(f);
+        fclose(f);
+    }
+};
+}
+
+// A server's record of a remote player: position, inventory (with heat), vitals and the lines it doesn't hold (kept text).
+TEST_F(SaveTest, PlayerRecordRoundTrip) {
+    Player p; p.position = { 1234.5, 60001.25, -77.125 }; p.forward = { 0, 0, 1 }; p.jetpackFuel = 0.4f;
+    Inventory inv; inv.add("iron_ingot", 7); inv.addAmount("iron_ore", 2.5, 0.75f); inv.add("stone_pickaxe", 1);
+    SurvivalState sv; sv.health = 63.0f; sv.food = 41.0f; sv.oxygen = 80.0f; sv.deaths = 3;
+    sv.hasBed = true; sv.bedBody = "terra"; sv.bedPlot = 4; sv.bedCell[0] = -2; sv.bedCell[1] = 5; sv.bedCell[2] = 9;
+    PlayerRecordMeta meta; meta.uuid = PlayerId_FromName("unit"); meta.name = "unit"; meta.firstSeen = 1700000000.0; meta.playTime = 60.0;
+    meta.kept = "hotbar 0 45\nmap_pin 1 2 3 home\n";
+    const std::string path = PlayerRecord_Path(meta.uuid);
+    ASSERT_TRUE(PlayerRecord_Write(path, p, inv, sv, meta, 30.0));
+    EXPECT_FALSE(std::filesystem::exists(path + ".tmp"));
+    const std::string text = Slurp(path);
+    EXPECT_EQ(text.rfind("RAYLIBGAME_PLAYER 1", 0), 0u);
+
+    Player p2; Inventory inv2; SurvivalState sv2; PlayerRecordMeta m2;
+    ASSERT_TRUE(PlayerRecord_Read(path, p2, inv2, sv2, m2));
+    EXPECT_EQ(m2.uuid, meta.uuid);
+    EXPECT_EQ(m2.name, "unit");
+    EXPECT_DOUBLE_EQ(m2.playTime, 90.0);
+    EXPECT_LT((p2.position - p.position).length(), 1e-5);
+    EXPECT_FLOAT_EQ(p2.jetpackFuel, 0.4f);
+    EXPECT_EQ(inv2.count("iron_ingot"), 7);
+    EXPECT_DOUBLE_EQ(inv2.amount("iron_ore"), 2.5);
+    EXPECT_EQ(inv2.count("stone_pickaxe"), 1);
+    for (int i = 0; i < Inventory::kCells; ++i) {
+        EXPECT_EQ(inv2.grid()[i].id, inv.grid()[i].id) << "cell " << i;
+        EXPECT_NEAR(inv2.grid()[i].heat, inv.grid()[i].heat, 1e-3f) << "cell " << i;
+    }
+    EXPECT_FLOAT_EQ(sv2.health, 63.0f); EXPECT_FLOAT_EQ(sv2.food, 41.0f); EXPECT_FLOAT_EQ(sv2.oxygen, 80.0f); EXPECT_EQ(sv2.deaths, 3);
+    EXPECT_TRUE(sv2.hasBed); EXPECT_EQ(sv2.bedBody, "terra"); EXPECT_EQ(sv2.bedPlot, 4u); EXPECT_EQ(sv2.bedCell[0], -2); EXPECT_EQ(sv2.bedCell[2], 9);
+    EXPECT_NE(m2.kept.find("hotbar 0 45"), std::string::npos) << "a line the server doesn't hold is kept: " << m2.kept;
+    EXPECT_NE(m2.kept.find("map_pin 1 2 3 home"), std::string::npos) << m2.kept;
+}
+
+TEST_F(SaveTest, TeamLinesRoundTrip) {
+    const std::string a = PlayerId_FromName("alice"), b = PlayerId_FromName("bob");
+    const int t = Teams_Join(a, "alice's team", 0xD04A2F);
+    Teams_SetOwner(a);
+    Teams_Move(b, t);
+    Teams_SetQuests(t, "quest 2\nside_done e0f\n");
+    const std::string p = dir + "/teams.txt";
+    { FILE* f = fopen(p.c_str(), "w"); Teams_Save(f, "", nullptr); fclose(f); }
+    Teams_Reset();
+    FILE* f = fopen(p.c_str(), "r");
+    char tok[64];
+    while (fscanf(f, " %63s", tok) == 1) ASSERT_TRUE(Teams_LoadLine(tok, f, "")) << tok;
+    fclose(f);
+    ASSERT_EQ(Teams_All().size(), 1u);
+    const TeamRecord& r = Teams_All()[0];
+    EXPECT_EQ(r.id, t);
+    EXPECT_EQ(r.colour, 0xD04A2Fu);
+    EXPECT_EQ(r.name, "alice's_team") << "spaces become underscores";
+    EXPECT_EQ(r.members, (std::vector<std::string>{ a, b }));
+    EXPECT_EQ(Teams_OwnerOf(t), a);
+    EXPECT_EQ(Teams_Owner(), a);
+    EXPECT_EQ(r.quests, "quest 2\nside_done e0f\n");
+}
+
+// Format 13: the world's extras hold the team and no player lines; the player's record beside it brings them back.
+TEST_F(SaveTest, Format13PutsThePlayerInItsRecord) {
+    inventory.clear(); inventory.add("iron_ingot", 7);
+    survival.health = 63.0f; survival.food = 41.0f;
+    const std::string w = WriteExtras();
+    EXPECT_EQ(Lines(w, "slot "), 0);
+    EXPECT_EQ(Lines(w, "player "), 0);
+    EXPECT_EQ(Lines(w, "survival "), 0);
+    EXPECT_EQ(Lines(w, "team "), 1);
+    EXPECT_EQ(Lines(w, "owner "), 1);
+    const std::string rec = Slurp(PlayerRecord_Path(PlayerId_Local()));
+    EXPECT_GE(Lines(rec, "slot "), 1);
+    EXPECT_EQ(Lines(rec, "survival "), 1);
+
+    inventory.clear(); survival.health = 100.0f; survival.food = 100.0f;
+    ReadExtras(w);
+    EXPECT_TRUE(GameSave_PlayerLoaded());
+    EXPECT_EQ(inventory.count("iron_ingot"), 7);
+    EXPECT_FLOAT_EQ(survival.health, 63.0f);
+    EXPECT_FLOAT_EQ(survival.food, 41.0f);
+}
+
+// Format 12 (the player's lines in the world file's extras, no teams, no record) loads the same, and its next save is 13.
+TEST_F(SaveTest, Format12MigratesTo13) {
+    const std::string v12 =
+        "player 10.000000 60000.000000 -3.000000 0.000000 0.000000 1.000000 0 0.500000\n"
+        "inv_cols 9\n"
+        "slot 0 iron_ingot 700\n"
+        "slot 45 stone_pickaxe 100\n" // a 9-wide save's first hotbar cell: moves up to the 10-wide grid's (#495)
+        "survival 90.000000 80.000000 63.000000 2\n"
+        "food 41.000000\n"
+        "end_extras\n";
+    inventory.clear();
+    ReadExtras(v12);
+    EXPECT_TRUE(GameSave_PlayerLoaded());
+    EXPECT_EQ(inventory.count("iron_ingot"), 7);
+    EXPECT_EQ(inventory.grid()[Inventory::kGrid].id, "stone_pickaxe");
+    EXPECT_FLOAT_EQ(survival.health, 63.0f);
+    EXPECT_FLOAT_EQ(survival.food, 41.0f);
+    EXPECT_EQ(survival.deaths, 2);
+    const std::string w = WriteExtras();
+    EXPECT_EQ(Lines(w, "slot "), 0) << "resaved as 13: the player moved to the record";
+    EXPECT_EQ(Lines(w, "team "), 1);
+    EXPECT_TRUE(std::filesystem::exists(PlayerRecord_Path(PlayerId_Local())));
+    inventory.clear();
+    ReadExtras(w);
+    EXPECT_EQ(inventory.count("iron_ingot"), 7);
+    EXPECT_EQ(inventory.grid()[Inventory::kGrid].id, "stone_pickaxe");
+}
+#endif

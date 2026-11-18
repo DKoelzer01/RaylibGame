@@ -17,7 +17,7 @@
 #include <functional>
 #include <vector>
 
-constexpr uint32_t kNetProtocol = 29; // 1 was the text "join" of #311; 5: world time in Welcome and Pong (#339); 6 (unused); 7: world-gen settings in Welcome (#757); 8: terrain edit requests, refusals, inventory deltas (#329); 9: chat (#326); 10: building (#330); 11 is #776's; 12: player snapshots, delta-coded against acked states (#769); 13: animals (#334); 14: animal actions, damage to a player (#334); 15 (unused); 16: server-side survival (#337); 17: the suit colour in the loadout (#341); 18: beds (#800); 19: graves (#804); 20: the player id (UUID) in the hello (#346); 21: team quest books (#338); 22: crafting on the server (#338); 23: machines on the server (#332); 24 is #604's; 25: crafting from nearby chests, cursor takes (#854); 26 is #604's; 27: plants and farming (#335); 28: land claims (#343, reserved); 29: MachineAction 8, insert into one chest slot, 9: take some of an item from a chest (#862)
+constexpr uint32_t kNetProtocol = 29; // 1 was the text "join" of #311; 5: world time in Welcome and Pong (#339); 6 (unused); 7: world-gen settings in Welcome (#757); 8: terrain edit requests, refusals, inventory deltas (#329); 9: chat (#326); 10: building (#330); 11 is #776's; 12: player snapshots, delta-coded against acked states (#769); 13: animals (#334); 14: animal actions, damage to a player (#334); 15 (unused); 16: server-side survival (#337); 17: the suit colour in the loadout (#341); 18: beds (#800); 19: graves (#804); 20: the player id (UUID) in the hello (#346); 21: team quest books (#338); 22: crafting on the server (#338); 23: machines on the server (#332); 24 is #604's; 25: crafting from nearby chests, cursor takes (#854); 26 is #604's; 27: plants and farming (#335); 28: claim refusals (#343); 29: MachineAction 8, insert into one chest slot, 9: take some of an item from a chest (#862)
 
 enum class NetMsg : uint8_t {
     Hello = 1,     // client -> server: protocol, build, player name, password
@@ -260,7 +260,7 @@ struct MsgEditRequest {
     float radius = 0.0f;
     std::string item;                // place: the filler that pays (dig: unused; the tool comes from the loadout)
 };
-enum class NetEditRefusal : uint8_t { Reach, Rate, Tool, Cost, Body, Mantle, Shape, Count };
+enum class NetEditRefusal : uint8_t { Reach, Rate, Tool, Cost, Body, Mantle, Shape, Claim, Count }; // Claim: inside another team's claim (#343)
 const char* NetEditRefusalText(NetEditRefusal r);
 struct MsgEditRefused { uint32_t seq = 0; NetEditRefusal why = NetEditRefusal::Reach; };
 struct MsgInventoryDelta { std::string item; double amount = 0.0; }; // > 0 added, < 0 taken (fractional, as the inventory)
@@ -279,7 +279,7 @@ struct MsgPartRequest {
     NetPart part;                     // Place
     uint32_t partIndex = 0;           // Remove
 };
-enum class NetPartRefusal : uint8_t { Reach, Cost, Blocked, NoPlot, NoPart, Body, Kind, Rate, Count };
+enum class NetPartRefusal : uint8_t { Reach, Cost, Blocked, NoPlot, NoPart, Body, Kind, Rate, Claim, Count }; // Claim (#343)
 const char* NetPartRefusalText(NetPartRefusal r);
 struct MsgPartRefused { uint32_t seq = 0; NetPartRefusal why = NetPartRefusal::Reach; };
 struct MsgPlotEdit {

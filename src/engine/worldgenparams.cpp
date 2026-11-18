@@ -94,3 +94,81 @@ bool WorldGen_StartPlanet(unsigned int worldSeed, unsigned int& terrainSeed, flo
     (void)seenParent;
     return false;
 }
+
+#ifdef RAYLIBGAME_UNIT_TESTS
+// ---- Unit tests (#869): the world generation sidecar and the Welcome's worldgen text ----
+#include "unit_helpers.h"
+#include <iterator>
+
+namespace {
+// Every field set away from its default, one at a time (the name is for the failure message).
+struct FieldCase { const char* name; void (*set)(WorldGenParams&); };
+const FieldCase kFields[] = {
+    { "ocean", [](WorldGenParams& p) { p.ocean = -0.375f; } },
+    { "mountains", [](WorldGenParams& p) { p.mountains = 1.7f; } },
+    { "roughness", [](WorldGenParams& p) { p.roughness = 0.31f; } },
+    { "biomeSize", [](WorldGenParams& p) { p.biomeSize = 1.9f; } },
+    { "resources", [](WorldGenParams& p) { p.resources = 0.6f; } },
+    { "erosion", [](WorldGenParams& p) { p.erosion = false; } },
+    { "erosionStrength", [](WorldGenParams& p) { p.erosionStrength = 1.3f; } },
+    { "waterCycle", [](WorldGenParams& p) { p.waterCycle = 1.75f; } }, // #686: once dropped from the text
+    { "cliffs", [](WorldGenParams& p) { p.cliffs = 0.1f; } },
+    { "karst", [](WorldGenParams& p) { p.karst = false; } },
+    { "volcanoes", [](WorldGenParams& p) { p.volcanoes = false; } },
+};
+}
+
+// A new field must be added to the text, the key, isDefault and kFields above: this fails until it is.
+TEST(WorldGenParams, EveryFieldIsListedHere) {
+    EXPECT_EQ(sizeof(WorldGenParams), 40u) << "WorldGenParams changed size: add the new field to ToText, FromText, key(), "
+                                              "isDefault() and kFields in this test";
+    EXPECT_EQ(std::size(kFields), 11u);
+}
+
+TEST(WorldGenParams, DefaultsRoundTrip) {
+    const WorldGenParams d;
+    EXPECT_TRUE(d.isDefault());
+    const WorldGenParams back = WorldGenParams_FromText(WorldGenParams_ToText(d));
+    EXPECT_TRUE(back.isDefault());
+    EXPECT_EQ(back.key(), d.key());
+    EXPECT_TRUE(WorldGenParams_FromText("").isDefault()) << "an old save without a sidecar generates as before";
+}
+
+TEST(WorldGenParams, EveryFieldRoundTripsThroughTheText) {
+    const uint64_t defaultKey = WorldGenParams{}.key();
+    for (const FieldCase& f : kFields) {
+        WorldGenParams p;
+        f.set(p);
+        EXPECT_FALSE(p.isDefault()) << f.name << ": isDefault() ignores it";
+        EXPECT_NE(p.key(), defaultKey) << f.name << ": the bake's cache key ignores it";
+        const std::string text = WorldGenParams_ToText(p);
+        const WorldGenParams back = WorldGenParams_FromText(text);
+        EXPECT_EQ(back.key(), p.key()) << f.name << " lost in the text:\n" << text;
+        EXPECT_FALSE(back.isDefault()) << f.name << " lost in the text:\n" << text;
+    }
+}
+
+TEST(WorldGenParams, FloatsComeBackBitForBit) {
+    WorldGenParams p;
+    p.ocean = 0.1f; p.mountains = 1.0f / 3.0f; p.waterCycle = 0.7f + 1e-7f; p.cliffs = 1.9999999f;
+    const WorldGenParams back = WorldGenParams_FromText(WorldGenParams_ToText(p));
+    EXPECT_EQ(memcmp(&back.ocean, &p.ocean, sizeof(float)), 0);
+    EXPECT_EQ(memcmp(&back.mountains, &p.mountains, sizeof(float)), 0);
+    EXPECT_EQ(memcmp(&back.waterCycle, &p.waterCycle, sizeof(float)), 0);
+    EXPECT_EQ(back.key(), p.key());
+}
+
+TEST(WorldGenParams, UnknownKeysAreSkipped) {
+    const WorldGenParams p = WorldGenParams_FromText("futureKnob 3\nmountains 1.5\nanother 0\n");
+    EXPECT_FLOAT_EQ(p.mountains, 1.5f);
+    EXPECT_FLOAT_EQ(p.roughness, 1.0f);
+}
+
+TEST(WorldGenParams, SidecarRoundTrip) {
+    const std::string save = UnitTest::ScratchDir() + "/world.sav";
+    WorldGenParams p; p.ocean = 0.25f; p.waterCycle = 0.5f; p.karst = false;
+    ASSERT_TRUE(WorldGenParams_Save(save, p));
+    EXPECT_EQ(WorldGenParams_ForSave(save).key(), p.key());
+    EXPECT_TRUE(WorldGenParams_ForSave(save + ".missing").isDefault());
+}
+#endif
