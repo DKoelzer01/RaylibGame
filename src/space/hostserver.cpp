@@ -1,4 +1,5 @@
 #include "hostserver.h"
+#include "netinterest.h"
 #include "events.h"
 #include "joininfo.h"
 #include "net.h"
@@ -135,15 +136,34 @@ namespace {
     void SendSnapshots(Scene& world) {
         if (SimTick() - lastSnapshot < kSnapshotEvery) return;
         lastSnapshot = SimTick();
+        // Every online player's state, written once (#348: it was written again for each client); then each client gets
+        // what interest management picks for it (#340: relevancy by distance and body, a byte budget; nothing starves).
+        // RAYLIBGAME_NET_INTEREST=0: every state to every client, as before (A/B).
+        static const bool interest = !(getenv("RAYLIBGAME_NET_INTEREST") && atoi(getenv("RAYLIBGAME_NET_INTEREST")) == 0);
+        struct Out { uint32_t session; MsgPlayerState s; NetWriter w; };
+        std::vector<Out> outs;
+        for (const auto& [session, r] : remotes) {
+            bool online = false;
+            for (const Session& s : sessions) online = online || (s.id == session && s.online);
+            if (!online) continue;
+            Out o{ session, StateOf(world, session, r), {} };
+            NetWrite(o.w, o.s);
+            outs.push_back(std::move(o));
+        }
+        std::vector<InterestItem> items;
         for (const auto& [conn, p] : peers) {
             if (!p.joined) continue;
-            for (const auto& [session, r] : remotes) {
-                bool online = false;
-                for (const Session& s : sessions) online = online || (s.id == session && s.online);
-                if (!online) continue;
-                NetWriter w; NetWrite(w, StateOf(world, session, r));
-                Net_Send(conn, w.bytes.data(), (uint32_t)w.bytes.size(), false); // unreliable: the next one replaces it
+            const Out* self = nullptr;
+            for (const Out& o : outs) if (o.session == p.session) self = &o;
+            if (!interest || !self) { // (no own state yet: everything, as before)
+                for (const Out& o : outs) Net_Send(conn, o.w.bytes.data(), (uint32_t)o.w.bytes.size(), false); // unreliable: the next one replaces it
+                continue;
             }
+            items.clear();
+            for (const Out& o : outs) items.push_back({ o.session, o.s.body, o.s.local, (uint32_t)o.w.bytes.size() + 28, o.session == p.session }); // + UDP/GNS overhead
+            const Planetoid* vb = Planetoid::findNet(self->s.body);
+            for (uint32_t id : Interest_Select(conn, self->s.body, self->s.local, vb ? vb->scale : 1.0, items))
+                for (const Out& o : outs) if (o.session == id) { Net_Send(conn, o.w.bytes.data(), (uint32_t)o.w.bytes.size(), false); break; }
         }
     }
 
@@ -167,6 +187,7 @@ namespace {
         if (why != NetBye::Quit) SendMsg(conn, MsgBye{ why });
         printf("host: connection %u (session %u) %s\n", conn, it->second.session, NetByeText(why));
         const bool wasJoined = it->second.joined;
+        Interest_Forget(conn); // (#340) its accumulators
         peers.erase(it);
         Net_Close(conn);
         if (wasJoined) SendRoster(); // the others see them go
