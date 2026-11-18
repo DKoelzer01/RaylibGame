@@ -8869,25 +8869,36 @@ int main(int argc, char** argv)
             if (sf == 20) {
                 const Vector3 me = p->toLocal((player.position - world.renderOrigin).toFloat());
                 built = Structures_Test(world, *p, me);
+                uint64_t layout = 0;
+                built = Structures_TestPlacement(*p, 2000.0f, layout) && built; // the world's placement round the start (#164)
                 Vector3 at; std::string set;
                 if (Structures_NearestSite(*p, me, 2000.0f, at, set)) printf("bench: structures: the nearest natural site is a %s, %.0f m from the start\n", set.c_str(), Vector3Distance(at, me));
                 else printf("bench: structures: no natural site within 2 km\n");
             }
             if (sf == 80) Structures_TestFill(*p);
             static Vector3 shotEye{}, shotAt{}, shotUp{};
-            if (sf == 81) { // look down into the second set (the geode, on -t1, 30 m out) from 9 m back and 12 m up
-                const Vector3 me = p->toLocal((player.position - world.renderOrigin).toFloat());
-                shotUp = Vector3Normalize(me);
-                const Vector3 t1 = Vector3Normalize(Vector3CrossProduct(shotUp, fabsf(shotUp.y) < 0.9f ? Vector3{ 0, 1, 0 } : Vector3{ 1, 0, 0 }));
-                shotAt = Vector3Subtract(Vector3Add(me, Vector3Scale(t1, -30.0f)), Vector3Scale(shotUp, 4.0f));
-                shotEye = Vector3Add(shotAt, Vector3Add(Vector3Scale(t1, 9.0f), Vector3Scale(shotUp, 16.0f)));
-                player.flyMode = true;
-            }
-            if (sf >= 81 && sf < 160) { // the camera itself, each frame
+            // A tour of the sets built round the start (#164: each new set looked at): set i stands on side i % 4 (t1, -t1, t2,
+            // -t2), 30 + 22 * (i / 4) m out (Structures_Test); 30 frames on each from 12 m back toward the start and 10 m up,
+            // bench_structure_<i>.png on the last.
+            static Vector3 home{};
+            if (sf == 20) home = p->toLocal((player.position - world.renderOrigin).toFloat());
+            const int nSets = Structures_SetCount(), tourEnd = 81 + 30 * nSets;
+            if (sf >= 81 && sf < tourEnd) {
+                const int i = (sf - 81) / 30;
+                if ((sf - 81) % 30 == 0) {
+                    shotUp = Vector3Normalize(home);
+                    const Vector3 t1 = Vector3Normalize(Vector3CrossProduct(shotUp, fabsf(shotUp.y) < 0.9f ? Vector3{ 0, 1, 0 } : Vector3{ 1, 0, 0 }));
+                    const Vector3 t2 = Vector3CrossProduct(t1, shotUp);
+                    const Vector3 side = i % 4 == 0 ? t1 : i % 4 == 1 ? Vector3Negate(t1) : i % 4 == 2 ? t2 : Vector3Negate(t2);
+                    shotAt = Vector3Add(home, Vector3Scale(side, 30.0f + 22.0f * (i / 4)));
+                    shotEye = Vector3Add(shotAt, Vector3Add(Vector3Scale(side, -12.0f), Vector3Scale(shotUp, 10.0f)));
+                    player.flyMode = true;
+                }
                 world.camera.position = p->toWorld(shotEye); world.camera.target = p->toWorld(shotAt); world.camera.up = p->dirToWorld(shotUp);
                 player.position = world.renderOrigin + world.camera.position;
+                if ((sf - 81) % 30 == 29) TakeScreenshot(TextFormat("bench_structure_%d.png", i));
             }
-            if (sf == 160) {
+            if (sf == tourEnd) {
                 TakeScreenshot("bench_structures.png");
                 int items = 0;
                 const int full = Structures_TestCheck(*p, items);

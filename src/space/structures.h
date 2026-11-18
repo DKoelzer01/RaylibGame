@@ -10,6 +10,7 @@
 // parts (as building does). Its chests are filled when the player is within 60 m. Built sites and unfilled chests
 // are saved; a looted or broken structure never comes back.
 
+#include <cstdint>
 #include <cstdio>
 #include <string>
 #include <vector>
@@ -23,10 +24,15 @@ void Structures_Reset();                // a new or loaded world
 void Structures_Save(FILE* f);
 bool Structures_LoadLine(const char* tok, FILE* f);
 int Structures_SetCount();              // sets loaded (tests)
+// The Help tab's Places page (#164): a paragraph per kind of site (with discoveredOnly, only the kinds found).
+std::string Structures_PlacesText(bool discoveredOnly);
 // Tests (--test-structures): every set built at sites round the player; parts placed, chests filled.
 bool Structures_Test(Scene& world, Planetoid& body, Vector3 nearLocal);
 // Tests: the nearest site (built or not) of any set within `range` of a body-local point; its set name.
 const char* Structures_LastSkip();   // tests: why the last site was left out
+// Tests: the world's placement within `range` m of the start (dry, level, none too close, the ring camp and ruin);
+// `hash` fingerprints the layout (two runs must agree).
+bool Structures_TestPlacement(const Planetoid& body, float range, uint64_t& hash);
 int Structures_SitesBuilt();          // tests: sites built by the world placement
 void Structures_TestFill(Planetoid& body);          // tests: fill every waiting chest now
 int Structures_TestCheck(Planetoid& body, int& items); // tests: how many of those chests hold items (and how many)
